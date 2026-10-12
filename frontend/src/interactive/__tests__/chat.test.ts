@@ -233,7 +233,11 @@ describe("悬浮聊天面板（组件级）", () => {
     await flushPromises();
 
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith("把这两张卡片连起来");
+    // 载荷形状与对话页同一条入口（P3 契约 §4.1）：文字 + 本次明确选定的附件（这里为空）
+    const [payload, attachmentIds, attachments] = send.mock.calls[0] as [string, string[], unknown[]];
+    expect(payload).toBe("把这两张卡片连起来");
+    expect(attachmentIds ?? []).toEqual([]);
+    expect(attachments ?? []).toEqual([]);
     expect(session.draft).toBe("");
   });
 

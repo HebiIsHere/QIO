@@ -11,6 +11,8 @@ import json
 import logging
 from typing import Any, AsyncIterator
 
+import httpx
+
 from agent.adapters.base import (
     STREAM_DONE,
     STREAM_TEXT,
@@ -29,6 +31,31 @@ from agent.adapters.base import (
 logger = logging.getLogger(__name__)
 
 MAX_PARSE_RETRIES = 2
+
+#: 派生转写通道标识（契约 §4.2）。只有**真的解析到凭据并装上路由**时才声明，
+#: 没有凭据就是 None —— 绝不静默换成用户没配置的外部服务。
+TRANSCRIPTION_CHANNEL = "openai.audio.transcriptions"
+
+
+class _TranscriptionHTTPError(RuntimeError):
+    """转写端点的 HTTP 层失败（带真实状态码与响应正文，供上层如实归因）。"""
+
+    def __init__(self, *, status: int | None, kind: str, detail: str) -> None:
+        self.status = status
+        self.kind = kind
+        self.detail = detail
+        super().__init__(f"{kind}: {detail}")
+
+
+
+
+def _transcription_route(
+    *, endpoint: str | None, api_key: str | None, model: str | None
+) -> dict[str, str] | None:
+    """路由三元组缺一不可：地址 / 密钥 / 模型（模型名来自凭据，不硬编码）。"""
+    if not endpoint or not api_key or not model:
+        return None
+    return {"endpoint": str(endpoint).rstrip("/"), "api_key": str(api_key), "model": str(model)}
 
 # 供应商明确表示「不认识 stream_options」时才去掉它重试一次（窄路径）：
 # 其它 4xx 一律按真实错误抛出，不靠重试掩盖。
@@ -222,7 +249,144 @@ class NativeAdapter(BaseAdapter):
         self.model = model
         self.endpoint = endpoint
         self.parse_retries = parse_retries
+        # 转写路由**按每次运行解析**（契约 §4.2）：默认没有，由 set_audio_route 装上。
+        self._audio_route: dict[str, str] | None = None
 
+    # -- 派生转写通道（契约 §4.2 / §4.4） ----------------------------------
+
+    def set_audio_route(
+        self,
+        route: dict[str, str] | None = None,
+        *,
+        endpoint: str | None = None,
+        api_key: str | None = None,
+        model: str | None = None,
+    ) -> None:
+        """装上 / 撤掉本轮的转写路由，并**同步**能力位（按运行解析，不是类的静态属性）。
+
+        三元组缺一 → 视为没有通道：能力位回到 None，`transcribe_audio` 不发任何请求。
+        """
+        resolved = _transcription_route(
+            endpoint=endpoint if endpoint is not None else (route or {}).get("endpoint"),
+            api_key=api_key if api_key is not None else (route or {}).get("api_key"),
+            model=model if model is not None else (route or {}).get("model"),
+        )
+        self._audio_route = resolved
+        self.audio_transcription = TRANSCRIPTION_CHANNEL if resolved else None
+
+    async def transcribe_audio(
+        self,
+        data: bytes,
+        *,
+        filename: str = "audio.wav",
+        language: str | None = None,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        """把一段音频字节交给**已配置凭据**的 OpenAI 兼容端点转写（multipart）。
+
+        返回 `{"text": str, "engine": {"provider": str, "model": str}, "language": str}`。
+        模型名取路由里的 default_model（来自凭据），**不硬编码任何模型名**。
+
+        失败一律抛异常并带上真实原因：调用方据此如实降级（有凭据但调用失败 ≠ 没有凭据），
+        绝不在失败路径上返回编造的文字。
+        """
+        route = self._audio_route
+        if not route:
+            raise RuntimeError(
+                "这条链路没有转写凭据：没有配置转写通道（也没有可回落的当前链路凭据），"
+                "本次没有把音频交给任何转写服务，也没有得到任何转写文字"
+            )
+        if not data:
+            raise RuntimeError("没有音频字节可转写：没有把空音频交给转写端点，也没有得到任何文字")
+        files = {"file": (str(filename or "audio.wav"), bytes(data), "application/octet-stream")}
+        payload: dict[str, Any] = {"model": route["model"], "response_format": "json"}
+        if language:
+            payload["language"] = str(language)
+        from agent.trace.redact import redact_text
+
+        try:
+            body = await self._post_transcription(
+                route, files=files, data=payload, timeout=timeout
+            )
+        except _TranscriptionHTTPError as exc:
+            if exc.status is None:
+                raise RuntimeError(
+                    "转写调用失败（" + TRANSCRIPTION_CHANNEL + " 没连上 / 超时）："
+                    + exc.kind + ": " + redact_text(exc.detail or "")
+                ) from exc
+            raise RuntimeError(
+                "转写调用失败（" + TRANSCRIPTION_CHANNEL + " 返回 " + str(exc.status) + "）："
+                + (redact_text(exc.detail or "")[:400] or "端点没有给出原因")
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - 其余异常照样如实上抛，不编造文字
+            raise RuntimeError(
+                "转写调用失败（" + TRANSCRIPTION_CHANNEL + "）："
+                + type(exc).__name__ + ": " + redact_text(str(exc))
+            ) from exc
+        text = str((body or {}).get("text") or "").strip()
+        if not text:
+            raise RuntimeError(
+                "转写端点返回了空文字（" + TRANSCRIPTION_CHANNEL + "）：本次没有得到任何转写文本"
+            )
+        return {
+            "text": text,
+            "engine": {"provider": TRANSCRIPTION_CHANNEL, "model": route["model"]},
+            "language": str((body or {}).get("language") or language or ""),
+        }
+
+    async def _post_transcription(
+        self, route: dict, *, files: dict, data: dict, timeout: float
+    ) -> dict[str, Any]:
+        """真正发出 multipart 请求：**优先复用** adapter 自己的客户端。
+
+        * adapter 的客户端是 OpenAI 兼容 SDK：audio.transcriptions.create 就是
+          POST /audio/transcriptions 的 multipart 协议，会走它配好的 base_url、
+          连接池、代理与假传输（测试和自建网关都在这一层替换）；
+        * 客户端没有这条 API（兼容实现 / 假客户端）时，退回同一条协议的自建请求：
+          地址用路由 endpoint（凭据里的地址），仍用 httpx 直发 multipart。
+        """
+        client = self._request_client()
+        audio = getattr(client, "audio", None)
+        transcriptions = getattr(audio, "transcriptions", None)
+        create = getattr(transcriptions, "create", None)
+        if callable(create):
+            if route["endpoint"] and hasattr(client, "with_options"):
+                try:
+                    client = client.with_options(base_url=route["endpoint"])
+                except Exception:  # noqa: BLE001 - 兼容客户端不接受时用原客户端
+                    pass
+            extra = {key: value for key, value in data.items() if key != "model"}
+            result = await create(
+                model=route["model"], file=(files["file"][0], files["file"][1]), **extra
+            )
+            return _model_dump(result) or {}
+
+        url = route["endpoint"] + "/audio/transcriptions"
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as http:
+                response = await http.post(
+                    url,
+                    headers={"Authorization": "Bearer " + route["api_key"]},
+                    files=files,
+                    data=data,
+                )
+        except Exception as exc:  # noqa: BLE001 - 传输层失败也要如实说清
+            raise _TranscriptionHTTPError(
+                status=None, kind=type(exc).__name__, detail=str(exc)
+            ) from exc
+        if response.status_code >= 400:
+            raise _TranscriptionHTTPError(
+                status=response.status_code,
+                kind="HTTPStatusError",
+                detail=response.text or "",
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                "转写端点返回的不是 JSON（" + TRANSCRIPTION_CHANNEL + "）："
+                "读不出转写文字，本次没有得到任何转写文本"
+            ) from exc
     # -- serialization ----------------------------------------------------
 
     def to_openai_messages(self, messages: list[ChatMessage]) -> list[dict[str, Any]]:

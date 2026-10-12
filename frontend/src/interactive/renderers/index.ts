@@ -35,3 +35,22 @@ export async function loadRenderer<M = unknown>(name: string): Promise<M> {
   }
   return (await RENDERER_LOADERS[name]()) as M;
 }
+
+/**
+ * 释放一个渲染器持有的一次性资源（契约 §3.5：收起 / 换附件 / 卸载时释放）。
+ *
+ * 渲染器模块**可以**导出 `dispose()`；没有导出就是没有需要释放的东西 ——
+ * 这里不制造一个假接口，也不因为释放失败打断收起（释放是收尾，不是功能）。
+ * 调用方（CardInlinePreview）仍然负责自己那一层：blob URL、canvas、pdf 文档对象。
+ */
+export function disposeRenderer(name: string): void {
+  if (!isRendererKey(name)) return;
+  void (async () => {
+    try {
+      const module = (await RENDERER_LOADERS[name]()) as { dispose?: () => void };
+      module.dispose?.();
+    } catch {
+      /* 模块加载不了 / 释放抛错：收起不该因此失败 */
+    }
+  })();
+}

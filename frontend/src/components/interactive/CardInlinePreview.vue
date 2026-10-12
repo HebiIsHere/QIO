@@ -33,7 +33,7 @@ import {
   openAttachment,
 } from "../../services/attachments";
 import type { PreviewEnvelope, PreviewPosition } from "../../services/attachments";
-import { loadRenderer } from "../../interactive/renderers";
+import { disposeRenderer, loadRenderer } from "../../interactive/renderers";
 import type { RenderResult } from "../../interactive/renderers/types";
 import type { CodeView } from "../../interactive/renderers/code";
 import type { DocxView } from "../../interactive/renderers/docx";
@@ -176,6 +176,9 @@ function stop(): void {
   generation += 1;
   controller?.abort();
   controller = null;
+  // 结构化渲染器的一次性资源（有就释放；没有 dispose 的模块不受影响）
+  const renderer = plan.value.renderer;
+  if (renderer !== "none") disposeRenderer(renderer);
   resetView();
   renderState.value = { status: "idle" };
 }
@@ -428,10 +431,10 @@ onBeforeUnmount(stop);
 </script>
 
 <template>
-  <section class="cip" data-testid="cip-root">
+  <section class="cip" data-testid="cip-root" data-im="card-inline-preview">
     <header class="cip-head">
       <div class="cip-ident">
-        <span class="cip-name" :title="fileName">{{ fileName }}</span>
+        <span class="cip-name" data-testid="cip-name" :title="fileName">{{ fileName }}</span>
         <span class="cip-status" data-testid="cip-status">{{ statusText }}</span>
       </div>
       <button type="button" class="cip-close" data-testid="cip-close" @click="props.onClose()">
@@ -448,7 +451,7 @@ onBeforeUnmount(stop);
     <!-- 内嵌渲染 -->
     <div v-if="inlineReady" class="cip-body" :class="'cip-body-' + plan.renderer">
       <!-- 图片：等比 + 放大 / 缩小 / 适应 -->
-      <div v-if="plan.renderer === 'image'" class="cip-image">
+      <div v-if="plan.renderer === 'image'" class="cip-image" data-im="cip-image">
         <div class="cip-tools">
           <button type="button" data-testid="cip-zoom-out" @click="changeZoom(-1)">缩小</button>
           <span class="cip-zoom" data-testid="cip-zoom">{{ zoomPercent }}</span>
@@ -471,7 +474,7 @@ onBeforeUnmount(stop);
       </div>
 
       <!-- PDF：pdf.js 逐页渲染（原页面外观） -->
-      <div v-else-if="plan.renderer === 'pdf'" class="cip-pdf">
+      <div v-else-if="plan.renderer === 'pdf'" class="cip-pdf" data-im="cip-pdf">
         <div class="cip-tools">
           <button type="button" data-testid="cip-page-prev" :disabled="pdfPage <= 1" @click="goPage(pdfPage - 1)">
             上一页
@@ -514,7 +517,7 @@ onBeforeUnmount(stop);
       </div>
 
       <!-- 代码 / 文本：行号 + 等宽 + 语言 + 只读 -->
-      <div v-else-if="plan.renderer === 'code' && codeView" class="cip-code">
+      <div v-else-if="plan.renderer === 'code' && codeView" class="cip-code" data-im="cip-code">
         <p class="cip-fact" data-testid="cip-code-facts">
           {{ codeView.languageLabel }} · 共 {{ codeView.totalLines }} 行 · 编码 {{ codeView.encoding }} · 只读
         </p>
@@ -528,7 +531,7 @@ onBeforeUnmount(stop);
       </div>
 
       <!-- DOCX：结构化正文（不是原版面） -->
-      <div v-else-if="plan.renderer === 'docx' && docxView" class="cip-docx" data-testid="cip-docx">
+      <div v-else-if="plan.renderer === 'docx' && docxView" class="cip-docx" data-testid="cip-docx" data-im="cip-docx">
         <p v-if="docxView.empty" class="cip-empty">这份文档没有可显示的正文段落（可能是空文档或只含图片）</p>
         <template v-for="(block, index) in docxView.blocks" :key="index">
           <h4 v-if="block.type === 'heading'" class="cip-h" :class="'cip-h' + block.level" data-testid="cip-h">
@@ -558,7 +561,7 @@ onBeforeUnmount(stop);
       </div>
 
       <!-- XLSX：工作表 + 单元格地址 + 公式/缓存值分开 -->
-      <div v-else-if="plan.renderer === 'xlsx' && xlsxView" class="cip-xlsx" data-testid="cip-xlsx">
+      <div v-else-if="plan.renderer === 'xlsx' && xlsxView" class="cip-xlsx" data-testid="cip-xlsx" data-im="cip-xlsx">
         <p v-if="xlsxView.empty" class="cip-empty">这份表格没有可显示的单元格</p>
         <div v-else class="cip-tabs">
           <button
@@ -599,7 +602,7 @@ onBeforeUnmount(stop);
       </div>
 
       <!-- PPTX：幻灯片切换 + 文本/表格/图片清单 -->
-      <div v-else-if="plan.renderer === 'pptx' && pptxView" class="cip-pptx" data-testid="cip-pptx">
+      <div v-else-if="plan.renderer === 'pptx' && pptxView" class="cip-pptx" data-testid="cip-pptx" data-im="cip-pptx">
         <div class="cip-tabs">
           <button
             v-for="(slide, index) in pptxView.slides"
@@ -648,7 +651,7 @@ onBeforeUnmount(stop);
     </p>
 
     <!-- 不能内嵌 / 看不了：给真实原因 + 打开/下载入口 -->
-    <div v-else class="cip-external" data-testid="cip-external">
+    <div v-else class="cip-external" data-testid="cip-external" data-im="cip-external">
       <p class="cip-reason" data-testid="cip-reason">{{ plan.reason }}</p>
       <div class="cip-actions">
         <button
