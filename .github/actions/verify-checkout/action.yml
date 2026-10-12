@@ -51,6 +51,10 @@ runs:
         EXPECTED_REF: ${{ inputs.expected-ref }}
         ALLOW_SHORT: ${{ inputs.allow-short }}
         SHA_LABEL: ${{ inputs.label }}
+        # verify_sha.py 的证据行含中文；windows-latest 上的 python 默认按 cp1252 打印，
+        # 2026-10-13 实测会 UnicodeEncodeError 崩在这一步（SHA 断言本身是通过的）。
+        # ci.yml 各 job 早就这么设；这里补上同一条，别让入口自己的证据行把入口打死。
+        PYTHONIOENCODING: utf-8
       run: |
         set -euo pipefail
         # --actual 故意不传：实际提交只认 git rev-parse HEAD。GITHUB_SHA 是事件提交

@@ -1,0 +1,422 @@
+﻿2026-10-12T17:52:02.9269531Z Current runner version: '2.337.0'
+2026-10-12T17:52:02.9303982Z ##[group]Runner Image Provisioner
+2026-10-12T17:52:02.9305178Z Hosted Compute Agent
+2026-10-12T17:52:02.9306160Z Version: 20260901.588
+2026-10-12T17:52:02.9307082Z Commit: f88ec8081b781fac6c440065ac7ff9e710ce3d0b
+2026-10-12T17:52:02.9308177Z Build Date: 2026-09-01T19:56:44Z
+2026-10-12T17:52:02.9309237Z Worker ID: {a9f6a408-ef09-4f05-8850-d6ca47df6637}
+2026-10-12T17:52:02.9310323Z Azure Region: westcentralus
+2026-10-12T17:52:02.9311226Z ##[endgroup]
+2026-10-12T17:52:02.9313256Z ##[group]Operating System
+2026-10-12T17:52:02.9314222Z Microsoft Windows Server 2025
+2026-10-12T17:52:02.9315264Z 10.0.26100
+2026-10-12T17:52:02.9316010Z Datacenter
+2026-10-12T17:52:02.9316768Z ##[endgroup]
+2026-10-12T17:52:02.9317541Z ##[group]Runner Image
+2026-10-12T17:52:02.9318386Z Image: windows-2025-vs2026
+2026-10-12T17:52:02.9319275Z Version: 20260925.250.1
+2026-10-12T17:52:02.9321893Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20260925.250/images/windows/Windows2025-VS2026-Readme.md
+2026-10-12T17:52:02.9324675Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20260925.250
+2026-10-12T17:52:02.9326265Z ##[endgroup]
+2026-10-12T17:52:02.9328028Z ##[group]GITHUB_TOKEN Permissions
+2026-10-12T17:52:02.9331186Z Contents: read
+2026-10-12T17:52:02.9332182Z Metadata: read
+2026-10-12T17:52:02.9333109Z ##[endgroup]
+2026-10-12T17:52:02.9335980Z Secret source: Actions
+2026-10-12T17:52:02.9337330Z Cache mode: write
+2026-10-12T17:52:02.9338767Z Prepare workflow directory
+2026-10-12T17:52:03.0104187Z Prepare all required actions
+2026-10-12T17:52:03.0174779Z Getting action download info
+2026-10-12T17:52:03.2755525Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+2026-10-12T17:52:03.6764893Z Download action repository 'astral-sh/setup-uv@v7' (SHA:37802adc94f370d6bfd71619e3f0bf239e1f3b78)
+2026-10-12T17:52:04.4104334Z Complete job name: backend (windows-latest)
+2026-10-12T17:52:05.7071494Z ##[group]Run actions/checkout@v5
+2026-10-12T17:52:05.7073164Z with:
+2026-10-12T17:52:05.7074121Z   ref: 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:05.7075339Z   fetch-depth: 0
+2026-10-12T17:52:05.7076485Z   persist-credentials: false
+2026-10-12T17:52:05.7077561Z   repository: HebiIsHere/QIO
+2026-10-12T17:52:05.7086382Z   token: ***
+2026-10-12T17:52:05.7087245Z   ssh-strict: true
+2026-10-12T17:52:05.7088116Z   ssh-user: git
+2026-10-12T17:52:05.7088966Z   clean: true
+2026-10-12T17:52:05.7089855Z   sparse-checkout-cone-mode: true
+2026-10-12T17:52:05.7090931Z   fetch-tags: false
+2026-10-12T17:52:05.7091976Z   show-progress: true
+2026-10-12T17:52:05.7092907Z   lfs: false
+2026-10-12T17:52:05.7093723Z   submodules: false
+2026-10-12T17:52:05.7094624Z   set-safe-directory: true
+2026-10-12T17:52:05.7095659Z   allow-unsafe-pr-checkout: false
+2026-10-12T17:52:05.7097204Z env:
+2026-10-12T17:52:05.7098012Z   PYTHONHASHSEED: 0
+2026-10-12T17:52:05.7099077Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:52:05.7100229Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:52:05.7101512Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:52:05.7102880Z   PYTEST_K: 
+2026-10-12T17:52:05.7103699Z ##[endgroup]
+2026-10-12T17:52:06.0259408Z Syncing repository: HebiIsHere/QIO
+2026-10-12T17:52:06.0263394Z ##[group]Getting Git version info
+2026-10-12T17:52:06.0265147Z Working directory is 'D:\a\QIO\QIO'
+2026-10-12T17:52:06.4972074Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:52:13.8449352Z git version 2.55.0.windows.5
+2026-10-12T17:52:13.8496773Z ##[endgroup]
+2026-10-12T17:52:13.8518687Z Temporarily overriding HOME='D:\a\_temp\61dbc41f-c9d3-4a8d-ad89-e53c6b642073' before making global git config changes
+2026-10-12T17:52:13.8519850Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:52:13.8531577Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:52:14.3248963Z Deleting the contents of 'D:\a\QIO\QIO'
+2026-10-12T17:52:14.3255356Z ##[group]Initializing the repository
+2026-10-12T17:52:14.3265713Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\QIO\QIO
+2026-10-12T17:52:14.5813364Z Initialized empty Git repository in D:/a/QIO/QIO/.git/
+2026-10-12T17:52:14.5858018Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/HebiIsHere/QIO
+2026-10-12T17:52:14.7086414Z ##[endgroup]
+2026-10-12T17:52:14.7086883Z ##[group]Disabling automatic garbage collection
+2026-10-12T17:52:14.7096574Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-10-12T17:52:14.7430667Z ##[endgroup]
+2026-10-12T17:52:14.7432146Z ##[group]Setting up auth
+2026-10-12T17:52:14.7454135Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:52:14.7768500Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:52:17.5647878Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:52:17.5943590Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:52:18.1148805Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:52:18.1438369Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:52:18.6910914Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-10-12T17:52:18.7213568Z ##[endgroup]
+2026-10-12T17:52:18.7214391Z ##[group]Fetching the repository
+2026-10-12T17:52:18.7226178Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2026-10-12T17:52:23.1141871Z From https://github.com/HebiIsHere/QIO
+2026-10-12T17:52:23.1143183Z  * [new branch]      ci/targeted-verify-entry -> origin/ci/targeted-verify-entry
+2026-10-12T17:52:23.1144313Z  * [new branch]      feat/interactive-foundation -> origin/feat/interactive-foundation
+2026-10-12T17:52:23.1145338Z  * [new branch]      feat/interactive-frontend-layout -> origin/feat/interactive-frontend-layout
+2026-10-12T17:52:23.1146387Z  * [new branch]      feat/interactive-real-model -> origin/feat/interactive-real-model
+2026-10-12T17:52:23.1147552Z  * [new branch]      feat/unified-cards-media-preview-021 -> origin/feat/unified-cards-media-preview-021
+2026-10-12T17:52:23.1148872Z  * [new branch]      feat/unified-process-attachments-streaming -> origin/feat/unified-process-attachments-streaming
+2026-10-12T17:52:23.1150146Z  * [new branch]      fix/attachment-readiness-stream-boundaries -> origin/fix/attachment-readiness-stream-boundaries
+2026-10-12T17:52:23.1150914Z  * [new branch]      fix/attachment-send-cancel-integrity -> origin/fix/attachment-send-cancel-integrity
+2026-10-12T17:52:23.1151577Z  * [new branch]      fix/interactive-closure-followup -> origin/fix/interactive-closure-followup
+2026-10-12T17:52:23.1152280Z  * [new branch]      fix/interactive-content-protection-polish -> origin/fix/interactive-content-protection-polish
+2026-10-12T17:52:23.1153343Z  * [new branch]      fix/interactive-draft-races-ui-polish -> origin/fix/interactive-draft-races-ui-polish
+2026-10-12T17:52:23.1154090Z  * [new branch]      fix/interactive-draft-recovery-completion -> origin/fix/interactive-draft-recovery-completion
+2026-10-12T17:52:23.1154767Z  * [new branch]      fix/interactive-final-closure -> origin/fix/interactive-final-closure
+2026-10-12T17:52:23.1156545Z  * [new branch]      fix/interactive-materials-drafts-preview -> origin/fix/interactive-materials-drafts-preview
+2026-10-12T17:52:23.1157762Z  * [new branch]      fix/interactive-state-recovery-completion -> origin/fix/interactive-state-recovery-completion
+2026-10-12T17:52:23.1158874Z  * [new branch]      fix/interactive-ui-refinement -> origin/fix/interactive-ui-refinement
+2026-10-12T17:52:23.1159488Z  * [new branch]      fix/main-audit-reliability-8fa8452 -> origin/fix/main-audit-reliability-8fa8452
+2026-10-12T17:52:23.1160161Z  * [new branch]      fix/main-reliability-memory-20261009-r2 -> origin/fix/main-reliability-memory-20261009-r2
+2026-10-12T17:52:23.1160932Z  * [new branch]      fix/main-safety-state-responsiveness-20261009 -> origin/fix/main-safety-state-responsiveness-20261009
+2026-10-12T17:52:23.1161775Z  * [new branch]      fix/preparation-cancel-and-spill-recovery -> origin/fix/preparation-cancel-and-spill-recovery
+2026-10-12T17:52:23.1162746Z  * [new branch]      fix/process-attachment-audit-consolidation -> origin/fix/process-attachment-audit-consolidation
+2026-10-12T17:52:23.1163565Z  * [new branch]      fix/process-attachment-audit-final-boundaries -> origin/fix/process-attachment-audit-final-boundaries
+2026-10-12T17:52:23.1164769Z  * [new branch]      fix/process-attachment-audit-round2 -> origin/fix/process-attachment-audit-round2
+2026-10-12T17:52:23.1165419Z  * [new branch]      fix/process-stream-retry-upload -> origin/fix/process-stream-retry-upload
+2026-10-12T17:52:23.1166058Z  * [new branch]      fix/process-upload-final-convergence -> origin/fix/process-upload-final-convergence
+2026-10-12T17:52:23.1166844Z  * [new branch]      fix/reliability-followup-closeout-20261010-f01f10 -> origin/fix/reliability-followup-closeout-20261010-f01f10
+2026-10-12T17:52:23.1167709Z  * [new branch]      fix/reliability-memory-followup-20261010-a7f3 -> origin/fix/reliability-memory-followup-20261010-a7f3
+2026-10-12T17:52:23.1169155Z  * [new branch]      fix/streaming-main-closeout-20261011 -> origin/fix/streaming-main-closeout-20261011
+2026-10-12T17:52:23.1170023Z  * [new branch]      fix/unified-process-audit -> origin/fix/unified-process-audit
+2026-10-12T17:52:23.1170646Z  * [new branch]      integrate/interactive-main-20261011 -> origin/integrate/interactive-main-20261011
+2026-10-12T17:52:23.1171437Z  * [new branch]      integrate/reliability-interactive-real-model-20261011 -> origin/integrate/reliability-interactive-real-model-20261011
+2026-10-12T17:52:23.1172351Z  * [new branch]      integrate/streaming-main-20261011 -> origin/integrate/streaming-main-20261011
+2026-10-12T17:52:23.1173121Z  * [new branch]      main               -> origin/main
+2026-10-12T17:52:23.1173956Z  * [new branch]      research/memory-retrieval-eval -> origin/research/memory-retrieval-eval
+2026-10-12T17:52:23.1174719Z  * [new branch]      wt/acc-b           -> origin/wt/acc-b
+2026-10-12T17:52:23.1175259Z  * [new branch]      wt/acc-b2          -> origin/wt/acc-b2
+2026-10-12T17:52:23.1175787Z  * [new branch]      wt/acc-c           -> origin/wt/acc-c
+2026-10-12T17:52:23.1176299Z  * [new branch]      wt/acc-c2          -> origin/wt/acc-c2
+2026-10-12T17:52:23.1176816Z  * [new branch]      wt/acc-d           -> origin/wt/acc-d
+2026-10-12T17:52:23.1177348Z  * [new branch]      wt/acc-doc         -> origin/wt/acc-doc
+2026-10-12T17:52:23.1177869Z  * [new branch]      wt/acc-e           -> origin/wt/acc-e
+2026-10-12T17:52:23.1178382Z  * [new branch]      wt/acc-e2          -> origin/wt/acc-e2
+2026-10-12T17:52:23.1178919Z  * [new branch]      wt/acc-f           -> origin/wt/acc-f
+2026-10-12T17:52:23.1179456Z  * [new branch]      wt/acc-f2          -> origin/wt/acc-f2
+2026-10-12T17:52:23.1180060Z  * [new branch]      wt/agent-a-runtime -> origin/wt/agent-a-runtime
+2026-10-12T17:52:23.1180772Z  * [new branch]      wt/agent-e-toolenv -> origin/wt/agent-e-toolenv
+2026-10-12T17:52:23.1181398Z  * [new branch]      wt/fb-a            -> origin/wt/fb-a
+2026-10-12T17:52:23.1182285Z  * [new branch]      wt/fb-b            -> origin/wt/fb-b
+2026-10-12T17:52:23.1182837Z  * [new branch]      wt/fb-c            -> origin/wt/fb-c
+2026-10-12T17:52:23.1183387Z  * [new branch]      wt/fb-d            -> origin/wt/fb-d
+2026-10-12T17:52:23.1184250Z  * [new branch]      wt/fb-e            -> origin/wt/fb-e
+2026-10-12T17:52:23.1184900Z  * [new branch]      wt/int-a-board     -> origin/wt/int-a-board
+2026-10-12T17:52:23.1185559Z  * [new branch]      wt/int-b-persist   -> origin/wt/int-b-persist
+2026-10-12T17:52:23.1186231Z  * [new branch]      wt/int-c-approval  -> origin/wt/int-c-approval
+2026-10-12T17:52:23.1186874Z  * [new branch]      wt/int-verify      -> origin/wt/int-verify
+2026-10-12T17:52:23.1187459Z  * [new branch]      wt/p2-debt         -> origin/wt/p2-debt
+2026-10-12T17:52:23.1188066Z  * [new branch]      wt/p2-isolation    -> origin/wt/p2-isolation
+2026-10-12T17:52:23.1188689Z  * [new branch]      wt/p2-trace-ui     -> origin/wt/p2-trace-ui
+2026-10-12T17:52:23.1189279Z  * [new branch]      wt/p3-a            -> origin/wt/p3-a
+2026-10-12T17:52:23.1189812Z  * [new branch]      wt/p3-b            -> origin/wt/p3-b
+2026-10-12T17:52:23.1190351Z  * [new branch]      wt/p3-c            -> origin/wt/p3-c
+2026-10-12T17:52:23.1190845Z  * [new branch]      wt/p3-d            -> origin/wt/p3-d
+2026-10-12T17:52:23.1191354Z  * [new branch]      wt/p3-e            -> origin/wt/p3-e
+2026-10-12T17:52:23.1191871Z  * [new branch]      wt/p3-f            -> origin/wt/p3-f
+2026-10-12T17:52:23.1192422Z  * [new branch]      wt/ui-a-visual     -> origin/wt/ui-a-visual
+2026-10-12T17:52:23.1193015Z  * [new branch]      wt/ui-b-rules      -> origin/wt/ui-b-rules
+2026-10-12T17:52:23.1193603Z  * [new branch]      wt/ui-c-drafts     -> origin/wt/ui-c-drafts
+2026-10-12T17:52:23.1194214Z  * [new branch]      wt/ui-d-overlay    -> origin/wt/ui-d-overlay
+2026-10-12T17:52:23.1194764Z  * [new tag]         v0.1.0             -> v0.1.0
+2026-10-12T17:52:23.1195540Z  * [new tag]         v0.1.1             -> v0.1.1
+2026-10-12T17:52:23.1195866Z  * [new tag]         v0.1.10            -> v0.1.10
+2026-10-12T17:52:23.1196162Z  * [new tag]         v0.1.11            -> v0.1.11
+2026-10-12T17:52:23.1196437Z  * [new tag]         v0.1.12            -> v0.1.12
+2026-10-12T17:52:23.1196698Z  * [new tag]         v0.1.13            -> v0.1.13
+2026-10-12T17:52:23.1197057Z  * [new tag]         v0.1.14            -> v0.1.14
+2026-10-12T17:52:23.1197531Z  * [new tag]         v0.1.3             -> v0.1.3
+2026-10-12T17:52:23.1197998Z  * [new tag]         v0.1.4             -> v0.1.4
+2026-10-12T17:52:23.1198455Z  * [new tag]         v0.1.5             -> v0.1.5
+2026-10-12T17:52:23.1198738Z  * [new tag]         v0.1.6             -> v0.1.6
+2026-10-12T17:52:23.1198999Z  * [new tag]         v0.1.7             -> v0.1.7
+2026-10-12T17:52:23.1199256Z  * [new tag]         v0.1.8             -> v0.1.8
+2026-10-12T17:52:23.1199522Z  * [new tag]         v0.1.9             -> v0.1.9
+2026-10-12T17:52:23.1199795Z  * [new tag]         v0.2.0             -> v0.2.0
+2026-10-12T17:52:23.1200051Z  * [new tag]         v0.2.1             -> v0.2.1
+2026-10-12T17:52:23.1210765Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse --verify --quiet 5c065e189c9fff444e73b852c86c27fffcf1142a^{object}
+2026-10-12T17:52:23.1656297Z 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:23.1691852Z ##[endgroup]
+2026-10-12T17:52:23.1692342Z ##[group]Determining the checkout info
+2026-10-12T17:52:23.1694050Z ##[endgroup]
+2026-10-12T17:52:23.1707455Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-10-12T17:52:23.2339685Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-10-12T17:52:23.2649414Z ##[group]Checking out the ref
+2026-10-12T17:52:23.2659246Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:24.3716904Z Updating files:  78% (2042/2590)
+2026-10-12T17:52:24.3912922Z Updating files:  79% (2047/2590)
+2026-10-12T17:52:24.4121612Z Updating files:  80% (2072/2590)
+2026-10-12T17:52:24.4238268Z Updating files:  81% (2098/2590)
+2026-10-12T17:52:24.4309288Z Updating files:  82% (2124/2590)
+2026-10-12T17:52:24.4379057Z Updating files:  83% (2150/2590)
+2026-10-12T17:52:24.4455994Z Updating files:  84% (2176/2590)
+2026-10-12T17:52:24.4542430Z Updating files:  85% (2202/2590)
+2026-10-12T17:52:24.4628584Z Updating files:  86% (2228/2590)
+2026-10-12T17:52:24.4686249Z Updating files:  87% (2254/2590)
+2026-10-12T17:52:24.4746086Z Updating files:  88% (2280/2590)
+2026-10-12T17:52:24.4800570Z Updating files:  89% (2306/2590)
+2026-10-12T17:52:24.4872721Z Updating files:  90% (2331/2590)
+2026-10-12T17:52:24.4956658Z Updating files:  91% (2357/2590)
+2026-10-12T17:52:24.5032375Z Updating files:  92% (2383/2590)
+2026-10-12T17:52:24.5096550Z Updating files:  93% (2409/2590)
+2026-10-12T17:52:24.5317731Z Updating files:  94% (2435/2590)
+2026-10-12T17:52:24.5503489Z Updating files:  95% (2461/2590)
+2026-10-12T17:52:24.5739178Z Updating files:  96% (2487/2590)
+2026-10-12T17:52:24.5843633Z Updating files:  97% (2513/2590)
+2026-10-12T17:52:24.5914813Z Updating files:  98% (2539/2590)
+2026-10-12T17:52:24.5996535Z Updating files:  99% (2565/2590)
+2026-10-12T17:52:24.5997242Z Updating files: 100% (2590/2590)
+2026-10-12T17:52:24.5997583Z Updating files: 100% (2590/2590), done.
+2026-10-12T17:52:24.6144335Z Note: switching to '5c065e189c9fff444e73b852c86c27fffcf1142a'.
+2026-10-12T17:52:24.6144799Z 
+2026-10-12T17:52:24.6145004Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-12T17:52:24.6145483Z changes and commit them, and you can discard any commits you make in this
+2026-10-12T17:52:24.6145935Z state without impacting any branches by switching back to a branch.
+2026-10-12T17:52:24.6146359Z 
+2026-10-12T17:52:24.6146584Z If you want to create a new branch to retain commits you create, you may
+2026-10-12T17:52:24.6147699Z do so (now or later) by using -c with the switch command. Example:
+2026-10-12T17:52:24.6148507Z 
+2026-10-12T17:52:24.6148731Z   git switch -c <new-branch-name>
+2026-10-12T17:52:24.6149011Z 
+2026-10-12T17:52:24.6149203Z Or undo this operation with:
+2026-10-12T17:52:24.6149398Z 
+2026-10-12T17:52:24.6149470Z   git switch -
+2026-10-12T17:52:24.6149580Z 
+2026-10-12T17:52:24.6149777Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-12T17:52:24.6150069Z 
+2026-10-12T17:52:24.6150626Z HEAD is now at 5c065e1 ci(targeted-verify): 本地 action 之前先引导签出（否则 JSON 入口第一步就崩，定向验证不可用）
+2026-10-12T17:52:24.6460982Z ##[endgroup]
+2026-10-12T17:52:24.7027232Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-10-12T17:52:24.7351720Z 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:24.7392652Z ##[group]Removing auth
+2026-10-12T17:52:24.7401835Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:52:24.7703592Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:52:25.3026872Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:52:25.3299135Z http.https://github.com/.extraheader
+2026-10-12T17:52:25.3342559Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2026-10-12T17:52:25.3658554Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:52:25.9239084Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:52:25.9541450Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:52:26.4915302Z ##[endgroup]
+2026-10-12T17:52:26.5481472Z Prepare all required actions
+2026-10-12T17:52:26.5482131Z Getting action download info
+2026-10-12T17:52:26.6717261Z ##[group]Run ./.github/actions/verify-checkout
+2026-10-12T17:52:26.6717535Z with:
+2026-10-12T17:52:26.6717737Z   ref: feat/unified-cards-media-preview-021
+2026-10-12T17:52:26.6718030Z   sha: 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:26.6718287Z   label: windows
+2026-10-12T17:52:26.6718462Z   allow-short: false
+2026-10-12T17:52:26.6718637Z env:
+2026-10-12T17:52:26.6718794Z   PYTHONHASHSEED: 0
+2026-10-12T17:52:26.6719005Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:52:26.6719252Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:52:26.6719549Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:52:26.6719849Z   PYTEST_K: 
+2026-10-12T17:52:26.6720028Z ##[endgroup]
+2026-10-12T17:52:26.6777552Z ##[start-action display=Show requested ref/SHA;id=__self.__run]
+2026-10-12T17:52:26.6956815Z ##[group]Run echo "requested ref : feat/unified-cards-media-preview-021"
+2026-10-12T17:52:26.6957372Z [36;1mecho "requested ref : feat/unified-cards-media-preview-021"[0m
+2026-10-12T17:52:26.6957838Z [36;1mecho "requested sha : 5c065e189c9fff444e73b852c86c27fffcf1142a"[0m
+2026-10-12T17:52:26.6979485Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-12T17:52:26.6979880Z env:
+2026-10-12T17:52:26.6980048Z   PYTHONHASHSEED: 0
+2026-10-12T17:52:26.6980257Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:52:26.6980504Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:52:26.6980792Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:52:26.6981103Z   PYTEST_K: 
+2026-10-12T17:52:26.6981266Z ##[endgroup]
+2026-10-12T17:52:27.0751464Z requested ref : feat/unified-cards-media-preview-021
+2026-10-12T17:52:27.0752542Z requested sha : 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:27.0805706Z ##[end-action id=__self.__run;outcome=success;conclusion=success;duration_ms=402]
+2026-10-12T17:52:27.0808529Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__self.__actions_checkout]
+2026-10-12T17:52:27.0987108Z ##[group]Run actions/checkout@v5
+2026-10-12T17:52:27.0987331Z with:
+2026-10-12T17:52:27.0987538Z   ref: feat/unified-cards-media-preview-021
+2026-10-12T17:52:27.0987799Z   fetch-depth: 0
+2026-10-12T17:52:27.0987988Z   persist-credentials: false
+2026-10-12T17:52:27.0988214Z   repository: HebiIsHere/QIO
+2026-10-12T17:52:27.0990604Z   token: ***
+2026-10-12T17:52:27.0990784Z   ssh-strict: true
+2026-10-12T17:52:27.0990974Z   ssh-user: git
+2026-10-12T17:52:27.0991138Z   clean: true
+2026-10-12T17:52:27.0991328Z   sparse-checkout-cone-mode: true
+2026-10-12T17:52:27.0991564Z   fetch-tags: false
+2026-10-12T17:52:27.0991749Z   show-progress: true
+2026-10-12T17:52:27.0991941Z   lfs: false
+2026-10-12T17:52:27.0992100Z   submodules: false
+2026-10-12T17:52:27.0992283Z   set-safe-directory: true
+2026-10-12T17:52:27.0992508Z   allow-unsafe-pr-checkout: false
+2026-10-12T17:52:27.0992723Z env:
+2026-10-12T17:52:27.0992873Z   PYTHONHASHSEED: 0
+2026-10-12T17:52:27.0993075Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:52:27.0993320Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:52:27.0993599Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:52:27.0993898Z   PYTEST_K: 
+2026-10-12T17:52:27.0994056Z ##[endgroup]
+2026-10-12T17:52:27.2061834Z Syncing repository: HebiIsHere/QIO
+2026-10-12T17:52:27.2065832Z ##[group]Getting Git version info
+2026-10-12T17:52:27.2066425Z Working directory is 'D:\a\QIO\QIO'
+2026-10-12T17:52:27.3002836Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:52:27.3285032Z git version 2.55.0.windows.5
+2026-10-12T17:52:27.3338737Z ##[endgroup]
+2026-10-12T17:52:27.3359696Z Temporarily overriding HOME='D:\a\_temp\9202b707-34a5-46de-a2e2-27d9cc771f4a' before making global git config changes
+2026-10-12T17:52:27.3364461Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:52:27.3375086Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:52:27.3737681Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get remote.origin.url
+2026-10-12T17:52:27.4021917Z https://github.com/HebiIsHere/QIO
+2026-10-12T17:52:27.4072531Z ##[group]Removing previously created refs, to avoid conflicts
+2026-10-12T17:52:27.4081402Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse --symbolic-full-name --verify --quiet HEAD
+2026-10-12T17:52:27.4358766Z HEAD
+2026-10-12T17:52:27.5197775Z ##[endgroup]
+2026-10-12T17:52:27.5212368Z [command]"C:\Program Files\Git\bin\git.exe" submodule status
+2026-10-12T17:52:28.0658261Z ##[group]Cleaning the repository
+2026-10-12T17:52:28.0668398Z [command]"C:\Program Files\Git\bin\git.exe" clean -ffdx
+2026-10-12T17:52:28.1068423Z [command]"C:\Program Files\Git\bin\git.exe" reset --hard HEAD
+2026-10-12T17:52:28.6225241Z HEAD is now at 5c065e1 ci(targeted-verify): 本地 action 之前先引导签出（否则 JSON 入口第一步就崩，定向验证不可用）
+2026-10-12T17:52:28.6274276Z ##[endgroup]
+2026-10-12T17:52:28.6278674Z ##[group]Disabling automatic garbage collection
+2026-10-12T17:52:28.6287821Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-10-12T17:52:28.6589033Z ##[endgroup]
+2026-10-12T17:52:28.6589391Z ##[group]Setting up auth
+2026-10-12T17:52:28.6601452Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:52:28.6907683Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:52:29.2227971Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:52:29.2528289Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:52:29.7985780Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:52:29.8282738Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:52:30.3823157Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-10-12T17:52:30.4133676Z ##[endgroup]
+2026-10-12T17:52:30.4134084Z ##[group]Fetching the repository
+2026-10-12T17:52:30.4147180Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2026-10-12T17:52:30.7957615Z ##[endgroup]
+2026-10-12T17:52:30.7958243Z ##[group]Determining the checkout info
+2026-10-12T17:52:30.7968307Z [command]"C:\Program Files\Git\bin\git.exe" branch --list --remote origin/feat/unified-cards-media-preview-021
+2026-10-12T17:52:30.8581469Z   origin/feat/unified-cards-media-preview-021
+2026-10-12T17:52:30.8616585Z ##[endgroup]
+2026-10-12T17:52:30.8626248Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-10-12T17:52:30.8988435Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-10-12T17:52:30.9283975Z ##[group]Checking out the ref
+2026-10-12T17:52:30.9293139Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B feat/unified-cards-media-preview-021 refs/remotes/origin/feat/unified-cards-media-preview-021
+2026-10-12T17:52:30.9807784Z Switched to a new branch 'feat/unified-cards-media-preview-021'
+2026-10-12T17:52:30.9830572Z branch 'feat/unified-cards-media-preview-021' set up to track 'origin/feat/unified-cards-media-preview-021'.
+2026-10-12T17:52:30.9876682Z ##[endgroup]
+2026-10-12T17:52:31.0205508Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-10-12T17:52:31.0469299Z 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:31.0519118Z ##[group]Removing auth
+2026-10-12T17:52:31.0533551Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:52:31.0851530Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:52:31.6993861Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:52:31.7255726Z http.https://github.com/.extraheader
+2026-10-12T17:52:31.7298154Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2026-10-12T17:52:31.7602674Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:52:32.3633910Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:52:32.3947357Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:52:32.9399112Z ##[endgroup]
+2026-10-12T17:52:32.9539150Z ##[end-action id=__self.__actions_checkout;outcome=success;conclusion=success;duration_ms=5872]
+2026-10-12T17:52:32.9544193Z ##[start-action display=Assert the checked-out commit equals the requested SHA;id=__self.__run_2]
+2026-10-12T17:52:32.9678602Z ##[group]Run set -euo pipefail
+2026-10-12T17:52:32.9678901Z [36;1mset -euo pipefail[0m
+2026-10-12T17:52:32.9679260Z [36;1m# --actual 故意不传：实际提交只认 git rev-parse HEAD。GITHUB_SHA 是事件提交[0m
+2026-10-12T17:52:32.9679676Z [36;1m# （PR 上是 merge commit），拿它当「实际 checkout 的 SHA」会假绿。[0m
+2026-10-12T17:52:32.9680074Z [36;1m# 实际提交只认 git rev-parse HEAD（GITHUB_SHA 是事件提交，PR 上是 merge commit，[0m
+2026-10-12T17:52:32.9680428Z [36;1m# 拿它当「实际 checkout 的 SHA」会假绿）。显式传值，连来源也写进证据。[0m
+2026-10-12T17:52:32.9680701Z [36;1mactual="$(git rev-parse HEAD)"[0m
+2026-10-12T17:52:32.9681156Z [36;1margs=(--requested "${REQUESTED_SHA}" --actual "${actual}" --actual-from arg --label "${SHA_LABEL}")[0m
+2026-10-12T17:52:32.9681630Z [36;1mif [ -n "${EXPECTED_REF}" ]; then[0m
+2026-10-12T17:52:32.9681916Z [36;1m  args+=(--expected-ref "${EXPECTED_REF}")[0m
+2026-10-12T17:52:32.9682174Z [36;1mfi[0m
+2026-10-12T17:52:32.9682362Z [36;1mif [ "${ALLOW_SHORT}" = "true" ]; then[0m
+2026-10-12T17:52:32.9682643Z [36;1m  args+=(--allow-short)[0m
+2026-10-12T17:52:32.9682852Z [36;1mfi[0m
+2026-10-12T17:52:32.9683111Z [36;1mpython scripts/targeted-verify/verify_sha.py "${args[@]}"[0m
+2026-10-12T17:52:32.9698074Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+2026-10-12T17:52:32.9698447Z env:
+2026-10-12T17:52:32.9698614Z   PYTHONHASHSEED: 0
+2026-10-12T17:52:32.9698821Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-12T17:52:32.9699064Z   VERIFY_SHA_SELF_TEST: true
+2026-10-12T17:52:32.9699348Z   PYTEST_NODE_IDS: tests/test_interactive_during_heavy_work.py
+2026-10-12T17:52:32.9699647Z   PYTEST_K: 
+2026-10-12T17:52:32.9699873Z   REQUESTED_SHA: 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:32.9700165Z   EXPECTED_REF: 
+2026-10-12T17:52:32.9700343Z   ALLOW_SHORT: false
+2026-10-12T17:52:32.9700521Z   SHA_LABEL: windows
+2026-10-12T17:52:32.9700698Z ##[endgroup]
+2026-10-12T17:52:35.6710388Z [windows] requested sha : 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:35.6711161Z [windows] actual  from : --actual (arg)
+2026-10-12T17:52:35.6711507Z [windows] actual    sha : 5c065e189c9fff444e73b852c86c27fffcf1142a
+2026-10-12T17:52:35.6869394Z Traceback (most recent call last):
+2026-10-12T17:52:35.6869947Z   File "D:\a\QIO\QIO\scripts\targeted-verify\verify_sha.py", line 284, in <module>
+2026-10-12T17:52:35.6873113Z     sys.exit(main())
+2026-10-12T17:52:35.7153538Z              ^^^^^^
+2026-10-12T17:52:35.7154110Z   File "D:\a\QIO\QIO\scripts\targeted-verify\verify_sha.py", line 276, in main
+2026-10-12T17:52:35.7157673Z     _print(lines)
+2026-10-12T17:52:35.7158266Z   File "D:\a\QIO\QIO\scripts\targeted-verify\verify_sha.py", line 146, in _print
+2026-10-12T17:52:35.7160495Z     print(line, flush=True)
+2026-10-12T17:52:35.7161088Z   File "C:\hostedtoolcache\windows\Python\3.12.10\x64\Lib\encodings\cp1252.py", line 19, in encode
+2026-10-12T17:52:35.7301430Z     return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+2026-10-12T17:52:35.7302152Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-10-12T17:52:35.7302889Z UnicodeEncodeError: 'charmap' codec can't encode characters in position 19-23: character maps to <undefined>
+2026-10-12T17:52:35.7428469Z ##[error]Process completed with exit code 1.
+2026-10-12T17:52:35.7436784Z ##[end-action id=__self.__run_2;outcome=failure;conclusion=failure;duration_ms=2789]
+2026-10-12T17:52:35.7690705Z Post job cleanup.
+2026-10-12T17:52:35.7694186Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__69e0c43f-ea9c-4b65-a6dd-fccc5904eeef.__actions_checkout]
+2026-10-12T17:52:35.7862012Z Post job cleanup.
+2026-10-12T17:52:35.9817473Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:52:36.0095070Z git version 2.55.0.windows.5
+2026-10-12T17:52:36.0167758Z Temporarily overriding HOME='D:\a\_temp\e69a2964-370f-4d28-92c4-e9f03f8ec376' before making global git config changes
+2026-10-12T17:52:36.0168977Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:52:36.0178979Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:52:36.0531420Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:52:36.0857834Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:52:36.6727921Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:52:36.7026348Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:52:37.2423392Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:52:37.2718776Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:52:37.7962386Z ##[end-action id=__69e0c43f-ea9c-4b65-a6dd-fccc5904eeef.__actions_checkout;outcome=success;conclusion=success;duration_ms=2026]
+2026-10-12T17:52:37.8152996Z Post job cleanup.
+2026-10-12T17:52:38.0027907Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-10-12T17:52:38.0352137Z git version 2.55.0.windows.5
+2026-10-12T17:52:38.0425410Z Temporarily overriding HOME='D:\a\_temp\05d0b20b-e5df-4eda-b6a2-3883ee7cf21a' before making global git config changes
+2026-10-12T17:52:38.0426648Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T17:52:38.0436958Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+2026-10-12T17:52:38.0733332Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T17:52:38.1025288Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-10-12T17:52:38.6436239Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T17:52:38.6732235Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-10-12T17:52:39.2090900Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T17:52:39.2374786Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-10-12T17:52:39.8043105Z Cleaning up orphan processes
