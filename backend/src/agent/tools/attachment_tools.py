@@ -593,6 +593,14 @@ class ReadAttachmentTool(Tool):
                 content = await self._run_worker(
                     lambda cancel: _extract_xlsx(att, path, offset, limit, fragment_offset, cancel)
                 )
+            elif mode == "pptx":
+                content = await self._run_worker(
+                    lambda cancel: _extract_pptx(att, path, offset, limit, fragment_offset, cancel)
+                )
+            elif mode == "pdf":
+                content = await self._run_worker(
+                    lambda cancel: _extract_pdf(att, path, offset, limit, fragment_offset, cancel)
+                )
             elif mode == "image":
                 return self._read_image(att, path, notes)
             elif mode == "unsupported":
@@ -1325,6 +1333,326 @@ def _extract_xlsx(
         truncated=page.truncated,
         notes=notes,
     )
+
+
+def _extract_pptx(
+    att: Attachment,
+    path: Path,
+    offset: int,
+    limit: int,
+    fragment_offset: int,
+    cancel: threading.Event | None,
+) -> _Content:
+    """PPTX：按幻灯片给文字 / 表格 / 图片清单（zipfile + xml.etree，沿用同一套预算）。
+
+    诚实口径（与卡片内预览一致）：**不还原版面**。这里给的是每一页的文本框文字、
+    表格文字与图片清单，不是"原样渲染的那一页"。
+    """
+    size = _file_size(path)
+    if size > PARSE_MAX_BYTES:
+        return _Content(
+            readable=False,
+            offset=offset,
+            limit=limit,
+            reason=(
+                f"当前不可读取：演示文稿 {human_size(size)} 超过解析上限 "
+                f"{human_size(PARSE_MAX_BYTES)}"
+            ),
+        )
+    budget = _ZipBudget()
+    units, total = _collect_window(_pptx_units(path, budget, cancel), offset, limit, cancel)
+    page = _paginate_units(
+        units, offset=offset, total=total, start_fragment=fragment_offset, char_budget=MAX_CHARS
+    )
+    notes = [
+        "只读每页的文本框文字与表格文字，**不还原版面**（不是原样渲染的那一页）",
+        "图片只给文件名与字节数：本工具不描述画面内容",
+        "备注页文字带「备注：」前缀",
+        "解压按实际读出的字节计量：单成员上限 %s、累计上限 %s（不信任 ZIP 声明大小）"
+        % (human_size(budget.member_limit), human_size(budget.total_limit)),
+    ]
+    if page.fragment_cut:
+        notes.insert(
+            0,
+            f"单行超过 {MAX_LINE_CHARS} 字符：本行已截断为片段，用 next_fragment_offset 继续读取",
+        )
+    return _Content(
+        content=page.content,
+        unit="行（含页标记）",
+        offset=offset,
+        limit=limit,
+        returned=page.returned,
+        total=page.total,
+        next_offset=page.next_offset,
+        next_fragment=page.next_fragment,
+        partial=page.partial,
+        truncated=page.truncated,
+        notes=notes,
+    )
+
+
+def _pptx_slide_files(path: Path, budget: _ZipBudget, cancel: threading.Event | None):
+    """按演示顺序返回 (页码, 幻灯片成员名)；顺序读不出就按文件名兜底。"""
+    with zipfile.ZipFile(path) as archive:
+        names = archive.namelist()
+        budget.add_members(len(names))
+        if not any(name.startswith("ppt/slides/slide") for name in names):
+            raise zipfile.BadZipFile("缺少 ppt/slides")
+        ordered: list[tuple[int, str]] = []
+        if "ppt/presentation.xml" in names:
+            try:
+                root = _parse_member_xml(archive, "ppt/presentation.xml", budget, cancel)
+                rels = None
+                if "ppt/_rels/presentation.xml.rels" in names:
+                    rels = _parse_member_xml(
+                        archive, "ppt/_rels/presentation.xml.rels", budget, cancel
+                    )
+                targets: dict[str, str] = {}
+                if rels is not None:
+                    for rel in rels:
+                        rel_id = rel.attrib.get("Id") or ""
+                        target = (rel.attrib.get("Target") or "").lstrip("/")
+                        if rel_id and target:
+                            targets[rel_id] = target if target.startswith("ppt/") else f"ppt/{target}"
+                index = 0
+                for node in root.iter():
+                    if _local(node.tag) != "sldId":
+                        continue
+                    index += 1
+                    rel_id = ""
+                    for key, value in node.attrib.items():
+                        if _local(key) == "id":
+                            rel_id = value
+                    target = targets.get(rel_id)
+                    if target:
+                        ordered.append((index, target))
+            except Exception:  # noqa: BLE001 - 顺序读不出来就用文件名兜底
+                ordered = []
+        if ordered:
+            return ordered
+        slides = sorted(
+            name for name in names if name.startswith("ppt/slides/slide") and name.endswith(".xml")
+        )
+        return [(index + 1, name) for index, name in enumerate(slides)]
+
+
+def _pptx_units(
+    path: Path, budget: _ZipBudget, cancel: threading.Event | None
+) -> Iterator[str]:
+    slides = _pptx_slide_files(path, budget, cancel)
+    with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
+        for index, slide_name in slides:
+            if cancel is not None and cancel.is_set():
+                raise _JobCancelled()
+            yield f"—— 第 {index} 页幻灯片 ——"
+            root = _parse_member_xml(archive, slide_name, budget, cancel)
+            for text in _pptx_lines(root):
+                yield text
+            tables = _pptx_table_rows(root)
+            for table_index, rows in enumerate(tables, start=1):
+                yield f"[表格 {table_index}]"
+                for row in rows:
+                    yield " | ".join(row)
+            for image in _pptx_images(archive, slide_name, names):
+                yield f"[图片] {image}"
+            notes_name = _pptx_notes_name(archive, slide_name, names, budget, cancel)
+            if notes_name:
+                try:
+                    notes_root = _parse_member_xml(archive, notes_name, budget, cancel)
+                except Exception:  # noqa: BLE001 - 备注页坏了不影响正文
+                    notes_root = None
+                for text in _pptx_lines(notes_root) if notes_root is not None else []:
+                    yield "备注：" + text
+
+
+def _pptx_lines(root) -> list[str]:
+    """一个部件里所有文本框的段落文字（一段一行）。"""
+    if root is None:
+        return []
+    lines: list[str] = []
+    for paragraph in root.iter():
+        if _local(paragraph.tag) != "p":
+            continue
+        text = "".join(node.text or "" for node in paragraph.iter() if _local(node.tag) == "t")
+        if text.strip():
+            lines.append(text.strip())
+    return lines
+
+
+def _pptx_table_rows(root) -> list[list[list[str]]]:
+    if root is None:
+        return []
+    tables: list[list[list[str]]] = []
+    for node in root.iter():
+        if _local(node.tag) != "tbl":
+            continue
+        rows: list[list[str]] = []
+        for row in node:
+            if _local(row.tag) != "tr":
+                continue
+            cells: list[str] = []
+            for cell in row:
+                if _local(cell.tag) != "tc":
+                    continue
+                cells.append(" ".join(_pptx_lines(cell)).strip())
+            rows.append(cells)
+        if rows:
+            tables.append(rows)
+    return tables
+
+
+def _pptx_images(archive: zipfile.ZipFile, slide_name: str, names: set[str]) -> list[str]:
+    """这一页引用的图片：文件名 + 真实成员大小（读不出就给 0，不编造）。"""
+    folder, _, filename = slide_name.rpartition("/")
+    rels_name = f"{folder}/_rels/{filename}.rels"
+    if rels_name not in names:
+        return []
+    images: list[str] = []
+    try:
+        with archive.open(rels_name) as raw:
+            root = ElementTree.parse(raw).getroot()
+    except Exception:  # noqa: BLE001 - rels 坏了就当作没有图片
+        return []
+    for rel in root:
+        target = (rel.attrib.get("Target") or "").lstrip("/")
+        if "/media/" not in f"/{target}":
+            continue
+        member = "ppt/" + target[3:] if target.startswith("../") else target
+        try:
+            size = int(archive.getinfo(member).file_size)
+        except KeyError:
+            size = 0
+        images.append(f"{member.rsplit('/', 1)[-1]}（{human_size(size)}）")
+    return images
+
+
+def _pptx_notes_name(
+    archive: zipfile.ZipFile,
+    slide_name: str,
+    names: set[str],
+    budget: _ZipBudget,
+    cancel: threading.Event | None,
+) -> str | None:
+    folder, _, filename = slide_name.rpartition("/")
+    rels_name = f"{folder}/_rels/{filename}.rels"
+    if rels_name not in names:
+        return None
+    try:
+        root = _parse_member_xml(archive, rels_name, budget, cancel)
+    except Exception:  # noqa: BLE001
+        return None
+    for rel in root:
+        target = (rel.attrib.get("Target") or "").lstrip("/")
+        if "notesSlide" not in target:
+            continue
+        member = "ppt/" + target[3:] if target.startswith("../") else target
+        return member if member in names else None
+    return None
+
+
+def _extract_pdf(
+    att: Attachment,
+    path: Path,
+    offset: int,
+    limit: int,
+    fragment_offset: int,
+    cancel: threading.Event | None,
+) -> _Content:
+    """PDF：只读**文字层**（pypdf），不渲染版面、不还原图片与表格。
+
+    三种情况分开说（诚实矩阵）：
+    * 有文字层 → 按行分段读，页与页之间插入「—— 第 N 页 ——」标记；
+    * 扫描件（没有文字层）→ 读得到文件但没有可提取的文字，如实说；
+    * 加密 → 需要密码，明确拒绝（绝不假装读到了空文档）。
+    """
+    size = _file_size(path)
+    if size > PARSE_MAX_BYTES:
+        return _Content(
+            readable=False,
+            offset=offset,
+            limit=limit,
+            reason=(
+                f"当前不可读取：PDF {human_size(size)} 超过解析上限 "
+                f"{human_size(PARSE_MAX_BYTES)}"
+            ),
+        )
+    try:
+        from pypdf import PdfReader
+    except ImportError:  # pragma: no cover - 打包缺库时才会走到
+        return _Content(
+            readable=False,
+            offset=offset,
+            limit=limit,
+            reason="当前不可读取：服务端没有安装 PDF 解析库（pypdf）",
+        )
+    try:
+        reader = PdfReader(str(path))
+        if getattr(reader, "is_encrypted", False):
+            opened = False
+            try:
+                opened = bool(reader.decrypt(""))
+            except Exception:  # noqa: BLE001 - 空密码解不开就是加密
+                opened = False
+            if not opened:
+                return _Content(
+                    readable=False,
+                    offset=offset,
+                    limit=limit,
+                    reason="当前不可读取：这个 PDF 有加密（需要密码）",
+                )
+        pages = list(reader.pages)
+    except Exception as exc:  # noqa: BLE001 - 损坏的 PDF 不是 500
+        return _Content(
+            readable=False,
+            offset=offset,
+            limit=limit,
+            reason=f"当前不可读取：这个 PDF 打不开（{type(exc).__name__}；可能已损坏）",
+        )
+    units, total = _collect_window(_pdf_units(pages, cancel), offset, limit, cancel)
+    page = _paginate_units(
+        units, offset=offset, total=total, start_fragment=fragment_offset, char_budget=MAX_CHARS
+    )
+    notes = [
+        "只读 PDF 的**文字层**（pypdf）：不渲染版面、不还原图片与表格，不是原页面外观",
+        f"共 {len(pages)} 页；扫描件没有文字层时会读到空内容 —— 那不是「读不到文件」，"
+        "是「没有可提取的文字」",
+        "加密的 PDF 明确拒绝（需要密码），不会假装读到了空文档",
+    ]
+    if page.fragment_cut:
+        notes.insert(
+            0,
+            f"单行超过 {MAX_LINE_CHARS} 字符：本行已截断为片段，用 next_fragment_offset 继续读取",
+        )
+    return _Content(
+        content=page.content,
+        unit="行（含页标记）",
+        offset=offset,
+        limit=limit,
+        returned=page.returned,
+        total=page.total,
+        next_offset=page.next_offset,
+        next_fragment=page.next_fragment,
+        partial=page.partial,
+        truncated=page.truncated,
+        notes=notes,
+        extra={"pages": len(pages)},
+    )
+
+
+def _pdf_units(pages: list, cancel: threading.Event | None) -> Iterator[str]:
+    """逐页产出：页标记 + 该页文字层的每一行（取不出文字的页给空）。"""
+    for index, page_obj in enumerate(pages, start=1):
+        if cancel is not None and cancel.is_set():
+            raise _JobCancelled()
+        try:
+            text = page_obj.extract_text() or ""
+        except Exception:  # noqa: BLE001 - 单页取不出文字不影响其它页
+            text = ""
+        yield f"—— 第 {index} 页 ——"
+        for line in text.splitlines():
+            if line.strip():
+                yield line
 
 
 # ---------------------------------------------------------------------------

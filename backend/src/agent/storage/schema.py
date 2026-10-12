@@ -1370,7 +1370,70 @@ MIGRATIONS.append(
 
 SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
 
+# ── 卡片内预览（迁移 41/42，2026-10-12）──────────────────────────────────────
+# 契约：docs/superpowers/plans/2026-10-12-unified-cards-media-preview-contract.md §3.4。
+# 只追加，不改历史迁移。
+#
+# 为什么缓存要按 (attachment_id, version, recipe) 做主键：
+# 预览是「看」，不是「已理解」—— 但它同样是**可重复的计算**。附件被改过（版本变了）
+# 或转换配方变了（recipe 变了）时，旧结果对新版本就是错的，必须重算。
+# 主键连版本一起，旧结果**没有位置**写到新版本上；迟到的工作线程也只能撞主键失败。
+_PREVIEW_CACHE_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS attachment_previews (
+      attachment_id TEXT NOT NULL,
+      version TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT '',
+      recipe INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'ready',
+      reason TEXT NOT NULL DEFAULT '',
+      truncated INTEGER NOT NULL DEFAULT 0,
+      payload TEXT NOT NULL DEFAULT '{}',
+      bytes INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (attachment_id, version, recipe)
+    )
+    """,
+]
+
+# 板面卡片的预览阅读位置：按 (board_id, card_id) 一行，行内存 attachment_id + version。
+# 位置**只在前端内存与这张表里**，永远不写回板面状态（契约 §3.6：展开/翻页/缩放
+# 都不产生表达与意图）。
+_PREVIEW_POSITION_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS board_preview_state (
+      board_id TEXT NOT NULL,
+      card_id TEXT NOT NULL,
+      attachment_id TEXT NOT NULL DEFAULT '',
+      version TEXT NOT NULL DEFAULT '',
+      position TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (board_id, card_id)
+    )
+    """
+]
+
+MIGRATIONS.append((41, list(_PREVIEW_CACHE_DDL)))
+MIGRATIONS.append((42, list(_PREVIEW_POSITION_DDL)))
+
+# 补偿入口（新，43）：迁移 40 的全部语句 + 本轮新增的 41/42 对象。
+# 40 已交付、原样保留；这里只把「缺对象时重放哪一条」指向覆盖更全的新迁移，
+# 与 36 / 38 / 40 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append(
+    (
+        43,
+        [stmt for target, stmts in MIGRATIONS if target == 40 for stmt in stmts]
+        + list(_PREVIEW_CACHE_DDL)
+        + list(_PREVIEW_POSITION_DDL),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
+
 # `storage/migrate.py` 的补偿入口：`REQUIRED_OBJECTS` 缺失时**重放这一条**。
 # 用编号固定引用（不是「最后一条」）：以后追加迁移不会把它挤掉。
-# 整合轮（2026-10-11）编号为 40：= 迁移 38 的全部语句 + 本轮新增的提交身份对象（39）。
-COMPENSATION_VERSION = 40
+# 整合轮（2026-10-11）编号为 40：= 迁移 38 的全部语句 + 提交身份对象（39）。
+# 卡片内预览轮（2026-10-12）编号为 43：= 迁移 40 的全部语句 + 41（预览缓存）
+# + 42（板面预览位置）。
+COMPENSATION_VERSION = 43
+
