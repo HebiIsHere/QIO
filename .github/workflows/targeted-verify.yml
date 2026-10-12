@@ -165,6 +165,16 @@ jobs:
     if: ${{ inputs.targets == 'all' || inputs.targets == 'docs' }}
     runs-on: ubuntu-24.04
     steps:
+      # 引导签出：`uses: ./.github/actions/...` 需要工作区里**先有**这个 action 文件，
+      # 而 SHA 断言那一步本身就是本地 action —— 没有这一步会直接
+      # 「Can't find action.yml … Did you forget to run actions/checkout?」（2026-10-13 实测）。
+      # 真正的 SHA 证据仍由下一步 verify-checkout 产出（它自己再签出一次并断言 HEAD）。
+      - name: Bootstrap checkout (letting the local action load)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify-sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -204,6 +214,16 @@ jobs:
       PYTEST_NODE_IDS: ${{ inputs.pytest_node_ids }}
       PYTEST_K: ${{ inputs.pytest_k }}
     steps:
+      # 引导签出：`uses: ./.github/actions/...` 需要工作区里**先有**这个 action 文件，
+      # 而 SHA 断言那一步本身就是本地 action —— 没有这一步会直接
+      # 「Can't find action.yml … Did you forget to run actions/checkout?」（2026-10-13 实测）。
+      # 真正的 SHA 证据仍由下一步 verify-checkout 产出（它自己再签出一次并断言 HEAD）。
+      - name: Bootstrap checkout (letting the local action load)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify-sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -276,6 +296,16 @@ jobs:
       PYTEST_NODE_IDS: ${{ inputs.pytest_node_ids }}
       PYTEST_K: ${{ inputs.pytest_k }}
     steps:
+      # 引导签出：`uses: ./.github/actions/...` 需要工作区里**先有**这个 action 文件，
+      # 而 SHA 断言那一步本身就是本地 action —— 没有这一步会直接
+      # 「Can't find action.yml … Did you forget to run actions/checkout?」（2026-10-13 实测）。
+      # 真正的 SHA 证据仍由下一步 verify-checkout 产出（它自己再签出一次并断言 HEAD）。
+      - name: Bootstrap checkout (letting the local action load)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify-sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -319,6 +349,16 @@ jobs:
       VITEST_FILES: ${{ inputs.vitest_files }}
       VITEST_NAME: ${{ inputs.vitest_name }}
     steps:
+      # 引导签出：`uses: ./.github/actions/...` 需要工作区里**先有**这个 action 文件，
+      # 而 SHA 断言那一步本身就是本地 action —— 没有这一步会直接
+      # 「Can't find action.yml … Did you forget to run actions/checkout?」（2026-10-13 实测）。
+      # 真正的 SHA 证据仍由下一步 verify-checkout 产出（它自己再签出一次并断言 HEAD）。
+      - name: Bootstrap checkout (letting the local action load)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify-sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -363,6 +403,16 @@ jobs:
       run:
         working-directory: frontend/src-tauri
     steps:
+      # 引导签出：`uses: ./.github/actions/...` 需要工作区里**先有**这个 action 文件，
+      # 而 SHA 断言那一步本身就是本地 action —— 没有这一步会直接
+      # 「Can't find action.yml … Did you forget to run actions/checkout?」（2026-10-13 实测）。
+      # 真正的 SHA 证据仍由下一步 verify-checkout 产出（它自己再签出一次并断言 HEAD）。
+      - name: Bootstrap checkout (letting the local action load)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify-sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -422,6 +472,16 @@ jobs:
       run:
         working-directory: frontend/src-tauri
     steps:
+      # 引导签出：`uses: ./.github/actions/...` 需要工作区里**先有**这个 action 文件，
+      # 而 SHA 断言那一步本身就是本地 action —— 没有这一步会直接
+      # 「Can't find action.yml … Did you forget to run actions/checkout?」（2026-10-13 实测）。
+      # 真正的 SHA 证据仍由下一步 verify-checkout 产出（它自己再签出一次并断言 HEAD）。
+      - name: Bootstrap checkout (letting the local action load)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify-sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -447,6 +507,16 @@ jobs:
     if: ${{ inputs.targets == 'all' || inputs.targets == 'frozen-worker' }}
     runs-on: windows-latest
     steps:
+      # 引导签出：`uses: ./.github/actions/...` 需要工作区里**先有**这个 action 文件，
+      # 而 SHA 断言那一步本身就是本地 action —— 没有这一步会直接
+      # 「Can't find action.yml … Did you forget to run actions/checkout?」（2026-10-13 实测）。
+      # 真正的 SHA 证据仍由下一步 verify-checkout 产出（它自己再签出一次并断言 HEAD）。
+      - name: Bootstrap checkout (letting the local action load)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.verify-sha.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
