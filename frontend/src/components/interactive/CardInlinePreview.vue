@@ -44,9 +44,21 @@ import type { PdfFactsView, PdfHandle } from "../../interactive/renderers/pdf";
 import { fitScale, stepZoom } from "../../interactive/renderers/image";
 
 const props = defineProps<{ card: BoardCard; active: boolean; onClose: () => void }>();
-const emit = defineEmits<{ position: [position: PreviewPosition] }>();
+/**
+ * 阅读位置必须**带着归属**一起交出去：位置按「附件 + 文件版本」落库，
+ * 只给一个页码，父组件无法判断它属于哪一份文件（旧版本的位置绝不能写到新版本上）。
+ */
+export interface PreviewPositionItem {
+  attachmentId: string;
+  version: string;
+  position: PreviewPosition;
+}
+
+const emit = defineEmits<{ position: [item: PreviewPositionItem] }>();
 
 const renderState = ref<PreviewRenderState>({ status: "idle" });
+/** 当前这一份文件在服务端的版本指纹（位置归属要用它，见 PreviewPositionItem）。 */
+const fileVersion = ref("");
 const data = ref<Record<string, unknown> | null>(null);
 const viewError = ref("");
 const actionNote = ref("");
@@ -169,6 +181,7 @@ function stop(): void {
 }
 
 function applyEnvelope(envelope: PreviewEnvelope): void {
+  fileVersion.value = String(envelope.version || "");
   renderState.value = {
     status: envelope.status,
     kind: envelope.kind,
@@ -310,7 +323,12 @@ function emitPosition(extra: Partial<PreviewPosition> = {}): void {
   if (mode === "image") position.zoom = zoom.value;
   if (mode === "xlsx" && currentSheet.value) position.sheet = currentSheet.value.name;
   if (mode === "pptx" && currentSlide.value) position.slide = currentSlide.value.index;
-  emit("position", position);
+  // 归属一起交出去：附件 id 来自卡片 meta，版本来自这一次真实取到的预览数据。
+  // 没有版本就不报位置（宁可少存一次，也不把位置写到不确定的版本上）。
+  const id = attachmentId.value;
+  const version = fileVersion.value;
+  if (!id || !version) return;
+  emit("position", { attachmentId: id, version, position });
 }
 
 function changeZoom(direction: 1 | -1): void {

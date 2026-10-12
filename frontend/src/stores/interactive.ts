@@ -11,6 +11,10 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import * as api from "../services/interactive";
+// 阅读位置的读写属于**预览服务**（不是板面状态）：位置按「附件 + 文件版本」归属，
+// 写它不产生表达、不改板面版本（契约 §3.3）。
+import { putBoardPreviewPosition } from "../services/attachments";
+import type { PreviewPosition } from "../services/attachments";
 import {
   batchesWithList,
   executionIsLive,
@@ -372,6 +376,31 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 这张卡现在是否展开着预览（模板里读它才会跟着 Set 变化重渲染）。 */
   function isCardPreviewExpanded(cardId: string): boolean {
     return expandedCards.value.has(cardId);
+  }
+
+  /**
+   * 保存一张卡片的**阅读位置**（页码 / 幻灯片 / 工作表 / 行 / 缩放）。
+   *
+   * 三条边界：
+   * 1. 位置按「附件 + 文件版本」归属，服务端在 attachmentId 与卡片不一致时回 409；
+   * 2. 写它**不是**板面改动：不产生表达、不改板面版本、不排队保存、不触发模型（契约 §3.5 / §3.6）；
+   * 3. 失败不打断阅读：只把原因写进 previewPositionError，界面据此如实显示（没有假成功）。
+   */
+  const previewPositionError = ref<string | null>(null);
+
+  async function savePreviewPosition(
+    cardId: string,
+    item: { attachmentId: string; version: string; position: PreviewPosition },
+  ): Promise<boolean> {
+    if (!cardId || !item?.attachmentId || !item.version) return false;
+    try {
+      await putBoardPreviewPosition(boardId.value, cardId, item);
+      previewPositionError.value = null;
+      return true;
+    } catch (err) {
+      previewPositionError.value = err instanceof Error ? err.message : String(err);
+      return false;
+    }
   }
 
   /** 展开顺序 = 让位处理顺序：直接喂给 planExpandedLayout 的 expanded。 */
@@ -4196,6 +4225,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     toggleCardPreview,
     collapseAllPreviews,
     isCardPreviewExpanded,
+    savePreviewPosition,
+    previewPositionError,
 
     batches,
     listBatches,

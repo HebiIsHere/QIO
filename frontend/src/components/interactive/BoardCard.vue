@@ -38,6 +38,10 @@ import {
   cardAttachmentLinked,
   cardAttachmentText,
 } from "../../interactive/materials";
+// 卡片内真实预览（契约 §3.5）：预览主体挂在**卡片内部**，不盖住编辑区、勾选框与卡片操作。
+// 渲染器按需动态加载；组件自己在收起 / 换附件 / 卸载时中止在途工作并释放资源。
+import CardInlinePreview from "./CardInlinePreview.vue";
+import type { PreviewPosition } from "../../services/attachments";
 import {
   pickBrowserFile,
   stateText,
@@ -506,6 +510,20 @@ function togglePreview(): void {
   store.toggleCardPreview(props.card.id);
 }
 
+/**
+ * 预览里的阅读位置（页码 / 幻灯片 / 行 / 缩放）—— 走预览服务落库，**不写板面状态**。
+ *
+ * 组件只把位置交出来，判断只有一处（store 的 savePreviewPosition）：位置按「附件 + 文件版本」
+ * 归属，服务端在附件与卡片不一致时回 409；写失败只记原因，不假装成功。
+ */
+function onPreviewPosition(payload: {
+  attachmentId: string;
+  version: string;
+  position: PreviewPosition;
+}): void {
+  void store.savePreviewPosition(props.card.id, payload);
+}
+
 const style = computed(() => ({
   left: props.x + "px",
   top: props.y + "px",
@@ -946,9 +964,6 @@ function cancelEdit() {
       <!--
         卡片内展开的阅读区（契约 §3.5）：展开时这张卡本身变大，预览主体挂在**卡片内部**，
         因此不会盖住编辑区、勾选框与卡片操作。收起（含「收起全部预览」）时整块消失。
-        这里是唯一的挂载点：P2 的 CardInlinePreview.vue 到位后，把占位元素整块替换成
-        <CardInlinePreview :card="card" :active="true" :on-close="togglePreview" @position="onPreviewPosition" />
-        （props / emits 契约见 §3.5；onPreviewPosition 若需要回写阅读位置，走 P2 的入口，不写板面状态）。
       -->
       <div
         v-if="previewExpanded"
@@ -956,9 +971,12 @@ function cancelEdit() {
         data-im="card-preview-host"
         :data-card-id="card.id"
       >
-        <p class="preview-placeholder" data-im="card-preview-placeholder">
-          预览区已展开（真实文件预览由 CardInlinePreview 渲染；当前是最小占位，接线已可用）。
-        </p>
+        <CardInlinePreview
+          :card="card"
+          :active="previewExpanded"
+          :on-close="togglePreview"
+          @position="onPreviewPosition"
+        />
       </div>
     </div>
 

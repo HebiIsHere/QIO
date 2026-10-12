@@ -201,10 +201,16 @@ const statusText = computed(() => {
       ].join("；");
     }
     const count = store.lastSubmission?.expressions?.length ?? 0;
+    /**
+     * `checkedCleared` 是**历史字段**：2026-10-12 起许可持续有效，服务端恒返回空数组。
+     * 这里保留读取，是为了万一遇到旧后端真的清了勾选时仍能如实说明；新规则下它不会出现。
+     */
     const cleared = store.lastSubmission?.checkedCleared?.length ?? 0;
     return [
       `已提交：本次 ${count} 项改动已记录` +
-        (cleared > 0 ? `；提交成功后已自动取消 ${cleared} 条注释的勾选（不是删除或撤回）` : ""),
+        (cleared > 0
+          ? `；有 ${cleared} 条旧记录在提交时被清掉了勾选（服务端按旧规则回报；新规则下许可不会因提交失效）`
+          : "；已提交的卡片仍然保持许可，只有你手动取消才会失效"),
       "受理只表示 QIO 可靠收下了这次提交；理解结果与任务执行状态分别由理解状态与任务列表表达，提交不构成执行批准。",
     ].join("；");
   }
