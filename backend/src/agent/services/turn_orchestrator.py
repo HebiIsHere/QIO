@@ -35,6 +35,62 @@ BOUNDARY_MODE_KEY = "fragment.boundary_mode"
 DEFAULT_BOUNDARY_MODE = "shadow"
 
 
+
+def media_facts_note(entries: list[dict]) -> str:
+    """把本轮媒体材料**实际读到什么**写成模型可读的一段（契约 §4.4）。
+
+    这里只转述事实，不做判断也不补内容：
+
+    * 转写文本原样给出（它只代表实际得到的文字，不代表理解了语气 / 音乐 / 全部环境声音）；
+    * 抽样帧给出**时间位置**并写明「抽样，不是逐帧」；
+    * 未支持的条目写明是哪一种：链路没有能力，还是这台机器上没有可用的转换程序。
+    """
+    lines: list[str] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        source = str(entry.get("source") or "")
+        label = str(entry.get("label") or entry.get("cardId") or "材料")
+        if source == "audio_transcribed":
+            text = str(entry.get("transcript") or "").strip()
+            span = entry.get("range") if isinstance(entry.get("range"), dict) else {}
+            start, end = span.get("start"), span.get("end")
+            where = ""
+            if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+                where = f"（{float(start):.1f}s–{float(end):.1f}s）"
+            engine = entry.get("engine") if isinstance(entry.get("engine"), dict) else {}
+            who = str(engine.get("provider") or "")
+            lines.append(
+                f"- 音频「{label}」{where}经派生转写得到文字"
+                + (f"（{who}）" if who else "")
+                + "："
+                + (text if text else "（没有得到任何文字）")
+            )
+            lines.append("  这段文字只是实际转写结果，不代表听懂了语气、音乐或全部环境声音。")
+        elif source == "audio_delivered":
+            lines.append(f"- 音频「{label}」的原始字节已交给本次链路，由模型自己听。")
+        elif source == "video_sampled":
+            frames = entry.get("frames") if isinstance(entry.get("frames"), list) else []
+            stamps = [
+                f"{float(frame['at']):.1f}s"
+                for frame in frames
+                if isinstance(frame, dict) and isinstance(frame.get("at"), (int, float))
+            ]
+            lines.append(
+                f"- 视频「{label}」按时间点抽样了 {len(frames)} 帧"
+                + (f"（{'、'.join(stamps)}）" if stamps else "")
+                + "：**这是抽样，不是逐帧读取完整视频**。"
+            )
+        elif source == "video_delivered":
+            lines.append(f"- 视频「{label}」的原始字节已交给本次链路，由模型自己看。")
+        elif source in ("audio_unsupported", "video_unsupported", "image_unsupported", "unreadable"):
+            reason = str(entry.get("reason") or "没有读到内容")
+            lines.append(f"- {label}：本次没有读到内容（{reason}）。")
+    if not lines:
+        return ""
+    return "【本轮媒体材料实际读到的内容】" + chr(10) + chr(10).join(lines)
+
+
 def verification_raw(result) -> dict | None:
     """assistant 消息的 `raw`：把后端核对结论与系统核对注释一起存下来。
 
@@ -538,6 +594,11 @@ class TurnOrchestrator:
             prompt = f"{payload.text}\n\n【用户消息】\n{message}"
         if attachment_note:
             prompt = f"{prompt}\n\n【系统通知】\n{attachment_note}"
+        # 媒体材料**实际读到了什么**（转写文字 / 抽样帧的时间位置 / 如实的不支持原因）
+        # 必须进本轮提示词：内容块能交付的只有字节，转写与抽样这两种派生事实只能走文字。
+        media_note = media_facts_note(media_entries)
+        if media_note:
+            prompt = f"{prompt}\n\n{media_note}"
         return _Plan(
             topic=topic,
             prediction=prediction,

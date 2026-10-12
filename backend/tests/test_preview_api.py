@@ -17,7 +17,7 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
-from agent.api.preview_routes import POSITION_KEYS, normalize_position, register_preview_routes
+from agent.api.preview_routes import POSITION_KEYS, normalize_position
 from agent.api.server import create_app
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
@@ -46,8 +46,9 @@ def client(tmp_path: Path):
     settings = Settings(data_dir=tmp_path / "data")
     app = create_app(settings, conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
-    # ← lead 在 server.py 加的就是这一行（放在其它 include_router 一起）
-    register_preview_routes(app)
+    # 预览路由现在由 create_app 内部注册（server.py 里的 register_preview_routes(app)）。
+    # 测试不再手动注册一次：重复注册会让同一路径出现两条相同路由，从而掩盖
+    # 「路由到底有没有真的挂上去」这个事实 —— 本用例的前提就是走真实注册路径。
     with TestClient(app) as c:
         yield c
 
