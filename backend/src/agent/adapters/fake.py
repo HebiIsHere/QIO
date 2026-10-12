@@ -116,13 +116,24 @@ class FakeStreamAdapter(BaseAdapter):
         *,
         model: str = "fake-stream",
         stream_supported: bool = True,
+        supports_images: bool = False,
+        supports_audio: bool = False,
+        supports_video: bool = False,
+        audio_transcription: str | None = None,
     ) -> None:
         self._scripts = list(scripts or [])
         self._index = 0
         self.model = model
         self.endpoint = None
         self.supports_stream = bool(stream_supported)
-        # 这条 adapter 收到的请求，测试用来断言「确实走了流式分支」。
+        # 能力协商（契约 §4.2）：默认**没有**任何多媒体能力 —— 测试要验证「有能力的
+        # 链路」时必须显式声明，绝不因为「这是假适配器」就默认看得见。
+        self.supports_images = bool(supports_images)
+        self.supports_audio = bool(supports_audio)
+        self.supports_video = bool(supports_video)
+        self.audio_transcription = audio_transcription
+        # 这条 adapter 收到的请求，测试用来断言「确实走了流式分支」，
+        # 也用来断言「后续每一次模型调用里仍然带着本轮媒体材料」（契约 §4 要求 5）。
         self.requests: list[dict] = []
 
     # -- script bookkeeping ------------------------------------------------

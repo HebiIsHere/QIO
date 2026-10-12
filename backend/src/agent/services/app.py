@@ -1187,6 +1187,82 @@ class AppContext:
         body = redact_text(str(note).strip())[: self.ATTACHMENT_NOTE_LIMIT]
         return f"{self.ATTACHMENT_NOTE_PREFIX}\n{body}"
 
+    # -- 多媒体材料（契约 §4）：本轮真正交付的图片/音频/视频依据 -------------
+
+    def media_materials_for_turn(self, turn_id: str | None, adapter: Any) -> dict:
+        """本轮媒体材料：诚实事实 + 真正能交付的内容块（**同步**，见调用点说明）。
+
+        能力协商只看**本次真实使用的适配器**（含凭据回落之后的那一个）的声明：
+        `supports_images` / `supports_audio` / `supports_video` / `audio_transcription`。
+        没有能力就如实降级成 `*_unsupported`，绝不静默换成用户没配置的外部服务。
+
+        线程纪律：候选清单（附件 → 路径）在**事件循环线程**上收集（附件服务与数据库
+        连接都不是线程安全的，见 services/attachments.py）；调用方把 `candidates`
+        交给工作线程跑 ffmpeg（那里只有纯文件 I/O 与子进程）。
+
+        返回 `{"parts": [...], "entries": [...], "work_dir": Path|None, "error": str}`；
+        任何一步失败都按「没有媒体材料」处理并把原因记在 `error` 里 —— 媒体是旁路，
+        绝不因为它挡住这一轮。
+        """
+        from agent.interactive import materials as materials_module
+
+        result: dict = {"parts": [], "entries": [], "work_dir": None, "error": ""}
+        if not turn_id:
+            return result
+        service = self._attachment_service()
+        if service is None:
+            result["error"] = "没有可用的附件服务：本轮没有读取任何媒体材料"
+            return result
+        try:
+            candidates = materials_module.collected_media_candidates(service, [turn_id])
+        except Exception as exc:  # noqa: BLE001 - 候选收集失败 = 没有媒体材料
+            logger.warning("media candidates failed", exc_info=True)
+            result["error"] = f"媒体候选收集失败：{type(exc).__name__}"
+            return result
+        if not candidates:
+            return result
+        result["candidates"] = candidates
+        return result
+
+    def resolve_media_materials(self, candidates: Any, *, turn_id: str | None, adapter: Any) -> dict:
+        """**工作线程**入口：跑 ffmpeg 派生处理并按适配器能力如实交付。
+
+        只碰候选里已经解析好的路径与适配器上的能力位：不读数据库、不碰附件服务。
+        """
+        from agent.interactive import materials as materials_module
+
+        result: dict = {"parts": [], "entries": [], "work_dir": None, "error": ""}
+        rows = list(candidates or [])
+        if not rows:
+            return result
+        supports_images = bool(getattr(adapter, "supports_images", False))
+        supports_audio = bool(getattr(adapter, "supports_audio", False))
+        supports_video = bool(getattr(adapter, "supports_video", False))
+        transcription = getattr(adapter, "audio_transcription", None)
+        work_dir = None
+        if turn_id:
+            try:
+                work_dir = Path(self.settings.data_dir) / "tmp" / f"media-{turn_id}"
+            except Exception:  # noqa: BLE001 - 取不到数据目录就让材料层用系统临时目录
+                work_dir = None
+        try:
+            resolved = materials_module.resolve_media(
+                candidates=rows,
+                supports_images=supports_images,
+                supports_audio=supports_audio,
+                supports_video=supports_video,
+                audio_transcription=transcription,
+                work_dir=work_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 - 媒体是旁路：失败就是没有材料
+            logger.warning("media resolve failed", exc_info=True)
+            result["error"] = f"媒体材料解析失败：{type(exc).__name__}"
+            return result
+        result["parts"] = list(resolved.get("parts") or [])
+        result["entries"] = list(resolved.get("entries") or [])
+        result["work_dir"] = resolved.get("work_dir")
+        return result
+
     # -- execution narrative（模型怎么表达，见 core/narrative.py） -------------
 
     def _append_narrative(self, binding, narrative, call, turn_id, raw) -> str | None:

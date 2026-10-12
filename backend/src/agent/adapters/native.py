@@ -204,6 +204,12 @@ class NativeAdapter(BaseAdapter):
     # 注意：它说的是「协议支持」，不是「用户选的模型一定看得懂」——模型不支持时
     # 由厂商报错，QIO 按既有失败路径如实上报，不假装看懂。
     supports_images = True
+    # 诚实能力协商（契约 §4.2）：chat.completions 的消息里没有音频/视频字节块，
+    # 这里**不夸大**。音频只能走派生转写通道，视频只能走抽样帧（图片块）。
+    supports_audio = False
+    supports_video = False
+    # 本轮没有接入任何转写通道：没有就不声明（绝不静默换成用户没配置的外部服务）。
+    audio_transcription = None
 
     def __init__(
         self,

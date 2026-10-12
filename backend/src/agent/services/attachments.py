@@ -320,6 +320,15 @@ XLSX_EXTS = {".xlsx", ".xlsm"}
 PDF_EXTS = {".pdf"}
 PPTX_EXTS = {".pptx"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".ico"}
+#: 音频 / 视频扩展名（契约 §4）：它们**不再是「当前不可读取」**，而是交给
+#: media 服务按本机真实能力做派生处理（元数据 / 抽样帧 / 抽取音频）。
+#: 只认扩展名 —— 真正的判定在 media.probe_media，这里不猜内容。
+AUDIO_EXTS = {
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus", ".wma", ".amr", ".aiff",
+}
+VIDEO_EXTS = {
+    ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".mpeg", ".mpg", ".ts", ".3gp",
+}
 #: 明确「当前不可读取」的扩展名：拿到文件名不等于读到了内容
 #: 注意：PDF / PPTX 已从这份名单移出 —— 它们现在**能读**（文字层 / 每页文字），
 #: 各自的诚实口径写在 classify_readability 的限制说明里。
@@ -350,25 +359,47 @@ UNSUPPORTED_EXTS = {
     ".m4a": "音频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".aac": "音频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".opus": "音频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
+    ".aiff": "音频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".mp4": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
+    ".m4v": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".mov": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".avi": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".mkv": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".webm": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
     ".ogv": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
+    ".wmv": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
+    ".flv": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
+    ".3gp": "视频不支持文本读取（预览层也不内嵌播放：可以打开或下载）",
 }
+
+
+def classify_media_kind(name: str) -> str:
+    """音频 / 视频的**扩展名归类**：`"audio"` / `"video"` / `""`（都不是）。
+
+    它只说「按扩展名看这是不是音视频」，**不判断能不能读** —— 真实能力由
+    `agent.services.media` 按本机（有没有 ffmpeg）如实给出。
+    """
+    suffix = Path(name or "").suffix.lower()
+    if suffix in AUDIO_EXTS:
+        return "audio"
+    if suffix in VIDEO_EXTS:
+        return "video"
+    return ""
 
 
 def classify_readability(name: str) -> tuple[str, str, str]:
     """按文件名给出（mode, 界面短标签, 限制说明）。
 
-    mode: text | csv | html | docx | xlsx | pptx | pdf | image | unsupported | sniff
+    mode: text | csv | html | docx | xlsx | pptx | pdf | image | audio | video | unsupported | sniff
     「sniff」= 扩展名不认识，读取时按内容嗅探：是文本就读，否则明确说不可读。
 
     卡片内预览轮（2026-10-12）新增 pdf / pptx 两个**能读**的模式：
     * pdf —— 只读**文字层**（不渲染版面、不还原图片与表格；加密的明确拒绝）；
     * pptx —— 读每页文本框与表格文字、图片清单与备注（**不还原版面**）。
-    两者的"原版面外观"分别由前端 pdf.js 与卡片内结构化渲染承担。
+    两者的「原版面外观」分别由前端 pdf.js 与卡片内结构化渲染承担。
+
+    「audio」「video」= 交给 media 服务按本机真实能力做派生处理（有 ffmpeg 才做，
+    没有就如实说「这台机器上没有可用的转换程序」）。
     """
     suffix = Path(name or "").suffix.lower()
     if not suffix:
@@ -398,6 +429,20 @@ def classify_readability(name: str) -> tuple[str, str, str]:
         )
     if suffix in IMAGE_EXTS:
         return ("image", "图片", "只给元数据（大小/像素）；没有视觉能力时不声称看懂内容")
+    if suffix in AUDIO_EXTS:
+        return (
+            "audio",
+            "音频",
+            "按本机真实能力处理：有转换程序才能抽音频/转写，没有就如实说不能；"
+            "只读音频本身，不声称理解语气或音乐",
+        )
+    if suffix in VIDEO_EXTS:
+        return (
+            "video",
+            "视频",
+            "按本机真实能力处理：有转换程序才能按时间点抽样帧，没有就如实说不能；"
+            "抽样帧只代表取到的那几张，不是逐帧读完",
+        )
     if suffix in UNSUPPORTED_EXTS:
         return ("unsupported", "当前不可读取", UNSUPPORTED_EXTS[suffix])
     return ("sniff", "未知类型", "读取时按内容嗅探，不是文本就明确说不可读")

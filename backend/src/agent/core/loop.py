@@ -34,11 +34,14 @@ from agent.adapters.base import (
     STREAM_TEXT,
     STREAM_TOOL_CALL,
     AdapterMode,
+    AudioPart,
     BaseAdapter,
     ChatMessage,
     Completion,
+    ImagePart,
     StreamDelta,
     ToolSpec,
+    VideoPart,
 )
 from agent.api.events import EventType, make_event
 from agent.api.bus import EventBus
@@ -692,6 +695,10 @@ class AgentLoop:
         spill_dir: Path | str | None = None,
         undeclared_memory_limit: int | None = None,
         undeclared_spill_limit: int | None = None,
+        # 本轮真正交付的媒体内容块（契约 §4）：挂在**首条 user 消息**上，因此
+        # 「需要再次调用模型的后续步骤」里仍然带着同一份材料依据。没有媒体时
+        # 是 None —— 既有调用方一字不用改，消息形状逐字不变。
+        media_parts: list[Any] | None = None,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -711,6 +718,9 @@ class AgentLoop:
         self.continue_batch_tokens = continue_batch_tokens
         self.turn_id = turn_id
         self.trace = trace
+        # 本轮媒体内容块（图片 / 音频 / 视频）：只属于**这一轮**，run() 会把它挂在
+        # 首条 user 消息上；复用同一个 loop 跑下一轮时不会把上一轮的材料带过去。
+        self.media_parts = list(media_parts or [])
         self._model_seq = 0
         self._halted = False
         # 无进展暂停的原因（同样的调用拿到同样的结果）：由 ProgressTracker 给出，
@@ -1267,10 +1277,26 @@ class AgentLoop:
         try:
             return await self._run(user_message)
         finally:
+            # 媒体材料只属于**这一轮**：设备复用同一个 loop 跑下一轮时，上一轮的
+            # 附件依据不许继续跟着（否则下一轮会带着用户已经换掉的材料回答）。
+            self.media_parts = []
             self.dispose()
 
     async def _run(self, user_message: str) -> TurnResult:
-        messages: list[ChatMessage] = [ChatMessage(role="user", content=user_message)]
+        # 本轮媒体材料挂在**首条 user 消息**上：后续每一次模型调用都基于同一个
+        # messages 列表累积，所以「需要再次调用模型的步骤」里仍然带着它。
+        images = [part for part in self.media_parts if isinstance(part, ImagePart)]
+        audios = [part for part in self.media_parts if isinstance(part, AudioPart)]
+        videos = [part for part in self.media_parts if isinstance(part, VideoPart)]
+        messages: list[ChatMessage] = [
+            ChatMessage(
+                role="user",
+                content=user_message,
+                images=images or None,
+                audios=audios or None,
+                videos=videos or None,
+            )
+        ]
         self._warnings = []
         self._stream_degraded_warned = False
         self._termination_warned = False
