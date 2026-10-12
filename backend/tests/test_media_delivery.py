@@ -33,7 +33,17 @@ from agent.tools.attachment_tools import ReadAttachmentTool
 from agent.tools.builtin import EchoTool
 from agent.tools.registry import ToolRegistry
 
-from tests.test_media_service import FFMPEG, real_audio, real_video  # noqa: F401 - 复用真实素材夹具
+try:
+    # 与 test_media_service 共用同一份探测与素材夹具（tests/media_shared.py）；
+    # 不再跨测试文件 import：CI 的 Linux 上 tests 不是包，那种写法会在收集期直接 ImportError。
+    from media_shared import FFMPEG, needs_ffmpeg, real_audio, real_video  # noqa: F401
+except ImportError:  # pragma: no cover - 某些 rootdir 下按包路径导入
+    from tests.media_shared import (  # type: ignore[no-redef]
+        FFMPEG,
+        needs_ffmpeg,
+        real_audio,
+        real_video,
+    )
 
 BOARD = "board_media"
 needs_ffmpeg = pytest.mark.skipif(

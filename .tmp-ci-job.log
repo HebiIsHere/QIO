@@ -1,0 +1,394 @@
+﻿2026-10-12T16:33:56.6420500Z Current runner version: '2.337.0'
+2026-10-12T16:33:56.6439735Z ##[group]Runner Image Provisioner
+2026-10-12T16:33:56.6440507Z Hosted Compute Agent
+2026-10-12T16:33:56.6441001Z Version: 20261002.596
+2026-10-12T16:33:56.6441533Z Commit: c3d12f3313a95f25162a1503be624f3b0617f8c0
+2026-10-12T16:33:56.6442348Z Build Date: 2026-10-02T22:28:27Z
+2026-10-12T16:33:56.6442975Z Worker ID: {4ec9a270-ad2c-476e-938e-ab4e7e503f14}
+2026-10-12T16:33:56.6443595Z Region: centralus
+2026-10-12T16:33:56.6444076Z Cloud: Azure
+2026-10-12T16:33:56.6444519Z ##[endgroup]
+2026-10-12T16:33:56.6445884Z ##[group]Operating System
+2026-10-12T16:33:56.6446448Z Ubuntu
+2026-10-12T16:33:56.6446881Z 24.04.5
+2026-10-12T16:33:56.6447351Z LTS
+2026-10-12T16:33:56.6447778Z ##[endgroup]
+2026-10-12T16:33:56.6448236Z ##[group]Runner Image
+2026-10-12T16:33:56.6448773Z Image: ubuntu-24.04
+2026-10-12T16:33:56.6449219Z Version: 20261004.327.1
+2026-10-12T16:33:56.6450353Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261004.327/images/ubuntu/Ubuntu2404-Readme.md
+2026-10-12T16:33:56.6451627Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261004.327
+2026-10-12T16:33:56.6452658Z ##[endgroup]
+2026-10-12T16:33:56.6453629Z ##[group]GITHUB_TOKEN Permissions
+2026-10-12T16:33:56.6455707Z Contents: read
+2026-10-12T16:33:56.6456172Z Metadata: read
+2026-10-12T16:33:56.6456724Z Packages: read
+2026-10-12T16:33:56.6457178Z ##[endgroup]
+2026-10-12T16:33:56.6458868Z Secret source: Actions
+2026-10-12T16:33:56.6459652Z Cache mode: write
+2026-10-12T16:33:56.6460237Z Prepare workflow directory
+2026-10-12T16:33:56.6745644Z Prepare all required actions
+2026-10-12T16:33:56.6780339Z Getting action download info
+2026-10-12T16:33:56.9137131Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+2026-10-12T16:33:57.0068232Z Download action repository 'astral-sh/setup-uv@v7' (SHA:37802adc94f370d6bfd71619e3f0bf239e1f3b78)
+2026-10-12T16:33:57.6195170Z Complete job name: backend (py3.12)
+2026-10-12T16:33:57.6733147Z ##[group]Run actions/checkout@v5
+2026-10-12T16:33:57.6733965Z with:
+2026-10-12T16:33:57.6734414Z   repository: HebiIsHere/QIO
+2026-10-12T16:33:57.6738097Z   token: ***
+2026-10-12T16:33:57.6738537Z   ssh-strict: true
+2026-10-12T16:33:57.6738952Z   ssh-user: git
+2026-10-12T16:33:57.6739409Z   persist-credentials: true
+2026-10-12T16:33:57.6739868Z   clean: true
+2026-10-12T16:33:57.6740324Z   sparse-checkout-cone-mode: true
+2026-10-12T16:33:57.6740842Z   fetch-depth: 1
+2026-10-12T16:33:57.6741251Z   fetch-tags: false
+2026-10-12T16:33:57.6741691Z   show-progress: true
+2026-10-12T16:33:57.6742124Z   lfs: false
+2026-10-12T16:33:57.6742728Z   submodules: false
+2026-10-12T16:33:57.6743223Z   set-safe-directory: true
+2026-10-12T16:33:57.6743701Z   allow-unsafe-pr-checkout: false
+2026-10-12T16:33:57.6744334Z env:
+2026-10-12T16:33:57.6744739Z   PYTHONHASHSEED: 0
+2026-10-12T16:33:57.6745176Z ##[endgroup]
+2026-10-12T16:33:57.7461794Z Syncing repository: HebiIsHere/QIO
+2026-10-12T16:33:57.7463859Z ##[group]Getting Git version info
+2026-10-12T16:33:57.7464553Z Working directory is '/home/runner/work/QIO/QIO'
+2026-10-12T16:33:57.7465431Z [command]/usr/bin/git version
+2026-10-12T16:33:57.7523964Z git version 2.55.0
+2026-10-12T16:33:57.7538155Z ##[endgroup]
+2026-10-12T16:33:57.7548105Z Temporarily overriding HOME='/home/runner/work/_temp/3e5ae173-5ccb-4cea-89a6-7cc08793a733' before making global git config changes
+2026-10-12T16:33:57.7549621Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T16:33:57.7551384Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+2026-10-12T16:33:57.8036873Z Deleting the contents of '/home/runner/work/QIO/QIO'
+2026-10-12T16:33:57.8045326Z ##[group]Initializing the repository
+2026-10-12T16:33:57.8046730Z [command]/usr/bin/git init /home/runner/work/QIO/QIO
+2026-10-12T16:33:57.9332792Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-12T16:33:57.9334684Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-12T16:33:57.9336613Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-12T16:33:57.9337791Z hint: call:
+2026-10-12T16:33:57.9338494Z hint:
+2026-10-12T16:33:57.9339308Z hint: 	git config --global init.defaultBranch <name>
+2026-10-12T16:33:57.9340708Z hint:
+2026-10-12T16:33:57.9342015Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-12T16:33:57.9343662Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-12T16:33:57.9344475Z hint:
+2026-10-12T16:33:57.9344959Z hint: 	git branch -m <name>
+2026-10-12T16:33:57.9345524Z hint:
+2026-10-12T16:33:57.9346216Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-12T16:33:58.0496793Z Initialized empty Git repository in /home/runner/work/QIO/QIO/.git/
+2026-10-12T16:33:58.0498282Z [command]/usr/bin/git remote add origin https://github.com/HebiIsHere/QIO
+2026-10-12T16:33:58.0499699Z ##[endgroup]
+2026-10-12T16:33:58.0500734Z ##[group]Disabling automatic garbage collection
+2026-10-12T16:33:58.0501419Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-12T16:33:58.1118010Z ##[endgroup]
+2026-10-12T16:33:58.1119532Z ##[group]Setting up auth
+2026-10-12T16:33:58.1126568Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T16:33:58.1156472Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-12T16:33:58.1444131Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T16:33:58.1470741Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-12T16:33:58.1634255Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T16:33:58.1658306Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-12T16:33:58.1819090Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-12T16:33:58.2886200Z ##[endgroup]
+2026-10-12T16:33:58.2887397Z ##[group]Fetching the repository
+2026-10-12T16:33:58.2896158Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +96c57e89fbe8a2504be42052bb97a8141d6f76f2:refs/remotes/origin/feat/unified-cards-media-preview-021
+2026-10-12T16:34:00.9846260Z From https://github.com/HebiIsHere/QIO
+2026-10-12T16:34:00.9847921Z  * [new ref]         96c57e89fbe8a2504be42052bb97a8141d6f76f2 -> origin/feat/unified-cards-media-preview-021
+2026-10-12T16:34:00.9850209Z ##[endgroup]
+2026-10-12T16:34:00.9850933Z ##[group]Determining the checkout info
+2026-10-12T16:34:00.9851852Z ##[endgroup]
+2026-10-12T16:34:00.9858493Z [command]/usr/bin/git sparse-checkout disable
+2026-10-12T16:34:01.1051578Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-12T16:34:01.1401301Z ##[group]Checking out the ref
+2026-10-12T16:34:01.1405907Z [command]/usr/bin/git checkout --progress --force -B feat/unified-cards-media-preview-021 refs/remotes/origin/feat/unified-cards-media-preview-021
+2026-10-12T16:34:01.6865485Z Switched to a new branch 'feat/unified-cards-media-preview-021'
+2026-10-12T16:34:01.6875837Z branch 'feat/unified-cards-media-preview-021' set up to track 'origin/feat/unified-cards-media-preview-021'.
+2026-10-12T16:34:01.6888915Z ##[endgroup]
+2026-10-12T16:34:01.6926703Z [command]/usr/bin/git log -1 --format=%H
+2026-10-12T16:34:01.6947421Z 96c57e89fbe8a2504be42052bb97a8141d6f76f2
+2026-10-12T16:34:01.7490460Z ##[group]Run astral-sh/setup-uv@v7
+2026-10-12T16:34:01.7490722Z with:
+2026-10-12T16:34:01.7490887Z   python-version: 3.12
+2026-10-12T16:34:01.7491180Z   enable-cache: true
+2026-10-12T16:34:01.7491355Z   cache-dependency-glob: backend/uv.lock
+2026-10-12T16:34:01.7491578Z   activate-environment: false
+2026-10-12T16:34:01.7491786Z   working-directory: /home/runner/work/QIO/QIO
+2026-10-12T16:34:01.7493887Z   github-token: ***
+2026-10-12T16:34:01.7494067Z   restore-cache: true
+2026-10-12T16:34:01.7494230Z   save-cache: true
+2026-10-12T16:34:01.7494386Z   prune-cache: true
+2026-10-12T16:34:01.7494551Z   cache-python: false
+2026-10-12T16:34:01.7494734Z   ignore-nothing-to-cache: false
+2026-10-12T16:34:01.7494930Z   ignore-empty-workdir: false
+2026-10-12T16:34:01.7495128Z   add-problem-matchers: true
+2026-10-12T16:34:01.7495333Z   resolution-strategy: highest
+2026-10-12T16:34:01.7495538Z env:
+2026-10-12T16:34:01.7495681Z   PYTHONHASHSEED: 0
+2026-10-12T16:34:01.7495834Z ##[endgroup]
+2026-10-12T16:34:01.8718243Z Trying to find version for uv in: /home/runner/work/QIO/QIO/uv.toml
+2026-10-12T16:34:01.8718660Z Could not find file: /home/runner/work/QIO/QIO/uv.toml
+2026-10-12T16:34:01.8719283Z Trying to find version for uv in: /home/runner/work/QIO/QIO/pyproject.toml
+2026-10-12T16:34:01.8719761Z Could not find file: /home/runner/work/QIO/QIO/pyproject.toml
+2026-10-12T16:34:01.8720294Z Could not determine uv version from uv.toml or pyproject.toml. Falling back to latest.
+2026-10-12T16:34:01.8721422Z Fetching version data from https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson ...
+2026-10-12T16:34:01.9767558Z Downloading uv from "https://releases.astral.sh/github/uv/releases/download/0.13.0/uv-x86_64-unknown-linux-gnu.tar.gz" ...
+2026-10-12T16:34:02.4144930Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/3e6db5bf-42f4-4fea-a433-ff3ae3def6c2 -f /home/runner/work/_temp/1e0d2a68-92bd-4b46-b8a1-c98a27ee07c9
+2026-10-12T16:34:03.0517762Z Added /home/runner/.local/bin to the path
+2026-10-12T16:34:03.0519554Z Added /opt/hostedtoolcache/uv/0.13.0/x86_64 to the path
+2026-10-12T16:34:03.0520173Z Set UV_PYTHON_INSTALL_DIR to /home/runner/work/_temp/uv-python-dir
+2026-10-12T16:34:03.0520547Z Added /home/runner/work/_temp/uv-python-dir to the path
+2026-10-12T16:34:03.0520823Z Set UV_PYTHON to 3.12
+2026-10-12T16:34:03.0544880Z Set UV_CACHE_DIR to /home/runner/work/_temp/setup-uv-cache
+2026-10-12T16:34:03.0545194Z Successfully installed uv version 0.13.0
+2026-10-12T16:34:03.0545588Z Searching files using cache dependency glob: /home/runner/work/QIO/QIO/backend/uv.lock
+2026-10-12T16:34:03.0550769Z /home/runner/work/QIO/QIO/backend/uv.lock
+2026-10-12T16:34:03.0569139Z Found 1 files to hash.
+2026-10-12T16:34:03.0615455Z Trying to restore cache from GitHub Actions cache with key: setup-uv-2-x86_64-unknown-linux-gnu-ubuntu-24.04-3.12-pruned-632eb4a370d35b4e507e8ea95fe1b7fd1ab4f9eb6f0e515b7389191879bdb04b
+2026-10-12T16:34:03.2035438Z No GitHub Actions cache found for key: setup-uv-2-x86_64-unknown-linux-gnu-ubuntu-24.04-3.12-pruned-632eb4a370d35b4e507e8ea95fe1b7fd1ab4f9eb6f0e515b7389191879bdb04b
+2026-10-12T16:34:03.2635396Z ##[group]Run uv sync --frozen --extra dev
+2026-10-12T16:34:03.2635700Z [36;1muv sync --frozen --extra dev[0m
+2026-10-12T16:34:03.2793973Z shell: /usr/bin/bash -e {0}
+2026-10-12T16:34:03.2794178Z env:
+2026-10-12T16:34:03.2794330Z   PYTHONHASHSEED: 0
+2026-10-12T16:34:03.2794549Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+2026-10-12T16:34:03.2794782Z   UV_PYTHON: 3.12
+2026-10-12T16:34:03.2794967Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+2026-10-12T16:34:03.2795186Z ##[endgroup]
+2026-10-12T16:34:03.3296424Z Using CPython 3.12.3 interpreter at: /usr/bin/python3.12
+2026-10-12T16:34:03.3296735Z Creating virtual environment at: .venv
+2026-10-12T16:34:03.3340904Z    Building qio @ file:///home/runner/work/QIO/QIO/backend
+2026-10-12T16:34:03.4178039Z Downloading tiktoken (1.1MiB)
+2026-10-12T16:34:03.4181011Z Downloading pydantic-core (2.0MiB)
+2026-10-12T16:34:03.4182916Z Downloading hf-xet (4.3MiB)
+2026-10-12T16:34:03.4185998Z Downloading numpy (15.9MiB)
+2026-10-12T16:34:03.4190210Z Downloading pygments (1.2MiB)
+2026-10-12T16:34:03.4193305Z Downloading openai (1.9MiB)
+2026-10-12T16:34:03.4194913Z Downloading uvloop (4.2MiB)
+2026-10-12T16:34:03.4196519Z Downloading tokenizers (3.2MiB)
+2026-10-12T16:34:03.4197298Z Downloading onnxruntime (22.5MiB)
+2026-10-12T16:34:03.4198818Z Downloading cryptography (4.5MiB)
+2026-10-12T16:34:03.8145391Z  Downloaded tiktoken
+2026-10-12T16:34:03.8319069Z  Downloaded pygments
+2026-10-12T16:34:03.8738993Z  Downloaded pydantic-core
+2026-10-12T16:34:03.8993350Z  Downloaded openai
+2026-10-12T16:34:03.9188650Z  Downloaded tokenizers
+2026-10-12T16:34:03.9392673Z  Downloaded uvloop
+2026-10-12T16:34:03.9430204Z  Downloaded hf-xet
+2026-10-12T16:34:03.9451569Z  Downloaded cryptography
+2026-10-12T16:34:04.0961692Z  Downloaded onnxruntime
+2026-10-12T16:34:04.0993665Z  Downloaded numpy
+2026-10-12T16:34:04.3949178Z       Built qio @ file:///home/runner/work/QIO/QIO/backend
+2026-10-12T16:34:04.3957965Z Prepared 63 packages in 1.06s
+2026-10-12T16:34:04.4218252Z Installed 63 packages in 25ms
+2026-10-12T16:34:04.4218611Z  + annotated-doc==0.0.5
+2026-10-12T16:34:04.4218841Z  + annotated-types==0.8.0
+2026-10-12T16:34:04.4219067Z  + anyio==4.15.1
+2026-10-12T16:34:04.4219274Z  + beautifulsoup4==4.15.0
+2026-10-12T16:34:04.4219532Z  + certifi==2026.7.22
+2026-10-12T16:34:04.4219732Z  + cffi==2.1.1
+2026-10-12T16:34:04.4219949Z  + charset-normalizer==3.5.1
+2026-10-12T16:34:04.4220205Z  + click==8.5.0
+2026-10-12T16:34:04.4220403Z  + cryptography==50.0.1
+2026-10-12T16:34:04.4220604Z  + fastapi==0.141.1
+2026-10-12T16:34:04.4220799Z  + filelock==3.32.6
+2026-10-12T16:34:04.4221054Z  + flatbuffers==25.12.19
+2026-10-12T16:34:04.4221268Z  + fsspec==2026.7.0
+2026-10-12T16:34:04.4221506Z  + h11==0.16.0
+2026-10-12T16:34:04.4221729Z  + hf-xet==1.6.0
+2026-10-12T16:34:04.4221923Z  + httpcore==1.0.9
+2026-10-12T16:34:04.4222426Z  + httpcore2==2.12.0
+2026-10-12T16:34:04.4222673Z  + httptools==0.8.0
+2026-10-12T16:34:04.4222962Z  + httpx==0.28.1
+2026-10-12T16:34:04.4223176Z  + httpx2==2.12.0
+2026-10-12T16:34:04.4223446Z  + huggingface-hub==1.31.0
+2026-10-12T16:34:04.4223662Z  + idna==3.19
+2026-10-12T16:34:04.4223874Z  + iniconfig==2.3.0
+2026-10-12T16:34:04.4224077Z  + jaraco-classes==3.4.0
+2026-10-12T16:34:04.4224364Z  + jaraco-context==6.1.2
+2026-10-12T16:34:04.4224629Z  + jaraco-functools==4.6.0
+2026-10-12T16:34:04.4224900Z  + jeepney==0.9.0
+2026-10-12T16:34:04.4225117Z  + jiter==0.16.0
+2026-10-12T16:34:04.4225312Z  + keyring==25.7.0
+2026-10-12T16:34:04.4225534Z  + more-itertools==11.1.0
+2026-10-12T16:34:04.4226056Z  + numpy==2.5.3
+2026-10-12T16:34:04.4226360Z  + onnxruntime==1.30.0
+2026-10-12T16:34:04.4226597Z  + openai==3.13.0
+2026-10-12T16:34:04.4226792Z  + packaging==26.3
+2026-10-12T16:34:04.4227041Z  + pluggy==1.6.0
+2026-10-12T16:34:04.4227292Z  + protobuf==7.36.1
+2026-10-12T16:34:04.4227530Z  + pycparser==3.0
+2026-10-12T16:34:04.4227717Z  + pydantic==2.13.5
+2026-10-12T16:34:04.4227916Z  + pydantic-core==2.46.5
+2026-10-12T16:34:04.4228082Z  + pygments==2.21.0
+2026-10-12T16:34:04.4228424Z  + pypdf==6.20.0
+2026-10-12T16:34:04.4228590Z  + pytest==9.1.1
+2026-10-12T16:34:04.4228820Z  + pytest-asyncio==1.4.0
+2026-10-12T16:34:04.4228998Z  + python-dotenv==1.2.3
+2026-10-12T16:34:04.4229159Z  + pyyaml==6.0.3
+2026-10-12T16:34:04.4229381Z  + qio==0.2.2 (from file:///home/runner/work/QIO/QIO/backend)
+2026-10-12T16:34:04.4229624Z  + regex==2026.9.10
+2026-10-12T16:34:04.4229782Z  + requests==2.34.2
+2026-10-12T16:34:04.4229935Z  + secretstorage==3.5.0
+2026-10-12T16:34:04.4230089Z  + sniffio==1.3.1
+2026-10-12T16:34:04.4230234Z  + soupsieve==2.9.2
+2026-10-12T16:34:04.4230380Z  + starlette==1.6.0
+2026-10-12T16:34:04.4230522Z  + tiktoken==0.14.0
+2026-10-12T16:34:04.4230670Z  + tokenizers==0.23.2
+2026-10-12T16:34:04.4230827Z  + tqdm==4.70.1
+2026-10-12T16:34:04.4230972Z  + truststore==0.10.4
+2026-10-12T16:34:04.4231138Z  + typing-extensions==4.16.0
+2026-10-12T16:34:04.4231320Z  + typing-inspection==0.4.4
+2026-10-12T16:34:04.4231493Z  + urllib3==2.7.0
+2026-10-12T16:34:04.4231639Z  + uvicorn==0.52.4
+2026-10-12T16:34:04.4231891Z  + uvloop==0.22.1
+2026-10-12T16:34:04.4232036Z  + watchfiles==1.2.0
+2026-10-12T16:34:04.4232400Z  + websockets==17.1
+2026-10-12T16:34:04.4330271Z ##[group]Run uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+2026-10-12T16:34:04.4330782Z [36;1muv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py[0m
+2026-10-12T16:34:04.4365647Z shell: /usr/bin/bash -e {0}
+2026-10-12T16:34:04.4365842Z env:
+2026-10-12T16:34:04.4366001Z   PYTHONHASHSEED: 0
+2026-10-12T16:34:04.4366216Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+2026-10-12T16:34:04.4366446Z   UV_PYTHON: 3.12
+2026-10-12T16:34:04.4366629Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+2026-10-12T16:34:04.4366840Z ##[endgroup]
+2026-10-12T16:34:04.5278368Z [RUN ] 源码 worker：/home/runner/work/QIO/QIO/backend/.venv/bin/python /home/runner/work/QIO/QIO/backend/src/agent/tool_worker.py
+2026-10-12T16:34:04.5279303Z [PASS] 单文件代码 — 单文件代码：一行 JSON，值正确
+2026-10-12T16:34:04.5279670Z [PASS] 多文件项目 — 多文件项目 + 包内相对 import：值正确
+2026-10-12T16:34:04.5280092Z [PASS] 坏 worker 被拒 — 异常退出（exit 17）没有结果输出
+2026-10-12T16:34:04.5280427Z [DONE] 源码 worker：3/3 通过
+2026-10-12T16:34:04.5354908Z ##[group]Run uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
+2026-10-12T16:34:04.5355432Z [36;1muv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py[0m
+2026-10-12T16:34:04.5386343Z shell: /usr/bin/bash -e {0}
+2026-10-12T16:34:04.5386546Z env:
+2026-10-12T16:34:04.5386700Z   PYTHONHASHSEED: 0
+2026-10-12T16:34:04.5386920Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+2026-10-12T16:34:04.5387163Z   UV_PYTHON: 3.12
+2026-10-12T16:34:04.5387357Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+2026-10-12T16:34:04.5387718Z   PYTEST_ADDOPTS: --junitxml=pytest-results.xml
+2026-10-12T16:34:04.5387937Z ##[endgroup]
+2026-10-12T16:34:19.0766667Z ......s................................                                  [100%]
+2026-10-12T16:34:19.1608913Z ##[group]Run uv run --frozen pytest -q
+2026-10-12T16:34:19.1609187Z [36;1muv run --frozen pytest -q[0m
+2026-10-12T16:34:19.1641478Z shell: /usr/bin/bash -e {0}
+2026-10-12T16:34:19.1641677Z env:
+2026-10-12T16:34:19.1641839Z   PYTHONHASHSEED: 0
+2026-10-12T16:34:19.1642056Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+2026-10-12T16:34:19.1642479Z   UV_PYTHON: 3.12
+2026-10-12T16:34:19.1642670Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+2026-10-12T16:34:19.1642921Z   PYTEST_ADDOPTS: --junitxml=pytest-results.xml
+2026-10-12T16:34:19.1643130Z ##[endgroup]
+2026-10-12T16:34:29.5419448Z 
+2026-10-12T16:34:29.5419993Z ==================================== ERRORS ====================================
+2026-10-12T16:34:29.5420447Z ________________ ERROR collecting tests/test_media_delivery.py _________________
+2026-10-12T16:34:29.5420967Z ImportError while importing test module '/home/runner/work/QIO/QIO/backend/tests/test_media_delivery.py'.
+2026-10-12T16:34:29.5421525Z Hint: make sure your test modules/packages have valid Python names.
+2026-10-12T16:34:29.5421813Z Traceback:
+2026-10-12T16:34:29.5422053Z /usr/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-10-12T16:34:29.5422602Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-10-12T16:34:29.5422895Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-10-12T16:34:29.5423149Z tests/test_media_delivery.py:36: in <module>
+2026-10-12T16:34:29.5423833Z     from tests.test_media_service import FFMPEG, real_audio, real_video  # noqa: F401 - 复用真实素材夹具
+2026-10-12T16:34:29.5424217Z     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-10-12T16:34:29.5424490Z E   ModuleNotFoundError: No module named 'tests'
+2026-10-12T16:34:29.5424805Z ________________ ERROR collecting tests/test_media_turn_e2e.py _________________
+2026-10-12T16:34:29.5425271Z ImportError while importing test module '/home/runner/work/QIO/QIO/backend/tests/test_media_turn_e2e.py'.
+2026-10-12T16:34:29.5426168Z Hint: make sure your test modules/packages have valid Python names.
+2026-10-12T16:34:29.5426439Z Traceback:
+2026-10-12T16:34:29.5426662Z /usr/lib/python3.12/importlib/__init__.py:90: in import_module
+2026-10-12T16:34:29.5426985Z     return _bootstrap._gcd_import(name[level:], package, level)
+2026-10-12T16:34:29.5427261Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-10-12T16:34:29.5427501Z tests/test_media_turn_e2e.py:29: in <module>
+2026-10-12T16:34:29.5428003Z     from tests.test_media_service import FFMPEG, real_audio, real_video  # noqa: F401 - 复用真实素材夹具
+2026-10-12T16:34:29.5428368Z     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-10-12T16:34:29.5428631Z E   ModuleNotFoundError: No module named 'tests'
+2026-10-12T16:34:29.5428904Z =============================== warnings summary ===============================
+2026-10-12T16:34:29.5429208Z tests/test_acc_e2_compat_failure_fact.py:1
+2026-10-12T16:34:29.5429659Z   /home/runner/work/QIO/QIO/backend/tests/test_acc_e2_compat_failure_fact.py:1: SyntaxWarning: invalid escape sequence '\.'
+2026-10-12T16:34:29.5430281Z     """ACC-E2：兼容兜底（旧客户端不带 attachment_ids）必须保住**失败事实**，不得静默少带。
+2026-10-12T16:34:29.5430495Z 
+2026-10-12T16:34:29.5430643Z .venv/lib/python3.12/site-packages/starlette/testclient.py:53
+2026-10-12T16:34:29.5431415Z   /home/runner/work/QIO/QIO/backend/.venv/lib/python3.12/site-packages/starlette/testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+2026-10-12T16:34:29.5432275Z     _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+2026-10-12T16:34:29.5432554Z 
+2026-10-12T16:34:29.5432651Z tests/test_attachments_failure_reason.py:1
+2026-10-12T16:34:29.5433090Z   /home/runner/work/QIO/QIO/backend/tests/test_attachments_failure_reason.py:1: SyntaxWarning: invalid escape sequence '\.'
+2026-10-12T16:34:29.5433604Z     """R6 问题四：失败原因保留与可用操作（契约 §1.4）—— **先写红**。
+2026-10-12T16:34:29.5433925Z 
+2026-10-12T16:34:29.5434041Z tests/test_attachments_readiness.py:1
+2026-10-12T16:34:29.5434442Z   /home/runner/work/QIO/QIO/backend/tests/test_attachments_readiness.py:1: SyntaxWarning: invalid escape sequence '\.'
+2026-10-12T16:34:29.5434947Z     """R7 §1.3：唯一的执行就绪条件 —— **prepared 一律不就绪**（先写红）。
+2026-10-12T16:34:29.5435118Z 
+2026-10-12T16:34:29.5435216Z tests/test_r6_declaration_chunks_verify.py:55
+2026-10-12T16:34:29.5435657Z   /home/runner/work/QIO/QIO/backend/tests/test_r6_declaration_chunks_verify.py:55: SyntaxWarning: invalid escape sequence '\`'
+2026-10-12T16:34:29.5436096Z     "\`\`\`python\nprint('r6')\n\`\`\`\n\n"
+2026-10-12T16:34:29.5436251Z 
+2026-10-12T16:34:29.5436356Z tests/test_r7_disconnect_cancel_verify.py:176
+2026-10-12T16:34:29.5436785Z   /home/runner/work/QIO/QIO/backend/tests/test_r7_disconnect_cancel_verify.py:176: SyntaxWarning: invalid escape sequence '\`'
+2026-10-12T16:34:29.5437290Z     """复制卡在闸门内：打在**真实调用点** \`shutil.copyfile\` 上（跨平台确定）。"""
+2026-10-12T16:34:29.5437462Z 
+2026-10-12T16:34:29.5437577Z tests/test_r8_compat_path_reject_verify.py:141
+2026-10-12T16:34:29.5438013Z   /home/runner/work/QIO/QIO/backend/tests/test_r8_compat_path_reject_verify.py:141: SyntaxWarning: invalid escape sequence '\`'
+2026-10-12T16:34:29.5438538Z     """**首次准备（登记）**的复制必然失败：真实调用点是 <目标>.part 写完后 \`os.replace\` 提交
+2026-10-12T16:34:29.5438715Z 
+2026-10-12T16:34:29.5438801Z tests/test_turn_journal_facts.py:1
+2026-10-12T16:34:29.5439201Z   /home/runner/work/QIO/QIO/backend/tests/test_turn_journal_facts.py:1: SyntaxWarning: invalid escape sequence '\.'
+2026-10-12T16:34:29.5439713Z     """R4：把 TURN_END 的结束事实落进 turn_journal 台账（迁移 + record_facts/facts）。
+2026-10-12T16:34:29.5439906Z 
+2026-10-12T16:34:29.5440092Z -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2026-10-12T16:34:29.5440442Z =========================== short test summary info ============================
+2026-10-12T16:34:29.5440714Z ERROR tests/test_media_delivery.py
+2026-10-12T16:34:29.5440935Z ERROR tests/test_media_turn_e2e.py
+2026-10-12T16:34:29.5441321Z !!!!!!!!!!!!!!!!!!! Interrupted: 2 errors during collection !!!!!!!!!!!!!!!!!!!!
+2026-10-12T16:34:29.8681435Z ##[error]Process completed with exit code 2.
+2026-10-12T16:34:29.8726116Z ##[group]Run python - <<'PY'
+2026-10-12T16:34:29.8726396Z [36;1mpython - <<'PY'[0m
+2026-10-12T16:34:29.8726602Z [36;1mimport glob[0m
+2026-10-12T16:34:29.8726810Z [36;1mimport xml.etree.ElementTree as ET[0m
+2026-10-12T16:34:29.8727043Z [36;1m[0m
+2026-10-12T16:34:29.8727357Z [36;1mpaths = glob.glob("pytest-results.xml") or glob.glob("**/pytest-results.xml", recursive=True)[0m
+2026-10-12T16:34:29.8727724Z [36;1mif not paths:[0m
+2026-10-12T16:34:29.8728063Z [36;1m    print("::error title=pytest::no junit report written (collection/import error before tests ran)")[0m
+2026-10-12T16:34:29.8728431Z [36;1m    raise SystemExit(0)[0m
+2026-10-12T16:34:29.8728630Z [36;1m[0m
+2026-10-12T16:34:29.8728785Z [36;1mbad = [][0m
+2026-10-12T16:34:29.8729023Z [36;1mfor case in ET.parse(paths[0]).getroot().iter("testcase"):[0m
+2026-10-12T16:34:29.8729398Z [36;1m    problems = list(case.findall("failure")) + list(case.findall("error"))[0m
+2026-10-12T16:34:29.8729736Z [36;1m    if not problems:[0m
+2026-10-12T16:34:29.8729936Z [36;1m        continue[0m
+2026-10-12T16:34:29.8730174Z [36;1m    message = (problems[0].get("message") or "").strip()[0m
+2026-10-12T16:34:29.8730464Z [36;1m    text = (problems[0].text or "").strip()[0m
+2026-10-12T16:34:29.8730829Z [36;1m    bad.append((f"{case.get('classname')}::{case.get('name')}", f"{message}\n{text}"[:1800]))[0m
+2026-10-12T16:34:29.8731160Z [36;1m[0m
+2026-10-12T16:34:29.8731458Z [36;1mprint(f"::error title=pytest failures ({len(bad)})::" + " | ".join(name for name, _ in bad[:12]))[0m
+2026-10-12T16:34:29.8731818Z [36;1m# 一条用例一条注解：注解是公开可读的，失败细节不至于被折叠掉[0m
+2026-10-12T16:34:29.8732045Z [36;1mfor name, detail in bad[:20]:[0m
+2026-10-12T16:34:29.8732577Z [36;1m    flat = " / ".join(line.strip() for line in detail.splitlines() if line.strip())[0m
+2026-10-12T16:34:29.8732955Z [36;1m    print(f"::error title={name}::{flat[:1400]}")[0m
+2026-10-12T16:34:29.8733200Z [36;1mPY[0m
+2026-10-12T16:34:29.8770759Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-12T16:34:29.8771038Z env:
+2026-10-12T16:34:29.8771215Z   PYTHONHASHSEED: 0
+2026-10-12T16:34:29.8771461Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+2026-10-12T16:34:29.8771739Z   UV_PYTHON: 3.12
+2026-10-12T16:34:29.8771949Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+2026-10-12T16:34:29.8772352Z ##[endgroup]
+2026-10-12T16:34:29.9011183Z ##[error]::tests.test_media_delivery | ::tests.test_media_turn_e2e
+2026-10-12T16:34:29.9015908Z ##[error]tests.test_media_delivery::collection failure / ImportError while importing test module '/home/runner/work/QIO/QIO/backend/tests/test_media_delivery.py'. / Hint: make sure your test modules/packages have valid Python names. / Traceback: / /usr/lib/python3.12/importlib/__init__.py:90: in import_module / return _bootstrap._gcd_import(name[level:], package, level) / ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ / tests/test_media_delivery.py:36: in <module> / from tests.test_media_service import FFMPEG, real_audio, real_video  # noqa: F401 - 复用真实素材夹具 / ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ / E   ModuleNotFoundError: No module named 'tests'
+2026-10-12T16:34:29.9020831Z ##[error]tests.test_media_turn_e2e::collection failure / ImportError while importing test module '/home/runner/work/QIO/QIO/backend/tests/test_media_turn_e2e.py'. / Hint: make sure your test modules/packages have valid Python names. / Traceback: / /usr/lib/python3.12/importlib/__init__.py:90: in import_module / return _bootstrap._gcd_import(name[level:], package, level) / ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ / tests/test_media_turn_e2e.py:29: in <module> / from tests.test_media_service import FFMPEG, real_audio, real_video  # noqa: F401 - 复用真实素材夹具 / ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ / E   ModuleNotFoundError: No module named 'tests'
+2026-10-12T16:34:29.9132861Z Post job cleanup.
+2026-10-12T16:34:29.9855177Z [command]/usr/bin/git version
+2026-10-12T16:34:29.9884914Z git version 2.55.0
+2026-10-12T16:34:29.9911259Z Temporarily overriding HOME='/home/runner/work/_temp/020425ef-551e-43a8-b944-fb737ac11a24' before making global git config changes
+2026-10-12T16:34:29.9912609Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-12T16:34:29.9915904Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+2026-10-12T16:34:29.9945775Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-12T16:34:29.9972593Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-12T16:34:30.0151025Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-12T16:34:30.0169998Z http.https://github.com/.extraheader
+2026-10-12T16:34:30.0179511Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-10-12T16:34:30.0207019Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-12T16:34:30.0399366Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-12T16:34:30.0427215Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-12T16:34:30.0716120Z Cleaning up orphan processes
