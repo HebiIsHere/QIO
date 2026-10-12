@@ -3,13 +3,14 @@
 职责：把**已经允许查看**的卡片解析成可以交给模型理解的条目，并如实记录每一条
 到底有没有读到正文（`models.MATERIAL_SOURCES` 是唯一口径）：
 
-- 文字注释 / 代码卡片：正文就在卡片里（inline）；
+- 统一文字卡（含迁移后的旧 code / url）：**整卡许可**为真时，把块序列的纯文本
+  （`text_card.blocks_to_text`，含链接地址与代码正文）作为**一条** inline 材料交付；
+  未许可 = 根本不进列表（卡内文字、链接、代码一律不交付，契约 §2.2）；
 - 文件卡片：只认卡片 meta 里登记的**已保存附件 id**（`meta.file.attachmentId`），
   用 `AttachmentService.content_target` 拿到真实路径，复用
   `agent/tools/attachment_tools.py` 的既有解析（文本 / CSV / HTML / DOCX / XLSX）；
   文件名与说明文字**不是正文**，绝不拿它们冒充内容；
 - 图片卡片：当前模型链路没有视觉能力 → `image_unsupported`，绝不声称看懂；
-- URL 卡片：只有真的已经有正文才 `url_fetched`，只有地址一律 `url_address_only`；
 - 格式未实现 / 读取失败 → `unreadable` + 可读原因；
 - `max_chars` 截断如实置 `truncated=true`，并记录截断前已解析到的原始 `characters`。
 
@@ -31,7 +32,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from agent.interactive import models
+from agent.interactive import models, text_card
 from agent.services import media
 from agent.services.attachments import (
     Attachment,
@@ -52,8 +53,6 @@ DEFAULT_MAX_CHARS = 40000
 PARSER_CHAR_BUDGET = attachment_tools.MAX_CHARS
 _MAX_UNITS = 20000
 
-#: URL 卡片里代表「已经抓到的正文」的 meta 字段名（只认显式登记的正文）
-_URL_BODY_KEYS = ("content", "text", "excerpt", "fetchedText", "fetched_text")
 #: 文件 / 图片卡片里登记附件 id 的字段名
 _ATTACHMENT_ID_KEYS = ("attachmentId", "attachment_id")
 
@@ -969,14 +968,15 @@ def _resolve_card(
     if kind == models.REPLY_KIND:
         # QIO 自己的结果卡片不是用户材料，不进理解上下文
         return None
-    if kind in ("text", "code"):
+    if kind == "text":
+        # 统一文字卡（契约 §2.1 / §2.2）：整卡许可为真时，卡内文字 / 链接 / 代码
+        # 合并成一条 inline 材料；未许可的卡在上层可见性判断里已被拦住、根本不进列表。
         return _inline_entry(card, label, max_chars=max_chars)
     if kind == "file":
         return _file_entry(card, label, meta, service=service, tool=tool, max_chars=max_chars)
     if kind == "image":
         return _image_entry(card, label, meta, service=service, vision=vision)
-    if kind == "url":
-        return _url_entry(card, label, meta, max_chars=max_chars)
+    # 遗留 code / url 没有材料通道：迁移完成前整体不可见（models.visible_except_deleted）。
     return _entry(
         card,
         source="unsupported",
@@ -990,20 +990,32 @@ def _resolve_card(
 
 
 def _inline_entry(card: dict, label: str, *, max_chars: int) -> dict:
-    """文字注释 / 代码卡片：content 就是正文。"""
-    raw = str(card.get("content") or "")
+    """统一文字卡：正文 = 块序列的纯文本（含链接地址与代码正文），整体一条 inline 材料。
+
+    同一张卡的多个块**合并为一条**（标注「同一张文字卡的正文」），不拆成多条以免重复。
+    """
+    doc = text_card.doc_from_card(card)
+    raw = text_card.blocks_to_text(doc)
     delivered, cut = _cut(raw, max_chars)
     read = bool(delivered)
     reason = "" if read else "卡片正文为空：这张材料没有可交付的文字"
-    notes = []
+    notes = ["同一张文字卡的正文（卡内文字、链接、代码都在这一条里，不拆成多条以免重复）"]
+    blocks: list[str] = []
+    for block in doc.get("blocks") or []:
+        block_kind = str(block.get("kind") or "")
+        attrs = block.get("attrs") if isinstance(block.get("attrs"), dict) else {}
+        if block_kind == "code":
+            language = str(attrs.get("language") or "").strip()
+            blocks.append("代码" + (f"（{language}）" if language else ""))
+        elif block_kind == "link":
+            href = str(attrs.get("href") or "")
+            blocks.append("链接" + (str(block.get("text") or "") or href))
+    if blocks:
+        notes.append("这张卡的正文包含：" + "、".join(blocks))
     if cut:
         notes.append(
             f"截断：已解析 {len(raw)} 字符，本次只交付前 {len(delivered)} 字符（上限 {max_chars}）"
         )
-    if str(card.get("kind")) == "code" and isinstance(card.get("meta"), dict):
-        language = str(card["meta"].get("language") or "").strip()
-        if language:
-            notes.append(f"代码语言：{language}")
     return _entry(
         card,
         source="inline",
@@ -1324,51 +1336,6 @@ def _image_unsupported(
         attachment_id=attachment_id,
         reason=reason,
         notes=notes,
-    )
-
-
-def _url_entry(card: dict, label: str, meta: dict, *, max_chars: int) -> dict:
-    """URL 卡片：只有真的抓到正文才 url_fetched；只有地址一律 url_address_only。"""
-    url_meta = meta.get("url") if isinstance(meta.get("url"), dict) else {}
-    address = str(url_meta.get("href") or card.get("content") or "").strip()
-    body = ""
-    for key in _URL_BODY_KEYS:
-        value = url_meta.get(key)
-        if isinstance(value, str) and value.strip():
-            body = value
-            break
-    notes = ["只按卡片上已经登记的正文判断；本次不抓取网络内容"]
-    if not body:
-        return _entry(
-            card,
-            source="url_address_only",
-            label=label,
-            version=_content_version(card),
-            read=False,
-            bytes=len(address.encode("utf-8")),
-            characters=0,
-            reason="只有网址，没有抓到网页正文：本次理解不凭地址推断内容，也不假装读过",
-            notes=notes + ["要正文需要在获准后真实抓取页面；地址本身不是正文"],
-            address=address,
-        )
-    delivered, cut = _cut(body, max_chars)
-    if cut:
-        notes.append(
-            f"截断：已抓到 {len(body)} 字符，本次只交付前 {len(delivered)} 字符（上限 {max_chars}）"
-        )
-    return _entry(
-        card,
-        source="url_fetched",
-        label=label,
-        version=_content_version(card) + f":{hashlib.sha256(body.encode('utf-8')).hexdigest()}",
-        read=True,
-        truncated=cut,
-        bytes=len(body.encode("utf-8")),
-        characters=len(body),
-        reason="",
-        text=delivered,
-        notes=notes + ["正文来自卡片上已登记的抓取结果（不是本次联网抓取）"],
-        address=address,
     )
 
 

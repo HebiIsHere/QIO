@@ -19,8 +19,12 @@ DEFAULT_BOARD_ID = "board_default"
 DEFAULT_BOARD_TITLE = "互动板面"
 
 CARD_KINDS = ("text", "file", "image", "code", "url", "reply")
-#: 材料类卡片：添加材料本身不等于要求总结 / 比较 / 修改 / 执行
-MATERIAL_KINDS = ("file", "image", "code", "url")
+#: 材料类卡片：添加材料本身不等于要求总结 / 比较 / 修改 / 执行。
+#: 统一文字卡（契约 §2.2）：code / url **不再**是材料通道 —— 卡内文字、链接与代码
+#: 一律通过**整卡许可**的文字卡交付；遗留 code / url 卡在迁移完成前整体不可见。
+MATERIAL_KINDS = ("file", "image")
+#: 遗留字符类卡片（迁移前的历史 kind）：仍可读，但绝不回退成可见 / 可交付材料。
+LEGACY_TEXT_CARD_KINDS = ("code", "url")
 #: 注释由文字卡片构成；问题、说明、态度、优先级、任务要求统一通过注释表达
 ANNOTATION_KINDS = ("text",)
 #: QIO 产生的结果卡片（正式内容，不参与注释勾选语义）
@@ -214,6 +218,10 @@ def visible_except_deleted(card: dict) -> bool:
     kind = card.get("kind")
     if kind == REPLY_KIND:
         return False
+    if kind in LEGACY_TEXT_CARD_KINDS:
+        # 遗留 code / url 卡（迁移未完成时也不回退成可见）：整体不进入范围 ——
+        # 未迁移的历史卡片要么在加载时迁成文字卡，要么完全不可交付。
+        return False
     if kind in CHECKABLE_KINDS and not card.get("checked", False):
         return False
     return True
@@ -298,6 +306,13 @@ MATERIAL_SOURCES = (
     "url_address_only",  # 只有地址，没有读到正文
     "image_delivered",   # 图片：本次**真的把字节交给了模型**（多模态），由模型自己看
     "image_unsupported", # 图片：当前模型链路没有视觉能力，如实标注
+    # 多媒体（契约 §4.4）：音频 / 视频的诚实事实与图片同一套口径，绝不混为一谈
+    "audio_delivered",   # 音频字节已交给模型
+    "audio_transcribed", # 音频经派生转写得到文字（带 transcript / 时段 / 提供方）
+    "audio_unsupported", # 没有音频能力也没有转写通道（带原因）
+    "video_delivered",   # 视频字节已交给模型
+    "video_sampled",     # 视频按时间点抽样帧交付（不是逐帧）
+    "video_unsupported", # 没有视频能力也没有可用的抽样通道（带原因）
     "unreadable",        # 附件当前不可读（格式未实现 / 读取失败），带原因
     "unsupported",       # 其他明确不支持的材料
 )

@@ -541,21 +541,23 @@ def test_first_submission_marker_and_baseline(db_conn, marking):
     assert submission.last_success_baseline(db_conn, BOARD)["seq"] == result["submission"]["seq"]
 
 
-def test_checked_cleared_after_success_and_kept_after_failure(db_conn, monkeypatch):
-    note = _note("提交后取消勾选", checked=True)
+def test_checked_kept_after_success_and_failure_checked_cleared_is_empty(db_conn, monkeypatch):
+    """契约 §2.2 新规则：整体许可**持续有效** —— 提交成功 / 失败都不再取消勾选，
+    checkedCleared 恒为空数组（旧规则「提交后自动取消勾选」已删除）。"""
+    note = _note("提交后许可仍然有效", checked=True)
     _save(db_conn, _state([note]))
     result = _submit(db_conn)
-    assert result["checkedCleared"] == [note["id"]]
+    assert result["checkedCleared"] == [], "checkedCleared 恒为空数组"
     stored = board_store.load_board(db_conn, BOARD)["state"]
-    assert stored["cards"][0]["checked"] is False, "提交成功后自动取消勾选"
-    assert stored["cards"][0]["deleted"] is False, "取消勾选不是删除或撤回"
+    assert stored["cards"][0]["checked"] is True, "提交成功后整体许可持续有效"
+    assert stored["cards"][0]["deleted"] is False, "提交不改卡片本身"
 
-    # 再勾选后让提交失败：勾选必须保留，基准不变
+    # 让提交失败：勾选同样必须保留，基准不变
     baseline_seq = submission.last_success_baseline(db_conn, BOARD)["seq"]
-    rechecked = dict(stored["cards"][0])
-    rechecked["checked"] = True
-    rechecked["content"] = "改过的文字"
-    _save(db_conn, _state([rechecked]), reason="edit")
+    edited = dict(stored["cards"][0])
+    edited["checked"] = True
+    edited["content"] = "改过的文字"
+    _save(db_conn, _state([edited]), reason="edit")
 
     def boom(before, after):  # noqa: ANN001
         raise RuntimeError("模拟求差失败")
@@ -569,7 +571,7 @@ def test_checked_cleared_after_success_and_kept_after_failure(db_conn, monkeypat
     assert failed["checkedCleared"] == []
     assert submission.last_success_baseline(db_conn, BOARD)["seq"] == baseline_seq
     kept = board_store.load_board(db_conn, BOARD)["state"]
-    assert kept["cards"][0]["checked"] is True, "失败要保留改动与本次注释选择"
+    assert kept["cards"][0]["checked"] is True, "失败要保留改动与整体许可"
     assert kept["cards"][0]["content"] == "改过的文字"
     assert failed["submission"]["error"]
     assert failed["delivery"]["marking"]["updated"] == []
@@ -683,17 +685,20 @@ def test_empty_board_first_submission_is_empty(db_conn, understanding):
     assert understanding["requests"] == []
 
 
-def test_no_visible_content_after_success_is_empty_not_duplicate(db_conn, understanding):
-    """成功提交后注释勾选被清空 → 退出可见范围 → 立刻再提交是 empty，不是 duplicate。"""
-    note = _note("提交后取消勾选", checked=True)
+def test_checked_is_kept_so_second_submit_is_duplicate_not_empty(db_conn, understanding):
+    """契约 §2.2 新规则：提交不再清空勾选 —— 同样内容再提交是 duplicate（不是 empty），
+    许可仍然有效（旧规则下第二次会因为勾选被自动清掉而变成 empty）。"""
+    note = _note("提交后许可仍然有效", checked=True)
     _save(db_conn, _state([note]))
     assert _submit(db_conn)["status"] == "succeeded"
     assert len(understanding["requests"]) == 1
 
     result = _submit(db_conn)
-    assert result["status"] == "empty"
+    assert result["status"] == "duplicate"
+    assert result["checkedCleared"] == []
     assert result["baseline"]["updated"] is False
-    assert len(understanding["requests"]) == 1, "empty 不建立理解请求"
+    assert len(understanding["requests"]) == 1, "duplicate 不建立第二条理解请求"
+    assert board_store.load_board(db_conn, BOARD)["state"]["cards"][0]["checked"] is True
 
 
 def test_empty_and_duplicate_never_create_understanding_request(db_conn, understanding):
@@ -806,7 +811,7 @@ async def test_background_failure_does_not_flip_submission(db_conn, understandin
     assert "模拟模型不可用" in row["error"]
     assert submission.last_success_baseline(db_conn, BOARD)["seq"] == result["submission"]["seq"]
     stored = board_store.load_board(db_conn, BOARD)["state"]
-    assert stored["cards"][0]["checked"] is False, "受理成功后勾选照常清除"
+    assert stored["cards"][0]["checked"] is True, "受理成功后整体许可持续有效（提交不清许可）"
 
 
 def test_before_is_projected_to_current_visible_range(db_conn, marking):
@@ -926,15 +931,15 @@ def test_api_submit_history_and_submissions(client):
     assert result["delivery"]["delivered"] is True
     assert result["delivery"]["status"] == "accepted"
     assert result["delivery"]["understandingId"]
-    assert result["checkedCleared"] == [note["id"]]
+    assert result["checkedCleared"] == [], "契约 §2.2：checkedCleared 恒为空数组"
 
     state_after = client.get(f"/api/interactive/boards/{BOARD}/state").json()
     assert state_after["baseline"]["seq"] == result["submission"]["seq"]
-    assert state_after["state"]["cards"][0]["checked"] is False
+    assert state_after["state"]["cards"][0]["checked"] is True, "提交不清许可，勾选保持"
 
     history = client.get(f"/api/interactive/boards/{BOARD}/history").json()
     assert history["snapshots"], "每次保存都追加快照（撤销 / 重做的依据）"
-    assert history["snapshots"][0]["state"]["cards"][0]["checked"] is False
+    assert history["snapshots"][0]["state"]["cards"][0]["checked"] is True
 
     listing = client.get(f"/api/interactive/boards/{BOARD}/submissions").json()
     assert listing["submissions"][0]["status"] == "succeeded"

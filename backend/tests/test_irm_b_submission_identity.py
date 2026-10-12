@@ -182,7 +182,8 @@ def test_same_identity_replays_original_facts(db_conn, understanding):
     first_id = first["submission"]["id"]
     first_uid = first["delivery"]["understandingId"]
     assert first_uid
-    assert first["checkedCleared"] == [note["id"]]
+    # 契约 §2.2 新规则：提交不再取消勾选，checkedCleared 恒为空数组
+    assert first["checkedCleared"] == []
 
     baseline_after_first = submission_module.last_success_baseline(db_conn, BOARD)
     rows_before = len(_submissions(db_conn))
@@ -196,6 +197,7 @@ def test_same_identity_replays_original_facts(db_conn, understanding):
     assert second["submission"]["status"] == "succeeded"
     assert second["delivery"] == first["delivery"], "重放返回原 delivery 事实"
     assert second["delivery"]["understandingId"] == first_uid
+    assert second["checkedCleared"] == []
     assert second["checkedCleared"] == first["checkedCleared"]
 
     assert len(_submissions(db_conn)) == rows_before, "重放不得落新行"
@@ -208,22 +210,30 @@ def test_same_identity_replays_original_facts(db_conn, understanding):
 
 
 def test_replay_ignores_stale_board_version(db_conn, understanding):
-    """提交之后服务端板面已经前进（清勾选 / 其它窗口保存）：重放不受版本漂移影响。
+    """提交之后服务端板面已经前进（其它窗口保存）：重放不受版本漂移影响。
 
     身份重放发生在**版本门之前**：同身份同内容的请求哪怕带着旧版本号，也必须返回原事实，
     而不是被当成一次新的（过期的）提交拒绝。
+
+    场景前提说明：契约 §2.2 之后提交本身**不再**写板面（不再清勾选），所以这里用一次
+    显式保存让版本真的前进。
     """
     note = _note("稳定身份下的说明")
     seq = _prepare(db_conn, [note])
     first = _submit(db_conn, note="", base_state_version=seq, client_request_id=CRID)
     first_id = first["submission"]["id"]
 
+    moved = dict(note)
+    moved["x"] = 320.0
+    _save(db_conn, _state([moved]), board_id=BOARD)
     loaded = board_store.load_board(db_conn, BOARD)
-    assert int(loaded["seq"]) > seq, "场景前提：成功提交后板面版本已经前进"
+    assert int(loaded["seq"]) > seq, "场景前提：板面版本已经前进"
 
     replay = _submit(db_conn, note="", base_state_version=seq, client_request_id=CRID)
     assert replay["replayed"] is True
     assert replay["submission"]["id"] == first_id
+    # 契约 §2.2 新规则：两条路径都恒为空数组
+    assert replay["checkedCleared"] == []
     assert replay["checkedCleared"] == first["checkedCleared"]
     assert len(_submissions(db_conn)) == 1
 
@@ -338,9 +348,12 @@ def test_empty_identity_keeps_legacy_behaviour(db_conn, understanding):
     assert first.get("replayed") is not True
     assert _client_request_id(db_conn, first["submission"]["id"]) == ""
 
-    # 旧客户端重复点击：用户重新勾选同一条注释（内容与上次成功提交一致）→ 沿用既有
-    # duplicate 语义（不是身份重放）。成功提交会取消勾选并保存，板面版本已经前进，
-    # 旧客户端每次点击前都会先读板面拿最新版本。
+    # 旧客户端重复点击：内容与上次成功提交一致 → 沿用既有 duplicate 语义（不是身份重放）。
+    # 契约 §2.2 之后提交不再清勾选、不再写板面，所以这里显式改一次板面让版本前进
+    # （旧客户端每次点击前都会先读板面拿最新版本）。
+    moved = dict(note)
+    moved["x"] = 240.0
+    _save(db_conn, _state([moved]))
     current = board_store.load_board(db_conn, BOARD)
     assert int(current["seq"]) > seq
     rechecked = dict(current["state"]["cards"][0])

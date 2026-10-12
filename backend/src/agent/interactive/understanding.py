@@ -377,9 +377,20 @@ def _normalize_material(item: Any, index: int) -> dict:
     if card_id is None and isinstance(data.get("id"), str):
         card_id = data.get("id")
     identifier = data.get("id") or card_id or ("m" + str(index))
-    source = data.get("source")
-    if not isinstance(source, str) or source not in models.MATERIAL_SOURCES:
+    # 材料来源**只归一化、不静默降级**（契约 §4.4）：音频 / 视频等诚实事实会持续追加到
+    # models.MATERIAL_SOURCES；把「暂时不在清单里」的来源悄悄抹成 unsupported，
+    # 等于把「抽样 / 转写 / 未支持」的真实区别丢掉。只有来源确实缺失或不是字符串时
+    # 才降级为 unsupported，并如实记下原因。
+    raw_source = data.get("source")
+    source = ""
+    source_note = ""
+    if isinstance(raw_source, str) and raw_source.strip():
+        source = raw_source.strip()
+        if source not in models.MATERIAL_SOURCES:
+            source_note = f"材料来源 {source} 不在当前已知清单里：按原值保留，不静默降级"
+    else:
         source = "unsupported"
+        source_note = "材料来源缺失或不是字符串：已如实记为 unsupported（不猜来源）"
     text = data.get("text")
     if text is None:
         text = data.get("content")
@@ -393,8 +404,16 @@ def _normalize_material(item: Any, index: int) -> dict:
         "text": text,
         "chars": int(data.get("chars") or len(text)),
         "truncated": bool(data.get("truncated")),
-        "reason": data.get("reason") or data.get("error"),
+        "reason": _material_reason(data, source_note),
     }
+
+
+def _material_reason(data: dict, note: str) -> Any:
+    """材料原因：原样保留原原因，需要说明来源归一化时如实追加，绝不覆盖真实原因。"""
+    original = data.get("reason") or data.get("error")
+    if not note:
+        return original
+    return f"{original}；{note}" if original else note
 
 
 def _resolve_materials(
