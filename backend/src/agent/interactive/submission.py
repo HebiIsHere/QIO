@@ -8,7 +8,7 @@
    **受理与理解分开**（契约 §14.1）：本函数只负责建立一条 accepted 的理解请求并把它交给
    后台真实理解（understanding.py，延迟 import）。受理成功 → delivery.delivered=true、
    delivery.understandingId、delivery.status='accepted'；受理**失败**（理解模块不可用 /
-   建立请求抛错）→ 这次提交按 failed 处理：不更新基准、不清勾选、如实返回原因，绝不假装
+   建立请求抛错）→ 这次提交按 failed 处理：不更新基准、不改动勾选、如实返回原因，绝不假装
    QIO 受理了。受理成功之后的模型失败**不得**回头改提交状态（那是理解记录自己的 failed，
    可从保存的快照重试）。
 2. 未勾选的注释、明确隐藏的卡片：文字与链接都不得进入 before / after；
@@ -752,6 +752,19 @@ def _understanding_facts(
     return str(row["id"]), str(row["status"])
 
 
+def _load_base_seq(loaded: dict) -> int:
+    """这次操作**基于的**服务端板面版本。
+
+    load_board 在加载时可能顺手做一次**表示层**迁移（旧 code / url → 文字卡，契约 §2.2）：
+    迁移只改内容的表示、不改用户的语义内容，所以这次操作仍然基于迁移前的那个版本。
+    否则「刚保存完就来提交」会被系统自己的迁移判成过期（会误导用户以为版本冲突）。
+    """
+    migrated_from = loaded.get("migratedFromSeq")
+    if isinstance(migrated_from, int) and not isinstance(migrated_from, bool):
+        return migrated_from
+    return int(loaded.get("seq") or 0)
+
+
 def _base_state_version(row) -> int | None:
     """这条提交记录**基于的板面版本**（契约 §1.2 acceptance.baseStateVersion）。
 
@@ -866,25 +879,12 @@ def _submission_facts(conn: sqlite3.Connection, row) -> dict:
 
 
 def _checked_cleared_at(conn: sqlite3.Connection, board_id: str, seq: int) -> list[str]:
-    """提交那一刻被自动取消勾选的卡片（从当时的板面快照读，不重算、不猜）。"""
-    try:
-        row = conn.execute(
-            "SELECT state FROM board_state_snapshots WHERE board_id = ? AND seq = ? LIMIT 1",
-            (board_id, int(seq)),
-        ).fetchone()
-    except sqlite3.Error:
-        return []
-    if row is None:
-        return []
-    state = models.loads(row["state"], {})
-    if not isinstance(state, dict):
-        return []
-    visible_ids = {card["id"] for card in project_snapshot(state)["cards"] if card.get("id")}
-    return [
-        str(card["id"])
-        for card in state.get("cards", [])
-        if card.get("id") in visible_ids and card.get("checked")
-    ]
+    """历史字段：现在**恒为空数组**（契约 §2.2）。
+
+    旧行为是「提交成功后自动取消勾选」；持续许可生效后，提交不再改动任何勾选 ——
+    这里保留函数与参数只是为了不改调用点与旧回执形状，绝不再从快照里重算「被清理的勾选」。
+    """
+    return []
 
 
 def replay_response(conn: sqlite3.Connection, row, *, board_id: str) -> dict:
@@ -893,7 +893,8 @@ def replay_response(conn: sqlite3.Connection, row, *, board_id: str) -> dict:
     与原提交响应同形状（status / submission / before / after / expressions / baseline /
     delivery / visibleRange / checkedCleared），但 status、delivery、submission 全部来自
     落库的原记录，并带 `replayed: true` 让调用方（与前端）区分「重放」与「新受理」。
-    重放**不重放副作用**：勾选当时已取消，这里如实回报当时被清理的勾选，不再清一次。
+    重放**不重放副作用**，也不再改动勾选：许可持续有效（契约 §2），
+    所以 checkedCleared 在直连与重放两条路径上都**恒为空数组**。
     """
     facts = _submission_facts(conn, row)
     status = str(facts["status"])
@@ -948,13 +949,10 @@ def replay_response(conn: sqlite3.Connection, row, *, board_id: str) -> dict:
         "baseline": baseline_info,
         "delivery": facts["delivery"],
         "visibleRange": facts["visible"],
-        # 提交那一刻被自动取消的勾选：按记录里的板面版本还原当时的快照（快照已被轮转清理
-        # 时如实返回空列表，不拿当前板面重算）
-        "checkedCleared": (
-            _checked_cleared_at(conn, board_id, baseline_seq)
-            if isinstance(baseline_seq, int)
-            else []
-        ),
+        # 契约 §2.2：提交不再取消勾选，重放也绝不复活 / 清除任何许可 —— 恒为空数组
+        "checkedCleared": _checked_cleared_at(conn, board_id, baseline_seq)
+        if isinstance(baseline_seq, int)
+        else [],
         "replayed": True,
     }
 
@@ -1172,8 +1170,9 @@ def _accept_submission(
     """受理：建立一条 accepted 的理解请求（幂等由 B 的 request_understanding 负责）。
 
     snapshot 就是这次提交结果里的 after 投影（内存里那份，不重新读板面）：
-    提交成功后紧接着会「自动取消勾选」并保存板面，重读会把刚提交的注释从可见范围里
-    过滤掉。B 需要 before / expressions 时自己按 submission_id 从 board_submissions 读。
+    提交不再改动板面（许可持续有效，契约 §2），这里仍然用内存里那份投影，
+    避免任何重读带来的漂移。B 需要 before / expressions 时自己按 submission_id 从
+    board_submissions 读。
 
     返回 {"ok": bool, "understandingId": str | None, "reason": str | None}。
     任何失败都如实返回原因，不抛异常（调用方据此把这次提交按 failed 处理）。
@@ -1195,7 +1194,7 @@ def _accept_submission(
             conn, board_id=board_id, submission_id=submission_id, snapshot=frozen
         )
     except Exception as exc:  # noqa: BLE001 - 受理失败必须如实返回，不能抛给路由
-        logger.warning("互动提交受理失败（不更新基准、不清勾选）", exc_info=True)
+        logger.warning("互动提交受理失败（不更新基准、不改动勾选）", exc_info=True)
         return {
             "ok": False,
             "understandingId": None,
@@ -1463,7 +1462,7 @@ async def submit_board(
 
     - 可见范围**由服务端从已保存状态推导**；客户端传来的 requestedVisible 只用来
       报告「哪些请求项不可见而被忽略」，绝不接受未勾选卡片进入载荷；
-    - 成功才更新基准，并自动取消勾选（不是删除或撤回）；
+    - 成功才更新基准；**不改动任何勾选**（整体许可持续有效，契约 §2.2）；
     - 失败保留改动与本次注释选择，不更新基准、不调用 QIO；
     - empty / duplicate 不更新基准、不调用 QIO；
     - M4 路径 3：请求可携带 baseStateVersion（本次候选所基于的服务器 seq）与
@@ -1473,7 +1472,7 @@ async def submit_board(
       （adapter_provider 透传给 B 的 run_understanding；没有可用凭据 / adapter 时后台
       如实降级为可读失败，不阻塞本请求）；
     - 受理失败（理解模块不可用 / 建立请求抛错）：按 failed 处理 —— 不更新基准、
-      不清勾选、如实返回原因；受理成功之后的模型失败不回改提交状态；
+      不改动勾选、如实返回原因；受理成功之后的模型失败不回改提交状态；
     - **稳定提交请求身份**（契约 §1.1）：client_request_id 非空时按
       (board_id, client_request_id) 精确认这一次提交请求 ——
       同身份同内容 = 重试，直接返回原记录事实（replayed=True，不落新行、不新建理解请求、
@@ -1484,6 +1483,7 @@ async def submit_board(
     loaded = board_store.load_board(conn, board_id)
     bid = loaded["board"]["id"]
     state = loaded["state"]
+    base_seq = _load_base_seq(loaded)
     requested_note = _raw_note(note)
     display_note = _display_note(note)
 
@@ -1506,9 +1506,9 @@ async def submit_board(
             requested_version = int(base_state_version)
         except (TypeError, ValueError) as exc:
             raise StaleState("baseStateVersion 必须是板面版本号（整数）。") from exc
-        if requested_version != loaded["seq"]:
+        if requested_version != base_seq:
             raise StaleState(
-                f"板面已经在服务端更新到版本 {loaded['seq']}，这次提交基于的版本 "
+                f"板面已经在服务端更新到版本 {base_seq}，这次提交基于的版本 "
                 f"{requested_version} 已过期：请重新读取板面后再提交；本次没有记录任何提交。"
             )
     if confirmed_check_id:
@@ -1525,7 +1525,7 @@ async def submit_board(
     submission_id = models.new_id("sub")
     note_text = display_note
 
-    # 任何一步出问题都走 failed：不更新基准、不清勾选，但要如实返回一份可读的载荷。
+    # 任何一步出问题都走 failed：不更新基准、不改动勾选，但要如实返回一份可读的载荷。
     visible = _empty_projection()
     before = _empty_projection(first_submission=first_submission)
     after = _empty_projection()
@@ -1555,11 +1555,11 @@ async def submit_board(
             conn,
             board_id=bid,
             submission_id=submission_id,
-            # 只传内存里这份 after 投影（不重读板面：随后就会清勾选并保存）
+            # 只传内存里这份 after 投影（不重读板面：提交不改动任何勾选）
             snapshot=after,
         )
         if not acceptance["ok"]:
-            # 受理失败：没有可靠受理 → 不更新基准、不清勾选，改动与本次注释选择保留
+            # 受理失败：没有可靠受理 → 不更新基准、不改动勾选，改动与本次注释许可保留
             status = "failed"
             error = f"受理失败：没有建立理解请求。原因：{acceptance['reason']}"
 
@@ -1654,7 +1654,7 @@ async def submit_board(
         "seq": submission_seq if status == "succeeded" else (int(baseline["seq"]) if baseline else None),
         # 新增（只增字段）：这次提交**基于**的板面版本 = 请求里的 baseStateVersion。
         # 契约 §1.2 的 acceptance.baseStateVersion 就取它（四种状态都写上，便于事后查证）。
-        "baseStateVersion": loaded["seq"],
+        "baseStateVersion": base_seq,
     }
     record = _record_submission(
         conn,
@@ -1673,29 +1673,9 @@ async def submit_board(
         client_request_id=identity,
     )
 
-    # 提交成功后自动取消勾选：不是删除或撤回，用户仍可再次勾选提交。
+    # 契约 §2.2：提交**不再**清空勾选（整体许可持续有效，只有用户手动取消 / 明确隐藏才失效）。
+    # checkedCleared 恒为空数组：字段名保留只为兼容旧前端，绝不因为一次回执把许可改掉。
     checked_cleared: list[str] = []
-    if status == "succeeded":
-        checked_cleared = [card["id"] for card in visible["cards"] if card.get("checked")]
-        if checked_cleared:
-            try:
-                cleared = json.loads(models.dumps(state))
-                cleared_ids = set(checked_cleared)
-                for card in cleared.get("cards", []):
-                    if card.get("id") in cleared_ids:
-                        card["checked"] = False
-                        card["updatedAt"] = models.now_iso()
-                board_store.save_board(conn, bid, cleared, reason="submitted")
-            except Exception as exc:  # noqa: BLE001 - 提交已成功；勾选清理失败只记进返回值
-                checked_cleared = []
-                delivery["detail"] = (
-                    f"{delivery.get('detail', '')}；勾选清理失败（提交本身已成功）：{exc}"
-                ).strip("；")
-                conn.execute(
-                    "UPDATE board_submissions SET delivery = ? WHERE id = ?",
-                    (models.dumps(delivery), submission_id),
-                )
-                record["delivery"] = delivery
 
     record["clientRequestId"] = identity
     return {
