@@ -22,6 +22,12 @@ import {
   type ThemePreference,
 } from "../utils/theme";
 import { getMotionPreference, setMotionPreference, type MotionPreference } from "../utils/motion";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
+import {
+  getScrollbarPreference,
+  setScrollbarPreference,
+  type ScrollbarPreference,
+} from "../utils/scrollIndicator";
 import {
   floatingState,
   resetFloatPositions,
@@ -343,6 +349,36 @@ function chooseMotion(p: MotionPreference) {
     "appearance",
     "ok",
     `动画已切换：${MOTION_OPTIONS.find((o) => o.value === p)?.label}（当前生效：${mode === "reduced" ? "减少动画" : "标准"}）`,
+  );
+}
+
+/* 滚动指示条偏好：自动显示 / 始终显示。落成 html[data-scrollbar]，
+   CSS 与指示条引擎（composables/useQioScrollbars.ts）读同一份结果。
+   文案必须说清边界：「始终显示」只让**允许显示且实际溢出**的区域常驻显示，
+   不会让板面（hidden 策略）出现滚动条，也不开放任何横向滚动。 */
+const scrollbarPref = ref<ScrollbarPreference>(getScrollbarPreference());
+const SCROLLBAR_OPTIONS: { value: ScrollbarPreference; label: string; hint: string }[] = [
+  {
+    value: "auto",
+    label: "自动显示",
+    hint: "默认：滚动、指针靠近边缘或用键盘操作该区域时才出现，停止后淡出",
+  },
+  {
+    value: "always",
+    label: "始终显示",
+    hint: "只让允许显示且实际溢出的区域常驻显示；不会让板面出现滚动条，也不开放对话横向滚动",
+  },
+];
+const scrollbarHint = computed(
+  () => SCROLLBAR_OPTIONS.find((o) => o.value === scrollbarPref.value)?.hint ?? "",
+);
+function chooseScrollbar(p: ScrollbarPreference) {
+  scrollbarPref.value = p;
+  setScrollbarPreference(p);
+  setNotice(
+    "appearance",
+    "ok",
+    "滚动指示条已切换：" + (SCROLLBAR_OPTIONS.find((o) => o.value === p)?.label ?? p),
   );
 }
 
@@ -899,7 +935,7 @@ watch(activeTab, async () => {
 </script>
 
 <template>
-  <div class="settings">
+  <div class="settings" v-qio-scrollbar data-qio-fit>
     <!-- 危险动作的确认层（取代原生 confirm）：layer 档 + 中性实心确认按钮 -->
     <QConfirm
       :open="!!pendingConfirm"
@@ -993,6 +1029,29 @@ watch(activeTab, async () => {
                 {{ o.label }}
               </button>
             </div>
+          </section>
+
+          <section class="sec">
+            <h2>滚动指示条</h2>
+            <p class="desc">
+              需要滚动的地方不再使用系统原生滚动条，改用 QIO 浮在边缘的细指示条（原生外观已全局移除）。
+              「始终显示」只作用于<strong>允许显示且确实溢出</strong>的区域：它不会让板面出现滚动条，
+              也不开放对话横向滚动 —— 对话永远不能左右滚。
+            </p>
+            <div class="seg" role="group" aria-label="滚动指示条偏好">
+              <button
+                v-for="o in SCROLLBAR_OPTIONS"
+                :key="o.value"
+                type="button"
+                class="scroll-opt"
+                :class="{ on: scrollbarPref === o.value }"
+                :aria-pressed="scrollbarPref === o.value"
+                @click="chooseScrollbar(o.value)"
+              >
+                {{ o.label }}
+              </button>
+            </div>
+            <p class="mode-hint mono">{{ scrollbarHint }}</p>
           </section>
 
           <section class="sec">
@@ -1624,19 +1683,23 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 /* 主题分段控件 */
 .seg { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--bg-inset); }
 .theme-opt,
-.motion-opt {
+.motion-opt,
+.scroll-opt {
   font-family: var(--sans); font-size: 12.5px; padding: 6px 16px; border-radius: var(--r-sm);
   border: none; background: transparent; color: var(--text-secondary); cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
     transform var(--dur-press) var(--ease-out);
 }
 .theme-opt:hover,
-.motion-opt:hover { color: var(--text-strong); }
+.motion-opt:hover,
+.scroll-opt:hover { color: var(--text-strong); }
 .theme-opt:active,
-.motion-opt:active { transform: translateY(var(--press-shift)); }
+.motion-opt:active,
+.scroll-opt:active { transform: translateY(var(--press-shift)); }
 /* 选中用底色 + 字重 + 下划线三重区分，不只靠颜色 */
 .theme-opt.on,
-.motion-opt.on {
+.motion-opt.on,
+.scroll-opt.on {
   background: var(--accent-soft); color: var(--text-strong); font-weight: 600;
   box-shadow: inset 0 -2px 0 var(--accent);
 }

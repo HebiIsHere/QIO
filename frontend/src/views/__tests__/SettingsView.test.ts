@@ -5,6 +5,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import SettingsView from "../SettingsView.vue";
 import { getTheme, getThemePreference, setTheme } from "../../utils/theme";
 import { floatingState, resetFloatPositions } from "../../composables/floatingState";
+import { getScrollbarPreference } from "../../utils/scrollIndicator";
 import { useUiStore } from "../../stores/ui";
 
 vi.mock("../../services/api", () => ({
@@ -716,6 +717,54 @@ describe("工具调用历史设置（2026-09-24）", () => {
     expect(api.updateToolHistorySettings).toHaveBeenCalledWith(
       expect.objectContaining({ record_outputs: false, output_retention_days: 90 }),
     );
+    w.unmount();
+  });
+});
+
+describe("QIO 滚动指示条偏好（2026-10-14）", () => {
+  /* 新设置项的语义边界：偏好只有 auto / always 两档，
+     始终显示只作用于「允许显示（auto 策略）且实际溢出」的区域；
+     hidden 策略区域（板面、软换行输入区）与对话横向都不受影响。 */
+  it("默认「自动显示」；选择「始终显示」同时落 html[data-scrollbar] 与 localStorage(qio-scrollbar)", async () => {
+    document.documentElement.removeAttribute("data-scrollbar");
+    const w = await mountSettings();
+    const opts = w.findAll(".scroll-opt");
+    expect(opts.map((o) => o.text())).toEqual(["自动显示", "始终显示"]);
+    // 没有持久化记录时回落 auto（本文件在此之前不写这个偏好）
+    expect(getScrollbarPreference()).toBe("auto");
+    expect(opts[0].attributes("aria-pressed")).toBe("true");
+
+    await opts[1].trigger("click");
+    await nextTick();
+    expect(getScrollbarPreference()).toBe("always");
+    expect(localStorage.getItem("qio-scrollbar")).toBe("always");
+    expect(document.documentElement.getAttribute("data-scrollbar")).toBe("always");
+    expect(w.findAll(".scroll-opt")[1].attributes("aria-pressed")).toBe("true");
+
+    // 反向也要落地：不是单向开关
+    await w.findAll(".scroll-opt")[0].trigger("click");
+    await nextTick();
+    expect(getScrollbarPreference()).toBe("auto");
+    expect(localStorage.getItem("qio-scrollbar")).toBe("auto");
+    expect(document.documentElement.getAttribute("data-scrollbar")).toBe("auto");
+
+    document.documentElement.removeAttribute("data-scrollbar");
+    w.unmount();
+  });
+
+  it("界面写清边界：始终显示只作用于允许显示且实际溢出的区域，不会让板面出现滚动条、不开放对话横向滚动", async () => {
+    const w = await mountSettings();
+    const panel = visiblePanel(w);
+    const text = panel.text();
+    expect(text).toContain("滚动指示条");
+    expect(text).toContain("自动显示");
+    expect(text).toContain("始终显示");
+    // 主说明（.desc）
+    expect(text).toContain("只作用于允许显示且确实溢出的区域");
+    expect(text).toContain("不会让板面出现滚动条");
+    expect(text).toContain("不开放对话横向滚动");
+    // 选项当前档位的说明也要在界面上，不能只藏在 title/aria 里
+    expect(text).toContain("停止后淡出");
     w.unmount();
   });
 });
