@@ -13,7 +13,7 @@
  *   * 「结构化预览，不是原版面」必须写在界面上（docx/xlsx/pptx 的 notice 来自渲染器模块）；
  *   * 失败 / 不支持时给**真实原因**与打开/下载入口，**不给假按钮**。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { BoardCard } from "../../interactive/types";
 import {
   cardAttachmentId,
@@ -44,6 +44,8 @@ import type { PdfFactsView, PdfHandle } from "../../interactive/renderers/pdf";
 import { fitScale, stepZoom } from "../../interactive/renderers/image";
 // 二维浏览区（图片框 / PDF 页面框 / 表格网格 / 代码框）统一用共享指示条，不各自发明滚动条样式。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+// 横向自检（溢出 + scrollLeft 真能移动，两项缺一不可）：见 ./horizontalFit.ts
+import { checkHorizontalFit, type HorizontalFitReport } from "./horizontalFit";
 
 /**
  * 渲染上下文（**显式属性**，不靠 DOM 结构或祖先类名猜测）：
@@ -117,6 +119,33 @@ const noticeText = computed(
 const currentSheet = computed(() => xlsxView.value?.sheets[sheetIndex.value] ?? null);
 const currentSlide = computed(() => pptxView.value?.slides[slideIndex.value] ?? null);
 const zoomPercent = computed(() => Math.round(zoom.value * 100) + "%");
+
+/**
+ * 横向自检（复核钩子）。
+ *
+ * 验收要的是「不横向溢出」，而不是「源码里写了 overflow: hidden」：
+ * 这里按**真实渲染结果**量一次（口径见 ./horizontalFit.ts：内容溢出 + scrollLeft 真的能移动，
+ * 两项缺一不可），结论同时挂在根节点属性 data-qio-h-fit 上，浏览器复核可以直接读它，
+ * 也可以调用暴露出来的 verifyHorizontalFit() 拿完整报告。
+ *
+ * - chat：外层与查看区都不许溢出（溢出即不通过，哪怕滚动条被藏起来）；
+ * - material：外层不许溢出；查看区允许二维浏览，但「溢出又动不了」= 内容被裁掉，同样不通过。
+ */
+const rootRef = ref<HTMLElement | null>(null);
+const horizontalFit = ref<HorizontalFitReport | null>(null);
+const horizontalFitState = computed<"unknown" | "ok" | "overflow" | "clipped">(() => {
+  const report = horizontalFit.value;
+  if (!report) return "unknown";
+  if (report.clipped.length) return "clipped";
+  if (!report.ok) return "overflow";
+  return "ok";
+});
+
+function verifyHorizontalFit(): HorizontalFitReport | null {
+  const report = checkHorizontalFit(rootRef.value, props.context);
+  horizontalFit.value = report;
+  return report;
+}
 
 /** 是否独立材料阅读（只有这一种上下文允许按材料类型做二维浏览）。 */
 const materialContext = computed(() => props.context === "material");
@@ -464,16 +493,50 @@ watch(
     if (props.active) void start();
   },
 );
-onBeforeUnmount(stop);
+/* ---------------------------------------------------------------------------
+ * 横向自检的触发时机与释放
+ * ------------------------------------------------------------------------- */
+
+/** 内容 / 上下文一变就重新量一次（post：DOM 已经更新；读 scrollWidth 会强制同步布局）。 */
+watch(
+  [inlineReady, bodyViewport, () => plan.value.mode, () => plan.value.renderer, imageUrl, codeView, xlsxView, docxView, pptxView, pdfFacts],
+  () => {
+    verifyHorizontalFit();
+  },
+  { flush: "post" },
+);
+
+/** 窗口尺寸变化会改变可用宽度（图片适应、表格换行都跟它相关），重新量一次。 */
+function onWindowResize(): void {
+  verifyHorizontalFit();
+}
+
+onMounted(() => {
+  verifyHorizontalFit();
+  window.addEventListener("resize", onWindowResize);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", onWindowResize);
+  stop();
+});
+
+defineExpose({
+  /** 复核入口：返回完整报告（外层 / 查看区各自的溢出与可移动性）。 */
+  verifyHorizontalFit,
+  horizontalFitReport: horizontalFit,
+});
 </script>
 
 <template>
   <section
+    ref="rootRef"
     class="cip"
     data-testid="cip-root"
     data-im="card-inline-preview"
     data-qio-fit
     :data-qio-context="context"
+    :data-qio-h-fit="horizontalFitState"
   >
     <header class="cip-head">
       <div class="cip-ident">
@@ -991,8 +1054,12 @@ onBeforeUnmount(stop);
   min-width: 1.6em;
 }
 /*
-  * 表格：文档 / 幻灯片里的表格按可用宽度重排（固定布局 + 换行），
-  * 保证任何上下文里都不横向溢出、也不靠裁切 —— 行与列的对应关系留在真实结构里。
+  * 交付口径（Lead 裁决，2026-10-14）：
+  * **记录模式仅用于存在真实表头的表格；合并单元格 / 电子表格保留真实结构；
+  *   二维浏览只出现在独立材料阅读上下文（context="material"），对话内一律不横向。**
+  *
+  * 因此这里的表格按可用宽度重排（固定布局 + 换行），保证任何上下文里都不横向溢出、
+  * 也不靠裁切 —— 行与列的对应关系留在真实结构里。
   *
   * 为什么不套共享的「记录模式」（useQioTables / .qio-table-wrap）：
   * 记录模式靠 td[data-label] 提供列名，而 docx / pptx 的表格数据里**没有表头行**，
