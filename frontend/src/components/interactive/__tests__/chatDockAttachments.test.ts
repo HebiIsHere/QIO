@@ -372,3 +372,36 @@ describe("ChatDock 附件失败：保留输入、可重试、不重复上传", (
     expect(second[1] ?? [], "上一条的附件被重复发送了").toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 4. 附件默认「数量 + 简述 + 展开入口」：不设一排固定高度的小滚动区
+// ---------------------------------------------------------------------------
+
+describe("ChatDock 附件条：默认简述 + 展开入口", () => {
+  it("超过简述条数时其余收起，展开后全部可见且仍可移除", async () => {
+    const { w } = await mountDock();
+    mocks.uploadAttachment.mockImplementation(async (file: File) =>
+      attachment({ id: "att_" + file.name, name: file.name }),
+    );
+    await chooseFiles(w, "资料一.pdf", "资料二.pdf", "资料三.pdf");
+
+    expect(w.find('[data-im="chat-attach-total"]').text(), "没有给到附件数量").toContain("3 个附件");
+    expect(w.findAll('[data-im="chat-attachment"]').length, "默认没有收敛成简述").toBe(2);
+
+    const more = w.find('[data-im="chat-attachments-more"]');
+    expect(more.exists(), "多出来的附件没有展开入口").toBe(true);
+    expect(more.attributes("aria-expanded")).toBe("false");
+    expect(more.text()).toContain("展开其余 1 个");
+
+    await more.trigger("click");
+    await flushPromises();
+    expect(w.findAll('[data-im="chat-attachment"]').length, "展开后没有看到全部附件").toBe(3);
+    expect(w.find('[data-im="chat-attachments-more"]').attributes("aria-expanded")).toBe("true");
+
+    // 展开不是「多开一层滚动」：移除入口照旧可达，移除后条目数与数量都对得上
+    await w.findAll('[data-im="chat-attachment-remove"]')[2].trigger("click");
+    await flushPromises();
+    expect(w.findAll('[data-im="chat-attachment"]').length).toBe(2);
+    expect(w.find('[data-im="chat-attach-total"]').text()).toContain("2 个附件");
+  });
+});

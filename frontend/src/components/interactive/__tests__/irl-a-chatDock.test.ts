@@ -500,3 +500,165 @@ describe("发布显示框：供审批托盘与展开卡片避让", () => {
     expect(liveChatFrame.value, "卸载后留下了幽灵矩形").toBeNull();
   });
 });
+
+/* ---------------------------------------------------------------------------
+ * 全局滚动 / 横向溢出：面板里只保留一层主要纵向滚动，且任何层级都没有横向滚动
+ * ------------------------------------------------------------------------- */
+
+/** 取出某个选择器的规则块（第一个匹配）；用来证明旧的「限高小滚动区」真的没有了 */
+function cssBlock(source: string, selector: string): string {
+  const start = source.indexOf(selector);
+  expect(start, "找不到选择器 " + selector).toBeGreaterThan(-1);
+  const open = source.indexOf("{", start);
+  const close = source.indexOf("}", open);
+  return source.slice(open + 1, close);
+}
+
+/** 等一帧：共享滚动引擎把测量合并到一帧一次（rAF），断言前必须让它跑完 */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+describe("横向：面板内不存在横向滚动容器", () => {
+  it("面板根声明 chat 作用域，关键容器都带 data-qio-fit 边界保护", async () => {
+    const { wrapper, interactive } = mountDock();
+    const panel = wrapper.find('[data-im="chat-panel"]');
+    expect(panel.attributes("data-qio-scope"), "面板根没有声明对话作用域").toBe("chat");
+    expect(panel.attributes("data-qio-fit"), "面板根没有横向边界保护").toBeDefined();
+
+    // 过程块要有真实事实才出现：给它一次「正在提交」
+    interactive.submitStatus = "submitting";
+    await nextTick();
+
+    for (const hook of ["chat-stream", "chat-composer", "chat-process", "chat-notices", "chat-scope"]) {
+      const el = wrapper.find('[data-im="' + hook + '"]');
+      expect(el.exists(), hook + " 不在面板里").toBe(true);
+      expect(el.attributes("data-qio-fit"), hook + " 缺 data-qio-fit（横向边界保护）").toBeDefined();
+    }
+  });
+
+  it("源码里没有横向滚动声明，四个旧的小滚动区已收敛为 content", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/components/interactive/ChatDock.vue"),
+      "utf8",
+    );
+    // 修的不是「把横向滚动条藏起来」：整份文件里一个横向滚动容器都不许有
+    expect(source, "ChatDock 里出现了横向滚动容器").not.toMatch(/overflow-x:\s*(auto|scroll)/);
+    expect(source, "ChatDock 里出现了 auto/scroll 的 overflow 简写").not.toMatch(/overflow:\s*(auto|scroll)\b/);
+    /*
+      旧口径：这些区域各自「限高 + 自己滚一层」，同一段阅读流被切成多个小滚动窗口。
+      新口径是 content：不设 max-height、不建 overflow 容器，内容自然展开 + 折叠/展开入口。
+    */
+    for (const selector of [".panel-notices {", ".process {", ".attach-list {", ".help-body {"]) {
+      const body = cssBlock(source, selector);
+      expect(body, selector + " 仍然是「限高 + 自己滚一层」的小滚动区").not.toMatch(/(max-height|overflow)/);
+    }
+  });
+
+  it("消息、过程、提示同属一条阅读流：.stream 是唯一的主要纵向滚动视口", async () => {
+    const { wrapper, interactive } = mountDock();
+    interactive.submitStatus = "submitting";
+    await nextTick();
+
+    const stream = wrapper.find('[data-im="chat-stream"]');
+    // 过程与提示就在消息流**里面**（不是面板里另开的滚动窗口）
+    expect(stream.find('[data-im="chat-process"]').exists(), "过程块没有并进阅读流").toBe(true);
+    expect(stream.find('[data-im="chat-notices"]').exists(), "提示块没有并进阅读流").toBe(true);
+    // 共享滚动指令真的接上了：宿主拿到宿主类与 policy
+    expect(stream.classes(), "消息流没有接上共享滚动指示条").toContain("qio-scroll-host");
+    expect(stream.attributes("data-qio-scroll")).toBe("auto");
+
+    // 制造真实溢出：纵向溢出被识别；横向内容更宽也不会建出可滚动范围（只声明 y 轴）
+    const el = stream.element as HTMLElement;
+    Object.defineProperty(el, "scrollHeight", { value: 1200, configurable: true });
+    Object.defineProperty(el, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(el, "scrollWidth", { value: 900, configurable: true });
+    Object.defineProperty(el, "clientWidth", { value: 300, configurable: true });
+    el.dispatchEvent(new Event("scroll"));
+    await nextTick();
+    await nextFrame();
+
+    expect(stream.attributes("data-qio-range"), "纵向溢出没有被识别").toBe("y");
+    expect(stream.findAll('.qio-scroll-rail[data-axis="x"]').length, "面板里出现了横向指示条").toBe(0);
+    expect(stream.findAll('.qio-scroll-rail[data-axis="y"]').length).toBe(1);
+  });
+});
+
+describe("提示：默认「简述 + 展开入口」，完整原文按需展开", () => {
+  it("长会话警告默认只给简述与「展开全文」，展开后是完整原文", async () => {
+    const { wrapper, session } = mountDock();
+    const long = "还没有配置可用的模型凭据：" + "请先在设置里填写后重试。".repeat(6);
+    session.warning = long;
+    await nextTick();
+
+    const warn = wrapper.find('[data-im="chat-warning"]');
+    expect(warn.exists(), "警告没有显示").toBe(true);
+    expect(warn.text(), "长警告默认没有收敛成简述").not.toContain(long);
+    expect(warn.text().length, "简述不该是空的").toBeGreaterThan(0);
+
+    const toggle = wrapper.find('[data-im="chat-warning-toggle"]');
+    expect(toggle.exists(), "长警告没有展开入口").toBe(true);
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+
+    await toggle.trigger("click");
+    await nextTick();
+    expect(wrapper.find('[data-im="chat-warning"]').text(), "展开后看不到完整原文").toContain(long);
+    expect(wrapper.find('[data-im="chat-warning-toggle"]').attributes("aria-expanded")).toBe("true");
+  });
+
+  it("短警告不出现多余的展开入口（不为了入口而入口）", async () => {
+    const { wrapper, session } = mountDock();
+    session.warning = "还没有配置可用的模型凭据。";
+    await nextTick();
+    expect(wrapper.find('[data-im="chat-warning"]').text()).toBe("还没有配置可用的模型凭据。");
+    expect(wrapper.find('[data-im="chat-warning-toggle"]').exists()).toBe(false);
+  });
+
+  it("待审批条目不需要展开过程详情就可见（不藏掉审批入口）", async () => {
+    const { wrapper, interactive } = mountDock();
+    interactive.submitStatus = "submitting";
+    interactive.acceptedUnderstandingId = "u1";
+    interactive.intents = [
+      {
+        id: "i1",
+        boardId: "b1",
+        submissionId: null,
+        title: "整理季度材料",
+        summary: "",
+        status: "pending",
+        preview: {},
+        impact: {},
+        dependsOn: [],
+        conflictsWith: [],
+        conflictKey: "",
+        materialRefs: [],
+        progress: { done: 0, total: 0, text: "" },
+        reason: "",
+        demo: false,
+        understandingId: "u1",
+        createdAt: "",
+        updatedAt: "",
+      },
+    ] as never;
+    await nextTick();
+
+    // 没有点开「过程详情」（processOpen 默认 false）：审批入口与批准 / 拒绝按钮就已经在
+    const approval = wrapper.find('[data-im="chat-approval"]');
+    expect(approval.exists(), "待审批条目没有出现").toBe(true);
+    expect(approval.text(), "待审批条目不显示任务标题").toContain("整理季度材料");
+    expect(wrapper.find('[data-im="chat-approve"]').exists(), "批准入口被藏掉了").toBe(true);
+    expect(wrapper.find('[data-im="chat-reject"]').exists(), "拒绝入口被藏掉了").toBe(true);
+  });
+
+  it("轮次错误始终完整可见（重要错误不因为「默认简述」被藏起来）", async () => {
+    const { wrapper, session } = mountDock();
+    const err = "后端没有可用的模型凭据：请在设置里填写后再试。".repeat(4);
+    session.lastError = err;
+    await nextTick();
+    const block = wrapper.find('[data-im="chat-turn-error"]');
+    expect(block.exists(), "轮次错误没有显示").toBe(true);
+    expect(block.text(), "轮次错误被截断/折叠了").toContain(err);
+  });
+});
