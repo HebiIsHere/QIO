@@ -1299,21 +1299,26 @@ function onWheel(event: WheelEvent) {
   zoomAtPointer(wheelZoomFactor(delta), { x: event.clientX, y: event.clientY });
 }
 
-/** 框选矩形的屏幕样式（相对板面容器）。 */
+/**
+ * 框选虚线的样式：**板面单位**。
+ *
+ * .select-rect 画在 .board-surface 内部，而那一层带 transform: scale() —— 它的坐标就是板面坐标，
+ * 缩放由 surface 统一作用**一次**。所以这里必须给板面矩形：与松手时 selectInRect 用的是
+ * 同一条换算（rectFromDrag + contentViewport），不再做视口 / 缩放换算。
+ *
+ * 30：原来按「视口相对像素」给 left/top/width/height —— 平移之后虚线整体偏 −滚动量
+ * （选区判定是对的，画出来的框是错的），缩放 ≠ 1 时再被 surface 的 transform 二次缩放。
+ * 现在板面单位 = 所见即所得：拖动全程跟着指针，缩放只作用一次。
+ */
 const rectStyle = computed(() => {
   const rect = rectSelect.value;
-  const element = viewportEl.value;
-  if (!rect || !element) return {};
-  const viewRect = element.getBoundingClientRect();
-  const x0 = rect.startClient.x - viewRect.left;
-  const y0 = rect.startClient.y - viewRect.top;
-  const x1 = rect.currentClient.x - viewRect.left;
-  const y1 = rect.currentClient.y - viewRect.top;
+  if (!rect || !viewportEl.value) return {};
+  const area = rectFromDrag(contentViewport(), rect.startClient, rect.currentClient, surfaceRect());
   return {
-    left: Math.min(x0, x1) + "px",
-    top: Math.min(y0, y1) + "px",
-    width: Math.abs(x1 - x0) + "px",
-    height: Math.abs(y1 - y0) + "px",
+    left: area.x + "px",
+    top: area.y + "px",
+    width: area.w + "px",
+    height: area.h + "px",
   };
 });
 

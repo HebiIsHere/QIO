@@ -178,6 +178,17 @@ function releaseAt(boardX: number, boardY: number): void {
   window.dispatchEvent(pointer("pointerup", screen.x, screen.y));
 }
 
+/**
+ * 让 .board-surface 的矩形与真实浏览器一致：内容原点 = 容器左上 − 滚动量。
+ * 缩放层里的一切（卡片、连线、.select-rect）都相对它，工具栏也要减它才是 offsetParent 坐标。
+ */
+function stubSurfaceRect(view: VueWrapper): void {
+  const viewport = view.get(".board-viewport").element as HTMLElement;
+  const surface = view.get(".board-surface").element as HTMLElement;
+  surface.getBoundingClientRect = () =>
+    ({ left: VIEW_LEFT - viewport.scrollLeft, top: VIEW_TOP - viewport.scrollTop, right: VIEW_LEFT - viewport.scrollLeft, bottom: VIEW_TOP - viewport.scrollTop, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   store = useInteractiveStore();
@@ -658,13 +669,6 @@ describe("hitCardAt 认显示矩形：展开 / 让位 / resize / 平移缩放之
 });
 
 describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 / 合并提示 / 缩放锚点", () => {
-  /** 让 .board-surface 的矩形与真实浏览器一致：内容原点 = 容器左上 − 滚动量。 */
-  function stubSurfaceRect(view: VueWrapper): void {
-    const viewport = view.get(".board-viewport").element as HTMLElement;
-    const surface = view.get(".board-surface").element as HTMLElement;
-    surface.getBoundingClientRect = () =>
-      ({ left: VIEW_LEFT - viewport.scrollLeft, top: VIEW_TOP - viewport.scrollTop, right: VIEW_LEFT - viewport.scrollLeft, bottom: VIEW_TOP - viewport.scrollTop, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
-  }
 
   it("平移之后框选：选中的是指针真正框住的卡片（滚动量不再被多减一次）", async () => {
     // c 正好落在「多减一次滚动量」时会算出来的错误矩形里：修复前会误选 c、漏掉 a
@@ -773,5 +777,87 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
     // 不变量：指针下的板面点 (500,400) 缩放后仍在同一屏幕位置（与 viewport.test.ts 的同一条口径）
     expect(VIEW_LEFT + 500 * after.scale - after.scrollLeft).toBeCloseTo(anchor.x, 0);
     expect(VIEW_TOP + 400 * after.scale - after.scrollTop).toBeCloseTo(anchor.y, 0);
+  });
+});
+
+describe("框选虚线的渲染坐标：板面单位，缩放只作用一次", () => {
+  /** 按下空格并拖出一段：返回起点与终点的屏幕坐标（不松手，虚线还在）。 */
+  function startRectDrag(element: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }): void {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true }));
+    element.dispatchEvent(pointer("pointerdown", from.x, from.y));
+    window.dispatchEvent(pointer("pointermove", to.x, to.y));
+  }
+
+  it("平移之后：虚线画在指针拖出的板面矩形上（不再偏 −滚动量）", async () => {
+    store.board = board([mkCard("a", 900, 700)], { selection: [] });
+    const view = mountCanvas();
+    const element = view.get(".board-viewport").element as HTMLElement;
+    makeScrollable(element, 800, 600);
+    stubSurfaceRect(view);
+    element.dispatchEvent(new Event("scroll"));
+    await nextTick();
+    const state = viewState();
+    expect(state).toMatchObject({ scale: 1, scrollLeft: 800, scrollTop: 600 });
+
+    const from = screenOf(880, 680, state);
+    const to = screenOf(1020, 780, state);
+    startRectDrag(element, from, to);
+    await nextTick();
+
+    const dashed = styleOf(view.get(".select-rect").element);
+    // 行内就是板面单位：与指针拖出的板面矩形 (880,680)-(1020,780) 逐字段一致
+    expect(px(dashed.left)).toBeCloseTo(880, 0);
+    expect(px(dashed.top)).toBeCloseTo(680, 0);
+    expect(px(dashed.width)).toBeCloseTo(140, 0);
+    expect(px(dashed.height)).toBeCloseTo(100, 0);
+    // 屏幕上：内容原点 + 板面单位 × 缩放 ＝ 指针按下的那个点（缩放为 1）
+    const surfaceLeft = VIEW_LEFT - state.scrollLeft;
+    const surfaceTop = VIEW_TOP - state.scrollTop;
+    expect(surfaceLeft + px(dashed.left) * state.scale).toBeCloseTo(from.x, 0);
+    expect(surfaceTop + px(dashed.top) * state.scale).toBeCloseTo(from.y, 0);
+
+    window.dispatchEvent(pointer("pointerup", to.x, to.y));
+    await nextTick();
+    // 选区与虚线用同一条换算：画出来的框框住了谁，松手就选中谁
+    expect(store.board?.selection).toEqual(["a"]);
+  });
+
+  it("缩放 ≠ 1：虚线以板面单位渲染，surface 的 transform 只作用一次（不二次缩放）", async () => {
+    store.board = board([mkCard("a", 500, 400)]);
+    const view = mountCanvas();
+    const element = view.get(".board-viewport").element as HTMLElement;
+    makeScrollable(element, 400, 300);
+    stubSurfaceRect(view);
+    element.dispatchEvent(new Event("scroll"));
+    await nextTick();
+    const before = viewState();
+    const anchorClient = screenOf(500, 400, before);
+    element.dispatchEvent(new WheelEvent("wheel", { clientX: anchorClient.x, clientY: anchorClient.y, deltaY: -462, deltaMode: 0, bubbles: true, cancelable: true }));
+    await nextTick();
+    const state = viewState();
+    expect(state.scale).toBeGreaterThan(1.9);
+
+    const from = screenOf(500, 400, state);
+    const to = screenOf(600, 460, state);
+    startRectDrag(element, from, to);
+    await nextTick();
+
+    const dashed = styleOf(view.get(".select-rect").element);
+    // 板面单位：板面位移 100×60，行内值不能被 ×scale 放大
+    expect(px(dashed.left)).toBeCloseTo(500, 0);
+    expect(px(dashed.top)).toBeCloseTo(400, 0);
+    expect(px(dashed.width)).toBeCloseTo(100, 0);
+    expect(px(dashed.height)).toBeCloseTo(60, 0);
+    // 屏幕上：缩放只作用一次 —— 板面单位 × scale 正好等于指针拖过的屏幕位移
+    const surfaceLeft = VIEW_LEFT - state.scrollLeft;
+    const surfaceTop = VIEW_TOP - state.scrollTop;
+    expect(surfaceLeft + px(dashed.left) * state.scale).toBeCloseTo(from.x, 0);
+    expect(surfaceTop + px(dashed.top) * state.scale).toBeCloseTo(from.y, 0);
+    expect(px(dashed.width) * state.scale).toBeCloseTo(to.x - from.x, 0);
+    expect(px(dashed.height) * state.scale).toBeCloseTo(to.y - from.y, 0);
+
+    window.dispatchEvent(pointer("pointerup", to.x, to.y));
+    await nextTick();
+    expect(store.board?.selection).toEqual(["a"]);
   });
 });
