@@ -1,5 +1,5 @@
 <!--
-  卡片尺寸把手层（IRL-C · 任务书 §3.1 / §3.2）。
+  卡片尺寸把手层 + 关系连接点入口（IRL-C · 任务书 §3.1 / §3.2；0.2.5 §三 / §四）。
 
   为什么是单独一层、而且放在**缩放之外**：
   - 卡片画在 .board-surface 里，而那一层带 transform: scale()。把手如果也画在里面，
@@ -8,9 +8,18 @@
     10px 边 / 16px 角在任何缩放下都是真实像素，与卡片边缘仍然严格对齐。
   - 卡片、组框、关系线、把手共用同一份显示坐标（BoardCanvas 的 displayRect）：
     展开让位、拖动、尺寸预览之后四者不会各画各的。
-  - 整层 pointer-events: none，只有把手热区接管指针：只读卡片正文、组框、连线都不被挡住。
-  - 本层不写任何状态：按下 / −＋ 只把事件发出去，预览与提交由 BoardCanvas 决定
+  - 整层 pointer-events: none，只有把手热区与连接点接管指针：只读卡片正文、组框、连线都不被挡住。
+  - 本层不写任何状态：按下 / −＋ / 连接点只把事件发出去，预览与提交由 BoardCanvas 决定
     （尺寸只是查看与布局，不产生表达、不调用模型、不申请审批）。
+
+  0.2.5 回归修复：**连接点也从这一层走**（原来画在卡片内部）。
+  - 根因：连接点在 .board-surface 的缩放层叠上下文里，四边中点正好落在本层 10px 的尺寸热区
+    下面 —— 真实鼠标按下先被尺寸调整接走，连接点永远拖不出关系。
+  - 现在为「恰好选中一张、未折叠」的卡片在本层里单独排一层连接点宿主（.connect-host，
+    z-index 比 .resize-host 高），四边中点各有独立命中区：**屏幕像素 18×18**（不随画布缩放），
+    视觉圆点仍是 12px、颜色仍走既有令牌。
+  - 命中规则因此是纯几何的：连接点 → 拖线；同层其余边 / 角（边 10px / 角 16px，一个都没缩）→
+    尺寸调整；卡片正文 → 卡片自己的选择 / 拖动。两种操作同时可用，不需要切换模式。
 -->
 <script setup lang="ts">
 import { computed } from "vue";
@@ -26,19 +35,50 @@ const props = withDefaults(
     scale: number;
     /** 无障碍名称（一般是「卡片标题：尺寸调整」） */
     labels?: Record<string, string>;
-    /** 关系编辑 / 拖线进行中时整层让路 */
+    /** 关系编辑 / 拖线进行中时整层让路（只关尺寸把手，不关连接点） */
     disabled?: boolean;
+    /**
+     * 关系连接点宿主（板面坐标）：键 = 卡片 id，值是 displayRect 的结果。
+     * 只有「恰好选中一张、未折叠」的卡片才传进来（筛选在 BoardCanvas 里做，本层只看几何）。
+     */
+    connectBoxes?: Record<string, LayoutRect>;
   }>(),
-  { labels: () => ({}), disabled: false },
+  { labels: () => ({}), disabled: false, connectBoxes: () => ({}) },
 );
 
 const emit = defineEmits<{
   (e: "handle-down", cardId: string, handle: ResizeHandle, event: PointerEvent): void;
   (e: "nudge", cardId: string, axis: "w" | "h", direction: 1 | -1): void;
+  (e: "connect-start", cardId: string, event: PointerEvent): void;
 }>();
 
 /** 非有限 / 非正的缩放按 1 处理：宁可尺寸差一点，也不让把手画到不存在的位置。 */
 const safeScale = computed(() => (Number.isFinite(props.scale) && props.scale > 0 ? props.scale : 1));
+
+/**
+ * 连接点的四个方向与顺序（与既有 data-side 一致）。
+ * top / right / bottom / left 是**渲染顺序**：既有测试与浏览器验证都按它取第一个连接点。
+ */
+const CONNECT_SIDES = ["top", "right", "bottom", "left"] as const;
+type ConnectSide = (typeof CONNECT_SIDES)[number];
+
+/** 连接点的 title 文案（沿用改动前那一句，只补方向，方便读屏 / 悬停辨认）。 */
+const CONNECT_LABELS: Record<ConnectSide, string> = {
+  top: "上边",
+  right: "右边",
+  bottom: "下边",
+  left: "左边",
+};
+
+/** 宿主定位：显示槽位（板面坐标）× 缩放。把手与连接点用**同一个**换算，不各写一套。 */
+function hostStyle(box: LayoutRect, scale: number): Record<string, string> {
+  return {
+    left: box.x * scale + "px",
+    top: box.y * scale + "px",
+    width: Math.max(1, box.w * scale) + "px",
+    height: Math.max(1, box.h * scale) + "px",
+  };
+}
 
 interface ResizeHost {
   id: string;
@@ -54,16 +94,38 @@ const hosts = computed<ResizeHost[]>(() => {
     out.push({
       id,
       label: props.labels?.[id] ?? "卡片尺寸调整",
-      style: {
-        left: box.x * scale + "px",
-        top: box.y * scale + "px",
-        width: Math.max(1, box.w * scale) + "px",
-        height: Math.max(1, box.h * scale) + "px",
-      },
+      style: hostStyle(box, scale),
     });
   }
   return out;
 });
+
+interface ConnectHost {
+  id: string;
+  style: Record<string, string>;
+}
+
+/** 连接点宿主：与把手同一份 displayRect × scale，但排在更高一层。 */
+const connectHosts = computed<ConnectHost[]>(() => {
+  const scale = safeScale.value;
+  const out: ConnectHost[] = [];
+  for (const [id, box] of Object.entries(props.connectBoxes ?? {})) {
+    if (!box) continue;
+    out.push({ id, style: hostStyle(box, scale) });
+  }
+  return out;
+});
+
+/**
+ * 从连接点开始拖线：连接点独占这一次指针。
+ * 这里拦住冒泡与默认行为 —— 板面不会把这次按下当成空白平移 / 框选；
+ * 拖动中不移动、不拉伸，建链与否由 BoardCanvas 决定（本层只发事件，不建链）。
+ */
+function onConnectDown(cardId: string, event: PointerEvent): void {
+  event.stopPropagation();
+  event.preventDefault();
+  emit("connect-start", cardId, event);
+}
 </script>
 
 <template>
@@ -81,6 +143,31 @@ const hosts = computed<ResizeHost[]>(() => {
         @handle-down="(handle, event) => emit('handle-down', host.id, handle, event)"
         @nudge="(axis, direction) => emit('nudge', host.id, axis, direction)"
       />
+    </div>
+
+    <!--
+      关系连接点：与尺寸把手**同一层、同一份显示坐标**（displayRect × scale），
+      但在本层里排在更高的 z-index 上 —— 边的中点上连接点优先，其余边 / 角仍是尺寸调整。
+      命中区是屏幕像素 18×18（本层不随画布缩放），视觉圆点由 ::after 画成 12px。
+    -->
+    <div
+      v-for="host in connectHosts"
+      :key="'connect-' + host.id"
+      class="connect-host"
+      :style="host.style"
+      :data-connect-card-id="host.id"
+    >
+      <span
+        v-for="side in CONNECT_SIDES"
+        :key="side"
+        class="connect-point"
+        :class="side"
+        data-im="connect-point"
+        :data-card-id="host.id"
+        :data-side="side"
+        :title="'从连接点拖到另一张卡片建立关系（' + CONNECT_LABELS[side] + '）'"
+        @pointerdown="onConnectDown(host.id, $event)"
+      ></span>
     </div>
   </div>
 </template>
@@ -100,9 +187,67 @@ const hosts = computed<ResizeHost[]>(() => {
   pointer-events: none;
   z-index: 45;
 }
-/* 宿主只定位：真正的热区 / 按钮由 ResizeHandles 画（父级必须是 relative / absolute） */
+/*
+ * 宿主只定位：真正的热区 / 按钮由 ResizeHandles 画（父级必须是 relative / absolute）。
+ * 尺寸把手显式给 z-index 1，连接点给 2：同一层内**不依赖 DOM 顺序**，连接点永远在热区之上。
+ */
 .resize-host {
   position: absolute;
   pointer-events: none;
+  z-index: 1;
+}
+/* 连接点宿主：同一层里更高一层；自身不接管指针，只有命中区接管 */
+.connect-host {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/*
+ * --- 关系连接点命中区 -----------------------------------------------------
+ * 屏幕像素 18×18（本层在未缩放的滚动内容层里，不受画布 scale 影响）；
+ * 中心落在对应边的中点上，且整个命中区留在卡片内侧边缘 ——
+ * 与改动前同一个位置，所以不会伸到卡片外面压住局部工具栏 / 相邻卡片。
+ */
+.connect-point {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+/* 视觉圆点仍是 12px（命中区变大 ≠ 看起来变重）：颜色与描边沿用改动前的令牌 */
+.connect-point::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  border: 1.5px solid var(--accent);
+}
+.connect-point.top {
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+}
+.connect-point.right {
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.connect-point.bottom {
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+}
+.connect-point.left {
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
 }
 </style>

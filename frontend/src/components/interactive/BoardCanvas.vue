@@ -10,8 +10,12 @@
      - 拖动板面空白处 = 平移；空格 + 拖动空白处 = 框选卡片；
      - 滚轮以指针附近为缩放中心；聊天 / 列表 / 代码区等可滚动内容优先滚动自身，不穿透成板面缩放；
      - 所有坐标换算统一走 interactive/viewport.ts，保证缩放平移后卡片拖动 / 框选 / 连线 / 工具栏都准确。
-  5. 卡片局部工具栏与连接点由 BoardCard 渲染；重叠成组的提示与判定走 board.ts 的 bestMergeTarget。
-  6. 改版后底部工具栏与板内搜索由页面壳与 A 的组件渲染：本文件不再引用 <BoardToolbar /> 与 <BoardSearchPanel />。
+  5. 卡片局部工具栏由 BoardCard 渲染；**连接点与尺寸把手统一由 BoardResizeLayer**（不随画布缩放的
+     交互层，同一份 displayRect × scale）渲染：连接点在四边中点、尺寸热区在边 / 角，两者同时可用，
+     不需要切换模式（0.2.5 §三 / §四）。重叠成组的提示与判定走 board.ts 的 bestMergeTarget。
+  6. 拖线目标判定认**当前显示矩形**（displayRect）：展开、让位、拖动、尺寸预览之后，
+     卡片 / 连线 / 高亮画在哪，落点就判在哪；临时显示坐标只读，绝不写回板面（0.2.5 §四）。
+  7. 改版后底部工具栏与板内搜索由页面壳与 A 的组件渲染：本文件不再引用 <BoardToolbar /> 与 <BoardSearchPanel />。
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -568,6 +572,8 @@ function beginResize(cardId: string): LayoutRect | null {
 }
 
 function onResizeHandleDown(cardId: string, handle: ResizeHandle, event: PointerEvent) {
+  // 同一指针只驱动一种手势：开始调整尺寸就退出可能还在的拖动 / 平移 / 框选 / 拖线
+  releaseGestures();
   if (!beginResize(cardId)) return;
   // 尺寸调整不是移动卡片：不预演落点、不判定成组目标，也就不会触发重叠成组
   notice.value = "";
@@ -658,6 +664,31 @@ const resizeLabels = computed<Record<string, string>>(() => {
 /** 关系编辑 / 拖线进行中：把手会让路，避免同一指针同时驱动两件事。 */
 const resizeDisabled = computed(() => Boolean(editingLinkId.value || linkDraft.value));
 
+/**
+ * 「同一个指针只驱动一种手势」（0.2.5 §三.6）：开始任何一种手势前，把其余手势的临时状态
+ * 一次清掉 —— 拖线中不移动 / 不拉伸 / 不成组，拉伸中不拖线，半条关系都不留。
+ *
+ * 只清**临时状态**与监听：不碰板面状态，也不写提示（提示由各条取消路径自己给）。
+ * `linkDraft` 被清掉后 `resizeDisabled` 立刻复原，尺寸把手在同一帧就回到可用状态。
+ */
+function releaseGestures(): void {
+  linkDraft.value = null;
+  dragging.value = null;
+  panning.value = null;
+  rectSelect.value = null;
+  resizing.value = null;
+  // 尺寸手势自带 document / window 监听：必须走它自己的取消入口，不能只清显示
+  resizeGesture.cancel();
+  detachPointerListeners();
+}
+
+/** 取消进行中的拖线：清临时状态、摘掉监听，并如实说明没有建立任何关系。 */
+function cancelLinkDraft(message: string): void {
+  linkDraft.value = null;
+  detachPointerListeners();
+  notice.value = message;
+}
+
 // --- 视口：平移 / 缩放 / 坐标换算 -----------------------------------------
 
 const surfaceStyle = computed(() => ({
@@ -725,8 +756,18 @@ function surfaceRect(): DOMRectLike {
   return effectiveRect(rect, live.x, live.y);
 }
 
+/**
+ * 屏幕坐标 → 板面坐标：必须与 {@link screenPointOfBoard} **严格互逆**：
+ *   板面 = (屏幕 − 容器左上 + 滚动量) ÷ 缩放。
+ *
+ * surfaceRect() 给的是「内容原点」（已经把滚动量减掉），所以这里平移量必须传 0。
+ * 原来传的是 view.value（x / y = −滚动量）：滚动量被减了两次 —— 一旦平移过，
+ * 拖线落点会整体偏移「滚动量 ÷ 缩放」：线画在卡片上，判定却落在别处。
+ * 拖动看不出来（用的是位移差，偏移在 offset 里被减掉），而连接点拖线用的是**绝对坐标**，
+ * 所以这个回归只在「先平移再拖线」时暴露（0.2.5 §四）。
+ */
 function boardPointOf(event: { clientX: number; clientY: number }): { x: number; y: number } {
-  return toBoardPoint(view.value, { x: event.clientX, y: event.clientY }, surfaceRect());
+  return toBoardPoint({ scale: view.value.scale, x: 0, y: 0 }, { x: event.clientX, y: event.clientY }, surfaceRect());
 }
 
 function containerSize(): { w: number; h: number } {
@@ -853,6 +894,11 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
 function onDragStart(cardId: string, event: PointerEvent) {
   const current = boardState.value;
   if (!current) return;
+  /**
+   * 拖线进行中：这一次指针已经属于连接点，不再开始拖动（同一指针只驱动一种手势）。
+   * 否则两个手势会同时挂着 window 监听，松手时只结掉其中一个 —— 剩下半条拖线卡在那里。
+   */
+  if (linkDraft.value) return;
   const card = cardById(current, cardId);
   if (!card) return;
   const point = boardPointOf(event);
@@ -971,17 +1017,19 @@ function onPointerUp() {
   }
 }
 
-/** Esc / 指针中断 / 窗口失焦：不提交，卡片回到操作前位置。 */
+/**
+ * Esc / 指针中断 / 窗口失焦：不提交，卡片回到操作前位置。
+ *
+ * 所有临时手势（拖动 / 框选 / 平移 / 拖线 / 尺寸预览）都在这里一次清掉并摘掉监听：
+ * 取消路径只有一个出口，不会留下「拖了一半的线」或「停不下来的尺寸拖动」。
+ */
 function onDragCancel() {
-  detachPointerListeners();
   const hadDrag = Boolean(dragging.value);
   const hadRect = Boolean(rectSelect.value);
   const hadPan = Boolean(panning.value);
-  dragging.value = null;
-  rectSelect.value = null;
-  panning.value = null;
-  if (linkDraft.value) {
-    linkDraft.value = null;
+  const hadLink = Boolean(linkDraft.value);
+  releaseGestures();
+  if (hadLink) {
     notice.value = "已取消建立关系：没有保存半条链接。";
     return;
   }
@@ -1102,7 +1150,12 @@ const mergeHintStyle = computed(() => {
  */
 function resetTransientGesture() {
   spaceDown.value = false;
-  if (dragging.value || rectSelect.value || panning.value) onDragCancel();
+  /**
+   * 拖线也必须在这一条出口里被清掉：原来只判拖动 / 框选 / 平移，
+   * 于是「拖线途中切窗口再回来」会留下一条半截的草稿 —— 尺寸把手一直被禁用（resizeDisabled），
+   * 用户再也拉不动卡片，只能靠 Esc 收拾。取消路径必须覆盖全部临时手势。
+   */
+  if (dragging.value || rectSelect.value || panning.value || linkDraft.value) onDragCancel();
 }
 
 function onWindowBlur() {
@@ -1280,6 +1333,31 @@ const toolbarStyle = computed(() => {
   return { left: overlay.value.left + "px", top: overlay.value.top + "px" };
 });
 
+// --- 关系连接点：宿主交给交互层（BoardResizeLayer） -------------------------
+
+/**
+ * 关系连接点的宿主：**恰好选中一张、未折叠**的卡片才有
+ * （与改动前的显示条件逐条一致 —— 原条件写在 BoardCard 模板里：selected && !folded && !multi）。
+ *
+ * 为什么放在 BoardResizeLayer 那一层：连接点原来画在卡片内部（.board-surface 的缩放层叠
+ * 上下文里），四边中点正好落在同层 10px 的尺寸热区下面，真实鼠标按下先被尺寸调整接走。
+ * 现在它与尺寸把手共用**同一份显示坐标**（displayRect）与**同一个不随画布缩放的层**：
+ * 位置 = displayRect × scale，缩到 25% 时命中区仍是屏幕像素。
+ *
+ * 这里**不**看 resizeDisabled：拖线 / 关系编辑进行中连接点照常在（与改动前一致）；
+ * 尺寸把手让不让路由 resizeBoxes 自己决定。
+ */
+const connectBoxes = computed<Record<string, LayoutRect>>(() => {
+  const out: Record<string, LayoutRect> = {};
+  const current = boardState.value;
+  const cardId = primarySelectedId.value;
+  if (!current || !cardId) return out;
+  const card = current.cards.find((item) => item.id === cardId);
+  if (!card || card.deleted || card.folded) return out;
+  out[cardId] = displayRect(card);
+  return out;
+});
+
 // --- 卡片操作 -------------------------------------------------------------
 
 function onCardPatch(cardId: string, patch: Partial<BoardCardModel>, label: string) {
@@ -1444,14 +1522,21 @@ function onLeaveMember(groupId: string, cardId: string) {
 
 // --- 关系链接：连接点拖线 -------------------------------------------------
 
-/** 指针下的卡片：多个命中时取面积最小的（最具体）。 */
+/**
+ * 指针下的卡片：多个命中时取面积最小的（最具体）。
+ *
+ * **用当前显示矩形**（displayRect）：展开、让位、拖动、尺寸预览之后，卡片 / 连线 / 高亮画在哪，
+ * 落点就判在哪 —— 用正式保存矩形（cardRect）会判在一个屏幕上不存在的旧位置上（0.2.5 §四）。
+ * 入参 point 已经是板面坐标（boardPointOf 的结果），displayRect 也是板面坐标：
+ * 全程板面坐标系比较，**不再乘除 scale**。displayRect 只读，临时槽位绝不写回板面。
+ */
 function hitCardAt(point: { x: number; y: number }, excludeId: string | null): string | null {
   const current = boardState.value;
   if (!current) return null;
   let best: { id: string; area: number } | null = null;
   for (const card of current.cards) {
     if (card.deleted || card.id === excludeId) continue;
-    const rect = cardRect(card);
+    const rect = displayRect(card);
     if (!pointInRect(point.x, point.y, rect)) continue; // board.ts 的签名是 (x, y, rect)
     const area = rect.w * rect.h;
     if (!best || area < best.area) best = { id: card.id, area };
@@ -1461,10 +1546,11 @@ function hitCardAt(point: { x: number; y: number }, excludeId: string | null): s
 
 function onConnectStart(cardId: string, event: PointerEvent) {
   event.preventDefault();
-  // 从连接点开始拖线：取消可能残留的卡片拖动 / 平移状态，避免同一指针同时驱动两件事
-  dragging.value = null;
-  panning.value = null;
-  rectSelect.value = null;
+  /**
+   * 同一指针只驱动一种手势（0.2.5 §三.6）：从连接点开始拖线时，把可能残留的卡片拖动 /
+   * 平移 / 框选 / **尺寸调整** 全部清掉 —— 拖线过程中不移动、不拉伸、不成组。
+   */
+  releaseGestures();
   linkDraft.value = { fromId: cardId, point: boardPointOf(event), targetId: null };
   notice.value = "从连接点拖到另一张卡片上建立关系；拖到无效位置或取消不会建立任何链接。";
   attachPointerListeners();
@@ -1657,8 +1743,8 @@ function onKeyDown(event: KeyboardEvent) {
     // Escape 也复位临时按键：取消手势之后不该继续停在框选模式（20）
     spaceDown.value = false;
     if (linkDraft.value) {
-      linkDraft.value = null;
-      notice.value = "已退出建立关系。";
+      // 拖线取消 = 清临时状态 + 摘掉监听 + 如实说明：不建立关系，也不留半条链接
+      cancelLinkDraft("已退出建立关系。");
       return;
     }
     if (editingLinkId.value) editingLinkId.value = null;
@@ -1729,6 +1815,8 @@ onBeforeUnmount(() => {
   detachPointerListeners();
   // 卸载时同样复位：组件已经不在了，临时按键状态不许残留（20）
   resetTransientGesture();
+  // 拖线 / 尺寸预览也一样：卸载后不留半条手势（0.2.5 §三.7）
+  releaseGestures();
   // 可用区域是显示态桥：画布没了就清空，别的组件（添加菜单）回到既有兜底行为
   publishBoardArea(null);
   if (highlightTimer) clearTimeout(highlightTimer);
@@ -1795,7 +1883,6 @@ onBeforeUnmount(() => {
             @duplicate="onCardDuplicate"
             @leave-group="onCardLeaveGroup"
             @join-group="onCardJoinGroup"
-            @connect-start="onConnectStart"
           />
 
           <BoardLinkLayer
@@ -1822,17 +1909,21 @@ onBeforeUnmount(() => {
           </div>
 
           <!--
-            尺寸把手层：放在**未缩放**的滚动内容层里（不在 .board-surface 内部）。
-            位置 = 显示槽位 × 缩放，所以 10px 边 / 16px 角在任何缩放下都是真实屏幕像素；
-            整层 pointer-events: none，只有把手热区接管指针，卡片正文、组框与连线都不被挡住。
+            尺寸把手 + 关系连接点层：放在**未缩放**的滚动内容层里（不在 .board-surface 内部）。
+            位置 = 显示槽位（displayRect）× 缩放，所以 10px 边 / 16px 角 / 18px 连接点在
+            任何缩放下都是真实屏幕像素；整层 pointer-events: none，只有把手热区与连接点
+            接管指针，卡片正文、组框与连线都不被挡住。连接点在同层更高 z-index 上：
+            四边中点按下 = 拖线，其余边 / 角 = 尺寸调整，两种操作同时可用。
           -->
           <BoardResizeLayer
             :boxes="resizeBoxes"
             :scale="scaleSafe"
             :labels="resizeLabels"
             :disabled="resizeDisabled"
+            :connect-boxes="connectBoxes"
             @handle-down="onResizeHandleDown"
             @nudge="onResizeNudge"
+            @connect-start="onConnectStart"
           />
         </div>
       </div>
