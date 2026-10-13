@@ -46,7 +46,13 @@ const title = computed(() => {
 </script>
 
 <template>
-  <span class="chip" :class="['s-' + attachment.state, 'k-' + attachment.kind]" :title="title">
+  <span
+    class="chip"
+    data-qio-fit
+    :class="['s-' + attachment.state, 'k-' + attachment.kind]"
+    :title="title"
+  >
+    <!-- 宽度链：chip 不横向滚动；长附件名 / 长路径 / 失败原因换行，操作按钮换行重排 -->
     <span class="name">{{ attachment.name }}</span>
     <span class="size mono">{{ humanSize(attachment.sizeBytes) }}</span>
     <span class="state">{{ stateText(attachment) }}</span>
@@ -125,7 +131,10 @@ const title = computed(() => {
 .chip {
   display: inline-flex;
   align-items: center;
+  /* 空间不足时按钮换到下一行，而不是把 chip 撑宽 */
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
   max-width: 100%;
   padding: 3px 6px 3px 9px;
   border: 1px solid var(--border-subtle);
@@ -141,10 +150,10 @@ const title = computed(() => {
   color: var(--text-primary);
 }
 .name {
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  /* 超长附件名（含路径式名字）换行显示：不省略、不撑宽、不横向滚动 */
+  max-width: 100%;
+  overflow-wrap: anywhere;
   color: var(--text-primary);
 }
 .size {
@@ -153,6 +162,7 @@ const title = computed(() => {
 }
 .state {
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 /* 准备中：不假装完成，用最轻的一档提示 */
 .s-prepared {
@@ -197,18 +207,18 @@ const title = computed(() => {
   color: var(--text-muted);
   cursor: default;
 }
-/* 失败/丢失原因：截断显示，完整原文在 title 里（用户可见，不只是日志） */
+/* 失败/丢失原因：完整换行显示（不只是日志），完整原文仍在 title 里 */
 .err {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   color: var(--danger);
 }
 /* 「QIO 无法从原地址恢复」：一句实话，别让用户以为点什么都能找回来 */
 .no-recovery {
   font-size: 10px;
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 .act.remove {
   font-size: 13px;

@@ -397,16 +397,25 @@ function removeOne(id: string) {
 </script>
 
 <template>
-  <div class="message" :class="[message.role, { fresh: isFresh }]">
+  <div class="message" :class="[message.role, { fresh: isFresh }]" data-qio-fit>
+    <!--
+      消息宽度链根：data-qio-fit = min-width:0 + max-width:100% + overflow-x:clip。
+      横向溢出的真正修复在下面的布局（min-width:0 / 换行 / 收缩），clip 只是边界保护。
+    -->
     <template v-if="message.role === 'user'">
-      <div class="bubble user-bubble">
+      <div class="bubble user-bubble" data-qio-fit>
         <div class="plain">{{ message.content }}</div>
       </div>
       <!--
         附件行（契约 §1.6）：显示与「打开 / 重新定位 / 重试 / ×」入口由 C 的
         AttachmentChip 负责，这里把事件接到真实动作，并把结果就地反馈。
       -->
-      <div v-if="attachmentChips.length" class="attach-row" data-test="message-attachments">
+      <div
+        v-if="attachmentChips.length"
+        class="attach-row"
+        data-qio-fit
+        data-test="message-attachments"
+      >
         <span
           v-for="a in attachmentChips"
           :key="a.id"
@@ -431,7 +440,12 @@ function removeOne(id: string) {
         多媒体附件的读取事实（契约 §4.4）：已交付 / 抽样 / 转写 / 未支持，
         各带**真实原因**与时间位置。这里只报告已经发生的事，不推断模型理解了什么。
       -->
-      <div v-if="mediaFactRows.length" class="media-facts" data-test="message-media-facts">
+      <div
+        v-if="mediaFactRows.length"
+        class="media-facts"
+        data-qio-fit
+        data-test="message-media-facts"
+      >
         <p
           v-for="row in mediaFactRows"
           :key="row.key"
@@ -458,17 +472,22 @@ function removeOne(id: string) {
         v-if="message.attachmentNotice"
         class="attach-notice"
         role="status"
+        data-qio-fit
         data-test="attachment-receipt-notice"
       >
         {{ message.attachmentNotice }}
       </p>
-      <p v-if="attachNotice" class="attach-notice" role="status" data-test="attachment-notice">
+      <p v-if="attachNotice" class="attach-notice" role="status" data-qio-fit data-test="attachment-notice">
         {{ attachNotice }}
       </p>
-      <p v-else-if="!attachmentChips.length && message.attachmentIds?.length" class="attach-note mono">
+      <p
+        v-else-if="!attachmentChips.length && message.attachmentIds?.length"
+        class="attach-note mono"
+        data-qio-fit
+      >
         带了 {{ message.attachmentIds.length }} 个附件（元数据未加载）
       </p>
-      <div class="meta mono">
+      <div class="meta mono" data-qio-fit>
         <span v-if="message.queued" class="queued-tag">等待中</span>
         <span class="ts">{{ formatTime(message.createdAt) }}</span>
         <button v-if="!message.queued" class="copy-btn" type="button" :class="{ fail: copyState === 'fail' }" @click="copyContent">
@@ -480,6 +499,7 @@ function removeOne(id: string) {
     <template v-else-if="message.role === 'tool'">
       <div
         class="tool-card qio-card"
+        data-qio-fit
         :class="{ fail: toolFailed, running: toolRunning, open }"
         :data-state="toolRunning ? 'running' : toolFailed ? 'failed' : 'ready'"
         :title="rawToolName"
@@ -510,35 +530,39 @@ function removeOne(id: string) {
           <span class="tool-chev">{{ open ? "▾" : "▸" }}</span>
         </button>
         <!-- 结论写在卡面上：失败不能只藏在折叠详情里 -->
-        <p v-if="toolFailureLine" class="tool-fail-line" role="status">{{ toolFailureLine }}</p>
+        <p v-if="toolFailureLine" class="tool-fail-line" role="status" data-qio-fit>
+          {{ toolFailureLine }}
+        </p>
         <!-- 展开/收起必须连续：用 0fr→1fr 网格行做真实高度过渡，
              不再 v-show 瞬切（detail-wrap 不设内边距，否则收起时会留下细条） -->
         <div class="tool-detail-wrap" :class="{ open }">
           <div class="tool-detail-clip">
-            <div class="tool-detail">
+            <div class="tool-detail" data-qio-fit>
               <!-- 参数与输出分开：参数是「它想做什么」，输出是「结果是什么」 -->
-              <div v-if="toolArgsText" class="tool-detail-sec">
+              <div v-if="toolArgsText" class="tool-detail-sec" data-qio-fit>
                 <div class="sec-label mono">参数</div>
-                <pre>{{ toolArgsText }}</pre>
+                <pre data-qio-fit>{{ toolArgsText }}</pre>
               </div>
-              <div class="tool-detail-sec">
+              <div class="tool-detail-sec" data-qio-fit>
                 <div class="sec-label mono">输出</div>
-                <pre>{{ toolSummary }}</pre>
+                <pre data-qio-fit>{{ toolSummary }}</pre>
               </div>
-              <p v-if="toolRecordLoading" class="tool-note mono" role="status">正在读取完整输出…</p>
-              <p v-else-if="toolRecordError" class="tool-note err" role="status">
+              <p v-if="toolRecordLoading" class="tool-note mono" role="status" data-qio-fit>
+                正在读取完整输出…
+              </p>
+              <p v-else-if="toolRecordError" class="tool-note err" role="status" data-qio-fit>
                 {{ toolRecordError }}
                 <button class="link" type="button" @click="session.loadToolRecord(message.id)">
                   重试
                 </button>
               </p>
-              <p v-else-if="toolMissingNote" class="tool-note mono" role="status">
+              <p v-else-if="toolMissingNote" class="tool-note mono" role="status" data-qio-fit>
                 {{ toolMissingNote }}
               </p>
-              <p v-else-if="message.toolTruncated" class="tool-note mono" role="status">
+              <p v-else-if="message.toolTruncated" class="tool-note mono" role="status" data-qio-fit>
                 输出过长，已截断（单条上限 4 万字）
               </p>
-              <p v-if="message.toolError" class="tool-error">{{ message.toolError }}</p>
+              <p v-if="message.toolError" class="tool-error" data-qio-fit>{{ message.toolError }}</p>
             </div>
           </div>
         </div>
@@ -549,6 +573,7 @@ function removeOne(id: string) {
     <template v-else-if="message.role === 'subagent'">
       <div
         class="subagent-card qio-card"
+        data-qio-fit
         :class="{ fail: message.taskStatus === 'failed' }"
         :data-state="subagentRunning ? 'running' : message.taskStatus === 'failed' ? 'failed' : 'ready'"
       >
@@ -563,9 +588,11 @@ function removeOne(id: string) {
         <p class="sub-line">
           QIO 正在单独处理这项任务{{ subagentRunning ? "" : "（已完成）" }}
         </p>
-        <p v-if="message.taskGoal" class="sub-goal">目标：{{ message.taskGoal }}</p>
-        <p v-if="!subagentRunning && message.content" class="sub-result">{{ message.content }}</p>
-        <p v-if="message.taskStatus === 'failed'" class="sub-fail" role="status">
+        <p v-if="message.taskGoal" class="sub-goal" data-qio-fit>目标：{{ message.taskGoal }}</p>
+        <p v-if="!subagentRunning && message.content" class="sub-result" data-qio-fit>
+          {{ message.content }}
+        </p>
+        <p v-if="message.taskStatus === 'failed'" class="sub-fail" role="status" data-qio-fit>
           这项独立任务没有完成：{{ message.toolError || "展开后可让 QIO 继续处理" }}
         </p>
       </div>
@@ -581,7 +608,7 @@ function removeOne(id: string) {
       这里保留同一条渲染路径，所以整段文字在 DOM 里只出现一次。
     -->
     <template v-else-if="message.role === 'assistant' && message.interim">
-      <p class="process-line" data-test="process-line">{{ message.content }}</p>
+      <p class="process-line" data-qio-fit data-test="process-line">{{ message.content }}</p>
     </template>
 
     <template v-else>
@@ -589,6 +616,7 @@ function removeOne(id: string) {
            落定后由正常文档流阅读即可。 -->
       <div
         class="bubble assist-bubble"
+        data-qio-fit
         :aria-busy="message.streaming ? 'true' : undefined"
         :aria-live="message.streaming ? 'off' : undefined"
       >
@@ -604,7 +632,9 @@ function removeOne(id: string) {
           :cps="ui.typewriterCps"
           :pace-ms="message.paceMs ?? null"
         />
-        <p v-if="verifiedText" class="verified-note mono" role="note">{{ verifiedText }}</p>
+        <p v-if="verifiedText" class="verified-note mono" role="note" data-qio-fit>
+          {{ verifiedText }}
+        </p>
       </div>
       <!--
         系统核对注记 = 后端事实，独立成块（不进正文 Markdown）：
@@ -613,13 +643,14 @@ function removeOne(id: string) {
       <div
         v-if="systemNote"
         class="system-fact"
+        data-qio-fit
         data-test="answer-system-note"
         role="note"
       >
         <span class="sf-kind mono">系统事实</span>
         <p class="sf-body">{{ systemNote }}</p>
       </div>
-      <div class="meta mono">
+      <div class="meta mono" data-qio-fit>
         <span class="ts">{{ metaText }}</span>
         <button class="copy-btn" type="button" :class="{ fail: copyState === 'fail' }" @click="copyContent">
           {{ copyLabel }}
@@ -630,6 +661,43 @@ function removeOne(id: string) {
 </template>
 
 <style scoped>
+/* ==========================================================================
+   宽度链（对话不得横向滚动）
+   真正的修复在布局：每一层都 min-width: 0 让 flex 子项可以收缩、长文本换行、
+   按钮空间不足时换行重排；data-qio-fit（overflow-x: clip）只是边界保护。
+   ========================================================================== */
+.message,
+.bubble,
+.attach-row,
+.media-facts,
+.system-fact,
+.process-line,
+.attach-notice,
+.attach-note,
+.meta {
+  min-width: 0;
+}
+/* 图片 / 视频 / 画布按消息可用宽度等比适配（只改呈现，不改数据、不裁切） */
+.message :where(img, video, canvas) {
+  max-width: 100%;
+  height: auto;
+}
+/* 附件名 / 超长路径 / 连续字符：视觉换行，不改字符序列 */
+.attach-row .attach-item {
+  min-width: 0;
+}
+.system-fact .sf-body,
+.process-line,
+.attach-notice,
+.attach-note,
+.sub-result,
+.sub-goal,
+.tool-error,
+.tool-note,
+.tool-fail-line,
+.sub-fail {
+  overflow-wrap: anywhere;
+}
 .media-facts {
   display: flex;
   flex-direction: column;
@@ -675,6 +743,8 @@ function removeOne(id: string) {
   flex-direction: column;
   /* 左半边完整显示：比原 640px 更宽，宽屏下消息占左侧更充分 */
   max-width: min(760px, 100%);
+  /* 收缩到可用宽度：内容再宽也不许把消息列撑出去 */
+  min-width: 0;
   margin: 6px 0;
   font-size: 14.5px;
   line-height: 1.75;
@@ -800,6 +870,7 @@ function removeOne(id: string) {
 .meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 6px;
   font-size: 10.5px;
@@ -859,7 +930,9 @@ function removeOne(id: string) {
   margin: 4px 0;
   padding: 0;
   border-radius: var(--r-lg);
-  overflow: hidden;
+  /* 纯裁剪（圆角 + 收起详情）：overflow: clip 不建立滚动容器 ——
+     程序性滚动也做不到，不存在「看不见但能左右滚」的路径。 */
+  overflow: clip;
   font-size: 12.5px;
 }
 .tool-card.fail {
@@ -872,8 +945,12 @@ function removeOne(id: string) {
 .tool-head {
   display: flex;
   align-items: center;
+  /* 空间不足时（窄窗口 / 长工具名）操作信息换行重排，而不是把卡片撑宽 */
+  flex-wrap: wrap;
+  row-gap: 4px;
   gap: 10px;
   width: 100%;
+  min-width: 0;
   padding: 8px 12px;
   background: transparent;
   border: none;
@@ -898,6 +975,8 @@ function removeOne(id: string) {
   color: var(--link);
 }
 .tool-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text-strong);
   letter-spacing: 0.02em;
 }
@@ -967,7 +1046,9 @@ function removeOne(id: string) {
 }
 .tool-detail-wrap.open { grid-template-rows: 1fr; }
 .tool-detail-clip {
-  overflow: hidden;
+  /* 展开/收起的高度过渡需要裁掉超出部分：纯裁剪 → overflow: clip，
+     不建立任何可程序性滚动的容器（0fr→1fr 过渡照旧）。 */
+  overflow: clip;
   min-height: 0;
   opacity: 0;
   transition: opacity var(--mo-2-in) var(--ease-2);
@@ -980,7 +1061,10 @@ function removeOne(id: string) {
 }
 .tool-detail pre {
   font-size: 11px;
+  /* 软换行：保留原始换行与缩进，长路径 / 长参数在视觉上折行（不改内容） */
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   color: var(--text-secondary);
   margin: 0;
   font-family: var(--mono);
@@ -989,6 +1073,7 @@ function removeOne(id: string) {
   color: var(--danger);
   font-size: 12px;
   margin: 4px 0 0;
+  overflow-wrap: anywhere;
 }
 /* ---- 独立任务卡 ---- */
 .subagent-card {
@@ -1005,7 +1090,10 @@ function removeOne(id: string) {
 .sub-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 4px;
   gap: 10px;
+  min-width: 0;
 }
 .sub-kind {
   font-family: var(--mono);
@@ -1017,6 +1105,8 @@ function removeOne(id: string) {
   padding: 0 8px;
 }
 .sub-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text-strong);
   font-size: 14px;
 }

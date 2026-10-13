@@ -547,12 +547,18 @@ onBeforeUnmount(() => {
 <template>
   <section
     class="turn-process"
+    data-qio-fit
     :class="{ open: historyOpen, running, failed: failedTools.length > 0 }"
     :data-state="dataState"
     :data-turn="turnId || undefined"
     data-test="turn-process"
     aria-label="本轮过程"
   >
+    <!--
+      过程区**不建立自己的滚动视口**：历史抽屉与工具详情展开后就在消息流这同一层
+      阅读区里长高（同一连续阅读区只保留一层主要纵向滚动）。
+      data-qio-fit 是宽度链的边界保护：过程内容不得撑出消息列。
+    -->
     <!-- 状态行：系统事实。展开按钮与耗时入口是两个独立控件（不能嵌套按钮） -->
     <div class="tp-status" data-test="turn-process-status">
       <button
@@ -583,7 +589,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 问题 7：失败 / 停止的一句话原因 + 确实可用的操作；详情默认折叠 -->
-    <div v-if="hasOutcome" class="tp-outcome" data-test="turn-process-outcome">
+    <div v-if="hasOutcome" class="tp-outcome" data-qio-fit data-test="turn-process-outcome">
       <p v-if="reasonLine" class="tp-reason" data-test="turn-process-reason">{{ reasonLine }}</p>
       <div v-if="hasActions" class="tp-outcome-actions" data-test="turn-process-actions">
         <button
@@ -602,22 +608,33 @@ onBeforeUnmount(() => {
           {{ actionNote }}
         </span>
       </div>
-      <p v-if="continueHint" class="tp-outcome-hint" data-test="turn-process-continue-hint">
+      <p
+        v-if="continueHint"
+        class="tp-outcome-hint"
+        data-qio-fit
+        data-test="turn-process-continue-hint"
+      >
         {{ continueHint }}
       </p>
       <p v-if="actionFeedback" class="tp-outcome-err" role="status" data-test="turn-process-action-error">
         {{ actionFeedback }}
       </p>
-      <details v-if="outcomeDetail" class="tp-outcome-detail" data-test="turn-process-outcome-detail">
+      <details
+        v-if="outcomeDetail"
+        class="tp-outcome-detail"
+        data-qio-fit
+        data-test="turn-process-outcome-detail"
+      >
         <summary>详情</summary>
-        <pre class="tp-outcome-pre mono">{{ outcomeDetail }}</pre>
+        <!-- 不再套一层 160px 的小滚动窗口：详情在同一阅读区里自然展开 -->
+        <pre class="tp-outcome-pre mono" data-qio-fit>{{ outcomeDetail }}</pre>
       </details>
     </div>
 
     <!-- 当前阶段：名字 + 最新说明，突出显示；逐项调用在独立开关后面（默认收起） -->
-    <div v-if="currentStage" class="tp-current" data-test="turn-process-current">
+    <div v-if="currentStage" class="tp-current" data-qio-fit data-test="turn-process-current">
       <div class="tp-cur-name serif">{{ currentStage.name || "当前阶段" }}</div>
-      <p v-if="currentNote" class="tp-cur-text">{{ currentNote }}</p>
+      <p v-if="currentNote" class="tp-cur-text" data-qio-fit>{{ currentNote }}</p>
       <div v-if="currentStageTools.length" class="tp-cur-detail">
         <button
           class="tp-cur-detail-toggle"
@@ -636,12 +653,23 @@ onBeforeUnmount(() => {
       </div>
     </div>
     <!-- legacy（没有阶段）：未归属的生成中说明就是「当前说明」 -->
-    <div v-else-if="running && looseLiveNote" class="tp-current" data-test="turn-process-current">
-      <p class="tp-cur-text">{{ looseLiveNote }}</p>
+    <div
+      v-else-if="running && looseLiveNote"
+      class="tp-current"
+      data-qio-fit
+      data-test="turn-process-current"
+    >
+      <p class="tp-cur-text" data-qio-fit>{{ looseLiveNote }}</p>
     </div>
 
     <!-- 内联审批：事实与弹窗共用 ApprovalFacts；同一 approval_id 只有一套有效按钮 -->
-    <div v-if="inlineApproval" class="tp-approval" data-test="turn-process-approval" role="group">
+    <div
+      v-if="inlineApproval"
+      class="tp-approval"
+      data-qio-fit
+      data-test="turn-process-approval"
+      role="group"
+    >
       <div class="tp-ap-head">
         <span class="tp-ap-mark" aria-hidden="true">!</span>
         <span class="tp-ap-title serif">{{ approvalTitle }}</span>
@@ -693,7 +721,7 @@ onBeforeUnmount(() => {
          收起时整块不渲染（DOM 里不存在）——「同一内容只出现一次」也包括不可见的重复。 -->
     <div v-if="hasDrawer && historyOpen" class="tp-drawer open" data-test="turn-process-history">
       <div class="tp-drawer-clip">
-        <div class="tp-drawer-body">
+        <div class="tp-drawer-body" data-qio-fit>
           <template v-if="stages.length">
             <section v-for="stage in historyStages" :key="stage.stageId" class="tp-stage">
               <div class="tp-stage-head">
@@ -704,7 +732,13 @@ onBeforeUnmount(() => {
                 </span>
               </div>
               <!-- 阶段说明（含 STAGE.text 与工具轮中间话）：一个阶段一个列表，各出现一次 -->
-              <p v-for="note in stage.notes" :key="note.narrativeId || note.text" class="tp-note" :data-kind="note.kind">
+              <p
+                v-for="note in stage.notes"
+                :key="note.narrativeId || note.text"
+                class="tp-note"
+                :data-kind="note.kind"
+                data-qio-fit
+              >
                 {{ note.text }}
               </p>
               <MessageItem v-for="m in toolsOf(stage.stageId)" :key="m.id" :message="m" />
@@ -773,6 +807,8 @@ onBeforeUnmount(() => {
 .tp-toggle {
   display: inline-flex;
   align-items: baseline;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: var(--sp-2);
   background: none;
   border: none;
@@ -846,6 +882,7 @@ onBeforeUnmount(() => {
 }
 /* 结束原因与可用操作：失败/停止时最该先看到的东西 */
 .tp-outcome {
+  min-width: 0;
   margin: 2px 0 2px 4px;
   padding-left: var(--sp-3);
   border-left: 1px solid var(--border-danger);
@@ -866,6 +903,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-sm);
   color: var(--danger);
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 .turn-process[data-state="stopped"] .tp-reason {
   color: var(--text-secondary);
@@ -882,6 +920,7 @@ onBeforeUnmount(() => {
 .tp-outcome-note {
   font-size: var(--fs-xs);
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 .tp-outcome-hint {
   margin: 0;
@@ -919,22 +958,27 @@ onBeforeUnmount(() => {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+/* 详情全文在同一阅读区里自然展开：
+   以前 max-height:160px + overflow:auto 会把一段错误原因切成第二个小滚动窗口
+   （契约 §1.5：同一连续阅读区只保留一层主要纵向滚动）。 */
 .tp-outcome-pre {
   margin: 6px 0 0;
   padding: 8px 10px;
-  max-height: 160px;
-  overflow: auto;
+  max-width: 100%;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-secondary);
+  /* 软换行：长路径 / 长错误原文在视觉上折行，不建立横向滚动范围 */
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 /* 当前阶段：突出但不喧哗 */
 .tp-current {
+  min-width: 0;
   margin: 2px 0 2px 4px;
   padding-left: var(--sp-3);
   border-left: 1px solid var(--border-strong);
@@ -949,6 +993,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 .tp-cur-detail {
   margin-top: 2px;
@@ -1039,7 +1084,10 @@ onBeforeUnmount(() => {
   grid-template-rows: 1fr;
 }
 .tp-drawer-clip {
-  overflow: hidden;
+  /* 纯裁剪（0fr→1fr 折叠过渡）：overflow: clip 不建立滚动容器，
+     程序性滚动也做不到。 */
+  overflow: clip;
+  min-height: 0;
 }
 .tp-drawer-body {
   display: flex;
@@ -1077,6 +1125,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-sm);
   color: var(--text-muted);
   line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 .tp-note[data-kind="warning"] {
   color: var(--warning);

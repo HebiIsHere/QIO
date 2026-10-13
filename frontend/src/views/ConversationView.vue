@@ -14,6 +14,7 @@ import KnowledgeCandidateCard from "../components/KnowledgeCandidateCard.vue";
 import InterruptedTurnEntry from "../components/InterruptedTurnEntry.vue";
 import RecoveryInbox from "../components/RecoveryInbox.vue";
 import { titlebarHeight } from "../utils/titlebar";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 // 星球页懒加载：three.js 不进首屏 chunk；加载期间立即显示「正在打开星球…」
 const PlanetView = defineAsyncComponent({
@@ -153,10 +154,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="conversation">
+  <div class="conversation" data-qio-scope="chat">
+    <!--
+      普通对话根：data-qio-scope="chat" 的另一处落点。
+      消息区的根（.stream）已经带这个属性（契约 §2.1）；这里再挂一份，
+      让「对话页 = 一个对话根」在 DOM 上自证，也让固定悬浮的输入区同样拿到
+      整套对话适配（长串换行 / 按钮重排）。两处作用域等价，不改变任何语义。
+      注意：注释必须放在根元素**里面** —— 模板里根元素之前的注释会让组件根变成
+      片段（Fragment），挂载方拿到的不再是那一个根元素。
+    -->
     <a class="skip-link" href="#composer-input" @click="focusComposer">跳到输入框</a>
     <!-- 未完成首次引导时的轻提示：可关闭，关闭状态落库（spec §1） -->
-    <div v-if="onboarding.hintVisible" class="setup-hint" role="status">
+    <div v-if="onboarding.hintVisible" class="setup-hint" role="status" data-qio-fit>
       <span class="text">还没设置完 QIO —— 补上模型、称呼与目标，它才会真正记得你</span>
       <button class="link resume" type="button" @click="onboarding.reopen()">继续设置</button>
       <button
@@ -184,26 +193,31 @@ onMounted(() => {
     <!-- 历史读取失败 ≠ 没有历史：低干扰提示 + 重试，且不清空已加载的内容 -->
     <!-- 状态行出现/消失必须有连续性（不再瞬切）；四类状态共用一套安静的行样式 -->
     <Transition name="qio-fade">
-      <div v-if="session.history.status === 'error'" class="notice quiet" role="status">
+      <div
+        v-if="session.history.status === 'error'"
+        class="notice quiet"
+        role="status"
+        data-qio-fit
+      >
         <span class="text">历史记录暂时无法读取</span>
         <button class="link" type="button" @click="retryHistory">重试</button>
       </div>
     </Transition>
     <!-- 错误 / 警告分开表达：错误要查，警告只需知道 -->
     <Transition name="qio-fade">
-      <div v-if="session.lastError" class="notice err" role="alert">
+      <div v-if="session.lastError" class="notice err" role="alert" data-qio-fit>
         <span class="kind mono qio-state err">错误</span>
         <span class="text">{{ session.lastError }}</span>
         <router-link to="/debug" class="link">查看详情</router-link>
         <router-link to="/settings" class="link">前往设置</router-link>
       </div>
-      <div v-else-if="session.warning" class="notice warn" role="status">
+      <div v-else-if="session.warning" class="notice warn" role="status" data-qio-fit>
         <span class="kind mono qio-state warn">提示</span>
         <span class="text">{{ session.warning }}</span>
       </div>
       <!-- 凭据状态：暂停 / 撤销之后依赖它的能力会不可用，必须说出来（去哪里恢复）。
            这段文案来自后端事件，只在真的影响当前使用时出现；恢复后自己消失。 -->
-      <div v-else-if="events.credentialNotice" class="notice warn" role="status">
+      <div v-else-if="events.credentialNotice" class="notice warn" role="status" data-qio-fit>
         <span class="kind mono qio-state warn">提示</span>
         <span class="text">{{ events.credentialNotice }}</span>
         <router-link to="/settings" class="link">前往设置</router-link>
@@ -213,6 +227,7 @@ onMounted(() => {
         v-else-if="session.lastTurnOutcome?.status === 'cancelled'"
         class="notice quiet"
         role="status"
+        data-qio-fit
       >
         <span class="kind mono qio-state quiet">已停止</span>
         <span class="text">这一轮已按你的要求停止，可以继续输入</span>
@@ -226,6 +241,7 @@ onMounted(() => {
         v-else-if="session.lastTurnOutcome?.status === 'incomplete'"
         class="notice quiet"
         role="status"
+        data-qio-fit
         data-test="turn-incomplete-notice"
       >
         <span class="kind mono qio-state quiet">未完成</span>
@@ -237,8 +253,18 @@ onMounted(() => {
          整体抬到输入气泡上方。不这么做的话它们会被固定悬浮的输入区压住，
          按钮看得见、点不到（实测：按钮中点命中的是输入框）。 -->
     <div ref="bottomCluster" class="bottom-cluster">
-    <!-- 高影响知识候选：只在回答完成之后出现，低干扰、不遮罩、不抢焦点 -->
-    <div v-if="session.knowledgeCandidates.length" class="candidates">
+    <!--
+      高影响知识候选：只在回答完成之后出现，低干扰、不遮罩、不抢焦点。
+      候选多时**自己滚动**（不把输入区挤出屏幕）——它是一块独立并列的列表，
+      用统一策略：只声明纵向指示条，原生滚动条外观已全局消除（不预留轨道空白），
+      横向一律不滚动（data-qio-fit）。
+    -->
+    <div
+      v-if="session.knowledgeCandidates.length"
+      class="candidates"
+      data-qio-fit
+      v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+    >
       <KnowledgeCandidateCard
         v-for="c in session.knowledgeCandidates"
         :key="c.knowledgeId"
@@ -247,7 +273,7 @@ onMounted(() => {
     </div>
     <!-- 能力降级：一次性、可忽略，不阻塞对话 -->
     <Transition name="qio-fade">
-      <div v-if="events.fallbackNotice" class="notice quiet fallback" role="status">
+      <div v-if="events.fallbackNotice" class="notice quiet fallback" role="status" data-qio-fit>
         <span class="kind mono qio-state quiet">兼容模式</span>
         <span class="text">{{ events.fallbackNotice }}</span>
         <button class="link" type="button" @click="events.fallbackNotice = null">知道了</button>
@@ -300,13 +326,14 @@ onMounted(() => {
 }
 .notice {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
   /* 右侧留白避开右上角浮动 ⚙（44px 按钮 + 26px 边距） */
   padding: 8px 84px 8px 20px;
   background: var(--bg-surface);
   font-size: 12px;
   flex-shrink: 0;
+  min-width: 0;
 }
 /* 「继续设置」轻提示：安静的一行，不抢消息流，可关闭 */
 .setup-hint {
@@ -319,8 +346,9 @@ onMounted(() => {
   color: var(--text-secondary);
   font-size: 12px;
   flex-shrink: 0;
+  min-width: 0;
 }
-.setup-hint .text { flex: 1; }
+.setup-hint .text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .setup-hint .close {
   border: none;
   background: none;
@@ -361,12 +389,14 @@ onMounted(() => {
   border-radius: var(--r-pill);
   border: 1px solid currentColor;
   flex-shrink: 0;
+  /* 与首行文字对齐（错误原文会换成多行） */
+  margin-top: 1px;
 }
 .notice .text {
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  /* 错误 / 提示原文完整换行显示：单行截断会把真实原因藏起来（换个行也不会横向滚动） */
+  overflow-wrap: anywhere;
 }
 .notice .link {
   color: var(--link);
@@ -393,9 +423,11 @@ onMounted(() => {
   align-items: center;
   padding: 0 24px;
   flex-shrink: 0;
-  /* 候选多时自己滚，不把输入区挤出屏幕 */
+  min-width: 0;
+  /* 候选多时自己滚，不把输入区挤出屏幕；横向不建立滚动范围 */
   max-height: 42vh;
   overflow-y: auto;
+  overflow-x: clip;
 }
 .notice.fallback {
   padding-right: 84px;

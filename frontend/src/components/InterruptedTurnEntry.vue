@@ -90,11 +90,18 @@ function dismiss(item: InterruptedTurn) {
     列表会变成空 —— 如果整块跟着一起消失，用户点完「继续」什么都看不到，
     那就是任务书禁止的"静默失败"。操作结果必须留在屏幕上。
   -->
-  <div v-if="count || notice" class="interrupted-turns" @keydown="onKeydown">
+  <div
+    v-if="count || notice"
+    class="interrupted-turns"
+    data-qio-fit
+    @keydown="onKeydown"
+  >
+    <!-- 宽度链：入口、面板与操作都不横向滚动；操作按钮空间不足时换行 -->
     <button
       v-if="count"
       class="entry"
       type="button"
+      data-qio-fit
       :aria-expanded="open"
       :aria-label="entryLabel"
       @click="toggle"
@@ -104,14 +111,20 @@ function dismiss(item: InterruptedTurn) {
       <span class="chev" :class="{ open }" aria-hidden="true">⌄</span>
     </button>
 
-    <div v-if="open && count" class="panel" role="region" aria-label="上次退出时没有执行的消息">
+    <div
+      v-if="open && count"
+      class="panel"
+      data-qio-fit
+      role="region"
+      aria-label="上次退出时没有执行的消息"
+    >
       <p class="lead">
         这些消息已经被 QIO 收下，但没有执行。你可以继续发送，或者忽略。
       </p>
       <ul class="list">
-        <li v-for="item in items" :key="item.turn_id" class="item">
+        <li v-for="item in items" :key="item.turn_id" class="item" data-qio-fit>
           <!-- 视觉上两行截断（省略号可见）；DOM 里是全文，读屏软件听到的也是全文 -->
-          <p class="message">{{ item.message }}</p>
+          <p class="message" data-qio-fit>{{ item.message }}</p>
           <p class="meta">
             <span class="when mono">{{ formatWhen(item) }}</span>
             <span class="reason">{{ reasonOf(item) }}</span>
@@ -151,7 +164,7 @@ function dismiss(item: InterruptedTurn) {
       </div>
     </div>
     <!-- 操作结果放在面板外：列表被清空、面板收起时它仍然在 -->
-    <p v-if="notice" class="notice" role="status" aria-live="polite">{{ notice }}</p>
+    <p v-if="notice" class="notice" role="status" aria-live="polite" data-qio-fit>{{ notice }}</p>
   </div>
 </template>
 
@@ -162,12 +175,14 @@ function dismiss(item: InterruptedTurn) {
  */
 .interrupted-turns {
   display: flex; flex-direction: column; align-items: center; gap: var(--sp-2);
+  min-width: 0;
   margin: var(--sp-3) auto var(--sp-2);
   max-width: min(560px, calc(100vw - 32px));
   font-family: var(--sans);
 }
 .entry {
-  display: inline-flex; align-items: center; gap: 8px;
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  min-width: 0; max-width: 100%;
   padding: 6px 14px; border-radius: var(--r-pill);
   background: var(--bg-elevated); color: var(--text-strong);
   border: 1px solid var(--border-strong); font-size: 12.5px;
@@ -187,25 +202,30 @@ function dismiss(item: InterruptedTurn) {
 .chev.open { transform: rotate(180deg); }
 
 .panel {
-  width: 100%; padding: var(--sp-3) var(--sp-4);
+  width: 100%; min-width: 0; padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-subtle); border-radius: var(--r-lg);
   background: var(--bg-elevated); box-shadow: var(--shadow-2);
 }
-.lead { margin: 0 0 var(--sp-2); font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.6; }
+.lead { margin: 0 0 var(--sp-2); font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.6; overflow-wrap: anywhere; }
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-3); }
-.item { display: flex; flex-direction: column; gap: 6px; }
+.item { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .message {
   margin: 0; font-size: var(--fs-sm); color: var(--text-primary); line-height: 1.6;
   /* 截断可见：两行之外给省略号，而不是把话悄悄吞掉 */
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; overflow-wrap: anywhere;
+  /* 两行视觉截断（省略号可见，全文仍在 DOM 里）：纵向必须保留 hidden 才能让
+     line-clamp 生效；横向一律 clip —— 文本本身换行，横向没有任何可滚动范围。 */
+  overflow-y: hidden;
+  overflow-x: clip;
+  overflow-wrap: anywhere;
 }
 .meta { margin: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: var(--fs-xs); }
 .when { color: var(--text-muted); }
-.reason { color: var(--text-secondary); }
-.actions { display: flex; gap: var(--sp-2); }
+.reason { color: var(--text-secondary); overflow-wrap: anywhere; }
+.actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .bulk { margin-top: var(--sp-3); display: flex; justify-content: flex-end; }
 .notice {
   margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 </style>
