@@ -183,6 +183,9 @@ jobs:
         working-directory: .
         env:
           REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+          # verify_sha.py 的证据行含中文；windows runner 的 python 默认 cp1252，
+          # 2026-10-13 实测内联步骤漏了这条会 UnicodeEncodeError（复合 action 里已修过同一个坑）。
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           python scripts/targeted-verify/verify_sha.py \
@@ -252,6 +255,9 @@ jobs:
         working-directory: .
         env:
           REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+          # verify_sha.py 的证据行含中文；windows runner 的 python 默认 cp1252，
+          # 2026-10-13 实测内联步骤漏了这条会 UnicodeEncodeError（复合 action 里已修过同一个坑）。
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           python scripts/targeted-verify/verify_sha.py \
@@ -349,6 +355,9 @@ jobs:
         working-directory: .
         env:
           REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+          # verify_sha.py 的证据行含中文；windows runner 的 python 默认 cp1252，
+          # 2026-10-13 实测内联步骤漏了这条会 UnicodeEncodeError（复合 action 里已修过同一个坑）。
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           python scripts/targeted-verify/verify_sha.py \
@@ -417,6 +426,9 @@ jobs:
         working-directory: .
         env:
           REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+          # verify_sha.py 的证据行含中文；windows runner 的 python 默认 cp1252，
+          # 2026-10-13 实测内联步骤漏了这条会 UnicodeEncodeError（复合 action 里已修过同一个坑）。
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           python scripts/targeted-verify/verify_sha.py \
@@ -486,6 +498,9 @@ jobs:
         working-directory: .
         env:
           REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+          # verify_sha.py 的证据行含中文；windows runner 的 python 默认 cp1252，
+          # 2026-10-13 实测内联步骤漏了这条会 UnicodeEncodeError（复合 action 里已修过同一个坑）。
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           python scripts/targeted-verify/verify_sha.py \
@@ -570,6 +585,9 @@ jobs:
         working-directory: .
         env:
           REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+          # verify_sha.py 的证据行含中文；windows runner 的 python 默认 cp1252，
+          # 2026-10-13 实测内联步骤漏了这条会 UnicodeEncodeError（复合 action 里已修过同一个坑）。
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           python scripts/targeted-verify/verify_sha.py \
@@ -620,6 +638,9 @@ jobs:
         working-directory: .
         env:
           REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+          # verify_sha.py 的证据行含中文；windows runner 的 python 默认 cp1252，
+          # 2026-10-13 实测内联步骤漏了这条会 UnicodeEncodeError（复合 action 里已修过同一个坑）。
+          PYTHONIOENCODING: utf-8
         run: |
           set -euo pipefail
           python scripts/targeted-verify/verify_sha.py \
