@@ -149,6 +149,9 @@ export function useResizeGesture(options: ResizeGestureOptions) {
     if (pointerId !== null && typeof event?.pointerId === "number" && event.pointerId !== pointerId) return;
     const base = started ? snapshot : null;
     const startedHandle = handle;
+    // reset() 会把 latest 置空，所以**先**把它取出来 —— 否则下面的差异守卫恒真，
+    // 变成「每次松手都无条件多推一次 onPreview」（E 复核的 R4）。
+    const lastPreview = latest;
     // 松手时按**当下**的限制再算一次：拖动期间窗口可能被缩小，直接交最后一次预览
     // 会把一个此刻已经超界的框提交出去（E 复核的 W5）。
     // scale 只取一次：非纯实现两次调用可能给出不同系数，x / y 会各用一套。
@@ -165,7 +168,7 @@ export function useResizeGesture(options: ResizeGestureOptions) {
     if (boxEquals(commit, base, NOOP_EPSILON)) return;
     // 复算结果与最后一次预览不同（拖动期间限制变了）时，先把最终框推给显示层再提交，
     // 否则用户会看到「松手之后自己跳一下」（E 复核的 R2：预览 420 → 提交 640）。
-    if (!latest || !boxEquals(commit, latest, NOOP_EPSILON)) options.onPreview(commit);
+    if (!lastPreview || !boxEquals(commit, lastPreview, NOOP_EPSILON)) options.onPreview(commit);
     options.onCommit(commit, "pointer");
   }
 

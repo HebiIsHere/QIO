@@ -42,6 +42,7 @@ import {
   type IntentBatch,
 } from "../../interactive/approval";
 import {
+  OVERLAY_BATCH_FOOTER,
   OVERLAY_EDGE,
   OVERLAY_GAP,
   chatHeightRelaxation,
@@ -53,6 +54,8 @@ import {
   type OverlayInput,
   type OverlayPane,
 } from "../../interactive/overlayLayout";
+import { chatObstacleFrame } from "../../interactive/chatFrameState";
+import { widestFreeBand } from "../../interactive/overlayAvoid";
 import type { Intent } from "../../interactive/types";
 
 const store = useInteractiveStore();
@@ -237,15 +240,62 @@ function applyGeometry(): void {
     batchAvailable,
   });
 
+  // ── 让开受用户控制的对话窗口（契约 IRL §7.4 / §5.4）───────────────────────
+  // 对话窗口现在可以被用户移动 / 调整尺寸，旧几何里「聊天永远占右侧固定一列」
+  // 的前提不再成立。这里按**当前真实的**对话窗口矩形重新取一条可用的水平带：
+  // 批量列表与切换条都落到这条带里，两个面板不再互相遮挡。
+  // 未发布（对话窗口未挂载或已收起 → chatObstacleFrame() 为 null）时整段逻辑不生效，
+  // 单独渲染本组件的既有单元测试行为逐字节不变。
+  const chatRect = chatObstacleFrame();
+  const batchBottom = toolbarTop - OVERLAY_BATCH_FOOTER;
+  const batchRightEdge = window.innerWidth - plan.batchRight;
+  // 只有当**原本那一版**批量列表真的会和对话窗口叠上时才改变几何 ——
+  // 否则「没挡到也把面板挪走」反而制造出别的新碰撞（这是第一版实现的缺陷，
+  // 被 Lead 的集成用例抓出来）。竖直方向也算：窗口在上半屏时下半屏照常用满。
+  const chatBlocks =
+    Boolean(chatRect) &&
+    batchRightEdge - plan.batchMaxWidth < chatRect!.x + chatRect!.w + OVERLAY_GAP &&
+    batchRightEdge > chatRect!.x - OVERLAY_GAP &&
+    batchBottom - plan.batchMaxHeight < chatRect!.y + chatRect!.h + OVERLAY_GAP &&
+    batchBottom > chatRect!.y - OVERLAY_GAP;
+  const band =
+    chatBlocks && chatRect
+      ? widestFreeBand(
+          { left: OVERLAY_EDGE, right: window.innerWidth - OVERLAY_EDGE },
+          [{ x: chatRect.x, y: chatRect.y, w: chatRect.w, h: chatRect.h }],
+          OVERLAY_GAP,
+        )
+      : null;
+  // band === null：对话窗口把这一带吃光了。此时**不**硬叠上去，而是进入切换显示
+  // （同一时间只开一个面板）；resolveOverlayPanes 只关闭、不打开，所以不会来回弹。
+  if (chatBlocks && !band && !cramped.value && (resolved.chatOpen || resolved.batchOpen)) {
+    cramped.value = true;
+    const retry = settlePanes(true);
+    const retryPlan = planOverlayGeometry({
+      ...chatInput,
+      chatOpen: retry.chatOpen,
+      batchOpen: retry.batchOpen,
+      switched: true,
+      batchAvailable,
+    });
+    Object.assign(plan, retryPlan);
+  }
+  const batchBand = band;
+  const batchRight = batchBand ? Math.round(window.innerWidth - batchBand.right) : plan.batchRight;
+  const batchMaxWidth = batchBand
+    ? Math.max(160, Math.min(plan.batchMaxWidth, Math.round(batchBand.right - batchBand.left)))
+    : plan.batchMaxWidth;
+
   // 切换条的位置与高度直接取几何计划的矩形（视口坐标）：面板底边已在同一次计划里让开它
   const bar = plan.switchBar;
   const nextBarStyle: Record<string, string> =
     bar.height > 0
       ? {
-          right: OVERLAY_EDGE + "px",
+          // 切换条同样落在让开之后的带里：它悬浮在批量列表上方，压住对话窗口一样是遮挡。
+          right: (batchBand ? Math.max(OVERLAY_EDGE, batchRight) : OVERLAY_EDGE) + "px",
           bottom: Math.round(window.innerHeight - (bar.y + bar.height)) + "px",
           height: bar.height + "px",
-          maxWidth: bar.width + "px",
+          maxWidth: (batchBand ? Math.min(bar.width, batchMaxWidth) : bar.width) + "px",
         }
       : {};
   if (!sameStyle(switchBarStyle.value, nextBarStyle)) switchBarStyle.value = nextBarStyle;
@@ -265,9 +315,9 @@ function applyGeometry(): void {
     plan.chatMaxWidth,
     chatMaxHeight,
     chatLift,
-    plan.batchMaxWidth,
+    batchMaxWidth,
     panelMaxHeight,
-    plan.batchRight,
+    batchRight,
     plan.gap,
     entryHeight > 0 ? 1 : 0,
   ].join("|");
@@ -278,9 +328,9 @@ function applyGeometry(): void {
     "im-geo-mode": plan.mode,
     "--im-geo-chat-max-w": plan.chatMaxWidth + "px",
     "--im-geo-chat-max-h": chatMaxHeight + "px",
-    "--im-geo-batch-max-w": plan.batchMaxWidth + "px",
+    "--im-geo-batch-max-w": batchMaxWidth + "px",
     "--im-geo-batch-max-h": panelMaxHeight + "px",
-    "--im-geo-batch-right": plan.batchRight + "px",
+    "--im-geo-batch-right": batchRight + "px",
     "--im-geo-gap": plan.gap + "px",
     "--im-geo-chat-lift": chatLift + "px",
   };
@@ -291,8 +341,8 @@ function applyGeometry(): void {
   }
 
   geometry.value = plan;
-  trayStyle.value = { right: plan.batchRight + "px", maxWidth: plan.batchMaxWidth + "px" };
-  panelStyle.value = { maxWidth: plan.batchMaxWidth + "px", maxHeight: panelMaxHeight + "px" };
+  trayStyle.value = { right: batchRight + "px", maxWidth: batchMaxWidth + "px" };
+  panelStyle.value = { maxWidth: batchMaxWidth + "px", maxHeight: panelMaxHeight + "px" };
 
   // 入口按钮可能在写入新宽度后换行：下一帧再量一次（第二次相同就不会再写）
   scheduleMeasure();
