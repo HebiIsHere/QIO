@@ -12,11 +12,22 @@
 
   收起时用 v-if 而不是 v-show：隐藏元素留在 DOM 里会让「按钩子驱动」的验收出现假通过
   （lead 在 task-6 里明确要求：收起后这些按钮不该存在）。
+
+  附件提示的生命周期（0.2.5 回归修复 §二，原语见 composables/useTransientNotice.ts）：
+  - **成功约 3 秒后自动移除**：移除的只是**提示**；卡片、meta 里的附件关联、已保存副本、
+    预览能力与卡片内状态全部保留（回归根因就是成功态挂在 v-if 上永不清除）；
+  - 等待选择 / 上传 / 处理期间是**真实进度**，不会被成功计时器提前藏掉；
+  - **失败不自动消失**：简短原因 + 关闭入口 + 「重新选择文件」（对同一张卡片重走关联流程）；
+  - 每次开始新操作都 begin()：旧提示、旧计时器与旧 token 一起作废，迟到结果写不进来；
+  - 卸载：原语自己清计时器并作废 token，这里再用 alive 挡住「卸载后还去写板面」的迟到回调；
+  - 成功文案只陈述**附件本身已保存**与「板面关联还只是本地改动」，不声称服务端已保存
+    （落盘 / 提交由既有机制负责，失败也由既有机制反馈，这里不另造一套）。
 -->
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
+import { cardAttachmentLinked, cardAttachmentName } from "../../interactive/materials";
 import { NEW_CARD_SIZE, planNewCardSlot } from "../../interactive/cardLayout";
 import { readBoardArea } from "../../interactive/viewport";
 import {
@@ -25,6 +36,7 @@ import {
   uploadAttachment,
   waitUntilSettled,
 } from "../../services/attachments";
+import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { CardKind } from "../../interactive/types";
 
 /**
@@ -32,6 +44,8 @@ import type { CardKind } from "../../interactive/types";
  * 菜单里不再单列 code / url —— 历史卡片仍然能显示（BoardCard 的兜底分支），只是不能新建。
  */
 type AddableKind = CardKind;
+/** 需要关联真实附件的两类材料。 */
+type AttachKind = "file" | "image";
 
 interface AddItem {
   kind: AddableKind;
@@ -62,6 +76,16 @@ const ITEMS: AddItem[] = ADDABLE_CARD_KINDS.map((kind) => ({
   hint: HINTS[kind] ?? "材料默认在本次允许查看范围内，不需要许可",
 }));
 
+/**
+ * 附件提示的生命周期全部交给同一份原语（Lead 冻结）：
+ * busy 一直显示到被替换，ok 约 3 秒自动移除，error 不自动消失且可重试 / 关闭。
+ * 不在这里另写 setTimeout，也不用一个裸 status 长期挂在界面上（0.2.5 的回归根因）。
+ */
+const { notice, begin, progress, succeed, fail, dismiss } = useTransientNotice();
+
+/** 卸载后到达的迟到结果连板面都不该再改：原语负责提示，这个标志负责副作用。 */
+let alive = true;
+
 function toggle(): void {
   open.value = !open.value;
 }
@@ -73,41 +97,74 @@ function close(returnFocus = false): void {
   if (returnFocus) void nextTick(() => trigger.value?.focus());
 }
 
-/**
- * 文件 / 图片卡片必须关联**真实已保存的附件**（meta.file.attachmentId / meta.image.attachmentId），
- * 否则 QIO 只能看到文件名、读不到正文（后端会如实标 unreadable）。
- * 状态文字一律渲染在菜单外面：菜单收起后上传失败仍然看得见，不静默。
- */
-const status = ref<{ tone: "busy" | "ok" | "error"; text: string } | null>(null);
-
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function attachRealFile(kind: "file" | "image", cardId: string): Promise<void> {
-  status.value = { tone: "busy", text: "正在等待选择文件…" };
+function kindLabel(kind: AddableKind): string {
+  return CARD_KIND_LABELS[kind] ?? "材料";
+}
+
+function cardOf(cardId: string) {
+  return store.board?.cards.find((item) => item.id === cardId);
+}
+
+/** 失败 / 取消都能一键重来：对**同一张卡片**再走一遍 pickBrowserFile → 上传 → 关联。 */
+function retryOf(kind: AttachKind, cardId: string): NoticeRetry {
+  return { label: "重新选择文件", run: () => void attachRealFile(kind, cardId) };
+}
+
+/**
+ * 用户取消选择的文案**必须看卡片当前的事实**（materials.ts 的 cardAttachmentLinked）：
+ * 卡片已经有附件时还说「还没有关联已保存的附件」是错的 —— 原有附件一直都在，只是没被更换。
+ */
+function cancelText(kind: AttachKind, cardId: string): string {
+  const card = cardOf(cardId);
+  const linkedKind = card?.kind ?? kind;
+  const label = kindLabel(linkedKind);
+  if (card && cardAttachmentLinked(card.meta, linkedKind)) {
+    const previous = cardAttachmentName(card.meta, linkedKind);
+    return (
+      "没有选择文件：这张" + label + "卡片仍然关联着原有附件" +
+      (previous ? "「" + previous + "」" : "") +
+      "，本次没有更换"
+    );
+  }
+  return "没有选择文件：这张" + label + "卡片还没有关联已保存的附件，QIO 读不到它的正文";
+}
+
+/**
+ * 文件 / 图片卡片必须关联**真实已保存的附件**（meta.file.attachmentId / meta.image.attachmentId），
+ * 否则 QIO 只能看到文件名、读不到正文（后端会如实标 unreadable）。
+ *
+ * 状态一律走 useTransientNotice：每次调用 begin() 开一代新操作，
+ * 之后所有写入都带这次操作的 token —— 迟到的结果不会覆盖 / 清掉别人的提示。
+ */
+async function attachRealFile(kind: AttachKind, cardId: string): Promise<void> {
+  const token = begin();
+  progress(token, "正在等待选择文件…");
   let file: File | null;
   try {
     file = await pickBrowserFile();
   } catch (error) {
-    status.value = { tone: "error", text: "选择文件失败：" + messageOf(error) };
+    fail(token, "选择文件失败：" + messageOf(error), retryOf(kind, cardId));
     return;
   }
+  if (!alive) return; // 组件已卸载：迟到结果不写提示，也不写板面
   if (!file) {
-    // 用户取消：卡片保留，但如实说明「还没有关联附件」——不假装已经读到内容
-    status.value = {
-      tone: "error",
-      text:
-        "没有选择文件：这张" +
-        CARD_KIND_LABELS[kind] +
-        "卡片还没有关联已保存的附件，QIO 读不到它的正文",
-    };
+    // 用户取消：如实说明（不假装读到了内容），文案按卡片当前是否已有附件区分
+    fail(token, cancelText(kind, cardId), retryOf(kind, cardId));
     return;
   }
-  status.value = { tone: "busy", text: "正在保存附件「" + (file.name || "未命名") + "」…" };
+  const fileName = file.name || "未命名";
+  progress(token, "正在保存附件「" + fileName + "」…");
   try {
     const uploaded = await uploadAttachment(file);
+    if (!alive) return;
+    // 上传完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
+    progress(token, "正在处理附件「" + fileName + "」…");
     const settled = await waitUntilSettled(uploaded);
+    if (!alive) return;
     if (settled.state !== "ready") {
       throw new Error(
         "附件「" +
@@ -120,23 +177,33 @@ async function attachRealFile(kind: "file" | "image", cardId: string): Promise<v
     const current = store.board;
     const card = current?.cards.find((item) => item.id === cardId);
     if (!current || !card) {
-      status.value = { tone: "error", text: "卡片已经不在了，附件没有关联上（附件本身已经保存）" };
+      fail(token, "卡片已经不在了，附件没有关联上（附件本身已经保存）");
       return;
     }
     const meta: Record<string, unknown> = { ...(card.meta ?? {}) };
     meta.name = settled.name;
     meta[kind] = { name: settled.name, attachmentId: settled.id, size: settled.sizeBytes };
     store.commit(updateCard(current, cardId, { meta }), "关联附件：" + settled.name);
-    status.value = {
-      tone: "ok",
-      text: "已关联已保存的附件「" + settled.name + "」：" + stateText(settled),
-    };
+    /**
+     * 成功只陈述两件已确认的事实：附件本身已经保存（stateText），板面关联还只是**本地**改动。
+     * 不写「已保存到服务端」——store.commit 只是本地板面改动，提交之后 QIO 才看得到（契约 §1.5）。
+     */
+    succeed(
+      token,
+      "已关联附件「" +
+        settled.name +
+        "」（" +
+        stateText(settled) +
+        "）；板面关联是本地改动，提交后 QIO 才可见",
+    );
   } catch (error) {
-    status.value = {
-      tone: "error",
-      text: "附件保存失败：" + messageOf(error) + "；卡片已保留，可在卡片编辑里重新关联",
-    };
+    fail(token, "附件保存失败：" + messageOf(error), retryOf(kind, cardId));
   }
+}
+
+/** 失败提示上的「重新选择文件」：重跑的是**重新走一遍那次关联**，不是只重发一次请求。 */
+function runRetry(): void {
+  notice.value?.retry?.run();
 }
 
 function add(kind: AddableKind): void {
@@ -208,6 +275,7 @@ watch(open, async (value) => {
 });
 
 onBeforeUnmount(() => {
+  alive = false;
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
   document.removeEventListener("keydown", onDocumentKeydown);
 });
@@ -228,35 +296,58 @@ onBeforeUnmount(() => {
       <span class="plus" aria-hidden="true">＋</span>添加
     </button>
 
-    <div v-if="open" ref="popup" class="add-pop" data-im="add-menu-list" role="menu" aria-label="添加到板面">
-      <p class="pop-title">添加到板面</p>
-      <button
-        v-for="item in ITEMS"
-        :key="item.kind"
-        class="pop-item"
-        type="button"
-        role="menuitem"
-        :data-im="'add-' + item.kind"
-        :title="item.hint"
-        @click="add(item.kind)"
+    <!--
+      附件状态与菜单共处**同一个悬浮列**（列在「添加」按钮上方，工具栏贴底、向下没有空间）：
+      提示在上、菜单在下（菜单仍紧贴按钮，位置不因提示变化），两者各占一行、永不互相遮挡。
+      这一层不吃指针事件，只有里面的菜单项与「重新选择 / 关闭」各自打开 ——
+      所以无论是长文件名还是失败提示，都不会挡住「添加」按钮或工具栏上的其它操作。
+    -->
+    <div class="add-float" data-im="add-float">
+      <!-- 附件上传 / 成功 / 失败状态：渲染在菜单外面，菜单收起后仍然可见（不静默） -->
+      <p
+        v-if="notice"
+        class="add-status"
+        :class="'is-' + notice.tone"
+        data-im="add-material-status"
+        :title="notice.text"
       >
-        <span class="item-label">{{ item.label }}</span>
-        <!-- 说明仍然留在无障碍树里（读屏与按文字断言都能读到），只是不再把菜单撑高 -->
-        <span class="item-hint">{{ item.hint }}</span>
-      </button>
-      <p class="pop-note">只加到本地板面：保存不调用 QIO，提交才会。</p>
-    </div>
+        <span class="status-text" data-im="add-material-status-text" role="status" aria-live="polite">{{ notice.text }}</span>
+        <button
+          v-if="notice.retry"
+          type="button"
+          class="status-action"
+          data-im="add-material-retry"
+          @click="runRetry()"
+        >{{ notice.retry.label }}</button>
+        <button
+          v-if="notice.tone !== 'ok'"
+          type="button"
+          class="status-action status-close"
+          data-im="add-material-dismiss"
+          aria-label="关闭提示"
+          @click="dismiss()"
+        >关闭</button>
+      </p>
 
-    <!-- 附件上传/失败状态：渲染在菜单外面，菜单收起后仍然可见（不静默） -->
-    <p
-      v-if="status"
-      class="add-status"
-      :class="'is-' + status.tone"
-      data-im="add-material-status"
-      role="status"
-    >
-      {{ status.text }}
-    </p>
+      <div v-if="open" ref="popup" class="add-pop" data-im="add-menu-list" role="menu" aria-label="添加到板面">
+        <p class="pop-title">添加到板面</p>
+        <button
+          v-for="item in ITEMS"
+          :key="item.kind"
+          class="pop-item"
+          type="button"
+          role="menuitem"
+          :data-im="'add-' + item.kind"
+          :title="item.hint"
+          @click="add(item.kind)"
+        >
+          <span class="item-label">{{ item.label }}</span>
+          <!-- 说明仍然留在无障碍树里（读屏与按文字断言都能读到），只是不再把菜单撑高 -->
+          <span class="item-hint">{{ item.hint }}</span>
+        </button>
+        <p class="pop-note">只加到本地板面：保存不调用 QIO，提交才会。</p>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -282,15 +373,26 @@ onBeforeUnmount(() => {
 .plus { color: var(--link); }
 
 /*
-  菜单从工具栏上方展开（工具栏贴底，向下没有空间）。
+  悬浮列：菜单与附件提示从「添加」按钮上方展开。
   实测（800×600）：五条「标题 + 说明」竖着排是 320×369，正好压住卡片工具栏与卡片本身。
   改成**一行五个入口 + 一行说明**：约 62px 高，说明文字改为读屏可见（sr-only）＋ 悬停提示。
+  0.2.5 起这一列还负责「提示不遮挡菜单」：两者在同一列里各占一行（提示在上、菜单紧贴按钮）。
+  整层 pointer-events: none：提示是纯信息，绝不挡住「添加」按钮或其它主要操作。
 */
-.add-pop {
+.add-float {
   position: absolute;
   left: 0;
   bottom: calc(100% + var(--sp-2));
-  z-index: 2;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+.add-pop {
+  /* 菜单自己要能点：在这一层内部单独打开指针事件 */
+  pointer-events: auto;
   width: max-content;
   max-width: min(520px, calc(100vw - var(--sp-6)));
   display: flex;
@@ -337,12 +439,13 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
-/* 状态条浮在工具栏上方（与菜单同一个位置）：菜单收起后仍看得到上传结果 */
+/* 状态条：与菜单同一列的上一行（菜单收起后仍看得到上传结果 / 失败原因） */
 .add-status {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + var(--sp-2));
-  z-index: 3;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sp-2);
   margin: 0;
   width: max-content;
   max-width: min(360px, calc(100vw - var(--sp-6)));
@@ -355,7 +458,30 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
   line-height: var(--lh-normal, 1.5);
   color: var(--text-secondary);
+  /* 长文件名：在提示内部换行断词，不把提示撑成一条盖住别处的横幅；完整名称看 title */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
 }
+/* 文本是唯一可换行的部分：按钮保持整块，不被名字挤断 */
+.status-text { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.status-action {
+  /* 提示层整体不吃指针事件，可操作按钮自己打开 */
+  pointer-events: auto;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.status-action:hover { border-color: var(--border-strong); color: var(--text-strong); }
+.status-action:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.status-close { color: var(--text-muted); }
 .add-status.is-busy { border-left-color: var(--link); }
 .add-status.is-ok { border-left-color: var(--success, var(--link)); }
 .add-status.is-error { border-left-color: var(--danger); color: var(--text-strong); }
