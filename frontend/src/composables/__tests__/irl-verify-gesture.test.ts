@@ -1,0 +1,452 @@
+/**
+ * IRL-E 独立复核（第一阶段）· useResizeGesture 的对抗式用例。
+ *
+ * 角度差异：不看「能不能拉大」，而是
+ * 1) 指针身份（多指 / pointerId 过滤）与取消的对称性；
+ * 2) 拖动阈值的边界值，以及换算系数（画布缩放）对阈值的影响；
+ * 3) 松手瞬间的时序（最后一次 move 之后限制/缩放变了会怎样）；
+ * 4) 键盘 nudge 的累加语义依赖调用方；接口在空事件下的健壮性。
+ *
+ * it.fails = 契约应当成立而当前实现不成立的最小复现，缺陷记在 _IRL-REVIEW-E-1.md。
+ */
+import { describe, expect, it, vi } from "vitest";
+import { effectScope, type EffectScope } from "vue";
+import { useResizeGesture, type ResizeGestureOptions } from "../useResizeGesture";
+import { sizeLimits, type ResizeBox } from "../../interactive/resize";
+
+const LIMITS = sizeLimits(120, 80, 640, 480);
+const BASE: ResizeBox = { x: 200, y: 150, w: 320, h: 240 };
+
+interface Extra {
+  pointerId?: number;
+  button?: number;
+  isPrimary?: boolean;
+}
+
+/** jsdom 没有 PointerEvent 时也能构造带 pointerId / isPrimary 的事件。 */
+function pe(type: string, x: number, y: number, extra: Extra = {}): PointerEvent {
+  const event = new MouseEvent(type, {
+    clientX: x,
+    clientY: y,
+    bubbles: true,
+    cancelable: true,
+    button: extra.button ?? 0,
+  });
+  if (extra.pointerId !== undefined) {
+    Object.defineProperty(event, "pointerId", { value: extra.pointerId, configurable: true });
+  }
+  if (extra.isPrimary !== undefined) {
+    Object.defineProperty(event, "isPrimary", { value: extra.isPrimary, configurable: true });
+  }
+  return event as unknown as PointerEvent;
+}
+
+interface Harness {
+  api: ReturnType<typeof useResizeGesture>;
+  scope: EffectScope;
+  previews: ResizeBox[];
+  commits: { box: ResizeBox; reason: string }[];
+  cancels: ResizeBox[];
+}
+
+function harness(overrides: Partial<ResizeGestureOptions> = {}): Harness {
+  const scope = effectScope();
+  const previews: ResizeBox[] = [];
+  const commits: { box: ResizeBox; reason: string }[] = [];
+  const cancels: ResizeBox[] = [];
+  let api!: ReturnType<typeof useResizeGesture>;
+  scope.run(() => {
+    api = useResizeGesture({
+      box: () => ({ ...BASE }),
+      limits: () => LIMITS,
+      onPreview: (box) => previews.push({ ...box }),
+      onCommit: (box, reason) => commits.push({ box: { ...box }, reason }),
+      onCancel: (box) => cancels.push({ ...box }),
+      ...overrides,
+    });
+  });
+  return { api, scope, previews, commits, cancels };
+}
+
+const press = (
+  api: ReturnType<typeof useResizeGesture>,
+  handle: "se" | "nw" | "e" | "w",
+  extra: Extra = {},
+) => api.onHandleDown(handle, pe("pointerdown", 0, 0, extra));
+
+describe("指针身份：同一个拖动只认一根指针", () => {
+  it("另一根手指的 pointerup 不会结束当前拖动", () => {
+    const h = harness();
+    press(h.api, "se", { pointerId: 1 });
+    document.dispatchEvent(pe("pointermove", 40, 40, { pointerId: 1 }));
+    document.dispatchEvent(pe("pointerup", 999, 999, { pointerId: 2 }));
+    expect(h.commits).toHaveLength(0);
+    document.dispatchEvent(pe("pointerup", 40, 40, { pointerId: 1 }));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(BASE.w + 40);
+  });
+
+  it("修复后（F3）：三个不同 pointerId 的 pointercancel 都不回滚当前拖动；后续仍能正常提交", () => {
+    const h = harness();
+    press(h.api, "se", { pointerId: 1 });
+    document.dispatchEvent(pe("pointermove", 40, 40, { pointerId: 1 }));
+    for (const foreign of [2, 7, 99]) {
+      document.dispatchEvent(pe("pointercancel", 40, 40, { pointerId: foreign }));
+    }
+    expect(h.cancels).toHaveLength(0);
+    expect(h.api.active.value).toBe(true);
+    document.dispatchEvent(pe("pointermove", 60, 60, { pointerId: 1 }));
+    document.dispatchEvent(pe("pointerup", 60, 60, { pointerId: 1 }));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(BASE.w + 60);
+  });
+
+  it("没有 pointerId 的指针（老浏览器 / 合成事件的 pointercancel）仍然回滚", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 40, 40));
+    document.dispatchEvent(pe("pointercancel", 40, 40));
+    expect(h.cancels).toEqual([BASE]);
+  });
+
+  it("修复后（F3）：同一个 pointerId 的 pointercancel 仍然照常回滚（没有矫枉过正）", () => {
+    const h = harness();
+    press(h.api, "se", { pointerId: 5 });
+    document.dispatchEvent(pe("pointermove", 40, 40, { pointerId: 5 }));
+    document.dispatchEvent(pe("pointercancel", 40, 40, { pointerId: 5 }));
+    expect(h.cancels).toEqual([BASE]);
+    expect(h.commits).toHaveLength(0);
+    expect(h.api.active.value).toBe(false);
+  });
+
+  it("isPrimary=false 的按下被忽略：既不打断已有拖动，也不开新的", () => {
+    const h = harness();
+    press(h.api, "se", { pointerId: 1 });
+    document.dispatchEvent(pe("pointermove", 40, 40, { pointerId: 1 }));
+    press(h.api, "nw", { pointerId: 2, isPrimary: false });
+    expect(h.cancels).toHaveLength(0);
+    document.dispatchEvent(pe("pointermove", 60, 60, { pointerId: 1 }));
+    document.dispatchEvent(pe("pointerup", 60, 60, { pointerId: 1 }));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(BASE.w + 60);
+  });
+
+  it("中键按下不进入拖动（只接主键）", () => {
+    const h = harness();
+    press(h.api, "se", { button: 1 });
+    document.dispatchEvent(pe("pointermove", 60, 60));
+    document.dispatchEvent(pe("pointerup", 60, 60));
+    expect(h.previews).toHaveLength(0);
+    expect(h.commits).toHaveLength(0);
+  });
+});
+
+describe("阈值与换算系数", () => {
+  it("修复后（F2）：1px 屏幕抖动在 5 种换算系数下都不进入拖动、不提交", () => {
+    for (const scale of [0.25, 0.5, 1, 2, 4]) {
+      const h = harness({ scale: () => scale });
+      h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+      document.dispatchEvent(pe("pointermove", 1, 0));
+      document.dispatchEvent(pe("pointerup", 1, 0));
+      expect(h.previews).toHaveLength(0);
+      expect(h.commits).toHaveLength(0);
+    }
+  });
+
+  it("修复后（F2）：2px 屏幕位移在每种系数下都开始拖动，尺寸 = 2 × 系数（阈值按屏幕像素）", () => {
+    const cases: { scale: number; expected: number }[] = [
+      { scale: 0.25, expected: 0.5 },
+      { scale: 0.5, expected: 1 },
+      { scale: 1, expected: 2 },
+      { scale: 2, expected: 4 },
+      { scale: 4, expected: 8 },
+    ];
+    for (const item of cases) {
+      const h = harness({ scale: () => item.scale });
+      h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+      document.dispatchEvent(pe("pointermove", 2, 0));
+      document.dispatchEvent(pe("pointerup", 2, 0));
+      expect(h.commits).toHaveLength(1);
+      expect(h.commits[0].box.w).toBe(BASE.w + item.expected);
+    }
+  });
+
+  it("修复后（F2）：阈值与缩放无关——0.25 与 4 两种系数下 1px / 2px 的分界一致", () => {
+    for (const scale of [0.25, 4]) {
+      const short = harness({ scale: () => scale });
+      short.api.onHandleDown("se", pe("pointerdown", 0, 0));
+      document.dispatchEvent(pe("pointermove", 1, 0));
+      document.dispatchEvent(pe("pointerup", 1, 0));
+      expect(short.commits).toHaveLength(0);
+
+      const enough = harness({ scale: () => scale });
+      enough.api.onHandleDown("se", pe("pointerdown", 0, 0));
+      document.dispatchEvent(pe("pointermove", 2, 0));
+      document.dispatchEvent(pe("pointerup", 2, 0));
+      expect(enough.commits).toHaveLength(1);
+    }
+  });
+
+  it("位移相对按下点计算：按下点不在原点时阈值同样成立", () => {
+    const short = harness();
+    short.api.onHandleDown("se", pe("pointerdown", 100, 80));
+    document.dispatchEvent(pe("pointermove", 101, 80));
+    document.dispatchEvent(pe("pointerup", 101, 80));
+    expect(short.commits).toHaveLength(0);
+
+    const enough = harness();
+    enough.api.onHandleDown("se", pe("pointerdown", 100, 80));
+    document.dispatchEvent(pe("pointermove", 102, 80));
+    document.dispatchEvent(pe("pointerup", 102, 80));
+    expect(enough.commits).toHaveLength(1);
+    expect(enough.commits[0].box.w).toBe(BASE.w + 2);
+  });
+
+  it("反方向 2px 同样触发（阈值看绝对值），尺寸变小", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 100, 100));
+    document.dispatchEvent(pe("pointermove", 98, 100));
+    document.dispatchEvent(pe("pointerup", 98, 100));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(BASE.w - 2);
+  });
+
+  it("阈值语义（沿用旧实现）：任一轴达到 2px 就算拖动，对角 2px/1px 也算", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 2, 1));
+    expect(h.previews).toHaveLength(1);
+    document.dispatchEvent(pe("pointerup", 2, 1));
+    expect(h.commits).toHaveLength(1);
+  });
+
+  it("换算系数 0 / 负数 / NaN 都退回 1", () => {
+    for (const scale of [0, -3, Number.NaN]) {
+      const h = harness({ scale: () => scale });
+      h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+      document.dispatchEvent(pe("pointermove", 50, 30));
+      document.dispatchEvent(pe("pointerup", 50, 30));
+      expect(h.commits).toHaveLength(1);
+      expect(h.commits[0].box.w).toBe(BASE.w + 50);
+      expect(h.commits[0].box.h).toBe(BASE.h + 30);
+    }
+  });
+
+  it("换算系数每次 move 重新求值：拖动中改缩放会按新系数整体重算（画面会跳一下）", () => {
+    let scale = 1;
+    const h = harness({ scale: () => scale });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 10, 0));
+    expect(h.previews[h.previews.length - 1].w).toBe(BASE.w + 10);
+    scale = 2;
+    document.dispatchEvent(pe("pointermove", 20, 0));
+    expect(h.previews[h.previews.length - 1].w).toBe(BASE.w + 40);
+  });
+});
+
+describe("取消即恢复：四类取消源", () => {
+  it("拖动中连按两次 Esc 只回调一次（第一次已经清干净）", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 80, 60));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(h.cancels).toHaveLength(1);
+    expect(h.commits).toHaveLength(0);
+  });
+
+  it("阈值之内的 Esc 不回调（没有需要恢复的东西）", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 1, 1));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(h.cancels).toHaveLength(0);
+  });
+
+  it("没按下把手时 Esc / window.blur 都不回调", () => {
+    const h = harness();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    window.dispatchEvent(new Event("blur"));
+    expect(h.cancels).toHaveLength(0);
+  });
+
+  it("成功松手不回调 onCancel", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 30, 30));
+    document.dispatchEvent(pe("pointerup", 30, 30));
+    expect(h.cancels).toHaveLength(0);
+    expect(h.commits).toHaveLength(1);
+  });
+
+  it("Esc 之后监听已摘除：继续 move 不产生预览", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 80, 60));
+    const before = h.previews.length;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    document.dispatchEvent(pe("pointermove", 200, 200));
+    expect(h.previews).toHaveLength(before);
+  });
+
+  it("window.blur 之后监听已摘除：继续 move 不产生预览", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 80, 60));
+    const before = h.previews.length;
+    window.dispatchEvent(new Event("blur"));
+    document.dispatchEvent(pe("pointermove", 200, 200));
+    expect(h.previews).toHaveLength(before);
+  });
+
+  it("取消后 active 复位，可以重新开始一次拖动", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 80, 60));
+    expect(h.api.active.value).toBe(true);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(h.api.active.value).toBe(false);
+    h.api.onHandleDown("e", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 20, 0));
+    expect(h.api.active.value).toBe(true);
+    document.dispatchEvent(pe("pointerup", 20, 0));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(BASE.w + 20);
+  });
+});
+
+describe("松手瞬间的时序", () => {
+  it("提交的数值与最后一次预览完全一致", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 31, 17));
+    document.dispatchEvent(pe("pointermove", 62, 34));
+    document.dispatchEvent(pe("pointerup", 62, 34));
+    expect(h.commits[0].box).toEqual(h.previews[h.previews.length - 1]);
+  });
+
+  it("修复后（W5）：最后一次 move 之后可用区域缩小，提交按当下限制复算（不超界）", () => {
+    let limits = LIMITS;
+    const h = harness({ limits: () => limits });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 500, 500));
+    expect(h.previews[h.previews.length - 1].w).toBe(LIMITS.maxW);
+    expect(h.previews[h.previews.length - 1].h).toBe(LIMITS.maxH);
+    limits = sizeLimits(120, 80, 420, 310);
+    document.dispatchEvent(pe("pointerup", 500, 500));
+    expect(h.commits[0].box.w).toBe(420);
+    expect(h.commits[0].box.h).toBe(310);
+  });
+
+  it("修复后（W5）：拉西边时复算仍然保持对边固定（右边界不动、左下角不漂）", () => {
+    let limits = LIMITS;
+    const h = harness({ limits: () => limits });
+    h.api.onHandleDown("w", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 100, 0));
+    expect(h.previews[h.previews.length - 1].w).toBe(BASE.w - 100);
+    limits = sizeLimits(300, 80, 640, 480);
+    document.dispatchEvent(pe("pointerup", 100, 0));
+    expect(h.commits[0].box.w).toBe(300);
+    expect(h.commits[0].box.x + h.commits[0].box.w).toBe(BASE.x + BASE.w);
+  });
+
+  it("行为说明（W5 的对称面）：松手前限制变大时，提交会比最后一次预览更大（松手跳一下）", () => {
+    let limits = sizeLimits(120, 80, 420, 310);
+    const h = harness({ limits: () => limits });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 500, 500));
+    expect(h.previews[h.previews.length - 1].w).toBe(420);
+    limits = LIMITS;
+    document.dispatchEvent(pe("pointerup", 500, 500));
+    expect(h.commits[0].box.w).toBe(LIMITS.maxW);
+  });
+});
+
+describe("键盘 nudge", () => {
+  it("用调用方当前的框：调用方每步应用提交，步进就会累加", () => {
+    let box: ResizeBox = { ...BASE };
+    const h = harness({
+      box: () => ({ ...box }),
+      onCommit: (next) => {
+        box = { ...next };
+      },
+    });
+    h.api.nudge("w", 1);
+    h.api.nudge("w", 1);
+    expect(box.w).toBe(BASE.w + 48);
+  });
+
+  it("调用方契约：没有同步应用提交时，连续 nudge 得到同一个目标（丢更新）", () => {
+    const h = harness();
+    h.api.nudge("w", 1);
+    h.api.nudge("w", 1);
+    expect(h.commits.map((item) => item.box.w)).toEqual([BASE.w + 24, BASE.w + 24]);
+  });
+
+  it("立即用当前限制：上限收紧后马上夹住", () => {
+    let limits = LIMITS;
+    const h = harness({ limits: () => limits });
+    limits = sizeLimits(120, 80, BASE.w + 4, 480);
+    h.api.nudge("w", 1);
+    expect(h.commits[0].box.w).toBe(BASE.w + 4);
+  });
+
+  it("步长 0 时提交一份没变的框（调用方要自己防重复提交）", () => {
+    const h = harness({ step: 0 });
+    h.api.nudge("h", 1);
+    expect(h.commits[0].box.h).toBe(BASE.h);
+  });
+});
+
+describe("接口健壮性", () => {
+  it("onHandleDown(null) 安全：不抛、不附着监听、不提交", () => {
+    const h = harness();
+    expect(() => h.api.onHandleDown("se", null)).not.toThrow();
+    document.dispatchEvent(pe("pointermove", 100, 100));
+    document.dispatchEvent(pe("pointerup", 100, 100));
+    expect(h.previews).toHaveLength(0);
+    expect(h.commits).toHaveLength(0);
+  });
+
+  it("按下时 preventDefault + stopPropagation（不要同时启动宿主的拖拽 / 选择）", () => {
+    const h = harness();
+    const event = pe("pointerdown", 0, 0);
+    const prevent = vi.fn();
+    const stop = vi.fn();
+    Object.defineProperty(event, "preventDefault", { value: prevent, configurable: true });
+    Object.defineProperty(event, "stopPropagation", { value: stop, configurable: true });
+    h.api.onHandleDown("se", event);
+    expect(prevent).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("未拖动时 scope.stop() 不回调 onCancel", () => {
+    const h = harness();
+    h.scope.stop();
+    expect(h.cancels).toHaveLength(0);
+  });
+
+  it("拖动中 scope.stop()：先恢复再摘监听", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 80, 60));
+    const before = h.previews.length;
+    h.scope.stop();
+    expect(h.cancels).toEqual([BASE]);
+    document.dispatchEvent(pe("pointermove", 200, 200));
+    expect(h.previews).toHaveLength(before);
+  });
+
+  it("重复按下时先恢复上一次：恢复的是按下那一刻的快照", () => {
+    const h = harness();
+    press(h.api, "se");
+    document.dispatchEvent(pe("pointermove", 60, 60));
+    press(h.api, "nw");
+    expect(h.cancels).toEqual([BASE]);
+    document.dispatchEvent(pe("pointermove", 10, 10));
+    document.dispatchEvent(pe("pointerup", 10, 10));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.x).toBe(BASE.x + 10);
+    expect(h.commits[0].box.w).toBe(BASE.w - 10);
+  });
+});

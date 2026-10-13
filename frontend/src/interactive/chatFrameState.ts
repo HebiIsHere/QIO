@@ -36,10 +36,15 @@ export function setChatCollapsed(isCollapsed: boolean): void {
   collapsed.value = Boolean(isCollapsed);
 }
 
-/** 收起状态下浮层**不应**按它避让：返回 null 表示「这块空间是可用的」。 */
+/**
+ * 收起状态下浮层**不应**按它避让：返回 null 表示「这块空间是可用的」。
+ *
+ * 与 `readChatFrame` 一样返回**副本**：下游拿去做几何换算时常常会就地改几个字段，
+ * 返回活引用会把这些改动写回发布源（E 复核 F4）。
+ */
 export function chatObstacleFrame(): ChatFrame | null {
   if (collapsed.value) return null;
-  return frame.value;
+  return frame.value ? { ...frame.value } : null;
 }
 
 export function resetChatFrameState(): void {

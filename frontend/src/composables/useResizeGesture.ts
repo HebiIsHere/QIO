@@ -12,6 +12,7 @@ import { onScopeDispose, ref, type Ref } from "vue";
 import {
   RESIZE_DRAG_THRESHOLD,
   RESIZE_STEP,
+  boxEquals,
   resizeBox,
   stepBox,
   type ResizeBox,
@@ -35,6 +36,9 @@ export interface ResizeGestureOptions {
   step?: number;
 }
 
+/** 「这次拖动没有改变任何数值」的容差：只滤掉真正的空操作，不吞掉亚像素位移。 */
+const NOOP_EPSILON = 0.01;
+
 interface PointerLike {
   clientX?: number;
   clientY?: number;
@@ -56,6 +60,9 @@ export function useResizeGesture(options: ResizeGestureOptions) {
   let handle: ResizeHandle | null = null;
   let originX = 0;
   let originY = 0;
+  /** 最近一次指针位移（屏幕像素，**未**乘 scale）—— 阈值判定与松手复算都用它。 */
+  let lastScreenDx = 0;
+  let lastScreenDy = 0;
   let pointerId: number | null = null;
   let started = false;
   let latest: ResizeBox | null = null;
@@ -78,6 +85,8 @@ export function useResizeGesture(options: ResizeGestureOptions) {
     pointerId = null;
     started = false;
     latest = null;
+    lastScreenDx = 0;
+    lastScreenDy = 0;
     active.value = false;
   }
 
@@ -120,27 +129,49 @@ export function useResizeGesture(options: ResizeGestureOptions) {
   function onPointerMove(event: PointerLike | null | undefined): void {
     if (!event || !snapshot || !handle) return;
     if (pointerId !== null && typeof event.pointerId === "number" && event.pointerId !== pointerId) return;
-    const scale = finiteScale(options.scale?.());
-    const dx = (Number(event.clientX ?? 0) - originX) * scale;
-    const dy = (Number(event.clientY ?? 0) - originY) * scale;
+    // 阈值必须在**屏幕位移**上判定：低缩放下（zoom 0.25 → 系数 4）1px 抖动
+    // 换算成 4 个板面单位就会越过 2px 阈值，变成「什么都没拖却改了尺寸」。
+    lastScreenDx = Number(event.clientX ?? 0) - originX;
+    lastScreenDy = Number(event.clientY ?? 0) - originY;
     if (!started) {
-      // 阈值之内算点击：不改尺寸，也不进入「拖动中」。
-      if (Math.abs(dx) < RESIZE_DRAG_THRESHOLD && Math.abs(dy) < RESIZE_DRAG_THRESHOLD) return;
+      if (Math.abs(lastScreenDx) < RESIZE_DRAG_THRESHOLD && Math.abs(lastScreenDy) < RESIZE_DRAG_THRESHOLD) {
+        return;
+      }
       started = true;
       active.value = true;
     }
-    latest = resizeBox(snapshot, handle, dx, dy, options.limits());
+    const scale = finiteScale(options.scale?.());
+    latest = resizeBox(snapshot, handle, lastScreenDx * scale, lastScreenDy * scale, options.limits());
     options.onPreview(latest);
   }
 
   function onPointerUp(event: PointerLike | null | undefined): void {
     if (pointerId !== null && typeof event?.pointerId === "number" && event.pointerId !== pointerId) return;
-    const commit = started ? latest : null;
+    const base = started ? snapshot : null;
+    const startedHandle = handle;
+    // 松手时按**当下**的限制再算一次：拖动期间窗口可能被缩小，直接交最后一次预览
+    // 会把一个此刻已经超界的框提交出去（E 复核的 W5）。
+    // scale 只取一次：非纯实现两次调用可能给出不同系数，x / y 会各用一套。
+    const scale = finiteScale(options.scale?.());
+    const commit =
+      base && startedHandle
+        ? resizeBox(base, startedHandle, lastScreenDx * scale, lastScreenDy * scale, options.limits())
+        : null;
     reset();
-    if (commit) options.onCommit(commit, "pointer");
+    if (!commit || !base) return;
+    // 拖动又回到起点：数值没变就不提交（不产生一次无意义的板面保存）。
+    // 容差取 0.01 而不是 boxEquals 默认的 0.5：0.5 会把「低缩放下的半像素位移」也当成没动，
+    // 于是 2px 屏幕位移在 zoom 0.25 下变成一次都不提交（E 用例 F2 的分界矩阵）。
+    if (boxEquals(commit, base, NOOP_EPSILON)) return;
+    // 复算结果与最后一次预览不同（拖动期间限制变了）时，先把最终框推给显示层再提交，
+    // 否则用户会看到「松手之后自己跳一下」（E 复核的 R2：预览 420 → 提交 640）。
+    if (!latest || !boxEquals(commit, latest, NOOP_EPSILON)) options.onPreview(commit);
+    options.onCommit(commit, "pointer");
   }
 
-  function onPointerCancel(): void {
+  function onPointerCancel(event: PointerLike | null | undefined): void {
+    // 别的手指（另一个 pointerId）的 cancel 不能回滚**这次**拖动。
+    if (pointerId !== null && typeof event?.pointerId === "number" && event.pointerId !== pointerId) return;
     cancel();
   }
 

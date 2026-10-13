@@ -50,6 +50,17 @@ export function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+/** 位移净化：非有限数（NaN / ±Infinity 造成的 NaN 中间量）按「没动」处理。 */
+function delta(value: number): number {
+  return Number.isFinite(value) ? value : 0;
+}
+
+/** 可用区域是否已经量到：0 / 负数 / NaN 一律算「还不知道」。 */
+export function usableArea(area: { w: number; h: number } | null | undefined): boolean {
+  if (!area) return false;
+  return Number.isFinite(area.w) && Number.isFinite(area.h) && area.w > 0 && area.h > 0;
+}
+
 /**
  * 归一化上下限。
  * 关键：`min` 不允许超过 `max`，否则会出现「最小值比屏幕还宽」的死结（任务书 §3.5）。
@@ -71,6 +82,12 @@ export function limitsForArea(
   min: { w: number; h: number },
   pad = 0,
 ): SizeLimits {
+  // 布局还没量到（首帧 / 容器 display:none / jsdom）时**不能**给出 {maxW:1,maxH:1}：
+  // 那会让一次拖动或一次恢复把卡片 / 窗口压成 1×1（IRL-E 的第一阶段复核 W4）。
+  // 「还不知道可用区域」的正确语义是「没有上界」，等真的量到再收紧。
+  if (!usableArea(area)) {
+    return sizeLimits(min.w, min.h, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+  }
   const availW = Math.max(1, area.w - Math.max(0, pad));
   const availH = Math.max(1, area.h - Math.max(0, pad));
   return sizeLimits(min.w, min.h, availW, availH);
@@ -103,20 +120,22 @@ export function resizeBox(
 ): ResizeBox {
   const right = start.x + start.w;
   const bottom = start.y + start.h;
+  const ddx = delta(dx);
+  const ddy = delta(dy);
   let { x, y, w, h } = start;
 
   if (handle.includes("e")) {
-    w = clampNumber(start.w + dx, limits.minW, limits.maxW);
+    w = clampNumber(start.w + ddx, limits.minW, limits.maxW);
   }
   if (handle.includes("w")) {
-    w = clampNumber(start.w - dx, limits.minW, limits.maxW);
+    w = clampNumber(start.w - ddx, limits.minW, limits.maxW);
     x = right - w;
   }
   if (handle.includes("s")) {
-    h = clampNumber(start.h + dy, limits.minH, limits.maxH);
+    h = clampNumber(start.h + ddy, limits.minH, limits.maxH);
   }
   if (handle.includes("n")) {
-    h = clampNumber(start.h - dy, limits.minH, limits.maxH);
+    h = clampNumber(start.h - ddy, limits.minH, limits.maxH);
     y = bottom - h;
   }
   return { x, y, w, h };
@@ -133,12 +152,12 @@ export function stepBox(
   limits: SizeLimits,
   step = RESIZE_STEP,
 ): ResizeBox {
-  const delta = (direction >= 0 ? 1 : -1) * Math.abs(step);
+  const amount = (direction >= 0 ? 1 : -1) * Math.abs(Number.isFinite(step) ? step : RESIZE_STEP);
   if (axis === "w") {
     return {
       x: start.x,
       y: start.y,
-      w: clampNumber(start.w + delta, limits.minW, limits.maxW),
+      w: clampNumber(start.w + amount, limits.minW, limits.maxW),
       h: start.h,
     };
   }
@@ -146,7 +165,7 @@ export function stepBox(
     x: start.x,
     y: start.y,
     w: start.w,
-    h: clampNumber(start.h + delta, limits.minH, limits.maxH),
+    h: clampNumber(start.h + amount, limits.minH, limits.maxH),
   };
 }
 
@@ -159,6 +178,18 @@ export function convergeBox(
   area: { w: number; h: number },
   origin: Point = { x: 0, y: 0 },
 ): ResizeBox {
+  // 还不知道可用区域时只保证「尺寸有效」：把 0 / NaN 变成一个像素，
+  // 但**不**把用户的框压成 1×1（首帧量不到布局就缩窗口是 E 复核的 W4）。
+  if (!usableArea(area)) {
+    const finite = (value: number, fallback: number) =>
+      Number.isFinite(value) && value > 0 ? value : fallback;
+    return {
+      x: Math.max(origin.x, Number.isFinite(box.x) ? box.x : origin.x),
+      y: Math.max(origin.y, Number.isFinite(box.y) ? box.y : origin.y),
+      w: finite(box.w, 1),
+      h: finite(box.h, 1),
+    };
+  }
   const availW = Math.max(1, area.w);
   const availH = Math.max(1, area.h);
   const w = clampNumber(box.w, 1, availW);
@@ -228,27 +259,54 @@ export function findFreeSlot(input: FreeSlotInput): ResizeBox {
   let best: ResizeBox | null = null;
   let bestOverlap = Number.POSITIVE_INFINITY;
 
+  function score(x: number, y: number): number {
+    let overlap = 0;
+    for (const obstacle of input.obstacles) {
+      overlap += overlapArea(
+        { x: x - gap, y: y - gap, w: w + gap * 2, h: h + gap * 2 },
+        obstacle,
+      );
+      if (overlap >= bestOverlap) return overlap;
+    }
+    return overlap;
+  }
+
+  function tryAt(x: number, y: number): ResizeBox | null {
+    if (x < input.area.x || y < input.area.y || x > maxX || y > maxY) return null;
+    const overlap = score(x, y);
+    if (overlap === 0) return { x, y, w, h };
+    if (overlap < bestOverlap) {
+      bestOverlap = overlap;
+      best = { x, y, w, h };
+    }
+    return null;
+  }
+
+  // 第一轮：**贴着障碍边缘**的候选。
+  // 为什么要有这一轮：均匀网格的步长如果比空档还大，就会从空档上跨过去 ——
+  // 明明放得下，却报「放不下」。障碍的右 / 下边缘 + gap 正是最可能出现空档的位置。
+  const xs = new Set<number>([input.area.x, maxX]);
+  const ys = new Set<number>([input.area.y, maxY]);
+  for (const obstacle of input.obstacles) {
+    xs.add(obstacle.x + obstacle.w + gap);
+    xs.add(obstacle.x - w - gap);
+    ys.add(obstacle.y + obstacle.h + gap);
+    ys.add(obstacle.y - h - gap);
+  }
+  const sortedX = [...xs].sort((a, b) => a - b);
+  const sortedY = [...ys].sort((a, b) => a - b);
+  for (const y of sortedY) {
+    for (const x of sortedX) {
+      const hit = tryAt(x, y);
+      if (hit) return hit;
+    }
+  }
+
+  // 第二轮：均匀网格兜底（覆盖大面积空白，且保证确定性顺序）。
   for (let y = input.area.y; y <= maxY; y += stepY) {
     for (let x = input.area.x; x <= maxX; x += stepX) {
-      const candidate: ResizeBox = { x, y, w, h };
-      let overlap = 0;
-      for (const obstacle of input.obstacles) {
-        overlap += overlapArea(
-          {
-            x: candidate.x - gap,
-            y: candidate.y - gap,
-            w: candidate.w + gap * 2,
-            h: candidate.h + gap * 2,
-          },
-          obstacle,
-        );
-        if (overlap >= bestOverlap) break;
-      }
-      if (overlap === 0) return candidate;
-      if (overlap < bestOverlap) {
-        bestOverlap = overlap;
-        best = candidate;
-      }
+      const hit = tryAt(x, y);
+      if (hit) return hit;
     }
   }
   if (best) return best;

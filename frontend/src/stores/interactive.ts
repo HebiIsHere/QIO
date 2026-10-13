@@ -260,6 +260,20 @@ export const useInteractiveStore = defineStore("interactive", () => {
   /** 提交回执丢失但已查询确认受理时的如实说明 */
   const submitNote = ref<string | null>(null);
 
+  /**
+   * 上面两条说明是否仍属于**当前**阶段（任务书 §5.2 / §5.3）。
+   *
+   * 为什么要有这两个判据：说明是**写下它的那个阶段**的事实。受理说明说的是「正在理解」，
+   * 理解一旦有结论（理解完成 / 本次无需任务 / 需要补充 / 理解失败），它就只是历史 ——
+   * 继续与当前状态并列显示，就会出现「本次无需开展任务」下面还压着一句「正在理解」。
+   * 判据只取服务端事实（本次理解是否结束），不引入第二套时钟；两个 ref 本身的值与既有
+   * 语义保持不变，只是给消费者一条「这条说明是当前事实还是历史」的明确归属。
+   */
+  const submitNoteOwnsCurrentStage = computed(() => !understandingSettled(understandingStatus.value));
+  const understandingNoteOwnsCurrentStage = computed(
+    () => !understandingSettled(understandingStatus.value),
+  );
+
   /** 本板面的真实执行记录（服务端事实，前端不自己拼进度） */
   const executions = ref<Execution[]>([]);
   const executionError = ref<string | null>(null);
@@ -1486,10 +1500,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const readLocalRev = boardLocalRev;
     const readCleanRev = boardCleanRev;
     const readSeq = ++boardReadSeq;
+    /**
+     * 板面身份一变，上一个板面的提交 / 理解事实就不属于这里（任务书 §5.7）：
+     * 不整块归零的话，切过来还会看到上一个板面的「已提交 / 待审批」，
+     * 而迟到的理解回执也可能落到新板面上。
+     */
+    if (requestedBoardId !== statusBoardId) resetSubmissionStatusForBoard(requestedBoardId);
     const payload = await api.fetchBoardState(requestedBoardId);
     // 板面已经切走：这次回执不属于当前板面，按板面身份保护丢弃（不能串用别板面的版本）
     if (boardId.value !== requestedBoardId) return false;
     boardId.value = payload.board.id;
+    // 服务端可能给出规范化的板面 id：以它为准，下一次读取（同一个板面）才不会误判成切换
+    statusBoardId = payload.board.id;
     submissions.value = payload.submissions ?? [];
     /*
      * 板面候选的落地决定（M1/06）必须排在草稿合并**之前**：
@@ -3657,6 +3679,38 @@ export const useInteractiveStore = defineStore("interactive", () => {
     acceptedUnderstandingId.value = null;
   }
 
+  /** 当前这份「提交 / 理解事实」属于哪个板面：板面一换，这些事实就不属于当前板面。 */
+  let statusBoardId = boardId.value;
+
+  /**
+   * 板面切换：把上一个板面的提交 / 理解事实整块归零（任务书 §5.7）。
+   *
+   * 只清「显示与查询」的状态：理解查询代次前进，因此迟到的理解回执再也落地不了；
+   * 板面内容、草稿、勾选、执行记录都不动 —— 它们各自由对应板面的读取负责。
+   */
+  function resetSubmissionStatusForBoard(nextBoardId: string): void {
+    statusBoardId = nextBoardId;
+    understandingEpoch += 1;
+    understandingBoundSubmissionId = null;
+    stopUnderstandingPolling();
+    understanding.value = null;
+    understandings.value = [];
+    understandingStatus.value = null;
+    understandingError.value = null;
+    understandingNote.value = null;
+    acceptedUnderstandingId.value = null;
+    submitNote.value = null;
+    submitStatus.value = "idle";
+    submitError.value = null;
+    submitResultUnknown.value = false;
+    submitRefreshState.value = "idle";
+    submitRefreshError.value = null;
+    submitAcceptedByLookup.value = false;
+    acceptanceLookupNote.value = null;
+    lastAcceptance.value = null;
+    lastSubmission.value = null;
+  }
+
   /** 把一次查询结果落成界面事实：最近一次 + 历史，不做任何推断。 */
   function adoptUnderstandings(
     payload: UnderstandingResponse | null | undefined,
@@ -3753,6 +3807,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return null;
     }
     acceptanceLookupPending.value = true;
+    /**
+     * 这次查证属于**发起时那一次提交**（任务书 §5.7）。返回时只要已经换过一代提交
+     * （用户重新提交 / 换过板面），或正在提交新的一次，这次回执就是迟到的：
+     * 不落地 —— 迟到的受理事实绝不许覆盖更新的提交状态与说明。
+     */
+    const lookupEpoch = understandingEpoch;
+    const lookupBoardId = boardId.value;
     let payload: { acceptance: AcceptanceLookup | null; reason?: string };
     try {
       payload = await api.fetchAcceptance(boardId.value, identity!.clientRequestId);
@@ -3766,6 +3827,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return null;
     }
     acceptanceLookupPending.value = false;
+    if (
+      lookupEpoch !== understandingEpoch ||
+      boardId.value !== lookupBoardId ||
+      submitStatus.value === "submitting"
+    ) {
+      return null;
+    }
     const acceptance = payload?.acceptance ?? null;
     if (!acceptanceMatchesIdentity(identity, acceptance)) {
       // 查不到，或者查到的记录与这次请求的内容不一致 —— 都不是这次受理的证据
@@ -4173,6 +4241,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submissionStage,
     /** 回执丢失但查询确认受理时的如实说明 */
     submitNote,
+    /**
+     * 说明的阶段归属（任务书 §5.2 / §5.3）：false = 理解已经有结论，
+     * 这条说明只是历史，界面不得再把它与当前状态并列显示。
+     */
+    submitNoteOwnsCurrentStage,
+    understandingNoteOwnsCurrentStage,
     visibleRange,
     intents,
     conflicts,

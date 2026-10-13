@@ -74,6 +74,40 @@ const batches = computed(() =>
 );
 /** 每一批的选中项各自独立（键 = 批次 key） */
 const selectedByBatch = ref<Record<string, string[]>>({});
+
+/**
+ * 待审批出现时**主动展开**必要的审批入口（任务书 §5.4）。
+ *
+ * 只对**本次提交**（当前理解请求）产出的待审批条目生效，而且只认「本会话里从 0 变成有」
+ * 这个真实变化：
+ * - 恢复出来的旧批次不抢用户的开合决定（挂载时不会自己弹开）；
+ * - 用户手动收起之后也不抢回来（同一个理解请求只主动展开一次）；
+ * - 没有可展示的批次（不足四项）时不开 —— 那种情况下审批入口在提交区与任务浮条里。
+ * 空间不足时既有几何层会二选一，并给出明确的切换条，内容都不丢。
+ */
+const currentUnderstandingId = computed(
+  () => store.understanding?.id ?? store.acceptedUnderstandingId ?? null,
+);
+const pendingInCurrentUnderstanding = computed(
+  () =>
+    store.understandingIntents.filter((item) =>
+      ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
+    ).length,
+);
+let autoOpenedFor: string | null = null;
+watch(
+  [currentUnderstandingId, pendingInCurrentUnderstanding],
+  ([understandingId, pending], [previousId, previousPending]) => {
+    if (!understandingId || !pending) return;
+    // 同一批的后续增长（例如又同步出几条）不重复抢开合
+    if (previousId === understandingId && previousPending > 0) return;
+    if (autoOpenedFor === understandingId) return;
+    if (!batches.value.length) return;
+    autoOpenedFor = understandingId;
+    store.batchOpen = true;
+    scheduleMeasure();
+  },
+);
 const busy = ref(false);
 const notice = ref<string | null>(null);
 const error = ref<string | null>(null);

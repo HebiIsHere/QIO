@@ -160,6 +160,16 @@ function boardContentConflict(cardId: string): { local: string; server: string }
 
 const checkable = computed(() => CHECKABLE_KINDS.includes(props.card.kind));
 const kindLabel = computed(() => CARD_KIND_LABELS[props.card.kind]);
+
+/**
+  许可的完整说明（任务书 §6.6）：勾选框只留一句短文案，规则原文放进旁边的「说明」详情。
+
+  「提交后仍然有效、只有用户主动取消才失效」是硬约束（§6.7 的许可边界）：
+  提交成功 / 失败 / 超时 / 重复 / 恢复 / 重启 / 模式切换都不自动取消许可；
+  隐藏或删除这张卡才会让它退出查看范围。这段话是**唯一**一份说明，卡片正文不重复铺开。
+*/
+const LICENSE_FULL_TEXT =
+  "许可：允许 QIO 查看这张卡（提交后仍然有效，只有你手动取消才失效）—— 覆盖卡里的全部文字、代码与链接；隐藏或删除这张卡才会退出查看范围。";
 const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
@@ -416,13 +426,22 @@ async function pickAttachment(): Promise<void> {
 const firstLine = computed(() => (props.card.content || "").trim().split("\n")[0].trim());
 
 /**
-  标题层：材料自己的名字 / 网址标题 / 代码语言；文字注释没有独立标题（正文就是它本身），
-  只有折叠后才用首行顶上，保证折叠卡片仍然认得出是哪一条。
+  标题层：材料自己的名字 / 网址标题 / 代码语言 / 文字卡的第一个标题块。
+
+  文字注释只有折叠后才用首行顶上（折叠态只剩标题，必须认得出是哪一条）；
+  常态下它的「标题」是正文里的标题块 —— 没有标题块时正文自己就是身份，
+  不额外造一个和正文重复的标题。
 */
+function firstHeadingText(): string {
+  const heading = cardDoc.value.blocks.find((block) => block.kind === "heading");
+  return String(heading?.text ?? "").trim();
+}
+
 const titleText = computed(() => {
   if (props.card.kind === "file" || props.card.kind === "image") return name.value || "未命名" + kindLabel.value;
   if (props.card.kind === "url") return linkTitle.value || "（还没有网址）";
   if (props.card.kind === "code") return language.value ? language.value + " 代码" : "代码";
+  if (isTextCard.value) return props.card.folded ? firstHeadingText() || firstLine.value : firstHeadingText();
   return props.card.folded ? firstLine.value : "";
 });
 
@@ -509,6 +528,94 @@ const previewExpanded = computed(() => store.isCardPreviewExpanded(props.card.id
 function togglePreview(): void {
   store.toggleCardPreview(props.card.id);
 }
+
+/* ------------------------------------------------------------------------
+ * 卡片自己的四种显示状态（任务书 §6）：常态 / 阅读展开 / 编辑 / 折叠
+ *
+ * 互斥关系只在这一个计算属性里定死：卡片里同一时刻只可能出现其中一种主体。
+ * 之前「展开的预览」与「正在编辑的正文」可以同时挂在卡片里，用户分不清
+ * 「展开」到底指折成标题、阅读，还是打开编辑器 —— 那是入口含义难分的根源。
+ *
+ * 四种状态都不写板面状态、不产生表达：折叠只改显示，阅读展开只在前端内存，
+ * 编辑内容进既有草稿通道。尺寸调整不在这里参与判断。
+ * ---------------------------------------------------------------------- */
+type CardDisplayState = "normal" | "reading" | "editing" | "folded";
+
+/** 有没有可读材料：文件 / 图片要有**真实已保存的附件**；其它卡片的正文本身就是材料 */
+const readingAvailable = computed(() => (attachKind.value ? attachmentLinked.value : true));
+
+/** 阅读展开时挂的是真实文件预览，还是只把卡片自己的正文当成阅读主体 */
+const hasPreviewMaterial = computed(() => Boolean(attachKind.value) && attachmentLinked.value);
+
+const displayState = computed<CardDisplayState>(() => {
+  if (props.card.folded) return "folded";
+  if (editing.value) return "editing";
+  if (previewExpanded.value && readingAvailable.value) return "reading";
+  return "normal";
+});
+
+/**
+ * 窄 / 矮卡片收一档（任务书 §3.3 / §3.5）。
+ *
+ * 判断用的是**卡片自己的权威尺寸**（板面状态 card.w / card.h），不是视口宽度：
+ * 「一张卡被拉窄」与「窗口变小」是两件事。最小尺寸（180×96）下，头部让出材料类型标签、
+ * 页脚让出更新时间，换来标题、主要操作、必要状态与内容区都还在（内容区高度仍 > 0）。
+ */
+const compactChrome = computed(() => props.card.w < 240 || props.card.h < 140);
+
+/* ------------------------------------------------------------------------
+ * 「更多」：低频操作（复制 / 隐藏 / 书签 / 整理 / 删除）收在一处（任务书 §6.5）
+ *
+ * 面板朝卡片**外侧**展开（与 SelectionMenu 同一套方向规则），不盖标题、连接点与正文；
+ * 面板本身 overflow 可见，否则嵌在里面的「整理」面板会被裁掉。
+ * Esc 只关这个面板（不让板面把同一次 Esc 当成取消拖动）；点到别处就收起。
+ * ---------------------------------------------------------------------- */
+const toolbarRoot = ref<HTMLElement | null>(null);
+const moreOpen = ref(false);
+const moreOpensUp = ref(false);
+
+function toggleMore(): void {
+  if (moreOpen.value) {
+    moreOpen.value = false;
+    return;
+  }
+  moreOpensUp.value = menuOpensUp.value;
+  moreOpen.value = true;
+}
+
+/** 面板里的一次动作：先关闭面板，再把操作交出去（emit 给板面统一 commit） */
+function moreAction(run: () => void): void {
+  moreOpen.value = false;
+  run();
+}
+
+function onMorePointerDown(event: PointerEvent): void {
+  const target = event.target as Node | null;
+  const root = toolbarRoot.value;
+  if (target && root && !root.contains(target)) moreOpen.value = false;
+}
+
+function onMoreKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape" || !moreOpen.value) return;
+  // 先关这个面板：同一次 Esc 不再往下传，板面不会把它当成「取消拖动」
+  event.stopPropagation();
+  moreOpen.value = false;
+}
+
+watch(moreOpen, (open) => {
+  if (open) {
+    document.addEventListener("pointerdown", onMorePointerDown, true);
+    document.addEventListener("keydown", onMoreKeydown);
+  } else {
+    document.removeEventListener("pointerdown", onMorePointerDown, true);
+    document.removeEventListener("keydown", onMoreKeydown);
+  }
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", onMorePointerDown, true);
+  document.removeEventListener("keydown", onMoreKeydown);
+});
 
 /**
  * 预览里的阅读位置（页码 / 幻灯片 / 行 / 缩放）—— 走预览服务落库，**不写板面状态**。
@@ -719,43 +826,81 @@ function cancelEdit() {
 <template>
   <article
     class="card"
-    :class="{ selected, highlight, dragging, folded: card.folded, hidden: card.hidden, reply: card.kind === 'reply' }"
+    :class="{
+      selected,
+      highlight,
+      dragging,
+      folded: card.folded,
+      hidden: card.hidden,
+      reply: card.kind === 'reply',
+      'is-compact': compactChrome,
+    }"
     :style="style"
     data-im="card"
     :data-card-id="card.id"
+    :data-card-state="displayState"
     @pointerdown="onPointerDown"
   >
-    <header class="card-head">
-      <span class="kind mono">{{ kindLabel }}</span>
-      <span v-if="titleText" class="title">{{ titleText }}</span>
-      <button
-        v-if="card.folded"
-        class="chip-btn"
-        type="button"
-        :data-card-id="card.id"
-        @click="emit('toggle', card.id, 'folded')"
-      >
-        展开
-      </button>
+    <header class="card-head" data-im="card-head">
+      <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
+      <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
+      <span v-if="titleText" class="title" data-im="card-title" :title="titleText">{{ titleText }}</span>
       <!--
-        卡片内预览的入口（契约 §3.5）：展开的是**这张卡本身**，不是弹窗、不盖别的卡片。
-        入口与卡片折叠互斥显示：折叠时连正文都没有，先展开卡片再说。
+        整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡允不允许 QIO 查看。
+        文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，这里不重复解释。
+      -->
+      <span
+        v-if="checkable"
+        class="license"
+        :class="card.checked ? 'is-on' : 'is-off'"
+        data-im="card-license"
+        :data-checked="card.checked ? '1' : '0'"
+        role="status"
+        :title="card.checked
+          ? '已允许 QIO 查看：覆盖这张卡里的全部文字、代码与链接'
+          : '未允许查看：QIO 看不到这张卡里的任何内容（提交也不会带上它）'"
+      >{{ card.checked ? "允许 QIO 查看" : "未允许查看" }}</span>
+      <!--
+        两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
+        折叠态只有「恢复卡片」（把卡片展开回常态）；
+        常态 / 阅读态只有「展开预览 / 收起预览」（让正文或文件预览成为主体）。
+        折成标题的动作在工具栏里叫「折成标题」，与这里的「展开」不是一回事。
       -->
       <button
-        v-if="!card.folded"
+        v-if="displayState === 'folded'"
+        class="chip-btn"
+        type="button"
+        data-im="card-unfold"
+        :data-card-id="card.id"
+        title="取消折叠：恢复标题、正文与状态（不改内容）"
+        @click="emit('toggle', card.id, 'folded')"
+      >
+        恢复卡片
+      </button>
+      <!--
+        卡片内阅读展开的入口（契约 §3.5）：展开的是**这张卡本身**，不是弹窗、不盖别的卡片。
+        没有可读材料的卡片不出现这个入口（任务书 §6.4：不给假预览入口）；
+        编辑态不出现，避免一个点了不会变的入口（四态互斥）。
+      -->
+      <button
+        v-else-if="displayState !== 'editing' && readingAvailable"
         class="chip-btn"
         type="button"
         data-im="card-preview-toggle"
         :data-card-id="card.id"
         :aria-expanded="previewExpanded"
+        :title="previewExpanded
+          ? '收起预览：回到常态卡片（不改内容）'
+          : '展开阅读：让正文或文件预览成为卡片主体（只改查看，不改内容）'"
         @click="togglePreview"
       >
         {{ previewExpanded ? "收起预览" : "展开预览" }}
       </button>
     </header>
 
-    <div v-if="!card.folded" class="card-body">
-      <template v-if="editing">
+    <div v-if="displayState !== 'folded'" class="card-body" data-im="card-body">
+      <!-- 编辑：整张卡只有这一个连续编辑区（任务书 §6.2） -->
+      <template v-if="displayState === 'editing'">
         <!--
           未决冲突的选择入口放在编辑器**上方**（契约 §12.1：冲突入口在真实操作路径可见可点）：
           卡片有固定高度、编辑区内部滚动，提示若排在编辑器之后，打开编辑器的第一屏就看不见它。
@@ -837,7 +982,15 @@ function cancelEdit() {
           确有冲突时直接**替换**正文行：两份内容都保留着（打开编辑或任一选择都能回到），这里先让用户做选择。
         -->
         <CardDraftHint v-if="store.draftConflictFor(card.id) || boardContentConflict(card.id)" :card-id="card.id" />
-        <template v-else>
+        <div
+          v-else
+          class="card-subject"
+          :class="{
+            'is-reading': displayState === 'reading',
+            'is-compact': displayState === 'reading' && !isTextCard,
+          }"
+          data-im="card-subject"
+        >
           <!-- 关闭态也能看到、能处理的状态（本机副本没删掉 / 清除未同步 / 草稿保存失败）：就地提示 + 重试 -->
           <CardDraftHint v-if="cardDraftNeedsAttention" :card-id="card.id" />
           <!--
@@ -845,7 +998,7 @@ function cancelEdit() {
             内容模型是 meta.doc（权威）；旧数据没有 doc 时由 content 兜底成一段。
           -->
           <template v-if="isTextCard">
-            <div v-if="shownBlocks.length" class="blocks" data-im="card-text-blocks">
+            <div v-if="shownBlocks.length" class="content blocks" data-im="card-text-blocks">
               <template v-for="item in shownBlocks" :key="item.block.id + '-' + item.index">
                 <h4
                   v-if="item.block.kind === 'heading'"
@@ -936,54 +1089,67 @@ function cancelEdit() {
               {{ linkStatus.text }}
             </p>
           </template>
+          <template v-else>
+            <!--
+              遗留分支（契约 §1.7）：历史 code / url 卡在迁移完成前**仍能显示**，但整体不交付
+              （不进提交载荷、不计入未许可统计），界面必须写明它还没迁移。
+              文字卡的块序列已经渲染过正文，这里用 v-else 分流 —— 同一句话不在卡片里出现两遍。
+            -->
+            <p v-if="isLegacyCard" class="legacy-note" data-im="card-legacy-note" role="status">
+              旧卡片，尚未迁移：{{ kindLabel }}卡将在下次加载板面时并入统一文字卡；现在不进入提交载荷。
+            </p>
+            <p v-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
+            <p v-else-if="card.kind === 'url'" class="content url">
+              <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
+            </p>
+            <p v-else class="content">
+              <span v-if="card.content" class="desc">{{ card.content }}</span>
+              <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
+            </p>
+          </template>
+
           <!--
-            遗留分支（契约 §1.7）：历史 code / url 卡在迁移完成前**仍能显示**，但整体不交付
-            （不进提交载荷、不计入未许可统计），界面必须写明它还没迁移。
+            附件（任务书 §6.3）：常态给缩略图与状态；阅读展开时压成一行「外部打开」入口 ——
+            文件名与说明留在标题附近，主体让给真实预览，不在预览上方重复铺开大段说明。
           -->
-          <p v-if="isLegacyCard" class="legacy-note" data-im="card-legacy-note" role="status">
-            旧卡片，尚未迁移：{{ kindLabel }}卡将在下次加载板面时并入统一文字卡；现在不进入提交载荷。
-          </p>
-          <p v-if="card.kind === 'code'" class="content code mono">{{ card.content || "// 待补充代码" }}</p>
-          <p v-else-if="card.kind === 'url'" class="content url">
-            <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
-          </p>
-          <p v-else class="content">
-            <span v-if="card.content" class="desc">{{ card.content }}</span>
-            <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
-          </p>
-          <!-- 附件状态在关闭态也要看得见：有关联则给真实预览入口，没关联只给诚实文案（不许用文件名冒充） -->
           <CardAttachmentPreview
             v-if="attachKind"
             :kind="card.kind"
             :meta="card.meta"
             :card-id="card.id"
+            :compact="displayState === 'reading'"
           />
-        </template>
-      </template>
 
-      <!--
-        卡片内展开的阅读区（契约 §3.5）：展开时这张卡本身变大，预览主体挂在**卡片内部**，
-        因此不会盖住编辑区、勾选框与卡片操作。收起（含「收起全部预览」）时整块消失。
-      -->
-      <div
-        v-if="previewExpanded"
-        class="card-preview-host"
-        data-im="card-preview-host"
-        :data-card-id="card.id"
-      >
-        <CardInlinePreview
-          :card="card"
-          :active="previewExpanded"
-          :on-close="togglePreview"
-          @position="onPreviewPosition"
-        />
-      </div>
+          <!--
+            卡片内阅读展开的挂载点（契约 §3.5）：真实附件预览挂在这里，永远在卡片**内部**，
+            不盖编辑区、勾选框与卡片操作。没有真实附件时不挂任何东西（任务书 §6.4：不造假预览）——
+            文字卡的阅读主体就是上面那份正文，所以这里是空的（:empty 时不占画面）。
+          -->
+          <div
+            v-if="displayState === 'reading'"
+            class="card-preview-host"
+            data-im="card-preview-host"
+            :data-card-id="card.id"
+          >
+            <CardInlinePreview
+              v-if="hasPreviewMaterial"
+              :card="card"
+              :active="true"
+              :on-close="togglePreview"
+              @position="onPreviewPosition"
+            />
+          </div>
+        </div>
+      </template>
     </div>
 
-    <!-- 元信息：状态文字 + 更新时间 + 组 + 书签。数量与时间退到次级视觉层。 -->
-    <footer class="card-meta">
+    <!--
+      元信息：必要状态 + 更新时间。状态在任何尺寸下都必须留着（§3.5）；
+      更新时间是次级信息，窄 / 矮卡片里让位给内容区，保证内容区高度仍然 > 0。
+    -->
+    <footer class="card-meta" data-im="card-meta">
       <span class="status" role="status">{{ statusText }}</span>
-      <span class="time mono">{{ updatedText }}</span>
+      <span v-if="!compactChrome" class="time mono">{{ updatedText }}</span>
     </footer>
 
     <!-- 连接点：选中后才出现；从这里拖到另一张卡片建立关系（方向与含义由用户写明） -->
@@ -1005,10 +1171,12 @@ function cancelEdit() {
   <!--
     卡片局部工具栏：只在选中后浮出，未选中即隐藏；由所选里的最后一张卡片渲染（不叠成一摞）。
     它挂在板面容器里（不是卡片内部），位置由画布按视口换算，所以不会挡住卡片标题与正文。
-    这里是**卡片自己的操作**；成组 / 移出组 / 解除组 / 序号 / 合并 / 删除所选在 SelectionMenu 里。
+    这里只放**这张卡片自己的操作**：常用的编辑 / 折成标题留在近处，
+    复制 / 隐藏 / 书签 / 整理 / 删除收进「更多」（任务书 §6.5），能力一个不少。
   -->
   <div
     v-if="isToolbarOwner"
+    ref="toolbarRoot"
     class="card-toolbar"
     :style="toolbarStyle"
     data-im="card-toolbar"
@@ -1019,14 +1187,11 @@ function cancelEdit() {
     @pointerdown.stop
   >
     <!--
-      整卡许可（契约 §2.3）：一张文字卡只有一个许可，覆盖卡内文字、链接、代码。
-      文案必须写明「提交后仍然有效、只有你手动取消才失效」—— 提交不再清勾选。
+      整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡只有一个许可，覆盖卡内文字、链接、代码。
+      勾选框只留一句短文案；「提交后仍然有效、只有你手动取消才失效」这类完整规则放进旁边的
+      「说明」详情（不常驻一整行字）。勾选只改 checked，不碰 hidden / deleted。
     -->
-    <label
-      v-if="checkable"
-      class="check"
-      title="许可：允许 QIO 查看这张卡（提交后仍然有效，只有你手动取消才失效）"
-    >
+    <label v-if="checkable" class="check" :title="LICENSE_FULL_TEXT">
       <input
         type="checkbox"
         :checked="card.checked"
@@ -1034,31 +1199,96 @@ function cancelEdit() {
         :data-card-id="card.id"
         @change="emit('toggle', card.id, 'checked')"
       />
-      <span>许可：允许 QIO 查看这张卡（提交后仍然有效，只有你手动取消才失效）</span>
+      <span class="check-label">{{ card.checked ? "已允许 QIO 查看" : "允许 QIO 查看" }}</span>
+      <details class="check-detail" :class="{ 'opens-up': menuOpensUp }" @click.stop @pointerdown.stop>
+        <summary class="check-detail-summary" title="许可的完整说明">说明</summary>
+        <p class="check-detail-text" data-im="check-detail-text">{{ LICENSE_FULL_TEXT }}</p>
+      </details>
     </label>
 
-    <template v-if="!multi">
-      <button class="tb" type="button" data-im="card-edit" :data-card-id="card.id" @click="startEdit">编辑</button>
-      <button class="tb" type="button" data-im="card-duplicate" :data-card-id="card.id" @click="emit('duplicate', card.id)">复制</button>
+    <!-- 多选：只显示共同适用的操作，不把单卡片编辑应用到整组 -->
+    <template v-if="multi">
+      <button class="tb" type="button" data-im="card-fold" :data-card-id="card.id" @click="emit('toggle', card.id, 'folded')">
+        {{ card.folded ? "恢复卡片" : "折成标题" }}
+      </button>
+      <span class="divider" aria-hidden="true"></span>
+      <SelectionMenu :open-up="menuOpensUp" />
+      <button class="tb danger" type="button" data-im="delete-card" :data-card-id="card.id" @click="emit('remove', card.id)">
+        删除
+      </button>
+      <span class="tb-note">多选：只显示共同适用的操作</span>
     </template>
 
-    <button class="tb" type="button" data-im="card-fold" :data-card-id="card.id" @click="emit('toggle', card.id, 'folded')">
-      {{ card.folded ? "展开" : "折叠" }}
-    </button>
-    <button class="tb" type="button" :data-card-id="card.id" @click="emit('toggle', card.id, 'hidden')">
-      {{ card.hidden ? "取消隐藏" : "隐藏" }}
-    </button>
-    <button class="tb" type="button" :data-card-id="card.id" @click="emit('toggle', card.id, 'bookmarked')">
-      {{ card.bookmarked ? "取消书签" : "书签" }}
-    </button>
+    <template v-else>
+      <button class="tb" type="button" data-im="card-edit" :data-card-id="card.id" @click="startEdit">编辑</button>
+      <button class="tb" type="button" data-im="card-fold" :data-card-id="card.id" @click="emit('toggle', card.id, 'folded')">
+        {{ card.folded ? "恢复卡片" : "折成标题" }}
+      </button>
 
-    <span class="divider" aria-hidden="true"></span>
-    <SelectionMenu :open-up="menuOpensUp" />
+      <span class="divider" aria-hidden="true"></span>
 
-    <button class="tb danger" type="button" data-im="delete-card" :data-card-id="card.id" @click="emit('remove', card.id)">
-      删除
-    </button>
-    <span v-if="multi" class="tb-note">多选：只显示共同适用的操作</span>
+      <!--
+        「更多」入口：面板朝卡片外侧展开（画布把工具栏放在卡片上方时向上开），不盖标题与正文。
+        面板用 v-show（不是 v-if）：DOM 里保留全部低频能力，收起时只是不占视觉位置 ——
+        键盘与读屏仍能到达，也不会因为「藏在 v-if 后面」而丢操作。
+      -->
+      <button
+        class="tb"
+        type="button"
+        data-im="card-more"
+        :data-card-id="card.id"
+        aria-haspopup="menu"
+        :aria-expanded="moreOpen"
+        title="更多：复制、隐藏、书签、整理与删除"
+        @click="toggleMore"
+      >
+        更多
+      </button>
+
+      <div
+        v-show="moreOpen"
+        class="more-panel"
+        :class="moreOpensUp ? 'up' : 'down'"
+        data-im="card-more-panel"
+        role="menu"
+        aria-label="更多操作"
+      >
+        <button
+          class="tb"
+          type="button"
+          role="menuitem"
+          data-im="card-duplicate"
+          :data-card-id="card.id"
+          @click="moreAction(() => emit('duplicate', card.id))"
+        >复制</button>
+        <button
+          class="tb"
+          type="button"
+          role="menuitem"
+          data-im="card-hide"
+          :data-card-id="card.id"
+          @click="moreAction(() => emit('toggle', card.id, 'hidden'))"
+        >{{ card.hidden ? "取消隐藏" : "隐藏" }}</button>
+        <button
+          class="tb"
+          type="button"
+          role="menuitem"
+          data-im="card-bookmark"
+          :data-card-id="card.id"
+          @click="moreAction(() => emit('toggle', card.id, 'bookmarked'))"
+        >{{ card.bookmarked ? "取消书签" : "书签" }}</button>
+        <!-- 分组类操作（成组 / 加入组 / 移出组 / 解除组 / 序号 / 合并 / 删除所选）都在整理菜单里 -->
+        <SelectionMenu :open-up="menuOpensUp" />
+        <button
+          class="tb danger"
+          type="button"
+          role="menuitem"
+          data-im="delete-card"
+          :data-card-id="card.id"
+          @click="moreAction(() => emit('remove', card.id))"
+        >删除</button>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -1091,6 +1321,13 @@ function cancelEdit() {
     width var(--mo-2-move) var(--ease-2),
     height var(--mo-2-move) var(--ease-2);
 }
+/*
+  窄 / 矮卡片收一档（任务书 §3.5）：内边距与间隙各收一档，把高度让给内容区。
+  最小可用尺寸 180×96（C 的 CARD_MIN_SIZE）下：标题仍在、主要操作仍可点、必要状态仍在、
+  内容区高度仍 > 0（头部与页脚 flex: none，正文 flex: 1 并 min-height: 0）。
+*/
+.card.is-compact { padding: var(--sp-2); gap: var(--sp-1); }
+
 /* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
 .card:hover { border-color: var(--border-strong); }
 .card.selected {
@@ -1103,8 +1340,19 @@ function cancelEdit() {
 .card.hidden { border-style: dashed; }
 .card.reply { border-left: 3px solid var(--link); }
 
-/* 第一层：材料类型 + 标题 */
-.card-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+/*
+  第一层：材料类型 + 标题 + 许可徽章 + 阅读展开入口。
+  一行到底、不换行也不换三行：标题自己用省略号收尾，操作与状态永远留在原位。
+*/
+.card-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.card.is-compact .card-head { gap: var(--sp-1); }
 .kind {
   flex: none;
   font-size: var(--fs-tech, var(--fs-xs));
@@ -1115,6 +1363,7 @@ function cancelEdit() {
   padding: 0 var(--sp-2);
 }
 .title {
+  flex: 1 1 auto;
   min-width: 0;
   font-family: var(--serif);
   font-size: var(--fs-md);
@@ -1124,6 +1373,22 @@ function cancelEdit() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/*
+  整卡许可徽章（任务书 §6.6）：文字 + 颜色双通道，未选中时也看得见。
+  文案与工具栏勾选框同源；规则原文只在工具栏的「说明」详情里出现一次。
+*/
+.license {
+  flex: none;
+  font-size: var(--fs-tech, var(--fs-xs));
+  line-height: var(--lh-tight);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-1);
+  white-space: nowrap;
+}
+.license.is-off { color: var(--text-muted); border-style: dashed; }
+.license.is-on { color: var(--text-secondary); border-color: var(--border-strong); }
+
 .chip-btn {
   flex: none;
   margin-left: auto;
@@ -1133,14 +1398,26 @@ function cancelEdit() {
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
-  padding: 0 var(--sp-2);
+  padding: 0 var(--sp-1);
   cursor: pointer;
 }
 .chip-btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
 .chip-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
-/* 第二层：正文。长名称 / 网址 / 代码要么换行要么自己滚动，不许横向溢出卡片 */
-.card-body { flex: 1; min-height: 0; overflow: auto; }
+/*
+  第二层：正文。长名称 / 网址 / 代码要么换行要么自己滚动，不许横向溢出卡片。
+
+  overflow-x 固定 hidden：横向滚动只允许发生在**代码块内部**（.code-body 的 overflow-x: auto），
+  整卡与内容区都不出现横向滚动条（任务书 §3.3）。纵向滚动留给内容区。
+*/
+.card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .content {
   margin: 0;
   font-size: var(--fs-base);
@@ -1159,7 +1436,17 @@ function cancelEdit() {
 }
 
 /* ---- 统一文字卡的块渲染（契约 §1.7）：每类块有自己的外观，但仍是一张卡的正文 ---- */
-.blocks { display: flex; flex-direction: column; gap: var(--sp-2); }
+/*
+  文字卡的正文容器同时带 .content（「卡片正文」这一层）与 .blocks（块布局）。
+  容器不套用 .content 的 pre-wrap：块自己负责空白与换行，保持既有外观。
+*/
+.blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  white-space: normal;
+}
 .blk { margin: 0; font-size: var(--fs-base); line-height: var(--lh-base); overflow-wrap: anywhere; }
 .blk-heading { font-family: var(--serif); font-weight: 600; color: var(--text-strong); line-height: var(--lh-tight); }
 .blk-heading[data-level="1"] { font-size: var(--fs-lg); }
@@ -1184,9 +1471,12 @@ function cancelEdit() {
 /* 代码块：语言 + 复制按钮在最上面一行；正文自己滚动，绝不横向撑破卡片 */
 .blk-code {
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   background: var(--bg-inset);
+  /* 宽代码由里面的 <pre> 自己横向滚动，外框只负责裁掉溢出 */
   overflow: hidden;
 }
 .code-head {
@@ -1213,11 +1503,14 @@ function cancelEdit() {
 .code-copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .code-body {
   margin: 0;
+  max-width: 100%;
   padding: var(--sp-2);
   font-size: var(--fs-sm);
   line-height: var(--lh-tight);
   white-space: pre;
-  overflow: auto;
+  /* 唯一允许横向滚动的地方：代码区（任务书 §3.3） */
+  overflow-x: auto;
+  overflow-y: auto;
 }
 .code-hint { margin: 0; padding: var(--sp-1) var(--sp-2); font-size: var(--fs-xs); color: var(--text-secondary); }
 /* 链接块：标题（可点开）与地址（等宽，永远看得见） */
@@ -1325,6 +1618,7 @@ function cancelEdit() {
 /* 第四层：元信息（状态文字 + 时间）。比正文小一档，但仍是可读文本，不用装饰级颜色。 */
 .card-meta {
   display: flex;
+  flex: none;
   align-items: baseline;
   gap: var(--sp-2);
   min-width: 0;
@@ -1335,15 +1629,42 @@ function cancelEdit() {
 .time { flex: none; color: var(--text-faint); }
 
 /*
-  卡片内展开的阅读区：占卡片里正文之后的剩余空间，自己滚动。
-  它是卡片内部的一块排版区域，不是浮层：不盖编辑区、不盖连接点、不盖局部工具栏。
+  卡片内主体（任务书 §6.1 / §6.3）：常态是简短内容与缩略图；
+  阅读展开时同一个容器升级成阅读主体 —— 正文只渲染一份，
+  预览上方不再重复铺开文件摘要、缩略图与大段说明。挂载点始终在卡片**内部**，
+  不是浮层：不盖编辑区、不盖连接点、不盖局部工具栏。
+*/
+.card-subject {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+  min-height: 0;
+}
+/* 阅读展开：正文成为主体（行距放宽，长文更好读）；真实预览在这里占满剩余空间 */
+.card-subject.is-reading { flex: 1 1 auto; gap: var(--sp-3); }
+/*
+  预览挂载点：有真实附件时占满卡片剩余空间；文字卡没有可挂的东西时它是空的，
+  不占任何画面（:empty —— Vue 在 v-if 为假时只留注释节点，不影响 :empty 匹配）。
 */
 .card-preview-host {
-  margin-top: var(--sp-3);
-  padding-top: var(--sp-3);
-  border-top: 1px dashed var(--border-subtle);
-  min-height: 140px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+.card-preview-host:empty { display: none; }
+.card-subject.is-reading .blk { line-height: var(--lh-loose); }
+.card-subject.is-reading .blk-paragraph,
+.card-subject.is-reading .blk-list,
+.card-subject.is-reading .blk-quote { max-width: var(--measure); }
+/* 材料卡阅读展开：说明压到两行以内，主体让给预览（文件名与状态留在标题附近） */
+.card-subject.is-compact .desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .preview-placeholder {
   margin: 0;
@@ -1391,8 +1712,61 @@ function cancelEdit() {
   box-shadow: var(--elev-floating, var(--shadow-2));
   font-size: var(--fs-sm);
 }
+/* 许可勾选：短文案 + 「说明」详情；勾选框本身只改 checked */
 .check { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--text-secondary); white-space: nowrap; }
 .check input { accent-color: var(--accent); }
+.check-label { font-size: var(--fs-sm); }
+.check-detail { position: relative; }
+.check-detail-summary {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.check-detail-summary:hover { color: var(--text-strong); }
+/*
+  详情是一块**浮层**：完整许可说明放在这里，不把工具栏撑高、不挤走别的操作；
+  工具栏在卡片上方时向上开（与「更多」同一个方向规则），不盖卡片标题。
+*/
+.check-detail-text {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--sp-1));
+  z-index: 5;
+  width: min(280px, calc(100vw - var(--sp-6)));
+  margin: 0;
+  padding: var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--elev-floating, var(--shadow-2));
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+  color: var(--text-secondary);
+  white-space: normal;
+}
+.check-detail.opens-up .check-detail-text { top: auto; bottom: calc(100% + var(--sp-1)); }
+
+/*
+  「更多」面板：朝卡片外侧展开（工具栏在卡片上方时向上开），不盖标题、连接点与正文。
+  面板不做裁切（overflow 可见），否则嵌在里面的「整理」面板会被裁掉。
+*/
+.more-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--sp-1));
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 132px;
+  padding: var(--sp-1);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  box-shadow: var(--elev-floating, var(--shadow-2));
+}
+.more-panel.up { top: auto; bottom: calc(100% + var(--sp-1)); }
+.more-panel .tb { text-align: left; }
 .divider { width: 1px; height: 16px; background: var(--border-subtle); flex: none; }
 .tb {
   font: inherit;
