@@ -466,10 +466,23 @@ def create_app(
         allow_origin_regex=DEV_ORIGIN_REGEX if settings.dev_insecure else None,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        # X-QIO-Prepare-Id：准备标识（契约：附件发送的中止要靠它定位一次准备），
-        # 它出现在正式请求头里 → 浏览器会为该组合发预检，漏在 allow_headers 外
-        # 会被直接 400 Disallowed CORS headers（带附件发送在浏览器侧被拦）。
-        allow_headers=["Authorization", "Content-Type", "X-QIO-Session", "X-QIO-Prepare-Id"],
+        # 自定义请求头**必须逐个列在这里**：它们出现在正式请求头里 → 浏览器会为该组合发预检，
+        # 漏在 allow_headers 外会被直接 400 Disallowed CORS headers，请求根本到不了后端。
+        # 踩过两次，都是「后端手工测是好的、界面一直失败」（CORS 是浏览器侧强制的，
+        # curl/httpx 不做预检）：
+        #   * X-QIO-Prepare-Id —— 带附件发送（契约：中止要靠它定位一次准备）；
+        #   * X-QIO-Name / X-QIO-Topic-Id —— 互动模式「添加图片 / 添加文件」上传
+        #     （POST /api/attachments/upload，octet-stream 本身也要预检）。
+        # 守护在 tests/test_attachment_upload_cors_preflight.py：第二个用例会把**前端源码里
+        # 出现的每个 X-QIO-* 头**都拿来预检一遍，再加头却忘了改这里会直接红。
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-QIO-Session",
+            "X-QIO-Prepare-Id",
+            "X-QIO-Name",
+            "X-QIO-Topic-Id",
+        ],
     )
     from agent.tools.approval import ApprovalService
 
