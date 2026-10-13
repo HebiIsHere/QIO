@@ -78,17 +78,19 @@ describe("收敛：可见性不变量（300 组随机）", () => {
   });
 });
 
-describe("收敛：宽 / 高小于最小值的边界（缺陷面）", () => {
-  it("现状：x=990 / w=10 → 宽被抬到 300，右边界跑到 1290（可见区只有 1000）", () => {
+describe("收敛：宽 / 高小于最小值的边界（F1 修复后）", () => {
+  it("宽小于最小值：先抬到 300 再贴右边界，右边界正好落在 1000", () => {
     const next = convergeChatFrame({ x: 990, y: 0, w: 10, h: 300 }, { w: 1000, h: 800 });
     expect(next.w).toBe(CHAT_FRAME_MIN.w);
-    expect(next.x + next.w).toBe(1290);
+    expect(next.x).toBe(700);
+    expect(next.x + next.w).toBe(1000);
   });
 
-  it("现状：y=795 / h=5 → 高被抬到 220，下边界跑到 1015（可见区只有 800）", () => {
+  it("高小于最小值：先抬到 220 再贴下边界，下边界正好落在 800", () => {
     const next = convergeChatFrame({ x: 0, y: 795, w: 400, h: 5 }, { w: 1000, h: 800 });
     expect(next.h).toBe(CHAT_FRAME_MIN.h);
-    expect(next.y + next.h).toBe(1015);
+    expect(next.y).toBe(580);
+    expect(next.y + next.h).toBe(800);
   });
 
   it("这种记录真的存得进去：saveChatFrame 只要求正尺寸", () => {
@@ -97,10 +99,62 @@ describe("收敛：宽 / 高小于最小值的边界（缺陷面）", () => {
     expect(loadChatFrame(BOARD_A)).toEqual({ x: 990, y: 795, w: 10, h: 5 });
   });
 
-  it.fails("契约「恢复到屏幕内」：宽高小于最小值时也不能溢出可见区", () => {
-    const next = convergeChatFrame({ x: 990, y: 795, w: 10, h: 5 }, { w: 1000, h: 800 });
-    expect(next.x + next.w).toBeLessThanOrEqual(1000);
-    expect(next.y + next.h).toBeLessThanOrEqual(800);
+  it("四组超界存档（W<min / H<min / 双超 / 负坐标）收敛后都完整落在可见区内且不小于最小值", () => {
+    const area = { w: 1000, h: 800 };
+    const cases: ChatFrame[] = [
+      { x: 990, y: 795, w: 10, h: 5 },
+      { x: -500, y: -500, w: 1, h: 1 },
+      { x: 9999, y: 9999, w: 2, h: 219 },
+      { x: 0, y: 0, w: 299, h: 219 },
+    ];
+    const bad: string[] = [];
+    for (const frame of cases) {
+      const next = convergeChatFrame(frame, area);
+      const tag = show(frame) + " -> " + show(next);
+      if (next.w < CHAT_FRAME_MIN.w || next.h < CHAT_FRAME_MIN.h) bad.push("小于最小值 " + tag);
+      if (next.x < 0 || next.y < 0) bad.push("跑到可见区左上之外 " + tag);
+      if (next.x + next.w > area.w || next.y + next.h > area.h) bad.push("溢出可见区 " + tag);
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("窗口比最小值还小（260×180）：收敛到可用区域且不越界", () => {
+    const next = convergeChatFrame({ x: 9999, y: 9999, w: 10, h: 5 }, { w: 260, h: 180 }, { x: 0, y: 44 });
+    expect(next.w).toBe(260);
+    expect(next.h).toBe(180);
+    expect(next.x).toBe(0);
+    expect(next.y).toBe(44);
+  });
+
+  it("NaN 存档（存储层会拒绝，但直接调用时也要有定义行为）：落到 origin + 最小值", () => {
+    const next = convergeChatFrame(
+      { x: Number.NaN, y: Number.NaN, w: Number.NaN, h: Number.NaN },
+      { w: 1000, h: 800 },
+      { x: 0, y: 44 },
+    );
+    expect(next).toEqual({ x: 0, y: 44, w: CHAT_FRAME_MIN.w, h: CHAT_FRAME_MIN.h });
+  });
+
+  it("性质（F1）：随机把宽高压到最小值以下 + 随机原点，收敛后仍完整落在可见区内（200 组）", () => {
+    const rand = makeRandom(13579);
+    const bad: string[] = [];
+    for (let i = 0; i < 200; i += 1) {
+      const origin = { x: Math.round(rand() * 60), y: Math.round(rand() * 60) };
+      const area = { w: 340 + Math.round(rand() * 900), h: 260 + Math.round(rand() * 700) };
+      const frame: ChatFrame = {
+        x: Math.round((rand() - 0.5) * 2500),
+        y: Math.round((rand() - 0.5) * 1800),
+        w: 1 + Math.round(rand() * (CHAT_FRAME_MIN.w - 1)),
+        h: 1 + Math.round(rand() * (CHAT_FRAME_MIN.h - 1)),
+      };
+      const next = convergeChatFrame(frame, area, origin);
+      const tag = show(frame) + " -> " + show(next);
+      if (next.x < origin.x || next.y < origin.y) bad.push("跑到 origin 之外 " + tag);
+      if (next.x + next.w > origin.x + area.w) bad.push("右边溢出 " + tag);
+      if (next.y + next.h > origin.y + area.h) bad.push("下边溢出 " + tag);
+      if (show(convergeChatFrame(next, area, origin)) !== show(next)) bad.push("二次收敛还在动 " + tag);
+    }
+    expect(bad).toEqual([]);
   });
 });
 
@@ -126,9 +180,27 @@ describe("默认框与限制", () => {
     expect(chatFrameLimits({ w: 260, h: 180 })).toEqual({ minW: 260, minH: 180, maxW: 260, maxH: 180 });
   });
 
-  it("零面积（还没量出来）：限制塌到 1，收敛会把窗口缩成 1×1（调用方必须先量到面积）", () => {
+  it("修复后（W4）：0 / NaN / 负面积给「无上界」，最小值仍是 CHAT_FRAME_MIN", () => {
+    for (const area of [{ w: 0, h: 0 }, { w: Number.NaN, h: 600 }, { w: 500, h: -1 }]) {
+      const limits = chatFrameLimits(area);
+      expect(limits.minW).toBe(CHAT_FRAME_MIN.w);
+      expect(limits.minH).toBe(CHAT_FRAME_MIN.h);
+      expect(limits.maxW).toBe(Number.POSITIVE_INFINITY);
+      expect(limits.maxH).toBe(Number.POSITIVE_INFINITY);
+    }
+  });
+
+  it("修复后（W4）：零面积时不再把窗口压成 1×1，原尺寸原位置保留", () => {
     const next = convergeChatFrame({ x: 0, y: 0, w: 400, h: 500 }, { w: 0, h: 0 });
-    expect(next).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+    expect(next).toEqual({ x: 0, y: 0, w: 400, h: 500 });
+  });
+
+  it("修复后（W4）：零面积下 defaultChatFrame 给默认尺寸，先落在 origin 上", () => {
+    const frame = defaultChatFrame({ w: 0, h: 0 }, { x: 0, y: 44 });
+    expect(frame.w).toBe(CHAT_FRAME_DEFAULT.w);
+    expect(frame.h).toBe(CHAT_FRAME_DEFAULT.h);
+    expect(frame.x).toBe(0);
+    expect(frame.y).toBe(44);
   });
 
   it("默认框在随机窗口里都不越界（120 组）", () => {
@@ -260,19 +332,21 @@ describe("共享桥：副本语义与活引用", () => {
     expect(readChatFrame()!.w).toBe(300);
   });
 
-  it("现状：chatObstacleFrame 返回的是活引用，下游改它等于改源（与 readChatFrame 的副本语义不一致）", () => {
+  it("修复后（F4）：chatObstacleFrame 返回副本，下游就地改不会污染源", () => {
     publishChatFrame({ x: 10, y: 20, w: 400, h: 500 });
     const obstacle = chatObstacleFrame();
-    expect(obstacle).not.toBeNull();
+    expect(obstacle).toEqual({ x: 10, y: 20, w: 400, h: 500 });
     obstacle!.x = 999;
-    expect(readChatFrame()!.x).toBe(999);
+    obstacle!.w = 1;
+    expect(readChatFrame()).toEqual({ x: 10, y: 20, w: 400, h: 500 });
   });
 
-  it.fails("chatObstacleFrame 也应当返回副本（当前返回活引用，下游 normalize 一下就会污染源）", () => {
+  it("修复后（F4）：两次 chatObstacleFrame 拿到两个独立对象", () => {
     publishChatFrame({ x: 10, y: 20, w: 400, h: 500 });
-    const obstacle = chatObstacleFrame();
-    obstacle!.x = 999;
-    expect(readChatFrame()!.x).toBe(10);
+    const first = chatObstacleFrame();
+    const second = chatObstacleFrame();
+    expect(first).not.toBe(second);
+    expect(first).toEqual(second);
   });
 
   it("liveChatFrame 是活引用：直接写它能绕过 publish（下游约定只读）", () => {

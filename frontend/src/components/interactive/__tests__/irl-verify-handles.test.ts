@@ -131,30 +131,31 @@ describe("样式与令牌（读源码，不靠肉眼）", () => {
   });
 });
 
-describe("静态复核发现（jsdom 无布局，标为未在浏览器验证）", () => {
-  it("现状：visible 只改类名，样式表里没有 .rz-quiet 规则，true / false 视觉完全相同", () => {
+describe("修复后的静态核对（jsdom 无布局；真实命中测试仍需浏览器，见报告 U1）", () => {
+  it("修复后（F5）：.rz-quiet 有了视觉降级规则，visible 不再是空操作", () => {
     const quiet = mount(ResizeHandles, { props: { visible: false } });
     const loud = mount(ResizeHandles, { props: { visible: true } });
     expect(quiet.find(".rz-root").classes()).toContain("rz-quiet");
     expect(loud.find(".rz-root").classes()).not.toContain("rz-quiet");
-    expect(style.includes(".rz-quiet")).toBe(false);
+    expect(style).toMatch(/\.rz-quiet\s+\.rz-mark\s*\{[^}]*opacity/);
+    expect(style).toMatch(/\.rz-quiet:hover\s+\.rz-mark/);
   });
 
-  it.fails("visible（视觉强调开关）应当有对应的样式规则，当前 .rz-quiet 在样式表里缺失", () => {
-    expect(style.includes(".rz-quiet")).toBe(true);
+  it("修复后（F5）：降级只作用于视觉——八向热区与 −/＋ 一个不少，也没有 display:none", () => {
+    const wrapper = mount(ResizeHandles, { props: { visible: false } });
+    expect(wrapper.findAll("[data-resize-handle]")).toHaveLength(8);
+    expect(wrapper.findAll("[data-resize-key]")).toHaveLength(4);
+    expect(style).not.toMatch(/\.rz-quiet[^{]*\{[^}]*display:\s*none/);
+    expect(style).not.toMatch(/\.rz-quiet[^{]*\{[^}]*pointer-events:\s*none/);
   });
 
-  it("现状：−/＋ 面板 right 只有 2px，与 10px 的东边热区在竖直方向上有重叠", () => {
+  it("修复后（W1）：−/＋ 面板避开东 10px、南 10px 热区，也不压 16px 的东南角", () => {
     const keys = block(/\.rz-keys\s*\{([^}]*)\}/);
-    const right = /right:\s*(\d+)px/.exec(keys);
-    const bottom = /bottom:\s*(\d+)px/.exec(keys);
-    expect(right?.[1]).toBe("2");
-    expect(bottom?.[1]).toBe("16");
-  });
-
-  it.fails("−/＋ 面板不该压在 10px 的东边热区上（当前 right:2px，重叠 8px，悬浮时 pointer-events:auto 会吞掉按下）", () => {
-    const keys = block(/\.rz-keys\s*\{([^}]*)\}/);
-    const right = /right:\s*(\d+)px/.exec(keys);
-    expect(Number(right ? right[1] : -1)).toBeGreaterThanOrEqual(10);
+    const right = Number(/right:\s*(\d+)px/.exec(keys)?.[1] ?? -1);
+    const bottom = Number(/bottom:\s*(\d+)px/.exec(keys)?.[1] ?? -1);
+    expect(right).toBeGreaterThanOrEqual(10);
+    expect(bottom).toBeGreaterThanOrEqual(10);
+    // 东南角是 16×16：要完全避开，至少一个方向得让开 16px。
+    expect(right >= 16 || bottom >= 16).toBe(true);
   });
 });
