@@ -194,6 +194,17 @@ describe("QIO 滚动指示条引擎", () => {
     expect(el.classList.contains("is-qio-scroll-dragging")).toBe(false);
   });
 
+  it("零尺寸宿主（折叠/隐藏）不算可滚动范围，也不建轨道", async () => {
+    // 收起状态的话题栏就是这种形态：clientWidth=0，内容宽度仍算进 scrollWidth
+    const el = makeHost({ clientHeight: 100, scrollHeight: 100, clientWidth: 0, scrollWidth: 76 });
+    const ctrl = createQioScrollbars(el, { policy: "auto" });
+    mounted.push({ el, ctrl });
+    await flush();
+    expect(el.getAttribute(QIO_SCROLL_RANGE_ATTR)).toBe("none");
+    expect(rail(el, "x")).toBeNull();
+    expect(rail(el, "y")).toBeNull();
+  });
+
   it("destroy 后不残留指示条、属性与观察器", async () => {
     const el = makeHost({ clientHeight: 200, scrollHeight: 1000 });
     const ctrl = createQioScrollbars(el, { policy: "auto" });

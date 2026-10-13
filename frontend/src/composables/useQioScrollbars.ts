@@ -178,6 +178,10 @@ export function createQioScrollbars(
   }
 
   function canScroll(axis: "x" | "y"): boolean {
+    // 折叠 / 隐藏的宿主在某一轴上是零尺寸：那里既没有可视区域，也不该有「可滚动范围」
+    // （例如收起状态的话题栏 clientWidth=0，内容宽度仍会算进 scrollWidth → 假溢出 + 假轨道）。
+    const view = axis === "y" ? host.clientHeight : host.clientWidth;
+    if (view <= 0) return false;
     return axis === "y"
       ? host.scrollHeight - host.clientHeight > OVERFLOW_EPS
       : host.scrollWidth - host.clientWidth > OVERFLOW_EPS;
