@@ -8,8 +8,10 @@
     材料默认就在 QIO 可查看范围内，没有这个选择框；reply 不参与勾选；
   - 局部工具栏（data-im="card-toolbar"）只放**这张卡片自己的操作**
     （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选）；分组类操作在 SelectionMenu 里；
-  - 选中后卡片四边出现**连接点**（data-im="connect-point"）。工具栏与整理菜单都朝卡片外侧展开，
-    实测不盖标题、连接点与正在编辑的正文；
+  - **连接点不在卡片里**（0.2.5 回归修复）：它由 BoardCanvas 的交互层（BoardResizeLayer）
+    统一渲染 —— 画在卡片内部时，四边中点正好被那一层 10px 的尺寸热区盖住，真实鼠标按不下去。
+    本组件只保留「正在拖线」的 prop 接线（connecting）；工具栏与整理菜单仍朝卡片外侧展开，
+    实测不盖标题与正在编辑的正文；
   - 状态一律「文字 + 颜色」双通道，不能只靠颜色；
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
@@ -86,7 +88,6 @@ const emit = defineEmits<{
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
   (e: "join-group", cardId: string, groupId: string): void;
-  (e: "connect-start", cardId: string, event: PointerEvent): void;
 }>();
 
 const store = useInteractiveStore();
@@ -657,14 +658,6 @@ function onPointerDown(event: PointerEvent) {
   emit("drag-start", props.card.id, event);
 }
 
-/** 从连接点拖出关系线：交给 BoardCanvas 接管指针（不在这里建链）。 */
-function onConnectDown(event: PointerEvent) {
-  // 连接点在卡片内部，必须同时拦住冒泡与默认行为，否则会先被卡片自己的拖动接走
-  event.stopPropagation();
-  event.preventDefault();
-  emit("connect-start", props.card.id, event);
-}
-
 function startEdit() {
   editing.value = true;
   const cardId = props.card.id;
@@ -1151,21 +1144,6 @@ function cancelEdit() {
       <span class="status" role="status">{{ statusText }}</span>
       <span v-if="!compactChrome" class="time mono">{{ updatedText }}</span>
     </footer>
-
-    <!-- 连接点：选中后才出现；从这里拖到另一张卡片建立关系（方向与含义由用户写明） -->
-    <template v-if="selected && !card.folded && !multi">
-      <span
-        v-for="side in ['top', 'right', 'bottom', 'left']"
-        :key="side"
-        class="connect-point"
-        :class="side"
-        data-im="connect-point"
-        :data-card-id="card.id"
-        :data-side="side"
-        :title="'从连接点拖到另一张卡片建立关系'"
-        @pointerdown="onConnectDown"
-      ></span>
-    </template>
   </article>
 
   <!--
@@ -1676,24 +1654,11 @@ function cancelEdit() {
   line-height: var(--lh-base);
 }
 
-/* 连接点：四边中点，拖出去建关系 */
-.connect-point {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-radius: var(--r-pill);
-  background: var(--bg-elevated);
-  border: 1.5px solid var(--accent);
-  cursor: crosshair;
-  z-index: 2;
-}
-/* 卡片是 overflow: hidden，连接点必须留在卡片内侧边缘，否则会被裁掉、真实鼠标点不到 */
-.connect-point.top { left: 50%; top: 0; transform: translateX(-50%); }
-.connect-point.right { right: 0; top: 50%; transform: translateY(-50%); }
-.connect-point.bottom { left: 50%; bottom: 0; transform: translateX(-50%); }
-.connect-point.left { left: 0; top: 50%; transform: translateY(-50%); }
-
 /*
+  连接点（data-im="connect-point"）**不在这里**：0.2.5 起由 BoardCanvas 的交互层
+  （BoardResizeLayer，不随画布缩放）渲染 —— 卡片内部处在 .board-surface 的缩放层叠上下文里，
+  四边中点会被同层的 10px 尺寸热区盖住，真实鼠标按不下去。见 BoardResizeLayer.vue 的说明。
+
   局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算。
   按钮字号用 --fs-sm：编辑 / 删除这些是主要操作，不缩成元信息字号。
 */
