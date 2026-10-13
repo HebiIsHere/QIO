@@ -101,7 +101,11 @@ chat 下一律不横向；`ResizeHandles` 的 `@pointerdown.stop` 让尺寸调�
 `DevTaskEntry` 删除自绘 `::-webkit-scrollbar{width:8px}` 一套；
 正文滚动与固定操作分离（审批操作行、影响确认、凭据弹窗、待审批卡的 sticky 操作）；
 D6 横向边界：`.planet-view` / `.panel-inner` / `.panel-body` 改两轴 `clip`，
-`.topic-scroll` / `.detail-scroll` 保留纵向滚动 + 横向锁死 + 内容换行（实测四处 `over=0 / moved=0`）。
+`.topic-scroll` / `.detail-scroll` 保留纵向滚动 + 横向锁死 + 内容换行。
+**口径更正（2026-10-14，独立复核提出）**：面板**展开 + 选中话题**态实测四处 `over=0 / moved=0`；
+面板**收起**态这些元素 `clientWidth=0`、不可见，其 `over/moved` 数字无意义（基线里观察到的
+182/144/129 正是这种收起态读数，**不构成"修掉了一个隐藏可滚缺陷"** —— 本材料不再这样表述）。
+判定口径因此明确为：零尺寸（折叠/隐藏）元素不参与横向判定。
 
 ## 3. 对话规则实现说明与具体例子
 
@@ -155,6 +159,9 @@ D6 横向边界：`.planet-view` / `.panel-inner` / `.panel-body` 改两轴 `cli
 | 构建 | `npm run build` | 成功 |
 | 文档一致性 | `python scripts/check_docs.py` + `--selftest` | 通过（48 个里程碑条目；selftest 6/6） |
 | 后端全量 | `cd backend; uv run --frozen pytest -q` | **exit 0** |
+| 独立复核（冻结基线） | 见 `_gs-verify/baseline.md` | 基线 75 通过 / 36 失败 / 3 跳过（对话消息区横向可滚 5459–5881px、60 次表格测量 26 次越界） |
+| 独立复核（集成快照） | `_gs-verify/tools/audit.mjs` 等（快照 `c9cb8035`） | 全量审计 **134 条 → 133 通过 / 1 失败 / 0 跳过**（唯一失败是复核工具自身未唤醒指示条，已修）；第二阶段补充 11/11、交互 8/8、指示条聚焦 2/2 |
+| 复核发现的真实缺陷 | 用户气泡纯文本不换行（F1） | 已修（`overflow-wrap` 两处）并在浏览器复测 `dx=0`；定向重跑 `gs-qio-chat-scroll-fit` + `scroll.test.ts` 16 用例全绿 |
 | 唯一全量 CI | push `fix/global-scroll-dialog-layout` 触发 `CI`（push 到任意分支都会触发；未建 PR） | 结果见「最终状态」 |
 
 **触发规则核对**：`.github/workflows/ci.yml` 是 `on: push: branches: ["**"]` + `pull_request`，
@@ -172,7 +179,37 @@ Lead 侧独立实例（前端 5396 / 后端 8746 / 数据目录 `_gs-verify\lead
 | 星球页 D6 复测 | `_gs-verify/lead/planet-probe.mjs`、`lead-planet.json`、`lead-planet-expanded.png` | 四处 `over=0 / moved=0` |
 | 指示条随内容滚走的原始缺陷与修复 | `_gs-verify/lead/clip-probe.mjs`、`overflow-combo-probe.mjs` | 修复后 `transform = translate(0px, scrollTop)` 贴合 |
 | 独立复核（基线） | `_gs-verify/baseline.md`、`evidence/baseline/` | 冻结基线：对话消息区横向可滚 5459–5881px；60 次表格测量 26 次越界（最大 2861px） |
-| 独立复核（集成版） | `_gs-verify/` 下集成证据目录 | 见复核最终报告 |
+| Edge（WebView2 同源内核）100% / 125% / 150% | `_gs-verify/lead/lead-probe-edge-{100,125,150}.json` | Lead 探针三档均 **18/18 通过** |
+| 用户气泡长 token（F1） | `_gs-verify/lead/userbubble-probe.mjs`、`lead-userbubble.json/.png` | 修复后 `dx=0`、`overflow-wrap=anywhere`、折行 7 行 |
+| 独立复核（集成版） | `_gs-verify/acceptance.md` + `evidence/`（16 个目录） | 6 条硬条件在可测范围内全部成立；有头真实窗口实测滚动条 gutter=0（原生滚动条不是 overlay 假象） |
+
+### 5.1 复核方法与更正记录（独立复核子智能体）
+
+判定口径（本任务最终采用，写入 `_gs-verify/README.md` 与 `baseline.md`）：
+
+- **内容溢出信号**：`scrollWidth − clientWidth`（≤ 1px 合格）；
+- **可滚动信号**：赋值 `scrollLeft = 500` 后是否真的移动 —— **不可只用 wheel deltaX**（基线里会假通过）；
+- **零尺寸元素**（`clientWidth/clientHeight ≤ 0`，折叠/隐藏）不参与判定；
+- **测量必须钉住提交**：用 `git archive` 导出快照再跑，避免 dev server 读活工作树造成数字漂移；
+- **反自欺**：扫不到真实内容（无 table/pre/img）时记 SKIP 而非 PASS。
+
+复核自己修正并公开记录的 9 处口径问题（供后续复用）：iframe 内校准滚动条信号、
+`::-webkit-scrollbar` 计算值判定、折叠元素单列、`clip` 不再一律判失败、指示条等帧 + 先唤醒、
+多实例 rail 取宿主自己的、互动对话表格与**它自己所属的** markdown 正文比、八向尺寸每向换新卡、
+手势用例重载清视图。
+
+**两条被撤回的结论**（本材料不再引用）：
+
+1. 「`overflow-x: clip` 会同时裁掉纵向溢出」—— 探针取样点被相邻元素盖住造成的假象；
+   独立复测：`clip` + `visible` 不裁纵向，`overflow-x: hidden` 才会（其 `overflow-y` 计算成 `auto`）。
+2. 「星球页 `.panel-inner` 在基线上仍能滚 182px」—— 收起态零尺寸元素的读数，
+   不构成真实缺陷（见 §2.5 的口径更正）。
+
+**未验证项（复核报告 §6，如实保留）**：星球页面板展开态（Lead 侧已量，复核侧未覆盖）、
+独立材料预览的二维浏览区「允许横向」未被激活、卡片最小尺寸下 xlsx 预览的可用性、
+真实输入法会话（IME 为 CDP 合成）、真实 Windows 显示缩放设置、打包 Tauri 外壳、
+Firefox/WebKit、框选矩形语义与连线创建、泄漏阈值只看趋势、表格无障碍只验证属性未做读屏、
+撤销栈边界与跨话题草稿等深层语义（由单测与门禁覆盖）。
 
 ## 6. 与另一修复任务的实际重叠（以真实分支 diff 为准）
 
@@ -219,12 +256,13 @@ Lead 侧独立实例（前端 5396 / 后端 8746 / 数据目录 `_gs-verify\lead
 
 ## 8. 已知限制与未完成验证
 
-1. **无头浏览器下的滚动条占位**：Playwright/Chrome 无头使用 overlay 滚动条，
-   「不预留轨道」是通过 `offsetWidth − clientWidth` 与计算值测的，**未做像素级判定**；
-   真实窗口（WebView2）下需再确认一次。
-2. **125% / 150% 显示缩放**：复核用「CSS 视口等价换算」验证，**未在真实 Windows 显示缩放设置下复验**。
+1. ~~无头浏览器下的滚动条占位~~ → 已由复核在**有头真实窗口**（Edge 移到屏外）实测：
+   `::-webkit-scrollbar` 计算值 0px/none、`documentElement` 与所有可滚动容器的 gutter 均为 0 ——
+   原生滚动条确实消失，不是 overlay 假象。
+2. **125% / 150% 显示缩放**：已用浏览器级缩放（`--force-device-scale-factor`，dpr 1.25/1.5）
+   与 Edge 的 DPR 1.25/1.5 复测通过；**仍未在真实 Windows「显示设置 → 缩放」下复验**。
 3. **Tauri / WebView2 实机**：未在打包后的桌面窗口里验收（自绘标题栏、真实 PointerEvent、
-   输入法组合、触控板横向手势仍属待验证）。
+   输入法组合、触控板横向手势仍属待验证）。已用 Edge（WebView2 同源内核）作为引擎级近似。
 4. **对话内预览**：`context="chat"` 的调用点在当前实现里不存在（只有单测覆盖），
    若以后要在对话里内嵌同一渲染器必须显式传 `context="chat"`（TS 必填）。
 5. **板面最小尺寸下的预览**：复核观察到卡片缩到最小时 xlsx 预览容器高度变为 0、网格不再渲染

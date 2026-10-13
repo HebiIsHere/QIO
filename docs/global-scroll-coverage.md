@@ -73,8 +73,8 @@
 | 凭据弹窗 | `overflow:auto` | auto + fit | 标题/操作固定 |
 | 引导向导正文 | `overflow-y:auto` | auto + fit | — |
 | 调试视图 | 根 auto + JSON `overflow-x:auto` + 限高 | 根 auto + JSON content（软换行） | 无「藏起来但还能滚」 |
-| 星球页 `.planet-view` `.panel-inner` `.panel-body` | `overflow:hidden`（仍可脚本滚） | **两轴 clip** | `moved=0`，不再是滚动容器 |
-| 星球页 `.topic-scroll` `.detail-scroll` | auto + 内容撑宽 | auto + 横向锁死 + 内容换行 | 实测 `over=0 / moved=0`（保留纵向滚动） |
+| 星球页 `.planet-view` `.panel-inner` `.panel-body` | `overflow:hidden`（仍可脚本滚） | **两轴 clip** | 展开态 `moved=0`、不再是滚动容器；收起态零尺寸不判 |
+| 星球页 `.topic-scroll` `.detail-scroll` | auto + 内容撑宽 | auto + 横向锁死 + 内容换行 | **展开态**实测 `over=0 / moved=0`（保留纵向滚动）；收起态 `clientWidth=0`，不参与判定 |
 | 恢复收件箱 / 候选卡 / 工具创建卡 / 叙事抽屉 | 单行截断或折叠裁剪 | content（换行 / 展开入口 / `clip`） | 长文本完整可读 |
 
 ## 5. 明确「完全不显示滚动条」的区域
@@ -93,6 +93,7 @@
 - 内容溢出：`scrollWidth − clientWidth`（≤ 1px 合格，允许取整误差）；
 - 可滚动性：赋值 `scrollLeft = 500` 后读回（> 0 即真的能滚）——**不可只用 wheel deltaX**（会假通过）；
 - 零尺寸元素（`clientWidth/clientHeight ≤ 0`）单列，不算可滚动范围；
-- 真实证据：Lead 探针 `D:\qio-dev\_gs-verify\lead\probe.mjs`（18/18 通过）、
+- 真实证据：独立复核审计（`_gs-verify/acceptance.md`，134 条 → 133 通过 / 1 失败且该失败是工具自身、已修；
+  第二阶段 11/11、交互 8/8）、Lead 探针 `D:\qio-dev\_gs-verify\lead\probe.mjs`（18/18 通过）、
   独立复核 `D:\qio-dev\_gs-verify\tools\audit.mjs`（基线与集成版对照）、
   证据目录 `D:\qio-dev\_gs-verify\`（基线、clip 判定、星球页、板面声称、集成版）。
