@@ -257,8 +257,10 @@ describe("A 连接点归属与定位（jsdom 可判的部分）", () => {
     const wrapper = mountCanvas();
     await select(wrapper, "a");
     const point = connectPoints(wrapper, "a")[0];
-    const inlineW = px(point.element.style.width);
-    const inlineH = px(point.element.style.height);
+    // DOMWrapper.element 的类型是 Element（没有 style），这里按行内样式读尺寸
+    const pointEl = point.element as unknown as HTMLElement;
+    const inlineW = px(pointEl.style.width);
+    const inlineH = px(pointEl.style.height);
     const declared = Number.isFinite(inlineW) && Number.isFinite(inlineH) && inlineW > 0 ? { w: inlineW, h: inlineH } : declaredHitBox(point.element);
     if (declared) {
       expect(Math.min(declared.w, declared.h), "连接点热区应 ≥18×18 屏幕像素").toBeGreaterThanOrEqual(18);
