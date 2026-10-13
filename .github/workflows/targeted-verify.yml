@@ -175,6 +175,21 @@ jobs:
           ref: ${{ needs.verify-sha.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # 契约要求「自己签出的代码，必须由本 job 自己断言 SHA」（verify_workflow_contract.py
+      # 的『asserts actual SHA after checkout』）。引导签出是本地 action 能加载的前提，
+      # 所以这里紧跟一次断言：本 job 自己的证据行。复合 action 稍后还会再签出并再断言一次。
+      - name: Assert the bootstrapped SHA (checkout implies assertion)
+        shell: bash
+        working-directory: .
+        env:
+          REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/targeted-verify/verify_sha.py \
+            --requested "${REQUESTED_SHA}" \
+            --actual "$(git rev-parse HEAD)" \
+            --actual-from arg \
+            --label "${{ github.job }}-bootstrap"
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -224,6 +239,21 @@ jobs:
           ref: ${{ needs.verify-sha.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # 契约要求「自己签出的代码，必须由本 job 自己断言 SHA」（verify_workflow_contract.py
+      # 的『asserts actual SHA after checkout』）。引导签出是本地 action 能加载的前提，
+      # 所以这里紧跟一次断言：本 job 自己的证据行。复合 action 稍后还会再签出并再断言一次。
+      - name: Assert the bootstrapped SHA (checkout implies assertion)
+        shell: bash
+        working-directory: .
+        env:
+          REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/targeted-verify/verify_sha.py \
+            --requested "${REQUESTED_SHA}" \
+            --actual "$(git rev-parse HEAD)" \
+            --actual-from arg \
+            --label "${{ github.job }}-bootstrap"
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -306,6 +336,21 @@ jobs:
           ref: ${{ needs.verify-sha.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # 契约要求「自己签出的代码，必须由本 job 自己断言 SHA」（verify_workflow_contract.py
+      # 的『asserts actual SHA after checkout』）。引导签出是本地 action 能加载的前提，
+      # 所以这里紧跟一次断言：本 job 自己的证据行。复合 action 稍后还会再签出并再断言一次。
+      - name: Assert the bootstrapped SHA (checkout implies assertion)
+        shell: bash
+        working-directory: .
+        env:
+          REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/targeted-verify/verify_sha.py \
+            --requested "${REQUESTED_SHA}" \
+            --actual "$(git rev-parse HEAD)" \
+            --actual-from arg \
+            --label "${{ github.job }}-bootstrap"
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -359,6 +404,21 @@ jobs:
           ref: ${{ needs.verify-sha.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # 契约要求「自己签出的代码，必须由本 job 自己断言 SHA」（verify_workflow_contract.py
+      # 的『asserts actual SHA after checkout』）。引导签出是本地 action 能加载的前提，
+      # 所以这里紧跟一次断言：本 job 自己的证据行。复合 action 稍后还会再签出并再断言一次。
+      - name: Assert the bootstrapped SHA (checkout implies assertion)
+        shell: bash
+        working-directory: .
+        env:
+          REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/targeted-verify/verify_sha.py \
+            --requested "${REQUESTED_SHA}" \
+            --actual "$(git rev-parse HEAD)" \
+            --actual-from arg \
+            --label "${{ github.job }}-bootstrap"
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -413,6 +473,21 @@ jobs:
           ref: ${{ needs.verify-sha.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # 契约要求「自己签出的代码，必须由本 job 自己断言 SHA」（verify_workflow_contract.py
+      # 的『asserts actual SHA after checkout』）。引导签出是本地 action 能加载的前提，
+      # 所以这里紧跟一次断言：本 job 自己的证据行。复合 action 稍后还会再签出并再断言一次。
+      - name: Assert the bootstrapped SHA (checkout implies assertion)
+        shell: bash
+        working-directory: .
+        env:
+          REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/targeted-verify/verify_sha.py \
+            --requested "${REQUESTED_SHA}" \
+            --actual "$(git rev-parse HEAD)" \
+            --actual-from arg \
+            --label "${{ github.job }}-bootstrap"
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -482,6 +557,21 @@ jobs:
           ref: ${{ needs.verify-sha.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # 契约要求「自己签出的代码，必须由本 job 自己断言 SHA」（verify_workflow_contract.py
+      # 的『asserts actual SHA after checkout』）。引导签出是本地 action 能加载的前提，
+      # 所以这里紧跟一次断言：本 job 自己的证据行。复合 action 稍后还会再签出并再断言一次。
+      - name: Assert the bootstrapped SHA (checkout implies assertion)
+        shell: bash
+        working-directory: .
+        env:
+          REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/targeted-verify/verify_sha.py \
+            --requested "${REQUESTED_SHA}" \
+            --actual "$(git rev-parse HEAD)" \
+            --actual-from arg \
+            --label "${{ github.job }}-bootstrap"
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
@@ -517,6 +607,21 @@ jobs:
           ref: ${{ needs.verify-sha.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # 契约要求「自己签出的代码，必须由本 job 自己断言 SHA」（verify_workflow_contract.py
+      # 的『asserts actual SHA after checkout』）。引导签出是本地 action 能加载的前提，
+      # 所以这里紧跟一次断言：本 job 自己的证据行。复合 action 稍后还会再签出并再断言一次。
+      - name: Assert the bootstrapped SHA (checkout implies assertion)
+        shell: bash
+        working-directory: .
+        env:
+          REQUESTED_SHA: ${{ needs.verify-sha.outputs.sha }}
+        run: |
+          set -euo pipefail
+          python scripts/targeted-verify/verify_sha.py \
+            --requested "${REQUESTED_SHA}" \
+            --actual "$(git rev-parse HEAD)" \
+            --actual-from arg \
+            --label "${{ github.job }}-bootstrap"
       - uses: ./.github/actions/verify-checkout
         with:
           ref: ${{ needs.verify-sha.outputs.ref }}
