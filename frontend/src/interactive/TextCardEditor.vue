@@ -13,7 +13,7 @@
   - 诚实反馈：插入链接时用户取消输入地址、剪贴板不可用，都如实写在编辑区内，不假装成功。
 -->
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import {
   FENCE,
   detectLanguage,
@@ -62,6 +62,29 @@ const note = ref("");
 
 const textareaStyle = computed(() => ({ minHeight: props.minHeight + "px" }));
 
+/**
+ * 连续编辑区：编辑框**跟随内容自动增高，自己不再滚动**。
+ *
+ * 为什么必须这样：编辑态的纵向滚动只允许有一层（卡片正文 .card-body）。
+ * 编辑框如果自己也能滚，就会变成「外层正文滚一段、内层编辑框再滚一段」——
+ * 同一个连续编辑动作被拆成两个小窗口，光标位置与可见区间对不上。
+ *
+ * 只改显示高度：文本、选区、撤销重做、提交内容与已保存尺寸都不受影响。
+ * jsdom / 还没布局时 scrollHeight 为 0，这时不写高度（绝不把编辑框压成 0）。
+ */
+function autosize(): void {
+  const el = area.value;
+  if (!el) return;
+  const content = el.scrollHeight;
+  if (!content) return;
+  el.style.height = "auto";
+  el.style.height = content + "px";
+}
+
+onMounted(() => {
+  autosize();
+});
+
 /** 工具栏动作 → 编辑区文本（唯一实现是纯函数 wrapSelection）。 */
 const ACTIONS: { action: string; label: string; title: string; format: InlineFormat }[] = [
   { action: "bold", label: "加粗", title: "加粗选中文字（**文字**）", format: "bold" },
@@ -86,12 +109,14 @@ function apply(next: string, selection?: { start: number; end: number }): void {
   if (el && el.value !== next) el.value = next;
   if (el && selection) el.setSelectionRange(selection.start, selection.end);
   text.value = next;
+  autosize();
   emit("change", { docText: next, doc: parseDocText(next) });
 }
 
 function onInput(event: Event): void {
   const value = (event.target as HTMLTextAreaElement).value;
   text.value = value;
+  autosize();
   emit("change", { docText: value, doc: parseDocText(value) });
 }
 
@@ -199,6 +224,8 @@ watch(
   () => {
     const next = initialText();
     if (next !== text.value) text.value = next;
+    // 换了一份文本（草稿恢复、冲突里选服务器上的、切到另一张卡）：高度跟着内容重算
+    void nextTick(autosize);
   },
   { deep: true },
 );
@@ -230,7 +257,7 @@ function offsetOfLine(value: string, line: number): number {
 </script>
 
 <template>
-  <div class="text-card-editor" data-im="text-card-editor">
+  <div class="text-card-editor" data-im="text-card-editor" data-qio-fit>
     <div class="editor-toolbar" data-im="card-editor-toolbar" role="toolbar" aria-label="文字卡格式" @pointerdown.prevent>
       <button
         v-for="item in ACTIONS"
@@ -300,6 +327,10 @@ function offsetOfLine(value: string, line: number): number {
 /*
   编辑面：等宽字体（三声部里的数据声部）—— 代码块、缩进与围栏都必须看得到空白。
   不重建 DOM、不拦输入：原生撤销/重做、光标与选区都由浏览器负责。
+
+  overflow: hidden + 脚本里的 autosize：编辑框自己**从不滚动**，高度跟随内容长；
+  纵向滚动因此只有卡片正文这一层（否则就是外层正文 + 内层编辑框两处各滚一段）。
+  min-height 是显示参数（父组件按卡片高度给定），只影响一屏内的高度，不影响提交内容。
 */
 .editor {
   width: 100%;
@@ -312,6 +343,7 @@ function offsetOfLine(value: string, line: number): number {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xs);
   padding: var(--sp-2);
+  overflow: hidden;
   resize: vertical;
 }
 .editor:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }

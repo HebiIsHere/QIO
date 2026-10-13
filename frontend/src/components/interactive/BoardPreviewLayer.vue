@@ -184,7 +184,8 @@ const rendered = computed<RenderedIntent[]>(() =>
 </script>
 
 <template>
-  <div class="preview-layer" aria-label="待审批预览（虚线，未确定）">
+  <!-- 整层不参与命中（pointer-events: none），也不建任何滚动容器：data-qio-fit 只兜住横向边界 -->
+  <div class="preview-layer" data-qio-fit aria-label="待审批预览（虚线，未确定）">
     <div
       v-for="item in rendered"
       :key="item.id"

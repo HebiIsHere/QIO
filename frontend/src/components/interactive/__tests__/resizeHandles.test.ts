@@ -38,6 +38,36 @@ describe("ResizeHandles：热区", () => {
     const wrapper = mount(ResizeHandles, { props: { handles: ["se"] as const } });
     expect(wrapper.findAll("[data-resize-handle]")).toHaveLength(1);
   });
+
+  /*
+    指针隔离（本轮滚动 / 手势规则）：同一个指针操作不得同时触发两种手势。
+    宿主（卡片 / 对话窗口 / 板面）都在外层监听 pointerdown 做拖动 ——
+    尺寸把手必须在本层就把 pointerdown 止住，否则「拉右下角」会同时开始拖卡片。
+  */
+  it("按在热区上时 pointerdown 不冒泡给宿主（不会同时触发拖动）", async () => {
+    const host = document.createElement("div");
+    const seen: string[] = [];
+    host.addEventListener("pointerdown", () => seen.push("host"));
+    document.body.appendChild(host);
+    const wrapper = mount(ResizeHandles, { attachTo: host });
+    await wrapper.find('[data-resize-handle="se"]').trigger("pointerdown");
+    expect(wrapper.emitted("handle-down")).toHaveLength(1);
+    expect(seen).toEqual([]);
+    wrapper.unmount();
+    host.remove();
+  });
+
+  it("按在 − / ＋ 按钮上同样不冒泡（键盘按钮不启动宿主拖动）", async () => {
+    const host = document.createElement("div");
+    const seen: string[] = [];
+    host.addEventListener("pointerdown", () => seen.push("host"));
+    document.body.appendChild(host);
+    const wrapper = mount(ResizeHandles, { attachTo: host });
+    await wrapper.find('[data-resize-key="w+"]').trigger("pointerdown");
+    expect(seen).toEqual([]);
+    wrapper.unmount();
+    host.remove();
+  });
 });
 
 describe("ResizeHandles：键盘 −/＋", () => {

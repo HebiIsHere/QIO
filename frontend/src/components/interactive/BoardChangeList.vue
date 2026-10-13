@@ -9,6 +9,8 @@
 import { computed } from "vue";
 import { changeBearingText, changeKindLabel, summarizeChanges } from "../../interactive/submission";
 import type { Expression } from "../../interactive/types";
+// 改动列表是独立并列的列表：可以自己滚，但滚动条外观走统一 QIO 指示条。
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const props = withDefaults(
   defineProps<{
@@ -30,12 +32,17 @@ const summary = computed(() => summarizeChanges(props.expressions));
 </script>
 
 <template>
-  <section class="changes" aria-label="本次有效改动">
+  <section class="changes" aria-label="本次有效改动" data-qio-fit>
     <header class="changes-head">
       <h3 class="changes-title">{{ title }}</h3>
       <p class="changes-headline" data-im="change-summary">{{ summary.headline }}</p>
     </header>
-    <ul v-if="summary.total" class="changes-list" data-im="change-list">
+    <ul
+      v-if="summary.total"
+      class="changes-list"
+      data-im="change-list"
+      v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+    >
       <li
         v-for="item in expressions"
         :key="item.id"
@@ -83,6 +90,10 @@ const summary = computed(() => summarizeChanges(props.expressions));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/*
+  改动列表：独立并列的列表，可以自己滚（不把提交区拆进正文那一层）。
+  滚动条外观由统一 QIO 指示条负责：默认隐藏、滚动时出现、不占布局列。
+*/
 .changes-list {
   list-style: none;
   margin: 0;
@@ -91,7 +102,8 @@ const summary = computed(() => summarizeChanges(props.expressions));
   flex-direction: column;
   gap: 2px;
   max-height: 118px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .change {
   display: flex;

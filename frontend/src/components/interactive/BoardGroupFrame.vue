@@ -18,6 +18,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
+// 组内顺序 / 成员条是**横向浏览**区域：滚动能力保留，滚动条外观统一走 QIO 指示条。
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const props = defineProps<{
   group: BoardGroup;
@@ -175,7 +177,7 @@ defineExpose({ focusName });
           <span class="tools-hint">这里只改顺序与归属，不改变成员的材料范围</span>
         </div>
 
-      <ol v-if="group.ordered" class="sequence" aria-label="组内顺序">
+      <ol v-if="group.ordered" class="sequence" aria-label="组内顺序" v-qio-scrollbar="{ policy: 'auto', axis: 'x' }">
         <li
           v-for="(card, index) in displayCards"
           :key="card.id"
@@ -223,7 +225,7 @@ defineExpose({ focusName });
           <span class="chip-text">插入位置：第 {{ (dropIndex ?? displayCards.length) + 1 }} 位</span>
         </li>
       </ol>
-      <ul v-else class="sequence plain" aria-label="组成员">
+      <ul v-else class="sequence plain" aria-label="组成员" v-qio-scrollbar="{ policy: 'auto', axis: 'x' }">
         <li
           v-for="card in displayCards"
           :key="card.id"
@@ -360,6 +362,10 @@ defineExpose({ focusName });
 .mode { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 /* 成员数量是次级信息：小、灰，但不至于看不清 */
 .count { flex: none; color: var(--text-muted); }
+/*
+  成员 / 顺序条：短的横向浏览区（头部高度固定 58px，不能靠换行长高）。
+  横向滚动能力保留，滚动条外观由统一 QIO 指示条负责（不占布局列、默认隐藏）。
+*/
 .sequence {
   display: flex;
   flex-wrap: nowrap;

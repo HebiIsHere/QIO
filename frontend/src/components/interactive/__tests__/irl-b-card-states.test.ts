@@ -9,8 +9,8 @@
  * 所以这里分两层取证：
  *   1. DOM 层：四态互斥、入口文案、许可徽章、更多菜单可达性、勾选只改 checked；
  *   2. 规则层：读 BoardCard.vue 的样式规则，断言「头部与页脚 flex: none、正文 flex: 1 且
- *      min-height: 0、横向滚动只发生在代码块内部、卡片自身 overflow: hidden」——
- *      这几条共同保证 180×96 时内容区仍拿到正高度、长代码不撑破卡片。
+ *      min-height: 0、正文是唯一的主要纵向视口（代码块自己不再滚动）、卡片自身 overflow: hidden」——
+ *      这几条共同保证 180×96 时内容区仍拿到正高度、长内容不撑破卡片、也不被无故裁掉。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -311,14 +311,40 @@ describe("规则层守卫：高度预算与横向滚动（jsdom 没有真实排�
     expect(card).toContain(".card.is-compact { padding: var(--sp-2); gap: var(--sp-1); }");
   });
 
-  it("横向滚动只发生在代码区：卡片与内容区都不产生横向滚动", () => {
-    expect(cssBlock(card, ".code-body {")).toContain("overflow-x: auto");
-    expect(cssBlock(card, ".card-body {")).toContain("overflow-x: hidden");
+  /*
+    规则变更（2026-10-14 统一滚动规则）：
+    旧断言是「横向滚动只发生在代码块内部（.code-body 的 overflow-x: auto）+ 卡片正文 overflow-x: hidden」。
+
+    为什么必须改：
+    1. 「代码块自己横向滚动」= 藏起滚动条、内容还在左右滚，正是本轮要消灭的形态；
+       而且代码块同时带 overflow-y: auto，于是阅读一段长代码要在
+       .card-body → .cip-body → .code-body 三个小窗口里分别滚。
+    2. 新规则：代码正文**不再自己滚动**（横纵都不），长行按视觉软换行
+       （white-space: pre-wrap + overflow-wrap: anywhere，textContent 与复制逐字不变），
+       纵向滚动只由卡片正文这一层承担；横向边界用共享的 data-qio-fit（overflow-x: clip，
+       它不建立滚动容器）兜底，而不是靠 .card-body 的 overflow-x: hidden 把内容裁掉。
+  */
+  it("代码块不再自己滚动：软换行 + 纵向交给卡片正文这一层", () => {
+    const code = cssBlock(card, ".code-body {");
+    expect(code).toContain("white-space: pre-wrap");
+    expect(code).toContain("overflow-wrap: anywhere");
+    // 关键反转：横向、纵向都不再是它自己的滚动方向
+    expect(code).not.toContain("overflow-x: auto");
+    expect(code).not.toContain("overflow-y: auto");
+    // 卡片正文是这张卡唯一的主要纵向视口，并且用统一 QIO 指示条
+    const body = cssBlock(card, ".card-body {");
+    expect(body).toContain("overflow-y: auto");
+    expect(cssBlock(card, ".blk-code {")).toContain("max-width: 100%");
+  });
+
+  it("卡片本身不产生横向滚动；横向边界由 data-qio-fit 兜底", () => {
     const root = cssBlock(card, ".card {");
     expect(root).toContain("overflow: hidden");
     expect(root).not.toContain("overflow-x: auto");
-    // 宽代码由内层 <pre> 滚动，外框不跟着长胖
-    expect(cssBlock(card, ".blk-code {")).toContain("max-width: 100%");
+    // data-qio-fit 挂在正文层：min-width/max-width + overflow-x: clip
+    expect(card).toMatch(/data-qio-fit/);
+    // 纵向视口只有一个：走共享指示条，且策略是 auto（实际溢出才出现）
+    expect(card).toContain('v-qio-scrollbar="{ policy: \'auto\', axis: \'y\' }"');
   });
 
   it("颜色只用设计令牌（没有裸色值）", () => {

@@ -42,8 +42,27 @@ import type { PptxView } from "../../interactive/renderers/pptx";
 import type { XlsxView } from "../../interactive/renderers/xlsx";
 import type { PdfFactsView, PdfHandle } from "../../interactive/renderers/pdf";
 import { fitScale, stepZoom } from "../../interactive/renderers/image";
+// 二维浏览区（图片框 / PDF 页面框 / 表格网格 / 代码框）统一用共享指示条，不各自发明滚动条样式。
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
-const props = defineProps<{ card: BoardCard; active: boolean; onClose: () => void }>();
+/**
+ * 渲染上下文（**显式属性**，不靠 DOM 结构或祖先类名猜测）：
+ *
+ * - `"material"` —— 独立互动材料阅读（板面卡片内展开阅读）：
+ *   图片 / PDF 放大、电子表格网格、代码预览可按材料类型保留必要的二维浏览，
+ *   二维浏览区使用统一 QIO 指示条；
+ * - `"chat"` —— 对话内渲染（互动对话、消息里的附件预览）：
+ *   执行无横向规则：data-qio-fit + 软换行 + 表格按可用宽度重排，
+ *   不建任何内层滚动容器（纵向滚动交给对话主体那一层）。
+ *
+ * 不给默认值：调用方必须明确写出自己处在哪一种上下文里。
+ */
+const props = defineProps<{
+  card: BoardCard;
+  active: boolean;
+  onClose: () => void;
+  context: "material" | "chat";
+}>();
 /**
  * 阅读位置必须**带着归属**一起交出去：位置按「附件 + 文件版本」落库，
  * 只给一个页码，父组件无法判断它属于哪一份文件（旧版本的位置绝不能写到新版本上）。
@@ -98,6 +117,24 @@ const noticeText = computed(
 const currentSheet = computed(() => xlsxView.value?.sheets[sheetIndex.value] ?? null);
 const currentSlide = computed(() => pptxView.value?.slides[slideIndex.value] ?? null);
 const zoomPercent = computed(() => Math.round(zoom.value * 100) + "%");
+
+/** 是否独立材料阅读（只有这一种上下文允许按材料类型做二维浏览）。 */
+const materialContext = computed(() => props.context === "material");
+
+/**
+ * 纵向滚动责任落在谁身上（**每个渲染器明确一次**，不允许层层各建视口）：
+ *
+ * - `"content"`（对话内）：一个滚动容器都不建，内容自然展开，滚动交给对话主体那一层；
+ * - `"self"`    （材料 + 文档/幻灯片/外部打开）：预览正文这一层是唯一视口；
+ * - `"viewer"`  （材料 + 图片/PDF/表格/代码）：材料自带的二维浏览区是唯一视口
+ *                （默认适应区域 / 网格自适应，只有真实超出时才滚动）。
+ */
+type PreviewViewport = "content" | "self" | "viewer";
+const VIEWER_RENDERERS: readonly string[] = ["image", "pdf", "xlsx", "code"];
+const bodyViewport = computed<PreviewViewport>(() => {
+  if (props.context !== "material") return "content";
+  return VIEWER_RENDERERS.includes(plan.value.renderer) ? "viewer" : "self";
+});
 
 // ---------------------------------------------------------------------------
 // 在途工作与释放：代次计数 + AbortController（迟到结果一律丢弃）
@@ -431,7 +468,13 @@ onBeforeUnmount(stop);
 </script>
 
 <template>
-  <section class="cip" data-testid="cip-root" data-im="card-inline-preview">
+  <section
+    class="cip"
+    data-testid="cip-root"
+    data-im="card-inline-preview"
+    data-qio-fit
+    :data-qio-context="context"
+  >
     <header class="cip-head">
       <div class="cip-ident">
         <span class="cip-name" data-testid="cip-name" :title="fileName">{{ fileName }}</span>
@@ -448,17 +491,28 @@ onBeforeUnmount(stop);
     <p v-if="noticeText" class="cip-notice" data-testid="cip-notice">{{ noticeText }}</p>
     <p v-if="viewError" class="cip-error" data-testid="cip-view-error">{{ viewError }}</p>
 
-    <!-- 内嵌渲染 -->
-    <div v-if="inlineReady" class="cip-body" :class="'cip-body-' + plan.renderer">
+    <!-- 内嵌渲染：纵向滚动责任由 data-qio-viewport 明确（见 bodyViewport 的注释） -->
+    <div
+      v-if="inlineReady"
+      class="cip-body"
+      :class="'cip-body-' + plan.renderer"
+      :data-qio-viewport="bodyViewport"
+      :data-qio-context="context"
+    >
       <!-- 图片：等比 + 放大 / 缩小 / 适应 -->
       <div v-if="plan.renderer === 'image'" class="cip-image" data-im="cip-image">
-        <div class="cip-tools">
+        <!-- 对话内不给缩放（放大必然产生横向浏览，违反对话无横向规则）；独立材料阅读保留完整缩放 -->
+        <div v-if="materialContext" class="cip-tools">
           <button type="button" data-testid="cip-zoom-out" @click="changeZoom(-1)">缩小</button>
           <span class="cip-zoom" data-testid="cip-zoom">{{ zoomPercent }}</span>
           <button type="button" data-testid="cip-zoom-in" @click="changeZoom(1)">放大</button>
           <button type="button" data-testid="cip-zoom-fit" @click="fitImage()">适应</button>
         </div>
-        <div class="cip-image-box">
+        <div
+          class="cip-image-box"
+          v-qio-scrollbar="{ policy: 'auto', axis: 'both' }"
+          :data-qio-pan="materialContext ? 'both' : 'none'"
+        >
           <img
             v-if="imageUrl"
             ref="imageRef"
@@ -499,11 +553,18 @@ onBeforeUnmount(stop);
             :value="pdfPage"
             @change="goPage(Number(($event.target as HTMLInputElement).value))"
           />
-          <button type="button" data-testid="cip-pdf-zoom-out" @click="changeZoom(-1)">缩小</button>
-          <span class="cip-zoom" data-testid="cip-pdf-zoom">{{ zoomPercent }}</span>
-          <button type="button" data-testid="cip-pdf-zoom-in" @click="changeZoom(1)">放大</button>
+          <!-- 缩放同样只属于独立材料阅读：对话内按可用宽度适应，不产生横向浏览 -->
+          <template v-if="materialContext">
+            <button type="button" data-testid="cip-pdf-zoom-out" @click="changeZoom(-1)">缩小</button>
+            <span class="cip-zoom" data-testid="cip-pdf-zoom">{{ zoomPercent }}</span>
+            <button type="button" data-testid="cip-pdf-zoom-in" @click="changeZoom(1)">放大</button>
+          </template>
         </div>
-        <div class="cip-canvas-box">
+        <div
+          class="cip-canvas-box"
+          v-qio-scrollbar="{ policy: 'auto', axis: 'both' }"
+          :data-qio-pan="materialContext ? 'both' : 'none'"
+        >
           <canvas ref="canvasRef" data-testid="cip-canvas"></canvas>
           <p v-if="pdfBusy" class="cip-busy" data-testid="cip-pdf-busy">正在渲染这一页…</p>
         </div>
@@ -521,7 +582,13 @@ onBeforeUnmount(stop);
         <p class="cip-fact" data-testid="cip-code-facts">
           {{ codeView.languageLabel }} · 共 {{ codeView.totalLines }} 行 · 编码 {{ codeView.encoding }} · 只读
         </p>
-        <pre class="cip-pre" data-testid="cip-pre" tabindex="0"><code><span
+        <pre
+          class="cip-pre"
+          data-testid="cip-pre"
+          tabindex="0"
+          v-qio-scrollbar="{ policy: 'auto', axis: 'both' }"
+          :data-qio-pan="materialContext ? 'both' : 'none'"
+        ><code><span
           v-for="line in codeView.lines"
           :key="line.number"
           class="cip-line"
@@ -576,7 +643,17 @@ onBeforeUnmount(stop);
             {{ sheet.name }}
           </button>
         </div>
-        <div v-if="currentSheet" class="cip-grid-box">
+        <!--
+          二维查看由这一个网格区域承担（唯一的滚动视口）：
+          行号列 + 列标表头始终在结构里，单元格地址与值一一对应，不展开成「记录」列表 ——
+          合并单元格之类的结构必须保住真实跨度与对应关系，展开成逐项记录会误导。
+        -->
+        <div
+          v-if="currentSheet"
+          class="cip-grid-box"
+          v-qio-scrollbar="{ policy: 'auto', axis: 'both' }"
+          :data-qio-pan="materialContext ? 'both' : 'none'"
+        >
           <table class="cip-grid" data-testid="cip-grid">
             <thead>
               <tr>
@@ -677,6 +754,9 @@ onBeforeUnmount(stop);
   flex-direction: column;
   gap: var(--sp-3);
   height: 100%;
+  /* 卡片内展开时由 .card-preview-host 的 flex 定高；height: 100% 给非 flex 宿主兜底 */
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
   padding: var(--sp-3);
   background: var(--bg-surface);
@@ -746,10 +826,36 @@ onBeforeUnmount(stop);
   color: var(--text-faint);
   cursor: not-allowed;
 }
+/*
+  * 材料主体：**纵向滚动责任只有一个**，由 data-qio-viewport 明确（见脚本 bodyViewport）：
+  *   self    —— 材料 + 文档 / 幻灯片 / 外部打开：这一层是唯一视口；
+  *   viewer  —— 材料 + 图片 / PDF / 表格 / 代码：自带二维浏览区是唯一视口，
+  *              这一层只负责把它撑满剩余高度，自己绝不滚动；
+  *   content —— 对话内：一个滚动容器都不建（无横向规则），滚动交给对话主体那一层。
+  * 这样从卡片正文到最内层预览最多只有**一个**纵向滚动面。
+  */
 .cip-body {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
-  overflow: auto;
+}
+.cip-body[data-qio-viewport="self"] {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.cip-body[data-qio-viewport="viewer"],
+.cip-body[data-qio-viewport="content"] {
+  overflow: visible;
+}
+/* 承担视口的渲染器：占满剩余高度，滚动只发生在它自己的盒子内部 */
+.cip-body[data-qio-viewport="viewer"] > * {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 .cip-tools {
   display: flex;
@@ -779,17 +885,33 @@ onBeforeUnmount(stop);
   border-radius: var(--r-xs);
   padding: var(--sp-1);
 }
+/*
+  * 图片框 / PDF 页面框：
+  * - data-qio-pan="both"（独立材料阅读）：二维浏览区，占满剩余高度，只有放大到超出时才滚动，
+  *   指示条走统一实现；
+  * - data-qio-pan="none"（对话内）：执行无横向规则 —— 图片与页面按可用宽度适应，不滚动。
+  */
 .cip-image-box,
 .cip-canvas-box {
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  overflow: auto;
+  min-width: 0;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   padding: var(--sp-2);
-  max-height: 60vh;
+}
+.cip-image-box[data-qio-pan="both"],
+.cip-canvas-box[data-qio-pan="both"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.cip-image-box[data-qio-pan="none"],
+.cip-canvas-box[data-qio-pan="none"] {
+  overflow: visible;
+  max-width: 100%;
 }
 .cip-image-el {
   display: block;
@@ -802,7 +924,12 @@ onBeforeUnmount(stop);
 }
 .cip-canvas-box canvas {
   max-width: 100%;
+  height: auto;
 }
+/*
+  * 代码预览：纵向滚动责任写死在这一处 —— 独立材料阅读里它自己就是那一个视口
+  * （横向保留必要的代码浏览，指示条走统一实现）；对话内软换行、不建滚动容器。
+  */
 .cip-pre {
   margin: 0;
   padding: var(--sp-2);
@@ -813,13 +940,27 @@ onBeforeUnmount(stop);
   font-size: var(--fs-sm);
   line-height: var(--lh-tight);
   color: var(--text-primary);
-  overflow: auto;
-  max-height: 60vh;
+  min-width: 0;
   tab-size: 4;
+}
+.cip-pre[data-qio-pan="both"] {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.cip-pre[data-qio-pan="none"] {
+  overflow: visible;
+  max-width: 100%;
 }
 .cip-line {
   display: block;
   white-space: pre;
+}
+/* 对话内：代码软换行（只改呈现，textContent 与复制结果逐字不变） */
+.cip-pre[data-qio-pan="none"] .cip-line {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 .cip-lineno {
   display: inline-block;
@@ -849,11 +990,30 @@ onBeforeUnmount(stop);
 .cip-marker {
   min-width: 1.6em;
 }
+/*
+  * 表格：文档 / 幻灯片里的表格按可用宽度重排（固定布局 + 换行），
+  * 保证任何上下文里都不横向溢出、也不靠裁切 —— 行与列的对应关系留在真实结构里。
+  *
+  * 为什么不套共享的「记录模式」（useQioTables / .qio-table-wrap）：
+  * 记录模式靠 td[data-label] 提供列名，而 docx / pptx 的表格数据里**没有表头行**，
+  * 硬套只会给出一列编造的列名；电子表格更是靠行号列 + 列标表头维持二维对应关系，
+  * 展开成逐条「列名：值」会破坏单元格的跨度与位置关系（合并单元格尤其明显）。
+  * 所以这里只改布局（固定列宽 + 换行），结构、顺序、跨度与对应关系一个都不动。
+  */
 .cip-table,
 .cip-grid {
   border-collapse: collapse;
   font-size: var(--fs-sm);
   margin: var(--sp-2) 0;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+}
+.cip-table :where(td, th),
+.cip-grid :where(td, th) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
 }
 .cip-table td,
 .cip-grid th,
@@ -863,9 +1023,18 @@ onBeforeUnmount(stop);
   vertical-align: top;
   text-align: left;
 }
+/* 电子表格：唯一一个「明确网格区域」承担二维查看（行号列 + 列标表头都在结构里） */
 .cip-grid-box {
+  min-width: 0;
+}
+.cip-grid-box[data-qio-pan="both"] {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
-  max-height: 50vh;
+}
+.cip-grid-box[data-qio-pan="none"] {
+  overflow: visible;
+  max-width: 100%;
 }
 .cip-grid th {
   background: var(--bg-elevated);

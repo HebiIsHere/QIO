@@ -242,6 +242,36 @@ describe("TextCardEditor：一个连续编辑区", () => {
     expect(editor(vm).style.minHeight || "").toContain("220");
     vm.unmount();
   });
+
+  /*
+    连续编辑区（本轮滚动规则）：编辑框**自己从不滚动**，高度跟随内容长 ——
+    这样纵向只剩卡片正文这一层，不会出现「外层正文滚一段、内层编辑框再滚一段」。
+    只改显示高度；文本、选区、撤销重做与提交内容都不受影响。
+  */
+  it("编辑框自己不滚动：overflow hidden + 输入后按内容自动增高（jsdom 无布局时不写高度）", async () => {
+    const source = readFileSync(resolve(__dirname, "../TextCardEditor.vue"), "utf8");
+    const rule = source.slice(source.indexOf(".editor {"), source.indexOf("}", source.indexOf(".editor {")) + 1);
+    expect(rule).toContain("overflow: hidden");
+    expect(rule).toContain("resize: vertical");
+
+    const vm = mountEditor({ content: "第一行" });
+    const area = editor(vm);
+    // jsdom 里 scrollHeight 恒为 0：这时**不许**把高度写成 0（否则编辑区会被压没）
+    Object.defineProperty(area, "scrollHeight", { value: 0, configurable: true });
+    await area.dispatchEvent(new Event("input"));
+    expect(area.style.height === "" || area.style.height === "auto").toBe(true);
+    // 真实布局里 scrollHeight > 0：高度跟着内容走
+    Object.defineProperty(area, "scrollHeight", { value: 240, configurable: true });
+    await area.dispatchEvent(new Event("input"));
+    expect(area.style.height).toBe("240px");
+    vm.unmount();
+  });
+
+  it("编辑区容器带 data-qio-fit：横向边界由共享规则兜住，不靠裁切", () => {
+    const vm = mountEditor({ content: "x" });
+    expect(vm.get('[data-im="text-card-editor"]').attributes("data-qio-fit")).toBeDefined();
+    vm.unmount();
+  });
 });
 
 describe("TextCardEditor：外部更新跟随", () => {

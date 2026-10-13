@@ -195,9 +195,13 @@ function fileCard(name: string, extra: Record<string, unknown> = {}): BoardCard 
   } as unknown as BoardCard;
 }
 
-function mountPreview(card: BoardCard, active = true) {
+/**
+ * 渲染上下文是必填 props（显式声明「对话内」还是「独立材料阅读」，不靠 DOM 猜测）。
+ * 默认给 material：这个文件测的是卡片内展开阅读（独立材料阅读）那一条路径。
+ */
+function mountPreview(card: BoardCard, active = true, context: "material" | "chat" = "material") {
   return mount(CardInlinePreview, {
-    props: { card, active, onClose: () => undefined },
+    props: { card, active, onClose: () => undefined, context },
   });
 }
 
@@ -296,6 +300,138 @@ describe("CardInlinePreview：六种 renderer 各自渲染出对应容器", () =
     expect(w.find('[data-testid="cip-code-facts"]').text()).toContain("Python");
     expect(w.find('[data-testid="cip-code-facts"]').text()).toContain("只读");
     expect(w.findAll('[data-testid="cip-line"]')).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1b. 渲染上下文是显式的：独立材料阅读 vs 对话内（本轮滚动规则）
+// ---------------------------------------------------------------------------
+
+describe("CardInlinePreview：显式渲染上下文决定滚动与横向规则", () => {
+  async function mountWith(renderer: string, data: Record<string, unknown>, context: "material" | "chat") {
+    mocks.fetchAttachmentPreview.mockResolvedValue(envelope(renderer, data));
+    const w = mountPreview(fileCard("材料.bin"), true, context);
+    await flushPromises();
+    return w;
+  }
+
+  it("material：图片 / PDF / 表格 / 代码各自声明二维浏览区（QIO 指示条 + data-qio-pan）", async () => {
+    const image = await mountWith("image", { kind: "image", width: 800, height: 600, bytes: 4096 }, "material");
+    expect(image.get('[data-testid="cip-root"]').attributes("data-qio-context")).toBe("material");
+    expect(image.get('[data-testid="cip-root"]').attributes("data-qio-fit")).toBeDefined();
+    // 图片：默认适应区域，放大后由图片框承担二维浏览
+    expect(image.get(".cip-image-box").attributes("data-qio-pan")).toBe("both");
+    expect(image.get(".cip-image-box").classes()).toContain("qio-scroll-host");
+    // 缩放工具属于独立材料阅读
+    expect(image.find('[data-testid="cip-zoom-in"]').exists()).toBe(true);
+    image.unmount();
+
+    const pdf = await mountWith("pdf", { kind: "pdf", pages: 3, title: "报告", encrypted: false, textChars: 10 }, "material");
+    expect(pdf.get(".cip-canvas-box").attributes("data-qio-pan")).toBe("both");
+    expect(pdf.find('[data-testid="cip-pdf-zoom-in"]').exists()).toBe(true);
+    pdf.unmount();
+
+    const code = await mountWith("code", { kind: "code", language: "text", lines: ["x"], totalLines: 1, truncated: false }, "material");
+    // 代码预览的纵向滚动责任写死在 .cip-pre 自己身上
+    expect(code.get('[data-testid="cip-pre"]').attributes("data-qio-pan")).toBe("both");
+    code.unmount();
+
+    const xlsx = await mountWith("xlsx", {
+      kind: "xlsx",
+      sheets: [{ name: "汇总", rows: [{ index: 1, cells: [{ ref: "A1", column: "A", row: 1, value: "12", formula: null, cached: null, kind: "value", display: "12", formulaNote: "" }] }], columns: ["A"], rowCount: 1, columnCount: 1 }],
+      truncated: false,
+    }, "material");
+    // 电子表格：一个明确的网格区域承担二维查看
+    expect(xlsx.get(".cip-grid-box").attributes("data-qio-pan")).toBe("both");
+    // 网格保持真实表格结构（行号列 + 列标表头），不展开成「记录」列表
+    expect(xlsx.get('[data-testid="cip-grid"]').element.tagName).toBe("TABLE");
+    expect(xlsx.get('[data-testid="cip-grid"]').attributes("data-mode")).toBeUndefined();
+    xlsx.unmount();
+  });
+
+  it("chat：无横向规则 —— 不建内层滚动容器、不给缩放、正文软换行", async () => {
+    const code = await mountWith("code", { kind: "code", language: "text", lines: ["x"], totalLines: 1, truncated: false }, "chat");
+    expect(code.get('[data-testid="cip-root"]').attributes("data-qio-context")).toBe("chat");
+    // 三档视口里，对话内是 content：一个滚动容器都不建
+    const body = code.get(".cip-body");
+    expect(body.attributes("data-qio-viewport")).toBe("content");
+    expect(body.attributes("data-qio-context")).toBe("chat");
+    expect(code.get('[data-testid="cip-pre"]').attributes("data-qio-pan")).toBe("none");
+    code.unmount();
+
+    const image = await mountWith("image", { kind: "image", width: 800, height: 600, bytes: 4096 }, "chat");
+    // 放大必然产生横向浏览：对话内不提供缩放入口
+    expect(image.find('[data-testid="cip-zoom-in"]').exists()).toBe(false);
+    expect(image.find('[data-testid="cip-zoom-out"]').exists()).toBe(false);
+    expect(image.get(".cip-image-box").attributes("data-qio-pan")).toBe("none");
+    image.unmount();
+
+    const xlsx = await mountWith("xlsx", {
+      kind: "xlsx",
+      sheets: [{ name: "汇总", rows: [{ index: 1, cells: [] }], columns: ["A"], rowCount: 1, columnCount: 1 }],
+      truncated: false,
+    }, "chat");
+    expect(xlsx.get(".cip-grid-box").attributes("data-qio-pan")).toBe("none");
+    xlsx.unmount();
+  });
+
+  /*
+    本轮验收硬条件：展开阅读时**只保留一个主要纵向视口**。
+    这里逐个渲染器数一遍「声明的纵向视口」：二维浏览区（data-qio-pan="both"）与
+    预览正文层（data-qio-viewport="self"）加起来必须恰好是 1 —— 不能既有卡片正文滚、
+    又有 cip-body 滚、还有内层预览滚。
+  */
+  it("每个渲染器都只有一个主要纵向视口（不出现三层各滚一段）", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["image", { kind: "image", width: 800, height: 600, bytes: 4096 }],
+      ["pdf", { kind: "pdf", pages: 3, title: "报告", encrypted: false, textChars: 10 }],
+      ["code", { kind: "code", language: "text", lines: ["x"], totalLines: 1, truncated: false }],
+      ["xlsx", {
+        kind: "xlsx",
+        sheets: [{ name: "汇总", rows: [{ index: 1, cells: [] }], columns: ["A"], rowCount: 1, columnCount: 1 }],
+        truncated: false,
+      }],
+      ["docx", {
+        kind: "docx",
+        blocks: [{ type: "paragraph", level: null, ordered: null, runs: [{ text: "正文", bold: false, italic: false }], text: "正文", marker: "" }],
+        tables: [],
+        truncated: false,
+      }],
+      ["pptx", {
+        kind: "pptx",
+        slides: [{ index: 1, title: "封面", texts: ["正文"], notes: [], images: [], tables: [] }],
+        truncated: false,
+      }],
+    ];
+    for (const [renderer, data] of cases) {
+      const w = await mountWith(renderer, data, "material");
+      const cip = w.get('[data-testid="cip-root"]');
+      const body = cip.get(".cip-body");
+      const innerViewports = cip.findAll('[data-qio-pan="both"]').length;
+      const selfViewport = body.attributes("data-qio-viewport") === "self" ? 1 : 0;
+      expect(innerViewports + selfViewport, renderer + " 的纵向视口数").toBe(1);
+      // 预览正文层自己绝不再加一层无条件滚动
+      expect(body.attributes("data-qio-viewport")).not.toBeUndefined();
+      w.unmount();
+    }
+  });
+
+  it("docx / pptx：材料阅读里纵向视口落在预览正文这一层（self），不是每个渲染器各建一层", async () => {
+    const docx = await mountWith("docx", {
+      kind: "docx",
+      blocks: [{ type: "paragraph", level: null, ordered: null, runs: [{ text: "正文", bold: false, italic: false }], text: "正文", marker: "" }],
+      tables: [],
+      truncated: false,
+    }, "material");
+    expect(docx.get(".cip-body").attributes("data-qio-viewport")).toBe("self");
+    docx.unmount();
+    const pptx = await mountWith("pptx", {
+      kind: "pptx",
+      slides: [{ index: 1, title: "封面", texts: ["正文"], notes: [], images: [], tables: [] }],
+      truncated: false,
+    }, "material");
+    expect(pptx.get(".cip-body").attributes("data-qio-viewport")).toBe("self");
+    pptx.unmount();
   });
 });
 
