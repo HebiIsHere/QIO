@@ -4317,3 +4317,38 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **后续依赖：** 打包桌面窗口的真实避让复验、多设备尺寸偏好同步、把尺寸偏好写进服务端用户数据，
   这三件事从 `docs/interactive-mode-contract.md` §15 的边界接手。
 
+
+### P39 — 0.2.5 互动模式两处回归修复：附件成功提示常驻 / 连接点被尺寸热区遮挡（2026-10-14）
+
+- **Status：** completed
+- **Implementation：**
+  - 新增临时提示生命周期原语 `frontend/src/composables/useTransientNotice.ts`：进行中一直显示、成功约 3 秒后自动移除、
+    失败不自动消失且可关闭 / 重新操作；每次 `begin()` 作废旧提示与旧计时器，迟到结果带 token 写不进来，组件卸载即失效。
+  - 附件入口 `frontend/src/components/interactive/AddMenu.vue` 与卡片内关联 `frontend/src/components/interactive/BoardCard.vue`
+    共用这一份原语：成功只陈述「附件已保存 + 板面关联是本地改动」，不再声称服务端已保存；
+    取消文案按卡片当前是否已有附件区分；等待选择 / 上传 / 处理都是真实进度；长文件名换行并可查看完整名称；
+    工具栏入口的提示与菜单放进同一悬浮列、各占一行且整层不吃指针事件，因此不会挡住「添加」与其它主要操作。
+  - 连接点与尺寸热区统一进**同一份不随画布缩放的交互层**（`frontend/src/components/interactive/BoardResizeLayer.vue`，
+    位置 = 显示矩形 × 缩放）：四边中点连接点有独立命中区（屏幕像素不小于 18×18）且位于边 / 角热区之上，
+    视觉仍是原先的圆点尺寸与既有颜色令牌；尺寸热区（边 / 角）不缩小。卡片内部不再有连接点，
+    从结构上不可能被缩放层里的热区盖住。
+  - 拖线目标判定改用**当前显示矩形**（`frontend/src/components/interactive/BoardCanvas.vue` 的 `displayRect`）而不是正式保存矩形：
+    展开卡片、因展开而临时让位的卡片、调整尺寸后、画布平移缩放后都按当前可见区域命中，旧位置不再命中；
+    临时显示坐标只用于渲染，不写回板面。
+  - 同一指针只驱动一种手势：连接点按下会清掉拖动 / 平移 / 框选 / 尺寸预览，拉伸开始后不再拖线；
+    拖线取消、Esc、指针取消、失焦、组件卸载都会清理临时状态并恢复尺寸调整能力，不留半条关系。
+  - 同源坐标缺陷一并修正：拖线落点 / 框选判定 / 局部工具栏定位 / 合并提示定位 / 滚轮缩放锚点原来把滚动量减了两次
+    （滚动为 0 时碰巧正确），统一成「内容原点 + 平移量 0」的口径后，先平移再拖线 / 框选 / 缩放都落在正确位置。
+  - 框选虚线自身的渲染也从「视口相对像素」改成与判定同一条来源的**板面矩形**：它画在带缩放的内容层里，
+    原来平移后整块虚线偏「滚动量」、缩放 ≠ 1 时还会被二次放大 —— 现在虚线框与真正选中的卡片始终是同一件事。
+- **Tests：** `frontend/src/composables/__tests__/useTransientNotice.test.ts`、
+  `frontend/src/components/interactive/__tests__/fix025-attach-notice.test.ts`、`fix025-card-attach-notice.test.ts`、
+  `fix025-connect-resize.test.ts`、`fix025-independent-verify.test.ts`；既有 `irl-verify-handles` / `resizeHandles` /
+  `boardCanvas` / `irl-c-canvas` 等套件继续通过。真实应用验收用 Playwright 真实鼠标（不是 dispatchEvent）：
+  四个连接点中心 `elementFromPoint` 命中连接入口、按下进入拖线、25%–250% 缩放与平移后的命中与位置、
+  四边四角仍可调整尺寸、附件提示约 3 秒后移除。
+- **Known limitations：** `.card-toolbar` 仍挂在带 `transform: scale()` 的 `.board-surface` 内部（工具栏自身随画布缩放，
+  且行内坐标与屏幕差值的口径不一致），本轮未修改；框选虚线的边框宽度仍随画布缩放（内容层内 1px 边框在 25% 下约 0.25px，
+  选区本身与位置都正确）；多指针（双指 / 多鼠标）场景只有单测级守卫，未真机复验；
+  打包后的桌面窗口未复验；`frontend/src/components/__tests__/AttachmentActions.test.ts` 里那条 Composer chip 用例
+  在 `origin/main` 上**同样失败**（已在基线工作树复现），与本轮无关，未修改。
