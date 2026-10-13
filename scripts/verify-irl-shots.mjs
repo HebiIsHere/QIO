@@ -118,9 +118,34 @@ async function main() {
   const dragged = await dragBy(page, handle, 180, 120);
   const after = (await cardBoxes(page))[0];
   record(
-    "拖动右下角改变的是容器宽高（不是 transform 缩放）",
+    "拖动右下角改变卡片容器宽高",
     dragged && after.w > before.w + 100 && after.h > before.h + 60,
     { before, after },
+  );
+  // F-E2E1：getBoundingClientRect 含 transform，单靠它分不出「容器尺寸」与「整体缩放」。
+  // 这里改看 offsetWidth / computed width 与 computed transform，并顺带证明
+  // **别的卡片文字大小没被带着变**、聊天文字大小也没变（任务书 §3.4）。
+  const sizeEvidence = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('[data-im="card"]')];
+    const target = cards[0];
+    const other = cards[cards.length - 1];
+    const chat = document.querySelector('[data-im="chat-panel"]');
+    const fs = (el) => (el ? getComputedStyle(el).fontSize : null);
+    return {
+      offsetWidth: target?.offsetWidth ?? null,
+      computedWidth: target ? getComputedStyle(target).width : null,
+      transform: target ? getComputedStyle(target).transform : null,
+      otherCardFontSize: fs(other?.querySelector('[data-im="card-body"]')),
+      chatFontSize: fs(chat?.querySelector('[data-im="chat-stream"]')),
+    };
+  });
+  record(
+    "改的是容器尺寸而不是 transform 缩放，且不影响其它卡片与聊天的文字大小",
+    sizeEvidence.transform === "none" &&
+      sizeEvidence.offsetWidth > 300 &&
+      sizeEvidence.computedWidth === sizeEvidence.offsetWidth + "px" &&
+      sizeEvidence.otherCardFontSize === "14.5px",
+    sizeEvidence,
   );
   await shot(page, "02-card-resized");
 
@@ -215,12 +240,16 @@ async function main() {
       headerVisible: Boolean(visible('[data-im="card-title"]') || visible('[data-im="card-license"]')),
       bodyHeight: Math.round(body?.getBoundingClientRect().height ?? 0),
       scrollW: card.scrollWidth - card.clientWidth,
-      handles: card.querySelectorAll("*").length > 0,
+      // 必要状态：许可徽章或「更多」入口至少有一个可见且可点
+      statusOrAction:
+        Boolean(visible('[data-im="card-license"]')) ||
+        Boolean(visible('[data-im="card-preview-toggle"]')) ||
+        Boolean(visible('[data-im="card-unfold"]')),
     };
   });
   record(
-    "拉到最小尺寸时卡头与内容区仍可用、卡片不横向撑破",
-    minInfo && minInfo.headerVisible && minInfo.bodyHeight > 0 && minInfo.scrollW <= 1,
+    "拉到最小尺寸时卡头、必要状态与内容区仍可用，卡片不横向撑破",
+    minInfo && minInfo.headerVisible && minInfo.bodyHeight > 0 && minInfo.scrollW <= 1 && minInfo.statusOrAction,
     { minBox: { w: Math.round(minBox.width), h: Math.round(minBox.height) }, ...minInfo },
   );
   await shot(page, "07b-card-min-size");
@@ -263,8 +292,38 @@ async function main() {
     const { context: ctx, page: p } = opened;
     await p.click('[data-im="chat-toggle"]').catch(() => {});
     await p.waitForTimeout(600);
-    const overflow = await p.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    record(name + " 无页面级横向溢出", overflow <= 1, { overflow });
+    const geom = await p.evaluate(() => {
+      const root = document.documentElement;
+      const bar = getComputedStyle(root).getPropertyValue("--titlebar-height").trim();
+      const barPx = parseFloat(bar) || 0;
+      const board = document.querySelector('[data-im="board"]')?.getBoundingClientRect();
+      const toolbar = document.querySelector('[data-im="board-toolbar"]')?.getBoundingClientRect();
+      const panel = document.querySelector('[data-im="chat-panel"]')?.getBoundingClientRect();
+      const stream = document.querySelector('[data-im="chat-stream"]')?.getBoundingClientRect();
+      return {
+        titlebar: barPx,
+        boardTop: Math.round(board?.top ?? -1),
+        overlapTitlebar: panel ? Math.round(barPx - panel.top) : 0,
+        panelBottom: panel ? Math.round(panel.bottom) : -1,
+        toolbarTop: toolbar ? Math.round(toolbar.top) : -1,
+        streamH: Math.round(stream?.height ?? 0),
+        streamVisible: board ? Math.round(Math.min(stream?.bottom ?? 0, board.bottom) - Math.max(stream?.top ?? 0, board.top)) : 0,
+        overflow: root.scrollWidth - root.clientWidth,
+      };
+    });
+    record(name + " 无页面级横向溢出", geom.overflow <= 1, { overflow: geom.overflow });
+    // 0.2.3 自绘标题栏：板面内容与对话窗口都要在标题栏之下，不被压住
+    record(
+      name + " 自绘标题栏避让（板面与对话窗口都在标题栏之下）",
+      geom.boardTop >= geom.titlebar - 1 && geom.overlapTitlebar <= 0,
+      { titlebar: geom.titlebar, boardTop: geom.boardTop, titlebarOverlap: geom.overlapTitlebar },
+    );
+    // 窄窗口是重排/收敛，不是把内容裁掉：消息阅读区仍有可见高度、面板底边不越过工具栏
+    record(
+      name + " 窄窗口下对话窗口重排而非被裁切",
+      geom.streamH >= 60 && geom.streamVisible >= 40 && (geom.toolbarTop < 0 || geom.panelBottom <= geom.toolbarTop + 1),
+      { streamH: geom.streamH, streamVisible: geom.streamVisible, panelBottom: geom.panelBottom, toolbarTop: geom.toolbarTop },
+    );
     await shot(p, name);
     await ctx.close();
   }

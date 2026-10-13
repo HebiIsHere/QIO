@@ -61,6 +61,16 @@ import type { Intent } from "../../interactive/types";
 const store = useInteractiveStore();
 
 /**
+ * 让开对话窗口之后，批量列表至少要有多宽才值得显示。
+ *
+ * 低于它就不再压缩显示，而是进入「同一时间只显示一个面板」的切换布局 ——
+ * 把一条 88px 的窄带硬抬到 160px 会重新压住对话窗口（IRL-E 第二阶段复核 F-G1）。
+ * 与 `interactive/approval.ts` 的 BATCH_LIST_MIN 不是同一个数：那个是「值不值得提供列表」的
+ * 业务门槛，这个是「这一带摆得下吗」的几何门槛。
+ */
+const BAND_MIN_WIDTH = 160;
+
+/**
  * 需要提供批量列表的批次（契约 §9.3）：
  * - 资格看**该批产生的意图总量** ≥ BATCH_LIST_MIN，不是「每次剩余的待审批数」——
  *   处理掉其中几项之后入口与列表继续保留，直到没有未处理项；
@@ -266,9 +276,12 @@ function applyGeometry(): void {
           OVERLAY_GAP,
         )
       : null;
-  // band === null：对话窗口把这一带吃光了。此时**不**硬叠上去，而是进入切换显示
+  // 带宽低于批量列表的最小可读宽度时也当作「没位置」：把 88px 的窄带抬到 160px
+  // 会重新压住对话窗口（IRL-E 的第二阶段复核 F-G1），宁可进入切换显示。
+  const bandUsable = band && band.right - band.left >= BAND_MIN_WIDTH ? band : null;
+  // band 不可用：对话窗口把这一带吃光了。此时**不**硬叠上去，而是进入切换显示
   // （同一时间只开一个面板）；resolveOverlayPanes 只关闭、不打开，所以不会来回弹。
-  if (chatBlocks && !band && !cramped.value && (resolved.chatOpen || resolved.batchOpen)) {
+  if (chatBlocks && !bandUsable && !cramped.value && (resolved.chatOpen || resolved.batchOpen)) {
     cramped.value = true;
     const retry = settlePanes(true);
     const retryPlan = planOverlayGeometry({
@@ -280,10 +293,10 @@ function applyGeometry(): void {
     });
     Object.assign(plan, retryPlan);
   }
-  const batchBand = band;
+  const batchBand = bandUsable;
   const batchRight = batchBand ? Math.round(window.innerWidth - batchBand.right) : plan.batchRight;
   const batchMaxWidth = batchBand
-    ? Math.max(160, Math.min(plan.batchMaxWidth, Math.round(batchBand.right - batchBand.left)))
+    ? Math.min(plan.batchMaxWidth, Math.round(batchBand.right - batchBand.left))
     : plan.batchMaxWidth;
 
   // 切换条的位置与高度直接取几何计划的矩形（视口坐标）：面板底边已在同一次计划里让开它
