@@ -6,6 +6,7 @@ import {
   type TraceDetail,
   type TraceSummary,
 } from "../services/api";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 const traces = ref<TraceSummary[]>([]);
 const total = ref(0);
@@ -92,7 +93,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="debug">
+  <div class="debug" v-qio-scrollbar data-qio-fit>
     <header class="head">
       <span class="title serif">运行追踪</span>
       <span class="sub mono">只读调试视图 · 回答“这一轮为什么这样做”</span>
@@ -184,7 +185,11 @@ onMounted(() => {
 <style scoped>
 .debug {
   height: 100%;
-  overflow: auto;
+  /* 整页只有这一层主要纵向滚动（正文）：日志/JSON 块不再各自开小滚动窗口。
+     data-qio-fit 保证不出现横向滚动；滚动条走统一策略（原生外观已全局移除）。 */
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
   padding: 26px 32px 40px;
   background: var(--bg-base);
   color: var(--text-primary);
@@ -295,9 +300,12 @@ summary {
   border-radius: 8px;
   font-size: 11px;
   color: var(--text-secondary);
+  /* content 策略：JSON / 日志软换行适配宽度，既不留横向滚动（原来的 overflow-x:auto
+     正是「藏起滚动条但内容仍在左右滚」的来源），也不自己限高切第二层滚动窗口 ——
+     纵向滚动只留给 .debug 这一层。 */
   white-space: pre-wrap;
-  overflow-x: auto;
-  max-height: 320px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .msg.err { color: var(--danger); font-size: 12px; }
 </style>

@@ -35,7 +35,7 @@ const progressText = computed(() => {
 </script>
 
 <template>
-  <div class="update-card qio-card">
+  <div class="update-card qio-card" data-qio-fit>
     <div class="head">
       <span class="title">应用更新</span>
       <span class="version mono">当前版本 {{ updater.currentVersion || "—" }}</span>

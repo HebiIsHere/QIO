@@ -69,6 +69,7 @@ function stepState(step: string): "done" | "current" | "todo" {
 <template>
   <div
     class="create-card qio-card"
+    data-qio-fit
     :class="{ failed, ready, open }"
     :data-state="ready ? 'ready' : failed ? 'failed' : running ? 'running' : 'waiting'"
   >

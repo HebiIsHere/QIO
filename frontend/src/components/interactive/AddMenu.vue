@@ -228,7 +228,7 @@ onBeforeUnmount(() => {
       <span class="plus" aria-hidden="true">＋</span>添加
     </button>
 
-    <div v-if="open" ref="popup" class="add-pop" data-im="add-menu-list" role="menu" aria-label="添加到板面">
+    <div v-if="open" ref="popup" class="add-pop" data-qio-fit data-im="add-menu-list" role="menu" aria-label="添加到板面">
       <p class="pop-title">添加到板面</p>
       <button
         v-for="item in ITEMS"

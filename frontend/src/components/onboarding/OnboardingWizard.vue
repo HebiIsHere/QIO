@@ -8,6 +8,7 @@
  * - **新用户不能在密钥这一步跳过**（老用户主页已有内容，可以整场关闭）。
  */
 import { computed, onMounted, reactive, ref } from "vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { api, type CredentialMeta, type OnboardingSubmitPayload, type VerifyReport } from "../../services/api";
 import { getTheme, setTheme, type Theme } from "../../utils/theme";
@@ -361,7 +362,7 @@ async function finish() {
         </span>
       </nav>
 
-      <div class="onboarding-body">
+      <div class="onboarding-body" v-qio-scrollbar data-qio-fit>
         <section v-if="step === 'welcome'" class="panel welcome">
           <div class="brand" aria-hidden="true">◍</div>
           <h1>QIO</h1>
@@ -602,7 +603,9 @@ async function finish() {
 }
 .onboarding-steps .step { padding-bottom: 4px; border-bottom: 2px solid transparent; }
 .onboarding-steps .step.current { border-bottom-color: var(--accent); color: var(--accent); }
-.onboarding-body { flex: 1; overflow-y: auto; padding: 26px; }
+/* 引导正文：整个向导唯一的主要纵向滚动层（步骤条在顶部、操作区在底部，都不随正文滚动）。
+   滚动条走统一策略（原生外观已全局移除），横向永不滚动。 */
+.onboarding-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: clip; overscroll-behavior: contain; padding: 26px; }
 .panel { display: flex; flex-direction: column; gap: 12px; }
 .panel h1, .panel h2 { margin: 0; color: var(--text-strong); font-size: 20px; font-weight: 600; }
 .panel .lede { margin: 0; color: var(--text-primary); font-size: 15px; }

@@ -1,5 +1,6 @@
 ﻿<script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from "vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const props = defineProps<{
   options: { value: string; label: string }[];
@@ -68,7 +69,13 @@ function onKeydown(e: KeyboardEvent) {
        @click="toggle" @keydown="onKeydown">
     <span class="qio-select-val">{{ val }}</span>
     <svg class="chev" width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    <div class="qio-select-menu" role="listbox" @click.stop>
+    <div
+      class="qio-select-menu"
+      role="listbox"
+      v-qio-scrollbar="{ axis: 'y' }"
+      data-qio-fit
+      @click.stop
+    >
       <div v-for="(o, i) in options" :key="o.value" :id="'qio-opt-' + o.value"
            class="opt" :class="{ sel: o.value === modelValue, hl: i === hl }"
            role="option" :aria-selected="o.value === modelValue ? 'true' : 'false'"
@@ -76,3 +83,23 @@ function onKeydown(e: KeyboardEvent) {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 下拉浮层（契约：菜单列表滚动走统一指示条；不出现原生滚动条、不出现横向滚动）。
+   这里显式重述 position:absolute —— 指令会给宿主补 .qio-scroll-host{position:relative}，
+   而 base.css 的 .qio-select-menu 与它同权重，必须由本组件锁死浮层定位。
+   宽度收进可用区域（不再靠 min-width:max-content 撑宽），标签换行而不是横向溢出。 */
+.qio-select-menu {
+  position: absolute;
+  min-width: 0;
+  max-width: min(420px, calc(100vw - 2 * var(--sp-3)));
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.qio-select-menu .opt {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+</style>

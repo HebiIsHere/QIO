@@ -7,7 +7,9 @@
   - 显示这次尝试的真实失败原因（由入口传入，组件不猜、不改写）；
   - 逐条列出还没成功发出去的文字，提供「找回原文 / 与当前文字互换 / 不再保留」；
   - **找回不是发送**：只把文字放回输入框，什么时候再发由用户决定，绝不自动重试；
-  - 原文较长时限高滚动，恢复入口再怎么多也不会挤掉输入框与发送按钮。
+  - 恢复入口**不自开滚动层**（task-7 / 验收硬条件 5）：内容自然展开，
+    同一阅读流只保留外层那一层主要纵向滚动；规模由「默认 3 条 + 查看其余 N 条」
+    与未决列表分页控制，不用高度上限切成小滚动窗口。
 
   分层（§11.8）：当前输入是主角，这里只是辅助信息 —— 所以用退缩底色、
   次级按钮与更小的字号，不抢输入行的视觉重量。
@@ -239,6 +241,7 @@ const hasStorageWarning = computed(() =>
   <section
     v-if="displayNotice || records.length || pendingViews.length || hasStorageWarning"
     class="failed-send"
+    data-qio-fit
     :data-im="`${hook}-recovery-wrap`"
   >
     <!-- 本次尝试的真实原因：失败后第一时间要能读到（不是只有打开详情才看得到） -->
@@ -375,7 +378,7 @@ const hasStorageWarning = computed(() =>
           <p v-if="recordReason(record)" class="reason" :data-im="`${hook}-recovery-reason`">
             原因：{{ recordReason(record) }}
           </p>
-          <!-- 原文原样显示（不截断）：限高滚动，长文不会把输入区挤走 -->
+          <!-- 原文原样显示（不截断、不限高滚动）：纵向滚动只留外层那一层 -->
           <p class="quote" :data-im="`${hook}-recovery-quote`">{{ record.text }}</p>
           <p
             v-if="originalInInput(record)"
@@ -493,21 +496,11 @@ const hasStorageWarning = computed(() =>
   flex-direction: column;
   gap: var(--sp-1);
   min-width: 0;
-  /**
-   * **必须可收缩**（契约 §11.7 / §11.8）。
-   *
-   * 面板是一个纵向 flex 容器、且 `overflow: hidden`；恢复块如果按内容高度长下去，
-   * 会把下面的输入行与发送按钮顶出面板、被直接裁掉 —— 480×600 实机复现：
-   * 面板底边 348，输入框 top 383、发送按钮 top 478，elementFromPoint 都命中不到自己。
-   * 所以这里显式允许收缩（flex: 0 1 auto + min-height: 0）并限高滚动：
-   * 内容再长，输入框与发送按钮也始终留在面板里。
-   */
-  flex: 0 1 auto;
-  /* 既不许把输入行顶出面板，也不许自己被压没：至少留出「原因 + 一个按钮」的高度 */
-  min-height: 56px;
-  max-height: min(34vh, 200px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* content 策略（task-7 / 验收硬条件 5）：恢复入口**不再自开滚动层**。
+     原先这里的 flex 收缩 + min-height:56px + max-height:min(34vh,200px) + overflow-y:auto
+     会在同一个阅读流里再切出一层固定高度的小滚动窗口；
+     现在内容自然展开，纵向滚动只留**外层那一层**（互动聊天由 ChatDock 提供滚动视口，
+     对话页由输入区所在外层提供），本组件只负责把原因、原文与操作按顺序排出来。 */
 }
 .attempt {
   margin: 0;
@@ -529,12 +522,8 @@ const hasStorageWarning = computed(() =>
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   padding: var(--sp-2);
-  /* 限高滚动：原文再长、待找回的再多，也不挤掉输入框与发送按钮（§11.8） */
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* content 策略：不再限高、不再开第二层滚动（规模由「默认 3 条 + 查看其余 N 条」控制） */
 }
-.scope-chat { max-height: min(26vh, 200px); }
-.scope-conversation { max-height: min(30vh, 240px); }
 /*
  * 未决发送块（F03/F12）：与失败原文同一套辅助层级，但状态行用警示色 ——
  * 「受理未知」不是「明确失败」，颜色也要能区分，同时不抢输入行的重量。
@@ -548,9 +537,7 @@ const hasStorageWarning = computed(() =>
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   padding: var(--sp-2);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  max-height: min(30vh, 240px);
+  /* content 策略：与失败原文同一层阅读流，不再自开滚动（未决列表用分页控制规模） */
 }
 .pending-state {
   margin: 0;
@@ -620,10 +607,7 @@ const hasStorageWarning = computed(() =>
   color: var(--text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  /* 单条原文自己再限一层高：一条超长原文也不会占满整个面板 */
-  max-height: 5.5em;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  /* content 策略：原文完整显示（不截断、不裁切、不再自开滚动） */
 }
 .quote-state {
   margin: 0;

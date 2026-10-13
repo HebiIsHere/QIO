@@ -15,7 +15,9 @@
  * 3. **详情默认收起**：主行已经能判断要不要处理，内部标识与时间按需展开；
  * 4. **失败就地说话**：原因写在**那一条**下面，并留着可重试的按钮 ——
  *    绝不静默、也绝不把整块清掉；
- * 5. **截断要可见**：服务端说还有没显示完的，就明说「还有 N 条未显示」。
+ * 5. **截断要可见**：服务端说还有没显示完的，就明说「还有 N 条未显示」；
+ * 6. **原文默认简述 + 就地展开**（滚动规则）：长原文默认两行，点「展开原文」看全文 ——
+ *    不在同一阅读流里再切出一个小滚动窗口，也不把全文藏进只有悬停才看得到的 title。
  */
 import { computed, ref } from "vue";
 import QConfirm from "./ui/QConfirm.vue";
@@ -30,6 +32,8 @@ import type { RecoveryActionView, RecoveryRecordView } from "../services/recover
 const session = useSessionStore();
 /** 哪些条目展开了详情（默认全部收起） */
 const openIds = ref<string[]>([]);
+/** 哪些条目展开了原文（默认只显示两行简述；展开后完整换行，不新开滚动层） */
+const openTextIds = ref<string[]>([]);
 /** 每条自己最近一次的失败原因（就地显示，不弹全局提示） */
 const localErrors = ref<Record<string, string>>({});
 /** 每条自己最近一次的成功说明（列表消失前也能看到结果） */
@@ -71,12 +75,32 @@ function toggle(recordId: string) {
     : [...openIds.value, recordId];
 }
 
+function isTextOpen(recordId: string): boolean {
+  return openTextIds.value.includes(recordId);
+}
+
+function toggleText(recordId: string) {
+  openTextIds.value = isTextOpen(recordId)
+    ? openTextIds.value.filter((id) => id !== recordId)
+    : [...openTextIds.value, recordId];
+}
+
+/**
+ * 是否需要「展开原文」：两行装不下的长原文（长文本或含换行）才给入口。
+ * 这里只决定**要不要给入口**，不改写文本；判定不依赖渲染后的实际宽度，
+ * 所以在窄窗口与宽窗口下都不会出现「被裁掉却没有入口」。
+ */
+function isLongText(text: string): boolean {
+  return text.length > 80 || text.includes("\n");
+}
+
 /** Esc 只收起这一块里展开的详情，不动任何记录、不碰别的组件。 */
 function onKeydown(event: KeyboardEvent) {
   if (event.key !== "Escape") return;
-  if (!openIds.value.length) return;
+  if (!openIds.value.length && !openTextIds.value.length) return;
   event.stopPropagation();
   openIds.value = [];
+  openTextIds.value = [];
 }
 
 /** 消息原文；派生任务没有用户原文，就给一句不编造的说明。 */
@@ -176,6 +200,7 @@ function formatWhen(record: RecoveryRecordView): string {
   <section
     v-if="count || listError || session.recoveryLoading"
     class="recovery-inbox"
+    data-qio-fit
     aria-label="未完成事项"
     @keydown="onKeydown"
   >
@@ -195,7 +220,13 @@ function formatWhen(record: RecoveryRecordView): string {
 
     <ul class="list">
       <li v-for="record in items" :key="record.record_id" class="item">
-        <p class="message" :title="messageOf(record)">{{ messageOf(record) }}</p>
+        <p
+          class="message"
+          :class="{ clamped: !isTextOpen(record.record_id) && isLongText(messageOf(record)) }"
+          :title="messageOf(record)"
+        >
+          {{ messageOf(record) }}
+        </p>
         <p class="meta">
           <span class="kind">{{ kindLabel(record) }}</span>
           <span class="status mono">{{ statusOf(record) }}</span>
@@ -215,6 +246,15 @@ function formatWhen(record: RecoveryRecordView): string {
             @click="run(record, action)"
           >
             {{ busyId === record.record_id ? "提交中…" : actionLabel(action) }}
+          </button>
+          <button
+            v-if="isLongText(messageOf(record))"
+            class="link btn-text"
+            type="button"
+            :aria-expanded="isTextOpen(record.record_id)"
+            @click="toggleText(record.record_id)"
+          >
+            {{ isTextOpen(record.record_id) ? "收起原文" : "展开原文" }}
           </button>
           <button
             class="link btn-details"
@@ -324,9 +364,14 @@ function formatWhen(record: RecoveryRecordView): string {
 .item { display: flex; flex-direction: column; gap: 6px; }
 .message {
   margin: 0; font-size: var(--fs-sm); color: var(--text-primary); line-height: 1.6;
-  /* 截断可见：两行之外给省略号；完整原文在 title 与 DOM 文本里都还在 */
+  overflow-wrap: anywhere;
+  /* 默认完整换行显示：不新开滚动层，也不裁切 */
+}
+/* 长原文的**默认简述**：两行之外给省略号，并由同一条目里的「展开原文」看全文；
+   这不是唯一的查看通道（DOM 文本与 title 始终是全文，屏幕阅读器读到的也是全文）。 */
+.message.clamped {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-  overflow: hidden; overflow-wrap: anywhere;
+  overflow: hidden;
 }
 .meta {
   margin: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
@@ -337,11 +382,13 @@ function formatWhen(record: RecoveryRecordView): string {
 .why { color: var(--text-secondary); }
 .actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
 .btn-action:disabled { opacity: .6; cursor: not-allowed; }
-.btn-details {
+.btn-details,
+.btn-text {
   background: none; border: none; padding: 0; cursor: pointer;
   color: var(--link); font-size: var(--fs-xs); font-family: var(--sans);
 }
-.btn-details:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.btn-details:focus-visible,
+.btn-text:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .blocked { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.6; }
 
 .details {

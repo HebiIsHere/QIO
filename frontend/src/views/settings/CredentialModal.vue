@@ -8,6 +8,7 @@ export type CredentialModalMode = "create" | "edit" | "rotate";
  * 表单本身与首次引导共用 `components/credentials/CredentialForm.vue`。
  */
 import { onMounted, onUnmounted, ref } from "vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import CredentialForm from "../../components/credentials/CredentialForm.vue";
 import type { CredentialMeta, VerifyReport } from "../../services/api";
 import type { CredentialMode } from "../../services/credentials";
@@ -104,6 +105,8 @@ onUnmounted(() => {
     <div
       ref="dialog"
       class="modal qio-card"
+      v-qio-scrollbar
+      data-qio-fit
       role="dialog"
       aria-modal="true"
       :aria-label="title"
@@ -136,7 +139,11 @@ onUnmounted(() => {
 }
 .modal-mask.leaving { opacity: 0; }
 .modal {
-  width: min(560px, 92vw); max-height: 88vh; overflow: auto; background: var(--bg-elevated);
+  /* 弹窗唯一的纵向滚动层（表单较长时在这里滚）；横向永不滚动（长 Key / 长 URL 换行）。
+     标题栏 sticky 在顶部，保存 / 验证按钮在表单里 sticky 在底部 —— 关键操作不随正文滚走。 */
+  width: min(560px, 92vw); max-height: 88vh;
+  overflow-y: auto; overflow-x: clip; overscroll-behavior: contain;
+  background: var(--bg-elevated);
   border: 1px solid var(--border-strong); border-radius: var(--r-lg); padding: var(--sp-5); color: var(--text-primary);
   animation: cred-modal-in var(--dur-menu) var(--ease-out) both;
   transition: transform var(--dur-exit) var(--ease-in), opacity var(--dur-exit) var(--ease-in);
@@ -147,7 +154,12 @@ onUnmounted(() => {
   from { opacity: 0; transform: translateY(var(--shift-4)) scale(.99); }
   to { opacity: 1; transform: none; }
 }
-.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--sp-3); }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: var(--sp-3);
+  position: sticky; top: 0; z-index: 2;
+  background: var(--bg-elevated);
+}
 .modal-head h3 { margin: 0; font-size: var(--fs-md); color: var(--text-strong); }
 .close {
   border: none; background: transparent; color: var(--text-muted); font-size: 20px; line-height: 1;

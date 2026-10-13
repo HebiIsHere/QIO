@@ -137,6 +137,7 @@ function chooseContent(choice: "local" | "server") {
   <p
     v-if="visible"
     class="card-draft-hint"
+    data-qio-fit
     :class="{ err: isError }"
     :role="isError ? 'alert' : 'status'"
     :aria-live="isError ? 'assertive' : 'polite'"
