@@ -671,12 +671,12 @@ describe("提示：默认「简述 + 展开入口」，完整原文按需展开"
  * ------------------------------------------------------------------------- */
 
 /** 造一条等待审批的真实意图（判定口径与 store.understandingIntents 一致） */
-function pendingIntentFixture() {
+function pendingIntentFixture(id = "i1", title = "整理季度材料") {
   return {
-    id: "i1",
+    id,
     boardId: "b1",
     submissionId: null,
-    title: "整理季度材料",
+    title,
     summary: "",
     status: "pending",
     preview: {},
@@ -766,6 +766,84 @@ describe("上翻时新出现的待审批 / 错误：固定入口一步可达", (
   it("没有待处理项、又在跟随时：不显示这个入口（不制造多余提示）", async () => {
     const { wrapper } = mountDock();
     expect(wrapper.find('[data-im="chat-latest"]').exists()).toBe(false);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * task-7 复验：FailedSendNotice 收敛为 content 之后，面板阅读流只剩一层主要纵向滚动
+ * ------------------------------------------------------------------------- */
+
+/** 去掉 CSS 注释：收敛后的注释里会引用旧写法（「原先 max-height:…」），不能当声明读 */
+function stripCssComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/** 规则块里「自建滚动层」的声明：限高，或 overflow(-x/-y): auto|scroll|hidden */
+function scrollLayerDeclarations(body: string): string[] {
+  const decls =
+    stripCssComments(body).match(/(?:^|[\s;{])(max-height|overflow|overflow-x|overflow-y)\s*:\s*([^;}]+)/g) ?? [];
+  return decls.filter((decl) => {
+    if (/^[\s;{]*max-height/.test(decl)) return true;
+    const value = decl.slice(decl.indexOf(":") + 1);
+    return /(^|[\s(])(auto|scroll|hidden)([\s)]|$)/.test(value.trim());
+  });
+}
+
+describe("task-7 复验：失败恢复收敛后，阅读流只剩一层主要纵向滚动", () => {
+  const LONG_FAIL = "这段文字没有发出去，原文必须完整保留：".repeat(12);
+
+  it("长失败恢复 + 12 条待审批同时在面板里：滚动宿主恰好两个（.stream auto + .composer hidden）", async () => {
+    const { wrapper, interactive, session } = mountDock();
+    // 长失败恢复：一条 12 遍重复的长原文 + 真实原因
+    session.failedSends = [{ id: "f1", draftId: "d1", topicId: "A", text: LONG_FAIL }] as never;
+    session.failedSendErrors = { f1: "网络中断：连接在受理之前就断了。" } as never;
+    // 长过程内容：12 条等待审批的真实条目
+    interactive.submitStatus = "submitting";
+    interactive.acceptedUnderstandingId = "u1";
+    interactive.intents = Array.from({ length: 12 }, (_, i) =>
+      pendingIntentFixture("i" + i, "待审批任务 " + (i + 1)),
+    );
+    await nextTick();
+
+    const panel = wrapper.find('[data-im="chat-panel"]');
+    // (a) 面板内 [data-qio-scroll] 容器数量与预期一致
+    const hosts = panel.findAll("[data-qio-scroll]");
+    expect(hosts.length, "面板里出现了预期之外的滚动层").toBe(2);
+    expect(hosts.map((h) => h.attributes("data-qio-scroll"))).toEqual(["auto", "hidden"]);
+    expect(panel.find('[data-im="chat-stream"]').attributes("data-qio-scroll")).toBe("auto");
+    expect(panel.find('[data-im="chat-composer"]').attributes("data-qio-scroll")).toBe("hidden");
+
+    // 失败恢复就在这一层阅读流里：自身不再开滚动层、也没有行内限高/裁剪
+    const stream = panel.find('[data-im="chat-stream"]');
+    const recovery = stream.find('[data-im="chat-recovery-wrap"]');
+    expect(recovery.exists(), "失败恢复不在阅读流里").toBe(true);
+    expect(recovery.findAll("[data-qio-scroll]").length, "失败恢复自带滚动层").toBe(0);
+    expect(recovery.findAll(".qio-scroll-host").length, "失败恢复自建滚动宿主").toBe(0);
+    expect(recovery.attributes("style") ?? "", "失败恢复被套了行内限高").not.toMatch(/max-height|overflow/);
+    expect(
+      stream.find('[data-im="chat-recovery"]').attributes("style") ?? "",
+      "恢复块被套了行内限高",
+    ).not.toMatch(/max-height|overflow/);
+
+    // 长原文一字不少地留在 DOM 里（收敛滚动 ≠ 截断内容），恢复操作仍然可达
+    expect(stream.find('[data-im="chat-recovery-quote"]').text()).toBe(LONG_FAIL);
+    expect(stream.find('[data-im="chat-recovery-restore"]').exists(), "恢复操作不可达").toBe(true);
+    expect(stream.find('[data-im="chat-recovery-discard"]').exists()).toBe(true);
+
+    // 长过程内容（12 条待审批）也在同一条流里，批准入口可达
+    expect(stream.findAll('[data-im="chat-approval-item"]').length).toBe(12);
+    expect(stream.find('[data-im="chat-approve"]').exists()).toBe(true);
+  });
+
+  it("(b) FailedSendNotice 四个区域不再是「限高 + 自己滚一层」（源码守卫；注释不算声明）", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/components/interactive/FailedSendNotice.vue"),
+      "utf8",
+    );
+    for (const selector of [".failed-send {", ".recovery {", ".pending {", ".quote {"]) {
+      const found = scrollLayerDeclarations(cssBlock(source, selector));
+      expect(found, selector + " 仍然是「限高 + 自己滚一层」：" + found.join(" / ")).toEqual([]);
+    }
   });
 });
 
