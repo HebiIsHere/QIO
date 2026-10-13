@@ -476,24 +476,27 @@ describe("R2：复算与预览一致（松手不跳）", () => {
     }
   });
 
-  it("现状（R4）：限制/缩放没变时，一次指针提交仍会多推一次预览（差异守卫失效）", () => {
-    const h = harness();
-    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
-    document.dispatchEvent(pe("pointermove", 40, 40));
-    const before = h.previews.length;
-    document.dispatchEvent(pe("pointerup", 40, 40));
-    expect(h.previews).toHaveLength(before + 1);
-    expect(h.commits).toHaveLength(1);
-    expect(h.commits[0].box).toEqual(h.previews[h.previews.length - 1]);
-  });
-
-  it.fails("R4（守卫应当生效）：复算结果与最后一次预览相同时不该再多推一次 onPreview", () => {
+  it("修复后（R4）：限制/缩放没变时不多推预览，最后一次预览仍等于提交值", () => {
     const h = harness();
     h.api.onHandleDown("se", pe("pointerdown", 0, 0));
     document.dispatchEvent(pe("pointermove", 40, 40));
     const before = h.previews.length;
     document.dispatchEvent(pe("pointerup", 40, 40));
     expect(h.previews).toHaveLength(before);
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box).toEqual(h.previews[h.previews.length - 1]);
+  });
+
+  it("修复后（R4）：守卫按 lastPreview 判断——限制变了才多推一次，且那一次就是提交值", () => {
+    let limits = sizeLimits(120, 80, 420, 310);
+    const h = harness({ limits: () => limits });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 500, 500));
+    const before = h.previews.length;
+    limits = LIMITS;
+    document.dispatchEvent(pe("pointerup", 500, 500));
+    expect(h.previews).toHaveLength(before + 1);
+    expect(h.previews[h.previews.length - 1]).toEqual(h.commits[0].box);
   });
 
   it("拖动中限制收紧到比原框还小、又拖回原点：提交被修正后的框（不是空操作）", () => {
