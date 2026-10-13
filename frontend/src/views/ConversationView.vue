@@ -13,6 +13,7 @@ import TopicSwitchPrompt from "../components/TopicSwitchPrompt.vue";
 import KnowledgeCandidateCard from "../components/KnowledgeCandidateCard.vue";
 import InterruptedTurnEntry from "../components/InterruptedTurnEntry.vue";
 import RecoveryInbox from "../components/RecoveryInbox.vue";
+import { titlebarHeight } from "../utils/titlebar";
 
 // 星球页懒加载：three.js 不进首屏 chunk；加载期间立即显示「正在打开星球…」
 const PlanetView = defineAsyncComponent({
@@ -85,7 +86,9 @@ function syncTopNotesOffset() {
   const hint = onboarding.hintVisible ? 52 : 0;
   const entry = interruptedRef.value?.getBoundingClientRect().height ?? 0;
   const total = Math.round(hint + (entry ? entry + 8 : 0));
-  if (total > 0) style.setProperty("--qio-top-notes-offset", `${total}px`);
+  // 这个值是「从视口顶端算起」的，横幅本身落在自定义标题条下面 —— 不加这一条，
+  // 浮层会反过来压到横幅上（横幅在 y=32 起，浮层却按 y=52 放）。
+  if (total > 0) style.setProperty("--qio-top-notes-offset", `${titlebarHeight() + total}px`);
   else style.removeProperty("--qio-top-notes-offset");
 }
 

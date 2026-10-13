@@ -46,8 +46,8 @@ const interruptedHint = computed(() => {
 
 <style scoped>
 /*
- * 位置由 App.vue 的 `.top-notes` 容器统一负责（顶部居中，避开右下角的星球入口
- * 与设置入口）。这里只描述这一行本身为什么长这样。
+ * 位置由 App.vue 的 `.top-notes` 容器统一负责（顶部居中，落在自定义标题条下方，
+ * 避开右下角的星球入口与设置入口）。这里只描述这一行本身为什么长这样。
  */
 .approval-entry {
   display: inline-flex; align-items: center; gap: 8px;

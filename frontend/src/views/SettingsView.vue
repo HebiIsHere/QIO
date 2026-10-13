@@ -1685,7 +1685,8 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 
 .toast {
   position: fixed;
-  top: 20px;
+  /* 让开自定义标题条（窗口层，层级比这里的 60 高）：压在它底下会「看得见、点不到」 */
+  top: calc(var(--titlebar-height) + 20px);
   right: 20px;
   z-index: 60;
   max-width: 340px;

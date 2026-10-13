@@ -26,6 +26,10 @@
      结果与列宽脱钩：1200px 窗口里右移 418px、右边缘溢出 194px，还盖住了停在
      右下角的入口球（点不到、拖不动）。 */
   --column-inset-left:24px; --column-inset-right:24px;
+  /* 自定义标题条（无边框窗口的「页眉」）高度：它是窗口层，不属于任何页面。
+     唯一事实来源 —— 组件用 CSS 读它，需要像素数的 JS（浮动组件默认位置）走
+     utils/titlebar.ts 的 titlebarHeight() 也读同一个值，不允许各自写死一个 32。 */
+  --titlebar-height:32px;
   /* 间距 / 圆角 */
   --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:20px; --sp-6:24px; --sp-8:32px;
   --r-xs:6px; --r-sm:8px; --r-md:10px; --r-lg:14px; --r-xl:20px; --r-pill:999px;

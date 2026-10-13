@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createRouter, createMemoryHistory, type Router } from "vue-router";
 import SettingsFloat from "../SettingsFloat.vue";
+import { titlebarHeight } from "../../utils/titlebar";
 
 const routes = [
   { path: "/", name: "conversation", component: { template: "<div>conversation</div>" } },
@@ -54,12 +55,13 @@ describe("SettingsFloat 浮动设置入口", () => {
     w.unmount();
   });
 
-  it("贴角：初始位置为右上角（像素 left/top，position fixed）", async () => {
+  it("贴角：初始位置在右上角标题条下方（像素 left/top，position fixed）", async () => {
     const { w } = await mountFloat();
     const btn = w.find(".settings-float").element as HTMLElement;
     expect(btn.style.position).toBe("fixed");
     expect(btn.style.left).toMatch(/^\d+px$/);
-    expect(btn.style.top).toBe("18px");
+    // 无边框窗口的标题条是窗口层，齿轮必须落在它下面，否则顶上那块点不到
+    expect(btn.style.top).toBe(`${titlebarHeight() + 18}px`);
     w.unmount();
   });
 });

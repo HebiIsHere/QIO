@@ -337,9 +337,9 @@ async function resume(task: DevTaskRow) {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: calc(100vh - var(--qio-top-notes-offset, 12px) - var(--dev-panel-reserve));
+  max-height: calc(100vh - var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) - var(--dev-panel-reserve));
   /* 动态视口高度更贴合真机（地址栏/工具栏收起时不再被裁掉）；旧内核落到上一行 */
-  max-height: max(180px, calc(100dvh - var(--qio-top-notes-offset, 12px) - var(--dev-panel-reserve)));
+  max-height: max(180px, calc(100dvh - var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) - var(--dev-panel-reserve)));
   width: min(560px, calc(100vw - 32px));
   padding: 10px 12px; border-radius: var(--r-2);
   background: var(--bg-elevated); border: 1px solid var(--border-subtle);

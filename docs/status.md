@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-13（分支 `fix/chat-image-delivery-023`：会话模式的图片交付缺口修复，见 P38；上一轮统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。核对方法见文末。
+最后核对：2026-10-13（分支 `feat/frameless-window-023`：无边框窗口与自绘标题条；本线上一轮是会话模式的图片交付缺口修复，见 P38；再上一轮统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。核对方法见文末。
 
 ---
 
@@ -1931,6 +1931,42 @@ npm test
   目前没有"整条记录自动删除"的规则。
 - 本功能上线前的历史调用没有记录，不做回填。
 - 单条参数与输出上限 4 万字（与工具自身的输出上限对齐），超出会截断并标注。
+
+---
+
+## 本轮变更：无边框窗口与自定义标题条（2026-10-13）
+
+**要解决的问题**：窗口一直带着系统标题栏（那条写着 QIO、带 − □ ✕ 的页眉）。
+去掉它之后，窗口既没有可拖拽的区域、也没有最小化/最大化/关闭按钮 —— 这两件事必须由前端补上，
+否则用户只能靠 Alt+F4 关窗口。
+
+| 改法 | 实现 | Tests |
+| --- | --- | --- |
+| 窗口无边框 | `frontend/src-tauri/tauri.conf.json`：窗口 `decorations: false`；`shadow: true` 保留（Windows 上它给无边框窗口 1px 边线与 Win11 圆角） | 「无边框窗口契约」逐条点名配置与权限 |
+| 自绘标题条 = 拖拽面 + 三个按钮 | 新增 `frontend/src/components/WindowChrome.vue`：满宽拖拽面（`data-tauri-drag-region`，双击由 Tauri 内置逻辑转成最大化/还原）+ 右侧最小化/最大化/关闭；按钮只在壳里渲染（浏览器预览里画了也点不动），最大化状态跟着系统的 resize 事件走 | `frontend/src/components/__tests__/WindowChrome.test.ts` |
+| 按钮真的调得动壳 | `frontend/src-tauri/capabilities/default.json` 补 `core:window:allow-start-dragging` / `allow-minimize` / `allow-toggle-maximize` / `allow-close` / `allow-is-maximized`：少一个按钮就静默失灵（调用被权限挡掉），所以契约测试逐个点名 | `frontend/src/design-guards.test.ts` |
+| 顶部让出条高：贴顶控件不许被压住 | 高度只在 `frontend/src/styles/tokens.css` 定义一次（`--titlebar-height`），JS 侧经 `frontend/src/utils/titlebar.ts` 读同一个值；`App.vue` 用 `padding-top` 让出这一段；原本贴顶的控件（设置齿轮、待确认入口、设置页 toast、星球页「收起星球」与两条顶部状态条）各下移一个条高 | `frontend/src/utils/__tests__/titlebar.test.ts`、`frontend/src/components/__tests__/SettingsFloat.test.ts` |
+
+**实拍与命中证据**（`frontend/scripts/window_chrome_shots.mjs`，图与结果在 `frontend/e2e-shots/window-chrome/`）：
+脚本自己判红绿，不靠人读图 —— 标题条 32px、整条除按钮外都是拖拽面、页面内容从 y=32 起、
+三个按钮打到壳命令 `plugin:window|minimize` / `toggle_maximize` / `close`、点齿轮能进设置页、
+星球页「收起星球」可命中。
+
+**真机核对（Windows，无边框这件事只能在真窗口上量）**：窗口矩形 1216×809，客户区 1200×800 @ 偏移 (8,1) ——
+非客户区只剩缩放宽边，**顶部没有标题栏那一条**（带系统标题栏时顶部非客户区是 20px 以上）。
+注意 `WS_CAPTION` 样式位仍然保留：tao 靠它保住拖边缩放与系统贴靠，标题栏是靠收掉非客户区实现的，
+所以**别拿样式位判断有没有页眉**，要看客户区与窗口矩形的差。
+
+**已知限制（不粉饰）**
+
+- Win11 的「贴靠布局」面板（鼠标悬停在最大化按钮上弹出的那个）没有：它由系统画在原生最大化按钮上，
+  自绘按钮拿不到。Win+方向键与拖到屏幕边缘是否仍然贴靠，本轮没有实测。
+- 标题条上没有原生标题栏右键那份系统菜单；标题文字也不再由系统显示（条里刻意不放文字）。
+- 全屏模态（审批 / 凭据弹窗）之上仍然保留标题条：这是故意的 —— 模态开着也应该能拖窗口、能关窗口。
+- **真机核对到哪一步**（Windows 11，1600×852 工作区）：最小化按钮 → 系统报告窗口已最小化且能还原；
+  最大化 → 客户区 1600×852 正好等于工作区，按钮自己变成「向下还原」，再点回到 1216×809；
+  关闭 → 进程退出。**拖拽只核到结构**（真窗口里 `data-tauri-drag-region` 在位、权限与上面三个同批生效），
+  没有再用系统级合成鼠标去拖窗口 —— 本机前台被别的应用占着，合成点击会落到那个应用上（实测踩过一次）。
 
 ---
 

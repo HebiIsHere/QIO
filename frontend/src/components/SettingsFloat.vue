@@ -6,6 +6,7 @@
 import { ref } from "vue";
 import { useRouter } from "vue-router";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
+import { titlebarHeight } from "../utils/titlebar";
 
 const router = useRouter();
 const elRef = ref<HTMLElement | null>(null);
@@ -13,9 +14,11 @@ const elRef = ref<HTMLElement | null>(null);
 const float = useFloatingWindow(elRef, {
   id: "settings-float",
   dockMode: "corner",
+  // 默认位置落在自定义标题条下面一个边距：标题条是窗口层（fixed + 最高层级），
+  // 齿轮压在它底下会「看得见、点不到顶上一块」。
   defaultPos: (el, vp) => ({
     x: vp.width - 26 - (el.offsetWidth || 44),
-    y: 18,
+    y: titlebarHeight() + 18,
   }),
 });
 

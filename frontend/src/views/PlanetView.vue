@@ -2206,7 +2206,9 @@ async function close() {
 /* 收起过程中（收势 + 收缩）不拦截点击与焦点：对象已经在回去的路上 */
 .planet-view.settling { pointer-events: none; }
 .close-btn {
-  position: absolute; top: 14px; left: 14px; z-index: 60;
+  /* 让开自定义标题条（窗口层，比这里的 60 高）：否则条会盖住按钮上半截，
+     用户点上去只看到「没反应」 */
+  position: absolute; top: calc(var(--titlebar-height) + 14px); left: 14px; z-index: 60;
   color: var(--text-strong);
   font-family: var(--sans);
   font-size: var(--fs-sm);
@@ -2243,7 +2245,7 @@ async function close() {
 .webgl-fallback .wf-title { font-size: 19px; color: var(--text-strong); }
 .webgl-fallback .wf-text { font-size: 13px; color: var(--text-secondary); line-height: 1.75; }
 .load-error {
-  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  position: absolute; top: calc(var(--titlebar-height) + 14px); left: 50%; transform: translateX(-50%);
   z-index: 61; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 200px));
   padding: 8px 12px; border-radius: 10px;
   /* 危险色调通过玻璃自己的令牌表达：直接写 border-color 会覆盖掉左右冷暖边，
@@ -2269,7 +2271,7 @@ async function close() {
   display: block; margin-top: 2px; color: var(--text-secondary); overflow-wrap: anywhere;
 }
 .planet-loading {
-  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 61;
+  position: absolute; top: calc(var(--titlebar-height) + 14px); left: 50%; transform: translateX(-50%); z-index: 61;
   padding: 8px 14px; border-radius: 10px; font-size: 12.5px;
   color: var(--text-secondary);
 }

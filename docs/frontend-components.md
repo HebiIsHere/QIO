@@ -116,6 +116,9 @@ CredentialForm
 - **Store 划分**：events / session（锚点、话题、消息）/ graph（节点、坐标、指纹）/ credentials / approvals（待审批队列）/ memory / knowledge / settings
 - **3D 场景单例**：PlanetSceneManager（挂载于对话页容器；悬浮球与全屏共用，相机状态切换驱动）
 - **审批队列**：approvals store 订阅 APPROVAL_REQUIRED 事件 → 弹窗队列（串行展示，避免堆叠）
+- **窗口层**：WindowChrome（无边框窗口的自定义标题条：满宽拖拽面 + 最小化/最大化/关闭，竖在页面之上、
+  模态之下）。高度只由 `--titlebar-height` 给出，`App.vue` 用 `padding-top` 让出这一条 ——
+  **任何贴顶的 fixed 控件都必须读同一个令牌下移**，否则它会落在标题条下面，变成看得见、点不到。
 
 ## 5. 关键交互流程
 

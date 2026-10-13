@@ -125,3 +125,80 @@ describe("浮动球的障碍清单", () => {
     expect(dock!.text).toContain("avoidSelectors: FLOAT_AVOID_SELECTORS");
   });
 });
+
+/**
+ * 无边框窗口契约（2026-10-13）。
+ *
+ * 系统页眉被 `decorations: false` 去掉之后，可拖拽与三个窗口按钮全靠前端补。
+ * 这里的四件事缺任何一件，用户看到的就是「窗口关不掉 / 拖不动 / 顶部控件点不到」——
+ * 而且都不会在类型检查或任何单测里报错。所以按源码与配置文本守住：
+ * 1. 壳配置确实是无边框；
+ * 2. capabilities 里有拖拽 + 最小化 + 最大化 + 关闭的权限（少一个按钮就静默失灵）；
+ * 3. 标题条高度只有一个来源（tokens.css），App 让出这一段高度；
+ * 4. 拖拽区由 WindowChrome 承担。
+ */
+describe("无边框窗口契约", () => {
+  const readJson = (rel: string) => JSON.parse(readFileSync(resolve(process.cwd(), rel), "utf8"));
+  const tokens = readFileSync(resolve(SRC, "styles", "tokens.css"), "utf8");
+  const app = FILES.find((f) => f.path === "App.vue");
+  const chrome = FILES.find((f) => f.path === "components/WindowChrome.vue");
+
+  it("tauri.conf.json：窗口无边框，且保留阴影（Win11 圆角与窗口边缘靠它）", () => {
+    const conf = readJson("src-tauri/tauri.conf.json");
+    const win = conf.app.windows[0];
+    expect(win.decorations).toBe(false);
+    expect(win.shadow).toBe(true);
+  });
+
+  it("capabilities：拖拽与三个窗口按钮的权限一个都不能少", () => {
+    const cap = readJson("src-tauri/capabilities/default.json");
+    const perms: string[] = cap.permissions;
+    for (const p of [
+      "core:window:allow-start-dragging",
+      "core:window:allow-minimize",
+      "core:window:allow-toggle-maximize",
+      "core:window:allow-close",
+      "core:window:allow-is-maximized",
+    ]) {
+      expect(perms).toContain(p);
+    }
+  });
+
+  it("标题条高度只在 tokens.css 定义一次，App 让出这一段", () => {
+    expect(tokens).toMatch(/--titlebar-height:\s*32px/);
+    expect(app).toBeTruthy();
+    expect(app!.text).toContain("<WindowChrome />");
+    expect(app!.text).toMatch(/padding-top:\s*var\(--titlebar-height\)/);
+    // 顶部锚定的组件读同一个令牌下移，不许自己写死像素
+    for (const path of ["views/SettingsView.vue", "views/PlanetView.vue"]) {
+      const file = FILES.find((f) => f.path === path);
+      expect(file, path).toBeTruthy();
+      expect(file!.text, path).toContain("var(--titlebar-height)");
+    }
+    // 顶部提示条（待确认审批 / 没执行的操作 / 开发任务）统一挂在 App 的 .top-notes 里：
+    // 默认位置必须让开标题条 —— 有人在这条上写死 12px，它就会重新被压住
+    const notes = app!.text.match(/\.top-notes\s*\{[^}]*\}/);
+    expect(notes, ".top-notes 样式块").toBeTruthy();
+    expect(notes![0]).toContain("var(--titlebar-height)");
+  });
+
+  it("拖拽面在 WindowChrome 里，且按钮不在拖拽面内部", () => {
+    expect(chrome).toBeTruthy();
+    expect(chrome!.text).toContain("data-tauri-drag-region");
+    // 按钮与拖拽面是兄弟：按钮长在拖拽面里，点击会被拖拽逻辑吃掉
+    expect(chrome!.text).toMatch(/<div class="drag-surface" data-tauri-drag-region[\s\S]*?<\/div>\s*<div v-if="inShell" class="window-controls">/);
+  });
+
+  it("按钮容器不许铺满整条：否则整个拖拽面都被它盖住，窗口拖不动", () => {
+    expect(chrome).toBeTruthy();
+    const controls = chrome!.text.match(/\.window-controls\s*\{[^}]*\}/);
+    expect(controls, ".window-controls 样式块").toBeTruthy();
+    expect(controls![0]).toMatch(/position:\s*absolute/);
+    expect(controls![0]).toMatch(/right:\s*0/);
+    expect(controls![0]).toMatch(/pointer-events:\s*none/);
+    // 按钮自己重新打开命中
+    const btn = chrome!.text.match(/\.wc-btn\s*\{[^}]*\}/);
+    expect(btn, ".wc-btn 样式块").toBeTruthy();
+    expect(btn![0]).toMatch(/pointer-events:\s*auto/);
+  });
+});

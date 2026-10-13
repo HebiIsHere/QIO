@@ -7,6 +7,7 @@ import { useApprovalsStore } from "./stores/approvals";
 import ApprovalModal from "./components/ApprovalModal.vue";
 import ApprovalEntry from "./components/ApprovalEntry.vue";
 import DevTaskEntry from "./components/DevTaskEntry.vue";
+import WindowChrome from "./components/WindowChrome.vue";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
 import { waitForBackend } from "./services/boot";
 
@@ -63,6 +64,10 @@ onUnmounted(stopTicker);
 
 <template>
   <div class="app-shell">
+    <!-- 无边框窗口的自定义标题条：系统页眉没了，可拖拽与三个窗口按钮由它补上。
+         它是 fixed 的窗口层，所以这里用 padding-top 把页面内容整体让下去一个条高，
+         而不是靠浮在上面 —— 否则顶部那一条里的控件会「看得见、点不到」。 -->
+    <WindowChrome />
     <!-- 后端还没应答：说清在等什么（以前这里是一片空白，看起来像卡死） -->
     <div v-if="bootState === 'starting'" class="boot-note" role="status">
       <p class="boot-title">正在启动 QIO 后端…</p>
@@ -108,7 +113,7 @@ onUnmounted(stopTicker);
 }
 * { box-sizing: border-box; }
 body { margin: 0; }
-.app-shell { width: 100vw; height: 100vh; overflow: hidden; }
+.app-shell { width: 100vw; height: 100vh; overflow: hidden; padding-top: var(--titlebar-height); }
 /* 启动状态：安静的一行说明 + 原因，不做成大卡片（它只是等几秒的事） */
 .boot-note {
   display: flex;
@@ -143,8 +148,10 @@ body { margin: 0; }
  * 容器 shrink-to-fit，空白区域不挡下面页面的点击。
  */
 .top-notes {
-  /* 顶部有「还没设置完」横幅时，对话页会把这条浮层让到横幅下面（见 ConversationView） */
-  position: fixed; top: var(--qio-top-notes-offset, 12px); left: 50%; transform: translateX(-50%);
+  /* 顶部有「还没设置完」横幅时，对话页会把这条浮层让到横幅下面（见 ConversationView）；
+     没有横幅时默认落在自定义标题条下方一个边距 —— 标题条是窗口层（z-index 240），
+     比这里的 190 高，压在它底下会「看得见、点不到」。 */
+  position: fixed; top: var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)); left: 50%; transform: translateX(-50%);
   z-index: 190; display: flex; flex-direction: column; align-items: center; gap: 8px;
   max-width: min(560px, calc(100vw - 32px));
   pointer-events: none;
