@@ -121,3 +121,35 @@ describe("ConversationView 键盘通道（任务 05 I：长消息流不该挡住
     target.remove();
   });
 });
+
+describe("ConversationView 顶部状态行与底部候选列表（统一滚动/宽度规则）", () => {
+  it("错误原文完整显示（不再单行截断），状态行在宽度链上", async () => {
+    const w = mountView();
+    const session = useSessionStore();
+    const long = "这一轮执行失败：" + "导致失败的完整原因".repeat(20);
+    session.lastError = long;
+    await w.vm.$nextTick();
+
+    const notice = w.find(".notice.err");
+    expect(notice.exists()).toBe(true);
+    expect(notice.attributes("data-qio-fit")).not.toBeUndefined();
+    // 全文都在 DOM 里：读屏与视觉读到的都是同一句话
+    expect(notice.find(".text").text()).toBe(long);
+    w.unmount();
+  });
+
+  it("知识候选列表接共享滚动策略（auto + 仅纵向），不与消息区抢滚动", async () => {
+    const w = mountView();
+    const session = useSessionStore();
+    session.knowledgeCandidates = [{ knowledgeId: "k1", category: "fact", content: "候选内容" }];
+    await w.vm.$nextTick();
+    await w.vm.$nextTick();
+
+    const candidates = w.find(".candidates").element as HTMLElement;
+    expect(candidates.classList.contains("qio-scroll-host")).toBe(true);
+    expect(candidates.dataset.qioScroll).toBe("auto");
+    expect(candidates.getAttribute("data-qio-fit")).not.toBeNull();
+    expect(candidates.querySelector('.qio-scroll-rail[data-axis="x"]')).toBeNull();
+    w.unmount();
+  });
+});

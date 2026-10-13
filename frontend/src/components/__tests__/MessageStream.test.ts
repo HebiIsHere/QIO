@@ -336,6 +336,25 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     expect(stream.attributes("aria-label")).toBe("对话消息");
     w.unmount();
   });
+
+  it("消息区是唯一的主要纵向滚动视口：对话根带 data-qio-scope，滚动条走共享引擎（仅纵向）", async () => {
+    const { w, stream } = await mountStream();
+    // 引擎把测量合并到一帧；滚动一次（用户滚动也会这样）让它立刻量一次
+    stream.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 40));
+    await nextTick();
+    // 对话根：整套对话适配（长 URL 换行 / 代码软换行 / 媒体按宽度适配）挂在这里
+    expect(stream.getAttribute("data-qio-scope")).toBe("chat");
+    // 原生滚动条样式不再由本组件声明（全局统一消除），改用共享指示条
+    expect(stream.classList.contains("qio-scroll-host")).toBe(true);
+    expect(stream.dataset.qioScroll).toBe("auto");
+
+    // 纵向溢出 → 允许出现纵向指示条；横向不声明 → 不出现横向指示条
+    expect(stream.dataset.qioRange).toBe("y");
+    expect(stream.querySelector('.qio-scroll-rail[data-axis="y"]')).not.toBeNull();
+    expect(stream.querySelector('.qio-scroll-rail[data-axis="x"]')).toBeNull();
+    w.unmount();
+  });
 });
 
 describe("本机发送被拒绝后不留后遗症（P0：没发出去的消息不该改变阅读位置）", () => {

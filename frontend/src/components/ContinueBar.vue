@@ -73,10 +73,12 @@ async function decide(decision: "approved" | "rejected") {
   <div
     v-if="session.pendingContinue"
     class="continue-bar qio-card"
+    data-qio-fit
     data-state="waiting"
     role="group"
     :aria-label="ariaLabel"
   >
+    <!-- 宽度链：操作条不横向滚动；空间不足时按钮换行重排（不改按钮语义与顺序） -->
     <div class="line">
       <span class="qio-state warn">{{ headline }}</span>
       <span class="msg">{{ detail }}</span>
@@ -88,12 +90,13 @@ async function decide(decision: "approved" | "rejected") {
         停止
       </button>
     </div>
-    <p v-if="error" class="qio-feedback err" role="alert">{{ error }}</p>
+    <p v-if="error" class="qio-feedback err" role="alert" data-qio-fit>{{ error }}</p>
   </div>
 </template>
 
 <style scoped>
 .continue-bar {
+  min-width: 0;
   margin: 8px 0;
   max-width: min(760px, 100%);
   padding: var(--sp-3) var(--sp-4);
@@ -101,16 +104,23 @@ async function decide(decision: "approved" | "rejected") {
 .continue-bar .line {
   display: flex;
   align-items: center;
+  /* 窄窗口下按钮换行，而不是把卡片撑宽或压扁正文 */
+  flex-wrap: wrap;
   gap: 12px;
+  min-width: 0;
 }
 .continue-bar .msg {
+  min-width: 0;
   font-size: 12px;
   color: var(--text-secondary);
+  /* 暂停原因可能是一整条路径 / 长句：换行，不省略、不横向滚动 */
+  overflow-wrap: anywhere;
 }
 .continue-bar .spacer {
   flex: 1;
 }
 .continue-bar .qio-feedback {
   margin: 6px 0 0;
+  overflow-wrap: anywhere;
 }
 </style>

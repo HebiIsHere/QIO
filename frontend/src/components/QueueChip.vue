@@ -33,10 +33,12 @@ async function cancelTurn(turnId: string) {
 </script>
 
 <template>
-  <div v-if="visible" class="queue">
+  <div v-if="visible" class="queue" data-qio-fit>
+    <!-- 宽度链：队列入口与每一行都不横向滚动；长消息换行而不是被截断 -->
     <button
       class="chip"
       type="button"
+      data-qio-fit
       :aria-expanded="open"
       aria-label="查看运行与排队中的消息"
       @click="open = !open"
@@ -51,8 +53,8 @@ async function cancelTurn(turnId: string) {
     </button>
     <!-- 折叠区用全局过渡原语（同一套中频进入/离开曲线），不再自定义一份 -->
     <transition name="qio-rise">
-      <div v-show="open" class="list">
-      <div v-if="running" class="row running">
+      <div v-show="open" class="list" data-qio-fit>
+      <div v-if="running" class="row running" data-qio-fit>
         <!-- 等待动画只在回答附近播一次；这里用静态标记表达「运行中」 -->
         <span class="live-mark" aria-hidden="true"></span>
         <span class="badge mono qio-state info">运行中</span>
@@ -69,7 +71,7 @@ async function cancelTurn(turnId: string) {
           {{ cancellingId === running.turn_id ? "正在停止…" : "停止" }}
         </button>
       </div>
-      <div v-for="(q, i) in queued" :key="q.turn_id" class="row queued">
+      <div v-for="(q, i) in queued" :key="q.turn_id" class="row queued" data-qio-fit>
         <span class="txt">{{ q.message }}</span>
         <span class="badge mono qio-state quiet">排队中 · 第 {{ i + 1 }} 位</span>
         <button
@@ -83,7 +85,7 @@ async function cancelTurn(turnId: string) {
           {{ cancellingId === q.turn_id ? "正在取消…" : "取消排队" }}
         </button>
       </div>
-      <div v-for="c in cancelled" :key="c.turn_id" class="row cancelled">
+      <div v-for="c in cancelled" :key="c.turn_id" class="row cancelled" data-qio-fit>
         <span class="txt">{{ c.message }}</span>
         <span class="badge mono qio-state quiet">已取消</span>
       </div>
@@ -104,7 +106,11 @@ async function cancelTurn(turnId: string) {
 .chip {
   display: inline-flex;
   align-items: center;
+  /* 计数文案在窄窗口下换行，而不是把 chip 撑出消息列 */
+  flex-wrap: wrap;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   align-self: flex-start;
   padding: 6px 12px;
   border-radius: 20px;
@@ -140,7 +146,10 @@ async function cancelTurn(turnId: string) {
 .row {
   display: flex;
   align-items: center;
+  /* 空间不足时「徽标 / 按钮」换到下一行，正文仍然完整可读 */
+  flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
   padding: 9px 12px;
   border-radius: var(--r-md);
   border: 1px solid var(--border-subtle);
@@ -157,13 +166,14 @@ async function cancelTurn(turnId: string) {
   margin: 6px 0 0;
   font-size: 11.5px;
   color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .txt {
-  flex: 1;
+  flex: 1 1 12ch;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 排队 / 运行中的原文完整显示：换行，不截断、不横向滚动 */
+  white-space: normal;
+  overflow-wrap: anywhere;
   font-size: 13px;
   color: var(--text-primary);
 }
