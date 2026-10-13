@@ -149,8 +149,8 @@ describe("迟到的回执不覆盖更新的状态（§5.6）", () => {
     vi.mocked(api.fetchAcceptance).mockImplementation(
       () =>
         new Promise((resolve) => {
-          release = resolve;
-        }),
+          release = resolve as (value: unknown) => void;
+        }) as never,
     );
 
     const inflight = store.confirmAcceptanceAfterUnclear();
@@ -193,8 +193,8 @@ describe("迟到的回执不覆盖更新的状态（§5.6）", () => {
     vi.mocked(api.fetchAcceptance).mockImplementation(
       () =>
         new Promise((resolve) => {
-          release = resolve;
-        }),
+          release = resolve as (value: unknown) => void;
+        }) as never,
     );
     const inflight = store.confirmAcceptanceAfterUnclear();
     store.boardId = "board_other";
