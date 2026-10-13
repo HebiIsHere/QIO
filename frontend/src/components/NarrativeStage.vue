@@ -269,7 +269,8 @@ const mark = computed(() =>
   grid-template-rows: 1fr;
 }
 .ndrawer-clip {
-  overflow: hidden;
+  /* 同上：抽屉折叠的纯裁剪盒，只负责 0fr→1fr 时的裁切，不建滚动容器 */
+  overflow: clip;
   min-height: 0;
   opacity: 0;
   transition: opacity var(--mo-2-in) var(--ease-2);
@@ -280,6 +281,13 @@ const mark = computed(() =>
 .ndrawer-body {
   padding: 1px 0 8px 13px;
 }
+/* clip 是裁切盒、不是滚动盒：宽内容必须靠换行适配，否则长工具名 / 长错误会被裁掉。
+   这条同时作用于插槽内容（TurnProcess 传进来的过程明细）。 */
+.ndrawer-body :where(p, span, div, code, a, li, dd, dt, summary) {
+  overflow-wrap: anywhere;
+}
+.callname,
+.callmeta { min-width: 0; }
 .calls-note {
   font-size: 10px;
   letter-spacing: 0.06em;
