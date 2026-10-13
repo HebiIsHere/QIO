@@ -24,6 +24,7 @@ import {
   resizeBox,
   sizeLimits,
   stepBox,
+  usableArea,
   type ResizeBox,
   type ResizeHandle,
   type SizeLimits,
@@ -221,44 +222,64 @@ describe("限制生成：可用区域不足时向内收敛", () => {
     expect(limitsForArea({ w: 1000, h: 600 }, { w: 300, h: 220 }, -50).maxW).toBe(1000);
   });
 
-  it("零面积：上下限一起塌到 1（调用方在量到真实面积之前不许取限制）", () => {
+  it("修复后（W4）：零面积算「还没量到」，限制是「无上界」而不是 1", () => {
     expect(limitsForArea({ w: 0, h: 0 }, { w: 300, h: 220 })).toEqual({
-      minW: 1,
-      minH: 1,
-      maxW: 1,
-      maxH: 1,
+      minW: 300,
+      minH: 220,
+      maxW: Number.POSITIVE_INFINITY,
+      maxH: Number.POSITIVE_INFINITY,
     });
   });
 
-  it.fails("面积是 NaN（还没量出来）时限制不该是 NaN，否则尺寸会渲染成非法 CSS", () => {
-    const limits = limitsForArea({ w: Number.NaN, h: Number.NaN }, { w: 300, h: 220 });
-    expect([limits.minW, limits.minH, limits.maxW, limits.maxH].every(Number.isFinite)).toBe(true);
+  it("修复后（W4）：0 / 负数 / NaN / Infinity 面积都走同一条「无上界」路径", () => {
+    const unusable: { w: number; h: number }[] = [
+      { w: 0, h: 800 },
+      { w: 800, h: 0 },
+      { w: Number.NaN, h: 600 },
+      { w: -10, h: -10 },
+      { w: Number.POSITIVE_INFINITY, h: 600 },
+    ];
+    for (const area of unusable) {
+      const limits = limitsForArea(area, { w: 300, h: 220 });
+      expect(limits.minW).toBe(300);
+      expect(limits.minH).toBe(220);
+      expect(limits.maxW).toBe(Number.POSITIVE_INFINITY);
+      expect(limits.maxH).toBe(Number.POSITIVE_INFINITY);
+      expect(usableArea(area)).toBe(false);
+    }
   });
 });
 
 describe("坏数据", () => {
-  it("clampNumber 的现状：NaN 与 ±Infinity 一律取下界（不是「+Infinity 取上界」的常规语义）", () => {
+  it("修复后：NaN 位移按「没动」处理，八个方向都保持原框", () => {
+    const bad: string[] = [];
+    for (const handle of HANDLES) {
+      const next = resizeBox(START, handle, Number.NaN, Number.NaN, LIMITS);
+      if (!boxEquals(next, START, 0)) note(bad, handle + " -> " + show(next));
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("修复后：±Infinity 位移也按「没动」处理（不再塌到最小值，也不超出上下界）", () => {
+    expect(resizeBox(START, "se", Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, LIMITS)).toEqual(START);
+    expect(resizeBox(START, "nw", Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, LIMITS)).toEqual(START);
+  });
+
+  it.fails("修复说明声称「±Infinity 仍按上下界饱和」，实测是按「没动」处理（代码与说明要二选一）", () => {
+    const grown = resizeBox(START, "se", Number.POSITIVE_INFINITY, 0, LIMITS);
+    expect(grown.w).toBe(LIMITS.maxW);
+  });
+
+  it("clampNumber 自身仍是「非有限值取低界」（+Infinity 也不例外）；resizeBox 已不再把 ±Infinity 交给它", () => {
     expect(clampNumber(Number.NaN, 10, 20)).toBe(10);
     expect(clampNumber(Number.POSITIVE_INFINITY, 10, 20)).toBe(10);
     expect(clampNumber(Number.NEGATIVE_INFINITY, 10, 20)).toBe(10);
+    expect(clampNumber(15, 10, 20)).toBe(15);
   });
 
-  it.fails("+Infinity 位移（理论上表示拉到无限大）应当夹到上限，而不是塌到最小值", () => {
-    expect(clampNumber(Number.POSITIVE_INFINITY, 10, 20)).toBe(20);
-  });
-
-  it("现状：±Infinity 位移把框塌到最小值（+Infinity 也不会拉大）", () => {
-    expect(resizeBox(START, "se", Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, LIMITS)).toEqual({
-      x: START.x,
-      y: START.y,
-      w: LIMITS.minW,
-      h: LIMITS.minH,
-    });
-  });
-
-  it.fails("NaN 位移应当「不动」而不是把尺寸塌到最小值（当前 clampNumber 把 NaN 当下界）", () => {
-    const next = resizeBox(START, "se", Number.NaN, Number.NaN, LIMITS);
-    expect({ w: next.w, h: next.h }).toEqual({ w: START.w, h: START.h });
+  it("stepBox 的步长非有限时退回默认 24（新增的防御）", () => {
+    expect(stepBox(START, "w", 1, LIMITS, Number.NaN).w).toBe(START.w + 24);
+    expect(stepBox(START, "w", 1, LIMITS, Number.POSITIVE_INFINITY).w).toBe(START.w + 24);
   });
 
   it("convergeBox 收到 NaN 位置时按 origin 落位，不产生 NaN", () => {
@@ -302,6 +323,37 @@ describe("convergeBox：可见性与幂等（200 组随机）", () => {
       if (!boxEquals(next, convergeBox(next, area, origin), 0)) note(bad, "二次收敛还在动 " + tag);
     }
     expect(bad).toEqual([]);
+  });
+});
+
+describe("convergeBox：面积未知（W4 修复后）", () => {
+  it("不再把用户的框压成 1×1：原尺寸保留，位置只保证不小于 origin", () => {
+    expect(convergeBox({ x: 5000, y: 5000, w: 400, h: 500 }, { w: 0, h: 0 }, { x: 0, y: 44 })).toEqual({
+      x: 5000,
+      y: 5000,
+      w: 400,
+      h: 500,
+    });
+  });
+
+  it("坏尺寸（0 / NaN）仍然被修成有效值 1，坏位置落到 origin", () => {
+    expect(convergeBox({ x: Number.NaN, y: Number.NaN, w: 0, h: Number.NaN }, { w: 0, h: 0 })).toEqual({
+      x: 0,
+      y: 0,
+      w: 1,
+      h: 1,
+    });
+  });
+
+  it("负位置被抬到 origin 之上，NaN 面积也走同一条路", () => {
+    const next = convergeBox({ x: -50, y: -50, w: 400, h: 500 }, { w: Number.NaN, h: Number.NaN }, {
+      x: 0,
+      y: 44,
+    });
+    expect(next.x).toBe(0);
+    expect(next.y).toBe(44);
+    expect(next.w).toBe(400);
+    expect(next.h).toBe(500);
   });
 });
 
@@ -365,18 +417,83 @@ describe("findFreeSlot：顺序落点与窄缝", () => {
     expect(slot).toEqual({ x: 3200, y: 1800, w: 240, h: 160 });
   });
 
-  it("已知折衷：空档比默认网格步长窄时找不到（回落到最小重叠），步长调细才找得到", () => {
+  it("修复后（W9）：三种宽度的窄空档都能命中，不再回落到重叠位置", () => {
     const area: ResizeBox = { x: 0, y: 0, w: 1000, h: 400 };
-    const obstacles: ResizeBox[] = [
-      { x: 0, y: 0, w: 405, h: 400 },
-      { x: 505, y: 0, w: 495, h: 400 },
+    // 三种空档宽度（100 / 60 / 140）：都窄于或错开默认网格步长（= max(24, 卡宽/2)）。
+    const cases: { left: number; gapWidth: number; card: number }[] = [
+      { left: 405, gapWidth: 100, card: 80 },
+      { left: 407, gapWidth: 60, card: 56 },
+      { left: 333, gapWidth: 140, card: 132 },
     ];
-    // 空档 = [405, 505] 宽 100，80 宽的卡片放得下（例如 x = 405..485）；
-    // 但默认步长 = max(24, 80/2) = 40，候选 x 只取 0,40,...,400,440,...，正好跨过空档。
-    const coarse = findFreeSlot({ size: { w: 80, h: 200 }, area, obstacles, gap: 0 });
-    expect(overlapArea(coarse, obstacles[0]) + overlapArea(coarse, obstacles[1])).toBeGreaterThan(0);
-    const fine = findFreeSlot({ size: { w: 80, h: 200 }, area, obstacles, gap: 0, stepX: 8 });
-    expect(overlapArea(fine, obstacles[0]) + overlapArea(fine, obstacles[1])).toBe(0);
+    for (const item of cases) {
+      const obstacles: ResizeBox[] = [
+        { x: 0, y: 0, w: item.left, h: 400 },
+        { x: item.left + item.gapWidth, y: 0, w: 1000 - item.left - item.gapWidth, h: 400 },
+      ];
+      const slot = findFreeSlot({ size: { w: item.card, h: 200 }, area, obstacles, gap: 0 });
+      expect(overlapArea(slot, obstacles[0]) + overlapArea(slot, obstacles[1])).toBe(0);
+    }
+  });
+
+  it("仍然：实在放不下时退化为重叠最小，且落点仍在可见范围内", () => {
+    const area: ResizeBox = { x: 0, y: 0, w: 300, h: 200 };
+    const obstacles: ResizeBox[] = [{ x: 0, y: 0, w: 300, h: 200 }];
+    const slot = findFreeSlot({ size: { w: 120, h: 90 }, area, obstacles, gap: 0 });
+    expect(slot.x).toBeGreaterThanOrEqual(0);
+    expect(slot.y).toBeGreaterThanOrEqual(0);
+    expect(slot.x + slot.w).toBeLessThanOrEqual(300);
+    expect(slot.y + slot.h).toBeLessThanOrEqual(200);
+    expect(overlapArea(slot, obstacles[0])).toBeGreaterThan(0);
+  });
+
+  it("性质（W9）：只要范围内存在零重叠落点，findFreeSlot 必须返回零重叠（40 组随机几何，2px 暴力扫描对照）", () => {
+    const rand = makeRandom(880011);
+    const bad: string[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      const area: ResizeBox = {
+        x: 0,
+        y: 0,
+        w: 240 + Math.round(rand() * 160),
+        h: 180 + Math.round(rand() * 120),
+      };
+      const size = { w: 40 + Math.round(rand() * 80), h: 32 + Math.round(rand() * 60) };
+      const gap = 8;
+      const obstacles: ResizeBox[] = [];
+      const count = 1 + Math.round(rand() * 3);
+      for (let j = 0; j < count; j += 1) {
+        obstacles.push({
+          x: Math.round(rand() * (area.w - 40)),
+          y: Math.round(rand() * (area.h - 40)),
+          w: 20 + Math.round(rand() * 70),
+          h: 20 + Math.round(rand() * 60),
+        });
+      }
+      const maxX = area.x + Math.max(0, area.w - size.w);
+      const maxY = area.y + Math.max(0, area.h - size.h);
+      let freeExists = false;
+      for (let y = area.y; y <= maxY && !freeExists; y += 2) {
+        for (let x = area.x; x <= maxX; x += 2) {
+          const probe: ResizeBox = { x: x - gap, y: y - gap, w: size.w + gap * 2, h: size.h + gap * 2 };
+          let overlap = 0;
+          for (const obstacle of obstacles) overlap += overlapArea(probe, obstacle);
+          if (overlap === 0) {
+            freeExists = true;
+            break;
+          }
+        }
+      }
+      const slot = findFreeSlot({ size, area, obstacles, gap });
+      const probe: ResizeBox = { x: slot.x - gap, y: slot.y - gap, w: slot.w + gap * 2, h: slot.h + gap * 2 };
+      let overlap = 0;
+      for (const obstacle of obstacles) overlap += overlapArea(probe, obstacle);
+      if (freeExists && overlap !== 0) note(bad, "有空位却没找到 " + show(slot) + " in " + show(area));
+    }
+    expect(bad).toEqual([]);
+  });
+
+  it("提醒（W4 未覆盖的同类路径）：面积是 0 时 findFreeSlot 会把尺寸夹成 1×1，C 必须先量到面积", () => {
+    const slot = findFreeSlot({ size: { w: 240, h: 160 }, area: { x: 0, y: 0, w: 0, h: 0 }, obstacles: [] });
+    expect(slot).toEqual({ x: 0, y: 0, w: 1, h: 1 });
   });
 
   it("可见范围比卡片还小：落在范围左上角，尺寸被夹进范围", () => {
