@@ -37,8 +37,14 @@ const props = withDefaults(
     cardId?: string;
     /** 测试缝：默认就是被接线的 openAttachment（生产不传） */
     open?: (ref: AttachmentRef, options: { desktop: boolean }) => Promise<AttachmentOpenResult>;
+    /**
+     * 紧凑档（任务书 §6.3）：卡片进入阅读展开时，主体让给真实预览 ——
+     * 这里只留**外部打开**这一个入口，不再重复铺缩略图、关联状态与大段说明。
+     * 默认 false，既有调用方行为一字不变。
+     */
+    compact?: boolean;
   }>(),
-  { meta: null, cardId: "", open: undefined },
+  { meta: null, cardId: "", open: undefined, compact: false },
 );
 
 const attachKind = computed<"file" | "image" | null>(() =>
@@ -216,19 +222,22 @@ onBeforeUnmount(() => {
   <div
     v-if="attachKind"
     class="card-attach-preview"
+    :class="{ compact }"
     :data-im="'card-attachment-preview'"
     :data-card-id="cardId"
     :data-state="linked ? 'linked' : 'unlinked'"
     :data-open-action="plan.action ?? 'none'"
   >
+    <!-- 紧凑档不再重复关联状态：文件名与说明留在标题附近，这里只说「怎么外部打开」 -->
     <p
+      v-if="!compact || !linked"
       class="attach-line"
       :class="linked ? 'is-linked' : 'is-missing'"
       :data-im="'card-attachment'"
     >{{ plan.statusText }}</p>
 
     <template v-if="linked">
-      <div v-if="plan.imagePreviewable" class="thumb-box" :data-card-id="cardId">
+      <div v-if="plan.imagePreviewable && !compact" class="thumb-box" :data-card-id="cardId">
         <img
           v-if="previewUrl"
           ref="thumb"
@@ -239,7 +248,7 @@ onBeforeUnmount(() => {
         />
         <p class="thumb-note" :data-im="'card-attachment-preview-state'">{{ previewNote }}</p>
       </div>
-      <p v-else class="preview-note" :data-im="'card-attachment-preview-state'">{{ previewNote }}</p>
+      <p v-else-if="!compact" class="preview-note" :data-im="'card-attachment-preview-state'">{{ previewNote }}</p>
 
       <div class="actions">
         <button
@@ -253,7 +262,7 @@ onBeforeUnmount(() => {
           @click="onOpen"
         >{{ actionText }}</button>
       </div>
-      <p v-if="usageNote" class="usage" :data-im="'card-attachment-open-note'">{{ usageNote }}</p>
+      <p v-if="usageNote && !compact" class="usage" :data-im="'card-attachment-open-note'">{{ usageNote }}</p>
       <p v-if="actionStatus" class="note" :class="'is-' + actionStatus.tone" :data-im="'card-attachment-open-status'" role="status">{{ actionStatus.text }}</p>
     </template>
   </div>
@@ -301,6 +310,8 @@ onBeforeUnmount(() => {
 .note.is-ok { color: var(--text-secondary); }
 .note.is-error { color: var(--danger, var(--text-strong)); }
 .actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+/* 紧凑档：一行放得下「外部打开」，缩略图与大段说明都不再出现（主体是预览） */
+.card-attach-preview.compact { margin-top: 0; }
 .btn {
   font: inherit;
   font-size: var(--fs-sm);
