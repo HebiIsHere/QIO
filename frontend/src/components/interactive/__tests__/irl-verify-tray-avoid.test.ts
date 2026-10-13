@@ -251,24 +251,55 @@ describe("让开之后的上界矩形必须落在可用带内", () => {
     expect(clearOf(rect, chat)).toBe(true);
   });
 
-  it("现状（窄带 + 160px 下限）：可用带只有 88px，上界矩形被抬到 160px，重新压住窗口", async () => {
-    // 窗口几乎占满宽度，只剩右侧 88px 的带（< 160）。
-    const chat: ChatRect = { x: OVERLAY_EDGE, y: 400, w: W - OVERLAY_EDGE - 100 - OVERLAY_EDGE, h: 340 };
-    const geo = await readGeometry(chat);
-    const band = widestFreeBand({ left: OVERLAY_EDGE, right: W - OVERLAY_EDGE }, [chat], OVERLAY_GAP);
-    expect(band).not.toBeNull();
-    expect(band!.right - band!.left).toBeLessThan(160);
-    expect(geo.width).toBe(160); // Math.max(160, ...) 抬上来的下限
-    expect(clearOf(trayRect(geo), chat)).toBe(false);
+  it("修复后（F-G1）：两种窄带宽度都进入切换显示，不再把上界矩形抬到 160px", async () => {
+    // 带 1：右侧剩 88px；带 2：右侧剩 40px（对话窗口更宽）。
+    const cases: { chat: ChatRect; bandWidth: number }[] = [
+      { chat: { x: OVERLAY_EDGE, y: 400, w: W - OVERLAY_EDGE - 100 - OVERLAY_EDGE, h: 340 }, bandWidth: 88 },
+      { chat: { x: OVERLAY_EDGE, y: 400, w: W - OVERLAY_EDGE - 52 - OVERLAY_EDGE, h: 340 }, bandWidth: 40 },
+    ];
+    for (const item of cases) {
+      const store = useInteractiveStore();
+      store.chatOpen = true;
+      store.batchOpen = true;
+      const geo = await readGeometry(item.chat);
+      const band = widestFreeBand({ left: OVERLAY_EDGE, right: W - OVERLAY_EDGE }, [item.chat], OVERLAY_GAP);
+      expect(band).not.toBeNull();
+      expect(Math.round(band!.right - band!.left)).toBe(item.bandWidth);
+      expect(item.bandWidth).toBeLessThan(160);
+      expect(geo.mode).toBe("switched"); // 宁可二选一，也不挤进窄带
+      expect(store.chatOpen && store.batchOpen).toBe(false); // 同一时间只开一个面板
+    }
   });
 
-  it.fails("窄带时上界矩形也不该超过可用带（否则「让开」会重新制造碰撞）", async () => {
-    const chat: ChatRect = { x: OVERLAY_EDGE, y: 400, w: W - OVERLAY_EDGE - 100 - OVERLAY_EDGE, h: 340 };
-    const geo = await readGeometry(chat);
-    const band = widestFreeBand({ left: OVERLAY_EDGE, right: W - OVERLAY_EDGE }, [chat], OVERLAY_GAP)!;
-    const rect = trayRect(geo);
-    expect(rect.right).toBeLessThanOrEqual(band.right + 0.5);
-    expect(rect.left).toBeGreaterThanOrEqual(band.left - 0.5);
+  it("修复后（F-G1）边界：可用带正好 160px 就用这条带；159px 进切换显示", async () => {
+    const bandRight = W - OVERLAY_EDGE;
+    const chatFor = (bandWidth: number): ChatRect => ({
+      x: OVERLAY_EDGE,
+      y: 400,
+      w: bandRight - OVERLAY_GAP - bandWidth - OVERLAY_EDGE,
+      h: 340,
+    });
+    const chat160 = chatFor(160);
+    const chat159 = chatFor(159);
+    const band160 = widestFreeBand({ left: OVERLAY_EDGE, right: bandRight }, [chat160], OVERLAY_GAP)!;
+    const band159 = widestFreeBand({ left: OVERLAY_EDGE, right: bandRight }, [chat159], OVERLAY_GAP)!;
+    expect(Math.round(band160.right - band160.left)).toBe(160);
+    expect(Math.round(band159.right - band159.left)).toBe(159);
+
+    const store = useInteractiveStore();
+    store.chatOpen = true;
+    store.batchOpen = true;
+    const geo160 = await readGeometry(chat160);
+    expect(geo160.mode).not.toBe("switched");
+    const rect160 = trayRect(geo160);
+    expect(rect160.right).toBeLessThanOrEqual(band160.right + 0.5);
+    expect(rect160.left).toBeGreaterThanOrEqual(band160.left - 0.5);
+    expect(clearOf(rect160, chat160)).toBe(true);
+
+    store.chatOpen = true;
+    store.batchOpen = true;
+    const geo159 = await readGeometry(chat159);
+    expect(geo159.mode).toBe("switched");
   });
 });
 

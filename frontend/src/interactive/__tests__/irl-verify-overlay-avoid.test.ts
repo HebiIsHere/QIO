@@ -101,23 +101,21 @@ describe("widestFreeBand：gap 与带本身退化", () => {
     expect(width(band)).toBe(1);
   });
 
-  it("带为空（left === right）：现状返回零宽带而不是 null —— 与「真的没位置 → null」不一致", () => {
-    const band = widestFreeBand({ left: 100, right: 100 }, [], 12);
-    expect(band).toEqual({ left: 100, right: 100 });
-    expect(width(band)).toBe(0);
-  });
-
-  it.fails("带为空时按契约也应当返回 null（调用方现在会把零宽带当成有位置）", () => {
+  it("修复后（F-G2）：带为空（left === right）返回 null，而不是一条零宽带", () => {
     expect(widestFreeBand({ left: 100, right: 100 }, [], 12)).toBeNull();
+    expect(widestFreeBand({ left: 100, right: 100 }, [rect(0, 50)], 12)).toBeNull();
   });
 
-  it("带被反转（left > right）且没有障碍：现状返回规范化后的整条带", () => {
-    expect(widestFreeBand({ left: 100, right: 0 }, [], 0)).toEqual({ left: 0, right: 100 });
+  it("修复后（F-G2，另一组输入）：反向带（left > right）无论有没有障碍都返回 null", () => {
+    expect(widestFreeBand({ left: 100, right: 0 }, [], 0)).toBeNull();
+    expect(widestFreeBand({ left: 500, right: 200 }, [rect(300, 100)], 8)).toBeNull();
+    expect(widestFreeBand({ left: 100, right: 99.5 }, [], 0)).toBeNull();
   });
 
-  it("带被反转且障碍确实被判为 active：返回 null（不会算出负数宽度）", () => {
-    // 障碍扩展后 [-50,150] 同时满足 right > full.left(100) 与 left < full.right(0)。
-    expect(widestFreeBand({ left: 100, right: 0 }, [rect(-50, 200)], 0)).toBeNull();
+  it("回归（修复不能误伤正常带）：非空带无障碍时返回整条带，带内障碍照常让开", () => {
+    expect(widestFreeBand({ left: 16, right: 1424 }, [], 12)).toEqual({ left: 16, right: 1424 });
+    // 障碍在 [40,50)：左空 40、右空 50 → 取更宽的右侧
+    expect(widestFreeBand({ left: 0, right: 100 }, [rect(40, 10)], 0)).toEqual({ left: 50, right: 100 });
   });
 });
 
