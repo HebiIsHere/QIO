@@ -162,6 +162,21 @@ export function createQioScrollbars(
     rails = [];
   }
 
+  /**
+   * 指示条是宿主的绝对定位子节点，而宿主自己就是滚动容器 ——
+   * 滚动容器里的 absolute 子节点会**随内容一起滚走**（只有 fixed 不会，但 fixed 会被
+   * 祖先的 transform 改变包含块，板面缩放场景不可用）。
+   * 所以这里按当前滚动偏移反向平移：指示条始终贴在可视边缘。
+   */
+  function syncRailOffset() {
+    if (!rails.length) return;
+    const tx = host.scrollLeft;
+    const ty = host.scrollTop;
+    for (const r of rails) {
+      r.rail.style.transform = "translate(" + tx + "px," + ty + "px)";
+    }
+  }
+
   function canScroll(axis: "x" | "y"): boolean {
     return axis === "y"
       ? host.scrollHeight - host.clientHeight > OVERFLOW_EPS
@@ -199,6 +214,7 @@ export function createQioScrollbars(
       const ratio = range <= 0 ? 0 : Math.round((scrollPos / range) * 100);
       rail.rail.setAttribute("aria-valuenow", String(Math.max(0, Math.min(100, ratio))));
     }
+    syncRailOffset();
     applyRange(overflowing.length ? overflowing.join(" ") : "none");
     applyVisibility();
   }
@@ -252,6 +268,8 @@ export function createQioScrollbars(
   // ---- 事件（全部可释放）----
   const onScroll = () => {
     activate();
+    // 同步贴合：只做样式写入，避免指示条在快速滚动时出现一帧的位移滞后
+    syncRailOffset();
     scheduleMeasure();
   };
 
@@ -344,6 +362,7 @@ export function createQioScrollbars(
     const next = d.startScroll + ratio * d.scrollRange;
     if (d.axis === "y") host.scrollTop = next;
     else host.scrollLeft = next;
+    syncRailOffset();
     scheduleMeasure();
   }
 

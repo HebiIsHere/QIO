@@ -134,6 +134,21 @@ describe("QIO 滚动指示条引擎", () => {
     expect(el.scrollTop).toBe(120);
   });
 
+  it("滚动后指示条仍贴在可视边缘（滚动容器内的 absolute 子节点会被内容带走）", async () => {
+    const el = makeHost({ clientHeight: 200, scrollHeight: 1000 });
+    const ctrl = createQioScrollbars(el, { policy: "auto" });
+    mounted.push({ el, ctrl });
+    await flush();
+    expect(rail(el, "y")!.style.transform).toBe("translate(0px,0px)");
+    el.scrollTop = 150;
+    el.scrollLeft = 0;
+    el.dispatchEvent(new Event("scroll"));
+    // 反向平移量与滚动偏移一致：top 从 -150 被拉回 0，指示条不会滚出视口
+    expect(rail(el, "y")!.style.transform).toBe("translate(0px,150px)");
+    await flush();
+    expect(rail(el, "y")!.style.transform).toBe("translate(0px,150px)");
+  });
+
   it("内容缩短/容器变大后指示条及时消失", async () => {
     const el = makeHost({ clientHeight: 200, scrollHeight: 1000 });
     const ctrl = createQioScrollbars(el, { policy: "auto" });
