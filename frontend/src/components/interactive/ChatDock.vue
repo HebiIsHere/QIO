@@ -1,24 +1,26 @@
 <!--
-  右下角独立聊天入口（子智能体 C 负责实现）。
+  右下角互动对话窗口（子智能体 A 负责实现）。
 
-  契约：docs/interactive-mode-contract.md §8.1 / §8.3。
+  契约：docs/interactive-mode-contract.md §8.1 / §8.3；互动模式契约 2026-10-13 §2 / §4。
 
-  这一版落地四件事：
-  1. 点击展开 / 收起悬浮对话框；收起不清消息、不删草稿、不打断进行中的对话 ——
-     消息、轮次、草稿都在 stores/session.ts 里，面板只是它的一扇窗；
-  2. 直接复用会话能力（messages / turnRunning / draft / send / lastError），
-     **不新建事件订阅**：订阅由 App.vue 统一建立，这里只读状态、只发文字，
-     所以不会重复写消息、不会重复建轮次；
-  3. 只发送输入的文字（POST /api/turns），不带板面、未提交改动、注释或选择范围，
-     也不调用板面提交接口（POST /api/interactive/boards/{id}/submissions）；
-  4. 外层容器透明：能看到后方板面，只有气泡、输入区这类必要控件用令牌里的轻量底色，
-     不整块不透明、也不做重度模糊。
+  结构（任务书 §4）只有三块：
+  1. 顶部：标题 + 一句运行状态 + 尺寸调整入口（−/＋）+ 帮助 + 收起；
+  2. 中间：连续消息流（正式回答持续流式显示；工具与阶段记录默认简短、详情按需展开）；
+  3. 底部：附件、输入框、发送按钮合成一个输入区；「文字发送不会提交板面」只留一句短提示，
+     完整的可见范围 / 媒体读取方式 / 附件限制 / 快捷键放进**可打开的帮助**。
+  —— 板面提交过程（理解说明、受理说明）归提交入口显示，这里不再常驻多块长说明。
 
-  为什么没有直接复用 MessageStream：它是**整页**虚拟滚动 + 底部跟随，会写
-  session.streamScrollTop / streamFollowing，并订阅输入区几何做「回到最新」定位。
-  放进 360–420px、固定高度的浮层会串改对话页的阅读位置与跟随状态。
-  这里改用 MessageItem 做紧凑渲染（回答、工具卡、Markdown 都还是同一套渲染），
-  滚动由面板自己管。
+  移动与尺寸（任务书 §3.1/3.2/3.5/3.6/3.7/3.8/3.10）：
+  - 标题栏是**唯一**的移动把手：正文区不参与移动，阅读与输入不被干扰；
+  - 四条边 + 四个角走公共 useResizeGesture，标题栏里另有键盘 −/＋；
+  - 位置 / 尺寸是**本机查看偏好**（chatFrame.ts，按板面身份绑定）：不进板面状态、
+    不进提交载荷、不调模型、不产生表达、不改许可；
+  - 拖动中只预览（跟手、无过渡动画），松手才提交一次；取消（指针取消 / Esc / 失焦 / 卸载）
+    恢复拖动前状态并清掉监听；
+  - 当前显示框用 publishChatFrame 发布，供审批托盘与展开卡片避让。
+
+  保留的既有能力：与对话页同一套会话与附件状态（消息、草稿、附件归属、未决发送、
+  失败恢复、回到最新、输入法选字不发送），拖动 / 调整尺寸 / 收起 / 重新渲染都不改这些状态。
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -27,6 +29,8 @@ import { useSessionStore } from "../../stores/session";
 import MessageItem from "../MessageItem.vue";
 import AttachmentChip from "../AttachmentChip.vue";
 import FailedSendNotice from "./FailedSendNotice.vue";
+import ResizeHandles from "./ResizeHandles.vue";
+import { useResizeGesture } from "../../composables/useResizeGesture";
 import {
   isAttachmentDead,
   invalidateAttachmentIdentity,
@@ -75,6 +79,17 @@ import {
   understandingText,
 } from "../../interactive/approval";
 import type { Intent } from "../../interactive/types";
+import {
+  CHAT_FRAME_MIN,
+  chatFrameLimits,
+  convergeChatFrame,
+  defaultChatFrame,
+  loadChatFrame,
+  saveChatFrame,
+  type ChatFrame,
+} from "../../interactive/chatFrame";
+import { publishChatFrame } from "../../interactive/chatFrameState";
+import { RESIZE_DRAG_THRESHOLD, boxEquals, clampNumber } from "../../interactive/resize";
 
 /**
  * 面板里最多渲染多少条消息。
@@ -83,6 +98,14 @@ import type { Intent } from "../../interactive/types";
 const TAIL_LIMIT = 60;
 /** 输入框最大高度：超过后输入框内部滚动，不把消息区挤没 */
 const MAX_INPUT_PX = 132;
+/** 可用区域四周留白：贴边的把手不好抓，也和自绘标题栏 / 底部工具栏留出呼吸 */
+const AREA_MARGIN = 8;
+/** 移动阈值：与尺寸拖动同一个指针语义（阈值内算点击，不改位置） */
+const MOVE_THRESHOLD = RESIZE_DRAG_THRESHOLD;
+/** 首次打开的默认框要给「入口按钮」留出位置：展开时它就挂在面板下方 */
+const TOGGLE_RESERVE = 48;
+/** 快捷键说明只留一处（帮助里），面板里不再常驻小字 */
+const SHORTCUT_TEXT = "Enter 发送 · Shift+Enter 换行 · 中文选字时不发送";
 
 const store = useInteractiveStore();
 const session = useSessionStore();
@@ -90,6 +113,7 @@ const session = useSessionStore();
 const inputRef = ref<HTMLTextAreaElement | null>(null);
 const streamRef = ref<HTMLElement | null>(null);
 const contentRef = ref<HTMLElement | null>(null);
+const dockRef = ref<HTMLElement | null>(null);
 /** 发送请求进行中（不是「对话在跑」：turnRunning 由 store 表达） */
 const sending = ref(false);
 /** 发送失败的真实原因（保留输入，不伪装成功） */
@@ -100,6 +124,8 @@ const failureTopic = ref<string | null>(null);
 const blankNotice = ref("");
 /** 是否跟随最新消息（用户上翻阅读后不再强行拉回） */
 const following = ref(true);
+/** 帮助（可见范围 / 媒体读取 / 附件限制 / 快捷键）是否展开 */
+const helpOpen = ref(false);
 
 const draft = computed({
   get: () => session.draft,
@@ -131,6 +157,277 @@ const turnError = computed(() => (failure.value ? "" : (session.lastError ?? "")
  * 这是「为什么没有回答」最直接的原因，必须显示，不能让用户对着一个空的等待框猜。
  */
 const sessionWarning = computed(() => session.warning ?? "");
+
+/* ------------------------------------------------------------------------
+ * 位置 / 尺寸：本机查看偏好（按板面身份绑定），只改布局与查看
+ * ---------------------------------------------------------------------- */
+
+/** 当前可用区域（视口坐标）：上界是自绘标题栏下边缘，下界是底部工具栏上边缘 */
+interface ChatArea {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/**
+ * 量当前可用区域。
+ *
+ * 为什么必须扣掉这两块：悬浮对话窗口在屏幕坐标系里，标题栏（0.2.3 自绘）与底部工具栏
+ * 都会随窗口宽度换行变高，写死一个高度必然在某个宽度上把面板顶出视口或压住工具栏。
+ * 量不到时（jsdom / 还没布好局，rect 全 0）退回视口，绝不把 0 当成「工具栏在顶部」。
+ */
+function measureArea(): ChatArea {
+  const vw = Math.max(1, Math.round(window.innerWidth || 0));
+  const vh = Math.max(1, Math.round(window.innerHeight || 0));
+  const title = document.querySelector<HTMLElement>(".im-top");
+  const titleBottom = title ? title.getBoundingClientRect().bottom : 0;
+  const top = (Number.isFinite(titleBottom) && titleBottom > 0 ? Math.round(titleBottom) : 0) + AREA_MARGIN;
+  const toolbar = document.querySelector<HTMLElement>('[data-im="board-toolbar"]');
+  const rect = toolbar?.getBoundingClientRect();
+  const bottom =
+    rect && rect.top > 0 && rect.height > 0 ? Math.round(rect.top) - AREA_MARGIN : vh - AREA_MARGIN;
+  return {
+    x: AREA_MARGIN,
+    y: Math.max(0, top),
+    w: Math.max(1, vw - AREA_MARGIN * 2),
+    // 下限 120：窗口真的小到装不下时让它自己滚动，而不是算出一个负的可用高度
+    h: Math.max(120, bottom - Math.max(0, top)),
+  };
+}
+
+const area = ref<ChatArea>(measureArea());
+
+/** 恢复：已保存的框按**当前**可用空间收敛（绝不恢复到屏幕外）；没保存过就贴右下角 */
+function resolveFrame(next: ChatArea, stored: ChatFrame | null): ChatFrame {
+  const origin = { x: next.x, y: next.y };
+  if (stored) return convergeChatFrame(stored, { w: next.w, h: next.h }, origin);
+  // 默认落点：贴右下角，并且给下方那个「入口按钮」留出一行
+  const size = { w: next.w, h: Math.max(CHAT_FRAME_MIN.h, next.h - TOGGLE_RESERVE) };
+  return defaultChatFrame(size, origin);
+}
+
+const frame = ref<ChatFrame>(resolveFrame(area.value, loadChatFrame(store.boardId)));
+/** 拖动中的预览框：只用于显示，不落盘、不写板面状态、不发请求 */
+const preview = ref<ChatFrame | null>(null);
+const activeFrame = computed(() => preview.value ?? frame.value);
+
+/**
+ * 定位父级（板面舞台）在视口里的原点与缩放。
+ * frame 一律是**视口坐标**（与 chatFrameState 的契约一致），落到绝对定位的 left/top
+ * 时才减去舞台原点；舞台被 CSS zoom 缩放时按实测比例换算，不假设「1 局部像素 = 1 视口像素」。
+ */
+const stageOrigin = ref({ left: 0, top: 0, scaleX: 1, scaleY: 1 });
+
+function readStageOrigin(): void {
+  const host = dockRef.value;
+  const parent =
+    (host?.offsetParent as HTMLElement | null) ?? document.querySelector<HTMLElement>(".im-stage");
+  if (!parent) {
+    stageOrigin.value = { left: 0, top: 0, scaleX: 1, scaleY: 1 };
+    return;
+  }
+  const rect = parent.getBoundingClientRect();
+  const scaleX = parent.offsetWidth > 0 && rect.width > 0 ? rect.width / parent.offsetWidth : 1;
+  const scaleY = parent.offsetHeight > 0 && rect.height > 0 ? rect.height / parent.offsetHeight : 1;
+  stageOrigin.value = {
+    left: rect.left,
+    top: rect.top,
+    scaleX: scaleX > 0 ? scaleX : 1,
+    scaleY: scaleY > 0 ? scaleY : 1,
+  };
+}
+
+const dockStyle = computed<Record<string, string>>(() => {
+  const current = activeFrame.value;
+  const origin = stageOrigin.value;
+  const round = (value: number) => Math.round(value * 100) / 100;
+  return {
+    left: round((current.x - origin.left) / origin.scaleX) + "px",
+    top: round((current.y - origin.top) / origin.scaleY) + "px",
+    width: round(current.w / origin.scaleX) + "px",
+    height: round(current.h / origin.scaleY) + "px",
+  };
+});
+
+/**
+ * 面板尺寸由 frame 说话：样式表里那两条 max-width / max-height 是**旧锚定模型**的上限
+ * （从工具栏顶边倒推、只限制不改位置），现在位置与尺寸都由用户拖动决定，再夹一层会让
+ * 「拖到一半被截住」；外层 margin-bottom（切换条抬升）同理，这里显式归零。
+ */
+const panelStyle: Record<string, string> = { maxWidth: "none", maxHeight: "none", margin: "0" };
+
+function applyFrame(next: ChatFrame, options: { save?: boolean } = {}): void {
+  frame.value = { x: next.x, y: next.y, w: next.w, h: next.h };
+  if (options.save) saveChatFrame(store.boardId, frame.value);
+}
+
+/** 显示框变化（恢复 / 拖动预览 / 提交 / 收起）与卸载都发布一次，供别的浮层避让 */
+watch(
+  [activeFrame, () => store.chatOpen],
+  () => publishChatFrame(activeFrame.value, !store.chatOpen),
+  { immediate: true },
+);
+
+/** 视口 / 工具栏变化：重新量可用区域，并把当前框收敛回可见范围（收敛不落盘，保留用户原意） */
+function refreshArea(): void {
+  area.value = measureArea();
+  readStageOrigin();
+  if (preview.value) return; // 拖动中不打断跟手
+  const converged = convergeChatFrame(
+    frame.value,
+    { w: area.value.w, h: area.value.h },
+    { x: area.value.x, y: area.value.y },
+  );
+  if (!boxEquals(frame.value, converged)) applyFrame(converged);
+}
+
+/* ------------------------------------------------------------------------
+ * 尺寸：四条边 + 四个角（公共手势层）
+ * ---------------------------------------------------------------------- */
+
+const {
+  active: resizeActive,
+  onHandleDown,
+  nudge,
+  cancel: cancelResize,
+} = useResizeGesture({
+  // 常态框：拖动起点快照的来源（拖动期间它保持不变）
+  box: () => activeFrame.value,
+  // 上限 = 当前可用区域；窗口比最小尺寸还小时由 chatFrameLimits 向内收敛
+  limits: () => chatFrameLimits({ w: area.value.w, h: area.value.h }),
+  // 屏幕坐标系：1 视口像素就是 1 像素
+  scale: () => 1,
+  onPreview: (box) => {
+    preview.value = { ...box };
+  },
+  onCommit: (box) => {
+    preview.value = null;
+    applyFrame(box, { save: true });
+  },
+  onCancel: () => {
+    // 恢复拖动前那一版（frame 本来就没被改过），只把预览收掉
+    preview.value = null;
+  },
+});
+
+const resizing = computed(() => resizeActive.value);
+
+/* ------------------------------------------------------------------------
+ * 移动：标题栏拖动（指针 + 阈值），取消即恢复
+ * ---------------------------------------------------------------------- */
+
+const moving = ref(false);
+let moveSnapshot: ChatFrame | null = null;
+let movePointerId: number | null = null;
+let moveStart = { x: 0, y: 0 };
+let moveLatest: ChatFrame | null = null;
+let moveStarted = false;
+let moveAttached = false;
+
+function detachMove(): void {
+  if (!moveAttached) return;
+  moveAttached = false;
+  document.removeEventListener("pointermove", onMoveMove, true);
+  document.removeEventListener("pointerup", onMoveUp, true);
+  document.removeEventListener("pointercancel", onMoveCancel, true);
+  document.removeEventListener("keydown", onMoveKeyDown, true);
+  window.removeEventListener("blur", onMoveCancel);
+}
+
+function resetMove(): void {
+  detachMove();
+  moveSnapshot = null;
+  movePointerId = null;
+  moveLatest = null;
+  moveStarted = false;
+  moving.value = false;
+}
+
+/** 取消：恢复这次拖动之前的框，清理监听（不留半完成状态） */
+function cancelMove(): void {
+  const restore = moveSnapshot;
+  const wasDragging = moveStarted;
+  resetMove();
+  if (!wasDragging || !restore) return;
+  preview.value = null;
+  applyFrame(restore);
+}
+
+function attachMove(): void {
+  if (moveAttached) return;
+  moveAttached = true;
+  document.addEventListener("pointermove", onMoveMove, true);
+  document.addEventListener("pointerup", onMoveUp, true);
+  document.addEventListener("pointercancel", onMoveCancel, true);
+  document.addEventListener("keydown", onMoveKeyDown, true);
+  window.addEventListener("blur", onMoveCancel);
+}
+
+/** 位移 → 新的视口坐标框，并夹进当前可用区域（拖动中只算，不写任何状态） */
+function movedFrame(start: ChatFrame, dx: number, dy: number): ChatFrame {
+  const box = area.value;
+  const maxX = box.x + Math.max(0, box.w - start.w);
+  const maxY = box.y + Math.max(0, box.h - start.h);
+  return {
+    x: clampNumber(start.x + dx, box.x, maxX),
+    y: clampNumber(start.y + dy, box.y, maxY),
+    w: start.w,
+    h: start.h,
+  };
+}
+
+function onHeadPointerDown(event: PointerEvent): void {
+  // 只接主键 / 主指针：右键菜单与多指手势不进入移动
+  if (event.button !== 0 || event.isPrimary === false) return;
+  const target = event.target as HTMLElement | null;
+  // 标题栏里的按钮与 −/＋ 有自己的语义：不让它们变成「拖动面板」
+  if (target?.closest("button, a, input, textarea, summary, [data-resize-root]")) return;
+  event.preventDefault();
+  cancelMove();
+  moveSnapshot = { ...activeFrame.value };
+  movePointerId = typeof event.pointerId === "number" ? event.pointerId : null;
+  moveStart = { x: Number(event.clientX ?? 0), y: Number(event.clientY ?? 0) };
+  moveLatest = null;
+  moveStarted = false;
+  attachMove();
+}
+
+function onMoveMove(event: PointerEvent): void {
+  if (!moveSnapshot) return;
+  if (movePointerId !== null && typeof event.pointerId === "number" && event.pointerId !== movePointerId) {
+    return;
+  }
+  const dx = Number(event.clientX ?? 0) - moveStart.x;
+  const dy = Number(event.clientY ?? 0) - moveStart.y;
+  if (!moveStarted) {
+    // 阈值之内算点击：不改位置，也不进入「拖动中」
+    if (Math.abs(dx) < MOVE_THRESHOLD && Math.abs(dy) < MOVE_THRESHOLD) return;
+    moveStarted = true;
+    moving.value = true;
+  }
+  moveLatest = movedFrame(moveSnapshot, dx, dy);
+  preview.value = moveLatest;
+}
+
+function onMoveUp(event: PointerEvent): void {
+  if (movePointerId !== null && typeof event.pointerId === "number" && event.pointerId !== movePointerId) {
+    return;
+  }
+  const commit = moveStarted ? moveLatest : null;
+  resetMove();
+  if (!commit) return;
+  preview.value = null;
+  applyFrame(commit, { save: true });
+}
+
+function onMoveCancel(): void {
+  cancelMove();
+}
+
+function onMoveKeyDown(event: KeyboardEvent): void {
+  if (event.key === "Escape") cancelMove();
+}
 
 /**
  * 失败事实只属于它自己的话题（契约 §10.1）：
@@ -186,11 +483,10 @@ function discardDisplaced(): void {
 }
 
 /* ------------------------------------------------------------------------
- * 统一过程规则（契约 §14.6）：受理 / 理解 / 理解完成三态 / 失败
+ * 过程状态（契约 §14.6）：默认只留一行「这次到哪一步了」
  *
- * - 没有说明时先出现统一状态，说明随查询结果补上；
- * - 阶段切换后上一阶段收进可展开的历史，同阶段只更新当前说明；
- * - 默认只占一行；理解完成后的审批入口自动展开，不必再找一次。
+ * 板面提交过程的长说明归提交入口（任务书 §4.4）：这里不再渲染 understandingNote /
+ * submitNote，只保留当前这一句与服务端事实（阶段、补充要求、无任务、审批入口）。
  * 这一块只读 store 里服务端给出的事实，不伪造进度。
  * ---------------------------------------------------------------------- */
 const uStatus = computed(() => store.understandingStatus);
@@ -213,12 +509,15 @@ const uOutcome = computed(() => understandingOutcome(uStatus.value));
 const uLive = computed(() => Boolean(uStatus.value) && !understandingSettled(uStatus.value));
 const uCurrent = computed(() => currentUnderstandingStep(store.understanding));
 const uHistory = computed(() => understandingHistory(store.understanding));
-const processVisible = computed(
+/** 只留这一块：有理解状态或正在提交时才占位，不再被「说明文案」撑出来 */
+const processVisible = computed(() => uStatus.value !== null || submitting.value);
+/** 有没有可展开的详情（没有就不给一个点不动的「详情」按钮） */
+const hasProcessDetail = computed(
   () =>
-    uStatus.value !== null ||
-    Boolean(store.submitNote) ||
-    store.submitStatus === "submitting" ||
-    Boolean(store.understandingNote),
+    Boolean(uCurrent.value) ||
+    uHistory.value.length > 0 ||
+    uOutcome.value === "clarification" ||
+    uOutcome.value === "no_action",
 );
 const missingText = computed(() => {
   const missing = store.understanding?.clarification?.missing ?? [];
@@ -280,11 +579,47 @@ async function decideIntent(intent: Intent, decision: "approve" | "reject"): Pro
   }
 }
 
-/** 收起面板时把还没到防抖时间的内容落盘（草稿不清、也不丢） */
+/* ------------------------------------------------------------------------
+ * 收起 / 展开：草稿、光标、滚动位置都要留在原处
+ * ---------------------------------------------------------------------- */
+
+/** 收起时记下的光标位置：重新展开恢复到原处（输入法组合无法跨越销毁-重建，见交付说明） */
+let caretMemory: { start: number; end: number } | null = null;
+/** 收起时记下的阅读位置：用户上翻过就回到那一处，没有就继续跟随最新 */
+let scrollMemory = 0;
+
 watch(
   () => store.chatOpen,
   (open) => {
-    if (!open) session.flushDraft();
+    if (!open) {
+      const input = inputRef.value;
+      caretMemory = input ? { start: input.selectionStart ?? 0, end: input.selectionEnd ?? 0 } : null;
+      scrollMemory = streamRef.value?.scrollTop ?? 0;
+      session.flushDraft();
+      return;
+    }
+    void nextTick(() => {
+      const input = inputRef.value;
+      if (input) {
+        input.focus({ preventScroll: true });
+        if (caretMemory) {
+          const length = input.value.length;
+          input.setSelectionRange(
+            Math.min(caretMemory.start, length),
+            Math.min(caretMemory.end, length),
+          );
+          caretMemory = null;
+        }
+      }
+      autosize();
+      const el = streamRef.value;
+      if (!el) return;
+      if (following.value) {
+        void scrollToBottom(true);
+        return;
+      }
+      el.scrollTop = Math.min(scrollMemory, Math.max(0, el.scrollHeight - el.clientHeight));
+    });
   },
 );
 
@@ -326,7 +661,7 @@ function onUserScroll() {
  */
 function onWindowResize() {
   ignoreScrollUntil = Date.now() + 400;
-  measureToolbar();
+  refreshArea();
   if (following.value) void scrollToBottom(true);
 }
 
@@ -344,46 +679,15 @@ async function scrollToBottom(force = false) {
 watch(() => session.messages.length, () => void scrollToBottom());
 watch(() => session.turnPhase, () => void scrollToBottom());
 
-/**
- * 避让底部工具栏：**量真实工具栏**，而不是猜一个高度。
- *
- * 悬浮聊天在右下角，底部工具栏右端是提交区，两者抢同一个角落。工具栏高度随窗口
- * 换行变化（实测 1440px 下 ~110px、360px 下更高），写死一个值必然在某个宽度上压住提交按钮。
- * 这里用契约里冻结的钩子 [data-im="board-toolbar"] 量它的上边缘，换算成「离视口底部多少」，
- * 通过 --chat-dock-clearance 传给定位；量不到时退回可覆盖的令牌与默认值。
- */
-const dockStyle = ref<Record<string, string>>({});
-
-function measureToolbar() {
-  const el = document.querySelector('[data-im="board-toolbar"]');
-  if (!el) {
-    dockStyle.value = {};
-    return;
-  }
-  const rect = el.getBoundingClientRect();
-  const clearance = Math.max(0, Math.round(window.innerHeight - rect.top)) + 8;
-  /**
-   * 面板最高只能到「工具栏上方剩下的空间」：否则窄窗口里工具栏一高，面板顶部会被挤出视口。
-   *
-   * 独立复核实测（800×600）：工具栏占了下半屏 304px，剩下的空间装不下 220px 的面板 +
-   * 入口按钮，容器顶部被顶到 -193px，聊天内容完全看不到。
-   * 所以这里**不再给 220px 的下限**：空间不够就让面板变矮、由它自己滚动（下限 160px，
-   * 并且预留入口按钮 + 顶部身份栏的高度）。
-   */
-  const panelMax = Math.max(160, Math.round(window.innerHeight - clearance - 112));
-  dockStyle.value = {
-    "--chat-dock-clearance": clearance + "px",
-    "--chat-panel-max-h": panelMax + "px",
-  };
-}
-
 /** 内容或容器尺寸变化时重新贴底（窄窗口换行变多、面板被拉动都算） */
 let resizeObserver: ResizeObserver | null = null;
-/** 工具栏尺寸变化时重新量一次避让值 */
+/** 工具栏尺寸变化时重新量一次可用区域（它会长高，可用高度随之变化） */
 let toolbarObserver: ResizeObserver | null = null;
 
 onMounted(async () => {
-  measureToolbar();
+  // 首帧渲染时父级（标题栏 / 工具栏）可能还没布好局：挂载后按真实可用区域收敛一次
+  refreshArea();
+  readStageOrigin();
   await scrollToBottom(true);
   inputRef.value?.focus({ preventScroll: true });
   // jsdom 里没有 ResizeObserver：没有就跳过（不影响功能，只影响「尺寸变化后自动贴底」）
@@ -397,23 +701,28 @@ onMounted(async () => {
     // 不会再触发回调，画面就停在半截（实测过：390px 下 atBottom 变 false）。
     if (streamRef.value) resizeObserver.observe(streamRef.value);
     if (contentRef.value) resizeObserver.observe(contentRef.value);
-  }
+
     const toolbar = document.querySelector('[data-im="board-toolbar"]');
     if (toolbar) {
-      toolbarObserver = new ResizeObserver(() => measureToolbar());
+      toolbarObserver = new ResizeObserver(() => refreshArea());
       toolbarObserver.observe(toolbar);
     }
+  }
   window.addEventListener("resize", onWindowResize);
 });
 
 onBeforeUnmount(() => {
   // 面板被路由切换卸载：把待保存的草稿落盘（本机写入同步完成，不依赖网络）
   session.flushDraft();
+  // 还在拖动 / 调整尺寸就先恢复，再清理监听；最后撤掉发布出去的显示框
+  cancelMove();
+  cancelResize();
   resizeObserver?.disconnect();
   resizeObserver = null;
   toolbarObserver?.disconnect();
   toolbarObserver = null;
   window.removeEventListener("resize", onWindowResize);
+  publishChatFrame(null);
 });
 
 function autosize() {
@@ -427,6 +736,10 @@ function autosize() {
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_PX) + "px";
 }
 
+function onHelpToggle(event: Event): void {
+  const el = event.target as HTMLDetailsElement | null;
+  helpOpen.value = Boolean(el?.open);
+}
 
 // ---------------------------------------------------------------------------
 // 附件入口（契约 §4.1）：只发送**当前消息 + 明确选定的附件**
@@ -740,207 +1053,201 @@ function onKeydown(event: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="chat-dock" :style="dockStyle">
+  <div class="chat-dock" ref="dockRef" :class="{ moving, open: store.chatOpen }" :style="dockStyle" data-im="chat-dock">
     <section
       v-if="store.chatOpen"
       id="im-chat-panel"
       class="panel"
+      :class="{ resizing }"
+      :style="panelStyle"
       data-im="chat-panel"
       aria-label="与 QIO 对话"
       @wheel.stop
     >
-      <header class="panel-head">
+      <!--
+        尺寸调整：四条边 + 四个角的拖动热区盖住**整块面板**。
+        键盘 −/＋ 放在标题栏里单独一组（见下），两组共用同一个手势层。
+      -->
+      <ResizeHandles :show-keys="false" label="对话窗口尺寸调整" @handle-down="onHandleDown" />
+
+      <!-- 标题栏 = 身份条 + 唯一的移动把手；正文区不参与移动，阅读与输入不被干扰 -->
+      <header class="panel-head" data-im="chat-head" @pointerdown="onHeadPointerDown">
         <span class="panel-title serif">对话</span>
         <span class="panel-status mono" data-im="chat-status">{{ statusText }}</span>
-        <button class="panel-close" type="button" aria-label="收起对话" @click="store.chatOpen = false">
-          收起
-        </button>
+        <div class="panel-tools">
+          <ResizeHandles
+            class="head-keys"
+            :handles="[]"
+            :show-mark="false"
+            label="对话窗口尺寸"
+            @nudge="nudge"
+          />
+          <button
+            class="panel-icon"
+            type="button"
+            data-im="chat-help-toggle"
+            :aria-expanded="helpOpen"
+            @click="helpOpen = !helpOpen"
+          >
+            帮助
+          </button>
+          <button class="panel-close" type="button" data-im="chat-collapse" @click="store.chatOpen = false">
+            收起
+          </button>
+        </div>
       </header>
 
-      <!--
-        常驻只留一句；完整范围说明放进可打开的详情（契约 §10.8）。
-        这里必须是 div：details 是块级元素，放进 p 里是无效 HTML（契约 §11.8 要求修掉）。
-      -->
-      <div class="panel-scope" data-im="chat-scope">
-        <p class="scope-line">文字发送不会提交板面</p>
-        <details class="scope-details">
-          <summary data-im="chat-scope-details">说明</summary>
-          <p class="scope-full">{{ scopeText }}</p>
-        </details>
-      </div>
-
-      <div
-        ref="streamRef"
-        class="stream"
-        data-im="chat-stream"
-        @scroll="onScroll"
-        @wheel.stop="onUserScroll"
-      >
-        <div ref="contentRef" class="stream-inner">
-          <p v-if="!shownMessages.length" class="stream-empty" data-im="chat-empty">
-            还没有消息。这里发送的文字会进入当前 QIO 会话（与对话页是同一个会话）。
-          </p>
-          <p v-else-if="hiddenText" class="stream-older mono" data-im="chat-older">{{ hiddenText }}</p>
-          <MessageItem v-for="message in shownMessages" :key="message.id" :message="message" class="stream-item" />
-        </div>
-      </div>
-
-      <button v-if="!following" class="to-latest" type="button" @click="scrollToBottom(true)">
-        回到最新
-      </button>
-
-      <!--
-        统一过程（契约 §14.6）：受理成功就先出现统一状态「已受理」，说明随查询补上；
-        阶段切换后上一阶段收进可展开的历史；理解完成产出的待审批条目在这里直接展开。
-      -->
-      <div
-        v-if="processVisible"
-        class="process"
-        data-im="chat-process"
-        :data-process-status="uStatus ?? 'none'"
-        :data-process-outcome="uOutcome"
-      >
-        <p class="process-line" role="status">
-          <strong class="process-label" :class="'tone-' + uText.tone" data-im="chat-process-status">
-            {{ uText.label }}
-          </strong>
-          <span class="process-detail" data-im="chat-process-detail" :title="uText.detail">{{ uText.detail }}</span>
-        </p>
-        <!-- 工具 / 阶段记录默认只占一行，历史按需展开 -->
-        <p v-if="uCurrent" class="process-step" data-im="chat-process-step">{{ understandingStepText(uCurrent) }}</p>
-        <p v-if="uOutcome === 'clarification'" class="process-note" data-im="chat-process-missing">
-          需要你补充：{{ missingText }}；这次没有生成任何任务。
-        </p>
-        <p v-else-if="uOutcome === 'no_action'" class="process-note" data-im="chat-process-no-action">
-          这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
-        </p>
-        <p v-if="store.understandingNote" class="process-note" data-im="chat-process-note">
-          {{ store.understandingNote }}
-        </p>
-        <p v-if="store.submitNote" class="process-note" data-im="chat-acceptance-note">{{ store.submitNote }}</p>
-        <div class="process-actions">
-          <button
-            v-if="!submitting && uStatus === 'failed'"
-            class="process-btn"
-            type="button"
-            data-im="chat-process-retry"
-            :disabled="processRefreshing"
-            @click="retryUnderstanding"
-          >
-            {{ processRefreshing ? "重试中…" : "重试理解（从快照恢复）" }}
-          </button>
-          <button
-            v-else-if="!submitting && uLive"
-            class="process-btn"
-            type="button"
-            data-im="chat-process-refresh"
-            :disabled="processRefreshing"
-            @click="refreshUnderstanding"
-          >
-            {{ processRefreshing ? "查询中…" : "刷新理解状态" }}
-          </button>
-          <button
-            v-if="uHistory.length"
-            class="process-btn"
-            type="button"
-            data-im="chat-process-history-toggle"
-            :aria-expanded="processOpen"
-            @click="processOpen = !processOpen"
-          >
-            {{ processOpen ? "收起过程" : "查看过程" }}
-          </button>
-        </div>
-        <ol v-if="processOpen" class="process-history" data-im="chat-process-history">
-          <li v-for="step in uHistory" :key="step.key + '-' + step.label" class="process-history-item">
-            {{ understandingStepText(step) }}
-          </li>
-        </ol>
-        <!-- 审批入口自动展开：批准前不会改动板面 -->
-        <div v-if="pendingApprovals.length" class="approval" data-im="chat-approval">
-          <p class="approval-title">待审批：{{ pendingApprovals.length }} 项（批准前不改动板面）</p>
+      <div class="panel-body">
+        <!-- 中间：连续消息流（正式回答持续流式显示；工具与阶段记录默认简短、详情可展开） -->
+        <div class="stream-wrap">
           <div
-            v-for="intent in pendingApprovals"
-            :key="intent.id"
-            class="approval-row"
-            data-im="chat-approval-item"
-            :data-intent-id="intent.id"
+            ref="streamRef"
+            class="stream"
+            data-im="chat-stream"
+            @scroll="onScroll"
+            @wheel.stop="onUserScroll"
           >
-            <span class="approval-name">
-              <span v-if="intent.demo" class="approval-demo">演示</span>{{ intent.title }}
-            </span>
+            <div ref="contentRef" class="stream-inner">
+              <p v-if="!shownMessages.length" class="stream-empty" data-im="chat-empty">
+                还没有消息。这里发送的文字会进入当前 QIO 会话（与对话页是同一个会话）。
+              </p>
+              <p v-else-if="hiddenText" class="stream-older mono" data-im="chat-older">{{ hiddenText }}</p>
+              <MessageItem v-for="message in shownMessages" :key="message.id" :message="message" class="stream-item" />
+            </div>
+          </div>
+          <!--
+            悬浮在消息区底部：不占布局行、不压输入区；用户上翻时只提示、不自动拉回。
+            消息区底部留出它的高度，最后一屏内容永远能滚到它上面。
+          -->
+          <button v-if="!following" class="to-latest" type="button" data-im="chat-latest" @click="scrollToBottom(true)">
+            回到最新
+          </button>
+        </div>
+
+        <!--
+          过程：默认只留一行（这次到哪一步）；工具与阶段记录收进「过程详情」，
+          审批条目直接可见（批准前不改动板面）。板面提交的长说明归提交入口。
+        -->
+        <div
+          v-if="processVisible"
+          class="process"
+          data-im="chat-process"
+          :data-process-status="uStatus ?? 'none'"
+          :data-process-outcome="uOutcome"
+        >
+          <p class="process-line" role="status">
+            <strong class="process-label" :class="'tone-' + uText.tone" data-im="chat-process-status">
+              {{ uText.label }}
+            </strong>
+            <span class="process-detail" data-im="chat-process-detail" :title="uText.detail">{{ uText.detail }}</span>
             <button
-              class="process-btn"
-              type="button"
-              data-im="chat-approve"
-              :data-intent-id="intent.id"
-              :disabled="processBusy === intent.id || !approveAvailability(intent).allowed"
-              :title="approveAvailability(intent).text"
-              @click="decideIntent(intent, 'approve')"
-            >
-              {{ processBusy === intent.id ? "处理中…" : intent.demo ? "批准（演示）" : "批准" }}
-            </button>
-            <button
+              v-if="hasProcessDetail"
               class="process-btn ghost"
               type="button"
-              data-im="chat-reject"
-              :data-intent-id="intent.id"
-              :disabled="processBusy === intent.id || !rejectAvailability(intent).allowed"
-              :title="rejectAvailability(intent).text"
-              @click="decideIntent(intent, 'reject')"
+              data-im="chat-process-toggle"
+              :aria-expanded="processOpen"
+              @click="processOpen = !processOpen"
             >
-              拒绝
+              {{ processOpen ? "收起详情" : "过程详情" }}
+            </button>
+          </p>
+          <p v-if="uCurrent && !processOpen" class="process-step" data-im="chat-process-step">
+            {{ understandingStepText(uCurrent) }}
+          </p>
+          <div class="process-actions">
+            <button
+              v-if="!submitting && uStatus === 'failed'"
+              class="process-btn"
+              type="button"
+              data-im="chat-process-retry"
+              :disabled="processRefreshing"
+              @click="retryUnderstanding"
+            >
+              {{ processRefreshing ? "重试中…" : "重试理解（从快照恢复）" }}
+            </button>
+            <button
+              v-else-if="!submitting && uLive"
+              class="process-btn"
+              type="button"
+              data-im="chat-process-refresh"
+              :disabled="processRefreshing"
+              @click="refreshUnderstanding"
+            >
+              {{ processRefreshing ? "查询中…" : "刷新理解状态" }}
             </button>
           </div>
+          <template v-if="processOpen">
+            <p v-if="uOutcome === 'clarification'" class="process-note" data-im="chat-process-missing">
+              需要你补充：{{ missingText }}；这次没有生成任何任务。
+            </p>
+            <p v-else-if="uOutcome === 'no_action'" class="process-note" data-im="chat-process-no-action">
+              这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
+            </p>
+            <ol v-if="uHistory.length" class="process-history" data-im="chat-process-history">
+              <li v-for="step in uHistory" :key="step.key + '-' + step.label" class="process-history-item">
+                {{ understandingStepText(step) }}
+              </li>
+            </ol>
+          </template>
+          <!-- 审批入口自动展开：批准前不会改动板面 -->
+          <div v-if="pendingApprovals.length" class="approval" data-im="chat-approval">
+            <p class="approval-title">待审批：{{ pendingApprovals.length }} 项（批准前不改动板面）</p>
+            <div
+              v-for="intent in pendingApprovals"
+              :key="intent.id"
+              class="approval-row"
+              data-im="chat-approval-item"
+              :data-intent-id="intent.id"
+            >
+              <span class="approval-name">
+                <span v-if="intent.demo" class="approval-demo">演示</span>{{ intent.title }}
+              </span>
+              <button
+                class="process-btn"
+                type="button"
+                data-im="chat-approve"
+                :data-intent-id="intent.id"
+                :disabled="processBusy === intent.id || !approveAvailability(intent).allowed"
+                :title="approveAvailability(intent).text"
+                @click="decideIntent(intent, 'approve')"
+              >
+                {{ processBusy === intent.id ? "处理中…" : intent.demo ? "批准（演示）" : "批准" }}
+              </button>
+              <button
+                class="process-btn ghost"
+                type="button"
+                data-im="chat-reject"
+                :data-intent-id="intent.id"
+                :disabled="processBusy === intent.id || !rejectAvailability(intent).allowed"
+                :title="rejectAvailability(intent).text"
+                @click="decideIntent(intent, 'reject')"
+              >
+                拒绝
+              </button>
+            </div>
+          </div>
+          <p v-if="processNote" class="process-note" data-im="chat-process-result">{{ processNote }}</p>
         </div>
-        <p v-if="processNote" class="process-note" data-im="chat-process-result">{{ processNote }}</p>
+
+        <!-- 会话级提示（警告 / 轮次错误 / 失败恢复）：限高滚动，绝不把消息阅读区挤成一行 -->
+        <div class="panel-notices" data-im="chat-notices">
+          <p v-if="sessionWarning" class="notice warn" role="status" data-im="chat-warning">{{ sessionWarning }}</p>
+          <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error">{{ turnError }}</p>
+          <!--
+            失败原因 + 待恢复原文：与对话页共用同一个组件（契约 §11.4），
+            只在原话题出现，不自动写回、不自动重发。长文限高滚动，不挤掉下面的输入行。
+          -->
+          <FailedSendNotice
+            scope="chat"
+            :notice="failureVisible ? failure : ''"
+            :reason="failureVisible ? session.lastError : ''"
+          />
+        </div>
       </div>
 
-      <p v-if="sessionWarning" class="notice warn" role="status" data-im="chat-warning">{{ sessionWarning }}</p>
-      <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error">{{ turnError }}</p>
-      <!--
-        失败原因 + 待恢复原文：与对话页共用同一个组件（契约 §11.4），
-        只在原话题出现，不自动写回、不自动重发。长文限高滚动，不挤掉下面的输入行。
-      -->
-      <FailedSendNotice
-        scope="chat"
-        :notice="failureVisible ? failure : ''"
-        :reason="failureVisible ? session.lastError : ''"
-      />
-      <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank">{{ blankNotice }}</p>
-
-      <p v-if="draftSaveError" class="notice err draft-status" role="alert" data-im="chat-draft-status">
-        <span>{{ draftSaveError }}</span>
-        <button class="draft-retry" type="button" data-im="chat-draft-retry" @click="session.retryDraftSave()">
-          重试保存
-        </button>
-      </p>
-      <p v-else-if="draftStatusText" class="draft-status mono" role="status" data-im="chat-draft-status">
-        {{ draftStatusText }}
-      </p>
-
-      <!-- 11a：被让位的旧草稿（两份都保留，取回 = 与当前文字互换） -->
-      <p v-if="displacedDraft" class="notice displaced" role="status" data-im="chat-displaced-draft">
-        <span>
-          这个话题原来还有一份草稿：{{ displacedSnippet }}
-          <template v-if="displacedCount > 1">（另有 {{ displacedCount - 1 }} 份）</template>
-        </span>
-        <button class="draft-retry" type="button" data-im="chat-displaced-restore" @click="restoreDisplaced">
-          取回（互换）
-        </button>
-        <button class="draft-retry" type="button" data-im="chat-displaced-discard" @click="discardDisplaced">
-          放弃这份
-        </button>
-      </p>
-      <p v-if="displacedNotice" class="draft-status mono" role="status" data-im="chat-displaced-status">
-        {{ displacedNotice }}
-      </p>
-
-      <!--
-        附件入口（契约 §4.1）：只发送**当前消息 + 明确选定的附件**。
-        这里明确不提供「把板面 / 未提交改动 / 未许可文字卡 / 预览内容一起发出去」的入口。
-      -->
-      <div class="attach-box" data-im="chat-attach">
-        <div class="attach-row">
+      <!-- 底部：附件 + 输入 + 发送合成一个输入区（没有附件时不显示附件条） -->
+      <div class="composer" data-im="chat-composer">
+        <div class="attach-tools">
           <button
             class="attach-btn"
             type="button"
@@ -976,7 +1283,7 @@ function onKeydown(event: KeyboardEvent) {
             class="path-input"
             data-im="chat-attach-path"
             type="text"
-            placeholder="粘贴文件的完整路径（例如 D:\\资料\\报告.pdf）"
+            placeholder="粘贴文件的完整路径（例如 D:\资料\报告.pdf）"
             aria-label="附件路径"
             @keydown.enter.prevent="addPath(attachPath)"
           />
@@ -991,31 +1298,38 @@ function onKeydown(event: KeyboardEvent) {
           </button>
         </div>
 
-        <!-- 每个附件一条：外层 div 是稳定的测试钩子（组件内部另有自己的钩子，不混用） -->
-        <div
-          v-for="item in pendingAttachments"
-          :key="item.id"
-          class="attach-item"
-          data-im="chat-attachment"
-          :data-attachment-id="item.id"
-        >
-          <AttachmentChip
-            :attachment="item"
-            :busy="attachBusy"
-            @remove="removeAttachmentAt(item.id)"
-            @retry="retryAttachmentAt(item)"
-            @open="openAttachmentAt(item)"
-            @relocate="relocateAttachmentAt(item)"
-          />
-          <button
-            class="attach-mini"
-            type="button"
-            data-im="chat-attachment-remove"
-            :aria-label="'从这条消息里移除「' + item.name + '」'"
-            @click="removeAttachmentAt(item.id)"
-          >
-            移除
-          </button>
+        <!-- 选定附件之后才出现；多个附件限高滚动，状态 / 移除 / 重试仍然可达 -->
+        <div v-if="pendingAttachments.length" class="attach-strip" data-im="chat-attach-strip">
+          <p class="attach-total mono" data-im="chat-attach-total">
+            {{ pendingAttachments.length }} 个附件<template v-if="attachTotalBytes > 0"> · {{ humanSize(attachTotalBytes) }}</template>
+          </p>
+          <div class="attach-list">
+            <div
+              v-for="item in pendingAttachments"
+              :key="item.id"
+              class="attach-item"
+              data-im="chat-attachment"
+              :data-attachment-id="item.id"
+            >
+              <AttachmentChip
+                :attachment="item"
+                :busy="attachBusy"
+                @remove="removeAttachmentAt(item.id)"
+                @retry="retryAttachmentAt(item)"
+                @open="openAttachmentAt(item)"
+                @relocate="relocateAttachmentAt(item)"
+              />
+              <button
+                class="attach-mini"
+                type="button"
+                data-im="chat-attachment-remove"
+                :aria-label="'从这条消息里移除「' + item.name + '」'"
+                @click="removeAttachmentAt(item.id)"
+              >
+                移除
+              </button>
+            </div>
+          </div>
         </div>
 
         <p v-if="attachHintText" class="attach-note err" role="status" data-im="chat-attach-error">
@@ -1031,44 +1345,90 @@ function onKeydown(event: KeyboardEvent) {
           </button>
         </p>
         <p v-if="attachNotice" class="attach-note mono" role="status" data-im="chat-attach-note">{{ attachNotice }}</p>
-        <p class="attach-hint mono" data-im="chat-attach-hint">
-          <template v-if="attachTotalBytes > 0">{{ humanSize(attachTotalBytes) }} · </template>单个附件上限 {{ humanSize(COPY_MAX_BYTES) }} · 只发送当前消息与这里明确选定的附件
-        </p>
-        <details class="attach-details">
-          <summary data-im="chat-attach-details">QIO 会怎么读这些附件</summary>
-          <p class="attach-hint">{{ MEDIA_CAPABILITY_HINT.image }}</p>
-          <p class="attach-hint">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
-          <p class="attach-hint">{{ MEDIA_CAPABILITY_HINT.video }}</p>
-        </details>
-      </div>
 
-      <div class="input-row">
-        <textarea
-          ref="inputRef"
-          v-model="draft"
-          class="input"
-          data-im="chat-input"
-          rows="2"
-          aria-label="聊天输入"
-          placeholder="和 QIO 说点什么…"
-          @keydown.stop="onKeydown"
-          @input="autosize"
-        ></textarea>
-        <button
-          class="send"
-          type="button"
-          data-im="chat-send"
-          :disabled="!canSubmitNow"
-          :title="session.turnRunning ? '发送（会排队）' : '发送'"
-          @click="submit"
-        >
-          {{ sending ? "发送中…" : "发送" }}
-        </button>
+        <p v-if="draftSaveError" class="notice err draft-status" role="alert" data-im="chat-draft-status">
+          <span>{{ draftSaveError }}</span>
+          <button class="draft-retry" type="button" data-im="chat-draft-retry" @click="session.retryDraftSave()">
+            重试保存
+          </button>
+        </p>
+        <p v-else-if="draftStatusText" class="draft-status mono" role="status" data-im="chat-draft-status">
+          {{ draftStatusText }}
+        </p>
+
+        <!-- 11a：被让位的旧草稿（两份都保留，取回 = 与当前文字互换） -->
+        <p v-if="displacedDraft" class="notice displaced" role="status" data-im="chat-displaced-draft">
+          <span>
+            这个话题原来还有一份草稿：{{ displacedSnippet }}
+            <template v-if="displacedCount > 1">（另有 {{ displacedCount - 1 }} 份）</template>
+          </span>
+          <button class="draft-retry" type="button" data-im="chat-displaced-restore" @click="restoreDisplaced">
+            取回（互换）
+          </button>
+          <button class="draft-retry" type="button" data-im="chat-displaced-discard" @click="discardDisplaced">
+            放弃这份
+          </button>
+        </p>
+        <p v-if="displacedNotice" class="draft-status mono" role="status" data-im="chat-displaced-status">
+          {{ displacedNotice }}
+        </p>
+
+        <div class="input-row">
+          <textarea
+            ref="inputRef"
+            v-model="draft"
+            class="input"
+            data-im="chat-input"
+            rows="2"
+            aria-label="聊天输入"
+            placeholder="和 QIO 说点什么…"
+            @keydown.stop="onKeydown"
+            @input="autosize"
+          ></textarea>
+          <button
+            class="send"
+            type="button"
+            data-im="chat-send"
+            :disabled="!canSubmitNow"
+            :title="session.turnRunning ? '发送（会排队）' : '发送'"
+            @click="submit"
+          >
+            {{ sending ? "发送中…" : "发送" }}
+          </button>
+        </div>
+        <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank">{{ blankNotice }}</p>
+
+        <!--
+          「发送不提交板面」只留一句短提示；完整的可见范围 / 媒体读取方式 / 附件限制 /
+          快捷键都在这个明确可打开的帮助里（顶部「帮助」按钮与这里的摘要都能开）。
+        -->
+        <div class="help" data-im="chat-scope">
+          <details class="help-details" :open="helpOpen" @toggle="onHelpToggle">
+            <summary class="help-summary" data-im="chat-scope-details">
+              <span class="help-hint">文字发送不会提交板面</span>
+              <span class="help-open mono">{{ helpOpen ? "收起帮助" : "帮助：可见范围 · 媒体读取 · 附件限制 · 快捷键" }}</span>
+            </summary>
+            <div class="help-body">
+              <p class="help-line">{{ scopeText }}</p>
+              <p class="help-line mono" data-im="chat-help-attach">
+                附件：单个上限 {{ humanSize(COPY_MAX_BYTES) }}；只发送当前消息与这里明确选定的附件，
+                不带板面、未提交改动、注释与预览内容。
+              </p>
+              <p class="help-line">{{ MEDIA_CAPABILITY_HINT.image }}</p>
+              <p class="help-line">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
+              <p class="help-line">{{ MEDIA_CAPABILITY_HINT.video }}</p>
+              <p class="help-line panel-hint mono" data-im="chat-shortcuts">{{ SHORTCUT_TEXT }}</p>
+              <p class="help-line panel-hint mono">{{ hintText }}</p>
+            </div>
+          </details>
+        </div>
       </div>
-      <p class="panel-hint mono" :title="hintText">Enter 发送 · Shift+Enter 换行 · 中文选字时不发送</p>
     </section>
 
-    <!-- 开关常驻右下角：展开后面板向上生长，入口不会被推到面板顶部 -->
+    <!--
+      入口按钮：收起时就地停在窗口右下角（再点开回到原处），展开时挂到面板下边缘之外。
+      收起只是不渲染面板，不清消息 / 草稿 / 附件归属。
+    -->
     <button
       class="toggle"
       type="button"
@@ -1085,127 +1445,28 @@ function onKeydown(event: KeyboardEvent) {
 </template>
 
 <style scoped>
-/* 附件区：与输入区同一套视觉语言，不加额外装饰 */
-.attach-box {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-  flex: none;
-}
-.attach-row,
-.attach-path-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-}
-.attach-btn {
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-family: var(--sans);
-  color: var(--text-primary);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-1) var(--sp-2);
-  cursor: pointer;
-}
-.attach-btn:hover { background: var(--accent-soft); }
-.attach-btn:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-.attach-btn:disabled { color: var(--text-faint); cursor: not-allowed; }
-.attach-file-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-.attach-path-row .path-input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-family: var(--mono);
-  color: var(--text-primary);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-1) var(--sp-2);
-}
-.attach-note {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-}
-.attach-note.err { color: var(--danger); }
-.attach-mini {
-  font: inherit;
-  font-size: var(--fs-xs);
-  color: var(--link);
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-}
-.attach-hint {
-  margin: 0;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-}
-.attach-details summary {
-  font-size: var(--fs-xs);
-  color: var(--link);
-  cursor: pointer;
-}
-
-/* 外层容器透明：面板外面什么都不铺，能看见后方板面 */
+/*
+  外层容器只是**坐标载体**：位置与尺寸来自 frame（视口坐标换算成舞台内的 left/top）。
+  它自己绝不接收指针事件 —— 收起时容器仍然是 frame 那么大，挡住板面就等于挡掉整块工作区。
+*/
 .chat-dock {
   position: absolute;
-  right: var(--sp-4);
-  /* 抬到底部工具栏上方：运行时量到的值优先，其次 A 可覆盖的令牌，最后默认值 */
-  bottom: calc(var(--sp-4) + var(--chat-dock-clearance, var(--im-toolbar-clearance, 72px)));
-  z-index: 25;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: var(--sp-2);
+  left: 0;
+  top: 0;
+  z-index: var(--im-z-chat, 25);
+  pointer-events: none;
   background: transparent;
   /* 正文与操作一律无衬线（三声部）；标题单独用衬线，数据/时间用等宽 */
   font-family: var(--sans);
 }
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-family: var(--sans);
-  color: var(--on-accent);
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: var(--r-pill);
-  padding: var(--sp-2) var(--sp-4);
-  cursor: pointer;
-  box-shadow: var(--shadow-1);
-}
-.toggle:hover { background: var(--accent-hover); }
-.toggle:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-.toggle-mark { font-size: var(--fs-base); line-height: 1; }
-.toggle-live {
-  font-size: var(--fs-xs);
-  color: var(--on-accent);
-  border-left: 1px solid var(--on-accent);
-  padding-left: var(--sp-2);
-}
+
 /* 面板：令牌里的高透低雾底色（不是不透明整块，也不做重度模糊），能看见后面的板面 */
 .panel {
-  width: min(420px, 92vw);
-  height: min(62vh, 520px, var(--chat-panel-max-h, 520px));
+  position: absolute;
+  left: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -1215,12 +1476,24 @@ function onKeydown(event: KeyboardEvent) {
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
   overflow: hidden;
+  pointer-events: auto;
 }
+
+/*
+  拖动中：位置与尺寸必须**跟手**，任何过渡都会变成「追赶动画」（松手才停下）。
+  这里显式关掉过渡属性，而不是依赖「现在恰好没有写 transition」。
+*/
+.panel.resizing,
+.chat-dock.moving .panel {
+  transition-property: none;
+}
+
+/* --- 标题栏（唯一的移动把手） ------------------------------------------- */
 .panel-head {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: baseline;
-  gap: var(--sp-2);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1) var(--sp-2);
   min-width: 0;
   flex: none;
   /* 标题条局部稳定底色（§12.7）：既有半实色令牌，明暗两主题自动成立 */
@@ -1228,15 +1501,23 @@ function onKeydown(event: KeyboardEvent) {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   box-shadow: var(--shadow-1);
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
+  cursor: grab;
+  /* 触屏上要先把滚动手势交给指针事件，否则拖动会被浏览器当成滚动吃掉 */
+  touch-action: none;
+  user-select: none;
+}
+.chat-dock.moving .panel-head {
+  cursor: grabbing;
 }
 .panel-title {
+  flex: none;
   font-size: var(--fs-md);
   font-weight: 600;
   color: var(--text-strong);
 }
 .panel-status {
-  flex: 1;
+  flex: 1 1 6ch;
   min-width: 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
@@ -1244,6 +1525,32 @@ function onKeydown(event: KeyboardEvent) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.panel-tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+}
+/*
+  标题栏里的 −/＋：ResizeHandles 默认是「盖在宿主右下角、鼠标悬停才浮现」，
+  放进标题栏就要参与排版并一直可见（它本来就是这里的一个入口）。
+*/
+.panel-head :deep(.rz-root) {
+  position: static;
+  inset: auto;
+  flex: none;
+  pointer-events: auto;
+}
+.panel-head :deep(.rz-keys) {
+  position: static;
+  opacity: 1;
+  pointer-events: auto;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.panel-icon,
 .panel-close {
   flex: none;
   font: inherit;
@@ -1254,46 +1561,38 @@ function onKeydown(event: KeyboardEvent) {
   padding: 0;
   cursor: pointer;
 }
-.panel-close:hover { color: var(--accent-hover); }
-.panel-close:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-/*
-  能力边界：常驻一句「文字发送不会提交板面」，完整说明放在可打开的详情里。
-  这里不再用 line-clamp 裁切完整说明（契约 §10.8 / §11.8）：详情是用户自己要打开的，
-  打开后就要能读全。
-*/
-.panel-scope {
-  flex: none;
-  margin: 0;
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-muted);
-  /* 说明条用与标题条一致的稳定底色，长说明展开后也不与板面文字相叠 */
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  box-shadow: var(--shadow-1);
-  padding: var(--sp-2) var(--sp-3);
+.panel-icon:hover,
+.panel-close:hover {
+  color: var(--accent-hover);
 }
-.scope-line {
-  margin: 0;
-}
-.scope-details {
-  margin-top: 2px;
-}
-.scope-details summary {
-  cursor: pointer;
-  color: var(--link);
-}
-.scope-details summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
+.panel-icon:focus-visible,
+.panel-close:focus-visible {
+  outline: 2px solid var(--link);
   outline-offset: 2px;
 }
-.scope-full {
-  margin: var(--sp-1) 0 0;
-  overflow-wrap: anywhere;
+
+/* --- 中间：消息阅读区 ---------------------------------------------------- */
+.panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.stream-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  /*
+    最小尺寸下也要留住消息阅读区：附件 / 帮助 / 错误 / 审批都不许把它压成一行。
+    72px ≈ 三行正文（CHAT_FRAME_MIN 的口径）。
+  */
+  min-height: 72px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 .stream {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1305,6 +1604,8 @@ function onKeydown(event: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* 「回到最新」浮在消息区底部：这里留出它的高度，最后一屏内容永远能滚到它上面 */
+  padding-bottom: 28px;
 }
 /*
   可读性（契约 §10.8）：聊天**外层保持透明**（仍能看见板面），
@@ -1338,6 +1639,12 @@ function onKeydown(event: KeyboardEvent) {
 .stream :deep(.tool-detail-wrap) {
   background: var(--glass-bg);
 }
+/* 不同尺寸下正文自然换行；长文件名 / 表格 / 代码不能撑宽面板（代码只在代码区横向滚动） */
+.stream :deep(.message),
+.stream :deep(.qio-card) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .stream-empty,
 .stream-older {
   margin: var(--sp-2) 0;
@@ -1359,9 +1666,13 @@ function onKeydown(event: KeyboardEvent) {
   只动这一处有操作意义的小字，不全局加深装饰元素。
 */
 .stream-older { color: var(--text-muted); }
+/* 回到最新：悬浮在消息区底部，不单独占布局行，也不压住输入区 */
 .to-latest {
-  align-self: center;
-  flex: none;
+  position: absolute;
+  left: 50%;
+  bottom: var(--sp-2);
+  transform: translateX(-50%);
+  z-index: 2;
   font: inherit;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
@@ -1369,8 +1680,11 @@ function onKeydown(event: KeyboardEvent) {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
   padding: 1px var(--sp-3);
+  box-shadow: var(--shadow-1);
   cursor: pointer;
 }
+.to-latest:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
 /*
   提示条也要有稳定的局部底色（契约 §11.8）：板面后方有密集文字或连线时，
   直接铺在透明面板上的小字会与背景混在一起。这里不整块加不透明背景，
@@ -1389,13 +1703,25 @@ function onKeydown(event: KeyboardEvent) {
 }
 .notice.err { color: var(--danger); }
 .notice.warn { color: var(--warning); }
+/* 会话级提示限高滚动：错误再多也不许把消息阅读区挤掉 */
+.panel-notices {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 30%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
 /*
-  统一过程（契约 §14.6 / §12.7）：状态与说明要有稳定的局部底色，
-  后方板面的长文字不许透上来叠在头上；默认一行，历史与审批列表按需展开。
+  过程（契约 §14.6 / §12.7）：默认一行，详情按需展开；状态与说明要有稳定的局部底色，
+  后方板面的长文字不许透上来叠在头上。
 */
 .process {
-  flex: none;
-  max-height: 40%;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 45%;
   overflow: auto;
   overscroll-behavior: contain;
   display: flex;
@@ -1480,6 +1806,101 @@ function onKeydown(event: KeyboardEvent) {
   color: var(--warning);
   background: var(--warning-soft);
 }
+
+/* --- 底部：附件 + 输入 + 发送（一个输入区） ------------------------------ */
+.composer {
+  flex: 0 1 auto;
+  min-height: 0;
+  /* 输入区内容过多时自己滚动，而不是把消息阅读区顶掉 */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.attach-tools,
+.attach-path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  flex: none;
+}
+.attach-btn {
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-family: var(--sans);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+  cursor: pointer;
+}
+.attach-btn:hover { background: var(--accent-soft); }
+.attach-btn:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.attach-btn:disabled { color: var(--text-faint); cursor: not-allowed; }
+.attach-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.attach-path-row .path-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-family: var(--mono);
+  color: var(--text-primary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2);
+}
+/* 附件条：选定之后才出现；多个附件限高滚动（状态 / 移除 / 重试都在条目里） */
+.attach-strip {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.attach-total {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.attach-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-height: 96px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.attach-note {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.attach-note.err { color: var(--danger); }
+.attach-mini {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
 /* 草稿状态：贴着输入区的一行小字，不抢消息区的空间 */
 .draft-status {
   flex: none;
@@ -1513,6 +1934,7 @@ function onKeydown(event: KeyboardEvent) {
 }
 .draft-retry:hover { border-color: var(--link); }
 .draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
 .input-row {
   flex: none;
   display: flex;
@@ -1557,6 +1979,45 @@ function onKeydown(event: KeyboardEvent) {
 .send:hover:not(:disabled) { background: var(--accent-hover); }
 .send:disabled { opacity: 0.5; cursor: default; }
 .send:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+/*
+  帮助（可见范围 / 媒体读取 / 附件限制 / 快捷键）：一句短提示 + 一个明确可打开的详情。
+  说明条用与标题条一致的稳定底色，展开后也不与板面文字相叠。
+*/
+.help {
+  flex: none;
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-1) var(--sp-2);
+}
+.help-summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  cursor: pointer;
+}
+.help-summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.help-hint { color: var(--text-secondary); }
+.help-open { color: var(--link); }
+.help-body {
+  margin-top: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* 帮助默认是用户主动打开的：给它自己的滚动区，长说明也不撑破面板 */
+  max-height: 180px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.help-line { margin: 0; overflow-wrap: anywhere; }
+
 .panel-hint {
   flex: none;
   margin: 0;
@@ -1572,33 +2033,66 @@ function onKeydown(event: KeyboardEvent) {
   /*
     快捷键说明是最长的一行小字，直接铺在透明面板上时与后方板面文字相叠
     （800×600 暗色实机复测发现，同批 §12.7 口径）：给它一个紧凑的局部底色，
-    明暗两主题都稳定；窄窗口下该行隐藏（既有规则不变）。
+    明暗两主题都稳定。
   */
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   padding: var(--sp-1) var(--sp-2);
 }
+
+/* --- 入口按钮：收起时就地停在窗口右下角，展开时挂到面板下方 ----------------- */
+.toggle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-family: var(--sans);
+  color: var(--on-accent);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-pill);
+  padding: var(--sp-2) var(--sp-4);
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: var(--shadow-1);
+}
+/* 面板展开时入口不盖面板：挂到它的下边缘之外（默认框已经为它留了位置） */
+.chat-dock.open .toggle {
+  bottom: auto;
+  top: calc(100% + var(--sp-1));
+}
+.toggle:hover { background: var(--accent-hover); }
+.toggle:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+.toggle-mark { font-size: var(--fs-base); line-height: 1; }
+.toggle-live {
+  font-size: var(--fs-xs);
+  color: var(--on-accent);
+  border-left: 1px solid var(--on-accent);
+  padding-left: var(--sp-2);
+}
+
 /*
   矮窗口（480×600 这类浏览器边缘档、以及 800×600 的桌面最小窗口）：
-  输入框不必保留整块最大高度 —— 面板里还要同时容下失败恢复块与发送按钮。
-  实机复现过：输入框按 132px 撑满时，恢复块被压到 6px（看不见）或输入行被顶出面板被裁掉。
+  输入框与帮助不必保留整块最大高度 —— 面板里还要同时容下失败恢复块与发送按钮。
 */
 @media (max-height: 700px) {
   .input { max-height: 84px; }
-}
-@media (max-width: 900px) {
-  /* 窄窗口里工具栏会换行变高：默认避让值抬一档（量到真实高度时以量到的为准） */
-  .chat-dock { bottom: calc(var(--sp-4) + var(--chat-dock-clearance, var(--im-toolbar-clearance, 112px))); }
+  .help-body { max-height: 140px; }
 }
 @media (max-width: 560px) {
-  .chat-dock { right: var(--sp-3); left: var(--sp-3); align-items: stretch; }
-  .toggle { align-self: flex-end; }
-  .panel { width: auto; height: min(58vh, 440px, var(--chat-panel-max-h, 440px)); }
-  /*
-    480px 这类窄窗口原先把快捷键说明整行藏掉 —— 那是「信息不可达」，不是重排。
-    实测这一行在 456px 面板宽度下仍能排成 1–2 行（字号 11px、可换行），所以保留它，
-    只在空间真不够时由它自己换行。
-  */
+  /* 窄窗口：面板宽度已经由 frame 收敛，这里只收紧内部留白 */
+  .panel { padding: var(--sp-2); }
+  .panel-head { padding: var(--sp-1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel.resizing,
+  .chat-dock.moving .panel {
+    transition: none;
+  }
 }
 </style>
