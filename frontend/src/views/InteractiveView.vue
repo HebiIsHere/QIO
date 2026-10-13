@@ -61,7 +61,20 @@ const saveTone = computed(() => {
  * 受理 / 正在理解 / 理解完成 / 需要补充 / 本次无需任务 / 理解失败各自有明确文字。
  * 失败可以在原地重试（从这次提交保存的快照恢复），未结束时可以查询最新状态。
  */
-const uText = computed(() => understandingText(store.understanding, store.understandingStatus));
+const uText = computed(() => {
+  /**
+   * 提交成功、但回执没有给出理解请求身份（或查询还没回来）：顶部绝不能说成
+   * 「还没有提交给 QIO」—— 那与提交事实相反。只说本页已知的：已提交，理解状态以服务端为准。
+   */
+  if (!store.understandingStatus && store.submitStatus === "succeeded") {
+    return {
+      label: "已提交，等待理解状态",
+      detail: "这次提交已经记录；回执没有给出理解请求身份，理解状态以服务端记录为准。",
+      tone: "waiting" as const,
+    };
+  }
+  return understandingText(store.understanding, store.understandingStatus);
+});
 const uLive = computed(
   () => Boolean(store.understandingStatus) && !understandingSettled(store.understandingStatus),
 );

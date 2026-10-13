@@ -9,7 +9,7 @@
   - 演示意图必须写明「演示」，批准只表示「成为任务」，不代表已经真的执行成功。
 -->
 <script setup lang="ts">
-import { computed, type CSSProperties } from "vue";
+import { computed, ref, type CSSProperties } from "vue";
 import {
   approveAvailability,
   cardLabel,
@@ -24,6 +24,9 @@ import {
   waitingForLabels,
 } from "../../interactive/approval";
 import type { Intent } from "../../interactive/types";
+import { limitsForArea, type ResizeBox, type ResizeHandle } from "../../interactive/resize";
+import { useResizeGesture } from "../../composables/useResizeGesture";
+import ResizeHandles from "./ResizeHandles.vue";
 
 const props = withDefaults(
   defineProps<{ intent: Intent; allIntents?: Intent[]; active?: boolean; docked?: boolean }>(),
@@ -80,6 +83,96 @@ const executionControlsOnly = computed(
     Boolean(execution.value) &&
     ["queued", "running", "paused"].includes(String(execution.value?.status ?? "")),
 );
+
+/* ------------------------------------------------------------------------
+ * 待审批预览卡的查看尺寸（任务书 §3.1）
+ *
+ * 与板面卡片共用同一套尺寸原语（ResizeHandles + useResizeGesture + resize.ts）：
+ * 八向拖动、键盘 −/＋、拖动中跟手、取消恢复；最小 / 上限由当前可用区域推出来。
+ *
+ * 三个边界：
+ * - 这是**查看**操作：不写板面状态、不产生表达、不申请审批、不调用模型；
+ * - 位置由父组件按板面预览锚点算（position: fixed），这里只叠加**相对锚点**的位移，
+ *   所以拉西 / 北边时左 / 上边跟着走（跟手），而锚点本身不被改写；
+ * - 只在浮条形态（docked）下生效：列表里的完整卡片由列表自己的排布决定宽度。
+ * ---------------------------------------------------------------------- */
+const cardEl = ref<HTMLElement | null>(null);
+const dockSize = ref<{ w: number; h: number } | null>(null);
+const dragSize = ref<{ w: number; h: number } | null>(null);
+const dockOffset = ref<{ x: number; y: number }>({ x: 0, y: 0 });
+/** 最小尺寸：标题 + 状态 + 批准 / 拒绝 / 定位仍然可用 */
+const DOCK_MIN = { w: 280, h: 150 };
+
+const dockLimits = computed(() => {
+  const width = typeof window === "undefined" ? 1440 : window.innerWidth || 1440;
+  const height = typeof window === "undefined" ? 900 : window.innerHeight || 900;
+  // 可用区域扣掉工具栏那一档（96px）与浮条四周的余量；窗口不足时最小值向内收敛
+  return limitsForArea({ w: Math.max(320, width), h: Math.max(240, height - 96) }, DOCK_MIN, 32);
+});
+
+function measuredSize(): { w: number; h: number } {
+  const rect = cardEl.value?.getBoundingClientRect();
+  if (rect && rect.width > 0 && rect.height > 0) {
+    return { w: Math.round(rect.width), h: Math.round(rect.height) };
+  }
+  // 没有布局（jsdom / 首帧）：按样式里的宽度上限与常见高度兜底，保证键盘步进有确定起点
+  return { w: 360, h: 220 };
+}
+
+/** 当前框用**相对锚点**的坐标：父组件给 fixed 的 left/top，位移由 margin 叠加。 */
+function currentBox(): ResizeBox {
+  const size = dragSize.value ?? dockSize.value ?? measuredSize();
+  return { x: dockOffset.value.x, y: dockOffset.value.y, w: size.w, h: size.h };
+}
+
+const {
+  active: resizeActive,
+  onHandleDown: beginResize,
+  nudge: nudgeResize,
+} = useResizeGesture({
+  box: () => currentBox(),
+  limits: () => dockLimits.value,
+  // 浮层在屏幕坐标系：与对话窗口同口径（scale = 1），不乘画布缩放
+  scale: () => 1,
+  onPreview: (box) => {
+    dragSize.value = { w: box.w, h: box.h };
+    dockOffset.value = { x: box.x, y: box.y };
+  },
+  onCommit: (box) => {
+    dockSize.value = { w: box.w, h: box.h };
+    dockOffset.value = { x: box.x, y: box.y };
+    dragSize.value = null;
+  },
+  onCancel: (box) => {
+    // 取消（Esc / 失焦 / 指针取消 / 卸载）回到拖动前那一版
+    dragSize.value = null;
+    dockOffset.value = { x: box.x, y: box.y };
+  },
+});
+
+function onResizeDown(handle: ResizeHandle, event: PointerEvent): void {
+  if (!props.docked) return;
+  beginResize(handle, event);
+}
+
+function onResizeNudge(axis: "w" | "h", direction: 1 | -1): void {
+  if (!props.docked) return;
+  nudgeResize(axis, direction);
+}
+
+/** 尺寸只在浮条形态下生效：宽 / 高与相对锚点的位移都走行内样式（不写任何状态、不排保存）。 */
+const dockFrameStyle = computed<CSSProperties>(() => {
+  if (!props.docked) return {};
+  const style: CSSProperties = {};
+  const size = dragSize.value ?? dockSize.value;
+  if (size) {
+    style.width = Math.round(size.w) + "px";
+    style.height = Math.round(size.h) + "px";
+  }
+  if (dockOffset.value.x) style.marginLeft = Math.round(dockOffset.value.x) + "px";
+  if (dockOffset.value.y) style.marginTop = Math.round(dockOffset.value.y) + "px";
+  return style;
+});
 
 const preview = computed(() => props.intent.preview ?? { cards: [], groups: [], links: [] });
 const hasPreview = computed(
@@ -225,9 +318,10 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 
 <template>
   <article
+    ref="cardEl"
     class="intent-card"
     :class="{ active, docked }"
-    :style="dockedStyle"
+    :style="[dockedStyle, dockFrameStyle]"
     data-im="intent"
     :data-docked="docked ? '1' : '0'"
     :data-intent-id="intent.id"
@@ -417,6 +511,17 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
     </p>
     <p v-else-if="!approve.allowed" class="action-hint">{{ approve.text }}</p>
     <p v-if="docked" class="action-hint docked-note">{{ dockedNote }}</p>
+    <!--
+      浮条的查看尺寸：与卡片同一套把手（八向 + 键盘 −/＋），只改这一处的显示大小，
+      不产生审批、不写板面状态、不调用模型。
+    -->
+    <ResizeHandles
+      v-if="docked"
+      :label="'审批预览：' + intent.title"
+      :visible="resizeActive"
+      @handle-down="onResizeDown"
+      @nudge="onResizeNudge"
+    />
   </article>
 </template>
 
@@ -440,6 +545,8 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 */
 .intent-card.docked {
   position: absolute;
+  /* 尺寸可被用户调整（任务书 §3.1）：内容超出时区内滚动，不把把手顶出去 */
+  overflow: auto;
   z-index: 34;
   width: min(360px, calc(100vw - var(--sp-6)));
   padding: var(--sp-2) var(--sp-3);

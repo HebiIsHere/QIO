@@ -23,6 +23,8 @@ import {
   statusText,
 } from "../../interactive/approval";
 import type { Intent } from "../../interactive/types";
+import { chatObstacleFrame } from "../../interactive/chatFrameState";
+import { OVERLAY_EDGE, planDockStrip, type BoxRect } from "../../interactive/overlayLayout";
 import IntentPreviewCard from "./IntentPreviewCard.vue";
 
 const store = useInteractiveStore();
@@ -179,10 +181,26 @@ const focusedWithExecution = computed<Intent | null>(() => {
   return latest ? { ...intent, execution: latest } : intent;
 });
 
+/**
+ * 还在等待审批的条目（任务书 §5.4）：任务浮层本身只管已批准 / 执行中的任务，
+ * 所以浮条单独把「待审批」也作为来源之一 —— 聊天收起时审批入口仍然可达，
+ * 而且 1~3 项（不够批量列表门槛）也有批准 / 拒绝 / 定位的入口。
+ */
+const pendingApprovals = computed(() =>
+  store.understandingIntents.filter((item) =>
+    ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
+  ),
+);
+
 const focused = computed<Intent | null>(() => {
   const byFocus = focusedId.value ? store.intentById(focusedId.value) : undefined;
   if (byFocus && ["running", "paused"].includes(byFocus.status)) return byFocus;
-  return tasks.value.find((item) => item.status === "running") ?? tasks.value[0] ?? null;
+  return (
+    tasks.value.find((item) => item.status === "running") ??
+    tasks.value[0] ??
+    pendingApprovals.value[0] ??
+    null
+  );
 });
 
 interface Box {
@@ -208,10 +226,23 @@ function overlap(a: Box, b: Box): number {
   return width * height;
 }
 
-/** 现在必须避开的浮层：聊天面板、批量列表整体、底部工具栏 */
+/**
+ * 对话窗口的避让事实以共享桥为准（IRL §7.1）：它已经处理了「收起 = 这块空间可用」，
+ * 也不依赖 ChatDock 的 DOM 钩子（那是 A 的组件，本轮在精简结构）；桥还没发布时
+ * 退回既有 DOM 查询，两者都量不到就不避让 —— 绝不凭空造一个矩形。
+ */
+function chatBox(): Box | null {
+  const frame = chatObstacleFrame();
+  if (frame) {
+    return { left: frame.x, top: frame.y, right: frame.x + frame.w, bottom: frame.y + frame.h };
+  }
+  return boxOf('[data-im="chat-panel"]');
+}
+
+/** 现在必须避开的浮层：对话窗口、批量列表整体、底部工具栏 */
 function avoidBoxes(): Box[] {
   const boxes: Box[] = [];
-  const chat = boxOf('[data-im="chat-panel"]');
+  const chat = chatBox();
   if (chat) boxes.push(chat);
   const batch = boxOf('[data-im="batch-area"]');
   if (batch) boxes.push(batch);
@@ -291,7 +322,15 @@ function measure(): void {
     if (score === 0) break;
   }
   popStyle.value = best;
-  measureDock(avoid, viewWidth, viewHeight);
+  /**
+   * 浮条还要避开**自己这个任务浮层**：多个面板不许互相遮挡。
+   * 只单向避让（浮条避开浮层），浮层的候选位置不看浮条 —— 两个浮层互相避让会来回抖。
+   */
+  const ownBox =
+    own && own.width > 0 && own.height > 0
+      ? { left: own.left, top: own.top, right: own.right, bottom: own.bottom }
+      : null;
+  measureDock(ownBox ? [...avoid, ownBox] : avoid, viewWidth, viewHeight);
 }
 
 /**
@@ -312,49 +351,38 @@ function previewRect(intentId: string): DOMRect | null {
   return best;
 }
 
-/** 审批浮条：贴着预览放，但绝不压住聊天 / 批量列表 / 工具栏 */
+/**
+ * 审批浮条：贴着预览放，但绝不压住聊天 / 批量列表 / 工具栏，也绝不出视口。
+ *
+ * 位置统一交给几何层（overlayLayout.planDockStrip）：四方向贴靠、完全离屏的预览
+ * 不作为锚点、视口约束优先、其次才避让浮层 —— 这几条是与板面定位共用的同一套事实，
+ * 组件里不再写第二份特例（上一版自己算候选，既漏视口夹取，也和几何层的口径不一致）。
+ */
 function measureDock(avoid: Box[], viewWidth: number, viewHeight: number): void {
   const intent = focused.value;
-  const stripWidth = Math.min(360, viewWidth - 40);
-  // 审批浮条的根元素（IntentPreviewCard 的 data-im="intent"）
+  // 审批浮条的根元素（IntentPreviewCard 的 data-im="intent"）：尺寸可能被用户调过，
+  // 所以宽度也从 DOM 量，量不到才退回默认值（jsdom 没有布局）。
   const card = document.querySelector('[data-im="intent"]') as HTMLElement | null;
-  const cardHeight = card && card.getBoundingClientRect().height > 0 ? card.getBoundingClientRect().height : 158;
+  const cardRect = card?.getBoundingClientRect();
+  const stripWidth =
+    cardRect && cardRect.width > 0 ? Math.round(cardRect.width) : Math.min(360, viewWidth - 40);
+  const cardHeight = cardRect && cardRect.height > 0 ? Math.round(cardRect.height) : 158;
   const rect = intent ? previewRect(intent.id) : null;
-
-  const options: CSSProperties[] = [];
-  if (rect) {
-    const center = rect.left + rect.width / 2;
-    const left = Math.min(Math.max(center - stripWidth / 2, 16), viewWidth - stripWidth - 16);
-    // ① 预览下方
-    options.push(fixedAt(left, rect.bottom + 10));
-    // ② 预览上方
-    options.push(fixedAt(left, Math.max(72, rect.top - cardHeight - 10)));
-    // ③ 预览左侧（窄窗口里预览靠右时）
-    options.push(fixedAt(Math.max(16, rect.left - stripWidth - 12), Math.min(rect.top, viewHeight - cardHeight - 16)));
-  }
-  // ④ 退回板面下沿居中
-  options.push({
-    position: "fixed",
-    left: "50%",
-    bottom: "var(--sp-6)",
-    transform: "translateX(-50%)",
-    top: "auto",
+  const anchor: BoxRect | null = rect
+    ? { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+    : null;
+  const toolbar = boxOf('[data-im="board-toolbar"]');
+  const plan = planDockStrip({
+    viewport: { width: viewWidth, height: viewHeight },
+    strip: { width: stripWidth, height: cardHeight },
+    anchor,
+    avoid: avoid.map((box) => ({ left: box.left, top: box.top, right: box.right, bottom: box.bottom })),
+    bottomLimit: toolbar ? toolbar.top : viewHeight - 96,
+    topLimit: 64,
+    edge: OVERLAY_EDGE,
+    gap: 10,
   });
-
-  let best = options[options.length - 1];
-  let bestPenalty = Number.POSITIVE_INFINITY;
-  for (const option of options) {
-    const left = option.left === "50%" ? viewWidth / 2 - stripWidth / 2 : Number.parseFloat(String(option.left)) || 0;
-    const top = String(option.top) === "auto" ? viewHeight - 24 - cardHeight : Number.parseFloat(String(option.top)) || 0;
-    const box: Box = { left, top, right: left + stripWidth, bottom: top + cardHeight };
-    const score = penalty(box, avoid);
-    if (score < bestPenalty) {
-      bestPenalty = score;
-      best = option;
-    }
-    if (score === 0) break;
-  }
-  dockStyle.value = best;
+  dockStyle.value = fixedAt(plan.left, plan.top);
 }
 
 function fixedAt(left: number, top: number): CSSProperties {
