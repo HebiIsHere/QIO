@@ -194,3 +194,39 @@ APPROVAL_REQUIRED 到达 → 队列弹出 → 展示 payload（解释/测试摘�
 - 悬浮球不再是「SVG 图标按钮」：入口小球现在是**全屏 Planet 的压缩态**（`PlanetOrb`，与全屏星球共用
   `frontend/src/planet/sdfRings.ts` 的距离场数学），并与全屏星球构成进入/退出连续体。
 - 记忆/知识面板仍在星球页详情与面板内，对话页只在回答完成后显示高影响知识候选卡。
+
+---
+
+## 8. 滚动与宽度原语（2026-10-14）
+
+### 8.1 用法速查
+
+| 需求 | 用什么 | 要点 |
+| --- | --- | --- |
+| 已经存在的滚动容器要 QIO 指示条 | `v-qio-scrollbar`（`frontend/src/composables/useQioScrollbars.ts`） | 默认 `auto`；`v-qio-scrollbar="'hidden'"` 保留滚动但不画条 |
+| 组件里自己持有 ref | `useQioScrollbars(el, () => ({ policy }))` | 策略可随状态变化（getter） |
+| 新造一层滚动视口 | `QioScrollArea`（`frontend/src/components/ui/QioScrollArea.vue`） | 布局仍由调用方给（`flex: 1` / `min-height: 0`） |
+| 任何不得横向滚动的容器 | `data-qio-fit` | `min-width: 0` + `max-width: 100%` + `overflow-x: clip` |
+| 对话根（普通 / 互动） | `data-qio-scope="chat"` | 启用整套对话适配（换行、软换行代码、媒体适配、按钮重排） |
+| 对话表格 | `MarkdownContent` + `useQioTables` | 表格 / 记录两态，按真实测量切换，共用一份判定 |
+
+### 8.2 组件作者必须知道的约束
+
+- **不要**再写 `::-webkit-scrollbar` 或 `scrollbar-width`：原生外观全局已消除，局部规则只会造成
+  第二套视觉语言。
+- **不要**把指示条覆盖层塞进滚动容器当绝对定位子节点：滚动容器里的 `absolute` 子节点会随内容滚走。
+  共享引擎已经做了反向平移补偿；自己写的覆盖层必须做同样的事，或者干脆不要覆盖层。
+- **不要**用 `overflow-x: hidden` 当横向溢出的唯一修复：先修布局（`min-width: 0`、收缩、换行），
+  再用 `data-qio-fit` 兜边界。`clip` 与 `hidden` 的区别是前者不建立滚动容器。
+- **不要**为了「不出现滚动条」而砍内容：内容必须可读到最后；需要收起时给展开入口。
+- 指示条的位置与显隐由引擎负责，组件不要自己去改 `.qio-scroll-rail` 的样式；
+  要调节的是令牌（`--scroll-*`）或策略。
+- 自定义交互滑块与共享指示条不得同时抓同一个指针操作。
+
+### 8.3 验证入口
+
+- 逻辑 / 行为单测：`frontend/src/composables/__tests__/qioScrollbars.test.ts`、
+  `frontend/src/composables/__tests__/useQioTables.test.ts`、
+  `frontend/src/utils/__tests__/qioTable.test.ts`、`frontend/src/styles/scroll.test.ts`。
+- 真实布局（像素边界、手势、指示条贴合）必须在浏览器 / WebView2 里量，不以源码断言代替。
+
