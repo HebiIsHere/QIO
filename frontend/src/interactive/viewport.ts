@@ -258,3 +258,32 @@ export function pointInRect(point: Point, rect: Rect): boolean {
     finite(point.y, 0) <= rect.y + rect.h
   );
 }
+
+// --- 当前可用板面区域（显示态桥） -------------------------------------------
+//
+// 为什么要有它：底部「添加」菜单（AddMenu）与画布是两个组件。新卡片要落在
+// **画布算出来的可用区域**（已扣平移后的可视起点、自绘标题栏、底部工具栏、对话窗口、
+// 审批浮层）里的空白处 —— 让菜单自己去量 DOM 会得到第二份坐标换算，迟早和画布漂移。
+// 所以画布每次重算就发布一次，需要的人读这一份（与 chatFrameState 同一个模式：
+// 只读显示态，不进板面状态、不产生表达、不排保存）。
+//
+// 还没算过 / 画布没挂载时返回 null：调用方据此回落到既有兜底行为（不传坐标）。
+let liveArea: Rect | null = null;
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+export function publishBoardArea(area: Rect | null): void {
+  // 任何一个数字无效（NaN / 未量到）都不发布：调用方据此回落到既有兜底，而不是拿到一个假区域
+  if (!area || !isFiniteNumber(area.x) || !isFiniteNumber(area.y) || !isFiniteNumber(area.w) || !isFiniteNumber(area.h)) {
+    liveArea = null;
+    return;
+  }
+  liveArea = area.w > 0 && area.h > 0 ? { x: area.x, y: area.y, w: area.w, h: area.h } : null;
+}
+
+/** 当前可用板面区域（板面坐标）的副本；没有发布过时 null。 */
+export function readBoardArea(): Rect | null {
+  return liveArea ? { ...liveArea } : null;
+}
