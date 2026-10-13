@@ -50,10 +50,15 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
 </script>
 
 <template>
+  <!--
+    pointerdown 在本层就止住：同一个指针操作不许既开始尺寸调整、又触发宿主的卡片拖动 / 板面平移 /
+    对话窗口拖动（实际接管的 useResizeGesture 也会 stopPropagation，这里再兜一层，键盘按钮同样适用）。
+  -->
   <div
     class="rz-root"
     :class="{ 'rz-quiet': !props.visible, 'rz-off': props.disabled }"
     data-resize-root="1"
+    @pointerdown.stop
   >
     <template v-if="!props.disabled">
       <span

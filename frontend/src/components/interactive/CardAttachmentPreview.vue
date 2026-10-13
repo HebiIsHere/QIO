@@ -222,6 +222,7 @@ onBeforeUnmount(() => {
   <div
     v-if="attachKind"
     class="card-attach-preview"
+    data-qio-fit
     :class="{ compact }"
     :data-im="'card-attachment-preview'"
     :data-card-id="cardId"

@@ -31,6 +31,8 @@ import {
   setGroupOrdered,
 } from "../../interactive/board";
 import type { BoardState } from "../../interactive/types";
+// 整理菜单的列表滚动走统一策略：滚动能力保留，滚动条外观用 QIO 指示条（不占布局列）。
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const props = defineProps<{
   /** 面板向工具栏上方展开（工具栏在卡片上方时），避免盖住卡片标题、连接点与正文 */
@@ -315,6 +317,10 @@ function deleteSelected(): void {
       整理
     </button>
 
+    <!--
+      菜单面板：纵向可滚（max-height 由 placePanel 按真实可用区域算），
+      data-qio-fit 兜住横向 —— 长组名 / 长说明只换行与省略，绝不产生横向滚动条。
+    -->
     <div
       v-if="open"
       ref="panel"
@@ -322,8 +328,10 @@ function deleteSelected(): void {
       :class="place"
       :style="panelStyle"
       data-im="selection-menu-list"
+      data-qio-fit
       role="menu"
       aria-label="整理所选对象"
+      v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
       @wheel.stop
     >
       <p class="head" data-im="selection-count">{{ selectionText }}</p>
@@ -399,7 +407,9 @@ function deleteSelected(): void {
   gap: var(--sp-1);
   width: min(272px, calc(100vw - var(--sp-6)));
   max-height: min(320px, 52vh);
+  /* 纵向才是滚动方向；横向由 data-qio-fit 兜边界（长文案换行 / 省略，不横向滚） */
   overflow-y: auto;
+  overflow-x: hidden;
   padding: var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
@@ -425,6 +435,8 @@ function deleteSelected(): void {
   flex-direction: column;
   gap: 1px;
   text-align: left;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font: inherit;
   font-size: var(--fs-sm);
   color: var(--text-primary);
@@ -437,8 +449,8 @@ function deleteSelected(): void {
 .item:hover { background: var(--bg-surface); border-color: var(--border-subtle); }
 .item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .item.danger { color: var(--danger); }
-.hint { font-size: var(--fs-xs); color: var(--text-muted); }
-.select-item { cursor: default; }
+.hint { font-size: var(--fs-xs); color: var(--text-muted); overflow-wrap: anywhere; }
+.select-item { cursor: default; min-width: 0; }
 .select-item select {
   font: inherit;
   font-size: var(--fs-xs);
@@ -448,6 +460,7 @@ function deleteSelected(): void {
   border-radius: var(--r-xs);
   padding: 1px var(--sp-1);
   max-width: 100%;
+  min-width: 0;
 }
-.notice { margin: var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-tight); }
+.notice { margin: var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-tight); overflow-wrap: anywhere; }
 </style>

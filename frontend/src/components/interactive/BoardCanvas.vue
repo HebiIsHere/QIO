@@ -67,6 +67,7 @@ import {
   type LayoutRect,
 } from "../../interactive/cardLayout";
 import { useResizeGesture } from "../../composables/useResizeGesture";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { chatObstacleFrame } from "../../interactive/chatFrameState";
 import type { ResizeBox, ResizeHandle, SizeLimits } from "../../interactive/resize";
 import { titlebarHeight } from "../../utils/titlebar";
@@ -1746,9 +1747,18 @@ onBeforeUnmount(() => {
     </p>
 
     <div class="board-main">
+      <!--
+        板面滚动区：策略 **hidden**（统一滚动规则）。
+        - 原生滚动条与 QIO 指示条都不出现（板面上已经有「拖动空白处平移」这条显式手势，
+          再画一条指示条只会占住卡片边缘）；
+        - 但滚动能力一个不少：overflow 仍是 auto，scrollLeft / scrollTop、平移、滚轮缩放、
+          定位与坐标换算（canScroll / insideScrollable 读的是 computed overflow）全部照旧。
+        不要为了「藏滚动条」改成 overflow: hidden / clip —— 那会连程序性滚动一起去掉。
+      -->
       <div
         ref="viewportEl"
         class="board-viewport"
+        v-qio-scrollbar="'hidden'"
         :class="{ dragging: Boolean(dragging), panning: Boolean(panning), framing: Boolean(rectSelect) }"
         @pointerdown="onSurfacePointerDown"
       >
@@ -1890,12 +1900,19 @@ onBeforeUnmount(() => {
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
 .banner.view-hint { color: var(--text-faint); }
 .board-main { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
+/*
+  板面滚动区：overflow 仍是 auto（滚动能力保留），滚动条外观由统一规则去掉：
+  v-qio-scrollbar="'hidden'" 补上 .qio-scroll-host 与 data-qio-scroll="hidden"，
+  引擎在 hidden 策略下**完全不建指示条、不挂监听**，data-qio-range 固定 none。
+  坐标系与手势读的都是 computed overflow（见 canScroll / insideScrollable），不受影响。
+*/
 .board-viewport {
   position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   background: var(--bg-inset);
   touch-action: none;
 }
