@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-13（**v0.2.4 已发布**，tag 指向构建提交 `1755c105`：修掉互动模式「添加图片 / 添加文件」附件上传被 CORS 预检挡住，见 `docs/releases/v0.2.4.md`；v0.2.3 的无边框窗口与自绘标题条、媒体交付缺口修复见 `docs/releases/v0.2.3.md` 与 P38；再上一轮统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。核对方法见文末。
+最后核对：2026-10-13（**v0.2.4 已发布**（tag 指向 `1755c105`），本轮在此之上做**互动空间结构与自由尺寸调整**：卡片与互动对话窗口都能自由调整尺寸并持久化，见 P36；上一轮统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。核对方法见文末。
 
 ---
 
@@ -4277,3 +4277,43 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   （每次模型调用都带着图片 / 没有能力位时在提示词里如实说明）。
 - 受影响套件（媒体族 + 互动材料 + 视觉 + 冻结产物打包 + 新用例）共 96 条全过。
 - 尚未在真机安装版上复验（需要出 0.2.3 并走发布闸门）。
+### P36 — 互动空间结构与自由尺寸调整（2026-10-13 第十一轮）
+
+- **Status：** completed
+- **Implementation：** 卡片与互动对话窗口都能自由调整尺寸（四条边 + 四个角 + 键盘 −/＋），
+  尺寸调整只改布局与查看 —— 不产生表达 / 意图 / 审批 / 模型调用，不取消持续许可，不动草稿与阅读状态。
+  - 公共原语：`frontend/src/interactive/resize.ts`（八向算术、最小/最大夹紧、恢复收敛、新卡落点）、
+    `frontend/src/composables/useResizeGesture.ts`（指针手势；取消即恢复：指针取消 / Esc / 失焦 / 卸载）、
+    `frontend/src/components/interactive/ResizeHandles.vue`（四边四角热区 + 右下角克制标记 + 键盘可达的 −/＋）、
+    `frontend/src/interactive/chatFrame.ts`（对话窗口位置/尺寸按**板面身份**绑定的本机偏好）、
+    `frontend/src/interactive/chatFrameState.ts`（显示框共享桥）、
+    `frontend/src/interactive/overlayAvoid.ts`（浮层互相让开的带宽几何）。
+  - **卡片常态尺寸就是板面状态的 `card.w/h`**：常态提交 `{x, y, w, h}`；展开中或被让位时只提交 `{w, h}`，
+    临时槽位坐标**绝不**写回板面。后端 `submission.py` 的 `_card_meaning` 不含位置/大小，
+    纯几何变化归入 `DISPLAY_ONLY_EXPRESSIONS`（`layout_only`），因此不产生意图。
+  - 展开让位 / 组框 / 关系线共用**同一份显示坐标**（`frontend/src/interactive/cardLayout.ts` 的
+    `planExpandedLayout` + `frontend/src/components/interactive/BoardCanvas.vue` 的
+    `displayCards` / `displayGroups`）；展开卡之间互相避让，被让位的卡片之间出现的新碰撞再迭代化解。
+    可用区域扣掉平移/滚动后的可视起点、缩放、自绘标题栏、底部工具栏、对话窗口
+    （`chatObstacleFrame()`）与审批浮层。
+  - 新卡落点改为「当前可见范围的空白位置」（`findFreeSlot` / `planNewCardSlot`），不再按固定四列 + 数量取模。
+  - 对话窗口精简为「标题 + 一句运行状态 + 尺寸调整 + 帮助 + 收起 / 连续消息流 / 一个输入区」；
+    「发送不提交板面」是短提示，完整可见范围、媒体读取、附件限制与快捷键进帮助面板。
+  - 板面提交状态只显示**最新**事实，旧阶段进可展开历史；待审批时提交区的审批入口无需展开详情即可操作。
+- **Tests：** `frontend/src/interactive/__tests__/`（resize / chatFrame / chatFrameState / overlayAvoid /
+  irl-c-layout / irl-c-overlay-chat-frame / irl-verify-resize / irl-verify-chatframe）、
+  `frontend/src/composables/__tests__/`（useResizeGesture / irl-verify-gesture）、
+  `frontend/src/components/interactive/__tests__/`（resizeHandles / irl-lead-tray-avoid / irl-a-chatDock /
+  irl-b-card-states / irl-c-canvas / irl-c-new-card / irl-d-submit-status / irl-d-approval-access /
+  irl-verify-handles）、`frontend/src/stores/__tests__/irl-d-status-identity.test.ts`。
+  真实应用验收脚本 `scripts/verify-irl-shots.mjs`，截图在 `docs/verification-shots/irl/`。
+- **Known limitations：** 真实应用检查在 Windows 无头 Edge + dev server 上完成，
+  **未在打包后的桌面窗口上复验**（0.2.3 自绘标题栏的真实高度、真实 PointerEvent / 触控、
+  输入法组合跨「收起销毁 / 展开重建」都未实测）；临时显示布局（展开或被让位）里的西 / 北把手按左上角锚定，
+  折叠卡片与部分 `height: auto` 状态不摆把手；对话窗口的位置与尺寸是本机偏好（按板面身份绑定），
+  不做跨设备同步；假厂商端到端对话本轮未跑，审批与聊天过程只做了结构与状态复核；
+  `frontend/src/components/__tests__/AttachmentActions.test.ts` 里那条 Composer chip 用例在
+  `origin/main` 上**同样失败**（已在基线工作树复现），与本轮无关，未修改。
+- **后续依赖：** 打包桌面窗口的真实避让复验、多设备尺寸偏好同步、把尺寸偏好写进服务端用户数据，
+  这三件事从 `docs/interactive-mode-contract.md` §15 的边界接手。
+

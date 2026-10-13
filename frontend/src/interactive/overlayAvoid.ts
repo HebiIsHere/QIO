@@ -42,7 +42,10 @@ export function widestFreeBand(
     .filter((item) => item.right > full.left && item.left < full.right)
     .sort((a, b) => a.left - b.left);
 
-  if (!active.length) return { left: Math.min(full.left, full.right), right: Math.max(full.left, full.right) };
+  // 带本身就是空的（left === right）：返回 null 而不是一条宽度 0 的带 ——
+  // 调用方按「没位置」处理（IRL-E 的第二阶段复核 F-G2）。
+  if (full.right <= full.left) return null;
+  if (!active.length) return { left: full.left, right: full.right };
 
   // 从最左的障碍开始扫，记录每两个障碍之间的空隙，以及两端剩余的空间。
   let cursor = full.left;
