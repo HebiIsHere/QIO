@@ -656,3 +656,122 @@ describe("hitCardAt 认显示矩形：展开 / 让位 / resize / 平移缩放之
     expect(store.board?.links).toHaveLength(0);
   });
 });
+
+describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 / 合并提示 / 缩放锚点", () => {
+  /** 让 .board-surface 的矩形与真实浏览器一致：内容原点 = 容器左上 − 滚动量。 */
+  function stubSurfaceRect(view: VueWrapper): void {
+    const viewport = view.get(".board-viewport").element as HTMLElement;
+    const surface = view.get(".board-surface").element as HTMLElement;
+    surface.getBoundingClientRect = () =>
+      ({ left: VIEW_LEFT - viewport.scrollLeft, top: VIEW_TOP - viewport.scrollTop, right: VIEW_LEFT - viewport.scrollLeft, bottom: VIEW_TOP - viewport.scrollTop, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  }
+
+  it("平移之后框选：选中的是指针真正框住的卡片（滚动量不再被多减一次）", async () => {
+    // c 正好落在「多减一次滚动量」时会算出来的错误矩形里：修复前会误选 c、漏掉 a
+    store.board = board([mkCard("a", 900, 700), mkCard("c", 1700, 1300), mkCard("far", 200, 200)], { selection: [] });
+    const view = mountCanvas();
+    const element = view.get(".board-viewport").element as HTMLElement;
+    makeScrollable(element, 800, 600);
+    element.dispatchEvent(new Event("scroll"));
+    await nextTick();
+    expect(viewState()).toMatchObject({ scale: 1, scrollLeft: 800, scrollTop: 600 });
+
+    // 空格 + 拖动空白处 = 框选（手势固定，不需要切换模式）
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true }));
+    const state = viewState();
+    const from = screenOf(880, 680, state);
+    const to = screenOf(1020, 780, state);
+    element.dispatchEvent(pointer("pointerdown", from.x, from.y));
+    window.dispatchEvent(pointer("pointermove", to.x, to.y));
+    await nextTick();
+    window.dispatchEvent(pointer("pointerup", to.x, to.y));
+    await nextTick();
+
+    // 板面 (880,680)-(1020,780) 只框住 a：框选矩形不会因为平移而整体偏移
+    expect(store.board?.selection).toEqual(["a"]);
+    expect(labels.filter((label) => label.includes("框选"))).toHaveLength(1);
+    expect(wrapper!.text()).toContain("140×100");
+    window.dispatchEvent(new KeyboardEvent("keyup", { key: " ", code: "Space", bubbles: true }));
+  });
+
+  it("平移之后：局部工具栏仍贴着选中卡片（相对卡片的屏幕位置正确）", async () => {
+    store.board = board([mkCard("a", 900, 700)], { selection: ["a"] });
+    const view = mountCanvas();
+    const element = view.get(".board-viewport").element as HTMLElement;
+    makeScrollable(element, 800, 600);
+    stubSurfaceRect(view);
+    element.dispatchEvent(new Event("scroll"));
+    await nextTick();
+
+    // 在平移后的画面上单击这张卡：工具栏按当下的视口重新定位（与真实操作同一条刷新路径）
+    const state = viewState();
+    const press = screenOf(950, 730, state);
+    cardEl("a")!.dispatchEvent(pointer("pointerdown", press.x, press.y));
+    window.dispatchEvent(pointer("pointerup", press.x, press.y));
+    await nextTick();
+
+    const card = rectOf(cardEl("a"));
+    const toolbar = styleOf(view.get('[data-im="card-toolbar"]').element);
+    const surfaceLeft = VIEW_LEFT - state.scrollLeft;
+    const surfaceTop = VIEW_TOP - state.scrollTop;
+    // 缩放为 1：工具栏行内坐标与板面单位一一对应，且它的屏幕位置要贴着卡片的左上角
+    expect(px(toolbar.left)).toBeCloseTo(card.x, 0);
+    expect(surfaceLeft + px(toolbar.left)).toBeCloseTo(screenOf(card.x, card.y, state).x, 0);
+    // 竖直方向：工具栏在卡片上方（不压卡片顶边），间距 ≈ 量到的工具栏高度 + 10
+    const gap = card.y - px(toolbar.top);
+    expect(gap).toBeGreaterThanOrEqual(2);
+    expect(gap).toBeLessThanOrEqual(14);
+    expect(surfaceTop + px(toolbar.top)).toBeLessThan(screenOf(card.x, card.y, state).y);
+  });
+
+  it("平移之后：合并提示仍贴在目标卡片上方（相对卡片的屏幕位置正确）", async () => {
+    store.board = board([mkCard("a", 830, 700), mkCard("b", 1000, 700)]);
+    const view = mountCanvas();
+    const element = view.get(".board-viewport").element as HTMLElement;
+    makeScrollable(element, 800, 600);
+    element.dispatchEvent(new Event("scroll"));
+    await nextTick();
+    const state = viewState();
+
+    // 把 a 拖到完全盖住 b：出现「松开后合并成组」提示
+    const a = rectOf(cardEl("a"));
+    const press = screenOf(a.x + a.w / 2, a.y + a.h / 2, state);
+    cardEl("a")!.dispatchEvent(pointer("pointerdown", press.x, press.y));
+    await nextTick();
+    moveTo(1000 + a.w / 2, a.y + a.h / 2);
+    await nextTick();
+    const hint = view.get('[data-im="group-merge-hint"]');
+    expect(hint.attributes("data-target-card-id")).toBe("b");
+
+    const b = rectOf(cardEl("b"));
+    const bClient = screenOf(b.x, b.y, viewState());
+    const hintStyle = styleOf(hint.element);
+    // 提示左边缘对齐目标卡片左边缘；底边在卡片上方 34px（都是屏幕坐标，缩放为 1）
+    expect(VIEW_LEFT + px(hintStyle.left)).toBeCloseTo(bClient.x, 0);
+    expect(bClient.y - (VIEW_TOP + px(hintStyle.top))).toBeCloseTo(34, 0);
+
+    const drop = screenOf(1000 + a.w / 2, a.y + a.h / 2, viewState());
+    window.dispatchEvent(pointer("pointerup", drop.x, drop.y));
+    await nextTick();
+  });
+
+  it("平移之后滚轮缩放：指针下的板面点留在同一屏幕位置（锚点不漂）", async () => {
+    store.board = board([mkCard("a", 500, 400)]);
+    const view = mountCanvas();
+    const element = view.get(".board-viewport").element as HTMLElement;
+    makeScrollable(element, 400, 300);
+    element.dispatchEvent(new Event("scroll"));
+    await nextTick();
+    const before = viewState();
+    expect(before.scale).toBe(1);
+    const anchor = screenOf(500, 400, before);
+
+    element.dispatchEvent(new WheelEvent("wheel", { clientX: anchor.x, clientY: anchor.y, deltaY: -462, deltaMode: 0, bubbles: true, cancelable: true }));
+    await nextTick();
+    const after = viewState();
+    expect(after.scale).toBeGreaterThan(1.9);
+    // 不变量：指针下的板面点 (500,400) 缩放后仍在同一屏幕位置（与 viewport.test.ts 的同一条口径）
+    expect(VIEW_LEFT + 500 * after.scale - after.scrollLeft).toBeCloseTo(anchor.x, 0);
+    expect(VIEW_TOP + 400 * after.scale - after.scrollTop).toBeCloseTo(anchor.y, 0);
+  });
+});
