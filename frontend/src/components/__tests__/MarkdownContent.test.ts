@@ -118,12 +118,50 @@ describe("MarkdownContent 长内容与代码块（任务02 §8/§9）", () => {
     w.unmount();
   });
 
-  it("表格包在可横向滚动的容器里（窄窗口不撑破气泡）", () => {
+  it("表格不再包在可横向滚动的容器里（用户规则：对话内任何层级都不允许横向滚动）", () => {
     const w = mount(MarkdownContent, {
       props: { source: "| a | b |\n| --- | --- |\n| 1 | 2 |" },
     });
-    expect(w.find(".table-wrap").exists()).toBe(true);
-    expect(w.find(".table-wrap table").exists()).toBe(true);
+    const wrap = w.find(".table-wrap");
+    expect(wrap.exists()).toBe(true);
+    expect(wrap.find("table").exists()).toBe(true);
+    // 记录模式 / 表格模式由 useQioTables 按**实际可用宽度**切换；容器本身带 data-qio-fit
+    expect(wrap.classes()).toContain("qio-table-wrap");
+    expect(wrap.attributes("data-qio-fit")).toBeDefined();
+    expect(wrap.attributes("data-mode")).toBe("table");
+    w.unmount();
+  });
+
+  it("表格的列身份完整：表头 id/scope、单元格 headers 与备用列名（空/重复表头）", () => {
+    const w = mount(MarkdownContent, {
+      props: { source: "| 名称 |  | 名称 |\n| --- | --- | --- |\n| a | b | c |" },
+    });
+    const ths = w.findAll("th");
+    expect(ths).toHaveLength(3);
+    expect(ths[0].attributes("scope")).toBe("col");
+    expect(ths[0].attributes("id")).toMatch(/^qio-t\d+-c1$/);
+    // 空表头与重复表头都有可区分的备用名称（不拿列名当唯一键）
+    expect(ths[0].attributes("data-label")).toBe("名称（第 1 列）");
+    expect(ths[1].attributes("data-label")).toBe("第 2 列");
+    expect(ths[2].attributes("data-label")).toBe("名称（第 3 列）");
+    const tds = w.findAll("td");
+    expect(tds[0].attributes("headers")).toBe(ths[0].attributes("id"));
+    expect(tds[1].attributes("data-label")).toBe("第 2 列");
+    expect(w.find("caption").exists()).toBe(true);
+    w.unmount();
+  });
+
+  it("代码块软换行不改变字符序列：复制出来的仍是原文（不插换行、不改缩进）", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const longLine = "const value = '" + "x".repeat(300) + "';";
+    const fence = "```";
+    const src = fence + "js\n" + longLine + "\n  indented();\n" + fence;
+    const w = mount(MarkdownContent, { props: { source: src } });
+    // DOM 文本逐字一致（视觉折行只发生在 CSS 层）
+    expect(w.find("pre code").text()).toBe(longLine + "\n  indented();");
+    await w.find(".code-copy").trigger("click");
+    expect(writeText).toHaveBeenCalledWith(longLine + "\n  indented();");
     w.unmount();
   });
 

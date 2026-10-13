@@ -448,7 +448,8 @@ export function createQioScrollbars(
     host.classList.remove("is-qio-scroll-dragging");
   }
 
-  if (!paused) attach();
+  if (paused) applyRange("none");
+  else attach();
 
   return {
     refresh: scheduleMeasure,
