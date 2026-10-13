@@ -374,9 +374,14 @@ def _media_candidate_entry(
             None,
         )
 
+    # 媒体类型必须按**真实文件名**判断：shown 是展示标签（_snippet 只留 24 字符），
+    # 长文件名会被截断成「…」，扩展名跟着丢 —— 图片会因此被判成「无法确认媒体类型」而
+    # 不交付；音频/视频只是被通配类型兜底救了（2026-10-13 用真实附件实测发现）。
+    media_name = str(candidate.get("name") or shown)
     if kind == "audio":
         entry, blocks = _audio_entry(
             card, path, bytes_=bytes_, attachment_id=attachment_id, shown=shown,
+            media_name=media_name,
             supports_audio=bool(supports_audio), audio_transcription=audio_transcription,
             transcriber=transcriber, version=version, limit_bytes=limit_bytes,
             work_dir=work_dir,
@@ -385,11 +390,13 @@ def _media_candidate_entry(
     if kind == "image":
         return _image_candidate_entry(
             card, path, bytes_=bytes_, attachment_id=attachment_id, shown=shown,
+            media_name=media_name,
             supports_images=bool(supports_images), version=version,
         )
     if kind == "video":
         return _video_entry(
             card, path, bytes_=bytes_, attachment_id=attachment_id, shown=shown,
+            media_name=media_name,
             supports_images=bool(supports_images), supports_video=bool(supports_video),
             version=version, frames_wanted=frames_wanted, cap_notes=cap_notes,
             max_edge=max_edge, limit_bytes=limit_bytes, work_dir=work_dir,
@@ -447,6 +454,7 @@ def _audio_entry(
     bytes_: int,
     attachment_id: str | None,
     shown: str,
+    media_name: str = "",
     supports_audio: bool,
     audio_transcription: str | None,
     transcriber: Callable[..., dict] | None,
@@ -488,7 +496,7 @@ def _audio_entry(
                 ),
                 [],
             )
-        media_type = _audio_media_type(shown)
+        media_type = _audio_media_type(media_name or shown)
         data_url = _file_data_url(path, media_type)
         if data_url is None:
             return (
@@ -820,6 +828,7 @@ def _image_candidate_entry(
     bytes_: int,
     attachment_id: str | None,
     shown: str,
+    media_name: str = "",
     supports_images: bool,
     version: str,
     max_image_bytes: int = MAX_IMAGE_BYTES,
@@ -829,7 +838,7 @@ def _image_candidate_entry(
     与音频 / 视频同一条规则：能力位是唯一事实来源 —— 没有视觉能力就 `image_unsupported`
     并点明「当前模型链路没有视觉能力」，绝不猜画面；超过上限也不截断（半张图会给出错的画面）。
     """
-    media_type = _image_media_type(shown)
+    media_type = _image_media_type(media_name or shown)
     if not media_type:
         return (
             _media_entry(
@@ -912,6 +921,7 @@ def _video_entry(
     bytes_: int,
     attachment_id: str | None,
     shown: str,
+    media_name: str = "",
     supports_images: bool,
     supports_video: bool,
     version: str,
@@ -940,7 +950,7 @@ def _video_entry(
             )
         from agent.adapters.base import VideoPart
 
-        media_type = _video_media_type(shown)
+        media_type = _video_media_type(media_name or shown)
         data_url = _file_data_url(path, media_type)
         if data_url is None:
             return (

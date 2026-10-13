@@ -271,3 +271,77 @@ async def test_conversation_turn_without_vision_says_so_in_the_prompt(tmp_path: 
     first = adapter.calls[0][0]
     assert not first.images, "没有视觉能力就不许把图片当内容块交付"
     assert "没有视觉能力" in (first.content or ""), first.content
+
+
+# --- 5. 最后一跳：内容块真的变成请求里的 image_url --------------------------
+
+
+def test_delivered_image_becomes_an_image_url_block_in_the_request(tmp_path: Path):
+    """交付的内容块必须真的变成 OpenAI 请求里的 image_url 块（不是只挂在 message 上）。"""
+    from agent.adapters import native
+    from agent.adapters.base import ChatMessage as Msg
+
+    source = _png(tmp_path)
+    out = _resolve([_candidate(source)], images=True)
+    message = Msg(role="user", content="这是什么", images=list(out["parts"]))
+
+    payload = native._openai_content(message)
+
+    assert isinstance(payload, list), payload
+    assert payload[0]["type"] == "text", payload
+    image_blocks = [b for b in payload if b["type"] == "image_url"]
+    assert len(image_blocks) == 1, payload
+    data_url = image_blocks[0]["image_url"]["url"]
+    head, _, encoded = data_url.partition(",")
+    assert head == "data:image/png;base64"
+    assert base64.b64decode(encoded) == source.read_bytes(), "请求里的字节必须与文件一致"
+
+
+def test_message_without_images_keeps_the_plain_string_shape():
+    """没有图片的消息形状逐字不变（只认字符串的端点不受影响）。"""
+    from agent.adapters import native
+    from agent.adapters.base import ChatMessage as Msg
+
+    assert native._openai_content(Msg(role="user", content="只有文字")) == "只有文字"
+
+
+# --- 6. 真实附件名的形状：长名字被展示层截断，不许影响媒体类型 ------------
+
+
+def test_long_hash_style_name_still_resolves_the_media_type(tmp_path: Path):
+    """真实副本名很长（哈希 + 原名，这里 52 字符）：展示标签只留 24 字符 + 「…」，
+    媒体类型必须按**真实文件名**判断 —— 否则图片会被判成「无法确认媒体类型」而拒绝交付。
+    （2026-10-13 用线上那张 65KB .jpeg 实测到的第二个坑。）"""
+    long_name = "f66a6ab18a08b3a87ae0e7689601319b_7305592917545852020.jpeg"
+    source = _jpeg(tmp_path, long_name)
+
+    out = _resolve([_candidate(source)], images=True)
+
+    entry = out["entries"][0]
+    assert entry["source"] == "image_delivered", entry
+    assert len(out["parts"]) == 1, out["parts"]
+    head, _, payload = out["parts"][0].data_url.partition(",")
+    assert head == "data:image/jpeg;base64", head
+    assert base64.b64decode(payload) == source.read_bytes()
+
+
+def test_long_name_audio_gets_a_real_media_type_not_a_wildcard(tmp_path: Path):
+    """同一条规则也管音频：长名字不再依赖通配类型兜底。"""
+    source = _write(tmp_path, ("9f1c" * 12) + "_recording.wav", b"RIFF" + bytes(64))
+    candidate = _candidate(source, kind="audio")
+
+    out = materials.resolve_media(
+        candidates=[candidate],
+        supports_images=False,
+        supports_audio=True,
+        supports_video=False,
+        audio_transcription=None,
+        transcriber=None,
+        work_dir=None,
+    )
+
+    entry = out["entries"][0]
+    assert entry["source"] == "audio_delivered", entry
+    head, _, payload = out["parts"][0].data_url.partition(",")
+    assert head == "data:audio/wav;base64", head
+    assert base64.b64decode(payload) == source.read_bytes()
