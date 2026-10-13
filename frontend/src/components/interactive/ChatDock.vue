@@ -560,6 +560,20 @@ const pendingApprovals = computed(() =>
     ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
   ),
 );
+/**
+ * 下面还有用户**没看见、又需要他处理**的东西：待审批 / 轮次错误 / 失败恢复。
+ *
+ * 为什么必须有它：过程与提示已并进消息流（同一阅读流只留一层滚动），用户上翻阅读时
+ * 它们会滚出视野 —— 「简化滚动」绝不允许变成「藏掉审批或重要错误」。
+ * 这个字符串由钉在阅读区底部的固定入口（不在滚动内容里，滚不走）显示出来：
+ * 用户一步就看得见「下面还有什么」，一步就能回到最新。
+ */
+const attentionText = computed(() => {
+  const parts: string[] = [];
+  if (pendingApprovals.value.length) parts.push("待审批 " + pendingApprovals.value.length + " 项");
+  if (turnError.value || failureVisible.value) parts.push("有错误待查看");
+  return parts.join(" · ");
+});
 const processOpen = ref(false);
 const processBusy = ref<string | null>(null);
 const processNote = ref<string | null>(null);
@@ -1314,12 +1328,22 @@ function onKeydown(event: KeyboardEvent) {
             悬浮在消息区底部：不占布局行、不压输入区；用户上翻时只提示、不自动拉回。
             消息区底部留出它的高度，最后一屏内容永远能滚到它上面。
           -->
-          <button v-if="!following" class="to-latest" type="button" data-im="chat-latest" @click="scrollToBottom(true)">
-            回到最新
+          <!--
+            固定入口（钉在阅读区底部，不在滚动内容里，滚不走）：
+            一步回到最新；下面还有待审批 / 错误没看见时把话说全，
+            而不是只丢一句含糊的「回到最新」。
+          -->
+          <button
+            v-if="!following"
+            class="to-latest"
+            type="button"
+            data-im="chat-latest"
+            :title="attentionText ? '下面还有：' + attentionText : '回到最新消息'"
+            @click="scrollToBottom(true)"
+          >
+            回到最新<template v-if="attentionText"> · <span class="to-latest-attention" data-im="chat-latest-attention">{{ attentionText }}</span></template>
           </button>
         </div>
-
-
       </div>
 
       <!-- 底部：附件 + 输入 + 发送合成一个输入区（没有附件时不显示附件条） -->
@@ -1327,12 +1351,17 @@ function onKeydown(event: KeyboardEvent) {
         底部输入区：**独立于阅读流的编辑区**，它是这块区域自己那一层纵向滚动
         （面板被拖到很矮时输入行不会被裁掉、也不需要外层再滚一次）。
         其它区域一律 content：让内容自然展开，不在这里再切小滚动窗口。
+
+        策略是 **hidden**（输入区这一档的既定口径：板面、输入框等）：
+        保留全部滚动与定位能力（长输入到上限后仍能纵向滚、光标跟随照旧），
+        但**始终不画** QIO 指示条 —— 输入框旁再来一根浮动条既无必要也干扰编辑。
+        **不要改回 auto**：auto 属于消息流 / 独立列表 / 浮层正文那一档。
       -->
       <div
         class="composer"
         data-im="chat-composer"
         data-qio-fit
-        v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+        v-qio-scrollbar="{ policy: 'hidden', axis: 'y' }"
       >
         <div class="attach-tools" data-qio-fit>
           <button
@@ -1577,12 +1606,12 @@ function onKeydown(event: KeyboardEvent) {
   border: 1px solid var(--glass-border);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
-  overflow: hidden;
   /*
-    横向永远是 clip：hidden 只是「看不见」，程序性横向滚动仍然做得到；
-    clip 不建立滚动容器，连程序性滚动也不允许 —— 面板任何层级都没有横向可滚动范围。
+    纯裁剪（圆角 + 边界），不需要滚动 → 用 clip 而不是 hidden：
+    hidden 仍建立「可程序性滚动」的容器（scrollLeft 能被改，focus / scrollIntoView
+    也能把它滚走），clip 完全不建立滚动容器 —— 面板任何层级都没有可滚动范围。
   */
-  overflow-x: clip;
+  overflow: clip;
   pointer-events: auto;
 }
 
@@ -1628,7 +1657,8 @@ function onKeydown(event: KeyboardEvent) {
   min-width: 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  overflow: hidden;
+  /* 单行省略是纯裁剪、不需要滚动 → clip（text-overflow 只在 overflow ≠ visible 时生效） */
+  overflow: clip;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1687,9 +1717,9 @@ function onKeydown(event: KeyboardEvent) {
   /*
     阅读区只有一个孩子（.stream-wrap）：过程与提示已经并在消息流**里面**，
     所以这里不需要再滚动、也裁不到东西 —— 只作为「不压到输入区」的边界。
+    纯裁剪语义 → clip（hidden 会留下一个可程序性滚动的容器）。
   */
-  overflow: hidden;
-  overflow-x: clip;
+  overflow: clip;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -1809,6 +1839,8 @@ function onKeydown(event: KeyboardEvent) {
   cursor: pointer;
 }
 .to-latest:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+/* 还没看见的待办（待审批 / 错误）：说清楚有什么，而不是只藏一句「回到最新」 */
+.to-latest-attention { color: var(--warning); }
 
 /*
   提示条也要有稳定的局部底色（契约 §11.8）：板面后方有密集文字或连线时，
@@ -2098,6 +2130,11 @@ function onKeydown(event: KeyboardEvent) {
   gap: var(--sp-2);
   min-width: 0;
 }
+/*
+  输入框自己的滚动：高度由 autosize() 跟着内容长，长到 MAX_INPUT_PX(132) 为止 ——
+  空 / 短内容根本不产生滚动范围；到上限后只在输入框内部**纵向**滚。
+  原生滚动条外观由全局 styles/scroll.css 统一消除，这里不自己声明任何滚动条样式。
+*/
 .input {
   flex: 1;
   min-width: 0;
