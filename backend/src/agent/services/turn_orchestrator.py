@@ -83,6 +83,8 @@ def media_facts_note(entries: list[dict]) -> str:
             )
         elif source == "video_delivered":
             lines.append(f"- 视频「{label}」的原始字节已交给本次链路，由模型自己看。")
+        elif source == "image_delivered":
+            lines.append(f"- 图片「{label}」的真实字节已交给本次链路，由模型自己看。")
         elif source in ("audio_unsupported", "video_unsupported", "image_unsupported", "unreadable"):
             reason = str(entry.get("reason") or "没有读到内容")
             lines.append(f"- {label}：本次没有读到内容（{reason}）。")

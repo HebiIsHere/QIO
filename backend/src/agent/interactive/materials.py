@@ -181,7 +181,9 @@ def collected_media_candidates(
             if str(getattr(att, "state", "")) != "ready":
                 continue
             name = str(getattr(att, "original_name", "") or "")
-            kind = classify_media_kind(name)
+            # include_images=True：图片也要进候选清单 —— 图片交付靠的就是这里产出的候选
+            # （没有候选就没有内容块，模型只能看到「附加了文件」而拿不到画面）。
+            kind = classify_media_kind(name, include_images=True)
             if not kind:
                 continue
             try:
@@ -358,9 +360,14 @@ def _media_candidate_entry(
         )
         return (
             _media_entry(
-                card, source="audio_unsupported" if kind == "audio" else "video_unsupported",
+                card,
+                source={
+                    "audio": "audio_unsupported",
+                    "video": "video_unsupported",
+                    "image": "image_unsupported",
+                }.get(kind, "unreadable"),
                 label=shown, version=version, read=False, bytes_=bytes_, reason=reason,
-                notes=["没有可读的字节就没有派生通道：本次没有读到任何内容"],
+                notes=["没有可读的字节就没有交付通道：本次没有读到任何内容"],
                 attachment_id=attachment_id,
             ),
             [],
@@ -375,11 +382,30 @@ def _media_candidate_entry(
             work_dir=work_dir,
         )
         return entry, blocks, None
-    return _video_entry(
-        card, path, bytes_=bytes_, attachment_id=attachment_id, shown=shown,
-        supports_images=bool(supports_images), supports_video=bool(supports_video),
-        version=version, frames_wanted=frames_wanted, cap_notes=cap_notes,
-        max_edge=max_edge, limit_bytes=limit_bytes, work_dir=work_dir,
+    if kind == "image":
+        return _image_candidate_entry(
+            card, path, bytes_=bytes_, attachment_id=attachment_id, shown=shown,
+            supports_images=bool(supports_images), version=version,
+        )
+    if kind == "video":
+        return _video_entry(
+            card, path, bytes_=bytes_, attachment_id=attachment_id, shown=shown,
+            supports_images=bool(supports_images), supports_video=bool(supports_video),
+            version=version, frames_wanted=frames_wanted, cap_notes=cap_notes,
+            max_edge=max_edge, limit_bytes=limit_bytes, work_dir=work_dir,
+        )
+    # 不是音频/视频/图片却走到媒体通道：如实说不处理。
+    # 历史反例：这里曾经无条件落到 _video_entry，于是「图片」会被当成视频去 ffmpeg 抽帧，
+    # 回执写成 video_unsupported「没有抽到任何一帧」（2026-10-13 实测）。
+    return (
+        _media_entry(
+            card, source="unreadable", label=shown, version=version, read=False, bytes_=bytes_,
+            reason=f"「{shown}」不是音频 / 视频 / 图片：媒体通道不处理它（按其它读取路径的结论为准）",
+            notes=["媒体通道只交付音视频与图片的真实字节，不猜测其它类型的内容"],
+            attachment_id=attachment_id,
+        ),
+        [],
+        None,
     )
 
 
@@ -785,6 +811,98 @@ def attach_transcripts(messages: list[Any], entries: Iterable[dict]) -> list[Any
             message.content = (content + chr(10) + chr(10) + block) if content else block
             return messages
     return messages
+
+
+def _image_candidate_entry(
+    card: dict,
+    path: Path,
+    *,
+    bytes_: int,
+    attachment_id: str | None,
+    shown: str,
+    supports_images: bool,
+    version: str,
+    max_image_bytes: int = MAX_IMAGE_BYTES,
+) -> tuple[dict, list[Any], Path | None]:
+    """图片候选：按能力位交付**真实字节**，不能交付就如实说为什么。
+
+    与音频 / 视频同一条规则：能力位是唯一事实来源 —— 没有视觉能力就 `image_unsupported`
+    并点明「当前模型链路没有视觉能力」，绝不猜画面；超过上限也不截断（半张图会给出错的画面）。
+    """
+    media_type = _image_media_type(shown)
+    if not media_type:
+        return (
+            _media_entry(
+                card, source="image_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason=f"这种图片格式（{Path(shown).suffix or '无扩展名'}）不作为多模态图片交付："
+                "当前只交付 png / jpg / jpeg / gif / webp；其余按既有读取结论处理",
+                notes=["不把无法确认媒体类型的字节当图片发给模型"],
+                attachment_id=attachment_id,
+            ),
+            [],
+            None,
+        )
+    if not supports_images:
+        return (
+            _media_entry(
+                card, source="image_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason="当前模型链路没有视觉能力：只登记图片元数据，不声称看懂图片内容",
+                notes=["当前模型链路没有视觉能力：不读取图片像素、不编造画面描述"],
+                attachment_id=attachment_id,
+            ),
+            [],
+            None,
+        )
+    limit = int(max_image_bytes) if int(max_image_bytes) > 0 else MAX_IMAGE_BYTES
+    if bytes_ <= 0 or bytes_ > limit:
+        return (
+            _media_entry(
+                card, source="image_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_,
+                reason=f"图片 {human_size(bytes_)} 超过交付上限 {human_size(limit)}："
+                "本次没有把像素交给模型（不截断成半张图，因为半张图会给出错的画面）",
+                notes=["要么压缩后再发，要么把结论写在注释里让 QIO 读文字"],
+                attachment_id=attachment_id,
+            ),
+            [],
+            None,
+        )
+    data_url = _file_data_url(path, media_type)
+    if data_url is None:
+        return (
+            _media_entry(
+                card, source="image_unsupported", label=shown, version=version, read=False,
+                bytes_=bytes_, reason="读不到这份图片的字节：本次没有把它交给模型",
+                notes=["不伪造一个空图片块"],
+                attachment_id=attachment_id,
+            ),
+            [],
+            None,
+        )
+    from agent.adapters.base import ImagePart
+
+    return (
+        _media_entry(
+            card, source="image_delivered", label=shown, version=version, read=True,
+            bytes_=bytes_, reason="",
+            notes=[
+                f"本次把这张图片的真实字节（{shown}，{human_size(bytes_)}）作为多模态内容"
+                "交给了模型，由模型自己看；QIO 不另外编造画面描述"
+            ],
+            attachment_id=attachment_id,
+        ),
+        [
+            ImagePart(
+                data_url=data_url,
+                label=str(card.get("id") or ""),
+                media_type=media_type,
+                bytes=bytes_,
+            )
+        ],
+        None,
+    )
 
 
 def _video_entry(

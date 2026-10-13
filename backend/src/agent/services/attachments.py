@@ -373,17 +373,23 @@ UNSUPPORTED_EXTS = {
 }
 
 
-def classify_media_kind(name: str) -> str:
-    """音频 / 视频的**扩展名归类**：`"audio"` / `"video"` / `""`（都不是）。
+def classify_media_kind(name: str, *, include_images: bool = False) -> str:
+    """扩展名归类：`"audio"` / `"video"` / `""`（都不是）；`include_images=True` 时图片是 `"image"`。
 
-    它只说「按扩展名看这是不是音视频」，**不判断能不能读** —— 真实能力由
-    `agent.services.media` 按本机（有没有 ffmpeg）如实给出。
+    默认**只认音视频** —— 既有调用点（附件工具、卡片候选）的语义不变。
+    会话模式的媒体清单传 `include_images=True`：图片同样要按能力位交付真实字节，
+    否则会出现「附了图但模型拿不到画面」的静默缺口（2026-10-13 线上实测）。
+
+    它只说「按扩展名看这是哪一类」，**不判断能不能读** —— 真实能力由
+    `agent.services.media` 按本机（有没有 ffmpeg）与适配器能力位如实给出。
     """
     suffix = Path(name or "").suffix.lower()
     if suffix in AUDIO_EXTS:
         return "audio"
     if suffix in VIDEO_EXTS:
         return "video"
+    if include_images and suffix in IMAGE_EXTS:
+        return "image"
     return ""
 
 

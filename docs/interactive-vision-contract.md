@@ -20,6 +20,17 @@
 
 每条 `image_unsupported` 的 `reason` 必须写清**为什么没交付**（哪一种），不允许只说「不支持」。
 
+### 2.1 适用范围：两条链路同一张表（2026-10-13 起）
+
+* **互动理解链路**（板面提交）：`resolve_images` → `build_context(vision=…)` → `image_parts_from_context`；
+* **会话链路**（对话模式聊天与互动悬浮聊天都走它）：本轮附件 → 媒体候选
+  （`collected_media_candidates`，归类用 `classify_media_kind(…, include_images=True)`）→
+  `resolve_media` 的图片分支 → `ImagePart` 挂在本轮首条 user 消息上。
+
+两条链路的能力位都只认**本次真实链路**的声明。会话链路**不**因为存在 `vision` 用途标签的凭据而切换链路
+（凭据策略：主循环优先 `main-loop`，见 `credentials/policy.py`）；所以「附件已交付」与「这个模型能否看懂」
+仍是两件事，后者不由本机保证。
+
 ## 3. 交付闸门（只有一处判断）
 
 * `resolve_images(conn, *, state, cards, attachments)` 是**能力无关**的读取层：只回答「字节读得出来吗」；

@@ -1,0 +1,497 @@
+﻿2026-10-13T04:20:47.7398089Z Current runner version: '2.337.0'
+2026-10-13T04:20:47.7422591Z ##[group]Runner Image Provisioner
+2026-10-13T04:20:47.7423395Z Hosted Compute Agent
+2026-10-13T04:20:47.7423865Z Version: 20261002.596
+2026-10-13T04:20:47.7424363Z Commit: c3d12f3313a95f25162a1503be624f3b0617f8c0
+2026-10-13T04:20:47.7425042Z Build Date: 2026-10-02T22:28:27Z
+2026-10-13T04:20:47.7425847Z Worker ID: {a7ef07d2-7f8c-49f6-b829-80ab516e49a4}
+2026-10-13T04:20:47.7426479Z Region: westus3
+2026-10-13T04:20:47.7426922Z Cloud: Azure
+2026-10-13T04:20:47.7427345Z ##[endgroup]
+2026-10-13T04:20:47.7428648Z ##[group]Operating System
+2026-10-13T04:20:47.7429194Z Ubuntu
+2026-10-13T04:20:47.7429654Z 24.04.5
+2026-10-13T04:20:47.7430090Z LTS
+2026-10-13T04:20:47.7430515Z ##[endgroup]
+2026-10-13T04:20:47.7431007Z ##[group]Runner Image
+2026-10-13T04:20:47.7431569Z Image: ubuntu-24.04
+2026-10-13T04:20:47.7432054Z Version: 20261004.327.1
+2026-10-13T04:20:47.7433104Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261004.327/images/ubuntu/Ubuntu2404-Readme.md
+2026-10-13T04:20:47.7434426Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261004.327
+2026-10-13T04:20:47.7435320Z ##[endgroup]
+2026-10-13T04:20:47.7436823Z ##[group]GITHUB_TOKEN Permissions
+2026-10-13T04:20:47.7438682Z Contents: read
+2026-10-13T04:20:47.7439213Z Metadata: read
+2026-10-13T04:20:47.7439715Z ##[endgroup]
+2026-10-13T04:20:47.7441502Z Secret source: Actions
+2026-10-13T04:20:47.7442370Z Cache mode: write
+2026-10-13T04:20:47.7443123Z Prepare workflow directory
+2026-10-13T04:20:47.7863443Z Prepare all required actions
+2026-10-13T04:20:47.7903913Z Getting action download info
+2026-10-13T04:20:48.0776028Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+2026-10-13T04:20:48.1888939Z Download action repository 'actions/setup-python@v6' (SHA:ece7cb06caefa5fff74198d8649806c4678c61a1)
+2026-10-13T04:20:48.3672719Z Complete job name: docs / workflow contract
+2026-10-13T04:20:48.4233757Z ##[group]Run actions/checkout@v5
+2026-10-13T04:20:48.4234445Z with:
+2026-10-13T04:20:48.4234816Z   ref: fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:48.4235277Z   fetch-depth: 0
+2026-10-13T04:20:48.4235783Z   persist-credentials: false
+2026-10-13T04:20:48.4236200Z   repository: HebiIsHere/QIO
+2026-10-13T04:20:48.4239207Z   token: ***
+2026-10-13T04:20:48.4239549Z   ssh-strict: true
+2026-10-13T04:20:48.4239892Z   ssh-user: git
+2026-10-13T04:20:48.4240232Z   clean: true
+2026-10-13T04:20:48.4240582Z   sparse-checkout-cone-mode: true
+2026-10-13T04:20:48.4240988Z   fetch-tags: false
+2026-10-13T04:20:48.4241340Z   show-progress: true
+2026-10-13T04:20:48.4241689Z   lfs: false
+2026-10-13T04:20:48.4242015Z   submodules: false
+2026-10-13T04:20:48.4242369Z   set-safe-directory: true
+2026-10-13T04:20:48.4242762Z   allow-unsafe-pr-checkout: false
+2026-10-13T04:20:48.4243415Z env:
+2026-10-13T04:20:48.4243740Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:48.4244164Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:48.4244611Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:48.4244989Z ##[endgroup]
+2026-10-13T04:20:48.5053626Z Syncing repository: HebiIsHere/QIO
+2026-10-13T04:20:48.5054992Z ##[group]Getting Git version info
+2026-10-13T04:20:48.5055498Z Working directory is '/home/runner/work/QIO/QIO'
+2026-10-13T04:20:48.5056502Z [command]/usr/bin/git version
+2026-10-13T04:20:48.5161546Z git version 2.55.0
+2026-10-13T04:20:48.5181317Z ##[endgroup]
+2026-10-13T04:20:48.5193904Z Temporarily overriding HOME='/home/runner/work/_temp/c464bb6c-3898-4015-b2de-94d6d2bcba12' before making global git config changes
+2026-10-13T04:20:48.5199028Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-13T04:20:48.5200017Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+2026-10-13T04:20:48.5245698Z Deleting the contents of '/home/runner/work/QIO/QIO'
+2026-10-13T04:20:48.5249816Z ##[group]Initializing the repository
+2026-10-13T04:20:48.5253702Z [command]/usr/bin/git init /home/runner/work/QIO/QIO
+2026-10-13T04:20:48.5346738Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-10-13T04:20:48.5347581Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-10-13T04:20:48.5348301Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-10-13T04:20:48.5348876Z hint: call:
+2026-10-13T04:20:48.5349201Z hint:
+2026-10-13T04:20:48.5349610Z hint: 	git config --global init.defaultBranch <name>
+2026-10-13T04:20:48.5350154Z hint:
+2026-10-13T04:20:48.5350603Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-10-13T04:20:48.5351320Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-10-13T04:20:48.5351899Z hint:
+2026-10-13T04:20:48.5352240Z hint: 	git branch -m <name>
+2026-10-13T04:20:48.5352612Z hint:
+2026-10-13T04:20:48.5353095Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-10-13T04:20:48.5357914Z Initialized empty Git repository in /home/runner/work/QIO/QIO/.git/
+2026-10-13T04:20:48.5367811Z [command]/usr/bin/git remote add origin https://github.com/HebiIsHere/QIO
+2026-10-13T04:20:48.5412410Z ##[endgroup]
+2026-10-13T04:20:48.5413047Z ##[group]Disabling automatic garbage collection
+2026-10-13T04:20:48.5416377Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-13T04:20:48.5443975Z ##[endgroup]
+2026-10-13T04:20:48.5444680Z ##[group]Setting up auth
+2026-10-13T04:20:48.5450646Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-13T04:20:48.5481262Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-13T04:20:48.5802551Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-13T04:20:48.5832891Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-13T04:20:48.6023402Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-13T04:20:48.6053483Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-13T04:20:48.6250051Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-13T04:20:48.6286608Z ##[endgroup]
+2026-10-13T04:20:48.6287271Z ##[group]Fetching the repository
+2026-10-13T04:20:48.6294637Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2026-10-13T04:20:51.9227095Z From https://github.com/HebiIsHere/QIO
+2026-10-13T04:20:51.9228622Z  * [new branch]      ci/targeted-verify-entry -> origin/ci/targeted-verify-entry
+2026-10-13T04:20:51.9229920Z  * [new branch]      feat/interactive-foundation -> origin/feat/interactive-foundation
+2026-10-13T04:20:51.9231249Z  * [new branch]      feat/interactive-frontend-layout -> origin/feat/interactive-frontend-layout
+2026-10-13T04:20:51.9232545Z  * [new branch]      feat/interactive-real-model -> origin/feat/interactive-real-model
+2026-10-13T04:20:51.9234090Z  * [new branch]      feat/unified-cards-media-preview-021 -> origin/feat/unified-cards-media-preview-021
+2026-10-13T04:20:51.9236544Z  * [new branch]      feat/unified-process-attachments-streaming -> origin/feat/unified-process-attachments-streaming
+2026-10-13T04:20:51.9239560Z  * [new branch]      fix/attachment-readiness-stream-boundaries -> origin/fix/attachment-readiness-stream-boundaries
+2026-10-13T04:20:51.9241697Z  * [new branch]      fix/attachment-send-cancel-integrity -> origin/fix/attachment-send-cancel-integrity
+2026-10-13T04:20:51.9243965Z  * [new branch]      fix/interactive-closure-followup -> origin/fix/interactive-closure-followup
+2026-10-13T04:20:51.9247067Z  * [new branch]      fix/interactive-content-protection-polish -> origin/fix/interactive-content-protection-polish
+2026-10-13T04:20:51.9249497Z  * [new branch]      fix/interactive-draft-races-ui-polish -> origin/fix/interactive-draft-races-ui-polish
+2026-10-13T04:20:51.9252170Z  * [new branch]      fix/interactive-draft-recovery-completion -> origin/fix/interactive-draft-recovery-completion
+2026-10-13T04:20:51.9254610Z  * [new branch]      fix/interactive-final-closure -> origin/fix/interactive-final-closure
+2026-10-13T04:20:51.9257347Z  * [new branch]      fix/interactive-materials-drafts-preview -> origin/fix/interactive-materials-drafts-preview
+2026-10-13T04:20:51.9260181Z  * [new branch]      fix/interactive-state-recovery-completion -> origin/fix/interactive-state-recovery-completion
+2026-10-13T04:20:51.9262556Z  * [new branch]      fix/interactive-ui-refinement -> origin/fix/interactive-ui-refinement
+2026-10-13T04:20:51.9264750Z  * [new branch]      fix/main-audit-reliability-8fa8452 -> origin/fix/main-audit-reliability-8fa8452
+2026-10-13T04:20:51.9268176Z  * [new branch]      fix/main-reliability-memory-20261009-r2 -> origin/fix/main-reliability-memory-20261009-r2
+2026-10-13T04:20:51.9271909Z  * [new branch]      fix/main-safety-state-responsiveness-20261009 -> origin/fix/main-safety-state-responsiveness-20261009
+2026-10-13T04:20:51.9275169Z  * [new branch]      fix/preparation-cancel-and-spill-recovery -> origin/fix/preparation-cancel-and-spill-recovery
+2026-10-13T04:20:51.9279000Z  * [new branch]      fix/process-attachment-audit-consolidation -> origin/fix/process-attachment-audit-consolidation
+2026-10-13T04:20:51.9281977Z  * [new branch]      fix/process-attachment-audit-final-boundaries -> origin/fix/process-attachment-audit-final-boundaries
+2026-10-13T04:20:51.9284830Z  * [new branch]      fix/process-attachment-audit-round2 -> origin/fix/process-attachment-audit-round2
+2026-10-13T04:20:51.9287599Z  * [new branch]      fix/process-stream-retry-upload -> origin/fix/process-stream-retry-upload
+2026-10-13T04:20:51.9290033Z  * [new branch]      fix/process-upload-final-convergence -> origin/fix/process-upload-final-convergence
+2026-10-13T04:20:51.9292879Z  * [new branch]      fix/reliability-followup-closeout-20261010-f01f10 -> origin/fix/reliability-followup-closeout-20261010-f01f10
+2026-10-13T04:20:51.9295979Z  * [new branch]      fix/reliability-memory-followup-20261010-a7f3 -> origin/fix/reliability-memory-followup-20261010-a7f3
+2026-10-13T04:20:51.9298729Z  * [new branch]      fix/streaming-main-closeout-20261011 -> origin/fix/streaming-main-closeout-20261011
+2026-10-13T04:20:51.9301066Z  * [new branch]      fix/unified-process-audit -> origin/fix/unified-process-audit
+2026-10-13T04:20:51.9303312Z  * [new branch]      integrate/interactive-main-20261011 -> origin/integrate/interactive-main-20261011
+2026-10-13T04:20:51.9306327Z  * [new branch]      integrate/reliability-interactive-real-model-20261011 -> origin/integrate/reliability-interactive-real-model-20261011
+2026-10-13T04:20:51.9309297Z  * [new branch]      integrate/streaming-main-20261011 -> origin/integrate/streaming-main-20261011
+2026-10-13T04:20:51.9311117Z  * [new branch]      main               -> origin/main
+2026-10-13T04:20:51.9312837Z  * [new branch]      research/memory-retrieval-eval -> origin/research/memory-retrieval-eval
+2026-10-13T04:20:51.9314610Z  * [new branch]      wt/acc-b           -> origin/wt/acc-b
+2026-10-13T04:20:51.9316236Z  * [new branch]      wt/acc-b2          -> origin/wt/acc-b2
+2026-10-13T04:20:51.9317660Z  * [new branch]      wt/acc-c           -> origin/wt/acc-c
+2026-10-13T04:20:51.9319241Z  * [new branch]      wt/acc-c2          -> origin/wt/acc-c2
+2026-10-13T04:20:51.9320884Z  * [new branch]      wt/acc-d           -> origin/wt/acc-d
+2026-10-13T04:20:51.9322470Z  * [new branch]      wt/acc-doc         -> origin/wt/acc-doc
+2026-10-13T04:20:51.9324090Z  * [new branch]      wt/acc-e           -> origin/wt/acc-e
+2026-10-13T04:20:51.9326153Z  * [new branch]      wt/acc-e2          -> origin/wt/acc-e2
+2026-10-13T04:20:51.9328520Z  * [new branch]      wt/acc-f           -> origin/wt/acc-f
+2026-10-13T04:20:51.9330115Z  * [new branch]      wt/acc-f2          -> origin/wt/acc-f2
+2026-10-13T04:20:51.9332014Z  * [new branch]      wt/agent-a-runtime -> origin/wt/agent-a-runtime
+2026-10-13T04:20:51.9333599Z  * [new branch]      wt/agent-e-toolenv -> origin/wt/agent-e-toolenv
+2026-10-13T04:20:51.9335065Z  * [new branch]      wt/fb-a            -> origin/wt/fb-a
+2026-10-13T04:20:51.9336592Z  * [new branch]      wt/fb-b            -> origin/wt/fb-b
+2026-10-13T04:20:51.9338021Z  * [new branch]      wt/fb-c            -> origin/wt/fb-c
+2026-10-13T04:20:51.9339333Z  * [new branch]      wt/fb-d            -> origin/wt/fb-d
+2026-10-13T04:20:51.9340603Z  * [new branch]      wt/fb-e            -> origin/wt/fb-e
+2026-10-13T04:20:51.9341966Z  * [new branch]      wt/int-a-board     -> origin/wt/int-a-board
+2026-10-13T04:20:51.9343458Z  * [new branch]      wt/int-b-persist   -> origin/wt/int-b-persist
+2026-10-13T04:20:51.9344942Z  * [new branch]      wt/int-c-approval  -> origin/wt/int-c-approval
+2026-10-13T04:20:51.9346485Z  * [new branch]      wt/int-verify      -> origin/wt/int-verify
+2026-10-13T04:20:51.9347863Z  * [new branch]      wt/p2-debt         -> origin/wt/p2-debt
+2026-10-13T04:20:51.9349240Z  * [new branch]      wt/p2-isolation    -> origin/wt/p2-isolation
+2026-10-13T04:20:51.9350678Z  * [new branch]      wt/p2-trace-ui     -> origin/wt/p2-trace-ui
+2026-10-13T04:20:51.9352024Z  * [new branch]      wt/p3-a            -> origin/wt/p3-a
+2026-10-13T04:20:51.9353294Z  * [new branch]      wt/p3-b            -> origin/wt/p3-b
+2026-10-13T04:20:51.9354554Z  * [new branch]      wt/p3-c            -> origin/wt/p3-c
+2026-10-13T04:20:51.9355896Z  * [new branch]      wt/p3-d            -> origin/wt/p3-d
+2026-10-13T04:20:51.9357167Z  * [new branch]      wt/p3-e            -> origin/wt/p3-e
+2026-10-13T04:20:51.9358579Z  * [new branch]      wt/p3-f            -> origin/wt/p3-f
+2026-10-13T04:20:51.9360148Z  * [new branch]      wt/ui-a-visual     -> origin/wt/ui-a-visual
+2026-10-13T04:20:51.9361681Z  * [new branch]      wt/ui-b-rules      -> origin/wt/ui-b-rules
+2026-10-13T04:20:51.9363198Z  * [new branch]      wt/ui-c-drafts     -> origin/wt/ui-c-drafts
+2026-10-13T04:20:51.9364624Z  * [new branch]      wt/ui-d-overlay    -> origin/wt/ui-d-overlay
+2026-10-13T04:20:51.9366089Z  * [new tag]         v0.1.0             -> v0.1.0
+2026-10-13T04:20:51.9367222Z  * [new tag]         v0.1.1             -> v0.1.1
+2026-10-13T04:20:51.9368510Z  * [new tag]         v0.1.10            -> v0.1.10
+2026-10-13T04:20:51.9369647Z  * [new tag]         v0.1.11            -> v0.1.11
+2026-10-13T04:20:51.9370799Z  * [new tag]         v0.1.12            -> v0.1.12
+2026-10-13T04:20:51.9371937Z  * [new tag]         v0.1.13            -> v0.1.13
+2026-10-13T04:20:51.9373064Z  * [new tag]         v0.1.14            -> v0.1.14
+2026-10-13T04:20:51.9374181Z  * [new tag]         v0.1.3             -> v0.1.3
+2026-10-13T04:20:51.9375319Z  * [new tag]         v0.1.4             -> v0.1.4
+2026-10-13T04:20:51.9376608Z  * [new tag]         v0.1.5             -> v0.1.5
+2026-10-13T04:20:51.9378076Z  * [new tag]         v0.1.6             -> v0.1.6
+2026-10-13T04:20:51.9379582Z  * [new tag]         v0.1.7             -> v0.1.7
+2026-10-13T04:20:51.9380719Z  * [new tag]         v0.1.8             -> v0.1.8
+2026-10-13T04:20:51.9381848Z  * [new tag]         v0.1.9             -> v0.1.9
+2026-10-13T04:20:51.9382977Z  * [new tag]         v0.2.0             -> v0.2.0
+2026-10-13T04:20:51.9384105Z  * [new tag]         v0.2.1             -> v0.2.1
+2026-10-13T04:20:51.9385250Z  * [new tag]         v0.2.2             -> v0.2.2
+2026-10-13T04:20:51.9388552Z [command]/usr/bin/git rev-parse --verify --quiet fc6924c903de9f18226792d85702d996c28e3639^{object}
+2026-10-13T04:20:51.9390169Z fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:51.9392554Z ##[endgroup]
+2026-10-13T04:20:51.9393788Z ##[group]Determining the checkout info
+2026-10-13T04:20:51.9395221Z ##[endgroup]
+2026-10-13T04:20:51.9396130Z [command]/usr/bin/git sparse-checkout disable
+2026-10-13T04:20:51.9398754Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-13T04:20:51.9401492Z ##[group]Checking out the ref
+2026-10-13T04:20:51.9402852Z [command]/usr/bin/git checkout --progress --force fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.4478554Z Note: switching to 'fc6924c903de9f18226792d85702d996c28e3639'.
+2026-10-13T04:20:52.4480006Z 
+2026-10-13T04:20:52.4480306Z You are in 'detached HEAD' state. You can look around, make experimental
+2026-10-13T04:20:52.4480960Z changes and commit them, and you can discard any commits you make in this
+2026-10-13T04:20:52.4481586Z state without impacting any branches by switching back to a branch.
+2026-10-13T04:20:52.4481937Z 
+2026-10-13T04:20:52.4482183Z If you want to create a new branch to retain commits you create, you may
+2026-10-13T04:20:52.4482761Z do so (now or later) by using -c with the switch command. Example:
+2026-10-13T04:20:52.4483212Z 
+2026-10-13T04:20:52.4483408Z   git switch -c <new-branch-name>
+2026-10-13T04:20:52.4483567Z 
+2026-10-13T04:20:52.4483676Z Or undo this operation with:
+2026-10-13T04:20:52.4483824Z 
+2026-10-13T04:20:52.4483935Z   git switch -
+2026-10-13T04:20:52.4484076Z 
+2026-10-13T04:20:52.4484336Z Turn off this advice by setting config variable advice.detachedHead to false
+2026-10-13T04:20:52.4484602Z 
+2026-10-13T04:20:52.4485255Z HEAD is now at fc6924c ci(targeted-verify): 引导签出后由本 job 自己断言 SHA（否则契约检查必红）
+2026-10-13T04:20:52.4501005Z ##[endgroup]
+2026-10-13T04:20:52.4541420Z [command]/usr/bin/git log -1 --format=%H
+2026-10-13T04:20:52.4566415Z fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.4573797Z ##[group]Removing auth
+2026-10-13T04:20:52.4577199Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-13T04:20:52.4605279Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-13T04:20:52.4796154Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-13T04:20:52.4822495Z http.https://github.com/.extraheader
+2026-10-13T04:20:52.4829259Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-10-13T04:20:52.4860198Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-13T04:20:52.5053938Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-13T04:20:52.5082907Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-13T04:20:52.5277781Z ##[endgroup]
+2026-10-13T04:20:52.5525160Z ##[group]Run set -euo pipefail
+2026-10-13T04:20:52.5525854Z [36;1mset -euo pipefail[0m
+2026-10-13T04:20:52.5526230Z [36;1mpython scripts/targeted-verify/verify_sha.py \[0m
+2026-10-13T04:20:52.5526582Z [36;1m  --requested "${REQUESTED_SHA}" \[0m
+2026-10-13T04:20:52.5526884Z [36;1m  --actual "$(git rev-parse HEAD)" \[0m
+2026-10-13T04:20:52.5527184Z [36;1m  --actual-from arg \[0m
+2026-10-13T04:20:52.5527484Z [36;1m  --label "docs-bootstrap"[0m
+2026-10-13T04:20:52.5740179Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-13T04:20:52.5740548Z env:
+2026-10-13T04:20:52.5740771Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:52.5741021Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:52.5741292Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:52.5741576Z   REQUESTED_SHA: fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.5741875Z ##[endgroup]
+2026-10-13T04:20:52.6132121Z [docs-bootstrap] requested sha : fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.6132770Z [docs-bootstrap] actual  from : --actual (arg)
+2026-10-13T04:20:52.6133163Z [docs-bootstrap] actual    sha : fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.6134273Z [docs-bootstrap] PASS SHA 核验通过：fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.6134703Z [docs-bootstrap] git HEAD      : fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.6135223Z [docs-bootstrap] github event  : workflow_dispatch refs/heads/feat/unified-cards-media-preview-021
+2026-10-13T04:20:52.6136083Z [docs-bootstrap] GITHUB_SHA    : fc6924c903de9f18226792d85702d996c28e3639（事件提交，PR 上是 merge commit）
+2026-10-13T04:20:52.6297972Z Prepare all required actions
+2026-10-13T04:20:52.6298509Z Getting action download info
+2026-10-13T04:20:52.7762919Z ##[group]Run ./.github/actions/verify-checkout
+2026-10-13T04:20:52.7763212Z with:
+2026-10-13T04:20:52.7763443Z   ref: feat/unified-cards-media-preview-021
+2026-10-13T04:20:52.7763734Z   sha: fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.7763989Z   label: docs
+2026-10-13T04:20:52.7764186Z   allow-short: false
+2026-10-13T04:20:52.7764391Z env:
+2026-10-13T04:20:52.7764584Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:52.7764835Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:52.7765097Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:52.7765329Z ##[endgroup]
+2026-10-13T04:20:52.7810189Z ##[start-action display=Show requested ref/SHA;id=__self.__run]
+2026-10-13T04:20:52.7833854Z ##[group]Run echo "requested ref : feat/unified-cards-media-preview-021"
+2026-10-13T04:20:52.7834321Z [36;1mecho "requested ref : feat/unified-cards-media-preview-021"[0m
+2026-10-13T04:20:52.7834787Z [36;1mecho "requested sha : fc6924c903de9f18226792d85702d996c28e3639"[0m
+2026-10-13T04:20:52.7890819Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-13T04:20:52.7891131Z env:
+2026-10-13T04:20:52.7891334Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:52.7891576Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:52.7891842Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:52.7892077Z ##[endgroup]
+2026-10-13T04:20:52.7967991Z requested ref : feat/unified-cards-media-preview-021
+2026-10-13T04:20:52.7968632Z requested sha : fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:52.7979250Z ##[end-action id=__self.__run;outcome=success;conclusion=success;duration_ms=16]
+2026-10-13T04:20:52.7981749Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__self.__actions_checkout]
+2026-10-13T04:20:52.8042719Z ##[group]Run actions/checkout@v5
+2026-10-13T04:20:52.8042964Z with:
+2026-10-13T04:20:52.8043187Z   ref: feat/unified-cards-media-preview-021
+2026-10-13T04:20:52.8043487Z   fetch-depth: 0
+2026-10-13T04:20:52.8043701Z   persist-credentials: false
+2026-10-13T04:20:52.8043942Z   repository: HebiIsHere/QIO
+2026-10-13T04:20:52.8046071Z   token: ***
+2026-10-13T04:20:52.8046276Z   ssh-strict: true
+2026-10-13T04:20:52.8046482Z   ssh-user: git
+2026-10-13T04:20:52.8046679Z   clean: true
+2026-10-13T04:20:52.8046913Z   sparse-checkout-cone-mode: true
+2026-10-13T04:20:52.8047164Z   fetch-tags: false
+2026-10-13T04:20:52.8047379Z   show-progress: true
+2026-10-13T04:20:52.8047599Z   lfs: false
+2026-10-13T04:20:52.8047816Z   submodules: false
+2026-10-13T04:20:52.8048034Z   set-safe-directory: true
+2026-10-13T04:20:52.8048276Z   allow-unsafe-pr-checkout: false
+2026-10-13T04:20:52.8048517Z env:
+2026-10-13T04:20:52.8048716Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:52.8048940Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:52.8049200Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:52.8049438Z ##[endgroup]
+2026-10-13T04:20:52.8754547Z Syncing repository: HebiIsHere/QIO
+2026-10-13T04:20:52.8760693Z ##[group]Getting Git version info
+2026-10-13T04:20:52.8762771Z Working directory is '/home/runner/work/QIO/QIO'
+2026-10-13T04:20:52.8778583Z [command]/usr/bin/git version
+2026-10-13T04:20:52.8813597Z git version 2.55.0
+2026-10-13T04:20:52.8828880Z ##[endgroup]
+2026-10-13T04:20:52.8840825Z Temporarily overriding HOME='/home/runner/work/_temp/64fa2bd6-3e54-4d9a-8045-bf30952a6074' before making global git config changes
+2026-10-13T04:20:52.8842088Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-13T04:20:52.8862876Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+2026-10-13T04:20:52.8882260Z [command]/usr/bin/git config --local --get remote.origin.url
+2026-10-13T04:20:52.8903679Z https://github.com/HebiIsHere/QIO
+2026-10-13T04:20:52.8915318Z ##[group]Removing previously created refs, to avoid conflicts
+2026-10-13T04:20:52.8919526Z [command]/usr/bin/git rev-parse --symbolic-full-name --verify --quiet HEAD
+2026-10-13T04:20:52.8942081Z HEAD
+2026-10-13T04:20:52.9022684Z ##[endgroup]
+2026-10-13T04:20:52.9024883Z [command]/usr/bin/git submodule status
+2026-10-13T04:20:52.9234280Z ##[group]Cleaning the repository
+2026-10-13T04:20:52.9239681Z [command]/usr/bin/git clean -ffdx
+2026-10-13T04:20:52.9307731Z [command]/usr/bin/git reset --hard HEAD
+2026-10-13T04:20:53.4415683Z HEAD is now at fc6924c ci(targeted-verify): 引导签出后由本 job 自己断言 SHA（否则契约检查必红）
+2026-10-13T04:20:53.4428263Z ##[endgroup]
+2026-10-13T04:20:53.4434514Z ##[group]Disabling automatic garbage collection
+2026-10-13T04:20:53.4435415Z [command]/usr/bin/git config --local gc.auto 0
+2026-10-13T04:20:53.4467398Z ##[endgroup]
+2026-10-13T04:20:53.4468102Z ##[group]Setting up auth
+2026-10-13T04:20:53.4473026Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-13T04:20:53.4504826Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-13T04:20:53.4714354Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-13T04:20:53.4745910Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-13T04:20:53.4959550Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-13T04:20:53.4994197Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-13T04:20:53.5217515Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-10-13T04:20:53.5257002Z ##[endgroup]
+2026-10-13T04:20:53.5257665Z ##[group]Fetching the repository
+2026-10-13T04:20:53.5265680Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+2026-10-13T04:20:53.8617903Z ##[endgroup]
+2026-10-13T04:20:53.8618462Z ##[group]Determining the checkout info
+2026-10-13T04:20:53.8622902Z [command]/usr/bin/git branch --list --remote origin/feat/unified-cards-media-preview-021
+2026-10-13T04:20:53.8654005Z   origin/feat/unified-cards-media-preview-021
+2026-10-13T04:20:53.8657553Z ##[endgroup]
+2026-10-13T04:20:53.8661028Z [command]/usr/bin/git sparse-checkout disable
+2026-10-13T04:20:53.8717698Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+2026-10-13T04:20:53.8743372Z ##[group]Checking out the ref
+2026-10-13T04:20:53.8748107Z [command]/usr/bin/git checkout --progress --force -B feat/unified-cards-media-preview-021 refs/remotes/origin/feat/unified-cards-media-preview-021
+2026-10-13T04:20:53.8831954Z Switched to a new branch 'feat/unified-cards-media-preview-021'
+2026-10-13T04:20:53.8832838Z branch 'feat/unified-cards-media-preview-021' set up to track 'origin/feat/unified-cards-media-preview-021'.
+2026-10-13T04:20:53.8838208Z ##[endgroup]
+2026-10-13T04:20:53.8871292Z [command]/usr/bin/git log -1 --format=%H
+2026-10-13T04:20:53.8893759Z fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:53.8900955Z ##[group]Removing auth
+2026-10-13T04:20:53.8903616Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-13T04:20:53.8932937Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-13T04:20:53.9134962Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-13T04:20:53.9158468Z http.https://github.com/.extraheader
+2026-10-13T04:20:53.9164851Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-10-13T04:20:53.9197444Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-13T04:20:53.9390600Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-13T04:20:53.9419883Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-13T04:20:53.9608261Z ##[endgroup]
+2026-10-13T04:20:53.9690626Z ##[end-action id=__self.__actions_checkout;outcome=success;conclusion=success;duration_ms=1170]
+2026-10-13T04:20:53.9697398Z ##[start-action display=Assert the checked-out commit equals the requested SHA;id=__self.__run_2]
+2026-10-13T04:20:53.9715132Z ##[group]Run set -euo pipefail
+2026-10-13T04:20:53.9715381Z [36;1mset -euo pipefail[0m
+2026-10-13T04:20:53.9716060Z [36;1m# --actual 故意不传：实际提交只认 git rev-parse HEAD。GITHUB_SHA 是事件提交[0m
+2026-10-13T04:20:53.9716488Z [36;1m# （PR 上是 merge commit），拿它当「实际 checkout 的 SHA」会假绿。[0m
+2026-10-13T04:20:53.9716877Z [36;1m# 实际提交只认 git rev-parse HEAD（GITHUB_SHA 是事件提交，PR 上是 merge commit，[0m
+2026-10-13T04:20:53.9717200Z [36;1m# 拿它当「实际 checkout 的 SHA」会假绿）。显式传值，连来源也写进证据。[0m
+2026-10-13T04:20:53.9717447Z [36;1mactual="$(git rev-parse HEAD)"[0m
+2026-10-13T04:20:53.9717832Z [36;1margs=(--requested "${REQUESTED_SHA}" --actual "${actual}" --actual-from arg --label "${SHA_LABEL}")[0m
+2026-10-13T04:20:53.9718230Z [36;1mif [ -n "${EXPECTED_REF}" ]; then[0m
+2026-10-13T04:20:53.9718478Z [36;1m  args+=(--expected-ref "${EXPECTED_REF}")[0m
+2026-10-13T04:20:53.9718721Z [36;1mfi[0m
+2026-10-13T04:20:53.9718901Z [36;1mif [ "${ALLOW_SHORT}" = "true" ]; then[0m
+2026-10-13T04:20:53.9719134Z [36;1m  args+=(--allow-short)[0m
+2026-10-13T04:20:53.9719331Z [36;1mfi[0m
+2026-10-13T04:20:53.9719566Z [36;1mpython scripts/targeted-verify/verify_sha.py "${args[@]}"[0m
+2026-10-13T04:20:53.9776733Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+2026-10-13T04:20:53.9777012Z env:
+2026-10-13T04:20:53.9777180Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:53.9777390Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:53.9777610Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:53.9777845Z   REQUESTED_SHA: fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:53.9778094Z   EXPECTED_REF: 
+2026-10-13T04:20:53.9778270Z   ALLOW_SHORT: false
+2026-10-13T04:20:53.9778447Z   SHA_LABEL: docs
+2026-10-13T04:20:53.9778619Z   PYTHONIOENCODING: utf-8
+2026-10-13T04:20:53.9778814Z ##[endgroup]
+2026-10-13T04:20:54.0163916Z [docs] requested sha : fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:54.0164456Z [docs] actual  from : --actual (arg)
+2026-10-13T04:20:54.0164760Z [docs] actual    sha : fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:54.0165372Z [docs] PASS SHA 核验通过：fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:54.0165861Z [docs] git HEAD      : fc6924c903de9f18226792d85702d996c28e3639
+2026-10-13T04:20:54.0166275Z [docs] github event  : workflow_dispatch refs/heads/feat/unified-cards-media-preview-021
+2026-10-13T04:20:54.0166847Z [docs] GITHUB_SHA    : fc6924c903de9f18226792d85702d996c28e3639（事件提交，PR 上是 merge commit）
+2026-10-13T04:20:54.0212528Z ##[end-action id=__self.__run_2;outcome=success;conclusion=success;duration_ms=51]
+2026-10-13T04:20:54.0299608Z ##[group]Run actions/setup-python@v6
+2026-10-13T04:20:54.0299840Z with:
+2026-10-13T04:20:54.0300005Z   python-version: 3.12
+2026-10-13T04:20:54.0300189Z   check-latest: false
+2026-10-13T04:20:54.0302063Z   token: ***
+2026-10-13T04:20:54.0302238Z   update-environment: true
+2026-10-13T04:20:54.0302598Z   allow-prereleases: false
+2026-10-13T04:20:54.0302779Z   freethreaded: false
+2026-10-13T04:20:54.0302964Z env:
+2026-10-13T04:20:54.0303118Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:54.0303304Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:54.0303524Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:54.0303715Z ##[endgroup]
+2026-10-13T04:20:54.1314619Z ##[group]Installed versions
+2026-10-13T04:20:54.1391238Z Successfully set up CPython (3.12.15)
+2026-10-13T04:20:54.1391929Z ##[endgroup]
+2026-10-13T04:20:54.1496068Z ##[group]Run python scripts/check_docs.py
+2026-10-13T04:20:54.1496354Z [36;1mpython scripts/check_docs.py[0m
+2026-10-13T04:20:54.1496602Z [36;1mpython scripts/check_docs.py --selftest[0m
+2026-10-13T04:20:54.1565752Z shell: /usr/bin/bash -e {0}
+2026-10-13T04:20:54.1565990Z env:
+2026-10-13T04:20:54.1566162Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:54.1566373Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:54.1566602Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:54.1566896Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.1567476Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib/pkgconfig
+2026-10-13T04:20:54.1568039Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.1568550Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.1569043Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.1569559Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib
+2026-10-13T04:20:54.1569946Z ##[endgroup]
+2026-10-13T04:20:54.2914836Z 文档一致性检查通过（47 个里程碑条目）
+2026-10-13T04:20:54.3195978Z   [ok] 过期：顶部 2026-09-12 < 正文 2026-10-03 → 期望红，实际红（顶部「最后核对」= 2026-09-12，但正文已记到 2026-10-03（第 3 行）——请把「最后核对」更新到 >= 2026-10-03）
+2026-10-13T04:20:54.3196471Z   [ok] 新鲜：顶部与正文同为 2026-10-03 → 期望绿，实际绿
+2026-10-13T04:20:54.3196768Z   [ok] 正文只有未来日期（路线图/迁移通知）→ 不算「已记到」 → 期望绿，实际绿
+2026-10-13T04:20:54.3197139Z   [ok] 缺「最后核对」字段 → 期望红，实际红（找不到「最后核对：YYYY-MM-DD」字段（读者靠它判断状态有多新））
+2026-10-13T04:20:54.3197497Z   [ok] 「最后核对」不是合法日期 → 期望红，实际红（「最后核对」不是合法日期：2026-13-99）
+2026-10-13T04:20:54.3197821Z   [ok] 正文只有更早的日期 → 不该误报 → 期望绿，实际绿
+2026-10-13T04:20:54.3198080Z check_docs --selftest：6 个场景，全部符合预期
+2026-10-13T04:20:54.3266596Z ##[group]Run python scripts/release_gate.py --selftest
+2026-10-13T04:20:54.3266943Z [36;1mpython scripts/release_gate.py --selftest[0m
+2026-10-13T04:20:54.3327951Z shell: /usr/bin/bash -e {0}
+2026-10-13T04:20:54.3328168Z env:
+2026-10-13T04:20:54.3328336Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:54.3328539Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:54.3328769Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:54.3329026Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.3329379Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib/pkgconfig
+2026-10-13T04:20:54.3329715Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.3330017Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.3330309Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:54.3330668Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib
+2026-10-13T04:20:54.3330923Z ##[endgroup]
+2026-10-13T04:20:55.6814567Z   [OK] 健康产物 （失败 无；警告 无）
+2026-10-13T04:20:55.6815006Z   [OK] 哈希不符 （失败 ['sha256sums']；警告 无）
+2026-10-13T04:20:55.6815424Z   [OK] 安装包比 sidecar 旧 （失败 ['sidecar.fresh']；警告 无）
+2026-10-13T04:20:55.6816008Z   [OK] 没有卸载钩子 （失败 ['uninstall.contract']；警告 无）
+2026-10-13T04:20:55.6816498Z   [OK] 卸载钩子删整键（会带走 DbBaseline） （失败 ['uninstall.contract']；警告 无）
+2026-10-13T04:20:55.6817063Z   [OK] 卸载钩子又按可执行文件名收 sidecar（会误杀另一份安装） （失败 ['uninstall.contract']；警告 无）
+2026-10-13T04:20:55.6817605Z   [OK] 缺少所有权守卫宏（模板补丁无处可指） （失败 ['uninstall.contract']；警告 无）
+2026-10-13T04:20:55.6818101Z   [OK] 钩子缺编译期门禁（没打补丁也能编译成功） （失败 ['uninstall.contract']；警告 无）
+2026-10-13T04:20:55.6818583Z   [OK] 没有构建 manifest（记 WARN，不判失败） （失败 无；警告 ['build.manifest']）
+2026-10-13T04:20:55.6819058Z   [OK] manifest 描述的是别的产物 （失败 ['build.manifest']；警告 无）
+2026-10-13T04:20:55.6819657Z   [OK] 未签名测试产物：签名项红、更新产物只记 WARN （失败 ['installer.sig', 'latest.json']；警告 ['updater.artifacts']）
+2026-10-13T04:20:55.6820757Z [PASS] 发布闸门自检通过：健康产物全绿；哈希不符 / 后端过期 / 缺卸载钩子 / 钩子删用户状态 / manifest 串包 都能变红；未签名测试产物只记 WARN
+2026-10-13T04:20:55.6915927Z ##[group]Run python scripts/targeted-verify/verify_workflow_contract.py
+2026-10-13T04:20:55.6916358Z [36;1mpython scripts/targeted-verify/verify_workflow_contract.py[0m
+2026-10-13T04:20:55.6970816Z shell: /usr/bin/bash -e {0}
+2026-10-13T04:20:55.6971026Z env:
+2026-10-13T04:20:55.6971189Z   PYTHONHASHSEED: 0
+2026-10-13T04:20:55.6971388Z   PYTEST_BASE_ARGS: -q --durations=15
+2026-10-13T04:20:55.6971612Z   VERIFY_SHA_SELF_TEST: true
+2026-10-13T04:20:55.6971871Z   pythonLocation: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:55.6972213Z   PKG_CONFIG_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib/pkgconfig
+2026-10-13T04:20:55.6972549Z   Python_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:55.6972848Z   Python2_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:55.6973166Z   Python3_ROOT_DIR: /opt/hostedtoolcache/Python/3.12.15/x64
+2026-10-13T04:20:55.6973461Z   LD_LIBRARY_PATH: /opt/hostedtoolcache/Python/3.12.15/x64/lib
+2026-10-13T04:20:55.6973753Z ##[endgroup]
+2026-10-13T04:20:55.7291689Z ##[error]PyYAML missing: No module named 'yaml'
+2026-10-13T04:20:55.7313795Z ##[error]Process completed with exit code 2.
+2026-10-13T04:20:55.7408605Z Post job cleanup.
+2026-10-13T04:20:55.7411420Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__6048c0a8-cb21-4779-b87b-261e1a400761.__actions_checkout]
+2026-10-13T04:20:55.7454064Z Post job cleanup.
+2026-10-13T04:20:55.8136116Z [command]/usr/bin/git version
+2026-10-13T04:20:55.8172394Z git version 2.55.0
+2026-10-13T04:20:55.8216465Z Temporarily overriding HOME='/home/runner/work/_temp/30f10374-0703-4d43-89f7-d4c6c4048e75' before making global git config changes
+2026-10-13T04:20:55.8217426Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-13T04:20:55.8218160Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+2026-10-13T04:20:55.8252938Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-13T04:20:55.8284456Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-13T04:20:55.8496823Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-13T04:20:55.8527554Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-13T04:20:55.8742720Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-13T04:20:55.8776111Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-13T04:20:55.9066842Z ##[end-action id=__6048c0a8-cb21-4779-b87b-261e1a400761.__actions_checkout;outcome=success;conclusion=success;duration_ms=165]
+2026-10-13T04:20:55.9120996Z Post job cleanup.
+2026-10-13T04:20:55.9793758Z [command]/usr/bin/git version
+2026-10-13T04:20:55.9827434Z git version 2.55.0
+2026-10-13T04:20:55.9856765Z Temporarily overriding HOME='/home/runner/work/_temp/e0b00fd4-72db-437f-873a-32dcbfd4dffa' before making global git config changes
+2026-10-13T04:20:55.9857774Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-13T04:20:55.9860796Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+2026-10-13T04:20:55.9891709Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-13T04:20:55.9921528Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-13T04:20:56.0146989Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-10-13T04:20:56.0180408Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-10-13T04:20:56.0406682Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-13T04:20:56.0421679Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-13T04:20:56.0902568Z Cleaning up orphan processes
