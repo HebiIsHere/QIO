@@ -27,6 +27,8 @@
   （`collected_media_candidates`，归类用 `classify_media_kind(…, include_images=True)`）→
   `resolve_media` 的图片分支 → `ImagePart` 挂在本轮首条 user 消息上。
 
+- **媒体类型一律按真实文件名判断**（`candidate["name"]`），展示标签（`_snippet` 只留 24 字符）只用于展示：
+  否则长文件名被截断后扩展名丢失，图片会被判成「无法确认媒体类型」而拒绝交付（2026-10-13 线上实测）。
 两条链路的能力位都只认**本次真实链路**的声明。会话链路**不**因为存在 `vision` 用途标签的凭据而切换链路
 （凭据策略：主循环优先 `main-loop`，见 `credentials/policy.py`）；所以「附件已交付」与「这个模型能否看懂」
 仍是两件事，后者不由本机保证。
