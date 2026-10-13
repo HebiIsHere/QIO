@@ -282,6 +282,15 @@ function refreshArea(): void {
   if (!boxEquals(frame.value, converged)) applyFrame(converged);
 }
 
+// 换板面：各恢复各的本机偏好（键里带板面身份），不把上一个板面的窗口带过去
+watch(
+  () => store.boardId,
+  (id) => {
+    if (preview.value) return;
+    applyFrame(resolveFrame(area.value, loadChatFrame(id)));
+  },
+);
+
 /* ------------------------------------------------------------------------
  * 尺寸：四条边 + 四个角（公共手势层）
  * ---------------------------------------------------------------------- */
@@ -618,7 +627,9 @@ watch(
         void scrollToBottom(true);
         return;
       }
-      el.scrollTop = Math.min(scrollMemory, Math.max(0, el.scrollHeight - el.clientHeight));
+      // 只在真的量到可滚动范围时才夹住：量不到（首帧 / 无布局）时按记下的位置原样恢复
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      el.scrollTop = maxScroll > 0 ? Math.min(Math.max(0, scrollMemory), maxScroll) : Math.max(0, scrollMemory);
     });
   },
 );
@@ -1575,6 +1586,8 @@ function onKeydown(event: KeyboardEvent) {
 .panel-body {
   flex: 1 1 auto;
   min-height: 0;
+  /* 阅读区（含过程与提示）不越界：缩到最小时宁可内部滚动 / 裁切，也不压到输入区 */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
