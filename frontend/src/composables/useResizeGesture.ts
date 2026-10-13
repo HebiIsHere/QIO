@@ -12,6 +12,7 @@ import { onScopeDispose, ref, type Ref } from "vue";
 import {
   RESIZE_DRAG_THRESHOLD,
   RESIZE_STEP,
+  boxEquals,
   resizeBox,
   stepBox,
   type ResizeBox,
@@ -81,6 +82,8 @@ export function useResizeGesture(options: ResizeGestureOptions) {
     pointerId = null;
     started = false;
     latest = null;
+    lastScreenDx = 0;
+    lastScreenDy = 0;
     active.value = false;
   }
 
@@ -141,20 +144,24 @@ export function useResizeGesture(options: ResizeGestureOptions) {
 
   function onPointerUp(event: PointerLike | null | undefined): void {
     if (pointerId !== null && typeof event?.pointerId === "number" && event.pointerId !== pointerId) return;
+    const base = started ? snapshot : null;
+    const startedHandle = handle;
     // 松手时按**当下**的限制再算一次：拖动期间窗口可能被缩小，直接交最后一次预览
     // 会把一个此刻已经超界的框提交出去（E 复核的 W5）。
+    // scale 只取一次：非纯实现两次调用可能给出不同系数，x / y 会各用一套。
+    const scale = finiteScale(options.scale?.());
     const commit =
-      started && snapshot && handle
-        ? resizeBox(
-            snapshot,
-            handle,
-            lastScreenDx * finiteScale(options.scale?.()),
-            lastScreenDy * finiteScale(options.scale?.()),
-            options.limits(),
-          )
+      base && startedHandle
+        ? resizeBox(base, startedHandle, lastScreenDx * scale, lastScreenDy * scale, options.limits())
         : null;
     reset();
-    if (commit) options.onCommit(commit, "pointer");
+    if (!commit || !base) return;
+    // 拖动又回到起点：数值没变就不提交（不产生一次无意义的板面保存）。
+    if (boxEquals(commit, base)) return;
+    // 复算结果与最后一次预览不同（拖动期间限制变了）时，先把最终框推给显示层再提交，
+    // 否则用户会看到「松手之后自己跳一下」（E 复核的 R2：预览 420 → 提交 640）。
+    if (!latest || !boxEquals(commit, latest)) options.onPreview(commit);
+    options.onCommit(commit, "pointer");
   }
 
   function onPointerCancel(event: PointerLike | null | undefined): void {
