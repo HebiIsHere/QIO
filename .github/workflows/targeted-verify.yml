@@ -204,6 +204,11 @@ jobs:
           python scripts/check_docs.py --selftest
       - name: Release gate selftest
         run: python scripts/release_gate.py --selftest
+      # ci.yml 的 docs job 里本来就有这一步；targeted-verify.yml 漏了它，于是这个入口的
+      # docs 单项从来没跑通过（契约检查器需要 PyYAML，缺了直接「PyYAML missing」退出 2）。
+      # 2026-10-13 派发 targets=docs 实测踩到，照 ci.yml 补上同一条。
+      - name: Install PyYAML (workflow contract checker)
+        run: python -m pip install --disable-pip-version-check "pyyaml==6.0.2"
       - name: Workflow trigger / SHA / filter contract
         run: python scripts/targeted-verify/verify_workflow_contract.py
       - name: verify_sha unit tests
