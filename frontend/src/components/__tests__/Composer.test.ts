@@ -129,6 +129,47 @@ describe("Composer 运行中仍可书写（任务02 §1/§3/§4/§11）", () => 
     w.unmount();
   });
 
+  it("输入框走共享滚动引擎的 hidden 档：保留滚动能力，但不画指示条、不预留轨道空白", async () => {
+    const { w } = await mountComposer();
+    const ta = w.find("textarea.qio-input").element as HTMLTextAreaElement;
+    expect(ta.classList.contains("qio-scroll-host")).toBe(true);
+    expect(ta.dataset.qioScroll).toBe("hidden");
+    // hidden 档不建立指示条，范围标记固定为 none
+    expect(ta.dataset.qioRange).toBe("none");
+    expect(ta.querySelector(".qio-scroll-rail")).toBeNull();
+    // 软换行：横向永远没有滚动范围
+    expect(ta.getAttribute("wrap")).toBe("soft");
+    expect(ta.getAttribute("data-qio-fit")).not.toBeNull();
+    w.unmount();
+  });
+
+  it("草稿从 store 恢复 / 切换话题后重算高度（不是等用户下一次输入）", async () => {
+    const { w } = await mountComposer();
+    const session = useSessionStore();
+    const ta = w.find("textarea").element as HTMLTextAreaElement;
+    // 模拟真实浏览器：多行内容需要更高
+    Object.defineProperty(ta, "scrollHeight", {
+      configurable: true,
+      get: () => (ta.value.includes("\n") ? 146 : 46),
+    });
+
+    // 恢复草稿（发送失败放回 / 从设置页返回）：高度按恢复后的内容重算
+    ta.style.height = "999px";
+    session.draft = "第一行\n第二行\n第三行";
+    await nextTick();
+    await nextTick();
+    expect(ta.value).toBe("第一行\n第二行\n第三行");
+    expect(ta.style.height).toBe("146px");
+
+    // 切换话题：草稿字符串没变（不触发草稿 watch），高度仍按内容重算
+    ta.style.height = "999px";
+    session.currentTopicId = "t2";
+    await nextTick();
+    await nextTick();
+    expect(ta.style.height).toBe("146px");
+    w.unmount();
+  });
+
   it("发送多行输入后高度复位（清空 DOM 值之后再测量）", async () => {
     const { w } = await mountComposer();
     const ta = w.find("textarea").element as HTMLTextAreaElement;

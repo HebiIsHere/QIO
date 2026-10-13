@@ -346,3 +346,40 @@ describe("内联审批：复用既有 approvals store，同一时刻只允许一
     w.unmount();
   });
 });
+
+describe("过程区：同一连续阅读区只保留一层主要纵向滚动", () => {
+  it("过程区在宽度链上带 data-qio-fit；展开历史 / 详情都不新建滚动视口", async () => {
+    const { w } = mountProcess({
+      items: [RUNNING_TOOL],
+      stages: [RUNNING_STAGE],
+      running: false,
+      facts: facts({
+        status: "failed",
+        reason: "模型服务没有响应",
+        reasonCode: "upstream_502",
+        errorText: "upstream 502 " + "E".repeat(500),
+        actions: ["retry"],
+      }),
+    });
+    await nextTick();
+
+    const tp = w.find("[data-test='turn-process']");
+    expect(tp.attributes("data-qio-fit")).not.toBeUndefined();
+    // 过程区自己**不**建滚动容器：内容在消息流这同一层阅读区里长高
+    expect(tp.element.querySelectorAll("[data-qio-scroll]").length).toBe(0);
+    expect(tp.element.querySelectorAll(".qio-scroll-host").length).toBe(0);
+
+    // 结束详情全文在同一个阅读区里展开（不再套 160px 的小滚动窗口）
+    const pre = tp.find(".tp-outcome-pre");
+    expect(pre.exists()).toBe(true);
+    expect(pre.attributes("data-qio-fit")).not.toBeUndefined();
+    expect(pre.text()).toContain("upstream 502");
+
+    // 展开历史：仍然没有第二个滚动视口
+    await tp.find("[data-test='turn-process-toggle']").trigger("click");
+    await nextTick();
+    expect(tp.element.querySelectorAll("[data-qio-scroll]").length).toBe(0);
+    expect(tp.element.querySelectorAll(".qio-scroll-rail").length).toBe(0);
+    w.unmount();
+  });
+});
