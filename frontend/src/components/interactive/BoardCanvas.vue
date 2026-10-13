@@ -635,6 +635,11 @@ const resizeBoxes = computed<Record<string, LayoutRect>>(() => {
   for (const cardId of current.selection) {
     const card = current.cards.find((item) => item.id === cardId);
     if (!card || card.deleted) continue;
+    /**
+     * 折叠的卡片高度是 auto（只有一条标题），真实外框与板面尺寸不同：
+     * 这时不摆把手，免得把手画在卡片外面（先展开再调尺寸）。
+     */
+    if (card.folded) continue;
     out[cardId] = displayRect(card);
   }
   return out;
@@ -1748,7 +1753,7 @@ onBeforeUnmount(() => {
         @pointerdown="onSurfacePointerDown"
       >
         <div class="board-scroll-content" :style="contentStyle">
-          <div ref="surface" class="board-surface" :style="surfaceStyle">
+          <div ref="surface" class="board-surface" :class="{ resizing: Boolean(resizing) }" :style="surfaceStyle">
           <BoardGroupFrame
             v-for="group in displayGroups"
             :key="group.id"
@@ -1899,6 +1904,12 @@ onBeforeUnmount(() => {
 .board-viewport.framing { cursor: crosshair; }
 .board-scroll-content { position: relative; }
 .board-surface { position: relative; will-change: transform; }
+/*
+ * 尺寸拖动中：关掉卡片的几何过渡（left / top / width / height）。
+ * 卡片自己的过渡是「松手后归位」用的；拖动中还带着它，预览会滞后于指针（看着不跟手）。
+ * 用父层类名 + :deep 关，避免动 BoardCard（子智能体 B 的写域）。
+ */
+.board-surface.resizing :deep(.card) { transition: none; }
 .select-rect {
   position: absolute;
   border: 1px dashed var(--accent);

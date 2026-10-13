@@ -166,6 +166,12 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
       width: 120 * scale + "px",
       height: 80 * scale + "px",
     });
+
+    // 折叠的卡片高度是 auto（只有标题条）：不摆把手，免得把手画在卡片外
+    store.board = board([mkCard("c1", 100, 100, 120, 80, { folded: true })], { selection: ["c1"] });
+    await nextTick();
+    expect(view.find('[data-resize-card-id="c1"]').exists()).toBe(false);
+    expect(view.find('[data-im="resize-layer"]').exists()).toBe(true);
   });
 
   it("拖动中只预览、不提交；松手才一次 commit，标签「调整卡片尺寸」，只改几何", async () => {
@@ -179,6 +185,8 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
     await nextTick();
     // 跟手：显示变大了，但板面状态一个字没改，也没有提交
     expect(labels).toEqual([]);
+    // 拖动中关掉几何过渡（否则预览会滞后于指针）
+    expect(view.get(".board-surface").classes()).toContain("resizing");
     expect(rectOfCard(view, "c1").w).toBe(180);
     expect(rectOfCard(view, "c1").h).toBe(120);
     expect(store.board?.cards[0].w).toBe(120);
@@ -187,6 +195,8 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
     document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 280, VIEW_TOP + 220));
     await nextTick();
     expect(labels).toEqual(["调整卡片尺寸"]);
+    // 松手后恢复过渡（归位动画照旧）
+    expect(view.get(".board-surface").classes()).not.toContain("resizing");
     expect(store.board?.cards[0]).toMatchObject({ x: 100, y: 100, w: 180, h: 120 });
     // 许可 / 选择 / 展开集合一个都没动
     expect(store.board?.cards[0].checked).toBe(true);
