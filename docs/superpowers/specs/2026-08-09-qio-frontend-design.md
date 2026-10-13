@@ -455,8 +455,12 @@
 - 普通对话与互动对话使用同一套内容宽度约束：消息流、消息项、气泡、正文、过程详情、附件、
   输入区、错误恢复与内部渲染器都**不得**成为水平滚动容器。
 - 布局链用 `min-width: 0` + 收缩规则 + `overflow-wrap: anywhere` 做**真正的修复**；
-  `[data-qio-fit]` 的 `overflow-x: clip` 只作边界保护 —— 与 `hidden` 不同，`clip` 不建立滚动容器
-  （程序性滚动也做不到），因此不存在「藏起滚动条但内容还能左右滚」。
+  `[data-qio-fit]` 的 `overflow-x: clip` 只作边界保护。两条实测事实（Chromium）：
+  ① 另一轴为 `visible` 时 `clip` 不建立滚动容器（程序性滚动也做不到）；
+  ② 另一轴为 `auto/scroll/hidden` 时 `clip` 的**计算值变成 `hidden`**（CSS Overflow 规范），
+  此时元素不会被用户手势横向滚动，但可被脚本 / `focus` / `scrollIntoView` 滚动。
+  所以判据是**内容本身不横向溢出**（`scrollWidth ≤ clientWidth + 1`），
+  而不是「写了 `clip` 或 `hidden`」；验收要同时看「内容是否溢出」与「scrollLeft 能否真的移动」。
 - 代码块软换行（`white-space: pre-wrap` + `overflow-wrap: anywhere`）：视觉折行不改字符序列，
   渲染文本、复制按钮、手动选择复制、下载与底层数据仍是**原字符串**。
 - `textarea` 软换行；长 URL、路径、连续英文与数字自动视觉换行；图片与视频按消息可用宽度比例适配；
@@ -479,6 +483,10 @@
 - 普通对话与互动对话复用同一份适配逻辑（`frontend/src/components/MarkdownContent.vue` +
   `frontend/src/composables/useQioTables.ts`），不写某个页面的深层 CSS。
 - 流式生成过程中也不能短暂撑破消息区。
+- **记录模式只用于存在真实表头行的表格**。合并单元格、电子表格网格与文档/幻灯片表格保留真实跨度与
+  行列对应关系（不展开成逐项记录，避免误导），改用固定布局 + 内容换行保证不横向溢出；
+  「由一个网格区域承担二维查看（可横向）」只允许出现在**独立互动材料阅读**上下文里，
+  对话内一律不横向。
 
 ### 15.5 边界（本节不改变的东西）
 

@@ -130,8 +130,16 @@
    规则优先级高于旧规范里「代码块可以横向滚动」的约定。用法：
    - data-qio-fit：任何**不得横向滚动**的容器（消息、气泡、正文、预览、过程、弹层正文）；
    - data-qio-scope="chat"：对话根（普通对话与互动对话都用它），启用整套适配。
-   overflow-x: clip 是**边界保护**：它不建立滚动容器（与 hidden 不同，程序性滚动也做不到），
-   因此不是「藏起滚动条但内容还能左右滚」。真正的修复在布局：min-width: 0 + 换行 + 收缩规则。 */
+   overflow-x: clip 是**边界保护**：真正的修复在布局（min-width: 0 + 换行 + 收缩规则）。
+   两条必须知道的实测事实（Chrome/Chromium，本任务 lead-probe 与 overflow-combo-probe 实测）：
+   1) 另一轴是 visible 时，clip 不建立滚动容器：程序性滚动（scrollLeft）也做不到；
+   2) 另一轴是 auto/scroll/hidden 时，**clip 的计算值会变成 hidden**（CSS Overflow 规范），
+      此时元素变成「横向不可被用户手势滚动、但可被脚本/focus/scrollIntoView 滚动」的容器。
+      实测：overflow-y:auto + overflow-x:hidden|clip → computed overflow-x=hidden，
+      scrollLeft=200 能赋值成功，但 wheel deltaX 与 Shift+wheel 都推不动它；
+      overflow-x:auto 则 wheel deltaX 真的会滚动（这才是必须消灭的「横向可滚」）。
+   结论：只要内容本身不横向溢出（scrollWidth ≤ clientWidth + 1），上面两种情况都不会移动；
+   验收判定因此必须同时看「内容是否溢出」与「是否真的能滚」，不能只看其中一项。 */
 [data-qio-fit] {
   min-width: 0;
   max-width: 100%;
