@@ -301,3 +301,96 @@ def test_context_only_carries_image_parts_when_vision_is_on(db_conn, svc, tmp_pa
     sources = {m["source"] for m in without["materials"]}
     assert "image_delivered" not in sources
 
+
+# -- 「文件」入口加的图片：与图片卡同一份交付事实（2026-10-13 复审指出的缺口） ------
+
+
+def _file_card(att) -> dict:
+    """用户在板面用「文件」入口加的卡片（扩展名是图片时也应该拿到画面）。"""
+    return models.new_card(
+        "file",
+        "",
+        meta={"name": att.original_name, "file": {"name": att.original_name, "attachmentId": att.id}},
+    )
+
+
+def test_file_card_holding_an_image_is_delivered_when_vision_is_on(db_conn, svc, tmp_path):
+    """链路有视觉能力时，「文件」卡里的 .png 必须交付**真实字节**。
+
+    旧实现把这一支硬编码成「当前模型链路没有视觉能力」且从不读字节 —— 理由假、字节也永远拿不到。
+    """
+    att = _ready(svc, tmp_path, "shot-file.png", _png())
+    card = _file_card(att)
+    state = _state(card)
+
+    entries = materials.resolve_materials(
+        db_conn, state=state, cards=[card], attachments=svc, vision=True
+    )
+    entry = [e for e in entries if e["cardId"] == card["id"]][0]
+    assert entry["source"] == "image_delivered", entry
+    assert entry["read"] is True
+    assert entry["bytes"] == len(_png())
+    assert "没有视觉能力" not in entry["reason"], entry["reason"]
+
+    images = materials.resolve_images(db_conn, state=state, cards=[card], attachments=svc)
+    assert len(images) == 1, images
+    head, payload = images[0]["dataUrl"].split(",", 1)
+    assert head == "data:image/png;base64"
+    assert base64.b64decode(payload) == _png(), "交付的必须是原字节"
+
+
+def test_file_card_holding_an_image_without_vision_keeps_the_honest_reason(db_conn, svc, tmp_path):
+    att = _ready(svc, tmp_path, "shot-file2.png", _png())
+    card = _file_card(att)
+    state = _state(card)
+
+    entries = materials.resolve_materials(
+        db_conn, state=state, cards=[card], attachments=svc, vision=False
+    )
+    entry = [e for e in entries if e["cardId"] == card["id"]][0]
+    assert entry["source"] == "image_unsupported"
+    assert entry["read"] is False
+    assert "没有视觉能力" in entry["reason"]
+    # resolve_images 是**能力无关**的读取层（只回答「字节读得出来吗」）：
+    # 「这次要不要交付」的闸门在 build_context 的 vision 上（见下一条用例）。
+    assert len(materials.resolve_images(db_conn, state=state, cards=[card], attachments=svc)) == 1
+
+
+def test_non_image_file_card_is_not_delivered_as_an_image(db_conn, svc, tmp_path):
+    """反向守卫：普通文件卡（.txt）不能被当成图片交付，也不许标成 image_* 的事实。"""
+    att = _ready(svc, tmp_path, "note.txt", "这是一份文本".encode("utf-8"))
+    card = _file_card(att)
+    state = _state(card)
+
+    entries = materials.resolve_materials(
+        db_conn, state=state, cards=[card], attachments=svc, vision=True
+    )
+    entry = [e for e in entries if e["cardId"] == card["id"]][0]
+    assert not str(entry["source"]).startswith("image"), entry["source"]
+    assert materials.resolve_images(db_conn, state=state, cards=[card], attachments=svc) == []
+
+
+def test_context_includes_a_file_card_image_when_vision_is_on(
+    db_conn, svc, tmp_path, monkeypatch
+):
+    """端到端：上下文里真的带上这份图片，且能重建内容块。"""
+    att = _ready(svc, tmp_path, "shot-file3.png", _png())
+    card = _file_card(att)
+    state = _state(card)
+    uid = _seed_submission(db_conn, state)
+
+    monkeypatch.setattr(understanding, "_derive_materials_service", lambda conn: svc, raising=False)
+    monkeypatch.setattr(
+        understanding,
+        "_resolve_deliverable_images",
+        lambda conn, st: materials.resolve_images(conn, state=st, cards=st["cards"], attachments=svc),
+    )
+
+    with_vision = understanding.build_context(db_conn, board_id=BOARD, understanding_id=uid, vision=True)
+    without = understanding.build_context(db_conn, board_id=BOARD, understanding_id=uid, vision=False)
+
+    assert with_vision["imageParts"], "视觉开启时文件卡里的图片也要进上下文"
+    assert with_vision["imageParts"][0]["dataUrl"].startswith("data:image/png;base64,")
+    assert understanding.image_parts_from_context(with_vision)
+    assert without["imageParts"] == []
+

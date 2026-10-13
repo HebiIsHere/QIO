@@ -126,8 +126,9 @@ def resolve_images(
     """本次可见范围里**可以真正交给模型看**的图片（多模态交付）。
 
     与 `resolve_materials` 同一套可见性纪律（未勾选的注释 / 隐藏 / 已删除一律不读），
-    只处理 `kind="image"` 且 meta 里登记了**真实已保存附件**的卡片：返回的每一条都是
-    「读了字节、能交给视觉模型」的条目 —— 读不到 / 类型不支持 / 超过上限的**不在这里**，
+    处理 `kind="image"` 的卡片，**以及 `kind="file"` 但附件是图片的卡片**（用户在板面上用「文件」
+    入口加一张 .png 也是图片，不该因为入口不同就拿不到画面），且 meta 里登记了**真实已保存附件**：
+    返回的每一条都是「读了字节、能交给视觉模型」的条目 —— 读不到 / 类型不支持 / 超过上限的**不在这里**，
     而是在 `resolve_materials` 的条目里如实说明原因（调用方据此区分「没交付」与「交付了」）。
 
     返回条目字段：
@@ -143,7 +144,9 @@ def resolve_images(
         return []
     out: list[dict] = []
     for card in _iter_cards(state, cards):
-        if str(card.get("kind") or "") != "image":
+        # 文件卡也要看：`_deliverable_image` 只认「可交付的图片类型」，
+        # 所以对 docx / pdf 这类文件卡它天然返回 None，不会误交付。
+        if str(card.get("kind") or "") not in ("image", "file"):
             continue
         item = _deliverable_image(card, service=service, max_bytes=limit_bytes)
         if item is not None:
@@ -1347,7 +1350,9 @@ def _resolve_card(
         # 合并成一条 inline 材料；未许可的卡在上层可见性判断里已被拦住、根本不进列表。
         return _inline_entry(card, label, max_chars=max_chars)
     if kind == "file":
-        return _file_entry(card, label, meta, service=service, tool=tool, max_chars=max_chars)
+        return _file_entry(
+            card, label, meta, service=service, tool=tool, max_chars=max_chars, vision=vision
+        )
     if kind == "image":
         return _image_entry(card, label, meta, service=service, vision=vision)
     # 遗留 code / url 没有材料通道：迁移完成前整体不可见（models.visible_except_deleted）。
@@ -1413,6 +1418,7 @@ def _file_entry(
     service: AttachmentService | None,
     tool: attachment_tools.ReadAttachmentTool | None,
     max_chars: int,
+    vision: bool = False,
 ) -> dict:
     raw_id = _attachment_id(meta, "file")
     shown_name = label or str(meta.get("name") or "").strip() or "（未命名文件）"
@@ -1456,7 +1462,8 @@ def _file_entry(
             reason=f"找不到这个附件 id：{raw_id}（可能已被删除或不属于这台设备）",
         )
     return _attachment_entry(
-        card, att, label=label or att.original_name, tool=tool, max_chars=max_chars
+        card, att, label=label or att.original_name, tool=tool, max_chars=max_chars,
+        vision=vision,
     )
 
 
@@ -1467,6 +1474,7 @@ def _attachment_entry(
     label: str,
     tool: attachment_tools.ReadAttachmentTool | None,
     max_chars: int,
+    vision: bool = False,
 ) -> dict:
     """真实读取已保存附件的正文（复用既有解析，不重写）。"""
     mode, mode_label, mode_note = classify_readability(att.original_name)
@@ -1487,19 +1495,10 @@ def _attachment_entry(
         )
 
     if mode == "image":
-        # 图片走 file 卡片（扩展名是图片）：同样没有视觉能力，如实标注
-        return _entry(
-            card,
-            source="image_unsupported",
-            label=label,
-            version=version,
-            read=False,
-            bytes=_int_bytes(att),
-            characters=0,
-            attachment_id=att.id,
-            reason="当前模型链路没有视觉能力：只登记图片元数据，不声称看懂图片内容",
-            notes=[f"附件类型：{mode_label}（{mode_note}）"],
-        )
+        # 图片走「文件」卡片（扩展名是图片）：与图片卡**共用同一份交付事实**，含 vision 判断。
+        # 旧实现硬编码「当前模型链路没有视觉能力」且从不读字节 —— 链路其实有视觉能力时，
+        # 那句话是假话，用户也永远拿不到画面（2026-10-13 复审指出）。
+        return _image_fact(card, att, raw_id=att.id, label=label, vision=vision)
     if att.state == "prepared":
         return unreadable(f"附件「{att.original_name}」还在准备中（{att.state}），现在没有可读的内容")
     if att.state == "cancelled":
@@ -1617,6 +1616,25 @@ def _image_entry(
     """
     raw_id = _attachment_id(meta, "image") or _attachment_id(meta, "file")
     att = service.get(raw_id, check=False) if (service is not None and raw_id) else None
+    return _image_fact(
+        card, att, raw_id=raw_id, label=label, vision=vision, max_image_bytes=max_image_bytes
+    )
+
+
+def _image_fact(
+    card: dict,
+    att: Attachment | None,
+    *,
+    raw_id: str | None,
+    label: str,
+    vision: bool,
+    max_image_bytes: int = MAX_IMAGE_BYTES,
+) -> dict:
+    """图片的交付事实：**图片卡与「文件卡里的图片」共用同一份判断与措辞**。
+
+    拆出来是为了不再出现「同一个事实两套说法」：文件卡里的图片以前是硬编码的
+    「当前模型链路没有视觉能力」——在链路其实有视觉能力时，那是一句假话（2026-10-13 复审指出）。
+    """
     bytes_ = _int_bytes(att) if att is not None else 0
     version = _attachment_version(att) if att is not None else _content_version(card)
     name = str(getattr(att, "original_name", "") or "") if att is not None else ""
@@ -1674,6 +1692,7 @@ def _image_entry(
             ],
         )
 
+    # 后面的三种原因都基于 raw_id / att，与 `_image_entry` 的入参无关。
     # 没有视觉能力时的**主原因**必须点明「视觉能力」；具体是哪一种拿不到字节写进 notes。
     # （这样既保持诚实口径可机械核对，又不会把「还没有附件」笼统说成「模型看不见」）
     if not raw_id:
