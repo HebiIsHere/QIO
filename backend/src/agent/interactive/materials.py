@@ -186,27 +186,34 @@ def collected_media_candidates(
             kind = classify_media_kind(name, include_images=True)
             if not kind:
                 continue
+            # 取不到路径也要**如实说**，不许静默丢弃：
+            # 静默丢弃的后果是模型连「没读到」这句事实都拿不到（复审用 100MB+ 的引用型 .jpeg 实测：
+            # candidates=[]，没有任何说明）。现在把它降级成一条带可读原因的 *_unsupported 条目。
+            unreadable = ""
             try:
                 path, _origin = attachments.content_target(att.id)
-            except Exception:  # noqa: BLE001 - 取不到路径的候选不参与（原因由条目如实说明）
-                continue
-            if path is None:
-                continue
+            except Exception as exc:  # noqa: BLE001 - 读不到字节是要交付的事实，不是异常
+                path = None
+                unreadable = str(exc).strip() or f"读取附件字节失败：{type(exc).__name__}"
+            if path is None and not unreadable:
+                unreadable = "读不到这份附件的字节：没有可用的副本路径"
             seen.add(identifier)
             size = _int_bytes(att)
-            try:
-                size = int(Path(path).stat().st_size) or size
-            except OSError:
-                pass
+            if path is not None:
+                try:
+                    size = int(Path(path).stat().st_size) or size
+                except OSError:
+                    pass
             out.append(
                 {
                     "attachmentId": identifier,
                     "card_id": identifier,
                     "name": name,
                     "kind": kind,
-                    "path": Path(path),
+                    "path": Path(path) if path is not None else None,
                     "bytes": size,
                     "version": _attachment_version(att),
+                    "unreadable_reason": unreadable,
                 }
             )
     return out
@@ -353,7 +360,8 @@ def _media_candidate_entry(
     bytes_ = _to_int_bytes(candidate.get("bytes"))
     attachment_id = str(candidate.get("attachmentId") or "") or None
     if path is None:
-        reason = (
+        # 候选带来的原因更具体（例如「引用本地文件的附件：QIO 没有保存副本」），优先用它。
+        reason = str(candidate.get("unreadable_reason") or "") or (
             "这张材料还没有关联已保存的附件（meta 里没有 attachmentId）：读不到字节"
             if not attachment_id
             else f"读不到附件「{shown}」的字节：文件不在原来登记的位置（可以重新定位后再试）"

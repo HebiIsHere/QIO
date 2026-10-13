@@ -4204,9 +4204,19 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - 线上数据复核（拿真附件真轮次跑修复后的代码）：候选 `image` / 65138 字节 → `image_delivered` / `read=True`，
   内容块 `ImagePart(image/jpeg)`，解码后 **65138 字节与文件逐字节一致**，提示词里出现「图片「…」的真实字节已交给本次链路」。
 
-### 六、验证
+### 六、第三个缺口（独立复审发现：读不到字节时静默丢弃）
 
-- 新增 `backend/tests/test_chat_image_delivery.py`（15 条，**不需要 ffmpeg**：图片夹具是内嵌的真实 JPEG/PNG 字节）：
+- 复审用 100MB+ 的**引用型** .jpeg 实测：这类附件（`kind=reference`，>100MB 不复制副本）
+  在 `content_target` 上必然报错，而收集器当时是 `except: continue` → **候选为空、连一句说明都没有**，
+  模型完全不知道有这张图。这违反本项目「要么交付、要么如实说明」的口径。
+- 修法：收集器取不到路径时**不再丢弃**，而是带 `path=None` + `unreadable_reason`（直接用服务端那句可读原因）
+  继续走到 `resolve_media`，由它产出一条 `image_unsupported`（音频 / 视频同理）；
+  `_media_candidate_entry` 优先采用候选带来的具体原因；同时修掉自己引入的一处 `Path(None).stat()` 崩溃。
+- 新增回归：引用型大图 → 有 1 条候选（`path is None`、带原因）→ `image_unsupported` 且不交付内容块。
+
+### 七、验证
+
+- 新增 `backend/tests/test_chat_image_delivery.py`（16 条，**不需要 ffmpeg**：图片夹具是内嵌的真实 JPEG/PNG 字节）：
   候选清单认图片（根因回归）、交付字节与文件**逐字节一致**、无能力位如实降级、超限不截断、
   格式不支持点明格式、非媒体不被当视频抽帧、事实文案、以及真实流水线的两条端到端
   （每次模型调用都带着图片 / 没有能力位时在提示词里如实说明）。

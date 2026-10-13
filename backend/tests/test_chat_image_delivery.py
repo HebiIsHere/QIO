@@ -305,6 +305,49 @@ def test_message_without_images_keeps_the_plain_string_shape():
     assert native._openai_content(Msg(role="user", content="只有文字")) == "只有文字"
 
 
+# --- 7. 读不到字节时也要给一句事实（不许静默丢弃） ------------------------
+
+
+async def test_reference_attachment_yields_an_honest_fact_not_silence(tmp_path: Path):
+    """大文件按「引用」登记（不复制副本）：媒体通道读不到字节，但**不许静默丢弃** ——
+    修复前这种附件连一条说明都没有（复审用 100MB+ 的 .jpeg 实测 candidates=[]），
+    模型因此完全不知道有这张图。现在必须给出一条带可读原因的 `image_unsupported`。"""
+    ctx = _ctx(tmp_path)
+    service = AttachmentService(ctx.conn, Path(ctx.settings.data_dir))
+    topic = ctx.topics.nodes.create_topic("大图").id
+    tctx = ctx.turns.submit("这是什么", topic)
+
+    big = tmp_path / "huge.jpeg"
+    with big.open("wb") as handle:  # 稀疏文件：不真的占 100MB
+        handle.seek(100_000_001)
+        handle.write(b"\0")
+    att = service.prepare(str(big), topic_id=topic, turn_id=tctx.turn_id)
+    service.run_prepare(att.id)
+    assert att.kind == "reference", att.kind
+
+    candidates = materials.collected_media_candidates(service, [tctx.turn_id])
+
+    assert len(candidates) == 1, candidates
+    assert candidates[0]["kind"] == "image"
+    assert candidates[0]["path"] is None
+    assert candidates[0]["unreadable_reason"], "必须带上可读原因"
+
+    out = materials.resolve_media(
+        candidates=candidates,
+        supports_images=True,
+        supports_audio=False,
+        supports_video=False,
+        audio_transcription=None,
+        transcriber=None,
+        work_dir=None,
+    )
+    entry = out["entries"][0]
+    assert entry["source"] == "image_unsupported", entry
+    assert entry["read"] is False
+    assert ("引用" in entry["reason"]) or ("副本" in entry["reason"]), entry["reason"]
+    assert out["parts"] == []
+
+
 # --- 6. 真实附件名的形状：长名字被展示层截断，不许影响媒体类型 ------------
 
 
