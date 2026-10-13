@@ -1026,4 +1026,90 @@ ExecutionStep / Execution / ExecutionControlResult`。
    （`reason=real_execution`），演示意图批准不建立真实执行。
 
 
+---
 
+## 15. 互动空间结构与自由尺寸调整（2026-10-13 第十一轮，**本轮边界**）
+
+### 15.0 本轮边界
+
+- 一句话：**卡片与互动对话窗口都能自由调整尺寸**；尺寸只改变布局与查看，不产生表达 / 意图 / 审批 /
+  模型调用，不暂停任务，不改变许可（`checked` / `hidden` / `deleted`），不清草稿，不触发重叠成组。
+- 本轮**不做**：打包桌面窗口的真机复验、跨设备尺寸偏好同步、把尺寸偏好写进服务端用户数据。
+
+### 15.1 三层彼此独立的状态（冻结）
+
+| 状态 | 载体 | 语义 |
+| --- | --- | --- |
+| 卡片 / 窗口**容器尺寸** | 卡片：板面状态 `card.w` / `card.h`；对话窗口：本机偏好 | 只改布局与查看 |
+| **阅读展开**（临时让位） | `planExpandedLayout` 的显示槽位，**只用于渲染** | 临时显示布局，绝不写回板面 |
+| **画布缩放 / 平移** | `viewport.ts` 的 `Viewport{scale,x,y}` | 查看适配 |
+
+- 调整一张卡片的尺寸**不得**改变其它卡片的文字大小，也不得改变聊天文字大小；
+  不得用 `transform: scale()` 冒充容器尺寸调整。
+
+### 15.2 尺寸的持久化与提交口径（冻结）
+
+- **卡片常态尺寸 = 板面状态的 `card.w/h`**，走既有保存路径
+  （`store.commit(updateCard(board, cardId, {...}), "调整卡片尺寸")`），一次提交、一条撤销记录。
+- 提交字段：**常态卡片提交 `{x, y, w, h}`**；
+  **展开中、或被让位（显示槽位 ≠ 正式位置）时只提交 `{w, h}`** —— 临时槽位坐标绝不写回板面。
+- 后端 `submission.py` 的 `_card_meaning` 不含位置 / 大小 / 折叠 / 书签，
+  纯几何变化归入 `DISPLAY_ONLY_EXPRESSIONS`（`layout_only`），**不产生意图、不申请审批**。
+- **对话窗口**的位置与尺寸是本机查看偏好（`interactive/chatFrame.ts`），
+  按**板面身份**绑定 localStorage 键（`qio-chat-frame:<boardId>`），
+  恢复时按当前可用空间收敛，不把窗口恢复到屏幕外；存储不可用时静默降级为「仅本次会话生效」。
+- 拖动过程中**不得**提交（只回调 `onPreview`）；松手才提交一次。
+- 尺寸未变（`boxEquals`，容差 `0.01`）不提交。
+
+### 15.3 尺寸原语（冻结签名）
+
+`frontend/src/interactive/resize.ts`（纯函数，无 DOM）：
+
+```ts
+export type ResizeHandle = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+export interface ResizeBox { x: number; y: number; w: number; h: number }
+export interface SizeLimits { minW: number; minH: number; maxW: number; maxH: number }
+export const RESIZE_HANDLES: readonly ResizeHandle[];
+export const RESIZE_STEP: number;
+export function usableArea(area): boolean;
+export function sizeLimits(minW, minH, maxW, maxH): SizeLimits;
+export function limitsForArea(area, min, pad?): SizeLimits;   // 面积未知 → 无上界，绝不塌成 1×1
+export function clampBox(box, limits): ResizeBox;
+export function resizeBox(start, handle, dx, dy, limits): ResizeBox;
+export function stepBox(start, axis, direction, limits, step?): ResizeBox;
+export function convergeBox(box, area, origin?): ResizeBox;
+export function boxEquals(a, b, epsilon?): boolean;
+export function boxesOverlap(a, b): boolean;
+export function findFreeSlot(input): ResizeBox;
+```
+
+`frontend/src/composables/useResizeGesture.ts`：`box` / `limits` / `scale` / `onPreview` / `onCommit` /
+`onCancel`；阈值按**未换算的屏幕位移**判定；松手按当下的限制复算一次并先推给显示层再提交；
+指针取消 / Esc / 失焦 / 组件卸载 = 恢复拖动前状态并清理监听。
+
+### 15.4 跨组件通道（冻结）
+
+- `interactive/chatFrameState.ts`：`liveChatFrame` / `liveChatCollapsed` /
+  `publishChatFrame(frame, collapsed?)` / `readChatFrame()` / `chatObstacleFrame()`（返回**副本**；收起时为 null）。
+  ChatDock 发布，审批浮层与展开布局消费。
+- `interactive/overlayAvoid.ts` 的 `widestFreeBand(full, obstacles, gap, vertical?)`：
+  在一条水平带里找出避开障碍后**最宽**的一段；返回 `null` 表示真的没位置，
+  调用方应进入「同一时间只显示一个面板」的切换布局，而不是硬叠上去。
+- `overlayLayout.planOverlayGeometry` 的 `chatFrame?` 为**可选**入参：不传时逐字段保持既有行为。
+
+### 15.5 本轮文件所有权（一个文件同一时间只有一个写者）
+
+| 角色 | 独占文件 |
+| --- | --- |
+| Lead | `interactive/resize.ts`、`interactive/chatFrame.ts`、`interactive/chatFrameState.ts`、`interactive/overlayAvoid.ts`、`composables/useResizeGesture.ts`、`components/interactive/ResizeHandles.vue`、`docs/*` |
+| A | `components/interactive/ChatDock.vue` |
+| B | `components/interactive/BoardCard.vue`、`CardAttachmentPreview.vue` |
+| C | `interactive/cardLayout.ts`、`overlayLayout.ts`、`viewport.ts`、`components/interactive/BoardCanvas.vue`、`BoardGroupFrame.vue`、`BoardLinkLayer.vue`、`BoardPreviewLayer.vue`、`BoardResizeLayer.vue`、`AddMenu.vue` |
+| D | `components/interactive/SubmitCluster.vue`、`BoardToolbar.vue`、`BoardChangeList.vue`、`IntentStatusPopover.vue`、`IntentBatchTray.vue`、`IntentPreviewCard.vue`、`views/InteractiveView.vue`、`stores/interactive.ts`（状态段） |
+
+### 15.6 已知限制（如实记）
+
+- 临时显示布局（展开 / 被让位）里的西 / 北把手按左上角锚定；折叠卡片与部分 `height: auto` 状态不摆把手。
+- `findFreeSlot` 在可用面积为 0 时无法给出合理落点，**调用方必须先量到面积**再调用。
+- 浮层扣减用「最大剩余矩形」：浮层位于视口正中时会选面积较大的一侧。
+- 对话窗口的位置/尺寸不做跨设备同步；打包桌面窗口（自绘标题栏真实高度）未复验。
