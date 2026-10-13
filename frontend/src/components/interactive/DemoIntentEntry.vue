@@ -68,7 +68,7 @@ async function advance(
 </script>
 
 <template>
-  <section class="demo-entry" data-im="demo-entry">
+  <section class="demo-entry" data-qio-fit data-im="demo-entry">
     <header class="head">
       <h3 class="title">演示入口</h3>
       <span class="badge">演示</span>

@@ -8,6 +8,7 @@
  * Enter / Esc / 空格），只是多了输入过滤。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const props = defineProps<{
   options: { value: string; label: string; hint?: string }[];
@@ -131,7 +132,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
         <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
       </svg>
     </button>
-    <div v-if="open" class="qio-combo-menu">
+    <div v-if="open" class="qio-combo-menu" data-qio-fit>
       <input
         ref="searchEl"
         v-model="query"
@@ -141,7 +142,7 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
         aria-label="搜索厂商"
         @keydown="onKeydown"
       />
-      <ul class="qio-combo-list" role="listbox">
+      <ul class="qio-combo-list" role="listbox" v-qio-scrollbar="{ axis: 'y' }" data-qio-fit>
         <li
           v-for="(o, i) in filtered"
           :key="o.value"
@@ -188,13 +189,19 @@ onBeforeUnmount(() => document.removeEventListener("pointerdown", onDocPointer))
   border-bottom: 1px solid var(--border-subtle); background: var(--bg-inset); color: var(--text-primary);
   font-family: var(--sans); font-size: var(--fs-sm);
 }
-.qio-combo-list { list-style: none; margin: 0; padding: var(--sp-1); max-height: 260px; overflow: auto; }
+/* 菜单列表：统一纵向滚动（QIO 指示条），绝不横向滚 */
+.qio-combo-list {
+  list-style: none; margin: 0; padding: var(--sp-1);
+  max-height: min(260px, 50vh); overflow-y: auto; overscroll-behavior: contain; min-width: 0;
+}
 .qio-combo-opt {
   display: flex; align-items: baseline; gap: var(--sp-2); justify-content: space-between;
   padding: 6px var(--sp-3); border-radius: var(--r-sm); cursor: pointer; font-size: var(--fs-sm); color: var(--text-primary);
+  min-width: 0;
 }
+.opt-label { min-width: 0; overflow-wrap: anywhere; }
 .qio-combo-opt.hl { background: var(--layer-hover); }
 .qio-combo-opt.sel { color: var(--text-strong); background: var(--layer-selected); }
-.opt-hint { font-size: var(--fs-xs); color: var(--text-muted); text-align: right; }
+.opt-hint { font-size: var(--fs-xs); color: var(--text-muted); text-align: right; overflow-wrap: anywhere; }
 .qio-combo-empty { padding: var(--sp-3); color: var(--text-muted); font-size: var(--fs-sm); }
 </style>

@@ -150,7 +150,7 @@ const queueNote = computed(() => {
 </script>
 
 <template>
-  <details v-if="turnId" class="tt" data-test="turn-timing" @toggle="onToggle">
+  <details v-if="turnId" class="tt" data-qio-fit data-test="turn-timing" @toggle="onToggle">
     <!-- 折叠态：▸ + 一句「已完成 · 耗时 12 秒」（总耗时来自 TURN_END，不展开也显示）。
          这里不再单独写一个「耗时」标签，避免同一行出现两次「耗时」。 -->
     <summary class="tt-summary" :aria-label="sentence">

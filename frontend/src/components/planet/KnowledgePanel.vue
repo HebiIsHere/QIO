@@ -4,6 +4,7 @@ import { api, type KnowledgeItem, type TopicFingerprint } from "../../services/a
 import QInput from "../ui/QInput.vue";
 import QSelect from "../ui/QSelect.vue";
 import QConfirm from "../ui/QConfirm.vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useActionFeedback } from "../../composables/useActionFeedback";
 
 const emit = defineEmits<{ "focus-topic": [topicId: string] }>();
@@ -247,7 +248,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="kpanel">
+  <div class="kpanel" v-qio-scrollbar data-qio-fit>
     <div class="row">
       <QInput v-model="q" placeholder="搜索知识…" class="grow" />
       <button class="qio-btn mini k-create-open" @click="openCreate">+ 新建</button>
@@ -372,7 +373,13 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.kpanel { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* 知识面板的正文层：只有这一层纵向滚动（搜索行固定在顶部、列表顺序展开）；
+   下拉浮层仍然浮在上面（滚动容器内可滚到），横向永不滚动。 */
+.kpanel {
+  display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px;
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: clip; overscroll-behavior: contain;
+}
 .row { display: flex; align-items: center; gap: 8px; }
 .qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
 .qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }

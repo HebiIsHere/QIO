@@ -391,6 +391,15 @@ onBeforeUnmount(() => form.dispose());
 .tech p { margin: 4px 0 0; word-break: break-all; }
 .progress { margin: 0; min-height: 14px; font-size: var(--fs-xs); color: var(--text-muted); }
 .actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-1); }
+/* 弹窗布局：表单比 max-height 长时，保存 / 验证这一行固定在底部（正文滚、操作不滚走）。
+   引导页布局保持原样（那里没有限高滚动容器）。 */
+.cred-form.layout-modal .actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding-top: var(--sp-2);
+  background: var(--bg-elevated);
+}
 /* 标题由调用方给（弹窗有标题栏、引导页有步骤标题），表单不重复一遍 */
 .cred-form.layout-onboarding { gap: var(--sp-2); }
 </style>

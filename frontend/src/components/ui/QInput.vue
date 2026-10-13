@@ -4,7 +4,7 @@ defineEmits<{ "update:modelValue": [string]; change: [Event] }>();
 </script>
 <template>
   <input
-    class="qio-input" :class="{ err: error, mono }" :type="type ?? 'text'"
+    class="qio-input" :class="{ err: error, mono }" :type="type ?? 'text'" data-qio-fit
     :value="modelValue" :placeholder="placeholder" :disabled="disabled"
     :aria-invalid="error || undefined"
     @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"

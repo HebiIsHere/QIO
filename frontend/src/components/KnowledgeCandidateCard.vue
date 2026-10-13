@@ -41,6 +41,7 @@ async function saveEdit() {
 <template>
   <div
     class="candidate qio-card"
+    data-qio-fit
     :class="{ editing }"
     :data-state="error ? 'failed' : busy ? 'running' : 'waiting'"
     role="group"

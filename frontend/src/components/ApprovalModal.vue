@@ -11,6 +11,7 @@ import { useApprovalsStore, approvalFacts } from "../stores/approvals";
 import type { ApprovalItem, ApprovalBudget } from "../stores/approvals";
 import { usePresence } from "../composables/usePresence";
 import ApprovalFacts from "./ApprovalFacts.vue";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 const approvals = useApprovalsStore();
 /** 退出动画期间还要渲染内容：保留一份「最后显示的审批」快照 */
@@ -181,7 +182,7 @@ function onKeydown(e: KeyboardEvent) {
       @keydown="onKeydown"
     >
       <h3 id="approval-title" :title="item.kind">{{ kindTitle(item.kind) }}</h3>
-      <div class="body">
+      <div class="body" v-qio-scrollbar data-qio-fit>
         <!-- 共用事实：内联卡与本弹窗说同样的话（契约 §1.3） -->
         <ApprovalFacts :item="item" :budget="budgetForm" @update:budget="budgetForm = $event" />
       </div>
@@ -251,8 +252,16 @@ function onKeydown(e: KeyboardEvent) {
 .modal:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .modal h3 { margin: 0 0 10px; font-size: 16px; color: var(--text-strong); }
 /* 内容变多（事实与高级详情）后，320px 会把「它想做什么」挤出首屏——
-   审批弹窗的第一句必须一眼可见，所以按视口给高度，仍然允许内部滚动。 */
-.body { max-height: min(58vh, 420px); overflow-y: auto; }
+   审批弹窗的第一句必须一眼可见，所以按视口给高度，仍然允许内部滚动。
+   滚动条走统一策略：原生外观已全局移除，这里用共享 QIO 指示条；
+   data-qio-fit + 软换行保证事实区不横向溢出。
+   按钮区（.actions）留在 .body **外面**：正文滚动与固定操作分离，任何长度的事实都藏不掉按钮。 */
+.body {
+  max-height: min(58vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-width: 0;
+}
 .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 /* 按钮尺寸对齐统一按钮原语（.qio-btn）：高度 34、圆角 r-md、内边距 18。
     以前这里是 18px 圆角 + 26px 内边距，看起来像另一个产品里的按钮。 */
