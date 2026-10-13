@@ -56,6 +56,16 @@ export interface OverlayInput {
    * 也不算切换显示（§12.6：没有第二个面板，切换条就是虚假提示）。
    */
   batchAvailable?: boolean;
+  /**
+   * 对话窗口**当前真实显示框**（屏幕坐标），来自 `chatFrameState.chatObstacleFrame()`。
+   *
+   * 三态（IRL §7.2 冻结）：
+   * - 不传 / undefined：完全保持既有行为（既有测试一条都不改 —— 旧的「右侧固定列」假设照旧）；
+   * - `null`：对话窗口收起 / 不存在 → 右侧那一列还给批量列表（按可用区域放宽）；
+   * - 传入矩形：对话窗口被用户移动 / 调整过尺寸，批量列表按它的**真实位置**避让，
+   *   而不是继续假设「聊天永远在右下角固定一列」。
+   */
+  chatFrame?: OverlayRect | null;
 }
 
 export interface OverlayGeometry {
@@ -250,6 +260,68 @@ function minsOf(input: OverlayInput): { chat: { width: number; height: number };
  * 否则会自我实现（把 switched 传进来就永远放不下、退不回去）。
  */
 export function planOverlayGeometry(input: OverlayInput): OverlayGeometry {
+  return applyChatFrame(input, planBaseGeometry(input));
+}
+
+/**
+ * 对话窗口真实矩形 → 批量列表几何（IRL §7.2）。
+ *
+ * 三条口径（缺省不传时**一个字段都不动**，所以既有调用方与既有测试完全不受影响）：
+ * 1. `null`（收起 / 不存在）：右侧整列还给批量列表，不再为它留列；
+ *    竖直区间仍然受工具栏与聊天入口按钮的既有预留约束（那两样与对话窗口开合无关）。
+ * 2. 传矩形且与批量列表**本来就不相交**：不动 —— 用户把对话窗口拖到别处时，
+ *    批量列表没理由跟着跳。
+ * 3. 传矩形且相交：先尝试收到它上方（高度够），再尝试整体挪到它左边（宽度够）；
+ *    两者都放不下时按「还剩多少」取较大的一侧给最小尺寸 —— 如实变窄，
+ *    绝不假装放得下（界面仍会呈现真实的重叠，不会被静默藏掉）。
+ */
+function applyChatFrame(input: OverlayInput, geometry: OverlayGeometry): OverlayGeometry {
+  const chat = input?.chatFrame;
+  if (chat === undefined) return geometry;
+  const gap = OVERLAY_GAP;
+  const bands = bandsOf(input, geometry.mode === "switched");
+  const mins = minsOf(input);
+  const batchCap = Math.min(BATCH_PREFERRED_WIDTH, bands.availWidth);
+  if (chat === null) {
+    const batchMaxWidth = Math.max(mins.batch.width, Math.min(batchCap, bands.availWidth));
+    const batchMaxHeight =
+      geometry.mode === "stacked" ? Math.max(mins.batch.height, bands.batchBand) : geometry.batchMaxHeight;
+    return { ...geometry, batchRight: OVERLAY_EDGE, batchMaxWidth, batchMaxHeight };
+  }
+  const width = px(num(chat.width));
+  const height = px(num(chat.height));
+  if (width <= 0 || height <= 0) return geometry;
+  const rect: OverlayRect = { x: px(num(chat.x)), y: px(num(chat.y)), width, height };
+  const batchRect: OverlayRect = {
+    x: bands.viewportWidth - px(num(geometry.batchRight)) - px(num(geometry.batchMaxWidth)),
+    y: bands.top,
+    width: px(num(geometry.batchMaxWidth)),
+    height: px(num(geometry.batchMaxHeight)),
+  };
+  if (intersectionArea(batchRect, rect) === 0) return geometry;
+  // 1) 收到对话窗口上方：底边抬到它的上沿之上
+  const aboveHeight = Math.floor(rect.y - gap - bands.top);
+  if (aboveHeight >= mins.batch.height) {
+    return { ...geometry, batchMaxHeight: Math.min(px(num(geometry.batchMaxHeight)), aboveHeight) };
+  }
+  // 2) 整体挪到对话窗口左边：右边贴在它的左沿
+  const batchRight = Math.max(OVERLAY_EDGE, bands.viewportWidth - rect.x + gap);
+  const leftWidth = Math.floor(rect.x - gap - OVERLAY_EDGE);
+  if (leftWidth >= mins.batch.width) {
+    return {
+      ...geometry,
+      batchRight,
+      batchMaxWidth: Math.min(px(num(geometry.batchMaxWidth)), leftWidth),
+    };
+  }
+  // 3) 两边都放不下：给「还剩更多」的那一侧（可能小于最小尺寸，如实变窄）
+  if (aboveHeight >= leftWidth) {
+    return { ...geometry, batchMaxHeight: Math.max(0, aboveHeight) };
+  }
+  return { ...geometry, batchRight, batchMaxWidth: Math.max(0, leftWidth) };
+}
+
+function planBaseGeometry(input: OverlayInput): OverlayGeometry {
   const gap = OVERLAY_GAP;
   const mins = minsOf(input);
   const both = Boolean(input?.chatOpen) && Boolean(input?.batchOpen);

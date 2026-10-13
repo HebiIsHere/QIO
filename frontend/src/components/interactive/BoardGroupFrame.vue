@@ -8,7 +8,12 @@
   - 组名：初始是系统给的默认名；输入即用；留空或取消保留默认名，组仍然成立；
   - 拖动预演时显示「将加入这一组」与**插入位置**（第 N 位），落地成事时才有；
   - 组框本身不吃指针事件（否则卡片拖不动），只有头部两行可交互；
-  - 头部高度控制在 board.ts 的 GROUP_PAD_TOP（58px）以内，序号条不会压住成员卡片。
+  - 头部高度控制在 board.ts 的 GROUP_PAD_TOP（58px）以内，序号条不会压住成员卡片；
+  - **常态只显示组名、成员数、是否有序**（任务书 §7.6）：改组名输入即用；
+    成员管理与顺序操作（设为有序 / 解除组 / 上移下移 / 移出）收进「成员与顺序」面板，
+    用户要看的时候才展开，不把天天要读的组框变成一排行操作按钮。
+    面板用 v-show（不是 v-if）：顺序 chip 始终在无障碍树与既有测试的 DOM 里，
+    收起只是不占版面。展开时面板按浮层读（自带底与边），不会把成员卡片的标题压花。
 -->
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
@@ -38,6 +43,11 @@ const emit = defineEmits<{
 }>();
 
 const nameInput = ref<HTMLInputElement | null>(null);
+/**
+ * 「成员与顺序」面板是否展开：**只有用户点它才展开**（缺省收起）。
+ * 这是纯显示状态，不进任何存储，也不改变分组 / 顺序本身。
+ */
+const membersOpen = ref(false);
 
 const style = computed(() => ({
   left: props.group.x + "px",
@@ -103,12 +113,10 @@ defineExpose({ focusName });
     :data-group-id="group.id"
     :data-ordered="group.ordered ? 'true' : 'false'"
   >
-    <div class="group-head" data-im="group-head">
-      <!-- 组语义说明单独一行：它跟操作按钮挤同一行时会把整行挤到三行（实测），
-           头部高度被吃光后序号 / 成员那一行就被裁掉、组内操作在视口里消失 -->
-      <span class="mode" :title="group.ordered ? '有序组：序号 1..n 表示顺序' : '普通组：自由摆放不表示先后'">
-        {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
-      </span>
+    <div class="group-head" :class="{ 'tools-open': membersOpen }" data-im="group-head">
+      <!-- 常态一行：组名（输入即用）、成员数、是否有序、以及按需展开的成员管理入口。
+           组语义说明跟操作按钮挤同一行会把整行挤到三行（实测），所以说明文字留在这一行里
+           但可压缩省略；真正的操作收进下面的面板。 -->
       <div class="head-row">
         <input
           ref="nameInput"
@@ -122,31 +130,50 @@ defineExpose({ focusName });
           @change="onRename"
           @keydown.enter="onNameKeydown"
         />
-        <button
-          class="btn"
-          type="button"
-          data-im="toggle-ordered"
-          :data-group-id="group.id"
-          @click="emit('toggle-ordered', group.id, !group.ordered)"
-        >
-          {{ group.ordered ? "取消有序" : "设为有序" }}
-        </button>
-        <button
-          class="btn"
-          type="button"
-          data-im="dissolve-group"
-          :data-group-id="group.id"
-          @click="emit('dissolve', group.id)"
-        >
-          解除组
-        </button>
         <span class="count mono">成员 {{ group.members.length }}</span>
+        <span class="mode" :title="group.ordered ? '有序组：序号 1..n 表示顺序' : '普通组：自由摆放不表示先后'">
+          {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
+        </span>
         <span v-if="group.defaultName" class="badge default-name">系统默认名，可改</span>
         <span v-if="dropMerge" class="badge merge">拖动中：这一组将被并入落点所在的组</span>
         <span v-else-if="dropTarget" class="badge" data-im="group-drop-hint">
           {{ insertText || "将加入这一组" }}
         </span>
+        <button
+          class="btn"
+          type="button"
+          data-im="group-members-toggle"
+          :data-group-id="group.id"
+          :aria-expanded="membersOpen"
+          :aria-controls="'group-tools-' + group.id"
+          @click="membersOpen = !membersOpen"
+        >
+          {{ membersOpen ? "收起成员与顺序" : "成员与顺序" }}
+        </button>
       </div>
+
+      <div v-show="membersOpen" :id="'group-tools-' + group.id" class="group-tools" data-im="group-tools">
+        <div class="tools-row">
+          <button
+            class="btn"
+            type="button"
+            data-im="toggle-ordered"
+            :data-group-id="group.id"
+            @click="emit('toggle-ordered', group.id, !group.ordered)"
+          >
+            {{ group.ordered ? "取消有序" : "设为有序" }}
+          </button>
+          <button
+            class="btn"
+            type="button"
+            data-im="dissolve-group"
+            :data-group-id="group.id"
+            @click="emit('dissolve', group.id)"
+          >
+            解除组
+          </button>
+          <span class="tools-hint">这里只改顺序与归属，不改变成员的材料范围</span>
+        </div>
 
       <ol v-if="group.ordered" class="sequence" aria-label="组内顺序">
         <li
@@ -221,6 +248,7 @@ defineExpose({ focusName });
           <span class="chip-text">插入位置：第 {{ (dropIndex ?? displayCards.length) + 1 }} 位</span>
         </li>
       </ul>
+      </div>
     </div>
   </div>
 </template>
@@ -286,6 +314,25 @@ defineExpose({ focusName });
  * （头部高度是固定的 56px，被挤满就没有成员那一行了）。宽度不够时先压缩说明文字。
  */
 .head-row { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--sp-2); min-width: 0; }
+/*
+ * 展开「成员与顺序」时头部才允许长高：收起时仍然是被 GROUP_PAD_TOP（58px）约束的一行，
+ * 成员卡片的标题不会被挤掉。展开的面板按浮层读（自带底 / 边 / 阴影），
+ * 即使盖在成员卡片上方也能读清，收起即恢复。
+ */
+.group-head.tools-open { max-height: none; overflow: visible; }
+.group-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+}
+.tools-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.tools-hint { font-size: var(--fs-xs); color: var(--text-muted); }
 /* 头部里所有可操作子元素重新接管指针（父级是 none，保证空白处不挡卡片） */
 .group-head > *,
 .group-head button,

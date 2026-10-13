@@ -17,6 +17,8 @@
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
+import { NEW_CARD_SIZE, planNewCardSlot } from "../../interactive/cardLayout";
+import { readBoardArea } from "../../interactive/viewport";
 import {
   pickBrowserFile,
   stateText,
@@ -144,11 +146,34 @@ function add(kind: AddableKind): void {
   const seed = defaultCardSeed(kind);
   const before = new Set(current.cards.map((card) => card.id));
   /**
+   * 新卡落点（任务书 §7.7）：优先放在**当前可用区域的空白处**。
+   * 可用区域由画布发布（已扣平移后的可视起点、自绘标题栏、底部工具栏、对话窗口、审批浮层），
+   * 落点再避开已有卡片 —— 平移 / 缩放之后也不会把新卡放到视口之外。
+   *
+   * 为什么不用 board.ts 的「固定四列 + 数量取模」兜底：那套排法在平移 / 缩放后会把
+   * 新卡放在用户看不到的地方，并反复落在同一处已有的卡上。这里的兜底是「读不到可用区域
+   * （画布未挂载 / 还没算过）就不传坐标」，此时行为与改动前逐字节一致。
+   */
+  const area = readBoardArea();
+  const slot = area
+    ? planNewCardSlot({
+        size: NEW_CARD_SIZE,
+        area,
+        cards: current.cards.filter((card) => !card.deleted),
+      })
+    : null;
+  /**
    * 新建文字卡默认 **checked = false**（契约 §1.4）：整卡一个许可，
    * 没有许可之前卡内的文字 / 链接 / 代码整体不可交付。
    */
   store.commit(
-    addCard(current, { kind, content: seed.content, meta: seed.meta, checked: false }),
+    addCard(current, {
+      kind,
+      content: seed.content,
+      meta: seed.meta,
+      checked: false,
+      ...(slot ? { x: slot.x, y: slot.y, w: slot.w, h: slot.h } : {}),
+    }),
     "添加" + CARD_KIND_LABELS[kind],
   );
   close(true);
