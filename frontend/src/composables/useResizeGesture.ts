@@ -36,6 +36,9 @@ export interface ResizeGestureOptions {
   step?: number;
 }
 
+/** 「这次拖动没有改变任何数值」的容差：只滤掉真正的空操作，不吞掉亚像素位移。 */
+const NOOP_EPSILON = 0.01;
+
 interface PointerLike {
   clientX?: number;
   clientY?: number;
@@ -157,10 +160,12 @@ export function useResizeGesture(options: ResizeGestureOptions) {
     reset();
     if (!commit || !base) return;
     // 拖动又回到起点：数值没变就不提交（不产生一次无意义的板面保存）。
-    if (boxEquals(commit, base)) return;
+    // 容差取 0.01 而不是 boxEquals 默认的 0.5：0.5 会把「低缩放下的半像素位移」也当成没动，
+    // 于是 2px 屏幕位移在 zoom 0.25 下变成一次都不提交（E 用例 F2 的分界矩阵）。
+    if (boxEquals(commit, base, NOOP_EPSILON)) return;
     // 复算结果与最后一次预览不同（拖动期间限制变了）时，先把最终框推给显示层再提交，
     // 否则用户会看到「松手之后自己跳一下」（E 复核的 R2：预览 420 → 提交 640）。
-    if (!latest || !boxEquals(commit, latest)) options.onPreview(commit);
+    if (!latest || !boxEquals(commit, latest, NOOP_EPSILON)) options.onPreview(commit);
     options.onCommit(commit, "pointer");
   }
 
