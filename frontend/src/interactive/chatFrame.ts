@@ -8,7 +8,7 @@
  * 持久化范式与既有 `floatingState.ts` 一致：localStorage + 防御式读写 +
  * 存储不可用（隐私模式 / 受限 WebView）时静默降级为「仅本次会话生效」，绝不抛错。
  */
-import { convergeBox, limitsForArea, type SizeLimits } from "./resize";
+import { clampBox, convergeBox, limitsForArea, type SizeLimits } from "./resize";
 
 export interface ChatFrame {
   x: number;
@@ -124,13 +124,10 @@ export function convergeChatFrame(
   origin: { x: number; y: number } = { x: 0, y: 0 },
 ): ChatFrame {
   const limits = chatFrameLimits({ w: area.w, h: area.h });
-  const converged = convergeBox(frame, area, origin);
-  return {
-    x: converged.x,
-    y: converged.y,
-    w: Math.max(limits.minW, Math.min(limits.maxW, converged.w)),
-    h: Math.max(limits.minH, Math.min(limits.maxH, converged.h)),
-  };
+  // 顺序很重要：**先把宽高抬进 [min, max]，再收敛位置**。
+  // 反过来的话，一个存档里 10px 宽的窗口会先被定位在右边缘、再被抬到最小值，
+  // 结果右边界直接越过可见区域（E 复核 F1 的最小复现）。
+  return convergeBox(clampBox(frame, limits), area, origin);
 }
 
 /** 首次打开：贴右下角，并留出 origin（标题栏 / 工具栏）的空间。 */
