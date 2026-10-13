@@ -14,6 +14,7 @@
  * 真实布局证据（无横向滚动范围、媒体等比适配）由复核阶段在浏览器里采集。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
@@ -434,5 +435,37 @@ describe("对话页：独立并列列表接入统一滚动策略", () => {
     expect(candidates.dataset.qioScroll).toBe("auto");
     expect(candidates.querySelector('.qio-scroll-rail[data-axis="x"]')).toBeNull();
     w.unmount();
+  });
+});
+
+/**
+ * 用户消息是**纯文本**通道（不经过 markdown）：它必须自己换行。
+ * 否则气泡上的 data-qio-fit（overflow-x: clip）会把超长 URL / 连续字符直接裁掉且滚不动 ——
+ * 复核实测 clientW 588 / scrollW 2251（422 字符 URL 渲染宽 3152px，约 2564px 永久看不见）。
+ */
+describe("用户纯文本气泡的换行（复核 F1）", () => {
+  // 路径放进变量：字面量会被 Vite 当成资源 URL 重写，读不到真实文件
+  const messagePath = "../MessageItem.vue";
+  const scrollCssPath = "../../styles/scroll.css";
+  const messageSource = readFileSync(new URL(messagePath, import.meta.url), "utf8");
+  const scrollCss = readFileSync(new URL(scrollCssPath, import.meta.url), "utf8");
+
+  function ruleBlock(css: string, selector: string): string {
+    const start = css.indexOf(selector);
+    if (start < 0) return "";
+    const open = css.indexOf("{", start);
+    const close = css.indexOf("}", open);
+    return css.slice(open + 1, close);
+  }
+
+  it("MessageItem 的 .user-bubble .plain 声明 overflow-wrap（长 token 视觉折行）", () => {
+    const block = ruleBlock(messageSource, ".user-bubble .plain");
+    expect(block, "找不到 .user-bubble .plain 规则").not.toBe("");
+    expect(block).toContain("overflow-wrap: anywhere");
+  });
+
+  it("共享规则在对话作用域根声明 overflow-wrap（继承覆盖自定义纯文本容器）", () => {
+    const block = ruleBlock(scrollCss, '[data-qio-scope~="chat"]');
+    expect(block).toContain("overflow-wrap: anywhere");
   });
 });

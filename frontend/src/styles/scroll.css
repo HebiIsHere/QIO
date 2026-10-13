@@ -152,6 +152,11 @@
 [data-qio-scope~="chat"] {
   min-width: 0;
   max-width: 100%;
+  /* overflow-wrap 是**继承属性**：在对话根声明一次，任何自定义纯文本容器
+     （例如用户气泡的 .plain，走的是纯文本通道而非 markdown）都不会再出现
+     「长 URL / 连续字符不换行 → 被 clip 裁掉却滚不动」。
+     复核实测：未声明时 .message.user .plain clientW 588 / scrollW 2251。 */
+  overflow-wrap: anywhere;
 }
 /* 长 URL / 路径 / 标识符 / 连续英文与数字：视觉换行，不改字符序列 */
 [data-qio-scope~="chat"] :where(p, li, dd, dt, th, td, figcaption, summary, label,

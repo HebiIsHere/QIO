@@ -813,6 +813,11 @@ function removeOne(id: string) {
 }
 .user-bubble .plain {
   white-space: pre-wrap;
+  /* 用户消息是**纯文本**通道（不经过 markdown），长 URL / 路径 / 连续字符必须自己换行：
+     气泡带 data-qio-fit（overflow-x: clip），不换行就等于「文字被裁掉且滚不动」——
+     复核实测 clientW 588 / scrollW 2251（422 字符 URL 渲染宽度 3152px）。 */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .assist-bubble {
   background: var(--bg-elevated);
