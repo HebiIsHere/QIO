@@ -4213,10 +4213,16 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   继续走到 `resolve_media`，由它产出一条 `image_unsupported`（音频 / 视频同理）；
   `_media_candidate_entry` 优先采用候选带来的具体原因；同时修掉自己引入的一处 `Path(None).stat()` 崩溃。
 - 新增回归：引用型大图 → 有 1 条候选（`path is None`、带原因）→ `image_unsupported` 且不交付内容块。
+- **同一类静默丢弃还有一处**（复审用「删掉副本」实测）：`state != "ready"` 的附件原来也是直接 `continue`
+  → 候选为空、没有任何说明。现在一并改成带可读原因（「这个附件当前不可用（…）」）继续走交付判定。
+- 新增回归两条：引用型大图、副本丢失（`state` 非 ready）都必须给出带原因的 `image_unsupported`。
+- 记进契约：`unreadable` 作为合法的 `source` 值写进 vision 契约 §8.2（原表只列了音视频与图片）。
+- 仍未覆盖（如实记）：同一入口另有 `limit=50` 的截断（第 51 个附件会被静默略过，与 `read_attachment` 同源上限）；
+  前端 `components/mediaFacts.ts` 对未知 `source` 会渲染成「尚未识别的来源取值」，未在本轮补 —— 它不在会话媒体链路上。
 
 ### 七、验证
 
-- 新增 `backend/tests/test_chat_image_delivery.py`（16 条，**不需要 ffmpeg**：图片夹具是内嵌的真实 JPEG/PNG 字节）：
+- 新增 `backend/tests/test_chat_image_delivery.py`（17 条，**不需要 ffmpeg**：图片夹具是内嵌的真实 JPEG/PNG 字节）：
   候选清单认图片（根因回归）、交付字节与文件**逐字节一致**、无能力位如实降级、超限不截断、
   格式不支持点明格式、非媒体不被当视频抽帧、事实文案、以及真实流水线的两条端到端
   （每次模型调用都带着图片 / 没有能力位时在提示词里如实说明）。

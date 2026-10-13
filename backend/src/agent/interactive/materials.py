@@ -178,8 +178,7 @@ def collected_media_candidates(
             identifier = str(getattr(att, "id", "") or "")
             if not identifier or identifier in seen:
                 continue
-            if str(getattr(att, "state", "")) != "ready":
-                continue
+            state = str(getattr(att, "state", "") or "")
             name = str(getattr(att, "original_name", "") or "")
             # include_images=True：图片也要进候选清单 —— 图片交付靠的就是这里产出的候选
             # （没有候选就没有内容块，模型只能看到「附加了文件」而拿不到画面）。
@@ -189,12 +188,20 @@ def collected_media_candidates(
             # 取不到路径也要**如实说**，不许静默丢弃：
             # 静默丢弃的后果是模型连「没读到」这句事实都拿不到（复审用 100MB+ 的引用型 .jpeg 实测：
             # candidates=[]，没有任何说明）。现在把它降级成一条带可读原因的 *_unsupported 条目。
+            # 状态不是 ready 同样**不许静默丢弃**：候选为空意味着模型连「没读到」都不知道
+            # （复审实测：把副本删掉后 candidates=0，既没有字节也没有说明）。
             unreadable = ""
+            if state != "ready":
+                unreadable = (
+                    f"这个附件当前不可用（{state or '未知状态'}）：没有可交付的字节，"
+                    "本次不声称看过它"
+                )
             try:
                 path, _origin = attachments.content_target(att.id)
             except Exception as exc:  # noqa: BLE001 - 读不到字节是要交付的事实，不是异常
                 path = None
-                unreadable = str(exc).strip() or f"读取附件字节失败：{type(exc).__name__}"
+                if not unreadable:
+                    unreadable = str(exc).strip() or f"读取附件字节失败：{type(exc).__name__}"
             if path is None and not unreadable:
                 unreadable = "读不到这份附件的字节：没有可用的副本路径"
             seen.add(identifier)

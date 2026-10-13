@@ -348,6 +348,40 @@ async def test_reference_attachment_yields_an_honest_fact_not_silence(tmp_path: 
     assert out["parts"] == []
 
 
+async def test_unavailable_copy_still_yields_an_honest_fact(tmp_path: Path):
+    """副本被删（状态不再是 ready）同样**不许静默丢弃**：
+    复审实测修复前 candidates=0 —— 模型既没有字节，也没有「没读到」这句话。"""
+    ctx = _ctx(tmp_path)
+    service = AttachmentService(ctx.conn, Path(ctx.settings.data_dir))
+    topic = ctx.topics.nodes.create_topic("丢副本").id
+    tctx = ctx.turns.submit("这张图呢", topic)
+    source = _png(tmp_path)
+    att = service.prepare(str(source), topic_id=topic, turn_id=tctx.turn_id)
+    service.run_prepare(att.id)
+    copy_path, _origin = service.content_target(att.id)
+    Path(copy_path).unlink()  # 模拟副本丢失 / 被清理
+
+    candidates = materials.collected_media_candidates(service, [tctx.turn_id])
+
+    assert len(candidates) == 1, candidates
+    assert candidates[0]["kind"] == "image"
+    assert candidates[0]["unreadable_reason"], "必须带上可读原因"
+
+    out = materials.resolve_media(
+        candidates=candidates,
+        supports_images=True,
+        supports_audio=False,
+        supports_video=False,
+        audio_transcription=None,
+        transcriber=None,
+        work_dir=None,
+    )
+    entry = out["entries"][0]
+    assert entry["source"] == "image_unsupported", entry
+    assert entry["reason"], entry["reason"]
+    assert out["parts"] == []
+
+
 # --- 6. 真实附件名的形状：长名字被展示层截断，不许影响媒体类型 ------------
 
 

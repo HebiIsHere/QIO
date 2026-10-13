@@ -99,6 +99,7 @@
 | `video_delivered` | true | 视频真实字节已交付 |
 | `video_sampled` | true | 视频按时间点抽样帧交付：`frames` 每项带 `at`（秒），`reason` 必须写明「抽样，不是逐帧」 |
 | `video_unsupported` | false | 既没有视频能力也没有可用的抽样通道：`reason` 说明是哪一种 |
+| `unreadable` | false | 这条材料**不是**音频 / 视频 / 图片（媒体通道不处理它），或走的是正文读取路径且读不出来：`reason` 必须说清是哪一种 |
 
 每条都带：`read`、`reason`、`range`（音视频的起止秒，可为空）、`frames`（视频抽样才有）、
 `engine`（派生处理实际用了哪个提供方与模型）、`attachmentId` 与 `version`。
