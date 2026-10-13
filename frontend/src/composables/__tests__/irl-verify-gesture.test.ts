@@ -350,15 +350,18 @@ describe("松手瞬间的时序", () => {
     expect(h.commits[0].box.x + h.commits[0].box.w).toBe(BASE.x + BASE.w);
   });
 
-  it("行为说明（W5 的对称面）：松手前限制变大时，提交会比最后一次预览更大（松手跳一下）", () => {
+  it("修复后（R2）：松手前限制变大时，先推最终预览再提交——界面不会在松手后跳", () => {
     let limits = sizeLimits(120, 80, 420, 310);
     const h = harness({ limits: () => limits });
     h.api.onHandleDown("se", pe("pointerdown", 0, 0));
     document.dispatchEvent(pe("pointermove", 500, 500));
     expect(h.previews[h.previews.length - 1].w).toBe(420);
+    const previewsBefore = h.previews.length;
     limits = LIMITS;
     document.dispatchEvent(pe("pointerup", 500, 500));
     expect(h.commits[0].box.w).toBe(LIMITS.maxW);
+    expect(h.previews).toHaveLength(previewsBefore + 1);
+    expect(h.previews[h.previews.length - 1]).toEqual(h.commits[0].box);
   });
 });
 
@@ -395,6 +398,179 @@ describe("键盘 nudge", () => {
     const h = harness({ step: 0 });
     h.api.nudge("h", 1);
     expect(h.commits[0].box.h).toBe(BASE.h);
+  });
+});
+
+describe("R2：复算与预览一致（松手不跳）", () => {
+  it("情形一（限制变大）：提交在当下限制内，且最后一次 onPreview === onCommit", () => {
+    let limits = sizeLimits(120, 80, 420, 310);
+    const h = harness({ limits: () => limits });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 500, 500));
+    expect(h.previews[h.previews.length - 1].w).toBe(420);
+    limits = LIMITS;
+    document.dispatchEvent(pe("pointerup", 500, 500));
+    const commit = h.commits[0].box;
+    expect(commit.w).toBe(LIMITS.maxW);
+    expect(commit.h).toBe(LIMITS.maxH);
+    expect(commit.w).toBeLessThanOrEqual(limits.maxW);
+    expect(commit.h).toBeLessThanOrEqual(limits.maxH);
+    expect(h.previews[h.previews.length - 1]).toEqual(commit);
+  });
+
+  it("情形二（限制变小）：提交在当下限制内，且最后一次 onPreview === onCommit", () => {
+    let limits = LIMITS;
+    const h = harness({ limits: () => limits });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 500, 500));
+    expect(h.previews[h.previews.length - 1].w).toBe(LIMITS.maxW);
+    limits = sizeLimits(120, 80, 420, 310);
+    document.dispatchEvent(pe("pointerup", 500, 500));
+    const commit = h.commits[0].box;
+    expect(commit.w).toBe(420);
+    expect(commit.h).toBe(310);
+    expect(commit.w).toBeLessThanOrEqual(limits.maxW);
+    expect(commit.h).toBeLessThanOrEqual(limits.maxH);
+    expect(h.previews[h.previews.length - 1]).toEqual(commit);
+  });
+
+  it("情形三（拖动中 scale 改变）：提交按新系数复算，且最后一次 onPreview === onCommit", () => {
+    let scale = 1;
+    const h = harness({ scale: () => scale });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 50, 50));
+    expect(h.previews[h.previews.length - 1].w).toBe(BASE.w + 50);
+    scale = 2;
+    document.dispatchEvent(pe("pointerup", 50, 50));
+    const commit = h.commits[0].box;
+    expect(commit.w).toBe(BASE.w + 100);
+    expect(commit.h).toBe(BASE.h + 100);
+    expect(h.previews[h.previews.length - 1]).toEqual(commit);
+  });
+
+  it("情形四（五个把手 × 收紧的限制）：被拉的那条轴一律落在当下限制内，且不跳", () => {
+    const cases: { handle: "se" | "nw" | "e" | "w" | "s"; axes: ("w" | "h")[] }[] = [
+      { handle: "se", axes: ["w", "h"] },
+      { handle: "nw", axes: ["w", "h"] },
+      { handle: "e", axes: ["w"] },
+      { handle: "w", axes: ["w"] },
+      { handle: "s", axes: ["h"] },
+    ];
+    const snug = sizeLimits(120, 80, 260, 200);
+    for (const item of cases) {
+      const h = harness({ limits: () => snug });
+      h.api.onHandleDown(item.handle, pe("pointerdown", 0, 0));
+      document.dispatchEvent(pe("pointermove", 400, 400));
+      document.dispatchEvent(pe("pointerup", 400, 400));
+      expect(h.commits).toHaveLength(1);
+      const commit = h.commits[0].box;
+      if (item.axes.indexOf("w") >= 0) {
+        expect(commit.w).toBeGreaterThanOrEqual(snug.minW);
+        expect(commit.w).toBeLessThanOrEqual(snug.maxW);
+      }
+      if (item.axes.indexOf("h") >= 0) {
+        expect(commit.h).toBeGreaterThanOrEqual(snug.minH);
+        expect(commit.h).toBeLessThanOrEqual(snug.maxH);
+      }
+      expect(h.previews[h.previews.length - 1]).toEqual(commit);
+    }
+  });
+
+  it("现状（R4）：限制/缩放没变时，一次指针提交仍会多推一次预览（差异守卫失效）", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 40, 40));
+    const before = h.previews.length;
+    document.dispatchEvent(pe("pointerup", 40, 40));
+    expect(h.previews).toHaveLength(before + 1);
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box).toEqual(h.previews[h.previews.length - 1]);
+  });
+
+  it.fails("R4（守卫应当生效）：复算结果与最后一次预览相同时不该再多推一次 onPreview", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 40, 40));
+    const before = h.previews.length;
+    document.dispatchEvent(pe("pointerup", 40, 40));
+    expect(h.previews).toHaveLength(before);
+  });
+
+  it("拖动中限制收紧到比原框还小、又拖回原点：提交被修正后的框（不是空操作）", () => {
+    const h = harness({ limits: () => sizeLimits(400, 300, 640, 480) });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 300, 200));
+    document.dispatchEvent(pe("pointermove", 0, 0));
+    document.dispatchEvent(pe("pointerup", 0, 0));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(400);
+    expect(h.commits[0].box.h).toBe(300);
+    expect(h.previews[h.previews.length - 1]).toEqual(h.commits[0].box);
+  });
+});
+
+describe("NOOP_EPSILON：空操作判定边界", () => {
+  it("0.005 / 0.01 不提交，0.011 / 0.5 / 8 提交", () => {
+    const cases: { scale: number; committed: boolean }[] = [
+      { scale: 0.0025, committed: false },
+      { scale: 0.005, committed: false },
+      { scale: 0.0055, committed: true },
+      { scale: 0.25, committed: true },
+      { scale: 4, committed: true },
+    ];
+    for (const item of cases) {
+      const h = harness({ scale: () => item.scale });
+      h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+      document.dispatchEvent(pe("pointermove", 2, 0));
+      document.dispatchEvent(pe("pointerup", 2, 0));
+      expect(h.commits.length).toBe(item.committed ? 1 : 0);
+      if (item.committed) expect(h.commits[0].box.w).toBeCloseTo(BASE.w + 2 * item.scale, 6);
+    }
+  });
+
+  it("F2 分界矩阵的真实场景：zoom 4（系数 0.25）下 2px = 0.5 板面单位仍然提交（旧的 0.5 容差会吞掉它）", () => {
+    const h = harness({ scale: () => 0.25 });
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 2, 0));
+    document.dispatchEvent(pe("pointerup", 2, 0));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(BASE.w + 0.5);
+  });
+
+  it("高度方向同样按 0.01 判定（不是只看宽度）", () => {
+    const noop = harness({ scale: () => 0.005 });
+    noop.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 0, 2));
+    document.dispatchEvent(pe("pointerup", 0, 2));
+    expect(noop.commits).toHaveLength(0);
+
+    const moved = harness({ scale: () => 0.0055 });
+    moved.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 0, 2));
+    document.dispatchEvent(pe("pointerup", 0, 2));
+    expect(moved.commits).toHaveLength(1);
+    expect(moved.commits[0].box.h).toBeCloseTo(BASE.h + 0.011, 6);
+  });
+
+  it("拖出去再拖回来：一次都不提交，也不多推预览（显示停在拖动前那一版）", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 300, 200));
+    document.dispatchEvent(pe("pointermove", 0, 0));
+    const before = h.previews.length;
+    document.dispatchEvent(pe("pointerup", 0, 0));
+    expect(h.commits).toHaveLength(0);
+    expect(h.previews).toHaveLength(before);
+    expect(h.previews[h.previews.length - 1]).toEqual(BASE);
+  });
+
+  it("行为说明：提交用最后一次 move 的位移，不使用 pointerup 自带的坐标", () => {
+    const h = harness();
+    h.api.onHandleDown("se", pe("pointerdown", 0, 0));
+    document.dispatchEvent(pe("pointermove", 100, 0));
+    document.dispatchEvent(pe("pointerup", 0, 0));
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].box.w).toBe(BASE.w + 100);
   });
 });
 

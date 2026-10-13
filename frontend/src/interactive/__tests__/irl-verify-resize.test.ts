@@ -265,9 +265,11 @@ describe("坏数据", () => {
     expect(resizeBox(START, "nw", Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, LIMITS)).toEqual(START);
   });
 
-  it.fails("修复说明声称「±Infinity 仍按上下界饱和」，实测是按「没动」处理（代码与说明要二选一）", () => {
-    const grown = resizeBox(START, "se", Number.POSITIVE_INFINITY, 0, LIMITS);
-    expect(grown.w).toBe(LIMITS.maxW);
+  it("契约澄清（R1 已由 Lead 确认）：非有限位移一律按「没动」处理，不按上下界饱和", () => {
+    // 2026-10-13 Lead 明确：代码为准，旧提交信息里「±Infinity 仍按上下界饱和」那句作废。
+    expect(resizeBox(START, "se", Number.POSITIVE_INFINITY, 0, LIMITS).w).toBe(START.w);
+    expect(resizeBox(START, "se", Number.NEGATIVE_INFINITY, 0, LIMITS).w).toBe(START.w);
+    expect(resizeBox(START, "nw", 0, Number.POSITIVE_INFINITY, LIMITS).h).toBe(START.h);
   });
 
   it("clampNumber 自身仍是「非有限值取低界」（+Infinity 也不例外）；resizeBox 已不再把 ±Infinity 交给它", () => {
@@ -491,7 +493,7 @@ describe("findFreeSlot：顺序落点与窄缝", () => {
     expect(bad).toEqual([]);
   });
 
-  it("提醒（W4 未覆盖的同类路径）：面积是 0 时 findFreeSlot 会把尺寸夹成 1×1，C 必须先量到面积", () => {
+  it("已知折衷（R3，已由 Lead 确认）：面积 0 时 findFreeSlot 夹成 1×1，调用方必须先量到面积", () => {
     const slot = findFreeSlot({ size: { w: 240, h: 160 }, area: { x: 0, y: 0, w: 0, h: 0 }, obstacles: [] });
     expect(slot).toEqual({ x: 0, y: 0, w: 1, h: 1 });
   });
