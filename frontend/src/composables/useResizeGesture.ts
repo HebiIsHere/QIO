@@ -56,6 +56,9 @@ export function useResizeGesture(options: ResizeGestureOptions) {
   let handle: ResizeHandle | null = null;
   let originX = 0;
   let originY = 0;
+  /** 最近一次指针位移（屏幕像素，**未**乘 scale）—— 阈值判定与松手复算都用它。 */
+  let lastScreenDx = 0;
+  let lastScreenDy = 0;
   let pointerId: number | null = null;
   let started = false;
   let latest: ResizeBox | null = null;
@@ -120,27 +123,43 @@ export function useResizeGesture(options: ResizeGestureOptions) {
   function onPointerMove(event: PointerLike | null | undefined): void {
     if (!event || !snapshot || !handle) return;
     if (pointerId !== null && typeof event.pointerId === "number" && event.pointerId !== pointerId) return;
-    const scale = finiteScale(options.scale?.());
-    const dx = (Number(event.clientX ?? 0) - originX) * scale;
-    const dy = (Number(event.clientY ?? 0) - originY) * scale;
+    // 阈值必须在**屏幕位移**上判定：低缩放下（zoom 0.25 → 系数 4）1px 抖动
+    // 换算成 4 个板面单位就会越过 2px 阈值，变成「什么都没拖却改了尺寸」。
+    lastScreenDx = Number(event.clientX ?? 0) - originX;
+    lastScreenDy = Number(event.clientY ?? 0) - originY;
     if (!started) {
-      // 阈值之内算点击：不改尺寸，也不进入「拖动中」。
-      if (Math.abs(dx) < RESIZE_DRAG_THRESHOLD && Math.abs(dy) < RESIZE_DRAG_THRESHOLD) return;
+      if (Math.abs(lastScreenDx) < RESIZE_DRAG_THRESHOLD && Math.abs(lastScreenDy) < RESIZE_DRAG_THRESHOLD) {
+        return;
+      }
       started = true;
       active.value = true;
     }
-    latest = resizeBox(snapshot, handle, dx, dy, options.limits());
+    const scale = finiteScale(options.scale?.());
+    latest = resizeBox(snapshot, handle, lastScreenDx * scale, lastScreenDy * scale, options.limits());
     options.onPreview(latest);
   }
 
   function onPointerUp(event: PointerLike | null | undefined): void {
     if (pointerId !== null && typeof event?.pointerId === "number" && event.pointerId !== pointerId) return;
-    const commit = started ? latest : null;
+    // 松手时按**当下**的限制再算一次：拖动期间窗口可能被缩小，直接交最后一次预览
+    // 会把一个此刻已经超界的框提交出去（E 复核的 W5）。
+    const commit =
+      started && snapshot && handle
+        ? resizeBox(
+            snapshot,
+            handle,
+            lastScreenDx * finiteScale(options.scale?.()),
+            lastScreenDy * finiteScale(options.scale?.()),
+            options.limits(),
+          )
+        : null;
     reset();
     if (commit) options.onCommit(commit, "pointer");
   }
 
-  function onPointerCancel(): void {
+  function onPointerCancel(event: PointerLike | null | undefined): void {
+    // 别的手指（另一个 pointerId）的 cancel 不能回滚**这次**拖动。
+    if (pointerId !== null && typeof event?.pointerId === "number" && event.pointerId !== pointerId) return;
     cancel();
   }
 

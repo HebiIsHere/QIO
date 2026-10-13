@@ -214,12 +214,26 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
   opacity: 0.85;
 }
 
+/*
+ * visible=false：只降**视觉强调**，不摘掉键盘可达性（按钮仍在无障碍树里）。
+ * 卡片密集 / 只读浏览时用这一档，让空间看起来干净，但功能一个不少。
+ */
+.rz-quiet .rz-mark {
+  opacity: 0.12;
+}
+
+.rz-quiet:hover .rz-mark,
+.rz-quiet:focus-within .rz-mark {
+  opacity: 0.6;
+}
+
 /* --- −/＋ 键盘按钮 --------------------------------------------------------- */
 
 .rz-keys {
   position: absolute;
-  right: 2px;
-  bottom: 16px;
+  /* 让开东 / 南两侧各 10px 的指针热区：按钮面板压在热区上会让「拉右边」变难点。 */
+  right: 14px;
+  bottom: 18px;
   display: grid;
   grid-template-columns: auto auto auto;
   gap: 2px var(--sp-1);
