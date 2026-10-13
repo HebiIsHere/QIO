@@ -57,7 +57,6 @@ import {
   publishBoardArea,
   rectFromDrag,
   toBoardPoint,
-  toScreenPoint,
   wheelDeltaY,
   wheelZoomFactor,
   zoomAtScroll,
@@ -746,6 +745,10 @@ function finiteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(result) ? result : fallback;
 }
 
+/**
+ * 内容原点：板面 (0,0) 在屏幕上的位置 = 容器左上 − 滚动量（{@link effectiveRect}）。
+ * 与 {@link contentViewport} **配套**使用：两者缺一个就会把滚动量算错（见下面的说明）。
+ */
 function surfaceRect(): DOMRectLike {
   const element = viewportEl.value;
   if (!element) return { left: 0, top: 0 };
@@ -757,17 +760,42 @@ function surfaceRect(): DOMRectLike {
 }
 
 /**
+ * 与 surfaceRect() 配套的视口：surfaceRect() 已经是**内容原点**（滚动量减过一次），
+ * 所以这里的平移量必须留 0 —— 再传 view.value（x / y = −滚动量）就会减第二次。
+ *
+ * 这是本文件坐标换算的唯一口径：**屏幕 → 板面**走
+ * toBoardPoint(contentViewport(), client, surfaceRect())，
+ * **板面 → 屏幕**走 screenPointOfBoard(x, y, 容器原始矩形)，两者严格互逆。
+ * （例外只有 zoomAtScroll：它自己的口径是「容器原始矩形 + scroll」，见 {@link viewportRect}。）
+ */
+function contentViewport(): Viewport {
+  return { scale: view.value.scale, x: 0, y: 0 };
+}
+
+/**
+ * 容器自身的屏幕矩形（**不含**滚动量）：zoomAtScroll 的口径是「容器原始矩形 + scroll」，
+ * 它内部自己会减滚动量；传 surfaceRect()（内容原点）会让滚动量被减两次
+ * —— 平移之后滚轮一滚画面就跳（指针下的板面点留不住）。
+ */
+function viewportRect(): DOMRectLike {
+  const element = viewportEl.value;
+  if (!element || typeof element.getBoundingClientRect !== "function") return { left: 0, top: 0 };
+  const rect = element.getBoundingClientRect();
+  return { left: finiteNumber(rect.left), top: finiteNumber(rect.top) };
+}
+
+/**
  * 屏幕坐标 → 板面坐标：必须与 {@link screenPointOfBoard} **严格互逆**：
  *   板面 = (屏幕 − 容器左上 + 滚动量) ÷ 缩放。
  *
- * surfaceRect() 给的是「内容原点」（已经把滚动量减掉），所以这里平移量必须传 0。
+ * surfaceRect() 给的是「内容原点」（已经把滚动量减掉），所以这里平移量必须传 0（{@link contentViewport}）。
  * 原来传的是 view.value（x / y = −滚动量）：滚动量被减了两次 —— 一旦平移过，
  * 拖线落点会整体偏移「滚动量 ÷ 缩放」：线画在卡片上，判定却落在别处。
  * 拖动看不出来（用的是位移差，偏移在 offset 里被减掉），而连接点拖线用的是**绝对坐标**，
  * 所以这个回归只在「先平移再拖线」时暴露（0.2.5 §四）。
  */
 function boardPointOf(event: { clientX: number; clientY: number }): { x: number; y: number } {
-  return toBoardPoint({ scale: view.value.scale, x: 0, y: 0 }, { x: event.clientX, y: event.clientY }, surfaceRect());
+  return toBoardPoint(contentViewport(), { x: event.clientX, y: event.clientY }, surfaceRect());
 }
 
 function containerSize(): { w: number; h: number } {
@@ -828,7 +856,8 @@ function zoomAtPointer(factor: number, client: { x: number; y: number }) {
     view.value.scale,
     factor,
     client,
-    surfaceRect(),
+    // 容器**原始**矩形 + scroll：zoomAtScroll 内部自己换算内容原点（见 viewportRect 的说明）
+    viewportRect(),
     containerSize(),
     { w: SURFACE_W, h: SURFACE_H },
   );
@@ -858,7 +887,8 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
   }
   const viewRect = element.getBoundingClientRect();
   const surfaceNow = surfaceElement.getBoundingClientRect();
-  const screen = toScreenPoint(view.value, { x: rect.x, y: rect.y }, surfaceRect());
+  // 板面 → 屏幕统一走 screenPointOfBoard：不要再拿 surfaceRect()（内容原点）配 view.value（已含 −滚动量）
+  const screen = screenPointOfBoard(rect.x, rect.y, viewRect);
   const cardTopClient = screen.y;
   const cardBottomClient = cardTopClient + rect.h * view.value.scale;
   const limitTopClient = viewRect.top + 2;
@@ -1004,7 +1034,8 @@ function onPointerUp() {
   if (rect && current) {
     rectSelect.value = null;
     detachPointerListeners();
-    const area = rectFromDrag(view.value, rect.startClient, rect.currentClient, surfaceRect());
+    // 与 boardPointOf 同一口径：surfaceRect() 已是内容原点，平移量必须留 0（否则框选整体偏移）
+    const area = rectFromDrag(contentViewport(), rect.startClient, rect.currentClient, surfaceRect());
     if (area.w > 4 || area.h > 4) {
       commit(selectInRect(current, area, rect.additive), "框选卡片");
       notice.value = "已框选 " + area.w.toFixed(0) + "×" + area.h.toFixed(0) + " 板面范围内的卡片。";
@@ -1129,7 +1160,8 @@ const mergeHintStyle = computed(() => {
   if (!element || !shellElement) return { display: "none" };
   const viewRect = element.getBoundingClientRect();
   const shellRect = shellElement.getBoundingClientRect();
-  const screen = toScreenPoint(view.value, { x: rect.x, y: rect.y }, surfaceRect());
+  // 与局部工具栏同一个口径：板面 → 屏幕只走 screenPointOfBoard（滚动量不重复减）
+  const screen = screenPointOfBoard(rect.x, rect.y, viewRect);
   // 放在目标卡片**上方**：卡片贴近容器顶部时才落到它下方，避免盖住卡片内容
   const above = screen.y - shellRect.top - 34;
   const below = screen.y - shellRect.top + rect.h * view.value.scale + 6;
