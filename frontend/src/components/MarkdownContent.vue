@@ -168,8 +168,15 @@ function renderBlock(node: any): string {
       const labels = rawLabels.map((label: string, i: number) =>
         qioColumnLabel(label, i, label !== "" && (repeats.get(label) ?? 0) > 1),
       );
-      tableSeq += 1;
-      const tableId = "qio-t" + tableSeq;
+      /**
+       * 表格身份必须**只取决于源码**（同一 source → 同一 HTML）：
+       * 以前用模块级自增序号，于是「流式渲染的最后一帧」与「一次性渲染」结果不同
+       * （MarkdownStreaming 用例直接把它抓出来了），流式期间每次重解析还会让 id/headers 抖动。
+       * 现在优先用 mdast 节点的源码偏移（稳定、且前缀渲染下不变），没有位置信息时才退回本次渲染内的序号。
+       */
+      const startOffset = node.position?.start?.offset;
+      const tableId =
+        typeof startOffset === "number" ? "qio-t" + startOffset : "qio-tn" + ++tableSeq;
       const labelOf = (i: number) => labels[i] ?? qioColumnLabel("", i, false);
       const head = headerRow
         .map(
