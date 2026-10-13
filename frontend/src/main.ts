@@ -4,6 +4,8 @@ import App from "./App.vue";
 import router from "./router";
 import "./styles/tokens.css";
 import "./styles/base.css";
+// 统一滚动规则：原生滚动条外观全局消除 + QIO 浮动指示条 + 表格适配 + 横向不滚动约束
+import "./styles/scroll.css";
 // 互动板改版的浮层层级与避让（主智能体在集成时统一导入；A 负责该文件）
 import "./styles/interactive-shell.css";
 // 中文衬线声部：本地打包 Noto Serif SC（SIL OFL 1.1，@fontsource 分发，
@@ -12,6 +14,7 @@ import "@fontsource/noto-serif-sc/400.css";
 import "@fontsource/noto-serif-sc/600.css";
 import { getThemePreference, resolveTheme, applyTheme, watchSystemTheme } from "./utils/theme";
 import { getMotionPreference, resolveMotion, applyMotion, watchSystemMotion } from "./utils/motion";
+import { getScrollbarPreference, applyScrollbarPreference } from "./utils/scrollIndicator";
 import { useUpdaterStore } from "./stores/updater";
 
 // 启动即应用持久化主题偏好（system 时按系统解析，并监听系统切换）
@@ -20,6 +23,8 @@ watchSystemTheme();
 // 动画偏好同理：落成 html[data-motion]，CSS 与星球脚本动画读同一份结果
 applyMotion(resolveMotion(getMotionPreference()));
 watchSystemMotion();
+// 滚动指示条偏好同理：落成 html[data-scrollbar]，CSS 与指示条引擎读同一份结果
+applyScrollbarPreference(getScrollbarPreference());
 
 const pinia = createPinia();
 createApp(App).use(pinia).use(router).mount("#app");

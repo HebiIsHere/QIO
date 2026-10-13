@@ -7,9 +7,11 @@
  * 组件实例只负责「显现动画」与交互（复制代码、外链安全）。
  */
 import { unified } from "unified";
+import { toString as mdastToString } from "mdast-util-to-string";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
 import remarkDirective from "remark-directive";
+import { qioColumnLabel } from "../utils/qioTable";
 import hljs from "highlight.js/lib/core";
 import { isSafeExternalUrl } from "../utils/externalLink";
 import javascript from "highlight.js/lib/languages/javascript";
@@ -32,6 +34,12 @@ hljs.registerLanguage("xml", xml);
  * 现在只在模块加载时建一次。processor 自身无状态，可以安全复用。
  */
 const processor = unified().use(remarkParse).use(remarkGfm).use(remarkDirective);
+
+/**
+ * 表格序号：给每个表格一份稳定身份，用来把单元格与表头列关联起来
+ * （th 的 id / td 的 headers）。复制、导出、无障碍全部读同一份原数据。
+ */
+let tableSeq = 0;
 
 /**
  * 代码高亮记忆化：同一 (语言, 代码) 只真正高亮一次。
@@ -146,12 +154,50 @@ function renderBlock(node: any): string {
     case "thematicBreak":
       return "<hr />";
     case "table": {
-      const head = (node.children?.[0]?.children ?? []).map((c: any) => `<th>${renderInline(c.children)}</th>`).join("");
-      const body = (node.children?.slice(1) ?? []).map((row: any) =>
-        `<tr>${row.children.map((c: any) => `<td>${renderInline(c.children)}</td>`).join("")}</tr>`
-      ).join("");
-      // 表格放进可横向滚动容器：窄窗口下滚动而不是撑破气泡
-      return `<div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+      /**
+       * 对话表格：受**实际所属正文**宽度约束，绝不横向滚动、绝不裁切。
+       * 列数/内容让每列过窄时由 useQioTables 切到记录模式（列名 + 值），
+       * 保留原记录顺序、列顺序、表头与内容；显示重排不改写数据。
+       */
+      const rows = node.children ?? [];
+      const headerRow = rows[0]?.children ?? [];
+      const bodyRows = rows.slice(1);
+      const rawLabels = headerRow.map((c: any) => mdastToString(c).replace(/\s+/g, " ").trim());
+      const repeats = new Map<string, number>();
+      for (const label of rawLabels) repeats.set(label, (repeats.get(label) ?? 0) + 1);
+      const labels = rawLabels.map((label: string, i: number) =>
+        qioColumnLabel(label, i, label !== "" && (repeats.get(label) ?? 0) > 1),
+      );
+      tableSeq += 1;
+      const tableId = "qio-t" + tableSeq;
+      const labelOf = (i: number) => labels[i] ?? qioColumnLabel("", i, false);
+      const head = headerRow
+        .map(
+          (c: any, i: number) =>
+            '<th id="' + tableId + "-c" + (i + 1) + '" scope="col" data-col="' + (i + 1) +
+            '" data-label="' + escapeHtml(labelOf(i)) + '">' + renderInline(c.children) + "</th>",
+        )
+        .join("");
+      const body = bodyRows
+        .map((row: any) => {
+          const cells = (row.children ?? [])
+            .map(
+              (c: any, i: number) =>
+                '<td data-col="' + (i + 1) + '" data-label="' + escapeHtml(labelOf(i)) +
+                '" headers="' + tableId + "-c" + (i + 1) + '">' + renderInline(c.children) + "</td>",
+            )
+            .join("");
+          return "<tr>" + cells + "</tr>";
+        })
+        .join("");
+      // 不再有「可横向滚动的表格容器」：宽度由正文说话，过窄由记录模式解决
+      return (
+        '<div class="table-wrap qio-table-wrap" data-qio-table="1" data-qio-fit data-mode="table"' +
+        ' data-cols="' + labels.length + '" data-rows="' + bodyRows.length + '">' +
+        '<table class="qio-table">' +
+        '<caption class="qio-sr-only">表格，' + labels.length + " 列 " + bodyRows.length + " 行</caption>" +
+        "<thead><tr>" + head + "</tr></thead><tbody>" + body + "</tbody></table></div>"
+      );
     }
     default:
       return renderInline(node.children ?? []);
@@ -184,6 +230,7 @@ export const markdownPipeline = {
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 // isSafeExternalUrl 已由模块级 <script> 块导入（同一模块作用域，不能重复导入）
 import { openExternal } from "../utils/externalLink";
+import { useQioTables } from "../composables/useQioTables";
 
 const props = defineProps<{
   source: string;
@@ -302,6 +349,13 @@ const renderSource = computed(() =>
 const html = computed(() => markdownPipeline.render(renderSource.value));
 
 /**
+ * 表格适配：对话正文的**实际**可用宽度 + 列结构 + 内容真实最小宽度决定呈现
+ * （表格 / 记录）。普通对话与互动对话共用这一个入口，流式期间也随内容增长重算。
+ */
+const bodyRef = ref<HTMLElement | null>(null);
+useQioTables(bodyRef);
+
+/**
  * 复制状态（对代码块按钮的短期反馈）。
  * 每个按钮独立计时：连续复制不同代码块时，各自的「已复制/复制失败」都要能自己复位，
  * 不能共用一个计时器（否则先点的那个会永久停在「已复制」）。
@@ -400,7 +454,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-<div class="markdown-body" v-html="html" @click="onClick"></div>
+<div ref="bodyRef" class="markdown-body" data-qio-fit v-html="html" @click="onClick"></div>
 </template>
 
 <style scoped>
@@ -413,7 +467,15 @@ onBeforeUnmount(() => {
 .markdown-body :deep(li) { margin: 0.2em 0; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 0.8em 0 0.4em; }
 .markdown-body :deep(h4), .markdown-body :deep(h5), .markdown-body :deep(h6) { margin: 1em 0 0.4em; }
-.markdown-body :deep(pre) { background: var(--bg-elevated); border-radius: 8px; padding: 10px 12px; overflow-x: auto; max-width: 100%; }
+/* 代码块软换行：保留原始换行/缩进，长行视觉折行。**不再横向滚动** ——
+   对话内任何层级都不允许横向滚动（规则高于旧规范里「代码块可以横向滚动」的约定）。
+   DOM 文本仍是原字符序列，复制/下载/底层数据一字不改。 */
+.markdown-body :deep(pre) {
+  background: var(--bg-elevated); border-radius: 8px; padding: 10px 12px;
+  max-width: 100%; min-width: 0;
+  white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
+  overflow-x: clip; tab-size: 4;
+}
 .markdown-body :deep(pre code) { font-family: var(--mono); font-size: 12.5px; }
 .markdown-body :deep(.code-block) { position: relative; margin: 0.5em 0; }
 .markdown-body :deep(.code-copy) {
@@ -432,13 +494,15 @@ onBeforeUnmount(() => {
 }
 .markdown-body :deep(.code-copy:hover) { color: var(--accent); border-color: var(--accent); }
 .markdown-body :deep(.code-copy.fail) { color: var(--danger); border-color: var(--danger); opacity: 1; }
-.markdown-body :deep(.table-wrap) { max-width: 100%; overflow-x: auto; }
+/* 表格的宽度/记录模式规则在全局 styles/scroll.css 的 .qio-table-wrap 里
+   （普通对话与互动对话共用同一份，任何入口都不会漏）。这里不再有横向滚动容器。 */
+.markdown-body :deep(.table-wrap) { max-width: 100%; min-width: 0; overflow-x: clip; }
 .markdown-body :deep(code.inline) { background: var(--bg-accent-subtle); border-radius: 4px; padding: 1px 5px; }
 .markdown-body :deep(a) { color: var(--link); }
 /* 危险 scheme：渲染成普通文本，不给可点链接 */
 .markdown-body :deep(.link-blocked) { color: var(--text-secondary); text-decoration: underline dotted; cursor: help; }
 .markdown-body :deep(a.link-failed) { color: var(--danger); }
 .markdown-body :deep(blockquote) { border-left: 3px solid var(--accent); margin: 0.4em 0; padding-left: 10px; color: var(--text-secondary); }
-.markdown-body :deep(table) { border-collapse: collapse; margin: 0.5em 0; min-width: max-content; }
-.markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid var(--border-subtle); padding: 4px 10px; }
+/* 单元格边框/内边距/换行由共享的 .qio-table-wrap 规则给出（唯一来源）。 */
+.markdown-body :deep(table) { margin: 0.5em 0; }
 </style>
