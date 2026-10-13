@@ -44,6 +44,7 @@ import {
 } from "../../interactive/submission";
 import BoardChangeList from "./BoardChangeList.vue";
 import { humanizeFailure, scrubInternalTerms } from "./displayText";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const store = useInteractiveStore();
 const detailsOpen = ref(false);
@@ -568,7 +569,7 @@ function onSubmit() {
         <p class="approvals-head" data-im="submit-approval-state" role="status">
           待审批 {{ pendingApprovals.length }} 项（批准前不会改动板面）
         </p>
-        <ul class="approval-rows">
+        <ul class="approval-rows" v-qio-scrollbar data-qio-fit>
           <li
             v-for="intent in pendingApprovals"
             :key="intent.id"
@@ -985,14 +986,20 @@ function onSubmit() {
   color: var(--text-primary);
 }
 .approval-rows {
+  /* 这一列是**独立列表**（每条自带批准 / 拒绝），允许自己有唯一一层纵向滚动：
+     滚动条走统一策略（原生外观已全局移除），横向永不滚动；列表之外的内容不自开滚动层。 */
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: calc(var(--fs-xs) * 1.45 * 3);
-  overflow: auto;
+  /* 原来的 3 行上限只够看两条，是个「小滚动窗口」；改成按视口取一个真正可用的高度，
+     超过才滚（批准入口与状态行都在列表外，任何滚动位置都看得见）。 */
+  max-height: min(200px, 26vh);
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
 }
 .approval-row {
   display: flex;
@@ -1065,9 +1072,9 @@ function onSubmit() {
   gap: 2px;
   margin: 0;
   padding: var(--sp-1) var(--sp-2);
-  /* 高度上限保持基线（4 行）：上一轮验收要求长原因在默认区完整显示，本轮不动这条 */
-  max-height: calc(var(--fs-xs) * 1.45 * 4);
-  overflow-y: auto;
+  /* content 策略：失败原因**完整显示**（换行、不截断、不自开滚动层）——
+     原来 4 行上限 + overflow-y 会在同一阅读流里再切一个小滚动窗口，
+     而且「原因看不全」正是失败恢复最不该发生的事。 */
   overflow-wrap: anywhere;
   border-left: 2px solid var(--danger);
   border-radius: var(--r-xs);

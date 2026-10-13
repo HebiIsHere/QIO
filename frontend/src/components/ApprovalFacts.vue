@@ -58,7 +58,7 @@ function syncBudget() {
 </script>
 
 <template>
-  <div v-if="facts" class="approval-facts" data-test="approval-facts" :data-kind="facts.kind">
+  <div v-if="facts" class="approval-facts" data-test="approval-facts" data-qio-fit :data-kind="facts.kind">
     <!-- 1) 它想做什么：系统事实 -->
     <p class="intent">{{ facts.description }}</p>
 
@@ -127,14 +127,14 @@ function syncBudget() {
       </p>
       <details v-if="facts.detail && facts.detail !== facts.command" class="af-detail" data-test="approval-detail">
         <summary>完整技术明细</summary>
-        <pre class="af-pre mono">{{ facts.detail }}</pre>
+        <pre class="af-pre mono" data-qio-fit>{{ facts.detail }}</pre>
       </details>
     </div>
 
     <!-- 工具参数：默认折叠，但入口写清楚是「完整参数」 -->
     <details v-if="facts.params" class="af-params" data-test="approval-params">
       <summary>工具参数（完整）</summary>
-      <pre class="af-pre mono">{{ facts.params }}</pre>
+      <pre class="af-pre mono" data-qio-fit>{{ facts.params }}</pre>
     </details>
 
     <!-- 6) 高级详情：策略指纹 / 逐条测试结果 / raw params，默认折叠 -->
@@ -143,7 +143,7 @@ function syncBudget() {
       <ul v-if="facts.advanced.lines.length" class="adv-list">
         <li v-for="l in facts.advanced.lines" :key="l">{{ l }}</li>
       </ul>
-      <pre class="adv-raw mono">{{ facts.advanced.raw }}</pre>
+      <pre class="adv-raw mono" data-qio-fit>{{ facts.advanced.raw }}</pre>
     </details>
 
     <!-- 子 agent 执行预算：可改后批准（内联卡与弹窗都有这个入口） -->
@@ -317,8 +317,8 @@ function syncBudget() {
 .af-pre {
   margin: 6px 0 0;
   padding: 8px 10px;
-  max-height: 160px;
-  overflow: auto;
+  /* content 策略：技术明细在 <details> 里按需展开，展开后自然长高 + 软换行，
+     不在审批正文（父层唯一滚动区）里再切出第二个小滚动窗口。 */
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
@@ -368,8 +368,7 @@ function syncBudget() {
 .adv-raw {
   margin: 8px 0 0;
   padding: 8px 10px;
-  max-height: 160px;
-  overflow: auto;
+  /* content 策略：同上 —— raw params 默认折叠，展开后靠软换行 + 父层滚动 */
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
