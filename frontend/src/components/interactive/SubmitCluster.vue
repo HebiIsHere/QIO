@@ -16,15 +16,21 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { fetchBoardState } from "../../services/interactive";
 import {
+  BATCH_LIST_MIN,
+  approveAvailability,
   currentUnderstandingStep,
+  locatePreview,
   materialReadText,
+  previewBounds,
+  rejectAvailability,
   understandingHistory,
   understandingOutcome,
   understandingSettled,
+  understandingStatusLabel,
   understandingStepText,
   understandingText,
 } from "../../interactive/approval";
-import type { BoardStateResponse, Expression } from "../../interactive/types";
+import type { BoardStateResponse, Expression, Intent } from "../../interactive/types";
 import {
   draftHintText,
   localVisibleRange,
@@ -63,6 +69,21 @@ const uText = computed(() => {
       known: false,
     };
   }
+  /**
+   * 提交成功、但回执没有给出理解请求身份（或查询还没回来）：
+   * 绝不能说成「还没有提交给 QIO」——那会把已经发生的事实说反。
+   * 这里只说本页已知的：已提交；理解状态以服务端记录为准。
+   */
+  if (!store.understandingStatus && store.submitStatus === "succeeded") {
+    return {
+      label: "已提交",
+      detail: "这次提交已经记录；回执没有给出理解请求身份，理解状态以服务端记录为准。",
+      tone: "waiting" as const,
+      settled: false,
+      needsUser: false,
+      known: false,
+    };
+  }
   return understandingText(store.understanding, store.understandingStatus);
 });
 const uSettled = computed(() => understandingSettled(uStatus.value));
@@ -77,12 +98,119 @@ const missingText = computed(() => {
   return missing.length ? missing.join("、") : "请补充这次要做什么";
 });
 const understoodIntents = computed(() => store.understandingIntents.length);
+
+/* ------------------------------------------------------------------------
+ * 本次提交的当前状态（任务书 §5.1 — §5.3）
+ *
+ * 只显示**最新一条事实**：受理 → 理解 → 审批 / 执行。
+ * 说明属于写下它的那个阶段：阶段一过，它只出现在可展开的过程历史里 ——
+ * 「本次无需任务」下面不许再压着一句旧的「正在理解」。
+ * ---------------------------------------------------------------------- */
+
+/** 这次理解产出的、还在等待审批的条目（批准前不改动板面）。 */
+const pendingApprovals = computed(() =>
+  store.understandingIntents.filter((item) =>
+    ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
+  ),
+);
+
+/** 这一轮是否真有一个可展示的批量列表（资格判据与 IntentBatchTray 同一口径）。 */
+const batchListAvailable = computed(() =>
+  store.batches.some(
+    (batch) => batch.intentIds.length >= BATCH_LIST_MIN && batch.pendingIds.length > 0,
+  ),
+);
+
+/**
+ * 阶段说明的归属：当前阶段的说在**当前区**；已经过去的说只进可展开历史。
+ * `submitNote` 写的是「正在理解」，理解有结论之后它就只是历史。
+ */
+const stageNotes = computed(() => {
+  const list: { key: string; text: string; current: boolean }[] = [];
+  if (store.understandingNote) {
+    list.push({
+      key: "understanding",
+      text: store.understandingNote,
+      current: store.understandingNoteOwnsCurrentStage,
+    });
+  }
+  if (store.submitNote) {
+    list.push({ key: "submit", text: store.submitNote, current: store.submitNoteOwnsCurrentStage });
+  }
+  return list;
+});
+const currentNotes = computed(() => stageNotes.value.filter((note) => note.current));
+const pastNotes = computed(() => stageNotes.value.filter((note) => !note.current));
+/** 历史里的旧理解过程（本板面；当前这一条不算历史）。 */
+const pastUnderstandings = computed(() => store.understandingHistory);
+
+/**
+ * 审批之后的执行事实（取服务端执行记录）：不把「已经批准」说成「已完成」，
+ * 也不伪造进度 —— 只如实报「执行中 / 等待执行记录 / 已结束」各几项。
+ */
+const handledSummary = computed(() => {
+  const items = store.understandingIntents;
+  if (!items.length || pendingApprovals.value.length) return "";
+  let live = 0;
+  let waiting = 0;
+  let settled = 0;
+  for (const intent of items) {
+    const status = store.executionStatus[intent.id] ?? intent.execution?.status ?? "none";
+    if (status === "queued" || status === "running") live += 1;
+    else if (status === "done" || status === "failed" || status === "cancelled") settled += 1;
+    else waiting += 1; // 已批准但还没有执行记录 / 已暂停：算「等待」，不假装已经结束
+  }
+  const parts: string[] = [];
+  if (live) parts.push("执行中 " + live + " 项");
+  if (waiting) parts.push("等待执行记录 " + waiting + " 项");
+  if (settled) parts.push("已结束 " + settled + " 项");
+  return parts.length ? "本次任务：" + parts.join(" · ") + "（取服务端执行记录）" : "";
+});
+
+const decisionBusy = ref<string | null>(null);
+const decisionNote = ref<string | null>(null);
+
+/** 批准 / 拒绝：与批量列表、聊天走同一个 store 入口（同一意图只提交一次，不重复执行）。 */
+async function decide(intent: Intent, decision: "approve" | "reject"): Promise<void> {
+  if (decisionBusy.value) return;
+  decisionBusy.value = intent.id;
+  decisionNote.value = null;
+  try {
+    const result =
+      decision === "approve"
+        ? await store.approve(intent.id, approveAvailability(intent).needsConfirm)
+        : await store.reject(intent.id);
+    decisionNote.value = result.ok
+      ? decision === "approve"
+        ? result.detail ?? "已批准：任务已经交给真实执行，进度以执行记录为准。"
+        : "已拒绝：预览消失，板面原内容保留。"
+      : "没有" +
+        (decision === "approve" ? "批准" : "拒绝") +
+        "：" +
+        (result.detail ?? result.reason ?? "服务端未说明原因");
+  } finally {
+    decisionBusy.value = null;
+  }
+}
+
+/** 定位到板面上的虚线预览（沿用既有 window 事件；不产生审批、不调用模型）。 */
+function locateOnBoard(intent: Intent): void {
+  locatePreview(intent.id, previewBounds(intent.preview));
+}
+
+/** 打开既有批量列表：不新建第二套批量入口；空间不足时由几何层二选一。 */
+function openBatchList(): void {
+  store.batchOpen = true;
+}
+
 const showUnderstanding = computed(
   () =>
     Boolean(uStatus.value) ||
     Boolean(store.submitNote) ||
     store.submitStatus === "submitting" ||
-    Boolean(store.understandingNote),
+    Boolean(store.understandingNote) ||
+    pendingApprovals.value.length > 0 ||
+    Boolean(handledSummary.value),
 );
 
 const retrying = ref(false);
@@ -415,7 +543,7 @@ function onSubmit() {
           {{ refreshing ? "查询中…" : "刷新理解状态" }}
         </button>
         <button
-          v-if="uHistory.length || store.understandingNote"
+          v-if="uHistory.length || pastNotes.length || pastUnderstandings.length"
           class="details"
           type="button"
           data-im="understanding-history-toggle"
@@ -425,6 +553,85 @@ function onSubmit() {
           {{ detailsOpen ? "收起过程" : "查看过程" }}
         </button>
       </span>
+
+      <!--
+        待审批出现时审批入口就在这里展开（任务书 §5.4）：不必先去聊天窗口或批量列表找，
+        聊天收起时这一段仍然可达。批准 / 拒绝 / 定位与既有批量操作都在，
+        批准前不会有任何改动；同一个意图只提交一次，不重复执行。
+      -->
+      <div
+        v-if="pendingApprovals.length"
+        class="approvals"
+        data-im="submit-approvals"
+        :data-approval-count="pendingApprovals.length"
+      >
+        <p class="approvals-head" data-im="submit-approval-state" role="status">
+          待审批 {{ pendingApprovals.length }} 项（批准前不会改动板面）
+        </p>
+        <ul class="approval-rows">
+          <li
+            v-for="intent in pendingApprovals"
+            :key="intent.id"
+            class="approval-row"
+            data-im="submit-approval-item"
+            :data-intent-id="intent.id"
+          >
+            <span v-if="intent.demo" class="approval-demo">演示</span>
+            <span class="approval-name">{{ intent.title }}</span>
+            <button
+              class="mini"
+              type="button"
+              data-im="submit-approve"
+              :data-intent-id="intent.id"
+              :disabled="decisionBusy === intent.id || !approveAvailability(intent).allowed"
+              :title="approveAvailability(intent).text"
+              @click="decide(intent, 'approve')"
+            >
+              {{ decisionBusy === intent.id ? "处理中…" : "批准" }}
+            </button>
+            <button
+              class="mini"
+              type="button"
+              data-im="submit-reject"
+              :data-intent-id="intent.id"
+              :disabled="decisionBusy === intent.id || !rejectAvailability(intent).allowed"
+              :title="rejectAvailability(intent).text"
+              @click="decide(intent, 'reject')"
+            >
+              拒绝
+            </button>
+            <button
+              class="mini ghost"
+              type="button"
+              data-im="submit-locate"
+              :data-intent-id="intent.id"
+              @click="locateOnBoard(intent)"
+            >
+              定位
+            </button>
+          </li>
+        </ul>
+        <span class="approvals-actions">
+          <button
+            v-if="batchListAvailable"
+            class="details"
+            type="button"
+            data-im="submit-open-batch"
+            @click="openBatchList"
+          >
+            打开批量审批
+          </button>
+          <span v-if="decisionNote" class="u-note" data-im="submit-decision-note" role="status">
+            {{ decisionNote }}
+          </span>
+        </span>
+      </div>
+
+      <!-- 审批之后的执行事实：只报服务端执行记录，不把「已批准」说成「已完成」 -->
+      <p v-if="handledSummary" class="u-note" data-im="submit-handled-state" role="status">
+        {{ handledSummary }}
+      </p>
+
       <p v-if="uOutcome === 'clarification'" class="u-note" data-im="understanding-missing">
         需要你补充：{{ missingText }}；这次没有生成任何任务。
       </p>
@@ -434,8 +641,18 @@ function onSubmit() {
       <p v-else-if="uOutcome === 'failed'" class="u-note err" data-im="understanding-failed">
         重试只会从这次提交保存的快照恢复：不重读当前板面，也不重建同一批任务。
       </p>
-      <p v-if="store.understandingNote" class="u-note" data-im="understanding-note">{{ store.understandingNote }}</p>
-      <p v-if="store.submitNote" class="u-note" data-im="submit-acceptance-note">{{ store.submitNote }}</p>
+      <!--
+        当前阶段的说明：只放**当前**阶段的那一/两条。
+        阶段已经过去的说明（例如受理时那句「正在理解」）不在这一区，只进可展开历史。
+      -->
+      <p
+        v-for="note in currentNotes"
+        :key="'note-' + note.key"
+        class="u-note"
+        :data-im="note.key === 'submit' ? 'submit-acceptance-note' : 'understanding-note'"
+      >
+        {{ note.text }}
+      </p>
       <p v-if="understandingActionNote" class="u-note err" data-im="understanding-action-note">
         {{ understandingActionNote }}
       </p>
@@ -593,11 +810,36 @@ function onSubmit() {
       <p v-if="store.understandingError" class="line err" data-im="understanding-error">
         理解状态读取失败：{{ store.understandingError }}
       </p>
-      <div v-if="uCurrent || uHistory.length" class="u-steps" data-im="understanding-history">
+      <!--
+        可展开的过程历史：当前阶段 + 已经过去的阶段。
+        旧阶段的说明与旧的理解过程只在这里出现 —— 保留历史，但不把历史当作当前状态。
+      -->
+      <div
+        v-if="uCurrent || uHistory.length || pastNotes.length || pastUnderstandings.length"
+        class="u-steps"
+        data-im="understanding-history"
+      >
         <p class="line strong">理解过程</p>
         <p v-if="uCurrent" class="line" data-im="understanding-current-step">{{ understandingStepText(uCurrent) }}</p>
         <p v-for="step in uHistory" :key="step.key + '-' + step.label" class="line faint">
           {{ understandingStepText(step) }}
+        </p>
+        <p
+          v-for="note in pastNotes"
+          :key="'past-' + note.key"
+          class="line faint"
+          data-im="submit-history-note"
+          :data-note-kind="note.key"
+        >
+          {{ note.text }}
+        </p>
+        <p
+          v-for="item in pastUnderstandings"
+          :key="item.id"
+          class="line faint"
+          data-im="submit-history-understanding"
+        >
+          上一次提交的理解：{{ understandingStatusLabel(item.status) }}{{ item.summary ? "——" + item.summary : "" }}
         </p>
       </div>
       <p v-if="understoodIntents > 0" class="line strong" data-im="understanding-intents">
@@ -721,6 +963,85 @@ function onSubmit() {
   overflow-wrap: anywhere;
 }
 .u-note.err { color: var(--danger); }
+/*
+  待审批入口（任务书 §5.4）：整行展开在提交状态下方；列表高度有上限、超出时区内滚动 ——
+  审批再多也不会把底部工具栏越撑越高（「常态工具栏高度有上限」那条口径仍然成立）。
+*/
+.approvals {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-1) var(--sp-2);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+}
+.approvals-head {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+.approval-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: calc(var(--fs-xs) * 1.45 * 3);
+  overflow: auto;
+}
+.approval-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+}
+.approval-name {
+  flex: 1 1 8ch;
+  min-width: 0;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-demo {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-1);
+}
+/* 审批行内的小按钮：只保留可点面积与可读性，不做装饰色（颜色一律走令牌） */
+.mini {
+  flex: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+  cursor: pointer;
+}
+.mini:hover:enabled { color: var(--text-strong); border-color: var(--border-strong); }
+.mini.ghost { background: none; color: var(--link); }
+.mini:disabled { opacity: 0.55; cursor: default; }
+.mini:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.approvals-actions {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+.approvals-actions .u-note { flex: 1 1 auto; }
 /* 过程历史：默认收起，展开后按「当前阶段 + 已过去的阶段」稳定排列 */
 .u-steps { display: flex; flex-direction: column; gap: 2px; }
 /* 允许查看范围始终可见（不折叠才存在）；视觉上最多两行，全文仍在 DOM 里 */
