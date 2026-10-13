@@ -1,0 +1,173 @@
+/**
+ * useResizeGesture —— 尺寸拖动的公共手势层（互动模式契约 2026-10-13 · IRL §2）
+ *
+ * 边界：
+ * - 只负责「指针 → 尺寸」这一段。改不改板面状态、要不要排队保存，由调用方决定。
+ * - 拖动过程中只回调 `onPreview`（跟手，不播放追赶动画）；松手才回调一次 `onCommit`。
+ * - **取消即恢复**：指针取消 / Esc / 窗口失焦 / 组件卸载都回到拖动前那一版，
+ *   并清掉 document 监听；不留半完成状态。
+ * - 全程除零防护：`scale` 返回 0 / NaN 时按 1 处理（画布缩放还没量出来时也跟手）。
+ */
+import { onScopeDispose, ref, type Ref } from "vue";
+import {
+  RESIZE_DRAG_THRESHOLD,
+  RESIZE_STEP,
+  resizeBox,
+  stepBox,
+  type ResizeBox,
+  type ResizeHandle,
+  type SizeLimits,
+} from "../interactive/resize";
+
+export interface ResizeGestureOptions {
+  /** 常态框（拖动起点的快照来源）。拖动期间必须保持稳定。 */
+  box: () => ResizeBox;
+  /** 当前可用区域推出的尺寸上限。 */
+  limits: () => SizeLimits;
+  /** 指针位移 → 该元素坐标系位移的换算；画布卡片用 `() => 1 / view.scale`。 */
+  scale?: () => number;
+  /** 拖动中的实时框（只用于显示，不写状态、不排队保存）。 */
+  onPreview: (box: ResizeBox) => void;
+  /** 松手 / 键盘步进后的最终框，一次。 */
+  onCommit: (box: ResizeBox, reason: "pointer" | "keyboard") => void;
+  /** 取消：调用方据此把显示恢复成拖动前的框。 */
+  onCancel?: (box: ResizeBox) => void;
+  step?: number;
+}
+
+interface PointerLike {
+  clientX?: number;
+  clientY?: number;
+  pointerId?: number;
+  button?: number;
+  isPrimary?: boolean;
+  preventDefault?: () => void;
+  stopPropagation?: () => void;
+}
+
+function finiteScale(value: number | undefined): number {
+  return Number.isFinite(value) && (value as number) > 0 ? (value as number) : 1;
+}
+
+export function useResizeGesture(options: ResizeGestureOptions) {
+  const active = ref(false);
+
+  let snapshot: ResizeBox | null = null;
+  let handle: ResizeHandle | null = null;
+  let originX = 0;
+  let originY = 0;
+  let pointerId: number | null = null;
+  let started = false;
+  let latest: ResizeBox | null = null;
+  let attached = false;
+
+  function detach(): void {
+    if (!attached) return;
+    attached = false;
+    document.removeEventListener("pointermove", onPointerMove, true);
+    document.removeEventListener("pointerup", onPointerUp, true);
+    document.removeEventListener("pointercancel", onPointerCancel, true);
+    document.removeEventListener("keydown", onKeyDown, true);
+    window.removeEventListener("blur", onBlur);
+  }
+
+  function reset(): void {
+    detach();
+    snapshot = null;
+    handle = null;
+    pointerId = null;
+    started = false;
+    latest = null;
+    active.value = false;
+  }
+
+  /** 取消：恢复拖动前状态。已经提交过（松手）就不再回调。 */
+  function cancel(): void {
+    const restore = snapshot;
+    const wasDragging = started;
+    reset();
+    if (wasDragging && restore) options.onCancel?.(restore);
+  }
+
+  function attach(): void {
+    if (attached) return;
+    attached = true;
+    document.addEventListener("pointermove", onPointerMove, true);
+    document.addEventListener("pointerup", onPointerUp, true);
+    document.addEventListener("pointercancel", onPointerCancel, true);
+    document.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("blur", onBlur);
+  }
+
+  function onHandleDown(nextHandle: ResizeHandle, event: PointerLike | null | undefined): void {
+    if (!event) return;
+    // 只接主键 / 主指针：右键菜单与多指手势不进入尺寸调整。
+    if (typeof event.button === "number" && event.button !== 0) return;
+    if (event.isPrimary === false) return;
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    cancel();
+    snapshot = { ...options.box() };
+    handle = nextHandle;
+    originX = Number(event.clientX ?? 0);
+    originY = Number(event.clientY ?? 0);
+    pointerId = typeof event.pointerId === "number" ? event.pointerId : null;
+    started = false;
+    latest = null;
+    attach();
+  }
+
+  function onPointerMove(event: PointerLike | null | undefined): void {
+    if (!event || !snapshot || !handle) return;
+    if (pointerId !== null && typeof event.pointerId === "number" && event.pointerId !== pointerId) return;
+    const scale = finiteScale(options.scale?.());
+    const dx = (Number(event.clientX ?? 0) - originX) * scale;
+    const dy = (Number(event.clientY ?? 0) - originY) * scale;
+    if (!started) {
+      // 阈值之内算点击：不改尺寸，也不进入「拖动中」。
+      if (Math.abs(dx) < RESIZE_DRAG_THRESHOLD && Math.abs(dy) < RESIZE_DRAG_THRESHOLD) return;
+      started = true;
+      active.value = true;
+    }
+    latest = resizeBox(snapshot, handle, dx, dy, options.limits());
+    options.onPreview(latest);
+  }
+
+  function onPointerUp(event: PointerLike | null | undefined): void {
+    if (pointerId !== null && typeof event?.pointerId === "number" && event.pointerId !== pointerId) return;
+    const commit = started ? latest : null;
+    reset();
+    if (commit) options.onCommit(commit, "pointer");
+  }
+
+  function onPointerCancel(): void {
+    cancel();
+  }
+
+  function onKeyDown(event: { key?: string } | null | undefined): void {
+    if (event?.key !== "Escape") return;
+    cancel();
+  }
+
+  function onBlur(): void {
+    cancel();
+  }
+
+  /** 键盘 −/＋：一次一步，直接提交（没有拖动过程，不需要 preview）。 */
+  function nudge(axis: "w" | "h", direction: 1 | -1): void {
+    const next = stepBox(options.box(), axis, direction, options.limits(), options.step ?? RESIZE_STEP);
+    options.onCommit(next, "keyboard");
+  }
+
+  /** 供拖动中的容器加 `.resizing` 类：拖动期间必须关掉尺寸/位置过渡。 */
+  function previewing(): boolean {
+    return active.value;
+  }
+
+  onScopeDispose(() => {
+    // 组件卸载时还在拖动：先恢复，再清理监听。
+    cancel();
+  });
+
+  return { active: active as Ref<boolean>, onHandleDown, nudge, cancel, previewing };
+}
