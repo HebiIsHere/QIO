@@ -205,3 +205,29 @@ describe("调试视图：一层正文滚动 + 日志软换行（不留横向滚�
     expect(json).toContain("overflow-wrap: anywhere");
   });
 });
+
+describe("折叠动画的纯裁剪盒不建立滚动容器（2026-10-14 收尾）", () => {
+  /* overflow:hidden 的视觉裁切与 clip 一致，但它仍然是一个可被脚本/焦点滚动的容器
+     （scrollTop/scrollLeft/scrollIntoView/focus 都能推动它）；这两处只做 0fr→1fr 折叠时的裁切，
+     不该有滚动语义。改成 clip 后裁切行为不变，但不再有滚动容器。 */
+  const boxes: [string, string][] = [
+    ["components/ToolCreationCard.vue", ".detail-clip"],
+    ["components/NarrativeStage.vue", ".ndrawer-clip"],
+  ];
+
+  it.each(boxes)("%s 的 %s 用 clip 而不是 hidden", (rel, sel) => {
+    const body = ruleBody(read(rel), sel);
+    expect(body, sel + " 规则必须存在").not.toBe("");
+    expect(body, sel + " 不应再用 overflow: hidden（仍可被程序性滚动）").not.toContain("overflow: hidden");
+    expect(body, sel + " 应为 overflow: clip").toContain("overflow: clip");
+  });
+
+  it("两处折叠盒里的宽内容靠换行适配（clip 只裁切，不提供滚动通道）", () => {
+    // 工具创建卡：详情段落可任意位置换行
+    expect(read("components/ToolCreationCard.vue")).toMatch(/\.detail p \{[^}]*overflow-wrap: anywhere/);
+    // 叙事抽屉：正文（含插槽内容）可任意位置换行，调用行的名称/元信息可收缩
+    const narrative = read("components/NarrativeStage.vue");
+    expect(narrative).toMatch(/\.ndrawer-body :where\([^)]*\) \{[^}]*overflow-wrap: anywhere/);
+    expect(narrative).toMatch(/\.callname,\s*\n\.callmeta \{ min-width: 0; \}/);
+  });
+});
