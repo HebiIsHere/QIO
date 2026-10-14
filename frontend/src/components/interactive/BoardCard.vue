@@ -8,8 +8,10 @@
     材料默认就在 QIO 可查看范围内，没有这个选择框；reply 不参与勾选；
   - 局部工具栏（data-im="card-toolbar"）只放**这张卡片自己的操作**
     （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选）；分组类操作在 SelectionMenu 里；
-  - 选中后卡片四边出现**连接点**（data-im="connect-point"）。工具栏与整理菜单都朝卡片外侧展开，
-    实测不盖标题、连接点与正在编辑的正文；
+  - **连接点不在卡片里**（0.2.5 回归修复）：它由 BoardCanvas 的交互层（BoardResizeLayer）
+    统一渲染 —— 画在卡片内部时，四边中点正好被那一层 10px 的尺寸热区盖住，真实鼠标按不下去。
+    本组件只保留「正在拖线」的 prop 接线（connecting）；工具栏与整理菜单仍朝卡片外侧展开，
+    实测不盖标题与正在编辑的正文；
   - 状态一律「文字 + 颜色」双通道，不能只靠颜色；
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
@@ -36,6 +38,7 @@ import { isSafeExternalUrl, openExternal } from "../../utils/externalLink";
 import {
   cardAttachmentId,
   cardAttachmentLinked,
+  cardAttachmentName,
   cardAttachmentText,
 } from "../../interactive/materials";
 // 卡片内真实预览（契约 §3.5）：预览主体挂在**卡片内部**，不盖住编辑区、勾选框与卡片操作。
@@ -48,6 +51,7 @@ import {
   uploadAttachment,
   waitUntilSettled,
 } from "../../services/attachments";
+import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
@@ -88,7 +92,6 @@ const emit = defineEmits<{
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
   (e: "join-group", cardId: string, groupId: string): void;
-  (e: "connect-start", cardId: string, event: PointerEvent): void;
 }>();
 
 const store = useInteractiveStore();
@@ -384,40 +387,82 @@ const attachKind = computed<"file" | "image" | null>(() =>
 const attachmentId = computed(() => cardAttachmentId(props.card.meta, props.card.kind));
 const attachmentLinked = computed(() => cardAttachmentLinked(props.card.meta, props.card.kind));
 const attachmentText = computed(() => cardAttachmentText(props.card.meta, props.card.kind));
-const attachStatus = ref<{ tone: "busy" | "ok" | "error"; text: string } | null>(null);
+/**
+ * 附件提示与 AddMenu 共用**同一份原语**（任务书 §二.8）：
+ * busy 真实进度一直显示，ok 约 3 秒自动移除（只移除提示），error 不自动消失且可关闭 / 可重来。
+ * 本组件只把 patch 交给父级 commit，所以成功文案不许声称服务端已经保存。
+ */
+const attachNotice = useTransientNotice();
+const attachStatus = attachNotice.notice;
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** 取消选择的文案按卡片**当前**事实区分：卡片已有附件时不许说「还没有关联」。 */
+function attachCancelText(): string {
+  if (attachmentLinked.value) {
+    const previous = cardAttachmentName(props.card.meta, props.card.kind) || name.value;
+    return (
+      "没有选择文件：这张卡片仍然关联着原有附件" +
+      (previous ? "「" + previous + "」" : "") +
+      "，本次没有更换"
+    );
+  }
+  return "没有选择文件：这张卡片还没有关联已保存的附件，QIO 读不到它的正文";
+}
+
+/** 失败提示上的「重新选择文件」：重新走一遍 pickBrowserFile → 上传 → 关联。 */
+function runAttachRetry(): void {
+  attachStatus.value?.retry?.run();
+}
+
+function dismissAttachStatus(): void {
+  attachNotice.dismiss();
 }
 
 /**
  * 选一份真实文件 → 走既有上传接口（不新造上传链路）→ 等附件进入最终态 →
  * 把 `{ name, attachmentId, size }` 写进卡片 meta（由父级 commit，组件不直接改板面状态）。
  * 取消与失败都如实说出来，并且显示在卡片上，不静默。
+ *
+ * 每次调用 begin() 开一代新操作，之后所有写入都带这次操作的 token ——
+ * 迟到的结果不会覆盖 / 清掉别的提示（与 AddMenu 的规则逐字一致）。
  */
 async function pickAttachment(): Promise<void> {
   const kind = attachKind.value;
   if (!kind) return;
   const cardId = props.card.id;
-  attachStatus.value = { tone: "busy", text: "正在等待选择文件…" };
+  const token = attachNotice.begin();
+  const retry: NoticeRetry = { label: "重新选择文件", run: () => void pickAttachment() };
+  attachNotice.progress(token, "正在等待选择文件…");
   let file: File | null;
   try {
     file = await pickBrowserFile();
   } catch (error) {
-    attachStatus.value = { tone: "error", text: "选择文件失败：" + messageOf(error) };
+    attachNotice.fail(token, "选择文件失败：" + messageOf(error), retry);
     return;
   }
+  // 被新操作取代 / 组件已卸载：不再继续，也不写提示与板面（isCurrent 同时覆盖这两种失效）
+  if (!attachNotice.isCurrent(token)) return;
   if (!file) {
-    attachStatus.value = {
-      tone: "error",
-      text: "没有选择文件：这张卡片还没有关联已保存的附件，QIO 读不到它的正文",
-    };
+    // 用户取消：如实说明（不假装读到了内容），文案按卡片当前是否已有附件区分
+    attachNotice.fail(token, attachCancelText(), retry);
     return;
   }
-  attachStatus.value = { tone: "busy", text: "正在保存附件「" + (file.name || "未命名") + "」…" };
+  const fileName = file.name || "未命名";
+  attachNotice.progress(token, "正在保存附件「" + fileName + "」…");
   try {
     const uploaded = await uploadAttachment(file);
+    if (!attachNotice.isCurrent(token)) return;
+    // 上传完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
+    attachNotice.progress(token, "正在处理附件「" + fileName + "」…");
     const settled = await waitUntilSettled(uploaded);
+    /**
+     * 这里多守一次：卡片是**同一个目标**，迟到的旧操作不许把新关联覆盖回去。
+     * （AddMenu 面对的是「每次添加一张新卡」，各自的附件绑各自的卡；这里只有一张卡。）
+     */
+    if (!attachNotice.isCurrent(token)) return;
     if (settled.state !== "ready") {
       throw new Error(
         "附件「" +
@@ -432,12 +477,20 @@ async function pickAttachment(): Promise<void> {
     meta[kind] = { name: settled.name, attachmentId: settled.id, size: settled.sizeBytes };
     metaName.value = settled.name;
     emit("patch", cardId, { meta } as Partial<BoardCard>, "关联附件：" + settled.name);
-    attachStatus.value = { tone: "ok", text: "已关联已保存的附件「" + settled.name + "」" };
+    /**
+     * 成功只陈述两件已确认的事实：附件本身已经保存（stateText），板面关联还只是**本地**改动
+     * —— 组件只 emit patch 给父级 commit，不声称服务端已保存（任务书 §二.10）。
+     */
+    attachNotice.succeed(
+      token,
+      "已关联附件「" +
+        settled.name +
+        "」（" +
+        stateText(settled) +
+        "）；板面关联是本地改动，提交后 QIO 才可见",
+    );
   } catch (error) {
-    attachStatus.value = {
-      tone: "error",
-      text: "附件保存失败：" + messageOf(error) + "；没有关联上，可以重试",
-    };
+    attachNotice.fail(token, "附件保存失败：" + messageOf(error), retry);
   }
 }
 
@@ -691,14 +744,6 @@ function onPointerDown(event: PointerEvent) {
   if (isInteractive(event.target)) return;
   emit("select", props.card.id, event.shiftKey || event.ctrlKey || event.metaKey);
   emit("drag-start", props.card.id, event);
-}
-
-/** 从连接点拖出关系线：交给 BoardCanvas 接管指针（不在这里建链）。 */
-function onConnectDown(event: PointerEvent) {
-  // 连接点在卡片内部，必须同时拦住冒泡与默认行为，否则会先被卡片自己的拖动接走
-  event.stopPropagation();
-  event.preventDefault();
-  emit("connect-start", props.card.id, event);
 }
 
 function startEdit() {
@@ -995,8 +1040,30 @@ function cancelEdit() {
             class="attach-status"
             :class="'is-' + attachStatus.tone"
             data-im="card-attach-status"
-            role="status"
-          >{{ attachStatus.text }}</span>
+            :title="attachStatus.text"
+          >
+            <span
+              class="attach-status-text"
+              data-im="card-attach-status-text"
+              role="status"
+              aria-live="polite"
+            >{{ attachStatus.text }}</span>
+            <button
+              v-if="attachStatus.retry"
+              type="button"
+              class="attach-status-action"
+              data-im="card-attach-retry"
+              @click="runAttachRetry()"
+            >{{ attachStatus.retry.label }}</button>
+            <button
+              v-if="attachStatus.tone !== 'ok'"
+              type="button"
+              class="attach-status-action attach-status-close"
+              data-im="card-attach-dismiss"
+              aria-label="关闭提示"
+              @click="dismissAttachStatus()"
+            >关闭</button>
+          </span>
         </div>
         <!-- 编辑态也能预览已关联的附件（接线 P2 的组件；无关联时它只给诚实文案） -->
         <CardAttachmentPreview
@@ -1211,21 +1278,6 @@ function cancelEdit() {
       <span class="status" role="status">{{ statusText }}</span>
       <span v-if="!compactChrome" class="time mono">{{ updatedText }}</span>
     </footer>
-
-    <!-- 连接点：选中后才出现；从这里拖到另一张卡片建立关系（方向与含义由用户写明） -->
-    <template v-if="selected && !card.folded && !multi">
-      <span
-        v-for="side in ['top', 'right', 'bottom', 'left']"
-        :key="side"
-        class="connect-point"
-        :class="side"
-        data-im="connect-point"
-        :data-card-id="card.id"
-        :data-side="side"
-        :title="'从连接点拖到另一张卡片建立关系'"
-        @pointerdown="onConnectDown"
-      ></span>
-    </template>
   </article>
 
   <!--
@@ -1695,7 +1747,31 @@ function cancelEdit() {
   font-size: var(--fs-xs);
 }
 .attach-state { color: var(--text-muted); line-height: var(--lh-tight); }
-.attach-status { flex: 1 1 100%; line-height: var(--lh-tight); }
+/* 状态里还带「重新选择 / 关闭」按钮，自己排一行；长文件名换行 / 断词，完整名称看 title */
+.attach-status {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  line-height: var(--lh-tight);
+}
+.attach-status-text { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.attach-status-action {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.attach-status-action:hover { border-color: var(--border-strong); color: var(--text-strong); }
+.attach-status-action:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.attach-status-close { color: var(--text-muted); }
 .attach-status.is-busy { color: var(--text-muted); }
 .attach-status.is-ok { color: var(--text-secondary); }
 .attach-status.is-error { color: var(--danger, var(--text-strong)); }
@@ -1761,24 +1837,11 @@ function cancelEdit() {
   line-height: var(--lh-base);
 }
 
-/* 连接点：四边中点，拖出去建关系 */
-.connect-point {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  border-radius: var(--r-pill);
-  background: var(--bg-elevated);
-  border: 1.5px solid var(--accent);
-  cursor: crosshair;
-  z-index: 2;
-}
-/* 卡片是 overflow: hidden，连接点必须留在卡片内侧边缘，否则会被裁掉、真实鼠标点不到 */
-.connect-point.top { left: 50%; top: 0; transform: translateX(-50%); }
-.connect-point.right { right: 0; top: 50%; transform: translateY(-50%); }
-.connect-point.bottom { left: 50%; bottom: 0; transform: translateX(-50%); }
-.connect-point.left { left: 0; top: 50%; transform: translateY(-50%); }
-
 /*
+  连接点（data-im="connect-point"）**不在这里**：0.2.5 起由 BoardCanvas 的交互层
+  （BoardResizeLayer，不随画布缩放）渲染 —— 卡片内部处在 .board-surface 的缩放层叠上下文里，
+  四边中点会被同层的 10px 尺寸热区盖住，真实鼠标按不下去。见 BoardResizeLayer.vue 的说明。
+
   局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算。
   按钮字号用 --fs-sm：编辑 / 删除这些是主要操作，不缩成元信息字号。
 */
