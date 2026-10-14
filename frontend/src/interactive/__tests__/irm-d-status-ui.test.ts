@@ -183,8 +183,11 @@ describe("提交区：受理与理解分开（契约 §14.1 / §14.6）", () => 
     store.understandingStatus = "understood";
     store.submitStatus = "submitting";
     const w = track(mount(SubmitCluster));
-    expect(w.find('[data-im="understanding-status"]').text()).toBe("正在提交");
-    expect(w.find('[data-im="understanding-detail"]').text()).toContain("已受理");
+    // 2026-10-15 两行主栏：说明区按需出现，提交中只在说明区说这一件事
+    expect(w.get('[data-im="submit-status"]').text()).toContain("正在提交");
+    // 上一次的「理解完成」不再与本次并列（它只由 chip 与「上次提交结果」面板表达）
+    expect(w.find('[data-im="understanding"]').exists()).toBe(false);
+    expect(w.find('[data-im="understanding-status"]').exists()).toBe(false);
   });
 
   it("需要补充：给出缺失项；无需行动：明确说没有任务", () => {
@@ -207,14 +210,17 @@ describe("提交区：受理与理解分开（契约 §14.1 / §14.6）", () => 
     expect(w.find('[data-im="submit-details-box"]').exists()).toBe(false);
   });
 
-  it("无需行动：明确说明没有需要开展的任务", () => {
+  it("无需行动：chip 直接写结论，展开「上次提交结果」才看完整说明", async () => {
     const store = freshStore();
     store.submitStatus = "succeeded";
     store.understanding = understandingFixture({ status: "no_action", kind: "no_action" });
     store.understandingStatus = "no_action";
     const w = track(mount(SubmitCluster));
-    expect(w.find('[data-im="understanding"]').attributes("data-understanding-outcome")).toBe("no_action");
-    expect(w.find('[data-im="understanding-no-action"]').text()).toContain("没有生成任何任务");
+    // 2026-10-15：已定局的结论不在主栏重复整段说明，结论就在 chip 上（剥掉「本次」前缀）
+    expect(w.get('[data-im="submit-history-toggle"]').text()).toBe("上次提交 · 无需开展任务");
+    expect(w.find('[data-im="understanding"]').exists()).toBe(false);
+    await w.get('[data-im="submit-history-toggle"]').trigger("click");
+    expect(w.get('[data-im="understanding-no-action"]').text()).toContain("没有生成任何任务");
   });
 
   it("理解失败：默认就给出重试入口（从快照恢复）", () => {
@@ -240,7 +246,10 @@ describe("提交区：受理与理解分开（契约 §14.1 / §14.6）", () => 
       intentFixture({ id: "i2", understandingId: "u1", status: "pending" }),
     ];
     const w = track(mount(SubmitCluster));
-    expect(w.find('[data-im="understanding"]').attributes("data-understanding-outcome")).toBe("intent");
+    // 2026-10-15：理解结论本身不进主栏说明区，结论由 chip 表达；
+    // 说明区此时只为**待审批入口**存在（批准 / 拒绝 / 定位仍默认可见，§5.4）
+    expect(w.get('[data-im="submit-history-toggle"]').text()).toBe("上次提交 · 理解完成");
+    expect(w.get('[data-im="submit-approvals"]').attributes("data-approval-count")).toBe("2");
     // 2026-10-14：用户要求详情里只留「本次有效改动」；等待审批的项数不再在详情里重复，
     // 审批入口本身（批量列表 / 状态浮层）不受影响
     await w.find('[data-im="submit-details"]').trigger("click");

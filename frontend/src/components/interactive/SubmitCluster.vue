@@ -10,6 +10,14 @@
   3. 「本次有效改动」与「本次允许 QIO 查看的范围」都能看到：
      visible-range 始终可见（自动化与用户都不必先展开），改动列表按需展开。
   4. 失败保留改动与勾选、说出真实原因，并允许直接重试（不假装成功、不清空板面）。
+
+  2026-10-15 布局重构（两行主栏 + 长说明按需展开）：
+  - .submit-cluster 是 display: contents：四个子块成为 BoardToolbar 的 grid item，
+    各自声明 grid-area（history / stats / notes / actions），位置全部由外层栅格决定；
+  - 主栏常态只说**简短状态**：说明正文（understanding.summary）不再参与主栏横向空间分配；
+  - 三类内容一律进按需展开的面板（绝对定位在主栏上方、宽度 = 功能栏完整宽度）：
+    ① 上次提交结果（提交 / 理解记录，只读）② 本次提交范围与改动 ③ 上次提交过程；
+    三者互斥、同一时间只开一个、再点同一入口收起，数据绝不相互串用。
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
@@ -41,13 +49,29 @@ import {
   summarizeChanges,
   visibleRangeCounts,
   visibleRangeText,
+  type SubmitStatusLike,
 } from "../../interactive/submission";
 import BoardChangeList from "./BoardChangeList.vue";
 import { humanizeFailure, scrubInternalTerms } from "./displayText";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const store = useInteractiveStore();
-const detailsOpen = ref(false);
+
+/**
+ * 展开面板（三选一，同一时间只开一个；再次点击同一入口收起）。
+ *
+ * 「上次提交结果」「本次提交范围与改动」「上次提交过程」是三类**不同**的数据：
+ * 用同一个状态互斥，既保证不会同时压两层，也保证不会把上一次的结果说成本次的范围。
+ */
+type PanelKind = "result" | "details" | "process";
+const openPanel = ref<PanelKind | null>(null);
+function togglePanel(kind: PanelKind): void {
+  openPanel.value = openPanel.value === kind ? null : kind;
+}
+function closePanel(): void {
+  openPanel.value = null;
+}
+
 const busy = computed(() => store.submitStatus === "submitting");
 
 /* ------------------------------------------------------------------------
@@ -104,7 +128,7 @@ const understoodIntents = computed(() => store.understandingIntents.length);
  * 本次提交的当前状态（任务书 §5.1 — §5.3）
  *
  * 只显示**最新一条事实**：受理 → 理解 → 审批 / 执行。
- * 说明属于写下它的那个阶段：阶段一过，它只出现在可展开的过程历史里 ——
+ * 说明属于写下它的那个阶段：阶段一过，它只出现在可展开的过程面板里 ——
  * 「本次无需任务」下面不许再压着一句旧的「正在理解」。
  * ---------------------------------------------------------------------- */
 
@@ -123,8 +147,8 @@ const batchListAvailable = computed(() =>
 );
 
 /**
- * 阶段说明的归属：当前阶段的说在**当前区**；已经过去的说只进可展开历史。
- * `submitNote` 写的是「正在理解」，理解有结论之后它就只是历史。
+ * 阶段说明的归属：当前阶段的说在**当前区**；已经过去的说只进可展开过程。
+ * submitNote 写的是「正在理解」，理解有结论之后它就只是历史。
  */
 const stageNotes = computed(() => {
   const list: { key: string; text: string; current: boolean }[] = [];
@@ -144,6 +168,98 @@ const currentNotes = computed(() => stageNotes.value.filter((note) => note.curre
 const pastNotes = computed(() => stageNotes.value.filter((note) => !note.current));
 /** 历史里的旧理解过程（本板面；当前这一条不算历史）。 */
 const pastUnderstandings = computed(() => store.understandingHistory);
+
+/**
+ * 有没有**真实存在过**的上次提交：只认服务端记录（提交结果 / 理解记录 / 过程历史）。
+ * 都没有时整块「上次提交」不渲染 —— 绝不凭空编一个「上次提交」状态。
+ */
+const hasHistory = computed(
+  () =>
+    Boolean(store.lastSubmission) ||
+    Boolean(store.understanding) ||
+    Boolean(store.understandingStatus) ||
+    pastUnderstandings.value.length > 0,
+);
+
+/** 上次提交的**简短**状态（主栏只说这一句；完整说明在「上次提交结果」面板里）。 */
+const outcomeLabel = computed(() => {
+  const uState = store.understandingStatus ?? store.understanding?.status ?? null;
+  if (uState) return understandingStatusLabel(uState);
+  const last = store.lastSubmission;
+  if (last) {
+    const map: Record<string, string> = {
+      succeeded: "已提交",
+      failed: "提交失败",
+      empty: "无内容可提交",
+      duplicate: "未重复提交",
+    };
+    return map[String(last.status ?? "")] ?? "已提交";
+  }
+  return stateLabel.value;
+});
+
+/**
+ * chip 上的短标签：outcomeLabel 里的「本次无需开展任务」拼到「上次提交 · 」后面会读成
+ * 「上次提交 · 本次无需开展任务」，所以只在 chip 上剥掉开头的「本次」（面板正文保留原样）。
+ */
+const historyLabel = computed(() => outcomeLabel.value.replace(/^本次/, ""));
+
+/**
+ * 主栏「理解说明」的短句：带 summary 的状态（理解完成 / 无需任务）只给结论，
+ * 正文留在「上次提交结果」面板里 —— 长说明不再参与主栏的横向空间分配。
+ */
+const noteDetail = computed(() => {
+  if (uOutcome.value === "intent") return "已产出可以审批的意图；完整结果说明在「上次提交」里。";
+  if (uOutcome.value === "no_action") return "";
+  return uText.value.detail;
+});
+
+/**
+ * 「上次提交结果」面板的正文：只取**上次提交 / 理解记录**的事实，
+ * 不掺入本次未提交的改动列表（那是「详情」的范围）。
+ */
+/** 无需行动时的结论正文：服务端给了真实 summary 就用它，没有才用标准说法。 */
+const noActionResultText = computed(() => {
+  const summary = String(store.understanding?.summary ?? "").trim();
+  return summary || "这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。";
+});
+
+const lastResultBody = computed(() => {
+  const summary = String(store.understanding?.summary ?? "").trim();
+  if (summary) return summary;
+  if (!submitting.value && uStatus.value) return uText.value.detail;
+  const result = store.lastSubmission;
+  if (result) {
+    return submitStatusText((result.status ?? "succeeded") as SubmitStatusLike, {
+      result,
+      pendingCount: pendingExpressions.value.length,
+    });
+  }
+  if (submitting.value) return "本次提交正在进行中：上面显示的是上一次已记录的结果。";
+  return statusText.value;
+});
+
+/** 上次提交过程的只读记录（旧理解记录 / 已过去步骤 / 已过去阶段说明）。 */
+const processHistory = computed(() =>
+  pastUnderstandings.value.map((item) => ({
+    key: item.id,
+    label: understandingStatusLabel(item.status),
+    text: String(item.summary ?? "").trim() || String(item.stage ?? "").trim(),
+  })),
+);
+const processSteps = computed(() =>
+  uHistory.value
+    .map((step) => understandingStepText(step))
+    .filter((text): text is string => Boolean(text)),
+);
+const processNotes = computed(() => pastNotes.value.map((note) => note.text).filter(Boolean));
+/** 有过程可看时才给「查看过程」入口（不编造过程，也不启动任何新任务）。 */
+const hasProcess = computed(
+  () =>
+    processHistory.value.length > 0 ||
+    processSteps.value.length > 0 ||
+    processNotes.value.length > 0,
+);
 
 /**
  * 审批之后的执行事实（取服务端执行记录）：不把「已经批准」说成「已完成」，
@@ -204,13 +320,33 @@ function openBatchList(): void {
   store.batchOpen = true;
 }
 
+/**
+ * 主栏说明区只在「需要用户看到或行动」时存在：正常状态（已定局且无需行动）不占第三行、
+ * 也不把「上次提交 · <结论>」这句 chip 又用一段说明重复一遍。
+ * 已定局的理解结论由 chip 与「上次提交结果」面板表达，阶段说明（currentNotes）单独渲染。
+ */
 const showUnderstanding = computed(
   () =>
-    Boolean(uStatus.value) ||
-    Boolean(store.submitNote) ||
-    store.submitStatus === "submitting" ||
-    Boolean(store.understandingNote) ||
+    uOutcome.value === "clarification" ||
+    uStatus.value === "failed" ||
+    Boolean(uStatus.value && !uSettled.value) ||
+    pendingApprovals.value.length > 0,
+);
+
+/** 说明区（.sc-notes）要不要整块出现：失败 / 未知 / 被挡 / 需补充 / 待审批 / 阶段说明等。 */
+const hasNotes = computed(
+  () =>
+    promotedCount.value > 0 ||
+    ["submitting", "unknown", "empty", "duplicate"].includes(store.submitStatus) ||
+    isFailed.value ||
+    refreshFailed.value ||
+    removalConflicts.value.length > 0 ||
+    Boolean(impactCheckErrorText.value) ||
+    uOutcome.value === "clarification" ||
+    uStatus.value === "failed" ||
     pendingApprovals.value.length > 0 ||
+    currentNotes.value.length > 0 ||
+    Boolean(understandingActionNote.value) ||
     Boolean(handledSummary.value),
 );
 
@@ -246,6 +382,8 @@ async function refreshUnderstandingNow(): Promise<void> {
   现在完全不自动展开：失败原因（reason）与保留说明（retention）本来就在折叠区**之外**
   （契约 §11.2 的分层口径，见 submission.ts 的说明），默认就能看见，不会藏住重要信息；
   过程详情只在用户点「查看过程」时展开。
+
+  2026-10-15：三个展开面板共用一个 openPanel，默认都不打开（展开不触发提交、不启动任务）。
 */
 
 /**
@@ -300,10 +438,14 @@ const stateLabel = computed(() =>
     hasSubmission: Boolean(store.lastSubmission),
   }),
 );
+/** 主栏的未提交数量（低强调 pill；0 时也说清「没有」，不留空白歧义）。 */
+const pendingLabel = computed(() =>
+  summary.value.total > 0 ? `未提交 ${summary.value.total} 项改动` : "没有未提交的改动",
+);
 /**
  * 失败说明（契约 §11.6）：原因、保留情况、下一步全部取**本次请求**的事实。
  *
- * 上一次提交结果只作为详情里的排查信息；它绝不能冒充本次失败原因 ——
+ * 上一次提交结果只作为面板里的排查信息；它绝不能冒充本次失败原因 ——
  * 那正是上一轮「默认失败区显示的是上一次结果」的缺陷。
  */
 const failure = computed(() =>
@@ -329,7 +471,7 @@ const statusText = computed(() => {
     }
     const count = store.lastSubmission?.expressions?.length ?? 0;
     /**
-     * `checkedCleared` 是**历史字段**：2026-10-12 起许可持续有效，服务端恒返回空数组。
+     * checkedCleared 是**历史字段**：2026-10-12 起许可持续有效，服务端恒返回空数组。
      * 这里保留读取，是为了万一遇到旧后端真的清了勾选时仍能如实说明；新规则下它不会出现。
      */
     const cleared = store.lastSubmission?.checkedCleared?.length ?? 0;
@@ -370,7 +512,7 @@ const isFailed = computed(() => failure.value !== null);
  * 默认区的原因**不截断**（上一轮验收已明确「很长的失败原因在默认区完整显示」），
  * 但必须先剥掉传输外壳（/api/… -> 500:）与内部代码（stale_check 之流），并解开底层的
  * 重复包裹 ——「完整」指的是真实原因完整，不是把实现用语与重复句子一起铺出来。
- * 辅助诊断（保存失败原因、上一次提交的说明）仍在展开的详情里。
+ * 辅助诊断（保存失败原因、上一次提交的说明）仍在展开的面板里。
  */
 const failureShort = computed(() => humanizeFailure(failure.value?.reason).short);
 const failureDetailText = computed(() => scrubInternalTerms(failure.value?.detail ?? ""));
@@ -410,7 +552,7 @@ const refreshRetrying = ref(false);
 /**
  * F10 + 契约 §1.3：受理情况未知时的**精确查证**入口。
  *
- * 只按这次提交的请求身份向服务端核对（`fetchAcceptance`）：命中才认受理，
+ * 只按这次提交的请求身份向服务端核对（fetchAcceptance）：命中才认受理，
  * 查不到 / 查询失败就说清「结果仍然未知」—— 不推断、不重复提交、不改判失败。
  */
 const verifyingAcceptance = ref(false);
@@ -476,154 +618,205 @@ function onSubmit() {
 
 <template>
   <!--
-    常态只有三样东西（契约 §10.8）：一行简短范围、一行简短提交状态、提交按钮（外加「详情」）。
-    完整排除清单、改动列表、保存与提交的边界说明、草稿提示都收进按需打开的详情里。
+    两行主栏（契约 §9.6 / 2026-10-15 重构）：位置全部由 BoardToolbar 的 grid 决定。
+    第一行左＝编辑操作，右＝简短上次提交状态 + 查看过程；
+    第二行左＝本次可见统计 + 未提交改动数量，右＝详情 + 提交给 QIO。
+    长说明（上次提交结果 / 本次提交范围与改动 / 上次提交过程）都进按需展开的面板。
   -->
-  <div class="submit-cluster" data-im="submit-cluster" :data-im-failed="isFailed ? '1' : undefined">
-    <p class="range" data-im="visible-range">{{ rangeShort }}</p>
+  <div
+    class="submit-cluster"
+    data-im="submit-cluster"
+    :data-im-failed="isFailed ? '1' : undefined"
+    @keydown.esc="closePanel"
+  >
+    <!--
+      第一行右：上次提交的**简短**状态 + 查看过程。
+      只有真的存在过上次提交（提交结果 / 理解记录 / 过程历史）才渲染 —— 没有就不编。
+    -->
+    <div v-if="hasHistory" class="sc-history" data-im="submit-history">
+      <button
+        class="sc-chip"
+        type="button"
+        data-im="submit-history-toggle"
+        :aria-expanded="openPanel === 'result'"
+        aria-controls="submit-result-panel"
+        title="展开上次提交的完整结果说明（只读，不会再次提交）"
+        @click="togglePanel('result')"
+      >
+        上次提交 · {{ historyLabel }}
+      </button>
+      <button
+        v-if="hasProcess"
+        class="details"
+        type="button"
+        data-im="understanding-history-toggle"
+        :aria-expanded="openPanel === 'process'"
+        aria-controls="submit-process-panel"
+        title="查看上次提交的过程记录（只读，不会启动新任务）"
+        @click="togglePanel('process')"
+      >
+        {{ openPanel === "process" ? "收起过程" : "查看过程" }}
+      </button>
+    </div>
 
-    <p class="status" data-im="submit-status" role="status">
-      <strong class="label" :class="{ ok: store.submitStatus === 'succeeded', warn: isFailed }">
-        {{ stateLabel }}
-      </strong>
-      <!-- 常态只说「几项改动」；完整摘要与边界说明在「详情」里（§10.8） -->
-      <span class="detail">{{ summary.hasContent ? summary.total + " 项改动" : "没有可提交的改动" }}</span>
-    </p>
+    <!-- 第二行左：本次可见统计 + 未提交改动数量（宽度不足时允许受控换行，不截断） -->
+    <div class="sc-stats" data-im="submit-stats">
+      <span class="sc-stat" data-im="visible-range">{{ rangeShort }}</span>
+      <span class="sc-pill" data-im="submit-pending">{{ pendingLabel }}</span>
+    </div>
 
     <!--
-      P1：提交时把「未点完成编辑」的草稿提升成了正文。这件事必须说出来（契约 4）：
-      用户的字确实进了这次提交快照（QIO 读得到），不是「没点完成编辑就没了」。
-      没有可提升的草稿时这一段完全不渲染。
+      说明区：失败 / 未知 / 被挡 / 理解补充说明与阶段说明都**默认可见**（不进面板）；
+      只有长正文（理解结论、改动列表、过程记录）按需展开。整块永远独占整行。
     -->
-    <p
-      v-if="promotedCount > 0"
-      class="promoted line faint"
-      data-im="submit-draft-promoted"
-      role="status"
-    >
-      这次有 {{ promotedCount }} 条未点完成编辑的文字已随本次提交生效（已作为正式正文提交给 QIO，不是丢弃）。
-    </p>
-    <!--
-      理解过程（契约 §14.1 / §14.6）：受理成功就先出现统一状态「已受理」，
-      说明随查询结果补上；需要补充 / 理解失败 / 无需行动都是明确状态，不靠颜色表达。
-    -->
-    <div
-      v-if="showUnderstanding"
-      class="understanding"
-      data-im="understanding"
-      :data-understanding-status="uStatus ?? 'none'"
-      :data-understanding-outcome="uOutcome"
-    >
-      <p class="u-line">
-        <strong class="u-label" :class="'tone-' + uText.tone" data-im="understanding-status">
-          {{ uText.label }}
-        </strong>
-        <span class="u-detail" data-im="understanding-detail" :title="uText.detail">{{ uText.detail }}</span>
-      </p>
-      <span class="u-actions">
-        <button
-          v-if="!submitting && uStatus === 'failed'"
-          class="details"
-          type="button"
-          data-im="understanding-retry"
-          :disabled="retrying"
-          @click="retryUnderstandingNow"
-        >
-          {{ retrying ? "重试中…" : "重试理解（从这次提交的快照恢复）" }}
-        </button>
-        <button
-          v-else-if="!submitting && !uSettled && uStatus"
-          class="details"
-          type="button"
-          data-im="understanding-refresh"
-          :disabled="refreshing"
-          @click="refreshUnderstandingNow"
-        >
-          {{ refreshing ? "查询中…" : "刷新理解状态" }}
-        </button>
-        <button
-          v-if="uHistory.length || pastNotes.length || pastUnderstandings.length"
-          class="details"
-          type="button"
-          data-im="understanding-history-toggle"
-          :aria-expanded="detailsOpen"
-          @click="detailsOpen = !detailsOpen"
-        >
-          {{ detailsOpen ? "收起过程" : "查看过程" }}
-        </button>
-      </span>
+    <div v-if="hasNotes" class="sc-notes" data-im="submit-notes">
+      <!--
+        常态（idle）不重复第二行那句「未提交 N 项改动」；只有提交真的在进行/有结论/被挡时
+        才在这里说「本次提交：<状态>」，避免同一条事实在一屏里说两遍。
+      -->
+      <p
+        v-if="store.submitStatus !== 'idle'"
+        class="line state-line"
+        data-im="submit-status"
+        role="status"
+      >本次提交：{{ stateLabel }}</p>
 
       <!--
-        待审批出现时审批入口就在这里展开（任务书 §5.4）：不必先去聊天窗口或批量列表找，
-        聊天收起时这一段仍然可达。批准 / 拒绝 / 定位与既有批量操作都在，
-        批准前不会有任何改动；同一个意图只提交一次，不重复执行。
+        P1：提交时把「未点完成编辑」的草稿提升成了正文。这件事必须说出来（契约 4）：
+        用户的字确实进了这次提交快照（QIO 读得到），不是「没点完成编辑就没了」。
+        没有可提升的草稿时这一段完全不渲染。
+      -->
+      <p
+        v-if="promotedCount > 0"
+        class="promoted line faint"
+        data-im="submit-draft-promoted"
+        role="status"
+      >
+        这次有 {{ promotedCount }} 条未点完成编辑的文字已随本次提交生效（已作为正式正文提交给 QIO，不是丢弃）。
+      </p>
+
+      <!--
+        理解过程（契约 §14.1 / §14.6）：受理成功就先出现统一状态「已受理」，
+        说明随查询结果补上；需要补充 / 理解失败 / 无需行动都是明确状态，不靠颜色表达。
+        这里只放**简短**状态与说明，理解结论正文在「上次提交结果」面板里。
       -->
       <div
-        v-if="pendingApprovals.length"
-        class="approvals"
-        data-im="submit-approvals"
-        :data-approval-count="pendingApprovals.length"
+        v-if="showUnderstanding"
+        class="understanding"
+        data-im="understanding"
+        :data-understanding-status="uStatus ?? 'none'"
+        :data-understanding-outcome="uOutcome"
       >
-        <p class="approvals-head" data-im="submit-approval-state" role="status">
-          待审批 {{ pendingApprovals.length }} 项（批准前不会改动板面）
+        <p class="u-line">
+          <strong class="u-label" :class="'tone-' + uText.tone" data-im="understanding-status">
+            {{ uText.label }}
+          </strong>
+          <span
+            v-if="noteDetail"
+            class="u-detail"
+            data-im="understanding-detail"
+            :title="uText.detail"
+          >{{ noteDetail }}</span>
         </p>
-        <ul class="approval-rows" v-qio-scrollbar data-qio-fit>
-          <li
-            v-for="intent in pendingApprovals"
-            :key="intent.id"
-            class="approval-row"
-            data-im="submit-approval-item"
-            :data-intent-id="intent.id"
-          >
-            <span v-if="intent.demo" class="approval-demo">演示</span>
-            <span class="approval-name">{{ intent.title }}</span>
-            <button
-              class="mini"
-              type="button"
-              data-im="submit-approve"
-              :data-intent-id="intent.id"
-              :disabled="decisionBusy === intent.id || !approveAvailability(intent).allowed"
-              :title="approveAvailability(intent).text"
-              @click="decide(intent, 'approve')"
-            >
-              {{ decisionBusy === intent.id ? "处理中…" : "批准" }}
-            </button>
-            <button
-              class="mini"
-              type="button"
-              data-im="submit-reject"
-              :data-intent-id="intent.id"
-              :disabled="decisionBusy === intent.id || !rejectAvailability(intent).allowed"
-              :title="rejectAvailability(intent).text"
-              @click="decide(intent, 'reject')"
-            >
-              拒绝
-            </button>
-            <button
-              class="mini ghost"
-              type="button"
-              data-im="submit-locate"
-              :data-intent-id="intent.id"
-              @click="locateOnBoard(intent)"
-            >
-              定位
-            </button>
-          </li>
-        </ul>
-        <span class="approvals-actions">
+        <span class="u-actions">
           <button
-            v-if="batchListAvailable"
+            v-if="!submitting && uStatus === 'failed'"
             class="details"
             type="button"
-            data-im="submit-open-batch"
-            @click="openBatchList"
+            data-im="understanding-retry"
+            :disabled="retrying"
+            @click="retryUnderstandingNow"
           >
-            打开批量审批
+            {{ retrying ? "重试中…" : "重试理解（从这次提交的快照恢复）" }}
           </button>
-          <span v-if="decisionNote" class="u-note" data-im="submit-decision-note" role="status">
-            {{ decisionNote }}
-          </span>
+          <button
+            v-else-if="!submitting && !uSettled && uStatus"
+            class="details"
+            type="button"
+            data-im="understanding-refresh"
+            :disabled="refreshing"
+            @click="refreshUnderstandingNow"
+          >
+            {{ refreshing ? "查询中…" : "刷新理解状态" }}
+          </button>
         </span>
+
+        <!--
+          待审批出现时审批入口就在这里展开（任务书 §5.4）：不必先去聊天窗口或批量列表找，
+          聊天收起时这一段仍然可达。批准 / 拒绝 / 定位与既有批量操作都在，
+          批准前不会有任何改动；同一个意图只提交一次，不重复执行。
+        -->
+        <div
+          v-if="pendingApprovals.length"
+          class="approvals"
+          data-im="submit-approvals"
+          :data-approval-count="pendingApprovals.length"
+        >
+          <p class="approvals-head" data-im="submit-approval-state" role="status">
+            待审批 {{ pendingApprovals.length }} 项（批准前不会改动板面）
+          </p>
+          <ul class="approval-rows" v-qio-scrollbar data-qio-fit>
+            <li
+              v-for="intent in pendingApprovals"
+              :key="intent.id"
+              class="approval-row"
+              data-im="submit-approval-item"
+              :data-intent-id="intent.id"
+            >
+              <span v-if="intent.demo" class="approval-demo">演示</span>
+              <span class="approval-name">{{ intent.title }}</span>
+              <button
+                class="mini"
+                type="button"
+                data-im="submit-approve"
+                :data-intent-id="intent.id"
+                :disabled="decisionBusy === intent.id || !approveAvailability(intent).allowed"
+                :title="approveAvailability(intent).text"
+                @click="decide(intent, 'approve')"
+              >
+                {{ decisionBusy === intent.id ? "处理中…" : "批准" }}
+              </button>
+              <button
+                class="mini"
+                type="button"
+                data-im="submit-reject"
+                :data-intent-id="intent.id"
+                :disabled="decisionBusy === intent.id || !rejectAvailability(intent).allowed"
+                :title="rejectAvailability(intent).text"
+                @click="decide(intent, 'reject')"
+              >
+                拒绝
+              </button>
+              <button
+                class="mini ghost"
+                type="button"
+                data-im="submit-locate"
+                :data-intent-id="intent.id"
+                @click="locateOnBoard(intent)"
+              >
+                定位
+              </button>
+            </li>
+          </ul>
+          <span class="approvals-actions">
+            <button
+              v-if="batchListAvailable"
+              class="details"
+              type="button"
+              data-im="submit-open-batch"
+              @click="openBatchList"
+            >
+              打开批量审批
+            </button>
+            <span v-if="decisionNote" class="u-note" data-im="submit-decision-note" role="status">
+              {{ decisionNote }}
+            </span>
+          </span>
+        </div>
+
+        <p v-if="uOutcome === 'clarification'" class="u-note" data-im="understanding-missing">
+          需要你补充：{{ missingText }}；这次没有生成任何任务。
+        </p>
       </div>
 
       <!-- 审批之后的执行事实：只报服务端执行记录，不把「已批准」说成「已完成」 -->
@@ -631,16 +824,9 @@ function onSubmit() {
         {{ handledSummary }}
       </p>
 
-      <p v-if="uOutcome === 'clarification'" class="u-note" data-im="understanding-missing">
-        需要你补充：{{ missingText }}；这次没有生成任何任务。
-      </p>
-      <p v-else-if="uOutcome === 'no_action'" class="u-note" data-im="understanding-no-action">
-        这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
-      </p>
-
       <!--
         当前阶段的说明：只放**当前**阶段的那一/两条。
-        阶段已经过去的说明（例如受理时那句「正在理解」）不在这一区，只进可展开历史。
+        阶段已经过去的说明（例如受理时那句「正在理解」）不在这一区，只进可展开过程面板。
       -->
       <p
         v-for="note in currentNotes"
@@ -653,139 +839,142 @@ function onSubmit() {
       <p v-if="understandingActionNote" class="u-note err" data-im="understanding-action-note">
         {{ understandingActionNote }}
       </p>
+
+      <!--
+        失败必须立刻可见（真实错误不许藏进面板）：默认就说清「本次原因 → 保留情况 → 重试」。
+        顺序固定，面板只补充较长诊断（保存失败原因、上一次提交返回的说明），不是了解原因的必经入口。
+      -->
+      <p v-if="failure" class="failure" role="alert" data-im="submit-failure">
+        <span class="failure-reason" data-im="submit-failure-reason"><span class="failure-label">失败原因：</span>{{ failureShort }}</span>
+        <span class="failure-retention" data-im="submit-failure-retention">{{ failure.retention }}</span>
+      </p>
+
+      <!--
+        F10：没有拿到回执 = 提交结果**未知**（既不是成功也不是失败）。
+        保留改动与勾选，明确要求先确认结果，不诱导直接重复提交。
+      -->
+      <p v-else-if="store.submitStatus === 'unknown'" class="blocked" role="status" data-im="submit-unknown">
+        <span class="blocked-text" data-im="submit-unknown-reason">
+          提交结果未知：没有拿到服务端回执，这次提交可能已经受理。改动与勾选都保留；请先查证结果，不要直接重复提交
+          （查证只按这次请求身份向服务端精确核对，不会自动重复提交）。
+        </span>
+        <!--
+          F10 + 契约 §1.3：未知时给的是**只读查证**入口（按请求身份精确匹配 + 重新读取），
+          不是「重新提交」—— 绝不用一次新的提交去赌原请求有没有受理。
+        -->
+        <button
+          class="details"
+          type="button"
+          data-im="submit-unknown-verify"
+          :disabled="verifyingAcceptance"
+          @click="verifyAcceptance"
+        >
+          {{ verifyingAcceptance ? "查证中…" : "查证受理结果（按请求身份）" }}
+        </button>
+        <button
+          class="details"
+          type="button"
+          data-im="submit-unknown-refresh"
+          :disabled="refreshRetrying"
+          @click="retryRefresh"
+        >
+          {{ refreshRetrying ? "重新读取中…" : "只重新读取页面事实" }}
+        </button>
+        <span v-if="store.acceptanceLookupNote" class="blocked-text" data-im="submit-unknown-lookup-note">
+          {{ store.acceptanceLookupNote }}
+        </span>
+      </p>
+
+      <!--
+        F10：提交已经成功、只是**页面刷新失败**。成功事实与基准依据不变，这里只提供重试刷新。
+      -->
+      <p v-else-if="refreshFailed" class="blocked" role="status" data-im="submit-refresh-failed">
+        <span class="blocked-text" data-im="submit-refresh-reason">
+          提交成功，页面刷新失败（{{ refreshErrorText }}）：这次提交已经成立、基准已经更新，
+          页面上的板面与可见范围可能不是最新事实。
+        </span>
+        <button
+          class="details"
+          type="button"
+          data-im="submit-refresh-retry"
+          :disabled="refreshRetrying"
+          @click="retryRefresh"
+        >
+          {{ refreshRetrying ? "重新读取中…" : "重试刷新" }}
+        </button>
+      </p>
+
+      <!--
+        F07：本地删除与服务器修改相撞 —— 保存被挡住，这里给每个对象两个明确选择。
+        没有它，用户只能看到「保存失败」，拿不到「保持删除 / 恢复服务器版」的入口。
+      -->
+      <p
+        v-else-if="removalConflicts.length"
+        class="blocked"
+        role="status"
+        data-im="board-removal-conflict"
+      >
+        <span class="blocked-text" data-im="board-removal-conflict-reason">
+          本地删除的对象在服务器上被改过：请选择保持删除，还是恢复服务器版（两种选择都会保存一次）。
+        </span>
+        <span
+          v-for="item in removalConflicts"
+          :key="item.id"
+          class="removal-row"
+          data-im="board-removal-conflict-row"
+        >
+          <span class="mono">{{ item.id }}</span>
+          <button
+            class="details"
+            type="button"
+            data-im="board-removal-keep-deleted"
+            :data-object-id="item.id"
+            @click="resolveRemovalConflict(item.id, 'keep-deleted')"
+          >
+            保持删除
+          </button>
+          <button
+            class="details"
+            type="button"
+            data-im="board-removal-restore-server"
+            :data-object-id="item.id"
+            @click="resolveRemovalConflict(item.id, 'restore-server')"
+          >
+            恢复服务器版
+          </button>
+        </span>
+      </p>
+
+      <!--
+        提交被「影响预判没完成 / 确认过期」挡住：这不是提交失败，而是保存前的检查没做完。
+        所以单独一条、层级低于失败区，并给**一次**可达的重试（重新预判并保存，不自动提交）。
+      -->
+      <p v-else-if="impactCheckErrorText" class="blocked" role="status" data-im="submit-blocked">
+        <span class="blocked-text" data-im="submit-blocked-reason">{{ impactCheckErrorText }}</span>
+        <button
+          class="details"
+          type="button"
+          data-im="submit-recheck"
+          :disabled="rechecking"
+          @click="recheckImpact"
+        >
+          {{ rechecking ? "重新预判中…" : "重新预判并保存" }}
+        </button>
+      </p>
     </div>
 
-    <!--
-      失败必须立刻可见（真实错误不许藏进详情）：默认就说清「本次原因 → 保留情况 → 重试」。
-      顺序固定，详情只补充较长诊断（保存失败原因、上一次提交返回的说明），不是了解原因的必经入口。
-    -->
-    <p v-if="failure" class="failure" role="alert" data-im="submit-failure">
-      <span class="failure-reason" data-im="submit-failure-reason"><span class="failure-label">失败原因：</span>{{ failureShort }}</span>
-      <span class="failure-retention" data-im="submit-failure-retention">{{ failure.retention }}</span>
-    </p>
-
-    <!--
-      F10：没有拿到回执 = 提交结果**未知**（既不是成功也不是失败）。
-      保留改动与勾选，明确要求先确认结果，不诱导直接重复提交。
-    -->
-    <p v-else-if="store.submitStatus === 'unknown'" class="blocked" role="status" data-im="submit-unknown">
-      <span class="blocked-text" data-im="submit-unknown-reason">
-        提交结果未知：没有拿到服务端回执，这次提交可能已经受理。改动与勾选都保留；请先查证结果，不要直接重复提交
-        （查证只按这次请求身份向服务端精确核对，不会自动重复提交）。
-      </span>
-      <!--
-        F10 + 契约 §1.3：未知时给的是**只读查证**入口（按请求身份精确匹配 + 重新读取），
-        不是「重新提交」—— 绝不用一次新的提交去赌原请求有没有受理。
-      -->
-      <button
-        class="details"
-        type="button"
-        data-im="submit-unknown-verify"
-        :disabled="verifyingAcceptance"
-        @click="verifyAcceptance"
-      >
-        {{ verifyingAcceptance ? "查证中…" : "查证受理结果（按请求身份）" }}
-      </button>
-      <button
-        class="details"
-        type="button"
-        data-im="submit-unknown-refresh"
-        :disabled="refreshRetrying"
-        @click="retryRefresh"
-      >
-        {{ refreshRetrying ? "重新读取中…" : "只重新读取页面事实" }}
-      </button>
-      <span v-if="store.acceptanceLookupNote" class="blocked-text" data-im="submit-unknown-lookup-note">
-        {{ store.acceptanceLookupNote }}
-      </span>
-    </p>
-
-    <!--
-      F10：提交已经成功、只是**页面刷新失败**。成功事实与基准依据不变，这里只提供重试刷新。
-    -->
-    <p v-else-if="refreshFailed" class="blocked" role="status" data-im="submit-refresh-failed">
-      <span class="blocked-text" data-im="submit-refresh-reason">
-        提交成功，页面刷新失败（{{ refreshErrorText }}）：这次提交已经成立、基准已经更新，
-        页面上的板面与可见范围可能不是最新事实。
-      </span>
-      <button
-        class="details"
-        type="button"
-        data-im="submit-refresh-retry"
-        :disabled="refreshRetrying"
-        @click="retryRefresh"
-      >
-        {{ refreshRetrying ? "重新读取中…" : "重试刷新" }}
-      </button>
-    </p>
-
-    <!--
-      F07：本地删除与服务器修改相撞 —— 保存被挡住，这里给每个对象两个明确选择。
-      没有它，用户只能看到「保存失败」，拿不到「保持删除 / 恢复服务器版」的入口。
-    -->
-    <p
-      v-else-if="removalConflicts.length"
-      class="blocked"
-      role="status"
-      data-im="board-removal-conflict"
-    >
-      <span class="blocked-text" data-im="board-removal-conflict-reason">
-        本地删除的对象在服务器上被改过：请选择保持删除，还是恢复服务器版（两种选择都会保存一次）。
-      </span>
-      <span
-        v-for="item in removalConflicts"
-        :key="item.id"
-        class="removal-row"
-        data-im="board-removal-conflict-row"
-      >
-        <span class="mono">{{ item.id }}</span>
-        <button
-          class="details"
-          type="button"
-          data-im="board-removal-keep-deleted"
-          :data-object-id="item.id"
-          @click="resolveRemovalConflict(item.id, 'keep-deleted')"
-        >
-          保持删除
-        </button>
-        <button
-          class="details"
-          type="button"
-          data-im="board-removal-restore-server"
-          :data-object-id="item.id"
-          @click="resolveRemovalConflict(item.id, 'restore-server')"
-        >
-          恢复服务器版
-        </button>
-      </span>
-    </p>
-
-    <!--
-      提交被「影响预判没完成 / 确认过期」挡住：这不是提交失败，而是保存前的检查没做完。
-      所以单独一条、层级低于失败区，并给**一次**可达的重试（重新预判并保存，不自动提交）。
-    -->
-    <p v-else-if="impactCheckErrorText" class="blocked" role="status" data-im="submit-blocked">
-      <span class="blocked-text" data-im="submit-blocked-reason">{{ impactCheckErrorText }}</span>
-      <button
-        class="details"
-        type="button"
-        data-im="submit-recheck"
-        :disabled="rechecking"
-        @click="recheckImpact"
-      >
-        {{ rechecking ? "重新预判中…" : "重新预判并保存" }}
-      </button>
-    </p>
-
-    <div class="actions">
+    <!-- 第二行右：详情 + 提交给 QIO（主提交按钮用强调色；其余一律低强调） -->
+    <div class="actions" data-im="submit-actions">
       <button
         class="details"
         type="button"
         data-im="submit-details"
-        :aria-expanded="detailsOpen"
-        @click="detailsOpen = !detailsOpen"
+        :aria-expanded="openPanel === 'details'"
+        aria-controls="submit-details-panel"
+        title="本次提交范围与改动（只读，不会再次提交）"
+        @click="togglePanel('details')"
       >
-        {{ detailsOpen ? "收起详情" : "详情" }}
+        {{ openPanel === "details" ? "收起详情" : "详情" }}
       </button>
       <button
         class="submit"
@@ -800,93 +989,212 @@ function onSubmit() {
     </div>
 
     <!--
-      2026-10-14：详情里**只留**「本次有效改动」这一块（用户要求：除粉色框标题以外的上下文字都删掉）。
-      保存状态、可见范围、材料读取状态、理解过程、草稿规则等说明都不再渲染。
+      展开面板：三类内容互斥，同一时间只开一个。
+      绝对定位 → 不参与主栏高度、不横向挤压按钮；宽度 = 功能栏完整宽度（left/right: 0，
+      包含块是 .board-toolbar）；限高 + **唯一一层**纵向滚动，横向永不滚动。
     -->
-    <section v-if="detailsOpen" class="details-box" data-im="submit-details-box">
-      <BoardChangeList
-        :expressions="pendingExpressions"
-        title="本次有效改动（尚未提交）"
-        empty-text="本次还没有可提交的改动（服务端在每次保存后重算）。"
-      />
-    </section>
+    <Transition name="sc-fade">
+      <section
+        v-if="openPanel"
+        class="sc-panels"
+        v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+        data-qio-fit
+        @wheel.stop
+      >
+        <!-- ① 上次提交结果：只来自上次提交 / 理解记录，绝不掺入本次未提交改动 -->
+        <div
+          v-if="openPanel === 'result'"
+          id="submit-result-panel"
+          class="sc-panel"
+          role="region"
+          aria-label="上次提交结果"
+          data-im="submit-result-panel"
+        >
+          <p class="sc-panel-head" data-im="submit-result-head">上次提交结果</p>
+          <p class="sc-panel-line" data-im="submit-result-outcome">上次提交 · {{ outcomeLabel }}</p>
+          <!--
+            「本次无需开展任务」优先展示服务端给出的**真实结论正文**（模型 summary）；
+            只有服务端确实没给正文时才退回标准说法 —— 标准说法不能顶掉真实说明，
+            否则「完整结果说明」就成了一句套话（参考图里展开的就是那段真实长文）。
+          -->
+          <p
+            v-if="uOutcome === 'no_action'"
+            class="sc-panel-text"
+            data-im="understanding-no-action"
+          >{{ noActionResultText }}</p>
+          <p v-else-if="lastResultBody" class="sc-panel-text" data-im="submit-result-body">{{ lastResultBody }}</p>
+          <p v-if="materialsText" class="sc-panel-text" data-im="submit-result-materials">{{ materialsText }}</p>
+          <p class="sc-panel-note">这里只说上次提交与理解记录；本次还没提交的改动在「详情」里。</p>
+        </div>
+
+        <!-- ② 本次提交范围与改动：本次可见范围明细 + 未提交改动列表 -->
+        <div
+          v-else-if="openPanel === 'details'"
+          id="submit-details-panel"
+          class="sc-panel"
+          role="region"
+          aria-label="本次提交范围与改动"
+          data-im="submit-details-box"
+        >
+          <p class="sc-panel-head" data-im="submit-details-head">本次提交范围与改动</p>
+          <p class="sc-panel-text" data-im="submit-details-range">{{ rangeText }}</p>
+          <BoardChangeList
+            :expressions="pendingExpressions"
+            title="本次有效改动（尚未提交）"
+            empty-text="本次还没有可提交的改动（服务端在每次保存后重算）。"
+          />
+        </div>
+
+        <!-- ③ 上次提交过程：只读记录，不触发提交、不启动新任务 -->
+        <div
+          v-else
+          id="submit-process-panel"
+          class="sc-panel"
+          role="region"
+          aria-label="上次提交过程"
+          data-im="submit-process-panel"
+        >
+          <p class="sc-panel-head" data-im="submit-process-head">上次提交过程</p>
+          <p v-if="!hasProcess" class="sc-panel-text" data-im="submit-process-empty">
+            服务端还没有留下可以查看的过程记录。
+          </p>
+          <ul v-if="processHistory.length" class="sc-process-list" data-im="submit-process-history">
+            <li v-for="item in processHistory" :key="item.key" class="sc-process-item">
+              <span class="sc-process-label">{{ item.label }}</span>
+              <span class="sc-process-text">{{ item.text || "（服务端没有给出说明）" }}</span>
+            </li>
+          </ul>
+          <ul v-if="processSteps.length" class="sc-process-list" data-im="submit-process-steps">
+            <li
+              v-for="(text, index) in processSteps"
+              :key="'step-' + index"
+              class="sc-process-item"
+            >{{ text }}</li>
+          </ul>
+          <ul v-if="processNotes.length" class="sc-process-list" data-im="submit-process-notes">
+            <li
+              v-for="(text, index) in processNotes"
+              :key="'note-' + index"
+              class="sc-process-item"
+            >{{ text }}</li>
+          </ul>
+          <p class="sc-panel-note">只读记录：不会重新提交，也不会启动新任务。</p>
+        </div>
+      </section>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
+/*
+  主栏排布完全交给 BoardToolbar 的 grid：这里 display: contents，
+  四个子块各自声明 grid-area（契约区名：edit / history / stats / notes / actions）。
+  旧版的 flex / 边框 / 内边距在 display: contents 下全部失效，因此删除，不保留死样式。
+*/
 .submit-cluster {
-  position: relative;
+  display: contents;
+}
+
+/* 第一行右：上次提交简短状态 + 查看过程（低强调；主强调只留给主提交按钮） */
+.sc-history {
+  grid-area: history;
   display: flex;
   align-items: center;
-  /* 允许换行：失败区可以换行、可以变高，但按钮行不会被挤坏（.actions 不参与收缩） */
   flex-wrap: wrap;
-  row-gap: var(--sp-1);
-  gap: var(--sp-3);
+  gap: var(--sp-1) var(--sp-2);
   min-width: 0;
-  padding-left: var(--sp-4);
-  /* 与编辑操作留出间距并区分样式（契约 §8.1） */
-  border-left: 1px solid var(--border-strong);
-  background: transparent;
+}
+.sc-chip {
+  font: inherit;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 2px var(--sp-2);
+  max-width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.sc-chip:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.sc-chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.sc-chip[aria-expanded="true"] {
+  color: var(--text-strong);
+  border-color: var(--border-strong);
+  background: var(--bg-inset);
+}
+
+/*
+  第二行左：本次可见统计 + 未提交改动数量。
+  统计允许**受控换行**（长数字 / 窄栏都不竖排、不省略号截断）。
+*/
+.sc-stats {
+  grid-area: stats;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  min-width: 0;
+}
+.sc-stat {
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.sc-pill {
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-secondary);
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-2);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 说明区：失败 / 未知 / 被挡 / 理解补充说明与阶段说明默认可见；永远整行独占 */
+.sc-notes {
+  grid-area: notes;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
   font-family: var(--sans);
 }
-/* 常态排成一行：简短范围 + 简短状态 + 操作（契约 §10.8），窄窗口也尽量不竖排 */
-.range,
-.status {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.range { flex: 0 1 auto; }
-.status { flex: 1 1 auto; }
+.sc-notes > * { min-width: 0; }
+.state-line { color: var(--text-muted); }
+
 .line {
   margin: 0;
   font-size: var(--fs-xs);
   line-height: 1.45;
   color: var(--text-muted);
 }
-.line.strong {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
-  min-width: 0;
-}
-.label {
-  flex: none;
-  font-family: var(--mono);
-  font-size: var(--fs-xs);
-  color: var(--text-primary);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
-  padding: 0 var(--sp-1);
-}
-.label.ok { color: var(--success); border-color: var(--success); }
-.label.warn { color: var(--danger); border-color: var(--danger); }
-.detail {
-  min-width: 0;
-  color: var(--text-secondary);
-}
 /*
   理解过程（契约 §14.1 / §14.6）：常态一行统一状态 + 需要用户做事时的明确说明。
   颜色只做辅助：每个状态都有文字；说明不裁切（换行显示），完整文本同时给 title。
 */
 .understanding {
-  flex: 1 1 24ch;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
   min-width: 0;
+}
+.u-line {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
   gap: var(--sp-1) var(--sp-2);
-}
-.u-line {
-  flex: 1 1 18ch;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
   margin: 0;
   font-size: var(--fs-xs);
   line-height: 1.45;
+  min-width: 0;
 }
 .u-label {
   flex: none;
@@ -907,9 +1215,8 @@ function onSubmit() {
   color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
-.u-actions { flex: none; display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.u-actions { display: flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
 .u-note {
-  flex: 1 1 100%;
   margin: 0;
   font-size: var(--fs-xs);
   line-height: 1.45;
@@ -918,11 +1225,10 @@ function onSubmit() {
 }
 .u-note.err { color: var(--danger); }
 /*
-  待审批入口（任务书 §5.4）：整行展开在提交状态下方；列表高度有上限、超出时区内滚动 ——
+  待审批入口（任务书 §5.4）：整块展开在提交状态下方；列表高度有上限、超出时区内滚动 ——
   审批再多也不会把底部工具栏越撑越高（「常态工具栏高度有上限」那条口径仍然成立）。
 */
 .approvals {
-  flex: 1 1 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -947,8 +1253,6 @@ function onSubmit() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  /* 原来的 3 行上限只够看两条，是个「小滚动窗口」；改成按视口取一个真正可用的高度，
-     超过才滚（批准入口与状态行都在列表外，任何滚动位置都看得见）。 */
   max-height: min(200px, 26vh);
   overflow-y: auto;
   overflow-x: clip;
@@ -1002,32 +1306,19 @@ function onSubmit() {
   gap: var(--sp-2);
 }
 .approvals-actions .u-note { flex: 1 1 auto; }
-/* 过程历史：默认收起，展开后按「当前阶段 + 已过去的阶段」稳定排列 */
-.u-steps { display: flex; flex-direction: column; gap: 2px; }
-/* 允许查看范围始终可见（不折叠才存在）；视觉上最多两行，全文仍在 DOM 里 */
-.line.range {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
 /*
   失败区（契约 §11.6 / §11.8）：默认就给出「本次原因 + 保留情况」，各占一行、顺序固定。
-  长原因允许换行（overflow-wrap），但整块有高度上限、超出时区内滚动，
-  所以既不会撑坏右边的提交按钮，也不会把板面盖住；颜色走令牌，明暗两主题都成立。
+  长原因允许换行（overflow-wrap），内容策略是**完整显示**、不自开滚动层 ——
+  唯一一层滚动只由展开面板承担，所以既不会撑坏提交按钮，也不会藏住原因。
 */
 .failure {
-  /* 基础尺寸给小值：长原因与按钮同排、由自己换行，而不是把整条操作行挤到下一行 */
-  flex: 1 1 12ch;
+  flex: none;
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
   margin: 0;
   padding: var(--sp-1) var(--sp-2);
-  /* content 策略：失败原因**完整显示**（换行、不截断、不自开滚动层）——
-     原来 4 行上限 + overflow-y 会在同一阅读流里再切一个小滚动窗口，
-     而且「原因看不全」正是失败恢复最不该发生的事。 */
   overflow-wrap: anywhere;
   border-left: 2px solid var(--danger);
   border-radius: var(--r-xs);
@@ -1037,7 +1328,7 @@ function onSubmit() {
 }
 /* 被挡住的那一条（影响预判未完成）：与失败区同宽、层级低一档，文字用正文色、按钮可点 */
 .blocked {
-  flex: 1 1 16ch;
+  flex: none;
   min-width: 0;
   display: flex;
   align-items: baseline;
@@ -1052,7 +1343,7 @@ function onSubmit() {
   line-height: 1.45;
 }
 .blocked-text { color: var(--text-secondary); overflow-wrap: anywhere; }
-/* F07：同一行里放对象 id 与两个明确选择，窄窗口自动换行 */
+/* F07：同一行里放对象 id 与两个明确选择，窄栏自动换行 */
 .removal-row {
   display: inline-flex;
   align-items: baseline;
@@ -1067,26 +1358,21 @@ function onSubmit() {
 .failure-retention { color: var(--text-secondary); }
 .line.retain { color: var(--warning); }
 .line.err { color: var(--danger); }
-/* 详情里的草稿提示是「输入什么时候会被保存」的操作说明：用可读色，不做装饰 */
+/* 低强调提示（提升说明等）用可读的元数据色，不做装饰 */
 .line.faint { color: var(--text-muted); }
 /*
   P1：提升说明是**要读的内容**（用户的字到底去哪了），不做装饰、不用警告色抢注意力：
   它只报告一件已经发生的事实，需要用户行动的情况由失败区承担。
 */
-.promoted { flex-basis: 100%; overflow-wrap: anywhere; }
+.promoted { overflow-wrap: anywhere; }
+/* 第二行右：详情 + 提交（窄档的右对齐由 BoardToolbar 统一给，这里不写 justify-self） */
 .actions {
-  flex: none;
+  grid-area: actions;
   display: flex;
   align-items: center;
+  flex: none;
+  justify-content: flex-end;
   gap: var(--sp-2);
-}
-.count {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .details {
   font: inherit;
@@ -1100,6 +1386,12 @@ function onSubmit() {
 }
 .details:hover { color: var(--text-strong); border-color: var(--border-strong); }
 .details:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.details[aria-expanded="true"] {
+  color: var(--text-strong);
+  border-color: var(--border-strong);
+  background: var(--bg-inset);
+}
+/* 主提交按钮：整个功能栏唯一的强调色操作 */
 .submit {
   font: inherit;
   font-size: var(--fs-base);
@@ -1113,51 +1405,134 @@ function onSubmit() {
 .submit:hover:not(:disabled) { background: var(--accent-hover); }
 .submit:disabled { opacity: 0.55; cursor: default; }
 .submit:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-/* 展开区从提交区上方长出来，不把工具栏顶变形 */
-.details-box {
+
+/*
+  展开面板：绝对定位（包含块 = .board-toolbar），宽度 = 功能栏完整宽度，长在主栏上方。
+  - 不参与主栏高度，也不横向挤压按钮（left/right: 0 独立于主栏栅格）；
+  - 限高 + **唯一一层**纵向滚动；overflow-x: clip 保证永不出现横向滚动条；
+  - 长文本自然换行（overflow-wrap: anywhere），不用省略号隐藏正文；
+  - user-select: text：面板里的说明可以选中复制（舞台层全局是 none）。
+*/
+.sc-panels {
   position: absolute;
+  left: 0;
   right: 0;
   bottom: calc(100% + var(--sp-2));
   z-index: 30;
-  width: min(460px, 88vw);
+  max-height: min(46vh, 420px);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   padding: var(--sp-3);
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   box-shadow: var(--shadow-2);
+  font-family: var(--sans);
+  user-select: text;
 }
-@media (max-width: 900px) {
-  /* 窄窗口仍排成一行；实在放不下才换行（换行也不会超过两行，工具栏总高目标 ≤96px 仍满足） */
-  .submit-cluster {
-    flex-wrap: wrap;
-    row-gap: var(--sp-1);
-    padding-left: 0;
-    border-left: none;
-  }
-  .texts { max-width: none; }
-  .actions { justify-content: flex-end; }
-  .details-box { width: min(420px, 92vw); }
-
+.sc-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
 }
+.sc-panel-head {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-strong);
+}
+.sc-panel-line {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.sc-panel-text {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sc-panel-note {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.sc-process-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.sc-process-item {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-2);
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.sc-process-label {
+  flex: none;
+  font-family: var(--mono);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+}
+.sc-process-text { min-width: 0; overflow-wrap: anywhere; }
 
 /*
-  更窄（480×600 这类边缘档）：工具栏实测 108px，超出 96px 的常态目标，原因是
-  「范围 + 状态」在同一行里各自换行、再加上按钮行，提交区内部占了 3 行。
-  这里只做三件不减少信息的事：范围单行省略（全文仍在详情里）、状态与按钮同排、
-  按钮内边距收一档。错误区与「等待重新预判」区改为整行，长文才读得清。
+  改动列表（BoardChangeList）嵌在唯一滚动层里：这里把它自带的「列表内滚动 +
+  逐行省略号」收掉 —— 面板只允许一层纵向滚动，改动摘要是要读的正文，不用省略号截断。
 */
-@media (max-width: 620px) {
-  /* 列间距收一档、行距保持原值（不要用 gap 一次改两个方向：会把行距从 4px 撑到 8px） */
-  .submit-cluster { column-gap: var(--sp-2); row-gap: var(--sp-1); }
-  /* 范围单行省略（全文仍在详情里），不再和状态争两行 */
-  .range { -webkit-line-clamp: 1; }
-  .actions { gap: var(--sp-1); }
-  .submit { font-size: var(--fs-sm); padding: 1px var(--sp-2); }
-  .details { padding: 1px var(--sp-2); }
-  .label { padding: 0 3px; }
+.sc-panel :deep(.changes-list) {
+  max-height: none;
+  overflow: visible;
+}
+.sc-panel :deep(.changes-headline),
+.sc-panel :deep(.change-summary) {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+.sc-panel :deep(.change) { align-items: flex-start; flex-wrap: wrap; }
+.sc-panel :deep(.change-bearing) { white-space: normal; }
 
+/* 展开 / 收起的过渡克制（低频、短时长）；reduced-motion 由动效令牌统一归零 */
+.sc-fade-enter-active,
+.sc-fade-leave-active { transition: opacity var(--dur-menu) var(--ease-1); }
+.sc-fade-enter-from,
+.sc-fade-leave-to { opacity: 0; }
+
+/*
+  视口兜底（老窗口尺寸下的小屏）：只压内边距与间距，**不缩字号、不隐藏任何说明**。
+  真正的窄档重排由 BoardToolbar 按功能栏实际可用宽度写 data-tb-band + 栅格完成。
+*/
+@media (max-width: 900px) {
+  .actions { gap: var(--sp-1); }
+  .submit { padding: var(--sp-1) var(--sp-4); }
+}
+@media (max-width: 620px) {
+  .actions { gap: var(--sp-1); }
+  .submit { padding: 1px var(--sp-2); }
+  .details { padding: 1px var(--sp-2); }
 }
 </style>

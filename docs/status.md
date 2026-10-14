@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-14（**v0.2.7 已发布**（tag `v0.2.7` → `2da1f5ee`，发布闸门 18/18 PASS，安装包 sha256 `2d428936…`），内容为**互动模式界面收敛与回归修复**：卡片表面收敛（文字卡编辑面 / 文件卡）、.md 文件卡做解析、西 / 北把手拉不动修复、图片卡封面回归修复，见 P63 与 `docs/releases/v0.2.7.md`；上一版 v0.2.6（tag `v0.2.6` → `18ea6e59`）是互动模式十个实机问题的修复与界面文案精简；v0.2.5（tag `fa9d0cfb`）是互动空间结构与自由尺寸调整，见 P36；更早的 v0.2.4（tag `1755c105`）是附件上传 CORS 预检热修，统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。**2026-10-14 第十二轮：统一滚动体验 / 对话不横向滚动 / 表格适配已完成（见 P39）**，并已合并进 main（`3a4f256e`，覆盖清单见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`）；同一轮还并入了 **0.2.5 互动模式两处回归修复**（附件成功提示常驻 / 连接点被尺寸热区遮挡，见 P40）。
+最后核对：2026-10-15（**2026-10-15 第三十六轮：底部功能栏布局重构**——按功能栏**实际可用宽度**分档、两行主栏、三类互斥展开面板，见 P64；在分支 `fix/interactive-bottom-toolbar-layout` 上，**尚未合并 main**。**v0.2.7 已发布**（tag `v0.2.7` → `2da1f5ee`，发布闸门 18/18 PASS，安装包 sha256 `2d428936…`），内容为**互动模式界面收敛与回归修复**：卡片表面收敛（文字卡编辑面 / 文件卡）、.md 文件卡做解析、西 / 北把手拉不动修复、图片卡封面回归修复，见 P63 与 `docs/releases/v0.2.7.md`；上一版 v0.2.6（tag `v0.2.6` → `18ea6e59`）是互动模式十个实机问题的修复与界面文案精简；v0.2.5（tag `fa9d0cfb`）是互动空间结构与自由尺寸调整，见 P36；更早的 v0.2.4（tag `1755c105`）是附件上传 CORS 预检热修，统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。**2026-10-14 第十二轮：统一滚动体验 / 对话不横向滚动 / 表格适配已完成（见 P39）**，并已合并进 main（`3a4f256e`，覆盖清单见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`）；同一轮还并入了 **0.2.5 互动模式两处回归修复**（附件成功提示常驻 / 连接点被尺寸热区遮挡，见 P40）。
 **2026-10-14 第十三轮：板面操作提示不再常驻**（改为「本机没用过查看手势时显示一次」，说明并入帮助，见 P41）；
 **第十四轮：对话窗口在短窗口下不再把输入框裁掉**（见 P42）；
 **第十五轮：卡片局部工具栏不再压住卡片**（见 P43）；
@@ -30,6 +30,7 @@
 **第三十四轮：局部工具栏不再与卡片分离**（独立不缩放浮层 + 真实 DOM 外框锚点 + 单帧合并调度，见 P62）；
 **第三十五轮：卡片表面收敛**（文字卡编辑面只剩工具栏 + 吃满卡片的输入框、完成编辑改为退出选中 / 再点编辑按钮、
 换行修复、文件卡只显示文件名且按钮全在工具栏）与**西 / 北把手拉不动修复**（见 P63）。核对方法见文末。
+**第三十六轮：底部功能栏布局重构**（长说明不再参与主栏横向分配；行列关系按功能栏**实际可用宽度**分档而不是视口宽度；「上次提交结果 / 本次提交范围与改动 / 上次提交过程」三类面板互斥展开，见 P64）。核对方法见文末。
 
 ---
 
@@ -4447,6 +4448,61 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   指针越过滚动容器边缘时触发 Chromium 的选择自动滚动，把 `.board-viewport` 滚到底
   （实测滚动量 300 → 911，并选中 162 字符；与是否按住 Ctrl 无关）。
   本轮**未修**（当时修法待定）—— **已在 P50 按方案 A 修好**。
+
+### P64 — 底部功能栏布局重构：按实际可用宽度分档 + 两行主栏 + 三类互斥展开面板（2026-10-15 第三十六轮）
+
+- **Status：** completed（分支 `fix/interactive-bottom-toolbar-layout`，基线 `6e1d4cd4`，**尚未合并 main**）
+- **Implementation：**
+  - **根因（静态 CSS 链 + 真实渲染实测）：** 功能栏的行列关系原先由**视口**媒体查询决定
+    （`BoardToolbar.vue` 的 `@media (max-width: 1080px)`、`SubmitCluster.vue` 的 `≤900 / ≤620`）。
+    功能栏实际宽度由 `max-width: min(--im-toolbar-max-width, 100% − --im-toolbar-chat-reserve − 两侧留白)`
+    决定，所以「窗口很宽、但聊天保留宽度把功能栏压到 764px」时两条断点都不触发，仍按宽档挤一行。
+    提交区的长说明正文（`.u-detail`）同时具备 `flex: 1 1 18ch` + `min-width: 0` +
+    `overflow-wrap: anywhere`（`anywhere` 参与固有尺寸计算，min-content 可降到「一个字」），
+    而同行 `.range/.status` 是 `nowrap`、`.actions` 是 `flex:none` —— 唯一能继续缩的就是正文。
+    `.u-line → .submit-cluster → .tb-submit → .tb-main → .board-toolbar` 五层都没有高度上限，
+    于是「正文被压成极窄竖列」与「整条功能栏被撑高」同时发生。基线实测：764px 下功能栏 151px、
+    1178px 下 106px；同一段说明在 764px 下 229px 宽（2 行），在 1178px 下反而只有 146px 宽（4 行），
+    3 张卡时 80px 宽（6 行）——「越宽越窄」。
+  - **分档改为实测功能栏自己的可用宽度：** 新增 `frontend/src/interactive/toolbarLayout.ts`
+    （纯函数 `toolbarBand`：wide / mid / narrow 三档 + 40px 滞回；`toolbarAvailableWidth` 用两个隐形
+    探测器量 `--im-toolbar-chat-reserve` 与两侧留白，再与 `--im-toolbar-max-width` 取小 —— 与 CSS 的
+    `max-width` 同源；那两个令牌是 `min()/vw` 串，`getPropertyValue` 拿不到像素，必须用探测器）。
+    `BoardToolbar.vue` 用 `ResizeObserver`（舞台 / 功能栏自身 / 保留宽度探测器）驱动 `data-tb-band`。
+  - **两行主栏：** `.tb-submit` 与 `.submit-cluster` 都是 `display: contents`，
+    `.sc-history / .sc-stats / .sc-notes / .actions` 各自声明 `grid-area`，由 `BoardToolbar` 的
+    `grid-template-areas` 决定每一档的行列关系（wide：编辑 | 上次提交、统计 | 操作；
+    mid：上次提交整组独占一行；narrow：提交操作组独占一行并右对齐）。
+    「上次提交」与「说明区」两块都是按状态出现的，不出现时用 `:has()` 收掉那一行 ——
+    写死的网格行即使没有网格项也会白占一条 `row-gap`（实测 0 高行仍让主栏多 4px）。
+  - **三类互斥展开面板：** 原来的单一 `detailsOpen` 被 `openPanel` 取代，
+    「上次提交结果 / 本次提交范围与改动 / 上次提交过程」各有自己的面板与 `aria-controls`，
+    同一时间只开一个、同一入口再点收起、Esc 收起。面板 `position:absolute; left/right:0;
+    bottom:calc(100% + …)`：宽度 = 功能栏完整宽度、不参与主栏高度，限高 + 唯一一层纵向滚动
+    （`v-qio-scrollbar` + `data-qio-fit`）、横向 `clip`。三块数据分家：结果面板只取提交 / 理解记录
+    （`understanding-no-action` 优先显示服务端真实 `summary`），详情只有本次范围与未提交改动，
+    过程面板只读渲染 `understandingHistory / pastNotes`。
+  - **视觉与可达：** 撤销 / 重做改图标按钮（保留 `title` 与 `aria-label`，禁用态更清晰）；
+    功能栏左侧与底部留白同源（`--im-toolbar-left` / `--im-toolbar-bottom`）；
+    功能栏宽度改为取满可用宽度（参考图里宽档就是撑满、两组内容各贴左右两侧）；
+    面板过渡用动效令牌（`--dur-menu` / `--ease-1`，reduced-motion 由令牌归零）。
+- **Tests：** 新增 `frontend/src/interactive/__tests__/toolbarLayout.test.ts`（三档 + 滞回 + 量不到不误判）、
+  `frontend/src/components/interactive/__tests__/boardToolbarBands.test.ts`（栅格契约 / 空行收口 /
+  面板定位）、`submitClusterPanels.test.ts`（三类面板互斥、aria 指向、数据不串用、默认无第三行）；
+  更新 `closure-c-visual-guards.test.ts`（不再要求靠 `-webkit-line-clamp` 收窄正文，改为钉
+  「不用省略号隐藏唯一可读正文」）、`irm-d-status-ui.test.ts` 与 `irl-d-submit-status.test.ts`
+  里锁定旧界面形状的断言。
+- **验证：** `npx vue-tsc --noEmit` 0 错误；前端全量 `vitest run` 全绿。真实渲染（1600×900，
+  独立后端 8803 / 前端 5303 + 全新数据目录，`scripts/visual_probe.mjs`）：
+  764px 可用宽 → `data-tb-band=mid`、功能栏 764×91、`.tb-main` 高 73 且只有 2 条网格轨道；
+  1178px → `band=wide`、功能栏 1178×91、`.tb-main` 高 73、2 条轨道；
+  两档主栏与页面横向溢出均为 0，控制台错误 0、失败请求 0；
+  两档点开「详情」面板时功能栏 rect **完全不变**（764×91 / 1178×91），面板宽 762 / 1176
+  （= 功能栏完整宽度）、面板横向溢出 0、高度受上限约束；再点收起回到同一 rect。
+- **Known limitations：** 本轮只在分支上提交，**未合并 main、未打包发布**；
+  narrow 档的视觉顺序与 DOM 顺序不一致，Tab 顺序按宽档的视觉顺序走；
+  两档阈值（900 / 560 + 40 滞回）来自 764px 与 1178px 的真实渲染实测，
+  遇到明显更长的真实文案应重新量一次。
 
 ### P63 — 卡片表面收敛（文字卡 / 文件卡）+ 西·北把手拉不动修复（2026-10-14 第三十五轮）
 

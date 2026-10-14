@@ -61,13 +61,20 @@ describe("亮色辅助文字的可读性（有操作意义的小字不能用装�
 });
 
 describe("工具栏密度与窄窗口重排", () => {
-  it("提交区在窄窗口下逐档收紧，并且明确让错误区整行可读", () => {
+  it("提交区在窄窗口下只压内边距：不用省略号/裁切隐藏唯一可读的正文", () => {
     expect(submitCluster).toContain("@media (max-width: 900px)");
     expect(submitCluster).toContain("@media (max-width: 620px)");
-    // 窄档里范围收成一行、按钮内边距收一档（实测 480 常态工具栏从 108px 压到 ~104px）
     const narrow = submitCluster.slice(submitCluster.indexOf("@media (max-width: 620px)"));
-    expect(narrow).toContain("-webkit-line-clamp: 1");
+    // 窄档只收按钮内边距（主要操作仍然是原来的字号与完整文案）
     expect(narrow).toMatch(/\.submit \{[^}]*padding:/);
+    expect(narrow).not.toMatch(/font-size/);
+    /*
+      2026-10-15 口径变化：上一版靠 -webkit-line-clamp 把范围收成一行来维持高度，
+      本轮明确要求「普通说明自然换行，不使用省略号隐藏唯一可读取的正文」。
+      真正的窄档重排改为按**功能栏实际可用宽度**分档（BoardToolbar 的 data-tb-band + 栅格），
+      所以这里钉的是「不靠隐藏正文来维持高度」：整个提交区不许出现 line-clamp。
+    */
+    expect(submitCluster).not.toContain("-webkit-line-clamp");
   });
 
   it("工具栏在窄窗口下压行高与内边距，但不缩按钮字号", () => {

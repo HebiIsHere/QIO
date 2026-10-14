@@ -145,9 +145,13 @@ describe("当前只有最新一条事实（§5.2 / §5.3）", () => {
       "已受理：QIO 已经可靠收下这次提交，正在理解。受理不等于理解完成，也不等于批准执行。";
     const w = mountCluster();
 
-    const current = w.get('[data-im="understanding"]');
-    expect(current.text()).toContain("本次无需开展任务");
-    expect(current.text(), "旧阶段的「正在理解」不许与当前状态并列").not.toContain("正在理解");
+    // 2026-10-15：已定局的结论不在主栏重复，结论就在 chip 上
+    expect(w.get('[data-im="submit-history-toggle"]').text()).toContain("无需开展任务");
+    expect(
+      w.find('[data-im="understanding"]').exists(),
+      "已定局、无需行动的理解结论不再占主栏说明区",
+    ).toBe(false);
+    expect(w.get('[data-im="submit-cluster"]').text()).not.toContain("正在理解");
     expect(
       w.find('[data-im="submit-acceptance-note"]').exists(),
       "旧阶段的说明不在当前区",
@@ -166,7 +170,8 @@ describe("当前只有最新一条事实（§5.2 / §5.3）", () => {
     store.understandingNote = "自动查询已停止：结果还没有回来，可以点「刷新理解状态」继续查询。";
     const w = mountCluster();
 
-    expect(w.get('[data-im="understanding"]').text()).not.toContain("自动查询已停止");
+    expect(w.find('[data-im="understanding"]').exists()).toBe(false);
+    expect(w.get('[data-im="submit-cluster"]').text()).not.toContain("自动查询已停止");
     expect(w.find('[data-im="understanding-note"]').exists()).toBe(false);
     // 2026-10-14：过程历史已删除（用户要求），这里只核对当前说明不含旧阶段
     expect(w.find('[data-im="understanding-history"]').exists()).toBe(false);
@@ -189,9 +194,9 @@ describe("当前只有最新一条事实（§5.2 / §5.3）", () => {
     store.submitNote = "这次提交的回执在传输中丢了：已按同一个请求身份查证，服务端确认它已被可靠受理。";
     store.understandingStatus = null;
     const w = mountCluster();
-    const status = w.get('[data-im="understanding-status"]').text();
-    expect(status).toBe("已提交");
-    expect(w.get('[data-im="understanding"]').text()).not.toContain("还没有提交给 QIO");
+    const status = w.get('[data-im="submit-status"]').text();
+    expect(status).toContain("已提交");
+    expect(w.get('[data-im="submit-cluster"]').text()).not.toContain("还没有提交给 QIO");
     expect(w.get('[data-im="submit-acceptance-note"]').text()).toContain("同一个请求身份");
   });
 });
@@ -307,9 +312,10 @@ describe("待审批出现时审批入口主动展开（§5.4）", () => {
       understandingFixture({ id: "u0", submissionId: "s0", status: "no_action", summary: "上一次提交没有任务" }),
     ];
     const w = mountCluster();
-    expect(w.get('[data-im="understanding"]').text()).not.toContain("上一次提交");
+    expect(w.find('[data-im="understanding"]').exists()).toBe(false);
+    expect(w.get('[data-im="submit-cluster"]').text()).not.toContain("上一次提交");
     // 历史区与「查看过程」入口都已删除，旧提交的理解过程不再出现在界面上
     expect(w.find('[data-im="understanding-history"]').exists()).toBe(false);
-    // 「查看过程」入口仍在（它打开的是只含「本次有效改动」的详情），但不再有历史区
+    // 「查看过程」入口仍在（它打开的是「上次提交过程」面板），但不再有历史区
   });
 });

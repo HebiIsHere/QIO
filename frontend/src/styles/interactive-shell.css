@@ -48,6 +48,8 @@
 
   /* 底部避让：工具栏在剩余空间里居中，右端给右下角聊天入口留出 --im-chat-reserve */
   --im-chat-reserve: 132px;
+  /* 功能栏的左侧与底部留白**同源**：两处用同一组令牌，任何一档都不许各写一个数 */
+  --im-toolbar-left: var(--sp-4);
   --im-toolbar-bottom: var(--sp-4);
   --im-toolbar-max-width: 1180px;
   /*
@@ -72,9 +74,18 @@
 */
 [data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"] {
   position: absolute;
-  left: var(--sp-4);
+  left: var(--im-toolbar-left);
   bottom: var(--im-toolbar-bottom);
-  width: fit-content;
+  /*
+    宽度 = **实际可用宽度**（上限 min(--im-toolbar-max-width, 100% - 聊天保留宽 - 两侧留白)）。
+    2026-10-15 布局重构：参考图里宽档功能栏就是撑满可用宽度、两组内容分别贴左右两侧，
+    而且任务书要求「重现约 764px 与约 1178px 功能栏宽度」——1178 ≈ --im-toolbar-max-width，
+    所以这里确定性地取满上限，不再按内容宽度收缩（内容宽度会让同一档宽度随文案长短乱变）。
+    上限本身已经扣掉聊天保留宽度，所以不会覆盖右下角对话面板那一列。
+    行列关系由组件实测同一口径的可用宽度决定（toolbarLayout.ts 的 data-tb-band），
+    不再按视口宽度猜断点。
+  */
+  width: 100%;
   /* 上限按 --im-toolbar-chat-reserve（宽窗口 = 几何计划的聊天宽度，窄窗口 = chat-reserve），
      工具栏不会伸进对话窗口那一列，也不会在窄窗口被压塌 */
   max-width: min(var(--im-toolbar-max-width), calc(100% - var(--im-toolbar-chat-reserve) - var(--sp-8) - var(--sp-4)));
@@ -122,6 +133,7 @@
 @media (max-width: 1024px) {
   :root {
     --im-chat-reserve: 104px;
+    --im-toolbar-left: var(--sp-3);
     --im-toolbar-bottom: var(--sp-3);
     --im-toolbar-max-width: 100%;
     --im-toolbar-chat-reserve: var(--im-chat-reserve);
@@ -135,6 +147,7 @@
 @media (max-width: 800px) {
   :root {
     --im-chat-reserve: 88px;
+    --im-toolbar-left: var(--sp-2);
     --im-toolbar-bottom: var(--sp-2);
   }
   [data-im="search-panel"][data-im="search-panel"][data-im="search-panel"] {
