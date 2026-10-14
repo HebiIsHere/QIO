@@ -167,3 +167,25 @@
 [data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] [data-im="chat-composer"] {
   overflow-x: clip;
 }
+/* --- 板面 chrome 不启动浏览器原生文字选择（2026-10-14 第一个问题，方案 A） --------
+  现象：Ctrl+拖拽时画布向下滚。根因**不是 Ctrl**：在非画布表面的板面 chrome
+  （提交区 / 徽章 / 工具栏文字）上按下并拖动会启动浏览器原生选择，
+  Chromium 顺带**自动滚动最近的滚动容器** —— 实测从提交区拖到窗口底，
+  .board-viewport 的 scrollTop 从 0 跳到 811。没有 Ctrl 时同样会发生，只是不容易碰到。
+  舞台整体关掉选择，需要选文字 / 复制的地方在下面显式开回来（选择不是继承锁）。
+----------------------------------------------------------------------------------- */
+main.im-stage {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 卡片正文 / 对话面板 / 输入框 / 可编辑区：文字仍然可以选中、复制 */
+main.im-stage [data-im="card-body"],
+main.im-stage [data-im="chat-panel"],
+main.im-stage textarea,
+main.im-stage input,
+main.im-stage [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+

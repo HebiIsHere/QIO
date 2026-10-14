@@ -367,6 +367,13 @@ QIO 的真实模型理解、外部工具执行；多板面协同编辑。
 
 ### 8.2 板面操作（必须真实可用）
 
+**板面 chrome 不启动原生选择拖拽（2026-10-14 追加）**：互动舞台 `main.im-stage` 默认
+`user-select: none` —— 否则在提交区 / 徽章 / 工具栏文字上按下并拖动会启动浏览器原生文本选择，
+指针越过滚动容器边缘时 Chromium 触发**选择自动滚动**，把 `.board-viewport` 滚走
+（实测从提交区拖到窗口底，`scrollTop` 0 → 811；与是否按住 Ctrl 无关）。
+需要选文字 / 复制的地方显式开回 `user-select: text`：卡片正文、对话面板、`textarea` / `input` /
+`[contenteditable="true"]`。契约守卫见 `frontend/src/interactive/__tests__/boardNoTextSelection.test.ts`。
+
 **画布范围是状态不变量（2026-10-14 追加）**：卡片坐标必须落在画布内 ——
 `x ∈ [0, 画布宽 − 卡片宽]`、`y ∈ [0, 画布高 − 卡片高]`（画布 2400×1600，唯一事实源是
 `frontend/src/interactive/board.ts` 的 `BOARD_SURFACE_W` / `BOARD_SURFACE_H`）。
