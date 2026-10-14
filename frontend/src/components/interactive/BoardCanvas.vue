@@ -425,6 +425,17 @@ const expandedSlots = computed<Record<string, LayoutRect>>(() => {
     const slot = plan.slots[id];
     if (slot) out[id] = slot;
   }
+  /*
+    2026-10-14（用户报「拖动时原地出现白色底框」）：拖动中的卡片本体走**实时矩形**，
+    而展开底衬走计划槽位 —— 两者差一个「展开抬升」（实测 46px），于是露出白底衬。
+    这里对**正在拖动**的那张卡直接用实时矩形，两边逐像素对齐；计划本身不动，
+    所以展开收敛（irl-c）那条路径不受影响。
+  */
+  const drag = dragging.value;
+  if (drag && drag.moved) {
+    const card = liveCards.value.find((item) => item.id === drag.cardId);
+    if (card && out[card.id]) out[card.id] = displayRect(card);
+  }
   return out;
 });
 
@@ -1429,6 +1440,25 @@ function refreshOverlay() {
   }
   placeOverlay({ x: card.x, y: card.y, w: card.w, h: card.folded ? 60 : card.h });
 }
+
+/*
+  2026-10-14（用户报「点击卡片时旁边的小框完全没有跟随在卡片旁边」）：
+  原来只在点选 / 拖放结束 / 窗口尺寸变化 / 挂载时重算 —— **平移或缩放板面之后不刷新**，
+  工具栏就停在旧位置（实测卡片已到 x=840，工具栏还在 996）。
+  这里只监听视图与展开集合：**不要**监听 layoutPlan —— refreshOverlay 走 placeOverlay 时
+  若读计划会引入副作用（实测会让展开槽位取不到，irl-c 的收敛用例变红）。
+*/
+watch(
+  () => [
+    view.value.scale,
+    view.value.x,
+    view.value.y,
+    scroll.value.x,
+    scroll.value.y,
+    store.expandedCardIds,
+  ],
+  () => refreshOverlay(),
+);
 
 const toolbarStyle = computed(() => {
   const card = primarySelectedCard.value;
