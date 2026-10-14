@@ -401,8 +401,86 @@ describe("BoardCanvas 接线", () => {
     await wrapper.vm.$nextTick();
     expect(JSON.stringify(store.board)).toBe(before);
     expect(labels).toEqual([]);
-    expect(wrapper.text()).toContain("平移");
+    // 平移是查看动作：既不产生改动，也不留通知。
+    // （原来这里断言 toContain("平移")，靠的其实是当时那条**常驻**操作提示；
+    //   提示改成「用过一次就收起」之后，这条断言换成对行为本身的检查。）
+    expect(wrapper.find(".banner").exists(), "平移不该留下任何提示条").toBe(false);
     wrapper.unmount();
+  });
+
+  /**
+   * 板面操作提示**不常驻**（2026-10-14 修）。
+   *
+   * 原来 `.view-hint` 没有 v-if：一进板面就永远占一行，与互动空间「说明只留一处（帮助里），
+   * 面板里不再常驻小字」的既有规则冲突；而且它带 role="status" + 文案里有实时缩放百分比，
+   * 每次滚轮缩放都会让读屏重复播报整条提示。
+   * 现在的规则：只在本机还没用过查看手势时显示，用过一次（平移 / 缩放 / 框选）就永久收起。
+   */
+  describe("板面操作提示不常驻", () => {
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    it("本机还没用过查看手势：显示一条，且不是 aria-live（缩放百分比不该被播报）", () => {
+      setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0)] });
+      const wrapper = mountCanvas();
+      // 用两种实现都存在的外观选择器：新加的 data-im 在旧实现里没有，
+      // 拿它做断言会让用例在缺陷版本上「空过」（选择器匹配不到 ≠ 提示已收起）
+      const hint = wrapper.find(".banner.view-hint");
+      expect(hint.exists()).toBe(true);
+      expect(hint.attributes("role")).toBeUndefined();
+      wrapper.unmount();
+    });
+
+    it("平移过一次就永久收起，并把「已看过」记在本机", async () => {
+      setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0)] });
+      const wrapper = mountCanvas();
+      const view = wrapper.get(".board-viewport").element as HTMLElement;
+      view.dispatchEvent(pointer("pointerdown", 500, 400));
+      window.dispatchEvent(pointer("pointermove", 560, 450));
+      await wrapper.vm.$nextTick();
+      // 拖动过程中不能收：那会在手势中途改变容器高度
+      expect(wrapper.find(".banner.view-hint").exists()).toBe(true);
+      window.dispatchEvent(pointer("pointerup", 560, 450));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find(".banner.view-hint").exists()).toBe(false);
+      expect(localStorage.getItem("qio-board-hint-seen")).toBe("1");
+      wrapper.unmount();
+    });
+
+    it("滚轮缩放一次也收起", async () => {
+      setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0)] });
+      const wrapper = mountCanvas();
+      const view = wrapper.get(".board-viewport").element as HTMLElement;
+      view.dispatchEvent(wheel(500, 400, -462));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find(".banner.view-hint").exists()).toBe(false);
+      wrapper.unmount();
+    });
+
+    it("空格框选一次也收起", async () => {
+      setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0)] });
+      const wrapper = mountCanvas();
+      const view = wrapper.get(".board-viewport").element as HTMLElement;
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space", bubbles: true, cancelable: true }));
+      await wrapper.vm.$nextTick();
+      view.dispatchEvent(pointer("pointerdown", 500, 400));
+      window.dispatchEvent(pointer("pointermove", 560, 450));
+      await wrapper.vm.$nextTick();
+      window.dispatchEvent(pointer("pointerup", 560, 450));
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find(".banner.view-hint").exists()).toBe(false);
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: " ", code: "Space", bubbles: true }));
+      wrapper.unmount();
+    });
+
+    it("本机已经看过：重开板面不再显示（不占那一行）", () => {
+      localStorage.setItem("qio-board-hint-seen", "1");
+      setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0)] });
+      const wrapper = mountCanvas();
+      expect(wrapper.find(".banner.view-hint").exists()).toBe(false);
+      wrapper.unmount();
+    });
   });
 
   it("空白处单击（没有拖动）＝ 取消选择", async () => {

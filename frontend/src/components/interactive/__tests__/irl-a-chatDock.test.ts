@@ -402,7 +402,7 @@ describe("结构：顶部精简、底部一个输入区、帮助可开可关", (
     expect(wrapper.findAll('[data-resize-handle]').length).toBe(8);
   });
 
-  it("帮助：默认收起，点「帮助」打开后有可见范围 / 媒体读取 / 附件限制 / 快捷键，再点收起", async () => {
+  it("帮助：默认收起，点「帮助」打开后有可见范围 / 板面手势 / 媒体读取 / 附件限制 / 快捷键，再点收起", async () => {
     const { wrapper } = mountDock();
     const scope = wrapper.find('[data-im="chat-scope"]');
     expect(scope.exists(), "帮助入口不在").toBe(true);
@@ -417,6 +417,11 @@ describe("结构：顶部精简、底部一个输入区、帮助可开可关", (
     expect(body, "缺少附件限制").toContain(humanSize(COPY_MAX_BYTES));
     expect(body, "缺少快捷键说明").toContain("Enter 发送");
     expect(body, "缺少草稿说明").toContain("不会清掉草稿");
+    // 板面顶部那条常驻提示已改成「没用过查看手势时显示一次」：
+    // 完整说明的唯一常驻处就是这里，缺了它就等于说明丢了
+    expect(body, "缺少板面手势说明").toContain("板面手势");
+    expect(body, "板面手势缺了框选那一句").toContain("按住空格");
+    expect(body, "板面手势缺了缩放那一句").toContain("缩放中心");
 
     await wrapper.find('[data-im="chat-help-toggle"]').trigger("click");
     await nextTick();

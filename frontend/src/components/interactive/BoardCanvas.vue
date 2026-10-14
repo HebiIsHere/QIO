@@ -160,6 +160,39 @@ const editingLinkId = ref<string | null>(null);
 const linkMeaning = ref("");
 const linkDirection = ref(false);
 const notice = ref("");
+/**
+ * 板面操作提示**不常驻**（2026-10-14 修）。
+ *
+ * 原来 `.view-hint` 是无条件渲染的：一进板面就永远占着顶部一行，与互动空间既有规则冲突 ——
+ * ChatDock 里明确写着「快捷键说明只留一处（帮助里），面板里不再常驻小字」。
+ * 现在只在本机**还没用过**这三个查看手势时显示一条，用过一次就永久收起；
+ * 完整说明同时留在 ChatDock 的帮助里（板面手势一节）。
+ *
+ * 读写沿用项目既有的防御式 localStorage 范式（chatFrame.ts / drafts.ts）：
+ * 隐私模式或企业策略下连读属性都可能抛异常，抛了就退回「本次会话内存」。
+ */
+const BOARD_HINT_KEY = "qio-board-hint-seen";
+const hintSeen = ref(readBoardHintSeen());
+
+function readBoardHintSeen(): boolean {
+  try {
+    return (globalThis as { localStorage?: Storage | null }).localStorage?.getItem(BOARD_HINT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** 手势结束时调用（不是开始时）：避免收起提示造成的高度变化发生在拖动过程中。 */
+function markBoardHintSeen(): void {
+  if (hintSeen.value) return;
+  hintSeen.value = true;
+  try {
+    (globalThis as { localStorage?: Storage | null }).localStorage?.setItem(BOARD_HINT_KEY, "1");
+  } catch {
+    // 存不进去也不影响：内存里已经记住，本次会话不再显示
+  }
+}
+
 const highlightId = ref<string | null>(null);
 const locatedIntentId = ref<string | null>(null);
 /** 工具栏 / 提示的浮层位置（板面容器坐标） */
@@ -1029,6 +1062,7 @@ function onPointerUp() {
     if (!pan.moved && current && current.selection.length) {
       commit(setSelection(current, []), "清空选择");
     }
+    if (pan.moved) markBoardHintSeen();
     return;
   }
   const rect = rectSelect.value;
@@ -1041,6 +1075,7 @@ function onPointerUp() {
       commit(selectInRect(current, area, rect.additive), "框选卡片");
       notice.value = "已框选 " + area.w.toFixed(0) + "×" + area.h.toFixed(0) + " 板面范围内的卡片。";
     }
+    if (rect.moved) markBoardHintSeen();
     return;
   }
   const draft = linkDraft.value;
@@ -1298,6 +1333,8 @@ function onWheel(event: WheelEvent) {
   const delta = wheelDeltaY(event);
   if (!delta) return;
   zoomAtPointer(wheelZoomFactor(delta), { x: event.clientX, y: event.clientY });
+  // 用户已经用上查看手势：这条一次性提示可以收起了（手势结束后再收，不在拖动中改高度）
+  markBoardHintSeen();
 }
 
 /**
@@ -1866,7 +1903,12 @@ onBeforeUnmount(() => {
   <section ref="shell" class="board-shell" data-im="board">
     <p v-if="dragging" class="banner drag" role="status">{{ dragHint }}</p>
     <p v-if="notice" class="banner" role="status">{{ notice }}</p>
-    <p class="banner view-hint" role="status">
+    <!--
+      操作提示只在「本机还没用过查看手势」时出现一条，用过一次即永久收起。
+      刻意不设 role="status"：它不是实时状态，而且文案里的缩放百分比会让 aria-live
+      在每一次滚轮缩放时把整条提示重复播报一遍。
+    -->
+    <p v-if="!hintSeen" class="banner view-hint" data-im="board-view-hint">
       拖动空白处平移查看位置（{{ Math.round(view.scale * 100) }}%）；按住空格拖动空白处框选卡片；滚轮以指针附近为缩放中心。
       平移与缩放只改变查看方式，不形成改动、不调用 QIO。
     </p>

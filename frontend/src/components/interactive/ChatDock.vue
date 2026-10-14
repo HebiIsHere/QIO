@@ -1537,7 +1537,7 @@ function onKeydown(event: KeyboardEvent) {
           <details class="help-details" :open="helpOpen" @toggle="onHelpToggle">
             <summary class="help-summary" data-im="chat-scope-details">
               <span class="help-hint">文字发送不会提交板面</span>
-              <span class="help-open mono">{{ helpOpen ? "收起帮助" : "帮助：可见范围 · 媒体读取 · 附件限制 · 快捷键" }}</span>
+              <span class="help-open mono">{{ helpOpen ? "收起帮助" : "帮助：可见范围 · 板面手势 · 媒体读取 · 附件限制 · 快捷键" }}</span>
             </summary>
             <div class="help-body" data-qio-fit>
               <p class="help-line">{{ scopeText }}</p>
@@ -1548,6 +1548,14 @@ function onKeydown(event: KeyboardEvent) {
               <p class="help-line">{{ MEDIA_CAPABILITY_HINT.image }}</p>
               <p class="help-line">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
               <p class="help-line">{{ MEDIA_CAPABILITY_HINT.video }}</p>
+              <!--
+                板面手势说明的**唯一常驻处**就是这里（板面顶部原来那条常驻提示已改为
+                「本机没用过查看手势时显示一次」，见 BoardCanvas 的 hintSeen）。
+              -->
+              <p class="help-line" data-im="chat-help-board">
+                板面手势：拖动空白处平移查看位置；按住空格拖动空白处框选卡片；滚轮以指针附近为缩放中心。
+                平移与缩放只改变查看方式，不形成改动、不调用 QIO。
+              </p>
               <p class="help-line panel-hint mono" data-im="chat-shortcuts">{{ SHORTCUT_TEXT }}</p>
               <p class="help-line panel-hint mono">{{ hintText }}</p>
             </div>
