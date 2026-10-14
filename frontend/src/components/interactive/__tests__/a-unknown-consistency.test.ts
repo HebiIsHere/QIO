@@ -124,7 +124,7 @@ describe("unknown 在类型 / 合成状态 / 按钮 / 文案四处一致", () =>
 });
 
 describe("材料 / 附件入口仍在", () => {
-  it("添加菜单提供三类入口（文字卡 / 文件 / 图片），文件与图片是关联真实附件的那两类", async () => {
+  it("添加菜单提供两类入口（文字卡 / 文件），文件入口负责关联真实附件（图片按文件类型呈现）", async () => {
     const store = useInteractiveStore();
     store.board = board.emptyState("board_t");
     const wrapper = track(mount(AddMenu));
@@ -133,7 +133,8 @@ describe("材料 / 附件入口仍在", () => {
     await wrapper.get('[data-im="add-menu"]').trigger("click");
 
     const list = wrapper.get('[data-im="add-menu-list"]');
-    for (const kind of ["text", "file", "image"]) {
+    // 2026-10-14：文件与图片合并成同一种材料，添加菜单只剩两类入口
+    for (const kind of ["text", "file"]) {
       expect(
         wrapper.find('[data-im="add-' + kind + '"]').exists(),
         "缺少材料入口：" + kind,
@@ -142,8 +143,9 @@ describe("材料 / 附件入口仍在", () => {
     // 文字卡提示必须写明「文字、链接、代码在同一张卡片里；默认未许可」（契约 §1.7）
     expect(list.text()).toContain("文字、链接、代码写在同一张卡片里");
     expect(list.text()).toContain("默认未许可");
-    // 文件 / 图片必须走真实附件关联（否则 QIO 只能看到文件名，读不到正文）
+    // 材料入口必须走真实附件关联（否则 QIO 只能看到文件名，读不到正文）；
+    // 「图片」不再是独立入口：选中的文件是图片时按图片呈现（第九个问题）
     expect(list.text()).toContain("文件");
-    expect(list.text()).toContain("图片");
+    expect(list.text()).not.toContain("图片");
   });
 });

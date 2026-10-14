@@ -13,7 +13,8 @@
 **第十六轮：星球不再为空槽画融合环**（见 P44）；
 **第十七轮：图片卡改为以图为主的封面式呈现**（见 P45）；
 **第十八轮：卡片坐标夹在画布范围内**（页眉不再吃掉卡片顶部，见 P46）；
-**第十九轮：对话窗口随窗口恢复 + 底部工具栏左对齐让出右下角**（见 P47）。核对方法见文末。
+**第十九轮：对话窗口随窗口恢复 + 底部工具栏左对齐让出右下角**（见 P47）；
+**第二十轮：文件与图片合并成同一种材料卡**（样式与标签按文件类型决定，见 P48）。核对方法见文末。
 
 ---
 
@@ -4575,4 +4576,31 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **Known limitations：** 工具栏宽度由内容决定，提交区文字很长时会在上限处换行（不截断）；
   窗口极窄（≤1024px）时工具栏仍会退化成接近整行，此时对话窗口按老规则让位。
 - **后续依赖：** 与 P41–P46 同一轮测试中发现；P41 记录的另一处未修问题（板面非表面区域缺 `preventDefault`
+  导致原生选择自动滚动）仍未处理。
+
+### P48 — 文件与图片合并成同一种材料卡（2026-10-14 第二十轮）
+
+- **Status：** completed
+- **Implementation：**
+  - 需求（用户在测试中提出并逐项确认）：互动模式不再区分「文件 / 图片」两种卡片，
+    卡片样式**统一按文件类型**考虑。
+  - `frontend/src/interactive/board.ts`：`ADDABLE_CARD_KINDS` 收敛成 `["text", "file"]`；
+    `normalizeCard` 把遗留的 `kind="image"` 逐张迁移成 `file`，并把 `meta.image` 搬到 `meta.file`
+    （老键保留，读老数据仍可用；与历史上 code / url → text 同一套做法）。
+  - `frontend/src/interactive/previewPlan.ts` 新增 `materialTypeLabel` / `attachmentDisplayName`：
+    类型标签按**附件类型**显示（图片 / PDF / 表格 / 演示文稿 / 文档 / 文本 / 代码 / 其它，
+    没有附件时显示「文件」）。`BoardCard` 的类型标签改用它。
+  - 样式沿用 P45 的封面式判定（"附件是可显示图片"，本来就与 kind 无关）→ 图片附件自动封面、
+    其余走常规材料卡，不需要额外分支。
+  - 后端无需改动：已核对 `backend/src/agent/interactive/materials.py` 明确同时处理
+    `kind="image"` 与「`kind="file"` 但附件是图片」两种情况。
+  - 契约 §1 的 kind 表与 §16.3 的卡片规则同步更新。
+- **Tests：** 新增 `frontend/src/interactive/__tests__/materialType.test.ts`：菜单不再提供图片、
+  遗留 image 迁移成 file 且 meta 搬家（幂等）、类型标签按附件类型显示。
+  既有测试文件按新契约更新（断言"三类入口 / kind=image"改为两类入口与 file，
+  附件断言由 `meta.image` 改为统一的 `meta.file`）。
+- **Known limitations：** 迁移发生在归一化路径（新建 / 写入 / 客户端加载）；服务器直接返回的
+  遗留 `image` 卡片在内存里会保持 `image` 直到下一次写入 —— 但呈现与标签都与 kind 无关，
+  用户看到的完全一致（后端两种都认）。
+- **后续依赖：** 与 P41–P47 同一轮测试中发现；P41 记录的另一处未修问题（板面非表面区域缺 `preventDefault`
   导致原生选择自动滚动）仍未处理。

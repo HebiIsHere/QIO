@@ -100,6 +100,60 @@ function extensionOf(name: string): string {
   return dot <= 0 ? "" : String(name).slice(dot + 1).toLowerCase();
 }
 
+/** 表格类扩展名（分类器把它们都算成 code，但界面上它们是「表格」）。 */
+const TABULAR_EXT = new Set(["csv", "tsv", "xls", "xlsx", "xlsm"]);
+/** 纯文本类扩展名（与源码区分：界面上一个是「文本」、一个是「代码」）。 */
+const PLAIN_TEXT_EXT = new Set(["txt", "md", "markdown", "log", "rst", "tex"]);
+
+/**
+ * 卡片 meta 里已保存附件的显示名（meta.file 优先，其次 meta.image —— 与后端同一口径）。
+ * 迁移把 meta.image 搬到 meta.file 之后，两条路都还能读到老数据。
+ */
+export function attachmentDisplayName(meta: Record<string, unknown> | null | undefined): string {
+  const raw = (meta ?? {}) as Record<string, unknown>;
+  for (const key of ["file", "image"]) {
+    const block = raw[key];
+    if (block && typeof block === "object") {
+      const name = (block as { name?: unknown }).name;
+      if (typeof name === "string" && name.trim()) return name.trim();
+    }
+  }
+  const top = raw.name;
+  return typeof top === "string" ? top.trim() : "";
+}
+
+/**
+ * 材料卡的类型标签（2026-10-14 第九个问题）：**按附件类型显示**，不再区分「文件 / 图片」两种卡片。
+ * 图片 / PDF / 表格 / 演示文稿 / 文档 / 文本 / 代码 / 其它；没有附件时显示「文件」。
+ * 非材料卡返回空串，调用方用自己的标签（文字注释 / QIO 结果）。
+ */
+export function materialTypeLabel(
+  kind: string | undefined,
+  meta: Record<string, unknown> | null | undefined,
+): string {
+  if (kind !== "file" && kind !== "image") return "";
+  const name = attachmentDisplayName(meta);
+  if (!name) return "文件";
+  const ext = extensionOf(name);
+  if (TABULAR_EXT.has(ext)) return "表格";
+  switch (kindForName(name)) {
+    case "image":
+      return "图片";
+    case "pdf":
+      return "PDF";
+    case "xlsx":
+      return "表格";
+    case "pptx":
+      return "演示文稿";
+    case "docx":
+      return "文档";
+    case "code":
+      return PLAIN_TEXT_EXT.has(ext) ? "文本" : "代码";
+    default:
+      return "文件";
+  }
+}
+
 /** 卡片 meta 里的已保存附件 id（meta.file / meta.image，与后端同一口径）。 */
 export function cardAttachmentId(card: Pick<BoardCard, "meta"> | null | undefined): string {
   const meta = (card?.meta ?? {}) as Record<string, unknown>;

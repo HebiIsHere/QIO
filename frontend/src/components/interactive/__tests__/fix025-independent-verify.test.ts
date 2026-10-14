@@ -489,7 +489,7 @@ describe("C AddMenu 提示生命周期（计时器 / 竞态 / 卸载）", () => 
   }
   async function addImage() {
     const menu = await mountMenu();
-    await menu.get('[data-im="add-image"]').trigger("click");
+    await menu.get('[data-im="add-file"]').trigger("click");
     return menu;
   }
   function addedCardId(before: Set<string>): string | null {
@@ -529,14 +529,15 @@ describe("C AddMenu 提示生命周期（计时器 / 竞态 / 卸载）", () => 
     expect(cardId).toBeTruthy();
     expect(noticeText(), "成功提示应出现").toContain("已关联");
     const card = store.board!.cards.find((c) => c.id === cardId)!;
-    expect((card.meta as Record<string, { attachmentId?: string }>).image?.attachmentId, "meta 必须绑定真实附件 id").toBe("att_w3_1");
+    // 文件与图片合并后统一写 meta.file（第九个问题）
+    expect((card.meta as Record<string, { attachmentId?: string }>).file?.attachmentId, "meta 必须绑定真实附件 id").toBe("att_w3_1");
 
     await vi.advanceTimersByTimeAsync(2400);
     expect(noticeText(), "2.4 秒时还不该消失").not.toBeNull();
     await vi.advanceTimersByTimeAsync(1200);
     expect(noticeText(), "3.6 秒内应自动移除").toBeNull();
     const after = store.board!.cards.find((c) => c.id === cardId)!;
-    expect((after.meta as Record<string, { attachmentId?: string }>).image?.attachmentId, "提示消失不影响附件关联").toBe("att_w3_1");
+    expect((after.meta as Record<string, { attachmentId?: string }>).file?.attachmentId, "提示消失不影响附件关联").toBe("att_w3_1");
     expect((store.board?.cards ?? []).length, "提示消失不影响卡片").toBe(before.size + 1);
   });
 
@@ -615,7 +616,7 @@ describe("C AddMenu 提示生命周期（计时器 / 竞态 / 卸载）", () => 
     // 距第一次成功 2.5 秒时开始第二次（第一次的 3 秒计时器还没到）
     await vi.advanceTimersByTimeAsync(2500);
     const menu2 = await mountMenu();
-    await menu2.get('[data-im="add-image"]').trigger("click");
+    await menu2.get('[data-im="add-file"]').trigger("click");
     await flushPromises();
     expect(noticeText(), "第二次成功提示应出现").toContain("已关联");
     // 再走 1.6 秒：此时第一次的计时器已经到点，但它绝不能清掉第二次的提示
@@ -636,7 +637,7 @@ describe("C AddMenu 提示生命周期（计时器 / 竞态 / 卸载）", () => 
     expect(text).not.toMatch(/已关联|已保存副本/);
     const cardId = addedCardId(before)!;
     const card = store.board!.cards.find((c) => c.id === cardId)!;
-    expect((card.meta as Record<string, unknown>).image, "取消选择不能写附件关联").toBeUndefined();
+    expect((card.meta as Record<string, unknown>).file, "取消选择不能写附件关联").toBeUndefined();
     await vi.advanceTimersByTimeAsync(6000);
     expect(noticeText(), "如实说明属于失败 / 未完成一类，不自动消失").not.toBeNull();
   });
@@ -648,7 +649,7 @@ describe("C AddMenu 提示生命周期（计时器 / 竞态 / 卸载）", () => 
     const menu = await mountMenu();
     // 组件挂载本身可能带来环境计时器：以「挂载后、操作前」为基线，只看这次操作新增的计时器
     const base = vi.getTimerCount();
-    await menu.get('[data-im="add-image"]').trigger("click");
+    await menu.get('[data-im="add-file"]').trigger("click");
     await flushPromises();
     expect(noticeText()).toContain("已关联");
     const withTimer = vi.getTimerCount();

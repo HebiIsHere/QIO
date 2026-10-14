@@ -100,8 +100,10 @@ function mountCard(card: BoardCardModel): VueWrapper {
 }
 
 describe("board.ts：可添加的种类与文字卡构造", () => {
-  it("ADDABLE_CARD_KINDS 只有 text / file / image（代码与网址不再是入口）", () => {
-    expect(ADDABLE_CARD_KINDS).toEqual(["text", "file", "image"]);
+  it("ADDABLE_CARD_KINDS 只有 text / file（代码 / 网址 / 图片都不再是独立入口）", () => {
+    // 2026-10-14 第九个问题：文件与图片合并成同一种材料，图片由文件类型决定
+    expect(ADDABLE_CARD_KINDS).toEqual(["text", "file"]);
+    expect(ADDABLE_CARD_KINDS).not.toContain("image");
     expect(ADDABLE_CARD_KINDS).not.toContain("code");
     expect(ADDABLE_CARD_KINDS).not.toContain("url");
   });

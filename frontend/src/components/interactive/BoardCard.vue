@@ -57,6 +57,7 @@ import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
 import CardAttachmentPreview from "./CardAttachmentPreview.vue";
 import { attachmentPreviewPlan } from "../../interactive/attachmentPreview";
+import { materialTypeLabel } from "../../interactive/previewPlan";
 import { isDesktopShell } from "../../services/attachments";
 import TextCardEditor from "../../interactive/TextCardEditor.vue";
 // 卡片正文是这张卡唯一的主要纵向视口：滚动能力保留，滚动条外观统一走 QIO 指示条。
@@ -183,7 +184,13 @@ function boardContentConflict(cardId: string): { local: string; server: string }
 }
 
 const checkable = computed(() => CHECKABLE_KINDS.includes(props.card.kind));
-const kindLabel = computed(() => CARD_KIND_LABELS[props.card.kind]);
+/**
+ * 类型标签（2026-10-14 第九个问题）：材料卡按**附件类型**显示（图片 / PDF / 表格 / 文本 / 代码…），
+ * 不再区分「文件 / 图片」两种卡片；非材料卡仍用自己的标签。
+ */
+const kindLabel = computed(
+  () => materialTypeLabel(props.card.kind, (props.card.meta ?? {}) as Record<string, unknown>) || CARD_KIND_LABELS[props.card.kind],
+);
 
 /**
   许可的完整说明（任务书 §6.6）：勾选框只留一句短文案，规则原文放进旁边的「说明」详情。

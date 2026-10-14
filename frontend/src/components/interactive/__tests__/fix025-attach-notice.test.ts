@@ -103,7 +103,9 @@ function statusText(): string {
 }
 
 /** 从「添加」菜单里点一个材料入口；返回新建卡片的 id（附件要绑到它上面）。 */
-async function clickAdd(kind: "file" | "image"): Promise<string> {
+// 2026-10-14：文件与图片合并成同一种材料 —— 添加菜单只剩「文件」一项，
+// 选中的文件是不是图片由文件本身决定，所以这里统一走 add-file。
+async function clickAdd(kind: "file"): Promise<string> {
   await wrapper!.get('[data-im="add-menu"]').trigger("click");
   await wrapper!.get('[data-im="add-' + kind + '"]').trigger("click");
   await flush();
@@ -274,7 +276,7 @@ describe("失败提示", () => {
 
     // 关闭入口真的关得掉（再来一次失败）
     mocks.uploadAttachment.mockRejectedValueOnce(new Error("这次是没有权限"));
-    await clickAdd("image");
+    await clickAdd("file");
     expect(statusEl().classes()).toContain("is-error");
     expect(statusText()).toContain("这次是没有权限");
     await wrapper!.find('[data-im="add-material-dismiss"]').trigger("click");
@@ -292,14 +294,14 @@ describe("连续两次添加", () => {
     mountMenu();
     mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "第一张.png"));
     mocks.uploadAttachment.mockResolvedValue(attachment({ id: "att_a", name: "第一张.png" }));
-    await clickAdd("image");
+    await clickAdd("file");
     expect(statusText()).toContain("第一张.png");
 
     // 第一张的成功计时器 3000ms 后到期：先走 2000ms，再开始第二次添加
     await vi.advanceTimersByTimeAsync(2000);
     mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "第二张.png"));
     mocks.uploadAttachment.mockResolvedValue(attachment({ id: "att_b", name: "第二张.png" }));
-    await clickAdd("image");
+    await clickAdd("file");
     expect(statusText(), "新提示没有出现").toContain("第二张.png");
 
     // 再走 1500ms：距第一次成功已 3500ms > 3000ms —— 旧计时器若没被清掉，新提示已经被它清掉了
@@ -330,7 +332,7 @@ describe("连续两次添加", () => {
     // 第二次：完整走完并成功，提示归第二次所有
     mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "新的.png"));
     mocks.uploadAttachment.mockResolvedValue(attachment({ id: "att_new", name: "新的.png" }));
-    const secondCardId = await clickAdd("image");
+    const secondCardId = await clickAdd("file");
     expect(statusText()).toContain("新的.png");
 
     // 第一次的上传这才返回：迟到结果不许覆盖 / 清掉新提示
@@ -347,7 +349,8 @@ describe("连续两次添加", () => {
 
     // 附件与目标卡片的绑定没有串：各自的 attachmentId 在自己的卡片上
     expect((cardById(firstCardId).meta.file as { attachmentId: string }).attachmentId).toBe("att_late");
-    expect((cardById(secondCardId).meta.image as { attachmentId: string }).attachmentId).toBe("att_new");
+    // 文件与图片合并后统一写 meta.file（第九个问题）
+    expect((cardById(secondCardId).meta.file as { attachmentId: string }).attachmentId).toBe("att_new");
   });
 });
 
@@ -361,7 +364,7 @@ describe("组件卸载", () => {
     const base = vi.getTimerCount();
     mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "报告.png"));
     mocks.uploadAttachment.mockResolvedValue(attachment({ id: "att_ok", name: "报告.png" }));
-    await clickAdd("image");
+    await clickAdd("file");
     expect(vi.getTimerCount(), "成功提示应当恰好有一个自动移除计时器").toBe(base + 1);
 
     wrapper!.unmount();
@@ -398,7 +401,7 @@ describe("组件卸载", () => {
     const lateUpload = deferred<AttachmentRef>();
     mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "迟到.png"));
     mocks.uploadAttachment.mockReturnValueOnce(lateUpload.promise);
-    const cardId = await clickAdd("image");
+    const cardId = await clickAdd("file");
     expect(statusText()).toContain("正在保存附件");
 
     wrapper!.unmount();
@@ -408,7 +411,7 @@ describe("组件卸载", () => {
     await flush();
     expect(vi.getTimerCount(), "迟到的成功结果又挂了计时器（提示复活）").toBe(base);
     expect(mocks.waitUntilSettled, "卸载后还继续跟进附件状态").not.toHaveBeenCalled();
-    expect(cardById(cardId).meta.image, "卸载后的迟到结果还写了板面").toBeUndefined();
+    expect(cardById(cardId).meta.file, "卸载后的迟到结果还写了板面").toBeUndefined();
   });
 });
 
@@ -440,7 +443,7 @@ describe("用户取消选择", () => {
     // 第一次：先失败，拿到「重新选择文件」入口（同一张卡片的重跑入口）
     mocks.pickBrowserFile.mockResolvedValue(new File(["x"], "原有的.png"));
     mocks.uploadAttachment.mockRejectedValueOnce(new Error("第一次没成功"));
-    const cardId = await clickAdd("image");
+    const cardId = await clickAdd("file");
     expect(statusEl().classes()).toContain("is-error");
 
     /**
@@ -448,7 +451,7 @@ describe("用户取消选择", () => {
      * 「添加」入口只对刚建的卡片走第一次关联，所以这个前置状态在这里直接写进板面。
      */
     store.board = updateCard(store.board!, cardId, {
-      meta: { ...cardById(cardId).meta, image: { name: "原有的.png", attachmentId: "att_old" } },
+      meta: { ...cardById(cardId).meta, file: { name: "原有的.png", attachmentId: "att_old" } },
     });
 
     // 同一张卡片再走一次：这次用户取消
@@ -461,7 +464,7 @@ describe("用户取消选择", () => {
     expect(statusText()).toContain("原有的.png");
     expect(statusText(), "卡片已有附件却还在说「还没有关联」").not.toContain("还没有关联");
     // 原有附件事实没被取消操作删掉
-    expect((cardById(cardId).meta.image as { attachmentId: string }).attachmentId).toBe("att_old");
+    expect((cardById(cardId).meta.file as { attachmentId: string }).attachmentId).toBe("att_old");
   });
 });
 

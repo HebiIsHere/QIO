@@ -65,7 +65,7 @@ export const MATERIAL_KINDS: CardKind[] = ["file", "image"];
  * 代码与网址不再是入口：它们与正文写在**同一张文字卡**里（卡内代码块可编辑）。
  * CARD_KINDS 仍保留全部旧取值用于读历史数据与导入文件。
  */
-export const ADDABLE_CARD_KINDS: CardKind[] = ["text", "file", "image"];
+export const ADDABLE_CARD_KINDS: CardKind[] = ["text", "file"];
 
 /**
  * 新卡片的默认内容与元信息（同一份默认值，避免工具栏与画布各写一份而漂移）。
@@ -288,11 +288,23 @@ export function cardById(state: BoardState, cardId: string): BoardCard | null {
 function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Partial<BoardCard> & Record<string, unknown>;
-  const kind = (["text", "file", "image", "code", "url", "reply"] as CardKind[]).includes(
+  const parsedKind = (["text", "file", "image", "code", "url", "reply"] as CardKind[]).includes(
     source.kind as CardKind,
   )
     ? (source.kind as CardKind)
     : "text";
+  /*
+    2026-10-14 第九个问题：互动模式不再区分「文件」与「图片」——
+    两者是**同一种材料**，样式与标签一律按附件类型决定。
+    这里把遗留的 `kind="image"` 逐张迁移成 `file`，并把 `meta.image` 搬到 `meta.file`
+    （与历史上 code / url → text 同一套做法；后端本来就两种都认，见 materials.py）。
+  */
+  const kind: CardKind = parsedKind === "image" ? "file" : parsedKind;
+  const sourceMeta =
+    source.meta && typeof source.meta === "object" ? { ...(source.meta as Record<string, unknown>) } : {};
+  if (parsedKind === "image" && sourceMeta.file === undefined && sourceMeta.image !== undefined) {
+    sourceMeta.file = sourceMeta.image;
+  }
   const checked = Boolean(source.checked);
   const hidden = Boolean(source.hidden);
   /*
@@ -310,7 +322,7 @@ function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
     id: String(source.id ?? "") || newId("c"),
     kind,
     content: asText(source.content),
-    meta: source.meta && typeof source.meta === "object" ? { ...(source.meta as Record<string, unknown>) } : {},
+    meta: sourceMeta,
     x: bounded.x,
     y: bounded.y,
     w: bounded.w,

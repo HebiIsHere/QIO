@@ -80,13 +80,15 @@ describe("BoardToolbar 接线", () => {
     const wrapper = mount(BoardToolbar);
     const trigger = wrapper.get('[data-im="add-menu"]');
     expect(trigger.attributes("aria-expanded")).toBe("false");
-    for (const kind of ["text", "file", "image"]) {
+    // 2026-10-14：文件与图片合并成同一种材料，添加菜单只剩两类入口
+    for (const kind of ["text", "file"]) {
       expect(wrapper.find('[data-im="add-' + kind + '"]').exists(), kind).toBe(false);
     }
 
     await trigger.trigger("click");
     expect(wrapper.get('[data-im="add-menu"]').attributes("aria-expanded")).toBe("true");
-    for (const kind of ["text", "file", "image"]) {
+    // 2026-10-14：文件与图片合并成同一种材料，添加菜单只剩两类入口
+    for (const kind of ["text", "file"]) {
       expect(wrapper.find('[data-im="add-' + kind + '"]').exists(), kind).toBe(true);
     }
     // 契约 §1.7：文字、链接、代码写在同一张文字卡里 —— 菜单不再有独立的「代码」「网址」

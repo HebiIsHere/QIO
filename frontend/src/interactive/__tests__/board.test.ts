@@ -520,10 +520,11 @@ describe("卡片：添加 / 编辑 / 删除 / 复制", () => {
     expect(state.cards[0].checked).toBe(false);
     expect(state.cards[0].deleted).toBe(false);
     // CARD_KINDS 保留全部旧取值：历史数据与导入文件仍然能读（新建入口另见 ADDABLE_CARD_KINDS）
-    for (const kind of ["file", "image", "code", "url", "reply"] as CardKind[]) {
+    // 2026-10-14：image 是遗留取值，归一化时迁移成 file（第九个问题），不再单独出现
+    for (const kind of ["file", "code", "url", "reply"] as CardKind[]) {
       state = board.addCard(state, { kind, content: "x" });
     }
-    expect(new Set(state.cards.map((card) => card.kind))).toEqual(new Set(["text", "file", "image", "code", "url", "reply"]));
+    expect(new Set(state.cards.map((card) => card.kind))).toEqual(new Set(["text", "file", "code", "url", "reply"]));
   });
 
   it("updateCard 改内容与元信息，且不改原状态", () => {
