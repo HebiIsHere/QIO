@@ -250,9 +250,18 @@ describe("TextCardEditor：一个连续编辑区", () => {
   */
   it("编辑框自己不滚动：overflow hidden + 输入后按内容自动增高（jsdom 无布局时不写高度）", async () => {
     const source = readFileSync(resolve(__dirname, "../TextCardEditor.vue"), "utf8");
-    const rule = source.slice(source.indexOf(".editor {"), source.indexOf("}", source.indexOf(".editor {")) + 1);
+    // 基础档（不 fill）：编辑框自己不滚动，高度跟随内容长
+    const baseAt = source.indexOf("\n.editor {");
+    expect(baseAt, "找不到基础 .editor 规则").toBeGreaterThan(-1);
+    const rule = source.slice(baseAt, source.indexOf("}", baseAt) + 1);
     expect(rule).toContain("overflow: hidden");
     expect(rule).toContain("resize: vertical");
+    // 吃满卡片档（fill，2026-10-14 用户要求）：输入框占满卡片并自己滚动
+    const fillAt = source.indexOf(".text-card-editor.is-fill .editor {");
+    expect(fillAt, "找不到 fill 档的 .editor 规则").toBeGreaterThan(-1);
+    const fillRule = source.slice(fillAt, source.indexOf("}", fillAt) + 1);
+    expect(fillRule).toContain("flex: 1 1 0%");
+    expect(fillRule).toContain("overflow: auto");
 
     const vm = mountEditor({ content: "第一行" });
     const area = editor(vm);

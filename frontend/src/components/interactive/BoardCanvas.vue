@@ -444,9 +444,23 @@ const planCards = computed<BoardCardModel[]>(() => {
   const size = resizing.value;
   if (!moved && !size) return liveCards.value;
   return liveCards.value.map((card) => {
-    const rect = displayRect(card);
-    if (rect.x === card.x && rect.y === card.y && rect.w === card.w && rect.h === card.h) return card;
-    return { ...card, x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+    /*
+      这里**绝不能**再调 displayRect：displayRect 的槽位来自 layoutPlan，
+      而 layoutPlan 又由本 computed 喂入 —— 成环之后槽位会慢一帧。
+      慢一帧的后果正是「西 / 北把手拉不动」：预览框的位置取到的是上一帧的槽位，
+      于是向左拉伸时左边界不动、右边界反而向右（2026-10-14 用户报告）。
+      拖动 / 尺寸预览都只认这一帧的实时值，环就断开了。
+    */
+    if (moved && moved.cardId === card.id) {
+      if (moved.x === card.x && moved.y === card.y) return card;
+      return { ...card, x: moved.x, y: moved.y };
+    }
+    if (size && size.cardId === card.id) {
+      const box = size.box;
+      if (box.x === card.x && box.y === card.y && box.w === card.w && box.h === card.h) return card;
+      return { ...card, x: box.x, y: box.y, w: box.w, h: box.h };
+    }
+    return card;
   });
 });
 

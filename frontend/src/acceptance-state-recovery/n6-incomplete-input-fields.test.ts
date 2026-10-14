@@ -64,8 +64,8 @@ async function openEditor(w: VueWrapper): Promise<void> {
 }
 
 /** 依次填入正文与附加字段（正文输入框 + 该类型适用的字段输入框）。 */
-async function fillEditor(w: VueWrapper, text: string, fields: string[]): Promise<void> {
-  await w.find('[data-im="card-editor"]').setValue(text);
+async function fillEditor(w: VueWrapper, text: string, fields: string[], editableText = true): Promise<void> {
+  if (editableText) await w.find('[data-im="card-editor"]').setValue(text);
   const inputs = w.findAll('input[type="text"]');
   expect(inputs.length, "这个卡片的附加字段数量与预期不符").toBe(fields.length);
   for (let index = 0; index < fields.length; index += 1) {
@@ -116,7 +116,8 @@ afterEach(() => {
 });
 
 describe("N6 未完成的附加字段", () => {
-  const cases: { name: string; value: BoardCardType; text: string; fields: string[]; labels: string[] }[] = [
+  // editableText：这张卡有没有「正文」编辑框（文件卡 2026-10-14 起只显示文件名，没有正文输入）
+  const cases: { name: string; value: BoardCardType; text: string; fields: string[]; labels: string[]; editableText?: boolean }[] = [
     {
       name: "网址（地址 + 标题）",
       value: card("c_url", "原始说明", { kind: "url", meta: { href: "https://旧.example", title: "旧标题" } }),
@@ -137,6 +138,7 @@ describe("N6 未完成的附加字段", () => {
       text: "文件的新说明",
       fields: ["新文件名.pdf"],
       labels: ["name"],
+      editableText: false,
     },
   ];
 
@@ -146,7 +148,7 @@ describe("N6 未完成的附加字段", () => {
 
       const first = mountCard(item.value);
       await openEditor(first);
-      await fillEditor(first, item.text, item.fields);
+      await fillEditor(first, item.text, item.fields, item.editableText ?? true);
 
       // 不点「完成编辑」就正常关闭重开
       first.unmount();
@@ -160,10 +162,15 @@ describe("N6 未完成的附加字段", () => {
 
       const second = mountCard(item.value);
       await openEditor(second);
-      expect(
-        (second.find('[data-im="card-editor"]').element as HTMLTextAreaElement).value,
-        "正文没有恢复",
-      ).toBe(item.text);
+      if (item.editableText ?? true) {
+        expect(
+          (second.find('[data-im="card-editor"]').element as HTMLTextAreaElement).value,
+          "正文没有恢复",
+        ).toBe(item.text);
+      } else {
+        // 文件卡（2026-10-14）：卡片只显示文件名，没有「待补充文件说明」输入框
+        expect(second.find('[data-im="card-editor"]').exists(), "文件卡不该有正文输入框").toBe(false);
+      }
       const inputs = second.findAll('input[type="text"]');
       for (let index = 0; index < item.labels.length; index += 1) {
         expect(

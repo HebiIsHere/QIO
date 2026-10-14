@@ -81,7 +81,7 @@ describe("previewPlan：内嵌渲染", () => {
     ["预算.xlsm", "xlsx"],
     ["路演.pptx", "pptx"],
     ["脚本.py", "code"],
-    ["说明.md", "code"],
+    ["说明.md", "markdown"],
     ["配置.json", "code"],
   ];
   for (const [name, renderer] of cases) {

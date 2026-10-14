@@ -152,12 +152,14 @@ describe("P1 契约 5：关闭态显示正式正文", () => {
     await flushPromises();
     expect((wrapper.find('[data-im="card-editor"]').element as HTMLTextAreaElement).value).toBe("为什么链路不可用？");
     /**
-     * 打开编辑器本身会把当前这一版登记成「未完成输入」（既有语义），这里如实收尾：
-     * 不点完成编辑直接取消 → 草稿退回与正文一致，不会形成一份「和正文不一样的旧稿」。
+     * 文字卡的完成编辑就是「再点一次编辑按钮」（编辑态里它变成「完成编辑」）：
+     * 没有改动时不生产板面变更，只把进入编辑登记的那份草稿收回 —— 不会形成「和正文不一样的旧稿」。
      */
-    await wrapper.find("button.btn").trigger("click");
+    const finish = wrapper.find('[data-im="card-edit"]');
+    expect(finish.text()).toContain("完成编辑");
+    await finish.trigger("click");
     await flushPromises();
-    expect(store.cardDraftText(CARD_ID), "取消后留下了与正文不一致的草稿").toBe("为什么链路不可用？");
+    expect(store.cardDraftText(CARD_ID), "退出编辑后留下了与正文不一致的草稿").toBe("为什么链路不可用？");
     wrapper.unmount();
   });
 });

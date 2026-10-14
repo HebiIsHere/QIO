@@ -163,19 +163,19 @@ describe("N6 合并后：完整未完成输入经 store 写入本机记录", () 
     expect(value(reopened, '[data-im="card-meta-title"]')).toBe("未完成标题");
   });
 
-  it("file：文件名随正文一起写入并恢复", async () => {
+  it("file：文件名写入并恢复（文件卡只有文件名，没有正文输入框）", async () => {
     const card = makeCard("file", { name: "旧文件名.pdf" });
     vi.mocked(imApi.fetchBoardState).mockResolvedValue(boardPayload(card) as never);
     const store = useInteractiveStore();
     await store.load();
     const wrapper = await openEditor(store, card);
 
-    await wrapper.find('[data-im="card-editor"]').setValue("材料说明改过了");
+    // 2026-10-14：文件卡卡片本身只显示文件名，不再有「待补充文件说明」输入框
+    expect(wrapper.find('[data-im="card-editor"]').exists(), "文件卡不该有正文输入框").toBe(false);
     await wrapper.find('[data-im="card-meta-name"]').setValue("新文件名.pdf");
 
     expect(readCardLocalDraft("c1")?.meta).toEqual({ name: "新文件名.pdf" });
     const { wrapper: reopened } = await reopen(card);
-    expect(value(reopened, '[data-im="card-editor"]')).toBe("材料说明改过了");
     expect(value(reopened, '[data-im="card-meta-name"]')).toBe("新文件名.pdf");
   });
 

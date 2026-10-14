@@ -27,10 +27,10 @@ function block(source: string, selector: string): string {
 }
 
 describe("亮色辅助文字的可读性（有操作意义的小字不能用装饰色）", () => {
-  it("快捷键说明：字号走令牌，颜色走可读色，不再是 10.5px + --text-faint", () => {
-    const hint = block(chatDock, ".panel-hint {");
-    expect(hint).toContain("font-size: var(--fs-xs)");
-    expect(hint).toContain("color: var(--text-muted)");
+  it("输入框下方的帮助已整块删除：不再有 .panel-hint / 帮助摘要（2026-10-14 用户要求）", () => {
+    expect(chatDock, "帮助摘要的样式还在").not.toContain(".panel-hint");
+    expect(chatDock, "帮助块还在").not.toContain('data-im="chat-scope"');
+    expect(chatDock, "帮助按钮还在").not.toContain('data-im="chat-help-toggle"');
     expect(chatDock).not.toContain("font-size: 10.5px");
   });
 

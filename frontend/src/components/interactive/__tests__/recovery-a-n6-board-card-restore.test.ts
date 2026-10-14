@@ -139,13 +139,14 @@ describe("N6 打开编辑器时恢复完整未完成输入", () => {
     expect(value(w, '[data-im="card-meta-title"]')).toBe("");
   });
 
-  it("仅改附加字段：正文仍是正式内容，附加字段用未完成输入", async () => {
+  it("文件卡仅改附加字段：卡片没有正文输入框，文件名用未完成输入", async () => {
     seedInput("c1", "材料说明", { name: "新文件名.pdf" });
     const w = mount(BoardCard, {
       props: props({ kind: "file", content: "材料说明", meta: { name: "旧文件名.pdf" } }),
     });
     await openEditor(w);
-    expect(value(w, '[data-im="card-editor"]')).toBe("材料说明");
+    // 2026-10-14：文件卡只显示文件名（不再有「待补充文件说明」）
+    expect(w.find('[data-im="card-editor"]').exists(), "文件卡不该有正文输入框").toBe(false);
     expect(value(w, '[data-im="card-meta-name"]')).toBe("新文件名.pdf");
   });
 

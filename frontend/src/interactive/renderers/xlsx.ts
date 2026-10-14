@@ -12,9 +12,6 @@ import type { RenderResult } from "./types";
 
 export const RENDERER = "xlsx";
 
-export const XLSX_NOTICE =
-  "结构化表格预览（不是原版面）：只显示单元格地址、值与公式；QIO 不计算公式，公式单元格给出的是文件里保存的缓存值";
-
 export type XlsxCellKind = "value" | "formula" | "empty";
 
 export interface XlsxCellView {
@@ -47,7 +44,6 @@ export interface XlsxSheetView {
 export interface XlsxView {
   sheets: XlsxSheetView[];
   truncated: boolean;
-  notice: string;
   empty: boolean;
 }
 
@@ -139,7 +135,7 @@ export function view(data: unknown): RenderResult<XlsxView> {
   return ok({
     sheets,
     truncated: asBool(record.truncated),
-    notice: XLSX_NOTICE,
+
     empty: sheets.length === 0 || sheets.every((sheet) => sheet.rows.length === 0),
   });
 }

@@ -129,13 +129,35 @@ describe("图片卡：封面式呈现", () => {
     expect(w.text()).toContain("照片");
   });
 
-  it("附件不是图片的文件卡：不铺封面，保留原来的附件信息行", async () => {
+  /*
+    回归守卫（2026-10-14）：互动板**不再创建 kind="image" 的卡片**（ADDABLE_CARD_KINDS = text/file），
+    图片一律作为附件挂在**文件卡**上。封面判定必须看「附件是不是图片」，不能看 kind ——
+    曾经按 kind === "image" 判过一次，结果全部图片卡（含微信图片）的封面一起消失。
+  */
+  it("附件是图片的文件卡（kind=file，例如微信图片）：照旧铺封面", async () => {
+    const w = mountCard(
+      baseCard({
+        id: "card_wechat",
+        kind: "file",
+        meta: { name: "微信图片_20260626181729_92_62.jpg", file: { attachmentId: "att_wx", name: "微信图片_20260626181729_92_62.jpg", sizeBytes: 2631718 } },
+      }),
+    );
+    await nextTick();
+    expect(w.find('[data-im="card"]').attributes("data-cover"), "附件是图片的文件卡丢了封面").toBe("1");
+    expect(w.find('[data-im="card-cover"]').exists(), "没有封面层").toBe(true);
+    expect(w.text()).toContain("微信图片_20260626181729_92_62.jpg");
+  });
+
+  it("附件不是图片的文件卡：不铺封面，卡片本身只显示文件名", async () => {
     const w = mountCard(
       baseCard({ id: "card_doc", kind: "file", meta: { file: { attachmentId: "att_doc", name: "简报.docx", sizeBytes: 1024 } } }),
     );
     await nextTick();
     expect(w.find('[data-im="card-cover"]').exists()).toBe(false);
-    expect(w.text()).toContain("已关联已保存的附件");
+    // 2026-10-14：文件卡不再在卡片里铺附件信息行 / 预览（按钮全在工具栏）
+    expect(w.text()).toContain("简报.docx");
+    expect(w.text()).not.toContain("已关联已保存的附件");
+    expect(w.find('[data-im="card-attachment-preview"]').exists()).toBe(false);
   });
 
   it("折叠态：仍保留一条封面带", async () => {

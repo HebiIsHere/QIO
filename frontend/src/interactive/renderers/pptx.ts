@@ -1,16 +1,14 @@
 /**
  * PPTX 渲染器：按幻灯片给出**文本（含备注）/ 表格 / 图片清单**。
  *
- * 诚实口径（契约 §3.1）：**不是原版面渲染**。界面必须写明 —— PPTX_NOTICE 是那句话的唯一来源。
+ * 诚实口径（契约 §3.1）：**不是原版面渲染**（结构化幻灯片预览）。
+ * 2026-10-14 用户要求：不再在预览界面上写「不是原版面」那一行，常量与视图字段一并移除。
  * 备注页文字在后端带「备注：」前缀；这里把它拆出来单独展示（来源仍然写得清清楚楚）。
  */
 import { asArray, asBool, asNumber, asRecord, asString, fail, humanBytes, ok } from "./types";
 import type { RenderResult } from "./types";
 
 export const RENDERER = "pptx";
-
-export const PPTX_NOTICE =
-  "结构化幻灯片预览（不是原版面）：按页给出文本框文字、表格与图片清单；图片只列清单，不在这里显示画面";
 
 export const NOTES_PREFIX = "备注：";
 
@@ -33,7 +31,6 @@ export interface PptxSlideView {
 export interface PptxView {
   slides: PptxSlideView[];
   truncated: boolean;
-  notice: string;
   empty: boolean;
 }
 
@@ -74,7 +71,7 @@ export function view(data: unknown): RenderResult<PptxView> {
   return ok({
     slides,
     truncated: asBool(record.truncated),
-    notice: PPTX_NOTICE,
+
     empty: slides.length === 0,
   });
 }

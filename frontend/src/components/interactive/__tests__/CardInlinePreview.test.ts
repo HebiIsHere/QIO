@@ -86,7 +86,6 @@ const DOCX_MODULE = {
       ],
       tables: [{ rows: [["A", "B"]], columns: 2 }],
       truncated: false,
-      notice: "结构化正文预览，不是原版面",
       empty: false,
     },
   }),
@@ -107,7 +106,6 @@ const XLSX_MODULE = {
         },
       ],
       truncated: false,
-      notice: "结构化表格预览（不是原版面）",
       empty: false,
     },
   }),
@@ -123,7 +121,6 @@ const PPTX_MODULE = {
         { index: 2, title: "第二页", texts: ["第二页正文"], notes: [], images: [], tables: [] },
       ],
       truncated: false,
-      notice: "结构化幻灯片预览（不是原版面）",
       empty: false,
     },
   }),
@@ -147,6 +144,29 @@ const CODE_MODULE = {
   }),
 };
 
+/** .md：后端仍按 code 类别给文本行，前端把它解析成正文 */
+const MARKDOWN_MODULE = {
+  RENDERER: "markdown",
+  view: () => ({
+    ok: true,
+    view: {
+      language: "markdown",
+      languageLabel: "Markdown",
+      lines: [
+        { number: 1, text: "# 季度说明" },
+        { number: 2, text: "" },
+        { number: 3, text: "- 第一条" },
+        { number: 4, text: "- 第二条" },
+        { number: 5, text: "" },
+        { number: 6, text: "**重点**" },
+      ],
+      totalLines: 6,
+      encoding: "utf-8",
+      truncated: false,
+    },
+  }),
+};
+
 const IMAGE_MODULE = {
   RENDERER: "image",
   view: () => ({ ok: true, view: { width: 800, height: 600, bytes: 4096, shape: "800×600 像素 · 4.1 KB" } }),
@@ -159,6 +179,7 @@ const MODULES: Record<string, unknown> = {
   xlsx: XLSX_MODULE,
   pptx: PPTX_MODULE,
   code: CODE_MODULE,
+  markdown: MARKDOWN_MODULE,
 };
 
 function envelope(kind: string, data: unknown, extra: Record<string, unknown> = {}) {
@@ -266,12 +287,29 @@ describe("CardInlinePreview：六种 renderer 各自渲染出对应容器", () =
     expect(w.find('[data-testid="cip-page"]').text()).toContain("3");
   });
 
-  it("docx：结构化正文容器 + 「不是原版面」的说明", async () => {
+  it("docx：结构化正文容器；不再显示「不是原版面」那一行（2026-10-14 用户要求删除）", async () => {
     mocks.fetchAttachmentPreview.mockResolvedValue(envelope("docx", { kind: "docx", blocks: [], tables: [] }));
     const w = mountPreview(fileCard("报告.docx"));
     await flushPromises();
     expect(w.find('[data-im="cip-docx"]').exists(), "docx 容器没有渲染出来").toBe(true);
-    expect(w.find('[data-testid="cip-notice"]').text()).toContain("不是原版面");
+    expect(w.find('[data-testid="cip-notice"]').exists(), "界面不该再出现那段说明文字").toBe(false);
+    expect(w.text()).not.toContain("不是原版面");
+  });
+
+  it("markdown：.md 解析成正文（标题 / 列表 / 行内格式），不再逐行显示原文", async () => {
+    mocks.fetchAttachmentPreview.mockResolvedValue(
+      envelope("code", { kind: "code", language: "markdown", lines: ["# 季度说明", "", "- 第一条", "- 第二条", "", "**重点**"], totalLines: 6, truncated: false }),
+    );
+    const w = mountPreview(fileCard("说明.md"));
+    await flushPromises();
+
+    expect(w.find('[data-im="cip-markdown"]').exists()).toBe(true);
+    const box = w.get('[data-im="cip-markdown"]');
+    // 逐行原文视图不再出现（那正是「没解析」的样子）
+    expect(w.find('[data-testid="cip-pre"]').exists()).toBe(false);
+    expect(box.find("h1").text()).toBe("季度说明");
+    expect(box.findAll("li")).toHaveLength(2);
+    expect(box.find("strong").text()).toBe("重点");
   });
 
   it("xlsx：工作表 + 单元格容器", async () => {

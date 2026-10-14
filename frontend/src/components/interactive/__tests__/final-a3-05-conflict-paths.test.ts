@@ -80,8 +80,9 @@ function editorValue(wrapper: ReturnType<typeof mount>): string {
   return (wrapper.find('[data-im="card-editor"]').element as HTMLTextAreaElement).value;
 }
 
-function cancelButton(wrapper: ReturnType<typeof mount>) {
-  return wrapper.findAll("button").find((b) => b.text() === "取消");
+/** 文字卡没有「取消」按钮：退出编辑 = 再点一次编辑按钮（编辑态里它叫「完成编辑」）。 */
+function finishButton(wrapper: ReturnType<typeof mount>) {
+  return wrapper.find('[data-im="card-edit"]');
 }
 
 /**
@@ -219,10 +220,11 @@ describe("05 未决冲突的组件行为", () => {
     // 继续编辑：冲突仍在，本机候选跟着最新输入走，服务器候选保持原样
     expect(store.draftConflictFor(card.id)).toEqual({ local: LOCAL_EDITED_2, server: SERVER });
 
-    // 取消：关闭编辑器不等于选择，冲突与两份候选都保留
-    const cancel = cancelButton(wrapper);
-    expect(cancel, "编辑态里没有「取消」按钮").toBeTruthy();
-    await cancel!.trigger("click");
+    // 退出编辑：关闭编辑器不等于选择，冲突与两份候选都保留
+    const finish = finishButton(wrapper);
+    expect(finish.exists(), "编辑态里没有编辑按钮").toBe(true);
+    expect(finish.text()).toContain("完成编辑");
+    await finish.trigger("click");
     await wrapper.vm.$nextTick();
 
     expect(wrapper.find('[data-im="card-draft-conflict"]').exists(), "取消后冲突说明消失").toBe(true);

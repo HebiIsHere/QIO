@@ -200,9 +200,10 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     // 编辑态不出现点了也不会变的阅读入口
     expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
 
-    const cancel = buttonByText(w, "取消");
-    expect(cancel).toBeTruthy();
-    await cancel!.trigger("click");
+    // 完成编辑 = 再点一次编辑按钮（编辑态里它叫「完成编辑」）
+    const finish = w.get('[data-im="card-edit"]');
+    expect(finish.text()).toContain("完成编辑");
+    await finish.trigger("click");
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
     expect(w.find('[data-im="card-editor"]').exists()).toBe(false);
   });
@@ -219,7 +220,7 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(store.dirty).toBe(false);
     expect(store.submissions).toEqual([]);
 
-    await buttonByText(w, "取消")!.trigger("click");
+    await w.get('[data-im="card-edit"]').trigger("click");
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
   });
 
@@ -286,7 +287,7 @@ describe("最小尺寸 180×96：标题 / 主要操作 / 必要状态 / 内容�
     // 主要操作都能点：编辑 → 有编辑器；更多 → 面板打开；展开预览 → 进入阅读态
     await w.get('[data-im="card-edit"]').trigger("click");
     expect(w.find('[data-im="card-editor"]').exists()).toBe(true);
-    await buttonByText(w, "取消")!.trigger("click");
+    await w.get('[data-im="card-edit"]').trigger("click");
 
     await w.get('[data-im="card-more"]').trigger("click");
     expect(w.get('[data-im="card-more"]').attributes("aria-expanded")).toBe("true");
@@ -386,7 +387,7 @@ describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：�
     const w = mountBoard(card);
     await w.get('[data-im="card-preview-toggle"]').trigger("click");
     await w.get('[data-im="card-edit"]').trigger("click");
-    await buttonByText(w, "取消")!.trigger("click");
+    await w.get('[data-im="card-edit"]').trigger("click");
 
     expect(w.emitted("toggle")).toBeUndefined();
     expect(w.emitted("patch")).toBeUndefined();
@@ -537,8 +538,11 @@ describe("阅读展开与可读材料：没有材料就不给假入口", () => {
     const w = mountBoard(card, { selected: false });
 
     expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
-    expect(w.get('[data-im="card-subject"]').text()).toContain("还没有关联已保存的附件");
+    // 文件卡（2026-10-14）：卡片本身只显示文件名，附件状态与假打开按钮都不在卡片里
+    expect(w.text()).toContain("预算表.pdf");
+    expect(w.text()).not.toContain("还没有关联已保存的附件");
     expect(w.find('[data-im="card-attachment-open"]').exists()).toBe(false);
+    expect(w.find('[data-im="card-attachment-preview"]').exists()).toBe(false);
   });
 
   it("文件卡有真实附件：入口存在；阅读展开把主体让给预览，说明压成紧凑档", async () => {
@@ -553,11 +557,11 @@ describe("阅读展开与可读材料：没有材料就不给假入口", () => {
     await w.get('[data-im="card-preview-toggle"]').trigger("click");
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
 
-    // 说明与缩略图不再铺在预览上方：附件只留一行外部打开入口
+    // 文件卡（2026-10-14）：附件预览与「查看」都不在卡片里（按钮在工具栏），阅读主体仍是真实预览
     expect(w.get('[data-im="card-subject"]').classes()).toContain("is-compact");
-    expect(w.get('[data-im="card-attachment-preview"]').classes()).toContain("compact");
+    expect(w.find('[data-im="card-attachment-preview"]').exists()).toBe(false);
     expect(w.find('[data-im="card-attachment-thumb"]').exists()).toBe(false);
-    expect(w.find('[data-im="card-attachment-open"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-attachment-open"]').exists()).toBe(false);
     // 真实预览组件挂在卡片内部
     const host = w.get('[data-im="card-preview-host"]');
     expect(host.find('[data-testid="cip-root"]').exists()).toBe(true);

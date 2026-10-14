@@ -1,15 +1,13 @@
 /**
  * DOCX 渲染器：把后端结构化数据（段落 / 标题 / 列表 / 表格）翻成可读视图。
  *
- * 诚实口径（契约 §3.1）：**逐页版面外观不保真**。界面必须写明
- * 「结构化正文预览，不是原版面」—— DOCX_NOTICE 就是那句话的唯一来源。
+ * 诚实口径（契约 §3.1）：**逐页版面外观不保真**（结构化正文预览）。
+ * 2026-10-14 用户要求：不再在预览界面上写「不是原版面」那一行，常量与视图字段一并移除。
  */
 import { asArray, asBool, asNumber, asRecord, asString, fail, ok } from "./types";
 import type { RenderResult } from "./types";
 
 export const RENDERER = "docx";
-
-export const DOCX_NOTICE = "结构化正文预览，不是原版面：按正文顺序给出段落、标题、列表与表格的文字";
 
 export interface DocxRunView {
   text: string;
@@ -36,7 +34,6 @@ export interface DocxView {
   blocks: DocxBlockView[];
   tables: DocxTableView[];
   truncated: boolean;
-  notice: string;
   empty: boolean;
 }
 
@@ -109,7 +106,6 @@ export function view(data: unknown): RenderResult<DocxView> {
     blocks,
     tables,
     truncated: asBool(record.truncated),
-    notice: DOCX_NOTICE,
     empty: blocks.length === 0 && tables.length === 0,
   });
 }

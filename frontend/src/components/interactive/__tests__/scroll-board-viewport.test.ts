@@ -309,24 +309,32 @@ describe("编辑态：连续编辑区（自己不滚，最小高度按卡片收�
     return view;
   }
 
-  it("很小的卡片不会被固定最小高度撑开：96px 高时编辑区最小值收敛到 40px", async () => {
+  it("很小的卡片：编辑区吃满卡片，不再用固定最小高度撑开（2026-10-14 输入框占满卡片）", async () => {
     const view = await openEditor(mkCard("c1", { w: 200, h: 96 }));
     const editor = view.get('[data-im="card-editor"]');
-    expect(editor.attributes("style") ?? "").toContain("min-height: 40px");
+    expect(editor.attributes("style") ?? "").toContain("min-height: 0px");
     // 编辑区仍是同一个连续编辑面（只有一个 textarea，格式工具栏在它上方）
     expect(view.findAll('[data-im="card-editor"]').length).toBe(1);
+    // 正文区是 flex 列，编辑区吃满它（fill 档）
+    expect(view.get(".card-body").classes()).toContain("card-body-editing-text");
+    expect(view.get('[data-im="text-card-editor"]').classes()).toContain("is-fill");
   });
 
-  it("高卡片仍然给足编辑高度：600px 时是 160px（显示参数，不改变任何内容）", async () => {
+  it("高卡片同样吃满：高度交给 flex，不写死最小高度", async () => {
     const view = await openEditor(mkCard("c1", { w: 420, h: 600 }));
-    expect(view.get('[data-im="card-editor"]').attributes("style") ?? "").toContain("min-height: 160px");
+    expect(view.get('[data-im="card-editor"]').attributes("style") ?? "").toContain("min-height: 0px");
   });
 
-  it("编辑框自身不滚动（overflow: hidden）+ 自动增高：纵向只剩卡片正文这一层", async () => {
+  it("吃满档输入框自己滚动；基础档（非 fill）仍不滚动，纵向只剩卡片正文这一层", async () => {
     const view = await openEditor(mkCard("c1", { w: 320, h: 420 }));
-    const editorRule = cssBlock(source("interactive/TextCardEditor.vue"), ".editor {");
-    expect(editorRule).toContain("overflow: hidden");
-    // 卡片正文是唯一的主要纵向视口
+    // fill 档（板面里的文字卡）：输入框吃满剩余高度并自己滚动
+    const fillRule = cssBlock(source("interactive/TextCardEditor.vue"), ".text-card-editor.is-fill .editor {");
+    expect(fillRule).toContain("overflow: auto");
+    expect(fillRule).toContain("flex: 1 1 0%");
+    // 基础档（独立挂载等）：编辑框自己不滚动，高度跟随内容长
+    const baseRule = cssBlock(source("interactive/TextCardEditor.vue"), "\n.editor {");
+    expect(baseRule).toContain("overflow: hidden");
+    // 卡片正文仍是主要纵向视口
     const body = cssBlock(source("components/interactive/BoardCard.vue"), ".card-body {");
     expect(body).toContain("overflow-y: auto");
     // 编辑区容器带 data-qio-fit：横向边界保护

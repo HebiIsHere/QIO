@@ -164,10 +164,10 @@ describe("01 迟到读取不得回退真实编辑框", () => {
     expect(editorValue(wrapper), "迟到的读取把用户真实编辑框里的新稿回退成了旧正文").toBe(LOCAL_NEW);
     expect(store.cardDraftText(card.id), "内存草稿候选被旧响应覆盖").toBe(LOCAL_NEW);
 
-    // 5. 退出编辑再打开：拿到的是新稿候选，不是服务器旧正文
-    const cancel = wrapper.findAll("button").find((b) => b.text() === "取消");
-    expect(cancel, "编辑态里没有「取消」按钮").toBeTruthy();
-    await cancel!.trigger("click");
+    // 5. 退出编辑（再点一次编辑按钮 = 完成编辑）再打开：拿到的是新稿候选，不是服务器旧正文
+    const finish = wrapper.find('[data-im="card-edit"]');
+    expect(finish.text(), "编辑态里没有「完成编辑」按钮").toContain("完成编辑");
+    await finish.trigger("click");
     await wrapper.vm.$nextTick();
     await wrapper.find('[data-im="card-edit"]').trigger("click");
     await wrapper.vm.$nextTick();

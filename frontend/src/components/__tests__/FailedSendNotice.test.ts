@@ -276,15 +276,15 @@ describe("悬浮聊天（ChatDock）的失败恢复入口（§11.4 / §11.8）",
     expect(vi.mocked(api.sendTurn).mock.calls.length).toBe(callsBefore);
   });
 
-  it("【组件】说明区不再是 <p> 包 <details> 的无效结构，说明内容仍可打开", async () => {
+  it("【组件】输入框下方的帮助整块已删除（2026-10-14 用户要求），输入区本身仍在", async () => {
     useInteractiveStore().chatOpen = true;
     const wrapper = track(mount(ChatDock, { attachTo: document.body }));
     await flushPromises();
-    expect(wrapper.find("p details").exists()).toBe(false);
-    expect(wrapper.find("details").exists()).toBe(true);
-    const scope = wrapper.find('[data-im="chat-scope"]');
-    expect(scope.text()).toContain("文字发送不会提交板面");
-    expect(scope.find("details").exists()).toBe(true);
-    expect(wrapper.find('[data-im="chat-scope-details"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="chat-scope"]').exists(), "帮助块还在").toBe(false);
+    expect(wrapper.find('[data-im="chat-help-toggle"]').exists(), "标题栏的帮助按钮还在").toBe(false);
+    expect(wrapper.find("details").exists(), "帮助的 details 结构还在").toBe(false);
+    expect(wrapper.text()).not.toContain("文字发送不会提交板面");
+    expect(wrapper.find('[data-im="chat-composer"]').exists(), "输入区本身不该被删").toBe(true);
+    expect(wrapper.find('[data-im="chat-input"]').exists()).toBe(true);
   });
 });

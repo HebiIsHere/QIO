@@ -71,7 +71,6 @@ const XLSX_MODULE = {
     view: {
       sheets: [{ name: "汇总", rows: [{ index: 1, cells: [{ ref: "A1", column: "A", row: 1, value: "12", formula: null, cached: null, kind: "value", display: "12", formulaNote: "" }] }], columns: ["A"], rowCount: 1, columnCount: 1 }],
       truncated: false,
-      notice: "结构化表格预览（不是原版面）",
       empty: false,
     },
   }),

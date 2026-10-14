@@ -41,7 +41,6 @@ import {
 } from "../../composables/attachmentOps";
 import type { AttachmentOpCapture } from "../../composables/attachmentOps";
 import {
-  COPY_MAX_BYTES,
   humanSize,
   isSendable,
   markAttachmentRemoved,
@@ -57,11 +56,8 @@ import {
   waitUntilSettled,
 } from "../../services/attachments";
 import type { AttachmentRef } from "../../services/attachments";
-import { MEDIA_CAPABILITY_HINT } from "../mediaFacts";
 import {
   canSend,
-  chatDraftHintText,
-  chatScopeText,
   chatStatusText,
   normalizeSendText,
   olderMessagesText,
@@ -112,8 +108,6 @@ const AREA_MARGIN = 8;
 const MOVE_THRESHOLD = RESIZE_DRAG_THRESHOLD;
 /** 首次打开的默认框要给「入口按钮」留出位置：展开时它就挂在面板下方 */
 const TOGGLE_RESERVE = 48;
-/** 快捷键说明只留一处（帮助里），面板里不再常驻小字 */
-const SHORTCUT_TEXT = "Enter 发送 · Shift+Enter 换行 · 中文选字时不发送";
 
 const store = useInteractiveStore();
 const session = useSessionStore();
@@ -132,8 +126,6 @@ const failureTopic = ref<string | null>(null);
 const blankNotice = ref("");
 /** 是否跟随最新消息（用户上翻阅读后不再强行拉回） */
 const following = ref(true);
-/** 帮助（可见范围 / 媒体读取 / 附件限制 / 快捷键）是否展开 */
-const helpOpen = ref(false);
 /** 附件完整列表是否展开（默认只给数量 + 简述 + 展开入口） */
 const attachmentsOpen = ref(false);
 /** 会话警告是否展开全文（默认只给简述 + 展开入口） */
@@ -160,8 +152,6 @@ const shownMessages = computed(() =>
   session.messages.length > TAIL_LIMIT ? session.messages.slice(-TAIL_LIMIT) : session.messages,
 );
 const hiddenText = computed(() => olderMessagesText(session.messages.length - shownMessages.value.length));
-const scopeText = chatScopeText();
-const hintText = chatDraftHintText();
 /** 轮次级错误（例如后端说没有模型凭据）：如实显示，不当成发送失败 */
 const turnError = computed(() => (failure.value ? "" : (session.lastError ?? "")));
 /**
@@ -833,11 +823,6 @@ function autosize() {
   el.style.height = Math.min(el.scrollHeight, MAX_INPUT_PX) + "px";
 }
 
-function onHelpToggle(event: Event): void {
-  const el = event.target as HTMLDetailsElement | null;
-  helpOpen.value = Boolean(el?.open);
-}
-
 // ---------------------------------------------------------------------------
 // 附件入口（契约 §4.1）：只发送**当前消息 + 明确选定的附件**
 // ---------------------------------------------------------------------------
@@ -1190,15 +1175,6 @@ function onKeydown(event: KeyboardEvent) {
             label="对话窗口尺寸"
             @nudge="nudge"
           />
-          <button
-            class="panel-icon"
-            type="button"
-            data-im="chat-help-toggle"
-            :aria-expanded="helpOpen"
-            @click="helpOpen = !helpOpen"
-          >
-            帮助
-          </button>
           <button class="panel-close" type="button" data-im="chat-collapse" @click="store.chatOpen = false">
             收起
           </button>
@@ -1581,31 +1557,6 @@ function onKeydown(event: KeyboardEvent) {
         </div>
         <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank" data-qio-fit>{{ blankNotice }}</p>
 
-        <!--
-          「发送不提交板面」只留一句短提示；完整的可见范围 / 媒体读取方式 / 附件限制 /
-          快捷键都在这个明确可打开的帮助里（顶部「帮助」按钮与这里的摘要都能开）。
-        -->
-        <div class="help" data-im="chat-scope" data-qio-fit>
-          <details class="help-details" :open="helpOpen" @toggle="onHelpToggle">
-            <summary class="help-summary" data-im="chat-scope-details">
-              <span class="help-hint">文字发送不会提交板面</span>
-              <span class="help-open mono">{{ helpOpen ? "收起帮助" : "帮助：可见范围 · 板面手势 · 媒体读取 · 附件限制 · 快捷键" }}</span>
-            </summary>
-            <div class="help-body" data-qio-fit>
-              <p class="help-line">{{ scopeText }}</p>
-              <p class="help-line mono" data-im="chat-help-attach">
-                附件：单个上限 {{ humanSize(COPY_MAX_BYTES) }}；只发送当前消息与这里明确选定的附件，
-                不带板面、未提交改动、注释与预览内容。
-              </p>
-              <p class="help-line">{{ MEDIA_CAPABILITY_HINT.image }}</p>
-              <p class="help-line">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
-              <p class="help-line">{{ MEDIA_CAPABILITY_HINT.video }}</p>
-
-              <p class="help-line panel-hint mono" data-im="chat-shortcuts">{{ SHORTCUT_TEXT }}</p>
-              <p class="help-line panel-hint mono">{{ hintText }}</p>
-            </div>
-          </details>
-        </div>
       </div>
     </section>
 
@@ -1744,7 +1695,6 @@ function onKeydown(event: KeyboardEvent) {
   border: none;
   padding: 0;
 }
-.panel-icon,
 .panel-close {
   flex: none;
   font: inherit;
@@ -1755,11 +1705,9 @@ function onKeydown(event: KeyboardEvent) {
   padding: 0;
   cursor: pointer;
 }
-.panel-icon:hover,
 .panel-close:hover {
   color: var(--accent-hover);
 }
-.panel-icon:focus-visible,
 .panel-close:focus-visible {
   outline: 2px solid var(--link);
   outline-offset: 2px;
@@ -2235,68 +2183,6 @@ function onKeydown(event: KeyboardEvent) {
 .send:hover:not(:disabled) { background: var(--accent-hover); }
 .send:disabled { opacity: 0.5; cursor: default; }
 .send:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
-
-/*
-  帮助（可见范围 / 媒体读取 / 附件限制 / 快捷键）：一句短提示 + 一个明确可打开的详情。
-  说明条用与标题条一致的稳定底色，展开后也不与板面文字相叠。
-*/
-.help {
-  flex: none;
-  margin: 0;
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-muted);
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  box-shadow: var(--shadow-1);
-  padding: var(--sp-1) var(--sp-2);
-}
-.help-summary {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-2);
-  flex-wrap: wrap;
-  cursor: pointer;
-}
-.help-summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.help-hint { color: var(--text-secondary); }
-.help-open { color: var(--link); }
-.help-body {
-  margin-top: var(--sp-1);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  /*
-    content 策略：帮助是用户主动打开的 details，内容自然展开。
-    不在这里套一个 180px 的小滚动窗口 —— 编辑区那一层（.composer）本来就能滚。
-  */
-}
-.help-line { margin: 0; overflow-wrap: anywhere; }
-
-.panel-hint {
-  flex: none;
-  margin: 0;
-  align-self: flex-start;
-  /* 快捷键说明（Enter 发送 / Shift+Enter 换行 / 中文选字不发送）是操作说明：
-     字号提到统一的 --fs-xs（11px，与其它小字同级），颜色从装饰色 --text-faint
-     改为可读色 --text-muted —— 迁移前亮色实测 3.28:1、暗色 2.86:1（真实像素采样），
-     都低于小字 4.5:1 的门槛。 */
-  font-size: var(--fs-xs);
-  line-height: 1.5;
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-  /*
-    快捷键说明是最长的一行小字，直接铺在透明面板上时与后方板面文字相叠
-    （800×600 暗色实机复测发现，同批 §12.7 口径）：给它一个紧凑的局部底色，
-    明暗两主题都稳定。
-  */
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  padding: var(--sp-1) var(--sp-2);
-}
 
 /*
   入口按钮：**固定**在窗口右下角（2026-10-14 用户要求）—— 展开 / 收起、面板拖到哪都不动。

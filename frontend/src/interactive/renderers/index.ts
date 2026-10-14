@@ -20,6 +20,7 @@ export const RENDERER_LOADERS = {
   xlsx: () => import("./xlsx"),
   pptx: () => import("./pptx"),
   code: () => import("./code"),
+  markdown: () => import("./markdown"),
 } as const;
 
 export type RendererKey = keyof typeof RENDERER_LOADERS;

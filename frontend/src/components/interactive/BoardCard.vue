@@ -46,6 +46,7 @@ import {
 import CardInlinePreview from "./CardInlinePreview.vue";
 import type { PreviewPosition } from "../../services/attachments";
 import {
+  openAttachment,
   pickBrowserFile,
   stateText,
   uploadAttachment,
@@ -56,7 +57,7 @@ import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
 import CardAttachmentPreview from "./CardAttachmentPreview.vue";
-import { attachmentPreviewPlan } from "../../interactive/attachmentPreview";
+import { attachmentPreviewPlan, attachmentRefForPreview } from "../../interactive/attachmentPreview";
 import { materialTypeLabel } from "../../interactive/previewPlan";
 import { isDesktopShell } from "../../services/attachments";
 import TextCardEditor from "../../interactive/TextCardEditor.vue";
@@ -125,6 +126,11 @@ const metaName = ref("");
 const metaLanguage = ref("");
 const metaHref = ref("");
 const metaTitle = ref("");
+/**
+ * 进入编辑（或外部换了编辑内容）时的基准文本：退出编辑时用它判断「有没有真实改动」。
+ * 没有它的话，用户只是点开再看一眼、点空白退出，都会凭空白生成一次板面变更。
+ */
+const editStartText = ref("");
 
 /** 遗留（非文字卡）编辑框实例：与 TextCardEditor 同一条规则，高度跟随内容。 */
 const legacyEditor = ref<HTMLTextAreaElement | null>(null);
@@ -233,6 +239,12 @@ const linkTitle = computed(() => String(props.card.meta?.title ?? "") || href.va
 /** 这张卡片用不用统一文字卡渲染：kind="text"（含迁移后的旧 code / url）。 */
 const isTextCard = computed(() => props.card.kind === "text");
 
+/**
+ * 文件卡（2026-10-14 用户要求）：卡片本身只显示文件名，其余按钮全部进工具栏，
+ * 也不需要「待补充文件说明」那一段正文。
+ */
+const isFileCard = computed(() => props.card.kind === "file");
+
 /** 遗留的 code / url 卡：迁移完成前兜底显示，界面必须写明它还没迁移。 */
 const LEGACY_KINDS = ["code", "url"] as const;
 const isLegacyCard = computed(() => (LEGACY_KINDS as readonly string[]).includes(props.card.kind));
@@ -314,6 +326,11 @@ function inlineHtml(raw: string): string {
   out = out.replace(/~~(.+?)~~/g, "<del>$1</del>");
   out = out.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
   out = out.replace(/`([^`]+)`/g, "<code>$1</code>");
+  /*
+    段落 / 引用块里的换行必须真的显示成换行：块文本内部用 \n 连接（parseDocText），
+    但 HTML 默认把 \n 折叠成空格 —— 编辑时明明换了行、关闭后却挤成一行就是这个原因。
+  */
+  out = out.replace(/\n/g, "<br />");
   return out;
 }
 
@@ -424,11 +441,22 @@ const coverPlan = computed(() =>
     desktop: desktopShell.value,
   }),
 );
+/**
+ * 这张卡的附件是不是「能安全渲染的图片」。
+ *
+ * 为什么单独拿出来：互动板现在**不再创建 `kind="image"` 的卡片**
+ * （`ADDABLE_CARD_KINDS = ["text", "file"]`），图片一律作为附件存在**文件卡**里，
+ * 卡片类型标签由附件类型推出来（显示成「图片」，底层 kind 是 "file"）。
+ * 所以「是不是图片卡」只能看附件，不能看 kind。
+ */
+const attachmentIsImage = computed(
+  () => Boolean(attachKind.value) && coverPlan.value.imagePreviewable && coverPlan.value.state === "linked",
+);
 const coverMode = computed(
   () =>
-    Boolean(attachKind.value) &&
-    coverPlan.value.imagePreviewable &&
-    coverPlan.value.state === "linked" &&
+    // 图片卡 + 「附件是图片」的文件卡都铺封面（2026-10-14 第六个问题；
+    // 2026-10-14 回归修复：按 kind 判会漏掉全部现有图片卡，因为图片都挂在文件卡上）
+    attachmentIsImage.value &&
     (displayState.value === "normal" || displayState.value === "folded"),
 );
 const coverDesc = computed(() => String(props.card.content ?? "").trim());
@@ -559,7 +587,10 @@ function firstHeadingText(): string {
 }
 
 const titleText = computed(() => {
-  if (props.card.kind === "file" || props.card.kind === "image") return name.value || "未命名" + kindLabel.value;
+  if (props.card.kind === "file" || props.card.kind === "image") {
+    // 卡片本身只显示文件名：meta.name 缺失时退回附件自己的名字，绝不显示成「未命名」
+    return name.value || cardAttachmentName(props.card.meta, props.card.kind) || "未命名" + kindLabel.value;
+  }
   if (props.card.kind === "url") return linkTitle.value || "（还没有网址）";
   if (props.card.kind === "code") return language.value ? language.value + " 代码" : "代码";
   if (isTextCard.value) return props.card.folded ? firstHeadingText() || firstLine.value : firstHeadingText();
@@ -589,6 +620,73 @@ const cardDraftNeedsAttention = computed(() => {
     Boolean(boardContentConflict(props.card.id))
   );
 });
+
+/** 未决冲突（F3 正文冲突 / 草稿新旧冲突）：两类卡都必须留出入口，两处提示共用这一个判断。 */
+const conflictPending = computed(() =>
+  Boolean(store.draftConflictFor(props.card.id) || boardContentConflict(props.card.id)),
+);
+
+/**
+ * 编辑态里草稿提示是否占位：
+ * - 文字卡 / 文件卡：只有**真的有问题**才占一行（草稿保存失败 / 清除未同步 / 本机副本没删掉）；
+ *   正常的「保存中 / 已保存」不再往卡片里塞提示 —— 这两类卡的编辑面只留内容与工具栏。
+ * - 其它卡（图片 / 遗留 url / code）：沿用既有行为（保存中 / 已保存 / 失败都显示）。
+ */
+const editDraftHintVisible = computed(
+  () => !conflictPending.value && (!(isTextCard.value || isFileCard.value) || cardDraftNeedsAttention.value),
+);
+
+/* ------------------------------------------------------------------------
+ * 文件卡的工具栏动作（2026-10-14 用户要求：卡片只显示文件名，按钮全在工具栏）
+ *
+ * 打开附件走**既有** openAttachment（与 CardAttachmentPreview 同一条链路、同一份计划函数），
+ * 结果如实显示在工具栏里：打不开就说打不开，绝不假装成功。
+ * ---------------------------------------------------------------------- */
+const fileActionStatus = ref<{ tone: "busy" | "ok" | "error"; text: string } | null>(null);
+const fileActionBusy = ref(false);
+const filePlan = computed(() =>
+  attachmentPreviewPlan(props.card.kind, (props.card.meta ?? {}) as Record<string, unknown>, {
+    desktop: desktopShell.value,
+  }),
+);
+const fileLinked = computed(() => filePlan.value.state === "linked" && Boolean(filePlan.value.attachmentId));
+/** 工具栏上这一行状态：打开附件的结果优先，其次是重新关联的结果 */
+const fileToolbarStatus = computed(() => fileActionStatus.value ?? attachStatus.value);
+const fileActionText = computed(() => {
+  const action = filePlan.value.action;
+  if (action === "reveal" || action === "open_in_folder") return "在文件夹中显示";
+  if (action === "download") return "下载副本";
+  if (action === "blocked") return "无法打开";
+  if (action === "open") return "打开";
+  return "查看";
+});
+
+async function openAttachmentFromToolbar(): Promise<void> {
+  if (!fileLinked.value || fileActionBusy.value) return;
+  const plan = filePlan.value;
+  if (plan.action === "blocked" || plan.action === "open_in_folder") {
+    // 计划说这条路现在走不通：如实说明原因，不执行一个注定报错的调用
+    fileActionStatus.value = { tone: "error", text: plan.openNote || "这个附件现在打不开" };
+    return;
+  }
+  fileActionBusy.value = true;
+  fileActionStatus.value = { tone: "busy", text: "正在打开「" + plan.displayName + "」…" };
+  try {
+    const result = await openAttachment(
+      attachmentRefForPreview({
+        attachmentId: plan.attachmentId,
+        name: plan.displayName,
+        size: plan.sizeBytes,
+      }),
+      { desktop: desktopShell.value },
+    );
+    fileActionStatus.value = { tone: "ok", text: result.note };
+  } catch (error) {
+    fileActionStatus.value = { tone: "error", text: "打不开：" + messageOf(error) };
+  } finally {
+    fileActionBusy.value = false;
+  }
+}
 
 /**
  * 元信息层：状态必须能读出来，不能只靠颜色。
@@ -908,6 +1006,7 @@ function applyRestore() {
   });
   draft.value = conflict ? conflict.local : restored.text;
   draftLoaded.value = true;
+  editStartText.value = draft.value;
   metaName.value = restored.meta.name ?? "";
   metaLanguage.value = restored.meta.language ?? "";
   metaHref.value = restored.meta.href ?? "";
@@ -942,7 +1041,10 @@ function onTextCardChange(payload: { docText: string; doc: TextDoc }) {
 watch(
   () => store.cardDraftText(props.card.id),
   (text) => {
-    if (editing.value && text !== draft.value) draft.value = text;
+    if (editing.value && text !== draft.value) {
+      draft.value = text;
+      editStartText.value = text;
+    }
   },
 );
 
@@ -1023,6 +1125,45 @@ function cancelEdit() {
   // 防抖可能还没触发：离开编辑器前把待保存的草稿落盘（失败会有状态与重试入口）
   store.flushDrafts();
 }
+
+/**
+ * 文字卡 / 文件卡的「完成编辑」：**退出选中**或**再次点编辑按钮**都走这里
+ * （不再有卡片里的完成 / 取消按钮行）。
+ *
+ * - 未决冲突：只关闭编辑器，不替用户做选择（冲突入口与两份候选都保留）；
+ * - 没有真实改动：不生产一次板面变更，只把进入编辑时登记的那份草稿收回；
+ * - 有改动：与旧「完成编辑」完全同一条路径（confirmEdit）。
+ */
+function finishEdit() {
+  if (!editing.value) return;
+  if (conflictPending.value) {
+    cancelEdit();
+    return;
+  }
+  if (draft.value === editStartText.value) {
+    store.requestDraftClear(cardDraftKey(props.card.id));
+    cancelEdit();
+    return;
+  }
+  confirmEdit();
+}
+
+/** 卡片工具栏的编辑按钮：文字卡 / 文件卡在编辑态变成「完成编辑」，再点一次即完成。 */
+function toggleEdit() {
+  if ((isTextCard.value || isFileCard.value) && editing.value) finishEdit();
+  else startEdit();
+}
+
+/**
+ * 退出选中 = 完成编辑：点板面空白、点别的卡片都会让本卡 selected 变 false。
+ * 只处理 true → false 这一跳；未决冲突时只关编辑器（不替用户选择）。
+ */
+watch(
+  () => props.selected,
+  (selected) => {
+    if (!selected && editing.value) finishEdit();
+  },
+);
 </script>
 
 <template>
@@ -1126,6 +1267,7 @@ function cancelEdit() {
     <div
       v-if="displayState !== 'folded'"
       class="card-body"
+      :class="{ 'card-body-editing-text': displayState === 'editing' && isTextCard }"
       data-im="card-body"
       data-qio-fit
       v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
@@ -1136,9 +1278,12 @@ function cancelEdit() {
           未决冲突的选择入口放在编辑器**上方**（契约 §12.1：冲突入口在真实操作路径可见可点）：
           卡片有固定高度、编辑区内部滚动，提示若排在编辑器之后，打开编辑器的第一屏就看不见它。
           -->
-        <CardDraftHint v-if="store.draftConflictFor(card.id) || boardContentConflict(card.id)" :card-id="card.id" />
+        <CardDraftHint v-if="conflictPending" :card-id="card.id" />
         <!--
           文字卡（含迁移后的旧 code / url）：**一个连续编辑区**（契约 §1.3）。
+          整张卡片正文区里只有「工具栏（加粗 / 行内代码…）+ 输入框」，输入框吃满其余全部空间：
+          没有说明文字、没有完成 / 取消按钮、也没有例行的「草稿保存中 / 已保存」。
+          完成编辑 = 退出选中（点板面空白 / 点别的卡片）或再点一次工具栏上的编辑按钮。
           输入即把草稿登记进既有通道；草稿文本就是 meta.docText（提交载荷也用这一份）。
         -->
         <TextCardEditor
@@ -1147,11 +1292,13 @@ function cancelEdit() {
           :card="card"
           :value="editorText"
           :min-height="editorMinHeight"
+          fill
           :data-card-id="card.id"
           @change="onTextCardChange"
         />
+        <!-- 文件卡（2026-10-14 用户要求）：编辑态只有文件名，没有「待补充文件说明」这一段正文 -->
         <textarea
-          v-else
+          v-else-if="!isFileCard"
           ref="legacyEditor"
           v-model="draft"
           class="editor"
@@ -1165,7 +1312,7 @@ function cancelEdit() {
           <span>名称</span>
           <input v-model="metaName" type="text" data-im="card-meta-name" :data-card-id="card.id" @input="onDraftInput" />
         </label>
-        <div v-if="attachKind" class="attach">
+        <div v-if="attachKind && !isFileCard" class="attach">
           <button class="btn" type="button" data-im="card-attach-file" :data-card-id="card.id" @click="pickAttachment">
             {{ attachmentLinked ? "重新关联已保存的附件" : "关联已保存的附件" }}
           </button>
@@ -1201,8 +1348,9 @@ function cancelEdit() {
           </span>
         </div>
         <!-- 编辑态也能预览已关联的附件（接线 P2 的组件；无关联时它只给诚实文案） -->
+        <!-- 文件卡的附件动作在工具栏里（卡片只留文件名），这里不再重复铺一份预览 -->
         <CardAttachmentPreview
-          v-if="attachKind"
+          v-if="attachKind && !isFileCard"
           :kind="card.kind"
           :meta="card.meta"
           :card-id="card.id"
@@ -1221,10 +1369,14 @@ function cancelEdit() {
             <input v-model="metaTitle" type="text" data-im="card-meta-title" :data-card-id="card.id" @input="onDraftInput" />
           </label>
         </template>
-        <p class="draft-note">输入过程只保存草稿；点「完成编辑」才形成有效文字状态。</p>
+        <!--
+          「输入过程只保存草稿」与完成 / 取消按钮行只属于其它卡（图片 / 遗留 url / code）。
+          文字卡与文件卡没有这些元素：完成编辑 = 退出选中或再点一次编辑按钮。
+        -->
+        <p v-if="!isTextCard && !isFileCard" class="draft-note">输入过程只保存草稿；点「完成编辑」才形成有效文字状态。</p>
         <!-- 草稿保存失败不能静默：状态与重试入口就近显示（C 的组件，A 的卡片接线） -->
-        <CardDraftHint v-if="!store.draftConflictFor(card.id) && !boardContentConflict(card.id)" :card-id="card.id" />
-        <div class="row">
+        <CardDraftHint v-if="editDraftHintVisible" :card-id="card.id" />
+        <div v-if="!isTextCard && !isFileCard" class="row">
           <button class="btn primary" type="button" @click="confirmEdit">完成编辑</button>
           <button class="btn" type="button" @click="cancelEdit">取消</button>
         </div>
@@ -1236,7 +1388,7 @@ function cancelEdit() {
           卡片高度固定且 overflow 隐藏，提示不能追加在正文后面（会被裁掉）——
           确有冲突时直接**替换**正文行：两份内容都保留着（打开编辑或任一选择都能回到），这里先让用户做选择。
         -->
-        <CardDraftHint v-if="store.draftConflictFor(card.id) || boardContentConflict(card.id)" :card-id="card.id" />
+        <CardDraftHint v-if="conflictPending" :card-id="card.id" />
         <div
           v-else
           class="card-subject"
@@ -1358,7 +1510,8 @@ function cancelEdit() {
               <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
             </p>
             <!-- 封面式：正文那行已经在封面底部，不在卡片里重复一遍 -->
-            <p v-else-if="!coverMode" class="content">
+            <!-- 文件卡：卡片本身只显示文件名（标题），不再铺一段「补充说明」 -->
+            <p v-else-if="!coverMode && !isFileCard" class="content">
               <span v-if="card.content" class="desc">{{ card.content }}</span>
               <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
             </p>
@@ -1368,8 +1521,12 @@ function cancelEdit() {
             附件（任务书 §6.3）：常态给缩略图与状态；阅读展开时压成一行「外部打开」入口 ——
             文件名与说明留在标题附近，主体让给真实预览，不在预览上方重复铺开大段说明。
           -->
+          <!--
+            文件卡（2026-10-14 用户要求）：非图片附件只在卡片里显示文件名，附件动作都在工具栏；
+            但「附件是图片」的文件卡要照旧渲染（缩略图 / 状态 / 查看），否则图片卡会变成一张空卡。
+          -->
           <CardAttachmentPreview
-            v-if="attachKind && !coverMode"
+            v-if="attachKind && !coverMode && (!isFileCard || attachmentIsImage)"
             :kind="card.kind"
             :meta="card.meta"
             :card-id="card.id"
@@ -1476,7 +1633,67 @@ function cancelEdit() {
     </template>
 
     <template v-else>
-      <button class="tb" type="button" data-im="card-edit" :data-card-id="card.id" @click="startEdit">编辑</button>
+      <button
+        class="tb"
+        type="button"
+        data-im="card-edit"
+        :data-card-id="card.id"
+        :data-editing="editing ? '1' : '0'"
+        @click="toggleEdit"
+      >
+        {{ (isTextCard || isFileCard) && editing ? "完成编辑" : "编辑" }}
+      </button>
+      <!--
+        文件卡（2026-10-14 用户要求）：卡片本身只显示文件名，附件动作全部收在工具栏。
+        打开走既有 openAttachment，结果如实写在旁边的状态行里。
+      -->
+      <button
+        v-if="isFileCard"
+        class="tb"
+        type="button"
+        data-im="card-attach-file"
+        :data-card-id="card.id"
+        @click="pickAttachment"
+      >
+        {{ attachmentLinked ? "重新关联附件" : "关联附件" }}
+      </button>
+      <button
+        v-if="isFileCard && fileLinked"
+        class="tb"
+        type="button"
+        data-im="card-attachment-open"
+        :data-card-id="card.id"
+        :data-open-action="filePlan.action ?? 'none'"
+        :title="filePlan.openNote"
+        :disabled="fileActionBusy"
+        @click="openAttachmentFromToolbar"
+      >
+        {{ fileActionText }}
+      </button>
+      <span
+        v-if="isFileCard && fileToolbarStatus"
+        class="tb-status"
+        :class="'is-' + fileToolbarStatus.tone"
+        data-im="card-file-action-status"
+        role="status"
+        aria-live="polite"
+        :title="fileToolbarStatus.text"
+      >{{ fileToolbarStatus.text }}</span>
+      <button
+        v-if="isFileCard && attachStatus && attachStatus.retry"
+        class="tb"
+        type="button"
+        data-im="card-attach-retry"
+        @click="runAttachRetry()"
+      >{{ attachStatus.retry.label }}</button>
+      <button
+        v-if="isFileCard && attachStatus && attachStatus.tone !== 'ok'"
+        class="tb"
+        type="button"
+        data-im="card-attach-dismiss"
+        aria-label="关闭提示"
+        @click="dismissAttachStatus()"
+      >关闭</button>
       <button class="tb" type="button" data-im="card-fold" :data-card-id="card.id" @click="emit('toggle', card.id, 'folded')">
         {{ card.folded ? "恢复卡片" : "折成标题" }}
       </button>
@@ -1693,6 +1910,15 @@ function cancelEdit() {
   overflow-x: clip（见 styles/scroll.css）。
   卡片自己的 overflow: hidden 保证任何意外都不会把卡片撑宽（任务书 §3.3）。
 */
+/*
+  文字卡编辑态：正文区变成 flex 列，编辑区吃满它，编辑区里的输入框再吃满剩下的高度 ——
+  卡片正文区里只有工具栏与输入框（2026-10-14 用户要求：输入框占满整张卡片）。
+*/
+.card-body-editing-text {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .card-body {
   display: flex;
   flex-direction: column;
@@ -2098,4 +2324,15 @@ function cancelEdit() {
 .tb:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .tb.danger { color: var(--danger); }
 .tb-note { color: var(--text-muted); white-space: nowrap; }
+/* 文件卡工具栏里的动作状态：只在真有话要说时占位（结果如实显示，不谎报成功） */
+.tb-status {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+.tb-status.is-ok { color: var(--text-secondary); }
+.tb-status.is-error { color: var(--danger, var(--text-strong)); }
 </style>

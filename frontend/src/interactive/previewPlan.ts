@@ -2,7 +2,8 @@
  * 卡片内预览的**计划**（契约 §3.5，冻结形状）。
  *
  * 纯函数：把 (卡片, 渲染状态, 环境) 翻成
- *   { mode: "inline"|"external"|"unsupported", renderer: "image"|"pdf"|"docx"|"xlsx"|"pptx"|"code"|"none",
+ *   { mode: "inline"|"external"|"unsupported",
+ *     renderer: "image"|"pdf"|"docx"|"xlsx"|"pptx"|"code"|"markdown"|"none",
  *     reason: string, actions: PreviewAction[] }
  * 不碰 DOM、不发请求、不 import vue —— 组件只负责按计划渲染与接线。
  *
@@ -19,7 +20,7 @@ import type { AttachmentRef } from "../services/attachments";
 import type { BoardCard } from "./types";
 
 export type PreviewMode = "inline" | "external" | "unsupported";
-export type PreviewRenderer = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "code" | "none";
+export type PreviewRenderer = "image" | "pdf" | "docx" | "xlsx" | "pptx" | "code" | "markdown" | "none";
 export type PreviewActionKind = "open" | "open_in_folder" | "view" | "download";
 
 export interface PreviewAction {
@@ -85,8 +86,16 @@ export const LEGACY_OFFICE_REASON =
 export const UNLINKED_REASON_SUFFIX =
   "QIO 读不到它的正文，也打不开它（卡片上只记着文件名）";
 
+/**
+ * Markdown 扩展名（2026-10-14 用户要求：.md 文件卡片要**解析**，不再按纯文本逐行显示）。
+ * 后端仍把 .md 归为 code 类别（给出文本行）；解析在前端由 MarkdownContent 的 remark 管线完成，
+ * 所以这里按扩展名把它分到 markdown 渲染器，不改后端分类与载荷。
+ */
+const MARKDOWN_EXT = new Set(["md", "markdown"]);
+
 /** 后端 kind（拿不到就按扩展名）→ 渲染器。 */
 export function rendererFor(kind: string | undefined, name: string): PreviewRenderer {
+  if (MARKDOWN_EXT.has(extensionOf(name))) return "markdown";
   const resolved = kind || KIND_BY_EXT[extensionOf(name)] || "unsupported";
   return RENDERER_BY_KIND[resolved] ?? "none";
 }

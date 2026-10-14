@@ -161,12 +161,13 @@ async function mountEditing(over: Partial<BoardCardModel> = {}): Promise<Harness
   return { w, card };
 }
 
+// 2026-10-14：文件卡的附件动作与反馈都移到了卡片工具栏（卡片本身只显示文件名）
 function statusEl(w: VueWrapper) {
-  return w.find('[data-im="card-attach-status"]');
+  return w.find('[data-im="card-file-action-status"]');
 }
 
 function statusText(w: VueWrapper): string {
-  const el = w.find('[data-im="card-attach-status-text"]');
+  const el = statusEl(w);
   return el.exists() ? el.text() : "";
 }
 
@@ -249,7 +250,8 @@ describe("卡片内成功提示的生命周期", () => {
     expect(meta?.name).toBe("报告.pdf");
 
     await applyLastPatch(h);
-    expect(w.get('[data-im="card-attachment-state"]').text()).toContain("报告.pdf");
+    // 卡片本身只显示文件名：关联成功后名字跟着 patch 落到标题上
+    expect(w.get('[data-im="card-title"]').text()).toContain("报告.pdf");
 
     // 3 秒之内还在
     await vi.advanceTimersByTimeAsync(2900);
@@ -262,7 +264,7 @@ describe("卡片内成功提示的生命周期", () => {
 
     // 移除的只是提示：卡片 meta、关联状态行与 emit 出去的 patch 都还在
     expect((h.card.meta.file as { attachmentId: string }).attachmentId).toBe("att_1");
-    expect(w.get('[data-im="card-attachment-state"]').text()).toContain("报告.pdf");
+    expect(w.get('[data-im="card-title"]').text()).toContain("报告.pdf");
     expect(w.find('[data-im="card-attach-file"]').exists()).toBe(true);
     expect(patches(w).length, "自动移除提示时又发了一次 patch").toBe(1);
   });

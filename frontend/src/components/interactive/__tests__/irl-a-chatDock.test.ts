@@ -52,9 +52,7 @@ import { useInteractiveStore } from "../../../stores/interactive";
 import { useSessionStore } from "../../../stores/session";
 import { CHAT_FRAME_MIN, loadChatFrame, saveChatFrame } from "../../../interactive/chatFrame";
 import { liveChatCollapsed, liveChatFrame, resetChatFrameState } from "../../../interactive/chatFrameState";
-import { COPY_MAX_BYTES, humanSize, type AttachmentRef } from "../../../services/attachments";
-import { chatScopeText } from "../../../interactive/chat";
-import { MEDIA_CAPABILITY_HINT } from "../../mediaFacts";
+import { type AttachmentRef } from "../../../services/attachments";
 
 const wrappers: VueWrapper[] = [];
 
@@ -388,13 +386,14 @@ describe("收起 / 展开：草稿、光标、阅读位置都留在原处", () =
   });
 });
 
-describe("结构：顶部精简、底部一个输入区、帮助可开可关", () => {
-  it("顶部只保留标题 / 状态 / 尺寸入口 / 帮助 / 收起", async () => {
+describe("结构：顶部精简、底部一个输入区、帮助已删除", () => {
+  it("顶部只保留标题 / 状态 / 尺寸入口 / 收起", async () => {
     const { wrapper } = mountDock();
     const head = wrapper.find('[data-im="chat-head"]');
     expect(head.find('.panel-title').text()).toBe("对话");
     expect(head.find('[data-im="chat-status"]').text().length).toBeGreaterThan(0);
-    expect(head.find('[data-im="chat-help-toggle"]').exists()).toBe(true);
+    // 2026-10-14 用户要求：标题栏的「帮助」入口随输入框下方的帮助一起删除
+    expect(head.find('[data-im="chat-help-toggle"]').exists()).toBe(false);
     expect(head.find('[data-im="chat-collapse"]').exists()).toBe(true);
     // 尺寸入口：键盘 −/＋ 就在标题栏里（另一组是盖住面板的拖动热区）
     expect(head.find('[data-resize-key="w-"]').exists()).toBe(true);
@@ -402,32 +401,17 @@ describe("结构：顶部精简、底部一个输入区、帮助可开可关", (
     expect(wrapper.findAll('[data-resize-handle]').length).toBe(8);
   });
 
-  it("帮助：默认收起，点「帮助」打开后有可见范围 / 板面手势 / 媒体读取 / 附件限制 / 快捷键，再点收起", async () => {
+  it("输入框下方的帮助已整块删除（2026-10-14 用户要求）：没有摘要、没有帮助按钮、输入区仍在", async () => {
     const { wrapper } = mountDock();
-    const scope = wrapper.find('[data-im="chat-scope"]');
-    expect(scope.exists(), "帮助入口不在").toBe(true);
-    expect(scope.find("details").exists(), "帮助必须是可打开的结构").toBe(true);
-    const details = scope.find("details").element as HTMLDetailsElement;
-    expect(details.open).toBe(false);
-
-    const body = scope.text();
-    expect(body, "缺少「发送不提交板面」的短提示").toContain("文字发送不会提交板面");
-    expect(body, "缺少完整可见范围说明").toContain(chatScopeText());
-    expect(body, "缺少媒体读取说明").toContain(MEDIA_CAPABILITY_HINT.image);
-    expect(body, "缺少附件限制").toContain(humanSize(COPY_MAX_BYTES));
-    expect(body, "缺少快捷键说明").toContain("Enter 发送");
-    expect(body, "缺少草稿说明").toContain("不会清掉草稿");
-    // 板面顶部那条常驻提示已改成「没用过查看手势时显示一次」：
-    // 完整说明的唯一常驻处就是这里，缺了它就等于说明丢了
-    // 2026-10-14：用户要求删除对话帮助里的板面手势段；帮助仍保留可见范围 / 媒体 / 附件 / 快捷键
-    expect(body, "帮助内容不能为空").not.toBe("");
-
-    await wrapper.find('[data-im="chat-help-toggle"]').trigger("click");
-    await nextTick();
-    expect((wrapper.find('[data-im="chat-scope"] details').element as HTMLDetailsElement).open).toBe(true);
-    await wrapper.find('[data-im="chat-help-toggle"]').trigger("click");
-    await nextTick();
-    expect((wrapper.find('[data-im="chat-scope"] details').element as HTMLDetailsElement).open).toBe(false);
+    expect(wrapper.find('[data-im="chat-scope"]').exists(), "帮助块还在").toBe(false);
+    expect(wrapper.find('[data-im="chat-help-toggle"]').exists(), "标题栏的帮助按钮还在").toBe(false);
+    expect(wrapper.text()).not.toContain("文字发送不会提交板面");
+    expect(wrapper.text()).not.toContain("可见范围 · 板面手势");
+    // 输入区本身（附件入口 / 输入框 / 发送）一个都不少
+    expect(wrapper.find('[data-im="chat-composer"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="chat-input"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="chat-send"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="chat-attach-file-btn"]').exists()).toBe(true);
   });
 
   it("常驻说明不再出现：没有 submitNote / understandingNote 的长说明块", async () => {
@@ -536,7 +520,7 @@ describe("横向：面板内不存在横向滚动容器", () => {
     interactive.submitStatus = "submitting";
     await nextTick();
 
-    for (const hook of ["chat-stream", "chat-composer", "chat-process", "chat-notices", "chat-scope"]) {
+    for (const hook of ["chat-stream", "chat-composer", "chat-process", "chat-notices"]) {
       const el = wrapper.find('[data-im="' + hook + '"]');
       expect(el.exists(), hook + " 不在面板里").toBe(true);
       expect(el.attributes("data-qio-fit"), hook + " 缺 data-qio-fit（横向边界保护）").toBeDefined();
@@ -555,7 +539,7 @@ describe("横向：面板内不存在横向滚动容器", () => {
       旧口径：这些区域各自「限高 + 自己滚一层」，同一段阅读流被切成多个小滚动窗口。
       新口径是 content：不设 max-height、不建 overflow 容器，内容自然展开 + 折叠/展开入口。
     */
-    for (const selector of [".panel-notices {", ".process {", ".attach-list {", ".help-body {"]) {
+    for (const selector of [".panel-notices {", ".process {", ".attach-list {"]) {
       const body = cssBlock(source, selector);
       expect(body, selector + " 仍然是「限高 + 自己滚一层」的小滚动区").not.toMatch(/(max-height|overflow)/);
     }

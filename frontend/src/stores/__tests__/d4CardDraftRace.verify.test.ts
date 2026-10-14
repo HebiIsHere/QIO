@@ -342,10 +342,10 @@ describe("时序 8：空草稿是有效编辑状态（§10.4）", () => {
     vi.advanceTimersByTime(900);
     await flushPromises();
 
-    // 取消编辑（离开编辑器）再重开
-    const cancel = wrapper.findAll("button").find((b) => b.text().includes("取消"));
-    expect(cancel, "编辑态应有取消按钮").toBeTruthy();
-    await cancel!.trigger("click");
+    // 退出编辑（再点一次编辑按钮 = 完成编辑）再重开
+    const finish = wrapper.find('[data-im="card-edit"]');
+    expect(finish.text(), "编辑态里编辑按钮应变成「完成编辑」").toContain("完成编辑");
+    await finish.trigger("click");
     await flushPromises();
     await wrapper.find('[data-im="card-edit"]').trigger("click");
     await flushPromises();

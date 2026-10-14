@@ -41,8 +41,16 @@ const props = withDefaults(
     readonly?: boolean;
     /** 编辑区最小高度（显示参数，不改变任何格式语义） */
     minHeight?: number;
+    /**
+     * 吃满卡片正文区（2026-10-14 用户要求：输入框占满整张卡片）。
+     *
+     * 关闭（缺省）时保持既有行为：编辑框跟随内容自动增高、自己不滚动，
+     * 纵向滚动只由卡片正文这一层承担。打开时编辑框吃满剩余高度并自己滚动 ——
+     * 这时「输入框占满卡片」是用户明确要的形态，卡片正文不再出现输入框下方的空白。
+     */
+    fill?: boolean;
   }>(),
-  { value: undefined, readonly: false, minHeight: 160 },
+  { value: undefined, readonly: false, minHeight: 160, fill: false },
 );
 
 const emit = defineEmits<{
@@ -60,7 +68,9 @@ const text = ref(initialText());
 /** 用户可读的当前状态（诚实反馈：插入链接取消了输入、格式动作的结果等）。 */
 const note = ref("");
 
-const textareaStyle = computed(() => ({ minHeight: props.minHeight + "px" }));
+const textareaStyle = computed(() =>
+  props.fill ? { minHeight: "0px" } : { minHeight: props.minHeight + "px" },
+);
 
 /**
  * 连续编辑区：编辑框**跟随内容自动增高，自己不再滚动**。
@@ -73,6 +83,8 @@ const textareaStyle = computed(() => ({ minHeight: props.minHeight + "px" }));
  * jsdom / 还没布局时 scrollHeight 为 0，这时不写高度（绝不把编辑框压成 0）。
  */
 function autosize(): void {
+  // 吃满卡片时不写高度：flex 决定高度，写死高度会把「占满」又变回「跟内容一样高」。
+  if (props.fill) return;
   const el = area.value;
   if (!el) return;
   const content = el.scrollHeight;
@@ -116,6 +128,8 @@ function apply(next: string, selection?: { start: number; end: number }): void {
 function onInput(event: Event): void {
   const value = (event.target as HTMLTextAreaElement).value;
   text.value = value;
+  // 上一次格式动作的反馈只说「刚才那一下」：用户继续打字后就不该再占着编辑区
+  if (note.value) note.value = "";
   autosize();
   emit("change", { docText: value, doc: parseDocText(value) });
 }
@@ -257,7 +271,12 @@ function offsetOfLine(value: string, line: number): number {
 </script>
 
 <template>
-  <div class="text-card-editor" data-im="text-card-editor" data-qio-fit>
+  <div
+    class="text-card-editor"
+    :class="{ 'is-fill': fill }"
+    data-im="text-card-editor"
+    data-qio-fit
+  >
     <div class="editor-toolbar" data-im="card-editor-toolbar" role="toolbar" aria-label="文字卡格式" @pointerdown.prevent>
       <button
         v-for="item in ACTIONS"
@@ -299,14 +318,17 @@ function offsetOfLine(value: string, line: number): number {
     ></textarea>
 
     <p v-if="note" class="fmt-note" data-im="card-fmt-note" role="status">{{ note }}</p>
-    <p class="editor-note">
-      文字、链接、代码写在同一张卡片里；格式用 markdown 子集（**粗体**、*斜体*、行内代码、~~删除线~~、## 标题、- 列表、&gt; 引用、[标题](地址)）。
-    </p>
   </div>
 </template>
 
 <style scoped>
 .text-card-editor { display: flex; flex-direction: column; gap: var(--sp-2); }
+/*
+  吃满卡片（fill）：这一层先吃满卡片正文区，输入框再吃满这一层剩下的高度。
+  父级不是 flex 时这两条不生效，独立挂载的用法与既有行为一致。
+*/
+.text-card-editor.is-fill { flex: 1 1 auto; min-height: 0; }
+.text-card-editor.is-fill .editor { flex: 1 1 0%; min-height: 0; overflow: auto; resize: none; }
 
 .editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); }
 .fmt {
@@ -349,5 +371,4 @@ function offsetOfLine(value: string, line: number): number {
 .editor:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 .fmt-note { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: var(--lh-tight); }
-.editor-note { margin: 0; font-size: var(--fs-xs); color: var(--text-faint); line-height: var(--lh-tight); }
 </style>

@@ -10,7 +10,7 @@
  *
  * 三条诚实规则（契约 §0）：
  *   * 预览 ≠ 模型已读：展开、翻页、缩放都不触发模型调用、不产生表达与意图；
- *   * 「结构化预览，不是原版面」必须写在界面上（docx/xlsx/pptx 的 notice 来自渲染器模块）；
+ *   * 结构化预览（docx/xlsx/pptx）不再在界面上写「不是原版面」那一行（2026-10-14 用户要求删除）；
  *   * 失败 / 不支持时给**真实原因**与打开/下载入口，**不给假按钮**。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -42,6 +42,8 @@ import type { PptxView } from "../../interactive/renderers/pptx";
 import type { XlsxView } from "../../interactive/renderers/xlsx";
 import type { PdfFactsView, PdfHandle } from "../../interactive/renderers/pdf";
 import { fitScale, stepZoom } from "../../interactive/renderers/image";
+// Markdown 文件卡片（2026-10-14 用户要求）：.md 按正文解析，不再逐行显示原文
+import MarkdownContent from "../MarkdownContent.vue";
 // 二维浏览区（图片框 / PDF 页面框 / 表格网格 / 代码框）统一用共享指示条，不各自发明滚动条样式。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 // 横向自检（溢出 + scrollLeft 真能移动，两项缺一不可）：见 ./horizontalFit.ts
@@ -112,10 +114,11 @@ const plan = computed(() =>
 const statusText = computed(() => previewStatusText(renderState.value, sizeBytes.value));
 const loading = computed(() => renderState.value.status === "loading" || renderState.value.status === "idle");
 const inlineReady = computed(() => plan.value.mode === "inline" && renderState.value.status === "ready");
-/** 结构化预览的"不是原版面"必须显示出来（来自渲染器模块，只有一处说法） */
-const noticeText = computed(
-  () => docxView.value?.notice ?? xlsxView.value?.notice ?? pptxView.value?.notice ?? "",
-);
+/**
+ * Markdown 正文：后端给的是 `code` 形状的文本行（.md 的分类没变），
+ * 拼回原文后交给 MarkdownContent 的 remark 管线解析 —— 只有一处解析实现。
+ */
+const markdownSource = computed(() => (codeView.value ? codeView.value.lines.map((line) => line.text).join("\n") : ""));
 const currentSheet = computed(() => xlsxView.value?.sheets[sheetIndex.value] ?? null);
 const currentSlide = computed(() => pptxView.value?.slides[slideIndex.value] ?? null);
 const zoomPercent = computed(() => Math.round(zoom.value * 100) + "%");
@@ -313,7 +316,7 @@ async function mountStructured(renderer: string, mine: number): Promise<void> {
   if (renderer === "docx") docxView.value = result.view as DocxView;
   else if (renderer === "xlsx") xlsxView.value = result.view as XlsxView;
   else if (renderer === "pptx") pptxView.value = result.view as PptxView;
-  else if (renderer === "code") codeView.value = result.view as CodeView;
+  else if (renderer === "code" || renderer === "markdown") codeView.value = result.view as CodeView;
 }
 
 async function mountImage(mine: number, ctrl: AbortController): Promise<void> {
@@ -386,7 +389,8 @@ async function renderPdfPage(mine: number): Promise<void> {
 function emitPosition(extra: Partial<PreviewPosition> = {}): void {
   if (!props.active || plan.value.mode !== "inline") return;
   const mode = plan.value.renderer;
-  if (mode === "none") return;
+  // Markdown 没有页码 / 缩放 / 工作表 / 幻灯片这类阅读位置：不报位置，也不写一个空记录
+  if (mode === "none" || mode === "markdown") return;
   const position: PreviewPosition = { mode, ...extra };
   if (mode === "pdf") position.page = pdfPage.value;
   if (mode === "image") position.zoom = zoom.value;
@@ -551,7 +555,6 @@ defineExpose({
     <p v-if="renderState.truncated" class="cip-warn" data-testid="cip-truncated">
       内容超出预览上限：这里只显示前一部分（已截断，完整内容请打开或下载）
     </p>
-    <p v-if="noticeText" class="cip-notice" data-testid="cip-notice">{{ noticeText }}</p>
     <p v-if="viewError" class="cip-error" data-testid="cip-view-error">{{ viewError }}</p>
 
     <!-- 内嵌渲染：纵向滚动责任由 data-qio-viewport 明确（见 bodyViewport 的注释） -->
@@ -638,6 +641,20 @@ defineExpose({
             （这一份没有可提取的文字层，可能是扫描件；页面仍然按原样渲染）
           </template>
         </p>
+      </div>
+
+      <!-- Markdown：按正文解析（标题 / 列表 / 表格 / 代码块），不再逐行显示原文 -->
+      <div
+        v-else-if="plan.renderer === 'markdown' && codeView"
+        class="cip-markdown"
+        data-im="cip-markdown"
+        data-testid="cip-markdown"
+        v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+      >
+        <p class="cip-fact" data-testid="cip-markdown-facts">
+          Markdown · 共 {{ codeView.totalLines }} 行 · 编码 {{ codeView.encoding }} · 已解析为正文 · 只读
+        </p>
+        <MarkdownContent :source="markdownSource" />
       </div>
 
       <!-- 代码 / 文本：行号 + 等宽 + 语言 + 只读 -->
@@ -738,7 +755,6 @@ defineExpose({
             </tbody>
           </table>
         </div>
-        <p class="cip-fact" data-testid="cip-xlsx-facts">{{ xlsxView.notice }}</p>
       </div>
 
       <!-- PPTX：幻灯片切换 + 文本/表格/图片清单 -->
@@ -781,7 +797,6 @@ defineExpose({
             <p v-for="(note, index) in currentSlide.notes" :key="'n' + index" class="cip-p">备注：{{ note }}</p>
           </div>
         </div>
-        <p class="cip-fact" data-testid="cip-pptx-facts">{{ pptxView.notice }}</p>
       </div>
     </div>
 
@@ -853,15 +868,11 @@ defineExpose({
 }
 .cip-status,
 .cip-fact,
-.cip-notice,
 .cip-warn,
 .cip-empty,
 .cip-loading {
   font-size: var(--fs-sm);
   color: var(--text-secondary);
-}
-.cip-notice {
-  color: var(--warning);
 }
 .cip-warn {
   color: var(--warning);
