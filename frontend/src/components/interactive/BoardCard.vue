@@ -25,7 +25,7 @@ import {
   restoreCardDraftInput,
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
-import { CARD_KIND_LABELS, CHECKABLE_KINDS } from "../../interactive/board";
+import { CARD_KIND_LABELS, CHECKABLE_KINDS, defaultCardSeed } from "../../interactive/board";
 import {
   cardDocFields,
   docFromCard,
@@ -131,6 +131,12 @@ const metaTitle = ref("");
  * 没有它的话，用户只是点开再看一眼、点空白退出，都会凭空白生成一次板面变更。
  */
 const editStartText = ref("");
+/**
+ * 进入编辑（或外部换了编辑内容）时的**附加字段**基线：退出编辑时用它判断
+ * 「只改了名称 / 语言 / 网址标题」这类改动有没有真的发生。
+ * 没有它的话，只改名称会被判成「没有真实改动」，整次编辑被静默丢弃。
+ */
+const editStartMeta = ref<CardDraftMetaInput>({});
 
 /** 遗留（非文字卡）编辑框实例：与 TextCardEditor 同一条规则，高度跟随内容。 */
 const legacyEditor = ref<HTMLTextAreaElement | null>(null);
@@ -424,9 +430,11 @@ async function editBlockAt(line: number): Promise<void> {
  * 写进 meta，QIO 才读得到正文。没有 attachmentId 时必须如实显示「QIO 读不到它的正文」，
  * 绝不拿文件名当正文。
  */
-const attachKind = computed<"file" | "image" | null>(() =>
-  props.card.kind === "file" || props.card.kind === "image" ? props.card.kind : null,
-);
+/**
+ * 附件只认 kind="file"：图片统一是文件卡的附件（meta.file），不再是独立卡片类型
+ * （本轮简化：BoardCard 里所有 kind==="image" 分支都已删除）。
+ */
+const attachKind = computed<"file" | null>(() => (props.card.kind === "file" ? "file" : null));
 /**
  * 封面式呈现（2026-10-14 第六个问题）：
  * 图片卡、以及**附件是图片**的文件卡，在常态与折叠态把图片铺满整张卡作为背景
@@ -459,7 +467,18 @@ const coverMode = computed(
     attachmentIsImage.value &&
     (displayState.value === "normal" || displayState.value === "folded"),
 );
-const coverDesc = computed(() => String(props.card.content ?? "").trim());
+/**
+ * 封面底部那行说明：**只有真实说明**才渲染。
+ *
+ * 新文件卡的 content 默认是 board.ts 的 defaultCardSeed("file").content（当前为「待补充文件说明」），
+ * 那是占位不是说明 —— 与 defaultCardSeed 比较，避免再维护第二套占位文案名单。
+ */
+const FILE_CONTENT_PLACEHOLDER = defaultCardSeed("file").content;
+const coverDesc = computed(() => {
+  const raw = String(props.card.content ?? "").trim();
+  if (!raw || raw === FILE_CONTENT_PLACEHOLDER) return "";
+  return raw;
+});
 
 const attachmentId = computed(() => cardAttachmentId(props.card.meta, props.card.kind));
 const attachmentLinked = computed(() => cardAttachmentLinked(props.card.meta, props.card.kind));
@@ -587,8 +606,8 @@ function firstHeadingText(): string {
 }
 
 const titleText = computed(() => {
-  if (props.card.kind === "file" || props.card.kind === "image") {
-    // 卡片本身只显示文件名：meta.name 缺失时退回附件自己的名字，绝不显示成「未命名」
+  if (props.card.kind === "file") {
+    // 卡片本身只显示文件名（图片也是文件卡）：meta.name 缺失时退回附件自己的名字，绝不显示成「未命名」
     return name.value || cardAttachmentName(props.card.meta, props.card.kind) || "未命名" + kindLabel.value;
   }
   if (props.card.kind === "url") return linkTitle.value || "（还没有网址）";
@@ -792,10 +811,19 @@ const readingAvailable = computed(() => (attachKind.value ? attachmentLinked.val
 /** 阅读展开时挂的是真实文件预览，还是只把卡片自己的正文当成阅读主体 */
 const hasPreviewMaterial = computed(() => Boolean(attachKind.value) && attachmentLinked.value);
 
+/**
+ * 卡片内阅读态入口是否适用（本轮简化）。
+ *
+ * 图片附件文件卡的阅读主体**就是封面本身**（常态已经把图片完整铺开），
+ * 所以不再有「展开预览 / 收起预览」入口，也不会进入 reading、不挂 CardInlinePreview。
+ * 其它材料（文字卡、非图片文件卡）的能力一字不变。
+ */
+const previewToggleAvailable = computed(() => readingAvailable.value && !attachmentIsImage.value);
+
 const displayState = computed<CardDisplayState>(() => {
   if (props.card.folded) return "folded";
   if (editing.value) return "editing";
-  if (previewExpanded.value && readingAvailable.value) return "reading";
+  if (previewExpanded.value && previewToggleAvailable.value) return "reading";
   return "normal";
 });
 
@@ -1011,6 +1039,8 @@ function applyRestore() {
   metaLanguage.value = restored.meta.language ?? "";
   metaHref.value = restored.meta.href ?? "";
   metaTitle.value = restored.meta.title ?? "";
+  // 附加字段的基线必须与上面重建的正文在同一处登记（两者是同一份未完成输入）
+  editStartMeta.value = currentMetaInput();
 }
 
 /**
@@ -1097,7 +1127,7 @@ function confirmEdit() {
     return;
   }
   patch = { content: draft.value };
-  if (props.card.kind === "file" || props.card.kind === "image") {
+  if (props.card.kind === "file") {
     patch.meta = { ...(props.card.meta ?? {}), name: metaName.value };
   } else if (props.card.kind === "code") {
     patch.meta = { ...(props.card.meta ?? {}), language: metaLanguage.value };
@@ -1140,7 +1170,10 @@ function finishEdit() {
     cancelEdit();
     return;
   }
-  if (draft.value === editStartText.value) {
+  // 「没有真实改动」= 正文与**适用附加字段**都没变（只打开看一眼不该生产一次板面变更）；
+  // 反过来，只改了名称 / 语言 / 网址标题也必须形成一次真实变更。
+  const metaChanged = JSON.stringify(currentMetaInput()) !== JSON.stringify(editStartMeta.value);
+  if (draft.value === editStartText.value && !metaChanged) {
     store.requestDraftClear(cardDraftKey(props.card.id));
     cancelEdit();
     return;
@@ -1196,9 +1229,11 @@ watch(
       v-if="coverMode"
       variant="cover"
       :desc="coverDesc"
+      :compact="compactChrome"
       :kind="card.kind"
       :meta="card.meta"
       :card-id="card.id"
+      @relink-attachment="pickAttachment"
     />
     <header class="card-head" data-im="card-head">
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
@@ -1242,7 +1277,7 @@ watch(
         编辑态不出现，避免一个点了不会变的入口（四态互斥）。
       -->
       <button
-        v-else-if="displayState !== 'editing' && readingAvailable"
+        v-else-if="displayState !== 'editing' && previewToggleAvailable"
         class="chip-btn"
         type="button"
         data-im="card-preview-toggle"
@@ -1308,7 +1343,7 @@ watch(
           :aria-label="'编辑' + kindLabel"
           @input="onDraftInput"
         ></textarea>
-        <label v-if="card.kind === 'file' || card.kind === 'image'" class="field">
+        <label v-if="card.kind === 'file'" class="field">
           <span>名称</span>
           <input v-model="metaName" type="text" data-im="card-meta-name" :data-card-id="card.id" @input="onDraftInput" />
         </label>
@@ -1657,8 +1692,12 @@ watch(
       >
         {{ attachmentLinked ? "重新关联附件" : "关联附件" }}
       </button>
+      <!--
+        封面显示期间（coverMode）工具栏不再渲染这个入口：封面里已经有「查看原图」，
+        两个入口各自持 busy 状态、重复打开同一个附件没有意义；非封面（非图片文件卡）行为不变。
+      -->
       <button
-        v-if="isFileCard && fileLinked"
+        v-if="isFileCard && fileLinked && !coverMode"
         class="tb"
         type="button"
         data-im="card-attachment-open"
@@ -2335,4 +2374,17 @@ watch(
 }
 .tb-status.is-ok { color: var(--text-secondary); }
 .tb-status.is-error { color: var(--danger, var(--text-strong)); }
+
+/*
+  封面之上的两条**窄蒙版**（本轮：不再用封面里上下各 42% 的大蒙版）：
+  头部（标题 / 许可徽章 / 折叠入口）与页脚（必要状态 / 更新时间）各贴一条，
+  文字压在图片上时始终清晰可读。规则放在样式表末尾：前面 .card-head / .card-meta
+  的基线规则不能被挤掉（源码守卫按选择器取第一个 CSS 块）。
+*/
+.card.is-cover > .card-head,
+.card.is-cover > .card-meta {
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  border-radius: var(--r-xs);
+  padding: 0 var(--sp-1);
+}
 </style>

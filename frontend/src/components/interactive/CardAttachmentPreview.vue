@@ -5,19 +5,26 @@
   没有关联时**不给假预览、不给假按钮**，如实说「QIO 读不到它的正文」。
 
   交付给 BoardCard.vue（由 P1 同事接线，见 _diag_qio/p2-report.md）：
-    props: kind  = 卡片种类（file / image 才有内容）、
-           meta  = 卡片 meta（读 meta.file / meta.image = {name, attachmentId, size}）、
+    props: kind  = 卡片种类（只有 file 有附件内容 —— 图片统一是 kind="file" + meta.file）、
+           meta  = 卡片 meta（读 meta.file = {name, attachmentId, size}）、
            cardId（可选，用于 data-card-id 钩子）
     open    = 可注入的执行函数，默认就是 services/attachments 的 openAttachment
               （预留的测试缝：组件测试注入 spy，生产代码不传）
+    emits:  relink-attachment —— 封面变体里的失败入口「重新关联」交给卡片用既有 pickAttachment 处理
 
   行为：
-  * 有关联：图片且是位图 → 带认证 fetch（fetchAttachmentContent）+ blob URL 缩略图；
+  * 有关联：图片且是位图 → 带认证 fetch（fetchAttachmentContent）+ blob URL；
     卸载 / 换附件时 revoke（生命周期在 interactive/attachmentPreview.ts 里，可单测）；
-  * 有关联但不可预览 / 超限 / 加载失败 → 显示**原因**，不留空白；
+  * 有关联但不可预览 / 超限 / 加载失败 / **解码失败** → 显示**原因**与可用入口，不留空白；
   * 可执行 / 脚本类 → 「在文件夹中显示」并说明不自动运行的原因（桌面端）；
   * 浏览器 → 带认证 fetch 的 blob 新标签页（不能内联的类型改为下载）；
   * 没有关联 → 只显示诚实文案，没有按钮、没有缩略图。
+
+  本轮（互动模式图片展示简化）：
+  * 封面变体承担**完整**的图片展示 —— object-fit: contain（等比完整、不裁切、留白走 --bg-inset）；
+  * 不再有上下各 42% 的大面积蒙版，也不再重复文件名或常驻占位说明；
+  * 图片层不吃指针事件（连接点 / 尺寸把手 / 工具栏不被它盖住），禁止原生拖动；
+  * 入口文案与真实动作一致：action === "view" 且是可预览图片 →「查看原图」。
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
@@ -29,9 +36,9 @@ import type { CardKind } from "../../interactive/types";
 
 const props = withDefaults(
   defineProps<{
-    /** 卡片种类：只有 file / image 有附件预览 */
+    /** 卡片种类：只有 file 有附件预览（图片统一是 kind="file" + meta.file） */
     kind: CardKind | string;
-    /** 卡片 meta（meta.file / meta.image = { name, attachmentId, size }） */
+    /** 卡片 meta（meta.file = { name, attachmentId, size }） */
     meta?: Record<string, unknown> | null;
     /** 可选：卡片 id，仅用于 data-card-id 钩子 */
     cardId?: string;
@@ -40,25 +47,27 @@ const props = withDefaults(
     /**
      * 紧凑档（任务书 §6.3）：卡片进入阅读展开时，主体让给真实预览 ——
      * 这里只留**外部打开**这一个入口，不再重复铺缩略图、关联状态与大段说明。
-     * 默认 false，既有调用方行为一字不变。
+     * 默认 false，既有调用方行为一字不变。封面变体用同一口径：说明行让位。
      */
     compact?: boolean;
     /**
-     * 呈现变体（2026-10-14 第六个问题）：
+     * 呈现变体（2026-10-14 第六个问题，2026-10-15 收敛）：
      * - `default`：既有形态（关联状态 + 缩略图 + 查看按钮 + 说明）；
-     * - `cover`：**封面式** —— 图片铺满整张卡作为背景，只留一行补充说明 + 右下角「查看」，
-     *   供「图片卡 / 附件是图片的文件卡」在常态与折叠态使用（编辑态与阅读态不铺封面）。
+     * - `cover`：**常态图片展示** —— 图片等比完整铺在卡片上，只留一行真实说明 + 「查看原图」，
+     *   供「附件是图片的文件卡」在常态与折叠态使用（编辑态不铺封面）。
      */
     variant?: "default" | "cover";
-    /** 封面变体底部那一行补充说明（卡片正文；空串时显示占位文案） */
+    /** 封面变体底部那一行补充说明（卡片正文；空串 = 没有真实说明，不渲染任何占位） */
     desc?: string;
   }>(),
   { meta: null, cardId: "", open: undefined, compact: false, variant: "default", desc: "" },
 );
 
-const attachKind = computed<"file" | "image" | null>(() =>
-  props.kind === "file" || props.kind === "image" ? props.kind : null,
-);
+/** 「重新关联」：封面变体里的失败入口，交给卡片用既有 pickAttachment 处理（组件不自己选文件）。 */
+const emit = defineEmits<{ (e: "relink-attachment"): void }>();
+
+/** 附件只认 kind="file"：图片是文件卡的附件，不再是独立卡片类型。 */
+const attachKind = computed<"file" | null>(() => (props.kind === "file" ? "file" : null));
 
 /** 桌面壳判定只在这里读一次：计划、缩略图、执行三条路共用同一个事实。 */
 const desktop = ref(false);
@@ -86,13 +95,23 @@ function attachmentRef(): AttachmentRef {
 }
 
 // ---------------------------------------------------------------------------
-// 缩略图：带认证 fetch + blob URL；卸载 / 换附件时 revoke（生命周期在纯模块里）
+// 缩略图 / 封面图：带认证 fetch + blob URL；卸载 / 换附件时 revoke（生命周期在纯模块里）
 // ---------------------------------------------------------------------------
 
 const thumb = ref<HTMLImageElement | null>(null);
-/** 封面变体的背景图（与缩略图共用同一条 blob 通道与生命周期） */
+/** 封面变体的图片（与缩略图共用同一条 blob 通道与生命周期：同一时刻只持有一个 URL） */
 const coverImg = ref<HTMLImageElement | null>(null);
 const previewTick = ref(0);
+/**
+ * 解码失败只可能是 <img> 的 error 事件（字节拿到了，但浏览器解不开）。
+ * 声明在 preview 的 watch 之前：schedulePreview() 每一代都会把它复位（immediate watch 先跑）。
+ */
+const decodeFailed = ref(false);
+const COVER_DECODE_FAILURE = "这张图片解不开：文件可能已损坏，或它不是真正的图片";
+
+function onCoverDecodeError(): void {
+  decodeFailed.value = true;
+}
 
 const previewImage = createPreviewImageState({
   fetchContent: (id: string) => fetchAttachmentContent(id),
@@ -117,6 +136,8 @@ watch(
 );
 
 function schedulePreview(): void {
+  // 每一代预览都从「没有解码失败」开始：换了附件 / 重试之后旧结论作废
+  decodeFailed.value = false;
   if (!plan.value.imagePreviewable || !plan.value.attachmentId) {
     // release 只在**确实持有东西**时才做（避免挂载时白通知一轮）
     if (previewImage.url() || previewImage.loading() || previewImage.error()) previewImage.release();
@@ -157,6 +178,34 @@ const previewNote = computed(() => {
 });
 
 // ---------------------------------------------------------------------------
+// 封面变体的「解不开」与失败入口
+//
+// 图片**解码失败**（文件损坏 / 不是真正的图片）与「取字节失败 / 文件丢失 / 超限」是两回事，
+// 但界面口径一致：说清真实原因，并给出**重试**（重走既有预览 blob 加载，不新建加载链路）、
+// **查看原图**（既有 openAttachment）与**重新关联**（交给卡片）三个可用入口。
+// ---------------------------------------------------------------------------
+
+/** 原图片区域里要显示的状态：解码失败 > 取字节失败 / 超限 / 不可用 > 加载中。 */
+const coverMessage = computed(() => {
+  if (decodeFailed.value) return COVER_DECODE_FAILURE;
+  if (previewUrl.value) return "";
+  if (previewLoading.value) return "正在读取图片…";
+  return previewError.value ?? plan.value.unavailableReason;
+});
+
+/** 失败（不是加载中）时给三个可用入口；没有真附件时不给「重试 / 查看原图」这类假入口。 */
+const coverFailed = computed(
+  () => decodeFailed.value || (!previewUrl.value && !previewLoading.value && Boolean(previewError.value)),
+);
+const coverActionsVisible = computed(() => coverFailed.value && (linked.value || decodeFailed.value));
+
+/** 重试：重走既有预览 blob 加载（在途请求由 attachmentPreview.ts 的 host 按附件 id 复用）。 */
+function retryPreview(): void {
+  decodeFailed.value = false;
+  schedulePreview();
+}
+
+// ---------------------------------------------------------------------------
 // 点一下：走既有 openAttachment（桌面原生 / 浏览器 blob），结果如实显示
 // ---------------------------------------------------------------------------
 
@@ -190,11 +239,17 @@ async function onOpen(): Promise<void> {
   }
 }
 
+/**
+ * 入口文案与**真实动作**一致：
+ * reveal / open_in_folder → 在文件夹中显示；download → 下载副本；blocked → 无法打开；
+ * action === "view" 且附件是可预览图片 → 「查看原图」；其余 view 保持「查看」。
+ */
 const actionText = computed(() => {
   const action = plan.value.action;
   if (action === "reveal" || action === "open_in_folder") return "在文件夹中显示";
   if (action === "download") return "下载副本";
   if (action === "blocked") return "无法打开（详见说明）";
+  if (action === "view") return plan.value.imagePreviewable ? "查看原图" : "查看";
   if (action === "open") return "打开";
   return "查看";
 });
@@ -227,16 +282,16 @@ const usageNote = computed(() => {
 });
 
 onBeforeUnmount(() => {
-  // 卸载即释放：blob URL 不留给下一个页面（缩略图与「查看」用的是不同 URL，这里只管缩略图）
+  // 卸载即释放：blob URL 不留给下一个页面（缩略图与「查看」用的是不同 URL，这里只管预览字节）
   previewImage.release();
 });
 </script>
 
 <template>
   <!--
-    封面式（variant="cover"）：图片铺满整张卡作为背景，文字退到上下两条蒙版里。
+    封面式（variant="cover"）：图片等比完整地铺在卡片上，文字退到上下两条**小条**里。
     这一层**不吃指针事件**（pointer-events: none）：卡片拖动 / 选中 / 双击手势照旧落在卡片上，
-    只有「查看」按钮自己接事件。图片是装饰（aria-hidden + 空 alt）：卡片名与附件信息由卡片自身与阅读态承担。
+    只有按钮自己接事件。图片是装饰（aria-hidden + 空 alt）：卡片名由卡片头部承担，不在这里重复。
   -->
   <div
     v-if="attachKind && variant === 'cover'"
@@ -246,33 +301,71 @@ onBeforeUnmount(() => {
     :data-card-id="cardId"
     :data-state="linked ? 'linked' : 'unlinked'"
     :data-open-action="plan.action ?? 'none'"
+    :data-preview-state="decodeFailed ? 'decode-failed' : previewUrl ? 'ready' : previewLoading ? 'loading' : 'unavailable'"
   >
     <img
-      v-if="previewUrl"
+      v-if="previewUrl && !decodeFailed"
       ref="coverImg"
       class="cover-img"
       alt=""
       aria-hidden="true"
+      draggable="false"
       :data-im="'card-cover-img'"
       :data-card-id="cardId"
+      @error="onCoverDecodeError"
     />
-    <span class="cover-scrim is-top" aria-hidden="true"></span>
-    <span class="cover-scrim is-bottom" aria-hidden="true"></span>
-    <p class="cover-desc" :data-im="'card-cover-desc'" :title="desc || undefined">
-      {{ desc || "图片：还没有补充说明" }}
-    </p>
-    <button
-      type="button"
-      class="btn cover-open"
-      :data-im="'card-cover-open'"
-      :data-card-id="cardId"
-      :data-open-action="plan.action ?? 'none'"
-      :aria-label="actionAriaLabel"
-      :disabled="actionBusy"
-      @click.stop="onOpen"
-    >{{ actionText }}</button>
-    <p v-if="!previewUrl && previewNote" class="cover-note" :data-im="'card-attachment-preview-state'">{{ previewNote }}</p>
-    <p v-if="actionStatus" class="cover-status" :class="'is-' + actionStatus.tone" :data-im="'card-attachment-open-status'" role="status">{{ actionStatus.text }}</p>
+    <!-- 解不开 / 取不到字节：原因落在**原图片区域**中间，并给出三个可用入口 -->
+    <div v-if="coverFailed" class="cover-failed" :data-im="'card-cover-failed'">
+      <p class="cover-reason" :data-im="'card-attachment-preview-state'">{{ coverMessage }}</p>
+      <div v-if="coverActionsVisible" class="cover-actions">
+        <button type="button" class="btn" :data-im="'card-cover-retry'" @click.stop="retryPreview">重试</button>
+        <button
+          v-if="linked"
+          type="button"
+          class="btn"
+          :data-im="'card-cover-original'"
+          :data-open-action="plan.action ?? 'none'"
+          :disabled="actionBusy"
+          @click.stop="onOpen"
+        >{{ actionText }}</button>
+        <button
+          type="button"
+          class="btn"
+          :data-im="'card-cover-relink'"
+          @click.stop="emit('relink-attachment')"
+        >重新关联</button>
+      </div>
+    </div>
+    <p
+      v-else-if="!previewUrl && coverMessage"
+      class="cover-loading"
+      :data-im="'card-attachment-preview-state'"
+    >{{ coverMessage }}</p>
+
+    <!-- 底部一条小蒙版：说明与「查看原图」贴在这一条上（不再盖住半张图） -->
+    <div class="cover-foot">
+      <p
+        v-if="actionStatus"
+        class="cover-status"
+        :class="'is-' + actionStatus.tone"
+        :data-im="'card-attachment-open-status'"
+        role="status"
+      >{{ actionStatus.text }}</p>
+      <div class="cover-foot-row">
+        <p v-if="desc && !compact" class="cover-desc" :data-im="'card-cover-desc'" :title="desc">{{ desc }}</p>
+        <button
+          v-if="linked && !coverFailed"
+          type="button"
+          class="btn cover-open"
+          :data-im="'card-cover-open'"
+          :data-card-id="cardId"
+          :data-open-action="plan.action ?? 'none'"
+          :aria-label="actionAriaLabel"
+          :disabled="actionBusy"
+          @click.stop="onOpen"
+        >{{ actionText }}</button>
+      </div>
+    </div>
   </div>
 
   <div
@@ -383,11 +476,12 @@ onBeforeUnmount(() => {
 .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .btn:disabled { color: var(--text-muted); cursor: progress; }
 
-/* --- 封面式：图片铺满整张卡作为背景（2026-10-14 第六个问题） ------------------ */
+/* --- 封面式：图片是**常态展示主体**（本轮：完整等比展示 + 小条蒙版） ------------------ */
 /*
   这一层是**背景**：position: absolute 填满卡片（.card 本身是定位元素），
-  border-radius: inherit 让它跟着卡片圆角；pointer-events: none 保证卡片拖动 / 选中 /
-  双击手势照旧落在卡片上，只有「查看」按钮自己接事件。
+  border-radius: inherit 让它跟着卡片圆角；overflow: hidden 保证不产生任何滚动条；
+  pointer-events: none 保证卡片拖动 / 选中 / 双击手势照旧落在卡片上，只有按钮自己接事件。
+  留白用既有令牌 --bg-inset（图片比例与卡片不同时等比完整显示，四周留白）。
 */
 .card-cover {
   position: absolute;
@@ -396,65 +490,104 @@ onBeforeUnmount(() => {
   border-radius: inherit;
   overflow: hidden;
   pointer-events: none;
-  background: var(--bg-surface);
+  background: var(--bg-inset);
 }
 .cover-img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* 等比完整显示：不拉伸、不裁切；卡片与图片比例不同时留白 */
+  object-fit: contain;
   display: block;
+  /* 图片层是背景：不吃指针事件（连接点 / 尺寸把手 / 工具栏不被它盖住），也不做原生拖动与选中 */
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 /*
-  上下两条蒙版：图片内容不可控，文字直接压上去必然有读不清的组合。
-  蒙版用 --bg-surface 的透明混合（token 派生，不写死色值），保证标题 / 说明始终可读。
+  失败 / 解不开：原因与可用入口落在**原图片区域**中间。
+  文字只在自己身后带一条窄蒙版（token 派生，不写死色值），不再有覆盖整张图的大面积蒙版。
 */
-.cover-scrim { position: absolute; left: 0; right: 0; height: 42%; }
-.cover-scrim.is-top {
-  top: 0;
-  background: linear-gradient(to bottom, color-mix(in srgb, var(--bg-surface) 86%, transparent), transparent);
+.cover-failed {
+  position: absolute;
+  left: var(--sp-2);
+  right: var(--sp-2);
+  top: var(--sp-2);
+  bottom: calc(var(--sp-2) + 54px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  text-align: center;
 }
-.cover-scrim.is-bottom {
-  bottom: 0;
-  background: linear-gradient(to top, color-mix(in srgb, var(--bg-surface) 92%, transparent), transparent);
+.cover-reason {
+  margin: 0;
+  max-width: 100%;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
-/*
-  底部文字要**抬到卡片状态行之上**：卡片页脚（.card-meta，必要状态 + 更新时间）在封面之上、
-  贴着卡片底边，两边都贴底就会叠在一起（第一次浏览器核对时就是这样）。
-  COVER_FOOTER_ROOM 是给页脚留出的高度（页脚约 20px + 一点间距）。
-*/
-.cover-desc {
+.cover-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: center; }
+.cover-actions .btn { pointer-events: auto; }
+.cover-loading {
   position: absolute;
   left: var(--sp-3);
-  right: calc(var(--sp-3) + 76px);
-  bottom: calc(var(--sp-2) + 26px);
+  right: var(--sp-3);
+  top: 50%;
+  transform: translateY(-50%);
+  margin: 0;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+/*
+  底部小条：一行真实说明 + 「查看原图」。
+  蒙版只贴在这一条后面（linear-gradient 落在这一条的盒子里），卡片页脚另有一条自己的窄蒙版（BoardCard）。
+*/
+.cover-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--sp-2) + 22px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-3);
+  background: linear-gradient(to top, color-mix(in srgb, var(--bg-surface) 92%, transparent), transparent);
+  pointer-events: none;
+}
+.cover-foot-row { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.cover-desc {
+  flex: 1 1 auto;
+  min-width: 0;
   margin: 0;
   font-size: var(--fs-sm);
   color: var(--text-secondary);
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
-.cover-open {
-  position: absolute;
-  right: var(--sp-3);
-  bottom: calc(var(--sp-2) + 24px);
-  pointer-events: auto;
-}
-.cover-note,
+.cover-open { flex: none; margin-left: auto; pointer-events: auto; }
 .cover-status {
-  position: absolute;
-  left: var(--sp-3);
   margin: 0;
   font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
   color: var(--text-muted);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.cover-note { bottom: calc(var(--sp-2) + 52px); }
-.cover-status { top: var(--sp-2); }
-.cover-status.is-ok { color: var(--success); }
-.cover-status.is-error { color: var(--danger); }
+.cover-status.is-busy { color: var(--text-muted); }
+.cover-status.is-ok { color: var(--text-secondary); }
+.cover-status.is-error { color: var(--danger, var(--text-strong)); }
 </style>
