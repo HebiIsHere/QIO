@@ -34,7 +34,7 @@ export type DraftRecordKind = "draft" | "cleared";
  * （那等于把用户删掉的旧值又塞回来）。
  */
 export interface CardDraftMetaInput {
-  /** file / image 的名称 */
+  /** file 附件的名称 */
   name?: string;
   /** code 的语言 */
   language?: string;
@@ -530,7 +530,7 @@ export function readCardDraftInputForBoard(
 
 /** 某一卡片种类适用的附加字段（文字注释/reply 没有附加字段） */
 export function cardDraftMetaFieldsForKind(kind: string): CardDraftMetaField[] {
-  if (kind === "file" || kind === "image") return ["name"];
+  if (kind === "file") return ["name"];
   if (kind === "code") return ["language"];
   if (kind === "url") return ["href", "title"];
   return [];

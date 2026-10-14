@@ -1,5 +1,5 @@
 <!--
-  添加菜单（子智能体 A 负责）：**文字卡 / 文件 / 图片**三类材料的统一入口。
+  添加菜单（子智能体 A 负责）：**文字卡 / 文件**两类材料的统一入口（图片是文件卡的附件，不是独立入口）。
 
   契约：docs/interactive-mode-contract.md §8.1 / §8.4.1；
        docs/superpowers/plans/2026-10-12-unified-cards-media-preview-contract.md §1.7：
@@ -44,8 +44,8 @@ import type { CardKind } from "../../interactive/types";
  * 菜单里不再单列 code / url —— 历史卡片仍然能显示（BoardCard 的兜底分支），只是不能新建。
  */
 type AddableKind = CardKind;
-/** 需要关联真实附件的两类材料。 */
-type AttachKind = "file" | "image";
+/** 需要关联真实附件的材料（2026-10-15 图片展示简化：只有文件卡，图片是它的附件）。 */
+type AttachKind = "file";
 
 interface AddItem {
   kind: AddableKind;
@@ -63,13 +63,11 @@ const popup = ref<HTMLElement | null>(null);
  * 入口与说明。说明里必须写清权限边界（不能只靠颜色或图标表达）：
  * 文字卡默认**提交给 QIO**（2026-10-14 第十个问题：新建即勾选，用户可取消；
  * 取消后 QIO 看不到卡内的文字、链接与代码，提交也不会带上它）；
- * 材料（文件 / 图片）默认在本次允许查看范围内。
+ * 材料（文件卡，图片是它的附件）默认在本次允许查看范围内。
  */
 const HINTS: Record<string, string> = {
   text: "文字、链接、代码写在同一张卡片里；默认提交给 QIO（可取消）",
   file: "材料默认在本次允许查看范围内，不需要许可",
-  // image 不再是入口（文件与图片合并成同一种材料），保留映射只为读旧数据时兜底
-  image: "材料默认在本次允许查看范围内，不需要许可",
 };
 
 const ITEMS: AddItem[] = ADDABLE_CARD_KINDS.map((kind) => ({
@@ -136,7 +134,7 @@ function cancelText(kind: AttachKind, cardId: string): string {
 }
 
 /**
- * 文件 / 图片卡片必须关联**真实已保存的附件**（meta.file.attachmentId / meta.image.attachmentId），
+ * 文件卡片必须关联**真实已保存的附件**（meta.file.attachmentId），
  * 否则 QIO 只能看到文件名、读不到正文（后端会如实标 unreadable）。
  *
  * 状态一律走 useTransientNotice：每次调用 begin() 开一代新操作，
@@ -248,8 +246,8 @@ function add(kind: AddableKind): void {
   );
   close(true);
   const added = store.board?.cards.find((card) => !before.has(card.id));
-  // 文件 / 图片：立刻让用户选一份真实文件，上传成功后把 attachmentId 写进卡片 meta
-  if ((kind === "file" || kind === "image") && added) void attachRealFile(kind, added.id);
+  // 文件卡：立刻让用户选一份真实文件，上传成功后把 attachmentId 写进卡片 meta
+  if (kind === "file" && added) void attachRealFile(kind, added.id);
 }
 
 /** 点菜单外面收起。 */
@@ -293,7 +291,7 @@ onBeforeUnmount(() => {
       data-im="add-menu"
       aria-haspopup="menu"
       :aria-expanded="open"
-      title="添加文字卡或材料：文字卡（文字 / 链接 / 代码） / 文件 / 图片"
+      title="添加文字卡或材料：文字卡（文字 / 链接 / 代码） / 文件（图片是文件附件）"
       @click="toggle"
     >
       <span class="plus" aria-hidden="true">＋</span>添加

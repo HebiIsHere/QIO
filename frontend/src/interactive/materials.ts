@@ -80,13 +80,13 @@ export function materialOneLine(material: UnderstandingMaterial): string {
 }
 
 // ---------------------------------------------------------------------------
-// 卡片 meta 里的附件关联（A 的新形状：meta.file.attachmentId / meta.image.attachmentId）
+// 卡片 meta 里的附件关联（2026-10-15 图片展示简化：附件只有 meta.file.attachmentId）
 // ---------------------------------------------------------------------------
 
-export type AttachableKind = "file" | "image";
+export type AttachableKind = "file";
 
 export function isAttachableKind(kind: CardKind | string): kind is AttachableKind {
-  return kind === "file" || kind === "image";
+  return kind === "file";
 }
 
 /** 卡片 meta 里登记的附件块（{name, attachmentId, size?}），没有就是 null。 */
@@ -96,13 +96,10 @@ export function cardAttachmentBlock(
 ): { name: string; attachmentId: string; size: number | null } | null {
   if (!isAttachableKind(kind)) return null;
   /*
-    2026-10-14：文件与图片合并成同一种材料后，meta 的键可能还是老的那个
-    （kind 已经迁移成 file、meta 仍是 meta.image，或反过来）——与后端同一口径：
-    `_attachment_id(meta, "file") or _attachment_id(meta, "image")`。
+    2026-10-15 图片展示简化：附件关联**只读 meta.file**，不再回退 meta.image
+    （本轮明确不做旧图片卡兼容；历史 meta.image 不当作附件来源）。
   */
-  const own = meta?.[kind];
-  const fallback = meta?.[kind === "file" ? "image" : "file"];
-  const block = own && typeof own === "object" ? own : fallback;
+  const block = meta?.[kind];
   if (!block || typeof block !== "object") return null;
   const record = block as Record<string, unknown>;
   const attachmentId = typeof record.attachmentId === "string" ? record.attachmentId.trim() : "";
@@ -186,6 +183,23 @@ export interface CardAttachmentAvailability {
 /** 是否位图扩展名：只有这些能当缩略图（svg / html / xml 会带脚本或外链，绝不当图片渲染）。 */
 export function isPreviewableImageName(name: string): boolean {
   return /.(png|jpe?g|gif|webp|bmp|avif|ico)$/i.test(String(name ?? "").trim());
+}
+
+/**
+ * 这张卡片上的附件**是不是图片**（本轮唯一判定口径：store 与组件共用，不各写一套）。
+ *
+ * 规则 =「kind 是 file 且已关联附件且附件是位图扩展名」，内部复用 isPreviewableImageName ——
+ * 与「能不能缩略图」是同一份名单（svg / html / xml 带脚本，绝不按图片算）。
+ * 它回答的是「这张卡有没有图片阅读态」，不回答「QIO 有没有读到图片内容」。
+ */
+export function cardAttachmentIsImage(
+  meta: Record<string, unknown> | null | undefined,
+  kind: CardKind | string,
+): boolean {
+  if (kind !== "file") return false;
+  const block = cardAttachmentBlock(meta, kind);
+  if (!block || !block.attachmentId) return false;
+  return isPreviewableImageName(block.name);
 }
 
 export function attachmentCardState(

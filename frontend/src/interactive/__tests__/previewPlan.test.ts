@@ -47,8 +47,9 @@ function fileCard(name: string, id = "att_1"): BoardCard {
   return card({ name, file: { name, attachmentId: id, size: 2048 } });
 }
 
-function imageCard(name: string, id = "att_img"): BoardCard {
-  return card({ name, image: { name, attachmentId: id, size: 4096 } }, "image");
+/** 遗留形状：附件写在 meta.image（本轮不再作为附件来源，只用于验证不回退）。 */
+function legacyImageCard(name: string, id = "att_img"): BoardCard {
+  return card({ name, image: { name, attachmentId: id, size: 4096 } });
 }
 
 const NO_STATE = { status: "idle" as const };
@@ -170,15 +171,19 @@ describe("previewPlan：动作与环境一致", () => {
 });
 
 describe("previewPlan：meta 读取", () => {
-  it("image 优先于 file，且下划线写法也认", () => {
-    expect(cardAttachmentId(imageCard("图.png", "att_a"))).toBe("att_a");
+  it("只读 meta.file（不再回退 meta.image），下划线写法也认", () => {
+    expect(cardAttachmentId(card({ file: { attachmentId: "att_a" } }))).toBe("att_a");
     expect(cardAttachmentId(card({ file: { attachment_id: "att_b" } }))).toBe("att_b");
+    expect(cardAttachmentId(legacyImageCard("图.png", "att_img"))).toBe("");
     expect(cardAttachmentId(card({}))).toBe("");
   });
 
-  it("文件名与大小按同一优先级取", () => {
-    expect(cardFileName(imageCard("图.png"))).toBe("图.png");
-    expect(cardSizeBytes(imageCard("图.png"))).toBe(4096);
+  it("文件名与大小同样只从 meta.file 取；旧键 meta.image 不冒充附件", () => {
+    expect(cardFileName(card({ file: { name: "图.png", attachmentId: "att_a" } }))).toBe("图.png");
+    expect(cardSizeBytes(card({ file: { name: "图.png", attachmentId: "att_a", size: 4096 } }))).toBe(4096);
+    // 旧键里有名字/大小：只当作顶层字段读，不当作附件
+    expect(cardFileName(card({ name: "顶层名.png", image: { name: "附件名.png", attachmentId: "att_x" } }))).toBe("顶层名.png");
+    expect(cardSizeBytes(card({ image: { name: "旧图.png", size: 4096 } }))).toBeNull();
     expect(cardSizeBytes(card({}))).toBeNull();
   });
 

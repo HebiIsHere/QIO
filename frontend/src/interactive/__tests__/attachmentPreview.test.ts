@@ -3,7 +3,7 @@
  *
  * 触发：互动板面上的图片 / 文件卡片此前**完全没有预览入口**（openAttachment 只在 Composer /
  * MessageItem 里被调用）。这里测的是新增的纯计划：
- *   1) 有关联（meta.image.attachmentId） → 图片可缩略图 / 文件可查看；
+ *   1) 有关联（meta.file.attachmentId） → 图片附件可缩略图 / 其它文件可查看；
  *   2) 无关联                        → 不给假预览、不给假按钮，如实说读不到正文；
  *   3) 可执行类                      → 桌面只「在文件夹中显示」并说明原因；
  *   4) 浏览器回退                    → blob 新标签页；引用型（无副本）如实说打不开；
@@ -68,7 +68,7 @@ afterEach(() => {
 
 describe("分支一：有关联的卡片", () => {
   it("图片 + 位图：可缩略图、可查看，状态一行说清关联了哪份附件", () => {
-    const plan = attachmentPreviewPlan("image", { image: IMAGE_META }, { desktop: false });
+    const plan = attachmentPreviewPlan("file", { file: IMAGE_META }, { desktop: false });
     expect(plan.state).toBe("linked");
     expect(plan.attachmentId).toBe("att_img");
     expect(plan.displayName).toBe("示意图.png");
@@ -89,7 +89,7 @@ describe("分支一：有关联的卡片", () => {
   });
 
   it("元信息不完整时也不编：只有 id、没有名字，就用「未命名附件」", () => {
-    const plan = attachmentPreviewPlan("image", { image: { attachmentId: "att_x" } }, { desktop: false });
+    const plan = attachmentPreviewPlan("file", { file: { attachmentId: "att_x" } }, { desktop: false });
     expect(plan.state).toBe("linked");
     expect(plan.displayName).toBe("未命名附件");
     expect(plan.sizeBytes).toBeNull();
@@ -99,7 +99,7 @@ describe("分支一：有关联的卡片", () => {
 
 describe("分支二：无关联的卡片（不许假装能打开）", () => {
   it("没有 attachmentId：没有动作、没有缩略图，理由是可读的一句话", () => {
-    const plan = attachmentPreviewPlan("image", { image: { name: "看起来像图.png" } }, { desktop: true });
+    const plan = attachmentPreviewPlan("file", { file: { name: "看起来像图.png" } }, { desktop: true });
     expect(plan.state).toBe("unlinked");
     expect(plan.attachmentId).toBe("");
     expect(plan.action).toBeNull();
@@ -185,7 +185,7 @@ describe("分支四：浏览器回退与打不开的情形", () => {
     expect(isPreviewableImageName("图.svg")).toBe(false);
     expect(isPreviewableImageName("图.xml")).toBe(false);
     expect(isPreviewableImageName("照片.JPG")).toBe(true);
-    const plan = attachmentPreviewPlan("image", { image: { name: "图.svg", attachmentId: "att_svg" } }, { desktop: false });
+    const plan = attachmentPreviewPlan("file", { file: { name: "图.svg", attachmentId: "att_svg" } }, { desktop: false });
     expect(plan.imagePreviewable).toBe(false);
     // svg 是图片类但不能安全渲染：理由说的是「可能带脚本」，这比「只用于图片」更准确
     expect(plan.unavailableReason).toContain("不能安全渲染缩略图");
@@ -194,11 +194,11 @@ describe("分支四：浏览器回退与打不开的情形", () => {
 
 describe("可读文案（a11y 标签与诚实说明）", () => {
   it("标签里带对象名，可执行类带「不自动运行」；无关联时直接说打不开", () => {
-    const linked = attachmentCardState({ image: IMAGE_META }, "image", { executable: () => false, viewable: () => true });
+    const linked = attachmentCardState({ file: IMAGE_META }, "file", { executable: () => false, viewable: () => true });
     expect(attachmentPreviewActionLabel(linked, false)).toBe("查看「示意图.png」");
     const exe = attachmentCardState({ file: { name: "a.exe", attachmentId: "id" } }, "file", { executable: () => true });
     expect(attachmentPreviewActionLabel(exe, false)).toContain("不自动运行");
-    const missing = attachmentCardState({ image: { name: "x.png" } }, "image");
+    const missing = attachmentCardState({ file: { name: "x.png" } }, "file");
     expect(attachmentPreviewActionLabel(missing, true)).toContain("打不开");
   });
 

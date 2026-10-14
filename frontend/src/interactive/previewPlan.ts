@@ -115,24 +115,21 @@ const TABULAR_EXT = new Set(["csv", "tsv", "xls", "xlsx", "xlsm"]);
 const PLAIN_TEXT_EXT = new Set(["txt", "md", "markdown", "log", "rst", "tex"]);
 
 /**
- * 卡片 meta 里已保存附件的显示名（meta.file 优先，其次 meta.image —— 与后端同一口径）。
- * 迁移把 meta.image 搬到 meta.file 之后，两条路都还能读到老数据。
+ * 卡片 meta 里已保存附件的显示名（2026-10-15 图片展示简化：**只读 meta.file**，不回退 meta.image）。
  */
 export function attachmentDisplayName(meta: Record<string, unknown> | null | undefined): string {
   const raw = (meta ?? {}) as Record<string, unknown>;
-  for (const key of ["file", "image"]) {
-    const block = raw[key];
-    if (block && typeof block === "object") {
-      const name = (block as { name?: unknown }).name;
-      if (typeof name === "string" && name.trim()) return name.trim();
-    }
+  const block = raw.file;
+  if (block && typeof block === "object") {
+    const name = (block as { name?: unknown }).name;
+    if (typeof name === "string" && name.trim()) return name.trim();
   }
   const top = raw.name;
   return typeof top === "string" ? top.trim() : "";
 }
 
 /**
- * 材料卡的类型标签（2026-10-14 第九个问题）：**按附件类型显示**，不再区分「文件 / 图片」两种卡片。
+ * 材料卡的类型标签（2026-10-15 图片展示简化）：**材料只有 file，按附件类型显示** ——
  * 图片 / PDF / 表格 / 演示文稿 / 文档 / 文本 / 代码 / 其它；没有附件时显示「文件」。
  * 非材料卡返回空串，调用方用自己的标签（文字注释 / QIO 结果）。
  */
@@ -140,7 +137,7 @@ export function materialTypeLabel(
   kind: string | undefined,
   meta: Record<string, unknown> | null | undefined,
 ): string {
-  if (kind !== "file" && kind !== "image") return "";
+  if (kind !== "file") return "";
   const name = attachmentDisplayName(meta);
   if (!name) return "文件";
   const ext = extensionOf(name);
@@ -163,15 +160,13 @@ export function materialTypeLabel(
   }
 }
 
-/** 卡片 meta 里的已保存附件 id（meta.file / meta.image，与后端同一口径）。 */
+/** 卡片 meta 里的已保存附件 id（2026-10-15：**只读 meta.file**，不回退 meta.image）。 */
 export function cardAttachmentId(card: Pick<BoardCard, "meta"> | null | undefined): string {
   const meta = (card?.meta ?? {}) as Record<string, unknown>;
-  for (const key of ["image", "file"]) {
-    const block = meta[key];
-    if (block && typeof block === "object") {
-      const value = (block as Record<string, unknown>).attachmentId ?? (block as Record<string, unknown>).attachment_id;
-      if (value) return String(value).trim();
-    }
+  const block = meta.file;
+  if (block && typeof block === "object") {
+    const value = (block as Record<string, unknown>).attachmentId ?? (block as Record<string, unknown>).attachment_id;
+    if (value) return String(value).trim();
   }
   const top = (meta.attachmentId as unknown) ?? (meta.attachment_id as unknown);
   return top ? String(top).trim() : "";
@@ -179,24 +174,20 @@ export function cardAttachmentId(card: Pick<BoardCard, "meta"> | null | undefine
 
 export function cardFileName(card: Pick<BoardCard, "meta"> | null | undefined): string {
   const meta = (card?.meta ?? {}) as Record<string, unknown>;
-  for (const key of ["image", "file"]) {
-    const block = meta[key];
-    if (block && typeof block === "object") {
-      const name = (block as Record<string, unknown>).name;
-      if (name) return String(name);
-    }
+  const block = meta.file;
+  if (block && typeof block === "object") {
+    const name = (block as Record<string, unknown>).name;
+    if (name) return String(name);
   }
   return meta.name ? String(meta.name) : "";
 }
 
 export function cardSizeBytes(card: Pick<BoardCard, "meta"> | null | undefined): number | null {
   const meta = (card?.meta ?? {}) as Record<string, unknown>;
-  for (const key of ["image", "file"]) {
-    const block = meta[key];
-    if (block && typeof block === "object") {
-      const size = (block as Record<string, unknown>).size;
-      if (typeof size === "number") return size;
-    }
+  const block = meta.file;
+  if (block && typeof block === "object") {
+    const size = (block as Record<string, unknown>).size;
+    if (typeof size === "number") return size;
   }
   return typeof meta.size === "number" ? (meta.size as number) : null;
 }

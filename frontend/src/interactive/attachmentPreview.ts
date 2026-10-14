@@ -3,7 +3,7 @@
  *
  * 契约：docs/interactive-mode-contract.md §14.1（拿到文件名 ≠ 读到正文）。
  * 这里只做两件事：
- * 1. **计划是纯的**：把卡片 meta（meta.file / meta.image = {name, attachmentId, size}）
+ * 1. **计划是纯的**：把卡片 meta（meta.file = {name, attachmentId, size}；2026-10-15 起只读 meta.file）
  *    翻成「能看见什么、点一下会发生什么、为什么不能」，可单测、不碰 DOM；
  * 2. **执行辅助不 import vue**：缩略图的 blob URL 生命周期（建 → 卸载 / 换附件时 revoke）
  *    与「点一下」到底走哪条既有链路（桌面 open / reveal，浏览器带认证 fetch + blob 新标签页）
