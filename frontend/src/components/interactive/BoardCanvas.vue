@@ -385,9 +385,29 @@ const userSizedCards = ref<Set<string>>(new Set());
  * 展开 / 让位 / 收起都不产生表达、不触发意图 / 任务、不排保存。
  * `expandedAvoid` 打开：多张卡同时展开时互相让位（任务书 §7.2）。
  */
+/*
+  布局计划的入参必须是**这一帧真正画出来的位置**（2026-10-14 用户报「拖动时原地出现白色底框」）：
+  拖动 / 尺寸调整期间板面状态不变（只预演），卡片本体用 displayRect 拿到实时坐标，
+  但展开槽位原来只喂了 liveCards（正式坐标）——于是展开面板停在原地，
+  露出它的白色底衬，看起来就是卡片"掉下"一个白框。
+  这里**不能**直接复用 displayCards：那个 computed 依赖 layoutPlan（判断要不要重建对象），
+  再互相引用就成了循环依赖。所以单独算一份只依赖 dragging / resizing 的坐标。
+*/
+const planCards = computed<BoardCardModel[]>(() => {
+  const drag = dragging.value;
+  const moved = drag && drag.moved ? drag : null;
+  const size = resizing.value;
+  if (!moved && !size) return liveCards.value;
+  return liveCards.value.map((card) => {
+    const rect = displayRect(card);
+    if (rect.x === card.x && rect.y === card.y && rect.w === card.w && rect.h === card.h) return card;
+    return { ...card, x: rect.x, y: rect.y, w: rect.w, h: rect.h };
+  });
+});
+
 const layoutPlan = computed(() =>
   planExpandedLayout({
-    cards: liveCards.value,
+    cards: planCards.value,
     expanded: store.expandedCardIds,
     expandedSize: EXPANDED_PREVIEW_SIZE,
     stage: boardRegion.value.size,
