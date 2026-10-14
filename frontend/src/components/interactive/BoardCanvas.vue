@@ -1085,8 +1085,14 @@ function onPointerUp() {
     const changed = stateDiffers(normalizeState(current), result.state);
     if (changed) {
       commit(result.state, label);
-      notice.value =
-        label + "：" + (result.groupId ? "已放入组（板面会自动保存，不会调用 QIO）。" : "只改变位置（位置不构成意图依据）。");
+      /*
+        2026-10-14（用户要求「把这个删掉」）：**只移动位置不再弹提示**。
+        位置不构成意图依据这件事已经写在提交区与操作说明里，每次拖动都弹一条属于噪音；
+        改变了结构的结果（成组 / 合并）仍然提示，因为它会真的改变板面组织方式。
+      */
+      if (result.groupId) {
+        notice.value = label + "：已放入组（板面会自动保存，不会调用 QIO）。";
+      }
     } else {
       notice.value = "卡片没有移动：板面没有产生改动，也没有保存。";
     }
