@@ -49,6 +49,8 @@ import {
   updateLink,
   type DropPreview,
 } from "../../interactive/board";
+// 局部工具栏的落点决策（纯函数，单测在 interactive/__tests__/overlayPlacement.test.ts）
+import { placeCardOverlay } from "../../interactive/overlayPlacement";
 import {
   clampViewport,
   effectiveRect,
@@ -925,30 +927,34 @@ function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
   const screen = screenPointOfBoard(rect.x, rect.y, viewRect);
   const cardTopClient = screen.y;
   const cardBottomClient = cardTopClient + rect.h * view.value.scale;
-  const limitTopClient = viewRect.top + 2;
-  const maxTopClient = viewRect.bottom - 30;
+  const cardRightClient = screen.x + rect.w * view.value.scale;
   const toolbarEl = shellElement.querySelector('[data-im="card-toolbar"]');
   const toolbarH = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().height)) : TOOLBAR_H;
   // 工具栏宽度也要量：只夹左边缘的话，窄窗口里右侧按钮会被视口裁掉（复核实测 800×600 下超出 74px）
   const toolbarW = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().width)) : 420;
-  const aboveTopClient = cardTopClient - toolbarH - TOOLBAR_GAP;
-  const belowTopClient = Math.min(maxTopClient, cardBottomClient + TOOLBAR_GAP);
-  const touchesCardTop = (value: number) => value + toolbarH > cardTopClient - 2 && value < cardTopClient;
-  let topClient = aboveTopClient >= limitTopClient ? aboveTopClient : belowTopClient;
-  if (touchesCardTop(topClient)) topClient = belowTopClient;
-  topClient = Math.max(limitTopClient, topClient);
-  if (touchesCardTop(topClient)) topClient = Math.max(limitTopClient, cardBottomClient + TOOLBAR_GAP);
+  /*
+    落点决策交给纯函数（interactive/overlayPlacement.ts）：先卡片上方、再卡片下方，两者都要求
+    整个工具栏在可视区内；竖向两边都放不下（卡片比可视区还高）时挪到卡片**横向之外**，
+    而不是整块压在卡片上。
+    2026-10-14 修：原来这里用 viewRect.bottom − 30 夹下方位置，既没算工具栏自身高度，
+    也看不见「落在卡片下半部分」——实测 1200×500 窗口下工具栏 442–478 整块落进卡片 104–508。
+  */
+  const placed = placeCardOverlay({
+    card: { top: cardTopClient, bottom: cardBottomClient, left: screen.x, right: cardRightClient },
+    toolbar: { w: toolbarW, h: toolbarH },
+    viewport: { top: viewRect.top, bottom: viewRect.bottom, left: viewRect.left, right: viewRect.right },
+    gap: TOOLBAR_GAP,
+  });
   // 卡片被拖出可视区时不再显示浮层（但状态仍然保留）
   const visible =
     screen.x + rect.w * view.value.scale > viewRect.left - 40 &&
     screen.x < viewRect.right + 40 &&
     screen.y + rect.h * view.value.scale > viewRect.top - 40 &&
     screen.y < viewRect.bottom + 40;
-  const leftClient = Math.max(viewRect.left + 4, Math.min(viewRect.right - toolbarW - 4, screen.x));
   overlay.value = {
     // 行内 left/top 是相对 offsetParent（.board-surface）的：最后一步统一减去它的位置
-    left: leftClient - surfaceNow.left,
-    top: topClient - surfaceNow.top,
+    left: placed.left - surfaceNow.left,
+    top: placed.top - surfaceNow.top,
     visible,
   };
 }
