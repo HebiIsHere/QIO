@@ -1179,6 +1179,10 @@ function onKeydown(event: KeyboardEvent) {
         <span class="panel-title serif">对话</span>
         <span class="panel-status mono" data-im="chat-status">{{ statusText }}</span>
         <div class="panel-tools">
+          <!--
+            2026-10-14（用户要求）：互动模式里不再出现宽 / 高那对按钮 —— 对话窗口标题栏里这一份也隐藏。
+            面板尺寸仍可用八向拖动调整。
+          -->
           <ResizeHandles
             class="head-keys"
             :handles="[]"
@@ -1731,6 +1735,8 @@ function onKeydown(event: KeyboardEvent) {
   pointer-events: auto;
 }
 .panel-head :deep(.rz-keys) {
+  /* 2026-10-14（用户要求）：宽 / 高按钮在互动模式里不出现 —— 仍在 DOM，仅视觉隐藏 */
+  display: none;
   position: static;
   opacity: 1;
   pointer-events: auto;
@@ -2292,11 +2298,14 @@ function onKeydown(event: KeyboardEvent) {
   padding: var(--sp-1) var(--sp-2);
 }
 
-/* --- 入口按钮：收起时就地停在窗口右下角，展开时挂到面板下方 ----------------- */
+/*
+  入口按钮：**固定**在窗口右下角（2026-10-14 用户要求）—— 展开 / 收起、面板拖到哪都不动。
+  原来用 absolute + right/bottom: 0，是相对外层坐标载体定位的：面板一挪，按钮跟着挪。
+*/
 .toggle {
-  position: absolute;
-  right: 0;
-  bottom: 0;
+  position: fixed;
+  right: var(--sp-4);
+  bottom: var(--sp-4);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
@@ -2313,10 +2322,10 @@ function onKeydown(event: KeyboardEvent) {
   box-shadow: var(--shadow-1);
 }
 /* 面板展开时入口不盖面板：挂到它的下边缘之外（默认框已经为它留了位置） */
-.chat-dock.open .toggle {
-  bottom: auto;
-  top: calc(100% + var(--sp-1));
-}
+/*
+  2026-10-14（用户要求）：按钮**固定**在窗口右下角 —— 展开时不再挂到面板下边缘。
+  原来这里把 open 状态改成 top: calc(100% + …)：配合 fixed 定位，按钮直接掉到视口下方 43px。
+*/
 .toggle:hover { background: var(--accent-hover); }
 .toggle:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
 .toggle-mark { font-size: var(--fs-base); line-height: 1; }

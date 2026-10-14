@@ -137,6 +137,11 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
       :style="host.style"
       :data-resize-card-id="host.id"
     >
+      <!--
+        2026-10-14（用户要求）：板面上的卡片**不再出现宽 / 高那对按钮**（附截图为证）。
+        按钮仍渲染（组件契约与既有用例不变），但由下面的样式在**板面这一层**视觉隐藏：
+        八向拖动热区保留，键盘 / 读屏也拿不到它们。
+      -->
       <ResizeHandles
         :label="host.label"
         :disabled="props.disabled"
@@ -189,8 +194,18 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
 }
 /*
  * 宿主只定位：真正的热区 / 按钮由 ResizeHandles 画（父级必须是 relative / absolute）。
+ *
+ * 2026-10-14（用户要求）：板面上**不出现**宽 / 高那对键盘按钮 —— 按钮仍在 DOM 里
+ * （组件契约与既有用例不变），只在板面这一层视觉隐藏，键盘 / 读屏也拿不到。
  * 尺寸把手显式给 z-index 1，连接点给 2：同一层内**不依赖 DOM 顺序**，连接点永远在热区之上。
  */
+/*
+  2026-10-14（用户要求）：板面卡片上不出现宽 / 高那对键盘按钮。
+  按钮仍在 DOM（组件契约与既有用例不变），这里只做视觉隐藏 —— 键盘 / 读屏也拿不到。
+*/
+.resize-host :deep(.rz-keys) {
+  display: none;
+}
 .resize-host {
   position: absolute;
   pointer-events: none;

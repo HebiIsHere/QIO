@@ -1199,7 +1199,12 @@ function dragHintText(): string {
     return "将与「" + cardSummary(other) + "」自动成组（默认组名「默认组名」）。";
   }
   if (drag.fromGroupId) return "松手后移出组（自由摆放，组空了会自动消失）。";
-  return "松手后只移动位置：位置不构成意图依据。";
+  /*
+    2026-10-14（用户要求删掉这条粉边栏，两次反馈）：纯位置变化**不提示** ——
+    拖动中它只是一直挂在头顶的噪音，而「位置不构成意图依据」已经写在提交区与操作说明里。
+    返回空串，配合模板上的 v-if="dragging && dragHint" 让这条横幅根本不出现。
+  */
+  return "";
 }
 
 const dragHint = computed(dragHintText);
@@ -1965,7 +1970,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section ref="shell" class="board-shell" data-im="board">
-    <p v-if="dragging" class="banner drag" role="status">{{ dragHint }}</p>
+    <p v-if="dragging && dragHint" class="banner drag" role="status">{{ dragHint }}</p>
     <p v-if="notice" class="banner" role="status">{{ notice }}</p>
     <!--
       操作提示只在「本机还没用过查看手势」时出现一条，用过一次即永久收起。
@@ -2123,13 +2128,24 @@ onBeforeUnmount(() => {
   min-width: 0;
   background: var(--bg-base);
 }
+/*
+  2026-10-14（用户要求）：提示条**浮在板面上**，不许把整块板面顶下去。
+  原来它们排在 flex 列里占一行 —— 一出现，板面与所有卡片整体下移，看起来像「板面跳了一下」。
+  现在绝对定位到板面顶部、半透明底、pointer-events: none（不挡任何板面操作）。
+*/
 .banner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  z-index: 40;
   margin: 0;
   padding: var(--sp-1) var(--sp-4);
   font-size: var(--fs-xs);
   color: var(--text-secondary);
-  background: var(--bg-surface);
+  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
   border-bottom: 1px solid var(--border-subtle);
+  pointer-events: none;
 }
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
 .banner.view-hint { color: var(--text-faint); }
