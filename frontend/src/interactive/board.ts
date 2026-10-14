@@ -1172,6 +1172,52 @@ export function previewDrop(state: BoardState, cardId: string, x: number, y: num
 }
 
 /** 放下后才完成操作：重叠成组 / 加入已有组 / 合并两组 / 有序组按落点插入。 */
+//: 找空位时向外搜索的步长与最大圈数（40 圈 × 16px = 最多挪 640px）
+const FREE_DROP_STEP = 16;
+const FREE_DROP_MAX_RINGS = 40;
+
+/** 第 ring 圈的候选偏移：按与落点的远近排（先四边，再四角）。 */
+function freeDropRing(ring: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let i = -ring; i <= ring; i++) {
+    if (Math.abs(i) === ring) out.push([i, -ring], [i, ring], [-ring, i], [ring, i]);
+  }
+  return out;
+}
+
+/**
+ * 落点被占就挪到最近的空位（2026-10-14 用户要求：**卡片不允许叠放**）。
+ *
+ * 纯函数、不改状态：以落点为中心一圈圈向外找第一个与**别的卡片**都不相交的位置。
+ * 找不到就如实返回原落点 —— 不假装让开了，也不把卡片推出画布（夹取由 clampCardRect 兜住）。
+ */
+export function freeDropSpot(
+  state: BoardState,
+  cardId: string,
+  x: number,
+  y: number,
+): { x: number; y: number } {
+  const work = normalizeState(state);
+  const card = cardById(work, cardId);
+  if (!card) return { x, y };
+  const others = work.cards.filter((item) => !item.deleted && item.id !== cardId);
+  const hits = (px: number, py: number): boolean =>
+    others.some((o) => px < o.x + o.w && o.x < px + card.w && py < o.y + o.h && o.y < py + card.h);
+  if (!hits(x, y)) return { x, y };
+  for (let ring = 1; ring <= FREE_DROP_MAX_RINGS; ring++) {
+    for (const [dx, dy] of freeDropRing(ring)) {
+      const spot = clampCardRect({
+        x: x + dx * FREE_DROP_STEP,
+        y: y + dy * FREE_DROP_STEP,
+        w: card.w,
+        h: card.h,
+      });
+      if (!hits(spot.x, spot.y)) return { x: spot.x, y: spot.y };
+    }
+  }
+  return { x, y };
+}
+
 export function dropCard(state: BoardState, cardId: string, x: number, y: number): DropResult {
   const px = asFloat(x, 0);
   const py = asFloat(y, 0);
@@ -1184,9 +1230,21 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
   // 落点先夹进画布范围：负坐标的卡片顶部永远看不见（见 clampCardRect 的说明）
   const placed = clampCardRect({ x: px, y: py, w: card.w, h: card.h });
   const resolved = resolveDrop(work, cardId, placed.x, placed.y);
+  /*
+    不成组时**不许叠放**：落点被别的卡片占住就自动挪到最近的空位。
+    成组时不挪：位置由组框排布接管（合并成组本来就是用户明确要的语义）。
+  */
+  /*
+    会成组就不挪：位置由组框排布接管。
+    注意有**两条**成组路径 —— resolved.target（落点明确指向某张卡）与 bestMergeTarget
+    （两张未分组卡片明确重叠 → 自动成组）。只看前者会让后者也被让位，
+    于是「重叠自动成组」的卡片先被推开、再成组（既有用例抓到过）。
+  */
+  const willGroup = Boolean(resolved.target) || Boolean(bestMergeTarget(work, cardId, px, py));
+  const spot = willGroup ? { x: placed.x, y: placed.y } : freeDropSpot(work, cardId, placed.x, placed.y);
   const stamp = nowIso();
-  card.x = placed.x;
-  card.y = placed.y;
+  card.x = spot.x;
+  card.y = spot.y;
   card.updatedAt = stamp;
   work.updatedAt = stamp;
 
