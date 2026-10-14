@@ -56,6 +56,8 @@ import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
 import CardAttachmentPreview from "./CardAttachmentPreview.vue";
+import { attachmentPreviewPlan } from "../../interactive/attachmentPreview";
+import { isDesktopShell } from "../../services/attachments";
 import TextCardEditor from "../../interactive/TextCardEditor.vue";
 // 卡片正文是这张卡唯一的主要纵向视口：滚动能力保留，滚动条外观统一走 QIO 指示条。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
@@ -384,6 +386,29 @@ async function editBlockAt(line: number): Promise<void> {
 const attachKind = computed<"file" | "image" | null>(() =>
   props.card.kind === "file" || props.card.kind === "image" ? props.card.kind : null,
 );
+/**
+ * 封面式呈现（2026-10-14 第六个问题）：
+ * 图片卡、以及**附件是图片**的文件卡，在常态与折叠态把图片铺满整张卡作为背景
+ * （标题 / 一行补充说明 / 右下角「查看」浮在蒙版上）。编辑态与阅读态不铺封面：
+ * 编辑要看清表单，阅读要让真实预览当主体。
+ * 判定与 CardAttachmentPreview 用**同一个计划函数**，两边不会各说各话。
+ */
+const desktopShell = ref(false);
+if (typeof window !== "undefined") desktopShell.value = isDesktopShell();
+const coverPlan = computed(() =>
+  attachmentPreviewPlan(props.card.kind, (props.card.meta ?? {}) as Record<string, unknown>, {
+    desktop: desktopShell.value,
+  }),
+);
+const coverMode = computed(
+  () =>
+    Boolean(attachKind.value) &&
+    coverPlan.value.imagePreviewable &&
+    coverPlan.value.state === "linked" &&
+    (displayState.value === "normal" || displayState.value === "folded"),
+);
+const coverDesc = computed(() => String(props.card.content ?? "").trim());
+
 const attachmentId = computed(() => cardAttachmentId(props.card.meta, props.card.kind));
 const attachmentLinked = computed(() => cardAttachmentLinked(props.card.meta, props.card.kind));
 const attachmentText = computed(() => cardAttachmentText(props.card.meta, props.card.kind));
@@ -917,13 +942,28 @@ function cancelEdit() {
       hidden: card.hidden,
       reply: card.kind === 'reply',
       'is-compact': compactChrome,
+      // 封面式：图片铺满整张卡，头部 / 正文 / 页脚浮在封面之上（见 CardAttachmentPreview 的 cover 变体）
+      'is-cover': coverMode,
     }"
     :style="style"
     data-im="card"
     :data-card-id="card.id"
     :data-card-state="displayState"
     @pointerdown="onPointerDown"
+    :data-cover="coverMode ? '1' : undefined"
   >
+    <!--
+      封面层：图片铺满整张卡作为背景（纯呈现，不进板面状态）。
+      编辑态 / 阅读态不铺：那两个状态的主体分别是表单与真实预览。
+    -->
+    <CardAttachmentPreview
+      v-if="coverMode"
+      variant="cover"
+      :desc="coverDesc"
+      :kind="card.kind"
+      :meta="card.meta"
+      :card-id="card.id"
+    />
     <header class="card-head" data-im="card-head">
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
@@ -1222,7 +1262,8 @@ function cancelEdit() {
             <p v-else-if="card.kind === 'url'" class="content url">
               <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
             </p>
-            <p v-else class="content">
+            <!-- 封面式：正文那行已经在封面底部，不在卡片里重复一遍 -->
+            <p v-else-if="!coverMode" class="content">
               <span v-if="card.content" class="desc">{{ card.content }}</span>
               <span v-else class="empty">{{ kindLabel }}：还没有补充说明</span>
             </p>
@@ -1233,7 +1274,7 @@ function cancelEdit() {
             文件名与说明留在标题附近，主体让给真实预览，不在预览上方重复铺开大段说明。
           -->
           <CardAttachmentPreview
-            v-if="attachKind"
+            v-if="attachKind && !coverMode"
             :kind="card.kind"
             :meta="card.meta"
             :card-id="card.id"
@@ -1439,6 +1480,22 @@ function cancelEdit() {
   内容区高度仍 > 0（头部与页脚 flex: none，正文 flex: 1 并 min-height: 0）。
 */
 .card.is-compact { padding: var(--sp-2); gap: var(--sp-1); }
+
+/*
+  封面式图片卡（2026-10-14 第六个问题）：图片铺满整张卡（CardAttachmentPreview 的 cover 变体）。
+  绝对定位的封面按**内边距盒**解析 inset:0，所以卡片自身的内边距不用改，封面天然满铺；
+  头部 / 正文 / 页脚只需要透明并浮到封面之上，文字可读性由封面里的上下蒙版保证。
+  这里刻意**不重复声明** .card-head / .card-body / .card-meta：源码守卫按选择器取 CSS 块，
+  重复声明会把真正的规则挤掉（第一次全量就是这样挂了 4 条守卫）。
+*/
+.card.is-cover {
+  overflow: hidden;
+}
+.card.is-cover > :not(.card-cover) {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
 
 /* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
 .card:hover { border-color: var(--border-strong); }

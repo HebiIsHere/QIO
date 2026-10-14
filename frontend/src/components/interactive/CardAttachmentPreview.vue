@@ -43,8 +43,17 @@ const props = withDefaults(
      * 默认 false，既有调用方行为一字不变。
      */
     compact?: boolean;
+    /**
+     * 呈现变体（2026-10-14 第六个问题）：
+     * - `default`：既有形态（关联状态 + 缩略图 + 查看按钮 + 说明）；
+     * - `cover`：**封面式** —— 图片铺满整张卡作为背景，只留一行补充说明 + 右下角「查看」，
+     *   供「图片卡 / 附件是图片的文件卡」在常态与折叠态使用（编辑态与阅读态不铺封面）。
+     */
+    variant?: "default" | "cover";
+    /** 封面变体底部那一行补充说明（卡片正文；空串时显示占位文案） */
+    desc?: string;
   }>(),
-  { meta: null, cardId: "", open: undefined, compact: false },
+  { meta: null, cardId: "", open: undefined, compact: false, variant: "default", desc: "" },
 );
 
 const attachKind = computed<"file" | "image" | null>(() =>
@@ -81,12 +90,15 @@ function attachmentRef(): AttachmentRef {
 // ---------------------------------------------------------------------------
 
 const thumb = ref<HTMLImageElement | null>(null);
+/** 封面变体的背景图（与缩略图共用同一条 blob 通道与生命周期） */
+const coverImg = ref<HTMLImageElement | null>(null);
 const previewTick = ref(0);
 
 const previewImage = createPreviewImageState({
   fetchContent: (id: string) => fetchAttachmentContent(id),
   clearUrl: () => {
     if (thumb.value) thumb.value.removeAttribute("src");
+    if (coverImg.value) coverImg.value.removeAttribute("src");
   },
   onUpdate: () => {
     previewTick.value += 1;
@@ -129,9 +141,11 @@ watch(
   (url) => {
     if (url) {
       if (thumb.value) thumb.value.setAttribute("src", url);
+      if (coverImg.value) coverImg.value.setAttribute("src", url);
       return;
     }
     if (thumb.value) thumb.value.removeAttribute("src");
+    if (coverImg.value) coverImg.value.removeAttribute("src");
   },
   { flush: "post" },
 );
@@ -219,8 +233,50 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!--
+    封面式（variant="cover"）：图片铺满整张卡作为背景，文字退到上下两条蒙版里。
+    这一层**不吃指针事件**（pointer-events: none）：卡片拖动 / 选中 / 双击手势照旧落在卡片上，
+    只有「查看」按钮自己接事件。图片是装饰（aria-hidden + 空 alt）：卡片名与附件信息由卡片自身与阅读态承担。
+  -->
   <div
-    v-if="attachKind"
+    v-if="attachKind && variant === 'cover'"
+    class="card-cover"
+    data-qio-fit
+    :data-im="'card-cover'"
+    :data-card-id="cardId"
+    :data-state="linked ? 'linked' : 'unlinked'"
+    :data-open-action="plan.action ?? 'none'"
+  >
+    <img
+      v-if="previewUrl"
+      ref="coverImg"
+      class="cover-img"
+      alt=""
+      aria-hidden="true"
+      :data-im="'card-cover-img'"
+      :data-card-id="cardId"
+    />
+    <span class="cover-scrim is-top" aria-hidden="true"></span>
+    <span class="cover-scrim is-bottom" aria-hidden="true"></span>
+    <p class="cover-desc" :data-im="'card-cover-desc'" :title="desc || undefined">
+      {{ desc || "图片：还没有补充说明" }}
+    </p>
+    <button
+      type="button"
+      class="btn cover-open"
+      :data-im="'card-cover-open'"
+      :data-card-id="cardId"
+      :data-open-action="plan.action ?? 'none'"
+      :aria-label="actionAriaLabel"
+      :disabled="actionBusy"
+      @click.stop="onOpen"
+    >{{ actionText }}</button>
+    <p v-if="!previewUrl && previewNote" class="cover-note" :data-im="'card-attachment-preview-state'">{{ previewNote }}</p>
+    <p v-if="actionStatus" class="cover-status" :class="'is-' + actionStatus.tone" :data-im="'card-attachment-open-status'" role="status">{{ actionStatus.text }}</p>
+  </div>
+
+  <div
+    v-else-if="attachKind"
     class="card-attach-preview"
     data-qio-fit
     :class="{ compact }"
@@ -326,4 +382,79 @@ onBeforeUnmount(() => {
 .btn:hover { border-color: var(--border-strong); }
 .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .btn:disabled { color: var(--text-muted); cursor: progress; }
+
+/* --- 封面式：图片铺满整张卡作为背景（2026-10-14 第六个问题） ------------------ */
+/*
+  这一层是**背景**：position: absolute 填满卡片（.card 本身是定位元素），
+  border-radius: inherit 让它跟着卡片圆角；pointer-events: none 保证卡片拖动 / 选中 /
+  双击手势照旧落在卡片上，只有「查看」按钮自己接事件。
+*/
+.card-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg-surface);
+}
+.cover-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/*
+  上下两条蒙版：图片内容不可控，文字直接压上去必然有读不清的组合。
+  蒙版用 --bg-surface 的透明混合（token 派生，不写死色值），保证标题 / 说明始终可读。
+*/
+.cover-scrim { position: absolute; left: 0; right: 0; height: 42%; }
+.cover-scrim.is-top {
+  top: 0;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--bg-surface) 86%, transparent), transparent);
+}
+.cover-scrim.is-bottom {
+  bottom: 0;
+  background: linear-gradient(to top, color-mix(in srgb, var(--bg-surface) 92%, transparent), transparent);
+}
+/*
+  底部文字要**抬到卡片状态行之上**：卡片页脚（.card-meta，必要状态 + 更新时间）在封面之上、
+  贴着卡片底边，两边都贴底就会叠在一起（第一次浏览器核对时就是这样）。
+  COVER_FOOTER_ROOM 是给页脚留出的高度（页脚约 20px + 一点间距）。
+*/
+.cover-desc {
+  position: absolute;
+  left: var(--sp-3);
+  right: calc(var(--sp-3) + 76px);
+  bottom: calc(var(--sp-2) + 26px);
+  margin: 0;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cover-open {
+  position: absolute;
+  right: var(--sp-3);
+  bottom: calc(var(--sp-2) + 24px);
+  pointer-events: auto;
+}
+.cover-note,
+.cover-status {
+  position: absolute;
+  left: var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.cover-note { bottom: calc(var(--sp-2) + 52px); }
+.cover-status { top: var(--sp-2); }
+.cover-status.is-ok { color: var(--success); }
+.cover-status.is-error { color: var(--danger); }
 </style>
