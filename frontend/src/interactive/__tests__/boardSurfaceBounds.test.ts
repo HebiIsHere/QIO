@@ -55,9 +55,16 @@ describe("板面坐标夹在画布范围内", () => {
     expect(pos(next)).toEqual({ x: 0, y: 0 });
   });
 
-  it("拖到画布右下之外：夹到「画布 − 卡片尺寸」", () => {
+  /*
+    2026-10-14（用户要求「板面无限」，方案 B）：右上不再有边界 —— 画布随内容增长
+    （BoardCanvas 的 surfaceSize），卡片可以拖到任意远。这里只保证数值仍然有限。
+  */
+  it("拖到画布右下之外：不再夹回旧画布（画布会跟着长）", () => {
     const next = dropCard(state(card()), "c1", 99999, 99999).state;
-    expect(pos(next)).toEqual({ x: BOARD_SURFACE_W - 260, y: BOARD_SURFACE_H - 170 });
+    const p = pos(next);
+    expect(p.x).toBeGreaterThan(BOARD_SURFACE_W);
+    expect(p.y).toBeGreaterThan(BOARD_SURFACE_H);
+    expect(Number.isFinite(p.x as number) && Number.isFinite(p.y as number)).toBe(true);
   });
 
   it("范围内的位置一个字都不改（夹取只在越界时生效）", () => {
@@ -97,7 +104,8 @@ describe("板面坐标夹在画布范围内", () => {
     expect(pos(moved)).toEqual({ x: 0, y: 0 });
     const resized = updateCard(state(card()), "c1", { w: BOARD_SURFACE_W + 500, h: BOARD_SURFACE_H + 500 });
     const grown = resized.cards.find((c) => c.id === "c1")!;
-    expect(grown.x + grown.w).toBeLessThanOrEqual(BOARD_SURFACE_W);
-    expect(grown.y + grown.h).toBeLessThanOrEqual(BOARD_SURFACE_H);
+    // 2026-10-14：右上不再夹取 —— 尺寸可以超出旧画布（画布会跟着长），只保证数值有限
+    expect(grown.w).toBe(BOARD_SURFACE_W + 500);
+    expect(Number.isFinite(grown.x + grown.w) && Number.isFinite(grown.y + grown.h)).toBe(true);
   });
 });

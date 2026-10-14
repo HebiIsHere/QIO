@@ -157,6 +157,13 @@ export const BOARD_SURFACE_W = 2400;
 export const BOARD_SURFACE_H = 1600;
 
 /**
+ * 画布尺寸的**上限哨兵**（2026-10-14 起画布随内容增长，见 BoardCanvas 的 surfaceSize）。
+ * 这里不再夹到 2400×1600 —— 只挡明显离谱的数值（浮点异常 / 外部数据），
+ * 保证坐标始终是有限数：**画布会长大，坐标不会失控**。
+ */
+export const BOARD_COORD_LIMIT = 1_000_000;
+
+/**
  * 把卡片矩形夹进画布范围：尺寸先收敛到画布内，再把左上角夹到 [0, 画布 − 尺寸]。
  * 所有写入路径（新建 / 拖动落下 / updateCard）都走这里，夹取规则只有一份。
  */
@@ -166,13 +173,19 @@ export function clampCardRect(rect: { x: number; y: number; w: number; h: number
   w: number;
   h: number;
 } {
-  const w = Math.max(1, Math.min(BOARD_SURFACE_W, asFloat(rect.w, 1)));
-  const h = Math.max(1, Math.min(BOARD_SURFACE_H, asFloat(rect.h, 1)));
+  const w = Math.max(1, Math.min(BOARD_COORD_LIMIT, asFloat(rect.w, 1)));
+  const h = Math.max(1, Math.min(BOARD_COORD_LIMIT, asFloat(rect.h, 1)));
+  /*
+    2026-10-14（用户要求「板面无限」，方案 B）：
+    右上不再有边界 —— 画布随内容增长（BoardCanvas 的 surfaceSize），卡片可以拖到任意远。
+    左边与上边仍以 0 为界：**坐标原点不漂**（否则卡片的 x/y 会变负数，
+    渲染、连线、组框、工具栏换算全都要跟着改一遍，代价远大于收益）。
+  */
   return {
     w,
     h,
-    x: Math.max(0, Math.min(BOARD_SURFACE_W - w, asFloat(rect.x, 0))),
-    y: Math.max(0, Math.min(BOARD_SURFACE_H - h, asFloat(rect.y, 0))),
+    x: Math.max(0, Math.min(BOARD_COORD_LIMIT - w, asFloat(rect.x, 0))),
+    y: Math.max(0, Math.min(BOARD_COORD_LIMIT - h, asFloat(rect.y, 0))),
   };
 }
 

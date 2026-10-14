@@ -88,6 +88,28 @@ import BoardResizeLayer from "./BoardResizeLayer.vue";
 // 画布尺寸与卡片坐标夹取共用 board.ts 的同一对常量（板面坐标的唯一事实源）
 const SURFACE_W = BOARD_SURFACE_W;
 const SURFACE_H = BOARD_SURFACE_H;
+//: 内容之外的留白：拖到边界后还能继续往外拖（画布会跟着长）
+const SURFACE_PAD = 400;
+
+/*
+  画布尺寸 = max(最小画布, 内容包围盒 + 留白)（2026-10-14 用户要求「板面无限」，方案 B）。
+  原来固定 2400×1600：卡片一碰边就被夹住，越不过去。
+  现在画布随内容增长 —— 卡片能往右下拖到任意远，滚动范围跟着变。
+  左上仍以 0 为界（坐标原点不漂，见 board.ts 的 clampCardRect 说明）。
+*/
+const surfaceSize = computed(() => {
+  let maxX = 0;
+  let maxY = 0;
+  for (const card of liveCards.value) {
+    if (card.deleted) continue;
+    maxX = Math.max(maxX, card.x + card.w);
+    maxY = Math.max(maxY, card.y + card.h);
+  }
+  return {
+    w: Math.max(SURFACE_W, Math.ceil(maxX + SURFACE_PAD)),
+    h: Math.max(SURFACE_H, Math.ceil(maxY + SURFACE_PAD)),
+  };
+});
 
 /** 工具栏 / 提示与卡片之间的间距（屏幕像素）。 */
 const TOOLBAR_GAP = 10;
@@ -760,15 +782,15 @@ function cancelLinkDraft(message: string): void {
 // --- 视口：平移 / 缩放 / 坐标换算 -----------------------------------------
 
 const surfaceStyle = computed(() => ({
-  width: SURFACE_W * view.value.scale + "px",
-  height: SURFACE_H * view.value.scale + "px",
+  width: surfaceSize.value.w * view.value.scale + "px",
+  height: surfaceSize.value.h * view.value.scale + "px",
   transform: `scale(${view.value.scale})`,
   transformOrigin: "0 0",
 }));
 
 const contentStyle = computed(() => ({
-  width: SURFACE_W * view.value.scale + "px",
-  height: SURFACE_H * view.value.scale + "px",
+  width: surfaceSize.value.w * view.value.scale + "px",
+  height: surfaceSize.value.h * view.value.scale + "px",
 }));
 
 /** 板面内容原点在屏幕上的位置（含滚动量）—— 所有坐标换算都用它。 */
@@ -869,13 +891,13 @@ function boardPointOf(event: { clientX: number; clientY: number }): { x: number;
 
 function containerSize(): { w: number; h: number } {
   const element = viewportEl.value;
-  if (!element) return { w: SURFACE_W, h: SURFACE_H };
-  return { w: element.clientWidth || SURFACE_W, h: element.clientHeight || SURFACE_H };
+  if (!element) return { w: surfaceSize.value.w, h: surfaceSize.value.h };
+  return { w: element.clientWidth || surfaceSize.value.w, h: element.clientHeight || surfaceSize.value.h };
 }
 
 /** 把滚动量写回容器（滚动量本身已经是坐标换算的事实来源）。 */
 function applyScroll(next: { x: number; y: number }) {
-  scroll.value = clampScroll(next, view.value.scale, containerSize(), { w: SURFACE_W, h: SURFACE_H });
+  scroll.value = clampScroll(next, view.value.scale, containerSize(), { w: surfaceSize.value.w, h: surfaceSize.value.h });
   const element = viewportEl.value;
   if (!element) return;
   // 浏览器不接受负滚动量：以 DOM 为准回写，保证坐标换算与真实显示一致
@@ -928,7 +950,7 @@ function zoomAtPointer(factor: number, client: { x: number; y: number }) {
     // 容器**原始**矩形 + scroll：zoomAtScroll 内部自己换算内容原点（见 viewportRect 的说明）
     viewportRect(),
     containerSize(),
-    { w: SURFACE_W, h: SURFACE_H },
+    { w: surfaceSize.value.w, h: surfaceSize.value.h },
   );
   view.value = { scale: result.scale, x: -result.scroll.x, y: -result.scroll.y };
   applyScroll(result.scroll);
@@ -2059,8 +2081,8 @@ onBeforeUnmount(() => {
             :links="links"
             :cards="displayCards"
             :active-link-id="editingLinkId"
-            :width="SURFACE_W"
-            :height="SURFACE_H"
+            :width="surfaceSize.w"
+            :height="surfaceSize.h"
             :draft-from-id="linkDraft ? linkDraft.fromId : null"
             :draft-point="linkDraft ? linkDraft.point : null"
             :draft-target-id="linkDraft ? linkDraft.targetId : null"
@@ -2070,8 +2092,8 @@ onBeforeUnmount(() => {
           <BoardPreviewLayer
             :intents="previewIntents"
             :located-intent-id="locatedIntentId"
-            :width="SURFACE_W"
-            :height="SURFACE_H"
+            :width="surfaceSize.w"
+            :height="surfaceSize.h"
             :expanded-slots="expandedSlots"
           />
 
