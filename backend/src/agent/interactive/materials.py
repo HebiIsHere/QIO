@@ -1602,30 +1602,6 @@ def _attachment_entry(
     )
 
 
-def _image_entry(
-    card: dict,
-    label: str,
-    meta: dict,
-    *,
-    service: AttachmentService | None,
-    vision: bool = False,
-    max_image_bytes: int = MAX_IMAGE_BYTES,
-) -> dict:
-    """卡片级（按 meta）的图片交付入口：能交付就如实说「字节已交给模型」，不能就如实说为什么。
-
-    保留它是为了「只有卡片、没有 Attachment 对象」的调用方也能走同一份判断；
-    只读 `meta.file`（旧 `meta.image` 回退已删除）。
-    `vision=True` 表示**本次模型链路支持多模态**（适配器声明）；此时真正读了字节的图片
-    记成 `image_delivered`（read=True，说明模型自己看），其余情况一律 `image_unsupported`
-    并带上可读原因（没有登记附件 / 附件不在 / 类型不支持 / 超过字节上限）。
-    """
-    raw_id = _attachment_id(meta, "file")
-    att = service.get(raw_id, check=False) if (service is not None and raw_id) else None
-    return _image_fact(
-        card, att, raw_id=raw_id, label=label, vision=vision, max_image_bytes=max_image_bytes
-    )
-
-
 def _image_fact(
     card: dict,
     att: Attachment | None,
@@ -1697,7 +1673,7 @@ def _image_fact(
             ],
         )
 
-    # 后面的三种原因都基于 raw_id / att，与 `_image_entry` 的入参无关。
+    # 后面的三种原因都基于 raw_id / att（调用方已经决定要读哪份附件），不依赖调用方的其余入参。
     # 没有视觉能力时的**主原因**必须点明「视觉能力」；具体是哪一种拿不到字节写进 notes。
     # （这样既保持诚实口径可机械核对，又不会把「还没有附件」笼统说成「模型看不见」）
     if not raw_id:
