@@ -132,10 +132,12 @@ function toggleSearch(): void {
 
 <style scoped>
 /*
-  悬浮在板面底部居中：position:absolute + left:50% + translateX(-50%) + bottom。
-  --tb-chat-reserve 是给右下角聊天入口留的横向空间：工具栏在**剩余空间**里居中，
-  右端不会压住聊天按钮。数值与 styles/interactive-shell.css 里的 --im-chat-reserve 一致
-  （shell.css 由主智能体在集成时导入，两处必须同值；这里是未导入时的兜底）。
+  悬浮在板面底部**左对齐、内容宽度**（2026-10-14 第八个问题）：
+  原来是「在剩余空间里居中 + 固定上限 1180」，于是对话窗口被整行工具栏卡在上方、
+  右下角一直留白。现在工具栏有多宽内容就多宽、贴在左边，
+  右侧整块让给对话窗口（可用区算法只在横向真的相交时才让位，见 ChatDock 的 avoidToolbar）。
+  --tb-chat-reserve 仍然保留：窗口很窄时工具栏不许压住右下角聊天入口。
+  数值与 styles/interactive-shell.css 里的 --im-chat-reserve 一致（两处必须同值）。
   背景只用令牌，不做重度模糊。高度问题不靠 max-height + 滚动条解决：
   上一轮实测那样会和「量工具栏高度做避让」的观察器形成尺寸震荡。
 */
@@ -143,10 +145,14 @@ function toggleSearch(): void {
   --tb-chat-reserve: 132px;
   --tb-max-width: 1180px;
   position: absolute;
-  left: calc(50% - var(--tb-chat-reserve) / 2);
-  transform: translateX(-50%);
+  left: var(--sp-4);
   bottom: var(--sp-4);
-  max-width: min(var(--tb-max-width), calc(100% - var(--tb-chat-reserve) - var(--sp-8)));
+  /*
+    上限要**真的避开对话窗口那一列**：用几何计划给的聊天宽度（--im-geo-chat-max-w，
+    没有计划时按 420px 兜底）+ 右边距，工具栏就不会伸进对话窗口的横向范围。
+  */
+  width: fit-content;
+  max-width: min(var(--tb-max-width), calc(100% - var(--im-geo-chat-max-w, 420px) - var(--sp-8) - var(--sp-4)));
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);

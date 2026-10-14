@@ -64,12 +64,19 @@
 }
 
 /* --- 底部工具栏：贴底居中，在剩余空间里居中，右端不压聊天 ------------------- */
+/*
+  2026-10-14 第八个问题：工具栏原来在「剩余空间里居中」并固定占一大块宽，
+  于是对话窗口被整行工具栏卡在上方、右下角留白。
+  现在改成**内容宽度 + 左对齐**：有多宽内容就多宽，右侧整块让给对话窗口
+  （可用区算法只在横向真的相交时才让位，见 ChatDock 的 avoidToolbar）。
+*/
 [data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"] {
   position: absolute;
-  left: calc(50% - var(--im-chat-reserve) / 2);
-  transform: translateX(-50%);
+  left: var(--sp-4);
   bottom: var(--im-toolbar-bottom);
-  max-width: min(var(--im-toolbar-max-width), calc(100% - var(--im-chat-reserve) - var(--sp-8)));
+  width: fit-content;
+  /* 上限用几何计划里的聊天宽度（--im-geo-chat-max-w），工具栏不会伸进对话窗口那一列 */
+  max-width: min(var(--im-toolbar-max-width), calc(100% - var(--im-geo-chat-max-w, 420px) - var(--sp-8) - var(--sp-4)));
   z-index: var(--im-z-toolbar);
 }
 

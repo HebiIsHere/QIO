@@ -207,8 +207,16 @@ function measureArea(): ChatArea {
   const top = (Number.isFinite(titleBottom) && titleBottom > 0 ? Math.round(titleBottom) : 0) + AREA_MARGIN;
   const toolbar = document.querySelector<HTMLElement>('[data-im="board-toolbar"]');
   const rect = toolbar?.getBoundingClientRect();
+  /*
+    工具栏只在**横向真的伸到对话窗口那一列**时才算边界（2026-10-14 第八个问题）：
+    工具栏现在是内容宽度、左对齐，对话窗口默认贴右下角，两者通常不相交 ——
+    那就把整块右下角还给对话窗口，不再「被下方工具栏卡在上方」而留白。
+    量不到工具栏（首帧 / 收起）时按窗口底边算，和以前一致。
+  */
+  const dockColumnLeft = vw - AREA_MARGIN - CHAT_FRAME_MIN.w;
+  const toolbarReachesDock = Boolean(rect && rect.top > 0 && rect.height > 0 && rect.right > dockColumnLeft);
   const bottom =
-    rect && rect.top > 0 && rect.height > 0 ? Math.round(rect.top) - AREA_MARGIN : vh - AREA_MARGIN;
+    toolbarReachesDock && rect ? Math.round(rect.top) - AREA_MARGIN : vh - AREA_MARGIN;
   return {
     x: AREA_MARGIN,
     y: Math.max(0, top),
@@ -220,6 +228,34 @@ function measureArea(): ChatArea {
 
 const area = ref<ChatArea>(measureArea());
 
+/**
+ * 工具栏矩形（量不到时为 null）。
+ * 只有**横向真的与对话窗口相交**时才需要让位：工具栏现在是内容宽度、左对齐，
+ * 对话窗口默认贴右下角，两者通常根本不相交 —— 那样窗口就能一直贴到窗口底边，
+ * 不再被整行工具栏「卡在上方」而在右下角留白（2026-10-14 第八个问题）。
+ */
+const toolbarRect = ref<{ top: number; left: number; right: number } | null>(null);
+
+function measureToolbar(): void {
+  const el = document.querySelector<HTMLElement>('[data-im="board-toolbar"]');
+  const rect = el?.getBoundingClientRect();
+  toolbarRect.value =
+    rect && rect.height > 0 && rect.top > 0
+      ? { top: Math.round(rect.top), left: Math.round(rect.left), right: Math.round(rect.right) }
+      : null;
+}
+
+/** 与工具栏横向相交时把底边收到工具栏上方；不相交就原样返回（可以贴到窗口右下角）。 */
+function avoidToolbar(box: ChatFrame): ChatFrame {
+  const toolbar = toolbarRect.value;
+  if (!toolbar) return box;
+  const overlapsX = box.x < toolbar.right - 8 && box.x + box.w > toolbar.left + 8;
+  if (!overlapsX) return box;
+  const maxBottom = toolbar.top - AREA_MARGIN;
+  if (box.y + box.h <= maxBottom) return box;
+  return { ...box, h: Math.max(CHAT_FRAME_MIN.h, maxBottom - box.y) };
+}
+
 /** 恢复：已保存的框按**当前**可用空间收敛（绝不恢复到屏幕外）；没保存过就贴右下角 */
 function resolveFrame(next: ChatArea, stored: ChatFrame | null): ChatFrame {
   const origin = { x: next.x, y: next.y };
@@ -229,7 +265,14 @@ function resolveFrame(next: ChatArea, stored: ChatFrame | null): ChatFrame {
   return defaultChatFrame(size, origin);
 }
 
-const frame = ref<ChatFrame>(resolveFrame(area.value, loadChatFrame(store.boardId)));
+/**
+ * **用户设定的框**：唯一会被落盘、也是窗口变化后要回去的那一份。
+ * 与 frame（当前生效的框）分开，是因为窗口临时变小会把生效框收敛小，
+ * 而用户并没有改过尺寸 —— 窗口放大回来必须回到用户框（2026-10-14 第八个问题：
+ * 原来收敛结果直接写回生效框，窗口恢复后停在缩小后的尺寸）。
+ */
+const preferredFrame = ref<ChatFrame>(resolveFrame(area.value, loadChatFrame(store.boardId)));
+const frame = ref<ChatFrame>({ ...preferredFrame.value });
 /** 拖动中的预览框：只用于显示，不落盘、不写板面状态、不发请求 */
 const preview = ref<ChatFrame | null>(null);
 const activeFrame = computed(() => preview.value ?? frame.value);
@@ -281,7 +324,11 @@ const panelStyle: Record<string, string> = { maxWidth: "none", maxHeight: "none"
 
 function applyFrame(next: ChatFrame, options: { save?: boolean } = {}): void {
   frame.value = { x: next.x, y: next.y, w: next.w, h: next.h };
-  if (options.save) saveChatFrame(store.boardId, frame.value);
+  if (options.save) {
+    // 只有用户拖动 / 调整尺寸才改「用户框」并落盘；窗口收敛不落盘、也不改用户框
+    preferredFrame.value = { ...frame.value };
+    saveChatFrame(store.boardId, frame.value);
+  }
 }
 
 /** 显示框变化（恢复 / 拖动预览 / 提交 / 收起）与卸载都发布一次，供别的浮层避让 */
@@ -294,12 +341,12 @@ watch(
 /** 视口 / 工具栏变化：重新量可用区域，并把当前框收敛回可见范围（收敛不落盘，保留用户原意） */
 function refreshArea(): void {
   area.value = measureArea();
+  measureToolbar();
   readStageOrigin();
   if (preview.value) return; // 拖动中不打断跟手
-  const converged = convergeChatFrame(
-    frame.value,
-    { w: area.value.w, h: area.value.h },
-    { x: area.value.x, y: area.value.y },
+  // 从**用户框**重新推导（不是从当前生效框）：窗口放大回来就能回到用户设定的尺寸
+  const converged = avoidToolbar(
+    convergeChatFrame(preferredFrame.value, { w: area.value.w, h: area.value.h }, { x: area.value.x, y: area.value.y }),
   );
   if (!boxEquals(frame.value, converged)) applyFrame(converged);
 }
@@ -309,7 +356,10 @@ watch(
   () => store.boardId,
   (id) => {
     if (preview.value) return;
-    applyFrame(resolveFrame(area.value, loadChatFrame(id)));
+    // 换板面 = 换一份本机偏好：用户框与生效框一起换，之后窗口变化都从这一份推导
+    const next = resolveFrame(area.value, loadChatFrame(id));
+    preferredFrame.value = { ...next };
+    applyFrame(avoidToolbar(next));
   },
 );
 
