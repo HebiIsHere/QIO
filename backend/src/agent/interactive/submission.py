@@ -87,7 +87,7 @@ def card_label(card: dict) -> str:
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
     if kind == "text":
         return _snippet(card.get("content"))
-    if kind in ("file", "image"):
+    if kind == "file":
         return _snippet(meta.get("name") or meta.get("title") or card.get("content"))
     if kind == "code":
         language = str(meta.get("language") or "").strip()

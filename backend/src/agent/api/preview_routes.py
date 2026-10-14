@@ -172,15 +172,18 @@ def _position_item(
 
 
 def _card_attachment_id(card: dict) -> str:
-    """卡片当前关联的已保存附件 id（meta.image / meta.file，与 materials 同一口径）。"""
+    """卡片当前关联的已保存附件 id（只读 meta.file，与 materials 同一口径）。
+
+    旧卡片把附件登记在 meta.image：那条回退已删除 —— 只认卡片真正在用的那份附件，
+    否则「残留的旧字段」会被当成关联，把阅读位置写到不是它现在用的附件上。
+    """
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
-    for key in ("image", "file"):
-        block = meta.get(key)
-        if isinstance(block, dict):
-            for name in ("attachmentId", "attachment_id"):
-                value = block.get(name)
-                if value:
-                    return str(value).strip()
+    block = meta.get("file")
+    if isinstance(block, dict):
+        for name in ("attachmentId", "attachment_id"):
+            value = block.get(name)
+            if value:
+                return str(value).strip()
     for name in ("attachmentId", "attachment_id"):
         value = meta.get(name)
         if value:
