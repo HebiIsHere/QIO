@@ -562,6 +562,22 @@ describe("横向：面板内不存在横向滚动容器", () => {
     }
   });
 
+  it("面板变矮时先让位的是阅读区，不是输入行：.composer 有必需的最小高度（源码守卫）", () => {
+    const source = readFileSync(
+      resolve(process.cwd(), "src/components/interactive/ChatDock.vue"),
+      "utf8",
+    );
+    const body = cssBlock(source, ".composer {");
+    const declared = /min-height:\s*(\d+)px/.exec(body);
+    /*
+      2026-10-14：短窗口（1200×560）下面板被收敛到 238px，而 .composer 当时是 min-height: 0，
+      于是输入行被推到面板底边之外、由 .panel 的 overflow: clip 裁掉 —— 发送键完全看不见。
+      附件行 31 + gap 4 + 输入行 57 ≈ 92：输入区至少要留住这些，帮助摘要可以让位（顶部另有「帮助」入口）。
+    */
+    expect(declared, "输入区没有最小高度：面板一矮，输入行就会被推出面板裁掉").not.toBeNull();
+    expect(Number(declared?.[1])).toBeGreaterThanOrEqual(92);
+  });
+
   it("消息、过程、提示同属一条阅读流：.stream 是唯一的主要纵向滚动视口", async () => {
     const { wrapper, interactive } = mountDock();
     interactive.submitStatus = "submitting";

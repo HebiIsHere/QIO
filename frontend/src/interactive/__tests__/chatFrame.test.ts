@@ -98,8 +98,16 @@ describe("chatFrame：坏数据与存储不可用", () => {
 });
 
 describe("chatFrame：恢复到可用空间", () => {
-  it("最小值保证消息阅读区（不是一行）", () => {
-    expect(CHAT_FRAME_MIN.h).toBeGreaterThanOrEqual(200);
+  it("最小值保证消息阅读区与输入行（不是一行，也不把输入框挤出面板）", () => {
+    /*
+      2026-10-14 在真实浏览器里逐段实测（Chrome，1200×800，ChatDock.vue 的实际布局）：
+      面板内边距 12+12 = 24；标题栏 .panel-head = 52；面板 gap 8×2 = 16；
+      阅读区 .stream-wrap 的 min-height = 72；输入区必需 = 附件行 31 + gap 4 + 输入行 57 = 92。
+      合计 ≈ 256 → 取 260。
+      原来的 220 是照「标题栏 44 + 输入区 92 + 阅读区 72」估的，实测这三段是 52 / 147 / 72，
+      于是 220 的面板会把输入行推到面板外面、被 overflow: clip 裁掉（实测 238px 面板下发送键完全不可见）。
+    */
+    expect(CHAT_FRAME_MIN.h).toBeGreaterThanOrEqual(260);
     expect(CHAT_FRAME_MIN.w).toBeGreaterThanOrEqual(280);
   });
 

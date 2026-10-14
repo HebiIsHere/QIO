@@ -1990,7 +1990,14 @@ function onKeydown(event: KeyboardEvent) {
 /* --- 底部：附件 + 输入 + 发送（一个输入区） ------------------------------ */
 .composer {
   flex: 0 1 auto;
-  min-height: 0;
+  /*
+    面板变矮时**先让位的是阅读区，不是输入行**（2026-10-14 修）。
+    附件行 31 + gap 4 + 输入行 57 ≈ 92 → 取 96 留余量。
+    原来这里是 min-height: 0：短窗口（1200×560）下面板被收敛到 238px 时，输入行会被推到
+    面板底边之外，再由 .panel 的 overflow: clip 裁掉 —— 发送键完全看不见、也没有任何入口能滚到它。
+    帮助摘要（51px）在这之后才让位：顶部另有「帮助」入口，不会因此失去访问路径。
+  */
+  min-height: 96px;
   /* 输入区内容过多时自己滚动，而不是把消息阅读区顶掉 */
   overflow-y: auto;
   overscroll-behavior: contain;

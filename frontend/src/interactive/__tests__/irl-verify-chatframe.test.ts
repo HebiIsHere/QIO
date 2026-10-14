@@ -86,10 +86,12 @@ describe("收敛：宽 / 高小于最小值的边界（F1 修复后）", () => {
     expect(next.x + next.w).toBe(1000);
   });
 
-  it("高小于最小值：先抬到 220 再贴下边界，下边界正好落在 800", () => {
+  it("高小于最小值：先抬到最小值再贴下边界，下边界正好落在 800", () => {
     const next = convergeChatFrame({ x: 0, y: 795, w: 400, h: 5 }, { w: 1000, h: 800 });
     expect(next.h).toBe(CHAT_FRAME_MIN.h);
-    expect(next.y).toBe(580);
+    // 不写死数字：最小高度本身会随实测布局更新（2026-10-14：220 → 260），
+    // 写死会让「先抬到最小值，再贴下边界」这条意图被一个会过期的数字绑住
+    expect(next.y).toBe(800 - CHAT_FRAME_MIN.h);
     expect(next.y + next.h).toBe(800);
   });
 
