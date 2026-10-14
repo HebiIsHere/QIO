@@ -419,9 +419,8 @@ describe("结构：顶部精简、底部一个输入区、帮助可开可关", (
     expect(body, "缺少草稿说明").toContain("不会清掉草稿");
     // 板面顶部那条常驻提示已改成「没用过查看手势时显示一次」：
     // 完整说明的唯一常驻处就是这里，缺了它就等于说明丢了
-    expect(body, "缺少板面手势说明").toContain("板面手势");
-    expect(body, "板面手势缺了框选那一句").toContain("按住空格");
-    expect(body, "板面手势缺了缩放那一句").toContain("缩放中心");
+    // 2026-10-14：用户要求删除对话帮助里的板面手势段；帮助仍保留可见范围 / 媒体 / 附件 / 快捷键
+    expect(body, "帮助内容不能为空").not.toBe("");
 
     await wrapper.find('[data-im="chat-help-toggle"]').trigger("click");
     await nextTick();

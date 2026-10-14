@@ -117,7 +117,8 @@ describe("unknown 在类型 / 合成状态 / 按钮 / 文案四处一致", () =>
 
     await wrapper.get('[data-im="submit-details"]').trigger("click");
     const details = wrapper.get('[data-im="submit-details-box"]').text();
-    expect(details, "查证来的受理必须如实说明来源").toContain("精确查证");
+    // 2026-10-14：用户要求删除详情里的说明文案；受理事实仍由受理行本身承载
+    expect(details.length, "受理行必须存在").toBeGreaterThan(0);
     expect(details, "不许把上一次提交的 3 项改动说成本次的").not.toContain("本次 3 项改动");
     expect(wrapper.get('[data-im="submit-acceptance-note"]').text()).toContain("同一个请求身份");
   });
@@ -140,9 +141,8 @@ describe("材料 / 附件入口仍在", () => {
         "缺少材料入口：" + kind,
       ).toBe(true);
     }
-    // 文字卡提示必须写明「文字、链接、代码在同一张卡片里；默认提交给 QIO」（契约 §1.7 + 第十个问题）
-    expect(list.text()).toContain("文字、链接、代码写在同一张卡片里");
-    expect(list.text()).toContain("默认提交给 QIO");
+    // 2026-10-14：用户要求删除添加菜单的解释文案，菜单只留入口名
+    expect(list.text()).toContain("文字注释");
     // 材料入口必须走真实附件关联（否则 QIO 只能看到文件名，读不到正文）；
     // 「图片」不再是独立入口：选中的文件是图片时按图片呈现（第九个问题）
     expect(list.text()).toContain("文件");

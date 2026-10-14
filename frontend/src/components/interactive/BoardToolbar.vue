@@ -98,26 +98,7 @@ function toggleSearch(): void {
 
         <span class="tb-sep" aria-hidden="true"></span>
 
-        <div class="tb-help">
-          <button
-            class="tb-btn"
-            type="button"
-            data-im="help-toggle"
-            :class="{ on: helpOpen }"
-            :aria-expanded="helpOpen"
-            title="操作说明：手势是固定的，不需要切换模式"
-            @click="helpOpen = !helpOpen"
-          >
-            操作说明
-          </button>
-          <div v-if="helpOpen" class="tb-help-pop" data-im="help-popover" role="note">
-            <p class="help-title">板面手势（固定，不需要切模式）</p>
-            <ul>
-              <li v-for="line in HELP_GESTURES" :key="line">{{ line }}</li>
-            </ul>
-            <p class="help-note">保存与编辑都不会调用 QIO；板面内容要你点「提交」才会交出去。</p>
-          </div>
-        </div>
+        <!-- 2026-10-14：用户要求删除「操作说明」入口与浮层（手势说明不再常驻界面） -->
       </div>
 
       <!-- 提交区（C 负责）：与编辑操作留出间距并区分样式，避免误点 -->

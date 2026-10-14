@@ -1219,10 +1219,8 @@ function onKeydown(event: KeyboardEvent) {
             @wheel.stop="onUserScroll"
           >
             <div ref="contentRef" class="stream-inner" data-qio-fit>
-              <p v-if="!shownMessages.length" class="stream-empty" data-im="chat-empty">
-                还没有消息。这里发送的文字会进入当前 QIO 会话（与对话页是同一个会话）。
-              </p>
-              <p v-else-if="hiddenText" class="stream-older mono" data-im="chat-older">{{ hiddenText }}</p>
+
+              <p v-if="hiddenText" class="stream-older mono" data-im="chat-older">{{ hiddenText }}</p>
               <MessageItem v-for="message in shownMessages" :key="message.id" :message="message" class="stream-item" />
 
               <!--
@@ -1598,14 +1596,7 @@ function onKeydown(event: KeyboardEvent) {
               <p class="help-line">{{ MEDIA_CAPABILITY_HINT.image }}</p>
               <p class="help-line">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
               <p class="help-line">{{ MEDIA_CAPABILITY_HINT.video }}</p>
-              <!--
-                板面手势说明的**唯一常驻处**就是这里（板面顶部原来那条常驻提示已改为
-                「本机没用过查看手势时显示一次」，见 BoardCanvas 的 hintSeen）。
-              -->
-              <p class="help-line" data-im="chat-help-board">
-                板面手势：拖动空白处平移查看位置；按住空格拖动空白处框选卡片；滚轮以指针附近为缩放中心。
-                平移与缩放只改变查看方式，不形成改动、不调用 QIO。
-              </p>
+
               <p class="help-line panel-hint mono" data-im="chat-shortcuts">{{ SHORTCUT_TEXT }}</p>
               <p class="help-line panel-hint mono">{{ hintText }}</p>
             </div>

@@ -156,7 +156,8 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.get('[data-im="card-body"]').text()).toContain("第一段正文。");
     expect(w.find('[data-im="card-block-code"]').exists()).toBe(true);
     expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("展开预览");
-    expect(w.get('[data-im="card-meta"]').text()).toContain("未许可");
+    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
+    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
 
     // 既不渲染编辑器，也不渲染预览挂载点
     expect(w.find('[data-im="card-editor"]').exists()).toBe(false);
@@ -268,7 +269,8 @@ describe("最小尺寸 180×96：标题 / 主要操作 / 必要状态 / 内容�
     // 标题 + 必要状态
     expect(w.find('[data-im="card-title"]').exists()).toBe(true);
     expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    expect(w.get('[data-im="card-meta"]').text()).toContain("未许可");
+    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
+    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
     // 让位的是次级信息：材料类型标签与更新时间
     expect(w.find('[data-im="card-head"] .kind').exists()).toBe(false);
     expect(w.find('[data-im="card-meta"] .time').exists()).toBe(false);
@@ -353,19 +355,19 @@ describe("规则层守卫：高度预算与横向滚动（jsdom 没有真实排�
   });
 });
 
-describe("整卡许可：未选中可见、勾选只改 checked、完整说明在详情里", () => {
+describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：元信息层不再重复许可文案）", () => {
   it("未选中也能辨认「未允许查看 / 允许 QIO 查看」", () => {
     const off = mountBoard(textCard(), { selected: false });
     expect(off.find('[data-im="card-toolbar"]').exists()).toBe(false);
     expect(off.get('[data-im="card-license"]').attributes("data-checked")).toBe("0");
     expect(off.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    expect(off.get('[data-im="card-meta"]').text()).toContain("未许可");
+    // 2026-10-14：元信息层不再重复许可文案（card-license 已在上面核对）
     off.unmount();
 
     const on = mountBoard(textCard({ checked: true }), { selected: false });
     expect(on.get('[data-im="card-license"]').attributes("data-checked")).toBe("1");
     expect(on.get('[data-im="card-license"]').text()).toBe("允许 QIO 查看");
-    expect(on.get('[data-im="card-meta"]').text()).toContain("已许可");
+    // 2026-10-14：同上，许可状态由 card-license 承载
   });
 
   it("勾选 / 取消只改 checked：不碰 hidden / deleted，也不改内容", async () => {

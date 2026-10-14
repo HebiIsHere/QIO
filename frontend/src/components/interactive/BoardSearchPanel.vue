@@ -120,13 +120,6 @@ onMounted(async () => {
       />
     </label>
 
-    <p class="note">
-      只查你自己的板面：能搜到未许可的文字卡，<strong>这不等于交给 QIO</strong>。
-      现在有 {{ uncheckedNotes }} 张未许可的文字卡，它们不会进入提交。
-    </p>
-    <p v-if="legacyCards" class="note" data-im="search-legacy-note">
-      另有 {{ legacyCards }} 张旧卡片（代码 / 网址）尚未迁移：它们整体不进入提交载荷，也不算「未许可」。
-    </p>
 
     <ul v-if="hits.length" class="results">
       <li v-for="hit in hits" :key="hit.id">

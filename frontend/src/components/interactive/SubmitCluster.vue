@@ -637,9 +637,7 @@ function onSubmit() {
       <p v-else-if="uOutcome === 'no_action'" class="u-note" data-im="understanding-no-action">
         这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
       </p>
-      <p v-else-if="uOutcome === 'failed'" class="u-note err" data-im="understanding-failed">
-        重试只会从这次提交保存的快照恢复：不重读当前板面，也不重建同一批任务。
-      </p>
+
       <!--
         当前阶段的说明：只放**当前**阶段的那一/两条。
         阶段已经过去的说明（例如受理时那句「正在理解」）不在这一区，只进可展开历史。
@@ -801,59 +799,16 @@ function onSubmit() {
       </button>
     </div>
 
+    <!--
+      2026-10-14：详情里**只留**「本次有效改动」这一块（用户要求：除粉色框标题以外的上下文字都删掉）。
+      保存状态、可见范围、材料读取状态、理解过程、草稿规则等说明都不再渲染。
+    -->
     <section v-if="detailsOpen" class="details-box" data-im="submit-details-box">
-      <p class="line" data-im="submit-save-status" role="status">{{ saveText }}</p>
-      <p class="line range" data-im="visible-range-full">{{ rangeText }}</p>
-      <p class="line strong">{{ statusText }}</p>
-      <p v-if="materialsText" class="line" data-im="understanding-materials">{{ materialsText }}</p>
-      <p v-if="store.understandingError" class="line err" data-im="understanding-error">
-        理解状态读取失败：{{ store.understandingError }}
-      </p>
-      <!--
-        可展开的过程历史：当前阶段 + 已经过去的阶段。
-        旧阶段的说明与旧的理解过程只在这里出现 —— 保留历史，但不把历史当作当前状态。
-      -->
-      <div
-        v-if="uCurrent || uHistory.length || pastNotes.length || pastUnderstandings.length"
-        class="u-steps"
-        data-im="understanding-history"
-      >
-        <p class="line strong">理解过程</p>
-        <p v-if="uCurrent" class="line" data-im="understanding-current-step">{{ understandingStepText(uCurrent) }}</p>
-        <p v-for="step in uHistory" :key="step.key + '-' + step.label" class="line faint">
-          {{ understandingStepText(step) }}
-        </p>
-        <p
-          v-for="note in pastNotes"
-          :key="'past-' + note.key"
-          class="line faint"
-          data-im="submit-history-note"
-          :data-note-kind="note.key"
-        >
-          {{ note.text }}
-        </p>
-        <p
-          v-for="item in pastUnderstandings"
-          :key="item.id"
-          class="line faint"
-          data-im="submit-history-understanding"
-        >
-          上一次提交的理解：{{ understandingStatusLabel(item.status) }}{{ item.summary ? "——" + item.summary : "" }}
-        </p>
-      </div>
-      <p v-if="understoodIntents > 0" class="line strong" data-im="understanding-intents">
-        理解完成：{{ understoodIntents }} 项等待你审批（批准前不会有任何改动）。
-      </p>
-      <p v-if="failure" class="line err" data-im="submit-failure-detail">{{ failureDetailText }}</p>
       <BoardChangeList
         :expressions="pendingExpressions"
         title="本次有效改动（尚未提交）"
         empty-text="本次还没有可提交的改动（服务端在每次保存后重算）。"
       />
-      <p v-if="pendingError" class="line err" role="status">
-        未提交改动预览失败：{{ pendingError }}（提交时服务端仍会重新求差，不影响提交）
-      </p>
-      <p class="line faint">{{ draftText }}</p>
     </section>
   </div>
 </template>

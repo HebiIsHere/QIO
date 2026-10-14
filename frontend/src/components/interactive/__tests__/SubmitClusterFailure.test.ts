@@ -123,18 +123,18 @@ describe("保留情况与重试", () => {
     expect(failure).toMatch(/没有保存|还没保存|没有存到服务器/);
   });
 
-  it("详情里保留较长诊断（保存失败原因与上一次的说明），但不是了解原因的必经入口", async () => {
+  it("失败原因必须在**不展开详情**时就能看到（详情不再承载诊断）", async () => {
     const store = useInteractiveStore();
     store.submitStatus = "failed";
     store.submitError = "网络中断";
     store.saveStatus = "saved";
     store.lastSubmission = staleResult();
     const w = mountCluster();
-    expect(w.find('[data-im="submit-failure-detail"]').exists()).toBe(false);
+    // 2026-10-14：用户要求详情里只留「本次有效改动」，诊断文案已删除；
+    // 「不是了解原因的必经入口」这条保证因此更强：原因本身就在折叠区之外
+    expect(w.find('[data-im="submit-failure"]').text()).toContain("网络中断");
     await w.find('[data-im="submit-details"]').trigger("click");
-    const detail = w.find('[data-im="submit-failure-detail"]');
-    expect(detail.exists()).toBe(true);
-    expect(detail.text()).toContain("上一次的旧原因");
+    expect(w.find('[data-im="submit-failure-detail"]').exists()).toBe(false);
   });
 
   it("长原因完整保留在 DOM 里，按钮还在、还可以点（不靠截断文字）", () => {

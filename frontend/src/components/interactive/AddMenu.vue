@@ -353,10 +353,7 @@ onBeforeUnmount(() => {
           @click="add(item.kind)"
         >
           <span class="item-label">{{ item.label }}</span>
-          <!-- 说明仍然留在无障碍树里（读屏与按文字断言都能读到），只是不再把菜单撑高 -->
-          <span class="item-hint">{{ item.hint }}</span>
         </button>
-        <p class="pop-note">只加到本地板面：保存不调用 QIO，提交才会。</p>
       </div>
     </div>
   </div>

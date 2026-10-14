@@ -527,10 +527,7 @@ function boundsText(intent: Intent): string {
       </button>
     </header>
 
-    <p class="hint" role="note">
-      待审批的条目走批量审批入口；这里列出已批准（含等待前项）、排队、执行中、已暂停与已结束的任务。
-      状态和进度都取服务端的真实执行记录：排队、执行、暂停与结束各自显示，不会把「已批准」一直显示成运行中。
-    </p>
+
     <p v-if="tasks.some((item) => item.demo)" class="hint" data-im="tasks-demo-note">
       演示任务不是真实执行：推进演示不会写回任何真实任务。
     </p>

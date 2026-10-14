@@ -153,12 +153,9 @@ describe("当前只有最新一条事实（§5.2 / §5.3）", () => {
       "旧阶段的说明不在当前区",
     ).toBe(false);
 
-    // 历史仍然保留：展开「查看过程」就能看到它（旧阶段只出现在可展开历史里）
-    await w.get('[data-im="understanding-history-toggle"]').trigger("click");
-    const history = w.get('[data-im="understanding-history"]');
-    expect(history.text()).toContain("正在理解");
-    const note = history.get('[data-im="submit-history-note"]');
-    expect(note.attributes("data-note-kind")).toBe("submit");
+    // 2026-10-14：用户要求详情里只留「本次有效改动」，过程历史不再渲染；
+    // 「旧阶段不与当前状态并列」这条保证仍然成立（上面已断言）
+    expect(w.find('[data-im="understanding-history"]').exists()).toBe(false);
   });
 
   it("理解完成之后，旧的「自动查询已停止」不再是当前说明", async () => {
@@ -171,8 +168,8 @@ describe("当前只有最新一条事实（§5.2 / §5.3）", () => {
 
     expect(w.get('[data-im="understanding"]').text()).not.toContain("自动查询已停止");
     expect(w.find('[data-im="understanding-note"]').exists()).toBe(false);
-    await w.get('[data-im="understanding-history-toggle"]').trigger("click");
-    expect(w.get('[data-im="understanding-history"]').text()).toContain("自动查询已停止");
+    // 2026-10-14：过程历史已删除（用户要求），这里只核对当前说明不含旧阶段
+    expect(w.find('[data-im="understanding-history"]').exists()).toBe(false);
   });
 
   it("还在等结果时，同一阶段的说明就是当前说明（同阶段更新、不提前收进历史）", () => {
@@ -300,7 +297,7 @@ describe("待审批出现时审批入口主动展开（§5.4）", () => {
     expect(state).toContain("服务端执行记录");
   });
 
-  it("旧提交的理解过程出现在历史里，不被当成当前状态", async () => {
+  it("旧提交的理解过程不出现在当前状态里（2026-10-14：历史区已按用户要求删除）", async () => {
     const store = freshStore();
     store.submitStatus = "succeeded";
     store.understanding = understandingFixture({ status: "understood", kind: "intent" });
@@ -311,9 +308,8 @@ describe("待审批出现时审批入口主动展开（§5.4）", () => {
     ];
     const w = mountCluster();
     expect(w.get('[data-im="understanding"]').text()).not.toContain("上一次提交");
-    await w.get('[data-im="understanding-history-toggle"]').trigger("click");
-    const line = w.get('[data-im="submit-history-understanding"]');
-    expect(line.text()).toContain("上一次提交的理解");
-    expect(line.text()).toContain("本次无需开展任务");
+    // 历史区与「查看过程」入口都已删除，旧提交的理解过程不再出现在界面上
+    expect(w.find('[data-im="understanding-history"]').exists()).toBe(false);
+    // 「查看过程」入口仍在（它打开的是只含「本次有效改动」的详情），但不再有历史区
   });
 });

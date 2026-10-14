@@ -241,11 +241,11 @@ describe("提交区：受理与理解分开（契约 §14.1 / §14.6）", () => 
     ];
     const w = track(mount(SubmitCluster));
     expect(w.find('[data-im="understanding"]').attributes("data-understanding-outcome")).toBe("intent");
+    // 2026-10-14：用户要求详情里只留「本次有效改动」；等待审批的项数不再在详情里重复，
+    // 审批入口本身（批量列表 / 状态浮层）不受影响
     await w.find('[data-im="submit-details"]').trigger("click");
-    const line = w.find('[data-im="understanding-intents"]');
-    expect(line.exists()).toBe(true);
-    expect(line.text()).toContain("2 项");
-    expect(line.text()).toContain("批准前不会有任何改动");
+    expect(w.find('[data-im="understanding-intents"]').exists()).toBe(false);
+    expect(w.find('[data-im="submit-details-box"]').exists()).toBe(true);
   });
 });
 

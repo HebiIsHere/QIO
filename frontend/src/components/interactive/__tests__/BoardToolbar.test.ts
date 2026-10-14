@@ -52,7 +52,8 @@ describe("BoardToolbar 接线", () => {
 
   it("常态只留必要入口：添加 / 搜索 / 撤销重做 / 视图 / 提交，没有一组常驻的分组按钮", () => {
     const wrapper = mount(BoardToolbar);
-    for (const hook of ["board-toolbar", "add-menu", "search-toggle", "undo", "redo", "help-toggle", "submit"]) {
+    // 2026-10-14：用户要求删除「操作说明」入口（help-toggle），这里不再要求它存在
+    for (const hook of ["board-toolbar", "add-menu", "search-toggle", "undo", "redo", "submit"]) {
       expect(wrapper.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
     // 反例（旧实现会挂）：分组类操作曾经常驻工具栏，且未选中时是一排禁用按钮
@@ -107,7 +108,7 @@ describe("BoardToolbar 接线", () => {
     wrapper.unmount();
   });
 
-  it("手势固定：工具栏不再有会改变手势的常驻模式，只留操作说明（契约 §10.7）", async () => {
+  it("手势固定：工具栏不再有会改变手势的常驻模式（2026-10-14：操作说明入口已按用户要求删除）", async () => {
     const wrapper = mount(BoardToolbar);
     // 反例（旧实现会挂）：选择 / 框选 / 连线 三个常驻模式按钮
     for (const old of ["mode-select", "mode-rect", "mode-link"]) {
@@ -118,13 +119,9 @@ describe("BoardToolbar 接线", () => {
       "store 不应再暴露可切换的指针模式",
     ).toBeUndefined();
 
-    // 说明入口默认收起，点开后把三条固定手势讲清楚
+    // 2026-10-14：用户要求删除「操作说明」入口与浮层 —— 工具栏里不再有手势说明
+    expect(wrapper.find('[data-im="help-toggle"]').exists()).toBe(false);
     expect(wrapper.find('[data-im="help-popover"]').exists()).toBe(false);
-    await wrapper.get('[data-im="help-toggle"]').trigger("click");
-    const pop = wrapper.get('[data-im="help-popover"]');
-    expect(pop.text()).toContain("空格");
-    expect(pop.text()).toContain("连接点");
-    expect(pop.text()).toContain("平移");
     wrapper.unmount();
   });
 
@@ -150,8 +147,8 @@ describe("BoardToolbar 接线", () => {
 
     const result = wrapper.get('[data-im="search-result"]');
     expect(result.attributes("data-card-id")).toBe(cardId);
-    // 未勾选的注释能被搜到，但界面必须写明「这不等于交给 QIO」
-    expect(wrapper.text()).toContain("不等于交给 QIO");
+    // 2026-10-14：用户要求删除搜索面板的解释文案；这里只核对「未勾选的注释能被搜到」
+    expect(wrapper.get('[data-im="search-result"]').text()).toContain("未勾选");
     expect(result.text()).toContain("未勾选");
 
     await result.trigger("click");

@@ -573,21 +573,18 @@ const cardDraftNeedsAttention = computed(() => {
   );
 });
 
-/** 元信息层：状态必须能读出来，不能只靠颜色。 */
+/**
+ * 元信息层：状态必须能读出来，不能只靠颜色。
+ *
+ * 2026-10-14（用户要求）：许可说明、材料 / QIO 结果的说明、所在组都不再在这里重复 ——
+ * 许可由卡片上的 card-license 徽章与卡片工具栏承载，材料类型由类型标签承载，
+ * 组由组框标题承载。这里只留**卡片自身的显示状态**（隐藏 / 折叠 / 书签）与时间。
+ */
 const statusText = computed(() => {
   const parts: string[] = [];
   if (props.card.hidden) parts.push("已隐藏：退出讨论范围");
-  else if (checkable.value) {
-    parts.push(
-      props.card.checked
-        ? "已许可：QIO 可以查看这张卡（提交后仍然有效）"
-        : "未许可：QIO 看不到这张卡里的任何内容",
-    );
-  } else if (props.card.kind === "reply") parts.push("QIO 结果：不进提交载荷");
-  else parts.push("材料：默认在本次允许查看范围内（不需要勾选）");
   if (props.card.folded) parts.push("已折叠：只改变显示");
   if (props.card.bookmarked) parts.push("书签：查找优先");
-  if (props.groupName) parts.push("在组「" + props.groupName + "」");
   return parts.join(" · ");
 });
 

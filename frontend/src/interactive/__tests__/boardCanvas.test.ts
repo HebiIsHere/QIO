@@ -258,8 +258,9 @@ describe("BoardCanvas 接线", () => {
       expect(toolbar.find('[data-im="' + hook + '"]').exists()).toBe(true);
     }
     // 契约 §2.3：文案改成「许可」口径（提交后仍然有效，只有手动取消才失效）；
-    // 2026-10-14 第十个问题：新建文字卡默认已许可（提交给 QIO），所以这里是「已许可」
-    expect(textCard.text()).toContain("已许可");
+    // 2026-10-14：卡片元信息层不再渲染许可文案（用户要求删除），
+    // 许可状态由工具栏勾选框与「说明」承载
+    expect(toolbar.find('[data-im="check"]').exists()).toBe(true);
 
     // 选中材料卡片：工具栏里没有勾选框
     wrapper.findAll('[data-im="card"]').find((item) => item.attributes("data-card-id") === fileId)!.element.dispatchEvent(pointer("pointerdown", 60, 30));
@@ -267,10 +268,7 @@ describe("BoardCanvas 接线", () => {
     const fileToolbar = wrapper.get('[data-im="card-toolbar"]');
     expect(fileToolbar.attributes("data-card-id")).toBe(fileId);
     expect(fileToolbar.find('[data-im="check"]').exists()).toBe(false);
-    // 材料的状态说明在卡片本体上（工具栏只放操作）
-    expect(wrapper.findAll('[data-im="card"]').find((item) => item.attributes("data-card-id") === fileId)!.text()).toContain(
-      "材料：默认在本次允许查看范围内",
-    );
+    // 2026-10-14：用户要求删除材料卡的说明文案；工具栏仍然只放操作（上面已断言没有勾选框）
     wrapper.unmount();
   });
 
@@ -297,7 +295,8 @@ describe("BoardCanvas 接线", () => {
     await wrapper.get('[data-im="check"]').trigger("change");
     expect(labels[0]).toContain("勾选");
     expect(store.board?.cards[0].checked).toBe(true);
-    expect(wrapper.get('[data-im="card"]').text()).toContain("已许可");
+    // 2026-10-14：卡片元信息层不再渲染许可文案；勾选状态由 store 与工具栏勾选框承载
+    expect(wrapper.get('[data-im="check"]').attributes("checked")).toBeDefined();
     wrapper.unmount();
   });
 
