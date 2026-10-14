@@ -95,7 +95,7 @@ def svc(db_conn: sqlite3.Connection, tmp_path: Path) -> AttachmentService:
 
 
 def test_material_kinds_exclude_legacy_code_and_url():
-    assert models.MATERIAL_KINDS == ("file", "image")
+    assert models.MATERIAL_KINDS == ("file",)
     assert "code" not in models.MATERIAL_KINDS
     assert "url" not in models.MATERIAL_KINDS
     assert models.CHECKABLE_KINDS == ("text",)

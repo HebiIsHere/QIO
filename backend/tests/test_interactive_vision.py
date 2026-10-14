@@ -66,29 +66,34 @@ def _state(*cards) -> dict:
     return state
 
 
-def _image_card(att) -> dict:
+def _file_card(att) -> dict:
+    """图片现在是**文件卡的附件**：kind="file" + meta.file 登记已保存附件。
+
+    板面上不再有 kind="image" 卡片；用户在「文件」入口加的 .png 必须拿到同一份画面。
+    """
     return models.new_card(
-        "image",
+        "file",
         "",
-        meta={"name": att.original_name, "image": {"name": att.original_name, "attachmentId": att.id}},
+        meta={"name": att.original_name, "file": {"name": att.original_name, "attachmentId": att.id}},
     )
 
 
 # -- 1. 交付：真的读了字节，并且适配器声明支持多模态 -------------------------
 
 
-def test_delivered_image_carries_real_bytes(db_conn, svc, tmp_path):
+def test_file_card_image_delivers_real_bytes(db_conn, svc, tmp_path):
     att = _ready(svc, tmp_path, "pic.png", _png())
-    card = _image_card(att)
+    card = _file_card(att)
     state = _state(card)
 
     entries = materials.resolve_materials(
         db_conn, state=state, cards=[card], attachments=svc, vision=True
     )
     entry = [e for e in entries if e["cardId"] == card["id"]][0]
-    assert entry["source"] == "image_delivered"
+    assert entry["source"] == "image_delivered", entry
     assert entry["read"] is True
     assert entry["bytes"] == len(_png())
+    assert "没有视觉能力" not in entry["reason"], entry["reason"]
 
     images = materials.resolve_images(db_conn, state=state, cards=[card], attachments=svc)
     assert len(images) == 1
@@ -102,9 +107,9 @@ def test_delivered_image_carries_real_bytes(db_conn, svc, tmp_path):
     assert base64.b64decode(payload) == _png(), "交付的必须是原字节，不是占位"
 
 
-def test_no_vision_route_keeps_the_honest_unsupported_result(db_conn, svc, tmp_path):
+def test_file_card_image_without_vision_keeps_the_honest_unsupported_result(db_conn, svc, tmp_path):
     att = _ready(svc, tmp_path, "pic.png", _png())
-    card = _image_card(att)
+    card = _file_card(att)
     state = _state(card)
 
     entries = materials.resolve_materials(
@@ -120,11 +125,12 @@ def test_no_vision_route_keeps_the_honest_unsupported_result(db_conn, svc, tmp_p
 
 
 def test_unlinked_or_missing_attachment_is_still_unsupported(db_conn, svc, tmp_path):
-    linked_only_name = models.new_card("image", "", meta={"name": "没关联的图.png"})
+    """只有文件名 / 附件 id 取不到：读不到就是读不到，不交付、不假装看过。"""
+    linked_only_name = models.new_card("file", "", meta={"name": "没关联的图.png"})
     ghost = models.new_card(
-        "image",
+        "file",
         "",
-        meta={"image": {"name": "x.png", "attachmentId": "att_not_here"}},
+        meta={"file": {"name": "x.png", "attachmentId": "att_not_here"}},
     )
     state = _state(linked_only_name, ghost)
 
@@ -132,11 +138,11 @@ def test_unlinked_or_missing_attachment_is_still_unsupported(db_conn, svc, tmp_p
         db_conn, state=state, cards=[linked_only_name, ghost], attachments=svc, vision=True
     )
     by_id = {e["cardId"]: e for e in entries}
-    assert by_id[linked_only_name["id"]]["source"] == "image_unsupported"
-    assert "没有视觉能力" in by_id[linked_only_name["id"]]["reason"]
-    assert any("attachmentId 缺失" in str(n) for n in by_id[linked_only_name["id"]]["notes"])
-    assert "没有视觉能力" in by_id[ghost["id"]]["reason"]
-    assert any("取不到" in str(n) for n in by_id[ghost["id"]]["notes"])
+    assert by_id[linked_only_name["id"]]["source"] == "unreadable"
+    assert by_id[linked_only_name["id"]]["read"] is False
+    assert "meta.file.attachmentId 缺失" in by_id[linked_only_name["id"]]["reason"]
+    assert by_id[ghost["id"]]["source"] == "unreadable"
+    assert "att_not_here" in by_id[ghost["id"]]["reason"]
     assert materials.resolve_images(
         db_conn, state=state, cards=[linked_only_name, ghost], attachments=svc
     ) == []
@@ -145,7 +151,7 @@ def test_unlinked_or_missing_attachment_is_still_unsupported(db_conn, svc, tmp_p
 def test_oversized_image_is_refused_with_a_readable_reason(db_conn, svc, tmp_path):
     big = _png() + b"\x00" * (materials.MAX_IMAGE_BYTES + 1)
     att = _ready(svc, tmp_path, "big.png", big)
-    card = _image_card(att)
+    card = _file_card(att)
     state = _state(card)
 
     entries = materials.resolve_materials(
@@ -159,9 +165,9 @@ def test_oversized_image_is_refused_with_a_readable_reason(db_conn, svc, tmp_pat
 
 def test_invisible_images_are_never_delivered(db_conn, svc, tmp_path):
     att = _ready(svc, tmp_path, "pic.png", _png())
-    hidden = _image_card(att)
+    hidden = _file_card(att)
     hidden["hidden"] = True
-    deleted = _image_card(att)
+    deleted = _file_card(att)
     deleted["deleted"] = True
     state = _state(hidden, deleted)
 
@@ -279,7 +285,7 @@ def _seed_submission(db_conn, state: dict) -> str:
 
 def test_context_only_carries_image_parts_when_vision_is_on(db_conn, svc, tmp_path, monkeypatch):
     att = _ready(svc, tmp_path, "pic.png", _png())
-    card = _image_card(att)
+    card = _file_card(att)
     state = _state(card)
     uid = _seed_submission(db_conn, state)
 
@@ -302,58 +308,7 @@ def test_context_only_carries_image_parts_when_vision_is_on(db_conn, svc, tmp_pa
     assert "image_delivered" not in sources
 
 
-# -- 「文件」入口加的图片：与图片卡同一份交付事实（2026-10-13 复审指出的缺口） ------
-
-
-def _file_card(att) -> dict:
-    """用户在板面用「文件」入口加的卡片（扩展名是图片时也应该拿到画面）。"""
-    return models.new_card(
-        "file",
-        "",
-        meta={"name": att.original_name, "file": {"name": att.original_name, "attachmentId": att.id}},
-    )
-
-
-def test_file_card_holding_an_image_is_delivered_when_vision_is_on(db_conn, svc, tmp_path):
-    """链路有视觉能力时，「文件」卡里的 .png 必须交付**真实字节**。
-
-    旧实现把这一支硬编码成「当前模型链路没有视觉能力」且从不读字节 —— 理由假、字节也永远拿不到。
-    """
-    att = _ready(svc, tmp_path, "shot-file.png", _png())
-    card = _file_card(att)
-    state = _state(card)
-
-    entries = materials.resolve_materials(
-        db_conn, state=state, cards=[card], attachments=svc, vision=True
-    )
-    entry = [e for e in entries if e["cardId"] == card["id"]][0]
-    assert entry["source"] == "image_delivered", entry
-    assert entry["read"] is True
-    assert entry["bytes"] == len(_png())
-    assert "没有视觉能力" not in entry["reason"], entry["reason"]
-
-    images = materials.resolve_images(db_conn, state=state, cards=[card], attachments=svc)
-    assert len(images) == 1, images
-    head, payload = images[0]["dataUrl"].split(",", 1)
-    assert head == "data:image/png;base64"
-    assert base64.b64decode(payload) == _png(), "交付的必须是原字节"
-
-
-def test_file_card_holding_an_image_without_vision_keeps_the_honest_reason(db_conn, svc, tmp_path):
-    att = _ready(svc, tmp_path, "shot-file2.png", _png())
-    card = _file_card(att)
-    state = _state(card)
-
-    entries = materials.resolve_materials(
-        db_conn, state=state, cards=[card], attachments=svc, vision=False
-    )
-    entry = [e for e in entries if e["cardId"] == card["id"]][0]
-    assert entry["source"] == "image_unsupported"
-    assert entry["read"] is False
-    assert "没有视觉能力" in entry["reason"]
-    # resolve_images 是**能力无关**的读取层（只回答「字节读得出来吗」）：
-    # 「这次要不要交付」的闸门在 build_context 的 vision 上（见下一条用例）。
-    assert len(materials.resolve_images(db_conn, state=state, cards=[card], attachments=svc)) == 1
+# -- 反向守卫：普通文件卡不得被当成图片交付 --------------------------------
 
 
 def test_non_image_file_card_is_not_delivered_as_an_image(db_conn, svc, tmp_path):

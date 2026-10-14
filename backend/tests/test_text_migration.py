@@ -170,7 +170,7 @@ def test_ready_text_card_is_not_migrated_again():
 
 
 def test_other_kinds_are_untouched():
-    for kind in ("file", "image", "reply"):
+    for kind in ("file", "reply"):
         card = models.new_card(kind, "内容")
         same, changed = text_migration.migrate_card(card)
         assert changed is False, kind

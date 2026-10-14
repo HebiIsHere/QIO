@@ -30,7 +30,9 @@ BOARD = "board_intents_test"
 def _seed(conn):
     """两份材料 + 一条注释：演示意图都要有真实材料可引用。"""
     file_a = models.new_card("file", "材料 A", meta={"file": {"name": "a.pdf"}}, x=20.0, y=20.0)
-    image_b = models.new_card("image", "材料 B", meta={"image": {"name": "b.png"}}, x=20.0, y=180.0)
+    image_b = models.new_card(
+        "file", "材料 B", meta={"file": {"name": "b.png"}}, x=20.0, y=180.0
+    )
     note = models.new_card("text", "只勾选这一条注释", checked=True, x=20.0, y=340.0)
     state = models.empty_state(BOARD)
     state["cards"] = [file_a, image_b, note]

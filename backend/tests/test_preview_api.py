@@ -314,6 +314,53 @@ def test_board_preview_rejects_other_attachment_with_409(client: TestClient, sam
     assert "不一致" in resp.text
 
 
+def test_board_preview_does_not_fall_back_to_meta_image(client: TestClient, samples):
+    """旧卡片把附件登记在 meta.image：卡片附件 id 只认 meta.file（回退已删除）。
+
+    否则一张**没有 meta.file** 的卡会因为残留的 meta.image 被当成关联了附件，
+    把阅读位置写到它并不是真的在用的附件上。
+    """
+    att = _upload(client, samples["docx"])
+    conn = client.app.state.ctx.conn
+    state = {
+        "boardId": BOARD_ID,
+        "seq": 0,
+        "updatedAt": "2026-10-12T00:00:00+00:00",
+        "cards": [
+            {
+                "id": CARD_ID,
+                "kind": "file",
+                "content": "",
+                "meta": {
+                    "name": "旧的.png",
+                    "image": {"name": "旧的.png", "attachmentId": att["id"]},
+                },
+                "x": 0,
+                "y": 0,
+                "w": 320,
+                "h": 200,
+                "checked": False,
+                "hidden": False,
+                "folded": False,
+                "bookmarked": False,
+                "deleted": False,
+                "createdAt": "2026-10-12T00:00:00+00:00",
+                "updatedAt": "2026-10-12T00:00:00+00:00",
+            }
+        ],
+        "groups": [],
+        "links": [],
+        "selection": [],
+    }
+    board_store.save_board(conn, BOARD_ID, state, reason="test meta.image fallback")
+    resp = client.put(
+        f"/api/interactive/boards/{BOARD_ID}/preview/{CARD_ID}",
+        json={"attachmentId": att["id"], "version": "v", "position": {"mode": "docx"}},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "不一致" in resp.text
+
+
 def test_board_preview_unknown_card_is_404(client: TestClient, samples):
     att = _upload(client, samples["docx"])
     _board_with_card(client, att["id"])
