@@ -61,12 +61,14 @@ const popup = ref<HTMLElement | null>(null);
 
 /**
  * 入口与说明。说明里必须写清权限边界（不能只靠颜色或图标表达）：
- * 文字卡默认**未许可**（许可后 QIO 才能看到卡内的文字、链接与代码，而且仍要提交）；
+ * 文字卡默认**提交给 QIO**（2026-10-14 第十个问题：新建即勾选，用户可取消；
+ * 取消后 QIO 看不到卡内的文字、链接与代码，提交也不会带上它）；
  * 材料（文件 / 图片）默认在本次允许查看范围内。
  */
 const HINTS: Record<string, string> = {
-  text: "文字、链接、代码写在同一张卡片里；默认未许可",
+  text: "文字、链接、代码写在同一张卡片里；默认提交给 QIO（可取消）",
   file: "材料默认在本次允许查看范围内，不需要许可",
+  // image 不再是入口（文件与图片合并成同一种材料），保留映射只为读旧数据时兜底
   image: "材料默认在本次允许查看范围内，不需要许可",
 };
 
@@ -230,15 +232,16 @@ function add(kind: AddableKind): void {
       })
     : null;
   /**
-   * 新建文字卡默认 **checked = false**（契约 §1.4）：整卡一个许可，
-   * 没有许可之前卡内的文字 / 链接 / 代码整体不可交付。
+   * 新建文字卡默认**提交给 QIO**（2026-10-14 第十个问题）：整卡一个许可，
+   * 覆盖卡内文字、链接与代码；用户可以在卡片工具栏里取消勾选，取消后整体不交付。
+   * 材料卡不需要这个勾选（默认在本次允许查看范围内），沿用 board.ts 的默认值。
    */
   store.commit(
     addCard(current, {
       kind,
       content: seed.content,
       meta: seed.meta,
-      checked: false,
+      ...(kind === "text" ? { checked: true } : {}),
       ...(slot ? { x: slot.x, y: slot.y, w: slot.w, h: slot.h } : {}),
     }),
     "添加" + CARD_KIND_LABELS[kind],

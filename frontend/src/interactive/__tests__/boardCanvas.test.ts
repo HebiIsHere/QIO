@@ -257,8 +257,9 @@ describe("BoardCanvas 接线", () => {
     for (const hook of ["card-edit", "card-duplicate", "delete-card", "card-fold"]) {
       expect(toolbar.find('[data-im="' + hook + '"]').exists()).toBe(true);
     }
-    // 契约 §2.3：文案改成「许可」口径（提交后仍然有效，只有手动取消才失效）
-    expect(textCard.text()).toContain("未许可");
+    // 契约 §2.3：文案改成「许可」口径（提交后仍然有效，只有手动取消才失效）；
+    // 2026-10-14 第十个问题：新建文字卡默认已许可（提交给 QIO），所以这里是「已许可」
+    expect(textCard.text()).toContain("已许可");
 
     // 选中材料卡片：工具栏里没有勾选框
     wrapper.findAll('[data-im="card"]').find((item) => item.attributes("data-card-id") === fileId)!.element.dispatchEvent(pointer("pointerdown", 60, 30));

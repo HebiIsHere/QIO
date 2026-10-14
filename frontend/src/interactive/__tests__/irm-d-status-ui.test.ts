@@ -202,8 +202,9 @@ describe("提交区：受理与理解分开（契约 §14.1 / §14.6）", () => 
     expect(missing.text()).toContain("材料版本");
     expect(missing.text()).toContain("时间范围");
     expect(missing.text()).toContain("没有生成任何任务");
-    // 需要用户做事的结果自动展开详情（入口不必再找一次）
-    expect(w.find('[data-im="submit-details-box"]').exists()).toBe(true);
+    // 2026-10-14 第十个问题：详情默认收起，不再因为「需要补充 / 理解失败」自动展开。
+    // 缺失项本身在折叠区之外（上面已经断言），所以重要信息仍然默认可见。
+    expect(w.find('[data-im="submit-details-box"]').exists()).toBe(false);
   });
 
   it("无需行动：明确说明没有需要开展的任务", () => {

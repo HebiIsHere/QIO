@@ -508,7 +508,13 @@ export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: Ca
     y: size.y,
     w: size.w,
     h: size.h,
-    checked: card.kind === "reply" ? false : Boolean(card.checked),
+    // 文字卡默认提交给 QIO；reply 恒 false；材料卡不需要这个勾选（默认在允许范围内）
+    checked:
+      card.kind === "reply"
+        ? false
+        : card.checked === undefined
+          ? card.kind === "text"
+          : Boolean(card.checked),
     hidden: Boolean(card.hidden),
     folded: Boolean(card.folded),
     bookmarked: Boolean(card.bookmarked),
@@ -523,7 +529,8 @@ export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: Ca
 /**
  * 新建一张统一文字卡（契约 §1.4 / §1.6）。
  *
- * - 默认**未许可**（`checked = false`）：整卡一个许可，覆盖卡内文字、链接与代码；
+ * - 默认**提交给 QIO**（`checked = true`，2026-10-14 第十个问题）：整卡一个许可，
+ *   覆盖卡内文字、链接与代码；用户随时可以在卡片工具栏里取消勾选（取消即不提交）；
  * - `content` 是块序列的纯文本派生，`meta.doc` 是权威，`meta.docText` 是编辑区文本；
  * - 位置只影响显示（给了 x / y 就用，没给按网格错开）。
  */
@@ -539,7 +546,8 @@ export function addTextCard(
     kind: "text",
     content: fields.content,
     meta: { doc: fields.meta.doc, docText: fields.meta.docText },
-    checked: false,
+    // 新建文字卡默认提交给 QIO（可取消）
+    checked: true,
     ...(typeof opts.x === "number" ? { x: opts.x } : {}),
     ...(typeof opts.y === "number" ? { y: opts.y } : {}),
   });

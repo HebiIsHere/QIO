@@ -517,7 +517,8 @@ describe("卡片：添加 / 编辑 / 删除 / 复制", () => {
     state = board.addCard(state, { kind: "text", content: "一条注释" });
     expect(state.cards[0].kind).toBe("text");
     expect(state.cards[0].content).toBe("一条注释");
-    expect(state.cards[0].checked).toBe(false);
+    // 2026-10-14 第十个问题：新建文字卡默认**提交给 QIO**（可取消）
+    expect(state.cards[0].checked).toBe(true);
     expect(state.cards[0].deleted).toBe(false);
     // CARD_KINDS 保留全部旧取值：历史数据与导入文件仍然能读（新建入口另见 ADDABLE_CARD_KINDS）
     // 2026-10-14：image 是遗留取值，归一化时迁移成 file（第九个问题），不再单独出现

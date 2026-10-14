@@ -240,15 +240,13 @@ async function refreshUnderstandingNow(): Promise<void> {
   }
 }
 
-// 需要用户做事的结果（要补充 / 理解失败）自动展开详情：入口不必再找一次
-// immediate：挂载时就已经是这个结果也要展开，不能等下一次变化
-watch(
-  () => uOutcome.value,
-  (outcome) => {
-    if (outcome === "clarification" || outcome === "failed") detailsOpen.value = true;
-  },
-  { immediate: true },
-);
+/*
+  2026-10-14 第十个问题：**详情默认收起**。
+  原来「要补充 / 理解失败」会自动把详情摊开，于是板面底部常年挂着一大段过程文字。
+  现在完全不自动展开：失败原因（reason）与保留说明（retention）本来就在折叠区**之外**
+  （契约 §11.2 的分层口径，见 submission.ts 的说明），默认就能看见，不会藏住重要信息；
+  过程详情只在用户点「查看过程」时展开。
+*/
 
 /**
  * 未提交的有效改动由**服务端**在每次保存后算好（board_pending），这里只读取展示；

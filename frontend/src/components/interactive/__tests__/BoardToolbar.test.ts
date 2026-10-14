@@ -129,7 +129,8 @@ describe("BoardToolbar 接线", () => {
   });
 
   it("板内搜索浮层：默认不在 DOM，点开后能搜到未勾选的注释，点结果 dispatch locate-card", async () => {
-    setBoard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做" }));
+    // 新建文字卡默认已勾选（第十个问题），这条用例要的是「未勾选」的注释，显式关掉
+    setBoard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做", checked: false }));
     const cardId = store.board?.cards[0].id as string;
     const seen: string[] = [];
     const onLocate = (event: Event) => {

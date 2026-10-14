@@ -126,12 +126,13 @@ describe("board.ts：可添加的种类与文字卡构造", () => {
     }
   });
 
-  it("addTextCard：默认未许可、位置可给、id 稳定返回", () => {
+  it("addTextCard：默认提交给 QIO、位置可给、id 稳定返回", () => {
     const result = addTextCard(emptyState("board_t"), {});
     expect(result.cardId).toBeTruthy();
     const card = cardById(result.state, result.cardId)!;
     expect(card.kind).toBe("text");
-    expect(card.checked).toBe(false);
+    // 2026-10-14 第十个问题：新建文字卡默认已勾选（可取消）
+    expect(card.checked).toBe(true);
     expect(card.meta.doc).toEqual({ schema: "qio.textcard/1", blocks: [] });
     expect(card.meta.docText).toBe("");
     expect(card.content).toBe("");
@@ -188,7 +189,10 @@ describe("board.ts：可添加的种类与文字卡构造", () => {
 describe("可见范围与提交载荷（许可）", () => {
   it("未许可的文字卡整体不可见：链接、代码、派生正文都进不去", () => {
     const doc = parseDocText("[QIO](https://example.com)\n\n" + FENCE + "py\nsecret = 1\n" + FENCE + "\n");
-    const { state, cardId } = addTextCard(emptyState("board_t"), { doc });
+    const created = addTextCard(emptyState("board_t"), { doc });
+    const cardId = created.cardId;
+    // 新建默认已勾选；这条用例要的是「未许可」的语义，显式关掉
+    const state = { ...created.state, cards: created.state.cards.map((c) => ({ ...c, checked: false })) };
     const unchecked = cardById(state, cardId)!;
     expect(isVisibleCard(unchecked)).toBe(false);
     const range = localVisibleRange(state);
