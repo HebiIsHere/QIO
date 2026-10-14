@@ -263,7 +263,7 @@ describe("图片文件卡：常态由封面承担完整展示", () => {
     // 让位的是说明行：最小尺寸下不渲染封面里那一行说明
     expect(w.find('[data-im="card-cover-desc"]').exists()).toBe(false);
     // 封面层不产生横纵滚动条
-    const cover = w.get('[data-im="card-cover"]');
+    const cover = w.find('[data-im="card-cover"]');
     expect(cover.exists()).toBe(true);
   });
 
@@ -390,7 +390,7 @@ describe("别的材料不受影响（本轮明确要求保留的能力）", () =
     const w = mountCard(pdfFileCard());
     await flushPromises();
     expect(w.find('[data-im="card-cover"]').exists()).toBe(false);
-    expect(w.get('[data-im="card-toolbar"] [data-im="card-attachment-open"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-toolbar"] [data-im="card-attachment-open"]').exists()).toBe(true);
   });
 });
 
