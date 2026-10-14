@@ -75,8 +75,9 @@
   left: var(--sp-4);
   bottom: var(--im-toolbar-bottom);
   width: fit-content;
-  /* 上限用几何计划里的聊天宽度（--im-geo-chat-max-w），工具栏不会伸进对话窗口那一列 */
-  max-width: min(var(--im-toolbar-max-width), calc(100% - var(--im-geo-chat-max-w, 420px) - var(--sp-8) - var(--sp-4)));
+  /* 上限按 --im-toolbar-chat-reserve（宽窗口 = 几何计划的聊天宽度，窄窗口 = chat-reserve），
+     工具栏不会伸进对话窗口那一列，也不会在窄窗口被压塌 */
+  max-width: min(var(--im-toolbar-max-width), calc(100% - var(--im-toolbar-chat-reserve) - var(--sp-8) - var(--sp-4)));
   z-index: var(--im-z-toolbar);
 }
 
@@ -107,12 +108,23 @@
   z-index: var(--im-z-dialog);
 }
 
+/*
+  工具栏给对话窗口留的横向空间（2026-10-14 追加）：
+  宽窗口按几何计划里的聊天宽度扣（保证工具栏不伸进对话窗口那一列）；
+  窄窗口按 --im-chat-reserve 扣 —— 否则 480 宽时 420px 的聊天宽度会把工具栏压到只剩十几像素，
+  提交区跟着塌成 0 宽、按钮互相压住（用户报的「详情压住查看过程」就是这种塌陷布局）。
+*/
+:root {
+  --im-toolbar-chat-reserve: min(var(--im-geo-chat-max-w, 420px), 40vw); /* 宽窗口按聊天宽度、窄窗口由下面的媒体查询换成 chat-reserve */
+}
+
 /* --- 1024×768：工具栏收窄间距、去掉分组标签，按钮全部保留 ------------------- */
 @media (max-width: 1024px) {
   :root {
     --im-chat-reserve: 104px;
     --im-toolbar-bottom: var(--sp-3);
     --im-toolbar-max-width: 100%;
+    --im-toolbar-chat-reserve: var(--im-chat-reserve);
   }
   [data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"] {
     padding: var(--sp-2);

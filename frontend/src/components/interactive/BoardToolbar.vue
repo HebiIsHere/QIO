@@ -152,7 +152,8 @@ function toggleSearch(): void {
     没有计划时按 420px 兜底）+ 右边距，工具栏就不会伸进对话窗口的横向范围。
   */
   width: fit-content;
-  max-width: min(var(--tb-max-width), calc(100% - var(--im-geo-chat-max-w, 420px) - var(--sp-8) - var(--sp-4)));
+  /* 上限按 --im-toolbar-chat-reserve（宽窗口 = 几何计划的聊天宽度，窄窗口 = chat-reserve） */
+  max-width: min(var(--tb-max-width), calc(100% - var(--im-toolbar-chat-reserve, min(var(--im-geo-chat-max-w, 420px), 40vw)) - var(--sp-8) - var(--sp-4)));
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
