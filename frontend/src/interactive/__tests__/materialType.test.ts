@@ -8,6 +8,7 @@
  * - 类型标签按附件类型显示：图片 / PDF / 表格 / 演示文稿 / 文档 / 文本 / 代码 / 其它。
  */
 import { describe, expect, it } from "vitest";
+import { attachmentPreviewPlan } from "../attachmentPreview";
 import { ADDABLE_CARD_KINDS, emptyState, normalizeState } from "../board";
 import { materialTypeLabel } from "../previewPlan";
 
@@ -56,6 +57,29 @@ describe("文件与图片合并成同一种材料", () => {
     const twice = normalizeState(once);
     expect(twice.cards[0].kind).toBe("file");
     expect(twice.cards[0].meta).toEqual(once.cards[0].meta);
+  });
+
+  /*
+    回归（2026-10-14 用户报「图片预览点一下就消失」）：
+    P48 把 kind=image 迁移成 file 之后，图片预览判定仍写着 `isImage = kind === "image"`，
+    于是第一次客户端写入触发迁移后，图片卡就再也不可预览 —— 预览「消失」。
+    正确口径：能不能当图片预览只看**附件扩展名**，与 kind 无关。
+  */
+  it("合并成 file 之后，图片附件仍然可预览（kind 不再决定预览）", () => {
+    const photo = { attachmentId: "att_1", name: "照片.jpeg" };
+    const asFile = attachmentPreviewPlan("file", { file: photo }, { desktop: false });
+    expect(asFile.state).toBe("linked");
+    expect(asFile.imagePreviewable).toBe(true);
+    // 遗留形状（kind=image + meta.image）也仍然可预览
+    const legacy = attachmentPreviewPlan("image", { image: photo }, { desktop: false });
+    expect(legacy.imagePreviewable).toBe(true);
+    // 只有 kind 迁移、meta 还是老键时也要读得到（与后端同一口径）
+    const halfMigrated = attachmentPreviewPlan("file", { image: photo }, { desktop: false });
+    expect(halfMigrated.state).toBe("linked");
+    expect(halfMigrated.imagePreviewable).toBe(true);
+    // 非图片扩展名不许当图片预览
+    const pdf = attachmentPreviewPlan("file", { file: { attachmentId: "att_2", name: "报告.pdf" } }, { desktop: false });
+    expect(pdf.imagePreviewable).toBe(false);
   });
 
   it("类型标签按附件类型显示", () => {

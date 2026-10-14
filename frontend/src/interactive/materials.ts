@@ -95,7 +95,14 @@ export function cardAttachmentBlock(
   kind: CardKind | string,
 ): { name: string; attachmentId: string; size: number | null } | null {
   if (!isAttachableKind(kind)) return null;
-  const block = meta?.[kind];
+  /*
+    2026-10-14：文件与图片合并成同一种材料后，meta 的键可能还是老的那个
+    （kind 已经迁移成 file、meta 仍是 meta.image，或反过来）——与后端同一口径：
+    `_attachment_id(meta, "file") or _attachment_id(meta, "image")`。
+  */
+  const own = meta?.[kind];
+  const fallback = meta?.[kind === "file" ? "image" : "file"];
+  const block = own && typeof own === "object" ? own : fallback;
   if (!block || typeof block !== "object") return null;
   const record = block as Record<string, unknown>;
   const attachmentId = typeof record.attachmentId === "string" ? record.attachmentId.trim() : "";
@@ -190,7 +197,6 @@ export function attachmentCardState(
   const attachmentId = block?.attachmentId ?? "";
   const name = block?.name ?? "";
   const linked = Boolean(attachmentId);
-  const isImage = kind === "image";
   return {
     state: linked ? "linked" : "unlinked",
     attachmentId,
@@ -198,7 +204,9 @@ export function attachmentCardState(
     size: block?.size ?? null,
     executable: linked ? Boolean(lookups.executable?.(name)) : false,
     viewable: linked ? Boolean(lookups.viewable?.(name)) : false,
-    imagePreviewable: linked && isImage && isPreviewableImageName(name),
+    // 2026-10-14 回归修复：能不能当图片预览只看**附件扩展名**，与 kind 无关 ——
+    // 原来写的是 `kind === "image"`，P48 把图片卡迁移成 file 之后预览就整块消失了。
+    imagePreviewable: linked && isPreviewableImageName(name),
   };
 }
 
