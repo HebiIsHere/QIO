@@ -37,11 +37,11 @@ import { disposeRenderer, loadRenderer } from "../../interactive/renderers";
 import type { RenderResult } from "../../interactive/renderers/types";
 import type { CodeView } from "../../interactive/renderers/code";
 import type { DocxView } from "../../interactive/renderers/docx";
-import type { ImageView } from "../../interactive/renderers/image";
 import type { PptxView } from "../../interactive/renderers/pptx";
 import type { XlsxView } from "../../interactive/renderers/xlsx";
 import type { PdfFactsView, PdfHandle } from "../../interactive/renderers/pdf";
-import { fitScale, stepZoom } from "../../interactive/renderers/image";
+// 只保留 PDF 仍在用的缩放步进（图片不再做卡片内阅读，fitScale 已不再需要）。
+import { stepZoom } from "../../interactive/renderers/image";
 // Markdown 文件卡片（2026-10-14 用户要求）：.md 按正文解析，不再逐行显示原文
 import MarkdownContent from "../MarkdownContent.vue";
 // 二维浏览区（图片框 / PDF 页面框 / 表格网格 / 代码框）统一用共享指示条，不各自发明滚动条样式。
@@ -85,12 +85,18 @@ const fileVersion = ref("");
 const data = ref<Record<string, unknown> | null>(null);
 const viewError = ref("");
 const actionNote = ref("");
+/**
+ * 图片不再做卡片内阅读（2026-10-15 图片展示简化）时给出的可读说明。
+ *
+ * 它只在「极端情况下仍被要求渲染 renderer==="image"」时出现：不静默空白，
+ * 给出说明 + previewPlan 的既有外部打开 / 下载动作（诚实、不假成功），
+ * 也不恢复缩放 / 阅读能力，更不新增第二套图片查看器。
+ */
+const IMAGE_INLINE_BLOCKED_REASON =
+  "图片不在卡片内展开阅读：这里不渲染画面，请用下面的入口打开或下载副本查看（预览不等于 QIO 已读到图片内容）。";
+const inlineBlockedReason = ref("");
 
-const imageView = ref<ImageView | null>(null);
-const imageUrl = ref<string | null>(null);
-const imageRef = ref<HTMLImageElement | null>(null);
 const zoom = ref(1);
-const fitMode = ref(true);
 
 const pdfFacts = ref<PdfFactsView | null>(null);
 const pdfPages = ref(0);
@@ -113,7 +119,11 @@ const plan = computed(() =>
 );
 const statusText = computed(() => previewStatusText(renderState.value, sizeBytes.value));
 const loading = computed(() => renderState.value.status === "loading" || renderState.value.status === "idle");
-const inlineReady = computed(() => plan.value.mode === "inline" && renderState.value.status === "ready");
+const inlineReady = computed(
+  () => plan.value.mode === "inline" && renderState.value.status === "ready" && !inlineBlockedReason.value,
+);
+/** 不能内嵌时显示的原因：图片的诚实降级说明优先，其余用 previewPlan 给的真实原因。 */
+const externalReason = computed(() => inlineBlockedReason.value || plan.value.reason);
 /**
  * Markdown 正文：后端给的是 `code` 形状的文本行（.md 的分类没变），
  * 拼回原文后交给 MarkdownContent 的 remark 管线解析 —— 只有一处解析实现。
@@ -158,11 +168,12 @@ const materialContext = computed(() => props.context === "material");
  *
  * - `"content"`（对话内）：一个滚动容器都不建，内容自然展开，滚动交给对话主体那一层；
  * - `"self"`    （材料 + 文档/幻灯片/外部打开）：预览正文这一层是唯一视口；
- * - `"viewer"`  （材料 + 图片/PDF/表格/代码）：材料自带的二维浏览区是唯一视口
+ * - `"viewer"`  （材料 + PDF/表格/代码）：材料自带的二维浏览区是唯一视口
  *                （默认适应区域 / 网格自适应，只有真实超出时才滚动）。
+ *                （图片不再内嵌阅读，所以不在这份名单里。）
  */
 type PreviewViewport = "content" | "self" | "viewer";
-const VIEWER_RENDERERS: readonly string[] = ["image", "pdf", "xlsx", "code"];
+const VIEWER_RENDERERS: readonly string[] = ["pdf", "xlsx", "code"];
 const bodyViewport = computed<PreviewViewport>(() => {
   if (props.context !== "material") return "content";
   return VIEWER_RENDERERS.includes(plan.value.renderer) ? "viewer" : "self";
@@ -184,18 +195,6 @@ function isAbort(err: unknown): boolean {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function revokeImage(): void {
-  const url = imageUrl.value;
-  imageUrl.value = null;
-  if (url && typeof URL.revokeObjectURL === "function") {
-    try {
-      URL.revokeObjectURL(url);
-    } catch {
-      /* 已经释放过就算了 */
-    }
-  }
 }
 
 async function releasePdf(): Promise<void> {
@@ -221,12 +220,11 @@ async function releasePdf(): Promise<void> {
 }
 
 function resetView(): void {
-  revokeImage();
   void releasePdf();
   data.value = null;
   viewError.value = "";
   actionNote.value = "";
-  imageView.value = null;
+  inlineBlockedReason.value = "";
   pdfFacts.value = null;
   docxView.value = null;
   xlsxView.value = null;
@@ -237,7 +235,6 @@ function resetView(): void {
   sheetIndex.value = 0;
   slideIndex.value = 0;
   zoom.value = 1;
-  fitMode.value = true;
 }
 
 /** 收起 / 换附件 / 卸载：中止在途请求与渲染，释放一切资源。 */
@@ -287,7 +284,8 @@ async function start(): Promise<void> {
     const renderer = plan.value.renderer;
     if (renderer === "none") return;
     if (renderer === "image") {
-      await mountImage(mine, ctrl);
+      // 图片不再做卡片内阅读：给出可读说明，外部打开 / 下载动作照旧（不静默空白、不假成功）
+      inlineBlockedReason.value = IMAGE_INLINE_BLOCKED_REASON;
       return;
     }
     if (renderer === "pdf") {
@@ -317,27 +315,6 @@ async function mountStructured(renderer: string, mine: number): Promise<void> {
   else if (renderer === "xlsx") xlsxView.value = result.view as XlsxView;
   else if (renderer === "pptx") pptxView.value = result.view as PptxView;
   else if (renderer === "code" || renderer === "markdown") codeView.value = result.view as CodeView;
-}
-
-async function mountImage(mine: number, ctrl: AbortController): Promise<void> {
-  const module = await loadRenderer<{ view: (value: unknown) => RenderResult<ImageView> }>("image");
-  if (mine !== generation) return;
-  if (!data.value) return;
-  const result = module.view(data.value);
-  if (!result.ok) {
-    viewError.value = result.reason;
-    return;
-  }
-  imageView.value = result.view;
-  const bytes = await fetchAttachmentBytes(attachmentId.value, { signal: ctrl.signal });
-  if (mine !== generation) return;
-  const create = (URL as unknown as { createObjectURL?: (blob: Blob) => string }).createObjectURL;
-  if (typeof create !== "function") {
-    viewError.value = "这个环境不支持图片内嵌预览（可以打开或下载副本）";
-    return;
-  }
-  revokeImage();
-  imageUrl.value = create(new Blob([bytes], { type: mimeTypeFor(fileName.value) }));
 }
 
 async function mountPdf(mine: number, ctrl: AbortController): Promise<void> {
@@ -393,7 +370,6 @@ function emitPosition(extra: Partial<PreviewPosition> = {}): void {
   if (mode === "none" || mode === "markdown") return;
   const position: PreviewPosition = { mode, ...extra };
   if (mode === "pdf") position.page = pdfPage.value;
-  if (mode === "image") position.zoom = zoom.value;
   if (mode === "xlsx" && currentSheet.value) position.sheet = currentSheet.value.name;
   if (mode === "pptx" && currentSlide.value) position.slide = currentSlide.value.index;
   // 归属一起交出去：附件 id 来自卡片 meta，版本来自这一次真实取到的预览数据。
@@ -405,31 +381,8 @@ function emitPosition(extra: Partial<PreviewPosition> = {}): void {
 }
 
 function changeZoom(direction: 1 | -1): void {
-  fitMode.value = false;
   zoom.value = stepZoom(zoom.value, direction);
   emitPosition();
-}
-
-function fitImage(): void {
-  fitMode.value = true;
-  applyFit();
-  emitPosition();
-}
-
-function applyFit(): void {
-  const element = imageRef.value;
-  const natural =
-    element && element.naturalWidth > 0
-      ? { width: element.naturalWidth, height: element.naturalHeight }
-      : imageView.value?.width && imageView.value?.height
-        ? { width: imageView.value.width, height: imageView.value.height }
-        : null;
-  const box = { width: element?.clientWidth ?? 0, height: element?.clientHeight ?? 0 };
-  zoom.value = natural ? fitScale(natural, { width: box.width || 640, height: box.height || 420 }) : 1;
-}
-
-function onImageLoad(): void {
-  if (fitMode.value) applyFit();
 }
 
 function goPage(page: number): void {
@@ -464,19 +417,6 @@ async function runAction(action: PreviewAction): Promise<void> {
   }
 }
 
-function mimeTypeFor(name: string): string {
-  const suffix = name.slice(name.lastIndexOf(".")).toLowerCase();
-  const table: Record<string, string> = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-  };
-  return table[suffix] ?? "application/octet-stream";
-}
-
 watch(
   () => props.active,
   (active) => {
@@ -503,7 +443,7 @@ watch(
 
 /** 内容 / 上下文一变就重新量一次（post：DOM 已经更新；读 scrollWidth 会强制同步布局）。 */
 watch(
-  [inlineReady, bodyViewport, () => plan.value.mode, () => plan.value.renderer, imageUrl, codeView, xlsxView, docxView, pptxView, pdfFacts],
+  [inlineReady, bodyViewport, () => plan.value.mode, () => plan.value.renderer, codeView, xlsxView, docxView, pptxView, pdfFacts],
   () => {
     verifyHorizontalFit();
   },
@@ -565,36 +505,13 @@ defineExpose({
       :data-qio-viewport="bodyViewport"
       :data-qio-context="context"
     >
-      <!-- 图片：等比 + 放大 / 缩小 / 适应 -->
-      <div v-if="plan.renderer === 'image'" class="cip-image" data-im="cip-image">
-        <!-- 对话内不给缩放（放大必然产生横向浏览，违反对话无横向规则）；独立材料阅读保留完整缩放 -->
-        <div v-if="materialContext" class="cip-tools">
-          <button type="button" data-testid="cip-zoom-out" @click="changeZoom(-1)">缩小</button>
-          <span class="cip-zoom" data-testid="cip-zoom">{{ zoomPercent }}</span>
-          <button type="button" data-testid="cip-zoom-in" @click="changeZoom(1)">放大</button>
-          <button type="button" data-testid="cip-zoom-fit" @click="fitImage()">适应</button>
-        </div>
-        <div
-          class="cip-image-box"
-          v-qio-scrollbar="{ policy: 'auto', axis: 'both' }"
-          :data-qio-pan="materialContext ? 'both' : 'none'"
-        >
-          <img
-            v-if="imageUrl"
-            ref="imageRef"
-            class="cip-image-el"
-            data-testid="cip-image"
-            :src="imageUrl"
-            :alt="fileName"
-            :style="{ transform: 'scale(' + zoom + ')' }"
-            @load="onImageLoad"
-          />
-        </div>
-        <p v-if="imageView" class="cip-fact" data-testid="cip-image-fact">{{ imageView.shape }}</p>
-      </div>
+      <!--
+        图片不做卡片内阅读（2026-10-15 图片展示简化）：这里**不渲染画面**，
+        由下方的 cip-external 给出可读说明 + 既有打开 / 下载动作。
+      -->
 
       <!-- PDF：pdf.js 逐页渲染（原页面外观） -->
-      <div v-else-if="plan.renderer === 'pdf'" class="cip-pdf" data-im="cip-pdf">
+      <div v-if="plan.renderer === 'pdf'" class="cip-pdf" data-im="cip-pdf">
         <div class="cip-tools">
           <button type="button" data-testid="cip-page-prev" :disabled="pdfPage <= 1" @click="goPage(pdfPage - 1)">
             上一页
@@ -807,7 +724,7 @@ defineExpose({
 
     <!-- 不能内嵌 / 看不了：给真实原因 + 打开/下载入口 -->
     <div v-else class="cip-external" data-testid="cip-external" data-im="cip-external">
-      <p class="cip-reason" data-testid="cip-reason">{{ plan.reason }}</p>
+      <p class="cip-reason" data-testid="cip-reason">{{ externalReason }}</p>
       <div class="cip-actions">
         <button
           v-for="action in plan.actions"
@@ -960,12 +877,11 @@ defineExpose({
   padding: var(--sp-1);
 }
 /*
-  * 图片框 / PDF 页面框：
+  * PDF 页面框：
   * - data-qio-pan="both"（独立材料阅读）：二维浏览区，占满剩余高度，只有放大到超出时才滚动，
   *   指示条走统一实现；
-  * - data-qio-pan="none"（对话内）：执行无横向规则 —— 图片与页面按可用宽度适应，不滚动。
+  * - data-qio-pan="none"（对话内）：执行无横向规则 —— 页面按可用宽度适应，不滚动。
   */
-.cip-image-box,
 .cip-canvas-box {
   display: flex;
   align-items: flex-start;
@@ -976,22 +892,14 @@ defineExpose({
   border-radius: var(--r-md);
   padding: var(--sp-2);
 }
-.cip-image-box[data-qio-pan="both"],
 .cip-canvas-box[data-qio-pan="both"] {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
 }
-.cip-image-box[data-qio-pan="none"],
 .cip-canvas-box[data-qio-pan="none"] {
   overflow: visible;
   max-width: 100%;
-}
-.cip-image-el {
-  display: block;
-  max-width: 100%;
-  transform-origin: top center;
-  transition: transform var(--dur-base) var(--ease);
 }
 .cip-canvas {
   display: block;

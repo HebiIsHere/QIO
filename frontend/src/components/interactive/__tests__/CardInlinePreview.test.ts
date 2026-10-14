@@ -3,7 +3,8 @@
  *
  * 这个文件测的是**组件这一层真的做了什么**，而不是某个函数被调用过：
  *
- *   1. 六种 `renderer`（image / pdf / docx / xlsx / pptx / code）各自渲染出对应容器
+ *   1. 五种 `renderer`（pdf / docx / xlsx / pptx / code）各自渲染出对应容器；
+ *      `image` 不再内嵌阅读：给出可读说明 + 既有外部打开动作（不静默空白、不假成功）
  *      （用契约 §8.4 的 `data-im` 钩子断言，不依赖 scoped 类名）；
  *   2. 不支持 / 失败时显示**真实原因**与打开/下载入口，**没有假按钮**；
  *   3. `active=false` 或 `card.id` 变化时不继续工作：换附件后旧结果**不写进新卡**；
@@ -263,17 +264,26 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("CardInlinePreview：六种 renderer 各自渲染出对应容器", () => {
-  it("图片：等比容器 + 缩放工具 + 真实像素事实", async () => {
+  it("图片：不再做卡片内阅读 —— 可读说明 + 既有外部打开动作，没有内嵌画面与缩放", async () => {
     mocks.fetchAttachmentPreview.mockResolvedValue(
       envelope("image", { kind: "image", width: 800, height: 600, bytes: 4096 }),
     );
     const w = mountPreview(fileCard("示意图.png"));
     await flushPromises();
-    const box = w.find('[data-im="cip-image"]');
-    expect(box.exists(), "图片容器没有渲染出来").toBe(true);
-    expect(w.find('[data-testid="cip-zoom-in"]').exists()).toBe(true);
-    expect(w.find('[data-testid="cip-image-fact"]').text()).toContain("800×600");
-    expect(mocks.createObjectURL).toHaveBeenCalledTimes(1);
+    // 图片这一路彻底不再挂载：没有图片容器、没有缩放工具条、不取字节、不建 blob URL
+    expect(w.find('[data-im="cip-image"]').exists()).toBe(false);
+    expect(w.find('[data-testid="cip-image"]').exists()).toBe(false);
+    expect(w.find('[data-testid="cip-zoom-in"]').exists()).toBe(false);
+    expect(w.find('[data-testid="cip-zoom-out"]').exists()).toBe(false);
+    expect(mocks.loadRenderer).not.toHaveBeenCalled();
+    expect(mocks.fetchAttachmentBytes).not.toHaveBeenCalled();
+    expect(mocks.createObjectURL).not.toHaveBeenCalled();
+    // 不静默空白：给出可读说明 + 真实存在的外部打开 / 下载入口（诚实、不假成功）
+    expect(w.find('[data-im="cip-external"]').exists()).toBe(true);
+    expect(w.get('[data-testid="cip-reason"]').text()).toContain("不在卡片内展开阅读");
+    expect(w.find('[data-testid="cip-action-view"]').exists()).toBe(true);
+    expect(w.find('[data-testid="cip-action-download"]').exists()).toBe(true);
+    expect(w.get('[data-testid="cip-reason"]').text()).toContain("预览不等于 QIO 已读到图片内容");
   });
 
   it("pdf：canvas 容器 + 真实页数（逐页渲染）", async () => {
@@ -353,19 +363,13 @@ describe("CardInlinePreview：显式渲染上下文决定滚动与横向规则",
     return w;
   }
 
-  it("material：图片 / PDF / 表格 / 代码各自声明二维浏览区（QIO 指示条 + data-qio-pan）", async () => {
-    const image = await mountWith("image", { kind: "image", width: 800, height: 600, bytes: 4096 }, "material");
-    expect(image.get('[data-testid="cip-root"]').attributes("data-qio-context")).toBe("material");
-    expect(image.get('[data-testid="cip-root"]').attributes("data-qio-fit")).toBeDefined();
-    // 图片：默认适应区域，放大后由图片框承担二维浏览
-    expect(image.get(".cip-image-box").attributes("data-qio-pan")).toBe("both");
-    expect(image.get(".cip-image-box").classes()).toContain("qio-scroll-host");
-    // 缩放工具属于独立材料阅读
-    expect(image.find('[data-testid="cip-zoom-in"]').exists()).toBe(true);
-    image.unmount();
-
+  it("material：PDF / 表格 / 代码各自声明二维浏览区（QIO 指示条 + data-qio-pan）", async () => {
     const pdf = await mountWith("pdf", { kind: "pdf", pages: 3, title: "报告", encrypted: false, textChars: 10 }, "material");
+    expect(pdf.get('[data-testid="cip-root"]').attributes("data-qio-context")).toBe("material");
+    expect(pdf.get('[data-testid="cip-root"]').attributes("data-qio-fit")).toBeDefined();
     expect(pdf.get(".cip-canvas-box").attributes("data-qio-pan")).toBe("both");
+    expect(pdf.get(".cip-canvas-box").classes()).toContain("qio-scroll-host");
+    // 缩放工具属于独立材料阅读（只服务 PDF 了）
     expect(pdf.find('[data-testid="cip-pdf-zoom-in"]').exists()).toBe(true);
     pdf.unmount();
 
@@ -397,11 +401,12 @@ describe("CardInlinePreview：显式渲染上下文决定滚动与横向规则",
     expect(code.get('[data-testid="cip-pre"]').attributes("data-qio-pan")).toBe("none");
     code.unmount();
 
+    // 图片在对话内同样不做内嵌阅读：没有画面、也没有缩放
     const image = await mountWith("image", { kind: "image", width: 800, height: 600, bytes: 4096 }, "chat");
-    // 放大必然产生横向浏览：对话内不提供缩放入口
+    expect(image.find('[data-testid="cip-image"]').exists()).toBe(false);
     expect(image.find('[data-testid="cip-zoom-in"]').exists()).toBe(false);
     expect(image.find('[data-testid="cip-zoom-out"]').exists()).toBe(false);
-    expect(image.get(".cip-image-box").attributes("data-qio-pan")).toBe("none");
+    expect(image.find('[data-im="cip-external"]').exists()).toBe(true);
     image.unmount();
 
     const xlsx = await mountWith("xlsx", {
@@ -421,7 +426,6 @@ describe("CardInlinePreview：显式渲染上下文决定滚动与横向规则",
   */
   it("每个渲染器都只有一个主要纵向视口（不出现三层各滚一段）", async () => {
     const cases: Array<[string, Record<string, unknown>]> = [
-      ["image", { kind: "image", width: 800, height: 600, bytes: 4096 }],
       ["pdf", { kind: "pdf", pages: 3, title: "报告", encrypted: false, textChars: 10 }],
       ["code", { kind: "code", language: "text", lines: ["x"], totalLines: 1, truncated: false }],
       ["xlsx", {
@@ -640,16 +644,16 @@ describe("CardInlinePreview：收起与换附件", () => {
 // ---------------------------------------------------------------------------
 
 describe("CardInlinePreview：卸载与换附件时释放资源", () => {
-  it("图片：卸载时 revoke blob URL", async () => {
+  it("图片：没有内嵌预览，所以既不建也不释放 blob URL（卸载无副作用）", async () => {
     mocks.fetchAttachmentPreview.mockResolvedValue(
       envelope("image", { kind: "image", width: 800, height: 600, bytes: 4096 }),
     );
     const w = mountPreview(fileCard("示意图.png"));
     await flushPromises();
-    expect(mocks.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(mocks.createObjectURL).not.toHaveBeenCalled();
     w.unmount();
     await flushPromises();
-    expect(mocks.revokeObjectURL).toHaveBeenCalledWith("blob:qio-preview-1");
+    expect(mocks.revokeObjectURL).not.toHaveBeenCalled();
   });
 
   it("pdf：卸载时销毁文档对象（destroy 被调用）", async () => {

@@ -76,12 +76,7 @@ const XLSX_MODULE = {
   }),
 };
 
-const IMAGE_MODULE = {
-  RENDERER: "image",
-  view: () => ({ ok: true, view: { width: 800, height: 600, bytes: 4096, shape: "800×600" } }),
-};
-
-const MODULES: Record<string, unknown> = { code: CODE_MODULE, xlsx: XLSX_MODULE, image: IMAGE_MODULE };
+const MODULES: Record<string, unknown> = { code: CODE_MODULE, xlsx: XLSX_MODULE };
 
 function envelope(renderer: string, data: Record<string, unknown>) {
   return { status: "ready", kind: renderer, version: "v1", attachmentId: "att_1", recipe: 1, data, reason: "", truncated: false, stats: {} };
@@ -216,7 +211,7 @@ describe("chat 上下文：预览里的查看区不许横向溢出（藏滚动�
     w.unmount();
   });
 
-  it("表格 / 图片查看区在 chat 里同样按同一口径判定", async () => {
+  it("表格 / 代码查看区在 chat 里同样按同一口径判定", async () => {
     mocks.fetchAttachmentPreview.mockResolvedValue(envelope("xlsx", { kind: "xlsx" }));
     const grid = await mountPreview("chat", "xlsx");
     const box = grid.get(".cip-grid-box").element as HTMLElement;
@@ -224,15 +219,15 @@ describe("chat 上下文：预览里的查看区不许横向溢出（藏滚动�
     expect((grid.vm as unknown as Exposed).verifyHorizontalFit()!.ok).toBe(true);
     grid.unmount();
 
-    mocks.fetchAttachmentPreview.mockResolvedValue(envelope("image", { kind: "image" }));
-    const image = await mountPreview("chat", "image");
-    const imageBox = image.get(".cip-image-box").element as HTMLElement;
-    stubWidth(imageBox, 360, 900, true);
-    const report = (image.vm as unknown as Exposed).verifyHorizontalFit()!;
+    mocks.fetchAttachmentPreview.mockResolvedValue(envelope("code", { kind: "code" }));
+    const code = await mountPreview("chat", "code");
+    const pre = code.get('[data-testid="cip-pre"]').element as HTMLElement;
+    stubWidth(pre, 360, 900, true);
+    const report = (code.vm as unknown as Exposed).verifyHorizontalFit()!;
     // chat 里不允许出现任何横向浏览：即使 scrollLeft 能移动也不通过
     expect(report.ok).toBe(false);
     expect(report.pannable.length).toBe(1);
-    image.unmount();
+    code.unmount();
   });
 });
 

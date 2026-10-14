@@ -207,6 +207,25 @@ describe("store：展开状态只在前端内存", () => {
     expect(store.toggleCardPreview("")).toBe(false);
     expect(store.previewExpandedCount).toBe(0);
   });
+
+  it("图片卡不能进入阅读态：返回 false，也不出现在任何展开出口", () => {
+    store.board = {
+      ...seedBoard(),
+      cards: [
+        {
+          ...mkCard("img_1", 100, 100),
+          kind: "file",
+          meta: { name: "照片.png", file: { name: "照片.png", attachmentId: "att_img", size: 2048 } },
+        },
+      ],
+    };
+    expect(store.toggleCardPreview("img_1")).toBe(false);
+    expect(store.isCardPreviewExpanded("img_1")).toBe(false);
+    expect(store.expandedCardIds).toEqual([]);
+    expect(store.previewExpandedCount).toBe(0);
+    // 图片不算数：收起全部预览返回 0（没有可收起的阅读）
+    expect(store.collapseAllPreviews()).toBe(0);
+  });
 });
 
 describe("BoardCard：卡片自己的「展开预览 / 收起预览」", () => {

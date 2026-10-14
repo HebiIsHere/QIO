@@ -246,7 +246,7 @@ describe("卡片：一个主要纵向视口 + 代码块不自己滚动", () => {
     expect(rule).not.toContain("overflow-y: auto");
   });
 
-  it("展开阅读（材料卡）：卡片内预览收到显式 material 上下文，且四类材料各自声明视口", async () => {
+  it("展开阅读（材料卡）：卡片内预览收到显式 material 上下文，并按材料类型声明视口", async () => {
     const card = mkCard("f1", {
       kind: "file",
       meta: { name: "台账.xlsx", file: { name: "台账.xlsx", attachmentId: "att_1", size: 4096 } },
@@ -274,7 +274,8 @@ describe("卡片：一个主要纵向视口 + 代码块不自己滚动", () => {
     // 纵向责任按 data-qio-viewport 明确；二维浏览区按 data-qio-pan 明确
     expect(cip).toContain('.cip-body[data-qio-viewport="self"]');
     expect(cip).toContain('.cip-body[data-qio-viewport="viewer"]');
-    expect(cip).toContain('.cip-image-box[data-qio-pan="both"]');
+    // 图片不再内嵌阅读：只保留 PDF / 表格 / 代码的二维浏览区
+    expect(cip).not.toContain("cip-image");
     expect(cip).toContain('.cip-canvas-box[data-qio-pan="both"]');
     expect(cip).toContain('.cip-pre[data-qio-pan="both"]');
     expect(cip).toContain('.cip-grid-box[data-qio-pan="both"]');
