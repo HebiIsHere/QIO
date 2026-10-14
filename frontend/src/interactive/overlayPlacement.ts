@@ -56,7 +56,17 @@ export function placeCardOverlay(input: {
 
   const leftMin = viewport.left + OVERLAY_EDGE_MARGIN;
   const leftMax = viewport.right - toolbar.w - OVERLAY_EDGE_MARGIN;
-  let left = Math.max(leftMin, Math.min(leftMax, card.left));
+  /*
+    2026-10-14（用户要求「拖动时工具栏要准确跟随卡片，相对位置不变」）：
+    卡片**没有完全在视口里**时不做横向夹取 —— 否则卡片一靠近右边缘，工具栏就被夹到视口边，
+    相对位置从 0 变成 −166（实测），看起来就是"漂移出去"。
+    卡片完全可见时才夹（那时夹取等于「整个浮层都在可视区内」，是原来的正确行为）。
+  */
+  const cardFullyVisible =
+    card.left >= viewport.left && card.right <= viewport.right && card.top >= viewport.top && card.bottom <= viewport.bottom;
+  let left = cardFullyVisible
+    ? Math.max(leftMin, Math.min(leftMax, card.left))
+    : card.left;
 
   /** 与卡片矩形（两个轴都要相交才算压住）是否重叠。 */
   const covers = (candidateLeft: number, candidateTop: number) =>

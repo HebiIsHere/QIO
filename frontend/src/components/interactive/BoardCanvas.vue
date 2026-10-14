@@ -1944,7 +1944,19 @@ onMounted(() => {
   window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.addEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
   refreshOverlay();
+  // 挂载后布局还没稳定（滚动位置 / 板面区域刚发布）：下一帧再算一次
+  requestAnimationFrame(() => refreshOverlay());
 });
+
+/*
+  选中的卡片一变就重算工具栏位置（2026-10-14）：
+  刷新页面时选中状态是从 store 恢复的，没有经过任何点击 —— 原来只靠点击 / 拖放结束触发，
+  于是工具栏停在 (0,84) 这种没算准的位置，看起来就是「漂到左上角」。
+*/
+watch(
+  () => primarySelectedCard.value?.id ?? "",
+  () => refreshOverlay(),
+);
 
 onBeforeUnmount(() => {
   viewportEl.value?.removeEventListener("wheel", onWheel);
