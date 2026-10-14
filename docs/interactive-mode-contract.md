@@ -1113,3 +1113,57 @@ export function findFreeSlot(input): ResizeBox;
 - `findFreeSlot` 在可用面积为 0 时无法给出合理落点，**调用方必须先量到面积**再调用。
 - 浮层扣减用「最大剩余矩形」：浮层位于视口正中时会选面积较大的一侧。
 - 对话窗口的位置/尺寸不做跨设备同步；打包桌面窗口（自绘标题栏真实高度）未复验。
+
+---
+
+## 16. 统一滚动与对话宽度约定（2026-10-14 第十二轮）
+
+**覆盖范围**：§8.2 的板面手势条文不受影响（板面仍可用滚轮/平移/缩放），
+但本节**取代** §8.2、§9.6、§10.8、§12.7 中一切与「滚动条」「限高滚动」「代码块横向滚动」有关的写法。
+完整规则见 `docs/superpowers/specs/2026-08-09-qio-frontend-design.md` §15。
+
+### 16.1 板面（保持不变的部分）
+
+- 板面滚动区策略为 `hidden`：**原生滚动条与 QIO 指示条都不出现**，但
+  `scrollLeft` / `scrollTop`、平移、滚轮缩放、定位与坐标换算**全部保留**；
+  空白拖动查看、空格框选等已确认手势不变。
+- 隐藏滚动条不得改变 `canScroll` / `insideScrollable` 的判定（它们读 computed overflow，
+  与滚动条外观无关）。
+
+### 16.2 互动对话（收紧的部分）
+
+- 面板内**任何层级**都不得有横向可滚动范围：消息、代码块、表格、输入区、附件区、过程、
+  工具输出、错误与恢复详情、对话内预览都不是例外。
+- 聊天区是面板内**唯一**的主要纵向滚动视口。通知、过程、附件摘要等属于同一阅读流的区域
+  改为自然展开 + 折叠入口，不再各自成为固定高度的小滚动窗口。
+- 附件、失败恢复、提示默认「数量 / 简述 + 展开入口」；**不得**因此隐藏审批入口或重要错误。
+- 面板可以被单独缩放：表格与内容的适配必须对该窗口宽度作出响应（不是只看整机窗口宽度）。
+
+### 16.3 卡片与预览
+
+- 卡片常态显示适量正文 + 展开入口；展开阅读时正文或预览占主要空间，**只保留一个主要纵向视口**
+  （不再有 `card-body` → 预览正文 → 内层预览三层纵向滚动）。
+- 编辑态是连续编辑区；不因固定最小高度撑出较小卡片。
+- 渲染上下文显式区分：**对话内**的预览执行 16.2 的无横向规则；**独立材料阅读**区
+  （图片 / PDF 放大、电子表格、代码）可按材料类型保留必要的横向浏览，并统一使用 QIO 指示条。
+- 摘要 / 折叠只改变呈现，**不得**改变提交内容、许可与已保存尺寸。
+- 合并单元格等结构保留真实跨度与对应关系，不展开成误导记录。
+
+### 16.4 本轮文件所有权（一个文件同一时间只有一个写者）
+
+| 写者 | 文件 |
+| --- | --- |
+| Lead | `frontend/src/styles/scroll.css`、`frontend/src/styles/tokens.css`、`frontend/src/styles/base.css`、`frontend/src/main.ts`、`frontend/src/utils/scrollIndicator.ts`、`frontend/src/utils/qioTable.ts`、`frontend/src/composables/useQioScrollbars.ts`、`frontend/src/composables/useQioTables.ts`、`frontend/src/components/ui/QioScrollArea.vue`、`frontend/src/components/MarkdownContent.vue`、`docs/*` |
+| msg-chat | `MessageStream.vue`、`MessageItem.vue`、`Composer.vue`、`TurnProcess.vue`、`ContinueBar.vue`、`QueueChip.vue`、`AttachmentChip.vue`、`InterruptedTurnEntry.vue`、`views/ConversationView.vue` |
+| msg-dock | `ChatDock.vue`、`interactive-shell.css` |
+| msg-board | `BoardCanvas.vue`、`BoardCard.vue`、`CardInlinePreview.vue`、`CardAttachmentPreview.vue`、`TextCardEditor.vue`、`BoardGroupFrame.vue`、`BoardChangeList.vue`、`BoardSearchPanel.vue`、`BoardPreviewLayer.vue`、`SelectionMenu.vue`、`ResizeHandles.vue`、`BoardToolbar.vue` |
+| msg-pages | 设置 / 星球 / 调试 / 审批 / 凭据 / 引导 / 意图与失败恢复等其余页面与浮层 |
+
+（路径均为 `frontend/src/` 下相对路径；本节只约束本轮，后续轮次另立。）
+
+### 16.5 本轮不做
+
+- 不合并 main、不动另一修复分支、不打包发布（本轮停在「独立分支完成、合并材料已备」）。
+- 不把滚动条外观做成用户可选的主题皮肤；只提供「自动显示 / 始终显示」。
+- 不为系统文件选择器与外部应用做样式覆盖（不属于 QIO 自有界面）。
+

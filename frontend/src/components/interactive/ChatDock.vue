@@ -31,6 +31,7 @@ import AttachmentChip from "../AttachmentChip.vue";
 import FailedSendNotice from "./FailedSendNotice.vue";
 import ResizeHandles from "./ResizeHandles.vue";
 import { useResizeGesture } from "../../composables/useResizeGesture";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import {
   isAttachmentDead,
   invalidateAttachmentIdentity,
@@ -98,6 +99,13 @@ import { RESIZE_DRAG_THRESHOLD, boxEquals, clampNumber } from "../../interactive
 const TAIL_LIMIT = 60;
 /** 输入框最大高度：超过后输入框内部滚动，不把消息区挤没 */
 const MAX_INPUT_PX = 132;
+/**
+ * 附件条默认只列出的条数（验收：附件默认给「数量 + 简述 + 展开入口」）。
+ * 其余条目**一条都不删**，只是不默认铺开：点「展开其余 N 个」就地看到全部。
+ */
+const ATTACH_BRIEF_COUNT = 2;
+/** 会话警告的简述长度：默认给一句能读完的简述，完整原文按需展开（原文一个字不改） */
+const WARNING_BRIEF_MAX = 72;
 /** 可用区域四周留白：贴边的把手不好抓，也和自绘标题栏 / 底部工具栏留出呼吸 */
 const AREA_MARGIN = 8;
 /** 移动阈值：与尺寸拖动同一个指针语义（阈值内算点击，不改位置） */
@@ -126,6 +134,10 @@ const blankNotice = ref("");
 const following = ref(true);
 /** 帮助（可见范围 / 媒体读取 / 附件限制 / 快捷键）是否展开 */
 const helpOpen = ref(false);
+/** 附件完整列表是否展开（默认只给数量 + 简述 + 展开入口） */
+const attachmentsOpen = ref(false);
+/** 会话警告是否展开全文（默认只给简述 + 展开入口） */
+const warningOpen = ref(false);
 
 const draft = computed({
   get: () => session.draft,
@@ -157,6 +169,16 @@ const turnError = computed(() => (failure.value ? "" : (session.lastError ?? "")
  * 这是「为什么没有回答」最直接的原因，必须显示，不能让用户对着一个空的等待框猜。
  */
 const sessionWarning = computed(() => session.warning ?? "");
+/**
+ * 会话警告的默认呈现：**简述 + 展开入口**。
+ * 只截断显示文本，会话层的事实一字不改；展开后看到的是完整原文。
+ */
+const warningLong = computed(() => sessionWarning.value.length > WARNING_BRIEF_MAX);
+const warningText = computed(() => {
+  const full = sessionWarning.value;
+  if (!warningLong.value || warningOpen.value) return full;
+  return full.slice(0, WARNING_BRIEF_MAX).trimEnd() + "…";
+});
 
 /* ------------------------------------------------------------------------
  * 位置 / 尺寸：本机查看偏好（按板面身份绑定），只改布局与查看
@@ -538,6 +560,20 @@ const pendingApprovals = computed(() =>
     ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
   ),
 );
+/**
+ * 下面还有用户**没看见、又需要他处理**的东西：待审批 / 轮次错误 / 失败恢复。
+ *
+ * 为什么必须有它：过程与提示已并进消息流（同一阅读流只留一层滚动），用户上翻阅读时
+ * 它们会滚出视野 —— 「简化滚动」绝不允许变成「藏掉审批或重要错误」。
+ * 这个字符串由钉在阅读区底部的固定入口（不在滚动内容里，滚不走）显示出来：
+ * 用户一步就看得见「下面还有什么」，一步就能回到最新。
+ */
+const attentionText = computed(() => {
+  const parts: string[] = [];
+  if (pendingApprovals.value.length) parts.push("待审批 " + pendingApprovals.value.length + " 项");
+  if (turnError.value || failureVisible.value) parts.push("有错误待查看");
+  return parts.join(" · ");
+});
 const processOpen = ref(false);
 const processBusy = ref<string | null>(null);
 const processNote = ref<string | null>(null);
@@ -775,6 +811,11 @@ const attachRetry = ref<{ kind: "file"; file: File } | { kind: "path"; path: str
 
 const readyAttachments = computed(() => pendingAttachments.value.filter((item) => isSendable(item)));
 const unready = computed(() => pendingAttachments.value.filter((item) => !isSendable(item)));
+/** 默认只列出前几条：数量与简述先给到，完整列表由「展开其余 N 个」打开 */
+const shownAttachments = computed(() =>
+  attachmentsOpen.value ? pendingAttachments.value : pendingAttachments.value.slice(0, ATTACH_BRIEF_COUNT),
+);
+const hiddenAttachmentCount = computed(() => Math.max(0, pendingAttachments.value.length - ATTACH_BRIEF_COUNT));
 /** 待发附件的总大小（只算本次真的会发出去的那些）。 */
 const attachTotalBytes = computed(() =>
   (readyAttachments.value.length ? readyAttachments.value : pendingAttachments.value).reduce(
@@ -1072,6 +1113,8 @@ function onKeydown(event: KeyboardEvent) {
       :class="{ resizing }"
       :style="panelStyle"
       data-im="chat-panel"
+      data-qio-scope="chat"
+      data-qio-fit
       aria-label="与 QIO 对话"
       @wheel.stop
     >
@@ -1082,7 +1125,7 @@ function onKeydown(event: KeyboardEvent) {
       <ResizeHandles :show-keys="false" label="对话窗口尺寸调整" @handle-down="onHandleDown" />
 
       <!-- 标题栏 = 身份条 + 唯一的移动把手；正文区不参与移动，阅读与输入不被干扰 -->
-      <header class="panel-head" data-im="chat-head" @pointerdown="onHeadPointerDown">
+      <header class="panel-head" data-im="chat-head" data-qio-fit @pointerdown="onHeadPointerDown">
         <span class="panel-title serif">对话</span>
         <span class="panel-status mono" data-im="chat-status">{{ statusText }}</span>
         <div class="panel-tools">
@@ -1111,154 +1154,216 @@ function onKeydown(event: KeyboardEvent) {
       <div class="panel-body">
         <!-- 中间：连续消息流（正式回答持续流式显示；工具与阶段记录默认简短、详情可展开） -->
         <div class="stream-wrap">
+          <!--
+            整段对话的**唯一主要纵向滚动视口**（policy auto：默认不画指示条，
+            滚动 / 靠近边缘 / 键盘使用该区域时才出现；指示条浮在边缘，不占布局列）。
+            只声明 y 轴：面板里不存在横向可滚动范围，连指示条也不会为 x 轴而建。
+          -->
           <div
             ref="streamRef"
             class="stream"
             data-im="chat-stream"
+            data-qio-fit
+            v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
             @scroll="onScroll"
             @wheel.stop="onUserScroll"
           >
-            <div ref="contentRef" class="stream-inner">
+            <div ref="contentRef" class="stream-inner" data-qio-fit>
               <p v-if="!shownMessages.length" class="stream-empty" data-im="chat-empty">
                 还没有消息。这里发送的文字会进入当前 QIO 会话（与对话页是同一个会话）。
               </p>
               <p v-else-if="hiddenText" class="stream-older mono" data-im="chat-older">{{ hiddenText }}</p>
               <MessageItem v-for="message in shownMessages" :key="message.id" :message="message" class="stream-item" />
+
+              <!--
+                过程：默认只留一行（这次到哪一步）；工具与阶段记录收进「过程详情」，
+                审批条目直接可见（批准前不改动板面）。板面提交的长说明归提交入口。
+
+                它就地在**同一条阅读流**里：不再是面板里另开的一个限高滚动小窗口。
+                内容自然展开（content 策略），整段阅读区只由外层 .stream 承担纵向滚动；
+                展开后的详情再长也一定滚得到，不会被裁掉。
+              -->
+              <div
+                v-if="processVisible"
+                class="process"
+                data-im="chat-process"
+                data-qio-fit
+                :data-process-status="uStatus ?? 'none'"
+                :data-process-outcome="uOutcome"
+              >
+                <p class="process-line" role="status">
+                  <strong class="process-label" :class="'tone-' + uText.tone" data-im="chat-process-status">
+                    {{ uText.label }}
+                  </strong>
+                  <span class="process-detail" data-im="chat-process-detail" :title="uText.detail">{{ uText.detail }}</span>
+                  <button
+                    v-if="hasProcessDetail"
+                    class="process-btn ghost"
+                    type="button"
+                    data-im="chat-process-toggle"
+                    :aria-expanded="processOpen"
+                    @click="processOpen = !processOpen"
+                  >
+                    {{ processOpen ? "收起详情" : "过程详情" }}
+                  </button>
+                </p>
+                <p v-if="uCurrent && !processOpen" class="process-step" data-im="chat-process-step">
+                  {{ understandingStepText(uCurrent) }}
+                </p>
+                <div class="process-actions">
+                  <button
+                    v-if="!submitting && uStatus === 'failed'"
+                    class="process-btn"
+                    type="button"
+                    data-im="chat-process-retry"
+                    :disabled="processRefreshing"
+                    @click="retryUnderstanding"
+                  >
+                    {{ processRefreshing ? "重试中…" : "重试理解（从快照恢复）" }}
+                  </button>
+                  <button
+                    v-else-if="!submitting && uLive"
+                    class="process-btn"
+                    type="button"
+                    data-im="chat-process-refresh"
+                    :disabled="processRefreshing"
+                    @click="refreshUnderstanding"
+                  >
+                    {{ processRefreshing ? "查询中…" : "刷新理解状态" }}
+                  </button>
+                </div>
+                <template v-if="processOpen">
+                  <p v-if="uOutcome === 'clarification'" class="process-note" data-im="chat-process-missing">
+                    需要你补充：{{ missingText }}；这次没有生成任何任务。
+                  </p>
+                  <p v-else-if="uOutcome === 'no_action'" class="process-note" data-im="chat-process-no-action">
+                    这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
+                  </p>
+                  <ol v-if="uHistory.length" class="process-history" data-im="chat-process-history">
+                    <li v-for="step in uHistory" :key="step.key + '-' + step.label" class="process-history-item">
+                      {{ understandingStepText(step) }}
+                    </li>
+                  </ol>
+                </template>
+                <!-- 审批入口自动展开：批准前不会改动板面 -->
+                <div v-if="pendingApprovals.length" class="approval" data-im="chat-approval">
+                  <p class="approval-title">待审批：{{ pendingApprovals.length }} 项（批准前不改动板面）</p>
+                  <div
+                    v-for="intent in pendingApprovals"
+                    :key="intent.id"
+                    class="approval-row"
+                    data-im="chat-approval-item"
+                    :data-intent-id="intent.id"
+                  >
+                    <span class="approval-name">
+                      <span v-if="intent.demo" class="approval-demo">演示</span>{{ intent.title }}
+                    </span>
+                    <button
+                      class="process-btn"
+                      type="button"
+                      data-im="chat-approve"
+                      :data-intent-id="intent.id"
+                      :disabled="processBusy === intent.id || !approveAvailability(intent).allowed"
+                      :title="approveAvailability(intent).text"
+                      @click="decideIntent(intent, 'approve')"
+                    >
+                      {{ processBusy === intent.id ? "处理中…" : intent.demo ? "批准（演示）" : "批准" }}
+                    </button>
+                    <button
+                      class="process-btn ghost"
+                      type="button"
+                      data-im="chat-reject"
+                      :data-intent-id="intent.id"
+                      :disabled="processBusy === intent.id || !rejectAvailability(intent).allowed"
+                      :title="rejectAvailability(intent).text"
+                      @click="decideIntent(intent, 'reject')"
+                    >
+                      拒绝
+                    </button>
+                  </div>
+                </div>
+                <p v-if="processNote" class="process-note" data-im="chat-process-result">{{ processNote }}</p>
+              </div>
+
+              <!--
+                会话级提示（警告 / 轮次错误 / 失败恢复）：content 策略，和消息流**同一条阅读流**。
+                正文自然展开，整块阅读区只保留 .stream 一层纵向滚动。
+                警告默认给「简述 + 展开全文」；轮次错误与失败恢复入口始终完整可见 —— 不藏掉重要错误。
+              -->
+              <div class="panel-notices" data-im="chat-notices" data-qio-fit>
+                <p
+                  v-if="sessionWarning"
+                  class="notice warn"
+                  role="status"
+                  data-im="chat-warning"
+                  :title="warningLong ? '完整提示：' + sessionWarning : undefined"
+                >
+                  <span class="notice-text">{{ warningText }}</span>
+                  <button
+                    v-if="warningLong"
+                    class="notice-more"
+                    type="button"
+                    data-im="chat-warning-toggle"
+                    :aria-expanded="warningOpen"
+                    @click="warningOpen = !warningOpen"
+                  >
+                    {{ warningOpen ? "收起" : "展开全文" }}
+                  </button>
+                </p>
+                <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error" data-qio-fit>{{ turnError }}</p>
+                <!--
+                  失败原因 + 待恢复原文：与对话页共用同一个组件（契约 §11.4），
+                  只在原话题出现，不自动写回、不自动重发。原文条数与「查看其余 N 条 / 查看原文」
+                  入口由该组件自己给出（默认数量 + 简述 + 展开入口，不占固定高度的小滚动区）。
+                -->
+                <FailedSendNotice
+                  scope="chat"
+                  :notice="failureVisible ? failure : ''"
+                  :reason="failureVisible ? session.lastError : ''"
+                />
+              </div>
             </div>
           </div>
           <!--
             悬浮在消息区底部：不占布局行、不压输入区；用户上翻时只提示、不自动拉回。
             消息区底部留出它的高度，最后一屏内容永远能滚到它上面。
           -->
-          <button v-if="!following" class="to-latest" type="button" data-im="chat-latest" @click="scrollToBottom(true)">
-            回到最新
-          </button>
-        </div>
-
-        <!--
-          过程：默认只留一行（这次到哪一步）；工具与阶段记录收进「过程详情」，
-          审批条目直接可见（批准前不改动板面）。板面提交的长说明归提交入口。
-        -->
-        <div
-          v-if="processVisible"
-          class="process"
-          data-im="chat-process"
-          :data-process-status="uStatus ?? 'none'"
-          :data-process-outcome="uOutcome"
-        >
-          <p class="process-line" role="status">
-            <strong class="process-label" :class="'tone-' + uText.tone" data-im="chat-process-status">
-              {{ uText.label }}
-            </strong>
-            <span class="process-detail" data-im="chat-process-detail" :title="uText.detail">{{ uText.detail }}</span>
-            <button
-              v-if="hasProcessDetail"
-              class="process-btn ghost"
-              type="button"
-              data-im="chat-process-toggle"
-              :aria-expanded="processOpen"
-              @click="processOpen = !processOpen"
-            >
-              {{ processOpen ? "收起详情" : "过程详情" }}
-            </button>
-          </p>
-          <p v-if="uCurrent && !processOpen" class="process-step" data-im="chat-process-step">
-            {{ understandingStepText(uCurrent) }}
-          </p>
-          <div class="process-actions">
-            <button
-              v-if="!submitting && uStatus === 'failed'"
-              class="process-btn"
-              type="button"
-              data-im="chat-process-retry"
-              :disabled="processRefreshing"
-              @click="retryUnderstanding"
-            >
-              {{ processRefreshing ? "重试中…" : "重试理解（从快照恢复）" }}
-            </button>
-            <button
-              v-else-if="!submitting && uLive"
-              class="process-btn"
-              type="button"
-              data-im="chat-process-refresh"
-              :disabled="processRefreshing"
-              @click="refreshUnderstanding"
-            >
-              {{ processRefreshing ? "查询中…" : "刷新理解状态" }}
-            </button>
-          </div>
-          <template v-if="processOpen">
-            <p v-if="uOutcome === 'clarification'" class="process-note" data-im="chat-process-missing">
-              需要你补充：{{ missingText }}；这次没有生成任何任务。
-            </p>
-            <p v-else-if="uOutcome === 'no_action'" class="process-note" data-im="chat-process-no-action">
-              这次提交没有需要开展的任务：没有生成任何任务，板面保持原样。
-            </p>
-            <ol v-if="uHistory.length" class="process-history" data-im="chat-process-history">
-              <li v-for="step in uHistory" :key="step.key + '-' + step.label" class="process-history-item">
-                {{ understandingStepText(step) }}
-              </li>
-            </ol>
-          </template>
-          <!-- 审批入口自动展开：批准前不会改动板面 -->
-          <div v-if="pendingApprovals.length" class="approval" data-im="chat-approval">
-            <p class="approval-title">待审批：{{ pendingApprovals.length }} 项（批准前不改动板面）</p>
-            <div
-              v-for="intent in pendingApprovals"
-              :key="intent.id"
-              class="approval-row"
-              data-im="chat-approval-item"
-              :data-intent-id="intent.id"
-            >
-              <span class="approval-name">
-                <span v-if="intent.demo" class="approval-demo">演示</span>{{ intent.title }}
-              </span>
-              <button
-                class="process-btn"
-                type="button"
-                data-im="chat-approve"
-                :data-intent-id="intent.id"
-                :disabled="processBusy === intent.id || !approveAvailability(intent).allowed"
-                :title="approveAvailability(intent).text"
-                @click="decideIntent(intent, 'approve')"
-              >
-                {{ processBusy === intent.id ? "处理中…" : intent.demo ? "批准（演示）" : "批准" }}
-              </button>
-              <button
-                class="process-btn ghost"
-                type="button"
-                data-im="chat-reject"
-                :data-intent-id="intent.id"
-                :disabled="processBusy === intent.id || !rejectAvailability(intent).allowed"
-                :title="rejectAvailability(intent).text"
-                @click="decideIntent(intent, 'reject')"
-              >
-                拒绝
-              </button>
-            </div>
-          </div>
-          <p v-if="processNote" class="process-note" data-im="chat-process-result">{{ processNote }}</p>
-        </div>
-
-        <!-- 会话级提示（警告 / 轮次错误 / 失败恢复）：限高滚动，绝不把消息阅读区挤成一行 -->
-        <div class="panel-notices" data-im="chat-notices">
-          <p v-if="sessionWarning" class="notice warn" role="status" data-im="chat-warning">{{ sessionWarning }}</p>
-          <p v-if="turnError" class="notice err" role="status" data-im="chat-turn-error">{{ turnError }}</p>
           <!--
-            失败原因 + 待恢复原文：与对话页共用同一个组件（契约 §11.4），
-            只在原话题出现，不自动写回、不自动重发。长文限高滚动，不挤掉下面的输入行。
+            固定入口（钉在阅读区底部，不在滚动内容里，滚不走）：
+            一步回到最新；下面还有待审批 / 错误没看见时把话说全，
+            而不是只丢一句含糊的「回到最新」。
           -->
-          <FailedSendNotice
-            scope="chat"
-            :notice="failureVisible ? failure : ''"
-            :reason="failureVisible ? session.lastError : ''"
-          />
+          <button
+            v-if="!following"
+            class="to-latest"
+            type="button"
+            data-im="chat-latest"
+            :title="attentionText ? '下面还有：' + attentionText : '回到最新消息'"
+            @click="scrollToBottom(true)"
+          >
+            回到最新<template v-if="attentionText"> · <span class="to-latest-attention" data-im="chat-latest-attention">{{ attentionText }}</span></template>
+          </button>
         </div>
       </div>
 
       <!-- 底部：附件 + 输入 + 发送合成一个输入区（没有附件时不显示附件条） -->
-      <div class="composer" data-im="chat-composer">
-        <div class="attach-tools">
+      <!--
+        底部输入区：**独立于阅读流的编辑区**，它是这块区域自己那一层纵向滚动
+        （面板被拖到很矮时输入行不会被裁掉、也不需要外层再滚一次）。
+        其它区域一律 content：让内容自然展开，不在这里再切小滚动窗口。
+
+        策略是 **hidden**（输入区这一档的既定口径：板面、输入框等）：
+        保留全部滚动与定位能力（长输入到上限后仍能纵向滚、光标跟随照旧），
+        但**始终不画** QIO 指示条 —— 输入框旁再来一根浮动条既无必要也干扰编辑。
+        **不要改回 auto**：auto 属于消息流 / 独立列表 / 浮层正文那一档。
+      -->
+      <div
+        class="composer"
+        data-im="chat-composer"
+        data-qio-fit
+        v-qio-scrollbar="{ policy: 'hidden', axis: 'y' }"
+      >
+        <div class="attach-tools" data-qio-fit>
           <button
             class="attach-btn"
             type="button"
@@ -1288,7 +1393,7 @@ function onKeydown(event: KeyboardEvent) {
           />
         </div>
 
-        <div v-if="attachPathOpen" class="attach-path-row">
+        <div v-if="attachPathOpen" class="attach-path-row" data-qio-fit>
           <input
             v-model="attachPath"
             class="path-input"
@@ -1310,13 +1415,13 @@ function onKeydown(event: KeyboardEvent) {
         </div>
 
         <!-- 选定附件之后才出现；多个附件限高滚动，状态 / 移除 / 重试仍然可达 -->
-        <div v-if="pendingAttachments.length" class="attach-strip" data-im="chat-attach-strip">
+        <div v-if="pendingAttachments.length" class="attach-strip" data-im="chat-attach-strip" data-qio-fit>
           <p class="attach-total mono" data-im="chat-attach-total">
             {{ pendingAttachments.length }} 个附件<template v-if="attachTotalBytes > 0"> · {{ humanSize(attachTotalBytes) }}</template>
           </p>
-          <div class="attach-list">
+          <div class="attach-list" data-qio-fit>
             <div
-              v-for="item in pendingAttachments"
+              v-for="item in shownAttachments"
               :key="item.id"
               class="attach-item"
               data-im="chat-attachment"
@@ -1341,9 +1446,24 @@ function onKeydown(event: KeyboardEvent) {
               </button>
             </div>
           </div>
+          <!--
+            附件默认只给「数量 + 简述 + 展开入口」：不设一排固定高度的小滚动区。
+            展开后完整列表自然铺开，交给下面的输入区（编辑区自己那一层滚动）承载；
+            条目、状态、移除 / 重试入口一个都不少，也一条都不删。
+          -->
+          <button
+            v-if="hiddenAttachmentCount > 0"
+            class="attach-more"
+            type="button"
+            data-im="chat-attachments-more"
+            :aria-expanded="attachmentsOpen"
+            @click="attachmentsOpen = !attachmentsOpen"
+          >
+            {{ attachmentsOpen ? "收起其余附件" : "展开其余 " + hiddenAttachmentCount + " 个" }}
+          </button>
         </div>
 
-        <p v-if="attachHintText" class="attach-note err" role="status" data-im="chat-attach-error">
+        <p v-if="attachHintText" class="attach-note err" role="status" data-im="chat-attach-error" data-qio-fit>
           <span>{{ attachHintText }}</span>
           <button
             v-if="attachRetry && !attachBusy"
@@ -1355,20 +1475,20 @@ function onKeydown(event: KeyboardEvent) {
             重试这个附件
           </button>
         </p>
-        <p v-if="attachNotice" class="attach-note mono" role="status" data-im="chat-attach-note">{{ attachNotice }}</p>
+        <p v-if="attachNotice" class="attach-note mono" role="status" data-im="chat-attach-note" data-qio-fit>{{ attachNotice }}</p>
 
-        <p v-if="draftSaveError" class="notice err draft-status" role="alert" data-im="chat-draft-status">
+        <p v-if="draftSaveError" class="notice err draft-status" role="alert" data-im="chat-draft-status" data-qio-fit>
           <span>{{ draftSaveError }}</span>
           <button class="draft-retry" type="button" data-im="chat-draft-retry" @click="session.retryDraftSave()">
             重试保存
           </button>
         </p>
-        <p v-else-if="draftStatusText" class="draft-status mono" role="status" data-im="chat-draft-status">
+        <p v-else-if="draftStatusText" class="draft-status mono" role="status" data-im="chat-draft-status" data-qio-fit>
           {{ draftStatusText }}
         </p>
 
         <!-- 11a：被让位的旧草稿（两份都保留，取回 = 与当前文字互换） -->
-        <p v-if="displacedDraft" class="notice displaced" role="status" data-im="chat-displaced-draft">
+        <p v-if="displacedDraft" class="notice displaced" role="status" data-im="chat-displaced-draft" data-qio-fit>
           <span>
             这个话题原来还有一份草稿：{{ displacedSnippet }}
             <template v-if="displacedCount > 1">（另有 {{ displacedCount - 1 }} 份）</template>
@@ -1384,7 +1504,7 @@ function onKeydown(event: KeyboardEvent) {
           {{ displacedNotice }}
         </p>
 
-        <div class="input-row">
+        <div class="input-row" data-qio-fit>
           <textarea
             ref="inputRef"
             v-model="draft"
@@ -1407,19 +1527,19 @@ function onKeydown(event: KeyboardEvent) {
             {{ sending ? "发送中…" : "发送" }}
           </button>
         </div>
-        <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank">{{ blankNotice }}</p>
+        <p v-if="blankNotice" class="notice warn" role="status" data-im="chat-blank" data-qio-fit>{{ blankNotice }}</p>
 
         <!--
           「发送不提交板面」只留一句短提示；完整的可见范围 / 媒体读取方式 / 附件限制 /
           快捷键都在这个明确可打开的帮助里（顶部「帮助」按钮与这里的摘要都能开）。
         -->
-        <div class="help" data-im="chat-scope">
+        <div class="help" data-im="chat-scope" data-qio-fit>
           <details class="help-details" :open="helpOpen" @toggle="onHelpToggle">
             <summary class="help-summary" data-im="chat-scope-details">
               <span class="help-hint">文字发送不会提交板面</span>
               <span class="help-open mono">{{ helpOpen ? "收起帮助" : "帮助：可见范围 · 媒体读取 · 附件限制 · 快捷键" }}</span>
             </summary>
-            <div class="help-body">
+            <div class="help-body" data-qio-fit>
               <p class="help-line">{{ scopeText }}</p>
               <p class="help-line mono" data-im="chat-help-attach">
                 附件：单个上限 {{ humanSize(COPY_MAX_BYTES) }}；只发送当前消息与这里明确选定的附件，
@@ -1486,7 +1606,12 @@ function onKeydown(event: KeyboardEvent) {
   border: 1px solid var(--glass-border);
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
-  overflow: hidden;
+  /*
+    纯裁剪（圆角 + 边界），不需要滚动 → 用 clip 而不是 hidden：
+    hidden 仍建立「可程序性滚动」的容器（scrollLeft 能被改，focus / scrollIntoView
+    也能把它滚走），clip 完全不建立滚动容器 —— 面板任何层级都没有可滚动范围。
+  */
+  overflow: clip;
   pointer-events: auto;
 }
 
@@ -1532,15 +1657,18 @@ function onKeydown(event: KeyboardEvent) {
   min-width: 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
-  overflow: hidden;
+  /* 单行省略是纯裁剪、不需要滚动 → clip（text-overflow 只在 overflow ≠ visible 时生效） */
+  overflow: clip;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .panel-tools {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-2);
+  min-width: 0;
   margin-left: auto;
 }
 /*
@@ -1586,8 +1714,12 @@ function onKeydown(event: KeyboardEvent) {
 .panel-body {
   flex: 1 1 auto;
   min-height: 0;
-  /* 阅读区（含过程与提示）不越界：缩到最小时宁可内部滚动 / 裁切，也不压到输入区 */
-  overflow: hidden;
+  /*
+    阅读区只有一个孩子（.stream-wrap）：过程与提示已经并在消息流**里面**，
+    所以这里不需要再滚动、也裁不到东西 —— 只作为「不压到输入区」的边界。
+    纯裁剪语义 → clip（hidden 会留下一个可程序性滚动的容器）。
+  */
+  overflow: clip;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
@@ -1604,9 +1736,14 @@ function onKeydown(event: KeyboardEvent) {
   display: flex;
   flex-direction: column;
 }
+/*
+  整段对话的**唯一主要纵向滚动视口**：消息、过程、提示、失败恢复都在它里面，
+  所以同一段阅读流永远不会被切成几个小滚动窗口。最大高度受 .stream-wrap（面板尺寸）约束。
+*/
 .stream {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   display: flex;
@@ -1614,6 +1751,11 @@ function onKeydown(event: KeyboardEvent) {
   padding-right: var(--sp-1);
 }
 .stream-inner {
+  /*
+    flex: none：内容按自然高度铺开，由外层 .stream 滚动。
+    可收缩的话（面板小、内容多）这里会退化成第二个纵向滚动区。
+  */
+  flex: none;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -1697,6 +1839,8 @@ function onKeydown(event: KeyboardEvent) {
   cursor: pointer;
 }
 .to-latest:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+/* 还没看见的待办（待审批 / 错误）：说清楚有什么，而不是只藏一句「回到最新」 */
+.to-latest-attention { color: var(--warning); }
 
 /*
   提示条也要有稳定的局部底色（契约 §11.8）：板面后方有密集文字或连线时，
@@ -1716,13 +1860,26 @@ function onKeydown(event: KeyboardEvent) {
 }
 .notice.err { color: var(--danger); }
 .notice.warn { color: var(--warning); }
-/* 会话级提示限高滚动：错误再多也不许把消息阅读区挤掉 */
+/* 提示默认「简述 + 展开入口」：入口本身就是一行可点的文字，不额外占一块高度 */
+.notice-more {
+  margin-left: var(--sp-2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+.notice-more:hover { color: var(--accent-hover); }
+.notice-more:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/*
+  会话级提示：content 策略 —— 和消息流同一条阅读流（不再限高、不再自己滚一层）。
+  提示再多再长，也只是让 .stream 的内容变高；重要错误与失败恢复入口始终完整可见。
+*/
 .panel-notices {
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 30%;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  flex: none;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
@@ -1731,12 +1888,13 @@ function onKeydown(event: KeyboardEvent) {
   过程（契约 §14.6 / §12.7）：默认一行，详情按需展开；状态与说明要有稳定的局部底色，
   后方板面的长文字不许透上来叠在头上。
 */
+/*
+  过程：content 策略 —— 它就是阅读流里的一段，不在这里再开一个限高滚动小窗口。
+  flex: none 让内容自然展开；展开后的详情由最外层 .stream 滚动，永远滚得到。
+*/
 .process {
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 45%;
-  overflow: auto;
-  overscroll-behavior: contain;
+  flex: none;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
@@ -1747,6 +1905,7 @@ function onKeydown(event: KeyboardEvent) {
 }
 .process-line {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--sp-2);
   margin: 0;
@@ -1857,7 +2016,8 @@ function onKeydown(event: KeyboardEvent) {
   position: absolute;
   width: 1px;
   height: 1px;
-  overflow: hidden;
+  /* 视觉隐藏但键盘可达：用 clip —— 它不该是一个「看不见但还能滚」的盒子 */
+  overflow: clip;
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
@@ -1873,7 +2033,7 @@ function onKeydown(event: KeyboardEvent) {
   border-radius: var(--r-sm);
   padding: var(--sp-1) var(--sp-2);
 }
-/* 附件条：选定之后才出现；多个附件限高滚动（状态 / 移除 / 重试都在条目里） */
+/* 附件条：选定之后才出现（默认给数量 + 简述 + 展开入口，完整列表按需展开） */
 .attach-strip {
   flex: none;
   display: flex;
@@ -1885,14 +2045,29 @@ function onKeydown(event: KeyboardEvent) {
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
+/*
+  完整列表：content 策略 —— 不设固定高度、也不再自己滚一层。
+  展开后由下面的输入区（编辑区那一层）承载滚动，状态 / 移除 / 重试入口都在条目里。
+*/
 .attach-list {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
-  max-height: 96px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  min-width: 0;
 }
+.attach-more {
+  align-self: flex-start;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--link);
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+}
+.attach-more:hover { color: var(--accent-hover); border-color: var(--link); }
+.attach-more:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .attach-note {
   display: flex;
   align-items: center;
@@ -1953,7 +2128,13 @@ function onKeydown(event: KeyboardEvent) {
   display: flex;
   align-items: flex-end;
   gap: var(--sp-2);
+  min-width: 0;
 }
+/*
+  输入框自己的滚动：高度由 autosize() 跟着内容长，长到 MAX_INPUT_PX(132) 为止 ——
+  空 / 短内容根本不产生滚动范围；到上限后只在输入框内部**纵向**滚。
+  原生滚动条外观由全局 styles/scroll.css 统一消除，这里不自己声明任何滚动条样式。
+*/
 .input {
   flex: 1;
   min-width: 0;
@@ -2024,10 +2205,11 @@ function onKeydown(event: KeyboardEvent) {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  /* 帮助默认是用户主动打开的：给它自己的滚动区，长说明也不撑破面板 */
-  max-height: 180px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  min-width: 0;
+  /*
+    content 策略：帮助是用户主动打开的 details，内容自然展开。
+    不在这里套一个 180px 的小滚动窗口 —— 编辑区那一层（.composer）本来就能滚。
+  */
 }
 .help-line { margin: 0; overflow-wrap: anywhere; }
 
@@ -2091,11 +2273,11 @@ function onKeydown(event: KeyboardEvent) {
 
 /*
   矮窗口（480×600 这类浏览器边缘档、以及 800×600 的桌面最小窗口）：
-  输入框与帮助不必保留整块最大高度 —— 面板里还要同时容下失败恢复块与发送按钮。
+  输入框不必保留整块最大高度 —— 面板里还要同时容下过程 / 提示与发送按钮。
+  （帮助正文已改成 content 策略，不再有限高需要在这里收紧。）
 */
 @media (max-height: 700px) {
   .input { max-height: 84px; }
-  .help-body { max-height: 140px; }
 }
 @media (max-width: 560px) {
   /* 窄窗口：面板宽度已经由 frame 收敛，这里只收紧内部留白 */

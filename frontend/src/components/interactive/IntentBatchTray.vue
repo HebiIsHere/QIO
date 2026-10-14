@@ -55,6 +55,7 @@ import {
   type OverlayPane,
 } from "../../interactive/overlayLayout";
 import { chatObstacleFrame } from "../../interactive/chatFrameState";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { widestFreeBand } from "../../interactive/overlayAvoid";
 import type { Intent } from "../../interactive/types";
 
@@ -690,6 +691,8 @@ watch(
       id="im-batch-list"
       ref="panelEl"
       class="panel"
+      v-qio-scrollbar
+      data-qio-fit
       data-im="batch-list"
       role="dialog"
       aria-label="同一批待审批条目的批量处理"
@@ -852,7 +855,10 @@ watch(
 .entry-arrow { flex: none; font-size: var(--fs-xs); color: var(--link); }
 .panel {
   width: 100%;
-  overflow: auto;
+  /* 独立的批量审批浮层：允许自己有**一层**主要纵向滚动（max-height 由几何层按可用区域写入），
+     滚动条走统一策略；横向永不滚动（长标题换行，不做左右滚）。 */
+  overflow-y: auto;
+  overflow-x: clip;
   overscroll-behavior: contain;
   padding: var(--sp-3);
   border: 1px solid var(--border-strong);

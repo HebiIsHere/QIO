@@ -151,12 +151,25 @@ describe("保留情况与重试", () => {
     expect(button.text()).toContain("重新提交");
   });
 
-  it("失败区换行、不挤坏按钮：样式走令牌且有高度上限（扫源码）", () => {
+  /* 规则更新（2026-10-14 · 滚动收敛 / task-7）：
+     旧断言要求 `.failure` 必须有 max-height（4 行封顶 + overflow-y 滚动）。
+     新规则（验收硬条件 5）不接受在同一个连续阅读流里再切出一个固定高度的小滚动窗口，
+     而且「失败原因看不全」正是失败恢复最不该发生的事 —— 所以失败区改为 content 策略：
+     换行、完整显示、不自开滚动；规模由外层的唯一滚动层承担。
+     这里同时守住「审批/提交按钮不被挤坏」与「独立列表只有一层滚动」两条。 */
+  it("失败区完整换行显示、不自开滚动；按钮行不参与收缩（扫源码）", () => {
     const source = readFileSync(resolve(process.cwd(), "src/components/interactive/SubmitCluster.vue"), "utf8");
     expect(source).toMatch(/\.failure\s*\{[^}]*overflow-wrap:\s*anywhere/);
-    expect(source).toMatch(/\.failure\s*\{[^}]*max-height:/);
+    // 不再有高度上限，也不再有区内滚动（旧的 max-height + overflow-y 组合已被规则取代）
+    expect(source).not.toMatch(/\.failure\s*\{[^}]*max-height:/);
+    expect(source).not.toMatch(/\.failure\s*\{[^}]*overflow-y:\s*auto/);
     expect(source).toMatch(/\.failure\s*\{[^}]*background:\s*var\(--danger-soft\)/);
+    // 按钮行固定（flex: none），失败区再长也不会把提交按钮挤走
     expect(source).toMatch(/\.actions\s*\{[^}]*flex:\s*none/);
+    // 待审批列表是独立列表：允许自己有唯一一层纵向滚动，并且走统一指示条、横向不可滚
+    expect(source).toMatch(/\.approval-rows\s*\{[^}]*overflow-y:\s*auto/);
+    expect(source).toMatch(/\.approval-rows\s*\{[^}]*overflow-x:\s*clip/);
+    expect(source).toContain("v-qio-scrollbar");
     expect(source).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });

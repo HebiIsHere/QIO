@@ -121,6 +121,11 @@ function buttonTexts(w: ReturnType<typeof mountChip>): string[] {
 }
 
 beforeEach(() => {
+  // 输入区（Composer）把待发附件持久化到 localStorage；不清干净时，
+  // 上一个用例失败/待发的 chip 会被下一个用例的 Composer 从持久化里恢复出来，
+  // 于是「pending 的本地路径 chip」会同时看到上一条浏览器上传失败的 chip。
+  // 这是用例之间的隔离问题（与本文件断言的 actions 语义无关），按用例清空。
+  localStorage.clear();
   pickLocalPath.mockClear();
   prepareAttachment.mockClear();
   uploadAttachment.mockClear();

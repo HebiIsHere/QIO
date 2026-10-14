@@ -1,0 +1,291 @@
+/* ==========================================================================
+   QIO 统一滚动规则（2026-10-14）
+   唯一实现：原生滚动条外观全局消除 + 共享浮动指示条 + 内容宽度约束 + 表格适配。
+   组件不要各自发明滚动条样式；需要滚动能力的区域用 v-qio-scrollbar / useQioScrollbars。
+   ========================================================================== */
+
+/* ---- 1. 原生滚动条外观全局消除 ----------------------------------------------
+   保留一切滚动能力（滚轮、触控板、键盘、惯性、选择、输入法），只去掉「原生外观」：
+   无箭头按钮、无白色轨道、无角落背景、无粗滑块，也不为它预留轨道空白。
+   这里**不**设置 overflow: hidden，也**不**禁用滚轮 —— 需要滚动的区域照旧能滚。 */
+*,
+*::before,
+*::after {
+  scrollbar-width: none;                /* Firefox / 新版 Chromium */
+  -ms-overflow-style: none;             /* 旧 Edge 内核 */
+  scrollbar-color: transparent transparent;
+}
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+  background: transparent;
+}
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track-piece,
+*::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-corner {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent;
+  border: 0;
+}
+/* 文本域/输入框的缩放柄不是滚动条的一部分，刻意不动（resize: vertical 仍可用）。 */
+
+/* 显式声明「有滚动能力但不画滚动条」的区域（板面、软换行输入区等）。 */
+[data-qio-scroll="hidden"] {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+[data-qio-scroll="hidden"]::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* ---- 2. 共享浮动指示条 -------------------------------------------------------
+   浮在边缘、不占布局列；只在**实际有可滚动范围**时出现；停止滚动后短暂保留再淡出。
+   不可见时轨道 pointer-events:none，不存在吞掉内容点击的透明遮罩；
+   唤出靠宿主自身的 pointermove 边缘感应（窄带宽度 = --scroll-indicator-hit），不额外盖层。 */
+.qio-scroll-host {
+  position: relative;
+}
+.qio-scroll-rail {
+  position: absolute;
+  z-index: 6;
+  display: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--scroll-fade) var(--ease-1);
+}
+.qio-scroll-host[data-qio-range~="y"] .qio-scroll-rail[data-axis="y"],
+.qio-scroll-host[data-qio-range~="x"] .qio-scroll-rail[data-axis="x"] {
+  display: block;
+}
+.qio-scroll-rail[data-axis="y"] {
+  top: var(--scroll-rail-inset);
+  bottom: var(--scroll-rail-inset);
+  right: var(--scroll-rail-inset);
+  width: var(--scroll-indicator-hit);
+}
+.qio-scroll-rail[data-axis="x"] {
+  left: var(--scroll-rail-inset);
+  right: var(--scroll-rail-inset);
+  bottom: var(--scroll-rail-inset);
+  height: var(--scroll-indicator-hit);
+}
+.qio-scroll-thumb {
+  position: absolute;
+  pointer-events: none;
+  background: var(--scroll-indicator-bg);
+  border-radius: var(--r-pill);
+  transition: background var(--dur-fast) var(--ease-1);
+}
+.qio-scroll-rail[data-axis="y"] .qio-scroll-thumb {
+  top: 0;
+  right: calc((var(--scroll-indicator-hit) - var(--scroll-indicator-w)) / 2);
+  width: var(--scroll-indicator-w);
+  height: var(--qio-thumb-size, 24px);
+  transform: translate3d(0, var(--qio-thumb-offset, 0px), 0);
+}
+.qio-scroll-rail[data-axis="x"] .qio-scroll-thumb {
+  left: 0;
+  bottom: calc((var(--scroll-indicator-hit) - var(--scroll-indicator-w)) / 2);
+  height: var(--scroll-indicator-w);
+  width: var(--qio-thumb-size, 24px);
+  transform: translate3d(var(--qio-thumb-offset, 0px), 0, 0);
+}
+.qio-scroll-rail.is-visible {
+  opacity: 1;
+}
+.qio-scroll-rail.is-visible .qio-scroll-thumb {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.qio-scroll-rail.is-persistent .qio-scroll-thumb {
+  background: var(--scroll-indicator-bg-idle);
+}
+.qio-scroll-rail.is-visible .qio-scroll-thumb:hover,
+.qio-scroll-host.is-qio-scroll-dragging .qio-scroll-thumb {
+  background: var(--scroll-indicator-bg-active);
+  cursor: grab;
+}
+.qio-scroll-host.is-qio-scroll-dragging,
+.qio-scroll-host.is-qio-scroll-dragging * {
+  user-select: none;
+}
+.qio-scroll-host.is-qio-scroll-dragging .qio-scroll-thumb {
+  cursor: grabbing;
+}
+/* 触屏没有 hover：滑块可见时直接可拖动（拖动仍是必须的） */
+@media (hover: none) {
+  .qio-scroll-rail.is-visible .qio-scroll-thumb {
+    pointer-events: auto;
+  }
+}
+
+/* ---- 3. 内容宽度约束（横向不滚动）------------------------------------------
+   规则优先级高于旧规范里「代码块可以横向滚动」的约定。用法：
+   - data-qio-fit：任何**不得横向滚动**的容器（消息、气泡、正文、预览、过程、弹层正文）；
+   - data-qio-scope="chat"：对话根（普通对话与互动对话都用它），启用整套适配。
+   overflow-x: clip 是**边界保护**：真正的修复在布局（min-width: 0 + 换行 + 收缩规则）。
+   两条必须知道的实测事实（Chrome/Chromium，本任务 lead-probe 与 overflow-combo-probe 实测）：
+   1) 另一轴是 visible 时，clip 不建立滚动容器：程序性滚动（scrollLeft）也做不到；
+   2) 另一轴是 auto/scroll/hidden 时，**clip 的计算值会变成 hidden**（CSS Overflow 规范），
+      此时元素变成「横向不可被用户手势滚动、但可被脚本/focus/scrollIntoView 滚动」的容器。
+      实测：overflow-y:auto + overflow-x:hidden|clip → computed overflow-x=hidden，
+      scrollLeft=200 能赋值成功，但 wheel deltaX 与 Shift+wheel 都推不动它；
+      overflow-x:auto 则 wheel deltaX 真的会滚动（这才是必须消灭的「横向可滚」）。
+   结论：只要内容本身不横向溢出（scrollWidth ≤ clientWidth + 1），上面两种情况都不会移动；
+   验收判定因此必须同时看「内容是否溢出」与「是否真的能滚」，不能只看其中一项。 */
+[data-qio-fit] {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+}
+[data-qio-fit] :where(img, video, canvas, svg, iframe, pre, table) {
+  max-width: 100%;
+}
+
+[data-qio-scope~="chat"] {
+  min-width: 0;
+  max-width: 100%;
+  /* overflow-wrap 是**继承属性**：在对话根声明一次，任何自定义纯文本容器
+     （例如用户气泡的 .plain，走的是纯文本通道而非 markdown）都不会再出现
+     「长 URL / 连续字符不换行 → 被 clip 裁掉却滚不动」。
+     复核实测：未声明时 .message.user .plain clientW 588 / scrollW 2251。 */
+  overflow-wrap: anywhere;
+}
+/* 长 URL / 路径 / 标识符 / 连续英文与数字：视觉换行，不改字符序列 */
+[data-qio-scope~="chat"] :where(p, li, dd, dt, th, td, figcaption, summary, label,
+  a, span, strong, em, small, code, button, textarea, input) {
+  overflow-wrap: anywhere;
+}
+/* 代码块软换行：保留原始换行与缩进，长行视觉折行；textContent 不变（复制逐字一致） */
+[data-qio-scope~="chat"] :where(pre, code, kbd, samp) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+[data-qio-scope~="chat"] :where(pre, table, .qio-table-wrap, img, video, canvas, svg, iframe) {
+  max-width: 100%;
+}
+[data-qio-scope~="chat"] :where(pre, table, .qio-table-wrap, ul, ol, blockquote, figure, section, article) {
+  min-width: 0;
+}
+/* 空间不足时按钮重排，而不是撑宽正文 */
+[data-qio-scope~="chat"] :where(button) {
+  white-space: normal;
+}
+
+/* ---- 4. 对话表格适配 ---------------------------------------------------------
+   普通对话与互动对话共用这一份规则（MarkdownContent 是唯一渲染入口）。
+   表格受它实际所属的**正文**边界约束；列数/内容让每列过窄时由 useQioTables
+   切到记录模式（列名 + 值），不裁切、不省略、不横向滚动、不缩放字号。 */
+.qio-table-wrap {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
+  margin: 0.5em 0;
+}
+.qio-table-wrap > table {
+  width: 100%;
+  max-width: 100%;
+  table-layout: auto;
+  border-collapse: collapse;
+}
+.qio-table-wrap[data-qio-table-wide="1"] > table {
+  table-layout: fixed;
+}
+.qio-table-wrap > table :where(th, td) {
+  border: 1px solid var(--border-subtle);
+  padding: 4px 10px;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.qio-table-wrap > table :where(th) {
+  text-align: left;
+  color: var(--text-strong);
+  background: var(--bg-inset);
+}
+.qio-table-wrap > table :where(img, video, canvas, svg, pre, code) {
+  max-width: 100%;
+}
+.qio-table-wrap > table :where(pre) {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 记录模式：每条原始记录逐项显示「列名 + 值」，保留记录顺序、列顺序与表头 */
+.qio-table-wrap[data-mode="records"] > table {
+  display: block;
+}
+.qio-table-wrap[data-mode="records"] > table > thead {
+  /* 视觉隐藏但留在无障碍树里：屏幕阅读器仍拿得到表头行 */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: clip;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.qio-table-wrap[data-mode="records"] > table > tbody {
+  display: block;
+}
+.qio-table-wrap[data-mode="records"] > table tr {
+  display: block;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  margin: 0 0 var(--sp-2);
+  background: var(--bg-inset);
+}
+.qio-table-wrap[data-mode="records"] > table tr:last-child {
+  margin-bottom: 0;
+}
+.qio-table-wrap[data-mode="records"] > table :where(td, th) {
+  display: grid;
+  grid-template-columns: minmax(0, 34%) minmax(0, 1fr);
+  gap: var(--sp-2);
+  border: 0;
+  padding: 2px 0;
+  background: none;
+}
+.qio-table-wrap[data-mode="records"] > table :where(td, th)::before {
+  content: attr(data-label);
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+  overflow-wrap: anywhere;
+}
+/* 记录行的顺序身份：位置稳定，不依赖列名（空/重复表头也有备用名称） */
+.qio-table-wrap[data-mode="records"] > table tr > :first-child::before {
+  color: var(--text-secondary);
+}
+
+/* 无障碍：只在无障碍树里出现 */
+.qio-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: clip;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- 5. 共享滚动容器（QioScrollArea / 重构后的区域）------------------------ */
+.qio-scroll-area {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}

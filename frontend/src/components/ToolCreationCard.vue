@@ -69,6 +69,7 @@ function stepState(step: string): "done" | "current" | "todo" {
 <template>
   <div
     class="create-card qio-card"
+    data-qio-fit
     :class="{ failed, ready, open }"
     :data-state="ready ? 'ready' : failed ? 'failed' : running ? 'running' : 'waiting'"
   >
@@ -172,7 +173,10 @@ function stepState(step: string): "done" | "current" | "todo" {
 }
 .detail-wrap.open { grid-template-rows: 1fr; }
 .detail-clip {
-  overflow: hidden;
+  /* 折叠动画的**纯裁剪盒**：不承担任何滚动。
+     overflow:hidden 仍然建立可被脚本滚动（scrollTop/scrollLeft/scrollIntoView/focus）的容器，
+     与本轮「只有明确需要滚动的区域才有滚动容器」冲突；clip 的视觉裁切完全一致但不建立滚动容器。 */
+  overflow: clip;
   min-height: 0;
   opacity: 0;
   transition: opacity var(--mo-2-in) var(--ease-2);

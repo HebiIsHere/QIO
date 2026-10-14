@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-14（**v0.2.5 已发布**（tag `v0.2.5` → `fa9d0cfb`，发布闸门 18/18 PASS），内容为**互动空间结构与自由尺寸调整**：卡片与互动对话窗口都能自由调整尺寸并持久化，见 P36 与 `docs/releases/v0.2.5.md`；上一版 v0.2.4（tag `1755c105`）是附件上传 CORS 预检的热修，再上一轮统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。核对方法见文末。
+最后核对：2026-10-14（**v0.2.5 已发布**（tag `v0.2.5` → `fa9d0cfb`，发布闸门 18/18 PASS），内容为**互动空间结构与自由尺寸调整**：卡片与互动对话窗口都能自由调整尺寸并持久化，见 P36 与 `docs/releases/v0.2.5.md`；上一版 v0.2.4（tag `1755c105`）是附件上传 CORS 预检的热修，再上一轮统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。**2026-10-14 第十二轮：统一滚动体验 / 对话不横向滚动 / 表格适配已完成（见 P39）**，成果停在独立分支 `fix/global-scroll-dialog-layout`，**未合并 main**；覆盖清单见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`。核对方法见文末。
 
 ---
 
@@ -4312,8 +4312,50 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   输入法组合跨「收起销毁 / 展开重建」都未实测）；临时显示布局（展开或被让位）里的西 / 北把手按左上角锚定，
   折叠卡片与部分 `height: auto` 状态不摆把手；对话窗口的位置与尺寸是本机偏好（按板面身份绑定），
   不做跨设备同步；假厂商端到端对话本轮未跑，审批与聊天过程只做了结构与状态复核；
-  `frontend/src/components/__tests__/AttachmentActions.test.ts` 里那条 Composer chip 用例在
-  `origin/main` 上**同样失败**（已在基线工作树复现），与本轮无关，未修改。
+  `frontend/src/components/__tests__/AttachmentActions.test.ts` 里那条 Composer chip 用例
+  曾观察到失败（当时判断为「基线同样失败」）；2026-10-14 在冻结基线 `17f28f7b` 的工作树上
+  单独复跑该文件为 **10/10 通过**，因此旧结论不成立（更可能是用例间本机存储残留造成的偶发），
+  本轮已给该文件补上 `localStorage.clear()` 的用例隔离，并把「基线版本测试文件在集成树上同样通过」
+  也复跑确认过。
 - **后续依赖：** 打包桌面窗口的真实避让复验、多设备尺寸偏好同步、把尺寸偏好写进服务端用户数据，
   这三件事从 `docs/interactive-mode-contract.md` §15 的边界接手。
+
+### P39 — 统一滚动体验 / 对话不横向滚动 / 表格适配（2026-10-14 第十二轮）
+
+- **Status：** completed
+- **Implementation：** 覆盖 QIO 自有界面的滚动规则收敛，权威约定见
+  `docs/superpowers/specs/2026-08-09-qio-frontend-design.md` §15、`docs/interactive-mode-contract.md` §16，
+  逐区域覆盖见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`。
+  - **共享原语（唯一实现）**：`frontend/src/styles/scroll.css`（全局消除原生滚动条外观，不设全局
+    `overflow:hidden`、不禁用滚轮）、`frontend/src/composables/useQioScrollbars.ts`（auto/hidden 两策略的
+    浮动指示条引擎）、`frontend/src/composables/useQioTables.ts` + `frontend/src/utils/qioTable.ts`（表格两态）、
+    `frontend/src/utils/scrollIndicator.ts`（指示条偏好）、`frontend/src/components/ui/QioScrollArea.vue`；
+    令牌集中在 `frontend/src/styles/tokens.css` 的 `--scroll-*`。
+  - **对话内不得横向滚动**（取代此前「代码块可以横向滚动」的写法）：消息流、消息项、气泡、正文、过程详情、
+    附件、输入区、错误恢复与对话内预览都不是水平滚动容器；代码块软换行（`white-space: pre-wrap`，
+    复制/下载仍是原字符序列）；输入区软换行、到上限后只纵向滚。
+  - **表格适配**：`frontend/src/components/MarkdownContent.vue` 产出列身份（`th[id|scope|data-col|data-label]`、
+    `td[headers|data-col|data-label]`、隐藏 caption），按**实际可用宽度 + 列结构 + 内容真实最小宽度**
+    （带 88–112px 滞回）在「表格」与「纵向记录」间切换；记录模式保留原记录顺序、列顺序与表头，
+    并保持辅助技术可辨认。记录模式只用于存在真实表头行的表格。
+  - **区域收敛**：普通对话与互动对话各自只保留一个主要纵向滚动视口（过程、通知、附件摘要、帮助改为
+    自然展开 + 展开入口）；板面滚动区用 hidden 策略（不画条但保留平移/缩放/坐标换算）；
+    卡片展开阅读只保留一个纵向视口；独立材料预览的二维浏览区仍可横向并走统一指示条；
+    设置页新增「QIO 滚动指示条：自动显示 / 始终显示」（默认自动，不作用于板面、不开放对话横向滚动）。
+- **Tests：** `frontend/src/styles/scroll.test.ts`、`frontend/src/utils/__tests__/qioTable.test.ts`、
+  `frontend/src/composables/__tests__/qioScrollbars.test.ts`、`frontend/src/composables/__tests__/useQioTables.test.ts`、
+  `frontend/src/components/__tests__/gs-qio-chat-scroll-fit.test.ts`、`frontend/src/components/__tests__/gs-scroll-policy.test.ts`、
+  `frontend/src/components/interactive/__tests__/scroll-board-viewport.test.ts`、
+  `frontend/src/components/interactive/__tests__/scroll-horizontal-fit.test.ts`，
+  以及 `MarkdownContent.test.ts`、`MarkdownStreaming.test.ts`、`Composer.test.ts`、
+  `irl-b-card-states.test.ts` 等既有用例按新规则更新（旧断言「代码块可以横向滚动」被反转并写明原因）。
+  真实浏览器证据在 `D:\qio-dev\_gs-verify\`（Lead 探针与独立复核，跨 1200×800 / 800×600 / 亮暗主题）。
+- **Known limitations：** 滚动条占位判定在无头浏览器里是 overlay 形态，未做像素级判定；
+  125% / 150% 显示缩放用 CSS 视口等价换算验证，未在真实 Windows 缩放设置下复验；
+  未在打包后的 Tauri / WebView2 窗口里验收（自绘标题栏、真实 PointerEvent、输入法组合、触控板横向手势仍待验证）；
+  `frontend/src/components/interactive/CardInlinePreview.vue` 的 `context="chat"` 分支当前只有单测覆盖，
+  对话里还没有调用点；该轮改动停在独立分支 `fix/global-scroll-dialog-layout`，**未合并 main**。
+- **后续依赖：** 合并顺序与冲突点见 `docs/global-scroll-merge-prep.md` §7；
+  合并前必须重新核对 main 差异并重跑门禁（本轮的结论只对冻结基线 `17f28f7b` 成立）。
+
 

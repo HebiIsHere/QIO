@@ -46,6 +46,7 @@ import {
 } from "../composables/attachmentOps";
 import FailedSendNotice from "./interactive/FailedSendNotice.vue";
 import { pendingSendText, sendFailureText } from "../interactive/chat";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 const session = useSessionStore();
 /**
@@ -59,6 +60,8 @@ const text = computed({
   },
 });
 const inputRef = ref<HTMLTextAreaElement | null>(null);
+/** 输入行（textarea + 按钮）：观察它的宽度变化来重算输入框高度 */
+const inputRowRef = ref<HTMLElement | null>(null);
 /** 停止请求进行中（取消是可观察动作，不能假装已停） */
 const stopping = ref(false);
 const cancelError = ref("");
@@ -1219,6 +1222,18 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+/**
+ * 输入框高度重算（软换行 + 随内容增高 + 到上限后只纵向滚动）。
+ *
+ * 三条规则：
+ * 1. 空草稿清掉内联高度 → 回到浏览器自然尺寸：空 / 短内容**不产生任何滚动范围**；
+ * 2. 量高度前先把 height 归位成 auto，否则量到的是上一次的上限高度（越写越不准）；
+ * 3. 上限内按内容自然高度设置，超过上限由 CSS 的 max-height 夹住，只保留纵向滚动
+ *    （textarea 是软换行，横向永远没有滚动范围）。
+ *
+ * 只写 style.height：不碰 value、选区、撤销栈 —— 输入法组合中的文字不受影响。
+ * 量高度会把滚动位置夹到 0，所以量完复位，到上限后在底部继续输入时光标不跳。
+ */
 function autosize() {
   const el = inputRef.value;
   if (!el) return;
@@ -1227,9 +1242,74 @@ function autosize() {
     el.style.height = "";
     return;
   }
+  const keepTop = el.scrollTop;
   el.style.height = "auto";
-  el.style.height = Math.min(el.scrollHeight, MAX_INPUT_PX) + "px";
+  // box-sizing: border-box 下 scrollHeight 不含边框：补上偏移，
+  // 短内容不会因为 1–2px 的取整误差冒出滚动范围。
+  // 量不到布局信息的环境（offsetHeight/clientHeight 不是数字）按 0 处理。
+  const borderY = el.offsetHeight - el.clientHeight;
+  const fix = Number.isFinite(borderY) && borderY > 0 ? borderY : 0;
+  el.style.height = Math.min(el.scrollHeight + fix, MAX_INPUT_PX) + "px";
+  if (el.scrollTop !== keepTop) el.scrollTop = keepTop;
 }
+
+/**
+ * 高度重算的触发点（缺一个就会出现「高度与实际内容不符」）：
+ * * 草稿本身变化（输入 / 粘贴 / 发送后清空 / 失败后放回 / 恢复被让位的草稿）；
+ * * 切换话题 —— 草稿可能恰好是同一个字符串，不会触发上面的 watch，但输入框属于新话题；
+ * * 窗口或面板宽度变化（输入框变窄后同一段文字需要更多行）。
+ * 观察器只认**宽度变化**：高度是自己写的，认高度会形成回环。
+ */
+watch(
+  () => session.draft,
+  () => void nextTick(autosize),
+);
+watch(
+  () => session.currentTopicId,
+  () => void nextTick(autosize),
+);
+
+/** 输入行的宽度观察句柄（窗口 / 面板 / 停止按钮出现都会改输入框可用宽度） */
+let inputWidthObserver: ResizeObserver | null = null;
+let lastInputWidth = -1;
+let inputResizeRaf = 0;
+
+function onWindowResize() {
+  if (inputResizeRaf) return;
+  if (typeof requestAnimationFrame !== "function") {
+    autosize();
+    return;
+  }
+  inputResizeRaf = requestAnimationFrame(() => {
+    inputResizeRaf = 0;
+    autosize();
+  });
+}
+
+onMounted(() => {
+  window.addEventListener("resize", onWindowResize);
+  if (typeof ResizeObserver === "function") {
+    inputWidthObserver = new ResizeObserver((entries) => {
+      const width = entries[entries.length - 1]?.contentRect.width ?? -1;
+      if (width === lastInputWidth) return;
+      lastInputWidth = width;
+      autosize();
+    });
+    if (inputRowRef.value) inputWidthObserver.observe(inputRowRef.value);
+  }
+  // 挂载后先量一次：切换话题 / 恢复草稿再进来时，草稿本来就是多行的
+  void nextTick(autosize);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", onWindowResize);
+  if (inputResizeRaf && typeof cancelAnimationFrame === "function") {
+    cancelAnimationFrame(inputResizeRaf);
+  }
+  inputResizeRaf = 0;
+  inputWidthObserver?.disconnect();
+  inputWidthObserver = null;
+});
 
 /**
  * 中止「正在准备附件」的这一轮：**先调后端取消端点，以后端确认为准**（契约 §1.1）。
@@ -1335,11 +1415,18 @@ async function stopTurn() {
 <template>
   <div
     class="composer bubble"
+    data-qio-fit
     @dragover.prevent="onDragOver"
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
   >
-    <div class="topicbar">
+    <!--
+      输入区：与对话消息区同一套宽度规则。
+      * data-qio-fit：气泡 / 输入行不得横向滚动（真正的修复在各层的 min-width:0 与换行）；
+      * textarea 用共享滚动引擎的 hidden 策略：保留滚动与定位能力，但**不画**指示条、
+        也不预留任何轨道空白 —— 空 / 短内容时连滚动范围都没有（见 autosize）。
+    -->
+    <div class="topicbar" data-qio-fit>
       <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
       <!-- 有「待落实」的接续选择时不再并排显示「位置就在历史上」那一条：
            两句话说的是同一件事的两个阶段，并排会挤成一团、也读不清哪一句生效 -->
@@ -1363,8 +1450,9 @@ async function stopTurn() {
     <div
       v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection || preparingVisible || preparingNotice"
       class="attach-area"
+      data-qio-fit
     >
-      <div class="attach-row">
+      <div class="attach-row" data-qio-fit>
         <AttachmentChip
           v-for="item in pending"
           :key="item.id"
@@ -1383,6 +1471,7 @@ async function stopTurn() {
         v-if="preparingVisible"
         class="preparing-status mono"
         role="status"
+        data-qio-fit
         data-test="preparing-attachments"
       >
         <span aria-hidden="true">◌</span>
@@ -1403,10 +1492,16 @@ async function stopTurn() {
           {{ preparingCancelBusy ? "正在中止…" : "中止" }}
         </button>
       </p>
-      <p v-if="preparingNotice" class="attach-note" role="status" data-test="preparing-notice">
+      <p
+        v-if="preparingNotice"
+        class="attach-note"
+        role="status"
+        data-qio-fit
+        data-test="preparing-notice"
+      >
         {{ preparingNotice }}
       </p>
-      <div v-if="pathOpen" class="path-row">
+      <div v-if="pathOpen" class="path-row" data-qio-fit>
         <input
           v-model="pathDraft"
           class="path-input mono"
@@ -1434,14 +1529,20 @@ async function stopTurn() {
         附件能力提示（契约 §4.1/§4.2 只加不减）：图片 / 音频 / 视频各自的真实状态，
         不承诺「一定能看见 / 一定听得见」——交付与否由**本次真实链路**的能力决定。
       -->
-      <details class="attach-capability" data-test="attach-capability">
+      <details class="attach-capability" data-qio-fit data-test="attach-capability">
         <summary data-test="attach-capability-summary">QIO 会怎么读图片 / 音频 / 视频</summary>
         <p class="attach-capability-note" data-test="attach-capability-image">{{ MEDIA_CAPABILITY_HINT.image }}</p>
         <p class="attach-capability-note" data-test="attach-capability-audio">{{ MEDIA_CAPABILITY_HINT.audio }}</p>
         <p class="attach-capability-note" data-test="attach-capability-video">{{ MEDIA_CAPABILITY_HINT.video }}</p>
       </details>
       <!-- 附件没附上（结构化失败）：说清是哪几个、为什么，并给一个出口 -->
-      <div v-if="sendRejection" class="attach-reject" data-test="attach-reject" role="alert">
+      <div
+        v-if="sendRejection"
+        class="attach-reject"
+        data-qio-fit
+        data-test="attach-reject"
+        role="alert"
+      >
         <p class="attach-reject-msg">{{ sendRejection.message }}</p>
         <ul class="attach-reject-list">
           <li v-for="row in sendRejection.rejected" :key="row.id">
@@ -1464,11 +1565,12 @@ async function stopTurn() {
         v-if="attachError"
         class="attach-error"
         role="alert"
+        data-qio-fit
         data-test="attach-error"
       >
         {{ attachError }}
       </p>
-      <p v-if="attachNote" class="attach-note" role="status">{{ attachNote }}</p>
+      <p v-if="attachNote" class="attach-note" role="status" data-qio-fit>{{ attachNote }}</p>
     </div>
 
     <!-- 失败原因 + 待恢复原文：辅助层，放在输入行上方，长文限高滚动，不挤走输入框 -->
@@ -1486,6 +1588,7 @@ async function stopTurn() {
       v-if="displacedDraft"
       class="displaced-draft"
       role="status"
+      data-qio-fit
       data-im="composer-displaced-draft"
     >
       <span>
@@ -1509,7 +1612,13 @@ async function stopTurn() {
         放弃这份
       </button>
     </p>
-    <p v-if="displacedNotice" class="displaced-notice" role="status" data-im="composer-displaced-status">
+    <p
+      v-if="displacedNotice"
+      class="displaced-notice"
+      role="status"
+      data-qio-fit
+      data-im="composer-displaced-status"
+    >
       {{ displacedNotice }}
     </p>
 
@@ -1522,6 +1631,7 @@ async function stopTurn() {
       v-if="chatDraftError"
       class="draft-error"
       role="alert"
+      data-qio-fit
       data-im="composer-draft-status"
     >
       <span>{{ chatDraftError }}</span>
@@ -1535,7 +1645,7 @@ async function stopTurn() {
       </button>
     </p>
 
-    <div class="input-row">
+    <div ref="inputRowRef" class="input-row" data-qio-fit>
       <button
         class="attach-btn"
         type="button"
@@ -1560,6 +1670,9 @@ async function stopTurn() {
         id="composer-input"
         v-model="text"
         class="qio-input"
+        data-qio-fit
+        v-qio-scrollbar="'hidden'"
+        wrap="soft"
         aria-label="输入消息"
         placeholder="和 QIO 说点什么…"
         @keydown="onKeydown"
@@ -1588,10 +1701,10 @@ async function stopTurn() {
         <span>↑</span>
       </button>
     </div>
-    <p v-if="cancelError" class="cancel-error" role="alert">{{ cancelError }}</p>
+    <p v-if="cancelError" class="cancel-error" role="alert" data-qio-fit>{{ cancelError }}</p>
     <!-- 发送回执丢失后的确认条（契约 5）：文案区分「正在确认」与「发送未确认」，
          操作按已知程度给：未知 → 重试/放弃；查询中 → 只识字；已受理 → 只有取消 -->
-    <div v-if="confirmState" class="send-confirm" role="status">
+    <div v-if="confirmState" class="send-confirm" role="status" data-qio-fit>
       <span class="confirm-notice mono" :class="{ unknown: confirmState.unknown }">
         {{ confirmState.unknown ? "⚠️ " : "" }}{{ confirmState.notice }}
       </span>
@@ -1660,11 +1773,14 @@ async function stopTurn() {
   margin: var(--sp-1) 0 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 /* 右下角大气泡：融入对话页 flex 布局（消息流下方、靠右），
    浅色表面 + 玫红描边 + 右下小圆角，不可拖动；
    增高时自动向上生长，消息流结束于气泡上方，天然不遮挡 */
 .composer {
+  /* 宽度链：气泡本身不得横向滚动（真正的修复在各层的 min-width:0 与换行重排） */
+  min-width: 0;
   /* 独立悬浮于消息流之上，与对话内容同一列（居中 860px），不参与消息流布局；
      消息流底部通过滚动缓冲让出本气泡高度，滚到底时最新消息停在气泡上方。
 
@@ -1705,27 +1821,30 @@ async function stopTurn() {
 .topicbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 8px;
+  min-width: 0;
   font-size: 12px;
 }
 .tname {
+  min-width: 0;
   font-weight: 600;
   color: var(--text-strong);
   font-size: 15px;
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* 话题名换行显示（不再单行截断 + overflow:hidden ——
+     那会留下「看不见但能左右滚」的路径，也会把话题身份藏掉一部分） */
+  max-width: min(320px, 100%);
+  overflow-wrap: anywhere;
 }
 .anchor {
+  min-width: 0;
   font-size: 10.5px;
   color: var(--text-muted);
   letter-spacing: 0.04em;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* 历史位置提示同样换行，不截断、不建立滚动范围 */
+  max-width: min(260px, 100%);
+  overflow-wrap: anywhere;
 }
 .anchor.pending { color: var(--accent); }
 .anchor-cancel {
@@ -1753,14 +1872,27 @@ async function stopTurn() {
 .input-row {
   display: flex;
   align-items: flex-end;
+  /* 空间不够时按钮换到下一行，而不是把输入区撑宽 / 裁掉按钮 */
+  flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
 }
 .input-row textarea.qio-input {
   flex: 1;
+  /* 可收缩到可用宽度：输入区不产生横向滚动范围 */
+  min-width: 0;
   min-height: 46px;
-  /* 随内容增长，到上限后内部滚动：长输入不会把聊天窗口挤成一条 */
+  /* 随内容增长，到上限后**只纵向滚动**：长输入不会把聊天窗口挤成一条 */
   max-height: min(40vh, 320px);
   resize: none;
+  /* 软换行：连续长串（路径 / URL / 无空格英文）在视觉上折行，值本身一个字符都不改 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  /* 横向是纯裁剪（软换行保证没有横向范围）→ clip 不建立滚动容器；
+     纵向是真实滚动（到上限后只纵滚）→ 保留 auto。 */
+  overflow-x: clip;
+  overflow-y: auto;
 }
 .stop-btn {
   display: inline-flex;
@@ -1803,21 +1935,23 @@ async function stopTurn() {
   margin-top: 8px;
   font-size: 12px;
   color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .send-confirm {
   margin-top: 8px;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
   font-size: 12px;
 }
 .confirm-notice {
   color: var(--text-muted);
   letter-spacing: 0.02em;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* 回执状态文案不再单行截断：说清「未确认」比省一行更重要；换行而不是横向滚动 */
+  overflow-wrap: anywhere;
 }
 /* 「发送未确认」是比「正在确认」更重的一态：用强调色把话说重一点 */
 .confirm-notice.unknown {
@@ -1889,6 +2023,7 @@ async function stopTurn() {
   margin-top: 6px;
   font-size: 12px;
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 .draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .send-btn {
@@ -1946,7 +2081,9 @@ async function stopTurn() {
 .preparing-status {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
   margin: 6px 0 0;
   font-size: var(--fs-xs);
   color: var(--text-secondary);
@@ -1972,11 +2109,14 @@ async function stopTurn() {
   font-size: 10.5px;
   color: var(--text-muted);
   letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
 }
 .path-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
+  min-width: 0;
   margin-top: 6px;
 }
 .path-input {
@@ -2012,6 +2152,7 @@ async function stopTurn() {
 }
 /* 附件没附上：原因逐条列出，出口只有一个（移除后重发） */
 .attach-reject {
+  min-width: 0;
   margin-top: var(--sp-2);
   padding: var(--sp-3);
   border: 1px solid var(--warning);
@@ -2036,20 +2177,24 @@ async function stopTurn() {
 }
 .attach-reject-name {
   color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 .attach-reject-why {
   margin-left: 6px;
+  overflow-wrap: anywhere;
 }
 .attach-error {
   margin-top: 6px;
   font-size: 12px;
   color: var(--danger);
+  overflow-wrap: anywhere;
 }
 /* 事实说明（例如「已在文件夹中显示：可执行文件不自动运行」）：不是错误，也不能当成功 */
 .attach-note {
   margin-top: 6px;
   font-size: 12px;
   color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 .file-input {
   display: none;

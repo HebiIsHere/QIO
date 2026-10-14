@@ -26,6 +26,7 @@ import type { Intent } from "../../interactive/types";
 import { chatObstacleFrame } from "../../interactive/chatFrameState";
 import { OVERLAY_EDGE, planDockStrip, type BoxRect } from "../../interactive/overlayLayout";
 import IntentPreviewCard from "./IntentPreviewCard.vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const store = useInteractiveStore();
 
@@ -502,6 +503,8 @@ function boundsText(intent: Intent): string {
     v-if="store.tasksOpen"
     ref="popEl"
     class="tasks-pop"
+    v-qio-scrollbar
+    data-qio-fit
     data-im="tasks-popover"
     role="dialog"
     aria-label="任务"
@@ -682,9 +685,15 @@ function boundsText(intent: Intent): string {
   top: 64px;
   z-index: var(--im-z-tasks, 30);
   width: min(380px, calc(100vw - var(--sp-6)));
+  /* 独立浮层（不是同一阅读流的一部分）：允许自己有**一层**主要纵向滚动，
+     max-height 的真实值由脚本按可用区域算（这里是量不到时的兜底）。
+     滚动条走统一策略（原生外观已全局消除，用共享 QIO 指示条）：
+     横向永不滚动 —— data-qio-fit + 长文本换行。 */
   max-height: min(48vh, 420px);
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: clip;
   overscroll-behavior: contain;
+  min-width: 0;
   padding: var(--sp-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);

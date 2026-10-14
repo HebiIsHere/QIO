@@ -2,7 +2,7 @@
  * 收件箱组件（A01 + A03）：用户**真的能操作**的那个界面。
  *
  * 守的是任务书里点名的几条：
- * 1. 安静列表 + 每条显示原文（截断）、原状态、「为什么现在动不了」；
+ * 1. 安静列表 + 每条显示原文（长文默认两行简述，可就地「展开原文」看全文）、原状态、「为什么现在动不了」；
  * 2. 可用动作按钮能点，点了真的打到接口；禁用动作给出原因，绝不给点了没效果的按钮；
  * 3. 详情默认收起；
  * 4. 失败就地显示原因 + 重试，不弹全局提示、不静默；
@@ -311,5 +311,53 @@ describe("不抢焦点、样式守规矩", () => {
     expect(rgb).toEqual([]);
     expect(style).toContain("var(--");
     expect(style).toContain(":focus-visible");
+  });
+});
+
+describe("原文默认简述 + 就地展开（滚动规则）", () => {
+  /* 契约：恢复原文默认简述、由展开入口承担完整内容，
+     不在同一阅读流里再切出一个小滚动窗口（也不靠 overflow/line-clamp 当唯一查看通道）。 */
+  const longText = "这是一条很长的失败原文，".repeat(8) + "结尾";
+
+  it("长原文默认两行简述，但全文仍在 DOM 里（读屏拿到的是全文）", () => {
+    const { w } = mountInbox([readyRecord({ message: longText })]);
+    const msg = w.find(".message");
+    expect(msg.classes()).toContain("clamped");
+    expect(msg.text()).toBe(longText);
+    expect(w.find("button.btn-text").exists()).toBe(true);
+    expect(w.find("button.btn-text").attributes("aria-expanded")).toBe("false");
+  });
+
+  it("点「展开原文」看全文，再点收起；按钮状态如实反映", async () => {
+    const { w } = mountInbox([readyRecord({ message: longText })]);
+    const btn = w.find("button.btn-text");
+    expect(btn.text()).toBe("展开原文");
+    await btn.trigger("click");
+    expect(w.find(".message").classes()).not.toContain("clamped");
+    expect(w.find("button.btn-text").text()).toBe("收起原文");
+    expect(w.find("button.btn-text").attributes("aria-expanded")).toBe("true");
+    await w.find("button.btn-text").trigger("click");
+    expect(w.find(".message").classes()).toContain("clamped");
+  });
+
+  it("短原文不出现展开入口（不给没有意义的按钮）", () => {
+    const { w } = mountInbox([readyRecord()]);
+    expect(w.find(".message").classes()).not.toContain("clamped");
+    expect(w.find("button.btn-text").exists()).toBe(false);
+    // 详情入口仍然按原语义工作
+    expect(w.find("button.btn-details").exists()).toBe(true);
+  });
+
+  it("Esc 收起原文与详情（只收展开态，不动记录与动作）", async () => {
+    const { w } = mountInbox([readyRecord({ message: longText })]);
+    await w.find("button.btn-text").trigger("click");
+    await w.find("button.btn-details").trigger("click");
+    expect(w.find(".details").exists()).toBe(true);
+    await w.find(".recovery-inbox").trigger("keydown", { key: "Escape" });
+    expect(w.find(".details").exists()).toBe(false);
+    expect(w.find("button.btn-text").attributes("aria-expanded")).toBe("false");
+    // 动作按钮与原文都不受影响
+    expect(w.find("button.btn-continue").exists()).toBe(true);
+    expect(w.find(".message").text()).toBe(longText);
   });
 });

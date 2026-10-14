@@ -13,6 +13,8 @@
 import { computed, nextTick, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { CARD_KIND_LABELS, cardById, searchCards } from "../../interactive/board";
+// 搜索结果是纵向列表：滚动能力保留，滚动条外观走统一 QIO 指示条。
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const emit = defineEmits<{
   (e: "close"): void;
@@ -93,7 +95,14 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="search-panel" data-im="search-panel" aria-label="板内搜索" @keydown="onKeydown">
+  <section
+  class="search-panel"
+  data-im="search-panel"
+  aria-label="板内搜索"
+  data-qio-fit
+  v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+  @keydown="onKeydown"
+>
     <header class="panel-head">
       <h2 class="panel-title">板内搜索</h2>
       <button class="close" type="button" data-im="search-close" title="收起搜索（Esc）" @click="emit('close')">收起</button>
@@ -160,7 +169,9 @@ onMounted(async () => {
   z-index: 2;
   width: min(340px, calc(100vw - 48px));
   max-height: min(420px, calc(100vh - 220px));
-  overflow: auto;
+  /* 纵向才是它的滚动方向：横向由 data-qio-fit 兜边界（长摘要省略号收尾，不靠横向滚动） */
+  overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);

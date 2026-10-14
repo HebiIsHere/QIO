@@ -17,6 +17,7 @@ import { prefersReducedMotion } from "../utils/motion";
 import { groupTurns, type StreamTurn } from "../stores/session";
 import { useLatestButtonAnchor } from "../composables/useLatestButtonAnchor";
 import { subscribeComposerMetrics } from "../composables/composerMetrics";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 /** 对话内容列宽：用户消息与回答共用一个居中列，不分别贴窗口两端 */
 const CONTENT_MAX_PX = 860;
@@ -526,14 +527,24 @@ const phaseLabel = computed(() => {
 </script>
 
 <template>
-  <!-- 可聚焦滚动区域：键盘用户也能滚动消息，并且键盘滚动同样会停止自动跟随 -->
   <div
     ref="containerRef"
     class="stream"
+    data-qio-scope="chat"
     tabindex="0"
     aria-label="对话消息"
+    v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
     @scroll.passive="onScroll"
   >
+    <!-- 可聚焦滚动区域：键盘用户也能滚动消息，并且键盘滚动同样会停止自动跟随。 -->
+    <!--
+      统一滚动规则：这里是普通对话**唯一的主要纵向滚动视口** ——
+      * data-qio-scope="chat"：对话根，启用长 URL/路径视觉换行、代码软换行、媒体按宽度适配；
+      * v-qio-scrollbar：原生滚动条外观已全局消除，改用共享 QIO 指示条（默认隐藏，
+        滚动 / 指针靠近右缘 / 键盘使用该区域时才出现，停止后约 900ms 淡出）；
+      * 只声明纵向（axis: "y"）：消息区不得出现横向滚动范围，也不给横向指示条留位置。
+      滚动跟随、历史锚定、虚拟列表与既有 ResizeObserver 全部照旧（指示条不接管滚动物理）。
+    -->
     <div
       ref="spacerRef"
       class="spacer"
@@ -553,7 +564,9 @@ const phaseLabel = computed(() => {
           transform: `translateY(${item.start}px)`,
         }"
       >
-        <div class="turn" :data-turn="turns[item.index].id">
+        <!-- 一轮的宽度链：data-qio-fit（min-width:0 + max-width:100% + overflow-x:clip）
+             保证轮内任何内容都不得撑出消息列，也不得产生横向滚动范围 -->
+        <div class="turn" :data-turn="turns[item.index].id" data-qio-fit>
           <div class="turn-meta">
             <span class="who">{{ labelOf(turns[item.index]) }}</span>
             <span class="bar"></span>
@@ -638,12 +651,16 @@ const phaseLabel = computed(() => {
 <style scoped>
 .stream {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
+  /* 横向一律不建立滚动范围：内容在各自的布局链上换行 / 收缩（见 scroll.css 的 data-qio-fit） */
+  overflow-x: clip;
   /* 左右留白取「正文列」令牌：与输入气泡同一条列。
      ≤1400px 时右侧令牌会变成 132px —— 那是给常驻星球入口球留的通道，
      两个组件读同一个值，谁也不能单独挪（见 tokens.css 的 --column-inset-*）。 */
   padding: 34px var(--column-inset-right) 20px var(--column-inset-left);
-  scrollbar-width: thin;
+  /* 原生滚动条外观由 styles/scroll.css 全局消除（不预留轨道空白）；
+     本区域的指示条由 v-qio-scrollbar 提供，不再写 scrollbar-width: thin。 */
   background: var(--bg-base);
 }
 /* 键盘聚焦时才显示焦点环：滚动区域平时不抢视觉焦点 */

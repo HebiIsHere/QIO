@@ -69,6 +69,18 @@
   --layer-selected:var(--bg-accent-subtle);
   /* ---- 技术信息层级：永远不得大过内容字号 ---- */
   --fs-tech:11.5px;
+  /* ---- 统一滚动（2026-10-14）：滚动条视觉的**唯一**来源 ----
+     原生滚动条外观已全局消除（见 styles/scroll.css）。必要区域用 QIO 浮动指示条：
+     浮在边缘、不占布局列、视觉宽度 3–5px、操作带更宽；默认低对比，交互时更清晰。
+     --scroll-linger 是「停止滚动后再淡出」的保留时长（引擎读同一个值）。 */
+  --scroll-indicator-w:4px;          /* 视觉宽度（3–5px） */
+  --scroll-indicator-hit:14px;       /* 操作带宽度（含边缘感应区） */
+  --scroll-rail-inset:3px;           /* 指示条到宿主边缘的距离 */
+  --scroll-indicator-bg:rgba(163,147,160,.44);
+  --scroll-indicator-bg-idle:rgba(163,147,160,.30);
+  --scroll-indicator-bg-active:rgba(232,120,189,.72);
+  --scroll-fade:var(--mo-1-wide);
+  --scroll-linger:900ms;
   /* ---- 晶体玻璃（高透、低雾；只在高层级空间界面用）----
      不是「深色毛玻璃 + 一道高光」：靠极淡底色 + 小半径模糊 + 边缘厚度 + 内外亮度差 +
      极轻冷暖边分离共同成立。 */
@@ -126,6 +138,10 @@
      改用高亮边界 + 更弱的暖/冷边分离 + 略强的背景饱和，避免变成塑料片。 */
   --layer-hover:rgba(32,31,29,.035);
   --layer-selected:var(--bg-accent-subtle);
+  /* 净白底上指示条要压深一档才有对比（暗色的半透明白在浅底上几乎看不见） */
+  --scroll-indicator-bg:rgba(60,60,56,.38);
+  --scroll-indicator-bg-idle:rgba(60,60,56,.24);
+  --scroll-indicator-bg-active:rgba(176,19,106,.62);
   --glass-bg:linear-gradient(160deg,rgba(255,255,255,.72),rgba(255,255,255,.46) 40%,rgba(197,27,125,.045));
   --glass-bg-strong:linear-gradient(160deg,rgba(255,255,255,.88),rgba(255,255,255,.62) 44%,rgba(197,27,125,.05));
   --glass-blur:12px;

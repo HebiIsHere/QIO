@@ -113,7 +113,7 @@ function onInput(e: Event) {
 </script>
 
 <template>
-  <div class="q-number" :class="{ mono }">
+  <div class="q-number" :class="{ mono }" data-qio-fit>
     <input
       class="q-number-input"
       :value="draft"

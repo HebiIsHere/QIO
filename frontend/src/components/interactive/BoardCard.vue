@@ -53,6 +53,8 @@ import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
 import CardAttachmentPreview from "./CardAttachmentPreview.vue";
 import TextCardEditor from "../../interactive/TextCardEditor.vue";
+// 卡片正文是这张卡唯一的主要纵向视口：滚动能力保留，滚动条外观统一走 QIO 指示条。
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const props = defineProps<{
   card: BoardCard;
@@ -100,6 +102,23 @@ const metaName = ref("");
 const metaLanguage = ref("");
 const metaHref = ref("");
 const metaTitle = ref("");
+
+/** 遗留（非文字卡）编辑框实例：与 TextCardEditor 同一条规则，高度跟随内容。 */
+const legacyEditor = ref<HTMLTextAreaElement | null>(null);
+
+/**
+ * 遗留编辑框也自动增高：编辑态只允许卡片正文（.card-body）这一层纵向滚动 ——
+ * 编辑框自己再能滚，同一个连续编辑动作就会被拆成两个小窗口。
+ * 只改显示高度；jsdom / 未布局时 scrollHeight 为 0，这时不写高度。
+ */
+function autosizeLegacyEditor(): void {
+  const el = legacyEditor.value;
+  if (!el) return;
+  const content = el.scrollHeight;
+  if (!content) return;
+  el.style.height = "auto";
+  el.style.height = content + "px";
+}
 
 /**
  * store 与本组件在两个工作树里分别实现（约定接口见本轮契约 §3/§4）：
@@ -563,6 +582,23 @@ const displayState = computed<CardDisplayState>(() => {
  */
 const compactChrome = computed(() => props.card.w < 240 || props.card.h < 140);
 
+/**
+ * 编辑区的最小高度（**显示参数**，不改变提交内容、许可与已保存尺寸）。
+ *
+ * 规则：编辑态是一整块连续编辑区，不能因为一个固定的最小高度把较小的卡片撑开 ——
+ * 那会立刻在卡内造出「外层 .card-body + 内层 textarea」两层纵向滚动。
+ * 所以这里按卡片自己的权威高度算一个**不超过剩余空间**的最小高度：
+ * 头部（约 26）+ 页脚（约 16）+ 卡片内边距（2×12）+ 编辑器工具栏（约 22）
+ * + 完成/取消与说明行（约 76）≈ 164px 是编辑区之外必须留出的固定高度。
+ * 卡片很小时最小值收到 40px：编辑区仍然可点、可输入，超出部分由卡片正文这一层滚动接住 ——
+ * 滚动层仍然只有一层（textarea 自己不再滚动，见 TextCardEditor 的自动增高）。
+ */
+const EDITOR_CHROME_H = 164;
+const editorMinHeight = computed(() => {
+  const height = Number.isFinite(props.card.h) ? props.card.h : 0;
+  return Math.max(40, Math.min(160, height - EDITOR_CHROME_H));
+});
+
 /* ------------------------------------------------------------------------
  * 「更多」：低频操作（复制 / 隐藏 / 书签 / 整理 / 删除）收在一处（任务书 §6.5）
  *
@@ -667,6 +703,7 @@ function onConnectDown(event: PointerEvent) {
 
 function startEdit() {
   editing.value = true;
+  void nextTick(autosizeLegacyEditor);
   const cardId = props.card.id;
   /**
    * 冲突未决时（契约 §12.1）：「打开编辑器」**不等于**选择本机版本。
@@ -718,6 +755,7 @@ function applyRestore() {
  * 一起进本机记录。分别保存会让两者不同步（刷新后正文恢复了、网址还是旧的）。
  */
 function onDraftInput() {
+  autosizeLegacyEditor();
   saveDraftInput();
 }
 
@@ -898,7 +936,20 @@ function cancelEdit() {
       </button>
     </header>
 
-    <div v-if="displayState !== 'folded'" class="card-body" data-im="card-body">
+    <!--
+      卡片正文是这张卡**唯一的主要纵向视口**：
+      - 常态 / 编辑 / 折叠之外的阅读态，纵向滚动都落在这一层（内层预览不再各建一层）；
+      - v-qio-scrollbar：实际溢出时用统一 QIO 指示条（默认隐藏、滚动时出现、不占布局列）；
+      - data-qio-fit：横向边界保护（min-width:0 + max-width:100% + overflow-x:clip），
+        真正的横向不溢出靠子元素的 min-width:0 与换行规则，不靠裁切。
+    -->
+    <div
+      v-if="displayState !== 'folded'"
+      class="card-body"
+      data-im="card-body"
+      data-qio-fit
+      v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+    >
       <!-- 编辑：整张卡只有这一个连续编辑区（任务书 §6.2） -->
       <template v-if="displayState === 'editing'">
         <!--
@@ -915,11 +966,13 @@ function cancelEdit() {
           ref="textEditor"
           :card="card"
           :value="editorText"
+          :min-height="editorMinHeight"
           :data-card-id="card.id"
           @change="onTextCardChange"
         />
         <textarea
           v-else
+          ref="legacyEditor"
           v-model="draft"
           class="editor"
           data-im="card-editor"
@@ -1131,11 +1184,18 @@ function cancelEdit() {
             data-im="card-preview-host"
             :data-card-id="card.id"
           >
+            <!--
+              渲染上下文是**显式**的（契约：不用 DOM 猜测区分「对话内渲染」与「独立材料阅读」）：
+              卡片内展开阅读 = 独立互动材料阅读 → material：
+              图片 / PDF 放大、电子表格网格、代码预览可按材料类型保留必要的二维浏览，
+              并且用统一 QIO 指示条；对话内（ChatDock 等）必须传 chat，执行无横向规则。
+            -->
             <CardInlinePreview
               v-if="hasPreviewMaterial"
               :card="card"
               :active="true"
               :on-close="togglePreview"
+              context="material"
               @position="onPreviewPosition"
             />
           </div>
@@ -1405,10 +1465,19 @@ function cancelEdit() {
 .chip-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 /*
-  第二层：正文。长名称 / 网址 / 代码要么换行要么自己滚动，不许横向溢出卡片。
+  第二层：正文 —— 这张卡**唯一的主要纵向视口**。
 
-  overflow-x 固定 hidden：横向滚动只允许发生在**代码块内部**（.code-body 的 overflow-x: auto），
-  整卡与内容区都不出现横向滚动条（任务书 §3.3）。纵向滚动留给内容区。
+  纵向：只有这一层滚动（v-qio-scrollbar, policy auto）。内层的卡片内预览、代码块
+  不再各建一层纵向滚动（原来 card-body → cip-body → .cip-pre 是三层，用户看到的
+  是「同一个阅读动作要在三个小窗口里分别滚」）。展开阅读时，真实预览由 flex 定高，
+  这一层自然没有可滚范围，于是纵向视口恰好剩下预览自己那一个。
+
+  横向：overflow-x 仍然是 hidden（边界保护；QIO 自有界面里不出现横向滚动条），
+  但**不是**靠它来「修」横向溢出 —— 每个子块都有 min-width: 0 + 换行规则
+  （.content / .blk 的 overflow-wrap: anywhere，.code-body 的软换行），
+  真正的横向溢出在布局上就不存在。data-qio-fit 另外补上 min-width/max-width 与
+  overflow-x: clip（见 styles/scroll.css）。
+  卡片自己的 overflow: hidden 保证任何意外都不会把卡片撑宽（任务书 §3.3）。
 */
 .card-body {
   display: flex;
@@ -1426,12 +1495,16 @@ function cancelEdit() {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+/*
+  遗留 code 卡的正文（迁移完成前仍要能读）：与 .code-body 同一条规则 ——
+  长行软换行，不靠裁切把内容吃掉（white-space: pre 会横向溢出后被卡片边界裁掉）。
+*/
 .content.code {
   font-family: var(--mono);
   font-size: var(--fs-sm);
   line-height: var(--lh-tight);
-  white-space: pre;
-  overflow-wrap: normal;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   word-break: normal;
 }
 
@@ -1468,7 +1541,13 @@ function cancelEdit() {
   border-radius: var(--r-xs);
   padding: 0 2px;
 }
-/* 代码块：语言 + 复制按钮在最上面一行；正文自己滚动，绝不横向撑破卡片 */
+/*
+  代码块：语言 + 复制按钮在最上面一行。
+  纵向滚动责任不在它身上：整段代码跟随卡片正文这一层（.card-body）滚 ——
+  代码块自己再有纵向滚动，就会和正文滚成两个小窗口。
+  横向也不滚动：长行按视觉软换行（见 .code-body），textContent 一个字符都不变，
+  复制出来仍然逐字一致。外框只做圆角裁切（overflow: clip 不建立滚动容器）。
+*/
 .blk-code {
   margin: 0;
   min-width: 0;
@@ -1476,8 +1555,7 @@ function cancelEdit() {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-sm);
   background: var(--bg-inset);
-  /* 宽代码由里面的 <pre> 自己横向滚动，外框只负责裁掉溢出 */
-  overflow: hidden;
+  overflow: clip;
 }
 .code-head {
   display: flex;
@@ -1501,16 +1579,23 @@ function cancelEdit() {
 }
 .code-copy:hover { color: var(--text-strong); border-color: var(--border-strong); }
 .code-copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/*
+  代码正文：**不自己滚动**（横向与纵向都不）。
+  - 纵向跟随卡片正文这一层，不再形成第二个纵向小窗口；
+  - 横向按视觉软换行：长行折行显示而不是被裁掉或藏进横向滚动条里，
+    原文的换行与缩进都保留（white-space: pre-wrap 只改呈现），
+    textContent / 复制结果逐字不变。
+*/
 .code-body {
   margin: 0;
   max-width: 100%;
   padding: var(--sp-2);
   font-size: var(--fs-sm);
   line-height: var(--lh-tight);
-  white-space: pre;
-  /* 唯一允许横向滚动的地方：代码区（任务书 §3.3） */
-  overflow-x: auto;
-  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  overflow: visible;
 }
 .code-hint { margin: 0; padding: var(--sp-1) var(--sp-2); font-size: var(--fs-xs); color: var(--text-secondary); }
 /* 链接块：标题（可点开）与地址（等宽，永远看得见） */

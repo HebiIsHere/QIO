@@ -140,3 +140,23 @@
   max-width: var(--im-geo-chat-max-w, none);
   max-height: var(--im-geo-chat-max-h, none);
 }
+
+/* ==========================================================================
+   聊天面板的滚动层（2026-10-14 全局滚动任务；只声明滚动语义，不改上面任何几何）
+
+   面板内部的**纵向**滚动由 ChatDock 自己按「一段连续阅读/编辑区域只留一层主要滚动」收敛：
+     · [data-im="chat-stream"]   —— 阅读流（消息 + 过程 + 提示 + 失败恢复）的唯一纵向滚动视口；
+     · [data-im="chat-composer"] —— 独立的输入 / 编辑区，自己那一层纵向滚动。
+   这里只在**跨组件**这一层保证横向：面板自身与它上面两个滚动视口都不是横向滚动容器。
+   用 clip 而不是 hidden —— clip 不建立滚动容器，程序性横向滚动也做不到，
+   因此不存在「藏起横向滚动条、内容仍在左右滚」的假修复。
+   值与组件内的 data-qio-fit 一致；组件若被别处特异度更高的 scoped 规则改回
+   overflow-x: auto，这一层把它压回来。尺寸上限（上面两段）保持原样不动。
+   ========================================================================== */
+[data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] {
+  overflow-x: clip;
+}
+[data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] [data-im="chat-stream"],
+[data-im="chat-panel"][data-im="chat-panel"][data-im="chat-panel"] [data-im="chat-composer"] {
+  overflow-x: clip;
+}

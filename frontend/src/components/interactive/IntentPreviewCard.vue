@@ -27,6 +27,7 @@ import type { Intent } from "../../interactive/types";
 import { limitsForArea, type ResizeBox, type ResizeHandle } from "../../interactive/resize";
 import { useResizeGesture } from "../../composables/useResizeGesture";
 import ResizeHandles from "./ResizeHandles.vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const props = withDefaults(
   defineProps<{ intent: Intent; allIntents?: Intent[]; active?: boolean; docked?: boolean }>(),
@@ -320,6 +321,8 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
   <article
     ref="cardEl"
     class="intent-card"
+    v-qio-scrollbar
+    data-qio-fit
     :class="{ active, docked }"
     :style="[dockedStyle, dockFrameStyle]"
     data-im="intent"
@@ -545,8 +548,12 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 */
 .intent-card.docked {
   position: absolute;
-  /* 尺寸可被用户调整（任务书 §3.1）：内容超出时区内滚动，不把把手顶出去 */
-  overflow: auto;
+  /* 尺寸可被用户调整（任务书 §3.1）：内容超出时区内滚动，不把把手顶出去。
+     只有这一层纵向滚动（滚动条走统一策略），横向永不滚动；批准 / 拒绝固定在卡片底部，
+     卡片被用户缩小时也不会把审批按钮滚出可视区（正文滚动与固定操作分离）。 */
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
   z-index: 34;
   width: min(360px, calc(100vw - var(--sp-6)));
   padding: var(--sp-2) var(--sp-3);
@@ -564,7 +571,14 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 .intent-card.docked .waiting { display: none; }
 .intent-card.docked .title { font-size: var(--fs-sm); }
 .intent-card.docked .status-detail { display: none; }
-.intent-card.docked .actions { position: static; }
+.intent-card.docked .actions {
+  /* 落实「固定操作」：卡片内滚到任何位置，批准 / 拒绝 / 定位都还在 */
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding-top: var(--sp-1);
+  background: var(--bg-elevated);
+}
 .intent-card.docked .docked-note { color: var(--text-faint); }
 .head {
   display: flex;

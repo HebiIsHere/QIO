@@ -4,6 +4,7 @@ import { api, type EntityAttribute, type EntityCard } from "../../services/api";
 import QInput from "../ui/QInput.vue";
 import QConfirm from "../ui/QConfirm.vue";
 import EntityCandidates from "./EntityCandidates.vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useActionFeedback } from "../../composables/useActionFeedback";
 
 const props = defineProps<{ openCardId?: string; openByNodeId?: string }>();
@@ -228,7 +229,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="epanel">
+  <div class="epanel" v-qio-scrollbar data-qio-fit>
     <template v-if="!opened">
       <QInput v-model="q" placeholder="搜索实体（名称/别名）…" />
       <div v-if="loading" class="hint">加载中…</div>
@@ -437,7 +438,13 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.epanel { display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* 实体面板的正文层：只有这一层纵向滚动（列表与详情在同一阅读流里顺序展开）；
+   滚动条走统一策略（原生外观已全局移除），横向永不滚动。 */
+.epanel {
+  display: flex; flex-direction: column; gap: 8px; padding: 0 14px 20px;
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; overflow-x: clip; overscroll-behavior: contain;
+}
 .e-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 /* 列表项用一个可聚焦的行：hover / 焦点 / 点击反馈来自 `.qio-row` 与 `.qio-card` */
 .e-item { padding: var(--sp-3); border-radius: var(--r-lg); }

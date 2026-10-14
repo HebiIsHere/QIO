@@ -96,6 +96,21 @@ describe("入口本身", () => {
     expect(entry.attributes("type")).toBe("button");
   });
 
+  it("入口、面板与每一条都在宽度链上（data-qio-fit）：长原文换行而不是撑宽页面", async () => {
+    const longItem = { ...ITEM, message: "很长的一条没有执行的消息".repeat(10) };
+    const { w } = mountEntry([longItem]);
+    expect(w.find(".interrupted-turns").attributes("data-qio-fit")).not.toBeUndefined();
+    expect(w.find(".entry").attributes("data-qio-fit")).not.toBeUndefined();
+    await w.find(".entry").trigger("click");
+    await flushPromises();
+    const panel = w.find(".panel");
+    expect(panel.attributes("data-qio-fit")).not.toBeUndefined();
+    expect(panel.find(".item").attributes("data-qio-fit")).not.toBeUndefined();
+    // 原文完整在 DOM 里（视觉截断由行数限制承担，不是把话吞掉）
+    expect(panel.find(".message").text()).toBe(longItem.message);
+    w.unmount();
+  });
+
   it("展开后给出原文、原因与「何时被中断」，以及继续/忽略两个动作", async () => {
     const { w } = mountEntry([ITEM]);
     await w.find(".entry").trigger("click");

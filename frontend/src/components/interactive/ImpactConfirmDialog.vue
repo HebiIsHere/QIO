@@ -15,6 +15,7 @@
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useInteractiveStore } from "../../stores/interactive";
 import type { ImpactConfirmOutcome, Intent } from "../../interactive/types";
 
@@ -378,7 +379,7 @@ function reopen(intentId: string): void {
     >
       <h2 id="im-impact-title" class="title">{{ title }}</h2>
 
-      <div id="im-impact-body" class="body">
+      <div id="im-impact-body" class="body" v-qio-scrollbar data-qio-fit>
         <template v-if="mode === 'impact'">
           <p class="lead">
             下面这些任务正在执行，而这次改动动了它们依赖的材料。<strong>改动还没有生效。</strong>
@@ -488,6 +489,8 @@ function reopen(intentId: string): void {
     <section
       v-if="outcome"
       class="outcome"
+      v-qio-scrollbar
+      data-qio-fit
       data-im="impact-outcome"
       :data-outcome="outcome.kind"
       role="status"
@@ -570,8 +573,9 @@ function reopen(intentId: string): void {
 .dialog {
   width: min(560px, calc(100vw - var(--sp-6)));
   max-height: min(80vh, 640px);
-  overflow: auto;
-  overscroll-behavior: contain;
+  /* 对话框本身不滚（clip 不建立滚动容器）：滚动收敛到 **正文一层**（.body），
+     标题 / 提示 / 「取消 · 继续」操作区固定在框内、任何长度的影响清单都藏不掉按钮。 */
+  overflow: clip;
   padding: var(--sp-5);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
@@ -586,7 +590,18 @@ function reopen(intentId: string): void {
   font-size: var(--fs-md);
   color: var(--text-strong);
 }
-.body { display: flex; flex-direction: column; gap: var(--sp-2); }
+/* 正文是这一框里唯一的主要纵向滚动层（长影响清单在这里滚，操作区不动） */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
+}
 /* 说明文字是用户做决定要读的东西：用正文级字号，不缩成元信息级 */
 .lead {
   margin: 0;
@@ -650,6 +665,7 @@ function reopen(intentId: string): void {
 .notice { color: var(--text-secondary); }
 .error { color: var(--danger); }
 .actions {
+  flex: none;
   margin-top: var(--sp-4);
   display: flex;
   gap: var(--sp-3);
@@ -676,13 +692,17 @@ function reopen(intentId: string): void {
 .item .error { overflow-wrap: anywhere; }
 /* 真实结果面板：确认之后对话框会收起，结果必须还能看见（宽窗口右下、窄窗口居中贴底） */
 .outcome {
+  /* 独立的真实结果浮层：自己一层纵向滚动（不占第二层），横向永不滚动 */
   position: fixed;
   right: var(--sp-4);
   bottom: var(--sp-4);
   z-index: var(--im-z-result, 62);
   width: min(420px, calc(100vw - var(--sp-6)));
   max-height: min(60vh, 420px);
-  overflow: auto;
+  /* 只有这一层纵向滚动；横向永不滚动（长文本换行，不把结果面板左右撑开） */
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
   padding: var(--sp-3) var(--sp-4);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);

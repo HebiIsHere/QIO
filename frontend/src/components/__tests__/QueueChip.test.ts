@@ -57,6 +57,25 @@ describe("QueueChip 取消语义（任务01 D）", () => {
     await flushPromises();
   });
 
+  it("队列入口与每一行都在宽度链上（data-qio-fit），长消息完整换行显示", async () => {
+    const { w, session } = setup();
+    const long = "一条很长的排队消息".repeat(12);
+    session.turnQueue = {
+      running: null,
+      queued: [{ turn_id: "t2", message: long }],
+      cancelled: [],
+    };
+    await nextTick();
+    expect(w.find(".queue").attributes("data-qio-fit")).not.toBeUndefined();
+    await w.find(".chip").trigger("click");
+    await flushPromises();
+    const row = w.find(".row");
+    expect(row.attributes("data-qio-fit")).not.toBeUndefined();
+    // 原文完整可读：不再单行截断（换行显示，不横向滚动）
+    expect(row.find(".txt").text()).toBe(long);
+    w.unmount();
+  });
+
   it("取消失败：错误就地可见，不假装已经取消", async () => {
     const { w, session } = setup();
     mocks.cancelTurn.mockRejectedValueOnce(new Error("500 boom"));

@@ -36,6 +36,7 @@ import {
 } from "../composables/planetContinuum";
 import { ballLayoutReady, readBallSize } from "../planet/entryLayout";
 import QConfirm from "../components/ui/QConfirm.vue";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 /**
  * 展开/收起的时间线（演示版，比任务02 的表格更慢一点，用户反馈原时长"过快"）：
@@ -1834,7 +1835,7 @@ async function close() {
           <!-- 可滚动中部：话题列表自己滚（高度封顶），详情正文占满剩余空间自己滚；
                底部操作区在两者之外，始终可见且不覆盖内容 -->
           <div class="panel-body">
-            <div class="topic-scroll">
+            <div class="topic-scroll" v-qio-scrollbar data-qio-fit>
               <!-- aria-selected 的 option 必须挂在 listbox 上；没有这个祖先，
                    读屏软件不会把话题读成"可选中的一项"，只会念一串文字 -->
               <ul class="topic-list" role="listbox" aria-label="话题列表">
@@ -1891,7 +1892,7 @@ async function close() {
               </ul>
             </div>
 
-            <div class="detail-scroll">
+            <div class="detail-scroll" v-qio-scrollbar data-qio-fit>
               <div v-if="detailLoading" class="detail-loading">加载中…</div>
               <!-- 加载失败：没有详情也要能看到失败原因并有重试入口 -->
               <div v-else-if="detailError" class="detail-error" role="alert">
@@ -2094,7 +2095,11 @@ async function close() {
 <style scoped>
 .planet-view {
   position: fixed; inset: 0; z-index: 50; display: flex;
-  overflow: hidden;
+  /* 不用 overflow:hidden：它仍然建立滚动容器，程序性滚动（scrollIntoView / focus）
+     能把整层左右推动 —— 星球舞台带着 transform 缩放/位移，正是「真的能横向滚」的来源。
+     overflow:clip 在视觉上同样裁切，但**不建立滚动容器**，因此横向滚动能力彻底不存在
+     （验收硬条件 3：不是「藏起滚动条但内容还在左右滚」）。 */
+  overflow: clip;
   /* 入口小球自己的画布尺寸。球态（.ball）与收缩尾段（.tail）共用同一个值：
      尾段要在「球自己的分辨率」下渲染（见 runCollapseMotion），两处必须是同一个数，
      否则交接时仍会差一点点尺寸。 */
@@ -2333,28 +2338,56 @@ async function close() {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  min-width: 0;
+  /* 布局容器，不承担滚动：clip 保证它不会成为一个可被程序性滚动的横向滚动容器 */
+  overflow: clip;
 }
+/*
+ * 面板正文里的一切文本都可能带长话题名 / 长 ID / 长路径。
+ * 「内容宽度不超过容器」才是横向不滚动的**根因修复**（不是靠 hidden/clip 藏起来）：
+ * 这里的每一条都可任意位置换行，配合各自的 min-width:0，内容不会把容器撑宽。
+ */
+.panel-inner :where(p, li, dd, dt, span, a, code, strong, em, label, h2, h3, h4, summary, pre) {
+  overflow-wrap: anywhere;
+}
+.panel-inner :where(ul, ol, dl, .detail, .topic-list, .epanel, .kpanel) {
+  min-width: 0;
+}
+
 /* 可滚动中部：顶部标题与底部操作区保持稳定，只有这两个区域各自滚动 */
 .panel-body {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* 中部只是排版层：真正的滚动在 .topic-scroll / .detail-scroll 两层各自发生 */
+  overflow: clip;
 }
-/* 话题多时列表自己滚，且高度封顶：详情永远留在可见区域，不用先滚过整份列表 */
+/* 话题多时列表自己滚，且高度封顶：详情永远留在可见区域，不用先滚过整份列表。
+   这是「独立列表 + 独立详情」的并列结构（契约 §5）：两层各自可滚是允许的，
+   但共享父容器 .panel-inner/.panel-body 只做裁切、**不再**多开一层滚动。
+   滚动条走统一策略：原生外观已全局移除，用共享 QIO 指示条。
+   横向判定口径（实测）：overflow-y:auto 时 overflow-x:clip 会**计算成 hidden**，
+   仍然可被程序性滚动 —— 所以这里只锁手势与滚动条，真正的不横向滚动靠
+   .panel-inner 的换行规则让 scrollWidth == clientWidth（over == 0）。 */
 .topic-scroll {
   flex: 0 1 auto;
   max-height: 42%;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
+  max-width: 100%;
   border-bottom: 1px solid var(--border-subtle);
 }
 .detail-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
+  max-width: 100%;
 }
 /* 固定底部操作区（在正常流里，不覆盖正文） */
 .detail-actions {
@@ -2398,8 +2431,9 @@ async function close() {
     box-shadow: var(--shadow-3);
   }
 }
-.tabs { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; border-bottom: 1px solid var(--border-subtle); }
-.tab { font-size: 13px; padding: 6px 12px; color: var(--text-secondary); cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; font-family: var(--sans); }
+/* 窄面板下分区标签换行，而不是把面板内容撑出横向溢出 */
+.tabs { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
+.tab { font-size: 13px; padding: 6px 12px; min-width: 0; color: var(--text-secondary); cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; font-family: var(--sans); }
 .tab:hover { color: var(--text-strong); }
 .tab.active { color: var(--text-strong); border-bottom-color: var(--accent); font-weight: 600; }
 .tabs .spacer { flex: 1; }
@@ -2436,16 +2470,18 @@ async function close() {
 .panel-toggle .chev.flip {
   transform: rotate(180deg);
 }
-.panel-head { padding: 14px 14px 8px; }
-.panel-head h2 { font-size: 16px; color: var(--text-strong); margin: 0 0 8px; }
-.topic-list { list-style: none; padding: 0 14px; margin: 6px 0; }
+.panel-head { padding: 14px 14px 8px; min-width: 0; }
+.panel-head h2 { font-size: 16px; color: var(--text-strong); margin: 0 0 8px; overflow-wrap: anywhere; }
+.topic-list { list-style: none; padding: 0 14px; margin: 6px 0; min-width: 0; }
 .topic-list li {
   display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px;
   border-radius: 10px; cursor: pointer; font-size: 13px;
+  /* 长话题名换行（不是把列表撑宽、也不是把右侧「已选中」标签挤没） */
+  min-width: 0; flex-wrap: wrap;
 }
 .topic-list li:hover { background: var(--accent-soft); }
 .topic-list li.active { background: var(--accent-softer); }
-.topic-list .name { font-size: 14px; color: var(--text-primary); }
+.topic-list .name { font-size: 14px; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
 .topic-list .meta { flex-shrink: 0; }
 .detail { padding: 0 14px 20px; border-top: 1px solid var(--border-subtle); }
 .detail h3 { font-size: 16px; color: var(--text-strong); margin: 12px 0 8px; }

@@ -17,6 +17,7 @@
  */
 import { computed, ref, watch } from "vue";
 import QConfirm from "./ui/QConfirm.vue";
+import { vQioScrollbar } from "../composables/useQioScrollbars";
 import { useSessionStore } from "../stores/session";
 import type { DevTaskRow } from "../services/api";
 
@@ -239,6 +240,8 @@ async function resume(task: DevTaskRow) {
       -->
       <ul
         class="dev-task-list"
+        v-qio-scrollbar
+        data-qio-fit
         tabindex="0"
         :aria-label="`未完成的工具开发任务，共 ${items.length} 项，可用方向键或 PageDown 滚动`"
       >
@@ -347,22 +350,17 @@ async function resume(task: DevTaskRow) {
   font-family: var(--sans); font-size: 12.5px; color: var(--text-primary);
   text-align: left;
 }
-/* 内部滚动容器：滚它不带动背后的对话（overscroll-behavior: contain）。 */
+/* 内部滚动容器：滚它不带动背后的对话（overscroll-behavior: contain）。
+   滚动条已交给统一策略（styles/scroll.css + useQioScrollbars 的共享指示条）：
+   这里**不再**自己写 ::-webkit-scrollbar / scrollbar-color —— 局部规则会和
+   「原生外观全局消除」互相打架，也会在别处留下第二套滚动条样式。 */
 .dev-task-list {
   flex: 1 1 auto; min-height: 0;
   margin: 0; padding: 0 6px 12px 0; list-style: none;
   display: flex; flex-direction: column; gap: 10px;
   overflow-y: auto; overscroll-behavior: contain;
-  /* 细而安静的滚动条：沿用现有 token，不引入新颜色 */
-  scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent;
 }
 .dev-task-list:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.dev-task-list::-webkit-scrollbar { width: 8px; }
-.dev-task-list::-webkit-scrollbar-track { background: transparent; }
-.dev-task-list::-webkit-scrollbar-thumb {
-  background: var(--border-strong); border-radius: var(--r-pill);
-}
-.dev-task-list::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 .dev-task-row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 /* 长需求文字在窄窗口里换行而不是撑出横向滚动（也不许把按钮挤出可见区） */
 .dev-task-request {

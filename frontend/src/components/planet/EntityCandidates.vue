@@ -307,7 +307,7 @@ onUnmounted(() => {
     根条件包含 loadError / blockNotice：采纳掉最后一条候选之后列表会变空，
     如果整块跟着消失，用户点完什么都看不到（静默失败）。操作结果必须留在屏幕上。
   -->
-  <div v-if="count || loadError || blockNotice" class="ec-block">
+  <div v-if="count || loadError || blockNotice" class="ec-block" data-qio-fit>
     <button
       class="ec-head"
       type="button"
