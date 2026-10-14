@@ -2387,4 +2387,24 @@ watch(
   border-radius: var(--r-xs);
   padding: 0 var(--sp-1);
 }
+
+/*
+  封面模式下的**命中层叠**（可达性回归修复）。
+
+  现象：elementFromPoint(封面「查看原图」按钮中心) === [data-im="card-body"]，真实鼠标点不动；
+  根因：上面 `.card.is-cover > :not(.card-cover) { z-index: 1 }` 让 .card-body / .card-head /
+  .card-meta 都画在 .card-cover（z-index: 0）之上，而 .card-body 是**可命中的空容器**，
+  于是把这轮唯一的打开入口整个挡住了（DOM 直击 .click() 正常，纯层叠命中问题）。
+
+  规则：封面模式下正文层与头部 / 页脚**让开指针** —— 事件穿到封面按钮，其余地方穿到卡片本身
+  （选中 / 拖动 / 双击手势照旧）；只对**真的需要交互**的子树显式放行：
+    * 正文层里的草稿 / 冲突提示（契约 §12.1：可见可点）；
+    * 头部里真正的按钮（折叠态「恢复卡片」等在 .chip-btn 上）。
+  **不**把 .card-body 压到封面后面：那会让草稿 / 冲突提示被图片盖住。
+*/
+.card.is-cover > .card-body { pointer-events: none; }
+.card.is-cover > .card-body :deep(.card-draft-hint) { pointer-events: auto; }
+.card.is-cover > .card-head { pointer-events: none; }
+.card.is-cover > .card-meta { pointer-events: none; }
+.card.is-cover > .card-head .chip-btn { pointer-events: auto; }
 </style>

@@ -200,6 +200,46 @@ describe("图片文件卡：常态由封面承担完整展示", () => {
     expect(toolbar.find('[data-im="card-fold"]').exists()).toBe(true);
   });
 
+  /*
+    可达性回归（verifier 真实应用实测）：封面按钮的 elementFromPoint 命中 .card-body ——
+    .card-body 是画在封面之上的**可命中空容器**，把这轮唯一的打开入口整个挡住了。
+    修法：正文层整体让开指针（事件落到封面按钮或卡片本身），只对真的可交互的子树显式放行；
+    绝不把 .card-body 压到封面后面（那会让草稿 / 冲突提示被图片盖住，契约 §12.1）。
+    jsdom 没有真实命中测试，这里做源码守卫 + DOM 结构守卫，真实命中由 verifier 复跑。
+  */
+  it("封面模式：正文层不吃指针事件，草稿 / 冲突提示显式放行（封面按钮才能被真实指针命中）", async () => {
+    const card = source("components/interactive/BoardCard.vue");
+    expect(cssBlock(card, ".card.is-cover > .card-body {"), "正文层还在抢封面按钮的指针").toContain(
+      "pointer-events: none",
+    );
+    // 真的可交互的子树显式放行（不是把整个正文层又放回来）
+    const hintRule = card.slice(card.indexOf(".card.is-cover > .card-body :deep(.card-draft-hint)"));
+    expect(hintRule.slice(0, hintRule.indexOf("}"))).toContain("pointer-events: auto");
+    // 头部 / 页脚只是文字与状态，也让开；头部里真正的按钮（折叠态「恢复卡片」）单独放行
+    expect(card).toContain(".card.is-cover > .card-head { pointer-events: none; }");
+    expect(card).toContain(".card.is-cover > .card-meta { pointer-events: none; }");
+    const chipRule = card.slice(card.indexOf(".card.is-cover > .card-head .chip-btn"));
+    expect(chipRule.slice(0, chipRule.indexOf("}"))).toContain("pointer-events: auto");
+    // 封面按钮自己收回指针（封面层是 pointer-events: none 的背景层）
+    const preview = source("components/interactive/CardAttachmentPreview.vue");
+    expect(cssBlock(preview, ".cover-open {")).toContain("pointer-events: auto");
+    expect(cssBlock(preview, ".cover-actions .btn {")).toContain("pointer-events: auto");
+
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+    expect(w.find('[data-im="card-cover-open"]').exists(), "封面按钮不在 DOM 里了").toBe(true);
+
+    // 有未决草稿冲突时，CardDraftHint 真的挂在正文层里（放行规则不是空放行）
+    const store = useInteractiveStore();
+    store.draftConflicts = { "card:card_img": { local: "本页候选", server: "服务器正文" } } as never;
+    await nextTick();
+    const hint = w.find('[data-im="card-draft-hint"]');
+    expect(hint.exists(), "未决冲突提示必须仍然渲染").toBe(true);
+    expect(hint.element.closest('[data-im="card-body"]')).not.toBeNull();
+    expect(hint.find('[data-im="card-draft-keep-local"]').exists()).toBe(true);
+    expect(hint.find('[data-im="card-draft-keep-server"]').exists()).toBe(true);
+  });
+
   it("占位说明不显示：新文件卡的默认 content（defaultCardSeed）不是真实说明", async () => {
     const w = mountCard(imageFileCard({ content: defaultCardSeed("file").content }));
     await flushPromises();
