@@ -26,6 +26,8 @@
 **第二十九轮：只移动位置不再弹提示**（见 P57）；
 **第三十轮：宽高按钮不再出现 + 提示条浮在板面上 + 对话按钮固定右下角**（见 P58）；
 **第三十一轮：工具栏准确跟随卡片**（拖动中与恢复选中都不再漂移，见 P59）。核对方法见文末。
+**第三十二轮：画布随内容增长**（方案 B 第一步，见 P60）；**第三十三轮：画布向左上也无限**（原点重定位，见 P61）；
+**第三十四轮：局部工具栏不再与卡片分离**（独立不缩放浮层 + 真实 DOM 外框锚点 + 单帧合并调度，见 P62）。核对方法见文末。
 
 ---
 
@@ -4443,6 +4445,65 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   指针越过滚动容器边缘时触发 Chromium 的选择自动滚动，把 `.board-viewport` 滚到底
   （实测滚动量 300 → 911，并选中 162 字符；与是否按住 Ctrl 无关）。
   本轮**未修**（当时修法待定）—— **已在 P50 按方案 A 修好**。
+
+### P62 — 局部工具栏与卡片不再分离：独立不缩放浮层 + 真实 DOM 外框锚点（2026-10-14 第三十四轮）
+
+- **Status：** completed
+- **Implementation：**
+  - **根因（三条，全部由真实浏览器几何证实，不是注释推断）**：
+    ① `.card-toolbar` 由 `frontend/src/components/interactive/BoardCard.vue` 的片段根渲染，DOM 上落在
+    `.board-surface`（`position: relative` + `transform: scale()`）内部；定位写入的是**客户端像素差值**，
+    被祖先再乘一次 —— 实测 250% 时行内 `left: 1997.5`、屏幕 `left: 4787.75`（= −1081 + 1997.5 × 2.5），
+    工具栏自身也被放大（宽 337.59 → 843.98、高 35.25 → 88.13）。
+    ② 刷新定位用的是**正式板面坐标**，而卡片本体与交互层走 `displayRect()`（拖动实时坐标 / 尺寸预览 / 展开槽位）；
+    展开、让位、拖动、尺寸预览之后两套位置不一致 —— 这就是「拖动中正确、松手后又偏」。基线还算出了可见性却从未
+    传给卡片，完全离屏也不隐藏。
+    ③ 旧的落点纯函数会竖向翻转、横向夹取、必要时侧移，与「固定相对位置」直接冲突。
+  - **唯一一套位置规则**：工具栏左边缘 = 所属卡片**实际渲染外框**的左边缘（0 偏差）；底边在卡片顶边上方
+    **10 屏幕像素**；删除夹取 / 翻转 / 侧移 —— 任何视口边缘都不改变相对位置。工具栏字号 / 按钮尺寸 / 间距
+    不随板面缩放。
+  - `frontend/src/interactive/overlayPlacement.ts`：删除 `placeCardOverlay` 与其边缘常量（改后无调用方，
+    且避让语义与新规则冲突），新增 `placeToolbarRelativeToCard()`（屏幕坐标 → 宿主定位原点；宿主确有缩放祖先时
+    按实测比例逆变换）与 `rectsIntersect()`（可见性）。合并提示的避让在 `BoardCanvas.vue` 的 `mergeHintStyle`
+    里自成一套，未动。
+  - `frontend/src/components/interactive/BoardCanvas.vue`：`.board-main` 内与 `.board-viewport` 并列新增
+    独立浮层宿主 `.card-toolbar-host`（`inset: 0`、`pointer-events: none`、`z-index: 50`、
+    `overflow: hidden` 裁切到板面可视区），工具栏因此脱离 `.board-surface` 的缩放与滚动。锚点按卡片 id 注册
+    `BoardCard` 实例（`defineExpose` 暴露只读 DOM 元素），只读该卡真实 `getBoundingClientRect()`，
+    不回写卡片坐标、布局计划或视图状态（jsdom 没有真实布局时才退回数学兜底，注释写明）。
+  - **单帧合并调度**：选择与所有者切换、view 与真实 scroll、展开集合、store 提交 / 撤销重做、窗口 resize、
+    宿主 / 锚点 / 工具栏三个 `ResizeObserver`、拖动 `pointermove`、尺寸预览与提交、挂载恢复全部走
+    `requestPlacement()`，同一帧最多一次有效测量与一次位置写入；卡片有 left / top / width / height 过渡时
+    `startFollow()` 逐帧测量，连续若干帧静止或超过安全时限后做最后一次定位并停止（`transitionrun` 重新触发，
+    减少动画时直接不进循环），空闲不跑 rAF；卸载 / 切板取消待执行帧、断开全部观察器与过渡监听。
+  - `BoardCard.vue`：`<Teleport :to="toolbarHost" :disabled="!toolbarHost">` 把工具栏送进宿主（宿主未挂载时
+    就地渲染，不会出现在 (0,0)）；新增 `toolbarHost` / `toolbarVisible` 可选 prop 与
+    `getCardElement()` / `getToolbarElement()`；菜单展开方向不再混算两套坐标（原来拿「宿主像素」比「板面单位」），
+    改为按实测屏幕矩形 + 面板真实高度决定；切换所有者时收起「更多」面板。
+  - **可见性（状态诚实）**：卡片与板面可视区相交**且**工具栏屏幕外框与板面可视区相交（都严格相交）才显示；
+    完全不相交时隐藏（`v-show`），重新相交后恢复；部分相交仍按固定位置显示（允许被宿主裁切）。
+    隐藏只影响显隐，`left / top` 照常写入、不因隐藏改变。
+- **Tests：** 新增 `frontend/src/components/interactive/__tests__/cardToolbarLayoutHarness.ts`（jsdom 布局桩：
+  按浏览器语义算 containing block、祖先 scale 与真实 scroll）、
+  `frontend/src/components/interactive/__tests__/cardToolbarAnchor.test.ts`（渲染后几何断言：选中与恢复、
+  缩放 25–250%、平移、拖动中与松手、拉伸、展开收起、让位、撤销重做、容器尺寸变化、工具栏换行变高、切换所有者、
+  部分与完全离屏）、`frontend/src/components/interactive/__tests__/cardToolbarLayoutHarness.test.ts`
+  （桩自检 + 反证：基线结构会报出 dx > 100、宿主原点漏减会报出 dx ≈ 40，证明断言不是恒真）；
+  改写 `frontend/src/interactive/__tests__/overlayPlacement.test.ts`；更新 `fix025-connect-resize.test.ts`
+  里一条过时的「相对 surface」断言。守卫口径：`abs(工具栏.left − 卡片.left) ≤ 1px`、
+  `abs((卡片.top − 工具栏.bottom) − 10px) ≤ 1px`。
+- **验证：** 真实浏览器（Playwright 驱动本机 Chrome，真鼠标 / 滚轮 / 连续手势采样）：可见采样最大
+  `|dx| = 0.02px`、最大 `|gap − 10| = 0.16px`，违反 0 条；工具栏从不落在 `.board-surface` 内；
+  可见性不变式（显示 ⇔ 卡片 ∩ 可视区 ∧ 工具栏外框 ∩ 可视区）在连续缩放 / 平移 / 拖动穿越边界时无一次不符、
+  无边界闪烁；边界恰在「工具栏底边 = 可视区上沿」处切换。菜单、许可说明、连接点拖线与尺寸把手都在真实鼠标下命中，
+  操作期间板面 scroll / scale / selection 不变。基线对照：同一探针在改动前实测最大 `dx = 2996.25px`、
+  `gap` 偏差 `1416.02px`。前端全量 `npm test` 全绿（2026-10-14）。
+- **Known limitations：** 真实浏览器里工具栏在各验证宽度下始终单行（换行变高只有 jsdom 用模拟高度覆盖）；
+  「边贴边」严格相等那一档由组件级探针覆盖，浏览器扫描落在边界两侧；只在 headless Chrome +
+  `deviceScaleFactor = 1` 下验证，Windows 125% / 150% 显示缩放与其它内核未覆盖；撤销 / 重做只在 jsdom 覆盖；
+  动画与连续手势采样间隔 60–120ms（逐帧跟随由 jsdom 的逐帧断言覆盖）；验证使用共享的 e2e 板面数据
+  （探针会拖动 / 拉伸 / 建关系），不是干净数据域。
+- **后续依赖：** 与 main 的合并说明、冲突清单与验证证据见交付说明；本轮未合并、未打包、未发布。
 
 ### P61 — 画布向左上也无限：原点重定位（方案 B 第二步）（2026-10-14 第三十三轮）
 

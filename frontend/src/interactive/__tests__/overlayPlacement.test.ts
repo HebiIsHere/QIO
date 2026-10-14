@@ -1,76 +1,109 @@
 /**
  * 卡片局部工具栏的落点决策（纯函数）。
  *
- * 契约 §8.2 只要求「选中后在卡片附近出现」，没有规定上下；这里定的是**不许压住卡片**：
- * 竖向能放到卡片外面就放外面（先上后下，且整个工具栏都在可视区内），
- * 竖向两边都放不下（卡片比可视区还高）时，至少挪到卡片**横向之外**，而不是整块压在卡片上。
+ * 契约（2026-10-14 第二轮，用户报告「工具栏与卡片有偏移、松手后还会漂」）：
+ * - 左边缘 = 所属卡片实际显示外框的左边缘（0 偏差）；
+ * - 底边 = 卡片顶边上方固定的 gap 屏幕像素；
+ * - **没有**横向夹取、**没有**上下翻转、**没有**侧移：视口边缘不改变相对位置。
  *
- * 2026-10-14 修的依据（真实浏览器复现）：
- * - 1200×500 窗口：卡片 104–508、可视区 111–500、工具栏 277×35 → 旧实现把工具栏放在 442–478，
- *   整块落在卡片内部（用户报告：「他不应该在下面的时候挡住卡片」）；
- * - 旧实现的根因：下方位置被 maxTopClient = viewport.bottom − 30 夹回卡片里，而当时的
- *   「碰到卡片顶边」判定看不见这种「落在卡片下半部分」的情况，且 30px 也没算工具栏自身高度。
+ * 用例刻意把「旧实现会翻转 / 夹取 / 侧移」的几何都摆出来，断言新规则一动不动。
  */
 import { describe, expect, it } from "vitest";
-import { placeCardOverlay } from "../overlayPlacement";
+import { placeToolbarRelativeToCard, rectsIntersect, type OverlayRect } from "../overlayPlacement";
 
-const GAP = 6;
-const TOOLBAR = { w: 277, h: 35 };
-const VIEWPORT = { top: 111, bottom: 800, left: 0, right: 1200 };
+const GAP = 10;
+const TOOLBAR_H = 34;
 
-function card(top: number, bottom: number, left = 407, right = 684) {
-  return { top, bottom, left, right };
+function rect(left: number, top: number, right: number, bottom: number): OverlayRect {
+  return { left, top, right, bottom };
 }
 
-const overlaps = (placed: { left: number; top: number }, c: { top: number; bottom: number; left: number; right: number }) =>
-  placed.top + TOOLBAR.h > c.top + 2 &&
-  placed.top < c.bottom - 2 &&
-  placed.left + TOOLBAR.w > c.left + 2 &&
-  placed.left < c.right - 2;
+/** 宿主原点：真实浏览器里 .card-toolbar-host 与 .board-viewport 同一个盒子。 */
+const HOST = rect(40, 100, 1240, 900);
 
-describe("placeCardOverlay：工具栏不许压住卡片", () => {
-  it("卡片上方放得下：放上方，且整个工具栏都在可视区内", () => {
-    const c = card(254, 658);
-    const placed = placeCardOverlay({ card: c, toolbar: TOOLBAR, viewport: VIEWPORT, gap: GAP });
-    expect(placed.top).toBe(254 - TOOLBAR.h - GAP);
-    expect(placed.top).toBeGreaterThanOrEqual(VIEWPORT.top);
-    expect(overlaps(placed, c)).toBe(false);
+describe("placeToolbarRelativeToCard：固定锚点，不做任何避让", () => {
+  it("左边缘对齐卡片左边缘，底边在卡片顶边上方 gap", () => {
+    const card = rect(407, 254, 684, 658);
+    const placed = placeToolbarRelativeToCard({ cardRect: card, hostRect: HOST, toolbarHeight: TOOLBAR_H, gap: GAP });
+    expect(placed.left).toBe(card.left - HOST.left);
+    expect(placed.top).toBe(card.top - HOST.top - TOOLBAR_H - GAP);
   });
 
-  it("卡片顶到可视区上沿、下方还有空间：放卡片下方", () => {
-    const c = card(111, 400);
-    const placed = placeCardOverlay({ card: c, toolbar: TOOLBAR, viewport: VIEWPORT, gap: GAP });
-    expect(placed.top).toBe(400 + GAP);
-    expect(placed.top + TOOLBAR.h).toBeLessThanOrEqual(VIEWPORT.bottom);
-    expect(overlaps(placed, c)).toBe(false);
+  it("工具栏高度实测：换行 / 文案变化时 top 跟着实测高度走", () => {
+    const card = rect(407, 254, 684, 658);
+    const oneLine = placeToolbarRelativeToCard({ cardRect: card, hostRect: HOST, toolbarHeight: 34, gap: GAP });
+    const wrapped = placeToolbarRelativeToCard({ cardRect: card, hostRect: HOST, toolbarHeight: 76, gap: GAP });
+    expect(oneLine.top - wrapped.top).toBe(42);
+    expect(wrapped.left).toBe(oneLine.left);
   });
 
-  it("卡片底边贴近可视区下缘：不许被夹回卡片里（用户报告的场景）", () => {
-    // 卡片 404 高、底边距下缘 20px：下方放不下（要 41px），但上方放得下 → 应该回到上方
-    const c = card(376, 780);
-    const placed = placeCardOverlay({ card: c, toolbar: TOOLBAR, viewport: VIEWPORT, gap: GAP });
-    expect(overlaps(placed, c), "工具栏压住了卡片").toBe(false);
-    expect(placed.top + TOOLBAR.h).toBeLessThanOrEqual(c.top);
+  it("卡片顶到可视区上沿（旧实现会翻到下方）：仍然在卡片上方，不翻转", () => {
+    const card = rect(407, 102, 684, 400);
+    const placed = placeToolbarRelativeToCard({ cardRect: card, hostRect: HOST, toolbarHeight: TOOLBAR_H, gap: GAP });
+    expect(placed.top).toBe(102 - 100 - TOOLBAR_H - GAP);
+    expect(placed.top).toBeLessThan(card.top - HOST.top);
   });
 
-  it("卡片比可视区还高（竖向两边都放不下）：挪到卡片横向之外，而不是压在卡片上", () => {
-    // 2026-10-14 实测几何：1200×500 窗口
-    const short = { top: 111, bottom: 500, left: 0, right: 1200 };
-    const c = card(104, 508);
-    const placed = placeCardOverlay({ card: c, toolbar: TOOLBAR, viewport: short, gap: GAP });
-    expect(overlaps(placed, c), "工具栏压住了卡片").toBe(false);
-    expect(placed.left).toBeGreaterThanOrEqual(c.right);
-    expect(placed.top).toBeGreaterThanOrEqual(short.top);
-    expect(placed.top + TOOLBAR.h).toBeLessThanOrEqual(short.bottom);
+  it("卡片贴着可视区右边缘（旧实现会横向夹取）：left 仍是卡片左边缘", () => {
+    const card = rect(1180, 300, 1420, 500);
+    const placed = placeToolbarRelativeToCard({ cardRect: card, hostRect: HOST, toolbarHeight: TOOLBAR_H, gap: GAP });
+    expect(placed.left).toBe(1140);
+    expect(placed.left + 277).toBeGreaterThan(HOST.right - HOST.left);
   });
 
-  it("横向也没地方（卡片占满宽度）：保底夹进可视区，仍然可见", () => {
-    const short = { top: 111, bottom: 500, left: 0, right: 1200 };
-    const c = card(104, 508, 0, 1200);
-    const placed = placeCardOverlay({ card: c, toolbar: TOOLBAR, viewport: short, gap: GAP });
-    expect(placed.left).toBeGreaterThanOrEqual(short.left);
-    expect(placed.left + TOOLBAR.w).toBeLessThanOrEqual(short.right);
-    expect(placed.top).toBeGreaterThanOrEqual(short.top);
-    expect(placed.top + TOOLBAR.h).toBeLessThanOrEqual(short.bottom);
+  it("卡片贴着可视区左边缘：left 可以为负，不夹取", () => {
+    const card = rect(-120, 300, 60, 500);
+    const placed = placeToolbarRelativeToCard({ cardRect: card, hostRect: HOST, toolbarHeight: TOOLBAR_H, gap: GAP });
+    expect(placed.left).toBe(-160);
+  });
+
+  it("卡片比可视区还高（旧实现会侧移到卡片左右）：不侧移，left 不变", () => {
+    const card = rect(40, 111, 1240, 1000);
+    const placed = placeToolbarRelativeToCard({ cardRect: card, hostRect: HOST, toolbarHeight: TOOLBAR_H, gap: GAP });
+    expect(placed.left).toBe(card.left - HOST.left);
+    expect(placed.left).not.toBe(card.right - HOST.left + GAP);
+  });
+
+  it("宿主处在缩放祖先下：按实测比例逆变换（hostRect / offsetWidth）", () => {
+    const card = rect(240, 300, 440, 500);
+    const scaledHost = rect(40, 100, 640, 500); // 1200×800 的宿主被 2 倍祖先放大后只剩 600×400
+    const placed = placeToolbarRelativeToCard({
+      cardRect: card,
+      hostRect: scaledHost,
+      toolbarHeight: 68, // 屏幕像素是布局值的 2 倍
+      gap: 10,
+      hostScale: { x: 2, y: 2 },
+    });
+    expect(placed.left).toBe((240 - 40) / 2);
+    expect(placed.top).toBe((300 - 100 - 68 - 10) / 2);
+  });
+
+  it("缩放比例非法（0 / 负数 / NaN / 缺省）一律按 1，不写经验补偿", () => {
+    const card = rect(240, 300, 440, 500);
+    const base = { cardRect: card, hostRect: HOST, toolbarHeight: TOOLBAR_H, gap: GAP };
+    const expected = { left: 200, top: 300 - 100 - TOOLBAR_H - GAP };
+    for (const hostScale of [{ x: 0, y: 0 }, { x: -2, y: -2 }, { x: Number.NaN, y: Number.NaN }]) {
+      expect(placeToolbarRelativeToCard({ ...base, hostScale })).toEqual(expected);
+    }
+    expect(placeToolbarRelativeToCard(base)).toEqual(expected);
+  });
+});
+
+describe("rectsIntersect：只决定隐藏，不参与定位", () => {
+  const view = rect(0, 0, 1200, 800);
+
+  it("部分相交 = 可见（照常按固定相对位置显示）", () => {
+    expect(rectsIntersect(rect(-50, -50, 100, 100), view)).toBe(true);
+    expect(rectsIntersect(rect(1100, 750, 1400, 1000), view)).toBe(true);
+  });
+
+  it("完全不相交 = 隐藏", () => {
+    expect(rectsIntersect(rect(1300, 100, 1400, 200), view)).toBe(false);
+    expect(rectsIntersect(rect(0, -300, 200, -1), view)).toBe(false);
+  });
+
+  it("边贴边不算相交", () => {
+    expect(rectsIntersect(rect(1200, 0, 1400, 100), view)).toBe(false);
+    expect(rectsIntersect(rect(0, 800, 100, 900), view)).toBe(false);
   });
 });

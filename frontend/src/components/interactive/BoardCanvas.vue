@@ -50,7 +50,12 @@ import {
   type DropPreview,
 } from "../../interactive/board";
 // 局部工具栏的落点决策（纯函数，单测在 interactive/__tests__/overlayPlacement.test.ts）
-import { placeCardOverlay } from "../../interactive/overlayPlacement";
+import {
+  placeToolbarRelativeToCard,
+  rectsIntersect,
+  type OverlayRect,
+} from "../../interactive/overlayPlacement";
+import { prefersReducedMotion } from "../../utils/motion";
 import {
   BOARD_SURFACE_H,
   BOARD_SURFACE_W,
@@ -226,8 +231,19 @@ function markBoardHintSeen(): void {
 
 const highlightId = ref<string | null>(null);
 const locatedIntentId = ref<string | null>(null);
-/** 工具栏 / 提示的浮层位置（板面容器坐标） */
+/**
+ * 工具栏的浮层位置：left / top 是**相对工具栏宿主（.card-toolbar-host）定位原点**的屏幕像素。
+ * visible = 「所属卡片 ∩ 板面可视区」且「工具栏屏幕外框 ∩ 板面可视区」都相交
+ * （严格相交；两者缺一才隐藏，部分相交照常显示）。
+ * 它只决定显隐：位置公式不受影响，任何视口边缘都不改变相对位置。
+ */
 const overlay = ref({ left: 0, top: 0, visible: false });
+/**
+ * 当前所有者是否已经完成过一次测量。
+ * 未完成时先不显示：否则切换所有者的那一帧会用**上一位所有者**的位置闪一下
+ * （用户报告的「偏移」里最刺眼的一种）。测量完成后立刻置真。
+ */
+const overlaySettled = ref(false);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 let locatedTimer: ReturnType<typeof setTimeout> | null = null;
 let scrollSyncLock = false;
@@ -256,6 +272,8 @@ const selection = computed(() => boardState.value?.selection ?? []);
 const stageTick = ref(0);
 function onWindowResize(): void {
   stageTick.value += 1;
+  // 窗口尺寸变化会改变可视区与宿主几何：重新测量一次
+  requestPlacement();
 }
 
 /**
@@ -626,6 +644,8 @@ const resizeGesture = useResizeGesture({
   onPreview: (box) => {
     if (!resizeTargetId) return;
     resizing.value = { cardId: resizeTargetId, box: { ...box } };
+    // 尺寸预览改变卡片外框：工具栏逐帧跟随（走合并调度，不直接写位置）
+    requestPlacement();
   },
   onCommit: (box) => commitCardSize(box),
   onCancel: () => {
@@ -720,8 +740,8 @@ function commitCardSize(box: ResizeBox) {
     userSizedCards.value = new Set([...userSizedCards.value, cardId]);
     commit(updateCard(current, cardId, { x, y, w, h }), "调整卡片尺寸");
   }
-  // 局部工具栏跟着卡片走：尺寸变了，它原来的位置可能压住卡片或跑出视口
-  refreshOverlay();
+  // 局部工具栏跟着卡片走（走合并调度：同一帧最多一次测量、一次位置写入）
+  requestPlacement();
 }
 
 /**
@@ -961,64 +981,6 @@ function zoomAtPointer(factor: number, client: { x: number; y: number }) {
   applyScroll(result.scroll);
 }
 
-/**
- * 浮层（局部工具栏 / 合并提示）定位：板面坐标 → **offsetParent（.board-surface）坐标**。
- *
- * 独立复核定位到的根因：工具栏挂在 `.board-surface` 里（它是 position:relative 的 offsetParent），
- * 行内 `left/top` 是**相对 surface** 的；而这里原来按 shell 坐标算，
- * 两个坐标系相差 `surface.top − shell.top`（实测 1440×900 下 55px），
- * 于是工具栏每次都比预期低 55px、压在卡片顶边上，把画在卡片内侧的顶部连接点整块盖住
- * （命中测试命中的是 card-edit / card-fold，不是连接点）。
- *
- * 现在统一成：**先用客户端坐标算好，最后一步再减去 surface 的位置**转成 offsetParent 坐标。
- * 判定里保留「量真实高度 + 夹取后复验」：工具栏只要会碰到卡片顶边就一律挪到卡片下方。
- */
-function placeOverlay(rect: { x: number; y: number; w: number; h: number }) {
-  const element = viewportEl.value;
-  const shellElement = shell.value;
-  const surfaceElement = surface.value;
-  if (!element || !shellElement || !surfaceElement) {
-    overlay.value = { left: 0, top: 0, visible: false };
-    return;
-  }
-  const viewRect = element.getBoundingClientRect();
-  const surfaceNow = surfaceElement.getBoundingClientRect();
-  // 板面 → 屏幕统一走 screenPointOfBoard：不要再拿 surfaceRect()（内容原点）配 view.value（已含 −滚动量）
-  const screen = screenPointOfBoard(rect.x, rect.y, viewRect);
-  const cardTopClient = screen.y;
-  const cardBottomClient = cardTopClient + rect.h * view.value.scale;
-  const cardRightClient = screen.x + rect.w * view.value.scale;
-  const toolbarEl = shellElement.querySelector('[data-im="card-toolbar"]');
-  const toolbarH = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().height)) : TOOLBAR_H;
-  // 工具栏宽度也要量：只夹左边缘的话，窄窗口里右侧按钮会被视口裁掉（复核实测 800×600 下超出 74px）
-  const toolbarW = toolbarEl ? Math.max(1, Math.round(toolbarEl.getBoundingClientRect().width)) : 420;
-  /*
-    落点决策交给纯函数（interactive/overlayPlacement.ts）：先卡片上方、再卡片下方，两者都要求
-    整个工具栏在可视区内；竖向两边都放不下（卡片比可视区还高）时挪到卡片**横向之外**，
-    而不是整块压在卡片上。
-    2026-10-14 修：原来这里用 viewRect.bottom − 30 夹下方位置，既没算工具栏自身高度，
-    也看不见「落在卡片下半部分」——实测 1200×500 窗口下工具栏 442–478 整块落进卡片 104–508。
-  */
-  const placed = placeCardOverlay({
-    card: { top: cardTopClient, bottom: cardBottomClient, left: screen.x, right: cardRightClient },
-    toolbar: { w: toolbarW, h: toolbarH },
-    viewport: { top: viewRect.top, bottom: viewRect.bottom, left: viewRect.left, right: viewRect.right },
-    gap: TOOLBAR_GAP,
-  });
-  // 卡片被拖出可视区时不再显示浮层（但状态仍然保留）
-  const visible =
-    screen.x + rect.w * view.value.scale > viewRect.left - 40 &&
-    screen.x < viewRect.right + 40 &&
-    screen.y + rect.h * view.value.scale > viewRect.top - 40 &&
-    screen.y < viewRect.bottom + 40;
-  overlay.value = {
-    // 行内 left/top 是相对 offsetParent（.board-surface）的：最后一步统一减去它的位置
-    left: placed.left - surfaceNow.left,
-    top: placed.top - surfaceNow.top,
-    visible,
-  };
-}
-
 // --- 拖动：预演 → 放下 / 中断 ---------------------------------------------
 
 function onDragStart(cardId: string, event: PointerEvent) {
@@ -1075,8 +1037,8 @@ function onPointerMove(event: PointerEvent) {
     drag.y = y;
     // 只预演：板面状态在松手前不变
     drag.preview = previewDrop(current, drag.cardId, x, y);
-    const card = cardById(current, drag.cardId);
-    if (card) placeOverlay({ x, y, w: card.w, h: card.folded ? 60 : card.h });
+    // 拖动中也走同一个入口：只置脏标记、由同一帧 rAF 做一次测量与一次写入
+    requestPlacement();
     return;
   }
   const rect = rectSelect.value;
@@ -1102,7 +1064,7 @@ function onPointerUp() {
     dragging.value = null;
     if (!drag.moved) {
       // 纯单击：只当作选中（选中逻辑在 pointerdown 里已经处理），板面**不产生任何改动**
-      refreshOverlay();
+      requestPlacement();
       return;
     }
     const result = dropCard(current, drag.cardId, drag.x, drag.y);
@@ -1140,7 +1102,7 @@ function onPointerUp() {
     } else {
       notice.value = "卡片没有移动：板面没有产生改动，也没有保存。";
     }
-    refreshOverlay();
+    requestPlacement();
     return;
   }
   const pan = panning.value;
@@ -1471,55 +1433,428 @@ function onSelect(cardId: string, additive: boolean) {
   commit(setSelection(current, ids), additive ? "加选 / 减选卡片" : "选择卡片");
 }
 
-// --- 卡片局部工具栏 -------------------------------------------------------
+// --- 卡片局部工具栏：独立宿主 + 真实 DOM 锚点 + 单帧合并调度 ----------------
+/*
+  2026-10-14 第二轮（用户报告「工具栏与卡片有偏移、松手后还会漂」）：
+  工具栏原来渲染在 .board-surface 内部（position: relative + transform: scale），
+  行内 left/top 写的却是客户端像素差值 —— 浏览器再乘一次缩放，坐标系直接错；
+  刷新用的锚点又走 card.x / card.y（正式板面坐标），与卡片本体使用的 displayRect()
+  不是同一份坐标，于是「拖动中正确、松手后偏移」。
+  现在两条都换掉：
+  1. 工具栏由 BoardCard 用 Teleport 送进本组件自己的 .card-toolbar-host（不缩放、不滚动，
+     与 .board-viewport 并列），行内 left/top 的语义 = 相对宿主定位原点的屏幕像素；
+  2. 锚点唯一来源：所属卡片 <article> 的真实 getBoundingClientRect()
+     （只有 jsdom 没有真实布局时才退回「板面坐标 × 缩放」的数学结果，见 measureAnchoredCard）。
+  相对位置固定：左边缘对齐卡片左边缘，底边在卡片顶边上方 TOOLBAR_GAP 屏幕像素；
+  不做夹取 / 翻转 / 侧移。卡片与可视区完全不相交时只隐藏（visible=false），重新相交自动恢复。
+  所有触发源都走 requestPlacement()：同一帧最多一次有效测量与一次位置写入。
+*/
 
+interface BoardCardHandle {
+  getCardElement: () => HTMLElement | null;
+  getToolbarElement: () => HTMLElement | null;
+}
+
+/** 工具栏宿主：本板面实例自己的 ref（绝不 querySelector 全局查找）。 */
+const toolbarHostEl = ref<HTMLElement | null>(null);
+/** card.id → BoardCard 暴露的锚点入口（卸载 / 回调收到 null 时删除）。 */
+const cardHandles = new Map<string, BoardCardHandle>();
+/** v-for 的 :ref 必须是稳定函数，否则每次 patch 都会重新注册（见 registerCardHandle）。 */
+const cardRefHandlers = new Map<string, (instance: unknown) => void>();
+
+/**
+ * 工具栏所有者 = 选中列表的**最后一项**（与 BoardCard 的 isToolbarOwner 逐字同口径），
+ * 并且必须是这一帧真的渲染出来的卡：已删除的卡不渲染，自然也不持有工具栏。
+ */
+const toolbarOwnerId = computed<string | null>(() => {
+  const ids = boardState.value?.selection ?? [];
+  const last = ids.length ? ids[ids.length - 1] : null;
+  if (!last) return null;
+  return liveCards.value.some((card) => card.id === last) ? last : null;
+});
+
+function cardRefFor(cardId: string): (instance: unknown) => void {
+  let handler = cardRefHandlers.get(cardId);
+  if (!handler) {
+    handler = (instance: unknown) => registerCardHandle(cardId, instance);
+    cardRefHandlers.set(cardId, handler);
+  }
+  return handler;
+}
+
+/** 按 card.id 注册 / 注销 BoardCard 实例：只登记实例，不写任何板面状态。 */
+function registerCardHandle(cardId: string, instance: unknown): void {
+  const handle = instance as BoardCardHandle | null;
+  const usable = handle && typeof handle.getCardElement === "function" ? handle : null;
+  const previous = cardHandles.get(cardId) ?? null;
+  if (usable) cardHandles.set(cardId, usable);
+  else {
+    cardHandles.delete(cardId);
+    cardRefHandlers.delete(cardId);
+  }
+  // 同一个实例的重复回调（函数 ref 每次 patch 都会被调用）不是几何变化，不排新帧
+  if (usable === previous) return;
+  if (toolbarOwnerId.value === cardId) requestPlacement();
+}
+
+/* ---- 单帧合并调度：所有触发源都走这里 ---------------------------------- */
+
+let placementFrame: number | null = null;
+let placementDirty = false;
+let lastMeasureStamp = -1;
+
+/** 请求一次定位：同一帧只做一次有效测量与一次位置写入，后续请求只置脏标记。 */
+function requestPlacement(): void {
+  placementDirty = true;
+  if (placementFrame !== null) return;
+  placementFrame = requestAnimationFrame((stamp: number) => {
+    placementFrame = null;
+    if (!placementDirty) return;
+    placementDirty = false;
+    applyToolbarPlacement(stamp);
+  });
+}
+
+/* ---- 几何过渡跟随：逐帧测量直到静止 / 超时，空闲不跑 rAF --------------- */
+
+/** 安全时限：再慢的过渡也不会让逐帧循环一直跑下去。 */
+const FOLLOW_TIMEOUT_MS = 600;
+/** 连续这么多帧没有位移就认为静止，做最后一次定位并停止。 */
+const FOLLOW_STABLE_FRAMES = 3;
+const FOLLOW_EPSILON = 0.5;
+
+let followFrame: number | null = null;
+let followDeadline = 0;
+let followStable = 0;
+let followLast: { left: number; top: number; width: number; height: number } | null = null;
+let anchorCardEl: HTMLElement | null = null;
+let anchorOwnerId: string | null = null;
+/** 锚点是不是来自真实 DOM 外框（jsdom 里是数学兜底，没有几何可跟随）。 */
+let anchorFromDom = false;
+let cardResizeObserver: ResizeObserver | null = null;
+let toolbarResizeObserver: ResizeObserver | null = null;
+let hostResizeObserver: ResizeObserver | null = null;
+let observedToolbarEl: HTMLElement | null = null;
+/** 上一次实测到的工具栏宽度（收起时量不到，用它避免把可见性自锁在 false）。 */
+let lastToolbarWidth = 0;
+
+function nowMs(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+}
+
+/** 锚点卡片是否有 left / top / width / height（或 transform）的几何过渡。 */
+function cardHasGeometryTransition(element: HTMLElement | null): boolean {
+  if (!element || typeof getComputedStyle !== "function") return false;
+  let style: CSSStyleDeclaration;
+  try {
+    style = getComputedStyle(element);
+  } catch {
+    return false;
+  }
+  const properties = String(style.transitionProperty ?? "")
+    .split(",")
+    .map((item) => item.trim());
+  const durations = String(style.transitionDuration ?? "")
+    .split(",")
+    .map((item) => item.trim());
+  const tracked = ["left", "top", "width", "height", "transform", "all"];
+  return properties.some((property, index) => {
+    if (!tracked.includes(property)) return false;
+    const duration = durations.length ? durations[index % durations.length] : "";
+    return Number.parseFloat(duration) > 0;
+  });
+}
+
+function endFollow(): void {
+  if (followFrame !== null) {
+    cancelAnimationFrame(followFrame);
+    followFrame = null;
+  }
+  followStable = 0;
+  followLast = null;
+  followDeadline = 0;
+}
+
+/** 过渡进行中：逐帧测量；连续若干帧静止或超过安全时限后做最后一次定位并停止。 */
+function startFollow(): void {
+  if (followFrame !== null) return;
+  // jsdom 没有真实布局：没有几何可跟随，也不在这里空转
+  if (!anchorFromDom) return;
+  // 减少动画 / 没有几何过渡：绝不进入循环
+  if (prefersReducedMotion()) return;
+  if (!cardHasGeometryTransition(anchorCardEl)) return;
+  followStable = 0;
+  followLast = null;
+  followDeadline = nowMs() + FOLLOW_TIMEOUT_MS;
+  followFrame = requestAnimationFrame(stepFollow);
+}
+
+function stepFollow(stamp: number): void {
+  followFrame = null;
+  applyToolbarPlacement(stamp);
+  const element = anchorCardEl;
+  const rect = element && element.isConnected ? element.getBoundingClientRect() : null;
+  if (!rect) {
+    endFollow();
+    return;
+  }
+  const previous = followLast;
+  const still =
+    previous !== null &&
+    Math.abs(rect.left - previous.left) < FOLLOW_EPSILON &&
+    Math.abs(rect.top - previous.top) < FOLLOW_EPSILON &&
+    Math.abs(rect.width - previous.width) < FOLLOW_EPSILON &&
+    Math.abs(rect.height - previous.height) < FOLLOW_EPSILON;
+  followLast = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  followStable = still ? followStable + 1 : 0;
+  if (followStable >= FOLLOW_STABLE_FRAMES || nowMs() >= followDeadline) {
+    endFollow();
+    return;
+  }
+  followFrame = requestAnimationFrame(stepFollow);
+}
+
+/** 过渡重新开始（transitionrun）：重新进入跟随，保证逐帧贴住卡片。 */
+function onAnchorTransitionRun(): void {
+  startFollow();
+}
+
+function attachAnchor(element: HTMLElement | null): void {
+  if (anchorCardEl === element) return;
+  if (anchorCardEl) anchorCardEl.removeEventListener("transitionrun", onAnchorTransitionRun);
+  anchorCardEl = element;
+  if (element) element.addEventListener("transitionrun", onAnchorTransitionRun);
+  endFollow();
+}
+
+/** 切换所有者时重新绑定锚点、两个 ResizeObserver 与过渡监听。 */
+function bindAnchorObservers(cardId: string, handle: BoardCardHandle): void {
+  const element = handle.getCardElement();
+  if (anchorOwnerId !== cardId || anchorCardEl !== element) {
+    anchorOwnerId = cardId;
+    attachAnchor(element);
+    cardResizeObserver?.disconnect();
+    cardResizeObserver = null;
+  }
+  if (element && !cardResizeObserver && typeof ResizeObserver === "function") {
+    cardResizeObserver = new ResizeObserver(() => requestPlacement());
+    cardResizeObserver.observe(element);
+  }
+  const toolbarElement = handle.getToolbarElement();
+  if (toolbarElement !== observedToolbarEl) {
+    toolbarResizeObserver?.disconnect();
+    toolbarResizeObserver = null;
+    observedToolbarEl = toolbarElement;
+    if (toolbarElement && typeof ResizeObserver === "function") {
+      toolbarResizeObserver = new ResizeObserver(() => requestPlacement());
+      toolbarResizeObserver.observe(toolbarElement);
+    }
+  }
+}
+
+/** 卸载 / 切板 / 失去所有者：断开全部观察器与过渡监听，取消跟随。 */
+function unbindAnchor(): void {
+  anchorOwnerId = null;
+  attachAnchor(null);
+  cardResizeObserver?.disconnect();
+  cardResizeObserver = null;
+  toolbarResizeObserver?.disconnect();
+  toolbarResizeObserver = null;
+  observedToolbarEl = null;
+  endFollow();
+}
+
+/* ---- 测量与写入 -------------------------------------------------------- */
+
+function elementScreenRect(element: Element | null | undefined): OverlayRect | null {
+  if (!element || typeof element.getBoundingClientRect !== "function") return null;
+  const rect = element.getBoundingClientRect();
+  const left = finiteNumber(rect.left);
+  const top = finiteNumber(rect.top);
+  const right = Number.isFinite(rect.right) ? finiteNumber(rect.right) : left + finiteNumber(rect.width);
+  const bottom = Number.isFinite(rect.bottom) ? finiteNumber(rect.bottom) : top + finiteNumber(rect.height);
+  return { left, top, right, bottom };
+}
+
+/**
+ * 锚点唯一来源：所属卡片的真实 DOM 外框。
+ * 只有「元素不存在 / 未 isConnected / 外框宽高都为 0」时才退回数学结果 ——
+ * 那是 **jsdom 专用兜底**（测试环境没有真实布局），真实浏览器一律用 DOM 外框。
+ */
+function measureAnchoredCard(handle: BoardCardHandle, card: BoardCardModel): { rect: OverlayRect; fromDom: boolean } {
+  const element = handle.getCardElement();
+  const rect = element && element.isConnected ? elementScreenRect(element) : null;
+  if (rect && rect.right - rect.left > 0 && rect.bottom - rect.top > 0) return { rect, fromDom: true };
+  const viewRect = elementScreenRect(viewportEl.value) ?? { left: 0, top: 0, right: 0, bottom: 0 };
+  const display = displayRect(card);
+  const scale = scaleSafe.value;
+  // 不读 liveScroll（它会回写 scroll / view）：滚动量以 ref 为准，等价且没有副作用
+  const left = viewRect.left + display.x * scale - scroll.value.x;
+  const top = viewRect.top + display.y * scale - scroll.value.y;
+  const height = card.folded ? 60 : display.h;
+  return {
+    rect: { left, top, right: left + display.w * scale, bottom: top + height * scale },
+    fromDom: false,
+  };
+}
+
+/** 宿主外框与自身布局盒的实测比例（hostRect / offsetWidth）；量不到就按 1（不缩放）。 */
+function hostScaleOf(host: HTMLElement, rect: OverlayRect): { x: number; y: number } {
+  const width = rect.right - rect.left;
+  const height = rect.bottom - rect.top;
+  const scaleX = host.offsetWidth > 0 && width > 0 ? width / host.offsetWidth : 1;
+  const scaleY = host.offsetHeight > 0 && height > 0 ? height / host.offsetHeight : 1;
+  return {
+    x: Number.isFinite(scaleX) && scaleX > 0 ? scaleX : 1,
+    y: Number.isFinite(scaleY) && scaleY > 0 ? scaleY : 1,
+  };
+}
+
+function setOverlay(left: number, top: number, visible: boolean): void {
+  const previous = overlay.value;
+  if (previous.left === left && previous.top === top && previous.visible === visible) return;
+  overlay.value = { left, top, visible };
+}
+
+/**
+ * 本帧唯一的一次有效测量与位置写入。
+ *
+ * 顺序固定为「先量卡片外框 → 再量工具栏高度 → 最后写位置」，三段全部在**同一帧内**完成，
+ * 不跨帧混用；坐标一律不取整（不引入任何取整 / 补偿常数），
+ * 因此底边到卡片顶边只剩浏览器子像素舍入带来的 <0.2px 误差。
+ * 工具栏自身高度变化（换行 / 文案）由它的 ResizeObserver 触发下一帧复测。
+ *
+ * stamp 由 requestAnimationFrame 传入：同一帧里的第二个调用直接返回（见 lastMeasureStamp），
+ * 于是「统一请求入口」与「过渡跟随」共用同一帧预算，不会重复测量 / 重复写位置。
+ */
+function applyToolbarPlacement(stamp?: number): void {
+  const currentStamp = stamp ?? nowMs();
+  if (currentStamp === lastMeasureStamp) return;
+  lastMeasureStamp = currentStamp;
+
+  const host = toolbarHostEl.value;
+  const ownerId = toolbarOwnerId.value;
+  const handle = ownerId ? cardHandles.get(ownerId) ?? null : null;
+  if (!host || !ownerId || !handle) {
+    unbindAnchor();
+    overlaySettled.value = false;
+    setOverlay(0, 0, false);
+    return;
+  }
+  const current = boardState.value;
+  const card = current ? cardById(current, ownerId) : null;
+  if (!card) {
+    unbindAnchor();
+    overlaySettled.value = false;
+    setOverlay(0, 0, false);
+    return;
+  }
+
+  bindAnchorObservers(ownerId, handle);
+
+  const hostRect = elementScreenRect(host);
+  if (!hostRect) {
+    overlaySettled.value = false;
+    setOverlay(0, 0, false);
+    return;
+  }
+  const measured = measureAnchoredCard(handle, card);
+  anchorFromDom = measured.fromDom;
+  const cardRect = measured.rect;
+
+  const toolbarElement = handle.getToolbarElement();
+  const toolbarRect = toolbarElement && toolbarElement.isConnected ? elementScreenRect(toolbarElement) : null;
+  const toolbarHeight =
+    toolbarRect && toolbarRect.bottom - toolbarRect.top > 0 ? toolbarRect.bottom - toolbarRect.top : TOOLBAR_H;
+
+  const hostScale = hostScaleOf(host, hostRect);
+  const placed = placeToolbarRelativeToCard({
+    cardRect,
+    hostRect,
+    toolbarHeight,
+    gap: TOOLBAR_GAP,
+    hostScale,
+  });
+  /*
+    工具栏的屏幕外框：由「宿主原点 + 本帧 placement × 宿主实测缩放」算出 ——
+    与写入位置同一份数据（placed）与同一份实测比例（hostScale），不另起一套换算；
+    宽高也取本帧实测值。
+    量不到宽度（工具栏被 v-show 收起时外框恒为 0）时沿用上一次实测宽度；
+    从未量到过就只按竖向判断 —— 否则 display: none 会把宽高都变成 0，
+    visible 会自锁在 false、再也回不来。
+  */
+  const widthThisFrame = toolbarRect ? toolbarRect.right - toolbarRect.left : 0;
+  if (widthThisFrame > 0) lastToolbarWidth = widthThisFrame;
+  const toolbarWidth = widthThisFrame > 0 ? widthThisFrame : lastToolbarWidth;
+
+  /*
+    可见性（状态诚实口径）：卡片与板面可视区相交 **且** 工具栏（按即将写入的位置算出的屏幕外框）
+    与板面可视区相交，才算可见。二者缺一不可：
+    - 卡片完全离屏：本来就不该有工具栏；
+    - 卡片只部分可见、工具栏整条落在可视区上沿之外：宿主 overflow: hidden 会把它整条裁掉
+      （屏幕上看不见、也点不到），此时 visible=false 才是诚实的，不会出现「标着可见却什么都没有」。
+    严格相交（边贴边不算），部分相交照常显示；位置规则一个字都没改，这里只决定显隐。
+    jsdom 量不到容器几何（宽高为 0）时不做隐藏判断 —— 不能把「测试环境没有布局」
+    当成「卡片在视口外」。
+  */
+  const viewRect = elementScreenRect(viewportEl.value);
+  const hasViewportGeometry = Boolean(
+    viewRect && viewRect.right - viewRect.left > 0 && viewRect.bottom - viewRect.top > 0,
+  );
+  let visible = true;
+  if (hasViewportGeometry) {
+    const board: OverlayRect = viewRect as OverlayRect;
+    const cardIntersects = rectsIntersect(cardRect, board);
+    if (cardIntersects) {
+      const toolbarScreen: OverlayRect = {
+        left: hostRect.left + placed.left * hostScale.x,
+        top: hostRect.top + placed.top * hostScale.y,
+        right: hostRect.left + (placed.left + toolbarWidth) * hostScale.x,
+        bottom: hostRect.top + (placed.top + toolbarHeight) * hostScale.y,
+      };
+      visible =
+        toolbarWidth > 0
+          ? rectsIntersect(toolbarScreen, board)
+          : toolbarScreen.bottom > board.top && toolbarScreen.top < board.bottom;
+    } else {
+      visible = false;
+    }
+  }
+
+  const wasHidden = !overlay.value.visible;
+  setOverlay(placed.left, placed.top, visible);
+  overlaySettled.value = true;
+  // 从隐藏恢复到显示：工具栏元素是这一帧才挂上的，补量一次真实高度（只补一次）
+  if (visible && wasHidden && !(toolbarRect && toolbarRect.bottom - toolbarRect.top > 0)) {
+    requestPlacement();
+    return;
+  }
+  if (visible) startFollow();
+}
+
+/** 恰好选中一张卡片时的那一张（连接点层用）。 */
 const primarySelectedId = computed(() => {
   const current = boardState.value;
   if (!current || current.selection.length !== 1) return null;
   return current.selection[0];
 });
 
-const primarySelectedCard = computed(() => {
-  const current = boardState.value;
-  const id = primarySelectedId.value;
-  if (!current || !id) return null;
-  return cardById(current, id);
-});
-
-/** 工具栏跟着选中卡片：位置由 placeOverlay 换算（缩放平移后仍准确）。 */
-function refreshOverlay() {
-  const card = primarySelectedCard.value;
-  if (!card) {
-    overlay.value = { ...overlay.value, visible: false };
-    return;
-  }
-  placeOverlay({ x: card.x, y: card.y, w: card.w, h: card.folded ? 60 : card.h });
-}
-
 /*
-  2026-10-14（用户报「点击卡片时旁边的小框完全没有跟随在卡片旁边」）：
-  原来只在点选 / 拖放结束 / 窗口尺寸变化 / 挂载时重算 —— **平移或缩放板面之后不刷新**，
-  工具栏就停在旧位置（实测卡片已到 x=840，工具栏还在 996）。
-  这里只监听视图与展开集合：**不要**监听 layoutPlan —— refreshOverlay 走 placeOverlay 时
-  若读计划会引入副作用（实测会让展开槽位取不到，irl-c 的收敛用例变红）。
+  触发源全部走 requestPlacement()：所有者 / 选择变化、view（scale / x / y）与真实 scroll、
+  展开集合、store 状态（commit / 撤销 / 重做）、窗口 resize、宿主与锚点的 ResizeObserver、
+  工具栏 ResizeObserver、拖动 pointermove、尺寸预览与提交、挂载与恢复。
+  这里刻意**不**监听 layoutPlan：定位只读 DOM 几何，不把显示布局卷进来。
 */
 watch(
-  () => [
-    view.value.scale,
-    view.value.x,
-    view.value.y,
-    scroll.value.x,
-    scroll.value.y,
-    store.expandedCardIds,
-  ],
-  () => refreshOverlay(),
+  () => [view.value.scale, view.value.x, view.value.y, scroll.value.x, scroll.value.y, store.expandedCardIds],
+  () => requestPlacement(),
 );
-
-const toolbarStyle = computed(() => {
-  const card = primarySelectedCard.value;
-  if (!card) return { display: "none" };
-  return { left: overlay.value.left + "px", top: overlay.value.top + "px" };
+watch(toolbarOwnerId, () => {
+  // 换了所有者：先隐藏，等这一帧测完再显示（位置绝不会停留在上一张卡上）
+  overlaySettled.value = false;
+  requestPlacement();
 });
+watch(boardState, () => requestPlacement());
 
 // --- 关系连接点：宿主交给交互层（BoardResizeLayer） -------------------------
 
@@ -1987,20 +2322,19 @@ onMounted(() => {
   document.addEventListener("visibilitychange", onVisibilityChange);
   window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.addEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
-  refreshOverlay();
-  // 挂载后布局还没稳定（滚动位置 / 板面区域刚发布）：下一帧再算一次
-  requestAnimationFrame(() => refreshOverlay());
+  // 工具栏宿主自己的尺寸变化（窗口 / 布局变化）也要重新定位
+  if (typeof ResizeObserver === "function" && toolbarHostEl.value) {
+    hostResizeObserver = new ResizeObserver(() => requestPlacement());
+    hostResizeObserver.observe(toolbarHostEl.value);
+  }
+  // 挂载后布局还没稳定（滚动位置 / 板面区域刚发布）：交给合并调度，下一帧做第一次测量
+  requestPlacement();
 });
 
 /*
-  选中的卡片一变就重算工具栏位置（2026-10-14）：
-  刷新页面时选中状态是从 store 恢复的，没有经过任何点击 —— 原来只靠点击 / 拖放结束触发，
-  于是工具栏停在 (0,84) 这种没算准的位置，看起来就是「漂到左上角」。
+  选中的卡片一变就重算工具栏位置（2026-10-14）：引擎自己的 watch（toolbarOwnerId）负责 ——
+  刷新页面时选中状态是从 store 恢复的，没有经过任何点击，也必须算准。
 */
-watch(
-  () => primarySelectedCard.value?.id ?? "",
-  () => refreshOverlay(),
-);
 
 onBeforeUnmount(() => {
   viewportEl.value?.removeEventListener("wheel", onWheel);
@@ -2017,6 +2351,17 @@ onBeforeUnmount(() => {
   resetTransientGesture();
   // 拖线 / 尺寸预览也一样：卸载后不留半条手势（0.2.5 §三.7）
   releaseGestures();
+  // 工具栏定位：取消待执行帧、断开全部 ResizeObserver 与过渡监听 / 跟随状态
+  if (placementFrame !== null) {
+    cancelAnimationFrame(placementFrame);
+    placementFrame = null;
+  }
+  placementDirty = false;
+  hostResizeObserver?.disconnect();
+  hostResizeObserver = null;
+  unbindAnchor();
+  cardHandles.clear();
+  cardRefHandlers.clear();
   // 可用区域是显示态桥：画布没了就清空，别的组件（添加菜单）回到既有兜底行为
   publishBoardArea(null);
   if (highlightTimer) clearTimeout(highlightTimer);
@@ -2077,6 +2422,7 @@ onBeforeUnmount(() => {
           <BoardCard
             v-for="card in liveCards"
             :key="card.id"
+            :ref="cardRefFor(card.id)"
             :card="renderCard(card)"
             :selected="selection.includes(card.id)"
             :highlight="highlightId === card.id"
@@ -2087,6 +2433,8 @@ onBeforeUnmount(() => {
             :groups="groups.filter((item) => item.id !== groupIdOf(card.id))"
             :toolbar-left="overlay.left"
             :toolbar-top="overlay.top"
+            :toolbar-host="toolbarHostEl"
+            :toolbar-visible="overlay.visible && overlaySettled"
             :multi="selection.length > 1"
             :connecting="linkDraft !== null && linkDraft.fromId === card.id"
             @select="onSelect"
@@ -2141,6 +2489,24 @@ onBeforeUnmount(() => {
           />
         </div>
       </div>
+
+      <!--
+        工具栏宿主：**独立、不缩放**的浮层容器，与 .board-viewport 并列（在 .board-main 里），
+        所以不受 .board-surface 的 transform: scale() 与容器滚动影响；
+        行内 left / top 由本组件按「卡片真实外框 − 宿主原点」算好。
+        整层 pointer-events: none（只有工具栏与已打开菜单接收事件）。
+        本层**裁切到板面可视区**（overflow: hidden）：卡片只部分可见时工具栏不会溢出到
+        板面上方的页面头部；裁切只作用于绘制，元素的完整几何（getBoundingClientRect）
+        不受影响，所以固定锚点仍然精确。菜单方向由 BoardCard 按实测几何决定，不会被裁掉。
+        这里是本实例自己的 ref，绝不 querySelector 全局查找别处的节点。
+      -->
+      <div
+        ref="toolbarHostEl"
+        class="card-toolbar-host"
+        data-im="card-toolbar-host"
+        :data-owner-card-id="toolbarOwnerId ?? ''"
+        :data-toolbar-visible="overlay.visible && overlaySettled ? '1' : '0'"
+      ></div>
 
       <!-- 松开后合并成组：只在**明确重叠**时出现，松手才成组 -->
       <p
@@ -2206,6 +2572,23 @@ onBeforeUnmount(() => {
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
 .banner.view-hint { color: var(--text-faint); }
 .board-main { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
+/*
+  工具栏宿主层：只有这一层（外加已打开菜单）接收指针事件，其余区域全部穿透。
+  z-index 只要高过 BoardResizeLayer（45）这一层即可 —— 不靠无限抬 z-index 掩盖层级问题。
+  它不在滚动区里，工具栏因此不随板面缩放、也不随容器滚动。
+*/
+.card-toolbar-host {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  /*
+    裁切到板面可视区（宿主盒 = .board-main 盒 = .board-viewport 盒，无 padding / border 偏差）。
+    透明浮层因此不会覆盖板面之外的页面头部；接近边缘时按板面可视区域裁切是允许的。
+    注意：裁切**不改变** getBoundingClientRect —— 固定锚点与外框测量都不受影响。
+  */
+  overflow: hidden;
+}
 /*
   板面滚动区：overflow 仍是 auto（滚动能力保留），滚动条外观由统一规则去掉：
   v-qio-scrollbar="'hidden'" 补上 .qio-scroll-host 与 data-qio-scroll="hidden"，

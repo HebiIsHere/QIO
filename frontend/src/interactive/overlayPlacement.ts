@@ -1,15 +1,21 @@
 /**
- * 浮层（卡片局部工具栏 / 合并提示）的落点决策 —— 纯函数，便于在 jsdom 里逐条断言。
+ * 卡片局部工具栏的落点决策 —— 纯函数，便于在 jsdom 里逐条断言。
  *
- * 规则（2026-10-14 定，用户报告「他不应该在下面的时候挡住卡片」）：
- * 1. 竖向能放到卡片外面、且**整个浮层都在可视区内**：先上方、后下方；
- * 2. 竖向两边都放不下（卡片比可视区还高）：挪到卡片**横向之外**（右侧优先，其次左侧），
- *    并与卡片可见的顶边对齐 —— 宁可浮在卡片旁边，也不整块压在卡片上；
- * 3. 横向也没有余地（卡片几乎占满可视区）：夹进可视区保底，此时压住卡片无法避免。
+ * 规则（2026-10-14 第二轮修，用户报告「工具栏与卡片有偏移、松手后还会漂」）：
+ * 1. 工具栏左边缘 = 所属卡片**实际显示外框**的左边缘（0 偏差）；
+ * 2. 工具栏底边 = 卡片顶边上方固定的 gap 屏幕像素；
+ * 3. 不做横向夹取、不做上下翻转、不做侧移 —— 任何视口边缘都不改变这个相对位置。
+ *    显隐由调用方决定：**卡片与板面可视区相交、且工具栏屏幕外框也与它相交**时才显示
+ *    （严格相交；边贴边不算），见 {@link rectsIntersect}。隐藏只作用于显隐，不改位置。
  *
- * 为什么不用「viewport.bottom − 30」这种硬编码：它没算浮层自身高度，
- * 于是「下方放得下」和「放不下」都会被夹进卡片内部，而当时的判定只看得见「碰到卡片顶边」，
- * 看不见「落在卡片下半部分」—— 实测 1200×500 窗口下工具栏 442–478 整块落在卡片 104–508 里。
+ * 为什么删掉了旧的避让语义（placeCardOverlay）：它把「不压住卡片」放在「固定相对位置」之上 ——
+ * 上方放不下就翻到下方、右边放不下就侧移，于是拖动 / 松手 / 缩放时工具栏会跳到别处；
+ * 而用户在同一时刻盯着卡片与工具栏，位置一跳就是「偏移」。现在只认卡片外框这一个锚点。
+ *
+ * 输入全部是**屏幕坐标**（getBoundingClientRect 原样），输出是**宿主定位原点**的像素：
+ * 宿主（.card-toolbar-host）与所属卡片的相对关系是它唯一的坐标来源。
+ * 宿主若真的处在缩放祖先下（实测 hostRect.width / host.offsetWidth ≠ 1），按同一实测比例逆变换 ——
+ * 不用任何经验补偿常数。
  */
 export interface OverlayRect {
   top: number;
@@ -18,76 +24,54 @@ export interface OverlayRect {
   right: number;
 }
 
-export interface OverlaySize {
-  w: number;
-  h: number;
-}
-
-export interface OverlayPlacement {
+/** 相对宿主定位原点的像素位置（直接写进行内 left / top）。 */
+export interface ToolbarPlacement {
   left: number;
   top: number;
 }
 
-/** 浮层与可视区边缘的最小留白（原来的 4px 左边缘夹取沿用）。 */
-export const OVERLAY_EDGE_MARGIN = 4;
-/** 与可视区上下沿的最小留白：2px 保证浮层不贴边。 */
-export const OVERLAY_VIEWPORT_PAD = 2;
+/** 宿主外框与自身布局盒的实测比例（1 = 无缩放祖先）。 */
+export interface ToolbarScale {
+  x: number;
+  y: number;
+}
 
-export function placeCardOverlay(input: {
-  card: OverlayRect;
-  toolbar: OverlaySize;
-  viewport: OverlayRect;
+export interface ToolbarAnchor {
+  /** 所属卡片的真实显示外框（屏幕坐标，含边框） */
+  cardRect: OverlayRect;
+  /** 工具栏宿主的外框（屏幕坐标） */
+  hostRect: OverlayRect;
+  /** 工具栏实测高度（屏幕像素）；量不到时调用方用 TOOLBAR_H 兜底 */
+  toolbarHeight: number;
+  /** 工具栏底边与卡片顶边之间的固定间距（屏幕像素） */
   gap: number;
-}): OverlayPlacement {
-  const { card, toolbar, viewport, gap } = input;
-  const minTop = viewport.top + OVERLAY_VIEWPORT_PAD;
-  const maxTop = viewport.bottom - toolbar.h - OVERLAY_VIEWPORT_PAD;
-  const aboveTop = card.top - toolbar.h - gap;
-  const belowTop = card.bottom + gap;
+  /** 宿主处于缩放祖先下时的实测比例；缺省 / 非法都按 1（不缩放）处理 */
+  hostScale?: ToolbarScale;
+}
 
-  let top: number;
-  if (aboveTop >= minTop) {
-    top = aboveTop; // 上方：天然不与卡片相交
-  } else if (belowTop <= maxTop) {
-    top = belowTop; // 下方：整个浮层仍在可视区内
-  } else {
-    top = Math.max(minTop, Math.min(maxTop, belowTop)); // 保底：夹进可视区
-  }
+function safeScale(value: unknown): number {
+  const scale = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
 
-  const leftMin = viewport.left + OVERLAY_EDGE_MARGIN;
-  const leftMax = viewport.right - toolbar.w - OVERLAY_EDGE_MARGIN;
-  /*
-    2026-10-14（用户要求「拖动时工具栏要准确跟随卡片，相对位置不变」）：
-    卡片**没有完全在视口里**时不做横向夹取 —— 否则卡片一靠近右边缘，工具栏就被夹到视口边，
-    相对位置从 0 变成 −166（实测），看起来就是"漂移出去"。
-    卡片完全可见时才夹（那时夹取等于「整个浮层都在可视区内」，是原来的正确行为）。
-  */
-  const cardFullyVisible =
-    card.left >= viewport.left && card.right <= viewport.right && card.top >= viewport.top && card.bottom <= viewport.bottom;
-  let left = cardFullyVisible
-    ? Math.max(leftMin, Math.min(leftMax, card.left))
-    : card.left;
+/**
+ * 固定锚点：左对齐卡片左边缘；底边在卡片顶边上方 gap。
+ * 只做一次「屏幕坐标 → 宿主定位原点」的换算，外加宿主缩放比例的逆变换。
+ */
+export function placeToolbarRelativeToCard(input: ToolbarAnchor): ToolbarPlacement {
+  const scaleX = safeScale(input.hostScale?.x);
+  const scaleY = safeScale(input.hostScale?.y);
+  return {
+    left: (input.cardRect.left - input.hostRect.left) / scaleX,
+    top: (input.cardRect.top - input.hostRect.top - input.toolbarHeight - input.gap) / scaleY,
+  };
+}
 
-  /** 与卡片矩形（两个轴都要相交才算压住）是否重叠。 */
-  const covers = (candidateLeft: number, candidateTop: number) =>
-    candidateTop + toolbar.h > card.top + 2 &&
-    candidateTop < card.bottom - 2 &&
-    candidateLeft + toolbar.w > card.left + 2 &&
-    candidateLeft < card.right - 2;
-
-  if (covers(left, top)) {
-    // 竖向已经无解：至少横向挪出卡片。与卡片可见顶边对齐（顶边在视口外时贴视口上沿）
-    const besideTop = Math.max(minTop, Math.min(maxTop, card.top));
-    const rightOfCard = card.right + gap;
-    const leftOfCard = card.left - toolbar.w - gap;
-    if (rightOfCard <= leftMax) {
-      left = rightOfCard;
-      top = besideTop;
-    } else if (leftOfCard >= leftMin) {
-      left = leftOfCard;
-      top = besideTop;
-    }
-  }
-
-  return { left, top };
+/**
+ * 两个矩形是否有交集（严格相交：边贴边不算）。
+ * 只用于**可见性**判断 —— 卡片与板面可视区完全不相交时才隐藏工具栏，
+ * 部分相交时照常按固定相对位置显示（绝不因此移动工具栏）。
+ */
+export function rectsIntersect(a: OverlayRect, b: OverlayRect): boolean {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }

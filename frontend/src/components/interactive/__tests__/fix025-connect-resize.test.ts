@@ -189,6 +189,32 @@ function stubSurfaceRect(view: VueWrapper): void {
     ({ left: VIEW_LEFT - viewport.scrollLeft, top: VIEW_TOP - viewport.scrollTop, right: VIEW_LEFT - viewport.scrollLeft, bottom: VIEW_TOP - viewport.scrollTop, width: 0, height: 0, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
 }
 
+/** 造一个 DOMRect 形状的盒子（jsdom 里组件只读 left/top/right/bottom/width/height）。 */
+function rectLike(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+/** 工具栏定位写在组件合并的 requestAnimationFrame 里：等一帧（含一次宏任务）再断言。 */
+async function flushFrame(): Promise<void> {
+  await nextTick();
+  await new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+    else setTimeout(resolve, 16);
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  await nextTick();
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   store = useInteractiveStore();
@@ -698,34 +724,47 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
     window.dispatchEvent(new KeyboardEvent("keyup", { key: " ", code: "Space", bubbles: true }));
   });
 
-  it("平移之后：局部工具栏仍贴着选中卡片（相对卡片的屏幕位置正确）", async () => {
+  it("平移之后：局部工具栏仍贴着选中卡片（相对宿主的屏幕位置正确）", async () => {
     store.board = board([mkCard("a", 900, 700)], { selection: ["a"] });
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
     makeScrollable(element, 800, 600);
-    stubSurfaceRect(view);
     element.dispatchEvent(new Event("scroll"));
     await nextTick();
 
-    // 在平移后的画面上单击这张卡：工具栏按当下的视口重新定位（与真实操作同一条刷新路径）
+    /*
+      2026-10-14 修正（结构变化后过时的断言）：
+      工具栏宿主改成 .card-toolbar-host（与可视区同盒、不再随 .board-surface 缩放），
+      行内 left/top 的语义 = 「卡片真实外框 − 宿主原点」的**屏幕像素**。
+      jsdom 没有布局，所以这里按真实浏览器口径给宿主与卡片外框打桩，
+      再断言「换算回屏幕后贴住卡片左缘 / 底边在卡片顶边上方 工具栏高度 + 10」。
+    */
     const state = viewState();
-    const press = screenOf(950, 730, state);
-    cardEl("a")!.dispatchEvent(pointer("pointerdown", press.x, press.y));
-    window.dispatchEvent(pointer("pointerup", press.x, press.y));
-    await nextTick();
+    const host = view.get('[data-im="card-toolbar-host"]').element as HTMLElement;
+    const cardElement = cardEl("a") as HTMLElement;
+    const cardRect = () => {
+      const left = VIEW_LEFT + 900 * state.scale - state.scrollLeft;
+      const top = VIEW_TOP + 700 * state.scale - state.scrollTop;
+      return rectLike(left, top, 100 * state.scale, 60 * state.scale);
+    };
+    host.getBoundingClientRect = () => rectLike(VIEW_LEFT, VIEW_TOP, VIEW_W, VIEW_H);
+    cardElement.getBoundingClientRect = cardRect;
 
-    const card = rectOf(cardEl("a"));
-    const toolbar = styleOf(view.get('[data-im="card-toolbar"]').element);
-    const surfaceLeft = VIEW_LEFT - state.scrollLeft;
-    const surfaceTop = VIEW_TOP - state.scrollTop;
-    // 缩放为 1：工具栏行内坐标与板面单位一一对应，且它的屏幕位置要贴着卡片的左上角
-    expect(px(toolbar.left)).toBeCloseTo(card.x, 0);
-    expect(surfaceLeft + px(toolbar.left)).toBeCloseTo(screenOf(card.x, card.y, state).x, 0);
-    // 竖直方向：工具栏在卡片上方（不压卡片顶边），间距 ≈ 量到的工具栏高度 + 10
-    const gap = card.y - px(toolbar.top);
-    expect(gap).toBeGreaterThanOrEqual(2);
-    expect(gap).toBeLessThanOrEqual(14);
-    expect(surfaceTop + px(toolbar.top)).toBeLessThan(screenOf(card.x, card.y, state).y);
+    // 定位写在合并 rAF 里：等一帧再读，否则读到的是定位前的初值
+    await flushFrame();
+
+    const toolbar = view.get('[data-im="card-toolbar"]');
+    expect(toolbar.attributes("data-teleported")).toBe("1");
+    const style = styleOf(toolbar.element);
+    const card = cardRect();
+    // 左边缘对齐卡片左边缘（相对宿主原点）
+    expect(px(style.left)).toBeCloseTo(card.left - VIEW_LEFT, 0);
+    expect(VIEW_LEFT + px(style.left)).toBeCloseTo(card.left, 0);
+    // 底边在卡片顶边上方：工具栏高度 + 10；jsdom 量不到高度 → 组件用 TOOLBAR_H 兜底
+    expect(px(style.top)).toBeCloseTo(card.top - VIEW_TOP - 34 - 10, 0);
+    expect(VIEW_TOP + px(style.top) + 34 + 10).toBeCloseTo(card.top, 0);
+    // 固定锚点：与滚动量无关，平移前后只跟着卡片走
+    expect(view.get('[data-im="card-toolbar-host"]').attributes("data-toolbar-visible")).toBe("1");
   });
 
   it("平移之后：合并提示仍贴在目标卡片上方（相对卡片的屏幕位置正确）", async () => {

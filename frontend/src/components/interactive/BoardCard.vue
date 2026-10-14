@@ -63,24 +63,41 @@ import TextCardEditor from "../../interactive/TextCardEditor.vue";
 // 卡片正文是这张卡唯一的主要纵向视口：滚动能力保留，滚动条外观统一走 QIO 指示条。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
-const props = defineProps<{
-  card: BoardCard;
-  selected: boolean;
-  /** 板内搜索定位后的短暂高亮（只是显示） */
-  highlight: boolean;
-  dragging: boolean;
-  x: number;
-  y: number;
-  groupName: string | null;
-  groups: BoardGroup[];
-  /** 选中时局部工具栏的位置（板面容器坐标，父组件按视口换算好） */
-  toolbarLeft: number;
-  toolbarTop: number;
-  /** 多选时：只显示共同适用的操作，并且不把单卡片编辑应用到整组 */
-  multi: boolean;
-  /** 正在从本卡片拖出关系线 */
-  connecting: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    card: BoardCard;
+    selected: boolean;
+    /** 板内搜索定位后的短暂高亮（只是显示） */
+    highlight: boolean;
+    dragging: boolean;
+    x: number;
+    y: number;
+    groupName: string | null;
+    groups: BoardGroup[];
+    /**
+     * 局部工具栏行内 left/top 的数值，语义 = **相对 toolbarHost 定位原点**的屏幕像素
+     * （由 BoardCanvas 按「卡片真实外框 − 宿主原点」算好；不再有任何板面 / 视口夹取）。
+     */
+    toolbarLeft: number;
+    toolbarTop: number;
+    /** 多选时：只显示共同适用的操作，并且不把单卡片编辑应用到整组 */
+    multi: boolean;
+    /** 正在从本卡片拖出关系线 */
+    connecting: boolean;
+    /**
+     * 工具栏的独立宿主（BoardCanvas 的 .card-toolbar-host）。
+     * 传 null 或未挂载时 Teleport 关闭：工具栏保持内联渲染，绝不在 (0,0) 之类的地方出现。
+     */
+    toolbarHost?: HTMLElement | null;
+    /**
+     * 所属卡片与板面可视区是否相交（BoardCanvas 测量后传入）。
+     * 默认 true：直接挂载本组件的场景不做可见性裁剪，行为与改动前一致。
+     * 完全不相交时只在显示层隐藏（v-show，元素仍在 DOM 里，不必重新挂载 / 重新测量）。
+     */
+    toolbarVisible?: boolean;
+  }>(),
+  { toolbarHost: null, toolbarVisible: true },
+);
 
 /**
   事件签名保持不变：BoardCanvas 仍在监听 leave-group / join-group，
@@ -609,8 +626,37 @@ const isToolbarOwner = computed(() => {
   return ids[ids.length - 1] === props.card.id;
 });
 
-/** 工具栏在卡片上方时，整理菜单向上展开（朝卡片外侧），不盖标题与连接点 */
-const menuOpensUp = computed(() => props.toolbarTop < props.y);
+/**
+ * 整理菜单 / 许可说明 / 「更多」面板的展开方向：朝**工具栏外侧**开（不盖卡片标题与正文）。
+ *
+ * 2026-10-14 第二轮：工具栏固定贴在卡片上方，方向不能再拿 `props.toolbarTop < props.y` 比
+ * —— 前者是相对宿主的屏幕像素、后者是板面坐标，两个坐标系混算本来就是错的。
+ * 现在全部用**同一套屏幕坐标**（getBoundingClientRect）实测：
+ *   可用空间 = 工具栏上沿 − 宿主（toolbarRoot.parentElement）上沿；
+ *   需要空间 = 面板实测高度 + MENU_MIN_GAP。
+ * 宿主裁切到板面可视区（.card-toolbar-host 的 overflow: hidden），所以贴顶时必须向下开，
+ * 否则菜单会被裁掉。量不到真实几何（jsdom / 宿主未挂载）时退回改动前那条比较，行为不变。
+ * **只改打开方向，绝不移动工具栏主体。** 三个入口（更多 / 说明 / 整理菜单）共用这一条判断。
+ */
+const MENU_MIN_GAP = 8;
+const MENU_FALLBACK_H = 160;
+
+/** 上方放得下整份菜单吗（true = 向上开）。所有方向判断都走这一条，不各写一份。 */
+function menuFitsAbove(): boolean {
+  const toolbar = toolbarRoot.value;
+  const host = toolbar?.parentElement ?? null;
+  const toolbarRect =
+    toolbar && typeof toolbar.getBoundingClientRect === "function" ? toolbar.getBoundingClientRect() : null;
+  const hostRect = host && typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : null;
+  if (!toolbarRect || !hostRect || !(toolbarRect.height > 0) || !(hostRect.height > 0)) {
+    // jsdom（没有真实布局）/ 宿主未挂载：沿用改动前的口径，不假装测到了几何
+    return props.toolbarTop < props.y;
+  }
+  const spaceAbove = toolbarRect.top - hostRect.top;
+  return spaceAbove >= (morePanelHeight.value || MENU_FALLBACK_H) + MENU_MIN_GAP;
+}
+
+const menuOpensUp = computed(menuFitsAbove);
 
 /** 冲突未决的关闭态卡片显示提示与选择按钮：高度放开为 auto，不被 overflow 裁掉（契约 §12.1 可见可点） */
 const conflictExpanded = computed(
@@ -689,17 +735,55 @@ const editorMinHeight = computed(() => {
  * Esc 只关这个面板（不让板面把同一次 Esc 当成取消拖动）；点到别处就收起。
  * ---------------------------------------------------------------------- */
 const toolbarRoot = ref<HTMLElement | null>(null);
+/** <article data-im="card"> 的真实外框：BoardCanvas 只拿它当锚点（只读，不回写板面） */
+const cardEl = ref<HTMLElement | null>(null);
+/** 「更多」面板元素：打开后量一次真实高度，供菜单方向判断 */
+const morePanel = ref<HTMLElement | null>(null);
 const moreOpen = ref(false);
 const moreOpensUp = ref(false);
+/** 上一次实测到的「更多」面板高度（量不到时用 MENU_FALLBACK_H） */
+const morePanelHeight = ref(0);
 
 function toggleMore(): void {
   if (moreOpen.value) {
     moreOpen.value = false;
     return;
   }
-  moreOpensUp.value = menuOpensUp.value;
+  moreOpensUp.value = menuFitsAbove();
   moreOpen.value = true;
+  /*
+    面板挂上之后**再量一次**：先取面板真实高度（换行 / 文案 / 窄窗口），
+    再用与上面完全同一条 menuFitsAbove() 重新判方向。nextTick 是微任务，纠正发生在绘制之前，
+    所以用户看不到「先上后下」的闪动。只改方向，不动工具栏主体。
+  */
+  void nextTick(() => {
+    const element = morePanel.value;
+    const rect =
+      element && typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : null;
+    if (rect && rect.height > 0) morePanelHeight.value = rect.height;
+    const shouldOpenUp = menuFitsAbove();
+    if (shouldOpenUp !== moreOpensUp.value) moreOpensUp.value = shouldOpenUp;
+  });
 }
+
+/** 面板打开期间几何变化（窗口 / 缩放 / 宿主裁切）也要跟着实测方向走 —— 包括传给整理菜单的偏好 */
+watch(menuOpensUp, (up) => {
+  if (moreOpen.value) moreOpensUp.value = up;
+});
+
+/**
+ * 交给 BoardCanvas 的锚点入口：只暴露**只读的 DOM 元素**。
+ * 定位只读 getBoundingClientRect()，不改板面状态、不产生保存 / 模型调用 / 审批。
+ */
+defineExpose({
+  getCardElement: () => cardEl.value,
+  getToolbarElement: () => toolbarRoot.value,
+});
+
+/** 不再是工具栏所有者时，把「更多」面板收起（面板不能跟着上一位所有者留在屏幕上） */
+watch(isToolbarOwner, (owner) => {
+  if (!owner) moreOpen.value = false;
+});
 
 /** 面板里的一次动作：先关闭面板，再把操作交出去（emit 给板面统一 commit） */
 function moreAction(run: () => void): void {
@@ -761,6 +845,12 @@ const toolbarStyle = computed(() => ({
   left: props.toolbarLeft + "px",
   top: props.toolbarTop + "px",
 }));
+
+/**
+ * Teleport 的目标：宿主没挂上时用一个不会被用到的占位（此时 :disabled 为真，占位不生效）。
+ * 目标只能是本板面实例自己的 ref —— 绝不 querySelector 全局查找。
+ */
+const toolbarTeleportTarget = computed<HTMLElement | string>(() => props.toolbarHost ?? "body");
 
 function isInteractive(target: EventTarget | null): boolean {
   const element = target as HTMLElement | null;
@@ -937,6 +1027,7 @@ function cancelEdit() {
 
 <template>
   <article
+    ref="cardEl"
     class="card"
     :class="{
       selected,
@@ -1327,22 +1418,30 @@ function cancelEdit() {
 
   <!--
     卡片局部工具栏：只在选中后浮出，未选中即隐藏；由所选里的最后一张卡片渲染（不叠成一摞）。
-    它挂在板面容器里（不是卡片内部），位置由画布按视口换算，所以不会挡住卡片标题与正文。
+    位置由画布按「卡片真实外框 − 宿主原点」算好（left / top 都相对 toolbarHost）。
     这里只放**这张卡片自己的操作**：常用的编辑 / 折成标题留在近处，
     复制 / 隐藏 / 书签 / 整理 / 删除收进「更多」（任务书 §6.5），能力一个不少。
+
+    Teleport 把工具栏送进 BoardCanvas 的 .card-toolbar-host —— 那一层**不在**
+    .board-surface 的 transform: scale() 里，工具栏字号 / 按钮尺寸 / 间距因此不随板面缩放；
+    toolbarHost 还没挂上（或本组件被单独挂载）时 Teleport 保持 disabled，工具栏就地渲染，
+    绝不会跑到 (0,0) 之类的位置去。
   -->
-  <div
-    v-if="isToolbarOwner"
-    ref="toolbarRoot"
-    class="card-toolbar"
-    :style="toolbarStyle"
-    data-im="card-toolbar"
-    :data-card-id="card.id"
-    :data-multi="multi ? '1' : '0'"
-    role="toolbar"
-    :aria-label="multi ? '所选卡片的共同操作' : kindLabel + '操作'"
-    @pointerdown.stop
-  >
+  <Teleport :to="toolbarTeleportTarget" :disabled="!toolbarHost">
+    <div
+      v-if="isToolbarOwner"
+      v-show="toolbarVisible"
+      ref="toolbarRoot"
+      class="card-toolbar"
+      :style="toolbarStyle"
+      data-im="card-toolbar"
+      :data-card-id="card.id"
+      :data-multi="multi ? '1' : '0'"
+      :data-teleported="toolbarHost ? '1' : '0'"
+      role="toolbar"
+      :aria-label="multi ? '所选卡片的共同操作' : kindLabel + '操作'"
+      @pointerdown.stop
+    >
     <!--
       整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡只有一个许可，覆盖卡内文字、链接、代码。
       勾选框只留一句短文案；「提交后仍然有效、只有你手动取消才失效」这类完整规则放进旁边的
@@ -1404,6 +1503,7 @@ function cancelEdit() {
 
       <div
         v-show="moreOpen"
+        ref="morePanel"
         class="more-panel"
         :class="moreOpensUp ? 'up' : 'down'"
         data-im="card-more-panel"
@@ -1445,8 +1545,9 @@ function cancelEdit() {
           @click="moreAction(() => emit('remove', card.id))"
         >删除</button>
       </div>
-    </template>
-  </div>
+      </template>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -1909,6 +2010,11 @@ function cancelEdit() {
 .card-toolbar {
   position: absolute;
   z-index: 60;
+  /*
+    宿主（.card-toolbar-host）整层 pointer-events: none：工具栏这一块自己收回事件，
+    只有工具栏与已打开的面板 / 菜单接收指针，其余地方照旧穿透到板面。
+  */
+  pointer-events: auto;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
