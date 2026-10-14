@@ -210,6 +210,23 @@ describe("图片文件卡：常态由封面承担完整展示", () => {
     expect(w.text()).not.toContain("还没有补充说明");
   });
 
+  it("最小尺寸 180×96：标题、查看原图与必要状态都在；说明行让位（compact 口径）", async () => {
+    const w = mountCard(imageFileCard({ w: 180, h: 96, content: "补充说明一行" }));
+    await flushPromises();
+
+    const root = w.get('[data-im="card"]');
+    expect(root.classes()).toContain("is-compact");
+    expect(root.attributes("data-cover")).toBe("1");
+    expect(w.get('[data-im="card-title"]').text()).toBe("照片.jpeg");
+    expect(w.find('[data-im="card-cover-open"]').exists(), "最小尺寸下查看原图不该消失").toBe(true);
+    expect(w.find('[data-im="card-meta"]').exists(), "必要状态行必须留着").toBe(true);
+    // 让位的是说明行：最小尺寸下不渲染封面里那一行说明
+    expect(w.find('[data-im="card-cover-desc"]').exists()).toBe(false);
+    // 封面层不产生横纵滚动条
+    const cover = w.get('[data-im="card-cover"]');
+    expect(cover.exists()).toBe(true);
+  });
+
   it("折叠态：仍保留封面带", async () => {
     const w = mountCard(imageFileCard({ folded: true }));
     await flushPromises();
