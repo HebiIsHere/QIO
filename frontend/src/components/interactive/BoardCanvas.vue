@@ -51,6 +51,7 @@ import {
 } from "../../interactive/board";
 // 局部工具栏的落点决策（纯函数，单测在 interactive/__tests__/overlayPlacement.test.ts）
 import { placeCardOverlay } from "../../interactive/overlayPlacement";
+import { BOARD_SURFACE_H, BOARD_SURFACE_W } from "../../interactive/board";
 import {
   clampViewport,
   effectiveRect,
@@ -84,8 +85,9 @@ import BoardPreviewLayer from "./BoardPreviewLayer.vue";
 import BoardResizeLayer from "./BoardResizeLayer.vue";
 
 /** 板面坐标系大小：卡片位置是板面状态，平移 / 缩放只是查看方式。 */
-const SURFACE_W = 2400;
-const SURFACE_H = 1600;
+// 画布尺寸与卡片坐标夹取共用 board.ts 的同一对常量（板面坐标的唯一事实源）
+const SURFACE_W = BOARD_SURFACE_W;
+const SURFACE_H = BOARD_SURFACE_H;
 
 /** 工具栏 / 提示与卡片之间的间距（屏幕像素）。 */
 const TOOLBAR_GAP = 10;

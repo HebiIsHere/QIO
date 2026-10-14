@@ -23,7 +23,7 @@ import {
   understandingSettled,
   understandingStatusLabel,
 } from "../interactive/approval";
-import { CHECKABLE_KINDS } from "../interactive/board";
+import { CHECKABLE_KINDS, clampBoardBounds } from "../interactive/board";
 import {
   cardDraftKey,
   cardIdFromDraftKey,
@@ -1090,9 +1090,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
         settleCancelRecovery(true, null);
         saveRecoveryRev = putRev;
         saveRecoveryAttempts = 0;
-        board.value = result.state;
-        cleanState = cloneState(result.state);
-        reconcileCheckedChoices(result.state);
+        board.value = clampBoardBounds(result.state);
+        cleanState = cloneState(board.value);
+        reconcileCheckedChoices(board.value);
         boardCleanRev = putRev;
         lastSavedAt.value = result.savedAt;
         saveStatus.value = "saved";
@@ -1410,6 +1410,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const serverSeq = Number(server?.seq ?? 0);
     if (Number.isFinite(serverSeq)) knownServerSeq = Math.max(knownServerSeq, serverSeq);
     if (!candidate) {
+      /*
+        这里**不做归一化**：adoptServerFacts 之后要按时间戳 / seq 比对「服务器改了哪些卡片」，
+        normalizeState 会给缺 updatedAt 的卡片补上当前时间，等于凭空造出一次「无关改动」，
+        让 F07 的删除合并误判成冲突（全量测试抓到过）。画布范围由加载路径与写入路径保证。
+      */
       cleanState = cloneState(server);
       board.value = server;
       boardLocalRev += 1;
@@ -1561,9 +1566,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
       settleCancelRecovery(true, null);
       return true;
     }
-    board.value = payload.state;
-    cleanState = cloneState(payload.state);
-    reconcileCheckedChoices(payload.state);
+    /*
+      服务器事实入口统一归一化（2026-10-14 第七个问题）：画布范围是**状态不变量** ——
+      已存成负坐标的卡片（实测 y = −63.84）顶部永远看不见，加载时就夹回画布内。
+    */
+    board.value = clampBoardBounds(payload.state);
+    cleanState = cloneState(board.value);
+    reconcileCheckedChoices(board.value);
     // 整块采用服务器事实：与它不一致的本地勾选选择记录一并作废（不能留到下次合并又冒出来）
     dropCheckedChoicesNotIn(payload.state);
     boardCleanRev = boardLocalRev;

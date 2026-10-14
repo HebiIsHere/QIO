@@ -145,6 +145,59 @@ function asFloat(value: unknown, fallback: number): number {
   return result;
 }
 
+/**
+ * 画布（板面坐标系）尺寸 —— **板面坐标的唯一事实源**。
+ * BoardCanvas 用同一对常量渲染 surface 与滚动范围；卡片坐标也必须夹在这对边界内：
+ * 负坐标或超出画布的位置**永远看不见**（滚动范围被 clampScroll 限制在 [0, 内容 − 视口]，
+ * 画布原点之外的内容既滚不到、也拖不回来）。
+ * 2026-10-14 第七个问题：拖到板面顶边之外会写出 y = −63.84 这样的坐标，
+ * 卡片顶部被页眉遮住的那一块再也回不来。
+ */
+export const BOARD_SURFACE_W = 2400;
+export const BOARD_SURFACE_H = 1600;
+
+/**
+ * 把卡片矩形夹进画布范围：尺寸先收敛到画布内，再把左上角夹到 [0, 画布 − 尺寸]。
+ * 所有写入路径（新建 / 拖动落下 / updateCard）都走这里，夹取规则只有一份。
+ */
+export function clampCardRect(rect: { x: number; y: number; w: number; h: number }): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const w = Math.max(1, Math.min(BOARD_SURFACE_W, asFloat(rect.w, 1)));
+  const h = Math.max(1, Math.min(BOARD_SURFACE_H, asFloat(rect.h, 1)));
+  return {
+    w,
+    h,
+    x: Math.max(0, Math.min(BOARD_SURFACE_W - w, asFloat(rect.x, 0))),
+    y: Math.max(0, Math.min(BOARD_SURFACE_H - h, asFloat(rect.y, 0))),
+  };
+}
+
+/**
+ * **只**把卡片矩形夹进画布范围：不动任何其它字段、不补时间戳。
+ *
+ * 为什么不复用 normalizeState：它会给缺 updatedAt 的卡片补当前时间，等于凭空造出一次
+ * 「无关改动」—— 服务器事实比对（F07 的删除 / 解散合并）按时间戳判断改了哪些卡片，
+ * 被污染的归一化会让它误判成冲突（全量测试抓到过）。
+ */
+export function clampBoardBounds(state: BoardState): BoardState {
+  const source = (state ?? {}) as BoardState;
+  const list = (source.cards as BoardCard[] | undefined) ?? [];
+  let changed = false;
+  const cards = list.map((card) => {
+    const bounded = clampCardRect({ x: card.x, y: card.y, w: card.w, h: card.h });
+    if (bounded.x === card.x && bounded.y === card.y && bounded.w === card.w && bounded.h === card.h) {
+      return card;
+    }
+    changed = true;
+    return { ...card, x: bounded.x, y: bounded.y, w: bounded.w, h: bounded.h };
+  });
+  return changed ? { ...source, cards } : source;
+}
+
 function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
@@ -242,15 +295,26 @@ function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
     : "text";
   const checked = Boolean(source.checked);
   const hidden = Boolean(source.hidden);
+  /*
+    画布范围是**状态不变量**：归一化时就夹住（不只在新写入时）。
+    这样已经存成负坐标的卡片（第七个问题实测 y = −63.84）在下次加载时自动回到画布内，
+    不会一直「顶部被页眉遮住、拖也拖不回来」。
+  */
+  const bounded = clampCardRect({
+    x: asFloat(source.x, 0),
+    y: asFloat(source.y, 0),
+    w: Math.max(1, asFloat(source.w, DEFAULT_CARD_W)),
+    h: Math.max(1, asFloat(source.h, DEFAULT_CARD_H)),
+  });
   return {
     id: String(source.id ?? "") || newId("c"),
     kind,
     content: asText(source.content),
     meta: source.meta && typeof source.meta === "object" ? { ...(source.meta as Record<string, unknown>) } : {},
-    x: asFloat(source.x, 0),
-    y: asFloat(source.y, 0),
-    w: Math.max(1, asFloat(source.w, DEFAULT_CARD_W)),
-    h: Math.max(1, asFloat(source.h, DEFAULT_CARD_H)),
+    x: bounded.x,
+    y: bounded.y,
+    w: bounded.w,
+    h: bounded.h,
     // G6 明确隐藏与勾选互斥；G7 reply 不参与注释勾选
     checked: hidden || kind === "reply" ? false : checked,
     hidden,
@@ -416,15 +480,22 @@ export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: Ca
   const defaultX = DEFAULT_CARD_ORIGIN + column * (DEFAULT_CARD_W + DEFAULT_CARD_GAP);
   const defaultY = DEFAULT_CARD_ORIGIN + row * (DEFAULT_CARD_H + DEFAULT_CARD_GAP);
   const stamp = nowIso();
+  // 调用方给的坐标同样要夹：新卡片不许落进「页眉遮住的那块」（画布原点之外）
+  const size = clampCardRect({
+    x: asFloat(card.x, defaultX),
+    y: asFloat(card.y, defaultY),
+    w: Math.max(1, asFloat(card.w, DEFAULT_CARD_W)),
+    h: Math.max(1, asFloat(card.h, DEFAULT_CARD_H)),
+  });
   work.cards.push({
     id: String(card.id ?? "") || newId("c"),
     kind: card.kind,
     content: asText(card.content),
     meta: card.meta && typeof card.meta === "object" ? { ...card.meta } : {},
-    x: asFloat(card.x, defaultX),
-    y: asFloat(card.y, defaultY),
-    w: Math.max(1, asFloat(card.w, DEFAULT_CARD_W)),
-    h: Math.max(1, asFloat(card.h, DEFAULT_CARD_H)),
+    x: size.x,
+    y: size.y,
+    w: size.w,
+    h: size.h,
     checked: card.kind === "reply" ? false : Boolean(card.checked),
     hidden: Boolean(card.hidden),
     folded: Boolean(card.folded),
@@ -506,6 +577,17 @@ export function updateCard(state: BoardState, cardId: string, patch: Partial<Boa
   if (patch.y !== undefined) assign("y", asFloat(patch.y, card.y));
   if (patch.w !== undefined) assign("w", Math.max(1, asFloat(patch.w, card.w)));
   if (patch.h !== undefined) assign("h", Math.max(1, asFloat(patch.h, card.h)));
+  /*
+    位置 / 尺寸写入统一夹进画布范围（展开让位、尺寸调整、拖动都走这里）：
+    夹取只改越界的值，范围内的坐标一个字都不动。
+  */
+  if (patch.x !== undefined || patch.y !== undefined || patch.w !== undefined || patch.h !== undefined) {
+    const bounded = clampCardRect({ x: card.x, y: card.y, w: card.w, h: card.h });
+    assign("x", bounded.x);
+    assign("y", bounded.y);
+    assign("w", bounded.w);
+    assign("h", bounded.h);
+  }
   if (patch.checked !== undefined) assign("checked", Boolean(patch.checked));
   if (patch.hidden !== undefined) assign("hidden", Boolean(patch.hidden));
   if (patch.folded !== undefined) assign("folded", Boolean(patch.folded));
@@ -1079,10 +1161,12 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
     return { state: work, groupId: null, merged: false, index: null };
   }
 
-  const resolved = resolveDrop(work, cardId, px, py);
+  // 落点先夹进画布范围：负坐标的卡片顶部永远看不见（见 clampCardRect 的说明）
+  const placed = clampCardRect({ x: px, y: py, w: card.w, h: card.h });
+  const resolved = resolveDrop(work, cardId, placed.x, placed.y);
   const stamp = nowIso();
-  card.x = px;
-  card.y = py;
+  card.x = placed.x;
+  card.y = placed.y;
   card.updatedAt = stamp;
   work.updatedAt = stamp;
 
