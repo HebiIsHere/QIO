@@ -1,14 +1,19 @@
 /**
- * 图片卡「封面式」呈现（2026-10-14 第六个问题）。
+ * 图片在卡片上的**常态展示**（本轮「互动模式图片展示简化」）。
  *
- * 用户确认的设计：图片卡 + 附件是图片的文件卡，**常态把图片作为卡片背景铺满**，
- * 只留标题 + 一行补充说明 + 右下角「查看」浮层按钮；编辑态与阅读态不铺封面；
- * 折叠态保留一条封面带。附件信息行与缩略图在常态让位给封面（阅读态里仍能看到完整信息）。
+ * 用户确认的设计：图片统一是 **kind="file" + meta.file 附件**（互动板不再创建 kind="image" 卡片）。
+ * - 常态 / 折叠态：封面层承担**完整**的图片展示（object-fit: contain，等比完整、不裁切、留白走 --bg-inset）；
+ * - 卡片头部不再有「展开预览 / 收起预览」入口，图片卡不进入阅读态、不挂卡片内预览；
+ * - 封面里不再重复文件名、不再常驻「图片：还没有补充说明」这类占位文字，只有**真实说明**才渲染一行；
+ * - 查看原图走既有 openAttachment；工具栏上重复的 card-attachment-open 在封面期间不再渲染；
+ * - 图片解码失败也要给原因 + 重试 / 查看原图 / 重新关联三个可用入口。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   fetchAttachmentContent: vi.fn(),
@@ -32,18 +37,32 @@ vi.mock("../../../services/attachments", async (importOriginal) => {
 
 import BoardCard from "../BoardCard.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
-import { emptyState, setSelection } from "../../../interactive/board";
+import { defaultCardSeed, emptyState, setSelection } from "../../../interactive/board";
 import type { BoardCard as BoardCardModel } from "../../../interactive/types";
 
-const STAMP = "2026-10-14T00:00:00.000Z";
+const STAMP = "2026-10-15T00:00:00.000Z";
+const SRC = resolve(process.cwd(), "src");
 
-function baseCard(patch: Partial<BoardCardModel> = {}): BoardCardModel {
+/** 某个选择器的规则块（第一个匹配），与同目录既有用例同一套读法。 */
+function cssBlock(text: string, selector: string): string {
+  const start = text.indexOf(selector);
+  expect(start, "找不到选择器 " + selector).toBeGreaterThan(-1);
+  const open = text.indexOf("{", start);
+  const close = text.indexOf("}", open);
+  return text.slice(open + 1, close);
+}
+
+function source(relative: string): string {
+  return readFileSync(resolve(SRC, relative), "utf8");
+}
+
+/** 图片附件的**文件卡**（图片的真实形状：kind="file" + meta.file） */
+function imageFileCard(patch: Partial<BoardCardModel> = {}): BoardCardModel {
   return {
     id: "card_img",
-    kind: "image",
+    kind: "file",
     content: "",
-    // 标题取 meta.name；附件关联信息在 meta.image（契约 §14.1）
-    meta: { name: "照片.jpeg", image: { attachmentId: "att_img", name: "照片.jpeg", sizeBytes: 66560 } },
+    meta: { name: "照片.jpeg", file: { attachmentId: "att_img", name: "照片.jpeg", sizeBytes: 66560 } },
     x: 0,
     y: 0,
     w: 320,
@@ -59,7 +78,18 @@ function baseCard(patch: Partial<BoardCardModel> = {}): BoardCardModel {
   };
 }
 
+/** 非图片附件的文件卡（PDF / Office / 代码 / 文本…） */
+function pdfFileCard(patch: Partial<BoardCardModel> = {}): BoardCardModel {
+  return imageFileCard({
+    id: "card_doc",
+    meta: { name: "简报.docx", file: { attachmentId: "att_doc", name: "简报.docx", sizeBytes: 1024 } },
+    ...patch,
+  });
+}
+
 let wrappers: VueWrapper[] = [];
+let created: string[] = [];
+let revoked: string[] = [];
 
 function mountCard(model: BoardCardModel): VueWrapper {
   const store = useInteractiveStore();
@@ -89,6 +119,26 @@ beforeEach(() => {
   setActivePinia(createPinia());
   mocks.fetchAttachmentContent.mockReset();
   mocks.fetchAttachmentContent.mockResolvedValue(new Blob(["x"], { type: "image/jpeg" }));
+  mocks.pickBrowserFile.mockReset();
+  mocks.pickBrowserFile.mockResolvedValue(null);
+  mocks.openAttachment.mockReset();
+  mocks.openAttachment.mockResolvedValue({ action: "view", note: "已交给浏览器在新标签页打开" });
+  created = [];
+  revoked = [];
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => {
+      const url = "blob:qio-cover-" + (created.length + 1);
+      created.push(url);
+      return url;
+    }),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn((url: string) => {
+      revoked.push(url);
+    }),
+  });
 });
 
 afterEach(() => {
@@ -103,87 +153,251 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("图片卡：封面式呈现", () => {
-  it("常态：图片铺满卡片作为背景，只留标题 / 一行说明 / 右下角「查看」", async () => {
-    const w = mountCard(baseCard({ content: "补充说明一行" }));
-    await nextTick();
+describe("图片文件卡：常态由封面承担完整展示", () => {
+  it("常态：封面层 + 标题 + 真实说明 + 「查看原图」，不再铺附件信息行与小缩略图", async () => {
+    const w = mountCard(imageFileCard({ content: "补充说明一行" }));
+    await flushPromises();
+
     expect(w.find('[data-im="card-cover"]').exists(), "没有封面层").toBe(true);
-    expect(w.find('[data-im="card-cover-open"]').exists(), "封面里没有「查看」入口").toBe(true);
+    expect(w.find('[data-im="card"]').attributes("data-cover")).toBe("1");
+    expect(w.find('[data-im="card-cover-img"]').exists(), "封面里没有真实图片").toBe(true);
+    expect(w.get('[data-im="card-cover-open"]').text(), "封面入口文案与真实动作不符").toBe("查看原图");
+    expect(w.find('[data-im="card-cover-desc"]').text()).toContain("补充说明一行");
+    expect(w.find('[data-im="card-title"]').text()).toBe("照片.jpeg");
+
     // 模板完整性：属性被挤成文本节点时（标签闭合位置写错）这里会立刻失败
     expect(w.text(), "卡片里出现了模板属性文本").not.toContain("@pointerdown");
-    expect(w.find('[data-im="card"]').attributes("data-cover")).toBe("1");
-    expect(w.find('[data-im="card-cover-desc"]').text()).toContain("补充说明一行");
-    expect(w.text(), "标题应当仍在卡片上").toContain("照片.jpeg");
+    // 不重复显示文件名、不铺附件信息行、不出现小缩略图
     expect(w.text(), "常态不该再铺附件信息行").not.toContain("已关联已保存的附件");
-    expect(w.find('[data-im="card-attachment-thumb"]').exists(), "常态不该再出现小缩略图").toBe(false);
-  });
-
-  it("封面图是装饰（aria-hidden + 空 alt），卡片的可访问名称仍在", async () => {
-    const w = mountCard(baseCard());
-    await nextTick();
-    const img = w.find('[data-im="card-cover-img"]');
-    if (img.exists()) {
-      expect(img.attributes("aria-hidden")).toBe("true");
-      expect(img.attributes("alt")).toBe("");
-    }
-    expect(w.text()).toContain("照片");
-  });
-
-  /*
-    回归守卫（2026-10-14）：互动板**不再创建 kind="image" 的卡片**（ADDABLE_CARD_KINDS = text/file），
-    图片一律作为附件挂在**文件卡**上。封面判定必须看「附件是不是图片」，不能看 kind ——
-    曾经按 kind === "image" 判过一次，结果全部图片卡（含微信图片）的封面一起消失。
-  */
-  it("附件是图片的文件卡（kind=file，例如微信图片）：照旧铺封面", async () => {
-    const w = mountCard(
-      baseCard({
-        id: "card_wechat",
-        kind: "file",
-        meta: { name: "微信图片_20260626181729_92_62.jpg", file: { attachmentId: "att_wx", name: "微信图片_20260626181729_92_62.jpg", sizeBytes: 2631718 } },
-      }),
-    );
-    await nextTick();
-    expect(w.find('[data-im="card"]').attributes("data-cover"), "附件是图片的文件卡丢了封面").toBe("1");
-    expect(w.find('[data-im="card-cover"]').exists(), "没有封面层").toBe(true);
-    expect(w.text()).toContain("微信图片_20260626181729_92_62.jpg");
-  });
-
-  it("附件不是图片的文件卡：不铺封面，卡片本身只显示文件名", async () => {
-    const w = mountCard(
-      baseCard({ id: "card_doc", kind: "file", meta: { file: { attachmentId: "att_doc", name: "简报.docx", sizeBytes: 1024 } } }),
-    );
-    await nextTick();
-    expect(w.find('[data-im="card-cover"]').exists()).toBe(false);
-    // 2026-10-14：文件卡不再在卡片里铺附件信息行 / 预览（按钮全在工具栏）
-    expect(w.text()).toContain("简报.docx");
-    expect(w.text()).not.toContain("已关联已保存的附件");
+    expect(w.find('[data-im="card-attachment"]').exists()).toBe(false);
+    expect(w.find('[data-im="card-attachment-thumb"]').exists()).toBe(false);
     expect(w.find('[data-im="card-attachment-preview"]').exists()).toBe(false);
   });
 
-  it("折叠态：仍保留一条封面带", async () => {
-    const w = mountCard(baseCard({ folded: true }));
+  it("封面图是装饰（aria-hidden + 空 alt + 禁止原生拖动），卡片可访问名称仍在", async () => {
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+
+    const img = w.get('[data-im="card-cover-img"]');
+    expect(img.attributes("aria-hidden")).toBe("true");
+    expect(img.attributes("alt")).toBe("");
+    expect(img.attributes("draggable")).toBe("false");
+    expect(w.get('[data-im="card-title"]').text()).toContain("照片.jpeg");
+  });
+
+  it("封面显示期间，工具栏上重复的 card-attachment-open 不再渲染（避免两个入口各自 busy）", async () => {
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+
+    const toolbar = w.get('[data-im="card-toolbar"]');
+    expect(toolbar.find('[data-im="card-attachment-open"]').exists(), "封面期间工具栏还在重复提供打开入口").toBe(false);
+    // 必须有且只有一个「查看原图」入口
+    expect(w.findAll('[data-im="card-cover-open"]')).toHaveLength(1);
+    // 别的基础能力一个不少
+    expect(toolbar.find('[data-im="card-edit"]').exists()).toBe(true);
+    expect(toolbar.find('[data-im="card-attach-file"]').exists()).toBe(true);
+    expect(toolbar.find('[data-im="card-more"]').exists()).toBe(true);
+    expect(toolbar.find('[data-im="card-fold"]').exists()).toBe(true);
+  });
+
+  it("占位说明不显示：新文件卡的默认 content（defaultCardSeed）不是真实说明", async () => {
+    const w = mountCard(imageFileCard({ content: defaultCardSeed("file").content }));
+    await flushPromises();
+
+    expect(w.find('[data-im="card-cover"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-cover-desc"]').exists(), "占位说明被当成了真实说明").toBe(false);
+    expect(w.text()).not.toContain(defaultCardSeed("file").content);
+    expect(w.text()).not.toContain("还没有补充说明");
+  });
+
+  it("折叠态：仍保留封面带", async () => {
+    const w = mountCard(imageFileCard({ folded: true }));
+    await flushPromises();
+    expect(w.find('[data-im="card-cover"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
+  });
+
+  it("编辑态：不铺封面（能改名称，编辑要能看清表单）", async () => {
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+    await w.get('[data-im="card-edit"]').trigger("click");
     await nextTick();
+
+    expect(w.find('[data-im="card-cover"]').exists(), "编辑态不该铺封面").toBe(false);
+    const nameInput = w.get('[data-im="card-meta-name"]');
+    expect((nameInput.element as HTMLInputElement).value).toBe("照片.jpeg");
+
+    // 只改名称也必须真的形成一次板面变更（完成编辑 = 再点一次编辑按钮）
+    await nameInput.setValue("改名.jpeg");
+    await w.get('[data-im="card-edit"]').trigger("click");
+    await nextTick();
+    const patches = w.emitted("patch") as unknown[][];
+    expect(patches, "改了名称却没有产生板面变更").toBeTruthy();
+    expect((patches[0][1] as { meta: { name: string } }).meta.name).toBe("改名.jpeg");
+  });
+
+  it("查看原图：走既有 openAttachment，不展开卡片、不改尺寸 / 位置、不产生板面变更", async () => {
+    const card = imageFileCard();
+    const w = mountCard(card);
+    await flushPromises();
+    const geometry = JSON.stringify({ x: card.x, y: card.y, w: card.w, h: card.h });
+
+    await w.get('[data-im="card-cover-open"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.openAttachment).toHaveBeenCalledTimes(1);
+    const [refArg] = mocks.openAttachment.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(refArg.id).toBe("att_img");
+    expect(refArg.name).toBe("照片.jpeg");
+    expect(w.get('[data-im="card-attachment-open-status"]').text()).toContain("新标签页");
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
+    expect(JSON.stringify({ x: card.x, y: card.y, w: card.w, h: card.h })).toBe(geometry);
+    expect(w.emitted("patch")).toBeUndefined();
+  });
+
+  it("封面 CSS：object-fit 是 contain（等比完整显示，不拉伸不裁切），留白用既有令牌", () => {
+    const cover = source("components/interactive/CardAttachmentPreview.vue");
+    const img = cssBlock(cover, ".cover-img {");
+    expect(img, "封面图还在裁切").toContain("object-fit: contain");
+    expect(img).not.toContain("object-fit: cover");
+    // 图片层不吃指针事件：连接点 / 尺寸把手 / 工具栏不会被它盖住
+    expect(img).toContain("pointer-events: none");
+    // 封面层自己也不产生滚动条
+    const layer = cssBlock(cover, ".card-cover {");
+    expect(layer).toContain("inset: 0");
+    expect(layer).toContain("overflow: hidden");
+    expect(layer).toContain("pointer-events: none");
+    // 大片蒙版（上下各 42%）不再存在
+    expect(cover).not.toContain(".cover-scrim");
+    expect(cover).not.toContain("height: 42%");
+    // 常驻占位文案已删除
+    expect(cover).not.toContain("图片：还没有补充说明");
+  });
+});
+
+describe("图片文件卡：卡片内不再有阅读态", () => {
+  it("没有 card-preview-toggle 入口、没有 card-preview-host、data-card-state 不是 reading", async () => {
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
+    expect(w.find('[data-im="card-preview-toggle"]').exists(), "图片卡还在给卡片内阅读入口").toBe(false);
+    expect(w.find('[data-im="card-preview-host"]').exists(), "图片卡挂上了卡片内预览").toBe(false);
+    expect(w.text()).not.toContain("展开预览");
+    expect(w.text()).not.toContain("收起预览");
+  });
+
+  it("就算 store 里被标记过展开（旧数据 / 别的入口），图片卡也不进入阅读态", async () => {
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+    const store = useInteractiveStore();
+    store.toggleCardPreview("card_img");
+    await nextTick();
+
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
+    expect(w.find('[data-im="card-preview-host"]').exists()).toBe(false);
     expect(w.find('[data-im="card-cover"]').exists()).toBe(true);
   });
+});
 
-  it("编辑态：不铺封面（保留表单）", async () => {
-    const w = mountCard(baseCard());
-    await nextTick();
-    const edit = w.find('[data-im="card-edit"]');
-    expect(edit.exists(), "找不到编辑入口").toBe(true);
-    await edit.trigger("click");
-    await nextTick();
-    expect(w.find('[data-im="card-cover"]').exists(), "编辑态不该铺封面").toBe(false);
-  });
+describe("别的材料不受影响（本轮明确要求保留的能力）", () => {
+  it("非图片文件卡（PDF / Office）仍有「展开预览 / 收起预览」与阅读主体", async () => {
+    const w = mountCard(pdfFileCard());
+    await flushPromises();
 
-  it("阅读态：不铺封面（真实预览接管），附件信息仍在", async () => {
-    const w = mountCard(baseCard());
-    await nextTick();
-    const toggle = w.find('[data-im="card-preview-toggle"]');
-    expect(toggle.exists(), "找不到展开预览入口").toBe(true);
+    expect(w.find('[data-im="card-cover"]').exists()).toBe(false);
+    const toggle = w.get('[data-im="card-preview-toggle"]');
+    expect(toggle.text()).toBe("展开预览");
     await toggle.trigger("click");
     await nextTick();
-    expect(w.find('[data-im="card-cover"]').exists(), "阅读态不该铺封面").toBe(false);
+
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
+    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("收起预览");
     expect(w.find('[data-im="card-preview-host"]').exists()).toBe(true);
+  });
+
+  it("文字卡仍有「展开预览 / 收起预览」", async () => {
+    const w = mountCard(
+      imageFileCard({ id: "card_text", kind: "text", content: "一段正文", meta: {} }),
+    );
+    await flushPromises();
+
+    const toggle = w.get('[data-im="card-preview-toggle"]');
+    expect(toggle.text()).toBe("展开预览");
+    await toggle.trigger("click");
+    await nextTick();
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
+  });
+
+  it("非图片文件卡的工具栏行为不变：card-attachment-open 仍在", async () => {
+    const w = mountCard(pdfFileCard());
+    await flushPromises();
+    expect(w.find('[data-im="card-cover"]').exists()).toBe(false);
+    expect(w.get('[data-im="card-toolbar"] [data-im="card-attachment-open"]').exists()).toBe(true);
+  });
+});
+
+describe("图片失败：给原因 + 可用入口", () => {
+  it("解码失败：原图片区域显示原因，并给出重试 / 查看原图 / 重新关联", async () => {
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+    const img = w.find('[data-im="card-cover-img"]');
+    expect(img.exists()).toBe(true);
+
+    await img.trigger("error");
+    await nextTick();
+
+    expect(w.find('[data-im="card-cover-img"]').exists(), "解不开的图片还挂在画面上").toBe(false);
+    expect(w.find('[data-im="card-cover-failed"]').exists()).toBe(true);
+    expect(w.get('[data-im="card-attachment-preview-state"]').text()).toMatch(/解不开|损坏/);
+    expect(w.find('[data-im="card-cover-retry"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-cover-original"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-cover-relink"]').exists()).toBe(true);
+  });
+
+  it("重试：重走既有预览 blob 加载（旧 URL 释放、只留一个新 URL）", async () => {
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+    expect(created).toEqual(["blob:qio-cover-1"]);
+    await w.get('[data-im="card-cover-img"]').trigger("error");
+    await nextTick();
+
+    mocks.fetchAttachmentContent.mockClear();
+    await w.get('[data-im="card-cover-retry"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.fetchAttachmentContent).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchAttachmentContent).toHaveBeenCalledWith("att_img");
+    expect(revoked, "旧 blob URL 没有释放").toContain("blob:qio-cover-1");
+    expect(created).toHaveLength(2);
+    const img = w.get('[data-im="card-cover-img"]');
+    expect(img.attributes("src")).toBe("blob:qio-cover-2");
+  });
+
+  it("请求失败：显示 previewImage.error() 的真实原因，不谎报成功", async () => {
+    mocks.fetchAttachmentContent.mockRejectedValue(new Error("401：本机 API 拒绝了这次请求"));
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+
+    expect(w.find('[data-im="card-cover-img"]').exists()).toBe(false);
+    const reason = w.get('[data-im="card-attachment-preview-state"]').text();
+    expect(reason).toContain("401");
+    expect(w.find('[data-im="card-cover-retry"]').exists()).toBe(true);
+    // 失败时入口在失败区域里（不在底部小条上各留一个，避免两个入口各自 busy）
+    expect(w.find('[data-im="card-cover-original"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-cover-open"]').exists()).toBe(false);
+  });
+
+  it("「重新关联」把事件交给 BoardCard，由既有 pickAttachment 处理", async () => {
+    mocks.fetchAttachmentContent.mockRejectedValue(new Error("文件丢失：附件不在了"));
+    const w = mountCard(imageFileCard());
+    await flushPromises();
+
+    await w.get('[data-im="card-cover-relink"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.pickBrowserFile).toHaveBeenCalledTimes(1);
+    // 取消选择也要如实说出来（不假装读到了内容）
+    expect(w.text()).toContain("没有选择文件");
   });
 });
