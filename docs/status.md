@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-14（**v0.2.7 已发布**（tag `v0.2.7` → `2da1f5ee`，发布闸门 18/18 PASS，安装包 sha256 `2d428936…`），内容为**互动模式界面收敛与回归修复**：卡片表面收敛（文字卡编辑面 / 文件卡）、.md 文件卡做解析、西 / 北把手拉不动修复、图片卡封面回归修复，见 P63 与 `docs/releases/v0.2.7.md`；上一版 v0.2.6（tag `v0.2.6` → `18ea6e59`）是互动模式十个实机问题的修复与界面文案精简；v0.2.5（tag `fa9d0cfb`）是互动空间结构与自由尺寸调整，见 P36；更早的 v0.2.4（tag `1755c105`）是附件上传 CORS 预检热修，统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。**2026-10-14 第十二轮：统一滚动体验 / 对话不横向滚动 / 表格适配已完成（见 P39）**，并已合并进 main（`3a4f256e`，覆盖清单见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`）；同一轮还并入了 **0.2.5 互动模式两处回归修复**（附件成功提示常驻 / 连接点被尺寸热区遮挡，见 P40）。
+最后核对：2026-10-15（**v0.2.7 已发布**（tag `v0.2.7` → `2da1f5ee`，发布闸门 18/18 PASS，安装包 sha256 `2d428936…`），内容为**互动模式界面收敛与回归修复**：卡片表面收敛（文字卡编辑面 / 文件卡）、.md 文件卡做解析、西 / 北把手拉不动修复、图片卡封面回归修复，见 P63 与 `docs/releases/v0.2.7.md`；上一版 v0.2.6（tag `v0.2.6` → `18ea6e59`）是互动模式十个实机问题的修复与界面文案精简；v0.2.5（tag `fa9d0cfb`）是互动空间结构与自由尺寸调整，见 P36；更早的 v0.2.4（tag `1755c105`）是附件上传 CORS 预检热修，统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。**2026-10-14 第十二轮：统一滚动体验 / 对话不横向滚动 / 表格适配已完成（见 P39）**，并已合并进 main（`3a4f256e`，覆盖清单见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`）；同一轮还并入了 **0.2.5 互动模式两处回归修复**（附件成功提示常驻 / 连接点被尺寸热区遮挡，见 P40）。
 **2026-10-14 第十三轮：板面操作提示不再常驻**（改为「本机没用过查看手势时显示一次」，说明并入帮助，见 P41）；
 **第十四轮：对话窗口在短窗口下不再把输入框裁掉**（见 P42）；
 **第十五轮：卡片局部工具栏不再压住卡片**（见 P43）；
@@ -29,7 +29,9 @@
 **第三十二轮：画布随内容增长**（方案 B 第一步，见 P60）；**第三十三轮：画布向左上也无限**（原点重定位，见 P61）；
 **第三十四轮：局部工具栏不再与卡片分离**（独立不缩放浮层 + 真实 DOM 外框锚点 + 单帧合并调度，见 P62）；
 **第三十五轮：卡片表面收敛**（文字卡编辑面只剩工具栏 + 吃满卡片的输入框、完成编辑改为退出选中 / 再点编辑按钮、
-换行修复、文件卡只显示文件名且按钮全在工具栏）与**西 / 北把手拉不动修复**（见 P63）。核对方法见文末。
+换行修复、文件卡只显示文件名且按钮全在工具栏）与**西 / 北把手拉不动修复**（见 P63）；
+**第三十六轮：图片展示简化**（图片统一为文件卡附件、常态即完整展示、取消卡片内展开预览与旧 `image` 卡片类型，
+见 P64）。核对方法见文末。
 
 ---
 
@@ -4972,3 +4974,72 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **Known limitations：** 详情收起后，失败原因只在提交区首行显示（完整过程要点开「查看过程」）。
 - **后续依赖：** 与 P41–P48 同一轮测试中发现；P41 记录的另一处未修问题（板面非表面区域缺 `preventDefault`
   导致原生选择自动滚动）仍未处理。
+
+### P64 — 图片展示简化：图片统一为文件卡附件、常态即完整展示（2026-10-15 第三十六轮）
+
+- **Status：** completed
+- **Implementation：**
+  - 需求（用户在测试中提出并逐项确认）：互动模式里的图片不再是一种卡片，而是**文件卡关联的附件**；
+    图片在卡片里**常态即完整显示**（等比、不裁切、不出卡片内滚动条），
+    卡片内不再有「展开预览 / 收起预览」，也不再保留旧图片卡的迁移与兼容回退。
+  - **统一为文件卡附件**：`kind="image"` 从前端类型（`frontend/src/interactive/types.ts` 的 `CardKind`）、
+    卡片默认值、创建 / 展示 / 编辑 / 保存 / 提交 / 状态分支里删除；卡片侧读附件**只看 `meta.file`**，
+    不再回退 `meta.image`（`frontend/src/interactive/materials.ts`、`previewPlan.ts`、
+    `attachmentPreview.ts`、`drafts.ts`、`submission.ts` 一并收敛）。添加菜单只剩「文字注释 / 文件」，
+    附件是不是图片由**文件本身**决定；图片附件的判定只有一份口径
+    `frontend/src/interactive/materials.ts` 的 `cardAttachmentIsImage`（store 与组件共用）。
+  - **常态即完整展示**：`frontend/src/components/interactive/CardAttachmentPreview.vue` 的封面变体改成
+    `object-fit: contain`（留白走 `--bg-inset`），去掉上下大面积蒙版与重复说明，只留一行真实说明 + 「查看原图」；
+    图片层不吃指针事件、禁止浏览器原生图片拖动；卡片尺寸 / 位置仍由用户设置（`card.w/h`），
+    不因图片加载、选中或查看原图而重排。
+  - **图片不进卡片内展开列表**：`frontend/src/stores/interactive.ts` 的 `toggleCardPreview` 在入口拒绝图片
+    （返回未展开、不假成功），`expandedCardIds` / `previewExpandedCount` 过滤图片，
+    板面变化时重新判定并只移除「已变成图片」的 id（`flush: "sync"`，界面不会有一帧把图片画成阅读态）；
+    `BoardCard.vue` 的图片文件卡不再渲染展开入口、不挂 `CardInlinePreview`，
+    `CardInlinePreview.vue` 的图片阅读分支删除（PDF / Office / 代码 / markdown 原样保留）。
+  - **「查看原图」复用既有 `openAttachment`**（带认证 fetch / 桌面原生打开）：不新增高清接口、
+    不挂第二套图片查看器；解码失败（文件损坏 / 不是真图片）、取字节失败、文件丢失、超限
+    都在**原图片区域**显示真实原因，并给出重试（重走既有 blob 加载）/ 查看原图 / 重新关联附件入口。
+  - **后端同口径**：`backend/src/agent/interactive/models.py` 的 `CARD_KINDS` / `MATERIAL_KINDS`、
+    `interactive/materials.py`（`resolve_images` / `_deliverable_image` / `_image_fact` / `_media_attachment`）、
+    `api/preview_routes.py` 的 `_card_attachment_id` 全部只认 `meta.file`，无调用方的 `_image_entry` 分支删除；
+    **保留** `image_delivered` / `image_unsupported` 的视觉交付契约（见 `docs/interactive-vision-contract.md`）。
+  - **可达性回归修复（真实应用核对发现）**：封面模式下 `.card-body` / `.card-head` / `.card-meta` 画在封面层之上，
+    `.card-body` 又是可命中的空容器，真实指针点不到「查看原图 / 重试 / 重新关联」
+    （`elementFromPoint` 命中 `card-body`）；改为封面模式下正文层让开指针命中、只对真正需要交互的子树放行
+    （草稿 / 冲突提示仍可见可点，不靠移动 z-index 解决），并补源码守卫。
+  - **删除的旧分支**：旧图片卡迁移成 `file` / `meta.image` 搬到 `meta.file`（含老键回退）、`meta.image` 读取、
+    图片的 `object-fit: cover` 裁切展示与「查看」浮层文案、图片的卡片内阅读态与 `CardInlinePreview` 图片渲染分支、
+    前后端接口与状态分支里的 `kind="image"`。
+  - **保留**：文件材料的附件关联 / 上传 / 重新关联 / 打开；其它材料（文字卡、PDF / Office / 代码 / 文本）
+    的展开阅读、临时布局与阅读位置服务；模型视觉输入与 `image_delivered` / `image_unsupported` 事实。
+- **Tests：** 前端定向用例 `frontend/src/interactive/__tests__/imageCardPreviewBlocked.test.ts`、
+  `frontend/src/interactive/__tests__/board.test.ts`、`frontend/src/interactive/__tests__/materialType.test.ts`、
+  `frontend/src/interactive/__tests__/attachmentPreview.test.ts`、`frontend/src/interactive/__tests__/previewPlan.test.ts`、
+  `frontend/src/components/interactive/__tests__/textCardUnified.test.ts`、
+  `frontend/src/interactive/__tests__/recovery-a-n6-draft-input.test.ts`、
+  `frontend/src/components/interactive/__tests__/image-cover-card.test.ts`、
+  `frontend/src/components/interactive/__tests__/CardAttachmentPreview.test.ts`、
+  `frontend/src/components/interactive/__tests__/CardInlinePreview.test.ts`、
+  `frontend/src/components/interactive/__tests__/recovery-a-n6-board-card-restore.test.ts`、
+  `frontend/src/components/interactive/__tests__/recovery-a-integration-n6-store-input.test.ts`、
+  `frontend/src/components/interactive/__tests__/scroll-board-viewport.test.ts`、
+  `frontend/src/components/interactive/__tests__/scroll-horizontal-fit.test.ts`、
+  `frontend/src/components/interactive/__tests__/image-card-simplification.test.ts`；
+  后端 `backend/tests/test_interactive_materials.py`、`backend/tests/test_interactive_board.py`、
+  `backend/tests/test_interactive_vision.py`、`backend/tests/test_interactive_understanding.py`、
+  `backend/tests/test_preview_api.py`、`backend/tests/test_interactive_intents.py`、
+  `backend/tests/test_text_license.py`、`backend/tests/test_text_migration.py`、
+  `backend/tests/test_frozen_materials_packaging.py`。
+  完整前端 / 后端套件与 `npx vue-tsc --noEmit` 由 Lead 本轮各跑一次。
+- **验证：** 后端定向用例全部通过；前端定向用例全部通过；
+  `python scripts/check_docs.py` 与 `python scripts/check_docs.py --selftest` 通过。
+  真实应用核对由独立验收子任务在隔离端口执行（含封面按钮真实命中）。
+- **Known limitations：**
+  - 遗留 `kind="image"` 数据**不做迁移 / 自动转换 / 兼容恢复**：加载归一化时按未知 kind 的既有兜底落到文字卡，
+    旧图片卡上的附件关联不再显示；需要保留旧图的板面必须手动重新关联附件。
+  - 图片不再有卡片内阅读态：超长图在卡片可用空间里等比缩小后细节较小，看细节要走「查看原图」；
+    这是本轮的取舍，不是缺陷。
+  - 封面模式下卡片正文层不再接收指针（事件穿到封面与卡片本身），卡片正文里的交互只保留显式放行的子树
+    （草稿 / 冲突提示、头部按钮）；本轮未做真机 Tauri 壳内复验。
+
