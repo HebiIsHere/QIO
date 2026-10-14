@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 星球 3D 场景组合式函数：透明球 + 球面 SDF 融合环 + 聚焦/环波交互。
  * 移植自参考原型 .superpowers/brainstorm/vs-1786250923/content/planet3d.html。
  *
@@ -14,7 +14,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import type { TopicPosition } from "../services/api";
 import type { TopicData } from "../planet/topicData";
 import { RING_FRAG, RING_VERT, makeRingUniforms } from "../planet/planetShader";
-import { LEVEL_HW } from "../planet/topicData";
+import { EMPTY_SLOT_WEIGHT, LEVEL_HW, ringAnchorsForSlots } from "../planet/topicData";
 import {
   backSlotOrder,
   clampPolar,
@@ -491,9 +491,8 @@ function motionDuration(ms: number): number {
     browseSession = session;
     windowChanged = options.onWindowChange ?? null;
     placeRng = mulberry32((options.seed ?? 1) >>> 0);
-    slotDirs = session
-      .windowMembers()
-      .map((m) => (m ? new THREE.Vector3(...m.dir) : new THREE.Vector3(0, 1, 0)));
+    const members = session.windowMembers();
+    slotDirs = members.map((m) => (m ? new THREE.Vector3(...m.dir) : new THREE.Vector3(0, 1, 0)));
     const material = dotMat ?? DOT_FALLBACK_MATERIAL;
 
     if (!dotPool || dotPool.capacity !== session.capacity) {
@@ -514,7 +513,8 @@ function motionDuration(ms: number): number {
       });
     }
     dotMeshes = dotPool.all();
-    currentData = slotDirs.map((dir, i) => ({ id: `slot-${i}`, ci: i % 3, pos: dir, w: 1 }));
+    // 只有真的有话题的槽位才是环锚点：空槽没有圆点，也不该画出「里面什么都没有」的环
+    currentData = ringAnchorsForSlots(slotDirs, members.map((m) => Boolean(m)));
     applyRingUniforms(currentData);
     markers.value = dotMeshes;
     refreshWindow(performance.now());
@@ -541,7 +541,8 @@ function motionDuration(ms: number): number {
         mesh.userData.windowTopicId = members[slot]?.topic.topic_id ?? null;
       }
     });
-    currentData = slotDirs.map((dir, i) => ({ id: `slot-${i}`, ci: i % 3, pos: dir, w: 1 }));
+    // 空槽不带环（同上）：整窗同步时也要按「这个槽位有没有话题」重算权重
+    currentData = ringAnchorsForSlots(slotDirs, members.map((m) => Boolean(m)));
     applyRingUniforms(currentData);
     windowChanged?.();
   }
@@ -550,7 +551,13 @@ function motionDuration(ms: number): number {
   function applySwap(slot: number, topic: BrowseTopic | null, dir: THREE.Vector3, now: number) {
     if (!dotPool) return;
     slotDirs[slot] = dir.clone().normalize();
-    currentData[slot] = { id: `slot-${slot}`, ci: slot % 3, pos: slotDirs[slot], w: 1 };
+    // 槽位变空（topic = null）时同样要中和权重，否则旋转到空位会留下一个孤零零的环
+    currentData[slot] = {
+      id: `slot-${slot}`,
+      ci: slot % 3,
+      pos: slotDirs[slot],
+      w: topic ? 1 : EMPTY_SLOT_WEIGHT,
+    };
     const mesh = dotPool.place(slot, topic, slotDirs[slot]);
     mesh.userData.enterAt = now;
     mesh.userData.windowTopicId = topic?.topic_id ?? null;

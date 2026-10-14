@@ -17,6 +17,34 @@ export const LEVEL_HW = [5.0, 3.25, 2.0];
 export const MIN_SEP = 0.095;
 
 /**
+ * 空槽位的环权重哨兵：与 `makeRingUniforms` 给「未使用 uniform 槽」的取值一致。
+ *
+ * 场项是 `ang − w·rL`：w = −100 时变成 `ang + 100·rL`，比三层环半径（0.14 / 0.22 / 0.34）
+ * 大两个数量级，任何方向都不会与环层相交 —— 空槽因此不画环，也不会推开真实话题的环
+ * （smin 取的是更小的那一项）。
+ */
+export const EMPTY_SLOT_WEIGHT = -100;
+
+/**
+ * 展示窗口 → 融合环锚点：**只有真的有话题的槽位才是锚点**。
+ *
+ * 2026-10-14 修：原来直接按槽位生成（空槽也带权重 1），空槽既没有圆点也没有标签，
+ * 却在球面上画出一圈圈「里面什么都没有」的环 —— 用户报告「星球这里多了三圈圆环」。
+ * 空槽保留占位（数组下标仍然对应槽位，applySwap 可以原地替换），只是权重被中和。
+ */
+export function ringAnchorsForSlots(
+  dirs: readonly { x: number; y: number; z: number }[],
+  occupied: readonly boolean[],
+): TopicData[] {
+  return dirs.map((dir, i) => ({
+    id: `slot-${i}`,
+    ci: i % 3,
+    pos: new THREE.Vector3(dir.x, dir.y, dir.z),
+    w: occupied[i] ? 1 : EMPTY_SLOT_WEIGHT,
+  }));
+}
+
+/**
  * 由簇中心 + 数量生成话题点（单位球面，簇内最小角间距 MIN_SEP）。
  * 使用固定种子 LCG，保证每次生成结果一致（快照/测试可复现）。
  */
