@@ -181,11 +181,16 @@ export function clampCardRect(rect: { x: number; y: number; w: number; h: number
     左边与上边仍以 0 为界：**坐标原点不漂**（否则卡片的 x/y 会变负数，
     渲染、连线、组框、工具栏换算全都要跟着改一遍，代价远大于收益）。
   */
+  /*
+    2026-10-14（方案 B 第二步）：左右上下都不再有边界 —— 坐标允许为负，
+    由 rebaseToFit 在落下之后把整块板面整体平移回 ≥0 的区域（原点重定位）。
+    这里只挡离谱值，保证坐标始终是有限数。
+  */
   return {
     w,
     h,
-    x: Math.max(0, Math.min(BOARD_COORD_LIMIT - w, asFloat(rect.x, 0))),
-    y: Math.max(0, Math.min(BOARD_COORD_LIMIT - h, asFloat(rect.y, 0))),
+    x: Math.max(-BOARD_COORD_LIMIT, Math.min(BOARD_COORD_LIMIT - w, asFloat(rect.x, 0))),
+    y: Math.max(-BOARD_COORD_LIMIT, Math.min(BOARD_COORD_LIMIT - h, asFloat(rect.y, 0))),
   };
 }
 
@@ -1204,6 +1209,40 @@ function freeDropRing(ring: number): Array<[number, number]> {
  * 纯函数、不改状态：以落点为中心一圈圈向外找第一个与**别的卡片**都不相交的位置。
  * 找不到就如实返回原落点 —— 不假装让开了，也不把卡片推出画布（夹取由 clampCardRect 兜住）。
  */
+/** 整块板面整体平移：卡片与组框一起走，语义不变（位置不构成意图依据）。 */
+export function rebaseOrigin(state: BoardState, dx: number, dy: number): BoardState {
+  if (!dx && !dy) return state;
+  const work = normalizeState(state);
+  const cards = work.cards.map((card) =>
+    card.deleted ? card : { ...card, x: card.x + dx, y: card.y + dy },
+  );
+  const groups = work.groups.map((group) => ({ ...group, x: group.x + dx, y: group.y + dy }));
+  return normalizeState({ ...work, cards, groups });
+}
+
+/**
+ * 让板面回到「内容全部 ≥ pad」的坐标系，返回需要整体平移的量（2026-10-14 方案 B 第二步）。
+ *
+ * 为什么用"整体平移"而不是"允许负坐标"：卡片的 x/y 会被渲染、连线、组框、工具栏换算、
+ * 板面可用区发布各自读一遍 —— 让坐标变负就得改所有这些地方；整体平移把它们一次性免掉，
+ * 语义上也没有损失（位置只是位置）。
+ */
+export function rebaseToFit(state: BoardState, pad: number): { dx: number; dy: number } {
+  const work = normalizeState(state);
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  for (const card of work.cards) {
+    if (card.deleted) continue;
+    minX = Math.min(minX, card.x);
+    minY = Math.min(minY, card.y);
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return { dx: 0, dy: 0 };
+  return {
+    dx: minX < pad ? pad - minX : 0,
+    dy: minY < pad ? pad - minY : 0,
+  };
+}
+
 export function freeDropSpot(
   state: BoardState,
   cardId: string,

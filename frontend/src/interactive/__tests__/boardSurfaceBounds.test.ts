@@ -14,6 +14,8 @@ import {
   clampBoardBounds,
   dropCard,
   emptyState,
+  rebaseOrigin,
+  rebaseToFit,
   updateCard,
 } from "../board";
 import type { BoardCard, BoardState } from "../types";
@@ -50,9 +52,21 @@ const pos = (s: BoardState, id = "c1") => {
 };
 
 describe("板面坐标夹在画布范围内", () => {
-  it("拖到画布左上之外：夹回原点（负坐标会让卡片永远看不见）", () => {
+  /*
+    2026-10-14（方案 B 第二步）：左上也不再有边界 —— 纯函数层允许负坐标，
+    由 BoardCanvas 在落下后做「原点重定位」（把整块板面整体平移回 ≥0，并补滚动量），
+    所以负坐标只是**瞬态**，不会留下"永远看不见"的卡片。
+  */
+  it("拖到画布左上之外：纯函数层允许负坐标（由画布层重定位收口）", () => {
     const next = dropCard(state(card()), "c1", -64, -63.84).state;
-    expect(pos(next)).toEqual({ x: 0, y: 0 });
+    const p = pos(next);
+    expect(p.x).toBeLessThan(0);
+    expect(p.y).toBeLessThan(0);
+    // 重定位是纯函数：整体平移后所有内容都回到 ≥0
+    const fit = rebaseToFit(next, 0);
+    expect(fit.dx).toBeGreaterThan(0);
+    const rebased = rebaseOrigin(next, fit.dx, fit.dy);
+    expect(pos(rebased)).toEqual({ x: 0, y: 0 });
   });
 
   /*
@@ -72,11 +86,12 @@ describe("板面坐标夹在画布范围内", () => {
     expect(pos(next)).toEqual({ x: 320, y: 240 });
   });
 
-  it("新建卡片：调用方给的负坐标同样被夹住", () => {
+  it("新建卡片：调用方给的负坐标同样保留（重定位统一收口）", () => {
     const next = addCard(emptyState("board_t"), { kind: "text", x: -40, y: -10 });
     const created = next.cards[0];
-    expect(created.x).toBe(0);
-    expect(created.y).toBe(0);
+    expect(created.x).toBe(-40);
+    const fit = rebaseToFit(next, 0);
+    expect(rebaseOrigin(next, fit.dx, fit.dy).cards[0].x).toBe(0);
   });
 
   it("clampBoardBounds：只改越界的卡片，卡片数量与其它字段（seq 等）都保留", () => {
@@ -91,7 +106,8 @@ describe("板面坐标夹在画布范围内", () => {
     } as unknown as BoardState;
     const out = clampBoardBounds(raw);
     expect(out.cards).toHaveLength(2);
-    expect(out.cards[0].y).toBe(0);
+    // 2026-10-14（方案 B 第二步）：负坐标不再被夹回 0（重定位统一收口），只挡离谱值
+    expect(out.cards[0].y).toBe(-63.84);
     expect(out.cards[1].y).toBe(100);
     expect((out as unknown as { seq: number }).seq).toBe(121);
     // 没有越界卡片时必须原样返回（不改对象、不改字段）
@@ -100,8 +116,9 @@ describe("板面坐标夹在画布范围内", () => {
   });
 
   it("updateCard 也不能把卡片挪出画布（展开让位 / 尺寸调整走同一条路）", () => {
+    // 2026-10-14：负坐标允许（由画布层的重定位收口）
     const moved = updateCard(state(card()), "c1", { x: -5, y: -5 });
-    expect(pos(moved)).toEqual({ x: 0, y: 0 });
+    expect(pos(moved)).toEqual({ x: -5, y: -5 });
     const resized = updateCard(state(card()), "c1", { w: BOARD_SURFACE_W + 500, h: BOARD_SURFACE_H + 500 });
     const grown = resized.cards.find((c) => c.id === "c1")!;
     // 2026-10-14：右上不再夹取 —— 尺寸可以超出旧画布（画布会跟着长），只保证数值有限

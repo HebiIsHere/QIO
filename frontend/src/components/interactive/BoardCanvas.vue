@@ -51,7 +51,12 @@ import {
 } from "../../interactive/board";
 // 局部工具栏的落点决策（纯函数，单测在 interactive/__tests__/overlayPlacement.test.ts）
 import { placeCardOverlay } from "../../interactive/overlayPlacement";
-import { BOARD_SURFACE_H, BOARD_SURFACE_W } from "../../interactive/board";
+import {
+  BOARD_SURFACE_H,
+  BOARD_SURFACE_W,
+  rebaseOrigin,
+  rebaseToFit,
+} from "../../interactive/board";
 import {
   clampViewport,
   effectiveRect,
@@ -1106,7 +1111,24 @@ function onPointerUp() {
     // 时间戳每次都不同，不能直接比较 JSON：只比较**真实含义**（位置 / 成员 / 顺序 / 选择 / 链接 / 勾选等）
     const changed = stateDiffers(normalizeState(current), result.state);
     if (changed) {
-      commit(result.state, label);
+      /*
+        2026-10-14（方案 B 第二步：左上也要无限）：
+        卡片被拖到负坐标（画布左上之外）时，把**整块板面整体平移**回 ≥0 的区域，
+        并把视图滚动量补上同样的量 —— 卡片在屏幕上原地不动，用户察觉不到坐标系换了原点。
+        这样卡片的 x/y 永远是"相对画布原点"的非负值，渲染 / 连线 / 组框 / 工具栏换算都不用改。
+      */
+      let nextState = result.state;
+      // 阈值是 0：只有真的拖到负坐标才重定位（用留白当阈值会让普通拖动也整体平移）
+      const rebase = rebaseToFit(nextState, 0);
+      if (rebase.dx || rebase.dy) {
+        nextState = rebaseOrigin(nextState, rebase.dx, rebase.dy);
+        const scale = view.value.scale;
+        applyScroll({
+          x: scroll.value.x + rebase.dx * scale,
+          y: scroll.value.y + rebase.dy * scale,
+        });
+      }
+      commit(nextState, label);
       /*
         2026-10-14（用户要求「把这个删掉」）：**只移动位置不再弹提示**。
         位置不构成意图依据这件事已经写在提交区与操作说明里，每次拖动都弹一条属于噪音；
