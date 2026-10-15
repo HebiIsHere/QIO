@@ -1252,3 +1252,141 @@ export function findFreeSlot(input): ResizeBox;
 - 不把滚动条外观做成用户可选的主题皮肤；只提供「自动显示 / 始终显示」。
 - 不为系统文件选择器与外部应用做样式覆盖（不属于 QIO 自有界面）。
 
+
+---
+
+## 17. 结果卡 Markdown、几何权威化与续用协作（2026-10-15 第十三轮）
+
+**覆盖范围**：本节**取代**下列旧条文，其余各节凡与本节冲突者以本节为准：
+
+- §1.4「QIO 结果 `reply`：不进提交载荷」→ 见 17.2（改为**用户许可后才进入范围**）。
+- §15.1 的「阅读展开（临时让位）」一行与 §15.2 的「展开中只提交 `{w, h}`」→ 见 17.1。
+- §15.6 的「临时显示布局里的西/北把手按左上角锚定」→ 见 17.1（不再有临时显示布局）。
+- §8.2 的「画布范围是状态不变量」**仍然成立**（`0..BOARD_SURFACE_W/H` 是**板面画布**边界），
+  但它**不是视野边界**：本节禁止任何按**当前可用视野**夹取卡片位置/尺寸的第二套规则。
+- §14.5 的操作集合形状按本节 17.4 扩展。
+
+本轮**不做**：通用工具调用扩展、删除 / 隐藏、改用户已有卡片正文、替用户改许可、
+其他 P2 外观功能、任意复杂自动排版系统、打包/发布/合并 main。
+
+### 17.1 正式几何是唯一权威（取代 §15.1 / §15.2 的临时槽位口径）
+
+- `board.cards[].x/y/w/h` 是卡片外框的**唯一**来源；**没有**第二套随视野变化的卡片位置。
+- 画布缩放 / 平移、窗口尺寸变化、聊天窗口与工具栏开合、审批浮层开合或尺寸变化
+  **只**影响查看方式与浮层自身布局：**不得**改变卡片坐标、尺寸、组成员、成员顺序，
+  也不得因此产生新的遮挡。
+- **展开阅读**（`expandedCardIds`）只切换**卡片内部内容呈现**：不改变自己或任何其他卡片的外框、
+  不推开周围卡片、不把卡片夹回视野。需要更大外框时由用户**明确的尺寸调整**完成。
+- 卡片可以大于当前视野、可以部分或完全在屏外；用户通过平移与缩放查看。
+  **禁止**为了"完整显示"自动移动 / 缩小 / 持续追踪卡片。
+- 仅在用户**明确点击"定位／完整查看"**时一次性调整视野；不改变卡片本身；
+  大卡片无法完整容纳时采用明确的视图策略（例如按最小边缩放并居中一次），**不产生两边轮流对齐**。
+- `cardLayout.planExpandedLayout` 冻结为**恒等映射**：`slots` 逐字段等于正式矩形，`displaced` 恒为 `[]`；
+  `EXPANDED_PREVIEW_SIZE` 不再参与卡片外框（标注 deprecated，无生产引用）。
+  §15 的临时让位实现（`expandedRect` 的视野夹取、`displaceLegacy` / `displaceEnhanced` / `pushAway` /
+  `candidateMove` / `MAX_DISPLACE_ROUNDS` 的生产用法）与 `BoardCanvas` 的会话内尺寸标记
+  `userSizedCards` 一并删除。
+- 提交口径统一为 `{x, y, w, h}`：不再有"展开中只提交 `{w, h}`"的分支。
+- 尺寸调整上限**不由视野决定**：空白区域允许继续扩大，上限是 `CARD_MAX_SIZE = 1600×1200`
+  （下限 `CARD_MIN_SIZE = 180×96`）；"当前视野大小"永远不是卡片上限。
+- 拖动与拉伸期间关闭位置 / 尺寸过渡；松手后的外框与**最后一帧预览**逐字段一致。
+
+### 17.2 结果卡可以继续参与协作（取代 §1.4 的 reply 行）
+
+- `reply` 卡**默认仍然不可见**（QIO 自己的产出不等于获得许可，`checked = false`）；
+  用户主动勾选"允许 QIO 查看"之后才进入下一次提交。
+- 可见性判据：`hidden` → 不可见；`kind == "reply"` → `bool(checked)`；
+  legacy `code`/`url` → 不可见（不变）；其余按既有 kind 规则（不变）。
+- 许可**持续有效**，提交成功不自动取消；隐藏、删除、手动取消许可立即退出范围。
+- 后续提交交付**实际正文**（Markdown 原文）与**必要来源**（哪张卡、哪一版：`meta.reply` 的
+  intentId / understandingId / executionId 与 `updatedAt`），不能只给卡片编号或任务标题。
+- 后续成果仍**新增为结果卡**；不因此开放覆盖原卡正文。
+- 不因新结果出现而自动再次提交、自动派生无限任务或绕过审批；
+  **不得**把同一成果反复作为新事实重复写入记忆。
+- 同批已批准计划对新对象的操作 **≠** 允许下一次提交自动读取结果卡；后续提交仍遵守用户许可。
+- 前端必须同步：`board.ts` 的 `CHECKABLE_KINDS`、`stores/interactive.ts` 的许可判定与勾选显示、
+  快照 / 材料解析 / 上下文 / 校验；**只改一个筛选条件不算完成**。
+
+### 17.3 提交快照与上下文的几何信息（新增）
+
+- `understanding.build_context` 增加 `geometry`：
+
+      geometry: {
+        unit: "board",                                   // 板面坐标：原点左上，x 右、y 下
+        view: {x, y, w, h, scale} | null,                 // 客户端冻结的可见区域；没给就是 null
+        cards:  [{id, x, y, w, h}],                       // 只含本次获准范围内的卡片
+        groups: [{id, x, y, w, h}]
+      }
+
+- 客户端在提交载荷里提供冻结视图（可见区域 origin / size / scale）。
+- **不得**泄露未许可对象的身份或几何；客户端布局层可以对**本机可见**的其他卡片做碰撞计算，
+  但不得把这些对象交给模型。
+- 纯缩放 / 平移 / 浮层变化**不构成新意图、不调用模型、不使内容任务失效**；
+  真实材料与目标对象变化仍按既有审批依据与版本规则处理。
+
+### 17.4 新建落点、相对摆放与两种排序（扩展 §14.5）
+
+    add_reply_card   {content, title?, x?, y?, w?, h?, ref?, place?}
+    add_text_card    {content, x?, y?, w?, h?, ref?, place?}
+    group_cards      {cardIds[], ordered?, name?, ref?}
+    order_group      {groupId, memberOrder[], arrange?: "row" | "column"}
+    move_card        {cardId, x, y}
+    add_link         {src, dst, direction?, meaning?}
+
+- **落点**：省略 `x`/`y` 时由共享布局规则在合理空白区域确定落点，
+  **不得**默认落到 `(0,0)`；给 `x`/`y` 时必须校验并真实生效；
+  与既有卡片冲突时确定性地在附近找空位（不随机挤动其他卡片）。
+- **尺寸**：给 `w`/`h` 时夹进 `180×96 .. 1600×1200` 并如实说明调整；
+  省略时按内容类型取默认（reply `320×240`、text `260×170`）；
+  **不得**静默变成 1×1 等无法使用的卡片。
+- **相对摆放**：`place = {relativeTo, side: "left"|"right"|"above"|"below", gap}`，
+  由**程序**用确定性几何计算真实 x/y，不依赖模型猜坐标。
+- **审批预览与执行必须使用同一份落点与尺寸**；依据变化按既有版本校验处理。
+- **引用**：见 §17.5。
+- **两种排序**：
+  - `order_group` 不带 `arrange` = **纯逻辑顺序**（只改 `memberOrder`），
+    文案必须明确说明"只改变逻辑顺序"，**不得**报告成"已经重新排列卡片"；
+  - 带 `arrange`（`row` = 从左到右、`column` = 从上到下一列）时，
+    在调整成员顺序之后**真实写入成员 `x/y`**，组框按既有口径更新；
+  - 只做这两种排列、只针对一个组，**不**扩大为通用自动排版系统。
+
+### 17.5 同批新对象的临时引用（扩展 §14.5）
+
+- 符号语法：`card:<symbol>` / `group:<symbol>`，`<symbol>` 匹配 `[A-Za-z][A-Za-z0-9_]{0,31}`；
+  不带前缀的裸符号按**卡片**引用处理（向后兼容）。
+- 声明：`add_reply_card` / `add_text_card` 的 `ref` 声明一张新卡；`group_cards` 的 `ref` 声明一个新组。
+- 解析顺序 = **同一意图内**的操作顺序，只能引用**更早**声明的、**类型正确**的符号。
+- 拒绝：不存在、重复声明、前向引用、跨意图、跨批次、类型错误、循环、未获批准依赖。
+- 已存在对象仍按 `visibleCardIds` / `visibleGroupIds` 校验；**不得**借临时引用访问任意已有卡片或扩大工具权限。
+- `understanding._validate_operation` 必须先收集声明、再校验引用（不能只在执行器支持 ref）。
+- 正式对象 id 由服务端在 `execution.build_plan` 稳定分配：
+  重复批准、刷新、暂停继续、重启恢复与重试**不得**重复创建。
+- 同批已批准计划对新对象的操作，不等于下一次提交可以自动读取结果卡（见 17.2）。
+- 部分失败沿用既有可追踪的撤回与保留规则，不覆盖用户后续修改；
+  审批、冲突、依赖、取消、恢复与材料版本保护不得退化。
+
+### 17.6 结果卡 Markdown（新增）
+
+- `kind="reply"` 的正文本体用既有 `frontend/src/components/MarkdownContent.vue` 渲染（`source = card.content`），
+  **不**另写简化解析器；支持标题、加粗、斜体、删除线、普通/有序列表、任务列表、引用、链接、
+  行内代码、代码块与表格。
+- `card.content` 保存 **Markdown 原文**；"复制原文"给出完整原文；代码复制保留代码原文；
+  历史普通文字结果照旧显示，不要求迁移。
+- 表格不得超出卡片正文两侧；代码 / 长链接 / 长单词不得撑宽卡片；**不引入横向滚动**。
+- 复用既有安全处理（`markdownPipeline` 转义 + `isSafeExternalUrl` 白名单），
+  **不得**把模型原文当可信 HTML。
+- 卡片正文是**唯一**纵向阅读区域；渲染 / 异步高亮 / 正文更新**不得**改变卡片外框或触发整板重排。
+- 正文长度上限必须**显式**处理（可见的截断标记或如实报错），不得把围栏 / 列表 / 表格截成半段还声称完整。
+- 结果撰写提示词明确允许用 Markdown 组织结果；程序负责解析。
+
+### 17.7 本轮文件所有权（一个文件同一时间只有一个写者）
+
+| 写者 | 独占文件 |
+| --- | --- |
+| Lead | `docs/*`、`_IML-COMMON.md` |
+| A | `interactive/geometry.ts`（新）、`interactive/cardLayout.ts`、`interactive/resize.ts`、`interactive/viewport.ts`、`components/interactive/BoardCanvas.vue`、`BoardResizeLayer.vue`、`ResizeHandles.vue`、`BoardLinkLayer.vue`、`BoardGroupFrame.vue`、`BoardToolbar.vue`、`AddMenu.vue` |
+| B | `components/MarkdownContent.vue`、`components/interactive/BoardCard.vue`、`interactive/textCard.ts`、`interactive/TextCardEditor.vue`、`components/interactive/displayText.ts` |
+| C | `backend/src/agent/interactive/*`、`interactive/types.ts`、`approval.ts`、`submission.ts`、`board.ts`、`materials.ts`、`overlayLayout.ts`、`serverFacts.ts`、`stores/interactive.ts`、`components/interactive/{IntentPreviewCard,IntentBatchTray,SubmitCluster,ChatDock}.vue` |
+| D | 只读被测源码；只写 `_iml-evidence` 与验收脚本 |
+
+（路径均为 `frontend/src/` 下相对路径，除 backend 明确标注者。）
