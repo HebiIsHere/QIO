@@ -304,16 +304,16 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     });
     expect(connectHostStyle("a")).toEqual(resizeHostStyle("a"));
 
-    // 展开让位（显示槽位 ≠ 正式位置）时也跟着显示矩形走，不掉回正式位置
+    // 展开不再产生第二套位置（F1）：三者仍然逐字段一致，且外框没变
     store.toggleCardPreview("a");
     await nextTick();
     const expanded = rectOf(cardEl("a"));
-    expect(expanded.w).toBeGreaterThan(120);
+    expect(expanded).toEqual({ x: 100, y: 100, w: 120, h: 80 });
     expect(connectHostStyle("a")).toMatchObject({
-      left: expanded.x * state.scale + "px",
-      top: expanded.y * state.scale + "px",
-      width: expanded.w * state.scale + "px",
-      height: expanded.h * state.scale + "px",
+      left: 100 * state.scale + "px",
+      top: 100 * state.scale + "px",
+      width: 120 * state.scale + "px",
+      height: 80 * state.scale + "px",
     });
     expect(connectHostStyle("a")).toEqual(resizeHostStyle("a"));
   });
@@ -571,8 +571,8 @@ describe("取消路径：拖线在 Esc / 指针中断 / 失焦 / 卸载后都不
   });
 });
 
-describe("hitCardAt 认显示矩形：展开 / 让位 / resize / 平移缩放之后落点仍然准", () => {
-  it("展开让位：按显示位置命中，正式保存位置不再命中，且临时槽位不写回板面", async () => {
+describe("hitCardAt 认显示矩形：resize / 平移缩放之后落点仍然准", () => {
+  it("展开不改显示矩形：命中仍按正式矩形，且没有任何槽位写回板面（F1）", async () => {
     store.board = board([mkCard("a", 0, 0, 300, 200), mkCard("b", 200, 0, 300, 200)], { selection: ["a"] });
     mountCanvas();
     store.toggleCardPreview("a");
@@ -580,7 +580,9 @@ describe("hitCardAt 认显示矩形：展开 / 让位 / resize / 平移缩放之
     await nextTick();
     const slotA = rectOf(wrapper!.find('[data-im="card"]').element);
     const slotB = rectOf(wrapper!.findAll('[data-im="card"]')[1].element);
-    expect(slotB.x).toBeGreaterThan(500); // 让位后 b 的显示槽位远离正式位置（x=200）
+    // F1：展开不改变任何显示矩形（旧行为是把 b 推到 x>500）
+    expect(slotA).toMatchObject({ x: 0, y: 0, w: 300, h: 200 });
+    expect(slotB).toMatchObject({ x: 200, y: 0, w: 300, h: 200 });
     const before = store.board!.cards.map((card) => ({ id: card.id, x: card.x, y: card.y, w: card.w, h: card.h }));
 
     await pressConnectPoint(0, { x: slotA.x + slotA.w / 2, y: slotA.y + 9 });
@@ -588,15 +590,15 @@ describe("hitCardAt 认显示矩形：展开 / 让位 / resize / 平移缩放之
     await nextTick();
     expect(draftTarget()).toBe("b");
 
-    // 拖到 b 的**正式保存位置**（已被 a 的展开槽位覆盖）：a 被排除，b 不在那儿 → 无效
-    moveTo(350, 100);
+    // 拖到两张卡之外（b 的右边界是 500）→ 无效
+    moveTo(600, 100);
     await nextTick();
     expect(draftTarget()).toBe("");
 
-    releaseAt(350, 100);
+    releaseAt(600, 100);
     await nextTick();
     expect(store.board?.links).toHaveLength(0);
-    // 显示槽位只是渲染：板面里的坐标一个字段都没被动过
+    // 展开只是显示态：板面里的坐标一个字段都没被动过
     expect(store.board!.cards.map((card) => ({ id: card.id, x: card.x, y: card.y, w: card.w, h: card.h }))).toEqual(before);
   });
 

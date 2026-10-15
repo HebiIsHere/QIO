@@ -4,9 +4,9 @@
  * 与 C 的 irl-c-canvas.test.ts 换角度：不做「标签对得上」的检查，而是
  * 1) 对整块板面做**全量路径 diff**：一次尺寸拖动之后，只有该卡的几何字段变了；
  * 2) 对网络做 spy：整个拖动 / 提交过程 0 次 fetch（不产生模型调用、不申请审批）；
- * 3) 对抗 C 的提交口径：被**让位**的展开卡（槽位 ≠ 正式位置）用西把手调尺寸，
- *    临时槽位坐标绝不写回板面，收起后停在正式位置 + 用户尺寸；
- * 4) 对照分支：常态卡的西把手必须写回 x（对边固定）。
+ * 3) 对抗 C 的提交口径（本轮按 F1 改写）：展开**不产生第二套位置**，展开中调尺寸
+ *    提交的仍是完整 { x, y, w, h }，收起前后外框逐字段不变；
+ * 4) 西把手必须写回 x（对边固定）—— 展开与收起走同一条口径。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
@@ -258,41 +258,39 @@ describe("尺寸操作 ↔ 任务语义分离", () => {
   });
 });
 
-describe("展开中的尺寸调整：临时槽位坐标绝不写回板面（对抗反例）", () => {
-  it("被让位的展开卡用西把手调尺寸：x/y 一个字都不写回，尺寸落到 card.w/h", async () => {
-    store.board = board([mkCard("a", 0, 0, 300, 200), mkCard("b", 200, 0, 300, 200)], { selection: ["b"] });
+describe("展开中的尺寸调整：外框就是正式几何（F1 对抗反例）", () => {
+  it("展开中的卡片用西把手调尺寸：x/y 照常写回，展开集合不变", async () => {
+    store.board = board([mkCard("a", 0, 0, 300, 200), mkCard("b", 700, 0, 300, 200)], { selection: ["b"] });
     const view = mountCanvas();
     store.toggleCardPreview("a");
     store.toggleCardPreview("b");
     await nextTick();
-    const slotB = rectOfCard(view, "b");
-    // 前提：b 确实被让位（槽位不在正式位置上）——否则这条用例不构成反例
-    expect(slotB.x).not.toBe(200);
-    expect(slotB.w).toBe(560);
-    expect(slotB.h).toBe(420);
+    const box = rectOfCard(view, "b");
+    // F1：展开不产生第二套位置（旧行为是被 a 的展开矩形推到另一个 x）
+    expect(box).toEqual({ x: 700, y: 0, w: 300, h: 200 });
 
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockClear();
-    // 西把手：常态下它会改 x；临时显示下只允许改 w
-    dragHandle(view, "b", "w", { x: slotB.x, y: slotB.y + slotB.h / 2 }, { x: 40, y: 0 });
+    // 西把手：左边界往右拉 40 → x 跟着回算 740，宽度 260（右边界 1000 不动）
+    dragHandle(view, "b", "w", { x: box.x, y: box.y + box.h / 2 }, { x: 40, y: 0 });
     await nextTick();
 
     expect(labels).toEqual(["调整卡片尺寸"]);
     const payload = payloads[0].cards.find((item) => item.id === "b")!;
-    expect(payload.x).toBe(200); // 板面里的正式位置没被动
+    expect(payload.x).toBe(740);
     expect(payload.y).toBe(0);
-    expect(payload.w).toBe(520); // 560 - 40
-    expect(payload.h).toBe(420);
+    expect(payload.w).toBe(260);
+    expect(payload.h).toBe(200);
     expect(store.expandedCardIds).toEqual(["a", "b"]);
     expect(fetchSpy).not.toHaveBeenCalled();
 
-    // 收起：停在正式位置 + 用户尺寸（不被旧快照覆盖）
+    // 收起后外框不变（本来就没有临时位置可回）
     store.collapseAllPreviews();
     await nextTick();
-    expect(rectOfCard(view, "b")).toEqual({ x: 200, y: 0, w: 520, h: 420 });
+    expect(rectOfCard(view, "b")).toEqual({ x: 740, y: 0, w: 260, h: 200 });
   });
 
-  it("展开中键盘 ＋：同样只提交 {w,h}，展开集合与位置不变", async () => {
+  it("展开中键盘 ＋：提交完整 {x,y,w,h}，展开集合与位置不变", async () => {
     store.board = board([mkCard("c1", 100, 100)], { selection: ["c1"] });
     const view = mountCanvas();
     store.toggleCardPreview("c1");
@@ -301,16 +299,16 @@ describe("展开中的尺寸调整：临时槽位坐标绝不写回板面（对�
     const payload = payloads[0].cards.find((item) => item.id === "c1")!;
     expect(payload.x).toBe(100);
     expect(payload.y).toBe(100);
-    expect(payload.w).toBe(560 + 24);
-    expect(payload.h).toBe(420);
+    expect(payload.w).toBe(120 + 24);
+    expect(payload.h).toBe(80);
     expect(store.expandedCardIds).toEqual(["c1"]);
     store.collapseAllPreviews();
     await nextTick();
-    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 584, h: 420 });
+    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 144, h: 80 });
   });
 
-  it("收起之后再次调整：这次走常态分支，x/y 才被允许写回", async () => {
-    store.board = board([mkCard("c1", 100, 100)], { selection: ["c1"] });
+  it("收起之后再次调整：同样提交完整外框（展开与收起走同一条口径）", async () => {
+    store.board = board([mkCard("c1", 100, 100, 300, 200)], { selection: ["c1"] });
     const view = mountCanvas();
     store.toggleCardPreview("c1");
     await nextTick();
@@ -318,6 +316,7 @@ describe("展开中的尺寸调整：临时槽位坐标绝不写回板面（对�
     store.collapseAllPreviews();
     await nextTick();
     const slot = rectOfCard(view, "c1");
+    expect(slot).toEqual({ x: 100, y: 100, w: 300, h: 224 });
     dragHandle(view, "c1", "nw", { x: slot.x, y: slot.y }, { x: 10, y: 10 });
     await nextTick();
     const card = store.board!.cards[0];

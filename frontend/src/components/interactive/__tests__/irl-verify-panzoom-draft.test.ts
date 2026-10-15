@@ -1,6 +1,6 @@
 /**
  * IRL-E 第二阶段补测（Lead 点名的两条未验证项）：
- * 1) §8.6 平移 **+ 缩放** 组合之后的展开位置仍可见（C 的用例只测了平移，这里加缩放）；
+ * 1) 平移 **+ 缩放** 组合之后展开**不改变任何卡片外框**（F1 改写：旧「展开槽位被拉进可视区」已删除）；
  * 2) §8.4 尺寸操作不丢草稿：调整尺寸 / 展开收起一轮之后，本机草稿原文与归属不变。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,8 +103,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("平移 + 缩放之后的展开位置（§8.6）", () => {
-  it("先平移再滚轮放大：展开槽位仍落在可见板面范围内，未展开卡不动，收起后回到正式位置", async () => {
+describe("平移 + 缩放之后的展开位置（F1：展开不改几何）", () => {
+  it("先平移再滚轮放大：展开不改变卡片外框（可以不在可视区），未展开卡不动", async () => {
     store.board = board([mkCard("c1", 100, 100), mkCard("c2", 100, 900)]);
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
@@ -132,17 +132,11 @@ describe("平移 + 缩放之后的展开位置（§8.6）", () => {
 
     store.toggleCardPreview("c1");
     await nextTick();
-    const slot = rectOfCard(view, "c1");
-    const visibleW = VIEW_W / scale;
-    const visibleH = VIEW_H / scale;
-    // 展开槽位落在当前可见板面范围内（平移 800/600 + 放大之后仍然看得见）
-    expect(slot.x).toBeGreaterThanOrEqual(800 - 1);
-    expect(slot.y).toBeGreaterThanOrEqual(600 - 1);
-    expect(slot.x + slot.w).toBeLessThanOrEqual(800 + visibleW + 1);
-    expect(slot.y + slot.h).toBeLessThanOrEqual(600 + visibleH + 1);
+    // F1：展开不产生第二套位置 —— 平移 + 缩放之后仍然画在正式矩形上（可以不在可视区）
+    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 120, h: 80 });
     // 未展开的卡不受影响
     expect(rectOfCard(view, "c2")).toEqual(official);
-    // 收起后回到正式位置
+    // 收起后外框依旧（本来就没有临时位置可回）
     store.collapseAllPreviews();
     await nextTick();
     expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 120, h: 80 });

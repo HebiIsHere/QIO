@@ -258,7 +258,7 @@ describe("固定锚点：手势（拖动 / 拉伸 / 展开）", () => {
     expect(after.cardRect!.width).toBeCloseTo(300 * harness!.scale(), 0);
   });
 
-  it("展开 / 收起预览：每一帧都跟着卡片（含几何过渡期间）", async () => {
+  it("展开 / 收起预览：卡片外框不变，工具栏每一帧都稳定贴住卡片", async () => {
     store.board = board([mkCard("c1", 300, 300)], { selection: ["c1"] });
     mountCanvas();
     await flushFrame();
@@ -271,7 +271,10 @@ describe("固定锚点：手势（拖动 / 拉伸 / 展开）", () => {
       expectAnchored(harness!.measure());
     }
     const expanded = harness!.measure();
-    expect(expanded.cardRect!.width).toBeGreaterThan(before.cardRect!.width);
+    // F1：展开只切卡内内容，外框逐字段不变（旧行为是放大到阅读尺寸）
+    expect(expanded.cardRect!.width).toBeCloseTo(before.cardRect!.width, 1);
+    expect(expanded.cardRect!.left).toBeCloseTo(before.cardRect!.left, 1);
+    expect(expanded.cardRect!.top).toBeCloseTo(before.cardRect!.top, 1);
 
     store.toggleCardPreview("c1");
     for (let i = 0; i < 3; i += 1) {
@@ -281,8 +284,8 @@ describe("固定锚点：手势（拖动 / 拉伸 / 展开）", () => {
   });
 });
 
-describe("固定锚点：结构变化（让位 / 撤销重做 / 容器尺寸 / 换行 / 切换）", () => {
-  it("另一张卡展开触发让位后，工具栏跟着被推开的卡片走", async () => {
+describe("固定锚点：结构变化（撤销重做 / 容器尺寸 / 换行 / 切换）", () => {
+  it("另一张卡展开不再推开任何卡片：工具栏锚点逐帧保持不变（F1）", async () => {
     store.board = board([mkCard("c1", 300, 300), mkCard("c2", 380, 360)], { selection: ["c1"] });
     mountCanvas();
     await flushFrame();
@@ -293,8 +296,9 @@ describe("固定锚点：结构变化（让位 / 撤销重做 / 容器尺寸 / �
     await flushFrame(3);
     const after = harness!.measure();
     expectAnchored(after);
-    // 让位真的发生了（c1 被推开），工具栏跟着新位置
-    expect(Math.abs(after.cardRect!.left - before.cardRect!.left) + Math.abs(after.cardRect!.top - before.cardRect!.top)).toBeGreaterThan(1);
+    // 展开不让位：c1 的外框一个像素都不动（旧行为是被推开），工具栏也不动
+    expect(after.cardRect!.left).toBeCloseTo(before.cardRect!.left, 1);
+    expect(after.cardRect!.top).toBeCloseTo(before.cardRect!.top, 1);
   });
 
   it("撤销 / 重做后都回到固定锚点", async () => {

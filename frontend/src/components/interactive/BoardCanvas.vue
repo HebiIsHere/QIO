@@ -13,8 +13,9 @@
   5. 卡片局部工具栏由 BoardCard 渲染；**连接点与尺寸把手统一由 BoardResizeLayer**（不随画布缩放的
      交互层，同一份 displayRect × scale）渲染：连接点在四边中点、尺寸热区在边 / 角，两者同时可用，
      不需要切换模式（0.2.5 §三 / §四）。重叠成组的提示与判定走 board.ts 的 bestMergeTarget。
-  6. 拖线目标判定认**当前显示矩形**（displayRect）：展开、让位、拖动、尺寸预览之后，
-     卡片 / 连线 / 高亮画在哪，落点就判在哪；临时显示坐标只读，绝不写回板面（0.2.5 §四）。
+  6. 拖线目标判定认**当前显示矩形**（displayRect）：拖动 / 尺寸预览期间卡片 / 连线 /
+     高亮画在哪，落点就判在哪；这些临时显示坐标只读，绝不写回板面（0.2.5 §四）。
+     展开阅读只切卡内内容，不产生第二套位置（_IML-COMMON.md §1 F1）。
   7. 改版后底部工具栏与板内搜索由页面壳与 A 的组件渲染：本文件不再引用 <BoardToolbar /> 与 <BoardSearchPanel />。
 -->
 <script setup lang="ts">
@@ -76,12 +77,8 @@ import {
   type DOMRectLike,
   type Viewport,
 } from "../../interactive/viewport";
-import {
-  cardSizeLimits,
-  EXPANDED_PREVIEW_SIZE,
-  planExpandedLayout,
-  type LayoutRect,
-} from "../../interactive/cardLayout";
+import { cardSizeLimits, DEFAULT_LAYOUT_GAP, type LayoutRect } from "../../interactive/cardLayout";
+import { resolvePlacement, type PlacementResult } from "../../interactive/geometry";
 import { useResizeGesture } from "../../composables/useResizeGesture";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { chatObstacleFrame } from "../../interactive/chatFrameState";
@@ -266,7 +263,7 @@ const groups = computed(() => boardState.value?.groups ?? []);
 const links = computed(() => boardState.value?.links ?? []);
 const selection = computed(() => boardState.value?.selection ?? []);
 
-// --- 临时布局：展开预览的槽位（契约 2026-10-12 §3.6） -----------------------
+// --- 显示几何：正式矩形是唯一权威（F1；展开不再产生临时槽位） ---------------
 
 /** 窗口尺寸变化后重新读一次容器尺寸（clientWidth 不是响应式的） */
 const stageTick = ref(0);
@@ -418,127 +415,28 @@ watch(
 );
 
 /**
- * 用户**亲自调过尺寸**的卡片（本次会话内）。展开时沿用用户尺寸，不再套默认阅读尺寸 ——
- * 否则用户在展开状态下把卡改小，槽位又按「max(卡尺寸, 阅读尺寸)」弹回去，看着像没生效。
- * 这是显示态、不进板面状态；刷新后回到默认阅读尺寸，但 card.w/h 仍是用户那一份。
+ * 某张卡这一帧画在哪：**正式矩形就是唯一权威**（F1，恒等映射）。
+ *
+ * 展开阅读只切卡内内容（BoardCard 的 reading 态），不改任何卡片的外框；
+ * 缩放 / 平移 / 窗口变化 / 浮层开合都不参与这里的计算。
  */
-const userSizedCards = ref<Set<string>>(new Set());
-
-/**
- * 这一帧的临时布局：只用于渲染。
- * 入参是**正式位置**（board.cards 的 x/y/w/h），输出槽位绝不写回板面状态；
- * 展开 / 让位 / 收起都不产生表达、不触发意图 / 任务、不排保存。
- * `expandedAvoid` 打开：多张卡同时展开时互相让位（任务书 §7.2）。
- */
-/*
-  布局计划的入参必须是**这一帧真正画出来的位置**（2026-10-14 用户报「拖动时原地出现白色底框」）：
-  拖动 / 尺寸调整期间板面状态不变（只预演），卡片本体用 displayRect 拿到实时坐标，
-  但展开槽位原来只喂了 liveCards（正式坐标）——于是展开面板停在原地，
-  露出它的白色底衬，看起来就是卡片"掉下"一个白框。
-  这里**不能**直接复用 displayCards：那个 computed 依赖 layoutPlan（判断要不要重建对象），
-  再互相引用就成了循环依赖。所以单独算一份只依赖 dragging / resizing 的坐标。
-*/
-const planCards = computed<BoardCardModel[]>(() => {
-  const drag = dragging.value;
-  const moved = drag && drag.moved ? drag : null;
-  const size = resizing.value;
-  if (!moved && !size) return liveCards.value;
-  return liveCards.value.map((card) => {
-    /*
-      这里**绝不能**再调 displayRect：displayRect 的槽位来自 layoutPlan，
-      而 layoutPlan 又由本 computed 喂入 —— 成环之后槽位会慢一帧。
-      慢一帧的后果正是「西 / 北把手拉不动」：预览框的位置取到的是上一帧的槽位，
-      于是向左拉伸时左边界不动、右边界反而向右（2026-10-14 用户报告）。
-      拖动 / 尺寸预览都只认这一帧的实时值，环就断开了。
-    */
-    if (moved && moved.cardId === card.id) {
-      if (moved.x === card.x && moved.y === card.y) return card;
-      return { ...card, x: moved.x, y: moved.y };
-    }
-    if (size && size.cardId === card.id) {
-      const box = size.box;
-      if (box.x === card.x && box.y === card.y && box.w === card.w && box.h === card.h) return card;
-      return { ...card, x: box.x, y: box.y, w: box.w, h: box.h };
-    }
-    return card;
-  });
-});
-
-const layoutPlan = computed(() =>
-  planExpandedLayout({
-    cards: planCards.value,
-    expanded: store.expandedCardIds,
-    expandedSize: EXPANDED_PREVIEW_SIZE,
-    stage: boardRegion.value.size,
-    stageOrigin: boardRegion.value.origin,
-    expandedAvoid: true,
-    sizedCards: [...userSizedCards.value],
-  }),
-);
-
-/** 只把**真正展开**的槽位交给预览层（普通卡片不需要额外容器） */
-const expandedSlots = computed<Record<string, LayoutRect>>(() => {
-  const plan = layoutPlan.value;
-  const out: Record<string, LayoutRect> = {};
-  for (const id of plan.expanded) {
-    const slot = plan.slots[id];
-    if (slot) out[id] = slot;
-  }
-  /*
-    2026-10-14（用户报「拖动时原地出现白色底框」）：拖动中的卡片本体走**实时矩形**，
-    而展开底衬走计划槽位 —— 两者差一个「展开抬升」（实测 46px），于是露出白底衬。
-    这里对**正在拖动**的那张卡直接用实时矩形，两边逐像素对齐；计划本身不动，
-    所以展开收敛（irl-c）那条路径不受影响。
-  */
-  const drag = dragging.value;
-  if (drag && drag.moved) {
-    const card = liveCards.value.find((item) => item.id === drag.cardId);
-    if (card && out[card.id]) out[card.id] = displayRect(card);
-  }
-  return out;
-});
-
-/** 某张卡这一帧画在哪：没有展开时就是正式位置（与改动前逐字段相同） */
 function slotOf(card: BoardCardModel): LayoutRect {
-  return layoutPlan.value.slots[card.id] ?? cardRect(card);
+  return cardRect(card);
 }
 
 /**
  * 卡片、组框、连线、尺寸把手**共用**的这一帧显示矩形。
- * 优先级：拖动中的实时坐标 > 尺寸拖动预览 > 布局槽位。
+ * 优先级：拖动中的实时坐标 > 尺寸拖动预览（已过几何约束） > 正式矩形。
+ *
+ * 这里**没有**第三套位置：展开不产生任何临时外框（F1）。
  */
 function displayRect(card: BoardCardModel): LayoutRect {
   const slot = slotOf(card);
   const drag = dragging.value;
   if (drag && drag.cardId === card.id) return { x: drag.x, y: drag.y, w: slot.w, h: slot.h };
   const size = resizing.value;
-  if (size && size.cardId === card.id) return previewRectOf(card, slot, size.box);
+  if (size && size.cardId === card.id) return size.box;
   return slot;
-}
-
-/**
- * 这张卡这一帧是不是**临时显示布局**（展开 / 被让位）。
- *
- * 判定必须同时看「槽位位置」与「是否在展开集合里」：原位展开的卡片槽位 x/y 与正式
- * 位置相同（不是被让位），但它的宽高是临时放大的 —— 位置仍然属于显示布局，
- * 不能被尺寸调整顺手写回板面（任务书 §7.1）。
- */
-function isTemporaryDisplay(card: BoardCardModel, slot: LayoutRect): boolean {
-  const official = cardRect(card);
-  return slot.x !== official.x || slot.y !== official.y || store.isCardPreviewExpanded(card.id);
-}
-
-/**
- * 尺寸拖动中的预览矩形。
- *
- * 位置只由「拖动卡片」改变：临时显示布局里的卡片（展开 / 被让位）绝不把临时坐标
- * 写回板面，所以预览也只取宽高、左上角留在槽位上 —— 否则松手后卡片会整块跳回正式位置
- * （所见非所得）。槽位就是正式位置的常态卡片，西 / 北把手本来就要「对边不动」，
- * 预览与提交都用完整 box。
- */
-function previewRectOf(card: BoardCardModel, slot: LayoutRect, box: ResizeBox): LayoutRect {
-  if (isTemporaryDisplay(card, slot)) return { x: slot.x, y: slot.y, w: box.w, h: box.h };
-  return { x: box.x, y: box.y, w: box.w, h: box.h };
 }
 
 /** 交给 BoardCard 的卡片对象：只把渲染坐标换成显示矩形，其余字段与正式状态一致 */
@@ -601,7 +499,7 @@ const displayCards = computed<BoardCardModel[]>(() => {
   const moved = drag && drag.moved ? drag : null;
   const size = resizing.value;
   // 没有展开、也没有进行中的拖动 / 尺寸预览时原样返回（与改动前完全一致，避免无谓的对象重建）
-  if (!moved && !size && !layoutPlan.value.expanded.length) return liveCards.value;
+  if (!moved && !size) return liveCards.value;
   return liveCards.value.map((card) => {
     const rect = displayRect(card);
     if (rect.x === card.x && rect.y === card.y && rect.w === card.w && rect.h === card.h) return card;
@@ -611,7 +509,7 @@ const displayCards = computed<BoardCardModel[]>(() => {
 
 /**
  * 组框也走**显示坐标**：组框的存储外框来自成员**正式位置**（board.ts 的 reflowGroup 口径），
- * 卡片被展开放大 / 让位 / 拖动之后必须跟着重算 —— 否则框不住成员，读起来像是「分组变了」。
+ * 卡片被拖动 / 预览尺寸之后必须跟着重算 —— 否则框不住成员，读起来像是「分组变了」。
  *
  * 这里不新引入间距常量：从存储外框与正式成员框**反推**四边的留白，再套到显示框上。
  * 显示坐标等于正式坐标时逐字段还原成存储值（既有行为与既有测试完全不变），
@@ -657,7 +555,8 @@ const resizeGesture = useResizeGesture({
   scale: () => 1 / scaleSafe.value,
   onPreview: (box) => {
     if (!resizeTargetId) return;
-    resizing.value = { cardId: resizeTargetId, box: { ...box } };
+    // 预览与提交共用同一份几何约束：松手后的外框逐字段等于最后一帧预览（A4/A5）
+    resizing.value = { cardId: resizeTargetId, box: resolveResizeBox(box).rect };
     // 尺寸预览改变卡片外框：工具栏逐帧跟随（走合并调度，不直接写位置）
     requestPlacement();
   },
@@ -667,19 +566,49 @@ const resizeGesture = useResizeGesture({
   },
 });
 
-/** 这张卡还能长到多大：从它的位置到可用区域右下角（板面坐标）。 */
-function resizeAreaFor(rect: LayoutRect): { w: number; h: number } {
-  const region = boardRegion.value;
-  const right = region.origin.x + region.size.w;
-  const bottom = region.origin.y + region.size.h;
-  /**
-   * 至少按卡片**当前尺寸**算：卡片被让位 / 平移到可用区边缘时，
-   * 「到右下角的距离」可能小于最小值，会把最小尺寸一起拖塌（sizeLimits 保证 min ≤ max）。
-   */
-  return { w: Math.max(rect.w, right - rect.x), h: Math.max(rect.h, bottom - rect.y) };
+/**
+ * 尺寸口径：只夹进卡片口径 [CARD_MIN, CARD_MAX]。
+ * **视野大小永远不是卡片上限**（F2/A4）：空白区域可以继续扩大，卡片可以大于可视区、
+ * 可以部分 / 完全在屏外；这里不再有任何「到可用区域右下角的距离」这种视野口径。
+ */
+function clampToCardCaliber(box: ResizeBox): ResizeBox {
+  const limits = resizeLimits.value;
+  const w = Math.max(Math.min(limits.minW, resizeStartBox.value.w), Math.min(limits.maxW, box.w));
+  const h = Math.max(Math.min(limits.minH, resizeStartBox.value.h), Math.min(limits.maxH, box.h));
+  if (w === box.w && h === box.h) return box;
+  // 夹紧后保持被拖动的边（对边不动）：拉西 / 拉北时回推左上角
+  const anchor = resizeStartBox.value;
+  const x = box.x === anchor.x ? box.x : anchor.x + anchor.w - w;
+  const y = box.y === anchor.y ? box.y : anchor.y + anchor.h - h;
+  return { x, y, w, h };
 }
 
-/** 按下 / 键盘步进前先把这一帧的槽位与可用范围快照给手势，保证拖动期间稳定。 */
+/**
+ * 这一帧的尺寸结果：**实时预览与最终提交都走这里**（A4/A5）。
+ *
+ * - 尺寸按 {@link clampToCardCaliber} 收敛到卡片口径；
+ * - 位置 / 外框再经 `geometry.resolvePlacement` 的 **bounded** 策略：
+ *   只把本次被拉伸的那条边停在「第一个碰撞邻卡边界 − gap」处，**绝不移动别的卡片**；
+ * - `anchor` 是按下把手时的起始框，用来判断哪条边被拉了（西 / 北把手要对边不动）。
+ */
+function resolveResizeBox(box: ResizeBox): { rect: ResizeBox; reason: PlacementResult["reason"] } {
+  const clamped = clampToCardCaliber(box);
+  const current = boardState.value;
+  const cardId = resizeTargetId;
+  const others = (current?.cards ?? [])
+    .filter((item) => !item.deleted && item.id !== cardId)
+    .map((item) => cardRect(item));
+  const result = resolvePlacement({
+    rect: clamped,
+    others,
+    policy: "bounded",
+    gap: DEFAULT_LAYOUT_GAP,
+    anchor: resizeStartBox.value,
+  });
+  return { rect: result.rect, reason: result.reason };
+}
+
+/** 按下 / 键盘步进前先把这一帧的槽位快照给手势，保证拖动期间稳定。 */
 function beginResize(cardId: string): LayoutRect | null {
   const current = boardState.value;
   const card = current ? cardById(current, cardId) : null;
@@ -687,7 +616,8 @@ function beginResize(cardId: string): LayoutRect | null {
   const rect = displayRect(card);
   resizeTargetId = cardId;
   resizeStartBox.value = { x: rect.x, y: rect.y, w: rect.w, h: rect.h };
-  const limits = cardSizeLimits(resizeAreaFor(rect));
+  // 卡片口径（geometry 常量），与视野无关；视野不再参与上限
+  const limits = cardSizeLimits();
   /**
    * 卡片本来就比最小口径还小时（历史数据、很小的卡片）：把最小值收敛到它自己的尺寸。
    * 否则按一下「−」会被夹到 180，看上去「点变小反而变大」；也让 +/− 在极小卡片上可预期。
@@ -722,14 +652,14 @@ function sameSize(a: number, b: number): boolean {
 /**
  * 松手 / 键盘步进：**一次** `updateCard` + `store.commit`，标签固定「调整卡片尺寸」。
  *
- * 提交口径（Lead 裁决）：
- * - 常态卡片（没有展开、也没有被让位）→ 提交 { x, y, w, h }：
- *   西 / 北把手要「对边不动」，不带上位置就会在松手后整块跳回原左边缘；
- * - 展开中 / 被让位（{@link isTemporaryDisplay}）→ **只提交 { w, h }**：
- *   临时槽位的坐标属于显示布局，绝不写回板面状态（任务书 §7.1）。
+ * 提交口径（F1/F2 之后只有一条）：外框就是正式几何，提交 { x, y, w, h }；
+ * 「展开中 / 被让位只提交 w/h」那条旧口径随 F1 一起消失（展开不再有临时槽位）。
  *
- * 两条路径都只改尺寸 / 位置：不碰 selection、checked、hidden、deleted、expandedCardIds，
- * 也不清草稿。后端 submission.py 把纯几何变化归为 layout_only，不产生意图、不申请审批。
+ * 最终碰撞检查走 `geometry.resolvePlacement`（A5），结果与最后一帧预览逐字段一致
+ * （同一个 resolveResizeBox）。无法满足时给一句简短原因。
+ *
+ * 只改尺寸 / 位置：不碰 selection、checked、hidden、deleted、expandedCardIds，也不清草稿。
+ * 后端 submission.py 把纯几何变化归为 layout_only，不产生意图、不申请审批。
  */
 function commitCardSize(box: ResizeBox) {
   const current = boardState.value;
@@ -739,20 +669,21 @@ function commitCardSize(box: ResizeBox) {
   const card = cardById(current, cardId);
   if (!card) return;
   const official = cardRect(card);
-  const slot = layoutPlan.value.slots[cardId] ?? official;
-  const temporary = isTemporaryDisplay(card, slot);
-  const w = Math.max(1, Math.round(box.w));
-  const h = Math.max(1, Math.round(box.h));
-  if (temporary) {
-    if (sameSize(w, official.w) && sameSize(h, official.h)) return;
-    userSizedCards.value = new Set([...userSizedCards.value, cardId]);
-    commit(updateCard(current, cardId, { w, h }), "调整卡片尺寸");
-  } else {
-    const x = Math.round(box.x);
-    const y = Math.round(box.y);
-    if (sameSize(x, official.x) && sameSize(y, official.y) && sameSize(w, official.w) && sameSize(h, official.h)) return;
-    userSizedCards.value = new Set([...userSizedCards.value, cardId]);
+  const resolved = resolveResizeBox(box);
+  const x = Math.round(resolved.rect.x);
+  const y = Math.round(resolved.rect.y);
+  const w = Math.max(1, Math.round(resolved.rect.w));
+  const h = Math.max(1, Math.round(resolved.rect.h));
+  const changed =
+    !sameSize(x, official.x) || !sameSize(y, official.y) || !sameSize(w, official.w) || !sameSize(h, official.h);
+  if (changed) {
     commit(updateCard(current, cardId, { x, y, w, h }), "调整卡片尺寸");
+  }
+  // 无法满足时给一句简短原因（A5）：被邻卡挡住 / 附近真的没有空位
+  if (resolved.reason === "bounded") {
+    notice.value = "尺寸已停在相邻卡片的边界上（不会移动其他卡片）。";
+  } else if (resolved.reason === "overlap") {
+    notice.value = "附近没有空位：已停在最接近可行的位置。";
   }
   // 局部工具栏跟着卡片走（走合并调度：同一帧最多一次测量、一次位置写入）
   requestPlacement();
@@ -2062,10 +1993,10 @@ function onLeaveMember(groupId: string, cardId: string) {
 /**
  * 指针下的卡片：多个命中时取面积最小的（最具体）。
  *
- * **用当前显示矩形**（displayRect）：展开、让位、拖动、尺寸预览之后，卡片 / 连线 / 高亮画在哪，
+ * **用当前显示矩形**（displayRect）：拖动 / 尺寸预览之后，卡片 / 连线 / 高亮画在哪，
  * 落点就判在哪 —— 用正式保存矩形（cardRect）会判在一个屏幕上不存在的旧位置上（0.2.5 §四）。
  * 入参 point 已经是板面坐标（boardPointOf 的结果），displayRect 也是板面坐标：
- * 全程板面坐标系比较，**不再乘除 scale**。displayRect 只读，临时槽位绝不写回板面。
+ * 全程板面坐标系比较，**不再乘除 scale**。displayRect 只读，临时显示坐标绝不写回板面。
  */
 function hitCardAt(point: { x: number; y: number }, excludeId: string | null): string | null {
   const current = boardState.value;
@@ -2179,31 +2110,68 @@ const editingLinkSummary = computed(() => {
 
 // --- 板内搜索定位（页面壳的搜索面板 dispatch 事件） -----------------------
 
+/**
+ * 屏幕矩形：DOMRectLike 的最小形状 + 可选的右 / 下边与宽高
+ * （真实 DOMRect 四边都有；量不到时用 left + width 兜底）。
+ */
+type ScreenRectLike = DOMRectLike & { right?: number; bottom?: number; width?: number; height?: number };
+
+/**
+ * 一次性把某个板面矩形移进可视区需要的位移。
+ *
+ * **只在用户明确点击「定位 / 完整查看」时调用**（F1/A6）：不给任何自动追踪、
+ * 不因为缩放 / 平移 / 浮层开合而调整，也绝不改卡片本身。
+ *
+ * 明确视图策略：
+ * - 整个矩形放得下 → 上下左右各夹一次，让它完整可见；
+ * - 矩形比可视区还大（大卡 / 大预览）→ **只对齐左上角**，不再试图把右下边也拉进来 ——
+ *   否则同一张卡会在两次定位之间左右 / 上下轮流对齐，看着像"两边轮流跳"。
+ */
+function revealDelta(bounds: LayoutRect, viewRect: ScreenRectLike, margin: number): { dx: number; dy: number } {
+  const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
+  const screen = screenPointOfBoard(bounds.x, bounds.y, viewRect);
+  if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return { dx: 0, dy: 0 };
+  // DOMRectLike 只保证 left / top：右 / 下边缺失时用宽高兜底（jsdom 的桩几何两种都有）
+  const left = finiteNumber(viewRect.left);
+  const top = finiteNumber(viewRect.top);
+  const right = Number.isFinite(viewRect.right) ? Number(viewRect.right) : left + finiteNumber(viewRect.width);
+  const bottom = Number.isFinite(viewRect.bottom) ? Number(viewRect.bottom) : top + finiteNumber(viewRect.height);
+  const width = Math.max(0, finiteNumber(bounds.w)) * scale;
+  const height = Math.max(0, finiteNumber(bounds.h)) * scale;
+  const availW = Math.max(0, right - left - margin * 2);
+  const availH = Math.max(0, bottom - top - margin * 2);
+  let dx = 0;
+  let dy = 0;
+  if (width > availW) dx = left + margin - screen.x;
+  else if (screen.x < left + margin) dx = left + margin - screen.x;
+  else if (screen.x + width > right - margin) dx = right - margin - (screen.x + width);
+  if (height > availH) dy = top + margin - screen.y;
+  else if (screen.y < top + margin) dy = top + margin - screen.y;
+  else if (screen.y + height > bottom - margin) dy = bottom - margin - (screen.y + height);
+  return { dx, dy };
+}
+
+/** 只动查看位置（滚动），板面状态一个字段都不改。 */
+function applyReveal(dx: number, dy: number): void {
+  if (!dx && !dy) return;
+  applyScroll({ x: scroll.value.x - dx, y: scroll.value.y - dy });
+  view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
+}
+
 function locate(cardId: string) {
   const current = boardState.value;
   if (!current) return;
   const card = cardById(current, cardId);
   if (!card) return;
-  // 平移查看位置，让卡片进入可视区（查看位置不是板面改动）
+  // 用户明确点击「定位 / 完整查看」：只调这一次视野（查看位置不是板面改动，卡片不动）
   const element = viewportEl.value;
   if (element) {
-    const viewRect = element.getBoundingClientRect();
-    const screen = screenPointOfBoard(card.x, card.y, viewRect);
-    const margin = 80;
-    let dx = 0;
-    let dy = 0;
-    if (screen.x < viewRect.left + margin) dx = viewRect.left + margin - screen.x;
-    else if (screen.x + card.w * view.value.scale > viewRect.right - margin) {
-      dx = viewRect.right - margin - (screen.x + card.w * view.value.scale);
-    }
-    if (screen.y < viewRect.top + margin) dy = viewRect.top + margin - screen.y;
-    else if (screen.y + card.h * view.value.scale > viewRect.bottom - margin) {
-      dy = viewRect.bottom - margin - (screen.y + card.h * view.value.scale);
-    }
-    if (dx || dy) {
-      applyScroll({ x: scroll.value.x - dx, y: scroll.value.y - dy });
-      view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
-    }
+    const delta = revealDelta(
+      { x: card.x, y: card.y, w: card.w, h: card.h },
+      element.getBoundingClientRect(),
+      80,
+    );
+    applyReveal(delta.dx, delta.dy);
   }
   highlightId.value = cardId;
   if (highlightTimer) clearTimeout(highlightTimer);
@@ -2238,34 +2206,16 @@ function onLocatePreview(event: Event) {
   const element = viewportEl.value;
   if (!bounds || !element) return;
   /**
-   * 19：预览的四个方向都要处理。原来只把「左/上离屏」拉回来，
-   * 右侧/下侧离屏时不做任何事 —— 用户点了定位却仍看不到预览。
-   *
-   * 这里用一个统一的矩形约束：先算预览在屏幕上的框（含缩放后的宽高），
-   * 再分别对左/右/上/下越界求位移；完全离屏的极远坐标也被拉回可用区域。
-   * 数值一律先做有限性检查：NaN / 非有限值不参与计算，避免把滚动位置写坏。
+   * 用户明确点击「在板面上定位」：只调这一次视野（F1/A6）。
+   * 四方向统一走 {@link revealDelta}：放得下就整块移进来，比可视区还大就只对齐左上角；
+   * 数值先做有限性检查，NaN / 非有限值不参与计算，避免把滚动位置写坏。
    */
-  const viewRect = element.getBoundingClientRect();
-  const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
-  const screen = screenPointOfBoard(bounds.x, bounds.y, viewRect);
-  if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return;
-  const width = (Number.isFinite(bounds.w) ? bounds.w : 0) * scale;
-  const height = (Number.isFinite(bounds.h) ? bounds.h : 0) * scale;
-  const margin = 60;
-  const left = screen.x;
-  const top = screen.y;
-  const right = screen.x + width;
-  const bottom = screen.y + height;
-  let dx = 0;
-  let dy = 0;
-  if (left < viewRect.left + margin) dx = viewRect.left + margin - left;
-  else if (right > viewRect.right - margin) dx = viewRect.right - margin - right;
-  if (top < viewRect.top + margin) dy = viewRect.top + margin - top;
-  else if (bottom > viewRect.bottom - margin) dy = viewRect.bottom - margin - bottom;
-  if (dx || dy) {
-    applyScroll({ x: scroll.value.x - dx, y: scroll.value.y - dy });
-    view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
-  }
+  const delta = revealDelta(
+    { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
+    element.getBoundingClientRect(),
+    60,
+  );
+  applyReveal(delta.dx, delta.dy);
 }
 
 // --- 键盘 -----------------------------------------------------------------
@@ -2414,7 +2364,12 @@ onBeforeUnmount(() => {
         @pointerdown="onSurfacePointerDown"
       >
         <div class="board-scroll-content" :style="contentStyle">
-          <div ref="surface" class="board-surface" :class="{ resizing: Boolean(resizing) }" :style="surfaceStyle">
+          <div
+            ref="surface"
+            class="board-surface"
+            :class="{ resizing: Boolean(resizing), dragging: Boolean(dragging) }"
+            :style="surfaceStyle"
+          >
           <BoardGroupFrame
             v-for="group in displayGroups"
             :key="group.id"
@@ -2478,7 +2433,6 @@ onBeforeUnmount(() => {
             :located-intent-id="locatedIntentId"
             :width="surfaceSize.w"
             :height="surfaceSize.h"
-            :expanded-slots="expandedSlots"
           />
 
             <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
@@ -2630,6 +2584,8 @@ onBeforeUnmount(() => {
  * 用父层类名 + :deep 关，避免动 BoardCard（子智能体 B 的写域）。
  */
 .board-surface.resizing :deep(.card) { transition: none; }
+/* 拖动中同样关掉几何过渡：位置预览必须逐帧跟手，不能有"追着指针跑"的滞后（A4）。 */
+.board-surface.dragging :deep(.card) { transition: none; }
 .select-rect {
   position: absolute;
   border: 1px dashed var(--accent);

@@ -5,9 +5,10 @@
  * 1.【状态】`expandedCards` / `toggleCardPreview` / `collapseAllPreviews`：
  *    只改前端内存的查看状态，不写板面状态、不产生表达、不排保存、不发请求；
  * 2.【卡片】BoardCard：这张卡自己出现「展开预览 / 收起预览」按钮与**卡片内**的预览挂载点；
- * 3.【画布】BoardCanvas：卡片渲染坐标改由临时槽位决定（正式位置一个字不改），
- *    让位与收起后都回到正式位置；缩放（board-surface 的 transform: scale）不影响板面坐标；
- * 4.【预览层】BoardPreviewLayer：展开容器的定位与尺寸按槽位来，既有意图虚线预览语义不变。
+ * 3.【画布】BoardCanvas：展开**不改变任何卡片外框**（F1：正式几何是唯一权威）；旧行为
+ *    「展开卡原位放大 + 推开邻卡」的断言已删除，改写为「外框逐字段不变」；
+ *    缩放（board-surface 的 transform: scale）仍然只影响查看方式；
+ * 4.【预览层】BoardPreviewLayer：展开容器随 F1 删除，只剩既有意图虚线预览（语义不变）。
  *
  * 注意：jsdom 没有真实布局，画布用例给容器打**桩几何**（与 boardCanvas.test.ts 同一套做法）。
  */
@@ -22,7 +23,6 @@ import BoardPreviewLayer from "../BoardPreviewLayer.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import * as imApi from "../../../services/interactive";
 import { emptyState } from "../../../interactive/board";
-import { EXPANDED_PREVIEW_SIZE } from "../../../interactive/cardLayout";
 import type { BoardCard as BoardCardModel, BoardState, Intent } from "../../../interactive/types";
 
 vi.mock("../../../services/interactive", () => ({
@@ -350,22 +350,18 @@ describe("BoardCanvas：渲染坐标改由临时槽位决定", () => {
     expect(cardStyle(view, "exp_b")).toMatchObject({ left: "600px", top: "200px", width: "120px", height: "80px" });
   });
 
-  it("展开这张卡：它在原位置原位放大，相交的未展开卡让开；正式位置一个字没改", async () => {
+  it("展开：任何卡片的外框逐字段不变（不再原位放大，也不推开邻卡）", async () => {
     const view = mountCanvas();
     store.toggleCardPreview("exp_a");
     await view.vm.$nextTick();
 
-    // 展开卡：原位置原位放大到 expandedSize
-    expect(cardStyle(view, "exp_a")).toMatchObject({
-      left: "100px",
-      top: "100px",
-      width: EXPANDED_PREVIEW_SIZE.w + "px",
-      height: EXPANDED_PREVIEW_SIZE.h + "px",
-    });
-    // 被相交的未展开卡：按最短方向（向右）让开 = 展开矩形右缘 660 + gap 16
-    expect(cardStyle(view, "exp_b")).toMatchObject({ left: "676px", top: "200px", width: "120px", height: "80px" });
+    // F1：正式矩形是唯一权威。展开只切卡内内容，外框一个像素都不动。
+    expect(store.isCardPreviewExpanded("exp_a")).toBe(true);
+    expect(cardStyle(view, "exp_a")).toMatchObject({ left: "100px", top: "100px", width: "120px", height: "80px" });
+    // 与它相交的邻卡同样分毫不动（旧行为是向右让到 676px）
+    expect(cardStyle(view, "exp_b")).toMatchObject({ left: "600px", top: "200px", width: "120px", height: "80px" });
 
-    // 展开只影响渲染：正式位置、seq、选择都没有变
+    // 板面状态一个字没改
     const cards = store.board!.cards;
     expect(cards.map((card) => [card.id, card.x, card.y, card.w, card.h])).toEqual([
       ["exp_a", 100, 100, 120, 80],
@@ -378,11 +374,11 @@ describe("BoardCanvas：渲染坐标改由临时槽位决定", () => {
     }
   });
 
-  it("收起（含「收起全部预览」）后所有卡片回到正式位置", async () => {
+  it("收起（含「收起全部预览」）前后外框完全一致：本来就没有临时位置可回", async () => {
     const view = mountCanvas();
     store.toggleCardPreview("exp_a");
     await view.vm.$nextTick();
-    expect(cardStyle(view, "exp_b").left).toBe("676px");
+    expect(cardStyle(view, "exp_b")).toMatchObject({ left: "600px", top: "200px", width: "120px", height: "80px" });
 
     store.collapseAllPreviews();
     await view.vm.$nextTick();
@@ -408,7 +404,7 @@ describe("BoardCanvas：渲染坐标改由临时槽位决定", () => {
     expect(cardStyle(view, "exp_a")).toMatchObject({ left: "400px", top: "500px", width: "120px", height: "80px" });
   });
 
-  it("板面缩放（transform: scale）下展开与让位仍按板面坐标算：视觉位置正确", async () => {
+  it("板面缩放（transform: scale）下展开仍按板面坐标算：外框逐字段不变", async () => {
     const view = mountCanvas();
     store.toggleCardPreview("exp_a");
     await view.vm.$nextTick();
@@ -421,27 +417,20 @@ describe("BoardCanvas：渲染坐标改由临时槽位决定", () => {
     expect(scale).toBeGreaterThan(1.9);
     // 板面坐标（行内 left/top/width/height）不随缩放改变 —— 缩放由 .board-surface 的 transform 承担
     expect(cardStyle(view, "exp_b")).toMatchObject(before);
-    expect(cardStyle(view, "exp_a").width).toBe(EXPANDED_PREVIEW_SIZE.w + "px");
+    // 展开也没有改变外框：始终是正式矩形
+    expect(cardStyle(view, "exp_a")).toMatchObject({ left: "100px", top: "100px", width: "120px", height: "80px" });
   });
 
-  it("预览层收到的是**展开卡**的槽位（普通卡片不会拿到多余的展开容器）", async () => {
+  it("画布不再产生第二套位置：预览层里没有任何展开容器（展开与否都不产生）", async () => {
     const view = mountCanvas();
     expect(view.findAll('[data-im="preview-expanded"]')).toHaveLength(0);
     store.toggleCardPreview("exp_a");
     await view.vm.$nextTick();
-    const boxes = view.findAll('[data-im="preview-expanded"]');
-    expect(boxes).toHaveLength(1);
-    expect(boxes[0].attributes("data-card-id")).toBe("exp_a");
-    expect(styleOf(boxes[0].element)).toMatchObject({
-      left: "100px",
-      top: "100px",
-      width: EXPANDED_PREVIEW_SIZE.w + "px",
-      height: EXPANDED_PREVIEW_SIZE.h + "px",
-    });
+    expect(view.findAll('[data-im="preview-expanded"]')).toHaveLength(0);
   });
 });
 
-describe("BoardPreviewLayer：展开容器的定位与尺寸，不改虚线预览语义", () => {
+describe("BoardPreviewLayer：只剩意图虚线预览（展开容器随 F1 删除）", () => {
   let wrapper: VueWrapper | null = null;
 
   afterEach(() => {
@@ -450,34 +439,22 @@ describe("BoardPreviewLayer：展开容器的定位与尺寸，不改虚线预�
     document.body.innerHTML = "";
   });
 
-  it("不传 expandedSlots：既有意图虚线预览照旧，没有任何展开容器", () => {
+  it("既有意图虚线预览照旧，且不再有任何展开容器", () => {
     wrapper = mount(BoardPreviewLayer, {
       props: { intents: [intentFixture()], locatedIntentId: null, width: 2400, height: 1600 },
     });
     expect(wrapper.find('[data-im="preview"]').exists()).toBe(true);
     const previewCard = wrapper.find(".preview-card");
     expect(previewCard.exists()).toBe(true);
-    // 虚线预览仍然用 preview 自带的坐标，不因展开功能改变
+    // 虚线预览仍然用 preview 自带的坐标：展开功能删除后语义一个字没改
     expect(styleOf(previewCard.element)).toMatchObject({ left: "120px", top: "120px", width: "100px", height: "60px" });
     expect(wrapper.findAll('[data-im="preview-expanded"]')).toHaveLength(0);
   });
 
-  it("传 expandedSlots：只按槽位定位与定尺寸（板面坐标 → px），不碰虚线预览", () => {
-    wrapper = mount(BoardPreviewLayer, {
-      props: {
-        intents: [intentFixture()],
-        locatedIntentId: null,
-        width: 2400,
-        height: 1600,
-        expandedSlots: { exp_a: { x: 100, y: 100, w: 560, h: 420 } },
-      },
-    });
-    const boxes = wrapper.findAll('[data-im="preview-expanded"]');
-    expect(boxes).toHaveLength(1);
-    expect(boxes[0].attributes("data-card-id")).toBe("exp_a");
-    expect(styleOf(boxes[0].element)).toMatchObject({ left: "100px", top: "100px", width: "560px", height: "420px" });
-    // 虚线预览用的仍是 preview 自带坐标（展开容器不改变它）
-    expect(styleOf(wrapper.find(".preview-card").element)).toMatchObject({ left: "120px", top: "120px" });
+  it("源码守卫：预览层不再接受任何「展开槽位」输入（第二套位置没有入口）", () => {
+    const text = source("components/interactive/BoardPreviewLayer.vue");
+    expect(text).not.toContain("expandedSlots");
+    expect(text).not.toContain("preview-expanded");
   });
 });
 

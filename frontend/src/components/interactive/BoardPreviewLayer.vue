@@ -1,6 +1,7 @@
 <!-- 待审批预览叠加层（子智能体 A 负责）：把 QIO 的虚线预览画在真实板面上。
 
-  契约：docs/interactive-mode-contract.md §1.6 / §4.4。
+  契约：docs/interactive-mode-contract.md §1.6 / §4.4；本轮冻结 _IML-COMMON.md §1 F1：
+  正式几何是唯一权威，本层**不再**接收任何"展开槽位"（那会是第二套卡片位置）。
   - 数据来自 store.intents 里仍在等待的意图（pending / needs_update / waiting_dependency /
     waiting_confirm / running）的 preview（结构与 BoardState 的 cards/groups/links 子集相同）；
   - 一律虚线：未获得的实际结果不能伪装成确定结论；元素上写「预览（未确定）」；
@@ -19,13 +20,6 @@ const props = defineProps<{
   locatedIntentId: string | null;
   width: number;
   height: number;
-  /**
-   * 展开预览的容器槽位（**板面坐标**，来自 `interactive/cardLayout.ts` 的
-   * `planExpandedLayout(...).slots`，只带真正展开的卡片）。
-   * 这是本层新增的唯一输入：缺省（不传 / 传空）时本层行为与加展开预览之前**完全一致**，
-   * 既有的意图虚线预览语义一个字都没改。
-   */
-  expandedSlots?: Record<string, BoardRect>;
 }>();
 
 const store = useInteractiveStore();
@@ -96,19 +90,6 @@ function boxStyle(rect: BoardRect): Record<string, string> {
     height: Math.max(1, rect.h) + "px",
   };
 }
-
-interface ExpandedBox {
-  id: string;
-  style: Record<string, string>;
-}
-
-/**
- * 展开容器：位置与尺寸只按槽位来（板面坐标 → 行内 px），不在这里做任何几何推算，
- * 更不参与卡片让位计算（那是 cardLayout 纯函数的职责）。
- */
-const expandedBoxes = computed<ExpandedBox[]>(() =>
-  Object.entries(props.expandedSlots ?? {}).map(([id, rect]) => ({ id, style: boxStyle(rect) })),
-);
 
 const rendered = computed<RenderedIntent[]>(() =>
   props.intents.map((intent) => {
@@ -262,23 +243,6 @@ const rendered = computed<RenderedIntent[]>(() =>
       </svg>
     </div>
   </div>
-
-  <!--
-    展开容器的**定位与尺寸**（契约 §3.5：从浮层扩为「原卡片内展开」）：
-    只把展开卡所在的那块板面区域按槽位画出来（抬高一层底衬），预览主体不在这里 ——
-    它在卡片内部（BoardCard 的 card-preview-host），所以编辑区、勾选框与卡片操作都不会被盖住。
-    整层 pointer-events: none，且 z-index 低于卡片：不参与命中、不挡任何操作。
-  -->
-  <div class="preview-expanded-layer" aria-hidden="true">
-    <div
-      v-for="box in expandedBoxes"
-      :key="box.id"
-      class="preview-expanded"
-      :style="box.style"
-      data-im="preview-expanded"
-      :data-card-id="box.id"
-    ></div>
-  </div>
 </template>
 
 <style scoped>
@@ -336,23 +300,6 @@ const rendered = computed<RenderedIntent[]>(() =>
 }
 .preview-group-head { color: var(--link); font-family: var(--serif); font-size: var(--fs-sm); }
 .preview-group-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* 展开容器层：在卡片之下（卡片 z-index 从 4 起），不参与命中 */
-.preview-expanded-layer {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 3;
-}
-.preview-expanded {
-  position: absolute;
-  border-radius: var(--r-md);
-  background: var(--bg-elevated);
-  /* 一圈很轻的抬起：卡片与容器同尺寸，靠这圈底衬让「这块在阅读态」看得出来 */
-  box-shadow: 0 0 0 4px var(--bg-elevated), var(--shadow-2);
-}
 .preview-links { position: absolute; left: 0; top: 0; overflow: visible; }
 .preview-arrow { fill: var(--link); }
 .preview-line { stroke: var(--link); stroke-width: 1.5; stroke-dasharray: 6 4; }
