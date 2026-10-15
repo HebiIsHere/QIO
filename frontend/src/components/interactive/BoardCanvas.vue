@@ -79,6 +79,7 @@ import {
 } from "../../interactive/viewport";
 import { cardSizeLimits, DEFAULT_LAYOUT_GAP, type LayoutRect } from "../../interactive/cardLayout";
 import { resolvePlacement, type PlacementResult } from "../../interactive/geometry";
+import { publishBoardScale } from "../../interactive/submission";
 import { useResizeGesture } from "../../composables/useResizeGesture";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { chatObstacleFrame } from "../../interactive/chatFrameState";
@@ -413,6 +414,14 @@ watch(
   },
   { immediate: true },
 );
+
+/**
+ * 把画布缩放发布给提交路径（F6 冻结视图的 view.scale）。
+ *
+ * 与上面那块**同一个模式**：只读显示态，不进板面状态、不产生表达、不排保存；
+ * 画布没挂载时提交侧如实拿 null，绝不编造一个 scale。缩放只是查看方式，不构成新意图。
+ */
+watch(scaleSafe, (scale) => publishBoardScale(scale), { immediate: true });
 
 /**
  * 某张卡这一帧画在哪：**正式矩形就是唯一权威**（F1，恒等映射）。
@@ -2326,8 +2335,10 @@ onBeforeUnmount(() => {
   unbindAnchor();
   cardHandles.clear();
   cardRefHandlers.clear();
-  // 可用区域是显示态桥：画布没了就清空，别的组件（添加菜单）回到既有兜底行为
+  // 可用区域与缩放都是显示态桥：画布没了就清空，别的组件（添加菜单）回到既有兜底行为，
+  // 提交路径也不再拿到上一块画布的 scale
   publishBoardArea(null);
+  publishBoardScale(null);
   if (highlightTimer) clearTimeout(highlightTimer);
   if (locatedTimer) clearTimeout(locatedTimer);
 });
