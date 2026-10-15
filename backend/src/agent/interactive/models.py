@@ -63,6 +63,10 @@ EXPRESSION_KINDS = (
     "ordered_changed",
     "focus_selection",
     "layout_only",
+    # F4：QIO 自己产出的结果卡片进入可见范围后，它的新增 / 正文变化也是板面变化
+    # （不属于用户提出的工作，见 NON_INTENT_EXPRESSIONS）。
+    "result_added",
+    "result_updated",
 )
 
 #: 这些改动不属于「用户提出的工作」，不作为意图依据（但仍然属于板面状态与变动记录）：
@@ -74,6 +78,9 @@ NON_INTENT_EXPRESSIONS = (
     "material_removed",
     "note_deleted",
     "link_removed",
+    # F4：可见结果卡的新增 / 正文变化交给 QIO 了解，但不是用户提出的新工作。
+    "result_added",
+    "result_updated",
 )
 
 #: 系统默认组名（契约 §9.1，覆盖 §1.3 / §6.1 的「组 N」）：
@@ -153,9 +160,8 @@ def new_card(kind: str, content: str = "", **fields: Any) -> dict:
         "updatedAt": stamp,
     }
     card.update(fields)
-    if card["kind"] == REPLY_KIND:
-        # QIO 结果卡片不参与注释勾选语义
-        card["checked"] = False
+    # F4：结果卡的默认勾选就是上面的 False（QIO 自己生成 ≠ 获得许可）；
+    # 调用方明确传入 checked 时**尊重它**（用户可以许可查看一张结果卡）。
     return card
 
 
@@ -200,8 +206,10 @@ def is_live(card: dict) -> bool:
     return not card.get("deleted", False)
 
 
-#: 需要「勾选才允许查看」的卡片：注释（文字卡片），包括说明、态度、优先级、任务要求
-CHECKABLE_KINDS = ANNOTATION_KINDS
+#: 需要「勾选才允许查看」的卡片：注释（文字卡片）与 QIO 结果卡片（reply）。
+#: 结果卡默认 **未**勾选（QIO 自己生成不等于获得许可，F4）；勾选后许可持续有效，
+#: 取消勾选 / 明确隐藏 / 删除立即退出范围。
+CHECKABLE_KINDS = ANNOTATION_KINDS + (REPLY_KIND,)
 
 
 def visible_except_deleted(card: dict) -> bool:
@@ -217,8 +225,6 @@ def visible_except_deleted(card: dict) -> bool:
     if card.get("hidden", False):
         return False
     kind = card.get("kind")
-    if kind == REPLY_KIND:
-        return False
     if kind in LEGACY_TEXT_CARD_KINDS:
         # 遗留 code / url 卡（迁移未完成时也不回退成可见）：整体不进入范围 ——
         # 未迁移的历史卡片要么在加载时迁成文字卡，要么完全不可交付。
@@ -235,11 +241,11 @@ def selectable_cards(state: dict) -> list[dict]:
 
     - 文字注释（text）：默认未勾选；**未勾选 = QIO 完全看不到它的文字与注释链接**，
       包括提交的前后状态；
+    - 结果卡片（reply）：**默认未勾选**；只有用户明确勾选「允许 QIO 查看」后才进入范围
+      （F4：QIO 自己生成不等于获得许可，许可持续有效）；
     - 材料（file）：默认在范围内（添加材料不等于要求总结、比较、修改或执行，
       那是意图问题，不是可见性问题）；图片是**文件卡的附件**，不单独成 kind；
-    - 任何卡片被明确隐藏（hidden）都退出讨论范围；
-    - `reply` 卡片是 QIO 自己的结果，不是用户的表达，不进提交载荷；
-    - 已删除的卡片不进范围。
+    - 任何卡片被明确隐藏（hidden）都退出讨论范围；已删除的卡片不进范围。
     """
     return [
         card

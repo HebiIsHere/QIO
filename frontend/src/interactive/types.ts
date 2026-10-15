@@ -98,7 +98,10 @@ export type ExpressionKind =
   | "order_changed"
   | "ordered_changed"
   | "focus_selection"
-  | "layout_only";
+  | "layout_only"
+  // F4：可见结果卡的新增 / 正文变化（不是用户提出的新工作，但属于板面变化）
+  | "result_added"
+  | "result_updated";
 
 export interface Expression {
   id: string;
@@ -109,6 +112,29 @@ export interface Expression {
   cardIds: string[];
   groupId: string | null;
   linkId: string | null;
+  /** F4：result_added / result_updated 的正文（结果卡的完整正文） */
+  content?: string;
+  /** F4：结果来源（meta.reply 的 intentId / understandingId / executionId / stepIndex） */
+  source?: ResultSource;
+  /** F4：结果卡的更新时刻 */
+  updatedAt?: string;
+}
+
+/** 结果来源（F4）：结果卡由哪次理解 / 执行产出。 */
+export interface ResultSource {
+  intentId?: string;
+  understandingId?: string;
+  executionId?: string;
+  stepIndex?: number;
+}
+
+/** F6：客户端**冻结的可见区域**（板面坐标，含 scale）；量不到时整体为 null。 */
+export interface FrozenView {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  scale: number;
 }
 
 export interface SubmissionRecord {
@@ -137,6 +163,8 @@ export interface DeliveryInfo {
   understandingId?: string | null;
   /** 受理状态：accepted = 已可靠受理、模型还没开始 */
   status?: UnderstandingStatus | null;
+  /** F6：这次提交携带的客户端冻结视图（合法时原样回显，否则 / 没给为 null） */
+  view?: FrozenView | null;
 }
 
 export interface BaselineInfo {
@@ -232,10 +260,19 @@ export interface ImpactConfirmResult {
   paused?: Intent[];
 }
 
+/** F7：相对摆放参数（x/y 由程序确定性算出，模型不猜坐标）。 */
+export interface IntentPlacement {
+  relativeTo: string;
+  side?: "left" | "right" | "above" | "below";
+  gap?: number;
+}
+
 export interface IntentPreview {
   cards: BoardCard[];
   groups: BoardGroup[];
   links: BoardLink[];
+  /** F5：符号 → 预览对象 id（裸符号与 card:/group: 别名都给出） */
+  refs?: Record<string, string>;
   note?: string;
 }
 
@@ -449,6 +486,12 @@ export interface IntentOperation {
   y?: number;
   w?: number;
   h?: number;
+  /** F5：本操作声明的批次内符号 */
+  ref?: string;
+  /** F7：相对摆放（与 x/y 二选一；优先级低于显式 x/y） */
+  place?: IntentPlacement;
+  /** F8：order_group 的排列方式；不给 = 只改逻辑顺序 */
+  arrange?: "row" | "column";
 }
 
 export interface IntentBasis {
@@ -477,6 +520,8 @@ export interface Execution {
   attempt: number;
   status: ExecutionStatus;
   steps: ExecutionStep[];
+  /** F5：符号 → 正式对象 id 的稳定映射（批准时分配，重试复用同一份） */
+  objectRefs?: Record<string, string>;
   result: { cardIds: string[]; groupIds: string[]; linkIds: string[] };
   error: string | null;
   createdAt: string;

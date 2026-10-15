@@ -91,8 +91,13 @@ export function defaultCardSeed(kind: CardKind): { kind: CardKind; content: stri
   }
 }
 
-/** 需要勾选才允许 QIO 查看的卡片：文字注释（材料默认在范围内）。 */
-export const CHECKABLE_KINDS: CardKind[] = ["text"];
+/**
+ * 需要勾选才允许 QIO 查看的卡片：文字注释与 QIO 结果卡（材料默认在范围内）。
+ *
+ * F4：结果卡（reply）与文字卡同一套许可语义 —— 默认**未**许可（QIO 自己生成 ≠ 获得许可），
+ * 用户勾选后持续有效；隐藏 / 删除 / 取消勾选立即退出范围。
+ */
+export const CHECKABLE_KINDS: CardKind[] = ["text", "reply"];
 
 //: 组框相对成员的留白（顶部留两行：组名一行 + 序号 / 成员一行，序号条不压住卡片）。
 //: 位置只影响显示，不是意图依据。
@@ -339,8 +344,8 @@ function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
     y: bounded.y,
     w: bounded.w,
     h: bounded.h,
-    // G6 明确隐藏与勾选互斥；G7 reply 不参与注释勾选
-    checked: hidden || kind === "reply" ? false : checked,
+    // G6 明确隐藏与勾选互斥（F4：结果卡同样保留用户明确给出的许可）
+    checked: hidden ? false : checked,
     hidden,
     folded: Boolean(source.folded),
     bookmarked: Boolean(source.bookmarked),
@@ -520,13 +525,10 @@ export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: Ca
     y: size.y,
     w: size.w,
     h: size.h,
-    // 文字卡默认提交给 QIO；reply 恒 false；材料卡不需要这个勾选（默认在允许范围内）
+    // 文字卡默认提交给 QIO；结果卡（reply）默认**不**许可（F4），明确传入时尊重它；
+    // 材料卡不需要这个勾选（默认在允许范围内）
     checked:
-      card.kind === "reply"
-        ? false
-        : card.checked === undefined
-          ? card.kind === "text"
-          : Boolean(card.checked),
+      card.checked === undefined ? card.kind === "text" : Boolean(card.checked),
     hidden: Boolean(card.hidden),
     folded: Boolean(card.folded),
     bookmarked: Boolean(card.bookmarked),

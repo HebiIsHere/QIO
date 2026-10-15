@@ -189,11 +189,24 @@ def test_g6_hidden_forces_checked_false():
     assert card_of(result, "b")["checked"] is True
 
 
-def test_g7_reply_card_never_checked():
-    """G7：reply 卡片不参与注释勾选语义。"""
+def test_g7_reply_card_keeps_its_license():
+    """F4（改写自「reply 恒不可勾选」）：结果卡与文字卡同一套许可语义。
+
+    - 用户明确勾选过的结果卡，归一化后**保持已勾选**（许可持续有效）；
+    - 新结果卡的默认值由 models.new_card 定为 False（QIO 自己生成 ≠ 获得许可）；
+    - 明确隐藏仍然强制取消许可（G6）。
+    """
     state = mk_state(cards=[mk_card("r", kind="reply", checked=True, content="结果")])
     result = board.normalize_state(state)
-    assert card_of(result, "r")["checked"] is False
+    assert card_of(result, "r")["checked"] is True
+
+    fresh = models.new_card(models.REPLY_KIND, "结果")
+    assert fresh["checked"] is False
+
+    hidden = board.normalize_state(
+        mk_state(cards=[mk_card("h", kind="reply", checked=True, hidden=True)])
+    )
+    assert card_of(hidden, "h")["checked"] is False
 
 
 def test_g8_selection_only_live_existing_cards_and_deduped():
@@ -755,7 +768,7 @@ def test_select_in_rect_replaces_or_adds():
     assert additive["selection"] == ["c", "a"]
 
 
-def test_set_checked_only_applies_to_text_annotations():
+def test_set_checked_applies_to_annotations_and_result_cards():
     state = mk_state(
         cards=[
             mk_card("t", kind="text", hidden=True),
@@ -767,7 +780,10 @@ def test_set_checked_only_applies_to_text_annotations():
     assert card_of(checked, "t")["checked"] is True
     assert card_of(checked, "t")["hidden"] is False, "勾选与明确隐藏互斥：勾选即回到讨论范围"
     assert card_of(board.set_checked(state, "f", True), "f")["checked"] is False, "材料没有勾选框"
-    assert card_of(board.set_checked(state, "r", True), "r")["checked"] is False, "reply 不参与勾选"
+    # F4（改写自「reply 不参与勾选」）：结果卡与文字卡同一套许可语义，可以勾选。
+    licensed = board.set_checked(state, "r", True)
+    assert card_of(licensed, "r")["checked"] is True, "结果卡可以由用户明确许可查看"
+    assert card_of(board.set_checked(licensed, "r", False), "r")["checked"] is False, "取消许可立即生效"
     unchecked = board.set_checked(checked, "t", False)
     assert card_of(unchecked, "t")["checked"] is False
 

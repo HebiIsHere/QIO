@@ -16,9 +16,11 @@ import {
   executionActions,
   executionProgress,
   executionText,
+  executionRefsText,
   locatePreview,
   operationsText,
   previewBounds,
+  previewSymbolsText,
   rejectAvailability,
   statusText,
   waitingForLabels,
@@ -179,6 +181,9 @@ const preview = computed(() => props.intent.preview ?? { cards: [], groups: [], 
 const hasPreview = computed(
   () => (preview.value.cards?.length ?? 0) + (preview.value.groups?.length ?? 0) > 0,
 );
+// F5：预览里的符号 → 对象映射，以及执行后正式对象 id 的同一份映射（有就显示）。
+const previewSymbolsLabel = computed(() => previewSymbolsText(preview.value));
+const executionRefsLabel = computed(() => executionRefsText(props.intent.execution));
 
 const approveLabel = computed(() => {
   switch (props.intent.status) {
@@ -465,6 +470,12 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
       </div>
       <p v-else class="preview-empty">这项预览没有可展示的内容。</p>
       <p v-if="preview.note" class="preview-note">{{ preview.note }}</p>
+      <p v-if="previewSymbolsLabel" class="preview-symbols" data-im="preview-symbols">
+        {{ previewSymbolsLabel }}
+      </p>
+      <p v-if="executionRefsLabel" class="preview-symbols" data-im="execution-refs">
+        {{ executionRefsLabel }}
+      </p>
     </div>
 
     <p v-if="waiting.length" class="waiting">
@@ -616,6 +627,7 @@ const progressText = computed(() => props.intent.progress?.text ?? "");
 .summary,
 .preview-caption,
 .preview-note,
+.preview-symbols,
 .waiting,
 .progress,
 .revert-text,

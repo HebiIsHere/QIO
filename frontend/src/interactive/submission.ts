@@ -10,12 +10,14 @@
  * 文字卡要勾选（整卡一个许可，覆盖卡内文字 / 链接 / 代码）；材料（file：图片与其它文件都是文件卡的附件）默认在范围内；
  * 遗留 code / url 卡**整体不可见**（迁移完成前也不回退成可见）；reply / hidden / deleted 不在。
  */
+import { CHECKABLE_KINDS } from "./board";
 import type {
   AcceptanceLookup,
   BoardCard,
   BoardState,
   Expression,
   ExpressionKind,
+  FrozenView,
   SubmissionResult,
   VisibleRange,
 } from "./types";
@@ -51,6 +53,8 @@ export interface ChangeSummary {
 export interface VisibleRangeCounts {
   cards: number;
   notes: number;
+  /** F4：可见结果卡数量（与注释分开报，不混为一谈） */
+  results: number;
   materials: number;
   groups: number;
   links: number;
@@ -70,10 +74,40 @@ const LEGACY_TEXT_CARD_KINDS = ["code", "url"];
  */
 export function isVisibleCard(card: BoardCard): boolean {
   if (card.deleted || card.hidden) return false;
-  if (card.kind === "reply") return false;
   if (LEGACY_TEXT_CARD_KINDS.includes(card.kind)) return false;
-  if (card.kind === "text") return card.checked;
+  // F4：文字注释与结果卡都要「勾选才允许 QIO 查看」（默认未勾选）；材料默认在范围内。
+  if (CHECKABLE_KINDS.includes(card.kind)) return card.checked;
   return true;
+}
+
+// --- F6：客户端冻结视图（显示态桥） -----------------------------------------
+//
+// 与 viewport.publishBoardArea 同一个模式：只读显示态，不进板面状态、不产生表达、不排保存。
+// 画布在 scale 变化 / 卸载时发布；没发布过（jsdom / 画布未挂载）时是 null —— 提交时如实
+// 传 null，绝不编造一个 scale。区域来自 viewport.readBoardArea()。
+
+let liveScale: number | null = null;
+
+export function publishBoardScale(scale: number | null): void {
+  liveScale = typeof scale === "number" && Number.isFinite(scale) && scale > 0 ? scale : null;
+}
+
+export function readBoardScale(): number | null {
+  return liveScale;
+}
+
+/**
+ * 组装提交用的**冻结视图**（F6）：板面坐标下的可见区域 + 当前缩放。
+ * 任何一项量不到（null / 非有限数 / 面积或缩放不为正）→ 整体返回 null（不编造）。
+ */
+export function frozenViewPayload(
+  area: { x: number; y: number; w: number; h: number } | null | undefined,
+  scale: number | null | undefined,
+): FrozenView | null {
+  if (!area || typeof scale !== "number" || !Number.isFinite(scale) || scale <= 0) return null;
+  if (![area.x, area.y, area.w, area.h].every((value) => Number.isFinite(value))) return null;
+  if (!(area.w > 0) || !(area.h > 0)) return null;
+  return { x: area.x, y: area.y, w: area.w, h: area.h, scale };
 }
 
 /** 本地预览用的可见范围（权威结果以服务端为准）。 */
@@ -104,6 +138,7 @@ export function visibleRangeCounts(range: VisibleRange | null | undefined): Visi
   return {
     cards: cards.length,
     notes: cards.filter((card) => card.kind === "text").length,
+    results: cards.filter((card) => card.kind === "reply").length,
     materials: cards.filter((card) => MATERIAL_KINDS.includes(card.kind)).length,
     groups: range?.groups?.length ?? 0,
     links: range?.links?.length ?? 0,
@@ -121,11 +156,12 @@ export function visibleRangeText(range: VisibleRange | null | undefined): string
     return "本次允许 QIO 查看的范围是空的：没有任何内容会被交给 QIO（未勾选与明确隐藏的注释不在其中）。";
   }
   const parts = [`注释 ${counts.notes} 条`, `材料 ${counts.materials} 项`];
+  if (counts.results > 0) parts.push(`结果卡 ${counts.results} 张`);
   if (counts.groups > 0) parts.push(`组 ${counts.groups} 个`);
   if (counts.links > 0) parts.push(`关系 ${counts.links} 条`);
   const tail =
     counts.notVisible > 0
-      ? `另有 ${counts.notVisible} 张卡片不在其中（未勾选的注释、明确隐藏的卡片与 QIO 结果都不会被查看）。`
+      ? `另有 ${counts.notVisible} 张卡片不在其中（未勾选的注释与结果卡、明确隐藏的卡片都不会被查看）。`
       : "没有被排除的卡片。";
   return `本次允许 QIO 查看：${parts.join("、")}。${tail}`;
 }
@@ -147,6 +183,9 @@ const KIND_LABELS: Record<ExpressionKind, string> = {
   ordered_changed: "有序设置变化",
   focus_selection: "关注范围",
   layout_only: "普通移动 / 缩放",
+  // F4：可见结果卡的新增 / 正文变化
+  result_added: "新增可见结果卡",
+  result_updated: "可见结果卡内容变化",
 };
 
 export function changeKindLabel(kind: ExpressionKind): string {
@@ -176,7 +215,7 @@ export function summarizeChanges(expressions: Expression[] | null | undefined): 
     parts.push(`本次有 ${rest.length} 项板面变化，都不构成工作请求`);
   }
   if (bearing.length && nonIntent.length) {
-    parts.push(`其中 ${nonIntent.length} 项只记录变化（材料增删、撤回等）`);
+    parts.push(`其中 ${nonIntent.length} 项只记录变化（材料增删、撤回、结果卡变化等）`);
   }
   if (layoutOnly.length) {
     parts.push(`${layoutOnly.length} 项普通移动 / 缩放只影响显示`);

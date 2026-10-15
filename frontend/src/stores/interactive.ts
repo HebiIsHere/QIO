@@ -81,8 +81,11 @@ import {
   serializeSubmissionIdentity,
   submissionIdentityFor,
   submissionIdentityStorageKey,
+  frozenViewPayload,
+  readBoardScale,
   type SubmissionIdentity,
 } from "../interactive/submission";
+import { readBoardArea } from "../interactive/viewport";
 
 const DEFAULT_BOARD_ID = "board_default";
 const UNDO_LIMIT = 100;
@@ -2895,6 +2898,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
         board.value.seq,
         confirmedCheckId,
         identity.clientRequestId,
+        // F6：板面坐标下的当前可见区域 + 当前缩放；任一量不到就是 null（不编造）。
+        frozenViewPayload(readBoardArea(), readBoardScale()),
       );
     } catch (err) {
       const status = (err as { status?: number }).status;
@@ -3333,15 +3338,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 这张卡片这次**会不会**连同它的正文进提交快照。
    *
    * 与后端的可见范围同一口径（agent/interactive/models.visible_except_deleted）：
-   * 已删除 / 明确隐藏 / reply 都进不去；可勾选的注释（ANNOTATION_KINDS）**未勾选 = QIO 看不到**；
-   * 材料（file / image / code / url）默认在范围内。
+   * 已删除 / 明确隐藏都进不去；可勾选的**文字注释与结果卡**（CHECKABLE_KINDS）未勾选 = QIO 看不到；
+   * 材料（file）默认在范围内。
    *
+   * F4：结果卡与文字卡同一套许可语义（默认未勾选，勾选后持续有效）；
    * 为什么不给未勾选的注释提升：那会越过「勾选才允许 QIO 查看」的边界，
    * 而且用户根本没打算把这段草稿交出去 —— 草稿原样留着，等他勾选或自己点完成编辑。
    */
   function cardSubmittedFor(card: { kind: string; checked: boolean; hidden: boolean; deleted: boolean }): boolean {
     if (card.deleted || card.hidden) return false;
-    if (card.kind === "reply") return false;
     if (CHECKABLE_KINDS.includes(card.kind as (typeof CHECKABLE_KINDS)[number])) return card.checked;
     return true;
   }

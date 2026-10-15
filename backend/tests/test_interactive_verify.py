@@ -214,19 +214,22 @@ def test_server_derives_visible_range_from_saved_state_not_request(harness: Harn
     assert note["id"] not in _dump(result["visibleRange"])
 
 
-def test_hidden_forced_off_and_reply_never_checkable_through_put_state(harness: Harness):
-    """PUT /state 的 normalize 真的生效：G6 隐藏强制取消勾选、G7 reply 恒不勾选。"""
+def test_hidden_forced_off_and_reply_license_kept_through_put_state(harness: Harness):
+    """PUT /state 的 normalize 真的生效：G6 隐藏强制取消勾选；F4 结果卡保持用户许可。"""
     state = harness.put_state(
         _state(
             [
                 {"id": "c_h", "kind": "text", "content": "hidden", "checked": True, "hidden": True},
                 {"id": "c_r", "kind": "reply", "content": "reply", "checked": True},
+                {"id": "c_r0", "kind": "reply", "content": "reply-default"},
             ]
         )
     ).json()["state"]
     by_id = {card["id"]: card for card in state["cards"]}
     assert by_id["c_h"]["checked"] is False
-    assert by_id["c_r"]["checked"] is False
+    # F4（改写自「reply 恒不勾选」）：明确许可过的结果卡保持勾选；新结果卡默认未勾选。
+    assert by_id["c_r"]["checked"] is True
+    assert by_id["c_r0"]["checked"] is False
 
 
 def test_normalize_fixes_duplicates_dangling_links_and_empty_groups(harness: Harness):

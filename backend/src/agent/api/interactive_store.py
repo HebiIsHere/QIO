@@ -327,6 +327,9 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
     只传 requestedVisible 表示「用户这一批想给 QIO 看的卡片」；
     服务端仍以**已保存状态推导出的可见范围**为准，绝不接受未勾选卡片进入载荷。
 
+    view（可选，F6）是客户端**冻结的可见区域**（板面坐标）：x/y/w/h/scale；没给或非法时
+    按 null 处理，绝不编造。
+
     clientRequestId（可选，契约 §1.2）是前端在发出提交**之前**生成的稳定提交请求身份：
     同身份重试返回原记录事实（replayed=true，不重复落行 / 不重复调用模型）；
     同身份但内容不同 → 409 request_identity_conflict；缺省 / 空串 = 旧客户端行为。
@@ -363,6 +366,8 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
             adapter_provider=_adapter_provider(request),
             # 稳定提交请求身份：同身份重试不重复落行、不重复调用模型
             client_request_id=client_request_id,
+            # F6：客户端冻结视图原样透传（校验在 submission.normalize_view，路由不加工）
+            view=payload.get("view"),
         )
     except submission.StaleState as exc:
         # M4 路径 3：候选版本 / 确认范围与服务端不一致 → 不落库

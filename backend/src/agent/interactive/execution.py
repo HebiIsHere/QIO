@@ -31,7 +31,7 @@ import inspect
 import sqlite3
 from typing import Any, Iterable
 
-from agent.interactive import models
+from agent.interactive import models, placement
 
 #: board_executions 里需要 JSON 序列化的列
 _JSON_COLUMNS = ("plan", "steps", "checkpoints", "result")
@@ -159,6 +159,13 @@ def execution_payload(row: sqlite3.Row) -> dict:
     if not isinstance(result, dict):
         result = {}
     steps = models.loads(_row_value(row, "steps", []), [])
+    plan = models.loads(_row_value(row, "plan", {}), {})
+    # F5：符号 → 正式对象 id 的稳定映射（批准时分配、重试复用同一份）。
+    object_refs = {
+        str(op.get("ref")): str(op.get("id"))
+        for op in (plan.get("ops") if isinstance(plan, dict) else []) or []
+        if isinstance(op, dict) and op.get("ref") and op.get("id")
+    }
     return {
         "id": row["id"],
         "intentId": row["intent_id"],
@@ -166,6 +173,7 @@ def execution_payload(row: sqlite3.Row) -> dict:
         "attempt": int(row["attempt"] or 1),
         "status": row["status"],
         "steps": [step for step in steps if isinstance(step, dict)],
+        "objectRefs": object_refs,
         "result": {
             "cardIds": _ids(result.get("cardIds")),
             "groupIds": _ids(result.get("groupIds")),
@@ -242,7 +250,8 @@ def build_plan(row: sqlite3.Row) -> dict:
                     "invalid_operations", label + "文字卡片没有正文：需要重新提出方案与审批。"
                 )
             op["id"] = models.new_id("c")
-            op["ref"] = str(raw.get("cardId") or raw.get("ref") or "").strip()
+            # F5：`ref` 声明本批次内的符号（同批更早的操作可以引用它）。
+            op["ref"] = str(raw.get("ref") or raw.get("cardId") or "").strip()
             op["content"] = content
         elif kind == "group_cards":
             members = [str(x) for x in (raw.get("cardIds") or []) if str(x).strip()]
@@ -251,7 +260,7 @@ def build_plan(row: sqlite3.Row) -> dict:
                     "invalid_operations", label + "成组操作没有成员：需要重新提出方案与审批。"
                 )
             op["id"] = models.new_id("g")
-            op["ref"] = str(raw.get("groupId") or raw.get("ref") or "").strip()
+            op["ref"] = str(raw.get("ref") or raw.get("groupId") or "").strip()
             op["cardIds"] = members
         elif kind == "add_link":
             src, dst = str(raw.get("src") or "").strip(), str(raw.get("dst") or "").strip()
@@ -308,6 +317,10 @@ _BINDING_OP_KEYS = (
     "y",
     "w",
     "h",
+    # F5 符号声明 / F7 相对摆放 / F8 排列方式：都是方案内容，批准后变化必须能被发现。
+    "ref",
+    "place",
+    "arrange",
 )
 
 
@@ -419,42 +432,90 @@ def stale_targets(conn: sqlite3.Connection, board_id: str, plan: dict) -> list[s
     return stale
 
 
-def preview_from_operations(operations: Iterable[dict]) -> dict:
+def _ref_keys(value: Any, decl_kind: str) -> list[str]:
+    """一个声明的两种写法都要能解析：裸符号与**类型正确**的 `card:a` / `group:a`。
+
+    不给另一种前缀起别名：`group:a` 永远不能解析到一张叫 a 的卡片（类型必须一致）。
+    """
+    symbol = str(value or "").strip()
+    if not symbol:
+        return []
+    prefix = decl_kind if decl_kind in ("card", "group") else "card"
+    if symbol.startswith("card:") or symbol.startswith("group:"):
+        return [symbol, symbol.split(":", 1)[1]]
+    return [symbol, prefix + ":" + symbol]
+
+
+def preview_from_operations(
+    operations: Iterable[dict],
+    *,
+    cards: Iterable[dict] = (),
+    view: dict | None = None,
+) -> dict:
     """把已批准的操作集合画成虚线预览（前端只看得到会发生什么）。
 
     预览里出现的是将要新增 / 将要改变的对象；移动与排序不产生新对象，因此不进预览
     （它们不是新内容），但仍会真实执行。
+
+    F7：落点与尺寸与**真实执行**共用 placement.plan_card_placement（同一函数、同一冻结
+    view），所以预览显示的坐标就是执行时会落地的坐标；`cards` / `view` 缺省时按没有
+    既有卡片、没有视野处理（逐字段仍确定性）。
     """
-    cards: list[dict] = []
+    existing = [card for card in cards if isinstance(card, dict)]
+    cards_out: list[dict] = []
     groups: list[dict] = []
     links: list[dict] = []
     ref_map: dict[str, str] = {}
+
+    def resolve(value: Any) -> str:
+        key = str(value or "").strip()
+        if not key:
+            return ""
+        if key in ref_map:
+            return ref_map[key]
+        symbol = key.split(":", 1)[1] if ":" in key else key
+        return ref_map.get(symbol, key)
+
     for index, raw in enumerate(operations or []):
         if not isinstance(raw, dict):
             continue
         kind = str(raw.get("op") or "")
         if kind in _ADD_OPS:
-            symbol = str(raw.get("cardId") or raw.get("ref") or "").strip()
+            symbol = str(raw.get("ref") or raw.get("cardId") or "").strip()
             preview_id = symbol or ("p_" + str(index))
-            ref_map[symbol or preview_id] = preview_id
             card = models.new_card(
                 models.REPLY_KIND if kind == "add_reply_card" else "text",
                 str(raw.get("content") or ""),
             )
             card["id"] = preview_id
-            if raw.get("x") is not None:
-                card["x"] = _num(raw.get("x"), card["x"])
-            if raw.get("y") is not None:
-                card["y"] = _num(raw.get("y"), card["y"])
-            if raw.get("w") is not None:
-                card["w"] = max(1.0, _num(raw.get("w"), card["w"]))
-            if raw.get("h") is not None:
-                card["h"] = max(1.0, _num(raw.get("h"), card["h"]))
-            cards.append(card)
+            if raw.get("place") is not None and not isinstance(raw.get("place"), dict):
+                card["placementNote"] = "place 参数形状无效，已按默认落点处理"
+            geometry = placement.plan_card_placement(
+                raw,
+                kind=card["kind"],
+                others=existing,
+                pending=cards_out,
+                view=view,
+                resolve_card_id=resolve,
+            )
+            card.update(
+                {
+                    "x": geometry["x"],
+                    "y": geometry["y"],
+                    "w": geometry["w"],
+                    "h": geometry["h"],
+                    "placement": {
+                        "reason": geometry["reason"],
+                        "sizeAdjusted": geometry["sizeAdjusted"],
+                    },
+                }
+            )
+            cards_out.append(card)
+            for key in _ref_keys(symbol, "card") or [preview_id]:
+                ref_map[key] = preview_id
         elif kind == "group_cards":
-            symbol = str(raw.get("groupId") or raw.get("ref") or "").strip()
+            symbol = str(raw.get("ref") or raw.get("groupId") or "").strip()
             preview_id = symbol or ("pg_" + str(index))
-            ref_map[symbol or preview_id] = preview_id
             name = str(raw.get("name") or "").strip()
             group = models.new_group(
                 name or models.default_group_name(len(groups) + 1),
@@ -463,19 +524,24 @@ def preview_from_operations(operations: Iterable[dict]) -> dict:
             )
             group["id"] = preview_id
             group["members"] = [
-                ref_map.get(str(member), str(member)) for member in raw.get("cardIds") or []
+                resolve(member) or str(member) for member in raw.get("cardIds") or []
             ]
+            for key in _ref_keys(symbol, "group") or [preview_id]:
+                ref_map[key] = preview_id
             groups.append(group)
         elif kind == "add_link":
             link = models.new_link(
-                ref_map.get(str(raw.get("src")), str(raw.get("src") or "")),
-                ref_map.get(str(raw.get("dst")), str(raw.get("dst") or "")),
+                resolve(raw.get("src")) or "",
+                resolve(raw.get("dst")) or "",
                 direction=bool(raw.get("direction", False)),
                 meaning=str(raw.get("meaning") or ""),
             )
             link["id"] = str(raw.get("linkId") or raw.get("ref") or link["id"])
+            if isinstance(raw.get("ref"), str) and raw.get("ref").strip():
+                for key in _ref_keys(raw.get("ref"), "card"):
+                    ref_map[key] = link["id"]
             links.append(link)
-    return {"cards": cards, "groups": groups, "links": links, "note": ""}
+    return {"cards": cards_out, "groups": groups, "links": links, "note": "", "refs": ref_map}
 
 
 # --- 建立执行记录（幂等） ---------------------------------------------------
@@ -899,16 +965,30 @@ def _live_links(state: dict) -> dict[str, dict]:
 class _StepContext:
     """一步执行需要的身份与符号表（新对象 id 已在批准时确定）。"""
 
-    def __init__(self, plan: dict, *, execution_id: str, intent_id: str, understanding_id: str):
+    def __init__(
+        self,
+        plan: dict,
+        *,
+        execution_id: str,
+        intent_id: str,
+        understanding_id: str,
+        view: dict | None = None,
+    ):
         self.execution_id = execution_id
         self.intent_id = intent_id
         self.understanding_id = understanding_id
+        #: F6：这次任务理解时冻结的可见区域（执行落点用同一份视图）。
+        self.view = view if isinstance(view, dict) else None
         self.refs: dict[str, str] = {}
         for op in plan.get("ops") or []:
             for symbol in (op.get("ref"), op.get("cardId"), op.get("groupId")):
                 key = str(symbol or "").strip()
                 if key and op.get("id"):
                     self.refs[key] = str(op["id"])
+                    # `card:a` / `group:a` 与裸符号都解析到同一个正式对象 id。
+                    if ":" not in key:
+                        self.refs["card:" + key] = str(op["id"])
+                        self.refs["group:" + key] = str(op["id"])
 
     def resolve(self, ref: Any) -> str:
         key = str(ref or "").strip()
@@ -927,6 +1007,52 @@ class _StepContext:
                 "stepIndex": int(step_index),
             },
         }
+
+
+def _arrange_members(state: dict, group: dict, arrange: str) -> None:
+    """按 row（从左到右）/ column（从上到下一列）真实写入成员 x/y（F8）。
+
+    间距用板面既有的分组间距；起点取成员当前的左上角，不把整组挪到别的地方。
+    写完由 board.normalize_state 统一更新组框。
+    """
+    cards = _live_cards(state)
+    members = [str(cid) for cid in group.get("members") or [] if str(cid) in cards]
+    if not members:
+        return
+    gap = float(getattr(_board(), "DEFAULT_CARD_GAP", placement.PLACEMENT_GAP))
+    start_x = min(cards[cid]["x"] for cid in members)
+    start_y = min(cards[cid]["y"] for cid in members)
+    x, y = start_x, start_y
+    for cid in members:
+        card = cards[cid]
+        card["x"] = x
+        card["y"] = y
+        card["updatedAt"] = _now()
+        if arrange == "row":
+            x += float(card.get("w") or 0.0) + gap
+        else:
+            y += float(card.get("h") or 0.0) + gap
+
+
+def _frozen_view(conn: sqlite3.Connection, intent_row: sqlite3.Row) -> dict | None:
+    """F6/F7：这次任务理解时冻结的可见区域（执行落点与审批预览同源）；取不到就是 None。"""
+    uid = str(_row_value(intent_row, "understanding_id", "") or "")
+    if not uid:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT snapshot FROM board_understanding WHERE id = ?", (uid,)
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    snapshot = models.loads(_row_value(row, "snapshot", {}), {})
+    if not isinstance(snapshot, dict):
+        return None
+    from agent.interactive import submission as submission_module  # 延迟 import：避免环
+
+    return submission_module.normalize_view(snapshot.get("view"))
 
 
 def apply_step(
@@ -949,10 +1075,19 @@ def apply_step(
         card = models.new_card(card_kind, str(op.get("content") or ""))
         card["id"] = op_id
         card["meta"] = ctx.card_meta(step_index=index)
-        card["x"] = _num(op.get("x"), card["x"])
-        card["y"] = _num(op.get("y"), card["y"])
-        card["w"] = max(1.0, _num(op.get("w"), card["w"]))
-        card["h"] = max(1.0, _num(op.get("h"), card["h"]))
+        # F7：落点与尺寸走唯一实现（默认尺寸 / 夹取 / 冲突找空位 / 相对摆放）——
+        # 与审批预览同一个函数、同一份冻结 view，所以预览坐标就是落地坐标。
+        geometry = placement.plan_card_placement(
+            op,
+            kind=card_kind,
+            others=list(cards.values()) if isinstance(cards, dict) else list(cards),
+            view=ctx.view,
+            resolve_card_id=ctx.resolve,
+        )
+        card["x"] = geometry["x"]
+        card["y"] = geometry["y"]
+        card["w"] = geometry["w"]
+        card["h"] = geometry["h"]
         card["checked"] = False
         card["hidden"] = False
         state.setdefault("cards", []).append(card)
@@ -1020,9 +1155,21 @@ def apply_step(
         group["ordered"] = bool(op.get("ordered", True))
         group["updatedAt"] = _now()
         state["updatedAt"] = _now()
+        # F8：`arrange` 才真实写入成员 x/y；没有 arrange 就是**纯逻辑排序**，
+        # 文案必须如实说「只改逻辑顺序」，不得报告成已经重新排列卡片。
+        arrange = str(op.get("arrange") or "").strip()
+        if arrange in ("row", "column"):
+            _arrange_members(state, group, arrange)
+            detail = (
+                "调整组内成员顺序，并按"
+                + ("从左到右" if arrange == "row" else "从上到下一列")
+                + "真实重排了卡片位置"
+            )
+        else:
+            detail = "只调整组内成员顺序（逻辑顺序），没有移动任何卡片"
         return (
             _board().normalize_state(state),
-            {"groupId": group_id, "detail": "按批准的顺序调整组内成员"},
+            {"groupId": group_id, "detail": detail},
             None,
         )
 
@@ -1498,6 +1645,8 @@ async def run_execution(
         execution_id=execution_id,
         intent_id=intent_row["id"],
         understanding_id=str(_row_value(intent_row, "understanding_id", "") or ""),
+        # F7：落点用理解时冻结的同一份 view（没有就是 None，不编造）。
+        view=_frozen_view(conn, intent_row),
     )
     steps = models.loads(_row_value(row, "steps", []), [])
     if not isinstance(steps, list):

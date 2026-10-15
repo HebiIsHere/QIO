@@ -63,6 +63,7 @@ async def _save_and_submit(
     links: list[dict] | None = None,
     selection: list[str] | None = None,
     note: str = "",
+    view: dict | None = None,
 ) -> dict:
     board_store.ensure_board(conn, board_id=BOARD)
     state = {
@@ -75,7 +76,7 @@ async def _save_and_submit(
         "selection": list(selection or []),
     }
     board_store.save_board(conn, BOARD, state, reason="test")
-    result = await submission_module.submit_board(conn, BOARD, note=note)
+    result = await submission_module.submit_board(conn, BOARD, note=note, view=view)
     # A 的提交路径在受理成功后会排一个后台理解任务。这里我们**自己**用 fake adapter 驱动
     # run_understanding，所以先把那个默认（没有 adapter）的后台任务取消掉，避免两边抢同一行；
     # 受理本身照旧（记录已建立、delivery.understandingId 已给出）。
@@ -727,3 +728,197 @@ async def test_memory_only_records_cooperation_relevant_entries(db_conn, fake_ma
             assert record["state"] in ("pending_review", "active")
     # 未获准的内容不会被自动激活
     assert all(record.get("state") != "active" for record in memory if record.get("stored"))
+
+
+# --- F4 / F5 / F6（本轮新增）：结果卡上下文 / 几何上下文 / 类型化引用 ---------
+
+
+async def test_context_geometry_covers_only_visible_objects(db_conn, fake_materials):
+    """F6：geometry 只覆盖本次获准范围；未许可对象的身份与几何都不出现。"""
+    cards = [
+        _card("c_note", "text", "获准的注释", checked=True),
+        _card(
+            "c_reply",
+            "reply",
+            "上次的结论正文",
+            checked=True,
+            meta={"reply": {"intentId": "i1", "understandingId": "u1", "executionId": "x1"}},
+        ),
+        _card("c_secret", "text", NOWHERE, checked=False),
+        _card("c_hidden", "file", NOWHERE, hidden=True, meta={"name": "h.txt"}),
+    ]
+    groups = [_group("g1", "获准组", ["c_note", "c_reply"])]
+    result = await _save_and_submit(db_conn, cards, groups=groups)
+    uid = result["delivery"]["understandingId"]
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=uid)
+    geometry = context["geometry"]
+    assert geometry["unit"] == "board"
+    assert geometry["view"] is None, "客户端没给 view 时必须是 null，不得编造"
+    assert {item["id"] for item in geometry["cards"]} == {"c_note", "c_reply"}
+    assert {item["id"] for item in geometry["groups"]} == {"g1"}
+    dumped = json.dumps(geometry, ensure_ascii=False)
+    assert "c_secret" not in dumped and "c_hidden" not in dumped
+    assert NOWHERE not in dumped
+    for item in geometry["cards"]:
+        for key in ("x", "y", "w", "h"):
+            assert isinstance(item[key], (int, float))
+
+
+async def test_context_geometry_view_comes_from_frozen_client_view(db_conn, fake_materials):
+    """F6：客户端冻结视图随提交快照进入 geometry.view（含 scale）。"""
+    cards = [_card("c_note", "text", "获准的注释", checked=True)]
+    view = {"x": 12.0, "y": 34.0, "w": 900.0, "h": 700.0, "scale": 1.25}
+    result = await _save_and_submit(db_conn, cards, view=view)
+    uid = result["delivery"]["understandingId"]
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=uid)
+    assert context["geometry"]["view"] == view
+
+
+async def test_context_delivers_result_body_and_source(db_conn, fake_materials):
+    """F4：可见结果卡交付完整正文与来源，供「根据上次结论继续」使用。"""
+    body = "结论正文：" + "甲乙" * 400
+    cards = [
+        _card("c_note", "text", "继续分析上次的结论", checked=True),
+        _card(
+            "c_reply",
+            "reply",
+            body,
+            checked=True,
+            meta={"reply": {"intentId": "i1", "understandingId": "u1", "executionId": "x1"}},
+        ),
+    ]
+    result = await _save_and_submit(db_conn, cards)
+    uid = result["delivery"]["understandingId"]
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=uid)
+    entry = [item for item in context["cards"] if item["id"] == "c_reply"][0]
+    assert entry["result"] is True
+    assert entry["text"] == body, "结果卡正文按结果正文口径交付，不是 600 字的普通卡片口径"
+    assert entry["textTruncated"] is False
+    assert entry["source"]["executionId"] == "x1"
+    assert entry["updatedAt"]
+    added = [item for item in context["changes"] if item["kind"] == "result_added"]
+    assert added and added[0]["content"] == body
+    assert added[0]["source"]["intentId"] == "i1"
+
+
+def _validate_ops(operations: list[dict], *, context: dict | None = None) -> dict:
+    payload = {
+        "kind": "intent",
+        "summary": "说明",
+        "intents": [
+            {
+                "intentKey": "k1",
+                "title": "任务",
+                "operations": operations,
+                "impact": {"cardIds": []},
+            }
+        ],
+    }
+    return u.validate_output(
+        payload,
+        context=context
+        or {"visibleCardIds": ["c_a"], "groups": [{"id": "g1", "members": ["c_a"]}], "materialIds": []},
+    )
+
+
+def test_typed_refs_are_order_and_type_checked():
+    """F5：ref 声明 + card:/group: 引用；拒绝重复 / 前向 / 类型错误 / 未声明。"""
+    good = _validate_ops(
+        [
+            {"op": "add_reply_card", "content": "结论", "ref": "a"},
+            {
+                "op": "add_text_card",
+                "content": "说明",
+                "ref": "b",
+                "place": {"relativeTo": "card:a", "side": "right", "gap": 24},
+            },
+            {"op": "group_cards", "ref": "grp", "cardIds": ["c_a", "card:a", "card:b"], "ordered": True},
+            {
+                "op": "order_group",
+                "groupId": "group:grp",
+                "memberOrder": ["c_a", "card:a"],
+                "arrange": "row",
+            },
+            {"op": "add_link", "src": "card:a", "dst": "card:b"},
+        ]
+    )
+    assert good["ok"] is True, good["reasons"]
+    ops = good["output"]["intents"][0]["operations"]
+    assert ops[0]["ref"] == "a"
+    assert ops[1]["place"] == {"relativeTo": "card:a", "side": "right", "gap": 24.0}
+    assert ops[3]["arrange"] == "row"
+
+    duplicate = _validate_ops(
+        [
+            {"op": "add_reply_card", "content": "1", "ref": "a"},
+            {"op": "add_text_card", "content": "2", "ref": "a"},
+        ]
+    )
+    assert duplicate["ok"] is False
+    assert any("重复声明" in reason for reason in duplicate["reasons"])
+
+    forward = _validate_ops(
+        [
+            {"op": "group_cards", "cardIds": ["c_a", "card:a"]},
+            {"op": "add_reply_card", "content": "1", "ref": "a"},
+        ]
+    )
+    assert forward["ok"] is False
+    assert any("前向引用" in reason for reason in forward["reasons"])
+
+    self_ref = _validate_ops(
+        [
+            {
+                "op": "add_reply_card",
+                "content": "1",
+                "ref": "a",
+                "place": {"relativeTo": "card:a"},
+            }
+        ]
+    )
+    assert self_ref["ok"] is False
+    assert any("前向引用" in reason for reason in self_ref["reasons"])
+
+    wrong_type = _validate_ops(
+        [
+            {"op": "add_reply_card", "content": "1", "ref": "a"},
+            {"op": "group_cards", "ref": "grp", "cardIds": ["c_a", "card:a"]},
+            {"op": "add_link", "src": "card:grp", "dst": "c_a"},
+        ]
+    )
+    assert wrong_type["ok"] is False
+    assert any("类型不匹配" in reason for reason in wrong_type["reasons"])
+
+    undeclared = _validate_ops([{"op": "add_link", "src": "card:nope", "dst": "c_a"}])
+    assert undeclared["ok"] is False
+    assert any("没有在本意图更早" in reason for reason in undeclared["reasons"])
+
+    cross_intent = u.validate_output(
+        {
+            "kind": "intent",
+            "summary": "说明",
+            "intents": [
+                {
+                    "intentKey": "k1",
+                    "title": "一",
+                    "operations": [{"op": "add_reply_card", "content": "1", "ref": "a"}],
+                    "impact": {"cardIds": []},
+                },
+                {
+                    "intentKey": "k2",
+                    "title": "二",
+                    "operations": [{"op": "add_link", "src": "card:a", "dst": "c_a"}],
+                    "impact": {"cardIds": []},
+                },
+            ],
+        },
+        context={"visibleCardIds": ["c_a"], "groups": [], "materialIds": []},
+    )
+    assert cross_intent["ok"] is False
+    assert any("没有在本意图更早" in reason for reason in cross_intent["reasons"])
+
+    bad_arrange = _validate_ops(
+        [{"op": "order_group", "groupId": "g1", "memberOrder": ["c_a"], "arrange": "diagonal"}]
+    )
+    assert bad_arrange["ok"] is False
+    assert any("arrange" in reason for reason in bad_arrange["reasons"])
