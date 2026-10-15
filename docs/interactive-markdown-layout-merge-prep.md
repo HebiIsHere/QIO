@@ -150,4 +150,4 @@ D1/D2 复验证据：`D:\qio-dev\_iml-evidence\after-fix\RECHECK-REPORT.md`（�
 
 - 建议 **squash 或按 §3 的顺序保留提交**（三个子分支的提交已按 A → C → A 的顺序合并，直接合并集成分支即可）。
 - 合并前请确认：CI（`4d1591a2` 的 run）`success`、D 的 D1/D2 复验结论、以及 `docs/status.md` 顶部"最后核对"日期。
-- **不**由本分支直接合并 main，**不**发布、**不**打包。
+- 本文写于合并前；最终执行结果：已合并 main（fast-forward）并打包 0.2.9，**未创建 GitHub Release**。

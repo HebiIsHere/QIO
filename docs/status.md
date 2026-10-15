@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-15（**v0.2.8 已发布**（tag `v0.2.8` → `a9e88a2d`，发布闸门 18/18 PASS，安装包 `QIO_0.2.8_x64-setup.exe` sha256 `60da302a…`，更新签名 key id `5af7e96c8e24bf8b`），内容为**底部功能栏布局重构**（第三十六轮，见 P64）与**图片展示简化**（第三十七轮，见 P65），见 `docs/releases/v0.2.8.md`。**v0.2.7 已发布**（tag `v0.2.7` → `2da1f5ee`，发布闸门 18/18 PASS，安装包 sha256 `2d428936…`），内容为**互动模式界面收敛与回归修复**：卡片表面收敛（文字卡编辑面 / 文件卡）、.md 文件卡做解析、西 / 北把手拉不动修复、图片卡封面回归修复，见 P63 与 `docs/releases/v0.2.7.md`；上一版 v0.2.6（tag `v0.2.6` → `18ea6e59`）是互动模式十个实机问题的修复与界面文案精简；v0.2.5（tag `fa9d0cfb`）是互动空间结构与自由尺寸调整，见 P36；更早的 v0.2.4（tag `1755c105`）是附件上传 CORS 预检热修，统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。**2026-10-14 第十二轮：统一滚动体验 / 对话不横向滚动 / 表格适配已完成（见 P39）**，并已合并进 main（`3a4f256e`，覆盖清单见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`）；同一轮还并入了 **0.2.5 互动模式两处回归修复**（附件成功提示常驻 / 连接点被尺寸热区遮挡，见 P40）。
+最后核对：2026-10-15（**v0.2.9 已打包**（提交 `22a4651a`，安装包 `QIO_0.2.9_x64-setup.exe` sha256 `c732ca5b…`，发布闸门 18/18 PASS，更新签名 key id `5af7e96c8e24bf8b`；**未创建 GitHub Release**），内容为**互动模式第三十八轮集中修复**（结果卡 Markdown、卡片几何权威化、统一落点与尺寸约束、结果卡许可续用、批次内类型化引用、几何上下文与空间排序），见 `docs/releases/v0.2.9.md` 与 P66。**v0.2.8 已发布**（tag `v0.2.8` → `a9e88a2d`，发布闸门 18/18 PASS，安装包 `QIO_0.2.8_x64-setup.exe` sha256 `60da302a…`，更新签名 key id `5af7e96c8e24bf8b`），内容为**底部功能栏布局重构**（第三十六轮，见 P64）与**图片展示简化**（第三十七轮，见 P65），见 `docs/releases/v0.2.8.md`。**v0.2.7 已发布**（tag `v0.2.7` → `2da1f5ee`，发布闸门 18/18 PASS，安装包 sha256 `2d428936…`），内容为**互动模式界面收敛与回归修复**：卡片表面收敛（文字卡编辑面 / 文件卡）、.md 文件卡做解析、西 / 北把手拉不动修复、图片卡封面回归修复，见 P63 与 `docs/releases/v0.2.7.md`；上一版 v0.2.6（tag `v0.2.6` → `18ea6e59`）是互动模式十个实机问题的修复与界面文案精简；v0.2.5（tag `fa9d0cfb`）是互动空间结构与自由尺寸调整，见 P36；更早的 v0.2.4（tag `1755c105`）是附件上传 CORS 预检热修，统一文字卡 / 持续许可 / 卡片内真实预览 / 多媒体对话见 P37）。**2026-10-14 第十二轮：统一滚动体验 / 对话不横向滚动 / 表格适配已完成（见 P39）**，并已合并进 main（`3a4f256e`，覆盖清单见 `docs/global-scroll-coverage.md`，合并材料见 `docs/global-scroll-merge-prep.md`）；同一轮还并入了 **0.2.5 互动模式两处回归修复**（附件成功提示常驻 / 连接点被尺寸热区遮挡，见 P40）。
 **2026-10-14 第十三轮：板面操作提示不再常驻**（改为「本机没用过查看手势时显示一次」，说明并入帮助，见 P41）；
 **第十四轮：对话窗口在短窗口下不再把输入框裁掉**（见 P42）；
 **第十五轮：卡片局部工具栏不再压住卡片**（见 P43）；
@@ -5166,3 +5166,27 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
     的显式分组语义）；`geometry.ts` 覆盖拉伸与新卡落点，QIO 移动 / 审批预览在服务端复用同口径。
   - 本轮不扩展通用工具调用、不开放删除 / 隐藏 / 改用户已有卡片正文 / 替用户改许可，不纳入其他 P2 外观功能。
   - 桌面壳（Tauri）内未复验；浏览器验收为无头 Chromium（受「不在桌面开窗」约束）。
+
+### P67 — v0.2.9 打包台账（2026-10-15 第三十九轮）
+
+- **Status：** completed
+- **范围**：把第三十八轮（P66）的互动模式集中修复合并进 main、版本号升到 0.2.9、产出**带更新签名**的 Windows 安装包。
+  本轮**只打包**：不创建 GitHub Release、不做应用内更新发布。
+- **版本号**：`backend/pyproject.toml`、`backend/src/agent/__init__.py`、`backend/src/agent/api/server.py`、
+  `backend/uv.lock`、`frontend/package.json`、`frontend/package-lock.json`、
+  `frontend/src-tauri/Cargo.toml`、`frontend/src-tauri/Cargo.lock`、`frontend/src-tauri/tauri.conf.json`
+  全部 0.2.8 → 0.2.9。
+- **提交**：`22a4651a`（`chore(release): v0.2.9 版本号与发布说明`，内容含 `fix/interactive-markdown-layout-continuity` 的全部改动）。
+- **产物**：`dist/QIO_0.2.9_x64-setup.exe`（sha256 `c732ca5b…`）、`QIO_0.2.9_x64-setup.exe.sig`、
+  `latest.json`、`QIO_0.2.9_x64-setup.exe.build.json`、`SHA256SUMS.txt`；
+  sidecar `qio-backend-x86_64-pc-windows-msvc.exe`（58.6 MB）。
+- **发布闸门**：18 项全部 PASS —— 含 `installer.sig` / `latest.json.signature` 的 key id 与内嵌公钥一致、
+  `sidecar.fresh`（与 release 后端逐字节一致）、`models`（内置模型与清单一致）、`nsis.payload`（含 0.2.9）、
+  `repo.commit`。记录见 `docs/releases/release-history.jsonl`。
+- **验证（本轮只跑一次全量）**：前端 `npx vitest run` 全绿；`npx vue-tsc --noEmit` 0 错误；
+  `python scripts/check_docs.py` 通过；后端 `uv run --frozen --no-sync pytest -q` 全绿。
+- **Known limitations：**
+  - 应用内更新链路（真实签名产物 + 真实更新源）未做端到端验证；闸门输出里列出的真机人工清单
+    （安装 → 首次启动 → 打包后端启动 → 内置模型就位 → … → 更新 → 卸载）仍待执行。
+  - 安装包已签名但**未创建 GitHub Release**，客户端此刻还取不到 0.2.9 的更新清单。
+  - 第三十八轮自身的已知限制见 P66。
