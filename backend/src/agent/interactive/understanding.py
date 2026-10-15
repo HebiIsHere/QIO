@@ -26,10 +26,11 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from typing import Any, Awaitable, Callable
 
-from agent.interactive import models, prompts
+from agent.interactive import models, placement, prompts
 from agent.interactive import submission as submission_module
 
 NL = chr(10)
@@ -42,6 +43,8 @@ MAX_CONTEXT_CHARS = 12000
 MAX_MATERIAL_CHARS = 4000
 #: 卡片正文进入上下文的上限。
 MAX_CARD_TEXT_CHARS = 600
+#: 结果卡（reply）正文进入上下文的上限（F4：结果卡的完整正文要能被后续任务引用）。
+MAX_RESULT_TEXT_CHARS = 4000
 #: 摘要 / 标题类字段的上限。
 MAX_SHORT_CHARS = 200
 #: 一次理解最多接受的意图数与每个意图的操作数（修改范围受限）。
@@ -237,6 +240,8 @@ def _freeze_snapshot(
         }
     )
     frozen = dict(projection)
+    # F6：冻结视图（客户端可见区域）随快照固化为 null 或 {x,y,w,h,scale}；不编造。
+    frozen["view"] = submission_module.normalize_view(raw.get("view"))
     if isinstance(expressions, list):
         frozen["expressions"] = [e for e in expressions if isinstance(e, dict)]
     else:
@@ -279,6 +284,16 @@ def request_understanding(
     if snapshot is None:
         after = models.loads(row["after_state"], {}) if row is not None else {}
         source = "submission" if row is not None else "missing"
+        # F6：从保存的快照重建时，冻结视图从提交记录的投递事实里取回（缺失 → null）。
+        if row is not None:
+            try:
+                delivery = models.loads(row["delivery"], {})
+            except (KeyError, IndexError):
+                delivery = {}
+            after = {
+                **(after if isinstance(after, dict) else {}),
+                "view": (delivery or {}).get("view") if isinstance(delivery, dict) else None,
+            }
     else:
         after = snapshot
         source = "caller"
@@ -484,6 +499,16 @@ def _resolve_deliverable_images(conn: sqlite3.Connection, state: dict) -> list[d
     return out
 
 
+def _geo_num(value: Any, fallback: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if number != number or number in (float("inf"), float("-inf")):
+        return fallback
+    return number
+
+
 def _card_label(card: dict) -> str:
     try:
         return submission_module.card_label(card)
@@ -616,20 +641,34 @@ def build_context(
     for cid in visible_ids:
         card = by_id[cid]
         text = str(card.get("content") or "")
-        cards.append({
+        # F4：可见结果卡交付**完整正文**（上限按结果正文口径，仍是诚实截断而不是省略），
+        # 并带上来源（meta.reply 的 intentId / understandingId / executionId）与 updatedAt。
+        is_result = card.get("kind") == models.REPLY_KIND
+        limit = MAX_RESULT_TEXT_CHARS if is_result else MAX_CARD_TEXT_CHARS
+        entry = {
             "id": cid,
             "kind": card.get("kind"),
             "label": _card_label(card),
-            "text": _clip(text, MAX_CARD_TEXT_CHARS),
-            "textTruncated": len(text) > MAX_CARD_TEXT_CHARS,
+            "text": _clip(text, limit),
+            "textTruncated": len(text) > limit,
             "material": card.get("kind") in models.MATERIAL_KINDS,
             "group": group_of.get(cid),
             "updatedAt": card.get("updatedAt"),
-        })
+        }
+        if is_result:
+            entry["result"] = True
+            meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+            reply = meta.get("reply") if isinstance(meta.get("reply"), dict) else {}
+            entry["source"] = {
+                key: reply[key]
+                for key in ("intentId", "understandingId", "executionId", "stepIndex")
+                if reply.get(key) is not None
+            }
+        cards.append(entry)
 
     changes: list[dict] = []
     for expr in expressions:
-        changes.append({
+        change = {
             "id": str(expr.get("id") or ""),
             "kind": str(expr.get("kind") or ""),
             "intentBearing": bool(expr.get("intentBearing")),
@@ -637,7 +676,15 @@ def build_context(
             "cardIds": [str(c) for c in (expr.get("cardIds") or []) if str(c) in visible_id_set],
             "groupId": expr.get("groupId"),
             "linkId": expr.get("linkId"),
-        })
+        }
+        # F4：结果新增 / 变化的表达载荷带正文与来源，不能只剩编号或任务标题。
+        if expr.get("kind") in ("result_added", "result_updated"):
+            change["content"] = _clip(expr.get("content"), MAX_RESULT_TEXT_CHARS)
+            source = expr.get("source")
+            change["source"] = dict(source) if isinstance(source, dict) else {}
+            if expr.get("updatedAt"):
+                change["updatedAt"] = str(expr.get("updatedAt"))
+        changes.append(change)
 
     note_ids: list[str] = []
     for expr in expressions:
@@ -678,6 +725,41 @@ def build_context(
             if value and str(value) not in material_ids:
                 material_ids.append(str(value))
 
+    # F6：几何上下文 —— **只**覆盖本次获准范围内的对象；未许可对象的身份与几何都不出现。
+    visible_group_ids = {g["id"] for g in groups if g["id"]}
+    geometry = {
+        "unit": "board",
+        "unitNote": (
+            "板面坐标（board units）：原点在板面左上角，x 向右、y 向下；"
+            "与卡片外框使用同一坐标系。"
+        ),
+        # 客户端冻结的可见区域（含 scale）；客户端没给 → null（不编造）。
+        "view": submission_module.normalize_view(
+            frozen.get("view") if isinstance(frozen, dict) else None
+        ),
+        "cards": [
+            {
+                "id": cid,
+                "x": _geo_num(by_id[cid].get("x")),
+                "y": _geo_num(by_id[cid].get("y")),
+                "w": _geo_num(by_id[cid].get("w")),
+                "h": _geo_num(by_id[cid].get("h")),
+            }
+            for cid in visible_ids
+        ],
+        "groups": [
+            {
+                "id": str(group.get("id") or ""),
+                "x": _geo_num(group.get("x")),
+                "y": _geo_num(group.get("y")),
+                "w": _geo_num(group.get("w")),
+                "h": _geo_num(group.get("h")),
+            }
+            for group in state_like["groups"]
+            if str(group.get("id") or "") in visible_group_ids
+        ],
+    }
+
     context = {
         "contextVersion": 1,
         "boardId": board_id,
@@ -686,6 +768,7 @@ def build_context(
         "requirement": requirement,
         "relationships": relationships,
         "changes": changes,
+        "geometry": geometry,
         "focus": {
             "cardIds": selection,
             "labels": [_card_label(by_id.get(cid, {})) for cid in selection],
@@ -836,6 +919,112 @@ def _invalid(reasons: list[str]) -> dict:
     }
 
 
+#: F5 引用符号语法：card:<symbol> / group:<symbol>；裸符号按卡片引用（向后兼容）。
+REF_SYMBOL_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}\Z")
+REF_PREFIXES = ("card", "group")
+
+
+def parse_ref(value: Any) -> tuple[str, str]:
+    """解析引用：返回 (类型, 符号)。类型是 "card" / "group"；裸符号按卡片处理。
+
+    形状不合法（非字符串 / 空 / 未知前缀）时类型返回 ""，调用方按「不是合法引用」处理。
+    """
+    if not isinstance(value, str):
+        return "", ""
+    text = value.strip()
+    if not text:
+        return "", ""
+    if ":" in text:
+        prefix, symbol = text.split(":", 1)
+        if prefix not in REF_PREFIXES:
+            return "", ""
+        return prefix, symbol
+    return "card", text
+
+
+def _check_card_ref(
+    value: Any,
+    visible: set[str],
+    earlier: dict[str, str],
+    all_declared: dict[str, str],
+    reasons: list[str],
+    where: str,
+) -> str | None:
+    """校验一个卡片引用：既有可见对象，或**更早**操作声明的、类型正确的符号。"""
+    if not isinstance(value, str) or not value.strip():
+        reasons.append(where + "：缺少卡片引用")
+        return None
+    text = str(value).strip()
+    # 1) 已存在的对象仍按当前获准范围（visibleCardIds）校验（F5）。
+    if text in visible:
+        return text
+    prefix, symbol = parse_ref(text)
+    if prefix == "group":
+        reasons.append(where + "：这里需要卡片引用，收到的是组引用 " + text)
+        return None
+    if prefix != "card" or not REF_SYMBOL_RE.match(symbol):
+        reasons.append(where + "：引用了不在本次可见范围内的对象 " + text)
+        return None
+    if symbol in earlier:
+        if earlier[symbol] != "card":
+            reasons.append(where + "：符号 " + symbol + " 已声明为组，类型不匹配")
+            return None
+        return text
+    if symbol in all_declared:
+        reasons.append(
+            where + "：符号 " + symbol + " 在更晚的操作里才声明（前向引用 / 自引用不允许）"
+        )
+        return None
+    reasons.append(
+        where
+        + "：引用了不在本次可见范围内的对象 "
+        + text
+        + "（既没有在本意图更早的操作里声明，也不在可见范围内）"
+    )
+    return None
+
+
+def _check_group_ref(
+    value: Any,
+    group_members: dict[str, list[str]],
+    earlier: dict[str, str],
+    all_declared: dict[str, str],
+    reasons: list[str],
+    where: str,
+) -> str | None:
+    """校验一个组引用：本次可见的组，或**更早**操作声明的组符号。"""
+    if not isinstance(value, str) or not value.strip():
+        reasons.append(where + "：缺少组引用")
+        return None
+    text = str(value).strip()
+    if text in group_members:
+        return text
+    prefix, symbol = parse_ref(text)
+    if prefix == "card":
+        reasons.append(where + "：这里需要组引用，收到的是卡片引用 " + text)
+        return None
+    if prefix != "group" or not REF_SYMBOL_RE.match(symbol):
+        reasons.append(where + "：引用了不在本次可见范围内的组 " + text)
+        return None
+    if symbol in earlier:
+        if earlier[symbol] != "group":
+            reasons.append(where + "：符号 " + symbol + " 已声明为卡片，类型不匹配")
+            return None
+        return text
+    if symbol in all_declared:
+        reasons.append(
+            where + "：符号 " + symbol + " 在更晚的操作里才声明（前向引用 / 自引用不允许）"
+        )
+        return None
+    reasons.append(
+        where
+        + "：引用了不在本次可见范围内的组 "
+        + text
+        + "（既没有在本意图更早的操作里声明，也不在可见范围内）"
+    )
+    return None
+
+
 def _check_card_id(value: Any, visible: set[str], reasons: list[str], where: str) -> bool:
     if not isinstance(value, str) or not value.strip():
         reasons.append(where + "：缺少卡片 id")
@@ -861,13 +1050,32 @@ def _validate_key_list(value: Any, where: str, reasons: list[str]) -> list[str]:
     return out
 
 
+def _declared_symbol(
+    kind: str, raw_ref: Any, where: str, reasons: list[str]
+) -> tuple[str, str]:
+    """校验 `ref` 声明：返回 (符号, 类型)。不合法返回 ("","") 并记原因。"""
+    if raw_ref is None:
+        return "", ""
+    if not isinstance(raw_ref, str) or not REF_SYMBOL_RE.match(raw_ref.strip()):
+        reasons.append(
+            where + " 的 ref 必须是 [A-Za-z][A-Za-z0-9_]{0,31} 的符号"
+        )
+        return "", ""
+    return raw_ref.strip(), ("group" if kind == "group_cards" else "card")
+
+
 def _validate_operation(
     raw: Any,
     visible: set[str],
     group_members: dict[str, list[str]],
     where: str,
     reasons: list[str],
+    *,
+    earlier: dict[str, str] | None = None,
+    all_declared: dict[str, str] | None = None,
 ) -> dict | None:
+    earlier = earlier if isinstance(earlier, dict) else {}
+    all_declared = all_declared if isinstance(all_declared, dict) else {}
     if not isinstance(raw, dict):
         reasons.append(where + " 不是对象")
         return None
@@ -914,9 +1122,54 @@ def _validate_operation(
                 reasons.append(label + " 的 " + key + " 必须是数字")
             else:
                 payload[key] = float(value)
+        # F5：`ref` 声明本批次内的符号（供同意图更早之后的操作引用）。
+        raw_ref = raw.get("ref")
+        if isinstance(raw_ref, str) and REF_SYMBOL_RE.match(raw_ref.strip()):
+            payload["ref"] = raw_ref.strip()
+        # F7：`place` 由程序确定性算出 x/y（不依赖模型猜坐标）。
+        place = raw.get("place")
+        if place is not None:
+            if not isinstance(place, dict):
+                reasons.append(label + " 的 place 必须是对象")
+            else:
+                for key in place:
+                    if key not in ("relativeTo", "side", "gap"):
+                        reasons.append(label + " 的 place 含不支持的参数 " + str(key))
+                relative_to = _check_card_ref(
+                    place.get("relativeTo"),
+                    visible,
+                    earlier,
+                    all_declared,
+                    reasons,
+                    label + " 的 place.relativeTo",
+                )
+                checked_place: dict[str, Any] = {}
+                if relative_to:
+                    checked_place["relativeTo"] = relative_to
+                side = place.get("side")
+                if side is not None:
+                    if not isinstance(side, str) or side not in placement.SIDES:
+                        reasons.append(
+                            label + " 的 place.side 必须是 "
+                            + " / ".join(placement.SIDES)
+                            + " 之一"
+                        )
+                    else:
+                        checked_place["side"] = side
+                gap = place.get("gap")
+                if gap is not None:
+                    if not _is_number(gap):
+                        reasons.append(label + " 的 place.gap 必须是数字")
+                    else:
+                        checked_place["gap"] = float(gap)
+                if checked_place:
+                    payload["place"] = checked_place
     elif op == "move_card":
-        if _check_card_id(raw.get("cardId"), visible, reasons, label):
-            payload["cardId"] = str(raw.get("cardId"))
+        card_ref = _check_card_ref(
+            raw.get("cardId"), visible, earlier, all_declared, reasons, label
+        )
+        if card_ref:
+            payload["cardId"] = card_ref
         for key in ("x", "y"):
             value = raw.get(key)
             if not _is_number(value):
@@ -930,9 +1183,15 @@ def _validate_operation(
         else:
             clean = []
             for cid in ids:
-                if _check_card_id(cid, visible, reasons, label):
-                    clean.append(str(cid))
+                checked_ref = _check_card_ref(
+                    cid, visible, earlier, all_declared, reasons, label
+                )
+                if checked_ref:
+                    clean.append(checked_ref)
             payload["cardIds"] = clean
+        raw_ref = raw.get("ref")
+        if isinstance(raw_ref, str) and REF_SYMBOL_RE.match(raw_ref.strip()):
+            payload["ref"] = raw_ref.strip()
         ordered = raw.get("ordered")
         if ordered is not None:
             if not isinstance(ordered, bool):
@@ -946,31 +1205,43 @@ def _validate_operation(
             else:
                 payload["name"] = _clip(name, MAX_SHORT_CHARS)
     elif op == "order_group":
-        gid = raw.get("groupId")
-        if not isinstance(gid, str) or gid not in group_members:
-            reasons.append(label + " 的 groupId 不在本次可见的组里：" + repr(gid))
-            gid = None
-        else:
+        gid = _check_group_ref(
+            raw.get("groupId"), group_members, earlier, all_declared, reasons, label
+        )
+        known_group = isinstance(gid, str) and gid in group_members
+        if gid:
             payload["groupId"] = gid
         order = raw.get("memberOrder")
         if not isinstance(order, list) or not order:
             reasons.append(label + " 的 memberOrder 必须是卡片 id 数组")
         else:
-            members = set(group_members.get(gid, [])) if isinstance(gid, str) else set()
+            members = set(group_members.get(gid, [])) if known_group else set()
             clean_order: list[str] = []
             for cid in order:
-                if not isinstance(cid, str) or cid not in visible:
-                    reasons.append(label + " 的 memberOrder 含不可见的卡片：" + repr(cid))
+                checked_ref = _check_card_ref(
+                    cid, visible, earlier, all_declared, reasons, label + " 的 memberOrder"
+                )
+                if not checked_ref:
                     continue
-                if members and cid not in members:
-                    reasons.append(label + " 的 memberOrder 含不属于该组的卡片：" + cid)
+                if members and str(cid) not in members:
+                    reasons.append(label + " 的 memberOrder 含不属于该组的卡片：" + str(cid))
                     continue
-                clean_order.append(cid)
+                clean_order.append(checked_ref)
             payload["memberOrder"] = clean_order
+        # F8：可选 arrange（row / column）；没有它时就是**纯逻辑排序**。
+        arrange = raw.get("arrange")
+        if arrange is not None:
+            if not isinstance(arrange, str) or arrange not in ("row", "column"):
+                reasons.append(label + " 的 arrange 必须是 row / column 之一")
+            else:
+                payload["arrange"] = arrange
     elif op == "add_link":
         for key in ("src", "dst"):
-            if _check_card_id(raw.get(key), visible, reasons, label):
-                payload[key] = str(raw.get(key))
+            checked_ref = _check_card_ref(
+                raw.get(key), visible, earlier, all_declared, reasons, label
+            )
+            if checked_ref:
+                payload[key] = checked_ref
         src, dst = raw.get("src"), raw.get("dst")
         if isinstance(src, str) and src == dst:
             reasons.append(label + " 的两端不能是同一张卡片")
@@ -1053,17 +1324,50 @@ def _validate_intents(
         elif len(operations) > MAX_OPS_PER_INTENT:
             reasons.append(where + " 的操作数超过上限 " + str(MAX_OPS_PER_INTENT))
             operations = operations[:MAX_OPS_PER_INTENT]
+        # F5：**先收集声明、再校验引用** —— 引用只能指向同一意图内更早操作声明的、
+        # 类型正确的符号；不存在 / 重复 / 前向 / 跨意图 / 跨批次 / 类型错误 / 循环
+        # 都会在这里被拒绝。
+        all_declared: dict[str, str] = {}
+        for op_index, op in enumerate(operations):
+            if not isinstance(op, dict):
+                continue
+            kind = str(op.get("op") or "")
+            if kind not in ("add_reply_card", "add_text_card", "group_cards"):
+                continue
+            symbol, decl_kind = _declared_symbol(
+                kind,
+                op.get("ref"),
+                where + ".操作[" + str(op_index) + "]",
+                reasons,
+            )
+            if not symbol:
+                continue
+            if symbol in all_declared:
+                reasons.append(
+                    where + ".操作[" + str(op_index) + "] 重复声明了符号 " + symbol
+                )
+                continue
+            all_declared[symbol] = decl_kind
+        earlier: dict[str, str] = {}
         normalized_ops: list[dict] = []
         for op_index, op in enumerate(operations):
+            label = where + ".操作[" + str(op_index) + "]"
             checked = _validate_operation(
                 op,
                 visible,
                 group_members,
-                where + ".操作[" + str(op_index) + "]",
+                label,
                 reasons,
+                earlier=dict(earlier),
+                all_declared=all_declared,
             )
             if checked is not None:
                 normalized_ops.append(checked)
+                symbol = str(checked.get("ref") or "")
+                if symbol:
+                    earlier[symbol] = all_declared.get(symbol) or (
+                        "group" if str(checked.get("op")) == "group_cards" else "card"
+                    )
         if operations and not normalized_ops:
             reasons.append(where + " 的板面操作全部无效")
         raw_basis = raw.get("basis")

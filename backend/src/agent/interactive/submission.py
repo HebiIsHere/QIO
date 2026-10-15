@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 from typing import Any
 
@@ -102,6 +103,21 @@ def _card_meaning(card: dict) -> tuple:
     return (card.get("kind"), str(card.get("content") or ""), _meta_key(card.get("meta")))
 
 
+def _reply_source(card: dict) -> dict:
+    """结果卡的来源（F4）：写进 result_added / result_updated 的载荷，而不是只给卡片编号。
+
+    来源取 `meta.reply`（执行时写入的 intentId / understandingId / executionId / stepIndex）；
+    没有来源时返回空对象 —— 不编造。
+    """
+    meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+    reply = meta.get("reply") if isinstance(meta.get("reply"), dict) else {}
+    return {
+        key: reply[key]
+        for key in ("intentId", "understandingId", "executionId", "stepIndex")
+        if reply.get(key) is not None
+    }
+
+
 def _card_layout(card: dict) -> tuple:
     def num(value: Any) -> float:
         try:
@@ -119,8 +135,11 @@ def _expr(
     card_ids: list[str] | tuple[str, ...] = (),
     group_id: str | None = None,
     link_id: str | None = None,
+    content: str | None = None,
+    source: dict | None = None,
+    updated_at: Any = None,
 ) -> dict:
-    return {
+    item = {
         "id": models.new_id("x"),
         "kind": kind,
         "intentBearing": kind not in models.NON_INTENT_EXPRESSIONS,
@@ -129,6 +148,14 @@ def _expr(
         "groupId": group_id,
         "linkId": link_id,
     }
+    # F4：结果卡的表达必须带**正文与来源**（不能只给卡片编号或任务标题）。
+    if content is not None:
+        item["content"] = str(content)
+    if isinstance(source, dict) and source:
+        item["source"] = dict(source)
+    if updated_at:
+        item["updatedAt"] = str(updated_at)
+    return item
 
 
 def _empty_projection(*, first_submission: bool = False) -> dict:
@@ -278,6 +305,17 @@ def diff_states(before: dict, after: dict) -> list[dict]:
     for cid in sorted(a_cards.keys() - b_cards.keys()):
         card = a_cards[cid]
         if _is_reply(card):
+            # F4：用户明确许可查看的结果卡进入范围 → 结果新增（载荷带正文与来源）。
+            expressions.append(
+                _expr(
+                    "result_added",
+                    card_ids=[cid],
+                    summary=f"新增可见结果卡：{card_label(card)}",
+                    content=str(card.get("content") or ""),
+                    source=_reply_source(card),
+                    updated_at=card.get("updatedAt"),
+                )
+            )
             continue
         is_note = card.get("kind") == "text"
         expressions.append(
@@ -294,6 +332,9 @@ def diff_states(before: dict, after: dict) -> list[dict]:
     for cid in sorted(b_cards.keys() - a_cards.keys()):
         card = b_cards[cid]
         if _is_reply(card):
+            # 撤回一张结果卡不是「用户提出的新工作」，也不是材料撤回：
+            # 这里不产出表达（F4 只要求「新增」与「已可见内容变化」两种），
+            # 但它仍然立刻退出可见范围（after 里没有它）。
             continue
         is_note = card.get("kind") == "text"
         expressions.append(
@@ -310,6 +351,26 @@ def diff_states(before: dict, after: dict) -> list[dict]:
     for cid in sorted(a_cards.keys() & b_cards.keys()):
         old, new = b_cards[cid], a_cards[cid]
         if _is_reply(new):
+            if _card_meaning(old) != _card_meaning(new):
+                # F4：已可见结果卡的正文 / 来源变化 → result_updated（同样带正文与来源）。
+                expressions.append(
+                    _expr(
+                        "result_updated",
+                        card_ids=[cid],
+                        summary=f"可见结果卡内容变化：{card_label(new)}",
+                        content=str(new.get("content") or ""),
+                        source=_reply_source(new),
+                        updated_at=new.get("updatedAt"),
+                    )
+                )
+            elif _card_layout(old) != _card_layout(new):
+                expressions.append(
+                    _expr(
+                        "layout_only",
+                        card_ids=[cid],
+                        summary=f"普通移动 / 缩放（只影响显示）：{card_label(new)}",
+                    )
+                )
             continue
         if _card_meaning(old) != _card_meaning(new):
             if old.get("kind") == "text" and new.get("kind") == "text":
@@ -679,6 +740,32 @@ def normalize_client_request_id(value: Any) -> str:
         # 只拒绝，不截断：身份必须**原样**保存与回显（前端逐字比较）
         raise ValueError(f"clientRequestId 过长（最多 {MAX_CLIENT_REQUEST_ID} 字符）")
     return value
+
+
+#: 客户端冻结视图（F6）的字段：板面坐标下可见区域的左上角 + 尺寸 + 缩放。
+VIEW_FIELDS = ("x", "y", "w", "h", "scale")
+
+
+def normalize_view(value: Any) -> dict | None:
+    """校验客户端的冻结视图（F6）。非法 / 缺失一律返回 None —— 不编造。
+
+    口径（与 Lead 冻结约定一致）：x/y/w/h/scale 必须都是**有限数**，且 w>0、h>0、scale>0；
+    任何一项不满足就整块丢弃。单位是板面坐标（board units），原点在板面左上。
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, float] = {}
+    for key in VIEW_FIELDS:
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        number = float(raw)
+        if not math.isfinite(number):
+            return None
+        out[key] = number
+    if out["w"] <= 0 or out["h"] <= 0 or out["scale"] <= 0:
+        return None
+    return out
 
 
 def _raw_note(note: Any) -> str:
@@ -1166,6 +1253,7 @@ def _accept_submission(
     board_id: str,
     submission_id: str,
     snapshot: dict,
+    view: dict | None = None,
 ) -> dict:
     """受理：建立一条 accepted 的理解请求（幂等由 B 的 request_understanding 负责）。
 
@@ -1187,8 +1275,11 @@ def _accept_submission(
             "understandingId": None,
             "reason": "理解模块没有 request_understanding：无法建立理解请求",
         }
-    # 深拷贝一份冻结快照：内容就是内存里那份 after，之后谁也改不到它
+    # 深拷贝一份冻结快照：内容就是内存里那份 after，之后谁也改不到它。
+    # F6：把**校验通过**的客户端冻结视图一起固化（没给 / 非法 → 不带 key，读出来就是 null）。
     frozen = models.loads(models.dumps(snapshot), {})
+    if isinstance(frozen, dict) and isinstance(view, dict) and view:
+        frozen["view"] = dict(view)
     try:
         record = requester(
             conn, board_id=board_id, submission_id=submission_id, snapshot=frozen
@@ -1457,6 +1548,7 @@ async def submit_board(
     confirmed_check_id: str | None = None,
     adapter_provider: Any = None,
     client_request_id: str = "",
+    view: Any = None,
 ) -> dict:
     """提交：QIO 取得表达的唯一入口。
 
@@ -1486,6 +1578,8 @@ async def submit_board(
     base_seq = _load_base_seq(loaded)
     requested_note = _raw_note(note)
     display_note = _display_note(note)
+    # F6：客户端冻结视图只影响「交给 QIO 的几何上下文」，不参与内容 / 求差 / 指纹。
+    frozen_view = normalize_view(view)
 
     # --- 稳定提交请求身份（契约 §1.1 / §1.2）：先按精确身份认领，再做任何写入与模型调用 ---
     identity = normalize_client_request_id(client_request_id)
@@ -1551,13 +1645,18 @@ async def submit_board(
     # 受理与理解分开（§14.1）：只有 succeeded 才建立理解请求；建立不起来按受理失败处理。
     acceptance: dict[str, Any] = {"ok": False, "understandingId": None, "reason": ""}
     if status == "succeeded":
-        acceptance = _accept_submission(
-            conn,
-            board_id=bid,
-            submission_id=submission_id,
+        acceptance_kwargs: dict[str, Any] = {
+            "conn": conn,
+            "board_id": bid,
+            "submission_id": submission_id,
             # 只传内存里这份 after 投影（不重读板面：提交不改动任何勾选）
-            snapshot=after,
-        )
+            "snapshot": after,
+        }
+        if frozen_view is not None:
+            # F6：客户端冻结视图随快照一起固化（不参与 before/after 求差与内容指纹）。
+            # 没给 view 时不传这个形参：老测试替身 / 旧调用点的签名保持可用。
+            acceptance_kwargs["view"] = frozen_view
+        acceptance = _accept_submission(**acceptance_kwargs)
         if not acceptance["ok"]:
             # 受理失败：没有可靠受理 → 不更新基准、不改动勾选，改动与本次注释许可保留
             status = "failed"
@@ -1638,6 +1737,8 @@ async def submit_board(
     # 备注**原样**落进 delivery：查证（acceptance.note）与身份冲突比对都按它逐字比较，
     # 前端提交时恒为空串，这里就回显空串（绝不把别的说明塞进这个字段）。
     delivery["note"] = requested_note
+    # F6：本次冻结视图一并落进投递事实（没给 / 非法 → null，不编造）
+    delivery["view"] = frozen_view
     if ignored_requested:
         delivery["detail"] = (
             f"{delivery.get('detail', '')}；客户端请求的 {len(ignored_requested)} 项不在本次允许查看范围内，"

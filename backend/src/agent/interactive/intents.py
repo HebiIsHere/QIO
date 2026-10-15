@@ -315,6 +315,13 @@ def _preview_shape(preview: Any) -> dict:
         "cards": [dict(c) for c in data.get("cards") or [] if isinstance(c, dict)],
         "groups": [dict(g) for g in data.get("groups") or [] if isinstance(g, dict)],
         "links": [dict(l) for l in data.get("links") or [] if isinstance(l, dict)],
+        # F5：符号 → 预览对象 id 的映射（审批预览与执行的是同一份对应关系）。
+        "refs": {
+            str(k): str(v)
+            for k, v in (data.get("refs") or {}).items()
+        }
+        if isinstance(data.get("refs"), dict)
+        else {},
         "note": str(data.get("note") or ""),
     }
 
@@ -752,7 +759,36 @@ def _understanding_submission(conn: sqlite3.Connection, understanding_id: str) -
     return str(_row_value(row, "submission_id", "") or "") or None
 
 
-def _normalize_understanding_payload(raw: Any, index: int) -> tuple[dict | None, str]:
+def _preview_view(conn: sqlite3.Connection, submission_id: str | None) -> dict | None:
+    """审批预览用的冻结视图（F7）：取本次提交理解时冻结的 view；取不到就是 None。"""
+    sid = str(submission_id or "").strip()
+    if not sid:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT snapshot FROM board_understanding WHERE submission_id = ?"
+            " ORDER BY created_at DESC LIMIT 1",
+            (sid,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    snapshot = models.loads(row["snapshot"], {})
+    if not isinstance(snapshot, dict):
+        return None
+    from agent.interactive import submission as submission_module  # 延迟 import：避免环
+
+    return submission_module.normalize_view(snapshot.get("view"))
+
+
+def _normalize_understanding_payload(
+    raw: Any,
+    index: int,
+    *,
+    preview_cards: Iterable[dict] = (),
+    preview_view: dict | None = None,
+) -> tuple[dict | None, str]:
     """把 B 已校验的 payload 归一成意图字段；返回（payload, 可读原因）。
 
     越权操作（不在 models.ALLOWED_INTENT_OPS 里）与形状无效的 payload
@@ -790,7 +826,12 @@ def _normalize_understanding_payload(raw: Any, index: int) -> tuple[dict | None,
             material_refs.append(card_id)
     preview = raw.get("preview") if isinstance(raw.get("preview"), dict) else None
     if preview is None and operations:
-        preview = _execution_module().preview_from_operations(operations)
+        # F7：预览落点/尺寸与真实执行共用 placement（同一函数 + 同一冻结 view）。
+        preview = _execution_module().preview_from_operations(
+            operations,
+            cards=list(preview_cards),
+            view=preview_view,
+        )
     depends_on = [str(x) for x in (raw.get("dependsOn") or raw.get("depends_on") or []) if str(x).strip()]
     conflicts_with = [
         str(x) for x in (raw.get("conflictsWith") or raw.get("conflicts_with") or []) if str(x).strip()
@@ -846,9 +887,16 @@ def create_intents_from_understanding(
         if key and key not in by_key:
             by_key[key] = row
 
+    preview_state = board_store.load_board(conn, board_id=resolved_board)["state"]
+    preview_view = _preview_view(conn, submission_id)
     items: list[dict] = []
     for index, raw in enumerate(payloads or []):
-        item, reason = _normalize_understanding_payload(raw, index)
+        item, reason = _normalize_understanding_payload(
+            raw,
+            index,
+            preview_cards=preview_state.get("cards") or [],
+            preview_view=preview_view,
+        )
         if item is None:
             logger.warning("互动意图创建跳过第 %s 项：%s", index + 1, reason)
             continue

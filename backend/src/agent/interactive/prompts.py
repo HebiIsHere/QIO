@@ -15,6 +15,8 @@
   再拼回通用聊天循环。
 * 输出必须是**单个 JSON 对象**，不带 Markdown 代码围栏、不带解释性前后缀。
 * 只允许 models.ALLOWED_INTENT_OPS 里的操作；模型不能直接写库、不能绕过审批。
+* 结果卡片的正文**允许用 Markdown 组织**（标题、列表、表格、代码块等）：程序负责解析与
+  安全渲染；正文始终保存 Markdown 原文。
 
 注意：本模块不调用模型，也不读写数据库。
 """
@@ -36,33 +38,40 @@ MAX_CONTEXT_CHARS = 20000
 OPERATION_SHAPES: dict[str, dict[str, Any]] = {
     "add_reply_card": {
         "required": ("content",),
-        "optional": ("title", "x", "y", "w", "h"),
+        # `ref` 声明本批次符号；`place` 由程序确定性算出相对落点（模型不猜坐标）。
+        "optional": ("title", "ref", "x", "y", "w", "h", "place"),
         "reference": (),
-        "summary": "生成一张 QIO 结果卡片（正文 = content）",
+        "summary": (
+            "生成一张 QIO 结果卡片（正文 = content，允许用 Markdown 组织）；"
+            '可用 ref 声明符号，place={"relativeTo","side","gap"} 指定相对摆放'
+        ),
     },
     "add_text_card": {
         "required": ("content",),
-        "optional": ("x", "y", "w", "h"),
+        "optional": ("ref", "x", "y", "w", "h", "place"),
         "reference": (),
-        "summary": "生成一张文字卡片（说明 / 清单）",
+        "summary": "生成一张文字卡片（说明 / 清单）；可用 ref 声明符号、place 指定相对摆放",
     },
     "move_card": {
         "required": ("cardId", "x", "y"),
         "optional": (),
         "reference": ("cardId",),
-        "summary": "只移动位置（不改变语义）",
+        "summary": "只移动位置（不改变语义）；cardId 可以是同批更早声明的符号",
     },
     "group_cards": {
         "required": ("cardIds",),
-        "optional": ("ordered", "name"),
+        "optional": ("ordered", "name", "ref"),
         "reference": ("cardIds",),
-        "summary": "把若干卡片归为一组 / 加入组",
+        "summary": "把若干卡片归为一组 / 加入组；成员可以是同批更早声明的卡片符号（card:<符号>）",
     },
     "order_group": {
         "required": ("groupId", "memberOrder"),
-        "optional": (),
+        "optional": ("arrange",),
         "reference": ("groupId", "memberOrder"),
-        "summary": "调整有序组内的顺序",
+        "summary": (
+            "调整组内顺序；不给 arrange 时**只改逻辑顺序**（不移动卡片），"
+            'arrange="row"/"column" 才会真实写入成员 x/y'
+        ),
     },
     "add_link": {
         "required": ("src", "dst"),
@@ -125,6 +134,20 @@ QIO 在互动模式中能执行的板面操作，是**用户在互动模式中�
 可引用的卡片 id 只在上下文的 visibleCardIds / 各条材料 / cards 里；id 必须原样复制，
 不能自己编，也不能引用没出现的 id。
 
+## 批次内的临时引用、落点与排序
+
+* 同一意图内可以用 `ref` 给新对象起一个符号（字母开头、只含字母 / 数字 / 下划线、
+  最多 32 位），之后用 `card:符号` / `group:符号` 引用它（裸符号按卡片引用）。
+  只能引用**同一意图内更早声明**、类型正确的符号；不存在 / 重复 / 前向引用 / 跨意图 /
+  跨批次 / 类型错误 / 引用未获准对象都会被程序拒绝。
+* 新建卡片省略 x/y 时，用 `place` 指定相对于某张卡的摆放（字段：relativeTo 取
+  「卡片 id 或 card:符号」、side 取 left / right / above / below、gap 取数字），
+  x/y 由程序算出 —— 不要自己猜坐标，也不要指望默认落到左上角。
+* `order_group` 默认**只改逻辑顺序**（不移动卡片）；确实要重排时给
+  `arrange: "row"`（从左到右）或 `"column"`（从上到下一列），程序会真实写入成员 x/y。
+* 上下文里的 `geometry` 是板面坐标（原点左上、x 向右、y 向下）下**本次获准范围内**
+  对象的真实几何；未获准对象既不在 cards 里，也不在 geometry 里。
+
 ## 输出格式（严格）
 
 只输出**一个 JSON 对象**，不要 Markdown 代码围栏，不要任何解释性前后缀。
@@ -153,8 +176,9 @@ OUTPUT_SCHEMA_TEXT = """{
       ],
       "expected": "预期结果（用户能看到什么）",
       "operations": [
-        {"op": "add_reply_card", "content": "..."},
-        {"op": "group_cards", "cardIds": ["c_xxx", "c_yyy"], "ordered": true}
+        {"op": "add_reply_card", "ref": "结论", "content": "..."},
+        {"op": "group_cards", "ref": "结果组", "cardIds": ["c_xxx", "card:结论"], "ordered": true},
+        {"op": "order_group", "groupId": "group:结果组", "memberOrder": ["c_xxx", "card:结论"], "arrange": "row"}
       ],
       "impact": {"cardIds": ["受影响的卡片 id"], "scope": "影响范围的一句话说明"},
       "dependsOn": ["必须先完成的 intentKey"],
@@ -203,6 +227,7 @@ def render_context(context: dict) -> str:
         "relationships": context.get("relationships") or [],
         "changes": context.get("changes") or [],
         "focus": context.get("focus") or {},
+        "geometry": context.get("geometry") or {},
         "cards": context.get("cards") or [],
         "groups": context.get("groups") or [],
         "materials": context.get("materials") or [],

@@ -820,3 +820,166 @@ def test_demo_intents_do_not_create_real_executions(db_conn):
     ).fetchone()
     assert rows["c"] == 0
 
+
+# --- F5 / F7 / F8（本轮新增）：类型化引用 / 落点 / 排序 ----------------------
+
+
+async def test_preview_and_execution_share_placement_and_ref_map(db_conn):
+    """F7：审批预览与真实执行用同一份落点/尺寸；F5：符号 → 正式对象映射稳定。"""
+    _seed(db_conn)
+    ops = [
+        {"op": "add_reply_card", "content": "结论", "ref": "a"},
+        {
+            "op": "add_text_card",
+            "content": "补充说明",
+            "ref": "b",
+            "place": {"relativeTo": "card:a", "side": "right", "gap": 24},
+        },
+    ]
+    cards = _state(db_conn)["cards"]
+    preview = execution.preview_from_operations(ops, cards=cards)
+    preview_by_id = {card["id"]: card for card in preview["cards"]}
+    assert preview["refs"]["a"] == "a" and preview["refs"]["b"] == "b"
+
+    intent = _create(db_conn, ops)
+    # 审批预览里存的卡片坐标就是 preview_from_operations 的坐标（同一函数）
+    stored = _listed(db_conn)[intent["id"]]["preview"]
+    stored_by_id = {card["id"]: card for card in stored["cards"]}
+    for symbol in ("a", "b"):
+        for key in ("x", "y", "w", "h"):
+            assert stored_by_id[symbol][key] == preview_by_id[symbol][key]
+    # 符号与其类型化写法都指向同一个预览对象 id
+    assert stored["refs"]["a"] == stored["refs"]["card:a"] == "a"
+    assert stored["refs"]["b"] == stored["refs"]["card:b"] == "b"
+
+    approved = _approve(db_conn, intent["id"])
+    result = await _run(db_conn, approved["id"])
+    assert result["ok"] is True, result
+    steps = result["execution"]["steps"]
+    card_a = _cards(db_conn)[steps[0]["cardId"]]
+    card_b = _cards(db_conn)[steps[1]["cardId"]]
+
+    # 默认尺寸：reply 320×240、text 260×170（不是 240×120，也不是 1×1）
+    assert (card_a["kind"], card_a["w"], card_a["h"]) == ("reply", 320.0, 240.0)
+    assert (card_b["kind"], card_b["w"], card_b["h"]) == ("text", 260.0, 170.0)
+    # place 由程序算出：b 在 a 右边、间距 24
+    assert card_b["x"] == card_a["x"] + card_a["w"] + 24
+    assert card_b["y"] == card_a["y"]
+    # 默认落点绝不是 (0,0)
+    assert (card_a["x"], card_a["y"]) != (0.0, 0.0)
+
+    # 预览坐标 == 落地坐标
+    for cid, card in ((steps[0]["cardId"], card_a), (steps[1]["cardId"], card_b)):
+        assert cid not in preview_by_id  # 预览用符号 id，执行用正式 id
+    assert (card_a["x"], card_a["y"]) == (
+        preview_by_id["a"]["x"],
+        preview_by_id["a"]["y"],
+    )
+    assert (card_b["x"], card_b["y"]) == (
+        preview_by_id["b"]["x"],
+        preview_by_id["b"]["y"],
+    )
+    refs = result["execution"]["objectRefs"]
+    assert refs["a"] == card_a["id"] and refs["b"] == card_b["id"]
+
+
+async def test_typed_refs_link_two_new_cards_and_do_not_duplicate(db_conn):
+    """F5：同批声明的两张新卡可以直接建关系；重复执行 / 恢复不重复创建。"""
+    _seed(db_conn)
+    ops = [
+        {"op": "add_reply_card", "content": "左边", "ref": "l"},
+        {
+            "op": "add_reply_card",
+            "content": "右边",
+            "ref": "r",
+            "place": {"relativeTo": "card:l", "side": "right", "gap": 24},
+        },
+        {"op": "add_link", "src": "card:l", "dst": "card:r", "direction": True, "meaning": "先后"},
+    ]
+    intent = _create(db_conn, ops)
+    approved = _approve(db_conn, intent["id"])
+    result = await _run(db_conn, approved["id"])
+    assert result["ok"] is True, result
+    steps = result["execution"]["steps"]
+    left_id, right_id = steps[0]["cardId"], steps[1]["cardId"]
+    link = {item["id"]: item for item in _state(db_conn)["links"]}[steps[2]["linkId"]]
+    assert (link["src"], link["dst"], link["meaning"], link["direction"]) == (
+        left_id,
+        right_id,
+        "先后",
+        True,
+    )
+
+    cards_before = len(_live_cards(db_conn))
+    links_before = len(_state(db_conn)["links"])
+    again = await _run(db_conn, approved["id"])
+    assert again.get("discarded") is True, "已结束的执行不会重复落地"
+    assert len(_live_cards(db_conn)) == cards_before
+    assert len(_state(db_conn)["links"]) == links_before
+    # 再点一次批准：已完成的任务不会被复活，也不会再建执行记录
+    repeated = intents.approve_intent(db_conn, intent["id"], instance_id="proc-1")
+    assert repeated["ok"] is False
+    assert execution.active_execution(db_conn, intent["id"]) is None
+
+
+def _arrange_seed(conn: sqlite3.Connection) -> dict:
+    """三张文字卡 + 一个组（成员顺序 a, b, c）。"""
+    cards = [
+        models.new_card("text", "A", checked=True, x=20.0, y=20.0),
+        models.new_card("text", "B", checked=True, x=300.0, y=20.0),
+        models.new_card("text", "C", checked=True, x=600.0, y=20.0),
+    ]
+    state = models.empty_state(BOARD)
+    state["cards"] = cards
+    group = models.new_group(
+        "一组", members=[cards[0]["id"], cards[1]["id"], cards[2]["id"]], default_name=False
+    )
+    group["id"] = "g_arrange"
+    state["groups"] = [group]
+    board_store.save_board(conn, BOARD, state, reason="seed-arrange")
+    return {"a": cards[0], "b": cards[1], "c": cards[2], "group": "g_arrange"}
+
+
+async def test_order_group_arrange_really_writes_positions(db_conn):
+    """F8：arrange="row" 在调整顺序后**真实写入成员 x/y**，并统一更新组框。"""
+    seed = _arrange_seed(db_conn)
+    order = [seed["c"]["id"], seed["a"]["id"], seed["b"]["id"]]
+    intent = _create(
+        db_conn,
+        [{"op": "order_group", "groupId": seed["group"], "memberOrder": order, "arrange": "row"}],
+    )
+    approved = _approve(db_conn, intent["id"])
+    result = await _run(db_conn, approved["id"])
+    assert result["ok"] is True, result
+    cards = _cards(db_conn)
+    xs = [cards[cid]["x"] for cid in order]
+    ys = [cards[cid]["y"] for cid in order]
+    assert xs == sorted(xs) and len(set(xs)) == 3, "row：从左到右、互不重叠"
+    assert len(set(ys)) == 1, "row：同一行"
+    assert "真实重排" in result["execution"]["steps"][0]["detail"]
+    group = [g for g in _state(db_conn)["groups"] if g["id"] == seed["group"]][0]
+    assert group["members"] == order
+    left = min(card["x"] for card in cards.values() if not card["deleted"])
+    top = min(card["y"] for card in cards.values() if not card["deleted"])
+    assert group["x"] <= left and group["y"] <= top, "组框按既有口径跟着成员更新"
+
+
+async def test_order_group_without_arrange_is_logic_only(db_conn):
+    """F8：没有 arrange 时是**纯逻辑排序** —— 位置一个都不动，文案也如实说明。"""
+    seed = _arrange_seed(db_conn)
+    before = {cid: (card["x"], card["y"]) for cid, card in _cards(db_conn).items()}
+    order = [seed["c"]["id"], seed["a"]["id"], seed["b"]["id"]]
+    intent = _create(
+        db_conn,
+        [{"op": "order_group", "groupId": seed["group"], "memberOrder": order}],
+    )
+    approved = _approve(db_conn, intent["id"])
+    result = await _run(db_conn, approved["id"])
+    assert result["ok"] is True, result
+    after = {cid: (card["x"], card["y"]) for cid, card in _cards(db_conn).items()}
+    assert after == before, "纯逻辑排序不得移动任何卡片"
+    group = [g for g in _state(db_conn)["groups"] if g["id"] == seed["group"]][0]
+    assert group["members"] == order, "逻辑顺序确实更新了"
+    detail = result["execution"]["steps"][0]["detail"]
+    assert "只调整组内成员顺序" in detail and "没有移动" in detail
+

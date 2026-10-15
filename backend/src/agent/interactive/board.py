@@ -187,10 +187,9 @@ def _normalize_card(raw: dict, stamp: str) -> dict:
         card[key] = bool(card.get(key, False))
     card["createdAt"] = _as_text(card.get("createdAt")) or stamp
     card["updatedAt"] = _as_text(card.get("updatedAt")) or card["createdAt"]
-    # G6 明确隐藏与勾选互斥；G7 reply 卡片不参与注释勾选
+    # G6 明确隐藏与勾选互斥（F4：结果卡的勾选与文字卡同一套语义，
+    # 勾选=允许 QIO 查看、许可持续有效；hidden 仍然强制取消许可）。
     if card["hidden"]:
-        card["checked"] = False
-    if kind == models.REPLY_KIND:
         card["checked"] = False
     return card
 
@@ -413,8 +412,6 @@ def duplicate_card(state: dict, card_id: str) -> dict:
     copy_card["deleted"] = False
     copy_card["createdAt"] = stamp
     copy_card["updatedAt"] = stamp
-    if copy_card["kind"] == models.REPLY_KIND:
-        copy_card["checked"] = False
     work["cards"].append(copy_card)
     # 副本留在原来的组里，紧跟原卡片
     group = models.group_of(work, card_id)

@@ -148,14 +148,15 @@ describe("normalizeState：契约 §1.2 的 G1..G8", () => {
     expect(result.selection).toEqual(["a"]);
   });
 
-  it("G6 hidden 与 checked 互斥；G7 reply 不参与勾选", () => {
+  it("G6 hidden 与 checked 互斥；F4 结果卡保留用户给出的许可", () => {
     const result = board.normalizeState(
       mkState([mkCard("a", 0, 0, { checked: true, hidden: true }), mkCard("b", 0, 0, { checked: true }), mkCard("r", 0, 0, { kind: "reply", checked: true })]),
     );
     expect(result.cards[0].checked).toBe(false);
     expect(result.cards[0].hidden).toBe(true);
     expect(result.cards[1].checked).toBe(true);
-    expect(result.cards[2].checked).toBe(false);
+    // F4（改写自「reply 恒不勾选」）：明确许可过的结果卡保持勾选。
+    expect(result.cards[2].checked).toBe(true);
   });
 
   it("G8 selection 只含存在且未删除的卡片，并去重", () => {
@@ -570,7 +571,7 @@ describe("选择 / 勾选 / 隐藏 / 折叠 / 书签 / 搜索", () => {
     expect(board.selectInRect(mkState(state.cards, [], [], ["c"]), rect, true).selection).toEqual(["c", "a"]);
   });
 
-  it("勾选只对文字注释有效：材料与 reply 没有勾选框", () => {
+  it("勾选对文字注释与结果卡有效：材料没有勾选框", () => {
     const state = mkState([
       mkCard("t", 0, 0, { hidden: true }),
       mkCard("f", 0, 0, { kind: "file", meta: { name: "a.pdf" } }),
@@ -580,7 +581,8 @@ describe("选择 / 勾选 / 隐藏 / 折叠 / 书签 / 搜索", () => {
     expect(board.cardById(checked, "t")?.checked).toBe(true);
     expect(board.cardById(checked, "t")?.hidden).toBe(false);
     expect(board.cardById(board.setChecked(state, "f", true), "f")?.checked).toBe(false);
-    expect(board.cardById(board.setChecked(state, "r", true), "r")?.checked).toBe(false);
+    // F4（改写自「reply 没有勾选框」）：结果卡可以由用户明确许可查看。
+    expect(board.cardById(board.setChecked(state, "r", true), "r")?.checked).toBe(true);
     expect(board.cardById(board.setChecked(checked, "t", false), "t")?.checked).toBe(false);
   });
 

@@ -12,6 +12,7 @@ import type {
   DecideResult,
   Execution,
   ExecutionControlResult,
+  FrozenView,
   Intent,
   IntentListResponse,
   IntentPreview,
@@ -148,12 +149,16 @@ export function submitBoard(
   baseStateVersion?: number,
   confirmedCheckId?: string,
   clientRequestId?: string,
+  view?: FrozenView | null,
 ): Promise<SubmissionResult> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/submissions`, {
     method: "POST",
     body: JSON.stringify({
       requestedVisible,
       note,
+      // F6：客户端冻结视图（板面坐标下可见区域 + scale）；量不到时显式传 null，
+      // 服务端把它原样固化进本次快照的 geometry.view，绝不编造。
+      view: view ?? null,
       ...(baseStateVersion !== undefined ? { baseStateVersion } : {}),
       ...(confirmedCheckId ? { confirmedCheckId } : {}),
       ...(clientRequestId ? { clientRequestId } : {}),

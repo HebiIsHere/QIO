@@ -901,6 +901,59 @@ export function executionIsLive(execution: Execution | null | undefined): boolea
   return execution?.status === "queued" || execution?.status === "running";
 }
 
+/**
+ * F8：order_group 的排列语义文案。
+ *
+ * 没有 arrange 时**必须**明确说「只改逻辑顺序（不移动卡片）」—— 不许把纯逻辑排序
+ * 报告成「已经重新排列卡片」；只有 row / column 才真实写入成员 x/y。
+ */
+export function arrangeText(operation: { op?: string; arrange?: string } | null | undefined): string {
+  if (!operation || String(operation.op ?? "") !== "order_group") return "";
+  const arrange = typeof operation.arrange === "string" ? operation.arrange : "";
+  if (arrange === "row") return "真实重排：从左到右";
+  if (arrange === "column") return "真实重排：从上到下一列";
+  return "只改逻辑顺序（不移动卡片）";
+}
+
+export interface PreviewSymbolEntry {
+  symbol: string;
+  /** 预览对象 id（执行时会换成正式对象 id，见 Execution.objectRefs） */
+  objectId: string;
+}
+
+/** F5：审批预览里的符号 → 对象映射（只列裸符号，card:/group: 别名不重复列）。 */
+export function previewSymbols(preview: IntentPreview | null | undefined): PreviewSymbolEntry[] {
+  const refs = preview?.refs;
+  if (!refs || typeof refs !== "object") return [];
+  const entries: PreviewSymbolEntry[] = [];
+  for (const [key, value] of Object.entries(refs)) {
+    if (key.includes(":")) continue;
+    if (typeof value !== "string" || !value) continue;
+    entries.push({ symbol: key, objectId: value });
+  }
+  return entries.sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+export function previewSymbolsText(preview: IntentPreview | null | undefined): string {
+  const entries = previewSymbols(preview);
+  if (!entries.length) return "";
+  return (
+    "本批临时符号（同一份映射会用于真实执行）：" +
+    entries.map((item) => `${item.symbol} → ${item.objectId}`).join("、")
+  );
+}
+
+/** F5：执行记录里「符号 → 正式对象 id」的映射文案（没有时返回空串）。 */
+export function executionRefsText(execution: Execution | null | undefined): string {
+  const refs = execution?.objectRefs;
+  if (!refs || typeof refs !== "object") return "";
+  const entries = Object.entries(refs)
+    .filter(([key, value]) => !key.includes(":") && typeof value === "string" && value)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return "";
+  return "正式对象：" + entries.map(([symbol, id]) => `${symbol} → ${id}`).join("、");
+}
+
 /** 预览与正式内容必须分开：模型建议的操作不能直接改正式板面。 */
 export function operationsText(intent: Intent): string[] {
   return (intent?.operations ?? []).map((operation) => {
@@ -908,7 +961,9 @@ export function operationsText(intent: Intent): string[] {
     const target = operation?.title || operation?.content || operation?.cardId || operation?.groupId || "";
     const short = String(target).replace(/\s+/g, " ").trim();
     const cut = short.length > 24 ? short.slice(0, 24) + "…" : short;
-    return cut ? label + "：" + cut : label;
+    const base = cut ? label + "：" + cut : label;
+    const arrange = arrangeText(operation);
+    return arrange ? `${base}（${arrange}）` : base;
   });
 }
 

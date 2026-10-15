@@ -75,7 +75,7 @@ def acceptance(monkeypatch):
     """受理走桩：本文件只验证许可与材料边界，不建立真实理解请求、不碰模型。"""
     calls: list[dict] = []
 
-    def fake_accept(conn, *, board_id, submission_id, snapshot):  # noqa: ANN001
+    def fake_accept(conn, *, board_id, submission_id, snapshot, view=None):  # noqa: ANN001
         calls.append(snapshot)
         return {"ok": True, "understandingId": "u_license", "reason": None}
 
@@ -98,7 +98,8 @@ def test_material_kinds_exclude_legacy_code_and_url():
     assert models.MATERIAL_KINDS == ("file",)
     assert "code" not in models.MATERIAL_KINDS
     assert "url" not in models.MATERIAL_KINDS
-    assert models.CHECKABLE_KINDS == ("text",)
+    # F4：结果卡（reply）与文字卡同一套许可语义（默认未勾选，勾选后持续有效）。
+    assert models.CHECKABLE_KINDS == ("text", "reply")
 
 
 def test_material_sources_include_multimedia_facts():

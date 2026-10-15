@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import sys
 import time
@@ -1010,3 +1011,117 @@ def test_api_material_visible_without_check(client):
     assert SECRET_NOTE not in models.dumps(result["after"])
     kinds = {item["kind"] for item in result["expressions"]}
     assert kinds == {"note_added", "material_added"}
+
+
+# --- F4 结果卡续用 / F6 冻结视图（本轮新增） --------------------------------
+
+
+def _reply(content: str, *, checked: bool, **fields) -> dict:
+    return models.new_card("reply", content, checked=checked, **fields)
+
+
+def _result_exprs(result: dict, kind: str) -> list[dict]:
+    return [item for item in result["expressions"] if item["kind"] == kind]
+
+
+def test_checked_result_card_enters_scope_with_body_and_source(db_conn, marking):
+    """F4：只有用户明确许可过的结果卡才进入范围，并带**正文与来源**。"""
+    note = _note("接着上次结论继续", checked=True)
+    reply = _reply(
+        "上次的结论正文",
+        checked=True,
+        meta={
+            "reply": {
+                "intentId": "i1",
+                "understandingId": "u1",
+                "executionId": "x1",
+                "stepIndex": 0,
+            }
+        },
+    )
+    _save(db_conn, _state([note, reply]))
+    result = _submit(db_conn)
+    assert result["status"] == "succeeded"
+    assert reply["id"] in [card["id"] for card in result["after"]["cards"]]
+    added = _result_exprs(result, "result_added")
+    assert len(added) == 1, result["expressions"]
+    assert added[0]["content"] == "上次的结论正文"
+    assert added[0]["source"]["executionId"] == "x1"
+    assert added[0]["intentBearing"] is False, "QIO 自己的结果不是用户提出的新工作"
+    assert added[0]["summary"].startswith("新增可见结果卡")
+
+
+def test_unchecked_or_hidden_result_card_never_enters_scope(db_conn, marking):
+    """F4：未许可 / 明确隐藏的结果卡整条不可见 —— 正文一个字都不进载荷。"""
+    note = _note("问题", checked=True)
+    unlicensed = _reply("未许可的结果正文", checked=False)
+    hidden = _reply("被隐藏的结果正文", checked=True, hidden=True)
+    _save(db_conn, _state([note, unlicensed, hidden]))
+    result = _submit(db_conn)
+    ids = [card["id"] for card in result["after"]["cards"]]
+    assert unlicensed["id"] not in ids and hidden["id"] not in ids
+    assert "未许可的结果正文" not in _dump(result["after"])
+    assert "被隐藏的结果正文" not in _dump(result["after"])
+    assert not _result_exprs(result, "result_added")
+
+
+def test_unlicensing_a_result_card_immediately_leaves_scope(db_conn, marking):
+    """F4：取消许可立即退出范围，且不产生新的结果表达。"""
+    note = _note("问题", checked=True)
+    reply = _reply("结论 A", checked=True)
+    _save(db_conn, _state([note, reply]))
+    first = _submit(db_conn)
+    assert _result_exprs(first, "result_added")
+    revoked = dict(reply)
+    revoked["checked"] = False
+    _save(db_conn, _state([note, revoked]))
+    second = _submit(db_conn)
+    assert reply["id"] not in [card["id"] for card in second["after"]["cards"]]
+    assert not _result_exprs(second, "result_added")
+
+
+def test_result_body_change_is_result_updated(db_conn, marking):
+    """F4：已可见结果卡的正文变化 → result_updated（同样带正文与来源）。"""
+    note = _note("问题", checked=True)
+    reply = _reply("结论 v1", checked=True, meta={"reply": {"intentId": "i1"}})
+    _save(db_conn, _state([note, reply]))
+    assert _submit(db_conn)["status"] == "succeeded"
+    changed = dict(reply)
+    changed["content"] = "结论 v2"
+    _save(db_conn, _state([note, changed]))
+    second = _submit(db_conn)
+    assert second["status"] == "succeeded"
+    updated = _result_exprs(second, "result_updated")
+    assert len(updated) == 1, second["expressions"]
+    assert updated[0]["content"] == "结论 v2"
+    assert updated[0]["source"]["intentId"] == "i1"
+
+
+def test_frozen_view_is_stored_and_invalid_view_is_dropped(db_conn, understanding):
+    """F6：合法 view 随快照冻结；非法 view 整块丢弃记为 null（不报错、不猜）。"""
+    note = _note("问题", checked=True)
+    _save(db_conn, _state([note]))
+    view = {"x": 10.0, "y": 20.0, "w": 800.0, "h": 600.0, "scale": 1.5}
+    first = _submit(db_conn, view=view)
+    assert first["status"] == "succeeded"
+    assert first["delivery"]["view"] == view
+    uid = first["delivery"]["understandingId"]
+    row = db_conn.execute(
+        "SELECT snapshot FROM board_understanding WHERE id = ?", (uid,)
+    ).fetchone()
+    assert json.loads(row["snapshot"])["view"] == view
+    assert understanding["requests"][-1]["snapshot"]["view"] == view
+
+    second = _submit(db_conn, view={"x": "bad"})
+    assert second["delivery"]["view"] is None
+
+
+def test_view_alone_does_not_change_content_or_fingerprint(db_conn, understanding):
+    """F6：纯 view 变化不构成新意图，也不让内容失效（内容指纹与求差都不含 view）。"""
+    note = _note("问题", checked=True)
+    _save(db_conn, _state([note]))
+    first = _submit(db_conn, view={"x": 0.0, "y": 0.0, "w": 400.0, "h": 300.0, "scale": 1.0})
+    second = _submit(db_conn, view={"x": 100.0, "y": 50.0, "w": 400.0, "h": 300.0, "scale": 2.0})
+    assert first["status"] == "succeeded"
+    assert second["status"] == "duplicate", second
+    assert second["expressions"] == [], "纯 view 变化不产生新的表达"
