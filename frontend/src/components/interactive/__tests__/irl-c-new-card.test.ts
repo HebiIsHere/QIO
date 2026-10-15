@@ -20,7 +20,7 @@ import type { BoardCard, BoardState } from "../../../interactive/types";
 
 const STAMP = "2026-10-13T00:00:00.000Z";
 
-function mkCard(id: string, x: number, y: number, w = NEW_CARD_SIZE.w, h = NEW_CARD_SIZE.h): BoardCard {
+function mkCard(id: string, x: number, y: number, w: number = NEW_CARD_SIZE.w, h: number = NEW_CARD_SIZE.h): BoardCard {
   return {
     id,
     kind: "text",
@@ -110,6 +110,31 @@ describe("添加菜单：新卡落在当前可用区域的空白处", () => {
     wrapper = null;
     const second = await addText();
     expect(overlaps(first, second)).toBe(false);
+  });
+
+  /*
+   * D2（真实浏览器验收）：可见区域被既有卡片挤满时，从前直接用 findFreeSlot 的
+   * 「重叠面积最小」兜底 —— 新卡压住 t_note。现在会先向右 / 向下扩大搜索范围。
+   */
+  it("D2：可见区域已被挤满时，新卡不压住任何已有卡片（落点扩到可见区域之外）", async () => {
+    setBoard({
+      ...emptyState("board_t"),
+      cards: [
+        mkCard("filler", 0, 400, 560, 200),
+        mkCard("t_note", 80, 620),
+        mkCard("corner", 0, 600, 80, 200),
+      ],
+    });
+    publishBoardArea({ x: 0, y: 400, w: 560, h: 400 });
+    const card = await addText();
+    for (const existing of store.board!.cards) {
+      if (existing.id === card.id) continue;
+      expect(overlaps(card, existing), "新卡压住了 " + existing.id).toBe(false);
+    }
+    // 落点在可见区域之外：视野大小不是落点搜索范围的上限
+    expect(card.x >= 560 || card.y >= 800).toBe(true);
+    // 找到零重叠落点时不该出现「放不下」的提示（只有真的退化才如实说明）
+    expect(wrapper!.find('[data-im="add-material-status-text"]').exists()).toBe(false);
   });
 
   it("画布没挂载（读不到可用区域）：不传坐标，沿用既有兜底行为", async () => {

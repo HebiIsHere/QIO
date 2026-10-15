@@ -20,6 +20,12 @@
     视觉圆点仍是 12px、颜色仍走既有令牌。
   - 命中规则因此是纯几何的：连接点 → 拖线；同层其余边 / 角（边 10px / 角 16px，一个都没缩）→
     尺寸调整；卡片正文 → 卡片自己的选择 / 拖动。两种操作同时可用，不需要切换模式。
+  - **2026-10-15（D1 修复）**：连接点宿主 z-index 更高，而它的 18×18 命中区从前**骑在边的
+    10px 热区上**（top: 0 → 盖住 y 0..10）—— 于是「抓边正中」被连接点抢走，按下去是拉线、
+    拉不动尺寸（偏离中点才行）。现在把命中区整体**移到边热区的内侧**：
+    top/bottom 各让开 10px、left/right 各让开 10px（= 热区厚度），
+    四边中点 ⊆ 尺寸把手热区 → 稳定开始拉伸；18×18 命中区与 12px 圆点同心，
+    整个圆点仍然落在自己的命中区里 → 连接点拖线照旧可用（契约 §8.2）。
 -->
 <script setup lang="ts">
 import { computed } from "vue";
@@ -221,8 +227,8 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
 /*
  * --- 关系连接点命中区 -----------------------------------------------------
  * 屏幕像素 18×18（本层在未缩放的滚动内容层里，不受画布 scale 影响）；
- * 中心落在对应边的中点上，且整个命中区留在卡片内侧边缘 ——
- * 与改动前同一个位置，所以不会伸到卡片外面压住局部工具栏 / 相邻卡片。
+ * 贴在对应边的**热区内侧**（见下面的分侧规则），整个命中区仍在卡片内部 ——
+ * 不会伸到卡片外面压住局部工具栏 / 相邻卡片，也不与边把手的 10px 热区重叠。
  */
 .connect-point {
   position: absolute;
@@ -245,23 +251,28 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
   background: var(--bg-elevated);
   border: 1.5px solid var(--accent);
 }
+/*
+ * 各边的命中区**让开该边的 10px 尺寸热区**（与 ResizeHandles 的 .rz-hit-* 同厚度）：
+ * 四边中点的命中共归属于尺寸把手，连接点从热区内侧开始命中。
+ * 圆点（::after）与命中区同心 → 看到的圆点整个都能拖线。
+ */
 .connect-point.top {
   left: 50%;
-  top: 0;
+  top: 10px;
   transform: translateX(-50%);
 }
 .connect-point.right {
-  right: 0;
+  right: 10px;
   top: 50%;
   transform: translateY(-50%);
 }
 .connect-point.bottom {
   left: 50%;
-  bottom: 0;
+  bottom: 10px;
   transform: translateX(-50%);
 }
 .connect-point.left {
-  left: 0;
+  left: 10px;
   top: 50%;
   transform: translateY(-50%);
 }

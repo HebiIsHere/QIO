@@ -335,7 +335,11 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     expect(dotBlock).toMatch(/width:\s*12px/);
     expect(dotBlock).toMatch(/height:\s*12px/);
 
-    // 同层 z-index：连接点宿主 > 尺寸宿主；整层不吃指针，只有命中区吃
+    /*
+     * 同层 z-index：连接点宿主 > 尺寸宿主（沿用既有层级，避免连接点被悬停出现的
+     * 「宽 / 高」按钮面板压住）。**命中区不靠 z 序分配**：D1 之后连接点命中区已经
+     * 让开边把手的 10px 热区（见下面那条 D1 用例），四边中点稳定归尺寸把手。
+     */
     const resizeHost = /\.resize-host\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
     const connectHost = /\.connect-host\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
     const layerRoot = /\.resize-layer\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
@@ -356,6 +360,103 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     const used = Array.from(layerStyle.matchAll(/var\((--[a-z0-9-]+)/g)).map((match) => match[1]);
     const missing = Array.from(new Set(used)).filter((name) => !new RegExp(name + "\\s*:").test(tokens));
     expect(missing).toEqual([]);
+  });
+
+  /*
+   * D1（真实浏览器验收发现）：连接点的 18×18 命中区从前骑在边的 10px 热区上，
+   * 而连接点宿主 z-index 更高 —— 「抓边正中」被连接点抢走命中，按下去是拉线、拉不动尺寸。
+   * 这条用例把「命中区域分配」算成几何事实：命中区与任何尺寸热区**零重叠**，
+   * 四边中点不在任何连接点命中区里，圆点与命中区同心（看到的圆点整个可拖线）。
+   */
+  it("D1：连接点命中区让开边把手热区 —— 四边中点归尺寸把手，圆点仍整个可拖线", () => {
+    const layer = source("components/interactive/BoardResizeLayer.vue");
+    const layerStyle = layer.slice(layer.indexOf("<style"));
+    const handles = source("components/interactive/ResizeHandles.vue");
+    const handleStyle = handles.slice(handles.indexOf("<style"));
+
+    const numberIn = (block: string, prop: string): number =>
+      Number(new RegExp(prop + ":\\s*(-?[\\d.]+)px").exec(block)?.[1] ?? Number.NaN);
+    const blockOf = (text: string, selector: string): string =>
+      new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{([^}]*)\\}").exec(text)?.[1] ?? "";
+
+    // 热区厚度与角尺寸（ResizeHandles 是唯一来源）
+    const hBand = /\.rz-hit-n,\s*\.rz-hit-s\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "";
+    const vBand = /\.rz-hit-e,\s*\.rz-hit-w\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "";
+    const cornerBlock = /\.rz-hit-ne,\s*\.rz-hit-nw,\s*\.rz-hit-se,\s*\.rz-hit-sw\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "";
+    const band = numberIn(hBand, "height");
+    expect(band).toBe(10);
+    expect(numberIn(vBand, "width")).toBe(band);
+    const corner = numberIn(cornerBlock, "width");
+    expect(corner).toBe(16);
+
+    // 连接点命中区尺寸
+    const pointBlock = blockOf(layerStyle, ".connect-point");
+    const hit = { w: numberIn(pointBlock, "width"), h: numberIn(pointBlock, "height") };
+    expect(hit).toEqual({ w: 18, h: 18 });
+
+    // 命中区**让开**对应边的热区：偏移量必须等于热区厚度
+    expect(numberIn(blockOf(layerStyle, ".connect-point.top"), "top")).toBe(band);
+    expect(numberIn(blockOf(layerStyle, ".connect-point.bottom"), "bottom")).toBe(band);
+    expect(numberIn(blockOf(layerStyle, ".connect-point.left"), "left")).toBe(band);
+    expect(numberIn(blockOf(layerStyle, ".connect-point.right"), "right")).toBe(band);
+
+    // 圆点与命中区同心（否则「看起来能点的地方」与「真正能点的地方」会错开）
+    const dot = blockOf(layerStyle, ".connect-point::after");
+    expect(dot).toMatch(/left:\s*50%/);
+    expect(dot).toMatch(/top:\s*50%/);
+    expect(dot).toMatch(/transform:\s*translate\(-50%,\s*-50%\)/);
+
+    interface Rect { x: number; y: number; w: number; h: number }
+    const overlaps = (a: Rect, b: Rect): boolean =>
+      a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const inside = (p: { x: number; y: number }, r: Rect): boolean =>
+      p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
+
+    for (const card of [{ w: 180, h: 96 }, { w: 260, h: 170 }, { w: 560, h: 420 }, { w: 1200, h: 800 }]) {
+      const W = card.w;
+      const H = card.h;
+      const connect: Record<string, Rect> = {
+        top: { x: W / 2 - hit.w / 2, y: band, w: hit.w, h: hit.h },
+        bottom: { x: W / 2 - hit.w / 2, y: H - band - hit.h, w: hit.w, h: hit.h },
+        left: { x: band, y: H / 2 - hit.h / 2, w: hit.w, h: hit.h },
+        right: { x: W - band - hit.w, y: H / 2 - hit.h / 2, w: hit.w, h: hit.h },
+      };
+      const resizeHit: Rect[] = [
+        { x: band, y: 0, w: Math.max(0, W - band * 2), h: band },
+        { x: band, y: H - band, w: Math.max(0, W - band * 2), h: band },
+        { x: 0, y: band, w: band, h: Math.max(0, H - band * 2) },
+        { x: W - band, y: band, w: band, h: Math.max(0, H - band * 2) },
+        { x: 0, y: 0, w: corner, h: corner },
+        { x: W - corner, y: 0, w: corner, h: corner },
+        { x: 0, y: H - corner, w: corner, h: corner },
+        { x: W - corner, y: H - corner, w: corner, h: corner },
+      ];
+      for (const [side, rect] of Object.entries(connect)) {
+        for (const handle of resizeHit) {
+          expect(
+            overlaps(rect, handle),
+            side + " 连接点命中区与尺寸热区重叠（卡片 " + W + "×" + H + "）",
+          ).toBe(false);
+        }
+        // 命中区整体留在卡片内：不伸到卡片外压住局部工具栏 / 相邻卡片
+        expect(rect.x).toBeGreaterThanOrEqual(0);
+        expect(rect.y).toBeGreaterThanOrEqual(0);
+        expect(rect.x + rect.w).toBeLessThanOrEqual(W);
+        expect(rect.y + rect.h).toBeLessThanOrEqual(H);
+      }
+      // 四边中点不在连接点命中区里 —— 它们必须稳定地开始拉伸
+      const midpoints = [
+        { x: W / 2, y: 0 },
+        { x: W / 2, y: H },
+        { x: 0, y: H / 2 },
+        { x: W, y: H / 2 },
+      ];
+      for (const point of midpoints) {
+        for (const rect of Object.values(connect)) {
+          expect(inside(point, rect), "四边中点落进了连接点命中区（卡片 " + W + "×" + H + "）").toBe(false);
+        }
+      }
+    }
   });
 });
 

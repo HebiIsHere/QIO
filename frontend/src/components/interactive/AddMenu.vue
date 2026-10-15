@@ -28,7 +28,7 @@ import { nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
 import { cardAttachmentLinked, cardAttachmentName } from "../../interactive/materials";
-import { NEW_CARD_SIZE, planNewCardSlot } from "../../interactive/cardLayout";
+import { NEW_CARD_SIZE, planNewCardSlot, rectsOverlap } from "../../interactive/cardLayout";
 import { readBoardArea } from "../../interactive/viewport";
 import {
   pickBrowserFile,
@@ -230,6 +230,14 @@ function add(kind: AddableKind): void {
       })
     : null;
   /**
+   * 落点**仍然**压着已有卡片：只有「扩大搜索范围之后都放不下」才会发生
+   * （planNewCardSlot 会先向右 / 向下延伸一整张卡再搜）。
+   * 这里只负责如实说明，绝不假装放得下 —— 不静默、也不改板面状态。
+   */
+  const crowded = Boolean(
+    slot && current.cards.some((card) => !card.deleted && rectsOverlap(slot, card)),
+  );
+  /**
    * 新建文字卡默认**提交给 QIO**（2026-10-14 第十个问题）：整卡一个许可，
    * 覆盖卡内文字、链接与代码；用户可以在卡片工具栏里取消勾选，取消后整体不交付。
    * 材料卡不需要这个勾选（默认在本次允许查看范围内），沿用 board.ts 的默认值。
@@ -246,6 +254,10 @@ function add(kind: AddableKind): void {
   );
   close(true);
   const added = store.board?.cards.find((card) => !before.has(card.id));
+  // 落点退化时如实说明（正常情况下 planNewCardSlot 已经找到零重叠落点，不会有这条提示）
+  if (crowded) {
+    succeed(begin(), "板面已经没有零重叠的空位了：新卡先放在重叠最少的位置，请先整理一下板面。");
+  }
   // 文件卡：立刻让用户选一份真实文件，上传成功后把 attachmentId 写进卡片 meta
   if (kind === "file" && added) void attachRealFile(kind, added.id);
 }

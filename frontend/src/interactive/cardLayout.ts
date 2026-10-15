@@ -181,28 +181,91 @@ export interface NewCardSlotInput {
  * 新卡片的落点：优先放在**当前可用区域的空白位置**，避开已有卡片与浮层。
  *
  * 走的是 F2 的 free 口径（`resize.findFreeSlot`，确定性顺序）：
- * 先逐字段试过「可用区左上角 + 每个障碍的边缘 ± gap」，再退回均匀网格；
- * 实在放不下就取"重叠面积最小"的一处并如实落在那儿，绝不随机挤动别的卡片。
+ * 先逐字段试过「可用区左上角 + 每个障碍的边缘 ± gap」，再退回均匀网格。
+ *
+ * **2026-10-15（D2 修复）**：从前只用可见区域搜一次，可见区域里没有零重叠空位时
+ * 就直接接受 findFreeSlot 的「重叠面积最小」兜底 —— 用户看到新建的卡压在既有卡上。
+ * 现在分两步，**视野大小不是落点搜索范围的上限**：
+ * 1. 先在可见区域里找零重叠落点（既有行为不变）；
+ * 2. 找不到就**向右 / 向下各让出一整张卡的空档**再搜一次（坐标可以自由延伸：
+ *    画布随内容长大），直到拿到真正零重叠的落点；
+ * 3. 只有连扩大后的范围都放不下（病态输入）才退化为「重叠最小」——
+ *    此时调用方（AddMenu）会如实说明，绝不假装放得下。
  *
  * 为什么不再用「固定四列 + 数量取模」：那种排法在平移 / 缩放之后会把新卡放到
  * 视口之外（用户看不到刚落下的卡），并反复落在同一处已有的卡上。
  */
 export function planNewCardSlot(input: NewCardSlotInput): LayoutRect {
-  const slot = findFreeSlot({
-    size: { w: Math.max(1, finite(input?.size?.w, 1)), h: Math.max(1, finite(input?.size?.h, 1)) },
-    area: {
-      x: finite(input?.area?.x, 0),
-      y: finite(input?.area?.y, 0),
-      w: Math.max(1, finite(input?.area?.w, 1)),
-      h: Math.max(1, finite(input?.area?.h, 1)),
-    },
-    obstacles: [...(input?.cards ?? []), ...(input?.overlays ?? [])].map((rect) => ({
-      x: finite(rect?.x, 0),
-      y: finite(rect?.y, 0),
-      w: Math.max(0, finite(rect?.w, 0)),
-      h: Math.max(0, finite(rect?.h, 0)),
-    })),
-    gap: input?.gap,
-  });
+  const size = { w: Math.max(1, finite(input?.size?.w, 1)), h: Math.max(1, finite(input?.size?.h, 1)) };
+  const area: LayoutRect = {
+    x: finite(input?.area?.x, 0),
+    y: finite(input?.area?.y, 0),
+    w: Math.max(1, finite(input?.area?.w, 1)),
+    h: Math.max(1, finite(input?.area?.h, 1)),
+  };
+  const obstacles = [...(input?.cards ?? []), ...(input?.overlays ?? [])].map((rect) => ({
+    x: finite(rect?.x, 0),
+    y: finite(rect?.y, 0),
+    w: Math.max(0, finite(rect?.w, 0)),
+    h: Math.max(0, finite(rect?.h, 0)),
+  }));
+  const gap = input?.gap;
+
+  const inView = rectOf(findFreeSlot({ size, area, obstacles, gap }));
+  if (isFreeOf(inView, obstacles)) return inView;
+
+  /*
+   * 可见区域里没有零重叠落点：扩大搜索范围（向右 / 向下延伸一整张卡）。
+   * 用**请求的卡片尺寸**而不是 inView 的宽高：可见区域比卡片还小时 findFreeSlot 会把
+   * 尺寸夹进区域，拿那个被夹小的值去算空档会让新卡悄悄变小。
+   */
+  const wide = extendedArea(area, obstacles, size.w, size.h, gap);
+  const widened = rectOf(findFreeSlot({ size, area: wide, obstacles, gap }));
+  if (isFreeOf(widened, obstacles)) return widened;
+
+  // 病态输入（障碍物铺满坐标可及范围）才会到这里：如实退化，由调用方说明
+  return widened;
+}
+
+function rectOf(slot: { x: number; y: number; w: number; h: number }): LayoutRect {
   return { x: slot.x, y: slot.y, w: slot.w, h: slot.h };
+}
+
+/** 落点是否与所有障碍**真正零重叠**（只碰到边不算）。 */
+function isFreeOf(rect: LayoutRect, obstacles: readonly LayoutRect[]): boolean {
+  return !obstacles.some((item) => rectsOverlap(rect, item));
+}
+
+/**
+ * 扩大后的搜索范围：可见区域 ∪ 全部障碍，再向右 / 向下各让出「一张卡 + gap」的空档。
+ *
+ * 左 / 上不扩：坐标原点之外的内容永远看不见（负坐标会被 clampCardRect / rebaseToFit 处理），
+ * 所以只在右下方向延伸 —— 这也正是用户能滚动到的方向。
+ */
+function extendedArea(
+  area: LayoutRect,
+  obstacles: readonly LayoutRect[],
+  cardW: number,
+  cardH: number,
+  gap: number | undefined,
+): LayoutRect {
+  const spacing = Math.max(0, finite(gap, DEFAULT_LAYOUT_GAP));
+  let minX = area.x;
+  let minY = area.y;
+  let maxX = area.x + area.w;
+  let maxY = area.y + area.h;
+  for (const item of obstacles) {
+    minX = Math.min(minX, item.x);
+    minY = Math.min(minY, item.y);
+    maxX = Math.max(maxX, item.x + item.w);
+    maxY = Math.max(maxY, item.y + item.h);
+  }
+  const left = Math.max(0, minX);
+  const top = Math.max(0, minY);
+  return {
+    x: left,
+    y: top,
+    w: Math.max(1, maxX + cardW + spacing - left),
+    h: Math.max(1, maxY + cardH + spacing - top),
+  };
 }

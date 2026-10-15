@@ -182,6 +182,53 @@ describe("新卡落点 planNewCardSlot（§7.7）", () => {
     expect(planNewCardSlot({ size: SIZE, area, cards })).toEqual(planNewCardSlot({ size: SIZE, area, cards }));
   });
 
+  /*
+   * D2（真实浏览器验收发现）：从前只在可见区域里搜一次，可见区域没有零重叠空位时
+   * 直接接受 findFreeSlot 的「重叠面积最小」兜底 → 新建的卡压在既有卡上
+   * （实测落点 (244,536,260×170) 压住 t_note(80,620,260×170)）。
+   * 「当前视野大小不是卡片上限」同样适用于**落点搜索范围**：扩大后再搜，直到真正零重叠。
+   */
+  it("可见区域被占满：扩大到可见区域之外，仍给出**零重叠**落点（视野不是落点上限）", () => {
+    const area = { x: 0, y: 0, w: 300, h: 200 };
+    const cards = [{ x: 0, y: 0, w: 300, h: 200 }];
+    const slot = planNewCardSlot({ size: SIZE, area, cards });
+    for (const item of cards) expect(rectsOverlap(slot, item)).toBe(false);
+    // 真正落在可见区域之外（向右 / 向下延伸出一整张卡的空档）
+    expect(slot.x >= area.x + area.w || slot.y >= area.y + area.h).toBe(true);
+    expect(Number.isFinite(slot.x + slot.y + slot.w + slot.h)).toBe(true);
+  });
+
+  it("D2 复现：可见区域被既有卡片挤满时，新卡不再压住 t_note", () => {
+    const area = { x: 0, y: 400, w: 560, h: 400 };
+    const cards = [
+      { x: 0, y: 400, w: 560, h: 200 }, // 上半个可见区域铺满
+      { x: 80, y: 620, w: 260, h: 170 }, // t_note：实测被新卡压住的那张
+      { x: 0, y: 600, w: 80, h: 200 }, // 左下被占
+    ];
+    const slot = planNewCardSlot({ size: SIZE, area, cards });
+    for (const item of cards) expect(rectsOverlap(slot, item)).toBe(false);
+    expect(rectsOverlap(slot, { x: 80, y: 620, w: 260, h: 170 })).toBe(false);
+    expect(slot.x >= area.x + area.w || slot.y >= area.y + area.h).toBe(true);
+  });
+
+  it("可见区域比卡片还小且被占满：扩大后仍按**请求尺寸**落点（不把新卡悄悄变小）", () => {
+    const area = { x: 0, y: 0, w: 100, h: 80 };
+    const cards = [{ x: 0, y: 0, w: 100, h: 80 }];
+    const slot = planNewCardSlot({ size: SIZE, area, cards });
+    // 旧实现会把 findFreeSlot 夹过的 100×80 当成「一整张卡」的空档，新卡因此悄悄变小
+    expect({ w: slot.w, h: slot.h }).toEqual(SIZE);
+    expect(rectsOverlap(slot, cards[0])).toBe(false);
+  });
+
+  it("扩大搜索是确定性的，且不会把落点推到坐标原点之外", () => {
+    const area = { x: 0, y: 0, w: 300, h: 200 };
+    const cards = [{ x: 0, y: 0, w: 300, h: 200 }];
+    const first = planNewCardSlot({ size: SIZE, area, cards });
+    expect(first).toEqual(planNewCardSlot({ size: SIZE, area, cards }));
+    expect(first.x).toBeGreaterThanOrEqual(0);
+    expect(first.y).toBeGreaterThanOrEqual(0);
+  });
+
   it("尺寸不再被视野夹小：可用区域比卡片还小时仍按卡片尺寸返回（落点被夹进区域）", () => {
     const area = { x: 40, y: 60, w: 100, h: 80 };
     const slot = planNewCardSlot({ size: SIZE, area, cards: [] });
