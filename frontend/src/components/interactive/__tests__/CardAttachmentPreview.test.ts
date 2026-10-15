@@ -314,6 +314,20 @@ describe("封面变体：完整等比展示 + 小条蒙版 + 真实说明", () =
     expect(previewSource).toContain('draggable="false"');
   });
 
+  it("底部小条的渐变铺到卡片最下沿（不再提前 30px 结束），内容位置不变", () => {
+    /*
+      用户报的：时间条与渐变光晕浮在卡片上方，底边露出一条原图。
+      渐变画在 .cover-foot 的内边距盒里，所以「抬升多少」就决定了它离底边多远：
+      整条贴到卡片最下沿（bottom: 0），把原来那段抬升改成等量的**下内边距** ——
+      内容（说明 / 查看原图）一点没动，渐变却一直铺到卡片底边。
+    */
+    const foot = cssBlock(previewSource, ".cover-foot {");
+    expect(foot).toContain("bottom: 0");
+    expect(foot).toContain("padding: var(--sp-1) var(--sp-3) calc(var(--sp-2) + 22px)");
+    expect(foot).toContain("linear-gradient");
+    expect(foot, "整条又被抬离卡片底边了").not.toContain("bottom: calc(var(--sp-2) + 22px)");
+  });
+
   it("封面层填满卡片、overflow: hidden（不产生横纵滚动条），且不再有大面积蒙版", () => {
     const layer = cssBlock(previewSource, ".card-cover {");
     expect(layer).toContain("inset: 0");

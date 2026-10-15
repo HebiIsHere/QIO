@@ -553,16 +553,21 @@ onBeforeUnmount(() => {
 /*
   底部小条：一行真实说明 + 「查看原图」。
   蒙版只贴在这一条后面（linear-gradient 落在这一条的盒子里），卡片页脚另有一条自己的窄蒙版（BoardCard）。
+
+  2026-10-15（用户要求「渐变的光晕放到卡片最下方」）：整条原来抬升
+  `calc(var(--sp-2) + 22px)`，渐变到离卡片底边 30px 就没了，底边那条露出原图。
+  现在把盒子贴到卡片最下沿（bottom: 0），把原来那段抬升改成等量的**下内边距** ——
+  内容（说明 / 查看原图）位置一点没动，渐变（画在内边距盒里）却一直铺到卡片底边。
 */
 .cover-foot {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: calc(var(--sp-2) + 22px);
+  bottom: 0;
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
-  padding: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-3) calc(var(--sp-2) + 22px);
   background: linear-gradient(to top, color-mix(in srgb, var(--bg-surface) 92%, transparent), transparent);
   pointer-events: none;
 }

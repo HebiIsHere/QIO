@@ -207,6 +207,21 @@ describe("图片文件卡：常态由封面承担完整展示", () => {
     绝不把 .card-body 压到封面后面（那会让草稿 / 冲突提示被图片盖住，契约 §12.1）。
     jsdom 没有真实命中测试，这里做源码守卫 + DOM 结构守卫，真实命中由 verifier 复跑。
   */
+  it("封面模式：页脚（状态 / 时间）贴到卡片最下沿，紧凑档跟着换一档", () => {
+    /*
+      用户报的：时间条浮在卡片底边上方，底边那条露出原图。
+      卡片自身有下内边距，页脚按内容盒排就会差这一截；封面模式下用等量负下外边距压到最下沿。
+      真实渲染实测：页脚底边距卡片底边 13px → 1px，渐变条 31px → 1px。
+    */
+    const card = source("components/interactive/BoardCard.vue");
+    expect(card).toContain("margin-bottom: calc(var(--card-pad) * -1);");
+    expect(card).toContain("--card-pad: var(--sp-3);");
+    // 紧凑档内边距是 --sp-2，负外边距必须跟着换档，否则会多压 4px
+    expect(card).toContain(".card.is-compact.is-cover > .card-meta");
+    const compact = card.slice(card.indexOf(".card.is-compact.is-cover > .card-meta"));
+    expect(compact.slice(0, compact.indexOf("}"))).toContain("--card-pad: var(--sp-2)");
+  });
+
   it("封面模式：正文层不吃指针事件，草稿 / 冲突提示显式放行（封面按钮才能被真实指针命中）", async () => {
     const card = source("components/interactive/BoardCard.vue");
     expect(cssBlock(card, ".card.is-cover > .card-body {"), "正文层还在抢封面按钮的指针").toContain(

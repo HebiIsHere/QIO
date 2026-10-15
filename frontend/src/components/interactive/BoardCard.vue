@@ -1813,6 +1813,8 @@ watch(
   flex-direction: column;
   gap: var(--sp-2);
   padding: var(--sp-3);
+  /* 卡片自身的内边距（封面模式下的页脚要按它抵消，贴到卡片最下沿） */
+  --card-pad: var(--sp-3);
   overflow: hidden;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
@@ -2407,4 +2409,21 @@ watch(
 .card.is-cover > .card-head { pointer-events: none; }
 .card.is-cover > .card-meta { pointer-events: none; }
 .card.is-cover > .card-head .chip-btn { pointer-events: auto; }
+
+/*
+  封面模式：页脚（状态 / 时间）贴到卡片**最下沿**。
+  页脚原本按内容盒排，卡片的下内边距会让它离底边差一截 —— 底边那条露出的是原图，
+  看起来就是「时间条没到底」。这里用等量的负下外边距把它压到内边距盒的最下沿；
+  .card.is-cover 本身 overflow: hidden，负外边距不会溢出卡片。
+  （尺寸跟随 --card-pad：普通卡片 12px、紧凑卡片 8px。）
+*/
+.card.is-cover > .card-meta {
+  margin-bottom: calc(var(--card-pad) * -1);
+  padding: 2px var(--sp-2);
+  border-radius: 0;
+}
+/* 紧凑档的卡片内边距是 --sp-2，负外边距跟着换一档（只作用在封面页脚，不动那条被守卫锁定的紧凑规则） */
+.card.is-compact.is-cover > .card-meta {
+  --card-pad: var(--sp-2);
+}
 </style>
