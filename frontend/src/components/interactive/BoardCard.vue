@@ -4,8 +4,9 @@
   契约：docs/interactive-mode-contract.md §1.1 / §1.4 / §9.6。
   这里落地的规则：
   - 信息分层：**材料类型 → 标题 → 正文 → 元信息**（元信息含状态文字、所在组、更新时间）；
-  - 勾选框只出现在**文字注释**上，而且放在「选中后才浮出的局部工具栏」里；
-    材料默认就在 QIO 可查看范围内，没有这个选择框；reply 不参与勾选；
+  - 勾选框出现在**需要用户许可才交给 QIO 查看**的卡片上（文字卡与结果卡都用这一条，
+    由 CHECKABLE_KINDS 决定），而且放在「选中后才浮出的局部工具栏」里；
+    材料默认就在 QIO 可查看范围内，没有这个选择框；
   - 局部工具栏（data-im="card-toolbar"）只放**这张卡片自己的操作**
     （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选）；分组类操作在 SelectionMenu 里；
   - **连接点不在卡片里**（0.2.5 回归修复）：它由 BoardCanvas 的交互层（BoardResizeLayer）
@@ -61,6 +62,8 @@ import { attachmentPreviewPlan, attachmentRefForPreview } from "../../interactiv
 import { materialTypeLabel } from "../../interactive/previewPlan";
 import { isDesktopShell } from "../../services/attachments";
 import TextCardEditor from "../../interactive/TextCardEditor.vue";
+// 结果卡正文（F3）：Markdown 原文交给共用渲染器 —— 与对话流同一套转义 / 白名单 / 表格适配。
+import MarkdownContent from "../MarkdownContent.vue";
 // 卡片正文是这张卡唯一的主要纵向视口：滚动能力保留，滚动条外观统一走 QIO 指示条。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
@@ -213,6 +216,10 @@ function boardContentConflict(cardId: string): { local: string; server: string }
 }
 
 const checkable = computed(() => CHECKABLE_KINDS.includes(props.card.kind));
+/** 结果卡（kind="reply"）：正文是 QIO 产出的 Markdown 原文，用户不需要点「解析」。 */
+const isReplyCard = computed(() => props.card.kind === "reply");
+/** 有真实正文才提供「复制原文」：没有原文时不假装能复制出一份内容。 */
+const hasReplyBody = computed(() => String(props.card.content ?? "").trim().length > 0);
 /**
  * 类型标签（2026-10-14 第九个问题）：材料卡按**附件类型**显示（图片 / PDF / 表格 / 文本 / 代码…），
  * 不再区分「文件 / 图片」两种卡片；非材料卡仍用自己的标签。
@@ -229,7 +236,7 @@ const kindLabel = computed(
   隐藏或删除这张卡才会让它退出查看范围。这段话是**唯一**一份说明，卡片正文不重复铺开。
 */
 const LICENSE_FULL_TEXT =
-  "许可：允许 QIO 查看这张卡（提交后仍然有效，只有你手动取消才失效）—— 覆盖卡里的全部文字、代码与链接；隐藏或删除这张卡才会退出查看范围。";
+  "许可：允许 QIO 查看这张卡（文字卡与结果卡同一条规则；提交后仍然有效，只有你手动取消才失效）—— 覆盖卡里的全部文字、代码与链接；隐藏或删除这张卡才会退出查看范围。";
 const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
@@ -410,8 +417,42 @@ async function copyCode(block: TextBlock): Promise<void> {
   );
 }
 
+/**
+ * 结果卡「复制原文」：给出**完整** Markdown 原文（card.content 一字不改）。
+ * 反馈口径与代码块复制一致：成功说已复制，失败如实说失败并给出手动复制退路。
+ */
+const sourceCopyState = ref<{ ok: boolean } | null>(null);
+let sourceCopyTimer: ReturnType<typeof setTimeout> | null = null;
+
+function sourceCopyText(): string {
+  const state = sourceCopyState.value;
+  if (!state) return "复制原文";
+  return state.ok ? "已复制原文" : "复制失败";
+}
+
+function copySourceTitle(): string {
+  const state = sourceCopyState.value;
+  if (!state) return "复制这张结果卡的 Markdown 原文（整份内容逐字不变）";
+  return state.ok
+    ? "已复制到剪贴板"
+    : "复制失败：可以选中原文后按 Ctrl+C 手动复制，或再点一次重试";
+}
+
+async function copySource(): Promise<void> {
+  const ok = await writeClipboard(String(props.card.content ?? ""));
+  sourceCopyState.value = { ok };
+  if (sourceCopyTimer) clearTimeout(sourceCopyTimer);
+  sourceCopyTimer = setTimeout(
+    () => {
+      sourceCopyState.value = null;
+    },
+    ok ? 1600 : 2400,
+  );
+}
+
 onBeforeUnmount(() => {
   if (copyTimer) clearTimeout(copyTimer);
+  if (sourceCopyTimer) clearTimeout(sourceCopyTimer);
 });
 
 /**
@@ -1240,8 +1281,9 @@ watch(
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
       <span v-if="titleText" class="title" data-im="card-title" :title="titleText">{{ titleText }}</span>
       <!--
-        整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡允不允许 QIO 查看。
-        文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，这里不重复解释。
+        整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
+        允不允许 QIO 查看。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，
+        这里不重复解释。
       -->
       <span
         v-if="checkable"
@@ -1251,8 +1293,8 @@ watch(
         :data-checked="card.checked ? '1' : '0'"
         role="status"
         :title="card.checked
-          ? '已允许 QIO 查看：覆盖这张卡里的全部文字、代码与链接'
-          : '未允许查看：QIO 看不到这张卡里的任何内容（提交也不会带上它）'"
+          ? '已允许 QIO 查看：覆盖这张卡里的全部文字、代码与链接（文字卡与结果卡同一条规则）'
+          : '未允许查看：QIO 看不到这张卡里的任何内容（文字卡与结果卡同一条规则）'"
       >{{ card.checked ? "允许 QIO 查看" : "未允许查看" }}</span>
       <!--
         两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
@@ -1544,6 +1586,23 @@ watch(
             <p v-else-if="card.kind === 'url'" class="content url">
               <a :href="href" target="_blank" rel="noreferrer" @pointerdown.stop>{{ linkTitle || href || "（还没有网址）" }}</a>
             </p>
+            <!--
+              结果卡正文（契约 F3）：card.content 是 Markdown **原文**，整份交给共用的
+              MarkdownContent 渲染 —— 这里**不做任何 slice / 截断**（卡片正文没有长度上限；
+              后端上下文里的 600 字上限只影响模型可见的上下文，且载荷里已显式带
+              textTruncated 标记，不改写卡片正文）。围栏 / 列表 / 表格因此不会被截成半段。
+              未选中（常态）与阅读态都走这一支；纵向滚动仍只由 .card-body 一层承担，
+              MarkdownContent 自己不建滚动容器。
+            -->
+            <template v-else-if="isReplyCard">
+              <MarkdownContent
+                v-if="hasReplyBody"
+                class="reply-markdown"
+                data-im="card-reply-markdown"
+                :source="card.content"
+              />
+              <p v-else class="content empty-text" data-im="card-reply-empty">{{ kindLabel }}：还没有正文</p>
+            </template>
             <!-- 封面式：正文那行已经在封面底部，不在卡片里重复一遍 -->
             <!-- 文件卡：卡片本身只显示文件名（标题），不再铺一段「补充说明」 -->
             <p v-else-if="!coverMode && !isFileCard" class="content">
@@ -1635,7 +1694,8 @@ watch(
       @pointerdown.stop
     >
     <!--
-      整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡只有一个许可，覆盖卡内文字、链接、代码。
+      整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡 / 结果卡只有一个许可，
+      覆盖卡内的文字、链接与代码。
       勾选框只留一句短文案；「提交后仍然有效、只有你手动取消才失效」这类完整规则放进旁边的
       「说明」详情（不常驻一整行字）。勾选只改 checked，不碰 hidden / deleted。
     -->
@@ -1678,6 +1738,21 @@ watch(
       >
         {{ (isTextCard || isFileCard) && editing ? "完成编辑" : "编辑" }}
       </button>
+      <!--
+        结果卡「复制原文」（契约 F3 / B4）：整份 Markdown 原文进剪贴板 ——
+        卡片正文里代码块自己的复制按钮只复制那一段代码，与这里是两个层级。
+      -->
+      <button
+        v-if="isReplyCard"
+        class="tb"
+        type="button"
+        data-im="card-copy-source"
+        :data-card-id="card.id"
+        :data-copy-ok="sourceCopyState ? String(sourceCopyState.ok) : ''"
+        :disabled="!hasReplyBody"
+        :title="copySourceTitle()"
+        @click="copySource()"
+      >{{ sourceCopyText() }}</button>
       <!--
         文件卡（2026-10-14 用户要求）：卡片本身只显示文件名，附件动作全部收在工具栏。
         打开走既有 openAttachment，结果如实写在旁边的状态行里。
@@ -2245,6 +2320,12 @@ watch(
   min-height: 0;
 }
 .card-preview-host:empty { display: none; }
+/*
+  结果卡正文（F3 / B3）：Markdown 渲染器自己**不带**滚动容器，这里只保证它受卡片正文
+  宽度约束；纵向滚动仍然只由 .card-body 这一层承担。阅读态的行距与行宽跟文字卡同一口径
+  （排版规则在 MarkdownContent 里，只有一份，不在这里重写第二套）。
+*/
+.reply-markdown { min-width: 0; max-width: 100%; }
 .card-subject.is-reading .blk { line-height: var(--lh-loose); }
 .card-subject.is-reading .blk-paragraph,
 .card-subject.is-reading .blk-list,

@@ -115,9 +115,16 @@ function renderBlock(node: any): string {
       return `<p>${renderInline(node.children)}</p>`;
     case "blockquote":
       return `<blockquote>${(node.children ?? []).map(renderBlock).join("\n")}</blockquote>`;
-    case "list":
+    case "list": {
       const tag = node.ordered ? "ol" : "ul";
-      return `<${tag}>${(node.children ?? []).map((item: any) => renderBlock(item)).join("")}</${tag}>`;
+      /**
+       * GFM 任务列表：只要有一个列表项带 `checked`，整张列表就是任务列表。
+       * 标记同时给 CSS（去掉圆点 / 序号）与测试读，语义由 listItem 自己渲染。
+       */
+      const task = (node.children ?? []).some((item: any) => typeof item?.checked === "boolean");
+      const cls = task ? ' class="contains-task-list"' : "";
+      return `<${tag}${cls}>${(node.children ?? []).map((item: any) => renderBlock(item)).join("")}</${tag}>`;
+    }
     case "listItem": {
       /**
        * 列表项是**块容器**，不是行内片段：段落、代码块、子列表、引用、表格
@@ -137,6 +144,20 @@ function renderBlock(node: any): string {
             : renderBlock(child),
         )
         .join("\n");
+      /**
+       * GFM 任务列表项（`- [x] 已完成` / `- [ ] 未完成`）：
+       * 渲染成**只读**复选框 —— `disabled` 保证用户改不了原文，`aria-label` 把「已完成 /
+       * 未完成」如实说出来（不靠颜色或对勾图形单独承载状态）。两个都缺会被读屏漏掉状态，
+       * 所以它们是这一分支的硬要求。
+       */
+      if (typeof node.checked === "boolean") {
+        const done = node.checked === true;
+        const box =
+          '<input class="task-checkbox" type="checkbox" disabled' +
+          (done ? " checked" : "") +
+          ' aria-label="' + (done ? "已完成" : "未完成") + '" />';
+        return '<li class="task-list-item">' + box + inner + "</li>";
+      }
       return `<li>${inner}</li>`;
     }
     case "code": {
@@ -465,13 +486,34 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.markdown-body { line-height: 1.65; font-size: 14px; overflow-wrap: anywhere; }
+/* 正文是**唯一的纵向阅读区域**：这一层只有排版，不带任何 overflow 容器 ——
+   放进互动卡片后，纵向滚动仍由卡片正文 .card-body 那一层承担；
+   横向由 data-qio-fit（min-width:0 + max-width:100% + overflow-x:clip）与下面的
+   换行规则共同保证「不溢出、也不装一个横向滚动条」。 */
+.markdown-body {
+  line-height: 1.65;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  max-width: 100%;
+}
 .markdown-body .tw-char { visibility: hidden; }
 /* 阅读行宽：长文不铺满整屏 */
 .markdown-body :deep(p), .markdown-body :deep(li), .markdown-body :deep(blockquote) { max-width: var(--measure); }
 .markdown-body :deep(p) { margin: 0.4em 0; }
 .markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 0.4em 0; padding-left: 1.4em; }
 .markdown-body :deep(li) { margin: 0.2em 0; }
+/* GFM 任务列表：去掉圆点 / 序号，复选框与文字同排；复选框只读（勾选状态来自 Markdown 原文） */
+.markdown-body :deep(ul.contains-task-list) { list-style: none; padding-left: 0; }
+.markdown-body :deep(li.task-list-item) { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.markdown-body :deep(li.task-list-item > p) { margin: 0; }
+.markdown-body :deep(.task-checkbox) {
+  flex: none; width: 13px; height: 13px; margin: 0;
+  accent-color: var(--accent);
+  /* 只读呈现：不接收指针事件，避免让人以为能点着改原文 */
+  pointer-events: none;
+}
+.markdown-body :deep(.task-checkbox:disabled) { opacity: 1; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 0.8em 0 0.4em; }
 .markdown-body :deep(h4), .markdown-body :deep(h5), .markdown-body :deep(h6) { margin: 1em 0 0.4em; }
 /* 代码块软换行：保留原始换行/缩进，长行视觉折行。**不再横向滚动** ——
@@ -504,8 +546,13 @@ onBeforeUnmount(() => {
 /* 表格的宽度/记录模式规则在全局 styles/scroll.css 的 .qio-table-wrap 里
    （普通对话与互动对话共用同一份，任何入口都不会漏）。这里不再有横向滚动容器。 */
 .markdown-body :deep(.table-wrap) { max-width: 100%; min-width: 0; overflow-x: clip; }
-.markdown-body :deep(code.inline) { background: var(--bg-accent-subtle); border-radius: 4px; padding: 1px 5px; }
-.markdown-body :deep(a) { color: var(--link); }
+/* 行内代码 / 长链接 / 图片一律受正文宽度约束：折行或等比缩小，不撑宽、不横向滚动 */
+.markdown-body :deep(code.inline) {
+  background: var(--bg-accent-subtle); border-radius: 4px; padding: 1px 5px;
+  overflow-wrap: anywhere;
+}
+.markdown-body :deep(img) { max-width: 100%; height: auto; }
+.markdown-body :deep(a) { color: var(--link); overflow-wrap: anywhere; }
 /* 危险 scheme：渲染成普通文本，不给可点链接 */
 .markdown-body :deep(.link-blocked) { color: var(--text-secondary); text-decoration: underline dotted; cursor: help; }
 .markdown-body :deep(a.link-failed) { color: var(--danger); }
