@@ -5,11 +5,10 @@
  * 1. 尺寸把手层：位置 = 显示槽位 × 缩放（缩放后仍是真 10px / 16px 热区），只给选中的卡；
  * 2. 拖动中只预览（跟手、不提交），松手 / 键盘 −＋ 才**一次** commit，标签固定「调整卡片尺寸」；
  * 3. 尺寸调整不改许可 / 选择 / 展开集合，也不会触发重叠成组；
- * 4. 展开卡调整尺寸只提交 { w, h }：临时槽位坐标绝不写回板面（位置只由拖动改变）；
- * 5. BoardCanvas 传了 expandedAvoid:true 与**真实**的 stageOrigin（平移后的可视起点）：
- *    多张展开卡互不遮挡；平移之后展开卡被拉进可视区；
- * 6. 可用区域扣掉底部工具栏（Y 轴）与对话窗口等浮层；
- * 7. 组框与关系线继续走同一份显示坐标：调整尺寸 / 让位后仍然框得住、接得上。
+ * 4. 展开**不改变任何卡片外框**（F1）：临时槽位与「展开中只提交 w/h」这条旧口径已删除，
+ *    调整尺寸始终提交完整 { x, y, w, h }；
+ * 5. 平移 / 底部工具栏 / 对话窗口开合都不改变卡片坐标，也不是尺寸上限（F2：视野不是上限）；
+ * 6. 组框与关系线继续走同一份显示坐标：调整尺寸 / 缩放 / 平移后仍然框得住、接得上。
  *
  * 注意：jsdom 没有真实布局，容器几何是打桩的（与 boardCanvas.test.ts 同一套做法）。
  */
@@ -235,6 +234,33 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
     expect(store.board?.groups).toEqual([]);
   });
 
+  it("拉伸遇邻卡：预览与提交都停在邻卡边界 − gap（提交 == 预览），邻卡分毫不动", async () => {
+    store.board = board([mkCard("c1", 0, 0, 200, 150), mkCard("c2", 500, 0, 200, 150)], { selection: ["c1"] });
+    const view = mountCanvas();
+    // c1 右边界在板面 x=200：把 SE 把手一路往右拉到板面 700（期望宽 700，会撞上 c2）
+    view.get('[data-resize-card-id="c1"] [data-resize-handle="se"]').element.dispatchEvent(
+      pointer("pointerdown", VIEW_LEFT + 200, VIEW_TOP + 150),
+    );
+    document.dispatchEvent(pointer("pointermove", VIEW_LEFT + 700, VIEW_TOP + 150));
+    await nextTick();
+    // 实时预览就已经停在 c2.x(500) − gap(16) = 484：拖动中不提交
+    const preview = rectOfCard(view, "c1");
+    expect(preview.x + preview.w).toBe(484);
+    expect(labels).toEqual([]);
+
+    document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 700, VIEW_TOP + 150));
+    await nextTick();
+    expect(labels).toEqual(["调整卡片尺寸"]);
+    const committed = store.board!.cards.find((item) => item.id === "c1")!;
+    expect(committed.x + committed.w).toBe(484);
+    // 提交 == 预览（逐字段一致：不会松手后又跳一下）
+    expect({ x: committed.x, y: committed.y, w: committed.w, h: committed.h }).toEqual(preview);
+    // 无法完全满足期望时的简短原因（A5）
+    expect(view.findAll(".banner").map((item) => item.text()).join(" | ")).toContain("相邻卡片");
+    // **绝不移动别的卡片**
+    expect(store.board!.cards.find((item) => item.id === "c2")).toMatchObject({ x: 500, y: 0, w: 200, h: 150 });
+  });
+
   it("尺寸调整不会触发重叠成组：两张重叠的卡只改尺寸，不建组", async () => {
     store.board = board([mkCard("c1", 100, 100), mkCard("c2", 150, 140)], { selection: ["c1"] });
     const view = mountCanvas();
@@ -250,46 +276,49 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
   });
 });
 
-describe("展开期间调整尺寸：只提交 w / h，临时槽位绝不写回板面", () => {
-  it("原位展开的卡片调整尺寸：card.x / card.y 不变，展开状态保留", async () => {
+describe("展开期间调整尺寸：外框就是正式几何（F1）", () => {
+  it("展开中的卡片调整尺寸：提交完整外框，展开状态保留", async () => {
     store.board = board([mkCard("c1", 100, 100)], { selection: ["c1"] });
     const view = mountCanvas();
     store.toggleCardPreview("c1");
     await nextTick();
-    // 展开后槽位是 560×420（阅读尺寸）：右下角在屏幕 (700, 620)
-    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 560, h: 420 });
+    // 展开不改变外框：仍是正式矩形 120×80（旧行为是 560×420 的阅读尺寸）
+    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 120, h: 80 });
     view.get('[data-resize-card-id="c1"] [data-resize-handle="se"]').element.dispatchEvent(
-      pointer("pointerdown", VIEW_LEFT + 660, VIEW_TOP + 520),
+      pointer("pointerdown", VIEW_LEFT + 220, VIEW_TOP + 180),
     );
-    document.dispatchEvent(pointer("pointermove", VIEW_LEFT + 700, VIEW_TOP + 560));
-    document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 700, VIEW_TOP + 560));
+    document.dispatchEvent(pointer("pointermove", VIEW_LEFT + 260, VIEW_TOP + 220));
+    document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 260, VIEW_TOP + 220));
     await nextTick();
     expect(labels).toEqual(["调整卡片尺寸"]);
-    // 尺寸落到 card.w/h（用户展开期间的调整生效），位置仍是正式位置
-    expect(store.board?.cards[0]).toMatchObject({ x: 100, y: 100, w: 600, h: 460 });
+    // 只有一套几何：尺寸落到 card.w/h，位置仍是正式位置
+    expect(store.board?.cards[0]).toMatchObject({ x: 100, y: 100, w: 160, h: 120 });
     expect(store.expandedCardIds).toEqual(["c1"]);
-    // 收起后停在用户调过的尺寸，不再被旧快照覆盖
+    // 收起后外框不变（本来就没有临时位置可回）
     store.collapseAllPreviews();
     await nextTick();
-    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 600, h: 460 });
+    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 160, h: 120 });
   });
 });
 
-describe("展开让位：多卡互相避让 + 平移后的可视起点（生产路径接线）", () => {
-  it("两张卡同时展开：画布上互不遮挡（expandedAvoid 在生产路径打开）", async () => {
+describe("展开不改几何：平移 / 浮层开合都不改变卡片外框（F1/A2）", () => {
+  it("两张卡同时展开：外框逐字段不变，也不再互相避让", async () => {
     store.board = board([mkCard("a", 0, 0, 300, 200), mkCard("b", 200, 0, 300, 200)]);
     const view = mountCanvas();
     store.toggleCardPreview("a");
     store.toggleCardPreview("b");
     await nextTick();
-    const a = rectOfCard(view, "a");
-    const b = rectOfCard(view, "b");
-    expect(a.w).toBe(560);
-    expect(overlaps(a, b)).toBe(false);
-    expect(b.x).toBe(560 + 16);
+    expect(rectOfCard(view, "a")).toEqual({ x: 0, y: 0, w: 300, h: 200 });
+    expect(rectOfCard(view, "b")).toEqual({ x: 200, y: 0, w: 300, h: 200 });
+    expect(store.expandedCardIds).toEqual(["a", "b"]);
+    // 正式几何同样一个字没改
+    expect(store.board!.cards.map((card) => [card.x, card.y, card.w, card.h])).toEqual([
+      [0, 0, 300, 200],
+      [200, 0, 300, 200],
+    ]);
   });
 
-  it("平移之后展开：展开卡被拉进可视区（stageOrigin 来自真实滚动量）", async () => {
+  it("平移（真实滚动量）之后展开：卡片留在正式位置，不再被拉进可视区", async () => {
     store.board = board([mkCard("c1", 100, 100), mkCard("c2", 100, 900)]);
     const view = mountCanvas();
     const element = view.get(".board-viewport").element as HTMLElement;
@@ -298,13 +327,11 @@ describe("展开让位：多卡互相避让 + 平移后的可视起点（生产�
     await nextTick();
     store.toggleCardPreview("c1");
     await nextTick();
-    // 可视起点 = 800：展开卡被夹进可视区（而不是留在板面 x=100）
-    expect(rectOfCard(view, "c1").x).toBe(800);
-    // 没有展开的卡片不受影响，仍在自己的正式位置
-    expect(rectOfCard(view, "c2").x).toBe(100);
+    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 120, h: 80 });
+    expect(rectOfCard(view, "c2")).toEqual({ x: 100, y: 900, w: 120, h: 80 });
   });
 
-  it("底部工具栏吃掉的高度必须扣掉（Y 轴）：展开尺寸向可用高度收敛", async () => {
+  it("底部工具栏开合不改变外框，也不是尺寸上限（F2：视野永远不是卡片上限）", async () => {
     const toolbar = document.createElement("div");
     toolbar.setAttribute("data-im", "board-toolbar");
     toolbar.getBoundingClientRect = () =>
@@ -314,31 +341,26 @@ describe("展开让位：多卡互相避让 + 平移后的可视起点（生产�
     const view = mountCanvas();
     store.toggleCardPreview("c1");
     await nextTick();
-    // 可用高度只剩 300：展开高度收敛到 300，并且贴着可用区顶边（不钻到工具栏底下）
-    const slot = rectOfCard(view, "c1");
-    expect(slot).toEqual({ x: 100, y: 0, w: 560, h: 300 });
-    // 尺寸上限同样来自这个可用区域：拖到再大也不会越过工具栏
+    // 可用高度只剩 300，但卡片外框与展开都照旧
+    expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 120, h: 80 });
+    // 拉到远超工具栏的高度：只受 CARD_MAX_SIZE(1200) 约束，不再被视野截断
     view.get('[data-resize-card-id="c1"] [data-resize-handle="se"]').element.dispatchEvent(
-      pointer("pointerdown", VIEW_LEFT + 660, VIEW_TOP + 400),
+      pointer("pointerdown", VIEW_LEFT + 220, VIEW_TOP + 180),
     );
-    document.dispatchEvent(pointer("pointermove", VIEW_LEFT + 1500, VIEW_TOP + 1500));
-    document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 1500, VIEW_TOP + 1500));
+    document.dispatchEvent(pointer("pointermove", VIEW_LEFT + 1200, VIEW_TOP + 1400));
+    document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 1200, VIEW_TOP + 1400));
     await nextTick();
-    expect(store.board?.cards[0].h).toBeLessThanOrEqual(300);
+    expect(store.board?.cards[0].h).toBe(1200);
     toolbar.remove();
   });
 
-  it("对话窗口（chatObstacleFrame 发布的真实显示框）也会被扣掉", async () => {
-    // 对话窗口占住左下（屏幕 140..940 × 200..1700）→ 可用区退到它右边（板面 x ≥ 900）
+  it("对话窗口（chatObstacleFrame 发布的真实显示框）也不改变卡片外框", async () => {
     publishChatFrame({ x: VIEW_LEFT + 100, y: VIEW_TOP + 100, w: 800, h: 1500 }, false);
     store.board = board([mkCard("c1", 200, 300)]);
     const view = mountCanvas();
     store.toggleCardPreview("c1");
     await nextTick();
-    const slot = rectOfCard(view, "c1");
-    // 展开卡被拉进可用区，绝不压在对话窗口上
-    expect(slot.x).toBe(900);
-    expect(overlaps(slot, { x: 100, y: 100, w: 800, h: 1500 })).toBe(false);
+    expect(rectOfCard(view, "c1")).toEqual({ x: 200, y: 300, w: 120, h: 80 });
     resetChatFrameState();
   });
 });
@@ -383,13 +405,20 @@ describe("组框与关系线继续走同一份显示坐标", () => {
 });
 
 describe("源码守卫：新行为在生产路径上真的被启用", () => {
-  it("BoardCanvas 给 planExpandedLayout 传了 expandedAvoid 与真实 stageOrigin", () => {
+  it("BoardCanvas 不再把视野 / 展开尺寸 / 让位开关喂给卡片几何（F1）", () => {
     const text = source("components/interactive/BoardCanvas.vue");
-    expect(text).toContain("expandedAvoid: true");
-    expect(text).toContain("stageOrigin: boardRegion.value.origin");
+    expect(text).not.toContain("planExpandedLayout");
+    expect(text).not.toContain("expandedAvoid");
+    expect(text).not.toContain("EXPANDED_PREVIEW_SIZE");
+    expect(text).not.toContain("stageOrigin");
+    expect(text).not.toContain("userSizedCards");
+    expect(text).not.toContain("resizeAreaFor");
+    // 统一几何服务在生产路径上真的被用（尺寸提交 / 预览共用一个入口）
+    expect(text).toContain("resolvePlacement(");
+    expect(text).toContain("BoardResizeLayer");
+    // 浮层量测仍在（可用区域仍发布给「添加」菜单），但不再参与卡片几何
     expect(text).toContain("chatObstacleFrame()");
     expect(text).toContain("board-toolbar");
-    expect(text).toContain("BoardResizeLayer");
   });
 
   it("尺寸提交只走 updateCard + 「调整卡片尺寸」，不碰 previewDrop / dropCard / bestMergeTarget", () => {

@@ -284,7 +284,7 @@ describe("A 连接点归属与定位（jsdom 可判的部分）", () => {
     expect(wrapper.findAll('[data-im="connect-point"]')).toHaveLength(0);
   });
 
-  it("展开 / 让位后连接点跟随显示矩形（不是正式位置）", async () => {
+  it("展开后连接点仍按正式矩形定位（F1：没有第二套显示矩形）", async () => {
     setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0), mkCard("b", 700, 0)] });
     const wrapper = mountCanvas();
     await select(wrapper, "b");
@@ -292,7 +292,7 @@ describe("A 连接点归属与定位（jsdom 可判的部分）", () => {
     store.toggleCardPreview("b");
     await wrapper.vm.$nextTick();
     const after = displayRectOf(wrapper, "b")!;
-    expect(after.w > before.w + 20 || after.h > before.h + 20, "展开后显示矩形应放大（前置条件）").toBe(true);
+    expect(after, "展开不得改变显示矩形").toEqual(before);
     // 缩到 50%：scale ≠ 1 时「宿主 = displayRect × scale」才有区分度
     (wrapper.get(".board-viewport").element as HTMLElement).dispatchEvent(wheel(400, 300, 462));
     await wrapper.vm.$nextTick();
@@ -340,7 +340,7 @@ describe("A 连接点归属与定位（jsdom 可判的部分）", () => {
   });
 });
 
-describe("B hitCardAt 必须用当前显示矩形（展开后旧位置不命中）", () => {
+describe("B hitCardAt 必须用当前显示矩形（展开不产生第二套位置）", () => {
   let store: ReturnType<typeof useInteractiveStore>;
   const mounted: VueWrapper[] = [];
 
@@ -374,18 +374,6 @@ describe("B hitCardAt 必须用当前显示矩形（展开后旧位置不命中�
     await wrapper.vm.$nextTick();
   }
 
-  function insideOutside(inside: { x: number; y: number; w: number; h: number }, outside: { x: number; y: number; w: number; h: number }) {
-    for (let gy = 0.1; gy <= 0.91; gy += 0.2) {
-      for (let gx = 0.1; gx <= 0.91; gx += 0.2) {
-        const p = { x: inside.x + inside.w * gx, y: inside.y + inside.h * gy };
-        const inOutside = p.x > outside.x - 4 && p.x < outside.x + outside.w + 4 && p.y > outside.y - 4 && p.y < outside.y + outside.h + 4;
-        const inInside = p.x > inside.x + 3 && p.x < inside.x + inside.w - 3 && p.y > inside.y + 3 && p.y < inside.y + inside.h - 3;
-        if (inInside && !inOutside) return p;
-      }
-    }
-    return null;
-  }
-
   async function expectTargetFor(wrapper: VueWrapper, fromId: string, source: { x: number; y: number }, probeBoard: { x: number; y: number }, scale: number) {
     const start = screenOf(source.x, source.y, scale);
     const point = wrapper.findAll('[data-im="connect-point"][data-card-id="' + fromId + '"]')[0];
@@ -411,7 +399,7 @@ describe("B hitCardAt 必须用当前显示矩形（展开后旧位置不命中�
     expect(hit, "未展开时目标卡中心必须命中 b（这条同时证明坐标换算没跑偏）").toBe("b");
   });
 
-  it("展开后：拖到「显示矩形内、正式矩形外」的点命中目标卡；旧位置不再命中", async () => {
+  it("展开后：显示矩形与正式矩形一致，卡内命中、卡外不命中", async () => {
     setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0, { w: 200, h: 120 }), mkCard("b", 800, 0, { w: 200, h: 120 })] });
     const wrapper = mountCanvas();
     await selectCard(wrapper, "a");
@@ -419,20 +407,15 @@ describe("B hitCardAt 必须用当前显示矩形（展开后旧位置不命中�
     store.toggleCardPreview("b");
     await wrapper.vm.$nextTick();
     const display = displayRectOf(wrapper, "b")!;
-    expect(display.w > official.w || display.h > official.h || display.x !== official.x || display.y !== official.y).toBe(true);
+    // F1：展开不再产生「比正式矩形更大」的第二套显示矩形
+    expect(display).toEqual(official);
 
-    const probeNew = insideOutside(display, official);
-    expect(probeNew, "展开矩形必须伸出正式矩形之外，否则该用例没有区分度").not.toBeNull();
-    const hitNew = await expectTargetFor(wrapper, "a", { x: 100, y: 60 }, probeNew!, 1);
-    expect(hitNew, "拖到显示矩形内（正式矩形外）必须命中 b").toBe("b");
+    const hitCenter = await expectTargetFor(wrapper, "a", { x: 100, y: 60 }, { x: 900, y: 60 }, 1);
+    expect(hitCenter, "拖到 b 的中心必须命中 b").toBe("b");
 
-    const probeOld = insideOutside(official, display);
-    if (probeOld) {
-      const hitOld = await expectTargetFor(wrapper, "a", { x: 100, y: 60 }, probeOld, 1);
-      expect(hitOld, "旧位置已经不在显示矩形里，就不能再命中 b").not.toBe("b");
-    } else {
-      console.log("[note] 展开矩形完全包含正式矩形，没有「旧位置」可用；命中用显示矩形已由上一条证明");
-    }
+    // b 的右边界是 1000：卡外一点不命中任何卡片
+    const hitOutside = await expectTargetFor(wrapper, "a", { x: 100, y: 60 }, { x: 1100, y: 60 }, 1);
+    expect(hitOutside, "卡外不应命中任何卡片").not.toBe("b");
   });
 
   it("缩小画布（50%）后命中仍按同一套换算（不重复乘除 scale）", async () => {
