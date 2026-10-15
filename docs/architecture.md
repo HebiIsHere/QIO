@@ -1268,7 +1268,8 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 | 预览渲染器（前端） | `frontend/src/interactive/renderers/` | 各格式独立模块、动态 import：图片 / PDF / docx / xlsx / pptx / 代码 |
 | 预览计划（前端） | `frontend/src/interactive/previewPlan.ts` | 纯函数：把卡片与渲染状态翻成「用什么渲染、为什么不能渲染、有哪些入口」 |
 | 卡片内预览组件 | `frontend/src/components/interactive/CardInlinePreview.vue` | 在原卡片内渲染预览；中止在途工作、释放资源、迟到结果丢弃 |
-| 临时布局（前端） | `frontend/src/interactive/cardLayout.ts` | 纯函数：展开矩形与让位槽位；不改板面状态、不产生表达 |
+| 卡片几何（前端） | `frontend/src/interactive/geometry.ts` | 纯函数：统一的落点 / 尺寸约束（`resolvePlacement` 的 free / bounded 两种策略、`clampCardSize`、`placeRelative`）；拖动、拉伸、QIO 新建与移动、审批预览共用这一套 |
+| 临时布局（前端，2026-10-15 起为恒等映射） | `frontend/src/interactive/cardLayout.ts` | 纯函数：正式几何的唯一算术。`planExpandedLayout` 恒等映射（`slots` 逐字段等于 `card.x/y/w/h`、`displaced` 恒空）——展开只切卡内呈现，不再放大与让位；不改板面状态、不产生表达 |
 
 ### 15.2 数据模型（只追加迁移）
 
@@ -1286,9 +1287,9 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 1. **未许可 = 整体不可见**：未许可的文字卡（含其中的链接地址与代码正文）不进入提交载荷、
    不进入材料解析、不进入模型请求；遗留 `code` / `url` 卡在迁移完成前一律不可见。
 2. **许可持续有效**：提交不取消许可；`checkedCleared` 恒为空数组（字段保留以兼容旧前端）。
-3. **预览 ≠ 模型已读**：展开、翻页、缩放、让位都不触发模型、不产生分组、不暂停任务，
+3. **预览 ≠ 模型已读**：展开、翻页、缩放、平移都不触发模型、不产生分组、不暂停任务，
    也不改变「模型是否已读到正文」这一事实。
-4. **临时布局只影响显示**：卡片坐标与板面版本号在展开前后完全不变。
+4. **正式几何是唯一权威**（2026-10-15 第十三轮起）：`card.x/y/w/h` 是卡片外框的唯一来源；画布缩放 / 平移、窗口变化、聊天窗口与工具栏开合、审批浮层开合**只**影响查看方式与浮层自身布局，不改变卡片坐标、尺寸、组成员与成员顺序；展开阅读只切卡内内容、不改外框；卡片可以大于视野或部分在屏外，只有用户明确点击「定位／完整查看」时才一次性调整视野。见 `docs/interactive-mode-contract.md` §17。
 5. **五件事分开报告**：附件已保存 / 预览可用 / 内容已处理 / 已交付模型 / 回答已完成。
 6. **能力以本次真实链路为准**：适配器声明 `supports_images` / `supports_audio` /
    `supports_video` / `audio_transcription`；没有能力时如实降级，绝不静默改用用户未配置的外部服务。
