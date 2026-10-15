@@ -33,6 +33,7 @@
 **第三十六轮：底部功能栏布局重构**（长说明不再参与主栏横向分配；行列关系按功能栏**实际可用宽度**分档而不是视口宽度；「上次提交结果 / 本次提交范围与改动 / 上次提交过程」三类面板互斥展开，见 P64）。核对方法见文末。
 **第三十七轮：图片展示简化**（图片统一为文件卡附件、常态即完整展示、取消卡片内展开预览与旧 `image` 卡片类型，
 见 P65）。核对方法见文末。
+**第三十八轮：结果卡 Markdown、几何权威化与续用协作**（卡片外框唯一权威、展开不再让卡片移位、统一落点与尺寸约束、结果卡 Markdown 与许可续用、批次内类型化临时引用、几何上下文、空间排序，见 P66）。核对方法见文末。
 
 ---
 
@@ -5099,3 +5100,69 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - 封面模式下卡片正文层不再接收指针（事件穿到封面与卡片本身），卡片正文里的交互只保留显式放行的子树
     （草稿 / 冲突提示、头部按钮）；本轮未做真机 Tauri 壳内复验。
 
+
+### P66 — 结果卡 Markdown、几何权威化与续用协作（2026-10-15 第三十八轮）
+
+- **Status：** completed
+- **Implementation：**
+  - 需求（用户在测试中确认的 P1 缺口 + 本轮集中修复）：①结果卡真正解析并显示 Markdown；
+    ②放大、平移、展开阅读与浮层变化不再让卡片自动移位、跳动或新重叠；③新建 / 移动卡片有可靠落点与尺寸保护；
+    ④QIO 获得获准范围内的几何信息，能提出有依据的相对布局；⑤用户许可后的结果卡可作为后续提交依据；
+    ⑥同一提交批次内新生成的卡片与组可被后续已批准操作引用；⑦用户要求实际排列时排序真的改变卡片位置。
+    契约见 `docs/interactive-mode-contract.md` §17（取代 §1.4 的 reply 行、§15.1 / §15.2 的临时槽位口径、§15.6 相关已知限制）。
+  - **F1 正式几何唯一权威**：`frontend/src/interactive/cardLayout.ts` 的 `planExpandedLayout` 退化为**恒等映射**
+    （`slots` 逐字段等于正式矩形、`displaced` 恒空）；删除 `expandedRect` 的视野夹取与
+    `displaceLegacy` / `displaceEnhanced` / `pushAway` / `candidateMove` / `MAX_DISPLACE_ROUNDS` 的生产用法；
+    `BoardCanvas.vue` 删除 `layoutPlan` / `expandedSlots` / `userSizedCards` / `isTemporaryDisplay` /
+    `previewRectOf` / `resizeAreaFor`，`BoardPreviewLayer.vue` 删除 `expandedSlots` 输入与 `preview-expanded` 容器。
+    缩放 / 平移 / 窗口变化 / 聊天窗口 / 工具栏 / 审批浮层开合不再改变卡片坐标、尺寸、组成员与成员顺序；
+    展开阅读只切卡内呈现；卡片可大于视野或部分在屏外；只有用户点击「定位／完整查看」时才一次性调整视野
+    （大卡只对齐左上角，不两边轮流对齐）。`EXPANDED_PREVIEW_SIZE` 标 deprecated 且无生产引用。
+  - **F2 统一几何约束服务**（新 `frontend/src/interactive/geometry.ts`）：`resolvePlacement`（拉伸走 bounded：
+    只把被拉伸的边停在邻卡边界 − 间距，绝不移动别的卡片；移动 / 新建走 free：确定性找附近空位）、
+    `clampCardSize`（180×96 .. 1600×1200，**视野不是上限**）、`placeRelative`。
+    拖动 / 拉伸期间关闭几何过渡，预览与提交共用同一入口（所见即所得）。
+  - **F3 结果卡 Markdown**：`frontend/src/components/interactive/BoardCard.vue` 的 `kind="reply"` 正文本体改用既有
+    `frontend/src/components/MarkdownContent.vue`（`source = card.content`，不传 reveal），支持标题 / 加粗 / 斜体 /
+    删除线 / 普通与有序列表 / **任务列表** / 引用 / 链接 / 行内代码 / 代码块 / 表格；
+    `card.content` 仍是 Markdown 原文，「复制原文」给完整原文，代码复制保留代码原文；历史普通文字结果照旧显示。
+    表格 / 代码 / 长链接不撑宽卡片、不引入横向滚动；沿用 `markdownPipeline` 转义与 `isSafeExternalUrl` 白名单。
+    结果撰写提示词明确允许用 Markdown 组织结果（`backend/src/agent/interactive/prompts.py`）。
+  - **F4 结果卡续用**：`models.CHECKABLE_KINDS` 加入 `reply`，`visible_except_deleted` 对结果卡取用户的
+    整卡许可（新结果卡默认未许可，许可持续有效，隐藏 / 删除 / 取消许可立即退出范围）；
+    `submission.diff_states` 引入 `result_added` / `result_updated`（载荷带正文与来源）；
+    `understanding.build_context` 交付可见结果卡的完整正文与 `meta.reply` 来源
+    （intentId / understandingId / executionId / updatedAt）。前端 `board.ts` / `submission.ts` /
+    `stores/interactive.ts` 同步许可判定、可见范围计数与勾选显示。
+  - **F5 批次内类型化临时引用**（`card:<symbol>` / `group:<symbol>`，裸符号按卡片）：
+    新增 / 成组操作可声明 `ref`，只能引用**同一意图内更早声明、类型正确**的符号；
+    `understanding._validate_operation` 先收集声明再校验引用（拒绝不存在 / 重复 / 前向 / 自引用 / 跨意图 /
+    类型错误 / 未获准）；正式对象 id 由服务端在 `execution.build_plan` 稳定分配，重复批准与重试不重复创建；
+    审批预览与执行后暴露同一份符号 → 正式对象映射。
+  - **F6 几何上下文**：提交载荷可带冻结视图（板面坐标的可见区域 + scale），
+    `understanding.build_context` 增加 `geometry{unit, unitNote, view, cards, groups}`，
+    **只覆盖本次获准范围**；量不到时如实为 `null`；纯缩放 / 平移 / 浮层变化不构成新意图、不调用模型。
+    画布在 `BoardCanvas.vue` 里发布 scale（`interactive/submission.ts` 的显示态桥）。
+  - **F7 新建落点与相对摆放**：新 `backend/src/agent/interactive/placement.py` 统一落点与尺寸
+    （默认 reply 320×240 / text 260×170；显式 `x/y` 生效且冲突时确定性找附近空位；省略时用
+    `place{relativeTo,side,gap}` 的相对摆放或冻结视图内的空白落点；**禁止默认 (0,0)**）；
+    审批预览与执行共用同一函数与同一冻结视图。
+  - **F8 两种排序**：`order_group` 不带 `arrange` 只改逻辑顺序（文案明确说明）；
+    带 `arrange:"row" | "column"` 时真实写入成员 `x/y` 并更新组框。
+- **Tests：** 前端 `frontend/src/interactive/__tests__/geometry.test.ts`（新增）、
+  `frontend/src/interactive/__tests__/c-continuity.test.ts`（新增）、
+  `frontend/src/components/interactive/__tests__/iml-b-reply-markdown.test.ts`（新增）、
+  `cardLayout.test.ts` / `board.test.ts` / `irl-c-layout.test.ts` /
+  `components/interactive/__tests__/{cardExpandLayout,irl-c-canvas,irl-verify-size-semantics,cardToolbarAnchor,fix025-connect-resize,fix025-independent-verify,irl-verify-panzoom-draft}.test.ts`
+  （按 §17 改写被否定的旧行为断言：展开放大与让位、视野夹取、视野上限、展开中只提交 `{w,h}`）。
+  后端 `backend/tests/test_interactive_{submission,understanding,execution,intents,board,verify}.py`、
+  `backend/tests/test_text_license.py`。完整前端与后端套件由 Lead 在集成完成后各跑一次。
+- **验证：** 全量前端与全量后端套件、`npx vue-tsc --noEmit`、`python scripts/check_docs.py` 由 Lead 执行；
+  真实浏览器验收（headless）由独立验收子任务执行，证据见 `_iml-evidence/`。
+- **Known limitations：**
+  - 结果卡正文没有前端展示层长度上限，因此没有前端截断标记；后端上下文对结果卡正文有上限并带
+    `textTruncated` 显式标记（前端不截断，故不会把围栏 / 列表 / 表格截成半段）。
+  - 拖动落点仍由 `frontend/src/interactive/board.ts` 的既有下落策略负责（为保留「拖到卡片上自动成组」
+    的显式分组语义）；`geometry.ts` 覆盖拉伸与新卡落点，QIO 移动 / 审批预览在服务端复用同口径。
+  - 本轮不扩展通用工具调用、不开放删除 / 隐藏 / 改用户已有卡片正文 / 替用户改许可，不纳入其他 P2 外观功能。
+  - 桌面壳（Tauri）内未复验；浏览器验收为无头 Chromium（受「不在桌面开窗」约束）。
