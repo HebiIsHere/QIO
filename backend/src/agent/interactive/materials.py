@@ -10,7 +10,8 @@
   用 `AttachmentService.content_target` 拿到真实路径，复用
   `agent/tools/attachment_tools.py` 的既有解析（文本 / CSV / HTML / DOCX / XLSX）；
   文件名与说明文字**不是正文**，绝不拿它们冒充内容；
-- 图片卡片：当前模型链路没有视觉能力 → `image_unsupported`，绝不声称看懂；
+- 图片（**文件卡的附件**）：本次链路有视觉能力就交付真实字节（`image_delivered`），
+  没有视觉能力就如实标 `image_unsupported`，绝不声称看懂；
 - 格式未实现 / 读取失败 → `unreadable` + 可读原因；
 - `max_chars` 截断如实置 `truncated=true`，并记录截断前已解析到的原始 `characters`。
 
@@ -53,7 +54,7 @@ DEFAULT_MAX_CHARS = 40000
 PARSER_CHAR_BUDGET = attachment_tools.MAX_CHARS
 _MAX_UNITS = 20000
 
-#: 文件 / 图片卡片里登记附件 id 的字段名
+#: 文件卡里登记附件 id 的字段名（图片是文件卡的附件，没有独立 kind）
 _ATTACHMENT_ID_KEYS = ("attachmentId", "attachment_id")
 
 #: 单张图片**交给模型**的字节上限。超过就不交付字节（如实说明原因、并给出尺寸与上限），
@@ -126,8 +127,8 @@ def resolve_images(
     """本次可见范围里**可以真正交给模型看**的图片（多模态交付）。
 
     与 `resolve_materials` 同一套可见性纪律（未勾选的注释 / 隐藏 / 已删除一律不读），
-    处理 `kind="image"` 的卡片，**以及 `kind="file"` 但附件是图片的卡片**（用户在板面上用「文件」
-    入口加一张 .png 也是图片，不该因为入口不同就拿不到画面），且 meta 里登记了**真实已保存附件**：
+    处理 `kind="file"` 且附件是图片的卡片（用户在板面上用「文件」入口加一张 .png 也是图片；
+    图片没有独立 kind —— 图片就是文件卡的附件），且 meta.file 里登记了**真实已保存附件**：
     返回的每一条都是「读了字节、能交给视觉模型」的条目 —— 读不到 / 类型不支持 / 超过上限的**不在这里**，
     而是在 `resolve_materials` 的条目里如实说明原因（调用方据此区分「没交付」与「交付了」）。
 
@@ -144,9 +145,9 @@ def resolve_images(
         return []
     out: list[dict] = []
     for card in _iter_cards(state, cards):
-        # 文件卡也要看：`_deliverable_image` 只认「可交付的图片类型」，
+        # 只处理**文件卡**：`_deliverable_image` 只认「可交付的图片类型」，
         # 所以对 docx / pdf 这类文件卡它天然返回 None，不会误交付。
-        if str(card.get("kind") or "") not in ("image", "file"):
+        if str(card.get("kind") or "") != "file":
             continue
         item = _deliverable_image(card, service=service, max_bytes=limit_bytes)
         if item is not None:
@@ -253,7 +254,7 @@ def resolve_media(
     返回 `{"entries": [...], "parts": [...], "work_dir": Path|None}`：
 
     * `entries`：每条音视频材料一条（`source` 取 §4.4 的八种之一），字段含
-      `read` / `reason` / `range` / `frames` / `engine`；图片卡的条目仍由
+      `read` / `reason` / `range` / `frames` / `engine`；图片（文件卡的附件）的条目仍由
       `resolve_materials` 负责，这里不重复报；
     * `parts`：**真的交付**的内容块（图片帧 → `ImagePart`，音频字节 → `AudioPart`）；
       没有能力 / 读不到字节时是空列表 —— 调用方据此区分「交付了」与「没交付」；
@@ -454,7 +455,7 @@ def _media_label(card: dict, att: Any, kind: str) -> str:
 
 
 def _media_attachment(card: dict, meta: dict, service: Any) -> Any:
-    raw_id = _attachment_id(meta, "file") or _attachment_id(meta, "image")
+    raw_id = _attachment_id(meta, "file")
     if not raw_id or service is None:
         return None
     return service.get(raw_id, check=False)
@@ -1216,9 +1217,12 @@ def _fallback_work_dir(card: dict) -> Path:
 
 
 def _deliverable_image(card: dict, *, service: Any, max_bytes: int) -> dict | None:
-    """这张图片卡能不能真的交付字节；不能就返回 None（原因由材料条目如实说明）。"""
+    """这张卡的**图片附件**能不能真的交付字节；不能就返回 None（原因由材料条目如实说明）。
+
+    只读 `meta.file`（旧 `meta.image` 回退已删除）：图片是文件卡的附件，没有独立 kind。
+    """
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
-    raw_id = _attachment_id(meta, "image") or _attachment_id(meta, "file")
+    raw_id = _attachment_id(meta, "file")
     if not raw_id:
         return None
     att = service.get(raw_id, check=False)
@@ -1353,8 +1357,7 @@ def _resolve_card(
         return _file_entry(
             card, label, meta, service=service, tool=tool, max_chars=max_chars, vision=vision
         )
-    if kind == "image":
-        return _image_entry(card, label, meta, service=service, vision=vision)
+    # 图片没有独立 kind（它是文件卡的附件）：kind="file" 在上一支里已经按附件类型分流。
     # 遗留 code / url 没有材料通道：迁移完成前整体不可见（models.visible_except_deleted）。
     return _entry(
         card,
@@ -1495,7 +1498,7 @@ def _attachment_entry(
         )
 
     if mode == "image":
-        # 图片走「文件」卡片（扩展名是图片）：与图片卡**共用同一份交付事实**，含 vision 判断。
+        # 图片走「文件」卡（扩展名是图片）：**只有这一份交付事实**，含 vision 判断。
         # 旧实现硬编码「当前模型链路没有视觉能力」且从不读字节 —— 链路其实有视觉能力时，
         # 那句话是假话，用户也永远拿不到画面（2026-10-13 复审指出）。
         return _image_fact(card, att, raw_id=att.id, label=label, vision=vision)
@@ -1599,28 +1602,6 @@ def _attachment_entry(
     )
 
 
-def _image_entry(
-    card: dict,
-    label: str,
-    meta: dict,
-    *,
-    service: AttachmentService | None,
-    vision: bool = False,
-    max_image_bytes: int = MAX_IMAGE_BYTES,
-) -> dict:
-    """图片卡片：能交付就如实说「字节已交给模型」，不能就如实说为什么不能。
-
-    `vision=True` 表示**本次模型链路支持多模态**（适配器声明）；此时真正读了字节的图片
-    记成 `image_delivered`（read=True，说明模型自己看），其余情况一律 `image_unsupported`
-    并带上可读原因（没有登记附件 / 附件不在 / 类型不支持 / 超过字节上限）。
-    """
-    raw_id = _attachment_id(meta, "image") or _attachment_id(meta, "file")
-    att = service.get(raw_id, check=False) if (service is not None and raw_id) else None
-    return _image_fact(
-        card, att, raw_id=raw_id, label=label, vision=vision, max_image_bytes=max_image_bytes
-    )
-
-
 def _image_fact(
     card: dict,
     att: Attachment | None,
@@ -1630,7 +1611,7 @@ def _image_fact(
     vision: bool,
     max_image_bytes: int = MAX_IMAGE_BYTES,
 ) -> dict:
-    """图片的交付事实：**图片卡与「文件卡里的图片」共用同一份判断与措辞**。
+    """图片附件的交付事实：**文件卡里的图片只有这一份判断与措辞**。
 
     拆出来是为了不再出现「同一个事实两套说法」：文件卡里的图片以前是硬编码的
     「当前模型链路没有视觉能力」——在链路其实有视觉能力时，那是一句假话（2026-10-13 复审指出）。
@@ -1692,13 +1673,13 @@ def _image_fact(
             ],
         )
 
-    # 后面的三种原因都基于 raw_id / att，与 `_image_entry` 的入参无关。
+    # 后面的三种原因都基于 raw_id / att（调用方已经决定要读哪份附件），不依赖调用方的其余入参。
     # 没有视觉能力时的**主原因**必须点明「视觉能力」；具体是哪一种拿不到字节写进 notes。
     # （这样既保持诚实口径可机械核对，又不会把「还没有附件」笼统说成「模型看不见」）
     if not raw_id:
         reason = "当前模型链路没有视觉能力：只登记图片元数据，不声称看懂图片内容"
         notes = [
-            "这张图片卡片还没有关联已保存的附件（meta.image.attachmentId 缺失）："
+            "这张卡片还没有关联已保存的附件（meta.file.attachmentId 缺失）："
             "没有可读的字节；文件名不是内容",
         ]
     elif att is None:
@@ -1774,7 +1755,11 @@ def _content_path(
 
 
 def _attachment_id(meta: dict, key: str) -> str:
-    """从卡片 meta 里取已保存附件 id：`meta.file.attachmentId` / `meta.image.attachmentId`。"""
+    """从卡片 meta 的指定块里取已保存附件 id（文件卡就是 `meta.file.attachmentId`）。
+
+    只认传进来的块名（旧 `meta.image` 回退已删除）：缺块时如实返回空串，
+    由调用方给出「没有关联已保存的附件」的真实原因。
+    """
     block = meta.get(key)
     if isinstance(block, dict):
         for name in _ATTACHMENT_ID_KEYS:
@@ -1839,8 +1824,8 @@ def _label(card: dict) -> str:
     meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
     if kind == "text":
         return _snippet(card.get("content"))
-    if kind in ("file", "image"):
-        block = meta.get(kind) if isinstance(meta.get(kind), dict) else {}
+    if kind == "file":
+        block = meta.get("file") if isinstance(meta.get("file"), dict) else {}
         return _snippet(
             block.get("name") or block.get("title") or meta.get("name") or meta.get("title")
             or card.get("content")

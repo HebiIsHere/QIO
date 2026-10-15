@@ -520,8 +520,8 @@ describe("卡片：添加 / 编辑 / 删除 / 复制", () => {
     // 2026-10-14 第十个问题：新建文字卡默认**提交给 QIO**（可取消）
     expect(state.cards[0].checked).toBe(true);
     expect(state.cards[0].deleted).toBe(false);
-    // CARD_KINDS 保留全部旧取值：历史数据与导入文件仍然能读（新建入口另见 ADDABLE_CARD_KINDS）
-    // 2026-10-14：image 是遗留取值，归一化时迁移成 file（第九个问题），不再单独出现
+    // 卡片种类仍保留历史取值：历史数据与导入文件仍然能读（新建入口另见 ADDABLE_CARD_KINDS）
+    // 2026-10-15：类型里不再有 image（图片是文件卡的附件）；遗留 kind=image 按未知 kind 兜底成 text
     for (const kind of ["file", "code", "url", "reply"] as CardKind[]) {
       state = board.addCard(state, { kind, content: "x" });
     }

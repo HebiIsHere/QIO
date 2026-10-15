@@ -71,7 +71,7 @@ def migrate_card(card: dict) -> tuple[dict, bool]:
         return card, False
     kind = str(card.get("kind") or "")
     if kind not in ("code", "url", "text"):
-        # 其他 kind（file / image / reply / 未知）原样不动
+        # 其他 kind（file / reply / 未知）原样不动
         return card, False
 
     meta = _meta_of(card)

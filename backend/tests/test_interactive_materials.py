@@ -5,7 +5,7 @@
 - 只有真的读到正文才是 attachment_text / inline，且 read=true；
 - 文件名、文件说明、网址本身**都不是正文**；
 - 契约 §2.2 新规则：code / url **不再是材料通道**（遗留卡片迁移完成前整体不可见）；
-- 图片 → image_unsupported（当前模型链路没有视觉能力）；
+- 图片（文件卡的图片附件）→ 没有视觉能力时 image_unsupported，绝不声称看懂；
 - 不可读格式 / 读取失败 → unreadable + 可读原因（不假装读过）；
 - max_chars 截断如实置 truncated=true，characters 记截断前的原始字数；
 - 未勾选注释 / 隐藏 / 已删除的卡片绝不进材料。
@@ -285,13 +285,15 @@ def test_csv_and_html_reuse_existing_parsing(db_conn, svc, tmp_path):
     assert "bad()" not in html_entry["text"], "脚本内容不得当成正文"
 
 
-# -- 图片：没有视觉能力 -----------------------------------------------------
+# -- 图片（文件卡的图片附件）：没有视觉能力时如实标注 ------------------------
 
 
-def test_image_card_is_image_unsupported(db_conn, svc, tmp_path):
+def test_file_card_with_image_extension_is_image_unsupported(db_conn, svc, tmp_path):
     png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
     att = _ready(svc, tmp_path, "截图.png", png)
-    card = models.new_card("image", "", meta={"image": {"name": "截图.png", "attachmentId": att.id}})
+    card = models.new_card(
+        "file", "", meta={"file": {"name": "截图.png", "attachmentId": att.id}}
+    )
     entry = materials.resolve_materials(
         db_conn, state=_state(card), cards=[card], attachments=svc
     )[0]
@@ -302,13 +304,28 @@ def test_image_card_is_image_unsupported(db_conn, svc, tmp_path):
     assert entry["attachmentId"] == att.id
 
 
-def test_file_card_with_image_extension_is_image_unsupported(db_conn, svc, tmp_path):
-    att = _ready(svc, tmp_path, "图.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
-    card = models.new_card("file", "", meta={"file": {"name": "图.png", "attachmentId": att.id}})
+def test_legacy_meta_image_is_not_read_any_more(db_conn, svc, tmp_path):
+    """旧卡片把附件登记在 meta.image：这条回退已删除，只认 meta.file。
+
+    不读旧结构里的附件 id 才不会「悄悄」把一张卡当成读了正文；
+    没有 meta.file 时如实说「没有关联已保存的附件」。
+    """
+    att = _ready(svc, tmp_path, "旧图.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+    card = models.new_card(
+        "file",
+        "",
+        meta={"name": "旧图.png", "image": {"name": "旧图.png", "attachmentId": att.id}},
+    )
     entry = materials.resolve_materials(
         db_conn, state=_state(card), cards=[card], attachments=svc
     )[0]
-    assert entry["source"] == "image_unsupported" and entry["read"] is False
+    assert entry["source"] == "unreadable"
+    assert entry["read"] is False and entry["text"] == ""
+    assert entry["attachmentId"] is None, "只认 meta.file：不得回退到 meta.image 的附件"
+    assert "meta.file.attachmentId 缺失" in entry["reason"]
+    assert materials.resolve_images(
+        db_conn, state=_state(card), cards=[card], attachments=svc
+    ) == []
 
 
 # -- 遗留 code / url：不再是材料通道（契约 §2.2 新规则） ---------------------

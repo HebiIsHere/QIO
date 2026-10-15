@@ -18,11 +18,12 @@ from typing import Any, Iterable
 DEFAULT_BOARD_ID = "board_default"
 DEFAULT_BOARD_TITLE = "互动板面"
 
-CARD_KINDS = ("text", "file", "image", "code", "url", "reply")
+CARD_KINDS = ("text", "file", "code", "url", "reply")
 #: 材料类卡片：添加材料本身不等于要求总结 / 比较 / 修改 / 执行。
 #: 统一文字卡（契约 §2.2）：code / url **不再**是材料通道 —— 卡内文字、链接与代码
 #: 一律通过**整卡许可**的文字卡交付；遗留 code / url 卡在迁移完成前整体不可见。
-MATERIAL_KINDS = ("file", "image")
+#: 图片不再有独立 kind：它是**文件卡的附件**（meta.file），交付口径见 materials.resolve_images。
+MATERIAL_KINDS = ("file",)
 #: 遗留字符类卡片（迁移前的历史 kind）：仍可读，但绝不回退成可见 / 可交付材料。
 LEGACY_TEXT_CARD_KINDS = ("code", "url")
 #: 注释由文字卡片构成；问题、说明、态度、优先级、任务要求统一通过注释表达
@@ -234,8 +235,8 @@ def selectable_cards(state: dict) -> list[dict]:
 
     - 文字注释（text）：默认未勾选；**未勾选 = QIO 完全看不到它的文字与注释链接**，
       包括提交的前后状态；
-    - 材料（file / image / code / url）：默认在范围内（添加材料不等于要求总结、比较、
-      修改或执行，那是意图问题，不是可见性问题）；
+    - 材料（file）：默认在范围内（添加材料不等于要求总结、比较、修改或执行，
+      那是意图问题，不是可见性问题）；图片是**文件卡的附件**，不单独成 kind；
     - 任何卡片被明确隐藏（hidden）都退出讨论范围；
     - `reply` 卡片是 QIO 自己的结果，不是用户的表达，不进提交载荷；
     - 已删除的卡片不进范围。
@@ -305,7 +306,7 @@ MATERIAL_SOURCES = (
     "url_fetched",       # 实际抓取并读到网页正文
     "url_address_only",  # 只有地址，没有读到正文
     "image_delivered",   # 图片：本次**真的把字节交给了模型**（多模态），由模型自己看
-    "image_unsupported", # 图片：当前模型链路没有视觉能力，如实标注
+    "image_unsupported", # 图片：本次没有把字节交给模型（没有视觉能力 / 读不到 / 超上限），如实标注
     # 多媒体（契约 §4.4）：音频 / 视频的诚实事实与图片同一套口径，绝不混为一谈
     "audio_delivered",   # 音频字节已交给模型
     "audio_transcribed", # 音频经派生转写得到文字（带 transcript / 时段 / 提供方）

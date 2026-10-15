@@ -93,22 +93,21 @@ describe("N6 打开编辑器时恢复完整未完成输入", () => {
     expect(value(w, '[data-im="card-meta-title"]')).toBe("未完成标题");
   });
 
-  it("file 卡片：名称恢复（不是正式卡片上的旧名）", async () => {
+  /*
+    图片统一是 kind="file" + meta.file 附件（本轮简化）：旧 kind="image" 卡片的名称恢复用例
+    已随类型收敛一起删除，图片附件走同一条「文件卡名称恢复」路径。
+  */
+  it("file 卡片（含图片附件）：名称恢复（不是正式卡片上的旧名）", async () => {
     seedInput("c1", "材料说明", { name: "新文件名.pdf" });
     const w = mount(BoardCard, {
-      props: props({ kind: "file", content: "材料说明", meta: { name: "旧文件名.pdf" } }),
+      props: props({
+        kind: "file",
+        content: "材料说明",
+        meta: { name: "旧文件名.pdf", file: { name: "旧文件名.pdf", attachmentId: "att_1", size: 1024 } },
+      }),
     });
     await openEditor(w);
     expect(value(w, '[data-im="card-meta-name"]')).toBe("新文件名.pdf");
-  });
-
-  it("image 卡片：图片名恢复", async () => {
-    seedInput("c1", "", { name: "新图.png" });
-    const w = mount(BoardCard, {
-      props: props({ kind: "image", content: "", meta: { name: "旧图.png" } }),
-    });
-    await openEditor(w);
-    expect(value(w, '[data-im="card-meta-name"]')).toBe("新图.png");
   });
 
   it("code 卡片：语言恢复", async () => {

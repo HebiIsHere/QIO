@@ -10,11 +10,19 @@
  *   释放     → 组件卸载时 revoke 缩略图 blob URL 并清掉 img.src；
  *   失败 / 超限 → 显示原因，不留空白。
  *
+ * 本轮新增（图片展示简化）：封面变体（variant="cover"）承担**完整**的图片展示 ——
+ * object-fit: contain、无大面积蒙版、不重复文件名、只有真实说明才渲染一行；
+ * 入口文案与真实动作一致（action === "view" 且是可预览图片 →「查看原图」）；
+ * 解码失败（img 的 error 事件）也要给原因 + 重试 / 查看原图 / 重新关联。
+ *
  * 模拟边界：真实组件 + 真实 attachmentPreview 模块；只替换「网络」与「Tauri 命令」两个边界。
  * 附件服务用 importOriginal 保留全部真实实现，仅替换 fetchAttachmentContent（假字节）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { nextTick } from "vue";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(async () => undefined),
@@ -37,14 +45,35 @@ type PreviewProps = {
   meta: Record<string, unknown> | null;
   cardId?: string;
   open?: (ref: AttachmentRef, options: { desktop: boolean }) => Promise<AttachmentOpenResult>;
+  compact?: boolean;
+  variant?: "default" | "cover";
+  desc?: string;
 };
 
-function imageCard(extra: Record<string, unknown> = {}): PreviewProps {
+const SRC = resolve(process.cwd(), "src");
+const previewSource = readFileSync(resolve(SRC, "components/interactive/CardAttachmentPreview.vue"), "utf8");
+
+/** 某个选择器的规则块（第一个匹配），与同目录既有用例同一套读法。 */
+function cssBlock(text: string, selector: string): string {
+  const start = text.indexOf(selector);
+  expect(start, "找不到选择器 " + selector).toBeGreaterThan(-1);
+  const open = text.indexOf("{", start);
+  const close = text.indexOf("}", open);
+  return text.slice(open + 1, close);
+}
+
+/** 图片附件的文件卡：图片统一是 kind="file" + meta.file（不再有 kind="image" 卡片）。 */
+function imageFileCard(block: Record<string, unknown> = {}): PreviewProps {
+  const name = typeof block.name === "string" ? block.name : "示意图.png";
   return {
-    kind: "image",
-    meta: { name: "示意图.png", image: { name: "示意图.png", attachmentId: "att_img", size: 2048, ...extra } },
+    kind: "file",
+    meta: { name, file: { name, attachmentId: "att_img", size: 2048, ...block } },
     cardId: "c1",
   };
+}
+
+function coverImageFileCard(block: Record<string, unknown> = {}): PreviewProps {
+  return { ...imageFileCard(block), variant: "cover" };
 }
 
 function fileCard(name: string, id = "att_file"): PreviewProps {
@@ -92,7 +121,7 @@ afterEach(() => {
 
 describe("有关联：图片缩略图走带认证 fetch + blob URL", () => {
   it("渲染缩略图：img 的 src 是 blob URL，加载完不留「正在读取」的占位", async () => {
-    const wrapper = mount(CardAttachmentPreview, { props: imageCard() });
+    const wrapper = mount(CardAttachmentPreview, { props: imageFileCard() });
     await flushPromises();
 
     expect(mocks.fetchAttachmentContent).toHaveBeenCalledWith("att_img");
@@ -121,7 +150,7 @@ describe("有关联：图片缩略图走带认证 fetch + blob URL", () => {
 
   it("读字节失败：如实显示原因，不显示空白缩略图", async () => {
     mocks.fetchAttachmentContent.mockRejectedValue(new Error("401：本机 API 拒绝了这次请求"));
-    const wrapper = mount(CardAttachmentPreview, { props: imageCard() });
+    const wrapper = mount(CardAttachmentPreview, { props: imageFileCard() });
     await flushPromises();
 
     expect(wrapper.find('[data-im="card-attachment-thumb"]').exists()).toBe(false);
@@ -132,12 +161,9 @@ describe("有关联：图片缩略图走带认证 fetch + blob URL", () => {
   });
 
   it("meta 中的 size 超过缩略图上限：不请求、说清原因（不假装加载中）", async () => {
-    const props: PreviewProps = {
-      kind: "image",
-      meta: { image: { name: "巨图.png", attachmentId: "att_big", size: 999_000_000 } },
-      cardId: "c1",
-    };
-    const wrapper = mount(CardAttachmentPreview, { props });
+    const wrapper = mount(CardAttachmentPreview, {
+      props: imageFileCard({ name: "巨图.png", attachmentId: "att_big", size: 999_000_000 }),
+    });
     await flushPromises();
 
     expect(mocks.fetchAttachmentContent).not.toHaveBeenCalled();
@@ -150,8 +176,8 @@ describe("有关联：图片缩略图走带认证 fetch + blob URL", () => {
 describe("无关联：诚实文案，一个请求都不发", () => {
   it("没有 attachmentId：没有缩略图与按钮，文案说清读不到正文", async () => {
     const wrapper = mount(CardAttachmentPreview, {
-      // 名字写在 meta.image 里（卡片真实形状），但没有 attachmentId
-      props: { kind: "image", meta: { image: { name: "只有名字.png" } }, cardId: "c1" },
+      // 名字写在 meta.file 里（卡片真实形状），但没有 attachmentId
+      props: { kind: "file", meta: { file: { name: "只有名字.png" } }, cardId: "c1" },
     });
     await flushPromises();
 
@@ -172,6 +198,7 @@ describe("无关联：诚实文案，一个请求都不发", () => {
   it("非材料卡片（text）根本不渲染这个区域", () => {
     const wrapper = mount(CardAttachmentPreview, { props: { kind: "text", meta: {}, cardId: "c1" } });
     expect(wrapper.find('[data-im="card-attachment-preview"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="card-cover"]').exists()).toBe(false);
     wrapper.unmount();
   });
 });
@@ -276,9 +303,132 @@ describe("浏览器回退：带认证 fetch + blob 新标签页", () => {
   });
 });
 
+describe("封面变体：完整等比展示 + 小条蒙版 + 真实说明", () => {
+  it("封面图 object-fit: contain（等比完整显示，不拉伸不裁切），图片层不吃指针事件", () => {
+    const img = cssBlock(previewSource, ".cover-img {");
+    expect(img).toContain("object-fit: contain");
+    expect(img).not.toContain("object-fit: cover");
+    expect(img).toContain("pointer-events: none");
+    expect(img).toContain("user-select: none");
+    expect(img).toContain("-webkit-user-drag: none");
+    expect(previewSource).toContain('draggable="false"');
+  });
+
+  it("封面层填满卡片、overflow: hidden（不产生横纵滚动条），且不再有大面积蒙版", () => {
+    const layer = cssBlock(previewSource, ".card-cover {");
+    expect(layer).toContain("inset: 0");
+    expect(layer).toContain("overflow: hidden");
+    expect(layer).toContain("pointer-events: none");
+    // 旧的两条 42% 蒙版已删除；蒙版只贴在文字 / 按钮后面的小条上
+    expect(previewSource).not.toContain(".cover-scrim");
+    expect(previewSource).not.toContain("height: 42%");
+    // 常驻占位文案已删除
+    expect(previewSource).not.toContain("图片：还没有补充说明");
+  });
+
+  it("封面：真实图片渲染 + 入口叫「查看原图」（plan.action === \"view\" 且是图片）", async () => {
+    const wrapper = mount(CardAttachmentPreview, { props: coverImageFileCard() });
+    await flushPromises();
+
+    const img = wrapper.get('[data-im="card-cover-img"]');
+    expect(img.attributes("src")).toBe("blob:qio-card-1");
+    expect(img.attributes("alt")).toBe("");
+    expect(wrapper.get('[data-im="card-cover-open"]').text()).toBe("查看原图");
+    // 不重复文件名（文件名已经在卡片头部）
+    expect(wrapper.text()).not.toContain("示意图.png");
+    wrapper.unmount();
+  });
+
+  it("封面说明：只有真实说明才渲染一行；没有说明时不留占位文字", async () => {
+    const withDesc = mount(CardAttachmentPreview, {
+      props: { ...coverImageFileCard(), desc: "补充说明一行" },
+    });
+    await flushPromises();
+    expect(withDesc.get('[data-im="card-cover-desc"]').text()).toContain("补充说明一行");
+    withDesc.unmount();
+
+    const withoutDesc = mount(CardAttachmentPreview, { props: coverImageFileCard() });
+    await flushPromises();
+    expect(withoutDesc.find('[data-im="card-cover-desc"]').exists()).toBe(false);
+    expect(withoutDesc.text()).not.toContain("还没有补充说明");
+    withoutDesc.unmount();
+  });
+
+  it("封面也按真实动作命名：可执行类在浏览器里是「下载副本」，不是「查看原图」", async () => {
+    const wrapper = mount(CardAttachmentPreview, {
+      props: { ...fileCard("deploy.ps1"), variant: "cover" },
+    });
+    await flushPromises();
+    expect(wrapper.get('[data-im="card-cover-open"]').text()).toBe("下载副本");
+    wrapper.unmount();
+  });
+
+  it("解码失败：原图片区域给原因，并出现重试 / 查看原图 / 重新关联", async () => {
+    const wrapper = mount(CardAttachmentPreview, { props: coverImageFileCard() });
+    await flushPromises();
+    const img = wrapper.get('[data-im="card-cover-img"]');
+    expect(img.attributes("src")).toBe("blob:qio-card-1");
+
+    await img.trigger("error");
+    await nextTick();
+
+    expect(wrapper.find('[data-im="card-cover-img"]').exists(), "解不开的图片还挂在画面上").toBe(false);
+    const broken = wrapper.get('[data-im="card-cover-failed"]');
+    expect(broken.text()).toMatch(/解不开|损坏/);
+    expect(wrapper.find('[data-im="card-cover-retry"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="card-cover-original"]').exists()).toBe(true);
+    expect(wrapper.find('[data-im="card-cover-relink"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("重试：重新走既有预览 blob 加载，释放旧 URL，只留一个新 URL", async () => {
+    const wrapper = mount(CardAttachmentPreview, { props: coverImageFileCard() });
+    await flushPromises();
+    expect(created).toEqual(["blob:qio-card-1"]);
+    await wrapper.get('[data-im="card-cover-img"]').trigger("error");
+    await nextTick();
+
+    mocks.fetchAttachmentContent.mockClear();
+    await wrapper.get('[data-im="card-cover-retry"]').trigger("click");
+    await flushPromises();
+
+    expect(mocks.fetchAttachmentContent).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchAttachmentContent).toHaveBeenCalledWith("att_img");
+    expect(revoked).toContain("blob:qio-card-1");
+    expect(created).toHaveLength(2);
+    expect(wrapper.get('[data-im="card-cover-img"]').attributes("src")).toBe("blob:qio-card-2");
+    wrapper.unmount();
+  });
+
+  it("重新关联：emit relink-attachment（由卡片用既有 pickAttachment 处理）", async () => {
+    mocks.fetchAttachmentContent.mockRejectedValue(new Error("文件丢失：附件不在了"));
+    const wrapper = mount(CardAttachmentPreview, { props: coverImageFileCard() });
+    await flushPromises();
+
+    expect(wrapper.find('[data-im="card-cover-relink"]').exists()).toBe(true);
+    await wrapper.get('[data-im="card-cover-relink"]').trigger("click");
+    expect(wrapper.emitted("relink-attachment")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("查看原图（封面里的失败入口）走同一条 openAttachment", async () => {
+    mocks.fetchAttachmentContent.mockRejectedValue(new Error("读字节失败"));
+    const injected = vi.fn(async () => ({ action: "view" as const, note: "已交给浏览器在新标签页打开" }));
+    const props: PreviewProps = { ...coverImageFileCard(), open: injected };
+    const wrapper = mount(CardAttachmentPreview, { props });
+    await flushPromises();
+
+    await wrapper.get('[data-im="card-cover-original"]').trigger("click");
+    await flushPromises();
+    expect(injected).toHaveBeenCalledTimes(1);
+    expect(wrapper.get('[data-im="card-attachment-open-status"]').text()).toContain("新标签页");
+    wrapper.unmount();
+  });
+});
+
 describe("blob 释放：卸载不留 URL", () => {
   it("卸载时 revoke 缩略图 blob URL 并清掉 img.src", async () => {
-    const wrapper = mount(CardAttachmentPreview, { props: imageCard() });
+    const wrapper = mount(CardAttachmentPreview, { props: imageFileCard() });
     await flushPromises();
     const img = wrapper.get('[data-im="card-attachment-thumb"]');
     expect(img.attributes("src")).toBe("blob:qio-card-1");
@@ -290,10 +440,18 @@ describe("blob 释放：卸载不留 URL", () => {
     expect(img.attributes("src")).toBeUndefined();
   });
 
-  it("同一张卡片重复渲染不会重复取字节 / 重复建 URL", async () => {
-    const wrapper = mount(CardAttachmentPreview, { props: imageCard() });
+  it("封面变体卸载时同样释放（只持有一个 blob URL）", async () => {
+    const wrapper = mount(CardAttachmentPreview, { props: coverImageFileCard() });
     await flushPromises();
-    await wrapper.setProps({ meta: { ...imageCard().meta, extra: 1 } });
+    expect(created).toEqual(["blob:qio-card-1"]);
+    wrapper.unmount();
+    expect(revoked).toEqual(["blob:qio-card-1"]);
+  });
+
+  it("同一张卡片重复渲染不会重复取字节 / 重复建 URL", async () => {
+    const wrapper = mount(CardAttachmentPreview, { props: imageFileCard() });
+    await flushPromises();
+    await wrapper.setProps({ meta: { ...imageFileCard().meta, extra: 1 } });
     await flushPromises();
 
     expect(mocks.fetchAttachmentContent).toHaveBeenCalledTimes(1);
@@ -302,12 +460,12 @@ describe("blob 释放：卸载不留 URL", () => {
   });
 
   it("换成另一个附件：先释放上一个 URL，再建新的", async () => {
-    const wrapper = mount(CardAttachmentPreview, { props: imageCard() });
+    const wrapper = mount(CardAttachmentPreview, { props: imageFileCard() });
     await flushPromises();
     expect(created).toEqual(["blob:qio-card-1"]);
 
     await wrapper.setProps({
-      meta: { name: "另一张.png", image: { name: "另一张.png", attachmentId: "att_img2", size: 1024 } },
+      meta: { name: "另一张.png", file: { name: "另一张.png", attachmentId: "att_img2", size: 1024 } },
     });
     await flushPromises();
 

@@ -108,8 +108,8 @@ describe("board.ts：可添加的种类与文字卡构造", () => {
     expect(ADDABLE_CARD_KINDS).not.toContain("url");
   });
 
-  it("MATERIAL_KINDS 只保留 file / image：遗留 code / url 不再是材料默认可见通道", () => {
-    expect(MATERIAL_KINDS).toEqual(["file", "image"]);
+  it("MATERIAL_KINDS 只保留 file：遗留 code / url 不是材料通道，也不再有不存在的独立 image 卡片类型", () => {
+    expect(MATERIAL_KINDS).toEqual(["file"]);
   });
 
   it("defaultCardSeed(\"text\") 产出空的块序列与空编辑区文本", () => {
@@ -121,7 +121,7 @@ describe("board.ts：可添加的种类与文字卡构造", () => {
   });
 
   it("历史种类仍然可读（CARD_KINDS 不缩水）：code / url / reply 的种子还在", () => {
-    for (const kind of ["file", "image", "code", "url", "reply"] as CardKind[]) {
+    for (const kind of ["file", "code", "url", "reply"] as CardKind[]) {
       expect(defaultCardSeed(kind).kind).toBe(kind);
     }
   });

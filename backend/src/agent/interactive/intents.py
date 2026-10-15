@@ -74,7 +74,6 @@ _JSON_COLUMNS = (
 _KIND_LABELS = {
     "text": "注释",
     "file": "文件",
-    "image": "图片",
     "code": "代码",
     "url": "链接",
     "reply": "QIO 结果",

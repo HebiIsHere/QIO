@@ -116,15 +116,16 @@ def test_frozen_self_check_script_exists():
 
 
 def _materials_state():
-    """一张图片卡 + 一张**许可过的文字卡**（内含一个代码块）。
+    """一张图片（**文件卡的图片附件**，没有登记已保存附件）+ 一张**许可过的文字卡**（内含一个代码块）。
 
+    图片没有独立的卡片 kind（会与前端口径打架）：图片是文件卡 meta.file 登记的附件。
     2026-10-12 起链接与代码没有默认可见通道：代码只能作为文字卡里的内容块，
     并且整卡许可打开之后才交付给模型。
     """
     from agent.interactive import models, text_card
 
     state = models.empty_state(BOARD)
-    image = models.new_card("image", "", meta={"name": "照片.png"})
+    image = models.new_card("file", "", meta={"file": {"name": "照片.png"}})
     note = text_card.new_text_card("", checked=True)
     doc = text_card.parse_doc_text("print('x')")
     note["meta"].update(text_card.card_text_fields(doc))
@@ -134,7 +135,7 @@ def _materials_state():
 
 
 def test_resolve_materials_marks_image_unsupported(db_conn):
-    """图片卡 → image_unsupported（不联网、临时 db、不声称看懂图片）。"""
+    """图片材料（文件卡、只有文件名）→ 如实 unreadable（不联网、临时 db、不声称读到正文）。"""
     from agent.interactive import materials
 
     state, image, note = _materials_state()
@@ -143,13 +144,13 @@ def test_resolve_materials_marks_image_unsupported(db_conn):
     assert set(by_card) == {image["id"], note["id"]}
 
     image_entry = by_card[image["id"]]
-    assert image_entry["source"] == "image_unsupported"
+    assert image_entry["source"] == "unreadable"
     assert image_entry["read"] is False
     assert image_entry["text"] == ""
-    # 原因必须**可读且说清是哪一种没交付**：视觉能力不可用、或这张卡还没有关联附件。
-    # （2026-10-12 视觉能力接入后，「没有附件」不再笼统说成「没有视觉能力」）
+    # 原因必须**可读且说清是哪一种没交付**：这张卡还没有关联已保存的附件，
+    # 「文件名」当然也不是正文（不笼统说成「没有视觉能力」）。
     reason = image_entry["reason"]
-    assert "视觉能力" in reason or "没有关联已保存的附件" in reason, reason
+    assert "没有关联已保存的附件" in reason, reason
     # 对照：同一批里**许可过的**文字卡是真的读到正文的 inline 材料（含卡内代码块）
     assert by_card[note["id"]]["source"] == "inline"
     assert "print('x')" in by_card[note["id"]]["text"]
@@ -173,7 +174,7 @@ def test_understanding_context_resolves_materials(db_conn):
     materials_out = context["materials"]
     assert {entry["cardId"] for entry in materials_out} == {image["id"], note["id"]}
     image_entry = next(e for e in materials_out if e["cardId"] == image["id"])
-    assert image_entry["source"] == "image_unsupported"
+    assert image_entry["source"] == "unreadable"
     note_entry = next(e for e in materials_out if e["cardId"] == note["id"])
     assert note_entry["source"] == "inline" and "print('x')" in note_entry["text"]
     assert context["materialIds"]

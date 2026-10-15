@@ -4,7 +4,7 @@
  * 契约：docs/interactive-mode-contract.md。字段含义以那里为准，改这里必须同步改契约。
  */
 
-export type CardKind = "text" | "file" | "image" | "code" | "url" | "reply";
+export type CardKind = "text" | "file" | "code" | "url" | "reply";
 
 export interface BoardCard {
   id: string;

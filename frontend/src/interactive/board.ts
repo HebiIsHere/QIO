@@ -45,7 +45,6 @@ export interface DropResult {
 export const CARD_KIND_LABELS: Record<CardKind, string> = {
   text: "文字注释",
   file: "文件",
-  image: "图片",
   code: "代码",
   url: "网址",
   reply: "QIO 结果",
@@ -54,13 +53,14 @@ export const CARD_KIND_LABELS: Record<CardKind, string> = {
 /**
  * 材料类卡片：添加材料本身不等于要求总结 / 比较 / 修改 / 执行。
  *
- * 契约 2026-10-12 §2.2：**材料只剩 file / image**。历史上 code / url 的
- * 「材料默认可见」通道取消 —— 卡内文字、链接与代码一律走统一文字卡的**整卡许可**。
+ * 契约（2026-10-15 图片展示简化）：**材料只有 file** —— 图片与其它文件都是文件卡的附件，
+ * 不再有独立的图片卡类型。历史上 code / url 的「材料默认可见」通道取消 ——
+ * 卡内文字、链接与代码一律走统一文字卡的**整卡许可**。
  */
-export const MATERIAL_KINDS: CardKind[] = ["file", "image"];
+export const MATERIAL_KINDS: CardKind[] = ["file"];
 
 /**
- * 用户能从工具栏添加的卡片：**文字卡 / 文件 / 图片**（契约 2026-10-12 §1.7）。
+ * 用户能从工具栏添加的卡片：**文字卡 / 文件**（契约 2026-10-12 §1.7；图片是文件卡的附件）。
  *
  * 代码与网址不再是入口：它们与正文写在**同一张文字卡**里（卡内代码块可编辑）。
  * CARD_KINDS 仍保留全部旧取值用于读历史数据与导入文件。
@@ -80,8 +80,6 @@ export function defaultCardSeed(kind: CardKind): { kind: CardKind; content: stri
       return { kind, content: "", meta: { doc: emptyDoc(), docText: "" } };
     case "file":
       return { kind, content: "待补充文件说明", meta: { name: "未命名文件" } };
-    case "image":
-      return { kind, content: "", meta: { name: "未命名图片" } };
     case "code":
       return { kind, content: "// 待补充代码", meta: { language: "text" } };
     case "url":
@@ -306,23 +304,19 @@ export function cardById(state: BoardState, cardId: string): BoardCard | null {
 function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Partial<BoardCard> & Record<string, unknown>;
-  const parsedKind = (["text", "file", "image", "code", "url", "reply"] as CardKind[]).includes(
+  const parsedKind = (["text", "file", "code", "url", "reply"] as CardKind[]).includes(
     source.kind as CardKind,
   )
     ? (source.kind as CardKind)
     : "text";
   /*
-    2026-10-14 第九个问题：互动模式不再区分「文件」与「图片」——
-    两者是**同一种材料**，样式与标签一律按附件类型决定。
-    这里把遗留的 `kind="image"` 逐张迁移成 `file`，并把 `meta.image` 搬到 `meta.file`
-    （与历史上 code / url → text 同一套做法；后端本来就两种都认，见 materials.py）。
+    2026-10-15 图片展示简化：不再有 `kind="image"` 这个卡片类型，**本轮不做旧图片卡兼容** ——
+    遗留的 `kind="image"` 与其它未知 kind 一样按既有兜底落到 "text"，
+    也不再把 `meta.image` 搬到 `meta.file`（附件只读 `meta.file`）。
   */
-  const kind: CardKind = parsedKind === "image" ? "file" : parsedKind;
+  const kind: CardKind = parsedKind;
   const sourceMeta =
     source.meta && typeof source.meta === "object" ? { ...(source.meta as Record<string, unknown>) } : {};
-  if (parsedKind === "image" && sourceMeta.file === undefined && sourceMeta.image !== undefined) {
-    sourceMeta.file = sourceMeta.image;
-  }
   const checked = Boolean(source.checked);
   const hidden = Boolean(source.hidden);
   /*

@@ -127,6 +127,17 @@ def _material_kinds() -> tuple:
     return models.MATERIAL_KINDS
 
 
+#: 文件卡里会被当成图片交付的扩展名（与 materials.DELIVERABLE_IMAGE_TYPES 同一口径）
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+
+def _is_image_attachment(meta: dict) -> bool:
+    """这张**文件卡**的附件是不是图片（图片没有独立 kind 了，扩展名判定）。"""
+    block = meta.get("file") if isinstance(meta.get("file"), dict) else {}
+    name = str(block.get("name") or meta.get("name") or "").strip().lower()
+    return name.endswith(_IMAGE_SUFFIXES)
+
+
 @pytest.fixture()
 def fake_materials(monkeypatch):
     """按冻结签名实现的假材料解析：只读传进来的 state，不碰当前板面。"""
@@ -144,12 +155,13 @@ def fake_materials(monkeypatch):
             # 用来验证理解链路仍然拒绝「把非材料卡当材料依据」。
             if meta.get("materialUnavailable"):
                 continue
-            # 2026-10-12 起（契约 §2.2）：材料通道 = **文字卡（整卡许可）** + 文件 / 图片；
+            # 2026-10-12 起（契约 §2.2）：材料通道 = **文字卡（整卡许可）** + 文件卡；
             # 链接与代码没有默认可见通道，旧 code / url 卡不再出现在材料里。
+            # 图片现在是**文件卡的附件**（kind 里没有 image）：没有视觉能力时如实记 image_unsupported。
             if kind not in ("text",) + _material_kinds():
                 continue
             name = meta.get("name") or meta.get("title") or card.get("content") or card.get("id")
-            if kind == "image":
+            if kind == "file" and _is_image_attachment(meta):
                 items.append({
                     "id": card["id"],
                     "cardId": card["id"],
@@ -640,10 +652,16 @@ async def test_material_honesty_records_truncation_and_unread(db_conn, fake_mate
     result = await _save_and_submit(
         db_conn,
         [
-            # 2026-10-12 起：长正文用**文字卡**（整卡许可）；图片是「可见但没有读到内容」的诚实来源；
+            # 2026-10-12 起：长正文用**文字卡**（整卡许可）；图片是「可见但没有读到内容」的诚实来源
+            # （现在是**文件卡里的图片附件**：文件卡 + meta.file 的图片名，没有视觉能力 → image_unsupported）；
             # 旧 url 卡留在板面上，但没有默认可见通道，不会进材料。
             _card("c_long", "text", long_text, checked=True, meta={"name": "长文本"}),
-            _card("c_img", "image", "", meta={"name": "示意图.png"}),
+            _card(
+                "c_img",
+                "file",
+                "",
+                meta={"name": "示意图.png", "file": {"name": "示意图.png", "attachmentId": "att_x"}},
+            ),
             _card("c_url", "url", "https://example.invalid/page", meta={"title": "网页地址"}),
             _card("c_note", "text", "请整理这些材料", checked=True),
         ],

@@ -689,14 +689,16 @@ def test_add_card_defaults():
     assert card["deleted"] is False
     assert card["id"].startswith("c_")
     state = added
-    for kind in ("file", "image", "code", "url", "reply"):
+    for kind in ("file", "code", "url", "reply"):
         state = board.add_card(state, kind, "x")
-    assert {card["kind"] for card in state["cards"]} == {"text", "file", "image", "code", "url", "reply"}
+    assert {card["kind"] for card in state["cards"]} == {"text", "file", "code", "url", "reply"}
 
 
 def test_add_card_unknown_kind_is_rejected():
     state = board.empty_state("board_t")
     assert board.add_card(state, "video")["cards"] == []
+    # 旧图片卡 kind 已删除：板面不再生产 kind="image"（图片是文件卡的附件）
+    assert board.add_card(state, "image")["cards"] == []
 
 
 def test_update_card_patches_content_and_meta():

@@ -9,7 +9,7 @@
  * 3. 提交失败保留改动与本次注释选择，不提前更新「上次成功提交」基准。
  */
 import { defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import * as api from "../services/interactive";
 // 阅读位置的读写属于**预览服务**（不是板面状态）：位置按「附件 + 文件版本」归属，
 // 写它不产生表达、不改板面版本（契约 §3.3）。
@@ -24,6 +24,7 @@ import {
   understandingStatusLabel,
 } from "../interactive/approval";
 import { CHECKABLE_KINDS, clampBoardBounds } from "../interactive/board";
+import { cardAttachmentIsImage } from "../interactive/materials";
 import {
   cardDraftKey,
   cardIdFromDraftKey,
@@ -369,9 +370,39 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   const expandedCards = ref<Set<string>>(new Set());
 
-  /** 展开 / 收起这张卡的预览主体；返回切换后的状态（true = 现在展开着）。 */
+  /**
+   * 这张卡是不是「附件是图片的文件卡」——判定只有一份口径：
+   * materials.cardAttachmentIsImage（内部复用 isPreviewableImageName），不按 kind 判
+   * （类型里已经没有 kind="image"）。
+   *
+   * 卡片不在板面上时返回 false：既有行为不变（不认识的 id 仍由调用方自己决定）。
+   */
+  function cardIsImageMaterial(cardId: string): boolean {
+    const card = board.value?.cards.find((item) => item.id === cardId);
+    if (!card) return false;
+    return cardAttachmentIsImage(card.meta, card.kind);
+  }
+
+  /** 展开列表里真正可阅读的 id（图片一律不算，BoardCanvas 的临时布局也读这个出口）。 */
+  function readableExpandedIds(): string[] {
+    return [...expandedCards.value].filter((id) => !cardIsImageMaterial(id));
+  }
+
+  /**
+   * 展开 / 收起这张卡的预览主体；返回切换后的状态（true = 现在展开着）。
+   *
+   * 图片卡没有卡片内阅读态：**不加入**展开列表，也如实返回 false（不假成功）。
+   */
   function toggleCardPreview(cardId: string): boolean {
     if (!cardId) return false;
+    if (cardIsImageMaterial(cardId)) {
+      if (expandedCards.value.has(cardId)) {
+        const cleaned = new Set(expandedCards.value);
+        cleaned.delete(cardId);
+        expandedCards.value = cleaned;
+      }
+      return false;
+    }
     const next = new Set(expandedCards.value);
     const opened = !next.has(cardId);
     if (opened) next.add(cardId);
@@ -380,16 +411,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return opened;
   }
 
-  /** 收起所有展开的预览；返回这一次真的收起了几张。 */
+  /** 收起所有展开的预览；返回这一次真的收起了几张（图片不算数）。 */
   function collapseAllPreviews(): number {
-    const count = expandedCards.value.size;
-    if (count) expandedCards.value = new Set();
-    return count;
+    const readable = readableExpandedIds().length;
+    if (expandedCards.value.size) expandedCards.value = new Set();
+    return readable;
   }
 
-  /** 这张卡现在是否展开着预览（模板里读它才会跟着 Set 变化重渲染）。 */
+  /** 这张卡现在是否展开着预览（模板里读它才会跟着 Set 变化重渲染）；图片永远为 false。 */
   function isCardPreviewExpanded(cardId: string): boolean {
-    return expandedCards.value.has(cardId);
+    if (!expandedCards.value.has(cardId)) return false;
+    return !cardIsImageMaterial(cardId);
   }
 
   /**
@@ -417,10 +449,35 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
   }
 
-  /** 展开顺序 = 让位处理顺序：直接喂给 planExpandedLayout 的 expanded。 */
-  const expandedCardIds = computed<string[]>(() => [...expandedCards.value]);
-  /** 展开中的预览数量（界面据此显示「收起全部预览」）。 */
-  const previewExpandedCount = computed<number>(() => expandedCards.value.size);
+  /** 展开顺序 = 让位处理顺序：直接喂给 planExpandedLayout 的 expanded（图片不算）。 */
+  const expandedCardIds = computed<string[]>(() => readableExpandedIds());
+  /** 展开中的预览数量（界面据此显示「收起全部预览」；图片不算）。 */
+  const previewExpandedCount = computed<number>(() => readableExpandedIds().length);
+
+  /**
+   * 板面变化后重新判定类型：**只移除**「已经变成图片卡」的 id，
+   * 不关闭其它文件正在进行的阅读（PDF 换成图片必须退出原有展开态；
+   * 图片换成 PDF 之后可以重新展开并恢复阅读）。
+   *
+   * flush: "sync" —— 与板面写入同步完成，界面不会有一帧把图片画成阅读态。
+   */
+  watch(
+    board,
+    () => {
+      if (!expandedCards.value.size) return;
+      const next = new Set<string>();
+      let changed = false;
+      for (const id of expandedCards.value) {
+        if (cardIsImageMaterial(id)) {
+          changed = true;
+          continue;
+        }
+        next.add(id);
+      }
+      if (changed) expandedCards.value = next;
+    },
+    { flush: "sync" },
+  );
   /**
    * 板面当前的指针模式：工具栏是控制面、画布是执行面，两边共用同一份状态。
    * 这是**查看状态**：切换模式不形成表达、不调用 QIO、不触发保存。

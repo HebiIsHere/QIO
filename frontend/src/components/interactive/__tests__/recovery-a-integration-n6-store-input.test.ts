@@ -41,9 +41,9 @@ vi.mock("../../../services/interactive", () => ({
   updateIntentPreview: vi.fn(),
 }));
 
-type Kind = "text" | "file" | "image" | "code" | "url";
+type Kind = "text" | "file" | "code" | "url";
 
-function makeCard(kind: Kind, meta: Record<string, string> = {}) {
+function makeCard(kind: Kind, meta: Record<string, unknown> = {}) {
   return {
     id: "c1",
     kind,
@@ -179,18 +179,21 @@ describe("N6 合并后：完整未完成输入经 store 写入本机记录", () 
     expect(value(reopened, '[data-im="card-meta-name"]')).toBe("新文件名.pdf");
   });
 
-  it("image：图片名随正文一起写入并恢复", async () => {
-    const card = makeCard("image", { name: "旧图.png" });
+  it("file + meta.file：附件名称随正文一起写入并恢复（不再有独立图片卡）", async () => {
+    const card = makeCard("file", {
+      name: "旧报告.pdf",
+      file: { name: "旧报告.pdf", attachmentId: "att_1", size: 2048 },
+    });
     vi.mocked(imApi.fetchBoardState).mockResolvedValue(boardPayload(card) as never);
     const store = useInteractiveStore();
     await store.load();
     const wrapper = await openEditor(store, card);
 
-    await wrapper.find('[data-im="card-meta-name"]').setValue("新图.png");
-    expect(readCardLocalDraft("c1")?.meta).toEqual({ name: "新图.png" });
+    await wrapper.find('[data-im="card-meta-name"]').setValue("新报告.pdf");
+    expect(readCardLocalDraft("c1")?.meta).toEqual({ name: "新报告.pdf" });
 
     const { wrapper: reopened } = await reopen(card);
-    expect(value(reopened, '[data-im="card-meta-name"]')).toBe("新图.png");
+    expect(value(reopened, '[data-im="card-meta-name"]')).toBe("新报告.pdf");
   });
 
   it("code：代码语言随正文一起写入并恢复", async () => {

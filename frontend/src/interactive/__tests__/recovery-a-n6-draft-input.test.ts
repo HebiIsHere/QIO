@@ -188,10 +188,11 @@ describe("N6 归属与卡片隔离", () => {
 });
 
 describe("N6 恢复来源重建（restoreCardDraftInput）", () => {
-  it("适用字段按卡片种类：url=网址+标题，file/image=名称，code=语言，文字注释没有附加字段", () => {
+  it("适用字段按卡片种类：url=网址+标题，file=附件名称，code=语言，文字注释没有附加字段", () => {
     expect(cardDraftMetaFieldsForKind("url")).toEqual(["href", "title"]);
     expect(cardDraftMetaFieldsForKind("file")).toEqual(["name"]);
-    expect(cardDraftMetaFieldsForKind("image")).toEqual(["name"]);
+    // 本轮不做旧图片卡兼容：旧 kind=image 不再是材料卡，没有适用字段
+    expect(cardDraftMetaFieldsForKind("image")).toEqual([]);
     expect(cardDraftMetaFieldsForKind("code")).toEqual(["language"]);
     expect(cardDraftMetaFieldsForKind("text")).toEqual([]);
     expect(cardDraftMetaFieldsForKind("reply")).toEqual([]);
