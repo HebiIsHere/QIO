@@ -120,6 +120,8 @@ $report = [ordered]@{
   product_dir = $target
   product_bytes = 0
   product_mb = 0
+  license_file = ""
+  license_bytes = 0
   python_version = ""
   venv_python_version = ""
   pip_version = ""
@@ -251,6 +253,43 @@ try {
     throw "裁剪把必需的东西删掉了：$($missing -join '、')"
   }
   Add-Check "pruned_but_complete" $true ("removed: " + ($pruned -join ", "))
+
+  # 3b) 许可证随包：自带运行时同样是**分发**，PSF 许可证必须跟着走（QIO 的合规缺口之一）。
+  #     优先用来源解释器自带的 LICENSE.txt（那份才对应真正分发的版本）；
+  #     没有就退回仓库里落过库的 licenses\texts\PSF-2.0.txt。两者都没有 = 直接失败，
+  #     绝不产出一个不带许可证的运行时。
+  $licenseDest = Join-Path $target "LICENSE-CPython.txt"
+  $licenseOrigin = ""
+  $srcLicense = Join-Path $src "LICENSE.txt"
+  if (Test-Path -LiteralPath $srcLicense) {
+    Copy-Item -LiteralPath $srcLicense -Destination $licenseDest -Force
+    $licenseOrigin = "source-interpreter"
+  } else {
+    $repoLicense = Join-Path $root "licenses\texts\PSF-2.0.txt"
+    if (-not (Test-Path -LiteralPath $repoLicense)) {
+      throw "来源解释器里没有 LICENSE.txt，仓库里也没有 licenses\texts\PSF-2.0.txt：不能产出不带许可证的运行时。"
+    }
+    Copy-Item -LiteralPath $repoLicense -Destination $licenseDest -Force
+    $licenseOrigin = "repo-licenses-texts"
+  }
+  $licenseBytes = (Get-Item -LiteralPath $licenseDest).Length
+  if ($licenseBytes -lt 1000) {
+    throw "许可证文本过短（$licenseBytes 字节）：$licenseDest"
+  }
+  # 另附一份 NOTICE，写清这份运行时从哪来、为什么随包。
+  $notice = @(
+    "QIO 内置 Python 运行时声明",
+    "",
+    "版本：Python $srcVersion",
+    "来源：python-build-standalone（astral-sh，MPL-2.0），经 uv python install 取得",
+    "许可证：PSF-2.0（全文见同目录 LICENSE-CPython.txt）",
+    "用途：只为「带第三方依赖的生成工具」离线建 venv；不联网、不上传任何内容。",
+    ""
+  ) -join $nl
+  Write-Utf8NoBom -Path (Join-Path $target "NOTICE.txt") -Text $notice
+  $report.license_file = $licenseDest
+  $report.license_bytes = $licenseBytes
+  Add-Check "license_shipped" $true "LICENSE-CPython.txt（$licenseOrigin，$licenseBytes 字节）+ NOTICE.txt"
 
   # 4) 自检
   $productPython = Join-Path $target "python.exe"

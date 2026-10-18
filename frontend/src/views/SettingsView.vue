@@ -22,6 +22,12 @@ import {
   type ThemePreference,
 } from "../utils/theme";
 import { getMotionPreference, setMotionPreference, type MotionPreference } from "../utils/motion";
+// 「关于」分区：授权与第三方声明。两处文本都直接来自仓库根目录的**唯一来源**，
+// 由 Vite 在构建期内联（?raw），因此随应用一起分发、离线可读，不需要联网也不需要后端。
+// 生成与校验命令见 licenses/README.md；覆盖率由 scripts/licenses/check_third_party.py 保证。
+import appPackage from "../../package.json";
+import projectLicenseText from "../../../LICENSE?raw";
+import thirdPartyNoticesText from "../../../THIRD-PARTY-NOTICES.md?raw";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
 import {
   getScrollbarPreference,
@@ -35,7 +41,7 @@ import {
   type DockId,
 } from "../composables/floatingState";
 
-type SectionId = "appearance" | "chat" | "model" | "tools" | "data" | "cred" | "advanced";
+type SectionId = "appearance" | "chat" | "model" | "tools" | "data" | "cred" | "advanced" | "about";
 type NoticeKind = "ok" | "err" | "warn" | "info";
 type NoticeKey = SectionId | "loop" | "window";
 interface Notice {
@@ -51,6 +57,7 @@ const SECTIONS: { id: SectionId; label: string }[] = [
   { id: "data", label: "数据与维护" },
   { id: "cred", label: "凭据" },
   { id: "advanced", label: "高级" },
+  { id: "about", label: "关于" },
 ];
 
 const ui = useUiStore();
@@ -76,8 +83,12 @@ const notices = reactive<Record<NoticeKey, Notice | null>>({
   data: null,
   cred: null,
   advanced: null,
+  about: null,
   window: null,
 });
+
+/** 「关于」分区：版本取自前端 package.json（发版时与 tauri.conf / Cargo / pyproject 同步 bump）。 */
+const appVersion = String(appPackage.version ?? "");
 
 function setNotice(key: NoticeKey, kind: NoticeKind, text: string) {
   notices[key] = { kind, text };
@@ -1591,6 +1602,50 @@ watch(activeTab, async () => {
             </dl>
           </section>
         </div>
+
+        <!-- 关于：授权与第三方声明（文本随包内联，离线可读） -->
+        <div v-show="activeTab === 'about'" class="panel" data-testid="settings-about">
+          <section class="sec">
+            <h2>版本</h2>
+            <dl class="raw mono">
+              <dt>应用</dt>
+              <dd>QIO {{ appVersion }}</dd>
+            </dl>
+            <p class="desc">
+              模型 Key 全部由你自己提供（BYOK），应用没有自带 Key；数据留在本机（SQLite + 系统凭据库）。
+              除更新检查和你自己发起的模型 / 搜索调用外，应用不主动上传内容。
+            </p>
+          </section>
+
+          <section class="sec">
+            <h2>授权</h2>
+            <p class="desc">
+              QIO 以 MIT 许可证开源：可以自由使用、修改、再分发（含商用），只需保留版权声明与许可声明。
+              完整条款见仓库根目录的 LICENSE（本页展示的就是它）。
+            </p>
+            <details class="adv-fold">
+              <summary>查看 QIO 许可全文</summary>
+              <div class="adv-body">
+                <pre class="license-text" data-testid="qio-license">{{ projectLicenseText }}</pre>
+              </div>
+            </details>
+          </section>
+
+          <section class="sec">
+            <h2>第三方开源组件</h2>
+            <p class="desc">
+              QIO 随安装包分发第三方开源组件（Python 依赖、npm 包、Rust crate、内置 CPython 运行时、
+              内置中文嵌入模型与中文字体）。完整声明（组件清单 + 每个许可证的全文）随应用一起分发，
+              无需联网即可查阅；覆盖率由仓库里的校验脚本保证，少一个组件就失败。
+            </p>
+            <details class="adv-fold">
+              <summary>查看第三方开源组件声明（生成物，请勿手工编辑）</summary>
+              <div class="adv-body">
+                <pre class="license-text" data-testid="third-party-notices">{{ thirdPartyNoticesText }}</pre>
+              </div>
+            </details>
+          </section>
+        </div>
       </div>
     </div>
 
@@ -1770,4 +1825,21 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 }
 .toast-enter-from,
 .toast-leave-to { opacity: 0; transform: translateY(10px); }
+
+/* 「关于」里的长文本（许可证 / 第三方声明）：等宽、可滚动，颜色全部来自令牌 */
+.license-text {
+  margin: 10px 0 0;
+  padding: 12px 14px;
+  max-height: 420px;
+  overflow: auto;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 </style>

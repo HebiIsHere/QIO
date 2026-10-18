@@ -110,7 +110,7 @@ const CRED = {
   note: "测试",
 };
 
-const NAV_LABELS = ["外观", "对话与记忆", "模型与联网", "工具与权限", "数据与维护", "凭据", "高级"];
+const NAV_LABELS = ["外观", "对话与记忆", "模型与联网", "工具与权限", "数据与维护", "凭据", "高级", "关于"];
 
 function makePinia(): Pinia {
   const pinia = createPinia();
@@ -148,7 +148,7 @@ beforeEach(() => {
 });
 
 describe("SettingsView 信息架构", () => {
-  it("按用户心智分为七个一级分区，默认停在「外观」", async () => {
+  it("按用户心智分为八个一级分区，默认停在「外观」", async () => {
     const w = await mountSettings();
     expect(w.findAll(".tab").map((b) => b.text())).toEqual(NAV_LABELS);
     expect(w.find(".tab.active").text()).toBe("外观");
@@ -765,6 +765,30 @@ describe("QIO 滚动指示条偏好（2026-10-14）", () => {
     expect(text).toContain("不开放对话横向滚动");
     // 选项当前档位的说明也要在界面上，不能只藏在 title/aria 里
     expect(text).toContain("停止后淡出");
+    w.unmount();
+  });
+});
+
+describe("关于：授权与第三方声明", () => {
+  it("导航里有「关于」，切过去能看到版本与 QIO 许可全文", async () => {
+    const w = await mountSettings();
+    await openTab(w, "关于");
+    const panel = visiblePanel(w);
+    expect(panel.text()).toContain("QIO");
+    expect(panel.text()).toContain("MIT");
+    // 许可是仓库根目录 LICENSE 的原文，随构建内联（不联网、不看后端）
+    expect(panel.get('[data-testid="qio-license"]').text()).toContain("Permission is hereby granted");
+    w.unmount();
+  });
+
+  it("第三方声明是随包内联的原文（组件清单 + 许可证全文）", async () => {
+    const w = await mountSettings();
+    await openTab(w, "关于");
+    const notices = visiblePanel(w).get('[data-testid="third-party-notices"]').text();
+    expect(notices).toContain("QIO 第三方开源组件声明");
+    expect(notices).toContain("许可证全文");
+    // 声明只有实际生成了才有内容：空文件/占位符会让这条变红
+    expect(notices.length).toBeGreaterThan(10000);
     w.unmount();
   });
 });

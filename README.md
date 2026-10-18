@@ -92,3 +92,13 @@ CI（`.github/workflows/ci.yml`）在 push / PR 上跑：后端 Python 3.11 与 
 - 存储：SQLite（WAL）+ 顺序迁移；数据目录默认 `%APPDATA%\qio`
 
 更细的技术说明见 `docs/architecture.md`。
+
+## 许可证与第三方声明
+
+QIO 以 **MIT 许可证**开源：可自由使用、修改、分发（含商用），只需保留版权声明与许可声明，
+完整条款见根目录的 `LICENSE`。安装包与前端产物里分发的第三方开源组件（Python 依赖、
+npm 包、Rust crate、内置 CPython 运行时、内置嵌入模型与中文字体）的完整声明见
+`THIRD-PARTY-NOTICES.md`，机器可读清单与各许可证全文在 `licenses/` 下。
+
+这些文本同时内联在应用内（**设置 → 关于**），无需联网即可查阅。合规口径、生成与覆盖率校验命令、
+以及**已知边界**（例如安装向导没有许可证页、过覆盖了其它平台的依赖）见 `docs/compliance.md`。

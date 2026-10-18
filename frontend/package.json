@@ -2,6 +2,7 @@
   "name": "qio-frontend",
   "private": true,
   "version": "0.2.9",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -216,6 +216,25 @@ powershell -File scripts\publish_release.ps1 -Version X.Y.Z
 **缺失影响**：不崩——向量召回自动降级为 **BM25**，话题预测走规则兜底；
 日志里会写明原因（`model files missing; falling back`）。
 
+## 5.2 第三方组件声明（合规）
+
+QIO 的安装包与前端产物里分发了第三方开源组件（后端 Python 依赖、前端 npm 包、Rust crate、
+内置 CPython 运行时、内置嵌入模型与中文字体）。完整声明与合规口径见 `docs/compliance.md`，
+目录说明见 `licenses/README.md`。**改了依赖就必须重新生成并提交生成物**：
+
+```powershell
+# 重新生成声明（组件清单 + 各许可证全文；人读版是 THIRD-PARTY-NOTICES.md）
+python scripts/licenses/build_third_party.py
+
+# 覆盖率校验（离线；少一个组件就失败，CI 的 docs 任务会跑）
+python scripts/licenses/check_third_party.py
+python scripts/licenses/check_third_party.py --selftest
+```
+
+声明文本随构建内联进 `dist/`，因此用户在应用内就能读到原文：**设置 → 关于 → 第三方开源组件**
+（离线可读，不需要联网）。内置 Python 运行时的 PSF 许可证由 `scripts/build_runtime.ps1`
+放进 `resources/python-runtime/LICENSE-CPython.txt`，缺许可证会直接构建失败。
+
 ## 6. 环境变量（可选）
 
 | 变量 | 默认 | 说明 |
@@ -307,6 +326,10 @@ python scripts/check_docs.py
 # 发布闸门自检：确认闸门自己会红（注入哈希不符 / 安装包比后端旧两种缺陷）
 # 只验闸门本身，不构建安装包、不联网、不需要 dist
 python scripts/release_gate.py --selftest
+
+# 第三方声明覆盖率：锁文件里的组件一个都不能少（离线、stdlib）
+python scripts/licenses/check_third_party.py
+python scripts/licenses/check_third_party.py --selftest
 
 # 后端测试
 cd backend

@@ -1,4 +1,4 @@
-﻿# QIO 项目约定（AI 助手必读）
+# QIO 项目约定（AI 助手必读）
 
 - 前端设计规范：`docs/superpowers/specs/2026-08-09-qio-frontend-design.md`
 - 颜色一律用 `var(--*)`（`frontend/src/styles/tokens.css`），禁止硬编码色值。
@@ -18,6 +18,8 @@
 - 前端：`npx vue-tsc --noEmit` + `npm test`。
 - 改了前端：实际起应用并用截图做视觉检查（窄窗口、滚动、代码块溢出）。
 - 改了 runtime / 预算 / 工具策略：除受影响测试外，重跑 `uv run --frozen python -m agent.eval.run` 对比基线。
+- 改了依赖（三套锁文件里任何一套）：跑 `python scripts/licenses/build_third_party.py` 重新生成第三方声明并提交生成物，
+  否则 `python scripts/licenses/check_third_party.py` 会在 CI 判红。合规口径与已知边界见 `docs/compliance.md`。
 
 ## 硬性约束
 

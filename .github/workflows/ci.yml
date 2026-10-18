@@ -72,6 +72,12 @@ jobs:
       - name: Release gate selftest
         run: |
           python scripts/release_gate.py --selftest
+      # 第三方声明覆盖率：装进安装包的组件必须一个不漏地出现在声明里（stdlib、离线）。
+      # 光有声明不够 —— 没有这条门禁，下次加依赖时声明会停在旧版本而 CI 照旧全绿。
+      - name: Third-party notices coverage
+        run: |
+          python scripts/licenses/check_third_party.py
+          python scripts/licenses/check_third_party.py --selftest
       # 触发去重 / 定向入口的契约也在这里被真断言：ci.yml 的 push+PR 双触发与
       # concurrency 键、targeted-verify.yml 的 workflow_dispatch、SHA 核验步骤与筛选参数
       # 全部由这个脚本解析 yaml 后核对，并有 --selftest 证明断言真能红。
