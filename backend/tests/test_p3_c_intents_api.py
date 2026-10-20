@@ -294,7 +294,9 @@ def test_single_confirm_uses_single_path(db_conn):
 # ---------------------------------------------------------------------------
 
 
-def test_confirm_requires_service(db_conn):
+def test_confirm_requires_service(db_conn, monkeypatch):
+    # B 的 intent_service 已合入；这里显式模拟「服务未接入」的失败前置。
+    monkeypatch.setattr(api_module, "_intent_service", lambda request: None)
     client = _client(db_conn)
     batch = client.post(
         "/api/interactive/intents/batch-confirm",
@@ -309,6 +311,7 @@ def test_confirm_requires_service(db_conn):
 def test_legacy_fallback_marks_source_and_maps_statuses(db_conn, monkeypatch):
     from agent.api import interactive_intents as module
 
+    monkeypatch.setattr(module, "_intent_service", lambda request: None)
     legacy_payload = {
         "intents": [
             {
@@ -363,6 +366,62 @@ def test_waiting_uses_injected_provider(db_conn):
     body = client.get(f"/api/interactive/boards/{BOARD}/waiting").json()
     assert body["available"] is True
     assert body["waiting"]["question"].startswith("你希望整理")
+
+
+def test_waiting_shape_normalises_a_waiting_state(db_conn, monkeypatch):
+    """A 的 waiting_state（items + camelCase）→ 稳定 {available, waiting: [WaitingView...]}。"""
+    from agent.api import interactive_intents as module
+    from agent.interactive import submission as submission_module
+
+    payload = module._normalise_waiting_payload(
+        {
+            "boardId": BOARD,
+            "waiting": True,
+            "count": 1,
+            "items": [
+                {
+                    "id": "w_1",
+                    "boardId": BOARD,
+                    "submissionId": "sub_1",
+                    "question": "整理成表格还是清单？",
+                    "missingFields": ["输出形态"],
+                    "status": "waiting",
+                    "createdAt": "2026-10-21T00:00:00+00:00",
+                }
+            ],
+        },
+        BOARD,
+    )
+    assert payload["available"] is True
+    assert payload["count"] == 1
+    assert isinstance(payload["waiting"], list) and len(payload["waiting"]) == 1
+    item = payload["waiting"][0]
+    assert item["submission_id"] == "sub_1"
+    assert item["question"] == "整理成表格还是清单？"
+    assert item["missing_fields"] == ["输出形态"]
+    assert item["status"] == "waiting"
+
+    monkeypatch.setattr(
+        submission_module,
+        "get_waiting",
+        lambda conn, board_id: {
+            "boardId": board_id,
+            "waiting": True,
+            "items": [
+                {
+                    "submissionId": "sub_1",
+                    "question": "整理成表格还是清单？",
+                    "missingFields": ["输出形态"],
+                }
+            ],
+        },
+    )
+    client = _client(db_conn)
+    body = client.get(f"/api/interactive/boards/{BOARD}/waiting").json()
+    assert body["available"] is True
+    assert isinstance(body["waiting"], list)
+    assert body["waiting"][0]["question"] == "整理成表格还是清单？"
+    assert body["waiting"][0]["missing_fields"] == ["输出形态"]
 
 
 def test_waiting_unavailable_is_honest(db_conn, monkeypatch):
@@ -425,7 +484,8 @@ def test_recovery_preview_and_recover(db_conn):
     assert ("recover_intent", BOARD, "in_4", 2) in service.calls
 
 
-def test_recovery_requires_service(db_conn):
+def test_recovery_requires_service(db_conn, monkeypatch):
+    monkeypatch.setattr(api_module, "_intent_service", lambda request: None)
     client = _client(db_conn)
     assert client.get("/api/interactive/intents/in_4/recovery-preview").status_code == 503
     assert (
