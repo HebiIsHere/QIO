@@ -17,6 +17,8 @@
 | --- | --- | --- | --- | --- | --- |
 | P1-预检-01 | 基线导入 / 适配器 | `pytest tests/test_import_smoke.py tests/test_adapters.py -q` | 通过（12 项） | 本台账 | 确认共享 venv 可用 |
 | P1-预检-02 | 模块拆分（摘要 / 知识抽取） | `pytest tests/test_import_smoke.py tests/test_extraction.py tests/test_memory.py -q` | 通过（25 项） | 本台账 | 契约冻结提交内验证 |
+| P1-Lead-01 | 历史接续当轮上下文 + 话题工具描述单源 | `pytest tests/test_p1_lead_continue_context.py tests/test_continue_fragment.py -q` | 通过（14 项） | 本台账 | 摘要/头尾原文进工具结果与结构化 data；预算与 omit 如实 |
+| P1-Lead-02 | 基线定向集合（整合前对照） | `pytest tests/test_adapters.py tests/test_anthropic_adapter.py tests/test_adapter_contract.py tests/test_text_adapter_health.py tests/test_tool_feedback.py tests/test_loop.py tests/test_memory.py tests/test_extraction.py tests/test_knowledge.py tests/test_knowledge_correction.py tests/test_entity_cards.py tests/test_entity_correct.py tests/test_entity_extract.py tests/test_service_injection.py tests/test_injection_short_term.py tests/test_path_context.py tests/test_turn_short_term.py tests/test_fragment_capacity.py -q` | 通过（exit 0） | 本台账 | 冻结提交 + Lead 接线的整合前对照 |
 
 ## 契约冻结产物（Lead，提交见 git log）
 

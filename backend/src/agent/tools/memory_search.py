@@ -1,23 +1,32 @@
-﻿"""memory_search tool: lets the main loop query historical memory."""
+"""memory_search tool: lets the main loop query historical memory."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from agent.prompts import TOOL_MEMORY_SEARCH_DESC
+from agent import prompts
 from agent.services.retrieval import Retriever
 from agent.tools.base import Tool, ToolResult
 
 
 class MemorySearchTool(Tool):
     name = "memory_search"
-    description = TOOL_MEMORY_SEARCH_DESC
+    description = prompts.TOOL_DESCRIPTIONS["memory_search"]
     parameters = {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "要检索的内容描述"},
-            "top_k": {"type": "integer", "description": "返回条数，默认 5"},
-            "topic_id": {"type": "string", "description": "限定检索的话题（可选）"},
+            "query": {
+                "type": "string",
+                "description": prompts.argument_description("memory_search", "query"),
+            },
+            "top_k": {
+                "type": "integer",
+                "description": prompts.argument_description("memory_search", "top_k"),
+            },
+            "topic_id": {
+                "type": "string",
+                "description": prompts.argument_description("memory_search", "topic_id"),
+            },
         },
         "required": ["query"],
     }

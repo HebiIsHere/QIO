@@ -14,7 +14,8 @@ from typing import Any, Awaitable, Callable
 
 from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
 from agent.selector.tokenize import tokenize
-from agent.prompts import DREAMING_PROMPT, TOOL_AUTOMATION_PROMPT
+from agent import prompts
+from agent.prompts import TOOL_AUTOMATION_PROMPT
 from agent.services.background import (
     BackgroundClosed,
     BackgroundHandle,
@@ -277,7 +278,7 @@ async def run_dreaming(ctx) -> dict:
         "WHERE f.summary IS NOT NULL AND f.summary != '' "
         "ORDER BY f.created_at DESC LIMIT 10"
     ).fetchall()
-    prompt = DREAMING_PROMPT.format(
+    prompt = prompts.render_dreaming_prompt(
         knowledge="\n".join(f"- [{k['id']}] ({k['category']}) {k['content']}" for k in knowledge),
         summaries="\n".join(f"- {s['summary'][:200]}" for s in summaries) or "(无)",
     )

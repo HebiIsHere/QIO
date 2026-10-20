@@ -29,6 +29,7 @@ from typing import Any, Awaitable, Callable
 
 from agent.tools import proc_cleanup
 from agent.tools.approval import DEFAULT_TIMEOUT_SECONDS, refusal_reason
+from agent import prompts
 from agent.tools.base import Tool, ToolResult
 
 MAX_OUTPUT_CHARS = 20_000
@@ -136,21 +137,27 @@ class RunProgramTool(_CmdTool):
     """安全路径：argv 白名单，不经 shell。"""
 
     name = "run_program"
-    description = (
-        "直接运行一个程序（program + args，不经过 shell）。只读程序白名单内自动放行，"
-        "其它程序需审批。需要管道/重定向/变量替换时改用 run_shell（必然要审批）。"
-    )
+    description = prompts.TOOL_DESCRIPTIONS["run_program"]
     parameters = {
         "type": "object",
         "properties": {
-            "program": {"type": "string", "description": "程序名，如 git / ls / pwd"},
+            "program": {
+                "type": "string",
+                "description": prompts.argument_description("run_program", "program"),
+            },
             "args": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "参数列表，按顺序传给程序，不做 shell 解释",
+                "description": prompts.argument_description("run_program", "args"),
             },
-            "cwd": {"type": "string"},
-            "timeout": {"type": "integer"},
+            "cwd": {
+                "type": "string",
+                "description": prompts.argument_description("run_program", "cwd"),
+            },
+            "timeout": {
+                "type": "integer",
+                "description": prompts.argument_description("run_program", "timeout"),
+            },
         },
         "required": ["program"],
     }
@@ -212,16 +219,22 @@ class RunCmdTool(_CmdTool):
     """高风险路径：自由 shell 命令。永远需要审批（plan 模式拒绝）。"""
 
     name = "run_shell"
-    description = (
-        "把一条命令交给系统 shell 执行（支持管道/重定向/变量替换）。属于高风险能力，"
-        "每次都需要用户批准；只要期望的是只读查看，优先用 run_program。"
-    )
+    description = prompts.TOOL_DESCRIPTIONS["run_shell"]
     parameters = {
         "type": "object",
         "properties": {
-            "cmd": {"type": "string"},
-            "cwd": {"type": "string"},
-            "timeout": {"type": "integer"},
+            "cmd": {
+                "type": "string",
+                "description": prompts.argument_description("run_shell", "cmd"),
+            },
+            "cwd": {
+                "type": "string",
+                "description": prompts.argument_description("run_shell", "cwd"),
+            },
+            "timeout": {
+                "type": "integer",
+                "description": prompts.argument_description("run_shell", "timeout"),
+            },
         },
         "required": ["cmd"],
     }
@@ -263,7 +276,7 @@ class RunCmdTool(_CmdTool):
 
 class SysInfoTool(_CmdTool):
     name = "sys_info"
-    description = "返回系统平台/CPU/内存/磁盘信息。自动放行。"
+    description = prompts.TOOL_DESCRIPTIONS["sys_info"]
     parameters = {"type": "object", "properties": {}}
     is_concurrency_safe = True
 
@@ -279,7 +292,7 @@ class SysInfoTool(_CmdTool):
 
 class ProcListTool(_CmdTool):
     name = "proc_list"
-    description = "列出当前进程列表。自动放行。"
+    description = prompts.TOOL_DESCRIPTIONS["proc_list"]
     parameters = {"type": "object", "properties": {}}
     is_concurrency_safe = True
 
@@ -312,8 +325,17 @@ class ProcListTool(_CmdTool):
 
 class ProcKillTool(_CmdTool):
     name = "proc_kill"
-    description = "结束指定 pid 的进程。pid 必填。需审批。"
-    parameters = {"type": "object", "properties": {"pid": {"type": "string"}}, "required": ["pid"]}
+    description = prompts.TOOL_DESCRIPTIONS["proc_kill"]
+    parameters = {
+        "type": "object",
+        "properties": {
+            "pid": {
+                "type": "string",
+                "description": prompts.argument_description("proc_kill", "pid"),
+            }
+        },
+        "required": ["pid"],
+    }
 
     async def run(self, **kwargs: Any) -> ToolResult:
         pid = str(kwargs.get("pid") or "").strip()

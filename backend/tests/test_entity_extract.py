@@ -14,7 +14,12 @@ class FakeAdapter:
         self.reply = reply
 
     async def complete(self, messages, tools, **kwargs):
-        assert any(m.role == "user" and "实体提炼器" in (m.content or "") for m in messages)
+        # Phase 1：固定文案来自 prompts.PROMPTS["ENTITY_EXTRACTION_SYSTEM"]，
+        # 动态数据（对话 / 证据目录）是 json.dumps 后的数据消息。
+        assert messages[0].role == "system"
+        assert '"entities"' in messages[0].content
+        assert messages[-1].role == "user"
+        assert '"messages"' in messages[-1].content
         return Completion(message=ChatMessage(role="assistant", content=self.reply))
 
 

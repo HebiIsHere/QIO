@@ -246,9 +246,11 @@ def test_tool_description_and_schema_are_explicit(ctx: AppContext):
     assert tool.parameters["required"] == ["fragment_id"]
     desc = tool.description
     # 明确「什么时候该调用 / 什么时候只要 memory_search」
-    assert "从那里继续" in desc or "继续" in desc
+    # Phase 1：描述统一来自 prompts.TOOL_DESCRIPTIONS；这里只断言仍存在的契约语义，
+    # 不再逐字匹配旧文案（文案唯一来源在 prompts.py）。
+    assert "继续" in desc
     assert "memory_search" in desc
-    assert "不要" in desc and "查询" in desc
+    assert "不改变" in desc or "只查询历史" in desc
 
 
 def test_continue_tool_publishes_anchor_event(ctx: AppContext):

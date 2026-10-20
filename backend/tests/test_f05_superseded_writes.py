@@ -29,6 +29,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from agent import prompts
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -38,9 +39,13 @@ from agent.services.app import AppContext
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
-SUMMARY_MARKER = "summarizing a closed conversation fragment"
-ENTITY_MARKER = "你是实体提炼器"
-KNOWLEDGE_MARKER = "extracting durable knowledge"
+from agent.prompts import PROMPTS
+
+# Phase 1：封块摘要 / 实体 / 知识提炼的固定正文只在 agent.prompts 维护；
+# 这里按固定文案本身的稳定前缀分派（不是全文快照断言）。
+SUMMARY_MARKER = PROMPTS["CLOSED_SUMMARY_SYSTEM"]
+ENTITY_MARKER = PROMPTS["ENTITY_EXTRACTION_SYSTEM"][:20]
+KNOWLEDGE_MARKER = PROMPTS["KNOWLEDGE_EXTRACTION_SYSTEM"][:20]
 
 
 def _summary_payload(title: str, summary: str, entities=None) -> str:

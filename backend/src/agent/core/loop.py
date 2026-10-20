@@ -55,7 +55,8 @@ from agent.core.turn_facts import TurnFacts
 from agent.core.answer_buffer import AnswerBuffer
 from agent.core.progress import ProgressTracker
 from agent.trace.redact import sanitize_error_text
-from agent.prompts import ANSWER_FALLBACK_HINT, ANSWER_MARKER, CONTENT_ROLE_PROTOCOL
+from agent import prompts
+from agent.prompts import ANSWER_MARKER
 from agent.tools.registry import ToolRegistry
 from agent.tools.base import ToolResult
 
@@ -1273,30 +1274,50 @@ class AgentLoop:
 
     # -- main entry -------------------------------------------------------
 
-    async def run(self, user_message: str) -> TurnResult:
+    async def run(
+        self,
+        user_message: str,
+        *,
+        initial_messages: list[ChatMessage] | None = None,
+    ) -> TurnResult:
+        """跑一轮。
+
+        initial_messages 是统一消息组装（core/message_assembly）给出的初始消息：
+        唯一一条 system 消息 + 承载用户原文与真实媒体内容块的 user 消息。
+        旧调用（只给 user_message）行为不变。
+        """
         try:
-            return await self._run(user_message)
+            return await self._run(user_message, initial_messages=initial_messages)
         finally:
             # 媒体材料只属于**这一轮**：设备复用同一个 loop 跑下一轮时，上一轮的
             # 附件依据不许继续跟着（否则下一轮会带着用户已经换掉的材料回答）。
             self.media_parts = []
             self.dispose()
 
-    async def _run(self, user_message: str) -> TurnResult:
-        # 本轮媒体材料挂在**首条 user 消息**上：后续每一次模型调用都基于同一个
-        # messages 列表累积，所以「需要再次调用模型的步骤」里仍然带着它。
-        images = [part for part in self.media_parts if isinstance(part, ImagePart)]
-        audios = [part for part in self.media_parts if isinstance(part, AudioPart)]
-        videos = [part for part in self.media_parts if isinstance(part, VideoPart)]
-        messages: list[ChatMessage] = [
-            ChatMessage(
-                role="user",
-                content=user_message,
-                images=images or None,
-                audios=audios or None,
-                videos=videos or None,
-            )
-        ]
+    async def _run(
+        self,
+        user_message: str,
+        *,
+        initial_messages: list[ChatMessage] | None = None,
+    ) -> TurnResult:
+        # 初始消息由统一消息组装给出时（system + 当前用户原文 + 媒体），直接用；
+        # 旧调用只给 user_message 时，仍按原行为把本轮媒体材料挂在首条 user 消息上
+        # （后续每一次模型调用都基于同一个 messages 列表累积，依据不会在第二步丢掉）。
+        if initial_messages is not None:
+            messages: list[ChatMessage] = list(initial_messages)
+        else:
+            images = [part for part in self.media_parts if isinstance(part, ImagePart)]
+            audios = [part for part in self.media_parts if isinstance(part, AudioPart)]
+            videos = [part for part in self.media_parts if isinstance(part, VideoPart)]
+            messages = [
+                ChatMessage(
+                    role="user",
+                    content=user_message,
+                    images=images or None,
+                    audios=audios or None,
+                    videos=videos or None,
+                )
+            ]
         self._warnings = []
         self._stream_degraded_warned = False
         self._termination_warned = False
@@ -1721,7 +1742,19 @@ class AgentLoop:
         """
         if getattr(self.adapter, "protocol_in_prompt", False):
             return None
-        return CONTENT_ROLE_PROTOCOL
+        return prompts.answer_protocol()
+
+    def _fallback_hint(self) -> str:
+        """补救调用（每轮最多一次）的附加要求。
+
+        契约：补救调用**保留通用规则**，再追加 answer_fallback_hint()；
+        回答协议正文不得重复注入。text 档的回答协议已经在它自己的 system prompt 里，
+        所以这里只追加兜底要求；native / anthropic 的协议是每次调用注入的，
+        这里必须先保留协议、再追加兜底要求。
+        """
+        if getattr(self.adapter, "protocol_in_prompt", False):
+            return prompts.answer_fallback_hint()
+        return prompts.answer_protocol() + "\n\n" + prompts.answer_fallback_hint()
 
     async def _emit_one_shot_assistant(self, completion: Completion) -> None:
         """一次性正文事件（不支持流式的路径**不假装流式**）。
@@ -1928,7 +1961,7 @@ class AgentLoop:
         声明 → 实时进回答区；未声明 → 一次性交付（降级路径，不冒充流式）。
         每次调用都计入迭代与用量，不隐藏。
         """
-        completion = await self._plan(messages, tools=[], hint=ANSWER_FALLBACK_HINT)
+        completion = await self._plan(messages, tools=[], hint=self._fallback_hint())
         if completion is None:
             return None  # 被取消：这次调用没有结果
         self._account_usage(completion)

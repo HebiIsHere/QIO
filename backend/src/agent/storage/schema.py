@@ -1437,3 +1437,24 @@ SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
 # + 42（板面预览位置）。
 COMPENSATION_VERSION = 43
 
+# ── 阶段一（P1）：提示词 / 消息组装 / 记忆记录基础（2026-10-21）──────────────
+# 契约：docs/qio-refactor-contract.md §8。只追加，不改历史迁移语义。
+# 迁移 44（B 线）：滚动摘要覆盖位置 / 输入版本持久化（agents/memory/rolling.py 使用）。
+from agent.storage.migration_p1_b import MIGRATION as _P1_B_MIGRATION  # noqa: E402
+
+MIGRATIONS.append(_P1_B_MIGRATION)
+
+# 补偿入口（新，45）：迁移 43 的全部语句 + 44 新增列。
+# 与 36 / 38 / 40 / 43 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append(
+    (
+        45,
+        [stmt for target, stmts in MIGRATIONS if target == 43 for stmt in stmts]
+        + list(_P1_B_MIGRATION[1]),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 45
+
+

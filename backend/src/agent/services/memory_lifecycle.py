@@ -22,15 +22,6 @@ logger = logging.getLogger(__name__)
 
 CONSOLIDATION_COOLDOWN_SECONDS = 600
 
-# 高影响候选是要用户点头的：用一句人话说明「为什么值得你确认」，
-# 而不是把内部类别枚举丢给界面。
-HIGH_IMPACT_REASON = {
-    "user_profile": "这会影响 QIO 对你的长期理解",
-    "agent_self": "这会影响 QIO 对自己的认识",
-    "goal": "这会影响 QIO 对你目标的判断",
-}
-
-
 class MemoryLifecycle:
     def __init__(
         self,
@@ -135,7 +126,7 @@ class MemoryLifecycle:
         不可恢复时，实体任务照样登记并独立推进。
         """
         from agent.memory.model_output import NOTE_TRUNCATED_TEXT
-        from agent.memory.summary import summarize_fragment_outcome
+        from agent.memory.summary import summarize_messages_outcome
         from agent.services import derived_tasks
 
         generation = task.claim_generation
@@ -156,7 +147,12 @@ class MemoryLifecycle:
             )
             return False
 
-        outcome = await summarize_fragment_outcome(adapter, [dict(m) for m in messages])
+        run = await summarize_messages_outcome(
+            adapter,
+            [dict(m) for m in messages],
+            input_version=int(task.content_version or 0),
+        )
+        outcome = run.outcome
         self._record_repairs(tracer, "摘要", outcome.notes)
         if outcome.value is None:
             # 摘要失败不使对话或导航失败：片段保持「已封存、无摘要」，原文仍可读。
@@ -169,6 +165,16 @@ class MemoryLifecycle:
             self._record_failure(tracer, "summary_derivation_failed", reason)
             derived_tasks.fail(self.conn, task.id, reason, expected_generation=generation)
             return False
+        if not run.coverage.complete:
+            # 覆盖不完整（任何分段 / 合并失败都走不到这里，防御性兜底）：
+            # 不得把「只覆盖了一部分」的结果写成完整摘要。
+            reason = "摘要未覆盖完整片段（coverage.complete=false）"
+            self._enqueue_entities_task(fragment.id, task.content_version)
+            self._record_failure(tracer, "summary_derivation_failed", reason)
+            derived_tasks.fail(
+                self.conn, task.id, reason, expected_generation=generation
+            )
+            return False
         summary = outcome.value
 
         # 降级标记写进片段数据本身（不只是 trace）：这段摘要是被本地修正过的，
@@ -179,6 +185,9 @@ class MemoryLifecycle:
             for note in outcome.notes
         )
         meta["summary_repairs"] = [note.render() for note in outcome.notes]
+        # 覆盖情况随片段持久化：输入版本 / 覆盖消息 id / 可追溯分段 / 块数 /
+        # 是否完整。失败路径不会写这个键（complete 永远不会被伪造成 true）。
+        meta["summary_coverage"] = run.coverage.as_dict()
 
         from agent.graph.edges import EdgeService
         from agent.graph.nodes import NodeService
@@ -493,9 +502,11 @@ class MemoryLifecycle:
                 expected_generation=generation,
             )
             return False
+        # 输入给模型的真实来源目录（证据 id 只能来自这里；不编造来源）。
+        evidence_catalog = self._evidence_catalog(fragment)
         # 模型抽取放在任何写事务之外；落库与「任务完成」再进同一个事务边界。
         extraction, error = await self.extract_knowledge_candidates(
-            adapter, summary, tracer=tracer
+            adapter, summary, evidence_catalog=evidence_catalog, tracer=tracer
         )
         if error:
             derived_tasks.fail(self.conn, task.id, error, expected_generation=generation)
@@ -512,6 +523,7 @@ class MemoryLifecycle:
                     topic_id=fragment.topic_id,
                     entity_ids=[],
                     fragment_id=fragment.id,
+                    evidence_catalog=evidence_catalog,
                     tracer=tracer,
                 )
                 derived_tasks.complete(self.conn, task.id, expected_generation=generation)
@@ -528,14 +540,14 @@ class MemoryLifecycle:
 
         片段行只存摘要正文；标题 / 关键词在 memory_index，实体名在 nodes。
         摘要还没写就返回 None，让知识任务保持可重试。
+
+        **存取路径不再二次截断**（Phase 1）：生成侧的上限仍在（模型输出先由
+        memory.limits 收敛），但已经存进来的摘要正文必须原样读回，不能在这里
+        再按 MAX_SUMMARY 砍一刀。因此用 model_construct 跳过 pydantic 的
+        「生成长度」校验 —— 那是生成契约，不是存取契约。
         """
-        from agent.memory.summary import (
-            MAX_ENTITIES,
-            MAX_KEYWORDS,
-            MAX_SUMMARY,
-            MAX_TITLE,
-            FragmentSummary,
-        )
+        from agent.memory.contract import FragmentSummary
+        from agent.memory.limits import MAX_ENTITIES, MAX_KEYWORDS, MAX_TITLE
 
         text = (fragment.summary or "").strip()
         if not text:
@@ -567,9 +579,9 @@ class MemoryLifecycle:
                         f"SELECT name FROM nodes WHERE id IN ({placeholders})", ids
                     ).fetchall()
                 ]
-        return FragmentSummary(
+        return FragmentSummary.model_construct(
             title=title,
-            summary=text[:MAX_SUMMARY],
+            summary=text,
             entities=entities[:MAX_ENTITIES],
             keywords=keywords,
         )
@@ -665,25 +677,33 @@ class MemoryLifecycle:
         return None
 
     async def extract_knowledge_candidates(
-        self, adapter: BaseAdapter, summary: Any, *, tracer=None
+        self,
+        adapter: BaseAdapter,
+        summary: Any,
+        *,
+        evidence_catalog: list[dict] | None = None,
+        tracer=None,
     ):
         """**只调用模型**：抽取知识候选，不碰数据库。
 
-        返回 `(提取结果 | None, 可读失败原因 | None)`。任何领域写入由
-        :meth:`commit_knowledge` 在调用方指定的事务边界内完成 —— 这样
-        「模型调用不跨写事务」与「写入前后核验所有权」可以同时成立（F05）。
+        Phase 1 起委托 C 的 agent.knowledge.derivation.extract_candidates（冻结签名），
+        并传入真实来源目录 evidence_catalog。返回 `(提取结果 | None, 可读失败原因)`；
+        任何领域写入由 :meth:`commit_knowledge` 在调用方指定的事务边界内完成 ——
+        这样「模型调用不跨写事务」与「写入前后核验所有权」可以同时成立（F05）。
         """
-        from agent.memory.summary import extract_knowledge_candidates_outcome
+        from agent.knowledge.derivation import extract_candidates
 
-        outcome = await extract_knowledge_candidates_outcome(adapter, summary)
-        self._record_repairs(tracer, "知识抽取", outcome.notes)
-        if outcome.value is None:
-            # 知识抽取失败不影响已完成的摘要与索引，但**必须留痕**：
-            # 失败原因要能在 trace 与日志里读出来，而不是悄悄没有知识条目。
-            reason = outcome.error or "知识抽取不可用"
+        extraction, error = await extract_candidates(
+            adapter,
+            summary=summary,
+            evidence_catalog=list(evidence_catalog or []),
+            tracer=tracer,
+        )
+        if extraction is None or error:
+            reason = error or "知识抽取不可用"
             self._record_failure(tracer, "knowledge_extraction_failed", reason)
             return None, reason
-        return outcome.value, None
+        return extraction, None
 
     def commit_knowledge(
         self,
@@ -692,89 +712,117 @@ class MemoryLifecycle:
         topic_id: str,
         entity_ids: list[str],
         fragment_id: str,
+        evidence_catalog: list[dict] | None = None,
         tracer=None,
     ) -> list[dict]:
         """把抽取结果落库。**调用方负责事务边界与所有权核验**（F05）。
 
-        返回本轮新建的高影响候选（由调用方在事务提交后再登记到待确认队列 ——
-        事务回滚时它们不能留在内存队列里指向不存在的知识条目）。
+        Phase 1 起委托 C 的 agent.knowledge.derivation.commit_candidates（冻结签名），
+        入参包含真实来源目录 evidence_catalog。返回本轮新建的高影响候选（由调用方
+        在事务提交后再登记到待确认队列 —— 事务回滚时它们不能留在内存队列里指向
+        不存在的知识条目）。
         """
-        from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
-        from agent.knowledge.verify import VerificationService
+        from agent.knowledge.derivation import commit_candidates
 
-        if extraction is None:
-            return []
-        ks = KnowledgeService(self.conn)
-        vs = VerificationService(self.conn, ks)
-        existing = self._knowledge_contents_for_fragment(fragment_id)
-        high_impact: list[dict] = []
-        for cand in extraction.candidates:
-            if cand.content in existing:
-                # 幂等：重试时不重复写同一条知识
-                continue
-            existing.add(cand.content)
-            node_ids: list[str] = []
-            if cand.attach == "user":
-                node_ids = [self.user_root_id()]
-            elif cand.attach == "entity" and cand.entity:
-                node, _ = self.topics.nodes.mention(cand.entity, topic_id, force=False)
-                if node is not None:
-                    node_ids = [node.id]
-            else:
-                node_ids = [topic_id]
-            try:
-                item = ks.create(
-                    category=cand.category,
-                    content=cand.content,
-                    node_ids=node_ids,
-                    provenance={"fragment_id": fragment_id},
-                )
-                if tracer is not None:
-                    tracer.write("knowledge", item.id)
-                ks.submit(item.id)
-                if cand.category in HIGH_IMPACT_CATEGORIES:
-                    # 留在待确认状态，由调用方在事务提交后登记到「回答后自然确认」队列
-                    high_impact.append(
-                        {
-                            "knowledge_id": item.id,
-                            "category": cand.category,
-                            "content": cand.content,
-                            "impact": "high",
-                            "reason": HIGH_IMPACT_REASON.get(
-                                cand.category, "这条知识会长期生效"
-                            ),
-                        }
-                    )
-                    continue  # stays draft; user confirmation required
-                result = vs.review(ks.get(item.id), verified_by="system")
-                if result.accepted:
-                    ks.activate(item.id)
-            except Exception as exc:  # extraction must not break the fragment close
-                logger.warning("knowledge candidate failed: %s", self._safe_exc(exc))
-        return high_impact
+        return list(
+            commit_candidates(
+                self.conn,
+                extraction,
+                topic_id=topic_id,
+                entity_ids=entity_ids,
+                fragment_id=fragment_id,
+                evidence_catalog=list(evidence_catalog or []),
+                tracer=tracer,
+            )
+        )
 
-    def _knowledge_contents_for_fragment(self, fragment_id: str) -> set[str]:
-        """这个片段已经写过的知识内容（供任务重试时幂等跳过）。"""
-        contents: set[str] = set()
+    def _evidence_catalog(self, fragment) -> list[dict]:
+        """后台知识提炼的真实来源目录（输入给模型的 evidence 清单）。
+
+        条目形状（与 C 的 derivation 约定）：{"id": "真实 id", "kind":
+        "message|fragment|summary|entity|knowledge", "label": "简短说明"}。
+        只列程序拥有的真实 id：片段 / 该片段每条消息 / 摘要索引 / 既有实体 /
+        该片段已有知识；不编造来源，不从模型正文里猜 id。
+        """
+        catalog: list[dict] = [
+            {"id": str(fragment.id), "kind": "fragment", "label": "待提炼的交流片段"}
+        ]
         for row in self.conn.execute(
-            "SELECT content, provenance FROM knowledge"
+            "SELECT id, role, content FROM messages WHERE fragment_id = ? ORDER BY rowid",
+            (fragment.id,),
         ).fetchall():
+            preview = str(row["content"] or "").strip().replace("\n", " ")[:80]
+            catalog.append(
+                {
+                    "id": str(row["id"]),
+                    "kind": "message",
+                    "label": f"{row['role']} 消息：{preview}",
+                }
+            )
+        index_row = self.conn.execute(
+            "SELECT id, title, entity_ids FROM memory_index WHERE fragment_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (fragment.id,),
+        ).fetchone()
+        entity_ids: list[str] = []
+        if index_row is not None:
+            catalog.append(
+                {
+                    "id": str(index_row["id"]),
+                    "kind": "summary",
+                    "label": f"摘要索引：{index_row['title'] or ''}".strip(),
+                }
+            )
+            try:
+                entity_ids = [str(i) for i in json.loads(index_row["entity_ids"] or "[]")]
+            except (TypeError, ValueError):
+                entity_ids = []
+        if entity_ids:
+            placeholders = ",".join("?" for _ in entity_ids)
+            for row in self.conn.execute(
+                f"SELECT id, name FROM nodes WHERE id IN ({placeholders})", entity_ids
+            ).fetchall():
+                catalog.append(
+                    {
+                        "id": str(row["id"]),
+                        "kind": "entity",
+                        "label": f"既有实体：{row['name']}",
+                    }
+                )
+        for row in self.conn.execute("SELECT id, content, provenance FROM knowledge").fetchall():
             try:
                 provenance = json.loads(row["provenance"] or "{}")
             except (TypeError, ValueError):
                 provenance = {}
-            if provenance.get("fragment_id") == fragment_id:
-                contents.add(str(row["content"]))
-        return contents
+            if provenance.get("fragment_id") != fragment.id:
+                continue
+            preview = str(row["content"] or "").strip().replace("\n", " ")[:60]
+            catalog.append(
+                {
+                    "id": str(row["id"]),
+                    "kind": "knowledge",
+                    "label": f"已有知识：{preview}",
+                }
+            )
+        return catalog
 
     # -- budget-pressure consolidation -----------------------------------
 
     async def consolidate(
         self, topic_id: str, adapter: BaseAdapter, tracer=None
     ) -> bool:
-        """Rolling summary of the open fragment under budget pressure."""
+        """Rolling summary of the open fragment under budget pressure.
+
+        Phase 1：只处理**未覆盖的新消息**（覆盖游标见迁移 44），摘要写入与游标
+        推进在同一个事务里；没有新消息时幂等返回、不调用模型；崩溃 / 取消时
+        游标不前进（原文保留、可重试）。
+        """
         from agent.memory.model_output import NOTE_TRUNCATED_TEXT
-        from agent.memory.summary import summarize_rolling_outcome
+        from agent.memory.rolling import (
+            rolling_view,
+            save_state,
+            summarize_rolling_outcome,
+        )
 
         fragment = self.fragments.get_or_create_open(topic_id)
         if fragment.start_message_id is None:
@@ -791,10 +839,13 @@ class MemoryLifecycle:
                     return False
             except ValueError:
                 pass
-        messages = self.fragments.messages(fragment.id)
-        outcome = await summarize_rolling_outcome(
-            adapter, fragment.summary, [dict(m) for m in messages]
-        )
+        # 只取未覆盖的新消息：已覆盖的原文不再重复喂给模型，未覆盖的也不跳过。
+        view = rolling_view(self.conn, fragment)
+        messages = list(view.uncovered)
+        if not messages:
+            # 同一输入重跑幂等：没有新消息就不重复调用模型、不动游标。
+            return False
+        outcome = await summarize_rolling_outcome(adapter, view.summary, messages)
         self._record_repairs(tracer, "滚动摘要", outcome.notes)
         if outcome.value is None:
             self._record_failure(
@@ -812,12 +863,20 @@ class MemoryLifecycle:
             for note in outcome.notes
         )
         meta["summary_repairs"] = [note.render() for note in outcome.notes]
+        # 摘要写入 + 游标推进 + 索引在同一个事务边界内：要么一起前进，要么都不写。
         with transaction(self.conn):
-            self.conn.execute(
-                "UPDATE fragments SET summary = ?, summary_model = ?, "
-                "summary_version = summary_version + 1, meta = ? WHERE id = ?",
-                (summary.summary, adapter.model, json.dumps(meta, ensure_ascii=False), fragment.id),
+            advanced = save_state(
+                self.conn,
+                fragment.id,
+                summary=summary.summary,
+                summary_model=adapter.model,
+                meta=meta,
+                covered_message_id=str(messages[-1]["id"]),
+                updated_at=now,
             )
+            if not advanced:
+                # 覆盖位置没有前进（迟到 / 并发）：不写入、不建索引。
+                return False
             entry = self.index_builder.build(
                 fragment_id=fragment.id,
                 topic_id=topic_id,

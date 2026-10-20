@@ -22,12 +22,7 @@ from agent.adapters.base import (
     ToolCall,
     ToolSpec,
 )
-from agent.prompts import (
-    CONTENT_ROLE_PROTOCOL,
-    SYSTEM_PROMPT_TEXT_MODE,
-    SYSTEM_PROMPT_TOOLS_HEADER,
-    TEXT_TOOL_ENTRY,
-)
+from agent import prompts
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +33,6 @@ _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 # 出现这些迹象说明模型**想**按工具协议回复，但格式坏了 —— 这才是协议失败。
 _PROTOCOL_HINTS = ("tool_calls", "tool_name", '"arguments"')
 
-# text 档没有 role=tool：工具结果以普通 user 文本回给模型，格式在这里定义一次。
-TOOL_RESULT_TEMPLATE = "工具 {name} 的结果（call_id={call_id}）：\n{content}"
-TOOL_CALL_TEMPLATE = "调用工具 {name}（call_id={call_id}）：参数 {arguments}"
-UNKNOWN_TOOL_NAME = "未知工具"
 
 
 class TextAdapter(BaseAdapter):
@@ -88,37 +79,55 @@ class TextAdapter(BaseAdapter):
 
     # -- prompt building --------------------------------------------------
 
-    def build_text_tools(self, tools: list[ToolSpec]) -> str:
-        lines = []
-        for t in tools:
-            lines.append(
-                TEXT_TOOL_ENTRY.format(
-                    name=t.name,
-                    description=t.description,
-                    schema=json.dumps(t.parameters, ensure_ascii=False),
-                )
-            )
-        return "\n".join(lines)
+    def mode_rules_text(self, tools: list[ToolSpec]) -> str:
+        """text 档的模式规则：文本工具协议 + 观测格式 + 实际工具目录。
 
-    # text 档自己把内容角色协议拼进 system prompt（见 build_system_prompt）：
+        与 native / anthropic 的 tools 字段等价，三档规则一致且只出现一次。
+        工具目录用 prompts.text_tool_catalog 渲染（参数 schema 以 JSON 作为数据传入）。
+        """
+        sections = [
+            prompts.text_mode_protocol(),
+            prompts.text_observation_rules(),
+        ]
+        catalog = prompts.text_tool_catalog(
+            [
+                {"name": t.name, "description": t.description, "parameters": t.parameters}
+                for t in tools
+            ]
+        )
+        if catalog:
+            sections.append(catalog)
+        return "\n\n".join(section for section in sections if section and section.strip())
+
+    # text 档自己把回答协议拼进 system prompt（见 build_system_prompt）：
     # core/loop.py 据此不再重复注入（同一份措辞只出现一次）。
     protocol_in_prompt = True
 
-    def build_system_prompt(self, tools: list[ToolSpec]) -> str:
-        tools_block = self.build_text_tools(tools)
-        if tools_block:
-            tools_block = f"{SYSTEM_PROMPT_TOOLS_HEADER}\n{tools_block}"
-        # 观测格式必须在 prompt 里说清楚：text 档没有 role=tool，工具结果是普通文本。
-        observation_note = (
-            "Tool results come back to you as ordinary user messages formatted as "
-            '"工具 <name> 的结果（call_id=<id>）：<result>"; '
-            'your tool calls are echoed as "调用工具 <name>（call_id=<id>）：参数 <json>".'
-        )
-        # 内容角色协议（第五轮契约 §1.1）：三档都要能看到，text 档拼在这里。
-        return f"{SYSTEM_PROMPT_TEXT_MODE}\n\n{CONTENT_ROLE_PROTOCOL}\n\n{observation_note}\n\n{tools_block}"
+    def build_system_prompt(self, tools: list[ToolSpec], base_system: str = "") -> str:
+        """拼出 text 档唯一的 system prompt。
+
+        base_system 是统一消息组装给出的系统规则 + 结构化上下文块；
+        模式规则（文本工具协议 / 观测格式 / 工具目录）与回答协议按契约顺序
+        各出现一次。没有 base_system（单独调用）时返回一份完整可用的 prompt。
+        """
+        sections: list[str] = []
+        if base_system and base_system.strip():
+            sections.append(base_system.strip())
+            # 组装方可能已经把模式规则放进 base_system（按契约顺序）；
+            # 这里只在缺失时补上，避免同一段规则出现两次。
+            if prompts.text_mode_protocol().strip() not in base_system:
+                sections.append(self.mode_rules_text(tools))
+        else:
+            sections.append(prompts.system_rules(self.mode_rules_text(tools)))
+        sections.append(prompts.answer_protocol())
+        return "\n\n".join(section for section in sections if section and section.strip())
 
     def system_prompt_text(self, tools: list[ToolSpec]) -> str:
-        """text 档真正会发出去的 system prompt（含全部工具 schema）。"""
+        """text 档真正会发出去的固定 system prompt（含全部工具 schema）。
+
+        预算口径：工具说明拼进 prompt 时只在这里算一次
+        （tools_in_prompt=True，registry 侧不再按 API tools 计一遍）。
+        """
         return self.build_system_prompt(tools)
 
     def protocol_overhead_tokens(self, tools: list[ToolSpec]) -> int:
@@ -236,10 +245,15 @@ class TextAdapter(BaseAdapter):
         * 一条输入消息对应一条输出消息，顺序严格保持（多工具 / 多轮 / 失败结果都稳定）。
         """
         call_names = self._tool_call_names(messages)
-        out: list[dict[str, Any]] = [
-            {"role": "system", "content": self.build_system_prompt(tools)}
-        ]
+        # text 档只允许一条 system 消息：把组装好的系统消息（固定规则 + 上下文）
+        # 合并进自己拼的那一份 prompt，再把回答协议拼在最后（只出现一次）。
+        system_parts: list[str] = []
+        out: list[dict[str, Any]] = []
         for msg in messages:
+            if msg.role == "system":
+                if msg.content:
+                    system_parts.append(msg.content)
+                continue
             if msg.role == "tool":
                 # 工具结果：普通文本观测，附工具名与调用关联（不丢内容、不换成 role=tool）。
                 out.append(
@@ -249,9 +263,10 @@ class TextAdapter(BaseAdapter):
             if msg.role == "assistant" and msg.tool_calls:
                 out.append({"role": "assistant", "content": self._assistant_text(msg)})
                 continue
-            # system / user / 普通 assistant：原样保留（空内容也保留，顺序不乱）
+            # user / 普通 assistant：原样保留（空内容也保留，顺序不乱）
             out.append({"role": msg.role, "content": msg.content or ""})
-        return out
+        system_prompt = self.build_system_prompt(tools, "\n\n".join(system_parts))
+        return [{"role": "system", "content": system_prompt}, *out]
 
     @staticmethod
     def _tool_call_names(messages: list[ChatMessage]) -> dict[str, str]:
@@ -271,8 +286,8 @@ class TextAdapter(BaseAdapter):
             blocks.append(msg.content)
         for call in msg.tool_calls or []:
             blocks.append(
-                TOOL_CALL_TEMPLATE.format(
-                    name=call.name or UNKNOWN_TOOL_NAME,
+                prompts.TEXT_TOOL_CALL_TEMPLATE.format(
+                    name=call.name or prompts.TEXT_UNKNOWN_TOOL_NAME,
                     call_id=call.id or "",
                     arguments=json.dumps(call.arguments or {}, ensure_ascii=False),
                 )
@@ -287,9 +302,15 @@ class TextAdapter(BaseAdapter):
         绝不靠删掉这条消息让请求「看起来合法」。
         """
         call_id = msg.tool_call_id or ""
-        name = call_names.get(call_id) or UNKNOWN_TOOL_NAME
-        content = msg.content if msg.content not in (None, "") else "（没有输出）"
-        return TOOL_RESULT_TEMPLATE.format(name=name, call_id=call_id, content=content)
+        name = call_names.get(call_id) or prompts.TEXT_UNKNOWN_TOOL_NAME
+        content = (
+            msg.content
+            if msg.content not in (None, "")
+            else prompts.TEXT_EMPTY_RESULT_PLACEHOLDER
+        )
+        return prompts.TEXT_TOOL_RESULT_TEMPLATE.format(
+            name=name, call_id=call_id, content=content
+        )
 
     def _parse(self, content: str) -> dict[str, Any] | None:
         text = content.strip()

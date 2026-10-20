@@ -433,6 +433,20 @@ class AppContext:
         self.registry.register(
             CorrectKnowledgeTool(conn, snapshot_provider=self._knowledge_snapshot_provider)
         )
+        # Phase 1 C：主对话新增知识一律提交审批；实体由 QIO 自主创建（证据必须在本轮目录）。
+        from agent.tools.entity_create import CreateEntityTool
+        from agent.tools.knowledge_propose import ProposeKnowledgeTool
+
+        self.registry.register(
+            ProposeKnowledgeTool(
+                conn,
+                evidence_provider=self._turn_evidence_catalog,
+                turn_id_provider=self._active_turn_id,
+            )
+        )
+        self.registry.register(
+            CreateEntityTool(conn, evidence_provider=self._turn_evidence_catalog)
+        )
         from agent.storage.tool_store import ToolStore
 
         self.tool_store = ToolStore(conn)
@@ -1851,9 +1865,32 @@ class AppContext:
                 },
                 dropped=[],
             )
-            prompt = notice
+            # 统一消息组装（契约 §3）：系统通知作为本轮 user 原文，长期记忆等上下文
+            # 走结构化 ContextBlock（固定标签由 prompts.CONTEXT_LABELS 渲染），
+            # 不再用「【系统通知】」中文标题把两段拼成一条消息。
+            from agent.core.message_assembly import (
+                ContextBlock,
+                MediaParts,
+                build_initial_messages,
+            )
+
+            blocks = []
             if payload.text:
-                prompt = f"{payload.text}\n\n【系统通知】\n{notice}"
+                blocks.append(ContextBlock("memory", {"legacy_text": payload.text}))
+            mode_rules = ""
+            mode_getter = getattr(adapter, "mode_rules_text", None)
+            if callable(mode_getter):
+                try:
+                    mode_rules = str(mode_getter(self.registry.specs()) or "")
+                except Exception:  # noqa: BLE001 - 模式规则失败不能挡住通知轮
+                    logging.getLogger(__name__).warning("notify mode rules failed", exc_info=True)
+                    mode_rules = ""
+            initial_messages = build_initial_messages(
+                user_text=notice,
+                media=MediaParts(),
+                mode_rules=mode_rules,
+                blocks=blocks,
+            )
             loop = AgentLoop(
                 adapter, self.registry, self.bus,
                 tool_trace=self._record_tool_call,
@@ -1876,7 +1913,7 @@ class AppContext:
             ctx.loop = loop
             try:
                 with tracer.phase("agent_loop"):
-                    result = await loop.run(prompt)
+                    result = await loop.run(notice, initial_messages=initial_messages)
             finally:
                 ctx.loop = None
             if ctx.cancelled or result.cancelled:
@@ -2023,6 +2060,51 @@ class AppContext:
         """当前 active turn 的知识快照（供 correct_knowledge 使用）。"""
         active = self.turns.active
         return active.knowledge_snapshot if active is not None else []
+
+    def _turn_entity_cards(self, ctx: Any) -> list[Any]:
+        """本轮实际会看到的实体（消息命中的卡 + 当前话题挂着的卡），供证据目录使用。"""
+        try:
+            from agent.entities.cards import EntityCardService
+
+            svc = EntityCardService(self.conn)
+            cards: dict[str, Any] = {}
+            for card in svc.match_cards(getattr(ctx, "message", "") or ""):
+                cards.setdefault(card.id, card)
+            topic_id = getattr(ctx, "current_topic", None)
+            if topic_id:
+                for node_id in self._topic_entity_ids(topic_id):
+                    row = self.conn.execute(
+                        "SELECT id FROM entity_cards WHERE node_id = ? AND state = 'active'",
+                        (node_id,),
+                    ).fetchone()
+                    if row is not None:
+                        card = svc.get(row["id"])
+                        if card is not None:
+                            cards.setdefault(card.id, card)
+            return list(cards.values())
+        except Exception:  # noqa: BLE001 - 证据目录是校验依据，但取实体失败不应打断一轮
+            logger.warning("turn entity evidence failed", exc_info=True)
+            return []
+
+    def _turn_evidence_catalog(self):
+        """本轮程序证据目录（Phase 1 C）。
+
+        惰性构造：工具在校验 evidence_ids 时才调用，因此本轮已经落库的用户消息、
+        附件与**已经真实完成**的工具调用都在目录里；回合结束不需要额外清理
+        （没有任何跨轮缓存）。
+        """
+        from agent.knowledge.evidence import EvidenceCatalog, build_turn_catalog
+
+        active = self.turns.active
+        if active is None:
+            return EvidenceCatalog.empty()
+        return build_turn_catalog(
+            self.conn,
+            turn_id=active.turn_id,
+            message=getattr(active, "message", "") or "",
+            knowledge_snapshot=list(active.knowledge_snapshot or []),
+            entity_cards=self._turn_entity_cards(active),
+        )
 
     async def run_turn(self, message: str, topic_id: str | None = None) -> dict:
         """提交一个 turn 并等待结果（单飞由 TurnManager 保证）。"""

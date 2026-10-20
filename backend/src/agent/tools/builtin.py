@@ -5,13 +5,23 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from agent import prompts
 from agent.tools.base import Tool, ToolResult
 
 
 class EchoTool(Tool):
     name = "echo"
-    description = "原样回显输入文本，用于连通性/冒烟自检。"
-    parameters = {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}
+    description = prompts.TOOL_DESCRIPTIONS["echo"]
+    parameters = {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "description": prompts.argument_description("echo", "text"),
+            }
+        },
+        "required": ["text"],
+    }
 
     async def run(self, **kwargs):
         return ToolResult(ok=True, content=kwargs.get("text", ""))
@@ -19,7 +29,7 @@ class EchoTool(Tool):
 
 class NowTool(Tool):
     name = "now"
-    description = "返回当前 UTC 时间。"
+    description = prompts.TOOL_DESCRIPTIONS["now"]
     parameters = {"type": "object", "properties": {}}
 
     async def run(self, **kwargs):

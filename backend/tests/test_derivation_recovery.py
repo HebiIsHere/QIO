@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from agent import prompts
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -125,13 +126,17 @@ class _ScriptedAdapter:
         self.calls = {"summary": 0, "entities": 0, "knowledge": 0}
 
     async def complete(self, messages, tools, **kwargs) -> Completion:
+        from agent.prompts import PROMPTS
+
         first = messages[0]
         prompt = first["content"] if isinstance(first, dict) else first.content
-        if "summarizing a closed conversation fragment" in prompt:
+        # Phase 1：封块摘要走 prompts.CLOSED_SUMMARY_SYSTEM（结构化 system 消息）。
+        # 分派只认单一来源的提示词正文，避免测试依赖第二份旧英文 prompt。
+        if prompts.PROMPTS["CLOSED_SUMMARY_SYSTEM"] in prompt:
             key, payload = "summary", self.summary
-        elif "extracting durable knowledge" in prompt:
+        elif PROMPTS["KNOWLEDGE_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "knowledge", self.knowledge
-        elif "你是实体提炼器" in prompt:
+        elif PROMPTS["ENTITY_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "entities", self.entities
         else:
             raise AssertionError(f"未知提示词：{prompt[:40]!r}")
@@ -253,10 +258,16 @@ def test_prompt_states_the_length_and_count_limits():
     """上限要写进给模型的要求里：模型先自己收敛，本地截断只是兜底。"""
     for limit in (MAX_TITLE, MAX_SUMMARY, MAX_ENTITIES, MAX_KEYWORDS):
         assert str(limit) in SUMMARY_PROMPT, limit
-    assert str(MAX_CANDIDATES) in KNOWLEDGE_EXTRACTION_PROMPT
+    # Phase 1：知识抽取改成结构化任务（固定 system + 程序生成 schema / limits），
+    # 上限仍然来自 memory/limits.py 的同一组常量，并真的出现在给模型的内容里。
+    from agent.knowledge.extraction import knowledge_limits, knowledge_task_system
+
+    prompt = knowledge_task_system()
+    assert str(MAX_CANDIDATES) in prompt
     from agent.memory.summary import MAX_CANDIDATE_CONTENT
 
-    assert str(MAX_CANDIDATE_CONTENT) in KNOWLEDGE_EXTRACTION_PROMPT
+    assert str(MAX_CANDIDATE_CONTENT) in prompt
+    assert knowledge_limits()["max_candidates"] == MAX_CANDIDATES
 
 
 # ---------------------------------------------------------------------------
@@ -884,11 +895,16 @@ def _seal_with(ctx: AppContext, user_text: str):
 
 
 class _LeakyAdapter(_ScriptedAdapter):
-    """模型调用失败时把请求原文带进异常（真实适配器/网关可能这样）。"""
+    """模型调用失败时把请求原文带进异常（真实适配器/网关可能这样）。
+
+    Phase 1：结构化任务把固定 system 与数据分开放，用户原文可能在后续消息里，
+    所以这里拼接**全部**消息正文再抛错 —— 仍然守「异常回显请求原文」这一真实形态。
+    """
 
     async def complete(self, messages, tools, **kwargs) -> Completion:
-        first = messages[0]
-        prompt = first["content"] if isinstance(first, dict) else first.content
+        prompt = "\n".join(
+            (m["content"] if isinstance(m, dict) else m.content) or "" for m in messages
+        )
         raise RuntimeError("upstream 400: " + prompt)
 
 

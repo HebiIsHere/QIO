@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent import prompts
 from agent.prompts import TOOL_DECLARE_COMPLETION_DESC
 from agent.tools.base import Tool, ToolResult
 
@@ -29,19 +30,18 @@ class DeclareCompletionTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "开发任务（工作区）id"},
+            "task_id": {
+                "type": "string",
+                "description": prompts.argument_description("declare_completion", "task_id"),
+            },
             "version": {
                 "type": "string",
-                "description": "要声明的版本 = 工作区内容摘要（dev_list_tasks 或工具结果里给出的那一串）",
+                "description": prompts.argument_description("declare_completion", "version"),
             },
             "claims": {
                 "type": "array",
                 "items": {"type": "string", "enum": list(CLAIMS)},
-                "description": (
-                    "要核对的结论：test_passed（这一版有测试通过证据）、"
-                    "registered（这一版提交成功且已注册）、"
-                    "usable（现在可以使用，要求前面两条都成立）"
-                ),
+                "description": prompts.argument_description("declare_completion", "claims"),
             },
         },
         "required": ["task_id", "version", "claims"],

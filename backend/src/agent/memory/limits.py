@@ -15,3 +15,25 @@ MAX_KEYWORDS = 50
 MAX_CANDIDATES = 10
 MAX_CANDIDATE_CONTENT = 500
 MAX_ENTITY_NAME = 80
+
+# ---------------------------------------------------------------------------
+# 封块摘要的输入分段预算（唯一来源：生成、合并、存取与测试都引用这里）
+# ---------------------------------------------------------------------------
+# 为什么需要：摘要必须覆盖**完整片段**，不得只保留尾部。输入超过一次调用的
+# 预算时按「完整消息 + 可追溯分段」切块，逐块摘要后再按顺序合并。
+# 单块预算 = 一次摘要调用携带的转录文本上限（字符与估算 token 同时约束）。
+SUMMARY_CHUNK_MAX_CHARS = 12_000
+SUMMARY_CHUNK_MAX_TOKENS = 3_000
+# 单条消息超过单块预算时的分段上限：按字符切段并记录（消息 id + 段偏移/序号），
+# 保证超长单条消息也不会被尾部截断。
+SUMMARY_SEGMENT_MAX_CHARS = 6_000
+SUMMARY_SEGMENT_MAX_TOKENS = 2_000
+# 合并调用的输入预算与单批摘要条数上限（超过就分批归并，顺序不变）。
+SUMMARY_MERGE_MAX_CHARS = 12_000
+SUMMARY_MERGE_MAX_TOKENS = 3_000
+SUMMARY_MERGE_MAX_SEGMENTS = 8
+
+# 滚动摘要的输入预算：已有摘要 + 真正新增的消息；只处理未覆盖消息，
+# 输入过大时按同样口径分块顺序折叠，不得只保留尾部。
+ROLLING_INPUT_MAX_CHARS = 8_000
+ROLLING_INPUT_MAX_TOKENS = 2_000

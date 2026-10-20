@@ -236,8 +236,12 @@ attach 缺省时按现有规则处理。明确拒绝的内容不能被另一入�
 | 46 | A | 结构化工具结果持久化 / 重建所需字段（仅当必须） |
 | 47 | Lead | 负责人接线所需（仅当必须） |
 
-- 只允许追加：在 `storage/schema.py` 的 `MIGRATIONS` 末尾新增，不得改历史迁移语义。
-- 编号冲突时由 Lead 重新分配；合并顺序由 Lead 在整合分支处理。`SCHEMA_VERSION` 由 Lead 统一收敛。
+- 只允许追加，不得改历史迁移语义。
+- **实现分支不改 `storage/schema.py`**：各自在自己的 worktree 新建
+  `backend/src/agent/storage/migration_p1_<a|b|c>.py`，导出 `MIGRATION = (编号, ["SQL", ...])`
+  （或 `MIGRATIONS_EXTRA = [(编号, [...])] )；分支内测试自行应用该 SQL。
+  Lead 在整合时把它们登记进 `schema.py` 的 `MIGRATIONS` 末尾并统一收敛 `SCHEMA_VERSION`。
+- 编号冲突时由 Lead 重新分配；合并顺序由 Lead 在整合分支处理。
 - 迁移必须有对应定向测试（升级路径 / 幂等 / 对象校验至少一项）。
 
 ## 9. 负责人（Lead）接线清单

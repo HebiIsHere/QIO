@@ -108,6 +108,8 @@ def _empty_meta() -> dict:
         "pending": [],
         "resolved": [],
         "card": {},
+        # Phase 1 C：只有名称、目标身份不确定的关系候选（不写同名实体）。
+        "pending_relations": [],
     }
 
 
@@ -123,7 +125,7 @@ def _normalize_meta(raw: object) -> dict:
                 str(k): dict(v) if isinstance(v, dict) else {"source": str(v)}
                 for k, v in section.items()
             }
-    for key in ("pending", "resolved"):
+    for key in ("pending", "resolved", "pending_relations"):
         section = raw.get(key)
         if isinstance(section, list):
             meta[key] = [dict(item) for item in section if isinstance(item, dict)]
@@ -179,25 +181,178 @@ def _pending_id(field_name: str, value: object) -> str:
     return "pc_" + hashlib.sha1(raw).hexdigest()[:10]
 
 
+#: Phase 1 C：实体提炼决策（契约 §6.4）。create/update 才写入正式实体；
+#: observe / identity_uncertain 只留候选 / 身份疑点，不自动创建。
+DECISION_CREATE = "create"
+DECISION_UPDATE = "update"
+DECISION_OBSERVE = "observe"
+DECISION_IDENTITY_UNCERTAIN = "identity_uncertain"
+ENTITY_DECISIONS = (
+    DECISION_CREATE,
+    DECISION_UPDATE,
+    DECISION_OBSERVE,
+    DECISION_IDENTITY_UNCERTAIN,
+)
+
+#: 新字段的硬上限（生成、修正、存储同一组数字）。
+MAX_IDENTITY = 300
+MAX_CREATION_REASON = 300
+MAX_EVIDENCE_IDS = 12
+MAX_EVIDENCE_ID_LENGTH = 80
+MAX_PENDING_RELATIONS = 20
+
+#: 待处理关系候选（名称已知、目标身份不确定：不写同名实体，留给人决定）。
+PENDING_RELATION = "relation_candidate"
+#: 同名但身份不同：不合并、不覆盖，记成可管理身份冲突。
+PENDING_IDENTITY = "identity_conflict"
+#: observe / identity_uncertain 这类「保留观察」候选。
+PENDING_OBSERVED_ENTITY = "observed_candidate"
+
+
+# -- Phase 1 C：身份 / 创建理由 / 证据（存放在 field_meta.card，不新增列） -----
+
+
+def _clean_evidence_ids(values: object) -> list[str]:
+    """真实证据 id 清洗：去空、去重、保持顺序（最多 MAX_EVIDENCE_IDS 条）。"""
+    if not isinstance(values, (list, tuple, set)):
+        return []
+    out: list[str] = []
+    for raw in values:
+        text = str(raw or "").strip()
+        if text and text not in out:
+            out.append(text)
+    return out[:MAX_EVIDENCE_IDS]
+
+
+def _attribute_payload(attr: Any) -> dict:
+    """属性的存储形状：有证据时才带 evidence_ids（旧行 / 旧 API 形状不变）。"""
+    if hasattr(attr, "model_dump"):
+        payload = attr.model_dump(exclude={"evidence_ids"})
+        evidence = _clean_evidence_ids(getattr(attr, "evidence_ids", None))
+    else:
+        payload = dict(attr or {})
+        payload.pop("evidence_ids", None)
+        evidence = _clean_evidence_ids((attr or {}).get("evidence_ids") if isinstance(attr, dict) else None)
+    if evidence:
+        payload["evidence_ids"] = evidence
+    return payload
+
+
+def card_identity(card: "EntityCard") -> str:
+    """已存储的身份说明（旧行没有 → 空串）。"""
+    meta = card.field_meta if isinstance(card.field_meta, dict) else {}
+    info = meta.get("card") if isinstance(meta.get("card"), dict) else {}
+    return str(info.get("identity") or "").strip()
+
+
+def card_creation_reason(card: "EntityCard") -> str:
+    meta = card.field_meta if isinstance(card.field_meta, dict) else {}
+    info = meta.get("card") if isinstance(meta.get("card"), dict) else {}
+    return str(info.get("creation_reason") or "").strip()
+
+
+def card_evidence_ids(card: "EntityCard") -> list[str]:
+    meta = card.field_meta if isinstance(card.field_meta, dict) else {}
+    info = meta.get("card") if isinstance(meta.get("card"), dict) else {}
+    return _clean_evidence_ids(info.get("evidence_ids"))
+
+
+def _apply_candidate_card_meta(
+    meta: dict, cand: "EntityCardCandidate", *, overwrite: bool
+) -> bool:
+    """把候选的身份信息写进 field_meta.card；返回是否发生变化。
+
+    overwrite=False（自动提炼）只补空，不覆盖已有身份；overwrite=True
+    （用户 / QIO 明确创建）写候选给出的值。
+    """
+    info = meta.setdefault("card", {})
+    if not isinstance(info, dict):
+        info = {}
+        meta["card"] = info
+    changed = False
+    identity = str(getattr(cand, "identity", None) or "").strip()
+    if identity and (overwrite or not str(info.get("identity") or "").strip()):
+        if info.get("identity") != identity[:MAX_IDENTITY]:
+            info["identity"] = identity[:MAX_IDENTITY]
+            changed = True
+    reason = str(getattr(cand, "creation_reason", None) or "").strip()
+    if reason and (overwrite or not str(info.get("creation_reason") or "").strip()):
+        if info.get("creation_reason") != reason[:MAX_CREATION_REASON]:
+            info["creation_reason"] = reason[:MAX_CREATION_REASON]
+            changed = True
+    evidence = _clean_evidence_ids(getattr(cand, "evidence_ids", None))
+    if evidence:
+        merged = _clean_evidence_ids(list(info.get("evidence_ids") or []) + evidence)
+        if merged != info.get("evidence_ids"):
+            info["evidence_ids"] = merged
+            changed = True
+    decision = str(getattr(cand, "decision", None) or "").strip()
+    if decision and info.get("decision") != decision:
+        info["decision"] = decision
+        changed = True
+    return changed
+
+
+def _add_pending_relation(
+    meta: dict, rel: "EntityRelation", *, reason: str = PENDING_RELATION
+) -> None:
+    """名称已知、目标身份不确定的关系：保留候选，不写同名实体。"""
+    candidate = {
+        "id": _pending_id("relations", f"{rel.target}\u0000{rel.type}"),
+        "field": "relations",
+        "target": str(rel.target or "").strip(),
+        "type": str(rel.type or "").strip(),
+        "evidence_ids": _clean_evidence_ids(rel.evidence_ids),
+        "reason": reason,
+        "at": _now(),
+    }
+    pending = [
+        item
+        for item in meta.get("pending_relations", [])
+        if str(item.get("id") or "") != candidate["id"]
+    ]
+    pending.append(candidate)
+    meta["pending_relations"] = pending[-MAX_PENDING_RELATIONS:]
+
+
 class EntityAttribute(BaseModel):
     key: str
     value: str
     confidence: float = 0.8
+    #: Phase 1 C：属性的证据（本阶段只存储与展示，不单独做校验）。
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class EntityRelation(BaseModel):
     target: str
     type: str
+    #: Phase 1 C：目标实体真实 ID（有它时不再按同名猜测目标）；缺省保持旧行为。
+    target_entity_id: str | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class EntityCardCandidate(BaseModel):
-    """主模型封块提炼输出的实体卡候选（本地校验契约）。"""
+    """实体卡候选（封块提炼输出 / 主对话 create_entity 共用契约）。
+
+    Phase 1 C 新增字段都有默认值：旧调用方（直接 upsert 的测试与管理路径）
+    不传 decision 时走既有合并语义，行为不变。
+    """
     name: str
     aliases: list[str] = Field(default_factory=list)
     kind: str | None = None
     summary: str = ""
     attributes: list[EntityAttribute] = Field(default_factory=list)
     relations: list[EntityRelation] = Field(default_factory=list)
+    #: update 时有真实已有 ID；create 必须为空。
+    entity_id: str | None = None
+    #: 这个对象是谁（身份说明：与用户的持续关系、独特标识等）。
+    identity: str | None = None
+    #: 为什么值得创建 / 更新（预选依据的人话说明）。
+    creation_reason: str | None = None
+    #: create / update / observe / identity_uncertain；None = 旧调用方直接写入。
+    decision: str | None = None
+    #: 支持这次候选的真实来源 id（由证据目录校验）。
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -350,15 +505,71 @@ class EntityCardService:
         return nodes.create_entity(name).id
 
     def _sync_relations(self, node_id: str, relations: list[EntityRelation]) -> None:
+        """写关系边。
+
+        有真实 `target_entity_id` 时按 ID 连边（不再按同名猜目标）；没有 ID 时
+        保持旧行为（按名称确保节点）—— 供用户 / 旧调用方的直接写入使用。
+        后台提炼的「只有名称、身份不确定」关系在 apply_auto_candidate 里另走候选
+        （见 _add_pending_relation），不会到这里。
+        """
         from agent.graph.edges import EdgeService
 
         edges = EdgeService(self.conn)
         for rel in relations:
+            rel_type = (rel.type or "").strip()
+            if not rel_type:
+                continue
+            target_id = str(getattr(rel, "target_entity_id", None) or "").strip()
+            if target_id:
+                node = self.conn.execute(
+                    "SELECT id FROM nodes WHERE id = ?", (target_id,)
+                ).fetchone()
+                if node is not None:
+                    edges.add(node_id, target_id, rel_type)
+                    continue
             target = (rel.target or "").strip()
-            if not target or (rel.type or "").strip() == "":
+            if not target:
                 continue
             other = self._ensure_node(target)
-            edges.add(node_id, other, rel.type.strip())
+            edges.add(node_id, other, rel_type)
+
+    def _commit_relations(
+        self,
+        card: "EntityCard",
+        cand: "EntityCardCandidate",
+        meta: dict,
+        *,
+        node_id: str,
+    ) -> bool:
+        """按候选决策写关系：create/update 走新规则，旧调用方保持原语义。
+
+        * 有 target_entity_id 且目标真实存在 → 直接连边；
+        * 只有名称 / 目标不存在 → 只留候选关系（不写同名实体），返回 True 表示
+          meta 变了需要落盘。
+        """
+        if getattr(cand, "decision", None) is None:
+            # 旧调用方（用户 / 直接 upsert）：保持按名称建节点的既有行为。
+            if cand.relations:
+                self._sync_relations(node_id, cand.relations)
+            return False
+        changed = False
+        direct: list[EntityRelation] = []
+        for rel in cand.relations:
+            target_id = str(getattr(rel, "target_entity_id", None) or "").strip()
+            if target_id:
+                row = self.conn.execute(
+                    "SELECT id FROM nodes WHERE id = ?", (target_id,)
+                ).fetchone()
+                if row is not None:
+                    direct.append(rel)
+                    continue
+            if not (rel.target or "").strip() and not target_id:
+                continue
+            _add_pending_relation(meta, rel)
+            changed = True
+        if direct:
+            self._sync_relations(node_id, direct)
+        return changed
 
     # -- 元数据小工具 -----------------------------------------------------
 
@@ -613,7 +824,7 @@ class EntityCardService:
     ) -> EntityCard:
         """整卡替换（用户/调用方明确给出的值），与迁移前行为一致。"""
         now = _now()
-        attrs = [a.model_dump() for a in cand.attributes]
+        attrs = [_attribute_payload(a) for a in cand.attributes]
         existing = self.find_by_name(cand.name)
         if existing is not None:
             node_id = existing.node_id or self._ensure_node(cand.name)
@@ -626,6 +837,8 @@ class EntityCardService:
             for attr in attrs:
                 self._mark_attribute(meta, str(attr.get("key", "")), source, revision)
             meta.setdefault("card", {})["source"] = source
+            # Phase 1 C：身份 / 创建理由 / 证据写进 field_meta.card（明确给出的值可覆盖）。
+            _apply_candidate_card_meta(meta, cand, overwrite=True)
             for key in list(meta.get("tombstones", {})):
                 if any(str(a.get("key", "")) == key for a in attrs):
                     meta["tombstones"].pop(key, None)
@@ -659,6 +872,7 @@ class EntityCardService:
             card_id = _new_id("ec")
             meta = _empty_meta()
             meta["card"] = {"source": source, "revision": 1}
+            _apply_candidate_card_meta(meta, cand, overwrite=True)
             for field_name in ("name", "aliases", "summary", "kind"):
                 self._mark_field(meta, field_name, source, 1)
             for attr in attrs:
@@ -685,8 +899,15 @@ class EntityCardService:
             )
             card = self.get(card_id)
             assert card is not None
-        if cand.relations:
-            self._sync_relations(card.node_id or node_id, cand.relations)
+        if cand.relations or getattr(cand, "decision", None) is not None:
+            meta_after = _normalize_meta(card.field_meta)
+            changed = self._commit_relations(
+                card, cand, meta_after, node_id=card.node_id or node_id
+            )
+            if changed and self._has_meta:
+                # 关系候选是这张卡的待处理项：写回 meta（不动字段值）。
+                updated = self._commit_card(card, meta=meta_after, values=None)
+                card = updated or card
         return card
 
     def apply_auto_candidate(
@@ -702,8 +923,24 @@ class EntityCardService:
           用户删除过的属性键、以及「请求期间卡已被改动」（`expected_revision` 不匹配 =
           迟到结果）都只记 pending 候选，不覆盖。
         """
+        decision = str(getattr(cand, "decision", None) or "").strip()
+        if decision in (DECISION_OBSERVE, DECISION_IDENTITY_UNCERTAIN):
+            # observe / identity_uncertain 不自动创建正式实体：有已存在卡时只留候选。
+            return self.record_observed_candidate(cand, decision)
         for _attempt in range(3):
-            existing = self._find_any_by_name(cand.name)
+            existing = None
+            entity_id = str(getattr(cand, "entity_id", None) or "").strip()
+            if entity_id and decision != DECISION_CREATE:
+                existing = self.get(entity_id)
+            if existing is None:
+                existing = self._find_any_by_name(cand.name)
+            if decision == DECISION_UPDATE and existing is None:
+                # update 必须有真实已有 ID：目标不存在时不新建（不把 update 当 create）。
+                logger.warning(
+                    "实体 update 候选没有真实已有对象：%s",
+                    str(getattr(cand, "name", "") or ""),
+                )
+                return None
             if existing is not None and existing.state != "active":
                 meta = _normalize_meta(existing.field_meta)
                 self._add_pending(
@@ -723,7 +960,29 @@ class EntityCardService:
                 expected_revision is not None
                 and existing.revision != int(expected_revision)
             )
+            # 同名不代表同一对象：身份文字明确冲突时，不合并、不覆盖，只记身份冲突。
+            stored_identity = card_identity(existing)
+            incoming_identity = str(getattr(cand, "identity", None) or "").strip()
+            if (
+                stored_identity
+                and incoming_identity
+                and stored_identity != incoming_identity
+                and decision != DECISION_UPDATE
+            ):
+                conflict_meta = _normalize_meta(existing.field_meta)
+                self._add_pending(
+                    conflict_meta,
+                    "card_identity",
+                    incoming_identity,
+                    reason=PENDING_IDENTITY,
+                    base_revision=existing.revision,
+                )
+                if self._has_meta:
+                    self._commit_card(existing, meta=conflict_meta, values=None)
+                return existing
+            original_meta = _normalize_meta(existing.field_meta)
             meta = _normalize_meta(existing.field_meta)
+            meta_changed = _apply_candidate_card_meta(meta, cand, overwrite=False)
             base = existing.revision
             revision = base  # 本次提交写回后的版本一律是 base + 1（下面统一用 revision + 1）
             changed = False
@@ -854,9 +1113,17 @@ class EntityCardService:
                     continue
                 hit = by_key.get(key)
                 if hit is None:
-                    attrs.append(
-                        {"key": key, "value": item.value, "confidence": item.confidence}
+                    payload = {
+                        "key": key,
+                        "value": item.value,
+                        "confidence": item.confidence,
+                    }
+                    evidence = _clean_evidence_ids(
+                        getattr(item, "evidence_ids", None)
                     )
+                    if evidence:
+                        payload["evidence_ids"] = evidence
+                    attrs.append(payload)
                     by_key[key] = attrs[-1]
                     attrs_changed = True
                     self._mark_attribute(meta, key, SOURCE_AUTO, revision + 1)
@@ -886,7 +1153,7 @@ class EntityCardService:
                 values["attributes"] = json.dumps(attrs, ensure_ascii=False)
                 changed = True
 
-            if changed or meta.get("pending") != _normalize_meta(existing.field_meta).get("pending"):
+            if changed or meta_changed or meta != original_meta:
                 written = self._commit_card(
                     existing, meta=meta, values=values, expected_revision=base
                 )
@@ -895,8 +1162,13 @@ class EntityCardService:
                 card = written
             else:
                 card = existing
-            if cand.relations:
-                self._sync_relations(card.node_id or self._ensure_node(cand.name), cand.relations)
+            if cand.relations or decision:
+                meta_after = _normalize_meta(card.field_meta)
+                if self._commit_relations(
+                    card, cand, meta_after, node_id=card.node_id or self._ensure_node(cand.name)
+                ) and self._has_meta:
+                    updated = self._commit_card(card, meta=meta_after, values=None)
+                    card = updated or card
             return card
         # 连续 3 次都撞上并发写入：这次提交放弃（绝不退回整卡覆盖），
         # 派生任务会带着新内容版本/退避重试，卡片内容保持原样。
@@ -904,6 +1176,88 @@ class EntityCardService:
 
         logger.warning("实体卡自动候选连续版本冲突，本次放弃提交：%s", redact_text(cand.name))
         return self._find_any_by_name(cand.name)
+
+    def record_observed_candidate(
+        self, cand: "EntityCardCandidate", decision: str
+    ) -> "EntityCard | None":
+        """observe / identity_uncertain：只把候选记到已存在卡上，不创建正式实体。"""
+        existing = self._find_any_by_name(cand.name)
+        if existing is None:
+            return None
+        meta = _normalize_meta(existing.field_meta)
+        value = str(getattr(cand, "identity", None) or cand.name or "").strip()
+        reason = (
+            PENDING_OBSERVED_ENTITY
+            if decision == DECISION_OBSERVE
+            else PENDING_IDENTITY
+        )
+        self._add_pending(meta, "card", value, reason=reason, base_revision=existing.revision)
+        _apply_candidate_card_meta(meta, cand, overwrite=False)
+        if self._has_meta:
+            self._commit_card(existing, meta=meta, values=None)
+        return existing
+
+    def add_pending_relations(
+        self, card_id: str, relations: list["EntityRelation"]
+    ) -> "EntityCard | None":
+        """把「只有名称、目标身份不确定」的关系记成待处理候选（不写同名实体）。"""
+        card = self.get(card_id)
+        if card is None:
+            return None
+        meta = _normalize_meta(card.field_meta)
+        for rel in relations:
+            _add_pending_relation(meta, rel)
+        return self._commit_card(card, meta=meta, values=None)
+
+    def pending_relations(self, card_id: str) -> list[dict]:
+        """待处理关系候选（只有名称、目标身份不确定；不写同名实体）。"""
+        card = self.get(card_id)
+        if card is None:
+            return []
+        meta = _normalize_meta(card.field_meta)
+        return list(meta.get("pending_relations", []))
+
+    def resolve_pending_relation(
+        self,
+        card_id: str,
+        candidate_id: str,
+        *,
+        target_entity_id: str,
+        expected_revision: int | None = None,
+    ) -> "EntityCard | None":
+        """用户确认「这条关系就是这个真实目标」：按 ID 连边并清掉候选。"""
+        card = self.get(card_id)
+        if card is None:
+            return None
+        row = self.conn.execute(
+            "SELECT id FROM nodes WHERE id = ?", (str(target_entity_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        meta = _normalize_meta(card.field_meta)
+        target = next(
+            (
+                item
+                for item in meta.get("pending_relations", [])
+                if str(item.get("id") or "") == str(candidate_id)
+            ),
+            None,
+        )
+        if target is None:
+            return card
+        rel_type = str(target.get("type") or "").strip()
+        if card.node_id and rel_type:
+            from agent.graph.edges import EdgeService
+
+            EdgeService(self.conn).add(card.node_id, str(target_entity_id), rel_type)
+        meta["pending_relations"] = [
+            item
+            for item in meta.get("pending_relations", [])
+            if str(item.get("id") or "") != str(candidate_id)
+        ]
+        return self._commit_card(
+            card, meta=meta, values=None, expected_revision=expected_revision
+        )
 
     def revise(
         self,
@@ -1158,6 +1512,11 @@ class EntityCardService:
             # A02：读时把「有非空值但没有来源记录」判成 unknown（旧数据）——
             # 管理侧能一眼看出哪些内容是按用户值保护的，而不是等着被自动提炼覆盖。
             "unknown_source_fields": self._unknown_source_fields(card),
+            # Phase 1 C：身份 / 创建理由 / 证据 / 待处理关系候选（贯穿到 API 与前端）。
+            "identity": card_identity(card),
+            "creation_reason": card_creation_reason(card),
+            "evidence_ids": card_evidence_ids(card),
+            "pending_relations": list(raw_meta.get("pending_relations", [])),
         }
 
     def _unknown_source_fields(self, card: EntityCard) -> list[str]:

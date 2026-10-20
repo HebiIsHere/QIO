@@ -8,23 +8,24 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent import prompts
 from agent.tools.base import Tool, ToolResult
 
 
 class WebSearchTool(Tool):
     name = "web_search"
-    description = (
-        "联网搜索，返回标题、链接、摘要列表。"
-        "调用时机：问题需要实时/外部资料。"
-        "query 必填，top_k 可选（默认 5，上限 20）。"
-        "若搜索不可用会明确说明原因（含建议），不会编造结果；"
-        "同一轮内不要用相同或近似查询重复调用本工具，失败时直接把原因告诉用户。"
-    )
+    description = prompts.TOOL_DESCRIPTIONS["web_search"]
     parameters = {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "检索关键词"},
-            "top_k": {"type": "integer", "description": "返回条数，默认 5，上限 20"},
+            "query": {
+                "type": "string",
+                "description": prompts.argument_description("web_search", "query"),
+            },
+            "top_k": {
+                "type": "integer",
+                "description": prompts.argument_description("web_search", "top_k"),
+            },
         },
         "required": ["query"],
     }

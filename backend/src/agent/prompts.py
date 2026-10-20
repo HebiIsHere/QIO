@@ -6,7 +6,10 @@ agent/prompts.py —— QIO 全部提示词的唯一集中管理文件。
 - 本模块只存放「给模型看」的文本（工具描述、注入模板、system prompt、维护/自动化指令、
   子任务运行时文案）。业务返回值（如错误消息）不属于提示词，留在各自模块。
 - 每个命名常量必须带自然语言注释：说明「用在哪里 + 作用是什么」。
-- 带占位符的模板统一用 str.format() 风格（{name}），JSON 花括号用 {{ }} 转义。
+- 模板占位符按内容选择：纯文本模板可用 str.format（{name}）；**含 JSON 示例的模板**
+  禁止 format / 百分号替换 / 递归 replace，改用 string.Template 的 $name（见
+  render_dreaming_prompt），或把动态数据整体 json.dumps 后作为数据传入。
+- 动态数据（工具结果、材料、用户内容、代码）一律作为**值**传入，不对其做二次解析。
 """
 import json
 from typing import Any, Mapping, Sequence
@@ -229,16 +232,10 @@ TOOL_DECLARE_COMPLETION_DESC = (
     "没有证据就不要说已完成或可使用。"
 )
 
-# 工具调用的可选叙事信封（保留字段 `_qio`）说明。定义于 tools/registry.py
-# `_with_narrative_field`，注入到每个工具的 parameters.properties；
-# 作用：告诉模型可以用一句话说明这次调用想让用户知道什么，不写就是保持安静。
-NARRATIVE_FIELD_DESCRIPTION = (
-    "可选。用一句中文说明这次调用想让用户知道的意图：kind 取 "
-    "announce（下一步准备做什么）/ progress（当前进展）/ warning（异常或限制）/ "
-    "result（上一阶段结果）。不要复述工具名或参数；连续的低价值读取可以整批省略。"
-    "不说明就省略整个字段（保持安静）。explanation 可选：若这次调用可能触发用户确认，"
-    "说明为什么需要执行、准备做什么、可能影响什么。"
-)
+# 工具调用的可选叙事信封（保留字段 `_qio`）说明的唯一来源在 PROMPTS 里
+# （见本文件 Phase 1 冻结契约段）。tools/registry.py 通过
+# prompts.narrative_field_description() 引用；旧名
+# NARRATIVE_FIELD_DESCRIPTION 在文件末尾作为指向同一来源的别名保留。
 
 
 # ============================================================================
@@ -356,54 +353,42 @@ NOTIFY_SUBTASK_DONE = (
 # 四、System Prompt（adapter 层）
 # ============================================================================
 
-# text 模式 system prompt 前缀。定义于 agent/adapters/text.py build_system_prompt；
-# 作用：没有原生工具调用 API 的降级模式，约束模型用 ```json 块输出工具调用。
-SYSTEM_PROMPT_TEXT_MODE = (
-    "You are a tool-calling assistant in text mode, where tool calls are expressed as JSON. "
-    "To call tools, respond with a single ```json block containing only this object:\n"
-    '{"tool_calls": [{"name": "<tool_name>", "arguments": {}}]}\n'
-    "Call independent tools together in one block. If no tool is needed, respond with plain text only; "
-    "never mix prose and the JSON block. "
-    'Optional: add "_qio" inside arguments to tell the user what this step is for; omit it to stay silent.'
-)
-
-# ---- 内容角色协议（第五轮契约 §1.1：消除完整答案重复生成）--------------------
+# ---- 内容角色协议 / text 模式协议（Phase 1 冻结，唯一来源见 PROMPTS）----------
 #
 # 模型用**正文开头的声明**告诉系统「这段文字是最终回答」；声明本身不展示给用户。
 # 这是**唯一**允许的角色判据（禁止用延迟、字数、是否含代码块等启发式猜角色）。
+# 注入点：三档都要能看到，且**每次调用只出现一次**（核心契约 §3）：
+#   * text 兼容档：adapters/text.py 把它拼进自己的 system prompt；
+#   * native / anthropic：core/loop.py 每次调用作为最后一条 system 消息发出。
+# 正文本身只在 PROMPTS["CONTENT_ROLE_PROTOCOL"] / PROMPTS["TEXT_MODE_PROTOCOL"] 维护；
+# 旧符号 CONTENT_ROLE_PROTOCOL / ANSWER_FALLBACK_HINT 在文件末尾指向同一来源。
 #
-# 注入点（同一份措辞，只有下面这一个常量；三档都要能看到）：
-#   * text 兼容档：adapters/text.py::build_system_prompt 把它拼进自己的 system prompt；
-#   * native / anthropic：core/loop.py 每次调用把它作为**最后一条 system 消息**发出
-#     （这两档本来就不自己拼 system prompt，见 BaseAdapter.protocol_in_prompt）。
 # 解析方：core/loop.py::_AssistantStream（流式）与 _split_declared_answer（整段）。
 ANSWER_MARKER = "[[QIO:ANSWER]]"
 
-# 内容角色协议说明（给模型看）。语义三件事：工作阶段文字=进度说明（进过程区）；
-# 最终回答必须以上面的声明开头；声明之后不要再请求工具（否则本轮按已声明回答收尾 + 可见警告）。
-CONTENT_ROLE_PROTOCOL = (
-    "【回答协议】工作阶段的文字是**进度说明**，会显示在过程区；需要工具就直接调用工具。"
-    f"给出最终回答时，正文**必须以 {ANSWER_MARKER} 开头**"
-    "（这个声明本身不会展示给用户）。"
-    "声明之后不要再请求工具：若仍然请求，本轮会按已声明的回答收尾并给出可见警告。"
-)
+# text 模式把工具调用 / 观测转换成普通文本时使用的固定格式（模型可见）。
+# 定义于 agent/adapters/text.py（_assistant_text / _tool_result_text）；
+# 作用：text 档没有 role=tool，工具调用与结果只能以普通文本往返，模型靠这两行关联。
+TEXT_TOOL_CALL_TEMPLATE = "调用工具 {name}（call_id={call_id}）：参数 {arguments}"
+TEXT_TOOL_RESULT_TEMPLATE = "工具 {name} 的结果（call_id={call_id}）：\n{content}"
+# 关联不出工具名时的占位（例如历史消息缺失）。
+TEXT_UNKNOWN_TOOL_NAME = "未知工具"
+# 工具结果是空串时的显式占位：发生过一次调用、输出为空，绝不删掉这条消息假装没发生。
+TEXT_EMPTY_RESULT_PLACEHOLDER = "（没有输出）"
 
-# 兜底调用（core/loop.py::_fallback_answer_call）的 system 提示。
-# 触发条件（唯一允许的额外回答调用，每轮最多一次）：整轮结束时**完全没有回答内容**
-# —— 既没有声明过的回答、也没有可交付的正文（模型只调用过工具、或一个字都没说）。
-# 合规模型下直接问答只需 1 次调用；只有这里会补一次「请给出最终回答」。
-ANSWER_FALLBACK_HINT = (
-    "【最终回答】本轮还没有产生正式回答。请直接给出面向用户的最终回答，"
-    f"正文以 {ANSWER_MARKER} 开头；本次调用不提供任何工具。"
-)
-
-# text 模式工具列表标题。定义于 agent/adapters/text.py build_system_prompt；
-# 作用：在 system prompt 中分隔「可用工具」区，标题后追加每个工具的名称/描述/参数 schema。
-SYSTEM_PROMPT_TOOLS_HEADER = "Available tools (call by exact name only):"
-
-# text 模式单条工具条目模板。定义于 agent/adapters/text.py build_text_tools；
-# 作用：格式化单个工具为「- 名称: 描述 + 参数 JSON Schema」，占位符 {name}、{description}、{schema}。
-TEXT_TOOL_ENTRY = "- {name}: {description}\n  arguments (JSON Schema): {schema}"
+# ---- 工具结果反馈（core/tool_feedback.py 的旧文本兼容路径，模型可见）--------
+# 结构化结果（protocol_version=1）走 ToolEnvelope JSON，不用这些文本；
+# 旧工具没有结构化字段时仍按这些固定句式如实说明失败事实，不做重试/成功判定。
+TOOL_FEEDBACK_FAILURE_HEADER = "【工具结果】{label}"
+TOOL_FEEDBACK_CALL_ID = "call_id: {call_id}"
+TOOL_FEEDBACK_STATUS = "状态: {label}（{code}）"
+TOOL_FEEDBACK_CATEGORY = "错误类别: {label}（{code}）"
+TOOL_FEEDBACK_REASON = "原因: {reason}"
+TOOL_FEEDBACK_RECOVERABLE = "是否可重试: {value}"
+TOOL_FEEDBACK_PARTIAL_HEADER = "有效结果（部分输出）:"
+TOOL_FEEDBACK_EMPTY_REASON = "（没有给出说明）"
+TOOL_FEEDBACK_SUCCESS_EMPTY = "{label} 执行成功，但没有返回内容。"
+TOOL_FEEDBACK_DIAGNOSTIC_TRUNCATED = "\n…[诊断已截断，共 {length} 字符]"
 
 
 # ============================================================================
@@ -416,14 +401,14 @@ TEXT_TOOL_ENTRY = "- {name}: {description}\n  arguments (JSON Schema): {schema}"
 DREAMING_PROMPT = """你是记忆维护分析器。阅读知识条目和最近片段摘要，只处理确实需要维护的内容。
 动作：correct（内容冲突或已过时，给出修正后的 new_content）、merge（内容高度重复，给出合并后内容）、expire（长期无价值或矛盾，直接过期）。
 只输出一个 JSON 对象，不要 Markdown、不要解释：
-{{"candidates": [{{"action": "correct|merge|expire", "knowledge_id": "<id>", "new_content": "<correct/merge 时填写>", "reason": "<原因>"}}]}}
-最多 10 条；没有需要处理的项目时输出 {{"candidates": []}}。
+{"candidates": [{"action": "correct|merge|expire", "knowledge_id": "<id>", "new_content": "<correct/merge 时填写>", "reason": "<原因>"}]}
+最多 10 条；没有需要处理的项目时输出 {"candidates": []}。
 
 知识条目：
-{knowledge}
+$knowledge
 
 最近片段摘要：
-{summaries}"""
+$summaries"""
 
 # 工具自动化草案 prompt。定义于 agent/services/maintenance.py；
 # 作用：当检测到用户多次提出相似请求时，让模型生成一个工具定义草案（帮助自动化这类任务），
@@ -470,9 +455,6 @@ ENTITY_CARD_INJECT = "【实体·{name}】{summary}\n属性：{attrs}\n关系：
 #   format / 百分号替换 / 递归 replace。
 # * 先按完整对象控制大小，再序列化；不得截断序列化后的 JSON。
 # * 本模块保持低依赖：只做固定文本、文案索引与纯组装；不反向导入业务服务。
-
-import json
-from typing import Any, Mapping, Sequence
 
 PROMPTS = {
     "QIO_CORE": """
@@ -725,6 +707,32 @@ ARGUMENT_DESCRIPTIONS = {
     "scope": "程序可校验的对象、动作和创建数量范围，不代替外部工具授权。",
     "version": "开发工具返回的当前完整内容摘要，不得截短或猜测。",
     "candidate_index": "兼容旧候选列表的序号；仅在列表仍有效时使用。",
+    "top_k": "返回条数；具体默认值与上限见工具说明。",
+    "topic_id": "限定范围的话题 id；省略表示不限定。",
+    "url": "目标网址。",
+    "path": "文件或目录路径；实际可访问范围由当前策略决定。",
+    "max_chars": "本次读取正文的字符预算。",
+    "dir": "查找的起始目录。",
+    "old": "要被替换的原文片段，需要足够上下文避免误改。",
+    "new": "替换后的新内容。",
+    "program": "要直接运行的程序名，不经过 shell。",
+    "args": "按顺序传给程序的参数列表，不做 shell 解释。",
+    "cwd": "工作目录；省略时使用配置的工作区根。",
+    "timeout": "超时时间；具体单位与默认值见工具说明。",
+    "cmd": "交给系统 shell 执行的命令。",
+    "pid": "进程 id。",
+    "workspace": "开发工作区 id。",
+    "task_id": "开发任务（工作区）id。",
+    "attachment_id": "附件 id；省略时列出本轮附件。",
+    "offset": "分页起始位置。",
+    "limit": "单次返回条数或长度上限。",
+    "fragment_offset": "从附件文本的第几段开始。",
+    "notify": "完成时是否自动唤起主 agent。",
+    "request": "用户需求说明（用途 / 输入输出 / 场景 / 凭据 / 类型）。",
+    "definition": "可选：需要核对时传入的工具定义 JSON。",
+    "explanation": "用通俗语言说明用途，用户会看到。",
+    "claims": "要核对的结论列表。",
+    "text": "要处理的文本。",
 }
 
 CONTEXT_LABELS = {
@@ -865,3 +873,324 @@ def structured_task_system(
         )
     parts.extend(str(section) for section in extra_sections if section and section.strip())
     return _join(parts)
+
+
+# ============================================================================
+# 七、Phase 1 A 迁移：互动模式 / text 档 / 工具反馈 / 工具开发 / 探测
+# ============================================================================
+# 本段由 A 角色从散落位置迁入（interactive/prompts.py、adapters/text.py、
+# tools/spec.py、adapters/probe.py、core/tool_feedback.py 等）。
+# 迁移只移动位置、保持原意；其他模块只能引用这里的常量或纯组装入口，
+# 不得复制正文。动态值一律作为数据传入，禁止对含 JSON 的整段文本 format。
+
+# ---- 互动模式理解（原 interactive/prompts.py::SYSTEM_PROMPT）----------------
+# 系统提示模板。占位符 {ops}、{schema} 由 interactive/prompts.py 用
+# prompts.interactive_system_prompt() 渲染；模板本身不含 JSON 花括号。
+INTERACTIVE_UNDERSTANDING_SYSTEM = """你是 QIO，正在「互动模式」里理解用户刚刚提交的一次板面改动。
+
+## 你能做的是什么
+
+QIO 在互动模式中能执行的板面操作，是**用户在互动模式中能做的操作的一个子集**：
+你只能提出下面这些操作，不能删除、不能隐藏、不能勾选用户内容、不能改用户已有卡片的正文、
+不能直接写数据库、不能绕过审批。
+
+{ops}
+
+任何不在上面的操作都不存在；需要用到它们时，只能在 summary 里说明「这不在互动模式的能力范围内」。
+
+## 你必须做的判断（三种，必须选一种）
+
+1. `intent`：这次提交确实提出了可执行的工作。此时给出 1 个或多个可执行意图。
+2. `clarification`：信息不足，无法诚实判断要做什么。此时**只**给出你需要用户补充的问题，
+   不要凭空生成任务、也不要猜一个看起来合理的任务。
+3. `no_action`：当前无需开展任务（例如只是添加了材料、只是整理位置、只是记录一句话、
+   或已提交内容与上次成功提交实质相同）。这是**正常结果**，不是失败。
+
+三种判定都要如实选。**不允许每次提交都强制生成任务**：
+不要因为「用户提交了」就一定要产出 intent；也不要为了安全一律给 no_action。
+判断依据只能是这次提交的实际内容，不能是关键词命中。
+
+## 绝对禁止的两种做法
+
+* 不许用固定模板 / 关键词映射代替理解（例如看到「比较」就套一段对比摘要，
+  看见「整理」就排一个清单）。你只能根据上下文里**真实存在**的内容与用户写明的意图来判断。
+* 不许声称自己读过没读到的东西。上下文会如实标注材料的来源与截断情况
+  （例如 url_address_only 表示只拿到地址、没有正文；image_unsupported 表示图片
+  当前链路不支持视觉理解；unreadable 表示读取失败）。你不能假装读过它们。
+
+## 上下文怎么给你
+
+你会收到**一条** user 消息，内容是结构化的 JSON 上下文：用户要求、板面关系、有效变化、
+关注范围、材料条目（含来源与截断标记）、以及本次允许引用的对象 id。它**不是**聊天历史，
+也不是让你随便总结的普通文字：你只能把它当成事实来源，逐项引用。
+
+可引用的卡片 id 只在上下文的 visibleCardIds / 各条材料 / cards 里；id 必须原样复制，
+不能自己编，也不能引用没出现的 id。
+
+## 批次内的临时引用、落点与排序
+
+* 同一意图内可以用 `ref` 给新对象起一个符号（字母开头、只含字母 / 数字 / 下划线、
+  最多 32 位），之后用 `card:符号` / `group:符号` 引用它（裸符号按卡片引用）。
+  只能引用**同一意图内更早声明**、类型正确的符号；不存在 / 重复 / 前向引用 / 跨意图 /
+  跨批次 / 类型错误 / 引用未获准对象都会被程序拒绝。
+* 新建卡片省略 x/y 时，用 `place` 指定相对于某张卡的摆放（字段：relativeTo 取
+  「卡片 id 或 card:符号」、side 取 left / right / above / below、gap 取数字），
+  x/y 由程序算出 —— 不要自己猜坐标，也不要指望默认落到左上角。
+* `order_group` 默认**只改逻辑顺序**（不移动卡片）；确实要重排时给
+  `arrange: "row"`（从左到右）或 `"column"`（从上到下一列），程序会真实写入成员 x/y。
+* 上下文里的 `geometry` 是板面坐标（原点左上、x 向右、y 向下）下**本次获准范围内**
+  对象的真实几何；未获准对象既不在 cards 里，也不在 geometry 里。
+
+## 输出格式（严格）
+
+只输出**一个 JSON 对象**，不要 Markdown 代码围栏，不要任何解释性前后缀。
+JSON 里的字符串用中文。schema 如下：
+
+{schema}
+
+再强调一遍：kind 决定其余字段里**哪些是必须的**；不属于该判定的字段可以省略。
+多余字段会被程序忽略，但结构错误会被判为无效输出。"""
+
+# 互动模式输出结构（给模型看的 JSON 形状说明）。纯文本，不做 format。
+INTERACTIVE_OUTPUT_SCHEMA = """{
+  "kind": "intent" | "clarification" | "no_action",
+  "summary": "给用户看的一句话中文说明（必填，说明你怎么判断的）",
+  "clarification": {
+    "question": "要用户补充的问题（一句中文）",
+    "missing": ["缺什么信息"]
+  },
+  "intents": [
+    {
+      "intentKey": "稳定身份：同一件事重复理解必须得到同一个 key，不要用随机数",
+      "title": "任务标题（中文，简短）",
+      "goal": "这件事要达成的目标",
+      "summary": "任务说明（做什么、为什么）",
+      "basis": [
+        {"cardId": "c_xxx", "role": "user_note|material|group|link", "version": "材料版本"}
+      ],
+      "expected": "预期结果（用户能看到什么）",
+      "operations": [
+        {"op": "add_reply_card", "ref": "结论", "content": "..."},
+        {"op": "group_cards", "ref": "结果组", "cardIds": ["c_xxx", "card:结论"], "ordered": true},
+        {"op": "order_group", "groupId": "group:结果组", "memberOrder": ["c_xxx", "card:结论"], "arrange": "row"}
+      ],
+      "impact": {"cardIds": ["受影响的卡片 id"], "scope": "影响范围的一句话说明"},
+      "dependsOn": ["必须先完成的 intentKey"],
+      "conflictsWith": ["互不相容的 intentKey"],
+      "conflictKey": "同一冲突组共用的短标签；没有冲突时留空"
+    }
+  ],
+  "memory": [
+    {"text": "一句话，别抄整块板面", "kind": "goal|conclusion|basis|outcome"}
+  ]
+}
+
+（kind=clarification 时必须给 clarification；kind=intent 时必须给非空 intents 数组；
+其它判定必须省略不属于它的字段。）"""
+
+# 互动模式一次理解调用的 user 消息固定前后缀（上下文 JSON 作为数据插入中间，
+# 不做任何 format/replace）。
+INTERACTIVE_CONTEXT_NOTICE = (
+    "下面是本次提交的结构化上下文（JSON）。它不是聊天历史，只是事实来源；"
+    "请按系统提示的判断规则输出单个 JSON 对象。"
+)
+INTERACTIVE_CONTEXT_START = "=== 上下文开始 ==="
+INTERACTIVE_CONTEXT_END = "=== 上下文结束 ==="
+# 修复调用（唯一一次）的上下文说明：与首次调用的区别只说「只是事实来源」。
+INTERACTIVE_REPAIR_CONTEXT_NOTICE = (
+    "下面是本次提交的结构化上下文（JSON）。它不是聊天历史，只是事实来源。"
+)
+# 修复调用追加的要求；{reasons} 是程序校验给出的原因列表（动态数据）。
+INTERACTIVE_REPAIR_INSTRUCTION = (
+    "你上一次的输出没有通过程序校验，原因如下：\n{reasons}\n"
+    "请重新输出**一个** JSON 对象（不要 Markdown 代码围栏）。"
+    "如果你确实无法给出可执行意图，请如实输出 clarification 或 no_action。"
+)
+
+
+def interactive_system_prompt(ops_text: str, schema_text: str) -> str:
+    """渲染互动模式系统提示。
+
+    ops_text / schema_text 是程序生成的数据；模板本身只有这两个占位符、
+    不含 JSON 花括号，因此这里可以安全地 str.format（插入值不会被再次解析）。
+    """
+    return INTERACTIVE_UNDERSTANDING_SYSTEM.format(ops=ops_text, schema=schema_text)
+
+
+def render_dreaming_prompt(knowledge: str, summaries: str) -> str:
+    """渲染记忆维护（Dreaming）提示词。
+
+    DREAMING_PROMPT 里带 JSON 示例，必须用 string.Template 的 $ 占位符渲染，
+    不能对整段文本调用 str.format / 百分号替换 / 递归 replace。
+    """
+    from string import Template
+
+    return Template(DREAMING_PROMPT).substitute(
+        knowledge=knowledge, summaries=summaries
+    )
+
+
+# ---- 工具定义提案（原 tools/spec.py::TOOL_PROPOSAL_PROMPT）------------------
+# 定义于 tools/spec.py 的独立结构化调用：让模型产出一个可校验的工具定义草案。
+TOOL_PROPOSAL_SYSTEM = (
+    "You are designing a new tool for an agent. The user wants a concrete capability. "
+    "Return only a single JSON object, no prose or Markdown fences:\n"
+    "{\n"
+    '  "explanation": "<why this tool is needed and what it does, for the user review>",\n'
+    '  "tool": {\n'
+    '    "name": "<snake_case name>",\n'
+    '    "description": "<one-line description for the agent>",\n'
+    '    "parameters": {<JSON Schema object>},\n'
+    '    "code": "<python function body: def run(**kwargs) -> dict, pure, deterministic, no network, no secrets>",\n'
+    '    "tool_type": "function",\n'
+    '    "sync": true,\n'
+    '    "tests": [{"name": "<case name>", "input": {...}, "expect": {...}}]\n'
+    "  }\n"
+    "}\n"
+    "Rules: code must be deterministic, side-effect free, and safe in a sandbox; tests must cover representative inputs."
+)
+
+
+# ---- 能力探测（adapters/probe.py 与 native/anthropic 探测调用）--------------
+# 探测本身是一次真实模型请求：工具描述与消息也是模型可见的固定文案。
+PROBE_TOOL_NAME = "ping"
+PROBE_TOOL_DESCRIPTION = "Returns pong."
+PROBE_TOOL_DESCRIPTION_WITH_PURPOSE = "Returns pong. Used for capability probing."
+PROBE_MESSAGE = "ping"
+
+
+# ---- 叙事信封（_qio）的嵌套参数说明 -----------------------------------------
+# 定义于 tools/registry.py::_with_narrative_field；与 PROMPTS["NARRATIVE_FIELD_DESCRIPTION"]
+# 是同一份提示词（总说明 + 字段说明），此处只维护字段级文案。
+NARRATIVE_ARGUMENT_DESCRIPTIONS = {
+    "kind": "一句面向用户的意图说明的类型：announce / progress / warning / result。",
+    "text": "一句面向用户的意图说明。",
+    "explanation": "需要确认时说明原因与影响。",
+}
+
+
+def narrative_field_description() -> str:
+    """每个工具 _qio 字段的说明（唯一来源在 PROMPTS 里）。"""
+    return PROMPTS["NARRATIVE_FIELD_DESCRIPTION"]
+
+
+# ---- 工具专属参数说明（通用参数见 ARGUMENT_DESCRIPTIONS）--------------------
+# 工具名 → 参数名 → 说明。工具 parameters 里只保留类型/枚举/required，
+# 自然语言只从这里取；同名参数含义不同的必须写成工具专属。
+TOOL_ARGUMENT_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "echo": {"text": "要原样返回的文本。"},
+    "memory_search": {"top_k": "返回条数，默认 5。"},
+    "web_search": {"top_k": "返回条数，默认 5，上限 20。"},
+    "web_fetch": {"max_chars": "正文预算字符数，默认 15000，上限 40000。"},
+    "fs_find": {"query": "要查找的文件名或其中的一部分。"},
+    "declare_completion": {
+        "claims": (
+            "要核对的结论：test_passed（这一版有测试通过证据）、"
+            "registered（这一版提交成功且已注册）、"
+            "usable（现在可以使用，要求前面两条都成立）"
+        ),
+        "version": (
+            "要声明的版本 = 工作区内容摘要（dev_list_tasks 或工具结果里给出的那一串）。"
+        ),
+    },
+    "dev_write_file": {
+        "name": "工作区内的相对路径（可用子目录，如 pkg/util.py；不能绝对路径或含 ..）。",
+    },
+    "dev_read_file": {"name": "要读取的工作区文件名。"},
+    "dev_submit_tool": {
+        "definition": "可选。仅在需要核对时传入，必须与工作区 tool.json 一致；提交以工作区文件为准。",
+        "explanation": "通俗的用途说明（≤300 字），用户会看到。",
+    },
+    "await_task": {"task_id": "子任务 id。", "timeout": "等待秒数，默认 120。"},
+    "read_task_result": {
+        "task_id": "子任务 id。",
+        "offset": "起始位置，默认 0。",
+        "limit": "读取长度，默认 4000，上限 4000。",
+    },
+    "create_entity": {
+        "identity": "这个对象是谁：区别于同名对象的具体身份。",
+        "creation_reason": "为什么值得持续记录（持续关系 / 实际使用需要 / 信息价值）。",
+    },
+    "read_attachment": {
+        "attachment_id": "附件 id（形如 att_xxxxxxxx）；不传则列出本轮附件。",
+        "offset": "从第几段开始（0 起；文本=行，DOCX=段落，XLSX=行）。",
+        "limit": "本次最多读多少段；默认值与上限由程序决定。",
+        "fragment_offset": (
+            "行内片段起点（字符，0 起）：配合返回里的 next_fragment_offset，"
+            "继续读取被按片段分页的超长行 / 段。"
+        ),
+    },
+}
+
+
+def argument_description(tool_name: str, argument: str, default: str = "") -> str:
+    """工具参数说明的唯一取用入口：工具专属优先，其次通用说明。"""
+    specific = TOOL_ARGUMENT_DESCRIPTIONS.get(tool_name, {}).get(argument)
+    if specific is not None:
+        return specific
+    return ARGUMENT_DESCRIPTIONS.get(argument, default)
+
+
+# ---- 媒体材料事实的文本渲染（原 services/turn_orchestrator.py::media_facts_note）--
+# 只转述事实，不做判断也不补内容。主链路已改为结构化 media 上下文块
+# （ContextBlock("media", {...})）；这个纯函数保留给旧调用 / 既有测试，
+# 正文仍只在本文件维护。
+MEDIA_FACTS_HEADER = "【本轮媒体材料实际读到的内容】"
+
+
+def render_media_facts(entries: list) -> str:
+    """把本轮媒体材料的**实际读到的内容**渲染成模型可读文本（旧文本路径）。"""
+    lines: list[str] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        source = str(entry.get("source") or "")
+        label = str(entry.get("label") or entry.get("cardId") or "材料")
+        if source == "audio_transcribed":
+            text = str(entry.get("transcript") or "").strip()
+            span = entry.get("range") if isinstance(entry.get("range"), dict) else {}
+            start, end = span.get("start"), span.get("end")
+            where = ""
+            if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+                where = f"（{float(start):.1f}s–{float(end):.1f}s）"
+            engine = entry.get("engine") if isinstance(entry.get("engine"), dict) else {}
+            who = str(engine.get("provider") or "")
+            lines.append(
+                f"- 音频「{label}」{where}经派生转写得到文字"
+                + (f"（{who}）" if who else "")
+                + "："
+                + (text if text else "（没有得到任何文字）")
+            )
+            lines.append("  这段文字只是实际转写结果，不代表听懂了语气、音乐或全部环境声音。")
+        elif source == "audio_delivered":
+            lines.append(f"- 音频「{label}」的原始字节已交给本次链路，由模型自己听。")
+        elif source == "video_sampled":
+            frames = entry.get("frames") if isinstance(entry.get("frames"), list) else []
+            stamps = [
+                f"{float(frame['at']):.1f}s"
+                for frame in frames
+                if isinstance(frame, dict) and isinstance(frame.get("at"), (int, float))
+            ]
+            lines.append(
+                f"- 视频「{label}」按时间点抽样了 {len(frames)} 帧"
+                + (f"（{'、'.join(stamps)}）" if stamps else "")
+                + "：**这是抽样，不是逐帧读取完整视频**。"
+            )
+        elif source == "video_delivered":
+            lines.append(f"- 视频「{label}」的原始字节已交给本次链路，由模型自己看。")
+        elif source == "image_delivered":
+            lines.append(f"- 图片「{label}」的真实字节已交给本次链路，由模型自己看。")
+        elif source in ("audio_unsupported", "video_unsupported", "image_unsupported", "unreadable"):
+            reason = str(entry.get("reason") or "没有读到内容")
+            lines.append(f"- {label}：本次没有读到内容（{reason}）。")
+    if not lines:
+        return ""
+    return MEDIA_FACTS_HEADER + chr(10) + chr(10).join(lines)
+
+
+# ---- 旧符号兼容：指向同一来源，不保留另一份正文 -----------------------------
+# core/loop.py 与既有测试仍可能 import 这些名字；内容一律来自 PROMPTS。
+CONTENT_ROLE_PROTOCOL = PROMPTS["CONTENT_ROLE_PROTOCOL"]
+ANSWER_FALLBACK_HINT = PROMPTS["ANSWER_FALLBACK_HINT"]
+NARRATIVE_FIELD_DESCRIPTION = PROMPTS["NARRATIVE_FIELD_DESCRIPTION"]
+

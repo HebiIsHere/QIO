@@ -240,12 +240,23 @@ def _knowledge_payload(ctx, item) -> dict:
         "supersedes_id": getattr(item, "supersedes_id", None),
         "ended": bool(provenance.get("ended_at")),
         "ended_at": provenance.get("ended_at"),
+        # Phase 1 C：审批入口需要看见「这条是主对话提议 / 事实确定程度 / 依据」，
+        # 不把内部 JSON 整个丢给前端。
+        "epistemic_status": provenance.get("epistemic_status"),
+        "evidence_ids": list(provenance.get("evidence_ids") or []),
+        "turn_id": provenance.get("turn_id"),
+        "provenance_source": provenance.get("source"),
         "created_at": item.created_at,
         "updated_at": item.updated_at,
     }
 
 
-_KNOWLEDGE_SOURCE_LABELS = {"onboarding": "引导", "dream_correct": "后台整理"}
+_KNOWLEDGE_SOURCE_LABELS = {
+    "onboarding": "引导",
+    "dream_correct": "后台整理",
+    "main_chat": "主对话",
+    "background_extraction": "后台整理",
+}
 
 
 def _knowledge_source_label(provenance: dict) -> str:
@@ -2990,6 +3001,12 @@ def create_app(
         if item.state.value != "pending_review":
             raise HTTPException(status_code=400, detail="only pending_review can be rejected")
         draft = ks.reject(knowledge_id)
+        # 明确拒绝的事实要保留：另一个入口（后台提炼 / 主对话 propose）不能
+        # 无理由把同一 category+content 再次保存成待审批条目。
+        from agent.knowledge.rejection import REASON_REJECTED, mark_rejected
+
+        mark_rejected(ctx.conn, knowledge_id, reason=REASON_REJECTED)
+        ctx.conn.commit()
         return {"ok": True, "knowledge": {"id": draft.id, "state": draft.state.value}}
 
     @app.post("/api/knowledge/{knowledge_id}/end")

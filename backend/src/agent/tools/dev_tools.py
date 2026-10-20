@@ -1,4 +1,4 @@
-﻿"""Dev workflow tools: create_tool + dev_write_file/read_file/run_tests/submit_tool.
+"""Dev workflow tools: create_tool + dev_write_file/read_file/run_tests/submit_tool.
 
 The main agent develops tools like an engineer: create a workspace, write
 implementation + tests, run tests, iterate on failures, then submit for
@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any, Awaitable, Callable
 
+from agent import prompts
 from agent.prompts import (
     dev_guide,
     TOOL_CREATE_TOOL_DESC,
@@ -168,7 +169,10 @@ class CreateToolTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "request": {"type": "string", "description": "用户需求（含用途/输入输出/场景/凭据需求/类型）"},
+            "request": {
+                "type": "string",
+                "description": prompts.argument_description("create_tool", "request"),
+            },
         },
         "required": ["request"],
     }
@@ -206,7 +210,10 @@ class DevListFilesTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "工作区 id"},
+            "workspace": {
+                "type": "string",
+                "description": prompts.argument_description("dev_list_files", "workspace"),
+            },
         },
         "required": ["workspace"],
     }
@@ -238,12 +245,18 @@ class DevWriteFileTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "工作区 id"},
+            "workspace": {
+                "type": "string",
+                "description": prompts.argument_description("dev_write_file", "workspace"),
+            },
             "name": {
                 "type": "string",
-                "description": "工作区内的相对路径（可用子目录，如 pkg/util.py；不能绝对路径或含 ..）",
+                "description": prompts.argument_description("dev_write_file", "name"),
             },
-            "content": {"type": "string", "description": "文件内容"},
+            "content": {
+                "type": "string",
+                "description": prompts.argument_description("dev_write_file", "content"),
+            },
         },
         "required": ["workspace", "name", "content"],
     }
@@ -290,8 +303,14 @@ class DevReadFileTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "工作区 id"},
-            "name": {"type": "string", "description": "文件名"},
+            "workspace": {
+                "type": "string",
+                "description": prompts.argument_description("dev_read_file", "workspace"),
+            },
+            "name": {
+                "type": "string",
+                "description": prompts.argument_description("dev_read_file", "name"),
+            },
         },
         "required": ["workspace", "name"],
     }
@@ -371,7 +390,10 @@ class DevRunTestsTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "工作区 id"},
+            "workspace": {
+                "type": "string",
+                "description": prompts.argument_description("dev_run_tests", "workspace"),
+            },
         },
         "required": ["workspace"],
     }
@@ -546,12 +568,18 @@ class DevSubmitTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "workspace": {"type": "string", "description": "工作区 id"},
+            "workspace": {
+                "type": "string",
+                "description": prompts.argument_description("dev_submit_tool", "workspace"),
+            },
             "definition": {
                 "type": "object",
-                "description": "可选。仅在需要核对时传入，必须与工作区 tool.json 一致；提交以工作区文件为准",
+                "description": prompts.argument_description("dev_submit_tool", "definition"),
             },
-            "explanation": {"type": "string", "description": "通俗的用途说明（≤300 字）"},
+            "explanation": {
+                "type": "string",
+                "description": prompts.argument_description("dev_submit_tool", "explanation"),
+            },
         },
         "required": ["workspace", "explanation"],
     }

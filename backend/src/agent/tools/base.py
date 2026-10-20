@@ -73,6 +73,11 @@ class Tool(ABC):
     # 输出 JSON Schema（轻量子集：object/string/number/integer/boolean/array/
     # required/properties/items）。执行后校验失败会返回失败结果。
     output_schema: dict[str, Any] | None = None
+    # Phase 1 类型化参数（契约 §7）：可选的 pydantic 参数模型。
+    # 存在时 registry.specs() 用 json_schema_for(arg_model) 生成展示 schema
+    # （与本地校验同源），执行前用 validate_model 校验；校验失败返回结构化失败
+    # 结果（status/code/errors），不靠中文错误句匹配。旧工具不设置时行为不变。
+    arg_model: Any = None
     # 为 True 时可在同一轮 tool_calls 中与其他并发安全工具并行执行
     # （AgentLoop 以 max_parallel_tools 分组 asyncio.gather）；默认 False 串行。
     is_concurrency_safe: bool = False
