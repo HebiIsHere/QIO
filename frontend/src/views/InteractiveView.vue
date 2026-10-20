@@ -20,11 +20,14 @@ import IntentBatchTray from "../components/interactive/IntentBatchTray.vue";
 import IntentStatusPopover from "../components/interactive/IntentStatusPopover.vue";
 import ImpactConfirmDialog from "../components/interactive/ImpactConfirmDialog.vue";
 import DemoIntentEntry from "../components/interactive/DemoIntentEntry.vue";
+import IntentWorkbench from "../components/interactive/IntentWorkbench.vue";
 import { humanizeFailure } from "../components/interactive/displayText";
 import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
 const demoOpen = ref(false);
+/** 意图与结果工作台（阶段三 C）：用户显式打开才出现，不抢板面操作 */
+const workbenchOpen = ref(false);
 
 onMounted(() => {
   void store.load();
@@ -196,6 +199,16 @@ const boardSize = computed(() => {
         >
           任务{{ store.taskCount ? " " + store.taskCount : "" }}
         </button>
+        <!-- 阶段三 C：意图 / 结果 / 等待 / 账本 / 恢复的统一入口（点击才打开，不抢板面操作） -->
+        <button
+          class="im-chip"
+          type="button"
+          data-im="workbench-entry"
+          :aria-expanded="workbenchOpen"
+          @click="workbenchOpen = !workbenchOpen"
+        >
+          意图与结果
+        </button>
         <button
           class="im-chip"
           type="button"
@@ -223,6 +236,7 @@ const boardSize = computed(() => {
       <IntentBatchTray />
       <ChatDock />
       <ImpactConfirmDialog />
+      <IntentWorkbench v-if="workbenchOpen" @close="workbenchOpen = false" />
 
       <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
         板面读取失败：{{ store.loadError }}
