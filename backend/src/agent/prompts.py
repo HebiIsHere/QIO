@@ -1255,3 +1255,79 @@ knowledge_ids 和 evidence_ids 只能引用输入提供的对象与来源。
 本次交流属于独立记忆事项，不写入主对话。
 """.strip(),
 })
+
+
+# ============================================================================
+# 阶段三（P3）冻结文案：互动模式接入完整主循环 / 板面专属工具
+# ============================================================================
+# 契约：docs/qio-refactor-contract.md §13。只有这里保存模型可见固定文案；
+# 互动政策作为主循环模式规则注入（prompts.system_rules(mode_rules=...)），
+# 工具说明进入 TOOL_DESCRIPTIONS（由工具注册表生成实际 schema），
+# 参数文案进入 ARGUMENT_DESCRIPTIONS；不另行使用旧三分类 JSON 协议。
+PROMPTS.update({
+    "INTERACTIVE_POLICY": """
+当前运行于互动模式，使用同一个 QIO 的理解、记忆、对话和工具能力。
+板面身份、提交身份、查看权限、意图状态及授权范围以程序提供的数据为准。
+用户点击“提交给 QIO”后，理解其目标和已授权材料，在板面提出意图；聊天回复是否必要由你判断。
+信息不足时在对话中自然询问，使用 board_wait_for_input 记录等待，不创建提问卡片或意图草案卡。
+系统已将问题作为正常对话展示时，不再重复发送同一问题。
+用户回答后继续原提交；回答足够时通过 resolved_question_ids 明确解除对应等待。
+意图尚未确认时先提案；已确认范围内可以调整执行步骤。实质扩大目标、对象、数量、成本或影响范围时更新意图并重新确认。
+按需读取最新已保存且获准查看的卡片，必要时对照提交快照。保存或编辑本身不自动构成新的提交。
+生成完整成果后交给板面工具保存，不让保存工具再次猜测或生成正文。
+修改已有内容前读取当前版本，保护用户后来的编辑。发生写入冲突时暂停受影响操作，其他独立工作继续。
+独立意图可在资源允许时并行，依赖与相互影响必须先检查。
+失败时保留已经完成且有用的成果，说明未完成部分；恢复后接着执行，不重复建卡。
+通过 board_finish_intent 明确本次执行结果。自然语言中的“完成”不能代替程序状态。
+普通文字成果完整保存在卡片中，文件成果按用户要求交付。
+""".strip(),
+})
+
+TOOL_DESCRIPTIONS.update({
+    "board_inspect": "查看当前互动板面中获准访问的对象、布局、版本、意图状态和等待事项。板面身份来自运行上下文；普通对话模式不可使用。",
+    "board_read_cards": "读取 card_ids 指定卡片，source 选择 latest 或 submission；按 offset、limit 获取必要范围。最新材料和提交快照分别使用，保留真实可读状态，不假装读取未提供内容。",
+    "board_propose_intents": "为 submission_id 提交意图，明确目标、预期成果、材料依据、结构化影响范围、依赖和冲突。它提出待确认目标，不执行板面改动。用户回答已补齐的问题可列入 resolved_question_ids。",
+    "board_update_intent": "按 intent_id 和 expected_version 更新意图或解除已经回答的等待。changes 修改目标、范围或其他实际字段；resolved_question_ids 指定已解决问题。实质范围变化使旧授权失效，不能在说明中自称已获新授权。",
+    "board_wait_for_input": "为 submission_id 记录必要澄清，question 写成面向用户的自然问题，missing_fields 说明缺少什么。问题在对话中呈现，不创建板面问题卡。返回 question_delivered 后不要重复提问。",
+    "board_create_card": "在已确认 intent_id 范围内创建成果卡，operation_key 用于幂等，content 必须是已经写好的完整正文。可提供标题、正尺寸和有效位置。工具只保存与放置，不再次调用模型生成内容。",
+    "board_update_card": "在意图授权范围内，按 card_id 和 expected_version 应用 patch。使用 operation_key 防止重复。先读取当前内容，保护用户的新编辑，不把查看许可当成编辑许可。",
+    "board_move_card": "在意图授权范围内按 card_id、expected_version 和 position 移动卡片，operation_key 防止重复。坐标使用板面坐标，引用正式对象，不猜测未提供的版本。",
+    "board_group_cards": "在意图范围内组织 card_ids，提供 operation_key 和全部受影响对象的 expected_versions。group_id 为空时建组，有值时加入已有组；检查原组、新组及相关成员，不扩大正文修改权限。",
+    "board_order_group": "按 group_id、member_order 和 expected_versions 调整成员顺序，arrange 可为 none、row 或 column。检查受影响组和卡片，使用 operation_key 防止重复，不遗漏并发用户编辑。",
+    "board_add_link": "在意图范围内连接 src 与 dst，operation_key 防止重复。direction 和 meaning 可选；关系说明必须有依据，不将为了布局连接的线解释成未经确认的事实关系。",
+    "board_finish_intent": "按 intent_id 和 expected_version 声明本次 outcome、summary 与 operation_keys。完成前检查实际成果和未完成事项；程序会核对完整账本、子任务、等待、冲突与依赖。部分完成保留成果并允许恢复，文字说明不能替代完成证据。",
+})
+
+ARGUMENT_DESCRIPTIONS.update({
+    "submission_id": "程序提供的提交身份；只能使用当前运行上下文中的那一次提交。",
+    "intents": "本次提交要提出的意图列表，每项包含目标、预期、依据和结构化范围。",
+    "intent_id": "程序返回的意图稳定身份。",
+    "changes": "本次要修改的意图实际字段；只包含真实变化，不写说明或批准状态。",
+    "card_ids": "本次涉及的正式卡片 id 列表。",
+    "source": "读取来源：latest 为最新已保存授权材料，submission 为提交时快照。",
+    "card_id": "程序返回的正式卡片 id。",
+    "patch": "要应用的字段修改；正文修改提供完整新内容。",
+    "group_id": "程序返回的正式分组 id；为空时创建新组。",
+    "group_ids": "本次涉及的正式分组 id 列表。",
+    "name": "可选的显示名称。",
+    "member_order": "组内成员的完整顺序，全部使用正式卡片 id。",
+    "arrange": "排列方式：none 只改逻辑顺序，row 或 column 才实际写入位置。",
+    "src": "关系起点的正式卡片 id。",
+    "dst": "关系终点的正式卡片 id。",
+    "direction": "是否为有向关系。",
+    "meaning": "关系的实际含义，必须有依据。",
+    "title": "可选的简短标题。",
+    "width": "卡片宽度，使用板面坐标且必须为正数。",
+    "height": "卡片高度，使用板面坐标且必须为正数。",
+    "outcome": "本次尝试的实际结果：completed、partially_completed 或 failed。",
+    "summary": "本次实际结果摘要，说明完成与未完成部分。",
+    "operation_keys": "本次尝试实际执行过的全部操作标识；不得省略或伪造。",
+    "missing_fields": "仍然缺少的信息说明，帮助用户一次补齐。",
+    "question": "面向用户的自然语言问题，只说必要的一次。",
+    "resolved_question_ids": "已经获得足够回答、可以解除对应等待的问题编号。",
+    "position": "板面位置；absolute 用 x、y，relative 引用正式卡片与方向、间距，二选一。",
+    "scope": "程序可校验的对象、动作和创建数量范围，不代替外部工具授权。",
+    "expected_version": "服务返回的对象版本，原样传递，不自行计算。",
+    "expected_versions": "全部受影响对象及其服务返回版本。",
+    "operation_key": "同一意图内一次明确操作的稳定标识，重试相同操作时复用。",
+})

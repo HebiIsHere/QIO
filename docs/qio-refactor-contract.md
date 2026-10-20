@@ -641,3 +641,158 @@ Lead 整合顺序 A / B / C → D 独立回归 → 更新 `docs/qio-refactor-con
 5. 真实模型下的维护输出质量、真实用户回答问题质量未做离线评估（本阶段全部 fake）；
    后续若调整提示词或阈值，需集中做离线评估并对比基线。
 6. 本阶段未推送、未合并 main、未发布。
+
+
+---
+
+## 13. 第三阶段契约：互动模式接入完整主循环（2026-10-21 冻结）
+
+### 13.1 起点、角色与分支
+
+- 起点：第二阶段整合提交 `6e71abbb`（本地 `feat/qio-refactor-p2`，未推送）。
+- 本阶段目标：互动模式不再使用独立的「理解 / 执行」模型调用链，改为**同一个主循环**；
+  板面身份、提交身份、查看权限、意图状态、授权范围全部由程序绑定与校验；QIO 通过
+  12 个专属板面工具提出意图、等待回答、执行操作、声明结果。
+- 角色与分支（各自独立 worktree，从本冻结提交开始）：
+  - Lead：可信运行上下文、主循环共享接线、迁移与整合、最终验证；`feat/qio-refactor-p3`。
+  - A（提交接入 / 对话澄清 / 自动续作）：`wt/p3-a-submission`。
+  - B（板面工具 / 授权范围 / 执行账本 / 并行）：`wt/p3-b-board`。
+  - C（前端意图 / 结果卡 / 局部失败与恢复）：`wt/p3-c-ui`。
+  - D（独立审阅 / 定向验证 / 实际界面检查）：`wt/p3-d-verify`。
+- 预算与禁止：本阶段**不运行完整测试或完整 CI**；四阶段完整验收 / 完整 CI 各最多两轮，
+  留最终阶段。不推送阶段分支、不创建 PR、不通过删测试或弱化权限检查省时间。
+
+### 13.2 冻结新增（本阶段唯一来源）
+
+- 固定模型可见文案（只有 `prompts.py` 保存）：
+  - `PROMPTS["INTERACTIVE_POLICY"]`（模式规则，经 system_rules(mode_rules=...) 注入主循环）；
+  - `TOOL_DESCRIPTIONS` 新增 12 个 board_* 工具说明；`ARGUMENT_DESCRIPTIONS` 新增对应参数文案。
+  - 其他模块只引用；不保留旧三分类 JSON 协议提示词作为新流程的一部分。
+- 执行模型：`agent/interactive/tool_models.py`（冻结）：
+  - 12 个工具参数模型 + IntentSpec / IntentScope / IntentBasisRef / DependencyRef /
+    Position（absolute | relative）/ BoardAction 枚举 / 冻结上限；
+  - `TOOL_ARG_MODELS`、`READ_ONLY_TOOLS`、`intent_spec_schema()`、`tool_argument_schemas()`；
+  - 工具注册时以 `arg_model` 交给注册表生成 schema（`json_schema_for`），不另写模型专用 schema。
+- 可信运行上下文：`agent/interactive/runtime.py`（冻结）：
+  - `BoardTurnContext`（turn_id / mode / board_id / submission_id / topic_id / attempt /
+    intent_ids / authorized_scopes）与 ContextVar；`require_board_turn()`；
+  - 普通模式没有该上下文 → 板面工具拒绝（`interactive_unavailable`）；
+  - `record_delivered_question` / `take_delivered_questions`：问题由工具参数写出，
+    轮末由 Lead 接线作为**正常对话**呈现一次，不触发第二次生成。
+- 本阶段不新增第二套 prompt / 状态 / schema 来源；旧交互历史记录可只读兼容，
+  新流程不再产生旧三分类 JSON 协议数据。
+
+### 13.3 A：提交接入、对话澄清、自动续作
+
+- 提交入口：`POST /api/interactive/boards/{board_id}/submit`（既有路由）保留
+  「提交给 QIO」与提交快照语义；受理成功后**不再创建独立理解模型任务**，而是把
+  「一次互动提交」作为主循环的一个 Turn 受理（同一 TurnManager / 同一 adapter / 同一工具循环）。
+- 请求模型与绑定：聊天发送请求新增可验证字段 `mode`（normal | interactive）、
+  `boardId`、`submissionId`（可选）；服务端校验板面存在、提交属于该板面、模式合法后，
+  写入 TurnContext 的 mode / board_id / submission_id / 原话题 / 续作身份；模型不能传入
+  其他 board_id 越界。普通模式 request 不带这些字段 → 不设板面上下文、不暴露板面工具。
+- 提交后：板面响应是**意图**；聊天是否另发回复由 QIO 判断，不强制每次都有聊天回答。
+  信息不足时由 QIO 在对话中自然提问（board_wait_for_input），不创建提问卡片或意图草案卡。
+- 等待与续作：等待事项与原 submission **持久关联**（迁移 49）；用户回答后自动继续原提交，
+  不要求再次点击提交；回答信息仍不足或属于其他事项时不机械清除等待（由 QIO 通过
+  resolved_question_ids / board_update_intent 明确解除）；等待可跨重启恢复。
+- 问题呈现一次：board_wait_for_input 的问题作为正常对话呈现一次；系统已展示后，
+  模型不重复发送同一问题。允许“已保存意图且不回复”的轮次不进入强制最终回答补救。
+- 退役（新流程不再调用）：独立意图理解模型调用；整份互动 JSON 的独立重写修复调用；
+  空正文卡片的二次模型生成调用。`interactive/prompts.py` 中「禁止接入通用主循环」的旧约束
+  必须移除；旧 `board_understanding` 历史记录保持只读可查，不再产生新记录。
+- 迁移 49（A）：`board_submissions` 增加 turn_id / resume_state / waiting 相关列或新等待表，
+  保证提交—等待—续作—重启恢复的持久关联；不改历史迁移。
+
+### 13.4 B：板面工具、授权范围、执行账本与并行
+
+- 12 个工具（参数模型见 tool_models.py）：board_inspect / board_read_cards /
+  board_propose_intents / board_update_intent / board_wait_for_input / board_create_card /
+  board_update_card / board_move_card / board_group_cards / board_order_group /
+  board_add_link / board_finish_intent。
+- 工具从 runtime 可信上下文取当前板面，不接受模型传入 board_id；普通模式 / 无绑定一律拒绝。
+- 授权对象是**目标与结构化影响范围**（read/write cards、groups、allowed_actions、
+  新建数量上限），不是固定操作文本；中文说明或模型自报批准不构成授权。
+  实质扩大目标、对象、创建数量、成本或影响范围时使旧授权失效并重新确认；
+  外部服务 / 文件 / 电脑操作仍走各自权限，不由板面 scope 授权。
+- 版本：原样使用服务返回的 card/group/link/intent version；模型计算、截短、猜版本一律拒绝；
+  写前 CAS 校验，冲突只暂停受影响步骤并返回结构化 conflict，其他独立操作继续。
+- operation_key：同一意图内稳定；相同 key + 相同请求 → 返回原结果（replayed=true）；
+  相同 key + 不同请求 → conflict。权威操作账本由程序写（迁移 50 的 board_operations /
+  意图版本记录），模型漏列 key 不能掩盖未完成。
+- 新建对象归属由程序登记（scope 计数按整个意图与续作累计，重试不重置）；模型不能自报归属。
+  不恢复旧中文临时 ref；依赖 / 冲突使用 kind=client_ref|intent_id，同一事务解析成正式 ID，
+  校验同板面、存在、自依赖、环与冲突正规化。
+- 位置：数字有限、尺寸为正、间距非负、使用板面坐标；relative 只引用正式且获准读取的对象。
+- 组操作检查原组、新组及全部受影响卡片；组权限不自动扩大正文编辑或查看权限。
+- 并行：独立意图可在资源允许时并行，数据库提交按实际需要串行；写入冲突隔离到受影响步骤。
+- 完成 / 失败：删除旧 `_settle_failed` 默认整体回滚成果的行为；部分失败保留有用成果、
+  标明未完成部分与影响、记录已完成操作、条件恢复后继续、不重复建卡与重复操作。
+  `partially_completed` 结束本次尝试，不永久锁死意图；撤回保护用户后续修改，
+  无法安全撤回时明确说明。
+- board_finish_intent（事务内）：检查意图版本 / 有效授权 / 状态；核对完整权威操作账本与
+  子任务、执行中操作、等待、冲突、必要依赖；存在未结束项不接受 completed；
+  不让迟到完成覆盖用户取消 / 暂停 / 新尝试；成果引用由服务从真实操作记录生成；
+  程序核验执行证据，QIO 仍负责自然语言目标是否满足。
+
+### 13.5 C：前端意图、结果卡、局部失败与恢复
+
+- 前后端「同批批量确认」门槛统一为**两条**（同一常量口径，单条走单条确认）；
+  保留依赖、冲突与确认范围展示。
+- 意图托盘 / 预览：目标、预期成果、依据、影响范围、依赖与冲突、当前真实状态；
+  未确认、已确认、执行中、等待回答、局部冲突、部分完成、失败、可续作如实显示；
+  **不把已受理显示为已完成**。
+- 结果卡：卡片正文完整保存并支持 Markdown（表格、代码块、折叠、合理滚动），
+  不静默截成四千字；文件成果按文件交付；空正文卡不再二次生成。
+- 读取：最新已保存且获权的卡片可读取，提交快照保留并可对照；编辑 / 保存本身不自动调用模型。
+- API：扩展 `api/interactive_intents.py` 的读取 / 确认响应，增加意图版本、授权范围、
+  等待、操作账本与结果引用；不改 A 的提交路由与 Lead 的聚合挂载。
+- 真实界面检查（C 初查 + D 独立复验）：窄窗口、Markdown 表格 / 代码块、长卡片、
+  等待、局部冲突、部分完成与恢复。
+
+### 13.6 Lead：共享接线与整合
+
+- `core/loop.py`：新增“允许不回复”的轮次选项（互动已保存意图 / 等待轮不强制最终回答补救）；
+  轮内设置 / 重置 runtime 上下文；问题已交付时不重复生成；只对真实完成的用户轮计数。
+- `services/turn_orchestrator.py`：按 TurnContext 的 mode/board_id/submission_id 选择
+  system 模式规则（INTERACTIVE_POLICY）、板面上下文块、工具可见性（普通模式不暴露 board_*）、
+  轮末持久化提交等待与已交付问题、无回复轮不写空助手消息、保持原话题与续作绑定。
+- `services/app.py`：注册 12 个板面工具（`build_board_tools` 由 B 提供）、注入 app/conn、
+  启动与关闭纳入既有后台生命周期；清理旧 understanding 调度入口（A 提供的兼容读取保留）。
+- `api/interactive.py`：只做聚合挂载（A / C 各自文件）。
+- 迁移：49（A）、50（B）、补偿 51（Lead：48 补偿语句 + 49 + 50）；
+  `SCHEMA_VERSION = COMPENSATION_VERSION = 51`；`REQUIRED_OBJECTS` 补本阶段必要对象。
+- 文档：契约 §13.10 交接、architecture 阶段三节、status P71、验证台账阶段三。
+
+### 13.7 迁移号（只追加）
+
+| 迁移 | 归属 | 内容 |
+| --- | --- | --- |
+| 49 | A | 提交—主循环 turn 绑定 / 等待事项 / 续作恢复所需列或表 |
+| 50 | B | 意图版本与授权快照、权威操作账本（board_operations）等 |
+| 51 | Lead | 补偿迁移：48 的全部语句 + 49 + 50；`SCHEMA_VERSION=COMPENSATION_VERSION=51` |
+
+禁止修改 `storage/schema.py` 之外的历史语句；A/B 各自新建 `storage/migration_p3_a.py` /
+`migration_p3_b.py` 导出 `MIGRATION=(号,[SQL]) `，分支内测试自行应用；Lead 登记并追加补偿。
+
+### 13.8 本阶段定向验收（复用既有 interactive / execution / materials / approval / 前端测试）
+
+- 普通模式与伪造板面身份被拒绝；模型传 board_id 越界无效。
+- 已确认授权、旧授权失效与实质扩大范围重新确认；中文说明 / 自报批准不构成授权。
+- operation_key 重复操作幂等 / 冲突；创建数量跨续作累计不重置。
+- 依赖环、自依赖、跨意图引用与冲突正规化。
+- 问题只呈现一次；回答后续作自动继续；回答不足 / 其他事项不清除等待；跨重启恢复。
+- 两条意图即可批量确认（前后端同口径）；已受理 != 已完成。
+- 部分失败保留成果并可恢复；局部写入冲突隔离；并行不越权。
+- board_finish_intent 不漏查运行任务 / 等待 / 冲突 / 依赖；迟到完成不覆盖取消/暂停/新尝试。
+- 长正文完整保存、Markdown 渲染、文件按文件交付；编辑 / 保存不调用模型。
+- 真实界面检查：窄窗口、Markdown 表格 / 代码块、长卡片、等待与恢复。
+
+不写纯文案全文快照测试；模型调用一律 fake / mock；不运行完整测试集合。
+
+### 13.9 交付与预算
+
+- 各角色提交自己的分支（中文 commit），证据写 `D:\qio-dev\_P3-EVIDENCE-<x>.md`；
+  D 的审阅记录写 `D:\qio-dev\_P3-REVIEW-d.md`。
+- Lead 合入 `feat/qio-refactor-p3`，跑定向回归 + D 独立测试，更新交接文档与台账，
+  不启动完整 CI；阶段四从本阶段整合提交继续。
