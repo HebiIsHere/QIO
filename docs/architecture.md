@@ -1381,3 +1381,55 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   整合时由 Lead 登记进 `MIGRATIONS` 并追加补偿迁移、收敛 `SCHEMA_VERSION` /
   `COMPENSATION_VERSION`。本阶段最终：迁移 44（滚动摘要覆盖位置 / 输入版本）+ 补偿迁移 45；
   知识 / 实体新字段复用既有 `provenance` / `field_meta` JSON 列，未新增知识侧迁移。
+
+
+---
+
+## 17. 独立后台维护与「记忆待确认」入口（2026-10-21，整体改造第二阶段）
+
+契约与交接见 `docs/qio-refactor-contract.md` §12；进度与限制见 `docs/status.md` P70。
+
+### 17.1 结构总览
+
+```
+知识正式生效（activate / revise）
+  → 变化日志 knowledge_change_log（A，迁移 46；维护自身来源不计数）
+  → 成功用户 turn 计数（turn_orchestrator.finish → scheduler.note_user_turn_completed）
+  → KnowledgeMaintenanceScheduler（A：20 条变化 或 最老变化等 30 轮触发；原子 claim + 快照）
+  → MaintenanceRunner.run_batch（B：结构化 MAINTENANCE_SYSTEM + 程序 schema）
+      ├─ merge / normalize → 领域操作 + 新版本记录（provenance.merged_from / 操作批次）
+      ├─ ask → 持久待回答事项 maintenance_items
+      └─ 批次 / 事项 / 操作记录（迁移 47）
+  → MemoryPendingPanel / API（C：待确认 + 维护记录 + 恢复预览/结果）
+  → 独立回答（B：MAINTENANCE_ANSWER_SYSTEM → revise/revoke/needs_clarification/deferred/no_change）
+  → 安全恢复（B：逐条 / 整批；新版本记录；保护用户后续修改）
+```
+
+- 调度与工具输出清理、工具记录保留、自动化建议（工具候选挖掘）**分开**：
+  知识维护有独立检查循环（`knowledge_maintenance.check_interval_seconds`），
+  旧否定词矛盾扫描与 dreaming 已从维护巡检退休。
+- 后台维护与主对话隔离：维护提示词不携带聊天回答标记、不拼接主对话上下文；
+  后台问题 / 回答不写主对话 messages / 摘要，不计用户轮次，不经主对话模型转述；
+  更新后的知识仍由正常注入路径读取。
+
+### 17.2 持久化与恢复
+
+- 迁移 46：`knowledge_change_log`（seq 处理位置 /（chain_id, version）唯一）、
+  `knowledge_maintenance_state`（单行：turn_seq / last_processed_seq / running /
+  失败与退避）、`knowledge_maintenance_turn_log`（成功用户 turn 去重）。
+- 迁移 47：`maintenance_batches` / `maintenance_items` / `maintenance_operations`
+  （批次、问题与候选、前后快照、证据、状态、错误）。
+- 恢复：预览不写库；恢复通过领域操作 + 新版本记录实现（`source=maintenance_restore`、
+  `restore_of`、`batch_id`），不删除历史；维护产物已不是当前链版本（用户后来改过）
+  时拒绝该项并在结果中说明无法安全恢复的部分。
+- 多来源合并不用一个 knowledge_id 冒充：来源关系全部保存在 `provenance.merged_from`。
+
+### 17.3 读取模型与来源展示
+
+- 待确认事项统一读取模型：`maintenance.models.PendingItemView`（两类事项
+  knowledge_proposal / maintenance_question 按 kind / handler 区分处理程序）。
+- 后台写入来源键（background_extraction / maintenance_merge / maintenance_normalize /
+  maintenance_restore）由 API 统一映射为「后台整理」，同时返回 `provenance_source`
+  原始键；前端「后台整理」筛选按该契约匹配。
+- 待确认事项持久保存在数据库，不使用易超时的临时审批等待替代；不把
+  `entities/pending.py` 当作实体预选库或记忆问答服务。
