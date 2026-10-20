@@ -48,6 +48,7 @@ def app_ctx(tmp_path, db_conn):
 def _seed_board(conn, board_id: str = BOARD) -> None:
     from agent.interactive import board_store, models
 
+    board_store.ensure_board(conn, board_id=board_id)
     board_store.save_board(conn, board_id, models.empty_state(board_id), reason="p3-d-seed")
 
 
@@ -158,7 +159,7 @@ def test_interactive_context_reads_the_bound_board(app_ctx):
 
     conn = app_ctx.conn
     _seed_board(conn)
-    card = models.new_card("text", "板面上的真实内容")
+    card = models.new_card("text", "板面上的真实内容", checked=True)
     state = board_store.load_board(conn, BOARD)["state"]
     state["cards"] = [card]
     board_store.save_board(conn, BOARD, state, reason="seed-card")

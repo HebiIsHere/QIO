@@ -215,6 +215,44 @@ def test_intent_scope_bounds_are_enforced():
         IntentScope.model_validate({"read_card_ids": ["", "c1"]})
 
 
+def test_structural_actions_validate_and_dedupe():
+    """§13.2/§13.4（DEFECT-P3-2 回归）：结构类动作可单独 / 组合校验，重复动作被正规化。
+
+    覆盖 group_cards / order_group / add_link 单独、组合与完整六动作；
+    这条用例在 Lead 修复「list 与 set 求交」前会失败，修复后必须保持通过。
+    """
+    from pydantic import ValidationError
+
+    from agent.interactive.tool_models import (
+        ALLOWED_BOARD_ACTIONS,
+        BoardAction,
+        IntentScope,
+        IntentSpec,
+    )
+
+    for name in ("group_cards", "order_group", "add_link"):
+        scope = IntentScope.model_validate({"allowed_actions": [name]})
+        assert [action.value for action in scope.allowed_actions] == [name]
+
+    full = IntentScope.model_validate({
+        "allowed_actions": list(ALLOWED_BOARD_ACTIONS) + ["create_card", "create_card"],
+        "max_new_cards": 2,
+    })
+    assert [action.value for action in full.allowed_actions] == list(ALLOWED_BOARD_ACTIONS)
+    assert all(isinstance(action, BoardAction) for action in full.allowed_actions)
+
+    spec = IntentSpec.model_validate(_spec(scope={
+        "allowed_actions": list(ALLOWED_BOARD_ACTIONS),
+        "max_new_cards": 2,
+        "max_new_groups": 1,
+        "max_new_links": 1,
+    }))
+    assert {action.value for action in spec.scope.allowed_actions} == set(ALLOWED_BOARD_ACTIONS)
+
+    with pytest.raises(ValidationError):
+        IntentScope.model_validate({"allowed_actions": ["create_card", "delete_card"]})
+
+
 def test_position_rules_are_enforced():
     """§13.4：位置 absolute / relative 二选一；有限数字、正尺寸、非负间距。"""
     from pydantic import ValidationError
