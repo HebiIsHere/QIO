@@ -10,19 +10,19 @@ from __future__ import annotations
 import sqlite3
 
 from agent.graph.nodes import NodeService
-from agent.prompts import TOOL_CREATE_TOPIC_DESC, TOOL_SWITCH_TOPIC_DESC
+from agent.prompts import TOOL_DESCRIPTIONS
 from agent.services.navigation import TopicNavigationService, note_tool_navigation
 from agent.tools.base import Tool, ToolResult
 
 
 class SwitchTopicTool(Tool):
     name = "switch_topic"
-    description = TOOL_SWITCH_TOPIC_DESC
+    description = TOOL_DESCRIPTIONS[name]
     parameters = {
         "type": "object",
         "properties": {
-            "topic_id": {"type": "string", "description": "目标话题 id"},
-            "reason": {"type": "string", "description": "切换原因（可选）"},
+            "topic_id": {"type": "string"},
+            "reason": {"type": "string"},
         },
         "required": ["topic_id"],
     }
@@ -59,12 +59,12 @@ class SwitchTopicTool(Tool):
 
 class CreateTopicTool(Tool):
     name = "create_topic"
-    description = TOOL_CREATE_TOPIC_DESC
+    description = TOOL_DESCRIPTIONS[name]
     parameters = {
         "type": "object",
         "properties": {
-            "name": {"type": "string", "description": "新话题名称，简短明确"},
-            "reason": {"type": "string", "description": "创建原因（可选）"},
+            "name": {"type": "string"},
+            "reason": {"type": "string"},
         },
         "required": ["name"],
     }
