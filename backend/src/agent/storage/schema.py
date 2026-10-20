@@ -1469,10 +1469,42 @@ MIGRATIONS.append(_P2_B_MIGRATION)
 
 # 补偿入口（新，48）：迁移 45 的全部语句 + 46 + 47。
 # 与 36 / 38 / 40 / 43 / 45 的追加方式一致（不手抄历史语句）。
+#
+# 基础表补建：REQUIRED_OBJECTS 里的列（例如第一阶段加入的 fragments.rolling_*）
+# 要求补偿里同时存在对应表的 CREATE TABLE IF NOT EXISTS；否则「整张基础表被删」
+# 时只能发现缺失、补不回来（test_main_closeout_migration_objects 会判红）。
+# 这里补 fragments 的现代形状（迁移 1 + 后续 ADD COLUMN 的合集）。
+_P2_BASE_RECOVERY_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS fragments (
+        id               TEXT PRIMARY KEY,
+        topic_id         TEXT NOT NULL,
+        start_message_id TEXT,
+        end_message_id   TEXT,
+        summary          TEXT,
+        summary_model    TEXT,
+        summary_version  INTEGER NOT NULL DEFAULT 0,
+        created_at       TEXT NOT NULL,
+        closed_at        TEXT,
+        meta             TEXT NOT NULL DEFAULT '{}',
+        source_fragment_id TEXT,
+        relation_type      TEXT,
+        boundary_reason    TEXT,
+        same_stage         INTEGER,
+        content_version    INTEGER NOT NULL DEFAULT 0,
+        rolling_covered_message_id TEXT,
+        rolling_covered_count INTEGER NOT NULL DEFAULT 0,
+        rolling_input_version TEXT,
+        rolling_updated_at    TEXT
+    )
+    """,
+]
+
 MIGRATIONS.append(
     (
         48,
-        [stmt for target, stmts in MIGRATIONS if target == 45 for stmt in stmts]
+        list(_P2_BASE_RECOVERY_DDL)
+        + [stmt for target, stmts in MIGRATIONS if target == 45 for stmt in stmts]
         + list(_P2_A_MIGRATION[1])
         + list(_P2_B_MIGRATION[1]),
     )
