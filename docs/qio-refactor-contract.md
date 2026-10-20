@@ -578,3 +578,64 @@ D 独立审阅并复跑关键项；完整验收与完整 CI 留到四阶段最�
 Lead 整合顺序 A / B / C → D 独立回归 → 更新 `docs/qio-refactor-contract.md`§12 交接、
 `docs/qio-verification-ledger.md` 阶段二段、`docs/status.md` 与 `docs/architecture.md`。
 不推送、不创建 PR、不启动完整 CI、不发布。
+
+
+### 12.10 阶段交接（第二阶段完成，2026-10-21）
+
+**分支与提交**
+
+- 起点：第一阶段整合提交 `5021a4d5`；契约冻结提交 `bcce3a2a`。
+- 实现分支（本地，均未 push）：A `wt/p2-a-schedule`（35b2fd00）；
+  B `wt/p2-b-maintain`（c2739057 / 03dcc0a2 / 6caefa19）；C `wt/p2-c-memory-ui`
+  （fc44a2b3 / 5745c62c / c88f19fc）；D `wt/p2-d-verify`（独立测试，见台账）。
+- 整合分支：`feat/qio-refactor-p2`（Lead 工作区 `D:\qio-dev\qio-ph2-lead`）；
+  **后续第三阶段从本阶段整合提交继续**。不合并 main、不推送、不创建 PR。
+
+**实现映射**
+
+| 契约 | 实现位置 |
+| --- | --- |
+| 12.2 提示词 / 类型 | `prompts.PROMPTS["MAINTENANCE_SYSTEM"/"MAINTENANCE_ANSWER_SYSTEM"]`；`agent/maintenance/models.py` |
+| 12.3 A 计数 / 调度 | `maintenance/changes.py`、`maintenance/scheduler.py`、`storage/migration_p2_a.py`（迁移 46） |
+| 12.4 B 维护 / 回答 / 恢复 | `maintenance/{runner,actions,questions,recovery,store}.py`、`knowledge/lifecycle.py`（增量钩子与域操作）、`storage/migration_p2_b.py`（迁移 47） |
+| 12.5 C API / 界面 | `api/memory_pending_routes.py` + `api/server.py` 挂载 / 来源标签；`frontend/src/components/planet/MemoryPendingPanel.vue`、`PlanetView.vue`、`services/api.ts` |
+| 12.6 Lead 接线 | `services/app.py`（实例化 runner / scheduler）、`services/maintenance.py`（独立知识维护检查循环 + 退休旧路径）、`services/turn_orchestrator.py`（成功用户 turn 钩子）、`storage/schema.py` + `migrate.py`（迁移 46/47 登记、补偿 48、REQUIRED_OBJECTS） |
+
+**本阶段确认的裁决（后续沿用）**
+
+1. 「修改后批准」因既有 lifecycle 只允许修改 active 当前版本，采用
+   `verify 原内容 → revise 写入修改后内容` 的顺序；最终生效的是修改后内容，
+   第二步失败会如实提示「原内容已批准、修正未生效」，不伪称整体成功。
+2. merge 产物使用**独立新链**，来源关系全部保存在 `provenance.merged_from`
+   （每个来源的 id / version / chain_id）与证据里；读取侧不得用一个 knowledge_id
+   冒充完整合并，也不得据此假定来源链唯一。
+3. 单轮互斥：调度器原子 claim；并发 `maybe_run` 只有一轮执行，其余返回
+   already_running（不排队等待）；running 超时（1800s）视为中断并计一次失败，
+   处理位置不丢。
+4. `GET /api/memory/pending` 在冻结的 PendingItemView 字段外允许附加
+   `maintenance_available` / `warnings` / `limit` 等说明性字段；核心事项字段与
+   kind / handler / status 取值仍以 `maintenance.models` 为准。
+5. 旧 `scan_contradictions`（否定词降置信度）与 `run_dreaming`（旧 revoke / expire）
+   已从 `run_once` 退休，函数保留但**不得重新接回调度**；知识整理只走新的
+   独立知识维护调度器。
+
+**验证与未验证边界**
+
+- 定向验证记录见 `docs/qio-verification-ledger.md` 阶段二部分（A / B / C / D / Lead
+  实际命令与结果；含真实界面检查截图与断言）。
+- 未执行：完整后端测试集合、完整前端测试集合、完整 CI、真实模型 / 桌面壳实机验收；
+  按四阶段共同预算留到最终收口。任何「已验证」结论仅覆盖台账列出的命令。
+- 平台：Windows 开发机；真实界面检查使用临时数据目录与 Playwright / 无头浏览器，
+  模型调用一律 fake / mock。
+
+**剩余问题（交给后续阶段）**
+
+1. 第三、四阶段未开始；从本阶段整合提交继续。
+2. 维护批次 / 事项 / 操作数量会随长期使用增长：本阶段未做归档或清理策略（契约未要求），
+   后续阶段如加入必须有界并可恢复。
+3. `knowledge_maintenance_turn_log` 只增不清（每行很小）；后续可评估保留策略。
+4. 通知轮记忆 legacy 文本块、旧 `build_injection` 文本路径仍在（见 §11.6）；
+   第三阶段继续清理。
+5. 真实模型下的维护输出质量、真实用户回答问题质量未做离线评估（本阶段全部 fake）；
+   后续若调整提示词或阈值，需集中做离线评估并对比基线。
+6. 本阶段未推送、未合并 main、未发布。
