@@ -21,6 +21,15 @@ import type {
   UnderstandingResponse,
   VisibleRange,
 } from "../interactive/types";
+import type {
+  ConfirmResponse,
+  IntentResultsResponse,
+  IntentViewListResponse,
+  LedgerSummaryView,
+  RecoveryPreviewResponse,
+  RecoveryResultView,
+  WaitingResponse,
+} from "../interactive/intentWorkbench";
 
 /** 服务端错误体（M4 定稿）：error/reason 是给用户看的真实原因，其余是可核对的结构。 */
 export interface InteractiveErrorPayload {
@@ -421,5 +430,76 @@ export function resumeIntent(intentId: string): Promise<ExecutionControlResult> 
 
 export function cancelIntent(intentId: string): Promise<ExecutionControlResult> {
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/cancel`, { method: "POST" });
+}
+
+// --- 第三阶段 C：意图视图 / 批量确认 / 等待 / 账本 / 结果 / 恢复（契约 §13.5）--
+
+/** 意图视图列表（目标 / 预期 / 依据 / 范围 / 依赖 / 冲突 / 版本 / 授权 / 真实状态）。 */
+export function fetchIntentViews(boardId: string): Promise<IntentViewListResponse> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/intent-views`);
+}
+
+/** 单条意图详情（含授权快照与账本摘要）。 */
+export function fetchIntentView(
+  boardId: string,
+  intentId: string,
+): Promise<{ available: boolean; intent: import("../interactive/intentWorkbench").IntentView }> {
+  return request(
+    `${BASE}/boards/${encodeURIComponent(boardId)}/intent-views/${encodeURIComponent(intentId)}`,
+  );
+}
+
+/** 单条确认：门槛由后端/前端强制（单条不走批量）。 */
+export function confirmSingleIntent(intentId: string, boardId: string): Promise<ConfirmResponse> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ boardId }),
+  });
+}
+
+/**
+ * 同批批量确认：至少两条（BATCH_CONFIRM_MIN，与后端同口径）。
+ * 不足两条时服务端返回 400 batch_confirm_min；调用方必须先禁用按钮，不靠错误兜底。
+ */
+export function batchConfirmIntents(
+  boardId: string,
+  intentIds: string[],
+): Promise<ConfirmResponse> {
+  return request(`${BASE}/intents/batch-confirm`, {
+    method: "POST",
+    body: JSON.stringify({ boardId, intentIds }),
+  });
+}
+
+/** 当前等待事项（A 的提交—等待—续作持久化；不可用时 available=false 并给原因）。 */
+export function fetchWaiting(boardId: string): Promise<WaitingResponse> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/waiting`);
+}
+
+/** 权威操作账本摘要（只有 applied 算完成）。 */
+export function fetchLedger(boardId: string): Promise<LedgerSummaryView> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/ledger`);
+}
+
+/** 结果引用 + 完整正文（结果卡按文件 / Markdown 交付，不在这里截断）。 */
+export function fetchIntentResults(boardId: string): Promise<IntentResultsResponse> {
+  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/results`);
+}
+
+/** 恢复预览（只读）：能续作什么、为什么不能、还有哪些未完成操作 / 依赖。 */
+export function fetchRecoveryPreview(intentId: string): Promise<RecoveryPreviewResponse> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/recovery-preview`);
+}
+
+/** 恢复（按版本 CAS）：只把可恢复的意图放回可继续状态，不自动执行操作。 */
+export function recoverIntent(
+  intentId: string,
+  boardId: string,
+  expectedVersion: number,
+): Promise<RecoveryResultView> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/recover`, {
+    method: "POST",
+    body: JSON.stringify({ boardId, expectedVersion }),
+  });
 }
 
