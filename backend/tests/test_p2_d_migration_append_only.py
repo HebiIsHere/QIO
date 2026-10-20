@@ -112,8 +112,12 @@ def test_migrations_46_47_48_are_registered():
     )
 
 
-def test_compensation_48_equals_45_plus_46_plus_47():
-    """§12.7：补偿 48 = 迁移 45 全部语句 + 46 全部语句 + 47 全部语句。"""
+def test_compensation_48_equals_base_recovery_plus_45_plus_46_plus_47():
+    """§12.7 最终口径：补偿 48 = fragments 基础表补建 + 45 全部语句 + 46 + 47。
+
+    基础表补建（DEFECT-1 收口）：REQUIRED_OBJECTS 里的基础表列（fragments.rolling_*）
+    要求补偿里同时有对应 CREATE TABLE IF NOT EXISTS；除此之外不允许再插入其它语句。
+    """
     missing = _missing_migrations()
     if missing:
         pytest.fail(
@@ -122,11 +126,20 @@ def test_compensation_48_equals_45_plus_46_plus_47():
         )
     table = _by_number()
     expected = _norm(table[BASELINE_MAX]) + _norm(table[46]) + _norm(table[47])
-    assert _norm(table[48]) == expected, (
-        f"{CLAUSE}：迁移 48 不是「45 全部语句 + 46 + 47」的拼接："
+    actual = _norm(table[48])
+    assert len(actual) >= len(expected)
+    assert actual[-len(expected):] == expected, (
+        f"{CLAUSE}：迁移 48 尾部不是「45 全部语句 + 46 + 47」的拼接："
         f"期望 {len(expected)} 条，实际 {len(table[48])} 条。"
         "补偿必须由语句列表推导（不手抄），否则存量库仍可能缺对象。"
     )
+    prefix = actual[: len(actual) - len(expected)]
+    for statement in prefix:
+        head = statement.strip().upper()
+        assert head.startswith("CREATE TABLE IF NOT EXISTS FRAGMENTS"), (
+            f"{CLAUSE}：基础表补建只允许 fragments 的 CREATE TABLE IF NOT EXISTS，"
+            f"实际多出：{statement[:100]}"
+        )
 
 
 def test_compensation_48_is_additive_only():

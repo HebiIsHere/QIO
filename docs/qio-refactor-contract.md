@@ -553,7 +553,7 @@ class MaintenanceRunner:
 | --- | --- | --- |
 | 46 | A | 变化日志 / 调度状态 / 用户 turn 去重 |
 | 47 | B | 维护批次 / 事项 / 操作记录 |
-| 48 | Lead | 补偿迁移（45 全部语句 + 46 + 47），`COMPENSATION_VERSION=SCHEMA_VERSION=48` |
+| 48 | Lead | 补偿迁移（fragments 基础表补建 + 45 全部语句 + 46 + 47），`COMPENSATION_VERSION=SCHEMA_VERSION=48` |
 
 实现分支不改 `storage/schema.py`；各自新建 `storage/migration_p2_<a|b>.py` 导出
 `MIGRATION = (号, [SQL...])`，分支内测试自行应用；Lead 整合时登记并收敛版本。
@@ -622,7 +622,9 @@ Lead 整合顺序 A / B / C → D 独立回归 → 更新 `docs/qio-refactor-con
 **验证与未验证边界**
 
 - 定向验证记录见 `docs/qio-verification-ledger.md` 阶段二部分（A / B / C / D / Lead
-  实际命令与结果；含真实界面检查截图与断言）。
+  实际命令与结果；含真实界面检查截图与断言）。整合后 C 在真实迁移 46-48、真实 runner / recovery
+  / scheduler 上复跑：17/17 界面断言 + 8/8 API 级真实链路（仅模型适配器为 fake）。
+  D 审核发现的 DEFECT-1（补偿 48 缺 fragments 基础表）已修复并复跑通过。
 - 未执行：完整后端测试集合、完整前端测试集合、完整 CI、真实模型 / 桌面壳实机验收；
   按四阶段共同预算留到最终收口。任何「已验证」结论仅覆盖台账列出的命令。
 - 平台：Windows 开发机；真实界面检查使用临时数据目录与 Playwright / 无头浏览器，

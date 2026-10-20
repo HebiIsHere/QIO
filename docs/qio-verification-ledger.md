@@ -98,8 +98,8 @@
 
 # 阶段二验证台账：独立后台维护 / 记忆待确认入口 / 安全恢复（2026-10-21）
 
-- 起点提交：`5021a4d5`（阶段一整合）；本阶段整合分支 `feat/qio-refactor-p2`
-  （Lead 工作区 `D:\qio-dev\qio-ph2-lead`）。
+- 起点提交：`5021a4d5`（阶段一整合）；契约冻结 `bcce3a2a`；整合分支 `feat/qio-refactor-p2`
+  （Lead 工作区 `D:\qio-dev\qio-ph2-lead`，本地，未推送）。
 - 契约：`docs/qio-refactor-contract.md` §12。
 - 口径同阶段一：只记录实际执行的定向验证；不跑完整集合 / 完整 CI；模型一律 fake/mock；
   平台 Windows 开发机，后端使用共享 venv `D:\qio-dev\qio\backend\.venv\Scripts\python.exe`。
@@ -108,15 +108,41 @@
 
 | 编号 | 范围 | 命令 / 方式 | 结果 | 备注 |
 | --- | --- | --- | --- | --- |
-| P2-预检-01 | 冻结提示词 / 类型 / 校验 | 导入 + `validate_maintenance_output` / `validate_resolution_output` / schema 生成 | 通过 | PROMPTS 23 键；维护/回答输出形状与本地校验同源 |
-| P2-A-01 | 待回填 | 待回填 | 待回填 | A：变化计数 / 触发 / 快照 / 重启 / 退避 / turn 去重 |
-| P2-B-01 | 待回填 | 待回填 | 待回填 | B：合并 / 格式整理 / 独立问题 / 独立回答 / 恢复 |
-| P2-C-01 | 待回填 | 待回填 | 待回填 | C：API / 界面 / 来源筛选 / 真实界面检查 |
-| P2-D-01 | 待回填 | 待回填 | 待回填 | D：独立契约测试 / 定向回归 / 静态审阅 |
-| P2-整合-01 | 待回填 | 待回填 | 待回填 | Lead：迁移登记 / 接线 / 定向集合 |
-| P2-前端 | 待回填 | 待回填 | 待回填 | 类型检查 + 受影响用例 + 真实界面 |
-| P2-docs | 待回填 | 待回填 | 待回填 | status / architecture / 契约 / 台账 |
+| P2-预检-01 | 冻结提示词 / 类型 / 本地校验同源 | 导入 + `validate_maintenance_output` / `validate_resolution_output` / schema 生成 | 通过 | PROMPTS 23 键；维护 / 回答输出形状与本地校验同一类型 |
+| P2-A-01 | A：变化计数 / 等待轮次 / 调度 | `pytest tests/test_import_smoke.py tests/test_p2_a_*.py -q`（A 分支） | 通过（45 项） | 跨重启 / 新变化不重置等待 / 未触发不调模型 / 20 或 30 轮 / 快照推进 / 退避 / 单轮互斥 / turn 去重 |
+| P2-B-01 | B：维护动作 / 独立回答 / 恢复 | `pytest tests/test_p2_b_*.py -q`（B 分支） | 通过（43 项） | merge 多来源关系 / 跨类别拒绝 / normalize / ask 去重 / 回答语义 / CAS / 恢复保护 |
+| P2-B-02 | B 简报定向集合 | import smoke + p2_b + knowledge + r02r03 + p1_c_knowledge_flow（B 分支） | 通过（74 项） | 既有维护回归 test_m12_maintenance 6 passed（B 分支未改共享文件） |
+| P2-C-01 | C：API 读取模型 / 两类事项 / 动作 | `pytest tests/test_import_smoke.py tests/test_p2_c_memory_api.py tests/test_knowledge_mgmt_api.py -q`（C 分支） | 通过（23 项） | fake runner；runner 不可用 503「未执行」；迁移未建表时诚实降级 |
+| P2-C-02 | C：前端受影响用例 + 类型 | `npx vitest run` 受影响 3 文件；`npx vue-tsc --noEmit`（C 分支） | 通过（34 项；类型 0 错误） | 两类事项区分 / 动作 / 状态 / 来源筛选用例 |
+| P2-C-03 | C：真实界面检查（首次，fake runner） | 真实 uvicorn + vite + Playwright 无头浏览器，临时数据目录 | 通过（16/16 断言，8 张截图） | 待确认列表 / 回答后状态 / 维护记录 / 恢复预览与结果 / 后台整理筛选 / 窄窗口 |
+| P2-D-01 | D：独立契约测试（未整合基线） | `pytest tests/test_p2_d_*.py -q`（9 文件，基线 bcce3a2a） | 98 收集；35 passed / 33 failed / 30 errors（预期：实现未合入） | 冻结面全绿；迁移 / 计数 / 调度 / 维护 / 回答 / 恢复 / API 边界为待翻正项 |
+| P2-D-02 | D：独立契约测试（整合结果） | `pytest tests/test_p2_d_*.py -q`（整合分支） | 通过（101 项） | 5 处测试前提适配，未放宽断言 |
+| P2-D-03 | D：定向回归 5 组 + 前端 + 真实后端启动 | 维护/关闭/工具记录 34；知识生命周期/纠正/API 38；记忆/注入/审批 + App 生命周期 47；导入/轮次/阶段一契约 40；迁移/schema 30 + 1 failed | 通过（除 DEFECT-1 外） | DEFECT-1 为基线遗留，见下 |
+| P2-D-04 | D：前端受影响用例 + 类型 | `npx vue-tsc --noEmit`；受影响 vitest 4 文件 | 通过（37 项；类型 0 错误） | — |
+| P2-D-05 | D：真实后端启动抽查 | 临时数据目录 + uvicorn，GET pending / status / batches / knowledge | 200，真实 scheduler 状态可见，进程清理 | 未调用模型 |
+| P2-整合-01 | Lead：整合分支定向集合（首次） | A/B/C 定向 + app integration + 迁移纪律 + 知识生命周期 | 4 个 C 测试因整合前提失败（真实 schema / 真实 runner） | 已按整合前提适配测试（不放宽断言） |
+| P2-整合-02 | Lead：迁移登记 / 补偿 48 / 维护表 | 迁移纪律 + closeout + storage + p2_a/p2_b 迁移测试 | 通过；发现 DEFECT-1（见下）后 26 项复跑通过 | SCHEMA_VERSION=COMPENSATION_VERSION=48 |
+| P2-整合-03 | Lead：D 测试合入整合分支 | 9 文件 D 测试 + import smoke | 通过（104 项） | 阶段二独立回归资产进入整合分支 |
+| P2-整合-04 | Lead：最终定向集合（阶段一 + 阶段二选受影响文件） | 适配器 / 组装 / 循环 / 记忆 / 知识 / 实体 / 维护 / 迁移 / 接续 / 媒体 / trace / 并发 / A+B+C+D 契约测试 | 通过（exit 0，非完整集合） | 交付前最终一条 |
+| P2-修复-01 | DEFECT-1：补偿 48 缺 fragments 基础表 | `pytest tests/test_main_closeout_migration_objects.py tests/test_migrations_append_only_verify.py tests/test_fu_w3_b01_schema.py -q` | 通过（26 项） | 补偿 48 增加 fragments 现代形状 CREATE TABLE（基础表补建），D 迁移测试口径同步更新并记录契约 §12.7 |
+| P2-前端-01 | Lead：整合后前端类型与受影响用例 | `npx vue-tsc --noEmit`；vitest 4 文件（含 PlanetView） | 通过（101 项；类型 0 错误） | 只跑受影响文件 / 受影响页面用例 |
+| P2-UI-01 | C：整合分支真实界面检查 + 真实 runner 链路（fake 适配器） | 真实迁移 46-48 建表 + 真实 runner/recovery/scheduler + 真实 HTTP；`verify_real_runner_c.py` | 17/17 UI 断言；8/8 真实 runner 链路 | 真实模型未调用；18 张截图在 `D:\qio-dev\_P2R-SHOTS-c\` |
+| P2-docs | 文档一致性 | `python scripts/check_docs.py` | 通过（79 个里程碑条目） | §12.10 / architecture §17 / status P70 / 本台账 |
+
+## 独立审阅发现与收口
+
+- **DEFECT-1（基线遗留，已修复）**：`REQUIRED_OBJECTS` 中的 `fragments.rolling_*` 要求补偿迁移同时有
+  对应基础表的 CREATE TABLE；补偿 48 原先只有 ALTER，整表丢失时无法自愈。已在补偿 48 增加
+  fragments 现代形状的 `CREATE TABLE IF NOT EXISTS`，并同步 D 的迁移测试口径与契约 §12.7；
+  `test_main_closeout_migration_objects` 等复跑通过。
+- 其余 D 判定 D-01..D-19 PASS；D-20（迁移口径）随 DEFECT-1 修复翻正；D-21（真实 runner 界面链路）
+  由 C 在整合分支复跑 17/17 + 8/8 闭环（模型仍为 fake 适配器）；D-22（台账）由本文件回填闭环。
 
 ## 剩余问题 / 未验证边界
 
-- 待回填。
+- 第三、四阶段未开始；后续从阶段二整合提交继续。
+- 完整后端测试集合、完整前端测试集合、完整 CI 均未运行（四阶段共同预算留到最终收口）。
+- 平台仅 Windows；桌面壳 / Tauri 实机与真实模型链路未验证（维护与回答均为 fake/mock 适配器）。
+- 维护批次 / 事项 / 操作、`knowledge_maintenance_turn_log` 暂无归档清理策略（契约未要求），长期增长待后续评估。
+- 通知轮记忆 legacy 文本块、旧 `build_injection` 文本路径仍在；第三阶段继续清理。
+- 本阶段未推送、未创建 PR、未合并 main、未发布。
