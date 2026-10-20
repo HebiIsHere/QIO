@@ -26,6 +26,30 @@ from fastapi.testclient import TestClient
 
 CLAUSE = "契约 §13.5"
 BOARD = "board_p3_d_batch"
+
+def _ensure_p3_schema(conn) -> None:
+    """在 Lead 登记迁移 49/50/51 之前，测试库按分支迁移模块自备对象（幂等）。
+
+    Lead 登记后 schema 已是 51，这里再 apply 一次也不会改变任何对象（幂等）。
+    """
+    for name in ("agent.storage.migration_p3_a", "agent.storage.migration_p3_b"):
+        try:
+            module = importlib.import_module(name)
+        except Exception:  # noqa: BLE001 - 分支未合入时由用例自己给出契约失败信息
+            continue
+        apply = getattr(module, "apply", None)
+        if callable(apply):
+            try:
+                apply(conn)
+            except Exception:  # noqa: BLE001 - 对象已由 Lead 登记时允许幂等差异
+                pass
+
+
+@pytest.fixture(autouse=True)
+def _p3_schema(db_conn):
+    _ensure_p3_schema(db_conn)
+    return db_conn
+
 SUBMISSION = "sub_p3_d_batch"
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -133,14 +157,14 @@ def test_batch_api_accepts_two_and_rejects_single(client, db_conn):
 
     client_obj, _ctx = client
     batch = client_obj.post("/api/interactive/intents/batch-confirm",
-                            json={"intentIds": ids})
+                            json={"boardId": BOARD, "intentIds": ids})
     assert batch.status_code == 200, (
         f"{CLAUSE}：两条意图应可批量确认（实际 {batch.status_code}: {batch.text[:300]}）")
     body = batch.json()
     assert int(body.get("min") or 2) == 2, f"{CLAUSE}：批量确认门槛应为 2：{body}"
 
     single = client_obj.post("/api/interactive/intents/batch-confirm",
-                             json={"intentIds": ids[:1]})
+                             json={"boardId": BOARD, "intentIds": ids[:1]})
     assert single.status_code in (400, 409), (
         f"{CLAUSE}：单条意图不得走批量接口（实际 {single.status_code}: {single.text[:300]}）")
 
@@ -266,6 +290,7 @@ def test_long_content_is_returned_by_board_state_api_completely(client, db_conn)
     content = "# 标题\n\n" + ("正文内容。" * 800)
     state = models.empty_state(BOARD)
     card = models.new_card("text", content, checked=True)
+    card_id = str(card["id"])
     state["cards"] = [card]
     board_store.save_board(db_conn, BOARD, state, reason="p3-d-long")
 
@@ -273,8 +298,14 @@ def test_long_content_is_returned_by_board_state_api_completely(client, db_conn)
     response = client_obj.get(f"/api/interactive/boards/{BOARD}/state")
     assert response.status_code == 200, (
         f"{CLAUSE}：板面读取失败（{response.status_code}: {response.text[:300]}）")
-    assert content in response.text, (
-        f"{CLAUSE}：API 必须返回完整正文（不允许静默截断）：{len(response.text)} 字节")
+    payload = response.json()
+    saved_cards = (payload.get("state") or {}).get("cards") or []
+    saved_content = next(
+        (str(item.get("content") or "") for item in saved_cards
+         if str(item.get("id")) == card_id), "")
+    assert saved_content == content, (
+        f"{CLAUSE}：API 必须返回完整正文（不允许静默截断）："
+        f"实际 {len(saved_content)} / 期望 {len(content)} 字符")
 
 
 def test_empty_content_is_rejected_at_registry(env):
@@ -289,17 +320,34 @@ def test_empty_content_is_rejected_at_registry(env):
 
 
 def test_edit_save_does_not_call_model(env, monkeypatch):
-    """§13.5：编辑 / 保存本身不调用模型（旧空正文二次生成路径也不得触发）。"""
+    """§13.5：编辑 / 保存本身不调用模型（旧空正文二次生成路径也不得触发）。
+
+    编辑授权范围针对用户已有卡片（write_card_ids）；新卡由 create 工具负责，
+    因此这里先放一张用户卡片，再用独立的 update 意图编辑它。
+    """
     execution = _load("agent.interactive.execution")
 
     def _bomb(*args, **kwargs):
         raise AssertionError("契约 §13.5：编辑 / 保存不得调用模型或旧二次生成路径")
 
     monkeypatch.setattr(execution, "_generate_text", _bomb)
-    intent_id = _confirmed_intent(env)
-    created = _tool(env, "board_create_card", {
-        "intent_id": intent_id, "operation_key": "op_edit_1", "content": "原始正文"})
-    card_id = _result_card_id(created)
+
+    # 用户已有卡片（在 write 范围内）
+    state = env["board_store"].current_state(env["conn"], BOARD)
+    user_card = env["models"].new_card("text", "用户原始正文", checked=True)
+    state["cards"] = list(state.get("cards") or []) + [user_card]
+    env["board_store"].save_board(env["conn"], BOARD, state, reason="p3-d-user-card")
+    card_id = str(user_card["id"])
+
+    proposed = env["service"].propose_intents(
+        env["conn"], board_id=BOARD, submission_id=SUBMISSION,
+        intents=[_spec("u1", scope={
+            "allowed_actions": ["update_card"],
+            "write_card_ids": [card_id],
+            "read_card_ids": [card_id]})],
+        resolved_question_ids=())
+    intent_id = str((proposed.get("client_refs") or {})["u1"])
+    env["service"].confirm_intents(env["conn"], board_id=BOARD, intent_ids=[intent_id])
     new_content = "# 编辑后的正文\n\n" + "内容。" * 600
     version = int(_cards(env)[card_id].get("version") or 1)
     result = _tool(env, "board_update_card", {

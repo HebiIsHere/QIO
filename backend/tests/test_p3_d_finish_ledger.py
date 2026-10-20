@@ -24,6 +24,30 @@ import pytest
 
 CLAUSE = "契约 §13.4"
 BOARD = "board_p3_d_finish"
+
+def _ensure_p3_schema(conn) -> None:
+    """在 Lead 登记迁移 49/50/51 之前，测试库按分支迁移模块自备对象（幂等）。
+
+    Lead 登记后 schema 已是 51，这里再 apply 一次也不会改变任何对象（幂等）。
+    """
+    for name in ("agent.storage.migration_p3_a", "agent.storage.migration_p3_b"):
+        try:
+            module = importlib.import_module(name)
+        except Exception:  # noqa: BLE001 - 分支未合入时由用例自己给出契约失败信息
+            continue
+        apply = getattr(module, "apply", None)
+        if callable(apply):
+            try:
+                apply(conn)
+            except Exception:  # noqa: BLE001 - 对象已由 Lead 登记时允许幂等差异
+                pass
+
+
+@pytest.fixture(autouse=True)
+def _p3_schema(db_conn):
+    _ensure_p3_schema(db_conn)
+    return db_conn
+
 SUBMISSION = "sub_p3_d_finish"
 
 

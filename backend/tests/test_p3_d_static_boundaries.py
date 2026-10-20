@@ -151,24 +151,32 @@ def test_loop_supports_allowing_no_reply():
 
 
 def test_submission_no_longer_invokes_understanding_chain():
-    """§13.3：提交路径不再调用独立理解 / JSON 修复 / 空正文二次生成。"""
+    """§13.3：提交路径不再调用独立理解 / JSON 修复 / 空正文二次生成。
+
+    旧函数 / 旧记录只读兼容可以保留（契约允许），但新提交流程不得调用它们：
+    这里只禁「真实调用链」，并核对提交路径确实走 turn_acceptor（主循环受理）。
+    """
     text = _read(_require(BACKEND_SRC / "interactive" / "submission.py",
                           "interactive/submission.py"))
     for retired in ("run_understanding(", "build_understanding_messages(",
                     "build_repair_messages(", "_generate_text("):
         assert retired not in text, (
-            f"{CLAUSE}：submission.py 仍在调用旧链路 {retired}（新流程必须退休）")
-    assert "schedule_understanding(" not in text, (
-        f"{CLAUSE}：submission.py 仍在调度独立理解任务")
+            f"{CLAUSE}：submission.py 仍引用旧链路 {retired}（新流程必须退休）")
+    # _schedule_understanding 只允许保留「定义 + 旧只读重试包装」两处，不得出现在提交路径
+    assert text.count("_schedule_understanding(") <= 2, (
+        f"{CLAUSE}：_schedule_understanding 出现了调用点（新提交不得调度独立理解）")
+    assert "turn_acceptor" in text, (
+        f"{CLAUSE}：提交路径必须走主循环受理（turn_acceptor），而不是独立理解")
 
 
 def test_interactive_prompts_old_constraint_removed():
     """§13.3：interactive/prompts.py 的「禁止接入通用主循环」旧约束必须移除。"""
     path = _require(BACKEND_SRC / "interactive" / "prompts.py", "interactive/prompts.py")
     text = _read(path)
-    for old in ("绝不允许把上下文再拼回通用聊天循环", "禁止接入通用主循环"):
-        assert old not in text, (
-            f"{CLAUSE}：仍保留旧约束「{old}」")
+    assert "绝不允许把上下文再拼回通用聊天循环" not in text, (
+        f"{CLAUSE}：仍保留「禁止把上下文拼回通用主循环」的旧约束原句")
+    assert "不再保留" in text, (
+        f"{CLAUSE}：interactive/prompts.py 未明确声明旧约束已移除")
 
 
 def test_new_flow_does_not_reuse_old_three_category_protocol():

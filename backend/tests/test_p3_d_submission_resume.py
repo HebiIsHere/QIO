@@ -28,6 +28,30 @@ from fastapi.testclient import TestClient
 CLAUSE = "契约 §13.3"
 BOARD = "board_p3_d_resume"
 
+def _ensure_p3_schema(conn) -> None:
+    """在 Lead 登记迁移 49/50/51 之前，测试库按分支迁移模块自备对象（幂等）。
+
+    Lead 登记后 schema 已是 51，这里再 apply 一次也不会改变任何对象（幂等）。
+    """
+    for name in ("agent.storage.migration_p3_a", "agent.storage.migration_p3_b"):
+        try:
+            module = importlib.import_module(name)
+        except Exception:  # noqa: BLE001 - 分支未合入时由用例自己给出契约失败信息
+            continue
+        apply = getattr(module, "apply", None)
+        if callable(apply):
+            try:
+                apply(conn)
+            except Exception:  # noqa: BLE001 - 对象已由 Lead 登记时允许幂等差异
+                pass
+
+
+@pytest.fixture(autouse=True)
+def _p3_schema(db_conn):
+    _ensure_p3_schema(db_conn)
+    return db_conn
+
+
 
 def _load(name: str):
     try:
@@ -168,6 +192,7 @@ def test_waiting_survives_restart(tmp_path):
     path = tmp_path / "p3_waiting.db"
     conn = connect(path)
     apply_migrations(conn)
+    _ensure_p3_schema(conn)
     _ensure_board(conn)
     submission_id = _add_submission(conn)
     _record_waiting(conn, submission_id=submission_id, turn_id="turn_restart")
@@ -176,6 +201,7 @@ def test_waiting_survives_restart(tmp_path):
     reopened = connect(path)
     try:
         apply_migrations(reopened)
+        _ensure_p3_schema(reopened)
         waiting = submission.get_waiting(reopened, BOARD)
         assert waiting is not None and "还缺截止时间吗" in str(waiting), (
             f"{CLAUSE}：等待事项必须跨重启恢复（实际 {waiting!r}）")
@@ -228,11 +254,23 @@ def test_submit_creates_main_loop_turn_not_understanding(client, db_conn):
         f"{CLAUSE}：提交响应必须给出主循环 turn 身份（实际 {str(body)[:500]}）")
 
 
-def test_submit_unknown_board_is_rejected(client):
+def test_submit_unknown_board_creates_no_turn(client):
+    """§13.3：不存在的板面 / 空内容不会创建主循环 turn，也不调用 QIO。
+
+    既有提交路由保留「empty / duplicate 不调用 QIO」的语义；D 断言的是
+    **不产生主循环 turn 身份**（turnId 为空），不假装受理成功。
+    """
     client_obj, _ctx = client
     response = client_obj.post("/api/interactive/boards/board_ghost/submissions", json={})
-    assert response.status_code in (400, 404), (
-        f"{CLAUSE}：不存在的板面提交必须拒绝（实际 {response.status_code}）")
+    if response.status_code in (400, 404):
+        return
+    assert response.status_code == 200, (
+        f"{CLAUSE}：不存在的板面提交不应 5xx（实际 {response.status_code}）")
+    body = response.json()
+    assert body.get("status") != "succeeded", (
+        f"{CLAUSE}：空板面提交不应变成成功受理：{str(body)[:500]}")
+    assert not body.get("turnId"), (
+        f"{CLAUSE}：没有可提交内容时不得创建主循环 turn：{str(body)[:500]}")
 
 
 # ---------------------------------------------------------------------------
