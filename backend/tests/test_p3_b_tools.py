@@ -218,10 +218,11 @@ async def test_update_card_version_conflict_is_isolated(env):
 
 async def test_write_scope_is_not_read_scope(env):
     conn, _app, tools, card, hidden = env
+    # 隐藏 / 未勾选卡片不进入授权范围（read scope 只列获准读取的卡片）。
     view = _intent(
         conn,
         scope=intent_scope(
-            read_card_ids=[card, hidden],
+            read_card_ids=[card],
             write_card_ids=[card],
             allowed_actions=["update_card"],
         ),
@@ -289,7 +290,6 @@ async def test_group_and_order_permissions_and_limits(env):
         conn,
         scope=intent_scope(
             read_card_ids=[card, second],
-            write_card_ids=[card, second],
             group_ids=[group_id],
             allowed_actions=["group_cards", "order_group"],
             max_new_groups=1,

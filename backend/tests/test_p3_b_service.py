@@ -412,3 +412,103 @@ def test_partial_completion_then_recover(env):
     )
     assert done["ok"] is True
     assert done["status"] == intent_service.STATUS_COMPLETED
+
+
+def test_finish_blocks_unfinished_dependencies_and_waiting(env, monkeypatch):
+    conn = env
+    proposed = intent_service.propose_intents(
+        conn,
+        board_id="board_p3",
+        submission_id="sub_p3_1",
+        intents=[
+            intent_spec("a"),
+            intent_spec("b", depends_on=[("client_ref", "a")]),
+            intent_spec("c"),
+        ],
+    )
+    assert proposed["ok"] is True
+    views = {view["client_ref"]: view for view in proposed["intents"]}
+    intent_service.confirm_intents(
+        conn, board_id="board_p3", intent_ids=[views["a"]["intent_id"], views["b"]["intent_id"]]
+    )
+    blocked = intent_service.finish_intent(
+        conn,
+        board_id="board_p3",
+        intent_id=views["b"]["intent_id"],
+        expected_version=1,
+        outcome="completed",
+        summary="完成",
+        operation_keys=[],
+    )
+    assert blocked["ok"] is False and blocked["code"] == "completion_blocked"
+    kinds = {item["kind"] for item in blocked.get("blockers") or []}
+    assert "dependencies" in kinds
+    dependency_done = intent_service.finish_intent(
+        conn,
+        board_id="board_p3",
+        intent_id=views["a"]["intent_id"],
+        expected_version=1,
+        outcome="completed",
+        summary="完成",
+        operation_keys=[],
+    )
+    assert dependency_done["ok"] is True
+    now_ok = intent_service.finish_intent(
+        conn,
+        board_id="board_p3",
+        intent_id=views["b"]["intent_id"],
+        expected_version=1,
+        outcome="completed",
+        summary="完成",
+        operation_keys=[],
+    )
+    assert now_ok["ok"] is True
+    # 等待未解除：A 的 get_waiting 被注入等待项时，completed 必须被拒绝。
+    import agent.interactive.submission as submission_mod
+
+    intent_service.confirm_intents(
+        conn, board_id="board_p3", intent_ids=[views["c"]["intent_id"]]
+    )
+    monkeypatch.setattr(
+        submission_mod,
+        "get_waiting",
+        lambda *args, **kwargs: {"items": [{"id": "w1", "question": "还缺一个字段", "status": "waiting"}]},
+        raising=False,
+    )
+    waiting_blocked = intent_service.finish_intent(
+        conn,
+        board_id="board_p3",
+        intent_id=views["c"]["intent_id"],
+        expected_version=1,
+        outcome="completed",
+        summary="完成",
+        operation_keys=[],
+    )
+    assert waiting_blocked["ok"] is False
+    assert waiting_blocked["code"] == "completion_blocked"
+    waiting_kinds = {item["kind"] for item in waiting_blocked.get("blockers") or []}
+    assert "waiting" in waiting_kinds
+
+
+def test_confirm_blocks_conflicting_intents(env):
+    conn = env
+    proposed = intent_service.propose_intents(
+        conn,
+        board_id="board_p3",
+        submission_id="sub_p3_1",
+        intents=[
+            intent_spec("a", conflicts_with=[("client_ref", "b")]),
+            intent_spec("b"),
+        ],
+    )
+    views = {view["client_ref"]: view for view in proposed["intents"]}
+    decided = intent_service.confirm_intents(
+        conn,
+        board_id="board_p3",
+        intent_ids=[views["a"]["intent_id"], views["b"]["intent_id"]],
+    )
+    results = {item["intent_id"]: item for item in decided["results"]}
+    assert results[views["a"]["intent_id"]]["ok"] is True
+    blocked = results[views["b"]["intent_id"]]
+    assert blocked["ok"] is False and blocked["status"] == "conflict"
+    assert "冲突" in blocked["reason"]
