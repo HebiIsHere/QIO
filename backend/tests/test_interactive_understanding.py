@@ -12,6 +12,12 @@
    自动修复**只调用一次**；
 6) 受理幂等；重试只从冻结快照恢复（不读当前板面）；
 7) 材料口径诚实：未读取 / 截断都如实记录，禁止声称已完整阅读。
+
+阶段三退役说明（docs/qio-refactor-contract.md §13.3）：新提交流程已改为「主循环 Turn +
+板面工具」，**不再产生** board_understanding 记录、也不再调用本文件的模型链。本文件继续
+存在是为了验证旧链的**只读兼容**（旧记录可读 / 可重试、上下文构建与校验逻辑仍成立）：
+每个用例自己用 request_understanding / build_context / run_understanding 显式驱动旧链，
+并断言提交响应不再带 understandingId（只带主循环 turnId）。
 """
 
 from __future__ import annotations
@@ -76,13 +82,11 @@ async def _save_and_submit(
         "selection": list(selection or []),
     }
     board_store.save_board(conn, BOARD, state, reason="test")
-    result = await submission_module.submit_board(conn, BOARD, note=note, view=view)
-    # A 的提交路径在受理成功后会排一个后台理解任务。这里我们**自己**用 fake adapter 驱动
-    # run_understanding，所以先把那个默认（没有 adapter）的后台任务取消掉，避免两边抢同一行；
-    # 受理本身照旧（记录已建立、delivery.understandingId 已给出）。
-    understanding_id = (result.get("delivery") or {}).get("understandingId")
-    if understanding_id:
-        await _stop_background_understanding(str(understanding_id))
+    # 阶段三：提交受理 = 主循环的一个 Turn（注入 fake turn_acceptor）；不再建立理解请求，
+    # 因此也没有「提交路径自己排的后台理解任务」需要取消。本文件用例后续显式驱动旧链。
+    result = await submission_module.submit_board(
+        conn, BOARD, note=note, view=view, turn_acceptor=_RecordingTurnAcceptor()
+    )
     return result
 
 
@@ -94,6 +98,21 @@ async def _stop_background_understanding(understanding_id: str) -> None:
         task.cancel()
         with contextlib.suppress(BaseException):
             await task
+
+
+class _RecordingTurnAcceptor:
+    """主循环受理器替身（阶段三）：记录提交受理，不调任何真实模型。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def __call__(self, **kwargs) -> dict:
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "turnId": f"turn_understanding_{len(self.calls)}",
+            "topicId": "topic-understanding",
+        }
 
 
 def _provider(adapter):
@@ -216,20 +235,24 @@ def intents_stub(monkeypatch):
 
 
 def _accept(conn, result) -> dict:
-    """复用提交路径**已经受理**的那条理解请求（A 的 submit_board 里建立的）。
+    """为旧链测试**显式建立**一条理解记录（阶段三后提交路径不再创建）。
 
-    「同一 request_id 重复受理是幂等的」由专门的用例断言，这里不重复受理。
+    阶段三（契约 §13.3）起互动提交是主循环的一个 Turn，旧理解链退役：新提交流程
+    不产生 board_understanding 记录。本文件保留用于验证旧链的**只读兼容能力**
+    （旧记录仍可读取 / 重试），因此测试自己调用 request_understanding 建立旧记录；
+    「同一 request_id 重复受理幂等」由专门的用例断言。
     """
     understanding_id = (result.get("delivery") or {}).get("understandingId")
     if understanding_id:
         record = u.get_understanding(conn, str(understanding_id))
         if record is not None:
             return record
+    # 旧链受理：不传 snapshot，让它从 board_submissions 读 after 并恢复 delivery.view
+    # （source="submission"，与基线旧提交流程的快照口径一致；重试仍只读冻结快照）。
     return u.request_understanding(
         conn,
         board_id=BOARD,
         submission_id=result["submission"]["id"],
-        snapshot=result["after"],
     )
 
 
@@ -273,10 +296,16 @@ async def test_intent_understanding_creates_intents(db_conn, fake_materials, int
         selection=["c_file", "c_code"],
         note="请特别关注成本一项",
     )
+    # 阶段三（契约 §13.3）：提交不再创建独立理解请求（受理 = 主循环 turn）。
+    # 本文件验证的是**旧理解链的只读兼容能力**：这里显式建立一条旧理解记录再驱动它。
+    assert result["delivery"]["understandingId"] is None
+    assert result["delivery"]["turnId"]
     accepted = _accept(db_conn, result)
     assert accepted["status"] == "accepted"
-    # 提交路径已受理：复用的就是同一条理解请求（幂等由专门的用例断言）
-    assert accepted["id"] == result["delivery"]["understandingId"]
+    assert accepted["submissionId"] == result["submission"]["id"]
+    assert (
+        db_conn.execute("SELECT COUNT(*) AS n FROM board_understanding").fetchone()["n"] == 1
+    )
 
     payload = _intent_payload([
         {"op": "add_reply_card", "content": "两份材料的差异如下……", "title": "差异"},
@@ -300,9 +329,12 @@ async def test_intent_understanding_creates_intents(db_conn, fake_materials, int
     ctx = _request_context(adapter.requests[0])
     assert len(adapter.requests) == 1
     assert "请比较这两份材料并给出差异" in ctx["requirement"]["text"]
-    assert ctx["requirement"]["expressionSource"] == "submission"
+    # 前提变化（阶段三）：旧记录由测试在提交落库**之后**显式建立，冻结快照里已带本次
+    # 表达与备注，因此来源如实标为 snapshot（内容仍来自同一次提交记录；新提交流程本身
+    # 不再产生理解记录，也不会走这条来源）。
+    assert ctx["requirement"]["expressionSource"] == "snapshot"
     assert ctx["requirement"]["note"] == "请特别关注成本一项"
-    assert ctx["honesty"]["expressionsSource"] == "submission"
+    assert ctx["honesty"]["expressionsSource"] == "snapshot"
     assert set(ctx["visibleCardIds"]) == {"c_file", "c_code", "c_note"}
     # 已许可的文字卡（含那条获准要求本身）都是材料：文字卡是唯一的字符内容材料通道
     assert {m["cardId"] for m in ctx["materials"]} == {"c_file", "c_code", "c_note"}
@@ -581,16 +613,20 @@ async def test_request_idempotent_and_retry_uses_frozen_snapshot(
         ],
     )
     submission_id = result["submission"]["id"]
-    # 提交路径已经受理过这一次提交：同 request_id 再受理两次都必须复用同一条
-    established = result["delivery"]["understandingId"]
+    # 阶段三：提交不再创建理解请求；这里显式建立一条旧记录，验证旧链的受理幂等与
+    # 「重试只从冻结快照恢复」语义（旧链只读兼容，不再由新提交流程产生新记录）。
+    assert result["delivery"]["understandingId"] is None
+    assert result["delivery"]["turnId"]
+    established = u.request_understanding(
+        db_conn, board_id=BOARD, submission_id=submission_id, snapshot=result["after"]
+    )
     first = u.request_understanding(
         db_conn, board_id=BOARD, submission_id=submission_id, snapshot=result["after"]
     )
     second = u.request_understanding(
         db_conn, board_id=BOARD, submission_id=submission_id, snapshot=result["after"]
     )
-    assert established
-    assert first["id"] == established
+    assert first["id"] == established["id"]
     assert first["reused"] is True
     assert second["reused"] is True
     assert second["id"] == first["id"]
@@ -749,8 +785,10 @@ async def test_context_geometry_covers_only_visible_objects(db_conn, fake_materi
     ]
     groups = [_group("g1", "获准组", ["c_note", "c_reply"])]
     result = await _save_and_submit(db_conn, cards, groups=groups)
-    uid = result["delivery"]["understandingId"]
-    context = u.build_context(db_conn, board_id=BOARD, understanding_id=uid)
+    # 阶段三：提交不再创建理解请求；显式建立旧记录后验证几何上下文（旧链只读兼容）
+    assert result["delivery"]["understandingId"] is None
+    accepted = _accept(db_conn, result)
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=accepted["id"])
     geometry = context["geometry"]
     assert geometry["unit"] == "board"
     assert geometry["view"] is None, "客户端没给 view 时必须是 null，不得编造"
@@ -769,8 +807,11 @@ async def test_context_geometry_view_comes_from_frozen_client_view(db_conn, fake
     cards = [_card("c_note", "text", "获准的注释", checked=True)]
     view = {"x": 12.0, "y": 34.0, "w": 900.0, "h": 700.0, "scale": 1.25}
     result = await _save_and_submit(db_conn, cards, view=view)
-    uid = result["delivery"]["understandingId"]
-    context = u.build_context(db_conn, board_id=BOARD, understanding_id=uid)
+    # 阶段三：提交不再创建理解请求；冻结视图经旧记录快照恢复（只读兼容）
+    assert result["delivery"]["understandingId"] is None
+    assert result["delivery"]["view"] == view
+    accepted = _accept(db_conn, result)
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=accepted["id"])
     assert context["geometry"]["view"] == view
 
 
@@ -788,8 +829,10 @@ async def test_context_delivers_result_body_and_source(db_conn, fake_materials):
         ),
     ]
     result = await _save_and_submit(db_conn, cards)
-    uid = result["delivery"]["understandingId"]
-    context = u.build_context(db_conn, board_id=BOARD, understanding_id=uid)
+    # 阶段三：提交不再创建理解请求；显式建立旧记录后验证结果卡交付（只读兼容）
+    assert result["delivery"]["understandingId"] is None
+    accepted = _accept(db_conn, result)
+    context = u.build_context(db_conn, board_id=BOARD, understanding_id=accepted["id"])
     entry = [item for item in context["cards"] if item["id"] == "c_reply"][0]
     assert entry["result"] is True
     assert entry["text"] == body, "结果卡正文按结果正文口径交付，不是 600 字的普通卡片口径"
