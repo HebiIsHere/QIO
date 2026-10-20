@@ -1,10 +1,15 @@
 # -*- coding: utf-8 -*-
 """阶段三 C 定向测试：意图视图 / 批量确认门槛 / 等待 / 账本 / 结果 / 恢复 API（契约 §13.5）。
 
-只依赖冻结契约与注入的 fake intent_service（B 尚未合入）：
-* 读取模型字段、真实状态不冒充完成、批量确认门槛两条（单条走单条确认）；
-* 等待 / 账本 / 结果 / 恢复在服务未接入时如实 503 / available=false，不伪造数据；
-* 旧 intents.list_intents 只读兼容映射（source=legacy）如实标注。
+**前提已变化（D 阶段 2 复跑口径）**：B 的 agent/interactive/intent_service.py 已合入整合分支，
+模块真实可导入，因此 `_intent_service(request)` 默认返回**真实服务**。
+本文件的写法：
+* 正常路径——注入 FakeIntentService（形状与 B 冻结接口一致）验证读取 / 确认 / 恢复接线；
+* 服务存在路径——不注入、不 monkeypatch，验证读取走真实服务（source=service）且确认返回
+  200 + 逐项如实状态，而不是 503；
+* 降级路径——**显式 monkeypatch 模块级解析器为 None** 来模拟「服务未接入」，保留 503 /
+  available=false / 旧 intents 只读兼容（source=legacy）的原有断言，不放宽任何断言；
+* 批量确认门槛两条、真实状态不冒充完成、等待 / 账本 / 结果 / 恢复的如实性断言全部保留。
 不联网、不调用真实模型。
 """
 
@@ -295,7 +300,8 @@ def test_single_confirm_uses_single_path(db_conn):
 
 
 def test_confirm_requires_service(db_conn, monkeypatch):
-    # B 的 intent_service 已合入；这里显式模拟「服务未接入」的失败前置。
+    """前提变化：B 的 intent_service 已真实存在，默认走 200；这里显式 monkeypatch 解析器为
+    None 来验证「服务未接入」的 503 降级（断言未放宽：仍要求 503 + 明确说明未执行）。"""
     monkeypatch.setattr(api_module, "_intent_service", lambda request: None)
     client = _client(db_conn)
     batch = client.post(
@@ -309,6 +315,8 @@ def test_confirm_requires_service(db_conn, monkeypatch):
 
 
 def test_legacy_fallback_marks_source_and_maps_statuses(db_conn, monkeypatch):
+    """前提变化：真实服务可导入后旧数据兼容分支不会再自然触发；显式 monkeypatch 解析器为
+    None 以保留「旧 intents 只读兼容、source=legacy、operations.available=false」断言。"""
     from agent.api import interactive_intents as module
 
     monkeypatch.setattr(module, "_intent_service", lambda request: None)
@@ -344,6 +352,41 @@ def test_legacy_fallback_marks_source_and_maps_statuses(db_conn, monkeypatch):
     assert mapped["old_1"]["raw_legacy_status"] == "pending"
     assert mapped["old_2"]["status"] == "completed"
     assert body["batch_confirm"]["min"] == 2
+
+
+def test_real_service_present_returns_service_source(db_conn):
+    """服务存在路径（不注入、不 monkeypatch）：读取走真实 B 服务，确认返回 200 逐项如实。
+
+    这是 D 阶段 2 前提变化的显式回归：真实 service 导入后不应再返回 503 / legacy；
+    但也不放宽真实断言——空板面没有任何可确认意图，批量门槛仍是两条，缺失意图逐项
+    ok=false / status=missing，绝不伪造成功。
+    """
+    from agent.interactive import board_store
+
+    board_store.ensure_board(db_conn, board_id=BOARD, title="阶段三 C 真实服务测试板")
+    client = _client(db_conn)  # 不注入 p3_intent_service → 走真实模块
+
+    response = client.get(f"/api/interactive/boards/{BOARD}/intent-views")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "service"
+    assert body["available"] is True
+    assert body["intents"] == []
+    assert body["batch_confirm"]["min"] == 2
+    assert body["batch_confirm"]["eligible_ids"] == []
+    assert body["batch_confirm"]["available"] is False
+
+    batch = client.post(
+        "/api/interactive/intents/batch-confirm",
+        json={"boardId": BOARD, "intentIds": ["missing_1", "missing_2"]},
+    )
+    assert batch.status_code == 200
+    payload = batch.json()
+    assert payload["batch"] is True
+    assert payload["min"] == 2
+    results = {item["intent_id"]: item for item in payload["results"]}
+    assert set(results) == {"missing_1", "missing_2"}
+    assert all(item["ok"] is False and item["status"] == "missing" for item in results.values())
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +528,8 @@ def test_recovery_preview_and_recover(db_conn):
 
 
 def test_recovery_requires_service(db_conn, monkeypatch):
+    """前提变化：真实服务已合入；显式 monkeypatch 解析器为 None 验证恢复预览 / 恢复在
+    「服务未接入」时返回 503，不臆造可恢复结论（断言未放宽）。"""
     monkeypatch.setattr(api_module, "_intent_service", lambda request: None)
     client = _client(db_conn)
     assert client.get("/api/interactive/intents/in_4/recovery-preview").status_code == 503
