@@ -116,22 +116,86 @@ const batchDetail: MaintenanceBatchDetail = {
   available: true,
 };
 
+// 真实 maintenance.recovery.preview_restore 的形状（operations 计划 + 计数 + warnings）
 const previewPayload = {
   ok: true,
   preview: {
+    ok: true,
+    status: "preview",
     batch_id: "mb_1",
-    items: [
-      { knowledge_id: "kn_new", restorable: true, reason: null },
-      { knowledge_id: "kn_old", restorable: false, reason: "后来被用户修改" },
+    operations: [
+      {
+        operation_id: "op_merge",
+        action: "merge",
+        restoreable: true,
+        partial: false,
+        already_restored: false,
+        reasons: [],
+        targets: [{ knowledge_id: "kn_a", status: "restorable" }],
+        product: { id: "kn_merged", state: "current", reason: "" },
+      },
+      {
+        operation_id: "op_normalize",
+        action: "normalize",
+        restoreable: false,
+        partial: false,
+        already_restored: false,
+        reasons: ["kn_old：后来被用户修改：维护产物已不是当前链版本"],
+        targets: [{ knowledge_id: "kn_old", status: "blocked" }],
+        product: { id: "kn_norm", state: "superseded", reason: "维护产物已不是当前链版本" },
+      },
     ],
+    restoreable: false,
+    restoreable_count: 1,
+    partial_count: 0,
+    blocked_count: 1,
+    already_restored_count: 0,
+    warnings: ["op_normalize：kn_old：后来被用户修改：维护产物已不是当前链版本"],
   },
 };
 
+// 真实 maintenance.recovery.restore 的形状（restored/blocked 是数量 + 逐操作结果 + 原因）
+const restoreOperationResults = [
+  {
+    operation_id: "op_merge",
+    status: "restored",
+    restored_knowledge_ids: ["kn_a"],
+    blocked_knowledge_ids: [],
+    reasons: [],
+  },
+  {
+    operation_id: "op_normalize",
+    status: "blocked",
+    restored_knowledge_ids: [],
+    blocked_knowledge_ids: ["kn_old"],
+    reasons: ["kn_old：后来被用户修改：维护产物已不是当前链版本"],
+  },
+];
 const restorePayload = {
   ok: true,
-  restored: [{ knowledge_id: "kn_new", result_id: "kn_v3" }],
-  blocked: [{ knowledge_id: "kn_old", reason: "后来被用户修改" }],
+  restored: 1,
+  blocked: 1,
   status: "rollback_partial",
+  blocked_reasons: [
+    {
+      operation_id: "op_normalize",
+      reasons: ["kn_old：后来被用户修改：维护产物已不是当前链版本"],
+    },
+  ],
+  operations: restoreOperationResults,
+  result: {
+    ok: true,
+    restored: 1,
+    blocked: 1,
+    status: "rollback_partial",
+    blocked_reasons: [
+      {
+        operation_id: "op_normalize",
+        reasons: ["kn_old：后来被用户修改：维护产物已不是当前链版本"],
+      },
+    ],
+    operations: restoreOperationResults,
+  },
 };
 
 function mountPanel() {
@@ -373,10 +437,13 @@ describe("MemoryPendingPanel 维护记录", () => {
       batch_id: "mb_1",
     });
     const previewText = w.text();
-    expect(previewText).toContain("可恢复");
+    // 真实 recovery 计划：逐操作状态 + 计数 + 不可恢复原因
+    expect(previewText).toContain("可恢复 1");
+    expect(previewText).toContain("不可恢复 1");
     expect(previewText).toContain("不可安全恢复");
     expect(previewText).toContain("后来被用户修改");
-    expect(previewText).toContain("kn_new");
+    expect(previewText).toContain("op_merge");
+    expect(previewText).toContain("op_normalize");
 
     await w.find(".mp-restore").trigger("click");
     await flushPromises();
@@ -392,9 +459,12 @@ describe("MemoryPendingPanel 维护记录", () => {
     });
     const resultText = w.text();
     expect(resultText).toContain("恢复结果");
+    // 真实 recovery 部分失败时 ok=true + status=rollback_partial：不能显示成「已完成」
+    expect(resultText).toContain("恢复未全部完成");
     expect(resultText).toContain("已恢复 1 项");
     expect(resultText).toContain("无法安全恢复 1 项");
     expect(resultText).toContain("rollback_partial");
+    expect(resultText).toContain("op_normalize");
     w.unmount();
   });
 

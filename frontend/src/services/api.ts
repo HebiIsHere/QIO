@@ -422,9 +422,14 @@ export interface MaintenanceRestorePreview {
 
 export interface MaintenanceRestoreResult {
   ok: boolean;
+  /** 真实 recovery 返回：已恢复 / 无法安全恢复的操作数量（也可能出现旧形状的数组） */
   restored?: unknown;
   blocked?: unknown;
   status?: string | null;
+  /** 逐操作无法安全恢复的原因：[{operation_id, reasons}] */
+  blocked_reasons?: unknown;
+  /** 逐操作结果：[{operation_id, status, restored_knowledge_ids, blocked_knowledge_ids, reasons}] */
+  operations?: unknown;
   result?: Record<string, unknown>;
 }
 
