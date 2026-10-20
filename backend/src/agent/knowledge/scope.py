@@ -257,3 +257,89 @@ def clear_unresolved(conn: sqlite3.Connection, knowledge_id: str) -> dict | None
     prov[SCOPE_VERSION_KEY] = SCOPE_VERSION
     _store_provenance(conn, knowledge_id, prov)
     return prov
+
+
+# -- 模型请求的 scope 解析（propose_knowledge 用） ---------------------------
+
+#: 契约 §6.1：scope.type 只有三种。
+SCOPE_TYPES = ("user", "topic", "entity")
+MAX_SCOPE_NODES = 8
+
+
+def resolve_scope_request(
+    conn: sqlite3.Connection,
+    *,
+    scope_type: str,
+    node_ids: Iterable[Any] | None,
+) -> tuple[list[str], list[str], str | None]:
+    """把模型给的 scope 解析成**真实**归属节点；返回 (node_ids, entity_ids, error)。
+
+    规则（程序解析 / 校验，不允许模型编造 id）：
+
+    * user：必须是真实用户根节点；旧写法（user / user:local 等）由程序映射到真实节点；
+    * topic：每个 id 必须真实存在且是话题节点；
+    * entity：每个 id 必须真实存在——实体卡 id 映射到它的图节点，实体节点 id 直接使用。
+
+    任何一项不合法都返回可读错误（字段错误可修正），不静默替换成别的对象。
+    """
+    from agent.graph.nodes import NodeService
+
+    kind = str(scope_type or "").strip()
+    if kind not in SCOPE_TYPES:
+        return [], [], f"scope.type 必须是 {'|'.join(SCOPE_TYPES)} 之一"
+    raw_ids = _clean_nodes(node_ids)
+    if not raw_ids:
+        return [], [], "scope.node_ids 不能为空"
+    if len(raw_ids) > MAX_SCOPE_NODES:
+        return [], [], f"scope.node_ids 最多 {MAX_SCOPE_NODES} 个"
+    nodes = NodeService(conn)
+    if kind == "user":
+        chosen: str | None = None
+        legacy = False
+        for node_id in raw_ids:
+            node = nodes.get(node_id)
+            if node is not None and node.type == "user":
+                chosen = node.id
+                break
+            if is_global_node_id(node_id):
+                legacy = True
+                continue
+            return [], [], f"scope.node_ids 里的 {node_id} 不是真实用户节点"
+        if chosen is not None:
+            return [chosen], [], None
+        if legacy:
+            # 程序解析：模型写的是用户全局的兼容写法，映射到真实用户根节点。
+            return [user_global_node_id(conn)], [], None
+        return [], [], "scope.type=user 需要真实用户根节点"
+    if kind == "topic":
+        out: list[str] = []
+        for node_id in raw_ids:
+            node = nodes.get_topic(node_id)
+            if node is None:
+                return [], [], f"scope.node_ids 里的 {node_id} 不是真实话题节点"
+            if node.id not in out:
+                out.append(node.id)
+        return out, [], None
+    # entity：实体卡 id 或实体节点 id
+    from agent.entities.cards import EntityCardService
+
+    cards = EntityCardService(conn)
+    out_nodes: list[str] = []
+    out_entities: list[str] = []
+    for node_id in raw_ids:
+        card = cards.get(node_id)
+        if card is not None and card.state == "active":
+            if not card.node_id:
+                return [], [], f"实体 {node_id} 没有图节点，无法作为归属"
+            if card.node_id not in out_nodes:
+                out_nodes.append(card.node_id)
+            if card.id not in out_entities:
+                out_entities.append(card.id)
+            continue
+        node = nodes.get(node_id)
+        if node is not None and node.type == "entity":
+            if node.id not in out_nodes:
+                out_nodes.append(node.id)
+            continue
+        return [], [], f"scope.node_ids 里的 {node_id} 不是真实实体"
+    return out_nodes, out_entities, None

@@ -150,6 +150,29 @@ describe("KnowledgePanel 筛选框（P0：关闭态要有可见标签，且能�
   });
 });
 
+describe("KnowledgePanel Phase 1 C：主对话提议的审批入口", () => {
+  it("待审核提议显示事实确定程度与依据条数（审批状态仍是单独的列）", async () => {
+    mocks.apiMock.listKnowledge.mockResolvedValue({
+      knowledge: [
+        {
+          ...K,
+          epistemic_status: "user_explicit",
+          evidence_ids: ["msg_1", "tr_2"],
+        },
+      ],
+    });
+    const w = mountPanel();
+    await flushPromises();
+    expect(w.find(".k-state").text()).toBe("待审核");
+    expect(w.find(".k-epistemic").text()).toBe("用户明确");
+    expect(w.find(".k-evidence").text()).toContain("依据 2 条");
+    // 审批入口仍然可用：批准 / 打回都在
+    expect(w.find(".k-approve").exists()).toBe(true);
+    expect(w.find(".k-reject").exists()).toBe(true);
+    w.unmount();
+  });
+});
+
 describe("KnowledgePanel 空态与失败区分（任务05 E：失败不能显示成无数据）", () => {
   it("加载失败：显示可读错误与重试入口，不显示「无知识条目」", async () => {
     mocks.apiMock.listKnowledge.mockRejectedValueOnce(new Error("offline"));
