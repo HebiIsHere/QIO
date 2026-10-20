@@ -329,7 +329,19 @@ D 在整合结果上独立审阅与定向回归 → Lead 修复、更新文档�
   这些按四阶段共同预算留到最终收口。任何“已验证”结论仅覆盖台账中列出的命令。
 - 平台：Windows 开发机（共享后端 venv）；前端只跑受影响 vitest 文件。
 
-### 11.6 剩余问题（交给后续阶段）
+### 11.6 独立审阅发现与收口（D 阶段 2）
+
+- F1（已修复）：新上下文装配下 turn trace 的 `injection.items` 曾为空 —— 现由
+  `turn_orchestrator._injection_items_from_blocks` 从结构化块派生（surface / item_id / tokens /
+  score / preview），预算仍取 limits 块真实值。
+- F2（已修复）：3 处模型可见固定文案迁入 prompts.py（互动模式结果卡生成 / 首次引导追问 /
+  附件事实前缀），模块只引用常量。
+- F3（已修复）：`storage/migrate.py::REQUIRED_OBJECTS` 补 `fragments.rolling_*` 四列，
+  由补偿迁移 45 覆盖，版本 45 丢列可自愈。
+- F4（已知边界，保留）：通知轮记忆块暂用 legacy_text；旧 `build_injection` / `short_term_items`
+  文本路径仍在，后续阶段清理。
+
+### 11.7 剩余问题（交给后续阶段）
 
 1. 第二阶段及以后（本阶段未做）：按整体改造计划继续，从本整合提交衍生新分支。
 2. 旧 `build_injection` / `short_term_items` 文本路径与 prompts.py 中兼容别名仍在；后续阶段清理时

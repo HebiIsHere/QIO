@@ -20,14 +20,8 @@ logger = logging.getLogger(__name__)
 MAX_QUESTIONS = 2
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
-SUGGEST_PROMPT = (
-    "你在帮一个人完成个人助手的首次设置。读他写下的这段自由描述，"
-    "提出最多两个**有实际价值**的追问：只问能长期影响助手理解他的信息（背景、长期关注、"
-    "以及他希望助手怎么跟他配合），不要问可以猜到的、也不要重复描述里已经说清楚的。"
-    "每个问题一句话，用他的语言（中文）。"
-    '只返回一个 JSON 对象，不要任何解释或代码块：{"questions": ["<问题>"]}\n'
-    "如果没有值得追问的，返回空数组。"
-)
+#: 追问生成的固定说明（唯一来源在 agent.prompts）。
+from agent.prompts import FOLLOWUP_SUGGEST_PROMPT as SUGGEST_PROMPT  # noqa: E402
 
 
 def validate_questions(text: str) -> tuple[list[str], str | None]:

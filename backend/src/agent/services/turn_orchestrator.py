@@ -109,6 +109,67 @@ def _context_limits(blocks) -> dict:
     return {}
 
 
+def _injection_items_from_blocks(blocks) -> list[dict]:
+    """从结构化上下文块派生 trace 注入项（Phase 1：B 不返回 InjectionPlan）。
+
+    * surface = 块 key（current_topic / short_term / knowledge / entity / ...）；
+    * item_id = 条目自己的真实 id（id / fragment_id / message_id / topic_id），没有时退回块 key；
+    * tokens 用条目 JSON 的 token 估算，score 取条目自带分数（没有就 0），preview 取可读正文。
+    这些是**如实**的注入事实，不是编造：只描述真正进入请求的块与条目。
+    """
+    import json as _json
+
+    from agent.memory.index import estimate_tokens
+
+    items: list[dict] = []
+    for block in blocks or []:
+        key = str(_block_key(block) or "")
+        data = _block_data(block)
+        if not key or not isinstance(data, dict):
+            continue
+        entries = data.get("entries")
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                item_id = (
+                    entry.get("id")
+                    or entry.get("item_id")
+                    or entry.get("fragment_id")
+                    or entry.get("message_id")
+                    or entry.get("node_id")
+                )
+                text = entry.get("content") or entry.get("summary") or entry.get("text") or ""
+                payload = _json.dumps(entry, ensure_ascii=False)
+                score = entry.get("score")
+                try:
+                    score_value = float(score) if score is not None else 0.0
+                except (TypeError, ValueError):
+                    score_value = 0.0
+                items.append(
+                    {
+                        "surface": key,
+                        "item_id": str(item_id) if item_id is not None else key,
+                        "tokens": estimate_tokens(payload),
+                        "score": round(score_value, 4),
+                        "preview": str(text)[:160],
+                    }
+                )
+            continue
+        payload = _json.dumps(data, ensure_ascii=False)
+        item_id = data.get("topic_id") or data.get("fragment_id") or key
+        items.append(
+            {
+                "surface": key,
+                "item_id": str(item_id),
+                "tokens": estimate_tokens(payload),
+                "score": 0.0,
+                "preview": payload[:160],
+            }
+        )
+    return items
+
+
 def _coerce_context_result(result):
     """归一化 B 的 build_context_blocks 返回值（契约形状：list[ContextBlock]）。
 
@@ -630,8 +691,9 @@ class TurnOrchestrator:
             }
             injection_dropped: list = []
         else:
-            # B 不返回 plan：不报假数据 —— items 留空，预算只取 limits 块里的真实值。
-            injection_items = []
+            # B 不返回 plan：从结构化块派生真实注入项（块 key → surface，条目 id → item_id）；
+            # 预算仍取 limits 块里的真实值，不编造分数与 token。
+            injection_items = _injection_items_from_blocks(blocks)
             injection_total_tokens = int(
                 context_limits.get("used_tokens")
                 or context_limits.get("total_tokens")

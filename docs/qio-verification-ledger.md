@@ -37,9 +37,12 @@
 | P1-整合-03 | 迁移 / 通知 / 展示名修复复跑 | `pytest tests/test_turn_short_term.py tests/test_p1_b_migration_and_storage.py tests/test_tool_display.py -q` | 通过（10 项） | 结构化上下文标签 / 迁移登记 / 新工具中文展示名 |
 | P1-整合-04 | 通知轮统一组装 + 实体参数说明 | `pytest tests/test_import_smoke.py tests/test_subagent_integration.py tests/test_app_integration.py tests/test_fragment_capacity.py tests/test_turn_short_term.py -q`；实体/知识工具相关 7 文件 | 通过（22 项；52 项） | 通知轮不再拼「【系统通知】」；create_entity 参数说明入 prompts |
 | P1-整合-05 | 整合分支定向集合（复跑） | 同 P1-整合-01 文件集合 | 通过（exit 0） | 无失败 |
-| P1-D-02 | D 独立契约测试 + 定向回归（整合结果） | 待回填 | 待回填 | D 阶段 2 |
-| P1-整合-06 | 合并 D 测试后的最终定向集合 | 待回填 | 待回填 | 交付前最后一条 |
-| P1-docs | 文档一致性 | `python scripts/check_docs.py` | 待回填 | 同步 status / architecture / 本台账 |
+| P1-D-02 | D 独立契约测试（整合结果） | `pytest tests/test_p1_d_*.py -q`（7 文件） | 通过（67 项，全 PASS） | D 阶段 2；两处仅修测试装置前提，断言未变 |
+| P1-D-03 | D 受影响定向回归 | 核心集 18 文件 → 129 项；扩展集 40 文件 → 395 项；turn 族 29 文件 → 217 项 + 6 skipped；A/B/C/Lead 契约测试 12 文件 → 78 项 | 通过 | D 阶段 2；均为受影响文件，非全量 |
+| P1-整合-06 | F1 / F2 / F3 收口验证 | `pytest tests/test_import_smoke.py tests/test_p7_memory_authority.py tests/test_p7_restart_trace_resources.py tests/test_fu_w3_b01_schema.py tests/test_p1_b_migration_and_storage.py tests/test_onboarding_followups.py tests/test_attachment_context.py tests/test_interactive_execution.py -q` | 通过（66 项） | trace 注入项从结构化块派生；3 处固定文案入 prompts；rolling_* 进 REQUIRED_OBJECTS |
+| P1-整合-07 | 最终整合定向集合 | 72 个受影响测试文件（D / A / B / C / Lead 契约测试 + 适配器 / 组装 / 记忆 / 知识 / 实体 / 接续 / 通知 / 迁移 / 流式 / 预算 / 媒体 / trace / 并发） | 通过（720 项，exit 0） | 交付前最终一条；非完整集合 |
+| P1-前端 | 前端类型检查与受影响用例 | `npx vue-tsc --noEmit`；`npx vitest run src/components/planet/__tests__/KnowledgePanel.test.ts src/components/planet/__tests__/EntityPanel.test.ts` | 通过（类型 0 错误；21 项） | 只跑受影响文件，未跑全量 |
+| P1-docs | 文档一致性 | `python scripts/check_docs.py` | 通过（78 个里程碑条目） | 同步 status P69 / architecture §16 / 契约 §11 / 本台账 |
 
 ## 契约冻结产物（Lead，提交 d265d033）
 
@@ -72,6 +75,15 @@
 - 新工具补中文展示名与参数说明来源；create_entity 的 pydantic 参数说明迁入 prompts.py。
 - 冲突处理：C 与 B 对 4 个既有 fake provider 的分派适配冲突按“单一提示词来源 + 不改弱断言”合并。
 
+## 独立审阅发现与收口（D 阶段 2）
+
+- F1（已修复）：新上下文装配下 turn trace 的 `injection.items` 为空 —— 现从结构化块派生真实的
+  surface / item_id / tokens / score / preview；预算仍取 limits 块真实值（不再留空，也不编造）。
+- F2（已修复）：3 处模型可见固定文案迁入 prompts.py（互动模式结果卡生成、首次引导追问、
+  附件事实前缀），调用点改为引用常量。
+- F3（已修复）：`REQUIRED_OBJECTS` 补 `fragments.rolling_*` 四列（补偿迁移 45 覆盖），版本 45 丢列可自愈。
+- F4（已知边界，保留）：通知轮记忆 legacy_text 与旧 `build_injection` 文本路径仍在，见契约 §11.6。
+
 ## 剩余问题 / 未验证边界
 
 - 只完成四阶段中的第一阶段；完整测试集合、完整前端测试、完整 CI 均未运行（预算保留给四阶段收口）。
@@ -79,3 +91,4 @@
 - 兼容期保留：旧 `build_injection` / `short_term_items` 文本路径、通知轮记忆 legacy 文本块、
   prompts.py 中少量兼容别名 —— 后续阶段清理。
 - 若后续阶段发现旧测试依赖旧提示词字面量，应更新测试而不是恢复旧正文（本阶段已按此处理少量既有测试）。
+- 本阶段未推送、未创建 PR、未合并 main、未发布。

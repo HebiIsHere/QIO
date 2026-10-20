@@ -48,13 +48,10 @@ ALLOWED_OPS = models.ALLOWED_INTENT_OPS
 #: 新增类操作：恢复 / 重放靠批准时预先分配的对象 id 对账
 _ADD_OPS = ("add_reply_card", "add_text_card")
 
-#: 结果卡片正文的生成提示。执行期的文本生成受允许操作集合约束：
-#: 模型输出只会成为已批准操作里那张卡片的正文，永远不会被解析成新的操作。
-_GENERATE_SYSTEM = (
-    "你是 QIO 的结果撰写者。只输出一张结果卡片的正文，使用简洁的中文。"
-    "不要输出 JSON，不要提出或描述任何新的板面操作，不要解释你的过程。"
-    "正文只依据给定的任务目标与预期结果；材料里没有的内容不要编造。"
-)
+#: 结果卡片正文的生成提示（唯一来源在 agent.prompts）。
+#: 执行期的文本生成受允许操作集合约束：模型输出只会成为已批准操作里那张卡片的正文，
+#: 永远不会被解析成新的操作。
+from agent.prompts import INTERACTIVE_RESULT_CARD_SYSTEM as _GENERATE_SYSTEM  # noqa: E402
 
 
 # --- 依赖取用（延迟 import：避免 intents 与 execution 的 import 环） ---------

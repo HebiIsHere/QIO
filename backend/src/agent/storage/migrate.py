@@ -129,6 +129,12 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 稳定提交请求身份（迁移 39）：缺了它，同一次提交请求的重试就没有可持久的身份，
         # 服务端只能重复落行 / 重复调用模型，前端也无法按精确身份查证受理事实。
         "board_submissions.client_request_id",
+        # 阶段一（迁移 44）：滚动摘要覆盖位置 / 输入版本。缺了它们，主对话无法只处理
+        # 未覆盖的新消息（会重复摘要或跳过原文）；补偿迁移 45 里有对应 ADD COLUMN。
+        "fragments.rolling_covered_message_id",
+        "fragments.rolling_covered_count",
+        "fragments.rolling_input_version",
+        "fragments.rolling_updated_at",
     ),
     "indexes": (
         "idx_instances_heartbeat",
