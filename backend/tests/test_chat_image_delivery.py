@@ -251,8 +251,10 @@ async def test_conversation_turn_delivers_the_image_to_every_model_call(tmp_path
 
     assert adapter.calls, "模型没有被调用"
     for messages in adapter.calls:
-        first = messages[0]
-        assert first.role == "user"
+        # 契约 §3：第一条是系统规则 + 结构化上下文；当前用户原文是第一条 user 消息。
+        user_messages = [m for m in messages if m.role == "user"]
+        assert user_messages, "本轮必须有一条 user 消息承载用户原文与真实媒体"
+        first = user_messages[0]
         images = list(first.images or [])
         assert images, "每一次模型调用都必须带着本轮的图片字节"
         head, _, payload = images[0].data_url.partition(",")
@@ -268,9 +270,13 @@ async def test_conversation_turn_without_vision_says_so_in_the_prompt(tmp_path: 
     adapter = await _run_turn_with(ctx, source, images=False, message="看看这张图")
 
     assert adapter.calls, "模型没有被调用"
-    first = adapter.calls[0][0]
-    assert not first.images, "没有视觉能力就不许把图片当内容块交付"
-    assert "没有视觉能力" in (first.content or ""), first.content
+    user_messages = [m for m in adapter.calls[0] if m.role == "user"]
+    assert user_messages, "本轮必须有一条 user 消息"
+    assert not user_messages[0].images, "没有视觉能力就不许把图片当内容块交付"
+    # 契约 §3：媒体实际事实（含真实降级原因）是 system 里的结构化 media 块，
+    # 不再拼进当前用户消息正文。
+    joined = "\n".join((m.content or "") for m in adapter.calls[0])
+    assert "没有视觉能力" in joined, joined
 
 
 # --- 5. 最后一跳：内容块真的变成请求里的 image_url --------------------------
