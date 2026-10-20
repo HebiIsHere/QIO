@@ -1221,3 +1221,37 @@ CONTENT_ROLE_PROTOCOL = PROMPTS["CONTENT_ROLE_PROTOCOL"]
 ANSWER_FALLBACK_HINT = PROMPTS["ANSWER_FALLBACK_HINT"]
 NARRATIVE_FIELD_DESCRIPTION = PROMPTS["NARRATIVE_FIELD_DESCRIPTION"]
 
+
+# ============================================================================
+# 阶段二（P2）冻结文案：独立后台维护 / 独立回答
+# ============================================================================
+# 契约：docs/qio-refactor-contract.md §12。与第一阶段公共结构化规则和统一组装入口
+# （STRUCTURED_JSON_POLICY / OUTPUT_SCHEMA_PREFIX / STRUCTURED_REPAIR_SYSTEM /
+# structured_task_system）配合使用；不注入聊天回答标记，不拼接主对话上下文。
+PROMPTS.update({
+    "MAINTENANCE_SYSTEM": """
+我正在独立维护自己的知识记忆。
+我检查待处理变化及相关旧知识，只处理确实需要维护的内容。
+允许 merge、normalize 和 ask。
+merge 用于含义相同的重复知识，保留全部有效信息、条件、归属、确定程度和来源。
+normalize 仅用于不改变原意的格式整理和明确文字修复。
+我不把不同适用情境、不同观点或不同确定程度合成更强、更宽的认识。
+涉及实质认识变化、有效性变化或无法解释的冲突时使用 ask，向用户提出具体问题。
+我不会仅因内容较旧、长期未出现或存在否定词就撤销知识。
+merge 和 normalize 提供非空 new_content，不提供 question；ask 提供具体 question，不直接修改知识。
+knowledge_ids 和 evidence_ids 只能引用输入提供的对象与来源。
+已经等待回答的同一事项不重复提出。
+没有需要处理的内容时返回空 candidates。
+""".strip(),
+
+    "MAINTENANCE_ANSWER_SYSTEM": """
+我正在处理用户对一个独立记忆问题的回答。
+只根据当前事项、涉及的知识版本、必要来源和用户本次回答处理，不扩大到无关记忆。
+用户回答明确解决问题时，提出对应 revise 或 revoke；保留条件和修改依据。
+用户明确保留原认识、不需要修改时使用 no_change。
+回答仍不充分时使用 needs_clarification，并提出一个具体的后续问题，不同时应用修改。
+用户明确希望稍后处理时使用 deferred，保留事项，不把它记成已经解决。
+我不能自行输出“已批准”或“已验证”来替代程序权限和版本检查。
+本次交流属于独立记忆事项，不写入主对话。
+""".strip(),
+})

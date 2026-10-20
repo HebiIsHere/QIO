@@ -350,3 +350,231 @@ D 在整合结果上独立审阅与定向回归 → Lead 修复、更新文档�
 4. 工具参数说明迁移已覆盖模型可见部分；非模型可见的产品文案（审批弹窗等）仍留在各自模块。
 5. 完整测试集合 / CI 未运行；若后续阶段发现旧测试依赖旧提示词字面量，应更新测试而不是恢复旧正文。
 6. 本阶段未推送、未合并 main、未发布；集成与发布流程按整体计划在最终阶段执行。
+
+
+---
+
+## 12. 第二阶段冻结契约：独立后台维护 / 记忆待确认入口 / 安全恢复（2026-10-21）
+
+### 12.1 起点、角色与分支
+
+- 从第一阶段整合提交 `5021a4d5`（`feat/qio-refactor-p1`）继续；本阶段整合分支
+  `feat/qio-refactor-p2`（Lead 工作区 `D:\qio-dev\qio-ph2-lead`）。
+- 角色：Lead（公共入口 / 迁移 / 整合 / 验证调度）；A（变化计数、轮数累计和后台调度）；
+  B（维护动作、独立回答、版本保护和恢复）；C（独立界面、API 和来源展示）；D（审阅与定向验证）。
+- 保留第一阶段已冻结契约（prompts 单文件、结构化工具结果、ContextBlock 组装、迁移只追加）。
+  本阶段**不另建一套提示词或状态格式**：新增固定文案只进 `backend/src/agent/prompts.py`，
+  新增类型 / 状态只进 `backend/src/agent/maintenance/models.py`（本文件冻结）。
+
+### 12.2 本阶段冻结新增（Lead 已写入）
+
+- `prompts.PROMPTS["MAINTENANCE_SYSTEM"]`、`PROMPTS["MAINTENANCE_ANSWER_SYSTEM"]`
+  （逐字来自用户冻结稿；与 `STRUCTURED_JSON_POLICY` / `OUTPUT_SCHEMA_PREFIX` /
+  `STRUCTURED_REPAIR_SYSTEM` / `structured_task_system` 配合）。
+- `agent/maintenance/models.py`：
+  - 输出类型：`MaintenanceOutput` / `MaintenanceCandidate` / `ResolutionOutput` /
+    `ResolutionChange`（pydantic，`extra="forbid"`，动作形状在本地强制执行）；
+  - 枚举：`MaintenanceAction`（merge/normalize/ask）、`ResolutionKind`、`ResolutionAction`、
+    `PendingKind`、`PendingStatus`、`PendingAction`、`BatchStatus`、`MaintenanceTrigger`、
+    `MaintenanceCandidateStatus`；
+  - 上下限：`MAX_CANDIDATES_PER_RUN`、`MAX_BATCH_CHANGES`、`MAX_KNOWLEDGE_CHARS` 等与
+    `MAINTENANCE_LIMITS`（schema 与本地校验同源）；
+  - 后台来源键：`SOURCE_BACKGROUND_EXTRACTION` / `SOURCE_MAINTENANCE_MERGE` /
+    `SOURCE_MAINTENANCE_NORMALIZE` / `SOURCE_MAINTENANCE_RESTORE`；
+    `MAINTENANCE_SOURCE_KEYS` 与 `MAINTENANCE_ORIGINS`（后者不参与变化计数）；
+  - 交接数据结构：`MaintenanceSnapshot`（A → B）、`MaintenanceRunOutcome`（B → A）、
+    `MaintenanceAnswerOutcome`（B → C）；
+  - C 的读取模型：`PendingKnowledgeRef` / `PendingItemView`（字段名冻结）；
+  - 校验 / schema 入口：`validate_maintenance_output` / `validate_resolution_output` /
+    `maintenance_output_schema` / `resolution_output_schema`。
+
+### 12.3 A：变化计数与调度契约
+
+**变化记录接口**（`agent/maintenance/changes.py`，B 的领域写入调用）：
+
+```python
+def record_effective_change(
+    conn, *, knowledge_id: str, chain_id: str, version: int, source: str, occurred_at: str | None = None
+) -> bool
+```
+
+- 只在知识**正式生效（active）的新增 / 实质修改**时记录；唯一键 `(chain_id, version)` 幂等；
+- `source` 取 provenance 的来源键；`maintenance_*`（`MAINTENANCE_ORIGINS`）不计数；
+- 未审批提议（draft / pending_review）、后台通知、失败重试、本轮维护产生的版本都不计数；
+- B 在 `KnowledgeService.activate()` / `revise_atomic()` 成功后调用（B 负责；A 不编辑 lifecycle）。
+
+**调度器**（`agent/maintenance/scheduler.py`）：
+
+```python
+class KnowledgeMaintenanceScheduler:
+    def __init__(self, conn, *, runner, settings=None, clock=None): ...
+    def note_user_turn_completed(self, turn_id: str) -> None   # 真实成功用户 turn，按 turn_id 去重
+    def pending_state(self) -> dict                            # 供状态展示 / 测试
+    async def maybe_run(self, *, busy: bool = False) -> dict    # 触发检查 + 单轮快照执行
+```
+
+- 触发：待处理变化数 ≥ 阈值（默认 20）**或**最老待处理变化等待的用户轮数 ≥ 阈值（默认 30），
+  两者任一达到；参数可配置（settings 键见下），关闭后状态持久保存、下次继续；
+- 新知识加入**不重置**较早内容的等待轮数（每条变化记录创建时的轮次序号，按最老一条计算）；
+- 没有待处理变化时不累计等待轮数、不调用模型；
+- 单次处理量上限（默认 50 条变化），按本轮快照 `change_seq_max` 推进处理位置；
+  期间新增变化留给后续批次；
+- 同一时间只运行一轮（持久化 running 标记 + 超时回收）；`busy=True`（主任务繁忙 / 关闭中）
+  时不启动；失败保留处理位置，记录失败次数与重试退避轮次，不能每轮重复失败调用；
+- 知识整理与工具输出到期清理、工具记录保留、自动化建议调度**分开**：本调度器只触发
+  知识维护，复用既有后台生命周期（Lead 接线），不改既有维护作业的触发条件；
+- 持久化（迁移 46，A 提供 `storage/migration_p2_a.py`）：
+  `knowledge_change_log`（seq / knowledge_id / chain_id / version / source / occurred_at /
+  created_turn_seq / consumed_batch_seq）、`knowledge_maintenance_state`（单行：
+  turn_seq / last_processed_seq / running / run_started_at / failed_attempts /
+  retry_blocked_until_turn / last_error 等）、`knowledge_maintenance_turn_log`
+  （成功用户 turn 去重）。
+- 配置键（settings_store，均有默认值）：`knowledge_maintenance.enabled`（true）/
+  `knowledge_maintenance.change_threshold`（20）/ `knowledge_maintenance.waiting_turns`
+  （30）/ `knowledge_maintenance.max_changes_per_run`（50）/
+  `knowledge_maintenance.retry_cooldown_turns`（5）/ `knowledge_maintenance.check_interval_seconds`（60）。
+
+### 12.4 B：维护动作、独立回答与恢复契约
+
+**执行入口**（`agent/maintenance/runner.py`）：
+
+```python
+class MaintenanceRunner:
+    def __init__(self, ctx): ...
+    async def run_batch(self, snapshot) -> MaintenanceRunOutcome       # A 调度调用
+    async def answer_question(self, item_id: str, answer: str) -> MaintenanceAnswerOutcome
+    async def preview_restore(self, *, batch_id: str | None = None, item_id: str | None = None) -> dict
+    async def restore(self, *, batch_id: str | None = None, item_id: str | None = None) -> dict
+```
+
+**模型调用规则**：公共结构化规则 + 本任务规则（`MAINTENANCE_SYSTEM` /
+`MAINTENANCE_ANSWER_SYSTEM`）+ 程序生成输出 schema + 独立 JSON 数据（`json.dumps`）；
+不注入聊天回答标记、不拼接主对话上下文；输出修复最多一次且有明确字段错误依据；
+失败保留原数据，不执行无效修改。
+
+**维护动作真正执行规则**（契约硬性）：
+
+- `merge`：至少两个不同 ID；非空 `new_content`；无 `question`；不同类别 / 归属 /
+  确定程度不得自动合成更强更宽的认识；新版本 provenance 必须保存 `merged_from`
+  （每个来源的 id / version / chain_id）与证据，撤销来源时保留完整历史；
+- `normalize`：恰好一个 ID；非空 `new_content`；无 `question`；只做不改变原意的格式整理 /
+  明确文字修复；
+- `ask`：提供具体问题，不直接改知识；事项持久保存为待回答（`PendingKind.MAINTENANCE_QUESTION`），
+  已等待回答的同一事项不重复提出；
+- 无效候选（未知 ID、旧版本、非法动作、缺新内容、跨类别合并等）**拒绝该项并保留原记录**，
+  不得回落为旧 revoke / expire 分支；
+- 维护自身产生的版本标记 `source=maintenance_*`，不参与变化计数、不进入主对话上下文注入
+  （直到被用户正常读取的有效知识状态）。
+
+**独立回答真正执行规则**：
+
+- `revise` 要求非空 `new_content`；`revoke` 要求 `new_content` 为空；
+- `needs_clarification` 必须有问题且不同时应用 changes；`deferred` 不应用 changes、
+  保留待处理；`no_change` 不应用 changes；
+- 只作用于当前事项允许的对象；写前重新检查版本（CAS，冲突则不改并如实记录）；
+- 用户回答是依据；模型不能自报批准 / 验证来取得执行权限；
+- 后台问题与回答不进入主对话 messages / 摘要、不计入用户对话轮数、不经主对话模型转述；
+  更新后的共享记忆由主对话按正常知识注入读取。
+
+**恢复能力**：
+
+- 逐条恢复、整批维护撤回、执行前影响预览、完整修改历史保留；
+- 恢复通过领域操作与新的版本记录实现（`source=maintenance_restore`、`restore_of`、
+  `batch_id`），不删除历史、不直接覆盖用户后续修改；
+- 检查并保护后来发生的修改：维护产物已不是当前链版本（用户改过）时该项拒绝恢复，
+  在结果里明确说明无法安全恢复的部分；
+- 多来源合并必须保存各来源关系（见上），不能只拿一个 knowledge_id 冒充完整合并。
+
+**迁移 47**（B 提供 `storage/migration_p2_b.py`）：`maintenance_batches`
+（批次 / 触发原因 / 快照 / 状态 / 统计 / 错误）、`maintenance_items`
+（候选 / 问题 / 前后内容 / 证据 / 状态 / 回答）、`maintenance_operations`
+（实际修改操作 / 目标与结果版本 / 前后快照 / 状态）。
+
+### 12.5 C：独立界面、API 与来源展示契约
+
+**「记忆待确认」读取模型**使用 `maintenance.models.PendingItemView`（字段冻结）：
+
+- 两类事项：`kind=knowledge_proposal`（主对话新增知识待审批，handler=`knowledge_proposal`，
+  沿用现有 verify / reject 流程）与 `kind=maintenance_question`（后台独立问题，
+  handler=`maintenance`，走回答流程）；必须按 `kind` / `handler` 区分处理程序；
+- 展示：问题、涉及对象（id / 版本 / 正文 / 类别 / 范围 / 确定程度 / 来源）、来源、修改前后、
+  真实状态（待回答 / 待审批 / 处理中 / 已处理 / 稍后处理 / 已拒绝 / 失败）；
+- 动作：回答、批准、修改后批准、拒绝、稍后处理（按事项类型给出允许集合）；
+- 维护记录：批次列表 / 详情、单条恢复与整批撤回的**预览与结果**；无法安全恢复的部分明确说明。
+
+**API（新增路由模块 `api/memory_pending_routes.py`，在 `api/server.py` 挂一次）**：
+`GET /api/memory/pending`、`POST /api/memory/pending/{id}/answer`、
+`POST /api/memory/pending/{id}/defer`、`GET /api/memory/maintenance/batches`、
+`GET /api/memory/maintenance/batches/{id}`、`GET /api/memory/maintenance/restore/preview`、
+`POST /api/memory/maintenance/restore`、`GET /api/memory/maintenance/status`。
+动作必须走 B 的 runner（`ctx.maintenance_runner`）；读取可用只读 SQL + 冻结读取模型。
+
+**持久与隔离**：等待事项必须持久保存（数据库行），不得用易超时的临时审批等待代替；
+不得把 `entities/pending.py` 直接当成预选实体库或完整记忆问答服务。
+
+**来源标记统一**：后台写入只写 `maintenance.models` 的来源键；API 的 `_knowledge_source_label`
+把这些键统一映射为「后台整理」并同时返回原始 `provenance_source`；前端「后台整理」筛选
+按 API 返回的标签/键匹配，不自行推断。后台维护写入的条目必须在来源筛选中可找到。
+
+**前端**：新增「记忆待确认」入口与维护记录（组件 / 面板由 C 决定，遵循现有 design tokens；
+不另建提示词或状态字符串）；完**真实界面检查**（起后端 + 前端，使用本机 Playwright
+`C:\Users\zxy\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\node_modules\playwright`
+或可用的无头浏览器；截图 / 断言证据写入 `D:\qio-dev\_P2-EVIDENCE-c.md`）。
+
+### 12.6 Lead 整合契约（共享文件集中处理）
+
+- `services/app.py`：实例化 `KnowledgeMaintenanceScheduler` 与 `MaintenanceRunner`，
+  暴露 `ctx.knowledge_maintenance` / `ctx.maintenance_runner`；启动周期检查循环
+  （`knowledge_maintenance.check_interval_seconds`）并纳入关闭报告（有界停止）。
+- `services/turn_orchestrator.py`：真实成功完成的**用户** turn 结束后调用
+  `note_user_turn_completed(ctx.turn_id)`（通知轮 / 失败 / 取消不计；按 turn_id 去重）。
+- `services/maintenance.py`：从既有 `run_once` 中退休 `scan_contradictions`（否定词降置信度）
+  与 `run_dreaming`（旧 revoke / expire 分支）；保留工具输出清理、工具记录保留、自动化建议，
+  三者的调度与知识维护分开。
+- `storage/schema.py`：登记迁移 46 / 47，追加补偿迁移 48（= 45 全部语句 + 46 + 47），
+  `SCHEMA_VERSION = COMPENSATION_VERSION = 48`；`REQUIRED_OBJECTS` 只列确有必需的对象，
+  且必须在补偿 48 中有对应语句。
+- 冲突 / 共享文件清单：
+  - Lead：`prompts.py`、`maintenance/models.py`、`services/app.py`、`services/turn_orchestrator.py`、
+    `services/maintenance.py`、`storage/schema.py`、`storage/migrate.py`、`docs/*`；
+  - A：`agent/maintenance/changes.py`、`agent/maintenance/scheduler.py`、
+    `storage/migration_p2_a.py`、`tests/test_p2_a_*.py`；
+  - B：`agent/maintenance/{runner,actions,questions,recovery,store}.py`、
+    `knowledge/lifecycle.py`（仅增量钩子与域操作）、`storage/migration_p2_b.py`、
+    `tests/test_p2_b_*.py`，以及退休旧维护行为的既有测试适配（`test_m12_maintenance.py` 等）；
+  - C：`api/memory_pending_routes.py`、`api/server.py`（挂载点 / 来源标签）、
+    `frontend/src/components/...` 新面板、`frontend/src/services/api.ts`、相关前端测试、
+    `tests/test_p2_c_*.py`；
+  - D：独立测试 `tests/test_p2_d_*.py` 与审阅记录，不改实现。
+
+### 12.7 迁移号分配（只追加）
+
+| 编号 | 归属 | 用途 |
+| --- | --- | --- |
+| 46 | A | 变化日志 / 调度状态 / 用户 turn 去重 |
+| 47 | B | 维护批次 / 事项 / 操作记录 |
+| 48 | Lead | 补偿迁移（45 全部语句 + 46 + 47），`COMPENSATION_VERSION=SCHEMA_VERSION=48` |
+
+实现分支不改 `storage/schema.py`；各自新建 `storage/migration_p2_<a|b>.py` 导出
+`MIGRATION = (号, [SQL...])`，分支内测试自行应用；Lead 整合时登记并收敛版本。
+
+### 12.8 本阶段定向验收（不跑完整集合 / 完整 CI）
+
+复用 maintenance、后台关闭、知识生命周期与 KnowledgePanel 测试，重点：
+
+- 跨重启累计（变化计数 / 等待轮数 / 处理位置）；新变化不重置等待；已处理位置正确；
+- 维护自身不形成循环触发；工具清理 / 记录保留 / 自动化建议调度不被知识维护触发条件影响；
+- 无效候选不撤销原知识；重复问题不重复催问；独立回答不进入主对话；
+- 多来源合并保留信息与来源关系；逐条 / 整批恢复保护后续修改；
+- 审批不被显示为事实已证实；来源筛选能找到后台修改记录；真实界面检查。
+
+只跑受影响定向 pytest / 受影响 vue-tsc + vitest；模型一律 fake / mock；不联网、不用真实 Key。
+D 独立审阅并复跑关键项；完整验收与完整 CI 留到四阶段最终整合后（各最多两轮）。
+
+### 12.9 交付
+
+各实现者在自己分支提交（中文 commit message）；汇报四段式（做了什么 / 证据命令结果 /
+偏差与剩余 / 需要 Lead 处理），证据写 `D:\qio-dev\_P2-EVIDENCE-<a|b|c|d>.md`。
+Lead 整合顺序 A / B / C → D 独立回归 → 更新 `docs/qio-refactor-contract.md`§12 交接、
+`docs/qio-verification-ledger.md` 阶段二段、`docs/status.md` 与 `docs/architecture.md`。
+不推送、不创建 PR、不启动完整 CI、不发布。
