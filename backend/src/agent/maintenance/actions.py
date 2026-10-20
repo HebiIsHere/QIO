@@ -30,6 +30,7 @@ from agent.knowledge.lifecycle import (
     KnowledgeService,
     KnowledgeState,
     VersionConflict,
+    resolve_current,
     revise_atomic,
 )
 from agent.maintenance import models, store
@@ -97,7 +98,7 @@ def _allowed_versions(allowed_knowledge: Mapping[str, Mapping[str, Any]]) -> dic
 
 
 def _version_error(
-    item: KnowledgeItem, allowed: Mapping[str, Any]
+    conn: sqlite3.Connection, item: KnowledgeItem, allowed: Mapping[str, Any]
 ) -> str | None:
     """写前版本核对：DB 当前行必须与模型输入里看到的那一版一致（CAS 语义）。"""
     expected_version = int(allowed.get("version") or 1)
@@ -109,6 +110,9 @@ def _version_error(
         )
     if expected_chain and item.chain_id and str(item.chain_id) != expected_chain:
         return "版本链已变化，原知识保持不动"
+    current = resolve_current(conn, item.id)
+    if current is None or current.id != item.id:
+        return "目标已不是该链当前版本（已被后续修改或取代），原知识保持不动"
     if item.state is not KnowledgeState.ACTIVE:
         return f"目标状态为 {item.state.value}，不是当前有效知识；原知识保持不动"
     return None
@@ -313,7 +317,7 @@ def _execute_merge(
                 item = svc.get(knowledge_id)
                 if item is None:
                     raise _CandidateRejected(f"knowledge_id 不存在：{knowledge_id}")
-                version_error = _version_error(item, allowed[knowledge_id])
+                version_error = _version_error(conn, item, allowed[knowledge_id])
                 if version_error is not None:
                     raise _CandidateRejected(version_error)
                 items.append(item)
@@ -475,7 +479,7 @@ def _execute_normalize(
             item = svc.get(target_id)
             if item is None:
                 raise _CandidateRejected(f"knowledge_id 不存在：{target_id}")
-            version_error = _version_error(item, allowed[target_id])
+            version_error = _version_error(conn, item, allowed[target_id])
             if version_error is not None:
                 raise _CandidateRejected(version_error)
             if item.content.strip() == content:

@@ -143,8 +143,10 @@ def _plan_operation(conn: sqlite3.Connection, operation: dict[str, Any]) -> dict
         plan["restoreable"] = product["state"] == "current" and all(
             entry["status"] in (_PLAN_RESTOREABLE, _PLAN_ALREADY) for entry in planned
         )
-        plan["partial"] = product["state"] == "current" and any(
-            entry["status"] == _PLAN_RESTOREABLE for entry in planned
+        plan["partial"] = (
+            product["state"] == "current"
+            and any(entry["status"] == _PLAN_RESTOREABLE for entry in planned)
+            and any(entry["status"] == _PLAN_BLOCKED for entry in planned)
         )
         plan["already_restored"] = product["state"] != "current" and bool(planned) and all(
             entry["status"] == _PLAN_ALREADY for entry in planned
@@ -363,6 +365,15 @@ def _restore_merge(
     conn: sqlite3.Connection, operation: dict[str, Any], plan: dict[str, Any]
 ) -> dict[str, Any]:
     product = plan["product"]
+    if plan.get("already_restored"):
+        return {
+            "operation_id": operation["id"],
+            "status": "already_restored",
+            "restored_knowledge_ids": [],
+            "blocked_knowledge_ids": [],
+            "reasons": ["该批次已经恢复过"],
+            "item_id": None,
+        }
     if product["state"] != "current":
         reason = product["reason"] or "维护产物已被后续修改，拒绝恢复"
         item_id, _ = _record_restore_item(
@@ -622,9 +633,17 @@ def restore(
     ]
     blocked = [result for result in results if result["status"] in ("blocked", "partial")]
     all_restored = len(restored) == len(results)
+    all_already = bool(results) and all(
+        result["status"] == "already_restored" for result in results
+    )
     status = "rolled_back" if all_restored else "rollback_partial"
     if item_id is not None:
-        status = "restored" if all_restored else "partial"
+        if all_already:
+            status = "already_restored"
+        elif all_restored:
+            status = "restored"
+        else:
+            status = "partial"
     if batch_id is not None:
         try:
             with lifecycle.atomic(conn):

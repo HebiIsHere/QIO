@@ -118,6 +118,7 @@ def _snapshot_payload(snapshot: MaintenanceSnapshot) -> dict[str, Any]:
         "waiting_turns": int(getattr(snapshot, "waiting_turns", 0) or 0),
         "change_ids": list(getattr(snapshot, "change_ids", ()) or ()),
         "knowledge_ids": list(getattr(snapshot, "knowledge_ids", ()) or ()),
+        "limits": dict(getattr(snapshot, "limits", None) or MAINTENANCE_LIMITS),
     }
 
 

@@ -125,6 +125,9 @@ def columns() -> dict[str, tuple[str, ...]]:
             first = line.split()[0]
             if first.upper() in _TABLE_CONSTRAINT_KEYWORDS:
                 continue
+            # 表级约束的续行（例如 CHECK 的枚举列表）不是列定义。
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", first) is None:
+                continue
             names.append(first)
         out[table] = tuple(names)
     return out
