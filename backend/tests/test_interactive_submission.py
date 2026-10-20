@@ -59,8 +59,42 @@ def _save(conn: sqlite3.Connection, state: dict, reason: str = "op") -> dict:
     return board_store.save_board(conn, BOARD, state, reason=reason)
 
 
-def _submit(conn: sqlite3.Connection, **kwargs) -> dict:
-    return asyncio.run(submission.submit_board(conn, BOARD, **kwargs))
+_LAST_ACCEPTOR: list = []
+
+
+class RecordingAcceptor:
+    """主循环受理器替身（阶段三）：记录每次受理参数，不调任何真实模型。"""
+
+    def __init__(self, *, ok: bool = True, reason: str | None = None, raise_exc=None) -> None:
+        self.calls: list[dict] = []
+        self.ok = ok
+        self.reason = reason
+        self.raise_exc = raise_exc
+
+    def __call__(self, **kwargs) -> dict:
+        self.calls.append(dict(kwargs))
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        if not self.ok:
+            return {"ok": False, "reason": self.reason or "fake 受理失败"}
+        return {
+            "ok": True,
+            "turnId": f"turn_submit_{len(self.calls)}",
+            "topicId": "topic-submit",
+        }
+
+
+def _acceptor() -> RecordingAcceptor:
+    assert _LAST_ACCEPTOR, "还没有发生提交受理"
+    return _LAST_ACCEPTOR[0]
+
+
+def _submit(conn: sqlite3.Connection, acceptor=None, **kwargs) -> dict:
+    chosen = acceptor if acceptor is not None else RecordingAcceptor()
+    _LAST_ACCEPTOR[:] = [chosen]
+    return asyncio.run(
+        submission.submit_board(conn, BOARD, turn_acceptor=chosen, **kwargs)
+    )
 
 
 def _dump(payload) -> str:
@@ -92,59 +126,23 @@ def marking(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def understanding(monkeypatch):
-    """把 B 的 understanding 模块换成 fake（B 还没合并时本文件也要能独立跑）。
+    """旧独立理解链已退役（阶段三 §13.3）：本文件内任何调用都直接失败。
 
-    受理（request_understanding）会**真实写一条 accepted 行**（用冻结的
-    board_understanding 表），后台理解（run_understanding）默认落到 understood；
-    用例可以替换其中任意一段行为。全程不调真实模型。
+    新流程把提交作为主循环 turn 受理（turn_acceptor），不再创建 board_understanding
+    记录；这里保留同名 fixture 作为**守卫**：一旦有代码偷偷调用旧链，用例立刻失败。
     """
     import agent.interactive as interactive_pkg
 
     calls: dict = {"requests": [], "runs": [], "adapters": [], "module": None}
     module = types.ModuleType("agent.interactive.understanding")
 
-    def request_understanding(conn, *, board_id, submission_id, snapshot=None):  # noqa: ANN001
-        calls["requests"].append(
-            {
-                "boardId": board_id,
-                "submissionId": submission_id,
-                "snapshot": dict(snapshot or {}),
-            }
-        )
-        uid = models.new_understanding_id()
-        stamp = models.now_iso()
-        conn.execute(
-            "INSERT INTO board_understanding (id, board_id, submission_id, request_id, status,"
-            " snapshot, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                uid,
-                board_id,
-                submission_id,
-                f"req:{submission_id}",
-                "accepted",
-                models.dumps(snapshot or {}),
-                stamp,
-                stamp,
-            ),
-        )
-        return {
-            "id": uid,
-            "status": "accepted",
-            "boardId": board_id,
-            "submissionId": submission_id,
-        }
+    def request_understanding(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["requests"].append({"args": args, "kwargs": kwargs})
+        raise AssertionError("新提交流程不得调用 request_understanding")
 
-    async def run_understanding(conn, understanding_id, *, adapter_provider=None):  # noqa: ANN001
-        adapter = await adapter_provider() if callable(adapter_provider) else None
-        calls["runs"].append(understanding_id)
-        calls["adapters"].append(adapter)
-        stamp = models.now_iso()
-        conn.execute(
-            "UPDATE board_understanding SET status = 'understood', output = ?, updated_at = ?,"
-            " finished_at = ? WHERE id = ?",
-            (models.dumps({"kind": "no_action", "summary": "当前无需开展任务"}), stamp, stamp, understanding_id),
-        )
-        return {"id": understanding_id, "status": "understood"}
+    async def run_understanding(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["runs"].append({"args": args, "kwargs": kwargs})
+        raise AssertionError("新提交流程不得调用 run_understanding")
 
     module.request_understanding = request_understanding
     module.run_understanding = run_understanding
@@ -156,10 +154,28 @@ def understanding(monkeypatch):
 
 @pytest.fixture()
 def client(db_conn: sqlite3.Connection, settings):
+    from agent.storage import migration_p3_a
+
+    migration_p3_a.apply(db_conn)  # 阶段三迁移 49（Lead 整合前在本分支手工应用）
     app = create_app(settings, db_conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
+
+    async def _fake_runner(turn_ctx) -> None:  # noqa: ANN001 - 模型替身
+        turn_ctx.result = {"ok": True}
+        turn_ctx.final_content = "fake answer"
+
+    app.state.ctx.turns.set_runner(_fake_runner)
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture(autouse=True)
+def _p3a_migration(db_conn):
+    """阶段三迁移 49：这些用例直接调 service（不走 Lead 整合后的 schema 登记）。"""
+    from agent.storage import migration_p3_a
+
+    migration_p3_a.apply(db_conn)
+    yield
 
 
 # --- 可见范围（权限边界） ------------------------------------------------
@@ -538,7 +554,9 @@ def test_first_submission_marker_and_baseline(db_conn, marking):
     assert result["baseline"]["previousSeq"] is None
     assert result["delivery"]["delivered"] is True
     assert result["delivery"]["status"] == "accepted"
-    assert result["delivery"]["understandingId"]
+    # 阶段三：受理 = 主循环 turn；不再有独立理解请求 id
+    assert result["delivery"]["turnId"] == result["turnId"]
+    assert result["delivery"]["understandingId"] is None
     assert submission.last_success_baseline(db_conn, BOARD)["seq"] == result["submission"]["seq"]
 
 
@@ -618,62 +636,57 @@ def test_duplicate_submission_is_idempotent(db_conn, marking):
 # --- 受理与理解分开（§14.1 / §14.4） --------------------------------------
 
 
-def test_success_creates_understanding_request(db_conn, understanding):
-    note = _note("受理要建立理解请求", checked=True)
+def test_success_creates_main_loop_turn(db_conn, understanding):
+    """阶段三：成功提交 = 受理一个主循环 turn；不再创建独立理解请求。"""
+    note = _note("受理要建立主循环轮次", checked=True)
     _save(db_conn, _state([note]))
     result = _submit(db_conn)
 
     assert result["status"] == "succeeded"
     assert result["delivery"]["delivered"] is True
     assert result["delivery"]["status"] == "accepted"
-    uid = result["delivery"]["understandingId"]
-    assert uid, "受理成功必须给出理解请求 id"
+    assert result["delivery"]["understandingId"] is None
+    turn_id = result["delivery"]["turnId"]
+    assert turn_id, "受理成功必须给出主循环 turnId"
+    assert result["turnId"] == turn_id
 
-    assert len(understanding["requests"]) == 1
-    request = understanding["requests"][0]
-    assert request["boardId"] == BOARD
-    assert request["submissionId"] == result["submission"]["id"]
-    snapshot = request["snapshot"]
-    assert set(snapshot) == {"cards", "groups", "links", "selection", "empty"}, (
-        "snapshot 必须是 after 投影本身（B 会再过滤一次可见范围）",
-        snapshot,
-    )
-    assert snapshot["cards"], "快照必须冻结本次交给 QIO 的范围"
-    assert [card["id"] for card in snapshot["cards"]] == [
-        card["id"] for card in result["after"]["cards"]
-    ]
-    assert models.dumps(snapshot) == models.dumps(result["after"]), (
-        "必须是内存里那份 after，不能重新读板面（否则刚提交的注释会被清勾选过滤掉）"
-    )
+    assert len(_acceptor().calls) == 1
+    call = _acceptor().calls[0]
+    assert call["board_id"] == BOARD
+    assert call["submission_id"] == result["submission"]["id"]
+    assert call["resume"] is False
+    assert "【互动板面提交】" in call["message"]
+    assert result["submission"]["id"] in call["message"]
+    assert "cards" not in call["message"], "程序消息不得把整份 JSON 快照塞给模型"
 
-    row = db_conn.execute(
-        "SELECT board_id, submission_id, status FROM board_understanding WHERE id = ?", (uid,)
-    ).fetchone()
-    assert row["board_id"] == BOARD
-    assert row["submission_id"] == result["submission"]["id"]
-    assert row["status"] in models.UNDERSTANDING_ACTIVE_STATUSES + models.UNDERSTANDING_SETTLED_STATUSES
+    # 旧理解链没有被调用、也没有新记录
+    assert understanding["requests"] == []
+    assert understanding["runs"] == []
+    count = db_conn.execute("SELECT COUNT(*) AS n FROM board_understanding").fetchone()["n"]
+    assert count == 0, "新流程不再产生 board_understanding 记录"
 
 
 def test_layout_only_after_success_is_duplicate_not_empty(db_conn, understanding):
     """契约 §1.5：纯位置变化后内容与上次成功提交一致 → duplicate（不是 empty）。"""
     material = _material("file", "", meta={"file": {"name": "材料.txt"}})
+    acceptor = RecordingAcceptor()
     _save(db_conn, _state([material]))
-    first = _submit(db_conn)
+    first = _submit(db_conn, acceptor=acceptor)
     assert first["status"] == "succeeded"
     baseline_seq = submission.last_success_baseline(db_conn, BOARD)["seq"]
-    requests_before = len(understanding["requests"])
+    assert len(acceptor.calls) == 1
 
     moved = dict(material)
     moved["x"] = 120.0
     moved["y"] = 40.0
     _save(db_conn, _state([moved]), reason="move")
 
-    result = _submit(db_conn)
+    result = _submit(db_conn, acceptor=acceptor)
     assert result["status"] == "duplicate", "纯位置变化后内容与上次成功提交一致"
     assert _kind(result["expressions"]) == ["layout_only"]
     assert result["baseline"]["updated"] is False
     assert submission.last_success_baseline(db_conn, BOARD)["seq"] == baseline_seq
-    assert len(understanding["requests"]) == requests_before, "duplicate 不建立理解请求"
+    assert len(acceptor.calls) == 1, "duplicate 不受理第二个主循环 turn"
     assert result["delivery"]["delivered"] is False
 
 
@@ -683,35 +696,37 @@ def test_empty_board_first_submission_is_empty(db_conn, understanding):
     assert result["status"] == "empty"
     assert result["baseline"]["updated"] is False
     assert submission.last_success_baseline(db_conn, BOARD) is None
-    assert understanding["requests"] == []
+    assert _acceptor().calls == [], "empty 不创建主循环 turn"
 
 
 def test_checked_is_kept_so_second_submit_is_duplicate_not_empty(db_conn, understanding):
     """契约 §2.2 新规则：提交不再清空勾选 —— 同样内容再提交是 duplicate（不是 empty），
     许可仍然有效（旧规则下第二次会因为勾选被自动清掉而变成 empty）。"""
     note = _note("提交后许可仍然有效", checked=True)
+    acceptor = RecordingAcceptor()
     _save(db_conn, _state([note]))
-    assert _submit(db_conn)["status"] == "succeeded"
-    assert len(understanding["requests"]) == 1
+    assert _submit(db_conn, acceptor=acceptor)["status"] == "succeeded"
+    assert len(acceptor.calls) == 1
 
-    result = _submit(db_conn)
+    result = _submit(db_conn, acceptor=acceptor)
     assert result["status"] == "duplicate"
     assert result["checkedCleared"] == []
     assert result["baseline"]["updated"] is False
-    assert len(understanding["requests"]) == 1, "duplicate 不建立第二条理解请求"
+    assert len(acceptor.calls) == 1, "duplicate 不创建第二个主循环 turn"
     assert board_store.load_board(db_conn, BOARD)["state"]["cards"][0]["checked"] is True
 
 
-def test_empty_and_duplicate_never_create_understanding_request(db_conn, understanding):
+def test_empty_and_duplicate_never_create_main_loop_turn(db_conn, understanding):
+    acceptor = RecordingAcceptor()
     # 未勾选注释 → empty
     _save(db_conn, _state([_note(SECRET_NOTE)]))
-    assert _submit(db_conn)["status"] == "empty"
-    assert understanding["requests"] == [], "empty 不建立理解请求"
+    assert _submit(db_conn, acceptor=acceptor)["status"] == "empty"
+    assert acceptor.calls == [], "empty 不创建主循环 turn"
 
     note = _note("会被判重复的说明", checked=True)
     _save(db_conn, _state([note]), reason="add")
-    assert _submit(db_conn)["status"] == "succeeded"
-    assert len(understanding["requests"]) == 1
+    assert _submit(db_conn, acceptor=acceptor)["status"] == "succeeded"
+    assert len(acceptor.calls) == 1
 
     deleted = dict(note)
     deleted["deleted"] = True
@@ -719,20 +734,22 @@ def test_empty_and_duplicate_never_create_understanding_request(db_conn, underst
     re_added = _note("会被判重复的说明", checked=True)
     _save(db_conn, _state([re_added]), reason="re-add")
 
-    again = _submit(db_conn)
+    again = _submit(db_conn, acceptor=acceptor)
     assert again["status"] == "duplicate"
-    assert len(understanding["requests"]) == 1, "duplicate 不建立第二条理解请求"
+    assert len(acceptor.calls) == 1, "duplicate 不创建第二个主循环 turn"
+    assert understanding["requests"] == []
 
 
-def test_acceptance_failure_keeps_changes_checks_and_baseline(db_conn, understanding, monkeypatch):
+def test_turn_acceptance_failure_keeps_changes_checks_and_baseline(db_conn, understanding):
+    """阶段三：主循环受理失败 → 按 failed 处理（不回退旧理解、不更新基准）。"""
     note = _note("受理失败要保留勾选", checked=True)
     _save(db_conn, _state([note]))
 
-    def boom(conn, *, board_id, submission_id, snapshot=None):  # noqa: ANN001
-        raise RuntimeError("模拟受理失败")
+    class BoomAcceptor:
+        def __call__(self, **kwargs):  # noqa: ANN003
+            raise RuntimeError("模拟受理失败")
 
-    monkeypatch.setattr(understanding["module"], "request_understanding", boom)
-    result = _submit(db_conn)
+    result = _submit(db_conn, acceptor=BoomAcceptor())
 
     assert result["status"] == "failed", "受理没成立就不是可靠受理，不能算 succeeded"
     assert result["delivery"]["delivered"] is False
@@ -746,73 +763,65 @@ def test_acceptance_failure_keeps_changes_checks_and_baseline(db_conn, understan
     assert stored["cards"][0]["checked"] is True, "受理失败要保留改动与本次注释选择"
     assert (
         db_conn.execute("SELECT COUNT(*) AS n FROM board_understanding").fetchone()["n"] == 0
-    ), "受理失败不得留下理解请求"
+    ), "受理失败不得留下理解请求（也不得回退旧理解链）"
+    assert understanding["requests"] == []
 
 
-def test_missing_understanding_module_fails_acceptance_without_crashing(db_conn, monkeypatch):
-    """理解模块不可用 → 受理不可用：按受理失败处理（不抛异常、保留勾选、不更新基准）。
-
-    模拟方式：直接替换**加载点**，而不是删 sys.modules —— B 的 understanding.py
-    真的在磁盘上之后，删 sys.modules 拦不住 import，那种模拟会失效。
-    """
-    monkeypatch.setattr(
-        submission, "_load_understanding", lambda: (None, "理解模块不可用（测试模拟）")
-    )
-    note = _note("理解模块缺失", checked=True)
+def test_missing_turn_acceptor_fails_acceptance_without_crashing(db_conn):
+    """没有主循环受理器 → 受理不可用：按 failed 处理（不抛异常、保留勾选、不更新基准、
+    也绝不回退旧理解链）。"""
+    note = _note("没有主循环受理器", checked=True)
     _save(db_conn, _state([note]))
 
-    result = _submit(db_conn)
+    # 直接调 service、不注入 turn_acceptor（模拟没有主循环可用的调用点）
+    result = asyncio.run(submission.submit_board(db_conn, BOARD))
     assert result["status"] == "failed"
-    assert "理解模块不可用" in result["delivery"]["reason"]
+    assert "主循环受理器不可用" in result["delivery"]["reason"]
     assert result["checkedCleared"] == []
     assert submission.last_success_baseline(db_conn, BOARD) is None
+    assert db_conn.execute("SELECT COUNT(*) AS n FROM board_understanding").fetchone()["n"] == 0
 
 
-async def test_adapter_provider_is_passed_to_background_understanding(db_conn, understanding):
-    note = _note("透传 adapter provider", checked=True)
+async def test_adapter_provider_is_not_used_for_legacy_understanding(db_conn, understanding):
+    """阶段三：提交不再启动独立理解模型；adapter_provider 仅兼容保留（不产生调用）。"""
+    note = _note("旧 provider 不再使用", checked=True)
     _save(db_conn, _state([note]))
     sentinel = object()
+    acceptor = RecordingAcceptor()
 
     async def provider():
         return sentinel
 
-    result = await submission.submit_board(db_conn, BOARD, adapter_provider=provider)
+    result = await submission.submit_board(
+        db_conn, BOARD, adapter_provider=provider, turn_acceptor=acceptor
+    )
     assert result["status"] == "succeeded"
-    assert result["delivery"]["background"]["started"] is True
+    assert result["delivery"]["turnId"], "受理成功给的是主循环 turnId"
+    assert "background" not in result["delivery"], "不再有后台理解调度事实"
     for _ in range(5):
         await asyncio.sleep(0)
-    assert understanding["runs"] == [result["delivery"]["understandingId"]]
-    assert understanding["adapters"] == [sentinel], "provider 必须按 async () -> adapter|None 透传"
+    assert understanding["runs"] == []
+    assert understanding["adapters"] == []
+    assert len(acceptor.calls) == 1
+    assert result["delivery"]["understandingId"] is None
 
 
-async def test_background_failure_does_not_flip_submission(db_conn, understanding, monkeypatch):
-    """受理已成功后，后台模型失败只写理解记录，不改提交状态、不回退基准与勾选。"""
-    note = _note("后台理解失败", checked=True)
+async def test_turn_acceptor_failure_flips_submission_to_failed(db_conn, understanding):
+    """受理失败（主循环不可用）→ 提交 failed、不更新基准、保留勾选；不产生理解记录。"""
+    note = _note("主循环受理失败", checked=True)
     _save(db_conn, _state([note]))
 
-    async def boom(conn, understanding_id, *, adapter_provider=None):  # noqa: ANN001
-        raise RuntimeError("模拟模型不可用")
+    class BoomAcceptor:
+        def __call__(self, **kwargs):  # noqa: ANN003
+            raise RuntimeError("模拟主循环不可用")
 
-    monkeypatch.setattr(understanding["module"], "run_understanding", boom)
-
-    async def provider():
-        return None
-
-    result = await submission.submit_board(db_conn, BOARD, adapter_provider=provider)
-    assert result["status"] == "succeeded", "受理后的失败不得把提交改成 failed"
-    assert result["delivery"]["delivered"] is True
-    uid = result["delivery"]["understandingId"]
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-    row = db_conn.execute(
-        "SELECT status, error FROM board_understanding WHERE id = ?", (uid,)
-    ).fetchone()
-    assert row["status"] == "failed", "理解记录要如实落 failed（可从保存的快照重试）"
-    assert "模拟模型不可用" in row["error"]
-    assert submission.last_success_baseline(db_conn, BOARD)["seq"] == result["submission"]["seq"]
-    stored = board_store.load_board(db_conn, BOARD)["state"]
-    assert stored["cards"][0]["checked"] is True, "受理成功后整体许可持续有效（提交不清许可）"
+    result = await submission.submit_board(db_conn, BOARD, turn_acceptor=BoomAcceptor())
+    assert result["status"] == "failed"
+    assert "模拟主循环不可用" in (result["submission"]["error"] or "")
+    assert result["delivery"]["delivered"] is False
+    assert result["delivery"]["understandingId"] is None
+    assert db_conn.execute("SELECT COUNT(*) AS n FROM board_understanding").fetchone()["n"] == 0
+    assert understanding["requests"] == []
 
 
 def test_before_is_projected_to_current_visible_range(db_conn, marking):
@@ -931,7 +940,9 @@ def test_api_submit_history_and_submissions(client):
     assert result["before"]["firstSubmission"] is True
     assert result["delivery"]["delivered"] is True
     assert result["delivery"]["status"] == "accepted"
-    assert result["delivery"]["understandingId"]
+    # 阶段三：受理 = 主循环 turn；understandingId 明确为 None
+    assert result["delivery"]["turnId"] == result["turnId"]
+    assert result["delivery"]["understandingId"] is None
     assert result["checkedCleared"] == [], "契约 §2.2：checkedCleared 恒为空数组"
 
     state_after = client.get(f"/api/interactive/boards/{BOARD}/state").json()
@@ -947,12 +958,13 @@ def test_api_submit_history_and_submissions(client):
     row_delivery = listing["submissions"][0]["delivery"]
     assert row_delivery["delivered"] is True
     assert row_delivery["status"] == "accepted"
-    assert row_delivery["understandingId"] == result["delivery"]["understandingId"]
+    assert row_delivery["turnId"] == result["delivery"]["turnId"]
+    assert row_delivery["understandingId"] is None
     assert "第一次提交" in row_delivery["detail"]
 
 
-def test_api_submit_uses_the_shared_adapter_injection_point(client, understanding):
-    """端到端验收的统一注入点：app.state.interactive_adapter_provider（与 intents 路由一致）。"""
+def test_api_submit_accepts_main_loop_turn_without_legacy_model(client, understanding):
+    """阶段三：API 提交同样走主循环受理；旧理解模型注入点不再被使用。"""
     sentinel = object()
 
     async def override():
@@ -965,12 +977,12 @@ def test_api_submit_uses_the_shared_adapter_injection_point(client, understandin
     assert submitted.status_code == 200, submitted.text
     result = submitted.json()
     assert result["status"] == "succeeded"
-    assert result["delivery"]["background"]["started"] is True
-
-    deadline = time.time() + 3
-    while not understanding["adapters"] and time.time() < deadline:
-        time.sleep(0.02)
-    assert understanding["adapters"] == [sentinel], "提交路径也要认这个注入点"
+    assert result["delivery"]["delivered"] is True
+    assert result["delivery"]["turnId"] == result["turnId"]
+    assert result["turnId"], "响应必须带主循环 turnId"
+    assert result["delivery"]["understandingId"] is None
+    assert understanding["requests"] == []
+    assert understanding["runs"] == []
 
 
 def test_api_validation_errors(client):
@@ -1097,26 +1109,25 @@ def test_result_body_change_is_result_updated(db_conn, marking):
     assert updated[0]["source"]["intentId"] == "i1"
 
 
-def test_frozen_view_is_stored_and_invalid_view_is_dropped(db_conn, understanding):
-    """F6：合法 view 随快照冻结；非法 view 整块丢弃记为 null（不报错、不猜）。"""
+def test_frozen_view_is_passed_and_invalid_view_is_dropped(db_conn):
+    """F6：合法 view 原样交给受理器并落 delivery；非法 view 整块丢弃记为 null。"""
     note = _note("问题", checked=True)
     _save(db_conn, _state([note]))
     view = {"x": 10.0, "y": 20.0, "w": 800.0, "h": 600.0, "scale": 1.5}
-    first = _submit(db_conn, view=view)
+    acceptor = RecordingAcceptor()
+    first = _submit(db_conn, acceptor=acceptor, view=view)
     assert first["status"] == "succeeded"
     assert first["delivery"]["view"] == view
-    uid = first["delivery"]["understandingId"]
-    row = db_conn.execute(
-        "SELECT snapshot FROM board_understanding WHERE id = ?", (uid,)
-    ).fetchone()
-    assert json.loads(row["snapshot"])["view"] == view
-    assert understanding["requests"][-1]["snapshot"]["view"] == view
+    assert acceptor.calls[-1]["view"] == view, "冻结视图随受理交给主循环"
 
-    second = _submit(db_conn, view={"x": "bad"})
+    second = _submit(db_conn, acceptor=acceptor, view={"x": "bad"})
+    # 相同内容 + 非法 view：duplicate（不重复受理），非法 view 整块丢弃记为 null
+    assert second["status"] == "duplicate"
     assert second["delivery"]["view"] is None
+    assert len(acceptor.calls) == 1
 
 
-def test_view_alone_does_not_change_content_or_fingerprint(db_conn, understanding):
+def test_view_alone_does_not_change_content_or_fingerprint(db_conn):
     """F6：纯 view 变化不构成新意图，也不让内容失效（内容指纹与求差都不含 view）。"""
     note = _note("问题", checked=True)
     _save(db_conn, _state([note]))

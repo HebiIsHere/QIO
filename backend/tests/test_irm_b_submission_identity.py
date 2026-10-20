@@ -62,31 +62,40 @@ def _save(conn: sqlite3.Connection, state: dict, board_id: str = BOARD) -> dict:
     return board_store.save_board(conn, board_id, state, reason="op")
 
 
-async def _submit_async(conn: sqlite3.Connection, board_id: str = BOARD, **kwargs) -> dict:
-    """提交并把默认（无 adapter）的后台理解任务停掉，避免它在断言期间改写理解行。
+_TURN_ACCEPTORS: list = []
 
-    后台理解的启动本身仍然发生（delivery.background.started=True），只是不在这里真跑模型。
-    """
-    result = await submission_module.submit_board(conn, board_id, **kwargs)
-    uid = (result.get("delivery") or {}).get("understandingId")
-    if uid:
-        await _stop_background(str(uid))
-    return result
+
+class RecordingAcceptor:
+    """主循环受理器替身：记录受理调用（不调任何真实模型）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def __call__(self, **kwargs) -> dict:
+        self.calls.append(dict(kwargs))
+        return {
+            "ok": True,
+            "turnId": f"turn_identity_{len(self.calls)}",
+            "topicId": "topic-identity",
+        }
+
+
+def _last_acceptor() -> RecordingAcceptor:
+    assert _TURN_ACCEPTORS, "还没有发生提交受理"
+    return _TURN_ACCEPTORS[0]
+
+
+async def _submit_async(
+    conn: sqlite3.Connection, board_id: str = BOARD, acceptor=None, **kwargs
+) -> dict:
+    """提交：阶段三起受理 = 主循环 turn（注入 fake turn_acceptor，不启动旧理解链）。"""
+    chosen = acceptor if acceptor is not None else RecordingAcceptor()
+    _TURN_ACCEPTORS[:] = [chosen]
+    return await submission_module.submit_board(conn, board_id, turn_acceptor=chosen, **kwargs)
 
 
 def _submit(conn: sqlite3.Connection, board_id: str = BOARD, **kwargs) -> dict:
     return asyncio.run(_submit_async(conn, board_id, **kwargs))
-
-
-async def _stop_background(understanding_id: str) -> None:
-    """取消提交路径排下的后台任务（用例自己用 fake adapter 驱动执行）。"""
-    target = "interactive-understanding:" + str(understanding_id)
-    for task in asyncio.all_tasks():
-        if task.get_name() != target:
-            continue
-        task.cancel()
-        with contextlib.suppress(BaseException):
-            await task
 
 
 def _submissions(conn: sqlite3.Connection, board_id: str = BOARD) -> list[dict]:
@@ -115,46 +124,21 @@ def _client_request_id(conn: sqlite3.Connection, submission_id: str) -> str:
     return str(row["client_request_id"]) if row is not None else "<missing>"
 
 
-@pytest.fixture()
+@pytest.fixture(autouse=True)
 def understanding(monkeypatch):
-    """fake 理解模块：**真实写** board_understanding 行，并记录受理 / 执行次数。"""
+    """旧独立理解链已退役：守卫 fixture，任何调用都直接失败（阶段三 §13.3）。"""
     import agent.interactive as interactive_pkg
 
     calls: dict = {"requests": [], "runs": [], "adapters": [], "module": None}
     module = types.ModuleType("agent.interactive.understanding")
 
-    def request_understanding(conn, *, board_id, submission_id, snapshot=None):  # noqa: ANN001
-        calls["requests"].append(
-            {"boardId": board_id, "submissionId": submission_id, "snapshot": dict(snapshot or {})}
-        )
-        rid = "sub:" + str(board_id) + ":" + str(submission_id)
-        existing = conn.execute(
-            "SELECT * FROM board_understanding WHERE request_id = ?", (rid,)
-        ).fetchone()
-        if existing is not None:
-            result = dict(existing)
-            result["reused"] = True
-            return result
-        uid = models.new_understanding_id()
-        stamp = models.now_iso()
-        conn.execute(
-            "INSERT INTO board_understanding (id, board_id, submission_id, request_id, status,"
-            " snapshot, created_at, updated_at) VALUES (?, ?, ?, ?, 'accepted', ?, ?, ?)",
-            (uid, board_id, submission_id, rid, models.dumps(snapshot or {}), stamp, stamp),
-        )
-        return {"id": uid, "status": "accepted", "boardId": board_id, "submissionId": submission_id}
+    def request_understanding(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["requests"].append({"args": args, "kwargs": kwargs})
+        raise AssertionError("新提交流程不得调用 request_understanding")
 
-    async def run_understanding(conn, understanding_id, *, adapter_provider=None):  # noqa: ANN001
-        adapter = await adapter_provider() if callable(adapter_provider) else None
-        calls["runs"].append(understanding_id)
-        calls["adapters"].append(adapter)
-        stamp = models.now_iso()
-        conn.execute(
-            "UPDATE board_understanding SET status = 'understood', output = ?, updated_at = ?,"
-            " finished_at = ? WHERE id = ?",
-            (models.dumps({"kind": "no_action", "summary": "当前无需开展任务"}), stamp, stamp, understanding_id),
-        )
-        return {"id": understanding_id, "status": "understood"}
+    async def run_understanding(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls["runs"].append({"args": args, "kwargs": kwargs})
+        raise AssertionError("新提交流程不得调用 run_understanding")
 
     module.request_understanding = request_understanding
     module.run_understanding = run_understanding
@@ -162,6 +146,15 @@ def understanding(monkeypatch):
     monkeypatch.setattr(interactive_pkg, "understanding", module, raising=False)
     calls["module"] = module
     return calls
+
+
+@pytest.fixture(autouse=True)
+def _p3a_migration(db_conn):
+    """阶段三迁移 49（Lead 登记 schema.py 前在本分支手工应用）。"""
+    from agent.storage import migration_p3_a
+
+    migration_p3_a.apply(db_conn)
+    yield
 
 
 def _prepare(conn: sqlite3.Connection, cards: list[dict], board_id: str = BOARD) -> int:
@@ -180,14 +173,14 @@ def test_same_identity_replays_original_facts(db_conn, understanding):
     assert first["status"] == "succeeded"
     assert first.get("replayed") is not True
     first_id = first["submission"]["id"]
-    first_uid = first["delivery"]["understandingId"]
-    assert first_uid
+    first_turn = first["delivery"]["turnId"]
+    assert first_turn, "阶段三：受理成功必须给出主循环 turnId"
+    assert first["delivery"]["understandingId"] is None
     # 契约 §2.2 新规则：提交不再取消勾选，checkedCleared 恒为空数组
     assert first["checkedCleared"] == []
 
     baseline_after_first = submission_module.last_success_baseline(db_conn, BOARD)
     rows_before = len(_submissions(db_conn))
-    requests_before = len(understanding["requests"])
 
     second = _submit(db_conn, note="第一次提交", base_state_version=seq, client_request_id=CRID)
     assert second["status"] == "succeeded"
@@ -196,14 +189,14 @@ def test_same_identity_replays_original_facts(db_conn, understanding):
     assert second["submission"]["seq"] == first["submission"]["seq"]
     assert second["submission"]["status"] == "succeeded"
     assert second["delivery"] == first["delivery"], "重放返回原 delivery 事实"
-    assert second["delivery"]["understandingId"] == first_uid
+    assert second["delivery"]["turnId"] == first_turn
     assert second["checkedCleared"] == []
     assert second["checkedCleared"] == first["checkedCleared"]
 
     assert len(_submissions(db_conn)) == rows_before, "重放不得落新行"
-    assert len(understanding["requests"]) == requests_before, "重放不得新建理解请求"
-    assert len(_understandings(db_conn)) == 1
-    assert understanding["runs"] == [], "重放不得进入后台理解 / 调用模型"
+    assert _last_acceptor().calls == [], "重放不得受理第二个主循环 turn"
+    assert len(_understandings(db_conn)) == 0, "新流程不创建理解记录"
+    assert understanding["runs"] == [], "重放不得进入旧理解 / 调用模型"
     after = submission_module.last_success_baseline(db_conn, BOARD)
     assert after["submissionId"] == baseline_after_first["submissionId"]
     assert after["seq"] == baseline_after_first["seq"], "重放不得改基准"
@@ -262,7 +255,7 @@ def test_identity_is_persisted_and_survives_reconnect(db_conn, understanding, tm
         )
         assert replay["replayed"] is True
         assert replay["submission"]["id"] == first["submission"]["id"]
-        assert len(_understandings(other)) == 1
+        assert len(_understandings(other)) == 0, "新流程不创建理解记录"
     finally:
         other.close()
     assert understanding["runs"] == []
@@ -277,7 +270,6 @@ def test_same_identity_different_note_is_conflict(db_conn, understanding):
     first = _submit(db_conn, note="原本的备注", base_state_version=seq, client_request_id=CRID)
     rows_before = len(_submissions(db_conn))
     baseline_before = submission_module.last_success_baseline(db_conn, BOARD)
-    requests_before = len(understanding["requests"])
 
     with pytest.raises(submission_module.RequestIdentityConflict) as excinfo:
         _submit(db_conn, note="另一个窗口的备注", base_state_version=seq, client_request_id=CRID)
@@ -285,7 +277,7 @@ def test_same_identity_different_note_is_conflict(db_conn, understanding):
     assert "request_identity_conflict" in message or "身份" in message
 
     assert len(_submissions(db_conn)) == rows_before, "冲突不得落新提交"
-    assert len(understanding["requests"]) == requests_before, "冲突不得新建理解请求"
+    assert _last_acceptor().calls == [], "冲突不得受理主循环 turn"
     assert understanding["runs"] == [], "冲突不得调用模型"
     baseline_after = submission_module.last_success_baseline(db_conn, BOARD)
     assert baseline_after["submissionId"] == baseline_before["submissionId"], "冲突不得改基准"
@@ -301,13 +293,12 @@ def test_same_identity_different_base_version_is_conflict(db_conn, understanding
     seq = _prepare(db_conn, [note])
     first = _submit(db_conn, note="", base_state_version=seq, client_request_id=CRID)
     rows_before = len(_submissions(db_conn))
-    requests_before = len(understanding["requests"])
 
     with pytest.raises(submission_module.RequestIdentityConflict):
         _submit(db_conn, note="", base_state_version=seq + 1, client_request_id=CRID)
 
     assert len(_submissions(db_conn)) == rows_before
-    assert len(understanding["requests"]) == requests_before
+    assert _last_acceptor().calls == []
     assert understanding["runs"] == []
     assert _submissions(db_conn)[0]["id"] == first["submission"]["id"]
 
@@ -321,7 +312,7 @@ def test_two_windows_same_identity_second_one_loses(db_conn, understanding):
     with pytest.raises(submission_module.RequestIdentityConflict):
         _submit(db_conn, note="窗口 B 的备注", base_state_version=seq, client_request_id=CRID)
     assert len(_submissions(db_conn)) == 1
-    assert len(_understandings(db_conn)) == 1
+    assert len(_understandings(db_conn)) == 0, "新流程不创建理解记录"
     assert understanding["runs"] == []
 
 
@@ -405,11 +396,12 @@ def test_acceptance_lookup_returns_exact_record(db_conn, understanding):
     assert found["baseStateVersion"] == seq
     assert found["note"] == "查证备注"
     assert found["createdAt"] == first["submission"]["createdAt"]
-    assert found["understandingId"] == first["delivery"]["understandingId"]
-    assert found["understandingStatus"] == "accepted"
+    # 阶段三：新流程没有理解请求；查证如实返回 None
+    assert found["understandingId"] is None
+    assert found["understandingStatus"] is None
     assert found["delivery"]["delivered"] is True
     assert found["delivery"]["status"] == "accepted"
-    assert found["delivery"]["understandingId"] == first["delivery"]["understandingId"]
+    assert found["delivery"]["turnId"] == first["turnId"]
 
 
 def test_acceptance_lookup_requires_exact_identity(db_conn, understanding):
@@ -447,18 +439,22 @@ def test_acceptance_lookup_ignores_time_proximity_and_other_submissions(db_conn,
     assert submission_module.acceptance_lookup(db_conn, OTHER_BOARD, CRID) is None
 
 
-def test_acceptance_lookup_reports_failed_and_settled_understanding(db_conn, understanding):
-    note = _note("理解终态")
+def test_acceptance_lookup_reports_legacy_understanding_readonly(db_conn, understanding):
+    """旧 board_understanding 记录只读兼容：查证仍能读到旧记录的真实状态。"""
+    note = _note("旧理解记录只读")
     seq = _prepare(db_conn, [note])
     first = _submit(db_conn, note="", base_state_version=seq, client_request_id=CRID)
-    uid = first["delivery"]["understandingId"]
+    stamp = models.now_iso()
     db_conn.execute(
-        "UPDATE board_understanding SET status = 'failed', error = '模型失败（可重试）' WHERE id = ?",
-        (uid,),
+        "INSERT INTO board_understanding (id, board_id, submission_id, request_id, status,"
+        " error, created_at, updated_at) VALUES ('u_legacy', ?, ?, 'req:legacy', 'failed',"
+        " '模型失败（可重试）', ?, ?)",
+        (BOARD, first["submission"]["id"], stamp, stamp),
     )
     found = submission_module.acceptance_lookup(db_conn, BOARD, CRID)
+    assert found["understandingId"] == "u_legacy"
     assert found["understandingStatus"] == "failed"
-    assert found["delivery"]["delivered"] is True, "理解失败不改受理事实"
+    assert found["delivery"]["delivered"] is True, "旧理解失败不代表本次受理失败"
 
 
 # --- 5. 同身份重试不重复调用模型（反例） ----------------------------------
@@ -468,17 +464,13 @@ def test_replay_never_reinvokes_model_even_after_settle(db_conn, understanding):
     note = _note("不重复调用模型")
     seq = _prepare(db_conn, [note])
     first = _submit(db_conn, note="", base_state_version=seq, client_request_id=CRID)
-    uid = first["delivery"]["understandingId"]
-    db_conn.execute(
-        "UPDATE board_understanding SET status = 'understood', finished_at = ?, updated_at = ?"
-        " WHERE id = ?",
-        (models.now_iso(), models.now_iso(), uid),
-    )
+    turn_id = first["delivery"]["turnId"]
     for _ in range(3):
         replay = _submit(db_conn, note="", base_state_version=seq, client_request_id=CRID)
         assert replay["replayed"] is True
+        assert replay["delivery"]["turnId"] == turn_id, "重放不创建新的主循环 turn"
     assert len(_submissions(db_conn)) == 1
-    assert len(_understandings(db_conn)) == 1
+    assert len(_understandings(db_conn)) == 0, "新流程不创建理解记录"
     assert understanding["runs"] == [], "重放绝不重新调用模型"
     assert understanding["adapters"] == []
 
@@ -494,4 +486,5 @@ def test_no_identity_request_second_submit_after_pause_still_works(db_conn, unde
     _save(db_conn, _state([rechecked]))
     latest = int(board_store.load_board(db_conn, BOARD)["seq"])
     assert _submit(db_conn, note="", base_state_version=latest)["status"] == "duplicate"
-    assert len(_understandings(db_conn)) == 1, "duplicate 不新建理解请求"
+    assert len(_understandings(db_conn)) == 0, "duplicate 不新建理解请求"
+    assert _last_acceptor().calls == [], "duplicate 不创建主循环 turn"

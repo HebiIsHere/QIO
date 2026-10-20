@@ -1,5 +1,10 @@
 """互动理解：受理 / 上下文构建 / 真实模型理解与结构化校验（子智能体 B 负责实现）。
 
+阶段三退役说明（docs/qio-refactor-contract.md §13.3）：新提交流程**不再调用**本模块的
+模型链。互动提交已改为主循环的一个 Turn（interactive/submission.py 注入 turn_acceptor），
+由板面工具在同一个主循环里提出意图 / 提问 / 执行；本模块保留只为旧 board_understanding
+记录的只读兼容、既有 API 读取与旧失败记录的重试入口，不再产生新记录。
+
 契约：docs/interactive-mode-contract.md §14.0 / §14.1 / §14.3 / §14.5。
 
 三个公开入口（冻结签名）：
