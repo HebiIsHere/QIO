@@ -333,6 +333,7 @@ class TurnOrchestrator:
             return
         with tracer.phase("persistence"):
             final_topic = await self.persist(ctx, adapter, plan, result)
+        self._persist_interactive_state(ctx)
         ctx.final_content = result.final_content
         ctx.final_annotation = getattr(result, "final_annotation", None)
         ctx.usage = {
@@ -748,6 +749,38 @@ class TurnOrchestrator:
             )
         if media_entries:
             blocks.append(ContextBlock("media", {"entries": list(media_entries)}))
+        # 阶段三契约 §13.2：互动模式的可信运行信息作为结构化块交给同一主循环。
+        # 板面身份 / 提交 / 等待来自程序绑定与持久记录；模型不能改写这些值。
+        if getattr(ctx, "mode", "normal") == "interactive" and getattr(ctx, "board_id", ""):
+            interactive_data: dict[str, Any] = {
+                "mode": "interactive",
+                "board_id": str(getattr(ctx, "board_id", "")),
+                "submission_id": str(getattr(ctx, "board_submission_id", "") or ""),
+                "topic_id": str(
+                    getattr(ctx, "board_topic_id", "")
+                    or getattr(ctx, "current_topic", "")
+                    or ""
+                ),
+                "attempt": int(getattr(ctx, "board_attempt", 1) or 1),
+                "resume": bool(getattr(ctx, "board_resume", False)),
+                "intent_ids": list(getattr(ctx, "board_intent_ids", ()) or ()),
+                "resolved_question_ids": list(
+                    getattr(ctx, "board_resolved_question_ids", ()) or ()
+                ),
+            }
+            try:
+                from agent.interactive import submission as _submission
+
+                state_reader = getattr(_submission, "waiting_state", None)
+                if callable(state_reader):
+                    interactive_data["waiting"] = state_reader(
+                        app.conn, str(getattr(ctx, "board_id", ""))
+                    )
+            except Exception:  # noqa: BLE001 - 等待信息缺失时块仍保留可信绑定
+                logging.getLogger(__name__).warning(
+                    "interactive waiting state unavailable", exc_info=True
+                )
+            blocks.append(ContextBlock("interactive", interactive_data))
         return _Plan(
             topic=topic,
             prediction=prediction,
@@ -902,15 +935,28 @@ class TurnOrchestrator:
         from agent.adapters.base import AudioPart, ImagePart, VideoPart
         from agent.core.message_assembly import MediaParts, build_initial_messages
 
-        specs = _specs_or_empty(app.registry)
+        interactive_mode = getattr(ctx, "mode", "normal") == "interactive"
+        specs = [
+            spec
+            for spec in _specs_or_empty(app.registry)
+            if interactive_mode or not str(getattr(spec, "name", "")).startswith("board_")
+        ]
         mode_rules = ""
-        mode_getter = getattr(adapter, "mode_rules_text", None)
-        if callable(mode_getter):
-            try:
-                mode_rules = str(mode_getter(specs) or "")
-            except Exception:  # noqa: BLE001 - 模式规则失败不能挡住这一轮
-                logging.getLogger(__name__).warning("mode rules failed", exc_info=True)
-                mode_rules = ""
+        if interactive_mode:
+            # 阶段三契约 §13.2：互动政策是主循环的模式规则（同一个 QIO，不是第二套模型）。
+            mode_rules = app.prompts_policy_text() if hasattr(app, "prompts_policy_text") else ""
+            if not mode_rules:
+                from agent import prompts as _prompts
+
+                mode_rules = _prompts.PROMPTS["INTERACTIVE_POLICY"]
+        else:
+            mode_getter = getattr(adapter, "mode_rules_text", None)
+            if callable(mode_getter):
+                try:
+                    mode_rules = str(mode_getter(specs) or "")
+                except Exception:  # noqa: BLE001 - 模式规则失败不能挡住这一轮
+                    logging.getLogger(__name__).warning("mode rules failed", exc_info=True)
+                    mode_rules = ""
         initial_messages = build_initial_messages(
             user_text=plan.user_text,
             media=MediaParts(
@@ -949,10 +995,54 @@ class TurnOrchestrator:
             # 本轮交付的媒体内容块（图片 / 音频 / 视频抽样帧）：挂在首条 user 消息上，
             # 后续每一次模型调用都带着它 —— 依据不会在第二步丢掉。
             media_parts=list(plan.media_parts or []),
+            # 阶段三：互动轮允许「已保存意图 / 已记录等待」时不产生聊天回答。
+            allow_no_answer=interactive_mode,
         )
         ctx.loop = loop
+        # 阶段三契约 §13.2：把程序验证过的板面绑定放进可信运行上下文；
+        # 板面工具只从这里取 board_id / submission_id，不接受模型自报。
+        board_token = None
+        if interactive_mode:
+            try:
+                from agent.interactive import runtime as _runtime
+
+                board_token = _runtime.set_board_turn(
+                    _runtime.BoardTurnContext(
+                        turn_id=ctx.turn_id,
+                        mode="interactive",
+                        board_id=str(getattr(ctx, "board_id", "") or ""),
+                        submission_id=str(getattr(ctx, "board_submission_id", "") or ""),
+                        topic_id=str(
+                            getattr(ctx, "board_topic_id", "")
+                            or getattr(ctx, "current_topic", "")
+                            or ""
+                        ),
+                        attempt=int(getattr(ctx, "board_attempt", 1) or 1),
+                        intent_ids=tuple(getattr(ctx, "board_intent_ids", ()) or ()),
+                    )
+                )
+            except Exception:  # noqa: BLE001 - 绑定失败时工具会拒绝，不拖垮整轮
+                board_token = None
+                logging.getLogger(__name__).warning("board runtime set failed", exc_info=True)
         try:
-            return await loop.run(plan.user_text, initial_messages=initial_messages)
+            result = await loop.run(plan.user_text, initial_messages=initial_messages)
+            # 阶段三：board_wait_for_input 写出的问题由程序在本轮呈现一次，
+            # 不让模型第二次生成同一问题；允许无回答时把问题当作本轮交付内容。
+            if interactive_mode:
+                try:
+                    from agent.interactive import runtime as _runtime
+
+                    questions = _runtime.take_delivered_questions()
+                except Exception:  # noqa: BLE001
+                    questions = []
+                ctx.board_delivered_questions = questions
+                if questions and not (getattr(result, "final_content", "") or "").strip():
+                    result.final_content = "\n\n".join(
+                        str(item.get("question") or "").strip()
+                        for item in questions
+                        if str(item.get("question") or "").strip()
+                    )
+            return result
         except Exception as exc:
             logging.getLogger(__name__).exception("turn failed")
             # 契约 3：错误文本先打码再截断（str(exc)[:N] 的旧写法会把消息末尾的
@@ -975,6 +1065,13 @@ class TurnOrchestrator:
             return None
         finally:
             ctx.loop = None
+            if board_token is not None:
+                try:
+                    from agent.interactive import runtime as _runtime
+
+                    _runtime.reset_board_turn(board_token)
+                except Exception:  # noqa: BLE001 - 清理失败不影响终态
+                    logging.getLogger(__name__).warning("board runtime reset failed", exc_info=True)
 
     async def persist(self, ctx, adapter, plan: _Plan, result) -> str:
         app = self.app
@@ -992,6 +1089,25 @@ class TurnOrchestrator:
         if final_topic != plan.topic:
             # 只记录，不搬动：绑定的归属优先
             ctx.trace.write("bound_topic", f"{final_topic} (context={plan.topic})")
+        # 阶段三契约 §13.3：互动轮允许不回复（已保存意图 / 已记录等待）。
+        # 没有真实交付内容时不写空助手消息，避免界面出现空白回答气泡。
+        if (
+            getattr(ctx, "mode", "normal") == "interactive"
+            and not (getattr(result, "final_content", "") or "").strip()
+        ):
+            ctx.final_verification = None
+            app.bindings.mark_write_closed(ctx.turn_id)
+            anchor = app.conn.execute(
+                "SELECT fragment_id FROM messages WHERE id = ?",
+                (ctx.user_message_id,),
+            ).fetchone()
+            ctx.position_fragment_id = (
+                anchor["fragment_id"]
+                if anchor is not None
+                else getattr(ctx, "bound_fragment_id", None)
+            )
+            ctx.trace.write("messages", "interactive_no_reply")
+            return final_topic
         assistant_msg_id, _ = app.memory.append_message(
             topic_id=final_topic,
             role="assistant",
@@ -1010,6 +1126,70 @@ class TurnOrchestrator:
         ).fetchone()
         ctx.position_fragment_id = row["fragment_id"] if row is not None else None
         return final_topic
+
+    def _persist_interactive_state(self, ctx) -> None:
+        """阶段三：把本轮互动结果持久化到提交等待 / 续作绑定。
+
+        只调用 A 的公开函数；任何失败只告警，不改变已经产生的用户可见结果。
+        """
+        if getattr(ctx, "mode", "normal") != "interactive":
+            return
+        board_id = str(getattr(ctx, "board_id", "") or "")
+        submission_id = str(getattr(ctx, "board_submission_id", "") or "")
+        if not board_id:
+            return
+        app = self.app
+        try:
+            from agent.interactive import submission as submission_module
+        except Exception:  # noqa: BLE001 - 模块未合入时保留已有进行中状态
+            return
+        resolved = tuple(getattr(ctx, "board_resolved_question_ids", ()) or ())
+        if resolved and submission_id:
+            resolver = getattr(submission_module, "resolve_waiting", None)
+            if callable(resolver):
+                try:
+                    resolver(
+                        app.conn,
+                        board_id=board_id,
+                        submission_id=submission_id,
+                        question_ids=resolved,
+                    )
+                except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).warning(
+                        "resolve interactive waiting failed", exc_info=True
+                    )
+        questions = list(getattr(ctx, "board_delivered_questions", []) or [])
+        if questions and submission_id:
+            recorder = getattr(submission_module, "record_waiting", None)
+            if callable(recorder):
+                try:
+                    first = questions[0]
+                    recorder(
+                        app.conn,
+                        board_id=board_id,
+                        submission_id=submission_id,
+                        question=str(first.get("question") or ""),
+                        missing_fields=list(first.get("missing_fields") or []),
+                        turn_id=ctx.turn_id,
+                    )
+                except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).warning(
+                        "record interactive waiting failed", exc_info=True
+                    )
+        if submission_id:
+            binder = getattr(submission_module, "bind_submission_turn", None)
+            if callable(binder):
+                try:
+                    binder(
+                        app.conn,
+                        submission_id=submission_id,
+                        turn_id=ctx.turn_id,
+                        resume_state={"resume": bool(getattr(ctx, "board_resume", False))},
+                    )
+                except Exception:  # noqa: BLE001
+                    logging.getLogger(__name__).warning(
+                        "bind interactive submission turn failed", exc_info=True
+                    )
 
     def _apply_tool_nav_rebind(self, ctx, topic_id: str) -> bool:
         """本轮模型自己换了话题：把这一轮整体搬到那个话题。

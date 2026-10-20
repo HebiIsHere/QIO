@@ -151,9 +151,11 @@ class IntentScope(BaseModel):
     @field_validator("allowed_actions")
     @classmethod
     def _actions(cls, value: Any) -> list[BoardAction]:
+        # pydantic v2 的 after 校验器收到的可能已经是 BoardAction 枚举；
+        # str(BoardAction.X) 在 Python 3.11 是 "BoardAction.X"，不能二次解析。
         out: list[BoardAction] = []
         for raw in value or []:
-            action = BoardAction(str(raw))
+            action = raw if isinstance(raw, BoardAction) else BoardAction(getattr(raw, "value", raw))
             if action not in out:
                 out.append(action)
         params = set(out) & {
