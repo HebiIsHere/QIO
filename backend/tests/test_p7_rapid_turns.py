@@ -44,10 +44,13 @@ class _TaggedAdapter:
     async def complete(self, messages, tools, **kwargs):
         self._running += 1
         self.peak = max(self.peak, self._running)
-        text = "\n".join(m.content or "" for m in messages)
-        # the current message is the segment after the last 【用户消息】 marker;
-        # earlier occurrences are history from previous turns
-        current = text.rsplit("【用户消息】", 1)[-1]
+        # 契约 §3.6：当前用户原文是请求里**最后一条 user 消息**（上下文在 system 侧），
+        # 不再有「【用户消息】」拼接标题；历史 user 消息在这些轮次里不会混进当前请求。
+        current = ""
+        for message in reversed(messages):
+            if getattr(message, "role", None) == "user":
+                current = message.content or ""
+                break
         tag = next((t for t in ("A", "B", "C") if f"唯一{t}" in current), "?")
         self.order.append(tag)
         try:
