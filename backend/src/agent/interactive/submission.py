@@ -31,7 +31,9 @@ import hashlib
 import json
 import logging
 import math
+import re
 import sqlite3
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from agent.interactive import board_store, models
@@ -1132,6 +1134,481 @@ def _record_submission(
         "error": error,
         "createdAt": stamp,
     }
+
+
+# --- 等待 / 续作持久化（阶段三契约 §13.3；迁移 49） ------------------------
+#
+# 互动提交现在是主循环的一轮：QIO 在对话里问出的问题（board_wait_for_input 的参数）
+# 必须**持久保存**，用户下一次发给该板面的聊天消息据此自动续作原提交。
+# 这些函数是 Lead 的轮末接线、B 的 board_finish_intent 完成核对、C 的只读 API
+# 共用的稳定入口；读函数只读，写函数复用外层事务（storage.db.transaction 语义）。
+
+MODE_NORMAL = "normal"
+MODE_INTERACTIVE = "interactive"
+
+WAITING_STATUSES: tuple[str, ...] = ("waiting", "resolved", "cancelled")
+
+#: 一个板面最多展示 / 读取的等待事项（有界；防止异常数据把响应撑爆）。
+MAX_WAITING_ITEMS = 50
+
+#: 自动续作时视为「已确认、需要继续执行」的意图状态（与 tool_models.INTENT_STATUSES 一致）。
+_RESUME_INTENT_STATUSES: tuple[str, ...] = (
+    "approved",
+    "running",
+    "paused",
+    "partially_completed",
+)
+
+_BOARD_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def _json_list(value: Any) -> list[str]:
+    loaded = models.loads(value, [])
+    if not isinstance(loaded, (list, tuple)):
+        return []
+    return [str(item) for item in loaded if str(item).strip()]
+
+
+def _question_key(question: Any) -> str:
+    return " ".join(str(question or "").split())
+
+
+def _waiting_row_dict(row) -> dict:
+    return {
+        "id": str(row["id"]),
+        "boardId": str(row["board_id"]),
+        "submissionId": str(row["submission_id"]),
+        "turnId": str(row["turn_id"] or ""),
+        "question": str(row["question"]),
+        "missingFields": _json_list(row["missing_fields"]),
+        "status": str(row["status"]),
+        "resolvedQuestionIds": _json_list(row["resolved_question_ids"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _waiting_rows(
+    conn: sqlite3.Connection,
+    board_id: str,
+    *,
+    submission_id: str | None = None,
+    status: str | None = "waiting",
+) -> list:
+    sql = "SELECT * FROM board_waiting WHERE board_id = ?"
+    params: list[Any] = [board_id]
+    if submission_id:
+        sql += " AND submission_id = ?"
+        params.append(submission_id)
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    sql += " ORDER BY created_at, rowid LIMIT ?"
+    params.append(MAX_WAITING_ITEMS)
+    return conn.execute(sql, params).fetchall()
+
+
+def _submission_row(conn: sqlite3.Connection, submission_id: str):
+    return conn.execute(
+        "SELECT id, board_id, turn_id, resume_state, created_at FROM board_submissions"
+        " WHERE id = ?",
+        (submission_id,),
+    ).fetchone()
+
+
+def record_waiting(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    submission_id: str,
+    question: str,
+    missing_fields: Sequence[str] = (),
+    turn_id: str = "",
+) -> dict:
+    """持久记录一条 QIO 在对话里提出的等待问题（同一事项不重复记录）。
+
+    * 同一 submission + 同一问题正文且仍在 waiting → 幂等返回已有项（created=False），
+      「已等待回答的同一事项不重复提出」；
+    * 空 board / 空 submission / 空问题 → ValueError（调用方是程序接线，不猜）；
+    * 提交必须属于这个板面（不接受伪造关联）。
+
+    返回冻结形状：{id, boardId, submissionId, turnId, question, missingFields,
+    status, resolvedQuestionIds, createdAt, updatedAt, created}。
+    """
+    bid = str(board_id or "").strip()
+    sid = str(submission_id or "").strip()
+    text = str(question or "").strip()
+    if not bid or not sid or not text:
+        raise ValueError("record_waiting 需要非空的 board_id / submission_id / question")
+    row = _submission_row(conn, sid)
+    if row is None:
+        raise ValueError(f"没有这条提交记录：{sid}")
+    if str(row["board_id"]) != bid:
+        raise ValueError(f"提交 {sid} 不属于板面 {bid}")
+    fields = [str(item).strip() for item in (missing_fields or []) if str(item).strip()]
+    stamp = models.now_iso()
+    with transaction(conn):
+        existing_rows = _waiting_rows(conn, bid, submission_id=sid)
+        wanted = _question_key(text)
+        for existing in existing_rows:
+            if _question_key(existing["question"]) == wanted:
+                item = _waiting_row_dict(existing)
+                item["created"] = False
+                return item
+        item_id = models.new_id("wait")
+        conn.execute(
+            "INSERT INTO board_waiting (id, board_id, submission_id, turn_id, question,"
+            " missing_fields, status, resolved_question_ids, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, 'waiting', '[]', ?, ?)",
+            (
+                item_id,
+                bid,
+                sid,
+                str(turn_id or ""),
+                text,
+                models.dumps(fields),
+                stamp,
+                stamp,
+            ),
+        )
+        created = conn.execute("SELECT * FROM board_waiting WHERE id = ?", (item_id,)).fetchone()
+    item = _waiting_row_dict(created)
+    item["created"] = True
+    return item
+
+
+def resolve_waiting(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    submission_id: str,
+    question_ids: Sequence[str] = (),
+) -> int:
+    """按 QIO 明确给出的 question id 解除等待；返回实际解除的条数。
+
+    空 question_ids = 不解除任何事项（回答不足 / 属于别的事项时必须保留等待）；
+    重复调用幂等（已 resolved 的行不再计数）。question id 就是 board_waiting.id。
+    """
+    bid = str(board_id or "").strip()
+    sid = str(submission_id or "").strip()
+    wanted = [str(item).strip() for item in (question_ids or []) if str(item).strip()]
+    if not bid or not sid or not wanted:
+        return 0
+    unique = list(dict.fromkeys(wanted))
+    resolved = 0
+    stamp = models.now_iso()
+    with transaction(conn):
+        rows = conn.execute(
+            "SELECT id, resolved_question_ids FROM board_waiting"
+            " WHERE board_id = ? AND submission_id = ? AND status = 'waiting'"
+            " AND id IN (" + ", ".join("?" for _ in unique) + ")",
+            [bid, sid, *unique],
+        ).fetchall()
+        for row in rows:
+            merged = _json_list(row["resolved_question_ids"])
+            for item_id in unique:
+                if str(row["id"]) == item_id and item_id not in merged:
+                    merged.append(item_id)
+            cursor = conn.execute(
+                "UPDATE board_waiting SET status = 'resolved', resolved_question_ids = ?,"
+                " updated_at = ? WHERE id = ? AND status = 'waiting'",
+                (models.dumps(merged), stamp, str(row["id"])),
+            )
+            resolved += int(cursor.rowcount or 0)
+    return resolved
+
+
+def get_waiting(
+    conn: sqlite3.Connection, board_id: str, *, submission_id: str | None = None
+) -> dict | None:
+    """只读查询未解除的等待事项；没有等待返回 None。
+
+    B 的 board_finish_intent 用 get_waiting(conn, board_id) is None 判「无等待」；
+    数据库 / 表不可用时**如实抛出 sqlite3.Error**（绝不伪装成「没有等待」）。
+    返回 {boardId, submissionId(最新一条), submissionIds, items, questionIds, count,
+    updatedAt}；items 按 created_at 升序，每项字段同 record_waiting。
+    """
+    bid = str(board_id or "").strip()
+    if not bid:
+        return None
+    wanted_sid = str(submission_id or "").strip() or None
+    rows = _waiting_rows(conn, bid, submission_id=wanted_sid)
+    if not rows:
+        return None
+    items = [_waiting_row_dict(row) for row in rows]
+    submission_ids: list[str] = []
+    for item in items:
+        if item["submissionId"] not in submission_ids:
+            submission_ids.append(item["submissionId"])
+    latest = items[-1]["submissionId"]
+    return {
+        "boardId": bid,
+        "submissionId": latest,
+        "submissionIds": submission_ids,
+        "items": items,
+        "questionIds": [item["id"] for item in items],
+        "count": len(items),
+        "updatedAt": max(str(item["updatedAt"] or "") for item in items),
+    }
+
+
+def waiting_state(conn: sqlite3.Connection, board_id: str) -> dict:
+    """等待状态的稳定只读视图（永远返回 dict，供 C 的 API / 状态展示读取）。
+
+    字段：{boardId, waiting, count, items, questionIds, submissionIds,
+    latestSubmissionId, updatedAt}。数据库错误如实抛出（由调用方按自身 API 语义处理）。
+    """
+    bid = str(board_id or "").strip()
+    empty = {
+        "boardId": bid,
+        "waiting": False,
+        "count": 0,
+        "items": [],
+        "questionIds": [],
+        "submissionIds": [],
+        "latestSubmissionId": None,
+        "updatedAt": None,
+    }
+    if not bid:
+        return empty
+    state = get_waiting(conn, bid)
+    if state is None:
+        return empty
+    return {
+        "boardId": bid,
+        "waiting": True,
+        "count": state["count"],
+        "items": state["items"],
+        "questionIds": state["questionIds"],
+        "submissionIds": state["submissionIds"],
+        "latestSubmissionId": state["submissionId"],
+        "updatedAt": state["updatedAt"],
+    }
+
+
+def bind_submission_turn(
+    conn: sqlite3.Connection,
+    *,
+    submission_id: str,
+    turn_id: str,
+    resume_state: Mapping[str, Any] | None = None,
+) -> dict:
+    """把一条提交绑定到主循环 turn（幂等；保留历次绑定历史）。
+
+    resume_state 会与已有状态合并（只增 / 覆盖同名键），典型键：topicId（原话题）、
+    kind（submission | resume）、attempt（第几次续作）。返回 {submissionId, boardId,
+    turnId, resumeState, createdAt, updatedAt}。
+    """
+    sid = str(submission_id or "").strip()
+    tid = str(turn_id or "").strip()
+    if not sid or not tid:
+        raise ValueError("bind_submission_turn 需要非空的 submission_id / turn_id")
+    row = _submission_row(conn, sid)
+    if row is None:
+        raise ValueError(f"没有这条提交记录：{sid}")
+    stored = models.loads(row["resume_state"], {})
+    merged: dict[str, Any] = dict(stored) if isinstance(stored, dict) else {}
+    if resume_state is not None:
+        if not isinstance(resume_state, Mapping):
+            raise ValueError("resume_state 必须是对象")
+        merged.update({str(key): value for key, value in resume_state.items()})
+    stamp = models.now_iso()
+    with transaction(conn):
+        conn.execute(
+            "UPDATE board_submissions SET turn_id = ?, resume_state = ? WHERE id = ?",
+            (tid, models.dumps(merged), sid),
+        )
+        conn.execute(
+            "INSERT INTO board_submission_turns (submission_id, turn_id, resume_state, created_at)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(submission_id, turn_id) DO UPDATE SET"
+            " resume_state = excluded.resume_state",
+            (sid, tid, models.dumps(merged), stamp),
+        )
+        first = conn.execute(
+            "SELECT MIN(created_at) AS first FROM board_submission_turns WHERE submission_id = ?",
+            (sid,),
+        ).fetchone()
+    return {
+        "submissionId": sid,
+        "boardId": str(row["board_id"]),
+        "turnId": tid,
+        "resumeState": merged,
+        "createdAt": first["first"] if first is not None else stamp,
+        "updatedAt": stamp,
+    }
+
+
+def submission_binding(conn: sqlite3.Connection, submission_id: str) -> dict | None:
+    """只读：一条提交当前的绑定事实（最近 turn / 续作状态 / 历次轮次）。"""
+    sid = str(submission_id or "").strip()
+    if not sid:
+        return None
+    row = _submission_row(conn, sid)
+    if row is None:
+        return None
+    stored = models.loads(row["resume_state"], {})
+    resume_state = dict(stored) if isinstance(stored, dict) else {}
+    turns = conn.execute(
+        "SELECT turn_id, resume_state, created_at FROM board_submission_turns"
+        " WHERE submission_id = ? ORDER BY created_at, rowid",
+        (sid,),
+    ).fetchall()
+    history = []
+    for item in turns:
+        state = models.loads(item["resume_state"], {})
+        history.append(
+            {
+                "turnId": str(item["turn_id"]),
+                "resumeState": dict(state) if isinstance(state, dict) else {},
+                "createdAt": item["created_at"],
+            }
+        )
+    return {
+        "submissionId": sid,
+        "boardId": str(row["board_id"]),
+        "turnId": str(row["turn_id"] or ""),
+        "resumeState": resume_state,
+        "turns": history,
+        "createdAt": row["created_at"],
+        "updatedAt": history[-1]["createdAt"] if history else row["created_at"],
+    }
+
+
+def resolve_chat_binding(
+    conn: sqlite3.Connection,
+    *,
+    mode: Any,
+    board_id: Any = None,
+    submission_id: Any = None,
+    current_topic: str | None = None,
+) -> dict:
+    """校验聊天发送请求里的互动字段，解析出可信的 TurnContext 绑定事实。
+
+    * normal（或缺省）：不带 boardId / submissionId；带了就拒绝（不许伪造身份）；
+    * interactive：boardId 必须存在；submissionId 可选且必须属于该板面；
+      没有 submissionId 但板面有等待中的提交 → 自动续作该提交（resume=True），
+      resolved_question_ids = 该提交当前等待的 question id（程序从 waiting 恢复）；
+    * 模型不能通过这里传入别的板面：所有身份都从服务端库核对。
+    非法输入抛 ValueError（路由映射 400）；数据库错误如实抛出。
+    """
+    raw_mode = MODE_NORMAL if mode is None or str(mode).strip() == "" else str(mode).strip()
+    if raw_mode not in (MODE_NORMAL, MODE_INTERACTIVE):
+        raise ValueError("mode 只能是 normal 或 interactive")
+    bid = "" if board_id is None else str(board_id).strip()
+    wanted_sid = "" if submission_id is None else str(submission_id).strip()
+    if raw_mode == MODE_NORMAL:
+        if bid or wanted_sid:
+            raise ValueError("普通模式不能携带 boardId / submissionId（板面身份只由互动模式使用）")
+        return {
+            "mode": MODE_NORMAL,
+            "boardId": "",
+            "submissionId": "",
+            "topicId": "",
+            "resume": False,
+            "attempt": 1,
+            "resolvedQuestionIds": (),
+            "intentIds": (),
+            "waiting": None,
+        }
+    if not bid:
+        raise ValueError("互动模式必须提供 boardId")
+    if not _BOARD_ID_RE.match(bid):
+        raise ValueError("boardId 只能包含字母、数字与 _.-: 且长度 1..64")
+    if conn.execute("SELECT 1 FROM boards WHERE id = ?", (bid,)).fetchone() is None:
+        raise ValueError(f"没有这个板面：{bid}")
+    sid = wanted_sid
+    resume = False
+    waiting: dict | None
+    if sid:
+        row = _submission_row(conn, sid)
+        if row is None:
+            raise ValueError(f"没有这条提交记录：{sid}")
+        if str(row["board_id"]) != bid:
+            raise ValueError(f"提交 {sid} 不属于板面 {bid}")
+        resume = True
+        waiting = get_waiting(conn, bid, submission_id=sid)
+    else:
+        waiting = get_waiting(conn, bid)
+        if waiting is not None:
+            sid = waiting["submissionId"]
+            resume = True
+    resolved: tuple[str, ...] = ()
+    if sid and waiting is not None:
+        resolved = tuple(
+            item["id"] for item in waiting["items"] if item["submissionId"] == sid
+        )
+    topic = ""
+    if sid:
+        binding = submission_binding(conn, sid)
+        if binding is not None:
+            topic = str(binding["resumeState"].get("topicId") or "")
+    if not topic:
+        topic = str(current_topic or "")
+    attempt = 1
+    intents: tuple[str, ...] = ()
+    if sid:
+        count_row = conn.execute(
+            "SELECT COUNT(*) AS n FROM board_submission_turns WHERE submission_id = ?",
+            (sid,),
+        ).fetchone()
+        attempt = int(count_row["n"] or 0) + 1
+        placeholders = ", ".join("?" for _ in _RESUME_INTENT_STATUSES)
+        intent_rows = conn.execute(
+            "SELECT id FROM board_intents WHERE submission_id = ? AND status IN ("
+            + placeholders
+            + ") ORDER BY created_at, rowid LIMIT 64",
+            (sid, *_RESUME_INTENT_STATUSES),
+        ).fetchall()
+        intents = tuple(str(row["id"]) for row in intent_rows)
+    return {
+        "mode": MODE_INTERACTIVE,
+        "boardId": bid,
+        "submissionId": sid,
+        "topicId": topic,
+        "resume": resume,
+        "attempt": attempt,
+        "resolvedQuestionIds": resolved,
+        "intentIds": intents,
+        "waiting": waiting_state(conn, bid),
+    }
+
+
+def submission_turn_message(
+    *,
+    board_id: str,
+    submission_id: str,
+    after: dict,
+    expressions: Sequence[dict],
+    note: str = "",
+) -> str:
+    """程序写清「这次提交是什么」的用户消息正文（不要求模型猜，也不塞整份 JSON）。"""
+    cards = after.get("cards") or []
+    groups = after.get("groups") or []
+    links = after.get("links") or []
+    kinds: dict[str, int] = {}
+    for item in expressions:
+        kind = str(item.get("kind") or "")
+        if kind:
+            kinds[kind] = kinds.get(kind, 0) + 1
+    summary = "、".join(f"{kind}×{count}" for kind, count in sorted(kinds.items()))
+    lines = [
+        f"【互动板面提交】board_id={board_id} submission_id={submission_id}",
+        (
+            f"本次提交范围：卡片 {len(cards)} 项、组 {len(groups)} 项、关系 {len(links)} 项；"
+            f"有效改动 {len(expressions)} 项"
+            + (f"（{summary}）" if summary else "")
+            + "。"
+        ),
+    ]
+    text_note = str(note or "").strip()
+    if text_note:
+        lines.append(f"用户备注：{text_note[:500]}")
+    lines.append(
+        "这是用户的一次正式互动提交（不是普通闲聊）：请用板面工具读取所需对象后处理，"
+        "提出意图或向用户提出具体问题；不要猜测未提供的板面内容，也不要重复提交。"
+    )
+    return "\n".join(lines)
 
 
 # --- 受理与后台理解（契约 §14.1 / §14.3 / §14.4） -------------------------
