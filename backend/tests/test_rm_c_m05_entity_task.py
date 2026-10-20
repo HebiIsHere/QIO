@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from agent import prompts
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -134,7 +135,8 @@ class _ScriptedAdapter:
     async def complete(self, messages, tools, **kwargs) -> Completion:
         first = messages[0]
         prompt = first["content"] if isinstance(first, dict) else first.content
-        if "summarizing a closed conversation fragment" in prompt:
+        # Phase 1：封块摘要走 prompts.CLOSED_SUMMARY_SYSTEM（结构化 system 消息）。
+        if prompts.PROMPTS["CLOSED_SUMMARY_SYSTEM"] in prompt:
             key, payload = "summary", self.summary
         elif "extracting durable knowledge" in prompt:
             key, payload = "knowledge", self.knowledge
