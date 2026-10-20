@@ -94,8 +94,8 @@ async def test_conversation_turn_delivers_sampled_frames_to_every_model_call(
     assert adapter.calls, "模型没有被调用"
     delivered = None
     for messages in adapter.calls:
-        first = messages[0]
-        assert first.role == "user"
+        # 契约 §3：首条消息是系统规则 + 结构化上下文；媒体内容块挂在第一条 user 消息上。
+        first = next(m for m in messages if m.role == "user")
         images = list(first.images or [])
         assert images, "每一次模型调用都必须带着本轮媒体依据"
         assert all(part.data_url.startswith("data:image/") for part in images)
@@ -126,8 +126,9 @@ async def test_conversation_turn_with_audio_attaches_no_audio_block_without_capa
     ctx.build_adapter = lambda: _return(adapter)  # type: ignore[assignment]
     await ctx.turns.wait(tctx.turn_id, timeout=60)
 
+    assert adapter.calls, "模型没有被调用"
     for messages in adapter.calls:
-        assert not messages[0].audios, "没有音频能力就不许把音频当内容块交付"
+        assert not any(m.audios for m in messages), "没有音频能力就不许把音频当内容块交付"
 
 
 async def _return(value):
@@ -169,11 +170,13 @@ async def test_transcript_text_reaches_the_model_prompt_every_call(
 
     assert adapter.calls, "模型没有被调用"
     for messages in adapter.calls:
-        first = messages[0]
-        assert first.role == "user"
-        assert transcript_text in first.content, "转写文字必须真的进提示词"
-        assert "0.0s" in first.content, "转写必须带时间位置（时段）"
-        assert "不代表听懂了语气" in first.content, "不得由转写推断语气 / 音乐"
+        # 契约 §3：转写与时段是**结构化 media 块**的数据（system 里），
+        # 当前用户消息正文只放用户原文。
+        joined = "\n".join((m.content or "") for m in messages)
+        assert transcript_text in joined, "转写文字必须真的进提示词"
+        assert '"audio_transcribed"' in joined, "转写来源必须如实标注"
+        assert '"range"' in joined and "0.0" in joined, "转写必须带时间位置（时段）"
+        assert '"notes"' in joined, "媒体条目的如实说明（notes）必须保留"
 
 
 def test_resolve_media_never_claims_transcription_without_a_real_transcript(db_conn, tmp_path):
