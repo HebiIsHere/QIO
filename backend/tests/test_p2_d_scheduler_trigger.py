@@ -223,6 +223,30 @@ async def test_no_pending_changes_never_calls_model(db_conn):
     assert runner.calls == 0, f"{CLAUSE}：刚创建的变化不应立刻因历史轮数触发"
 
 
+async def test_turn_notification_is_deduplicated_by_turn_id(db_conn):
+    """§12.3：note_user_turn_completed 按 turn_id 去重（同一 turn 重复通知只计一次）。"""
+    _require_tables(db_conn)
+    store = _settings_store(db_conn)
+    store.set("knowledge_maintenance.change_threshold", "1000")
+    store.set("knowledge_maintenance.waiting_turns", "5")
+    db_conn.commit()
+    runner = FakeRunner()
+    scheduler = _scheduler(db_conn, runner, store)
+    _record_changes(db_conn, 1)  # 有待处理变化才累计轮次
+    scheduler.note_user_turn_completed("turn-dup-1")
+    scheduler.note_user_turn_completed("turn-dup-1")
+    scheduler.note_user_turn_completed("turn-dup-1")
+    state = db_conn.execute(
+        "SELECT turn_seq FROM knowledge_maintenance_state WHERE id = 1").fetchone()
+    assert int(state["turn_seq"]) == 1, (
+        f"{CLAUSE}：同一 turn_id 重复通知只能计一次（turn_seq={state['turn_seq']}）")
+    scheduler.note_user_turn_completed("turn-dup-2")
+    state = db_conn.execute(
+        "SELECT turn_seq FROM knowledge_maintenance_state WHERE id = 1").fetchone()
+    assert int(state["turn_seq"]) == 2, (
+        f"{CLAUSE}：不同 turn_id 应继续累计（turn_seq={state['turn_seq']}）")
+
+
 async def test_disabled_switch_preserves_pending_state(db_conn):
     """§12.3：enabled=false 时不启动；恢复后待处理状态仍在（下次继续）。"""
     _require_tables(db_conn)

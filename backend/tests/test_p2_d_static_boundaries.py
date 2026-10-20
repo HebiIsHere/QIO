@@ -89,16 +89,26 @@ def test_new_prompt_literals_are_not_embedded_as_system_messages():
 
 
 def test_maintenance_modules_use_frozen_prompts_and_types():
-    """§12.2/§12.4：执行入口引用冻结提示词与类型，不另造状态 / 文案。"""
-    runner = _require_file(BACKEND_SRC / "maintenance" / "runner.py", "B 的执行入口 runner.py")
-    text = _read(runner)
-    for token in ("MAINTENANCE_SYSTEM", "MAINTENANCE_ANSWER_SYSTEM"):
-        assert token in text, f"{CLAUSE}：runner.py 未引用冻结提示词 {token}"
-    assert ("structured_task_system" in text), (
+    """§12.2/§12.4：执行入口引用冻结提示词与类型，不另造状态 / 文案。
+
+    维护批次与独立回答是两个任务：维护提示词由 runner 引用，回答提示词由
+    questions 引用；两者都必须经 prompts.structured_task_system 与冻结校验入口。
+    """
+    runner = _read(_require_file(BACKEND_SRC / "maintenance" / "runner.py",
+                                 "B 的执行入口 runner.py"))
+    assert "MAINTENANCE_SYSTEM" in runner, (
+        f"{CLAUSE}：runner.py 未引用冻结提示词 MAINTENANCE_SYSTEM")
+    assert "structured_task_system" in runner, (
         f"{CLAUSE}：runner.py 必须经 prompts.structured_task_system 组装结构化任务"
         "（契约 §2 公共结构化规则）")
-    assert ("validate_maintenance_output" in text or "validate_resolution_output" in text), (
-        f"{CLAUSE}：runner.py 必须使用冻结校验入口 validate_*_output")
+    assert "validate_maintenance_output" in runner, (
+        f"{CLAUSE}：runner.py 必须使用冻结校验入口 validate_maintenance_output")
+    questions = _read(_require_file(BACKEND_SRC / "maintenance" / "questions.py",
+                                    "B 的独立回答 questions.py"))
+    assert "MAINTENANCE_ANSWER_SYSTEM" in questions, (
+        f"{CLAUSE}：questions.py 未引用冻结提示词 MAINTENANCE_ANSWER_SYSTEM")
+    assert "validate_resolution_output" in questions, (
+        f"{CLAUSE}：questions.py 必须使用冻结校验入口 validate_resolution_output")
     models = _load("agent.maintenance.models")
     assert models is not None
 
@@ -139,12 +149,13 @@ def test_old_maintenance_paths_are_retired_from_run_once():
     text = _read(path)
     body = _function_body(text, "run_once")
     assert body, f"{CLAUSE}：找不到 services/maintenance.py 的 run_once"
-    assert "scan_contradictions" not in body, (
-        f"{CLAUSE}：run_once 仍在调用 scan_contradictions（旧的否定词降置信度路径必须退休）")
-    assert "run_dreaming" not in body, (
-        f"{CLAUSE}：run_once 仍在调用 run_dreaming（旧 revoke / expire 分支必须退休）")
+    # 只禁「真正的调用」：注释里说明为什么退休不算（退休说明本身是审计线索）。
+    code = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+    for retired in ("scan_contradictions", "run_dreaming"):
+        assert not re.search(rf"await\s+{retired}\s*\(", code), (
+            f"{CLAUSE}：run_once 仍在调用 {retired}（旧否定词降置信度 / revoke 路径必须退休）")
     for kept in ("prune_tool_outputs", "prune_tool_records", "mine_tool_candidates"):
-        assert kept in body, (
+        assert kept in code, (
             f"{CLAUSE}：run_once 必须保留 {kept}（工具清理 / 记录保留 / 自动化建议与知识维护分开）")
 
 
@@ -217,15 +228,26 @@ def test_migration_modules_export_frozen_shape(module_name, number):
 
 
 def test_frontend_has_memory_pending_entry():
-    """§12.5：前端必须新增「记忆待确认」入口。"""
-    offenders = []
-    for path in sorted(FRONTEND_SRC.rglob("*")):
-        if path.suffix not in {".vue", ".ts"} or "__tests__" in path.parts:
-            continue
-        if "记忆待确认" in _read(path):
-            offenders.append(str(path.relative_to(ROOT)))
-    assert offenders, (
-        f"{CLAUSE}：前端未找到「记忆待确认」入口（契约 §12.5 要求新增入口）")
+    """§12.5：前端必须新增「记忆待确认」入口，并区分两类事项的处理程序。
+
+    入口 = PlanetView 的页签 + 面板组件；只出现注释字样不算（必须在界面结构里）。
+    """
+    planet = _require_file(FRONTEND_SRC / "views" / "PlanetView.vue", "PlanetView.vue")
+    text = _read(planet)
+    assert "MemoryPendingPanel" in text, (
+        f"{CLAUSE}：PlanetView 未挂载「记忆待确认」面板组件")
+    entry_labels = ("记忆待确认", "待确认")
+    assert any(label in text for label in entry_labels), (
+        f"{CLAUSE}：PlanetView 未提供「待确认」页签入口")
+    panel = FRONTEND_SRC / "components" / "planet" / "MemoryPendingPanel.vue"
+    panel_text = _read(_require_file(panel, "MemoryPendingPanel.vue"))
+    for token in ("知识待审批", "后台维护提问"):
+        assert token in panel_text, (
+            f"{CLAUSE}：待确认面板必须区分两类事项（缺少「{token}」）")
+    # 两类事项的 handler 区分必须来自 API 读取模型字段，不自行推断
+    for token in ("knowledge_proposal", "maintenance_question", "handler"):
+        assert token in panel_text, (
+            f"{CLAUSE}：待确认面板必须按 kind / handler 区分处理程序（缺少 {token}）")
 
 
 def test_frontend_source_filter_uses_api_label():

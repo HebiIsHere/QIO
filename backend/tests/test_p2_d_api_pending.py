@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 CLAUSE = "契约 §12.5/§12.6"
+ROOT = Path(__file__).resolve().parents[2]
 
 ROUTES = (
     ("GET", "/api/memory/pending"),
@@ -183,20 +185,61 @@ async def _ask_item(ctx, monkeypatch, kid: str, question: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_memory_pending_routes_are_mounted_once(app_ctx):
-    """§12.5：8 条路由在 api/server.py 挂载一次（不重复、不缺路径）。"""
+async def test_memory_pending_routes_are_mounted_once(app_ctx):
+    """§12.5：8 条路由在 api/server.py 只挂载一次，且逐条真实可达。
+
+    说明：本机 FastAPI 0.141 / starlette 1.6 的 include_router 在 app.routes 里只
+    体现为子路由对象（path 为 None），不能按 app.routes 路径字符串判断「挂了几次」；
+    因此「挂一次」用源码静态核对，「可达」用逐路由真实请求的语义响应核对。
+    """
     app, _ctx = app_ctx
-    paths: list[str] = []
-    for route in app.routes:
-        path = getattr(route, "path", "")
-        if path.startswith("/api/memory/"):
-            paths.append(path)
-    for _method, template in ROUTES:
-        api_path = template
-        assert api_path in paths, (
-            f"{CLAUSE}：缺少路由 {template}（已挂载 {sorted(set(paths))}）")
-        assert paths.count(api_path) == 1, (
-            f"{CLAUSE}：路由 {template} 被挂载了 {paths.count(api_path)} 次（要求一次）")
+    server_file = ROOT / "backend" / "src" / "agent" / "api" / "server.py"
+    server_text = server_file.read_text(encoding="utf-8")
+    mount_calls = server_text.count("build_memory_pending_router(ctx)")
+    assert mount_calls == 1, (
+        f"{CLAUSE}：api/server.py 里 build_memory_pending_router(ctx) 出现 {mount_calls} 次"
+        "（契约要求挂载一次）")
+
+    responses = {}
+
+    async def probe(client, name, method, path, *, json_body=None):
+        if method == "GET":
+            resp = await client.get(path)
+        else:
+            resp = await client.post(path, json=json_body if json_body is not None else {})
+        responses[name] = (resp.status_code, resp.text[:200])
+        return resp
+
+    async with _client(app) as client:
+        # 1) 待确认列表
+        resp = await probe(client, "pending", "GET", "/api/memory/pending")
+        assert resp.status_code == 200, responses["pending"]
+        assert "items" in resp.json(), (
+            f"{CLAUSE}：GET /api/memory/pending 必须返回 items 列表：{responses['pending']}")
+        # 2) 回答动作（不存在的 id -> 路由可达、返回「不存在」而非路由缺失的 Not Found）
+        resp = await probe(client, "answer", "POST", "/api/memory/pending/ghost/answer",
+                           json_body={"answer": "x"})
+        assert resp.status_code == 404 and "不存在" in resp.text, responses["answer"]
+        # 3) 稍后处理动作
+        resp = await probe(client, "defer", "POST", "/api/memory/pending/ghost/defer")
+        assert resp.status_code == 404 and "不存在" in resp.text, responses["defer"]
+        # 4) 批次列表
+        resp = await probe(client, "batches", "GET", "/api/memory/maintenance/batches")
+        assert resp.status_code == 200, responses["batches"]
+        # 5) 批次详情
+        resp = await probe(client, "batch", "GET", "/api/memory/maintenance/batches/ghost")
+        assert resp.status_code == 404 and "不存在" in resp.text, responses["batch"]
+        # 6) 恢复预览（参数校验错误证明路由存在）
+        resp = await probe(client, "preview", "GET",
+                           "/api/memory/maintenance/restore/preview")
+        assert resp.status_code == 400 and "batch_id" in resp.text, responses["preview"]
+        # 7) 恢复动作（必须显式 confirm）
+        resp = await probe(client, "restore", "POST",
+                           "/api/memory/maintenance/restore", json_body={})
+        assert resp.status_code == 400 and "confirm" in resp.text, responses["restore"]
+        # 8) 维护状态
+        resp = await probe(client, "status", "GET", "/api/memory/maintenance/status")
+        assert resp.status_code == 200 and isinstance(resp.json(), dict), responses["status"]
 
 
 # ---------------------------------------------------------------------------

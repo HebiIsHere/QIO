@@ -65,6 +65,7 @@ def _active(conn, content: str, *, category: str = "general_fact", provenance: d
     item = ks.create(category=category, content=content, provenance=provenance)
     ks.submit(item.id)
     ks.verify(item.id, verified_by="user")
+    ks.activate(item.id)
     return item, ks
 
 

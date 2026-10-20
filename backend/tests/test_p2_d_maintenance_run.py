@@ -222,6 +222,32 @@ async def test_merge_creates_new_version_and_keeps_sources_history(ctx, monkeypa
             f"{CLAUSE}：merge 后来源应为 revoked（保留历史），实际 {item.state.value}")
 
 
+async def test_maintenance_itself_does_not_create_change_records(ctx, monkeypatch):
+    """§12.3/§12.8：维护自身产生的版本不记录为待处理变化（不形成循环触发）。"""
+    conn = ctx.conn
+    first = _active(conn, "用户常用命令行")
+    second = _active(conn, "用户习惯用命令行")
+    before = int(conn.execute(
+        "SELECT COUNT(*) AS n FROM knowledge_change_log").fetchone()["n"])
+    adapter = FakeAdapter(_payload([{
+        "action": "merge",
+        "knowledge_ids": [first, second],
+        "new_content": "用户常用命令行工作",
+        "reason": "语义重复",
+    }]))
+    monkeypatch.setattr(ctx, "build_adapter", _fake_build(adapter))
+    outcome = await _runner(ctx).run_batch(_snapshot(conn, [first, second]))
+    assert outcome.ok is True and outcome.applied >= 1
+    maintenance_rows = list(conn.execute(
+        "SELECT source FROM knowledge_change_log WHERE source LIKE 'maintenance%'"))
+    assert maintenance_rows == [], (
+        f"{CLAUSE}：维护自身版本不得进入变化计数（实际 {maintenance_rows}）")
+    after = int(conn.execute(
+        "SELECT COUNT(*) AS n FROM knowledge_change_log").fetchone()["n"])
+    assert after == before, (
+        f"{CLAUSE}：维护产生的 active 版本不应新增待处理变化（{before} -> {after}）")
+
+
 async def test_merge_rejects_unknown_id_and_keeps_originals(ctx, monkeypatch):
     """§12.4：无效候选（未知 ID）必须拒绝该项并保留原记录，不得回落旧 revoke / expire。"""
     conn = ctx.conn
@@ -269,8 +295,11 @@ async def test_cross_category_merge_is_rejected(ctx, monkeypatch):
 async def test_merge_with_different_scope_is_rejected(ctx, monkeypatch):
     """§12.4：不同归属 / 范围不得自动合并。"""
     conn = ctx.conn
+    from agent.graph.nodes import NodeService
+
+    topic_node = NodeService(conn).create_topic("阶段二 D 范围测试话题")
     global_id = _active(conn, "用户偏好安静的环境")
-    scoped_id = _active(conn, "用户偏好安静的环境（某话题内）", node_ids=["topic_p2_d_scope"])
+    scoped_id = _active(conn, "用户偏好安静的环境（某话题内）", node_ids=[topic_node.id])
     adapter = FakeAdapter(_payload([{
         "action": "merge",
         "knowledge_ids": [global_id, scoped_id],
@@ -311,7 +340,10 @@ async def test_merge_with_different_epistemic_status_is_rejected(ctx, monkeypatc
         row = conn.execute("SELECT state FROM knowledge WHERE id = ?", (kid,)).fetchone()
         assert row["state"] == "active", (
             f"{CLAUSE}：不同确定程度的 merge 必须被拒绝，原知识保持 active（{kid}）")
-    assert _active_rows(conn, "用户对花生过敏") == []
+    # 合并内容与 explicit 原文相同：只能存在原知识本身，不得出现第二条同内容 active 版本
+    same_content = _active_rows(conn, "用户对花生过敏")
+    assert [row["id"] for row in same_content] == [explicit], (
+        f"{CLAUSE}：不同确定程度的 merge 不得产生新的合并版本：{[(r['id'], r['content']) for r in same_content]}")
 
 
 # ---------------------------------------------------------------------------
