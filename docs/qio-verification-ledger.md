@@ -160,3 +160,21 @@
 | --- | --- | --- | --- | --- |
 | P3-预检-01 | 冻结提示词 / 工具参数模型 / 可信运行上下文同源 | 导入 + schema 生成探针 | 通过 | PROMPTS 24 键；TOOL_DESCRIPTIONS 36（含 12 个 board_*）；12 个参数模型 schema 由 json_schema_for 生成；意图结构可校验 |
 | P3-预检-02 | allowed_actions 非空校验（DEFECT-P3-1） | D 复现后 Lead 修复 + 定向探针 | 通过 | 修复 enum 二次解析；补充 create_card / update_card 等非空 allowed_actions 可校验回归 |
+| P3-A-01 | A：提交接入主循环 / 等待续作 / 聊天绑定 / 退休旧理解 | pytest test_p3_a_* + interactive_submission + interactive_integration + irm_b + import_smoke | 通过（107 项） | 无 turn_acceptor 时如实 failed，不回退旧理解；旧测试 19 条前提变化逐条记录 |
+| P3-A-02 | A：旧理解测试红项收口 | pytest test_interactive_understanding.py（17）+ 上述组合 | 通过（17 / 109 项） | 只改测试前提，不删不 skip；旧记录只读兼容 |
+| P3-B-01 | B：迁移 50 / 授权账本 / 12 工具 / 版本 CAS | pytest test_p3_b_service.py test_p3_b_tools.py | 通过（26 项） | 普通模式拒绝 / 伪造板面 / scope / 幂等 / 依赖环 / finish 账本 / 迟到完成 / 部分失败 |
+| P3-B-02 | B：简报定向 + 相关互动回归 | test_p3_b_* + board + intents + import_smoke；追加互动 11 文件 | 通过（127 / 275 项） | 合并 DEFECT-P3-1/2 修复后复跑 |
+| P3-C-01 | C：意图 API / 门槛 / 等待 / 账本 / 结果 / 恢复 | pytest test_import_smoke + test_p3_c_intents_api + test_interactive_intents | 通过（54 项） | 三条降级前提显式 monkeypatch；新增真实 service 200 形状回归 |
+| P3-C-02 | C：前端意图工作台 / 结果卡 / 长正文 | npx vitest run IntentWorkbench + intentWorkbench；npx vue-tsc --noEmit | 通过（21 项；类型 0 错误） | Markdown 表格/代码块完整、折叠展开、空正文不显示假卡 |
+| P3-C-03 | C：真实界面检查（真实迁移 51 + 真实 intent_service） | uvicorn + vite + Playwright(msedge)，临时数据目录，模型未调用 | 通过（20/20 断言，截图 D:\qio-dev\_P3R-SHOTS-c\） | 批量 1 禁用 / 2 可批、结果 / 账本 / 恢复 / 窄窗口 |
+| P3-D-01 | D：独立契约测试（阶段 1） | pytest test_p3_d_*.py（8 文件 78 条） | 收集 78；合入冻结修复后冻结面 15/15 | 实现未合入项预期失败，均带契约条款，无 skip |
+| P3-D-02 | D：整合后独立测试与定向回归 | 9 文件 79 条 + C API 15 条；interactive* + p3_* + turn/loop/app/迁移纪律 | 通过（94/94 + 定向回归） | 阶段 2 复跑；发现 DEFECT-P3-1/2/3 |
+| P3-D-03 | D：独立真实界面检查（自有装置） | 真实后端 + vite 5199 + Playwright(msedge)，种子用真实 A/B 服务 | 通过（32/32 断言） | 长文 6384 字完整、表格/代码块、窄窗口、批量 2-vs-1、恢复预览、等待区 |
+| P3-整合-01 | Lead：A+B 合入后定向集合 | 导入 / 迁移纪律 / closeout / A+B+D 测试 / 互动提交与存储回归 | 通过（303 项） | 迁移 49/50/51 登记、补偿 51、REQUIRED_OBJECTS |
+| P3-整合-02 | Lead：最终整合定向集合（A+B+C+D + 互动/循环/存储/知识回归） | pytest 选受影响文件，-p no:warnings | 通过（exit 0，非完整集合） | 含 6 个环境 skip；C 分支 5108e978、A 分支 aac2fe4f 合入后复跑 |
+| P3-前端-01 | Lead：整合后前端类型 + 受影响用例 | npx vue-tsc --noEmit；vitest 5 文件（session / turnFacts / IntentWorkbench / intentWorkbench / approval） | 通过（92 项；类型 0 错误） | 修复普通聊天 sendTurn 参数形状；旧 approval 门槛统一为 2 |
+| P3-修复-01 | DEFECT-P3-1/2（冻结模型） | D/B 复现 → Lead 修复 → 探针 + 冻结面 15/15 | 通过 | allowed_actions 枚举二次解析、list/set 求交 |
+| P3-修复-02 | DEFECT-P3-3（等待响应形状） | D 独立界面 FAIL → C 修复 75f38b47 → D 复跑 32/32 | 通过 | waiting 固定为 {available, board_id, count, waiting:[...]} |
+| P3-修复-03 | 阶段二遗留 stale 测试 + 旧批量门槛 | test_interactive_during_heavy_work（2 条）+ approval.test.ts / intents.py 门槛 4→2 | 通过 | 旧否定词扫描断言改为退休守卫；前后端批量门槛统一 2 |
+| P3-docs | 文档一致性 | python scripts/check_docs.py | 通过（79 个里程碑条目） | 契约 §13.10 / architecture §18 / status P71 / 本台账 |
+

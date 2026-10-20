@@ -796,3 +796,58 @@ Lead 整合顺序 A / B / C → D 独立回归 → 更新 `docs/qio-refactor-con
   D 的审阅记录写 `D:\qio-dev\_P3-REVIEW-d.md`。
 - Lead 合入 `feat/qio-refactor-p3`，跑定向回归 + D 独立测试，更新交接文档与台账，
   不启动完整 CI；阶段四从本阶段整合提交继续。
+
+
+### 13.10 阶段交接（第三阶段完成，2026-10-21）
+
+**分支与提交**
+
+- 起点：第二阶段整合提交 `6e71abbb`；契约冻结 `f80a5fa8`。
+- 实现分支（本地，未 push）：A `wt/p3-a-submission`（068b7064 / 26773f84 / 73162859）；
+  B `wt/p3-b-board`（0d551a38 / 3b97f2a2 / 8518f642）；C `wt/p3-c-ui`（8c77d63f / c08730d7 + 适配）；
+  D `wt/p3-d-verify`（独立测试，见台账）。
+- 整合分支：`feat/qio-refactor-p3`（Lead 工作区 `D:\qio-dev\qio-ph2-lead`）；
+  **后续第四阶段从本阶段整合提交继续**。不合并 main、不推送、不创建 PR。
+
+**实现映射**
+
+| 契约 | 实现位置 |
+| --- | --- |
+| 13.2 冻结文案 / 执行模型 / 运行上下文 | `prompts.py`（INTERACTIVE_POLICY + 12 工具说明 + 参数文案）、`interactive/tool_models.py`、`interactive/runtime.py` |
+| 13.3 A 提交 / 等待 / 续作 | `interactive/submission.py`（turn_acceptor、等待/续作接口）、`core/turn.py` TurnContext、`api/interactive_store.py` 提交路由、`api/server.py` 聊天绑定、`storage/migration_p3_a.py`（49） |
+| 13.4 B 工具 / 授权 / 账本 | `interactive/board_tools.py`、`intent_service.py`、`board.py` / `board_store.py`（版本与 CAS）、`intents.py` 增量、`storage/migration_p3_b.py`（50） |
+| 13.5 C 意图 / 结果 / 恢复 | `api/interactive_intents.py`、`frontend IntentWorkbench.vue / IntentResultCards.vue`、`interactive/intentWorkbench.ts`、`services/interactive.ts`、`InteractiveView.vue` |
+| 13.6 Lead 接线 | `core/loop.py`（allow_no_answer）、`services/turn_orchestrator.py`（模式规则 / 工具可见性 / runtime / 等待持久化 / 无回答轮）、`services/app.py`（注册 12 工具）、`storage/schema.py` + `migrate.py`（49/50/51 登记、补偿 51、REQUIRED_OBJECTS） |
+
+**本阶段确认的裁决（后续沿用）**
+
+1. 提交路由沿用既有 `POST /api/interactive/boards/{board_id}/submissions`（`/submit` 仅说明别名）。
+2. 旧独立理解链（请求 / 修复 / 空正文二次生成）在生产与新提交流程中全部退役；
+   旧 `board_understanding` 历史只读，重试旧失败记录仍走旧模型属历史入口，不属新流程。
+3. 「允许不回复」轮次由主循环 `allow_no_answer` 控制；互动轮不写空助手消息，问题由工具参数
+   给出并由接线在轮末作为正常对话呈现一次，不触发第二次生成。
+4. 授权对象是目标 + 结构化 scope；实质变化（goal / expected / basis / scope / depends_on /
+   conflicts_with）version+1、回 awaiting_confirmation、旧授权失效；仅 title 变化保持授权。
+5. operation_key 请求指纹 = 参数 JSON 的 sha256；同 key 同参返回原结果（replayed），
+   同 key 不同参返回 `operation_key_conflict`。
+6. `board_finish_intent` 以权威操作账本为准：模型漏列 operation_keys 不能把未完成判成完成；
+   部分完成保留成果、不整体回滚；迟到完成不覆盖取消 / 暂停 / 新尝试。
+7. 批量确认门槛由前端与 API 同口径 `BATCH_CONFIRM_MIN = 2`；单条可单独确认。
+
+**验证与未验证边界**
+
+- 定向验证记录见 `docs/qio-verification-ledger.md` 阶段三部分（A / B / C / D / Lead 实际命令与结果）：
+  A 107 + 17/109、B 26/127/275、C 54 + 21 + 真实界面 20/20、D 94/94 + 独立界面 32/32、
+  Lead 整合 303 + 最终定向集合全绿、前端 92 + 类型 0 错误；DEFECT-P3-1/2/3 均已修复并复跑。
+- 未执行：完整后端 / 前端测试集合、完整 CI、真实模型 / 桌面壳实机验收；按四阶段预算留最终收口。
+- 平台 Windows；真实界面检查使用临时数据目录、Playwright 无头浏览器，模型 fake / mock。
+
+**剩余问题（交给后续阶段）**
+
+1. 第四阶段未开始；从本阶段整合提交继续。
+2. 前端失败发送重试 / 中断轮重发未携带 interactive 绑定（按普通回合执行，不暴露板面工具、不越权）；
+   后续可把互动绑定持久化进发送快照。
+3. 旧理解读取 / 重试 / 取消 API 与前端旧理解面板仍在（只读历史）；是否彻底下线由后续阶段决定。
+4. 旧 `execution.py` 执行链保留为历史兼容（新流程不再使用），其 `_settle_failed` 默认回滚
+   行为不在新流程路径上；后续可集中清理。
+5. 维护批次 / 操作账本 / 等待记录长期增长策略未做（契约未要求）。

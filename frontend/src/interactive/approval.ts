@@ -33,7 +33,9 @@ import type {
 } from "./types";
 
 /** 同一批达到这个数量时，界面提供简洁列表（与服务端 intents.BATCH_MIN 一致） */
-export const BATCH_MIN = 4;
+// 阶段三契约 §13.5：同批批量确认门槛统一为两条（与后端 intent_service 的
+// BATCH_CONFIRM_MIN、interactive_intents.py 的门槛同口径）。
+export const BATCH_MIN = 2;
 
 /** 仍然等待审批、可以进入批量列表的状态 */
 export const DECIDABLE_STATUSES: IntentStatus[] = [

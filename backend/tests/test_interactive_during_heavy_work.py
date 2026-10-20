@@ -581,9 +581,10 @@ async def test_a_cancel_request_is_served_while_maintenance_runs(
 
 
 async def test_maintenance_still_commits_its_results(ctx: AppContext):
-    """没有被新一轮打断时，维护照旧落地：矛盾扫描下调置信度、工具候选请求审批。
+    """没有被新一轮打断时，维护照旧落地：工具候选请求审批。
 
-    这条是「别为了数字好看改语义」的守门用例：清理范围、判定阈值、候选生成都没动。
+    阶段二契约 §12 收口后：否定词矛盾扫描 / 置信度下调已从维护巡检退休，
+    这里守住「有效知识不因否定词被降权，但工具候选仍要产出」。
     """
     from agent.knowledge.lifecycle import KnowledgeService
 
@@ -603,8 +604,8 @@ async def test_maintenance_still_commits_its_results(ctx: AppContext):
     result = await ctx.maintenance.run_once()
 
     assert result["ok"] is True
-    assert result["contradiction_hits"] == 1, result
-    assert ks.get(item.id).confidence < before, "矛盾扫描仍要下调置信度"
+    assert "contradiction_hits" not in result, "旧否定词矛盾扫描不得重新接回维护"
+    assert ks.get(item.id).confidence == before, "有效知识不因否定词被降低置信度"
     assert result["tool_candidates"] >= 1, "够大的簇仍要产出工具候选"
 
 
@@ -641,22 +642,14 @@ async def test_maintenance_discards_results_when_a_new_turn_starts(
     )
     ctx.conn.commit()
 
-    # 第一次「开始新一轮」：发生在矛盾扫描的纯计算期间
-    real_find = maint.find_contradiction_hits
-
-    def _flip_then_find(messages, knowledge):
-        turns.active = object()
-        return real_find(messages, knowledge)
-
-    monkeypatch.setattr(maint, "find_contradiction_hits", _flip_then_find)
-    # 第二次「开始新一轮」：发生在工具候选聚类的嵌入期间
+    # 阶段二起矛盾扫描已退休：这里只验证「计算期间开始新一轮 → 工具候选结果不得落地」
     slow.on_call = lambda: setattr(turns, "active", object())
 
     result = await ctx.maintenance.run_once()
 
     assert result["ok"] is True
-    assert result["contradiction_hits"] == 0, "过时的扫描结果不许提交"
-    assert ks.get(item.id).confidence == before, "置信度不该被过时结果改动"
+    assert "contradiction_hits" not in result
+    assert ks.get(item.id).confidence == before, "旧扫描不得重新降权"
     assert result["tool_candidates"] == 0, "过时的聚类结果不许落成候选"
 
 

@@ -45,7 +45,9 @@ CONFLICT_ACTIVE_STATUSES = (
 #: 已经批准、还没被撤回的状态：这些会阻挡互不相容的另一项被批准
 CONFLICT_BLOCKING_STATUSES = ("waiting_dependency", "waiting_confirm", "running", "paused", "done")
 #: 同一批达到这个数量时，界面提供简洁列表（批量选择部分或全部）
-BATCH_MIN = 4
+# 阶段三契约 §13.5：同批批量确认门槛统一为两条（与 api/interactive_intents.py
+# BATCH_CONFIRM_MIN、前端 approval.ts 同口径）；单条继续走单项确认。
+BATCH_MIN = 2
 #: 演示执行推进允许的结果
 ADVANCE_OUTCOMES = ("done", "failed", "paused", "cancelled")
 
