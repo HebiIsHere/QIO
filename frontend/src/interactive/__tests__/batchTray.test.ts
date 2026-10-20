@@ -2,9 +2,9 @@
  * 右上批量列表的接线测试（子智能体 D）。
  *
  * 契约 §8.1 / §8.5 在界面上的三条硬要求，这里用真实挂载证明：
- * - 只有**同一批**等待审批 ≥4 才出现入口（3 项不出现、4 项出现）；
+ * - 只有**同一批**等待审批 ≥2 才出现入口（1 项不出现、2 项出现；阶段三契约 §13.5 统一门槛）；
  * - 默认收起（点击才展开），数量更新不抢占用户的开合决定；
- * - 不同批次不累加（3+1 不出现）；勾选部分后批量批准只提交选中的项。
+ * - 不同批次不累加（2+1：只有 2 项那批出现入口）；勾选部分后批量批准只提交选中的项。
  *
  * 批次来源由「记录」模拟：真实调用方是 store（createDemoIntents / submit 成功后
  * 调 approval.recordIntentBatch），见 Lead 的实现。
@@ -91,10 +91,17 @@ afterEach(() => {
 });
 
 describe("批量列表入口的出现条件", () => {
-  it("同批 3 项：没有任何批量入口", () => {
-    recordBatches({ "session:demo": ["i0", "i1", "i2"] });
-    const w = mountTray([intent("i0"), intent("i1"), intent("i2")]);
+  it("同批 1 项：没有任何批量入口（门槛两条）", () => {
+    recordBatches({ "session:demo": ["i0"] });
+    const w = mountTray([intent("i0")]);
     expect(w.find('[data-im="batch-entry"]').exists()).toBe(false);
+    expect(w.find('[data-im="batch-list"]').exists()).toBe(false);
+  });
+
+  it("同批 2 项：入口出现，且默认收起（门槛两条，单个可直接确认）", () => {
+    recordBatches({ "session:demo": ["i0", "i1"] });
+    const w = mountTray([intent("i0"), intent("i1")]);
+    expect(w.find('[data-im="batch-entry"]').exists()).toBe(true);
     expect(w.find('[data-im="batch-list"]').exists()).toBe(false);
   });
 
@@ -106,10 +113,11 @@ describe("批量列表入口的出现条件", () => {
     expect(useInteractiveStore().batchOpen).toBe(false);
   });
 
-  it("不同批次 3+1：不出现入口（不同批次不累加）", () => {
-    recordBatches({ "session:a": ["i0", "i1", "i2"], "session:b": ["i3"] });
-    const w = mountTray([intent("i0"), intent("i1"), intent("i2"), intent("i3")]);
-    expect(w.find('[data-im="batch-entry"]').exists()).toBe(false);
+  it("不同批次 2+1：只有够两条的那批出现入口（不同批次不累加）", () => {
+    recordBatches({ "session:a": ["i0", "i1"], "session:b": ["i2"] });
+    const w = mountTray([intent("i0"), intent("i1"), intent("i2")]);
+    expect(w.findAll('[data-im="batch-entry"]').length).toBe(1);
+    expect(w.find('[data-im="batch-entry"]').text()).toContain("这一批待审批 2 项");
   });
 
   it("一批够 4 项、另一批 1 项：只出现够 4 项的那一批，文案分开说明", () => {
@@ -121,13 +129,13 @@ describe("批量列表入口的出现条件", () => {
     expect(text).toContain("另有 1 项在其他批次等待");
   });
 
-  it("数量变化不改变入口的存在（3 项时收起、4 项时出现，且不自动展开）", async () => {
-    // 四项都属于同一批（同一次创建动作），列表先只有 3 项
-    recordBatches({ "session:demo": ["i0", "i1", "i2", "i3"] });
-    const w = mountTray([intent("i0"), intent("i1"), intent("i2")]);
+  it("数量变化不改变入口的存在（1 项无入口、2 项出现，且不自动展开）", async () => {
+    // 两项都属于同一批（同一次创建动作），列表先只有 1 项
+    recordBatches({ "session:demo": ["i0", "i1"] });
+    const w = mountTray([intent("i0")]);
     expect(w.find('[data-im="batch-entry"]').exists()).toBe(false);
     const store = useInteractiveStore();
-    store.intents = [intent("i0"), intent("i1"), intent("i2"), intent("i3")];
+    store.intents = [intent("i0"), intent("i1")];
     await w.vm.$nextTick();
     expect(w.find('[data-im="batch-entry"]').exists()).toBe(true);
     expect(store.batchOpen).toBe(false);

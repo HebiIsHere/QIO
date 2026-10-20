@@ -168,11 +168,11 @@
 | P3-C-02 | C：前端意图工作台 / 结果卡 / 长正文 | npx vitest run IntentWorkbench + intentWorkbench；npx vue-tsc --noEmit | 通过（21 项；类型 0 错误） | Markdown 表格/代码块完整、折叠展开、空正文不显示假卡 |
 | P3-C-03 | C：真实界面检查（真实迁移 51 + 真实 intent_service） | uvicorn + vite + Playwright(msedge)，临时数据目录，模型未调用 | 通过（20/20 断言，截图 D:\qio-dev\_P3R-SHOTS-c\） | 批量 1 禁用 / 2 可批、结果 / 账本 / 恢复 / 窄窗口 |
 | P3-D-01 | D：独立契约测试（阶段 1） | pytest test_p3_d_*.py（8 文件 78 条） | 收集 78；合入冻结修复后冻结面 15/15 | 实现未合入项预期失败，均带契约条款，无 skip |
-| P3-D-02 | D：整合后独立测试与定向回归 | 9 文件 79 条 + C API 15 条；interactive* + p3_* + turn/loop/app/迁移纪律 | 通过（94/94 + 定向回归） | 阶段 2 复跑；发现 DEFECT-P3-1/2/3 |
-| P3-D-03 | D：独立真实界面检查（自有装置） | 真实后端 + vite 5199 + Playwright(msedge)，种子用真实 A/B 服务 | 通过（32/32 断言） | 长文 6384 字完整、表格/代码块、窄窗口、批量 2-vs-1、恢复预览、等待区 |
+| P3-D-02 | D：整合后独立测试与定向回归 | 8 文件 79 条（最终 SHA 8c1ffea0 复跑）；interactive* + p3_* + turn/loop/app/迁移纪律 | 通过（79/79 + 定向回归 426 passed / 6 skipped / 0 failed） | 阶段 2 复跑；发现 DEFECT-P3-1/2/3 |
+| P3-D-03 | D：独立真实界面检查（自有装置） | 真实后端 + vite 5199 + Playwright(msedge)，种子用真实 A/B 服务 | 通过（35/35 断言，截图 D:\\qio-dev\\_P3R-SHOTS-d\\） | 长文 6384 字完整、表格/代码块、窄窗口、批量 2-vs-1、恢复预览、等待区、互动聊天服务端确认 mode/boardId、等待板面自动续作 |
 | P3-整合-01 | Lead：A+B 合入后定向集合 | 导入 / 迁移纪律 / closeout / A+B+D 测试 / 互动提交与存储回归 | 通过（303 项） | 迁移 49/50/51 登记、补偿 51、REQUIRED_OBJECTS |
 | P3-整合-02 | Lead：最终整合定向集合（A+B+C+D + 互动/循环/存储/知识回归） | pytest 选受影响文件，-p no:warnings | 通过（exit 0，非完整集合） | 含 6 个环境 skip；C 分支 5108e978、A 分支 aac2fe4f 合入后复跑 |
-| P3-前端-01 | Lead：整合后前端类型 + 受影响用例 | npx vue-tsc --noEmit；vitest 5 文件（session / turnFacts / IntentWorkbench / intentWorkbench / approval） | 通过（92 项；类型 0 错误） | 修复普通聊天 sendTurn 参数形状；旧 approval 门槛统一为 2 |
+| P3-前端-01 | Lead：整合后前端类型 + 受影响套件 | npx vue-tsc --noEmit；vitest src/interactive + src/components/interactive + session/turnFacts 受影响文件 | 通过（116 文件 / 1406 项；类型 0 错误） | 修复普通聊天 sendTurn 参数形状；旧批量门槛与 batchTray/approval 用例统一为 2 |
 | P3-修复-01 | DEFECT-P3-1/2（冻结模型） | D/B 复现 → Lead 修复 → 探针 + 冻结面 15/15 | 通过 | allowed_actions 枚举二次解析、list/set 求交 |
 | P3-修复-02 | DEFECT-P3-3（等待响应形状） | D 独立界面 FAIL → C 修复 75f38b47 → D 复跑 32/32 | 通过 | waiting 固定为 {available, board_id, count, waiting:[...]} |
 | P3-修复-03 | 阶段二遗留 stale 测试 + 旧批量门槛 | test_interactive_during_heavy_work（2 条）+ approval.test.ts / intents.py 门槛 4→2 | 通过 | 旧否定词扫描断言改为退休守卫；前后端批量门槛统一 2 |
