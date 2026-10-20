@@ -1270,6 +1270,18 @@ class TurnOrchestrator:
         ctx.final_content = result.final_content
         ctx.final_annotation = getattr(result, "final_annotation", None)
         ctx.result = {"ok": True, "turn": result.__dict__}
+        # 阶段二（契约 §12.3）：只有**真实成功完成的用户 turn** 才计入知识维护的等待轮数。
+        # 通知轮在 execute() 已分流；失败 / 取消不会走到 finish()。按 turn_id 去重由调度器负责。
+        scheduler = getattr(app, "knowledge_maintenance", None)
+        if scheduler is not None:
+            try:
+                scheduler.note_user_turn_completed(ctx.turn_id)
+            except Exception:  # noqa: BLE001 - 计数失败不能影响用户轮
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "knowledge maintenance turn note failed", exc_info=True
+                )
 
 
 def _tool_spec_tokens(registry) -> int:

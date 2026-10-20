@@ -512,6 +512,8 @@ class MaintenanceScheduler:
         self._approvals = BackgroundTasks(name="maintenance-approval")
         self._run_handle: BackgroundHandle | None = None
         self._last_result: dict | None = None
+        # 阶段二：独立知识维护检查循环（与周期巡检分开；由 start()/stop() 同一生命周期托管）。
+        self._knowledge_task: asyncio.Task | None = None
         # 一旦某次 stop() 如实报告过「有执行单元未确认结束」，这件事就**不能**被
         # 后来的重复调用抹掉（否则调用方会把整个关闭说成干净）。
         self._reported_unfinished = False
@@ -569,6 +571,38 @@ class MaintenanceScheduler:
             return
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._loop())
+        self._start_knowledge_loop()
+
+    def _knowledge_check_interval(self) -> float:
+        """知识维护检查间隔（秒）：独立于工具清理 / 自动化建议的 24h 巡检。"""
+        try:
+            raw = self.ctx.settings_store.get_int(
+                "knowledge_maintenance.check_interval_seconds", 60
+            )
+        except Exception:  # noqa: BLE001 - 读配置失败用默认值，不挡住启动
+            raw = 60
+        return float(max(5, int(raw)))
+
+    def _start_knowledge_loop(self) -> None:
+        scheduler = getattr(self.ctx, "knowledge_maintenance", None)
+        if scheduler is None or self._closing:
+            return
+        if self._knowledge_task is None or self._knowledge_task.done():
+            self._knowledge_task = asyncio.create_task(
+                self._knowledge_loop(scheduler)
+            )
+
+    async def _knowledge_loop(self, scheduler) -> None:
+        """知识维护检查循环：只在没有主 Turn 时尝试；失败隔离，一次失败不杀循环。"""
+        while True:
+            try:
+                await asyncio.sleep(self._knowledge_check_interval())
+                busy = self.ctx.turns.active is not None
+                await scheduler.maybe_run(busy=busy)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 一次知识维护失败不能杀死调度器
+                logger.warning("knowledge maintenance tick failed", exc_info=True)
 
     def next_delay_seconds(self) -> float:
         """下一次巡检的间隔（测试会把它调小以驱动真实循环）。"""
@@ -675,8 +709,11 @@ class MaintenanceScheduler:
             results["tool_outputs_purged"] = self.ctx.prune_tool_outputs()
             # 整条记录的保留天数默认 0（永久保留）；用户设置过才在这里隐式清理
             results["tool_records_purged"] = self.ctx.prune_tool_records()
-            results.update(await scan_contradictions(self.ctx))
-            results.update(await run_dreaming(self.ctx))
+            # 阶段二起：知识整理（变化计数 / 触发 / 合并 / 格式整理 / 独立问答）由
+            # **独立的知识维护调度器**负责（agent/maintenance/*，见契约 §12）。
+            # 旧的否定词矛盾扫描（scan_contradictions）与 dreaming（run_dreaming：
+            # 会按置信度下调 / revoke）不再执行 —— 不得因长期未出现、否定词或词语重合
+            # 直接撤销或降低有效认识。工具候选挖掘（自动化建议）与知识整理保持分开调度。
             results.update(await mine_tool_candidates(self.ctx))
             return results
         except asyncio.CancelledError:
@@ -714,6 +751,20 @@ class MaintenanceScheduler:
                 pass
             except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
                 logger.warning("maintenance loop ended with an error", exc_info=True)
+        # 1b) 知识维护检查循环：同一关闭生命周期，有界等待并如实记录是否确认结束。
+        knowledge_pending: list[str] = []
+        knowledge_task, self._knowledge_task = self._knowledge_task, None
+        if knowledge_task is not None and not knowledge_task.done():
+            knowledge_task.cancel()
+            try:
+                await asyncio.wait_for(knowledge_task, timeout=10.0)
+            except asyncio.CancelledError:
+                pass
+            except asyncio.TimeoutError:
+                knowledge_pending.append("knowledge_maintenance")
+                logger.error("知识维护检查循环在关闭等待窗口内未确认结束")
+            except Exception:  # noqa: BLE001 - 关闭阶段不能再抛
+                logger.warning("knowledge maintenance loop ended with an error", exc_info=True)
         # 2) 在跑的那一轮 + 维护发起的等待：有界等待 → 取消 → 确认结束。
         run_report = await self._runs.shutdown()
         approval_report = await self._approvals.shutdown()
@@ -722,6 +773,7 @@ class MaintenanceScheduler:
             | set(run_report.still_running)
             | set(approval_report.unfinished)
             | set(approval_report.still_running)
+            | set(knowledge_pending)
         )
         clean = not pending
         phases: list[str] = []

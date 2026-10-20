@@ -102,6 +102,15 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 两者都在补偿迁移 43 里有对应的建表语句。
         "attachment_previews",
         "board_preview_state",
+        # 阶段二（迁移 46/47）：知识维护变化日志 / 调度状态 / 用户 turn 去重 +
+        # 维护批次 / 事项 / 操作。缺了它们，计数、待确认事项与恢复记录都会丢；
+        # 全部在补偿迁移 48 里有对应的建表语句。
+        "knowledge_change_log",
+        "knowledge_maintenance_state",
+        "knowledge_maintenance_turn_log",
+        "maintenance_batches",
+        "maintenance_items",
+        "maintenance_operations",
     ),
     "columns": (
         "turn_journal.owner_instance_id",

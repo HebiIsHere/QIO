@@ -468,6 +468,15 @@ class AppContext:
 
         self.tool_router = ToolRouter(embedding=self.embedding)
         self.maintenance = MaintenanceScheduler(self)
+        # 阶段二：独立知识维护（调度器 + 执行器）。生命周期由 MaintenanceScheduler
+        # 的 start()/stop() 统一托管（见 services/maintenance.py），与工具清理 / 自动化建议分开。
+        from agent.maintenance.runner import MaintenanceRunner
+        from agent.maintenance.scheduler import KnowledgeMaintenanceScheduler
+
+        self.maintenance_runner = MaintenanceRunner(self)
+        self.knowledge_maintenance = KnowledgeMaintenanceScheduler(
+            conn, runner=self.maintenance_runner, settings=self.settings_store
+        )
         # 重活执行器（契约 WS3 §3）：把纯计算（ONNX 推理等）搬出事件循环，
         # 有并发上限。输入读取与结果提交仍留在事件循环一侧（见 services/heavy.py）。
         self.heavy = HeavyWork()

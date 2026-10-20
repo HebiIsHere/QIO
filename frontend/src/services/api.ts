@@ -310,6 +310,130 @@ export interface KnowledgeItem {
   updated_at: string;
 }
 
+/**
+ * 阶段二 C：「记忆待确认」读取模型（与后端 maintenance.models.PendingKnowledgeRef 字段一致）。
+ * 字段名冻结 —— 前端不另造状态字符串，只做展示映射。
+ */
+export interface PendingKnowledgeRef {
+  id: string;
+  version: number;
+  content: string;
+  category: string;
+  /** 真实节点归属翻译后的范围标签（全局（你）/ 话题：X / 实体：Y / 未指定） */
+  scope: string[];
+  epistemic_status?: string | null;
+  source?: string | null;
+  state?: string | null;
+}
+
+/** 两类待确认事项共用；kind / handler 决定处理程序（知识审批 vs 维护回答）。 */
+export interface PendingItemView {
+  id: string;
+  kind: string;
+  status: string;
+  handler: string;
+  title: string;
+  question?: string | null;
+  knowledge: PendingKnowledgeRef[];
+  before: Record<string, unknown>[];
+  after: Record<string, unknown>[];
+  evidence: Record<string, unknown>[];
+  actions: string[];
+  created_at: string;
+  updated_at: string;
+  batch_id?: string | null;
+  error?: string | null;
+}
+
+export interface MemoryPendingListing {
+  items: PendingItemView[];
+  total: number;
+  truncated: boolean;
+  /** B 的迁移 47 未应用时后端如实返回 false（不伪造数据） */
+  maintenance_available?: boolean;
+  warnings?: string[];
+}
+
+/** POST /api/memory/pending/{id}/answer 的返回：MaintenanceAnswerOutcome 字段 + 最新事项。 */
+export interface MemoryAnswerOutcome {
+  ok: boolean;
+  status: string;
+  item_id: string;
+  resolution?: string | null;
+  applied_changes?: number;
+  error?: string | null;
+  detail?: Record<string, unknown>;
+  item?: PendingItemView | null;
+}
+
+export interface MaintenanceBatchSummary {
+  id: string;
+  /** change_count | waiting_turns（来源是批次记录本身，界面只做展示映射） */
+  trigger?: string | null;
+  status: string;
+  model?: string | null;
+  created_at?: string | null;
+  finished_at?: string | null;
+  stats?: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface MaintenanceItemRecord {
+  id?: string;
+  batch_id?: string | null;
+  kind?: string;
+  status?: string;
+  question?: string | null;
+  answer?: string | null;
+  knowledge?: unknown;
+  before?: Record<string, unknown>[];
+  after?: Record<string, unknown>[];
+  evidence?: Record<string, unknown>[];
+  reason?: string | null;
+  error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface MaintenanceOperationRecord {
+  id?: string;
+  batch_id?: string | null;
+  item_id?: string | null;
+  action?: string;
+  target_ids?: unknown;
+  result_id?: string | null;
+  before?: Record<string, unknown>[];
+  after?: Record<string, unknown>[];
+  status?: string | null;
+  created_at?: string | null;
+}
+
+export interface MaintenanceBatchDetail {
+  batch: MaintenanceBatchSummary;
+  items: MaintenanceItemRecord[];
+  operations: MaintenanceOperationRecord[];
+  available: boolean;
+}
+
+export interface MaintenanceRestorePreview {
+  ok: boolean;
+  preview: Record<string, unknown> | null;
+}
+
+export interface MaintenanceRestoreResult {
+  ok: boolean;
+  restored?: unknown;
+  blocked?: unknown;
+  status?: string | null;
+  result?: Record<string, unknown>;
+}
+
+export interface MemoryMaintenanceStatus {
+  available: boolean;
+  reason?: string;
+  [key: string]: unknown;
+}
+
 export interface EntityAttribute {
   key: string;
   value: string;
@@ -405,6 +529,17 @@ export interface InterruptedTurn {
   started_at?: string | null;
   ended_at?: string | null;
   updated_at?: string | null;
+}
+
+/** 把可选查询参数拼成 ?a=b（空值不出现；不改变后端默认值）。 */
+function memoryQuery(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === "") continue;
+    search.set(key, String(value));
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
 }
 
 export const api = {
@@ -1094,6 +1229,60 @@ export const api = {
       `/api/knowledge/${encodeURIComponent(id)}/scope`,
       { method: "POST", body: JSON.stringify(scope) },
     ),
+  /** 阶段二 C：「记忆待确认」列表（两类事项；动作按 handler 区分，全走后端维护执行器）。 */
+  listMemoryPending: (
+    params: { status?: string; kind?: string; limit?: number } = {},
+  ) =>
+    request<MemoryPendingListing>(`/api/memory/pending${memoryQuery(params)}`, {
+      timeoutMs: API_TIMEOUT_MS.bulk,
+    }),
+  /** 回答后台维护提问：只进维护执行器，不写主对话 messages / 摘要。 */
+  answerMemoryPending: (itemId: string, answer: string) =>
+    request<MemoryAnswerOutcome>(
+      `/api/memory/pending/${encodeURIComponent(itemId)}/answer`,
+      { method: "POST", body: JSON.stringify({ answer }), timeoutMs: API_TIMEOUT_MS.long },
+    ),
+  /** 稍后处理：事项持久为 deferred，继续留在待确认入口。 */
+  deferMemoryPending: (itemId: string) =>
+    request<{ ok: boolean; status: string; item: PendingItemView | null }>(
+      `/api/memory/pending/${encodeURIComponent(itemId)}/defer`,
+      { method: "POST" },
+    ),
+  /** 维护批次列表（新的在前；stats 摘要来自批次记录本身）。 */
+  listMaintenanceBatches: (limit?: number) =>
+    request<{
+      batches: MaintenanceBatchSummary[];
+      total: number;
+      truncated: boolean;
+      available: boolean;
+      warnings?: string[];
+    }>(`/api/memory/maintenance/batches${memoryQuery({ limit })}`, {
+      timeoutMs: API_TIMEOUT_MS.bulk,
+    }),
+  /** 批次详情：事项（前后内容 / 证据）与真实操作记录。 */
+  getMaintenanceBatch: (batchId: string) =>
+    request<MaintenanceBatchDetail>(
+      `/api/memory/maintenance/batches/${encodeURIComponent(batchId)}`,
+      { timeoutMs: API_TIMEOUT_MS.bulk },
+    ),
+  /** 恢复影响预览（不写库）：每项是否可恢复与不可恢复原因。 */
+  previewMaintenanceRestore: (params: { batch_id?: string; item_id?: string }) =>
+    request<MaintenanceRestorePreview>(
+      `/api/memory/maintenance/restore/preview${memoryQuery(params)}`,
+      { timeoutMs: API_TIMEOUT_MS.bulk },
+    ),
+  /** 执行恢复：单条 / 整批；必须显式 confirm（高影响动作）。 */
+  restoreMaintenance: (payload: { batch_id?: string; item_id?: string; confirm: true }) =>
+    request<MaintenanceRestoreResult>("/api/memory/maintenance/restore", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: API_TIMEOUT_MS.long,
+    }),
+  /** 知识维护调度状态（对象缺失时后端返回 available=false，界面如实说明）。 */
+  memoryMaintenanceStatus: () =>
+    request<MemoryMaintenanceStatus>("/api/memory/maintenance/status", {
+      timeoutMs: API_TIMEOUT_MS.read,
+    }),
   endTopic: (topicId: string) =>
     request<{ ok: boolean; topic_id: string }>(
       `/api/graph/topics/${encodeURIComponent(topicId)}/end`,

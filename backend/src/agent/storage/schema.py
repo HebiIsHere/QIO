@@ -1457,4 +1457,29 @@ MIGRATIONS.append(
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 COMPENSATION_VERSION = 45
 
+# ── 阶段二（P2）：独立后台维护 / 记忆待确认 / 安全恢复（2026-10-21）──────────
+# 契约：docs/qio-refactor-contract.md §12.7。只追加，不改历史迁移语义。
+# 迁移 46（A 线）：变化日志 / 调度状态 / 成功用户 turn 去重。
+# 迁移 47（B 线）：维护批次 / 事项 / 操作记录。
+from agent.storage.migration_p2_a import MIGRATION as _P2_A_MIGRATION  # noqa: E402
+from agent.storage.migration_p2_b import MIGRATION as _P2_B_MIGRATION  # noqa: E402
+
+MIGRATIONS.append(_P2_A_MIGRATION)
+MIGRATIONS.append(_P2_B_MIGRATION)
+
+# 补偿入口（新，48）：迁移 45 的全部语句 + 46 + 47。
+# 与 36 / 38 / 40 / 43 / 45 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append(
+    (
+        48,
+        [stmt for target, stmts in MIGRATIONS if target == 45 for stmt in stmts]
+        + list(_P2_A_MIGRATION[1])
+        + list(_P2_B_MIGRATION[1]),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 48
+
+
 
