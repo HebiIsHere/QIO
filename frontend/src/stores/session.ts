@@ -5103,6 +5103,16 @@ const sessionStoreDefinition = defineStore("session", {
         signal?: AbortSignal;
         /** 准备标识（契约 §1.1）：中止时用它调取消端点，**以后端确认为准** */
         prepareId?: string;
+        /**
+         * 阶段三契约 §13.3：互动模式的聊天绑定（mode/boardId/submissionId）。
+         * 只由互动悬浮聊天（ChatDock）传入；普通聊天不传 → 请求体没有板面身份，
+         * 服务端不设板面上下文、不暴露板面工具。
+         */
+        interactive?: {
+          mode: "interactive" | "normal";
+          boardId?: string;
+          submissionId?: string;
+        };
       } = {},
     ): Promise<boolean> {
       const message = text.trim();
@@ -5221,15 +5231,48 @@ const sessionStoreDefinition = defineStore("session", {
             options.retryOfTurnId,
             options.signal,
             options.prepareId,
+            options.interactive,
           );
         } else if (options.retryOfTurnId) {
           res = options.signal
-            ? await api.sendTurn(message, requestTopicId, ids, options.retryOfTurnId, options.signal)
-            : await api.sendTurn(message, requestTopicId, ids, options.retryOfTurnId);
+            ? await api.sendTurn(
+                message,
+                requestTopicId,
+                ids,
+                options.retryOfTurnId,
+                options.signal,
+                undefined,
+                options.interactive,
+              )
+            : await api.sendTurn(
+                message,
+                requestTopicId,
+                ids,
+                options.retryOfTurnId,
+                undefined,
+                undefined,
+                options.interactive,
+              );
         } else {
           res = options.signal
-            ? await api.sendTurn(message, requestTopicId, ids, undefined, options.signal)
-            : await api.sendTurn(message, requestTopicId, ids);
+            ? await api.sendTurn(
+                message,
+                requestTopicId,
+                ids,
+                undefined,
+                options.signal,
+                undefined,
+                options.interactive,
+              )
+            : await api.sendTurn(
+                message,
+                requestTopicId,
+                ids,
+                undefined,
+                undefined,
+                undefined,
+                options.interactive,
+              );
         }
         /**
          * 受理事实（契约 C3）：**绝不能只看 turn_id**。

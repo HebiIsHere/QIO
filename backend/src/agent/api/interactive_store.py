@@ -354,6 +354,41 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # 阶段三契约 §13.3：受理 = 把这次提交作为**主循环的一个 Turn**（同一 TurnManager /
+    # 同一 adapter / 同一工具循环）。这里把 AppContext 的公开受理接口包成 turn_acceptor
+    # 交给 submission.submit_board；成功后绑定 TurnContext 并写「提交—turn」持久绑定。
+    ctx = getattr(request.app.state, "ctx", None)
+
+    def accept_turn(**kwargs: Any) -> dict:
+        if ctx is None:
+            return {"ok": False, "reason": "主循环不可用（没有 AppContext）"}
+        message = str(kwargs.get("message") or "").strip()
+        if not message:
+            return {"ok": False, "reason": "受理消息为空，无法创建主循环 turn"}
+        try:
+            turn_topic = ctx.current_topic() or None
+        except Exception:  # noqa: BLE001 - 没有活动话题时按新话题处理
+            turn_topic = None
+        try:
+            turn = ctx.turns.submit(message, turn_topic)
+        except Exception as exc:  # noqa: BLE001 - TurnAcceptError / 已关闭：如实拒绝
+            logger.warning("互动提交受理失败（没有创建主循环 turn）：%s", exc)
+            return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        turn.mode = "interactive"
+        turn.board_id = str(kwargs.get("board_id") or "")
+        turn.board_submission_id = str(kwargs.get("submission_id") or "")
+        turn.board_topic_id = str(turn_topic or "")
+        turn.board_resume = bool(kwargs.get("resume"))
+        turn.board_intent_ids = tuple(kwargs.get("intent_ids") or ())
+        turn.board_resolved_question_ids = tuple(kwargs.get("resolved_question_ids") or ())
+        turn.board_attempt = int(kwargs.get("attempt") or 1)
+        return {
+            "ok": True,
+            "turnId": turn.turn_id,
+            "topicId": turn.board_topic_id,
+            "attempt": 1,
+        }
+
     try:
         return await submission.submit_board(
             conn,
@@ -362,12 +397,14 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
             note=note,
             base_state_version=base_version,
             confirmed_check_id=payload.get("confirmedCheckId"),
-            # 与理解路由共用同一个 adapter 注入点：提交 → 受理 → 后台理解也走同一条链路
+            # 兼容保留：新流程不再用 adapter_provider 启动任何独立理解模型调用
             adapter_provider=_adapter_provider(request),
             # 稳定提交请求身份：同身份重试不重复落行、不重复调用模型
             client_request_id=client_request_id,
             # F6：客户端冻结视图原样透传（校验在 submission.normalize_view，路由不加工）
             view=payload.get("view"),
+            # 主循环受理器（阶段三唯一受理路径；没有它提交按 failed，不回退旧理解）
+            turn_acceptor=accept_turn,
         )
     except submission.StaleState as exc:
         # M4 路径 3：候选版本 / 确认范围与服务端不一致 → 不落库
