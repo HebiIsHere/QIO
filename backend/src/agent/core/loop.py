@@ -700,6 +700,9 @@ class AgentLoop:
         # 「需要再次调用模型的后续步骤」里仍然带着同一份材料依据。没有媒体时
         # 是 None —— 既有调用方一字不用改，消息形状逐字不变。
         media_parts: list[Any] | None = None,
+        # 阶段三：允许「已保存意图 / 已记录等待」的互动轮次不产生聊天回答。
+        # True 时不启动强制最终回答补救，也不把空回答补成停止说明；上层决定呈现方式。
+        allow_no_answer: bool = False,
     ) -> None:
         self.adapter = adapter
         self.registry = registry
@@ -749,6 +752,7 @@ class AgentLoop:
         # 这次调用「交付不完整」的结构化事实（limit / spill_create / spill_write /
         # spill_read）；有值时如实报告：可见 WARNING + 事实写进交付内容（契约 §1.4）。
         self._call_buffer_outcome: BufferOutcome | None = None
+        self.allow_no_answer = bool(allow_no_answer)
         self._spill_dir = spill_dir
         self._undeclared_memory_limit = undeclared_memory_limit
         self._undeclared_spill_limit = undeclared_spill_limit
@@ -1527,6 +1531,9 @@ class AgentLoop:
                     break
                 # 声明了回答却一个字都没有 → 与「整轮没有回答内容」同路（兜底一次）
                 phase = LoopPhase.DONE
+                if self.allow_no_answer:
+                    final_content = ""
+                    break
                 final_content = await self._maybe_fallback(messages, completion)
                 break
 
@@ -1537,8 +1544,12 @@ class AgentLoop:
                     phase = LoopPhase.DONE
                     final_content = answer_text
                     break
-                # 整轮**完全没有回答内容** → 唯一允许的额外调用：兜底要一次最终回答
+                # 整轮**完全没有回答内容** → 唯一允许的额外调用：兜底要一次最终回答。
+                # 阶段三：互动轮允许不回复时跳过补救（已保存意图 / 已记录等待）。
                 phase = LoopPhase.DONE
+                if self.allow_no_answer:
+                    final_content = ""
+                    break
                 final_content = await self._maybe_fallback(messages, completion)
                 break
 
@@ -1593,7 +1604,7 @@ class AgentLoop:
             stop_code = self._stop_code or "none"
             stop_reason = self._stop_reason
             stop_by = self._stop_by
-        if not cancelled and not (final_content or "").strip():
+        if not cancelled and not (final_content or "").strip() and not self.allow_no_answer:
             # 静默失败收口：护栏终止 / 预算停止 / 模型什么都没说，都必须留下人话。
             # 取消是用户自己的动作，界面已有「已停止」状态行，这里不补文本。
             # 停止说明可能引用工具 / 厂商回显，过一遍脱敏（契约 C3：错误与最终输出）。

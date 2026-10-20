@@ -159,3 +159,4 @@
 | 编号 | 范围 | 命令 / 方式 | 结果 | 备注 |
 | --- | --- | --- | --- | --- |
 | P3-预检-01 | 冻结提示词 / 工具参数模型 / 可信运行上下文同源 | 导入 + schema 生成探针 | 通过 | PROMPTS 24 键；TOOL_DESCRIPTIONS 36（含 12 个 board_*）；12 个参数模型 schema 由 json_schema_for 生成；意图结构可校验 |
+| P3-预检-02 | allowed_actions 非空校验（DEFECT-P3-1） | D 复现后 Lead 修复 + 定向探针 | 通过 | 修复 enum 二次解析；补充 create_card / update_card 等非空 allowed_actions 可校验回归 |
