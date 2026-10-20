@@ -68,6 +68,29 @@ describe("EntityPanel 空态与失败区分（任务05 E）", () => {
 /**
  * 第四阶段：实体卡默认阅读、按需编辑；归档走 QIO 自己的确认层。
  */
+describe("EntityPanel Phase 1 C：身份与创建依据可读", () => {
+  it("阅读态显示实体身份、创建依据与证据条数", async () => {
+    mocks.apiMock.listEntities.mockResolvedValue({
+      entities: [
+        {
+          ...CARD,
+          identity: "用户家里的白鹅",
+          creation_reason: "持续健康记录需要",
+          evidence_ids: ["msg_1"],
+        },
+      ],
+    });
+    const w = mountPanel();
+    await flushPromises();
+    await w.find(".e-item").trigger("click");
+    await flushPromises();
+    expect(w.find(".e-read-identity").text()).toBe("用户家里的白鹅");
+    expect(w.find(".e-read-creation").text()).toBe("持续健康记录需要");
+    expect(w.find(".e-evidence-count").text()).toContain("依据 1 条");
+    w.unmount();
+  });
+});
+
 describe("EntityPanel 阅读态与确认层（第四阶段）", () => {
   it("打开卡片默认是阅读态：没有输入框，只显示摘要与字段", async () => {
     const w = mountPanel();
