@@ -660,6 +660,41 @@ async def confirm_intents_batch(request: Request, body: dict) -> dict:
 # -- 等待 / 账本 / 结果 / 恢复（只读为主）-------------------------------------
 
 
+def _normalise_waiting_payload(waiting, board_id: str) -> dict:
+    """把 A 的 waiting_state（items 列表、camelCase）规范成 C 的只读形状（snake_case）。"""
+    if not isinstance(waiting, dict):
+        return {"available": True, "waiting": waiting}
+    items = waiting.get("items")
+    if not isinstance(items, list):
+        return {"available": True, "waiting": waiting}
+    normalised: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        normalised.append(
+            {
+                "submission_id": item.get("submissionId") or item.get("submission_id"),
+                "question": str(item.get("question") or ""),
+                "missing_fields": [
+                    str(value)
+                    for value in (item.get("missingFields") or item.get("missing_fields") or [])
+                ],
+                "question_ids": [
+                    str(value)
+                    for value in (item.get("questionIds") or item.get("question_ids") or [])
+                ],
+                "status": str(item.get("status") or "waiting"),
+                "created_at": item.get("createdAt") or item.get("created_at"),
+            }
+        )
+    return {
+        "available": True,
+        "board_id": waiting.get("boardId") or board_id,
+        "count": len(normalised),
+        "waiting": normalised,
+    }
+
+
 def _waiting_for(request: Request, board_id: str) -> dict:
     """等待事项：优先注入的 provider（测试 / 联调），否则读 A 的 submission.get_waiting。"""
     conn = _conn(request)
@@ -695,7 +730,7 @@ def _waiting_for(request: Request, board_id: str) -> dict:
         raise HTTPException(
             status_code=500, detail=f"读取等待事项失败：{reason}"
         ) from exc
-    return {"available": True, "waiting": waiting}
+    return _normalise_waiting_payload(waiting, board_id)
 
 
 @router.get("/api/interactive/boards/{board_id}/waiting")

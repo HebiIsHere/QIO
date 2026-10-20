@@ -87,9 +87,21 @@ const batchHint = computed(() => batchConfirmHint(selectedEligible.value.length)
 const waitingItems = computed<WaitingView[]>(() => {
   const value = waiting.value?.waiting;
   if (!value) return [];
-  if (Array.isArray(value)) return value;
-  if (typeof value === "object") return [value as WaitingView];
-  return [];
+  const list: WaitingView[] = Array.isArray(value)
+    ? value
+    : typeof value === "object"
+      ? [value as WaitingView]
+      : [];
+  // A 的真实 waiting_state 用 camelCase；API 已规范成 snake_case，这里再兼容两种写法。
+  return list.map((item) => {
+    const record = item as Record<string, unknown>;
+    return {
+      ...item,
+      submission_id: item.submission_id ?? (record.submissionId as string | undefined),
+      missing_fields:
+        item.missing_fields ?? ((record.missingFields as string[] | undefined) ?? []),
+    };
+  });
 });
 
 function errorMessage(error: unknown): string {
@@ -251,6 +263,22 @@ function cancelRecovery(): void {
   recoveryError.value = "";
 }
 
+/** 真实 preview_recovery 的未完成操作 / 依赖是结构化对象；这里只做可读映射，不丢信息。 */
+function recoveryItemsText(items: unknown[] | undefined): string {
+  return (items ?? [])
+    .map((item) => {
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        const key =
+          record.operation_key ?? record.operation_id ?? record.action ?? record.intent_id ?? record.id;
+        const status = record.status ? "（" + String(record.status) + "）" : "";
+        return (key ? String(key) : "未标注项") + status;
+      }
+      return String(item);
+    })
+    .join("、");
+}
+
 function ledgerCountEntries(): Array<{ key: string; label: string; value: number }> {
   const counts = ledger.value?.counts ?? {};
   const labels: Record<string, string> = {
@@ -404,10 +432,10 @@ onMounted(() => {
                   <span class="iw-label">原因</span>{{ recoveryPreview.reasons.join("；") }}
                 </p>
                 <p v-if="recoveryPreview.unfinished_operations && recoveryPreview.unfinished_operations.length" class="iw-row">
-                  <span class="iw-label">未完成操作</span>{{ recoveryPreview.unfinished_operations.join("、") }}
+                  <span class="iw-label">未完成操作</span>{{ recoveryItemsText(recoveryPreview.unfinished_operations) }}
                 </p>
                 <p v-if="recoveryPreview.unfinished_dependencies && recoveryPreview.unfinished_dependencies.length" class="iw-row">
-                  <span class="iw-label">未完成依赖</span>{{ recoveryPreview.unfinished_dependencies.join("、") }}
+                  <span class="iw-label">未完成依赖</span>{{ recoveryItemsText(recoveryPreview.unfinished_dependencies) }}
                 </p>
                 <div class="iw-intent-actions">
                   <button
