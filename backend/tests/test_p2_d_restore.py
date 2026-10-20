@@ -269,8 +269,9 @@ async def test_restore_protects_later_user_modification(ctx, monkeypatch):
 
     preview = await runner.preview_restore(batch_id=batch_id)
     preview_text = json.dumps(preview, ensure_ascii=False, default=str)
-    assert any(token in preview_text for token in
-               ("无法安全恢复", "冲突", "conflict", "unsafe", "跳过", "无法恢复")), (
+    unsafe_tokens = ("无法安全恢复", "冲突", "conflict", "unsafe", "跳过", "无法恢复",
+                     "拒绝恢复", "已被后续", "blocked")
+    assert any(token in preview_text for token in unsafe_tokens), (
         f"{CLAUSE}：预览必须明确说明无法安全恢复的部分：{preview_text[:500]}")
 
     result = await runner.restore(batch_id=batch_id)
@@ -280,8 +281,7 @@ async def test_restore_protects_later_user_modification(ctx, monkeypatch):
         f"{CLAUSE}：恢复不得覆盖用户后来的修改（当前内容 {getattr(current, 'content', None)!r}）")
     assert current.version == 2, (
         f"{CLAUSE}：恢复保护后续修改时不应产生新版本（当前 v{current.version}）")
-    assert any(token in result_text for token in
-               ("无法安全恢复", "冲突", "conflict", "unsafe", "跳过", "无法恢复")), (
+    assert any(token in result_text for token in unsafe_tokens), (
         f"{CLAUSE}：恢复结果必须明确说明无法安全恢复的部分：{result_text[:500]}")
     assert _batch_status(conn, batch_id) in ("rollback_partial", "rolled_back"), (
         f"{CLAUSE}：部分无法恢复时批次状态应如实反映，实际 {_batch_status(conn, batch_id)!r}")

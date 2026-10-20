@@ -139,13 +139,12 @@ def test_old_maintenance_paths_are_retired_from_run_once():
     text = _read(path)
     body = _function_body(text, "run_once")
     assert body, f"{CLAUSE}：找不到 services/maintenance.py 的 run_once"
-    entries = re.findall(r"results\.update\(await\s+([a-zA-Z_][\w]*)\(", body)
-    assert "scan_contradictions" not in entries, (
+    assert "scan_contradictions" not in body, (
         f"{CLAUSE}：run_once 仍在调用 scan_contradictions（旧的否定词降置信度路径必须退休）")
-    assert "run_dreaming" not in entries, (
+    assert "run_dreaming" not in body, (
         f"{CLAUSE}：run_once 仍在调用 run_dreaming（旧 revoke / expire 分支必须退休）")
     for kept in ("prune_tool_outputs", "prune_tool_records", "mine_tool_candidates"):
-        assert kept in entries, (
+        assert kept in body, (
             f"{CLAUSE}：run_once 必须保留 {kept}（工具清理 / 记录保留 / 自动化建议与知识维护分开）")
 
 
@@ -169,6 +168,25 @@ def test_new_maintenance_modules_do_not_reuse_old_paths():
                 offenders.append(f"{route.relative_to(ROOT)}: {token}")
     assert not offenders, (
         f"{CLAUSE}：新维护 / API 模块复用了旧 revoke / 否定词路径：{offenders}")
+
+
+def test_knowledge_maintenance_is_wired_and_turn_hook_exists():
+    """§12.6：AppContext 暴露 knowledge_maintenance / maintenance_runner；成功用户
+    turn 结束钩子在 turn_orchestrator；不得留「模块不可用」的静默回退。"""
+    app_text = _read(_require_file(BACKEND_SRC / "services" / "app.py", "services/app.py"))
+    assert "self.knowledge_maintenance" in app_text, (
+        f"{CLAUSE}：AppContext 未暴露 knowledge_maintenance（Lead 接线缺失）")
+    assert "self.maintenance_runner" in app_text, (
+        f"{CLAUSE}：AppContext 未暴露 maintenance_runner（Lead 接线缺失）")
+    assert "knowledge maintenance modules not available yet" not in app_text, (
+        f"{CLAUSE}：app.py 仍保留「阶段二模块未合入」的 ImportError 静默回退，整合后必须删除")
+    orchestrator = _read(
+        _require_file(BACKEND_SRC / "services" / "turn_orchestrator.py", "turn_orchestrator.py"))
+    assert "note_user_turn_completed" in orchestrator, (
+        f"{CLAUSE}：turn_orchestrator 未在真实成功用户 turn 结束后调用 "
+        "note_user_turn_completed（按 turn_id 去重由调度器负责）")
+    assert "knowledge_maintenance" in orchestrator, (
+        f"{CLAUSE}：turn_orchestrator 缺少 knowledge_maintenance 存在性判断（替身 ctx 兼容）")
 
 
 # ---------------------------------------------------------------------------

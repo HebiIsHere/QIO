@@ -370,9 +370,13 @@ async def test_ask_persists_pending_item_without_touching_knowledge(ctx, monkeyp
     hits = _rows_containing(conn, "maintenance_items", question)
     assert hits, f"{CLAUSE}：ask 的问题必须持久保存（maintenance_items 里找不到问题原文）"
     models = _load("agent.maintenance.models")
-    assert any(str(v) == models.PendingKind.MAINTENANCE_QUESTION.value
-               or "maintenance_question" in str(v) for hit in hits for v in hit), (
-        f"{CLAUSE}：事项类型必须记为 maintenance_question")
+    # 持久化行的内部状态名与读取模型枚举分层：C 的 PendingItemView 把 kind=ask 映射为
+    # PendingKind.MAINTENANCE_QUESTION；这里接受「内部 ask」或「读取模型枚举」两种表示，
+    # 真正面向用户的 kind/handler 由 API 契约测试（test_p2_d_api_pending）核对。
+    kinds = {str(value) for hit in hits for value in hit}
+    assert (models.PendingKind.MAINTENANCE_QUESTION.value in kinds
+            or "ask" in kinds), (
+        f"{CLAUSE}：ask 事项的类型必须可被识别为后台维护问题（实际 {kinds}）")
 
     # 同一事项已经等待回答：不重复催问
     before = len(list(conn.execute("SELECT * FROM maintenance_items")))

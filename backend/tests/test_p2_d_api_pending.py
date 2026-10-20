@@ -89,7 +89,7 @@ def _items(body):
     if isinstance(body, list):
         return body
     if isinstance(body, dict):
-        for key in ("items", "pending", "data", "results"):
+        for key in ("items", "pending", "data", "results", "batches"):
             value = body.get(key)
             if isinstance(value, list):
                 return value
@@ -328,8 +328,10 @@ async def test_restore_routes_go_through_runner(app_ctx):
                 "/api/memory/maintenance/restore/preview", params={"batch_id": "batch_api_1"})
             assert preview.status_code == 200, (
                 f"{CLAUSE}：恢复预览失败 {preview.status_code}: {preview.text[:300]}")
+            # 契约 §12.5：恢复是高影响动作，API 要求显式 confirm（防误触）
             restore = await client.post(
-                "/api/memory/maintenance/restore", json={"batch_id": "batch_api_1"})
+                "/api/memory/maintenance/restore",
+                json={"batch_id": "batch_api_1", "confirm": True})
             assert restore.status_code == 200, (
                 f"{CLAUSE}：执行恢复失败 {restore.status_code}: {restore.text[:300]}")
     finally:

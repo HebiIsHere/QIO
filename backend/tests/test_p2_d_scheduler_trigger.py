@@ -399,7 +399,10 @@ async def test_cross_restart_continues_turn_and_change_state(db_conn):
 
 
 async def test_stale_running_flag_is_recovered(db_conn):
-    """§12.3：持久化 running 标记 + 超时回收（崩溃遗留的 running 不能永久卡死）。"""
+    """§12.3：持久化 running 标记 + 超时回收（崩溃遗留的 running 不能永久卡死）。
+
+    回收后按失败处理（计一次失败 + 退避），处理位置不动；退避结束后必须能继续执行。
+    """
     _require_tables(db_conn)
     runner = FakeRunner()
     scheduler = _scheduler(db_conn, runner)
@@ -422,6 +425,19 @@ async def test_stale_running_flag_is_recovered(db_conn):
     db_conn.commit()
 
     _record_changes(db_conn, 20, prefix="kn_recover")
+    recovered = await scheduler.maybe_run()
+    reason = str(recovered.get("reason") or "") if isinstance(recovered, dict) else ""
+    assert runner.calls == 1, (
+        f"{CLAUSE}：过期 running 的回收轮本身不应把同一批变化再执行一次（reason={reason!r}）")
+    # 回收按失败记账（记一次失败 + 退避），不与成功轮混淆
+    assert any(token in reason for token in ("stale", "recover", "recovered")) or (
+        int(db_conn.execute(
+            "SELECT failed_attempts FROM knowledge_maintenance_state WHERE id = 1"
+        ).fetchone()["failed_attempts"]) >= 1), (
+        f"{CLAUSE}：running 超时回收必须如实记一次失败（reason={reason!r}）")
+
+    # 退避结束后必须能继续执行（默认 cooldown 5 个用户轮；这里用默认配置）
+    _turn(scheduler, 5, start=2)
     await scheduler.maybe_run()
     assert runner.calls == 2, (
-        f"{CLAUSE}：明显过期的 running 标记应被超时回收，下一轮必须能继续执行")
+        f"{CLAUSE}：超时回收 + 退避结束后，下一轮必须能继续执行积压变化")
