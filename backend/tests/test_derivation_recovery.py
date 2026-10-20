@@ -125,13 +125,15 @@ class _ScriptedAdapter:
         self.calls = {"summary": 0, "entities": 0, "knowledge": 0}
 
     async def complete(self, messages, tools, **kwargs) -> Completion:
+        from agent.prompts import PROMPTS
+
         first = messages[0]
         prompt = first["content"] if isinstance(first, dict) else first.content
         if "summarizing a closed conversation fragment" in prompt:
             key, payload = "summary", self.summary
-        elif "extracting durable knowledge" in prompt:
+        elif PROMPTS["KNOWLEDGE_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "knowledge", self.knowledge
-        elif "你是实体提炼器" in prompt:
+        elif PROMPTS["ENTITY_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "entities", self.entities
         else:
             raise AssertionError(f"未知提示词：{prompt[:40]!r}")
@@ -253,10 +255,16 @@ def test_prompt_states_the_length_and_count_limits():
     """上限要写进给模型的要求里：模型先自己收敛，本地截断只是兜底。"""
     for limit in (MAX_TITLE, MAX_SUMMARY, MAX_ENTITIES, MAX_KEYWORDS):
         assert str(limit) in SUMMARY_PROMPT, limit
-    assert str(MAX_CANDIDATES) in KNOWLEDGE_EXTRACTION_PROMPT
+    # Phase 1：知识抽取改成结构化任务（固定 system + 程序生成 schema / limits），
+    # 上限仍然来自 memory/limits.py 的同一组常量，并真的出现在给模型的内容里。
+    from agent.knowledge.extraction import knowledge_limits, knowledge_task_system
+
+    prompt = knowledge_task_system()
+    assert str(MAX_CANDIDATES) in prompt
     from agent.memory.summary import MAX_CANDIDATE_CONTENT
 
-    assert str(MAX_CANDIDATE_CONTENT) in KNOWLEDGE_EXTRACTION_PROMPT
+    assert str(MAX_CANDIDATE_CONTENT) in prompt
+    assert knowledge_limits()["max_candidates"] == MAX_CANDIDATES
 
 
 # ---------------------------------------------------------------------------

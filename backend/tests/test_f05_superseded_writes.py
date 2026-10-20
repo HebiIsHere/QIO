@@ -38,9 +38,13 @@ from agent.services.app import AppContext
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
+from agent.prompts import PROMPTS
+
 SUMMARY_MARKER = "summarizing a closed conversation fragment"
-ENTITY_MARKER = "你是实体提炼器"
-KNOWLEDGE_MARKER = "extracting durable knowledge"
+# Phase 1：实体 / 知识提炼改为固定 system（prompts.PROMPTS）+ 程序 schema，
+# 这里按固定文案本身的稳定前缀分派（不是全文快照断言）。
+ENTITY_MARKER = PROMPTS["ENTITY_EXTRACTION_SYSTEM"][:20]
+KNOWLEDGE_MARKER = PROMPTS["KNOWLEDGE_EXTRACTION_SYSTEM"][:20]
 
 
 def _summary_payload(title: str, summary: str, entities=None) -> str:

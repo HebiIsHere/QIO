@@ -291,6 +291,18 @@ onMounted(async () => {
         <template v-if="!editing">
           <p v-if="opened.summary" class="e-read-summary">{{ opened.summary }}</p>
           <p v-else class="hint">暂无摘要。</p>
+          <!-- Phase 1 C：身份与创建依据要可读（判断「这张卡是不是同一个对象」的依据）。 -->
+          <div v-if="opened.identity" class="field e-identity-field">
+            <span class="label">身份</span>
+            <p class="e-read-identity">{{ opened.identity }}</p>
+          </div>
+          <div v-if="opened.creation_reason" class="field e-creation-field">
+            <span class="label">创建依据</span>
+            <p class="e-read-creation">{{ opened.creation_reason }}</p>
+          </div>
+          <p v-if="opened.evidence_ids && opened.evidence_ids.length" class="hint e-evidence-count">
+            依据 {{ opened.evidence_ids.length }} 条
+          </p>
           <div class="field">
             <span class="label">别名</span>
             <div class="chips">

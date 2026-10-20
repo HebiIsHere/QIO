@@ -63,11 +63,13 @@ class _FakeAdapter:
     async def complete(self, messages, tools, **kwargs) -> Completion:
         first = messages[0]
         prompt = first["content"] if isinstance(first, dict) else first.content
+        from agent.prompts import PROMPTS
+
         if "summarizing a closed conversation fragment" in prompt:
             key, payload = "summary", self.summary
-        elif "extracting durable knowledge" in prompt:
+        elif PROMPTS["KNOWLEDGE_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "knowledge", self.knowledge
-        elif "实体" in prompt and "提炼" in prompt:
+        elif PROMPTS["ENTITY_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "entities", self.entities
         else:
             raise AssertionError(f"未知提示词：{prompt[:40]!r}")
