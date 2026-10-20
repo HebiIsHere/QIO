@@ -1513,5 +1513,28 @@ MIGRATIONS.append(
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 COMPENSATION_VERSION = 48
 
+# ── 阶段三（P3）：互动模式接入完整主循环（2026-10-21）──────────────────────────
+# 契约：docs/qio-refactor-contract.md §13.7。只追加，不改历史迁移语义。
+# 迁移 49（A 线）：提交—主循环 turn 绑定 / 等待事项 / 续作恢复。
+# 迁移 50（B 线）：意图版本与授权快照 / 权威操作账本。
+from agent.storage.migration_p3_a import MIGRATION as _P3_A_MIGRATION  # noqa: E402
+from agent.storage.migration_p3_b import MIGRATION as _P3_B_MIGRATION  # noqa: E402
+
+MIGRATIONS.append(_P3_A_MIGRATION)
+MIGRATIONS.append(_P3_B_MIGRATION)
+
+# 补偿入口（新，51）：迁移 48 的全部语句 + 49 + 50。
+MIGRATIONS.append(
+    (
+        51,
+        [stmt for target, stmts in MIGRATIONS if target == 48 for stmt in stmts]
+        + list(_P3_A_MIGRATION[1])
+        + list(_P3_B_MIGRATION[1]),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 51
+
 
 

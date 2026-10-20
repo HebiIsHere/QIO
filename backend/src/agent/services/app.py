@@ -463,13 +463,10 @@ class AppContext:
         # 阶段三契约 §13.6：互动板面专属工具。它们始终注册在注册表里（便于服务端
         # 拒绝越权调用），但普通模式的模型消息里不出现（turn_orchestrator 过滤 specs）；
         # 工具自身还要求 interactive/runtime.py 里程序验证过的板面绑定。
-        try:
-            from agent.interactive.board_tools import build_board_tools
+        from agent.interactive.board_tools import build_board_tools
 
-            for board_tool in build_board_tools(self):
-                self.registry.register(board_tool)
-        except ImportError:  # PHASE3-INTEGRATION-TODO: B 的 board_tools 合入后由 Lead 删除回退
-            logger.info("interactive board tools not available yet")
+        for board_tool in build_board_tools(self):
+            self.registry.register(board_tool)
         self._notify_turn = False
         # 上一次宣告过的适配档位：正常状态不制造噪声，只有档位变化才广播
         self._announced_mode: str | None = None

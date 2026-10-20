@@ -249,6 +249,20 @@ class TurnContext:
     # 本轮**真正绑定**的附件 id（F04）：去重命中时重试方必须拿到原请求的真实绑定结果，
     # 而不是重新绑定或凭空推断。
     bound_attachment_ids: list[str] | None = None
+    # 阶段三（契约 §13.3）：互动模式的**程序绑定事实**。由提交受理 / 聊天请求绑定写入，
+    # 模型不可覆盖；Lead 的接线读取它们选择模式规则、板面上下文与工具可见性。
+    # 普通对话保持默认值（mode="normal"），不设置任何板面身份。
+    mode: str = "normal"
+    board_id: str = ""
+    board_submission_id: str = ""
+    board_topic_id: str = ""
+    board_resume: bool = False
+    board_intent_ids: tuple[str, ...] = ()
+    board_resolved_question_ids: tuple[str, ...] = ()
+    # 附加字段（Lead 按 getattr 兼容）：这次续作是第几次尝试（1 = 首次提交轮）。
+    board_attempt: int = 1
+    # 本轮由 board_wait_for_input 交付、由程序在轮末呈现一次的问题（Lead 接线写入）。
+    board_delivered_questions: list[dict] = field(default_factory=list)
 
 
 class TurnManager:

@@ -194,6 +194,18 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   const submissions = ref<SubmissionRecord[]>([]);
   const lastSubmission = ref<SubmissionResult | null>(null);
+  /**
+   * 阶段三（契约 §13.3）：聊天发送的互动绑定。
+   *
+   * 互动模式的每条聊天消息都带 mode=interactive + boardId；有当前提交（等待回答 /
+   * 续作）时带 submissionId，服务端据此把这一轮绑定为**原提交的续作**，并从 waiting
+   * 恢复原话题与已等待问题；普通聊天不经过这个 store，因此不带板面身份。
+   */
+  const chatBinding = computed(() => ({
+    mode: "interactive" as const,
+    boardId: boardId.value,
+    submissionId: lastSubmission.value?.submission?.id ?? undefined,
+  }));
 
   const submitStatus = ref<SubmitStatus>("idle");
   const submitError = ref<string | null>(null);
@@ -4306,6 +4318,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     lastOpLabel,
     submissions,
     lastSubmission,
+    /** 阶段三：聊天发送要携带的互动绑定（mode/boardId/submissionId） */
+    chatBinding,
     submitStatus,
     submitError,
     /** 四种状态分开的合成视图（受理 / 理解中 / 理解完成三态 / 提交失败） */
