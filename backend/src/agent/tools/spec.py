@@ -13,6 +13,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from agent import prompts
+
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 # 入口写法：`包.模块:函数`（多文件项目里入口写在模块里，而不是 code 字符串里）。
 _ENTRY_RE = re.compile(
@@ -159,20 +161,6 @@ def validate_tool_proposal(text: str) -> tuple[ToolProposal | None, str | None]:
     return proposal, None
 
 
-TOOL_PROPOSAL_PROMPT = (
-    "You are designing a new tool for an agent. The user wants a concrete capability. "
-    "Return only a single JSON object, no prose or Markdown fences:\n"
-    "{\n"
-    '  "explanation": "<why this tool is needed and what it does, for the user review>",\n'
-    '  "tool": {\n'
-    '    "name": "<snake_case name>",\n'
-    '    "description": "<one-line description for the agent>",\n'
-    '    "parameters": {<JSON Schema object>},\n'
-    '    "code": "<python function body: def run(**kwargs) -> dict, pure, deterministic, no network, no secrets>",\n'
-    '    "tool_type": "function",\n'
-    '    "sync": true,\n'
-    '    "tests": [{"name": "<case name>", "input": {...}, "expect": {...}}]\n'
-    "  }\n"
-    "}\n"
-    "Rules: code must be deterministic, side-effect free, and safe in a sandbox; tests must cover representative inputs."
-)
+# 提示词正文的唯一来源是 agent/prompts.py（Phase 1 契约 §2）。
+# 旧符号保留为薄引用：只指向同一来源，不再保留另一份正文。
+TOOL_PROPOSAL_PROMPT = prompts.TOOL_PROPOSAL_SYSTEM

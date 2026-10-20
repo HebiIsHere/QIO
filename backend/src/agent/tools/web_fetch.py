@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from agent import prompts
 from agent.tools.base import Tool, ToolResult
 
 USER_AGENT = (
@@ -48,16 +49,18 @@ async def _fetch(url: str, timeout: float = 15.0) -> tuple[int, str]:
 
 class WebFetchTool(Tool):
     name = "web_fetch"
-    description = (
-        "抓取指定网址并提取正文纯文本，供 agent 阅读。"
-        "url 必填，max_chars 可选（默认 15000，上限 40000）。"
-        "不会抓取需登录/验证的内容；失败时给出原因，不编造正文。"
-    )
+    description = prompts.TOOL_DESCRIPTIONS["web_fetch"]
     parameters = {
         "type": "object",
         "properties": {
-            "url": {"type": "string", "description": "目标网址"},
-            "max_chars": {"type": "integer", "description": "正文预算字符数，默认 15000"},
+            "url": {
+                "type": "string",
+                "description": prompts.argument_description("web_fetch", "url"),
+            },
+            "max_chars": {
+                "type": "integer",
+                "description": prompts.argument_description("web_fetch", "max_chars"),
+            },
         },
         "required": ["url"],
     }

@@ -6,12 +6,13 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from agent import prompts
 from agent.adapters.base import AdapterMode, ToolSpec
 
 PING_TOOLS = [
     ToolSpec(
-        name="ping",
-        description="Returns pong. Used for capability probing.",
+        name=prompts.PROBE_TOOL_NAME,
+        description=prompts.PROBE_TOOL_DESCRIPTION_WITH_PURPOSE,
         parameters={"type": "object", "properties": {}},
     )
 ]
@@ -75,13 +76,13 @@ async def _probe_uncached(client: Any, model: str) -> ProbeResult:
     try:
         await client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": "ping"}],
+            messages=[{"role": "user", "content": prompts.PROBE_MESSAGE}],
             tools=[
                 {
                     "type": "function",
                     "function": {
-                        "name": "ping",
-                        "description": "Returns pong.",
+                        "name": prompts.PROBE_TOOL_NAME,
+                        "description": prompts.PROBE_TOOL_DESCRIPTION,
                         "parameters": {"type": "object", "properties": {}},
                     },
                 }

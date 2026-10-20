@@ -619,13 +619,15 @@ async def probe_anthropic(
         from agent.credentials.usage import bind_request_accounting
 
         bind_request_accounting(adapter, accounting_store)
+    from agent import prompts
+
     try:
         completion = await adapter.complete(
-            [ChatMessage(role="user", content="ping")],
+            [ChatMessage(role="user", content=prompts.PROBE_MESSAGE)],
             [
                 ToolSpec(
-                    name="ping",
-                    description="Returns pong.",
+                    name=prompts.PROBE_TOOL_NAME,
+                    description=prompts.PROBE_TOOL_DESCRIPTION,
                     parameters={"type": "object", "properties": {}},
                 )
             ],

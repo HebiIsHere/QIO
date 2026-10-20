@@ -1,4 +1,4 @@
-﻿"""Subagent runtime tool: standalone loop with own model/key.
+"""Subagent runtime tool: standalone loop with own model/key.
 
 sync=true waits for completion; sync=false submits a background task via
 the TaskManager and returns a pending handle. Results are never truncated:
@@ -12,6 +12,7 @@ import json
 import uuid
 from typing import Any, Awaitable, Callable
 
+from agent import prompts
 from agent.prompts import (
     SUBAGENT_PROMPT,
     SUBAGENT_RESULT_LONG,
@@ -164,9 +165,18 @@ class AwaitTaskTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "子任务 id"},
-            "notify": {"type": "boolean", "description": "是否注册完成唤起，默认 false"},
-            "timeout": {"type": "integer", "description": "等待秒数，默认 120"},
+            "task_id": {
+                "type": "string",
+                "description": prompts.argument_description("await_task", "task_id"),
+            },
+            "notify": {
+                "type": "boolean",
+                "description": prompts.argument_description("await_task", "notify"),
+            },
+            "timeout": {
+                "type": "integer",
+                "description": prompts.argument_description("await_task", "timeout"),
+            },
         },
         "required": ["task_id"],
     }
@@ -209,9 +219,18 @@ class ReadTaskResultTool(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "task_id": {"type": "string", "description": "子任务 id"},
-            "offset": {"type": "integer", "description": "起始位置，默认 0"},
-            "limit": {"type": "integer", "description": "读取长度，默认 4000，上限 4000"},
+            "task_id": {
+                "type": "string",
+                "description": prompts.argument_description("read_task_result", "task_id"),
+            },
+            "offset": {
+                "type": "integer",
+                "description": prompts.argument_description("read_task_result", "offset"),
+            },
+            "limit": {
+                "type": "integer",
+                "description": prompts.argument_description("read_task_result", "limit"),
+            },
         },
         "required": ["task_id"],
     }
