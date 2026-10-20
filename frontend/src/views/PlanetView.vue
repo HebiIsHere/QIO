@@ -18,6 +18,7 @@ import { useActionFeedback } from "../composables/useActionFeedback";
 import QInput from "../components/ui/QInput.vue";
 import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
 import EntityPanel from "../components/planet/EntityPanel.vue";
+import MemoryPendingPanel from "../components/planet/MemoryPendingPanel.vue";
 import { useUiStore } from "../stores/ui";
 import { prefersReducedMotion } from "../utils/motion";
 import { CSS_SETTLE_FALLBACK, easePointsFromCssValue, evalCubicBezier } from "../utils/easing";
@@ -654,8 +655,8 @@ const loadErrorDetail = ref("");
 const dataLoading = ref(false);
 /** 右侧话题边栏：默认收起；点击话题点/展开按钮展开，点击收起按钮收起 */
 const panelOpen = ref(false);
-/** 面板页签：话题 / 知识 / 实体；知识/实体页签自动进入管理模式（面板 640px 宽） */
-const activeTab = ref<"topic" | "knowledge" | "entity">("topic");
+/** 面板页签：话题 / 知识 / 实体 / 待确认；知识/实体/待确认页签自动进入管理模式（面板 640px 宽） */
+const activeTab = ref<"topic" | "knowledge" | "entity" | "memory">("topic");
 const manageMode = ref(false);
 /** 实体页签挂载后按 node_id 自动打开的实体卡 */
 const entityOpenId = ref("");
@@ -1511,8 +1512,8 @@ async function startHere() {
   await close();
 }
 
-/* ---- 星球记忆中心：三页签 + 管理模式 + 与知识/实体面板联动 ---- */
-function switchTab(tab: "topic" | "knowledge" | "entity") {
+/* ---- 星球记忆中心：四页签 + 管理模式 + 与知识/实体面板联动 ---- */
+function switchTab(tab: "topic" | "knowledge" | "entity" | "memory") {
   activeTab.value = tab;
   manageMode.value = tab !== "topic";
   entityOpenId.value = "";
@@ -1823,6 +1824,7 @@ async function close() {
           <button class="tab tab-topic" :class="{ active: activeTab === 'topic' }" @click="switchTab('topic')">话题</button>
           <button class="tab tab-knowledge" :class="{ active: activeTab === 'knowledge' }" @click="switchTab('knowledge')">知识</button>
           <button class="tab tab-entity" :class="{ active: activeTab === 'entity' }" @click="switchTab('entity')">实体</button>
+          <button class="tab tab-memory" :class="{ active: activeTab === 'memory' }" @click="switchTab('memory')">待确认</button>
           <span class="spacer"></span>
           <button class="mode-btn" @click="toggleManageMode">{{ manageMode ? "✕ 管理模式" : "管理模式" }}</button>
         </div>
@@ -2086,6 +2088,7 @@ async function close() {
           </div>
         </template>
         <KnowledgePanel v-else-if="activeTab === 'knowledge'" @focus-topic="focusTopicFromPanel" />
+        <MemoryPendingPanel v-else-if="activeTab === 'memory'" />
         <EntityPanel v-else :open-by-node-id="entityOpenId" />
       </div>
     </aside>
