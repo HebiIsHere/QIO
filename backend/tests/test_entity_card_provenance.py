@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agent import prompts
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -71,6 +73,22 @@ async def _run(ctx: AppContext, message: str, topic_id: str) -> str:
     return "\n".join(adapter.prompts)
 
 
+def _entity_entries(prompt: str) -> list[dict]:
+    """取本轮 system 里的结构化实体块（契约 §3.4：标签 + JSON 数据，不是预拼中文文本）。"""
+    heading = "【" + prompts.CONTEXT_LABELS["entity"] + "】"
+    assert heading in prompt, "实体上下文块缺失（应使用 prompts.CONTEXT_LABELS 的标签）"
+    tail = prompt.split(heading, 1)[1].lstrip()
+    data, _ = json.JSONDecoder().raw_decode(tail)
+    return list(data.get("entries") or [])
+
+
+def _entity_entry(prompt: str, name: str) -> dict:
+    for entry in _entity_entries(prompt):
+        if entry.get("name") == name:
+            return entry
+    raise AssertionError(f"结构化实体块里没有 {name!r}：{_entity_entries(prompt)!r}")
+
+
 async def test_card_from_another_topic_is_marked_reference_only(ctx: AppContext):
     other = ctx.topics.nodes.create_topic("别的话题").id
     current = ctx.topics.nodes.create_topic("当前话题").id
@@ -78,10 +96,23 @@ async def test_card_from_another_topic_is_marked_reference_only(ctx: AppContext)
 
     prompt = await _run(ctx, "QIO 前端现在做到哪了？", current)
 
-    assert "【实体·QIO 前端】" in prompt
-    assert "来自其他话题" in prompt
-    assert "只作参考" in prompt
-    assert "别的话题" in prompt, "要点名来源话题，用户才看得出这是别处的结论"
+    # Phase 1 §3.4：实体卡以结构化上下文块进入 system（固定标签 + JSON 数据），
+    # 来源与适用范围用程序字段表达（scope.type / topic_ids），不再拼「【实体·…】」中文正文。
+    entry = _entity_entry(prompt, "QIO 前端")
+    assert entry["kind"] == "entity_card"
+    assert entry["summary"] == "一句话摘要"
+    assert {
+        "key": "状态",
+        "value": "进行中",
+    }.items() <= next(
+        (a for a in entry["attributes"] if a.get("key") == "状态"), {}
+    ).items()
+    assert entry["scope"]["type"] == "other_topic", (
+        "契约：其他话题的实体卡必须标成仅参考（结构化 scope.type=other_topic）"
+    )
+    assert other in entry["scope"]["topic_ids"], (
+        "来源话题必须可追溯（scope.topic_ids 里要有点名来源话题的 id）"
+    )
 
 
 async def test_card_of_the_current_topic_has_no_reference_note(ctx: AppContext):
@@ -90,8 +121,12 @@ async def test_card_of_the_current_topic_has_no_reference_note(ctx: AppContext):
 
     prompt = await _run(ctx, "QIO 前端现在做到哪了？", current)
 
-    assert "【实体·QIO 前端】" in prompt
-    assert "只作参考" not in prompt
+    entry = _entity_entry(prompt, "QIO 前端")
+    assert entry["scope"]["type"] == "topic", "当前话题的实体卡不应标成其他话题"
+    assert entry["scope"]["topic_ids"] == [current]
+    assert all(
+        item.get("scope", {}).get("type") != "other_topic" for item in _entity_entries(prompt)
+    ), "当前话题的实体卡不应出现其他话题的参考标记"
 
 
 async def test_card_without_topic_is_marked_unknown(ctx: AppContext):
@@ -100,5 +135,6 @@ async def test_card_without_topic_is_marked_unknown(ctx: AppContext):
 
     prompt = await _run(ctx, "无归属的卡是什么？", current)
 
-    assert "【实体·无归属的卡】" in prompt
-    assert "来源未知" in prompt
+    entry = _entity_entry(prompt, "无归属的卡")
+    assert entry["scope"]["type"] == "unknown", "没有话题归属的实体卡必须标成来源未知"
+    assert entry["scope"]["topic_ids"] == []

@@ -44,6 +44,11 @@ def _summary(title: str = "标题", summary: str = "摘要", *, entities=None, k
     )
 
 
+def _scripted_summaries(count: int, prefix: str = "分段") -> list[StreamScript]:
+    """足够多的合法摘要响应：分段摘要 + 逐层合并都会各消耗一次模型调用。"""
+    return [StreamScript(text=_summary(title=f"{prefix}{index}")) for index in range(count)]
+
+
 def _prompt_of(adapter: FakeStreamAdapter, index: int = 0) -> str:
     request = adapter.requests[index]
     messages = request["messages"]
@@ -79,10 +84,13 @@ async def test_closed_summary_covers_head_and_tail_of_long_transcript():
         {"id": "m_0002", "role": "assistant", "content": middle},
         {"id": "m_0003", "role": "user", "content": tail},
     ]
-    adapter = FakeStreamAdapter([StreamScript(text=_summary())])
+    # 契约 §5 要求分段摘要 + 合并；每段/每次合并都是一次模型调用，脚本必须够用。
+    adapter = FakeStreamAdapter(_scripted_summaries(120))
     outcome = await summarize_fragment_outcome(adapter, messages)
     assert outcome.value is not None, f"摘要校验失败：{outcome.error}"
-    prompt = _prompt_of(adapter)
+    prompt = "\n".join(
+        _prompt_of(adapter, index) for index in range(len(adapter.requests))
+    )
     for sentinel in ("HEAD_SENTINEL_9d2", "MIDDLE_SENTINEL_9d2", "TAIL_SENTINEL_9d2"):
         assert sentinel in prompt, (
             "契约 §5：封块摘要只取了部分片段（开头/中间/结尾之一丢失），"
@@ -104,8 +112,7 @@ async def test_long_transcript_is_segmented_and_mergeable():
                 "content": sentinel + "：" + "内容" * 3000,
             }
         )
-    scripts = [StreamScript(text=_summary(title=f"分段{index}")) for index in range(8)]
-    adapter = FakeStreamAdapter(scripts)
+    adapter = FakeStreamAdapter(_scripted_summaries(400))
     outcome = await summarize_fragment_outcome(adapter, messages)
     assert outcome.value is not None, f"摘要校验失败：{outcome.error}"
     prompts_text = "\n".join(_prompt_of(adapter, i) for i in range(len(adapter.requests)))

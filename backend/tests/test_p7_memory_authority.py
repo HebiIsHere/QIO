@@ -10,10 +10,12 @@ newer, unrelated chatter.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agent import prompts
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -48,6 +50,16 @@ class _CapturingAdapter:
     @property
     def first_request(self) -> str:
         return self.calls[0]
+
+
+def _knowledge_contents(prompt: str) -> list[str]:
+    """结构化 knowledge 块里的条目正文（契约 §3.4：标签 + JSON 数据）。"""
+    heading = "【" + prompts.CONTEXT_LABELS["knowledge"] + "】"
+    if heading not in prompt:
+        return []
+    tail = prompt.split(heading, 1)[1].lstrip()
+    data, _ = json.JSONDecoder().raw_decode(tail)
+    return [str(entry.get("content") or "") for entry in data.get("entries") or []]
 
 
 def _activate(ks: KnowledgeService, item_id: str) -> None:
@@ -99,7 +111,7 @@ async def test_superseded_decision_is_not_presented_as_current(ctx: AppContext):
     prompt = adapter.first_request
     assert "SQLite" in prompt, prompt
     # the revoked plan must not be injected as current knowledge
-    knowledge_lines = [ln for ln in prompt.splitlines() if ln.startswith("[知识·")]
+    knowledge_lines = _knowledge_contents(prompt)
     assert knowledge_lines, prompt
     # the *superseded statement* must not be injected as current knowledge.
     # (The newer line may legitimately mention PostgreSQL to say it was dropped.)

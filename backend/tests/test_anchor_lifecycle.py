@@ -10,11 +10,13 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 
 import pytest
 
+from agent import prompts
 from agent.adapters.base import ChatMessage, Completion
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -140,7 +142,19 @@ async def test_start_here_focus_injected_next_turn(ctx: AppContext, monkeypatch)
     assert result["ok"] is True
     assert adapter.prompts, "turn 必须真正调用过模型"
     assert payload in adapter.prompts[0], "StartHere 选中的片段必须进入本轮 Focus"
-    assert "聚焦片段" in adapter.prompts[0]
+    # 契约 §3.4：Focus 以结构化 history_focus 块进入 system（固定标签 + JSON 数据），
+    # 不再拼「【聚焦片段·…】」中文正文；这里核对块里的片段身份与原文仍然真实存在。
+    heading = "【" + prompts.CONTEXT_LABELS["history_focus"] + "】"
+    assert heading in adapter.prompts[0], "StartHere 必须生成 history_focus 结构化上下文块"
+    data, _ = json.JSONDecoder().raw_decode(
+        adapter.prompts[0].split(heading, 1)[1].lstrip()
+    )
+    assert data.get("fragment_id") == frag
+    focus_texts = [
+        str(entry.get("content") or "")
+        for entry in [*data.get("head", []), *data.get("tail", [])]
+    ]
+    assert any(payload in text for text in focus_texts)
 
 
 # -- Case 2: 成功一轮后位置推进，不再每轮重复同一历史片段 ----------------

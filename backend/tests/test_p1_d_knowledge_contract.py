@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from agent.knowledge.extraction import (
     extract_knowledge_candidates_outcome,
     validate_knowledge,
 )
+from agent.knowledge.evidence import EvidenceCatalog
 from agent.knowledge.lifecycle import KnowledgeService
 from agent.memory.contract import FragmentSummary
 from agent.services.app import AppContext
@@ -59,6 +62,48 @@ def _spec(ctx: AppContext, name: str):
     return next((spec for spec in ctx.registry.specs() if spec.name == name), None)
 
 
+def _prompts_string_values() -> set[str]:
+    """prompts.py 暴露的全部固定文本（模块字符串常量 + 四个冻结映射的值）。
+
+    说明：源码里相邻字符串字面量会被 Python 拼接，运行时正文未必能按原文在源码中
+    连续匹配；因此判据用「运行时值来自 prompts.py 的固定常量」而不是源码 substring。
+    """
+    values: set[str] = set()
+    for name in dir(prompts):
+        value = getattr(prompts, name)
+        if isinstance(value, str):
+            values.add(value)
+    for mapping in (
+        prompts.PROMPTS,
+        prompts.TOOL_DESCRIPTIONS,
+        prompts.ARGUMENT_DESCRIPTIONS,
+        prompts.CONTEXT_LABELS,
+    ):
+        values.update(value for value in mapping.values() if isinstance(value, str))
+    return values
+
+
+def _module_string_literals(path: str | None) -> set[str]:
+    """模块源码里出现的字符串字面量（AST 会折叠相邻字面量，便于查正文副本）。"""
+    if not path:
+        return set()
+    try:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return set()
+    return {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+
+
+def _tool_module_source_path(ctx: AppContext, name: str) -> str | None:
+    tool = ctx.registry._tools.get(name)  # noqa: SLF001 - 只读诊断
+    module = inspect.getmodule(tool) if tool is not None else None
+    return getattr(module, "__file__", None)
+
+
 def _walk_enums(node) -> list[list]:
     found = []
     if isinstance(node, dict):
@@ -81,11 +126,6 @@ def _has_additional_properties_false(node) -> bool:
     if isinstance(node, list):
         return any(_has_additional_properties_false(value) for value in node)
     return False
-
-
-def _prompts_source_text() -> str:
-    """prompts.py 的源码文本：用于核对「工具描述正文只能来自 prompts.py」。"""
-    return Path(prompts.__file__).read_text(encoding="utf-8")
 
 
 def _knowledge_states(conn, content: str) -> list[str]:
@@ -129,8 +169,9 @@ def test_all_registered_tool_descriptions_come_from_frozen_source(ctx: AppContex
     裁决：
     * 冻结词典 TOOL_DESCRIPTIONS 里的工具：description 必须与 TOOL_DESCRIPTIONS[name] 逐字一致；
     * 其余工具（await_task / read_task_result / create_tool / dev_* / declare_completion 等）：
-      正文可以是 prompts.py 里的独立常量（如既有 TOOL_*_DESC），但不得留在工具模块里
-      —— 判据是「这段描述文本出现在 prompts.py 源码中」。
+      正文可以是 prompts.py 里的独立常量（如既有 TOOL_*_DESC），但不得留在工具模块里。
+      判据：运行时 description 逐字等于 prompts.py 暴露的某个固定文本；
+      且该正文不得再以字符串字面量出现在工具模块源码里（不是模块自写副本）。
     """
     specs = {spec.name: spec for spec in ctx.registry.specs()}
     mismatch = sorted(
@@ -143,18 +184,32 @@ def test_all_registered_tool_descriptions_come_from_frozen_source(ctx: AppContex
         "契约 §2.1/§2.3（冻结词典部分）：这些工具的 description 与 TOOL_DESCRIPTIONS[name] "
         f"不是逐字一致：{mismatch}"
     )
-    prompts_source = _prompts_source_text()
-    not_in_prompts_source = sorted(
+
+    prompt_values = _prompts_string_values()
+    not_from_prompts = sorted(
         name
         for name, spec in specs.items()
         if name not in prompts.TOOL_DESCRIPTIONS
         and (spec.description or "").strip()
-        and (spec.description or "") not in prompts_source
+        and spec.description not in prompt_values
     )
-    assert not not_in_prompts_source, (
-        "契约 §2.1/§2.3（其余工具部分）：这些已注册工具的描述既不在 TOOL_DESCRIPTIONS，"
-        "也不在 prompts.py 源码中（正文仍留在工具模块里，不是单一来源）："
-        f"{not_in_prompts_source}"
+    assert not not_from_prompts, (
+        "契约 §2.1/§2.3（其余工具部分）：这些已注册工具的 description 不等于 prompts.py "
+        "暴露的任何固定文本（正文不是来自 prompts.py 的单一常量）："
+        f"{not_from_prompts}"
+    )
+
+    duplicated_in_tool_module = sorted(
+        name
+        for name, spec in specs.items()
+        if name not in prompts.TOOL_DESCRIPTIONS
+        and (spec.description or "").strip()
+        and spec.description
+        in _module_string_literals(_tool_module_source_path(ctx, name))
+    )
+    assert not duplicated_in_tool_module, (
+        "契约 §2.1/§2.3（其余工具部分）：这些工具的描述正文同时以字面量留在工具模块源码里"
+        f"（另一份副本，不是单一来源）：{duplicated_in_tool_module}"
     )
 
 
@@ -518,8 +573,14 @@ async def test_entity_extraction_uses_frozen_prompt_and_new_schema():
     adapter = FakeStreamAdapter(
         [StreamScript(text=json.dumps(model_output, ensure_ascii=False))]
     )
+    # 证据目录由程序拥有；测试构造一条真实存在的 fragment id（模型只能引用目录里的 id）。
+    catalog = EvidenceCatalog.from_entries(
+        [{"id": "frag_777", "kind": "fragment", "label": "测试片段"}]
+    )
     outcome = await extract_entity_cards_outcome(
-        adapter, [{"id": "m_1", "role": "user", "content": "我家的鹅叫大白"}]
+        adapter,
+        [{"id": "m_1", "role": "user", "content": "我家的鹅叫大白"}],
+        evidence_catalog=catalog,
     )
     assert outcome.value, f"契约 §6.4：实体提炼输出被丢弃；失败原因={outcome.error!r}"
     prompt = "\n".join(str(m.content or "") for m in adapter.requests[0]["messages"])

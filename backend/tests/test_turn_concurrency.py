@@ -37,10 +37,15 @@ class _SlowAdapter:
     async def complete(self, messages, tools, **kwargs):
         self._running += 1
         self.peak = max(self.peak, self._running)
-        content = messages[0].content if messages else ""
+        # 契约 §3.6：当前用户原文是请求里最后一条 user 消息（上下文在 system 侧）；
+        # 不再用「【用户消息】」标题拼接，所以按结构化消息角色取当前 query。
+        current = ""
+        for message in reversed(messages):
+            if getattr(message, "role", None) == "user":
+                current = message.content or ""
+                break
         for tag in ("A", "B", "C"):
-            # 当前 query 是 prompt 末尾的「用户消息」；历史里也可能含其它 tag
-            if (content or "").rstrip().endswith(f"唯一{tag}"):
+            if current.rstrip().endswith(f"唯一{tag}"):
                 self.order.append(tag)
         await asyncio.sleep(0.02)
         self._running -= 1

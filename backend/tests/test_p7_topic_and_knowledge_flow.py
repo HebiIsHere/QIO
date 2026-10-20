@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agent import prompts
 from agent.adapters.base import ChatMessage, Completion, ToolCall
 from agent.api.bus import EventBus
 from agent.config import Settings
@@ -116,10 +118,20 @@ async def test_topic_graph_navigation_flow(ctx: AppContext):
 # -- scenario 7: knowledge lifecycle gate ------------------------------------
 
 
+def _knowledge_contents(prompt: str) -> list[str]:
+    """结构化 knowledge 块里的条目正文（契约 §3.4：标签 + JSON 数据，不是「[知识·…]」文本）。"""
+    heading = "【" + prompts.CONTEXT_LABELS["knowledge"] + "】"
+    if heading not in prompt:
+        return []
+    tail = prompt.split(heading, 1)[1].lstrip()
+    data, _ = json.JSONDecoder().raw_decode(tail)
+    return [str(entry.get("content") or "") for entry in data.get("entries") or []]
+
+
 async def _injected_knowledge_lines(ctx: AppContext, topic: str, text: str) -> list[str]:
     adapter = _ScriptedAdapter()
     await _run(ctx, adapter, text, topic)
-    return [ln for ln in adapter.last_request.splitlines() if ln.startswith("[知识·")]
+    return _knowledge_contents(adapter.last_request)
 
 
 async def test_only_active_knowledge_reaches_injection(ctx: AppContext):
