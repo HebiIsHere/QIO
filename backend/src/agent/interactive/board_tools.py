@@ -650,7 +650,7 @@ class BoardWaitForInputTool(_BoardTool):
         persisted = False
         waiting_id = None
         unavailable = False
-        # TEMP-P3-INTEGRATION：A 的等待持久化（迁移 49）；不可用时如实降级。
+        # 等待持久化（迁移 49，A 的 submission.get_waiting）；读取失败如实上抛。
         try:
             from agent.interactive import submission as submission_mod
 

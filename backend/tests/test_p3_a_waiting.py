@@ -244,13 +244,19 @@ def test_waiting_survives_reconnect(tmp_path):
 
 
 def test_missing_waiting_table_raises_instead_of_faking_none(tmp_path):
-    """迁移 49 未应用时：读函数如实抛 sqlite3.Error（B 的完成核对据此降级）。"""
+    """等待表缺失时：读函数如实抛 sqlite3.Error，不伪装成「没有等待」。
+
+    整合前提变化：迁移 49 已登记进 schema.py，全新库一定带 board_waiting；
+    这里显式删表来模拟「迁移半截 / 表被手工破坏」的降级现场。
+    """
     from agent.storage.db import connect
     from agent.storage.migrate import apply_migrations
 
     conn = connect(tmp_path / "no_p3a.db")
     try:
-        apply_migrations(conn)  # 只到冻结基线（未登记 49）
+        apply_migrations(conn)
+        conn.execute("DROP TABLE board_waiting")
+        conn.commit()
         with pytest.raises(sqlite3.Error):
             submission.get_waiting(conn, BOARD)
         with pytest.raises(sqlite3.Error):

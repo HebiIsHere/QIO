@@ -662,6 +662,16 @@ export const api = {
      * abort 只是客户端行为，不能当后端证据 —— 所以准备标识必须随请求发给后端。
      */
     prepareId?: string,
+    /**
+     * 阶段三契约 §13.3：互动模式的可验证绑定（mode=interactive + boardId，可选
+     * submissionId 表示续作原提交）。服务端核对板面 / 提交归属后才写入 TurnContext；
+     * 普通聊天不传这个参数 —— 请求体里就没有这些字段，行为与旧客户端完全一致。
+     */
+    interactive?: {
+      mode: "interactive" | "normal";
+      boardId?: string;
+      submissionId?: string;
+    },
   ) => {
       // 请求身份（幂等键）：发送方在调用前用 setNextSendRequestId 挂上，这里取走。
       // 同一次发送动作（含重试）永远复用同一个 id —— 后端据此保证幂等命中也回 200、
@@ -679,6 +689,12 @@ export const api = {
       topic_id: string | null;
       /** true = 这个 client_request_id 之前已受理过：这是同一次发送的回执，不是新一轮 */
       deduplicated?: boolean;
+      /** 阶段三：这次发送的互动绑定事实（普通模式不带） */
+      mode?: string;
+      board_id?: string;
+      submission_id?: string;
+      resume?: boolean;
+      attempt?: number;
       /** 本轮真实绑定到的附件（受理回执；前端以它为准） */
       bound_attachment_ids?: string[];
       /** 旧形状的回执：真实绑定到的附件 payload（id 就是事实） */
@@ -718,6 +734,10 @@ export const api = {
         // 后端于是走旧客户端兜底，把话题下的遗留附件绑到这条纯文字消息上（审计问题 3）。
         // 只有完全没传这个参数（undefined）才省略字段：那是真正的旧客户端路径。
         ...(attachmentIds === undefined ? {} : { attachment_ids: attachmentIds }),
+        // 阶段三：互动模式身份（服务端会核对板面存在 / 提交属于该板面；model 无法伪造）
+        ...(interactive?.mode ? { mode: interactive.mode } : {}),
+        ...(interactive?.boardId ? { boardId: interactive.boardId } : {}),
+        ...(interactive?.submissionId ? { submissionId: interactive.submissionId } : {}),
       }),
     });
   },

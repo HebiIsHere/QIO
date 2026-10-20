@@ -1098,6 +1098,13 @@ async function submit() {
       payload,
       sentAttachments.map((item) => item.id),
       sentAttachments,
+      {
+        /**
+         * 阶段三契约 §13.3：互动悬浮聊天发出的消息携带可验证的互动绑定。
+         * 服务端核对板面存在 / 提交归属后写入 TurnContext；演示或普通聊天不会走到这里。
+         */
+        interactive: store.chatBinding,
+      },
     );
     if (ok) {
       // 发送成功：这些附件已经跟着这条消息走了，不许跟着下一条再发一次

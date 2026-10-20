@@ -121,8 +121,11 @@ async def test_propose_via_tool_and_fake_submission_rejected(env):
         assert result.data["requires_confirmation"] is True
 
 
-async def test_wait_for_input_delivers_question_once_and_degrades_honestly(env):
+async def test_wait_for_input_delivers_question_once_and_persists(env):
     conn, _app, tools, _card, _hidden = env
+    # 整合前提变化：A 的等待持久化模块已合入，问题必须真实落库（不再降级）。
+    from agent.interactive import submission as submission_mod
+
     with bound(board_id=BOARD, submission_id=SUBMISSION):
         runtime.clear_delivered_questions()
         result = await tools["board_wait_for_input"].run(
@@ -131,7 +134,14 @@ async def test_wait_for_input_delivers_question_once_and_degrades_honestly(env):
         assert result.ok is True
         assert result.status == "awaiting_input"
         assert result.data["question_delivered"] is True
-        assert result.data["waiting_unavailable"] is True
+        assert result.data["waiting_unavailable"] is False
+        assert result.data["persisted"] is True
+        assert result.data["waiting_id"]
+        waiting = submission_mod.get_waiting(
+            conn, BOARD, submission_id=SUBMISSION
+        )
+        assert waiting is not None
+        assert waiting["items"][0]["question"] == "你希望整理成哪种格式？"
         delivered = runtime.take_delivered_questions()
         assert delivered and delivered[-1]["question"] == "你希望整理成哪种格式？"
 
