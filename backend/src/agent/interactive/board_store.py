@@ -19,7 +19,7 @@ save_board 返回 {"seq", "savedAt", "state", "pending"}：
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from typing import Any, Mapping
 
 from agent.interactive import board, models, text_migration
 
@@ -577,4 +577,137 @@ def save_draft(
         "blockedRemovals": sorted(blocked),
         "mode": "patch" if explicit_patch else "replace",
         "legacyReplace": not explicit_patch,
+    }
+
+# ---------------------------------------------------------------------------
+# 阶段三：对象版本 + 事务型 CAS 保存（板面工具专用；不改既有 save_board 语义）
+# ---------------------------------------------------------------------------
+
+
+def object_versions(state: dict) -> dict[str, int]:
+    """板面内全部对象的真实版本（卡片 / 组 / 链接；历史数据缺 version 按 1）。"""
+    versions: dict[str, int] = {}
+    for key in ("cards", "groups", "links"):
+        for item in state.get(key) or []:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            try:
+                value = int(item.get("version", 1))
+            except (TypeError, ValueError):
+                value = 1
+            versions[str(item["id"])] = value if value >= 1 else 1
+    return versions
+
+
+def find_object_version(state: dict, object_id: str) -> int | None:
+    return object_versions(state).get(str(object_id))
+
+
+def check_expected_versions(
+    state: dict, expected_versions: Mapping[str, Any] | None
+) -> list[dict]:
+    """CAS 预检：返回冲突列表（空 = 全部匹配）；不写库。"""
+    conflicts: list[dict] = []
+    versions = object_versions(state)
+    for raw_id, raw_version in (expected_versions or {}).items():
+        object_id = str(raw_id)
+        try:
+            expected = int(raw_version)
+        except (TypeError, ValueError):
+            conflicts.append(
+                {"id": object_id, "expected": raw_version, "actual": None, "reason": "invalid_expected_version"}
+            )
+            continue
+        actual = versions.get(object_id)
+        if actual is None:
+            conflicts.append(
+                {"id": object_id, "expected": expected, "actual": None, "reason": "not_found"}
+            )
+            continue
+        if int(actual) != expected:
+            conflicts.append(
+                {
+                    "id": object_id,
+                    "expected": expected,
+                    "actual": int(actual),
+                    "reason": "version_mismatch",
+                }
+            )
+    return conflicts
+
+
+def current_state(conn: sqlite3.Connection, board_id: str) -> dict:
+    """读取最新已保存板面（含迁移）并规范化；返回带真实 seq 与对象 version 的状态。"""
+    loaded = load_board(conn, board_id)
+    return board.normalize_state(loaded["state"])
+
+
+def write_board_cas(
+    conn: sqlite3.Connection,
+    board_id: str,
+    *,
+    expected_versions: Mapping[str, Any] | None,
+    mutate: Any,
+    reason: str = "board_tool",
+) -> dict:
+    """事务型板面写入：读当前 state（含 seq）→ CAS 校验 expected_versions →
+    应用 mutate → 递增 seq / 保存快照 → 提交。冲突返回结构化结果，**不写库**。
+
+    mutate(state) -> (new_state, result)；它在事务内执行，异常会整体回滚。
+    板面工具用它保证「查看 / 读取不是编辑许可」：只有显式 expected_versions
+    与真实版本一致时才落地。
+    """
+    from agent.storage.db import transaction
+
+    info = ensure_board(conn, board_id=board_id)
+    with transaction(conn):
+        row = conn.execute(
+            "SELECT seq, state FROM board_states WHERE board_id = ?", (info["id"],)
+        ).fetchone()
+        loaded = models.loads(row["state"] if row else None, None)
+        raw_state = loaded if isinstance(loaded, dict) else models.empty_state(info["id"])
+        raw_state["boardId"] = info["id"]
+        state = board.normalize_state(raw_state)
+        current_seq = int(row["seq"]) if row else 0
+        conflicts = check_expected_versions(state, expected_versions)
+        if conflicts:
+            return {
+                "ok": False,
+                "conflict": True,
+                "code": "version_conflict",
+                "conflicts": conflicts,
+                "seq": current_seq,
+                "state": state,
+            }
+        new_state, result = mutate(state)
+        seq = current_seq + 1
+        stamp = _now()
+        payload = board.normalize_state({**new_state, "boardId": info["id"]})
+        payload["seq"] = seq
+        payload["updatedAt"] = stamp
+        dumped = models.dumps(payload)
+        label = _clip(reason or "board_tool", limit=64)
+        conn.execute(
+            "UPDATE board_states SET seq = ?, state = ?, reason = ?, updated_at = ?"
+            " WHERE board_id = ?",
+            (seq, dumped, label, stamp, info["id"]),
+        )
+        conn.execute(
+            "INSERT INTO board_state_snapshots (id, board_id, seq, state, reason, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (models.new_id("snap"), info["id"], seq, dumped, label, stamp),
+        )
+        conn.execute(
+            "DELETE FROM board_state_snapshots WHERE board_id = ? AND seq <= ?",
+            (info["id"], seq - SNAPSHOT_KEEP),
+        )
+    pending = _refresh_pending(conn, info["id"])
+    return {
+        "ok": True,
+        "conflict": False,
+        "seq": seq,
+        "savedAt": stamp,
+        "state": payload,
+        "result": result,
+        "pending": pending,
     }

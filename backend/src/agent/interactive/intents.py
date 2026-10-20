@@ -69,6 +69,9 @@ _JSON_COLUMNS = (
     # 第九轮新增列：具体板面操作与审批依据（契约 §14.2 / §14.5）
     "operations",
     "basis",
+    # 阶段三：结构化授权范围与授权快照（迁移 50；旧行缺列时按空值兼容）
+    "scope",
+    "authorization",
 )
 
 _KIND_LABELS = {
@@ -563,6 +566,15 @@ def _intent_payload(
         ],
         "intentKey": str(_row_value(row, "intent_key", "") or ""),
         "understandingId": understanding_id or None,
+        # 阶段三兼容读取：旧 API 也能看到版本 / 授权范围 / 结果状态（缺列时给默认值）。
+        "clientRef": str(_row_value(row, "client_ref", "") or ""),
+        "version": int(_row_value(row, "version", 1) or 1),
+        "scope": _row_value(row, "scope", {}) if not isinstance(_row_value(row, "scope", {}), str) else models.loads(_row_value(row, "scope", "{}"), {}),
+        "authorization": _row_value(row, "authorization", {}) if not isinstance(_row_value(row, "authorization", {}), str) else models.loads(_row_value(row, "authorization", "{}"), {}),
+        "authorizationValid": bool(_row_value(row, "authorization", None)),
+        "outcome": str(_row_value(row, "outcome", "") or ""),
+        "attempt": int(_row_value(row, "attempt", 0) or 0),
+        "finishedAt": _row_value(row, "finished_at", None),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
