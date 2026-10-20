@@ -145,8 +145,12 @@ def test_migration_49_provides_waiting_and_turn_binding_storage():
         f"{CLAUSE}：迁移 49 未见提交—turn 绑定 / 续作相关列")
 
 
-def test_migration_50_provides_intent_versions_and_operation_ledger():
-    """§13.4/§13.7：50 必须包含意图版本历史与权威操作账本（board_operations）。"""
+def test_migration_50_provides_intent_versions_and_operation_ledger(db_conn):
+    """§13.4/§13.7：50 必须包含意图版本历史与权威操作账本（board_operations）。
+
+    summary / goal / expected / basis 是更早迁移（34/35/37）已有的列，50 不重复添加；
+    这里同时核对「增量列」与「最终表确实具备完成/账本所需字段」。
+    """
     if _missing():
         pytest.fail(f"{CLAUSE}：迁移 50 未登记。", pytrace=False)
     blob = " ".join(" ".join(str(s).split()) for s in _by_number()[50]).lower()
@@ -154,9 +158,16 @@ def test_migration_50_provides_intent_versions_and_operation_ledger():
         assert f"create table if not exists {table}" in blob, (
             f"{CLAUSE}：迁移 50 缺少表 {table}")
     for column in ("client_ref", "version", "scope", "authorization", "outcome",
-                   "summary", "attempt", "finished_at"):
+                   "attempt", "finished_at"):
         assert column in blob, (
             f"{CLAUSE}：迁移 50 的 board_intents 增量缺列 {column}")
+    final_columns = {
+        str(row["name"])
+        for row in db_conn.execute("PRAGMA table_info(board_intents)")
+    }
+    for existing in ("goal", "expected", "basis", "summary"):
+        assert existing in final_columns, (
+            f"{CLAUSE}：迁移 51 后 board_intents 仍缺列 {existing}")
     for column in ("operation_key", "request_hash", "before", "after", "result"):
         assert column in blob, (
             f"{CLAUSE}：board_operations 缺列 {column}")
