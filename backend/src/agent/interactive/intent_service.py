@@ -199,7 +199,13 @@ def _authorization_valid(row: sqlite3.Row) -> bool:
     authorization = _loads(_row_value(row, "authorization", "{}"), {})
     if not isinstance(authorization, dict) or not authorization:
         return False
-    if str(row["status"]) not in (STATUS_APPROVED, STATUS_RUNNING, STATUS_PAUSED):
+    if str(row["status"]) not in (
+        STATUS_APPROVED,
+        STATUS_RUNNING,
+        STATUS_PAUSED,
+        STATUS_PARTIALLY_COMPLETED,
+        STATUS_FAILED,
+    ):
         return False
     try:
         version = int(authorization.get("version") or 0)
@@ -796,7 +802,8 @@ def update_intent(
                 new_status = STATUS_AWAITING
                 authorization: dict[str, Any] = {}
             else:
-                new_status = status if status in CONFIRMABLE_STATUSES else STATUS_AWAITING
+                # 非实质变化（例如只改标题）：保持原状态与授权有效性，仅推进版本。
+                new_status = status
                 authorization = _loads(_row_value(row, "authorization", "{}"), {})
                 if isinstance(authorization, dict) and authorization:
                     authorization = dict(authorization)
@@ -1400,12 +1407,23 @@ def _change_status(
             status="conflict",
             data={"current_version": version},
         )
+    current_status = str(row["status"])
+    if current_status in TERMINAL_STATUSES and status != current_status:
+        return _fail(
+            "invalid_status",
+            f"意图状态为 {current_status}，不能再切换到 {status}",
+        )
+    authorization = _loads(_row_value(row, "authorization", "{}"), {})
+    if isinstance(authorization, dict) and authorization:
+        authorization = dict(authorization)
+        authorization["version"] = version + 1
     with transaction(conn):
         _update_row(
             conn,
             intent_id,
             status=status,
             version=version + 1,
+            authorization=authorization,
             **(dict(extra or {})),
         )
         new_row = _get_row(conn, intent_id)
@@ -1441,6 +1459,9 @@ def recover_intent(
             "旧授权已失效，需要用户重新确认后才能恢复",
             status="awaiting_approval",
         )
+    if isinstance(authorization, dict) and authorization:
+        authorization = dict(authorization)
+        authorization["version"] = version + 1
     with transaction(conn):
         _update_row(
             conn,
@@ -1448,6 +1469,7 @@ def recover_intent(
             status=STATUS_APPROVED,
             attempt=int(_row_value(row, "attempt", 0) or 0) + 1,
             version=version + 1,
+            authorization=authorization,
         )
         new_row = _get_row(conn, intent_id)
         if new_row is not None:
