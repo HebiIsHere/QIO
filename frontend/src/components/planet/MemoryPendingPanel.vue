@@ -429,44 +429,188 @@ function entriesOf(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return [];
   return value.filter(isRecord);
 }
-const previewEntries = computed<Record<string, unknown>[]>(() => {
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+/** 恢复预览的一项（真实 runner 的 operations 计划 / 旧 items 形状都收敛到这里）。 */
+interface PreviewItemView {
+  label: string;
+  tone: string;
+  title: string;
+  reason: string;
+}
+interface RestoreItemView {
+  label: string;
+  tone: string;
+  title: string;
+  reason: string;
+}
+function countedValue(value: unknown): number | null {
+  return typeof value === "number" ? value : null;
+}
+function operationTargetIds(operation: Record<string, unknown>): string {
+  return entriesOf(operation.targets)
+    .map((target) => shortText(target.knowledge_id))
+    .filter(Boolean)
+    .join("、");
+}
+function productIdOf(operation: Record<string, unknown>): string {
+  const product = isRecord(operation.product) ? operation.product : {};
+  return shortText(product.id);
+}
+const previewItems = computed<PreviewItemView[]>(() => {
   const data = previewData.value;
   if (!data) return [];
-  return entriesOf(data.items);
+  const operations = entriesOf(data.operations);
+  if (operations.length) {
+    return operations.map((operation) => {
+      const reasons = stringList(operation.reasons);
+      const product = isRecord(operation.product) ? operation.product : {};
+      const productReason = shortText(product.reason);
+      const reason = (reasons.length ? reasons : productReason ? [productReason] : []).join("；");
+      const action = shortText(operation.action) || "操作";
+      const operationId = shortText(operation.operation_id) || "未标注操作";
+      const ids = operationTargetIds(operation) || productIdOf(operation);
+      let label = "不可安全恢复";
+      let tone = "quiet";
+      if (operation.restoreable === true) {
+        label = "可恢复";
+        tone = "ok";
+      } else if (operation.already_restored === true) {
+        label = "已恢复过";
+        tone = "info";
+      } else if (operation.partial === true) {
+        label = "部分可恢复";
+        tone = "warn";
+      }
+      return {
+        label,
+        tone,
+        title: action + " · " + operationId + (ids ? " · " + ids : ""),
+        reason,
+      };
+    });
+  }
+  // 兼容旧形状（items 里直接是 restorable/reason）。
+  return entriesOf(data.items).map((entry) => {
+    const restorable = entry.restorable !== false;
+    const id =
+      shortText(entry.knowledge_id) ||
+      shortText(entry.id) ||
+      shortText(entry.result_id) ||
+      "未标注对象";
+    const content = shortText(entry.content);
+    return {
+      label: restorable ? "可恢复" : "不可安全恢复",
+      tone: restorable ? "ok" : "quiet",
+      title: content ? id + "：" + content : id,
+      reason: shortText(entry.reason),
+    };
+  });
 });
-const restoredEntries = computed<Record<string, unknown>[]>(() =>
-  entriesOf(restoreResult.value?.restored),
+const previewSummary = computed(() => {
+  const data = previewData.value;
+  if (!data) return "";
+  const parts: string[] = [];
+  const restoreable = countedValue(data.restoreable_count);
+  const partial = countedValue(data.partial_count);
+  const blocked = countedValue(data.blocked_count);
+  const already = countedValue(data.already_restored_count);
+  if (restoreable !== null) parts.push("可恢复 " + restoreable);
+  if (partial !== null && partial > 0) parts.push("部分 " + partial);
+  if (blocked !== null) parts.push("不可恢复 " + blocked);
+  if (already !== null && already > 0) parts.push("已恢复过 " + already);
+  if (!parts.length) {
+    parts.push("可恢复 " + previewItems.value.filter((item) => item.tone === "ok").length);
+    parts.push(
+      "不可恢复 " + previewItems.value.filter((item) => item.tone === "quiet").length,
+    );
+  }
+  return parts.join(" · ");
+});
+const previewWarnings = computed(() => stringList(previewData.value?.warnings));
+const restoreOperationViews = computed<{ restored: RestoreItemView[]; blocked: RestoreItemView[] }>(
+  () => {
+    const data = restoreResult.value?.result;
+    const topOperations = restoreResult.value?.operations;
+    const topBlockedReasons = restoreResult.value?.blocked_reasons;
+    if (data || topOperations !== undefined) {
+      const operations = entriesOf(topOperations ?? data?.operations);
+      const restored: RestoreItemView[] = [];
+      const blocked: RestoreItemView[] = [];
+      for (const operation of operations) {
+        const status = shortText(operation.status);
+        const reasons = stringList(operation.reasons);
+        const ids = [
+          ...stringList(operation.restored_knowledge_ids),
+          ...stringList(operation.blocked_knowledge_ids),
+        ].join("、");
+        const title =
+          (shortText(operation.operation_id) || "未标注操作") + (ids ? " · " + ids : "");
+        if (status === "restored" || status === "already_restored") {
+          restored.push({
+            label: status === "already_restored" ? "已恢复过" : "已恢复",
+            tone: "ok",
+            title,
+            reason: reasons.join("；"),
+          });
+        } else {
+          blocked.push({
+            label: status === "partial" ? "部分恢复" : "无法安全恢复",
+            tone: status === "failed" ? "warn" : "quiet",
+            title,
+            reason: reasons.join("；"),
+          });
+        }
+      }
+      if (!operations.length) {
+        for (const entry of entriesOf(topBlockedReasons ?? data?.blocked_reasons)) {
+          blocked.push({
+            label: "无法安全恢复",
+            tone: "quiet",
+            title: shortText(entry.operation_id) || "未标注操作",
+            reason: stringList(entry.reasons).join("；"),
+          });
+        }
+      }
+      return { restored, blocked };
+    }
+    // 兼容旧形状（restored / blocked 直接是数组）。
+    const views = (value: unknown, tone: string, label: string): RestoreItemView[] =>
+      entriesOf(value).map((entry) => {
+        const id =
+          shortText(entry.knowledge_id) ||
+          shortText(entry.id) ||
+          shortText(entry.result_id) ||
+          "未标注对象";
+        return { label, tone, title: id, reason: shortText(entry.reason) };
+      });
+    return {
+      restored: views(restoreResult.value?.restored, "ok", "已恢复"),
+      blocked: views(restoreResult.value?.blocked, "quiet", "无法安全恢复"),
+    };
+  },
 );
-const blockedEntries = computed<Record<string, unknown>[]>(() =>
-  entriesOf(restoreResult.value?.blocked),
-);
-function entryId(entry: Record<string, unknown>): string {
-  return (
-    shortText(entry.knowledge_id) ||
-    shortText(entry.id) ||
-    shortText(entry.result_id) ||
-    "未标注对象"
-  );
-}
-function previewEntryLabel(entry: Record<string, unknown>): string {
-  const content = shortText(entry.content);
-  return content ? entryId(entry) + "：" + content : entryId(entry);
-}
-function previewRestorable(entry: Record<string, unknown>): boolean {
-  return entry.restorable !== false;
-}
-function previewReason(entry: Record<string, unknown>): string {
-  return shortText(entry.reason);
-}
-function outcomeLabel(entry: Record<string, unknown>): string {
-  const reason = shortText(entry.reason);
-  return reason ? entryId(entry) + "：" + reason : entryId(entry);
-}
 function countText(value: unknown): string {
   if (typeof value === "number") return String(value);
   if (Array.isArray(value)) return String(value.length);
   return "—";
 }
+/**
+ * 恢复是否「全部完成」：真实 recovery 在部分失败时也返回 ok=true + status=rollback_partial，
+ * 只看 ok 会把「部分撤回」显示成已完成 —— 这里按状态判断，部分完成必须如实说。
+ */
+const restoreCompleted = computed(() => {
+  const result = restoreResult.value;
+  if (!result) return false;
+  const status = String(result.status || "");
+  if (!status) return Boolean(result.ok);
+  return (
+    Boolean(result.ok) &&
+    ["restored", "rolled_back", "already_restored", "nothing_to_restore"].includes(status)
+  );
+});
 function statsText(batch: MaintenanceBatchSummary): string {
   const stats = batch.stats || {};
   const parts: string[] = [];
@@ -777,23 +921,28 @@ onBeforeUnmount(() => {
               <div class="mp-head">
                 <span class="mp-label">恢复预览</span>
                 <span class="mp-preview-target mono">{{ previewTarget }}</span>
+                <span v-if="previewSummary" class="mp-status-text">{{ previewSummary }}</span>
               </div>
-              <ul v-if="previewEntries.length" class="mp-preview-items">
+              <ul v-if="previewItems.length" class="mp-preview-items">
                 <li
-                  v-for="(entry, index) in previewEntries"
+                  v-for="(entry, index) in previewItems"
                   :key="index"
                   class="mp-preview-item"
-                  :class="previewRestorable(entry) ? 'restorable' : 'blocked'"
+                  :class="entry.tone === 'ok' ? 'restorable' : 'blocked'"
                 >
-                  <span class="qio-state" :class="previewRestorable(entry) ? 'ok' : 'quiet'">
-                    {{ previewRestorable(entry) ? '可恢复' : '不可安全恢复' }}
-                  </span>
-                  <span class="mp-preview-label mono">{{ previewEntryLabel(entry) }}</span>
-                  <span v-if="previewReason(entry)" class="mp-reason">{{ previewReason(entry) }}</span>
+                  <span class="qio-state" :class="entry.tone">{{ entry.label }}</span>
+                  <span class="mp-preview-label mono">{{ entry.title }}</span>
+                  <span v-if="entry.reason" class="mp-reason">{{ entry.reason }}</span>
                 </li>
               </ul>
-              <p v-else class="hint">
-                这次预览没有逐项结果（服务端未返回 items）；不臆造可恢复结论。
+              <ul v-if="previewWarnings.length" class="mp-restore-list">
+                <li v-for="(warning, index) in previewWarnings" :key="index" class="mp-blocked-item">
+                  <span class="qio-state quiet">预览提示</span>
+                  <span class="mono">{{ warning }}</span>
+                </li>
+              </ul>
+              <p v-if="!previewItems.length && !previewWarnings.length" class="hint">
+                这次预览没有可恢复的操作（服务端未返回操作计划）；不臆造可恢复结论。
               </p>
             </div>
 
@@ -803,8 +952,8 @@ onBeforeUnmount(() => {
             <div v-if="restoreResult" class="mp-restore-result">
               <div class="mp-head">
                 <span class="mp-label">恢复结果</span>
-                <span class="qio-state" :class="restoreResult.ok ? 'ok' : 'warn'">
-                  {{ restoreResult.ok ? '恢复已完成' : '恢复未全部完成' }}
+                <span class="qio-state" :class="restoreCompleted ? 'ok' : 'warn'">
+                  {{ restoreCompleted ? '恢复已完成' : '恢复未全部完成' }}
                 </span>
                 <span v-if="restoreResult.status" class="mp-status-text mono">status={{ restoreResult.status }}</span>
               </div>
@@ -812,16 +961,18 @@ onBeforeUnmount(() => {
                 已恢复 {{ countText(restoreResult.restored) }} 项；无法安全恢复
                 {{ countText(restoreResult.blocked) }} 项。
               </p>
-              <ul v-if="restoredEntries.length" class="mp-restore-list">
-                <li v-for="(entry, index) in restoredEntries" :key="index" class="mp-restored-item">
-                  <span class="qio-state ok">已恢复</span>
-                  <span class="mono">{{ outcomeLabel(entry) }}</span>
+              <ul v-if="restoreOperationViews.restored.length" class="mp-restore-list">
+                <li v-for="(entry, index) in restoreOperationViews.restored" :key="index" class="mp-restored-item">
+                  <span class="qio-state" :class="entry.tone">{{ entry.label }}</span>
+                  <span class="mono">{{ entry.title }}</span>
+                  <span v-if="entry.reason" class="mp-reason">{{ entry.reason }}</span>
                 </li>
               </ul>
-              <ul v-if="blockedEntries.length" class="mp-restore-list">
-                <li v-for="(entry, index) in blockedEntries" :key="index" class="mp-blocked-item">
-                  <span class="qio-state quiet">无法安全恢复</span>
-                  <span class="mono">{{ outcomeLabel(entry) }}</span>
+              <ul v-if="restoreOperationViews.blocked.length" class="mp-restore-list">
+                <li v-for="(entry, index) in restoreOperationViews.blocked" :key="index" class="mp-blocked-item">
+                  <span class="qio-state" :class="entry.tone">{{ entry.label }}</span>
+                  <span class="mono">{{ entry.title }}</span>
+                  <span v-if="entry.reason" class="mp-reason">{{ entry.reason }}</span>
                 </li>
               </ul>
             </div>

@@ -582,6 +582,9 @@ def build_router(ctx: Any) -> APIRouter:  # noqa: ANN001 - ctx 由 Lead 传入�
             "restored": result.get("restored"),
             "blocked": result.get("blocked"),
             "status": result.get("status"),
+            # 真实 recovery 的结构化结果：逐操作状态 / 无法安全恢复的原因
+            "blocked_reasons": result.get("blocked_reasons") or [],
+            "operations": result.get("operations") or [],
             "result": result,
         }
 

@@ -242,11 +242,32 @@ class FakeRunner:
         self.restore_calls: list[dict] = []
         self.answer_error: Exception | None = None
         self.preview_result: dict = {"items": []}
+        # 与真实 maintenance.recovery.restore 对齐：restored/blocked 是数量，
+        # 逐操作结果与原因在 operations / blocked_reasons。
         self.restore_result: dict = {
-            "ok": True,
-            "status": "rolled_back",
-            "restored": [{"knowledge_id": "kn_new", "result_id": "kn_restored"}],
-            "blocked": [{"knowledge_id": "kn_other", "reason": "后来被用户修改"}],
+            "ok": False,
+            "status": "rollback_partial",
+            "restored": 1,
+            "blocked": 1,
+            "blocked_reasons": [
+                {"operation_id": "op_normalize", "reasons": ["后来被用户修改"]}
+            ],
+            "operations": [
+                {
+                    "operation_id": "op_merge",
+                    "status": "restored",
+                    "restored_knowledge_ids": ["kn_new"],
+                    "blocked_knowledge_ids": [],
+                    "reasons": [],
+                },
+                {
+                    "operation_id": "op_normalize",
+                    "status": "blocked",
+                    "restored_knowledge_ids": [],
+                    "blocked_knowledge_ids": ["kn_other"],
+                    "reasons": ["后来被用户修改"],
+                },
+            ],
         }
         self.mark_processed = True
 
@@ -703,11 +724,16 @@ def test_restore_requires_confirm_and_returns_blocked_parts(tmp_path):
     )
     assert r.status_code == 200
     body = r.json()
-    assert body["ok"] is True
-    assert body["status"] == "rolled_back"
-    assert body["restored"] == [{"knowledge_id": "kn_new", "result_id": "kn_restored"}]
-    assert body["blocked"] == [{"knowledge_id": "kn_other", "reason": "后来被用户修改"}]
-    assert body["result"]["status"] == "rolled_back"
+    assert body["ok"] is False
+    assert body["status"] == "rollback_partial"
+    assert body["restored"] == 1
+    assert body["blocked"] == 1
+    assert body["blocked_reasons"][0]["operation_id"] == "op_normalize"
+    assert [operation["status"] for operation in body["operations"]] == [
+        "restored",
+        "blocked",
+    ]
+    assert body["result"]["status"] == "rollback_partial"
     assert runner.restore_calls == [{"batch_id": "mb_1", "item_id": None}]
 
     # 单条恢复 + 两个目标都不允许
