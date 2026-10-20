@@ -1433,3 +1433,55 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   原始键；前端「后台整理」筛选按该契约匹配。
 - 待确认事项持久保存在数据库，不使用易超时的临时审批等待替代；不把
   `entities/pending.py` 当作实体预选库或记忆问答服务。
+
+
+---
+
+## 18. 互动模式接入完整主循环（2026-10-21，整体改造第三阶段）
+
+契约与交接见 `docs/qio-refactor-contract.md` §13；进度与限制见 `docs/status.md` P71。
+
+### 18.1 结构总览
+
+```
+用户点击「提交给 QIO」
+  → 提交受理（api/interactive_store.py）：快照 / 基准 / 请求身份不变
+  → 主循环 Turn（同一 TurnManager / adapter / 工具循环，不再有独立理解模型调用）
+       TurnContext: mode=interactive, board_id, submission_id, 原话题, 续作身份
+       system: QIO_CORE + INTERACTIVE_POLICY + 结构化上下文块（interactive / 附件 / 媒体）
+       tools: 普通模式不暴露 board_*；互动模式 12 个板面工具
+  → board_propose_intents：意图（目标 / 期望 / 依据 / scope / 依赖 / 冲突）待用户确认
+  → 用户批量 / 单条确认（前后端门槛 BATCH_CONFIRM_MIN=2）→ 授权快照
+  → 续作 Turn（自动，不需再次提交）：12 个工具在授权范围内执行
+       board_create_card / update_card / move_card / group_cards /
+       order_group / add_link / wait_for_input / finish_intent
+       写入：授权门 → operation_key 账本幂等 → CAS 事务写 → 落账
+  → 等待：board_wait_for_input 问题作为正常对话呈现一次；回答后自动续作
+  → 结果：board_finish_intent 按权威账本核对完成 / 部分完成 / 失败
+```
+
+- 可信运行上下文 `interactive/runtime.py`：板面 / 提交 / 意图 / 授权以程序绑定为准；
+  模型不能传其他 board_id 越界；普通模式没有上下文，板面工具一律拒绝。
+- 工具参数模型 `interactive/tool_models.py` 与展示 schema 同源（json_schema_for），
+  固定文案只在 `prompts.py`。
+- 对象版本：卡片 / 组 / 链接真实 version；写前 CAS，冲突只暂停受影响步骤；
+  operation_key 相同 + 请求相同返回原结果，不同报冲突。
+
+### 18.2 持久化与恢复
+
+- 迁移 49（A）：`board_submissions.turn_id/resume_state`、`board_submission_turns`、
+  `board_waiting`（waiting / resolved / cancelled，跨重启恢复）。
+- 迁移 50（B）：`board_intents` 增量列（client_ref / version / scope / authorization /
+  outcome / attempt / finished_at）、`board_intent_versions`（完整版本历史）、
+  `board_operations`（权威操作账本，UNIQUE(intent_id, operation_key)）。
+- 补偿迁移 51：48 全部语句 + 49 + 50；`SCHEMA_VERSION=COMPENSATION_VERSION=51`。
+- 部分失败：保留已完成且有用的成果，标明未完成部分；`partially_completed` 结束本次尝试、
+  不永久锁死意图；恢复后继续不重复建卡；撤回保护用户后续修改，无法安全撤回时明确说明。
+
+### 18.3 前端
+
+- `IntentWorkbench`：意图目标 / 期望 / 依据 / scope / 依赖 / 冲突 / 版本与真实状态；
+  批量与单条确认；等待、局部冲突、部分完成、失败、可恢复；结果卡完整 Markdown
+  （表格 / 代码块 / 折叠 / 滚动），长正文不静默截断；文件按文件交付；编辑保存不调用模型。
+- 普通聊天与互动聊天共用 ChatDock / 主循环，但互动消息携带经服务端验证的 mode / boardId /
+  submissionId；失败重试与中断重发暂不携带互动绑定（按普通回合执行，不越权，已知限制）。

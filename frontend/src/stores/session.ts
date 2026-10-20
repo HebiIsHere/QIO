@@ -5222,57 +5222,92 @@ const sessionStoreDefinition = defineStore("session", {
         // 调用形状按需最小化：没有 signal 时保持既有参数个数，免得把「准备期中止」
         // 的管道塞进所有调用点的既有契约里。
         let res;
+        const interactive = options.interactive;
         if (options.prepareId) {
           // 带准备标识：多一个参数（契约 §1.1 的取消端点要靠它定位这次准备）
-          res = await api.sendTurn(
-            message,
-            requestTopicId,
-            ids,
-            options.retryOfTurnId,
-            options.signal,
-            options.prepareId,
-            options.interactive,
-          );
+          res = interactive
+            ? await api.sendTurn(
+                message,
+                requestTopicId,
+                ids,
+                options.retryOfTurnId,
+                options.signal,
+                options.prepareId,
+                interactive,
+              )
+            : await api.sendTurn(
+                message,
+                requestTopicId,
+                ids,
+                options.retryOfTurnId,
+                options.signal,
+                options.prepareId,
+              );
         } else if (options.retryOfTurnId) {
           res = options.signal
-            ? await api.sendTurn(
-                message,
-                requestTopicId,
-                ids,
-                options.retryOfTurnId,
-                options.signal,
-                undefined,
-                options.interactive,
-              )
-            : await api.sendTurn(
-                message,
-                requestTopicId,
-                ids,
-                options.retryOfTurnId,
-                undefined,
-                undefined,
-                options.interactive,
-              );
+            ? interactive
+              ? await api.sendTurn(
+                  message,
+                  requestTopicId,
+                  ids,
+                  options.retryOfTurnId,
+                  options.signal,
+                  undefined,
+                  interactive,
+                )
+              : await api.sendTurn(
+                  message,
+                  requestTopicId,
+                  ids,
+                  options.retryOfTurnId,
+                  options.signal,
+                )
+            : interactive
+              ? await api.sendTurn(
+                  message,
+                  requestTopicId,
+                  ids,
+                  options.retryOfTurnId,
+                  undefined,
+                  undefined,
+                  interactive,
+                )
+              : await api.sendTurn(
+                  message,
+                  requestTopicId,
+                  ids,
+                  options.retryOfTurnId,
+                );
         } else {
           res = options.signal
-            ? await api.sendTurn(
-                message,
-                requestTopicId,
-                ids,
-                undefined,
-                options.signal,
-                undefined,
-                options.interactive,
-              )
-            : await api.sendTurn(
-                message,
-                requestTopicId,
-                ids,
-                undefined,
-                undefined,
-                undefined,
-                options.interactive,
-              );
+            ? interactive
+              ? await api.sendTurn(
+                  message,
+                  requestTopicId,
+                  ids,
+                  undefined,
+                  options.signal,
+                  undefined,
+                  interactive,
+                )
+              : await api.sendTurn(
+                  message,
+                  requestTopicId,
+                  ids,
+                  undefined,
+                  options.signal,
+                )
+            : interactive
+              ? await api.sendTurn(
+                  message,
+                  requestTopicId,
+                  ids,
+                  undefined,
+                  undefined,
+                  undefined,
+                  interactive,
+                )
+              : await api.sendTurn(message, requestTopicId, ids);
         }
         /**
          * 受理事实（契约 C3）：**绝不能只看 turn_id**。

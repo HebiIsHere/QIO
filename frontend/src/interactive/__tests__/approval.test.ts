@@ -3,7 +3,7 @@
  *
  * 重点：预览语义比较（只改位置 vs 改语义）、状态文案、批量选择，
  * 以及契约 §9.2 / §9.3 的批次判定（本地按次记录 / 真实 submissionId / 不成批）、
- * 批量列表资格（该批总量 ≥4，保留到处理完）与部分选择。
+ * 批量列表资格（该批总量 ≥2，阶段三契约 §13.5 统一门槛；保留到处理完）与部分选择。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { computed, ref } from "vue";
@@ -312,7 +312,7 @@ describe("批量选择", () => {
     intent({ id: "f", status: "done" }),
   ];
 
-  it("候选只包含等待审批的状态（4 项时提供批量列表）", () => {
+  it("候选只包含等待审批的状态（两条起可批量）", () => {
     const candidates = batchCandidates(items);
     expect(candidates.map((item) => item.id)).toEqual(["a", "b", "c", "d"]);
     expect(candidates.length).toBeGreaterThanOrEqual(4);
@@ -451,7 +451,7 @@ describe("批次判定：只认可证明的来源（契约 §9.2）", () => {
     expect(batchesWithList(items)[0].pendingIds.length).toBe(4);
   });
 
-  it("不同 submissionId 不属于同一批", () => {
+  it("不同 submissionId 不属于同一批（门槛两条：3 项那批可成列表，1 项那批不单独成列表）", () => {
     const items = [
       intent({ id: "b0", status: "pending", submissionId: "sub_1" }),
       intent({ id: "b1", status: "pending", submissionId: "sub_2" }),
@@ -459,7 +459,9 @@ describe("批次判定：只认可证明的来源（契约 §9.2）", () => {
       intent({ id: "b3", status: "pending", submissionId: "sub_2" }),
     ];
     expect(groupIntentsByBatch(items).length).toBe(2);
-    expect(batchesWithList(items)).toEqual([]);
+    const batches = batchesWithList(items);
+    expect(batches.map((batch) => batch.key)).toEqual(["submission:sub_2"]);
+    expect(batches[0].intentIds).toEqual(["b1", "b2", "b3"]);
   });
 
   it("反例：同一秒内两批各两项，清掉本地记录后不能变成四项一批", () => {
@@ -681,12 +683,14 @@ describe("批量列表资格：该批总量 ≥4，保留到处理完（契约 �
     expect(batches[0].pendingIds).toEqual(["b1", "b2", "b3"]);
   });
 
-  it("反例：另一批 3 项 + 这批 1 项不会凑成 4 项列表", () => {
+  it("反例：另一批 3 项可成列表，这批 1 项不会单独成列表（门槛两条）", () => {
     recordIntentBatch("session:three", ["t0", "t1", "t2"]);
     recordIntentBatch("session:one", ["o0"]);
     const items = batchItems(["t0", "t1", "t2", "o0"]);
     expect(groupIntentsByBatch(items).map((batch) => batch.intentIds.length)).toEqual([3, 1]);
-    expect(batchesWithList(items)).toEqual([]);
+    const batches = batchesWithList(items);
+    expect(batches.map((batch) => batch.key)).toEqual(["session:three"]);
+    expect(batches[0].intentIds).toEqual(["t0", "t1", "t2"]);
   });
 
   it("刷新（重新分组）后资格与处理状态保持：资格只看总量，不靠组件内临时标记", () => {
