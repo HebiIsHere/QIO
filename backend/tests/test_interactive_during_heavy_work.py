@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import os
 import time
 from contextlib import suppress
@@ -580,7 +581,35 @@ async def test_a_cancel_request_is_served_while_maintenance_runs(
     )
 
 
-async def test_maintenance_still_commits_its_results(ctx: AppContext):
+class _SuggestionOnlyAdapter:
+    """维护工具候选：只回一条合法自动化建议（不联网）。"""
+
+    model = "stub-model"
+
+    async def complete(self, messages, tools=None, temperature=0.0):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            message=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "suggestions": [
+                            {
+                                "name": "weather_lookup",
+                                "description": "查询当天天气",
+                                "reason": "用户多次重复询问天气",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
+
+
+async def test_maintenance_still_commits_its_results(
+    ctx: AppContext, monkeypatch
+):
     """没有被新一轮打断时，维护照旧落地：工具候选请求审批。
 
     阶段二契约 §12 收口后：否定词矛盾扫描 / 置信度下调已从维护巡检退休，
@@ -588,6 +617,10 @@ async def test_maintenance_still_commits_its_results(ctx: AppContext):
     """
     from agent.knowledge.lifecycle import KnowledgeService
 
+    async def _build_adapter():
+        return _SuggestionOnlyAdapter()
+
+    monkeypatch.setattr(ctx, "build_adapter", _build_adapter)
     _seed_maintenance_messages(ctx, 3)
     ks = KnowledgeService(ctx.conn)
     item = ks.create(category="general_fact", content="用户偏好清淡饮食")
