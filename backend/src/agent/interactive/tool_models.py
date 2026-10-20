@@ -163,7 +163,7 @@ class IntentScope(BaseModel):
             BoardAction.ORDER_GROUP,
             BoardAction.ADD_LINK,
         }
-        if params and not (out & {BoardAction.CREATE_CARD, BoardAction.MOVE_CARD}):
+        if params and not (set(out) & {BoardAction.CREATE_CARD, BoardAction.MOVE_CARD}):
             # 允许只做结构关系；但任何写入动作都必须明确列出，不做隐式推断。
             pass
         return out
