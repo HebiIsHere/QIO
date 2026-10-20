@@ -83,6 +83,11 @@ def _has_additional_properties_false(node) -> bool:
     return False
 
 
+def _prompts_source_text() -> str:
+    """prompts.py 的源码文本：用于核对「工具描述正文只能来自 prompts.py」。"""
+    return Path(prompts.__file__).read_text(encoding="utf-8")
+
+
 def _knowledge_states(conn, content: str) -> list[str]:
     rows = conn.execute(
         "SELECT state FROM knowledge WHERE content = ?", (content,)
@@ -119,21 +124,37 @@ def test_propose_knowledge_and_create_entity_are_registered(ctx: AppContext):
 
 
 def test_all_registered_tool_descriptions_come_from_frozen_source(ctx: AppContext):
-    """§2.1/§2.3：所有工具类引用 prompts.TOOL_DESCRIPTIONS[name]（唯一来源）。"""
+    """§2.1/§2.3：全部工具描述来自 prompts.py（Lead 2026-10-21 裁决口径）。
+
+    裁决：
+    * 冻结词典 TOOL_DESCRIPTIONS 里的工具：description 必须与 TOOL_DESCRIPTIONS[name] 逐字一致；
+    * 其余工具（await_task / read_task_result / create_tool / dev_* / declare_completion 等）：
+      正文可以是 prompts.py 里的独立常量（如既有 TOOL_*_DESC），但不得留在工具模块里
+      —— 判据是「这段描述文本出现在 prompts.py 源码中」。
+    """
     specs = {spec.name: spec for spec in ctx.registry.specs()}
-    missing = sorted(name for name in specs if name not in prompts.TOOL_DESCRIPTIONS)
-    assert not missing, (
-        "契约 §2.1/§2.3：这些已注册工具在 TOOL_DESCRIPTIONS 里没有条目"
-        f"（工具描述不是唯一来源）：{missing}"
-    )
     mismatch = sorted(
         name
         for name, spec in specs.items()
-        if prompts.TOOL_DESCRIPTIONS.get(name) != spec.description
+        if name in prompts.TOOL_DESCRIPTIONS
+        and prompts.TOOL_DESCRIPTIONS[name] != spec.description
     )
     assert not mismatch, (
-        "契约 §2.1/§2.3：这些工具的 description 仍是各模块自写副本，"
-        f"没有引用 TOOL_DESCRIPTIONS[name]：{mismatch}"
+        "契约 §2.1/§2.3（冻结词典部分）：这些工具的 description 与 TOOL_DESCRIPTIONS[name] "
+        f"不是逐字一致：{mismatch}"
+    )
+    prompts_source = _prompts_source_text()
+    not_in_prompts_source = sorted(
+        name
+        for name, spec in specs.items()
+        if name not in prompts.TOOL_DESCRIPTIONS
+        and (spec.description or "").strip()
+        and (spec.description or "") not in prompts_source
+    )
+    assert not not_in_prompts_source, (
+        "契约 §2.1/§2.3（其余工具部分）：这些已注册工具的描述既不在 TOOL_DESCRIPTIONS，"
+        "也不在 prompts.py 源码中（正文仍留在工具模块里，不是单一来源）："
+        f"{not_in_prompts_source}"
     )
 
 
