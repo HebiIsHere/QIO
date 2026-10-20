@@ -1,10 +1,36 @@
-﻿"""Tool interface."""
+"""Tool interface."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
+
+
+class ToolStatus(str, Enum):
+    """工具结果状态（Phase 1 冻结枚举；字段由程序填写，不靠中文措辞推断）。
+
+    * queued / running：已受理、尚未完成；
+    * completed / partially_completed：本次动作完成 / 部分完成（后者不代表整个用户目标完成）；
+    * awaiting_approval / awaiting_input：仍有等待；
+    * conflict / failed / cancelled / unknown：不得表述为成功。
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    PARTIALLY_COMPLETED = "partially_completed"
+    AWAITING_APPROVAL = "awaiting_approval"
+    AWAITING_INPUT = "awaiting_input"
+    CONFLICT = "conflict"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
+# 结构化工具结果协议版本。None = 旧正文兼容结果；新工具/关键改造路径显式填 1。
+TOOL_RESULT_PROTOCOL_VERSION = 1
 
 
 @dataclass
@@ -19,6 +45,19 @@ class ToolResult:
     # 机器可读的事实（见 core/turn_facts.py）：工具把自己操作之后的真实状态报给主
     # 循环，用于「最终结论的事实校正」。它不是给用户看的正文，也不进模型消息。
     facts: dict[str, Any] | None = None
+    # ---- Phase 1 结构化结果契约（docs/qio-refactor-contract.md §4）--------
+    # 程序自有类型标识：protocol_version=1 表示结构化结果；None 表示旧正文兼容。
+    # 结构化结果由 core/tool_feedback.py 统一序列化成 ToolEnvelope（JSON），
+    # 其中 data 必须真正进入模型消息；不得只放进 facts。
+    protocol_version: int | None = None
+    # ToolStatus 的值；None 时由 ok / category 派生（旧工具兼容）。
+    status: str | None = None
+    # 稳定机器代码（例如 "ok" / "not_found" / "version_conflict"），不做中文匹配。
+    code: str | None = None
+    # 证据 / 结果载荷（JSON 可序列化）。结构化结果必须通过它把完整证据交给模型。
+    data: dict[str, Any] | None = None
+    # 显式的模型载荷：给出时优先序列化它（必须符合 ToolEnvelope 形状）。
+    model_payload: dict[str, Any] | None = None
 
 
 class Tool(ABC):
