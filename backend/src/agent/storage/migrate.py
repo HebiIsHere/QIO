@@ -111,6 +111,12 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "maintenance_batches",
         "maintenance_items",
         "maintenance_operations",
+        # 阶段三（迁移 49/50）：提交—轮次绑定 / 持久等待 / 意图版本历史 / 权威操作账本。
+        # 全部在补偿迁移 51 里有对应的建表语句。
+        "board_submission_turns",
+        "board_waiting",
+        "board_intent_versions",
+        "board_operations",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -144,6 +150,16 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "fragments.rolling_covered_count",
         "fragments.rolling_input_version",
         "fragments.rolling_updated_at",
+        # 阶段三：提交续作绑定（迁移 49）与意图版本 / 授权（迁移 50）。
+        "board_submissions.turn_id",
+        "board_submissions.resume_state",
+        "board_intents.client_ref",
+        "board_intents.version",
+        "board_intents.scope",
+        "board_intents.authorization",
+        "board_intents.outcome",
+        "board_intents.attempt",
+        "board_intents.finished_at",
     ),
     "indexes": (
         "idx_instances_heartbeat",

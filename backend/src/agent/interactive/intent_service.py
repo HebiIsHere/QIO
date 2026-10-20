@@ -428,7 +428,7 @@ def _resolve_questions(
     if not ids:
         return []
     try:
-        from agent.interactive import submission as submission_mod  # TEMP-P3-INTEGRATION
+        from agent.interactive import submission as submission_mod
 
         resolver = getattr(submission_mod, "resolve_waiting", None)
         if callable(resolver):
@@ -449,9 +449,9 @@ def _resolve_questions(
 
 
 def _waiting_items(conn: sqlite3.Connection, *, board_id: str, submission_id: str) -> list[dict[str, Any]] | None:
-    """读取未解决等待；A 的模块不可用返回 None（调用方如实标 waiting_unavailable）。"""
+    """读取未解决等待；A 的 get_waiting 语义（None = 没有等待）。"""
     try:
-        from agent.interactive import submission as submission_mod  # TEMP-P3-INTEGRATION
+        from agent.interactive import submission as submission_mod
 
         getter = getattr(submission_mod, "get_waiting", None)
         if not callable(getter):
