@@ -101,6 +101,16 @@ def _make_app(tmp_path, *, maintenance_tables: bool = True):
     apply_migrations(conn)
     if maintenance_tables:
         _create_maintenance_tables(conn)
+    else:
+        # 整合前提变化：迁移 47 已登记进 schema.py（生产路径），所以这里显式移除
+        # 维护表来模拟「维护记录尚未建立」的降级库，验证读取 / 写动作的诚实降级。
+        for table in (
+            "maintenance_operations",
+            "maintenance_items",
+            "maintenance_batches",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+        conn.commit()
     app = create_app(Settings(data_dir=tmp_path), conn)
     client = TestClient(app)
     return conn, app, client
@@ -204,9 +214,11 @@ def _insert_batch(
 def _insert_operation(conn, *, batch_id: str = "mb_1", op_id: str = "op_1") -> str:
     now = _now()
     conn.execute(
+        # item_id 置 NULL：整合后迁移 47 对 item_id 有外键（本用例只验证批次详情展示，
+        # 不伪造一条不存在的事项）。
         "INSERT INTO maintenance_operations"
         " (id, batch_id, item_id, action, target_ids, result_id, before, after, status, created_at)"
-        " VALUES (?, ?, 'mi_op1', 'normalize', ?, 'kn_new', ?, ?, 'applied', ?)",
+        " VALUES (?, ?, NULL, 'normalize', ?, 'kn_new', ?, ?, 'applied', ?)",
         (
             op_id,
             batch_id,
@@ -465,6 +477,8 @@ def test_answer_uses_maintenance_runner_and_does_not_touch_main_chat(tmp_path):
 def test_answer_requires_runner_and_does_not_change_data(tmp_path):
     conn, _app, client = _make_app(tmp_path)
     _insert_question(conn, item_id="mi_q1")
+    # 整合后 AppContext 会真正初始化维护执行器；这里显式模拟「执行器不可用」。
+    _app.state.ctx.maintenance_runner = None
     r = client.post("/api/memory/pending/mi_q1/answer", json={"answer": "五里关"})
     assert r.status_code == 503
     assert "未执行" in r.json()["detail"]
@@ -719,6 +733,13 @@ def test_restore_requires_confirm_and_returns_blocked_parts(tmp_path):
 
 def test_maintenance_status_reports_unavailable_or_real_state(tmp_path):
     _conn, app, client = _make_app(tmp_path)
+    # 整合后 AppContext 会真正初始化调度器：先验证真实状态可用。
+    real = client.get("/api/memory/maintenance/status").json()
+    assert real["available"] is True
+    assert "pending_change_count" in real and "turn_seq" in real
+
+    # 显式模拟「调度器未接入」的降级路径。
+    app.state.ctx.knowledge_maintenance = None
     missing = client.get("/api/memory/maintenance/status").json()
     assert missing["available"] is False
     assert "未接入" in missing["reason"]

@@ -63,8 +63,14 @@ def make_knowledge(
 
 
 def add_change(conn, item, *, source: str = "user_approved", turn_seq: int = 1) -> int:
-    cursor = conn.execute(
-        "INSERT INTO knowledge_change_log"
+    """确保这条 (chain, version) 有一条变化记录，并把等待起点设成 turn_seq。
+
+    整合后 lifecycle 的 activate() 已经会通过 A 的 record_effective_change 自动记录
+    同一条变化（契约 §12.3），所以这里必须幂等：已有行就复用 seq 并只调整
+    created_turn_seq（测试需要精确控制「等待了多少轮」）。
+    """
+    conn.execute(
+        "INSERT OR IGNORE INTO knowledge_change_log"
         " (knowledge_id, chain_id, version, source, occurred_at, created_turn_seq)"
         " VALUES (?, ?, ?, ?, ?, ?)",
         (
@@ -76,7 +82,17 @@ def add_change(conn, item, *, source: str = "user_approved", turn_seq: int = 1) 
             int(turn_seq),
         ),
     )
-    return int(cursor.lastrowid)
+    row = conn.execute(
+        "SELECT seq FROM knowledge_change_log WHERE chain_id = ? AND version = ?",
+        (item.chain_id, int(item.version)),
+    ).fetchone()
+    assert row is not None
+    conn.execute(
+        "UPDATE knowledge_change_log SET created_turn_seq = ? WHERE seq = ?",
+        (int(turn_seq), int(row["seq"])),
+    )
+    conn.commit()
+    return int(row["seq"])
 
 
 def make_snapshot(

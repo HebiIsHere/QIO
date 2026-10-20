@@ -225,17 +225,12 @@ def atomic(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 # agent.maintenance.changes.record_effective_change；A 的 recorder 自己按
 # MAINTENANCE_ORIGINS 跳过维护来源（maintenance_* 不形成循环触发）。
 #
-# TEMP-B-INTEGRATION：A 的 maintenance/changes.py 尚未合入本分支，所以这里用函数内
-# import + 兜底；A 合入后由 Lead 删掉 try/except 与 TEMP 标记即可（调用点不变）。
 def _record_effective_change_safe(
     conn: sqlite3.Connection, item: KnowledgeItem
 ) -> None:
-    """通知变化计数。任何失败只告警：既不迁就成异常，也不影响知识写入。"""
-    try:
-        from agent.maintenance.changes import record_effective_change  # TEMP-B-INTEGRATION
-    except Exception:  # noqa: BLE001 - A 的模块未合入时只跳过，不破坏写路径
-        logger.debug("变化记录模块不可用：跳过本次变化计数")
-        return
+    """通知变化计数（A 的 recorder）。任何失败只告警：不影响知识写入 / 用户路径。"""
+    from agent.maintenance.changes import record_effective_change
+
     try:
         source = str((item.provenance or {}).get("source") or "user_approved")
         record_effective_change(
