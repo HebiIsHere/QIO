@@ -50,6 +50,10 @@ class ContextAssembler:
         self.context_registry = context_registry
         self.budget_ratio = budget_ratio
         self.budget_planner = budget_planner or TokenBudgetPlanner()
+        # 最近一次 build_context_blocks 的预算结论（A 的调用点与 trace 读取）：
+        # 收尾压缩触发与预算展示依赖它们；默认值保证“还没装上下文”时也有定义。
+        self.last_needs_consolidation = False
+        self.last_budget: dict | None = None
 
     # -- focus / anchor ---------------------------------------------------
 
@@ -529,6 +533,19 @@ class ContextAssembler:
         if cost("limits", limits_data) <= remaining:
             remaining -= cost("limits", limits_data)
             blocks.append(ContextBlock(key="limits", data=limits_data))
+        # 把本轮预算结论暴露给 A 的调用点（trace / 收尾压缩触发）：
+        # 没有它 needs_consolidation 恒为 False，滚动摘要不会在预算压力下触发。
+        hard_cap = int(breakdown.injection_hard_cap)
+        used = max(0, hard_cap - remaining)
+        self.last_budget = {
+            "hard_cap": hard_cap,
+            "used_tokens": used,
+            "truncated": bool(dropped),
+            "dropped_entries": dict(dropped),
+        }
+        self.last_needs_consolidation = bool(dropped) or (
+            hard_cap > 0 and used >= hard_cap * 0.9
+        )
         return blocks
 
     # -- 各块的数据构造（只读；预算由调用方统一分配） ----------------------
