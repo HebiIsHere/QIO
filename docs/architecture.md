@@ -1297,4 +1297,87 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
    docx / xlsx / pptx 转换只用标准库；音频与视频的派生处理需要本机可用的 ffmpeg
    （查找顺序与降级口径见 `docs/SETUP.md` §2.1）。
 
+---
 
+## 16. 提示词单文件与统一消息组装（2026-10-21，整体改造第一阶段）
+
+契约与阶段交接见 `docs/qio-refactor-contract.md`；进度与限制见 `docs/status.md` P69。
+本节只描述**结构与边界**。
+
+### 16.1 提示词唯一来源
+
+- `backend/src/agent/prompts.py` 是全部固定模型可见文案的唯一来源：系统规则、回答协议与补救规则、
+  记忆 / 话题 / 材料 / 多媒体说明、工具描述与参数说明、开发指南、摘要 / 提炼 / 维护 / 独立回答规则、
+  互动模式规则、子任务 / 通知 / 修复说明、固定上下文标签。
+- 供引用的公共符号：`PROMPTS`（固定文案）、`TOOL_DESCRIPTIONS`（工具描述）、
+  `ARGUMENT_DESCRIPTIONS` / `TOOL_ARGUMENT_DESCRIPTIONS`（参数说明）、`CONTEXT_LABELS`（上下文标签），
+  以及纯组装入口（`system_rules` / `answer_protocol` / `text_tool_catalog` /
+  `render_context_blocks` / `structured_task_system` 等）。
+- 约束：其他模块只引用常量或调用组装入口，不得复制 / 另写 / 覆盖提示词；动态消息、材料、来源、
+  工具结果与运行时工具定义作为**数据**经 `json.dumps` 序列化；不对含 JSON / 用户内容的整段文本做
+  `format` / 百分号替换 / 递归 `replace`；先按完整对象控制大小再序列化，不截断序列化后的 JSON。
+- 依赖方向：prompts.py 保持低依赖（只做固定文本、索引与纯组装），不反向导入业务服务。
+
+### 16.2 统一消息组装（`backend/src/agent/core/message_assembly.py`）
+
+主对话请求形状（顺序固定）：
+
+```
+系统规则（QIO_CORE + 记忆/上下文/话题/材料/工具结果政策）
++ 当前模式规则（由程序按适配器能力给出）
++ 实际可用工具定义（native/anthropic 走 tools 字段；text 档拼进 system）
++ 结构化上下文块 ContextBlock（key ∈ prompts.CONTEXT_LABELS，data 为 JSON 数据）
++ 实际对话消息
++ 当前用户原文 + 真实多媒体内容块（图片/音频/视频）
+```
+
+- 不再使用「【用户消息】」「【系统通知】」等中文标题拼接上下文与当前消息；mode / 任务身份 / 权限
+  来自程序状态，不来自正文。
+- 回答协议（`[[QIO:ANSWER]]`）三档适配器只注入一次；补救调用（每轮最多一次）保留通用规则，
+  再追加 `ANSWER_FALLBACK_HINT`；标记原值保留，解析仍只看正文开头声明。
+- 预算：固定规则 / 模式规则 / 工具定义 / 结构化上下文 / 媒体分别如实计入；text 档工具在 prompt 里时
+  只算一次；上下文按完整条目裁剪并如实记录裁剪事实（`limits` 块）。
+
+### 16.3 结构化工具结果与类型化参数（`backend/src/agent/tools/contracts.py`）
+
+- 程序自有结果契约：`{protocol_version, ok, status, code, data, error}`；`status` 枚举见
+  `ToolStatus`（queued / running / completed / partially_completed / awaiting_approval /
+  awaiting_input / conflict / failed / cancelled / unknown）。
+- 识别结构化结果只认程序字段（`protocol_version == 1` / `ToolEnvelope`），不从任意正文猜 JSON；
+  成功结果的 evidence 放在 `data` 并随 envelope 序列化后**真正进入模型消息**；旧工具成功正文兼容。
+- 新工具参数模型用 pydantic（`extra="forbid"`、enum、受限联合），下发给模型的 JSON Schema 用
+  `json_schema_for(model)` 生成，本地校验用同一模型 `validate_model` —— 展示与校验同源，
+  enum / oneOf / additionalProperties 真正执行，不再以轻量 schema 检查冒充严格校验。
+
+### 16.4 记忆派生（摘要 / 滚动摘要 / 上下文）
+
+- 封块摘要覆盖完整片段：按完整消息切块、超长单条按「消息 id + 段序号 + 字符偏移」可追溯分段，
+  逐段用 `CLOSED_SUMMARY_SYSTEM` 生成、按序用 `MERGE_SUMMARY_SYSTEM` 合成；coverage 元数据写入
+  `fragments.meta`，失败可重试且绝不标记完整。
+- 滚动摘要只处理未覆盖的新消息；覆盖位置与输入版本持久化在 `fragments` 的迁移 44 列
+  （`rolling_covered_message_id` / `rolling_covered_count` / `rolling_input_version` /
+  `rolling_updated_at`），摘要写入与游标推进同一事务，覆盖位置只前进；列缺失时降级读 `fragments.meta`。
+- 主对话结构化上下文由 `services/context.py::ContextAssembler.build_context_blocks` 提供：
+  current_topic / history_focus / entity / short_term（滚动摘要 + 未覆盖原文）/ path_premises /
+  related_memory / knowledge（仅 state=active）/ limits；预算按完整条目裁剪，优先级
+  Focus > 实体完整卡片 > 短期记忆。
+- 存取路径保存完整摘要正文，不再按旧 2000 字上限二次截断；原始对话保留，失败可回查。
+
+### 16.5 知识与实体写入边界
+
+- 主对话新增知识：`propose_knowledge` + 程序证据目录；一律 `pending_review` 等待用户审批，
+  不能通过选择低影响分类绕过；待审批不进入注入面；审批复用知识面板与既有 verify / reject 路由。
+- 后台提炼：`knowledge/derivation.py`（冻结接口 `extract_candidates` / `commit_candidates`）+
+  `knowledge/evidence.py`（程序证据目录）+ `knowledge/rejection.py`（拒绝墓碑）；分类规则保持
+  user_profile / agent_self / goal 需用户确认、general_fact / tool_experience 可自动生效。
+- 实体：`create_entity` 与后台实体提炼使用 `decision`（create / update / observe / identity_uncertain）；
+  同名不代表同一对象（身份不同不合并、不覆盖受保护信息）；关系目标不确定时保留候选，不写入同名对象。
+- 明确纠正：`correct_knowledge` / `correct_entity` 支持稳定 ID + `expected_version` /
+  `expected_revision` CAS，冲突显式返回；用户明确纠正当场生效。
+
+### 16.6 迁移登记方式（本阶段）
+
+- 并行实现分支不改共享的 `storage/schema.py`：各自新增 `storage/migration_p1_<x>.py` 导出迁移；
+  整合时由 Lead 登记进 `MIGRATIONS` 并追加补偿迁移、收敛 `SCHEMA_VERSION` /
+  `COMPENSATION_VERSION`。本阶段最终：迁移 44（滚动摘要覆盖位置 / 输入版本）+ 补偿迁移 45；
+  知识 / 实体新字段复用既有 `provenance` / `field_meta` JSON 列，未新增知识侧迁移。
