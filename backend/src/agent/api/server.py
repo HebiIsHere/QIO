@@ -1930,7 +1930,36 @@ def create_app(
         message = str(body.get("message", "")).strip()
         if not message:
             raise HTTPException(status_code=400, detail="message required")
+        # 阶段三契约 §13.3：聊天发送请求新增可验证的互动字段 mode/boardId/submissionId。
+        # 普通模式不带这些字段 → 不设板面上下文、后续不会暴露板面工具；互动模式必须
+        # 由服务端核对板面存在、提交属于该板面后才能写入 TurnContext（模型不能越界）。
+        raw_mode = body.get("mode")
+        wants_interactive = isinstance(raw_mode, str) and raw_mode.strip() == "interactive"
+        interactive_binding: dict | None = None
+        try:
+            from agent.interactive import submission as interactive_submission
+        except Exception:  # noqa: BLE001 - 互动模块异常不应挡住普通聊天
+            interactive_submission = None  # type: ignore[assignment]
+        if interactive_submission is not None:
+            try:
+                interactive_binding = interactive_submission.resolve_chat_binding(
+                    ctx.conn,
+                    mode=raw_mode,
+                    board_id=body.get("boardId"),
+                    submission_id=body.get("submissionId"),
+                    current_topic=ctx.current_topic() if wants_interactive else None,
+                )
+            except ValueError as exc:
+                # 伪造 / 越界 boardId、提交不属于该板面、mode 非法都在这里拒绝
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         topic_id = body.get("topic_id")
+        if (
+            interactive_binding is not None
+            and interactive_binding["mode"] == "interactive"
+            and interactive_binding["topicId"]
+        ):
+            # 续作保持**原话题**（即使界面已切换话题）；普通对话完全不变。
+            topic_id = interactive_binding["topicId"]
         # 受理时就已经有 turn_id：前端可以立刻用它做乐观消息关联与取消，
         # 不必等 SSE 的 TURN_START（SSE 是异步状态通道，不承担请求身份）。
         # 提交这一刻捕获待落实的接续选择：之后再选别的，只影响后续提交
@@ -2061,7 +2090,38 @@ def create_app(
         # 原请求的绑定结果，不能重新绑定、也不能凭空推断。
         turn.bound_attachment_ids = list(outcome.bound)
         ctx.turns.activate(turn)
-        return {
+        # 阶段三：把**程序验证过**的互动绑定写进 TurnContext（Lead 的接线读取它选择
+        # 模式规则 / 板面上下文 / 工具可见性；板面工具只认 runtime 里的可信上下文）。
+        # activate 之后到下一个 await 之间不会让 worker 跑起来，因此这里写入是安全的。
+        if interactive_binding is not None and interactive_binding["mode"] == "interactive":
+            from agent.interactive import submission as interactive_submission
+
+            turn.mode = "interactive"
+            turn.board_id = interactive_binding["boardId"]
+            turn.board_submission_id = interactive_binding["submissionId"]
+            turn.board_topic_id = interactive_binding["topicId"]
+            turn.board_resume = bool(interactive_binding["resume"])
+            turn.board_intent_ids = tuple(interactive_binding["intentIds"])
+            turn.board_resolved_question_ids = tuple(
+                interactive_binding["resolvedQuestionIds"]
+            )
+            turn.board_attempt = int(interactive_binding["attempt"])
+            if interactive_binding["submissionId"]:
+                try:
+                    # 自动续作 / 显式续作的绑定：重启后仍能把这次对话接到原提交。
+                    interactive_submission.bind_submission_turn(
+                        ctx.conn,
+                        submission_id=interactive_binding["submissionId"],
+                        turn_id=turn.turn_id,
+                        resume_state={
+                            "topicId": interactive_binding["topicId"],
+                            "kind": "resume",
+                            "attempt": int(interactive_binding["attempt"]),
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - 绑定失败不推翻已受理的轮次
+                    logger.warning("绑定聊天续作到提交失败", exc_info=True)
+        response = {
             "ok": True,
             "accepted": True,
             "cancelled": False,
@@ -2074,6 +2134,18 @@ def create_app(
             **outcome.as_receipt(),
             "attachments": [attachments.payload(a, check=False) for a in outcome],
         }
+        if interactive_binding is not None and interactive_binding["mode"] == "interactive":
+            # 只增字段：前端据此显示这次消息属于哪个板面 / 是否续作；普通模式不出现。
+            response.update(
+                {
+                    "mode": "interactive",
+                    "board_id": interactive_binding["boardId"],
+                    "submission_id": interactive_binding["submissionId"],
+                    "resume": bool(interactive_binding["resume"]),
+                    "attempt": int(interactive_binding["attempt"]),
+                }
+            )
+        return response
 
     @app.get("/api/turns/by-request/{client_request_id}")
     async def turn_by_request(client_request_id: str) -> dict:

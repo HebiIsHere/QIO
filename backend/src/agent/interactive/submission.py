@@ -5,12 +5,12 @@
 硬约束（不许绕过）：
 
 1. 保存不调用 QIO；**只有 submit_board 会让 QIO 拿到表达**。提交成功（succeeded）时
-   **受理与理解分开**（契约 §14.1）：本函数只负责建立一条 accepted 的理解请求并把它交给
-   后台真实理解（understanding.py，延迟 import）。受理成功 → delivery.delivered=true、
-   delivery.understandingId、delivery.status='accepted'；受理**失败**（理解模块不可用 /
-   建立请求抛错）→ 这次提交按 failed 处理：不更新基准、不改动勾选、如实返回原因，绝不假装
-   QIO 受理了。受理成功之后的模型失败**不得**回头改提交状态（那是理解记录自己的 failed，
-   可从保存的快照重试）。
+   **受理 = 主循环受理**（阶段三契约 §13.3）：本函数通过注入的 turn_acceptor 把这次提交
+   作为主循环的一个 Turn 受理（同一 TurnManager / 同一模型与工具循环），不再创建独立
+   理解请求、不再启动理解模型调用。受理成功 → delivery.delivered=true、delivery.turnId、
+   delivery.status='accepted'，响应带 turnId / waiting，并写「提交—turn 绑定」（迁移 49）；
+   没有受理器 / 受理失败 → 这次提交按 failed 处理：不更新基准、不改动勾选、如实返回原因，
+   绝不假装 QIO 受理了，也绝不回退旧理解路径。旧 board_understanding 记录保持只读兼容。
 2. 未勾选的注释、明确隐藏的卡片：文字与链接都不得进入 before / after；
    链接必须两端都在范围内才出现；一名可见成员都没有的组整体不出现。
 3. 提交成功才更新「上次成功提交」基准；失败保留改动与本次注释选择。
@@ -37,6 +37,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from agent.interactive import board_store, models
+from agent.storage.db import transaction
 
 logger = logging.getLogger(__name__)
 
@@ -1038,6 +1039,13 @@ def replay_response(conn: sqlite3.Connection, row, *, board_id: str) -> dict:
         "baseline": baseline_info,
         "delivery": facts["delivery"],
         "visibleRange": facts["visible"],
+        # 阶段三：重放也如实回原记录的主循环 turnId 与当前等待快照（不重新受理）
+        "turnId": (
+            facts["delivery"].get("turnId")
+            if isinstance(facts["delivery"], dict)
+            else None
+        ),
+        "waiting": _waiting_state_safe(conn, board_id),
         # 契约 §2.2：提交不再取消勾选，重放也绝不复活 / 清除任何许可 —— 恒为空数组
         "checkedCleared": _checked_cleared_at(conn, board_id, baseline_seq)
         if isinstance(baseline_seq, int)
@@ -1574,6 +1582,26 @@ def resolve_chat_binding(
     }
 
 
+def _waiting_state_safe(conn: sqlite3.Connection, board_id: str) -> dict:
+    """提交响应里的等待快照：表未就绪时如实标 available=False，不假装「没有等待」。"""
+    try:
+        return waiting_state(conn, board_id)
+    except sqlite3.Error as exc:  # 迁移 49 未应用 / 库不可用：响应继续，事实如实标注
+        logger.warning("读取等待状态失败（等待/续作表不可用）：%s", exc)
+        return {
+            "boardId": str(board_id or ""),
+            "waiting": None,
+            "count": 0,
+            "items": [],
+            "questionIds": [],
+            "submissionIds": [],
+            "latestSubmissionId": None,
+            "updatedAt": None,
+            "available": False,
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def submission_turn_message(
     *,
     board_id: str,
@@ -1701,78 +1729,6 @@ def _load_understanding():
     except Exception as exc:  # noqa: BLE001 - 模块缺失 / 加载失败都是「受理不可用」
         return None, f"理解模块不可用（agent.interactive.understanding）：{type(exc).__name__}: {exc}"
     return understanding, None
-
-
-def _understanding_id_of(conn: sqlite3.Connection, record: Any, submission_id: str) -> str:
-    """从受理返回值里取理解请求 id；取不到就按 submission_id 回查（只取一条）。"""
-    if isinstance(record, dict):
-        for key in ("id", "understandingId"):
-            value = record.get(key)
-            if value:
-                return str(value)
-        nested = record.get("understanding")
-        if isinstance(nested, dict) and nested.get("id"):
-            return str(nested["id"])
-    try:
-        row = conn.execute(
-            "SELECT id FROM board_understanding WHERE submission_id = ?"
-            " ORDER BY created_at DESC LIMIT 1",
-            (submission_id,),
-        ).fetchone()
-    except sqlite3.Error:
-        return ""
-    return str(row["id"]) if row is not None else ""
-
-
-def _accept_submission(
-    conn: sqlite3.Connection,
-    *,
-    board_id: str,
-    submission_id: str,
-    snapshot: dict,
-    view: dict | None = None,
-) -> dict:
-    """受理：建立一条 accepted 的理解请求（幂等由 B 的 request_understanding 负责）。
-
-    snapshot 就是这次提交结果里的 after 投影（内存里那份，不重新读板面）：
-    提交不再改动板面（许可持续有效，契约 §2），这里仍然用内存里那份投影，
-    避免任何重读带来的漂移。B 需要 before / expressions 时自己按 submission_id 从
-    board_submissions 读。
-
-    返回 {"ok": bool, "understandingId": str | None, "reason": str | None}。
-    任何失败都如实返回原因，不抛异常（调用方据此把这次提交按 failed 处理）。
-    """
-    understanding, reason = _load_understanding()
-    if understanding is None:
-        return {"ok": False, "understandingId": None, "reason": reason}
-    requester = getattr(understanding, "request_understanding", None)
-    if not callable(requester):
-        return {
-            "ok": False,
-            "understandingId": None,
-            "reason": "理解模块没有 request_understanding：无法建立理解请求",
-        }
-    # 深拷贝一份冻结快照：内容就是内存里那份 after，之后谁也改不到它。
-    # F6：把**校验通过**的客户端冻结视图一起固化（没给 / 非法 → 不带 key，读出来就是 null）。
-    frozen = models.loads(models.dumps(snapshot), {})
-    if isinstance(frozen, dict) and isinstance(view, dict) and view:
-        frozen["view"] = dict(view)
-    try:
-        record = requester(
-            conn, board_id=board_id, submission_id=submission_id, snapshot=frozen
-        )
-    except Exception as exc:  # noqa: BLE001 - 受理失败必须如实返回，不能抛给路由
-        logger.warning("互动提交受理失败（不更新基准、不改动勾选）", exc_info=True)
-        return {
-            "ok": False,
-            "understandingId": None,
-            "reason": f"建立理解请求失败：{type(exc).__name__}: {exc}",
-        }
-    return {
-        "ok": True,
-        "understandingId": _understanding_id_of(conn, record, submission_id) or None,
-        "reason": None,
-    }
 
 
 def _current_attempt(conn: sqlite3.Connection, understanding_id: str) -> int | None:
@@ -2026,28 +1982,30 @@ async def submit_board(
     adapter_provider: Any = None,
     client_request_id: str = "",
     view: Any = None,
+    turn_acceptor: Callable[..., dict] | None = None,
 ) -> dict:
-    """提交：QIO 取得表达的唯一入口。
+    """提交：QIO 取得表达的唯一入口（阶段三起作为主循环的一个 Turn 受理）。
 
     - 可见范围**由服务端从已保存状态推导**；客户端传来的 requestedVisible 只用来
       报告「哪些请求项不可见而被忽略」，绝不接受未勾选卡片进入载荷；
     - 成功才更新基准；**不改动任何勾选**（整体许可持续有效，契约 §2.2）；
     - 失败保留改动与本次注释选择，不更新基准、不调用 QIO；
-    - empty / duplicate 不更新基准、不调用 QIO；
+    - empty / duplicate 不更新基准、不调用 QIO、**不创建主循环 turn**；
     - M4 路径 3：请求可携带 baseStateVersion（本次候选所基于的服务器 seq）与
       confirmedCheckId（影响确认记录）；与服务端不一致 → StaleState，
       **不落库**（不产生提交记录、不更新基准、不调用 QIO）；
-    - **受理与理解分开**（§14.1）：成功时建立理解请求，并把真实理解交给后台
-      （adapter_provider 透传给 B 的 run_understanding；没有可用凭据 / adapter 时后台
-      如实降级为可读失败，不阻塞本请求）；
-    - 受理失败（理解模块不可用 / 建立请求抛错）：按 failed 处理 —— 不更新基准、
-      不改动勾选、如实返回原因；受理成功之后的模型失败不回改提交状态；
+    - **受理 = 主循环受理**（§13.3）：succeeded 时由注入的 turn_acceptor 把这次提交
+      作为主循环的一个 Turn 受理（同一 TurnManager / 同一模型与工具循环）；不再创建
+      独立理解请求、不再启动理解模型调用。turn_acceptor 省略 / 抛错 / 未返回 turnId
+      → 按 failed 处理（不更新基准、不改动勾选、如实返回原因），绝不回退旧理解路径；
+    - 受理成功后写「提交—turn 绑定」（迁移 49），响应带 turnId 与等待快照；
     - **稳定提交请求身份**（契约 §1.1）：client_request_id 非空时按
       (board_id, client_request_id) 精确认这一次提交请求 ——
-      同身份同内容 = 重试，直接返回原记录事实（replayed=True，不落新行、不新建理解请求、
-      不启动后台理解、不调用模型）；同身份但 base_state_version 或 note 不一致 →
+      同身份同内容 = 重试，直接返回原记录事实（replayed=True，不落新行、不创建 turn、
+      不调用模型）；同身份但 base_state_version 或 note 不一致 →
       RequestIdentityConflict（HTTP 409，不落新提交、不改基准、不调模型）；
-      空串 = 旧客户端，行为与今天完全一致（不参与幂等）。
+      空串 = 旧客户端，行为与今天一致（不参与幂等）。
+    - adapter_provider 参数保留只为旧调用点兼容；新流程不再用它启动任何独立模型调用。
     """
     loaded = board_store.load_board(conn, board_id)
     bid = loaded["board"]["id"]
@@ -2119,58 +2077,100 @@ async def submit_board(
     requested = {str(cid) for cid in (requested_visible or [])}
     ignored_requested = sorted(requested - {card["id"] for card in visible["cards"]})
 
-    # 受理与理解分开（§14.1）：只有 succeeded 才建立理解请求；建立不起来按受理失败处理。
-    acceptance: dict[str, Any] = {"ok": False, "understandingId": None, "reason": ""}
+    # 受理（§13.3）：只有 succeeded 才把这次提交作为主循环的一个 Turn 受理。
+    # 由注入的 turn_acceptor 完成（生产路由用 app.turns 的公开受理接口）；这里绝不
+    # 回退旧独立理解模型调用。没有注入 / 受理失败 → 按 failed 处理（不更新基准）。
+    acceptance: dict[str, Any] = {"ok": False, "turnId": None, "topicId": "", "reason": ""}
     if status == "succeeded":
-        acceptance_kwargs: dict[str, Any] = {
-            "conn": conn,
-            "board_id": bid,
-            "submission_id": submission_id,
-            # 只传内存里这份 after 投影（不重读板面：提交不改动任何勾选）
-            "snapshot": after,
-        }
-        if frozen_view is not None:
-            # F6：客户端冻结视图随快照一起固化（不参与 before/after 求差与内容指纹）。
-            # 没给 view 时不传这个形参：老测试替身 / 旧调用点的签名保持可用。
-            acceptance_kwargs["view"] = frozen_view
-        acceptance = _accept_submission(**acceptance_kwargs)
-        if not acceptance["ok"]:
-            # 受理失败：没有可靠受理 → 不更新基准、不改动勾选，改动与本次注释许可保留
+        if turn_acceptor is None:
             status = "failed"
-            error = f"受理失败：没有建立理解请求。原因：{acceptance['reason']}"
+            error = (
+                "受理失败：主循环受理器不可用（没有注入 turn_acceptor）。"
+                "本次没有更新基准、没有创建独立理解请求；改动与本次注释选择已保留，可以再试一次。"
+            )
+            acceptance = {
+                "ok": False,
+                "turnId": None,
+                "topicId": "",
+                "reason": "主循环受理器不可用（没有注入 turn_acceptor）",
+            }
+        else:
+            message = submission_turn_message(
+                board_id=bid,
+                submission_id=submission_id,
+                after=after,
+                expressions=expressions,
+                note=requested_note,
+            )
+            try:
+                created = turn_acceptor(
+                    board_id=bid,
+                    submission_id=submission_id,
+                    message=message,
+                    topic_id=None,
+                    resume=False,
+                    resolved_question_ids=(),
+                    intent_ids=(),
+                    attempt=1,
+                    view=frozen_view,
+                )
+            except Exception as exc:  # noqa: BLE001 - 受理失败如实返回，不能把路由打崩
+                logger.warning("互动提交受理失败（不更新基准、不改动勾选）", exc_info=True)
+                created = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+            reason = created.get("reason") if isinstance(created, dict) else None
+            turn_id = (
+                str(created.get("turnId") or created.get("turn_id") or "").strip()
+                if isinstance(created, dict)
+                else ""
+            )
+            if not isinstance(created, dict) or not created.get("ok") or not turn_id:
+                status = "failed"
+                detail = (
+                    str(reason)
+                    if reason
+                    else (
+                        "受理器没有返回 turnId"
+                        if isinstance(created, dict) and created.get("ok")
+                        else "未知原因"
+                    )
+                )
+                error = f"受理失败：没有创建主循环 turn。原因：{detail}"
+                acceptance = {
+                    "ok": False,
+                    "turnId": None,
+                    "topicId": "",
+                    "reason": detail,
+                }
+            else:
+                acceptance = {
+                    "ok": True,
+                    "turnId": turn_id,
+                    "topicId": str(
+                        created.get("topicId") or created.get("topic_id") or ""
+                    ),
+                    "reason": None,
+                }
 
-    # QIO 投递位置：受理成功才 delivered；受理成功之后的模型失败不回改这次提交。
+    # QIO 投递位置：主循环 turn 已受理才 delivered；没有独立理解模型失败这回事了。
     if status == "succeeded":
         delivery: dict[str, Any] = {
             "delivered": True,
             "status": "accepted",
-            "understandingId": acceptance.get("understandingId"),
+            "understandingId": None,
+            "turnId": acceptance.get("turnId"),
+            "boardId": bid,
+            "submissionId": submission_id,
+            "waiting": _waiting_state_safe(conn, bid),
             "reason": (
-                "提交已可靠受理：理解请求已落库，QIO 正在（或即将）读取本次材料并真实理解；"
-                "模型失败会记在理解记录上（可从保存的快照重试），不影响本次提交"
+                "提交已可靠受理：本次互动提交已作为主循环的一轮受理"
+                "（同一 TurnManager / 同一模型与工具循环），QIO 会在对话中处理；"
+                "不再创建独立理解记录，旧理解记录只读保留"
             ),
             "detail": (
                 f"本次交给 QIO 的范围：卡片 {len(after['cards'])} 项、组 {len(after['groups'])} 项、"
                 f"关系 {len(after['links'])} 项；有效改动 {len(expressions)} 项"
             ),
         }
-        if acceptance.get("understandingId"):
-            dispatch = _schedule_understanding(
-                conn,
-                understanding_id=str(acceptance["understandingId"]),
-                adapter_provider=adapter_provider,
-            )
-        else:
-            dispatch = {
-                "started": False,
-                "reason": (
-                    "理解请求已建立但没有拿到理解 id：本次没有启动后台理解"
-                    "（可以从保存的快照重试）"
-                ),
-            }
-        delivery["background"] = dispatch
-        if not dispatch.get("started") and dispatch.get("reason"):
-            delivery["detail"] = f"{delivery['detail']}；{dispatch['reason']}"
         marking_updated: list[str] = []
         try:
             from agent.interactive import intents  # 延迟 import：避免与 C 的模块互相牵制
@@ -2191,10 +2191,15 @@ async def submit_board(
                 "error": f"受影响意图标记失败（提交本身已成功）：{exc}",
             }
     elif status == "failed":
-        acceptance_failed = bool(acceptance["reason"] and not acceptance["ok"])
+        acceptance_failed = bool(acceptance["reason"]) and not acceptance["ok"]
         delivery = {
             "delivered": False,
             "status": "failed",
+            "understandingId": None,
+            "turnId": None,
+            "boardId": bid,
+            "submissionId": submission_id,
+            "waiting": _waiting_state_safe(conn, bid),
             "reason": (
                 f"受理失败：{acceptance['reason']}。本次没有更新基准、没有清除勾选，"
                 "改动与本次注释选择已保留，可以再试一次"
@@ -2255,10 +2260,34 @@ async def submit_board(
     # checkedCleared 恒为空数组：字段名保留只为兼容旧前端，绝不因为一次回执把许可改掉。
     checked_cleared: list[str] = []
 
+    # 提交—主循环 turn 绑定（迁移 49）：受理成功后写最近绑定与历史；绑定失败只告警，
+    # 不影响已经成立的受理事实（响应里仍如实带 turnId / waiting）。
+    turn_binding: dict | None = None
+    if status == "succeeded" and acceptance.get("turnId"):
+        try:
+            turn_binding = bind_submission_turn(
+                conn,
+                submission_id=submission_id,
+                turn_id=str(acceptance["turnId"]),
+                resume_state={
+                    "topicId": str(acceptance.get("topicId") or ""),
+                    "kind": "submission",
+                    "attempt": 1,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 绑定失败不能让已受理的提交失败
+            logger.warning(
+                "记录提交—主循环 turn 绑定失败（提交已受理）：%s", exc, exc_info=True
+            )
+            turn_binding = {"error": str(exc)[:300]}
+
     record["clientRequestId"] = identity
     return {
         "status": status,
         "submission": record,
+        "turnId": acceptance.get("turnId"),
+        "turnBinding": turn_binding,
+        "waiting": _waiting_state_safe(conn, bid),
         "before": before,
         "after": after,
         "expressions": expressions,
