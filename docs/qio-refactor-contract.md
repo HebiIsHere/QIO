@@ -264,3 +264,77 @@ attach 缺省时按现有规则处理。明确拒绝的内容不能被另一入�
 
 整合顺序：A/B/C 分支完成 → Lead 逐个合并到 `feat/qio-refactor-p1`（解决共享文件冲突）→
 D 在整合结果上独立审阅与定向回归 → Lead 修复、更新文档、形成阶段交接提交。
+
+---
+
+## 11. 阶段交接（第一阶段完成，2026-10-21）
+
+### 11.1 分支与提交
+
+- 基线：`aef3c43c0cf5c03a4c551b18970f226a745cc6fc`（origin/main）。
+- 公共契约冻结提交：`d265d033`（prompts.py 冻结正文、tools/base.py 结构化字段、
+  tools/contracts.py、core/message_assembly.py、memory / knowledge 派生模块拆分、本文件与验证台账）。
+- 实现分支（本地，均未 push）：
+  - A：`wt/p1-a-prompts`（提示词单文件化 / 统一消息组装 / 适配器与回答协议 / 结构化工具结果）；
+  - B：`wt/p1-b-memory`（摘要完整覆盖 / 滚动摘要覆盖位置 / 结构化上下文块）；
+  - C：`wt/p1-c-knowledge`（知识新增审批 / 实体创建 / 纠正 / 证据与拒绝墓碑）；
+  - D：`wt/p1-d-verify`（独立契约测试与审阅记录）。
+- 整合分支：`feat/qio-refactor-p1`（Lead 工作区 `D:\qio-dev\qio-p1-lead`）。
+  **后续阶段从本分支的整合提交继续**；不合并 main、不推送、不创建 PR。
+
+### 11.2 实现映射（契约条目 → 落地位置）
+
+| 契约 | 实现位置 | 交接说明 |
+| --- | --- | --- |
+| §2 提示词单文件 | `backend/src/agent/prompts.py`；`interactive/prompts.py` 变薄引用；各工具引用常量 | 冻结正文逐字保留；新增迁移文案在同文件；旧英文摘要 / 提炼提示词已删除 |
+| §3 消息组装 | `core/message_assembly.py`；`services/turn_orchestrator.py`；`services/app.py`（通知轮） | 主对话与通知轮都走同一入口；`ContextBlock` 为与 B 的交接形状 |
+| §3 适配器 / 回答协议 | `adapters/{base,native,anthropic,text,fake}.py`；`core/loop.py` | 三档规则一致；协议只注入一次；补救保留通用规则 + hint |
+| §4 结构化工具结果 | `tools/base.py`、`tools/contracts.py`、`core/tool_feedback.py`、`tools/registry.py` | `protocol_version==1` 识别；`data` 进模型消息；旧正文兼容；`arg_model` 参数同源校验 |
+| §5 记忆 | `memory/{limits,contract,summary,rolling}.py`；`services/memory_lifecycle.py`；`storage/migration_p1_b.py` → schema.py 44/45 | 完整覆盖 + 滚动游标；存取不二次截断 |
+| §5 上下文 | `services/context.py::build_context_blocks` | 七类结构化块 + limits；仅 active 知识 |
+| §6 知识 / 实体 | `knowledge/{lifecycle,verify,extraction,derivation,evidence,rejection,scope}.py`；`entities/{cards,extract}.py`；`tools/{knowledge_propose,knowledge_correction,entity_create,entity_tools}.py`；`services/app.py`；`api/server.py`；前端 KnowledgePanel / EntityPanel | 主对话一律审批；后台分类规则保持；拒绝墓碑；稳定 ID CAS；实体 decision 语义 |
+| §7 类型模型 | `tools/contracts.py`；新工具 pydantic 参数模型 | `json_schema_for` / `validate_model` 同源；enum / additionalProperties 真正执行 |
+| §8 迁移 | `storage/schema.py` 追加 44 + 补偿 45；`storage/migration_p1_b.py` 为 SQL 唯一来源 | 历史迁移未改；`COMPENSATION_VERSION = SCHEMA_VERSION = 45` |
+| §9 负责人接线 | `tools/continue_tool.py`（当轮片段上下文）；`services/app.py`（通知轮）；`tools/topic_tools.py`（描述单源） | 不改本轮归属、不影响排队消息；不推送 / 不跑完整 CI |
+
+### 11.3 冻结接口备注（后续阶段沿用）
+
+- `ContextBlock(key, data)`：key 必须是 `prompts.CONTEXT_LABELS` 中的键；data 一律 JSON 数据
+  （不预拼中文标题），由 `prompts.render_context_blocks` 渲染。
+- `ContextAssembler.build_context_blocks(...) -> list[ContextBlock]`，并通过实例属性
+  `last_budget` / `last_needs_consolidation` 暴露收尾压缩信号（主对话 trace 与压缩触发读取）。
+- `knowledge/derivation.py`：`extract_candidates(adapter, *, summary, evidence_catalog, tracer=None)`、
+  `commit_candidates(conn, extraction, *, topic_id, entity_ids, fragment_id, evidence_catalog, tracer=None)`。
+- 证据目录条目：`{"id": 真实 id, "kind": message|fragment|summary|entity|knowledge|tool_result|
+  attachment|material, "label": 简短说明}`（可带 `role`）。
+- `ToolResult` 结构化字段与 `ToolEnvelope` 形状见 §4；`ToolStatus` 为唯一状态枚举。
+
+### 11.4 本阶段确认的裁决（实现 / 验证沿用）
+
+1. 工具描述单一来源：冻结词典内工具必须与 `TOOL_DESCRIPTIONS[name]` 逐字一致；其余工具正文必须
+   出现在 prompts.py 源码中（不强制进词典，不得留在工具模块）。
+2. `correct_knowledge` 提供 `expected_version` 时，版本不匹配必须返回 conflict/failure；
+   只有未提供稳定 ID / 版本时才走 candidate_index / content 兼容匹配。
+3. 上下文块 key 必须 ⊆ `CONTEXT_LABELS`；具体使用哪些键由实现决定，验证不限定子集。
+4. 补救调用必须保留 QIO_CORE 等通用规则，再追加 `ANSWER_FALLBACK_HINT`（每轮最多一次）。
+5. 并行分支不改 `storage/schema.py`；迁移以独立模块交付，由 Lead 登记并追加补偿迁移（见 §8）。
+6. B 的分段摘要与知识抽取：所有路径使用 prompts.py 的固定正文；既有 fake provider 的**分派识别**
+   可做最小适配，不得放宽断言。
+7. 通知轮（系统驱动）同样使用统一消息组装；通知正文来自 prompts.py 的固定模板。
+
+### 11.5 验证与未验证边界
+
+- 定向验证记录见 `docs/qio-verification-ledger.md`（含 A / B / C / D 与 Lead 整合的实际命令与结果）。
+- 未执行：完整后端测试集合、完整前端测试集合、完整 CI、真实模型 / 桌面壳实机验收；
+  这些按四阶段共同预算留到最终收口。任何“已验证”结论仅覆盖台账中列出的命令。
+- 平台：Windows 开发机（共享后端 venv）；前端只跑受影响 vitest 文件。
+
+### 11.6 剩余问题（交给后续阶段）
+
+1. 第二阶段及以后（本阶段未做）：按整体改造计划继续，从本整合提交衍生新分支。
+2. 旧 `build_injection` / `short_term_items` 文本路径与 prompts.py 中兼容别名仍在；后续阶段清理时
+   需同步替换旧测试，不要把两套路径继续扩散。
+3. 通知轮的记忆块暂沿用旧渲染文本（`legacy_text`），后续阶段可切到更细的结构化块。
+4. 工具参数说明迁移已覆盖模型可见部分；非模型可见的产品文案（审批弹窗等）仍留在各自模块。
+5. 完整测试集合 / CI 未运行；若后续阶段发现旧测试依赖旧提示词字面量，应更新测试而不是恢复旧正文。
+6. 本阶段未推送、未合并 main、未发布；集成与发布流程按整体计划在最终阶段执行。
