@@ -46,6 +46,69 @@ def media_facts_note(entries: list[dict]) -> str:
     return prompts.render_media_facts(entries)
 
 
+def _block_key(block) -> str:
+    if isinstance(block, dict):
+        return str(block.get("key") or "")
+    return str(getattr(block, "key", "") or "")
+
+
+def _block_data(block):
+    if isinstance(block, dict):
+        return block.get("data")
+    return getattr(block, "data", None)
+
+
+def _knowledge_snapshot_from_plan(plan) -> list[dict]:
+    """旧 InjectionPlan（或 B 提供的等价 plan）里的知识快照。"""
+    snapshot = []
+    for item in getattr(plan, "knowledge", None) or []:
+        text = getattr(item, "text", "") or ""
+        snapshot.append(
+            {
+                "item_id": item.item_id,
+                "content": (text.split("] ", 1)[-1] if "] " in text else text),
+            }
+        )
+    return snapshot
+
+
+def _knowledge_snapshot_from_blocks(blocks) -> list[dict]:
+    """B 只返回 blocks 时，从 key=="knowledge" 块派生知识快照。
+
+    兼容工具（correct_knowledge）需要本轮实际注入的知识 id 与内容；
+    data["entries"] 的条目字段由 B 约定（id / content，text 为等价兜底）。
+    """
+    for block in blocks or []:
+        if _block_key(block) != "knowledge":
+            continue
+        data = _block_data(block)
+        entries = data.get("entries") if isinstance(data, dict) else None
+        snapshot: list[dict] = []
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            item_id = entry.get("id") or entry.get("item_id")
+            content = entry.get("content")
+            if content is None:
+                content = entry.get("text") or ""
+            if item_id is None and not content:
+                continue
+            snapshot.append({"item_id": item_id, "content": str(content)})
+        return snapshot
+    return []
+
+
+def _context_limits(blocks) -> dict:
+    """从结构化上下文里取 limits 块（预算 / 截断事实）；没有就返回空 dict。"""
+    for block in blocks or []:
+        if _block_key(block) != "limits":
+            continue
+        data = _block_data(block)
+        if isinstance(data, dict):
+            return dict(data)
+    return {}
+
+
 def _coerce_context_result(result):
     """归一化 B 的 build_context_blocks 返回值（契约形状：list[ContextBlock]）。
 
@@ -521,33 +584,33 @@ class TurnOrchestrator:
             blocks, injection_plan, needs_consolidation = await self._assemble_context(
                 app,
                 adapter,
+                ctx,
                 message=message,
                 topic=topic,
                 aux_topic_ids=aux_topic_ids,
-                short_term=short_term,
+                fragment_id=ctx.bound_fragment_id,
+                focus_fragment_id=focus_fragment,
+                exclude_message_id=ctx.user_message_id,
                 new_topic_candidate=new_topic_candidate,
                 reason=reason,
+                # 仅旧桥（B 的 build_context_blocks 不存在时）使用：
+                short_term=short_term,
                 topic_note=topic_note,
                 focus_block=focus_block,
                 focus_item_id=focus_fragment,
                 entity_cards=entity_cards,
             )
-        # 取消之后不再把这次检索的结果提交进本轮上下文（这一轮不会再被使用）。
-        if not ctx.cancelled and injection_plan is not None:
-            knowledge_items = getattr(injection_plan, "knowledge", None) or []
-            snapshot = []
-            for item in knowledge_items:
-                text = getattr(item, "text", "") or ""
-                snapshot.append(
-                    {
-                        "item_id": item.item_id,
-                        "content": (text.split("] ", 1)[-1] if "] " in text else text),
-                    }
-                )
-            ctx.knowledge_snapshot = snapshot
-        plan_items = list(getattr(injection_plan, "all_items", None) or [])
-        tracer.injection(
-            items=[
+        # 取消之后不再把这次检索的结果提交进本轮上下文（这一轮不会被使用）。
+        if not ctx.cancelled:
+            if injection_plan is not None:
+                ctx.knowledge_snapshot = _knowledge_snapshot_from_plan(injection_plan)
+            else:
+                # B 只返回 blocks：知识快照从 key=="knowledge" 的块派生。
+                ctx.knowledge_snapshot = _knowledge_snapshot_from_blocks(blocks)
+        context_limits = _context_limits(blocks)
+        if injection_plan is not None:
+            plan_items = list(getattr(injection_plan, "all_items", None) or [])
+            injection_items = [
                 {
                     "surface": it.surface,
                     "item_id": it.item_id,
@@ -556,14 +619,35 @@ class TurnOrchestrator:
                     "preview": _preview(it.text, 160),
                 }
                 for it in plan_items
-            ],
-            total_tokens=int(getattr(injection_plan, "total_tokens", 0) or 0),
-            budget={
+            ]
+            injection_total_tokens = int(
+                getattr(injection_plan, "total_tokens", 0) or 0
+            )
+            injection_budget = {
                 "hard_cap": int(getattr(injection_plan, "hard_cap", 0) or 0),
                 "truncated": bool(getattr(injection_plan, "truncated", False)),
                 "needs_consolidation": bool(needs_consolidation),
-            },
-            dropped=[],
+            }
+            injection_dropped: list = []
+        else:
+            # B 不返回 plan：不报假数据 —— items 留空，预算只取 limits 块里的真实值。
+            injection_items = []
+            injection_total_tokens = int(
+                context_limits.get("used_tokens")
+                or context_limits.get("total_tokens")
+                or 0
+            )
+            injection_budget = {
+                "hard_cap": int(context_limits.get("hard_cap") or 0),
+                "truncated": bool(context_limits.get("truncated", False)),
+                "needs_consolidation": bool(needs_consolidation),
+            }
+            injection_dropped = list(context_limits.get("dropped") or [])
+        tracer.injection(
+            items=injection_items,
+            total_tokens=injection_total_tokens,
+            budget=injection_budget,
+            dropped=injection_dropped,
         )
         # 附件事实（C 的 AttachmentService）：只说明「本轮附加了哪些文件对象」，
         # 内容不进上下文（模型必须按需 read_attachment），也不影响审批权限与工具参数。
@@ -623,54 +707,86 @@ class TurnOrchestrator:
         self,
         app,
         adapter,
+        ctx,
         *,
         message: str,
         topic: str,
         aux_topic_ids: list[str],
-        short_term: list,
+        fragment_id: str | None,
+        focus_fragment_id: str | None,
+        exclude_message_id: str | None,
         new_topic_candidate: bool,
         reason: str,
+        # 以下参数只给旧桥用；B 的 build_context_blocks 不接收
+        short_term: list,
         topic_note: str,
         focus_block: str,
         focus_item_id: str | None,
         entity_cards: list,
     ):
-        """组装本轮结构化上下文（契约 §3）。
+        """组装本轮结构化上下文（契约 §3，已对齐 B 的最终签名）。
 
-        优先走 B 的 ContextAssembler.build_context_blocks（返回 list[ContextBlock]
-        或带 .blocks / .plan 的等价数据）；A 分支里它可能还不存在（B 并行开发），
-        此时把旧 payload.text 包成一个 memory 块保证分支可跑 —— 这是**临时桥**，
-        整合时必须走 B 的结构化路径。
+        优先走 B 的 ContextAssembler.build_context_blocks（返回 list[ContextBlock]）；
+        只传它声明的参数（short_term / 实体卡由 B 内部基于 fragment / query 计算）。
+        builder 不存在时（A 分支在 B 合入前）才走旧 payload.text 的**临时桥**。
         """
         from agent.core.message_assembly import ContextBlock
 
-        kwargs = {
-            "topic_id": topic,
-            "aux_topic_ids": aux_topic_ids,
-            "entity_ids": app._topic_entity_ids(topic),
-            "user_node_id": app._user_root_id(),
-            "model": adapter.model,
-            "short_term": short_term,
-            "new_topic_candidate": new_topic_candidate,
-            "new_topic_reason": reason,
-            "topic_note": topic_note,
-            "focus_block": focus_block,
-            "focus_item_id": focus_item_id,
-            "entity_cards": entity_cards,
-            # 预算必须贴近 Adapter 真正发出去的内容：system prompt（text 档含
-            # 全部工具说明）与协议开销都要如实扣除，而不是恒为 0。
-            "system_prompt_tokens": _system_prompt_tokens(adapter, app.registry),
-            "adapter_overhead_tokens": _adapter_overhead_tokens(adapter, app.registry),
-            "tool_definitions_tokens": _tool_definitions_tokens(adapter, app.registry),
-        }
+        # 预算必须贴近 Adapter 真正发出去的内容：固定系统规则（所有档位都有）、
+        # system prompt（text 档含全部工具说明）与协议开销都要如实扣除。
+        system_prompt_tokens = _system_prompt_tokens(
+            adapter, app.registry
+        ) + _fixed_system_rules_tokens(adapter, app.registry)
+        adapter_overhead_tokens = _adapter_overhead_tokens(adapter, app.registry)
+        tool_definitions_tokens = _tool_definitions_tokens(adapter, app.registry)
+
         assembler = getattr(app, "context_assembler", None)
         builder = getattr(assembler, "build_context_blocks", None)
         if callable(builder):
-            result = await app.heavy.run(builder, message, **kwargs)
-            return _coerce_context_result(result)
-        # ---- 临时桥（整合前）----
-        payload = await app.heavy.run(app.build_injection, message, **kwargs)
-        blocks: list[Any] = []
+            result = await app.heavy.run(
+                builder,
+                message,
+                topic_id=topic,
+                aux_topic_ids=aux_topic_ids,
+                entity_ids=app._topic_entity_ids(topic),
+                user_node_id=app._user_root_id(),
+                model=adapter.model,
+                fragment_id=fragment_id,
+                focus_fragment_id=focus_fragment_id,
+                exclude_message_id=exclude_message_id,
+                new_topic_candidate=new_topic_candidate,
+                new_topic_reason=reason,
+                system_prompt_tokens=system_prompt_tokens,
+                adapter_overhead_tokens=adapter_overhead_tokens,
+                tool_definitions_tokens=tool_definitions_tokens,
+            )
+            blocks = _coerce_context_result(result)[0]
+            # B 不返回 plan；整合后由 assembler 的属性给出压缩建议。
+            needs_consolidation = bool(
+                getattr(assembler, "last_needs_consolidation", False)
+            )
+            return blocks, None, needs_consolidation
+        # ---- 临时桥（B 的 build_context_blocks 不存在时；整合后不应走到这里）----
+        payload = await app.heavy.run(
+            app.build_injection,
+            message,
+            topic_id=topic,
+            aux_topic_ids=aux_topic_ids,
+            entity_ids=app._topic_entity_ids(topic),
+            user_node_id=app._user_root_id(),
+            model=adapter.model,
+            short_term=short_term,
+            new_topic_candidate=new_topic_candidate,
+            new_topic_reason=reason,
+            topic_note=topic_note,
+            focus_block=focus_block,
+            focus_item_id=focus_item_id,
+            entity_cards=entity_cards,
+            system_prompt_tokens=system_prompt_tokens,
+            adapter_overhead_tokens=adapter_overhead_tokens,
+            tool_definitions_tokens=tool_definitions_tokens,
+        )
+        blocks = []
         legacy_text = getattr(payload, "text", "") or ""
         if legacy_text.strip():
             blocks.append(ContextBlock("memory", {"legacy_text": legacy_text}))
@@ -1132,6 +1248,26 @@ def _specs_or_empty(registry) -> list:
         return list(registry.specs())
     except Exception:  # noqa: BLE001 - 预算估算不得影响本轮
         return []
+
+
+def _fixed_system_rules_tokens(adapter, registry) -> int:
+    """所有档位都会收到的固定系统规则（QIO_CORE + 政策）的 token 估算。
+
+    消息组装（core/message_assembly）把它放进唯一 system 消息：
+    * text 档的 system_prompt_text 已经把这段规则算进去，这里返回 0（只算一次）；
+    * native / anthropic 的 adapter 不自拼 system，规则由调用方组装，
+      所以在这里单独计入，避免预算高估可用空间。
+    """
+    from agent.memory.index import estimate_tokens
+
+    try:
+        adapter_text = adapter.system_prompt_text(_specs_or_empty(registry))
+    except Exception:  # noqa: BLE001 - 预算估算不得影响本轮
+        adapter_text = ""
+    marker = prompts.PROMPTS["QIO_CORE"].splitlines()[0]
+    if adapter_text and marker in adapter_text:
+        return 0
+    return estimate_tokens(prompts.system_rules(""))
 
 
 def _system_prompt_tokens(adapter, registry) -> int:
