@@ -301,9 +301,18 @@ class BaseAdapter(ABC):
         返回空串；text 兼容档需要把工具说明写进 prompt，必须如实返回，
         否则预算会高估可用空间。
 
-        注意：内容角色协议（prompts.CONTENT_ROLE_PROTOCOL）不在这里返回 ——
-        它不是本 Adapter 拼的：native / anthropic 由 core/loop.py 作为 system
-        消息注入（见 protocol_in_prompt），text 档由 build_system_prompt 拼进去。
+        注意：回答协议（prompts.answer_protocol()）**不在这里返回** ——
+        它不是本 Adapter 拼的：native / anthropic 由 core/loop.py 作为每次调用的
+        系统消息注入（见 protocol_in_prompt），text 档由 build_system_prompt 拼进去。
+        """
+        return ""
+
+    def mode_rules_text(self, tools: list[ToolSpec]) -> str:
+        """由程序决定的「当前模式规则」段（拼在固定系统规则之后、上下文块之前）。
+
+        默认空串：native / anthropic 靠 API 的 tools 字段表达可用工具；
+        text 兼容档在这里给出文本工具调用协议、观测格式与工具目录。
+        模式规则**只来自程序**，不让模型自报模式或身份。
         """
         return ""
 

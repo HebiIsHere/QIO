@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from agent import prompts
 from agent.tools.base import Tool, ToolResult
 from agent.tools.blocking import get_blocking_executor
 
@@ -134,7 +135,7 @@ class _FsTool(Tool):
 
 class FsReadTool(_FsTool):
     name = "fs_read"
-    description = "读取一个文件的内容。path 必填。根内自动放行；根外需审批。"
+    description = prompts.TOOL_DESCRIPTIONS["fs_read"]
     parameters = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
     is_concurrency_safe = True
 
@@ -159,7 +160,7 @@ class FsReadTool(_FsTool):
 
 class FsWriteTool(_FsTool):
     name = "fs_write"
-    description = "写入/覆盖一个文件。path、content 必填。需审批（accept-edits 模式根内自动）。"
+    description = prompts.TOOL_DESCRIPTIONS["fs_write"]
     parameters = {
         "type": "object",
         "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
@@ -186,7 +187,7 @@ class FsWriteTool(_FsTool):
 
 class FsPatchTool(_FsTool):
     name = "fs_patch"
-    description = "对文件做结构化编辑：把 old 替换为 new。需审批。"
+    description = prompts.TOOL_DESCRIPTIONS["fs_patch"]
     parameters = {
         "type": "object",
         "properties": {
@@ -225,7 +226,7 @@ class FsPatchTool(_FsTool):
 
 class FsListTool(_FsTool):
     name = "fs_list"
-    description = "列出目录内容。path 必填。根内自动放行。"
+    description = prompts.TOOL_DESCRIPTIONS["fs_list"]
     parameters = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
     is_concurrency_safe = True
 
@@ -250,7 +251,7 @@ class FsListTool(_FsTool):
 
 class FsFindTool(_FsTool):
     name = "fs_find"
-    description = "按名称查找文件。query 必填，dir 可选（默认工作区根，不跟随符号链接）。根内自动放行。"
+    description = prompts.TOOL_DESCRIPTIONS["fs_find"]
     parameters = {
         "type": "object",
         "properties": {"query": {"type": "string"}, "dir": {"type": "string"}},
@@ -283,7 +284,7 @@ class FsFindTool(_FsTool):
 
 class FsInfoTool(_FsTool):
     name = "fs_info"
-    description = "返回文件大小/修改时间。path 必填。根内自动放行。"
+    description = prompts.TOOL_DESCRIPTIONS["fs_info"]
     parameters = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
     is_concurrency_safe = True
 

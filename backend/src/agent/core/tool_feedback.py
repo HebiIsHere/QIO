@@ -18,7 +18,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from agent.tools.base import ToolResult
+from agent import prompts
+from agent.tools.base import TOOL_RESULT_PROTOCOL_VERSION, ToolResult
 
 # 状态语义：取消是独立语义，不能并进「失败」。
 STATUS_SUCCESS = "success"
@@ -146,7 +147,9 @@ def _redact_and_limit(text: str, limit: int) -> str:
     cleaned = redact_text(text or "").strip()
     if len(cleaned) <= limit:
         return cleaned
-    return cleaned[:limit] + f"\n…[诊断已截断，共 {len(cleaned)} 字符]"
+    return cleaned[:limit] + prompts.TOOL_FEEDBACK_DIAGNOSTIC_TRUNCATED.format(
+        length=len(cleaned)
+    )
 
 
 def facts(result: ToolResult) -> dict[str, Any]:
@@ -162,6 +165,14 @@ def facts(result: ToolResult) -> dict[str, Any]:
     }
 
 
+def is_structured(result: ToolResult) -> bool:
+    """是否走 Phase 1 结构化结果协议（只认程序字段，不从正文猜 JSON）。"""
+    return (
+        result.protocol_version == TOOL_RESULT_PROTOCOL_VERSION
+        or result.model_payload is not None
+    )
+
+
 def message(
     result: ToolResult,
     *,
@@ -171,25 +182,74 @@ def message(
 ) -> str:
     """把一次工具结果变成交给模型的正文。
 
-    成功且正文非空时**原样返回 content**（保持既有行为与提示词契约）；
+    结构化结果（protocol_version==1 或显式 model_payload）：整份 ToolEnvelope 序列化，
+    data 里的完整证据真正进入模型消息；失败也带 status / code / error 字段。
+    旧工具（没有结构化字段）：成功且正文非空时**原样返回 content**（保持既有行为），
     其余情况给出结构化的中文事实，确保模型不会收到空正文。
     """
+    if is_structured(result):
+        from agent.tools.contracts import envelope_json
+
+        try:
+            return envelope_json(result)
+        except Exception:  # noqa: BLE001 - 反馈层绝不能让工具结果变成空正文
+            # 显式 model_payload 自身不合契约时，退回按字段构造 envelope：
+            # 仍然给出结构化事实，不退回中文句子匹配，也不抛出到主循环。
+            from agent.tools.contracts import build_envelope
+            import json
+
+            fallback = ToolResult(
+                ok=result.ok,
+                content=result.content,
+                error=result.error,
+                category=result.category,
+                recoverable=result.recoverable,
+                protocol_version=result.protocol_version,
+                status=result.status,
+                code=result.code,
+                data=result.data,
+            )
+            return json.dumps(
+                build_envelope(fallback).model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+
     label = tool_name or "工具"
     if result.ok:
         if (result.content or "").strip():
             return result.content
-        return f"{label} 执行成功，但没有返回内容。"
+        return prompts.TOOL_FEEDBACK_SUCCESS_EMPTY.format(label=label)
 
     category = resolve_category(result)
     status = status_of(result)
-    lines = [f"【工具结果】{label}"]
+    lines = [prompts.TOOL_FEEDBACK_FAILURE_HEADER.format(label=label)]
     if call_id:
-        lines.append(f"call_id: {call_id}")
-    lines.append(f"状态: {_STATUS_LABELS.get(status, status)}（{status}）")
-    lines.append(f"错误类别: {category_label(category.value)}（{category.value}）")
-    lines.append(f"原因: {(_redact_and_limit(result.error or '', 400) or '（没有给出说明）')}")
-    lines.append(f"是否可重试: {'是' if is_recoverable(result) else '否'}")
+        lines.append(prompts.TOOL_FEEDBACK_CALL_ID.format(call_id=call_id))
+    lines.append(
+        prompts.TOOL_FEEDBACK_STATUS.format(
+            label=_STATUS_LABELS.get(status, status), code=status
+        )
+    )
+    lines.append(
+        prompts.TOOL_FEEDBACK_CATEGORY.format(
+            label=category_label(category.value), code=category.value
+        )
+    )
+    lines.append(
+        prompts.TOOL_FEEDBACK_REASON.format(
+            reason=(
+                _redact_and_limit(result.error or "", 400)
+                or prompts.TOOL_FEEDBACK_EMPTY_REASON
+            )
+        )
+    )
+    lines.append(
+        prompts.TOOL_FEEDBACK_RECOVERABLE.format(
+            value="是" if is_recoverable(result) else "否"
+        )
+    )
     if (result.content or "").strip():
-        lines.append("有效结果（部分输出）:")
+        lines.append(prompts.TOOL_FEEDBACK_PARTIAL_HEADER)
         lines.append(_redact_and_limit(result.content, diagnostic_limit))
     return "\n".join(lines)
