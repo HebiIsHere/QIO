@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import logging
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -34,6 +35,8 @@ from enum import Enum
 from typing import Any, Iterator
 
 from agent.knowledge import scope as scope_mod
+
+logger = logging.getLogger(__name__)
 
 CATEGORIES = {
     "user_profile",
@@ -213,6 +216,37 @@ def atomic(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         raise
     else:
         conn.execute("COMMIT")
+
+
+# ---------------------------------------------------------------------------
+# 第二阶段 B 增量：正式生效后的变化记录钩子（契约 §12.3）
+# ---------------------------------------------------------------------------
+# B 负责在 activate() / revise_atomic() 成功后调用 A 的
+# agent.maintenance.changes.record_effective_change；A 的 recorder 自己按
+# MAINTENANCE_ORIGINS 跳过维护来源（maintenance_* 不形成循环触发）。
+#
+# TEMP-B-INTEGRATION：A 的 maintenance/changes.py 尚未合入本分支，所以这里用函数内
+# import + 兜底；A 合入后由 Lead 删掉 try/except 与 TEMP 标记即可（调用点不变）。
+def _record_effective_change_safe(
+    conn: sqlite3.Connection, item: KnowledgeItem
+) -> None:
+    """通知变化计数。任何失败只告警：既不迁就成异常，也不影响知识写入。"""
+    try:
+        from agent.maintenance.changes import record_effective_change  # TEMP-B-INTEGRATION
+    except Exception:  # noqa: BLE001 - A 的模块未合入时只跳过，不破坏写路径
+        logger.debug("变化记录模块不可用：跳过本次变化计数")
+        return
+    try:
+        source = str((item.provenance or {}).get("source") or "user_approved")
+        record_effective_change(
+            conn,
+            knowledge_id=item.id,
+            chain_id=item.chain_id,
+            version=int(item.version),
+            source=source,
+        )
+    except Exception:  # noqa: BLE001 - 记录失败不得影响知识写入 / 用户路径
+        logger.warning("变化记录失败（知识写入已生效）：%s", item.id, exc_info=True)
 
 
 # -- 身份与链 ---------------------------------------------------------------
@@ -648,7 +682,11 @@ class KnowledgeService:
                 if member.id != item.id and member.state is KnowledgeState.ACTIVE:
                     _revoke_row(self.conn, member.id, superseded_by=item.id)
             self._set_state(item.id, KnowledgeState.ACTIVE, extra={"activated_at": _now()})
-        return self.get(knowledge_id)  # type: ignore[return-value]
+        activated = self.get(knowledge_id)
+        # 变化记录钩子：只在真正从非 active 变成 active 后记录（幂等路径已提前返回）。
+        if activated is not None:
+            _record_effective_change_safe(self.conn, activated)
+        return activated  # type: ignore[return-value]
 
     def revoke(
         self, knowledge_id: str, *, expected_version: int | None = None
@@ -1015,6 +1053,8 @@ def revise_atomic(
         )
     created = svc.get(new_knowledge_id)
     assert created is not None
+    # 变化记录钩子：实质修改生效后计数（source 来自 provenance，维护来源由 A 跳过）。
+    _record_effective_change_safe(conn, created)
     return created
 
 
@@ -1072,3 +1112,147 @@ def deactivate_atomic(
             current_id=item.id,
             current_version=int(item.version),
         )
+
+# -- 维护域操作（第二阶段 B 增量；不改变既有状态机语义）----------------------
+# 契约 §12.4：merge 保留来源关系与完整历史；恢复通过新版本记录实现，不删除、
+# 不直接覆盖用户后续修改。动作合法性 / provenance 内容（merged_from / evidence_ids /
+# batch_id / source=maintenance_*）由 maintenance.actions / recovery 在调用前校验。
+
+
+def merge_active(
+    conn: sqlite3.Connection,
+    *,
+    source_ids: list[str],
+    content: str,
+    provenance: dict,
+) -> KnowledgeItem:
+    """把多个「当前有效版本」合成一个新的有效版本（B 的 merge 动作）。
+
+    领域不变量（调用方 actions 负责动作规则、版本匹配与证据校验）：
+
+    * 至少两个不同 id，且每个都是其版本链的**当前 active** 版本；
+    * 类别 / 归属节点 / 确定程度必须一致——不合成就更宽更强的认识；
+    * 新版本开一条新链（chain_id = 新 id，version = 1），provenance 原样保存调用方
+      给出的 merged_from / evidence_ids / batch_id / source；
+    * 来源行撤销但保留原文与 superseded_by 历史，绝不删除。
+    """
+    ids = [str(value) for value in source_ids or []]
+    if len(ids) < 2 or len(set(ids)) != len(ids):
+        raise ValueError("merge 至少需要两个不同的 knowledge_id")
+    text = str(content or "").strip()
+    if not text:
+        raise ValueError("merge 的 new_content 不能为空")
+    svc = KnowledgeService(conn)
+    created_id = new_id()
+    with atomic(conn):
+        items: list[KnowledgeItem] = []
+        for knowledge_id in ids:
+            item = svc.get(knowledge_id)
+            if item is None:
+                raise KnowledgeNotFound(knowledge_id)
+            current = resolve_current(conn, knowledge_id)
+            if current is None or current.id != item.id:
+                raise VersionConflict(
+                    knowledge_id,
+                    current_id=current.id if current is not None else None,
+                    current_version=int(current.version) if current is not None else None,
+                    reason="merge 来源已不是该链当前版本（已被修改或取代）",
+                )
+            if item.state is not KnowledgeState.ACTIVE:
+                raise VersionConflict(
+                    knowledge_id,
+                    current_id=item.id,
+                    current_version=int(item.version),
+                    reason=f"merge 来源状态为 {item.state.value}，不是有效知识",
+                )
+            items.append(item)
+        if len({item.category for item in items}) != 1:
+            raise ValueError("merge 来源类别不一致，拒绝合成更强更宽的认识")
+        if len({tuple(sorted(str(node) for node in item.node_ids)) for item in items}) != 1:
+            raise ValueError("merge 来源归属范围不一致，拒绝合成更强更宽的认识")
+        if len(
+            {
+                str((item.provenance or {}).get("epistemic_status") or "")
+                for item in items
+            }
+        ) != 1:
+            raise ValueError("merge 来源确定程度不一致，拒绝合成更强更宽的认识")
+        first = items[0]
+        confidences = [item.confidence for item in items if item.confidence is not None]
+        entity_ids = sorted({str(entity) for item in items for entity in item.entity_ids})
+        _insert_active(
+            conn,
+            knowledge_id=created_id,
+            category=first.category,
+            content=text,
+            supersedes_id=None,
+            chain_id=created_id,
+            version=1,
+            node_ids=[str(node) for node in first.node_ids],
+            entity_ids=entity_ids,
+            provenance=dict(provenance or {}),
+            confidence=min(confidences) if confidences else None,
+            export=any(bool(item.export) for item in items),
+            now=_now(),
+        )
+        for item in items:
+            _revoke_row(conn, item.id, superseded_by=created_id)
+    created = svc.get(created_id)
+    assert created is not None
+    # 维护来源由 A 的 recorder 按 MAINTENANCE_ORIGINS 跳过；这里仍显式通知，
+    # 保证「直接 insert active」路径与 activate() / revise_atomic() 行为一致。
+    _record_effective_change_safe(conn, created)
+    return created
+
+
+def restore_version(
+    conn: sqlite3.Connection,
+    *,
+    reference_id: str,
+    content: str,
+    provenance: dict,
+) -> KnowledgeItem:
+    """以**新版本**恢复一条历史内容（B 的恢复动作；不删除、不覆盖历史）。
+
+    reference_id 是要恢复其内容的历史行；新版本接在该行所在链的当前版本之后：
+
+    * 链上仍有 active（例如维护产物仍有效）→ 新版本取代它，旧行撤销但保留历史；
+    * 链上已无 active（来源在合并时被撤销）→ 以链上最新版本为 supersedes 重新生效。
+
+    可恢复性（维护产物是否仍是当前版本 / 用户是否后来改过）由 recovery 在同一事务里
+    先检查；这里只负责可回放的领域写入。
+    """
+    text = str(content or "").strip()
+    if not text:
+        raise ValueError("restore 的内容不能为空")
+    svc = KnowledgeService(conn)
+    created_id = new_id()
+    with atomic(conn):
+        reference = svc.get(reference_id)
+        if reference is None:
+            raise KnowledgeNotFound(reference_id)
+        current = resolve_current(conn, reference_id)
+        if current is None:
+            raise KnowledgeNotFound(reference_id)
+        _insert_active(
+            conn,
+            knowledge_id=created_id,
+            category=reference.category,
+            content=text,
+            supersedes_id=current.id,
+            chain_id=current.chain_id or current.id,
+            version=int(current.version) + 1,
+            node_ids=list(reference.node_ids),
+            entity_ids=list(reference.entity_ids),
+            provenance=dict(provenance or {}),
+            confidence=reference.confidence,
+            export=reference.export,
+            now=_now(),
+        )
+        if current.state is KnowledgeState.ACTIVE:
+            _revoke_row(conn, current.id, superseded_by=created_id)
+    created = svc.get(created_id)
+    assert created is not None
+    _record_effective_change_safe(conn, created)
+    return created
+
