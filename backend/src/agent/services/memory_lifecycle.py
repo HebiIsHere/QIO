@@ -22,15 +22,6 @@ logger = logging.getLogger(__name__)
 
 CONSOLIDATION_COOLDOWN_SECONDS = 600
 
-# 高影响候选是要用户点头的：用一句人话说明「为什么值得你确认」，
-# 而不是把内部类别枚举丢给界面。
-HIGH_IMPACT_REASON = {
-    "user_profile": "这会影响 QIO 对你的长期理解",
-    "agent_self": "这会影响 QIO 对自己的认识",
-    "goal": "这会影响 QIO 对你目标的判断",
-}
-
-
 class MemoryLifecycle:
     def __init__(
         self,
@@ -700,21 +691,8 @@ class MemoryLifecycle:
         任何领域写入由 :meth:`commit_knowledge` 在调用方指定的事务边界内完成 ——
         这样「模型调用不跨写事务」与「写入前后核验所有权」可以同时成立（F05）。
         """
-        # PHASE1-INTEGRATION-TODO: C 的 derivation 合入后由 Lead 删除本回退。
-        try:
-            from agent.knowledge.derivation import extract_candidates
-        except ImportError:  # 本分支还没有 C 的模块：退回已冻结的旧抽取路径
-            from agent.memory.summary import extract_knowledge_candidates_outcome
+        from agent.knowledge.derivation import extract_candidates
 
-            outcome = await extract_knowledge_candidates_outcome(adapter, summary)
-            self._record_repairs(tracer, "知识抽取", outcome.notes)
-            if outcome.value is None:
-                # 知识抽取失败不影响已完成的摘要与索引，但**必须留痕**：
-                # 失败原因要能在 trace 与日志里读出来，而不是悄悄没有知识条目。
-                reason = outcome.error or "知识抽取不可用"
-                self._record_failure(tracer, "knowledge_extraction_failed", reason)
-                return None, reason
-            return outcome.value, None
         extraction, error = await extract_candidates(
             adapter,
             summary=summary,
@@ -744,17 +722,8 @@ class MemoryLifecycle:
         在事务提交后再登记到待确认队列 —— 事务回滚时它们不能留在内存队列里指向
         不存在的知识条目）。
         """
-        # PHASE1-INTEGRATION-TODO: C 的 derivation 合入后由 Lead 删除本回退。
-        try:
-            from agent.knowledge.derivation import commit_candidates
-        except ImportError:  # 本分支还没有 C 的模块：退回已冻结的旧落库路径
-            return self._commit_knowledge_legacy(
-                extraction,
-                topic_id=topic_id,
-                entity_ids=entity_ids,
-                fragment_id=fragment_id,
-                tracer=tracer,
-            )
+        from agent.knowledge.derivation import commit_candidates
+
         return list(
             commit_candidates(
                 self.conn,
@@ -766,70 +735,6 @@ class MemoryLifecycle:
                 tracer=tracer,
             )
         )
-
-    def _commit_knowledge_legacy(
-        self,
-        extraction: Any,
-        *,
-        topic_id: str,
-        entity_ids: list[str],
-        fragment_id: str,
-        tracer=None,
-    ) -> list[dict]:
-        """旧落库路径（仅 C 的 derivation 尚未合入时使用，整合后由 Lead 删除）。"""
-        from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
-        from agent.knowledge.verify import VerificationService
-
-        if extraction is None:
-            return []
-        ks = KnowledgeService(self.conn)
-        vs = VerificationService(self.conn, ks)
-        existing = self._knowledge_contents_for_fragment(fragment_id)
-        high_impact: list[dict] = []
-        for cand in extraction.candidates:
-            if cand.content in existing:
-                # 幂等：重试时不重复写同一条知识
-                continue
-            existing.add(cand.content)
-            node_ids: list[str] = []
-            if cand.attach == "user":
-                node_ids = [self.user_root_id()]
-            elif cand.attach == "entity" and cand.entity:
-                node, _ = self.topics.nodes.mention(cand.entity, topic_id, force=False)
-                if node is not None:
-                    node_ids = [node.id]
-            else:
-                node_ids = [topic_id]
-            try:
-                item = ks.create(
-                    category=cand.category,
-                    content=cand.content,
-                    node_ids=node_ids,
-                    provenance={"fragment_id": fragment_id},
-                )
-                if tracer is not None:
-                    tracer.write("knowledge", item.id)
-                ks.submit(item.id)
-                if cand.category in HIGH_IMPACT_CATEGORIES:
-                    # 留在待确认状态，由调用方在事务提交后登记到「回答后自然确认」队列
-                    high_impact.append(
-                        {
-                            "knowledge_id": item.id,
-                            "category": cand.category,
-                            "content": cand.content,
-                            "impact": "high",
-                            "reason": HIGH_IMPACT_REASON.get(
-                                cand.category, "这条知识会长期生效"
-                            ),
-                        }
-                    )
-                    continue  # stays draft; user confirmation required
-                result = vs.review(ks.get(item.id), verified_by="system")
-                if result.accepted:
-                    ks.activate(item.id)
-            except Exception as exc:  # extraction must not break the fragment close
-                logger.warning("knowledge candidate failed: %s", self._safe_exc(exc))
-        return high_impact
 
     def _evidence_catalog(self, fragment) -> list[dict]:
         """后台知识提炼的真实来源目录（输入给模型的 evidence 清单）。
@@ -900,20 +805,6 @@ class MemoryLifecycle:
                 }
             )
         return catalog
-
-    def _knowledge_contents_for_fragment(self, fragment_id: str) -> set[str]:
-        """这个片段已经写过的知识内容（供任务重试时幂等跳过）。"""
-        contents: set[str] = set()
-        for row in self.conn.execute(
-            "SELECT content, provenance FROM knowledge"
-        ).fetchall():
-            try:
-                provenance = json.loads(row["provenance"] or "{}")
-            except (TypeError, ValueError):
-                provenance = {}
-            if provenance.get("fragment_id") == fragment_id:
-                contents.add(str(row["content"]))
-        return contents
 
     # -- budget-pressure consolidation -----------------------------------
 

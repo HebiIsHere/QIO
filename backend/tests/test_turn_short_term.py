@@ -73,9 +73,10 @@ async def test_run_turn_injects_short_term_and_switches_topic(ctx: AppContext, t
     result = await ctx.run_turn("继续聊数据库", topic_id=topic)
     assert result["ok"]
 
-    # 注入包含短期记忆（开放片段原文）
+    # 注入包含近期记忆（开放片段原文；Phase 1 起以结构化上下文块注入，
+    # 标签来自 prompts.CONTEXT_LABELS["short_term"]，不再拼「【短期·当前话题】」）
     joined = "\n".join(adapter.prompts)
-    assert "短期" in joined
+    assert "近期记忆" in joined
     assert "用户喜欢清淡饮食" in joined
 
     # 锚点已切换，related 边建立

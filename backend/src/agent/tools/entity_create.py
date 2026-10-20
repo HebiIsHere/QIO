@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agent import prompts
 from agent.entities.cards import (
     DECISION_CREATE,
     MAX_CREATION_REASON,
@@ -73,12 +74,12 @@ class CreateEntityArgs(BaseModel):
     identity: str = Field(
         min_length=1,
         max_length=MAX_IDENTITY,
-        description="这个对象是谁：区别于同名对象的具体身份",
+        description=prompts.argument_description("create_entity", "identity"),
     )
     creation_reason: str = Field(
         min_length=1,
         max_length=MAX_CREATION_REASON,
-        description="为什么值得持续记录（持续关系 / 实际使用需要 / 信息价值）",
+        description=prompts.argument_description("create_entity", "creation_reason"),
     )
     evidence_ids: list[str] = Field(
         min_length=1,

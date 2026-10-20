@@ -1865,9 +1865,32 @@ class AppContext:
                 },
                 dropped=[],
             )
-            prompt = notice
+            # 统一消息组装（契约 §3）：系统通知作为本轮 user 原文，长期记忆等上下文
+            # 走结构化 ContextBlock（固定标签由 prompts.CONTEXT_LABELS 渲染），
+            # 不再用「【系统通知】」中文标题把两段拼成一条消息。
+            from agent.core.message_assembly import (
+                ContextBlock,
+                MediaParts,
+                build_initial_messages,
+            )
+
+            blocks = []
             if payload.text:
-                prompt = f"{payload.text}\n\n【系统通知】\n{notice}"
+                blocks.append(ContextBlock("memory", {"legacy_text": payload.text}))
+            mode_rules = ""
+            mode_getter = getattr(adapter, "mode_rules_text", None)
+            if callable(mode_getter):
+                try:
+                    mode_rules = str(mode_getter(self.registry.specs()) or "")
+                except Exception:  # noqa: BLE001 - 模式规则失败不能挡住通知轮
+                    logging.getLogger(__name__).warning("notify mode rules failed", exc_info=True)
+                    mode_rules = ""
+            initial_messages = build_initial_messages(
+                user_text=notice,
+                media=MediaParts(),
+                mode_rules=mode_rules,
+                blocks=blocks,
+            )
             loop = AgentLoop(
                 adapter, self.registry, self.bus,
                 tool_trace=self._record_tool_call,
@@ -1890,7 +1913,7 @@ class AppContext:
             ctx.loop = loop
             try:
                 with tracer.phase("agent_loop"):
-                    result = await loop.run(prompt)
+                    result = await loop.run(notice, initial_messages=initial_messages)
             finally:
                 ctx.loop = None
             if ctx.cancelled or result.cancelled:

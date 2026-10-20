@@ -44,9 +44,11 @@ TOOL_LABELS: dict[str, str] = {
     # 子任务
     "await_task": "等待子任务",
     "read_task_result": "读取子任务结果",
-    # 纠正
+    # 纠正 / 记忆写入
     "correct_entity": "修正实体",
     "correct_knowledge": "修正知识",
+    "propose_knowledge": "提交知识",
+    "create_entity": "创建实体",
 }
 
 

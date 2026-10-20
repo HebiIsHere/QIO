@@ -1107,6 +1107,10 @@ TOOL_ARGUMENT_DESCRIPTIONS: dict[str, dict[str, str]] = {
         "offset": "起始位置，默认 0。",
         "limit": "读取长度，默认 4000，上限 4000。",
     },
+    "create_entity": {
+        "identity": "这个对象是谁：区别于同名对象的具体身份。",
+        "creation_reason": "为什么值得持续记录（持续关系 / 实际使用需要 / 信息价值）。",
+    },
     "read_attachment": {
         "attachment_id": "附件 id（形如 att_xxxxxxxx）；不传则列出本轮附件。",
         "offset": "从第几段开始（0 起；文本=行，DOCX=段落，XLSX=行）。",

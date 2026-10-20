@@ -98,6 +98,8 @@ def _app(tmp_path: Path) -> AppContext:
 
 
 def test_migration_44_is_append_only_and_idempotent(db_conn):
+    from agent.storage.schema import COMPENSATION_VERSION, MIGRATIONS, SCHEMA_VERSION
+
     version, statements = migration_p1_b.MIGRATION
     assert version == 44, "迁移号由契约 §8 冻结：44 = B（滚动摘要覆盖位置/输入版本）"
     assert statements, "迁移 44 必须有 SQL"
@@ -106,6 +108,19 @@ def test_migration_44_is_append_only_and_idempotent(db_conn):
     assert set(migration_p1_b.columns()) == set(ROLLING_STATE_KEYS), (
         "迁移列名必须与 agent.memory.rolling.ROLLING_STATE_KEYS 一致"
     )
+    # 整合后迁移 44 已登记进 schema.py（生产路径）；补偿入口必须覆盖它。
+    versions = [int(v) for v, _ in MIGRATIONS]
+    assert version in versions, "迁移 44 必须登记进 schema.py 的 MIGRATIONS"
+    assert COMPENSATION_VERSION == max(versions) == SCHEMA_VERSION >= 44
+    assert any(target == COMPENSATION_VERSION and any(
+        "rolling_covered_message_id" in str(stmt) for stmt in stmts
+    ) for target, stmts in MIGRATIONS), "补偿迁移必须覆盖 44 新增列"
+
+    # 模拟「尚未升级到 44」的存量库：补齐列必须与首次应用一致且幂等。
+    for column in ROLLING_STATE_KEYS:
+        if column in _columns(db_conn):
+            db_conn.execute(f"ALTER TABLE fragments DROP COLUMN {column}")
+    db_conn.commit()
     assert set(ROLLING_STATE_KEYS).isdisjoint(_columns(db_conn))
 
     first = migration_p1_b.apply(db_conn)

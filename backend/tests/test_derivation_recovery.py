@@ -895,11 +895,16 @@ def _seal_with(ctx: AppContext, user_text: str):
 
 
 class _LeakyAdapter(_ScriptedAdapter):
-    """模型调用失败时把请求原文带进异常（真实适配器/网关可能这样）。"""
+    """模型调用失败时把请求原文带进异常（真实适配器/网关可能这样）。
+
+    Phase 1：结构化任务把固定 system 与数据分开放，用户原文可能在后续消息里，
+    所以这里拼接**全部**消息正文再抛错 —— 仍然守「异常回显请求原文」这一真实形态。
+    """
 
     async def complete(self, messages, tools, **kwargs) -> Completion:
-        first = messages[0]
-        prompt = first["content"] if isinstance(first, dict) else first.content
+        prompt = "\n".join(
+            (m["content"] if isinstance(m, dict) else m.content) or "" for m in messages
+        )
         raise RuntimeError("upstream 400: " + prompt)
 
 

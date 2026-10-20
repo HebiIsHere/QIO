@@ -75,7 +75,14 @@ def _app(tmp_path: Path, *, apply_p1: bool = True) -> AppContext:
     conn = connect(tmp_path / f"rolling_{int(apply_p1)}.db")
     apply_migrations(conn)
     if apply_p1:
+        # 幂等：迁移 44 已登记进 schema.py；这里只为单独启用分支内的降级路径显式调用。
         migration_p1_b.apply(conn)
+    else:
+        # 模拟「尚未升级到迁移 44」的存量库：去掉 44 新增列，验证 meta 降级读取。
+        # （44 已登记进 schema.py，apply_migrations 一定会建列；这里只改测试前置形状。）
+        for column in migration_p1_b.columns():
+            conn.execute(f"ALTER TABLE fragments DROP COLUMN {column}")
+        conn.commit()
     ctx = AppContext(Settings(data_dir=tmp_path), conn, EventBus())
     ctx.credentials._kr = MemoryKeyring()
     return ctx
