@@ -100,6 +100,20 @@ def _dedupe(values: Iterable[Any]) -> list[str]:
     return result
 
 
+def _version_of(record: dict) -> int:
+    """对象版本：历史 state 没有 version 时按 1 读取（不批量回写）。"""
+    try:
+        value = int(record.get("version", 1))
+    except (TypeError, ValueError):
+        return 1
+    return value if value >= 1 else 1
+
+
+def _bump_version(record: dict) -> None:
+    """对象实际被修改时版本 +1（查看 / 纯位置展示不写库时不调用）。"""
+    record["version"] = _version_of(record) + 1
+
+
 def _is_default_name(name: str) -> bool:
     """这个名字是不是系统默认名：同时认「默认组名」与历史「组 N」（契约 §9.1）。"""
     return bool(_DEFAULT_NAME_RE.match(str(name or "").strip()))
@@ -187,6 +201,7 @@ def _normalize_card(raw: dict, stamp: str) -> dict:
         card[key] = bool(card.get(key, False))
     card["createdAt"] = _as_text(card.get("createdAt")) or stamp
     card["updatedAt"] = _as_text(card.get("updatedAt")) or card["createdAt"]
+    card["version"] = _version_of(card)
     # G6 明确隐藏与勾选互斥（F4：结果卡的勾选与文字卡同一套语义，
     # 勾选=允许 QIO 查看、许可持续有效；hidden 仍然强制取消许可）。
     if card["hidden"]:
@@ -246,6 +261,7 @@ def _normalize_group(
     group["deleted"] = False
     group["createdAt"] = _as_text(group.get("createdAt")) or stamp
     group["updatedAt"] = _as_text(group.get("updatedAt")) or group["createdAt"]
+    group["version"] = _version_of(group)
     _reflow_group(group, cards)
     return group
 
@@ -267,6 +283,7 @@ def _normalize_link(raw: dict, live: set[str], stamp: str) -> dict | None:
     link["deleted"] = False
     link["createdAt"] = _as_text(link.get("createdAt")) or stamp
     link["updatedAt"] = _as_text(link.get("updatedAt")) or link["createdAt"]
+    link["version"] = _version_of(link)
     return link
 
 
@@ -385,6 +402,7 @@ def update_card(state: dict, card_id: str, patch: dict) -> dict:
         card[key] = value
         changed = True
     if changed:
+        _bump_version(card)
         card["updatedAt"] = _now()
         work["updatedAt"] = _now()
     return normalize_state(work)
@@ -412,6 +430,7 @@ def duplicate_card(state: dict, card_id: str) -> dict:
     copy_card["deleted"] = False
     copy_card["createdAt"] = stamp
     copy_card["updatedAt"] = stamp
+    copy_card["version"] = 1
     work["cards"].append(copy_card)
     # 副本留在原来的组里，紧跟原卡片
     group = models.group_of(work, card_id)
@@ -445,6 +464,7 @@ def create_group(state: dict, card_ids: Iterable[str], name: str = "") -> dict:
     for group in work["groups"]:
         if any(cid in member_set for cid in group["members"]):
             group["members"] = [cid for cid in group["members"] if cid not in member_set]
+            _bump_version(group)
             group["updatedAt"] = stamp
     # 先让被搬空的组消失，再取默认名（避免新组拿到一个刚刚空掉的旧组名）
     work = normalize_state(work)
@@ -469,16 +489,24 @@ def join_group(state: dict, card_id: str, group_id: str, index: int | None = Non
     if card is None or card["deleted"] or target is None:
         return work
     stamp = _now()
+    changed = False
     for group in work["groups"]:
         if group["id"] != group_id and card_id in group["members"]:
             group["members"].remove(card_id)
+            _bump_version(group)
             group["updatedAt"] = stamp
+            changed = True
     members = target["members"]
+    original = list(members)
     if card_id in members:
         members.remove(card_id)
     members.insert(_clamp_index(index, len(members)), card_id)
-    target["updatedAt"] = stamp
-    work["updatedAt"] = stamp
+    if members != original:
+        _bump_version(target)
+        changed = True
+    if changed:
+        target["updatedAt"] = stamp
+        work["updatedAt"] = stamp
     return normalize_state(work)
 
 
@@ -490,6 +518,7 @@ def remove_from_group(state: dict, card_id: str) -> dict:
     for group in work["groups"]:
         if card_id in group["members"]:
             group["members"].remove(card_id)
+            _bump_version(group)
             group["updatedAt"] = stamp
             changed = True
     if changed:
@@ -505,6 +534,7 @@ def dissolve_group(state: dict, group_id: str) -> dict:
         return work
     group["members"] = []
     group["deleted"] = True
+    _bump_version(group)
     work["updatedAt"] = _now()
     return normalize_state(work)
 
@@ -524,6 +554,7 @@ def rename_group(state: dict, group_id: str, name: str) -> dict:
         return work
     group["name"] = cleaned
     group["defaultName"] = _is_default_name(cleaned)
+    _bump_version(group)
     group["updatedAt"] = _now()
     work["updatedAt"] = _now()
     return normalize_state(work)
@@ -538,6 +569,7 @@ def set_group_ordered(state: dict, group_id: str, ordered: bool) -> dict:
     if group["ordered"] == bool(ordered):
         return work
     group["ordered"] = bool(ordered)
+    _bump_version(group)
     group["updatedAt"] = _now()
     work["updatedAt"] = _now()
     return normalize_state(work)
@@ -550,10 +582,13 @@ def move_within_group(state: dict, group_id: str, card_id: str, index: int) -> d
     if group is None or card_id not in group["members"]:
         return work
     members = group["members"]
+    original = list(members)
     members.remove(card_id)
     members.insert(_clamp_index(index, len(members)), card_id)
-    group["updatedAt"] = _now()
-    work["updatedAt"] = _now()
+    if members != original:
+        _bump_version(group)
+        group["updatedAt"] = _now()
+        work["updatedAt"] = _now()
     return normalize_state(work)
 
 
@@ -579,6 +614,7 @@ def merge_groups(state: dict, source_group_id: str, target_group_id: str, insert
     target["ordered"] = bool(source["ordered"]) and bool(target["ordered"])
     target["name"] = _next_default_name([group["name"] for group in work["groups"] if group["id"] != source["id"]])
     target["defaultName"] = True
+    _bump_version(target)
     target["updatedAt"] = _now()
     source["deleted"] = True
     work["updatedAt"] = _now()
@@ -603,8 +639,11 @@ def add_link(state: dict, src: str, dst: str, direction: bool = False, meaning: 
     pair = frozenset((src, dst))
     existing = next((link for link in work["links"] if frozenset((link["src"], link["dst"])) == pair), None)
     if existing is not None:
+        changed = existing["direction"] != bool(direction) or existing["meaning"] != _as_text(meaning)
         existing["direction"] = bool(direction)
         existing["meaning"] = _as_text(meaning)
+        if changed:
+            _bump_version(existing)
         existing["updatedAt"] = stamp
     else:
         work["links"].append(models.new_link(src, dst, direction=bool(direction), meaning=_as_text(meaning)))
@@ -633,6 +672,7 @@ def update_link(state: dict, link_id: str, patch: dict) -> dict:
         link[key] = value
         changed = True
     if changed:
+        _bump_version(link)
         link["updatedAt"] = _now()
         work["updatedAt"] = _now()
     return normalize_state(work)
@@ -682,6 +722,7 @@ def set_checked(state: dict, card_id: str, checked: bool) -> dict:
     card["checked"] = value
     if value:
         card["hidden"] = False
+    _bump_version(card)
     card["updatedAt"] = _now()
     work["updatedAt"] = _now()
     return normalize_state(work)
@@ -696,6 +737,7 @@ def set_hidden(state: dict, card_id: str, hidden: bool) -> dict:
     card["hidden"] = bool(hidden)
     if card["hidden"]:
         card["checked"] = False
+    _bump_version(card)
     card["updatedAt"] = _now()
     work["updatedAt"] = _now()
     return normalize_state(work)
@@ -708,6 +750,7 @@ def set_folded(state: dict, card_id: str, folded: bool) -> dict:
     if card is None or card["deleted"] or card["folded"] == bool(folded):
         return work
     card["folded"] = bool(folded)
+    _bump_version(card)
     card["updatedAt"] = _now()
     work["updatedAt"] = _now()
     return normalize_state(work)
@@ -720,6 +763,7 @@ def set_bookmark(state: dict, card_id: str, bookmarked: bool) -> dict:
     if card is None or card["deleted"] or card["bookmarked"] == bool(bookmarked):
         return work
     card["bookmarked"] = bool(bookmarked)
+    _bump_version(card)
     card["updatedAt"] = _now()
     work["updatedAt"] = _now()
     return normalize_state(work)
@@ -923,6 +967,10 @@ def drop_card(state: dict, card_id: str, x: float, y: float) -> dict:
             work["updatedAt"] = stamp
 
     final = normalize_state(work)
+    moved_card = models.card_by_id(final, card_id)
+    if moved_card is not None:
+        _bump_version(moved_card)
+    final = normalize_state(final)
     group = models.group_of(final, card_id)
     return {
         "state": final,
