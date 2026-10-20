@@ -1,4 +1,4 @@
-﻿"""Tool registry: registration + an internal event-driven execution pipeline.
+"""Tool registry: registration + an internal event-driven execution pipeline.
 
 每次调用沿管线执行：
     tool/start (emit) → tool/pre-execute (waterfall，可拒/替换输入) →
@@ -19,7 +19,12 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
 from agent.adapters.base import ToolCall, ToolSpec
-from agent.tools.base import Tool, ToolResult
+from agent.tools.base import (
+    TOOL_RESULT_PROTOCOL_VERSION,
+    Tool,
+    ToolResult,
+    ToolStatus,
+)
 
 # 这里**不能**在模块级 `from agent.core.narrative import ...`：那会让
 # tools → lifecycle → registry → core → core.loop → tools.registry 围成一个圈，
@@ -134,10 +139,25 @@ class ToolRegistry:
                 description=t.description,
                 # 每个工具都声明可选的叙事信封：模型据此知道自己可以说明意图，
                 # 而 adapter 会在解析时把它剥离，工具本身永远看不到这个字段。
-                parameters=self._with_narrative_field(t.parameters),
+                parameters=self._with_narrative_field(self._parameters_for(t)),
             )
             for t in self._tools.values()
         ]
+
+    @staticmethod
+    def _parameters_for(tool: Tool) -> dict[str, Any]:
+        """展示给模型的参数 schema：类型模型存在时与本地校验同源。
+
+        arg_model（pydantic）存在 → json_schema_for 生成 JSON Schema
+        （enum / additionalProperties / required 由类型真正执行）；
+        否则沿用工具自己写的 parameters（旧工具兼容）。
+        """
+        model = getattr(tool, "arg_model", None)
+        if model is not None:
+            from agent.tools.contracts import json_schema_for
+
+            return json_schema_for(model)
+        return tool.parameters
 
     @staticmethod
     def _with_narrative_field(parameters: dict[str, Any]) -> dict[str, Any]:
@@ -146,21 +166,25 @@ class ToolRegistry:
         只改副本，不动工具自己的 parameters；不加入 required；
         已有同名属性时不覆盖（保持工具自身定义优先）。
         """
+        from agent import prompts
         from agent.core.narrative import NARRATIVE_KEY, NARRATIVE_KINDS
-        from agent.prompts import NARRATIVE_FIELD_DESCRIPTION
 
         spec = dict(parameters or {})
         spec.setdefault("type", "object")
         properties = dict(spec.get("properties") or {})
+        descriptions = prompts.NARRATIVE_ARGUMENT_DESCRIPTIONS
         properties.setdefault(
             NARRATIVE_KEY,
             {
                 "type": "object",
-                "description": NARRATIVE_FIELD_DESCRIPTION,
+                "description": prompts.narrative_field_description(),
                 "properties": {
                     "kind": {"type": "string", "enum": list(NARRATIVE_KINDS)},
-                    "text": {"type": "string", "description": "一句面向用户的意图说明"},
-                    "explanation": {"type": "string", "description": "需要确认时说明原因与影响"},
+                    "text": {"type": "string", "description": descriptions["text"]},
+                    "explanation": {
+                        "type": "string",
+                        "description": descriptions["explanation"],
+                    },
                 },
                 "additionalProperties": False,
             },
@@ -201,6 +225,31 @@ class ToolRegistry:
             "arguments": dict(call.arguments),
             "call": call,
         }
+        # Phase 1 类型化参数：执行前用同源 pydantic 模型校验（enum / oneOf /
+        # additionalProperties 真正执行）。失败是**结构化结果**，不是中文错误句：
+        # status=failed / code=invalid_arguments / data.errors 进入工具反馈。
+        if getattr(tool, "arg_model", None) is not None:
+            from agent.tools.contracts import validate_model
+
+            validated, errors = validate_model(tool.arg_model, dict(call.arguments))
+            if errors or validated is None:
+                result = ToolResult(
+                    ok=False,
+                    status=ToolStatus.FAILED.value,
+                    code="invalid_arguments",
+                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+                    error="工具参数校验失败：" + "；".join(errors),
+                    data={
+                        "tool": call.name,
+                        "errors": list(errors),
+                        "received_keys": sorted(dict(call.arguments).keys()),
+                    },
+                )
+                await self._finish(call, tool, result)
+                return result
+            # 校验通过后按类型模型归一化后的参数交给管线（含默认值 / 枚举约束），
+            # 后续工具与审批看到的是同一份已校验数据。
+            ctx["arguments"] = dict(validated.model_dump(mode="python"))
         try:
             await self.events.emit(
                 EVENT_START,
