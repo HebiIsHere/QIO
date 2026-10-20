@@ -255,7 +255,12 @@ _KNOWLEDGE_SOURCE_LABELS = {
     "onboarding": "引导",
     "dream_correct": "后台整理",
     "main_chat": "主对话",
+    # 阶段二 C（契约 §12.5）：后台写入只写 maintenance.models 的来源键，
+    # 这里统一映射成「后台整理」；原始键仍由负载里的 provenance_source 返回。
     "background_extraction": "后台整理",
+    "maintenance_merge": "后台整理",
+    "maintenance_normalize": "后台整理",
+    "maintenance_restore": "后台整理",
 }
 
 
@@ -3315,6 +3320,13 @@ def create_app(
     from agent.api.recovery_routes import build_router as build_recovery_router
 
     app.include_router(build_recovery_router(ctx))
+
+    # 阶段二 C：「记忆待确认」入口 / 维护记录 / 安全恢复（契约 §12.5）。
+    # 路由工厂在 api/memory_pending_routes.py；这里只挂一次（动作走 ctx.maintenance_runner，
+    # 读取用只读 SQL + maintenance.models 的冻结读取模型）。
+    from agent.api.memory_pending_routes import build_router as build_memory_pending_router
+
+    app.include_router(build_memory_pending_router(ctx))
 
     # 卡片内预览（契约 §3.3）：附件转换数据与板面阅读位置。路由工厂在本文件之外，
     # 避免把预览规则塞进这个长文件；这里只挂一行。

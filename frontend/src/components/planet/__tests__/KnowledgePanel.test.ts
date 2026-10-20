@@ -264,3 +264,42 @@ describe("KnowledgePanel 阅读态与确认层（第四阶段）", () => {
     w.unmount();
   });
 });
+
+/**
+ * 阶段二 C（契约 §12.5）：后台写入的来源键统一映射为「后台整理」，
+ * 前端「后台整理」筛选按 API 返回的标签匹配 —— 后台维护写入的条目必须能被筛出。
+ */
+describe("KnowledgePanel 来源筛选（阶段二 C：后台整理）", () => {
+  it("后台维护写入的条目（source=后台整理）能被「后台整理」筛出", async () => {
+    mocks.apiMock.listKnowledge.mockResolvedValue({
+      knowledge: [
+        {
+          ...K,
+          id: "kn_bg",
+          content: "后台整理写入的知识条目",
+          source: "后台整理",
+          provenance_source: "maintenance_merge",
+        },
+        {
+          ...K,
+          id: "kn_chat",
+          content: "主对话学到的知识条目",
+          source: "主对话",
+          provenance_source: "main_chat",
+        },
+      ],
+    });
+    const w = mountPanel();
+    await flushPromises();
+    const sourceSelect = w.findAll(".filters .qio-select")[2];
+    await sourceSelect.trigger("click");
+    await sourceSelect
+      .findAll(".opt")
+      .find((option) => option.text() === "后台整理")!
+      .trigger("click");
+    await nextTick();
+    expect(w.text()).toContain("后台整理写入的知识条目");
+    expect(w.text()).not.toContain("主对话学到的知识条目");
+    w.unmount();
+  });
+});
