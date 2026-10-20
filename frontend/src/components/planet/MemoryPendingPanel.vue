@@ -17,7 +17,7 @@
  * 4. 恢复必须先预览再确认：可恢复 / 不可恢复原因逐项列出，无法安全恢复的部分明说；
  * 5. 服务端说某块存储不可用（迁移 47 未应用 / 调度器未接入）时如实说明，不伪造数据。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   api,
   type MaintenanceBatchDetail,
@@ -98,6 +98,20 @@ const feedback = useActionFeedback();
 const answers = ref<Record<string, string>>({});
 const editingId = ref<string | null>(null);
 const editDraft = ref("");
+/**
+ * 面板级成功提示：事项处理完会从列表消失，条目内的反馈如果跟着消失，
+ * 用户就看不到「已经处理了」这件事（静默成功）。所以重要动作完成后在面板顶部
+ * 留一条可见、会自动收回的说明。
+ */
+const notice = ref("");
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+function showNotice(text: string) {
+  notice.value = text;
+  if (noticeTimer) clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => {
+    notice.value = "";
+  }, 5000);
+}
 
 const kindOptions = [
   { value: "", label: "全部类型" },
@@ -208,7 +222,7 @@ async function loadPending(): Promise<void> {
 }
 
 async function approveProposal(item: PendingItemView): Promise<void> {
-  await feedback.run(
+  const ok = await feedback.run(
     feedbackKey(item),
     async () => {
       await api.verifyKnowledge(item.id);
@@ -216,10 +230,11 @@ async function approveProposal(item: PendingItemView): Promise<void> {
     },
     { okText: "已批准并生效", failText: "批准没有成功" },
   );
+  if (ok) showNotice("已批准并生效：" + (firstKnowledge(item)?.content || item.title));
 }
 
 async function rejectProposal(item: PendingItemView): Promise<void> {
-  await feedback.run(
+  const ok = await feedback.run(
     feedbackKey(item),
     async () => {
       await api.rejectKnowledge(item.id);
@@ -227,6 +242,7 @@ async function rejectProposal(item: PendingItemView): Promise<void> {
     },
     { okText: "已拒绝这条提议", failText: "拒绝没有成功" },
   );
+  if (ok) showNotice("已拒绝这条知识提议（原文已打回草稿，没有生效）。");
 }
 
 function startModify(item: PendingItemView) {
@@ -243,7 +259,7 @@ function cancelModify() {
 async function approveModified(item: PendingItemView): Promise<void> {
   const content = editDraft.value.trim();
   if (!content) return;
-  await feedback.run(
+  const ok = await feedback.run(
     feedbackKey(item),
     async () => {
       // 既有生命周期只允许对「已生效」条目做版本纠正：
@@ -264,12 +280,13 @@ async function approveModified(item: PendingItemView): Promise<void> {
     },
     { okText: "已按修改后的内容生效", failText: "修改后批准没有完成" },
   );
+  if (ok) showNotice("已按修改后的内容批准并生效。");
 }
 
 async function answerQuestion(item: PendingItemView): Promise<void> {
   const text = answerOf(item.id).trim();
   if (!text) return;
-  await feedback.run(
+  const ok = await feedback.run(
     feedbackKey(item),
     async () => {
       const outcome = await api.answerMemoryPending(item.id, text);
@@ -281,6 +298,7 @@ async function answerQuestion(item: PendingItemView): Promise<void> {
     },
     { okText: "回答已交给后台维护", failText: "回答没有成功" },
   );
+  if (ok) showNotice("回答已交给后台维护，该事项已处理（不再出现在待确认列表）。");
 }
 
 async function deferQuestion(item: PendingItemView): Promise<void> {
@@ -464,6 +482,10 @@ function statsText(batch: MaintenanceBatchSummary): string {
 onMounted(() => {
   void loadPending();
 });
+
+onBeforeUnmount(() => {
+  if (noticeTimer) clearTimeout(noticeTimer);
+});
 </script>
 
 <template>
@@ -497,6 +519,7 @@ onMounted(() => {
         <button class="qio-btn mini" type="button" @click="loadPending">重试</button>
       </div>
       <template v-else>
+        <p v-if="notice" class="mp-notice" role="status">{{ notice }}</p>
         <p v-if="!maintenanceAvailable" class="mp-warn" role="status">
           {{ warnings[0] || '维护事项存储不可用：后台维护问题暂无数据可读（不伪造数据）。' }}
         </p>
@@ -921,6 +944,10 @@ onMounted(() => {
 .mp-warn {
   margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px;
   border: 1px solid var(--warning-soft); background: var(--warning-soft); color: var(--warning);
+}
+.mp-notice {
+  margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  border: 1px solid var(--success-soft); background: var(--success-soft); color: var(--success);
 }
 .mp-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .link { background: none; border: none; color: var(--link); cursor: pointer; font-size: 12px; padding: 0; }
