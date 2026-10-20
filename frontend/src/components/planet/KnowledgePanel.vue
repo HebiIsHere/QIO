@@ -35,6 +35,22 @@ function stateTone(state: string): string {
   return "quiet";
 }
 
+/**
+ * Phase 1 C：事实的确定程度（epistemic_status）**不是审批状态** —— 审批仍是
+ * pending_review / active 那一列；这里让用户在批准前看懂「这条是从哪来的」。
+ */
+const EPISTEMIC_LABELS: Record<string, string> = {
+  user_explicit: "用户明确",
+  shared_understanding: "共同认识",
+  qio_observed: "实际观测",
+  qio_inference: "QIO 推测",
+};
+
+function epistemicLabel(status?: string | null): string {
+  if (!status) return "";
+  return EPISTEMIC_LABELS[status] || status;
+}
+
 const items = ref<KnowledgeItem[]>([]);
 const topics = ref<TopicFingerprint[]>([]);
 const q = ref("");
@@ -290,6 +306,7 @@ onMounted(() => {
           <span class="qio-tag k-cat">{{ CATEGORY_LABELS[k.category] || k.category }}</span>
           <span class="qio-state k-state" :class="[k.state, stateTone(k.state)]">{{ STATE_LABELS[k.state] || k.state }}</span>
           <span v-if="k.ended" class="qio-state k-ended quiet">已结束</span>
+          <span v-if="k.epistemic_status" class="qio-tag k-epistemic">{{ epistemicLabel(k.epistemic_status) }}</span>
           <span class="k-source">{{ k.source }}</span>
           <span class="k-scope">{{ k.scope }}</span>
           <button
@@ -317,6 +334,7 @@ onMounted(() => {
           <p class="k-content">{{ k.content }}</p>
           <!-- 阅读态：内容与「待确认」的动作在明处，管理动作（修正/归档）退到次要位置 -->
           <div class="row k-actions">
+            <span v-if="k.state === 'pending_review' && k.evidence_ids && k.evidence_ids.length" class="k-evidence">依据 {{ k.evidence_ids.length }} 条</span>
             <button class="qio-btn mini k-approve" type="button" v-if="k.state === 'pending_review'" @click="approve(k)">批准</button>
             <button class="qio-btn mini k-reject" type="button" v-if="k.state === 'pending_review'" @click="reject(k)">打回</button>
             <button class="qio-btn mini quiet k-edit-open" type="button" @click="startEdit(k)">修正</button>
@@ -419,6 +437,7 @@ onMounted(() => {
 }
 /* 操作反馈留在条目里：成功短暂、失败保留（失败比成功持久） */
 .k-feedback { font-size: 11.5px; }
+.k-evidence { font-size: 11px; color: var(--text-muted); }
 .k-feedback.ok { color: var(--success); }
 .k-feedback.err { margin: 4px 0 0; color: var(--danger); }
 </style>

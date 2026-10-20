@@ -132,16 +132,22 @@ class _ScriptedAdapter:
         self.calls = {"summary": 0, "entities": 0, "knowledge": 0}
 
     async def complete(self, messages, tools, **kwargs) -> Completion:
+        from agent.prompts import PROMPTS
+
         first = messages[0]
         prompt = first["content"] if isinstance(first, dict) else first.content
+        all_text = "\n".join(
+            (m["content"] if isinstance(m, dict) else m.content) or ""
+            for m in messages
+        )
         if "summarizing a closed conversation fragment" in prompt:
             key, payload = "summary", self.summary
-        elif "extracting durable knowledge" in prompt:
+        elif PROMPTS["KNOWLEDGE_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "knowledge", self.knowledge
-        elif "你是实体提炼器" in prompt:
+        elif PROMPTS["ENTITY_EXTRACTION_SYSTEM"][:20] in prompt:
             key, payload = "entities", self.entities
         else:
-            raise AssertionError(f"未知提示词：{prompt[:40]!r}")
+            raise AssertionError(f"未知提示词：{all_text[:40]!r}")
         self.calls[key] += 1
         if key == "entities" and self.entity_fail_times > 0:
             self.entity_fail_times -= 1
@@ -365,9 +371,11 @@ class _GatedEntitiesAdapter(_ScriptedAdapter):
         self.entities_entered = asyncio.Event()
 
     async def complete(self, messages, tools, **kwargs) -> Completion:
+        from agent.prompts import PROMPTS
+
         first = messages[0]
         prompt = first["content"] if isinstance(first, dict) else first.content
-        if "你是实体提炼器" in prompt:
+        if PROMPTS["ENTITY_EXTRACTION_SYSTEM"][:20] in prompt:
             self.entities_entered.set()
             await self.gate.wait()
         return await super().complete(messages, tools, **kwargs)

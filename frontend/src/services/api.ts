@@ -299,6 +299,13 @@ export interface KnowledgeItem {
   /** 是否已结束：不再是当前状态，但相关内容仍能被参考到 */
   ended?: boolean;
   ended_at?: string | null;
+  /** Phase 1 C：事实的确定程度（不是审批状态），用于审批入口展示依据性质。 */
+  epistemic_status?: string | null;
+  /** Phase 1 C：这条提议引用的真实证据 id（主对话 = 本轮消息/附件/工具结果/注入对象）。 */
+  evidence_ids?: string[];
+  /** 主对话提议所在的轮次 id（后台提炼没有）。 */
+  turn_id?: string | null;
+  provenance_source?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -324,6 +331,14 @@ export interface EntityCard {
   attributes: EntityAttribute[];
   relations: EntityRelation[];
   state: string;
+  /** Phase 1 C：实体的修订版本（纠正时用作 CAS 依据）。 */
+  revision?: number;
+  /** 这个对象是谁 / 为什么创建 / 依据哪些真实来源。 */
+  identity?: string;
+  creation_reason?: string;
+  evidence_ids?: string[];
+  /** 只有名称、目标身份不确定的关系候选（不写同名实体）。 */
+  pending_relations?: Record<string, unknown>[];
   created_at: string;
   updated_at: string;
 }
