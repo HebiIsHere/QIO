@@ -130,7 +130,8 @@ async def test_main_loop_async_subagent_pending_then_await(ctx: AppContext):
     assert "研究发现清淡饮食有益" in (records[0].result.content if records[0].result else "")
 
 
-async def test_notify_injected_into_running_loop(ctx: AppContext):
+async def test_notify_queued_without_interrupting_active_loop(ctx: AppContext):
+    """阶段四：子任务完成**不打断**当前交流 —— 先入队，空闲时再成为自己的通知轮。"""
     from agent.core.loop import AgentLoop
     from agent.core.turn import TurnContext
 
@@ -139,24 +140,23 @@ async def test_notify_injected_into_running_loop(ctx: AppContext):
     # 模拟"有一个 active turn 正在跑，其 loop 是这个 loop"
     ctx.turns._active = TurnContext(turn_id="turn_test", message="x", loop=loop)
     try:
-        # 模拟子任务完成回调
         async def work():
             await asyncio.sleep(0.001)
             return ToolResult(ok=True, content="完成")
 
-        # 提交慢任务后在完成前注册通知回调；完成后回调将通知 push 到运行中的 loop
         ctx.task_manager.submit("t", work, task_id="task_notify_test")
         ok_reg = ctx.task_manager.register_notify("task_notify_test", ctx._handle_subagent_notify)
         assert ok_reg
         await asyncio.sleep(0.3)
-        assert loop._notices, "notice should be queued"
-        await ctx._handle_subagent_notify("task_notify_test", ctx.task_manager.record_info("task_notify_test"))
+        # 新语义：active 期间不把通知 push 进正在跑的 loop（不打断当前交流）
+        assert loop._notices == [], "通知不得打断正在进行的交流"
+        await ctx._handle_subagent_notify(
+            "task_notify_test", ctx.task_manager.record_info("task_notify_test")
+        )
+        assert loop._notices == []
+        assert ctx.subtask_notifications.pending_count() == 1, "通知要可靠排队、不能丢"
     finally:
         ctx.turns._active = None
-    # 再次运行一轮验证 system 注入
-    await loop.run("继续")
-    joined = "\n".join(main.seen_messages)
-    assert "子任务完成" in joined
 
 
 async def test_notify_turn_writes_feedback_memory(ctx: AppContext, monkeypatch):

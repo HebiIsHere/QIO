@@ -349,11 +349,9 @@ class TaskManager:
             if not fut.done():
                 fut.set_result(outcome)
         # 完成通知：按 task 去重；取消的任务不通知（迟到结果不复活）。
-        if (
-            record.outcome in NOTIFY_OUTCOMES
-            and not record.cancelled
-            and self.mark_notified(task_id)
-        ):
+        # 通知去重由消费方（SubtaskNotificationQueue.enqueue）用 mark_notified 完成；
+        # TaskManager 这里只负责按终态过滤并调用注册的回调（多个回调各自决定去重）。
+        if record.outcome in NOTIFY_OUTCOMES and not record.cancelled:
             for cb in list(self._notify.pop(task_id, [])):
                 try:
                     await cb(task_id, record)

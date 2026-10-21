@@ -44,7 +44,7 @@ MAX_PENDING_NOTIFICATIONS = 200
 
 def completion_system_hint() -> str:
     """通知轮要用的固定指令（唯一来源 prompts.py，不在业务模块复制正文）。"""
-    return str(prompts.PROMPTS.get("SUBTASK_COMPLETION_SYSTEM") or "").strip()
+    return (str(prompts.PROMPTS.get("SUBTASK_COMPLETION_SYSTEM") or "").strip()).strip() + chr(10) + chr(10) + __import__("agent.prompts", fromlist=["PROMPTS"]).PROMPTS["SUBTASK_RETURN_POLICY"]
 
 
 def build_notification(task_id: str, record) -> dict[str, Any]:
