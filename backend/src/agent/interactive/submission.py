@@ -1153,6 +1153,8 @@ def _record_submission(
 
 MODE_NORMAL = "normal"
 MODE_INTERACTIVE = "interactive"
+#: P73 Stage 2：普通对话也能接入板面（只读上下文 + 可提落板意图），不需要提交。
+MODE_BOARD = "board"
 
 WAITING_STATUSES: tuple[str, ...] = ("waiting", "resolved", "cancelled")
 
@@ -1494,6 +1496,8 @@ def resolve_chat_binding(
     """校验聊天发送请求里的互动字段，解析出可信的 TurnContext 绑定事实。
 
     * normal（或缺省）：不带 boardId / submissionId；带了就拒绝（不许伪造身份）；
+    * board（P73 Stage 2）：普通对话接入板面 —— boardId 可省略（默认板面），
+      不能携带 submissionId；只读上下文 + 可提案，写操作仍需用户确认；
     * interactive：boardId 必须存在；submissionId 可选且必须属于该板面；
       没有 submissionId 但板面有等待中的提交 → 自动续作该提交（resume=True），
       resolved_question_ids = 该提交当前等待的 question id（程序从 waiting 恢复）；
@@ -1501,8 +1505,8 @@ def resolve_chat_binding(
     非法输入抛 ValueError（路由映射 400）；数据库错误如实抛出。
     """
     raw_mode = MODE_NORMAL if mode is None or str(mode).strip() == "" else str(mode).strip()
-    if raw_mode not in (MODE_NORMAL, MODE_INTERACTIVE):
-        raise ValueError("mode 只能是 normal 或 interactive")
+    if raw_mode not in (MODE_NORMAL, MODE_INTERACTIVE, MODE_BOARD):
+        raise ValueError("mode 只能是 normal、board 或 interactive")
     bid = "" if board_id is None else str(board_id).strip()
     wanted_sid = "" if submission_id is None else str(submission_id).strip()
     if raw_mode == MODE_NORMAL:
@@ -1518,6 +1522,26 @@ def resolve_chat_binding(
             "resolvedQuestionIds": (),
             "intentIds": (),
             "waiting": None,
+        }
+    if raw_mode == MODE_BOARD:
+        if wanted_sid:
+            raise ValueError("board 模式不能携带 submissionId（需要提交请用 interactive 模式）")
+        if not bid:
+            bid = models.DEFAULT_BOARD_ID
+        if not _BOARD_ID_RE.match(bid):
+            raise ValueError("boardId 只能包含字母、数字与 _.-: 且长度 1..64")
+        if conn.execute("SELECT 1 FROM boards WHERE id = ?", (bid,)).fetchone() is None:
+            raise ValueError(f"没有这个板面：{bid}")
+        return {
+            "mode": MODE_BOARD,
+            "boardId": bid,
+            "submissionId": "",
+            "topicId": str(current_topic or ""),
+            "resume": False,
+            "attempt": 1,
+            "resolvedQuestionIds": (),
+            "intentIds": (),
+            "waiting": waiting_state(conn, bid),
         }
     if not bid:
         raise ValueError("互动模式必须提供 boardId")

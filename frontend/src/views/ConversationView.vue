@@ -11,6 +11,8 @@ import SettingsFloat from "../components/SettingsFloat.vue";
 import PlanetBoot from "../components/PlanetBoot.vue";
 import TopicSwitchPrompt from "../components/TopicSwitchPrompt.vue";
 import KnowledgeCandidateCard from "../components/KnowledgeCandidateCard.vue";
+// P73 Stage 2：普通对话（mode=board）里 QIO 提议的板面意图，在对话内直接批准 / 拒绝
+import BoardIntentInbox from "../components/interactive/BoardIntentInbox.vue";
 import InterruptedTurnEntry from "../components/InterruptedTurnEntry.vue";
 import RecoveryInbox from "../components/RecoveryInbox.vue";
 import { titlebarHeight } from "../utils/titlebar";
@@ -253,6 +255,11 @@ onMounted(() => {
          整体抬到输入气泡上方。不这么做的话它们会被固定悬浮的输入区压住，
          按钮看得见、点不到（实测：按钮中点命中的是输入框）。 -->
     <div ref="bottomCluster" class="bottom-cluster">
+    <!--
+      P73 Stage 2：待批准的板面意图（普通对话的 board 模式提案）。
+      没有待批准条目不渲染；确认/拒绝后与每轮对话结束都会重读，不轮询。
+    -->
+    <BoardIntentInbox />
     <!--
       高影响知识候选：只在回答完成之后出现，低干扰、不遮罩、不抢焦点。
       候选多时**自己滚动**（不把输入区挤出屏幕）——它是一块独立并列的列表，

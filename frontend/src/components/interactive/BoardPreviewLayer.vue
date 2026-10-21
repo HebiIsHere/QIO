@@ -2,7 +2,7 @@
 
   契约：docs/interactive-mode-contract.md §1.6 / §4.4；
         docs/superpowers/specs/2026-10-21-intent-preview-apply-design.md §4.3 / §5。
-  本轮冻结规则（Stage 1）：
+  本轮冻结规则（Stage 1 + Stage 2）：
   - 数据来自 store.intents 里**仍未落地**的意图（proposed / awaiting_confirmation / approved，
     以及旧状态 pending / needs_update / waiting_dependency / waiting_confirm / running）的
     preview（结构与 BoardState 的 cards/groups/links 子集相同）；已 applied 或已结束的不画；
@@ -10,9 +10,13 @@
   - 链接方向只画用户写明的方向，不解释成因果 / 支持 / 执行顺序；
   - 整层 pointer-events: none：不参与拖动与选择命中，不挡正式卡片操作；
     只有「可编辑预演」的幽灵卡（proposed / awaiting_confirmation 且带 operations）打开
-    pointer-events，用于**拖动改落点**与**删除该新增卡**；
-  - 拖动期间只在本地跟手（不写 store、不发请求），松手才 PATCH plan；
-    编辑失败**如实提示并回滚本地预演**，绝不假成功；
+    pointer-events，用于拖动改落点 / 双击编辑正文 / Ctrl(⌘)+点击多选 / 删除新增卡；
+  - Stage 2 编辑（全部走既有 PATCH plan）：
+    多选 >=2 张 → 成组（追加 group_cards）；恰好 2 张 → 连线（追加 add_link）；
+    双击幽灵卡 → 编辑 Markdown 正原文（空白正文本地拦截）；删除时连带清理依赖操作；
+    任何一步失败都**如实提示并回滚本地预演**，绝不假成功；
+  - 新增控件（选择工具条 / 正文编辑器）都在预览层内、只接管自己的指针与键盘事件，
+    不改板面手势与坐标换算，也不挡真实卡片操作；
   - 收到 window 事件 qio:interactive:locate-preview 时由 BoardCanvas 高亮对应意图。
 -->
 <script setup lang="ts">
@@ -28,6 +32,14 @@ import {
   removePreviewCardFromPlan,
   type PlanEditBaseline,
 } from "../../interactive/intentPreviewApply";
+import {
+  editPreviewCardContent,
+  groupPreviewCards,
+  linkPreviewCards,
+  readPreviewCardContent,
+  togglePreviewSelection,
+  type PreviewPlanEdit,
+} from "../../interactive/intentPreviewEdit";
 
 const props = defineProps<{
   intents: Intent[];
@@ -53,8 +65,10 @@ interface PreviewCardBox {
   style: Record<string, string>;
   kindLabel: string;
   text: string;
-  /** 这张幽灵卡可拖动 / 可删除（未批准 + 有对应 add 操作） */
+  /** 这张幽灵卡可拖动 / 可删除 / 可编辑（未批准 + 有对应 add 操作） */
   editable: boolean;
+  /** Stage 2：Ctrl/⌘+点击多选中的卡片 */
+  selected: boolean;
 }
 
 interface PreviewGroupBox {
@@ -113,6 +127,117 @@ const drag = ref<EditDragState | null>(null);
 const localPositions = ref<Record<string, { x: number; y: number }>>({});
 /** 正在保存预演修改的意图 id（同一时间只处理一次） */
 const saving = ref<string | null>(null);
+
+/* --------------------------------------------------------------------------
+ * Stage 2：多选（成组 / 连线）与正文编辑（只改 operations，预览以服务端重算为准）
+ * ------------------------------------------------------------------------ */
+
+/** 多选状态：只在一个意图内选择（跨意图成组 / 连线没有意义）。 */
+interface PreviewSelection {
+  intentId: string;
+  cardIds: string[];
+}
+const selection = ref<PreviewSelection | null>(null);
+
+/** 正文编辑器（双击幽灵卡打开；保存 = 改 add 操作 content 后 PATCH plan）。 */
+interface PreviewEditorState {
+  intentId: string;
+  cardId: string;
+  content: string;
+  error: string;
+}
+const editor = ref<PreviewEditorState | null>(null);
+
+/** 幽灵卡的当前显示位置（拖动期间用本地乐观位置，其余用服务端预览坐标）。 */
+function cardDisplayPosition(intentId: string, card: BoardCard): { x: number; y: number } {
+  return localPositions.value[keyFor(intentId, card.id)] ?? { x: card.x, y: card.y };
+}
+
+function selectedCardIds(intentId: string): string[] {
+  const current = selection.value;
+  return current && current.intentId === intentId ? current.cardIds : [];
+}
+
+function isCardSelected(intentId: string, cardId: string): boolean {
+  return selectedCardIds(intentId).includes(cardId);
+}
+
+function toggleCardSelection(intentId: string, cardId: string): void {
+  const next = togglePreviewSelection(selectedCardIds(intentId), cardId);
+  selection.value = next.length ? { intentId, cardIds: next } : null;
+}
+
+function clearSelection(): void {
+  selection.value = null;
+}
+
+function dropFromSelection(intentId: string, cardId: string): void {
+  const current = selection.value;
+  if (!current || current.intentId !== intentId) return;
+  const next = current.cardIds.filter((item) => item !== cardId);
+  selection.value = next.length ? { intentId, cardIds: next } : null;
+}
+
+interface SelectionToolbarView {
+  intentId: string;
+  style: Record<string, string>;
+  count: number;
+  canGroup: boolean;
+  canLink: boolean;
+}
+
+/**
+ * 选择工具条：贴着被选中卡片的上方显示（板面坐标；整层在缩放层里，所以随缩放移动）。
+ * 只有 >=2 张时才出现（成组门槛）；恰好 2 张时「连线」可用。
+ */
+const selectionToolbar = computed<SelectionToolbarView | null>(() => {
+  const current = selection.value;
+  if (!current) return null;
+  const intent = props.intents.find((item) => item.id === current.intentId);
+  if (!intent || !isPlanEditable(intent) || saving.value) return null;
+  const cards = (intent.preview?.cards ?? []).filter((card) =>
+    current.cardIds.includes(card.id),
+  );
+  if (cards.length < 2) return null;
+  const boxes = cards.map((card) => {
+    const position = cardDisplayPosition(intent.id, card);
+    return { x: position.x, y: position.y, w: card.w, h: card.h };
+  });
+  const left = Math.min(...boxes.map((box) => box.x));
+  const top = Math.min(...boxes.map((box) => box.y));
+  return {
+    intentId: intent.id,
+    style: {
+      left: Math.round(left) + "px",
+      top: Math.max(0, Math.round(top) - 38) + "px",
+    },
+    count: boxes.length,
+    canGroup: boxes.length >= 2,
+    canLink: boxes.length === 2,
+  };
+});
+
+interface EditorPanelView {
+  style: Record<string, string>;
+}
+
+/** 编辑器面板位置：贴着被编辑的幽灵卡下方（同样用板面坐标）。 */
+const editorPanel = computed<EditorPanelView | null>(() => {
+  const state = editor.value;
+  if (!state) return null;
+  const intent = props.intents.find((item) => item.id === state.intentId);
+  if (!intent) return null;
+  const card = (intent.preview?.cards ?? []).find((item) => item.id === state.cardId);
+  if (!card) return null;
+  const position = cardDisplayPosition(state.intentId, card);
+  return {
+    style: {
+      left: Math.round(position.x) + "px",
+      top: Math.max(0, Math.round(position.y + card.h + 8)) + "px",
+      width: "300px",
+    },
+  };
+});
 
 function keyFor(intentId: string, cardId: string): string {
   return intentId + ":" + cardId;
@@ -181,14 +306,19 @@ function onPointerMove(event: PointerEvent): void {
   };
 }
 
-function onPointerUp(): void {
+function onPointerUp(event: PointerEvent): void {
   const state = drag.value;
   detachPointerListeners();
   drag.value = null;
   if (!state) return;
   if (!state.moved) {
-    // 纯点击：不产生任何修改（也不会误 PATCH）
+    // 纯点击：不产生任何板面修改（也不会误 PATCH）；Ctrl/⌘+点击 = 多选切换
     clearLocal(state.intentId, state.cardId);
+    if (event?.ctrlKey || event?.metaKey) {
+      toggleCardSelection(state.intentId, state.cardId);
+    } else if (selection.value) {
+      clearSelection();
+    }
     return;
   }
   const intent = props.intents.find((item) => item.id === state.intentId);
@@ -226,7 +356,10 @@ function onKeydown(event: KeyboardEvent): void {
  * - 成功：清掉本地乐观位置，store 会按服务端重算结果重新读取意图；
  * - 失败：清掉本地乐观位置（回到修改前），并把真实原因交给 BoardCanvas 提示 —— 不假成功。
  */
-async function commitPlan(intent: Intent, operations: IntentOperation[]): Promise<void> {
+async function commitPlan(
+  intent: Intent,
+  operations: IntentOperation[],
+): Promise<{ ok: boolean; error: string }> {
   const baseline: PlanEditBaseline = {
     preview: intent.preview ?? { cards: [], groups: [], links: [], note: "" },
     operations: intent.operations ?? [],
@@ -241,9 +374,13 @@ async function commitPlan(intent: Intent, operations: IntentOperation[]): Promis
     clearAllLocal();
     if (!outcome.ok) {
       emit("edit-error", "预演修改没有保存（已回到修改前）：" + outcome.error);
-      return;
+      return { ok: false, error: outcome.error };
     }
+    // 成功：服务端会重算 preview；选择与编辑器都收起（不留悬空的旧状态）
+    clearSelection();
+    editor.value = null;
     emit("edit-applied", intent.id);
+    return { ok: true, error: "" };
   } finally {
     saving.value = null;
   }
@@ -292,7 +429,78 @@ async function onDeleteById(intentId: string, cardId: string, event: MouseEvent)
     return;
   }
   clearLocal(intentId, cardId);
+  dropFromSelection(intentId, cardId);
+  if (editor.value?.intentId === intentId && editor.value?.cardId === cardId) {
+    editor.value = null;
+  }
   await commitPlan(intent, removed.operations);
+}
+
+/** 成组 / 连线的公共入口：把选中卡片交给纯函数，成功后 PATCH plan。 */
+async function applySelectionEdit(
+  transform: (operations: IntentOperation[], cardIds: string[]) => PreviewPlanEdit,
+): Promise<void> {
+  const current = selection.value;
+  if (!current || saving.value) return;
+  const intent = intentAt(current.intentId);
+  if (!intent || !isPlanEditable(intent)) return;
+  const result = transform(intent.operations ?? [], current.cardIds);
+  if (!result.ok) {
+    emit("edit-error", result.reason);
+    return;
+  }
+  await commitPlan(intent, result.operations);
+}
+
+async function onGroupSelected(): Promise<void> {
+  await applySelectionEdit(groupPreviewCards);
+}
+
+async function onLinkSelected(): Promise<void> {
+  await applySelectionEdit(linkPreviewCards);
+}
+
+/** 双击幽灵卡：打开正文编辑器（Markdown 原文；空白提交会被本地拦截）。 */
+function onCardDoubleClickById(
+  intentId: string,
+  cardId: string,
+  event: MouseEvent,
+): void {
+  event.preventDefault();
+  event.stopPropagation();
+  const intent = intentAt(intentId);
+  if (!intent || !isPlanEditable(intent) || saving.value) return;
+  const content = readPreviewCardContent(intent.operations ?? [], cardId);
+  if (content === null) return;
+  clearSelection();
+  editor.value = { intentId, cardId, content, error: "" };
+}
+
+function closeEditor(): void {
+  if (saving.value) return;
+  editor.value = null;
+}
+
+async function saveEditor(): Promise<void> {
+  const state = editor.value;
+  if (!state || saving.value) return;
+  const intent = intentAt(state.intentId);
+  if (!intent) {
+    editor.value = null;
+    return;
+  }
+  const result = editPreviewCardContent(intent.operations ?? [], state.cardId, state.content);
+  if (!result.ok) {
+    // 空白正文等本地可判定的错误：不发注定失败的请求
+    state.error = result.reason;
+    return;
+  }
+  state.error = "";
+  const outcome = await commitPlan(intent, result.operations);
+  if (!outcome.ok && editor.value) {
+    // 服务端拒绝 / 网络失败：编辑器保持打开，原因原样给出（不假成功、不吞错）
+    editor.value.error = "正文没有保存（已回到修改前）：" + outcome.error;
+  }
 }
 
 function cardText(card: BoardCard): string {
@@ -333,8 +541,10 @@ const rendered = computed<RenderedIntent[]>(() =>
 
     // 拖动期间用本地乐观位置渲染（跟手），其余时候就是服务端预览坐标
     const cards: BoardCard[] = originalCards.map((card) => {
-      const position = localPositions.value[keyFor(intent.id, card.id)];
-      return position ? { ...card, x: position.x, y: position.y } : card;
+      const position = cardDisplayPosition(intent.id, card);
+      return position.x === card.x && position.y === card.y
+        ? card
+        : { ...card, x: position.x, y: position.y };
     });
     const byId = new Map(cards.map((card) => [card.id, card]));
 
@@ -345,6 +555,7 @@ const rendered = computed<RenderedIntent[]>(() =>
       text: cardText(card),
       editable:
         editableIntent && previewCardOperationIndex(intent.operations ?? [], card.id) >= 0,
+      selected: isCardSelected(intent.id, card.id),
     }));
 
     const groupBoxes: PreviewGroupBox[] = groups.map((group) => ({
@@ -434,7 +645,7 @@ onBeforeUnmount(() => {
     >
       <p class="preview-badge" :style="item.badgeStyle">
         预览（未确定）· {{ item.title }} · {{ item.statusLabel
-        }}<template v-if="item.editable"> · 可拖动落点 / 删除新增卡</template>
+        }}<template v-if="item.editable"> · 拖动 / 双击编辑 / Ctrl(⌘)+多选</template>
       </p>
 
       <div
@@ -455,12 +666,14 @@ onBeforeUnmount(() => {
         v-for="card in item.cards"
         :key="card.id"
         class="preview-card"
-        :class="{ editable: card.editable, saving: item.saving }"
+        :class="{ editable: card.editable, saving: item.saving, selected: card.selected }"
         :style="card.style"
         data-im="preview"
         :data-intent-id="item.id"
         :data-preview-card-id="card.id"
+        :data-selected="card.selected ? '1' : '0'"
         @pointerdown="card.editable && onCardPointerDownById(item.id, card.id, $event)"
+        @dblclick="card.editable && onCardDoubleClickById(item.id, card.id, $event)"
         @dragstart.prevent
       >
         <span class="preview-card-kind mono">{{ card.kindLabel }}</span>
@@ -518,6 +731,106 @@ onBeforeUnmount(() => {
           </text>
         </g>
       </svg>
+    </div>
+
+    <!--
+      Stage 2 选择工具条：多选 >=2 张幽灵卡时出现（贴着选中卡片上方）。
+      只接管自己的指针 / 键盘事件 —— 不触发板面平移 / 框选，也不改任何板面状态。
+    -->
+    <div
+      v-if="selectionToolbar"
+      class="preview-toolbar"
+      :style="selectionToolbar.style"
+      data-im="preview-select-toolbar"
+      :data-intent-id="selectionToolbar.intentId"
+      role="toolbar"
+      aria-label="预演卡片选择"
+      @pointerdown.stop
+      @click.stop
+      @keydown.stop
+    >
+      <span class="preview-toolbar-count mono">已选 {{ selectionToolbar.count }} 张</span>
+      <button
+        class="preview-btn"
+        type="button"
+        data-im="preview-group-action"
+        :disabled="!selectionToolbar.canGroup || Boolean(saving)"
+        :title="selectionToolbar.canGroup ? '把选中的预演卡片组成一个组' : '成组至少需要 2 张'"
+        @click.stop="onGroupSelected"
+      >
+        成组
+      </button>
+      <button
+        class="preview-btn"
+        type="button"
+        data-im="preview-link-action"
+        :disabled="!selectionToolbar.canLink || Boolean(saving)"
+        :title="selectionToolbar.canLink ? '在选中的两张卡片之间建立关系（无方向）' : '连线需要恰好 2 张'"
+        @click.stop="onLinkSelected"
+      >
+        连线
+      </button>
+      <button
+        class="preview-btn ghost"
+        type="button"
+        data-im="preview-selection-clear"
+        :disabled="Boolean(saving)"
+        @click.stop="clearSelection"
+      >
+        取消选择
+      </button>
+    </div>
+
+    <!--
+      Stage 2 正文编辑器：双击幽灵卡打开；保存 = 改对应 add 操作的 content 后 PATCH plan。
+      空白正文本地拦截；失败如实提示并回到修改前（不假成功）。
+    -->
+    <div
+      v-if="editor && editorPanel"
+      class="preview-editor"
+      :style="editorPanel.style"
+      data-im="preview-editor"
+      :data-intent-id="editor.intentId"
+      :data-preview-card-id="editor.cardId"
+      role="dialog"
+      aria-label="编辑预演正文"
+      @pointerdown.stop
+      @click.stop
+      @keydown.stop
+      @keyup.stop
+    >
+      <p class="preview-editor-title">编辑预演正文（Markdown 原文）</p>
+      <textarea
+        v-model="editor.content"
+        class="preview-editor-input"
+        data-im="preview-editor-input"
+        rows="5"
+        spellcheck="false"
+        :disabled="Boolean(saving)"
+      ></textarea>
+      <p v-if="editor.error" class="preview-editor-error" role="alert" data-im="preview-editor-error">
+        {{ editor.error }}
+      </p>
+      <div class="preview-editor-actions">
+        <button
+          class="preview-btn primary"
+          type="button"
+          data-im="preview-editor-save"
+          :disabled="Boolean(saving)"
+          @click.stop="saveEditor"
+        >
+          {{ saving ? "保存中…" : "保存" }}
+        </button>
+        <button
+          class="preview-btn ghost"
+          type="button"
+          data-im="preview-editor-cancel"
+          :disabled="Boolean(saving)"
+          @click.stop="closeEditor"
+        >
+          取消
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -613,4 +926,103 @@ onBeforeUnmount(() => {
 .preview-line { stroke: var(--link); stroke-width: 1.5; stroke-dasharray: 6 4; }
 .preview-line-label-bg { fill: var(--bg-elevated); stroke: var(--border-subtle); }
 .preview-line-label { fill: var(--text-secondary); font-size: var(--fs-xs); font-family: var(--sans); }
+
+/* Stage 2：多选高亮（颜色只是辅助，工具条上还有「已选 N 张」文字） */
+.preview-card.selected {
+  border-style: solid;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* Stage 2：选择工具条（贴着选中卡片上方；只接管自己的指针事件） */
+.preview-toolbar {
+  position: absolute;
+  z-index: 26;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  pointer-events: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  box-shadow: var(--elev-floating, var(--shadow-2));
+  white-space: nowrap;
+}
+.preview-toolbar-count {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  padding-right: var(--sp-1);
+}
+.preview-btn {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-2);
+  cursor: pointer;
+}
+.preview-btn:hover { border-color: var(--link); }
+.preview-btn:disabled { opacity: 0.5; cursor: default; }
+.preview-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.preview-btn.primary {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.preview-btn.ghost { background: none; color: var(--link); }
+
+/* Stage 2：正文编辑器（双击幽灵卡打开；不改板面手势与坐标换算） */
+.preview-editor {
+  position: absolute;
+  z-index: 27;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
+  pointer-events: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--elev-floating, var(--shadow-2));
+  color: var(--text-primary);
+  font-family: var(--sans);
+}
+.preview-editor-title {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+.preview-editor-input {
+  width: 100%;
+  min-height: 84px;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: var(--sp-1) var(--sp-2);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-base);
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  /* 板面正文可能被全局禁选：编辑框里必须可以选中与输入 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+.preview-editor-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.preview-editor-error {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.preview-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+}
 </style>

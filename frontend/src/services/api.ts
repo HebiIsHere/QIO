@@ -547,6 +547,20 @@ function memoryQuery(params: Record<string, string | number | undefined>): strin
   return text ? `?${text}` : "";
 }
 
+/**
+ * 一轮对话的互动 / 板面绑定（Stage 2，2026-10-21 冻结）。
+ *
+ * - interactive：互动板悬浮聊天（mode=interactive + 板面 / 提交续作绑定）；
+ * - board：普通对话携带板面上下文（QIO 能读板面、能提落板意图）；
+ *   不传 boardId 时后端默认 board_default；
+ * - normal：显式不带板面（旧语义）。
+ */
+export interface TurnInteractiveContext {
+  mode: "interactive" | "normal" | "board";
+  boardId?: string;
+  submissionId?: string;
+}
+
 export const api = {
   listCredentials: () =>
     request<{ credentials: CredentialMeta[]; default_key_id: string | null }>(
@@ -663,15 +677,11 @@ export const api = {
      */
     prepareId?: string,
     /**
-     * 阶段三契约 §13.3：互动模式的可验证绑定（mode=interactive + boardId，可选
-     * submissionId 表示续作原提交）。服务端核对板面 / 提交归属后才写入 TurnContext；
-     * 普通聊天不传这个参数 —— 请求体里就没有这些字段，行为与旧客户端完全一致。
+     * 板面绑定（Stage 2）：普通对话由 session.send 默认传 { mode: "board" }（后端用
+     * 默认板面 board_default）；互动板悬浮聊天传 { mode: "interactive" + boardId /
+     * submissionId }（阶段三契约 §13.3 的可验证续作绑定）。显式传 "normal" = 不带板面。
      */
-    interactive?: {
-      mode: "interactive" | "normal";
-      boardId?: string;
-      submissionId?: string;
-    },
+    interactive?: TurnInteractiveContext,
   ) => {
       // 请求身份（幂等键）：发送方在调用前用 setNextSendRequestId 挂上，这里取走。
       // 同一次发送动作（含重试）永远复用同一个 id —— 后端据此保证幂等命中也回 200、

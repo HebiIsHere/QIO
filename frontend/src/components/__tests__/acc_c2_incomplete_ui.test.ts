@@ -195,7 +195,9 @@ describe("F06 界面：incomplete 的过程区不是「已完成」", () => {
     expect(retry.exists()).toBe(true);
     await retry.trigger("click");
     await flushPromises();
-    expect(sendTurn).toHaveBeenCalledWith("这一轮的用户消息", "topic_1", [], "turn_i");
+    expect(sendTurn).toHaveBeenCalledWith("这一轮的用户消息", "topic_1", [], "turn_i", undefined, undefined, {
+      mode: "board",
+    });
     w.unmount();
   });
 
@@ -304,7 +306,9 @@ describe("F06 界面：刷新之后仍然是「未完成 + 原因 + retry」", (
 
     await wrapper.find("[data-test='turn-process-action-retry']").trigger("click");
     await flushPromises();
-    expect(sendTurn).toHaveBeenCalledWith("帮我看看这段流", "topic_1", [], "turn_i");
+    expect(sendTurn).toHaveBeenCalledWith("帮我看看这段流", "topic_1", [], "turn_i", undefined, undefined, {
+      mode: "board",
+    });
     wrapper.unmount();
   });
 });

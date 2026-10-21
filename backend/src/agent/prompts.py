@@ -1265,6 +1265,14 @@ knowledge_ids 和 evidence_ids 只能引用输入提供的对象与来源。
 # 工具说明进入 TOOL_DESCRIPTIONS（由工具注册表生成实际 schema），
 # 参数文案进入 ARGUMENT_DESCRIPTIONS；不另行使用旧三分类 JSON 协议。
 PROMPTS.update({
+    "BOARD_CHAT_POLICY": """
+当前对话接入了互动板面（board 模式）：你有只读的板面上下文，可以在对话里直接响应用户对板面的要求。
+读取板面现状用 board_inspect / board_read_cards；不要猜测未读取到的卡片内容。
+用户的要求涉及板面改动（新增卡片、移动、成组、连关系）时，用 board_propose_intents 提出带 operations 的完整计划，不要直接请求写板面；本轮没有写权限，用户确认后由系统落地或自动续作执行。
+提案中的新增卡片要写完整正文与落点；不确定用户是否要落地时先提案，不要以文字承诺代替计划。
+需要用户补充信息时直接用对话提问；没有提交身份时不能解除等待事项。
+本轮仍要像普通对话一样给出回答：说明你读到了什么、将要做什么，以及需要用户确认什么。
+""".strip(),
     "INTERACTIVE_POLICY": """
 当前运行于互动模式，使用同一个 QIO 的理解、记忆、对话和工具能力。
 板面身份、提交身份、查看权限、意图状态及授权范围以程序提供的数据为准。
@@ -1287,7 +1295,7 @@ PROMPTS.update({
 TOOL_DESCRIPTIONS.update({
     "board_inspect": "查看当前互动板面中获准访问的对象、布局、版本、意图状态和等待事项。板面身份来自运行上下文；普通对话模式不可使用。",
     "board_read_cards": "读取 card_ids 指定卡片，source 选择 latest 或 submission；按 offset、limit 获取必要范围。最新材料和提交快照分别使用，保留真实可读状态，不假装读取未提供内容。",
-    "board_propose_intents": "为 submission_id 提交意图，明确目标、预期成果、材料依据、结构化影响范围、依赖和冲突。任务是对板面的具体改动时，在 operations 里给出完整操作计划（新增卡正文与落点、移动、成组、关系），系统据此生成板面虚线预演；用户批准后原子落地。它提出待确认目标，不直接执行板面改动。用户回答已补齐的问题可列入 resolved_question_ids。",
+    "board_propose_intents": "提出板面意图，明确目标、预期成果、材料依据、结构化影响范围、依赖和冲突。有提交身份时必须传同一次提交的 submission_id；普通对话（board 模式）没有提交，submission_id 留空即可。任务是对板面的具体改动时，在 operations 里给出完整操作计划（新增卡正文与落点、移动、成组、关系），系统据此生成板面虚线预演；用户批准后落地（没有操作计划的意图会由系统自动续作执行）。它提出待确认目标，不直接执行板面改动。用户回答已补齐的问题可列入 resolved_question_ids。",
     "board_update_intent": "按 intent_id 和 expected_version 更新意图或解除已经回答的等待。changes 修改目标、范围或其他实际字段；resolved_question_ids 指定已解决问题。实质范围变化使旧授权失效，不能在说明中自称已获新授权。",
     "board_wait_for_input": "为 submission_id 记录必要澄清，question 写成面向用户的自然问题，missing_fields 说明缺少什么。问题在对话中呈现，不创建板面问题卡。返回 question_delivered 后不要重复提问。",
     "board_create_card": "在已确认 intent_id 范围内创建成果卡，operation_key 用于幂等，content 必须是已经写好的完整正文。可提供标题、正尺寸和有效位置。工具只保存与放置，不再次调用模型生成内容。",

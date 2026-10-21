@@ -669,15 +669,14 @@ def propose_intents(
     submission_id = str(submission_id or "").strip()
     if not board_id or not _board_exists(conn, board_id):
         return _fail("board_not_found", "板面不存在")
-    if not submission_id:
-        return _fail("submission_required", "必须提供当前提交身份")
-    submission = conn.execute(
-        "SELECT board_id FROM board_submissions WHERE id = ?", (submission_id,)
-    ).fetchone()
-    if submission is None:
-        return _fail("submission_not_found", "提交不存在")
-    if str(submission["board_id"]) != board_id:
-        return _fail("board_mismatch", "提交不属于这个板面")
+    if submission_id:
+        submission = conn.execute(
+            "SELECT board_id FROM board_submissions WHERE id = ?", (submission_id,)
+        ).fetchone()
+        if submission is None:
+            return _fail("submission_not_found", "提交不存在")
+        if str(submission["board_id"]) != board_id:
+            return _fail("board_mismatch", "提交不属于这个板面")
     specs: list[Any] = []
     try:
         for value in intents:
@@ -808,12 +807,24 @@ def propose_intents(
                 if not preview.get("ok"):
                     raise ValueError(str(preview.get("detail") or preview.get("reason") or "预演生成失败"))
                 _update_row(conn, intent_id, preview=preview["preview"])
-            questions = _resolve_questions(
-                conn,
-                board_id=board_id,
-                submission_id=submission_id,
-                question_ids=resolved_question_ids,
-            )
+            if submission_id:
+                questions = _resolve_questions(
+                    conn,
+                    board_id=board_id,
+                    submission_id=submission_id,
+                    question_ids=resolved_question_ids,
+                )
+            else:
+                # 普通对话（board 模式）没有等待事项可解除；带 id 说明调用方身份不对。
+                pending_questions = [
+                    str(item) for item in (resolved_question_ids or []) if str(item).strip()
+                ]
+                if pending_questions:
+                    return _fail(
+                        "questions_require_submission",
+                        "没有提交身份时不能解除等待事项；请先提交一次互动板面。",
+                    )
+                questions = []
     except Exception as exc:  # noqa: BLE001
         logger.warning("propose_intents failed", exc_info=True)
         return _fail("proposal_failed", f"提案未保存：{exc}")
@@ -1957,6 +1968,9 @@ def apply_approved_intent(
             "reason": "no_operations",
             "detail": "这条意图没有板面操作计划，走既有的续作执行。",
             "status": status,
+            # 调用方（API）据此自动续作，不需要再让用户发一条消息。
+            "intent": _intent_view(conn, row),
+            "submission_id": str(row["submission_id"] or ""),
         }
     execution = _execution()
     plan = execution.build_plan(row)

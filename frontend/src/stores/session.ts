@@ -6,6 +6,7 @@ import {
   type DevTaskRow,
   type InterruptedTurn,
   type ToolRecordPreview,
+  type TurnInteractiveContext,
 } from "../services/api";
 import {
   confirmStopped as confirmStoppedCall,
@@ -52,6 +53,12 @@ import {
   writeDraft,
 } from "../interactive/drafts";
 import { isBlankText, normalizeSendText } from "../interactive/chat";
+
+/**
+ * Stage 2（2026-10-21 冻结）：普通对话请求默认携带板面上下文 —— mode=board。
+ * 后端不传 boardId 时默认 board_default；互动板 ChatDock 传显式 interactive，原样保留。
+ */
+const DEFAULT_CONVERSATION_INTERACTIVE: TurnInteractiveContext = { mode: "board" };
 
 export interface ToolPresentation {
   title?: string;
@@ -1243,6 +1250,11 @@ export interface SendSnapshot {
   } | null;
   /** 提交时是否已在排队 */
   queued: boolean;
+  /**
+   * 这一轮的板面绑定（Stage 2）：快照的一部分，重试必须原样复用。
+   * 旧格式快照没有它 → 重试保持旧调用形状（不凭空造 board 绑定）。
+   */
+  interactive?: TurnInteractiveContext;
   /** 快照冻结时刻（毫秒） */
   capturedAt: number;
 }
@@ -5104,15 +5116,12 @@ const sessionStoreDefinition = defineStore("session", {
         /** 准备标识（契约 §1.1）：中止时用它调取消端点，**以后端确认为准** */
         prepareId?: string;
         /**
-         * 阶段三契约 §13.3：互动模式的聊天绑定（mode/boardId/submissionId）。
-         * 只由互动悬浮聊天（ChatDock）传入；普通聊天不传 → 请求体没有板面身份，
-         * 服务端不设板面上下文、不暴露板面工具。
+         * 板面绑定：普通对话不传时默认 { mode: "board" }（Stage 2：QIO 在普通对话里
+         * 也能读板面、提落板意图；后端不传 boardId 时用 board_default）；
+         * 互动悬浮聊天（ChatDock）传 { mode: "interactive", boardId, submissionId }，
+         * 原样保留、不被默认值覆盖。
          */
-        interactive?: {
-          mode: "interactive" | "normal";
-          boardId?: string;
-          submissionId?: string;
-        };
+        interactive?: TurnInteractiveContext;
       } = {},
     ): Promise<boolean> {
       const message = text.trim();
@@ -5137,6 +5146,12 @@ const sessionStoreDefinition = defineStore("session", {
             at: Date.now(),
             recorded: false,
           };
+      /**
+       * Stage 2：普通对话默认携带板面上下文（mode=board）；显式传入的
+       * interactive（互动板 ChatDock 的续作绑定）原样保留。
+       * 它属于这次发送的**请求语义**，因此要进提交快照并跟着重试一起复用。
+       */
+      const interactive = options.interactive ?? DEFAULT_CONVERSATION_INTERACTIVE;
       // 原文先受保护：清空输入框引起的「删草稿」写入在拿到受理结果之前被按住
       draftKeeper?.protectForSend(attribution);
       const queued = this.turnRunning;
@@ -5178,6 +5193,7 @@ const sessionStoreDefinition = defineStore("session", {
         clientRequestId: newClientRequestId(),
         retryOfTurnId: options.retryOfTurnId ?? null,
         draftId: attribution.draftId,
+        interactive: { ...interactive },
         continuation: {
           topicId: startIdentity.topicId,
           fragmentId: startIdentity.fragmentId,
@@ -5222,7 +5238,6 @@ const sessionStoreDefinition = defineStore("session", {
         // 调用形状按需最小化：没有 signal 时保持既有参数个数，免得把「准备期中止」
         // 的管道塞进所有调用点的既有契约里。
         let res;
-        const interactive = options.interactive;
         if (options.prepareId) {
           // 带准备标识：多一个参数（契约 §1.1 的取消端点要靠它定位这次准备）
           res = interactive
@@ -5456,13 +5471,27 @@ const sessionStoreDefinition = defineStore("session", {
          * 未绑定附件绑到这条纯文字消息上。
          */
         const snapshot = attempt.snapshot;
+        /**
+         * 快照里冻结了板面绑定（Stage 2）：重试原样带上，绝不因为页面状态变化
+         * 丢掉 mode=board / 互动板绑定。旧格式快照没有它 → 保持旧调用形状。
+         */
         const res = snapshot
-          ? await api.sendTurn(
-              snapshot.text,
-              snapshot.topicId,
-              snapshot.attachmentIds,
-              snapshot.retryOfTurnId ?? undefined,
-            )
+          ? snapshot.interactive
+            ? await api.sendTurn(
+                snapshot.text,
+                snapshot.topicId,
+                snapshot.attachmentIds,
+                snapshot.retryOfTurnId ?? undefined,
+                undefined,
+                undefined,
+                snapshot.interactive,
+              )
+            : await api.sendTurn(
+                snapshot.text,
+                snapshot.topicId,
+                snapshot.attachmentIds,
+                snapshot.retryOfTurnId ?? undefined,
+              )
           : await api.sendTurn(attempt.message, attempt.topicId);
         const verdict = readSendReceiptVerdict(res);
         if (verdict.preparing) {
@@ -6343,6 +6372,25 @@ function readExplicitAttachmentIds(raw: unknown): string[] | null {
 }
 
 /**
+ * 从任意形状里读出板面绑定（Stage 2）。字段无效 / 旧格式就返回 null ——
+ * 调用方据此保持旧调用形状，绝不凭空造 board 绑定。
+ */
+function readStoredInteractiveContext(raw: unknown): TurnInteractiveContext | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const mode = String(record.mode ?? "").trim();
+  if (mode !== "interactive" && mode !== "normal" && mode !== "board") return null;
+  const boardId = typeof record.boardId === "string" ? record.boardId.trim() : "";
+  const submissionId =
+    typeof record.submissionId === "string" ? record.submissionId.trim() : "";
+  return {
+    mode,
+    ...(boardId ? { boardId } : {}),
+    ...(submissionId ? { submissionId } : {}),
+  };
+}
+
+/**
  * 归一化一条从本机读回来的未决发送。
  *
  * 必须容得下旧格式：字段缺失时尽最大努力还原（原文 + 请求身份 + 话题），
@@ -6399,6 +6447,10 @@ function normalizePendingSend(raw: unknown): PendingSendRecord | null {
     snapshotRaw.continuation && typeof snapshotRaw.continuation === "object"
       ? (snapshotRaw.continuation as Record<string, unknown>)
       : null;
+  // Stage 2：板面绑定是请求语义的一部分，重开之后重试必须原样复用
+  const interactive = readStoredInteractiveContext(
+    snapshotRaw.interactive ?? record.interactive,
+  );
   return {
     id: typeof record.id === "string" && record.id ? record.id : clientRequestId,
     clientRequestId,
@@ -6411,6 +6463,7 @@ function normalizePendingSend(raw: unknown): PendingSendRecord | null {
       clientRequestId,
       retryOfTurnId:
         typeof snapshotRaw.retryOfTurnId === "string" ? snapshotRaw.retryOfTurnId : null,
+      ...(interactive ? { interactive } : {}),
       continuation: continuationRaw
         ? {
             topicId:

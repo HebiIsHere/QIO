@@ -18,6 +18,8 @@ from typing import Any
 
 MODE_NORMAL = "normal"
 MODE_INTERACTIVE = "interactive"
+#: P73 Stage 2：普通对话接入板面（只读 + 可提案；写操作仍需用户确认）。
+MODE_BOARD = "board"
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,7 @@ class BoardTurnContext:
 
     @property
     def interactive(self) -> bool:
-        return self.mode == MODE_INTERACTIVE and bool(self.board_id)
+        return self.mode in (MODE_INTERACTIVE, MODE_BOARD) and bool(self.board_id)
 
 
 class BoardToolUnavailable(RuntimeError):

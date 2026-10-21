@@ -1934,7 +1934,9 @@ def create_app(
         # 普通模式不带这些字段 → 不设板面上下文、后续不会暴露板面工具；互动模式必须
         # 由服务端核对板面存在、提交属于该板面后才能写入 TurnContext（模型不能越界）。
         raw_mode = body.get("mode")
-        wants_interactive = isinstance(raw_mode, str) and raw_mode.strip() == "interactive"
+        mode_text = raw_mode.strip() if isinstance(raw_mode, str) else ""
+        # P73 Stage 2：board = 普通对话接入板面（只读 + 可提案，无需提交）。
+        wants_board_context = mode_text in ("interactive", "board")
         interactive_binding: dict | None = None
         try:
             from agent.interactive import submission as interactive_submission
@@ -1947,7 +1949,9 @@ def create_app(
                     mode=raw_mode,
                     board_id=body.get("boardId"),
                     submission_id=body.get("submissionId"),
-                    current_topic=ctx.current_topic() if wants_interactive else None,
+                    current_topic=(
+                        ctx.current_topic() if wants_board_context else None
+                    ),
                 )
             except ValueError as exc:
                 # 伪造 / 越界 boardId、提交不属于该板面、mode 非法都在这里拒绝
@@ -2093,10 +2097,15 @@ def create_app(
         # 阶段三：把**程序验证过**的互动绑定写进 TurnContext（Lead 的接线读取它选择
         # 模式规则 / 板面上下文 / 工具可见性；板面工具只认 runtime 里的可信上下文）。
         # activate 之后到下一个 await 之间不会让 worker 跑起来，因此这里写入是安全的。
-        if interactive_binding is not None and interactive_binding["mode"] == "interactive":
+        binding_mode = (
+            str(interactive_binding["mode"])
+            if isinstance(interactive_binding, dict)
+            else ""
+        )
+        if binding_mode in ("interactive", "board"):
             from agent.interactive import submission as interactive_submission
 
-            turn.mode = "interactive"
+            turn.mode = binding_mode
             turn.board_id = interactive_binding["boardId"]
             turn.board_submission_id = interactive_binding["submissionId"]
             turn.board_topic_id = interactive_binding["topicId"]
@@ -2134,11 +2143,11 @@ def create_app(
             **outcome.as_receipt(),
             "attachments": [attachments.payload(a, check=False) for a in outcome],
         }
-        if interactive_binding is not None and interactive_binding["mode"] == "interactive":
+        if binding_mode in ("interactive", "board"):
             # 只增字段：前端据此显示这次消息属于哪个板面 / 是否续作；普通模式不出现。
             response.update(
                 {
-                    "mode": "interactive",
+                    "mode": binding_mode,
                     "board_id": interactive_binding["boardId"],
                     "submission_id": interactive_binding["submissionId"],
                     "resume": bool(interactive_binding["resume"]),

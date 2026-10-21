@@ -150,7 +150,9 @@ describe("刷新后失败轮的入口", () => {
     await retry.trigger("click");
     await flushPromises();
     // 重发的是这一轮的用户消息，并带上 retry_of_turn_id（后端据此复用原轮附件）
-    expect(sendTurn).toHaveBeenCalledWith("帮我改这个文件", "topic_1", [], "turn_failed");
+    expect(sendTurn).toHaveBeenCalledWith("帮我改这个文件", "topic_1", [], "turn_failed", undefined, undefined, {
+      mode: "board",
+    });
     wrapper.unmount();
   });
 

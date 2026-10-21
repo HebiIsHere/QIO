@@ -322,8 +322,9 @@ class BoardReadCardsArgs(BaseModel):
 
 class BoardProposeIntentsArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    submission_id: str = Field(min_length=1, max_length=MAX_REF_CHARS)
     intents: list[IntentSpec] = Field(min_length=1, max_length=MAX_INTENTS_PER_PROPOSAL)
+    #: 有提交绑定时必须与运行上下文一致；普通对话（board 模式）没有提交，留空即可。
+    submission_id: str = Field(default="", max_length=MAX_REF_CHARS)
     resolved_question_ids: list[str] = Field(default_factory=list, max_length=MAX_IDS)
 
     @model_validator(mode="after")
@@ -529,6 +530,10 @@ TOOL_ARG_MODELS: dict[str, type[BaseModel]] = {
 
 #: 只读工具：不写板面，可与其他只读工具并行。
 READ_ONLY_TOOLS: tuple[str, ...] = ("board_inspect", "board_read_cards")
+
+#: P73 Stage 2：普通对话接入板面时只暴露「读 + 提案」；写操作必须在用户确认后
+#: 由执行轮（或原子落地）完成，对话轮不能直接写板面。
+BOARD_CHAT_TOOLS: tuple[str, ...] = READ_ONLY_TOOLS + ("board_propose_intents",)
 
 
 def intent_spec_schema() -> dict[str, Any]:

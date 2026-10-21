@@ -9,6 +9,7 @@ agent.interactive.intents（仓库层）与 agent.interactive.execution（真实
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from typing import Any
 
@@ -18,6 +19,7 @@ from agent.interactive import execution as execution_module
 from agent.interactive import intents
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 #: 演示执行推进允许的结果；revert_rest 用于执行「等待用户决定」的其余撤回项
 ADVANCE_OUTCOMES = tuple(intents.ADVANCE_OUTCOMES) + ("revert_rest",)
@@ -596,13 +598,82 @@ async def intent_view_detail(request: Request, board_id: str, intent_id: str) ->
     return {"available": True, "intent": view}
 
 
-def _apply_confirmed(
+def _enqueue_continuation(
+    request: Request, board_id: str, items: list[dict]
+) -> dict | None:
+    """P73 Stage 2：无操作计划的已确认意图由服务端自动起一个续作轮执行。
+
+    对应 architecture §18.1 的「续作 Turn（自动，不需再次提交）」：不要求用户
+    再发一条消息，也不依赖前端停留在互动板面。
+    """
+    ctx = getattr(request.app.state, "ctx", None)
+    turns = getattr(ctx, "turns", None) if ctx is not None else None
+    if ctx is None or turns is None or not items:
+        return None
+    intent_ids: list[str] = []
+    titles: list[str] = []
+    submission_ids: set[str] = set()
+    for item in items:
+        intent = item.get("intent") if isinstance(item.get("intent"), dict) else {}
+        intent_id = str(item.get("intent_id") or intent.get("intent_id") or "")
+        if not intent_id:
+            continue
+        intent_ids.append(intent_id)
+        titles.append(str(intent.get("title") or intent_id))
+        sid = str(item.get("submission_id") or intent.get("submission_id") or "")
+        if sid:
+            submission_ids.add(sid)
+    if not intent_ids:
+        return None
+    submission_id = next(iter(submission_ids)) if len(submission_ids) == 1 else ""
+    topic_id = ""
+    if submission_id:
+        try:
+            from agent.interactive import submission as _submission
+
+            binding = _submission.submission_binding(ctx.conn, submission_id)
+            if binding is not None:
+                topic_id = str((binding.get("resumeState") or {}).get("topicId") or "")
+        except Exception:  # noqa: BLE001 - 找不到原话题时退回当前话题
+            logger.warning("continuation topic lookup failed", exc_info=True)
+    if not topic_id:
+        try:
+            topic_id = str(ctx.current_topic() or "")
+        except Exception:  # noqa: BLE001
+            topic_id = ""
+    message = (
+        "【互动板面自动续作】用户已确认以下意图："
+        + "；".join(
+            f"{title}（{intent_id}）" for title, intent_id in zip(titles, intent_ids)
+        )
+        + "。请在已确认的授权范围内直接执行，并用 board_finish_intent 声明结果；"
+        "不要再次提出同一件事。"
+    )
+    try:
+        turn = turns.reserve(message, topic_id or None)
+        turn.mode = "interactive"
+        turn.board_id = board_id
+        turn.board_submission_id = submission_id
+        turn.board_topic_id = topic_id
+        turn.board_resume = False
+        turn.board_intent_ids = tuple(intent_ids)
+        turn.board_resolved_question_ids = ()
+        turn.board_attempt = 1
+        turns.activate(turn)
+        return {"enqueued": True, "turn_id": turn.turn_id}
+    except Exception:  # noqa: BLE001 - 自动续作失败不推翻已经写好的确认
+        logger.warning("auto continuation enqueue failed", exc_info=True)
+        return {"enqueued": False, "reason": "enqueue_failed"}
+
+
+async def _apply_confirmed(
     request: Request, service: Any, response: dict, board_id: str
 ) -> dict:
     """P73：确认之后对带操作计划的意图**在同一请求里**落地。
 
     服务没有 apply_approved_intent（旧 / 测试注入的服务）时原样返回：
-    不带计划的意图保持 0.2.10 行为，不会因此失败。
+    不带计划的意图保持旧行为，不会因此失败。
+    P73 Stage 2：没有操作计划的已确认意图 → 自动起续作轮执行（不再要求用户再发一条）。
     """
     apply_fn = getattr(service, "apply_approved_intent", None)
     if apply_fn is None:
@@ -613,6 +684,7 @@ def _apply_confirmed(
     applied: dict[str, Any] = {}
     last_execution: Any = None
     last_intent: Any = None
+    continuation_items: list[dict] = []
     # 只给本次真正确认（approved）的意图落地；already_completed 的重复确认不再落地。
     confirmed = {str(x) for x in (response.get("confirmed") or [])}
     for item in results:
@@ -645,6 +717,14 @@ def _apply_confirmed(
             if isinstance(outcome.get("intent"), dict):
                 last_intent = outcome.get("intent")
         elif outcome.get("reason") == "no_operations":
+            # 没有可原子落地的计划：交给服务端自动续作轮执行（Stage 2）。
+            continuation_items.append(
+                {
+                    "intent_id": intent_id,
+                    "intent": outcome.get("intent") or item.get("intent"),
+                    "submission_id": outcome.get("submission_id", ""),
+                }
+            )
             continue
         else:
             item["apply_error"] = (
@@ -659,6 +739,14 @@ def _apply_confirmed(
         response["execution"] = last_execution
     if last_intent is not None:
         response["intent"] = last_intent
+    if continuation_items:
+        continuation = _enqueue_continuation(request, board_id, continuation_items)
+        if continuation is not None:
+            response["continuation"] = continuation
+            turn_id = continuation.get("turn_id")
+            if turn_id:
+                for item in continuation_items:
+                    item["continuation_turn_id"] = turn_id
     return response
 
 
@@ -681,7 +769,7 @@ async def confirm_single_intent(
     )
     response = dict(result) if isinstance(result, dict) else {"results": result}
     # P73：带操作计划的意图在确认后立即原子落地（不需要再发一条消息）。
-    response = _apply_confirmed(request, service, response, board_id)
+    response = await _apply_confirmed(request, service, response, board_id)
     response["min"] = BATCH_CONFIRM_MIN
     response["batch"] = False
     return response
@@ -721,7 +809,7 @@ async def confirm_intents_batch(request: Request, body: dict) -> dict:
         intent_ids=intent_ids,
     )
     response = dict(result) if isinstance(result, dict) else {"results": result}
-    response = _apply_confirmed(request, service, response, board_id)
+    response = await _apply_confirmed(request, service, response, board_id)
     response["min"] = BATCH_CONFIRM_MIN
     response["batch"] = True
     return response

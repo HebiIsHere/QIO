@@ -593,17 +593,30 @@ class BoardProposeIntentsTool(_BoardTool):
     name = "board_propose_intents"
 
     async def _run(self, turn: Any, args: Any) -> ToolResult:
-        if not turn.submission_id or str(args.submission_id) != turn.submission_id:
-            return _fail(
-                self.name,
-                "submission_binding_mismatch",
-                "只能为当前运行上下文绑定的那一次提交提出意图",
-            )
+        bound_submission = str(getattr(turn, "submission_id", "") or "")
+        requested = str(getattr(args, "submission_id", "") or "").strip()
+        if bound_submission:
+            if requested and requested != bound_submission:
+                return _fail(
+                    self.name,
+                    "submission_binding_mismatch",
+                    "只能为当前运行上下文绑定的那一次提交提出意图",
+                )
+            submission_id = bound_submission
+        else:
+            if requested:
+                return _fail(
+                    self.name,
+                    "submission_binding_mismatch",
+                    "当前对话没有提交身份：不能为其他提交提案；不传 submission_id 即可直接提案",
+                )
+            # P73 Stage 2：普通对话（board 模式）无需提交也能提案。
+            submission_id = ""
         conn = _conn(self)
         payload = intent_service.propose_intents(
             conn,
             board_id=turn.board_id,
-            submission_id=str(args.submission_id),
+            submission_id=submission_id,
             intents=list(args.intents),
             resolved_question_ids=list(args.resolved_question_ids or []),
         )

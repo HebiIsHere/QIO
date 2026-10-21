@@ -1,7 +1,9 @@
-# 2026-10-21 意图预演与批准即落地（P73 · Stage 1）
+# 2026-10-21 意图预演与批准即落地（P73 · Stage 1 + Stage 2）
 
 - 基线：tag `v0.2.10`（commit `0c326d45`），分支 `feat/interactive-intent-preview`。
-- 状态：Stage 1 实现中；Stage 2 事项见 §8。
+- 状态：Stage 1 + Stage 2 实现完成（定向验证 + 测试实例真实链路；未跑全量 / CI）。
+- 阶段：Stage 1 = 预演 + 预演编辑（位置 / 删除）+ 批准即落地；Stage 2 = 对话接入板面、
+  免提交提案、无计划意图自动续作、预演成组 / 连线、预演正文编辑（§8）。
 - 关联分析：0.2.9 旧链（独立理解模型 + 单 JSON preview/operations + execution.py 原子落地）
   在 0.2.10 P71 被整体退役，新 `IntentSpec` 只允许目标 / scope，确认只写授权、执行靠
   下一次消息续作 —— 视觉预演与「批准即落地」因此丢失（见 `docs/qio-refactor-contract.md`
@@ -17,12 +19,12 @@
 4. 工作台与板面两个批准入口都触发落地并刷新板面。
 5. 失败不半落地；已确认的任务不能再改预演。
 
-## 2. 非目标（Stage 2，见 §8）
+## 2. 两个阶段的边界
 
-- 普通对话轮读板面（不依赖提交绑定）。
-- 对话请求与「提交给 QIO」完全解耦（免提交提案 / 执行）。
-- 无 operations 意图确认后的自动续作（本阶段仍走既有续作路径）。
-- 在预演层直接新建关系 / 分组的 UI（本阶段只渲染关系与组，不支持预演上连线）。
+- Stage 1（已完成）：预演 + 预演可编辑（位置 / 删除）+ 批准即原子落地。
+- Stage 2（已完成，见 §8）：普通对话轮读板面（board 模式，无需提交）、免提交提案、
+  无操作计划意图确认后由服务端自动续作、预演层成组 / 连线、预演正文编辑。
+- 不在本设计内：把旧 `execution.run_execution` 重新接回主循环；桌面壳 / 安装包改动。
 
 ## 3. 数据模型
 
@@ -118,15 +120,40 @@ resp: { ok: true, intent: <intent view> }  // 含 preview / operations
   5. PATCH plan 改位置 / 删卡 → preview 与 ops 更新；approved 后 PATCH 409；
   6. 非法 op / 空正文被拒绝。
 - 前端定向 vitest：新状态过滤、批准路由、拖拽/删除参数映射。
+- `backend/tests/test_p73_stage2_board_chat.py`（Stage 2）：board 模式绑定（默认 / 显式板面、
+  拒绝 submissionId / 未知板面）、免提交提案与 preview、board 模式运行上下文里的
+  board_propose_intents、no_operations 返回 intent + submission_id、confirm API 自动起续作轮
+  （stub TurnManager 校验 reserve/activate 与 TurnContext 字段）、update_plan 的成组 /
+  连线 / 正文编辑。
+- 前端 Stage 2 定向：`intentPreviewEdit.test.ts` / `intentPreviewEdit.component.test.ts` /
+  `boardIntentInbox.test.ts`（纯逻辑 + 组件）/ `conversationBoardMode.test.ts`。
 - 命令：
   - `cd backend; & 'D:\qio-dev\qio\backend\.venv\Scripts\python.exe' -m pytest tests/test_p3_plan_preview_apply.py -q`
   - `cd frontend; npx vitest run <受影响测试文件>`
   - `npx vue-tsc --noEmit`（类型检查，不是全量测试）
 
-## 8. Stage 2 事项（本阶段不做，已记录）
+## 8. Stage 2 实现（已完成，2026-10-21）
 
-1. 普通对话轮可读板面（只读绑定，无需提交）。
-2. 对话请求与「提交给 QIO」解耦（免提交提案 / 执行）。
-3. 无 operations 意图确认后的自动续作（architecture §18.1 写的「自动续作」接线）。
-4. 预演层直接建立关系 / 分组（本阶段只渲染）。
-5. 预演编辑的内容编辑（改卡片正文），本阶段只支持位置与删除。
+1. **普通对话轮可读板面**：`POST /api/turns` 新增 `mode: "board"`（可省略 boardId，
+   默认 `board_default`）；`submission.resolve_chat_binding` 在 board 模式下拒绝携带
+   submissionId，服务端核对板面存在后写 TurnContext.mode = "board" / board_id / topic。
+   TurnOrchestrator 注入结构化 `interactive` 上下文块（mode / board_id / waiting），
+   模式规则切换为 `PROMPTS["BOARD_CHAT_POLICY"]`；普通对话仍像普通对话一样回答。
+2. **对话请求与提交解耦**：board 模式只暴露只读工具 + `board_propose_intents`
+   （`tool_models.BOARD_CHAT_TOOLS`）；`board_propose_intents.submission_id` 可省略，
+   没有提交身份时 `intent_service.propose_intents(submission_id="")` 正常落库并派生
+   preview（resolved_question_ids 非空会被拒绝）。写操作仍由授权范围拦：没有用户确认的
+   计划不能写板面。前端普通对话（`session.send`）默认携带 `{mode:"board"}`，对话视图用
+   `BoardIntentInbox` 列出待确认板面意图（确认仍走 confirm，落地 / 续作结果如实转述）。
+3. **无 operations 意图确认后的自动续作**：confirm / batch-confirm 的 `_apply_confirmed`
+   遇到 `no_operations` 时，由服务端 `TurnManager.reserve` + `activate` 起一个续作轮
+   （mode = interactive、board_intent_ids = 本次确认的意图、回落话题优先取原提交话题，
+   消息前缀「互动板面自动续作」）；响应返回 `continuation: {enqueued, turn_id?}`。
+   续作轮使用完整板面工具与授权范围，执行完用 `board_finish_intent` 声明结果，
+   不需要用户再发一条消息。
+4. **预演层建立关系 / 分组**：前端多选幽灵卡（Ctrl/⌘+点击）→「成组」追加
+   `group_cards`、「连线」追加 `add_link`，经 `PATCH plan` 保存；服务端重算 preview，
+   组框与虚线关系线随预演显示。只接受带稳定 ref/cardId 的新增卡（服务端落地按 ref 解析），
+   重复组 / 重复关系 / 超过 20 条 / 空白正文本地拦截。
+5. **预演正文编辑**：双击幽灵卡打开 Markdown 编辑器，保存 = 改对应 add op 的 content →
+   `PATCH plan`；空白正文本地拦截，失败保留编辑器并返回服务端真实原因（不假成功）。

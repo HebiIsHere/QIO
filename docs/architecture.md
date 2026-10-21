@@ -1512,7 +1512,7 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 
 ---
 
-## 20. 可视化意图与批准即落地（2026-10-21，P73 Stage 1）
+## 20. 可视化意图与批准即落地（2026-10-21，P73 Stage 1 + Stage 2）
 
 设计与契约：`docs/superpowers/specs/2026-10-21-intent-preview-apply-design.md`；
 进度与限制见 `docs/status.md` P73。
@@ -1526,5 +1526,14 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 - **落地**：confirm / batch-confirm 在同一个请求内用 `write_board_cas`（expected_seq CAS）+
   `board_operations` 账本 + `board_executions` 记录把计划原子应用成真卡 / 关系 / 分组；
   失败整体回滚，重复确认 / 应用幂等。
-- **边界**：不带 operations 的意图保持 0.2.10 行为（执行另行续作）；普通对话读板面 /
-  提交解耦 / 无计划意图自动续作属于 Stage 2，见 `docs/status.md` P73 Known limitations。
+- **对话接入板面（Stage 2）**：`POST /api/turns` 的 `mode: "board"` 让普通对话带只读
+  板面上下文（默认 `board_default`），只暴露 `BOARD_CHAT_TOOLS`（读 + 提案）并注入
+  `BOARD_CHAT_POLICY`；`board_propose_intents` 的 submission_id 可省略，免提交也能提案，
+  写操作仍只在用户确认的计划授权范围内发生。
+- **自动续作**：confirm / batch-confirm 遇到无操作计划的意图时由服务端 `TurnManager`
+  reserve + activate 一个续作轮（mode=interactive、绑定本次确认的意图），不需要用户再发
+  消息；响应返回 `continuation: {enqueued, turn_id?}`。
+- **预演编辑（Stage 2）**：成组 / 连线 / 正文编辑都通过 `PATCH plan` 修改计划，服务端重算
+  scope / preview；预演与落地继续共用 placement（预览坐标 = 落地坐标）。
+- **边界**：不带 operations 的旧意图在确认后会走自动续作（执行仍由模型工具完成）；
+  桌面壳真机 / 安装包未在本轮复验，全量测试与 CI 未跑（按用户要求）。

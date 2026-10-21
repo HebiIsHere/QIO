@@ -751,9 +751,11 @@ class TurnOrchestrator:
             blocks.append(ContextBlock("media", {"entries": list(media_entries)}))
         # 阶段三契约 §13.2：互动模式的可信运行信息作为结构化块交给同一主循环。
         # 板面身份 / 提交 / 等待来自程序绑定与持久记录；模型不能改写这些值。
-        if getattr(ctx, "mode", "normal") == "interactive" and getattr(ctx, "board_id", ""):
+        # P73 Stage 2：board 模式同样注入（只读上下文 + 可提案）。
+        turn_mode = str(getattr(ctx, "mode", "normal") or "normal")
+        if turn_mode in ("interactive", "board") and getattr(ctx, "board_id", ""):
             interactive_data: dict[str, Any] = {
-                "mode": "interactive",
+                "mode": turn_mode,
                 "board_id": str(getattr(ctx, "board_id", "")),
                 "submission_id": str(getattr(ctx, "board_submission_id", "") or ""),
                 "topic_id": str(
@@ -939,12 +941,29 @@ class TurnOrchestrator:
         from agent.adapters.base import AudioPart, ImagePart, VideoPart
         from agent.core.message_assembly import MediaParts, build_initial_messages
 
-        interactive_mode = getattr(ctx, "mode", "normal") == "interactive"
-        specs = [
-            spec
-            for spec in _specs_or_empty(app.registry)
-            if interactive_mode or not str(getattr(spec, "name", "")).startswith("board_")
-        ]
+        turn_mode = str(getattr(ctx, "mode", "normal") or "normal")
+        interactive_mode = turn_mode == "interactive"
+        # P73 Stage 2：普通对话也可以接板面（只读 + 提案），但写操作仍需确认后执行。
+        board_chat_mode = turn_mode == "board"
+        board_access = interactive_mode or board_chat_mode
+        if interactive_mode:
+            specs = list(_specs_or_empty(app.registry))
+        elif board_chat_mode:
+            from agent.interactive import tool_models as _board_models
+
+            chat_tools = set(_board_models.BOARD_CHAT_TOOLS)
+            specs = [
+                spec
+                for spec in _specs_or_empty(app.registry)
+                if not str(getattr(spec, "name", "")).startswith("board_")
+                or str(getattr(spec, "name", "")) in chat_tools
+            ]
+        else:
+            specs = [
+                spec
+                for spec in _specs_or_empty(app.registry)
+                if not str(getattr(spec, "name", "")).startswith("board_")
+            ]
         mode_rules = ""
         if interactive_mode:
             # 阶段三契约 §13.2：互动政策是主循环的模式规则（同一个 QIO，不是第二套模型）。
@@ -953,6 +972,11 @@ class TurnOrchestrator:
                 from agent import prompts as _prompts
 
                 mode_rules = _prompts.PROMPTS["INTERACTIVE_POLICY"]
+        elif board_chat_mode:
+            # P73 Stage 2：对话接入板面的模式规则（只读 + 提案；写操作必须用户确认）。
+            from agent import prompts as _prompts
+
+            mode_rules = _prompts.PROMPTS["BOARD_CHAT_POLICY"]
         else:
             mode_getter = getattr(adapter, "mode_rules_text", None)
             if callable(mode_getter):
@@ -1000,20 +1024,21 @@ class TurnOrchestrator:
             # 后续每一次模型调用都带着它 —— 依据不会在第二步丢掉。
             media_parts=list(plan.media_parts or []),
             # 阶段三：互动轮允许「已保存意图 / 已记录等待」时不产生聊天回答。
+            # P73 Stage 2：普通对话接入板面（board 模式）仍要正常回答。
             allow_no_answer=interactive_mode,
         )
         ctx.loop = loop
         # 阶段三契约 §13.2：把程序验证过的板面绑定放进可信运行上下文；
         # 板面工具只从这里取 board_id / submission_id，不接受模型自报。
         board_token = None
-        if interactive_mode:
+        if board_access:
             try:
                 from agent.interactive import runtime as _runtime
 
                 board_token = _runtime.set_board_turn(
                     _runtime.BoardTurnContext(
                         turn_id=ctx.turn_id,
-                        mode="interactive",
+                        mode=("interactive" if interactive_mode else "board"),
                         board_id=str(getattr(ctx, "board_id", "") or ""),
                         submission_id=str(getattr(ctx, "board_submission_id", "") or ""),
                         topic_id=str(

@@ -129,7 +129,9 @@ describe("R7：retry 接线（创建新 turn，绝不自动启动）", () => {
     await flushPromises();
 
     expect(sendTurn).toHaveBeenCalledTimes(1);
-    expect(sendTurn).toHaveBeenCalledWith("帮我核对实现", "topic_1", [], "turn_1");
+    expect(sendTurn).toHaveBeenCalledWith("帮我核对实现", "topic_1", [], "turn_1", undefined, undefined, {
+      mode: "board",
+    });
     expect(resendInterruptedTurn, "cancelled 不再走 resend（那条路必然 409）").not.toHaveBeenCalled();
     w.unmount();
   });

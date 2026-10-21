@@ -46,7 +46,9 @@ describe("Composer 输入框（右下角大气泡）", () => {
     await w.find("textarea").setValue("hello qio");
     await w.find(".send-btn").trigger("click");
     await flushPromises();
-    expect(mocks.sendTurn).toHaveBeenCalledWith("hello qio", null, []);
+    expect(mocks.sendTurn).toHaveBeenCalledWith("hello qio", null, [], undefined, undefined, undefined, {
+      mode: "board",
+    });
     const session = useSessionStore();
     expect(session.messages[session.messages.length - 1]?.content).toBe("hello qio");
     expect(w.find("textarea").element as HTMLTextAreaElement).toHaveProperty("value", "");
@@ -97,7 +99,9 @@ describe("Composer 运行中仍可书写（任务02 §1/§3/§4/§11）", () => 
     expect(btn.attributes("title")).toContain("排队");
     await btn.trigger("click");
     await flushPromises();
-    expect(mocks.sendTurn).toHaveBeenCalledWith("排队的消息", null, []);
+    expect(mocks.sendTurn).toHaveBeenCalledWith("排队的消息", null, [], undefined, undefined, undefined, {
+      mode: "board",
+    });
     const last = session.messages[session.messages.length - 1];
     expect(last?.content).toBe("排队的消息");
     expect(last?.queued).toBe(true);
@@ -116,7 +120,9 @@ describe("Composer 运行中仍可书写（任务02 §1/§3/§4/§11）", () => 
     expect(mocks.sendTurn).not.toHaveBeenCalled();
     await ta.trigger("keydown", { key: "Enter" });
     await flushPromises();
-    expect(mocks.sendTurn).toHaveBeenCalledWith("中文输入", null, []);
+    expect(mocks.sendTurn).toHaveBeenCalledWith("中文输入", null, [], undefined, undefined, undefined, {
+      mode: "board",
+    });
     w.unmount();
   });
 

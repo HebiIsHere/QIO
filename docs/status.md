@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-21（**v0.2.10 已从 main 打包：正式更新签名，离线发布闸门 18/18 PASS；未创建 tag/release、未做真机安装验收**。**QIO 整体改造第四阶段（P72，最终阶段）已完成实现与本地集中验证；CI 崩溃根因已定位并修复，本地全量 4640 项通过，等待获准后的新一轮完整 CI 验收**：子任务保留控制字段与凭据自主选择、真实终态与原话题续作、工具开发完整版本证据与可用声明分离、放弃任务只读复用、自动化建议结构化与首次引导、旧 ToolCreator/旧理解链退出、提示词单源与显示名补齐。前三阶段 P69–P71 保持冻结。**未合并 main、未发版**；完整 CI 作为第一轮完整验收，结果以最终运行记录为准。细节见 P72、契约 §14 与台账阶段四部分。**P73（可视化意图与批准即落地）Stage 1 已实现并定向验证**：意图携带结构化操作计划、板面虚线预演可编辑、确认即原子落地；Stage 2 事项见 P73。
+最后核对：2026-10-21（**v0.2.10 已从 main 打包：正式更新签名，离线发布闸门 18/18 PASS；未创建 tag/release、未做真机安装验收**。**QIO 整体改造第四阶段（P72，最终阶段）已完成实现与本地集中验证；CI 崩溃根因已定位并修复，本地全量 4640 项通过，等待获准后的新一轮完整 CI 验收**：子任务保留控制字段与凭据自主选择、真实终态与原话题续作、工具开发完整版本证据与可用声明分离、放弃任务只读复用、自动化建议结构化与首次引导、旧 ToolCreator/旧理解链退出、提示词单源与显示名补齐。前三阶段 P69–P71 保持冻结。**未合并 main、未发版**；完整 CI 作为第一轮完整验收，结果以最终运行记录为准。细节见 P72、契约 §14 与台账阶段四部分。**P73（可视化意图与批准即落地）Stage 1 + Stage 2 已实现并验证**：意图携带结构化操作计划、板面虚线预演可编辑（位置 / 删除 / 成组 / 连线 / 正文）、确认即原子落地；普通对话以 board 模式读板面并免提交提案，无操作计划意图确认后由服务端自动续作执行。细节与限制见 P73。
 最后核对：2026-10-21（**QIO 整体改造第三阶段（P71）已完成实现与定向验证**：互动模式接入完整主循环，12 个板面专属工具（意图提案/确认/创建/更新/移动/分组/排序/链接/等待/完成），授权范围与权威操作账本、版本 CAS 与幂等、提交—等待—续作持久关联与自动续作、问题一次呈现、普通模式不暴露板面工具、前端意图工作台/结果卡/局部失败与恢复。第二阶段 P70 的独立后台维护与 P69 的提示词单文件/统一组装保持冻结。本阶段仍只做定向验证与真实界面检查，**未推送、未合并 main、未启动完整 CI**；第四阶段从阶段三整合提交继续。细节见 P71、契约 §13 与台账阶段三部分。
 最后核对：2026-10-21（**QIO 整体改造第二阶段（P70）已完成实现与定向验证**：独立后台知识维护（变化计数 / 20 条或 30 轮触发 / 快照推进 / 失败退避 / 单轮互斥）、维护动作（merge / normalize / ask，保留条件、归属、确定程度与多来源关系）、独立回答（revise / revoke / needs_clarification / deferred / no_change + 版本保护）、「记忆待确认」入口与维护记录、安全恢复（预览 / 逐条 / 整批 / 保护后续修改）、来源标签统一为「后台整理」。第一阶段（P69）的提示词单文件、统一消息组装与记忆基础保持冻结。本阶段仍只做定向验证与真实界面检查，**未推送、未合并 main、未启动完整 CI**；后续阶段从阶段二整合提交继续。细节见 P70、`docs/qio-refactor-contract.md` §12 与 `docs/qio-verification-ledger.md` 阶段二部分。
 最后核对：2026-10-21（**QIO 整体改造第一阶段（P69）已完成实现与定向验证**：提示词统一到单文件 `backend/src/agent/prompts.py`、统一消息组装、结构化工具结果、摘要完整覆盖与滚动摘要覆盖位置（迁移 44）、知识新增审批与实体决策（`propose_knowledge` / `create_entity` / 证据目录 / 拒绝墓碑 / 稳定 ID 纠正）、`continue_from_fragment` 当轮上下文。本阶段按四阶段共同验证预算只做定向验证，**未推送、未合并 main、未启动完整 CI**；后续阶段从整合提交继续。第一阶段细节见 P69 与 `docs/qio-refactor-contract.md`、`docs/qio-verification-ledger.md`。）
@@ -5414,33 +5414,55 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - 未合并 main、未发版。
 
 
-### P73 — 可视化意图与批准即落地（Stage 1，2026-10-21）
+### P73 — 可视化意图与批准即落地（Stage 1 + Stage 2，2026-10-21）
 
-- **Status：** partial（Stage 1 实现完成 + 定向验证；Stage 2 事项见下）
+- **Status：** completed（Stage 1 + Stage 2 实现完成 + 定向验证 + 测试实例真实链路验证；
+  按用户要求未跑全量测试 / CI）
 - **背景**：P71 把互动模式接入主循环后，意图只含目标 / scope；确认只写授权、执行靠下一次
   消息续作 —— 视觉预演与「批准即落地」丢失（见 `docs/qio-refactor-contract.md`
   §13.1 / §13.3 / §13.10 的分析结论）。本阶段在 P71 的新架构上把两者加回来，不回滚旧链。
-- **实现**：
+- **实现（Stage 1）**：
   - `IntentSpec.operations`（可选，长度上限由 `tool_models.MAX_PLAN_OPS` 程序执行）：
     提案可带结构化操作计划；服务端派生 scope 与 `board_intents.preview`
     （与落地共用 `placement.plan_card_placement`，**预览坐标 = 落地坐标**）；
     intent-views 与旧 `intents` 读取面都返回 preview / operations。
-  - `PATCH /api/interactive/intents/{intent_id}/plan`：未确认意图可编辑计划
-    （拖动位置 / 删除计划项）；保存时 version+1、清空授权、重算 scope 与 preview；
-    已确认返回 409（不悄悄改已批准计划）；空计划被拒绝（不想落地请拒绝 / 放弃提案）。
+  - `PATCH /api/interactive/intents/{intent_id}/plan`：未确认意图可编辑计划；
+    保存时 version+1、清空授权、重算 scope 与 preview；已确认返回 409；空计划被拒绝。
   - 前端：板面虚线预演层识别新状态，幽灵卡可拖动 / 删除（拖动 = 改 op 落点，
     删除 = 移除 op 与依赖它的分组 / 关系操作），PATCH 失败回滚本地预演并如实提示；
     批准入口统一路由到 confirm（旧状态仍走 /approve），确认成功即刷新板面与任务清单。
   - confirm / batch-confirm：确认后在**同一请求内**原子落地 —— `write_board_cas`
     （expected_seq CAS）+ `board_operations` 权威账本 + `board_executions` 记录 +
     意图 `completed`（`applied.previewIdMap`）；失败整体回滚；重复确认 / 重复应用幂等。
-  - 不带 operations 的旧意图行为不变（仍走既有续作路径，本阶段不强制落地）。
-- **验证（定向）**：新增 `backend/tests/test_p3_plan_preview_apply.py`（计划派生 / 落地 /
-  幂等 / board_changed / 预演编辑 / 非法计划 / HTTP 接线 / 旧意图不受影响）；另跑受影响
-  的 P3 套件、prompts 与 frozen-surface 用例；按用户要求未跑全量测试 / CI。
-- **Known limitations（Stage 2 事项）**：
-  - 普通对话轮仍读不到板面（需要提交 / 续作绑定）；对话请求与「提交给 QIO」尚未完全解耦。
-  - 不带 operations 的意图确认后仍不会自动开始执行（`docs/architecture.md` §18.1 写的
-    「自动续作」接线尚未补齐）。
-  - 预演编辑只支持位置与删除：不支持在预演层直接改正文、新建关系 / 分组。
-  - 桌面壳真机未复验；真实模型未验证（本阶段验证模型输出为 fake / 程序链路）。
+- **实现（Stage 2）**：
+  - 对话接入板面（board 模式）：`POST /api/turns` 支持 `mode: "board"`（可省略 boardId，
+    默认 `board_default`；拒绝携带 submissionId）。运行上下文注入只读板面上下文块，
+    模式规则切到 `BOARD_CHAT_POLICY`，工具只暴露只读 + 提案（`BOARD_CHAT_TOOLS`）。
+  - 免提交提案：`board_propose_intents.submission_id` 可省略，没有提交身份也能提案并派生
+    预演（解除等待事项会被明确拒绝）；普通对话默认携带 `{mode:"board"}`，对话视图用
+    `BoardIntentInbox` 列出待确认板面意图，确认仍走 confirm 并如实转述落地 / 续作结果。
+  - 无操作计划意图自动续作：confirm 遇到 `no_operations` 时由服务端 `TurnManager`
+    reserve + activate 一个续作轮（绑定本次确认的意图、优先回落原提交话题），响应返回
+    `continuation: {enqueued, turn_id?}`；不需要用户再发消息。
+  - 预演层成组 / 连线：多选幽灵卡 →「成组」追加 `group_cards`、「连线」追加 `add_link`，
+    经 `PATCH plan` 保存并由服务端重算预演。
+  - 预演正文编辑：双击幽灵卡打开 Markdown 编辑器，保存 = 改对应 add op 的 content；
+    空白正文本地拦截，失败保留编辑器并返回服务端真实原因。
+- **验证（定向）**：
+  - 定向测试：`backend/tests/test_p73_stage2_board_chat.py`（board 模式绑定 / 免提交提案 /
+    board 工具集 / 自动续作 / 计划编辑）+ Stage 1 用例 + 受影响的 P3、prompts、
+    frozen-surface 套件；前端 Stage 2 新用例（预演编辑纯逻辑与组件、对话内意图入口、
+    对话发送模式）+ Stage 1 与发送路径回归；`npx vue-tsc --noEmit` 通过；
+    `python scripts/check_docs.py` 通过。
+  - 测试实例真实链路（真实模型 / 真实凭据的数据副本）：普通对话 mode=board 经
+    board_inspect 读到板面真实状态；免提交提出带操作计划的意图并得到预演；confirm
+    原子落卡；无计划意图 confirm 后自动续作并落卡。
+  - 按用户要求未跑全量测试 / CI（提交信息带 skip ci）。
+- **Known limitations：**
+  - 桌面壳 / 安装包真机与本轮视觉未复验（以测试实例 + 前端 jsdom 定向验证；建议在测试
+    服务器上点一遍成组 / 连线 / 双击编辑）。
+  - 预演成组 / 连线只接受带稳定 ref/cardId 的新增卡；`p_<下标>` 这类没有稳定符号的卡片
+    仍可拖动 / 删除 / 改正文，但不能成组 / 连线（服务端落地按 ref 解析，本地如实拒绝）。
+  - 对话内「拒绝」仍走既有 `/reject`；自动续作时若板面存在与本次意图无关的旧悬挂等待项，
+    `board_finish_intent` 可能以 partially_completed 结束（执行本身已完成，真实数据状态所致）。
+  - 批量确认的续作字段按响应顶层 / 逐项读取；前端兜底刷新只在页面可见时生效。

@@ -28,6 +28,7 @@ import {
   appliedSummaryText,
   approvalRoute,
 } from "../interactive/intentPreviewApply";
+import { confirmDetailText } from "../interactive/boardIntentInbox";
 import { CHECKABLE_KINDS, clampBoardBounds } from "../interactive/board";
 import { cardAttachmentIsImage } from "../interactive/materials";
 import {
@@ -3246,52 +3247,56 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
-   * Stage 1：新意图的确认（POST /intents/{id}/confirm）。
+   * 新意图的确认（POST /intents/{id}/confirm；Stage 1 落地 + Stage 2 续作）。
    *
    * 成功即在同一请求里落地：applied 给出真实新增的对象、板面 seq 前进 ——
-   * 必须立刻刷新板面与任务清单（预演消失、真卡出现）。失败如实返回原因，
-   * 不重试、不假装已落地（意图保持 approved / awaiting_confirmation，可重试）。
+   * 必须立刻刷新板面与任务清单（预演消失、真卡出现）。无操作计划的意图确认后
+   * 服务端会自动排续作（continuation.enqueued），结果文字如实说「正在继续执行」。
+   * 失败如实返回原因，不重试、不假装已落地（意图保持 approved / awaiting_confirmation）。
+   *
+   * `options.boardId`：对话视图读的是 board_default，可能与本 store 当前板面不同；
+   * 这时只确认那一个板面、不拿别的板面的旧快照做核验，也不刷新本 store 的板面状态
+   * （调用方自己重新读取对话内的意图列表）。
    */
-  async function confirmIntent(intentId: string): Promise<DecideResult> {
+  async function confirmIntent(
+    intentId: string,
+    options: { boardId?: string } = {},
+  ): Promise<DecideResult> {
     if (decideInFlight.has(intentId)) {
       return { ok: false, reason: "这项确认正在处理中，请等它返回。" };
     }
+    const targetBoardId = String(options.boardId ?? boardId.value);
+    const sameBoard = targetBoardId === boardId.value;
     decideInFlight.add(intentId);
     try {
-      const stale = await ensureFreshIntents();
-      if (stale) return { ok: false, reason: stale, detail: stale };
-      const response = await api.confirmSingleIntent(intentId, boardId.value);
+      // 只有确认的是本 store 当前板面时，才用本页任务清单做「事实是否过期」核验
+      if (sameBoard) {
+        const stale = await ensureFreshIntents();
+        if (stale) return { ok: false, reason: stale, detail: stale };
+      }
+      const response = await api.confirmSingleIntent(intentId, targetBoardId);
       const item = (response?.results ?? []).find((entry) => entry?.intent_id === intentId);
       // 落地失败（board_changed / 某一步失败）时服务端给 apply_error：不能当已落地
       const ok = response?.ok !== false && item?.ok !== false && !item?.apply_error;
       let refreshError: string | null = null;
-      try {
-        await refreshAfterIntentApply();
-      } catch (err) {
-        refreshError = (err as Error).message || "原因未知";
+      if (sameBoard) {
+        try {
+          await refreshAfterIntentApply();
+        } catch (err) {
+          refreshError = (err as Error).message || "原因未知";
+        }
       }
       const landed = appliedSummaryText(
         item?.applied ?? appliedForIntent(response?.applied, intentId),
       );
-      let detail: string;
-      if (item?.apply_error) {
-        detail =
-          "确认已受理，但落地没有完成：" +
-          item.apply_error +
-          "。意图可能已退回待确认，请刷新后重试。";
-      } else if (!ok) {
-        detail =
-          "确认没有完成：" +
-          (item?.reason || response?.results?.[0]?.reason || "服务端未说明原因") +
-          "。";
-      } else if (landed) {
-        detail = "已确认并落地：板面新增 " + landed + "（结果以板面与服务端账本为准）。";
-      } else {
-        detail = "已确认：服务端没有返回落地结果，执行情况以任务清单与账本为准。";
-      }
-      if (refreshError) {
-        detail += "（板面刷新失败：" + refreshError + "，请刷新重试）";
-      }
+      const detail = confirmDetailText({
+        ok,
+        reason: item?.reason || response?.results?.[0]?.reason,
+        applyError: item?.apply_error,
+        landedText: landed,
+        continuation: response?.continuation ?? item?.continuation ?? null,
+        refreshError,
+      });
       return {
         ok,
         intent: intentById(intentId),

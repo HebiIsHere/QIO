@@ -106,6 +106,39 @@ describe("intentWorkbench 纯逻辑", () => {
     expect(text).toContain("已确认不等于已完成");
   });
 
+  it("Stage 2：确认后自动续作如实说「正在继续执行」，不把续作说成完成", () => {
+    const text = confirmOutcomeText({
+      results: [
+        {
+          intent_id: "in_1",
+          ok: true,
+          status: "approved",
+          continuation: { enqueued: true, turn_id: "turn_9" },
+        },
+      ],
+      continuation: { enqueued: true, turn_id: "turn_9" },
+    });
+    expect(text).toContain("正在继续执行");
+    expect(text).toContain("turn_9");
+    expect(text).not.toContain("任务已完成");
+  });
+
+  it("Stage 2：落地没完成的真实原因不会被吞掉（不假报已落地）", () => {
+    const text = confirmOutcomeText({
+      results: [
+        {
+          intent_id: "in_1",
+          ok: true,
+          status: "approved",
+          apply_error: "板面在确认之后发生了变化：本次没有写入。",
+        },
+      ],
+    });
+    expect(text).toContain("落地没有完成");
+    expect(text).toContain("板面在确认之后发生了变化");
+    expect(text).not.toContain("已落地：板面新增");
+  });
+
   it("长正文判定：短正文默认不折叠，长正文折叠并可展开", () => {
     expect(isLongResultContent("短正文")).toBe(false);
     expect(isLongResultContent("x".repeat(1201))).toBe(true);

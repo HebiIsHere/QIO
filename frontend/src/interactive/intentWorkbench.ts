@@ -178,6 +178,15 @@ export interface RecoveryResultView {
   reason?: string;
 }
 
+/**
+ * P73 Stage 2：无操作计划的意图确认后，服务端自动排续作（同一响应里给出）。
+ * 前端只如实转述，不把「已排入续作」说成「已完成」。
+ */
+export interface ConfirmContinuation {
+  enqueued?: boolean;
+  turn_id?: string | null;
+}
+
 export interface ConfirmItemResult {
   intent_id: string;
   ok?: boolean;
@@ -189,6 +198,8 @@ export interface ConfirmItemResult {
   applied?: ConfirmAppliedRefs;
   execution?: { id?: string; status?: string; steps?: unknown[] } | null;
   intent?: Record<string, unknown> | null;
+  /** P73 Stage 2：这一条的续作信息（批量时可能逐项给出） */
+  continuation?: ConfirmContinuation | null;
 }
 
 /** 新意图确认成功后，同一请求内真实落地的对象 id（服务端 applied 原样）。 */
@@ -216,6 +227,8 @@ export interface ConfirmResponse {
   applied?: Record<string, ConfirmAppliedRefs> | ConfirmAppliedRefs;
   /** Stage 1：落地对应的执行摘要（服务端事实；没有执行时缺省/null） */
   execution?: { id?: string; status?: string; steps?: unknown[] } | null;
+  /** P73 Stage 2：无操作计划意图确认后自动续作（enqueued=true 表示已排入续作轮） */
+  continuation?: ConfirmContinuation | null;
 }
 
 export type StatusTone = "open" | "waiting" | "active" | "settled" | "problem";
@@ -355,7 +368,24 @@ export function confirmOutcomeText(result: ConfirmResponse | null | undefined): 
     return item.intent_id + "：" + label + (detail ? "（" + detail + "）" : "");
   });
   const prefix = result?.batch ? "同批确认结果：" : "确认结果：";
-  return prefix + lines.join("；") + "。已确认不等于已完成，执行结果以账本与结果卡为准。";
+  // P73 Stage 2：无操作计划的意图确认后由后端自动起续作轮 —— 如实转述，不说成已完成
+  const continuation =
+    result?.continuation ??
+    items.find((item) => item.continuation?.enqueued)?.continuation ??
+    null;
+  const continuationNote = continuation?.enqueued
+    ? "服务端已自动排入续作执行（正在继续执行" +
+      (String(continuation.turn_id ?? "").trim()
+        ? "，续作轮 " + String(continuation.turn_id).trim()
+        : "") +
+      "）。"
+    : "";
+  return (
+    prefix +
+    lines.join("；") +
+    "。已确认不等于已完成，执行结果以账本与结果卡为准。" +
+    continuationNote
+  );
 }
 
 export function recoveryOutcomeText(result: RecoveryResultView | null | undefined): string {
