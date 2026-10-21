@@ -946,3 +946,23 @@ Lead 整合顺序 A / B / C → D 独立回归 → 更新 `docs/qio-refactor-con
 
 - 角色证据 `D:\qio-dev\_P4-EVIDENCE-<x>.md`；D 审阅 `D:\qio-dev\_P4-REVIEW-d.md`。
 - 阶段四预算：定向验证按需；完整验收/完整 CI 各最多两轮，用于最终集中收口（本阶段即最终阶段）。
+
+
+### 14.10 阶段交接（第四阶段完成，2026-10-21）
+
+- 起点：第三阶段整合 `c68ec692`；契约冻结 `92d927f2`；整合分支 `feat/qio-refactor-p4`
+  （本地与阶段分支已推送，未合并 main、未发版）。
+- 实现映射：A 凭据目录/选择（`credentials/selection.py`、`tools/credential_catalog.py`）、
+  `_qio_subtask` 与终态/分页/通知（`tools/subagent_tool.py`、`task_manager.py`、
+  `subtask_notifications.py`，最小 app.py/registry.py 接线）；B `tools/dev_tools.py`、
+  `dev_workspace.py`、`declare_completion.py`、`tool_store.py`/`lifecycle.py`；
+  C `services/automation.py`、`services/followups.py`、删除 `tools/creator.py`；
+  Lead 文案冻结/接线/整合/文档/CI。
+- 裁决：旧独立理解链测试按退役口径 skip（原因写模块，替代套件 p3/p4）；旧理解读取/重试
+  API 保留仅作历史兼容；工具停用/恢复当前仅程序 API；通知语义从「注入运行中轮」改为
+  「排队 + 空闲独立通知轮、原话题续作」；真实条件验证依赖真实凭据链路，当前记 unavailable。
+- 验证：本地宽集 577 项通过、D 57/57 + 414 定向回归、离线评估 sha16=d1a8ff768a8afad6、
+  D 真实界面验收（最终轮记录见台账）、完整 CI 两轮预算（第一轮旧 SHA 不作依据；第二/最终轮
+  记录见 CI）。未跑本地全量重复集合。
+- 限制：真实模型/凭据质量、完整用户旅程、Windows 安装包/原生窗口未验证；A 独测用例未落地；
+  B 停用入口未做 UI/工具触发；旧理解链仅历史读；本阶段未合并 main、未发版。

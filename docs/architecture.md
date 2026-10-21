@@ -1485,3 +1485,27 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   （表格 / 代码块 / 折叠 / 滚动），长正文不静默截断；文件按文件交付；编辑保存不调用模型。
 - 普通聊天与互动聊天共用 ChatDock / 主循环，但互动消息携带经服务端验证的 mode / boardId /
   submissionId；失败重试与中断重发暂不携带互动绑定（按普通回合执行，不越权，已知限制）。
+
+
+---
+
+## 19. 子任务续作 / 凭据目录 / 工具开发闭环（2026-10-21，整体改造第四阶段）
+
+契约与交接见 `docs/qio-refactor-contract.md` §14；进度与限制见 `docs/status.md` P72。
+
+- **凭据目录与选择**：`list_available_credentials` 只返回 credential_ref/provider/models/
+  capabilities/availability/usage_limits，不返回密钥；模型凭据与业务服务凭据分开；选择顺序为
+  显式指定 > 用户默认 > 预算余额 > 稳定 key_id，实际调用与用量归因同一个 credential_ref；
+  旧 credential_key 归一化，双参冲突拒绝。
+- **子任务控制字段**：动态 subagent 工具使用 `_qio_subtask`（credential_ref 必填，model/context/
+  evidence_ids/budget 严格校验），先剥离控制字段再传业务参数；原任务/原话题/目标版本/授权
+  由程序绑定。终态区分排队、运行、完成、部分完成、失败、取消、预算耗尽；完整结果保留并分页；
+  通知队列 FIFO/去重，不打断当前交流；结果回原话题独立通知轮续作。
+- **工具开发闭环**：开发工具结果 data 携带完整 version 与测试/注册/真实验证三类证据；
+  declare_completion 机器 claims 不变，usable 要求真实条件验证；放弃任务只读复用、禁止写测提；
+  工具可暂停/恢复（保留定义与工作区）；受限子进程明确不是安全沙箱。
+- **自动化建议与引导**：完整请求 + 实际结果 + 已有工具判断；输出固定 suggestions/questions
+  schema；公共结构化规则、实际 schema、独立 JSON 数据，无聊天回答标记；建议不是授权；
+  引导最多两问、可空、可跳过。旧 ToolCreator 与旧理解链退出生产路径。
+- **集中验收**：定向回归、离线评估、界面检查、文档/迁移/密钥检查后，冻结整合提交；完整 CI
+  作为完整验收，最多两轮；不推送旧 SHA 证明新代码，不合并 main、不发版。

@@ -195,3 +195,17 @@
 
 | 编号 | 范围 | 命令 / 方式 | 结果 | 备注 |
 | --- | --- | --- | --- | --- |
+
+| P4-A-01 | A：凭据目录/选择 + _qio_subtask + 终态/分页/通知 | 既有 subagent/race 适配 + 接口冒烟 | 31 passed + 冒烟 | 新增 test_p4_a_* 未落地（已知限制） |
+| P4-B-01 | B：开发闭环证据分层/放弃只读/停用恢复 | test_p4_b_dev_evidence + 受影响 dev/tool 测试 | 45 passed；受影响 257 passed / 6 failed（旧断言，Lead 已适配） | 完整版本进 data、模拟与真实分开 |
+| P4-C-01 | C：自动化建议/引导/旧路径清点 | 阶段四 C 用例 + onboarding/maintenance/prompts 受影响 | 101 passed；前端 23 passed、vue-tsc 0 | 建议可空、拒绝不催问；旧 creator 退出 |
+| P4-D-01 | D：阶段四独立契约测试 | pytest tests/test_p4_d_*.py（7 文件 57 条） | 57/57（合入 RETURN_POLICY 后） | 冻结面/凭据/控制字段/终态/闭环/旧路径 |
+| P4-D-02 | D：相关定向回归 + 广域回归 | subagent/race/dev/tool/onboarding/automation/p4 等；protocol/摘要/知识/实体/maintenance/interactive | 414/414；广域 619 项仅 1 条（工具 description 单源，已修） | 0 超时；p7 race 恢复 |
+| P4-D-03 | D：离线评估对比 | python -m agent.eval.run | sha16=d1a8ff768a8afad6（topic/retrieval 与阶段一基线一致） | 未退化 |
+| P4-D-04 | D：真实界面验收 | 真实后端（fake 模型）+ 前端 + Playwright | 19/19（上一轮），最终轮记录见 D 报告/截图 | 引导追问/子任务/开发证据入口 |
+| P4-修复-01 | Lead：CI 第一轮失败收口 | 工具 description 单源、13 个中文显示名、旧链退役 skip、迁移资产 51、预算/生命周期断言 | 宽集 577 passed | 14 条 CI 失败均为旧测试前提/文案/签名 |
+| P4-集成-01 | Lead：最终本地定向集合 | 阶段四相关 + A/B/C/D + 关键既有（577 项） | 全绿 | 不重复全量集合 |
+| P4-CI-01 | 完整 CI 第一轮（旧 SHA 自动运行，不作验收依据） | GitHub Actions push run 39519065880 | failure（旧 SHA） | 规则：旧 SHA 不证明新代码 |
+| P4-CI-02 | 完整 CI 第二轮候选（b1025c66） | GitHub Actions run 39520259040 | failure：14 条旧测试未适配/工具 description 单源；py3.11/3.12 job exit 139 | 已定位并修复全部失败原因 |
+| P4-CI-03 | 完整 CI 最终轮（修复后最终 SHA） | GitHub Actions push 自动运行 | 运行记录见最终 CI（本轮作为第二轮完整验收） | 不启动第三轮 |
+| P4-docs | 文档/迁移/密钥检查 | check_docs + 迁移纪律/closeout + 密钥不外泄相关测试 | 通过（待最终确认） | status P72 / architecture §19 / 契约 §14.10 / 本台账 |
