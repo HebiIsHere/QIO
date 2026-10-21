@@ -100,7 +100,8 @@ def _record() -> TaskRecord:
 
 
 @pytest.mark.parametrize("delay", [0.0, 0.005, 0.02])
-async def test_notice_reaches_active_turn_and_not_the_queued_turn(ctx: AppContext, delay):
+async def test_notice_never_interrupts_active_or_queued_user_turn(ctx: AppContext, delay):
+    """阶段四：子任务完成不打断当前交流 —— 先排队，用户轮都结束后才成为自己的通知轮。"""
     topic = ctx.topics.nodes.create_topic("t").id
     adapter = _RaceAdapter()
     mp = pytest.MonkeyPatch()
@@ -113,18 +114,27 @@ async def test_notice_reaches_active_turn_and_not_the_queued_turn(ctx: AppContex
         t_b = asyncio.create_task(ctx.run_turn("唯一B", topic_id=topic))
         await asyncio.sleep(delay)
 
-        # subagent finishes while A is still active
+        # subagent finishes while A is still active：只入队，不打断 A/B
         await ctx._handle_subagent_notify("task_race", _record())
 
         adapter.release.set()
         await asyncio.wait_for(asyncio.gather(t_a, t_b), timeout=20)
+        # 等通知轮跑完（队列里的通知不能丢）
+        for _ in range(300):
+            if (
+                ctx.turns.active is None
+                and ctx.turns.queued_count() == 0
+                and not ctx.subtask_notifications.has_pending()
+            ):
+                break
+            await asyncio.sleep(0.01)
     finally:
         mp.undo()
 
-    # A saw the notice on a later planning step ...
-    assert adapter.a_requests_containing(RESULT_MARKER) >= 1
-    # ... and B never saw it
+    # A 没有被打断；B 从未看到这条结果；通知作为独立轮交付一次
+    assert adapter.a_requests_containing(RESULT_MARKER) == 0
     assert adapter.b_requests_containing(RESULT_MARKER) == 0
+    assert adapter.requests_containing(RESULT_MARKER) >= 1
 
 
 @pytest.mark.parametrize("delay", [0.0, 0.005, 0.02])

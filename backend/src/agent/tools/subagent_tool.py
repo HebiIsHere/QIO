@@ -338,6 +338,10 @@ class SubagentTool(Tool):
                 "credential_ref": choice["credential_ref"],
                 "model": model,
                 "origin": origin,
+                "next": (
+                    "需要结果时调用 await_task(task_id=..., notify=true) 取回；"
+                    "结果较长时用 read_task_result 分段读取全文。"
+                ),
             },
             protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
             status="queued",
