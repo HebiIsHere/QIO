@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,32 @@ from agent.services.app import AppContext
 from agent.services.maintenance import MaintenanceScheduler, mine_tool_candidates
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
+
+
+class _SuggestionAdapter:
+    """阶段四：自动化建议走结构化输出；这里只回一条合法建议（不联网）。"""
+
+    model = "stub-model"
+
+    async def complete(self, messages, tools=None, temperature=0.0):
+        return SimpleNamespace(
+            message=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "suggestions": [
+                            {
+                                "name": "weather_lookup",
+                                "description": "查询当天天气",
+                                "reason": "用户多次重复询问天气",
+                                "parameters": {"type": "object", "properties": {}},
+                                "evidence_ids": ["mc0"],
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        )
 
 
 @pytest.fixture()
@@ -67,8 +94,15 @@ async def test_run_once_no_longer_scans_or_dreams(ctx: AppContext, monkeypatch):
     assert row["state"] == "active", "有效认识不因长期未出现 / 否定词被撤销"
 
 
-async def test_run_once_still_prunes_and_mines_tool_candidates(ctx: AppContext):
+async def test_run_once_still_prunes_and_mines_tool_candidates(
+    ctx: AppContext, monkeypatch
+):
     """工具输出清理 / 工具记录保留 / 自动化建议（工具候选）仍由维护巡检负责。"""
+
+    async def _build_adapter():
+        return _SuggestionAdapter()
+
+    monkeypatch.setattr(ctx, "build_adapter", _build_adapter)
     for i in range(3):
         ctx.conn.execute(
             "INSERT INTO messages (id, fragment_id, role, content, content_type, created_at) "
@@ -84,7 +118,11 @@ async def test_run_once_still_prunes_and_mines_tool_candidates(ctx: AppContext):
     assert result.get("tool_candidates", 0) >= 1
 
 
-async def test_mine_tool_candidates_cluster_and_request(ctx: AppContext):
+async def test_mine_tool_candidates_cluster_and_request(ctx: AppContext, monkeypatch):
+    async def _build_adapter():
+        return _SuggestionAdapter()
+
+    monkeypatch.setattr(ctx, "build_adapter", _build_adapter)
     for i in range(3):
         ctx.conn.execute(
             "INSERT INTO messages (id, fragment_id, role, content, content_type, created_at) "
