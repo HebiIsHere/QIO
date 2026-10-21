@@ -84,6 +84,14 @@ class DeclareCompletionTool(Tool):
         definition = self.workspaces.read_definition(task_id)
         tool_name = getattr(definition, "name", None)
         requires_tests = definition is None or definition.tool_type != "subagent"
+        # 模型可见证据：完整版本摘要 + 测试 / 注册 / 真实条件验证分开记录。
+        snapshot = {}
+        try:
+            snapshot = self.workspaces.evidence_snapshot(task_id) or {}
+        except Exception:  # noqa: BLE001 - 证据快照失败不能把核对弄挂
+            snapshot = {}
+        real_verification = snapshot.get("real_verification") or {}
+        registration = snapshot.get("registration") or {}
         facts = _Facts(
             version=current_version,
             test_passed=bool(status.get("test_evidence_current"))
@@ -96,7 +104,26 @@ class DeclareCompletionTool(Tool):
             registered=bool(tool_name) and self.registry.get(tool_name) is not None
             and (self.tool_store is None or self.tool_store.load(tool_name) is not None),
             requires_tests=requires_tests,
+            registration=registration,
+            real_required=bool(real_verification.get("required")),
+            real_verified=bool(real_verification.get("verified")),
+            real_status=str(real_verification.get("status") or "not_attempted"),
+            real_reason_code=str(real_verification.get("reason_code") or ""),
         )
+        evidence = {
+            "task_id": task_id,
+            "version": current_version,
+            "claims": list(claims),
+            "test": snapshot.get("test")
+            or {
+                "state": facts.test_state,
+                "passed": facts.test_passed,
+                "summary": facts.test_summary,
+                "current": facts.test_passed,
+            },
+            "registration": registration,
+            "real_verification": real_verification,
+        }
 
         missing: list[str] = []
         for claim in claims:
@@ -104,15 +131,32 @@ class DeclareCompletionTool(Tool):
             if reason:
                 missing.append(f"{_claim_label(claim)}：{reason}")
         if missing:
-            return self._reject(task_id, version, claims, missing, facts.basis_lines())
+            return self._reject(
+                task_id, version, claims, missing, facts.basis_lines(), data=evidence
+            )
 
         basis = "；".join(facts.basis_lines())
+        declaration = {
+            "accepted": True,
+            "task_id": task_id,
+            "version": version,
+            "claims": list(claims),
+            "basis": basis,
+            "missing": [],
+        }
+        evidence["accepted"] = True
+        evidence["basis"] = basis
+        evidence["missing"] = []
         return ToolResult(
             ok=True,
             content=(
                 f"已核对：{'、'.join(_claim_label(c) for c in claims)} 与后端记录一致。\n"
                 f"依据：{basis}"
             ),
+            data=evidence,
+            protocol_version=1,
+            status="completed",
+            code="declaration_accepted",
             facts={
                 "declaration": {
                     "accepted": True,
@@ -132,15 +176,32 @@ class DeclareCompletionTool(Tool):
         claims: list[str],
         missing: list[str],
         basis_lines: list[str],
+        *,
+        data: dict | None = None,
     ) -> ToolResult:
         lines = ["声明没有通过核对（以后端记录为准）："]
         lines.extend(f"- {item}" for item in missing)
         if basis_lines:
             lines.append("现在的后端记录：" + "；".join(basis_lines))
         lines.append("先补齐缺的那一步，再用当前版本摘要重新声明；没有证据就不要说「已完成 / 可使用」。")
+        evidence = dict(data or {})
+        evidence.update(
+            {
+                "task_id": task_id,
+                "version": version,
+                "claims": list(claims),
+                "accepted": False,
+                "missing": list(missing),
+                "basis": None,
+            }
+        )
         return ToolResult(
             ok=False,
             error="\n".join(lines),
+            data=evidence,
+            protocol_version=1,
+            status="failed",
+            code="declaration_rejected",
             facts={
                 "declaration": {
                     "accepted": False,
@@ -197,6 +258,11 @@ class _Facts:
         tool_name: str | None,
         registered: bool,
         requires_tests: bool,
+        registration: dict | None = None,
+        real_required: bool = False,
+        real_verified: bool = False,
+        real_status: str = "not_attempted",
+        real_reason_code: str = "",
     ) -> None:
         self.version = version
         self.test_passed = test_passed
@@ -207,6 +273,12 @@ class _Facts:
         self.tool_name = tool_name
         self.registered = registered
         self.requires_tests = requires_tests
+        # 注册与真实条件验证是独立证据，不能由测试结论推断。
+        self.registration = dict(registration or {})
+        self.real_required = bool(real_required)
+        self.real_verified = bool(real_verified)
+        self.real_status = str(real_status or "not_attempted")
+        self.real_reason_code = str(real_reason_code or "")
 
     def check(self, claim: str) -> str | None:
         """对得上返回 None；对不上返回「缺什么」的人话说明。"""
@@ -219,11 +291,15 @@ class _Facts:
                 return self._registered_reason()
             if self.requires_tests and not self.test_passed:
                 return self._test_reason()
+            # 模拟测试 + 注册不能代表真实条件已经验证（真实凭据 / 外部链路）。
+            if self.real_required and not self.real_verified:
+                return self._real_reason()
             return None
         return f"不认识的结论「{claim}」"
 
     def basis_lines(self) -> list[str]:
-        lines = [f"版本 {self.version[:12]}"]
+        # 完整版本摘要原样给出：不要求模型自己计算 / 截短 / 拼前缀。
+        lines = [f"完整版本 {self.version}"]
         if self.requires_tests:
             if self.test_passed:
                 lines.append(f"测试 {self.test_summary or '通过'}")
@@ -234,11 +310,30 @@ class _Facts:
         lines.append(
             f"已提交（注册为 {self.tool_name}）" if self._registered() else "未提交 / 未注册"
         )
+        if self.real_required:
+            lines.append(
+                "真实条件验证：" + self.real_status
+                + ("（当前版本已验证）" if self.real_verified else "（未验证，模拟测试不能代替）")
+            )
         return lines
+
+    def _real_reason(self) -> str:
+        status = self.real_status or "not_attempted"
+        reason = f"，原因 {self.real_reason_code}" if self.real_reason_code else ""
+        return (
+            f"真实条件尚未验证（状态 {status}{reason}）。模拟测试与注册不能代表真实可用；"
+            "需要真实凭据 / 授权下完成验证，或在说明中明确待验证范围"
+        )
 
     # -- internals --------------------------------------------------------
 
     def _registered(self) -> bool:
+        registration = self.registration or {}
+        if registration.get("status") == "failed":
+            return False
+        registered_version = str(registration.get("version") or "")
+        if registered_version and registered_version != self.version:
+            return False
         return (
             self.submitted
             and bool(self.submitted_digest)

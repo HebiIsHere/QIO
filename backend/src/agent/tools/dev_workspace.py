@@ -1,8 +1,8 @@
-﻿"""Tool development workspace: sandboxed per-task directory.
+﻿"""Tool development workspace：每个开发任务一个受限目录（不是安全沙箱）。
 
-The main agent develops tools inside a workspace (write code/tests, run
-tests, iterate) before submitting for approval. Files are restricted to
-the workspace directory; the definition contract reuses ToolDefinition.
+主智能体在工作区里写代码 / 测试、运行、迭代，然后提交审批并注册。
+文件工具把路径限制在工作区目录内；生成代码在受限子进程中执行
+（同一用户权限，**不是安全沙箱**）。工具定义复用 ToolDefinition。
 """
 
 from __future__ import annotations
@@ -50,6 +50,26 @@ EVIDENCE_NONE = "none"
 EVIDENCE_CURRENT = "current"
 EVIDENCE_STALE = "stale"
 _EVIDENCE_STATES = frozenset({EVIDENCE_NONE, EVIDENCE_CURRENT, EVIDENCE_STALE})
+
+# ---- 三类证据分开记录（契约 §14.4）--------------------------------------
+# 测试（模拟/确定性）、注册（真的进了注册表与持久层）、真实条件验证
+# （真实凭据 / 外部服务链路）是**不同**的事实，不能互相冒充。
+REGISTRATION_NONE = "none"
+REGISTRATION_REGISTERED = "registered"
+REGISTRATION_FAILED = "failed"
+_REGISTRATION_STATES = frozenset(
+    {REGISTRATION_NONE, REGISTRATION_REGISTERED, REGISTRATION_FAILED}
+)
+REAL_NOT_ATTEMPTED = "not_attempted"
+REAL_UNAVAILABLE = "unavailable"
+REAL_VERIFIED = "verified"
+REAL_FAILED = "failed"
+_REAL_STATES = frozenset(
+    {REAL_NOT_ATTEMPTED, REAL_UNAVAILABLE, REAL_VERIFIED, REAL_FAILED}
+)
+# 真实条件验证不可用的机器原因（措辞由 prompts 的固定文案解释，不在这里散落副本）。
+REAL_REASON_SIMULATED = "simulated_credentials"
+REAL_REASON_CREDENTIAL = "credential_dependency"
 
 
 def _is_digest(value: object) -> bool:
@@ -267,6 +287,45 @@ def _read_state(task_dir: Path) -> dict:
     return data
 
 
+def _read_registration(raw: object) -> dict | None:
+    """读回「注册证据」；形状不对返回 None（不能把未知当已注册）。"""
+    if not isinstance(raw, dict):
+        return None
+    status = raw.get("status")
+    if status not in _REGISTRATION_STATES:
+        return None
+    version = raw.get("version")
+    return {
+        "status": status,
+        "tool_name": str(raw.get("tool_name") or ""),
+        "version": version if _is_digest(version) else "",
+        "at": str(raw.get("at") or ""),
+    }
+
+
+def _read_real_verification(raw: object) -> dict | None:
+    """读回「真实条件验证」；形状不对返回 None（不能把未知当已验证）。"""
+    if not isinstance(raw, dict):
+        return None
+    status = raw.get("status")
+    if status not in _REAL_STATES:
+        return None
+    version = raw.get("version")
+    evidence_ids = raw.get("evidence_ids")
+    return {
+        "status": status,
+        "summary": str(raw.get("summary") or ""),
+        "reason_code": str(raw.get("reason_code") or ""),
+        "version": version if _is_digest(version) else "",
+        "evidence_ids": (
+            [str(item) for item in evidence_ids if str(item or "")]
+            if isinstance(evidence_ids, (list, tuple))
+            else []
+        ),
+        "at": str(raw.get("at") or ""),
+    }
+
+
 def _write_state(task: "DevTask") -> None:
     """落盘任务状态（尽力而为：写不进去也不能让工具调用失败）。
 
@@ -305,6 +364,9 @@ def _state_payload(task: "DevTask") -> dict:
         # 放弃是终态：它必须落盘，否则重启后任务会「复活」成未完成。
         "abandoned": task.abandoned,
         "abandoned_at": task.abandoned_at,
+        # 三类证据分开落盘：测试证据在上面，注册与真实条件验证各自独立。
+        "registration": task.registration,
+        "real_verification": task.real_verification,
     }
 
 
@@ -428,6 +490,10 @@ class DevTask:
     # （见 DevWorkspace 各写方法的前置判定），绝不能擦回 False。
     abandoned: bool = False
     abandoned_at: str | None = None
+    # 注册证据（提交并真的注册成功后由提交工具写入）。
+    registration: dict | None = None
+    # 真实条件验证证据（真实凭据 / 外部服务链路；与模拟测试、注册分开）。
+    real_verification: dict | None = None
 
 
 class DevWorkspace:
@@ -505,6 +571,10 @@ class DevWorkspace:
                 ),
                 submitted_digest=state.get("submitted_digest"),
                 submitted_at=state.get("submitted_at"),
+                registration=_read_registration(state.get("registration")),
+                real_verification=_read_real_verification(
+                    state.get("real_verification")
+                ),
             )
             if task.abandoned:
                 # 终态的 phase 只有一个合法值：旧文件里若写着别的，按终态纠正。
@@ -1007,7 +1077,130 @@ class DevWorkspace:
             "authorization_lifetime": (task.test_authorization or {}).get("lifetime", ""),
             "files": files,
             "content_digest": digest,
+            # 三类证据分开：测试（上面）/ 注册 / 真实条件验证。
+            "registration": dict(
+                task.registration or {"status": REGISTRATION_NONE}
+            ),
+            "real_verification": self.real_verification_state(task_id),
         }
+
+    # -- 三类证据分开记录（契约 §14.4）-----------------------------------
+
+    def real_verification_requirement(self, task_id: str) -> dict:
+        """这个工具需要真实条件验证吗？只按实际声明判定，不猜。"""
+        definition = self.read_definition(task_id)
+        credential_ref = str(getattr(definition, "credential_ref", None) or "")
+        if credential_ref:
+            return {
+                "required": True,
+                "kind": "credential",
+                "reason_code": REAL_REASON_CREDENTIAL,
+                "credential_ref": credential_ref,
+            }
+        return {"required": False, "kind": "none", "reason_code": ""}
+
+    def real_verification_state(self, task_id: str) -> dict:
+        """真实条件验证的当前事实：状态 + 是否对应当前内容（不拿旧证据冒充）。"""
+        task = self._tasks.get(task_id)
+        if task is None:
+            return {}
+        requirement = self.real_verification_requirement(task_id)
+        record = _read_real_verification(task.real_verification)
+        digest = self.content_digest(task_id)
+        status = record["status"] if record else REAL_NOT_ATTEMPTED
+        version = record.get("version") if record else ""
+        current = bool(record) and (not version or version == digest)
+        return {
+            "required": bool(requirement.get("required")),
+            "kind": requirement.get("kind") or "none",
+            "reason_code": requirement.get("reason_code") or "",
+            "status": status,
+            "summary": record.get("summary") if record else "",
+            "version": version,
+            "current": current,
+            "verified": status == REAL_VERIFIED and current,
+            "at": record.get("at") if record else None,
+            "evidence_ids": list(record.get("evidence_ids") or []) if record else [],
+        }
+
+    def record_registration(
+        self,
+        task_id: str,
+        *,
+        tool_name: str,
+        version: str,
+        registered: bool = True,
+    ) -> None:
+        """记录「注册」这一步的真实结果（与测试、真实条件验证分开）。"""
+        task = self._tasks.get(task_id)
+        if task is None or task.abandoned:
+            return
+        task.registration = {
+            "status": REGISTRATION_REGISTERED if registered else REGISTRATION_FAILED,
+            "tool_name": str(tool_name or ""),
+            "version": str(version or ""),
+            "at": _now(),
+        }
+        _write_state(task)
+
+    def record_real_verification(
+        self,
+        task_id: str,
+        *,
+        status: str,
+        summary: str = "",
+        reason_code: str = "",
+        version: str | None = None,
+        evidence_ids: list[str] | tuple[str, ...] = (),
+    ) -> None:
+        """记录真实条件验证结果；只接受明确状态词，旧证据按版本自动失效。"""
+        if status not in _REAL_STATES or status == REAL_NOT_ATTEMPTED:
+            raise ValueError(f"unknown real verification status: {status!r}")
+        task = self._tasks.get(task_id)
+        if task is None or task.abandoned:
+            return
+        task.real_verification = {
+            "status": status,
+            "summary": str(summary or ""),
+            "reason_code": str(reason_code or ""),
+            "version": str(version or self.content_digest(task_id) or ""),
+            "evidence_ids": [str(item) for item in evidence_ids if str(item or "")],
+            "at": _now(),
+        }
+        _write_state(task)
+
+    def evidence_snapshot(self, task_id: str) -> dict:
+        """给工具 data（模型可见）的完整证据快照：完整版本摘要不截断。"""
+        status = self.status(task_id)
+        if not status:
+            return {}
+        definition = self.read_definition(task_id)
+        snapshot = {
+            "task_id": task_id,
+            "version": status.get("content_digest") or "",
+            "phase": status.get("phase"),
+            "submitted": bool(status.get("submitted")),
+            "abandoned": bool(status.get("abandoned")),
+            "read_only": bool(status.get("abandoned")),
+            "tool_type": str(getattr(definition, "tool_type", "function") or "function"),
+            "test": {
+                "state": status.get("evidence_state") or EVIDENCE_NONE,
+                "passed": status.get("last_test_passed"),
+                "summary": status.get("last_test_summary"),
+                "current": bool(status.get("test_evidence_current")),
+                "runs": status.get("test_runs"),
+                "at": status.get("last_test_at"),
+            },
+            "registration": status.get("registration")
+            or {"status": REGISTRATION_NONE},
+            "real_verification": status.get("real_verification") or {
+                "required": False,
+                "status": REAL_NOT_ATTEMPTED,
+                "verified": False,
+                "current": False,
+            },
+        }
+        return snapshot
 
     def cleanup(self, task_id: str) -> None:
         """删掉工作区目录（只用于明确要丢弃的临时工作区）。"""
