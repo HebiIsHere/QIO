@@ -1,60 +1,60 @@
 {
   "route_async_exists": true,
-  "main_thread_id": 65528,
+  "main_thread_id": 134636,
   "sync_route_blocks_loop": true,
   "sync_route_beats_in_window": 0,
   "sync_route_beats_by_time": 0,
-  "sync_route_window_secs": 4.028,
+  "sync_route_window_secs": 4.018,
   "route_async_blocks_loop": false,
   "route_async_beats_in_window": 64,
-  "route_async_window_secs": 2.016,
-  "embed_thread_id": 84028,
+  "route_async_window_secs": 2.014,
+  "embed_thread_id": 136724,
   "embed_off_main_thread": true,
   "fs_find_blocks_loop": false,
-  "fs_find_beats_in_window": 64,
-  "fs_find_window_secs": 2.007,
-  "fs_find_thread_id": 84028,
+  "fs_find_beats_in_window": 65,
+  "fs_find_window_secs": 2.009,
+  "fs_find_thread_id": 136724,
   "fs_find_off_main_thread": true,
   "records": [
     {
       "op": "embed_texts",
-      "thread_id": 65528,
-      "t": 107886.8262
+      "thread_id": 134636,
+      "t": 311495.3453
     },
     {
       "op": "embed_texts_done",
-      "thread_id": 65528,
-      "t": 107888.8385
+      "thread_id": 134636,
+      "t": 311497.3559
     },
     {
       "op": "embed_texts",
-      "thread_id": 65528,
-      "t": 107888.8385
+      "thread_id": 134636,
+      "t": 311497.3559
     },
     {
       "op": "embed_texts_done",
-      "thread_id": 65528,
-      "t": 107890.8536
+      "thread_id": 134636,
+      "t": 311499.363
     },
     {
       "op": "embed_texts",
-      "thread_id": 84028,
-      "t": 107890.9467
+      "thread_id": 136724,
+      "t": 311499.4571
     },
     {
       "op": "embed_texts_done",
-      "thread_id": 84028,
-      "t": 107892.9615
+      "thread_id": 136724,
+      "t": 311501.4702
     },
     {
       "op": "_find_files",
-      "thread_id": 84028,
-      "t": 107893.1481
+      "thread_id": 136724,
+      "t": 311501.6111
     },
     {
       "op": "_find_files_done",
-      "thread_id": 84028,
-      "t": 107895.151
+      "thread_id": 136724,
+      "t": 311503.6173
     }
   ]
 }

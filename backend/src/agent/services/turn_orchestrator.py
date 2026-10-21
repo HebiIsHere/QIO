@@ -838,6 +838,10 @@ class TurnOrchestrator:
         assembler = getattr(app, "context_assembler", None)
         builder = getattr(assembler, "build_context_blocks", None)
         if callable(builder):
+            # 阶段四根因修复：装配本身仍留在 heavy 池里（WS3 的性能契约：慢检索不能
+            # 卡住事件循环）。生命周期由 HeavyWork.shutdown(wait=True) 保证：
+            # 关闭/测试收尾必须先等已在执行的重活结束，再关闭共享 SQLite 连接；
+            # 旧实现 wait=False 会让工作线程在连接关闭后继续使用它 → C 层崩溃。
             result = await app.heavy.run(
                 builder,
                 message,

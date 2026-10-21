@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import Any, Callable, TypeVar
@@ -36,6 +37,25 @@ DEFAULT_MAX_WORKERS = 2
 
 T = TypeVar("T")
 
+# 存活的执行器强引用登记：测试/收尾路径需要在关闭共享 SQLite 连接之前，
+# 等待所有工作线程真正结束（弱引用会在任务尚未结束时被回收，等不到）。
+_INSTANCES: list["HeavyWork"] = []
+_INSTANCES_LOCK = threading.Lock()
+
+
+async def wait_for_heavy_work(timeout: float = 30.0) -> None:
+    """等待所有存活 HeavyWork 的**已在执行**任务结束（关闭连接前的安全闸）。
+
+    只等待当前登记在案的执行器；调用方随后可以安全关闭它们共享的数据库连接。
+    超时由调用方决定是否容忍（测试收尾给有界值，生产关闭走 shutdown(wait=True)）。
+    """
+    async def _wait_all() -> None:
+        with _INSTANCES_LOCK:
+            instances = list(_INSTANCES)
+        await asyncio.gather(*(item.wait_idle() for item in instances))
+
+    await asyncio.wait_for(_wait_all(), timeout=timeout)
+
 
 class HeavyWork:
     """有并发上限的「重活」执行器（线程池 + 事件循环侧的结果提交约定）。"""
@@ -47,6 +67,12 @@ class HeavyWork:
         )
         self._max_workers = workers
         self._closed = False
+        # 真正在工作线程里执行中的任务数（不是 event loop 侧的 await 数：
+        # await 被取消后线程仍可能继续跑，必须由工作线程自己的 finally 递减）。
+        self._active = 0
+        self._idle = threading.Condition()
+        with _INSTANCES_LOCK:
+            _INSTANCES.append(self)
 
     @property
     def max_workers(self) -> int:
@@ -65,9 +91,47 @@ class HeavyWork:
         if self._closed:
             return fn(*args, **kwargs)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._pool, partial(fn, *args, **kwargs))
+        with self._idle:
+            self._active += 1
+
+        def _wrapped() -> T:
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                with self._idle:
+                    self._active -= 1
+                    self._idle.notify_all()
+
+        return await loop.run_in_executor(self._pool, _wrapped)
+
+    async def wait_idle(self) -> None:
+        """等待工作线程里正在执行的任务真正结束（不关闭池子）。"""
+        while True:
+            with self._idle:
+                active = self._active
+            if active <= 0:
+                return
+            await asyncio.to_thread(self._wait_idle_blocking)
+
+    def _wait_idle_blocking(self) -> None:
+        with self._idle:
+            while self._active > 0:
+                self._idle.wait(timeout=0.05)
 
     async def shutdown(self) -> None:
-        """停止接收新任务并让池子退出（不等已排队的任务跑完）。"""
+        """停止接收新任务，并**等待已在跑的纯计算结束**后退出。
+
+        阶段四修复：旧实现 wait=False 会立刻返回，而线程里仍在执行的函数可能继续
+        访问调用方随后要关闭的资源（最典型：共享 SQLite 连接 → use-after-free，
+        Windows access violation / Linux SIGSEGV）。这里的任务按契约只是纯计算，
+        等待有界；取消排队中尚未开始的任务。
+        """
         self._closed = True
-        self._pool.shutdown(wait=False, cancel_futures=True)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: self._pool.shutdown(wait=True, cancel_futures=True),
+        )
+        with _INSTANCES_LOCK:
+            if self in _INSTANCES:
+                _INSTANCES.remove(self)

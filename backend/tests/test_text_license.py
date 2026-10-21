@@ -51,8 +51,24 @@ def _save(conn: sqlite3.Connection, state: dict, reason: str = "op") -> dict:
     return board_store.save_board(conn, BOARD, state, reason=reason)
 
 
+class _TurnAcceptor:
+    """主循环受理器替身（阶段三起提交 = 受理一个主循环 turn）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, **kwargs) -> dict:
+        self.calls += 1
+        return {"ok": True, "topicId": "topic-original", "turnId": f"turn_fake_{self.calls}"}
+
+
+_ACCEPTOR = _TurnAcceptor()
+
+
 def _submit(conn: sqlite3.Connection, **kwargs) -> dict:
-    return asyncio.run(submission.submit_board(conn, BOARD, **kwargs))
+    return asyncio.run(
+        submission.submit_board(conn, BOARD, turn_acceptor=_ACCEPTOR, **kwargs)
+    )
 
 
 def _text_card(content: str = "", *, checked: bool = False, **fields) -> dict:
@@ -68,22 +84,6 @@ def _rich_card() -> dict:
         "[QIO 仓库](https://github.com/HebiIsHere/QIO)\n"
     )
     return _text_card(text, checked=True)
-
-
-@pytest.fixture(autouse=True)
-def acceptance(monkeypatch):
-    """受理走桩：本文件只验证许可与材料边界，不建立真实理解请求、不碰模型。"""
-    calls: list[dict] = []
-
-    def fake_accept(conn, *, board_id, submission_id, snapshot, view=None):  # noqa: ANN001
-        calls.append(snapshot)
-        return {"ok": True, "understandingId": "u_license", "reason": None}
-
-    monkeypatch.setattr(submission, "_accept_submission", fake_accept)
-    monkeypatch.setattr(
-        submission, "_schedule_understanding", lambda *args, **kwargs: {"started": False, "reason": ""}
-    )
-    return calls
 
 
 @pytest.fixture()

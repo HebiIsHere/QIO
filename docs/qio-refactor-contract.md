@@ -964,5 +964,10 @@ Lead 整合顺序 A / B / C → D 独立回归 → 更新 `docs/qio-refactor-con
 - 验证：本地宽集 577 项通过、D 57/57 + 414 定向回归、离线评估 sha16=d1a8ff768a8afad6、
   D 真实界面验收（最终轮记录见台账）、完整 CI 两轮预算（第一轮旧 SHA 不作依据；第二/最终轮
   记录见 CI）。未跑本地全量重复集合。
+- CI 首次两轮失败根因（已修复，待用户授权后复跑）：HeavyWork 旧 shutdown(wait=False) 在
+  工作线程仍执行时返回，随后关闭共享 SQLite 连接 → sqlite3 C 层 use-after-free（Windows
+  access violation / Linux SIGSEGV，栈在 _entity_card_columns）；修复为 shutdown 等待 +
+  工作线程侧活跃计数（取消 await 不提前算结束）+ 测试收尾 drain；并修 5 条旧去重测试与
+  text_license 旧夹具。本地全量 4640/0/0/51 通过。
 - 限制：真实模型/凭据质量、完整用户旅程、Windows 安装包/原生窗口未验证；A 独测用例未落地；
   B 停用入口未做 UI/工具触发；旧理解链仅历史读；本阶段未合并 main、未发版。

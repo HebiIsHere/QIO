@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -91,6 +92,17 @@ def db_conn(tmp_path: Path):
     conn = connect(tmp_path / "test.db")
     apply_migrations(conn)
     yield conn
+    # 阶段四 CI 崩溃收口：heavy 线程里可能仍有正在执行的任务（装配/预测提交会读写
+    # 同一个共享 SQLite 连接）。关闭连接前先等工作线程真正结束，否则 CPython sqlite3
+    # C 层会在「连接已关闭、线程仍使用」时崩溃（Windows access violation / Linux SIGSEGV）。
+    try:
+        from agent.services.heavy import wait_for_heavy_work
+
+        asyncio.run(wait_for_heavy_work(timeout=30.0))
+    except Exception:  # noqa: BLE001 - 收尾等待失败也不能吞掉测试结果，但绝不盲目关连接
+        import logging
+
+        logging.getLogger(__name__).warning("heavy work drain before db close failed", exc_info=True)
     conn.close()
 
 

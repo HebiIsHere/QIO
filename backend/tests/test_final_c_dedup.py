@@ -40,8 +40,24 @@ def _save(conn: sqlite3.Connection, cards: list[dict], groups=None, links=None, 
     return board_store.save_board(conn, BOARD, state, reason="test")
 
 
+class _TurnAcceptor:
+    """主循环受理器替身（阶段三起提交 = 受理一个主循环 turn）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, **kwargs) -> dict:
+        self.calls += 1
+        return {"ok": True, "topicId": "topic-original", "turnId": f"turn_fake_{self.calls}"}
+
+
+_ACCEPTOR = _TurnAcceptor()
+
+
 def _submit(conn: sqlite3.Connection, **kwargs) -> dict:
-    return asyncio.run(submission.submit_board(conn, BOARD, **kwargs))
+    return asyncio.run(
+        submission.submit_board(conn, BOARD, turn_acceptor=_ACCEPTOR, **kwargs)
+    )
 
 
 def _seed(conn: sqlite3.Connection):

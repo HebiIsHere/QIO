@@ -207,5 +207,7 @@
 | P4-集成-01 | Lead：最终本地定向集合 | 阶段四相关 + A/B/C/D + 关键既有（577 项） | 全绿 | 不重复全量集合 |
 | P4-CI-01 | 完整 CI 第一轮（旧 SHA 自动运行，不作验收依据） | GitHub Actions push run 39519065880 | failure（旧 SHA） | 规则：旧 SHA 不证明新代码 |
 | P4-CI-02 | 完整 CI 第二轮候选（b1025c66） | GitHub Actions run 39520259040 | failure：14 条旧测试未适配/工具 description 单源；py3.11/3.12 job exit 139 | 已定位并修复全部失败原因 |
-| P4-CI-03 | 完整 CI 最终轮（修复后最终 SHA） | GitHub Actions push 自动运行 | 运行记录见最终 CI（本轮作为第二轮完整验收） | 不启动第三轮 |
+| P4-CI-03 | 完整 CI 最终轮（88f4e71c） | GitHub Actions run 39525475587 | failure：前端/docs/rust/install-e2e/frozen-worker/ci-dedup success；三个 backend job 失败（Windows access violation，Linux SIGSEGV；另有 5 条旧去重测试失败） | 已定位根因并修复，未启动第三轮 |
+| P4-修复-02 | CI 崩溃根因修复（heavy 线程/共享 SQLite 生命周期） | heavy.shutdown(wait=True) + 工作线程侧活跃计数 + db_conn 收尾 drain + 去重/text_license 旧测试适配 | 本地全量 4640 tests / 0 failed / 0 errors / 51 skipped（1116s） | 根因：wait=False 让工作线程在连接关闭后继续使用 sqlite3 连接 |
+| P4-整合-02 | 修复后本地全量 | pytest -q（全量，非 CI） | 通过（4640/0/0/51） | 待授权后新一轮完整 CI 验收 |
 | P4-docs | 文档/迁移/密钥检查 | check_docs + 迁移纪律/closeout + 密钥不外泄相关测试 | 通过（待最终确认） | status P72 / architecture §19 / 契约 §14.10 / 本台账 |
