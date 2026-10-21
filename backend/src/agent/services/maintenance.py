@@ -1,4 +1,9 @@
-"""M12 offline maintenance: scheduler + contradiction scan + dreaming + tool candidates.
+"""M12 offline maintenance: scheduler + knowledge maintenance + automation suggestions.
+
+阶段四（角色 C）起，工具候选挖掘改为「自动化建议」：
+完整请求 + 实际使用结果 + 已有工具目录 → 一次结构化建议（允许空，不伪造）；
+用户同意后进入统一开发流程，已拒绝且无新依据不重复催问。
+旧矛盾扫描 / dreaming 已在阶段二从调度器退休（函数保留但不再被调度）。
 
 Runs in the background (periodic or manual). All failures are isolated:
 a broken maintenance pass must never affect the main loop.
@@ -9,13 +14,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from agent.knowledge.lifecycle import HIGH_IMPACT_CATEGORIES, KnowledgeService
 from agent.selector.tokenize import tokenize
 from agent import prompts
-from agent.prompts import TOOL_AUTOMATION_PROMPT
+from agent.services import automation as automation_service
 from agent.services.background import (
     BackgroundClosed,
     BackgroundHandle,
@@ -212,6 +217,17 @@ def _request_approval(ctx, kind: str, payload: dict) -> None:
             result = await ctx.approvals.request(kind, payload)
             if result.decision == "approved":
                 await _apply_approval(ctx, kind, payload)
+            elif kind == "tool_candidate" and result.decision == "rejected":
+                # 已拒绝且无新依据不催问：记录建议指纹 + 本次判断依据。
+                try:
+                    automation_service.record_rejection(
+                        ctx.conn,
+                        suggestion=payload,
+                        reason=result.decision,
+                        basis=str(payload.get("basis") or ""),
+                    )
+                except Exception:  # noqa: BLE001 - 拒绝记录失败不影响审批收尾
+                    logger.warning("record automation rejection failed", exc_info=True)
         except Exception:  # noqa: BLE001
             logger.warning("approval handling failed for %s", kind, exc_info=True)
 
@@ -228,7 +244,11 @@ def _request_approval(ctx, kind: str, payload: dict) -> None:
 
 async def _apply_approval(ctx, kind: str, payload: dict) -> None:
     if kind == "tool_candidate":
+        # 用户同意建议后进入**统一开发流程**（与手工 create_tool 相同的工作区入口）；
+        # 建议本身不是开发授权，这里才把已批准的说明交给开发工作区。
         request = payload.get("description") or payload.get("name") or "自动工具候选"
+        if payload.get("reason"):
+            request = "\n\n".join([str(request), "建议原因：" + str(payload["reason"])])
         task = ctx.dev_workspaces.create(request)
         logger.info("tool candidate approved -> dev workspace %s", task.id)
         return
@@ -341,14 +361,20 @@ async def run_dreaming(ctx) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 3) trajectory -> tool candidates
+# 3) trajectory -> automation suggestions（阶段四契约 §14.5，角色 C）
 # ---------------------------------------------------------------------------
+
+#: 进入建议上下文的总字符预算（数据层预算；每条请求保留完整正文，不按 200 字前缀截断）。
+REQUEST_CONTEXT_CHARS = 20000
+RESULT_CONTEXT_CHARS = 8000
+MAX_ACTUAL_RESULTS = 20
+
 
 @dataclass(frozen=True)
 class ToolClusterPlan:
-    """工具候选挖掘的「输入」：消息文本 + 这次用的相似度口径（纯数据）。
+    """工具候选挖掘的「输入」：完整请求 + 相似度口径 + 实际结果 + 已有工具目录。
 
-    `embedding` 只放**嵌入后端本身**（不是 ctx）：工作线程里只做推理与相似度比较，
+    embedding 只放**嵌入后端本身**（不是 ctx）：工作线程里只做推理与相似度比较，
     碰不到数据库、也碰不到 AppContext。
     """
 
@@ -356,21 +382,90 @@ class ToolClusterPlan:
     embedding: object | None
     threshold: float
     generation: object
+    message_ids: list[str] = field(default_factory=list)
+    actual_results: list[dict] = field(default_factory=list)
+    existing_tools: list[dict] = field(default_factory=list)
+    rejected: list[dict] = field(default_factory=list)
+
+
+def _trim_messages(rows, *, total_chars: int) -> list[dict]:
+    """按时间倒序取**完整正文**直到总预算；单条超预算时如实标记 truncated。"""
+    out: list[dict] = []
+    used = 0
+    for row in rows:
+        content = str(row["content"] or "")
+        if not content.strip():
+            continue
+        remaining = total_chars - used
+        if remaining <= 0:
+            break
+        truncated = len(content) > remaining
+        text = content if not truncated else content[:remaining]
+        out.append(
+            {
+                "message_id": str(row["id"]),
+                "content": text,
+                "truncated": truncated,
+            }
+        )
+        used += len(text)
+    out.reverse()
+    return out
+
+
+def _active_tool_catalog(ctx) -> list[dict]:
+    """已有工具目录：内置工具说明 + 数据库里已注册的动态工具（名字 + 说明）。"""
+    catalog = automation_service.existing_tool_catalog()
+    names = {item["name"] for item in catalog}
+    try:
+        rows = ctx.conn.execute(
+            "SELECT name, definition FROM tools WHERE status = 'active'"
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - 旧库 / 替身连接不阻塞维护
+        rows = []
+    for row in rows:
+        name = str(row["name"] or "").strip()
+        if not name or name in names:
+            continue
+        description = ""
+        try:
+            definition = json.loads(row["definition"] or "{}")
+            description = str(definition.get("description") or "")
+        except (TypeError, ValueError):
+            description = ""
+        catalog.append({"name": name, "description": description})
+        names.add(name)
+    return catalog
 
 
 def plan_tool_candidates(ctx) -> ToolClusterPlan | None:
-    """输入读取（循环侧，只读）。消息太少（< CLUSTER_MIN_SIZE）时返回 None。"""
+    """输入读取（循环侧，只读）。用户消息太少（< CLUSTER_MIN_SIZE）时返回 None。"""
     rows = ctx.conn.execute(
-        "SELECT content FROM messages WHERE role = 'user' AND content != '' "
-        "ORDER BY created_at DESC LIMIT ?",
+        "SELECT id, content, created_at FROM messages WHERE role = 'user' AND content != ''"
+        " ORDER BY created_at DESC LIMIT ?",
         (SCAN_LIMIT,),
     ).fetchall()
-    texts = [r["content"] for r in rows]
+    texts = [str(row["content"] or "") for row in rows]
     if len(texts) < CLUSTER_MIN_SIZE:
         return None
     embedding = (
         ctx.embedding if (ctx.embedding is not None and ctx.embedding.available()) else None
     )
+    assistant_rows = ctx.conn.execute(
+        "SELECT id, content FROM messages WHERE role = 'assistant' AND content != ''"
+        " ORDER BY created_at DESC LIMIT ?",
+        (MAX_ACTUAL_RESULTS,),
+    ).fetchall()
+    rejections = automation_service.load_rejections(ctx.conn)
+    rejected = [
+        {
+            "name": str(value.get("name") or ""),
+            "description": str(value.get("description") or ""),
+            "reason": str(value.get("reason") or ""),
+        }
+        for value in rejections.values()
+        if isinstance(value, dict)
+    ][:10]
     return ToolClusterPlan(
         texts=texts,
         embedding=embedding,
@@ -379,6 +474,10 @@ def plan_tool_candidates(ctx) -> ToolClusterPlan | None:
             EMBED_SIMILARITY_THRESHOLD if embedding is not None else TOKEN_OVERLAP_THRESHOLD
         ),
         generation=_maintenance_generation(ctx),
+        message_ids=[str(row["id"]) for row in rows],
+        actual_results=_trim_messages(assistant_rows, total_chars=RESULT_CONTEXT_CHARS),
+        existing_tools=_active_tool_catalog(ctx),
+        rejected=rejected,
     )
 
 
@@ -386,7 +485,7 @@ def cluster_texts(texts: list[str], embedding, threshold: float) -> list[list[in
     """**纯计算**（可交给工作线程）：按「与簇首条相似度 ≥ 阈值」顺序聚类。
 
     返回的是**下标**而不是文本，提交侧再取原文 —— 这样顺序与旧实现逐字一致，
-    而且线程里不搬动大对象。逐条比较会调 `embed_texts`，过去这一步整段跑在
+    而且线程里不搬动大对象。逐条比较会调 embed_texts，过去这一步整段跑在
     事件循环上（240 条消息实测 5.4 s）。
     """
     clusters: list[list[int]] = []
@@ -402,43 +501,92 @@ def cluster_texts(texts: list[str], embedding, threshold: float) -> list[list[in
     return clusters
 
 
-async def commit_tool_candidates(ctx, plan: ToolClusterPlan, clusters: list[list[int]]) -> int:
-    """结果提交（循环侧）：够大的簇生成草案并请求审批。
+def _suggestion_requests(plan: ToolClusterPlan, clusters: list[list[int]]) -> list[dict]:
+    """把够大的簇里的**完整请求**装进建议输入；显式记录数据层截断，不静默省略。"""
+    requests: list[dict] = []
+    used = 0
+    for cluster in clusters:
+        if len(cluster) < CLUSTER_MIN_SIZE:
+            continue
+        for index in cluster:
+            if index >= len(plan.texts):
+                continue
+            content = str(plan.texts[index] or "")
+            if not content.strip():
+                continue
+            remaining = REQUEST_CONTEXT_CHARS - used
+            if remaining <= 0:
+                return requests
+            truncated = len(content) > remaining
+            text = content if not truncated else content[:remaining]
+            requests.append(
+                {
+                    "message_id": plan.message_ids[index] if index < len(plan.message_ids) else "",
+                    "content": text,
+                    "truncated": truncated,
+                }
+            )
+            used += len(text)
+    return requests
 
-    模型调用（`_generate_draft` 里的 `await`）留在循环上，不进线程。提交前校验
-    代次：计算期间用户开始了新一轮就丢弃 —— 不落审批、也不再花一次模型调用。
+
+async def commit_tool_candidates(
+    ctx, plan: ToolClusterPlan, clusters: list[list[int]]
+) -> int:
+    """结果提交（循环侧）：一次结构化建议调用，允许空，不伪造草案。
+
+    模型调用留在循环上，不进线程。提交前校验代次：计算期间用户开始了新一轮就丢弃
+    —— 不落审批、也不再花一次模型调用。
     """
     if _maintenance_generation(ctx) is not plan.generation:
         logger.info("tool candidate mining result discarded: a new turn started meanwhile")
         return 0
-    generated = 0
-    for i, cluster in enumerate(clusters):
-        if len(cluster) < CLUSTER_MIN_SIZE:
-            continue
-        texts = [plan.texts[index] for index in cluster]
-        representative = max(texts, key=len)
-        try:
-            draft = await _generate_draft(ctx, texts)
-        except Exception:  # noqa: BLE001
-            draft = {
-                "name": f"auto_tool_{i}",
-                "description": representative[:200],
-                "parameters": {},
-                "example": representative[:200],
-            }
-        _request_approval(
-            ctx,
-            "tool_candidate",
-            {
-                "name": draft.get("name", f"auto_tool_{i}"),
-                "description": draft.get("description", "")[:300],
-                "parameters": draft.get("parameters", {}),
-                "example": representative[:300],
-                "source_count": len(cluster),
-            },
+    requests = _suggestion_requests(plan, clusters)
+    if not requests:
+        return 0
+    adapter = await ctx.build_adapter()
+    if adapter is None:
+        logger.info("tool candidate mining skipped: no adapter (不伪造建议)")
+        return 0
+    basis = automation_service.basis_fingerprint([str(item.get("content") or "") for item in requests])
+    try:
+        suggestions, error = await automation_service.suggest_automations(
+            adapter,
+            requests=requests,
+            actual_results=plan.actual_results,
+            existing_tools=plan.existing_tools,
+            rejected=plan.rejected,
         )
-        generated += 1
-    return generated
+    except Exception:  # noqa: BLE001 - 后台建议失败不影响主流程
+        logger.warning("automation suggestion call failed", exc_info=True)
+        return 0
+    if error:
+        logger.info("automation suggestions unavailable: %s", error)
+        return 0
+    rejections = automation_service.load_rejections(ctx.conn)
+    kept, skipped = automation_service.filter_suggestions(
+        suggestions,
+        existing_tool_names=[str(item.get("name") or "") for item in plan.existing_tools],
+        rejections=rejections,
+        basis=basis,
+    )
+    if skipped:
+        logger.info("automation suggestions skipped: %s", skipped)
+    for suggestion in kept:
+        payload = {
+            "name": suggestion.name,
+            "description": suggestion.description,
+            "reason": suggestion.reason,
+            "parameters": suggestion.parameters,
+            "evidence_ids": suggestion.evidence_ids,
+            "source_count": len(requests),
+            "basis": basis,
+            "signature": automation_service.suggestion_signature(
+                {"name": suggestion.name, "description": suggestion.description}
+            ),
+        }
+        _request_approval(ctx, "tool_candidate", payload)
+    return len(kept)
 
 
 async def mine_tool_candidates(ctx) -> dict:
@@ -447,34 +595,6 @@ async def mine_tool_candidates(ctx) -> dict:
         return {"tool_candidates": 0}
     clusters = await _run_heavy(ctx, cluster_texts, plan.texts, plan.embedding, plan.threshold)
     return {"tool_candidates": await commit_tool_candidates(ctx, plan, clusters)}
-
-
-async def _generate_draft(ctx, cluster: list[str]) -> dict:
-    adapter = await ctx.build_adapter()
-    if adapter is None:
-        raise RuntimeError("no adapter")
-    from agent.adapters.base import ChatMessage
-    from agent.core.loop import AgentLoop
-    from agent.credentials.usage import credential_usage_sink
-    from agent.tools.registry import ToolRegistry
-
-    prompt = TOOL_AUTOMATION_PROMPT + "\n".join(f"- {c[:200]}" for c in cluster)
-    loop = AgentLoop(
-        adapter,
-        ToolRegistry(),
-        ctx.bus,
-        max_iterations=1,
-        token_budget=20_000,
-        usage_sink=credential_usage_sink(ctx.credentials, adapter),
-    )
-    result = await loop.run(prompt)
-    import re
-
-    match = re.search(r"\{.*\}", result.final_content or "", re.DOTALL)
-    if not match:
-        raise RuntimeError("no json")
-    return json.loads(match.group(0))
-
 
 # ---------------------------------------------------------------------------
 # scheduler

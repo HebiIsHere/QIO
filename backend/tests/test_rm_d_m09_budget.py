@@ -321,29 +321,36 @@ async def test_subagent_loop_uses_the_same_budget_gate(db_conn):
 
 
 async def test_background_draft_generation_stops_after_exhaustion(db_conn):
-    """后台维护（工具草稿）也是真金白银的调用：耗尽后不再发新请求。"""
-    from agent.services.maintenance import _generate_draft
+    """后台维护（自动化建议）也是真金白银的调用：耗尽后不再发新请求。"""
+    from agent.services.automation import suggest_automations
 
     store = _store(db_conn, budget=100)
     client = ScriptedClient(
         [
-            text_response('{"name": "auto_tool_0"}', prompt=60, completion=40),
-            text_response('{"name": "never"}', prompt=60, completion=40),
+            text_response(
+                '{"suggestions": [{"name": "auto_tool_0", '
+                '"description": "批量导出报表", "reason": "用户重复请求"}]}',
+                prompt=60,
+                completion=40,
+            ),
+            text_response(
+                '{"suggestions": [{"name": "never", "description": "x"}]}',
+                prompt=60,
+                completion=40,
+            ),
         ]
     )
     adapter = _adapter(client, store)
+    requests = [{"message_id": "m1", "content": "用户想批量导出报表，需要完整需求"}]
 
-    async def build_adapter():
-        return adapter
+    first, first_error = await suggest_automations(adapter, requests=requests)
+    assert first_error is None
+    assert [item.name for item in first] == ["auto_tool_0"]
 
-    ctx = SimpleNamespace(build_adapter=build_adapter, bus=EventBus(), credentials=store)
-
-    first = await _generate_draft(ctx, ["用户想批量导出报表"])
-    assert first["name"] == "auto_tool_0"
-
-    with pytest.raises(RuntimeError):
-        # 预算已耗尽：第二次草稿生成拿不到任何模型响应（而不是继续偷偷调用）
-        await _generate_draft(ctx, ["再来一次"])
+    # 预算已耗尽：第二次建议拿不到模型响应 → 如实返回空，不偷偷调用。
+    second, second_error = await suggest_automations(adapter, requests=requests)
+    assert second == []
+    assert second_error
 
     assert len(client.calls) == 1
     assert store.get_metadata("k1")["budget_used"] == 100
