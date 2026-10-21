@@ -500,7 +500,7 @@ def _task_facts_text(task_id: str, facts: dict[str, Any]) -> str:
 
 class AwaitTaskTool(Tool):
     name = "await_task"
-    description = TOOL_AWAIT_TASK_DESC
+    description = prompts.TOOL_DESCRIPTIONS["await_task"]
     parameters = {
         "type": "object",
         "properties": {
@@ -612,7 +612,7 @@ class AwaitTaskTool(Tool):
 
 class ReadTaskResultTool(Tool):
     name = "read_task_result"
-    description = TOOL_READ_TASK_RESULT_DESC
+    description = prompts.TOOL_DESCRIPTIONS["read_task_result"]
     parameters = {
         "type": "object",
         "properties": {

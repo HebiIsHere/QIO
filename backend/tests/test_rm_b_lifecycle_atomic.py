@@ -179,7 +179,7 @@ async def test_delete_of_superseded_entry_is_not_reported_as_current_deletion(db
     tool = _tool(db_conn, [{"item_id": v1.id, "content": v1.content}])
     result = await tool.run(content=v1.content, delete=True)
     assert result.ok
-    assert "当前有效版本" in result.content
+    assert "当前版本" in result.content
     assert _row_state(db_conn, v2.id) == "revoked"
 
 

@@ -36,6 +36,10 @@ import types
 
 import pytest
 
+pytestmark = pytest.mark.skip(
+    reason="旧理解生命周期已随 §13.3 退役"
+)
+
 from agent.adapters.fake import FakeStreamAdapter, StreamScript
 from agent.api.bus import EventBus
 from agent.credentials.store import MemoryKeyring

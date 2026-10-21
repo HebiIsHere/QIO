@@ -26,7 +26,7 @@ CLAIMS = (CLAIM_TEST_PASSED, CLAIM_REGISTERED, CLAIM_USABLE)
 
 class DeclareCompletionTool(Tool):
     name = "declare_completion"
-    description = TOOL_DECLARE_COMPLETION_DESC
+    description = prompts.TOOL_DESCRIPTIONS["declare_completion"]
     parameters = {
         "type": "object",
         "properties": {

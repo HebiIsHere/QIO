@@ -49,6 +49,20 @@ TOOL_LABELS: dict[str, str] = {
     "correct_knowledge": "修正知识",
     "propose_knowledge": "提交知识",
     "create_entity": "创建实体",
+    # 阶段三/四：互动板面与凭据目录
+    "board_inspect": "查看互动板面",
+    "board_read_cards": "读取板面卡片",
+    "board_propose_intents": "提出板面意图",
+    "board_update_intent": "更新板面意图",
+    "board_wait_for_input": "等待补充信息",
+    "board_create_card": "创建成果卡片",
+    "board_update_card": "修改卡片",
+    "board_move_card": "移动卡片",
+    "board_group_cards": "分组卡片",
+    "board_order_group": "调整组内顺序",
+    "board_add_link": "添加卡片关系",
+    "board_finish_intent": "结束板面意图",
+    "list_available_credentials": "可用凭据目录",
 }
 
 

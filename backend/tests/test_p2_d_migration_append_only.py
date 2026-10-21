@@ -104,11 +104,15 @@ def test_migrations_46_47_48_are_registered():
     table = _by_number()
     for number in (46, 47, 48):
         assert table[number], f"{CLAUSE}：迁移 {number} 没有 SQL 语句"
-    assert SCHEMA_VERSION == max(int(n) for n, _ in MIGRATIONS) == 48, (
-        f"{CLAUSE}：SCHEMA_VERSION 必须收敛到 48（实际 {SCHEMA_VERSION}）"
+    # 阶段三/四继续追加迁移：这里只要求「最大号 = SCHEMA_VERSION = 补偿版本」，
+    # 且阶段二的 46/47/48 仍在登记序列里（后续阶段不得删改）。
+    latest = max(int(n) for n, _ in MIGRATIONS)
+    assert SCHEMA_VERSION == latest >= 48, (
+        f"{CLAUSE}：SCHEMA_VERSION 必须等于最大迁移号（实际 {SCHEMA_VERSION}/{latest}）"
     )
-    assert COMPENSATION_VERSION == 48, (
-        f"{CLAUSE}：COMPENSATION_VERSION 必须为 48（实际 {COMPENSATION_VERSION}）"
+    assert COMPENSATION_VERSION == SCHEMA_VERSION, (
+        f"{CLAUSE}：COMPENSATION_VERSION 必须等于 SCHEMA_VERSION（实际 "
+        f"{COMPENSATION_VERSION}/{SCHEMA_VERSION}）"
     )
 
 
@@ -168,14 +172,15 @@ def test_fresh_database_reaches_48_with_p2_objects(tmp_path):
     conn: sqlite3.Connection = connect(tmp_path / "p2_fresh.db")
     try:
         version = apply_migrations(conn)
-        assert version == 48, f"{CLAUSE}：新库版本应为 48（实际 {version}）"
-        assert current_version(conn) == 48
+        assert version == SCHEMA_VERSION, (
+            f"{CLAUSE}：新库版本应为 {SCHEMA_VERSION}（实际 {version}）")
+        assert current_version(conn) == SCHEMA_VERSION
         tables = {str(row[0]) for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         missing = [name for name in NEW_TABLES if name not in tables]
         assert not missing, f"{CLAUSE}：新库缺少阶段二对象 {missing}"
         # 重复应用：版本不倒退、对象仍在
-        assert apply_migrations(conn) == 48
+        assert apply_migrations(conn) == SCHEMA_VERSION
         assert migrate_module.missing_objects(conn) == {
             "tables": [], "columns": [], "indexes": []}
     finally:
@@ -220,14 +225,16 @@ def test_change_log_and_state_columns_match_contract(tmp_path):
 def test_required_objects_have_compensation_statements():
     if _missing_migrations():
         pytest.fail(f"{CLAUSE}：迁移 48 未登记，无法核对 REQUIRED_OBJECTS。", pytrace=False)
-    statements = [str(stmt) for stmt in _by_number()[48]]
+    # 阶段三起补偿版本为 51（后续阶段继续收敛）：以当前补偿版本为准核对清单覆盖。
+    statements = [str(stmt) for stmt in _by_number()[COMPENSATION_VERSION]]
     blob = "\n".join(" ".join(stmt.split()) for stmt in statements)
     for spec in REQUIRED_OBJECTS["columns"]:
         table, _, column = str(spec).partition(".")
         assert f"ADD COLUMN {column}" in blob and table in blob, (
-            f"{CLAUSE}：REQUIRED_OBJECTS 列 {spec} 在补偿 48 里没有对应语句")
+            f"{CLAUSE}：REQUIRED_OBJECTS 列 {spec} 在补偿 {COMPENSATION_VERSION} 里没有对应语句")
     for name in REQUIRED_OBJECTS["indexes"]:
-        assert name in blob, f"{CLAUSE}：REQUIRED_OBJECTS 索引 {name} 在补偿 48 里没有语句"
+        assert name in blob, (
+            f"{CLAUSE}：REQUIRED_OBJECTS 索引 {name} 在补偿 {COMPENSATION_VERSION} 里没有语句")
     for name in REQUIRED_OBJECTS["tables"]:
         assert f"CREATE TABLE IF NOT EXISTS {name}" in blob, (
-            f"{CLAUSE}：REQUIRED_OBJECTS 表 {name} 在补偿 48 里没有 CREATE 语句")
+            f"{CLAUSE}：REQUIRED_OBJECTS 表 {name} 在补偿 {COMPENSATION_VERSION} 里没有 CREATE 语句")

@@ -254,7 +254,7 @@ class ToolCreateStatus:
 
 class CreateToolTool(_DevToolBase):
     name = "create_tool"
-    description = TOOL_CREATE_TOOL_DESC
+    description = prompts.TOOL_DESCRIPTIONS["create_tool"]
     parameters = {
         "type": "object",
         "properties": {
@@ -296,7 +296,7 @@ class CreateToolTool(_DevToolBase):
 
 class DevListFilesTool(_DevToolBase):
     name = "dev_list_files"
-    description = TOOL_DEV_LIST_FILES_DESC
+    description = prompts.TOOL_DESCRIPTIONS["dev_list_files"]
     parameters = {
         "type": "object",
         "properties": {
@@ -331,7 +331,7 @@ class DevListFilesTool(_DevToolBase):
 
 class DevWriteFileTool(_DevToolBase):
     name = "dev_write_file"
-    description = TOOL_DEV_WRITE_FILE_DESC
+    description = prompts.TOOL_DESCRIPTIONS["dev_write_file"]
     parameters = {
         "type": "object",
         "properties": {
@@ -390,7 +390,7 @@ class DevWriteFileTool(_DevToolBase):
 
 class DevReadFileTool(_DevToolBase):
     name = "dev_read_file"
-    description = TOOL_DEV_READ_FILE_DESC
+    description = prompts.TOOL_DESCRIPTIONS["dev_read_file"]
     parameters = {
         "type": "object",
         "properties": {
@@ -434,7 +434,7 @@ class DevListTasksTool(_DevToolBase):
     """
 
     name = "dev_list_tasks"
-    description = TOOL_DEV_LIST_TASKS_DESC
+    description = prompts.TOOL_DESCRIPTIONS["dev_list_tasks"]
     parameters = {"type": "object", "properties": {}, "required": []}
 
     def __init__(self, workspaces) -> None:
@@ -487,7 +487,7 @@ class DevListTasksTool(_DevToolBase):
 
 class DevRunTestsTool(_DevToolBase):
     name = "dev_run_tests"
-    description = TOOL_DEV_RUN_TESTS_DESC
+    description = prompts.TOOL_DESCRIPTIONS["dev_run_tests"]
     parameters = {
         "type": "object",
         "properties": {
@@ -681,7 +681,7 @@ class DevRunTestsTool(_DevToolBase):
 
 class DevSubmitTool(_DevToolBase):
     name = "dev_submit_tool"
-    description = TOOL_DEV_SUBMIT_DESC
+    description = prompts.TOOL_DESCRIPTIONS["dev_submit_tool"]
     parameters = {
         "type": "object",
         "properties": {

@@ -136,6 +136,7 @@ def _store(db_conn: sqlite3.Connection, budget: int | None, key_id: str = "k1") 
         tags=["main-loop"],
         verify_state="verified",
         budget=budget,
+        default_model="fake-model",
     )
     return store
 

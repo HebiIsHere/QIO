@@ -14,6 +14,10 @@ import sqlite3
 import time
 
 import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="旧独立理解链已于阶段三退役（契约 §13.3）；新流程验收见 test_p3_*/test_p4_*"
+)
 from fastapi.testclient import TestClient
 
 from agent.adapters.fake import FakeStreamAdapter, StreamScript

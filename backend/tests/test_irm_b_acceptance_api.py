@@ -20,6 +20,10 @@ import time
 import types
 
 import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="旧理解受理载荷已随 §13.3 退役；新受理事实由 turnId/主循环测试覆盖"
+)
 from fastapi.testclient import TestClient
 
 from agent.api.server import create_app
