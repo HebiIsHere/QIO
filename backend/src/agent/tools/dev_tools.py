@@ -64,6 +64,89 @@ def _dev_facts(workspaces, workspace: str, tool_name: str) -> dict[str, Any]:
         return {}
 
 
+def _evidence_data(
+    workspaces, workspace: str, *, guide_step: str | None = None
+) -> dict[str, Any]:
+    """模型可见 data：完整版本摘要 + 测试 / 注册 / 真实条件验证三类证据。"""
+    try:
+        data = dict(workspaces.evidence_snapshot(workspace) or {})
+    except Exception:  # noqa: BLE001 - 证据快照失败不能把工具调用弄挂
+        data = {}
+    if guide_step:
+        # 结构化结果下 content 不进模型消息；这一步的指南作为数据随证据一起给模型，
+        # 正文仍是 prompts.DEV_GUIDE_SECTIONS 的同一来源，不复制副本。
+        data["guide"] = dev_guide(guide_step)
+    return data
+
+
+class _DevToolBase(Tool):
+    """开发工具基类：有 data 的结果走 Phase-1 结构化协议，data 才真正进模型消息。"""
+
+    def __init_subclass__(cls, **kwargs):  # noqa: ANN001, ANN003
+        super().__init_subclass__(**kwargs)
+        original = cls.__dict__.get("run")
+        if original is None:
+            return
+
+        async def wrapped(self, **call_kwargs):  # noqa: ANN001, ANN003
+            result = await original(self, **call_kwargs)
+            if result.data is not None:
+                result.protocol_version = 1
+                result.status = result.status or (
+                    "completed" if result.ok else (result.category or "failed")
+                )
+                result.code = result.code or (
+                    "ok" if result.ok else (result.category or "failed")
+                )
+            return result
+
+        # 保留 __wrapped__：inspect.getsource 会解包回原始 run 的源码，
+        # 源码守卫（执行代码前必须先过授权闸门）照常生效。
+        import functools
+
+        cls.run = functools.wraps(original)(wrapped)
+
+
+def _record_real_verification_requirement(workspaces, workspace: str) -> None:
+    """需要真实条件验证、但当前环境只能跑模拟测试时，如实记 unavailable。
+
+    不把模拟测试当成真实链路验证；真实凭据可用时由调用方记录 verified
+    （见 DevWorkspace.record_real_verification），这里绝不猜测通过。
+    """
+    try:
+        requirement = workspaces.real_verification_requirement(workspace)
+        if not requirement.get("required"):
+            return
+        state = workspaces.real_verification_state(workspace)
+        if state.get("verified"):
+            return
+        workspaces.record_real_verification(
+            workspace,
+            status="unavailable",
+            reason_code="simulated_credentials",
+            summary="tester_does_not_inject_real_credentials",
+        )
+    except Exception:  # noqa: BLE001 - 记账失败不影响测试结果本身
+        pass
+
+
+def _execution_boundary(workspaces, workspace: str) -> dict[str, Any]:
+    """如实说明生成代码的实际执行边界（受限子进程不是安全沙箱的唯一文案来源）。"""
+    from agent.tools.policy import isolation_label, unprotected_surfaces
+
+    executor = ""
+    try:
+        definition = workspaces.read_definition(workspace)
+        executor = str(getattr(definition, "executor", "") or "")
+    except Exception:  # noqa: BLE001
+        executor = ""
+    return {
+        "executor": executor,
+        "isolation": isolation_label(executor),
+        "unprotected": list(unprotected_surfaces(executor)),
+    }
+
+
 def _is_abandoned(workspaces, workspace: str) -> bool:
     """任务是否已放弃（判定失败按「没放弃」处理：绝不让守卫本身弄挂工具调用）。"""
     try:
@@ -80,6 +163,12 @@ def _abandoned_result(
         error=error,
         category="abandoned",
         recoverable=False,
+        data={
+            "workspace": workspace,
+            "abandoned": True,
+            "read_only": True,
+            "write_allowed": False,
+        },
         facts=_dev_facts(workspaces, workspace, tool_name),
     )
 
@@ -163,7 +252,7 @@ class ToolCreateStatus:
         await self.bus.publish(make_event(EventType.TOOL_CREATE_STATUS, data))
 
 
-class CreateToolTool(Tool):
+class CreateToolTool(_DevToolBase):
     name = "create_tool"
     description = TOOL_CREATE_TOOL_DESC
     parameters = {
@@ -200,11 +289,12 @@ class CreateToolTool(Tool):
                 f"工作区已有文件：{', '.join(files) or '(空)'}。\n"
                 f"按以下指南继续开发：\n\n{dev_guide('create')}"
             ),
+            data=_evidence_data(self.workspaces, task.id, guide_step="create"),
             facts=_dev_facts(self.workspaces, task.id, self.name),
         )
 
 
-class DevListFilesTool(Tool):
+class DevListFilesTool(_DevToolBase):
     name = "dev_list_files"
     description = TOOL_DEV_LIST_FILES_DESC
     parameters = {
@@ -225,21 +315,21 @@ class DevListFilesTool(Tool):
         workspace = str(kwargs.get("workspace") or "")
         if self.workspaces.task(workspace) is None:
             return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
-        if _is_abandoned(self.workspaces, workspace):
-            # 读也拒绝：让模型（和界面）不会以为「这个任务还能继续做」。
-            return _abandoned_result(
-                self.workspaces, workspace, self.name, error=ABANDONED_FILES_ERROR
-            )
+        # 已放弃任务允许只读查看 / 复用材料（契约 §14.4）：写入/测试/提交才拒绝。
+        abandoned = _is_abandoned(self.workspaces, workspace)
         files = self.workspaces.list_files(workspace)
+        data = _evidence_data(self.workspaces, workspace)
+        data.update({"workspace": workspace, "files": files, "read_only": abandoned})
         if not files:
-            return ToolResult(ok=True, content="工作区为空，尚无文件。")
+            return ToolResult(ok=True, content="工作区为空，尚无文件。", data=data)
         return ToolResult(
             ok=True,
             content="工作区文件：\n" + "\n".join(f"- {name}" for name in files),
+            data=data,
         )
 
 
-class DevWriteFileTool(Tool):
+class DevWriteFileTool(_DevToolBase):
     name = "dev_write_file"
     description = TOOL_DEV_WRITE_FILE_DESC
     parameters = {
@@ -293,11 +383,12 @@ class DevWriteFileTool(Tool):
         return ToolResult(
             ok=True,
             content=f"已写入 {name}（{len(content)} 字符）",
+            data=_evidence_data(self.workspaces, workspace),
             facts=_dev_facts(self.workspaces, workspace, self.name),
         )
 
 
-class DevReadFileTool(Tool):
+class DevReadFileTool(_DevToolBase):
     name = "dev_read_file"
     description = TOOL_DEV_READ_FILE_DESC
     parameters = {
@@ -323,17 +414,19 @@ class DevReadFileTool(Tool):
         name = str(kwargs.get("name") or "")
         if self.workspaces.task(workspace) is None:
             return ToolResult(ok=False, error=f"找不到工作区：{workspace}")
-        if _is_abandoned(self.workspaces, workspace):
-            return _abandoned_result(
-                self.workspaces, workspace, self.name, error=ABANDONED_FILES_ERROR
-            )
+        # 已放弃任务允许只读查看与材料复用（契约 §14.4）；读取不代表获准继续开发。
+        abandoned = _is_abandoned(self.workspaces, workspace)
         content = self.workspaces.read_file(workspace, name)
+        evidence = _evidence_data(self.workspaces, workspace)
+        evidence.update(
+            {"workspace": workspace, "name": name, "read_only": abandoned}
+        )
         if content is None:
-            return ToolResult(ok=False, error=f"找不到文件：{name}")
-        return ToolResult(ok=True, content=content)
+            return ToolResult(ok=False, error=f"找不到文件：{name}", data=evidence)
+        return ToolResult(ok=True, content=content, data=evidence)
 
 
-class DevListTasksTool(Tool):
+class DevListTasksTool(_DevToolBase):
     """列出开发任务及权威状态：给 agent 一个「我有哪些未完成的开发」入口。
 
     重启、断线后模型/界面都能靠它枚举任务并恢复上下文，不再依赖对话摘要里的
@@ -378,13 +471,21 @@ class DevListTasksTool(Tool):
             lines.append(
                 f"- {task.id} | 阶段 {phase} | {test} | {submitted} | {task.request[:40]}"
             )
+        tasks_data = [
+            snapshot
+            for snapshot in (
+                self.workspaces.evidence_snapshot(task.id) for task in tasks
+            )
+            if snapshot
+        ]
         return ToolResult(
             ok=True,
             content=_with_guide("开发任务：\n" + "\n".join(lines), "recover"),
+            data={"tasks": tasks_data, "guide": dev_guide("recover")},
         )
 
 
-class DevRunTestsTool(Tool):
+class DevRunTestsTool(_DevToolBase):
     name = "dev_run_tests"
     description = TOOL_DEV_RUN_TESTS_DESC
     parameters = {
@@ -438,6 +539,7 @@ class DevRunTestsTool(Tool):
                 return ToolResult(
                     ok=False,
                     error="tool.json 缺失或无效，请先写入工具定义",
+                    data=_evidence_data(self.workspaces, workspace),
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             if definition.tool_type == "subagent":
@@ -446,6 +548,7 @@ class DevRunTestsTool(Tool):
                 return ToolResult(
                     ok=True,
                     content="subagent 型工具无需确定性测试，可直接提交审批。",
+                    data=_evidence_data(self.workspaces, workspace),
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             # 执行 AI 生成的代码之前必须拿到用户对执行边界的确认（按任务一次）。
@@ -469,6 +572,7 @@ class DevRunTestsTool(Tool):
                     tool_name=definition.name,
                 )
                 blocked.facts = _dev_facts(self.workspaces, workspace, self.name)
+                blocked.data = _evidence_data(self.workspaces, workspace)
                 return blocked
             # 授权回来的这一刻再查一次：用户可能正好在这期间点了「放弃开发」。
             # 迟到的执行结果不能让任务复活 —— 这里就是「不执行」的落点。
@@ -509,6 +613,7 @@ class DevRunTestsTool(Tool):
                     ok=False,
                     error=plan.reason or "依赖环境没准备好，这次没有运行测试",
                     category="missing_dependency",
+                    data=_evidence_data(self.workspaces, workspace),
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             # 真正跑生成代码之前最后再查一次（准备依赖环境也可能耗时很久）。
@@ -523,6 +628,16 @@ class DevRunTestsTool(Tool):
             ]
             # 权威测试记录：通过与否、摘要、时刻落盘（重启后可查，且不被文件存在推断）。
             self.workspaces.record_test(workspace, report.passed, report.summary)
+            # 测试 / 注册 / 真实条件验证分开记录：模拟测试不冒充真实链路验证。
+            _record_real_verification_requirement(self.workspaces, workspace)
+            evidence = _evidence_data(
+                self.workspaces, workspace, guide_step="test"
+            )
+            evidence["execution_boundary"] = _execution_boundary(self.workspaces, workspace)
+            evidence["test"]["outcomes"] = [
+                {"name": o.name, "passed": bool(o.passed), "detail": o.detail}
+                for o in report.outcomes
+            ]
             if report.passed:
                 await self.status.emit(
                     workspace,
@@ -540,6 +655,7 @@ class DevRunTestsTool(Tool):
                         ),
                         "test",
                     ),
+                    data=evidence,
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             await self.status.emit(
@@ -556,13 +672,14 @@ class DevRunTestsTool(Tool):
                     _with_note(f"测试失败 {report.summary}\n" + "\n".join(lines), definition),
                     "test",
                 ),
+                data=evidence,
                 facts=_dev_facts(self.workspaces, workspace, self.name),
             )
         finally:
             self.workspaces.end_run(workspace, RUN_TESTS)
 
 
-class DevSubmitTool(Tool):
+class DevSubmitTool(_DevToolBase):
     name = "dev_submit_tool"
     description = TOOL_DEV_SUBMIT_DESC
     parameters = {
@@ -622,6 +739,7 @@ class DevSubmitTool(Tool):
                 )
                 return ToolResult(
                     ok=False, error="explanation 必填",
+                    data=_evidence_data(self.workspaces, workspace),
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             # 以工作区 tool.json 为唯一权威：模型不必再复述整份定义（重复输出容易与
@@ -641,6 +759,7 @@ class DevSubmitTool(Tool):
                 return ToolResult(
                     ok=False,
                     error="工作区里的 tool.json 缺失或无效，请先写入工具定义",
+                    data=_evidence_data(self.workspaces, workspace),
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             if raw is not None:
@@ -654,6 +773,7 @@ class DevSubmitTool(Tool):
                     )
                     return ToolResult(
                         ok=False, error="definition 必须是对象",
+                        data=_evidence_data(self.workspaces, workspace),
                         facts=_dev_facts(self.workspaces, workspace, self.name),
                     )
                 try:
@@ -668,6 +788,7 @@ class DevSubmitTool(Tool):
                     )
                     return ToolResult(
                         ok=False, error=f"definition 不合法：{exc}",
+                        data=_evidence_data(self.workspaces, workspace),
                         facts=_dev_facts(self.workspaces, workspace, self.name),
                     )
                 # 只核对模型写的清单：项目文件是后端从工作区收集的，不在模型职责内。
@@ -685,6 +806,7 @@ class DevSubmitTool(Tool):
                             "definition 与工作区 tool.json 不一致；提交以工作区为准。"
                             "请先用 dev_read_file 读取 tool.json 核对，或改为省略 definition。"
                         ),
+                        data=_evidence_data(self.workspaces, workspace),
                         facts=_dev_facts(self.workspaces, workspace, self.name),
                     )
             if definition.tool_type == "function":
@@ -708,6 +830,7 @@ class DevSubmitTool(Tool):
                         tool_name=definition.name,
                     )
                     blocked.facts = _dev_facts(self.workspaces, workspace, self.name)
+                    blocked.data = _evidence_data(self.workspaces, workspace)
                     return blocked
                 # 授权回来的这一刻再查一次：用户可能正好在这期间点了「放弃开发」。
                 if _is_abandoned(self.workspaces, workspace):
@@ -762,6 +885,7 @@ class DevSubmitTool(Tool):
                 return ToolResult(
                     ok=False,
                     error=f"提交失败：{type(exc).__name__}: {exc}",
+                    data=_evidence_data(self.workspaces, workspace),
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             if outcome.ok:
@@ -770,17 +894,34 @@ class DevSubmitTool(Tool):
                 # 任务再也枚举不到。
                 self.workspaces.mark_submitted(workspace)
                 self.workspaces.archive(workspace)
+                # 注册证据单独记录：注册成功不等于真实条件验证通过。
+                final_version = self.workspaces.content_digest(workspace) or str(digest or "")
+                self.workspaces.record_registration(
+                    workspace,
+                    tool_name=definition.name,
+                    version=final_version,
+                    registered=True,
+                )
+                _record_real_verification_requirement(self.workspaces, workspace)
+                evidence = _evidence_data(
+                    self.workspaces, workspace, guide_step="submit"
+                )
+                evidence["execution_boundary"] = _execution_boundary(
+                    self.workspaces, workspace
+                )
                 return ToolResult(
                     ok=True,
                     content=_with_guide(
-                        f"工具 {definition.name} 已注册（内容摘要 {str(digest)[:12]}）。",
+                        f"工具 {definition.name} 已注册（完整版本 {final_version}）。",
                         "submit",
                     ),
+                    data=evidence,
                     facts=_dev_facts(self.workspaces, workspace, self.name),
                 )
             return ToolResult(
                 ok=False,
                 error=f"提交未通过（{outcome.step}）: {outcome.detail}",
+                data=_evidence_data(self.workspaces, workspace),
                 facts=_dev_facts(self.workspaces, workspace, self.name),
             )
         finally:
