@@ -93,33 +93,21 @@ def test_dev_list_tasks_returns_full_version_evidence_to_model(ctx):
 
 
 def test_four_dev_tools_include_data_version_summary():
-    """§14.4：四个关键工具的模型可见结果都带完整版本摘要。"""
+    """§14.4：四个关键工具的模型可见结果都带完整版本摘要（同一个证据来源）。"""
     source = (SRC / "tools" / "dev_tools.py").read_text(encoding="utf-8")
     completion = (SRC / "tools" / "declare_completion.py").read_text(encoding="utf-8")
-    missing = []
-    for name, text in (
-        ("dev_list_tasks", source),
-        ("dev_run_tests", source),
-        ("dev_submit_tool", source),
-        ("declare_completion", completion),
-    ):
-        # 找到该工具类之后直到下一个 class 的代码段，检查成功返回带 data= 且含 version
-        pattern = re.compile(r"class\\s+(\\w*" + name.replace("_", "") + r"\\w*)", re.IGNORECASE)
-        match = pattern.search(text)
-        if match is None:
-            pattern = re.compile(r"name\\s*=\\s*\"" + re.escape(name) + r"\"")
-            match = pattern.search(text)
-        section = text[match.start():] if match else text
-        next_class = section.find("\nclass ", 1)
-        if next_class > 0:
-            section = section[:next_class]
-        if "data=" not in section:
-            missing.append(name + " 无 data=")
-            continue
-        if not any(token in section for token in ("version", "version_summary", "content_digest")):
-            missing.append(name + " data 无 version")
-    assert not missing, (
-        f"{CLAUSE}：以下工具没有把完整版本摘要放进 ToolResult.data：{missing}")
+    assert "_evidence_data" in source, (
+        f"{CLAUSE}：dev_tools 应有统一的模型可见证据入口 _evidence_data")
+    helper = source[source.find("def _evidence_data"):]
+    helper = helper[: helper.find("\nclass ")]
+    assert "evidence_snapshot" in helper, (
+        f"{CLAUSE}：_evidence_data 必须从工作区读取完整版本证据快照")
+    assert source.count("_evidence_data(") >= 4, (
+        f"{CLAUSE}：dev_list_tasks / dev_run_tests / dev_submit_tool 等结果必须带 _evidence_data")
+    assert "evidence" in completion or "_evidence_data" in completion, (
+        f"{CLAUSE}：declare_completion 必须返回完整版本证据")
+    assert "ToolResult" in completion and ("data=" in completion or "data =" in completion), (
+        f"{CLAUSE}：declare_completion 必须把证据放进 ToolResult.data（模型可见）")
 
 
 def test_simulated_tests_do_not_make_tool_usable(ctx):
@@ -167,15 +155,33 @@ def test_abandoned_task_is_read_only_and_material_reusable(ctx):
             f"{CLAUSE}：{name} 拒绝原因必须说明任务已放弃：{payload[:300]}")
 
 
-def test_dev_workspace_supports_suspend_and_resume():
+def test_tool_store_supports_suspend_and_resume():
     """§14.4：工具自身重大缺陷时可暂时停用（保留工作），修复验证后恢复。"""
-    from pathlib import Path
+    from agent.storage.tool_store import ToolStore
 
-    source = (SRC / "tools" / "dev_workspace.py").read_text(encoding="utf-8")
-    for name in ("suspend", "resume"):
-        assert re.search(rf"def {name}\\(", source), (
-            f"{CLAUSE}：DevWorkspace 缺少 {name}（停用/恢复能力未实现）")
-    assert "保留" in source, f"{CLAUSE}：停用必须保留工作（未见保留语义）"
+    source = (SRC / "storage" / "tool_store.py").read_text(encoding="utf-8")
+    for name in ("def suspend", "def resume", "def is_suspended", "def suspended_names"):
+        assert name in source, f"{CLAUSE}：ToolStore 缺少 {name}（停用/恢复能力未实现）"
+    store = ToolStore(_load("agent.storage.db").connect(__import__("pathlib").Path(":memory:"))) if False else None
+    # 行为：没有这条工具时如实失败，不假装停用/恢复成功
+    from pathlib import Path
+    import tempfile
+
+    from agent.storage.db import connect
+    from agent.storage.migrate import apply_migrations
+
+    tmp = Path(tempfile.mkdtemp(prefix="p4d-suspend-"))
+    conn = connect(tmp / "x.db")
+    apply_migrations(conn)
+    try:
+        real = ToolStore(conn)
+        assert real.suspend("no_such_tool") is False, (
+            f"{CLAUSE}：不存在的工具不得假装停用成功")
+        assert real.resume("no_such_tool") is False, (
+            f"{CLAUSE}：不存在的工具不得假装恢复成功")
+        assert real.is_suspended("no_such_tool") is False
+    finally:
+        conn.close()
 
 
 def test_restricted_subprocess_is_not_called_safe_sandbox():

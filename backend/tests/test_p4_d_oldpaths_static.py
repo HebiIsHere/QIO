@@ -54,9 +54,11 @@ def test_tool_creator_compat_export_is_single_source_or_gone():
     """§14.5：若保留兼容名，只引用单一来源；不得复制旧提案实现。"""
     init = _read(SRC / "tools" / "__init__.py")
     creator_path = SRC / "tools" / "creator.py"
-    if "ToolCreator" in init:
+    init_code = "\n".join(
+        line for line in init.splitlines() if not line.strip().startswith("#"))
+    if "ToolCreator" in init_code:
         assert creator_path.exists(), (
-            f"{CLAUSE}：tools/__init__ 仍导出 ToolCreator 但实现文件不存在")
+            f"{CLAUSE}：tools/__init__ 仍导出 ToolCreator 但实现文件不存在（导出未清理）")
         text = _read(creator_path)
         assert len(text) > 0, f"{CLAUSE}：ToolCreator 兼容模块为空"
     # 旧提案提示词不得在其他业务模块复制

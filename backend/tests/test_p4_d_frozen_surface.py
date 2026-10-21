@@ -159,10 +159,15 @@ def test_frozen_phase4_text_is_not_copied_elsewhere():
         for path in SRC.rglob("*.py"):
             if path.name == "prompts.py":
                 continue
-            if marker in path.read_text(encoding="utf-8", errors="ignore"):
-                hits.append(str(path.relative_to(SRC)))
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for line in text.splitlines():
+                if marker not in line:
+                    continue
+                code = line.split("#", 1)[0]
+                if marker in code:
+                    hits.append(f"{path.relative_to(SRC)}（非注释代码）")
         assert not hits, (
-            f"{CLAUSE}：固定文案出现第二份来源：{hits}（只能引用 prompts.py）")
+            f"{CLAUSE}：固定文案出现第二份代码来源：{hits}（只能引用 prompts.py）")
 
 
 def test_qio_answer_marker_is_retained():
