@@ -212,6 +212,23 @@ class ToolRegistry:
 
     async def _execute_call(self, call: ToolCall) -> ToolResult:
         tool = self._tools.get(call.name)
+        # 阶段四（契约 §14.2）：_qio_subtask 是 subagent 工具的保留控制字段，
+        # 只允许 subagent 工具消费。其它工具收到它 = 模型把控制信息混进业务参数，
+        # 直接拒绝（不静默忽略、不静默转发）。字段名唯一来源
+        # agent/tools/subagent_tool.py 的 SUBTASK_CONTROL_KEY。
+        if (
+            tool is not None
+            and "_qio_subtask" in dict(call.arguments)
+            and not getattr(tool, "subtask_control_allowed", False)
+        ):
+            result = ToolResult(
+                ok=False,
+                status="failed",
+                code="unexpected_control_field",
+                error="_qio_subtask 只允许 subagent 工具使用；本次调用已拒绝。",
+            )
+            await self._finish(call, tool, result)
+            return result
         if tool is None:
             result = ToolResult(
                 ok=False,
