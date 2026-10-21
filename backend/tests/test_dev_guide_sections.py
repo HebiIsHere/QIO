@@ -57,15 +57,15 @@ def test_each_step_only_gets_its_own_sections():
     testing = dev_guide("test")
     submit = dev_guide("submit")
 
-    # 准备阶段：需求规格与契约（含多文件与依赖）
-    assert "需求规格" in prepare and "多文件项目" in prepare
+    # 准备阶段：需求与契约（第三方依赖 / 文件结构）
+    assert "需求应明确用途" in prepare and "第三方依赖" in prepare
     assert "提交口径" not in prepare
-    # 测试阶段：执行授权与「测试通过不等于真实链路」
-    assert "执行授权" in testing and "不等于真实链路" in testing
+    # 测试阶段：执行授权与「模拟测试不等于真实外部链路」
+    assert "执行授权" in testing and "真实外部链路" in testing
     assert "契约约束" not in testing
-    # 提交阶段：提交口径与结论核对
-    assert "提交口径" in submit and "declare_completion" in submit
-    assert "需求规格" not in submit
+    # 提交阶段：以工作区为准提交与保留成果
+    assert "当前工作区" in submit and "保留可追溯成果" in submit
+    assert "需求应明确用途" not in submit
 
 
 def test_every_section_is_used_by_some_step():
@@ -87,8 +87,8 @@ def test_create_tool_returns_the_preparation_sections(tmp_path):
     result = asyncio.run(tool.run(request="做一个把数字翻倍的工具"))
 
     assert result.ok
-    assert "需求规格" in result.content
-    assert "多文件项目" in result.content
+    assert "需求应明确用途" in result.content
+    assert "第三方依赖" in result.content
     assert "提交口径" not in result.content
 
 
@@ -110,4 +110,4 @@ def test_run_tests_returns_the_test_section(tmp_path):
 
     assert result.ok
     assert "执行授权" in result.content
-    assert "不等于真实链路" in result.content
+    assert "真实外部链路" in result.content

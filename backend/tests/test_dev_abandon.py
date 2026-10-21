@@ -656,10 +656,12 @@ async def test_file_tools_refuse_an_abandoned_task(tmp_path):
     read = await DevReadFileTool(ws).run(workspace=task.id, name="notes.txt")
     listing = await DevListFilesTool(ws).run(workspace=task.id)
 
-    for result in (write, read, listing):
-        assert result.ok is False
-        assert result.category == "abandoned"
-        assert "已经被放弃" in result.error
+    # 阶段四契约 §14.4：放弃任务允许只读查看与材料复用，写入/测试/提交仍拒绝。
+    assert write.ok is False
+    assert write.category == "abandoned"
+    assert "已经被放弃" in write.error
+    assert read.ok is True and "还在写" in read.content
+    assert listing.ok is True
     assert "late.txt" not in ws.list_files(task.id)
 
 

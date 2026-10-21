@@ -150,7 +150,7 @@ async def test_create_tool_returns_guide():
     tool = CreateToolTool(ws)
     result = await tool.run(request="帮我做一个计算工具")
     assert result.ok and "ws_" in result.content
-    assert "需求规格" in result.content  # 指南含必填项
+    assert "需求应明确用途" in result.content  # 指南含必填项
 
 
 async def test_create_tool_reports_initial_files():

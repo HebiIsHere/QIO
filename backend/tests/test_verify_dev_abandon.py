@@ -589,9 +589,11 @@ async def test_file_tools_refuse_an_abandoned_task(tmp_path):
     read = await DevReadFileTool(ws).run(workspace=task.id, name="tool.py")
     listing = await DevListFilesTool(ws).run(workspace=task.id)
 
+    # 阶段四契约 §14.4：放弃任务可只读复用材料；写入 / 测试 / 提交仍拒绝。
     assert write.ok is False and "放弃" in write.error
-    assert read.ok is False, "读也拒绝，避免界面上出现「还能继续做」的假象"
-    assert listing.ok is False
+    assert read.ok is True and read.content.strip() == "print(1)"
+    assert listing.ok is True
+    assert listing.data.get("read_only") is True if isinstance(listing.data, dict) else True
     assert (task.dir / "late.py").exists() is False
 
 

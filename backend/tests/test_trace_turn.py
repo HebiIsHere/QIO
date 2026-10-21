@@ -126,7 +126,14 @@ async def test_subagent_loop_records_trace(ctx: AppContext):
         trace_store=ctx.trace_store,
     )
     tool.bus = EventBus()
-    res = await tool._execute("task_x", _AnswerAdapter("子任务结果"), {"x": 1})
+    res = await tool._execute(
+        "task_x",
+        _AnswerAdapter("子任务结果"),
+        {"x": 1},
+        None,
+        definition.subagent_budget,
+        {},
+    )
     assert res.ok
     trace = ctx.trace_store.get("subagent:task_x")
     assert trace is not None
