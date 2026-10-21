@@ -322,11 +322,29 @@ class AppContext:
         from agent.tools.continue_tool import ContinueFromFragmentTool
 
         self.registry.register(ContinueFromFragmentTool(conn))
-        from agent.tools.subagent_tool import AwaitTaskTool, ReadTaskResultTool
+        from agent.tools.subagent_tool import (
+            AwaitTaskTool,
+            ReadTaskResultTool,
+            set_origin_provider,
+        )
+        from agent.tools.subagent_tool import SUBTASK_CONTROL_KEY as _SUBTASK_CONTROL_KEY  # noqa: F401
+        from agent.tools.subtask_notifications import SubtaskNotificationQueue
         from agent.tools.task_manager import TaskManager
 
         self.task_manager = TaskManager(bus)
         self.services.register("task_manager", self.task_manager)
+        # 阶段四 A：子任务完成通知先入队（按 task 去重），空闲时各自成为一条通知轮；
+        # 不打断当前交流、不因处理另一条通知而丢弃。
+        self.subtask_notifications = SubtaskNotificationQueue(self.task_manager)
+        # 阶段四 A：程序绑定子任务 origin（当前真实用户轮 + 原话题），模型不能伪造。
+        set_origin_provider(self._subtask_origin)
+        from agent.tools.credential_catalog import ListAvailableCredentialsTool
+
+        self.registry.register(
+            ListAvailableCredentialsTool(
+                self.credentials, settings_store=self.settings_store
+            )
+        )
         self.registry.register(
             AwaitTaskTool(self.task_manager, notify_handler=self._handle_subagent_notify)
         )
@@ -1798,23 +1816,93 @@ class AppContext:
             facts["ended_at"] = row["ended_at"]
         return facts
 
-    def _format_notice(self, task_id: str, record) -> str:
-        result = record.result
-        preview = (result.content or "")[:300] if result else ""
-        status = "完成" if (result and result.ok) else "失败"
-        return NOTIFY_SUBTASK_DONE.format(
-            tool=record.tool, task_id=task_id, status=status, preview=preview
-        )
+    def _subtask_origin(self) -> dict:
+        """程序绑定子任务 origin：当前真实用户轮 + 原话题（模型不能伪造）。"""
+        active = self.turns.active
+        topic = ""
+        if active is not None:
+            topic = str(getattr(active, "current_topic", None) or "")
+        if not topic:
+            try:
+                topic = str(self.current_topic() or "")
+            except Exception:  # noqa: BLE001 - 没有活动话题时如实留空
+                topic = ""
+        return {
+            "turn_id": str(getattr(active, "turn_id", "") or ""),
+            "topic_id": topic,
+            "goal_version": getattr(active, "bound_intent_version", None),
+        }
 
-    async def _handle_subagent_notify(self, task_id: str, record) -> None:
-        """Notify callback: inject into a running loop, or start a notify turn."""
+    def _format_notice(self, task_id: str, record) -> str:
+        """兼容名：通知正文统一由 subtask_notifications 渲染（固定文案来自 prompts）。"""
+        from agent.tools.subtask_notifications import build_notification, format_completion_notice
+
+        return format_completion_notice(build_notification(task_id, record))
+
+    async def _handle_subagent_notify(self, task_id: str, record=None) -> None:
+        """子任务收口：只入队（去重），空闲时再取一条作为自己的通知轮。
+
+        不打断当前交流：有 active 用户轮时留在队列里，轮末再取；处理另一条通知
+        期间到达的通知也不会丢。取消 / 迟到结果不入队（不复活已取消任务）。
+        """
         if self._notify_turn:
-            return  # no recursive notify turns
-        notice = self._format_notice(task_id, record)
-        # single-flight：唯一 active turn 就是正确归属；找不到才排队一个系统 turn
-        if self.turns.push_notice(notice):
+            # 当前通知轮正在跑：入队即可，它结束时统一 drain。
+            try:
+                self.subtask_notifications.enqueue(task_id, record)
+            except Exception:  # noqa: BLE001 - 通知入队失败只记日志
+                logging.getLogger(__name__).warning(
+                    "subtask notification enqueue failed", exc_info=True
+                )
             return
-        self.turns.submit(notice, None, notify=True)
+        try:
+            enqueued = self.subtask_notifications.enqueue(task_id, record)
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "subtask notification enqueue failed", exc_info=True
+            )
+            return
+        if enqueued:
+            self._schedule_subtask_notification_pump()
+
+    def _schedule_subtask_notification_pump(self) -> None:
+        """在当前 turn 真正收尾后再尝试取通知（TurnManager 清 active 在 runner 之后）。"""
+
+        async def _later() -> None:
+            await asyncio.sleep(0)
+            await self._pump_subtask_notifications()
+
+        try:
+            asyncio.get_running_loop().create_task(_later())
+        except RuntimeError:
+            return
+
+    async def _pump_subtask_notifications(self) -> None:
+        """空闲时取一条通知作为自己的通知轮；不在 active 用户轮里打断当前交流。"""
+        if self._notify_turn or self.turns.active is not None:
+            return
+        # 用户消息还在排队：先让用户轮执行，通知轮排在其后（不抢占）。
+        if self.turns.queued_count():
+            return
+        item = self.subtask_notifications.take()
+        if item is None:
+            return
+        from agent.tools.subtask_notifications import format_completion_notice
+
+        origin = item.get("origin") or {}
+        topic = str(origin.get("topic_id") or "") or None
+        try:
+            turn = self.turns.submit(format_completion_notice(item), topic, notify=True)
+        except Exception:  # noqa: BLE001 - 提交失败放回队列，下一轮再试
+            logging.getLogger(__name__).warning(
+                "subtask notification turn submit failed", exc_info=True
+            )
+            self.subtask_notifications.requeue(item)
+            return
+        # 通知轮携带结构化事实（身份 / 状态 / 结果引用 / origin），供轮末原话题续作。
+        try:
+            turn.subtask_notification = item
+        except Exception:  # noqa: BLE001 - TurnContext 允许动态属性，失败不影响执行
+            pass
 
     async def _execute_notify_turn(self, ctx) -> None:
         """System-driven turn: main agent reacts to a finished subagent task."""
@@ -1977,6 +2065,7 @@ class AppContext:
         finally:
             self._notify_turn = False
             self.approvals.set_context(turn_id=None, session_id=self.session_id)
+            self._schedule_subtask_notification_pump()
 
     # -- short-term memory & topic helpers ---------------------------------
 
@@ -2131,7 +2220,11 @@ class AppContext:
 
     async def _execute_turn(self, ctx) -> None:
         """委派给 TurnOrchestrator（见 agent/services/turn_orchestrator.py）。"""
-        await self.turn_orchestrator.execute(ctx)
+        try:
+            await self.turn_orchestrator.execute(ctx)
+        finally:
+            # 轮末尝试取一条子任务通知（不打断刚结束的交流；有排队用户轮时延后）。
+            self._schedule_subtask_notification_pump()
 
     # -- fragment close: summary + entities + knowledge extraction --------
 

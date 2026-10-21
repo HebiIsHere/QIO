@@ -1,4 +1,4 @@
-﻿"""Task manager: async subagent task lifecycle, concurrency cap, notify.
+"""Task manager: async subagent task lifecycle, concurrency cap, notify.
 
 Tasks run in the background with a hard concurrency cap (extra tasks queue
 behind the semaphore; only the task holding a slot is `running`, the rest stay
@@ -27,6 +27,32 @@ DEFAULT_MAX_RECORDS = 200
 DEFAULT_RECORD_TTL_SECONDS = 1800.0
 NOTIFY_CB = Callable[[str, "TaskRecord"], Awaitable[None]]
 
+#: 真实终态（契约 §14.3）：不得把非异常退出包装成功。
+#: status 保留旧的 queued/running/done/failed 事实（界面/既有协议兼容），
+#: outcome 用下面这组精确词，供 await_task / read_task_result / 通知使用。
+OUTCOME_COMPLETED = "completed"
+OUTCOME_PARTIALLY_COMPLETED = "partially_completed"
+OUTCOME_FAILED = "failed"
+OUTCOME_CANCELLED = "cancelled"
+OUTCOME_BUDGET_EXHAUSTED = "budget_exhausted"
+TERMINAL_OUTCOMES: frozenset[str] = frozenset(
+    {
+        OUTCOME_COMPLETED,
+        OUTCOME_PARTIALLY_COMPLETED,
+        OUTCOME_FAILED,
+        OUTCOME_CANCELLED,
+        OUTCOME_BUDGET_EXHAUSTED,
+    }
+)
+NOTIFY_OUTCOMES: frozenset[str] = frozenset(
+    {
+        OUTCOME_COMPLETED,
+        OUTCOME_PARTIALLY_COMPLETED,
+        OUTCOME_FAILED,
+        OUTCOME_BUDGET_EXHAUSTED,
+    }
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -46,18 +72,31 @@ def _parse_ts(value: str | None) -> datetime | None:
 class TaskRecord:
     task_id: str
     tool: str
-    status: str  # queued | running | done | failed
+    status: str  # queued | running | done | failed | cancelled
     created_at: str = field(default_factory=_now)
     finished_at: str | None = None
     result: ToolResult | None = None
-    full_content: str | None = None  # untruncated result for pointer reads
+    #: 完整结果（不经输出上限截断）。分页读取只读它；预览永远不能冒充全文。
+    full_content: str | None = None
+    #: 完整结果字符数（即使 full_content 被释放，事实仍在）。
+    total_chars: int = 0
     iterations: int = 0
     tokens: int = 0
     tool_calls: int = 0
+    #: 精确终态（契约 §14.3）：由执行器按真实结束事实填写；
+    #: None = 还没结束 / 旧调用方没有提供，由 result.ok 回退推断。
+    outcome: str | None = None
+    #: 程序绑定的原任务上下文（turn_id / topic_id / goal_version），模型不能伪造。
+    origin: dict = field(default_factory=dict)
+    #: 取消事实：取消后到达的结果不得复活任务。
+    cancelled: bool = False
+    cancel_reason: str = ""
+    #: 是否已经投递过完成通知（按 task 去重，不因正在处理另一通知而丢）。
+    notified: bool = False
 
     @property
     def done(self) -> bool:
-        return self.status in ("done", "failed")
+        return self.status in ("done", "failed", "cancelled")
 
     def release(self) -> None:
         """释放结果占用（长结果 full_content 可能是几十 KB 级）。"""
@@ -84,6 +123,8 @@ class TaskManager:
         self._max_records = max(1, max_records)
         self._record_ttl = record_ttl_seconds
         self._closed = False
+        # 已投递过完成通知的 task_id（按 task 去重，重启后从空开始）
+        self._notified: set[str] = set()
 
     # -- submit -----------------------------------------------------------
 
@@ -93,12 +134,18 @@ class TaskManager:
         coro_factory: Callable[[], Awaitable[ToolResult]],
         *,
         task_id: str | None = None,
+        origin: dict | None = None,
     ) -> str:
         if self._closed:
             # 关闭之后收下的任务永远不会被执行（事件循环要走了）
             raise RuntimeError("TaskManager is closed; it no longer accepts new tasks")
         task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
-        record = TaskRecord(task_id=task_id, tool=tool_name, status="queued")
+        record = TaskRecord(
+            task_id=task_id,
+            tool=tool_name,
+            status="queued",
+            origin=dict(origin or {}),
+        )
         self._records[task_id] = record
         self.prune()
         task = asyncio.create_task(self._run(task_id, coro_factory))
@@ -136,6 +183,7 @@ class TaskManager:
         for record in self._records.values():
             if not record.done:
                 record.status = "failed"
+                record.outcome = OUTCOME_FAILED
                 record.result = ToolResult(ok=False, error="task cancelled: app shutting down")
                 record.finished_at = _now()
 
@@ -154,6 +202,111 @@ class TaskManager:
         for task_id, callbacks in list(self._notify.items()):
             self._notify.pop(task_id, None)
 
+    # -- cancel / facts / paginated result --------------------------------
+
+    def cancel(self, task_id: str, reason: str = "用户取消了子任务") -> bool:
+        """用户明确取消：终态立即定死，之后到达的结果不得复活任务。
+
+        * 排队中 / 运行中的任务被标记 cancelled（运行中的 coroutine 无法强制杀，
+          但它的迟到结果会被 _run 丢弃为 cancelled 事实，不触发完成通知）；
+        * 已进入终态的任务不改变（取消不是「倒带」）。
+        """
+        record = self._records.get(task_id)
+        if record is None or record.done:
+            return False
+        record.cancelled = True
+        record.cancel_reason = str(reason or "用户取消了子任务")
+        record.outcome = OUTCOME_CANCELLED
+        record.status = "cancelled"
+        record.finished_at = record.finished_at or _now()
+        record.result = ToolResult(
+            ok=False,
+            status="cancelled",
+            error=record.cancel_reason,
+        )
+        # 兑现 waiter：它们等的是「终态」，不是成功。
+        for fut in self._waiters.pop(task_id, []):
+            if not fut.done():
+                fut.set_result((record.status, record.result))
+        # 取消的任务不进入完成通知队列（不复活）
+        self._notify.pop(task_id, None)
+        return True
+
+    def task_facts(self, task_id: str) -> dict | None:
+        """给 await_task / read_task_result / 通知渲染用的真实事实（不含正文）。"""
+        record = self._records.get(task_id)
+        if record is None:
+            return None
+        return {
+            "task_id": record.task_id,
+            "tool": record.tool,
+            "status": record.status,
+            "outcome": record.outcome,
+            "ok": record.result.ok if record.result is not None else None,
+            "error": (
+                record.result.error
+                if record.result is not None and not record.result.ok
+                else None
+            ),
+            "total_chars": int(record.total_chars or 0),
+            "has_full_result": record.full_content is not None,
+            "preview": (
+                (record.full_content or record.result.content or "")
+                if record.result is not None
+                else ""
+            )[:200],
+            "iterations": record.iterations,
+            "tokens": record.tokens,
+            "tool_calls": record.tool_calls,
+            "created_at": record.created_at,
+            "finished_at": record.finished_at,
+            "origin": dict(record.origin or {}),
+            "cancelled": record.cancelled,
+            "cancel_reason": record.cancel_reason,
+        }
+
+    def read_result(self, task_id: str, offset: int = 0, limit: int = 4000) -> dict | None:
+        """按 offset/limit 读取完整结果分段；返回分页事实（含 next_offset/has_more）。
+
+        完整结果永久保留在记录里（直到 TTL 回收）；预览不冒充全文。
+        """
+        record = self._records.get(task_id)
+        if record is None:
+            return None
+        content = (
+            record.full_content
+            if record.full_content is not None
+            else (record.result.content if record.result is not None else "")
+        ) or ""
+        start = max(0, int(offset or 0))
+        size = max(1, min(int(limit or 4000), 4000))
+        chunk = content[start : start + size]
+        end = start + len(chunk)
+        return {
+            "task_id": task_id,
+            "content": chunk,
+            "offset": start,
+            "limit": size,
+            "next_offset": end,
+            "has_more": end < len(content),
+            "total_chars": len(content),
+            "status": record.status,
+            "outcome": record.outcome,
+        }
+
+    def mark_notified(self, task_id: str) -> bool:
+        """标记已投递完成通知；返回 False 表示之前已经投递过（去重）。"""
+        if task_id in self._notified:
+            return False
+        self._notified.add(task_id)
+        record = self._records.get(task_id)
+        if record is not None:
+            record.notified = True
+        return True
+
+    def was_notified(self, task_id: str) -> bool:
+        return task_id in self._notified
+
     # -- lifecycle --------------------------------------------------------
 
     async def _run(
@@ -170,11 +323,11 @@ class TaskManager:
                 await self._emit(task_id)
                 try:
                     result = await coro_factory()
-                    record.result = result
-                    record.status = "done" if result.ok else "failed"
+                    self._settle_result(record, result)
                 except Exception as exc:  # noqa: BLE001 - task isolation
                     logger.warning("subagent task %s failed: %s", task_id, exc)
                     record.result = ToolResult(ok=False, error=f"{type(exc).__name__}: {exc}")
+                    record.outcome = OUTCOME_FAILED
                     record.status = "failed"
         except asyncio.CancelledError:
             # 关闭时的取消也是终态：把记录留在 running 会让「谁在跑」永远失真。
@@ -195,12 +348,52 @@ class TaskManager:
         for fut in self._waiters.pop(task_id, []):
             if not fut.done():
                 fut.set_result(outcome)
-        for cb in list(self._notify.pop(task_id, [])):
-            try:
-                await cb(task_id, record)
-            except Exception:  # noqa: BLE001 - notify isolation
-                logger.warning("notify callback failed for %s", task_id, exc_info=True)
+        # 完成通知：按 task 去重；取消的任务不通知（迟到结果不复活）。
+        if (
+            record.outcome in NOTIFY_OUTCOMES
+            and not record.cancelled
+            and self.mark_notified(task_id)
+        ):
+            for cb in list(self._notify.pop(task_id, [])):
+                try:
+                    await cb(task_id, record)
+                except Exception:  # noqa: BLE001 - notify isolation
+                    logger.warning("notify callback failed for %s", task_id, exc_info=True)
+        else:
+            self._notify.pop(task_id, None)
         self.prune()
+
+    def _settle_result(self, record: TaskRecord, result: ToolResult) -> None:
+        """把执行器返回的结果收口成真实终态（不把非异常退出包装成功）。
+
+        * 已被用户取消：迟到结果只作废，不改变终态；
+        * outcome 由执行器（subagent）按真实结束事实填写；缺省按 result.ok 回退；
+        * full_content 完整保留（预览/分页只读它，静默截断不冒充完整结果）。
+        """
+        if record.cancelled:
+            record.status = "cancelled"
+            record.outcome = OUTCOME_CANCELLED
+            return
+        record.result = result
+        content = result.content or ""
+        # 执行器可能已经把**真正的完整结果**写进记录（长结果返回的是预览占位文本）：
+        # 绝不能拿缩略后的 content 覆盖完整结果。
+        existing_full = record.full_content or ""
+        if len(existing_full) >= len(content):
+            record.total_chars = len(existing_full)
+        else:
+            record.full_content = content
+            record.total_chars = len(content)
+        outcome = str(record.outcome or "").strip()
+        if outcome not in TERMINAL_OUTCOMES:
+            outcome = OUTCOME_COMPLETED if result.ok else OUTCOME_FAILED
+        record.outcome = outcome
+        if outcome in (OUTCOME_COMPLETED, OUTCOME_PARTIALLY_COMPLETED):
+            record.status = "done"
+        elif outcome == OUTCOME_CANCELLED:
+            record.status = "cancelled"
+        else:
+            record.status = "failed"
 
     # -- await / notify ---------------------------------------------------
 
@@ -272,12 +465,15 @@ class TaskManager:
                     "task_id": record.task_id,
                     "tool": record.tool,
                     "status": record.status,
+                    "outcome": record.outcome,
                     "ok": result.ok if result else None,
-                    "content_preview": (result.content or "")[:200] if result else "",
+                    "content_preview": (record.full_content or (result.content if result else ""))[:200],
                     "error": (result.error or "")[:200] if result and not result.ok else None,
+                    "total_chars": record.total_chars,
                     "iterations": record.iterations,
                     "tokens": record.tokens,
                     "tool_calls": record.tool_calls,
+                    "origin": dict(record.origin or {}),
                 }
             )
         return out
@@ -333,12 +529,15 @@ class TaskManager:
                     "task_id": task_id,
                     "tool": record.tool,
                     "status": record.status,
+                    "outcome": record.outcome,
                     "ok": result.ok if result else None,
-                    "content_preview": (result.content or "")[:200] if result else "",
+                    "content_preview": (record.full_content or (result.content if result else ""))[:200],
                     "error": (result.error or "")[:200] if result and not result.ok else None,
+                    "total_chars": record.total_chars,
                     "iterations": record.iterations,
                     "tokens": record.tokens,
                     "tool_calls": record.tool_calls,
+                    "origin": dict(record.origin or {}),
                 },
             )
         )
