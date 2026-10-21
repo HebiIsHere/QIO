@@ -484,6 +484,68 @@ class ToolLifecycle:
         if disposer is not None:
             disposer()
 
+    def suspend_tool(self, name: str, *, reason: str = "") -> dict:
+        """暂时停用工具：保留定义 / 工作区 / 历史，只从注册表移除并标记 suspended。
+
+        与 revoke（真正撤销）不同：停用不删记录，恢复后同一份定义可以重新注册。
+        """
+        tool = self.registry.get(name)
+        disposer = self._registry_disposers.pop(name, None)
+        if disposer is not None:
+            disposer()
+        elif tool is not None:
+            self.registry.unregister(name)
+        persisted = False
+        if self.tool_store is not None:
+            try:
+                persisted = bool(self.tool_store.suspend(name, reason=reason))
+            except Exception:  # noqa: BLE001 - 持久层失败不能半截停用
+                logger.warning("failed to persist tool suspension: %s", name, exc_info=True)
+        if tool is None and not persisted:
+            return {
+                "ok": False,
+                "code": "tool_not_found",
+                "name": name,
+                "status": "unknown",
+            }
+        logger.info("tool suspended: %s", name)
+        return {
+            "ok": True,
+            "name": name,
+            "status": "suspended",
+            "reason": str(reason or ""),
+            "registry_removed": tool is not None,
+            "persisted": persisted,
+            "work_preserved": True,
+        }
+
+    def resume_tool(self, name: str) -> dict:
+        """恢复暂时停用的工具：重新注册同一份持久定义（工作区与证据保留）。"""
+        if self.tool_store is None:
+            return {"ok": False, "code": "store_unavailable", "status": "unavailable"}
+        definition = self.tool_store.load_any(name)
+        if definition is None:
+            return {"ok": False, "code": "definition_not_found", "name": name}
+        try:
+            self._register(definition)
+            self.tool_store.resume(name)
+        except Exception as exc:  # noqa: BLE001 - 恢复失败要如实报告，不能假装成功
+            logger.warning("failed to resume tool: %s", name, exc_info=True)
+            return {
+                "ok": False,
+                "code": "resume_failed",
+                "name": name,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        logger.info("tool resumed: %s", name)
+        return {
+            "ok": True,
+            "name": name,
+            "tool_name": definition.name,
+            "status": "active",
+            "work_preserved": True,
+        }
+
     def revoke_tool(self, name: str) -> bool:
         """撤销工具：真正从注册表移除（disposer），并在持久层标记 removed。"""
         disposer = self._registry_disposers.pop(name, None)
