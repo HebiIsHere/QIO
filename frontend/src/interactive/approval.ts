@@ -56,6 +56,12 @@ export const INTENT_STATUS_LABELS: Record<IntentStatus, string> = {
   done: "已完成",
   failed: "失败",
   cancelled: "已取消",
+  // Stage 1（意图预演与批准即落地）：与工作台 intentWorkbench.INTENT_STATUS_LABELS 同口径，
+  // approved 只说「已确认」，绝不说成「已完成」。
+  proposed: "待确认",
+  awaiting_confirmation: "待再次确认",
+  approved: "已确认（等待执行）",
+  completed: "已完成",
 };
 
 const KIND_LABELS: Record<string, string> = {
@@ -361,6 +367,31 @@ export function statusText(intent: Intent): StatusText {
       };
     case "cancelled":
       return { label, detail: reason || "任务已取消，本任务造成的改动已撤回。", tone: "problem" };
+    // Stage 1：带 operations 的新意图。确认后在同一请求里落成正式卡片 / 组 / 关系。
+    case "proposed":
+      return {
+        label,
+        detail:
+          "这是 QIO 的预演：确认后会在同一次请求里落成正式卡片 / 组 / 关系；确认前板面没有任何改动。",
+        tone: "open",
+      };
+    case "awaiting_confirmation":
+      return {
+        label,
+        detail:
+          reason || "还需要你再次确认：确认后才会在同一个请求里落地，不会自动执行。",
+        tone: "waiting",
+      };
+    case "approved":
+      return {
+        label,
+        detail:
+          reason ||
+          "已确认，正在落地：结果以服务端返回的真实对象与账本为准；落地失败时可以重试确认。",
+        tone: "waiting",
+      };
+    case "completed":
+      return { label, detail: "结果已经成为板面正式内容（实线）。", tone: "settled" };
     default:
       return { label, detail: reason, tone: "settled" };
   }
@@ -892,7 +923,13 @@ export function executionActions(
       return { canPause: false, canResume: false, canCancel: true, reason: "已批准，正在等待前项：可以取消。" };
     case "pending":
     case "waiting_confirm":
-      return { ...none, reason: "还没有批准，没有可以控制的任务。" };
+    case "proposed":
+    case "awaiting_confirmation":
+      return { ...none, reason: "还没有确认，没有可以控制的任务。" };
+    case "approved":
+      return { ...none, reason: "已确认，正在落地：落地失败时可以重试确认。" };
+    case "completed":
+      return { ...none, reason: "任务已经完成。" };
     default:
       return { ...none, reason: "这项任务已经没有可以控制的操作。" };
   }
@@ -1010,6 +1047,27 @@ export function approveAvailability(intent: Intent): ApproveAvailability {
       return { allowed: false, needsConfirm: false, text: "任务正在执行中。" };
     case "done":
       return { allowed: false, needsConfirm: false, text: "任务已经完成。" };
+    // Stage 1：新意图的确认入口（走 POST /confirm，成功即在同一请求里落地）
+    case "proposed":
+      return {
+        allowed: true,
+        needsConfirm: false,
+        text: "确认后会在同一次请求里落成正式卡片 / 组 / 关系；确认前板面没有任何改动。",
+      };
+    case "awaiting_confirmation":
+      return {
+        allowed: true,
+        needsConfirm: false,
+        text: "还需要你确认：确认后才会落成正式内容，不会自动执行。",
+      };
+    case "approved":
+      return {
+        allowed: false,
+        needsConfirm: false,
+        text: "已确认，正在落地：落地失败时可以重试确认。",
+      };
+    case "completed":
+      return { allowed: false, needsConfirm: false, text: "任务已经完成。" };
     default:
       return { allowed: false, needsConfirm: false, text: "这项意图已经结束。" };
   }
@@ -1017,6 +1075,10 @@ export function approveAvailability(intent: Intent): ApproveAvailability {
 
 export function rejectAvailability(intent: Intent): { allowed: boolean; text: string } {
   if (isDecidable(intent?.status)) {
+    return { allowed: true, text: "拒绝后预览消失，板面原内容保留。" };
+  }
+  // Stage 1：未批准的新意图也可以拒绝（预览消失、板面原内容保留）
+  if (["proposed", "awaiting_confirmation"].includes(intent?.status)) {
     return { allowed: true, text: "拒绝后预览消失，板面原内容保留。" };
   }
   if (intent?.status === "running" || intent?.status === "paused") {

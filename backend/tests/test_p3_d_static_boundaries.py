@@ -100,8 +100,9 @@ def test_tool_models_and_runtime_frozen_surface():
                  "take_delivered_questions", "clear_delivered_questions"):
         assert hasattr(runtime, name), f"{CLAUSE}：runtime 缺少冻结符号 {name}"
     fields = set(tool_models.IntentSpec.model_fields)
+    # P73 允许扩展：operations 是可视化意图的数据来源（只追加字段，不改写既有字段）。
     assert fields == {"client_ref", "title", "goal", "expected", "basis", "scope",
-                      "depends_on", "conflicts_with"}, (
+                      "depends_on", "conflicts_with", "operations"}, (
         f"{CLAUSE}：IntentSpec 字段被改写：{sorted(fields)}")
 
 

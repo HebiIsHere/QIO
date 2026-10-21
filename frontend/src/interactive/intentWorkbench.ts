@@ -183,6 +183,19 @@ export interface ConfirmItemResult {
   ok?: boolean;
   status?: string;
   reason?: string;
+  /** P73：确认写授权成功、但同一请求里的落地没完成时的真实原因（不会假报已落地） */
+  apply_error?: string;
+  /** P73：这一条确认即落地时真实新增的对象 id */
+  applied?: ConfirmAppliedRefs;
+  execution?: { id?: string; status?: string; steps?: unknown[] } | null;
+  intent?: Record<string, unknown> | null;
+}
+
+/** 新意图确认成功后，同一请求内真实落地的对象 id（服务端 applied 原样）。 */
+export interface ConfirmAppliedRefs {
+  cardIds?: string[];
+  groupIds?: string[];
+  linkIds?: string[];
 }
 
 export interface ConfirmResponse {
@@ -193,6 +206,16 @@ export interface ConfirmResponse {
   min?: number;
   batch?: boolean;
   gate?: string;
+  /**
+   * Stage 1：确认即落地时给出真实对象 id（没有落地时缺省）。
+   *
+   * 两种形状都兼容：单条接口的实现按 intentId 分组
+   * （`{ [intentId]: { cardIds, groupIds, linkIds } }`，批量确认天然需要分组），
+   * 契约文字描述的是扁平形状；前端两种都认，不依赖某一种。
+   */
+  applied?: Record<string, ConfirmAppliedRefs> | ConfirmAppliedRefs;
+  /** Stage 1：落地对应的执行摘要（服务端事实；没有执行时缺省/null） */
+  execution?: { id?: string; status?: string; steps?: unknown[] } | null;
 }
 
 export type StatusTone = "open" | "waiting" | "active" | "settled" | "problem";
@@ -321,7 +344,15 @@ export function confirmOutcomeText(result: ConfirmResponse | null | undefined): 
   const lines = items.map((item) => {
     const label = statusLabel(item.status);
     const reason = (item.reason ?? "").trim();
-    return item.intent_id + "：" + label + (reason ? "（" + reason + "）" : "");
+    // P73：确认写授权成功、但同一请求里的落地没完成时也要如实说（不假装已落地）
+    const applyError = String(item.apply_error ?? "").trim();
+    const detail = [
+      reason,
+      applyError ? "落地没有完成：" + applyError : "",
+    ]
+      .filter(Boolean)
+      .join("；");
+    return item.intent_id + "：" + label + (detail ? "（" + detail + "）" : "");
   });
   const prefix = result?.batch ? "同批确认结果：" : "确认结果：";
   return prefix + lines.join("；") + "。已确认不等于已完成，执行结果以账本与结果卡为准。";

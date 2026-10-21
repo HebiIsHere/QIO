@@ -649,13 +649,15 @@ def write_board_cas(
     expected_versions: Mapping[str, Any] | None,
     mutate: Any,
     reason: str = "board_tool",
+    expected_seq: int | None = None,
 ) -> dict:
-    """事务型板面写入：读当前 state（含 seq）→ CAS 校验 expected_versions →
+    """事务型板面写入：读当前 state（含 seq）→ CAS 校验 expected_versions / expected_seq →
     应用 mutate → 递增 seq / 保存快照 → 提交。冲突返回结构化结果，**不写库**。
 
     mutate(state) -> (new_state, result)；它在事务内执行，异常会整体回滚。
     板面工具用它保证「查看 / 读取不是编辑许可」：只有显式 expected_versions
-    与真实版本一致时才落地。
+    与真实版本一致时才落地。P73 的「批准即落地」用 expected_seq 保证批准时看到的
+    板面版本没有被别人改过。
     """
     from agent.storage.db import transaction
 
@@ -669,6 +671,15 @@ def write_board_cas(
         raw_state["boardId"] = info["id"]
         state = board.normalize_state(raw_state)
         current_seq = int(row["seq"]) if row else 0
+        if expected_seq is not None and int(expected_seq) != current_seq:
+            return {
+                "ok": False,
+                "conflict": True,
+                "code": "seq_conflict",
+                "expected_seq": int(expected_seq),
+                "seq": current_seq,
+                "state": state,
+            }
         conflicts = check_expected_versions(state, expected_versions)
         if conflicts:
             return {

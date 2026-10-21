@@ -1509,3 +1509,22 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   引导最多两问、可空、可跳过。旧 ToolCreator 与旧理解链退出生产路径。
 - **集中验收**：定向回归、离线评估、界面检查、文档/迁移/密钥检查后，冻结整合提交；完整 CI
   作为完整验收，最多两轮；不推送旧 SHA 证明新代码，不合并 main、不发版。
+
+---
+
+## 20. 可视化意图与批准即落地（2026-10-21，P73 Stage 1）
+
+设计与契约：`docs/superpowers/specs/2026-10-21-intent-preview-apply-design.md`；
+进度与限制见 `docs/status.md` P73。
+
+- **提案**：`IntentSpec.operations`（可选）携带结构化操作计划；服务端派生 scope 与
+  `board_intents.preview`（与落地共用 placement，预览坐标 = 落地坐标）。
+- **预演**：intent-views 与旧 `intents` 读取面返回 preview / operations；板面据此画
+  虚线幽灵卡 / 组框 / 关系线。
+- **编辑**：`PATCH /api/interactive/intents/{intent_id}/plan` 只在未确认状态允许；
+  保存时重算 scope / preview 并清空授权；已确认返回 409。
+- **落地**：confirm / batch-confirm 在同一个请求内用 `write_board_cas`（expected_seq CAS）+
+  `board_operations` 账本 + `board_executions` 记录把计划原子应用成真卡 / 关系 / 分组；
+  失败整体回滚，重复确认 / 应用幂等。
+- **边界**：不带 operations 的意图保持 0.2.10 行为（执行另行续作）；普通对话读板面 /
+  提交解耦 / 无计划意图自动续作属于 Stage 2，见 `docs/status.md` P73 Known limitations。

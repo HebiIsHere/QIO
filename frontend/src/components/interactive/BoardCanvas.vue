@@ -85,6 +85,8 @@ import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { chatObstacleFrame } from "../../interactive/chatFrameState";
 import type { ResizeBox, ResizeHandle, SizeLimits } from "../../interactive/resize";
 import { titlebarHeight } from "../../utils/titlebar";
+// Stage 1：新意图状态是否仍要画虚线预演（落地后必须消失）
+import { shouldPreviewIntent } from "../../interactive/intentPreviewApply";
 import type { BoardCard as BoardCardModel, BoardGroup, BoardState, CardKind, Intent } from "../../interactive/types";
 import BoardCard from "./BoardCard.vue";
 import BoardGroupFrame from "./BoardGroupFrame.vue";
@@ -252,12 +254,28 @@ let scrollSyncLock = false;
  * 以前工具栏的常驻模式会改变同一个手势的含义（选了「框选」后不按空格也框选），已移除。
  */
 
-/** 仍在等待的意图：它们的虚线预览要一直画在真实板面上（未确定 ≠ 已确定结论）。 */
-const OPEN_INTENT_STATUSES = ["pending", "needs_update", "waiting_dependency", "waiting_confirm", "running"];
-
+/**
+ * 仍在等待 / 尚未落地的意图：它们的虚线预览要一直画在真实板面上（未确定 ≠ 已确定结论）。
+ *
+ * Stage 1：新状态 proposed / awaiting_confirmation / approved 也画；
+ * 一旦确认落地（applied 非空）或意图结束就不再画 —— 真卡已经出现，预演不能和它重叠。
+ */
 const previewIntents = computed<Intent[]>(() =>
-  store.intents.filter((item) => OPEN_INTENT_STATUSES.includes(item.status) && item.preview),
+  store.intents.filter((item) => shouldPreviewIntent(item)),
 );
+
+/**
+ * 预演层把指针换算成板面坐标的唯一入口：
+ * 与卡片拖动 / 框选 / 连线的坐标换算完全同源（缩放、平移都算对）。
+ */
+function previewToBoardPoint(clientX: number, clientY: number): { x: number; y: number } {
+  return boardPointOf({ clientX, clientY });
+}
+
+/** 预演编辑失败：如实提示（预演层已回滚本地显示），不假成功、不阻塞板面。 */
+function onPreviewEditError(message: string): void {
+  notice.value = message;
+}
 
 const liveCards = computed(() => (boardState.value?.cards ?? []).filter((card) => !card.deleted));
 const groups = computed(() => boardState.value?.groups ?? []);
@@ -2444,6 +2462,8 @@ onBeforeUnmount(() => {
             :located-intent-id="locatedIntentId"
             :width="surfaceSize.w"
             :height="surfaceSize.h"
+            :to-board-point="previewToBoardPoint"
+            @edit-error="onPreviewEditError"
           />
 
             <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>

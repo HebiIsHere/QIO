@@ -178,6 +178,20 @@ async function load(): Promise<void> {
   }
 }
 
+/**
+ * Stage 1：确认即落地后，板面 seq 已经前进 —— 工作台必须同时刷新共享 store 的
+ * 板面与任务清单，让板面预演消失、真卡出现（工作台自己再按服务端重读一次视图）。
+ * 刷新失败不改变「确认已经返回」这个事实，如实说明并给刷新入口。
+ */
+async function refreshBoardAfterApply(): Promise<void> {
+  try {
+    await store.refreshAfterIntentApply();
+  } catch (error) {
+    actionError.value =
+      "确认已经返回，但板面刷新失败：" + errorMessage(error) + "。请点右上「刷新」重试。";
+  }
+}
+
 async function confirmOne(view: IntentView): Promise<void> {
   if (actionBusy.value || !isConfirmable(view)) return;
   actionBusy.value = view.intent_id;
@@ -187,6 +201,7 @@ async function confirmOne(view: IntentView): Promise<void> {
     const result = await confirmSingleIntent(view.intent_id, boardId.value);
     notice.value = confirmOutcomeText(result);
     await load();
+    await refreshBoardAfterApply();
   } catch (error) {
     actionError.value = "确认没有完成：" + errorMessage(error);
   } finally {
@@ -206,6 +221,7 @@ async function confirmBatch(): Promise<void> {
     notice.value = confirmOutcomeText(result);
     selectedIds.value = [];
     await load();
+    await refreshBoardAfterApply();
   } catch (error) {
     actionError.value = "同批确认没有完成：" + errorMessage(error);
   } finally {

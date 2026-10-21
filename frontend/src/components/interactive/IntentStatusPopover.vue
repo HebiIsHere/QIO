@@ -23,6 +23,8 @@ import {
   statusText,
 } from "../../interactive/approval";
 import type { Intent } from "../../interactive/types";
+// Stage 1：新状态（proposed / awaiting_confirmation）的批准必须走 confirm 新接口
+import { approvalRoute } from "../../interactive/intentPreviewApply";
 import { chatObstacleFrame } from "../../interactive/chatFrameState";
 import { OVERLAY_EDGE, planDockStrip, type BoxRect } from "../../interactive/overlayLayout";
 import IntentPreviewCard from "./IntentPreviewCard.vue";
@@ -67,7 +69,8 @@ const tasks = computed(() => {
   const list: Intent[] = [];
   for (const intent of store.intents) {
     const managed =
-      ["running", "paused", "waiting_dependency"].includes(intent.status) ||
+      // Stage 1：approved = 已确认、等待（或正在）落地，也属于用户还要关注的任务
+      ["running", "paused", "waiting_dependency", "approved"].includes(intent.status) ||
       Boolean(intent.execution) ||
       Boolean(store.latestExecution(intent.id));
     if (!managed || seen.has(intent.id)) continue;
@@ -126,15 +129,32 @@ function controlById(intentId: string, action: "pause" | "resume" | "cancel"): v
   if (intent) void control(intent, action);
 }
 
-/** 浮动审批条上的批准 / 拒绝：与列表里走同一个 store 入口（重复点击不会重复提交） */
+/**
+ * 浮动审批条上的批准 / 拒绝。
+ *
+ * Stage 1：新状态（proposed / awaiting_confirmation）的批准**必须**走
+ * `POST /intents/{id}/confirm`（同一请求里落地并刷新板面）；旧 /approve 只写授权、
+ * 不落地，对新型意图语义不对。旧状态继续走既有 store.approve，不回归。
+ */
 async function approveById(intentId: string, confirmDependency: boolean): Promise<void> {
   busy.value = true;
   error.value = null;
   try {
-    const result = await store.approve(intentId, confirmDependency);
+    const intent = store.intentById(intentId);
+    const route = approvalRoute(intent ?? null);
+    const result =
+      route === "confirm"
+        ? await store.confirmIntent(intentId)
+        : await store.approve(intentId, confirmDependency);
     notice.value = result.ok
-      ? result.detail ?? "已批准：任务已经交给真实执行，进度以执行记录为准。"
-      : "没有批准：" + (result.detail ?? result.reason ?? "服务端未说明原因");
+      ? result.detail ??
+        (route === "confirm"
+          ? "已确认：落地结果以板面与服务端账本为准。"
+          : "已批准：任务已经交给真实执行，进度以执行记录为准。")
+      : // 新接口的失败明细自带「确认已受理 / 没有完成」等完整说明，不重复加前缀
+        route === "confirm"
+        ? (result.detail ?? result.reason ?? "确认没有完成：服务端未说明原因")
+        : "没有批准：" + (result.detail ?? result.reason ?? "服务端未说明原因");
   } catch (err) {
     error.value = (err as Error).message;
   } finally {
@@ -189,7 +209,15 @@ const focusedWithExecution = computed<Intent | null>(() => {
  */
 const pendingApprovals = computed(() =>
   store.understandingIntents.filter((item) =>
-    ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
+    [
+      "pending",
+      "needs_update",
+      "waiting_dependency",
+      "waiting_confirm",
+      // Stage 1：带 operations 的新意图（未落地前都要有审批入口）
+      "proposed",
+      "awaiting_confirmation",
+    ].includes(item.status),
   ),
 );
 

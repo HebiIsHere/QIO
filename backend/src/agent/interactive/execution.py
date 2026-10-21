@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import sqlite3
 from typing import Any, Iterable
@@ -1980,9 +1981,112 @@ def resume_intent(
     }
 
 
+# --- P73：计划预演与同步原子应用 -------------------------------------------
+
+
+def preview_for_intent(
+    conn: sqlite3.Connection, row: sqlite3.Row, plan: dict | None = None
+) -> dict:
+    """按意图的操作计划派生板面虚线预演（与真实落地共用 placement）。
+
+    只读：不改板面、不写库。计划无效时如实返回原因，由调用方决定是否落库。
+    """
+    plan = plan if isinstance(plan, dict) else build_plan(row)
+    if not plan.get("ok"):
+        return {
+            "ok": False,
+            "reason": str(plan.get("reason") or "invalid_plan"),
+            "detail": str(plan.get("detail") or ""),
+        }
+    try:
+        loaded = _store().load_board(conn, str(row["board_id"]))
+        cards = loaded.get("state", {}).get("cards") or []
+    except Exception:  # noqa: BLE001 - 预演失败不阻塞提案 / 编辑
+        cards = []
+    preview = preview_from_operations(
+        plan.get("ops") or [], cards=cards, view=_frozen_view(conn, row)
+    )
+    preview.pop("refs", None)
+    return {"ok": True, "preview": preview}
+
+
+def apply_ops_to_state(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    plan: dict,
+    *,
+    execution_id: str,
+    state: dict | None = None,
+) -> dict:
+    """在内存里按计划落地全部操作：不写库、不调用模型。
+
+    调用方传入事务里读到的 state 时，全部步骤与 CAS 共用同一份状态；
+    新对象 id 已在 build_plan 时分配，重复执行不会产生第二份。
+    """
+    base_state = (
+        state
+        if isinstance(state, dict)
+        else _store().load_board(conn, str(row["board_id"]))["state"]
+    )
+    ctx = _StepContext(
+        plan,
+        execution_id=execution_id,
+        intent_id=str(row["id"]),
+        understanding_id=str(_row_value(row, "understanding_id", "") or ""),
+        view=None,
+    )
+    work = copy.deepcopy(base_state)
+    steps: list[dict] = []
+    applied: dict[str, list[str]] = {"cardIds": [], "groupIds": [], "linkIds": []}
+    mapping: dict[str, str] = {}
+    for index, op in enumerate(plan.get("ops") or []):
+        new_state, fields, error = apply_step(work, op, ctx, index=index)
+        if error is not None:
+            return {
+                "ok": False,
+                "reason": "step_failed",
+                "detail": error,
+                "index": index,
+            }
+        assert new_state is not None
+        work = new_state
+        fields = fields or {}
+        steps.append(
+            {
+                "index": index,
+                "op": str(op.get("op") or ""),
+                "status": "done",
+                "detail": str(fields.get("detail") or ""),
+                "cardId": fields.get("cardId"),
+                "groupId": fields.get("groupId"),
+                "linkId": fields.get("linkId"),
+            }
+        )
+        for key, bucket in (
+            ("cardId", "cardIds"),
+            ("groupId", "groupIds"),
+            ("linkId", "linkIds"),
+        ):
+            value = fields.get(key)
+            if value:
+                applied[bucket].append(str(value))
+        symbol = str(op.get("ref") or "").strip()
+        real = fields.get("cardId") or fields.get("groupId") or fields.get("linkId")
+        if symbol and real:
+            mapping[symbol] = str(real)
+    return {
+        "ok": True,
+        "state": work,
+        "steps": steps,
+        "applied": applied,
+        "previewIdMap": mapping,
+    }
+
+
 __all__ = [
     "ALLOWED_OPS",
     "active_execution",
+    "apply_ops_to_state",
     "build_plan",
     "cancel_intent",
     "ensure_execution",
@@ -1991,6 +2095,7 @@ __all__ = [
     "latest_execution",
     "list_executions",
     "pause_intent",
+    "preview_for_intent",
     "preview_from_operations",
     "resume_intent",
     "run_execution",

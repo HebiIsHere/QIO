@@ -31,6 +31,8 @@ MAX_CARD_IDS = 64
 MAX_IDS = 128
 MAX_REF_IDS = 64
 MAX_OPERATION_KEYS = 200
+#: P73：单个意图可携带的结构化操作计划上限（与执行侧 ALLOWED_INTENT_OPS 同源）。
+MAX_PLAN_OPS = 20
 MAX_NEW_CARDS_PER_INTENT = 40
 MAX_NEW_GROUPS_PER_INTENT = 10
 MAX_NEW_LINKS_PER_INTENT = 40
@@ -244,7 +246,12 @@ class Position(BaseModel):
 
 
 class IntentSpec(BaseModel):
-    """一次提案中的单个意图（模型只提目标与范围，不发送坐标落点之外的执行细节）。"""
+    """一次提案中的单个意图：目标 + 结构化范围（+ 可选的结构化操作计划）。
+
+    P73：`operations` 是**可视化意图**的数据来源 —— 提案带计划时，服务端据此派生
+    scope 与板面虚线预演；用户批准后在同一个请求里原子落地成卡片 / 关系 / 分组。
+    不带 operations 时行为与 0.2.10 完全一致（只有目标与范围，执行另行续作）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -256,6 +263,8 @@ class IntentSpec(BaseModel):
     scope: IntentScope = Field(default_factory=IntentScope)
     depends_on: list[DependencyRef] = Field(default_factory=list, max_length=MAX_REF_IDS)
     conflicts_with: list[DependencyRef] = Field(default_factory=list, max_length=MAX_REF_IDS)
+    #: 可选的结构化操作计划（op 白名单与形状由服务端 execution 校验）。
+    operations: list[dict[str, Any]] = Field(default_factory=list, max_length=MAX_PLAN_OPS)
 
     @field_validator("client_ref")
     @classmethod

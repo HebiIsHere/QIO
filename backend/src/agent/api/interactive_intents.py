@@ -10,6 +10,7 @@ agent.interactive.intents（仓库层）与 agent.interactive.execution（真实
 from __future__ import annotations
 
 import sqlite3
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -595,6 +596,72 @@ async def intent_view_detail(request: Request, board_id: str, intent_id: str) ->
     return {"available": True, "intent": view}
 
 
+def _apply_confirmed(
+    request: Request, service: Any, response: dict, board_id: str
+) -> dict:
+    """P73：确认之后对带操作计划的意图**在同一请求里**落地。
+
+    服务没有 apply_approved_intent（旧 / 测试注入的服务）时原样返回：
+    不带计划的意图保持 0.2.10 行为，不会因此失败。
+    """
+    apply_fn = getattr(service, "apply_approved_intent", None)
+    if apply_fn is None:
+        return response
+    results = response.get("results")
+    if not isinstance(results, list):
+        return response
+    applied: dict[str, Any] = {}
+    last_execution: Any = None
+    last_intent: Any = None
+    # 只给本次真正确认（approved）的意图落地；already_completed 的重复确认不再落地。
+    confirmed = {str(x) for x in (response.get("confirmed") or [])}
+    for item in results:
+        if not isinstance(item, dict) or not item.get("ok"):
+            continue
+        intent_id = str(item.get("intent_id") or "")
+        if not intent_id or intent_id not in confirmed:
+            continue
+        try:
+            outcome = apply_fn(
+                _conn(request),
+                board_id=board_id,
+                intent_id=intent_id,
+                instance_id=_instance_id(request),
+            )
+        except Exception as exc:  # noqa: BLE001 - 落地失败如实写进逐项结果，不吞错
+            item["apply_error"] = f"落地调用失败：{exc}"
+            continue
+        if not isinstance(outcome, dict):
+            continue
+        if outcome.get("ok"):
+            applied_payload = outcome.get("applied") or {}
+            item["applied"] = applied_payload
+            item["execution"] = outcome.get("execution")
+            if isinstance(outcome.get("intent"), dict):
+                item["intent"] = outcome["intent"]
+            applied[intent_id] = applied_payload
+            if outcome.get("execution") is not None:
+                last_execution = outcome.get("execution")
+            if isinstance(outcome.get("intent"), dict):
+                last_intent = outcome.get("intent")
+        elif outcome.get("reason") == "no_operations":
+            continue
+        else:
+            item["apply_error"] = (
+                outcome.get("detail")
+                or outcome.get("error")
+                or outcome.get("reason")
+                or "落地没有完成"
+            )
+    if applied:
+        response["applied"] = applied
+    if last_execution is not None:
+        response["execution"] = last_execution
+    if last_intent is not None:
+        response["intent"] = last_intent
+    return response
+
+
 @router.post("/api/interactive/intents/{intent_id}/confirm")
 async def confirm_single_intent(
     intent_id: str, request: Request, body: dict | None = None
@@ -613,6 +680,8 @@ async def confirm_single_intent(
         intent_ids=[str(intent_id)],
     )
     response = dict(result) if isinstance(result, dict) else {"results": result}
+    # P73：带操作计划的意图在确认后立即原子落地（不需要再发一条消息）。
+    response = _apply_confirmed(request, service, response, board_id)
     response["min"] = BATCH_CONFIRM_MIN
     response["batch"] = False
     return response
@@ -652,9 +721,52 @@ async def confirm_intents_batch(request: Request, body: dict) -> dict:
         intent_ids=intent_ids,
     )
     response = dict(result) if isinstance(result, dict) else {"results": result}
+    response = _apply_confirmed(request, service, response, board_id)
     response["min"] = BATCH_CONFIRM_MIN
     response["batch"] = True
     return response
+
+
+@router.patch("/api/interactive/intents/{intent_id}/plan")
+async def update_intent_plan(
+    intent_id: str, request: Request, body: dict | None = None
+) -> dict:
+    """P73：编辑未确认意图的操作计划（板面预演层拖动 / 删除）。
+
+    只允许 proposed / awaiting_confirmation；保存时重新校验计划并重算预演。
+    已确认的意图返回 409：先放弃或重新提案，绝不悄悄改动已批准的计划。
+    """
+    payload = _body_dict(body)
+    board_id = str(payload.get("boardId") or "").strip()
+    if not board_id:
+        raise HTTPException(status_code=400, detail="需要 boardId（意图属于哪个板面）")
+    operations = payload.get("operations")
+    if not isinstance(operations, list):
+        raise HTTPException(status_code=400, detail="operations 必须是操作对象列表")
+    service = _require_intent_service(request)
+    if getattr(service, "update_plan", None) is None:
+        raise HTTPException(
+            status_code=503,
+            detail="意图服务尚未接入 update_plan：本次请求未执行，未改动任何计划。",
+        )
+    result = _service_call(
+        service,
+        "update_plan",
+        _conn(request),
+        board_id=board_id,
+        intent_id=str(intent_id),
+        operations=operations,
+    )
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=500, detail="意图服务没有返回结果：本次请求未执行。")
+    if result.get("ok"):
+        return result
+    code = str(result.get("code") or "")
+    if code == "not_editable":
+        raise HTTPException(status_code=409, detail=result)
+    if code == "not_found":
+        raise HTTPException(status_code=404, detail=result)
+    raise HTTPException(status_code=400, detail=result)
 
 
 # -- 等待 / 账本 / 结果 / 恢复（只读为主）-------------------------------------

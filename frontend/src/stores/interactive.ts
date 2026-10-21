@@ -23,6 +23,11 @@ import {
   understandingSettled,
   understandingStatusLabel,
 } from "../interactive/approval";
+import {
+  appliedForIntent,
+  appliedSummaryText,
+  approvalRoute,
+} from "../interactive/intentPreviewApply";
 import { CHECKABLE_KINDS, clampBoardBounds } from "../interactive/board";
 import { cardAttachmentIsImage } from "../interactive/materials";
 import {
@@ -57,6 +62,7 @@ import {
   type ImpactConfirmOutcome,
   type ImpactConfirmResult,
   type Intent,
+  type IntentOperation,
   type IntentPreview,
   type IntentStatus,
   type SubmissionRecord,
@@ -647,14 +653,27 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   const pendingIntents = computed(() =>
     intents.value.filter((item) =>
-      ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
+      [
+        "pending",
+        "needs_update",
+        "waiting_dependency",
+        "waiting_confirm",
+        // Stage 1：带 operations 的新意图在批准前同样属于「等待审批」
+        "proposed",
+        "awaiting_confirmation",
+      ].includes(item.status),
     ),
   );
   const activeIntents = computed(() =>
-    intents.value.filter((item) => ["running", "paused"].includes(item.status)),
+    intents.value.filter((item) =>
+      // approved = 已确认、等待（或正在进行）落地：属于用户还要关注的任务
+      ["running", "paused", "approved"].includes(item.status),
+    ),
   );
   const settledIntents = computed(() =>
-    intents.value.filter((item) => ["done", "rejected", "failed", "cancelled"].includes(item.status)),
+    intents.value.filter((item) =>
+      ["done", "completed", "rejected", "failed", "cancelled"].includes(item.status),
+    ),
   );
   /** 需要处理的任务（执行中 / 已暂停），顶部「任务」入口显示它们的数量 */
   const runningIntents = computed(() => activeIntents.value);
@@ -3155,7 +3174,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (!pendingImpact.value) scheduleSave();
     }
   }
-  async function settleAfterIntentChange() {
+  /**
+   * Stage 1：批准 / 确认 / 落地之后，把「板面 + 可见范围 + 任务清单 + 执行记录」
+   * 全部按服务端事实刷新一次 —— 确认在同一请求里落地后，板面 seq 已经前进，
+   * 不刷新就会一直画着虚线预演、看不到真卡。
+   */
+  async function refreshAfterIntentApply(): Promise<void> {
+    // 本地还有未保存候选：先落盘，避免服务端落地后的读取把候选当作旧读取丢掉
     if (dirty.value) await saveNow();
     await refreshBoardFromServer();
     await refreshVisibleRange();
@@ -3163,11 +3188,24 @@ export const useInteractiveStore = defineStore("interactive", () => {
     await loadExecutions();
   }
 
+  async function settleAfterIntentChange() {
+    await refreshAfterIntentApply();
+  }
+
   /** 同一意图同一时间只允许一次批准 / 拒绝：重复点击不重复创建、不重复执行。 */
   const decideInFlight = new Set<string>();
   let batchDecideInFlight = false;
 
   async function approve(intentId: string, confirmDependency = false): Promise<DecideResult> {
+    /**
+     * Stage 1：新状态（proposed / awaiting_confirmation）的批准必须走 confirm ——
+     * 旧 /approve 只写授权、不落地，对新型意图语义不对。
+     * 所有既有批准入口（板面浮条 / 聊天 / 提交区 / 工作台之外的调用）都经过这里，
+     * 在这里统一路由就不会有哪个入口漏调新接口。
+     */
+    if (approvalRoute(intentById(intentId) ?? null) === "confirm") {
+      return confirmIntent(intentId);
+    }
     if (decideInFlight.has(intentId)) {
       return { ok: false, reason: "这项批准正在处理中，请等它返回。" };
     }
@@ -3204,6 +3242,111 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return result;
     } finally {
       decideInFlight.delete(intentId);
+    }
+  }
+
+  /**
+   * Stage 1：新意图的确认（POST /intents/{id}/confirm）。
+   *
+   * 成功即在同一请求里落地：applied 给出真实新增的对象、板面 seq 前进 ——
+   * 必须立刻刷新板面与任务清单（预演消失、真卡出现）。失败如实返回原因，
+   * 不重试、不假装已落地（意图保持 approved / awaiting_confirmation，可重试）。
+   */
+  async function confirmIntent(intentId: string): Promise<DecideResult> {
+    if (decideInFlight.has(intentId)) {
+      return { ok: false, reason: "这项确认正在处理中，请等它返回。" };
+    }
+    decideInFlight.add(intentId);
+    try {
+      const stale = await ensureFreshIntents();
+      if (stale) return { ok: false, reason: stale, detail: stale };
+      const response = await api.confirmSingleIntent(intentId, boardId.value);
+      const item = (response?.results ?? []).find((entry) => entry?.intent_id === intentId);
+      // 落地失败（board_changed / 某一步失败）时服务端给 apply_error：不能当已落地
+      const ok = response?.ok !== false && item?.ok !== false && !item?.apply_error;
+      let refreshError: string | null = null;
+      try {
+        await refreshAfterIntentApply();
+      } catch (err) {
+        refreshError = (err as Error).message || "原因未知";
+      }
+      const landed = appliedSummaryText(
+        item?.applied ?? appliedForIntent(response?.applied, intentId),
+      );
+      let detail: string;
+      if (item?.apply_error) {
+        detail =
+          "确认已受理，但落地没有完成：" +
+          item.apply_error +
+          "。意图可能已退回待确认，请刷新后重试。";
+      } else if (!ok) {
+        detail =
+          "确认没有完成：" +
+          (item?.reason || response?.results?.[0]?.reason || "服务端未说明原因") +
+          "。";
+      } else if (landed) {
+        detail = "已确认并落地：板面新增 " + landed + "（结果以板面与服务端账本为准）。";
+      } else {
+        detail = "已确认：服务端没有返回落地结果，执行情况以任务清单与账本为准。";
+      }
+      if (refreshError) {
+        detail += "（板面刷新失败：" + refreshError + "，请刷新重试）";
+      }
+      return {
+        ok,
+        intent: intentById(intentId),
+        // 落地对应的新执行记录已经由刷新从服务端读回（不把响应里的摘要伪装成完整记录）
+        execution: null,
+        reason: ok ? undefined : item?.reason,
+        detail,
+      };
+    } catch (err) {
+      const payload = (err as { payload?: { error?: string; reason?: string; detail?: string } }).payload;
+      const reason =
+        payload?.detail || payload?.reason || payload?.error || (err as Error).message || "确认没有完成";
+      return { ok: false, reason, detail: "确认没有完成：" + reason };
+    } finally {
+      decideInFlight.delete(intentId);
+    }
+  }
+
+  /**
+   * Stage 1：保存预演修改（PATCH /intents/{id}/plan）——只改未批准意图的 operations。
+   *
+   * 成功后重新读取任务清单（服务端会重算 preview / scope）；失败把真实原因交回调用方，
+   * 由界面回滚本地预演，绝不假装保存成功。
+   */
+  async function updateIntentPlan(
+    intentId: string,
+    operations: IntentOperation[],
+  ): Promise<{ ok: boolean; error: string }> {
+    try {
+      const response = await api.patchIntentPlan(intentId, boardId.value, operations);
+      if (response?.ok === false) {
+        return {
+          ok: false,
+          error:
+            response.detail || response.reason || response.error || "服务端没有接受这次预演修改",
+        };
+      }
+      const loaded = await loadIntents();
+      return {
+        ok: true,
+        error: loaded
+          ? ""
+          : "服务端已接受修改，但任务清单刷新失败：" + (intentsLoadError.value ?? "原因未知"),
+      };
+    } catch (err) {
+      const payload = (err as { payload?: { error?: string; reason?: string; detail?: string } }).payload;
+      return {
+        ok: false,
+        error:
+          payload?.detail ||
+          payload?.reason ||
+          payload?.error ||
+          (err as Error).message ||
+          "预演修改没有保存：原因未知",
+      };
     }
   }
 
@@ -4301,6 +4444,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
       done: "已完成",
       failed: "失败",
       cancelled: "已取消",
+      // Stage 1：带 operations 的新意图状态
+      proposed: "待确认",
+      awaiting_confirmation: "待再次确认",
+      approved: "已确认（等待落地）",
+      completed: "已完成",
     };
     return labels[status] ?? status;
   }
@@ -4452,6 +4600,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
     approve,
     reject,
     decideBatch,
+    /** Stage 1：新意图确认（走 /confirm，同一请求里落地）；批准入口统一路由后也走它 */
+    confirmIntent,
+    /** Stage 1：预演修改（PATCH plan），失败交回真实原因给界面回滚 */
+    updateIntentPlan,
+    /** Stage 1：批准 / 确认 / 落地后刷新板面 + 任务清单（供工作台复用） */
+    refreshAfterIntentApply,
     updatePreview,
     advanceDemo,
     createDemoIntents,

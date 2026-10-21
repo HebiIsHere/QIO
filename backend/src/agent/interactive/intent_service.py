@@ -27,6 +27,22 @@ from agent.storage.db import transaction
 
 logger = logging.getLogger(__name__)
 
+
+class _PlanAbort(RuntimeError):
+    """P73：应用预演计划时在事务内中止（整体回滚，不写半截）。"""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        super().__init__(str(payload.get("detail") or payload.get("reason") or "plan aborted"))
+        self.payload = payload
+
+
+def _execution() -> Any:
+    """延迟 import execution：本模块只做程序校验，计划预演 / 应用复用既有实现。"""
+    from agent.interactive import execution
+
+    return execution
+
+
 # -- 状态 / 动作 ------------------------------------------------------------
 
 STATUS_PROPOSED = "proposed"
@@ -244,6 +260,14 @@ def _intent_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
             if isinstance(item, dict)
         ],
         "scope": _loads(_row_value(row, "scope", "{}"), {}),
+        # P73：可视化意图的数据面 —— 前端据此在板面画虚线预演。
+        "preview": _loads(_row_value(row, "preview", "{}"), {}),
+        "operations": [
+            dict(item)
+            for item in (_loads(_row_value(row, "operations", []), []) or [])
+            if isinstance(item, dict)
+        ],
+        "plan_editable": str(row["status"]) in (STATUS_PROPOSED, STATUS_AWAITING),
         "depends_on": [str(item) for item in _loads(row["depends_on"], []) or []],
         "conflicts_with": [str(item) for item in _loads(row["conflicts_with"], []) or []],
         "conflicts": conflicts,
@@ -341,6 +365,84 @@ def _validate_scope(conn: sqlite3.Connection, board_id: str, scope: dict[str, An
     if unknown:
         return "allowed_actions 不在契约枚举内：" + ", ".join(unknown[:5])
     return None
+
+
+#: P73：结构化操作计划 → 授权动作（与 BoardAction 枚举同源）。
+_OP_ACTION = {
+    "add_reply_card": "create_card",
+    "add_text_card": "create_card",
+    "move_card": "move_card",
+    "group_cards": "group_cards",
+    "order_group": "order_group",
+    "add_link": "add_link",
+}
+
+
+def _derive_scope_from_operations(
+    operations: Iterable[Any], *, base: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """从操作计划派生授权范围：动作 / 新建数量 / 被移动卡片 / 被排序分组。
+
+    授权对象仍是「目标 + 结构化范围」，但计划里的每个动作都必须能被范围覆盖；
+    计划之外的写操作不存在，因为批准后只执行这份计划。
+    """
+    base = dict(base or {})
+    actions: list[str] = []
+    write_cards: list[str] = []
+    group_ids: list[str] = []
+    new_cards = new_groups = new_links = 0
+    for index, op in enumerate(operations):
+        if not isinstance(op, dict):
+            raise ValueError(f"第 {index + 1} 项不是操作对象")
+        kind = str(op.get("op") or "")
+        action = _OP_ACTION.get(kind)
+        if action is None:
+            raise ValueError(f"第 {index + 1} 项操作不在允许集合：{kind or '（空）'}")
+        if kind in ("add_reply_card", "add_text_card"):
+            if not str(op.get("content") or "").strip():
+                raise ValueError(f"第 {index + 1} 项新增卡片没有正文")
+            new_cards += 1
+        elif kind == "group_cards":
+            if not [str(x) for x in (op.get("cardIds") or []) if str(x).strip()]:
+                raise ValueError(f"第 {index + 1} 项成组操作没有成员")
+            new_groups += 1
+        elif kind == "add_link":
+            src = str(op.get("src") or "").strip()
+            dst = str(op.get("dst") or "").strip()
+            if not src or not dst or src == dst:
+                raise ValueError(f"第 {index + 1} 项关系操作的端点无效")
+            new_links += 1
+        elif kind == "move_card":
+            card_id = str(op.get("cardId") or "").strip()
+            if not card_id:
+                raise ValueError(f"第 {index + 1} 项移动操作缺少 cardId")
+            if card_id not in write_cards:
+                write_cards.append(card_id)
+        elif kind == "order_group":
+            group_id = str(op.get("groupId") or "").strip()
+            if not group_id:
+                raise ValueError(f"第 {index + 1} 项排序操作缺少 groupId")
+            if group_id not in group_ids:
+                group_ids.append(group_id)
+        if action not in actions:
+            actions.append(action)
+    if len(list(operations)) > tool_models.MAX_PLAN_OPS:
+        raise ValueError(f"一次最多 {tool_models.MAX_PLAN_OPS} 条操作")
+    if new_cards > tool_models.MAX_NEW_CARDS_PER_INTENT:
+        raise ValueError("新建卡片数量超出上限")
+    if new_groups > tool_models.MAX_NEW_GROUPS_PER_INTENT:
+        raise ValueError("新建分组数量超出上限")
+    if new_links > tool_models.MAX_NEW_LINKS_PER_INTENT:
+        raise ValueError("新建关系数量超出上限")
+    return {
+        "read_card_ids": [str(x) for x in (base.get("read_card_ids") or [])],
+        "write_card_ids": write_cards,
+        "group_ids": group_ids,
+        "allowed_actions": actions,
+        "max_new_cards": new_cards,
+        "max_new_groups": new_groups,
+        "max_new_links": new_links,
+    }
 
 
 def _validate_basis(conn: sqlite3.Connection, board_id: str, spec: Any) -> str | None:
@@ -482,10 +584,12 @@ def _insert_intent(
     status: str,
     depends_on: list[str],
     conflicts_with: list[str],
+    operations: list[dict[str, Any]] | None = None,
+    scope_override: dict[str, Any] | None = None,
 ) -> str:
     intent_id = models.new_id("i")
     stamp = _now()
-    scope = _scope_payload(spec)
+    scope = scope_override if isinstance(scope_override, dict) else _scope_payload(spec)
     conn.execute(
         "INSERT INTO board_intents ("
         " id, board_id, submission_id, title, summary, status, preview, impact,"
@@ -494,7 +598,7 @@ def _insert_intent(
         " basis, intent_key, understanding_id, client_ref, version, scope,"
         " authorization, outcome, attempt, finished_at"
         ") VALUES (?, ?, ?, ?, '', ?, '{}', '{}', ?, ?, '', '[]', '{}', '{}', '{}', '',"
-        " 0, ?, ?, ?, ?, '[]', ?, '', '', ?, 1, ?, '{}', '', 0, NULL)",
+        " 0, ?, ?, ?, ?, ?, ?, '', '', ?, 1, ?, '{}', '', 0, NULL)",
         (
             intent_id,
             board_id,
@@ -507,6 +611,7 @@ def _insert_intent(
             stamp,
             spec.goal,
             spec.expected,
+            _dumps(list(operations or [])),
             _dumps([ref.model_dump(mode="json") for ref in spec.basis]),
             spec.client_ref,
             _dumps(scope),
@@ -584,6 +689,23 @@ def propose_intents(
     client_refs = [spec.client_ref for spec in specs]
     if len(set(client_refs)) != len(client_refs):
         return _fail("duplicate_client_ref", "同一次提案里的 client_ref 必须唯一")
+    # P73：带操作计划的意图由服务端派生授权范围（计划即范围），并从计划派生预演。
+    ops_by_ref: dict[str, list[dict[str, Any]]] = {}
+    scope_by_ref: dict[str, dict[str, Any]] = {}
+    for spec in specs:
+        ops = [dict(item) for item in (spec.operations or []) if isinstance(item, dict)]
+        if len(ops) != len(list(spec.operations or [])):
+            return _fail("invalid_plan", "operations 里每一项都必须是对象")
+        if ops:
+            try:
+                derived = _derive_scope_from_operations(ops, base=_scope_payload(spec))
+                tool_models.IntentScope.model_validate(derived)
+            except Exception as exc:  # noqa: BLE001 - 计划错误如实返回，不落库
+                return _fail("invalid_plan", f"操作计划不合法：{exc}")
+            ops_by_ref[spec.client_ref] = ops
+            scope_by_ref[spec.client_ref] = derived
+        else:
+            scope_by_ref[spec.client_ref] = _scope_payload(spec)
     board_rows = _extend(conn, board_id)
     existing_ids = {str(row["id"]) for row in board_rows}
     graph: dict[str, list[str]] = {
@@ -593,7 +715,7 @@ def propose_intents(
     resolved_deps: dict[str, list[str]] = {}
     resolved_conflicts: dict[str, list[str]] = {}
     for spec in specs:
-        scope_error = _validate_scope(conn, board_id, _scope_payload(spec))
+        scope_error = _validate_scope(conn, board_id, scope_by_ref[spec.client_ref])
         if scope_error is not None:
             return _fail("scope_invalid", scope_error)
         basis_error = _validate_basis(conn, board_id, spec)
@@ -639,6 +761,8 @@ def propose_intents(
                     status=STATUS_AWAITING,
                     depends_on=[],
                     conflicts_with=[],
+                    operations=ops_by_ref.get(spec.client_ref),
+                    scope_override=scope_by_ref.get(spec.client_ref),
                 )
             for spec in specs:
                 intent_id = created[spec.client_ref]
@@ -669,6 +793,21 @@ def propose_intents(
                     for item in resolved_conflicts[spec.client_ref]
                 ]
                 _normalize_conflicts(conn, board_id, intent_id, formal_conflicts)
+            # P73：有计划的意图先校验计划形状，再从计划派生预演（与落地共用 placement）。
+            for spec in specs:
+                plan_ops = ops_by_ref.get(spec.client_ref)
+                if not plan_ops:
+                    continue
+                intent_id = created[spec.client_ref]
+                plan_row = _get_row(conn, intent_id)
+                assert plan_row is not None
+                plan = _execution().build_plan(plan_row)
+                if not plan.get("ok"):
+                    raise ValueError(str(plan.get("detail") or plan.get("reason") or "操作计划不合法"))
+                preview = _execution().preview_for_intent(conn, plan_row, plan)
+                if not preview.get("ok"):
+                    raise ValueError(str(preview.get("detail") or preview.get("reason") or "预演生成失败"))
+                _update_row(conn, intent_id, preview=preview["preview"])
             questions = _resolve_questions(
                 conn,
                 board_id=board_id,
@@ -874,6 +1013,18 @@ def confirm_intents(
                     results.append({"intent_id": intent_id, "ok": True, "status": status, "reason": "已确认"})
                     approved.append(intent_id)
                     continue
+                if status in (STATUS_COMPLETED, STATUS_PARTIALLY_COMPLETED):
+                    # P73：完成后的重复确认是幂等操作，不重新落地、不复活旧授权。
+                    results.append(
+                        {
+                            "intent_id": intent_id,
+                            "ok": True,
+                            "status": status,
+                            "reason": "已经完成，不需要再次确认",
+                            "already_completed": True,
+                        }
+                    )
+                    continue
                 if status not in CONFIRMABLE_STATUSES:
                     results.append(
                         {
@@ -911,6 +1062,8 @@ def confirm_intents(
                     "confirmed_at": _now(),
                     "confirmed_by": "user",
                     "source": AUTHORIZATION_SOURCE,
+                    # P73：批准那一刻的板面版本 —— 落地前核对，避免按旧板面写回。
+                    "board_seq": board_store.saved_seq(conn, board_id),
                 }
                 _update_row(
                     conn,
@@ -1609,4 +1762,314 @@ def list_waiting_view(conn: sqlite3.Connection, board_id: str) -> dict[str, Any]
         "board_id": board_id,
         "count": len(items),
         "items": items,
+    }
+
+
+# -- P73：预演编辑与「批准即落地」 -------------------------------------------
+
+
+def update_plan(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    intent_id: str,
+    operations: Iterable[Any],
+) -> dict[str, Any]:
+    """编辑未确认意图的操作计划（板面预演层拖动 / 删除）。
+
+    只允许 proposed / awaiting_confirmation：已确认的意图要先放弃或重新提案。
+    保存前重新校验计划、派生授权范围与预演；任何一步失败整体回滚。
+    """
+    board_id = str(board_id or "").strip()
+    row = _get_row(conn, str(intent_id or ""))
+    if row is None:
+        return _fail("not_found", "意图不存在")
+    if str(row["board_id"]) != board_id:
+        return _fail("board_mismatch", "意图不属于这个板面")
+    status = str(row["status"])
+    if status not in (STATUS_PROPOSED, STATUS_AWAITING):
+        return _fail(
+            "not_editable",
+            "只有未确认的意图可以修改预演；已确认的任务请先放弃或重新提案。",
+            status=status,
+        )
+    ops: list[dict[str, Any]] = []
+    for item in list(operations or []):
+        if not isinstance(item, dict):
+            return _fail("invalid_plan", "operations 里每一项都必须是对象")
+        ops.append(dict(item))
+    if not ops:
+        # 空计划没有可落地的内容；不想落地应该拒绝 / 放弃提案，而不是留一个空批准。
+        return _fail("invalid_plan", "预演至少要保留一条操作；不想落地请拒绝或放弃这次提案。")
+    try:
+        scope = _derive_scope_from_operations(ops, base=_loads(_row_value(row, "scope", "{}"), {}))
+        tool_models.IntentScope.model_validate(scope)
+    except Exception as exc:  # noqa: BLE001 - 计划错误如实返回
+        return _fail("invalid_plan", f"操作计划不合法：{exc}")
+    scope_error = _validate_scope(conn, board_id, scope)
+    if scope_error is not None:
+        return _fail("invalid_plan", scope_error)
+    fresh: sqlite3.Row | None = None
+    try:
+        with transaction(conn):
+            _update_row(
+                conn,
+                str(intent_id),
+                operations=ops,
+                scope=scope,
+                preview={},
+                version=int(_row_value(row, "version", 1) or 1) + 1,
+                authorization={},
+            )
+            fresh = _get_row(conn, str(intent_id))
+            assert fresh is not None
+            plan = _execution().build_plan(fresh)
+            if not plan.get("ok"):
+                raise ValueError(str(plan.get("detail") or plan.get("reason") or "操作计划不合法"))
+            preview = _execution().preview_for_intent(conn, fresh, plan)
+            if not preview.get("ok"):
+                raise ValueError(str(preview.get("detail") or preview.get("reason") or "预演生成失败"))
+            _update_row(conn, str(intent_id), preview=preview["preview"])
+            fresh = _get_row(conn, str(intent_id))
+            assert fresh is not None
+            _record_version(conn, fresh)
+    except Exception as exc:  # noqa: BLE001 - 计划校验失败时事务已整体回滚
+        logger.warning("update_plan failed", exc_info=True)
+        return _fail("plan_not_saved", f"预演没有保存：{exc}")
+    assert fresh is not None
+    return {"ok": True, "intent": _intent_view(conn, fresh)}
+
+
+def _insert_applied_operations(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    plan_ops: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
+) -> None:
+    """把预演计划的每一步写进权威操作账本（status=applied）。"""
+    stamp = _now()
+    intent_id = str(row["id"])
+    board_id = str(row["board_id"])
+    for index, (op, step) in enumerate(zip(plan_ops, steps)):
+        result_payload = dict(step)
+        kind = str(op.get("op") or "")
+        if kind in ("add_reply_card", "add_text_card") and step.get("cardId"):
+            # 结果卡派生（list_results）只认账本里 applied 的 create_card 操作。
+            card_id = str(step.get("cardId"))
+            result_payload["card_id"] = card_id
+            result_payload["card"] = {
+                "id": card_id,
+                "kind": "reply" if kind == "add_reply_card" else "text",
+                "content": str(op.get("content") or ""),
+                "title": str(op.get("title") or ""),
+            }
+        conn.execute(
+            "INSERT OR REPLACE INTO board_operations"
+            " (id, board_id, intent_id, operation_key, request_hash, action, status, before,"
+            "  after, result, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)",
+            (
+                models.new_id("bo"),
+                board_id,
+                intent_id,
+                "plan:" + str(index),
+                request_hash(op),
+                kind,
+                OP_APPLIED,
+                _dumps({"op": op}),
+                _dumps(result_payload),
+                stamp,
+                stamp,
+            ),
+        )
+
+
+def _insert_done_execution(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    execution_id: str,
+    plan_ops: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
+    applied: dict[str, Any],
+    instance_id: str | None,
+) -> None:
+    """为「批准即落地」建立一条 done 执行记录（审计 / 结果卡引用）。"""
+    stamp = _now()
+    attempt = int(_row_value(row, "attempt", 0) or 0) + 1
+    conn.execute(
+        "INSERT OR REPLACE INTO board_executions"
+        " (id, intent_id, board_id, attempt, status, plan, steps, checkpoints, result,"
+        "  error, owner_instance_id, created_at, updated_at, started_at, finished_at)"
+        " VALUES (?, ?, ?, ?, 'done', ?, ?, '[]', ?, NULL, ?, ?, ?, ?, ?)",
+        (
+            execution_id,
+            str(row["id"]),
+            str(row["board_id"]),
+            attempt,
+            _dumps({"ok": True, "ops": plan_ops, "intentId": str(row["id"])}),
+            _dumps(steps),
+            _dumps(applied),
+            instance_id,
+            stamp,
+            stamp,
+            stamp,
+            stamp,
+        ),
+    )
+
+
+def apply_approved_intent(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str | None = None,
+    intent_id: str,
+    instance_id: str | None = None,
+) -> dict[str, Any]:
+    """批准即落地：把已确认意图的操作计划原子应用成卡片 / 关系 / 分组。
+
+    与 0.2.9 的旧执行链不同：不调用模型、不等下一次消息；在同一个请求里
+    用一个事务完成板面写入 + 操作账本 + 执行记录 + 意图完成。
+    """
+    row = _get_row(conn, str(intent_id or ""))
+    if row is None:
+        return _fail("not_found", "意图不存在")
+    bid = str(row["board_id"])
+    if board_id and str(board_id) != bid:
+        return _fail("board_mismatch", "意图不属于这个板面")
+    status = str(row["status"])
+    if status in (STATUS_COMPLETED, STATUS_PARTIALLY_COMPLETED):
+        return {
+            "ok": True,
+            "already": True,
+            "status": status,
+            "applied": _loads(_row_value(row, "applied", "{}"), {}),
+            "intent": _intent_view(conn, row),
+        }
+    if status not in EXECUTABLE_STATUSES:
+        return _fail("not_approved", f"意图状态为 {status}，不能落地")
+    if not _authorization_valid(row):
+        return _fail("authorization_stale", "旧授权已失效，需要重新确认")
+    plan_ops = _loads(_row_value(row, "operations", []), [])
+    if not isinstance(plan_ops, list) or not plan_ops:
+        return {
+            "ok": False,
+            "reason": "no_operations",
+            "detail": "这条意图没有板面操作计划，走既有的续作执行。",
+            "status": status,
+        }
+    execution = _execution()
+    plan = execution.build_plan(row)
+    if not plan.get("ok"):
+        return _fail("invalid_plan", str(plan.get("detail") or plan.get("reason") or "操作计划不合法"))
+    authorization = _loads(_row_value(row, "authorization", "{}"), {})
+    raw_seq = authorization.get("board_seq") if isinstance(authorization, dict) else None
+    try:
+        expected_seq = int(raw_seq) if raw_seq is not None else None
+    except (TypeError, ValueError):
+        expected_seq = None
+    current_seq = board_store.saved_seq(conn, bid)
+    if expected_seq is not None and current_seq is not None and expected_seq != int(current_seq):
+        _update_row(
+            conn,
+            str(intent_id),
+            status=STATUS_AWAITING,
+            authorization={},
+            reason="板面在确认之后发生了变化：需要重新确认落地方案。",
+        )
+        fresh = _get_row(conn, str(intent_id))
+        if fresh is not None:
+            _record_version(conn, fresh)
+        return {
+            "ok": False,
+            "reason": "board_changed",
+            "detail": "板面在确认之后发生了变化：本次没有写入，意图已退回待确认。",
+            "intent": _intent_view(conn, fresh) if fresh is not None else None,
+        }
+    execution_id = models.new_execution_id()
+    holder: dict[str, Any] = {}
+
+    def _mutate(state: dict) -> tuple[dict, dict]:
+        landed = execution.apply_ops_to_state(
+            conn, row, plan, execution_id=execution_id, state=state
+        )
+        if not landed.get("ok"):
+            raise _PlanAbort(
+                {
+                    "reason": str(landed.get("reason") or "step_failed"),
+                    "detail": str(landed.get("detail") or "计划里有一步无法落地：本次没有写入。"),
+                }
+            )
+        holder["landed"] = landed
+        return landed["state"], {"steps": landed["steps"], "applied": landed["applied"]}
+
+    applied_payload: dict[str, Any] = {}
+    steps: list[dict[str, Any]] = []
+    saved: dict[str, Any] = {}
+    try:
+        with transaction(conn):
+            saved = board_store.write_board_cas(
+                conn,
+                bid,
+                expected_versions=None,
+                expected_seq=expected_seq,
+                mutate=_mutate,
+                reason="intent_apply:" + str(intent_id),
+            )
+            if not saved.get("ok"):
+                raise _PlanAbort(
+                    {
+                        "reason": "board_conflict",
+                        "detail": "板面在落地过程中发生了变化：本次没有写入，请刷新后重试。",
+                    }
+                )
+            landed = holder["landed"]
+            steps = landed["steps"]
+            applied_payload = {
+                "cardIds": landed["applied"]["cardIds"],
+                "groupIds": landed["applied"]["groupIds"],
+                "linkIds": landed["applied"]["linkIds"],
+                "previewIdMap": landed.get("previewIdMap") or {},
+                "appliedAt": _now(),
+            }
+            _insert_applied_operations(conn, row, plan.get("ops") or [], steps)
+            _insert_done_execution(
+                conn,
+                row,
+                execution_id=execution_id,
+                plan_ops=plan.get("ops") or [],
+                steps=steps,
+                applied=applied_payload,
+                instance_id=instance_id,
+            )
+            _update_row(
+                conn,
+                str(intent_id),
+                status=STATUS_COMPLETED,
+                outcome="completed",
+                applied=applied_payload,
+                finished_at=_now(),
+                progress={"done": len(steps), "total": len(steps), "text": "已完成"},
+            )
+            fresh = _get_row(conn, str(intent_id))
+            assert fresh is not None
+            _record_version(conn, fresh)
+    except _PlanAbort as abort:
+        current = _get_row(conn, str(intent_id))
+        return {
+            "ok": False,
+            **abort.payload,
+            "status": str(current["status"]) if current is not None else status,
+        }
+    except Exception as exc:  # noqa: BLE001 - 落地失败整体回滚，如实返回
+        logger.warning("apply_approved_intent failed", exc_info=True)
+        return _fail("apply_failed", f"落地没有完成：{exc}")
+    assert fresh is not None
+    return {
+        "ok": True,
+        "already": False,
+        "applied": applied_payload,
+        "execution": {"id": execution_id, "status": "done", "steps": steps},
+        "intent": _intent_view(conn, fresh),
+        "seq": saved.get("seq"),
     }

@@ -1,25 +1,49 @@
-<!-- 待审批预览叠加层（子智能体 A 负责）：把 QIO 的虚线预览画在真实板面上。
+<!-- 待审批预览叠加层（Stage 1）：把 QIO 的虚线预览画在真实板面上，并允许编辑未批准的计划。
 
-  契约：docs/interactive-mode-contract.md §1.6 / §4.4；本轮冻结 _IML-COMMON.md §1 F1：
-  正式几何是唯一权威，本层**不再**接收任何"展开槽位"（那会是第二套卡片位置）。
-  - 数据来自 store.intents 里仍在等待的意图（pending / needs_update / waiting_dependency /
-    waiting_confirm / running）的 preview（结构与 BoardState 的 cards/groups/links 子集相同）；
+  契约：docs/interactive-mode-contract.md §1.6 / §4.4；
+        docs/superpowers/specs/2026-10-21-intent-preview-apply-design.md §4.3 / §5。
+  本轮冻结规则（Stage 1）：
+  - 数据来自 store.intents 里**仍未落地**的意图（proposed / awaiting_confirmation / approved，
+    以及旧状态 pending / needs_update / waiting_dependency / waiting_confirm / running）的
+    preview（结构与 BoardState 的 cards/groups/links 子集相同）；已 applied 或已结束的不画；
   - 一律虚线：未获得的实际结果不能伪装成确定结论；元素上写「预览（未确定）」；
   - 链接方向只画用户写明的方向，不解释成因果 / 支持 / 执行顺序；
   - 整层 pointer-events: none：不参与拖动与选择命中，不挡正式卡片操作；
+    只有「可编辑预演」的幽灵卡（proposed / awaiting_confirmation 且带 operations）打开
+    pointer-events，用于**拖动改落点**与**删除该新增卡**；
+  - 拖动期间只在本地跟手（不写 store、不发请求），松手才 PATCH plan；
+    编辑失败**如实提示并回滚本地预演**，绝不假成功；
   - 收到 window 事件 qio:interactive:locate-preview 时由 BoardCanvas 高亮对应意图。
 -->
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { CARD_KIND_LABELS, groupFrame, type BoardRect } from "../../interactive/board";
-import type { BoardCard, BoardGroup, Intent } from "../../interactive/types";
+import type { BoardCard, BoardGroup, Intent, IntentOperation } from "../../interactive/types";
+import {
+  isPlanEditable,
+  movePreviewCardInPlan,
+  persistPlanEdit,
+  previewCardOperationIndex,
+  removePreviewCardFromPlan,
+  type PlanEditBaseline,
+} from "../../interactive/intentPreviewApply";
 
 const props = defineProps<{
   intents: Intent[];
   locatedIntentId: string | null;
   width: number;
   height: number;
+  /**
+   * 指针（屏幕坐标）→ 板面坐标。由 BoardCanvas 提供，保证与卡片拖动 / 框选
+   * 走**同一条** viewport.toBoardPoint 口径（缩放与平移都算对）。
+   */
+  toBoardPoint?: (clientX: number, clientY: number) => { x: number; y: number };
+}>();
+
+const emit = defineEmits<{
+  (event: "edit-error", message: string): void;
+  (event: "edit-applied", intentId: string): void;
 }>();
 
 const store = useInteractiveStore();
@@ -29,6 +53,8 @@ interface PreviewCardBox {
   style: Record<string, string>;
   kindLabel: string;
   text: string;
+  /** 这张幽灵卡可拖动 / 可删除（未批准 + 有对应 add 操作） */
+  editable: boolean;
 }
 
 interface PreviewGroupBox {
@@ -58,9 +84,215 @@ interface RenderedIntent {
   statusLabel: string;
   located: boolean;
   badgeStyle: Record<string, string>;
+  editable: boolean;
+  saving: boolean;
   cards: PreviewCardBox[];
   groups: PreviewGroupBox[];
   lines: PreviewLine[];
+}
+
+const rootEl = ref<HTMLElement | null>(null);
+
+/* --------------------------------------------------------------------------
+ * 本地编辑状态（只在显示态；不写 store、不改板面）
+ * ------------------------------------------------------------------------ */
+
+interface EditDragState {
+  intentId: string;
+  cardId: string;
+  startClient: { x: number; y: number };
+  startBoard: { x: number; y: number };
+  startCard: { x: number; y: number };
+  /** 超过 3px 才算拖动：纯点击不提交任何修改 */
+  moved: boolean;
+  current: { x: number; y: number };
+}
+
+const drag = ref<EditDragState | null>(null);
+/** 本地乐观位置（"intentId:cardId" → 板面坐标）：拖动期间跟手，PATCH 返回后清掉。 */
+const localPositions = ref<Record<string, { x: number; y: number }>>({});
+/** 正在保存预演修改的意图 id（同一时间只处理一次） */
+const saving = ref<string | null>(null);
+
+function keyFor(intentId: string, cardId: string): string {
+  return intentId + ":" + cardId;
+}
+
+/**
+ * 屏幕坐标 → 板面坐标。优先用 BoardCanvas 注入的函数（唯一口径）；
+ * 万一没注入（独立挂载）就按 .board-surface 的真实缩放兜底，绝不假装 scale=1 却不除缩放。
+ */
+function boardPointOf(clientX: number, clientY: number): { x: number; y: number } {
+  if (props.toBoardPoint) return props.toBoardPoint(clientX, clientY);
+  const surface = rootEl.value?.closest?.(".board-surface") as HTMLElement | null;
+  if (!surface || typeof surface.getBoundingClientRect !== "function") return { x: clientX, y: clientY };
+  const rect = surface.getBoundingClientRect();
+  const unscaled = surface.offsetWidth || rect.width;
+  const scale = unscaled > 0 && rect.width > 0 ? rect.width / unscaled : 1;
+  return { x: (clientX - rect.left) / scale, y: (clientY - rect.top) / scale };
+}
+
+function attachPointerListeners(): void {
+  if (typeof window === "undefined") return;
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", onPointerUp);
+  window.addEventListener("pointercancel", onPointerCancel);
+  window.addEventListener("keydown", onKeydown, true);
+}
+
+function detachPointerListeners(): void {
+  if (typeof window === "undefined") return;
+  window.removeEventListener("pointermove", onPointerMove);
+  window.removeEventListener("pointerup", onPointerUp);
+  window.removeEventListener("pointercancel", onPointerCancel);
+  window.removeEventListener("keydown", onKeydown, true);
+}
+
+function clearLocal(intentId: string, cardId: string): void {
+  const key = keyFor(intentId, cardId);
+  if (!(key in localPositions.value)) return;
+  const next = { ...localPositions.value };
+  delete next[key];
+  localPositions.value = next;
+}
+
+function clearAllLocal(): void {
+  localPositions.value = {};
+}
+
+function onPointerMove(event: PointerEvent): void {
+  const state = drag.value;
+  if (!state) return;
+  if (
+    !state.moved &&
+    (Math.abs(event.clientX - state.startClient.x) > 3 ||
+      Math.abs(event.clientY - state.startClient.y) > 3)
+  ) {
+    state.moved = true;
+  }
+  if (!state.moved) return;
+  const point = boardPointOf(event.clientX, event.clientY);
+  const x = Math.round(state.startCard.x + (point.x - state.startBoard.x));
+  const y = Math.round(state.startCard.y + (point.y - state.startBoard.y));
+  state.current = { x, y };
+  localPositions.value = {
+    ...localPositions.value,
+    [keyFor(state.intentId, state.cardId)]: { x, y },
+  };
+}
+
+function onPointerUp(): void {
+  const state = drag.value;
+  detachPointerListeners();
+  drag.value = null;
+  if (!state) return;
+  if (!state.moved) {
+    // 纯点击：不产生任何修改（也不会误 PATCH）
+    clearLocal(state.intentId, state.cardId);
+    return;
+  }
+  const intent = props.intents.find((item) => item.id === state.intentId);
+  if (!intent) {
+    clearAllLocal();
+    return;
+  }
+  const moved = movePreviewCardInPlan(intent.operations ?? [], state.cardId, state.current);
+  if (!moved.ok) {
+    clearLocal(state.intentId, state.cardId);
+    emit("edit-error", moved.reason);
+    return;
+  }
+  void commitPlan(intent, moved.operations);
+}
+
+function onPointerCancel(): void {
+  const state = drag.value;
+  detachPointerListeners();
+  drag.value = null;
+  if (!state) return;
+  // Esc / 指针中断：本地预演回到操作前，不提交任何修改
+  clearLocal(state.intentId, state.cardId);
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape") return;
+  if (!drag.value) return;
+  event.preventDefault();
+  onPointerCancel();
+}
+
+/**
+ * 把一次预演修改发给服务端（PATCH plan），并按结果决定本地显示：
+ * - 成功：清掉本地乐观位置，store 会按服务端重算结果重新读取意图；
+ * - 失败：清掉本地乐观位置（回到修改前），并把真实原因交给 BoardCanvas 提示 —— 不假成功。
+ */
+async function commitPlan(intent: Intent, operations: IntentOperation[]): Promise<void> {
+  const baseline: PlanEditBaseline = {
+    preview: intent.preview ?? { cards: [], groups: [], links: [], note: "" },
+    operations: intent.operations ?? [],
+  };
+  saving.value = intent.id;
+  try {
+    const outcome = await persistPlanEdit({
+      baseline,
+      nextOperations: operations,
+      patch: (next) => store.updateIntentPlan(intent.id, next),
+    });
+    clearAllLocal();
+    if (!outcome.ok) {
+      emit("edit-error", "预演修改没有保存（已回到修改前）：" + outcome.error);
+      return;
+    }
+    emit("edit-applied", intent.id);
+  } finally {
+    saving.value = null;
+  }
+}
+
+function intentAt(intentId: string): Intent | undefined {
+  return props.intents.find((item) => item.id === intentId);
+}
+
+function onCardPointerDownById(intentId: string, cardId: string, event: PointerEvent): void {
+  const intent = intentAt(intentId);
+  if (!intent) return;
+  if (!isPlanEditable(intent) || saving.value) return;
+  const card = (intent.preview?.cards ?? []).find((item) => item.id === cardId);
+  if (!card) return;
+  if (previewCardOperationIndex(intent.operations ?? [], cardId) < 0) return;
+  if (event.button !== undefined && event.button !== 0) return;
+  // 不把这次指针交给板面（否则会变成平移 / 框选）
+  event.preventDefault();
+  event.stopPropagation();
+  const position = localPositions.value[keyFor(intentId, cardId)] ?? { x: card.x, y: card.y };
+  drag.value = {
+    intentId,
+    cardId,
+    startClient: { x: event.clientX, y: event.clientY },
+    startBoard: boardPointOf(event.clientX, event.clientY),
+    startCard: { x: position.x, y: position.y },
+    moved: false,
+    current: { x: position.x, y: position.y },
+  };
+  attachPointerListeners();
+}
+
+async function onDeleteById(intentId: string, cardId: string, event: MouseEvent): Promise<void> {
+  event.preventDefault();
+  event.stopPropagation();
+  const intent = intentAt(intentId);
+  if (!intent || !isPlanEditable(intent) || saving.value) return;
+  const removed = removePreviewCardFromPlan(
+    intent.operations ?? [],
+    cardId,
+    intent.preview?.refs,
+  );
+  if (!removed.ok) {
+    emit("edit-error", removed.reason);
+    return;
+  }
+  clearLocal(intentId, cardId);
+  await commitPlan(intent, removed.operations);
 }
 
 function cardText(card: BoardCard): string {
@@ -69,7 +301,7 @@ function cardText(card: BoardCard): string {
   return text.length > 20 ? text.slice(0, 20) + "…" : text;
 }
 
-/** 预览组框：优先用预览自带的位置，没有就按成员卡片推出来。 */
+/** 预览组框：优先用预览自带的位置，没有就按成员卡片推出来（用**当前显示位置**）。 */
 function previewGroupFrame(group: BoardGroup, cards: BoardCard[]): BoardRect {
   const frame = groupFrame(group);
   if (frame.w > 2 && frame.h > 2) return frame;
@@ -94,9 +326,16 @@ function boxStyle(rect: BoardRect): Record<string, string> {
 const rendered = computed<RenderedIntent[]>(() =>
   props.intents.map((intent) => {
     const preview = intent.preview;
-    const cards = preview?.cards ?? [];
+    const originalCards = preview?.cards ?? [];
     const groups = preview?.groups ?? [];
     const links = preview?.links ?? [];
+    const editableIntent = isPlanEditable(intent) && !saving.value;
+
+    // 拖动期间用本地乐观位置渲染（跟手），其余时候就是服务端预览坐标
+    const cards: BoardCard[] = originalCards.map((card) => {
+      const position = localPositions.value[keyFor(intent.id, card.id)];
+      return position ? { ...card, x: position.x, y: position.y } : card;
+    });
     const byId = new Map(cards.map((card) => [card.id, card]));
 
     const cardBoxes: PreviewCardBox[] = cards.map((card) => ({
@@ -104,6 +343,8 @@ const rendered = computed<RenderedIntent[]>(() =>
       style: boxStyle({ x: card.x, y: card.y, w: card.w, h: card.h }),
       kindLabel: CARD_KIND_LABELS[card.kind],
       text: cardText(card),
+      editable:
+        editableIntent && previewCardOperationIndex(intent.operations ?? [], card.id) >= 0,
     }));
 
     const groupBoxes: PreviewGroupBox[] = groups.map((group) => ({
@@ -146,7 +387,10 @@ const rendered = computed<RenderedIntent[]>(() =>
     }
 
     // 预览标注放在预览范围的上方，避免盖住内容
-    const rects = [...cards.map((card) => ({ x: card.x, y: card.y, w: card.w, h: card.h })), ...groups.map((group) => previewGroupFrame(group, cards))];
+    const rects = [
+      ...cards.map((card) => ({ x: card.x, y: card.y, w: card.w, h: card.h })),
+      ...groups.map((group) => previewGroupFrame(group, cards)),
+    ];
     const top = rects.length ? Math.min(...rects.map((rect) => rect.y)) : 0;
     const left = rects.length ? Math.min(...rects.map((rect) => rect.x)) : 0;
 
@@ -156,17 +400,30 @@ const rendered = computed<RenderedIntent[]>(() =>
       statusLabel: store.statusLabel(intent.status),
       located: props.locatedIntentId === intent.id,
       badgeStyle: { left: left + "px", top: Math.max(0, top - 24) + "px" },
+      editable: editableIntent,
+      saving: saving.value === intent.id,
       cards: cardBoxes,
       groups: groupBoxes,
       lines,
     };
   }),
 );
+
+onBeforeUnmount(() => {
+  detachPointerListeners();
+  drag.value = null;
+  clearAllLocal();
+});
 </script>
 
 <template>
   <!-- 整层不参与命中（pointer-events: none），也不建任何滚动容器：data-qio-fit 只兜住横向边界 -->
-  <div class="preview-layer" data-qio-fit aria-label="待审批预览（虚线，未确定）">
+  <div
+    ref="rootEl"
+    class="preview-layer"
+    data-qio-fit
+    aria-label="待审批预览（虚线，未确定）"
+  >
     <div
       v-for="item in rendered"
       :key="item.id"
@@ -176,7 +433,8 @@ const rendered = computed<RenderedIntent[]>(() =>
       :data-intent-id="item.id"
     >
       <p class="preview-badge" :style="item.badgeStyle">
-        预览（未确定）· {{ item.title }} · {{ item.statusLabel }}
+        预览（未确定）· {{ item.title }} · {{ item.statusLabel
+        }}<template v-if="item.editable"> · 可拖动落点 / 删除新增卡</template>
       </p>
 
       <div
@@ -197,12 +455,31 @@ const rendered = computed<RenderedIntent[]>(() =>
         v-for="card in item.cards"
         :key="card.id"
         class="preview-card"
+        :class="{ editable: card.editable, saving: item.saving }"
         :style="card.style"
         data-im="preview"
         :data-intent-id="item.id"
+        :data-preview-card-id="card.id"
+        @pointerdown="card.editable && onCardPointerDownById(item.id, card.id, $event)"
+        @dragstart.prevent
       >
         <span class="preview-card-kind mono">{{ card.kindLabel }}</span>
         <span class="preview-card-text">{{ card.text }}</span>
+        <button
+          v-if="card.editable"
+          class="preview-card-delete"
+          type="button"
+          data-im="preview-delete"
+          :data-intent-id="item.id"
+          :data-preview-card-id="card.id"
+          :disabled="item.saving"
+          :aria-label="'删除这张预演卡片：' + card.text"
+          title="删除这张预演卡片（只改计划，不动板面正式内容）"
+          @pointerdown.stop.prevent
+          @click.stop.prevent="onDeleteById(item.id, card.id, $event)"
+        >
+          ×
+        </button>
       </div>
 
       <svg class="preview-links" :width="width" :height="height" aria-hidden="true">
@@ -282,8 +559,39 @@ const rendered = computed<RenderedIntent[]>(() =>
   color: var(--text-primary);
   font-size: var(--fs-sm);
 }
+/*
+  只有「未批准预演」里的新增卡才接管指针：可拖动改落点、可删除。
+  正式卡片 / 组 / 连线仍由整层 pointer-events: none 保持不可命中。
+*/
+.preview-card.editable {
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.preview-card.editable:active { cursor: grabbing; }
+.preview-card.saving { opacity: 0.7; }
 .preview-card-kind { color: var(--link); font-size: var(--fs-xs); }
 .preview-card-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-card.editable .preview-card-text { padding-right: var(--sp-4); }
+.preview-card-delete {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  line-height: 1;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+}
+.preview-card-delete:hover { border-color: var(--danger); }
+.preview-card-delete:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.preview-card-delete:disabled { opacity: 0.5; cursor: default; }
 .preview-group {
   position: absolute;
   display: flex;

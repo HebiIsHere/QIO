@@ -292,7 +292,15 @@ export type IntentStatus =
   | "paused"
   | "done"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  // Stage 1（0.2.11，2026-10-21 意图预演与批准即落地）：
+  // 带 operations 的新意图状态（与后端 tool_models.INTENT_STATUSES 同口径）。
+  // proposed = 待确认；awaiting_confirmation = 待再次确认；
+  // approved = 已确认待落地（落地失败可重试）；completed = 已落地完成（旧数据用 done）。
+  | "proposed"
+  | "awaiting_confirmation"
+  | "approved"
+  | "completed";
 
 export interface Intent {
   id: string;

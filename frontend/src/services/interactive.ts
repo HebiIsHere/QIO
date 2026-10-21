@@ -15,6 +15,7 @@ import type {
   FrozenView,
   Intent,
   IntentListResponse,
+  IntentOperation,
   IntentPreview,
   SubmissionRecord,
   SubmissionResult,
@@ -468,6 +469,34 @@ export function batchConfirmIntents(
   return request(`${BASE}/intents/batch-confirm`, {
     method: "POST",
     body: JSON.stringify({ boardId, intentIds }),
+  });
+}
+
+/**
+ * 编辑未批准意图的**预演**（Stage 1，契约 §4.3）：
+ * 只改 plan（operations），不批准、不落地、不写板面。
+ *
+ * - 仅 proposed / awaiting_confirmation 可改；approved 之后服务端返回 409 not_editable；
+ * - 拖动：改对应 add 操作的 x/y；删除幽灵卡：移除该 add 操作与引用它的依赖操作；
+ * - 成功返回 `{ ok: true, intent: <intent view> }`（含重算后的 preview / operations）。
+ */
+export interface IntentPlanPatchResponse {
+  ok?: boolean;
+  /** 服务端重算后的意图视图（含 preview / operations）；形状以服务端为准，调用方以重新读取为准 */
+  intent?: Intent | null;
+  error?: string;
+  detail?: string;
+  reason?: string;
+}
+
+export function patchIntentPlan(
+  intentId: string,
+  boardId: string,
+  operations: IntentOperation[],
+): Promise<IntentPlanPatchResponse> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/plan`, {
+    method: "PATCH",
+    body: JSON.stringify({ boardId, operations }),
   });
 }
 

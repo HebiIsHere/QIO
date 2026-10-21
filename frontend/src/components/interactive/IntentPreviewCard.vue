@@ -187,6 +187,15 @@ const executionRefsLabel = computed(() => executionRefsText(props.intent.executi
 
 const approveLabel = computed(() => {
   switch (props.intent.status) {
+    // Stage 1：新意图的确认 = 同一请求里落地，不再只是「成为任务」
+    case "proposed":
+      return "确认并落地";
+    case "awaiting_confirmation":
+      return "再次确认并落地";
+    case "approved":
+      return "已确认，等待落地";
+    case "completed":
+      return "已完成";
     case "waiting_confirm":
       return "确认并开始";
     case "waiting_dependency":
@@ -307,6 +316,11 @@ const dockedStyle = computed<CSSProperties>(() => {
 /** 单项审批入口的说明：把服务端的判定结果原样说给用户听 */
 const dockedNote = computed(() => {
   if (props.intent.status === "needs_update") return status.value.detail;
+  // Stage 1：新意图的「批准」= 同一请求里落地，不再是「先成为任务、等下一次续作」
+  if (props.intent.status === "proposed" || props.intent.status === "awaiting_confirmation") {
+    return "确认后会在同一次请求里落成正式卡片 / 组 / 关系；确认前这里只是虚线预演，板面没有改动。";
+  }
+  if (props.intent.status === "approved") return "已确认，正在落地；落地失败时可以重试确认。";
   if (!approve.value.allowed && reject.value.allowed) return approve.value.text;
   if (exec.value.running) return exec.value.detail;
   if (props.intent.demo) return "演示任务不是真实执行；批准只表示它成为任务。";
