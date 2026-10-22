@@ -750,7 +750,8 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
       );
       stops.push(
         watch(
-          () => events.events.length,
+          // 事件数组有上限（到顶会 shift 最旧的一条，长度不再变化）：盯最后一条的 id。
+          () => events.events[events.events.length - 1]?.id ?? "",
           () => {
             const last = events.events[events.events.length - 1];
             if (!last || !REFRESH_ON_EVENTS.has(last.type)) return;

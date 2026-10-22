@@ -122,6 +122,7 @@ watch(
     row.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
     flashHighlight(focus.id);
   },
+  { immediate: true },
 );
 
 // 聚焦请求可能先于列表数据到达（focusTask 期间在刷新）：行出现后再定位一次。

@@ -6,6 +6,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
+import { flushPromises } from "@vue/test-utils";
 
 const api = vi.hoisted(() => ({
   fetchTaskFeed: vi.fn(),
@@ -20,6 +22,7 @@ import { useConversationTasksStore } from "../conversationTasks";
 import { useConversationShellStore } from "../conversationShell";
 import { useApprovalsStore } from "../approvals";
 import { useSessionStore } from "../session";
+import { useEventStore } from "../events";
 import type { TaskCounts, TaskFeedItem, TaskFeedPage, TaskView } from "../../conversation/contracts";
 
 const ZERO_COUNTS: TaskCounts = {
@@ -367,5 +370,56 @@ describe("定位、计数与偏好", () => {
     await tasks.refresh("current");
     expect(tasks.badgeCount).toBe(3);
     expect(tasks.badgeTone).toBe("active");
+  });
+});
+
+describe("事件驱动刷新与断线重连", () => {
+  it("真实任务事件只触发一次防抖刷新（不按事件条数重复打后端）", async () => {
+    vi.useFakeTimers();
+    feed(page([]));
+    const tasks = makeStore();
+    tasks.bindEvents();
+    const events = useEventStore();
+
+    events.events.push({ type: "SUBAGENT_STATUS", id: "ev-1", ts: "", data: {} } as never);
+    events.events.push({ type: "SUBAGENT_STATUS", id: "ev-2", ts: "", data: {} } as never);
+    await nextTick();
+    await vi.advanceTimersByTimeAsync(500);
+    await flushPromises();
+
+    const currentCalls = api.fetchTaskFeed.mock.calls.filter(
+      (call) => (call[0] as { view: TaskView }).view === "current",
+    );
+    expect(currentCalls).toHaveLength(1);
+    tasks.unbindEvents();
+  });
+
+  it("断线时提示可能不是最新；重连后清掉旧快照时间并整份重新对齐", async () => {
+    feed(page([item({ id: "tool:1", status: "running" })], { serverTime: "2026-10-22T10:00:00.000Z" }));
+    const tasks = makeStore();
+    tasks.bindEvents();
+    const events = useEventStore();
+    await tasks.refresh("current");
+    expect(tasks.current.items[0].status).toBe("running");
+
+    events.connected = true;
+    await nextTick();
+    events.connected = false;
+    await nextTick();
+    expect(tasks.connection).toBe("offline");
+    expect(tasks.connectionHint).toContain("可能已经变化");
+
+    // 后端重启：新实例给出的历史终态不能被旧快照时间挡掉，也不许被重新标成 running
+    feed(
+      page([item({ id: "tool:1", status: "completed", finishedAt: "2026-10-22T10:05:00.000Z" })], {
+        serverTime: "2026-10-22T08:00:00.000Z",
+        instanceId: "inst-2",
+      }),
+    );
+    events.connected = true;
+    await nextTick();
+    await flushPromises();
+    expect(tasks.current.items[0].status).toBe("completed");
+    tasks.unbindEvents();
   });
 });

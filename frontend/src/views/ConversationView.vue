@@ -215,15 +215,55 @@ function hasOpenModal(): boolean {
 
 // 全窗口预览时按 Esc 返回对话；任务抽屉先关。弹窗打开时不抢它的 Esc。
 function onKeydown(event: KeyboardEvent) {
-  if (event.key !== "Escape") return;
   if (railDrawer.value) {
-    event.preventDefault();
-    void closeRailDrawer();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void closeRailDrawer();
+      return;
+    }
+    if (event.key === "Tab") trapDrawerFocus(event);
     return;
   }
+  if (event.key !== "Escape") return;
   if (!shell.effectivePreviewFull || planetOpen.value) return;
   if (event.defaultPrevented || hasOpenModal()) return;
   shell.setPreviewFull(false);
+}
+
+/** 抽屉是模态层：Tab 在抽屉内循环，不跑到背后的页面。 */
+function trapDrawerFocus(event: KeyboardEvent) {
+  const root = railDrawerEl.value;
+  if (!root) return;
+  const focusables = Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), [href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  const inside = Boolean(active && root.contains(active));
+  if (event.shiftKey) {
+    if (!inside || active === first) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+  if (!inside || active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+// 窗口重新可见（休眠唤醒 / 切回桌面）时补一次幂等刷新。
+function onVisibilityChange() {
+  if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+  if (tasks.current.loaded) void tasks.refresh("current", { silent: true });
+  if (shell.prefs.taskTab === "history" && tasks.history.loaded) {
+    void tasks.refresh("history", { silent: true });
+  }
 }
 
 // ── 生命周期（页面切换不重复初始化） ──────────────────────────────────────
@@ -251,6 +291,7 @@ onMounted(() => {
 
   mountPlanetWhenIdle();
   window.addEventListener("keydown", onKeydown);
+  document.addEventListener("visibilitychange", onVisibilityChange);
 });
 
 onBeforeUnmount(() => {
@@ -259,6 +300,7 @@ onBeforeUnmount(() => {
   stopFocusListener?.();
   stopFocusListener = null;
   window.removeEventListener("keydown", onKeydown);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
   setDraggingChrome(false);
   tasks.dispose();
   // 最后一次布局改动要落盘（防抖窗口内切走页面时不能丢）。
