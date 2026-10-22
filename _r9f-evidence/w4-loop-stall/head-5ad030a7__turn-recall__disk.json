@@ -1,0 +1,4286 @@
+{
+ "env": {
+  "label": "head-5ad030a7",
+  "repo": "D:\\qio-dev\\qio-r9f-w4",
+  "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+  "python": "3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "cpu_count": 16,
+  "runs_requested": 20,
+  "gap_threshold_ms": 50.0,
+  "pressure": "disk",
+  "timestamp": "2026-10-22T22:11:47+0800",
+  "test_file_sha256": "e2c5bdb157f6029cc3d952a1147c13d42956d88370de1a7991b761e1551fe907"
+ },
+ "scenario": "turn-recall",
+ "summary": {
+  "runs": 20,
+  "gap_ms": {
+   "min": 65.8,
+   "p50": 73.5,
+   "p90": 90.7,
+   "max": 124.8,
+   "over_budget_300ms": 0
+  },
+  "kinds_in_gaps": {
+   "sync_python": 24,
+   "loop_idle_wait": 14,
+   "worker_thread_execution": 1
+  },
+  "errors": 0
+ },
+ "runs": [
+  {
+   "index": 0,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 73.122,
+   "turn_ms": 1195.063,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435916.2834001,
+    "end": 435916.356522,
+    "ms": 73.122
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 2
+   },
+   "gap_records": [
+    {
+     "start": 435916.2834,
+     "end": 435916.356522,
+     "ms": 73.122,
+     "kind": "sync_python",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435916.761625,
+     "end": 435916.807093,
+     "ms": 45.468,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1,
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_write_to_self",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435917.385707,
+     "end": 435917.432574,
+     "ms": 46.866,
+     "kind": "sync_python",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 2
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:363:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1457:advance_anchor",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:189:enter_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:62:set_active",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:187:_upsert_singleton"
+     ],
+     "threads": {
+      "MainThread": "_upsert_singleton",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435916.2878429,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435916.3035922,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435916.3590125,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:646:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:863:_assemble_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1557:_fixed_system_rules_tokens",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/index.py:25:estimate_tokens",
+      "D:/qio-dev/qio-r9f-w4/backend/.venv/Lib/site-packages/tiktoken/core.py:123:encode"
+     ],
+     "threads": {
+      "MainThread": "encode",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1028,
+     "slow_recall_enter"
+    ],
+    [
+     0.3048,
+     "slow_recall_exit"
+    ],
+    [
+     1.1773,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 1,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 69.935,
+   "turn_ms": 925.717,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435918.0122565,
+    "end": 435918.0821911,
+    "ms": 69.935
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 2
+   },
+   "gap_records": [
+    {
+     "start": 435917.977921,
+     "end": 435917.998135,
+     "ms": 20.214,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435918.012257,
+     "end": 435918.082191,
+     "ms": 69.935,
+     "kind": "sync_python",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:120:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435918.118156,
+     "end": 435918.139835,
+     "ms": 21.679,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "search",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435918.475671,
+     "end": 435918.519083,
+     "ms": 43.412,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1,
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_write_to_self",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435918.861818,
+     "end": 435918.900666,
+     "ms": 38.848,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1061:execute_loop",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/loop.py:1316:run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/loop.py:1500:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/loop.py:2059:_plan",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/recorder.py:69:model_call",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:164:record_model_call",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:215:_append",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:208:_patch"
+     ],
+     "threads": {
+      "MainThread": "_patch",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435918.0168816,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435918.0304501,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:120:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435918.0851226,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:598:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:127:record_binding"
+     ],
+     "threads": {
+      "MainThread": "record_binding",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1046,
+     "slow_recall_enter"
+    ],
+    [
+     0.3066,
+     "slow_recall_exit"
+    ],
+    [
+     0.9222,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 2,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 70.738,
+   "turn_ms": 1001.0,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435919.4475534,
+    "end": 435919.5182915,
+    "ms": 70.738
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 2,
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435919.402797,
+     "end": 435919.434798,
+     "ms": 32.0,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435919.447553,
+     "end": 435919.518291,
+     "ms": 70.738,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 2,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435919.909703,
+     "end": 435919.95436,
+     "ms": 44.657,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "entity_card_search",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435920.351013,
+     "end": 435920.397361,
+     "ms": 46.348,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_embed_uncached",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435919.4461665,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "run",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435919.4685877,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435919.5192161,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:646:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:863:_assemble_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1557:_fixed_system_rules_tokens",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/index.py:25:estimate_tokens",
+      "D:/qio-dev/qio-r9f-w4/backend/.venv/Lib/site-packages/tiktoken/core.py:123:encode"
+     ],
+     "threads": {
+      "MainThread": "encode",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1132,
+     "slow_recall_enter"
+    ],
+    [
+     0.3137,
+     "slow_recall_exit"
+    ],
+    [
+     0.9912,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 3,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 77.676,
+   "turn_ms": 1239.996,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435920.9453032,
+    "end": 435921.022979,
+    "ms": 77.676
+   },
+   "kinds_in_gap": {
+    "sync_python": 2,
+    "loop_idle_wait": 1
+   },
+   "gap_records": [
+    {
+     "start": 435920.90698,
+     "end": 435920.934654,
+     "ms": 27.674,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435920.945303,
+     "end": 435921.022979,
+     "ms": 77.676,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2,
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_save",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435921.42208,
+     "end": 435921.46187,
+     "ms": 39.79,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435922.087153,
+     "end": 435922.126351,
+     "ms": 39.197,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:364:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1467:finish",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/recorder.py:103:topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:158:set_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:208:_patch"
+     ],
+     "threads": {
+      "MainThread": "_patch",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435920.9429918,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:308:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:485:begin",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:189:enter_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:62:set_active",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:193:_upsert_singleton"
+     ],
+     "threads": {
+      "MainThread": "_upsert_singleton",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435920.9642074,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_save",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435921.02239,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:598:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:127:record_binding"
+     ],
+     "threads": {
+      "MainThread": "record_binding",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1165,
+     "slow_recall_enter"
+    ],
+    [
+     0.3188,
+     "slow_recall_exit"
+    ],
+    [
+     1.2186,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 4,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 73.468,
+   "turn_ms": 1348.973,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435922.7537543,
+    "end": 435922.8272227,
+    "ms": 73.468
+   },
+   "kinds_in_gap": {
+    "sync_python": 2
+   },
+   "gap_records": [
+    {
+     "start": 435922.67781,
+     "end": 435922.725187,
+     "ms": 47.377,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:308:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:485:begin",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:189:enter_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:62:set_active",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:193:_upsert_singleton"
+     ],
+     "threads": {
+      "MainThread": "_upsert_singleton",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435922.732439,
+     "end": 435922.753754,
+     "ms": 21.315,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "run",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435922.753754,
+     "end": 435922.827223,
+     "ms": 73.468,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:588:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/recorder.py:109:write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:173:record_write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:208:_patch"
+     ],
+     "threads": {
+      "MainThread": "_patch",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435923.220876,
+     "end": 435923.259084,
+     "ms": 38.208,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435923.922528,
+     "end": 435923.943276,
+     "ms": 20.748,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435923.984717,
+     "end": 435924.022585,
+     "ms": 37.868,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1144:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_write_to_self",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435922.7684048,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:98:append_message",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:66:_resolve_fragment",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/fragment.py:123:get_or_create_open"
+     ],
+     "threads": {
+      "MainThread": "get_or_create_open",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435922.8198632,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:588:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/recorder.py:109:write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:173:record_write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:208:_patch"
+     ],
+     "threads": {
+      "MainThread": "_patch",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1487,
+     "slow_recall_enter"
+    ],
+    [
+     0.3512,
+     "slow_recall_exit"
+    ],
+    [
+     1.343,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 5,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 70.792,
+   "turn_ms": 937.342,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435924.5983733,
+    "end": 435924.6691652,
+    "ms": 70.792
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435924.598373,
+     "end": 435924.669165,
+     "ms": 70.792,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:588:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/recorder.py:109:write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:173:record_write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:208:_patch"
+     ],
+     "threads": {
+      "MainThread": "_patch",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435925.059161,
+     "end": 435925.100332,
+     "ms": 41.171,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "entity_card_search",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435925.101071,
+     "end": 435925.121312,
+     "ms": 20.24,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "entity_card_search",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435925.399801,
+     "end": 435925.420618,
+     "ms": 20.817,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435925.442644,
+     "end": 435925.48749,
+     "ms": 44.845,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:363:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1457:advance_anchor",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:192:enter_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:396:_result",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:155:is_historic_position",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:149:focus_fragment",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:122:open_fragment_id"
+     ],
+     "threads": {
+      "MainThread": "open_fragment_id",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435924.6143117,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_save",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435924.6697066,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:588:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/recorder.py:109:write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:173:record_write",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:208:_patch"
+     ],
+     "threads": {
+      "MainThread": "_patch",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1053,
+     "slow_recall_enter"
+    ],
+    [
+     0.3064,
+     "slow_recall_exit"
+    ],
+    [
+     0.922,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 6,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 73.434,
+   "turn_ms": 979.505,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435926.0086857,
+    "end": 435926.0821193,
+    "ms": 73.434
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435926.008686,
+     "end": 435926.082119,
+     "ms": 73.434,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:98:append_message",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:66:_resolve_fragment",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/fragment.py:123:get_or_create_open"
+     ],
+     "threads": {
+      "MainThread": "get_or_create_open",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435926.473341,
+     "end": 435926.518687,
+     "ms": 45.347,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "entity_card_search",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435926.897447,
+     "end": 435926.93838,
+     "ms": 40.932,
+     "kind": "sync_python",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1144:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:124:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435926.0140849,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "run",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435926.0307714,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:98:append_message",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:66:_resolve_fragment",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/fragment.py:123:get_or_create_open"
+     ],
+     "threads": {
+      "MainThread": "get_or_create_open",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1043,
+     "slow_recall_enter"
+    ],
+    [
+     0.3045,
+     "slow_recall_exit"
+    ],
+    [
+     0.959,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 7,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 77.797,
+   "turn_ms": 896.93,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435927.4162706,
+    "end": 435927.4940671,
+    "ms": 77.797
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435927.385534,
+     "end": 435927.407625,
+     "ms": 22.092,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435927.416271,
+     "end": 435927.494067,
+     "ms": 77.797,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435927.895297,
+     "end": 435927.928435,
+     "ms": 33.139,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435928.225021,
+     "end": 435928.266628,
+     "ms": 41.607,
+     "kind": "sync_python",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1144:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435927.4216183,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "run",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435927.4382224,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.109,
+     "slow_recall_enter"
+    ],
+    [
+     0.3094,
+     "slow_recall_exit"
+    ],
+    [
+     0.8807,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 8,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 72.097,
+   "turn_ms": 979.287,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435928.808129,
+    "end": 435928.880226,
+    "ms": 72.097
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435928.772816,
+     "end": 435928.797124,
+     "ms": 24.308,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435928.808129,
+     "end": 435928.880226,
+     "ms": 72.097,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435929.270111,
+     "end": 435929.314853,
+     "ms": 44.741,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435929.680761,
+     "end": 435929.746245,
+     "ms": 65.485,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:363:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1457:advance_anchor",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:189:enter_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:62:set_active",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:187:_upsert_singleton"
+     ],
+     "threads": {
+      "MainThread": "_upsert_singleton",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435928.8136974,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:516:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:947:_predict_topics",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/heavy.py:105:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:830:run_in_executor",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:176:submit",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:199:_adjust_thread_count",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait"
+     ],
+     "threads": {
+      "MainThread": "wait",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435928.8328792,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1079,
+     "slow_recall_enter"
+    ],
+    [
+     0.3081,
+     "slow_recall_exit"
+    ],
+    [
+     0.9729,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 9,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 90.739,
+   "turn_ms": 957.661,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435930.3362185,
+    "end": 435930.426957,
+    "ms": 90.739
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 2
+   },
+   "gap_records": [
+    {
+     "start": 435930.283966,
+     "end": 435930.325191,
+     "ms": 41.225,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:235:measure",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:291:accepted",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435930.336218,
+     "end": 435930.426957,
+     "ms": 90.739,
+     "kind": "sync_python",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:124:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435930.829023,
+     "end": 435930.860112,
+     "ms": 31.09,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435931.185953,
+     "end": 435931.236421,
+     "ms": 50.469,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1155:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:175:mark_write_closed"
+     ],
+     "threads": {
+      "MainThread": "mark_write_closed",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435930.3531725,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_save",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435930.3719686,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:124:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435930.428832,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:598:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:127:record_binding"
+     ],
+     "threads": {
+      "MainThread": "record_binding",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1411,
+     "slow_recall_enter"
+    ],
+    [
+     0.3413,
+     "slow_recall_exit"
+    ],
+    [
+     0.9493,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 10,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 65.81,
+   "turn_ms": 921.766,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435931.8362856,
+    "end": 435931.902096,
+    "ms": 65.81
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1
+   },
+   "gap_records": [
+    {
+     "start": 435931.775798,
+     "end": 435931.828663,
+     "ms": 52.866,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:308:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:474:begin",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:148:record_binding",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435931.836286,
+     "end": 435931.902096,
+     "ms": 65.81,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435932.304078,
+     "end": 435932.336685,
+     "ms": 32.606,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435932.631544,
+     "end": 435932.688416,
+     "ms": 56.871,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1155:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:175:mark_write_closed"
+     ],
+     "threads": {
+      "MainThread": "mark_write_closed",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435931.8562123,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1267,
+     "slow_recall_enter"
+    ],
+    [
+     0.329,
+     "slow_recall_exit"
+    ],
+    [
+     0.9121,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 11,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 71.517,
+   "turn_ms": 940.537,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435933.2286271,
+    "end": 435933.3001444,
+    "ms": 71.517
+   },
+   "kinds_in_gap": {
+    "sync_python": 2
+   },
+   "gap_records": [
+    {
+     "start": 435933.181762,
+     "end": 435933.216269,
+     "ms": 34.507,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435933.228627,
+     "end": 435933.300144,
+     "ms": 71.517,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435933.300144,
+     "end": 435933.320981,
+     "ms": 20.836,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:646:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:880:_assemble_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:1851:_user_root_id",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/nodes.py:53:get_or_create_user_root"
+     ],
+     "threads": {
+      "MainThread": "get_or_create_user_root",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435933.696098,
+     "end": 435933.73915,
+     "ms": 43.052,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435934.06506,
+     "end": 435934.103447,
+     "ms": 38.386,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1155:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:175:mark_write_closed"
+     ],
+     "threads": {
+      "MainThread": "mark_write_closed",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435933.2338084,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:308:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:485:begin",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:189:enter_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:62:set_active",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:193:_upsert_singleton"
+     ],
+     "threads": {
+      "MainThread": "_upsert_singleton",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435933.2916453,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1191,
+     "slow_recall_enter"
+    ],
+    [
+     0.3196,
+     "slow_recall_exit"
+    ],
+    [
+     0.9212,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 12,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 73.604,
+   "turn_ms": 949.826,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435934.6264235,
+    "end": 435934.7000276,
+    "ms": 73.604
+   },
+   "kinds_in_gap": {
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435934.58679,
+     "end": 435934.612837,
+     "ms": 26.046,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435934.626424,
+     "end": 435934.700028,
+     "ms": 73.604,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:517:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2330:_entity_card_topics",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/context.py:346:entity_card_topics",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/entities/cards.py:379:__init__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/entities/cards.py:1555:_entity_card_columns"
+     ],
+     "threads": {
+      "MainThread": "_entity_card_columns",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435935.098082,
+     "end": 435935.139001,
+     "ms": 40.918,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435935.427836,
+     "end": 435935.451404,
+     "ms": 23.568,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435935.479587,
+     "end": 435935.535394,
+     "ms": 55.807,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:364:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1464:finish",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/binding.py:210:mark_status"
+     ],
+     "threads": {
+      "MainThread": "mark_status",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435934.6539831,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:517:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2330:_entity_card_topics",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/context.py:346:entity_card_topics",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/entities/cards.py:379:__init__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/entities/cards.py:1555:_entity_card_columns"
+     ],
+     "threads": {
+      "MainThread": "_entity_card_columns",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1138,
+     "slow_recall_enter"
+    ],
+    [
+     0.3141,
+     "slow_recall_exit"
+    ],
+    [
+     0.9481,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 13,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 68.608,
+   "turn_ms": 964.565,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435936.1174056,
+    "end": 435936.1860132,
+    "ms": 68.608
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1
+   },
+   "gap_records": [
+    {
+     "start": 435936.086639,
+     "end": 435936.108574,
+     "ms": 21.935,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435936.117406,
+     "end": 435936.186013,
+     "ms": 68.608,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_save",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435936.579138,
+     "end": 435936.624778,
+     "ms": 45.64,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435936.990072,
+     "end": 435937.034383,
+     "ms": 44.311,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1144:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:129:append_message",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/fragment.py:364:should_close",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/fragment.py:383:content_tokens",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/index.py:25:estimate_tokens",
+      "D:/qio-dev/qio-r9f-w4/backend/.venv/Lib/site-packages/tiktoken/core.py:127:encode"
+     ],
+     "threads": {
+      "MainThread": "encode",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435936.1426264,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_save",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1002,
+     "slow_recall_enter"
+    ],
+    [
+     0.3003,
+     "slow_recall_exit"
+    ],
+    [
+     0.9474,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 14,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 73.559,
+   "turn_ms": 1225.361,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435937.6241763,
+    "end": 435937.6977349,
+    "ms": 73.559
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1
+   },
+   "gap_records": [
+    {
+     "start": 435937.545812,
+     "end": 435937.612905,
+     "ms": 67.093,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:235:measure",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:291:accepted",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435937.624176,
+     "end": 435937.697735,
+     "ms": 73.559,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:951:_predict_topics",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/heavy.py:105:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:830:run_in_executor",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:176:submit",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:199:_adjust_thread_count",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait"
+     ],
+     "threads": {
+      "MainThread": "wait",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435937.826701,
+     "end": 435937.847163,
+     "ms": 20.462,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435937.847163,
+     "end": 435937.895508,
+     "ms": 48.345,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435937.895508,
+     "end": 435937.916637,
+     "ms": 21.129,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435937.916637,
+     "end": 435937.939669,
+     "ms": 23.032,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435937.939669,
+     "end": 435937.982645,
+     "ms": 42.976,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435937.982645,
+     "end": 435938.01964,
+     "ms": 36.994,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435938.031145,
+     "end": 435938.052591,
+     "ms": 21.446,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435938.092864,
+     "end": 435938.140631,
+     "ms": 47.767,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435938.170067,
+     "end": 435938.190683,
+     "ms": 20.616,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:760:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/media.py:755:cleanup_media",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/pathlib.py:1235:exists",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/pathlib.py:1013:stat"
+     ],
+     "threads": {
+      "MainThread": "stat",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435938.720499,
+     "end": 435938.767755,
+     "ms": 47.255,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435937.6479172,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:516:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:951:_predict_topics",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/heavy.py:105:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:830:run_in_executor",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:176:submit",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:199:_adjust_thread_count",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait"
+     ],
+     "threads": {
+      "MainThread": "wait",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1525,
+     "slow_recall_enter"
+    ],
+    [
+     0.3527,
+     "slow_recall_exit"
+    ],
+    [
+     1.2213,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 15,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 124.813,
+   "turn_ms": 1660.553,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435939.853821,
+    "end": 435939.9786339,
+    "ms": 124.813
+   },
+   "kinds_in_gap": {
+    "worker_thread_execution": 1
+   },
+   "gap_records": [
+    {
+     "start": 435939.31631,
+     "end": 435939.348181,
+     "ms": 31.871,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435939.348181,
+     "end": 435939.373322,
+     "ms": 25.142,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435939.373322,
+     "end": 435939.454986,
+     "ms": 81.663,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:124:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435939.732561,
+     "end": 435939.755911,
+     "ms": 23.35,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435939.755911,
+     "end": 435939.777209,
+     "ms": 21.298,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435939.853821,
+     "end": 435939.978634,
+     "ms": 124.813,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435940.150579,
+     "end": 435940.176944,
+     "ms": 26.365,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435940.176944,
+     "end": 435940.214088,
+     "ms": 37.144,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435940.214088,
+     "end": 435940.247692,
+     "ms": 33.604,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435940.247692,
+     "end": 435940.269338,
+     "ms": 21.646,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435940.269338,
+     "end": 435940.297712,
+     "ms": 28.374,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435940.893495,
+     "end": 435940.949933,
+     "ms": 56.438,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:335:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1144:persist",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:124:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435939.8536421,
+     "kind": "worker_thread_execution",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1391,
+     "slow_recall_enter"
+    ],
+    [
+     0.3448,
+     "slow_recall_exit"
+    ],
+    [
+     1.6331,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 16,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 90.201,
+   "turn_ms": 1098.191,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435941.7643818,
+    "end": 435941.854583,
+    "ms": 90.201
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1,
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435941.716377,
+     "end": 435941.745453,
+     "ms": 29.076,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435941.764382,
+     "end": 435941.854583,
+     "ms": 90.201,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:124:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435942.248985,
+     "end": 435942.293725,
+     "ms": 44.74,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435942.418369,
+     "end": 435942.439092,
+     "ms": 20.723,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435942.742117,
+     "end": 435942.802835,
+     "ms": 60.718,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435941.7860079,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:592:<module>",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_write_to_self",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435941.8562575,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:124:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1386,
+     "slow_recall_enter"
+    ],
+    [
+     0.3439,
+     "slow_recall_exit"
+    ],
+    [
+     1.0859,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 17,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 74.115,
+   "turn_ms": 1007.147,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435943.5014718,
+    "end": 435943.5755871,
+    "ms": 74.115
+   },
+   "kinds_in_gap": {
+    "sync_python": 1
+   },
+   "gap_records": [
+    {
+     "start": 435943.465475,
+     "end": 435943.488099,
+     "ms": 22.624,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435943.501472,
+     "end": 435943.575587,
+     "ms": 74.115,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:914:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:367:_journal_call",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:318:running",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:1054:_execute"
+     ],
+     "threads": {
+      "MainThread": "_execute",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435943.968483,
+     "end": 435944.011141,
+     "ms": 42.659,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435944.011141,
+     "end": 435944.031931,
+     "ms": 20.789,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "entity_card_search",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435944.399433,
+     "end": 435944.44298,
+     "ms": 43.548,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "run",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435943.5063804,
+     "kind": "sync_python",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:914:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:367:_journal_call",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:318:running",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:1054:_execute"
+     ],
+     "threads": {
+      "MainThread": "_execute",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1102,
+     "slow_recall_enter"
+    ],
+    [
+     0.3106,
+     "slow_recall_exit"
+    ],
+    [
+     0.9767,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 18,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 76.724,
+   "turn_ms": 995.114,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435945.0297579,
+    "end": 435945.1064821,
+    "ms": 76.724
+   },
+   "kinds_in_gap": {
+    "sync_python": 2
+   },
+   "gap_records": [
+    {
+     "start": 435945.029758,
+     "end": 435945.106482,
+     "ms": 76.724,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435945.495695,
+     "end": 435945.539633,
+     "ms": 43.938,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435945.557342,
+     "end": 435945.578357,
+     "ms": 21.015,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435945.944514,
+     "end": 435945.9968,
+     "ms": 52.286,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1,
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:363:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1457:advance_anchor",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/navigation.py:189:enter_topic",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:62:set_active",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/graph/anchors.py:187:_upsert_singleton"
+     ],
+     "threads": {
+      "MainThread": "_upsert_singleton",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435945.0340206,
+     "kind": "sync_python",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:571:main",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:914:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:367:_journal_call",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:318:running",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:1054:_execute"
+     ],
+     "threads": {
+      "MainThread": "_execute",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435945.1035311,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:103:append_message"
+     ],
+     "threads": {
+      "MainThread": "append_message",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.1036,
+     "slow_recall_enter"
+    ],
+    [
+     0.3041,
+     "slow_recall_exit"
+    ],
+    [
+     0.9932,
+     "turn_end"
+    ]
+   ]
+  },
+  {
+   "index": 19,
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "gap_ms": 73.372,
+   "turn_ms": 979.827,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 435946.5963769,
+    "end": 435946.6697488,
+    "ms": 73.372
+   },
+   "kinds_in_gap": {
+    "sync_python": 2
+   },
+   "gap_records": [
+    {
+     "start": 435946.562216,
+     "end": 435946.582774,
+     "ms": 20.558,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 435946.596377,
+     "end": 435946.669749,
+     "ms": 73.372,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 2
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:98:append_message",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:66:_resolve_fragment",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/fragment.py:123:get_or_create_open"
+     ],
+     "threads": {
+      "MainThread": "get_or_create_open",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435947.065039,
+     "end": 435947.103568,
+     "ms": 38.529,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "entity_card_search",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 435947.479512,
+     "end": 435947.535741,
+     "ms": 56.229,
+     "kind": "sync_python",
+     "kinds": {
+      "sync_python": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:1061:execute_loop",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/loop.py:1316:run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/loop.py:1500:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/loop.py:2059:_plan",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/recorder.py:69:model_call",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:164:record_model_call",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:215:_append",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/trace/store.py:208:_patch"
+     ],
+     "threads": {
+      "MainThread": "_patch",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_write_to_self",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 435946.6014647,
+     "kind": "sync_python",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:554:_main",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:456:_run_scenario",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:415:_run_one",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:235:measure",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:381:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2452:run_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:769:submit",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:385:_persist_accept",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/turn_journal.py:313:accepted",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/instance_registry.py:298:claim",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/storage/db.py:60:transaction"
+     ],
+     "threads": {
+      "MainThread": "transaction",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "t": 435946.6676171,
+     "kind": "sync_python",
+     "main_stack": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1936:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/events.py:84:_run",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/core/turn.py:922:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/app.py:2480:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:288:execute",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:315:_execute_turn",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/turn_orchestrator.py:576:build_context",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:98:append_message",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/ingest.py:66:_resolve_fragment",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/memory/fragment.py:123:get_or_create_open"
+     ],
+     "threads": {
+      "MainThread": "get_or_create_open",
+      "qio-heavy_0": "_worker",
+      "qio-heavy_1": "_worker",
+      "qio-blocking_0": "_worker",
+      "Thread-3 (_burn)": "_burn",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "turn_start"
+    ],
+    [
+     0.108,
+     "slow_recall_enter"
+    ],
+    [
+     0.3085,
+     "slow_recall_exit"
+    ],
+    [
+     0.9728,
+     "turn_end"
+    ]
+   ]
+  }
+ ]
+}
