@@ -473,9 +473,16 @@ class AuthorizationEngine(AuthorizationGateway):
             return Verdict.APPROVE, reason + unavailable_note, scope_id, True
 
         operation = self._review_operation(effect)
-        fingerprint = self._operation_fingerprint(
-            requirement.requirement_id, mode.value, operation
-        )
+        # fingerprint 用审查模块的单一实现（含操作类型/对象身份/程序/argv/cwd/
+        # 脚本摘要/接收方/模式）；后端自算版本只作为模块缺失时的兜底。
+        try:
+            from agent.security.review import operation_fingerprint as _op_fingerprint
+
+            fingerprint = _op_fingerprint(operation, mode=mode.value)
+        except Exception:  # noqa: BLE001 - 模块异常时用本地实现（仍含同样字段）
+            fingerprint = self._operation_fingerprint(
+                requirement.requirement_id, mode.value, operation
+            )
         try:
             record = self.authorizations.reuse(
                 requirement_id=requirement.requirement_id,
@@ -551,8 +558,12 @@ class AuthorizationEngine(AuthorizationGateway):
             try:
                 from dataclasses import asdict
 
+                import uuid
+
                 record = AuthorizationRecord(
-                    record_id="authz_" + fingerprint[:16],
+                    # record_id 只是行身份；复用键是 (requirement_id, fingerprint)，
+                    # 不同要求下相同操作也不能撞主键。
+                    record_id="authz_" + uuid.uuid4().hex[:16],
                     requirement_id=requirement.requirement_id,
                     operation_kind=operation.kind,
                     fingerprint=fingerprint,
