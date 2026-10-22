@@ -192,16 +192,20 @@ async def test_external_replacement_does_not_inherit_generated(env):
         temp = root / "生成物.txt.external"
         temp.write_text("someone-else", encoding="utf-8")
         os.replace(temp, target)
+
+        assert env["store"].lookup(target) is None, "外部替换的文件不得继承旧来源"
+        result = await tool.run(path="生成物.txt", content="qio-v2")
+        assert result.ok, result.error
+        effect = _last_effect(env)
+        assert effect.detail["file_origin"] is None, (
+            "写前来源未知（外部文件），不得声称 generated"
+        )
+        record = env["store"].lookup(target)
+        assert record is not None and record.origin == fo.ORIGIN_USER_ORIGINAL, (
+            "外部替换后的同名文件只能被保守当作 user_original"
+        )
+        # 旧 inode 一直钉住到断言结束：后续原子写的临时文件若复用旧 inode，
+        # 会被误判成"原生成物"（ext4 会复用已释放 inode；这是测试环境问题）。
     finally:
         if hold is not None:
             os.close(hold)
-
-    assert env["store"].lookup(target) is None, "外部替换的文件不得继承旧来源"
-    result = await tool.run(path="生成物.txt", content="qio-v2")
-    assert result.ok, result.error
-    effect = _last_effect(env)
-    assert effect.detail["file_origin"] is None, "写前来源未知（外部文件），不得声称 generated"
-    record = env["store"].lookup(target)
-    assert record is not None and record.origin == fo.ORIGIN_USER_ORIGINAL, (
-        "外部替换后的同名文件只能被保守当作 user_original"
-    )
