@@ -337,6 +337,8 @@ class AppContext:
             computer=self.computer,
             security=self.authorization,
             tool_lookup=self.registry.get,
+            # AttachmentService 由 create_app 稍后注册到 services；用 getter 延迟取。
+            attachments_getter=lambda: self._attachment_service(),
         )
         for _tool in (
             FsReadTool(),
