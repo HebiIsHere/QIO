@@ -156,8 +156,8 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.get('[data-im="card-body"]').text()).toContain("第一段正文。");
     expect(w.find('[data-im="card-block-code"]').exists()).toBe(true);
     expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("展开预览");
-    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
+    // 2026-10-14：元信息层不再重复互动材料文案，开关由 card-license 单独承载
+    expect(w.get('[data-im="card-license"]').text()).toBe("未作为互动材料");
 
     // 既不渲染编辑器，也不渲染预览挂载点
     expect(w.find('[data-im="card-editor"]').exists()).toBe(false);
@@ -269,9 +269,9 @@ describe("最小尺寸 180×96：标题 / 主要操作 / 必要状态 / 内容�
 
     // 标题 + 必要状态
     expect(w.find('[data-im="card-title"]').exists()).toBe(true);
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
+    expect(w.get('[data-im="card-license"]').text()).toBe("未作为互动材料");
+    // 2026-10-14：元信息层不再重复互动材料文案，开关由 card-license 单独承载
+    expect(w.get('[data-im="card-license"]').text()).toBe("未作为互动材料");
     // 让位的是次级信息：材料类型标签与更新时间
     expect(w.find('[data-im="card-head"] .kind').exists()).toBe(false);
     expect(w.find('[data-im="card-meta"] .time').exists()).toBe(false);
@@ -356,18 +356,18 @@ describe("规则层守卫：高度预算与横向滚动（jsdom 没有真实排�
   });
 });
 
-describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：元信息层不再重复许可文案）", () => {
-  it("未选中也能辨认「未允许查看 / 允许 QIO 查看」", () => {
+describe("互动材料开关：未选中可见、勾选只改 checked（2026-10-14：元信息层不再重复互动材料文案）", () => {
+  it("未选中也能辨认「未作为互动材料 / 作为互动材料」", () => {
     const off = mountBoard(textCard(), { selected: false });
     expect(off.find('[data-im="card-toolbar"]').exists()).toBe(false);
     expect(off.get('[data-im="card-license"]').attributes("data-checked")).toBe("0");
-    expect(off.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    // 2026-10-14：元信息层不再重复许可文案（card-license 已在上面核对）
+    expect(off.get('[data-im="card-license"]').text()).toBe("未作为互动材料");
+    // 2026-10-14：元信息层不再重复互动材料文案（card-license 已在上面核对）
     off.unmount();
 
     const on = mountBoard(textCard({ checked: true }), { selected: false });
     expect(on.get('[data-im="card-license"]').attributes("data-checked")).toBe("1");
-    expect(on.get('[data-im="card-license"]').text()).toBe("允许 QIO 查看");
+    expect(on.get('[data-im="card-license"]').text()).toBe("作为互动材料");
     // 2026-10-14：同上，许可状态由 card-license 承载
   });
 
@@ -397,11 +397,13 @@ describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：�
   it("勾选框只留短文案；完整规则放在可达的「说明」详情里（默认收起）", () => {
     const w = mountBoard(textCard());
     const check = w.get('[data-im="card-toolbar"] .check');
-    expect(check.get(".check-label").text()).toBe("允许 QIO 查看");
+    expect(check.get(".check-label").text()).toBe("作为互动材料");
     // 完整说明仍在同一处，点开「说明」就能读到（收起 ≠ 删掉）
-    expect(check.text()).toContain("许可：允许 QIO 查看这张卡");
-    expect(check.text()).toContain("只有你手动取消才失效");
-    expect(check.text()).toContain("覆盖卡里的全部文字、代码与链接");
+    expect(check.text()).toContain("作为互动材料：主动把这张卡的文字、代码与链接纳入 QIO 的互动上下文");
+    // 文案必须明确它不是文件访问权限（R9 契约 §8）
+    expect(check.text()).toContain("不是操作系统文件访问权限");
+    expect(check.text()).toContain("只有你手动取消、隐藏或删除这张卡才会退出互动上下文");
+    expect(check.text()).toContain("把这张卡的文字、代码与链接纳入 QIO 的互动上下文");
     const details = check.get("details.check-detail");
     expect(details.attributes("open"), "完整说明默认收起").toBeUndefined();
     expect(details.find("summary").text()).toBe("说明");

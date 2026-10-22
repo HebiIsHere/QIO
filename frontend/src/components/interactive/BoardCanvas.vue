@@ -1849,7 +1849,7 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
   const card = cardById(current, cardId);
   if (!card) return;
   if (flag === "checked") {
-    commit(updateCard(current, cardId, { checked: !card.checked }), card.checked ? "取消勾选" : "勾选注释（本次允许 QIO 查看）");
+    commit(updateCard(current, cardId, { checked: !card.checked }), card.checked ? "取消勾选" : "勾选注释（本次作为互动材料）");
     return;
   }
   if (flag === "hidden") {

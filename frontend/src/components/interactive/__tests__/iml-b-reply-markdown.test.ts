@@ -7,7 +7,7 @@
  *    渲染器自身不建滚动容器、不含 overflow-x: auto|scroll；模型原文不被当可信 HTML。
  * 2. BoardCard 的结果卡（kind="reply"）正文走 MarkdownContent，**不**走普通文字 p.content；
  *    未选中的常态与 reading 态都要渲染；正文仍是唯一纵向阅读区（只有一个 QIO 滚动宿主）。
- * 3. 「复制原文」给出完整 Markdown 原文（代码块复制仍是代码原文）；允许 QIO 查看的文案
+ * 3. 「复制原文」给出完整 Markdown 原文（代码块复制仍是代码原文）；作为互动材料的文案
  *    对文字卡与结果卡都成立；正文更新 / 阅读切换不改变卡片外框、不触发板面变更。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -352,10 +352,10 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
 });
 
 /* =========================================================================
- * 3. 复制原文 / 许可文案（B4 / B6）
+ * 3. 复制原文 / 互动材料文案（B4 / B6）
  * ======================================================================= */
 
-describe("结果卡：复制原文与许可文案（B4 / B6）", () => {
+describe("结果卡：复制原文与互动材料文案（B4 / B6）", () => {
   let store: ReturnType<typeof useInteractiveStore>;
   let wrapper: VueWrapper | null = null;
 
@@ -417,7 +417,7 @@ describe("结果卡：复制原文与许可文案（B4 / B6）", () => {
     expect(writeText).toHaveBeenCalledWith(PY_CODE);
   });
 
-  it("许可文案对文字卡与结果卡都成立（工具栏说明与整卡徽章）", () => {
+  it("互动材料文案对文字卡与结果卡都成立（工具栏说明与整卡徽章）", () => {
     const card = mkCard("t1", {
       kind: "text",
       content: "注释",
@@ -428,9 +428,9 @@ describe("结果卡：复制原文与许可文案（B4 / B6）", () => {
     store.setDraft(cardDraftKey("t1"), "");
     wrapper = mountCard(card);
     const check = wrapper.get('[data-im="card-toolbar"] .check');
-    expect(check.text()).toContain("许可：允许 QIO 查看这张卡");
+    expect(check.text()).toContain("作为互动材料：主动把这张卡的文字、代码与链接纳入 QIO 的互动上下文");
     expect(check.text()).toContain("文字卡与结果卡");
-    expect(check.text()).toContain("只有你手动取消才失效");
+    expect(check.text()).toContain("只有你手动取消、隐藏或删除这张卡才会退出互动上下文");
     const license = wrapper.get('[data-im="card-license"]');
     expect(license.attributes("title") ?? "").toContain("文字卡与结果卡");
   });

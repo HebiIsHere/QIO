@@ -55,7 +55,7 @@ export const CARD_KIND_LABELS: Record<CardKind, string> = {
  *
  * 契约（2026-10-15 图片展示简化）：**材料只有 file** —— 图片与其它文件都是文件卡的附件，
  * 不再有独立的图片卡类型。历史上 code / url 的「材料默认可见」通道取消 ——
- * 卡内文字、链接与代码一律走统一文字卡的**整卡许可**。
+ * 卡内文字、链接与代码一律走统一文字卡的**互动材料开关**。
  */
 export const MATERIAL_KINDS: CardKind[] = ["file"];
 
@@ -92,7 +92,7 @@ export function defaultCardSeed(kind: CardKind): { kind: CardKind; content: stri
 }
 
 /**
- * 需要勾选才允许 QIO 查看的卡片：文字注释与 QIO 结果卡（材料默认在范围内）。
+ * 需要勾选才作为互动材料的卡片：文字注释与 QIO 结果卡（材料默认在范围内）。
  *
  * F4：结果卡（reply）与文字卡同一套许可语义 —— 默认**未**许可（QIO 自己生成 ≠ 获得许可），
  * 用户勾选后持续有效；隐藏 / 删除 / 取消勾选立即退出范围。

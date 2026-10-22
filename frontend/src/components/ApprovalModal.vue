@@ -7,8 +7,14 @@
  * 出现/退出、焦点管理、队列门控与按钮层级；不再自己算一套显示规则。
  */
 import { computed, nextTick, onMounted, ref, watch } from "vue";
-import { useApprovalsStore, approvalFacts } from "../stores/approvals";
+import {
+  useApprovalsStore,
+  approvalFacts,
+  confirmationProgressText,
+  isLifecycleApproval,
+} from "../stores/approvals";
 import type { ApprovalItem, ApprovalBudget } from "../stores/approvals";
+import { approvalStateLabel } from "../services/approvalLifecycle";
 import { usePresence } from "../composables/usePresence";
 import ApprovalFacts from "./ApprovalFacts.vue";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
@@ -47,6 +53,61 @@ function kindTitle(kind: string): string {
 
 /** 共用事实（与内联卡同一份整理） */
 const facts = computed(() => approvalFacts(item.value));
+
+/** R9 生命周期 v2：状态机 / 内部数据三次确认（前端只呈现，后端 CAS 为准）。 */
+const lifecycle = computed(() => isLifecycleApproval(item.value));
+const requiredConfirmations = computed(() =>
+  Math.max(1, Number(item.value?.requiresConfirmations ?? 1)),
+);
+const doneConfirmations = computed(() =>
+  Math.max(0, Math.min(requiredConfirmations.value, Number(item.value?.confirmedStage ?? 0))),
+);
+const needsConfirm = computed(() => requiredConfirmations.value > 1 && doneConfirmations.value < requiredConfirmations.value);
+const confirmButtonText = computed(
+  () =>
+    "继续确认（第 " +
+    (doneConfirmations.value + 1) +
+    "/" +
+    requiredConfirmations.value +
+    " 次）",
+);
+/** 已批准 / 执行中：没有更多用户动作，只等执行结果（恢复出来的 pending 可能出现这两种状态）。 */
+const awaitingExecution = computed(() => {
+  const state = item.value?.state;
+  return state === "approved" || state === "executing";
+});
+/** 内部数据警告文案（确认进度 + 边界；后端为准，前端不自行推进 stage）。 */
+const confirmHint = computed(() => {
+  if (!needsConfirm.value) return "";
+  return (
+    "这是 QIO 的内部运行数据，直接改写可能损坏应用：需要连续 " +
+    requiredConfirmations.value +
+    " 次确认。已确认 " +
+    doneConfirmations.value +
+    "/" +
+    requiredConfirmations.value +
+    " 次；" +
+    confirmationProgressText(item.value)
+  );
+});
+
+/** 「稍后处理」在已批准/执行中时没有待办意义：改为「知道了」收起这条状态。 */
+function onLater() {
+  if (awaitingExecution.value && item.value) {
+    approvals.resolve(item.value.approval_id);
+    return;
+  }
+  approvals.defer();
+}
+
+/** 打开弹窗时顺带刷新执行结果历史（只读补充事实；失败不打断审批本身）。 */
+watch(
+  () => [item.value?.approval_id ?? null, approvals.visible] as const,
+  ([id, visible]) => {
+    if (id && visible && !approvals.historyLoading) void approvals.loadHistory();
+  },
+  { immediate: true },
+);
 
 /**
  * 子 agent 预算（编辑后批准时随 overrides 提交）。
@@ -185,6 +246,28 @@ function onKeydown(e: KeyboardEvent) {
       <div class="body" v-qio-scrollbar data-qio-fit>
         <!-- 共用事实：内联卡与本弹窗说同样的话（契约 §1.3） -->
         <ApprovalFacts :item="item" :budget="budgetForm" @update:budget="budgetForm = $event" />
+
+        <!--
+          R9：执行结果历史（GET /api/approvals/history；只读补充事实）。
+          与审批事实分开展示，不把「历史结果」冒充成「这次会发生什么」。
+        -->
+        <details v-if="lifecycle" class="approval-history" data-test="approval-history">
+          <summary>执行结果历史（只读）</summary>
+          <p v-if="approvals.historyLoading" class="history-note">正在读取…</p>
+          <p v-if="approvals.historyError" class="history-error" role="status">{{ approvals.historyError }}</p>
+          <p v-if="approvals.lastResult" class="history-note" data-test="approval-last-result">
+            最近一次结局：{{ approvalStateLabel(approvals.lastResult.state) }}
+            <template v-if="approvals.lastResult.summary"> · {{ approvals.lastResult.summary }}</template>
+          </p>
+          <ul v-if="approvals.history.length" class="history-list" data-test="approval-history-list">
+            <li v-for="row in approvals.history.slice(0, 8)" :key="row.approval_id + row.at">
+              <span class="mono">{{ row.at }}</span>
+              <span class="history-outcome">{{ approvalStateLabel(row.outcome) }}</span>
+              <span class="history-summary">{{ row.summary }}</span>
+            </li>
+          </ul>
+          <p v-else-if="!approvals.historyLoading" class="history-note">还没有执行结果历史。</p>
+        </details>
       </div>
       <p v-if="approvals.error" class="approval-error" role="alert">{{ approvals.error }}</p>
       <div class="actions">
@@ -198,26 +281,51 @@ function onKeydown(e: KeyboardEvent) {
           知道了
         </button>
         <template v-else>
-          <button class="reject" :disabled="submitting" @click="approvals.respond('rejected')">
+          <!-- 已批准 / 执行中（恢复出来的状态）：没有更多用户动作，只等执行结果 -->
+          <p v-if="awaitingExecution" class="executing-note" data-test="approval-awaiting-execution">
+            已批准，等待后端执行结果；不需要再操作。
+          </p>
+          <button
+            v-if="!awaitingExecution"
+            class="reject"
+            :disabled="submitting"
+            @click="approvals.respond('rejected')"
+          >
             拒绝
           </button>
           <button
             class="later"
             :disabled="submitting"
-            title="只收起窗口，保留待审批任务：既不批准也不拒绝"
-            @click="approvals.defer()"
+            :title="awaitingExecution ? '收起这条状态' : '只收起窗口，保留待审批任务：既不批准也不拒绝'"
+            @click="onLater"
           >
-            稍后处理
+            {{ awaitingExecution ? "知道了" : "稍后处理" }}
+          </button>
+          <!-- 内部数据三次确认：按钮是「第 N 次确认」，不是一次批准；stage 由后端 CAS -->
+          <button
+            v-if="needsConfirm"
+            class="approve"
+            :disabled="submitting"
+            :title="confirmHint"
+            data-test="approval-confirm-next"
+            @click="approvals.confirmNext()"
+          >
+            {{ submitting ? "提交中…" : confirmButtonText }}
           </button>
           <button
-            v-if="facts?.isSubagentCreate"
+            v-else-if="facts?.isSubagentCreate"
             class="approve"
             :disabled="submitting"
             @click="approveWithBudget"
           >
             {{ submitting ? "提交中…" : "允许此次操作（含预算）" }}
           </button>
-          <button v-else class="approve" :disabled="submitting" @click="approvals.respond('approved')">
+          <button
+            v-else-if="!awaitingExecution"
+            class="approve"
+            :disabled="submitting"
+            @click="approvals.respond('approved')"
+          >
             {{ submitting ? "提交中…" : "允许此次操作" }}
           </button>
         </template>
@@ -294,6 +402,28 @@ function onKeydown(e: KeyboardEvent) {
 .actions .reject:hover:not(:disabled) { background: var(--bg-inset); }
 .actions button:disabled { opacity: 0.5; }
 .actions button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.approval-history {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.approval-history > summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+  list-style: none;
+}
+.approval-history > summary::-webkit-details-marker { display: none; }
+.approval-history > summary::before { content: "›"; display: inline-block; margin-right: 4px; color: var(--text-muted); }
+.approval-history[open] > summary::before { transform: rotate(90deg); }
+.history-note { margin: 6px 0 0; color: var(--text-muted); }
+.history-error { margin: 6px 0 0; color: var(--danger); }
+.history-list { margin: 6px 0 0; padding-left: 18px; }
+.history-list li { margin: 2px 0; overflow-wrap: anywhere; }
+.history-list .mono { color: var(--text-muted); font-size: 11px; margin-right: 6px; }
+.history-outcome { color: var(--text-strong); margin-right: 6px; }
+.executing-note { margin: 0 auto 0 0; color: var(--text-secondary); font-size: 12.5px; align-self: center; }
 .approval-error {
   margin-top: 12px;
   padding: 8px 12px;

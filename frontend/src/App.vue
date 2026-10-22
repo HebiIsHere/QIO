@@ -4,6 +4,7 @@ import { useEventStore } from "./stores/events";
 import { useUiStore } from "./stores/ui";
 import { useOnboardingStore } from "./stores/onboarding";
 import { useApprovalsStore } from "./stores/approvals";
+import { useSecurityStore } from "./stores/security";
 import ApprovalModal from "./components/ApprovalModal.vue";
 import ApprovalEntry from "./components/ApprovalEntry.vue";
 import DevTaskEntry from "./components/DevTaskEntry.vue";
@@ -15,6 +16,7 @@ const events = useEventStore();
 const ui = useUiStore();
 const onboarding = useOnboardingStore();
 const approvals = useApprovalsStore();
+const security = useSecurityStore();
 
 /**
  * 启动状态：后端没应答之前不渲染主界面。
@@ -50,6 +52,10 @@ async function boot() {
     events.connect();
     void ui.load();
     void onboarding.load();
+    // 当前权限模式是常驻可见的事实：后端一就绪就恢复真实值（不靠事件）
+    void security.load();
+    // 审批生命周期 v2：断线/刷新/重启后主动恢复待审批项（旧后端没有该接口时静默跳过）
+    void approvals.recoverPending();
   } catch (err) {
     bootState.value = "failed";
     bootDetail.value = (err as Error)?.message || "未知原因";

@@ -58,9 +58,24 @@ export type AttachmentKind = "copy" | "reference";
 export type AttachmentState = "prepared" | "ready" | "failed" | "missing" | "changed";
 
 /**
- * 附件引用（Lead 冻结形状，逐字一致；B 也按这个形状消费）。
- * display 只有两种取值：「已保存副本」/「引用本地文件」。
+ * 附件引用（冻结形状 + R9 源引用扩展）。
+ *
+ * 旧字段逐字保留（B / 既有调用方按老形状消费）；R9 新字段全部可选：
+ * 老后端 / 老历史快照不返回它们时，界面走旧语义，不伪造「源引用」。
  */
+export type AttachmentSourceKind =
+  | "desktop_path"
+  | "dropped_path"
+  | "browser_upload"
+  | "clipboard_image"
+  | "legacy_copy"
+  | "missing";
+
+export type AttachmentOrigin = "user_original" | "user_saved_material" | "qio_generated";
+
+/** 源文件当前能不能用（契约 §6.1 reference_state）。 */
+export type AttachmentAvailability = "available" | "missing" | "ambiguous" | "relocated";
+
 export interface AttachmentRef {
   id: string;
   name: string;
@@ -87,11 +102,62 @@ export interface AttachmentRef {
    * 身份与原持久化数据保留，但状态未知 —— 不能当成就绪发送；界面显示「暂时无法确认」+ 重试。
    */
   unconfirmed?: boolean;
+  // ---- R9 源引用扩展（契约 §6.4；payload snake_case，全部可选） ----
+  /** = id；后端新字段叫 attachment_id */
+  attachmentId?: string;
+  /** 原始文件名（后端新字段 filename） */
+  filename?: string;
+  /** 媒体类型（图片 / 文档 / 表格 / PDF / 文本 …，后端 media_kind） */
+  mediaKind?: string;
+  /** 材料归属：用户原文件 / 用户提供并首次落盘 / QIO 生成 */
+  origin?: AttachmentOrigin;
+  /** 来源入口：桌面选择 / 拖放 / 浏览器上传 / 剪贴板 / 历史副本 */
+  sourceKind?: AttachmentSourceKind;
+  /** 源文件可用性（available / missing / ambiguous / relocated） */
+  availability?: AttachmentAvailability;
+  /** 用户说明（登记时写下的用途说明） */
+  userNote?: string;
+  /** 「作为互动材料」开关（只控制是否主动纳入互动上下文，不是文件访问权限） */
+  materialEnabled?: boolean;
+  /** 不可用原因（缺失 / 位置待确认时由后端给） */
+  missingReason?: string | null;
+  /** 引用行 id（复制卡片共享同一个 attachmentId 与引用 id） */
+  referenceId?: string;
 }
 
 export const COPY_LABEL = "已保存副本";
 export const REFERENCE_LABEL = "引用本地文件";
+export const MATERIAL_LABEL = "工作区材料";
 export const REFERENCE_CAVEAT = "历史保留的是位置，不保证内容仍然存在";
+
+/** 来源入口的中文标签（界面必须说清「引用本地文件」还是「QIO 首次落盘」）。 */
+export const SOURCE_KIND_LABELS: Record<AttachmentSourceKind, string> = {
+  desktop_path: "桌面选择",
+  dropped_path: "拖放",
+  browser_upload: "浏览器上传",
+  clipboard_image: "剪贴板截图",
+  legacy_copy: "历史副本",
+  missing: "位置缺失",
+};
+
+/** 材料归属的中文标签（不把用户原文件说成 QIO 生成）。 */
+export const ORIGIN_LABELS: Record<AttachmentOrigin, string> = {
+  user_original: "你的原文件",
+  user_saved_material: "QIO 首次落盘的材料",
+  qio_generated: "QIO 生成的工作文件",
+};
+
+/** 源文件可用性的中文标签。 */
+export const AVAILABILITY_LABELS: Record<AttachmentAvailability, string> = {
+  available: "可用",
+  missing: "缺失",
+  ambiguous: "位置待确认",
+  relocated: "已重新指定位置",
+};
+
+const SOURCE_KINDS = new Set<string>(Object.keys(SOURCE_KIND_LABELS));
+const ORIGINS = new Set<string>(Object.keys(ORIGIN_LABELS));
+const AVAILABILITIES = new Set<string>(Object.keys(AVAILABILITY_LABELS));
 
 /** 后端可能返回的原始状态（含冻结类型之外的内部值）：一律归到冻结的五个状态里。 */
 function normalizeState(raw: unknown): AttachmentState {
@@ -127,16 +193,32 @@ export function toAttachmentRef(payload: Record<string, unknown>): AttachmentRef
   const state = normalizeState(payload.state);
   const rawError = typeof payload.error === "string" && payload.error ? payload.error : null;
   const normalized = state === "failed" && payload.state === "cancelled" ? (rawError ?? "已取消（可以重试）") : rawError;
+
+  // R9：新字段与老字段同时读 —— 新字段优先，老字段作回退（契约 §6.4 / W3 HTTP 答复）。
+  const sourceKind = normalizeSourceKind(payload.source_kind);
+  const availability = normalizeAvailability(payload);
+  const kind =
+    payload.kind === "reference" ||
+    sourceKind === "desktop_path" ||
+    sourceKind === "dropped_path"
+      ? "reference"
+      : "copy";
+  const display =
+    sourceKind === "browser_upload" || sourceKind === "clipboard_image"
+      ? MATERIAL_LABEL
+      : kind === "reference"
+        ? REFERENCE_LABEL
+        : COPY_LABEL;
   const ref: AttachmentRef = {
-    id: String(payload.id ?? ""),
-    name: String(payload.name ?? "未命名文件"),
-    sizeBytes: Number(payload.size_bytes ?? 0),
-    kind: payload.kind === "reference" ? "reference" : "copy",
-    display: payload.kind === "reference" ? REFERENCE_LABEL : COPY_LABEL,
+    id: String(payload.attachment_id ?? payload.id ?? ""),
+    name: String(payload.filename ?? payload.name ?? "未命名文件"),
+    sizeBytes: Number(payload.size_bytes ?? payload.size ?? 0),
+    kind,
+    display,
     state,
     error: normalized,
   };
-  // 可选事实：payload 没给就不写进对象（冻结的 7 字段形状对老调用方逐字不变）
+  // 可选事实：payload 没给就不写进对象（冻结的字段形状对老调用方逐字不变）
   if (typeof payload.stored_path === "string") ref.storedPath = payload.stored_path;
   if (typeof payload.source_path === "string") ref.sourcePath = payload.source_path;
   if (typeof payload.topic_id === "string") ref.topicId = payload.topic_id;
@@ -149,7 +231,100 @@ export function toAttachmentRef(payload: Record<string, unknown>): AttachmentRef
   }
   // F10：这个标记是前端的「暂时无法确认」事实，持久化后刷新仍要如实显示。
   if (payload.unconfirmed === true) ref.unconfirmed = true;
+  // ---- R9 源引用扩展（全部可选；字段名与 W3 HTTP 答复一致） ----
+  if (typeof payload.attachment_id === "string") ref.attachmentId = payload.attachment_id;
+  if (typeof payload.filename === "string") ref.filename = payload.filename;
+  if (typeof payload.media_kind === "string") ref.mediaKind = payload.media_kind;
+  if (ORIGINS.has(String(payload.origin ?? ""))) ref.origin = String(payload.origin) as AttachmentOrigin;
+  if (sourceKind) ref.sourceKind = sourceKind;
+  if (availability) ref.availability = availability;
+  if (typeof payload.user_note === "string") ref.userNote = payload.user_note;
+  if (typeof payload.material_enabled === "boolean") ref.materialEnabled = payload.material_enabled;
+  if (typeof payload.missing_reason === "string") ref.missingReason = payload.missing_reason;
+  else if (payload.missing_reason === null) ref.missingReason = null;
+  if (typeof payload.reference_id === "string") ref.referenceId = payload.reference_id;
+  const legacyState = payload.reference_state;
+  if (!ref.availability && typeof legacyState === "string" && AVAILABILITIES.has(legacyState)) {
+    ref.availability = legacyState as AttachmentAvailability;
+  }
   return ref;
+}
+
+function normalizeSourceKind(raw: unknown): AttachmentSourceKind | null {
+  return typeof raw === "string" && SOURCE_KINDS.has(raw) ? (raw as AttachmentSourceKind) : null;
+}
+
+/**
+ * 可用性：W3 的 payload 用 dict（{state, readable_by_tool, ...}），
+ * 也兼容直接给字符串 reference_state —— 只认识冻结的四种取值，未知不猜。
+ */
+function normalizeAvailability(payload: Record<string, unknown>): AttachmentAvailability | null {
+  const raw = payload.availability;
+  const value =
+    typeof raw === "string"
+      ? raw
+      : raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>).state
+        : undefined;
+  return typeof value === "string" && AVAILABILITIES.has(value) ? (value as AttachmentAvailability) : null;
+}
+
+/** 来源入口标签（拿不到就是「来源未知」，不按所在目录猜）。 */
+export function attachmentSourceLabel(ref: AttachmentRef): string {
+  return ref.sourceKind ? SOURCE_KIND_LABELS[ref.sourceKind] : "来源未知";
+}
+
+/**
+ * 来源说明（界面必须说实话）：
+ * * 桌面选择 / 拖放 → 引用本地源文件，QIO 不复制、不移动；
+ * * 浏览器上传 / 剪贴板 → QIO 首次落盘到工作区材料源文件；
+ * * 历史副本 → 旧数据，保留原样用于只读回放。
+ */
+export function attachmentSourceNote(ref: AttachmentRef): string {
+  switch (ref.sourceKind) {
+    case "desktop_path":
+    case "dropped_path":
+      return "引用本地源文件（QIO 不复制、不移动；读取与获准写回都作用于这个文件）";
+    case "browser_upload":
+      return "已保存为工作区材料源文件（来源：浏览器上传）";
+    case "clipboard_image":
+      return "已保存为工作区材料源文件（来源：剪贴板截图）";
+    case "legacy_copy":
+      return "历史副本（旧数据；用于只读回放）";
+    case "missing":
+      return "源文件位置缺失：需要重新指定位置";
+    default:
+      return ref.kind === "reference"
+        ? "引用本地源文件（QIO 不复制、不移动）"
+        : COPY_LABEL;
+  }
+}
+
+/** 材料归属说明；拿不到归属就不显示（不猜）。 */
+export function attachmentOriginLabel(ref: AttachmentRef): string {
+  return ref.origin ? ORIGIN_LABELS[ref.origin] : "";
+}
+
+/** 引用 id（复制卡片共享同一个 id；界面用它说明「共享同一份材料」）。 */
+export function attachmentReferenceId(ref: AttachmentRef): string {
+  return ref.referenceId || ref.attachmentId || ref.id;
+}
+
+/** 源文件是不是已经不可用（需要重新指定位置）。 */
+export function isAttachmentSourceMissing(ref: AttachmentRef): boolean {
+  if (ref.availability === "missing" || ref.availability === "ambiguous") return true;
+  return ref.state === "missing" || ref.state === "failed";
+}
+
+/** 可用性说明：先用可用性事实，再退回既有状态文字；缺失时带上后端给的原因。 */
+export function attachmentAvailabilityText(ref: AttachmentRef): string {
+  if (ref.availability) {
+    const label = AVAILABILITY_LABELS[ref.availability];
+    if (ref.availability === "missing" && ref.missingReason) return label + "：" + ref.missingReason;
+    if (ref.availability === "ambiguous") return label + "：需要你确认是不是同一个文件";
+    return label;
+  }
+  return stateText(ref);
 }
 
 /** 只接受冻结的三种取值：未知/重复/非字符串一律丢弃（宁可少一个按钮，也不给走不通的动作）。 */
@@ -298,15 +473,32 @@ interface AttachmentPayload {
   attachment: Record<string, unknown>;
 }
 
-/** 登记一个真实存在的本地路径（≤100MB 后台复制副本；>100MB 只记引用）。 */
+/**
+ * 登记一个真实存在的本地路径（契约 §6.2 register_source：不复制、不移动、不改名）。
+ *
+ * `sourceKind` 传 desktop_path / dropped_path 时走 R9 源引用语义；不传保持旧兼容语义
+ * （历史数据回放与老后端），调用方不会因为新字段被老后端忽略而失败。
+ */
 export async function prepareAttachment(
   sourcePath: string,
-  options: { topicId?: string | null; name?: string | null; size?: number | null } = {},
+  options: {
+    topicId?: string | null;
+    name?: string | null;
+    size?: number | null;
+    sourceKind?: Extract<AttachmentSourceKind, "desktop_path" | "dropped_path">;
+    origin?: AttachmentOrigin;
+    userNote?: string;
+  } = {},
 ): Promise<AttachmentRef> {
   const body: Record<string, unknown> = { source_path: sourcePath };
   if (options.topicId) body.topic_id = options.topicId;
   if (options.name) body.name = options.name;
   if (options.size != null) body.size = options.size;
+  if (options.sourceKind) {
+    body.source_kind = options.sourceKind;
+    body.origin = options.origin ?? "user_original";
+    if (options.userNote) body.user_note = options.userNote;
+  }
   const res = await request<AttachmentPayload>(
     "/api/attachments",
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
@@ -315,28 +507,54 @@ export async function prepareAttachment(
   return toAttachmentRef(res.attachment);
 }
 
-/** 浏览器回退：把文件字节原样传上去（不用 multipart，也不碰 fakepath）。 */
+/**
+ * 桌面上选了一个真实路径 → 登记源引用（契约 §6.3：不复制、不移动）。
+ * 与 prepareAttachment 同一入口：多一个显式来源，界面才能如实标注。
+ */
+export function registerSourceAttachment(
+  path: string,
+  sourceKind: Extract<AttachmentSourceKind, "desktop_path" | "dropped_path">,
+  options: { topicId?: string | null; name?: string | null; userNote?: string } = {},
+): Promise<AttachmentRef> {
+  return prepareAttachment(path, {
+    ...options,
+    sourceKind,
+    origin: "user_original",
+  });
+}
+
+/**
+ * 浏览器回退：只有字节、没有原位置（契约 §6.3）→ 首次落盘到工作区材料源文件。
+ *
+ * 不用 multipart，也不碰 fakepath；用 `X-QIO-Source-Kind` 明确标注来源，
+ * 后端据此记录 origin=user_saved_material，界面不会把它说成「引用本地原文件」。
+ */
 export async function uploadAttachment(
   file: File,
-  options: { topicId?: string | null } = {},
+  options: {
+    topicId?: string | null;
+    sourceKind?: Extract<AttachmentSourceKind, "browser_upload" | "clipboard_image">;
+    userNote?: string;
+  } = {},
 ): Promise<AttachmentRef> {
   if (file.size > COPY_MAX_BYTES) {
     throw new Error(
       "浏览器上传只用于 ≤ " +
         humanSize(COPY_MAX_BYTES) +
-        " 的文件；这个文件 " +
+        " 的文件（这是上传大小限制，不是附件副本规则）；这个文件 " +
         humanSize(file.size) +
-        "，请用「选择本地文件」（桌面端）或把路径粘进来（大于 " +
-        humanSize(COPY_MAX_BYTES) +
-        " 的文件只记位置，不复制内容）",
+        "，请用桌面端的「选择本地文件」登记源文件引用",
     );
   }
   const headers: Record<string, string> = {
     "Content-Type": "application/octet-stream",
     // 头部不能放非 ASCII：URL 编码后由后端解码
     "X-QIO-Name": encodeURIComponent(file.name || "attachment"),
+    // R9：明确来源语义（老后端忽略这个头，按旧上传语义处理）
+    "X-QIO-Source-Kind": options.sourceKind ?? "browser_upload",
   };
   if (options.topicId) headers["X-QIO-Topic-Id"] = options.topicId;
+  if (options.userNote) headers["X-QIO-User-Note"] = encodeURIComponent(options.userNote);
   const res = await request<AttachmentPayload>(
     "/api/attachments/upload",
     { method: "POST", headers, body: file },
@@ -369,16 +587,49 @@ export async function removeAttachment(id: string): Promise<void> {
   });
 }
 
-/** 文件被移动/改名之后重新指定位置。 */
-export async function relocateAttachment(id: string, sourcePath: string): Promise<AttachmentRef> {
+/**
+ * 文件被移动/改名之后重新指定位置（契约 §6.2 relocate_reference / §7）。
+ *
+ * `confirmedIdentity` 只在用户确认「这是同一个文件」后传 true：
+ * 仅同名 / 同大小 / 同 hash 的候选**不能自动采纳**；身份（volume+file_id）一致时后端自行修复。
+ */
+export async function relocateAttachment(
+  id: string,
+  sourcePath: string,
+  options: { confirmedIdentity?: boolean } = {},
+): Promise<AttachmentRef> {
+  const body: Record<string, unknown> = { source_path: sourcePath };
+  if (options.confirmedIdentity !== undefined) body.confirmed_identity = options.confirmedIdentity;
   const res = await request<AttachmentPayload>(
     "/api/attachments/" + encodeURIComponent(id) + "/relocate",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source_path: sourcePath }),
+      body: JSON.stringify(body),
     },
     TIMEOUT_MS.long,
+  );
+  return toAttachmentRef(res.attachment);
+}
+
+/**
+ * 「作为互动材料」开关（契约 §8）。
+ *
+ * 只控制**是否主动纳入互动上下文**，不是 OS 文件访问权限，也不改变来源引用：
+ * 关闭后卡片仍在、源文件仍可被用户主动预览/打开。
+ */
+export async function setAttachmentMaterialEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<AttachmentRef> {
+  const res = await request<AttachmentPayload>(
+    "/api/attachments/" + encodeURIComponent(id) + "/material",
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    },
+    TIMEOUT_MS.write,
   );
   return toAttachmentRef(res.attachment);
 }
@@ -485,6 +736,43 @@ export async function pickLocalPath(): Promise<string | null> {
   const { invoke } = await import("@tauri-apps/api/core");
   const picked = await invoke<string | null>("pick_attachment_file");
   return picked && picked.trim() ? picked : null;
+}
+
+/** 原生选择返回的源文件事实（path 是真实路径；name/size 只用于即时展示）。 */
+export interface PickedAttachmentSource {
+  path: string;
+  name: string;
+  sizeBytes: number | null;
+}
+
+/**
+ * 桌面原生选择：返回**真实路径**（R9 契约 §6.3）。
+ *
+ * 优先调新命令 `pick_attachment_source`（带 name/size）；旧壳没有注册这个命令时
+ * 退回既有的 `pick_attachment_file`（同样返回真实路径），不假装拿到了元信息。
+ */
+export async function pickLocalSource(): Promise<PickedAttachmentSource | null> {
+  if (!isDesktopShell()) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    const picked = await invoke<{ path?: string; name?: string; size?: number } | null>(
+      "pick_attachment_source",
+    );
+    if (!picked?.path || !picked.path.trim()) return null;
+    return {
+      path: picked.path,
+      name: typeof picked.name === "string" ? picked.name : "",
+      sizeBytes: typeof picked.size === "number" && Number.isFinite(picked.size) ? picked.size : null,
+    };
+  } catch (err) {
+    const message = String((err as Error)?.message ?? err);
+    // 只有「命令不存在 / 未注册」才退回旧命令；选择器本身的失败原样抛出（不掩盖）
+    if (!/pick_attachment_source|not found|not allowed|unknown command|command .* not/i.test(message)) {
+      throw err;
+    }
+    const path = await invoke<string | null>("pick_attachment_file");
+    return path && path.trim() ? { path, name: "", sizeBytes: null } : null;
+  }
 }
 
 /**

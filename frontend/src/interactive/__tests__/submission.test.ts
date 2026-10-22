@@ -165,7 +165,7 @@ describe("可见范围预览（与服务端 models.selectable_cards 同规则）
   });
 });
 
-describe("允许查看范围文案", () => {
+describe("互动材料范围文案", () => {
   it("列出注释与材料数量，并明确写出未勾选的不在其中", () => {
     const range = localVisibleRange(
       state({

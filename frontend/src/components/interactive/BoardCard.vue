@@ -47,17 +47,23 @@ import {
 import CardInlinePreview from "./CardInlinePreview.vue";
 import type { PreviewPosition } from "../../services/attachments";
 import {
+  attachmentSourceNote,
   openAttachment,
   pickBrowserFile,
+  pickLocalSource,
+  registerSourceAttachment,
   stateText,
   uploadAttachment,
   waitUntilSettled,
+  type AttachmentRef,
 } from "../../services/attachments";
+import { mergeAttachmentIntoMeta } from "../../interactive/fileCardRef";
 import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
 import CardAttachmentPreview from "./CardAttachmentPreview.vue";
+import FileCardMaterialPanel from "./FileCardMaterialPanel.vue";
 import { attachmentPreviewPlan, attachmentRefForPreview } from "../../interactive/attachmentPreview";
 import { materialTypeLabel } from "../../interactive/previewPlan";
 import { isDesktopShell } from "../../services/attachments";
@@ -229,14 +235,15 @@ const kindLabel = computed(
 );
 
 /**
-  许可的完整说明（任务书 §6.6）：勾选框只留一句短文案，规则原文放进旁边的「说明」详情。
+  「作为互动材料」的完整说明（R9 契约 §8）：勾选框只留一句短文案，规则原文放进「说明」详情。
 
-  「提交后仍然有效、只有用户主动取消才失效」是硬约束（§6.7 的许可边界）：
-  提交成功 / 失败 / 超时 / 重复 / 恢复 / 重启 / 模式切换都不自动取消许可；
-  隐藏或删除这张卡才会让它退出查看范围。这段话是**唯一**一份说明，卡片正文不重复铺开。
+  「提交后仍然有效、只有用户主动取消才失效」是硬约束：
+  提交成功 / 失败 / 超时 / 重复 / 恢复 / 重启 / 模式切换都不自动取消；
+  隐藏或删除这张卡才会让它退出互动上下文。
+  **这不是操作系统文件访问权限**，只是是否主动纳入互动上下文。这段话是唯一一份说明。
 */
 const LICENSE_FULL_TEXT =
-  "许可：允许 QIO 查看这张卡（文字卡与结果卡同一条规则；提交后仍然有效，只有你手动取消才失效）—— 覆盖卡里的全部文字、代码与链接；隐藏或删除这张卡才会退出查看范围。";
+  "作为互动材料：主动把这张卡的文字、代码与链接纳入 QIO 的互动上下文（文字卡与结果卡同一条规则）。这不是操作系统文件访问权限；提交后仍然有效，只有你手动取消、隐藏或删除这张卡才会退出互动上下文。";
 const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
@@ -558,6 +565,11 @@ function dismissAttachStatus(): void {
   attachNotice.dismiss();
 }
 
+/** 文件卡面板把（只含引用与展示事实的）meta 补丁交给父级统一 commit。 */
+function onFileMetaPatch(meta: Record<string, unknown>, label: string): void {
+  emit("patch", props.card.id, { meta } as Partial<BoardCard>, label);
+}
+
 /**
  * 选一份真实文件 → 走既有上传接口（不新造上传链路）→ 等附件进入最终态 →
  * 把 `{ name, attachmentId, size }` 写进卡片 meta（由父级 commit，组件不直接改板面状态）。
@@ -573,28 +585,48 @@ async function pickAttachment(): Promise<void> {
   const token = attachNotice.begin();
   const retry: NoticeRetry = { label: "重新选择文件", run: () => void pickAttachment() };
   attachNotice.progress(token, "正在等待选择文件…");
-  let file: File | null;
+  let created: AttachmentRef | null = null;
+  let fileName = "";
+  let fallbackNote = "";
   try {
-    file = await pickBrowserFile();
-  } catch (error) {
-    attachNotice.fail(token, "选择文件失败：" + messageOf(error), retry);
-    return;
-  }
-  // 被新操作取代 / 组件已卸载：不再继续，也不写提示与板面（isCurrent 同时覆盖这两种失效）
-  if (!attachNotice.isCurrent(token)) return;
-  if (!file) {
-    // 用户取消：如实说明（不假装读到了内容），文案按卡片当前是否已有附件区分
-    attachNotice.fail(token, attachCancelText(), retry);
-    return;
-  }
-  const fileName = file.name || "未命名";
-  attachNotice.progress(token, "正在保存附件「" + fileName + "」…");
-  try {
-    const uploaded = await uploadAttachment(file);
+    // 桌面：原生选择器拿真实路径 → 登记源引用（不复制、不移动内容）
+    if (desktopShell.value) {
+      try {
+        const picked = await pickLocalSource();
+        if (!picked) {
+          // 用户取消原生选择器：如实说明，不再擅自打开浏览器文件选择
+          attachNotice.fail(token, attachCancelText(), retry);
+          return;
+        }
+        fileName = picked.name || picked.path.split(/[\\/]/).pop() || "未命名";
+        attachNotice.progress(token, "正在登记源文件「" + fileName + "」…");
+        created = await registerSourceAttachment(picked.path, "desktop_path");
+      } catch (error) {
+        // 原生选择器不可用（旧壳 / 非 Windows）：如实说，再退回字节上传
+        fallbackNote = "原生选择器不可用（" + messageOf(error) + "），改用文件上传：";
+      }
+    }
+    if (!created) {
+      let file: File | null;
+      try {
+        file = await pickBrowserFile();
+      } catch (error) {
+        attachNotice.fail(token, "选择文件失败：" + messageOf(error), retry);
+        return;
+      }
+      if (!attachNotice.isCurrent(token)) return;
+      if (!file) {
+        attachNotice.fail(token, (fallbackNote ? fallbackNote + "\n" : "") + attachCancelText(), retry);
+        return;
+      }
+      fileName = file.name || "未命名";
+      attachNotice.progress(token, fallbackNote + "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
+      created = await uploadAttachment(file, { sourceKind: "browser_upload" });
+    }
     if (!attachNotice.isCurrent(token)) return;
-    // 上传完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
+    // 上传/登记完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
     attachNotice.progress(token, "正在处理附件「" + fileName + "」…");
-    const settled = await waitUntilSettled(uploaded);
+    const settled = await waitUntilSettled(created);
     /**
      * 这里多守一次：卡片是**同一个目标**，迟到的旧操作不许把新关联覆盖回去。
      * （AddMenu 面对的是「每次添加一张新卡」，各自的附件绑各自的卡；这里只有一张卡。）
@@ -609,22 +641,20 @@ async function pickAttachment(): Promise<void> {
           (settled.error ? "（" + settled.error + "）" : ""),
       );
     }
-    const meta: Record<string, unknown> = { ...(props.card.meta ?? {}) };
-    meta.name = settled.name;
-    meta[kind] = { name: settled.name, attachmentId: settled.id, size: settled.sizeBytes };
+    const meta = mergeAttachmentIntoMeta(props.card.meta, settled, kind);
     metaName.value = settled.name;
     emit("patch", cardId, { meta } as Partial<BoardCard>, "关联附件：" + settled.name);
     /**
-     * 成功只陈述两件已确认的事实：附件本身已经保存（stateText），板面关联还只是**本地**改动
-     * —— 组件只 emit patch 给父级 commit，不声称服务端已保存（任务书 §二.10）。
+     * 成功只陈述已确认的事实：附件本身已经登记/保存，来源如实标注；
+     * 板面关联还只是**本地**改动 —— 组件只 emit patch 给父级 commit。
      */
     attachNotice.succeed(
       token,
       "已关联附件「" +
         settled.name +
-        "」（" +
-        stateText(settled) +
-        "）；板面关联是本地改动，提交后 QIO 才可见",
+        "」：" +
+        attachmentSourceNote(settled) +
+        "；板面关联是本地改动，提交后 QIO 才可见",
     );
   } catch (error) {
     attachNotice.fail(token, "附件保存失败：" + messageOf(error), retry);
@@ -1281,9 +1311,8 @@ watch(
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
       <span v-if="titleText" class="title" data-im="card-title" :title="titleText">{{ titleText }}</span>
       <!--
-        整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
-        允不允许 QIO 查看。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，
-        这里不重复解释。
+        「作为互动材料」徽章：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
+        有没有主动纳入互动上下文。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里。
       -->
       <span
         v-if="checkable"
@@ -1293,9 +1322,9 @@ watch(
         :data-checked="card.checked ? '1' : '0'"
         role="status"
         :title="card.checked
-          ? '已允许 QIO 查看：覆盖这张卡里的全部文字、代码与链接（文字卡与结果卡同一条规则）'
-          : '未允许查看：QIO 看不到这张卡里的任何内容（文字卡与结果卡同一条规则）'"
-      >{{ card.checked ? "允许 QIO 查看" : "未允许查看" }}</span>
+          ? '已作为互动材料：主动把这张卡的文字、代码与链接纳入互动上下文（文字卡与结果卡同一条规则）；这不是文件访问权限'
+          : '未作为互动材料：QIO 不会主动读取这张卡里的内容（文字卡与结果卡同一条规则）；这不是文件访问权限'"
+      >{{ card.checked ? "作为互动材料" : "未作为互动材料" }}</span>
       <!--
         两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
         折叠态只有「恢复卡片」（把卡片展开回常态）；
@@ -1628,6 +1657,20 @@ watch(
           />
 
           <!--
+            文件卡源引用信息（R9 契约 §6.4 / §8）：文件名 / 类型 / 引用 id / 来源 /
+            可用或缺失 / 用户说明 / 「作为互动材料」开关 / 缺失时重新指定位置。
+            封面式图片卡把画面留给图片，信息在卡片工具栏与阅读态里看。
+          -->
+          <FileCardMaterialPanel
+            v-if="isFileCard && !coverMode"
+            :card-id="card.id"
+            :meta="card.meta"
+            :attachment-id="attachmentId"
+            :desktop="desktopShell"
+            @patch-meta="onFileMetaPatch"
+          />
+
+          <!--
             卡片内阅读展开的挂载点（契约 §3.5）：真实附件预览挂在这里，永远在卡片**内部**，
             不盖编辑区、勾选框与卡片操作。没有真实附件时不挂任何东西（任务书 §6.4：不造假预览）——
             文字卡的阅读主体就是上面那份正文，所以这里是空的（:empty 时不占画面）。
@@ -1694,10 +1737,9 @@ watch(
       @pointerdown.stop
     >
     <!--
-      整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡 / 结果卡只有一个许可，
-      覆盖卡内的文字、链接与代码。
-      勾选框只留一句短文案；「提交后仍然有效、只有你手动取消才失效」这类完整规则放进旁边的
-      「说明」详情（不常驻一整行字）。勾选只改 checked，不碰 hidden / deleted。
+      作为互动材料（R9 契约 §8）：一张文字卡 / 结果卡只有一个开关，
+      覆盖卡内的文字、链接与代码；**只控制是否主动纳入互动上下文，不是文件访问权限**。
+      勾选框只留一句短文案；完整规则放进旁边的「说明」详情（不常驻一整行字）。
     -->
     <label v-if="checkable" class="check" :title="LICENSE_FULL_TEXT">
       <input
@@ -1707,9 +1749,9 @@ watch(
         :data-card-id="card.id"
         @change="emit('toggle', card.id, 'checked')"
       />
-      <span class="check-label">{{ card.checked ? "已允许 QIO 查看" : "允许 QIO 查看" }}</span>
+      <span class="check-label">{{ card.checked ? "已作为互动材料" : "作为互动材料" }}</span>
       <details class="check-detail" :class="{ 'opens-up': menuOpensUp }" @click.stop @pointerdown.stop>
-        <summary class="check-detail-summary" title="许可的完整说明">说明</summary>
+        <summary class="check-detail-summary" title="「作为互动材料」的完整说明">说明</summary>
         <p class="check-detail-text" data-im="check-detail-text">{{ LICENSE_FULL_TEXT }}</p>
       </details>
     </label>

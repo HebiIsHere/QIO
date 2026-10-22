@@ -380,14 +380,14 @@ describe("BoardCard：文字卡的编辑与显示", () => {
     b.unmount();
   });
 
-  it("许可文案：勾选框说明按契约 §2.3 改为「许可：允许 QIO 查看这张卡」", () => {
+  it("互动材料文案：勾选框说明改为「作为互动材料」并写明不是文件访问权限（R9 契约 §8）", () => {
     const card = mkCard("t7", { content: "注释" });
     store.board = mkState([card]);
     select("t7");
     wrapper = mountCard(card);
     const check = wrapper.get('[data-im="card-toolbar"] .check');
-    expect(check.text()).toContain("许可：允许 QIO 查看这张卡");
-    expect(check.text()).toContain("只有你手动取消才失效");
+    expect(check.text()).toContain("作为互动材料：主动把这张卡的文字、代码与链接纳入 QIO 的互动上下文");
+    expect(check.text()).toContain("只有你手动取消、隐藏或删除这张卡才会退出互动上下文");
   });
 });
 
