@@ -14,29 +14,30 @@
  * 按钮若在拖拽面内部，点按钮就会先被拖拽逻辑截走（不同版本判定 `hasAttribute`
  * 或 `closest` 的行为还不一致），拆开两种判定都安全。
  *
- * R9 §11（W5）：关闭按钮不再直接 `window.close()`。标题条关闭、系统
- * CloseRequested、Alt+F4 全部走同一个 `handleCloseRequest`：
- * ask（默认）→ 确认框；tray → 壳隐藏窗口继续运行；quit → 真正退出流程。
- * 托盘菜单「退出 QIO」由壳发 `qio://tray-quit` 事件，也走同一个退出流程。
+ * R9 §11（W5）：关闭按钮**不自己判断行为**，而是发窗口关闭请求（`window.close()`）——
+ * 由壳在 CloseRequested 里按 ui.close_behavior 执行：tray 直接 hide、quit 直接退出，
+ * ask 才发 `qio://close-requested` 回来让前端弹确认框。
+ *
+ * 真机 install_e2e 的教训：关闭行为不能依赖前端是否还能正常 invoke / 读设置 ——
+ * 前端启动握手异常时点 X 必须仍有反应（壳侧独立执行），这里只承担 ask 的 UI。
  */
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useUiStore } from "../stores/ui";
+import { useEventStore } from "../stores/events";
+import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
 import {
-  CLOSE_BEHAVIOR_OPTIONS,
-  DEFAULT_CLOSE_BEHAVIOR,
-  type CloseBehavior,
-} from "../services/quitGuard";
-import {
+  ackCloseRequest,
   inTauriShell,
   listenShellEvent,
+  noteShellQuit,
   requestClose,
-  startQuitFlow,
 } from "../services/desktop";
 
 /** @tauri-apps/api/window 里我们真正用到的那几个方法（只声明用到的部分，便于测试替身）。 */
 interface ShellWindow {
   minimize(): Promise<void>;
   toggleMaximize(): Promise<void>;
+  close(): Promise<void>;
   isMaximized(): Promise<boolean>;
   onResized(handler: () => void): Promise<() => void>;
 }
@@ -62,8 +63,6 @@ let unlisten: (() => void) | null = null;
 let unlistenClose: (() => void) | null = null;
 let unlistenTrayQuit: (() => void) | null = null;
 let disposed = false;
-/** 防止「标题条点击 + 系统关闭事件」在同一瞬间进入两次（弹两个框 / 退两次）。 */
-let handlingClose = false;
 
 async function syncMaximized() {
   if (!shell) return;
@@ -85,85 +84,57 @@ async function run(action: "minimize" | "toggleMaximize") {
   }
 }
 
-function currentBehavior(): CloseBehavior {
-  // 设置可能还没加载（启动阶段就按了关闭）：默认 ask 是契约默认，也是唯一不会
-  // 静默杀掉/藏起来的选项。loaded 之后 store 里就是后端的最新值。
-  if (!ui.loaded) return DEFAULT_CLOSE_BEHAVIOR;
-  return ui.closeBehavior;
+/** 标题条 X / 系统关闭的统一动作：把关闭请求交给壳，由壳按设置执行。 */
+async function requestWindowClose() {
+  if (!shell || busy.value) return;
+  try {
+    await shell.close();
+  } catch (err) {
+    // 窗口接口失败（极少见）：保留可查原因，不假装已关闭。
+    console.error("[qio] 发送窗口关闭请求失败", err);
+    notice.value = "无法关闭窗口（详见日志）";
+  }
 }
 
-async function ensureBehaviorLoaded() {
-  // 每次都从后端重读一次：设置可能在别处/上一个会话改过（真机验证脚本就是用 API 设置的），
-  // 用启动时的缓存会让「改了设置但这次关闭仍按旧行为」——那正是最不该出现的不确定性。
-  // load() 自己会吞掉错误并置 loaded：后端未就绪时回退到 ask（先问用户）。
-  await ui.load();
+/** 壳发来 ask 问询：先 ACK（壳 1.8s 没收到会兜底隐藏到托盘），再弹确认框。 */
+async function onShellCloseRequested() {
+  if (busy.value || askOpen.value) return;
+  void ackCloseRequest();
+  askOpen.value = true;
 }
 
-/** 最小化到托盘：只隐藏窗口，不触发退出收尾，后端继续运行。 */
-async function hideToTray() {
+/** ask 里选「最小化到托盘」：由壳执行 hide（前端只发动作，不判断设置）。 */
+async function chooseTray() {
+  if (busy.value) return;
+  askOpen.value = false;
+  notice.value = "";
   try {
     await requestClose("tray");
-    notice.value = "";
   } catch (err) {
     console.error("[qio] 隐藏到托盘失败", err);
     notice.value = "无法隐藏到系统托盘（详见日志）";
   }
 }
 
-/** 真正退出流程：前端守卫 → 后端有界收尾 → 壳按 pid 等待/兜底并退出。 */
-async function quitNow() {
+/** ask 里选「退出 QIO」：壳自己完成后端收尾/进程树核验/退出；前端只置守卫。 */
+async function chooseQuit() {
+  if (busy.value) return;
+  askOpen.value = false;
   busy.value = true;
   notice.value = "";
-  askOpen.value = false;
-  const result = await startQuitFlow();
-  if (!result.ok) {
-    // 壳命令失败（进程还在）：如实报错并让用户还能继续操作，不假装已退出。
-    busy.value = false;
-    notice.value = result.detail;
-  }
-}
-
-/** 从壳事件里取「无人值守覆盖」（QIO_CLOSE_BEHAVIOR，仅真机验证脚本用）。 */
-function forcedBehaviorOf(payload: unknown): CloseBehavior | undefined {
-  const raw = (payload as { forcedBehavior?: unknown } | null | undefined)?.forcedBehavior;
-  return raw === "ask" || raw === "tray" || raw === "quit" ? raw : undefined;
-}
-
-/** 统一关闭入口（契约 §11）。`forced` 只来自壳的无人值守覆盖，不参与用户设置。 */
-async function handleCloseRequest(forced?: CloseBehavior) {
-  if (handlingClose || busy.value) return;
-  handlingClose = true;
   try {
-    await ensureBehaviorLoaded();
-    const behavior = forced ?? currentBehavior();
-    if (behavior === "tray") {
-      await hideToTray();
-      return;
-    }
-    if (behavior === "quit") {
-      await quitNow();
-      return;
-    }
-    // ask：先经过壳的统一入口（幂等/退出互斥由壳保证），再弹 QIO 自己的确认框。
-    let outcome = null;
-    try {
-      outcome = await requestClose("ask");
-    } catch (err) {
-      // 壳不可用（理论上只会在浏览器预览里）：保持「询问」的默认行为。
-      console.error("[qio] 关闭入口不可用", err);
-    }
-    if (outcome?.quitting) return;
-    askOpen.value = true;
-  } finally {
-    handlingClose = false;
+    await requestClose("quit");
+    // 壳会 app.exit(0)：正常路径下这里不会返回；返回说明退出没完成，保留提示。
+  } catch (err) {
+    console.error("[qio] 请求退出失败（壳可能已经退出）", err);
   }
 }
 
 async function chooseClose(action: "tray" | "quit") {
   if (busy.value) return;
-  askOpen.value = false;
   if (rememberChoice.value) {
     try {
+      // setCloseBehavior 会同时把新值同步给壳（下次点 X 立即按新行为）。
       await ui.setCloseBehavior(action);
     } catch (err) {
       // 记忆失败不影响本次选择，但要留下可查原因（下次还会问）。
@@ -171,8 +142,8 @@ async function chooseClose(action: "tray" | "quit") {
     }
   }
   rememberChoice.value = false;
-  if (action === "tray") await hideToTray();
-  else await quitNow();
+  if (action === "tray") await chooseTray();
+  else await chooseQuit();
 }
 
 function cancelAsk() {
@@ -207,14 +178,21 @@ onMounted(async () => {
       unlisten?.();
       unlisten = null;
     }
-    // 系统关闭（Alt+F4 / 任务栏关闭 / WM_CLOSE）由 Rust 拦下并发这个事件：
-    // 和标题条按钮走完全相同的关闭行为判断。
-    unlistenClose = await listenShellEvent("qio://close-requested", (payload) => {
-      void handleCloseRequest(forcedBehaviorOf(payload));
+    // 系统关闭（Alt+F4 / 任务栏关闭 / WM_CLOSE / 标题条 X）由壳按设置执行；
+    // 只有 ask 档会发这个事件回来 —— 前端只负责 ACK + 渲染确认框。
+    unlistenClose = await listenShellEvent("qio://close-requested", () => {
+      void onShellCloseRequested();
     });
-    // 托盘菜单「退出 QIO」：用户已明确选择退出，不再弹 ask 确认框。
-    unlistenTrayQuit = await listenShellEvent("qio://tray-quit", () => {
-      void quitNow();
+    // 壳侧退出（托盘菜单 / 系统关闭 quit）：前端只置守卫、断开 SSE 长连接，
+    // 让后端 uvicorn 不必等这条连接就能在预算内退出（否则只能被超时强杀）。
+    unlistenTrayQuit = await listenShellEvent("qio://quit-requested", () => {
+      noteShellQuit();
+      busy.value = true;
+      try {
+        useEventStore().disconnect();
+      } catch (err) {
+        console.warn("[qio] 退出时断开事件流失败（不影响壳侧退出）", err);
+      }
     });
     window.addEventListener("keydown", onKeydown, true);
   } catch (err) {
@@ -258,8 +236,8 @@ onBeforeUnmount(() => {
           <path d="M4.5 4.5V3.6A1.1 1.1 0 0 1 5.6 2.5h2.8A1.1 1.1 0 0 1 9.5 3.6v2.8A1.1 1.1 0 0 1 8.4 7.5h-.9" />
         </svg>
       </button>
-      <!-- R9 §11：不再直接 close()，而是走关闭行为（ask/tray/quit） -->
-      <button class="wc-btn wc-close" type="button" aria-label="关闭" title="关闭窗口" @click="handleCloseRequest()">
+      <!-- R9 §11：发窗口关闭请求，由壳按 ui.close_behavior 执行（ask 才回来弹框） -->
+      <button class="wc-btn wc-close" type="button" aria-label="关闭" title="关闭窗口" @click="requestWindowClose">
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
       </button>
     </div>
@@ -290,7 +268,7 @@ onBeforeUnmount(() => {
           </div>
           <label class="close-ask__remember">
             <input v-model="rememberChoice" type="checkbox" />
-            记住我的选择（以后按「{{ behaviorLabel(currentBehavior()) }}」处理）
+            记住我的选择（以后按「{{ behaviorLabel(ui.closeBehavior) }}」处理）
           </label>
           <p v-if="notice" class="close-ask__notice" role="status">{{ notice }}</p>
         </div>

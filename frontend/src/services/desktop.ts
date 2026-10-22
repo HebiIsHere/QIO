@@ -4,15 +4,13 @@
  * 只有这一个模块直接与 Tauri 交互：组件与 store 不直接写 `invoke`，
  * 浏览器预览（IAB）里也不会因为缺少 `__TAURI_INTERNALS__` 抛异常。
  *
- * 关闭与退出的分工（与 Rust 侧一一对应）：
- * 1. 关闭行为由设置 `ui.close_behavior` 决定（store 里是最新值）；
- * 2. 真正退出：先置前端守卫（不再发起新 turn）→ `POST /api/lifecycle/shutdown`
- *    （后端有界收尾，保存状态、保留有效待审批）→ 调用壳命令 `request_close`
- *    （action=quit）：壳按 pid 等 sidecar 退出、超时 `taskkill /PID <pid> /T /F`
- *    兜底并核验 pid 消失，最后退出应用。
+ * 关闭与退出的分工（与 Rust 侧一一对应；真机 E2E 后的约定）：
+ * 1. 关闭行为由设置 `ui.close_behavior` 决定；前端把结果**同步一份给壳**，
+ *    壳在系统关闭事件里自己执行（ask 才通知前端弹框）—— 前端 IPC 异常时点 X 也不会没反应。
+ * 2. 真正退出：前端只负责置守卫；`request_close(quit)` 后由壳完成
+ *    「POST 后端有界收尾 → 等/结束本实例后端进程树 → 核验 → 退出应用」。
  */
-import { api } from "./api";
-import { beginQuitGuard, resetQuitGuard } from "./quitGuard";
+import { beginQuitGuard } from "./quitGuard";
 
 export type CloseAction = "ask" | "tray" | "quit";
 
@@ -24,36 +22,9 @@ export interface CloseOutcome {
   detail: string;
 }
 
-export interface ShutdownReport {
-  clean: boolean;
-  unfinished: string[];
-  phases: string[];
-  detail: string;
-}
-
-export interface ShutdownResponse {
-  done: boolean;
-  already: boolean;
-  timeout: boolean;
-  grace_seconds: number;
-  approvals_restored: number;
-  report: ShutdownReport;
-}
-
-export interface QuitResult {
-  ok: boolean;
-  detail: string;
-  shutdown: ShutdownResponse | null;
-}
-
 /** 是否在 Tauri 壳里（浏览器预览没有它：窗口按钮/关闭行为都不出现）。 */
 export function inTauriShell(): boolean {
   return Boolean((globalThis as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
-}
-
-function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err ?? "未知错误");
 }
 
 /** 调用壳的统一关闭入口（R9 §11：标题条/系统关闭/Alt+F4 都走这里）。 */
@@ -62,9 +33,9 @@ export async function requestClose(action: CloseAction): Promise<CloseOutcome> {
   return (await invoke("request_close", { action })) as CloseOutcome;
 }
 
-/** 监听壳发来的事件（关闭请求 / 托盘退出）。浏览器预览里返回空取消函数。 */
+/** 监听壳发来的事件（关闭问询 / 退出通知）。浏览器预览里返回空取消函数。 */
 export async function listenShellEvent(
-  event: "qio://close-requested" | "qio://tray-quit",
+  event: "qio://close-requested" | "qio://quit-requested",
   handler: (payload?: unknown) => void,
 ): Promise<() => void> {
   if (!inTauriShell()) return () => {};
@@ -84,41 +55,34 @@ export async function listenShellEvent(
   }
 }
 
-let quitInFlight: Promise<QuitResult> | null = null;
-
 /**
- * 真正退出（可重复调用，幂等）。
+ * 把当前关闭行为同步给壳（壳侧兜底用）。
  *
- * 返回 `ok=false` 只发生在「壳命令本身失败」（进程仍活着）：此时重置前端守卫，
- * 让用户还能继续用/重试 —— 绝不假装已经退出。后端收尾失败不属于这一类：
- * 壳仍会按 pid 结束后端进程树并核验，退出不会因此卡住。
+ * 真机 install_e2e 教训：关闭行为不能只由前端判定 —— 前端启动握手异常时点 X 会毫无反应。
+ * 壳缓存这一份；读不到时壳还会自己请求后端设置。失败只记日志，不影响 UI 设置本身。
  */
-export function startQuitFlow(): Promise<QuitResult> {
-  if (quitInFlight) return quitInFlight;
-  const run = (async (): Promise<QuitResult> => {
-    beginQuitGuard(); // 从这一刻起不再发起新 turn / 写请求
-    let shutdown: ShutdownResponse | null = null;
-    try {
-      shutdown = await api.shutdownBackend();
-    } catch (err) {
-      // 后端可能已经退出/不可达：如实记录，但仍然继续走壳退出（壳会按 pid 核验）。
-      console.error("[qio] 后端退出收尾请求失败（继续按 pid 结束本实例进程树）", err);
-    }
-    try {
-      const outcome = await requestClose("quit");
-      return { ok: true, detail: outcome.detail, shutdown };
-    } catch (err) {
-      const detail = `无法完成桌面退出：${describeError(err)}`;
-      console.error("[qio]", detail);
-      resetQuitGuard();
-      return { ok: false, detail, shutdown };
-    }
-  })();
-  quitInFlight = run;
-  // 失败只发生在壳命令不可用（进程仍在）：允许用户重试。成功路径进程马上就会退出，
-  // 这里清掉引用不影响幂等 —— 重复调用会被退出守卫/壳的 quitting 标记挡住。
-  void run.finally(() => {
-    if (quitInFlight === run) quitInFlight = null;
-  });
-  return run;
+export async function syncCloseBehaviorToShell(behavior: CloseAction): Promise<void> {
+  if (!inTauriShell()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("qio_set_close_behavior", { behavior });
+  } catch (err) {
+    console.warn("[qio] 同步关闭行为到壳失败（壳会自己读后端设置）", err);
+  }
+}
+
+/** 确认收到壳的关闭问询（ask 档）：壳 1.8s 内没等到会走「隐藏到托盘」兜底。 */
+export async function ackCloseRequest(): Promise<void> {
+  if (!inTauriShell()) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("qio_close_ack");
+  } catch (err) {
+    console.warn("[qio] 关闭问询 ACK 失败（壳会走兜底）", err);
+  }
+}
+
+/** 退出通知到达时置前端守卫：不再发起新 turn（退出本身由壳完成）。 */
+export function noteShellQuit(): void {
+  beginQuitGuard();
 }

@@ -15,7 +15,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -869,9 +870,15 @@ struct RestoreResult {
 /// `taskkill /PID <pid> /T /F` 兜底并核验 pid 消失 —— 绝不按进程名批量结束。
 const QUIT_SIDECAR_WAIT: Duration = Duration::from_secs(15);
 
-/// 托盘菜单点「退出 QIO」后，前端多久没有开始真正退出流程就由壳兜底强制退出。
-/// 场景：WebView 卡死/未加载完，托盘退出不能变成「点了没反应」。
-const TRAY_QUIT_FALLBACK_WAIT: Duration = Duration::from_secs(10);
+/// 「ask」档下通知前端弹确认框后，等前端 ACK 的兜底窗口。
+///
+/// 真机安装版实测（2026-10-22，install_e2e）：前端在启动握手失败/WebView 异常时
+/// 事件可能送达不了或页面卡死 —— 这时点 X 不能「没有任何反应」。超过这个窗口没有 ACK，
+/// 壳自己按「最小化到托盘」兜底（可逆、不退出），并留下日志。
+const ASK_FALLBACK_WAIT: Duration = Duration::from_millis(1800);
+
+/// 壳侧退出时 POST /api/lifecycle/shutdown 的读超时（后端有界收尾 8s + 余量）。
+const SHUTDOWN_HTTP_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// 真正退出时的进程收尾结果（只报告真实事实）。
 #[derive(Debug, Clone, Serialize)]
@@ -931,8 +938,13 @@ struct ShellRuntime {
     phase: Mutex<BackendPhase>,
     /// 真正退出的幂等闸门：第一个开始退出的人置 true；后台启动/恢复/隐藏都不会置它。
     quitting: AtomicBool,
-    /// 托盘「退出 QIO」正在等前端接手（防止重复点产生多个兜底线程）。
-    tray_quit_pending: AtomicBool,
+    /// 前端同步过来的关闭行为缓存（壳侧兜底用）：ask / tray / quit。
+    ///
+    /// 为什么壳要自己缓存/读设置：真机 E2E 实测前端在启动握手异常时会停在启动页，
+    /// 若关闭行为只由前端决定，点 X 就变成「没有任何反应」。壳侧必须能独立执行。
+    close_behavior: Mutex<Option<String>>,
+    /// ask 档：前端是否已确认收到关闭请求（收到后马上 invoke request_close("ask")）。
+    close_ack: AtomicBool,
 }
 
 fn lock<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
@@ -973,6 +985,138 @@ impl ShellRuntime {
 
     fn is_quitting(&self) -> bool {
         self.quitting.load(Ordering::SeqCst)
+    }
+
+    // -- 壳侧关闭行为（不依赖前端 IPC） ------------------------------------
+
+    /// 前端在 ui.load()/保存设置后同步过来的关闭行为缓存。
+    fn set_close_behavior(&self, behavior: &str) {
+        let normalized = behavior.trim().to_ascii_lowercase();
+        if normalized == "ask" || normalized == "tray" || normalized == "quit" {
+            *lock(&self.close_behavior) = Some(normalized.clone());
+            log::info!("[qio] 前端已同步关闭行为：{normalized}");
+        }
+    }
+
+    /// 后端会话令牌：优先环境变量（安装 E2E / 开发脚本注入），否则读后端写出的令牌文件。
+    ///
+    /// 只在本机内存里用，绝不打印。环境变量优先是必要的：后端在 QIO_SESSION_TOKEN
+    /// 已提供时**不会**再写令牌文件（见 backend/api/auth.py），此时壳仍要能连自己后端。
+    fn backend_token(&self) -> Option<String> {
+        if let Ok(token) = std::env::var("QIO_SESSION_TOKEN") {
+            let token = token.trim().to_string();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+        read_token_file(&self.token_path, Duration::from_millis(1200))
+    }
+
+    /// 极简本机 HTTP 客户端：只服务「壳侧读关闭行为 / 请求后端有界收尾」两条兜底路径。
+    ///
+    /// 不引入 HTTP 依赖（reqwest 只被 updater 插件间接使用）：请求是固定的短 JSON，
+    /// 连 127.0.0.1 固定端口，读超时有界；失败一律返回 None，由调用方决定降级。
+    fn backend_http(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+        timeout: Duration,
+    ) -> Option<(u16, String)> {
+        let token = self.backend_token().unwrap_or_default();
+        let payload = body.unwrap_or("");
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\nAccept: application/json\r\n",
+            self.port
+        );
+        if !token.is_empty() {
+            request.push_str(&format!("Authorization: Bearer {token}\r\n"));
+        }
+        if !payload.is_empty() {
+            request.push_str("Content-Type: application/json\r\n");
+        }
+        request.push_str(&format!("Content-Length: {}\r\n\r\n", payload.len()));
+        request.push_str(payload);
+
+        let addr = SocketAddr::from(([127, 0, 0, 1], self.port));
+        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(900)).ok()?;
+        let _ = stream.set_read_timeout(Some(timeout));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(900)));
+        stream.write_all(request.as_bytes()).ok()?;
+        let mut response = String::new();
+        // 读失败（对端提前关连接）也可能已经拿到完整响应，按已有字节解析。
+        let _ = stream.read_to_string(&mut response);
+        let status = response.split_whitespace().nth(1)?.parse::<u16>().ok()?;
+        Some((status, response))
+    }
+
+    /// 从后端设置里读 ui.close_behavior（壳侧兜底：前端不可用时也能按用户设置执行）。
+    fn fetch_backend_close_behavior(&self) -> Option<String> {
+        let (status, response) =
+            self.backend_http("GET", "/api/settings/ui", None, Duration::from_secs(3))?;
+        if status != 200 {
+            log::warn!("[qio] 读取关闭行为失败：HTTP {status}");
+            return None;
+        }
+        let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+        let value: serde_json::Value = serde_json::from_str(body).ok()?;
+        let behavior = value.get("close_behavior")?.as_str()?.to_string();
+        if behavior == "ask" || behavior == "tray" || behavior == "quit" {
+            *lock(&self.close_behavior) = Some(behavior.clone());
+            Some(behavior)
+        } else {
+            None
+        }
+    }
+
+    /// 壳侧解析关闭行为（只在后台线程里调用；HTTP 读有 3s 上界）。
+    ///
+    /// 优先级：无人值守环境覆盖（真机脚本） > **后端设置（每次现读）** > 前端同步的缓存 > ask。
+    ///
+    /// 为什么后端设置排在缓存前：设置可能被 API/别的界面改过（真机脚本就是这么做的），
+    /// 用启动时缓存会让「改成 tray 了但这次关闭还弹框」。后端不可达（崩溃/启动中）时
+    /// 才退回前端同步的缓存，再不行按 ask（先问用户，绝不静默退出或藏起来）。
+    fn resolve_close_behavior(&self) -> String {
+        if let Some(forced) = close_behavior_override() {
+            return forced;
+        }
+        if let Some(from_backend) = self.fetch_backend_close_behavior() {
+            return from_backend;
+        }
+        if let Some(cached) = lock(&self.close_behavior).clone() {
+            log::warn!("[qio] 读不到后端关闭行为，使用前端同步的缓存：{cached}");
+            return cached;
+        }
+        log::warn!("[qio] 读不到关闭行为（后端不可达且前端未同步）：按 ask 处理");
+        "ask".to_string()
+    }
+
+    /// 壳侧真正退出：**不依赖前端**。
+    ///
+    /// 1. POST /api/lifecycle/shutdown（后端有界收尾；aclose 获得执行机会，有效 waiting 审批保留）；
+    /// 2. 按 pid 等本实例后端进程树自行退出（预算见 QUIT_SIDECAR_WAIT）；
+    /// 3. 仍不退出才 taskkill /PID <pid> /T /F，再按事前 pid 名单核验 pid 消失；
+    /// 4. 调用方随后 app.exit(0)，RunEvent::Exit 的 shutdown_runtime 负责删 lease/令牌文件。
+    fn shell_quit(&self) -> QuitReport {
+        log::info!("[qio] 壳侧退出：先请求后端有界收尾（POST /api/lifecycle/shutdown）");
+        match self.backend_http(
+            "POST",
+            "/api/lifecycle/shutdown",
+            Some("{}"),
+            SHUTDOWN_HTTP_TIMEOUT,
+        ) {
+            Some((status, response)) => {
+                let body = response.split("\r\n\r\n").nth(1).unwrap_or("");
+                log::info!(
+                    "[qio] 后端退出收尾 HTTP {status}（响应 {} 字节，不打印内容以免带出业务信息）",
+                    body.len()
+                );
+            }
+            None => log::warn!(
+                "[qio] 后端退出收尾请求失败（后端可能已经退出/未就绪）；继续按 pid 结束本实例进程树"
+            ),
+        }
+        self.quit_backend_and_verify()
     }
 
     /// 真正退出的闸门：第一个调用者返回 true。
@@ -1765,51 +1909,99 @@ fn show_main_window(app: &tauri::AppHandle) {
     log::info!("[qio] 已从托盘恢复主窗口");
 }
 
-/// 托盘菜单「退出 QIO」：与标题条关闭走**同一个**真正退出流程。
+/// 把主窗口隐藏到托盘（壳侧动作，不经过前端）。
+fn hide_main_window(app: &tauri::AppHandle, reason: &str) {
+    match app.get_webview_window("main") {
+        Some(window) => match window.hide() {
+            Ok(()) => log::info!(
+                "[qio] 主窗口已隐藏到托盘（{reason}）：后端继续运行，托盘可恢复"
+            ),
+            Err(err) => log::error!("[qio] 隐藏主窗口失败（{reason}）：{err}"),
+        },
+        None => log::error!("[qio] 隐藏主窗口失败（{reason}）：找不到主窗口"),
+    }
+}
+
+/// 系统关闭请求的**壳侧**处理（按 pid 收尾，不依赖前端 IPC）。
 ///
-/// 先通知前端（前端负责置 quitting 守卫 → POST /api/lifecycle/shutdown），
-/// 壳只负责「等前端接手」；到点还没接手（WebView 卡死/未加载）就由壳兜底：
-/// 仍然只按 pid 结束本实例的后端进程树，绝不按进程名批量杀。
+/// 真机 install_e2e 实测（2026-10-22）：前端可能因启动握手异常停在启动页，
+/// 此时若关闭行为只在前端判定，点 X 就是「没有任何反应」。所以：
+/// * 先由壳自己解析设置（前端同步的缓存 / 直接读后端 / 环境覆盖）；
+/// * tray 直接在壳里 hide；
+/// * quit 直接在壳里走「POST 后端收尾 → 等/结束后端进程树 → app.exit」；
+/// * ask 才通知前端弹框；前端 1.8s 内没有 ACK 就隐藏到托盘兜底（可逆、不退出）。
+fn handle_shell_close(app: tauri::AppHandle, runtime: Arc<ShellRuntime>) {
+    let behavior = runtime.resolve_close_behavior();
+    log::info!("[qio] 关闭请求：壳侧解析关闭行为 = {behavior}");
+    match behavior.as_str() {
+        "tray" => hide_main_window(&app, "ui.close_behavior=tray"),
+        "quit" => {
+            if !runtime.begin_quit() {
+                return;
+            }
+            // 通知前端置退出守卫（best effort；前端不可用不影响壳完成退出）。
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.emit("qio://quit-requested", ());
+            }
+            let report = runtime.shell_quit();
+            log::info!(
+                "[qio] 壳侧退出完成：后端 pid {:?}，graceful={}，forced={}，verified={}，survivors={:?}",
+                report.backend_pid,
+                report.graceful,
+                report.forced,
+                report.verified,
+                report.survivors
+            );
+            app.exit(0);
+        }
+        _ => {
+            runtime.close_ack.store(false, Ordering::SeqCst);
+            if let Some(window) = app.get_webview_window("main") {
+                // forcedBehavior 保留给真机脚本的进程级覆盖（正常用户路径恒为 null）。
+                if let Err(err) = window.emit(
+                    "qio://close-requested",
+                    serde_json::json!({ "forcedBehavior": close_behavior_override() }),
+                ) {
+                    log::warn!("[qio] 关闭请求事件发送失败：{err}");
+                }
+            }
+            std::thread::sleep(ASK_FALLBACK_WAIT);
+            if !runtime.close_ack.load(Ordering::SeqCst) && !runtime.is_quitting() {
+                log::warn!(
+                    "[qio] 前端 {:?} 内没有确认收到关闭请求（启动握手/WebView 异常）：壳兜底隐藏到托盘",
+                    ASK_FALLBACK_WAIT
+                );
+                hide_main_window(&app, "前端未响应兜底");
+            }
+        }
+    }
+}
+
+/// 托盘菜单「退出 QIO」：直接由壳执行真正退出（不再等前端接手）。
 fn request_quit_from_tray(app: &tauri::AppHandle) {
     let Some(state) = app.try_state::<Arc<ShellRuntime>>() else {
         log::warn!("[qio] 托盘退出：运行时状态尚未注册，直接请求退出");
         app.exit(0);
         return;
     };
-    if state.is_quitting() {
+    if !state.begin_quit() {
         return;
-    }
-    if state.tray_quit_pending.swap(true, Ordering::SeqCst) {
-        return; // 已经有一个托盘退出在等前端接手
     }
     let runtime = Arc::clone(state.inner());
     let handle = app.clone();
     if let Some(window) = app.get_webview_window("main") {
-        // 退出的确认/进度要让用户看见：先把窗口恢复出来。
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
-        if let Err(err) = window.emit("qio://tray-quit", ()) {
-            log::warn!("[qio] 托盘退出事件发送失败（将走兜底）：{err}");
-        }
-    } else {
-        log::warn!("[qio] 托盘退出：找不到主窗口（将走兜底）");
+        let _ = window.emit("qio://quit-requested", ());
     }
     std::thread::spawn(move || {
-        let deadline = Instant::now() + TRAY_QUIT_FALLBACK_WAIT;
-        while Instant::now() < deadline {
-            if runtime.is_quitting() {
-                log::info!("[qio] 托盘退出：前端已接手真正退出流程");
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        log::warn!(
-            "[qio] 托盘退出：前端在 {TRAY_QUIT_FALLBACK_WAIT:?} 内没有开始退出流程，壳按 pid 兜底退出"
+        let report = runtime.shell_quit();
+        log::info!(
+            "[qio] 托盘退出完成：verified={}，survivors={:?}",
+            report.verified,
+            report.survivors
         );
-        if runtime.begin_quit() {
-            let _ = runtime.quit_backend_and_verify();
-        }
         handle.exit(0);
     });
 }
@@ -1878,12 +2070,16 @@ async fn request_close(
         });
     }
     match action.as_str() {
-        "ask" => Ok(CloseOutcome {
-            action: "ask".to_string(),
-            hidden: false,
-            quitting: false,
-            detail: "等待用户选择：最小化到托盘 / 退出 QIO / 取消".to_string(),
-        }),
+        "ask" => {
+            // 前端确认收到问询（壳在等这个 ACK 决定要不要走「隐藏到托盘」兜底）。
+            runtime.close_ack.store(true, Ordering::SeqCst);
+            Ok(CloseOutcome {
+                action: "ask".to_string(),
+                hidden: false,
+                quitting: false,
+                detail: "等待用户选择：最小化到托盘 / 退出 QIO / 取消".to_string(),
+            })
+        }
         "tray" => {
             let window = app
                 .get_webview_window("main")
@@ -1908,12 +2104,15 @@ async fn request_close(
                     detail: "已经在退出中".to_string(),
                 });
             }
+            // 前端选择「退出 QIO」：壳自己完成「后端有界收尾 → 等/结束后端进程树 → 退出」，
+            // 不再要求前端先发 HTTP（前端卡住时也必须能退出）。
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.emit("qio://quit-requested", ());
+            }
             let runtime_for_task = Arc::clone(&runtime);
-            let report = tauri::async_runtime::spawn_blocking(move || {
-                runtime_for_task.quit_backend_and_verify()
-            })
-            .await
-            .map_err(|err| format!("退出收尾任务失败：{err}"))?;
+            let report = tauri::async_runtime::spawn_blocking(move || runtime_for_task.shell_quit())
+                .await
+                .map_err(|err| format!("退出收尾任务失败：{err}"))?;
             log::info!(
                 "[qio] 真正退出：后端 pid {:?}，graceful={}，forced={}，verified={}，survivors={:?}",
                 report.backend_pid,
@@ -1935,6 +2134,28 @@ async fn request_close(
             "未知的关闭动作：{other}（只接受 ask / tray / quit）"
         )),
     }
+}
+
+/// 前端在 ui.load()/保存设置后同步关闭行为：给壳侧兜底用（不改变后端设置）。
+#[tauri::command]
+fn qio_set_close_behavior(
+    state: tauri::State<'_, Arc<ShellRuntime>>,
+    behavior: String,
+) -> Result<(), String> {
+    let normalized = behavior.trim().to_ascii_lowercase();
+    if normalized != "ask" && normalized != "tray" && normalized != "quit" {
+        return Err(format!("未知的关闭行为：{behavior}"));
+    }
+    state.set_close_behavior(&normalized);
+    Ok(())
+}
+
+/// 前端确认收到关闭请求（ask 档）：壳 1.8s 内没等到就会走「隐藏到托盘」兜底。
+///
+/// 正常 WebView 里前端会在收到 qio://close-requested 后立刻调用（见 WindowChrome）。
+#[tauri::command]
+fn qio_close_ack(state: tauri::State<'_, Arc<ShellRuntime>>) {
+    state.close_ack.store(true, Ordering::SeqCst);
 }
 
 fn main() {
@@ -1987,6 +2208,19 @@ fn main() {
     let token_path = session_token_path();
     // 清掉上一轮的残留文件：令牌绝不跨进程生命周期复用。
     let _ = std::fs::remove_file(&token_path);
+    // 真机安装 E2E / 开发脚本可能直接注入 QIO_SESSION_TOKEN。此时后端不会再写令牌文件
+    // （auth.py：已有令牌就不生成），而前端只能通过 qio_backend_info 读文件拿连接信息 ——
+    // 真机 E2E 实测这会让 WebView 永远停在「正在启动 QIO 后端…」，关闭行为也就无从谈起。
+    // 壳把同一个令牌写进约定路径，双方立刻一致；令牌不进日志、只在本机临时目录。
+    if let Ok(injected) = std::env::var("QIO_SESSION_TOKEN") {
+        let injected = injected.trim();
+        if !injected.is_empty() {
+            match std::fs::write(&token_path, injected.as_bytes()) {
+                Ok(()) => eprintln!("[qio] 已把注入的会话令牌写入本实例令牌文件（不打印内容）"),
+                Err(err) => eprintln!("[qio] 写入注入的会话令牌失败：{err}"),
+            }
+        }
+    }
     let runtime = Arc::new(ShellRuntime {
         port,
         token_path,
@@ -2001,7 +2235,9 @@ fn main() {
         phase: Mutex::new(BackendPhase::Preparing),
         // R9 §11：真正退出与「隐藏到托盘」是两条路；只有前者会置退出闸门。
         quitting: AtomicBool::new(false),
-        tray_quit_pending: AtomicBool::new(false),
+        // 壳侧关闭行为兜底：前端会同步一次；未同步时壳自己读后端设置。
+        close_behavior: Mutex::new(None),
+        close_ack: AtomicBool::new(false),
     });
     let runtime_for_setup = Arc::clone(&runtime);
 
@@ -2061,37 +2297,36 @@ fn main() {
             start_backend_in_background(app.handle().clone(), Arc::clone(&runtime_for_setup));
             Ok(())
         })
-        // R9 §11：标题条关闭 / 系统 CloseRequested / Alt+F4 统一交给前端按
-        // ui.close_behavior 处理（ask 弹确认框 / tray 隐藏 / quit 真正退出）。
-        // 壳在这里只做两件事：拦下默认的「直接关窗退出」；把请求原样告诉前端。
+        // R9 §11：标题条关闭 / 系统 CloseRequested / Alt+F4 统一进入壳侧处理。
+        //
+        // 真机 install_e2e 实测的教训：关闭行为**不能只由前端判定** —— 前端启动握手异常时
+        // 点 X 会毫无反应。这里先拦下默认关窗，再在后台线程里由壳自己解析并执行
+        // ask / tray / quit（前端只负责 ask 的确认框）。
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
-                let quitting = app
-                    .try_state::<Arc<ShellRuntime>>()
-                    .map(|state| state.is_quitting())
-                    .unwrap_or(false);
-                if quitting {
+                let Some(state) = app.try_state::<Arc<ShellRuntime>>() else {
+                    log::warn!("[qio] 关闭请求：运行时状态尚未注册，忽略（等待初始化完成）");
+                    api.prevent_close();
+                    return;
+                };
+                if state.is_quitting() {
                     // 真正退出流程由壳自己 app.exit(0)：这里不再拦截系统关闭。
                     return;
                 }
                 api.prevent_close();
-                // 事件带「无人值守覆盖」（没有则为 null）：前端据此决定本次行为；
-                // 正常用户路径下它永远是 null，行为只由 ui.close_behavior 决定。
-                let forced = close_behavior_override();
-                if let Err(err) = window.emit(
-                    "qio://close-requested",
-                    serde_json::json!({ "forcedBehavior": forced }),
-                ) {
-                    log::warn!("[qio] 关闭请求事件发送失败：{err}");
-                }
-                log::info!("[qio] 收到主窗口关闭请求：交给前端按关闭行为处理");
+                let runtime = Arc::clone(state.inner());
+                let handle = app.clone();
+                std::thread::spawn(move || handle_shell_close(handle, runtime));
             }
         })
         .invoke_handler(tauri::generate_handler![
             qio_backend_info,
             // R9 §11：关闭行为 / 托盘 / 真正退出的唯一入口（幂等）。
             request_close,
+            // 前端同步关闭行为给壳侧兜底 + ask 事件 ACK（壳侧不依赖 IPC 也能关窗）。
+            qio_set_close_behavior,
+            qio_close_ack,
             qio_prepare_for_update,
             qio_restore_backend,
             qio_refresh_updater_proxy,

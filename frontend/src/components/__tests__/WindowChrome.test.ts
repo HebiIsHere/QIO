@@ -1,12 +1,15 @@
 /**
- * 无边框窗口的自定义标题条 + 关闭行为（R9 契约 §11）。
+ * 无边框窗口的自定义标题条 + 关闭行为（R9 契约 §11，真机 E2E 后的约定）。
  *
- * 系统页眉被 `decorations: false` 去掉之后，「能拖窗口」「能最小化/最大化/关闭」
- * 这两件事只剩下前端这一处承担。这些测试守的就是它们不会悄悄失灵：
+ * 关闭行为的执行主体是**壳**（Rust）：前端点 X 只发 window.close()，壳按 ui.close_behavior
+ * 执行 tray/quit；只有 ask 会发事件回来让前端弹确认框。这些测试守的是：
  * - 浏览器预览里不许画出点了没反应的按钮；
- * - 三个按钮必须真的调到壳的窗口接口，且最大化状态跟着系统走；
- * - 按钮不能长在拖拽区里面（否则点击会被 Tauri 的拖拽逻辑吃掉）；
- * - 关闭按钮必须走关闭行为：ask 弹确认框 / tray 隐藏 / quit 真正退出。
+ * - 最小化/最大化/关闭调到壳的窗口接口，最大化状态跟着系统走；
+ * - 按钮不能长在拖拽区里面；
+ * - X 一律交给壳（不在前端自行判断 behavior）；
+ * - ask 问询：先 ACK，再弹三选确认框；取消不触发任何动作；
+ * - 记住选择会写回设置并同步给壳；
+ * - 壳侧退出通知只置守卫（不再由前端发 HTTP / 二次判断）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -18,68 +21,67 @@ import { resetQuitGuard } from "../../services/quitGuard";
 const mocks = vi.hoisted(() => {
   const unlisten = vi.fn();
   const resizeUnlisten = vi.fn();
-  const listeners = new Map<string, () => void>();
+  const listeners = new Map<string, (payload?: unknown) => void>();
   const state: { resized: (() => void) | null } = { resized: null };
   const win = {
     minimize: vi.fn(async () => {}),
     toggleMaximize: vi.fn(async () => {}),
+    close: vi.fn(async () => {}),
     isMaximized: vi.fn(async () => false),
     onResized: vi.fn(async (cb: () => void) => {
       state.resized = cb;
       return resizeUnlisten;
     }),
   };
-  const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-    if (cmd === "request_close") {
-      const action = String(args?.action ?? "ask");
-      return {
-        action: action === "ask" ? "ask" : action === "tray" ? "hidden" : "quitting",
-        hidden: action === "tray",
-        quitting: action === "quit",
-        detail: "fake",
-      };
-    }
-    return null;
-  });
-  const listen = vi.fn(async (event: string, cb: () => void) => {
+  const requestClose = vi.fn(async (action: string) => ({
+    action: action === "ask" ? "ask" : action === "tray" ? "hidden" : "quitting",
+    hidden: action === "tray",
+    quitting: action === "quit",
+    detail: "fake",
+  }));
+  const ack = vi.fn(async () => {});
+  const syncBehavior = vi.fn(async () => {});
+  const noteQuit = vi.fn();
+  const listen = vi.fn(async (event: string, cb: (payload?: unknown) => void) => {
     listeners.set(event, cb);
     return unlisten;
   });
-  const shutdownBackend = vi.fn(async () => ({
-    done: true,
-    already: false,
-    timeout: false,
-    grace_seconds: 8,
-    approvals_restored: 0,
-    report: { clean: true, unfinished: [], phases: [], detail: "fake clean" },
-  }));
   const getUISettings = vi.fn(async () => ({ typewriter_cps: 50, close_behavior: "ask" }));
+  const updateCloseBehavior = vi.fn(async (behavior: string) => ({
+    ok: true,
+    typewriter_cps: 50,
+    close_behavior: behavior,
+  }));
   return {
     win,
     unlisten,
     resizeUnlisten,
     listeners,
     state,
-    invoke,
+    requestClose,
+    ack,
+    syncBehavior,
+    noteQuit,
     listen,
-    shutdownBackend,
     getUISettings,
+    updateCloseBehavior,
   };
 });
 
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => mocks.win }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
+vi.mock("../../services/desktop", () => ({
+  inTauriShell: () => true,
+  listenShellEvent: mocks.listen,
+  requestClose: mocks.requestClose,
+  ackCloseRequest: mocks.ack,
+  syncCloseBehaviorToShell: mocks.syncBehavior,
+  noteShellQuit: mocks.noteQuit,
+}));
 vi.mock("../../services/api", () => ({
   api: {
     getUISettings: mocks.getUISettings,
     updateUISettings: vi.fn(async () => ({ ok: true, typewriter_cps: 50 })),
-    updateCloseBehavior: vi.fn(async (behavior: string) => ({
-      ok: true,
-      typewriter_cps: 50,
-      close_behavior: behavior,
-    })),
-    shutdownBackend: mocks.shutdownBackend,
+    updateCloseBehavior: mocks.updateCloseBehavior,
   },
 }));
 
@@ -92,7 +94,6 @@ function setShell(on: boolean) {
 async function mountChrome(behavior: "ask" | "tray" | "quit" = "ask") {
   const pinia = createPinia();
   setActivePinia(pinia);
-  // 关闭前会从后端重读一次设置（真机脚本用 API 改设置的场景）→ mock 返回本次行为。
   mocks.getUISettings.mockResolvedValue({ typewriter_cps: 50, close_behavior: behavior });
   const ui = useUiStore();
   ui.loaded = true;
@@ -103,9 +104,17 @@ async function mountChrome(behavior: "ask" | "tray" | "quit" = "ask") {
   return w;
 }
 
+/** 模拟壳发来的关闭问询（ask 档）。 */
+async function emitCloseRequested() {
+  const cb = mocks.listeners.get("qio://close-requested");
+  expect(cb).toBeTypeOf("function");
+  cb?.({ forcedBehavior: null });
+  await flushPromises();
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
-  resetQuitGuard(); // 退出守卫是模块级状态：每个用例从「未退出」开始
+  resetQuitGuard();
   mocks.listeners.clear();
   mocks.state.resized = null;
   mocks.win.isMaximized.mockResolvedValue(false);
@@ -147,26 +156,22 @@ describe("WindowChrome 自定义标题条", () => {
 
   it("最小化 / 最大化按钮调到壳的窗口接口", async () => {
     const w = await mountChrome();
-
     await w.find('button[aria-label="最小化"]').trigger("click");
     await flushPromises();
     expect(mocks.win.minimize).toHaveBeenCalledTimes(1);
-
     await w.find('button[aria-label="最大化"]').trigger("click");
     await flushPromises();
     expect(mocks.win.toggleMaximize).toHaveBeenCalledTimes(1);
-
     w.unmount();
   });
 
-  it("关闭按钮走统一关闭入口，不再直接 close()", async () => {
-    const w = await mountChrome("ask");
-
+  it("关闭按钮把请求交给壳（window.close），不在前端自行判断 behavior", async () => {
+    const w = await mountChrome("tray"); // 即使设置是 tray，前端也仍只发关闭请求
     await w.find('button[aria-label="关闭"]').trigger("click");
     await flushPromises();
-
-    expect(mocks.invoke).toHaveBeenCalledWith("request_close", { action: "ask" });
-    expect("close" in mocks.win).toBe(false); // 不再直接 close()：否则会绕过关闭行为
+    expect(mocks.win.close).toHaveBeenCalledTimes(1);
+    expect(mocks.requestClose).not.toHaveBeenCalled();
+    expect(w.find('[role="dialog"]').exists()).toBe(false);
     w.unmount();
   });
 
@@ -180,16 +185,14 @@ describe("WindowChrome 自定义标题条", () => {
   it("系统改了最大化状态（拖边缩放 / Win+方向键）：按钮跟着变", async () => {
     const w = await mountChrome();
     expect(w.find('button[aria-label="最大化"]').exists()).toBe(true);
-
     mocks.win.isMaximized.mockResolvedValue(true);
     mocks.state.resized?.();
     await flushPromises();
-
     expect(w.find('button[aria-label="向下还原"]').exists()).toBe(true);
     w.unmount();
   });
 
-  it("卸载时取消订阅（窗口缩放 + 壳关闭事件），不留悬挂监听", async () => {
+  it("卸载时取消订阅（窗口缩放 + 壳事件），不留悬挂监听", async () => {
     const w = await mountChrome();
     w.unmount();
     expect(mocks.unlisten).toHaveBeenCalled();
@@ -197,91 +200,67 @@ describe("WindowChrome 自定义标题条", () => {
   });
 });
 
-describe("WindowChrome 关闭行为（R9 §11）", () => {
-  it("ask：弹出确认框，三个选择与契约一致", async () => {
+describe("WindowChrome ask 确认框（壳侧判定，前端只做 UI）", () => {
+  it("收到壳的问询：先 ACK，再弹出三选确认框", async () => {
     const w = await mountChrome("ask");
-    await w.find('button[aria-label="关闭"]').trigger("click");
-    await flushPromises();
+    await emitCloseRequested();
 
+    expect(mocks.ack).toHaveBeenCalledTimes(1);
     const dialog = w.find('[role="dialog"]');
     expect(dialog.exists()).toBe(true);
-    const labels = dialog.findAll("button").map((b) => b.text());
-    expect(labels).toEqual(["最小化到托盘", "退出 QIO", "取消"]);
+    expect(dialog.findAll("button").map((b) => b.text())).toEqual([
+      "最小化到托盘",
+      "退出 QIO",
+      "取消",
+    ]);
 
-    // 取消不触发任何退出/隐藏动作
+    // 取消：只关框，不触发隐藏/退出
     await dialog.findAll("button")[2].trigger("click");
     await flushPromises();
     expect(w.find('[role="dialog"]').exists()).toBe(false);
-    expect(mocks.invoke).toHaveBeenCalledTimes(1); // 只有打开前的那次 ask 门禁
+    expect(mocks.win.close).not.toHaveBeenCalled();
     w.unmount();
   });
 
-  it("ask 选「最小化到托盘」：壳只隐藏窗口，不触发退出", async () => {
+  it("选「最小化到托盘」：调壳 request_close(tray)，前端不发后端 HTTP", async () => {
     const w = await mountChrome("ask");
-    await w.find('button[aria-label="关闭"]').trigger("click");
+    await emitCloseRequested();
+    await w.find('[role="dialog"] button.primary').trigger("click");
     await flushPromises();
+    expect(mocks.requestClose).toHaveBeenCalledWith("tray");
+    w.unmount();
+  });
+
+  it("选「退出 QIO」：调壳 request_close(quit)，由壳完成后端收尾与进程树核验", async () => {
+    const w = await mountChrome("ask");
+    await emitCloseRequested();
+    await w.find('[role="dialog"] button.danger').trigger("click");
+    await flushPromises();
+    expect(mocks.requestClose).toHaveBeenCalledWith("quit");
+    w.unmount();
+  });
+
+  it("记住我的选择：写回设置并把新行为同步给壳", async () => {
+    const w = await mountChrome("ask");
+    await emitCloseRequested();
+    await w.find('[role="dialog"] input[type="checkbox"]').setValue(true);
     await w.find('[role="dialog"] button.primary').trigger("click");
     await flushPromises();
 
-    expect(mocks.invoke).toHaveBeenCalledWith("request_close", { action: "tray" });
-    expect(mocks.shutdownBackend).not.toHaveBeenCalled();
+    expect(mocks.updateCloseBehavior).toHaveBeenCalledWith("tray");
+    expect(mocks.syncBehavior).toHaveBeenCalledWith("tray");
+    expect(mocks.requestClose).toHaveBeenCalledWith("tray");
     w.unmount();
   });
 
-  it("ask 选「退出 QIO」：先走后端有界收尾，再走壳真正退出", async () => {
+  it("壳侧退出通知（托盘菜单 / quit）：只置守卫并显示退出进度，不再 invoke 业务命令", async () => {
     const w = await mountChrome("ask");
-    await w.find('button[aria-label="关闭"]').trigger("click");
+    const cb = mocks.listeners.get("qio://quit-requested");
+    expect(cb).toBeTypeOf("function");
+    cb?.();
     await flushPromises();
-    await w.find('[role="dialog"] button.danger').trigger("click");
-    await flushPromises();
-
-    expect(mocks.shutdownBackend).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).toHaveBeenCalledWith("request_close", { action: "quit" });
-    w.unmount();
-  });
-
-  it("关闭行为 = tray：点关闭直接隐藏，不弹框", async () => {
-    const w = await mountChrome("tray");
-    await w.find('button[aria-label="关闭"]').trigger("click");
-    await flushPromises();
-
-    expect(w.find('[role="dialog"]').exists()).toBe(false);
-    expect(mocks.invoke).toHaveBeenCalledWith("request_close", { action: "tray" });
-    w.unmount();
-  });
-
-  it("关闭行为 = quit：点关闭直接进入真正退出流程", async () => {
-    const w = await mountChrome("quit");
-    await w.find('button[aria-label="关闭"]').trigger("click");
-    await flushPromises();
-
-    expect(w.find('[role="dialog"]').exists()).toBe(false);
-    expect(mocks.shutdownBackend).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).toHaveBeenCalledWith("request_close", { action: "quit" });
-    w.unmount();
-  });
-
-  it("系统关闭（Alt+F4 / WM_CLOSE）与标题条走同一套行为", async () => {
-    const w = await mountChrome("tray");
-    const closeRequested = mocks.listeners.get("qio://close-requested");
-    expect(closeRequested).toBeTypeOf("function");
-    closeRequested?.();
-    await flushPromises();
-
-    expect(mocks.invoke).toHaveBeenCalledWith("request_close", { action: "tray" });
-    w.unmount();
-  });
-
-  it("托盘菜单「退出 QIO」直接走真正退出流程（不再弹 ask 框）", async () => {
-    const w = await mountChrome("ask");
-    const trayQuit = mocks.listeners.get("qio://tray-quit");
-    expect(trayQuit).toBeTypeOf("function");
-    trayQuit?.();
-    await flushPromises();
-
-    expect(w.find('[role="dialog"]').exists()).toBe(false);
-    expect(mocks.shutdownBackend).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke).toHaveBeenCalledWith("request_close", { action: "quit" });
+    expect(w.find(".close-busy").exists()).toBe(true);
+    expect(mocks.noteQuit).toHaveBeenCalledTimes(1);
     w.unmount();
   });
 });
