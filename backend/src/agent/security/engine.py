@@ -52,6 +52,12 @@ _READ_ONLY_DENY = "只读模式下 QIO 不能修改业务文件"
 _NEEDS_APPROVAL = "受限模式下这类操作需要你确认后才会执行"
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 class AuthorizationEngine(AuthorizationGateway):
     def __init__(
         self,
@@ -63,6 +69,12 @@ class AuthorizationEngine(AuthorizationGateway):
         workspace_root: Callable[[], Path] | None = None,
         internal_data_paths: Callable[[], list[Path]] | None = None,
         audit: AuthorizationAudit | None = None,
+        # R9-F：受限模式的模型授权审查与后端文件来源（均可缺省，缺省时行为与 R9 一致）。
+        requirements: Any = None,
+        authorizations: Any = None,
+        reviewer: Any = None,
+        origin_provider: Callable[[Path], str | None] | None = None,
+        prompt_version: str = "",
     ) -> None:
         self.conn = conn
         self.approvals = approvals
@@ -71,6 +83,11 @@ class AuthorizationEngine(AuthorizationGateway):
         self._workspace_root = workspace_root or (lambda: Path.cwd())
         self._internal_data_paths = internal_data_paths or (lambda: [])
         self.audit = audit or AuthorizationAudit()
+        self.requirements = requirements
+        self.authorizations = authorizations
+        self.reviewer = reviewer
+        self.origin_provider = origin_provider
+        self.prompt_version = prompt_version
 
     # -- 模式：读取归一；写入只接受用户发起 ---------------------------------
 
@@ -159,13 +176,24 @@ class AuthorizationEngine(AuthorizationGateway):
     async def authorize(self, effect: Effect, *, ctx: AuthContext | None = None) -> AuthDecision:
         context = self._context(ctx)
         mode = self.mode()
+        self._enrich_origin(effect)
         verdict, reason, scope_id = self._verdict(effect, context, mode)
+        needs_review = False
+        if (
+            mode == PermissionMode.RESTRICTED
+            and verdict == Verdict.APPROVE
+            and self._review_candidate(effect)
+        ):
+            verdict, reason, scope_id, needs_review = await self._apply_review(
+                effect, context, mode, reason, scope_id
+            )
         decision = AuthDecision(
             verdict=verdict,
             reason=reason,
             approval_id=None,
             effects=(effect,),
             scope_id=scope_id,
+            needs_review=needs_review,
         )
         instruction = context.instruction or current_instruction.get()
         self.audit.record(
@@ -173,7 +201,7 @@ class AuthorizationEngine(AuthorizationGateway):
             decision=decision,
             mode=mode.value,
             instruction_id=instruction.instruction_id if instruction is not None else None,
-            detail={"origin": context.origin},
+            detail={"origin": context.origin, "needs_review": needs_review},
         )
         return decision
 
@@ -189,7 +217,16 @@ class AuthorizationEngine(AuthorizationGateway):
         approves: list[str] = []
         scope_id: str | None = None
         for effect in tuples:
+            self._enrich_origin(effect)
             verdict, reason, hit_scope = self._verdict(effect, context, mode)
+            if (
+                mode == PermissionMode.RESTRICTED
+                and verdict == Verdict.APPROVE
+                and self._review_candidate(effect)
+            ):
+                verdict, reason, hit_scope, _ = await self._apply_review(
+                    effect, context, mode, reason, hit_scope
+                )
             scope_id = scope_id or hit_scope
             if verdict == Verdict.DENY:
                 denies.append(reason)
@@ -278,6 +315,283 @@ class AuthorizationEngine(AuthorizationGateway):
             operation.purpose = str(instruction.text or "")[:200]
         return await self.approvals.submit(
             operation, mode=operation.mode_at_request, origin=context.origin
+        )
+
+    # -- R9-F：受限模式模型授权审查 + 后端文件来源 -------------------------
+
+    #: 需要理解"用户具体要求是否覆盖这次操作"的效果类别。读取/QIO 受控数据/
+    #: 专用环境装依赖等固定规则不在其中（不为每次读取调用模型）。
+    _REVIEW_KINDS = frozenset(
+        {
+            EffectKind.WRITE,
+            EffectKind.CREATE,
+            EffectKind.DELETE,
+            EffectKind.EXECUTE,
+            EffectKind.INSTALL_DEPS,
+            EffectKind.SYSTEM_CHANGE,
+            EffectKind.NETWORK_EGRESS,
+        }
+    )
+
+    def _review_candidate(self, effect: Effect) -> bool:
+        if effect.kind not in self._REVIEW_KINDS:
+            return False
+        if self._is_app_managed(effect):
+            return False
+        # 未声明效果的工具调用没有具体对象可核对：交人工审批，不让模型猜。
+        if effect.detail.get("undeclared_effects"):
+            return False
+        return True
+
+    def _enrich_origin(self, effect: Effect) -> None:
+        """用后端持久化来源覆盖"来源归属"（不信任模型/参数传入的 origin）。
+
+        来源查询失败不阻断判定：缺省 origin 会退回"用户原始文件"语义（需要确认），
+        而不是被当成 QIO 生成物放行。
+        """
+        provider = self.origin_provider
+        if provider is None or effect.origin():
+            return
+        for target in effect.path_targets():
+            try:
+                origin = provider(Path(target.value))
+            except Exception:  # noqa: BLE001 - 查不到来源按未记录处理（保守）
+                origin = None
+            if origin:
+                effect.detail["origin"] = str(origin)
+                return
+
+    def _current_requirement(self) -> Any:
+        if self.requirements is None:
+            return None
+        try:
+            return self.requirements.current()
+        except Exception:  # noqa: BLE001 - 台账不可用按"没有可对照要求"
+            return None
+
+    @staticmethod
+    def _operation_fingerprint(requirement_id: str, mode: str, operation: Any) -> str:
+        import hashlib
+        import json
+
+        payload = {
+            "requirement_id": requirement_id,
+            "mode": mode,
+            "kind": operation.kind,
+            "objects": [
+                {
+                    "kind": obj.kind,
+                    "value": obj.value,
+                    "identity": getattr(obj, "identity_key", None),
+                    "origin": getattr(obj, "file_origin", None),
+                }
+                for obj in operation.objects
+            ],
+            "program": operation.program,
+            "argv": list(operation.argv),
+            "cwd": operation.cwd,
+            "script_sha256": operation.script_sha256,
+            "network_hosts": list(operation.network_hosts),
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _review_operation(self, effect: Effect) -> Any:
+        from agent.security.review import ReviewObject, ReviewOperation
+
+        objects = []
+        for target in effect.targets:
+            if target.kind == "path":
+                objects.append(
+                    ReviewObject(
+                        kind="path",
+                        value=str(target.value),
+                        identity_key=target.identity,
+                        file_origin=effect.origin() or None,
+                    )
+                )
+            elif target.kind == "program":
+                objects.append(ReviewObject(kind="program", value=str(target.value)))
+            elif target.kind == "url":
+                objects.append(ReviewObject(kind="service", value=str(target.value)))
+        kind_map = {
+            "write": "write",
+            "create": "create",
+            "delete": "delete",
+            "execute": "execute",
+            "install_deps": "install",
+            "system_change": "system_change",
+            "network_egress": "egress",
+        }
+        detail = effect.detail or {}
+        return ReviewOperation(
+            kind=kind_map.get(effect.kind.value, effect.kind.value),
+            objects=tuple(objects),
+            program=str(detail.get("program") or "") or None,
+            argv=tuple(str(item) for item in (detail.get("argv") or [])),
+            cwd=str(detail.get("cwd") or "") or None,
+            script_sha256=(
+                str(detail.get("script_sha256") or "") or None
+            ),
+            network_hosts=tuple(str(item) for item in (detail.get("network_hosts") or [])),
+            summary=str(effect.purpose or "")[:300],
+        )
+
+    async def _apply_review(
+        self,
+        effect: Effect,
+        context: AuthContext,
+        mode: PermissionMode,
+        reason: str,
+        scope_id: str | None,
+    ) -> tuple[Verdict, str, str | None, bool]:
+        """受限模式下把"需要自然语言理解"的操作交给模型审查（后端验证后生效）。
+
+        模型不可用/超时/输出非法/对象无法核实 → 不默认允许，退回普通审批并写明原因；
+        用户仍可对这条具体操作手动审批（审批单会列明对象与操作）。
+        """
+        unavailable_note = "（暂时无法确认授权范围；本次没有执行，你可以对这条具体操作手动审批）"
+        if self.reviewer is None or self.requirements is None or self.authorizations is None:
+            return Verdict.APPROVE, reason + unavailable_note, scope_id, True
+        requirement = self._current_requirement()
+        if requirement is None:
+            return (
+                Verdict.APPROVE,
+                reason + "（没有可对照的具体用户要求；你可以对这条具体操作手动审批）",
+                scope_id,
+                True,
+            )
+        try:
+            from agent.security.review import (
+                ReviewDecision,
+                ReviewRequest,
+                ReviewUnavailable,
+                validate_outcome,
+            )
+            from agent.security.requirements import AuthorizationRecord
+        except Exception:  # noqa: BLE001 - 审查模块未就绪时不能默认放行
+            return Verdict.APPROVE, reason + unavailable_note, scope_id, True
+
+        operation = self._review_operation(effect)
+        fingerprint = self._operation_fingerprint(
+            requirement.requirement_id, mode.value, operation
+        )
+        try:
+            record = self.authorizations.reuse(
+                requirement_id=requirement.requirement_id,
+                operation_kind=operation.kind,
+                fingerprint=fingerprint,
+            )
+        except Exception:  # noqa: BLE001 - 复用查询失败按未命中（会重新审查）
+            record = None
+        if record is not None:
+            return (
+                Verdict.ALLOW,
+                "这条操作在已经确认过的授权范围内（复用审查记录，没有再次调用模型）",
+                str(getattr(record, "record_id", "") or "") or scope_id,
+                False,
+            )
+
+        instruction = context.instruction or current_instruction.get()
+        related_grants = ()
+        if instruction is not None:
+            related_grants = tuple(
+                {
+                    "grant_id": grant.grant_id,
+                    "operations": sorted(grant.operations),
+                    "objects": [
+                        {"kind": scope.kind, "value": scope.value}
+                        for scope in grant.objects
+                    ],
+                    "purpose": grant.purpose,
+                    "source": grant.source,
+                }
+                for grant in instruction.active_grants()
+            )
+        user_limits = tuple(getattr(requirement, "limits", ()) or ())
+        request = ReviewRequest(
+            requirement=requirement,
+            corrections=tuple(getattr(requirement, "corrections", ()) or ()),
+            limits=user_limits,
+            mode=mode.value,
+            operation=operation,
+            related_grants=related_grants,
+            prior_decisions=(),
+            approvals=(),
+            user_constraints=user_limits,
+        )
+        try:
+            outcome = await self.reviewer.review(request)
+        except ReviewUnavailable as exc:
+            return (
+                Verdict.APPROVE,
+                reason + "（暂时无法确认授权范围：%s；本次没有执行，你可以手动审批）" % (exc,),
+                scope_id,
+                True,
+            )
+        except Exception as exc:  # noqa: BLE001 - 审查崩溃不能默认允许
+            logger.warning("授权审查失败：%s: %s", type(exc).__name__, exc)
+            return (
+                Verdict.APPROVE,
+                reason + "（授权审查失败，本次没有执行；你可以手动审批）",
+                scope_id,
+                True,
+            )
+        try:
+            outcome = validate_outcome(outcome, request)
+        except Exception as exc:  # noqa: BLE001 - 非法输出一律不放行
+            logger.warning("授权审查输出无效：%s", exc)
+            return (
+                Verdict.APPROVE,
+                reason + "（授权审查结果无效，本次没有执行；你可以手动审批）",
+                scope_id,
+                True,
+            )
+        if outcome.decision == ReviewDecision.ALLOW:
+            try:
+                from dataclasses import asdict
+
+                record = AuthorizationRecord(
+                    record_id="authz_" + fingerprint[:16],
+                    requirement_id=requirement.requirement_id,
+                    operation_kind=operation.kind,
+                    fingerprint=fingerprint,
+                    decision="allow",
+                    reason=str(outcome.reason or "")[:500],
+                    allowed_operations=tuple(outcome.allowed_operations),
+                    objects=tuple(asdict(obj) for obj in outcome.objects),
+                    limits=tuple(outcome.limits),
+                    source="model_review",
+                    mode=mode.value,
+                    created_at=_now_iso(),
+                    expires_at=None,
+                    revoked_at=None,
+                    review_id=None,
+                )
+                self.authorizations.record(record)
+            except Exception as exc:  # noqa: BLE001 - 记录不了授权就不放行
+                logger.warning("授权记录保存失败：%s", exc)
+                return (
+                    Verdict.APPROVE,
+                    reason + "（授权记录保存失败，本次没有执行；你可以手动审批）",
+                    scope_id,
+                    True,
+                )
+            return (
+                Verdict.ALLOW,
+                "模型审查确认这属于你当前的要求：" + str(outcome.reason or "")
+                + "（授权范围：%s）" % "、".join(outcome.allowed_operations),
+                record.record_id,
+                False,
+            )
+        if outcome.decision == ReviewDecision.CONFIRM:
+            return Verdict.APPROVE, "模型审查认为需要你确认：" + str(outcome.reason or ""), None, True
+        return (
+            Verdict.DENY,
+            "模型审查认为这与你的要求冲突，不能执行（不会转成普通审批）："
+            + str(outcome.reason or ""),
+            None,
+            False,
         )
 
     # -- 规则实现 -----------------------------------------------------------
@@ -423,7 +737,13 @@ class AuthorizationEngine(AuthorizationGateway):
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
             return Verdict.APPROVE, limit_reason, None
-        # 4) 三种模式。
+        # 4) 用户明确禁止（R9-F 契约 §5.3）：三种模式都必须遵守。
+        # 这是**限制**检测：只把"不要修改/只分析/禁止删除/不要外发"等用户原话
+        # 转成拒绝，永远不会产生许可；误判方向是更保守（多拒绝一次），不是放行。
+        prohibited = self._user_prohibition(effect)
+        if prohibited:
+            return Verdict.DENY, prohibited, None
+        # 5) 三种模式。
         if mode == PermissionMode.READ_ONLY:
             return self._read_only(effect)
         if mode == PermissionMode.UNRESTRICTED:
@@ -433,6 +753,62 @@ class AuthorizationEngine(AuthorizationGateway):
                 None,
             )
         return self._restricted(effect, context)
+
+    #: 用户"只分析/不许改"类明确禁止 → 拒绝所有会改状态的效果。
+    _MUTATION_PROHIBITIONS = (
+        "只分析",
+        "只读分析",
+        "不要修改",
+        "别修改",
+        "不要改",
+        "别改",
+        "禁止修改",
+        "不许修改",
+        "不要动",
+        "不要写",
+        "别写",
+    )
+    _DELETE_PROHIBITIONS = ("不要删除", "别删除", "禁止删除", "不许删除", "不要删")
+    _EGRESS_PROHIBITIONS = (
+        "不要发送",
+        "别发送",
+        "不要外发",
+        "禁止外发",
+        "不要上传",
+        "禁止上传",
+        "不要发给",
+    )
+
+    def _user_prohibition(self, effect: Effect) -> str | None:
+        """从当前用户要求原话里识别**禁止**（只用于拒绝，不产生任何许可）。
+
+        完全无限制模式也遵守用户明确禁止（契约 §5.3）；受限模式同理，
+        且禁止优先于模型审查（不让模型把用户刚说出的限制推翻）。
+        """
+        requirement = self._current_requirement()
+        if requirement is None:
+            return None
+        parts = [str(getattr(requirement, "text", "") or "")]
+        limits = getattr(requirement, "limits", ()) or ()
+        parts.extend(str(item) for item in limits)
+        text = "\n".join(item for item in parts if item)
+        if not text.strip():
+            return None
+        compact = text.replace(" ", "").lower()
+        kind = effect.kind
+        if kind in MUTATING_EFFECTS and any(
+            token in compact for token in self._MUTATION_PROHIBITIONS
+        ):
+            return "你明确要求只分析/不要修改；这次操作会改变状态，本次没有执行。"
+        if kind == EffectKind.DELETE and any(
+            token in compact for token in self._DELETE_PROHIBITIONS
+        ):
+            return "你明确要求不要删除；本次没有执行。"
+        if kind == EffectKind.NETWORK_EGRESS and any(
+            token in compact for token in self._EGRESS_PROHIBITIONS
+        ):
+            return "你明确要求不要外发/上传；本次没有执行。"
+        return None
 
     def _read_only(self, effect: Effect) -> tuple[Verdict, str, str | None]:
         kind = effect.kind

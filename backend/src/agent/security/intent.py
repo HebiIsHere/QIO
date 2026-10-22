@@ -173,70 +173,12 @@ def _make_grant(
 
 
 def extract_grants(text: str, *, instruction_id: str, created_at: str) -> list[Grant]:
-    """从用户原话确定性提取 grant；不确定就不授权。"""
-    source = str(text or "")
-    if not source.strip():
-        return []
-    grants: list[Grant] = []
-    index = 0
-    for sentence in _SENTENCE_SPLIT.split(source):
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-        paths = _extract_paths(sentence)
-        write_act = _acts(sentence, _WRITE_VERBS)
-        delete_act = _acts(sentence, _DELETE_VERBS)
-        execute_act = _acts(sentence, _EXECUTE_VERBS)
-        repair_act = _acts(sentence, _REPAIR_VERBS)
-        for position, path in paths:
-            purpose = sentence[:200]
-            directory = _is_directory_like(
-                path,
-                sentence,
-                position,
-                verb="修复" if repair_act else ("删除" if delete_act else ""),
-            )
-            scopes = [Scope("path_prefix", path) if directory else Scope("path", path)]
-            operations: set[str] = set()
-            # 写入/创建：明确 write 动作，或项目目录 + 修复类动作。
-            if write_act or (directory and repair_act):
-                operations.add(OPERATION_WRITE)
-                if directory:
-                    operations.add(OPERATION_CREATE)
-            # 删除：只来自明确删除动作；目录/项目不因「修改项目」获得删除授权。
-            if delete_act and not directory:
-                operations.add(OPERATION_DELETE)
-            # 执行：目录/项目 + 执行或修复动作（限定该目录，不产生自由 shell 权限）。
-            if directory and (execute_act or repair_act):
-                operations.add(OPERATION_EXECUTE)
-            if not operations:
-                continue
-            index += 1
-            grant = _make_grant(
-                instruction_id=instruction_id,
-                created_at=created_at,
-                operations=operations,
-                scopes=scopes,
-                purpose=purpose,
-            )
-            if grant is not None:
-                grant.grant_id = "grant_" + instruction_id + "_" + str(index)
-                grants.append(grant)
-        # 外发：明确外发动作 + 明确服务（URL host）才构成 grant。
-        if _acts(sentence, _EGRESS_VERBS):
-            for match in _URL.finditer(sentence):
-                host = match.group(1).strip().lower()
-                if not host:
-                    continue
-                index += 1
-                grant = _make_grant(
-                    instruction_id=instruction_id,
-                    created_at=created_at,
-                    operations={OPERATION_NETWORK_EGRESS},
-                    scopes=[Scope("url_host", host)],
-                    purpose=sentence[:200],
-                )
-                if grant is not None:
-                    grant.grant_id = "grant_" + instruction_id + "_" + str(index)
-                    grants.append(grant)
-    return grants
+    """【R9-F 已停用】关键词提取不再是自然语言授权放行依据（契约 §2、§4.7）。
+
+    受限模式的许可由模型授权审查理解具体用户要求、经后端验证后形成
+    **有界授权记录**（security/review.py + AuthorizationLedger）；read_only /
+    unrestricted 也不会走这里。本函数保留仅避免旧导入立刻失败，**永远返回空**，
+    不存在"绕过模型审查的旧授权入口"。
+    """
+    _ = (text, instruction_id, created_at)
+    return []

@@ -217,16 +217,12 @@ class InstructionRegistry:
             topic_id=topic_id,
             created_at=created_at,
         )
-        if extract:
-            from agent.security.intent import extract_grants
-
-            instruction.grants.extend(
-                extract_grants(
-                    instruction.text,
-                    instruction_id=instruction_id,
-                    created_at=created_at,
-                )
-            )
+        # R9-F（契约 §2、§4.7）：自然语言许可**不再**由动作词/路径关键词产生。
+        # 受限模式下由模型授权审查理解具体用户要求，再经后端验证形成有界授权记录
+        # （见 security/review.py 与 AuthorizationLedger）；这里只保留用户原话与
+        # 生命周期，不再把"句子里出现修改/删除"当成 grant。
+        # extract 参数保留仅为兼容旧调用点，语义固定为"不产生 grant"。
+        _ = extract
         self._active = instruction
         return instruction
 

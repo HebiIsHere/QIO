@@ -77,3 +77,6 @@ class AuthDecision:
     approval_id: str | None = None
     effects: tuple[Effect, ...] = ()
     scope_id: str | None = None
+    #: 受限模式下"需要模型授权审查"的候选（R9-F）。审查不可用时仍回退为普通审批，
+    #: 但调用方/审计能看出这次判定没有经过自然语言授权理解。
+    needs_review: bool = False

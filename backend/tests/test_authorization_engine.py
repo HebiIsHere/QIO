@@ -71,48 +71,55 @@ async def test_restricted_user_file_write_and_delete_need_approval(db_conn, tmp_
     security = make_security(tmp_path, db_conn, mode="restricted")
     write = await verdict(security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.txt"))
     assert write.verdict == Verdict.APPROVE
+    assert write.needs_review is True
     delete = await verdict(security.engine, path_effect(EffectKind.DELETE, tmp_path / "a.txt"))
     assert delete.verdict == Verdict.APPROVE
+    assert delete.needs_review is True
 
 
-async def test_explicit_instruction_grant_allows_write_without_approval(db_conn, tmp_path):
+async def test_explicit_instruction_without_review_needs_approval(db_conn, tmp_path):
+    """R9-F：关键词提取不再产生许可；没有模型审查时退回普通审批并标明原因。"""
     security = make_security(tmp_path, db_conn, mode="restricted")
     target = tmp_path / "a.docx"
     async with with_instruction(security, "把 " + str(target) + " 第 3 段改成 X 并保存"):
         decision = await verdict(security.engine, path_effect(EffectKind.WRITE, target))
-        assert decision.verdict == Verdict.ALLOW
-        assert "你的指令" in decision.reason
-        assert decision.scope_id
+        assert decision.verdict == Verdict.APPROVE
+        assert decision.needs_review is True
+        assert "暂时无法确认授权范围" in decision.reason
+        assert not decision.scope_id
 
 
-async def test_delete_grant_is_not_derived_from_write_grant(db_conn, tmp_path):
-    """「修改项目」不得扩张出删除授权（契约 §2.3）。"""
+async def test_write_sentence_does_not_derive_delete_permission(db_conn, tmp_path):
+    """「修改项目」不得扩张出删除授权；而且两种操作都不能靠关键词放行。"""
     security = make_security(tmp_path, db_conn, mode="restricted")
     target = tmp_path / "a.docx"
     async with with_instruction(security, "修改 " + str(target)):
         write = await verdict(security.engine, path_effect(EffectKind.WRITE, target))
         delete = await verdict(security.engine, path_effect(EffectKind.DELETE, target))
-        assert write.verdict == Verdict.ALLOW
+        assert write.verdict == Verdict.APPROVE
         assert delete.verdict == Verdict.APPROVE
+        assert write.needs_review is True and delete.needs_review is True
 
 
-async def test_explicit_delete_grant_allows_delete(db_conn, tmp_path):
+async def test_delete_sentence_without_review_needs_approval(db_conn, tmp_path):
     security = make_security(tmp_path, db_conn, mode="restricted")
     target = tmp_path / "a.tmp"
     async with with_instruction(security, "删除 " + str(target)):
         decision = await verdict(security.engine, path_effect(EffectKind.DELETE, target))
-        assert decision.verdict == Verdict.ALLOW
-        assert "回收站" in decision.reason
+        assert decision.verdict == Verdict.APPROVE
+        assert decision.needs_review is True
 
 
-async def test_project_repair_grant_allows_execute_in_project(db_conn, tmp_path):
+async def test_project_repair_sentence_needs_authorization_review(db_conn, tmp_path):
+    """问题 D：目录/项目执行授权不再由关键词直接放行，交模型审查理解必要性。"""
     security = make_security(tmp_path, db_conn, mode="restricted")
     project = tmp_path / "proj"
     project.mkdir()
     async with with_instruction(security, "修复 " + str(project) + " 里的这个项目"):
         execute = await verdict(security.engine, path_effect(EffectKind.EXECUTE, project))
-        assert execute.verdict == Verdict.ALLOW
-    # 指令结束后 grant 关闭：同样操作重新需要审批
+        assert execute.verdict == Verdict.APPROVE
+        assert execute.needs_review is True
+    # 指令结束后同样需要重新审查/审批（不继承）
     after = await verdict(security.engine, path_effect(EffectKind.EXECUTE, project))
     assert after.verdict == Verdict.APPROVE
 
@@ -160,6 +167,49 @@ async def test_unrestricted_allows_normal_operations(db_conn, tmp_path):
         assert decision.verdict == Verdict.ALLOW, kind
 
 
+# -- 用户明确禁止：只分析/不要修改在三种模式都生效 --------------------------
+
+
+def _set_requirement(security, text: str, *, limits=()):
+    """注入一个最小需求台账替身（生产由 AppContext 的 RequirementLedger 提供）。"""
+    from types import SimpleNamespace
+
+    class _Ledger:
+        def current(self):
+            return SimpleNamespace(
+                requirement_id="req_test", text=text, limits=tuple(limits)
+            )
+
+    security.engine.requirements = _Ledger()
+
+
+async def test_unrestricted_honors_explicit_prohibition(db_conn, tmp_path):
+    security = make_security(tmp_path, db_conn, mode="unrestricted")
+    _set_requirement(security, "只分析这个项目，不要修改任何文件")
+    write = await verdict(security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.py"))
+    assert write.verdict == Verdict.DENY
+    assert "不要修改" in write.reason or "只分析" in write.reason
+    read = await verdict(security.engine, path_effect(EffectKind.READ, tmp_path / "a.py"))
+    assert read.verdict == Verdict.ALLOW
+
+
+async def test_restricted_prohibition_beats_authorization_review(db_conn, tmp_path):
+    security = make_security(tmp_path, db_conn, mode="restricted")
+    _set_requirement(security, "只分析，不要删除这个文件")
+    delete = await verdict(security.engine, path_effect(EffectKind.DELETE, tmp_path / "a.txt"))
+    assert delete.verdict == Verdict.DENY
+    assert "没有执行" in delete.reason
+
+
+async def test_prohibition_only_denies_matching_effect_kind(db_conn, tmp_path):
+    security = make_security(tmp_path, db_conn, mode="unrestricted")
+    _set_requirement(security, "不要删除这些文件，但可以修改")
+    write = await verdict(security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.txt"))
+    assert write.verdict == Verdict.ALLOW
+    delete = await verdict(security.engine, path_effect(EffectKind.DELETE, tmp_path / "a.txt"))
+    assert delete.verdict == Verdict.DENY
+
+
 # -- 内部运行数据：所有模式都要三次确认 -------------------------------------
 
 
@@ -185,6 +235,18 @@ async def test_subagent_cannot_expand_parent_scope(db_conn, tmp_path):
 
     instruction = security.instructions.begin(
         turn_id="turn_parent", text="修复 " + str(allowed) + " 里的这个项目"
+    )
+    # 真实授权现在只能来自用户批准（审批服务 add_grant）；用它验证子智能体子集规则。
+    from agent.security.instructions import Scope
+
+    assert (
+        security.instructions.add_grant(
+            instruction,
+            operations={"write", "create"},
+            objects=[Scope("path_prefix", str(allowed))],
+            purpose="用户批准修复这个项目",
+        )
+        is not None
     )
     inside = path_effect(EffectKind.WRITE, allowed / "a.py")
     outside = path_effect(EffectKind.WRITE, tmp_path / "outside.py")

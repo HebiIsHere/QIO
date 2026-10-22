@@ -106,27 +106,32 @@ def test_restricted_write_pends_then_approval_executes(tmp_path, app_client):
     assert row["result"] is not None
 
 
-def test_explicit_instruction_authorizes_without_second_approval(tmp_path, app_client):
-    """用户明确指定文件+修改内容+保存 → 指令本身构成当次授权，不再重复审批。"""
+def test_explicit_instruction_requires_review_not_keyword_grant(tmp_path, app_client):
+    """R9-F：明确指令不再靠"修改/保存"关键词直接放行。
+
+    模型审查不可用（无模型/超时/非法输出同一路径）时必须退回普通审批，
+    不能默认允许；这保证"明确指令"本身不再是一个绕过审查的旧授权入口。
+    """
     client = app_client
     target = client.workspace / "explicit.txt"
     target.write_text("old", encoding="utf-8")
     ctx = client.app.state.ctx
+    original_reviewer = getattr(ctx.authorization, "reviewer", None)
+    ctx.authorization.reviewer = None  # 模拟模型审查不可用
     instruction = ctx.instructions.begin(
         turn_id="turn_explicit", text=f"修改 {target} 的内容改成 hello 并保存"
     )
     try:
         with instruction_context(instruction):
             result = _exec(client, "fs_write", {"path": str(target), "content": "hello"})
-        assert result.ok is True, result.error
-        assert target.read_text(encoding="utf-8") == "hello"
-        assert _pending(client) == [], "明确指令授权不应再产生一次审批"
     finally:
         ctx.instructions.end(instruction)
-    # 指令结束后授权关闭：后续同类写入重新需要审批
-    result = _exec(client, "fs_write", {"path": str(target), "content": "after-close"})
-    assert target.read_text(encoding="utf-8") == "hello", "指令结束后的写入不得自动执行"
-    assert result.ok is True and len(_pending(client)) == 1
+        ctx.authorization.reviewer = original_reviewer
+    assert "已提交审批" in (result.content or ""), "关键词授权的旧行为不得复活（应返回待审批）"
+    assert target.read_text(encoding="utf-8") == "old", "没有审查结论时不得执行写入"
+    pending = _pending(client)
+    assert len(pending) == 1, "应当退回普通审批（等待用户明确决定）"
+    assert pending[0]["state"] == "waiting"
 
 
 def test_unrestricted_still_requires_three_confirmations_for_internal_data(app_client):

@@ -312,6 +312,31 @@ class AppContext:
         self.instructions = InstructionRegistry()
         self.operations = OperationRegistry()
         self.tempfiles = TempFileManager(Path(self.settings.data_dir) / "tmp")
+        # R9-F：受限模式模型授权审查 / 需求台账 / 有界授权记录 / 后端文件来源。
+        # 这些模块由并行分支提供；未合入或初始化失败时明确降级为"没有模型审查"，
+        # 受限模式退回普通审批（不默认放行，也不会自动切模式）。
+        self.requirements = None
+        self.authorizations = None
+        self.file_origins = None
+        self.reviewer = None
+        try:
+            from agent.security.requirements import (
+                AuthorizationLedger,
+                RequirementLedger,
+            )
+            from agent.security.review import ModelAuthorizationReviewer
+
+            self.requirements = RequirementLedger(conn)
+            self.authorizations = AuthorizationLedger(conn)
+            self.reviewer = ModelAuthorizationReviewer(
+                adapter_factory=self.build_adapter
+            )
+        except Exception as exc:  # noqa: BLE001 - 降级必须可见，不静默假装已启用
+            logging.getLogger(__name__).warning(
+                "R9-F 授权审查组件未启用（受限模式退回普通审批）：%s: %s",
+                type(exc).__name__,
+                exc,
+            )
         self.authorization = AuthorizationEngine(
             conn=conn,
             approvals=self.approvals,
@@ -319,6 +344,10 @@ class AppContext:
             instance_id=self.instance_id,
             workspace_root=lambda: self.computer.root(),
             internal_data_paths=self._internal_data_paths,
+            requirements=self.requirements,
+            authorizations=self.authorizations,
+            reviewer=self.reviewer,
+            origin_provider=self._file_origin_for,
         )
         self.approvals.set_engine(self.authorization)
         self.approvals.set_operations(self.operations)
@@ -704,6 +733,19 @@ class AppContext:
         except OSError:  # pragma: no cover - 数据目录不可读时按已收集路径
             pass
         return paths
+
+    def _file_origin_for(self, path: Path) -> str | None:
+        """后端持久化文件来源查询（供授权引擎核实 qio_generated / 用户材料）。
+
+        模型/工具传入的 origin 字段不可信；只有这里查到的来源才参与判定。
+        存储由 AttachmentService 构造时建立并设为进程级默认（W3，迁移 55）。
+        """
+        try:
+            from agent.services.file_origins import origin_for_path
+
+            return origin_for_path(path)
+        except Exception:  # noqa: BLE001 - 模块未就绪/查不到按未记录（保守：需要确认）
+            return None
 
     def _make_tool_sandbox(self):
         """工具子进程执行器：注入模式/网关/受保护范围（契约 §3.1，R9 W2b 接线）。"""
@@ -2472,6 +2514,19 @@ class AppContext:
             )
         except Exception:  # noqa: BLE001 - 指令提取失败不能挡住一轮（保守=没有 grant）
             logging.getLogger(__name__).warning("instruction begin failed", exc_info=True)
+        # R9-F：把这次用户要求写入需求台账（原话 + 真实来源），后续受限模式
+        # 模型审查引用它作为授权依据；轮末不撤销需求本身（同一要求的后台工作
+        # 可能还在继续），但需求会被新的用户要求 supersede。
+        if instruction is not None and self.requirements is not None:
+            try:
+                self.requirements.record_user_message(
+                    text=instruction.text,
+                    message_id=str(getattr(ctx, "message_id", "") or ""),
+                    turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                    topic_id=getattr(ctx, "initial_topic", None),
+                )
+            except Exception:  # noqa: BLE001 - 台账失败不阻塞用户轮，但审查会因缺少要求退回审批
+                logging.getLogger(__name__).warning("requirement record failed", exc_info=True)
         try:
             if instruction is None:
                 await self.turn_orchestrator.execute(ctx)
