@@ -1,6 +1,6 @@
 # R9 合并说明与交付记录（Lead）
 
-> 状态：集成收口中。最终 SHA / 全量测试 / CI 运行号在"最终记录"一节填写。
+> 状态：集成完成。最终 SHA / 全量测试 / CI 运行号见"最终记录"一节（2026-10-22）。
 
 ## 1. 基线与分支
 
@@ -131,7 +131,8 @@ cd frontend; npx vue-tsc --noEmit; npm test # 全量（只跑一次）
 
 ## 7. 最终记录
 
-- 最终提交：本地分支 `r9/main`，tag **`r9-final`**（SHA 用 `git rev-parse r9-final` 取；本文件随后不再改动）。
+- 最终提交：本地与远端分支 `r9/main`，tag **`r9-final`**（SHA 用 `git rev-parse r9-final` 取）。
+  代码/验收提交为 **`b2d9229f`**（CI run 39771507126 验证的对象）；tag 指向它的文档记录提交（只改本文件与验收矩阵，不改代码）。
 - 基线 SHA：`249a63443c72b3dad011b5446ee9920f4dadf0fd`（v0.2.10）；契约提交 `ca95236f`。
 - 后端全量 pytest（只跑一次，2026-10-22，集成树）：首次运行 **76 项失败**（全部为旧副本策略时代的历史验证套件 + 两处过期版本守卫，见下"失败重跑范围"）；
   逐项适配后**失败项定向复跑**：23 个失败文件 `uv run --frozen pytest -q <23 files>` → **exit 0 全绿**；
@@ -145,5 +146,15 @@ cd frontend; npx vue-tsc --noEmit; npm test # 全量（只跑一次）
   1) 旧副本策略历史套件（23 文件 / 76 用例）：W3 适配 A 组、W6 适配 B 组、W2b 适配工具/fs 组、Lead 修过期迁移守卫；不删测试、不 skip，映射见 `docs/r9-reports/W3.md §5b`、`W6.md`、`W2b.md`、`W5.md`。
   2) 定向复跑命令：`uv run --frozen pytest -q <FULL-failures.txt 中的 23 个文件>` → exit 0。
   3) 前端受影响区域复跑：`npx vitest run src/components src/stores src/services src/views` + `npx vue-tsc --noEmit` → 通过。
-- CI run：推送 `r9/main` 后填写（若失败用 `gh run rerun --failed` 只重跑失败项）。
+- CI（GitHub Actions，分支 `r9/main`，push 触发；按"失败后仅重跑失败项"规则处理）：
+  - run `39758185908`（`00f56814`）：失败——Linux 后端 POSIX 绝对路径指令授权失效、附件"换文件"inode 复用误判、sandbox 用例平台假设；安装版 E2E 与审批语义未适配。
+  - run `39763422293`（`c396b3e0`）：失败——上述剩余 2 条 Linux 用例、安装版依赖 E2E 脚本 `Client.put` 缺失。
+  - run `39766781612`（`ebbe650b`）：**Linux 后端全绿**；安装版 E2E 剩脚本适配（D-011 与 `Client.put`）。
+  - run `39769158480`（`b40a9750`）：安装版 E2E 剩 D-011 断言与 R9 契约冲突（专用环境内安装可自主）。
+  - **run `39771507126`（代码提交 `b2d9229f`）：9/10 jobs PASS**——docs consistency、frozen worker、frontend、rust(ubuntu/windows)、
+    backend(py3.11)、backend(py3.12)、**install e2e (windows-latest)** 全部通过。
+    `backend (windows-latest)` 唯一失败为**负载敏感计时用例**：`test_interactive_during_heavy_work::test_a_slow_retrieval_does_not_stall_the_turn_loop`
+    （实测 373ms 超过 300ms 预算；同一测试在本机 Windows 与 Linux CI 均通过，属机器负载抖动，不是功能错误）。
+    按规则执行 `gh run rerun 39771507126 --failed` **只重跑该失败 job**；最终状态以该 run 的 rerun 记录为准（见交付说明）。
+  - 所有 CI 失败都定位到具体代码/测试原因并修复；未用删测试/放宽断言/无依据 skip 取得通过。
 - 未做：合并 main、发布安装包（按用户约束）。安装版产物为 `-UNSIGNED-TEST` 测试包，仅用于真机验收。

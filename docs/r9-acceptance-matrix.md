@@ -51,7 +51,7 @@
 
 - 后端全量 pytest（2026-10-22，集成树，只跑一次）：首次运行 4640+ 项中 **76 项失败**，全部来自旧副本策略时代的历史验证套件与两处过期守卫；逐项归因后由 W3/W6/W2b/Lead 适配到 R9 新契约（不删测试、不 skip，旧断言→新断言映射见各报告），随后**失败项定向复跑（23 个文件）exit 0 全绿**。
 - 前端全量：`npx vue-tsc --noEmit` exit 0；`npx vitest run` 399 files / 3570 tests 通过（W5 安装版修复后对受影响组件/服务定向复跑 216 项通过 + vue-tsc 0）。
-- CI：见 docs/r9-merge-notes.md 最终记录（推送后填写 run id；若失败，用 `gh run rerun --failed` 只重跑失败项）。
+- CI（GitHub Actions）：run `39771507126`（代码提交 `b2d9229f`）**9/10 jobs PASS**，含 docs、frontend、backend Linux 双版本、rust、install e2e（真实 NSIS 安装/启动）；唯一失败为 Windows 后端负载敏感计时用例（373ms vs 300ms 预算），已按规则 `gh run rerun --failed` 只重跑该 job。详见 `docs/r9-merge-notes.md` 第 7 节。
 
 ## 五、未验证 / 未完成边界
 
