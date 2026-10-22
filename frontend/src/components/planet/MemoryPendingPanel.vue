@@ -26,6 +26,7 @@ import {
   type PendingItemView,
   type PendingKnowledgeRef,
 } from "../../services/api";
+import { submitKnowledgeApprovalRequest } from "../../stores/unifiedApprovals";
 import QConfirm from "../ui/QConfirm.vue";
 import QSelect from "../ui/QSelect.vue";
 import { useActionFeedback } from "../../composables/useActionFeedback";
@@ -259,20 +260,22 @@ function cancelModify() {
 async function approveModified(item: PendingItemView): Promise<void> {
   const content = editDraft.value.trim();
   if (!content) return;
+  const knowledge = firstKnowledge(item);
   const ok = await feedback.run(
     feedbackKey(item),
     async () => {
-      // 既有生命周期只允许对「已生效」条目做版本纠正：
-      // ① 先用 verify 批准这条提议（pending_review -> active）；
-      // ② 再用 revise 原子替换成用户改过的内容（新版本）。
-      // 两步都是既有 API；第二步失败时如实说明「原内容已批准、修正未生效」。
-      await api.verifyKnowledge(item.id);
+      // 与统一审批弹窗同一个原子接口：一次事务里以**用户确认后的内容**生成生效版本，
+      // 绝不「先批准原文再改」。expected_* 把用户看到的这一版一起带上（CAS）。
       try {
-        await api.reviseKnowledge(item.id, content);
+        await submitKnowledgeApprovalRequest(item.id, "approve_modified", {
+          content,
+          expectedVersion: knowledge?.version ?? null,
+          expectedContent: knowledge?.content ?? null,
+          expectedUpdatedAt: item.updated_at || null,
+        });
       } catch (error) {
-        throw new Error(
-          "原内容已批准，但修正没有生效：" + ((error as Error).message || "未知原因"),
-        );
+        const body = (error as { body?: { error?: string } }).body;
+        throw new Error(body?.error || (error as Error).message || "未知原因");
       }
       editingId.value = null;
       editDraft.value = "";

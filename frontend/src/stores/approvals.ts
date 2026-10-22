@@ -317,6 +317,14 @@ export const useApprovalsStore = defineStore("approvals", {
      * 不再对同一个 approval_id 显示按钮（按 id 门控，不是按「有没有审批」）。
      */
     inlineId: null as string | null,
+    /**
+     * 对话页统一审批层接管期间置 true：过程区内联卡不再声明按钮，按钮只留在
+     * 统一弹窗（同一时刻只有一套有效提交按钮）。其他页面保持 false，内联审批照旧。
+     *
+     * 消费方：TurnProcess.vue 的 inlineApproval 计算（由 Lead 在集成时加一行门控，
+     * 本分支不动该文件，避免 B 的分支类型不兼容）。
+     */
+    inlineSuppressed: false,
   }),
   getters: {
     current: (state) => state.queue[0] ?? null,
@@ -327,6 +335,8 @@ export const useApprovalsStore = defineStore("approvals", {
     /** 内联卡正在显示的就是当前这条审批 */
     inlineClaimed: (state) =>
       !!state.inlineId && state.queue.length > 0 && state.queue[0]?.approval_id === state.inlineId,
+    /** 内联审批是否被统一审批层接管（接管时内联卡不显示按钮） */
+    inlineAllowed: (state) => !state.inlineSuppressed,
   },
   actions: {
     enqueue(
