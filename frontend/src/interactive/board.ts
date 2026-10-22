@@ -1317,17 +1317,21 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
   const placed = clampCardRect({ x: px, y: py, w: card.w, h: card.h });
   const resolved = resolveDrop(work, cardId, placed.x, placed.y);
   /*
-    不成组时**不许叠放**：落点被别的卡片占住就自动挪到最近的空位。
-    成组时不挪：位置由组框排布接管（合并成组本来就是用户明确要的语义）。
+    卡片之间**不允许叠放**（2026-10-22 用户实测：拖入已有组时也要避开）。
+
+    只有两条「明确重叠才成立」的成组路径保留原位 —— 它们是用户主动重叠的结果：
+    1) 两个未分组卡片明确重叠 → 自动成组；
+    2) 两个已有组重叠 → 合并组。
+    其余情况（自由摆放 / 拖入已有组 / 组内换位）都找最近空位，避免卡片互相遮挡。
   */
-  /*
-    会成组就不挪：位置由组框排布接管。
-    注意有**两条**成组路径 —— resolved.target（落点明确指向某张卡）与 bestMergeTarget
-    （两张未分组卡片明确重叠 → 自动成组）。只看前者会让后者也被让位，
-    于是「重叠自动成组」的卡片先被推开、再成组（既有用例抓到过）。
-  */
-  const willGroup = Boolean(resolved.target) || Boolean(bestMergeTarget(work, cardId, px, py));
-  const spot = willGroup ? { x: placed.x, y: placed.y } : freeDropSpot(work, cardId, placed.x, placed.y);
+  const currentGroup = groupOfCard(work, cardId);
+  const target = resolved.target;
+  const mergingGroups = Boolean(target && currentGroup && currentGroup.id !== target.id);
+  const autoMerge = !target && Boolean(bestMergeTarget(work, cardId, px, py));
+  const keepOverlap = mergingGroups || autoMerge;
+  const spot = keepOverlap
+    ? { x: placed.x, y: placed.y }
+    : freeDropSpot(work, cardId, placed.x, placed.y);
   const stamp = nowIso();
   card.x = spot.x;
   card.y = spot.y;

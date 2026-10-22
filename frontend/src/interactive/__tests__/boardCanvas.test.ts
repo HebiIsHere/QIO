@@ -695,10 +695,14 @@ describe("BoardCanvas 接线", () => {
     expect(store.board?.groups[0].members).toContain("c");
     expect(store.board?.groups[0].name).toBe("发布计划");
     expect(board.groupById(store.board!, groupId)?.name).toBe("发布计划");
+    // 2026-10-22 用户要求：拖入已有组也不允许卡片互相遮挡 —— 落点被成员占住时自动挪到最近空位
+    const dropped = store.board?.cards.find((card) => card.id === "c")!;
+    const memberCard = store.board?.cards.find((card) => card.id === grouped.cards[0].id)!;
+    expect(board.rectsOverlap(board.cardRect(dropped), board.cardRect(memberCard))).toBe(false);
     wrapper.unmount();
   });
 
-  it("方案 A：组轮廓默认隐藏；悬停成员时临时出现，成员卡有归属标记", async () => {
+  it("方案 A：组条常驻、不画轮廓；成员卡有归属标记", async () => {
     const base = board.addCard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "A" }), {
       kind: "text",
       content: "B",
@@ -707,20 +711,8 @@ describe("BoardCanvas 接线", () => {
     setBoard(grouped);
     const wrapper = mountCanvas();
     expect(wrapper.find('[data-im="group"]').exists()).toBe(true);
-    // 常驻不画轮廓；成员卡有很轻的归属标记
     expect(wrapper.find('[data-im="group-outline"]').exists()).toBe(false);
     expect(wrapper.findAll('[data-im="card-group-mark"]')).toHaveLength(2);
-
-    const member = wrapper
-      .findAll('[data-im="card"]')
-      .find((item) => item.attributes("data-card-id") === grouped.cards[0].id)!;
-    member.element.dispatchEvent(new MouseEvent("pointerenter"));
-    await wrapper.vm.$nextTick();
-    expect(wrapper.find('[data-im="group-outline"]').exists()).toBe(true);
-
-    member.element.dispatchEvent(new MouseEvent("pointerleave"));
-    await wrapper.vm.$nextTick();
-    expect(wrapper.find('[data-im="group-outline"]').exists()).toBe(false);
     wrapper.unmount();
   });
 

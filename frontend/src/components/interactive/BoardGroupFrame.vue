@@ -1,18 +1,16 @@
 <!--
-  组框（问题 4c 彻底修法，2026-10-22 用户拍板）：
+  组条（方案 A 的最终呈现，2026-10-22 用户确认）：
 
-  - 组框不再是矩形包围盒，而是**贴合成员的并集轮廓**：只描成员自己的扩张区边界，
-    组外卡片（除非落进成员 16px 扩张带 / 顶行 58px 头部带）不会被围进组里；
-  - 轮廓由 groupOutline 纯函数按成员**显示矩形**算出：拖动成员 / 整组时实时跟随；
-  - 组名 / 有序 / 成员与顺序等操作收进轮廓上方的浮动头部；按住头部空白处拖动 = 整组拖动
-    （拖动由 BoardCanvas 处理并作为一次板面变更提交）；
-  - 轮廓与填充不吃指针（pointer-events: none），只有头部子控件接管，成员卡片照常可拖；
-  - 正式内容用实线；虚线只属于待审批预览。
+  - 组不再常驻画任何轮廓/线条：常驻只有一条「组条」+ 成员卡片左缘的归属标记；
+  - 组条 = 拖动把手 + 组名（可改）+ 成员数 + 有序说明 + 成员入口；按住组条空白处拖动整组；
+  - 拖入组时的提示（将插入第 N 位 / 并入）是组条上方的独立浮标，不塞进组条里，
+    因此不会把组条文字挤到显示不全，也不会被组条裁切；
+  - 组框位置按成员包围盒顶部计算；组条本身只接管自己的指针，不挡成员卡片；
+  - 正式内容不画虚线；虚线只属于待审批预览（另一个组件）。
 -->
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
-import { groupOutline } from "../../interactive/groupOutline";
 // 组内顺序 / 成员条是**横向浏览**区域：滚动能力保留，滚动条外观统一走 QIO 指示条。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
@@ -28,11 +26,6 @@ const props = defineProps<{
   dropIndex: number | null;
   /** 拖动预演：被拖动的那张卡片（有序组里要显示它将插到哪两位之间） */
   dropCardId: string | null;
-  /**
-   * 是否显示贴合轮廓（方案 A）：常驻只有组条 + 成员标记，
-   * 悬停组条 / 悬停成员 / 选中成员 / 组拖动或落点预演时才显示轮廓。
-   */
-  active?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -42,10 +35,8 @@ const emit = defineEmits<{
   (e: "move-member", groupId: string, cardId: string, index: number): void;
   (e: "leave", groupId: string, cardId: string): void;
   (e: "select-member", cardId: string): void;
-  /** 按住头部拖动整组（由 BoardCanvas 处理：实时预览 + 松手一次提交） */
+  /** 按住组条拖动整组（由 BoardCanvas 处理：实时预览 + 松手一次提交） */
   (e: "drag-start", groupId: string, event: PointerEvent): void;
-  /** 悬停组条（进入 / 离开）：由 BoardCanvas 决定是否临时显示轮廓 */
-  (e: "hover", groupId: string, entering: boolean): void;
 }>();
 
 const nameInput = ref<HTMLInputElement | null>(null);
@@ -67,51 +58,23 @@ const displayCards = computed(() =>
   props.dropCardId ? memberCards.value.filter((card) => card.id !== props.dropCardId) : memberCards.value,
 );
 
-/** 贴合成员的轮廓（没有成员时返回 null：不画空框）。 */
-const outline = computed(() =>
-  groupOutline(
-    memberCards.value.map((card) => ({
-      cardId: card.id,
-      rect: { x: card.x, y: card.y, w: card.w, h: card.h },
-    })),
-  ),
-);
-
-const svgStyle = computed<Record<string, string>>(() => {
-  const result = outline.value;
-  if (!result) return { display: "none" } as Record<string, string>;
-  return {
-    left: result.bounds.x + "px",
-    top: result.bounds.y + "px",
-    width: Math.max(1, result.bounds.w) + "px",
-    height: Math.max(1, result.bounds.h) + "px",
-  };
+/** 成员包围盒（只用于摆组条；不再画轮廓）。 */
+const memberBounds = computed(() => {
+  const members = memberCards.value;
+  if (!members.length) return null;
+  const minX = Math.min(...members.map((card) => card.x));
+  const minY = Math.min(...members.map((card) => card.y));
+  return { x: minX, y: minY };
 });
 
-const headerStyle = computed<Record<string, string>>(() => {
-  const result = outline.value;
-  if (!result) return { display: "none" } as Record<string, string>;
+/** 组条位置：成员最上方偏左一点（高度按 GROUP_PAD_TOP 留白带）。没有成员时不渲染。 */
+const railStyle = computed<Record<string, string>>(() => {
+  const bounds = memberBounds.value;
+  if (!bounds) return { display: "none" } as Record<string, string>;
   return {
-    left: result.header.x + "px",
-    top: result.header.y + "px",
-    width: Math.max(120, result.header.w) + "px",
+    left: Math.max(0, bounds.x) + "px",
+    top: Math.max(0, bounds.y - 52) + "px",
   };
-});
-
-/** 轮廓只做“交互态”提示（方案 A）：常驻不画，避免把组表达成一个几何边界。 */
-const showBoundary = computed(() => Boolean(props.active || props.dropTarget || props.dropMerge));
-
-const segments = computed(() => {
-  const result = outline.value;
-  if (!result) return [];
-  const dx = result.bounds.x;
-  const dy = result.bounds.y;
-  return result.segments.map((segment) => ({
-    x1: segment.x1 - dx,
-    y1: segment.y1 - dy,
-    x2: segment.x2 - dx,
-    y2: segment.y2 - dy,
-  }));
 });
 
 /** 输入框留空时的提示：留空不生效，组名仍是系统给的默认名，组依然成立。 */
@@ -151,7 +114,7 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
   );
 }
 
-/** 按住头部（空白处）开始整组拖动；点输入框 / 按钮 / 成员面板不进入拖动。 */
+/** 按住组条（空白处）开始整组拖动；点输入框 / 按钮 / 成员面板不进入拖动。 */
 function onHeaderPointerDown(event: PointerEvent): void {
   if (event.button !== undefined && event.button !== 0) return;
   if (isInteractiveTarget(event.target)) return;
@@ -169,37 +132,19 @@ defineExpose({ focusName });
 </script>
 
 <template>
-  <template v-if="outline">
-    <svg
-      v-if="showBoundary"
-      class="group-outline"
-      :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge }"
-      :style="svgStyle"
-      aria-hidden="true"
-      data-im="group-outline"
-      :data-group-id="group.id"
-    >
-      <line
-        v-for="(segment, index) in segments"
-        :key="'seg-' + index"
-        class="group-segment"
-        :x1="segment.x1"
-        :y1="segment.y1"
-        :x2="segment.x2"
-        :y2="segment.y2"
-      />
-    </svg>
-
-    <div
-      class="group"
-      :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge }"
-      :style="headerStyle"
-      data-im="group"
-      :data-group-id="group.id"
-      :data-ordered="group.ordered ? 'true' : 'false'"
-      @pointerenter="emit('hover', group.id, true)"
-      @pointerleave="emit('hover', group.id, false)"
-    >
+  <div
+    v-if="memberCards.length"
+    class="group"
+    :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge }"
+    :style="railStyle"
+    data-im="group"
+    :data-group-id="group.id"
+    :data-ordered="group.ordered ? 'true' : 'false'"
+  >
+    <div class="group-body">
+      <!--
+        组条：常驻的“组身份 + 拖动把手”。整条空白处都能拖；输入框 / 按钮除外。
+      -->
       <div
         class="group-head"
         :class="{ 'tools-open': membersOpen }"
@@ -207,7 +152,6 @@ defineExpose({ focusName });
         title="按住组条拖动整组"
         @pointerdown="onHeaderPointerDown"
       >
-        <!-- 常态一行：拖动把手、组名（输入即用）、成员数、是否有序、以及按需展开的成员管理入口。 -->
         <div class="head-row">
           <span class="grip" aria-hidden="true">⠿</span>
           <input
@@ -227,10 +171,6 @@ defineExpose({ focusName });
             {{ group.ordered ? "有序：序号 1..n 表示顺序" : "普通组：摆放顺序不代表先后" }}
           </span>
           <span v-if="group.defaultName" class="badge default-name">系统默认名，可改</span>
-          <span v-if="dropMerge" class="badge merge">拖动中：这一组将被并入落点所在的组</span>
-          <span v-else-if="dropTarget" class="badge" data-im="group-drop-hint">
-            {{ insertText || "将加入这一组" }}
-          </span>
           <button
             class="btn"
             type="button"
@@ -342,51 +282,51 @@ defineExpose({ focusName });
           </ul>
         </div>
       </div>
+
+      <!--
+        拖入提示：独立浮标放在组条**上方**（不塞进组条里），
+        所以组条文字不会被挤到显示不全，浮标也不会被组条裁切。
+      -->
+      <span
+        v-if="dropMerge"
+        class="drop-badge merge"
+        data-im="group-drop-hint"
+        role="status"
+      >拖动中：这一组将被并入落点所在的组</span>
+      <span
+        v-else-if="dropTarget"
+        class="drop-badge"
+        data-im="group-drop-hint"
+        role="status"
+      >{{ insertText || "将加入这一组" }}</span>
     </div>
-  </template>
+  </div>
 </template>
 
 <style scoped>
 /*
-  组框比卡片更轻：一条 1px 细线 + 一层很淡的底，没有阴影、没有第二层厚边框。
-  正式内容用实线；虚线只属于「待审批完成后才会出现的预览」，并且一定配文字说明。
-*/
-.group-outline {
-  position: absolute;
-  overflow: visible;
-  pointer-events: none;
-  z-index: 2;
-}
-.group-segment {
-  stroke: var(--border-subtle);
-  stroke-width: 1.25;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.group-outline.ordered .group-segment { stroke: var(--border-strong); }
-.group-outline.drop-target .group-segment { stroke: var(--accent); }
-.group-outline.drop-merge .group-segment { stroke: var(--warning); }
-/*
- * 头部是浮动小条，放在轮廓顶部的留白带里：只改显示、不影响成员卡片。
- * 按住头部空白处 = 拖动整组；输入框 / 按钮 / 成员面板照常各自操作。
+ * 组条：比卡片轻的一条悬浮标识，不再画组框轮廓。
+ * 位置由成员包围盒给出；宽度按内容自适应（有上限），不会把文字挤成省略。
  */
 .group {
   position: absolute;
   z-index: 8;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   font-size: var(--fs-xs);
   pointer-events: none;
 }
-/*
- * 组条（方案 A）：常驻的“组身份 + 拖动把手”。
- * 比卡片轻：薄边、无阴影、小字号；整条都是拖动热区（输入框 / 按钮除外）。
- */
+/* 拖入提示浮标在组条**上方**：column-reverse 让 DOM 里后出现的提示排在上面。 */
+.group-body {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--sp-1);
+  align-items: flex-start;
+}
 .group-head {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 160px;
+  max-width: 520px;
   padding: 2px var(--sp-2);
   pointer-events: auto;
   cursor: grab;
@@ -394,60 +334,18 @@ defineExpose({ focusName });
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
   font-size: var(--fs-xs);
-  overflow: hidden;
 }
 .group-head:active { cursor: grabbing; }
 .group.ordered .group-head { border-color: var(--border-strong); }
 .group.drop-target .group-head { border-color: var(--accent); background: var(--accent-soft); }
 .group.drop-merge .group-head { border-color: var(--warning); }
-.badge {
-  flex: none;
-  font-size: var(--fs-tech, var(--fs-xs));
-  color: var(--on-accent);
-  background: var(--accent);
-  border-radius: var(--r-pill);
-  padding: 0 var(--sp-2);
-}
-.badge.merge { background: var(--warning); color: var(--bg-base); }
-.badge.default-name { color: var(--text-muted); background: none; border: 1px solid var(--border-subtle); }
-/* 单行不折行：成员数 / 系统默认名 / 拖动提示再多也不能把头部挤成多行 */
 .head-row { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--sp-2); min-width: 0; }
-/*
- * 展开「成员与顺序」时面板按浮层读（自带底 / 边 / 阴影），不改变头部高度、
- * 也不把成员卡片挤走；收起即恢复。
- */
-.group-head.tools-open { overflow: visible; border-radius: var(--r-md); }
-.group-tools {
-  position: absolute;
-  left: 0;
-  top: calc(100% + 4px);
-  width: max(340px, 100%);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 2px;
-  padding: var(--sp-1) var(--sp-2) var(--sp-2);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  box-shadow: var(--shadow-2);
-}
-.tools-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
-.tools-hint { font-size: var(--fs-xs); color: var(--text-muted); }
-/* 头部里所有可操作子元素重新接管指针（父级 none，保证空白处不挡卡片） */
+.grip { flex: none; color: var(--text-muted); letter-spacing: -1px; user-select: none; pointer-events: none; }
+.group-head:hover .grip { color: var(--text-secondary); }
 .group-head input,
 .group-head button,
 .group-head .chip,
 .group-head .btn { pointer-events: auto; cursor: default; }
-/* 抓握图标只是拖动提示：不单独接管指针，整条组条都能拖 */
-.grip {
-  flex: none;
-  color: var(--text-muted);
-  letter-spacing: -1px;
-  user-select: none;
-  pointer-events: none;
-}
-.group-head:hover .grip { color: var(--text-secondary); }
 .group-name {
   flex: none;
   font: inherit;
@@ -459,20 +357,56 @@ defineExpose({ focusName });
   border-radius: var(--r-xs);
   padding: 0 var(--sp-1);
   min-width: 72px;
-  max-width: 140px;
+  max-width: 160px;
   min-height: 22px;
   box-sizing: border-box;
 }
 .group-name:hover { border-color: var(--border-strong); }
 .group-name:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-/* 说明行自己一行：可压缩、可省略，不跟按钮抢同一行的宽度 */
 .mode { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
-/* 成员数量是次级信息：小、灰，但不至于看不清 */
 .count { flex: none; color: var(--text-muted); }
+.badge {
+  flex: none;
+  font-size: var(--fs-tech, var(--fs-xs));
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-2);
+}
+.badge.default-name { color: var(--text-muted); background: none; border: 1px solid var(--border-subtle); }
 /*
-  成员 / 顺序条：短的横向浏览区。
-  横向滚动能力保留，滚动条外观由统一 QIO 指示条负责（不占布局列、默认隐藏）。
-*/
+ * 拖入提示浮标：组条上方一条独立小签；不参与组条布局，也不会被裁切。
+ */
+.drop-badge {
+  pointer-events: none;
+  margin: 0;
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-tech, var(--fs-xs));
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+.drop-badge.merge { background: var(--warning); color: var(--bg-base); }
+.drop-target .drop-badge { background: var(--accent); }
+/* 成员面板按浮层读：展开时只改面板自身，不改变组条高度，也不把成员卡片挤走。 */
+.group-head.tools-open { border-radius: var(--r-md); }
+.group-tools {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 4px);
+  width: max(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  box-shadow: var(--shadow-2);
+}
+.tools-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.tools-hint { font-size: var(--fs-xs); color: var(--text-muted); }
 .sequence {
   display: flex;
   flex-wrap: nowrap;
@@ -520,7 +454,6 @@ defineExpose({ focusName });
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xs);
   padding: 0 var(--sp-1);
-  /* 操作按钮要能稳定点中：给足高度，不被同行的说明文字挤扁 */
   min-height: 22px;
   cursor: pointer;
 }

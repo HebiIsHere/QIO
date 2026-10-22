@@ -116,9 +116,6 @@ const emit = defineEmits<{
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
   (e: "join-group", cardId: string, groupId: string): void;
-  /** 方案 A：悬停卡片时让画面临时显示它所属组的轮廓（只影响显示）。 */
-  (e: "hover-enter"): void;
-  (e: "hover-leave"): void;
 }>();
 
 const store = useInteractiveStore();
@@ -1263,8 +1260,6 @@ watch(
     :data-card-id="card.id"
     :data-card-state="displayState"
     @pointerdown="onPointerDown"
-    @pointerenter="emit('hover-enter')"
-    @pointerleave="emit('hover-leave')"
     :data-cover="coverMode ? '1' : undefined"
   >
     <!--

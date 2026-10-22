@@ -851,3 +851,25 @@ describe("moveGroup（整组拖动，问题 4a）", () => {
     expect(board.cardById(board.moveGroup(state, "g_missing", 0, 0), "a")).toMatchObject({ x: 10, y: 20 });
   });
 });
+
+describe("dropCard 拖入已有组（2026-10-22：不允许卡片互相遮挡）", () => {
+  it("落点压住成员卡时自动挪到最近空位，但仍然加入该组", () => {
+    const state = mkState(
+      [mkCard("a", 0, 0, { w: 100, h: 60 }), mkCard("b", 600, 0, { w: 100, h: 60 })],
+      [mkGroup("g1", ["a"])],
+    );
+    const result = board.dropCard(state, "b", 10, 10);
+    expect(result.groupId).toBe("g1");
+    const moved = board.cardById(result.state, "b")!;
+    const member = board.cardById(result.state, "a")!;
+    expect(board.rectsOverlap(board.cardRect(moved), board.cardRect(member))).toBe(false);
+    expect(membersOf(result.state, "g1")).toContain("b");
+  });
+
+  it("两张未分组卡片明确重叠仍然自动成组（这条语义不因避让而失效）", () => {
+    const state = mkState([mkCard("a", 0, 0, { w: 100, h: 60 }), mkCard("b", 600, 0, { w: 100, h: 60 })]);
+    const result = board.dropCard(state, "b", 10, 10);
+    expect(result.groupId).not.toBeNull();
+    expect(result.merged).toBe(false);
+  });
+});
