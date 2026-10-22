@@ -23,7 +23,6 @@ import {
   UNBOUND_DRAFT_ID,
 } from "../../interactive/drafts";
 import ChatDock from "../../components/interactive/ChatDock.vue";
-import Composer from "../../components/Composer.vue";
 import ComposerDock from "../../components/conversation/ComposerDock.vue";
 import { useInteractiveStore } from "../interactive";
 
@@ -498,7 +497,7 @@ describe("时序 11：刷新前未保存的输入要能恢复（§10.5）", () =
     expect(imApi.saveBoardState).not.toHaveBeenCalled();
   });
 
-  it("【组件】Composer：恢复的草稿只在输入框里，不自动发出", async () => {
+  it("【组件】对话页输入区：恢复的草稿只在输入框里，不自动发出", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
     session.currentTopicId = "A";
@@ -506,7 +505,7 @@ describe("时序 11：刷新前未保存的输入要能恢复（§10.5）", () =
     session.flushDraft();
 
     setActivePinia(createPinia());
-    const wrapper = mount(Composer, { attachTo: document.body });
+    const wrapper = mountDock();
     const reloaded = useSessionStore();
     reloaded.currentTopicId = "A";
     await flushPromises();
@@ -593,12 +592,12 @@ describe("对话页发送恢复（§10.1「会话层统一管理」）", () => {
     wrapper.unmount();
   });
 
-  it("【组件】Composer：切到 B 之后 A 的失败不许写进 B 的输入框", async () => {
+  it("【组件】对话页输入区：切到 B 之后 A 的失败不许写进 B 的输入框", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
     session.currentTopicId = "A";
     session.draft = "A 的话";
-    const wrapper = mount(Composer, { attachTo: document.body });
+    const wrapper = mountDock();
     await flushPromises();
     pendingSend();
     const textarea = wrapper.find("#composer-input");

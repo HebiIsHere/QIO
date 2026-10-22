@@ -197,11 +197,14 @@ describe("文案小工具", () => {
   });
 
   it("whenText 解析不了时如实说未知，不猜", () => {
-    const now = new Date("2026-10-22T10:00:00+08:00");
+    // 文案按**本地时区**显示；测试不能假定运行机是哪个时区（CI 是 UTC）：
+    // 用本地时间构造 Date，再把它转成 ISO 喂给 whenText，期望值同样是本地时间。
+    const tsToday = new Date(2026, 9, 22, 9, 5);
+    const now = new Date(2026, 9, 22, 10, 0);
     expect(whenText("not-a-date", now)).toBe("时间未知");
     expect(whenText(null, now)).toBe("时间未知");
-    expect(whenText("2026-10-22T09:05:00+08:00", now)).toContain("今天 09:05");
-    expect(whenText("2026-10-20T09:05:00+08:00", now)).toContain("10 月 20 日");
+    expect(whenText(tsToday.toISOString(), now)).toContain("今天 09:05");
+    expect(whenText(new Date(2026, 9, 20, 9, 5).toISOString(), now)).toContain("10 月 20 日");
   });
 
   it("snippetOf 压缩换行并在过长时保留省略号", () => {
