@@ -3479,4 +3479,9 @@ def create_app(
     from agent.api.task_feed_routes import register_task_feed_routes
 
     register_task_feed_routes(app, ctx)
+
+    # 对话页 v2：知识保存申请的原子审批入口（修改后保存必须让用户确认的内容生效）。
+    from agent.api.knowledge_approval_routes import register_knowledge_approval_routes
+
+    register_knowledge_approval_routes(app, ctx)
     return app

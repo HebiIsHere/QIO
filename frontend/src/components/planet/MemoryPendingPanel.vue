@@ -17,7 +17,7 @@
  * 4. 恢复必须先预览再确认：可恢复 / 不可恢复原因逐项列出，无法安全恢复的部分明说；
  * 5. 服务端说某块存储不可用（迁移 47 未应用 / 调度器未接入）时如实说明，不伪造数据。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   api,
   type MaintenanceBatchDetail,
@@ -82,6 +82,49 @@ const STATS_LABELS: Record<string, string> = {
 
 type PanelView = "pending" | "records";
 const view = ref<PanelView>("pending");
+
+/**
+ * 外部定位：来自对话页的记忆问题提醒（星球打开后切到待确认并定位某一条）。
+ * 只做滚动/高亮，不改变任何事项状态；找不到就安静地什么都不做（不伪造）。
+ */
+const props = withDefaults(defineProps<{ focusPendingId?: string | null }>(), {
+  focusPendingId: null,
+});
+const panelRef = ref<HTMLElement | null>(null);
+const highlightedId = ref("");
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+
+function focusRequestedItem(): void {
+  const target = String(props.focusPendingId || "");
+  if (!target) return;
+  view.value = "pending";
+  kindFilter.value = "";
+  sourceFilter.value = "";
+  void nextTick(() => {
+    const root = panelRef.value;
+    if (!root) return;
+    const el = root.querySelector<HTMLElement>(`[data-pending-id="${target}"]`);
+    if (!el) return;
+    el.scrollIntoView({
+      block: "center",
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+    highlightedId.value = target;
+    if (highlightTimer) clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => {
+      highlightedId.value = "";
+    }, 2600);
+  });
+}
+
+// 列表加载完成 / 定位目标变化时再试一次：事项可能在异步加载之后才出现在列表里。
+watch(
+  () => [props.focusPendingId, items.value.length, view.value] as const,
+  () => {
+    if (view.value === "pending") focusRequestedItem();
+  },
+  { flush: "post" },
+);
 
 // -- 待确认事项 -------------------------------------------------------------
 
@@ -632,11 +675,12 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer);
+  if (highlightTimer) clearTimeout(highlightTimer);
 });
 </script>
 
 <template>
-  <div class="mpanel" v-qio-scrollbar data-qio-fit>
+  <div ref="panelRef" class="mpanel" v-qio-scrollbar data-qio-fit>
     <div class="mp-tabs" role="tablist" aria-label="记忆与维护">
       <button
         class="mp-tab mp-tab-pending"
@@ -678,7 +722,9 @@ onBeforeUnmount(() => {
             v-for="item in filtered"
             :key="item.id"
             class="mp-item qio-card qio-card--quiet"
-            :class="['kind-' + item.kind, item.status]"
+            :class="['kind-' + item.kind, item.status, { 'focus-flash': highlightedId === item.id }]"
+            :data-pending-id="item.id"
+            tabindex="-1"
           >
             <div class="mp-head">
               <span class="qio-tag mp-kind">{{ kindLabel(item.kind) }}</span>
@@ -1064,6 +1110,11 @@ onBeforeUnmount(() => {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px;
 }
 .mp-item { padding: var(--sp-3); border-radius: var(--r-lg); display: flex; flex-direction: column; gap: 6px; }
+/* 从对话页定位过来：短暂高亮这一条（状态不因此改变，只帮助用户找到它） */
+.mp-item.focus-flash {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .mp-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .mp-ineffective, .mp-handler { font-size: 11px; color: var(--text-muted); }
 /* 标题/话题层用衬线（字体三声部）；正文默认无衬线 */
