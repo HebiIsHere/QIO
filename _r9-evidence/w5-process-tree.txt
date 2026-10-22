@@ -1,0 +1,18 @@
+# R9 W5 进程树真机取证（scripts/verify_r9_process_tree.py）
+# 主机时间：2026-10-22 14:31:19
+# 判定：只按 pid 结束本实例的进程树；其他实例与同名进程不受影响；结束后逐 pid 核验。
+
+[PASS] W5-PT-000 环境 — Windows；脚本 pid=170652；开始时间=2026-10-22 14:31:14；证据=D:\qio-dev\qio-r9-w5\_r9-evidence\w5-process-tree.txt
+[PASS] W5-PT-001 两个独立实例的进程树都已建立（各有后代，pid 集合不相交） — 实例A：cmd.exe(pid=136564)、conhost.exe(pid=157944)、PING.EXE(pid=164012)；实例B：cmd.exe(pid=116084)、conhost.exe(pid=136888)、PING.EXE(pid=172552)；交集=无
+[PASS] W5-PT-002 按 pid 结束实例 A 的整棵树（taskkill /PID <pid> /T /F） — pid=136564 taskkill 返回=True；输出=SUCCESS: The process with PID 157944 (child process of PID 136564) has been terminated.
+SUCCESS: The process with PID 164012 (child process of PID 136564) has been terminated.
+SUCCESS: The process with PID 136564 (child process of PID 170652) has been terminated.
+[PASS] W5-PT-003 实例 A 整棵树确认消失（逐 pid 核验，含后代） — 共核验 3 个 pid；幸存=无
+[PASS] W5-PT-004 实例 B 完全不受影响（根与全部后代仍持有原进程身份） — 实例B丢失/变化的进程=无；其余 3 个 pid 身份未变
+[PASS] W5-PT-005 没有按进程名批量结束：实例 B 的同名子进程（PING.EXE, conhost.exe）仍存活 — 实例B子进程=conhost.exe(pid=136888)、PING.EXE(pid=172552)
+[PASS] W5-PT-006 构造「根先退出、后代残留」场景（模拟 onefile launcher 先走） — 已单独结束根 pid=162448；残留后代=conhost.exe(pid=166360)、PING.EXE(pid=154252)
+[PASS] W5-PT-007 按事前记录的 pid 名单清理孤儿后代并核验消失（不按进程名） — 名单=conhost.exe(pid=166360)、PING.EXE(pid=154252)；幸存=无
+[PASS] W5-PT-008 不存在的 pid 探测为「不在」（核验逻辑不会误报还活着） — pid=4294967280 identity=None
+[PASS] W5-PT-009 脚本只结束自己启动的进程：收尾后两棵树都不残留 — 实例B幸存=无
+
+结论：PASS（10 条，FAIL=0）

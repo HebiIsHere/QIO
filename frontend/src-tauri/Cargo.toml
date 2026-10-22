@@ -30,6 +30,12 @@ path = "src/bin/qio-uninstall-helper.rs"
 name = "uninstall_helper_cli"
 path = "src/tests_uninstall_helper_cli.rs"
 
+[features]
+# Tauri 标准特性：启用后调试构建也使用**内嵌前端产物**（custom protocol），不再依赖
+# dev server。发布构建（tauri build）本来就需要它；给 cargo build 调试时也用它，
+# 才能在没有 Vite dev server 的环境里复现真实窗口行为（例如关闭/托盘真机验证）。
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

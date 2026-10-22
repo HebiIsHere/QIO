@@ -1,0 +1,29 @@
+W5-RUN-001 真实后端进程已启动并健康：pid=164060 health=(200, {'status': 'ok', 'db': True})（后台入口 python -m agent.main）
+W5-RUN-002 POST /api/lifecycle/shutdown → HTTP 200，用时 0.01s；done=True timeout=False clean=True
+            report.phases=['reject_new', 'verify', 'maintenance_stopped', 'clean_exit_recorded', 'adapters_released']
+            approvals_restored=0 grace_seconds=8.0
+W5-RUN-003 后端进程自行退出：exit=0，从收尾请求算起 0.82s（壳侧等待预算 15s）
+W5-RUN-004 后端日志尾部（无密钥）：
+storage.migrate:迁移 51：语句已应用过，跳过（column scope already exists）
+WARNING:agent.storage.migrate:迁移 51：语句已应用过，跳过（column authorization already exists）
+WARNING:agent.storage.migrate:迁移 51：语句已应用过，跳过（column outcome already exists）
+WARNING:agent.storage.migrate:迁移 51：语句已应用过，跳过（column attempt already exists）
+WARNING:agent.storage.migrate:迁移 51：语句已应用过，跳过（column finished_at already exists）
+INFO:agent.selector.onnx:onnx embedding backend: model files missing; falling back（找过 model.onnx, model_quantized.onnx）
+INFO:agent.selector.selector:selector: recall backend 'bm25' indexed 0 docs
+WARNING:agent.main:local API authentication is DISABLED (QIO_DEV_INSECURE=1): any local process can call the QIO API. Development only.
+INFO:     Started server process [156872]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:63763 (Press CTRL+C to quit)
+INFO:     127.0.0.1:63768 - "GET /api/health HTTP/1.1" 200 OK
+INFO:agent.api.lifecycle_routes:收到退出请求：停止受理新工作，开始有界收尾
+INFO:agent.services.maintenance:维护已确认全部结束（周期循环 + 在跑的一轮 + 维护发起的等待）
+INFO:agent.services.lifecycle:关闭已完成：background: 后台执行单元已全部确认结束（有界等待内结束 0 个，取消 0 个）（阶段 reject_new→verify→maintenance_stopped→clean_exit_recorded→adapters_released）
+INFO:agent.api.lifecycle_routes:退出收尾完成：clean=True（阶段 ['reject_new', 'verify', 'maintenance_stopped', 'clean_exit_recorded', 'adapters_released']）
+INFO:     127.0.0.1:63771 - "POST /api/lifecycle/shutdown HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:agent.services.lifecycle:关闭已完成：background: 后台执行单元已全部确认结束（有界等待内结束 0 个，取消 0 个）（阶段 reject_new→verify→maintenance_stopped→clean_exit_recorded→adapters_released→db_closed）
+INFO:     Application shutdown complete.
+INFO:     Finished server process [156872]

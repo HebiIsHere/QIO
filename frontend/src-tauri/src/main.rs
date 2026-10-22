@@ -1396,7 +1396,8 @@ fn backend_launch(
             .env("PYTHONPATH", backend_dir.join("src"))
             .env("QIO_HOST", "127.0.0.1")
             .env("QIO_PORT", port.clone())
-            .env("QIO_LOG", "warning")
+            // 大写：后端 logging.basicConfig 只认级别名（小写 "warning" 会让后端启动即崩）。
+            .env("QIO_LOG", "WARNING")
             .env("QIO_SESSION_TOKEN_FILE", token_path.clone())
             // 数据目录显式传入：壳与后端必须算同一个目录（内置模型就放在它下面）
             .env("QIO_DATA_DIR", user_data_dir.clone())
@@ -1726,6 +1727,22 @@ fn shutdown_runtime(runtime: &ShellRuntime) {
         }
     }
     let _ = std::fs::remove_file(session_token_path());
+}
+
+/// 无人值守关闭覆盖：`QIO_CLOSE_BEHAVIOR` 环境变量（ask / tray / quit）。
+///
+/// 只给**真机验证脚本**用：默认关闭行为是 ask，脚本发 WM_CLOSE 时没有手点确认框，
+/// 会停在弹窗上。覆盖只影响「系统关闭事件」这一次的行为，**不写设置**、不改变用户配置；
+/// 未设置或取值非法时返回 None（按用户设置处理，非法值留一条警告）。
+fn close_behavior_override() -> Option<String> {
+    let raw = std::env::var("QIO_CLOSE_BEHAVIOR").ok()?;
+    let value = raw.trim().to_ascii_lowercase();
+    if value == "ask" || value == "tray" || value == "quit" {
+        log::info!("[qio] 关闭行为被 QIO_CLOSE_BEHAVIOR 覆盖：{value}（无人值守验证用，不改设置）");
+        return Some(value);
+    }
+    log::warn!("[qio] QIO_CLOSE_BEHAVIOR 取值非法（{raw:?}）：按用户设置处理");
+    None
 }
 
 /// 显示主窗口：隐藏到托盘后必须能恢复（show + unminimize + focus 缺一不可）。
@@ -2059,7 +2076,13 @@ fn main() {
                     return;
                 }
                 api.prevent_close();
-                if let Err(err) = window.emit("qio://close-requested", ()) {
+                // 事件带「无人值守覆盖」（没有则为 null）：前端据此决定本次行为；
+                // 正常用户路径下它永远是 null，行为只由 ui.close_behavior 决定。
+                let forced = close_behavior_override();
+                if let Err(err) = window.emit(
+                    "qio://close-requested",
+                    serde_json::json!({ "forcedBehavior": forced }),
+                ) {
                     log::warn!("[qio] 关闭请求事件发送失败：{err}");
                 }
                 log::info!("[qio] 收到主窗口关闭请求：交给前端按关闭行为处理");
