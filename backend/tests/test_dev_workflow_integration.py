@@ -133,6 +133,19 @@ async def test_full_dev_workflow_registers_tool(ctx: AppContext, monkeypatch):
     # 工作区保留：已完成任务的项目文件、需求与测试证据都要留下来
     assert ctx.dev_workspaces.task(ws.id) is not None
     assert ctx.dev_workspaces.status(ws.id)["submitted"] is True
-    # 新工具可调用
-    r = await tool.run(a=2, b=3)
-    assert r.ok and r.content == '{"sum": 5}'
+    # 新工具可调用：每次调用经审批（新语义），批准后由审批执行器重跑拿到真实结果
+    pending = await tool.run(a=2, b=3)
+    assert pending.ok is True and pending.code == "pending_approval", pending
+    approval_id = pending.data["approval_id"]
+    await ctx.approvals.decide(approval_id, "approve")
+    for _ in range(300):
+        row = ctx.approvals.store.get(approval_id) or {}
+        if row.get("state") in ("completed", "failed"):
+            break
+        await asyncio.sleep(0.02)
+    row = ctx.approvals.store.get(approval_id) or {}
+    assert row.get("state") == "completed", row
+    stored = row.get("result") or {}
+    if isinstance(stored, str):
+        stored = json.loads(stored or "{}")
+    assert stored.get("content") == '{"sum": 5}', stored

@@ -268,3 +268,63 @@ uv run --frozen python -m pytest tests/test_fs_delete_recycle.py -o addopts='' -
    fake gateway 覆盖了 allow 分支，真实引擎的分支由引擎自身测试覆盖。
 4. 真实系统回收站在本机 Windows 实测（`windows_recycle_bin`）；POSIX freedesktop
    分支仍未在 Linux 实跑；未跑全量 pytest/CI（纪律，由 Lead 跑一次）。
+
+---
+
+## 七、全量失败回归适配（5 条 W2 行为变更用例）
+
+> 追加提交（新提交号见提交信息）。范围：`test_sr_d_fs_cancel.py`(4)、
+> `test_sr_d_fs_threading.py`(1)、`test_tool_restore.py`(1)、
+> `test_dev_workflow_integration.py`(1)。只改这些测试 + 最小实现修复；未碰 W3 附件文件。
+
+### 真实根因（与最初判断不同，已按事实修）
+
+1. **fs 取消/线程用例**并不是"默认受限模式需要审批"导致的（这些用例没有注入网关，
+   legacy 路径仍会立即写）。真正原因是 W2 把写入改成
+   `security_gate.atomic_write_text` 后，绕过了测试夹具使用的两个模块级 I/O 缝
+   （`fs_tools._write_file` / `_write_file_text`）与 `builtins.open`：
+   - 取消用例的闸门替换的是 `_write_file`，写入不再经过它 → 取消前已直接写完，
+     于是返回 ok=True（4 条失败）；
+   - 线程用例用 `builtins.open` 观察 I/O 线程，原子写用 `tempfile + os.replace`，
+     不再调用 builtins.open → 观察不到线程（1 条失败）。
+   修复（最小实现）：`_write_file` / `_write_file_text` 继续作为**唯一写入缝**，
+   内部实现改为原子写（同目录临时文件 + os.replace）；FsWrite/FsPatch 重新经它们
+   进线程池执行。取消语义/线程语义仍由真实落盘路径验证（不是 mock 掉写入）。
+   同时按 Lead 指示把这两个文件的 fake sandbox 模式设为 `unrestricted`（显式说明
+   这些用例只验证 I/O/取消语义，不验证权限）。
+2. **自建工具批准后重跑不闭环**：`CodeTool` 每次调用都会走统一入口判定；用户批准
+   `tool.invoke` 后，审批执行器重跑工具管线时它会**再次**提交审批（无限审批环）。
+   修复（最小实现）：新增 `registry.current_approved_execution()`，CodeTool 在
+   approved 重跑标记内跳过重复提交；**只读检查仍然生效**（批准后用户切到只读 →
+   这次不执行）。`test_tool_restore` / `test_dev_workflow_integration` 改为：
+   断言第一次调用返回 `pending_approval` + `approval_id` → `approvals.decide(approve)`
+   → 等审批执行器完成 → 从 `store.get(approval_id).result` 拿到真实结果
+   （`{"v": 42}` / `{"sum": 5}`）。覆盖"重启恢复 + 批准后执行"整条链路。
+
+### 已运行验证
+
+```
+cd D:\qio-dev\qio-r9-w2b\backend
+# Lead 指定 4 个文件 + 本任务定向套件（fs_delete/approved_ops 等）
+uv run --frozen python -m pytest \
+  tests/test_tool_restore.py tests/test_dev_workflow_integration.py \
+  tests/test_sr_d_fs_cancel.py tests/test_sr_d_fs_threading.py \
+  tests/test_fs_delete_recycle.py tests/test_approved_operations.py \
+  tests/test_sandbox_readonly.py tests/test_subagent_scope.py tests/test_app_lifecycle.py \
+  tests/test_cmd_tools.py tests/test_tool_display.py tests/test_tool_isolation.py \
+  tests/test_fs_containment.py tests/test_shell_boundary.py \
+  tests/test_approval_lifecycle.py tests/test_approval_restart.py \
+  -o addopts='' -q --tb=short
+→ 172 passed, 1 warning in 42.90s
+
+# 其中 4 个被点名文件单独跑
+→ 25 passed in 14.46s
+```
+
+### 边界说明
+
+- 这 5 条之外，`D:\qio-dev\_r9-logs\FULL-failures.txt` 里仍有大量附件/W3 相关失败
+  （copy→source 语义迁移等），不在 W2 改动范围，本次未动。
+- 审批后执行路径在本机真实跑通（docker 可用时走容器，不可用时走受限子进程 +
+  Low IL 强制执行层）；CI 上 `requires_docker` 用例可能按既有条件跳过。
+- 未跑全量 pytest/CI（纪律，由 Lead 跑一次）。

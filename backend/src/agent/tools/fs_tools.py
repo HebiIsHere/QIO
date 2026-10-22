@@ -48,14 +48,16 @@ def _read_file_text(path: Path) -> str:
 
 
 def _write_file(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    """写入文件（原子：同目录临时文件 + os.replace；失败时原文件不变）。
+
+    模块级函数是**测试缝**：取消/线程语义用例用闸门替换它来观察真实 I/O 线程。
+    """
+    security_gate.atomic_write_text(path, content)
 
 
 def _write_file_text(path: Path, text: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
+    """写入文本（同 _write_file，保留旧名字作为测试缝）。"""
+    security_gate.atomic_write_text(path, text)
 
 
 def _list_dir(path: Path) -> list[str]:
@@ -315,9 +317,7 @@ class FsWriteTool(_FsTool):
         if not same:
             return ToolResult(ok=False, error=reason, category="conflict", recoverable=False)
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(
-            get_blocking_executor(), security_gate.atomic_write_text, target, content
-        )
+        fut = loop.run_in_executor(get_blocking_executor(), _write_file, target, content)
         return await self._await_write_settled(fut, target, f"已写入 {target}")
 
 
@@ -399,7 +399,7 @@ class FsPatchTool(_FsTool):
             return ToolResult(ok=False, error=reason, category="conflict", recoverable=False)
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(
-            get_blocking_executor(), security_gate.atomic_write_text, target, text
+            get_blocking_executor(), _write_file_text, target, text
         )
         return await self._await_write_settled(fut, target, f"已编辑 {target}")
 
