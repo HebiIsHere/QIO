@@ -118,7 +118,16 @@ def main(argv: list[str] | None = None) -> None:
     # uvicorn **优雅**停下 —— lifespan 的 finally 会再走一次同一个 aclose（幂等），
     # 数据库随后按 close_decision 关闭，进程自己退出。壳按 pid 等它消失，超时才兜底。
     server = uvicorn.Server(
-        uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info")
+        uvicorn.Config(
+            app,
+            host=settings.host,
+            port=settings.port,
+            log_level="info",
+            # 退出收尾的有界保证：前端可能仍有长连接（SSE /api/events）没关，
+            # uvicorn 默认会无限等它们 —— 安装版实测会让后端「aclose 已完成但进程不退」，
+            # 壳只能 15s 后强杀。给优雅关闭一个上界，超过就由 uvicorn 取消残留连接。
+            timeout_graceful_shutdown=3,
+        )
     )
     coordinator = getattr(app.state, "shutdown_coordinator", None)
     if coordinator is not None:

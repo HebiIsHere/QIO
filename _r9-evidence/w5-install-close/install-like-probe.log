@@ -1,0 +1,24 @@
+[PASS] W5-IL-001 真壳窗口已起来 — shell pid=182520 hwnd=6686752
+[PASS] W5-IL-002 后端已拉起且监听端口可核验 — pids=[186800, 178332] port=57073
+[PASS] W5-IL-003 后端健康检查可用（注入令牌同 install_e2e） — http://127.0.0.1:57073
+[PASS] W5-IL-004 前端握手成功：令牌文件已由壳写出（否则 qio_backend_info 会超时） — token=qio-session-182520.token exists=True
+[PASS] W5-IL-005 默认关闭行为 ask — {"typewriter_cps": 50, "close_behavior": "ask"}
+[PASS] W5-IL-006 WM_CLOSE（tray）：壳侧直接隐藏窗口，不触发退出收尾 — posted=True 已隐藏=True 壳存活=True 后端存活=True
+[PASS] W5-IL-006b 隐藏到托盘后令牌文件仍在（没有走退出清理） — token exists=True
+[PASS] W5-IL-007 隐藏后窗口可恢复（show + restore 等价于托盘菜单） — hwnd=6686752 visible=True
+[PASS] W5-IL-008 WM_CLOSE（quit）：外壳自行退出（不是被 taskkill） — posted=True exited=True exit=0 用时 1.22s
+[PASS] W5-IL-009 退出后本实例后端整棵进程树消失（逐 pid 核验） — 后端 pid=[186800, 178332] 仍存活=False
+[PASS] W5-IL-010 退出后令牌文件被清理（RunEvent::Exit 的 shutdown_runtime 生效） — token exists=False
+
+壳日志（关闭/退出相关，节选）：
+  [2026-10-22][09:01:01][qio][INFO] [qio] 系统托盘已创建：菜单「显示主窗口 / 退出 QIO」
+  [2026-10-22][09:01:02][qio][INFO] [qio] 后端 pid 186800 已纳入 job（随壳退出自动终止）
+  [2026-10-22][09:01:06][qio][INFO] [qio] 关闭请求：壳侧解析关闭行为 = tray
+  [2026-10-22][09:01:06][qio][INFO] [qio] 主窗口已隐藏到托盘（ui.close_behavior=tray）：后端继续运行，托盘可恢复
+  [2026-10-22][09:01:07][qio][INFO] [qio] 关闭请求：壳侧解析关闭行为 = quit
+  [2026-10-22][09:01:07][qio][INFO] [qio] 进入真正退出流程：停止受理新工作、等待后端进程树退出
+  [2026-10-22][09:01:07][qio][INFO] [qio] 壳侧退出：先请求后端有界收尾（POST /api/lifecycle/shutdown）
+  [2026-10-22][09:01:07][qio][INFO] [qio] 后端退出收尾 HTTP 200（响应 336 字节，不打印内容以免带出业务信息）
+  [2026-10-22][09:01:07][qio][INFO] [qio] 真正退出：等待后端 pid 186800 的进程树自行退出（树内 [144488, 178332, 186800]，预算 15s）
+  [2026-10-22][09:01:08][qio][INFO] [qio] 后端进程树已在预算内自行退出（pid 186800，树内 3 个进程）
+  [2026-10-22][09:01:08][qio][INFO] [qio] 壳侧退出完成：后端 pid Some(186800)，graceful=true，forced=false，verified=true，survivors=[]

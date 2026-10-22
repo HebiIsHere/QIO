@@ -5,6 +5,7 @@ import {
   normalizeCloseBehavior,
   type CloseBehavior,
 } from "../services/quitGuard";
+import { syncCloseBehaviorToShell } from "../services/desktop";
 
 export const TYPEWRITER_SPEEDS = [25, 50, 75] as const;
 export const DEFAULT_TYPEWRITER_CPS = 50;
@@ -63,6 +64,8 @@ export const useUiStore = defineStore("ui", {
         this.typewriterCps = s.typewriter_cps ?? DEFAULT_TYPEWRITER_CPS;
         // 旧客户端/后端没有该字段：按契约默认 ask，不报错（不静默提高成 quit）。
         this.closeBehavior = normalizeCloseBehavior(s.close_behavior);
+        // 同步给壳：系统关闭事件由壳按这个值执行（不依赖前端再回传动作）。
+        void syncCloseBehaviorToShell(this.closeBehavior);
       } catch (e) {
         console.error("[ui] load settings failed:", e);
       } finally {
@@ -75,6 +78,8 @@ export const useUiStore = defineStore("ui", {
       try {
         const r = await api.updateCloseBehavior(behavior);
         this.closeBehavior = normalizeCloseBehavior(r.close_behavior ?? behavior);
+        // 保存成功后立即让壳拿到新值：下一次点 X 就按新行为执行（无需重启）。
+        void syncCloseBehaviorToShell(this.closeBehavior);
       } catch (e) {
         console.error("[ui] save close behavior failed:", e);
         throw e;

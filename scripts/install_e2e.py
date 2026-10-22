@@ -1597,19 +1597,31 @@ def step_invoke_tool(args, client: Client, sse: SseReader, fp: Client):
 
 
 def _backend_pids_by_path(install_dir) -> list[int]:
-    """**只**找安装目录里那个 qio-backend.exe 的进程 id。
+    """**只**找安装目录里那个 qio-backend.exe 的进程 id（按路径，绝不按镜像名）。
 
-    按路径找，不按镜像名找：这台机器上同时有多个 agent 在跑真实后端，
-    按名字杀（taskkill /IM qio-backend.exe）会误伤别人的进程
-    —— 2026-10-02 Lead 明确要求"按 PID / 进程树杀"。
+    真机 E2E 踩过（2026-10-22）：CIM 查询在这台机器的受限令牌下可能返回空/被拒，
+    于是 ensure_backend_stopped 以为「已经没有后端」，上一阶段启动的 standalone
+    backend 一直活到 shelllease，导致 A-118 把别人的进程算成我们的 sidecar 残留。
+    因此 CIM 查不到时用 Get-Process 再按 Path 核对一遍（仍是按路径，不是按名字杀）。
     """
+    expected = str((Path(install_dir) / "qio-backend.exe").resolve()).lower()
     script = (
         "Get-CimInstance Win32_Process -Filter \"Name='qio-backend.exe'\" | "
         "Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLower() -eq '%s' } | "
         "Select-Object -ExpandProperty ProcessId"
-        % str((Path(install_dir) / "qio-backend.exe").resolve()).lower()
+        % expected
     )
     code, out = powershell(script, tag="backend-pids-by-path")
+    pids = [int(x) for x in out.split() if x.strip().isdigit()]
+    if pids:
+        return pids
+    # CIM 不可用/返回空：用 Get-Process（Path 在本用户进程上可读）再核对一次。
+    fallback = (
+        "Get-Process -Name qio-backend -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Path -and $_.Path.ToLower() -eq '%s' } | "
+        "Select-Object -ExpandProperty Id" % expected
+    )
+    code, out = powershell(fallback, tag="backend-pids-by-path-getprocess")
     return [int(x) for x in out.split() if x.strip().isdigit()]
 
 
