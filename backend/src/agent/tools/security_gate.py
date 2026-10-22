@@ -530,6 +530,8 @@ def file_identity(path: Any) -> dict:
         if found is not None:
             return {
                 "source": "file_identity",
+                # 有权威身份的对象一定存在（W3 identity_of 对不存在的路径返回 None）。
+                "exists": True,
                 "volume": str(getattr(found, "volume", "")),
                 "file_id": str(getattr(found, "file_id", "")),
                 "path": str(getattr(found, "path", target)),
@@ -666,28 +668,46 @@ def agent_scope_context(scope: Any | None) -> AsyncIterator[None]:
                 var.reset(token)
 
 
+def _grant_ids(grants: Iterable[Any] = ()) -> tuple[str, ...]:
+    return tuple(
+        str(getattr(grant, "grant_id", "") or "")
+        for grant in grants
+        if str(getattr(grant, "grant_id", "") or "")
+    )
+
+
 def make_agent_scope(
     *,
     scope_id: str | None = None,
+    grants: Iterable[Any] = (),
     parent_grant_ids: Iterable[str] = (),
+    parent_instruction_id: str | None = None,
     depth: int = 1,
     max_depth: int = SUBAGENT_MAX_DEPTH,
     purpose: str = "",
+    label: str = "",
 ) -> Any:
-    """按真实 AgentScope 的字段形状构造（W1 定义与临时定义都能用）。
+    """按 AgentScope 的真实字段形状构造（本函数是**唯一**适配点）。
 
-    字段名是契约说明里的最小集合；若 W1 的权威定义用了别的字段名，合入时由
-    Lead 在这里做一次适配（本函数是唯一的构造点）。
+    W1 权威定义（agent/security/context.AgentScope）字段：
+    parent_instruction_id / grants / depth / purpose / label。
+    grant 对象优先；只有 id 时（旧 fake / 契约最小形状）退回 *grant_ids 字段。
     """
+    grant_objects = tuple(grants or ())
     ids = tuple(str(item) for item in parent_grant_ids if str(item))
+    if grant_objects and not ids:
+        ids = _grant_ids(grant_objects)
     values = {
         "scope_id": scope_id or f"scope_{uuid.uuid4().hex[:12]}",
+        "parent_instruction_id": parent_instruction_id,
+        "grants": grant_objects,
         "parent_grant_ids": ids,
         "grant_ids": ids,
-        "parent_grants": ids,
+        "parent_grants": grant_objects or ids,
         "depth": int(depth),
         "max_depth": int(max_depth),
         "purpose": str(purpose or ""),
+        "label": str(label or ""),
         "created_by": "subagent",
     }
     fields = set(getattr(AgentScope, "__dataclass_fields__", {}) or {})
@@ -709,21 +729,31 @@ async def create_child_scope(
     purpose: str,
     parent_scope: Any | None = None,
 ) -> Any | None:
-    """创建子智能体能力子集（父 grant 子集 + 深度 + 用途）。
+    """创建子智能体能力子集（父 grant 子集 + 深度 + 用途）——只能缩小，不能扩大。
 
     * 网关提供 child_scope/child_agent_scope 时以它为准（W1 的权威实现）；
-    * 否则按当前 InstructionContext.grants 生成子集（父指令结束即全部失效）；
+    * 否则按当前 InstructionContext 的 active_grants 生成子集（父指令结束即失效）；
+    * **单层**：父上下文已经处在子智能体里（depth >= 1）时返回 None —— 子智能体
+      不能自己再建下一层，嵌套需求由主智能体统一申请；
     * 没有网关（旧测试/未接线）返回 None，不伪造授权。
     """
     if gateway is None:
+        return None
+    parent_scope = parent_scope if parent_scope is not None else current_agent_scope()
+    try:
+        parent_depth = int(getattr(parent_scope, "depth", 0) or 0)
+    except (TypeError, ValueError):
+        parent_depth = 0
+    if parent_depth >= 1:
         return None
     for name in ("child_scope", "create_child_scope", "child_agent_scope"):
         fn = getattr(gateway, name, None)
         if callable(fn):
             try:
-                result = fn(purpose=purpose)
-            except TypeError:
-                result = fn()
+                try:
+                    result = fn(purpose=purpose)
+                except TypeError:
+                    result = fn()
             except Exception:  # noqa: BLE001 - 回退到本地构造
                 break
             else:
@@ -735,16 +765,26 @@ async def create_child_scope(
         instruction = getter() if callable(getter) else getter
     except Exception:  # noqa: BLE001
         instruction = None
-    grants = [g for g in getattr(instruction, "grants", []) or [] if not getattr(g, "revoked", False)]
-    parent_scope = parent_scope if parent_scope is not None else current_agent_scope()
-    depth = int(getattr(parent_scope, "depth", 0) or 0) + 1
-    max_depth = int(getattr(parent_scope, "max_depth", SUBAGENT_MAX_DEPTH) or SUBAGENT_MAX_DEPTH)
-    if depth > max_depth:
-        return None
+    grants: list[Any] = []
+    active = getattr(instruction, "active_grants", None)
+    if callable(active):
+        try:
+            grants = list(active() or [])
+        except Exception:  # noqa: BLE001 - 拿不到 active_grants 时退回 grants 字段
+            grants = []
+    if not grants:
+        grants = [
+            grant
+            for grant in getattr(instruction, "grants", []) or []
+            if not getattr(grant, "revoked", False)
+        ]
+    instruction_id = getattr(instruction, "instruction_id", None) or snapshot.get(
+        "instruction_id"
+    )
     return make_agent_scope(
-        parent_grant_ids=[getattr(g, "grant_id", "") for g in grants],
-        depth=depth,
-        max_depth=max_depth,
+        grants=grants,
+        parent_instruction_id=instruction_id,
+        depth=1,
         purpose=purpose or snapshot.get("instruction_text") or "",
     )
 
@@ -752,9 +792,15 @@ async def create_child_scope(
 def scope_summary(scope: Any | None) -> dict:
     if scope is None:
         return {}
+    grants = tuple(getattr(scope, "grants", ()) or ())
+    ids = getattr(scope, "parent_grant_ids", None)
+    if not ids and grants:
+        ids = _grant_ids(grants)
     return {
         "scope_id": str(getattr(scope, "scope_id", "") or ""),
-        "parent_grant_ids": [str(x) for x in (getattr(scope, "parent_grant_ids", ()) or ())],
+        "parent_instruction_id": getattr(scope, "parent_instruction_id", None),
+        "parent_grant_ids": [str(x) for x in (ids or ())],
+        "grant_count": len(grants) if grants else len(tuple(ids or ())),
         "depth": int(getattr(scope, "depth", 0) or 0),
         "purpose": str(getattr(scope, "purpose", "") or ""),
     }

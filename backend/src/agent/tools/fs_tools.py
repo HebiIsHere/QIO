@@ -290,6 +290,13 @@ class FsWriteTool(_FsTool):
                 "kind": "fs.write",
                 "path": str(target),
                 "identity": identity,
+                # 提交审批时目标文件的内容摘要：执行前核对「审批期间内容有没有被改」。
+                # 文件身份 volume+file_id 在编辑后不变，光靠身份挡不住覆盖别人刚改的内容。
+                "base_content_sha256": (
+                    security_gate.content_sha256(target)
+                    if identity.get("exists")
+                    else None
+                ),
                 "content_sha256": digest,
                 "internal_data_root": str(internal_root) if internal_root else None,
             },
@@ -372,6 +379,7 @@ class FsPatchTool(_FsTool):
                 "kind": "fs.patch",
                 "path": str(target),
                 "identity": identity,
+                "base_content_sha256": security_gate.content_sha256(target),
                 "content_sha256": digest,
                 "internal_data_root": str(internal_root) if internal_root else None,
             },

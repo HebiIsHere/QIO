@@ -211,6 +211,90 @@ def render_subtask_context(control: SubtaskControl | None) -> str:
     return "\n\n".join(parts)
 
 
+def _scope_to_payload(scope: Any) -> dict | None:
+    """AgentScope → 可持久化载荷（审批执行器按同一子集重建，不扩大范围）。"""
+    if scope is None:
+        return None
+    grants: list[dict] = []
+    for grant in getattr(scope, "grants", ()) or ():
+        as_dict = getattr(grant, "as_dict", None)
+        if callable(as_dict):
+            try:
+                grants.append(dict(as_dict()))
+                continue
+            except Exception:  # noqa: BLE001 - 退回逐字段读取
+                pass
+        grants.append(
+            {
+                "grant_id": getattr(grant, "grant_id", ""),
+                "instruction_id": getattr(grant, "instruction_id", ""),
+                "operations": sorted(getattr(grant, "operations", ()) or ()),
+                "objects": [
+                    {"kind": getattr(obj, "kind", "path"), "value": getattr(obj, "value", "")}
+                    for obj in getattr(grant, "objects", ()) or ()
+                ],
+                "purpose": getattr(grant, "purpose", ""),
+                "source": getattr(grant, "source", "user_explicit"),
+                "created_at": getattr(grant, "created_at", ""),
+                "revoked": bool(getattr(grant, "revoked", False)),
+            }
+        )
+    return {
+        "parent_instruction_id": getattr(scope, "parent_instruction_id", None),
+        "grants": grants,
+        # 诊断/测试用的摘要（重建时以 grants 为准，不靠 id 反推授权）。
+        "parent_grant_ids": [
+            str(item.get("grant_id") or "") for item in grants if item.get("grant_id")
+        ],
+        "grant_count": len(grants),
+        "depth": int(getattr(scope, "depth", 0) or 0),
+        "purpose": str(getattr(scope, "purpose", "") or ""),
+        "label": str(getattr(scope, "label", "") or ""),
+    }
+
+
+def _scope_from_payload(data: Any) -> Any:
+    """审批载荷 → AgentScope（与提交审批时是同一批 grant，只能缩小不能扩大）。"""
+    if not isinstance(data, dict) or not data:
+        return None
+    try:
+        from agent.security.instructions import Grant, Scope
+    except Exception:  # noqa: BLE001 - 没有权威类型时不伪造 scope
+        return None
+    grants: list[Any] = []
+    for item in data.get("grants") or []:
+        if not isinstance(item, dict):
+            continue
+        grants.append(
+            Grant(
+                grant_id=str(item.get("grant_id") or ""),
+                instruction_id=str(item.get("instruction_id") or ""),
+                operations=frozenset(
+                    str(op) for op in (item.get("operations") or ())
+                ),
+                objects=[
+                    Scope(
+                        kind=str(obj.get("kind") or "path"),
+                        value=str(obj.get("value") or ""),
+                    )
+                    for obj in item.get("objects") or []
+                    if isinstance(obj, dict)
+                ],
+                purpose=str(item.get("purpose") or ""),
+                source=str(item.get("source") or "user_explicit"),
+                created_at=str(item.get("created_at") or ""),
+                revoked=bool(item.get("revoked", False)),
+            )
+        )
+    return security_gate.make_agent_scope(
+        grants=grants,
+        parent_instruction_id=data.get("parent_instruction_id"),
+        depth=int(data.get("depth") or 1),
+        purpose=str(data.get("purpose") or ""),
+        label=str(data.get("label") or ""),
+    )
+
+
 def _merged_budget(
     definition_budget: SubagentBudget | None, control: SubtaskControl | None
 ) -> SubagentBudget:
@@ -295,62 +379,6 @@ class SubagentTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         if self.adapter_factory is None:
             return ToolResult(ok=False, error="子任务没有可用的适配器工厂")
-        # 契约 §2.3/§2.4：子智能体只拿到父级 grant 的**子集**，深度只有一层；
-        # 创建本身走统一授权入口；超出父级范围由主智能体统一向用户申请（单层），
-        # 子智能体自己绝不弹窗。
-        scope = None
-        if self.security is not None:
-            decision = await security_gate.authorize(
-                self.security,
-                security_gate.subagent_effect(
-                    self.name, definition_name=self.definition.name
-                ),
-            )
-            verdict = security_gate.verdict_of(decision)
-            if verdict == "deny":
-                return security_gate.denied_result(
-                    decision, "当前模式不允许创建子智能体"
-                )
-            if verdict == "approve":
-                operation = security_gate.build_pending_operation(
-                    kind="subagent.create",
-                    label=f"创建子智能体 {self.name}",
-                    payload={"tool": self.name, "definition": self.definition.name},
-                    effect=security_gate.subagent_effect(
-                        self.name, definition_name=self.definition.name
-                    ),
-                    fingerprint={"tool": self.name},
-                    purpose="创建子智能体（能力不超过父级授权范围）",
-                    mode_at_request=security_gate.mode_of(self.security),
-                    instruction=security_gate.instruction_snapshot(self.security),
-                )
-                ticket = await security_gate.submit_pending(self.security, operation)
-                if ticket is not None:
-                    return security_gate.pending_result(
-                        ticket, operation_label=f"创建子智能体 {self.name}"
-                    )
-                return ToolResult(
-                    ok=False,
-                    error=(
-                        "创建子智能体需要你的批准，但当前没有可用的审批执行器："
-                        "本次没有创建（执行边界暂不可用）。"
-                    ),
-                    category="permission",
-                    recoverable=False,
-                )
-            scope = await security_gate.create_child_scope(
-                self.security, purpose=self.definition.description
-            )
-            if scope is None:
-                return ToolResult(
-                    ok=False,
-                    error=(
-                        "子智能体不能继续扩权：当前上下文无法生成父授权的子集"
-                        "（或已超过允许的深度），本次没有创建。"
-                    ),
-                    category="permission",
-                    recoverable=False,
-                )
         try:
             control, business = split_subtask_control(kwargs)
         except SubtaskControlError as exc:
@@ -376,6 +404,72 @@ class SubagentTool(Tool):
                 code="credential_unavailable",
                 status="failed",
             )
+
+        # 契约 §2.3/§2.4：子智能体只拿到父级 grant 的**子集**，深度只有一层；
+        # 创建本身走统一授权入口；超出父级范围由主智能体统一向用户申请（单层），
+        # 子智能体自己绝不弹窗。scope 先算出来：批准后的执行器要按同一个子集重建。
+        scope = None
+        if self.security is not None:
+            scope = await security_gate.create_child_scope(
+                self.security, purpose=self.definition.description
+            )
+            if scope is None:
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        "子智能体不能继续扩权：当前上下文无法生成父授权的子集"
+                        "（或已超过允许的深度），本次没有创建。"
+                    ),
+                    category="permission",
+                    recoverable=False,
+                )
+            effect = security_gate.subagent_effect(
+                self.name, definition_name=self.definition.name
+            )
+            decision = await security_gate.authorize(self.security, effect)
+            verdict = security_gate.verdict_of(decision)
+            if verdict == "deny":
+                return security_gate.denied_result(
+                    decision, "当前模式不允许创建子智能体"
+                )
+            if verdict == "approve":
+                operation = security_gate.build_pending_operation(
+                    kind="subagent.create",
+                    label=f"创建子智能体 {self.name}",
+                    payload={
+                        "tool": self.name,
+                        "definition": self.definition.name,
+                        # 审批执行器要用的完整执行参数（可序列化、可恢复）：
+                        "arguments": dict(business),
+                        "control": control.model_dump() if control is not None else None,
+                        "credential_ref": choice["credential_ref"],
+                        "model": model,
+                        "agent_scope": _scope_to_payload(scope),
+                    },
+                    effect=effect,
+                    fingerprint={
+                        "tool": self.name,
+                        "definition": self.definition.name,
+                        "arguments": dict(business),
+                    },
+                    purpose="创建子智能体（能力不超过父级授权范围）",
+                    mode_at_request=security_gate.mode_of(self.security),
+                    instruction=security_gate.instruction_snapshot(self.security),
+                )
+                ticket = await security_gate.submit_pending(self.security, operation)
+                if ticket is not None:
+                    return security_gate.pending_result(
+                        ticket, operation_label=f"创建子智能体 {self.name}"
+                    )
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        "创建子智能体需要你的批准，但当前没有可用的审批执行器："
+                        "本次没有创建（执行边界暂不可用）。"
+                    ),
+                    category="permission",
+                    recoverable=False,
+                )
         adapter = await self.adapter_factory(choice["credential_ref"], model)
         if adapter is None:
             return ToolResult(ok=False, error="为子任务构建适配器失败")
@@ -414,6 +508,57 @@ class SubagentTool(Tool):
             status="queued",
             code="queued",
         )
+
+    async def execute_after_approval(self, payload: dict[str, Any]) -> ToolResult:
+        """审批执行器入口（契约 §5.3）：按审批单参数 + AgentScope 子集重建并执行。
+
+        审批已由用户完成（审批执行器做过模式/对象重核对）；这里不重新申请审批，
+        也不扩大范围 —— 用的是提交审批时快照的同一个能力子集。
+        """
+        if self.adapter_factory is None:
+            return ToolResult(ok=False, error="子任务没有可用的适配器工厂")
+        try:
+            control = (
+                SubtaskControl.model_validate(payload.get("control"))
+                if payload.get("control")
+                else None
+            )
+        except ValidationError as exc:
+            return ToolResult(
+                ok=False,
+                error=f"审批单里的子任务控制字段不合法：{exc}",
+                status="failed",
+            )
+        business = dict(payload.get("arguments") or {})
+        ref = str(payload.get("credential_ref") or "")
+        model = payload.get("model")
+        if not ref:
+            return ToolResult(
+                ok=False,
+                error="审批单缺少凭据引用，无法重建子智能体",
+                status="failed",
+            )
+        adapter = await self.adapter_factory(ref, model)
+        if adapter is None:
+            return ToolResult(ok=False, error="为子任务构建适配器失败", status="failed")
+        scope = _scope_from_payload(payload.get("agent_scope"))
+        budget = _merged_budget(self.definition.subagent_budget, control)
+        task_id = f"task_{uuid.uuid4().hex[:12]}"
+        result = await self._execute(
+            task_id,
+            adapter,
+            business,
+            control,
+            budget,
+            {"credential_ref": ref, "model": model},
+            scope,
+        )
+        if result.ok and scope is not None:
+            result.data = {
+                **(result.data or {}),
+                "agent_scope": security_gate.scope_summary(scope),
+            }
+        return result
 
     async def _execute(
         self,

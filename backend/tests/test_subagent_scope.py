@@ -9,11 +9,15 @@ import types
 
 import pytest
 
+from _r9_auth_support import make_security, with_instruction
+
+from agent.security.effects import Effect, EffectKind, Target
+from agent.security.instructions import Scope
 from agent.tools import security_gate
 from agent.tools.base import ToolResult
 from agent.tools.runtime_tools import CodeTool
 from agent.tools.sandbox import SandboxResult
-from agent.tools.security_types import AgentScope, AuthDecision, Verdict
+from agent.tools.security_types import AuthDecision, Verdict
 from agent.tools.spec import ToolDefinition
 from agent.tools.subagent_tool import SubagentTool
 from agent.tools.task_manager import TaskManager
@@ -155,9 +159,14 @@ async def test_subagent_scope_is_parent_grant_subset(monkeypatch):
     assert result.ok is True, result.error
     scope = captured["scope"]
     assert scope is not None, "子智能体循环必须处在 AgentScope 里"
-    assert tuple(scope.parent_grant_ids) == ("grant_1", "grant_2"), "只包含父级未撤销 grant"
+    # W1 权威 AgentScope：能力子集放在 grants（Grant 对象），没有 parent_grant_ids 字段。
+    assert tuple(grant.grant_id for grant in scope.grants) == ("grant_1", "grant_2"), (
+        "只包含父级未撤销 grant"
+    )
     assert scope.depth == 1, "子智能体深度只有一层"
     assert "研究任务" in scope.purpose
+    summary = security_gate.scope_summary(scope)
+    assert summary["parent_grant_ids"] == ["grant_1", "grant_2"]
     assert result.data is not None and result.data["agent_scope"]["depth"] == 1
 
 
@@ -182,8 +191,8 @@ async def test_subagent_depth_gt_max_is_denied(monkeypatch):
     captured: dict = {}
     _stub_subagent_loop(monkeypatch, captured)
 
-    # 父上下文已经是第 2 层（达到上限）→ 不允许再创建下一层
-    parent = AgentScope(scope_id="scope_parent", parent_grant_ids=("grant_0",), depth=2, max_depth=2, purpose="父级")
+    # 父上下文已经处在子智能体里（单层限制）→ 不允许子智能体自己再建下一层
+    parent = security_gate.make_agent_scope(depth=1, purpose="父级子智能体")
     with security_gate.agent_scope_context(parent):
         result = await tool.run(query="研究")
 
@@ -194,13 +203,20 @@ async def test_subagent_depth_gt_max_is_denied(monkeypatch):
 @pytest.mark.asyncio
 async def test_subagent_creation_needs_approval_and_submits_pending(monkeypatch):
     gateway = FakeGateway(verdicts={"subagent": Verdict.APPROVE})
+    gateway.child_scope = None  # 走 security_gate 的本地子集构造（fake 没有权威 child_scope）
     tool, tm = _make_subagent_tool(gateway)
 
     result = await tool.run(query="研究")
 
     assert result.ok is True and result.code == "pending_approval"
     assert len(gateway.submitted) == 1
-    assert gateway.submitted[0].kind == "subagent.create"
+    operation = gateway.submitted[0]
+    assert operation.kind == "subagent.create"
+    # 审批单必须带够「批准后重建子智能体」所需的执行参数与同一个 scope 子集。
+    payload = operation.payload
+    assert payload["arguments"] == {"query": "研究"}
+    assert payload["agent_scope"]["depth"] == 1
+    assert payload["agent_scope"]["parent_grant_ids"] == ["grant_1", "grant_2"]
     assert not list(tm._records), "待审批时不得启动子任务"
 
 
@@ -261,3 +277,70 @@ async def test_code_tool_denied_in_read_only_mode():
     assert result.ok is False
     assert "只读模式" in (result.error or "")
     assert sandbox.executed == [], "只读模式下不得执行自建工具代码"
+
+
+@pytest.mark.asyncio
+async def test_engine_child_scope_really_bounds_subagent_effects(
+    db_conn, tmp_path, monkeypatch
+):
+    """真联调：subagent_tool → AuthorizationEngine.child_scope 的子集语义。
+
+    子智能体拿到的 scope.grants 就是父指令的授权集合；在项目授权范围内的写
+    allow，项目外的写必须回到 approve（由主智能体统一申请），不能借父授权扩权。
+    """
+    security = make_security(tmp_path, db_conn, mode="restricted")
+    project = tmp_path / "project"
+    project.mkdir()
+    inside = project / "a.txt"
+    outside = tmp_path / "outside.txt"
+    captured: dict = {}
+
+    async def fake_run_subagent(
+        self, task_id, adapter, business, control, budget, choice, tid, tracer
+    ):
+        scope = security_gate.current_agent_scope()
+        captured["scope"] = scope
+        inside_effect = Effect(
+            kind=EffectKind.WRITE,
+            targets=(Target(kind="path", value=str(inside)),),
+            purpose="子任务修改项目内的文件",
+            tool="sub_test",
+        )
+        outside_effect = Effect(
+            kind=EffectKind.WRITE,
+            targets=(Target(kind="path", value=str(outside)),),
+            purpose="子任务修改项目外的文件",
+            tool="sub_test",
+        )
+        captured["inside"] = (await security.engine.authorize(inside_effect)).verdict.value
+        captured["outside"] = (
+            await security.engine.authorize(outside_effect)
+        ).verdict.value
+        return ToolResult(ok=True, content="子任务完成")
+
+    monkeypatch.setattr(SubagentTool, "_run_subagent", fake_run_subagent)
+    tool, _tm = _make_subagent_tool(security.engine)
+
+    async with with_instruction(
+        security, "修复 " + str(project) + " 里的这个项目"
+    ) as instruction:
+        security.instructions.add_grant(
+            instruction,
+            operations={"write"},
+            objects=[Scope("path_prefix", str(project))],
+            purpose="在项目范围内修改",
+        )
+        parent_grant_ids = {grant.grant_id for grant in instruction.active_grants()}
+        result = await tool.run(query="研究")
+
+    assert result.ok is True, result.error
+    scope = captured["scope"]
+    assert scope is not None, "子智能体循环必须在 AgentScope 里"
+    assert scope.depth == 1
+    assert scope.parent_instruction_id == instruction.instruction_id
+    assert {grant.grant_id for grant in scope.grants} == parent_grant_ids, (
+        "子集必须恰好是父指令的授权集合（W1 child_scope 的语义）"
+    )
+    assert captured["inside"] == "allow", "项目授权范围内的写应允许"
+    assert captured["outside"] == "approve", "项目外的写必须重新审批，不能借子智能体扩权"
+    assert security_gate.current_agent_scope() is None, "子任务结束后上下文必须恢复"

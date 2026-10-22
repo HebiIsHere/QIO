@@ -328,6 +328,16 @@ class AppContext:
         self.services.register("tempfiles", self.tempfiles)
         # 工具审批走 deferred：批准后由后台执行器按 kind 取出执行函数真正执行。
         self.operations.register("tool.invoke", self._execute_approved_tool)
+        # 审批通过后的真实执行器（契约 §5.3）：fs.write/fs.patch/fs.delete、proc.*、
+        # subagent.create；没有实现的动作显式注册「不可用」，不允许批准后静默丢单。
+        from agent.tools.approved_operations import register_approved_operations
+
+        self.approved_operation_kinds = register_approved_operations(
+            self.operations,
+            computer=self.computer,
+            security=self.authorization,
+            tool_lookup=self.registry.get,
+        )
         for _tool in (
             FsReadTool(),
             FsWriteTool(),
@@ -395,7 +405,9 @@ class AppContext:
         self.dev_workspaces = DevWorkspace(settings.data_dir / "dev-workspaces")
         # 工具执行器只建一份：开发测试、提交复测与注册后的真实执行走同一套
         # 超时 / 环境 / 输出上限（见 tools/sandbox.py）。
-        self.tool_sandbox = SandboxExecutor()
+        # R9 执行层约束（契约 §3.1）：执行器同时知道当前模式、统一授权网关与
+        # 受保护范围 —— read_only/restricted 的脚本约束在应用内真正生效。
+        self.tool_sandbox = self._make_tool_sandbox()
         # 项目级专用依赖环境（QIO 管理）：声明了第三方依赖的工具用它跑，
         # 没准备好就明确失败 —— 不静默回落到随包解释器。
         self.tool_envs = ToolEnvManager(Path(settings.data_dir) / "tool-envs")
@@ -689,6 +701,19 @@ class AppContext:
             pass
         return paths
 
+    def _make_tool_sandbox(self):
+        """工具子进程执行器：注入模式/网关/受保护范围（契约 §3.1，R9 W2b 接线）。"""
+        from agent.tools.sandbox import SandboxExecutor
+
+        return SandboxExecutor(
+            mode_provider=lambda: self.authorization.mode().value,
+            security=self.authorization,
+            protected_scope_provider=lambda: [
+                self.computer.root(),
+                *self._internal_data_paths(),
+            ],
+        )
+
     async def _execute_approved_tool(self, payload: dict, ctx) -> object:
         """tool.invoke 执行器：用户批准后重新走工具管线真正执行（不重复弹审批）。"""
         from agent.adapters.base import ToolCall
@@ -828,7 +853,8 @@ class AppContext:
         from agent.tools.sandbox import SandboxExecutor
         from agent.tools.subagent_tool import SubagentTool
 
-        sandbox = SandboxExecutor()
+        # 恢复出来的自建工具同样受执行层约束（与 self.tool_sandbox 同一套注入）。
+        sandbox = self._make_tool_sandbox()
         for definition in self.tool_store.load_all():
             try:
                 # 能力指纹变化 → 不得沿用旧授权，需重新批准
