@@ -72,8 +72,13 @@ vi.mock("../../services/api", () => ({
       top_k_default: Number(body.top_k_default ?? 5),
       max_fetch_chars: Number(body.max_fetch_chars ?? 15000),
     })),
-    getUISettings: vi.fn(async () => ({ typewriter_cps: 50 })),
+    getUISettings: vi.fn(async () => ({ typewriter_cps: 50, close_behavior: "ask" })),
     updateUISettings: vi.fn(async (cps: number) => ({ ok: true, typewriter_cps: cps })),
+    updateCloseBehavior: vi.fn(async (behavior: string) => ({
+      ok: true,
+      typewriter_cps: 50,
+      close_behavior: behavior,
+    })),
     getComputerSettings: vi.fn(async () => ({ root_dir: "", permission_mode: "default" })),
     updateComputerSettings: vi.fn(async (body: Record<string, unknown>) => ({
       root_dir: String(body.root_dir ?? ""),
@@ -765,6 +770,33 @@ describe("QIO 滚动指示条偏好（2026-10-14）", () => {
     expect(text).toContain("不开放对话横向滚动");
     // 选项当前档位的说明也要在界面上，不能只藏在 title/aria 里
     expect(text).toContain("停止后淡出");
+    w.unmount();
+  });
+});
+
+describe("关闭主窗口行为（R9 §11）", () => {
+  it("三档与契约一致：每次询问 / 最小化到托盘 / 直接退出，且保存到后端设置", async () => {
+    const w = await mountSettings();
+    const panel = visiblePanel(w);
+    const text = panel.text();
+    expect(text).toContain("关闭主窗口时");
+    expect(text).toContain("每次询问");
+    expect(text).toContain("最小化到托盘");
+    expect(text).toContain("直接退出");
+    // 说明必须讲清边界：隐藏 ≠ 退出收尾；退出会保留有效待审批
+    expect(text).toContain("继续运行");
+    expect(text).toContain("有效审批");
+
+    const section = panel.findAll("section.sec").find((s) => s.text().includes("关闭主窗口时"));
+    expect(section).toBeTruthy();
+    const options = section!.findAll("button.motion-opt");
+    expect(options.map((b) => b.text())).toEqual(["每次询问", "最小化到托盘", "直接退出"]);
+
+    const { api } = await import("../../services/api");
+    await options[1].trigger("click");
+    await flushPromises();
+    expect(api.updateCloseBehavior).toHaveBeenCalledWith("tray");
+    expect(visiblePanel(w).find(".msg").text()).toContain("已保存");
     w.unmount();
   });
 });
