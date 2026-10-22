@@ -1119,6 +1119,32 @@ impl ShellRuntime {
         self.quit_backend_and_verify()
     }
 
+    /// 删除本实例的归属记录（lease + 旧版镜像）与会话令牌文件。
+    ///
+    /// 为什么退出路径要显式调用：Tauri 的 app.exit() 在个别情况下 request_exit 会失败并
+    /// 直接 std::process::exit（安装版实测 "failed to exit: failed to send message to the
+    /// webview"）——此时 RunEvent::Exit 不执行，shutdown_runtime 的清理就被跳过，
+    /// sidecar.lease.json 会残留（install_e2e A-119）。所以退出前主动收一遍；
+    /// 与 RunEvent::Exit 的清理幂等（lease_path 取走后第二次为空）。
+    fn cleanup_instance_records(&self) {
+        if let Some(path) = lock(&self.lease_path).take() {
+            match ownership::remove_lease_at(&path) {
+                Ok(()) => log::info!("[qio] 已删除本实例的 sidecar lease：{}", path.display()),
+                Err(err) => log::warn!("[qio] 删除本实例 sidecar lease 失败：{err}"),
+            }
+        }
+        if !cfg!(debug_assertions) {
+            if let Some(install_dir) = ownership::shell_install_dir() {
+                match ownership::remove_legacy_mirror_if_owned(&install_dir, std::process::id()) {
+                    Ok(true) => log::info!("[qio] 已删除旧版 sidecar lease 镜像（记的是本实例）"),
+                    Ok(false) => {}
+                    Err(err) => log::warn!("[qio] 删除旧版 sidecar lease 镜像失败：{err}"),
+                }
+            }
+        }
+        let _ = std::fs::remove_file(session_token_path());
+    }
+
     /// 真正退出的闸门：第一个调用者返回 true。
     ///
     /// 同时把生命周期阶段置成 Exiting —— 后台启动准备/恢复流程从此不能再拉起后端
@@ -1855,22 +1881,7 @@ fn shutdown_runtime(runtime: &ShellRuntime) {
     // 记录是「本安装实例还活着」的事实源：退出（任何路径）只删**自己那一份**
     // （+ 旧版镜像里记的正是自己时才删镜像）。别人的记录一律不动 ——
     // 旧实现删的是固定文件名，先退出的实例会把后启动实例的记录删掉（2026-10-05 §7 缺陷）。
-    if let Some(path) = lock(&runtime.lease_path).take() {
-        match ownership::remove_lease_at(&path) {
-            Ok(()) => log::info!("[qio] 已删除本实例的 sidecar lease：{}", path.display()),
-            Err(err) => log::warn!("[qio] 删除本实例 sidecar lease 失败：{err}"),
-        }
-    }
-    if !cfg!(debug_assertions) {
-        if let Some(install_dir) = ownership::shell_install_dir() {
-            match ownership::remove_legacy_mirror_if_owned(&install_dir, std::process::id()) {
-                Ok(true) => log::info!("[qio] 已删除旧版 sidecar lease 镜像（记的是本实例）"),
-                Ok(false) => {}
-                Err(err) => log::warn!("[qio] 删除旧版 sidecar lease 镜像失败：{err}"),
-            }
-        }
-    }
-    let _ = std::fs::remove_file(session_token_path());
+    runtime.cleanup_instance_records();
 }
 
 /// 无人值守关闭覆盖：`QIO_CLOSE_BEHAVIOR` 环境变量（ask / tray / quit）。
@@ -1922,6 +1933,20 @@ fn hide_main_window(app: &tauri::AppHandle, reason: &str) {
     }
 }
 
+/// 退出应用（已在本实例进程树/记录收尾之后调用）。
+///
+/// 优先把 app.exit 调度到主线程：Tauri 的 request_exit 在非主线程偶尔会
+/// "failed to send message to the webview" → 直接 std::process::exit，RunEvent::Exit
+/// 不执行（安装版实测导致 lease 残留，install_e2e A-119）。调度失败才退回直接 exit；
+/// 无论如何，调用方已显式 cleanup_instance_records()，记录不会残留。
+fn exit_app(app: &tauri::AppHandle, code: i32) {
+    let handle = app.clone();
+    if let Err(err) = app.run_on_main_thread(move || handle.exit(code)) {
+        log::warn!("[qio] 主线程退出调度失败（直接退出）：{err}");
+        app.exit(code);
+    }
+}
+
 /// 系统关闭请求的**壳侧**处理（按 pid 收尾，不依赖前端 IPC）。
 ///
 /// 真机 install_e2e 实测（2026-10-22）：前端可能因启动握手异常停在启动页，
@@ -1952,7 +1977,8 @@ fn handle_shell_close(app: tauri::AppHandle, runtime: Arc<ShellRuntime>) {
                 report.verified,
                 report.survivors
             );
-            app.exit(0);
+            runtime.cleanup_instance_records();
+            exit_app(&app, 0);
         }
         _ => {
             runtime.close_ack.store(false, Ordering::SeqCst);
@@ -2002,7 +2028,8 @@ fn request_quit_from_tray(app: &tauri::AppHandle) {
             report.verified,
             report.survivors
         );
-        handle.exit(0);
+        runtime.cleanup_instance_records();
+        exit_app(&handle, 0);
     });
 }
 
@@ -2121,8 +2148,10 @@ async fn request_close(
                 report.verified,
                 report.survivors
             );
-            // 退出应用：RunEvent::Exit 会再做一次有界的运行时清理（幂等）。
-            app.exit(0);
+            // 退出应用：先显式删本实例记录（RunEvent::Exit 可能因非主线程 request_exit
+            // 失败而不执行）；然后调度到主线程退出（重复清理幂等）。
+            runtime.cleanup_instance_records();
+            exit_app(&app, 0);
             Ok(CloseOutcome {
                 action: "quitting".to_string(),
                 hidden: false,

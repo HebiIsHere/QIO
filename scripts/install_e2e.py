@@ -518,14 +518,16 @@ def show_window(hwnd: int) -> bool:
         return False
     try:
         user32 = ctypes.windll.user32
-        user32.ShowWindow(ctypes.c_void_p(hwnd), 5)  # SW_SHOW
-        user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
-        user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
-        deadline = time.time() + 5.0
+        # 隐藏动作可能还在 Tauri 事件循环里收尾：每轮都重发一次 ShowWindow，
+        # 否则会撞上「刚显示又被隐藏态覆盖」的竞态（安装版实测 A-117b 偶发）。
+        deadline = time.time() + 10.0
         while time.time() < deadline:
+            user32.ShowWindow(ctypes.c_void_p(hwnd), 5)  # SW_SHOW
+            user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
+            user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+            time.sleep(0.2)
             if window_visible(hwnd):
                 return True
-            time.sleep(0.1)
         return window_visible(hwnd)
     except Exception:  # noqa: BLE001
         return False
@@ -635,11 +637,24 @@ def step_shell_lease(args) -> bool:
             token = token_file.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             time.sleep(0.5)
-    port = listen_port_of([item["pid"] for item in procs]) or listen_port_of([lease_backend_pid])
+    # 端口探测必须**有界重试**：PyInstaller onefile 的 lease 在 launcher 起步时就写了，
+    # 真正的服务进程（same exe 的 child）要晚 1-3 秒才出现并监听 —— 只查一次会得到
+    # 「lease 有、端口没有」的假失败（2026-10-22 W5 安装版复跑实测）。
+    port = None
+    probe_pids: list[int] = []
+    deadline = time.time() + 60
+    while time.time() < deadline and proc.poll() is None:
+        fresh_procs = processes_in_dir(install_dir)
+        probe_pids = [item["pid"] for item in fresh_procs] + [proc.pid]
+        port = listen_port_of(probe_pids)
+        if port is not None:
+            procs = fresh_procs or procs  # 后续断言用最新的进程快照（含 child）
+            break
+        time.sleep(0.5)
     api = None
     if port is None:
         record("A-115", "外壳启动的 sidecar 健康检查可用", "FAIL",
-               "按 pid 反查不到监听端口（pids=%s）" % [item["pid"] for item in procs])
+               "60s 内按 pid 反查不到监听端口（探测 pids=%s）" % probe_pids)
     else:
         api = Client("http://127.0.0.1:%d" % port, token or args.token)
         ok, detail = wait_health(api, timeout=60)
@@ -692,7 +707,9 @@ def step_shell_lease(args) -> bool:
                % (hidden_ok, proc.poll() is None, lease_kept, sidecar_ok,
                   "" if sidecar_ok else "（消失的 pid=%s）" % sidecar_gone))
         # 恢复窗口：托盘菜单「显示主窗口」的 OS 层等价动作（show + 还原 + 置前）。
-        # 不恢复的话后面 CloseMainWindow 找不到窗口，测的就不是退出路径了。
+        # 先让隐藏动作在 Tauri 事件循环里落定，再恢复（否则会被随后的 hide 覆盖）。
+        if hidden_ok:
+            time.sleep(0.8)
         restored = show_window(hwnd) if hidden_ok else False
         record("A-117b", "隐藏到托盘后窗口可恢复（show + 还原，等价于托盘菜单「显示主窗口」）",
                "PASS" if restored else "FAIL",
