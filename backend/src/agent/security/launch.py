@@ -77,6 +77,17 @@ _READONLY_OPERATIONS = frozenset({"execute_readonly", "readonly"})
 #: 确切条目作为证据；不做整类排除）。
 _OWN_RUNTIME_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db-journal", ".log", ".jsonl")
 
+# 作为命令行参数传入的「脚本文件」必须按内容参与 spec_digest：只核对 argv 字符串
+# 会让「批准后把脚本内容换掉」沿用旧许可（问题 A 的验收反例）。
+_SCRIPT_SUFFIXES = frozenset(
+    {
+        ".py", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".sh", ".bash", ".zsh",
+        ".ps1", ".psm1", ".bat", ".cmd", ".rb", ".pl", ".php", ".lua", ".r",
+    }
+)
+_ARGUMENT_IDENTITY_MAX_BYTES = 8 * 1024 * 1024
+_MAX_ARGUMENT_FACTS = 16
+
 # 程序内容 sha256 缓存：key = f"{realpath}|{size}|{mtime_ns}"。
 # 程序文件被替换（大小/修改时间变化）→ 换 key 重算；缓存只省重复哈希，不影响身份核对。
 _SCRIPT_BOOTSTRAP = (
@@ -285,6 +296,98 @@ def _resolved_cwd(spec: LaunchSpec) -> str | None:
         return text
 
 
+def _looks_like_path(text: str, suffix: str) -> bool:
+    return any(sep in text for sep in ("/", "\\")) or suffix in _SCRIPT_SUFFIXES
+
+
+def _has_script_shebang(path: Path) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) == b"#!"
+    except OSError:
+        return False
+
+
+def _shell_tokens(command: str) -> list[str]:
+    """shell 命令的粗略 token 化（只用于找脚本文件参数，不作为解析/权限依据）。"""
+    tokens: list[str] = []
+    for part in str(command or "").replace(";", " ").replace("|", " ").split():
+        token = part.strip().strip("\"'").rstrip("&,")
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _argument_file_facts(spec: LaunchSpec) -> list[dict]:
+    """argv / shell 命令里作为脚本文件的参数：内容摘要必须进入 spec_digest。
+
+    只核对 argv 字符串不够：python job.py 这种「解释器 + 脚本文件」的启动，脚本
+    内容在批准之后被替换时 argv 完全不变。这里对**存在或明确不存在的脚本文件**
+    记录内容 sha256（相对路径按 spec.cwd 解析；没有 cwd 时相对路径不做核对），
+    让摘要同时覆盖「被执行的脚本内容」。
+    """
+    cwd = _resolved_cwd(spec)
+    tokens: list[str] = [str(item) for item in spec.argv]
+    if str(spec.kind) == "shell" and spec.shell_cmd:
+        tokens.extend(_shell_tokens(str(spec.shell_cmd)))
+    facts: list[dict] = []
+    seen: set[str] = set()
+    for text in tokens:
+        raw = str(text or "").strip().strip("\"'")
+        if not raw or len(raw) > 4096:
+            continue
+        suffix = Path(raw).suffix.lower()
+        if not _looks_like_path(raw, suffix):
+            continue
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            if not cwd:
+                continue
+            candidate = Path(cwd) / candidate
+        try:
+            candidate = candidate.resolve()
+        except (OSError, ValueError):
+            continue
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        entry: dict[str, Any] = {"path": key}
+        try:
+            stat = candidate.stat()
+        except OSError:
+            if suffix in _SCRIPT_SUFFIXES:
+                entry["exists"] = False
+                facts.append(entry)
+            continue
+        if not candidate.is_file():
+            continue
+        if suffix not in _SCRIPT_SUFFIXES and not _has_script_shebang(candidate):
+            continue
+        if int(stat.st_size) > _ARGUMENT_IDENTITY_MAX_BYTES:
+            entry.update(
+                {
+                    "exists": True,
+                    "size": int(stat.st_size),
+                    "mtime_ns": int(getattr(stat, "st_mtime_ns", 0)),
+                    "identity": "too_large_to_hash",
+                }
+            )
+        else:
+            entry.update(
+                {
+                    "exists": True,
+                    "size": int(stat.st_size),
+                    "mtime_ns": int(getattr(stat, "st_mtime_ns", 0)),
+                    "sha256": _program_sha256(key),
+                }
+            )
+        facts.append(entry)
+        if len(facts) >= _MAX_ARGUMENT_FACTS:
+            break
+    return facts
+
+
 def build_spec_facts(spec: LaunchSpec, *, computer: Any = None) -> dict:
     """构造 spec 的「当前事实」：程序身份/argv/cwd/脚本内容摘要。"""
     script_source = spec.script_source or ""
@@ -299,6 +402,8 @@ def build_spec_facts(spec: LaunchSpec, *, computer: Any = None) -> dict:
             else None
         ),
         "script_name": spec.script_name,
+        # argv/命令里作为脚本文件传入的参数也按内容参与摘要（批准后换脚本 → 失效）
+        "argument_files": _argument_file_facts(spec),
     }
     if str(spec.kind) == "shell":
         # shell 的真实身份是解析后的 COMSPEC/sh；只把命令文本算进去不是「程序身份」。

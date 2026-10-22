@@ -1,0 +1,236 @@
+{
+  "title": "R9-F W2 统一程序执行边界真机验证",
+  "started_at": "2026-10-22T14:46:46.477514+00:00",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "python": "3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]",
+  "executable": "D:\\qio-dev\\qio-r9f-w2\\backend\\.venv\\Scripts\\python.exe",
+  "repo_root": "D:\\qio-dev\\qio-r9f-w2",
+  "branch": "r9f/w2-exec",
+  "head": "602c1be21bed2bc4d02751b3c6e6338e00b1dbef",
+  "windows": true,
+  "finished_at": "2026-10-22T14:46:52.943590+00:00",
+  "counts": {
+    "pass": 11,
+    "fail": 0,
+    "unsupported": 0
+  },
+  "conclusion": "PASS",
+  "results": [
+    {
+      "check": "write_scope",
+      "title": "范围内必要写入可用；范围外写入被 Low IL 内核拒绝",
+      "status": "PASS",
+      "detail": {
+        "allowed_root": "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\write_scope\\allowed",
+        "outside_target": "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\write_scope\\protected\\medium.txt",
+        "stdout": [
+          "OUTSIDE_WRITE_DENIED PermissionError",
+          "INSIDE_WRITE_OK"
+        ],
+        "isolation_mechanisms": [
+          "job_object",
+          "low_integrity"
+        ],
+        "write_scope": {
+          "pre_enforced": true,
+          "labeled_low_during_execution": true,
+          "restored_after_execution": [
+            {
+              "root": "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\write_scope\\allowed",
+              "previous_label": "",
+              "restored": true,
+              "restored_to": "S:AI(ML;OICI;NW;;;ME)"
+            }
+          ]
+        },
+        "capability_boundaries": [
+          "read_not_isolated：Low IL 不阻止读取当前账户可读的内容",
+          "network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）",
+          "write_scope_enforced_by_low_il：仅靠 Windows MIC 限制写范围；不是容器/账户隔离，读与网络不受限",
+          "delete_not_recycled_within_allowed_roots：任意解释器/脚本可在获准写范围内直接 unlink，无法强制改道系统回收站；只能每次审批 + 范围限制 + 事实上报"
+        ]
+      }
+    },
+    {
+      "check": "delete_boundary",
+      "title": "解释器内部删除不能绕过写边界（Low 删 Medium 被拒）",
+      "status": "PASS",
+      "detail": {
+        "target": "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\delete\\protected\\keep.txt",
+        "child_output": [
+          "DELETE_DENIED PermissionError"
+        ],
+        "note": "Low IL 阻止写向上（含删除高完整性对象）；若文件本身是 Low 标签则删除会成功，这属于如实标注的能力边界（获准写范围内可以 unlink，不能强制进回收站）"
+      }
+    },
+    {
+      "check": "descendants_boundary",
+      "title": "后代进程遵守同一 Low IL 边界",
+      "status": "PASS",
+      "detail": {
+        "victim": "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\descendants\\protected\\medium.txt",
+        "stdout": [
+          "PARENT_SAW CHILD_WRITE_DENIED PermissionError"
+        ],
+        "note": "子进程继承父进程的 Low 完整性令牌；隔离对后代同样生效"
+      }
+    },
+    {
+      "check": "job_object_reap",
+      "title": "Job Object 收树：超时后后代进程全部消失",
+      "status": "PASS",
+      "detail": {
+        "child_pid": 208828,
+        "timeout_error": "执行超时：已终止进程树（进程已终止）",
+        "isolation_mechanisms": [
+          "job_object"
+        ],
+        "note": "script 启动带握手：Job Object 在放行脚本前已指派，后代必然在 job 内"
+      }
+    },
+    {
+      "check": "internal_data",
+      "title": "内部运行数据未经三次确认 → launcher 拒绝",
+      "status": "PASS",
+      "detail": {
+        "internal_root": "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\internal_data",
+        "unconfirmed": {
+          "ok": false,
+          "category": "permission",
+          "error": "脚本/命令涉及 QIO 内部运行数据（C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\internal_data）：必须先完成连续三次确认；本次未确认，不启动"
+        },
+        "confirmed": {
+          "ok": true,
+          "stdout": [
+            "INTERNAL_DATA_REACHED",
+            "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\internal_data\\qio.db"
+          ]
+        }
+      }
+    },
+    {
+      "check": "spec_mismatch",
+      "title": "permit 与 spec 不一致（程序/argv/cwd/脚本内容/程序文件）→ 拒绝启动",
+      "status": "PASS",
+      "detail": {
+        "argv_changed": {
+          "ok": false,
+          "category": "permit_mismatch",
+          "error": "许可失效：程序/脚本/参数/工作目录与授权时不一致（spec_digest 不一致），本次不启动；请重新授权"
+        },
+        "cwd_changed": {
+          "ok": false,
+          "category": "permit_mismatch",
+          "error": "许可失效：程序/脚本/参数/工作目录与授权时不一致（spec_digest 不一致），本次不启动；请重新授权"
+        },
+        "script_content_changed": {
+          "ok": false,
+          "category": "permit_mismatch",
+          "error": "许可失效：程序/脚本/参数/工作目录与授权时不一致（spec_digest 不一致），本次不启动；请重新授权"
+        },
+        "program_changed": {
+          "ok": false,
+          "category": "startup",
+          "error": "找不到解释器：C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\other-interpreter.exe"
+        },
+        "program_file_replaced": {
+          "ok": false,
+          "category": "permit_mismatch",
+          "error": "许可失效：程序/脚本/参数/工作目录与授权时不一致（spec_digest 不一致），本次不启动；请重新授权"
+        }
+      }
+    },
+    {
+      "check": "post_identity",
+      "title": "执行后重算 spec_digest（身份变化 → 标记变化）",
+      "status": "PASS",
+      "detail": {
+        "changed": true,
+        "expected": "334c550e59ab03a9461a8a3bba81ddc3b3441192f7b2f267a78c01467a971cb8",
+        "actual": "7e665543bc39f2d070ac6cc24dadc3372025c34c16e4981c9c307df5b399d1da",
+        "detail": "程序/脚本在执行期间发生了变化（spec_digest 不一致）"
+      }
+    },
+    {
+      "check": "approval_replay",
+      "title": "审批重放：一致→执行 / payload·指纹不一致→不执行 / 网关不再无条件 ALLOW",
+      "status": "PASS",
+      "detail": {
+        "executed": {
+          "ok": true,
+          "content": "R9F_APPROVED_REPLAY_OK",
+          "permit_source": "approval",
+          "approval_id": "appr_verify",
+          "spec_digest_match": true
+        },
+        "payload_changed": {
+          "ok": false,
+          "summary": "审批失效：本次执行的参数与审批单记录不一致（payload 被改动）：程序/参数/工作目录/脚本内容必须与批准时完全相同，本次未执行，请重新提出"
+        },
+        "fingerprint_changed": {
+          "ok": false
+        },
+        "gateway": {
+          "matching": "allow",
+          "mismatched_argv": "deny",
+          "no_approval_record": "deny"
+        }
+      }
+    },
+    {
+      "check": "script_change_invalidates",
+      "title": "批准后脚本内容变化 → 旧许可失效、篡改脚本不执行",
+      "status": "PASS",
+      "detail": {
+        "script": "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9f-w2-exec-yul6a2st\\script_change\\job.py",
+        "rejected": {
+          "ok": false,
+          "invalidated": true,
+          "summary": "审批失效：审批单记录的程序/参数/工作目录/脚本内容与本次执行不一致（spec_digest 不一致）：许可已失效，本次不执行，请重新提出（本次未执行）"
+        },
+        "tampered_marker_exists": false,
+        "control_executed": true,
+        "control_marker_exists": true,
+        "note": "spec_digest 覆盖 argv 中脚本文件的内容 sha256；批准后内容变化 → 许可失效，不执行"
+      }
+    },
+    {
+      "check": "read_only_no_bypass",
+      "title": "只读模式不能被审批/许可绕过",
+      "status": "PASS",
+      "detail": {
+        "replay": {
+          "ok": false,
+          "summary": "当前已切换到只读模式：这次批准不再允许执行程序/命令（只读模式不能被审批绕过），本次未执行，需重新提出"
+        },
+        "gateway": {
+          "verdict": "deny",
+          "reason": "当前是只读模式：批准过的程序执行也不能绕过只读（本次未执行，需切回受限/无限制模式后重新提出）"
+        }
+      }
+    },
+    {
+      "check": "network_honesty",
+      "title": "网络边界如实标注（白名单明确不可用；不假装有强制隔离）",
+      "status": "PASS",
+      "detail": {
+        "declared_hosts": {
+          "ok": false,
+          "category": "unsupported",
+          "error": "本机无法按主机白名单强制限制网络（没有 WFP/防火墙集成）：这个路径暂不可用；需要联网的操作只能按「允许整条命令/脚本」审批并如实标注边界"
+        },
+        "not_declared": {
+          "ok": true,
+          "capability_boundaries": [
+            "read_not_isolated：Low IL 不阻止读取当前账户可读的内容",
+            "network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）",
+            "unrestricted_mode：无限制模式不建立写范围/Low IL 边界",
+            "write_scope_not_pre_enforced：普通命令的写范围只做事后核验分类，没有事前阻断（任意程序/脚本的副作用无法在启动前可靠限定）",
+            "interpreter_side_effects_not_containable：解释器/脚本可执行任意副作用（写/删/外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计"
+          ],
+          "note": "网络没有强制隔离：能做的是如实标注 + 需要主机白名单时明确「暂不可用」"
+        }
+      }
+    }
+  ]
+}
