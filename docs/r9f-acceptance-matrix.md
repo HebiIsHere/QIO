@@ -11,7 +11,7 @@
 | A1 | run_program/run_cmd 真实启动经受控入口（permit + spec_digest） | `test_r9f_exec_boundary.py`、`test_r9f_approved_replay.py`、`test_cmd_tools.py` | ✅ |
 | A2 | 自建工具 worker 启动复用同一隔离/guard 组件 | `test_r9f_exec_boundary.py`、`test_sandbox_worker.py`、`test_sandbox_executor.py` | ✅ |
 | A3 | 批准后重放：payload/程序/argv/cwd/对象/模式变化 → invalidated，不执行 | `test_r9f_approved_replay.py`、W4 E2E（A 用例待最终复验） | ✅ |
-| A4 | 审批后脚本内容变化 → 旧许可失效（篡改脚本不得执行） | W4 E2E `test_script_change_does_not_reuse_old_approval` + W2 单测 | 最终复验后填 |
+| A4 | 审批后脚本内容变化 → 旧许可失效（篡改脚本不得执行） | W4 E2E `test_script_change_does_not_reuse_old_approval`（终态 failed/invalidated）+ W2 单测 + 真机第 9 项 | ✅ |
 | A5 | 只读模式不能靠批准绕过；范围内必要写入可用 | `test_r9f_exec_boundary.py`、`test_sandbox_readonly.py`、W2 真机 | ✅ |
 | A6 | Windows：范围外写入被拒、内部数据未确认被拒、后代进程同边界 | `_r9f-evidence/w2-exec/`（W2 报告） | ✅（Windows 本机） |
 | A7 | POSIX 无强制隔离时如实标注，不误拒普通命令 | `test_r9f_exec_boundary.py` | 🟡（本机 Windows；Linux 由定向 CI 复验） |
@@ -81,7 +81,7 @@
 | R2 | offload 段本身 p50≈19ms/max≈58ms，不是 offload 回归 | 同上 | ✅ |
 | R3 | 测量窗口收窄到刺激段（不抬高 300ms） | `test_interactive_during_heavy_work.py` 修改 + 定向测试 | ✅ |
 | R4 | 保留真实阻塞检测力（446ms 回归签名仍会红） | 测试文档 + 窗口重叠逻辑 | 🟡（逻辑论证，未构造回归注入实验） |
-| R5 | CI 定向 job 通过 | `gh workflow run targeted-verify.yml`（推送后派发） | 待填 |
+| R5 | CI 定向 job 通过 | `gh workflow run targeted-verify.yml`（推送后派发；运行号/结果见交付说明） | 待派发 |
 
 ## 8. 未验证 / 明确不做
 

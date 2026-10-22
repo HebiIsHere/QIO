@@ -11,7 +11,7 @@
 | --- | --- | --- |
 | `r9f/main` / qio-r9f-main | Lead：schema/迁移、engine/gateway/app 接线、用户禁止、测量方式修正、集成与文档 | 见文末最终记录 |
 | `r9f/w1-review` / qio-r9f-w1 | W1：模型授权审查、需求台账、授权记录生命周期、真实模型评估 | `486631439a19bcede73e2cb465df506ea09441e9` |
-| `r9f/w2-exec` / qio-r9f-w2 | W2：统一受控启动、cmd/shell/自建工具/审批后重放 | 见 W2 报告与最终记录 |
+| `r9f/w2-exec` / qio-r9f-w2 | W2：统一受控启动、cmd/shell/自建工具/审批后重放 | `8a471ce3` |
 | `r9f/w3-origin` / qio-r9f-w3 | W3：文件来源持久化与工作区自主操作 | `6de8e390` |
 | `r9f/w4-verify` / qio-r9f-w4 | W4：真实链路 E2E、循环停顿诊断、定向验证清单 | `800feee969a206ac65b706f6b2ee065598d6f952` |
 
@@ -98,4 +98,6 @@
 
 ## 8. 最终记录
 
-- 最终 SHA：见 tag/交付说明（推送后补）；CI 定向运行号与状态：见交付说明。
+- 最终 SHA：本文件所在提交即最终提交（`git rev-parse HEAD`）；不合并 main、不发布安装包。
+- 定向 CI：推送后在 `targeted-verify.yml` 派发与 R9-F 直接相关的 node id（windows 执行边界 + 授权/审批/来源/验收/响应性）；
+  运行号与结果见交付说明（文档不写易过期的运行号）。
