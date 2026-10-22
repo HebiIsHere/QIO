@@ -44,6 +44,54 @@ _TERM_VERIFY_SECONDS = 10.0
 # 合并输出里 stderr 的分隔标记（不写反斜杠转义，保持与旧格式一致）。
 _STDERR_DELIM = chr(10) + "[stderr]" + chr(10)
 
+# 永久删除类程序/命令：**所有模式一律拒绝**（QIO 契约 §0.8：用户业务文件删除一律进
+# 系统回收站）。这是有意的能力限制：rm/del/erase/rd/rmdir/Remove-Item 等无法保证可恢复，
+# 也无法可靠地「还原到回收站」；宁可少一条能力，也不允许命令行绕过回收规则。
+PERMANENT_DELETE_PROGRAMS = frozenset(
+    {"rm", "del", "erase", "rd", "rmdir", "remove-item", "ri", "unlink", "shred"}
+)
+_SHELL_PROGRAMS = frozenset(
+    {"cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+     "sh", "bash", "dash", "zsh", "wsl", "wsl.exe"}
+)
+_PERMANENT_DELETE_MESSAGE = (
+    "QIO 不通过命令行永久删除文件：删除操作会进系统回收站。"
+    "请使用 fs_delete 工具发起删除（必要时会先让你确认）。"
+)
+
+
+def _program_basename(value: Any) -> str:
+    text = str(value or "").strip().strip('"')
+    if not text:
+        return ""
+    return text.replace("\\", "/").rsplit("/", 1)[-1].lower()
+
+
+def _command_tokens(value: Any) -> list[str]:
+    import re
+
+    return [tok for tok in re.split(r"[^\w\-\.]+", str(value or "").lower()) if tok]
+
+
+def _permanent_delete_program_reason(program: str, args: list[str] | None = None) -> str | None:
+    """run_program：永久删除类程序（或经 shell 包装的删除命令）一律拒绝。"""
+    name = _program_basename(program)
+    if name in PERMANENT_DELETE_PROGRAMS:
+        return _PERMANENT_DELETE_MESSAGE
+    if name in _SHELL_PROGRAMS:
+        for token in _command_tokens(" ".join(str(a) for a in (args or []))):
+            if token in PERMANENT_DELETE_PROGRAMS:
+                return _PERMANENT_DELETE_MESSAGE
+    return None
+
+
+def _permanent_delete_shell_reason(cmd: str) -> str | None:
+    """run_shell：命令里出现永久删除类命令一律拒绝（不交给 shell 执行）。"""
+    for token in _command_tokens(cmd):
+        if token in PERMANENT_DELETE_PROGRAMS:
+            return _PERMANENT_DELETE_MESSAGE
+    return None
+
 
 def _clip(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
@@ -170,7 +218,16 @@ class _CmdTool(Tool):
         described.update(describe_computer_action(payload))
         r = await self.approvals.request("computer", described)
         if r.decision != "approved":
-            return ToolResult(ok=False, error=f"{refusal_reason(r.decision)}")
+            labels = {
+                "run_program": "程序执行",
+                "run_shell": "命令执行",
+                "proc_kill": "结束进程",
+            }
+            label = labels.get(str(payload.get("action") or ""), "操作")
+            return ToolResult(
+                ok=False,
+                error=f"{label}未获批准：{refusal_reason(r.decision)}",
+            )
         return None
 
     async def _authorize_execution(
@@ -285,6 +342,16 @@ class RunProgramTool(_CmdTool):
         if not isinstance(raw_args, (list, tuple)):
             return ToolResult(ok=False, error="args 必须是字符串数组")
         args = [str(a) for a in raw_args]
+        # 契约 §0.8：永久删除类程序一律拒绝（所有模式），删除只能走 fs_delete → 系统回收站。
+        delete_block = _permanent_delete_program_reason(program, args)
+        if delete_block:
+            return ToolResult(
+                ok=False,
+                error=delete_block,
+                category="permission",
+                recoverable=False,
+                code="permanent_delete_blocked",
+            )
         # Lead 接线（契约 1）：把请求里的 cwd 交给裁决 —— cwd 内同名替身
         # 不能仅凭程序名得到自动放行（resolve_program 会因此升级 HIGH）。
         cwd_arg = str(kwargs.get("cwd") or "") or None
@@ -381,6 +448,17 @@ class RunCmdTool(_CmdTool):
         cmd = str(kwargs.get("cmd") or "").strip()
         if not cmd:
             return ToolResult(ok=False, error="cmd 必填")
+        # 契约 §0.8：命令里出现 rm/del/erase/rd/rmdir/Remove-Item 等永久删除命令
+        # 一律拒绝（所有模式），不交给 shell；删除只能走 fs_delete → 系统回收站。
+        delete_block = _permanent_delete_shell_reason(cmd)
+        if delete_block:
+            return ToolResult(
+                ok=False,
+                error=delete_block,
+                category="permission",
+                recoverable=False,
+                code="permanent_delete_blocked",
+            )
         cwd = str(kwargs.get("cwd") or "") or None
         verdict, risk = self.computer.shell_verdict(cmd)
         effect = security_gate.execute_effect(

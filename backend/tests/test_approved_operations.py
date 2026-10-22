@@ -286,8 +286,9 @@ async def test_fs_delete_without_recycle_bin_keeps_the_file(
     result = await security.operations.execute("fs.delete", ctx.operation.payload, ctx)
 
     assert result.ok is False
-    assert "回收站" in result.summary and "未删除" in result.summary
-    assert "recycle_bin_unavailable" in (result.error or "")
+    assert "回收站" in result.summary and "保留文件" in result.summary
+    # 多文件执行器把逐条事实放在 detail.results；不可用原因必须如实带出来。
+    assert result.detail["results"][0]["code"] == "recycle_bin_unavailable"
     assert target.exists(), "回收站不可用时必须保留文件（绝不 unlink）"
 
 

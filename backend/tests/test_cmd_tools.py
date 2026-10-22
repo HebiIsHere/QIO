@@ -81,7 +81,9 @@ async def test_run_shell_rejected():
     t = RunCmdTool()
     t.computer = _FakeSandbox(verdict="approve")
     t.approvals = _FakeApproval(decision="rejected")
-    res = await t.run(cmd="rm -rf /tmp/x")
+    # 普通非删除命令：审批拒绝必须如实说「未获批准」（旧用例用 rm，新契约下
+    # 永久删除命令会在审批前就被拒绝，见 tests/test_fs_delete_recycle.py）。
+    res = await t.run(cmd="curl http://example.com")
     assert not res.ok
     assert "未获批准" in res.error
 

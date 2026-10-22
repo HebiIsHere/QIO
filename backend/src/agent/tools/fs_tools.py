@@ -499,6 +499,209 @@ class FsInfoTool(_FsTool):
         return ToolResult(ok=True, content="\n".join(lines))
 
 
+class FsDeleteTool(_FsTool):
+    """删除用户文件：**唯一**入口进系统回收站（契约 §0.8/§3.1）。
+
+    * 每个 path 逐条 resolve 成真实路径，构造一个 DELETE effect（多目标一次判定）；
+    * ALLOW（指令明确删除授权 / QIO 生成文件）→ 直接走
+      agent/services/recycle_bin 逐条移入系统回收站；
+    * APPROVE → 提交 `fs.delete` 待审批操作（含每条的身份/存在性指纹），
+      返回「已提交待批准」；批准后由审批执行器进回收站；
+    * DENY → 中文拒绝；
+    * 失败/回收站不可用 → 文件保留并如实报告，绝不 unlink。
+    """
+
+    name = "fs_delete"
+    description = prompts.TOOL_DESCRIPTIONS["fs_delete"]
+    parameters = {
+        "type": "object",
+        "properties": {
+            "paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "description": prompts.argument_description("fs_delete", "paths"),
+            }
+        },
+        "required": ["paths"],
+    }
+
+    def _legacy_delete_verdict(self, targets: list[Path]) -> str:
+        """旧接线（没有网关）时的删除判定：红线 deny；其余按写权限语义。"""
+        if self.computer is None:
+            return "approve"
+        worst = "auto"
+        for target in targets:
+            verdict = self.computer.write_verdict(str(target))
+            if verdict == "deny":
+                return "deny"
+            if verdict == "approve":
+                worst = "approve"
+        return worst
+
+    async def _recycle_each(self, targets: list[Path]) -> ToolResult:
+        """逐条移入系统回收站；失败保留文件并如实报告（绝不永久删除）。"""
+        mover = None
+        try:
+            from agent.services import recycle_bin
+
+            candidate = getattr(recycle_bin, "send_to_recycle_bin", None)
+            if callable(candidate):
+                mover = candidate
+        except Exception:  # noqa: BLE001 - 模块不可用按「回收站不可用」处理
+            mover = None
+        results: list[dict] = []
+        failed: list[dict] = []
+        for target in targets:
+            if mover is None:
+                item = {
+                    "path": str(target),
+                    "ok": False,
+                    "reason": "回收站模块暂不可用：文件已保留，未删除（不会直接 unlink）",
+                    "deleted_permanently": False,
+                }
+            else:
+                try:
+                    outcome = await asyncio.to_thread(mover, str(target))
+                except Exception as exc:  # noqa: BLE001 - 失败保留文件
+                    outcome = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+                outcome = dict(outcome or {})
+                item = {
+                    "path": str(target),
+                    "ok": bool(outcome.get("ok")),
+                    "mechanism": outcome.get("mechanism"),
+                    "reason": str(outcome.get("reason") or ""),
+                    "trashed_path": outcome.get("trashed_path"),
+                    "deleted_permanently": bool(outcome.get("deleted_permanently", False)),
+                }
+            results.append(item)
+            if not item["ok"]:
+                failed.append(item)
+        lines = [
+            f"{item['path']}："
+            + ("已移入系统回收站" if item["ok"] else "未删除（" + (item["reason"] or "失败") + "）")
+            for item in results
+        ]
+        data = {"results": results, "deleted_permanently": False}
+        if failed:
+            return ToolResult(
+                ok=False,
+                error=(
+                    "部分文件没有移入系统回收站：失败项已保留文件（未做永久删除）。"
+                    + "；".join(
+                        item["path"] + "（" + (item["reason"] or "失败") + "）"
+                        for item in failed
+                    )
+                ),
+                content="\n".join(lines),
+                data=data,
+                code="recycle_partial_failure",
+                recoverable=True,
+            )
+        return ToolResult(
+            ok=True,
+            content="已把 %d 个文件移入系统回收站：\n%s"
+            % (len(results), "\n".join(lines)),
+            data=data,
+        )
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        raw_paths = kwargs.get("paths")
+        if not isinstance(raw_paths, (list, tuple)) or not raw_paths:
+            return ToolResult(ok=False, error="paths 必填（至少一个路径）")
+        targets: list[Path] = []
+        skipped: list[str] = []
+        seen: set[str] = set()
+        for raw in raw_paths:
+            text = str(raw or "").strip()
+            if not text:
+                skipped.append("空路径")
+                continue
+            try:
+                target = self._resolve(text)
+            except Exception as exc:  # noqa: BLE001 - 无法定位的路径不能猜着删
+                skipped.append(f"{text}（路径无法解析：{exc}）")
+                continue
+            key = str(target).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(target)
+        if not targets:
+            return ToolResult(
+                ok=False,
+                error="没有可删除的有效路径：" + "；".join(skipped),
+            )
+
+        effect_targets: list[Any] = []
+        payload_paths: list[dict] = []
+        fingerprint_paths: list[dict] = []
+        internal_root = None
+        for target in targets:
+            identity = security_gate.file_identity(target)
+            exists = bool(identity.get("exists"))
+            identity_key = security_gate.identity_key(identity)
+            effect_targets.append(
+                security_gate.path_target(target, identity=identity_key, exists=exists)
+            )
+            payload_paths.append(
+                {"path": str(target), "identity": identity_key, "exists": exists}
+            )
+            fingerprint_paths.append(
+                {"path": str(target), "identity": identity, "exists": exists}
+            )
+            found_root = security_gate.match_internal_data(self.security, target)
+            if found_root is not None and internal_root is None:
+                internal_root = found_root
+        kind = (
+            security_gate.EffectKind.INTERNAL_DATA
+            if internal_root is not None
+            else security_gate.EffectKind.DELETE
+        )
+        effect = security_gate.make_effect(
+            kind,
+            effect_targets,
+            purpose="把用户文件移入系统回收站（不永久删除）",
+            tool=self.name,
+            detail={
+                "paths": [str(target) for target in targets],
+                "internal_data_root": str(internal_root) if internal_root else None,
+                "deleted_to_recycle_bin": True,
+            },
+        )
+        fingerprint = {
+            "kind": "fs.delete",
+            "paths": fingerprint_paths,
+            "deleted_to_recycle_bin": True,
+        }
+        if internal_root is not None:
+            fingerprint["internal_data_root"] = str(internal_root)
+        label = (
+            f"把 {len(targets)} 个文件移入系统回收站"
+            if len(targets) > 1
+            else f"把文件移入系统回收站：{targets[0]}"
+        )
+        pending = (
+            "fs.delete",
+            label,
+            {
+                "paths": payload_paths,
+                "reason": "删除用户文件（进系统回收站，不永久删除）",
+            },
+            fingerprint,
+        )
+        blocked = await self._permitted(
+            self._legacy_delete_verdict(targets),
+            {"action": "fs_delete", "paths": [str(target) for target in targets]},
+            "拒绝删除该路径（敏感路径）",
+            effect=effect,
+            pending=pending,
+        )
+        if blocked is not None:
+            return blocked
+        return await self._recycle_each(targets)
+
+
 def _find_files(root: Path, query: str, limit: int = FIND_LIMIT) -> list[str]:
     """不跟随符号链接的广度优先查找，且只返回仍在 root 内的真实文件。
 

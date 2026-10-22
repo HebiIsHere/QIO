@@ -278,6 +278,7 @@ class AppContext:
             FsListTool,
             FsFindTool,
             FsInfoTool,
+            FsDeleteTool,
         )
         from agent.tools.cmd_tools import (
             ProcKillTool,
@@ -347,6 +348,7 @@ class AppContext:
             FsListTool(),
             FsFindTool(),
             FsInfoTool(),
+            FsDeleteTool(),
             RunProgramTool(),
             RunCmdTool(),
             SysInfoTool(),
