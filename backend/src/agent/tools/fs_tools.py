@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import prompts
+from agent.services import file_origins
 from agent.tools import security_gate
 from agent.tools.base import Tool, ToolResult
 from agent.tools.blocking import get_blocking_executor
@@ -70,13 +71,62 @@ def _stat_info(path: Path) -> os.stat_result:
 
 class _FsTool(Tool):
     # security = 统一授权网关（契约 §2 的 AuthorizationGateway，W1 实现）。
-    # 注册时由 ServiceRegistry.attach 注入；为 None 时只用于旧接线/单测回退。
-    inject = ["computer", "approvals", "security"]
+    # origins = W3 的 FileOriginStore（可选注入；未注入时用进程默认 store，见
+    # services/file_origins.py）。注册时由 ServiceRegistry.attach 注入；为 None 时
+    # 只用于旧接线/单测回退。
+    inject = ["computer", "approvals", "security", "origins"]
 
-    def __init__(self, computer=None, approvals=None, security=None) -> None:
+    def __init__(self, computer=None, approvals=None, security=None, origins=None) -> None:
         self.computer = computer
         self.approvals = approvals
         self.security = security
+        self.origins = origins
+
+    # -- 文件来源（契约 §3.4：后端核实后才给授权引擎，不信任模型传入值） ------
+
+    def _origin_store(self):
+        return self.origins if self.origins is not None else file_origins.default_store()
+
+    def _origin_record(self, target: Path):
+        store = self._origin_store()
+        if store is None:
+            return None
+        try:
+            return store.lookup(target)
+        except Exception:  # noqa: BLE001 - 来源查询失败按未知处理，不打断文件操作
+            return None
+
+    def _file_origin(self, target: Path) -> str | None:
+        record = self._origin_record(target)
+        return record.origin if record is not None else None
+
+    def _note_after_write(self, target: Path, pre_record, existed_before: bool, *, source: str) -> None:
+        """写入落定后记账（在事件循环线程调用）。
+
+        * 已记录的生成物/用户文件：原子替换会改变 OS 身份，更新身份但**保留来源**；
+        * 写前不存在（本次创建）：记 qio_generated —— 必须在真实创建成功后；
+        * 写前已存在但没有记录：观测为用户文件（user_original），绝不冒充生成物。
+        """
+        store = self._origin_store()
+        if store is None:
+            return
+        try:
+            if pre_record is not None:
+                store.update_after_replace(pre_record, target)
+            elif existed_before:
+                store.record_existing_file(
+                    target,
+                    origin=file_origins.ORIGIN_USER_ORIGINAL,
+                    source=source + ".observed_existing",
+                )
+            else:
+                store.record_created(
+                    target,
+                    origin=file_origins.ORIGIN_QIO_GENERATED,
+                    source=source,
+                )
+        except Exception:  # noqa: BLE001 - 记账失败不改变写入结果（安全侧按未知/用户文件）
+            return
 
     def _resolve(self, raw: str) -> Path:
         """相对路径以工作区根为基准解析，返回规范化后的绝对路径。"""
@@ -269,6 +319,8 @@ class FsWriteTool(_FsTool):
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
         identity = security_gate.file_identity(target)
+        existed_before = bool(identity.get("exists"))
+        pre_record = self._origin_record(target)
         digest = security_gate.text_sha256(content)
         internal_root = security_gate.match_internal_data(self.security, target)
         effect = security_gate.write_effect(
@@ -281,6 +333,10 @@ class FsWriteTool(_FsTool):
             detail={
                 "action": "write",
                 "internal_data_root": str(internal_root) if internal_root else None,
+                # 契约 §3.4：后端核实过的来源（新文件在创建前未知 → None）。
+                # 模型传入的 origin 字段不参与判定。
+                "file_origin": pre_record.origin if pre_record is not None else None,
+                "file_exists": existed_before,
             },
             internal=internal_root is not None,
         )
@@ -318,7 +374,12 @@ class FsWriteTool(_FsTool):
             return ToolResult(ok=False, error=reason, category="conflict", recoverable=False)
         loop = asyncio.get_running_loop()
         fut = loop.run_in_executor(get_blocking_executor(), _write_file, target, content)
-        return await self._await_write_settled(fut, target, f"已写入 {target}")
+        result = await self._await_write_settled(fut, target, f"已写入 {target}")
+        if result.ok:
+            # 记账在真实创建/替换成功之后：创建前不存在 → generated；
+            # 已有文件 → 保留原来源；没有记录 → user_original（不冒充生成物）。
+            self._note_after_write(target, pre_record, existed_before, source="fs_write")
+        return result
 
 
 class FsPatchTool(_FsTool):
@@ -342,6 +403,7 @@ class FsPatchTool(_FsTool):
             return ToolResult(ok=False, error="path 与 old 必填")
         target = self._resolve(path)
         identity = security_gate.file_identity(target)
+        pre_record = self._origin_record(target)
         try:
             text = await self._run_blocking(_read_file_text, target)
         except OSError as exc:
@@ -362,6 +424,9 @@ class FsPatchTool(_FsTool):
                 "action": "patch",
                 "old": old,
                 "internal_data_root": str(internal_root) if internal_root else None,
+                # 编辑不改变归属：后端核实过的来源随 effect 给授权引擎。
+                "file_origin": pre_record.origin if pre_record is not None else None,
+                "file_exists": True,
             },
             internal=internal_root is not None,
         )
@@ -401,7 +466,11 @@ class FsPatchTool(_FsTool):
         fut = loop.run_in_executor(
             get_blocking_executor(), _write_file_text, target, text
         )
-        return await self._await_write_settled(fut, target, f"已编辑 {target}")
+        result = await self._await_write_settled(fut, target, f"已编辑 {target}")
+        if result.ok:
+            # 编辑保留原来源；原子替换换掉的是 OS 身份，不是归属。
+            self._note_after_write(target, pre_record, True, source="fs_patch")
+        return result
 
 
 class FsListTool(_FsTool):
@@ -539,6 +608,15 @@ class FsDeleteTool(_FsTool):
                 worst = "approve"
         return worst
 
+    def _note_recycled(self, target: Path) -> None:
+        store = self._origin_store()
+        if store is None:
+            return
+        try:
+            store.mark_missing(target)
+        except Exception:  # noqa: BLE001 - 记账失败不改变删除结果
+            return
+
     async def _recycle_each(self, targets: list[Path]) -> ToolResult:
         """逐条移入系统回收站；失败保留文件并如实报告（绝不永久删除）。"""
         mover = None
@@ -575,7 +653,10 @@ class FsDeleteTool(_FsTool):
                     "deleted_permanently": bool(outcome.get("deleted_permanently", False)),
                 }
             results.append(item)
-            if not item["ok"]:
+            if item["ok"]:
+                # 已移入回收站：保留来源事实，只标记 missing（重启后仍可查历史归属）。
+                self._note_recycled(Path(item["path"]))
+            else:
                 failed.append(item)
         lines = [
             f"{item['path']}："
@@ -636,6 +717,7 @@ class FsDeleteTool(_FsTool):
         effect_targets: list[Any] = []
         payload_paths: list[dict] = []
         fingerprint_paths: list[dict] = []
+        origin_rows: list[dict] = []
         internal_root = None
         for target in targets:
             identity = security_gate.file_identity(target)
@@ -650,6 +732,9 @@ class FsDeleteTool(_FsTool):
             fingerprint_paths.append(
                 {"path": str(target), "identity": identity, "exists": exists}
             )
+            origin_record = self._origin_record(target)
+            origin = origin_record.origin if origin_record is not None else None
+            origin_rows.append({"path": str(target), "file_origin": origin})
             found_root = security_gate.match_internal_data(self.security, target)
             if found_root is not None and internal_root is None:
                 internal_root = found_root
@@ -667,6 +752,11 @@ class FsDeleteTool(_FsTool):
                 "paths": [str(target) for target in targets],
                 "internal_data_root": str(internal_root) if internal_root else None,
                 "deleted_to_recycle_bin": True,
+                # 契约 §3.4：多目标逐条给后端核实过的来源；单目标同时给 file_origin。
+                "file_origin": (
+                    origin_rows[0]["file_origin"] if len(origin_rows) == 1 else None
+                ),
+                "file_origins": origin_rows,
             },
         )
         fingerprint = {
