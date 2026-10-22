@@ -122,6 +122,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "material_cleanup_candidates",
         "approval_audit",
         "approval_history",
+        # R9-F（迁移 55）：用户要求 / 有界授权记录 / 审查审计 / 文件来源。
+        "user_requirements",
+        "authorization_records",
+        "authorization_review_audit",
+        "file_origins",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -220,6 +225,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_material_cleanup_state",
         "idx_pending_approvals_state",
         "idx_pending_approvals_expiry",
+        # R9-F（迁移 55）：要求状态 / 授权记录复用查询 / 审查审计 / 文件来源路径检索。
+        "idx_user_requirements_status",
+        "idx_authorization_records_req",
+        "idx_authorization_review_audit_req",
+        "idx_file_origins_path",
     ),
 }
 
