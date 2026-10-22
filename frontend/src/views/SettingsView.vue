@@ -9,6 +9,7 @@ import { api, type CredentialMeta, type VerifyReport } from "../services/api";
 import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
+import PermissionModeSettings from "../components/security/PermissionModeSettings.vue";
 import { useOnboardingStore } from "../stores/onboarding";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
@@ -711,19 +712,16 @@ function onSearchMaxCharsInput(v: number | null) {
 
 /* ---------------- 工具与权限 ---------------- */
 const computerRootDir = ref("");
-const computerPermissionMode = ref("default");
-const permissionModeOptions = [
-  { value: "default", label: "默认（低危自动，高危审批）" },
-  { value: "plan", label: "只读规划（不写不执行）" },
-  { value: "accept-edits", label: "接受编辑（文件编辑自动，命令仍审批）" },
-  { value: "bypass", label: "全放行（危险，仅信任环境）" },
-];
+/*
+ * 权限模式（R9 契约 §1）由独立的 PermissionModeSettings 组件负责：
+ * 三种新模式、旧值映射展示、只有用户操作才走 PUT /api/security/mode（user_confirmed=true）。
+ * 这里不再保留旧的四值下拉（旧值只作为映射事实展示，不再作为可写入口）。
+ */
 
 async function loadComputerSettings() {
   try {
     const s = await api.getComputerSettings();
     computerRootDir.value = s.root_dir || "";
-    computerPermissionMode.value = s.permission_mode || "default";
   } catch (e) {
     setNotice("tools", "err", errText("加载电脑操控设置", e));
   }
@@ -735,19 +733,12 @@ async function saveComputerSettings() {
   try {
     const r = await api.updateComputerSettings({
       root_dir: computerRootDir.value.trim(),
-      permission_mode: computerPermissionMode.value,
     });
     computerRootDir.value = r.root_dir || "";
-    computerPermissionMode.value = r.permission_mode || "default";
     setNotice("tools", "ok", "电脑操控配置已保存");
   } catch (e) {
     setNotice("tools", "err", errText("保存电脑操控配置", e));
   }
-}
-
-function onPermissionModeSelect(v: string) {
-  computerPermissionMode.value = v;
-  void saveComputerSettings();
 }
 
 /* ---------------- 工具调用历史 ---------------- */
@@ -879,7 +870,6 @@ const draftFields = {
   searchSearxngUrl,
   searchKeyless,
   computerRootDir,
-  computerPermissionMode,
   toolRecordOutputs,
   toolOutputRetentionDays,
   maintenanceEnabled,
@@ -1375,19 +1365,8 @@ watch(activeTab, async () => {
                 />
               </div>
             </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">权限模式</div>
-                <div class="d">决定动作是否需要人工确认</div>
-              </div>
-              <div class="ctl">
-                <QSelect
-                  :options="permissionModeOptions"
-                  :model-value="computerPermissionMode"
-                  @update:model-value="onPermissionModeSelect"
-                />
-              </div>
-            </div>
+            <!-- 权限模式（R9 契约 §1）：三模式选择 / 常驻显示 / 旧值映射 / 只有用户能改 -->
+            <PermissionModeSettings />
             <p v-if="notices.tools" class="msg" :class="notices.tools.kind" role="status">
               {{ notices.tools.text }}
             </p>

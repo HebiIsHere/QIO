@@ -31,11 +31,17 @@ import { cardAttachmentLinked, cardAttachmentName } from "../../interactive/mate
 import { NEW_CARD_SIZE, planNewCardSlot, rectsOverlap } from "../../interactive/cardLayout";
 import { readBoardArea } from "../../interactive/viewport";
 import {
+  attachmentSourceNote,
+  isDesktopShell,
   pickBrowserFile,
+  pickLocalSource,
+  registerSourceAttachment,
   stateText,
   uploadAttachment,
   waitUntilSettled,
+  type AttachmentRef,
 } from "../../services/attachments";
+import { mergeAttachmentIntoMeta } from "../../interactive/fileCardRef";
 import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { CardKind } from "../../interactive/types";
 
@@ -67,7 +73,7 @@ const popup = ref<HTMLElement | null>(null);
  */
 const HINTS: Record<string, string> = {
   text: "文字、链接、代码写在同一张卡片里；默认提交给 QIO（可取消）",
-  file: "材料默认在本次允许查看范围内，不需要许可",
+  file: "提供的是源文件引用：桌面选择/拖放不复制内容；「作为互动材料」只控制是否纳入互动上下文",
 };
 
 const ITEMS: AddItem[] = ADDABLE_CARD_KINDS.map((kind) => ({
@@ -143,27 +149,48 @@ function cancelText(kind: AttachKind, cardId: string): string {
 async function attachRealFile(kind: AttachKind, cardId: string): Promise<void> {
   const token = begin();
   progress(token, "正在等待选择文件…");
-  let file: File | null;
+  let created: AttachmentRef | null = null;
+  let fileName = "";
+  let fallbackNote = "";
   try {
-    file = await pickBrowserFile();
-  } catch (error) {
-    fail(token, "选择文件失败：" + messageOf(error), retryOf(kind, cardId));
-    return;
-  }
-  if (!alive) return; // 组件已卸载：迟到结果不写提示，也不写板面
-  if (!file) {
-    // 用户取消：如实说明（不假装读到了内容），文案按卡片当前是否已有附件区分
-    fail(token, cancelText(kind, cardId), retryOf(kind, cardId));
-    return;
-  }
-  const fileName = file.name || "未命名";
-  progress(token, "正在保存附件「" + fileName + "」…");
-  try {
-    const uploaded = await uploadAttachment(file);
+    // 桌面：原生选择拿**真实路径** → 登记源引用（契约 §6.3：不复制、不移动、不改名）
+    if (isDesktopShell()) {
+      try {
+        const picked = await pickLocalSource();
+        if (!picked) {
+          if (!alive) return;
+          fail(token, cancelText(kind, cardId), retryOf(kind, cardId));
+          return;
+        }
+        fileName = picked.name || picked.path.split(/[\\/]/).pop() || "未命名";
+        progress(token, "正在登记源文件「" + fileName + "」…");
+        created = await registerSourceAttachment(picked.path, "desktop_path");
+      } catch (error) {
+        fallbackNote = "原生选择器不可用（" + messageOf(error) + "），改用文件上传：";
+      }
+    }
+    if (!created) {
+      let file: File | null;
+      try {
+        file = await pickBrowserFile();
+      } catch (error) {
+        fail(token, "选择文件失败：" + messageOf(error), retryOf(kind, cardId));
+        return;
+      }
+      if (!alive) return; // 组件已卸载：迟到结果不写提示，也不写板面
+      if (!file) {
+        // 用户取消：如实说明（不假装读到了内容），文案按卡片当前是否已有附件区分
+        fail(token, (fallbackNote ? fallbackNote + "\n" : "") + cancelText(kind, cardId), retryOf(kind, cardId));
+        return;
+      }
+      fileName = file.name || "未命名";
+      progress(token, fallbackNote + "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
+      created = await uploadAttachment(file, { sourceKind: "browser_upload" });
+    }
     if (!alive) return;
-    // 上传完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
+    // 登记/上传完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
     progress(token, "正在处理附件「" + fileName + "」…");
-    const settled = await waitUntilSettled(uploaded);
+    const settled = await waitUntilSettled(created);
     if (!alive) return;
     if (settled.state !== "ready") {
       throw new Error(
@@ -180,21 +207,19 @@ async function attachRealFile(kind: AttachKind, cardId: string): Promise<void> {
       fail(token, "卡片已经不在了，附件没有关联上（附件本身已经保存）");
       return;
     }
-    const meta: Record<string, unknown> = { ...(card.meta ?? {}) };
-    meta.name = settled.name;
-    meta[kind] = { name: settled.name, attachmentId: settled.id, size: settled.sizeBytes };
+    const meta = mergeAttachmentIntoMeta(card.meta, settled, kind);
     store.commit(updateCard(current, cardId, { meta }), "关联附件：" + settled.name);
     /**
-     * 成功只陈述两件已确认的事实：附件本身已经保存（stateText），板面关联还只是**本地**改动。
-     * 不写「已保存到服务端」——store.commit 只是本地板面改动，提交之后 QIO 才看得到（契约 §1.5）。
+     * 成功只陈述已确认的事实：附件本身已登记/保存，来源如实标注（引用本地源文件 /
+     * 已保存为工作区材料）；板面关联还只是**本地**改动，提交后 QIO 才可见。
      */
     succeed(
       token,
       "已关联附件「" +
         settled.name +
-        "」（" +
-        stateText(settled) +
-        "）；板面关联是本地改动，提交后 QIO 才可见",
+        "」：" +
+        attachmentSourceNote(settled) +
+        "；板面关联是本地改动，提交后 QIO 才可见",
     );
   } catch (error) {
     fail(token, "附件保存失败：" + messageOf(error), retryOf(kind, cardId));

@@ -47,17 +47,23 @@ import {
 import CardInlinePreview from "./CardInlinePreview.vue";
 import type { PreviewPosition } from "../../services/attachments";
 import {
+  attachmentSourceNote,
   openAttachment,
   pickBrowserFile,
+  pickLocalSource,
+  registerSourceAttachment,
   stateText,
   uploadAttachment,
   waitUntilSettled,
+  type AttachmentRef,
 } from "../../services/attachments";
+import { mergeAttachmentIntoMeta } from "../../interactive/fileCardRef";
 import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
 import CardDraftHint from "./CardDraftHint.vue";
 import CardAttachmentPreview from "./CardAttachmentPreview.vue";
+import FileCardMaterialPanel from "./FileCardMaterialPanel.vue";
 import { attachmentPreviewPlan, attachmentRefForPreview } from "../../interactive/attachmentPreview";
 import { materialTypeLabel } from "../../interactive/previewPlan";
 import { isDesktopShell } from "../../services/attachments";
@@ -558,6 +564,11 @@ function dismissAttachStatus(): void {
   attachNotice.dismiss();
 }
 
+/** 文件卡面板把（只含引用与展示事实的）meta 补丁交给父级统一 commit。 */
+function onFileMetaPatch(meta: Record<string, unknown>, label: string): void {
+  emit("patch", props.card.id, { meta } as Partial<BoardCard>, label);
+}
+
 /**
  * 选一份真实文件 → 走既有上传接口（不新造上传链路）→ 等附件进入最终态 →
  * 把 `{ name, attachmentId, size }` 写进卡片 meta（由父级 commit，组件不直接改板面状态）。
@@ -573,28 +584,48 @@ async function pickAttachment(): Promise<void> {
   const token = attachNotice.begin();
   const retry: NoticeRetry = { label: "重新选择文件", run: () => void pickAttachment() };
   attachNotice.progress(token, "正在等待选择文件…");
-  let file: File | null;
+  let created: AttachmentRef | null = null;
+  let fileName = "";
+  let fallbackNote = "";
   try {
-    file = await pickBrowserFile();
-  } catch (error) {
-    attachNotice.fail(token, "选择文件失败：" + messageOf(error), retry);
-    return;
-  }
-  // 被新操作取代 / 组件已卸载：不再继续，也不写提示与板面（isCurrent 同时覆盖这两种失效）
-  if (!attachNotice.isCurrent(token)) return;
-  if (!file) {
-    // 用户取消：如实说明（不假装读到了内容），文案按卡片当前是否已有附件区分
-    attachNotice.fail(token, attachCancelText(), retry);
-    return;
-  }
-  const fileName = file.name || "未命名";
-  attachNotice.progress(token, "正在保存附件「" + fileName + "」…");
-  try {
-    const uploaded = await uploadAttachment(file);
+    // 桌面：原生选择器拿真实路径 → 登记源引用（不复制、不移动内容）
+    if (desktopShell.value) {
+      try {
+        const picked = await pickLocalSource();
+        if (!picked) {
+          // 用户取消原生选择器：如实说明，不再擅自打开浏览器文件选择
+          attachNotice.fail(token, attachCancelText(), retry);
+          return;
+        }
+        fileName = picked.name || picked.path.split(/[\\/]/).pop() || "未命名";
+        attachNotice.progress(token, "正在登记源文件「" + fileName + "」…");
+        created = await registerSourceAttachment(picked.path, "desktop_path");
+      } catch (error) {
+        // 原生选择器不可用（旧壳 / 非 Windows）：如实说，再退回字节上传
+        fallbackNote = "原生选择器不可用（" + messageOf(error) + "），改用文件上传：";
+      }
+    }
+    if (!created) {
+      let file: File | null;
+      try {
+        file = await pickBrowserFile();
+      } catch (error) {
+        attachNotice.fail(token, "选择文件失败：" + messageOf(error), retry);
+        return;
+      }
+      if (!attachNotice.isCurrent(token)) return;
+      if (!file) {
+        attachNotice.fail(token, (fallbackNote ? fallbackNote + "\n" : "") + attachCancelText(), retry);
+        return;
+      }
+      fileName = file.name || "未命名";
+      attachNotice.progress(token, fallbackNote + "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
+      created = await uploadAttachment(file, { sourceKind: "browser_upload" });
+    }
     if (!attachNotice.isCurrent(token)) return;
-    // 上传完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
+    // 上传/登记完成还要等附件真的 ready（服务端处理中）：这一段同样是真实进度
     attachNotice.progress(token, "正在处理附件「" + fileName + "」…");
-    const settled = await waitUntilSettled(uploaded);
+    const settled = await waitUntilSettled(created);
     /**
      * 这里多守一次：卡片是**同一个目标**，迟到的旧操作不许把新关联覆盖回去。
      * （AddMenu 面对的是「每次添加一张新卡」，各自的附件绑各自的卡；这里只有一张卡。）
@@ -609,22 +640,20 @@ async function pickAttachment(): Promise<void> {
           (settled.error ? "（" + settled.error + "）" : ""),
       );
     }
-    const meta: Record<string, unknown> = { ...(props.card.meta ?? {}) };
-    meta.name = settled.name;
-    meta[kind] = { name: settled.name, attachmentId: settled.id, size: settled.sizeBytes };
+    const meta = mergeAttachmentIntoMeta(props.card.meta, settled, kind);
     metaName.value = settled.name;
     emit("patch", cardId, { meta } as Partial<BoardCard>, "关联附件：" + settled.name);
     /**
-     * 成功只陈述两件已确认的事实：附件本身已经保存（stateText），板面关联还只是**本地**改动
-     * —— 组件只 emit patch 给父级 commit，不声称服务端已保存（任务书 §二.10）。
+     * 成功只陈述已确认的事实：附件本身已经登记/保存，来源如实标注；
+     * 板面关联还只是**本地**改动 —— 组件只 emit patch 给父级 commit。
      */
     attachNotice.succeed(
       token,
       "已关联附件「" +
         settled.name +
-        "」（" +
-        stateText(settled) +
-        "）；板面关联是本地改动，提交后 QIO 才可见",
+        "」：" +
+        attachmentSourceNote(settled) +
+        "；板面关联是本地改动，提交后 QIO 才可见",
     );
   } catch (error) {
     attachNotice.fail(token, "附件保存失败：" + messageOf(error), retry);
@@ -1625,6 +1654,20 @@ watch(
             :meta="card.meta"
             :card-id="card.id"
             :compact="displayState === 'reading'"
+          />
+
+          <!--
+            文件卡源引用信息（R9 契约 §6.4 / §8）：文件名 / 类型 / 引用 id / 来源 /
+            可用或缺失 / 用户说明 / 「作为互动材料」开关 / 缺失时重新指定位置。
+            封面式图片卡把画面留给图片，信息在卡片工具栏与阅读态里看。
+          -->
+          <FileCardMaterialPanel
+            v-if="isFileCard && !coverMode"
+            :card-id="card.id"
+            :meta="card.meta"
+            :attachment-id="attachmentId"
+            :desktop="desktopShell"
+            @patch-meta="onFileMetaPatch"
           />
 
           <!--

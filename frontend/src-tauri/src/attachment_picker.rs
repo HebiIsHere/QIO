@@ -13,7 +13,51 @@
 /// 点击选择：返回真实路径；用户取消返回 None。
 #[tauri::command]
 pub async fn pick_attachment_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let owner = owner_hwnd(&app);
+    run_native_picker(&app).await
+}
+
+/// 原生选择返回的源文件事实（R9 契约 §6.3）。
+///
+/// 前端拿到的是**真实路径**，用来 POST /api/attachments 登记源引用；
+/// 不在这里读文件字节（附件不再走「选择后字节上传」的复制语义）。
+/// name / size 只是给界面做即时展示，最终以服务端登记结果为准。
+#[derive(serde::Serialize)]
+pub struct AttachmentSource {
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+}
+
+/// 点击选择：返回真实路径 + 文件名 + 字节数；用户取消返回 None。
+///
+/// 与 pick_attachment_file 共用同一个 Win32 选择器实现；只多带展示用的元信息。
+/// 注册位置：main.rs 的 generate_handler（该文件归 W5，集成时补一行即可）。
+#[tauri::command]
+pub async fn pick_attachment_source(
+    app: tauri::AppHandle,
+) -> Result<Option<AttachmentSource>, String> {
+    let Some(path) = run_native_picker(&app).await? else {
+        return Ok(None);
+    };
+    let metadata = std::fs::metadata(&path)
+        .map_err(|err| format!("选中的文件读不到信息（{err}）：{path}"))?;
+    if !metadata.is_file() {
+        return Err("选中的位置不是文件".to_string());
+    }
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .map(|value| value.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.clone());
+    Ok(Some(AttachmentSource {
+        path,
+        name,
+        size: metadata.len(),
+    }))
+}
+
+/// 在**主线程**打开原生选择器并等待结果（Win32 UI 线程要求）。
+async fn run_native_picker(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    let owner = owner_hwnd(app);
     let (tx, rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
     app.run_on_main_thread(move || {
         let _ = tx.send(pick_native(owner));
