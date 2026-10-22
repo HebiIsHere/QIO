@@ -1,0 +1,23 @@
+[2026-10-22][09:38:47][qio::updater_net][INFO] [qio] 已把 NO_PROXY 固定为 *：壳按操作显式决定代理，不让底层客户端自动挑系统代理
+[2026-10-22][09:38:47][qio][INFO] [qio] 系统托盘已创建：菜单「显示主窗口 / 退出 QIO」
+[2026-10-22][09:38:47][qio][INFO] [qio] 自带 Python 运行时：\\?\D:\qio-dev\_r9-logs\w5-e2e-work2\install\python-runtime\python.exe
+[2026-10-22][09:38:47][qio][INFO] [qio] 启动准备：内置模型 339ms（在后台线程完成，不占窗口主线程）
+[2026-10-22][09:38:47][qio::updater_net][INFO] [qio] 更新走代理（来源：Windows 系统代理）：http://127.0.0.1:20185
+[2026-10-22][09:38:47][qio][INFO] [qio] 启动期代理探测完成：Windows 系统代理（Windows 系统代理可用），耗时 582ms
+[2026-10-22][09:38:48][qio][INFO] [qio] 后端 pid 184800 已纳入 job（随壳退出自动终止）
+[2026-10-22][09:38:48][qio][INFO] [qio] 已写 sidecar lease：shell pid 181564 / backend pid 184800 → D:\qio-dev\_r9-logs\w5-e2e-work2\install\sidecar.lease.181564.json（兼容镜像 D:\qio-dev\_r9-logs\w5-e2e-work2\install\sidecar.lease.json）
+[2026-10-22][09:38:48][qio][INFO] [qio] 后端已拉起：pid 184800（拉起 300ms / 启动合计 641ms）
+[2026-10-22][09:38:53][qio][INFO] [qio] 前端已同步关闭行为：ask
+[2026-10-22][09:38:57][qio::updater_net][INFO] [qio] 更新走代理（来源：Windows 系统代理）：http://127.0.0.1:20185
+[2026-10-22][09:38:57][qio][INFO] [qio] 更新代理探测完成：Windows 系统代理（Windows 系统代理可用），耗时 288ms
+[2026-10-22][09:39:00][qio][INFO] [qio] 关闭请求：壳侧解析关闭行为 = tray
+[2026-10-22][09:39:00][qio][INFO] [qio] 主窗口已隐藏到托盘（ui.close_behavior=tray）：后端继续运行，托盘可恢复
+[2026-10-22][09:39:01][qio][INFO] [qio] 关闭请求：壳侧解析关闭行为 = quit
+[2026-10-22][09:39:01][qio][INFO] [qio] 进入真正退出流程：停止受理新工作、等待后端进程树退出
+[2026-10-22][09:39:01][qio][INFO] [qio] 壳侧退出：先请求后端有界收尾（POST /api/lifecycle/shutdown）
+[2026-10-22][09:39:01][qio][INFO] [qio] 后端退出收尾 HTTP 200（响应 336 字节，不打印内容以免带出业务信息）
+[2026-10-22][09:39:01][qio][INFO] [qio] 真正退出：等待后端 pid 184800 的进程树自行退出（树内 [184800, 191644, 193136]，预算 15s）
+[2026-10-22][09:39:03][qio][INFO] [qio] 后端进程树已在预算内自行退出（pid 184800，树内 3 个进程）
+[2026-10-22][09:39:03][qio][INFO] [qio] 壳侧退出完成：后端 pid Some(184800)，graceful=true，forced=false，verified=true，survivors=[]
+[2026-10-22][09:39:03][qio][INFO] [qio] 已删除本实例的 sidecar lease：D:\qio-dev\_r9-logs\w5-e2e-work2\install\sidecar.lease.181564.json
+[2026-10-22][09:39:03][qio][INFO] [qio] 已删除旧版 sidecar lease 镜像（记的是本实例）
