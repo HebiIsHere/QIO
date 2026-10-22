@@ -820,3 +820,34 @@ describe("默认组名：系统命名路径统一用「默认组名」（契约 
     expect(board.renameGroup(fresh, fresh.groups[0].id, "").groups[0].name).toBe("默认组名");
   });
 });
+
+describe("moveGroup（整组拖动，问题 4a）", () => {
+  it("整组成员同位移：组内相对位置 / 成员顺序 / 组外卡片都不变", () => {
+    const state = mkState(
+      [mkCard("a", 10, 20), mkCard("b", 210, 20), mkCard("c", 600, 300)],
+      [mkGroup("g1", ["a", "b"], { name: "计划", defaultName: false, ordered: true })],
+    );
+    const moved = board.moveGroup(state, "g1", 40, 60);
+    expect(board.cardById(moved, "a")).toMatchObject({ x: 50, y: 80 });
+    expect(board.cardById(moved, "b")).toMatchObject({ x: 250, y: 80 });
+    expect(board.cardById(moved, "c")).toMatchObject({ x: 600, y: 300 });
+    const group = board.groupById(moved, "g1");
+    expect(group?.members).toEqual(["a", "b"]);
+    expect(group?.ordered).toBe(true);
+    expect(group?.name).toBe("计划");
+  });
+
+  it("向左 / 上越出原点时整段夹取：相对位置不变，不会被逐卡压扁", () => {
+    const state = mkState([mkCard("a", 10, 20), mkCard("b", 210, 20)], [mkGroup("g1", ["a", "b"])]);
+    const moved = board.moveGroup(state, "g1", -100, -100);
+    // 整段位移被夹到 (-10, -20)：a 回到 0/0，b 与 a 的相对位置仍是 200/0
+    expect(board.cardById(moved, "a")).toMatchObject({ x: 0, y: 0 });
+    expect(board.cardById(moved, "b")).toMatchObject({ x: 200, y: 0 });
+  });
+
+  it("未知组 / 零位移不改动任何卡片", () => {
+    const state = mkState([mkCard("a", 10, 20)], []);
+    expect(board.cardById(board.moveGroup(state, "g_missing", 50, 50), "a")).toMatchObject({ x: 10, y: 20 });
+    expect(board.cardById(board.moveGroup(state, "g_missing", 0, 0), "a")).toMatchObject({ x: 10, y: 20 });
+  });
+});

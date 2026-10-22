@@ -21,7 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from agent.api import interactive_intents as api_module
-from agent.interactive import board_store, intent_service
+from agent.interactive import board, board_store, intent_service
 
 from test_p3_b_support import add_submission, add_visible_card, intent_spec, make_board, prepare
 
@@ -106,6 +106,41 @@ def test_propose_plan_derives_preview_and_scope(env):
     assert plain_view["operations"] == []
     assert plain_view["preview"] == {}
     assert plain_view["plan_editable"] is True
+
+
+def test_preview_group_frame_uses_member_positions(env):
+    """预览组框必须由成员位置算出来（不是占位 0/0/320×240），且与落地后一致。"""
+    view = _propose(env)
+    preview = view["preview"]
+    cards = preview["cards"]
+    group = preview["groups"][0]
+    left = min(float(card["x"]) for card in cards) - board.GROUP_PAD_X
+    top = min(float(card["y"]) for card in cards) - board.GROUP_PAD_TOP
+    right = max(float(card["x"]) + float(card["w"]) for card in cards) + board.GROUP_PAD_X
+    bottom = max(float(card["y"]) + float(card["h"]) for card in cards) + board.GROUP_PAD_BOTTOM
+    assert float(group["x"]) == pytest.approx(left)
+    assert float(group["y"]) == pytest.approx(top)
+    assert float(group["w"]) == pytest.approx(right - left)
+    assert float(group["h"]) == pytest.approx(bottom - top)
+    # 不能还是 models.new_group 的占位框
+    assert not (
+        float(group["x"]) == 0.0
+        and float(group["y"]) == 0.0
+        and float(group["w"]) == 320.0
+        and float(group["h"]) == 240.0
+    )
+
+    intent_id = view["intent_id"]
+    _confirm(env, intent_id)
+    result = _apply(env, intent_id)
+    assert result["ok"] is True
+    landed_groups = [g for g in _state(env)["groups"] if not g.get("deleted")]
+    assert len(landed_groups) == 1
+    landed = landed_groups[0]
+    assert float(landed["x"]) == pytest.approx(float(group["x"]))
+    assert float(landed["y"]) == pytest.approx(float(group["y"]))
+    assert float(landed["w"]) == pytest.approx(float(group["w"]))
+    assert float(landed["h"]) == pytest.approx(float(group["h"]))
 
 
 def test_confirm_then_apply_lands_cards_groups_links(env):

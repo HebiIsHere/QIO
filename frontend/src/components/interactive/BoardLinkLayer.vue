@@ -9,6 +9,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { cardRect } from "../../interactive/board";
+import { linkGeometry, rectEdgePoint } from "../../interactive/linkGeometry";
 import type { BoardCard, BoardLink } from "../../interactive/types";
 
 const props = defineProps<{
@@ -58,36 +59,37 @@ const drawn = computed<DrawnLink[]>(() => {
     if (!src || !dst) continue;
     const a = cardRect(src);
     const b = cardRect(dst);
-    const x1 = a.x + a.w / 2;
-    const y1 = a.y + a.h / 2;
-    const x2 = b.x + b.w / 2;
-    const y2 = b.y + b.h / 2;
     const meaning = link.meaning.trim() || (link.direction ? "有方向（含义待填写）" : "关联（含义待填写）");
+    const labelW = Math.max(64, meaning.length * 13 + 18);
+    // 关系线几何的唯一实现（与预览层共用）：边框交点 + 标签避让。
+    const geometry = linkGeometry(a, b, { label: { w: labelW, h: 20 } });
     result.push({
       id: link.id,
-      x1,
-      y1,
-      x2,
-      y2,
+      x1: geometry.x1,
+      y1: geometry.y1,
+      x2: geometry.x2,
+      y2: geometry.y2,
       direction: link.direction,
       meaning,
-      labelX: (x1 + x2) / 2,
-      labelY: (y1 + y2) / 2,
-      labelW: Math.max(64, meaning.length * 13 + 18),
+      labelX: geometry.labelX,
+      labelY: geometry.labelY,
+      labelW,
       active: props.activeLinkId === link.id,
     });
   }
   return result;
 });
 
-/** 待建连线：从源卡片中心指向指针（或有效目标中心）。 */
+/** 待建连线：从源卡片**边框**指向指针（或有效目标的边框）。 */
 const draft = computed(() => {
   const from = props.cards.find((card) => card.id === props.draftFromId);
   if (!from) return null;
-  const start = centerOf(from);
+  const fromRect = cardRect(from);
   const target = props.draftTargetId ? props.cards.find((card) => card.id === props.draftTargetId) : null;
-  const end = target ? centerOf(target) : props.draftPoint;
-  if (!end) return null;
+  const endRaw = target ? centerOf(target) : props.draftPoint;
+  if (!endRaw) return null;
+  const start = rectEdgePoint(fromRect, endRaw);
+  const end = target ? rectEdgePoint(cardRect(target), start) : endRaw;
   return {
     fromId: from.id,
     x1: start.x,

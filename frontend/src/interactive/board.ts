@@ -671,6 +671,44 @@ export function duplicateCard(state: BoardState, cardId: string): BoardState {
 // --- 分组与顺序 ------------------------------------------------------------
 
 /**
+ * 拖动组（用户决策 2 / F）：整组成员同位移，作为**一次**板面变更提交。
+ *
+ * - 先夹取**整段位移**（而不是逐卡夹取）：组内相对位置与顺序一个字都不变；
+ * - 位置只影响显示（layout_only），不产生表达、不调用模型；
+ * - 组框由成员推导（normalizeState → reflowGroup），不需要在这里写组坐标。
+ */
+export function moveGroup(
+  state: BoardState,
+  groupId: string,
+  dx: number,
+  dy: number,
+): BoardState {
+  const work = normalizeState(state);
+  const group = groupById(work, groupId);
+  if (!group) return work;
+  const members = group.members
+    .map((id) => cardById(work, id))
+    .filter((card): card is BoardCard => card != null && !card.deleted);
+  if (!members.length) return work;
+  const rawDx = Number.isFinite(dx) ? dx : 0;
+  const rawDy = Number.isFinite(dy) ? dy : 0;
+  const minX = Math.min(...members.map((card) => card.x));
+  const minY = Math.min(...members.map((card) => card.y));
+  // 左边 / 上边不越出板面原点；右边 / 下边可以继续增长（画布随内容增长）
+  const appliedDx = Math.max(rawDx, -minX);
+  const appliedDy = Math.max(rawDy, -minY);
+  if (!appliedDx && !appliedDy) return work;
+  const stamp = nowIso();
+  for (const card of members) {
+    card.x += appliedDx;
+    card.y += appliedDy;
+    card.updatedAt = stamp;
+  }
+  work.updatedAt = stamp;
+  return normalizeState(work);
+}
+
+/**
  * 把若干卡片组成一个新组（普通组，默认名或用户给的名字）。
  * 已在别的组里的卡片会先离开原来的组（G1）；没有活卡片时不建组（G3）。
  * 这是「显式分组」入口；拖动重叠自动成组走 dropCard。

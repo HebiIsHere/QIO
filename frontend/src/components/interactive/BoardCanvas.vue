@@ -36,6 +36,7 @@ import {
   groupOfCard,
   joinGroup,
   mergeGroups,
+  moveGroup,
   normalizeState,
   pointInRect,
   previewDrop,
@@ -87,6 +88,8 @@ import type { ResizeBox, ResizeHandle, SizeLimits } from "../../interactive/resi
 import { titlebarHeight } from "../../utils/titlebar";
 // Stage 1：新意图状态是否仍要画虚线预演（落地后必须消失）
 import { shouldPreviewIntent } from "../../interactive/intentPreviewApply";
+// 关系编辑器必须停在底部工具栏上沿之上（工具栏高度由 InteractiveView 实测发布）
+import { linkEditorLayout, readToolbarClearance } from "../../interactive/toolbarFrame";
 import type { BoardCard as BoardCardModel, BoardGroup, BoardState, CardKind, Intent } from "../../interactive/types";
 import BoardCard from "./BoardCard.vue";
 import BoardGroupFrame from "./BoardGroupFrame.vue";
@@ -191,6 +194,20 @@ let resizeTargetId: string | null = null;
 const panning = ref<PanState | null>(null);
 const rectSelect = ref<RectDrag | null>(null);
 const linkDraft = ref<LinkDraft | null>(null);
+/**
+ * 整组拖动（问题 4a）：按住组头部移动全部成员，松手作为**一次**板面变更提交。
+ * 只保存位移与成员快照；成员实时坐标由 displayRect 叠加，板面状态在松手前不变。
+ */
+interface GroupDragState {
+  groupId: string;
+  memberIds: string[];
+  startClient: { x: number; y: number };
+  startBoard: { x: number; y: number };
+  moved: boolean;
+  dx: number;
+  dy: number;
+}
+const groupDragging = ref<GroupDragState | null>(null);
 const spaceDown = ref(false);
 const editingLinkId = ref<string | null>(null);
 const linkMeaning = ref("");
@@ -459,6 +476,10 @@ function slotOf(card: BoardCardModel): LayoutRect {
  */
 function displayRect(card: BoardCardModel): LayoutRect {
   const slot = slotOf(card);
+  const groupDrag = groupDragging.value;
+  if (groupDrag && groupDrag.memberIds.includes(card.id)) {
+    return { x: slot.x + groupDrag.dx, y: slot.y + groupDrag.dy, w: slot.w, h: slot.h };
+  }
   const drag = dragging.value;
   if (drag && drag.cardId === card.id) return { x: drag.x, y: drag.y, w: slot.w, h: slot.h };
   const size = resizing.value;
@@ -525,8 +546,9 @@ const displayCards = computed<BoardCardModel[]>(() => {
   const drag = dragging.value;
   const moved = drag && drag.moved ? drag : null;
   const size = resizing.value;
-  // 没有展开、也没有进行中的拖动 / 尺寸预览时原样返回（与改动前完全一致，避免无谓的对象重建）
-  if (!moved && !size) return liveCards.value;
+  const groupDrag = groupDragging.value;
+  // 没有展开、也没有进行中的拖动 / 组拖动 / 尺寸预览时原样返回（避免无谓的对象重建）
+  if (!moved && !size && !groupDrag) return liveCards.value;
   return liveCards.value.map((card) => {
     const rect = displayRect(card);
     if (rect.x === card.x && rect.y === card.y && rect.w === card.w && rect.h === card.h) return card;
@@ -984,8 +1006,53 @@ function onDragStart(cardId: string, event: PointerEvent) {
   attachPointerListeners();
 }
 
+/**
+ * 组头部按下（问题 4a）：整组拖动。只移动显示坐标，松手才提交一次。
+ * 与卡片拖动 / 平移 / 框选 / 拖线互斥（同一指针只驱动一种手势）。
+ */
+function onGroupDragStart(groupId: string, event: PointerEvent) {
+  if (event.button !== undefined && event.button !== 0) return;
+  const current = boardState.value;
+  if (!current) return;
+  if (dragging.value || panning.value || rectSelect.value || linkDraft.value) return;
+  const group = groupById(current, groupId);
+  if (!group) return;
+  const memberIds = group.members.filter((cardId) => {
+    const card = cardById(current, cardId);
+    return card != null && !card.deleted;
+  });
+  if (!memberIds.length) return;
+  groupDragging.value = {
+    groupId,
+    memberIds,
+    startClient: { x: event.clientX, y: event.clientY },
+    startBoard: boardPointOf(event),
+    moved: false,
+    dx: 0,
+    dy: 0,
+  };
+  notice.value = "";
+  attachPointerListeners();
+}
+
 function onPointerMove(event: PointerEvent) {
   const current = boardState.value;
+  const groupDrag = groupDragging.value;
+  if (groupDrag) {
+    if (
+      !groupDrag.moved &&
+      (Math.abs(event.clientX - groupDrag.startClient.x) > 3 ||
+        Math.abs(event.clientY - groupDrag.startClient.y) > 3)
+    ) {
+      groupDrag.moved = true;
+    }
+    if (!groupDrag.moved) return;
+    const point = boardPointOf(event);
+    groupDrag.dx = point.x - groupDrag.startBoard.x;
+    groupDrag.dy = point.y - groupDrag.startBoard.y;
+    requestPlacement();
+    return;
+  }
   const pan = panning.value;
   if (pan) {
     const dx = event.clientX - pan.startClient.x;
@@ -1030,6 +1097,32 @@ function onPointerMove(event: PointerEvent) {
 
 function onPointerUp() {
   const current = boardState.value;
+  const groupDrag = groupDragging.value;
+  if (groupDrag) {
+    detachPointerListeners();
+    groupDragging.value = null;
+    if (groupDrag.moved && current) {
+      const moved = moveGroup(current, groupDrag.groupId, groupDrag.dx, groupDrag.dy);
+      if (stateDiffers(normalizeState(current), moved)) {
+        let nextState = moved;
+        // 与卡片拖动同一口径：拖到负坐标时整体平移回 ≥0，并补滚动量（屏幕位置不变）
+        const rebase = rebaseToFit(nextState, 0);
+        if (rebase.dx || rebase.dy) {
+          nextState = rebaseOrigin(nextState, rebase.dx, rebase.dy);
+          const scale = view.value.scale;
+          applyScroll({
+            x: scroll.value.x + rebase.dx * scale,
+            y: scroll.value.y + rebase.dy * scale,
+          });
+        }
+        commit(nextState, "拖动组");
+      } else {
+        notice.value = "组没有移动：板面没有产生改动，也没有保存。";
+      }
+    }
+    requestPlacement();
+    return;
+  }
   const drag = dragging.value;
   if (drag && current) {
     detachPointerListeners();
@@ -1118,7 +1211,13 @@ function onDragCancel() {
   const hadRect = Boolean(rectSelect.value);
   const hadPan = Boolean(panning.value);
   const hadLink = Boolean(linkDraft.value);
+  const hadGroupDrag = Boolean(groupDragging.value);
+  groupDragging.value = null;
   releaseGestures();
+  if (hadGroupDrag) {
+    notice.value = "已取消组拖动：组成员回到操作前的位置，板面没有改动。";
+    return;
+  }
   if (hadLink) {
     notice.value = "已取消建立关系：没有保存半条链接。";
     return;
@@ -1251,7 +1350,9 @@ function resetTransientGesture() {
    * 于是「拖线途中切窗口再回来」会留下一条半截的草稿 —— 尺寸把手一直被禁用（resizeDisabled），
    * 用户再也拉不动卡片，只能靠 Esc 收拾。取消路径必须覆盖全部临时手势。
    */
-  if (dragging.value || rectSelect.value || panning.value || linkDraft.value) onDragCancel();
+  if (dragging.value || rectSelect.value || panning.value || linkDraft.value || groupDragging.value) {
+    onDragCancel();
+  }
 }
 
 function onWindowBlur() {
@@ -1849,9 +1950,21 @@ const connectBoxes = computed<Record<string, LayoutRect>>(() => {
   if (!current || !cardId) return out;
   const card = current.cards.find((item) => item.id === cardId);
   if (!card || card.deleted || card.folded) return out;
+  // 冲突展开（auto 高度）时实际框 ≠ 布局框：连接点会漂在错误的位置，排除（与 BoardCard 同口径）。
+  if (cardConflictsExpanded(cardId)) return out;
   out[cardId] = displayRect(card);
   return out;
 });
+
+/** 与 BoardCard 的 conflictExpanded 同口径：草稿冲突 / 正文冲突时卡片按 auto 高度展开。 */
+function cardConflictsExpanded(cardId: string): boolean {
+  if (store.draftConflictFor(cardId)) return true;
+  const api = store as unknown as {
+    boardContentConflictFor?: (id: string) => { local: string; server: string } | null;
+  };
+  if (typeof api.boardContentConflictFor !== "function") return false;
+  return Boolean(api.boardContentConflictFor(cardId));
+}
 
 // --- 卡片操作 -------------------------------------------------------------
 
@@ -2092,6 +2205,25 @@ function pickLinkCard(cardId: string) {
   linkDraft.value = { fromId: source, point: null, targetId: cardId };
   finishLinkDraft(true);
 }
+
+/**
+ * 关系编辑器的落点（任务 C）：底部停在「实测工具栏净空 + 间距」之上，左侧限制在可视区；
+ * 窄窗口贴底全宽、自动让出工具栏带。z-index 在工具栏之下（不盖住工具栏）。
+ */
+const linkEditorStyle = computed<Record<string, string>>(() => {
+  void stageTick.value;
+  const layout = linkEditorLayout({
+    clearance: readToolbarClearance(),
+    viewportWidth:
+      typeof window !== "undefined" && window.innerWidth > 0 ? window.innerWidth : 1280,
+  });
+  return {
+    left: layout.left + "px",
+    bottom: layout.bottom + "px",
+    width: layout.width,
+    right: layout.right === null ? "auto" : layout.right + "px",
+  };
+});
 
 function openLinkEditor(linkId: string) {
   const current = boardState.value;
@@ -2415,6 +2547,7 @@ onBeforeUnmount(() => {
             @move-member="onMoveMember"
             @leave="onLeaveMember"
             @select-member="(cardId) => onSelect(cardId, false)"
+            @drag-start="onGroupDragStart"
           />
 
           <BoardCard
@@ -2520,7 +2653,13 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <div v-if="editingLink" class="link-editor" role="dialog" aria-label="关系编辑">
+    <div
+      v-if="editingLink"
+      class="link-editor"
+      :style="linkEditorStyle"
+      role="dialog"
+      aria-label="关系编辑"
+    >
       <p class="link-title">{{ editingLinkSummary }}</p>
       <label class="link-row">
         <input v-model="linkDirection" type="checkbox" data-im="link-direction" />
@@ -2639,11 +2778,15 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-2);
   pointer-events: none;
 }
+/*
+ * 关系编辑器（任务 C）：行内样式按 InteractiveView 实测的工具栏净空算 bottom；
+ * z-index 压在工具栏（--im-z-toolbar = 30）之下 —— 编辑器打开时不盖住底部工具栏。
+ */
 .link-editor {
   position: absolute;
   left: var(--sp-4);
-  bottom: var(--sp-4);
-  z-index: 70;
+  bottom: 72px; /* 未测量时的兜底（行内样式覆盖） */
+  z-index: calc(var(--im-z-toolbar, 30) - 5);
   width: min(420px, 92%);
   display: flex;
   flex-direction: column;
@@ -2682,7 +2825,8 @@ onBeforeUnmount(() => {
 .btn:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
 .btn.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
 .btn.danger { color: var(--danger); }
-@media (max-width: 900px) {
-  .link-editor { left: var(--sp-2); bottom: var(--sp-2); }
+/* 窄窗口：贴底全宽面板（底部仍让出工具栏带；具体 bottom 由行内样式给） */
+@media (max-width: 800px) {
+  .link-editor { left: var(--sp-2); right: var(--sp-2); width: auto; }
 }
 </style>

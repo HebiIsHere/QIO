@@ -47,6 +47,12 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
   if (props.disabled) return;
   emit("handle-down", handle, event);
 }
+
+/** 四条边的热区拆成两段（中间 24px 缺口留给关系连接点）；四个角仍是整块。 */
+const EDGE_HANDLES: readonly ResizeHandle[] = ["n", "s", "e", "w"];
+function isEdgeHandle(handle: ResizeHandle): boolean {
+  return EDGE_HANDLES.includes(handle);
+}
 </script>
 
 <template>
@@ -69,7 +75,16 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
         :data-resize-handle="handle"
         :aria-hidden="true"
         @pointerdown="onDown(handle, $event)"
-      />
+      >
+        <!--
+          边的热区拆成两段：中间 24px 缺口让给关系连接点（用户决策 4）。
+          外层仍只有 8 个 [data-resize-handle]（契约/用例口径不变），真实命中由两段子热区承担。
+        -->
+        <template v-if="isEdgeHandle(handle)">
+          <span class="rz-seg" :class="'rz-seg-' + handle + '-a'" data-resize-segment="a" />
+          <span class="rz-seg" :class="'rz-seg-' + handle + '-b'" data-resize-segment="b" />
+        </template>
+      </span>
     </template>
     <span v-if="props.showMark && !props.disabled" class="rz-mark" aria-hidden="true" />
     <div
@@ -130,18 +145,21 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
   z-index: 3;
 }
 
-/* --- 指针热区：边 10px、角 16px ------------------------------------------- */
+/* --- 指针热区：边 10px、角 16px -------------------------------------------
+   用户决策 4：边中点让出 24px 缺口给关系连接点 —— 边的热区拆成两段子热区，
+   尺寸调整从边中点两侧拖；昆点本体固定在卡片边框中点（见 BoardResizeLayer）。
+   外层 .rz-hit 只作定位容器（pointer-events: none），真实命中在 .rz-seg 上。 */
 
 .rz-hit {
   position: absolute;
-  pointer-events: auto;
+  pointer-events: none;
   touch-action: none;
 }
 
 .rz-hit-n,
 .rz-hit-s {
-  left: 10px;
-  right: 10px;
+  left: 0;
+  right: 0;
   height: 10px;
   cursor: ns-resize;
 }
@@ -154,8 +172,8 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
 
 .rz-hit-e,
 .rz-hit-w {
-  top: 10px;
-  bottom: 10px;
+  top: 0;
+  bottom: 0;
   width: 10px;
   cursor: ew-resize;
 }
@@ -166,12 +184,44 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
   left: 0;
 }
 
+/* 两段子热区：中间各让出 12px（合起来 24px 缺口给连接点的 18px 命中区）。 */
+.rz-seg {
+  position: absolute;
+  pointer-events: auto;
+  touch-action: none;
+}
+.rz-seg-n-a,
+.rz-seg-s-a {
+  left: 0;
+  width: calc(50% - 12px);
+  height: 100%;
+}
+.rz-seg-n-b,
+.rz-seg-s-b {
+  left: calc(50% + 12px);
+  right: 0;
+  height: 100%;
+}
+.rz-seg-e-a,
+.rz-seg-w-a {
+  top: 0;
+  height: calc(50% - 12px);
+  width: 100%;
+}
+.rz-seg-e-b,
+.rz-seg-w-b {
+  top: calc(50% + 12px);
+  bottom: 0;
+  width: 100%;
+}
+
 .rz-hit-ne,
 .rz-hit-nw,
 .rz-hit-se,
 .rz-hit-sw {
   width: 16px;
   height: 16px;
+  pointer-events: auto;
 }
 .rz-hit-ne {
   top: 0;
@@ -194,7 +244,8 @@ function onDown(handle: ResizeHandle, event: PointerEvent): void {
   cursor: nesw-resize;
 }
 
-.rz-off .rz-hit {
+.rz-off .rz-hit,
+.rz-off .rz-seg {
   pointer-events: none;
 }
 

@@ -225,10 +225,12 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
 }
 
 /*
- * --- 关系连接点命中区 -----------------------------------------------------
+ * --- 关系连接点命中区（用户决策 4） ---------------------------------------
  * 屏幕像素 18×18（本层在未缩放的滚动内容层里，不受画布 scale 影响）；
- * 贴在对应边的**热区内侧**（见下面的分侧规则），整个命中区仍在卡片内部 ——
- * 不会伸到卡片外面压住局部工具栏 / 相邻卡片，也不与边把手的 10px 热区重叠。
+ * 圆心 = 卡片边框**中点**（不再向卡片内部缩 10px）：
+ * - 边热区在 ResizeHandles 里已拆成两段，中间让出 24px 缺口；
+ * - 连接点 18px 命中区正好落在缺口里，两者不互相抢：中点 → 拉线，边中点两侧 → 尺寸调整。
+ * 视觉圆点仍是 12px，颜色沿用既有令牌。
  */
 .connect-point {
   position: absolute;
@@ -238,7 +240,7 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
   touch-action: none;
   cursor: crosshair;
 }
-/* 视觉圆点仍是 12px（命中区变大 ≠ 看起来变重）：颜色与描边沿用改动前的令牌 */
+/* 视觉圆点仍是 12px（命中区变大 ≠ 看起来变重）：颜色与描边沿用既有令牌 */
 .connect-point::after {
   content: "";
   position: absolute;
@@ -252,28 +254,28 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
   border: 1.5px solid var(--accent);
 }
 /*
- * 各边的命中区**让开该边的 10px 尺寸热区**（与 ResizeHandles 的 .rz-hit-* 同厚度）：
- * 四边中点的命中共归属于尺寸把手，连接点从热区内侧开始命中。
- * 圆点（::after）与命中区同心 → 看到的圆点整个都能拖线。
+ * 命中区与视觉圆点**同心停在卡片边框中点**（用户决策 4）：
+ * 18px 热区居中于边框 → 一半在卡片内、一半在卡片外；边的 10px 尺寸热区在
+ * 中点两侧各让开 12px，所以中点只可能命中连接点、两侧只可能命中尺寸调整。
  */
 .connect-point.top {
   left: 50%;
-  top: 10px;
-  transform: translateX(-50%);
+  top: 0;
+  transform: translate(-50%, -50%);
 }
 .connect-point.right {
-  right: 10px;
+  right: 0;
   top: 50%;
-  transform: translateY(-50%);
+  transform: translate(50%, -50%);
 }
 .connect-point.bottom {
   left: 50%;
-  bottom: 10px;
-  transform: translateX(-50%);
+  bottom: 0;
+  transform: translate(-50%, 50%);
 }
 .connect-point.left {
-  left: 10px;
+  left: 0;
   top: 50%;
-  transform: translateY(-50%);
+  transform: translate(-50%, -50%);
 }
 </style>

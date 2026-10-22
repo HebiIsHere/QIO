@@ -11,7 +11,7 @@
   - 右下角独立聊天入口（C 负责），右上角批量列表入口（D 负责），影响确认是页面中央对话框（D 负责）。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
@@ -23,14 +23,68 @@ import DemoIntentEntry from "../components/interactive/DemoIntentEntry.vue";
 import IntentWorkbench from "../components/interactive/IntentWorkbench.vue";
 import { humanizeFailure } from "../components/interactive/displayText";
 import { understandingSettled, understandingText } from "../interactive/approval";
+import { publishToolbarClearance, resetToolbarClearance } from "../interactive/toolbarFrame";
 
 const store = useInteractiveStore();
 const demoOpen = ref(false);
 /** 意图与结果工作台（阶段三 C）：用户显式打开才出现，不抢板面操作 */
 const workbenchOpen = ref(false);
 
-onMounted(() => {
+/* --------------------------------------------------------------------------
+ * 底部工具栏净空（任务 C）：ResizeObserver 实测「舞台底边 → 工具栏顶边」，
+ * 发布给关系编辑器（BoardCanvas 的 .link-editor）用；同时写 CSS 变量便于样式引用。
+ * 工具栏自身是 absolute dock（interactive-shell.css），高度随内容 / 断点变化，不能写死。
+ * ------------------------------------------------------------------------ */
+const stageEl = ref<HTMLElement | null>(null);
+const toolbarRef = ref<InstanceType<typeof BoardToolbar> | null>(null);
+let toolbarObserver: ResizeObserver | null = null;
+
+function toolbarElement(): HTMLElement | null {
+  const el = toolbarRef.value?.$el;
+  return el instanceof HTMLElement ? el : null;
+}
+
+function measureToolbar(): void {
+  const stage = stageEl.value;
+  const toolbar = toolbarElement();
+  if (!stage || !toolbar) {
+    publishToolbarClearance(null);
+    return;
+  }
+  const stageRect = stage.getBoundingClientRect();
+  const toolbarRect = toolbar.getBoundingClientRect();
+  // 未布局（jsdom / 首帧）：不发布假数据，编辑器用兜底净空
+  if (toolbarRect.width <= 0 && toolbarRect.height <= 0) {
+    publishToolbarClearance(null);
+    return;
+  }
+  const clearance = Math.max(0, stageRect.bottom - toolbarRect.top);
+  publishToolbarClearance(clearance);
+  stage.style.setProperty("--im-toolbar-height", Math.round(toolbarRect.height) + "px");
+  stage.style.setProperty("--im-toolbar-clearance", Math.round(clearance) + "px");
+}
+
+function disconnectToolbarObserver(): void {
+  toolbarObserver?.disconnect();
+  toolbarObserver = null;
+  if (typeof window !== "undefined") window.removeEventListener("resize", measureToolbar);
+}
+
+onMounted(async () => {
   void store.load();
+  await nextTick();
+  measureToolbar();
+  const toolbar = toolbarElement();
+  if (toolbar && typeof ResizeObserver !== "undefined") {
+    toolbarObserver = new ResizeObserver(() => measureToolbar());
+    toolbarObserver.observe(toolbar);
+  }
+  if (typeof window !== "undefined") window.addEventListener("resize", measureToolbar);
+});
+
+onBeforeUnmount(() => {
+  disconnectToolbarObserver();
+  resetToolbarClearance();
 });
 
 /**
@@ -81,6 +135,17 @@ const uText = computed(() => {
 const uLive = computed(
   () => Boolean(store.understandingStatus) && !understandingSettled(store.understandingStatus),
 );
+/**
+ * 用户决策 1（2026-10-22）：顶部只在「进行中 / 需要用户处理」时显示理解状态；
+ * understood / no_action 等结束态回到只显示保存状态（历史理解在提交区的「上次提交」入口里）。
+ */
+const showUnderstandingNote = computed(() => {
+  if (uLive.value) return true;
+  const status = String(store.understandingStatus ?? "");
+  if (status === "needs_clarification" || status === "failed") return true;
+  // 已提交、但回执还没给出理解状态：这是「等待理解状态」的进行中事实
+  return !store.understandingStatus && store.submitStatus === "succeeded";
+});
 const retrying = ref(false);
 async function retryUnderstanding(): Promise<void> {
   if (retrying.value) return;
@@ -145,7 +210,7 @@ const boardSize = computed(() => {
         >
           还没有提交给 QIO
         </span>
-        <template v-else>
+        <template v-else-if="showUnderstandingNote">
           <span
             class="im-note"
             :class="'tone-' + uText.tone"
@@ -227,11 +292,11 @@ const boardSize = computed(() => {
       <DemoIntentEntry />
     </div>
 
-    <main class="im-stage">
+    <main ref="stageEl" class="im-stage">
       <BoardCanvas />
 
       <!-- 板面上的浮层：底部工具栏 / 右下聊天 / 右上批量列表 / 任务浮层 / 中央影响确认 -->
-      <BoardToolbar />
+      <BoardToolbar ref="toolbarRef" />
       <IntentStatusPopover />
       <IntentBatchTray />
       <ChatDock />

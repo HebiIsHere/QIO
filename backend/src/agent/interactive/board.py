@@ -209,6 +209,11 @@ def _normalize_card(raw: dict, stamp: str) -> dict:
     return card
 
 
+def reflow_group(group: dict, cards: dict[str, dict]) -> None:
+    """按成员重算组框（公开入口：真实落地与预览共用同一口径）。"""
+    _reflow_group(group, cards)
+
+
 def _reflow_group(group: dict, cards: dict[str, dict]) -> None:
     """组框跟着成员走：位置 / 大小只影响显示，不是意图依据。"""
     members = [cards[cid] for cid in group["members"] if cid in cards]

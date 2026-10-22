@@ -580,8 +580,24 @@ const uOutcome = computed(() => understandingOutcome(uStatus.value));
 const uLive = computed(() => Boolean(uStatus.value) && !understandingSettled(uStatus.value));
 const uCurrent = computed(() => currentUnderstandingStep(store.understanding));
 const uHistory = computed(() => understandingHistory(store.understanding));
-/** 只留这一块：有理解状态或正在提交时才占位，不再被「说明文案」撑出来 */
-const processVisible = computed(() => uStatus.value !== null || submitting.value);
+/**
+ * 用户决策 1（2026-10-22）：理解完成后**只留历史入口** —— 聊天区不再常驻过程块。
+ * 过程块只在两种时候出现：
+ * 1. 进行中（正在提交 / 已受理 / 正在理解）；
+ * 2. 需要用户处理（需要补充 / 理解失败）。
+ * understood / no_action 等结束态不渲染（历史说明在「上次提交」入口里）。
+ * 待审批条目是**可操作事项**、不是过程：它们仍单独显示（见模板里的 approval 块）。
+ */
+const LIVE_UNDERSTANDING_STATUSES = ["accepted", "understanding"];
+const NEEDS_USER_UNDERSTANDING_STATUSES = ["needs_clarification", "failed"];
+const processVisible = computed(() => {
+  if (submitting.value) return true;
+  const status = String(uStatus.value ?? "");
+  return (
+    LIVE_UNDERSTANDING_STATUSES.includes(status) ||
+    NEEDS_USER_UNDERSTANDING_STATUSES.includes(status)
+  );
+});
 /** 有没有可展开的详情（没有就不给一个点不动的「详情」按钮） */
 const hasProcessDetail = computed(
   () =>
@@ -1280,44 +1296,48 @@ function onKeydown(event: KeyboardEvent) {
                     </li>
                   </ol>
                 </template>
-                <!-- 审批入口自动展开：批准前不会改动板面 -->
-                <div v-if="pendingApprovals.length" class="approval" data-im="chat-approval">
-                  <p class="approval-title">待审批：{{ pendingApprovals.length }} 项（批准前不改动板面）</p>
-                  <div
-                    v-for="intent in pendingApprovals"
-                    :key="intent.id"
-                    class="approval-row"
-                    data-im="chat-approval-item"
-                    :data-intent-id="intent.id"
-                  >
-                    <span class="approval-name">
-                      <span v-if="intent.demo" class="approval-demo">演示</span>{{ intent.title }}
-                    </span>
-                    <button
-                      class="process-btn"
-                      type="button"
-                      data-im="chat-approve"
-                      :data-intent-id="intent.id"
-                      :disabled="processBusy === intent.id || !approveAvailability(intent).allowed"
-                      :title="approveAvailability(intent).text"
-                      @click="decideIntent(intent, 'approve')"
-                    >
-                      {{ processBusy === intent.id ? "处理中…" : intent.demo ? "批准（演示）" : "批准" }}
-                    </button>
-                    <button
-                      class="process-btn ghost"
-                      type="button"
-                      data-im="chat-reject"
-                      :data-intent-id="intent.id"
-                      :disabled="processBusy === intent.id || !rejectAvailability(intent).allowed"
-                      :title="rejectAvailability(intent).text"
-                      @click="decideIntent(intent, 'reject')"
-                    >
-                      拒绝
-                    </button>
-                  </div>
-                </div>
                 <p v-if="processNote" class="process-note" data-im="chat-process-result">{{ processNote }}</p>
+              </div>
+
+              <!--
+                审批入口：**可操作事项**，不属于「理解过程」。即使理解已结束（understood /
+                no_action）也保留在这里 —— 用户仍要能批准 / 拒绝；没有待审批条目不占位。
+              -->
+              <div v-if="pendingApprovals.length" class="approval" data-im="chat-approval">
+                <p class="approval-title">待审批：{{ pendingApprovals.length }} 项（批准前不改动板面）</p>
+                <div
+                  v-for="intent in pendingApprovals"
+                  :key="intent.id"
+                  class="approval-row"
+                  data-im="chat-approval-item"
+                  :data-intent-id="intent.id"
+                >
+                  <span class="approval-name">
+                    <span v-if="intent.demo" class="approval-demo">演示</span>{{ intent.title }}
+                  </span>
+                  <button
+                    class="process-btn"
+                    type="button"
+                    data-im="chat-approve"
+                    :data-intent-id="intent.id"
+                    :disabled="processBusy === intent.id || !approveAvailability(intent).allowed"
+                    :title="approveAvailability(intent).text"
+                    @click="decideIntent(intent, 'approve')"
+                  >
+                    {{ processBusy === intent.id ? "处理中…" : intent.demo ? "批准（演示）" : "批准" }}
+                  </button>
+                  <button
+                    class="process-btn ghost"
+                    type="button"
+                    data-im="chat-reject"
+                    :data-intent-id="intent.id"
+                    :disabled="processBusy === intent.id || !rejectAvailability(intent).allowed"
+                    :title="rejectAvailability(intent).text"
+                    @click="decideIntent(intent, 'reject')"
+                  >
+                    拒绝
+                  </button>
+                </div>
               </div>
 
               <!--

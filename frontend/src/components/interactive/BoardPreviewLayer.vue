@@ -22,8 +22,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
-import { CARD_KIND_LABELS, groupFrame, type BoardRect } from "../../interactive/board";
+import { CARD_KIND_LABELS } from "../../interactive/board";
 import type { BoardCard, BoardGroup, Intent, IntentOperation } from "../../interactive/types";
+import { linkGeometry } from "../../interactive/linkGeometry";
+import { groupOutline } from "../../interactive/groupOutline";
 import {
   isPlanEditable,
   movePreviewCardInPlan,
@@ -71,12 +73,41 @@ interface PreviewCardBox {
   selected: boolean;
 }
 
-interface PreviewGroupBox {
+interface PreviewGroupRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface PreviewGroupSegment {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+/**
+ * 预览组（用户决策 2 / 问题 1、4c）：组框改为贴合成员的轮廓。
+ * - 轮廓由成员虚卡的**显示位置**实时算出（拖动成员 / 整组时跟着走）；
+ * - 找不到成员的组不画（不再出现左上角的大空框）；
+ * - 头部是浮动的小条（组名 / 有序 / 张数），整组拖动从这里开始。
+ */
+interface PreviewGroupView {
   id: string;
-  style: Record<string, string>;
   name: string;
   ordered: boolean;
-  sequence: string;
+  memberCount: number;
+  sequenceTitle: string;
+  /** 轮廓 svg 的定位（板面坐标；内部坐标已平移到 0,0） */
+  svgStyle: Record<string, string>;
+  /** 轮廓外接矩形（板面坐标；预览标注定位用） */
+  bounds: PreviewGroupRect;
+  /** 浮动头部（板面坐标） */
+  headerStyle: Record<string, string>;
+  fills: PreviewGroupRect[];
+  segments: PreviewGroupSegment[];
+  editable: boolean;
 }
 
 interface PreviewLine {
@@ -101,7 +132,7 @@ interface RenderedIntent {
   editable: boolean;
   saving: boolean;
   cards: PreviewCardBox[];
-  groups: PreviewGroupBox[];
+  groups: PreviewGroupView[];
   lines: PreviewLine[];
 }
 
@@ -128,6 +159,19 @@ const localPositions = ref<Record<string, { x: number; y: number }>>({});
 /** 正在保存预演修改的意图 id（同一时间只处理一次） */
 const saving = ref<string | null>(null);
 
+/** 整组拖动（问题 1）：从组头部按下开始；松手时统一改成员的 add 操作坐标再 PATCH plan。 */
+interface GroupDragState {
+  intentId: string;
+  groupId: string;
+  memberIds: string[];
+  startClient: { x: number; y: number };
+  startBoard: { x: number; y: number };
+  moved: boolean;
+  dx: number;
+  dy: number;
+}
+const groupDrag = ref<GroupDragState | null>(null);
+
 /* --------------------------------------------------------------------------
  * Stage 2：多选（成组 / 连线）与正文编辑（只改 operations，预览以服务端重算为准）
  * ------------------------------------------------------------------------ */
@@ -148,9 +192,18 @@ interface PreviewEditorState {
 }
 const editor = ref<PreviewEditorState | null>(null);
 
-/** 幽灵卡的当前显示位置（拖动期间用本地乐观位置，其余用服务端预览坐标）。 */
+/** 幽灵卡的当前显示位置（单卡拖动用本地乐观位置；整组拖动再叠加组位移）。 */
 function cardDisplayPosition(intentId: string, card: BoardCard): { x: number; y: number } {
-  return localPositions.value[keyFor(intentId, card.id)] ?? { x: card.x, y: card.y };
+  const base = localPositions.value[keyFor(intentId, card.id)] ?? { x: card.x, y: card.y };
+  const groupState = groupDrag.value;
+  if (
+    groupState &&
+    groupState.intentId === intentId &&
+    groupState.memberIds.includes(card.id)
+  ) {
+    return { x: base.x + groupState.dx, y: base.y + groupState.dy };
+  }
+  return base;
 }
 
 function selectedCardIds(intentId: string): string[] {
@@ -286,6 +339,21 @@ function clearAllLocal(): void {
 }
 
 function onPointerMove(event: PointerEvent): void {
+  const groupState = groupDrag.value;
+  if (groupState) {
+    if (
+      !groupState.moved &&
+      (Math.abs(event.clientX - groupState.startClient.x) > 3 ||
+        Math.abs(event.clientY - groupState.startClient.y) > 3)
+    ) {
+      groupState.moved = true;
+    }
+    if (!groupState.moved) return;
+    const point = boardPointOf(event.clientX, event.clientY);
+    groupState.dx = point.x - groupState.startBoard.x;
+    groupState.dy = point.y - groupState.startBoard.y;
+    return;
+  }
   const state = drag.value;
   if (!state) return;
   if (
@@ -307,6 +375,13 @@ function onPointerMove(event: PointerEvent): void {
 }
 
 function onPointerUp(event: PointerEvent): void {
+  const groupState = groupDrag.value;
+  if (groupState) {
+    detachPointerListeners();
+    groupDrag.value = null;
+    if (groupState.moved) void commitGroupMove(groupState);
+    return;
+  }
   const state = drag.value;
   detachPointerListeners();
   drag.value = null;
@@ -336,6 +411,11 @@ function onPointerUp(event: PointerEvent): void {
 }
 
 function onPointerCancel(): void {
+  if (groupDrag.value) {
+    groupDrag.value = null;
+    detachPointerListeners();
+    return;
+  }
   const state = drag.value;
   detachPointerListeners();
   drag.value = null;
@@ -346,7 +426,7 @@ function onPointerCancel(): void {
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key !== "Escape") return;
-  if (!drag.value) return;
+  if (!drag.value && !groupDrag.value) return;
   event.preventDefault();
   onPointerCancel();
 }
@@ -412,6 +492,66 @@ function onCardPointerDownById(intentId: string, cardId: string, event: PointerE
     current: { x: position.x, y: position.y },
   };
   attachPointerListeners();
+}
+
+/**
+ * 组头部按下（问题 1）：开始整组拖动。只移动计划内的新增虚卡；
+ * 没有可移动成员 / 计划不可编辑 / 正在保存时不进入拖动。
+ */
+function onGroupHeaderPointerDown(
+  intentId: string,
+  groupId: string,
+  event: PointerEvent,
+): void {
+  if (event.button !== undefined && event.button !== 0) return;
+  const intent = intentAt(intentId);
+  if (!intent || !isPlanEditable(intent) || saving.value) return;
+  const group = (intent.preview?.groups ?? []).find((item) => item.id === groupId);
+  if (!group) return;
+  const memberIds = (intent.preview?.cards ?? [])
+    .filter((card) => group.members.includes(card.id))
+    .map((card) => card.id);
+  if (!memberIds.length) return;
+  event.preventDefault();
+  event.stopPropagation();
+  groupDrag.value = {
+    intentId,
+    groupId,
+    memberIds,
+    startClient: { x: event.clientX, y: event.clientY },
+    startBoard: boardPointOf(event.clientX, event.clientY),
+    moved: false,
+    dx: 0,
+    dy: 0,
+  };
+  attachPointerListeners();
+}
+
+/** 整组拖动松手：每个成员虚卡按位移改自己的 add 操作坐标，一次 PATCH plan。 */
+async function commitGroupMove(state: GroupDragState): Promise<void> {
+  const intent = intentAt(state.intentId);
+  if (!intent) return;
+  const dx = Math.round(state.dx);
+  const dy = Math.round(state.dy);
+  if (!dx && !dy) return;
+  const memberCards = (intent.preview?.cards ?? []).filter((card) =>
+    state.memberIds.includes(card.id),
+  );
+  if (!memberCards.length) return;
+  const operations: IntentOperation[] = (intent.operations ?? []).map((op) => ({ ...op }));
+  let changed = false;
+  for (const card of memberCards) {
+    const index = previewCardOperationIndex(operations, card.id);
+    if (index < 0) continue;
+    operations[index] = {
+      ...operations[index],
+      x: Math.round(card.x) + dx,
+      y: Math.round(card.y) + dy,
+    };
+    changed = true;
+  }
+  if (!changed) return;
+  await commitPlan(intent, operations);
 }
 
 async function onDeleteById(intentId: string, cardId: string, event: MouseEvent): Promise<void> {
@@ -509,20 +649,64 @@ function cardText(card: BoardCard): string {
   return text.length > 20 ? text.slice(0, 20) + "…" : text;
 }
 
-/** 预览组框：优先用预览自带的位置，没有就按成员卡片推出来（用**当前显示位置**）。 */
-function previewGroupFrame(group: BoardGroup, cards: BoardCard[]): BoardRect {
-  const frame = groupFrame(group);
-  if (frame.w > 2 && frame.h > 2) return frame;
-  const members = cards.filter((card) => group.members.includes(card.id));
-  if (!members.length) return frame;
-  const left = Math.min(...members.map((card) => card.x)) - 16;
-  const top = Math.min(...members.map((card) => card.y)) - 30;
-  const right = Math.max(...members.map((card) => card.x + card.w)) + 16;
-  const bottom = Math.max(...members.map((card) => card.y + card.h)) + 16;
-  return { x: left, y: top, w: Math.max(1, right - left), h: Math.max(1, bottom - top) };
+/**
+ * 预览组轮廓（问题 1 / 4c）：**始终**按成员虚卡的显示位置推算；
+ * 找不到成员就返回 null（不画大空框，也不信任 preview.groups 自带坐标）。
+ */
+function previewGroupView(
+  group: BoardGroup,
+  cards: BoardCard[],
+  editable: boolean,
+): PreviewGroupView | null {
+  const members = group.members
+    .map((id) => cards.find((card) => card.id === id))
+    .filter((card): card is BoardCard => Boolean(card));
+  if (!members.length) return null;
+  const outline = groupOutline(
+    members.map((card) => ({
+      cardId: card.id,
+      rect: { x: card.x, y: card.y, w: card.w, h: card.h },
+    })),
+  );
+  if (!outline) return null;
+  const bounds = outline.bounds;
+  return {
+    id: group.id,
+    name: group.name,
+    ordered: Boolean(group.ordered),
+    memberCount: members.length,
+    sequenceTitle: group.ordered
+      ? members.map((card, index) => String(index + 1) + ". " + cardText(card)).join(" · ")
+      : "普通组：摆放顺序不代表先后",
+    bounds: { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h },
+    svgStyle: {
+      left: bounds.x + "px",
+      top: bounds.y + "px",
+      width: Math.max(1, bounds.w) + "px",
+      height: Math.max(1, bounds.h) + "px",
+    },
+    headerStyle: {
+      left: outline.header.x + "px",
+      top: outline.header.y + "px",
+      width: Math.max(120, outline.header.w) + "px",
+    },
+    fills: outline.members.map((fill) => ({
+      x: fill.x - bounds.x,
+      y: fill.y - bounds.y,
+      w: fill.w,
+      h: fill.h,
+    })),
+    segments: outline.segments.map((segment) => ({
+      x1: segment.x1 - bounds.x,
+      y1: segment.y1 - bounds.y,
+      x2: segment.x2 - bounds.x,
+      y2: segment.y2 - bounds.y,
+    })),
+    editable,
+  };
 }
 
-function boxStyle(rect: BoardRect): Record<string, string> {
+function boxStyle(rect: PreviewGroupRect): Record<string, string> {
   return {
     left: rect.x + "px",
     top: rect.y + "px",
@@ -558,49 +742,41 @@ const rendered = computed<RenderedIntent[]>(() =>
       selected: isCardSelected(intent.id, card.id),
     }));
 
-    const groupBoxes: PreviewGroupBox[] = groups.map((group) => ({
-      id: group.id,
-      style: boxStyle(previewGroupFrame(group, cards)),
-      name: group.name,
-      ordered: Boolean(group.ordered),
-      sequence: group.ordered
-        ? group.members
-            .map((id, index) => {
-              const card = byId.get(id);
-              return String(index + 1) + ". " + (card ? cardText(card) : "（成员）");
-            })
-            .join(" · ")
-        : "普通组：摆放顺序不代表先后",
-    }));
+    const groupViews: PreviewGroupView[] = groups
+      .map((group) => previewGroupView(group, cards, editableIntent))
+      .filter((group): group is PreviewGroupView => group !== null);
 
     const lines: PreviewLine[] = [];
     for (const link of links) {
       const src = byId.get(link.src);
       const dst = byId.get(link.dst);
       if (!src || !dst) continue;
-      const x1 = src.x + src.w / 2;
-      const y1 = src.y + src.h / 2;
-      const x2 = dst.x + dst.w / 2;
-      const y2 = dst.y + dst.h / 2;
       const meaning = link.meaning.trim() || (link.direction ? "有方向（含义待填写）" : "关联（含义待填写）");
+      const labelW = Math.max(64, meaning.length * 13 + 18);
+      // 关系线几何的唯一实现（与 BoardLinkLayer 共用）：端点落在边框上，标签避开卡片。
+      const geometry = linkGeometry(
+        { x: src.x, y: src.y, w: src.w, h: src.h },
+        { x: dst.x, y: dst.y, w: dst.w, h: dst.h },
+        { label: { w: labelW, h: 20 } },
+      );
       lines.push({
         id: link.id,
-        x1,
-        y1,
-        x2,
-        y2,
+        x1: geometry.x1,
+        y1: geometry.y1,
+        x2: geometry.x2,
+        y2: geometry.y2,
         direction: Boolean(link.direction),
         meaning,
-        labelX: (x1 + x2) / 2,
-        labelY: (y1 + y2) / 2,
-        labelW: Math.max(64, meaning.length * 13 + 18),
+        labelX: geometry.labelX,
+        labelY: geometry.labelY,
+        labelW,
       });
     }
 
     // 预览标注放在预览范围的上方，避免盖住内容
     const rects = [
       ...cards.map((card) => ({ x: card.x, y: card.y, w: card.w, h: card.h })),
-      ...groups.map((group) => previewGroupFrame(group, cards)),
+      ...groupViews.map((group) => group.bounds),
     ];
     const top = rects.length ? Math.min(...rects.map((rect) => rect.y)) : 0;
     const left = rects.length ? Math.min(...rects.map((rect) => rect.x)) : 0;
@@ -614,7 +790,7 @@ const rendered = computed<RenderedIntent[]>(() =>
       editable: editableIntent,
       saving: saving.value === intent.id,
       cards: cardBoxes,
-      groups: groupBoxes,
+      groups: groupViews,
       lines,
     };
   }),
@@ -648,19 +824,51 @@ onBeforeUnmount(() => {
         }}<template v-if="item.editable"> · 拖动 / 双击编辑 / Ctrl(⌘)+多选</template>
       </p>
 
-      <div
-        v-for="group in item.groups"
-        :key="group.id"
-        class="preview-group"
-        :style="group.style"
-        data-im="preview"
-        :data-intent-id="item.id"
-      >
-        <span class="preview-group-head">
-          {{ group.name }}<span v-if="group.ordered"> · 有序</span>
-        </span>
-        <span class="preview-group-note">{{ group.sequence }}</span>
-      </div>
+      <template v-for="group in item.groups" :key="group.id">
+        <svg
+          class="preview-group-outline"
+          :style="group.svgStyle"
+          aria-hidden="true"
+          data-im="preview-group-outline"
+          :data-intent-id="item.id"
+          :data-preview-group-id="group.id"
+        >
+          <rect
+            v-for="(fill, index) in group.fills"
+            :key="'fill-' + index"
+            class="preview-group-fill"
+            :x="fill.x"
+            :y="fill.y"
+            :width="fill.w"
+            :height="fill.h"
+            rx="12"
+          />
+          <line
+            v-for="(segment, index) in group.segments"
+            :key="'seg-' + index"
+            class="preview-group-segment"
+            :x1="segment.x1"
+            :y1="segment.y1"
+            :x2="segment.x2"
+            :y2="segment.y2"
+          />
+        </svg>
+        <div
+          class="preview-group-head"
+          :class="{ draggable: group.editable, saving: item.saving }"
+          :style="group.headerStyle"
+          data-im="preview-group-head"
+          :data-intent-id="item.id"
+          :data-preview-group-id="group.id"
+          :title="group.sequenceTitle"
+          @pointerdown="group.editable && onGroupHeaderPointerDown(item.id, group.id, $event)"
+          @dragstart.prevent
+        >
+          <span class="preview-group-name">{{ group.name }}</span>
+          <span v-if="group.ordered" class="preview-group-meta mono">有序</span>
+          <span class="preview-group-meta mono">{{ group.memberCount }} 张</span>
+        </div>
+      </template>
 
       <div
         v-for="card in item.cards"
@@ -847,7 +1055,8 @@ onBeforeUnmount(() => {
 }
 .preview-intent { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
 .preview-intent.located .preview-card,
-.preview-intent.located .preview-group { border-color: var(--warning); }
+.preview-intent.located .preview-group-segment { stroke: var(--warning); }
+.preview-intent.located .preview-group-head { color: var(--warning); }
 .preview-badge {
   position: absolute;
   margin: 0;
@@ -905,22 +1114,40 @@ onBeforeUnmount(() => {
 .preview-card-delete:hover { border-color: var(--danger); }
 .preview-card-delete:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .preview-card-delete:disabled { opacity: 0.5; cursor: default; }
-.preview-group {
+.preview-group-outline { position: absolute; overflow: visible; pointer-events: none; }
+.preview-group-fill { fill: var(--bg-inset); opacity: 0.55; }
+.preview-group-segment { stroke: var(--link); stroke-width: 1.5; stroke-dasharray: 6 4; }
+/*
+ * 组头部是浮动小条（贴合轮廓的顶部留白带里）：只有可编辑预览的头部接管指针，
+ * 按住拖动 = 整组虚卡同位移；不可编辑时只是显示。
+ */
+.preview-group-head {
   position: absolute;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: 28px;
   padding: 2px var(--sp-2);
-  border: 1px dashed var(--link);
-  border-radius: var(--r-lg);
+  pointer-events: none;
+  border: 1px dashed transparent;
+  border-radius: var(--r-pill);
   background: transparent;
-  opacity: 0.9;
-  color: var(--text-secondary);
-  font-size: var(--fs-xs);
+  color: var(--link);
+  font-family: var(--serif);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
   overflow: hidden;
 }
-.preview-group-head { color: var(--link); font-family: var(--serif); font-size: var(--fs-sm); }
-.preview-group-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-group-head.draggable {
+  pointer-events: auto;
+  cursor: grab;
+  border-color: var(--link);
+  background: var(--bg-elevated);
+}
+.preview-group-head.draggable:active { cursor: grabbing; }
+.preview-group-head.saving { opacity: 0.7; }
+.preview-group-name { overflow: hidden; text-overflow: ellipsis; }
+.preview-group-meta { color: var(--text-secondary); font-size: var(--fs-xs); }
 .preview-links { position: absolute; left: 0; top: 0; overflow: visible; }
 .preview-arrow { fill: var(--link); }
 .preview-line { stroke: var(--link); stroke-width: 1.5; stroke-dasharray: 6 4; }

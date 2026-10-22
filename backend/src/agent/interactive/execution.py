@@ -539,6 +539,14 @@ def preview_from_operations(
                 for key in _ref_keys(raw.get("ref"), "card"):
                     ref_map[key] = link["id"]
             links.append(link)
+    # P73 Stage 2 修复：预览组框必须由成员位置算出来（不是 models.new_group 的
+    # 占位 0/0/320×240）。与真实落地共用 board.reflow_group，保证预览坐标 = 落地坐标。
+    if groups and cards_out:
+        from agent.interactive import board as board_model
+
+        cards_by_id = {str(card["id"]): card for card in cards_out}
+        for group in groups:
+            board_model.reflow_group(group, cards_by_id)
     return {"cards": cards_out, "groups": groups, "links": links, "note": "", "refs": ref_map}
 
 
