@@ -68,6 +68,13 @@ export interface PdfHandle {
   ): Promise<PdfPageSize>;
   /** 释放文档与 worker 侧资源（卸载 / 换附件时调用）。 */
   destroy(): Promise<void>;
+  /**
+   * 取某一页的**可提取文字**（用于预览栏里的逐页文字搜索）。
+   *
+   * 这是 2026-10-22 对话页预览的**向后兼容增量**：不改既有签名，只多一个方法。
+   * 扫描件 / 没有文字层的页面返回空串（如实——不假装有文字）。
+   */
+  pageText(page: number, signal?: AbortSignal): Promise<string>;
 }
 
 let workerConfigured = false;
@@ -118,6 +125,21 @@ export async function openPdf(
 
   return {
     pages: doc.numPages,
+    /**
+     * 一页的可提取文字：把 textContent 里的每一项拼起来（保持原有顺序与换行）。
+     * 页面没有任何文字项时返回空串 —— 扫描件没有文字层，界面据此如实说「未找到」。
+     */
+    async pageText(pageNumber: number, signal?: AbortSignal): Promise<string> {
+      if (signal?.aborted) throw new PdfAbortedError();
+      const page = await doc.getPage(pageNumber);
+      if (signal?.aborted) throw new PdfAbortedError();
+      const content = await page.getTextContent();
+      const parts: string[] = [];
+      for (const item of content.items as { str?: string }[]) {
+        if (typeof item.str === "string" && item.str) parts.push(item.str);
+      }
+      return parts.join("\n");
+    },
     async renderPage(pageNumber, canvas, scale, signal) {
       if (signal?.aborted) throw new PdfAbortedError();
       const page = await doc.getPage(pageNumber);
