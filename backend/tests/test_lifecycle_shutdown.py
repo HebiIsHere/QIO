@@ -197,6 +197,36 @@ def test_restore_waiting_approvals_only_touches_valid_shutdown_cancellations(
     assert _status(db_conn, "appr_approved")[0] == "approved", "已批准不被改回等待"
 
 
+def test_restore_does_not_override_approval_v2_state(db_conn: sqlite3.Connection) -> None:
+    """W1 审批 v2 合并后：state 是权威状态机，本兜底不得把 v2 行改回 waiting。
+
+    本兜底只服务 base 的 legacy 取消路径（state IS NULL）；v2 行（state='cancelled' 等）
+    必须原样保留 —— 否则会在两套状态之间制造不一致。
+    """
+    now = datetime.now(UTC)
+    started = now.isoformat()
+    future = (now + timedelta(minutes=10)).isoformat()
+    _insert_pending(db_conn, "appr_v2", created_at=started, expires_at=future)
+    db_conn.execute(
+        "UPDATE pending_approvals SET status = 'cancelled', state = 'cancelled', "
+        "resolved_at = ? WHERE approval_id = 'appr_v2'",
+        ((now + timedelta(seconds=1)).isoformat(),),
+    )
+    db_conn.commit()
+
+    ctx = SimpleNamespace(conn=db_conn, approvals=None)
+    restored = _restore_waiting_approvals(
+        ctx,
+        [{"approval_id": "appr_v2", "expires_at": future, "created_at": started}],
+        shutdown_started_at=started,
+    )
+    assert restored == 0, "v2 状态机裁决过的行不能被 legacy 兜底改写"
+    row = db_conn.execute(
+        "SELECT status, state FROM pending_approvals WHERE approval_id = 'appr_v2'"
+    ).fetchone()
+    assert row[0] == "cancelled" and row[1] == "cancelled"
+
+
 # ---------------------------------------------------------------------------
 # 真实应用：退出接口 + 503 闸门 + 幂等 + 退出钩子
 # ---------------------------------------------------------------------------
