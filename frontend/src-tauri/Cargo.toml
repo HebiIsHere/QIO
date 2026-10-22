@@ -34,7 +34,8 @@ path = "src/tests_uninstall_helper_cli.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# tray-icon：R9 §11 要求主窗口可隐藏到系统托盘（TrayIconBuilder）+ 托盘菜单。
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 # 应用内更新：updater 负责「检查 / 下载 / 签名校验 / 安装」，process 负责装完重启。
 # 网络请求在 Rust 侧发出，所以不需要放宽前端 CSP。

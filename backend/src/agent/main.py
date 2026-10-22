@@ -103,7 +103,17 @@ def main(argv: list[str] | None = None) -> None:
 
     settings = Settings()
     logging.basicConfig(level=settings.log_level)
-    uvicorn.run(create_app(), host=settings.host, port=settings.port, log_level="info")
+    app = create_app()
+    # R9 契约 §11（W5）：退出收尾（POST /api/lifecycle/shutdown）完成后，由这里让
+    # uvicorn **优雅**停下 —— lifespan 的 finally 会再走一次同一个 aclose（幂等），
+    # 数据库随后按 close_decision 关闭，进程自己退出。壳按 pid 等它消失，超时才兜底。
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=settings.host, port=settings.port, log_level="info")
+    )
+    coordinator = getattr(app.state, "shutdown_coordinator", None)
+    if coordinator is not None:
+        coordinator.set_exit_hook(lambda: setattr(server, "should_exit", True))
+    server.run()
 
 
 if __name__ == "__main__":

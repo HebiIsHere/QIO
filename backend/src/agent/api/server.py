@@ -332,6 +332,12 @@ def create_app(
 ) -> FastAPI:
     bus = EventBus()
     ctx = AppContext(settings, conn, bus)
+    # R9 契约 §11（W5）：退出闸门 + 一次性关闭。必须在 lifespan 之前建立：
+    # 退出路由与 lifespan 共用**同一个** aclose 任务（退出收尾只执行一次），
+    # middleware 也从收到请求那一刻起拒绝新工作（503）。
+    from agent.api.lifecycle_routes import ShutdownCoordinator, build_lifecycle_router
+
+    shutdown = ShutdownCoordinator()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -396,7 +402,8 @@ def create_app(
             except Exception:  # noqa: BLE001
                 hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
             try:
-                report = await ctx.aclose()
+                # 退出路由可能已经触发过收尾：这里等的是同一个任务（幂等、不重复收尾）。
+                report = await shutdown.aclose_for_lifespan(ctx)
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
                 logging.getLogger(__name__).warning("app context close failed", exc_info=True)
             from agent.services.lifecycle import (
@@ -433,6 +440,10 @@ def create_app(
                 log_close_report(report)
 
     app = FastAPI(title="QIO", version="0.2.10", lifespan=lifespan)
+    # R9 §11：桌面壳真正退出前的唯一收尾入口（POST /api/lifecycle/shutdown）。
+    # 入口（agent/main.py）通过 app.state.shutdown_coordinator 注入「如何让 uvicorn 退出」。
+    app.include_router(build_lifecycle_router(ctx, shutdown))
+    app.state.shutdown_coordinator = shutdown
     from agent.knowledge.lifecycle import VersionConflict
 
     @app.exception_handler(VersionConflict)
@@ -519,6 +530,20 @@ def create_app(
         if not allowed:
             status = 403 if reason in ("origin_rejected", "host_not_loopback") else 401
             return JSONResponse({"detail": "unauthorized", "reason": reason}, status_code=status)
+        # R9 契约 §11：退出开始后**不再受理新工作**（503）。只读请求仍短暂放行：
+        # 前端要能读到最后的事实；唯一允许的写是退出接口本身（重复调用必须幂等）。
+        if (
+            shutdown.is_shutting_down()
+            and request.method not in ("GET", "HEAD", "OPTIONS")
+            and path != "/api/lifecycle/shutdown"
+        ):
+            return JSONResponse(
+                {
+                    "detail": "QIO 正在退出，不再受理新的工作",
+                    "code": "shutting_down",
+                },
+                status_code=503,
+            )
         return await call_next(request)
 
     @app.get("/api/health")
@@ -1021,33 +1046,68 @@ def create_app(
     async def update_memory_settings(body: dict) -> dict:
         return _apply_settings_patch(ctx, "memory", body)
 
-    # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒） ----------------
+    # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒）
+    #    + 关闭主窗口时的行为（R9 契约 §11：每次询问 / 最小化到托盘 / 直接退出） ----
 
     TYPEWRITER_SPEEDS = (25, 50, 75)
     DEFAULT_TYPEWRITER_CPS = 50
+    # 关闭行为：ask = 原生/前端确认框；tray = 隐藏窗口继续运行；quit = 真正退出。
+    # 默认 ask 是契约规定：第一次遇到关闭按钮的人必须先被问一次，而不是被静默杀掉或藏起来。
+    CLOSE_BEHAVIORS = ("ask", "tray", "quit")
+    DEFAULT_CLOSE_BEHAVIOR = "ask"
+
+    def _close_behavior() -> str:
+        raw = ctx.settings_store.get("ui.close_behavior", DEFAULT_CLOSE_BEHAVIOR) or ""
+        return raw if raw in CLOSE_BEHAVIORS else DEFAULT_CLOSE_BEHAVIOR
 
     @app.get("/api/settings/ui")
     async def get_ui_settings() -> dict:
         return {
             "typewriter_cps": ctx.settings_store.get_int(
                 "ui.typewriter_cps", DEFAULT_TYPEWRITER_CPS
-            )
+            ),
+            # 旧客户端没有这个字段时按默认，不报错（契约 §11）。
+            "close_behavior": _close_behavior(),
         }
 
     @app.put("/api/settings/ui")
     async def update_ui_settings(body: dict) -> dict:
-        raw = body.get("typewriter_cps")
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="typewriter_cps must be an integer")
-        if value not in TYPEWRITER_SPEEDS:
+        touched = False
+        if "typewriter_cps" in body:
+            raw = body.get("typewriter_cps")
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="typewriter_cps must be an integer")
+            if value not in TYPEWRITER_SPEEDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"typewriter_cps must be one of {list(TYPEWRITER_SPEEDS)}",
+                )
+            ctx.settings_store.set("ui.typewriter_cps", str(value))
+            touched = True
+        if "close_behavior" in body:
+            behavior = body.get("close_behavior")
+            if behavior not in CLOSE_BEHAVIORS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"close_behavior must be one of {list(CLOSE_BEHAVIORS)}",
+                )
+            ctx.settings_store.set("ui.close_behavior", str(behavior))
+            touched = True
+        if not touched:
+            # 不接受「什么都不改」的 PUT：它会让调用方误以为某一项已经被保存。
             raise HTTPException(
                 status_code=400,
-                detail=f"typewriter_cps must be one of {list(TYPEWRITER_SPEEDS)}",
+                detail="at least one of typewriter_cps / close_behavior is required",
             )
-        ctx.settings_store.set("ui.typewriter_cps", str(value))
-        return {"ok": True, "typewriter_cps": value}
+        return {
+            "ok": True,
+            "typewriter_cps": ctx.settings_store.get_int(
+                "ui.typewriter_cps", DEFAULT_TYPEWRITER_CPS
+            ),
+            "close_behavior": _close_behavior(),
+        }
 
     # -- 对话深度：迭代上限 / 输出 token 预算 -------------------------------
 

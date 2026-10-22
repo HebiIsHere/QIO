@@ -1,6 +1,7 @@
 /** 后端 API 客户端（本机 HTTP + 会话令牌）。 */
 import { authHeaders, resetBackend, resolveBackend } from "./backend";
 import { takeNextSendRequestId } from "./sendIdentity";
+import { isQuitting, type CloseBehavior } from "./quitGuard";
 
 /** API 错误：带上状态码，调用方才能区分「没权限」和「真的坏了」。 */
 export class ApiError extends Error {
@@ -128,6 +129,11 @@ async function requestOnce<T>(
 export async function request<T>(path: string, init: RequestOptions = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
   const isRead = method === "GET";
+  // R9 §11：退出流程开始后不再发起新工作（前端守卫）。唯一例外是退出接口本身：
+  // 它必须能发出，否则「停止受理新工作」就变成了「连退出都做不了」。
+  if (!isRead && isQuitting() && path !== "/api/lifecycle/shutdown") {
+    throw new ApiError(503, path, "QIO 正在退出，不再发起新的请求");
+  }
   const timeoutMs = init.timeoutMs ?? (isRead ? API_TIMEOUT_MS.read : API_TIMEOUT_MS.write);
   const retries = isRead ? Math.max(0, init.retries ?? 1) : 0;
   let attempt = 0;
@@ -1380,11 +1386,44 @@ export const api = {
       },
     ),
   getUISettings: () =>
-    request<{ typewriter_cps: number }>("/api/settings/ui"),
+    request<{ typewriter_cps: number; close_behavior?: string }>("/api/settings/ui"),
   updateUISettings: (typewriterCps: number) =>
-    request<{ ok: boolean; typewriter_cps: number }>("/api/settings/ui", {
-      method: "PUT",
-      body: JSON.stringify({ typewriter_cps: typewriterCps }),
+    request<{ ok: boolean; typewriter_cps: number; close_behavior?: string }>(
+      "/api/settings/ui",
+      {
+        method: "PUT",
+        body: JSON.stringify({ typewriter_cps: typewriterCps }),
+      },
+    ),
+  /** R9 §11：关闭主窗口行为（ask / tray / quit），后端设置键 ui.close_behavior。 */
+  updateCloseBehavior: (behavior: CloseBehavior) =>
+    request<{ ok: boolean; typewriter_cps: number; close_behavior: string }>(
+      "/api/settings/ui",
+      {
+        method: "PUT",
+        body: JSON.stringify({ close_behavior: behavior }),
+      },
+    ),
+  /**
+   * 真正退出前的后端收尾（R9 §11）：停止受理新工作、有界收尾、持久化有效待审批。
+   * 有界预算是后端常量（初值 8 秒）；这里多给一点网络余量，超时由壳按 pid 兜底。
+   */
+  shutdownBackend: () =>
+    request<{
+      done: boolean;
+      already: boolean;
+      timeout: boolean;
+      grace_seconds: number;
+      approvals_restored: number;
+      report: {
+        clean: boolean;
+        unfinished: string[];
+        phases: string[];
+        detail: string;
+      };
+    }>("/api/lifecycle/shutdown", {
+      method: "POST",
+      timeoutMs: API_TIMEOUT_MS.bulk,
     }),
   getComputerSettings: () =>
     request<ComputerSettings>("/api/settings/computer"),

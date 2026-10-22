@@ -9,6 +9,7 @@ import { api, type CredentialMeta, type VerifyReport } from "../services/api";
 import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
+import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
 import { useOnboardingStore } from "../stores/onboarding";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
@@ -427,6 +428,30 @@ function toggleWindowHide(id: DockId) {
 function resetWindowLayout() {
   resetFloatPositions();
   setNotice("window", "ok", "已还原默认布局（贴靠隐藏关闭、位置回到默认）");
+}
+
+/* ---------------- 关闭主窗口行为（R9 契约 §11） ---------------- */
+const CLOSE_OPTIONS = CLOSE_BEHAVIOR_OPTIONS;
+function closeBehaviorLabel(value: CloseBehavior): string {
+  return CLOSE_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+/**
+ * 保存关闭行为：写后端设置键 ui.close_behavior，立即生效（前端 store 同步更新）。
+ * 失败必须让用户看见 —— 「设置看起来改了但实际没保存」会让下一次关窗行为不可预期。
+ */
+async function chooseCloseBehavior(value: CloseBehavior) {
+  if (ui.closeBehavior === value) return;
+  beginSave("appearance", `正在保存关闭行为：${closeBehaviorLabel(value)}…`);
+  try {
+    await ui.setCloseBehavior(value);
+    setNotice(
+      "appearance",
+      "ok",
+      `关闭主窗口时：${closeBehaviorLabel(ui.closeBehavior)}（已保存，立即生效）`,
+    );
+  } catch (e) {
+    setNotice("appearance", "err", errText("保存关闭行为", e));
+  }
 }
 
 /* ---------------- 对话与记忆 ---------------- */
@@ -1122,6 +1147,33 @@ watch(activeTab, async () => {
             </div>
             <p v-if="notices.window" class="msg" :class="notices.window.kind" role="status">
               {{ notices.window.text }}
+            </p>
+          </section>
+
+          <section class="sec">
+            <h2>关闭主窗口时</h2>
+            <p class="desc">
+              标题条关闭按钮、系统关闭（Alt+F4 / 任务栏关闭）都按这里的选择处理。
+              「最小化到托盘」只是隐藏窗口：QIO 与后端继续运行，可从系统托盘恢复，不会触发退出收尾。
+              「直接退出」会先停止受理新工作、保存状态并有界收尾，再结束本实例的后端进程；
+              等待中的有效审批会保留下来，下次启动可恢复。
+            </p>
+            <div class="seg" role="group" aria-label="关闭主窗口行为">
+              <button
+                v-for="o in CLOSE_OPTIONS"
+                :key="o.value"
+                type="button"
+                class="motion-opt"
+                :class="{ on: ui.closeBehavior === o.value }"
+                :aria-pressed="ui.closeBehavior === o.value"
+                :title="o.desc"
+                @click="chooseCloseBehavior(o.value)"
+              >
+                {{ o.label }}
+              </button>
+            </div>
+            <p class="mode-hint mono">
+              当前：{{ closeBehaviorLabel(ui.closeBehavior) }}（{{ CLOSE_OPTIONS.find((o) => o.value === ui.closeBehavior)?.desc }}）
             </p>
           </section>
         </div>
