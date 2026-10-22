@@ -116,6 +116,9 @@ const emit = defineEmits<{
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
   (e: "join-group", cardId: string, groupId: string): void;
+  /** 方案 A：悬停卡片时让画面临时显示它所属组的轮廓（只影响显示）。 */
+  (e: "hover-enter"): void;
+  (e: "hover-leave"): void;
 }>();
 
 const store = useInteractiveStore();
@@ -1260,8 +1263,22 @@ watch(
     :data-card-id="card.id"
     :data-card-state="displayState"
     @pointerdown="onPointerDown"
+    @pointerenter="emit('hover-enter')"
+    @pointerleave="emit('hover-leave')"
     :data-cover="coverMode ? '1' : undefined"
   >
+    <!--
+      方案 A 的组成员标记：组框不再常驻，成员卡片用一条很轻的同色竖条表示归属。
+      只是视觉提示：不接管指针，不改变卡片操作，也不写板面状态。
+    -->
+    <span
+      v-if="groupName"
+      class="group-mark"
+      data-im="card-group-mark"
+      :data-group-name="groupName"
+      :title="'属于组：' + groupName"
+      aria-hidden="true"
+    ></span>
     <!--
       封面层：图片铺满整张卡作为背景（纯呈现，不进板面状态）。
       编辑态 / 阅读态不铺：那两个状态的主体分别是表单与真实预览。
@@ -1904,6 +1921,21 @@ watch(
     `prefers-reduced-motion` / 手动「减少动画」由 styles/base.css 的
     :root[data-motion="reduced"] 统一关掉（同一份偏好来自 utils/motion.ts）。
   */
+}
+/*
+ * 组成员标记（方案 A）：贴在卡片左边缘的一条细竖条。
+ * 组框本身不再常驻，归属靠这一条轻提示 + 组条来读；颜色走强调色令牌。
+ */
+.group-mark {
+  position: absolute;
+  left: 0;
+  top: 14px;
+  width: 3px;
+  height: 26px;
+  border-radius: 0 var(--r-pill) var(--r-pill) 0;
+  background: var(--accent);
+  opacity: 0.65;
+  pointer-events: none;
 }
 .card:not(.dragging) {
   transition:

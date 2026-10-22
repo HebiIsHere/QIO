@@ -208,6 +208,11 @@ interface GroupDragState {
   dy: number;
 }
 const groupDragging = ref<GroupDragState | null>(null);
+/**
+ * 方案 A：组不常驻画轮廓。悬停组条 / 悬停成员 / 选中成员 / 组拖动或落点预演时，
+ * 才临时显示贴合轮廓（同时成员卡片有常驻的共同标记，见 BoardCard 的 groupName）。
+ */
+const hoveredGroupId = ref<string | null>(null);
 const spaceDown = ref(false);
 const editingLinkId = ref<string | null>(null);
 const linkMeaning = ref("");
@@ -1033,6 +1038,38 @@ function onGroupDragStart(groupId: string, event: PointerEvent) {
   };
   notice.value = "";
   attachPointerListeners();
+}
+
+/** 组条悬停（进入 / 离开）：只影响显示，不写板面状态。 */
+function onGroupHover(groupId: string, entering: boolean): void {
+  if (entering) {
+    hoveredGroupId.value = groupId;
+  } else if (hoveredGroupId.value === groupId) {
+    hoveredGroupId.value = null;
+  }
+}
+
+/** 悬停成员卡片：临时显示它所属组的轮廓（离开即收起）。 */
+function onCardPointerEnter(cardId: string): void {
+  hoveredGroupId.value = groupIdOf(cardId);
+}
+
+function onCardPointerLeave(cardId: string): void {
+  if (hoveredGroupId.value === groupIdOf(cardId)) hoveredGroupId.value = null;
+}
+
+/** 当前这一帧哪些组显示轮廓（只用于显示，不产生任何板面改动）。 */
+function groupActive(groupId: string): boolean {
+  if (hoveredGroupId.value === groupId) return true;
+  const current = boardState.value;
+  if (current && current.selection.some((cardId) => groupIdOf(cardId) === groupId)) return true;
+  const drag = dragging.value;
+  if (drag && drag.preview && (drag.preview.groupId === groupId || drag.preview.mergesWith === groupId)) {
+    return true;
+  }
+  const groupDrag = groupDragging.value;
+  if (groupDrag && groupDrag.groupId === groupId) return true;
+  return false;
 }
 
 function onPointerMove(event: PointerEvent) {
@@ -2546,8 +2583,10 @@ onBeforeUnmount(() => {
             @dissolve="onDissolveGroup"
             @move-member="onMoveMember"
             @leave="onLeaveMember"
+            :active="groupActive(group.id)"
             @select-member="(cardId) => onSelect(cardId, false)"
             @drag-start="onGroupDragStart"
+            @hover="onGroupHover"
           />
 
           <BoardCard
@@ -2576,6 +2615,8 @@ onBeforeUnmount(() => {
             @duplicate="onCardDuplicate"
             @leave-group="onCardLeaveGroup"
             @join-group="onCardJoinGroup"
+            @hover-enter="onCardPointerEnter(card.id)"
+            @hover-leave="onCardPointerLeave(card.id)"
           />
 
           <BoardLinkLayer

@@ -833,16 +833,6 @@ onBeforeUnmount(() => {
           :data-intent-id="item.id"
           :data-preview-group-id="group.id"
         >
-          <rect
-            v-for="(fill, index) in group.fills"
-            :key="'fill-' + index"
-            class="preview-group-fill"
-            :x="fill.x"
-            :y="fill.y"
-            :width="fill.w"
-            :height="fill.h"
-            rx="12"
-          />
           <line
             v-for="(segment, index) in group.segments"
             :key="'seg-' + index"
@@ -864,6 +854,7 @@ onBeforeUnmount(() => {
           @pointerdown="group.editable && onGroupHeaderPointerDown(item.id, group.id, $event)"
           @dragstart.prevent
         >
+          <span class="preview-group-grip" aria-hidden="true">⠿</span>
           <span class="preview-group-name">{{ group.name }}</span>
           <span v-if="group.ordered" class="preview-group-meta mono">有序</span>
           <span class="preview-group-meta mono">{{ group.memberCount }} 张</span>
@@ -1115,8 +1106,13 @@ onBeforeUnmount(() => {
 .preview-card-delete:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .preview-card-delete:disabled { opacity: 0.5; cursor: default; }
 .preview-group-outline { position: absolute; overflow: visible; pointer-events: none; }
-.preview-group-fill { fill: var(--bg-inset); opacity: 0.55; }
-.preview-group-segment { stroke: var(--link); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.preview-group-segment {
+  stroke: var(--link);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 /*
  * 组头部是浮动小条（贴合轮廓的顶部留白带里）：只有可编辑预览的头部接管指针，
  * 按住拖动 = 整组虚卡同位移；不可编辑时只是显示。
@@ -1146,6 +1142,7 @@ onBeforeUnmount(() => {
 }
 .preview-group-head.draggable:active { cursor: grabbing; }
 .preview-group-head.saving { opacity: 0.7; }
+.preview-group-grip { color: var(--text-muted); letter-spacing: -1px; }
 .preview-group-name { overflow: hidden; text-overflow: ellipsis; }
 .preview-group-meta { color: var(--text-secondary); font-size: var(--fs-xs); }
 .preview-links { position: absolute; left: 0; top: 0; overflow: visible; }

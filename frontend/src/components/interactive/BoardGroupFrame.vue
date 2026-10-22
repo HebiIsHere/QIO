@@ -28,6 +28,11 @@ const props = defineProps<{
   dropIndex: number | null;
   /** 拖动预演：被拖动的那张卡片（有序组里要显示它将插到哪两位之间） */
   dropCardId: string | null;
+  /**
+   * 是否显示贴合轮廓（方案 A）：常驻只有组条 + 成员标记，
+   * 悬停组条 / 悬停成员 / 选中成员 / 组拖动或落点预演时才显示轮廓。
+   */
+  active?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -39,6 +44,8 @@ const emit = defineEmits<{
   (e: "select-member", cardId: string): void;
   /** 按住头部拖动整组（由 BoardCanvas 处理：实时预览 + 松手一次提交） */
   (e: "drag-start", groupId: string, event: PointerEvent): void;
+  /** 悬停组条（进入 / 离开）：由 BoardCanvas 决定是否临时显示轮廓 */
+  (e: "hover", groupId: string, entering: boolean): void;
 }>();
 
 const nameInput = ref<HTMLInputElement | null>(null);
@@ -91,18 +98,8 @@ const headerStyle = computed<Record<string, string>>(() => {
   };
 });
 
-const fills = computed(() => {
-  const result = outline.value;
-  if (!result) return [];
-  const dx = result.bounds.x;
-  const dy = result.bounds.y;
-  return result.members.map((fill) => ({
-    x: fill.x - dx,
-    y: fill.y - dy,
-    w: fill.w,
-    h: fill.h,
-  }));
-});
+/** 轮廓只做“交互态”提示（方案 A）：常驻不画，避免把组表达成一个几何边界。 */
+const showBoundary = computed(() => Boolean(props.active || props.dropTarget || props.dropMerge));
 
 const segments = computed(() => {
   const result = outline.value;
@@ -174,6 +171,7 @@ defineExpose({ focusName });
 <template>
   <template v-if="outline">
     <svg
+      v-if="showBoundary"
       class="group-outline"
       :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge }"
       :style="svgStyle"
@@ -181,16 +179,6 @@ defineExpose({ focusName });
       data-im="group-outline"
       :data-group-id="group.id"
     >
-      <rect
-        v-for="(fill, index) in fills"
-        :key="'fill-' + index"
-        class="group-fill"
-        :x="fill.x"
-        :y="fill.y"
-        :width="fill.w"
-        :height="fill.h"
-        rx="12"
-      />
       <line
         v-for="(segment, index) in segments"
         :key="'seg-' + index"
@@ -209,15 +197,19 @@ defineExpose({ focusName });
       data-im="group"
       :data-group-id="group.id"
       :data-ordered="group.ordered ? 'true' : 'false'"
+      @pointerenter="emit('hover', group.id, true)"
+      @pointerleave="emit('hover', group.id, false)"
     >
       <div
         class="group-head"
         :class="{ 'tools-open': membersOpen }"
         data-im="group-head"
+        title="按住组条拖动整组"
         @pointerdown="onHeaderPointerDown"
       >
-        <!-- 常态一行：组名（输入即用）、成员数、是否有序、以及按需展开的成员管理入口。 -->
+        <!-- 常态一行：拖动把手、组名（输入即用）、成员数、是否有序、以及按需展开的成员管理入口。 -->
         <div class="head-row">
+          <span class="grip" aria-hidden="true">⠿</span>
           <input
             ref="nameInput"
             class="group-name"
@@ -365,8 +357,12 @@ defineExpose({ focusName });
   pointer-events: none;
   z-index: 2;
 }
-.group-fill { fill: var(--bg-inset); }
-.group-segment { stroke: var(--border-subtle); stroke-width: 1; }
+.group-segment {
+  stroke: var(--border-subtle);
+  stroke-width: 1.25;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .group-outline.ordered .group-segment { stroke: var(--border-strong); }
 .group-outline.drop-target .group-segment { stroke: var(--accent); }
 .group-outline.drop-merge .group-segment { stroke: var(--warning); }
@@ -383,6 +379,10 @@ defineExpose({ focusName });
   font-size: var(--fs-xs);
   pointer-events: none;
 }
+/*
+ * 组条（方案 A）：常驻的“组身份 + 拖动把手”。
+ * 比卡片轻：薄边、无阴影、小字号；整条都是拖动热区（输入框 / 按钮除外）。
+ */
 .group-head {
   display: flex;
   flex-direction: column;
@@ -392,7 +392,7 @@ defineExpose({ focusName });
   cursor: grab;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--r-md);
   font-size: var(--fs-xs);
   overflow: hidden;
 }
@@ -439,6 +439,15 @@ defineExpose({ focusName });
 .group-head button,
 .group-head .chip,
 .group-head .btn { pointer-events: auto; cursor: default; }
+/* 抓握图标只是拖动提示：不单独接管指针，整条组条都能拖 */
+.grip {
+  flex: none;
+  color: var(--text-muted);
+  letter-spacing: -1px;
+  user-select: none;
+  pointer-events: none;
+}
+.group-head:hover .grip { color: var(--text-secondary); }
 .group-name {
   flex: none;
   font: inherit;

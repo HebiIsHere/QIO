@@ -698,6 +698,32 @@ describe("BoardCanvas 接线", () => {
     wrapper.unmount();
   });
 
+  it("方案 A：组轮廓默认隐藏；悬停成员时临时出现，成员卡有归属标记", async () => {
+    const base = board.addCard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "A" }), {
+      kind: "text",
+      content: "B",
+    });
+    const grouped = board.createGroup(base, [base.cards[0].id, base.cards[1].id], "发布计划");
+    setBoard(grouped);
+    const wrapper = mountCanvas();
+    expect(wrapper.find('[data-im="group"]').exists()).toBe(true);
+    // 常驻不画轮廓；成员卡有很轻的归属标记
+    expect(wrapper.find('[data-im="group-outline"]').exists()).toBe(false);
+    expect(wrapper.findAll('[data-im="card-group-mark"]')).toHaveLength(2);
+
+    const member = wrapper
+      .findAll('[data-im="card"]')
+      .find((item) => item.attributes("data-card-id") === grouped.cards[0].id)!;
+    member.element.dispatchEvent(new MouseEvent("pointerenter"));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-im="group-outline"]').exists()).toBe(true);
+
+    member.element.dispatchEvent(new MouseEvent("pointerleave"));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[data-im="group-outline"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("组名编辑：输入即用；留空保留默认名且组仍然成立", async () => {
     const base = board.addCard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "A" }), {
       kind: "text",
