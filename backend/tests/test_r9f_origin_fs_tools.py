@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -181,10 +182,19 @@ async def test_external_replacement_does_not_inherit_generated(env):
     target = root / "生成物.txt"
     assert env["store"].is_generated(target)
 
-    # 外部程序删除并重建同名文件（os.replace 模拟原子替换）
-    temp = root / "生成物.txt.external"
-    temp.write_text("someone-else", encoding="utf-8")
-    os.replace(temp, target)
+    # 外部程序删除并重建同名文件（os.replace 模拟原子替换）。
+    # POSIX：用打开的描述符钉住旧 inode，避免 ext4 复用 inode 导致"新文件仍被视为旧身份"
+    # （平台行为差异，不是产品缺陷）；Windows 不允许删除已打开文件，故只在 POSIX 钉住。
+    hold = None
+    if sys.platform != "win32":
+        hold = os.open(str(target), os.O_RDONLY)
+    try:
+        temp = root / "生成物.txt.external"
+        temp.write_text("someone-else", encoding="utf-8")
+        os.replace(temp, target)
+    finally:
+        if hold is not None:
+            os.close(hold)
 
     assert env["store"].lookup(target) is None, "外部替换的文件不得继承旧来源"
     result = await tool.run(path="生成物.txt", content="qio-v2")

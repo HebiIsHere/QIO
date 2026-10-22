@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -110,9 +111,17 @@ def test_external_replacement_does_not_inherit_generated(store, tmp_path):
     )
     assert generated is not None
 
-    # 外部程序删掉并重建同名文件（新身份）
+    # 外部程序删掉并重建同名文件（新身份）。
+    # POSIX 上 unlink 后立刻在同一路径重建，文件系统可能复用同一 inode（ext4 实测会），
+    # 这会把"平台行为差异"误读成产品缺陷。先用一个打开的文件描述符钉住旧 inode，
+    # 保证重建得到不同身份；Windows 不允许删除已打开的文件，所以只在 POSIX 这样做。
+    hold = None
+    if sys.platform != "win32":
+        hold = os.open(str(path), os.O_RDONLY)
     path.unlink()
     path.write_text("someone-else", encoding="utf-8")
+    if hold is not None:
+        os.close(hold)
 
     assert store.lookup(path) is None, "外部替换不得继承旧记录"
     assert store.is_generated(path) is False
