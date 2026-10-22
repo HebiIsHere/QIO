@@ -167,18 +167,21 @@ def test_browser_upload_lands_material_once_with_origin(client: TestClient, tmp_
     assert client.get(f"/api/attachments/{att['id']}/content").content == payload
 
 
-def test_upload_without_source_kind_is_rejected_as_legacy(client: TestClient):
-    """新入口必须声明来源；不带 X-QIO-Source-Kind 的旧上传分支不再接新请求。"""
+def test_upload_without_source_kind_defaults_to_browser_upload(client: TestClient, tmp_path: Path):
+    """缺省来源按 browser_upload 首次落盘（不再有旧副本语义）。"""
+    payload = b"no-header-bytes"
     resp = client.post(
         "/api/attachments/upload",
-        content=b"legacy-bytes",
+        content=payload,
         headers={"Content-Type": "application/octet-stream", "X-QIO-Name": "old.txt"},
     )
-    # 当前过渡期：旧分支仍保留给历史数据回放测试；最终接缝明确报 400。
-    assert resp.status_code in (200, 400)
-    if resp.status_code == 200:
-        att = resp.json()["attachment"]
-        assert att["source_kind"] is None, "旧分支产生的只能是历史形态记录"
+    assert resp.status_code == 200, resp.text
+    att = resp.json()["attachment"]
+    assert att["source_kind"] == "browser_upload", "缺省必须标注浏览器上传来源"
+    assert att["origin"] == "user_saved_material"
+    assert att["stored_path"] is None
+    assert "materials" in Path(att["source_path"]).parts
+    assert Path(att["source_path"]).read_bytes() == payload
 
 
 # ---------------------------------------------------------------------------

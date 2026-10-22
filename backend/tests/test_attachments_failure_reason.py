@@ -82,7 +82,8 @@ def _block_target_directory(ctx) -> Path:
     `target.parent.mkdir(parents=True, exist_ok=True)` 会抛 ENOTDIR/EACCES 一类 OSError。
     """
     year = datetime.now(timezone.utc).astimezone().strftime("%Y")
-    blocker = ctx.attachments.root / year
+    # 新语义：首次落盘在 workspace/materials/<yyyy>/<mm>/，失败注入点在材料根下
+    blocker = ctx.attachments.materials_root / year
     blocker.parent.mkdir(parents=True, exist_ok=True)
     if blocker.exists():
         blocker.unlink()
@@ -91,16 +92,16 @@ def _block_target_directory(ctx) -> Path:
 
 
 def _upload(client: TestClient, ctx, *, name: str = "报告.txt", body: bytes = b"hello") -> str:
-    """走**真实上传路由**；用测试专用的探针拿到刚登记的 id（不改实现行为）。"""
+    """走**真实上传路由**（首次落盘用户材料）；用探针拿到刚登记的 id。"""
     created: list[str] = []
-    real_begin = ctx.attachments.begin_upload
+    real_begin = ctx.attachments.begin_material
 
     def spy(**kwargs):
         att = real_begin(**kwargs)
         created.append(att.id)
         return att
 
-    ctx.attachments.begin_upload = spy  # type: ignore[method-assign]
+    ctx.attachments.begin_material = spy  # type: ignore[method-assign]
     try:
         resp = client.post(
             "/api/attachments/upload",
@@ -109,9 +110,16 @@ def _upload(client: TestClient, ctx, *, name: str = "报告.txt", body: bytes = 
             headers={"X-QIO-Name": quote(name), "X-QIO-Topic-Id": "t1"},
         )
     finally:
-        ctx.attachments.begin_upload = real_begin  # type: ignore[method-assign]
+        ctx.attachments.begin_material = real_begin  # type: ignore[method-assign]
     assert created, f"上传路由没有登记附件：{resp.status_code} {resp.text[:200]}"
     return created[0], resp
+
+
+def _legacy_ready_copy(ctx, body: bytes = b"hello"):
+    """**历史行夹具**：旧副本上传路径（begin_upload/write_upload_stream/apply_outcome）。"""
+    att = ctx.attachments.begin_upload(name="历史副本.bin")
+    outcome = ctx.attachments.write_upload_stream(att, [body])
+    return ctx.attachments.apply_outcome(att.id, outcome)
 
 
 # -- 1. 建目录失败：failed 粘性、原始原因不被覆盖 -----------------------------
@@ -181,16 +189,16 @@ def test_browser_upload_failure_offers_reupload_not_a_fake_retry(client: TestCli
     assert _wait_terminal(client, att_id)["state"] == "failed"
 
     payload = client.get(f"/api/attachments/{att_id}").json()["attachment"]
-    assert payload["kind"] == "copy" and payload["source_path"] is None
+    assert payload["source_path"] is None
+    assert payload["source_kind"] == "browser_upload"
     assert payload["actions"] == ["reupload"], payload["actions"]
     assert payload["recoverable_from_source"] is False
 
-    # 证据：服务端 POST /retry 对它**不可能**成功（没有字节可重放）——
-    # 所以可用操作里不能出现 retry（否则界面会给出一个必然失败的动作）。
-    assert client.post(f"/api/attachments/{att_id}/retry").status_code == 200
-    time.sleep(0.5)  # 让它真的跑一次（预期它不可能成功）
+    # 证据：服务端 POST /retry 对它**不可能**成功（没有字节可重放）→ 明确拒绝，不是 200
+    refused = client.post(f"/api/attachments/{att_id}/retry")
+    assert refused.status_code == 409, refused.text
     again = client.get(f"/api/attachments/{att_id}").json()["attachment"]
-    assert again["state"] == "failed", "浏览器上传没有原路径：服务端重试不可能成功"
+    assert again["state"] == "failed"
 
 
 def test_second_failure_keeps_the_new_reason(client: TestClient):
@@ -200,7 +208,7 @@ def test_second_failure_keeps_the_new_reason(client: TestClient):
     att_id, _resp = _upload(client, ctx)
     first = _wait_terminal(client, att_id)["error"]
 
-    ctx.attachments.apply_outcome(
+    ctx.attachments.apply_material_outcome(
         att_id, DiskOutcome(state="failed", error="第二次失败：磁盘配额用完了")
     )
 
@@ -214,11 +222,12 @@ def test_second_failure_keeps_the_new_reason(client: TestClient):
 
 
 def test_ready_copy_deleted_later_becomes_missing(client: TestClient):
+    """历史行（旧副本）：曾成功保存、后来副本丢了 → 如实 missing（行为不变）。"""
     ctx = _ctx(client)
-    att_id, resp = _upload(client, ctx)
-    assert resp.status_code == 200, resp.text
-    ready = _wait_terminal(client, att_id)
-    assert ready["state"] == "ready"
+    legacy = _legacy_ready_copy(ctx)
+    att_id = legacy.id
+    assert legacy.state == "ready"
+    ready = ctx.attachments.payload(legacy)
 
     Path(ready["stored_path"]).unlink()  # 曾成功保存，后来副本丢了
 
@@ -243,9 +252,11 @@ def test_prepared_and_cancelled_are_untouched(client: TestClient):
 
 
 def test_failed_copy_recovers_only_with_matching_sha256(client: TestClient, tmp_path: Path):
+    """历史行（旧副本）：只有 sha256 一致才允许「可验证的恢复」。"""
     ctx = _ctx(client)
-    att_id, _resp = _upload(client, ctx)
-    ready = _wait_terminal(client, att_id)
+    legacy = _legacy_ready_copy(ctx)
+    att_id = legacy.id
+    ready = ctx.attachments.payload(legacy)
     assert ready["state"] == "ready"
     stored = Path(ready["stored_path"])
     body = stored.read_bytes()
@@ -274,7 +285,8 @@ def test_available_actions_distinguish_kinds(client: TestClient, tmp_path: Path)
     att_id, _resp = _upload(client, ctx)
     _wait_terminal(client, att_id)
     payload = client.get(f"/api/attachments/{att_id}").json()["attachment"]
-    assert payload["kind"] == "copy"
+    assert payload["kind"] == "reference"
+    assert payload["source_path"] is None
     # 浏览器上传没有源路径：服务端重试不可能成功（见下面那条用例的证据），
     # 唯一真能成功的动作是「重新上传」；也不得声称 QIO 能从原地址恢复。
     assert payload["actions"] == ["reupload"], payload["actions"]
