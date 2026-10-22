@@ -759,7 +759,68 @@ class SandboxExecutor:
             code, arguments, extra_env or {}, policy, project_files, entry, interpreter,
             extra_writable_dirs=extra_writable_dirs,
             authorized_write_dirs=authorized_write_dirs,
+            internal_data_confirmed=bool(internal_data_confirmed),
         )
+
+    # -- 受控启动组件复用（契约 §3.3） -------------------------------------
+
+    def _launch_boundary(self):
+        """与 cmd_tools 同一个 ControlledLauncher：只复用受控启动组件，不重判权限。"""
+        from agent.security import launch as launch_boundary
+
+        return launch_boundary.ControlledLauncher(
+            computer=None,
+            security=self.security,
+            mode_provider=self.mode_provider,
+            protected_scope_provider=self.protected_scope_provider,
+        )
+
+    def _worker_launch_plan(
+        self,
+        tmp: str,
+        spec,
+        code: str,
+        files: dict[str, str] | None,
+        entry: str | None,
+        guarded_mode: str | None,
+        *,
+        authorized_write_dirs: "list[str] | tuple[str, ...] | None",
+        internal_data_confirmed: bool,
+    ):
+        """自建工具 worker 的 LaunchSpec/LaunchPermit（与普通程序启动同一套契约）。"""
+        from agent.security import launch as launch_boundary
+
+        argv = [str(item) for item in (getattr(spec, "argv", None) or [])]
+        program = argv[0] if argv else None
+        worker_argv = tuple(argv[1:])
+        payload_shape = {
+            "code": code,
+            "files": dict(files or {}),
+            "entry": str(entry or ""),
+        }
+        worker_spec = launch_boundary.LaunchSpec(
+            kind="script",
+            program=program,
+            argv=worker_argv,
+            cwd=tmp,
+            script_source=json.dumps(payload_shape, ensure_ascii=False, sort_keys=True),
+            script_name=(
+                Path(worker_argv[-1]).name if worker_argv else "qio-tool-worker.py"
+            ),
+            timeout=float(self.timeout_seconds),
+        )
+        worker_permit = launch_boundary.build_permit(
+            worker_spec,
+            mode=(guarded_mode or "unrestricted"),
+            allowed_roots=tuple(
+                str(item) for item in (authorized_write_dirs or ()) if str(item)
+            ),
+            allowed_operations=("execute",),
+            internal_data_confirmed=bool(internal_data_confirmed),
+            source="instruction",
+            reason="自建工具 worker 启动：复用统一受控启动组件（spec 摘要/隔离/事后核验）",
+        )
+        return worker_spec, worker_permit, self._launch_boundary()
 
     # -- subprocess executor ----------------------------------------------
 
@@ -774,6 +835,7 @@ class SandboxExecutor:
         interpreter: str | None = None,
         extra_writable_dirs: "list[str] | tuple[str, ...] | None" = None,
         authorized_write_dirs: "list[str] | tuple[str, ...] | None" = None,
+        internal_data_confirmed: bool = False,
     ) -> SandboxResult:
         from agent.tools.executor_env import ToolRuntimeUnavailable, resolve_tool_executor
 
@@ -812,6 +874,28 @@ class SandboxExecutor:
             guard_before = None
             guard = self._execution_guard()
             guarded_mode = self.current_mode()
+            # 契约 §3.3：worker 启动也走同一套受控启动事前约束（spec_digest/内部数据/
+            # 只读/许可操作核对）；拒绝时在创建任何进程之前返回。
+            worker_spec, worker_permit, launcher = self._worker_launch_plan(
+                tmp,
+                spec,
+                code,
+                files,
+                entry,
+                guarded_mode,
+                authorized_write_dirs=authorized_write_dirs,
+                internal_data_confirmed=internal_data_confirmed,
+            )
+            pre_error, pre_category = launcher.prepare(worker_spec, worker_permit)
+            if pre_error:
+                return SandboxResult(
+                    ok=False,
+                    value=None,
+                    stdout="",
+                    stderr="",
+                    error=pre_error,
+                    category=pre_category or "permission",
+                )
             if guard is not None and guarded_mode != "unrestricted":
                 from agent.tools import security_gate
 
@@ -841,8 +925,10 @@ class SandboxExecutor:
             # Job Object（内存/活动进程数上限 + 关句柄即收整棵树）与低完整性降级。
             # 钩子永不抛异常；平台不支持 / 调用失败时行为与改动前完全一致，
             # 并把实际结果与原因附在 SandboxResult.isolation 上（可诊断，不静默）。
-            hardening = isolation.harden(
+            hardening = launcher.apply_isolation(
                 process,
+                worker_spec,
+                worker_permit,
                 scratch_dir=tmp,
                 policy=policy,
                 extra_writable_dirs=extra_writable_dirs,
@@ -895,6 +981,27 @@ class SandboxExecutor:
             finally:
                 # 关掉 job 句柄：KILL_ON_JOB_CLOSE 保证这棵树里不会留下任何进程。
                 isolation.release(process)
+            # 执行后再算一次 spec_digest：worker 程序/脚本内容执行期间被替换 →
+            # 结果不可作为已授权操作的事实（与 cmd_tools 同一核对语义）。
+            post = launcher.postflight(worker_spec, worker_permit)
+            if post.get("changed"):
+                return self._guard_after(
+                    _with_isolation(
+                        SandboxResult(
+                            ok=False,
+                            value=None,
+                            stdout=stdout.decode("utf-8", errors="replace"),
+                            stderr=stderr.decode("utf-8", errors="replace"),
+                            error=(
+                                "工具 worker/脚本在执行期间发生了变化（spec_digest 不一致）："
+                                "本次执行结果不可作为已授权操作的事实"
+                            ),
+                            category="boundary_violation",
+                        ),
+                        hardening,
+                    ),
+                    guard_before,
+                )
             # 协议判定只有一份实现（见 _parse_worker_result）：
             # 输出超限 → 退出码 → 空输出 → 恰好一行 → 合法 JSON → 布尔 ok → value 类型。
             return self._guard_after(

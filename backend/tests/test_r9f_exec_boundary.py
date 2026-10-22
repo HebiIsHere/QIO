@@ -19,6 +19,7 @@ import sys
 
 import pytest
 
+from agent.security import launch as launch_boundary
 from agent.security.launch import (
     ControlledLauncher,
     LaunchSpec,
@@ -447,3 +448,81 @@ def test_script_file_content_check_detects_replacement(tmp_path):
     checked = Launcher()._check_script_file(path, spec)
     assert checked["checked"] is True
     assert checked["changed"] is True
+
+
+# --------------------------------------------------------------------------
+# 自建工具 worker：启动路径复用同一组受控启动组件（sandbox.py，契约 §3.3）
+# --------------------------------------------------------------------------
+
+
+async def test_sandbox_worker_start_uses_shared_launch_components(monkeypatch):
+    from agent.tools import sandbox as sandbox_mod
+
+    calls: dict = {}
+    original_prepare = launch_boundary.ControlledLauncher.prepare
+    original_apply = launch_boundary.ControlledLauncher.apply_isolation
+    original_post = launch_boundary.ControlledLauncher.postflight
+
+    def _spy_prepare(self, spec, permit, **kwargs):
+        calls["spec"] = spec
+        calls["permit"] = permit
+        return original_prepare(self, spec, permit, **kwargs)
+
+    def _spy_apply(self, process, spec, permit, **kwargs):
+        calls["applied"] = True
+        return original_apply(self, process, spec, permit, **kwargs)
+
+    def _spy_post(self, spec, permit, **kwargs):
+        calls["post"] = True
+        return original_post(self, spec, permit, **kwargs)
+
+    monkeypatch.setattr(launch_boundary.ControlledLauncher, "prepare", _spy_prepare)
+    monkeypatch.setattr(launch_boundary.ControlledLauncher, "apply_isolation", _spy_apply)
+    monkeypatch.setattr(launch_boundary.ControlledLauncher, "postflight", _spy_post)
+
+    executor = sandbox_mod.SandboxExecutor(executor="subprocess")
+    result = await executor.execute(
+        "def run(**kwargs):\n    return {'doubled': kwargs['n'] * 2}\n", {"n": 21}
+    )
+
+    assert result.ok is True, result.error
+    assert result.value == {"doubled": 42}
+    assert calls["spec"].kind == "script"
+    assert calls["permit"].allowed_operations == ("execute",)
+    assert calls.get("applied") is True
+    assert calls.get("post") is True
+    mechanisms = (result.isolation or {}).get("mechanisms") or []
+    if WINDOWS:
+        assert "job_object" in mechanisms
+
+
+async def test_sandbox_worker_spec_mismatch_refuses_before_spawn(monkeypatch):
+    from agent.tools import sandbox as sandbox_mod
+
+    original_plan = sandbox_mod.SandboxExecutor._worker_launch_plan
+
+    def _tampered(self, tmp, spec, code, files, entry, guarded_mode, **kwargs):
+        worker_spec, worker_permit, launcher = original_plan(
+            self, tmp, spec, code, files, entry, guarded_mode, **kwargs
+        )
+        changed = launch_boundary.LaunchSpec(
+            kind="script",
+            program=worker_spec.program,
+            argv=("someone-else.py",),
+            cwd=worker_spec.cwd,
+            script_source=worker_spec.script_source,
+            script_name=worker_spec.script_name,
+            timeout=worker_spec.timeout,
+        )
+        return changed, worker_permit, launcher
+
+    monkeypatch.setattr(sandbox_mod.SandboxExecutor, "_worker_launch_plan", _tampered)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _no_spawn)
+
+    result = await sandbox_mod.SandboxExecutor(executor="subprocess").execute(
+        "def run(**kwargs):\n    return {}\n", {}
+    )
+
+    assert result.ok is False
+    assert "许可失效" in (result.error or "")
+    assert "spec_digest" in (result.error or "")
