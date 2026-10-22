@@ -26,14 +26,18 @@ mod backend_lifecycle;
 mod updater_net;
 
 use backend_lifecycle::{
-    process_alive, stop_pids, stop_tree_by_pid, StopFailure, StopReport, STOP_VERIFY_BUDGET,
+    descendant_pids, process_alive, stop_pids, stop_tree_by_pid, StopFailure, StopReport,
+    STOP_VERIFY_BUDGET,
 };
 use qio_core::ownership;
 // 按 pid 结束整棵树只在 Windows 的退出/兜底路径上用（非 Windows 没有 job，也没有 taskkill 语义）。
 #[cfg(windows)]
 use qio_core::ownership::kill_tree_by_pid;
 use serde::Serialize;
-use tauri::{Manager, RunEvent};
+// R9 §11（W5）：托盘图标/菜单 + 把「关闭请求」交给前端处理的事件。
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 use updater_net::{install_direct_fallback_guard, resolve_updater_proxy};
@@ -858,6 +862,56 @@ struct RestoreResult {
     detail: String,
 }
 
+/// 真正退出时：等 sidecar（后端进程树）自行退出的预算。
+///
+/// 后端退出路由的有界收尾预算是 8 秒（契约 §11），之后 uvicorn 还要走 lifespan
+/// （数据库按 close_decision 关闭）。这里留足余量；仍未退出才用
+/// `taskkill /PID <pid> /T /F` 兜底并核验 pid 消失 —— 绝不按进程名批量结束。
+const QUIT_SIDECAR_WAIT: Duration = Duration::from_secs(15);
+
+/// 托盘菜单点「退出 QIO」后，前端多久没有开始真正退出流程就由壳兜底强制退出。
+/// 场景：WebView 卡死/未加载完，托盘退出不能变成「点了没反应」。
+const TRAY_QUIT_FALLBACK_WAIT: Duration = Duration::from_secs(10);
+
+/// 真正退出时的进程收尾结果（只报告真实事实）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuitReport {
+    backend_pid: Option<u32>,
+    /// 后端进程树在预算内自行退出（没有触发强制结束）
+    graceful: bool,
+    /// 是否动用了 taskkill 兜底
+    forced: bool,
+    /// pid 核验结论：树内进程是否全部确认消失（false 时 survivors 非空）
+    verified: bool,
+    survivors: Vec<u32>,
+    detail: String,
+}
+
+impl QuitReport {
+    fn no_backend() -> Self {
+        Self {
+            backend_pid: None,
+            graceful: true,
+            forced: false,
+            verified: true,
+            survivors: Vec::new(),
+            detail: "本实例没有在跑的后端，无需结束".to_string(),
+        }
+    }
+}
+
+/// `request_close` 的返回值：前端据此决定「弹确认框 / 已隐藏 / 已在退出」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloseOutcome {
+    /// ask = 需要前端弹确认框；hidden = 已隐藏到托盘；quitting = 已进入真正退出
+    action: String,
+    hidden: bool,
+    quitting: bool,
+    detail: String,
+}
+
 /// 外壳的运行时状态：后端进程、归属记录、生命周期闸门、更新网络策略。
 ///
 /// 加锁顺序（避免死锁）：**先 `phase`，后 `child` / `lease_path` / `residual_pids`**。
@@ -875,6 +929,10 @@ struct ShellRuntime {
     job: Option<Arc<backend_job::BackendJob>>,
     job_active: AtomicBool,
     phase: Mutex<BackendPhase>,
+    /// 真正退出的幂等闸门：第一个开始退出的人置 true；后台启动/恢复/隐藏都不会置它。
+    quitting: AtomicBool,
+    /// 托盘「退出 QIO」正在等前端接手（防止重复点产生多个兜底线程）。
+    tray_quit_pending: AtomicBool,
 }
 
 fn lock<'a, T>(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
@@ -911,6 +969,117 @@ impl ShellRuntime {
     /// 恢复流程就会跳过重启、把聊天留在不可用状态。
     fn is_backend_alive(&self) -> bool {
         self.backend_pid().map(process_alive).unwrap_or(false)
+    }
+
+    fn is_quitting(&self) -> bool {
+        self.quitting.load(Ordering::SeqCst)
+    }
+
+    /// 真正退出的闸门：第一个调用者返回 true。
+    ///
+    /// 同时把生命周期阶段置成 Exiting —— 后台启动准备/恢复流程从此不能再拉起后端
+    /// （关闭到托盘**不算**退出，不会走到这里；隐藏后恢复也不经过这里）。
+    fn begin_quit(&self) -> bool {
+        if self.quitting.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        *lock(&self.phase) = BackendPhase::Exiting;
+        log::info!("[qio] 进入真正退出流程：停止受理新工作、等待后端进程树退出");
+        true
+    }
+
+    /// 等本实例后端进程树自然退出；超时**只按 pid** 结束整棵树并核验 pid 消失。
+    ///
+    /// 为什么先记名单：root 先退出时，onefile 的 child 会被 reparent（父 pid 变化），
+    /// 之后再也无法从 root 反查它。名单是「整棵树都走了」的唯一依据。
+    fn quit_backend_and_verify(&self) -> QuitReport {
+        let Some(pid) = self.backend_pid() else {
+            log::info!("[qio] 真正退出：本实例没有在跑的后端");
+            return QuitReport::no_backend();
+        };
+        let mut tracked = vec![pid];
+        tracked.extend(descendant_pids(pid));
+        tracked.sort_unstable();
+        tracked.dedup();
+        log::info!(
+            "[qio] 真正退出：等待后端 pid {pid} 的进程树自行退出（树内 {tracked:?}，预算 {QUIT_SIDECAR_WAIT:?}）"
+        );
+        let deadline = Instant::now() + QUIT_SIDECAR_WAIT;
+        while Instant::now() < deadline {
+            if tracked.iter().all(|pid| !process_alive(*pid)) {
+                let detail = format!(
+                    "后端进程树已在预算内自行退出（pid {pid}，树内 {} 个进程）",
+                    tracked.len()
+                );
+                log::info!("[qio] {detail}");
+                return QuitReport {
+                    backend_pid: Some(pid),
+                    graceful: true,
+                    forced: false,
+                    verified: true,
+                    survivors: Vec::new(),
+                    detail,
+                };
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        log::warn!(
+            "[qio] 后端在 {QUIT_SIDECAR_WAIT:?} 内没有自行退出：按 pid 结束整棵树（taskkill /PID {pid} /T /F，绝不按进程名）"
+        );
+        let mut forced = false;
+        if process_alive(pid) {
+            forced = true;
+            match stop_tree_by_pid(pid, STOP_VERIFY_BUDGET) {
+                Ok(report) => {
+                    log::info!("[qio] 强制结束本实例后端进程树：{}", report.detail);
+                }
+                Err(StopFailure { detail, survivors }) => {
+                    log::error!("[qio] 强制结束后端进程树失败：{detail}（幸存 {survivors:?}）");
+                }
+            }
+        }
+        // root 可能刚刚退出、名单里的孤儿后代还在：按同一份 pid 名单再清一次。
+        let leftover: Vec<u32> = tracked
+            .iter()
+            .copied()
+            .filter(|pid| process_alive(*pid))
+            .collect();
+        if !leftover.is_empty() {
+            forced = true;
+            let _ = stop_pids(&leftover, STOP_VERIFY_BUDGET);
+        }
+        // 核验：名单里必须一个都不剩。还有活着的就如实报告（壳退出时 Job Object 句柄
+        // 关闭由系统兜底，但那不是「已经确认结束」）。
+        let survivors: Vec<u32> = tracked
+            .iter()
+            .copied()
+            .filter(|pid| process_alive(*pid))
+            .collect();
+        let verified = survivors.is_empty();
+        let detail = if verified {
+            format!(
+                "后端进程树已结束并核验 pid 消失（pid {pid}，树内 {} 个进程，强制={forced}）",
+                tracked.len()
+            )
+        } else {
+            format!(
+                "后端进程树仍有进程存活 {survivors:?}（pid {pid}）；无法确认已结束，壳退出时由 Job Object 兜底"
+            )
+        };
+        if verified {
+            log::info!("[qio] {detail}");
+        } else {
+            log::error!("[qio] {detail}");
+        }
+        QuitReport {
+            backend_pid: Some(pid),
+            graceful: false,
+            forced,
+            verified,
+            survivors,
+            detail,
+        }
     }
 
     /// 拉起后端 + Job Object 指派 + 归属记录。
@@ -1216,24 +1385,18 @@ fn backend_launch(
             .join("..")
             .join("backend");
         let python = std::env::var("PYTHON").unwrap_or_else(|_| "python".to_string());
+        // 用 `-m agent.main` 而不是 `uvicorn ... --factory`：退出收尾（R9 §11）需要
+        // 后端入口持有 uvicorn Server 句柄，收尾完成后才能真正优雅停下 —— 工厂模式
+        // 拿不到句柄，开发态就测不了「后端自己退出、壳按 pid 核验」这条真实路径。
         let (mut rx, child) = app
             .shell()
             .command(python)
-            .args([
-                "-m",
-                "uvicorn",
-                "agent.main:create_app",
-                "--factory",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                port.as_str(),
-                "--log-level",
-                "warning",
-            ])
+            .args(["-m", "agent.main"])
             .current_dir(backend_dir.clone())
             .env("PYTHONPATH", backend_dir.join("src"))
+            .env("QIO_HOST", "127.0.0.1")
             .env("QIO_PORT", port.clone())
+            .env("QIO_LOG", "warning")
             .env("QIO_SESSION_TOKEN_FILE", token_path.clone())
             // 数据目录显式传入：壳与后端必须算同一个目录（内置模型就放在它下面）
             .env("QIO_DATA_DIR", user_data_dir.clone())
@@ -1565,6 +1728,198 @@ fn shutdown_runtime(runtime: &ShellRuntime) {
     let _ = std::fs::remove_file(session_token_path());
 }
 
+/// 显示主窗口：隐藏到托盘后必须能恢复（show + unminimize + focus 缺一不可）。
+///
+/// 只隐藏、不重建窗口：后端不会被重新拉起，也不会出现「第二个实例」。
+fn show_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        log::warn!("[qio] 找不到主窗口，无法从托盘恢复");
+        return;
+    };
+    if let Err(err) = window.show() {
+        log::warn!("[qio] 从托盘恢复窗口失败（show）：{err}");
+    }
+    if let Err(err) = window.unminimize() {
+        log::warn!("[qio] 从托盘恢复窗口失败（unminimize）：{err}");
+    }
+    if let Err(err) = window.set_focus() {
+        log::warn!("[qio] 从托盘恢复窗口失败（focus）：{err}");
+    }
+    log::info!("[qio] 已从托盘恢复主窗口");
+}
+
+/// 托盘菜单「退出 QIO」：与标题条关闭走**同一个**真正退出流程。
+///
+/// 先通知前端（前端负责置 quitting 守卫 → POST /api/lifecycle/shutdown），
+/// 壳只负责「等前端接手」；到点还没接手（WebView 卡死/未加载）就由壳兜底：
+/// 仍然只按 pid 结束本实例的后端进程树，绝不按进程名批量杀。
+fn request_quit_from_tray(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<Arc<ShellRuntime>>() else {
+        log::warn!("[qio] 托盘退出：运行时状态尚未注册，直接请求退出");
+        app.exit(0);
+        return;
+    };
+    if state.is_quitting() {
+        return;
+    }
+    if state.tray_quit_pending.swap(true, Ordering::SeqCst) {
+        return; // 已经有一个托盘退出在等前端接手
+    }
+    let runtime = Arc::clone(state.inner());
+    let handle = app.clone();
+    if let Some(window) = app.get_webview_window("main") {
+        // 退出的确认/进度要让用户看见：先把窗口恢复出来。
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+        if let Err(err) = window.emit("qio://tray-quit", ()) {
+            log::warn!("[qio] 托盘退出事件发送失败（将走兜底）：{err}");
+        }
+    } else {
+        log::warn!("[qio] 托盘退出：找不到主窗口（将走兜底）");
+    }
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + TRAY_QUIT_FALLBACK_WAIT;
+        while Instant::now() < deadline {
+            if runtime.is_quitting() {
+                log::info!("[qio] 托盘退出：前端已接手真正退出流程");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        log::warn!(
+            "[qio] 托盘退出：前端在 {TRAY_QUIT_FALLBACK_WAIT:?} 内没有开始退出流程，壳按 pid 兜底退出"
+        );
+        if runtime.begin_quit() {
+            let _ = runtime.quit_backend_and_verify();
+        }
+        handle.exit(0);
+    });
+}
+
+/// 创建系统托盘：图标（应用自身图标）+ 菜单「显示主窗口 / 退出 QIO」。
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, "show-main", "显示主窗口", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit-qio", "退出 QIO", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let mut builder = TrayIconBuilder::with_id("qio-tray")
+        .tooltip("QIO")
+        .menu(&menu)
+        // 左键点击直接恢复窗口；菜单只在右键/显式唤出时出现（桌面惯例）。
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show-main" => show_main_window(app),
+            "quit-qio" => request_quit_from_tray(app),
+            other => log::warn!("[qio] 未知托盘菜单项：{other}"),
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    // 图标用应用自身的图标（tauri.conf.json 的 bundle.icon）；缺图标时如实报错，
+    // 不去伪造一个占位图标 —— 托盘失败只降级，不影响主窗口使用。
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    } else {
+        log::warn!("[qio] 应用没有默认窗口图标：托盘将使用系统默认外观");
+    }
+    builder.build(app)?;
+    log::info!("[qio] 系统托盘已创建：菜单「显示主窗口 / 退出 QIO」");
+    Ok(())
+}
+
+/// 关闭主窗口的统一入口（R9 契约 §11）。
+///
+/// 标题条关闭按钮、系统 CloseRequested、Alt+F4 全部走这里：
+///
+/// * `ask`（默认）：返回 `action=ask`，由前端弹确认框（最小化到托盘 / 退出 QIO / 取消）；
+/// * `tray`：`window.hide()`，后端与前端继续运行；托盘可恢复；
+/// * `quit`：进入真正退出流程（只按 pid 等/结束后端进程树并核验 pid 消失）。
+///
+/// 幂等：退出闸门由 `AtomicBool` 保证只有一个调用者执行退出收尾；已在退出时返回
+/// `action=quitting`，前端不再重复弹框、也不会重新拉起后端。
+#[tauri::command]
+async fn request_close(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<ShellRuntime>>,
+    action: Option<String>,
+) -> Result<CloseOutcome, String> {
+    let runtime = Arc::clone(state.inner());
+    let action = action.unwrap_or_else(|| "ask".to_string());
+    if runtime.is_quitting() {
+        return Ok(CloseOutcome {
+            action: "quitting".to_string(),
+            hidden: false,
+            quitting: true,
+            detail: "已经在退出中，忽略重复的关闭请求".to_string(),
+        });
+    }
+    match action.as_str() {
+        "ask" => Ok(CloseOutcome {
+            action: "ask".to_string(),
+            hidden: false,
+            quitting: false,
+            detail: "等待用户选择：最小化到托盘 / 退出 QIO / 取消".to_string(),
+        }),
+        "tray" => {
+            let window = app
+                .get_webview_window("main")
+                .ok_or_else(|| "找不到主窗口，无法隐藏到托盘".to_string())?;
+            window
+                .hide()
+                .map_err(|err| format!("隐藏主窗口失败：{err}"))?;
+            log::info!("[qio] 主窗口已隐藏到托盘：后端继续运行，托盘可恢复");
+            Ok(CloseOutcome {
+                action: "hidden".to_string(),
+                hidden: true,
+                quitting: false,
+                detail: "已最小化到系统托盘，QIO 继续运行".to_string(),
+            })
+        }
+        "quit" => {
+            if !runtime.begin_quit() {
+                return Ok(CloseOutcome {
+                    action: "quitting".to_string(),
+                    hidden: false,
+                    quitting: true,
+                    detail: "已经在退出中".to_string(),
+                });
+            }
+            let runtime_for_task = Arc::clone(&runtime);
+            let report = tauri::async_runtime::spawn_blocking(move || {
+                runtime_for_task.quit_backend_and_verify()
+            })
+            .await
+            .map_err(|err| format!("退出收尾任务失败：{err}"))?;
+            log::info!(
+                "[qio] 真正退出：后端 pid {:?}，graceful={}，forced={}，verified={}，survivors={:?}",
+                report.backend_pid,
+                report.graceful,
+                report.forced,
+                report.verified,
+                report.survivors
+            );
+            // 退出应用：RunEvent::Exit 会再做一次有界的运行时清理（幂等）。
+            app.exit(0);
+            Ok(CloseOutcome {
+                action: "quitting".to_string(),
+                hidden: false,
+                quitting: true,
+                detail: report.detail,
+            })
+        }
+        other => Err(format!(
+            "未知的关闭动作：{other}（只接受 ask / tray / quit）"
+        )),
+    }
+}
+
 fn main() {
     // 后端进程随这份 job 的生死而生死：壳没了，系统负责清干净，不留孤儿。
     let job = backend_job::create().map(Arc::new);
@@ -1627,6 +1982,9 @@ fn main() {
         job_active: AtomicBool::new(false),
         // 启动准备中：后台准备完成后才允许拉起后端（见 launch_backend_at_startup）
         phase: Mutex::new(BackendPhase::Preparing),
+        // R9 §11：真正退出与「隐藏到托盘」是两条路；只有前者会置退出闸门。
+        quitting: AtomicBool::new(false),
+        tray_quit_pending: AtomicBool::new(false),
     });
     let runtime_for_setup = Arc::clone(&runtime);
 
@@ -1676,12 +2034,41 @@ fn main() {
             install_direct_fallback_guard();
 
             app.manage(Arc::clone(&runtime_for_setup));
+            // R9 §11：系统托盘。创建失败只降级（关闭行为仍可用），不让应用起不来。
+            if let Err(err) = setup_tray(app.handle()) {
+                log::error!(
+                    "[qio] 系统托盘创建失败（关闭到托盘的选项会降级为每次询问）：{err}"
+                );
+            }
             // 窗口先可用：代理探测、模型准备、拉起后端全部在后台完成（见函数注释）。
             start_backend_in_background(app.handle().clone(), Arc::clone(&runtime_for_setup));
             Ok(())
         })
+        // R9 §11：标题条关闭 / 系统 CloseRequested / Alt+F4 统一交给前端按
+        // ui.close_behavior 处理（ask 弹确认框 / tray 隐藏 / quit 真正退出）。
+        // 壳在这里只做两件事：拦下默认的「直接关窗退出」；把请求原样告诉前端。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let quitting = app
+                    .try_state::<Arc<ShellRuntime>>()
+                    .map(|state| state.is_quitting())
+                    .unwrap_or(false);
+                if quitting {
+                    // 真正退出流程由壳自己 app.exit(0)：这里不再拦截系统关闭。
+                    return;
+                }
+                api.prevent_close();
+                if let Err(err) = window.emit("qio://close-requested", ()) {
+                    log::warn!("[qio] 关闭请求事件发送失败：{err}");
+                }
+                log::info!("[qio] 收到主窗口关闭请求：交给前端按关闭行为处理");
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             qio_backend_info,
+            // R9 §11：关闭行为 / 托盘 / 真正退出的唯一入口（幂等）。
+            request_close,
             qio_prepare_for_update,
             qio_restore_backend,
             qio_refresh_updater_proxy,
