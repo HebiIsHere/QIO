@@ -68,14 +68,14 @@ const MATERIAL_KINDS = ["file"];
 const LEGACY_TEXT_CARD_KINDS = ["code", "url"];
 
 /**
- * 单张卡片是否在本次允许查看的范围内（与服务端 models.visible_except_deleted 一致）。
+ * 单张卡片是否在本次互动材料的范围内（与服务端 models.visible_except_deleted 一致）。
  *
  * 未许可的文字卡**整体**不可见：卡内文字、链接、代码与派生正文都进不去提交载荷。
  */
 export function isVisibleCard(card: BoardCard): boolean {
   if (card.deleted || card.hidden) return false;
   if (LEGACY_TEXT_CARD_KINDS.includes(card.kind)) return false;
-  // F4：文字注释与结果卡都要「勾选才允许 QIO 查看」（默认未勾选）；材料默认在范围内。
+  // F4：文字注释与结果卡都要「勾选才作为互动材料」（默认未勾选）；材料默认在范围内。
   if (CHECKABLE_KINDS.includes(card.kind)) return card.checked;
   return true;
 }
@@ -146,14 +146,14 @@ export function visibleRangeCounts(range: VisibleRange | null | undefined): Visi
   };
 }
 
-/** 允许查看范围的展示文案：明确写出「未勾选的不在其中」。 */
+/** 互动材料范围的展示文案：明确写出「未勾选的不在其中」。 */
 export function visibleRangeText(range: VisibleRange | null | undefined): string {
   if (!range) {
-    return "服务端还没有返回本次允许查看的范围：未勾选与明确隐藏的注释不会被查看，也不会进入提交载荷。";
+    return "服务端还没有返回本次互动材料的范围：未勾选与明确隐藏的注释不会被查看，也不会进入提交载荷。";
   }
   const counts = visibleRangeCounts(range);
   if (counts.cards === 0 && counts.groups === 0 && counts.links === 0) {
-    return "本次允许 QIO 查看的范围是空的：没有任何内容会被交给 QIO（未勾选与明确隐藏的注释不在其中）。";
+    return "本次作为互动材料的范围是空的：没有任何内容会被交给 QIO（未勾选与明确隐藏的注释不在其中）。";
   }
   const parts = [`注释 ${counts.notes} 条`, `材料 ${counts.materials} 项`];
   if (counts.results > 0) parts.push(`结果卡 ${counts.results} 张`);
@@ -163,7 +163,7 @@ export function visibleRangeText(range: VisibleRange | null | undefined): string
     counts.notVisible > 0
       ? `另有 ${counts.notVisible} 张卡片不在其中（未勾选的注释与结果卡、明确隐藏的卡片都不会被查看）。`
       : "没有被排除的卡片。";
-  return `本次允许 QIO 查看：${parts.join("、")}。${tail}`;
+  return `本次作为互动材料：${parts.join("、")}。${tail}`;
 }
 
 const KIND_LABELS: Record<ExpressionKind, string> = {
@@ -299,13 +299,13 @@ export function submitStatusText(
        */
       return `提交结果未知：${context.error || "没有拿到服务端回执"}；这次提交可能已经受理，改动与勾选都保留，请先确认结果再决定是否重试。`;
     case "empty":
-      return "没有可提交内容：只有普通移动 / 缩放，或本次没有允许查看的内容；未更新基准、未调用 QIO。";
+      return "没有可提交内容：只有普通移动 / 缩放，或本次没有互动材料内容；未更新基准、未调用 QIO。";
     case "duplicate":
       return "与上次成功提交内容一致：未重复提交、未更新基准、未调用 QIO。";
     default:
       return pending > 0
         ? `尚未提交：当前有 ${pending} 项改动还没有交给 QIO。编辑与保存都不会调用 QIO。`
-        : "尚未提交：编辑与保存都不会调用 QIO，点「提交」才会把本次允许查看的表达交给 QIO。";
+        : "尚未提交：编辑与保存都不会调用 QIO，点「提交」才会把本次互动材料的表达交给 QIO。";
   }
 }
 
@@ -382,7 +382,7 @@ export function submitFailureBrief(context: SubmitFailureContext): SubmitFailure
     keepSentence,
     saveFailed && saveError ? `保存失败原因：${saveError}` : "",
     !fromResult && diagnostic ? `上一次提交返回的说明（供排查）：${diagnostic}` : "",
-    "本次允许查看的范围与改动列表在下面的详情里；重试会先重新保存板面，再重新提交。",
+    "本次互动材料的范围与改动列表在下面的详情里；重试会先重新保存板面，再重新提交。",
   ]
     .filter(Boolean)
     .join("；");

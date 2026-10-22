@@ -141,7 +141,7 @@ const boardSize = computed(() => {
           v-if="store.submissionStage === 'idle'"
           class="im-note"
           data-im="not-connected"
-          title="保存只落库、不调用模型；提交之后 QIO 才会读取本次允许查看的内容并开始理解"
+          title="保存只落库、不调用模型；提交之后 QIO 才会读取本次互动材料的内容并开始理解"
         >
           还没有提交给 QIO
         </span>

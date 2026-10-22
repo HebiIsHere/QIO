@@ -35,7 +35,11 @@ const title = computed(() => {
 /** 进入设置 →「工具与权限」：动态取 router，避免在只挂徽标的组件测试里强依赖路由注入。 */
 function openSettings() {
   ui.settingsSection = "tools";
-  void import("../../router").then(({ default: router }) => router.push("/settings"));
+  void import("../../router")
+    .then(({ default: router }) => router.push("/settings"))
+    .catch(() => {
+      // 路由不可用（例如单独挂载徽标的组件测试）：不能把一次点击变成未处理异常
+    });
 }
 
 

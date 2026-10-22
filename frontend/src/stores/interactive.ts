@@ -1197,7 +1197,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
           materialPaused.value = impact.paused;
           void loadIntents();
         }
-        // 保存只落到本机板面；顺手刷新「本次允许查看的范围」让提交前预览是新的。
+        // 保存只落到本机板面；顺手刷新「本次互动材料的范围」让提交前预览是新的。
         // 这一步同样不调用 QIO。
         void refreshVisibleRange();
       } catch (err) {
@@ -3354,7 +3354,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 材料（file）默认在范围内。
    *
    * F4：结果卡与文字卡同一套许可语义（默认未勾选，勾选后持续有效）；
-   * 为什么不给未勾选的注释提升：那会越过「勾选才允许 QIO 查看」的边界，
+   * 为什么不给未勾选的注释提升：那会越过「勾选才作为互动材料」的边界，
    * 而且用户根本没打算把这段草稿交出去 —— 草稿原样留着，等他勾选或自己点完成编辑。
    */
   function cardSubmittedFor(card: { kind: string; checked: boolean; hidden: boolean; deleted: boolean }): boolean {

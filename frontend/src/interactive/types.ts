@@ -15,7 +15,7 @@ export interface BoardCard {
   y: number;
   w: number;
   h: number;
-  /** 注释勾选：本次是否允许 QIO 查看（默认 false）。勾选仍须提交 */
+  /** 注释勾选：本次是否作为互动材料（默认 false）。勾选仍须提交 */
   checked: boolean;
   /** 明确隐藏 = 退出讨论范围；与 checked 互斥 */
   hidden: boolean;
@@ -68,7 +68,7 @@ export interface BoardState {
   selection: string[];
 }
 
-/** 提交载荷里的板面状态：只含本次允许查看的范围 */
+/** 提交载荷里的板面状态：只含本次互动材料的范围 */
 export interface Snapshot {
   cards: BoardCard[];
   groups: BoardGroup[];
@@ -230,7 +230,7 @@ export interface BoardStateResponse {
   };
   /** 未提交的有效改动（服务端每次保存后重算；它不进 QIO） */
   pending?: Expression[];
-  /** 本次允许查看的范围（服务端以已保存状态推导） */
+  /** 本次互动材料的范围（服务端以已保存状态推导） */
   visibleRange?: VisibleRange;
 }
 

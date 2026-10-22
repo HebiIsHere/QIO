@@ -24,7 +24,7 @@
     （落盘 / 提交由既有机制负责，失败也由既有机制反馈，这里不另造一套）。
 -->
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
 import { cardAttachmentLinked, cardAttachmentName } from "../../interactive/materials";
@@ -33,6 +33,7 @@ import { readBoardArea } from "../../interactive/viewport";
 import {
   attachmentSourceNote,
   isDesktopShell,
+  onPathDrop,
   pickBrowserFile,
   pickLocalSource,
   registerSourceAttachment,
@@ -69,7 +70,7 @@ const popup = ref<HTMLElement | null>(null);
  * 入口与说明。说明里必须写清权限边界（不能只靠颜色或图标表达）：
  * 文字卡默认**提交给 QIO**（2026-10-14 第十个问题：新建即勾选，用户可取消；
  * 取消后 QIO 看不到卡内的文字、链接与代码，提交也不会带上它）；
- * 材料（文件卡，图片是它的附件）默认在本次允许查看范围内。
+ * 材料（文件卡，图片是它的附件）默认在本次互动材料范围内。
  */
 const HINTS: Record<string, string> = {
   text: "文字、链接、代码写在同一张卡片里；默认提交给 QIO（可取消）",
@@ -79,7 +80,7 @@ const HINTS: Record<string, string> = {
 const ITEMS: AddItem[] = ADDABLE_CARD_KINDS.map((kind) => ({
   kind,
   label: CARD_KIND_LABELS[kind],
-  hint: HINTS[kind] ?? "材料默认在本次允许查看范围内，不需要许可",
+  hint: HINTS[kind] ?? "材料默认在本次互动材料范围内，不需要许可",
 }));
 
 /**
@@ -146,15 +147,30 @@ function cancelText(kind: AttachKind, cardId: string): string {
  * 状态一律走 useTransientNotice：每次调用 begin() 开一代新操作，
  * 之后所有写入都带这次操作的 token —— 迟到的结果不会覆盖 / 清掉别人的提示。
  */
-async function attachRealFile(kind: AttachKind, cardId: string): Promise<void> {
+async function attachRealFile(
+  kind: AttachKind,
+  cardId: string,
+  preset?:
+    | { path: string; sourceKind: "desktop_path" | "dropped_path" }
+    | { file: File },
+): Promise<void> {
   const token = begin();
-  progress(token, "正在等待选择文件…");
+  progress(token, preset ? "正在登记拖放的源文件…" : "正在等待选择文件…");
   let created: AttachmentRef | null = null;
   let fileName = "";
   let fallbackNote = "";
   try {
-    // 桌面：原生选择拿**真实路径** → 登记源引用（契约 §6.3：不复制、不移动、不改名）
-    if (isDesktopShell()) {
+    if (preset && "path" in preset) {
+      // 有真实路径（桌面拖放）：**只登记源引用**，不复制、不移动、不走字节上传
+      fileName = preset.path.split(/[\\/]/).pop() || "未命名";
+      progress(token, "正在登记拖放的源文件「" + fileName + "」…");
+      created = await registerSourceAttachment(preset.path, preset.sourceKind);
+    } else if (preset && "file" in preset) {
+      // 浏览器拖放：只有字节 → 首次落盘为工作区材料源文件（来源如实标注）
+      fileName = preset.file.name || "未命名";
+      progress(token, "正在保存附件「" + fileName + "」…（首次落盘为工作区材料源文件）");
+      created = await uploadAttachment(preset.file, { sourceKind: "browser_upload" });
+    } else if (isDesktopShell()) {
       try {
         const picked = await pickLocalSource();
         if (!picked) {
@@ -231,9 +247,23 @@ function runRetry(): void {
   notice.value?.retry?.run();
 }
 
+/**
+ * 拖放进来、等待随新文件卡一起登记的**真实路径**。
+ * 只在这一个「添加」动作内有效：add() 消费后立即清空，不泄漏到下一次点击。
+ */
+let pendingDroppedPath: string | null = null;
+/** 浏览器拖放进来、等待随新文件卡一起上传的文件对象（同样是消费即清）。 */
+let pendingDroppedFile: File | null = null;
+
 function add(kind: AddableKind): void {
   const current = store.board;
   if (!current) return;
+  const droppedPath = kind === "file" ? pendingDroppedPath : null;
+  const droppedFile = kind === "file" ? pendingDroppedFile : null;
+  if (kind === "file") {
+    pendingDroppedPath = null;
+    pendingDroppedFile = null;
+  }
   // 默认内容统一由 board.ts 提供：同一个「添加文件」不能有两种默认值
   const seed = defaultCardSeed(kind);
   const before = new Set(current.cards.map((card) => card.id));
@@ -265,7 +295,7 @@ function add(kind: AddableKind): void {
   /**
    * 新建文字卡默认**提交给 QIO**（2026-10-14 第十个问题）：整卡一个许可，
    * 覆盖卡内文字、链接与代码；用户可以在卡片工具栏里取消勾选，取消后整体不交付。
-   * 材料卡不需要这个勾选（默认在本次允许查看范围内），沿用 board.ts 的默认值。
+   * 材料卡不需要这个勾选（默认在本次互动材料范围内），沿用 board.ts 的默认值。
    */
   store.commit(
     addCard(current, {
@@ -283,8 +313,18 @@ function add(kind: AddableKind): void {
   if (crowded) {
     succeed(begin(), "板面已经没有零重叠的空位了：新卡先放在重叠最少的位置，请先整理一下板面。");
   }
-  // 文件卡：立刻让用户选一份真实文件，上传成功后把 attachmentId 写进卡片 meta
-  if (kind === "file" && added) void attachRealFile(kind, added.id);
+  // 文件卡：拖放有真实路径 → 登记源引用；否则让用户选择（桌面原生路径 / 浏览器字节上传）
+  if (kind === "file" && added) {
+    void attachRealFile(
+      kind,
+      added.id,
+      droppedPath
+        ? { path: droppedPath, sourceKind: "dropped_path" }
+        : droppedFile
+          ? { file: droppedFile }
+          : undefined,
+    );
+  }
 }
 
 /** 点菜单外面收起。 */
@@ -312,15 +352,52 @@ watch(open, async (value) => {
   }
 });
 
+/**
+ * 桌面拖放：Tauri 核心事件给的是**真实路径**（不是字节）—— 每份材料新建一张文件卡，
+ * 并用 registerSourceAttachment 登记源引用（source_kind=dropped_path，不复制内容）。
+ */
+async function attachDroppedPaths(paths: string[]): Promise<void> {
+  if (!paths.length) return;
+  for (const path of paths.slice(0, 5)) {
+    if (!alive) return;
+    pendingDroppedPath = path;
+    add("file");
+    await nextTick();
+  }
+}
+
+/** 浏览器拖放：只有字节（没有原位置）→ 每份文件新建一张文件卡并首次落盘为工作区材料。 */
+async function onBrowserDrop(event: DragEvent): Promise<void> {
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (!files.length) return;
+  for (const file of files.slice(0, 5)) {
+    if (!alive) return;
+    pendingDroppedFile = file;
+    add("file");
+    await nextTick();
+  }
+}
+
+let stopPathDrop: (() => void) | null = null;
+
+onMounted(async () => {
+  // 只有桌面壳会给出真实路径；浏览器由模板里的 drop 事件兜底（字节 → 首次落盘）
+  stopPathDrop = await onPathDrop((paths) => {
+    void attachDroppedPaths(paths);
+  });
+});
+
 onBeforeUnmount(() => {
   alive = false;
+  stopPathDrop?.();
+  stopPathDrop = null;
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
   document.removeEventListener("keydown", onDocumentKeydown);
 });
 </script>
 
 <template>
-  <div ref="root" class="add">
+  <div ref="root" class="add" @dragover.prevent @drop.prevent="onBrowserDrop">
     <button
       ref="trigger"
       class="tb-btn"

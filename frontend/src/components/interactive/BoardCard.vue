@@ -235,14 +235,15 @@ const kindLabel = computed(
 );
 
 /**
-  许可的完整说明（任务书 §6.6）：勾选框只留一句短文案，规则原文放进旁边的「说明」详情。
+  「作为互动材料」的完整说明（R9 契约 §8）：勾选框只留一句短文案，规则原文放进「说明」详情。
 
-  「提交后仍然有效、只有用户主动取消才失效」是硬约束（§6.7 的许可边界）：
-  提交成功 / 失败 / 超时 / 重复 / 恢复 / 重启 / 模式切换都不自动取消许可；
-  隐藏或删除这张卡才会让它退出查看范围。这段话是**唯一**一份说明，卡片正文不重复铺开。
+  「提交后仍然有效、只有用户主动取消才失效」是硬约束：
+  提交成功 / 失败 / 超时 / 重复 / 恢复 / 重启 / 模式切换都不自动取消；
+  隐藏或删除这张卡才会让它退出互动上下文。
+  **这不是操作系统文件访问权限**，只是是否主动纳入互动上下文。这段话是唯一一份说明。
 */
 const LICENSE_FULL_TEXT =
-  "许可：允许 QIO 查看这张卡（文字卡与结果卡同一条规则；提交后仍然有效，只有你手动取消才失效）—— 覆盖卡里的全部文字、代码与链接；隐藏或删除这张卡才会退出查看范围。";
+  "作为互动材料：主动把这张卡的文字、代码与链接纳入 QIO 的互动上下文（文字卡与结果卡同一条规则）。这不是操作系统文件访问权限；提交后仍然有效，只有你手动取消、隐藏或删除这张卡才会退出互动上下文。";
 const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
@@ -1310,9 +1311,8 @@ watch(
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
       <span v-if="titleText" class="title" data-im="card-title" :title="titleText">{{ titleText }}</span>
       <!--
-        整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
-        允不允许 QIO 查看。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，
-        这里不重复解释。
+        「作为互动材料」徽章：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
+        有没有主动纳入互动上下文。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里。
       -->
       <span
         v-if="checkable"
@@ -1322,9 +1322,9 @@ watch(
         :data-checked="card.checked ? '1' : '0'"
         role="status"
         :title="card.checked
-          ? '已允许 QIO 查看：覆盖这张卡里的全部文字、代码与链接（文字卡与结果卡同一条规则）'
-          : '未允许查看：QIO 看不到这张卡里的任何内容（文字卡与结果卡同一条规则）'"
-      >{{ card.checked ? "允许 QIO 查看" : "未允许查看" }}</span>
+          ? '已作为互动材料：主动把这张卡的文字、代码与链接纳入互动上下文（文字卡与结果卡同一条规则）；这不是文件访问权限'
+          : '未作为互动材料：QIO 不会主动读取这张卡里的内容（文字卡与结果卡同一条规则）；这不是文件访问权限'"
+      >{{ card.checked ? "作为互动材料" : "未作为互动材料" }}</span>
       <!--
         两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
         折叠态只有「恢复卡片」（把卡片展开回常态）；
@@ -1737,10 +1737,9 @@ watch(
       @pointerdown.stop
     >
     <!--
-      整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡 / 结果卡只有一个许可，
-      覆盖卡内的文字、链接与代码。
-      勾选框只留一句短文案；「提交后仍然有效、只有你手动取消才失效」这类完整规则放进旁边的
-      「说明」详情（不常驻一整行字）。勾选只改 checked，不碰 hidden / deleted。
+      作为互动材料（R9 契约 §8）：一张文字卡 / 结果卡只有一个开关，
+      覆盖卡内的文字、链接与代码；**只控制是否主动纳入互动上下文，不是文件访问权限**。
+      勾选框只留一句短文案；完整规则放进旁边的「说明」详情（不常驻一整行字）。
     -->
     <label v-if="checkable" class="check" :title="LICENSE_FULL_TEXT">
       <input
@@ -1750,9 +1749,9 @@ watch(
         :data-card-id="card.id"
         @change="emit('toggle', card.id, 'checked')"
       />
-      <span class="check-label">{{ card.checked ? "已允许 QIO 查看" : "允许 QIO 查看" }}</span>
+      <span class="check-label">{{ card.checked ? "已作为互动材料" : "作为互动材料" }}</span>
       <details class="check-detail" :class="{ 'opens-up': menuOpensUp }" @click.stop @pointerdown.stop>
-        <summary class="check-detail-summary" title="许可的完整说明">说明</summary>
+        <summary class="check-detail-summary" title="「作为互动材料」的完整说明">说明</summary>
         <p class="check-detail-text" data-im="check-detail-text">{{ LICENSE_FULL_TEXT }}</p>
       </details>
     </label>

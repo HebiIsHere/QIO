@@ -1,5 +1,16 @@
 import { defineStore } from "pinia";
 import { api } from "../services/api";
+import {
+  approvalStateFromPhase,
+  approvalStateLabel,
+  confirmApprovalStage,
+  decideApproval,
+  getApprovalHistory,
+  getPendingApprovals,
+  toPendingApproval,
+  type ApprovalHistoryEntry,
+  type PendingApproval,
+} from "../services/approvalLifecycle";
 
 export interface ApprovalItem {
   approval_id: string;
@@ -19,6 +30,57 @@ export interface ApprovalItem {
    * 所以标记为失效：界面明确说清楚，并给一个「知道了」把它清掉。
    */
   stale?: boolean;
+
+  // ---- R9 审批生命周期 v2（契约 §5；老后端事件没有这些字段 → 全部可选） ----
+  /** 新状态机权威状态：waiting / approved / executing / completed / failed / … */
+  state?: string;
+  /** 人类可读标题（后端 label；缺失时按 kind 映射） */
+  label?: string;
+  /** 这次操作用的什么用途（进入审批单的 purpose） */
+  purpose?: string;
+  /** 来源：tool / subagent / background / user */
+  source?: string;
+  /** 操作摘要（后端 operation {kind,label,summary}，只读；不含执行参数细节） */
+  operationSummary?: string;
+  createdAt?: string;
+  expiresAt?: string;
+  /** 内部数据三次确认进度（后端 CAS 为准，前端只呈现） */
+  confirmedStage?: number;
+  requiresConfirmations?: number;
+  /** 后端 CAS 修订号（decide / confirm 携带 expected_revision） */
+  revision?: number;
+  /** 最近一次确认 / 决定失败的原因（不覆盖 approvals.error 的全局语义时用） */
+  lifecycleError?: string;
+}
+
+/** 这条审批是否走 R9 新状态机（老后端事件没有 state 字段 → 走旧 /respond 兼容路径）。 */
+export function isLifecycleApproval(item: ApprovalItem | null | undefined): boolean {
+  return Boolean(item && typeof item.state === "string" && item.state);
+}
+
+/** v2 pending 条目 → store 待办字段（snake_case → camelCase；未知字段留在 payload）。 */
+export function approvalMetaFromPending(pending: PendingApproval): Partial<ApprovalItem> {
+  return {
+    state: pending.state,
+    label: pending.label,
+    purpose: pending.purpose,
+    source: pending.source,
+    operationSummary: pending.operation?.summary ?? "",
+    createdAt: pending.created_at,
+    expiresAt: pending.expires_at ?? undefined,
+    confirmedStage: pending.confirmed_stage,
+    requiresConfirmations: pending.requires_confirmations,
+    ...(pending.revisions ? { revision: pending.revisions } : {}),
+  };
+}
+
+/** 内部数据审批的确认进度文案（0/3 → 第 1 次确认；3/3 → 已完成）。 */
+export function confirmationProgressText(item: ApprovalItem | null | undefined): string {
+  if (!item) return "";
+  const required = Math.max(1, Number(item.requiresConfirmations ?? 1));
+  if (required <= 1) return "";
+  const done = Math.max(0, Math.min(required, Number(item.confirmedStage ?? 0)));
+  return done >= required ? "已完成 " + required + "/" + required + " 次确认" : "已确认 " + done + "/" + required + " 次";
 }
 
 /**
@@ -104,6 +166,25 @@ export interface ApprovalFacts {
   rows: { label: string; value: string }[];
   /** 高级详情（默认折叠）：策略指纹 / 逐条测试结果 / raw params */
   advanced: { lines: string[]; raw: string };
+
+  // ---- R9 审批生命周期 v2（老审批没有这些字段 → 空串 / 0，界面不显示） ----
+  /** 状态机权威状态（waiting / approved / executing / completed / failed / …） */
+  lifecycleState: string;
+  /** 状态中文标签（可直接展示） */
+  stateLabel: string;
+  /** 内部数据确认进度文案（"已确认 1/3 次"）；普通审批为空 */
+  confirmationProgress: string;
+  requiresConfirmations: number;
+  confirmedStage: number;
+  isInternalData: boolean;
+  /** 用途（进入审批单的 purpose） */
+  purpose: string;
+  /** 操作摘要（后端 operation.summary，只读；不含执行参数细节） */
+  operationSummary: string;
+  /** 来源标签（工具 / 子智能体 / 后台任务 / 用户发起） */
+  sourceLabel: string;
+  /** 过期时间（给人看的原样字符串；没有就不显示） */
+  expiresAt: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -174,7 +255,20 @@ function prettyJson(value: unknown): string {
  * 保证弹窗的第一句话没有回归。
  */
 export function approvalFacts(
-  input: { kind?: string; payload?: Record<string, unknown> } | null | undefined,
+  input:
+    | {
+        kind?: string;
+        payload?: Record<string, unknown>;
+        state?: string;
+        requiresConfirmations?: number;
+        confirmedStage?: number;
+        purpose?: string;
+        operationSummary?: string;
+        source?: string;
+        expiresAt?: string;
+      }
+    | null
+    | undefined,
 ): ApprovalFacts | null {
   if (!input) return null;
   const p = asRecord(input.payload);
@@ -259,6 +353,22 @@ export function approvalFacts(
   pushRow("示例请求", p.example);
   pushRow("相似请求数", p.source_count);
 
+  // ---- R9 生命周期 v2 展示事实（老审批输入没有这些字段 → 空/0，不显示） ----
+  const lifecycleState = String(input.state ?? "");
+  const stateLabel = lifecycleState ? approvalStateLabel(lifecycleState) : "";
+  const requiresConfirmations = Math.max(1, Number(input.requiresConfirmations ?? 1));
+  const confirmedStage = Math.max(0, Number(input.confirmedStage ?? 0));
+  const isInternalData = requiresConfirmations > 1;
+  const confirmationProgress = isInternalData
+    ? (confirmedStage >= requiresConfirmations
+        ? "已完成 " + requiresConfirmations + "/" + requiresConfirmations + " 次确认"
+        : "已确认 " + confirmedStage + "/" + requiresConfirmations + " 次（还差 " + (requiresConfirmations - confirmedStage) + " 次）")
+    : "";
+  const purpose = trimmed(input.purpose);
+  const operationSummary = trimmed(input.operationSummary);
+  const sourceLabel = approvalSourceLabel(String(input.source ?? ""));
+  const expiresAt = trimmed(input.expiresAt);
+
   const advLines: string[] = [];
   if (p.policy_fingerprint) advLines.push(`策略指纹：${String(p.policy_fingerprint)}`);
   if (p.action) advLines.push(`内部动作名：${String(p.action)}`);
@@ -295,7 +405,33 @@ export function approvalFacts(
     isSubagentCreate,
     rows,
     advanced: { lines: advLines, raw: prettyJson(p) },
+    lifecycleState,
+    stateLabel,
+    confirmationProgress,
+    requiresConfirmations,
+    confirmedStage,
+    isInternalData,
+    purpose,
+    operationSummary,
+    sourceLabel,
+    expiresAt,
   };
+}
+
+/** APPROVAL_SOURCE → 中文标签（未知来源如实显示原值）。 */
+function approvalSourceLabel(source: string): string {
+  switch (source) {
+    case "tool":
+      return "工具执行";
+    case "subagent":
+      return "子智能体";
+    case "background":
+      return "后台任务";
+    case "user":
+      return "你发起的操作";
+    default:
+      return source ? "来源：" + source : "";
+  }
 }
 
 export const useApprovalsStore = defineStore("approvals", {
@@ -317,6 +453,22 @@ export const useApprovalsStore = defineStore("approvals", {
      * 不再对同一个 approval_id 显示按钮（按 id 门控，不是按「有没有审批」）。
      */
     inlineId: null as string | null,
+    /** R9：执行结果历史（后端 approval_history；只读展示） */
+    history: [] as ApprovalHistoryEntry[],
+    historyLoading: false,
+    historyError: null as string | null,
+    /** R9：最近一次审批结局（事件 / 决定 / 确认后的可见事实） */
+    lastResult: null as {
+      approvalId: string;
+      phase: string;
+      state: string;
+      summary: string;
+      ok: boolean | null;
+    } | null,
+    /** R9：pending 恢复是否已尝试（失败可重试；不因一次失败永久放弃） */
+    recovered: false,
+    /** R9：pending 恢复失败原因（只影响「恢复」这件事，不改变已有待办） */
+    recoveryError: null as string | null,
   }),
   getters: {
     current: (state) => state.queue[0] ?? null,
@@ -338,6 +490,8 @@ export const useApprovalsStore = defineStore("approvals", {
         turnId?: string | null;
         sessionId?: string | null;
         requestDigest?: string | null;
+        /** R9：v2 状态机字段（state / confirmed_stage / requires_confirmations / purpose …） */
+        meta?: Partial<ApprovalItem>;
       } = {},
     ) {
       if (this.queue.some((a) => a.approval_id === approvalId)) return;
@@ -349,6 +503,7 @@ export const useApprovalsStore = defineStore("approvals", {
         turnId: opts.turnId ?? null,
         sessionId: opts.sessionId ?? null,
         requestDigest: opts.requestDigest ?? null,
+        ...(opts.meta ?? {}),
       });
       // 编辑中到达的确认不抢焦点：保留待办并亮出可发现的入口，由用户主动打开。
       if (first) this.deferred = opts.autoOpen === false;
@@ -410,6 +565,236 @@ export const useApprovalsStore = defineStore("approvals", {
       if (this.queue.length !== before) this.error = null;
       if (!this.queue.length) this.deferred = false;
     },
+    // -- R9：pending 恢复 / 决定 / 三次确认 / 执行历史 ---------------------
+
+    /** 把一条服务端 pending 事实写进队列（已存在则只更新状态，不重复入队）。 */
+    applyPending(pending: PendingApproval, opts: { autoOpen?: boolean } = {}) {
+      const meta = approvalMetaFromPending(pending);
+      const existing = this.queue.find((a) => a.approval_id === pending.approval_id);
+      if (existing) {
+        Object.assign(existing, meta, { payload: pending.payload });
+        // 后端说已经不在等待（还会列在 pending 里但状态前进）→ 保留展示真实状态
+        return existing;
+      }
+      return this.enqueue(pending.approval_id, pending.kind || "unknown", pending.payload, {
+        // 恢复出来的审批不抢焦点：保留待办 + 亮出入口（与 RESYNC 恢复同一规则）
+        autoOpen: opts.autoOpen ?? false,
+        meta,
+      });
+    },
+
+    /**
+     * 断线 / 刷新 / 重启后恢复待审批项（契约 §5.1 / §5.4 的唯一恢复入口）。
+     *
+     * * 成功：服务端 pending 就是权威集合 —— 已在队列但服务端没列出的项移除；
+     * * 404 / 老后端没有这个接口：保持现状并标记已尝试（不伪造恢复成功）；
+     * * 其它失败：保留已有待办，如实给出可重试原因。
+     */
+    async recoverPending(): Promise<void> {
+      if (this.responding) return;
+      try {
+        const pending = await getPendingApprovals();
+        // kind=continue 的「继续/停止」走会话层操作条，不进入审批队列（与事件入口一致）
+        const rows = pending.filter((item) => item.kind !== "continue");
+        this.reconcile(rows.map((item) => item.approval_id));
+        for (const item of rows) this.applyPending(item, { autoOpen: false });
+        this.recoveryError = null;
+        this.recovered = true;
+      } catch (e) {
+        const status = (e as { status?: number }).status;
+        if (status === 404) {
+          // 老后端（W1 未合入 / 旧版本）：没有 pending 接口，不当作失败，也不清空待办
+          this.recoveryError = null;
+          this.recovered = true;
+          return;
+        }
+        this.recoveryError = "恢复待审批项失败：" + ((e as Error)?.message || "未知原因") + "（可以重试）";
+        this.recovered = true;
+      }
+    },
+
+    /**
+     * 用户对当前审批做出决定（R9 新接口：approve / reject / cancel）。
+     * 失败**不移除**待办：看起来批准了、后端没批准是绝不允许的状态。
+     */
+    async decide(decision: "approve" | "reject" | "cancel", approvalId?: string) {
+      const item = approvalId
+        ? this.queue.find((a) => a.approval_id === approvalId)
+        : this.current;
+      if (!item || this.responding) return;
+      // 内部数据多次确认：批准的第一动作是「第 1 次确认」，不是决定
+      if (decision === "approve" && (item.requiresConfirmations ?? 1) > 1) {
+        return this.confirmNext(item.approval_id);
+      }
+      if (decision === "approve") return this._decideItem(item, "approve");
+      return this._decideItem(item, decision);
+    },
+
+    async _decideItem(item: ApprovalItem, decision: "approve" | "reject" | "cancel") {
+      if (item.stale) return;
+      this.responding = item.approval_id;
+      this.error = null;
+      item.lifecycleError = undefined;
+      try {
+        const updated = await decideApproval(item.approval_id, decision, {
+          expectedRevision: item.revision,
+        });
+        if (updated) this._applyLifecycle(item, updated);
+        this._settleAfterAction(item, decision === "approve" ? "approved" : decision === "reject" ? "rejected" : "cancelled");
+      } catch (e) {
+        this._lifecycleFailure(item, e);
+      } finally {
+        this.responding = null;
+      }
+    },
+
+    /**
+     * 内部数据「连续三次确认」的下一击（契约 §4）。
+     *
+     * 前端只发 `stage = confirmed_stage + 1`，是否允许由后端 CAS 判定：
+     * 越级 / 重复 / 范围变化后重置都会返回 409，这里把原因原样显示并把进度
+     * 以后端返回为准覆盖（绝不在前端自行把 stage 加一）。
+     */
+    async confirmNext(approvalId?: string) {
+      const item = approvalId
+        ? this.queue.find((a) => a.approval_id === approvalId)
+        : this.current;
+      if (!item || this.responding) return;
+      if (item.stale) return;
+      const required = Math.max(1, item.requiresConfirmations ?? 1);
+      const done = Math.max(0, item.confirmedStage ?? 0);
+      if (done >= required) return;
+      this.responding = item.approval_id;
+      this.error = null;
+      item.lifecycleError = undefined;
+      const stage = done + 1;
+      try {
+        const updated = await confirmApprovalStage(item.approval_id, stage, {
+          expectedRevision: item.revision,
+        });
+        if (updated) this._applyLifecycle(item, updated);
+        if (stage >= required) {
+          // 第三次确认成功：后端状态变为 approved 并自动开始执行 —— 没有更多用户动作
+          this._settleAfterAction(item, "confirmed", "已完成 " + required + "/" + required + " 次确认，后端已批准并开始执行");
+        }
+      } catch (e) {
+        this._lifecycleFailure(item, e);
+      } finally {
+        this.responding = null;
+      }
+    },
+
+    /** 把服务端返回的 v2 事实写回待办项（以服务端为准，不自行推进状态）。 */
+    _applyLifecycle(item: ApprovalItem, updated: PendingApproval) {
+      Object.assign(item, approvalMetaFromPending(updated), { payload: updated.payload });
+    },
+
+    /** 动作成功后的收口：移除待办 / 记录最近结局；终态才出队。 */
+    _settleAfterAction(item: ApprovalItem, phase: string, summary = "") {
+      const state = item.state ?? phase;
+      this.lastResult = {
+        approvalId: item.approval_id,
+        phase,
+        state,
+        summary:
+          summary ||
+          (phase === "approved"
+            ? "已批准，等待后端执行"
+            : phase === "rejected"
+              ? "已拒绝，不会执行"
+              : phase === "cancelled"
+                ? "已取消，不会执行"
+                : ""),
+        ok: phase === "rejected" || phase === "cancelled" ? false : null,
+      };
+      // 决定 / 三次确认成功 = 不再等待用户输入；执行结果由 APPROVAL_RESULT 事件补上
+      this.resolve(item.approval_id);
+    },
+
+    /** 决定 / 确认失败：保留待办、给出结论先行的原因；409 表示状态已变（以后端为准）。 */
+    _lifecycleFailure(item: ApprovalItem, error: unknown) {
+      const status = (error as { status?: number }).status;
+      const message = (error as Error)?.message || "未知原因";
+      if (status === 404) {
+        item.stale = true;
+        this.error = "这项确认已经有结局（可能已在别处处理或已过期），不会再等待你的授权。未做出任何授权：" + message;
+        return;
+      }
+      item.lifecycleError = message;
+      this.error = "审批请求失败，未做出任何授权：" + message + "（可重试）";
+    },
+
+    /** 读执行结果历史（APPROVAL_EXECUTED 落库的历史；只读）。 */
+    async loadHistory(limit = 20) {
+      if (this.historyLoading) return;
+      this.historyLoading = true;
+      this.historyError = null;
+      try {
+        this.history = await getApprovalHistory(limit);
+      } catch (e) {
+        this.historyError = "读取执行结果历史失败：" + ((e as Error)?.message || "未知原因");
+      } finally {
+        this.historyLoading = false;
+      }
+    },
+
+    /**
+     * 处理 APPROVAL_RESULT（W1：复用既有事件，payload.phase 区分状态）。
+     *
+     * * waiting 之后的进度（confirmed / approved / executing）：更新状态，不移除；
+     * * 终态（executed / failed / invalidated / interrupted_unverified / expired / rejected / cancelled）：
+     *   移除待办，并记下最近结局（失败/待核对也给可见事实，不静默）。
+     */
+    recordResult(d: Record<string, unknown>) {
+      const approvalId = String(d.approval_id ?? "");
+      const phase = String(d.phase ?? "");
+      if (!approvalId) return;
+      // 旧后端没有 phase：保持旧语义（结果事件 = 已有结局，按 id 收敛）
+      if (!phase) {
+        this.resolve(approvalId);
+        return;
+      }
+      const state = approvalStateFromPhase(phase);
+      const item = this.queue.find((a) => a.approval_id === approvalId);
+      if (item) {
+        // 中间态事件（confirm_stage）也带进度事实：即使 phase 没有对应状态名，
+        // 也要把 confirmed_stage / requires_confirmations 以后端为准写回来。
+        if (state) item.state = state;
+        if (typeof d.confirmed_stage === "number") item.confirmedStage = d.confirmed_stage;
+        if (typeof d.requires_confirmations === "number") item.requiresConfirmations = d.requires_confirmations;
+      }
+      const terminal = new Set([
+        "executed",
+        "failed",
+        "invalidated",
+        "interrupted_unverified",
+        "expired",
+        "rejected",
+        "cancelled",
+      ]);
+      if (terminal.has(phase)) {
+        const ok = typeof d.ok === "boolean" ? d.ok : phase === "executed" ? true : false;
+        this.lastResult = {
+          approvalId,
+          phase,
+          state: state ?? phase,
+          summary: String(d.summary ?? d.detail ?? approvalStateLabel(state ?? phase)),
+          ok,
+        };
+        this.resolve(approvalId);
+        // 有结局后刷新历史（失败也不打断：历史只是补充事实）
+        void this.loadHistory().catch(() => undefined);
+      } else if (phase === "confirm_stage" || phase === "confirmed") {
+        this.lastResult = {
+          approvalId,
+          phase,
+          state: state ?? "waiting",
+          summary: confirmationProgressText(item) || "确认进度已更新",
+          ok: null,
+        };
+      }
+    },
+
     async respond(decision: "approved" | "rejected", overrides?: Record<string, unknown>) {
       const item = this.current;
       if (!item) return;
@@ -441,6 +826,15 @@ export const useApprovalsStore = defineStore("approvals", {
       if (this.responding) return;
       // 已经判定失效的项不再发请求：后端已经没有它了，重试只会一直 404
       if (item.stale) return;
+      /**
+       * R9：v2 审批只走新接口（decide / confirm）；旧审批保留 /respond 兼容。
+       * 内部数据的三次确认：点「允许」的第一次动作是第 1 次确认（stage 由后端 CAS）。
+       */
+      if (isLifecycleApproval(item)) {
+        if (decision === "rejected") return this.decide("reject", item.approval_id);
+        if ((item.requiresConfirmations ?? 1) > 1) return this.confirmNext(item.approval_id);
+        return this.decide("approve", item.approval_id);
+      }
       this.responding = item.approval_id;
       this.error = null;
       try {

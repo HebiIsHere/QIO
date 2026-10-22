@@ -220,7 +220,7 @@ describe("(a) 提交时把未确认草稿提升为正文", () => {
 
     expect(
       lastSavePayload().cards.find((item) => item.id === "c1")?.content,
-      "未勾选的注释被提升进正文：越过了「勾选才允许 QIO 查看」的边界",
+      "未勾选的注释被提升进正文：越过了「勾选才作为互动材料」的边界",
     ).toBe("");
     expect(store.cardDraftText("c1"), "草稿必须原样保留，留给用户自己决定").toBe("还没勾选的字");
     expect(store.promotedDraftsCount, "没有提升就不该声称有文字随提交生效").toBe(0);

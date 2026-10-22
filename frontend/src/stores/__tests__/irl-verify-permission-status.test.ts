@@ -1,5 +1,5 @@
 /**
- * IRL-E 第二阶段独立复核 · 持续许可（§8.2）与状态身份矩阵（§8.3）。
+ * IRL-E 第二阶段独立复核 · 持续互动材料（§8.2）与状态身份矩阵（§8.3）。
  *
  * 独立角度：
  * 1) 许可：提交成功 / 失败 / 悬挂未回 / 重复提交 / 服务端快照回读 / 模式重载 六条路径，
@@ -127,7 +127,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("持续许可：六条路径都不自动取消（§8.2）", () => {
+describe("持续互动材料：六条路径都不自动取消（§8.2）", () => {
   it("提交成功（checkedCleared 为空）→ 许可保留，服务端快照回读也保留", async () => {
     const api = await import("../../services/interactive");
     const cards = [mkCard("t1", { checked: true })];
