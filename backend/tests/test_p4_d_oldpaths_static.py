@@ -166,17 +166,28 @@ def test_no_plaintext_secret_logging_patterns():
         f"{CLAUSE}：疑似把密钥写进日志/输出：{offenders}（必须走 trace/redact.py）")
 
 
-def test_no_new_migration_or_version_bump():
-    """§14.1：本阶段无新增迁移；版本仍 51，不得改历史迁移。"""
+def test_schema_migrations_are_append_only():
+    """§14.1 的追加式纪律：历史迁移 49/50/51 必须保留；后续轮次只允许追加。
+
+    本测试原意是"本阶段没有新增迁移"（当时最新是 51）。R9（2026-10-22）按用户要求
+    用户要求新增了迁移 52/53/54（附件源引用、审批 v2、补偿）。所以不变量从
+    "版本必须等于 51"改为"版本必须收敛到最新且不少于 51；历史迁移不得被改写"。
+    这仍然是可失败的守卫：回退版本、丢历史迁移、版本与补偿不一致都会红。
+    """
     schema = __import__("agent.storage.schema", fromlist=["SCHEMA_VERSION"])
-    assert int(getattr(schema, "SCHEMA_VERSION")) == 51, (
-        f"{CLAUSE}：本阶段不应新增迁移/提升版本（实际 {getattr(schema, 'SCHEMA_VERSION', None)}）")
-    assert int(getattr(schema, "COMPENSATION_VERSION")) == 51, (
-        f"{CLAUSE}：补偿版本应保持 51")
     numbers = [int(number) for number, _ in getattr(schema, "MIGRATIONS")]
-    assert max(numbers) == 51, f"{CLAUSE}：出现了未登记的 52/53/54 迁移：{max(numbers)}"
+    latest = max(numbers)
+    assert latest >= 51, f"{CLAUSE}：最新迁移号不得小于 51（实际 {latest}）"
+    assert int(getattr(schema, "SCHEMA_VERSION")) == latest, (
+        f"{CLAUSE}：SCHEMA_VERSION 必须等于最新迁移（实际 "
+        f"{getattr(schema, 'SCHEMA_VERSION', None)} / {latest}）")
+    assert int(getattr(schema, "COMPENSATION_VERSION")) == latest, (
+        f"{CLAUSE}：补偿版本必须等于最新迁移（实际 {getattr(schema, 'COMPENSATION_VERSION')} / {latest}）")
     assert 49 in numbers and 50 in numbers and 51 in numbers, (
         f"{CLAUSE}：阶段三迁移 49/50/51 必须保留（只追加）")
+    # 编号连续（追加不跳号）+ 唯一（同号重复会破坏 apply_migrations 的版本推进）
+    assert len(numbers) == len(set(numbers)), f"{CLAUSE}：迁移编号重复：{numbers}"
+    assert numbers == sorted(numbers), f"{CLAUSE}：迁移编号必须升序登记"
 
 
 def test_redaction_module_still_used_for_new_output_paths():
