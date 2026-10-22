@@ -1,0 +1,501 @@
+{
+ "generated_at": "2026-10-22T14:19:03.229Z",
+ "note": "R9-F W4 CI 响应性诊断：同一脚本、同机、逐棵顺序运行（避免并行互相干扰）。",
+ "comparison_idle": [
+  {
+   "file": "baseline-249a6344__turn-predict__none.json",
+   "label": "baseline-249a6344",
+   "sha": "249a63443c72b3dad011b5446ee9920f4dadf0fd",
+   "scenario": "turn-predict",
+   "pressure": "none",
+   "summary": {
+    "runs": 30,
+    "gap_ms": {
+     "min": 57.1,
+     "p50": 71.9,
+     "p90": 148.8,
+     "max": 157.9,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "worker_thread_execution": 20
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "unsampled": 124,
+    "worker_thread_execution": 30,
+    "loop_idle_wait": 34,
+    "sync_python": 5
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     41
+    ],
+    [
+     "",
+     39
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:851:_assemble_context <- backend/src/agent/services/app.py:1618:_user_root_id <- backend/src/agent/graph/nodes.py:53:get_or_create_user_root",
+     2
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:335:_execute_turn <- backend/src/agent/services/turn_orchestrator.py:1115:persist <- backend/src/agent/memory/ingest.py:124:append_message",
+     1
+    ],
+    [
+     "backend/src/agent/memory/ingest.py:98:append_message <- backend/src/agent/memory/ingest.py:66:_resolve_fragment <- backend/src/agent/memory/fragment.py:123:get_or_create_open",
+     1
+    ]
+   ],
+   "gaps_over_300ms": []
+  },
+  {
+   "file": "baseline-249a6344__turn-recall__none.json",
+   "label": "baseline-249a6344",
+   "sha": "249a63443c72b3dad011b5446ee9920f4dadf0fd",
+   "scenario": "turn-recall",
+   "pressure": "none",
+   "summary": {
+    "runs": 30,
+    "gap_ms": {
+     "min": 58,
+     "p50": 67.6,
+     "p90": 91,
+     "max": 152.8,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "sync_python": 40,
+     "loop_idle_wait": 18
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "sync_python": 39,
+    "worker_thread_execution": 35,
+    "loop_idle_wait": 31,
+    "unsampled": 25
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     26
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:315:_execute_turn <- backend/src/agent/services/turn_orchestrator.py:576:build_context <- backend/src/agent/memory/ingest.py:103:append_message",
+     7
+    ],
+    [
+     "backend/src/agent/storage/instance_registry.py:298:claim <- PY/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__ <- backend/src/agent/storage/db.py:60:transaction",
+     6
+    ],
+    [
+     "backend/src/agent/trace/recorder.py:109:write <- backend/src/agent/trace/store.py:173:record_write <- backend/src/agent/trace/store.py:208:_patch",
+     3
+    ],
+    [
+     "",
+     3
+    ]
+   ],
+   "gaps_over_300ms": []
+  },
+  {
+   "file": "head-5ad030a7__turn-predict__none.json",
+   "label": "head-5ad030a7",
+   "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+   "scenario": "turn-predict",
+   "pressure": "none",
+   "summary": {
+    "runs": 30,
+    "gap_ms": {
+     "min": 68,
+     "p50": 75.9,
+     "p90": 129.4,
+     "max": 198.7,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "worker_thread_execution": 16
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "unsampled": 102,
+    "worker_thread_execution": 22,
+    "loop_idle_wait": 18,
+    "sync_python": 1
+   },
+   "top_blocking_stacks": [
+    [
+     "",
+     39
+    ],
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     25
+    ]
+   ],
+   "gaps_over_300ms": []
+  },
+  {
+   "file": "head-5ad030a7__turn-recall__none.json",
+   "label": "head-5ad030a7",
+   "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+   "scenario": "turn-recall",
+   "pressure": "none",
+   "summary": {
+    "runs": 30,
+    "gap_ms": {
+     "min": 73.7,
+     "p50": 88.8,
+     "p90": 164.9,
+     "max": 261.6,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "sync_python": 41,
+     "loop_idle_wait": 11
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "sync_python": 47,
+    "loop_idle_wait": 27,
+    "worker_thread_execution": 26,
+    "unsampled": 44
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     32
+    ],
+    [
+     "",
+     11
+    ],
+    [
+     "backend/src/agent/storage/instance_registry.py:298:claim <- PY/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__ <- backend/src/agent/storage/db.py:60:transaction",
+     9
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:315:_execute_turn <- backend/src/agent/services/turn_orchestrator.py:576:build_context <- backend/src/agent/memory/ingest.py:120:append_message",
+     3
+    ],
+    [
+     "backend/src/agent/trace/store.py:164:record_model_call <- backend/src/agent/trace/store.py:215:_append <- backend/src/agent/trace/store.py:208:_patch",
+     3
+    ]
+   ],
+   "gaps_over_300ms": []
+  },
+  {
+   "file": "main-37a2d26b__turn-predict__none.json",
+   "label": "main-37a2d26b",
+   "sha": "37a2d26b94df113b45fbc8d0702801c2d1a06cf3",
+   "scenario": "turn-predict",
+   "pressure": "none",
+   "summary": {
+    "runs": 30,
+    "gap_ms": {
+     "min": 57.5,
+     "p50": 65.8,
+     "p90": 76.5,
+     "max": 153.3,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "worker_thread_execution": 19,
+     "loop_idle_wait": 2,
+     "sync_python": 2
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "unsampled": 71,
+    "sync_python": 8,
+    "worker_thread_execution": 26,
+    "loop_idle_wait": 27
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     31
+    ],
+    [
+     "",
+     14
+    ],
+    [
+     "backend/src/agent/memory/ingest.py:98:append_message <- backend/src/agent/memory/ingest.py:66:_resolve_fragment <- backend/src/agent/memory/fragment.py:123:get_or_create_open",
+     1
+    ],
+    [
+     "backend/src/agent/memory/ingest.py:98:append_message <- backend/src/agent/memory/ingest.py:53:_resolve_fragment <- backend/src/agent/services/binding.py:106:binding_for",
+     1
+    ]
+   ],
+   "gaps_over_300ms": []
+  },
+  {
+   "file": "main-37a2d26b__turn-recall__none.json",
+   "label": "main-37a2d26b",
+   "sha": "37a2d26b94df113b45fbc8d0702801c2d1a06cf3",
+   "scenario": "turn-recall",
+   "pressure": "none",
+   "summary": {
+    "runs": 30,
+    "gap_ms": {
+     "min": 57.6,
+     "p50": 69.8,
+     "p90": 112.9,
+     "max": 161.5,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "sync_python": 42,
+     "loop_idle_wait": 14
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "sync_python": 40,
+    "worker_thread_execution": 32,
+    "loop_idle_wait": 49,
+    "unsampled": 28
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     18
+    ],
+    [
+     "backend/src/agent/storage/instance_registry.py:298:claim <- PY/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__ <- backend/src/agent/storage/db.py:60:transaction",
+     6
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:315:_execute_turn <- backend/src/agent/services/turn_orchestrator.py:576:build_context <- backend/src/agent/memory/ingest.py:103:append_message",
+     5
+    ],
+    [
+     "",
+     5
+    ],
+    [
+     "backend/src/agent/trace/recorder.py:109:write <- backend/src/agent/trace/store.py:173:record_write <- backend/src/agent/trace/store.py:208:_patch",
+     3
+    ]
+   ],
+   "gaps_over_300ms": []
+  }
+ ],
+ "injection_path": {
+  "file": "head-5ad030a7__injection__none.json",
+  "label": "head-5ad030a7",
+  "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+  "scenario": "injection",
+  "pressure": "none",
+  "summary": {
+   "runs": 20,
+   "gap_ms": {
+    "min": 16.5,
+    "p50": 19.1,
+    "p90": 30.5,
+    "max": 57.5,
+    "over_budget_300ms": 0
+   },
+   "kinds_in_gaps": {
+    "loop_idle_wait": 1
+   },
+   "errors": 0
+  },
+  "gap_kinds": {
+   "worker_thread_execution": 8,
+   "unsampled": 3,
+   "loop_idle_wait": 1
+  },
+  "top_blocking_stacks": [
+   [
+    "PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start <- PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait <- PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait",
+    1
+   ]
+  ],
+  "gaps_over_300ms": []
+ },
+ "pressure": [
+  {
+   "file": "head-5ad030a7__turn-predict__cpu.json",
+   "label": "head-5ad030a7",
+   "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+   "scenario": "turn-predict",
+   "pressure": "cpu",
+   "summary": {
+    "runs": 20,
+    "gap_ms": {
+     "min": 75.8,
+     "p50": 130.4,
+     "p90": 304.1,
+     "max": 307.2,
+     "over_budget_300ms": 2
+    },
+    "kinds_in_gaps": {
+     "loop_idle_wait": 12,
+     "sync_python": 7
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "sync_python": 26,
+    "worker_thread_execution": 42,
+    "loop_idle_wait": 149,
+    "unsampled": 95
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     98
+    ],
+    [
+     "",
+     37
+    ],
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start <- PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait <- PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait",
+     9
+    ],
+    [
+     "backend/src/agent/trace/recorder.py:109:write <- backend/src/agent/trace/store.py:173:record_write <- backend/src/agent/trace/store.py:208:_patch",
+     7
+    ],
+    [
+     "backend/src/agent/core/turn.py:367:_journal_call <- backend/src/agent/storage/turn_journal.py:446:note_user_message <- backend/src/agent/storage/turn_journal.py:1054:_execute",
+     3
+    ]
+   ],
+   "gaps_over_300ms": [
+    {
+     "run": 5,
+     "ms": 307,
+     "kind": "loop_idle_wait",
+     "top": [
+      "PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start",
+      "PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait",
+      "PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait"
+     ]
+    },
+    {
+     "run": 18,
+     "ms": 304,
+     "kind": "unsampled",
+     "top": []
+    }
+   ]
+  },
+  {
+   "file": "head-5ad030a7__turn-recall__cpu.json",
+   "label": "head-5ad030a7",
+   "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+   "scenario": "turn-recall",
+   "pressure": "cpu",
+   "summary": {
+    "runs": 20,
+    "gap_ms": {
+     "min": 80.6,
+     "p50": 119.5,
+     "p90": 214.4,
+     "max": 278.1,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "loop_idle_wait": 12,
+     "sync_python": 10
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "loop_idle_wait": 140,
+    "sync_python": 27,
+    "worker_thread_execution": 43,
+    "unsampled": 85
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     92
+    ],
+    [
+     "",
+     39
+    ],
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start <- PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait <- PY/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait",
+     17
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:315:_execute_turn <- backend/src/agent/services/turn_orchestrator.py:576:build_context <- backend/src/agent/memory/ingest.py:103:append_message",
+     2
+    ],
+    [
+     "backend/src/agent/storage/instance_registry.py:298:claim <- PY/cpython-3.11-windows-x86_64-none/Lib/contextlib.py:144:__exit__ <- backend/src/agent/storage/db.py:60:transaction",
+     2
+    ]
+   ],
+   "gaps_over_300ms": []
+  },
+  {
+   "file": "head-5ad030a7__turn-recall__disk.json",
+   "label": "head-5ad030a7",
+   "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+   "scenario": "turn-recall",
+   "pressure": "disk",
+   "summary": {
+    "runs": 20,
+    "gap_ms": {
+     "min": 65.8,
+     "p50": 73.5,
+     "p90": 90.7,
+     "max": 124.8,
+     "over_budget_300ms": 0
+    },
+    "kinds_in_gaps": {
+     "sync_python": 24,
+     "loop_idle_wait": 14,
+     "worker_thread_execution": 1
+    },
+    "errors": 0
+   },
+   "gap_kinds": {
+    "sync_python": 29,
+    "worker_thread_execution": 23,
+    "loop_idle_wait": 33,
+    "unsampled": 17
+   },
+   "top_blocking_stacks": [
+    [
+     "PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select <- PY/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll",
+     18
+    ],
+    [
+     "",
+     6
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:315:_execute_turn <- backend/src/agent/services/turn_orchestrator.py:576:build_context <- backend/src/agent/memory/ingest.py:103:append_message",
+     5
+    ],
+    [
+     "backend/src/agent/services/navigation.py:189:enter_topic <- backend/src/agent/graph/anchors.py:62:set_active <- backend/src/agent/graph/anchors.py:187:_upsert_singleton",
+     3
+    ],
+    [
+     "backend/src/agent/services/turn_orchestrator.py:315:_execute_turn <- backend/src/agent/services/turn_orchestrator.py:576:build_context <- backend/src/agent/memory/ingest.py:124:append_message",
+     3
+    ]
+   ],
+   "gaps_over_300ms": []
+  }
+ ]
+}

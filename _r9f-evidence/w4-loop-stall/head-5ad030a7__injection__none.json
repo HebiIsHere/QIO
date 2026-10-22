@@ -1,0 +1,847 @@
+{
+ "env": {
+  "label": "head-5ad030a7",
+  "repo": "D:\\qio-dev\\qio-r9f-w4",
+  "sha": "5ad030a789c2f394bfd051b79a8e9c45ea6de878",
+  "python": "3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "cpu_count": 16,
+  "runs_requested": 20,
+  "gap_threshold_ms": 50.0,
+  "pressure": "none",
+  "timestamp": "2026-10-22T22:13:42+0800",
+  "test_file_sha256": "e2c5bdb157f6029cc3d952a1147c13d42956d88370de1a7991b761e1551fe907"
+ },
+ "scenario": "injection",
+ "summary": {
+  "runs": 20,
+  "gap_ms": {
+   "min": 16.5,
+   "p50": 19.1,
+   "p90": 30.5,
+   "max": 57.5,
+   "over_budget_300ms": 0
+  },
+  "kinds_in_gaps": {
+   "loop_idle_wait": 1
+  },
+  "errors": 0
+ },
+ "runs": [
+  {
+   "index": 0,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 19.595,
+   "turn_ms": 426.429,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436030.0668455,
+    "end": 436030.0864409,
+    "ms": 19.595
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4083,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 1,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 16.553,
+   "turn_ms": 416.064,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436030.9870676,
+    "end": 436031.0036207,
+    "ms": 16.553
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4065,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 2,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 17.562,
+   "turn_ms": 412.243,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436031.9551447,
+    "end": 436031.9727072,
+    "ms": 17.562
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.405,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 3,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 22.032,
+   "turn_ms": 411.36,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436032.8579066,
+    "end": 436032.8799386,
+    "ms": 22.032
+   },
+   "kinds_in_gap": {},
+   "gap_records": [
+    {
+     "start": 436032.857907,
+     "end": 436032.879939,
+     "ms": 22.032,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.406,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 4,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 17.251,
+   "turn_ms": 415.524,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436033.9691486,
+    "end": 436033.9863995,
+    "ms": 17.251
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.408,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 5,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 22.692,
+   "turn_ms": 406.202,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436034.8056959,
+    "end": 436034.8283877,
+    "ms": 22.692
+   },
+   "kinds_in_gap": {},
+   "gap_records": [
+    {
+     "start": 436034.805696,
+     "end": 436034.828388,
+     "ms": 22.692,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4058,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 6,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 16.817,
+   "turn_ms": 417.471,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436035.9801965,
+    "end": 436035.997014,
+    "ms": 16.817
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4084,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 7,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 19.908,
+   "turn_ms": 439.438,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436037.0616356,
+    "end": 436037.0815437,
+    "ms": 19.908
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4064,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 8,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 16.528,
+   "turn_ms": 423.198,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436038.0104186,
+    "end": 436038.0269464,
+    "ms": 16.528
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4073,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 9,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 19.035,
+   "turn_ms": 432.164,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436038.8228347,
+    "end": 436038.8418696,
+    "ms": 19.035
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.409,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 10,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 30.454,
+   "turn_ms": 422.099,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436039.7579651,
+    "end": 436039.7884191,
+    "ms": 30.454
+   },
+   "kinds_in_gap": {},
+   "gap_records": [
+    {
+     "start": 436039.757965,
+     "end": 436039.788419,
+     "ms": 30.454,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    }
+   ],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4087,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 11,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 22.687,
+   "turn_ms": 407.699,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436040.7630561,
+    "end": 436040.7857436,
+    "ms": 22.687
+   },
+   "kinds_in_gap": {},
+   "gap_records": [
+    {
+     "start": 436040.763056,
+     "end": 436040.785744,
+     "ms": 22.687,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    },
+    {
+     "start": 436040.955909,
+     "end": 436040.976776,
+     "ms": 20.867,
+     "kind": "unsampled",
+     "kinds": {},
+     "top": [],
+     "threads": {}
+    }
+   ],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4067,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 12,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 57.476,
+   "turn_ms": 479.121,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436041.8835094,
+    "end": 436041.9409854,
+    "ms": 57.476
+   },
+   "kinds_in_gap": {
+    "loop_idle_wait": 1
+   },
+   "gap_records": [
+    {
+     "start": 436041.883509,
+     "end": 436041.940985,
+     "ms": 57.476,
+     "kind": "loop_idle_wait",
+     "kinds": {
+      "loop_idle_wait": 1
+     },
+     "top": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:408:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/heavy.py:105:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:830:run_in_executor",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:176:submit",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:199:_adjust_thread_count",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait"
+     ],
+     "threads": {
+      "MainThread": "wait",
+      "qio-heavy_0": "_worker",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 436041.981211,
+     "end": 436042.006784,
+     "ms": 25.572,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 436042.006784,
+     "end": 436042.028634,
+     "ms": 21.85,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 436042.028634,
+     "end": 436042.052791,
+     "ms": 24.157,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 436042.052791,
+     "end": 436042.080689,
+     "ms": 27.898,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [
+    {
+     "t": 436041.925734,
+     "kind": "loop_idle_wait",
+     "main_stack": [
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:558:_main",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:456:_run_scenario",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:415:_run_one",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:235:measure",
+      "D:/qio-dev/qio-r9f-w4/scripts/diagnose_loop_stall.py:408:_work",
+      "D:/qio-dev/qio-r9f-w4/backend/src/agent/services/heavy.py:105:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:830:run_in_executor",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:176:submit",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/concurrent/futures/thread.py:199:_adjust_thread_count",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:969:start",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:629:wait",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/threading.py:327:wait"
+     ],
+     "threads": {
+      "MainThread": "wait",
+      "qio-heavy_0": "_worker",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4675,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 13,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 17.297,
+   "turn_ms": 426.017,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436043.0075892,
+    "end": 436043.024886,
+    "ms": 17.297
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4049,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 14,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 19.11,
+   "turn_ms": 429.61,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436043.987939,
+    "end": 436044.0070493,
+    "ms": 19.11
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4096,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 15,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 23.071,
+   "turn_ms": 421.288,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436045.0321198,
+    "end": 436045.055191,
+    "ms": 23.071
+   },
+   "kinds_in_gap": {},
+   "gap_records": [
+    {
+     "start": 436044.932981,
+     "end": 436044.954973,
+     "ms": 21.991,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    },
+    {
+     "start": 436045.03212,
+     "end": 436045.055191,
+     "ms": 23.071,
+     "kind": "worker_thread_execution",
+     "kinds": {
+      "worker_thread_execution": 1
+     },
+     "top": [
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:190:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/runners.py:118:run",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:641:run_until_complete",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:321:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:608:run_forever",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/base_events.py:1898:_run_once",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:444:select",
+      "C:/Users/zxy/AppData/Roaming/uv/python/cpython-3.11-windows-x86_64-none/Lib/asyncio/windows_events.py:825:_poll"
+     ],
+     "threads": {
+      "MainThread": "_poll",
+      "qio-heavy_0": "search",
+      "loop-probe-sampler": "_sampler"
+     }
+    }
+   ],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4058,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 16,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 16.929,
+   "turn_ms": 431.598,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436045.8744736,
+    "end": 436045.891403,
+    "ms": 16.929
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4064,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 17,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 19.552,
+   "turn_ms": 422.385,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436046.8316058,
+    "end": 436046.8511575,
+    "ms": 19.552
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4071,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 18,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 17.773,
+   "turn_ms": 423.063,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436047.9283789,
+    "end": 436047.9461518,
+    "ms": 17.773
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4083,
+     "injection_end"
+    ]
+   ]
+  },
+  {
+   "index": 19,
+   "scenario": "injection",
+   "pressure": "none",
+   "gap_ms": 18.755,
+   "turn_ms": 415.645,
+   "ok": true,
+   "error": null,
+   "max_gap": {
+    "start": 436049.0063248,
+    "end": 436049.0250794,
+    "ms": 18.755
+   },
+   "kinds_in_gap": {},
+   "gap_records": [],
+   "samples_in_gap": [],
+   "marks": [
+    [
+     0.0,
+     "injection_start"
+    ],
+    [
+     0.4102,
+     "injection_end"
+    ]
+   ]
+  }
+ ]
+}
