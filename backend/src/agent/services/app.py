@@ -331,7 +331,8 @@ class AppContext:
         from agent.tools.subtask_notifications import SubtaskNotificationQueue
         from agent.tools.task_manager import TaskManager
 
-        self.task_manager = TaskManager(bus)
+        # 对话页任务栏：子任务生命周期同步写进 task_feed（展示事实，不替代执行）。
+        self.task_manager = TaskManager(bus, on_change=self._on_subagent_task_change)
         self.services.register("task_manager", self.task_manager)
         # 阶段四 A：子任务完成通知先入队（按 task 去重），空闲时各自成为一条通知轮；
         # 不打断当前交流、不因处理另一条通知而丢弃。
@@ -715,6 +716,23 @@ class AppContext:
         if onnx.available():
             return onnx
         return None
+
+    # -- 对话页任务栏：子任务展示记录 -------------------------------------
+
+    def _on_subagent_task_change(self, record) -> None:
+        """把子任务的真实生命周期写进展示记录（失败不影响任务本身）。"""
+        from agent.services import task_feed
+
+        try:
+            task_feed.record_subagent(
+                self.conn, record, instance_id=self.instance_id
+            )
+        except Exception:  # noqa: BLE001 - 展示记录写失败不能影响执行
+            logger.warning(
+                "task feed record failed: %s",
+                getattr(record, "task_id", ""),
+                exc_info=True,
+            )
 
     def _restore_tools(self) -> None:
         """Restore agent-created tools from the persistent store at startup."""

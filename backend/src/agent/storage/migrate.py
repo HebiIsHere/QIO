@@ -117,6 +117,10 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_waiting",
         "board_intent_versions",
         "board_operations",
+        # 对话页 v2（迁移 55）：左侧任务栏的持久化展示记录 / 用户「知道了」状态。
+        # 缺了它们，任务历史只能存在组件内存或浏览器存储，重启即丢。
+        "task_feed",
+        "task_ack",
     ),
     "columns": (
         "turn_journal.owner_instance_id",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -40,3 +41,43 @@ def test_ui_put_rejects_unsupported_cps(client):
 def test_ui_put_rejects_non_int(client):
     r = client.put("/api/settings/ui", json={"typewriter_cps": "fast"})
     assert r.status_code == 400
+
+def test_ui_conversation_layout_round_trip(client):
+    layout = {
+        "version": 1,
+        "leftWidth": 300,
+        "leftCollapsed": False,
+        "rightWidth": 420,
+        "rightOpen": True,
+        "taskTab": "current",
+        "previewFull": False,
+        "previewTabs": [],
+        "activePreviewTabId": None,
+    }
+    r = client.put(
+        "/api/settings/ui", json={"conversation_layout": json.dumps(layout, ensure_ascii=False)}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["conversation_layout"]["leftWidth"] == 300
+    fetched = client.get("/api/settings/ui").json()["conversation_layout"]
+    assert fetched["rightWidth"] == 420
+    assert fetched["rightOpen"] is True
+
+
+def test_ui_conversation_layout_rejects_bad_or_oversized_values(client):
+    assert client.put(
+        "/api/settings/ui", json={"conversation_layout": "{not json"}
+    ).status_code == 400
+    assert client.put(
+        "/api/settings/ui", json={"conversation_layout": {"leftWidth": -1}}
+    ).status_code == 400
+    huge = {"previewTabs": [{"id": "x" * 70000}]}
+    assert client.put(
+        "/api/settings/ui", json={"conversation_layout": huge}
+    ).status_code == 400
+
+
+def test_ui_put_without_known_keys_is_rejected(client):
+    r = client.put("/api/settings/ui", json={"unknown": 1})
+    assert r.status_code == 400
+

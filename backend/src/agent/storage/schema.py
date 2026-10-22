@@ -1536,5 +1536,62 @@ MIGRATIONS.append(
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 COMPENSATION_VERSION = 51
 
+# ── 对话页 v2：左侧任务栏持久化展示记录（2026-10-22）──────────────────────
+# 为什么需要这张表：TaskManager 的记录是**进程内**的（TTL 30 分钟、重启即失）。
+# 左侧任务栏要展示的「历史」不能只存在组件内存或 localStorage，也不能在后端重启后
+# 把上次的运行重新点亮成 running。这里只持久化**展示所需的事实**：
+# 身份 / 来源 / 原始与展示状态 / 时间 / 是否需处理 / 用户是否已知晓 / 预览与详情入口。
+# 真正的执行结果仍由 TaskManager（活）/ 各自持久层（派生任务、维护批次、工具记录）持有。
+#
+# 命名空间：R9 冻结了 52–54，本任务从 55 起，避免与并行分支撞号。
+_TASK_FEED_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS task_feed (
+        id                TEXT PRIMARY KEY,
+        source            TEXT NOT NULL,
+        source_id         TEXT NOT NULL,
+        title             TEXT NOT NULL DEFAULT '',
+        origin            TEXT NOT NULL DEFAULT 'unknown',
+        topic_id          TEXT,
+        topic_title       TEXT,
+        status            TEXT NOT NULL DEFAULT 'unknown',
+        raw_status        TEXT NOT NULL DEFAULT '',
+        executor          TEXT,
+        summary           TEXT NOT NULL DEFAULT '',
+        queued_at         TEXT,
+        started_at        TEXT,
+        finished_at       TEXT,
+        duration_ms       INTEGER,
+        requires_attention INTEGER NOT NULL DEFAULT 0,
+        acknowledged_at   TEXT,
+        output_preview    TEXT NOT NULL DEFAULT '',
+        output_truncated  INTEGER NOT NULL DEFAULT 0,
+        output_hint       TEXT NOT NULL DEFAULT '',
+        actions           TEXT NOT NULL DEFAULT '[]',
+        detail            TEXT NOT NULL DEFAULT '',
+        instance_id       TEXT,
+        updated_at        TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_task_feed_updated ON task_feed(updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_task_feed_source ON task_feed(source, source_id)",
+    """
+    CREATE TABLE IF NOT EXISTS task_ack (
+        id                TEXT PRIMARY KEY,
+        acknowledged_at   TEXT NOT NULL
+    )
+    """,
+]
 
+# 补偿入口（55）：迁移 51 的全部语句 + 55 新增对象。
+# 只追加、不改历史迁移；与 36/38/40/43/45/48/51 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append(
+    (
+        55,
+        [stmt for target, stmts in MIGRATIONS if target == 51 for stmt in stmts]
+        + list(_TASK_FEED_DDL),
+    )
+)
 
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 55
