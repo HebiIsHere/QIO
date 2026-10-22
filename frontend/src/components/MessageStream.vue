@@ -11,7 +11,6 @@ import { useApprovalsStore } from "../stores/approvals";
 import MessageItem from "./MessageItem.vue";
 import TurnProcess from "./TurnProcess.vue";
 import ContinueBar from "./ContinueBar.vue";
-import QueueChip from "./QueueChip.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
 import { groupTurns, type StreamTurn } from "../stores/session";
@@ -639,11 +638,25 @@ const phaseLabel = computed(() => {
       </button>
     </div>
     <ContinueBar />
-    <QueueChip />
-    <div v-if="!messages.length" class="empty">
-      <div class="greet serif">今天想聊点什么？</div>
-      <div class="sub mono">你的星球在右下角等待 · 点击悬浮球查看话题大陆</div>
-      <div class="chip"><span class="pd"></span>打开话题星球</div>
+    <!--
+      空状态必须如实（契约 §8）：
+      * 正在读历史 → 说「正在读取」，不显示成「没有消息」；
+      * 历史读取失败 → 说「没有读出来」，也不显示成「没有消息」；
+      * 只有真的没有消息时才显示空对话引导。
+    -->
+    <div v-if="!messages.length" class="empty" data-test="stream-empty">
+      <template v-if="session.history.status === 'loading'">
+        <div class="greet serif">正在读取历史…</div>
+        <div class="sub mono">之前在对话里的消息还在加载</div>
+      </template>
+      <template v-else-if="session.history.status === 'error'">
+        <div class="greet serif">历史没有读取出来</div>
+        <div class="sub mono">这不代表没有消息；可在上方状态条里重试</div>
+      </template>
+      <template v-else>
+        <div class="greet serif">今天想聊点什么？</div>
+        <div class="sub mono">从下方输入框开始 · 话题星球在右下角</div>
+      </template>
     </div>
   </div>
 </template>

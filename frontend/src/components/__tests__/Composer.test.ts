@@ -3,6 +3,7 @@ import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import Composer from "../Composer.vue";
+import ComposerDock from "../conversation/ComposerDock.vue";
 import { useSessionStore } from "../../stores/session";
 
 const mocks = vi.hoisted(() => ({
@@ -212,65 +213,83 @@ describe("Composer 运行中仍可书写（任务02 §1/§3/§4/§11）", () => 
   });
 });
 
-describe("Composer 历史位置提示（任务05 A/B/C）", () => {
+describe("话题位置与输入提示（v2：入口② + 输入区）", () => {
+  function mountDock() {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    return mount(ComposerDock, { global: { plugins: [pinia] } });
+  }
+
+  async function openContinuation(w: ReturnType<typeof mountDock>) {
+    await w.find('[data-entry="continuation"]').trigger("click");
+    await nextTick();
+    return w.find(".panel");
+  }
+
   it("输入区提示语是中文（不再显示 /tool /topic /memory 这类英文命令）", async () => {
-    const { w } = await mountComposer();
-    const bar = w.find(".topicbar").text();
-    expect(bar).toContain("Enter 发送");
-    expect(bar).not.toContain("/tool");
-    expect(bar).not.toContain("/topic");
-    expect(bar).not.toContain("/memory");
+    const w = mountDock();
+    const placeholder = w.find("textarea").attributes("placeholder") ?? "";
+    expect(placeholder).toContain("Enter 发送");
+    expect(placeholder).toContain("Shift+Enter 换行");
+    expect(placeholder).not.toContain("/tool");
+    expect(placeholder).not.toContain("/topic");
+    expect(placeholder).not.toContain("/memory");
     w.unmount();
   });
 
-  it("用户「从这里继续」后提示当前从哪个历史片段继续", async () => {
-    const { w } = await mountComposer();
+  it("用户「从这里继续」后入口②说明当前从哪个历史片段继续", async () => {
+    const w = mountDock();
     const session = useSessionStore();
     session.setAnchor("t1", "f13", "话题A", { id: "f13", title: "Anchor 生命周期" });
     session.anchorHistoric = true;
     await nextTick();
-    const anchor = w.find(".anchor");
-    expect(anchor.exists()).toBe(true);
-    expect(anchor.text()).toContain("从「Anchor 生命周期」继续");
-    expect(anchor.text()).not.toContain("anchor_fragment_id");
+    expect(w.find(".topic-anchor, [data-test='topic-anchor']").exists()).toBe(false);
+    const panel = await openContinuation(w);
+    expect(panel.text()).toContain("Anchor 生命周期");
+    expect(panel.text()).toContain("下一条消息会从这里继续");
+    expect(w.text()).not.toContain("anchor_fragment_id");
     w.unmount();
   });
 
   it("没有片段标题时也能读懂的兜底文案", async () => {
-    const { w } = await mountComposer();
+    const w = mountDock();
     const session = useSessionStore();
     session.setAnchor("t1", "f13", "话题A", { id: "f13", title: null });
     session.anchorHistoric = true;
     await nextTick();
-    expect(w.find(".anchor").text()).toContain("从选中的历史位置继续");
+    const panel = await openContinuation(w);
+    expect(panel.text()).toContain("当前位置停在历史片段上");
+    expect(panel.text()).toContain("下一条消息会从这里继续");
     w.unmount();
   });
 
   it("成功一轮位置推进后不再显示历史提示（不会几十轮后仍显示旧片段）", async () => {
-    const { w } = await mountComposer();
+    const w = mountDock();
     const session = useSessionStore();
     session.setAnchor("t1", "f13", "话题A", { id: "f13", title: "Anchor 生命周期" });
     session.anchorHistoric = true;
     await nextTick();
-    expect(w.find(".anchor").exists()).toBe(true);
+    expect(w.find('[data-entry="continuation"]').exists()).toBe(true);
 
     // 后端在成功一轮后推送 historic=false 的 ANCHOR 事件
     session.setAnchor("t1", "f20", "话题A", { id: "f20", title: null });
     session.anchorHistoric = false;
     await nextTick();
-    expect(w.find(".anchor").exists()).toBe(false);
+    expect(w.find('[data-entry="continuation"]').exists()).toBe(false);
     w.unmount();
   });
 
   it("只读检索（memory_search）不产生历史提示变化", async () => {
-    const { w } = await mountComposer();
+    const w = mountDock();
     const session = useSessionStore();
     session.setAnchor("t1", "f13", "话题A", { id: "f13", title: "Anchor 生命周期" });
     session.anchorHistoric = true;
     await nextTick();
-    const before = w.find(".anchor").text();
-    // 没有任何 ANCHOR 事件 → 提示保持不变
-    expect(w.find(".anchor").text()).toBe(before);
+    const panel = await openContinuation(w);
+    const beforeText = panel.text();
+    // 没有任何 ANCHOR 事件 → 提示内容保持不变（只读检索不改变起点）
+    await nextTick();
+    expect(w.find(".panel").text()).toBe(beforeText);
     w.unmount();
   });
 });
