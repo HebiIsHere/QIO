@@ -1030,6 +1030,20 @@ def main() -> int:
         base.record("D-002", "安装目录里的后端 /api/health", "PASS" if ok else "FAIL", detail)
         if not ok:
             return 4
+        # R9（2026-10-22）：本 E2E 验证的是**安装版工具链/自带运行时**，不是审批交互。
+        # 自建工具在受限模式下每次调用都会走 deferred 审批（工具返回"已提交审批"，
+        # 真实结果在批准后由后台执行器产生）—— 那会把"审批未走完"误读成"工具链坏了"。
+        # 所以显式切到完全无限制模式，让工具调用保持同步执行；权限/审批行为由
+        # backend/tests/test_approval_*、test_r9_acceptance_e2e 与 install_e2e 覆盖。
+        status, mode_body = client.put(
+            "/api/security/mode", {"mode": "unrestricted", "user_confirmed": True}
+        )
+        base.record(
+            "D-002b",
+            "权限模式设为完全无限制（本 E2E 只验证工具链，不验证审批交互）",
+            "PASS" if status == 200 else "WARN",
+            "%s %s" % (status, json.dumps(mode_body, ensure_ascii=False)[:160]),
+        )
         sse = new_reader(client)
 
         fp_proc, fp, fp_port = start_fake_provider(args, args.port)

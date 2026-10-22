@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import time
 
 import pytest
@@ -186,10 +188,21 @@ def test_missing_and_changed_reference_are_reported(app_client, tmp_path):
     meta = _wait_terminal(client, str(created["id"]))
     assert meta["state"] == "ready", meta
 
-    source.unlink()
-    missing = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
-    assert missing["state"] == "missing", ("源文件不在了必须如实说 missing", missing)
-    assert missing.get("missing_reason"), missing
+    # POSIX 上 unlink 后立刻在**同一路径**重建文件，文件系统可能复用同一个 inode
+    # （ext4 实测会），于是「换了一份文件」在身份判据上看起来仍是同一个文件 —— 这会把
+    # 平台行为差异误读成产品缺陷。这里先用一个打开的文件描述符**钉住旧 inode**，
+    # 保证重建得到的是不同身份；Windows 不允许删除已打开的文件，所以只在 POSIX 上这样做。
+    hold_open = None
+    if sys.platform != "win32":
+        hold_open = os.open(str(source), os.O_RDONLY)
+    try:
+        source.unlink()
+        missing = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
+        assert missing["state"] == "missing", ("源文件不在了必须如实说 missing", missing)
+        assert missing.get("missing_reason"), missing
+    finally:
+        if hold_open is not None:
+            os.close(hold_open)
 
     # 在同一个路径上换了一份新文件：文件身份不同 → 如实 changed（不得继续冒充 ready）
     source = _sparse(tmp_path / "被引用.bin", LEGACY_COPY_THRESHOLD + 2)

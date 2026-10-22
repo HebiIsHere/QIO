@@ -59,7 +59,10 @@ _DIRECTORY_HINTS = (
 _PATH_STOP = r"""\s"'“”‘’<>|*?，。；：！？、（）【】「」『』《》,;!?(){}"""
 _WIN_ABS = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]:[\\/](?:[^" + _PATH_STOP + r"]+))")
 _UNC = re.compile(r"(\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^" + _PATH_STOP + r"]*)*)")
-_POSIX_ABS = re.compile(r"(?<![\w:./\\])/((?:[^" + _PATH_STOP + r"]+))")
+# POSIX 绝对路径：**必须把前导 "/" 一起捕获**。旧写法把 "/" 放在捕获组外，
+# 于是 _looks_absolute_path("tmp/x") 判 False —— 在 Linux 上任何 "/tmp/..." 都提取不到，
+# 明确指令授权在非 Windows 平台整体失效（CI py3.11/py3.12 实证）。
+_POSIX_ABS = re.compile(r"(?<![\w:./\\])(/(?:[^" + _PATH_STOP + r"]+))")
 _QUOTED = re.compile(r"""[“"']([^"'“”‘’]{2,300})[”"']""")
 _URL = re.compile(r"""https?://([^/\s"'“”]+)""", re.IGNORECASE)
 
@@ -110,7 +113,9 @@ def _extract_paths(sentence: str) -> list[tuple[int, str]]:
     seen: set[str] = set()
     unique: list[tuple[int, str]] = []
     for position, path in sorted(found, key=lambda item: item[0]):
-        key = re.sub(r"[\\/]+$", "", path).lower()
+        # 去重键：Windows 路径大小写不敏感；POSIX 路径大小写敏感（/tmp/A 与 /tmp/a 是两个对象）。
+        key = re.sub(r"[\\/]+$", "", path)
+        key = key.lower() if re.match(r"^[A-Za-z]:[\\/]", key) or key.startswith("\\\\") else key
         if not key or key in seen:
             continue
         seen.add(key)

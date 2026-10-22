@@ -70,6 +70,10 @@ class _FakeProcess:
     async def wait(self):
         return 0
 
+    async def communicate(self, input=None):  # noqa: A002 - 与 asyncio.Process 同签名
+        """asyncio subprocess 的收尾路径会调用它；缺了会在非 Windows 分支直接 AttributeError。"""
+        return (b"", b"")
+
     def kill(self):
         self.killed = True
 
@@ -340,8 +344,9 @@ async def test_sandbox_marks_violation_when_protected_file_changes(tmp_path, mon
         return isolation.IsolationOutcome(applied=True, mechanisms=("job_object",))
 
     monkeypatch.setattr(isolation, "harden", _fake_harden)
+    # 本用例验证的是「事后核验能发现越界」，不是权限模式本身；不挂 mode_provider，
+    # 避免在 Linux CI 上把模式分支（Low IL 不可用）与核验逻辑混在一起。
     executor = SandboxExecutor(
-        mode_provider=lambda: "restricted",
         protected_scope_provider=lambda: [str(protected)],
     )
     code = (
