@@ -141,6 +141,16 @@ def _restore_waiting_approvals(
     if conn is None or not snapshot:
         return 0
     now = _now_iso()
+    # W1 审批 v2 合并后：state 列是权威状态机，status 只保留兼容。
+    # 本兜底**只恢复 legacy 行**（state IS NULL 或仍为 waiting 的），
+    # 对 v2 已进入 cancelled/executing 等状态的行一律不碰（不越过 W1 的状态机），
+    # 因此合并后它是无害的 no-op 或仅覆盖 base 同步 request() 那条取消路径。
+    has_state = False
+    try:
+        columns = [str(row[1]) for row in conn.execute("PRAGMA table_info(pending_approvals)")]
+        has_state = "state" in columns
+    except Exception:  # noqa: BLE001 - 读不到表结构就按 legacy 处理
+        has_state = False
     restored: list[str] = []
     try:
         from agent.storage.db import transaction
@@ -151,12 +161,21 @@ def _restore_waiting_approvals(
                 expires_at = item.get("expires_at") or ""
                 if not approval_id or not expires_at or expires_at <= now:
                     continue  # 已经过期：恢复等待没有意义，也不该复活
-                cur = conn.execute(
-                    "UPDATE pending_approvals SET status = 'pending', resolved_at = NULL "
-                    "WHERE approval_id = ? AND status = 'cancelled' "
-                    "AND (resolved_at IS NULL OR resolved_at >= ?)",
-                    (approval_id, shutdown_started_at),
-                )
+                if has_state:
+                    cur = conn.execute(
+                        "UPDATE pending_approvals SET status = 'pending', resolved_at = NULL "
+                        "WHERE approval_id = ? AND status = 'cancelled' "
+                        "AND (state IS NULL OR state = 'waiting') "
+                        "AND (resolved_at IS NULL OR resolved_at >= ?)",
+                        (approval_id, shutdown_started_at),
+                    )
+                else:
+                    cur = conn.execute(
+                        "UPDATE pending_approvals SET status = 'pending', resolved_at = NULL "
+                        "WHERE approval_id = ? AND status = 'cancelled' "
+                        "AND (resolved_at IS NULL OR resolved_at >= ?)",
+                        (approval_id, shutdown_started_at),
+                    )
                 if cur.rowcount == 1:
                     restored.append(approval_id)
     except Exception:  # noqa: BLE001 - 持久化失败不能挡住退出，但必须留证据

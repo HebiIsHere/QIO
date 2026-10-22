@@ -1,0 +1,15 @@
+真实壳已启动：shell pid=138168 hwnd=10162826
+前端已加载：{"href":"http://tauri.localhost/#/","ready":"complete","internals":"object","controls":3,"dialog":false}
+截图已保存：D:\qio-dev\qio-r9-w5\_r9-evidence\w5-gui\01-before-close.png（24013 bytes）
+WM_CLOSE 已发送（等价于点标题条关闭 / Alt+F4）：True
+关闭确认框出现：True
+确认框文案：关闭 QIO 主窗口？ /  / 可以只把窗口收进系统托盘继续运行，也可以直接退出。 「退出 QIO」会先保存状态、有界收尾，再结束本实例的后端进程。 /  / 最小化到托盘 / 退出 QIO / 取消 / 记住我的选择（以后按「每次询问」处理）
+截图已保存：D:\qio-dev\qio-r9-w5\_r9-evidence\w5-gui\02-ask-dialog.png（89633 bytes）
+点击取消：clicked；确认框已关闭=True；壳进程仍存活=True；窗口仍可见=True
+截图已保存：D:\qio-dev\qio-r9-w5\_r9-evidence\w5-gui\03-ask-cancelled.png（23967 bytes）
+结论：PASS（真实 GUI：关闭请求→ask 确认框→取消→应用继续运行）
+console(warning): ['IPC custom protocol failed, Tauri will now use the postMessage interface instead', 'TypeError: Failed to fetch\n    at Object.sendIpcMessage (<anonymous>:83:7)\n    at Object.<anonymous> (<anonymous>:177:38)\n    at action (<anonymous>:336:38)\n    at <anonymous>:345:11\n    at new Promise (<anony
+console(error): ['[ui] load settings failed:', 'BackendNotReadyError: 后端连接信息尚未就绪（桌面壳没有在预期时间内应答）。稍后重试即可。\n    at http://tauri.localhost/assets/index-hTGZyZOF.js:22:5320']
+壳日志（关闭/托盘相关）：
+  [2026-10-22][07:20:55][qio][INFO] [qio] 系统托盘已创建：菜单「显示主窗口 / 退出 QIO」
+  [2026-10-22][07:20:55][qio][INFO] [qio] 收到主窗口关闭请求：交给前端按关闭行为处理
