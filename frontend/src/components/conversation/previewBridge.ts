@@ -13,7 +13,39 @@ import {
 
 export type ConversationPreviewOpener = (target: PreviewTarget) => void | Promise<void>;
 
+export interface ReplyCodeOpenInput {
+  messageId: string;
+  blockIndex: number;
+  text: string;
+  language?: string;
+  title?: string;
+}
+
+export type ConversationReplyCodeOpener = (input: ReplyCodeOpenInput) => void | Promise<void>;
+
 let opener: ConversationPreviewOpener | null = null;
+let replyCodeOpener: ConversationReplyCodeOpener | null = null;
+
+export function registerConversationReplyCodeOpener(
+  fn: ConversationReplyCodeOpener | null,
+): void {
+  replyCodeOpener = fn;
+}
+
+export function hasConversationReplyCodeOpener(): boolean {
+  return replyCodeOpener !== null;
+}
+
+/** 打开回复里的代码块预览；未接线时返回 false，调用方不渲染按钮。 */
+export function openConversationReplyCode(input: ReplyCodeOpenInput): boolean {
+  if (!replyCodeOpener) return false;
+  try {
+    void replyCodeOpener(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function registerConversationPreviewOpener(fn: ConversationPreviewOpener | null): void {
   opener = fn;

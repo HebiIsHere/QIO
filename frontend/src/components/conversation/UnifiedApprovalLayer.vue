@@ -18,7 +18,6 @@ import {
   isUserEditing,
   useUnifiedApprovalsStore,
 } from "../../stores/unifiedApprovals";
-import UnifiedApprovalEntry from "../approval/UnifiedApprovalEntry.vue";
 import UnifiedApprovalModal from "../approval/UnifiedApprovalModal.vue";
 import MemoryQuestionReminder from "./MemoryQuestionReminder.vue";
 import type { MemoryOpenTarget } from "../../stores/memoryQuestions";
@@ -87,7 +86,12 @@ onMounted(() => {
   // 对话页由统一弹窗接管按钮：让过程区内联卡让位（Lead 在 TurnProcess 加一行门控）
   approvals.inlineSuppressed = true;
   ingestCandidates();
-  void unified.refreshKnowledgePending();
+  // 页面加载时已经存在的待审批项也要遵守自动弹出规则（此前只在「队列变化」时尝试，
+  // 启动前就存在的申请会只亮入口、不自动弹）。
+  void unified.refreshKnowledgePending().then(() => {
+    unified.noteQueueChanged();
+    unified.maybeAutoOpen();
+  });
   refreshTimer = window.setInterval(() => {
     void unified.refreshKnowledgePending();
   }, REFRESH_MS);
@@ -145,7 +149,8 @@ watch(
 
 <template>
   <div class="unified-approval-layer">
-    <UnifiedApprovalEntry />
+    <!-- 入口统一放到输入区上方的五图标入口（⑤）：对话页只有这一处审批入口，
+         这里不再额外渲染顶部浮动条，避免同一时刻出现两个入口。 -->
     <UnifiedApprovalModal />
     <MemoryQuestionReminder @open="onOpenMemory" />
     <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>

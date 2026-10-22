@@ -13,6 +13,7 @@
 import { computed, ref, watch } from "vue";
 import { useSessionStore } from "../../stores/session";
 import { useApprovalsStore } from "../../stores/approvals";
+import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import SendIssuesPanel from "./SendIssuesPanel.vue";
 import QueuePanel from "./QueuePanel.vue";
@@ -26,6 +27,8 @@ import {
 
 const session = useSessionStore();
 const approvals = useApprovalsStore();
+// ⑤ 的数量与打开动作走统一审批队列：工具/权限类 + 知识保存类按身份去重后的有效数量。
+const unified = useUnifiedApprovalsStore();
 
 /** 当前展开的入口（null = 全部收起） */
 const openEntry = ref<ComposerEntryId | null>(null);
@@ -51,7 +54,7 @@ const entries = computed(() =>
     localQueued: session.messages
       .filter((message) => message.queued && !message.turnId)
       .map((message) => ({ id: message.id, content: message.content })),
-    approvals: approvals.pendingCount,
+    approvals: unified.count,
   }),
 );
 
@@ -65,9 +68,10 @@ watch(visibleEntries, (list) => {
 
 function toggle(id: ComposerEntryId) {
   if (id === "approvals") {
-    // 审批：直接打开统一弹窗并收起其余四项（不在这里放内联批准/拒绝按钮）
+    // 审批：直接打开统一弹窗并收起其余四项（不在这里放内联批准/拒绝按钮）。
+    // unified.open() 按类型分派：工具/权限仍走既有审批接口，知识走知识原子接口。
     openEntry.value = null;
-    approvals.openNow();
+    unified.open();
     return;
   }
   openEntry.value = openEntry.value === id ? null : id;

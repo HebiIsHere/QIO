@@ -117,14 +117,6 @@ function focusRequestedItem(): void {
   });
 }
 
-// 列表加载完成 / 定位目标变化时再试一次：事项可能在异步加载之后才出现在列表里。
-watch(
-  () => [props.focusPendingId, items.value.length, view.value] as const,
-  () => {
-    if (view.value === "pending") focusRequestedItem();
-  },
-  { flush: "post" },
-);
 
 // -- 待确认事项 -------------------------------------------------------------
 
@@ -668,6 +660,15 @@ function statsText(batch: MaintenanceBatchSummary): string {
   }
   return parts.length ? parts.join(" · ") : "无统计";
 }
+
+// 列表加载完成 / 定位目标变化时再试一次：事项可能在异步加载之后才出现在列表里。
+watch(
+  () => [props.focusPendingId, items.value.length, view.value] as const,
+  () => {
+    if (view.value === "pending") focusRequestedItem();
+  },
+  { flush: "post" },
+);
 
 onMounted(() => {
   void loadPending();

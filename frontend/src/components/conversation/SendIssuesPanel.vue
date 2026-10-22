@@ -286,7 +286,14 @@ const counts = computed(() => ({
     <p v-else-if="interruptedNotice" class="notice" role="status">{{ interruptedNotice }}</p>
 
     <!-- 受理未确认：不能当失败、更不能自动重发 -->
-    <section v-if="pending.length" class="group" data-section="pending">
+    <section
+      v-if="pending.length"
+      class="group"
+      data-section="pending"
+      data-im="composer-pending"
+      role="group"
+      :aria-label="`还没有确认是否发出的文字（${pending.length} 条）`"
+    >
       <h4 class="head">
         受理未确认的发送<span class="count mono">{{ pending.length }}</span>
       </h4>
@@ -294,10 +301,22 @@ const counts = computed(() => ({
         这些消息还没有拿到可靠回执：可能已经到后端，也可能没有。请不要直接重写再发一次。
       </p>
       <ul class="list">
-        <li v-for="record in pending" :key="record.id" class="item" data-item="pending">
-          <p class="text">{{ snippetOf(record.snapshot.text, 64) }}</p>
+        <li
+          v-for="record in pending"
+          :key="record.id"
+          class="item"
+          data-item="pending"
+          data-im="composer-pending-item"
+        >
+          <p class="text" data-im="composer-pending-quote" :title="record.snapshot.text">
+            {{ snippetOf(record.snapshot.text, 64) }}
+          </p>
           <p class="meta">
-            <span class="state mono" :class="{ unknown: confirmFor(record.id)?.unknown }">
+            <span
+              class="state mono"
+              :class="{ unknown: confirmFor(record.id)?.unknown }"
+              data-im="composer-pending-state"
+            >
               {{ pendingNotice(record) }}
             </span>
             <span v-if="confirmFor(record.id)?.busy" class="why">正在确认…</span>
@@ -308,6 +327,7 @@ const counts = computed(() => ({
               v-if="!pendingBusy(record.id) && !confirmFor(record.id)?.accepted"
               class="qio-btn mini quiet"
               type="button"
+              data-im="composer-pending-recheck"
               @click="recheckPending(record.id)"
             >
               再查一次
@@ -316,6 +336,7 @@ const counts = computed(() => ({
               v-if="canRetry(record) && !pendingBusy(record.id)"
               class="qio-btn mini primary"
               type="button"
+              data-im="composer-pending-retry"
               @click="retryPending(record.id)"
             >
               用原身份重试
@@ -324,6 +345,7 @@ const counts = computed(() => ({
               v-if="canAbandon(record) && !pendingBusy(record.id)"
               class="qio-btn mini quiet"
               type="button"
+              data-im="composer-pending-abandon"
               @click="abandonPending(record.id)"
             >
               放弃（原文放回输入框）
@@ -332,6 +354,7 @@ const counts = computed(() => ({
               v-if="canCancel(record) && !pendingBusy(record.id)"
               class="qio-btn mini quiet"
               type="button"
+              data-im="composer-pending-cancel"
               @click="cancelAccepted(record.id)"
             >
               取消这条已受理的轮次
@@ -376,25 +399,58 @@ const counts = computed(() => ({
     </section>
 
     <!-- 明确失败的可恢复原文：找回不覆盖当前内容 -->
-    <section v-if="failed.length" class="group" data-section="failed">
+    <section
+      v-if="failed.length"
+      class="group"
+      data-section="failed"
+      data-im="composer-recovery"
+      role="group"
+      :aria-label="failed.length > 1 ? `上一次没有发出去的文字（${failed.length} 条）` : '上一次没有发出去的文字'"
+    >
       <h4 class="head">
         发送失败的原文<span class="count mono">{{ failed.length }}</span>
       </h4>
       <p class="lead">失败原文保存在本机。找回只在输入框为空时放回；有更新文字时用「互换」，两份都不丢。</p>
       <ul class="list">
-        <li v-for="(record, index) in failed" :key="`${record.id ?? record.draftId ?? 'row'}-${index}`" class="item" data-item="failed">
-          <p class="text">{{ snippetOf(record.text, 64) }}</p>
+        <li
+          v-for="(record, index) in failed"
+          :key="`${record.id ?? record.draftId ?? 'row'}-${index}`"
+          class="item"
+          data-item="failed"
+          data-im="composer-recovery-item"
+        >
+          <p class="text" data-im="composer-recovery-quote" :title="record.text">
+            {{ snippetOf(record.text, 64) }}
+          </p>
           <p class="meta">
-            <span class="why">{{ reasonOfFailed(record.id, index) }}</span>
+            <span class="why" data-im="composer-recovery-reason">{{ reasonOfFailed(record.id, index) }}</span>
           </p>
           <div class="actions">
-            <button class="qio-btn mini primary" type="button" :disabled="Boolean(busy)" @click="retryFailed(record.id, index)">
+            <button
+              class="qio-btn mini primary"
+              type="button"
+              data-im="composer-recovery-restore"
+              :disabled="Boolean(busy)"
+              @click="retryFailed(record.id, index)"
+            >
               找回原文
             </button>
-            <button class="qio-btn mini quiet" type="button" :disabled="Boolean(busy)" @click="swapFailed(record.id, index)">
+            <button
+              class="qio-btn mini quiet"
+              type="button"
+              data-im="composer-recovery-swap"
+              :disabled="Boolean(busy)"
+              @click="swapFailed(record.id, index)"
+            >
               与当前文字互换
             </button>
-            <button class="qio-btn mini quiet" type="button" :disabled="Boolean(busy)" @click="discardFailed(record.id, index)">
+            <button
+              class="qio-btn mini quiet"
+              type="button"
+              data-im="composer-recovery-discard"
+              :disabled="Boolean(busy)"
+              @click="discardFailed(record.id, index)"
+            >
               不再保留
             </button>
           </div>
@@ -403,19 +459,46 @@ const counts = computed(() => ({
     </section>
 
     <!-- 被让位的旧草稿：取回 = 与当前文字互换 -->
-    <section v-if="displaced.length" class="group" data-section="displaced">
+    <section
+      v-if="displaced.length"
+      class="group"
+      data-section="displaced"
+      data-im="composer-displaced"
+      role="group"
+      aria-label="被让位的旧草稿"
+    >
       <h4 class="head">
         被让位的旧草稿<span class="count mono">{{ displaced.length }}</span>
       </h4>
       <p class="lead">这个话题原本还有一份草稿。取回会与当前文字互换，两份都保留，不会自动发送。</p>
       <ul class="list">
-        <li v-for="record in displaced" :key="record.id" class="item" data-item="displaced">
-          <p class="text">{{ snippetOf(record.text, 64) }}</p>
+        <li
+          v-for="record in displaced"
+          :key="record.id"
+          class="item"
+          data-item="displaced"
+          data-im="composer-displaced-item"
+        >
+          <p class="text" data-im="composer-displaced-quote" :title="record.text">
+            {{ snippetOf(record.text, 64) }}
+          </p>
           <div class="actions">
-            <button class="qio-btn mini primary" type="button" :disabled="Boolean(busy)" @click="restoreDisplaced(record.id)">
+            <button
+              class="qio-btn mini primary"
+              type="button"
+              data-im="composer-displaced-restore"
+              :disabled="Boolean(busy)"
+              @click="restoreDisplaced(record.id)"
+            >
               取回（与当前文字互换）
             </button>
-            <button class="qio-btn mini quiet" type="button" :disabled="Boolean(busy)" @click="discardDisplaced(record.id)">
+            <button
+              class="qio-btn mini quiet"
+              type="button"
+              data-im="composer-displaced-discard"
+              :disabled="Boolean(busy)"
+              @click="discardDisplaced(record.id)"
+            >
               放弃这份
             </button>
           </div>
@@ -424,21 +507,44 @@ const counts = computed(() => ({
     </section>
 
     <!-- 保存失败：草稿 / 失败原文本机存储 -->
-    <section v-if="draftSaveFailed" class="group" data-section="draft-save">
+    <section v-if="draftSaveFailed" class="group" data-section="draft-save" data-im="composer-draft-status">
       <h4 class="head">草稿没有保存进本机</h4>
       <p class="lead">
         {{ session.draftSaveError ?? "原因未知" }}（文字还在输入框里，重试只重写本机草稿，不会发送）
       </p>
-      <button class="qio-btn mini quiet" type="button" @click="retryDraftSave">重试保存</button>
+      <button
+        class="qio-btn mini quiet"
+        type="button"
+        data-im="composer-draft-retry"
+        @click="retryDraftSave"
+      >
+        重试保存
+      </button>
     </section>
 
-    <section v-if="storageWriteError || storageReadError" class="group" data-section="storage">
+    <section
+      v-if="storageWriteError || storageReadError"
+      class="group"
+      data-section="storage"
+      data-im="composer-recovery-storage"
+      role="group"
+      aria-label="失败原文的本机存储"
+    >
       <h4 class="head">失败原文的本机存储</h4>
-      <p v-if="storageWriteError" class="lead">
+      <p v-if="storageWriteError" class="lead" data-im="composer-recovery-persist">
         写入失败：{{ storageWriteError }}（内存里的记录仍可找回；关闭后可能丢失）
       </p>
-      <p v-if="storageReadError" class="lead">读取失败：{{ storageReadError }}（这不代表没有失败原文）</p>
-      <button v-if="storageReadError" class="qio-btn mini quiet" type="button" :disabled="Boolean(busy)" @click="retryStorageRead">
+      <p v-if="storageReadError" class="lead" data-im="composer-recovery-read-error">
+        读取失败：{{ storageReadError }}（这不代表没有失败原文）
+      </p>
+      <button
+        v-if="storageReadError"
+        class="qio-btn mini quiet"
+        type="button"
+        data-im="composer-recovery-read-retry"
+        :disabled="Boolean(busy)"
+        @click="retryStorageRead"
+      >
         {{ busy === "storage:read" ? "读取中…" : "重试读取" }}
       </button>
     </section>

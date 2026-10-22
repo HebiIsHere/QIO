@@ -262,10 +262,18 @@ function backToLatest() {
 let unsubscribeComposer: (() => void) | null = null;
 /** 内容高度观察器：assistant 流式正文变高（不换条）时也要跟随底部 */
 let streamObserver: ResizeObserver | null = null;
+function composerIsFloating(): boolean {
+  // v2 起输入区是对话列里的正常流布局（position: relative）；只有旧式悬浮输入区
+  // 才需要消息流补一块底部滚动缓冲。读不到样式时按悬浮处理（保持旧行为）。
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return true;
+  const panel = document.querySelector<HTMLElement>(".composer");
+  if (!panel) return true;
+  return getComputedStyle(panel).position === "fixed";
+}
 function applyComposerPad(height: number) {
   const el = containerRef.value;
   if (!el) return;
-  el.style.paddingBottom = `${Math.round(height) + 16}px`;
+  el.style.paddingBottom = composerIsFloating() ? `${Math.round(height) + 16}px` : "";
 }
 onMounted(() => {
   lastContainer = containerRef.value;

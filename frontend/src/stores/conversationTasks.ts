@@ -748,12 +748,23 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
           },
         ),
       );
+      // 事件数组有上限（到顶会 shift 最旧的一条，长度不再变化）：盯最后一条的 id。
+      // 某些测试/降级环境注入的是精简 events store（没有 events 数组）：此时跳过这条订阅，
+      // 不因为「读不到事件列表」让整个页面绑定失败。
+      const eventList = () => {
+        const raw = (events as { events?: unknown }).events;
+        return Array.isArray(raw) ? raw : [];
+      };
+      const lastEventId = () => {
+        const list = eventList();
+        return list.length ? list[list.length - 1]?.id ?? "" : "";
+      };
       stops.push(
         watch(
-          // 事件数组有上限（到顶会 shift 最旧的一条，长度不再变化）：盯最后一条的 id。
-          () => events.events[events.events.length - 1]?.id ?? "",
+          lastEventId,
           () => {
-            const last = events.events[events.events.length - 1];
+            const list = eventList();
+            const last = list[list.length - 1];
             if (!last || !REFRESH_ON_EVENTS.has(last.type)) return;
             this.scheduleRefresh();
           },

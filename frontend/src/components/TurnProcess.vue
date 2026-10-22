@@ -418,6 +418,9 @@ const legacyGroups = computed(() =>
 // -- 内联审批（复用既有 approvals store，绝不自己发请求） --------------
 
 const inlineApproval = computed(() => {
+  // 对话页由统一审批弹窗接管提交按钮（D 的层挂载时置位）：内联卡让位，
+  // 避免同一时刻出现两套按钮；其他页面该标志为 false，行为不变。
+  if (approvals.inlineSuppressed) return null;
   if (!props.running || !props.turnId) return null;
   // 只有「当前正在跑的这一轮」才内联；非当前轮 / 过期 / 恢复路径仍走全局入口
   if (session.activeTurnId !== props.turnId) return null;

@@ -68,9 +68,10 @@ const float = useFloatingWindow(elRef, {
   // 输入气泡与设置齿轮都不是「已贴靠的浮动组件」，但压住球一样致命：
   // 球会既看不见也点不到（用户看到的是「星球没办法进行移动」）。
   avoidSelectors: FLOAT_AVOID_SELECTORS,
+  // 设计位置：固定在右下角（用户原图）。其余样式、拖动、贴边收纳行为不变。
   defaultPos: (el, vp) => ({
     x: vp.width - 26 - (el.offsetWidth || 96),
-    y: Math.round((vp.height - (el.offsetHeight || 96)) / 2),
+    y: vp.height - 24 - (el.offsetHeight || 96),
   }),
 });
 

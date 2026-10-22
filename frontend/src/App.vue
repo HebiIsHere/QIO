@@ -16,12 +16,21 @@ const events = useEventStore();
 const ui = useUiStore();
 const onboarding = useOnboardingStore();
 const approvals = useApprovalsStore();
-const route = useRoute();
+/**
+ * 路由可能不存在（组件单测会直接挂载 App，不经过 router）。
+ * 读不到路由时按「非对话页」处理：旧的全局入口保持原样，不因为缺路由而渲染崩溃。
+ */
+let routeRef: ReturnType<typeof useRoute> | undefined;
+try {
+  routeRef = useRoute();
+} catch {
+  routeRef = undefined;
+}
 /**
  * 对话页 v2 自己承载审批与任务入口（统一弹窗 / 左侧任务栏 / 输入区五入口）。
  * 旧的顶部居中悬浮入口只留给互动、设置、调试等页面，避免同一时刻出现两套按钮。
  */
-const isConversation = computed(() => route.name === "conversation");
+const isConversation = computed(() => routeRef?.name === "conversation");
 
 /**
  * 启动状态：后端没应答之前不渲染主界面。

@@ -1,6 +1,7 @@
 # 对话页 v2 · 并行开发共享契约（2026-10-22）
 
-> 状态：**进行中**，由 Lead 维护。所有子分支以此文件为接口与验收口径的唯一事实源。
+> 状态：**已交付（2026-10-22）**；最终 SHA、CI 运行号与已知限制见
+> `docs/conversation-page-v2-merge-notes.md`。所有子分支以此文件为接口与验收口径的唯一事实源。
 > 基线：origin/main = v0.2.10 = `249a63443c72b3dad011b5446ee9920f4dadf0fd`（开工时重新 fetch 确认无更新）。
 > 主开发分支：`cv/main`（worktree `D:\qio-dev\qio-cv-main`）。
 

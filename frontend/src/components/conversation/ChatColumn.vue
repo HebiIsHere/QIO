@@ -396,6 +396,7 @@ onBeforeUnmount(() => {
         class="notice"
         :class="notice.tone === 'error' ? 'err' : notice.tone"
         :data-notice="notice.id"
+        :data-test="notice.id === 'incomplete' ? 'turn-incomplete-notice' : undefined"
         :role="notice.tone === 'error' ? 'alert' : 'status'"
         data-qio-fit
       >

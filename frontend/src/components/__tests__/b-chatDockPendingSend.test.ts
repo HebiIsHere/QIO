@@ -2,23 +2,33 @@
  * 子 agent B 定向验收（F12）：两个聊天入口共用未决发送的状态规则与恢复动作。
  *
  * 要点：
- * - 普通对话页（Composer）与悬浮聊天（ChatDock）对同一次未决发送给**同一套**结果与动作；
- * - 在原话题提供查证 / 同身份重试 / 查看原文 / 明确放弃；切到别的话题一个字都不串；
+ * - 普通对话页（v2：ComposerDock 的入口①）与悬浮聊天（ChatDock）对同一次未决发送
+ *   给**同一套**结果与动作；在原话题提供查证 / 同身份重试 / 查看原文 / 明确放弃，
+ *   切到别的话题一个字都不串；
  * - 输入框为空时不得再提示「输入已保留，可以重试」——原文保存在独立记录里，要说清在哪里；
  * - 收起 / 展开面板不自动发送、不丢状态。
  *
- * 标注：【组件/DOM】挂载真实 Composer / ChatDock；【模拟失败】受控 api.sendTurn。
+ * v2（2026-10-22）：对话页的未决发送不再内联渲染在 Composer.vue，而是移到输入区上方
+ * 入口①（ComposerDock → ComposerEntries → SendIssuesPanel）。入口默认收起，点开才渲染。
+ * ChatDock 仍用共享的 FailedSendNotice（含只读的「查看原文」）；对话页面板直接把原文
+ * 列出来，所以两边共同的显式动作是查证 / 同身份重试 / 明确放弃。
+ *
+ * 标注：【组件/DOM】挂载真实 ComposerDock / ChatDock；【模拟失败】受控 api.sendTurn。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import ChatDock from "../interactive/ChatDock.vue";
-import Composer from "../Composer.vue";
-import FailedSendNotice from "../interactive/FailedSendNotice.vue";
+import ComposerDock from "../conversation/ComposerDock.vue";
 import { useSessionStore } from "../../stores/session";
 import { useInteractiveStore } from "../../stores/interactive";
 import { api } from "../../services/api";
+
+// 模式切换与这些用例无关：用桩替换，避免测试环境缺少 router 造成噪声。
+vi.mock("../conversation/ConversationModeSwitch.vue", () => ({
+  default: { name: "ConversationModeSwitch", template: '<div class="mode-switch-stub" />' },
+}));
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -28,6 +38,7 @@ vi.mock("../../services/api", () => ({
     cancelContinuation: vi.fn(),
     cancelTurn: vi.fn(),
     cancelActiveTurn: vi.fn(),
+    lookupTurnByRequest: vi.fn(),
     saveDrafts: vi.fn(),
     saveBoardState: vi.fn(),
     fetchBoardState: vi.fn(),
@@ -62,6 +73,19 @@ vi.mock("../../services/interactive", () => ({
   updateIntentPreview: vi.fn(),
 }));
 
+/** 挂载输入区（模式切换与本组用例无关：避免测试环境缺少 router） */
+function mountDock() {
+  return mount(ComposerDock, { attachTo: document.body });
+}
+
+/** v2：入口①默认收起；有未决发送时图标才出现，点开才渲染面板 */
+async function openComposerSendIssues(wrapper: ReturnType<typeof mount>): Promise<void> {
+  const entry = wrapper.find('.entry-btn[data-entry="sendIssues"]');
+  expect(entry.exists(), "对话页没有出现「发送异常与草稿恢复」入口").toBe(true);
+  await entry.trigger("click");
+  await flushPromises();
+}
+
 let wrappers: Array<{ unmount: () => void }> = [];
 function track<T extends { unmount: () => void }>(wrapper: T): T {
   wrappers.push(wrapper);
@@ -81,6 +105,8 @@ beforeEach(() => {
     topic_id: "A",
   } as never);
   vi.mocked(api.getSessionContext).mockResolvedValue({ topic_id: null } as never);
+  // 自动查证默认查不到（网络失败）：未决状态保持「正在确认」；需要 404 的用例自己覆盖。
+  vi.mocked(api.lookupTurnByRequest).mockRejectedValue(new Error("查证请求失败"));
   setActivePinia(createPinia());
 });
 
@@ -156,6 +182,7 @@ describe("F12：悬浮聊天的未决发送入口", () => {
     const call = vi.mocked(api.sendTurn).mock.calls[vi.mocked(api.sendTurn).mock.calls.length - 1];
     expect(call[0]).toBe("重试要复用身份的话");
     expect(call[1]).toBe("A");
+    expect(requestId, "重试没有复用请求身份").toBeTruthy();
     expect(session.unresolvedSendsForTopic("A"), "受理成功后未决入口没有收掉").toEqual([]);
   });
 
@@ -192,7 +219,7 @@ describe("F12：悬浮聊天的未决发送入口", () => {
 });
 
 describe("F12：两个入口共用同一套规则与动作", () => {
-  it("Composer 与 ChatDock 对同一条未决发送给出相同的状态与四个动作", async () => {
+  it("Composer 与 ChatDock 对同一条未决发送给出相同的状态与恢复动作", async () => {
     const session = useSessionStore();
     session.currentTopicId = "A";
     vi.mocked(api.sendTurn).mockRejectedValueOnce(new Error("网络中断"));
@@ -200,22 +227,42 @@ describe("F12：两个入口共用同一套规则与动作", () => {
     session.sendAttribution();
     session.draft = "";
     await session.send("两个入口共用的话");
+    // 自动查证命中「后端没有这条记录」（404）：这是两个入口都必须如实呈现的「未确认」
+    vi.mocked(api.lookupTurnByRequest).mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404 }),
+    );
 
-    const composer = track(mount(Composer, { attachTo: document.body }));
+    const composer = track(mountDock());
     const dock = track(mount(ChatDock, { attachTo: document.body }));
     useInteractiveStore().chatOpen = true;
     await flushPromises();
+    await vi.advanceTimersByTimeAsync(800);
+    await flushPromises();
+    await openComposerSendIssues(composer);
+    expect(composer.find(".mode-switch-stub").exists(), "模式切换应当被桩替换（与本组用例无关）").toBe(true);
 
-    for (const hook of ["pending-recheck", "pending-retry", "pending-view", "pending-abandon"]) {
+    // 两个入口都从会话层同一份未决记录出发：显式动作一套
+    for (const hook of ["pending-recheck", "pending-retry", "pending-abandon"]) {
       expect(composer.find(`[data-im="composer-${hook}"]`).exists(), `Composer 缺 ${hook}`).toBe(true);
       expect(dock.find(`[data-im="chat-${hook}"]`).exists(), `ChatDock 缺 ${hook}`).toBe(true);
     }
-    // 两个入口显示同一个状态文案（来自会话层同一份事实）
-    const stateText = session.pendingSends[0]
-      ? composer.find('[data-im="composer-pending-state"]').text()
-      : "";
-    expect(stateText).toContain("确认");
-    expect(dock.find('[data-im="chat-pending-state"]').text()).toBe(stateText);
+    // ChatDock 保留只读的「查看原文」；对话页的面板直接把原文列出来（不额外藏一层）
+    expect(dock.find('[data-im="chat-pending-view"]').exists()).toBe(true);
+    await dock.find('[data-im="chat-pending-view"]').trigger("click");
+    await flushPromises();
+
+    // 两个入口显示同一个状态文案（来自会话层同一份事实；ChatDock 只多一个未知态前缀）
+    const composerState = composer.find('[data-im="composer-pending-state"]').text();
+    expect(composerState).toContain("确认");
+    expect(dock.find('[data-im="chat-pending-state"]').text().replace("⚠️ ", "")).toBe(composerState);
+
+    // 同一条原文、同一个真实原因，两边都能看到
+    expect(composer.find('[data-im="composer-pending-quote"]').text()).toBe("两个入口共用的话");
+    expect(composer.find('[data-im="composer-pending-quote"]').attributes("title")).toBe("两个入口共用的话");
+    expect(dock.find('[data-im="chat-pending-quote"]').text()).toBe("两个入口共用的话");
+    expect(composer.find('[data-im="composer-pending"]').text()).toContain("网络中断");
+    expect(dock.find('[data-im="chat-pending-reason"]').text()).toContain("网络中断");
+    expect(session.unresolvedSendsForTopic("A")[0]?.lastError).toBe("网络中断");
     // 输入框为空时两边都不许提示「输入已保留，可以重试」
     expect(composer.text()).not.toContain("输入已保留");
     expect(dock.text()).not.toContain("输入已保留");
@@ -224,7 +271,7 @@ describe("F12：两个入口共用同一套规则与动作", () => {
   it("Composer 自己发失败（未决）：输入框为空时提示改为说清原文保存在哪里", async () => {
     const session = useSessionStore();
     session.currentTopicId = "A";
-    const composer = track(mount(Composer, { attachTo: document.body }));
+    const composer = track(mountDock());
     await flushPromises();
     vi.mocked(api.sendTurn).mockRejectedValueOnce(new Error("网络中断"));
     await composer.find("#composer-input").setValue("对话页里没定论的话");
@@ -233,15 +280,19 @@ describe("F12：两个入口共用同一套规则与动作", () => {
     await flushPromises();
     await vi.advanceTimersByTimeAsync(800);
     await flushPromises();
+    await openComposerSendIssues(composer);
 
-    const failure = composer.find('[data-im="composer-failure"]');
+    const failure = composer.find('[data-im="composer-pending"]');
     expect(failure.exists()).toBe(true);
     expect(failure.text()).toContain("网络中断");
     expect(
       failure.text(),
       "输入框是空的，却还提示「输入已保留，可以重试」",
     ).not.toContain("输入已保留");
-    expect(failure.text()).toContain("还没有确认是否发出的文字");
+    // 入口①就是原文的存放处：分组名与可见正文都说清「还没有确认是否发出的文字」
+    expect(failure.attributes("aria-label")).toContain("还没有确认是否发出的文字");
+    expect(failure.text()).toContain("受理未确认的发送");
+    expect(composer.find('[data-im="composer-pending-quote"]').text()).toBe("对话页里没定论的话");
     expect(session.draft).toBe("");
   });
 
@@ -277,7 +328,7 @@ describe("F12：两个入口共用同一套规则与动作", () => {
     session.draft = "";
     await session.send("未决的原话");
 
-    const composer = track(mount(Composer, { attachTo: document.body }));
+    const composer = track(mountDock());
     await flushPromises();
     await composer.find("#composer-input").setValue("用户后来写的新草稿");
     await flushPromises();
@@ -287,19 +338,24 @@ describe("F12：两个入口共用同一套规则与动作", () => {
       session.unresolvedSendsForTopic("A").map((r) => r.snapshot.text),
       "新输入把未决记录覆盖掉了",
     ).toEqual(["未决的原话"]);
-    // 明确点「找回原文」时才互换：两份都保留
-    await composer.find('[data-im="composer-pending-view"]').trigger("click");
-    await flushPromises();
+    await openComposerSendIssues(composer);
+    // 面板只读地列出原文（不写回输入框）：两份都还在
     expect(composer.find('[data-im="composer-pending-quote"]').text()).toBe("未决的原话");
+    expect((composer.find("#composer-input").element as HTMLTextAreaElement).value).toBe(
+      "用户后来写的新草稿",
+    );
   });
 
-  it("共用组件在零未决记录时不渲染未决块（不虚报）", async () => {
+  it("两个入口在零未决记录时都不渲染未决块（不虚报）", async () => {
     const session = useSessionStore();
     session.currentTopicId = "A";
-    const wrapper = track(
-      mount(FailedSendNotice, { props: { scope: "conversation" }, attachTo: document.body }),
-    );
+    const composer = track(mountDock());
+    useInteractiveStore().chatOpen = true;
+    const dock = track(mount(ChatDock, { attachTo: document.body }));
     await flushPromises();
-    expect(wrapper.find('[data-im="composer-pending"]').exists()).toBe(false);
+    expect(composer.find('[data-im="composer-pending"]').exists()).toBe(false);
+    expect(composer.find('.entry-btn[data-entry="sendIssues"]').exists()).toBe(false);
+    expect(dock.find('[data-im="chat-pending"]').exists()).toBe(false);
+    expect(dock.text()).not.toContain("还没有确认是否发出的文字");
   });
 });

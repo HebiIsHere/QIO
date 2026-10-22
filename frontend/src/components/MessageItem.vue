@@ -15,7 +15,9 @@ import {
 import {
   canPreviewAttachment,
   hasConversationPreviewOpener,
+  hasConversationReplyCodeOpener,
   openConversationPreview,
+  openConversationReplyCode,
   previewTargetForAttachment,
 } from "./conversation/previewBridge";
 import {
@@ -249,6 +251,38 @@ const attachmentChips = computed(() => props.message.attachments ?? []);
  * 身份退化为 attachment:<id>；**不用文件名当身份**。未接线时不渲染按钮。
  */
 const previewAvailable = hasConversationPreviewOpener();
+/** 回复里的代码块 → 右侧只读预览（身份 replycode:<messageId>:<blockIndex>）。 */
+const replyCodePreviewAvailable = hasConversationReplyCodeOpener();
+interface CodeBlockRef {
+  index: number;
+  language: string;
+  text: string;
+}
+const codeBlocks = computed<CodeBlockRef[]>(() => {
+  if (props.message.role !== "assistant" || props.message.interim) return [];
+  const source = String(props.message.content || "");
+  const blocks: CodeBlockRef[] = [];
+  const fence = /(?:^|\n)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\1/g;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = fence.exec(source)) !== null && blocks.length < 4) {
+    blocks.push({ index, language: String(match[2] || "").trim(), text: match[3] });
+    index += 1;
+  }
+  return blocks;
+});
+const replyCodeNotice = ref("");
+function previewCodeBlock(block: CodeBlockRef): void {
+  const ok = openConversationReplyCode({
+    messageId: String(props.message.id || ""),
+    blockIndex: block.index,
+    text: block.text,
+    language: block.language || undefined,
+    // 标签本身会带上类别（「代码」）；这里只给语言，避免出现「ts 代码代码」。
+    title: block.language || "回复中的代码",
+  });
+  replyCodeNotice.value = ok ? "已在右侧打开这段代码的只读预览" : "右侧预览还没有接上（不会打开空白面板）";
+}
 function canPreview(attachment: MessageAttachment): boolean {
   return previewAvailable && canPreviewAttachment({ name: attachment.name });
 }
@@ -275,7 +309,9 @@ const locateAvailable = hasExecutionTaskLocator();
 const locateNotice = ref("");
 const locateRef = computed(() => {
   if (props.message.role === "tool") {
-    const sourceId = props.message.callId || props.message.id;
+    // 任务栏的工具执行身份是 tool_records.id（不是 callId）；优先用真实记录 id，
+    // 没有记录 id 时才退回 callId（定位会如实显示「没有找到」，不假装成功）。
+    const sourceId = props.message.toolRecordId || props.message.callId || props.message.id;
     return sourceId
       ? { source: "tool" as const, sourceId, turnId: props.message.turnId ?? null, title: toolTitle.value }
       : null;
@@ -730,6 +766,26 @@ function removeOne(id: string) {
         />
         <p v-if="verifiedText" class="verified-note mono" role="note" data-qio-fit>
           {{ verifiedText }}
+        </p>
+        <div
+          v-if="codeBlocks.length && replyCodePreviewAvailable"
+          class="code-preview-row"
+          data-qio-fit
+          data-test="reply-code-preview"
+        >
+          <button
+            v-for="block in codeBlocks"
+            :key="block.index"
+            class="code-preview-btn"
+            type="button"
+            :aria-label="'在右侧查看这段' + (block.language || '') + '代码（只读）'"
+            @click="previewCodeBlock(block)"
+          >
+            在右侧查看{{ block.language ? " " + block.language : "" }}代码
+          </button>
+        </div>
+        <p v-if="replyCodeNotice" class="code-preview-notice" role="status" data-qio-fit>
+          {{ replyCodeNotice }}
         </p>
       </div>
       <!--
@@ -1269,5 +1325,30 @@ function removeOne(id: string) {
 }
 .preview-open {
   flex: none;
+}
+.code-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.code-preview-btn {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: var(--fs-xs);
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.code-preview-btn:hover { border-color: var(--accent); color: var(--text-strong); }
+.code-preview-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.code-preview-notice {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 </style>

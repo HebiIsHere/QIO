@@ -23,6 +23,18 @@ const planetStub = {
   // 暴露 open：关闭不再是「display:none」，而是切换成入口球态（由星球页自己按 open 决定）
   template: `<div class="stub-planet" :data-seq="seq" :data-open="String(open)"></div>`,
 };
+/**
+ * v2：五入口与模式切换通过 Composer 的命名插槽进入输入气泡。
+ * 测试里用真实插槽结构的替身，才能验证「输入区附近的入口」这一行为。
+ */
+const composerStub = {
+  name: "Composer",
+  template: `<div class="stub-composer">
+    <slot name="entries"></slot>
+    <slot name="leading"></slot>
+    <textarea id="composer-input"></textarea>
+  </div>`,
+};
 
 function mountView() {
   const pinia = createPinia();
@@ -32,7 +44,7 @@ function mountView() {
       plugins: [pinia],
       stubs: {
         MessageStream: true,
-        Composer: true,
+        Composer: composerStub,
         SettingsFloat: true,
         PlanetDock: dockStub,
         PlanetView: planetStub,
@@ -41,23 +53,29 @@ function mountView() {
   });
 }
 
-describe("待确认切换条（spec 第 29~30 条）", () => {
-  it("没有建议时不出现", () => {
+describe("话题切换建议（spec 第 29~30 条，v2 为输入区上方入口③）", () => {
+  it("没有建议时不出现该入口", () => {
     const w = mountView();
-    expect(w.find(".topic-switch").exists()).toBe(false);
+    expect(w.find('[data-entry="topicSwitch"]').exists()).toBe(false);
   });
 
-  it("有建议时出现在输入区附近，并显示目标话题名", async () => {
+  it("有建议时入口出现在输入区附近，展开后显示目标话题名与两个选择", async () => {
     const w = mountView();
     const session = useSessionStore();
     session.setPendingSwitch({ topicId: "t2", topicName: "顺丁橡胶降解" });
 
     await w.vm.$nextTick();
+    await w.vm.$nextTick();
 
-    const prompt = w.find(".topic-switch");
-    expect(prompt.exists()).toBe(true);
-    expect(prompt.text()).toContain("顺丁橡胶降解");
-    expect(prompt.text()).toContain("保留当前");
+    const entry = w.find('[data-entry="topicSwitch"]');
+    expect(entry.exists()).toBe(true);
+
+    await entry.trigger("click");
+    const panel = w.find('[data-section="topic-switch"]');
+    expect(panel.exists()).toBe(true);
+    expect(panel.text()).toContain("顺丁橡胶降解");
+    expect(panel.text()).toContain("保留当前");
+    w.unmount();
   });
 });
 
@@ -111,8 +129,10 @@ describe("ConversationView 键盘通道（任务 05 I：长消息流不该挡住
     expect(skip.exists()).toBe(true);
     expect(skip.text()).toContain("跳到输入框");
     expect(skip.attributes("href")).toBe("#composer-input");
-    // 必须是 DOM 里的第一个可聚焦元素：否则长消息流会把它挤到后面
-    expect(w.element.firstElementChild?.classList.contains("skip-link")).toBe(true);
+    // v2：跳转入口随对话列一起渲染，必须是对话列里的第一个元素，
+    // 否则长消息流仍会把键盘用户挡在复制按钮之间。
+    const chatColumn = w.find(".chat-column").element;
+    expect(chatColumn.firstElementChild?.classList.contains("skip-link")).toBe(true);
 
     await skip.trigger("click");
     expect(document.activeElement).toBe(target);

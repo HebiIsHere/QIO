@@ -1567,13 +1567,13 @@ async function stopTurn() {
      左右贴边取「正文列」令牌，不再手算 `calc(50% - Npx)`：手算的偏移与列宽、
      与右侧给入口球留的通道都脱钩 —— 900–1400px 区间里它整体右移了 418px、
      右边缘溢出视口 194px（发送按钮跑到屏幕外），还盖住了停在右下角的入口球。 */
-  position: fixed;
-  left: var(--column-inset-left);
-  right: var(--column-inset-right);
-  width: auto;
+  /* v2：输入区回到对话列的**正常布局**（flew 布局最底部），不再固定悬浮在视口上。
+     这样右侧预览打开时输入区只占中央列，不会盖住预览栏；消息流自然也止于它上方。
+     （旧实现固定在视口上并贴视口边，右侧栏一开就会压到预览上。） */
+  position: relative;
+  width: min(860px, 100%);
   max-width: 860px;
-  margin: 0 auto;
-  bottom: 16px;
+  margin: 0 auto 10px;
   z-index: 12;
   /* 默认中性边框 + 较轻阴影：不靠重描边和重阴影抢注意力 */
   border: 1px solid var(--border-subtle);
@@ -1593,9 +1593,9 @@ async function stopTurn() {
 /* 窄窗口：整宽贴底，不缩成小气泡、不遮挡文字 */
 @media (max-width: 899px) {
   .composer {
-    left: var(--sp-3);
-    right: var(--sp-3);
+    width: auto;
     max-width: none;
+    margin: 0 var(--sp-3) 8px;
   }
 }
 .topicbar {

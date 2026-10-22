@@ -42,7 +42,14 @@ import PreviewPanel from "../components/conversation/PreviewPanel.vue";
 import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
 import PlanetDock from "../components/PlanetDock.vue";
 import PlanetBoot from "../components/PlanetBoot.vue";
-import SettingsFloat from "../components/SettingsFloat.vue";
+import RecoveryInbox from "../components/RecoveryInbox.vue";
+import { useConversationPreviewStore } from "../stores/conversationPreview";
+import {
+  registerConversationPreviewOpener,
+  registerConversationReplyCodeOpener,
+} from "../components/conversation/previewBridge";
+import { registerExecutionTaskLocator } from "../components/conversation/taskLocator";
+import type { MemoryOpenTarget } from "../stores/memoryQuestions";
 
 const PlanetView = defineAsyncComponent({
   loader: () => import("./PlanetView.vue"),
@@ -53,12 +60,31 @@ const PlanetView = defineAsyncComponent({
 const session = useSessionStore();
 const shell = useConversationShellStore();
 const tasks = useConversationTasksStore();
+const preview = useConversationPreviewStore();
 
 const planetOpen = ref(false);
 const planetMounted = ref(false);
 const planetSeq = ref(0);
+/** 打开星球时定位到哪个页签 / 哪条待确认问题（记忆问题提醒 → 星球待确认）。 */
+const planetTab = ref<"topic" | "knowledge" | "entity" | "memory">("topic");
+const planetFocusPendingId = ref<string | null>(null);
+/** 「未完成事项」恢复区：左栏任务的「去处理」会打开它（原有恢复动作都在这里）。 */
+const recoveryOpen = ref(false);
 let stopViewport: (() => void) | null = null;
 let stopFocusListener: (() => void) | null = null;
+
+// 接线桥必须在**本组件 setup 期间**注册：消息流/任务栏子组件在 setup 时读取
+// 「有没有接线」决定是否渲染按钮（放到 onMounted 会晚于子组件 setup，按钮永远不出现）。
+registerExecutionTaskLocator((ref) => {
+  void tasks.focusTask(`${ref.source}:${ref.sourceId}`);
+  return true;
+});
+registerConversationPreviewOpener((target) => {
+  void preview.openPreview(target);
+});
+registerConversationReplyCodeOpener((input) => {
+  void preview.openReplyCode(input);
+});
 
 // ── 三栏拖动 ───────────────────────────────────────────────────────────────
 
@@ -215,6 +241,13 @@ function hasOpenModal(): boolean {
 
 // 全窗口预览时按 Esc 返回对话；任务抽屉先关。弹窗打开时不抢它的 Esc。
 function onKeydown(event: KeyboardEvent) {
+  if (recoveryOpen.value) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      recoveryOpen.value = false;
+    }
+    return;
+  }
   if (railDrawer.value) {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -266,6 +299,37 @@ function onVisibilityChange() {
   }
 }
 
+// ── 恢复事项（原有恢复动作集中在这里，不复制一套） ─────────────────────────
+
+function openRecoveryFromTask(): void {
+  recoveryOpen.value = true;
+}
+
+function closeRecovery(): void {
+  recoveryOpen.value = false;
+}
+
+// ── 记忆问题提醒 → 星球待确认定位（不改星球入口样式/功能） ────────────────
+
+function onOpenMemory(target: MemoryOpenTarget): void {
+  planetTab.value = target.tab === "memory" ? "memory" : "topic";
+  planetFocusPendingId.value = target.itemId ?? null;
+  openPlanet();
+}
+
+/**
+ * 右侧预览开/关会改变「右下角是否被固定面板占据」：让星球入口重新计算一次位置
+ * （useFloatingWindow 在 resize 时会避开 [data-preview-panel] 等固定控件）。
+ * 只触发布局重算，不改星球入口样式或拖动行为。
+ */
+watch(
+  () => shell.rightVisible,
+  () => {
+    if (typeof window === "undefined") return;
+    nextTick(() => window.dispatchEvent(new Event("resize")));
+  },
+);
+
 // ── 生命周期（页面切换不重复初始化） ──────────────────────────────────────
 
 onMounted(() => {
@@ -288,6 +352,7 @@ onMounted(() => {
   stopFocusListener = listenFocusTask((taskId) => {
     void tasks.focusTask(taskId);
   });
+  window.addEventListener("qio:open-recovery", openRecoveryFromTask);
 
   mountPlanetWhenIdle();
   window.addEventListener("keydown", onKeydown);
@@ -301,8 +366,13 @@ onBeforeUnmount(() => {
   stopFocusListener = null;
   window.removeEventListener("keydown", onKeydown);
   document.removeEventListener("visibilitychange", onVisibilityChange);
+  window.removeEventListener("qio:open-recovery", openRecoveryFromTask);
+  registerExecutionTaskLocator(null);
+  registerConversationPreviewOpener(null);
+  registerConversationReplyCodeOpener(null);
   setDraggingChrome(false);
   tasks.dispose();
+  preview.dispose();
   // 最后一次布局改动要落盘（防抖窗口内切走页面时不能丢）。
   void shell.flush();
 });
@@ -436,10 +506,39 @@ onBeforeUnmount(() => {
       <span class="preview-reopen-count mono">{{ shell.prefs.previewTabs.length }}</span>
     </button>
 
-    <UnifiedApprovalLayer />
-    <SettingsFloat />
+    <!-- 未完成事项（恢复区）：原有继续 / 重发 / 忽略 / 重试动作都在这里，
+         左栏任务的「去处理」把它打开；不另做一套恢复逻辑。 -->
+    <div v-if="recoveryOpen" class="recovery-layer">
+      <div class="recovery-backdrop" aria-hidden="true" @click="closeRecovery"></div>
+      <section
+        class="recovery-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="未完成事项"
+        @keydown.esc.stop="closeRecovery"
+      >
+        <header class="recovery-head">
+          <h2>未完成事项</h2>
+          <button class="qio-btn quiet mini" type="button" @click="closeRecovery">关闭</button>
+        </header>
+        <p class="recovery-hint">
+          这些是上次没有执行完、或归属无法确认的事项。继续、重发或忽略都由你决定；
+          关掉这个窗口不会处理它们。
+        </p>
+        <RecoveryInbox />
+      </section>
+    </div>
+
+    <UnifiedApprovalLayer @open-memory="onOpenMemory" />
     <PlanetDock @open="openPlanet" />
-    <PlanetView v-if="planetMounted" :seq="planetSeq" :open="planetOpen" @close="closePlanet" />
+    <PlanetView
+      v-if="planetMounted"
+      :seq="planetSeq"
+      :open="planetOpen"
+      :initial-tab="planetTab"
+      :focus-pending-id="planetFocusPendingId"
+      @close="closePlanet"
+    />
   </div>
 </template>
 
@@ -666,4 +765,54 @@ onBeforeUnmount(() => {
 }
 .preview-reopen:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .preview-reopen .badge { font-size: 10px; color: var(--text-muted); }
+
+/* ---- 未完成事项（恢复区） ---- */
+.recovery-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.recovery-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(2px);
+}
+.recovery-panel {
+  position: relative;
+  width: min(680px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-3);
+  overflow-y: auto;
+}
+.recovery-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.recovery-head h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  color: var(--text-strong);
+}
+.recovery-hint {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--text-secondary);
+}
 </style>
