@@ -27,6 +27,7 @@ import platform
 import sys
 from typing import Any, Awaitable, Callable
 
+from agent.security import launch as launch_boundary
 from agent.tools import isolation, proc_cleanup, security_gate
 from agent.tools.approval import DEFAULT_TIMEOUT_SECONDS, refusal_reason
 from agent import prompts
@@ -91,6 +92,24 @@ def _permanent_delete_shell_reason(cmd: str) -> str | None:
         if token in PERMANENT_DELETE_PROGRAMS:
             return _PERMANENT_DELETE_MESSAGE
     return None
+
+
+def _merged_text(stdout: str, stderr: str) -> str:
+    """launcher 的 stdout/stderr → 与既有语义一致的合并输出（stderr 用 [stderr] 段）。"""
+    content = str(stdout or "").strip()
+    err_text = str(stderr or "").strip()
+    if err_text:
+        content += _STDERR_DELIM + err_text
+    return content
+
+
+def _payload_digest(payload: dict) -> str:
+    """审批单 payload 的整体摘要：重放前核对「参数有没有被改」。"""
+    import hashlib
+    import json
+
+    raw = json.dumps(dict(payload or {}), ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _clip(text: str) -> str:
@@ -184,6 +203,241 @@ class _CmdTool(Tool):
 
     def _mode(self) -> str:
         return security_gate.mode_of(self.security, self.computer)
+
+    # -- 受控启动（契约 §3.3）：真实执行统一走 ControlledLauncher -----------
+
+    def _new_launcher(self):
+        """受控启动器：消费后端许可（模式/写范围/内部数据），不复制权限判定。"""
+        return launch_boundary.ControlledLauncher(
+            computer=self.computer,
+            security=self.security,
+            mode_provider=self._mode,
+        )
+
+    def _write_roots(self) -> tuple[str, ...]:
+        """普通命令的写范围事实（工作区根；拿不到就空，绝不用 cwd 冒充）。"""
+        return launch_boundary.write_roots_for(self.computer, self._mode())
+
+    def _internal_mentions(self, text: str) -> list[str]:
+        """命令/参数里明确提到的内部运行数据路径（对象解析，不是权限判定）。"""
+        if self.security is None:
+            return []
+        try:
+            return list(security_gate.internal_data_mentions(self.security, text))
+        except Exception:  # noqa: BLE001 - 识别失败不阻断：launcher 会做同一次识别
+            return []
+
+    def _pending_facts(
+        self,
+        kind: str,
+        spec,
+        payload: dict,
+        *,
+        risk: str | None = None,
+        internal_roots=(),
+    ) -> dict:
+        """审批单指纹：重放前用它重核对 payload/程序身份/digest（重放网关消费）。"""
+        facts = launch_boundary.build_spec_facts(spec, computer=self.computer)
+        program_facts = facts.get("program_facts") or {}
+        return {
+            "kind": kind,
+            "argv": (
+                [str(spec.program or ""), *[str(item) for item in spec.argv]]
+                if str(spec.kind) == "program"
+                else None
+            ),
+            "cwd": spec.cwd,
+            "risk": risk,
+            "spec_digest": launch_boundary.compute_spec_digest(spec, computer=self.computer),
+            "program_sha256": program_facts.get("sha256"),
+            "allowed_roots": list(self._write_roots()),
+            "payload_digest": _payload_digest(payload),
+            "internal_data_roots": list(internal_roots),
+        }
+
+    def _permit_for(
+        self,
+        spec,
+        *,
+        mode: str,
+        readonly_proof: bool = False,
+        approval_id: str | None = None,
+        source: str = "instruction",
+    ):
+        """授权/审批通过后构造 LaunchPermit（launcher 消费它，不重新判权限）。"""
+        operations = ("execute_readonly",) if readonly_proof else ("execute",)
+        roots = () if readonly_proof else self._write_roots()
+        return launch_boundary.build_permit(
+            spec,
+            computer=self.computer,
+            mode=mode,
+            allowed_roots=roots,
+            allowed_operations=operations,
+            network_hosts=None,
+            internal_data_confirmed=False,
+            approval_id=approval_id,
+            source=source,
+            reason=(
+                "执行已由统一授权网关判定/用户审批通过；受控启动仍执行同一执行边界"
+                "（程序/参数/脚本内容执行前后不得更换）"
+            ),
+        )
+
+    def _launch_permit_for_call(self, kwargs: dict, spec, *, readonly_proof: bool):
+        supplied = kwargs.get("_launch_permit")
+        if isinstance(supplied, launch_boundary.LaunchPermit):
+            return supplied
+        return self._permit_for(
+            spec, mode=self._mode(), readonly_proof=readonly_proof
+        )
+
+    async def _submit_internal_data_operation(
+        self,
+        *,
+        kind: str,
+        label: str,
+        spec,
+        payload: dict,
+        fingerprint: dict,
+        effect,
+        mode: str,
+    ) -> ToolResult | None:
+        """内部运行数据（契约 §4）：所有模式都要连续三次确认，先提交待审批、不执行。"""
+        mentions = list(fingerprint.get("internal_data_roots") or [])
+        if not mentions or self.security is None:
+            return None
+        operation = security_gate.build_pending_operation(
+            kind=kind,
+            label=label,
+            payload=dict(payload),
+            effect=effect,
+            fingerprint=fingerprint,
+            purpose=effect.purpose,
+            mode_at_request=mode,
+            confirmations_required=security_gate.INTERNAL_DATA_CONFIRMATIONS,
+            instruction=security_gate.instruction_snapshot(self.security),
+        )
+        try:
+            ticket = await security_gate.submit_pending(self.security, operation)
+        except Exception as exc:  # noqa: BLE001 - 提交失败不能假装已提交
+            return ToolResult(
+                ok=False,
+                error=f"提交审批失败：{type(exc).__name__}: {exc}（本次没有执行）",
+                category="permission",
+                recoverable=False,
+            )
+        if ticket is not None:
+            return security_gate.pending_result(
+                ticket,
+                operation_label=label,
+                confirmations_required=security_gate.INTERNAL_DATA_CONFIRMATIONS,
+                extra={"internal_data_roots": mentions},
+            )
+        return ToolResult(
+            ok=False,
+            error=(
+                "这次操作涉及 QIO 内部运行数据，需要连续三次确认；"
+                "但当前没有可用的审批执行器：本次没有执行。"
+            ),
+            category="permission",
+            recoverable=False,
+        )
+
+    def _launch_result_to_tool(
+        self, result, *, label: str, program: str | None = None
+    ) -> ToolResult:
+        """LaunchResult → ToolResult：保持既有退出码/超时/启动失败语义。"""
+        merged = _clip(_merged_text(result.stdout, result.stderr))
+        isolation_info = result.isolation or {}
+        guard_info = result.guard or {}
+        facts = {
+            "launch_boundary": {
+                "spec_digest": result.spec_digest,
+                "category": result.category,
+                "isolation_mechanisms": isolation_info.get("mechanisms"),
+                "write_scope_pre_enforced": (isolation_info.get("write_scope") or {}).get(
+                    "pre_enforced"
+                ),
+                "guard_boundary": guard_info.get("boundary"),
+                "capability_boundaries": isolation_info.get("capability_boundaries"),
+            }
+        }
+        category = result.category
+        if result.ok and category is None:
+            return ToolResult(ok=True, content=merged or "(无输出)", facts=facts)
+        if category == "exit_code":
+            return ToolResult(
+                ok=False,
+                error=f"{label}退出码 {result.returncode}",
+                content=merged,
+                facts=facts,
+            )
+        if category == "timeout":
+            return ToolResult(
+                ok=False,
+                error=f"{label}{result.error or '执行超时'}",
+                category="timeout",
+                facts=facts,
+            )
+        if category == "startup":
+            text = result.error or f"{label}启动失败"
+            if label == "程序" and program and "找不到程序" in text:
+                text = f"找不到程序：{program}"
+            return ToolResult(ok=False, error=text, category="startup", facts=facts)
+        if category == "output_limit":
+            return ToolResult(
+                ok=False,
+                error=result.error or "输出超过上限",
+                content=merged,
+                category="output_limit",
+                facts=facts,
+            )
+        if category == "permit_mismatch":
+            return ToolResult(
+                ok=False,
+                error=result.error,
+                content=merged,
+                category="permission",
+                recoverable=False,
+                code="permit_invalidated",
+                facts=facts,
+            )
+        if category in ("boundary_violation", "boundary_unverified"):
+            return ToolResult(
+                ok=False,
+                error=result.error,
+                content=merged,
+                category=category,
+                recoverable=False,
+                code=category,
+                facts=facts,
+            )
+        if category in ("permission", "boundary_unavailable", "unsupported"):
+            return ToolResult(
+                ok=False,
+                error=result.error,
+                content=merged,
+                category="permission" if category == "permission" else category,
+                recoverable=False,
+                code=(
+                    "permission_denied"
+                    if category == "permission"
+                    else "execution_boundary_unavailable"
+                ),
+                facts=facts,
+            )
+        return ToolResult(
+            ok=False,
+            error=result.error or f"{label}执行失败",
+            content=merged,
+            category=category,
+            facts=facts,
+        )
+
+    async def _exec(self, spec, permit, *, label: str, program: str | None = None) -> ToolResult:
+        """真实启动（契约 §3.3）：受控入口消费 permit；不另写一套启动/收尾。"""
+        result = await self._new_launcher().launch(spec, permit, enforce_write_scope=False)
+        return self._launch_result_to_tool(result, label=label, program=program)
 
     def _readonly_program_proof(self, program: str, args: list[str]) -> str | None:
         """只读模式下「能可靠证明只读」的 run_program：白名单 + shell=False + 无元字符。
@@ -355,12 +609,22 @@ class RunProgramTool(_CmdTool):
         # Lead 接线（契约 1）：把请求里的 cwd 交给裁决 —— cwd 内同名替身
         # 不能仅凭程序名得到自动放行（resolve_program 会因此升级 HIGH）。
         cwd_arg = str(kwargs.get("cwd") or "") or None
+        timeout = float(kwargs.get("timeout") or 30)
+        mode = self._mode()
         verdict, risk = self.computer.command_verdict_for_program(
             program, args, cwd=cwd_arg
         )
         # 执行层兜底（契约 §2.3 read_only）：只有白名单 + shell=False 的只读
         # argv 才允许在只读模式下执行；其余明确拒绝，不静默降级。
-        proof = self._readonly_program_proof(program, args) if self._mode() == "read_only" else None
+        proof = self._readonly_program_proof(program, args) if mode == "read_only" else None
+        # 契约 §3.3：真实启动的东西由 LaunchSpec 描述；授权后 permit 绑定它的摘要。
+        spec = launch_boundary.LaunchSpec(
+            kind="program",
+            program=program,
+            argv=tuple(args),
+            cwd=cwd_arg,
+            timeout=timeout,
+        )
         effect = security_gate.execute_effect(
             "run_program",
             program,
@@ -370,17 +634,26 @@ class RunProgramTool(_CmdTool):
             purpose="运行程序（argv 白名单、shell=False）",
             detail={"risk": risk.value},
         )
-        pending = (
+        payload = {"program": program, "args": args, "cwd": cwd_arg, "risk": risk.value}
+        fingerprint = self._pending_facts(
             "proc.run_program",
-            f"运行程序 {program}",
-            {"program": program, "args": args, "cwd": cwd_arg, "risk": risk.value},
-            {
-                "kind": "proc.run_program",
-                "argv": [program, *args],
-                "cwd": cwd_arg,
-                "risk": risk.value,
-            },
+            spec,
+            payload,
+            risk=risk.value,
+            internal_roots=self._internal_mentions(" ".join([program, *args])),
         )
+        internal_pending = await self._submit_internal_data_operation(
+            kind="proc.run_program",
+            label=f"运行程序 {program}",
+            spec=spec,
+            payload=payload,
+            fingerprint=fingerprint,
+            effect=effect,
+            mode=mode,
+        )
+        if internal_pending is not None:
+            return internal_pending
+        pending = ("proc.run_program", f"运行程序 {program}", payload, fingerprint)
         blocked = await self._authorize_execution(
             effect,
             legacy_verdict=verdict,
@@ -395,28 +668,10 @@ class RunProgramTool(_CmdTool):
         )
         if blocked is not None:
             return blocked
-        return await self._exec(program, args, kwargs.get("cwd"), kwargs.get("timeout", 30))
-
-    async def _exec(self, program: str, args: list[str], cwd: Any, timeout: Any) -> ToolResult:
-        cwd_str = str(cwd or "") or None
-
-        def _create():
-            return asyncio.create_subprocess_exec(
-                program,
-                *args,
-                cwd=cwd_str,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                shell=False,
-                **proc_cleanup.new_session_kwargs(),
-            )
-
-        return await _run_child(
-            _create,
-            timeout=float(timeout or 30),
-            label="程序",
-            missing_error=f"找不到程序：{program}",
+        permit = self._launch_permit_for_call(
+            kwargs, spec, readonly_proof=(mode == "read_only" and proof is None)
         )
+        return await self._exec(spec, permit, label="程序", program=program)
 
 
 class RunCmdTool(_CmdTool):
@@ -460,7 +715,18 @@ class RunCmdTool(_CmdTool):
                 code="permanent_delete_blocked",
             )
         cwd = str(kwargs.get("cwd") or "") or None
+        timeout = float(kwargs.get("timeout") or 30)
+        mode = self._mode()
         verdict, risk = self.computer.shell_verdict(cmd)
+        # 契约 §3.3：shell 的真实身份 = 解析后的 shell 可执行文件 + 命令文本。
+        spec = launch_boundary.LaunchSpec(
+            kind="shell",
+            program=None,
+            argv=(),
+            cwd=cwd,
+            shell_cmd=cmd,
+            timeout=timeout,
+        )
         effect = security_gate.execute_effect(
             "run_shell",
             "shell",
@@ -470,12 +736,26 @@ class RunCmdTool(_CmdTool):
             purpose="运行自由 shell 命令",
             detail={"risk": risk.value, "command": cmd},
         )
-        pending = (
+        payload = {"cmd": cmd, "cwd": cwd, "risk": risk.value}
+        fingerprint = self._pending_facts(
             "proc.shell",
-            "运行一条 shell 命令",
-            {"cmd": cmd, "cwd": cwd, "risk": risk.value},
-            {"kind": "proc.shell", "cmd": cmd, "cwd": cwd, "risk": risk.value},
+            spec,
+            payload,
+            risk=risk.value,
+            internal_roots=self._internal_mentions(cmd),
         )
+        internal_pending = await self._submit_internal_data_operation(
+            kind="proc.shell",
+            label="运行一条 shell 命令",
+            spec=spec,
+            payload=payload,
+            fingerprint=fingerprint,
+            effect=effect,
+            mode=mode,
+        )
+        if internal_pending is not None:
+            return internal_pending
+        pending = ("proc.shell", "运行一条 shell 命令", payload, fingerprint)
         blocked = await self._authorize_execution(
             effect,
             legacy_verdict=verdict,
@@ -490,18 +770,8 @@ class RunCmdTool(_CmdTool):
         )
         if blocked is not None:
             return blocked
-        timeout = float(kwargs.get("timeout", 30))
-
-        def _create():
-            return asyncio.create_subprocess_shell(
-                cmd,
-                cwd=cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **proc_cleanup.new_session_kwargs(),
-            )
-
-        return await _run_child(_create, timeout=timeout, label="命令")
+        permit = self._launch_permit_for_call(kwargs, spec, readonly_proof=False)
+        return await self._exec(spec, permit, label="命令")
 
 
 class SysInfoTool(_CmdTool):

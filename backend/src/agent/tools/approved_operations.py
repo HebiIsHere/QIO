@@ -434,16 +434,32 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
 # --------------------------------------------------------------------------
 
 
-class _ApprovedReplayGateway:
-    """已批准操作的重放网关。
+def _mode_text(value: Any) -> str:
+    from agent.security.launch import normalize_mode_value
 
-    审批执行器在领取**之前**已经做过模式快照与对象重核对；这里不再重复向用户
-    申请审批（否则批准后又会弹一次）。但 `mode()` 仍返回当前真实模式，于是
-    cmd_tools 的只读执行层兜底照常生效（不会因为「批准过」就绕过只读）。
+    return normalize_mode_value(value)
+
+
+class _ApprovedReplayGateway:
+    """已批准操作的重放网关（契约 §3.3 / 问题 A）。
+
+    批准只表示「不重复询问」：**不是**无条件 ALLOW。authorize() 必须先核对
+    「本次要执行的效果」与审批单记录（payload / effect 快照 / 指纹）一致，才返回
+    有界 ALLOW；以下情况一律 DENY：当前已切到只读模式、操作类型/argv/命令/cwd
+    与审批记录不一致、没有审批记录快照（无法核对）。mode() 仍返回当前真实模式，
+    cmd_tools 的只读执行层兜底照常生效。
     """
 
-    def __init__(self, security: Any) -> None:
+    def __init__(
+        self,
+        security: Any,
+        *,
+        operation: Any = None,
+        approval_id: str | None = None,
+    ) -> None:
         self._security = security
+        self._operation = operation
+        self._approval_id = approval_id
 
     def mode(self):
         if self._security is not None:
@@ -463,12 +479,99 @@ class _ApprovedReplayGateway:
         except Exception:  # noqa: BLE001
             return None
 
+    def _expected_shape(self) -> dict:
+        """审批单记录里的「应被执行的操作形状」（没有 effect 快照时从 payload 推导）。"""
+        operation = self._operation
+        if operation is None:
+            return {}
+        effect = dict(getattr(operation, "effect", {}) or {})
+        detail = dict(effect.get("detail") or {})
+        payload = dict(getattr(operation, "payload", {}) or {})
+        shape: dict[str, Any] = {
+            "kind": str(effect.get("kind") or ""),
+            "argv": detail.get("argv"),
+            "command": detail.get("command"),
+            "cwd": detail.get("cwd"),
+            "targets": [
+                (str(item.get("kind") or ""), str(item.get("value") or ""))
+                for item in (effect.get("targets") or [])
+                if isinstance(item, dict)
+            ],
+        }
+        # 旧审批单可能没有 effect 快照：仍然按 payload 绑定（不是无条件放行）。
+        if shape["argv"] is None and str(getattr(operation, "kind", "")) == "proc.run_program":
+            program = str(payload.get("program") or "")
+            if program:
+                shape["argv"] = [program, *[str(a) for a in (payload.get("args") or [])]]
+        if shape["command"] is None and str(getattr(operation, "kind", "")) == "proc.shell":
+            command = str(payload.get("cmd") or "")
+            if command:
+                shape["command"] = command
+        if shape["cwd"] is None and payload.get("cwd"):
+            shape["cwd"] = str(payload.get("cwd"))
+        return shape
+
+    def _binding_error(self, effect) -> str | None:
+        """返回不一致原因；None = 本次执行就是被批准的同一个操作。"""
+        if self._operation is None:
+            return "没有审批记录快照，无法核对这次执行是否就是被批准的同一个操作"
+        expected = self._expected_shape()
+        actual = security_gate.effect_to_dict(effect)
+        actual_detail = dict(actual.get("detail") or {})
+        if expected.get("kind") and str(actual.get("kind") or "") != str(expected["kind"]):
+            return (
+                f"审批记录的操作类型（{expected['kind']}）与本次执行"
+                f"（{actual.get('kind')}）不一致"
+            )
+        expected_argv = expected.get("argv")
+        if expected_argv:
+            actual_argv = [str(item) for item in (actual_detail.get("argv") or [])]
+            if [str(item) for item in expected_argv] != actual_argv:
+                return "审批记录的程序/参数（argv）与本次执行不一致"
+        expected_command = expected.get("command")
+        if expected_command is not None and str(actual_detail.get("command") or "") != str(
+            expected_command
+        ):
+            return "审批记录的 shell 命令与本次执行不一致"
+        expected_paths = [
+            value for kind, value in (expected.get("targets") or []) if kind == "path"
+        ]
+        actual_paths = [
+            str(item.get("value") or "")
+            for item in (actual.get("targets") or [])
+            if isinstance(item, dict) and item.get("kind") == "path"
+        ]
+        if expected_paths and expected_paths != actual_paths:
+            return "审批记录的对象/工作目录与本次执行不一致"
+        return None
+
     async def authorize(self, effect, *, ctx=None):
         from agent.security.effects import AuthDecision, Verdict
 
+        if _mode_text(self.mode()) == "read_only":
+            return AuthDecision(
+                verdict=Verdict.DENY,
+                reason=(
+                    "当前是只读模式：批准过的程序执行也不能绕过只读"
+                    "（本次未执行，需切回受限/无限制模式后重新提出）"
+                ),
+                effects=(effect,),
+            )
+        problem = self._binding_error(effect)
+        if problem:
+            return AuthDecision(
+                verdict=Verdict.DENY,
+                reason="审批失效：" + problem + "；本次未执行（需要重新提出审批）",
+                approval_id=self._approval_id,
+                effects=(effect,),
+            )
         return AuthDecision(
             verdict=Verdict.ALLOW,
-            reason="用户已批准这次操作；审批执行器已完成模式与对象重核对",
+            reason=(
+                "用户已批准这次操作，且本次执行与审批记录一致"
+                "（只免去重复询问；执行边界仍生效）"
+            ),
+            approval_id=self._approval_id,
             effects=(effect,),
         )
 
@@ -485,53 +588,176 @@ async def _run_approved_tool(tool, arguments: dict, *, label: str) -> ExecResult
     return _tool_result_to_exec(result, label=label)
 
 
+def _reject_if_payload_changed(payload: dict, ctx: ExecutionContext) -> ExecResult | None:
+    """重放前核对：本次 payload 必须就是审批单里记录的那一份（不执行任何东西）。"""
+    approved = dict(getattr(ctx.operation, "payload", {}) or {})
+    current = dict(payload or {})
+    if current != approved:
+        return _failure(
+            "审批失效：本次执行的参数与审批单记录不一致（payload 被改动）："
+            "程序/参数/工作目录/脚本内容必须与批准时完全相同，本次未执行，请重新提出",
+            "invalidated: payload_changed",
+            invalidated=True,
+        )
+    return None
+
+
+def _recheck_proc_launch(
+    ctx: ExecutionContext,
+    spec: Any,
+    *,
+    computer: Any,
+) -> tuple[Any | None, ExecResult | None]:
+    """构造并核对 permit：指纹/spec_digest/effect 快照不一致 → 不执行。"""
+    from agent.security import launch as launch_boundary
+
+    fingerprint = _fingerprint(ctx)
+    effect = dict(getattr(ctx.operation, "effect", {}) or {})
+    unchanged, reason, digest = launch_boundary.recheck_approved_spec(
+        spec,
+        fingerprint,
+        computer=computer,
+        effect=effect,
+        payload=ctx.operation.payload,
+    )
+    if not unchanged:
+        return None, _failure(
+            "审批失效：" + reason + "（本次未执行）",
+            "invalidated: " + (reason or "spec_changed"),
+            invalidated=True,
+            spec_digest=digest,
+        )
+    mode_now = _mode_text(ctx.current_mode())
+    if mode_now == "read_only":
+        return None, _failure(
+            "当前已切换到只读模式：这次批准不再允许执行程序/命令"
+            "（只读模式不能被审批绕过），本次未执行，需重新提出",
+            "invalidated: mode_read_only",
+            invalidated=True,
+        )
+    allow_roots = tuple(
+        str(item) for item in (fingerprint.get("allowed_roots") or ()) if str(item)
+    ) or launch_boundary.write_roots_for(computer, mode_now)
+    confirmed = bool(fingerprint.get("internal_data_roots")) and (
+        int(getattr(ctx.operation, "confirmations_required", 1) or 1) >= 3
+    )
+    permit = launch_boundary.build_permit(
+        spec,
+        computer=computer,
+        mode=mode_now,
+        allowed_roots=allow_roots,
+        allowed_operations=("execute",),
+        network_hosts=None,
+        internal_data_confirmed=confirmed,
+        approval_id=ctx.approval_id,
+        source="approval",
+        reason="用户已批准这次操作；执行前已重核对 payload/程序身份/spec_digest/spec 一致",
+    )
+    return permit, None
+
+
 async def execute_proc_run_program(
     payload: dict, ctx: ExecutionContext, *, computer: Any, security: Any = None
 ) -> ExecResult:
+    from agent.security import launch as launch_boundary
+    from agent.tools.cmd_tools import RunProgramTool
+
+    changed = _reject_if_payload_changed(payload, ctx)
+    if changed is not None:
+        return changed
     program = str(payload.get("program") or "").strip()
     if not program:
         return _failure("审批单缺少 program：未执行", "missing_program")
     args = [str(item) for item in (payload.get("args") or [])]
-    from agent.tools.cmd_tools import RunProgramTool
-
+    timeout = float(payload.get("timeout") or 30)
+    cwd = str(payload.get("cwd") or "") or None
+    spec = launch_boundary.LaunchSpec(
+        kind="program", program=program, argv=tuple(args), cwd=cwd, timeout=timeout
+    )
+    permit, rejected = _recheck_proc_launch(ctx, spec, computer=computer)
+    if rejected is not None:
+        return rejected
     tool = RunProgramTool(
         computer=computer,
         approvals=None,
-        security=_ApprovedReplayGateway(security),
+        security=_ApprovedReplayGateway(
+            security, operation=ctx.operation, approval_id=ctx.approval_id
+        ),
     )
-    return await _run_approved_tool(
+    result = await _run_approved_tool(
         tool,
         {
             "program": program,
             "args": args,
-            "cwd": payload.get("cwd"),
-            "timeout": payload.get("timeout") or 30,
+            "cwd": cwd,
+            "timeout": timeout,
+            "_launch_permit": permit,
         },
         label="proc.run_program",
+    )
+    detail = dict(result.detail or {})
+    detail["permit"] = permit.as_dict()
+    detail["approval_id"] = ctx.approval_id
+    return ExecResult(
+        ok=result.ok,
+        state=result.state,
+        summary=result.summary,
+        error=result.error,
+        detail=detail,
     )
 
 
 async def execute_proc_shell(
     payload: dict, ctx: ExecutionContext, *, computer: Any, security: Any = None
 ) -> ExecResult:
+    from agent.security import launch as launch_boundary
+    from agent.tools.cmd_tools import RunCmdTool
+
+    changed = _reject_if_payload_changed(payload, ctx)
+    if changed is not None:
+        return changed
     cmd = str(payload.get("cmd") or "").strip()
     if not cmd:
         return _failure("审批单缺少 cmd：未执行", "missing_cmd")
-    from agent.tools.cmd_tools import RunCmdTool
-
+    timeout = float(payload.get("timeout") or 30)
+    cwd = str(payload.get("cwd") or "") or None
+    spec = launch_boundary.LaunchSpec(
+        kind="shell",
+        program=None,
+        argv=(),
+        cwd=cwd,
+        shell_cmd=cmd,
+        timeout=timeout,
+    )
+    permit, rejected = _recheck_proc_launch(ctx, spec, computer=computer)
+    if rejected is not None:
+        return rejected
     tool = RunCmdTool(
         computer=computer,
         approvals=None,
-        security=_ApprovedReplayGateway(security),
+        security=_ApprovedReplayGateway(
+            security, operation=ctx.operation, approval_id=ctx.approval_id
+        ),
     )
-    return await _run_approved_tool(
+    result = await _run_approved_tool(
         tool,
         {
             "cmd": cmd,
-            "cwd": payload.get("cwd"),
-            "timeout": payload.get("timeout") or 30,
+            "cwd": cwd,
+            "timeout": timeout,
+            "_launch_permit": permit,
         },
         label="proc.shell",
+    )
+    detail = dict(result.detail or {})
+    detail["permit"] = permit.as_dict()
+    detail["approval_id"] = ctx.approval_id
+    return ExecResult(
+        ok=result.ok,
+        state=result.state,
+        summary=result.summary,
+        error=result.error,
+        detail=detail,
     )
 
 
