@@ -427,7 +427,7 @@ def recheck_approved_spec(
     expected_effect = dict(effect or {})
     detail = dict(expected_effect.get("detail") or {})
     expected_argv = detail.get("argv")
-    if expected_argv:
+    if expected_argv and str(spec.kind) == "program":
         actual_argv = [str(spec.program or ""), *[str(item) for item in spec.argv]]
         if [str(item) for item in expected_argv] != actual_argv:
             return (
@@ -657,6 +657,11 @@ class ControlledLauncher:
             return invalid, "startup"
         if not permit.authorized:
             return "这次启动没有获得授权：不执行", "permission"
+        if str(spec.kind) in ("program", "script"):
+            resolved = _resolve_program(spec.program, spec.cwd, self.computer)
+            if not resolved:
+                what = "解释器" if str(spec.kind) == "script" else "程序"
+                return f"找不到{what}：{spec.program}", "startup"
         mode = normalize_mode_value(permit.mode)
         # 0) 模式重核对：当前模式比许可时更严格（切到只读）→ 许可失效
         current = self.current_mode()
