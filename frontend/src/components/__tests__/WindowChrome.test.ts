@@ -83,11 +83,12 @@ describe("顶部全局栏布局", () => {
     w.unmount();
   });
 
-  it("对话页左侧是克制的 QIO 字标，不显示话题标题与说明", async () => {
+  it("对话页左侧是 QIO 字标 + PERSONAL AGENT 副标，不显示话题标题", async () => {
     const w = await mountChrome();
     const brand = w.find(".brand-name");
     expect(brand.exists()).toBe(true);
     expect(brand.text()).toBe("QIO");
+    expect(w.find(".brand-caption").text()).toBe("PERSONAL AGENT");
     // 话题标题属于中央工作区顶部，不在全局栏
     expect(w.text()).not.toContain("话题");
     w.unmount();
@@ -192,7 +193,7 @@ describe("标题条高度只在对话页生效", () => {
   it("对话页把标题条加高，离开后恢复，不波及其他页面", async () => {
     document.documentElement.style.setProperty(TITLEBAR_PROPERTY, "56px");
     const w = await mountChrome();
-    expect(document.documentElement.style.getPropertyValue(TITLEBAR_PROPERTY)).toBe("44px");
+    expect(document.documentElement.style.getPropertyValue(TITLEBAR_PROPERTY)).toBe("80px");
 
     setRouteName("settings");
     await flushPromises();
@@ -200,7 +201,7 @@ describe("标题条高度只在对话页生效", () => {
 
     setRouteName("conversation");
     await flushPromises();
-    expect(document.documentElement.style.getPropertyValue(TITLEBAR_PROPERTY)).toBe("44px");
+    expect(document.documentElement.style.getPropertyValue(TITLEBAR_PROPERTY)).toBe("80px");
 
     w.unmount();
     expect(document.documentElement.style.getPropertyValue(TITLEBAR_PROPERTY)).toBe("56px");

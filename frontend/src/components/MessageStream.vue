@@ -540,7 +540,7 @@ const phaseLabel = computed(() => {
     data-qio-scope="chat"
     tabindex="0"
     aria-label="对话消息"
-    v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+    v-qio-scrollbar="{ policy: 'auto', axis: 'y', edgeZone: 24, lingerMs: 1800 }"
     @scroll.passive="onScroll"
   >
     <!-- 可聚焦滚动区域：键盘用户也能滚动消息，并且键盘滚动同样会停止自动跟随。 -->

@@ -44,19 +44,21 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   padding: 4px 12px 10px;
 }
 .composer-line {
-  display: flex;
-  align-items: flex-end;
+  display: grid;
+  /* 三列硬约束：模式 | 对话栈 | 星球槽；列间距就是星球与胶囊的保底安全距。 */
+  grid-template-columns: auto minmax(0, 860px) var(--planet-size, 96px);
+  column-gap: 12px;
+  align-items: end;
   justify-content: center;
-  gap: 10px;
   width: 100%;
-  /* 胶囊 860 + 模式 90 + 星球槽 96 + 两个间隙 ≈ 1066：模式紧邻胶囊左侧，
-     星球紧邻胶囊右侧，整行在中央列居中。 */
-  max-width: 1066px;
+  /* 模式 90 + 间隙 12 + 胶囊 860 + 间隙 12 + 星球 96 = 1070 */
+  max-width: 1070px;
   margin: 0 auto;
   min-width: 0;
 }
 .composer-stack {
-  flex: 1 1 860px;
+  grid-column: 2;
+  width: 100%;
   max-width: 860px;
   min-width: 0;
 }
@@ -72,34 +74,39 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   margin-bottom: 8px;
 }
 .composer-mode-cell {
-  flex: none;
-  align-self: flex-end;
+  grid-column: 1;
+  align-self: end;
+  min-width: 0;
   /* 与胶囊垂直居中（下面还有 Enter 提示的高度） */
   padding-bottom: 36px;
 }
 .composer-planet-cell {
-  flex: none;
-  width: 96px;
+  grid-column: 3;
+  width: var(--planet-size, 96px);
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  /* 96px 球心与 54px 胶囊中心对齐 */
+  /* 球心与胶囊中心对齐；不再用 transform 缩放布局盒，避免热区/视觉尺寸错位 */
   padding-bottom: 8px;
+}
+.composer-planet-cell :deep(.dock.anchored) {
+  width: var(--planet-size, 96px);
+  height: var(--planet-size, 96px);
+}
+.composer-planet-cell :deep(.orb) {
+  width: 100% !important;
+  height: 100% !important;
 }
 @media (max-width: 1100px) {
   .composer-dock {
     padding: 2px 8px 8px;
   }
   .composer-line {
-    gap: 8px;
+    --planet-size: 80px;
+    column-gap: 12px;
   }
   .composer-planet-cell {
-    width: 80px;
     padding-bottom: 16px;
-  }
-  .composer-planet-cell :deep(.dock) {
-    transform: scale(0.82);
-    transform-origin: bottom center;
   }
 }
 @media (max-width: 700px) {
@@ -109,12 +116,12 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   .composer-mode-cell {
     padding-bottom: 32px;
   }
-  .composer-planet-cell {
-    width: 56px;
-    padding-bottom: 28px;
+  .composer-line {
+    --planet-size: 56px;
+    column-gap: 12px;
   }
-  .composer-planet-cell :deep(.dock) {
-    transform: scale(0.56);
+  .composer-planet-cell {
+    padding-bottom: 28px;
   }
 }
 </style>

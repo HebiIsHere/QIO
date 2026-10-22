@@ -29,8 +29,8 @@ interface ShellWindow {
   onResized(handler: () => void): Promise<() => void>;
 }
 
-/** 对话页的全局栏高度：字标 + 设置 + 窗口按钮，留出呼吸但仍是「页眉」而不是卡片。 */
-const CONVERSATION_TITLEBAR_HEIGHT = "44px";
+/** 对话页的全局栏高度：8px 外边距 + 62px 圆角栏 + 10px 呼吸，给下方卡片留出同一条顶线。 */
+const CONVERSATION_TITLEBAR_HEIGHT = "80px";
 
 function tauriInternals(): unknown {
   return (globalThis as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -162,10 +162,15 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- QIO 字标：不显示话题标题/说明，也不加副标题。pointer-events 关掉，点在字标上仍可拖窗口。 -->
+    <!-- QIO 字标：对话页按全局栏规格显示 PERSONAL AGENT 副标；其他页保持克制的一行字。
+         pointer-events 关掉，点在字标上仍可拖窗口。 -->
     <div class="brand" aria-hidden="true">
       <span class="brand-dot"></span>
       <span class="brand-name">QIO</span>
+      <template v-if="isConversation">
+        <span class="brand-sep"></span>
+        <span class="brand-caption">PERSONAL AGENT</span>
+      </template>
     </div>
 
     <!-- 设置入口：只在对话页出现，固定排在窗口按钮左边（最右仍是窗口控制）。 -->
@@ -347,5 +352,80 @@ onBeforeUnmount(() => {
   height: 16px;
   margin: 0 2px;
   background: var(--border-subtle);
+}
+
+/* ---- 对话页：整条全局栏是一张圆角卡片（与下方工作区卡片同一条视觉基线） ---- */
+/*
+ * 其他页面保持原来的 32px 透明标题条；只有对话页把窗口层变成 62px 高的可见全局栏。
+ * 这样设置入口、窗口控制在 Tauri 里仍然可点，浏览器里只留设置入口。
+ */
+.window-chrome.conversation-bar {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  height: 62px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xl);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+.conversation-bar .drag-surface {
+  border-radius: inherit;
+}
+.conversation-bar .brand {
+  left: 20px;
+  gap: 10px;
+}
+.conversation-bar .brand-dot {
+  width: 8px;
+  height: 8px;
+  opacity: 1;
+}
+.conversation-bar .brand-name {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  opacity: 1;
+}
+.brand-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 2px;
+  background: var(--border-subtle);
+}
+.brand-caption {
+  font-family: var(--sans);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  color: var(--text-faint);
+}
+.conversation-bar .window-controls {
+  right: 8px;
+  align-items: center;
+}
+.conversation-bar .wc-btn {
+  width: 46px;
+  height: 44px;
+  border-radius: var(--r-sm);
+}
+.conversation-bar .chrome-actions {
+  right: 20px;
+}
+.conversation-bar .chrome-actions.with-controls {
+  right: 160px;
+}
+.conversation-bar .chrome-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+}
+.conversation-bar .chrome-btn svg {
+  width: 16px;
+  height: 16px;
+}
+.conversation-bar .chrome-sep {
+  height: 18px;
 }
 </style>

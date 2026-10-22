@@ -1630,8 +1630,9 @@ async function stopTurn() {
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
   background: var(--bg-surface);
-  box-shadow: var(--shadow-2);
-  transition: border-color var(--dur-fast) var(--ease-1), box-shadow var(--dur-fast) var(--ease-1);
+  /* 用户确认不要阴影：只保留 1px 边框；也避免被 .composer 的 overflow-x: clip 截断 */
+  box-shadow: none;
+  transition: border-color var(--dur-fast) var(--ease-1);
 }
 .input-pill:focus-within {
   border-color: var(--accent);
@@ -1666,8 +1667,10 @@ async function stopTurn() {
 /* 窄窗口：整宽贴底，不缩成小气泡、不遮挡文字 */
 @media (max-width: 899px) {
   .composer {
+    width: 100%;
     max-width: none;
-    margin: 0 var(--sp-2);
+    /* 宽度由 ComposerDock 的 grid 列决定；这里再加左右 margin 会让胶囊比入口行窄 */
+    margin: 0;
   }
 }
 .topicbar {

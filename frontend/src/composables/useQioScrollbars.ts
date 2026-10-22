@@ -151,12 +151,14 @@ export function createQioScrollbars(
     const state: RailState = { axis, rail, thumb, overflow: false };
     rails.push(state);
     thumb.addEventListener("pointerdown", onThumbDown);
+    rail.addEventListener("pointerdown", onRailDown);
     return state;
   }
 
   function removeRails() {
     for (const r of rails) {
       r.thumb.removeEventListener("pointerdown", onThumbDown);
+      r.rail.removeEventListener("pointerdown", onRailDown);
       r.rail.remove();
     }
     rails = [];
@@ -319,6 +321,57 @@ export function createQioScrollbars(
   };
 
   // ---- 滑块拖动（与卡片拖动 / 连线 / 板面平移隔离）----
+  /**
+   * 轨道拖动/跳转：指示条只有 4px 宽时太难抓，用户会直接按轨道。
+   * 按下轨道先把视口跳到指针位置，再跟手拖动；与滑块拖动共用同一套比例计算。
+   */
+  function scrollFromRailPointer(e: PointerEvent, state: RailState) {
+    const axis = state.axis;
+    const rect = state.rail.getBoundingClientRect();
+    const track = axis === "y" ? state.rail.clientHeight : state.rail.clientWidth;
+    const view = axis === "y" ? host.clientHeight : host.clientWidth;
+    const content = axis === "y" ? host.scrollHeight : host.scrollWidth;
+    const range = Math.max(0, content - view);
+    if (range <= 0) return;
+    const visible = Math.min(1, view / Math.max(1, content));
+    const size = Math.max(opt.minThumb, Math.round(track * visible));
+    const maxOffset = Math.max(1, track - size);
+    const coord = axis === "y" ? e.clientY - rect.top : e.clientX - rect.left;
+    const ratio = Math.max(0, Math.min(1, (coord - size / 2) / maxOffset));
+    if (axis === "y") host.scrollTop = ratio * range;
+    else host.scrollLeft = ratio * range;
+    syncRailOffset();
+    scheduleMeasure();
+  }
+
+  function onRailDown(e: PointerEvent) {
+    if ((e.target as HTMLElement | null)?.closest("." + QIO_SCROLL_THUMB_CLASS)) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    const railEl = e.currentTarget as HTMLElement;
+    const axis: "x" | "y" = railEl.dataset.axis === "x" ? "x" : "y";
+    const state = rails.find((r) => r.axis === axis);
+    if (!state || !state.overflow) return;
+    e.preventDefault();
+    e.stopPropagation();
+    active = true;
+    clearLinger();
+    applyVisibility();
+    scrollFromRailPointer(e, state);
+    const move = (ev: PointerEvent) => {
+      ev.preventDefault();
+      scrollFromRailPointer(ev, state);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      scheduleLinger(700);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }
+
   function onThumbDown(e: PointerEvent) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     const railEl = (e.currentTarget as HTMLElement).parentElement;

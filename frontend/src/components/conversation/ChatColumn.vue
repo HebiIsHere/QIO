@@ -448,7 +448,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   height: 100%;
-  background: var(--bg-base);
+  /* 透明：外层工作区已经是统一的圆角底，中央列不再铺一块直角背景 */
+  background: transparent;
   color: var(--text-primary);
   font-family: var(--sans);
   position: relative;
@@ -456,7 +457,8 @@ onBeforeUnmount(() => {
 /* ---- 话题栏 ---- */
 .topic-bar {
   flex: none;
-  margin: 8px 12px 0;
+  /* 作为中央列的第一块，顶边与左栏/预览卡同一条线；不再额外下移 8px */
+  margin: 0 0 8px;
   min-width: 0;
 }
 .topic-main {
@@ -465,7 +467,8 @@ onBeforeUnmount(() => {
   gap: 10px;
   width: 100%;
   min-width: 0;
-  padding: 8px 14px;
+  min-height: 50px;
+  padding: 10px 16px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   background: var(--bg-surface);
@@ -527,7 +530,7 @@ onBeforeUnmount(() => {
 /* ---- 话题说明 ---- */
 .topic-details {
   flex: none;
-  margin: 6px 12px 0;
+  margin: 6px 0 0;
   padding: 10px 14px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-md);
@@ -721,6 +724,9 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   display: flex;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-base);
 }
 .bottom-cluster {
   flex: none;
@@ -728,6 +734,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+  margin-top: 8px;
 }
 .candidates {
   display: flex;

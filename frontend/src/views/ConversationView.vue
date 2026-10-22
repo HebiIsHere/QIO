@@ -570,7 +570,8 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   min-width: 0;
-  padding: 6px 8px 0 8px;
+  /* 和 8px 外边距的全局栏共用同一条左右基线；底部也留出 8px，卡片不再贴窗口边 */
+  padding: 6px 8px 8px;
   gap: 0;
   overflow: hidden;
 }
@@ -696,7 +697,7 @@ onBeforeUnmount(() => {
 /* ---- 全窗口预览 ---- */
 .preview-overlay {
   position: absolute;
-  inset: 6px 8px 0;
+  inset: 6px 8px 8px;
   z-index: 30;
   box-shadow: var(--shadow-3);
 }

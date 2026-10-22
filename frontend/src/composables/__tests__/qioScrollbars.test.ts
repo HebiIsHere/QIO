@@ -194,6 +194,23 @@ describe("QIO 滚动指示条引擎", () => {
     expect(el.classList.contains("is-qio-scroll-dragging")).toBe(false);
   });
 
+  it("按住轨道也能跳转/拖动（4px 滑块太难抓时的保底交互）", async () => {
+    const el = makeHost({ clientHeight: 200, scrollHeight: 1000 });
+    const ctrl = createQioScrollbars(el, { policy: "auto" });
+    mounted.push({ el, ctrl });
+    await flush();
+    el.dispatchEvent(new Event("scroll"));
+    await flush();
+    const r = rail(el, "y")!;
+    const down = new Event("pointerdown", { bubbles: true, cancelable: true });
+    Object.assign(down, { button: 0, pointerType: "mouse", pointerId: 3, clientY: 160 });
+    r.dispatchEvent(down);
+    expect(el.scrollTop).toBeGreaterThan(0);
+    const up = new Event("pointerup");
+    Object.assign(up, { pointerId: 3 });
+    window.dispatchEvent(up);
+  });
+
   it("零尺寸宿主（折叠/隐藏）不算可滚动范围，也不建轨道", async () => {
     // 收起状态的话题栏就是这种形态：clientWidth=0，内容宽度仍算进 scrollWidth
     const el = makeHost({ clientHeight: 100, scrollHeight: 100, clientWidth: 0, scrollWidth: 76 });

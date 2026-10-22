@@ -20,7 +20,7 @@ export interface ComposerMetrics {
   top: number;
   /**
    * **输入框本体**上缘的视口坐标（px）：面板里那条带占位符的圆角框，
-   * 不含它上面的话题名 / 提示行。「回到最新消息」按钮要贴着它，不是贴着整个面板。
+   * 不含它上面的话题名 / 提示行。用于需要贴住胶囊本体的定位。
    */
   inputTop: number;
   /** 输入面板中线的视口坐标（px）：与对话内容列同一条列，用作水平对齐的兜底 */
@@ -52,7 +52,12 @@ let listening = false;
 const MAX_OBSERVE_TRIES = 60;
 
 function readComposer(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(".composer");
+  // 量整个输入区外壳（入口行 + 模式 + 胶囊 + 星球 + 提示），而不是只量胶囊：
+  // 「回到最新消息」必须停在入口行之外，消息流底部让位也要包含入口行。
+  return (
+    document.querySelector<HTMLElement>(".composer-dock") ??
+    document.querySelector<HTMLElement>(".composer")
+  );
 }
 
 /** 同步量一次（拿不到输入面板时明确回 found=false，调用方据此优雅降级） */

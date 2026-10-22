@@ -85,6 +85,8 @@ describe("输入区与消息列同一条列", () => {
     expect(rootBlock).toMatch(/max-width:\s*860px/);
     const pillBlock = composer!.text.match(/\.input-pill\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(pillBlock).toMatch(/border-radius:\s*var\(--r-pill\)/);
+    // 用户确认不要阴影：胶囊只用 1px 边框，不再有会被 overflow-x: clip 截断的投影
+    expect(pillBlock).toMatch(/box-shadow:\s*none/);
     expect(rootBlock).not.toMatch(/position:\s*fixed/);
     expect(composer!.text).not.toMatch(/left:\s*calc\(50%/);
     expect(composer!.text).not.toMatch(/left:\s*max\(12px/);
