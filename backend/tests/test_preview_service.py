@@ -668,11 +668,13 @@ def test_read_attachment_tool_refuses_encrypted_pdf(tmp_path: Path):
     assert "加密" in (content.reason or "")
 
 
-def test_reference_attachment_without_a_copy_is_failed(svc: AttachmentService, tmp_path: Path):
-    source = tmp_path / "只记位置.py"  # 分类必须是受支持的类别，才走「取副本」这条路
+def test_attachment_without_a_readable_location_is_failed(svc: AttachmentService, tmp_path: Path):
+    """新契约：没有可读源文件/副本时预览必须如实 failed（不猜内容、不缓存失败）。"""
+    source = tmp_path / "只记位置.py"  # 分类必须是受支持的类别，才走到「取路径」这一步
     source.write_bytes(b"x" * 32)
     att = svc.prepare(str(source))
-    # 不跑 run_prepare：这行还是「只登记、没有副本」
+    # 不跑 run_prepare（历史行没有副本），并且把登记位置也移走：没有任何可读位置
+    source.unlink()
     env = preview.render_for(svc, att.id)
     assert env["status"] == "failed"
     assert env["data"] is None

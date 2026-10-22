@@ -131,10 +131,11 @@ async def _wait_ready(client, attachment_id: str, timeout: float = 60.0) -> dict
 
 
 async def _register(client, path: Path) -> dict:
-    resp = await client.post("/api/attachments", json={"source_path": str(path)})
-    assert resp.status_code == 200, (resp.status_code, resp.text[:200])
-    attachment_id = str(resp.json()["attachment"]["id"])
-    return await _wait_ready(client, attachment_id)
+    """**历史行夹具**（source_kind=NULL）：准备/克隆流水线是历史数据的维护能力。"""
+    app = client._transport.app
+    svc = app.state.ctx.attachments
+    att = svc.run_prepare(svc.prepare(str(path)).id)
+    return svc.payload(att)
 
 
 async def _wait_idle(client, timeout: float = 90.0) -> bool:
