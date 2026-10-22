@@ -712,6 +712,23 @@ class TurnOrchestrator:
             budget=injection_budget,
             dropped=injection_dropped,
         )
+        # R9 §3.1：本轮附件的 READ effect 统一授权（异步边界）。同步材料层只查结果表，
+        # 不复制任何判定；权限裁决全部来自 W1 的 AuthorizationGateway。
+        read_grants: dict = {"allowed": [], "denied": [], "degraded": False}
+        try:
+            from agent.services import attachment_access as attachment_access_module
+
+            read_grants = await app.authorize_attachment_reads_for_turn(ctx.turn_id)
+            attachment_access_module.set_read_grants(read_grants.get("allowed") or [])
+        except Exception:  # noqa: BLE001 - 授权失败按本轮没有材料授权处理
+            logging.getLogger(__name__).warning(
+                "attachment read authorization failed", exc_info=True
+            )
+        attachment_materials: list[dict] = []
+        try:
+            attachment_materials = app.attachment_materials_facts(ctx.turn_id)
+        except Exception:  # noqa: BLE001 - 附件事实是旁路
+            attachment_materials = []
         # 附件事实（C 的 AttachmentService）：只说明「本轮附加了哪些文件对象」，
         # 内容不进上下文（模型必须按需 read_attachment），也不影响审批权限与工具参数。
         # 作为结构化 ContextBlock("attachments") 注入，不再拼「【系统通知】」。
@@ -743,10 +760,22 @@ class TurnOrchestrator:
                 cleanup_media(work_root)
         # 附件提示与媒体**实际读到了什么**（转写文字 / 抽样帧时间位置 / 真实降级原因）
         # 都是结构化上下文块；当前用户消息正文只放用户原文（契约 §3）。
+        # 附件块：契约 §6.4/§8 要求互动上下文暴露源引用事实 + 用户说明。
+        # 只使用 prompts.CONTEXT_LABELS 允许的键（attachments），把材料事实并入同一块，
+        # 不新增未注册的块类型（否则消息组装会拒绝未知上下文键）。
+        attachment_block: dict = {}
         if attachment_note:
-            blocks.append(
-                ContextBlock("attachments", {"note": str(attachment_note).strip()})
+            attachment_block["note"] = str(attachment_note).strip()
+        if attachment_materials:
+            attachment_block["materials"] = attachment_materials
+        denied_materials = list(read_grants.get("denied") or [])
+        if denied_materials:
+            attachment_block["read_denied"] = denied_materials
+            attachment_block["read_denied_note"] = (
+                "这些附件本轮没有读取授权或源文件不可用：不要声称读过其内容"
             )
+        if attachment_block:
+            blocks.append(ContextBlock("attachments", attachment_block))
         if media_entries:
             blocks.append(ContextBlock("media", {"entries": list(media_entries)}))
         # 阶段三契约 §13.2：互动模式的可信运行信息作为结构化块交给同一主循环。

@@ -219,34 +219,191 @@ async def test_read_attachment_tool_resolves_source(service: AttachmentService, 
 
 
 # ---------------------------------------------------------------------------
-# 写回：重核对 identity+hash，原子写
+# 统一授权：读取 / 写回 / 删除用户材料都必须经网关（W1 未合入时用 Fake）
 # ---------------------------------------------------------------------------
 
 
-def test_write_back_rechecks_content_and_updates_facts(service: AttachmentService, tmp_path: Path):
+class FakeGateway:
+    """测试用授权网关：只记录 effect、按预设返回 verdict，不做任何判定。"""
+
+    def __init__(self, verdict: str = "allow", reason: str = "") -> None:
+        self.verdict = verdict
+        self.reason = reason
+        self.effects: list = []
+        self.submitted: list = []
+
+    def mode(self):
+        return "restricted"
+
+    def instruction(self):
+        return None
+
+    async def authorize(self, effect, ctx=None):
+        self.effects.append(effect)
+        return {
+            "verdict": self.verdict,
+            "reason": self.reason or ("允许" if self.verdict == "allow" else "需要审批"),
+            "approval_id": None,
+        }
+
+    async def submit(self, operation, ctx=None):
+        self.submitted.append(operation)
+        return {
+            "approval_id": "appr_fake_1",
+            "state": "waiting",
+            "expires_at": "",
+            "confirmations_required": 1,
+        }
+
+
+def _effect_kind(effect) -> str:
+    kind = getattr(effect, "kind", "")
+    return str(getattr(kind, "value", kind))
+
+
+async def test_write_back_requires_write_effect_and_rechecks(service: AttachmentService, tmp_path: Path):
     source = tmp_path / "要改的.txt"
     source.write_text("旧内容", encoding="utf-8")
     att = service.register_source(path=str(source), source_kind="desktop_path")
-    original_identity = att.file_id
+    gateway = FakeGateway("allow")
 
-    result = service.write_back_source(att.id, "新内容".encode("utf-8"))
-    assert result["ok"] is True
+    result = await service.write_back_source(
+        att.id, "新内容".encode("utf-8"), gateway=gateway
+    )
+    assert result["ok"] is True and result.get("pending_approval") is not True
     assert source.read_bytes() == "新内容".encode("utf-8")
+    assert [ _effect_kind(item) for item in gateway.effects ] == ["write"], gateway.effects
+    target = gateway.effects[0].targets[0]
+    assert str(target.value) == str(source)
+    assert target.identity
     refreshed = service.get(att.id)
     assert refreshed.content_sha256 == hashlib.sha256("新内容".encode("utf-8")).hexdigest()
     assert refreshed.size_bytes == len("新内容".encode("utf-8"))
-    # 原子替换会换掉文件身份：这是 OS 事实，如实记录（不是静默丢掉）
     assert result["identity_changed"] is True
     assert refreshed.file_id == result["identity"]
-    facts = refreshed.legacy_paths
-    assert "atomic_write" in facts
+    assert "atomic_write" in refreshed.legacy_paths
 
-    # 用户在写回之外又改了文件：下一次写回必须拒绝（登记哈希已对不上）
+    # 用户在写回之外又改了文件：下一次写回必须拒绝（登记哈希已对不上），且不覆盖
     source.write_text("用户又改的内容", encoding="utf-8")
     with pytest.raises(Exception) as excinfo:
-        service.write_back_source(att.id, "覆盖用户改动".encode("utf-8"))
+        await service.write_back_source(
+            att.id, "覆盖用户改动".encode("utf-8"), gateway=FakeGateway("allow")
+        )
     assert "不一致" in str(excinfo.value) or "变化" in str(excinfo.value)
-    assert source.read_text(encoding="utf-8") == "用户又改的内容", "拒绝时不得覆盖用户内容"
+    assert source.read_text(encoding="utf-8") == "用户又改的内容"
+
+
+async def test_write_back_denied_or_deferred_never_touches_file(service: AttachmentService, tmp_path: Path):
+    source = tmp_path / "受保护.txt"
+    source.write_bytes("用户内容".encode("utf-8"))
+    att = service.register_source(path=str(source), source_kind="desktop_path")
+
+    with pytest.raises(Exception) as denied:
+        await service.write_back_source(
+            att.id, b"should-not-write", gateway=FakeGateway("deny", "受限模式下需要明确指令授权")
+        )
+    assert "授权" in str(denied.value) or "受限" in str(denied.value)
+    assert source.read_bytes() == "用户内容".encode("utf-8")
+
+    pending_gateway = FakeGateway("approve")
+    pending = await service.write_back_source(
+        att.id, b"approved-later", gateway=pending_gateway
+    )
+    assert pending["pending_approval"] is True
+    assert pending["approval"]["state"] == "waiting"
+    assert pending_gateway.submitted, "approve 必须提交待审批操作（不阻塞等待）"
+    assert source.read_bytes() == "用户内容".encode("utf-8"), "待审批时绝不能先写"
+
+    # 没有网关（W1 未接入）时写操作必须拒绝，绝不静默放行
+    with pytest.raises(Exception):
+        await service.write_back_source(att.id, b"no-gateway")
+    assert source.read_bytes() == "用户内容".encode("utf-8")
+
+
+async def test_read_tool_deny_and_allow_via_gateway(service: AttachmentService, tmp_path: Path):
+    source = tmp_path / "工具授权.txt"
+    source.write_text("正文", encoding="utf-8")
+    att = service.register_source(path=str(source), source_kind="desktop_path")
+
+    denied_tool = ReadAttachmentTool(
+        service, active_turn_id=lambda: None, security=FakeGateway("deny", "红线保护")
+    )
+    denied = await denied_tool.run(attachment_id=att.id)
+    assert denied.ok is False and denied.category == "permission"
+    assert "红线保护" in (denied.error or "")
+
+    allow_gateway = FakeGateway("allow")
+    allowed_tool = ReadAttachmentTool(
+        service, active_turn_id=lambda: None, security=allow_gateway
+    )
+    allowed = await allowed_tool.run(attachment_id=att.id)
+    assert allowed.ok is True and "正文" in allowed.content
+    assert [_effect_kind(item) for item in allow_gateway.effects] == ["read"]
+
+
+def test_content_route_denied_by_gateway(client: TestClient, tmp_path: Path):
+    source = tmp_path / "接口授权.txt"
+    source.write_text("正文", encoding="utf-8")
+    att = _register(client, source)
+    ctx = client.app.state.ctx
+    original = getattr(ctx, "authorization", None)
+    try:
+        ctx.authorization = FakeGateway("deny", "接口读取被拒")
+        denied = client.get(f"/api/attachments/{att['id']}/content")
+        assert denied.status_code == 403
+        assert "接口读取被拒" in str(denied.json().get("detail"))
+        ctx.authorization = FakeGateway("allow")
+        ok = client.get(f"/api/attachments/{att['id']}/content")
+        assert ok.status_code == 200 and ok.content == "正文".encode("utf-8")
+    finally:
+        ctx.authorization = original
+
+
+async def test_delete_material_goes_through_delete_effect_and_recycle_bin(
+    service: AttachmentService, tmp_path: Path, monkeypatch
+):
+    import agent.services.recycle_bin as recycle_bin_module
+
+    target = tmp_path / "冗余副本.txt"
+    target.write_bytes(b"redundant")
+    recycled: list[str] = []
+
+    def fake_recycle(path):
+        recycled.append(str(path))
+        return {
+            "ok": True,
+            "path": str(path),
+            "mechanism": "fake",
+            "reason": "已移入回收站",
+            "deleted_permanently": False,
+        }
+
+    monkeypatch.setattr(recycle_bin_module, "send_to_recycle_bin", fake_recycle)
+
+    with pytest.raises(Exception):
+        await service.recycle_material_files(
+            [{"attachment_id": "att_1", "path": str(target)}],
+            gateway=FakeGateway("deny", "删除需要用户批准"),
+        )
+    assert recycled == [] and target.is_file()
+
+    allowed = await service.recycle_material_files(
+        [{"attachment_id": "att_1", "path": str(target)}],
+        gateway=FakeGateway("allow"),
+    )
+    assert allowed["ok"] is True and allowed["deleted_permanently"] is False
+    assert recycled == [str(target)]
+
+    pending_gateway = FakeGateway("approve")
+    pending = await service.recycle_material_files(
+        [{"attachment_id": "att_1", "path": str(target)}], gateway=pending_gateway
+    )
+    assert pending["pending_approval"] is True and pending_gateway.submitted
+
+
+# ---------------------------------------------------------------------------
+# 写回：重核对 identity+hash，原子写
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
