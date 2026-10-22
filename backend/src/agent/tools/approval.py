@@ -296,8 +296,9 @@ class ApprovalService:
             with transaction(self.conn):
                 for approval_id in victims:
                     self.conn.execute(
-                        "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
-                        "WHERE approval_id = ? AND status = 'pending'",
+                        "UPDATE pending_approvals SET status = 'interrupted',"
+                        " state = 'interrupted_unverified', resolved_at = ?"
+                        " WHERE approval_id = ? AND status = 'pending'",
                         (_now().isoformat(), approval_id),
                     )
         except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
@@ -328,8 +329,9 @@ class ApprovalService:
         try:
             with transaction(self.conn):
                 self.conn.execute(
-                    "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
-                    "WHERE status = 'pending' AND state IS NULL",
+                    "UPDATE pending_approvals SET status = 'interrupted',"
+                    " state = 'interrupted_unverified', resolved_at = ?"
+                    " WHERE status = 'pending' AND state IS NULL",
                     (_now().isoformat(),),
                 )
         except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
@@ -492,8 +494,8 @@ class ApprovalService:
             raise RuntimeError("没有数据库连接，不能提交可恢复的审批")
         if not operation.mode_at_request:
             operation.mode_at_request = mode or self.current_mode_value()
-        if not operation.source or operation.source == "tool":
-            operation.source = str(origin or operation.source or "tool")
+        if not operation.source:
+            operation.source = str(origin or "tool")
         row = self.store.create(
             operation,
             timeout_seconds=self.timeout_seconds,
@@ -629,20 +631,24 @@ class ApprovalService:
         return True
 
     async def _execute_approved(self, approval_id: str) -> None:
-        """批准后的后台执行器：原子领取 -> 重核对 -> 执行 -> 发布结果。"""
+        """批准后的后台执行器：重核对 -> 原子领取 -> 执行 -> 发布结果。
+
+        重核对在领取**之前**：当前模式更严格、且该操作在新模式下不再允许时，
+        标 invalidated 并如实说明（新的执行需重新审批），不把 approved 行卡在
+        executing。领取用 CAS，重复领取/并发执行拿不到行。
+        """
         if self.store is None:  # pragma: no cover - 防御
             return
-        claimed = self.store.claim(approval_id)
-        if claimed is None:
-            # 已被别的执行器领取 / 状态不是 approved：不重复执行。
+        approved = self.store.get(approval_id)
+        if approved is None or str(approved.get("state") or "") != "approved":
             return
-        operation = PendingOperation.from_dict(claimed.get("operation_detail") or {})
+        operation = PendingOperation.from_dict(approved.get("operation_detail") or {})
         ctx = ExecutionContext(
             approval_id=approval_id,
             operation=operation,
-            mode_at_request=str(claimed.get("mode_at_request") or ""),
-            mode_at_approval=str(claimed.get("mode_at_approval") or ""),
-            attempt=int(claimed.get("attempt") or 1),
+            mode_at_request=str(approved.get("mode_at_request") or ""),
+            mode_at_approval=str(approved.get("mode_at_approval") or ""),
+            attempt=int(approved.get("attempt") or 0) + 1,
             engine=self.engine,
             mode_getter=self.current_mode_value,
         )
@@ -651,6 +657,10 @@ class ApprovalService:
             row = self.store.mark_invalidated(approval_id, reason)
             await self._publish_phase("invalidated", row, extra={"summary": reason})
             await self._notify(row, ok=False, summary=reason)
+            return
+        claimed = self.store.claim(approval_id)
+        if claimed is None:
+            # 已被别的执行器领取 / 状态已变：不重复执行。
             return
         await self._publish_phase("executing", claimed)
         result = await self.operations.execute(operation.kind, operation.payload, ctx)

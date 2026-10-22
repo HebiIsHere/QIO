@@ -51,6 +51,12 @@ _current_narrative: ContextVar[Narrative | None] = ContextVar(
     "qio_current_narrative", default=None
 )
 
+#: 已批准操作的延迟执行标记：tool.invoke 执行器重跑管线时不再重复弹审批
+#: （真实执行前的模式/对象重核对已由审批执行器完成，见 tools/approval.py）。
+_approved_execution: ContextVar[str | None] = ContextVar(
+    "qio_approved_execution", default=None
+)
+
 
 def current_narrative() -> Narrative | None:
     """当前工具调用携带的叙事（没有则 None）。"""
@@ -194,20 +200,26 @@ class ToolRegistry:
 
     # -- pipeline -----------------------------------------------------------
 
-    async def execute(self, call: ToolCall) -> ToolResult:
+    async def execute(
+        self, call: ToolCall, *, approval_id: str | None = None
+    ) -> ToolResult:
         """Run one tool call through the pipeline; never raises.
 
         外部取消（Task.cancel）会把 CancelledError 转成 aborted 失败结果，
         保证 per-call 隔离，并让 TOOL_END(ok=false, aborted) 照常发出。
+        approval_id 非空表示这是**用户已批准**的延迟执行：不再重复弹审批，
+        但仍走完整管线（参数校验 / 执行 / 输出校验 / 事件 / 审计）。
         """
         # 叙事只用于「模型想怎么表达」，不参与任何执行/风险/权限判断；
         # 在这里挂到 ContextVar 上，工具内部发起的审批可以取到 explanation。
         from agent.core.narrative import parse_narrative
 
         token = _current_narrative.set(parse_narrative(getattr(call, "narrative", None)))
+        approved_token = _approved_execution.set(approval_id)
         try:
             return await self._execute_call(call)
         finally:
+            _approved_execution.reset(approved_token)
             _current_narrative.reset(token)
 
     async def _execute_call(self, call: ToolCall) -> ToolResult:
@@ -383,6 +395,14 @@ class ToolRegistry:
         tool = ctx.get("tool")
         if tool is None or not getattr(tool, "requires_approval", False) or self._approvals is None:
             return await next(ctx)
+        # 已批准的延迟执行：审批已在用户点「允许」时完成，不再重复弹。
+        if _approved_execution.get():
+            return await next(ctx)
+        engine = getattr(self._approvals, "engine", None)
+        store = getattr(self._approvals, "store", None)
+        if engine is not None and store is not None:
+            return await self._deferred_approval(ctx, tool)
+        # 旧装配（没有统一授权引擎 / 没有持久化审批）：保持原同步审批行为。
         # 审批内容要能被普通用户看懂（spec 第 66~70 条）：把这次具体调用翻译成
         # 「想做什么 / 会访问什么 / 影响 / 一次性还是长期」，而不是把工具名和
         # 参数原样丢给用户。原始 tool/arguments 保留给「高级详情」。
@@ -406,6 +426,94 @@ class ToolRegistry:
             ok=False,
             error=f"工具「{tool.name}」未执行（{refusal_reason(decision.decision)}）",
         )
+
+    async def _deferred_approval(self, ctx: dict, tool) -> Any:
+        """统一授权 + 非阻塞审批（契约 §2.1/§5.1）。
+
+        ALLOW：直接执行；DENY：中文原因短路；APPROVE：持久化待执行操作并立即
+        返回 pending 结果 —— 不在工具调用栈里等用户点按钮（TurnManager 是单飞，
+        同步等待会占住唯一 active turn）。批准后由审批执行器重跑本管线。
+        """
+        from agent.security.effects import Verdict
+        from agent.security.operations import PendingOperation
+
+        arguments = ctx.get("arguments", {}) or {}
+        call = ctx.get("call")
+        declared = None
+        effects_fn = getattr(tool, "effects", None)
+        if callable(effects_fn):
+            try:
+                declared = list(effects_fn(dict(arguments)))
+            except Exception:  # noqa: BLE001 - 效果声明失败按未声明（保守）
+                logger.warning("tool effects declaration failed for %s", tool.name, exc_info=True)
+                declared = None
+        decision = await self._approvals.engine.authorize_tool_invocation(
+            tool_name=tool.name,
+            arguments=dict(arguments),
+            declared_effects=declared,
+        )
+        if decision.verdict == Verdict.ALLOW:
+            return await next(ctx)
+        if decision.verdict == Verdict.DENY:
+            return ToolResult(
+                ok=False,
+                status=ToolStatus.FAILED.value,
+                code="authorization_denied",
+                error=f"工具「{tool.name}」未执行（{decision.reason}）",
+            )
+        label = ""
+        try:
+            from agent.tools.approval_present import describe_tool_call
+
+            described = describe_tool_call(tool.name, dict(arguments))
+            label = str(described.get("description") or described.get("summary") or "")
+        except Exception:  # noqa: BLE001
+            label = ""
+        if not label:
+            label = "调用工具「" + str(tool.name) + "」"
+        operation = PendingOperation(
+            kind="tool.invoke",
+            label=label[:200],
+            payload={
+                "tool": tool.name,
+                "arguments": dict(arguments),
+                "call_id": getattr(call, "id", None),
+            },
+            effect=self._effect_dict(decision.effects),
+            fingerprint={"tool": tool.name, "arguments": dict(arguments)},
+            purpose=decision.reason,
+            source="tool",
+        )
+        ticket = await self._approvals.submit(operation)
+        return ToolResult(
+            ok=True,
+            status=ToolStatus.AWAITING_APPROVAL.value,
+            code="pending_approval",
+            protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+            content="已提交审批，批准后会自动执行（审批 id：" + ticket.approval_id + "）",
+            data={"pending_approval": ticket.as_dict()},
+        )
+
+    @staticmethod
+    def _effect_dict(effects) -> dict:
+        if not effects:
+            return {}
+        effect = effects[0]
+        return {
+            "kind": effect.kind.value,
+            "purpose": effect.purpose,
+            "tool": effect.tool,
+            "targets": [
+                {
+                    "kind": target.kind,
+                    "value": target.value,
+                    "identity": target.identity,
+                    "exists": target.exists,
+                }
+                for target in effect.targets
+            ],
+            "detail": dict(effect.detail),
+        }
 
     async def _default_execute(self, ctx: dict, *, next: Callable[..., Any]) -> ToolResult:
         tool = ctx["tool"]

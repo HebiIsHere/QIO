@@ -143,8 +143,40 @@ class ComputerSandbox:
 
     @property
     def mode(self) -> str:
-        value = self._permission_mode() if callable(self._permission_mode) else str(self._permission_mode)
-        return value if value in PERMISSION_MODES else DEFAULT_MODE
+        """旧逻辑使用的规范旧值（plan/default/bypass）；新三模式归一后映射。
+
+        既有测试/调用方仍按旧值断言；新存储值（read_only/restricted/unrestricted）
+        在这里映射成等价的旧语义，两种输入都不会静默提高权限。
+        """
+        value = (
+            self._permission_mode()
+            if callable(self._permission_mode)
+            else str(self._permission_mode)
+        )
+        if value in PERMISSION_MODES:
+            return value
+        try:
+            from agent.security.modes import PermissionMode, normalize_mode
+
+            return {
+                PermissionMode.READ_ONLY.value: "plan",
+                PermissionMode.RESTRICTED.value: "default",
+                PermissionMode.UNRESTRICTED.value: "bypass",
+            }[normalize_mode(value).value]
+        except Exception:  # noqa: BLE001 - 未知值按旧默认（不静默提高）
+            return DEFAULT_MODE
+
+    @property
+    def permission_mode(self):
+        """新三模式（read_only/restricted/unrestricted）；未知值回落 restricted。"""
+        from agent.security.modes import normalize_mode
+
+        value = (
+            self._permission_mode()
+            if callable(self._permission_mode)
+            else str(self._permission_mode)
+        )
+        return normalize_mode(value)
 
     def _root(self) -> Path:
         raw = self._resolve_root() if callable(self._resolve_root) else str(self._resolve_root)

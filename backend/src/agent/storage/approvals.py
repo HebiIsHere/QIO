@@ -528,10 +528,16 @@ class ApprovalStore:
             self.conn.execute(
                 "UPDATE pending_approvals SET state = 'invalidated', status = 'invalidated',"
                 " error = ?, resolved_at = ?, revisions = revisions + 1"
-                " WHERE approval_id = ? AND state IN ('approved','waiting')",
+                " WHERE approval_id = ? AND state IN ('approved','waiting','executing')",
                 (str(reason or ""), _iso(self.now()), str(approval_id)),
             )
             self._audit(approval_id, "invalidated", {"reason": str(reason or "")[:300]})
+        self._write_history(
+            approval_id,
+            summary=str(reason or "批准后重核对失败，本次未执行"),
+            outcome="invalidated",
+            detail={"reason": str(reason or "")},
+        )
         return self.get(approval_id) or {}
 
     def mark_expired(self, approval_id: str) -> dict:
@@ -555,6 +561,12 @@ class ApprovalStore:
                 (str(reason or ""), _iso(self.now()), str(approval_id)),
             )
             self._audit(approval_id, "interrupted_unverified", {"reason": str(reason or "")[:300]})
+        self._write_history(
+            approval_id,
+            summary=str(reason or "上次进程在执行中退出，未自动重放"),
+            outcome="interrupted_unverified",
+            detail={"reason": str(reason or "")},
+        )
         return self.get(approval_id) or {}
 
     # -- 过期 / 启动恢复 ----------------------------------------------------
@@ -678,6 +690,34 @@ class ApprovalStore:
         payload = {"actor": actor}
         payload.update(detail or {})
         self._audit(approval_id, action, payload)
+
+    def _write_history(
+        self,
+        approval_id: str,
+        *,
+        summary: str,
+        outcome: str,
+        detail: dict | None = None,
+    ) -> None:
+        """写一条可读历史（approval_history，PK approval_id：每个审批一条最新结果）。"""
+        try:
+            row = self.get_raw(approval_id)
+            kind = str(row["kind"] or "") if row is not None else ""
+            self.conn.execute(
+                "INSERT OR REPLACE INTO approval_history"
+                " (approval_id, kind, summary, outcome, detail, at)"
+                " VALUES (?,?,?,?,?,?)",
+                (
+                    str(approval_id),
+                    kind,
+                    str(summary or ""),
+                    str(outcome),
+                    _json(detail or {}),
+                    _iso(self.now()),
+                ),
+            )
+        except sqlite3.Error:  # pragma: no cover - 历史失败不能挡住状态收口
+            pass
 
     def _audit(self, approval_id: str, action: str, detail: dict | None = None) -> None:
         try:

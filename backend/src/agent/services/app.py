@@ -299,6 +299,35 @@ class AppContext:
         # 启动即就位：工作区根目录不存在时，所有相对路径的文件工具都会直接失败
         self.computer.ensure_root()
         self.services.register("computer", self.computer)
+
+        # ── R9 统一授权边界（契约 §1/§2/§5）──────────────────────────────
+        # 权限判定、指令授权、可恢复审批、内部数据保护共用同一套实现：
+        # 工具只能走 AuthorizationEngine；审批 v2 由 ApprovalService 持久化。
+        from agent.security.engine import AuthorizationEngine
+        from agent.security.instructions import InstructionRegistry
+        from agent.security.operations import OperationRegistry
+        from agent.security.tempfiles import TempFileManager
+
+        self.instructions = InstructionRegistry()
+        self.operations = OperationRegistry()
+        self.tempfiles = TempFileManager(Path(self.settings.data_dir) / "tmp")
+        self.authorization = AuthorizationEngine(
+            conn=conn,
+            approvals=self.approvals,
+            settings=self.settings_store,
+            instance_id=self.instance_id,
+            workspace_root=lambda: self.computer.root(),
+            internal_data_paths=self._internal_data_paths,
+        )
+        self.approvals.set_engine(self.authorization)
+        self.approvals.set_operations(self.operations)
+        self.approvals.set_instruction_registry(self.instructions)
+        self.approvals.set_notifier(self._on_approval_executed)
+        self.services.register("security", self.authorization)
+        self.services.register("operations", self.operations)
+        self.services.register("tempfiles", self.tempfiles)
+        # 工具审批走 deferred：批准后由后台执行器按 kind 取出执行函数真正执行。
+        self.operations.register("tool.invoke", self._execute_approved_tool)
         for _tool in (
             FsReadTool(),
             FsWriteTool(),
@@ -625,6 +654,83 @@ class AppContext:
             counts["pending_approvals"] = 0
         return counts
 
+    # -- R9 授权 / 审批 v2 接线 --------------------------------------------
+
+    def _internal_data_paths(self) -> list[Path]:
+        """QIO 内部运行数据路径清单（契约 §4）：DB、内部配置、日志、凭据等。
+
+        工作区 / 归档 / 临时目录不在此列（它们是用户工作与可清理数据）。
+        """
+        paths: list[Path] = []
+        try:
+            paths.append(Path(self.settings.db_path))
+            paths.append(Path(self.settings.config_path))
+        except Exception:  # noqa: BLE001 - 路径字段缺失不阻塞
+            pass
+        try:
+            for row in self.conn.execute("PRAGMA database_list").fetchall():
+                file = str(row["file"] or "")
+                if file:
+                    paths.append(Path(file))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            data_dir = Path(self.settings.data_dir)
+            for name in ("logs", "credentials", "instances", "cache", "tmp"):
+                candidate = data_dir / name
+                if candidate.exists():
+                    paths.append(candidate)
+            for child in data_dir.iterdir():
+                if child.name in {"workspace", "archive"} or child.name.startswith("workspace"):
+                    continue
+                if child.is_file():
+                    paths.append(child)
+        except OSError:  # pragma: no cover - 数据目录不可读时按已收集路径
+            pass
+        return paths
+
+    async def _execute_approved_tool(self, payload: dict, ctx) -> object:
+        """tool.invoke 执行器：用户批准后重新走工具管线真正执行（不重复弹审批）。"""
+        from agent.adapters.base import ToolCall
+        from agent.security.operations import ExecResult
+
+        name = str(payload.get("tool") or "")
+        arguments = dict(payload.get("arguments") or {})
+        call_id = str(payload.get("call_id") or ("approved_" + str(ctx.approval_id)))
+        if self.registry.get(name) is None:
+            return ExecResult(
+                ok=False,
+                state="failed",
+                summary="工具已不存在，本次未执行",
+                error="tool_not_found: " + name,
+            )
+        call = ToolCall(id=call_id, name=name, arguments=arguments)
+        result = await self.registry.execute(call, approval_id=ctx.approval_id)
+        ok = bool(getattr(result, "ok", False))
+        return ExecResult(
+            ok=ok,
+            state="completed" if ok else "failed",
+            summary=(getattr(result, "content", "") or getattr(result, "error", "") or "")[:300],
+            detail={
+                "tool": name,
+                "ok": ok,
+                "content": (getattr(result, "content", "") or "")[:2000],
+                "error": getattr(result, "error", None),
+            },
+        )
+
+    def _on_approval_executed(self, data: dict) -> None:
+        """审批执行结果通知：原 turn 若仍在，注入一条系统通知（不伪装成模型的话）。"""
+        active = self.turns.active
+        loop = getattr(active, "loop", None) if active is not None else None
+        push = getattr(loop, "push_notice", None)
+        if not callable(push):
+            return
+        label = str(data.get("label") or data.get("kind") or "操作")
+        summary = str(data.get("summary") or "").strip()
+        state_text = "已执行" if data.get("ok") else "未完成"
+        push("审批「" + label + "」" + state_text + ("：" + summary if summary else ""))
+
     # -- anchor 事件广播 --------------------------------------------------
 
     async def _on_tool_anchor_result(self, data: dict) -> None:
@@ -914,6 +1020,11 @@ class AppContext:
         数据库连接的关闭由调用方决定（`create_app(..., close_db_on_shutdown=True)`
         时在 lifespan 的最后一步），保证不会出现「后台任务还在写，DB 已经关了」。
         """
+        # R9：先停审批后台执行器（取消在途执行任务；waiting 审批不取消，供重启恢复）。
+        try:
+            await self.approvals.aclose()
+        except Exception:  # noqa: BLE001 - 取消失败不能阻止其它收尾
+            logging.getLogger(__name__).warning("approvals aclose failed", exc_info=True)
         # A05：派生工作在 turn 收尾时调度。必须先关它，否则 turns.shutdown() 之后
         # 仍可能有提炼协程在写库。`close_background` 会等/取消并如实回报
         # 「句柄取消了」与「底层执行单元确认结束」的区别。
@@ -1907,7 +2018,10 @@ class AppContext:
     async def _execute_notify_turn(self, ctx) -> None:
         """System-driven turn: main agent reacts to a finished subagent task."""
         from agent.core.loop import AgentLoop
+        from agent.security.context import approval_origin
 
+        # 系统通知轮不是用户指令：不产生 grant，审批来源如实标为 background。
+        origin_token = approval_origin.set("background")
         self._notify_turn = True
         try:
             self.approvals.set_context(turn_id=ctx.turn_id, session_id=self.session_id)
@@ -2064,6 +2178,7 @@ class AppContext:
             ctx.error = f"{type(exc).__name__}: {str(exc)[:180]}"
         finally:
             self._notify_turn = False
+            approval_origin.reset(origin_token)
             self.approvals.set_context(turn_id=None, session_id=self.session_id)
             self._schedule_subtask_notification_pump()
 
@@ -2219,10 +2334,31 @@ class AppContext:
         return result or {"ok": False, "reason": "no_result"}
 
     async def _execute_turn(self, ctx) -> None:
-        """委派给 TurnOrchestrator（见 agent/services/turn_orchestrator.py）。"""
+        """委派给 TurnOrchestrator（见 agent/services/turn_orchestrator.py）。
+
+        R9：每轮用户指令建立独立的 InstructionContext（授权依据），轮末即关闭
+        全部 grant —— 绝不因为同话题/同目录/历史许可而延续到后续指令。
+        """
+        from agent.security.context import approval_origin_context, instruction_context
+
+        instruction = None
         try:
-            await self.turn_orchestrator.execute(ctx)
+            instruction = self.instructions.begin(
+                turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                text=str(getattr(ctx, "message", "") or ""),
+                topic_id=getattr(ctx, "initial_topic", None),
+            )
+        except Exception:  # noqa: BLE001 - 指令提取失败不能挡住一轮（保守=没有 grant）
+            logging.getLogger(__name__).warning("instruction begin failed", exc_info=True)
+        try:
+            if instruction is None:
+                await self.turn_orchestrator.execute(ctx)
+            else:
+                with instruction_context(instruction), approval_origin_context("user"):
+                    await self.turn_orchestrator.execute(ctx)
         finally:
+            if instruction is not None:
+                self.instructions.end(instruction)
             # 轮末尝试取一条子任务通知（不打断刚结束的交流；有排队用户轮时延后）。
             self._schedule_subtask_notification_pump()
 

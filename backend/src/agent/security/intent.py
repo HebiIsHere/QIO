@@ -59,7 +59,7 @@ _DIRECTORY_HINTS = (
 _PATH_STOP = r"""\s"'“”‘’<>|*?，。；：！？、（）【】「」『』《》,;!?(){}"""
 _WIN_ABS = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]:[\\/](?:[^" + _PATH_STOP + r"]+))")
 _UNC = re.compile(r"(\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^" + _PATH_STOP + r"]*)*)")
-_POSIX_ABS = re.compile(r"(?<![\w:/])/(?:[^" + _PATH_STOP + r"]+)")
+_POSIX_ABS = re.compile(r"(?<![\w:./\\])/((?:[^" + _PATH_STOP + r"]+))")
 _QUOTED = re.compile(r"""[“"']([^"'“”‘’]{2,300})[”"']""")
 _URL = re.compile(r"""https?://([^/\s"'“”]+)""", re.IGNORECASE)
 
