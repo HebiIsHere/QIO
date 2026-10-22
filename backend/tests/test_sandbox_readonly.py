@@ -344,9 +344,11 @@ async def test_sandbox_marks_violation_when_protected_file_changes(tmp_path, mon
         return isolation.IsolationOutcome(applied=True, mechanisms=("job_object",))
 
     monkeypatch.setattr(isolation, "harden", _fake_harden)
-    # 本用例验证的是「事后核验能发现越界」，不是权限模式本身；不挂 mode_provider，
-    # 避免在 Linux CI 上把模式分支（Low IL 不可用）与核验逻辑混在一起。
+    # 本用例验证的是「事后核验能发现越界」，不是权限模式本身，也不假设 worker 在哪个
+    # 平台执行：**显式 subprocess**，避免 Linux CI 上 docker 守护进程可用时自动选容器，
+    # 而容器里看不到 tmp_path（会把"容器没挂载这个路径"误读成产品缺陷）。
     executor = SandboxExecutor(
+        executor="subprocess",
         protected_scope_provider=lambda: [str(protected)],
     )
     code = (

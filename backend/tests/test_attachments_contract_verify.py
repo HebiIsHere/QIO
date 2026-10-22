@@ -195,17 +195,15 @@ def test_missing_and_changed_reference_are_reported(app_client, tmp_path):
     hold_open = None
     if sys.platform != "win32":
         hold_open = os.open(str(source), os.O_RDONLY)
-    try:
-        source.unlink()
-        missing = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
-        assert missing["state"] == "missing", ("源文件不在了必须如实说 missing", missing)
-        assert missing.get("missing_reason"), missing
-    finally:
-        if hold_open is not None:
-            os.close(hold_open)
+    source.unlink()
+    missing = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
+    assert missing["state"] == "missing", ("源文件不在了必须如实说 missing", missing)
+    assert missing.get("missing_reason"), missing
 
-    # 在同一个路径上换了一份新文件：文件身份不同 → 如实 changed（不得继续冒充 ready）
+    # 新文件要在**旧 inode 仍被打开时**创建（上面钉住），否则释放后 inode 可能被复用。
     source = _sparse(tmp_path / "被引用.bin", LEGACY_COPY_THRESHOLD + 2)
+    if hold_open is not None:
+        os.close(hold_open)
     changed = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
     assert changed["state"] == "changed", (
         "路径上的文件换了一份必须如实说 changed（不得继续冒充 ready）",
