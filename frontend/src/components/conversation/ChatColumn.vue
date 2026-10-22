@@ -435,7 +435,9 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <ComposerDock />
+    <ComposerDock>
+      <template #planet><slot name="planet" /></template>
+    </ComposerDock>
   </section>
 </template>
 

@@ -17,9 +17,15 @@ import { planetContinuum } from "../composables/planetContinuum";
 import { prefersReducedMotion } from "../utils/motion";
 import PlanetOrb from "./planet/PlanetOrb.vue";
 
+const props = defineProps<{ anchored?: boolean }>();
 const session = useSessionStore();
 const emit = defineEmits<{ open: [] }>();
 const elRef = ref<HTMLElement | null>(null);
+/**
+ * 对话页 v3：星球固定在输入区右下角的槽位里（锚定模式）。
+ * 锚定时不启用浮动窗口：不拖动、不贴边、不参与避让；样式与点击展开行为不变。
+ */
+const anchored = computed(() => props.anchored === true);
 
 /** 收到回来的星球时的一次轻微「接收」反馈（不做回弹、不做庆祝） */
 const receiving = ref(false);
@@ -62,21 +68,23 @@ onBeforeUnmount(() => {
   window.clearTimeout(receiveTimer);
 });
 
-const float = useFloatingWindow(elRef, {
-  id: "planet-dock",
-  dockMode: "edge",
-  // 输入气泡与设置齿轮都不是「已贴靠的浮动组件」，但压住球一样致命：
-  // 球会既看不见也点不到（用户看到的是「星球没办法进行移动」）。
-  avoidSelectors: FLOAT_AVOID_SELECTORS,
-  // 设计位置：固定在右下角（用户原图）。其余样式、拖动、贴边收纳行为不变。
-  defaultPos: (el, vp) => ({
-    x: vp.width - 26 - (el.offsetWidth || 96),
-    y: vp.height - 24 - (el.offsetHeight || 96),
-  }),
-});
+const float = anchored.value
+  ? { moved: ref(false) }
+  : useFloatingWindow(elRef, {
+      id: "planet-dock",
+      dockMode: "edge",
+      // 输入气泡与设置齿轮都不是「已贴靠的浮动组件」，但压住球一样致命：
+      // 球会既看不见也点不到（用户看到的是「星球没办法进行移动」）。
+      avoidSelectors: FLOAT_AVOID_SELECTORS,
+      // 非锚定模式（其他页面）保持原浮动行为：默认右下角、可拖动。
+      defaultPos: (el, vp) => ({
+        x: vp.width - 26 - (el.offsetWidth || 96),
+        y: vp.height - 24 - (el.offsetHeight || 96),
+      }),
+    });
 
 function onClick() {
-  if (float.moved.value) return; // 拖动不误触发
+  if (!anchored.value && float.moved.value) return; // 拖动不误触发
   if (handedOff.value) return; // 转场中不重复触发
   emit("open");
 }
@@ -86,7 +94,7 @@ function onClick() {
   <button
     ref="elRef"
     class="dock"
-    :class="{ activating, handed: handedOff, receiving }"
+    :class="{ activating, handed: handedOff, receiving, anchored }"
     data-planet-entry
     :aria-expanded="handedOff"
     title="话题星球"
@@ -123,6 +131,15 @@ function onClick() {
   justify-content: center;
   /* 高频层：hover/按下用短令牌；贴边隐藏的淡入用中频档 */
   transition: transform var(--dur-fast) var(--ease-1), opacity var(--dur-planet-settle) var(--ease-1);
+}
+/* 对话页 v3：锚定在输入区右下槽位（不固定到视口、不参与拖动/贴边） */
+.dock.anchored {
+  position: static;
+  z-index: auto;
+  left: auto;
+  top: auto;
+  flex: none;
+  cursor: pointer;
 }
 .dock:active {
   cursor: grabbing;

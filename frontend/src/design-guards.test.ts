@@ -80,7 +80,11 @@ describe("输入区与消息列同一条列", () => {
     // 固定悬浮会让它盖住右侧预览栏；手算 50% 偏移仍被禁止（历史错位的来源）。
     const rootBlock = composer!.text.match(/\.composer\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(rootBlock).toMatch(/position:\s*relative/);
-    expect(rootBlock).toMatch(/width:\s*min\(860px,\s*100%\)/);
+    // v3：外层是透明列（width:100% + max-width:860px），真正的卡片是内部胶囊 .input-pill
+    expect(rootBlock).toMatch(/width:\s*100%/);
+    expect(rootBlock).toMatch(/max-width:\s*860px/);
+    const pillBlock = composer!.text.match(/\.input-pill\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(pillBlock).toMatch(/border-radius:\s*var\(--r-pill\)/);
     expect(rootBlock).not.toMatch(/position:\s*fixed/);
     expect(composer!.text).not.toMatch(/left:\s*calc\(50%/);
     expect(composer!.text).not.toMatch(/left:\s*max\(12px/);

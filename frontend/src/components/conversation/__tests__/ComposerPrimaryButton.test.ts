@@ -131,7 +131,7 @@ describe("发送 / 停止共用按钮四态", () => {
     const btn = primary(w);
     expect(btn.attributes("data-mode")).toBe("disabled");
     expect(btn.attributes("disabled")).toBeDefined();
-    expect(btn.text()).toContain("发送");
+    expect(btn.attributes("aria-label") ?? "").toContain("发送");
     w.unmount();
   });
 
@@ -155,7 +155,7 @@ describe("发送 / 停止共用按钮四态", () => {
     await nextTick();
     const btn = primary(w);
     expect(btn.attributes("data-mode")).toBe("stop");
-    expect(btn.text()).toContain("停止");
+    expect(btn.attributes("aria-label") ?? "").toContain("停止");
     // 旧选择器兼容：停止模式仍带 .stop-btn 语义类（样式由共用按钮统一接管）
     expect(w.find(".send-btn.stop-btn").exists()).toBe(true);
     await btn.trigger("click");
@@ -221,7 +221,7 @@ describe("「存在内容」与「满足发送条件」分开", () => {
     const btn = primary(w);
     expect(btn.attributes("data-mode")).toBe("send");
     expect(btn.attributes("data-ready")).toBe("false");
-    expect(btn.text()).toContain("发送");
+    expect(btn.attributes("aria-label") ?? "").toContain("发送");
 
     await btn.trigger("click");
     await flushPromises();

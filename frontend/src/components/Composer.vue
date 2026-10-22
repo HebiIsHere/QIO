@@ -400,7 +400,33 @@ const attachError = ref("");
 const dragging = ref(false);
 const pathOpen = ref(false);
 const pathDraft = ref("");
+const pathInputRef = ref<HTMLInputElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+/** 回形针菜单：把「选择文件」与「从路径添加」收进同一个圆形图标按钮，减少文字按钮。 */
+const attachMenuOpen = ref(false);
+const attachMenuRef = ref<HTMLElement | null>(null);
+
+function toggleAttachMenu() {
+  attachMenuOpen.value = !attachMenuOpen.value;
+}
+function chooseLocalFile() {
+  attachMenuOpen.value = false;
+  void pickFile();
+}
+async function choosePathEntry() {
+  attachMenuOpen.value = false;
+  pathOpen.value = true;
+  await nextTick();
+  pathInputRef.value?.focus();
+}
+/** 点空白处收起回形针菜单（不改变任何附件/路径状态）。 */
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!attachMenuOpen.value) return;
+  const root = attachMenuRef.value;
+  const target = event.target as Node | null;
+  if (root && target && root.contains(target)) return;
+  attachMenuOpen.value = false;
+}
 /** 打开/重新定位之后的事实说明（例如「已在文件夹中显示：可执行文件不自动运行」） */
 const attachNote = ref("");
 /** 浏览器里没有原生选择器时，「粘贴路径 → 重新定位」的目标附件 id */
@@ -1203,6 +1229,7 @@ function onWindowResize() {
 
 onMounted(() => {
   window.addEventListener("resize", onWindowResize);
+  document.addEventListener("pointerdown", onDocumentPointerDown, true);
   if (typeof ResizeObserver === "function") {
     inputWidthObserver = new ResizeObserver((entries) => {
       const width = entries[entries.length - 1]?.contentRect.width ?? -1;
@@ -1218,6 +1245,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onWindowResize);
+  document.removeEventListener("pointerdown", onDocumentPointerDown, true);
   if (inputResizeRaf && typeof cancelAnimationFrame === "function") {
     cancelAnimationFrame(inputResizeRaf);
   }
@@ -1334,9 +1362,8 @@ async function stopTurn() {
     @dragover.prevent="onDragOver"
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
+    @keydown.esc="attachMenuOpen = false"
   >
-    <!-- 五入口（B 的 ComposerEntries 从插槽进入：输入框正上方、紧邻输入区） -->
-    <slot name="entries" />
     <!--
       输入区：与对话消息区同一套宽度规则。
       * data-qio-fit：气泡 / 输入行不得横向滚动（真正的修复在各层的 min-width:0 与换行）；
@@ -1399,6 +1426,7 @@ async function stopTurn() {
       </p>
       <div v-if="pathOpen" class="path-row" data-qio-fit>
         <input
+          ref="pathInputRef"
           v-model="pathDraft"
           class="path-input mono"
           type="text"
@@ -1469,31 +1497,39 @@ async function stopTurn() {
       <p v-if="attachNote" class="attach-note" role="status" data-qio-fit>{{ attachNote }}</p>
     </div>
 
-    <div ref="inputRowRef" class="input-row" data-qio-fit>
+    <div ref="inputRowRef" class="input-pill" data-qio-fit>
       <slot name="leading" />
-      <button
-        class="attach-btn"
-        type="button"
-        :disabled="attaching"
-        title="添加附件（桌面端选择本地文件；也可以拖入或粘贴路径）"
-        aria-label="添加附件"
-        @click="pickFile"
-      >
-        附件
-      </button>
-      <button
-        class="attach-btn ghost"
-        type="button"
-        title="粘贴本地文件路径（拖入不方便时用；不会把浏览器给的假路径当路径）"
-        aria-label="粘贴本地文件路径"
-        @click="pathOpen = !pathOpen"
-      >
-        路径
-      </button>
+      <div ref="attachMenuRef" class="attach-anchor">
+        <button
+          class="attach-circle"
+          type="button"
+          :disabled="attaching"
+          :aria-expanded="attachMenuOpen ? 'true' : 'false'"
+          aria-haspopup="menu"
+          title="添加附件：选择本地文件，或粘贴路径"
+          aria-label="添加附件"
+          @click="toggleAttachMenu"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L16 7" />
+          </svg>
+        </button>
+        <div v-if="attachMenuOpen" class="attach-menu" role="menu" aria-label="添加附件">
+          <button class="attach-menu-item" type="button" role="menuitem" @click="chooseLocalFile">
+            <span class="ami-title">选择本地文件</span>
+            <span class="ami-note mono">拖入也可以</span>
+          </button>
+          <button class="attach-menu-item" type="button" role="menuitem" @click="choosePathEntry">
+            <span class="ami-title">从路径添加</span>
+            <span class="ami-note mono">粘贴路径后回车</span>
+          </button>
+        </div>
+      </div>
       <textarea
         ref="inputRef"
         id="composer-input"
         v-model="text"
+        rows="1"
         class="qio-input"
         data-qio-fit
         v-qio-scrollbar="'hidden'"
@@ -1501,7 +1537,7 @@ async function stopTurn() {
         aria-label="输入消息（Enter 发送，Shift+Enter 换行）"
         aria-keyshortcuts="Enter Shift+Enter"
         title="Enter 发送 · Shift+Enter 换行"
-        placeholder="和 QIO 说点什么…（Enter 发送，Shift+Enter 换行）"
+        placeholder="继续讨论，或添加文件…"
         @keydown="onKeydown"
         @input="autosize"
       ></textarea>
@@ -1522,10 +1558,12 @@ async function stopTurn() {
         @click="primaryAction"
       >
         <span v-if="primaryMode === 'stop'" class="sq" aria-hidden="true"></span>
-        <span v-else class="send-arrow" aria-hidden="true">↑</span>
-        <span class="send-label">{{ primaryLabel }}</span>
+        <svg v-else class="send-arrow" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 20V4m-6 6 6-6 6 6" />
+        </svg>
       </button>
     </div>
+    <p class="composer-caption" data-qio-fit>Enter 发送 · Shift + Enter 换行</p>
     <p v-if="cancelError" class="cancel-error" role="alert" data-qio-fit>{{ cancelError }}</p>
     <!-- 浏览器回退：只拿字节上传；fakepath 绝不当路径 -->
     <input
@@ -1571,31 +1609,65 @@ async function stopTurn() {
      这样右侧预览打开时输入区只占中央列，不会盖住预览栏；消息流自然也止于它上方。
      （旧实现固定在视口上并贴视口边，右侧栏一开就会压到预览上。） */
   position: relative;
-  width: min(860px, 100%);
+  width: 100%;
   max-width: 860px;
-  margin: 0 auto 10px;
+  margin: 0 auto;
   z-index: 12;
-  /* 默认中性边框 + 较轻阴影：不靠重描边和重阴影抢注意力 */
+  /* 外层只是一个透明列：真正的卡片是内部的胶囊（.input-pill）。
+     这样附件行 / 路径行 / 菜单可以浮在胶囊外，而胶囊始终保持胶囊形。 */
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+/* 输入胶囊：附件圆形按钮 + 输入 + 圆形发送，全部在胶囊内部 */
+.input-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 7px 6px 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  padding: 10px 18px 14px;
+  border-radius: var(--r-pill);
   background: var(--bg-surface);
   box-shadow: var(--shadow-2);
   transition: border-color var(--dur-fast) var(--ease-1), box-shadow var(--dur-fast) var(--ease-1);
 }
-/* 聚焦时只加强一层：外框变强调色；内层输入框不再同时叠一层边框 + 光晕 */
-.composer:focus-within { border-color: var(--accent); }
+.input-pill:focus-within {
+  border-color: var(--accent);
+}
+.composer textarea.qio-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  min-height: 26px;
+  max-height: min(40vh, 260px);
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 22px;
+  resize: none;
+}
 .composer textarea.qio-input:focus {
   border-color: transparent;
   box-shadow: none;
   background: transparent;
+  outline: none;
+}
+.composer-caption {
+  margin: 6px 0 8px;
+  text-align: center;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
 }
 /* 窄窗口：整宽贴底，不缩成小气泡、不遮挡文字 */
 @media (max-width: 899px) {
   .composer {
-    width: auto;
     max-width: none;
-    margin: 0 var(--sp-3) 8px;
+    margin: 0 var(--sp-2);
   }
 }
 .topicbar {
@@ -1806,18 +1878,17 @@ async function stopTurn() {
   overflow-wrap: anywhere;
 }
 .draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-/* 发送 / 停止共用按钮：带文字标签的胶囊，两种模式共用同一层动效令牌 */
+/* 发送 / 停止共用按钮：胶囊内部的圆形图标按钮，两种模式共用同一层动效令牌 */
 .send-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-width: 38px;
-  height: 38px;
-  padding: 0 16px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
   flex-shrink: 0;
   border: 1px solid transparent;
-  border-radius: var(--r-pill);
+  border-radius: 50%;
   background: var(--accent);
   color: var(--on-accent);
   font-family: var(--sans);
@@ -1830,11 +1901,13 @@ async function stopTurn() {
     color var(--dur-fast) var(--ease-1);
 }
 .send-btn .send-arrow {
-  font-size: 15px;
-  line-height: 1;
-}
-.send-btn .send-label {
-  white-space: nowrap;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 /* 有内容但还没满足发送条件（附件准备中 / 只带附件没有文字）：仍然可点 ——
    点击给出真实校验原因，比一个点不动的灰按钮更有用 */
@@ -1891,6 +1964,87 @@ async function stopTurn() {
 .attach-btn:disabled {
   opacity: 0.55;
   cursor: default;
+}
+.attach-anchor {
+  position: relative;
+  flex: none;
+}
+.attach-circle {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1),
+    background var(--dur-fast) var(--ease-1);
+}
+.attach-circle svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.attach-circle:hover:not(:disabled),
+.attach-circle[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--layer-hover);
+}
+.attach-circle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.attach-circle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.attach-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  min-width: 188px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
+}
+.attach-menu-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.attach-menu-item:hover,
+.attach-menu-item:focus-visible {
+  background: var(--layer-hover);
+  color: var(--text-strong);
+  outline: none;
+}
+.ami-note {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 10px;
 }
 .attach-area {
   margin-bottom: 8px;

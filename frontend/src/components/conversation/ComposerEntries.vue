@@ -378,20 +378,23 @@ const panelTitle = computed(() =>
 .entry-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 8px;
   min-width: 0;
-  padding: 0 0 6px;
+  padding: 0 0 2px;
 }
 .entry-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: var(--r-pill);
-  background: transparent;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-elevated);
   color: var(--text-secondary);
   font-family: var(--sans);
   font-size: var(--fs-xs);
@@ -417,23 +420,34 @@ const panelTitle = computed(() =>
   border-color: var(--warning);
 }
 .entry-btn .ico {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   flex: none;
 }
+.entry-label {
+  display: none;
+}
 .entry-btn .count {
+  position: absolute;
+  top: -4px;
+  right: -4px;
   min-width: 15px;
+  height: 15px;
   padding: 0 4px;
+  border: 1px solid var(--bg-elevated);
   border-radius: var(--r-pill);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font-size: 10px;
-  line-height: 14px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9px;
+  line-height: 13px;
   text-align: center;
 }
 .entry-btn .dot {
-  width: 5px;
-  height: 5px;
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--warning);
 }

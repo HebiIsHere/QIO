@@ -439,7 +439,11 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <ChatColumn class="center-pane" />
+      <ChatColumn class="center-pane">
+        <template #planet>
+          <PlanetDock anchored @open="openPlanet" />
+        </template>
+      </ChatColumn>
 
       <div
         v-if="shell.rightVisible && !shell.effectivePreviewFull"
@@ -530,7 +534,6 @@ onBeforeUnmount(() => {
     </div>
 
     <UnifiedApprovalLayer @open-memory="onOpenMemory" />
-    <PlanetDock @open="openPlanet" />
     <PlanetView
       v-if="planetMounted"
       :seq="planetSeq"

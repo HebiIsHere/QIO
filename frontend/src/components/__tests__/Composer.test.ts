@@ -204,7 +204,7 @@ describe("Composer 运行中仍可书写（任务02 §1/§3/§4/§11）", () => 
     await stop.trigger("click");
     await flushPromises();
     expect(mocks.cancelTurn).toHaveBeenCalledWith("turn_1");
-    expect(w.find(".stop-btn").text()).toContain("正在停止");
+    expect(w.find(".stop-btn").attributes("aria-label") ?? "").toContain("正在停止");
     // turn 结束后恢复
     session.turnEnded();
     await nextTick();
@@ -228,9 +228,12 @@ describe("话题位置与输入提示（v2：入口② + 输入区）", () => {
 
   it("输入区提示语是中文（不再显示 /tool /topic /memory 这类英文命令）", async () => {
     const w = mountDock();
+    // v3：快捷键提示从输入框占位语移到胶囊下方的说明行；占位语本身保持中文、无命令。
     const placeholder = w.find("textarea").attributes("placeholder") ?? "";
-    expect(placeholder).toContain("Enter 发送");
-    expect(placeholder).toContain("Shift+Enter 换行");
+    const caption = w.find(".composer-caption").text();
+    expect(caption).toContain("Enter 发送");
+    expect(caption).toContain("Shift + Enter 换行");
+    expect(placeholder).toContain("继续讨论");
     expect(placeholder).not.toContain("/tool");
     expect(placeholder).not.toContain("/topic");
     expect(placeholder).not.toContain("/memory");
@@ -333,14 +336,14 @@ describe("Composer 草稿连续性（P0：草稿不能因为切页或失败而�
     await nextTick();
     // 不再是一个灰着的死按钮：后端只会取消真正在跑的那一轮，
     // 所以没有 turn_id 也可以安全地停止。
-    expect(w.find(".stop-btn").text()).toContain("停止");
+    expect(w.find(".stop-btn").attributes("aria-label") ?? "").toContain("停止");
     expect(w.find(".stop-btn").attributes("disabled")).toBeUndefined();
     expect(w.find(".stop-btn").attributes("title")).toContain("取消后端");
 
     // 收到 TURN_START（有 turn_id）后才是真正可用的「停止」
     session.activeTurnId = "turn_1";
     await nextTick();
-    expect(w.find(".stop-btn").text()).toContain("停止");
+    expect(w.find(".stop-btn").attributes("aria-label") ?? "").toContain("停止");
     expect(w.find(".stop-btn").attributes("disabled")).toBeUndefined();
     w.unmount();
   });
