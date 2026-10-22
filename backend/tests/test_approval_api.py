@@ -81,7 +81,10 @@ def _register_executor(client, *, kind="test.op", counter=None):
         (counter if counter is not None else []).append(payload)
         return ExecResult(ok=True, summary="已执行", detail={"payload": payload})
 
-    client.app.state.ctx.operations.register(kind, handler)
+    # 应用构造时会把尚无独立执行器的 kind 显式注册为「不可用」（不允许批准后静默丢单）。
+    # 这里用 replace=True 覆盖成测试执行器：测试要验证的是「批准后真的执行」，
+    # 不是绕过应用的生产注册结果。
+    client.app.state.ctx.operations.register(kind, handler, replace=True)
 
 
 def test_pending_api_returns_operation_summary_and_state(client):

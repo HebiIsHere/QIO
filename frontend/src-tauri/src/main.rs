@@ -2097,6 +2097,8 @@ fn main() {
             qio_refresh_updater_proxy,
             // 附件：点击「附件」时的原生文件选择（Win32 对话框给真实路径；不新增 crate）
             attachment_picker::pick_attachment_file,
+            // R9：源文件引用入口——一次性返回真实路径与元信息（文件卡/附件来源登记用）。
+            attachment_picker::pick_attachment_source,
             attachment_picker::pick_attachment_file_available,
             // 附件：打开 / 在文件夹中显示（可执行 / 脚本类只给后者 —— 不自动执行）
             attachment_picker::open_attachment_path,
