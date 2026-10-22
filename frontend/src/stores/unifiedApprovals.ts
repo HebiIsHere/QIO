@@ -157,12 +157,15 @@ export interface KnowledgePendingDetail {
   updatedAt: string | null;
 }
 
+/** 知识候选详情（范围/依据/确定程度）的加载状态：事件先到、权威详情随后补齐。 */
+export type DetailStatus = "ready" | "loading" | "failed";
+
 export interface KnowledgeApprovalItem extends KnowledgePendingDetail {
   key: string;
   /** 候选被提出时的原因（事件里有就显示；没有就不显示）。 */
   reason: string;
   arrivedAt: number;
-  detailStatus: LoadStatus;
+  detailStatus: DetailStatus;
   detailError: string;
 }
 
@@ -312,6 +315,43 @@ export function knowledgeDetailFromView(view: PendingItemView): KnowledgePending
 /** 知识保存申请在队列里的排序：先到先处理。 */
 function nextKnowledgeArrival(): number {
   return Date.now();
+}
+
+export interface KnowledgeApprovalResponse {
+  ok: boolean;
+  decision: string;
+  already_handled?: boolean;
+  message?: string;
+  knowledge?: Record<string, unknown>;
+}
+
+/**
+ * 知识保存申请的真实提交入口（统一弹窗与星球「待确认」共用同一个实现）。
+ *
+ * 只发一个请求、只走知识原子接口；调用方负责把 expected_* 原样带上，服务端据此
+ * 拒绝「用户确认的不是当前这一版」。工具/权限审批**不能**调用本函数。
+ */
+export async function submitKnowledgeApprovalRequest(
+  knowledgeId: string,
+  decision: "approve" | "approve_modified" | "ignore" | "reject",
+  options: {
+    content?: string;
+    expectedVersion?: number | null;
+    expectedContent?: string | null;
+    expectedUpdatedAt?: string | null;
+  } = {},
+): Promise<KnowledgeApprovalResponse> {
+  const body: Record<string, unknown> = { decision };
+  if (decision === "approve_modified") body.content = String(options.content ?? "");
+  if (options.expectedVersion !== null && options.expectedVersion !== undefined) {
+    body.expected_version = options.expectedVersion;
+  }
+  if (options.expectedContent) body.expected_content = options.expectedContent;
+  if (options.expectedUpdatedAt) body.expected_updated_at = options.expectedUpdatedAt;
+  return request<KnowledgeApprovalResponse>(
+    `/api/knowledge/${encodeURIComponent(knowledgeId)}/approval`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
 }
 
 /** 统一队列的唯一拼装实现（getter 共用；顺序：工具队列 → 知识到达顺序）。 */
@@ -741,23 +781,15 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         this.submitErrorCode = "empty_content";
         return false;
       }
-      const body: Record<string, unknown> = { decision };
-      if (content !== undefined) body.content = content;
-      if (knowledge.version !== null) body.expected_version = knowledge.version;
-      if (knowledge.content) body.expected_content = knowledge.content;
-      if (knowledge.updatedAt) body.expected_updated_at = knowledge.updatedAt;
       this.submittingKey = active.key;
       this.submitError = "";
       this.submitErrorCode = "";
       try {
-        const result = await request<{
-          ok: boolean;
-          decision: string;
-          already_handled?: boolean;
-          message?: string;
-        }>(`/api/knowledge/${encodeURIComponent(knowledge.id)}/approval`, {
-          method: "POST",
-          body: JSON.stringify(body),
+        const result = await submitKnowledgeApprovalRequest(knowledge.id, decision, {
+          content,
+          expectedVersion: knowledge.version,
+          expectedContent: knowledge.content || null,
+          expectedUpdatedAt: knowledge.updatedAt,
         });
         const messages: Record<string, string> = {
           approve: "已保存你确认的这条知识。",

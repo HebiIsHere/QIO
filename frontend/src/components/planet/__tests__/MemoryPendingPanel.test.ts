@@ -5,6 +5,7 @@ import MemoryPendingPanel from "../MemoryPendingPanel.vue";
 import type { MaintenanceBatchDetail, MaintenanceBatchSummary, PendingItemView } from "../../../services/api";
 
 const mocks = vi.hoisted(() => ({
+  request: vi.fn(),
   apiMock: {
     listMemoryPending: vi.fn(),
     answerMemoryPending: vi.fn(),
@@ -19,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../../../services/api", () => ({ api: mocks.apiMock }));
+vi.mock("../../../services/api", () => ({ api: mocks.apiMock, request: mocks.request }));
 
 const proposal: PendingItemView = {
   id: "kp_1",
@@ -233,6 +234,12 @@ beforeEach(() => {
     knowledge: { id: "kp_1", state: "draft" },
   });
   mocks.apiMock.reviseKnowledge.mockResolvedValue({ ok: true, knowledge_id: "kp_new" });
+  mocks.request.mockResolvedValue({
+    ok: true,
+    decision: "approve_modified",
+    already_handled: false,
+    knowledge: { id: "kp_new", state: "active" },
+  });
   mocks.apiMock.listMaintenanceBatches.mockResolvedValue({
     batches: [batch],
     total: 1,
@@ -285,7 +292,7 @@ describe("MemoryPendingPanel 待确认列表", () => {
     w.unmount();
   });
 
-  it("修改后批准：先 verify 再按修改后的内容 revise（既有 API）", async () => {
+  it("修改后批准：走知识原子接口（一次请求，不先批准原文）", async () => {
     const w = mountPanel();
     await flushPromises();
     await w.find(".mp-modify-open").trigger("click");
@@ -294,26 +301,36 @@ describe("MemoryPendingPanel 待确认列表", () => {
     await edit.setValue("用户其实更爱另一家火锅");
     await w.find(".mp-save-modified").trigger("click");
     await flushPromises();
-    expect(mocks.apiMock.verifyKnowledge).toHaveBeenCalledWith("kp_1");
-    expect(mocks.apiMock.reviseKnowledge).toHaveBeenCalledWith(
-      "kp_1",
-      "用户其实更爱另一家火锅",
-    );
-    expect(
-      mocks.apiMock.verifyKnowledge.mock.invocationCallOrder[0],
-    ).toBeLessThan(mocks.apiMock.reviseKnowledge.mock.invocationCallOrder[0]);
+
+    // 只走一个原子请求：提交的是用户编辑后的内容，并带回用户看到的这一版（CAS）
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    const [path, init] = mocks.request.mock.calls[0];
+    expect(path).toBe("/api/knowledge/kp_1/approval");
+    const body = JSON.parse(String(init.body));
+    expect(body.decision).toBe("approve_modified");
+    expect(body.content).toBe("用户其实更爱另一家火锅");
+    expect(body.expected_version).toBe(1);
+    expect(body.expected_content).toBe("用户偏好五里关火锅");
+    // 绝不沿用「先 verify 批准原文，再 revise」的非原子流程
+    expect(mocks.apiMock.verifyKnowledge).not.toHaveBeenCalled();
+    expect(mocks.apiMock.reviseKnowledge).not.toHaveBeenCalled();
+    expect(mocks.apiMock.listMemoryPending).toHaveBeenCalledTimes(2);
     w.unmount();
   });
 
-  it("修改后批准的第二步行失败时如实说明（原内容已批准）", async () => {
-    mocks.apiMock.reviseKnowledge.mockRejectedValueOnce(new Error("409 版本冲突"));
+  it("修改后批准失败时如实说明，且没有先批准原文", async () => {
+    mocks.request.mockRejectedValueOnce(
+      Object.assign(new Error("409"), { body: { error: "内容在你确认前已经变化" } }),
+    );
     const w = mountPanel();
     await flushPromises();
     await w.find(".mp-modify-open").trigger("click");
     await w.find(".mp-edit").setValue("改过的内容");
     await w.find(".mp-save-modified").trigger("click");
     await flushPromises();
-    expect(w.text()).toContain("原内容已批准，但修正没有生效");
+    expect(w.text()).toContain("内容在你确认前已经变化");
+    expect(w.text()).not.toContain("原内容已批准");
+    expect(mocks.apiMock.verifyKnowledge).not.toHaveBeenCalled();
     w.unmount();
   });
 
