@@ -373,6 +373,29 @@ def create_app(
                 logging.getLogger(__name__).info("recovered %s stale derived tasks", recovered)
         except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
             logging.getLogger(__name__).warning("derived task recovery failed", exc_info=True)
+        # R9：审批 v2 重启恢复（契约 §5.1）—— waiting 恢复待审批、过期收口、
+        # executing -> interrupted_unverified（不自动重放）、approved 重核对后执行。
+        try:
+            approval_report = await ctx.approvals.recover()
+            changed = [
+                key
+                for key in ("waiting", "taken_over", "expired", "approved", "interrupted", "legacy_interrupted")
+                if approval_report.get(key)
+            ]
+            if changed:
+                logging.getLogger(__name__).info(
+                    "approvals recovered: %s",
+                    {key: len(approval_report.get(key) or []) for key in changed},
+                )
+        except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
+            logging.getLogger(__name__).warning("approval recovery failed", exc_info=True)
+        # R9：清理上次进程留下的解析临时文件（有生命周期，不是永久副本）。
+        try:
+            removed = ctx.tempfiles.sweep()
+            if removed:
+                logging.getLogger(__name__).info("removed %s stale temp files", removed)
+        except Exception:  # noqa: BLE001 - 清理失败不影响启动
+            logging.getLogger(__name__).warning("temp file sweep failed", exc_info=True)
         # 实例心跳（契约 C1）：别的实例靠「心跳新鲜」确认本实例还活着，
         # 所以它必须**持续**刷新，而不是只在启动时写一次。崩溃时它自然停止，
         # TTL 到期 + pid 不存在 → 下一个实例才会恢复本实例的记录。
@@ -1151,17 +1174,66 @@ def create_app(
         # 保存即生效由 SettingsService 在**提交成功之后**套用到运行中的 SearchService
         return _apply_settings_patch(ctx, "search", body)
 
-    # -- computer control settings -----------------------------------------
+    # -- 权限模式：唯一用户入口 + 旧设置接口兼容（契约 §1） ----------------
 
-    PERMISSION_MODES = ("default", "plan", "accept-edits", "bypass")
+    from agent.security.modes import (
+        DEFAULT_MODE as _DEFAULT_PERMISSION_MODE,
+        is_new_mode_value as _is_new_mode_value,
+        is_valid_mode_value as _is_valid_mode_value,
+        label_for as _mode_label,
+        legacy_value_for as _legacy_mode_value,
+        normalize_mode as _normalize_mode,
+    )
+
+    def _security_mode_payload() -> dict:
+        mode = ctx.authorization.mode()
+        return {
+            "mode": mode.value,
+            "label": _mode_label(mode),
+            "legacy_value": _legacy_mode_value(mode),
+        }
+
+    @app.get("/api/security/mode")
+    async def get_security_mode() -> dict:
+        """当前权限模式（顶部/输入区常驻显示用）。"""
+        return _security_mode_payload()
+
+    @app.put("/api/security/mode")
+    async def update_security_mode(body: dict) -> dict:
+        """**只有用户**能切换模式：必须 user_confirmed=true，且只接受新值。
+
+        模型 / 工具 / 子智能体没有任何到达这里的路径；旧值只做读入兼容。
+        """
+        if body.get("user_confirmed") is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="提高或切换权限模式必须由用户确认（user_confirmed=true）",
+            )
+        mode_value = str(body.get("mode") or "").strip()
+        if not _is_new_mode_value(mode_value):
+            raise HTTPException(
+                status_code=400,
+                detail="invalid mode（只接受 read_only / restricted / unrestricted）",
+            )
+        try:
+            ctx.authorization.set_mode(mode_value, user_initiated=True)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _security_mode_payload()
 
     @app.get("/api/settings/computer")
     async def get_computer_settings() -> dict:
+        """旧接口保留兼容：permission_mode 返回 **normalize 后的新值**（契约 §1）。"""
         store = ctx.settings_store
-        mode = store.get("computer.permission_mode", "default") or "default"
+        raw = store.get("computer.permission_mode", _DEFAULT_PERMISSION_MODE.value) or (
+            _DEFAULT_PERMISSION_MODE.value
+        )
         return {
             "root_dir": store.get("computer.root_dir", "") or "",
-            "permission_mode": mode if mode in PERMISSION_MODES else "default",
+            "permission_mode": _normalize_mode(raw).value,
+            "mode_label": _mode_label(raw),
         }
 
     @app.put("/api/settings/computer")
@@ -1176,9 +1248,10 @@ def create_app(
             writes.append(("computer.root_dir", str(body.get("root_dir") or "")))
         if "permission_mode" in body:
             mode = str(body["permission_mode"])
-            if mode not in PERMISSION_MODES:
+            # 旧客户端可能还在写旧值：接受，但**映射后落库**（新值）。
+            if not _is_valid_mode_value(mode):
                 raise HTTPException(status_code=400, detail="invalid permission_mode")
-            writes.append(("computer.permission_mode", mode))
+            writes.append(("computer.permission_mode", _normalize_mode(mode).value))
         if writes:
             try:
                 with transaction(ctx.conn):
@@ -3552,8 +3625,60 @@ def create_app(
 
     # -- approvals ---------------------------------------------------------
 
+    from agent.storage.approvals import ApprovalError as _ApprovalError
+
+    def _approval_http_error(exc: _ApprovalError) -> HTTPException:
+        return HTTPException(
+            status_code=getattr(exc, "status_code", 400),
+            detail={"code": getattr(exc, "code", "approval_error"), "message": str(exc)},
+        )
+
+    @app.get("/api/approvals/pending")
+    async def list_pending_approvals() -> dict:
+        """等待用户决定的审批（含操作摘要、过期时间、确认阶段、来源）。"""
+        return {"approvals": approvals.pending(), "instance_id": instance_id}
+
+    @app.get("/api/approvals/history")
+    async def list_approval_history(limit: int = 50) -> dict:
+        return {"history": approvals.history(limit=max(1, min(int(limit), 200)))}
+
+    @app.post("/api/approvals/{approval_id}/decide")
+    async def decide_approval(approval_id: str, body: dict) -> dict:
+        decision = str(body.get("decision") or "")
+        expected_revision = body.get("expected_revision")
+        scope = body.get("scope")
+        try:
+            row = await approvals.decide(
+                approval_id,
+                decision,
+                expected_revision=expected_revision,
+                scope=scope,
+            )
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"ok": True, "approval": row, "decision": decision}
+
+    @app.post("/api/approvals/{approval_id}/confirm")
+    async def confirm_approval(approval_id: str, body: dict) -> dict:
+        """内部运行数据连续三次确认（后端 CAS；前端只呈现）。"""
+        if "stage" not in body:
+            raise HTTPException(status_code=400, detail="缺少 stage（1/2/3）")
+        try:
+            stage = int(body.get("stage"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="stage 必须是 1/2/3") from exc
+        expected_revision = body.get("expected_revision")
+        try:
+            row = await approvals.confirm(
+                approval_id, stage, expected_revision=expected_revision
+            )
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"ok": True, "approval": row, "confirmed_stage": row.get("confirmed_stage")}
+
     @app.post("/api/approvals/{approval_id}/respond")
     async def respond_approval(approval_id: str, body: dict) -> dict:
+        """旧接口保留兼容：映射到 decide；新前端用 decide/confirm。"""
         decision = body.get("decision", "")
         scope = body.get("scope")
         overrides = body.get("overrides")
@@ -3572,6 +3697,8 @@ def create_app(
                 session_id=session_id,
                 digest=digest,
             )
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not handled:
@@ -3598,6 +3725,7 @@ def create_app(
     app.state.auth = auth
     app.state.instance_id = instance_id
     app.state.approvals = approvals
+    app.state.authorization = ctx.authorization
     app.state.ctx = ctx
     # A01/A03：可恢复记录收件箱（历史无归属消息 / 孤立重发 / 归属判不出来的记录）
     # 与它们的处理动作。路由工厂在本文件之外，避免把恢复规则塞进这个长文件。
