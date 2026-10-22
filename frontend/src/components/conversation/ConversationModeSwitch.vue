@@ -90,7 +90,11 @@ function ensureOutside() {
     >
       <span class="mode-dot" aria-hidden="true"></span>
       <span class="mode-text">{{ current === "interactive" ? "互动模式" : "对话模式" }}</span>
-      <span class="chev" :class="{ open }" aria-hidden="true">⌄</span>
+      <span class="chev" :class="{ open }" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </span>
     </button>
     <ul v-if="open" class="menu" role="menu" aria-label="页面模式">
       <li class="menu-item" role="menuitem" aria-current="true">
@@ -148,12 +152,33 @@ function ensureOutside() {
   white-space: nowrap;
 }
 .chev {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
-  font-size: 11px;
+  transition: color var(--dur-fast) var(--ease-1), background-color var(--dur-fast) var(--ease-1);
+}
+.chev svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transform-origin: 50% 50%;
   transition: transform var(--dur-fast) var(--ease-1);
 }
-.chev.open {
+.chev.open svg {
   transform: rotate(180deg);
+}
+.mode-btn:hover .chev {
+  color: var(--text-strong);
+  background: var(--layer-hover);
 }
 .menu {
   position: absolute;

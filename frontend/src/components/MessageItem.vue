@@ -771,9 +771,21 @@ function removeOne(id: string) {
             class="code-preview-btn"
             type="button"
             :aria-label="'在右侧查看这段' + (block.language || '') + '代码（只读）'"
+            :title="'在右侧只读预览这段' + (block.language || '') + '代码'"
             @click="previewCodeBlock(block)"
           >
-            在右侧查看{{ block.language ? " " + block.language : "" }}代码
+            <span class="code-preview-glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
+              </svg>
+            </span>
+            <span class="code-preview-lang mono">{{ block.language || "代码" }}</span>
+            <span class="code-preview-eye" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </span>
           </button>
         </div>
         <p v-if="replyCodeNotice" class="code-preview-notice" role="status" data-qio-fit>
@@ -1324,19 +1336,79 @@ function removeOne(id: string) {
   gap: 6px;
   margin-top: 8px;
 }
+/* 代码块预览：单胶囊 + 代码符号 + 语言 + 眼睛；不再用「在右侧查看…」文字药丸 */
 .code-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 3px 5px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
-  background: var(--bg-elevated);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
   color: var(--text-secondary);
   font-family: var(--sans);
   font-size: var(--fs-xs);
-  padding: 4px 10px;
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.code-preview-btn:hover { border-color: var(--accent); color: var(--text-strong); }
-.code-preview-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.code-preview-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+.code-preview-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.code-preview-glyph {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--link);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.code-preview-glyph svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.code-preview-lang {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.code-preview-eye {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex: none;
+  transition: color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+.code-preview-btn:hover .code-preview-eye {
+  color: var(--accent);
+  background: var(--layer-hover);
+}
+.code-preview-eye svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .code-preview-notice {
   margin: 4px 0 0;
   color: var(--text-muted);

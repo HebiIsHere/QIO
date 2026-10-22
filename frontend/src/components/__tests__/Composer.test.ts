@@ -228,11 +228,12 @@ describe("话题位置与输入提示（v2：入口② + 输入区）", () => {
 
   it("输入区提示语是中文（不再显示 /tool /topic /memory 这类英文命令）", async () => {
     const w = mountDock();
-    // v3：快捷键提示从输入框占位语移到胶囊下方的说明行；占位语本身保持中文、无命令。
-    const placeholder = w.find("textarea").attributes("placeholder") ?? "";
-    const caption = w.find(".composer-caption").text();
-    expect(caption).toContain("Enter 发送");
-    expect(caption).toContain("Shift + Enter 换行");
+    // v5：可见的快捷键说明行已删除；快捷键只留在 textarea 的 aria-label / title，不占布局。
+    const textarea = w.find("textarea");
+    const placeholder = textarea.attributes("placeholder") ?? "";
+    expect(w.find(".composer-caption").exists()).toBe(false);
+    expect(textarea.attributes("aria-label")).toContain("Enter 发送");
+    expect(textarea.attributes("title")).toContain("Shift+Enter 换行");
     expect(placeholder).toContain("继续讨论");
     expect(placeholder).not.toContain("/tool");
     expect(placeholder).not.toContain("/topic");

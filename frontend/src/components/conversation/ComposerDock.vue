@@ -41,14 +41,15 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   min-width: 0;
   position: relative;
   z-index: 2;
-  padding: 4px 12px 10px;
+  /* 说明行已删：只留底部的 8px 外沿；高度由输入行/星球槽共同决定 */
+  padding: 0 12px 8px;
 }
 .composer-line {
   display: grid;
   /* 三列硬约束：模式 | 对话栈 | 星球槽；列间距就是星球与胶囊的保底安全距。 */
   grid-template-columns: auto minmax(0, 860px) var(--planet-size, 96px);
   column-gap: 12px;
-  align-items: end;
+  align-items: center;
   justify-content: center;
   width: 100%;
   /* 模式 90 + 间隙 12 + 胶囊 860 + 间隙 12 + 星球 96 = 1070 */
@@ -75,10 +76,10 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
 }
 .composer-mode-cell {
   grid-column: 1;
-  align-self: end;
+  align-self: center;
   min-width: 0;
-  /* 与胶囊垂直居中（下面还有 Enter 提示的高度） */
-  padding-bottom: 36px;
+  /* 说明行已删：模式与胶囊直接共用同一条中心线 */
+  padding-bottom: 0;
 }
 .composer-planet-cell {
   grid-column: 3;
@@ -87,7 +88,7 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   align-items: flex-end;
   justify-content: center;
   /* 球心与胶囊中心对齐；不再用 transform 缩放布局盒，避免热区/视觉尺寸错位 */
-  padding-bottom: 8px;
+  padding-bottom: 0;
 }
 .composer-planet-cell :deep(.dock.anchored) {
   width: var(--planet-size, 96px);
@@ -99,29 +100,20 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
 }
 @media (max-width: 1100px) {
   .composer-dock {
-    padding: 2px 8px 8px;
+    padding: 0 8px 8px;
   }
   .composer-line {
     --planet-size: 80px;
     column-gap: 12px;
-  }
-  .composer-planet-cell {
-    padding-bottom: 16px;
   }
 }
 @media (max-width: 700px) {
   .composer-mode-cell :deep(.mode-text) {
     display: none;
   }
-  .composer-mode-cell {
-    padding-bottom: 32px;
-  }
   .composer-line {
     --planet-size: 56px;
     column-gap: 12px;
-  }
-  .composer-planet-cell {
-    padding-bottom: 28px;
   }
 }
 </style>

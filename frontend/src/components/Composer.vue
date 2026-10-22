@@ -1563,7 +1563,6 @@ async function stopTurn() {
         </svg>
       </button>
     </div>
-    <p class="composer-caption" data-qio-fit>Enter 发送 · Shift + Enter 换行</p>
     <p v-if="cancelError" class="cancel-error" role="alert" data-qio-fit>{{ cancelError }}</p>
     <!-- 浏览器回退：只拿字节上传；fakepath 绝不当路径 -->
     <input
@@ -1655,14 +1654,6 @@ async function stopTurn() {
   box-shadow: none;
   background: transparent;
   outline: none;
-}
-.composer-caption {
-  margin: 6px 0 8px;
-  text-align: center;
-  color: var(--text-faint);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
 }
 /* 窄窗口：整宽贴底，不缩成小气泡、不遮挡文字 */
 @media (max-width: 899px) {
