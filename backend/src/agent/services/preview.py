@@ -1232,6 +1232,20 @@ def _status_for(data: dict) -> str:
     return "ready"
 
 
+def _resolved_source_path(store, attachment_id: str):
+    """预览读取的唯一取路径入口：优先 resolve_source（源文件引用），历史记录回退旧口径。"""
+    resolver = getattr(store, "resolve_source", None)
+    if callable(resolver):
+        resolved = resolver(attachment_id)
+        if resolved.path is None:
+            raise AttachmentContentError(
+                resolved.reason or "源文件当前不可用（可能被移动或删除）", 409
+            )
+        return resolved.path
+    path, _name = store.content_target(attachment_id)
+    return path
+
+
 def render_for(
     store,
     attachment_id: str,
@@ -1241,7 +1255,7 @@ def render_for(
 ) -> dict:
     """带缓存与版本校验的预览入口（契约 3.2 冻结签名 + 两个可选关键字参数）。
 
-    * store：AttachmentService（要有 get / conn / content_target），缓存读写落在**调用线程**；
+    * store：AttachmentService（要有 get / conn / resolve_source），缓存读写落在**调用线程**；
     * refresh=True：绕过缓存重算（HTTP 的 ?refresh=1）；
     * cancel：协作取消标志（工作线程在单元边界检查）。
 
@@ -1279,7 +1293,7 @@ def render_for(
                 else _unsupported_reason(att.original_name)
             )
         else:
-            path, _name = store.content_target(attachment_id)
+            path = _resolved_source_path(store, attachment_id)
             data = convert(att, path, cancel=cancel)
             status = _status_for(data)
             reason = str(data.get("reason") or "")

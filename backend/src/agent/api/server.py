@@ -58,9 +58,13 @@ from agent.memory.fragment import (
 from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
 # 附件路由的错误类型与可绑状态：模块级导入（无循环依赖）
 from agent.services.attachments import (
+    MATERIAL_SOURCE_KINDS,
+    REFERENCE_AMBIGUOUS,
+    REFERENCE_MISSING,
     TEMP_SUFFIX,
     STATE_CANCELLED as DISK_CANCELLED,
     STATE_FAILED as DISK_FAILED,
+    AttachmentConfirmationRequired,
     AttachmentContentError,
     AttachmentError,
     DiskOutcome,
@@ -1272,16 +1276,31 @@ def create_app(
 
     @app.post("/api/attachments")
     async def create_attachment(body: dict) -> dict:
-        """登记一个本地文件：**按服务端 stat 出来的真实大小**决定存副本还是记引用。
+        """登记一个附件（R9 契约 §6.3）。
 
-        ≤ 100_000_000 字节 → 存独立副本（后台复制，先写 .part 再改名提交）；
-        >  100_000_000 字节 → 只记路径 + 元数据（历史保留的是位置，不保证内容仍在）。
-        复制在后台线程里做，这里立刻返回登记事实（state=prepared），
-        前端按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        新语义（请求带 source_kind=desktop_path / dropped_path）：桌面端给出**真实路径**，
+        这里只登记**源文件引用** —— 不复制、不移动、不改名，stored_path 恒为 NULL；
+        读取/预览/获准写回都作用于这个源文件。
+        不带 source_kind 的分支只保留给历史数据回放与迁移测试（新入口不再产生副本）。
         """
         source_path = str(body.get("source_path") or "")
         raw_name = body.get("name")
         topic_id = body.get("topic_id")
+        source_kind = str(body.get("source_kind") or "").strip()
+        if source_kind:
+            try:
+                att = attachments.register_source(
+                    path=source_path,
+                    source_kind=source_kind,
+                    origin=str(body.get("origin") or "user_original"),
+                    topic_id=str(topic_id) if topic_id else None,
+                    name=str(raw_name) if raw_name else None,
+                    user_note=str(body.get("user_note") or ""),
+                )
+            except AttachmentError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"ok": True, "attachment": attachments.payload(att, check=False)}
+        # 历史兼容分支：只服务旧数据回放/迁移测试，不接新入口
         try:
             att = attachments.prepare(
                 source_path,
@@ -1292,6 +1311,54 @@ def create_app(
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         _schedule_prepare(att.id)
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    async def _receive_material_upload(request: Request, source_kind: str) -> dict:
+        """只有字节、没有原位置的入口：首次落盘到 workspace/materials/（契约 §6.3）。
+
+        没有真实路径可登记：上传内容只是本机新落盘的用户材料，不伪造路径，
+        也不声称能修改上传设备上的原文件。max_upload_bytes 是传输资源限制，
+        与旧的"≤100MB 才复制"副本策略无关（任意大小的桌面路径都不复制）。
+        """
+        limit = attachments.max_upload_bytes
+        declared = request.headers.get("content-length")
+        if declared and declared.isdigit() and int(declared) > limit:
+            raise HTTPException(status_code=413, detail=_upload_limit_detail())
+        from urllib.parse import unquote
+
+        raw_name = request.headers.get("x-qio-name") or "attachment"
+        try:
+            name = unquote(raw_name)
+        except Exception:  # noqa: BLE001 - 解不出来就退回原名
+            name = raw_name
+        raw_note = request.headers.get("x-qio-user-note") or ""
+        try:
+            user_note = unquote(raw_note)
+        except Exception:  # noqa: BLE001
+            user_note = raw_note
+        topic_id = request.headers.get("x-qio-topic-id") or None
+        pieces: list[bytes] = []
+        received = 0
+        async for chunk in request.stream():
+            if not chunk:
+                continue
+            received += len(chunk)
+            if received > limit:
+                raise HTTPException(status_code=413, detail=_upload_limit_detail())
+            pieces.append(bytes(chunk))
+        try:
+            att = attachments.write_material(
+                stream=pieces,
+                name=name,
+                source_kind=source_kind,
+                topic_id=str(topic_id) if topic_id else None,
+                user_note=user_note,
+                max_bytes=limit,
+            )
+        except UploadTooLarge as exc:
+            raise HTTPException(status_code=413, detail=_upload_limit_detail()) from exc
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "attachment": attachments.payload(att, check=False)}
 
     def _upload_limit_detail() -> str:
@@ -1407,6 +1474,14 @@ def create_app(
         （纯文件 I/O），登记与落状态在事件循环线程 —— 同一个 sqlite 连接永不被两个线程碰，
         见 services/attachments.py 顶部的线程纪律。
         """
+        source_kind = (request.headers.get("x-qio-source-kind") or "").strip()
+        if source_kind:
+            if source_kind not in MATERIAL_SOURCE_KINDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail="X-QIO-Source-Kind 只接受 browser_upload / clipboard_image",
+                )
+            return await _receive_material_upload(request, source_kind)
         limit = attachments.max_upload_bytes
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > limit:
@@ -1613,43 +1688,88 @@ def create_app(
 
     @app.get("/api/attachments/{attachment_id}")
     async def get_attachment(attachment_id: str) -> dict:
-        """元数据 + 可用性/变化检查：missing（不在原位）/ changed（内容与登记时不同）。"""
-        att = attachments.get(attachment_id)
+        """元数据 + 可用性/变化检查：missing（不在原位）/ changed（内容与登记时不同）。
+
+        新记录在这里触发一次**使用时的有限范围解析**（契约 §7）：源文件被同卷移动/改名时
+        按 volume+file_id 自动修复位置并把事实写回；找不到就如实报 missing，不伪造恢复。
+        """
+        att = attachments.get(attachment_id, check=False)
         if att is None:
             raise HTTPException(status_code=404, detail="没有这个附件")
+        if attachments.is_source_ref(att):
+            attachments.resolve_source(attachment_id)
+            att = attachments.get(attachment_id, check=False) or att
         return {"ok": True, "attachment": attachments.payload(att)}
 
     @app.get("/api/attachments/{attachment_id}/content")
     async def attachment_content(attachment_id: str) -> FileResponse:
-        """打开/下载一个附件：**只读 QIO 自己管理的副本**。
+        """打开/下载一个附件：读取入口统一走 resolve_source（契约 §6.2）。
 
-        * 只认 kind=copy 且 state=ready 的副本，路径由 id 从数据库取，
-          **绝不接受调用方给的任意路径** —— 这是「打开历史附件」与「任意文件读取」的分界线；
-        * 沿用 /api/* 的会话令牌认证（session_guard 中间件），没有裸链接；
-        * 文件名只用 QIO 清洗过的 original_name（safe_name 落盘名，不含路径），
+        * 新记录（source_kind 非 NULL）：读**登记的源文件**，不读任何副本；
+          源文件缺失/待确认时如实 409，并给出可重新定位的原因；
+        * 历史记录：沿用只读回放口径（旧副本优先，其次原文件），只服务历史数据；
+        * 路径永远由 attachment id 从数据库/解析器取，**绝不接受调用方给的任意路径**；
+        * 沿用 /api/* 的会话令牌认证，没有裸链接；文件名只用清洗过的 original_name，
           并带 X-Content-Type-Options: nosniff；HTML/SVG 这类会执行脚本的类型不内联。
         """
-        try:
-            path, name = attachments.content_target(attachment_id)
-        except AttachmentContentError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        att = attachments.get(attachment_id, check=False)
+        if att is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
+        if attachments.is_source_ref(att):
+            resolved = attachments.resolve_source(attachment_id)
+            if resolved.path is None or resolved.state == REFERENCE_MISSING:
+                raise HTTPException(
+                    status_code=409,
+                    detail=resolved.reason or "源文件当前不可用；可以重新指定位置",
+                )
+            path, name = resolved.path, att.original_name
+            headers["X-QIO-Reference-State"] = str(resolved.state or "")
+            if resolved.state == REFERENCE_AMBIGUOUS:
+                headers["X-QIO-Identity-Warning"] = "1"
+        else:
+            try:
+                path, name = attachments.content_target(attachment_id)
+            except AttachmentContentError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
         media_type = INLINE_SAFE_SUFFIXES.get(Path(name).suffix.lower(), "application/octet-stream")
         return FileResponse(
             path,
             media_type=media_type,
             filename=name,
-            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+            headers=headers,
         )
 
     @app.post("/api/attachments/{attachment_id}/relocate")
     async def relocate_attachment(attachment_id: str, body: dict) -> dict:
-        """文件被移动/改名之后重新指定位置；副本按新来源重做。
+        """文件被移动/改名之后重新指定源文件位置（契约 §6.2 / §7）。
 
-        重新校验（真实大小 → copy / reference、状态、位置）后把准备交给后台：
-        工作线程只做文件 I/O，状态回事件循环线程落库（审计问题 6）。
-        响应是**受理事实**（prepared / missing / failed）：不要当成功，
-        按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        新记录：只有 volume+file_id 相同才自动修复；身份不同必须
+        confirmed_identity=true（用户确认「这是同一文件吗」），否则 409 + 候选事实。
+        历史记录：保留旧的重定位/重建副本路径，只服务历史数据。
         """
+        current = attachments.get(attachment_id, check=False)
+        if current is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        if attachments.is_source_ref(current):
+            try:
+                att = attachments.relocate_reference(
+                    attachment_id,
+                    str(body.get("source_path") or ""),
+                    confirmed_identity=bool(body.get("confirmed_identity")),
+                )
+            except AttachmentConfirmationRequired as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "identity_confirmation_required",
+                        "message": str(exc),
+                        "candidates": exc.candidates,
+                    },
+                ) from exc
+            except AttachmentError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"ok": True, "attachment": attachments.payload(att, check=False)}
         try:
             att = attachments.plan_relocate(attachment_id, str(body.get("source_path") or ""))
         except AttachmentError as exc:
@@ -1672,20 +1792,52 @@ def create_app(
 
     @app.delete("/api/attachments/{attachment_id}")
     async def delete_attachment(attachment_id: str) -> dict:
-        """移除附件：**只删 QIO 自己管理的副本，绝不动用户原文件**。
+        """删除引用：**只删卡片/引用行，绝不删除源文件**（契约 §6.2 / §8）。
 
-        正在复制时调用它 = 取消：复制线程在分块之间看到标志就停下并清掉临时文件。
+        新记录：删引用行；源文件、用户材料文件都保留（将来的清理走回收站审批清单）。
+        历史记录：保留旧行为（清理 QIO 自己管理目录下的旧副本，用户原文件仍不动）。
         """
         # 先中止正在进行的上传作业：删除附件 = 取消这次上传。
-        # 不能只靠服务侧的取消事件 —— services/attachments.py 的 delete() 置位后会把事件从
-        # _cancel 里清掉，事后轮询的取块循环就看不到取消了（CI py3.12 的取消用例红在这里）。
         abort_jobs_for(
-            attachment_id, "附件已被移除，上传取消；没有保存任何副本"
+            attachment_id, "附件已被移除，上传取消；没有保存任何数据"
         )
-        result = attachments.delete(attachment_id)
+        current = attachments.get(attachment_id, check=False)
+        if current is not None and not attachments.is_source_ref(current):
+            # 历史记录：旧行为（只清理 QIO 管理目录下的旧副本，用户原文件不动）
+            legacy = attachments.delete(attachment_id)
+            if not legacy["removed"]:
+                raise HTTPException(status_code=404, detail="没有这个附件")
+            return {"ok": True, **legacy}
+        result = attachments.remove_reference(attachment_id)
         if not result["removed"]:
             raise HTTPException(status_code=404, detail="没有这个附件")
-        return {"ok": True, **result}
+        body = {"ok": True, **result}
+        # 兼容字段：新语义永远不删文件，deleted_copy 恒为 None
+        body.setdefault("deleted_copy", result.get("deleted_legacy_copy"))
+        return body
+
+    @app.patch("/api/attachments/{attachment_id}/material")
+    async def set_attachment_material(attachment_id: str, body: dict) -> dict:
+        """「作为互动材料」开关（契约 §8）：只控制是否主动纳入互动上下文。
+
+        这不是操作系统文件访问权限；关掉不等于 QIO 不能读（用户明确要求读取时仍走
+        resolve_source 与统一授权）。
+        """
+        current = attachments.get(attachment_id, check=False)
+        if current is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        try:
+            att = attachments.set_material_enabled(
+                attachment_id, bool(body.get("enabled"))
+            )
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    @app.post("/api/attachments/{attachment_id}/material-enabled")
+    async def set_attachment_material_enabled(attachment_id: str, body: dict) -> dict:
+        """兼容入口：与 PATCH /material 等价（前端可任选其一）。"""
+        return await set_attachment_material(attachment_id, body)
 
     # -- 轮次绑定：B 的冻结回执 + 受理前预检（round4 §1.2） -------------------
 

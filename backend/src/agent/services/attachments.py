@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import hashlib
+import json
 import logging
 import os
 import re
@@ -58,6 +59,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+from agent.services.file_identity import (
+    FileIdentity,
+    content_sha256,
+    find_by_identity,
+    identity_of,
+    iter_files_limited,
+    same_file,
+)
 from agent.storage.db import transaction
 from agent.trace.redact import redact_text
 
@@ -74,6 +83,62 @@ REFERENCE_CAVEAT = "历史保留的是位置，不保证内容仍然存在"
 CHUNK_BYTES = 1024 * 1024
 #: 临时文件后缀：重启清理只认自己写的这个后缀
 TEMP_SUFFIX = ".part"
+
+# ── R9 源文件引用（契约 §6/§7/§9）──────────────────────────────────────────
+#: 来源入口：只有前四种是用户真实提供位置/字节；legacy_copy 是历史迁移标记，
+#: missing 表示历史记录已经没有可用位置（迁移后仍保留行与引用关系）。
+SOURCE_KINDS = (
+    "desktop_path",
+    "dropped_path",
+    "browser_upload",
+    "clipboard_image",
+    "legacy_copy",
+    "missing",
+)
+#: 桌面端必须拿真实路径的入口（不复制、不移动、不改名）
+USER_PATH_SOURCE_KINDS = ("desktop_path", "dropped_path")
+#: 只有字节没有原位置的入口（QIO 首次落盘为用户材料）
+MATERIAL_SOURCE_KINDS = ("browser_upload", "clipboard_image")
+
+#: 归属：用户原文件 / 用户提供、QIO 首次落盘的材料 / QIO 自主生成的工作文件
+ORIGINS = ("user_original", "user_saved_material", "qio_generated")
+
+#: reference_state 取值（契约 §6.1）：可用 / 缺失 / 待用户确认 / 已修复位置
+REFERENCE_AVAILABLE = "available"
+REFERENCE_MISSING = "missing"
+REFERENCE_AMBIGUOUS = "ambiguous"
+REFERENCE_RELOCATED = "relocated"
+REFERENCE_STATES = (
+    REFERENCE_AVAILABLE,
+    REFERENCE_MISSING,
+    REFERENCE_AMBIGUOUS,
+    REFERENCE_RELOCATED,
+)
+
+#: 新语义的展示文案（旧的「已保存副本 / 引用本地文件」只用于历史记录回放）
+SOURCE_LABEL = "源文件引用"
+MATERIAL_LABEL = "用户材料"
+
+#: 登记时计算内容哈希的上限：登记发生在事件循环线程上，必须快；
+#: 更大的文件只在写回前核对时计算（不把「没登记哈希」伪装成内容没变）。
+REGISTER_HASH_MAX_BYTES = 8 * 1024 * 1024
+
+#: 移动失效时的有限范围查找（契约 §7：不持续全盘监听）
+RELOCATE_SCAN_MAX_FILES = 5000
+RELOCATE_SCAN_MAX_DEPTH = 3
+
+#: attachments 表上由迁移 52 追加的列（老库/最小测试库可能没有，读写都按存在性判断）
+_SOURCE_COLUMN_NAMES = (
+    "source_kind",
+    "origin",
+    "file_id",
+    "content_sha256",
+    "reference_state",
+    "material_enabled",
+    "user_note",
+    "last_verified_at",
+    "legacy_paths",
+)
 
 
 def temp_path_for(target: Path) -> Path:
@@ -205,6 +270,22 @@ class UploadAborted(AttachmentError):
     """上传被主动中止（客户端断开 / 接收端已判定超限）：不提交任何副本。"""
 
 
+class AttachmentConfirmationRequired(AttachmentError):
+    """重定位/写回前需要用户确认「这是同一份文件吗」（契约 §7）。
+
+    只有 volume+file_id 相同才能自动修复；仅同名/同大小/同 mtime/同哈希都不够，
+    必须让用户选择。candidates 是给界面展示的候选事实（不是授权）。
+    """
+
+    def __init__(self, message: str, candidates: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.candidates = list(candidates or [])
+
+
+class AttachmentSourceUnavailable(AttachmentContentError):
+    """源文件当前读不到（缺失 / 待确认）：读取方必须如实报告，不得读旧副本冒充。"""
+
+
 @dataclass
 class Attachment:
     id: str
@@ -224,6 +305,53 @@ class Attachment:
     updated_at: str
     #: 重试复用：这一行是从哪一条附件克隆来的（原行归属与历史都不变，见 bind_for_turn）
     source_attachment_id: str | None = None
+    # -- R9 源文件引用（迁移 52；历史行这些列可能为 NULL）--------------------------
+    #: 来源入口：desktop_path / dropped_path / browser_upload / clipboard_image /
+    #: legacy_copy / missing。**非 NULL = 新语义记录**（历史行由迁移写入或保持 NULL）。
+    source_kind: str | None = None
+    #: 归属：user_original / user_saved_material / qio_generated
+    origin: str | None = None
+    #: 文件身份键（volume:file_id，见 services/file_identity.py）
+    file_id: str | None = None
+    #: 内容摘要（与 file_id 并列：内容变了 ≠ 文件身份变了）
+    content_sha256: str | None = None
+    #: available / missing / ambiguous / relocated
+    reference_state: str | None = None
+    #: 「作为互动材料」开关：只控制是否主动纳入互动上下文，不是 OS 文件访问权限
+    material_enabled: int = 1
+    #: 用户对这份材料的说明
+    user_note: str = ""
+    #: 最近一次核实可用性的时间
+    last_verified_at: str | None = None
+    #: JSON 数组：历史位置 / 与源文件的差异事实（迁移与修复都保留，不静默替换）
+    legacy_paths: str = "[]"
+
+
+@dataclass
+class ResolvedSource:
+    """一次源文件解析的**当下事实**（契约 §6.2 冻结形状）。
+
+    resolve_source 是读取/预览/获准写回/媒体解析/历史附件读取的唯一解析入口；
+    state 只有 available / missing / ambiguous 三种（relocated 是记录列的值，
+    解析时自动修复成功就是 available，事实写进该行的 legacy_paths / reference_state）。
+    """
+
+    attachment_id: str
+    path: Path | None
+    identity: FileIdentity | None
+    state: str
+    reason: str
+    candidates: list[dict] = field(default_factory=list)
+    #: 历史行（迁移前记录）：只用于回放，不用于新写回
+    legacy: bool = False
+    source_kind: str | None = None
+    origin: str | None = None
+    #: 本次解析实际算出的内容哈希（只有 for_write=True 或无身份可依时才计算）
+    current_sha256: str | None = None
+    #: 登记时记录的内容哈希（未登记则为 None，不得当成"内容未变"的证据）
+    recorded_sha256: str | None = None
+    size: int = 0
+    mtime_ns: int = 0
 
 
 @dataclass
@@ -570,10 +698,25 @@ class BindOutcome(list):
 class AttachmentService:
     """附件的登记、准备（复制/引用）、检查、重定位、删除。"""
 
-    def __init__(self, conn, data_dir: Path, *, clock: Callable[[], str] = _now) -> None:
+    def __init__(
+        self,
+        conn,
+        data_dir: Path,
+        *,
+        clock: Callable[[], str] = _now,
+        workspace_dir: Path | None = None,
+    ) -> None:
         self.conn = conn
         self.data_dir = Path(data_dir)
         self._clock = clock
+        #: 无路径材料首次落盘的根（契约 §6.3：workspace/materials/）。
+        #: 默认取 <data_dir>/workspace，与 Settings.workspace_dir 一致。
+        self.workspace_dir = (
+            Path(workspace_dir) if workspace_dir is not None else self.data_dir / "workspace"
+        )
+        #: R9 新列是否已由迁移 52 建好（老库/最小测试库可能没有；没有就退回旧行为，
+        #: 绝不因为缺列让既有功能崩掉）。
+        self._source_columns = self._detect_source_columns()
         # 浏览器回退的上限：接口层读它（不各自硬编码 100_000_000），测试也能收紧成小值
         self.max_upload_bytes = COPY_MAX_BYTES
         # 取消标志：DELETE（或显式 cancel）置位，复制线程在每个分块之间检查
@@ -626,6 +769,32 @@ class AttachmentService:
         year, month = _local_month()
         return self.root / year / month / f"{att.id}__{safe_name(att.original_name)}"
 
+    @property
+    def materials_root(self) -> Path:
+        """无路径材料（浏览器上传 / 剪贴板）的首次落盘根目录：<workspace>/materials/。"""
+        return self.workspace_dir / "materials"
+
+    def is_source_ref(self, att: Attachment) -> bool:
+        """这条记录是不是 R9 新语义的**源文件引用**（source_kind 非 NULL）。
+
+        历史行（迁移前产生）source_kind 为 NULL：只用于回放/迁移，不接新入口。
+        """
+        return bool(getattr(att, "source_kind", None))
+
+    def _detect_source_columns(self) -> frozenset[str]:
+        """迁移 52 追加列的当前存在情况（按 PRAGMA 读取，不猜）。"""
+        try:
+            rows = self.conn.execute("PRAGMA table_info(attachments)").fetchall()
+        except Exception:  # noqa: BLE001 - 表还没建：按没有新列处理
+            return frozenset()
+        names = set()
+        for row in rows:
+            try:
+                names.add(str(row["name"]))
+            except (KeyError, IndexError):
+                names.add(str(row[1]))
+        return frozenset(name for name in _SOURCE_COLUMN_NAMES if name in names)
+
     def is_managed_path(self, path: str | Path) -> bool:
         """这个路径是不是 QIO 自己写的副本（在 attachments 根目录之下）。"""
         try:
@@ -639,10 +808,12 @@ class AttachmentService:
 
     @staticmethod
     def _row_to_attachment(row) -> Attachment:
-        try:
-            source_attachment_id = row["source_attachment_id"]
-        except (IndexError, KeyError):  # 迁移尚未跑到的库：按「不是克隆」处理
-            source_attachment_id = None
+        def opt(name: str, default=None):
+            try:
+                return row[name]
+            except (IndexError, KeyError):  # 迁移尚未跑到的库：列不存在
+                return default
+
         return Attachment(
             id=row["id"],
             message_id=row["message_id"],
@@ -659,7 +830,16 @@ class AttachmentService:
             error=row["error"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
-            source_attachment_id=source_attachment_id,
+            source_attachment_id=opt("source_attachment_id"),
+            source_kind=opt("source_kind"),
+            origin=opt("origin"),
+            file_id=opt("file_id"),
+            content_sha256=opt("content_sha256"),
+            reference_state=opt("reference_state"),
+            material_enabled=int(opt("material_enabled", 1) or 0),
+            user_note=str(opt("user_note", "") or ""),
+            last_verified_at=opt("last_verified_at"),
+            legacy_paths=str(opt("legacy_paths", "[]") or "[]"),
         )
 
     def _note_db_thread(self) -> None:
@@ -728,18 +908,26 @@ class AttachmentService:
 
     def _insert(self, att: Attachment) -> Attachment:
         self._note_db_thread()
+        columns = [
+            "id", "message_id", "turn_id", "topic_id", "kind", "original_name",
+            "stored_path", "source_path", "size_bytes", "mtime", "sha256",
+            "state", "error", "created_at", "updated_at", "source_attachment_id",
+        ]
+        values: list[object] = [
+            att.id, att.message_id, att.turn_id, att.topic_id, att.kind,
+            att.original_name, att.stored_path, att.source_path, att.size_bytes,
+            att.mtime, att.sha256, att.state, att.error, att.created_at,
+            att.updated_at, att.source_attachment_id,
+        ]
+        for name in _SOURCE_COLUMN_NAMES:
+            if name in self._source_columns:
+                columns.append(name)
+                values.append(getattr(att, name))
+        placeholders = ",".join("?" for _ in columns)
         with self._db_lock, transaction(self.conn):
             self.conn.execute(
-                "INSERT INTO attachments (id, message_id, turn_id, topic_id, kind,"
-                " original_name, stored_path, source_path, size_bytes, mtime, sha256,"
-                " state, error, created_at, updated_at, source_attachment_id)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    att.id, att.message_id, att.turn_id, att.topic_id, att.kind,
-                    att.original_name, att.stored_path, att.source_path, att.size_bytes,
-                    att.mtime, att.sha256, att.state, att.error, att.created_at,
-                    att.updated_at, att.source_attachment_id,
-                ),
+                f"INSERT INTO attachments ({', '.join(columns)}) VALUES ({placeholders})",
+                tuple(values),
             )
         return att
 
@@ -752,6 +940,876 @@ class AttachmentService:
         values = list(fields.values()) + [str(attachment_id)]
         with self._db_lock, transaction(self.conn):
             self.conn.execute(f"UPDATE attachments SET {columns} WHERE id = ?", tuple(values))
+
+    # -- 源文件引用：登记 / 首次落盘（R9 契约 §6.2 / §6.3）-------------------
+
+    @staticmethod
+    def _identity_from_record(att: Attachment) -> FileIdentity | None:
+        """把落库的 file_id（volume:file_id）还原成 FileIdentity；无法解析返回 None。"""
+        raw = str(getattr(att, "file_id", "") or "")
+        if ":" not in raw:
+            return None
+        volume, file_id = raw.split(":", 1)
+        if not volume or not file_id:
+            return None
+        return FileIdentity(
+            volume=volume,
+            file_id=file_id,
+            path=str(att.source_path or ""),
+            size=int(att.size_bytes or 0),
+            mtime_ns=0,
+        )
+
+    def _legacy_facts(self, att: Attachment, *, event: str, **extra) -> str:
+        """把一条历史/修复事实追加进 legacy_paths（JSON 数组），保留差异不静默替换。"""
+        try:
+            items = json.loads(att.legacy_paths or "[]")
+        except (TypeError, ValueError):
+            items = []
+        if not isinstance(items, list):
+            items = []
+        item: dict = {"event": str(event), "at": self._clock()}
+        item.update(extra)
+        items.append(item)
+        return json.dumps(items, ensure_ascii=False, separators=(",", ":"))
+
+    def _set_source_fields(self, attachment_id: str, **fields) -> None:
+        """只写迁移 52 已存在的列（缺列的老库不崩），并如实刷新 updated_at。"""
+        allowed = {
+            name: value
+            for name, value in fields.items()
+            if name in _SOURCE_COLUMN_NAMES and name in self._source_columns
+        }
+        self._update(attachment_id, **allowed)
+
+    def register_source(
+        self,
+        *,
+        path: str,
+        source_kind: str,
+        origin: str = "user_original",
+        topic_id: str | None = None,
+        name: str | None = None,
+        user_note: str = "",
+        message_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> Attachment:
+        """登记用户已有的源文件：**不复制、不移动、不改名**（契约 §6.3）。
+
+        只有桌面原生选择/拖放能拿到真实路径；路径必须真实存在且当前可读 ——
+        不接受浏览器 fakepath，也不接受"大概就是这个文件"。新记录的 stored_path
+        为 NULL：QIO 没有副本，读取/预览/获准写回都作用于这个源文件。
+        """
+        raw = str(path or "").strip().strip('"')
+        if not raw:
+            raise AttachmentError("source_path 必填")
+        if source_kind not in USER_PATH_SOURCE_KINDS:
+            raise AttachmentError(
+                "桌面路径登记只接受 source_kind=desktop_path / dropped_path；"
+                "只有字节的入口请用 write_material"
+            )
+        if origin not in ORIGINS:
+            raise AttachmentError(f"不支持的 origin：{origin}")
+        target = Path(raw)
+        try:
+            stat = target.stat()
+        except FileNotFoundError as exc:
+            raise AttachmentError(f"找不到这个文件：{raw}") from exc
+        except OSError as exc:
+            raise AttachmentError(
+                f"打不开这个文件：{raw}（{redact_text(str(exc))}）"
+            ) from exc
+        if target.is_dir():
+            raise AttachmentError("这是一个目录；附件只能是文件")
+        probe = self._read_probe_reason(target)
+        if probe:
+            raise AttachmentError(probe)
+        size_bytes = int(stat.st_size)
+        identity = identity_of(target)
+        digest = (
+            content_sha256(target) if size_bytes <= REGISTER_HASH_MAX_BYTES else None
+        )
+        now = self._clock()
+        att = Attachment(
+            id=f"att_{uuid.uuid4().hex[:12]}",
+            message_id=str(message_id) if message_id else None,
+            turn_id=str(turn_id) if turn_id else None,
+            topic_id=str(topic_id) if topic_id else None,
+            # 新语义：永远是"引用源文件"，没有 copy/reference 的保存方式之分
+            kind="reference",
+            original_name=safe_name(name or target.name),
+            stored_path=None,
+            source_path=str(target.absolute()),
+            size_bytes=size_bytes,
+            mtime=float(stat.st_mtime),
+            sha256=digest,
+            state=STATE_READY,
+            error=None,
+            created_at=now,
+            updated_at=now,
+            source_kind=source_kind,
+            origin=origin,
+            file_id=identity.key if identity is not None else None,
+            content_sha256=digest,
+            reference_state=REFERENCE_AVAILABLE,
+            material_enabled=1,
+            user_note=str(user_note or ""),
+            last_verified_at=now,
+            legacy_paths="[]",
+        )
+        return self._insert(att)
+
+    def _material_target(self, attachment_id: str, name: str) -> Path:
+        year, month = _local_month()
+        return (
+            self.materials_root
+            / year
+            / month
+            / f"{attachment_id}__{safe_name(name)}"
+        )
+
+    def write_material(
+        self,
+        *,
+        stream: Iterable[bytes],
+        name: str,
+        source_kind: str,
+        topic_id: str | None = None,
+        user_note: str = "",
+        max_bytes: int | None = None,
+        message_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> Attachment:
+        """只有字节、没有原位置的入口：**首次落盘**为用户的材料（契约 §6.3）。
+
+        * 落盘位置：<workspace>/materials/<yyyy>/<mm>/<attachment_id>__<safe_name>；
+        * 落盘一次：先写本操作独有的临时文件，成功后才 os.replace 提交，失败不留半个文件；
+        * 记录 source_kind=browser_upload / clipboard_image 与
+          origin=user_saved_material；不伪造"原路径"；
+        * 这里的 max_bytes 是**上传传输限制**（资源限制），不是旧的"≤100MB 才复制"
+          副本规则 —— 任意大小的桌面路径登记都不复制。
+        """
+        if source_kind not in MATERIAL_SOURCE_KINDS:
+            raise AttachmentError(
+                "write_material 只接受 source_kind=browser_upload / clipboard_image"
+            )
+        limit = int(max_bytes if max_bytes is not None else self.max_upload_bytes)
+        attachment_id = f"att_{uuid.uuid4().hex[:12]}"
+        display_name = safe_name(name or "attachment")
+        target = self._material_target(attachment_id, display_name)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise AttachmentError(
+                "无法创建材料目录：" + redact_text(str(exc))
+            ) from exc
+        temp = temp_path_for(target)
+        digest = hashlib.sha256()
+        written = 0
+        try:
+            with open(temp, "xb") as handle:
+                for piece in stream:
+                    payload = bytes(piece or b"")
+                    if not payload:
+                        continue
+                    written += len(payload)
+                    if written > limit:
+                        raise UploadTooLarge(written, limit)
+                    handle.write(payload)
+                    digest.update(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if written <= 0:
+                raise AttachmentError("上传内容为空")
+            # 提交边界：提交前文件系统层面再确认临时文件仍在且大小一致
+            if int(temp.stat().st_size) != written:
+                raise AttachmentError("上传内容在落盘期间发生变化；没有提交这份材料")
+            os.replace(temp, target)
+        except BaseException:
+            _unlink_quiet(temp)
+            raise
+        try:
+            stat = target.stat()
+        except OSError as exc:
+            raise AttachmentError(
+                "材料已落盘但读不到：" + redact_text(str(exc))
+            ) from exc
+        identity = identity_of(target)
+        now = self._clock()
+        att = Attachment(
+            id=attachment_id,
+            message_id=str(message_id) if message_id else None,
+            turn_id=str(turn_id) if turn_id else None,
+            topic_id=str(topic_id) if topic_id else None,
+            kind="reference",
+            original_name=display_name,
+            stored_path=None,
+            source_path=str(target.absolute()),
+            size_bytes=int(stat.st_size),
+            mtime=float(stat.st_mtime),
+            sha256=digest.hexdigest(),
+            state=STATE_READY,
+            error=None,
+            created_at=now,
+            updated_at=now,
+            source_kind=source_kind,
+            origin="user_saved_material",
+            file_id=identity.key if identity is not None else None,
+            content_sha256=digest.hexdigest(),
+            reference_state=REFERENCE_AVAILABLE,
+            material_enabled=1,
+            user_note=str(user_note or ""),
+            last_verified_at=now,
+            legacy_paths="[]",
+        )
+        return self._insert(att)
+
+    def write_material_bytes(self, data: bytes, **kwargs) -> Attachment:
+        """write_material 的字节便捷入口（测试与小型剪贴板内容用）。"""
+        return self.write_material(stream=[bytes(data or b"")], **kwargs)
+
+    # -- 源文件解析：读取 / 预览 / 写回的唯一入口（契约 §6.2 / §7）------------
+
+    def _search_roots_for(
+        self, att: Attachment, extra: Iterable[str | Path] | None = None
+    ) -> list[Path]:
+        """移动失效时的有限查找范围：原目录、父目录、工作区、用户指定的根。
+
+        不做全盘监听/遍历（契约 §7）；目录不存在就跳过。
+        """
+        roots: list[Path] = []
+        raw = str(att.source_path or "")
+        if raw:
+            original = Path(raw)
+            roots.extend([original.parent, original.parent.parent])
+        roots.append(self.workspace_dir)
+        for item in extra or []:
+            text = str(item or "").strip()
+            if text:
+                roots.append(Path(text))
+        out: list[Path] = []
+        seen: set[str] = set()
+        for root in roots:
+            try:
+                key = str(root.resolve())
+                is_dir = root.is_dir()
+            except OSError:
+                continue
+            if not is_dir or key in seen:
+                continue
+            seen.add(key)
+            out.append(root)
+        return out
+
+    def _candidate_fact(
+        self, path: Path, att: Attachment, *, recorded_identity: FileIdentity | None = None
+    ) -> dict:
+        """候选文件的事实（只用于给用户看/确认，不用来自动修复）。"""
+        fact: dict = {
+            "path": str(path),
+            "name": path.name,
+            "size": None,
+            "mtime_ns": None,
+            "same_name": path.name == att.original_name,
+            "same_size": None,
+            "same_mtime": None,
+            "same_content": None,
+            "same_file": False,
+            "identity": None,
+        }
+        try:
+            stat = path.stat()
+        except OSError:
+            return fact
+        identity = identity_of(path)
+        fact["identity"] = identity.key if identity is not None else None
+        fact["same_file"] = same_file(recorded_identity, identity)
+        fact["size"] = int(stat.st_size)
+        fact["mtime_ns"] = int(getattr(stat, "st_mtime_ns", 0))
+        fact["same_size"] = int(stat.st_size) == int(att.size_bytes or 0)
+        fact["same_mtime"] = att.mtime is not None and abs(
+            float(stat.st_mtime) - float(att.mtime)
+        ) <= 1e-6
+        if (
+            fact["same_size"]
+            and att.content_sha256
+            and int(stat.st_size) <= REGISTER_HASH_MAX_BYTES
+        ):
+            fact["same_content"] = content_sha256(path) == att.content_sha256
+        return fact
+
+    def _same_name_candidates(
+        self, att: Attachment, roots: list[Path], *, limit: int = 20
+    ) -> list[dict]:
+        """有限范围里与登记文件名相同的候选（必须用户确认，绝不自动修复）。"""
+        recorded = self._identity_from_record(att)
+        wanted = str(att.original_name or "")
+        if not wanted:
+            return []
+        found: list[dict] = []
+        seen: set[str] = set()
+        for root in roots:
+            for path in iter_files_limited(
+                root,
+                max_files=RELOCATE_SCAN_MAX_FILES,
+                max_depth=RELOCATE_SCAN_MAX_DEPTH,
+            ):
+                if path.name != wanted:
+                    continue
+                key = str(path)
+                if key in seen:
+                    continue
+                seen.add(key)
+                fact = self._candidate_fact(path, att, recorded_identity=recorded)
+                if fact["same_file"]:
+                    # 身份相同的文件由自动修复处理，不混进"需要用户确认"的名单
+                    continue
+                found.append(fact)
+                if len(found) >= limit:
+                    return found
+        return found
+
+    def _resolve_legacy_source(
+        self, att: Attachment, *, for_write: bool = False
+    ) -> ResolvedSource:
+        """历史行（迁移前记录）的只读回放：副本优先，其次原文件；写回必须重新指定。"""
+        stored = (
+            Path(att.stored_path)
+            if att.stored_path and self.is_managed_path(att.stored_path)
+            else None
+        )
+        stored_ok = bool(stored is not None and stored.is_file())
+        source = Path(att.source_path) if att.source_path else None
+        if for_write:
+            if source is not None and source.is_file():
+                current = identity_of(source)
+                digest = content_sha256(source)
+                return ResolvedSource(
+                    attachment_id=att.id,
+                    path=source,
+                    identity=current,
+                    state=REFERENCE_AVAILABLE,
+                    reason="历史记录：写回作用于用户原文件",
+                    legacy=True,
+                    current_sha256=digest,
+                    recorded_sha256=att.sha256,
+                    size=int(att.size_bytes or 0),
+                )
+            return ResolvedSource(
+                attachment_id=att.id,
+                path=None,
+                identity=None,
+                state=REFERENCE_MISSING,
+                reason=(
+                    "这是历史附件：保存的是 QIO 旧副本，只能回放，不能写回；"
+                    "写回需要先重新指定源文件位置"
+                ),
+                legacy=True,
+            )
+        if stored_ok:
+            current = identity_of(stored)
+            return ResolvedSource(
+                attachment_id=att.id,
+                path=stored,
+                identity=current,
+                state=REFERENCE_AVAILABLE,
+                reason="历史副本（只读回放）",
+                legacy=True,
+                recorded_sha256=att.sha256,
+                size=int(att.size_bytes or 0),
+                mtime_ns=current.mtime_ns if current is not None else 0,
+            )
+        if source is not None and source.is_file():
+            current = identity_of(source)
+            if current is not None:
+                return ResolvedSource(
+                    attachment_id=att.id,
+                    path=source,
+                    identity=current,
+                    state=REFERENCE_AVAILABLE,
+                    reason="历史记录：读取的是用户原文件",
+                    legacy=True,
+                    recorded_sha256=att.sha256,
+                    size=int(att.size_bytes or 0),
+                    mtime_ns=current.mtime_ns,
+                )
+        return ResolvedSource(
+            attachment_id=att.id,
+            path=None,
+            identity=None,
+            state=REFERENCE_MISSING,
+            reason="这条历史附件的位置和副本都已经不在了；可以重新指定位置",
+            legacy=True,
+        )
+
+    def resolve_source(
+        self,
+        attachment_id: str,
+        *,
+        for_write: bool = False,
+        search_roots: Iterable[str | Path] | None = None,
+    ) -> ResolvedSource:
+        """解析一条附件的**当下**可读/可写源文件（读取类入口的唯一入口）。
+
+        规则（契约 §6.2 / §7）：
+
+        * 新记录：作用域永远是登记的源文件；源文件被移动/改名时在有限范围里
+          按 **volume+file_id** 自动修复；仅同名/同大小/同 mtime/同哈希都只能
+          作为候选，需要用户确认（ambiguous）；
+        * 历史记录：只读回放（旧副本优先、其次原文件），写回要求重新指定源文件；
+        * 任何情况下都不拿"另一份同内容文件"冒充原文件。
+
+        for_write=True 才会计算当前内容哈希（用于写回前重核对 identity+hash）。
+        """
+        att = self.get(attachment_id, check=False)
+        if att is None:
+            return ResolvedSource(
+                attachment_id=str(attachment_id),
+                path=None,
+                identity=None,
+                state=REFERENCE_MISSING,
+                reason="没有这个附件（可能已被移除）",
+            )
+        if not self.is_source_ref(att):
+            return self._resolve_legacy_source(att, for_write=for_write)
+        recorded = self._identity_from_record(att)
+        raw = str(att.source_path or "")
+        path = Path(raw) if raw else None
+        current = identity_of(path) if path is not None else None
+        if path is not None and current is not None:
+            digest = content_sha256(path) if for_write else None
+            common = dict(
+                source_kind=att.source_kind,
+                origin=att.origin,
+                current_sha256=digest,
+                recorded_sha256=att.content_sha256,
+                size=current.size,
+                mtime_ns=current.mtime_ns,
+            )
+            if recorded is None or same_file(recorded, current):
+                return ResolvedSource(
+                    attachment_id=att.id,
+                    path=path,
+                    identity=current,
+                    state=REFERENCE_AVAILABLE,
+                    reason="",
+                    **common,
+                )
+            # 同一路径上现在是另一份文件：可读当前文件，但写回必须先确认
+            fact = self._candidate_fact(path, att, recorded_identity=recorded)
+            return ResolvedSource(
+                attachment_id=att.id,
+                path=path,
+                identity=current,
+                state=REFERENCE_AMBIGUOUS,
+                reason=(
+                    "这个位置上的文件已不是登记时的那一份（文件身份不同）；"
+                    "读取按当前文件，写回前必须由用户确认"
+                ),
+                candidates=[fact],
+                **common,
+            )
+        roots = self._search_roots_for(att, search_roots)
+        if recorded is not None:
+            matches = find_by_identity(
+                roots,
+                recorded,
+                max_files=RELOCATE_SCAN_MAX_FILES,
+                max_depth=RELOCATE_SCAN_MAX_DEPTH,
+            )
+            matches = [item for item in matches if path is None or str(item) != str(path)]
+            if len(matches) == 1:
+                return self._auto_relocate(att, matches[0], for_write=for_write)
+            if len(matches) > 1:
+                return ResolvedSource(
+                    attachment_id=att.id,
+                    path=None,
+                    identity=None,
+                    state=REFERENCE_AMBIGUOUS,
+                    reason=(
+                        "在有限范围里找到多份文件身份相同的文件（硬链接）；"
+                        "需要用户确认用哪一份"
+                    ),
+                    candidates=[
+                        self._candidate_fact(item, att, recorded_identity=recorded)
+                        for item in matches[:20]
+                    ],
+                    source_kind=att.source_kind,
+                    origin=att.origin,
+                    recorded_sha256=att.content_sha256,
+                )
+        candidates = self._same_name_candidates(att, roots)
+        if candidates:
+            return ResolvedSource(
+                attachment_id=att.id,
+                path=None,
+                identity=None,
+                state=REFERENCE_AMBIGUOUS,
+                reason=(
+                    "源文件不在登记位置；在有限范围里找到了同名/同大小候选，"
+                    "但只有文件身份相同才能自动修复 —— 需要用户确认这是同一文件吗"
+                ),
+                candidates=candidates,
+                source_kind=att.source_kind,
+                origin=att.origin,
+                recorded_sha256=att.content_sha256,
+            )
+        reason = (
+            "源文件不在登记位置了（可能被移动或删除）；可以重新指定位置"
+            if raw
+            else "没有记录源文件位置；可以重新指定位置"
+        )
+        return ResolvedSource(
+            attachment_id=att.id,
+            path=None,
+            identity=None,
+            state=REFERENCE_MISSING,
+            reason=reason,
+            source_kind=att.source_kind,
+            origin=att.origin,
+            recorded_sha256=att.content_sha256,
+        )
+
+    def _auto_relocate(
+        self, att: Attachment, new_path: Path, *, for_write: bool = False
+    ) -> ResolvedSource:
+        """只有 volume+file_id 相同才走这里：自动修复位置并留下事实。"""
+        current = identity_of(new_path)
+        digest = content_sha256(new_path) if for_write else None
+        facts = self._legacy_facts(
+            att,
+            event="auto_relocate",
+            previous_path=att.source_path,
+            new_path=str(new_path),
+            mechanism="file_identity_match",
+            file_id=current.key if current is not None else None,
+        )
+        fields: dict = {
+            "source_path": str(new_path.absolute()),
+            "last_verified_at": self._clock(),
+            "legacy_paths": facts,
+            "state": STATE_READY,
+            "error": None,
+        }
+        if "reference_state" in self._source_columns:
+            fields["reference_state"] = REFERENCE_RELOCATED
+        if current is not None:
+            fields["size_bytes"] = current.size
+            fields["mtime"] = current.mtime_ns / 1_000_000_000
+        self._update(att.id, **fields)
+        refreshed = self.get(att.id, check=False) or att
+        return ResolvedSource(
+            attachment_id=refreshed.id,
+            path=new_path,
+            identity=current,
+            state=REFERENCE_AVAILABLE,
+            reason="源文件已按文件身份自动修复位置",
+            source_kind=refreshed.source_kind,
+            origin=refreshed.origin,
+            current_sha256=digest,
+            recorded_sha256=refreshed.content_sha256,
+            size=current.size if current is not None else int(refreshed.size_bytes or 0),
+            mtime_ns=current.mtime_ns if current is not None else 0,
+        )
+
+    # -- 用户确认后的位置修复（契约 §7）----------------------------------------
+
+    def relocate_reference(
+        self,
+        attachment_id: str,
+        path: str,
+        *,
+        confirmed_identity: bool = False,
+        search_roots: Iterable[str | Path] | None = None,
+    ) -> Attachment:
+        """用户重新指定源文件位置。
+
+        文件身份（volume+file_id）与登记一致 → 自动接受；
+        不一致（或登记时没有身份）→ 必须 confirmed_identity=True（用户确认"这是同一文件吗"），
+        否则抛 AttachmentConfirmationRequired 并带上候选事实。修复事实写进 legacy_paths。
+        """
+        att = self.get(attachment_id, check=False)
+        if att is None:
+            raise AttachmentError(f"没有这个附件：{attachment_id}")
+        if not self.is_source_ref(att):
+            raise AttachmentError(
+                "这条记录是历史附件（迁移前），请使用旧的重定位入口或先完成迁移"
+            )
+        raw = str(path or "").strip().strip('"')
+        if not raw:
+            raise AttachmentError("source_path 必填")
+        target = Path(raw)
+        try:
+            stat = target.stat()
+        except FileNotFoundError as exc:
+            raise AttachmentError(f"找不到这个文件：{raw}") from exc
+        except OSError as exc:
+            raise AttachmentError(
+                f"打不开这个文件：{raw}（{redact_text(str(exc))}）"
+            ) from exc
+        if target.is_dir():
+            raise AttachmentError("这是一个目录；附件只能是文件")
+        probe = self._read_probe_reason(target)
+        if probe:
+            raise AttachmentError(probe)
+        new_identity = identity_of(target)
+        recorded = self._identity_from_record(att)
+        if same_file(recorded, new_identity):
+            return self._adopt_source(
+                att, target, new_identity, confirmed=False, mechanism="file_identity_match"
+            )
+        if not confirmed_identity:
+            candidates = [
+                self._candidate_fact(target, att, recorded_identity=recorded)
+            ]
+            for fact in self._same_name_candidates(
+                att, self._search_roots_for(att, search_roots), limit=10
+            ):
+                if fact["path"] != str(target):
+                    candidates.append(fact)
+            raise AttachmentConfirmationRequired(
+                "新位置上的文件与登记时不是同一份（文件身份不同）；"
+                "请确认「这是同一文件吗」后再修复位置",
+                candidates=candidates,
+            )
+        return self._adopt_source(
+            att, target, new_identity, confirmed=True, mechanism="user_confirmed"
+        )
+
+    def _adopt_source(
+        self,
+        att: Attachment,
+        target: Path,
+        identity: FileIdentity | None,
+        *,
+        confirmed: bool,
+        mechanism: str,
+    ) -> Attachment:
+        previous_hash = att.content_sha256
+        try:
+            size = int(target.stat().st_size)
+        except OSError as exc:
+            raise AttachmentError(
+                "打不开这个文件：" + redact_text(str(exc))
+            ) from exc
+        digest = None
+        if previous_hash is not None or size <= REGISTER_HASH_MAX_BYTES:
+            digest = content_sha256(target)
+        facts = self._legacy_facts(
+            att,
+            event="relocate",
+            previous_path=att.source_path,
+            new_path=str(target.absolute()),
+            previous_file_id=att.file_id,
+            new_file_id=identity.key if identity is not None else None,
+            previous_sha256=previous_hash,
+            new_sha256=digest,
+            confirmed_by_user=bool(confirmed),
+            mechanism=mechanism,
+        )
+        now = self._clock()
+        stat = target.stat()
+        fields: dict = {
+            "source_path": str(target.absolute()),
+            "size_bytes": int(stat.st_size),
+            "mtime": float(stat.st_mtime),
+            "last_verified_at": now,
+            "legacy_paths": facts,
+            "state": STATE_READY,
+            "error": None,
+        }
+        if "reference_state" in self._source_columns:
+            fields["reference_state"] = REFERENCE_RELOCATED
+        if identity is not None:
+            fields["file_id"] = identity.key
+        if digest is not None:
+            fields["sha256"] = digest
+            fields["content_sha256"] = digest
+        self._update(att.id, **fields)
+        return self.get(att.id, check=False) or att
+
+    def set_material_enabled(self, attachment_id: str, enabled: bool) -> Attachment:
+        """「作为互动材料」开关：只控制是否主动纳入互动上下文，不是 OS 访问权限。"""
+        att = self.get(attachment_id, check=False)
+        if att is None:
+            raise AttachmentError(f"没有这个附件：{attachment_id}")
+        if "material_enabled" not in self._source_columns:
+            raise AttachmentError(
+                "当前数据库还没有迁移到 R9 源文件引用结构（缺 material_enabled 列）"
+            )
+        self._update(att.id, material_enabled=1 if enabled else 0)
+        return self.get(att.id, check=False) or att
+
+    def remove_reference(self, attachment_id: str) -> dict:
+        """只删除卡片/引用行，**绝不删除源文件**（契约 §6.2 / §8）。
+
+        历史行例外：QIO 自己管理目录下的旧副本属于 QIO 资产，按旧行为清理
+        （用户原文件 source_path 永远不动）；这一分支只服务历史数据回放。
+        """
+        att = self.get(attachment_id, check=False)
+        if att is None:
+            return {
+                "removed": False,
+                "deleted_reference": None,
+                "kept_source": None,
+                "deleted_legacy_copy": None,
+            }
+        if not self.is_source_ref(att):
+            legacy = self.delete(attachment_id)
+            return {
+                "removed": bool(legacy.get("removed")),
+                "deleted_reference": att.id if legacy.get("removed") else None,
+                "kept_source": legacy.get("kept_source"),
+                "deleted_legacy_copy": legacy.get("deleted_copy"),
+            }
+        self.cancel(att.id)
+        with self._db_lock, transaction(self.conn):
+            self.conn.execute("DELETE FROM attachments WHERE id = ?", (att.id,))
+        with self._cancel_lock:
+            self._cancel.pop(att.id, None)
+        self._clear_preparing(att.id)
+        return {
+            "removed": True,
+            "deleted_reference": att.id,
+            "kept_source": att.source_path,
+            "deleted_legacy_copy": None,
+        }
+
+    # -- 写回：重核对 identity + hash 后原子写（契约 §6.2 / §3.1）-------------
+
+    def write_back_source(
+        self,
+        attachment_id: str,
+        data: bytes,
+        *,
+        expected_identity: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> dict:
+        """把获准修改后的字节写回源文件。
+
+        写前重新解析 + 重核对：文件身份、登记时内容哈希、调用方手里那份的身份/哈希；
+        任一项不符 → **不覆盖**并如实说明。写采用同目录临时文件 + os.replace。
+        原子替换会改变文件身份（OS 事实），修复后的新身份如实落库并记入 legacy_paths。
+        """
+        payload = bytes(data or b"")
+        resolved = self.resolve_source(attachment_id, for_write=True)
+        if resolved.path is None:
+            raise AttachmentContentError(
+                resolved.reason or "源文件当前不可用，没有写入", 409
+            )
+        if resolved.legacy:
+            raise AttachmentError(
+                "历史附件只用于回放；写回需要先迁移或重新指定源文件"
+            )
+        if resolved.state == REFERENCE_AMBIGUOUS and not expected_identity:
+            raise AttachmentConfirmationRequired(
+                "源文件位置上的文件身份与登记不一致，写回需要用户先确认",
+                resolved.candidates,
+            )
+        path = resolved.path
+        current = identity_of(path)
+        current_hash = content_sha256(path)
+        if current is None or current_hash is None:
+            raise AttachmentContentError("源文件现在读不到，没有写入", 409)
+        if resolved.identity is not None and current.key != resolved.identity.key:
+            raise AttachmentError(
+                "源文件在这一刻变成了另一份（文件身份变化），没有写入；请重新读取后再确认"
+            )
+        if resolved.recorded_sha256 and current_hash != resolved.recorded_sha256:
+            raise AttachmentError(
+                "源文件内容与登记时不一致（可能在读取后被修改），没有写入；"
+                "请重新读取后再确认"
+            )
+        if expected_identity and current.key != str(expected_identity):
+            raise AttachmentError(
+                "源文件已经不是刚才读取的那一份（身份变化），没有写入"
+            )
+        if expected_sha256 and current_hash != str(expected_sha256):
+            raise AttachmentError(
+                "源文件内容已经不是刚才读取的内容，没有写入"
+            )
+        temp = temp_path_for(path)
+        try:
+            with open(temp, "xb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, path)
+        except OSError as exc:
+            _unlink_quiet(temp)
+            raise AttachmentError(
+                "写回源文件失败：" + redact_text(str(exc))
+            ) from exc
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            raise AttachmentError(
+                "写入后读不到源文件：" + redact_text(str(exc))
+            ) from exc
+        after = identity_of(path)
+        new_hash = content_sha256(path)
+        att = self.get(attachment_id, check=False)
+        fields: dict = {
+            "size_bytes": int(stat.st_size),
+            "mtime": float(stat.st_mtime),
+            "sha256": new_hash,
+            "content_sha256": new_hash,
+            "last_verified_at": self._clock(),
+        }
+        if "reference_state" in self._source_columns:
+            fields["reference_state"] = REFERENCE_AVAILABLE
+        if after is not None:
+            fields["file_id"] = after.key
+        identity_changed = bool(
+            resolved.identity is not None
+            and after is not None
+            and after.key != resolved.identity.key
+        )
+        if att is not None and identity_changed:
+            fields["legacy_paths"] = self._legacy_facts(
+                att,
+                event="atomic_write",
+                previous_path=str(path),
+                previous_file_id=resolved.identity.key if resolved.identity else None,
+                new_file_id=after.key if after is not None else None,
+                previous_sha256=current_hash,
+                new_sha256=new_hash,
+            )
+        if att is not None:
+            self._update(att.id, **fields)
+        return {
+            "ok": True,
+            "attachment_id": str(attachment_id),
+            "path": str(path),
+            "bytes": len(payload),
+            "sha256": new_hash,
+            "previous_sha256": current_hash,
+            "identity": after.key if after is not None else None,
+            "identity_changed": identity_changed,
+        }
+
+    def file_ref(self, att: Attachment, *, check: bool = True) -> dict:
+        """卡片/互动上下文必须暴露的源引用事实（契约 §6.4）+ 用户说明。"""
+        if check:
+            att = self._check(att)
+        media_kind = classify_media_kind(att.original_name, include_images=True)
+        return {
+            "attachment_id": att.id,
+            "filename": att.original_name,
+            "media_kind": media_kind,
+            "origin": att.origin,
+            "source_kind": att.source_kind,
+            "availability": self.availability(att),
+            "size": int(att.size_bytes or 0),
+            "user_note": att.user_note,
+            "material_enabled": bool(att.material_enabled),
+            "missing_reason": (
+                (att.error or None)
+                if att.state in (STATE_MISSING, STATE_FAILED)
+                else None
+            ),
+            "reference_id": att.id,
+        }
 
     # -- 登记 --------------------------------------------------------------
 
@@ -2619,6 +3677,15 @@ class AttachmentService:
             created_at=now,
             updated_at=now,
             source_attachment_id=source.id,
+            source_kind=source.source_kind,
+            origin=source.origin,
+            file_id=source.file_id,
+            content_sha256=source.content_sha256,
+            reference_state=source.reference_state,
+            material_enabled=source.material_enabled,
+            user_note=source.user_note,
+            last_verified_at=source.last_verified_at,
+            legacy_paths=source.legacy_paths,
         )
 
     def _clone_reference_for_retry(
@@ -2854,6 +3921,9 @@ class AttachmentService:
         if att.state in (STATE_PREPARED, STATE_CANCELLED):
             # prepared：正在准备（或等待准备），这里不越权改状态
             return att
+        if self.is_source_ref(att):
+            # R9 源文件引用：源文件就是唯一的读取对象，没有旧副本可回退
+            return self._check_source_ref(att)
         if att.kind == "copy":
             stored_exists = bool(att.stored_path) and Path(att.stored_path).is_file()
             if not stored_exists:
@@ -2895,6 +3965,65 @@ class AttachmentService:
             return self._transition(att, STATE_READY, None)
         return att
 
+    def _check_source_ref(self, att: Attachment) -> Attachment:
+        """源文件引用的事实投影：位置 / 可读性 / 内容变化 / 是否还是同一份文件。
+
+        与旧 copy/reference 的差别：没有副本可回退；文件身份与登记不同 =
+        这一路径上换了一份文件（可读当前内容，但 reference_state=ambiguous，
+        写回必须用户确认，绝不覆盖）。
+        """
+        if not att.source_path:
+            return self._transition(
+                att, STATE_MISSING, "没有记录源文件位置；可以重新指定位置",
+                reference_state=REFERENCE_MISSING,
+            )
+        path = Path(att.source_path)
+        try:
+            stat = path.stat()
+        except OSError:
+            return self._transition(
+                att,
+                STATE_MISSING,
+                "源文件不在原位了（可能被移动或删除）；可以重新指定位置",
+                reference_state=REFERENCE_MISSING,
+            )
+        if path.is_dir():
+            return self._transition(
+                att, STATE_FAILED, "这个位置现在是目录，不是文件",
+                reference_state=REFERENCE_MISSING,
+            )
+        probe = self._read_probe_reason(path)
+        if probe:
+            return self._transition(
+                att, STATE_FAILED, probe, reference_state=REFERENCE_MISSING
+            )
+        current = identity_of(path)
+        recorded = self._identity_from_record(att)
+        if recorded is not None and current is not None and not same_file(recorded, current):
+            return self._transition(
+                att,
+                STATE_CHANGED,
+                "这个位置上的文件已不是登记时的那一份（文件身份不同）；"
+                "内容按当前文件读取，写回前需要用户确认",
+                reference_state=REFERENCE_AMBIGUOUS,
+            )
+        changed = int(stat.st_size) != int(att.size_bytes or 0) or (
+            att.mtime is not None
+            and abs(float(stat.st_mtime) - float(att.mtime)) > 1e-6
+        )
+        if changed:
+            return self._transition(
+                att,
+                STATE_CHANGED,
+                "源文件内容与登记时不同（同一文件被编辑过）；读取按最新内容",
+                reference_state=REFERENCE_AVAILABLE,
+            )
+        if att.state in (STATE_MISSING, STATE_CHANGED, STATE_FAILED):
+            return self._transition(
+                att, STATE_READY, None, reference_state=REFERENCE_AVAILABLE
+            )
+        return att
+
     def _copy_recovery_verified(self, att: Attachment) -> bool:
         """可验证的恢复：记录的副本文件在**且** sha256 与登记值一致（契约 §1.4）。
 
@@ -2934,6 +4063,15 @@ class AttachmentService:
         """
         if att.state in (STATE_PREPARED, STATE_READY):
             return []
+        if self.is_source_ref(att) and att.state == STATE_CHANGED:
+            # 同一文件被编辑（内容变化不是错误）；位置修复才需要 relocate
+            return []
+        if self.is_source_ref(att):
+            return ["relocate"] if att.state in (
+                STATE_FAILED,
+                STATE_MISSING,
+                STATE_CANCELLED,
+            ) else []
         actions: list[str] = []
         if att.state in (STATE_FAILED, STATE_MISSING, STATE_CHANGED, STATE_CANCELLED):
             if att.kind == "reference":
@@ -2956,10 +4094,21 @@ class AttachmentService:
         """
         return bool(att.source_path)
 
-    def _transition(self, att: Attachment, state: str, error: str | None) -> Attachment:
+    def _transition(
+        self,
+        att: Attachment,
+        state: str,
+        error: str | None,
+        *,
+        reference_state: str | None = None,
+    ) -> Attachment:
+        fields: dict = {"state": state, "error": error}
+        if reference_state is not None and "reference_state" in self._source_columns:
+            fields["reference_state"] = reference_state
         if att.state == state and (att.error or None) == (error or None):
-            return att
-        self._update(att.id, state=state, error=error)
+            if reference_state is None or att.reference_state == reference_state:
+                return att
+        self._update(att.id, **fields)
         refreshed = self.get(att.id, check=False)
         return refreshed or att
 
@@ -2989,6 +4138,8 @@ class AttachmentService:
             "source_changed": source_changed,
             "checked_at": self._clock(),
             "note": REFERENCE_CAVEAT if att.kind == "reference" else None,
+            "reference_state": att.reference_state,
+            "material_enabled": bool(att.material_enabled),
         }
 
     # -- 重启 / 维护 --------------------------------------------------------
@@ -3039,7 +4190,11 @@ class AttachmentService:
             "size_bytes": att.size_bytes,
             "size_display": human_size(att.size_bytes),
             "kind": att.kind,
-            "display": COPY_LABEL if att.kind == "copy" else REFERENCE_LABEL,
+            "display": (
+                SOURCE_LABEL
+                if self.is_source_ref(att)
+                else (COPY_LABEL if att.kind == "copy" else REFERENCE_LABEL)
+            ),
             "state": att.state,
             "error": att.error,
             # F24（2026-10-09）：**「已受理且正在准备」不是最终态**。重试/定位刚被受理时，
@@ -3064,6 +4219,24 @@ class AttachmentService:
             "turn_id": att.turn_id,
             "message_id": att.message_id,
             "availability": self.availability(att),
+            # -- R9 源文件引用事实（契约 §6.4；老字段全部保留作兼容）----------
+            "attachment_id": att.id,
+            "filename": att.original_name,
+            "media_kind": classify_media_kind(att.original_name, include_images=True),
+            "origin": att.origin,
+            "source_kind": att.source_kind,
+            "size": int(att.size_bytes or 0),
+            "user_note": att.user_note,
+            "material_enabled": bool(att.material_enabled),
+            "missing_reason": (
+                (att.error or None)
+                if att.state in (STATE_MISSING, STATE_FAILED)
+                else None
+            ),
+            "reference_id": att.id,
+            "reference_state": att.reference_state,
+            "file_id": att.file_id,
+            "file_ref": self.file_ref(att, check=False),
             "created_at": att.created_at,
             "updated_at": att.updated_at,
         }
@@ -3097,7 +4270,11 @@ class AttachmentService:
                 state_text = f"准备失败（{att.error or '原因未知'}）"
             else:
                 state_text = att.state
-            label_text = COPY_LABEL if att.kind == "copy" else REFERENCE_LABEL
+            label_text = (
+                SOURCE_LABEL
+                if self.is_source_ref(att)
+                else (COPY_LABEL if att.kind == "copy" else REFERENCE_LABEL)
+            )
             lines.append(
                 f"{index}. id={att.id} 名称「{att.original_name}」"
                 f" {human_size(att.size_bytes)} · {label_text} · {label} · {state_text}"
