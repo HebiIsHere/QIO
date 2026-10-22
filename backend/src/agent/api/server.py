@@ -525,6 +525,11 @@ def create_app(
     attachments = AttachmentService(conn, settings.data_dir)
     ctx.attachments = attachments
     ctx.services.register("attachments", attachments)
+    # R9-F：文件来源 store 同时按名字注册给工具注入（fs_tools 的 inject=["origins"]）；
+    # 未注册时工具会退回进程默认 store，但显式注册让接线可测、可诊断。
+    origins_store = getattr(attachments, "file_origins", None)
+    if origins_store is not None:
+        ctx.services.register("origins", origins_store)
     from agent.tools.attachment_tools import ReadAttachmentTool
 
     ctx.registry.register(

@@ -317,19 +317,24 @@ class AppContext:
         # 受限模式退回普通审批（不默认放行，也不会自动切模式）。
         self.requirements = None
         self.authorizations = None
-        self.file_origins = None
+        self.review_audit = None
         self.reviewer = None
         try:
             from agent.security.requirements import (
                 AuthorizationLedger,
                 RequirementLedger,
             )
-            from agent.security.review import ModelAuthorizationReviewer
+            from agent.security.review import (
+                ModelAuthorizationReviewer,
+                ReviewAuditLedger,
+            )
 
             self.requirements = RequirementLedger(conn)
             self.authorizations = AuthorizationLedger(conn)
+            self.review_audit = ReviewAuditLedger(conn)
             self.reviewer = ModelAuthorizationReviewer(
-                adapter_factory=self.build_adapter
+                adapter_factory=self.build_adapter,
+                audit=self.review_audit,
             )
         except Exception as exc:  # noqa: BLE001 - 降级必须可见，不静默假装已启用
             logging.getLogger(__name__).warning(

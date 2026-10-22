@@ -33,6 +33,51 @@ from agent.trace.redact import redact_text
 logger = logging.getLogger(__name__)
 
 
+def _file_origins():
+    """R9-F：后端文件来源 store（W3）；模块缺失时返回 None（不阻断执行）。"""
+    try:
+        from agent.services import file_origins as module
+
+        return module
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _snapshot_origin(path: str):
+    module = _file_origins()
+    if module is None:
+        return None
+    try:
+        return module.snapshot_before_write(path)
+    except Exception:  # noqa: BLE001 - 记账失败不改变执行结果
+        return None
+
+
+def _note_write_origin(path: str, *, existed_before: bool, pre_record, source: str) -> None:
+    module = _file_origins()
+    if module is None:
+        return
+    try:
+        module.note_authorized_write_path(
+            path,
+            existed_before=existed_before,
+            pre_record=pre_record,
+            source=source,
+        )
+    except Exception:  # noqa: BLE001 - 记账失败不改变写入结果
+        pass
+
+
+def _note_recycled_origin(path: str) -> None:
+    module = _file_origins()
+    if module is None:
+        return
+    try:
+        module.note_recycled_path(path)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # --------------------------------------------------------------------------
 # 结果构造
 # --------------------------------------------------------------------------
@@ -193,6 +238,9 @@ async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
             invalidated=True,
             path=path,
         )
+    # R9-F：写前抓来源/存在性，写成功后一次记账（不得把已存在用户文件冒充生成物）。
+    pre_record = await asyncio.to_thread(_snapshot_origin, path)
+    existed_before = await asyncio.to_thread(lambda: Path(path).exists())
     try:
         await asyncio.to_thread(security_gate.atomic_write_text, path, content)
     except OSError as exc:
@@ -201,6 +249,13 @@ async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
             f"{type(exc).__name__}: {exc}",
             path=path,
         )
+    await asyncio.to_thread(
+        _note_write_origin,
+        path,
+        existed_before=existed_before,
+        pre_record=pre_record,
+        source="approved.fs_write",
+    )
     return _success(
         f"已写入 {path}",
         path=path,
@@ -271,6 +326,8 @@ async def execute_fs_patch(payload: dict, ctx: ExecutionContext) -> ExecResult:
             invalidated=True,
             path=path,
         )
+    pre_record = await asyncio.to_thread(_snapshot_origin, path)
+    existed_before = await asyncio.to_thread(lambda: Path(path).exists())
     try:
         await asyncio.to_thread(security_gate.atomic_write_text, path, updated)
     except OSError as exc:
@@ -279,6 +336,13 @@ async def execute_fs_patch(payload: dict, ctx: ExecutionContext) -> ExecResult:
             f"{type(exc).__name__}: {exc}",
             path=path,
         )
+    await asyncio.to_thread(
+        _note_write_origin,
+        path,
+        existed_before=existed_before,
+        pre_record=pre_record,
+        source="approved.fs_patch",
+    )
     return _success(
         f"已修改 {path}",
         path=path,
@@ -404,6 +468,8 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             failed.append(item)
             continue
         ok, code, detail = await _move_to_recycle_bin(path)
+        if ok:
+            await asyncio.to_thread(_note_recycled_origin, path)
         item = {
             "path": path,
             "ok": bool(ok),
@@ -890,6 +956,13 @@ async def execute_attachment_write_back(
             attachment_id=attachment_id,
         )
     outcome = dict(outcome or {})
+    # R9-F：写回/原子替换成功后更新来源与文件身份（W3），失败不改变写回结果。
+    note = getattr(service, "note_origin_after_write_back", None)
+    if callable(note):
+        try:
+            note(attachment_id, outcome)
+        except Exception:  # noqa: BLE001 - 来源记账失败不改变写回事实
+            pass
     return _success(
         f"已写回源文件：{path}",
         path=str(outcome.get("path") or path),
@@ -954,6 +1027,8 @@ async def execute_attachment_recycle(
         outcome = dict(outcome or {})
         ok = bool(outcome.get("ok"))
         all_ok = all_ok and ok
+        if ok:
+            await asyncio.to_thread(_note_recycled_origin, path)
         results.append(
             {
                 "attachment_id": item.get("attachment_id"),
