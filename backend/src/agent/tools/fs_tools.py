@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import prompts
+from agent.tools import security_gate
 from agent.tools.base import Tool, ToolResult
 from agent.tools.blocking import get_blocking_executor
 
@@ -66,36 +67,126 @@ def _stat_info(path: Path) -> os.stat_result:
 
 
 class _FsTool(Tool):
-    inject = ["computer", "approvals"]
+    # security = 统一授权网关（契约 §2 的 AuthorizationGateway，W1 实现）。
+    # 注册时由 ServiceRegistry.attach 注入；为 None 时只用于旧接线/单测回退。
+    inject = ["computer", "approvals", "security"]
 
-    def __init__(self, computer=None, approvals=None) -> None:
+    def __init__(self, computer=None, approvals=None, security=None) -> None:
         self.computer = computer
         self.approvals = approvals
+        self.security = security
 
     def _resolve(self, raw: str) -> Path:
         """相对路径以工作区根为基准解析，返回规范化后的绝对路径。"""
         return self.computer.resolve_in_root(raw)
 
-    async def _permitted(self, verdict: str, payload: dict, denied: str) -> ToolResult | None:
-        """把 sandbox 判定翻译成工具行为；返回非 None 表示应当直接返回。"""
+    async def _legacy_approve(self, payload: dict, denied: str) -> ToolResult | None:
+        """旧审批通道（同一 ApprovalService）：网关不可用 / 网关不提供 submit 时使用。"""
+        if self.approvals is None:
+            return ToolResult(
+                ok=False,
+                error="这次操作需要你的批准，但当前没有可用的审批服务：本次没有执行。",
+                category="permission",
+                recoverable=False,
+            )
+        # 审批内容必须让普通用户看懂（spec 第 66~70 条）：把这次具体操作
+        # 翻译成「想做什么 / 会访问什么 / 一次性还是长期」，原始 action
+        # 仍然保留（高级详情用）。
+        from agent.tools.approval_present import describe_computer_action
+
+        described = dict(payload)
+        described.update(describe_computer_action(payload))
+        r = await self.approvals.request("computer", described)
+        if r.decision != "approved":
+            from agent.tools.approval import refusal_reason
+
+            return ToolResult(
+                ok=False,
+                error=f"{payload.get('action')} 未获批准：{refusal_reason(r.decision)}",
+            )
+        return None
+
+    async def _gateway_permitted(
+        self,
+        effect,
+        payload: dict,
+        denied: str,
+        pending: tuple | None = None,
+    ) -> ToolResult | None:
+        """统一授权入口：allow 继续；deny 中文拒绝；approve 提交待审批操作（非阻塞）。"""
+        decision = await security_gate.authorize(self.security, effect)
+        verdict = security_gate.verdict_of(decision)
+        if verdict == "allow":
+            return None
+        if verdict == "deny":
+            return security_gate.denied_result(decision, denied)
+        # approve：按契约 §2.1/§5.3 交给 submit()，工具立即返回 pending 结果。
+        confirmations = (
+            security_gate.INTERNAL_DATA_CONFIRMATIONS
+            if effect.kind == security_gate.EffectKind.INTERNAL_DATA
+            else 1
+        )
+        if pending is not None:
+            kind, label, pending_payload, fingerprint = pending
+            operation = security_gate.build_pending_operation(
+                kind=kind,
+                label=label,
+                payload=pending_payload,
+                effect=effect,
+                fingerprint=fingerprint,
+                purpose=effect.purpose,
+                mode_at_request=security_gate.mode_of(self.security, self.computer),
+                confirmations_required=confirmations,
+                instruction=security_gate.instruction_snapshot(self.security),
+            )
+            try:
+                ticket = await security_gate.submit_pending(self.security, operation)
+            except Exception as exc:  # noqa: BLE001 - 提交失败要如实说，不能当作已提交
+                return ToolResult(
+                    ok=False,
+                    error=f"提交审批失败：{type(exc).__name__}: {exc}（本次没有执行）",
+                    category="permission",
+                    recoverable=False,
+                )
+            if ticket is not None:
+                return security_gate.pending_result(
+                    ticket,
+                    operation_label=label,
+                    confirmations_required=confirmations,
+                    extra={"path": payload.get("path"), "effect": security_gate.effect_to_dict(effect)},
+                )
+        # 网关要求批准但没有可提交的操作（或没有 submit）：退回同一个 ApprovalService，
+        # 绝不自行执行；没有审批通道就明确说这次没执行。
+        if self.approvals is not None:
+            return await self._legacy_approve(payload, denied)
+        return ToolResult(
+            ok=False,
+            error="这次操作需要你的批准，但当前没有可用的审批执行器：本次没有执行（执行边界暂不可用）。",
+            category="permission",
+            recoverable=False,
+            code="approval_unavailable",
+        )
+
+    async def _permitted(
+        self,
+        verdict: str,
+        payload: dict,
+        denied: str,
+        *,
+        effect=None,
+        pending: tuple | None = None,
+    ) -> ToolResult | None:
+        """把判定翻译成工具行为；返回非 None 表示应当直接返回。
+
+        网关存在时一切以网关为准（ComputerSandbox 判定只作为旧接线回退，不再
+        单独决定权限）；网关不存在时才走旧的 computer → approvals 路径。
+        """
+        if self.security is not None and effect is not None:
+            return await self._gateway_permitted(effect, payload, denied, pending)
         if verdict == "deny":
             return ToolResult(ok=False, error=denied)
         if verdict == "approve":
-            # 审批内容必须让普通用户看懂（spec 第 66~70 条）：把这次具体操作
-            # 翻译成「想做什么 / 会访问什么 / 一次性还是长期」，原始 action
-            # 仍然保留（高级详情用）。
-            from agent.tools.approval_present import describe_computer_action
-
-            described = dict(payload)
-            described.update(describe_computer_action(payload))
-            r = await self.approvals.request("computer", described)
-            if r.decision != "approved":
-                from agent.tools.approval import refusal_reason
-
-                return ToolResult(
-                    ok=False,
-                    error=f"{payload.get('action')} 未获批准：{refusal_reason(r.decision)}",
-                )
+            return await self._legacy_approve(payload, denied)
         return None
 
     @staticmethod
@@ -144,10 +235,12 @@ class FsReadTool(_FsTool):
         if not path:
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
+        effect = security_gate.read_effect("fs_read", target, purpose="读取文件内容")
         blocked = await self._permitted(
             self.computer.read_verdict(str(target)),
             {"action": "read", "path": str(target)},
             "拒绝访问该路径（敏感路径）",
+            effect=effect,
         )
         if blocked is not None:
             return blocked
@@ -173,15 +266,51 @@ class FsWriteTool(_FsTool):
         if not path:
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
+        identity = security_gate.file_identity(target)
+        digest = security_gate.text_sha256(content)
+        internal_root = security_gate.match_internal_data(self.security, target)
+        effect = security_gate.write_effect(
+            "fs_write",
+            target,
+            purpose="写入文件内容",
+            content_sha256=digest,
+            identity=security_gate.identity_key(identity),
+            exists=bool(identity.get("exists")),
+            detail={
+                "action": "write",
+                "internal_data_root": str(internal_root) if internal_root else None,
+            },
+            internal=internal_root is not None,
+        )
+        pending = (
+            "fs.write",
+            f"写入文件 {target}",
+            {"path": str(target), "content": content, "content_sha256": digest},
+            {
+                "kind": "fs.write",
+                "path": str(target),
+                "identity": identity,
+                "content_sha256": digest,
+                "internal_data_root": str(internal_root) if internal_root else None,
+            },
+        )
         blocked = await self._permitted(
             self.computer.write_verdict(str(target)),
             {"action": "write", "path": str(target)},
             "拒绝访问该路径（敏感路径）",
+            effect=effect,
+            pending=pending,
         )
         if blocked is not None:
             return blocked
+        # 执行前重核对对象身份（契约 §3.1/§7）：审批期间文件被改过就不覆盖。
+        same, reason = security_gate.recheck_identity(target, identity)
+        if not same:
+            return ToolResult(ok=False, error=reason, category="conflict", recoverable=False)
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(get_blocking_executor(), _write_file, target, content)
+        fut = loop.run_in_executor(
+            get_blocking_executor(), security_gate.atomic_write_text, target, content
+        )
         return await self._await_write_settled(fut, target, f"已写入 {target}")
 
 
@@ -205,13 +334,7 @@ class FsPatchTool(_FsTool):
         if not path or not old:
             return ToolResult(ok=False, error="path 与 old 必填")
         target = self._resolve(path)
-        blocked = await self._permitted(
-            self.computer.write_verdict(str(target)),
-            {"action": "patch", "path": str(target), "old": old},
-            "拒绝访问该路径（敏感路径）",
-        )
-        if blocked is not None:
-            return blocked
+        identity = security_gate.file_identity(target)
         try:
             text = await self._run_blocking(_read_file_text, target)
         except OSError as exc:
@@ -219,8 +342,57 @@ class FsPatchTool(_FsTool):
         if old not in text:
             return ToolResult(ok=False, error="未找到待替换的内容 old")
         text = text.replace(old, new, 1)
+        digest = security_gate.text_sha256(text)
+        internal_root = security_gate.match_internal_data(self.security, target)
+        effect = security_gate.write_effect(
+            "fs_patch",
+            target,
+            purpose="修改文件内容",
+            content_sha256=digest,
+            identity=security_gate.identity_key(identity),
+            exists=True,
+            detail={
+                "action": "patch",
+                "old": old,
+                "internal_data_root": str(internal_root) if internal_root else None,
+            },
+            internal=internal_root is not None,
+        )
+        pending = (
+            "fs.patch",
+            f"修改文件 {target}",
+            {
+                "path": str(target),
+                "old": old,
+                "new": new,
+                "expected_identity": identity,
+                "content_sha256": digest,
+            },
+            {
+                "kind": "fs.patch",
+                "path": str(target),
+                "identity": identity,
+                "content_sha256": digest,
+                "internal_data_root": str(internal_root) if internal_root else None,
+            },
+        )
+        blocked = await self._permitted(
+            self.computer.write_verdict(str(target)),
+            {"action": "patch", "path": str(target), "old": old},
+            "拒绝访问该路径（敏感路径）",
+            effect=effect,
+            pending=pending,
+        )
+        if blocked is not None:
+            return blocked
+        # 读取与写入之间文件可能被改过：执行前重核对（同 fs_write）。
+        same, reason = security_gate.recheck_identity(target, identity)
+        if not same:
+            return ToolResult(ok=False, error=reason, category="conflict", recoverable=False)
         loop = asyncio.get_running_loop()
-        fut = loop.run_in_executor(get_blocking_executor(), _write_file_text, target, text)
+        fut = loop.run_in_executor(
+            get_blocking_executor(), security_gate.atomic_write_text, target, text
+        )
         return await self._await_write_settled(fut, target, f"已编辑 {target}")
 
 
@@ -235,10 +407,12 @@ class FsListTool(_FsTool):
         if not path:
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
+        effect = security_gate.read_effect("fs_list", target, purpose="列出目录内容")
         blocked = await self._permitted(
             self.computer.read_verdict(str(target)),
             {"action": "list", "path": str(target)},
             "拒绝访问该路径（敏感路径）",
+            effect=effect,
         )
         if blocked is not None:
             return blocked
@@ -266,10 +440,12 @@ class FsFindTool(_FsTool):
         directory = str(kwargs.get("dir") or "").strip()
         # 默认（以及相对路径）都以工作区根为基准，而不是后端进程的 cwd
         root = self._resolve(directory) if directory else self.computer.root()
+        effect = security_gate.read_effect("fs_find", root, purpose="按文件名查找")
         blocked = await self._permitted(
             self.computer.read_verdict(str(root)),
             {"action": "find", "path": str(root)},
             "拒绝访问该路径（敏感路径）",
+            effect=effect,
         )
         if blocked is not None:
             return blocked
@@ -293,10 +469,12 @@ class FsInfoTool(_FsTool):
         if not path:
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
+        effect = security_gate.read_effect("fs_info", target, purpose="读取文件信息")
         blocked = await self._permitted(
             self.computer.read_verdict(str(target)),
             {"action": "info", "path": str(target)},
             "拒绝访问该路径（敏感路径）",
+            effect=effect,
         )
         if blocked is not None:
             return blocked

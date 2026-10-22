@@ -27,7 +27,7 @@ import platform
 import sys
 from typing import Any, Awaitable, Callable
 
-from agent.tools import proc_cleanup
+from agent.tools import isolation, proc_cleanup, security_gate
 from agent.tools.approval import DEFAULT_TIMEOUT_SECONDS, refusal_reason
 from agent import prompts
 from agent.tools.base import Tool, ToolResult
@@ -126,11 +126,125 @@ async def _run_child(
 
 
 class _CmdTool(Tool):
-    inject = ["computer", "approvals"]
+    # security = 统一授权网关（契约 §2）；None = 旧接线/单测回退路径。
+    inject = ["computer", "approvals", "security"]
 
-    def __init__(self, computer=None, approvals=None) -> None:
+    def __init__(self, computer=None, approvals=None, security=None) -> None:
         self.computer = computer
         self.approvals = approvals
+        self.security = security
+
+    def _mode(self) -> str:
+        return security_gate.mode_of(self.security, self.computer)
+
+    def _readonly_program_proof(self, program: str, args: list[str]) -> str | None:
+        """只读模式下「能可靠证明只读」的 run_program：白名单 + shell=False + 无元字符。
+
+        返回 None = 可以执行；返回中文原因 = 执行层拒绝（不是引擎判定，而是
+        执行层无法证明只读时的兜底 —— 契约 §2.3 read_only）。
+        """
+        if self.computer is None:
+            return "当前环境没有可用的程序风险分类器，无法证明这个程序只读"
+        try:
+            argv_risk = self.computer.classify_argv(program, args)
+        except Exception:  # noqa: BLE001 - 分类失败即无法证明
+            return "无法证明这个程序只读（风险分类失败）"
+        risk_value = getattr(argv_risk, "value", str(argv_risk))
+        if risk_value != "low":
+            return "这个程序的参数不是可证明的只读形态（只读模式只允许白名单程序的只读用法）"
+        if any(meta in str(program) for meta in ("|", ">", "<", "&", ";", "`", "$(")):
+            return "程序名里含有 shell 元字符"
+        return None
+
+    async def _legacy_approve(self, payload: dict, denied: str) -> ToolResult | None:
+        if self.approvals is None:
+            return ToolResult(
+                ok=False,
+                error="这次操作需要你的批准，但当前没有可用的审批服务：本次没有执行。",
+                category="permission",
+                recoverable=False,
+            )
+        from agent.tools.approval_present import describe_computer_action
+
+        described = dict(payload)
+        described.update(describe_computer_action(payload))
+        r = await self.approvals.request("computer", described)
+        if r.decision != "approved":
+            return ToolResult(ok=False, error=f"{refusal_reason(r.decision)}")
+        return None
+
+    async def _authorize_execution(
+        self,
+        effect,
+        *,
+        legacy_verdict: str,
+        legacy_payload: dict,
+        denied: str,
+        pending: tuple | None = None,
+        readonly_allowed: bool = False,
+        readonly_reason: str = "",
+    ) -> ToolResult | None:
+        """统一执行入口：read_only 执行层兜底 + 网关判定 + 待审批提交。
+
+        返回 None 表示可以执行；返回 ToolResult 表示应当直接返回（拒绝/待审批）。
+        """
+        mode = self._mode()
+        if mode == "read_only" and not readonly_allowed:
+            return ToolResult(
+                ok=False,
+                error=(
+                    readonly_reason
+                    or "只读模式下 QIO 不能执行可能修改业务文件的命令/脚本："
+                    "这条路径无法证明只读，本次已拒绝（没有任何程序被执行）。"
+                ),
+                category="permission",
+                recoverable=False,
+                code="readonly_execution_denied",
+            )
+        if self.security is None:
+            if legacy_verdict == "deny":
+                return ToolResult(ok=False, error=denied)
+            if legacy_verdict == "approve":
+                return await self._legacy_approve(legacy_payload, denied)
+            return None
+        decision = await security_gate.authorize(self.security, effect)
+        verdict = security_gate.verdict_of(decision)
+        if verdict == "allow":
+            return None
+        if verdict == "deny":
+            return security_gate.denied_result(decision, denied)
+        if pending is not None:
+            kind, label, pending_payload, fingerprint = pending
+            operation = security_gate.build_pending_operation(
+                kind=kind,
+                label=label,
+                payload=pending_payload,
+                effect=effect,
+                fingerprint=fingerprint,
+                purpose=effect.purpose,
+                mode_at_request=mode,
+                instruction=security_gate.instruction_snapshot(self.security),
+            )
+            try:
+                ticket = await security_gate.submit_pending(self.security, operation)
+            except Exception as exc:  # noqa: BLE001 - 提交失败不能假装已提交
+                return ToolResult(
+                    ok=False,
+                    error=f"提交审批失败：{type(exc).__name__}: {exc}（本次没有执行）",
+                    category="permission",
+                    recoverable=False,
+                )
+            if ticket is not None:
+                return security_gate.pending_result(ticket, operation_label=label)
+        if self.approvals is not None:
+            return await self._legacy_approve(legacy_payload, denied)
+        return ToolResult(
+            ok=False,
+            error="这次操作需要你的批准，但当前没有可用的审批执行器：本次没有执行（执行边界暂不可用）。",
+            category="permission",
+            recoverable=False,
+            code="approval_unavailable",
+        )
 
 
 class RunProgramTool(_CmdTool):
@@ -173,24 +287,47 @@ class RunProgramTool(_CmdTool):
         args = [str(a) for a in raw_args]
         # Lead 接线（契约 1）：把请求里的 cwd 交给裁决 —— cwd 内同名替身
         # 不能仅凭程序名得到自动放行（resolve_program 会因此升级 HIGH）。
+        cwd_arg = str(kwargs.get("cwd") or "") or None
         verdict, risk = self.computer.command_verdict_for_program(
-            program, args, cwd=str(kwargs.get("cwd") or "") or None
+            program, args, cwd=cwd_arg
         )
-        if verdict == "deny":
-            return ToolResult(ok=False, error=f"程序在当前模式下被拒绝（{risk.value}）")
-        if verdict == "approve":
-            from agent.tools.approval_present import describe_computer_action
-
-            payload = {
-                "action": "run_program",
-                "program": program,
-                "args": args,
+        # 执行层兜底（契约 §2.3 read_only）：只有白名单 + shell=False 的只读
+        # argv 才允许在只读模式下执行；其余明确拒绝，不静默降级。
+        proof = self._readonly_program_proof(program, args) if self._mode() == "read_only" else None
+        effect = security_gate.execute_effect(
+            "run_program",
+            program,
+            args,
+            cwd=cwd_arg,
+            shell=False,
+            purpose="运行程序（argv 白名单、shell=False）",
+            detail={"risk": risk.value},
+        )
+        pending = (
+            "proc.run_program",
+            f"运行程序 {program}",
+            {"program": program, "args": args, "cwd": cwd_arg, "risk": risk.value},
+            {
+                "kind": "proc.run_program",
+                "argv": [program, *args],
+                "cwd": cwd_arg,
                 "risk": risk.value,
-            }
-            payload.update(describe_computer_action(payload))
-            r = await self.approvals.request("computer", payload)
-            if r.decision != "approved":
-                return ToolResult(ok=False, error=f"程序执行未获批准：{refusal_reason(r.decision)}")
+            },
+        )
+        blocked = await self._authorize_execution(
+            effect,
+            legacy_verdict=verdict,
+            legacy_payload={"action": "run_program", "program": program, "args": args, "risk": risk.value},
+            denied=f"程序在当前模式下被拒绝（{risk.value}）",
+            pending=pending,
+            readonly_allowed=proof is None,
+            readonly_reason=(
+                "只读模式下只能执行可证明只读的程序（白名单 + shell=False）："
+                f"{proof}。本次已拒绝。"
+            ),
+        )
+        if blocked is not None:
+            return blocked
         return await self._exec(program, args, kwargs.get("cwd"), kwargs.get("timeout", 30))
 
     async def _exec(self, program: str, args: list[str], cwd: Any, timeout: Any) -> ToolResult:
@@ -246,20 +383,35 @@ class RunCmdTool(_CmdTool):
             return ToolResult(ok=False, error="cmd 必填")
         cwd = str(kwargs.get("cwd") or "") or None
         verdict, risk = self.computer.shell_verdict(cmd)
-        if verdict == "deny":
-            return ToolResult(
-                ok=False, error=f"命令在当前模式下被拒绝（{risk.value}）：shell 命令需要用户批准"
-            )
-        if verdict == "approve":
-            from agent.tools.approval_present import describe_computer_action
-
-            # 自由 shell 是最需要说清楚的一类审批：用户要看懂「想运行一条命令」
-            # 以及实际命令（放在详情里），而不是只看到 run_shell 这个内部动作名。
-            payload = {"action": "run_shell", "cmd": cmd, "risk": risk.value}
-            payload.update(describe_computer_action(payload))
-            r = await self.approvals.request("computer", payload)
-            if r.decision != "approved":
-                return ToolResult(ok=False, error=f"命令执行未获批准：{refusal_reason(r.decision)}")
+        effect = security_gate.execute_effect(
+            "run_shell",
+            "shell",
+            [cmd],
+            cwd=cwd,
+            shell=True,
+            purpose="运行自由 shell 命令",
+            detail={"risk": risk.value, "command": cmd},
+        )
+        pending = (
+            "proc.shell",
+            "运行一条 shell 命令",
+            {"cmd": cmd, "cwd": cwd, "risk": risk.value},
+            {"kind": "proc.shell", "cmd": cmd, "cwd": cwd, "risk": risk.value},
+        )
+        blocked = await self._authorize_execution(
+            effect,
+            legacy_verdict=verdict,
+            legacy_payload={"action": "run_shell", "cmd": cmd, "risk": risk.value},
+            denied=f"命令在当前模式下被拒绝（{risk.value}）：shell 命令需要用户批准",
+            pending=pending,
+            readonly_allowed=False,
+            readonly_reason=(
+                "只读模式下 QIO 不能运行 shell 命令：管道/重定向/命令替换无法证明只读，"
+                "本次已拒绝（没有任何命令被执行）。"
+            ),
+        )
+        if blocked is not None:
+            return blocked
         timeout = float(kwargs.get("timeout", 30))
 
         def _create():
@@ -343,17 +495,34 @@ class ProcKillTool(_CmdTool):
             return ToolResult(ok=False, error="pid 必填")
         if not pid.isdigit():
             return ToolResult(ok=False, error="pid 必须是数字")
+        # 契约 §3.1 proc_kill：只允许结束本实例管理的 pid（Job 归属）；其它 pid
+        # 必须经过统一授权（默认需要用户批准）。
+        managed = isolation.is_managed_pid(int(pid))
         verdict = self.computer.command_verdict(f"kill {pid}")[0]
-        if verdict == "deny":
-            return ToolResult(ok=False, error="结束进程在当前模式下被拒绝")
-        if verdict == "approve":
-            from agent.tools.approval_present import describe_computer_action
-
-            payload = {"action": "proc_kill", "pid": pid}
-            payload.update(describe_computer_action(payload))
-            r = await self.approvals.request("computer", payload)
-            if r.decision != "approved":
-                return ToolResult(ok=False, error="结束进程未获批准")
+        effect = security_gate.execute_effect(
+            "proc_kill",
+            "taskkill" if platform.system().lower() == "windows" else "kill",
+            [pid],
+            purpose="结束本实例管理的进程" if managed else "结束进程",
+            detail={"pid": pid, "managed_by_this_instance": managed},
+        )
+        pending = (
+            "proc.kill",
+            f"结束进程 {pid}",
+            {"pid": pid, "managed_by_this_instance": managed},
+            {"kind": "proc.kill", "pid": pid, "managed": managed},
+        )
+        blocked = await self._authorize_execution(
+            effect,
+            legacy_verdict="auto" if managed else verdict,
+            legacy_payload={"action": "proc_kill", "pid": pid},
+            denied="结束进程在当前模式下被拒绝",
+            pending=pending,
+            readonly_allowed=False,
+            readonly_reason="只读模式下 QIO 不能结束进程（系统级变更），本次已拒绝。",
+        )
+        if blocked is not None:
+            return blocked
         if platform.system().lower() == "windows":
             argv = ["taskkill", "/f", "/pid", pid]
         else:
