@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+from agent.services import file_origins
 from agent.services.file_identity import (
     FileIdentity,
     content_sha256,
@@ -765,6 +766,13 @@ class AttachmentService:
         self._commit_seq: dict[str, int] = {}
         self._commit_bucket: dict[tuple[str, int], int] = {}
         self._commit_seq_lock = threading.Lock()
+        # -- R9-F 文件来源（契约 §3.4）----------------------------------------
+        # 统一查询"这个路径是谁的文件"：附件登记/首次落盘/写回/回收都记账，
+        # fs_write/fs_patch/fs_delete 通过同一个 store 查询（不信任模型传入 origin）。
+        # fail-soft：老库没有 file_origins 表时 store 自动降级为空（_ready()=False）。
+        self.file_origins = file_origins.FileOriginStore(self.conn, self.workspace_dir)
+        file_origins.set_default_store(self.file_origins)
+        file_origins.set_attachment_origin_provider(self._origin_from_attachment_row)
 
     # -- 路径 --------------------------------------------------------------
 
@@ -802,6 +810,84 @@ class AttachmentService:
             except (KeyError, IndexError):
                 names.add(str(row[1]))
         return frozenset(name for name in _SOURCE_COLUMN_NAMES if name in names)
+
+    # -- R9-F 文件来源记账（契约 §3.4）----------------------------------------
+
+    def _attachment_origin(self, att: Attachment) -> str:
+        """附件行 → 三来源之一（老行 origin 为空时按 source_kind 保守映射）。"""
+        origin = str(getattr(att, "origin", "") or "")
+        if origin in ORIGINS:
+            return origin
+        source_kind = str(getattr(att, "source_kind", "") or "")
+        if source_kind in MATERIAL_SOURCE_KINDS:
+            return "user_saved_material"
+        return "user_original"
+
+    def _origin_from_attachment_row(self, path: Path) -> str | None:
+        """老附件行的统一回退查询（fs 查询用；后端核实 identity，不信任路径字面）。
+
+        外部替换防误继承：当前文件身份与附件行 file_id 不一致 → 返回 None，
+        绝不让"同名新文件"继承旧附件来源。
+        """
+        target = Path(path)
+        try:
+            raw = str(target.absolute())
+        except OSError:
+            raw = str(target)
+        try:
+            rows = self.conn.execute(
+                "SELECT origin, source_kind, file_id FROM attachments "
+                "WHERE source_path = ? OR stored_path = ?",
+                (raw, raw),
+            ).fetchall()
+        except Exception:  # noqa: BLE001 - 老库没有这些列：按未知来源
+            return None
+        if not rows:
+            return None
+        current = identity_of(target)
+        for row in rows:
+            try:
+                origin, source_kind, file_id = row["origin"], row["source_kind"], row["file_id"]
+            except (KeyError, IndexError, TypeError):
+                origin, source_kind, file_id = row[0], row[1], row[2]
+            if current is not None and file_id and str(file_id) != current.key:
+                # 路径上的文件已不是附件登记的那一份（外部替换）→ 不继承
+                continue
+            if origin in ORIGINS:
+                return str(origin)
+            if str(source_kind or "") in MATERIAL_SOURCE_KINDS:
+                return "user_saved_material"
+            return "user_original"
+        return None
+
+    def _note_origin(self, att: Attachment, path: Path, *, source: str) -> "file_origins.FileOriginRecord | None":
+        """把一条附件路径的**后端核实来源**写入持久化 store（事件循环线程）。"""
+        target = Path(path)
+        try:
+            return self.file_origins.record_existing_file(
+                target,
+                origin=self._attachment_origin(att),
+                source=source,
+                attachment_id=att.id,
+            )
+        except Exception:  # noqa: BLE001 - 记账失败不打断真实文件操作
+            return None
+
+    def note_origin_after_write_back(self, attachment_id: str, outcome: dict) -> None:
+        """写回/原子替换成功后由事件循环线程调用：身份变化，来源保留。"""
+        att = self.get(attachment_id, check=False)
+        if att is None:
+            return
+        path = str((outcome or {}).get("path") or "")
+        if path:
+            self._note_origin(att, Path(path), source="attachment.write_back")
+
+    def note_origin_after_recycle(self, path: str | Path) -> None:
+        """回收站删除成功后调用：来源事实保留，只标记 missing（重启后可查历史）。"""
+        try:
+            self.file_origins.mark_missing(Path(path))
+        except Exception:  # noqa: BLE001 - 记账失败不改变删除结果
+            return
 
     def is_managed_path(self, path: str | Path) -> bool:
         """这个路径是不是 QIO 自己写的副本（在 attachments 根目录之下）。"""
@@ -1065,7 +1151,10 @@ class AttachmentService:
             last_verified_at=now,
             legacy_paths="[]",
         )
-        return self._insert(att)
+        inserted = self._insert(att)
+        # 桌面/拖放入口：用户已有文件 → user_original（工作区位置不决定所有权）。
+        self._note_origin(inserted, target, source=f"attachment.register:{source_kind}")
+        return inserted
 
     def _material_target(self, attachment_id: str, name: str) -> Path:
         year, month = _local_month()
@@ -1170,7 +1259,10 @@ class AttachmentService:
             last_verified_at=now,
             legacy_paths="[]",
         )
-        return self._insert(att)
+        inserted = self._insert(att)
+        # 浏览器/剪贴板首次落盘：用户提供材料（不是 QIO 生成物）。
+        self._note_origin(inserted, target, source=f"attachment.write_material:{source_kind}")
+        return inserted
 
     def material_path(self, att: Attachment) -> Path:
         """这条材料在 workspace/materials/ 下的落盘路径（可预测，用于收尾清理）。"""
@@ -1391,7 +1483,11 @@ class AttachmentService:
             fields["reference_state"] = REFERENCE_AVAILABLE
         self._update(att.id, **fields)
         self._clear_preparing(att.id, generation=effective_generation)
-        return self.get(att.id, check=False)
+        updated = self.get(att.id, check=False)
+        if updated is not None and target is not None:
+            # 首次落盘成功：持久化 user_saved_material（重启/fs 查询同一份事实）。
+            self._note_origin(updated, target, source="attachment.first_landing")
+        return updated
 
     def write_material_bytes(self, data: bytes, **kwargs) -> Attachment:
         """write_material 的字节便捷入口（测试与小型剪贴板内容用）。"""
@@ -1981,6 +2077,8 @@ class AttachmentService:
                     **outcome,
                 }
             )
+            if outcome.get("ok"):
+                self.note_origin_after_recycle(item["path"])
         return {
             "ok": all_ok,
             "pending_approval": False,
@@ -2068,12 +2166,16 @@ class AttachmentService:
                 "path": target,
                 "bytes": len(bytes(data or b"")),
             }
-        return self._write_back_source_now(
+        outcome = self._write_back_source_now(
             attachment_id,
             bytes(data or b""),
             expected_identity=expected_identity,
             expected_sha256=expected_sha256,
         )
+        # 原子替换会改变 OS 身份：更新持久化来源的身份键，**保留原来源**
+        # （写回用户源文件不得变成"QIO 生成物"）。
+        self.note_origin_after_write_back(attachment_id, outcome)
+        return outcome
 
     def _write_back_source_now(
         self,
