@@ -204,7 +204,6 @@ def test_approval_payload_binds_program_and_argv(app_client):
     _decide(client, item["approval_id"], "cancel")
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W2)
 def test_script_change_does_not_reuse_old_approval(app_client, tmp_path):
     """A 修复点：审批后执行前必须重核对**脚本内容/程序身份**（契约 §3.3 permit.spec_digest）。
 
@@ -225,10 +224,26 @@ def test_script_change_does_not_reuse_old_approval(app_client, tmp_path):
     # 批准之后、执行之前：脚本内容被替换
     script.write_text(f"open(r'{tampered_marker}', 'w').write('tampered')", encoding="utf-8")
     _decide(client, approval_id, "approve")
-    _wait_state(client, approval_id, "completed")
-    assert not tampered_marker.exists(), (
-        "脚本内容在批准后发生变化，旧许可不得沿用（W2 待收紧：执行前重算 spec_digest）"
+
+    # 执行器重算 spec_digest 发现脚本内容已变 → 许可失效（终态 failed/invalidated，
+    # 不是 completed）；两种终态名都接受，但绝不允许 completed。
+    deadline = time.time() + 15.0
+    row = None
+    while time.time() < deadline:
+        row = client.app.state.ctx.conn.execute(
+            "SELECT state, result, error FROM pending_approvals WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        if row is not None and row["state"] in {"failed", "invalidated", "completed"}:
+            break
+        time.sleep(0.05)
+    assert row is not None and row["state"] in {"failed", "invalidated"}, (
+        "脚本内容在批准后发生变化，旧许可必须失效", dict(row) if row else None
     )
+    assert not tampered_marker.exists(), (
+        "脚本内容在批准后发生变化，旧许可不得沿用（篡改后的脚本不得被执行）"
+    )
+    assert not original_marker.exists(), "旧许可失效后原脚本也不得执行"
 
 
 # ---------------------------------------------------------------------------
