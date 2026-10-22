@@ -1,0 +1,66 @@
+R9 W2 执行边界真机探针
+========================================================================
+时间（UTC）: 2026-10-22T06:36:06.544575+00:00
+平台: Windows-10-10.0.26200-SP0
+Python: 3.11.15 (D:\qio-dev\qio-r9-w2\backend\.venv\Scripts\python.exe)
+仓库根: D:\qio-dev\qio-r9-w2
+Windows: True
+
+
+[PASS] Low IL 写拒绝（Medium 文件 PermissionError）
+{
+  "父进程完整性": "S-1-16-8192",
+  "子进程完整性": "S-1-16-4096",
+  "要求低完整性": true,
+  "边界核实": true,
+  "机制": [
+    "job_object",
+    "low_integrity"
+  ],
+  "子进程退出码": 3,
+  "stderr": "WRITE-DENIED PermissionError",
+  "受保护文件未被修改": true
+}
+
+[PASS] Job Object 收进程树（KILL_ON_JOB_CLOSE）
+{
+  "机制": [
+    "job_object"
+  ],
+  "limits": {
+    "process_memory_bytes": 1073741824,
+    "active_processes": 32,
+    "kill_on_close": true
+  },
+  "孙进程 pid": 151924,
+  "释放前孙进程存活": true,
+  "释放后子进程消失": true,
+  "释放后孙进程消失": true
+}
+
+[PASS] 只读模式 argv 白名单实测（run_program / run_shell）
+{
+  "只读 argv(git --version)": {
+    "ok": true,
+    "输出含 git": true
+  },
+  "可写子命令(git commit)": {
+    "ok": false,
+    "原因": "只读模式下只能执行可证明只读的程序（白名单 + shell=False）：这个程序的参数不是可证明的只读形态（只读模式只允许白名单程序的只读用法）。本次已拒绝。"
+  },
+  "自由 shell(echo > 文件)": {
+    "ok": false,
+    "原因": "只读模式下 QIO 不能运行 shell 命令：管道/重定向/命令替换无法证明只读，本次已拒绝（没有任何命令被执行）。"
+  },
+  "工作区里新增的文件": [],
+  "经过统一授权入口的 effect 数": 1
+}
+
+[PASS] 只读模式拒绝任意脚本（执行层兜底）
+{
+  "ok": false,
+  "error": "只读模式下 QIO 不能运行脚本或自建工具：无法证明它不会修改业务文件，本次已拒绝（没有任何代码被执行）。",
+  "category": "permission"
+}
+
+结论: PASS=4 FAIL=0 UNSUPPORTED=0

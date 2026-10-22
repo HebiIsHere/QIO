@@ -31,6 +31,7 @@ from agent.prompts import (
     TOOL_AWAIT_TASK_DESC,
     TOOL_READ_TASK_RESULT_DESC,
 )
+from agent.tools import security_gate
 from agent.tools.base import TOOL_RESULT_PROTOCOL_VERSION, Tool, ToolResult
 from agent.tools.contracts import json_schema_for
 from agent.tools.memory_search import MemorySearchTool
@@ -249,6 +250,9 @@ class SubagentTool(Tool):
     #: 允许接收 _qio_subtask 控制字段（registry 的保留字段检查据此放行）
     subtask_control_allowed = True
 
+    # security = 统一授权网关（契约 §2.4）；None = 旧接线/单测回退路径。
+    inject = ["security"]
+
     def __init__(
         self,
         definition: ToolDefinition,
@@ -261,6 +265,7 @@ class SubagentTool(Tool):
         toolset: list[str] | None = None,
         trace_store=None,
         origin_provider: Callable[[], dict[str, Any] | None] | None = None,
+        security=None,
     ) -> None:
         self.definition = definition
         self.name = definition.name
@@ -275,6 +280,7 @@ class SubagentTool(Tool):
         self.toolset = toolset or ["memory_search"]
         self.trace_store = trace_store
         self.origin_provider = origin_provider
+        self.security = security
 
     def _origin(self) -> dict[str, Any]:
         provider = self.origin_provider or _ORIGIN_PROVIDER
@@ -289,6 +295,62 @@ class SubagentTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         if self.adapter_factory is None:
             return ToolResult(ok=False, error="子任务没有可用的适配器工厂")
+        # 契约 §2.3/§2.4：子智能体只拿到父级 grant 的**子集**，深度只有一层；
+        # 创建本身走统一授权入口；超出父级范围由主智能体统一向用户申请（单层），
+        # 子智能体自己绝不弹窗。
+        scope = None
+        if self.security is not None:
+            decision = await security_gate.authorize(
+                self.security,
+                security_gate.subagent_effect(
+                    self.name, definition_name=self.definition.name
+                ),
+            )
+            verdict = security_gate.verdict_of(decision)
+            if verdict == "deny":
+                return security_gate.denied_result(
+                    decision, "当前模式不允许创建子智能体"
+                )
+            if verdict == "approve":
+                operation = security_gate.build_pending_operation(
+                    kind="subagent.create",
+                    label=f"创建子智能体 {self.name}",
+                    payload={"tool": self.name, "definition": self.definition.name},
+                    effect=security_gate.subagent_effect(
+                        self.name, definition_name=self.definition.name
+                    ),
+                    fingerprint={"tool": self.name},
+                    purpose="创建子智能体（能力不超过父级授权范围）",
+                    mode_at_request=security_gate.mode_of(self.security),
+                    instruction=security_gate.instruction_snapshot(self.security),
+                )
+                ticket = await security_gate.submit_pending(self.security, operation)
+                if ticket is not None:
+                    return security_gate.pending_result(
+                        ticket, operation_label=f"创建子智能体 {self.name}"
+                    )
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        "创建子智能体需要你的批准，但当前没有可用的审批执行器："
+                        "本次没有创建（执行边界暂不可用）。"
+                    ),
+                    category="permission",
+                    recoverable=False,
+                )
+            scope = await security_gate.create_child_scope(
+                self.security, purpose=self.definition.description
+            )
+            if scope is None:
+                return ToolResult(
+                    ok=False,
+                    error=(
+                        "子智能体不能继续扩权：当前上下文无法生成父授权的子集"
+                        "（或已超过允许的深度），本次没有创建。"
+                    ),
+                    category="permission",
+                    recoverable=False,
+                )
         try:
             control, business = split_subtask_control(kwargs)
         except SubtaskControlError as exc:
@@ -322,12 +384,16 @@ class SubagentTool(Tool):
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         self.task_manager.submit(
             self.name,
-            lambda: self._execute(task_id, adapter, business, control, budget, choice),
+            lambda: self._execute(
+                task_id, adapter, business, control, budget, choice, scope
+            ),
             task_id=task_id,
             origin=origin,
         )
         if self.definition.sync:
             _, res = await self.task_manager.await_result(task_id, timeout=None)
+            if res is not None and scope is not None:
+                res.data = {**(res.data or {}), "agent_scope": security_gate.scope_summary(scope)}
             return res if res is not None else ToolResult(ok=False, error="子任务执行失败")
         return ToolResult(
             ok=True,
@@ -338,6 +404,7 @@ class SubagentTool(Tool):
                 "credential_ref": choice["credential_ref"],
                 "model": model,
                 "origin": origin,
+                "agent_scope": security_gate.scope_summary(scope),
                 "next": (
                     "需要结果时调用 await_task(task_id=..., notify=true) 取回；"
                     "结果较长时用 read_task_result 分段读取全文。"
@@ -356,6 +423,7 @@ class SubagentTool(Tool):
         control: SubtaskControl | None,
         budget: SubagentBudget,
         choice: dict[str, Any],
+        scope=None,
     ) -> ToolResult:
         tid = f"subagent:{task_id}"
         tracer = None
@@ -365,9 +433,11 @@ class SubagentTool(Tool):
             tracer = TurnTracer(self.trace_store, tid)
             self.trace_store.begin(tid)
         try:
-            result = await self._run_subagent(
-                task_id, adapter, business, control, budget, choice, tid, tracer
-            )
+            # 子智能体循环内创建的所有 effect 都带这个 AgentScope（契约 §2.4）。
+            with security_gate.agent_scope_context(scope):
+                result = await self._run_subagent(
+                    task_id, adapter, business, control, budget, choice, tid, tracer
+                )
         except Exception:
             if self.trace_store is not None:
                 self.trace_store.finish(tid, "failed")

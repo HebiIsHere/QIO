@@ -59,6 +59,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
+from agent.tools import security_gate
+
 DEFAULT_INSTALL_TIMEOUT_SECONDS = 600.0
 MANIFEST_NAME = "qio-env.json"
 LOCK_NAME = "requirements.lock"
@@ -776,6 +778,7 @@ async def resolve_execution_environment(
     approvals=None,
     tool_name: str = "",
     task_id: str | None = None,
+    security=None,
 ) -> ToolExecutionEnv:
     """按执行器决定「用宿主专用环境还是容器依赖镜像」，没准备好就给出原因。
 
@@ -807,6 +810,7 @@ async def resolve_execution_environment(
             approvals=approvals if prepare else None,
             tool_name=tool_name,
             task_id=task_id,
+            security=security if prepare else None,
         )
         if not status.ok:
             reason = status.reason or "依赖镜像没准备好，已拒绝执行"
@@ -818,7 +822,11 @@ async def resolve_execution_environment(
         return ToolExecutionEnv(ok=True, executor=executor, container_image=status.image)
     if prepare:
         status = await envs.ensure(
-            requirements, approvals=approvals, tool_name=tool_name, task_id=task_id
+            requirements,
+            approvals=approvals,
+            tool_name=tool_name,
+            task_id=task_id,
+            security=security,
         )
     else:
         status = envs.status_for(requirements)
@@ -1082,8 +1090,11 @@ class ToolEnvManager:
         approvals=None,
         tool_name: str = "",
         task_id: str | None = None,
+        security=None,
     ) -> EnvStatus:
         """按需准备专用环境；没有依赖时直接用随包环境（interpreter=None）。"""
+        # 统一授权入口（契约 §2.3 INSTALL_DEPS）：QIO 专用环境内的安装由引擎
+        # 允许；系统级安装/系统配置才需要用户批准（本管理器只写自己的 root）。
         wanted = _normalize_requirements(requirements)
         if not wanted:
             return EnvStatus(ok=True, interpreter=None)
@@ -1100,6 +1111,45 @@ class ToolEnvManager:
                 resolution=manifest.get("resolution"),
                 lock_available=lock is not None,
             )
+        install_allowed = False
+        if security is not None:
+            try:
+                auth = await security_gate.authorize(
+                    security,
+                    security_gate.install_deps_effect(
+                        "tool_envs",
+                        wanted,
+                        target=self.root,
+                        detail={
+                            "tool": tool_name,
+                            "task_id": task_id,
+                            "env_root": str(self.root),
+                        },
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - 判定失败不装（fail-closed）
+                return EnvStatus(
+                    ok=False,
+                    interpreter=None,
+                    reason=f"安装授权判定失败，本次没有准备专用环境：{type(exc).__name__}: {exc}",
+                    fingerprint=fingerprint,
+                    lock_available=lock is not None,
+                )
+            verdict = security_gate.verdict_of(auth)
+            if verdict == "deny":
+                return EnvStatus(
+                    ok=False,
+                    interpreter=None,
+                    reason=security_gate.reason_of(
+                        auth, "当前模式不允许安装依赖：这次没有准备专用环境。"
+                    ),
+                    fingerprint=fingerprint,
+                    lock_available=lock is not None,
+                )
+            install_allowed = verdict == "allow"
+        if install_allowed:
+            # 契约 §2.3：QIO 专用环境内安装由引擎 allow，不再重复征求用户同意。
+            return await self._prepare(wanted, fingerprint=fingerprint)
         if approvals is None:
             return EnvStatus(
                 ok=False,
@@ -1577,6 +1627,7 @@ class ToolEnvManager:
         approvals=None,
         tool_name: str = "",
         task_id: str | None = None,
+        security=None,
     ) -> ContainerStatus:
         """把「按锁定版本构建的镜像」准备好（构建一次，之后按 tag 离线复用）。
 
@@ -1604,38 +1655,79 @@ class ToolEnvManager:
                 pinned=pinned,
                 note="本机已经有这个镜像（按锁定版本构建过）：直接复用，不联网、不重新安装。",
             )
-        if approvals is None:
-            return ContainerStatus(
-                ok=False,
-                image=image,
-                base_image=base_image,
-                lock_available=lock_file.is_file(),
-                pinned=pinned,
-                reason=(
-                    "需要一个按锁定版本构建的容器镜像，但没有可用的确认通道来征求构建许可："
-                    "这次没有构建，也不会在工具调用时临时 pip install。"
+        build_allowed = False
+        if security is not None:
+            try:
+                auth = await security_gate.authorize(
+                    security,
+                    security_gate.install_deps_effect(
+                        "tool_envs",
+                        wanted,
+                        target=self.root,
+                        detail={
+                            "tool": tool_name,
+                            "task_id": task_id,
+                            "image": image,
+                            "kind": "container_image",
+                        },
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - 判定失败不构建（fail-closed）
+                return ContainerStatus(
+                    ok=False,
+                    image=image,
+                    base_image=base_image,
+                    lock_available=lock_file.is_file(),
+                    pinned=pinned,
+                    reason=f"构建授权判定失败，本次没有构建镜像：{type(exc).__name__}: {exc}",
+                )
+            verdict = security_gate.verdict_of(auth)
+            if verdict == "deny":
+                return ContainerStatus(
+                    ok=False,
+                    image=image,
+                    base_image=base_image,
+                    lock_available=lock_file.is_file(),
+                    pinned=pinned,
+                    reason=security_gate.reason_of(
+                        auth, "当前模式不允许构建依赖镜像：这次没有构建。"
+                    ),
+                )
+            build_allowed = verdict == "allow"
+        if not build_allowed:
+            if approvals is None:
+                return ContainerStatus(
+                    ok=False,
+                    image=image,
+                    base_image=base_image,
+                    lock_available=lock_file.is_file(),
+                    pinned=pinned,
+                    reason=(
+                        "需要一个按锁定版本构建的容器镜像，但没有可用的确认通道来征求构建许可："
+                        "这次没有构建，也不会在工具调用时临时 pip install。"
+                    ),
+                )
+            decision = await approvals.request(
+                "dependency_install",
+                self._container_approval_payload(
+                    wanted,
+                    tool_name=tool_name,
+                    task_id=task_id,
+                    image=image,
+                    needs_resolve=not lock_file.is_file(),
                 ),
             )
+            if getattr(decision, "decision", None) != "approved":
+                return ContainerStatus(
+                    ok=False,
+                    image=image,
+                    base_image=base_image,
+                    lock_available=lock_file.is_file(),
+                    pinned=pinned,
+                    reason="你（或超时）没有同意构建容器镜像：容器路径这次不可用（不会退回临时安装）。",
+                )
+        # 走到这里 = 引擎 allow（QIO 专用环境内）或用户已批准：真正开始构建。
         needs_resolve = not lock_file.is_file()
-        decision = await approvals.request(
-            "dependency_install",
-            self._container_approval_payload(
-                wanted,
-                tool_name=tool_name,
-                task_id=task_id,
-                image=image,
-                needs_resolve=needs_resolve,
-            ),
-        )
-        if getattr(decision, "decision", None) != "approved":
-            return ContainerStatus(
-                ok=False,
-                image=image,
-                base_image=base_image,
-                lock_available=lock_file.is_file(),
-                pinned=pinned,
-                reason="你（或超时）没有同意构建容器镜像：容器路径这次不可用（不会退回临时安装）。",
-            )
         note: str | None = None
         if needs_resolve:
             resolved, packages, installer = await self.resolve_only(wanted)

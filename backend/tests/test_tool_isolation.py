@@ -399,11 +399,16 @@ async def test_low_integrity_keeps_the_scratch_writable(tmp_path, monkeypatch):
     # 外面那个目录的标签高于 Low 时（Medium 会话/CI），写必须被内核拒绝；
     # 本会话自身就在 Low 完整性（父进程造不出更高标签的对象）时，它也是 Low，写得进去才是对的。
     label = isolation.integrity_label_of(str(outside))
-    if isolation.label_is_low(label) or not label:
-        assert result.value['outside'] == 'WRITE-OK'
-    else:
-        assert result.value['outside'] == 'WRITE-DENIED'
+    parent_integrity = isolation.integrity_of_process(os.getpid())
+    # 没有显式标签 ACE 时对象继承父目录的完整性：父进程是 Medium 就是 Medium。
+    target_is_high = (
+        bool(label) and not isolation.label_is_low(label)
+    ) or (not label and parent_integrity != isolation.LOW_INTEGRITY_SID)
+    if target_is_high:
+        assert result.value['outside'] == 'WRITE-DENIED', result.isolation
         assert not (outside / 'probe.txt').exists()
+    else:
+        assert result.value['outside'] == 'WRITE-OK'
 
 
 @WINDOWS_ONLY
@@ -569,8 +574,11 @@ async def test_the_declared_triple_holds_with_a_non_low_parent(tmp_path, monkeyp
     mechanisms = (result.isolation or {}).get('mechanisms', [])
     problems = (result.isolation or {}).get('problems', [])
     claimed_low = 'low_integrity' in mechanisms
-    # 目标目录是否**明确**标了高于 Low 的标签（没有标签 ACE 时读回是空串，不能当成「更高」）
-    higher_target = bool(user_label) and not isolation.label_is_low(user_label)
+    # 目标目录是否高于 Low：有显式标签 ACE 时按标签判断；没有标签 ACE 时
+    # 它继承父目录的完整性 —— 父进程（本测试进程）是 Medium 就是 Medium。
+    higher_target = (
+        bool(user_label) and not isolation.label_is_low(user_label)
+    ) or (not user_label and parent_integrity != isolation.LOW_INTEGRITY_SID)
 
     if claimed_low and higher_target:
         # 声明了低完整性、而且目标确实更高：这时写必须被内核拒绝（工具返回 'WRITE-DENIED <原因>'）
@@ -607,7 +615,9 @@ _SELF_REPORT = (
     '    adv.ConvertSidToStringSidW(ctypes.c_void_p(sid), ctypes.byref(text))\n'
     '    in_job = wintypes.BOOL()\n'
     '    k32.IsProcessInJob(k32.GetCurrentProcess(), None, ctypes.byref(in_job))\n'
-    "    return {'pid': os.getpid(), 'integrity': text.value, 'in_job': bool(in_job.value), 'ppid': os.getppid()}\n"
+    # 注意：Low 完整性进程不能用 os.getppid()（Windows 上它靠 Toolhelp 枚举进程，
+    # 低完整性令牌枚举 Medium 进程会 ERROR_NO_MORE_FILES）—— 自检只报 pid/完整性/job。
+    "    return {'pid': os.getpid(), 'integrity': text.value, 'in_job': bool(in_job.value)}\n"
 )
 
 
@@ -635,7 +645,7 @@ async def test_the_process_that_runs_tool_code_is_the_one_we_hardened(tmp_path, 
         assert result.value['integrity'] == isolation.LOW_INTEGRITY_SID, (
             '声称低完整性，但真正跑工具代码的进程是 '
             + str(result.value['integrity'])
-            + f' (pid={result.value["pid"]}, 父进程={result.value["ppid"]})；'
+            + f' (pid={result.value["pid"]})；'
             '说明降级落在转发进程上、真正干活的进程逃逸了'
         )
     if 'job_object' in mechanisms:

@@ -24,6 +24,7 @@ from typing import Callable
 
 from agent.adapters.base import BaseAdapter
 from agent.credentials.store import CredentialStore
+from agent.tools import security_gate
 from agent.tools.approval import ApprovalService
 from agent.tools.dev_tools import (
     PHASE_FAILED,
@@ -107,6 +108,9 @@ class ToolLifecycle:
         self.stage_sink: Callable[[str], None] | None = None
         # 已注册工具的 disposer，撤销时真正从注册表移除
         self._registry_disposers: dict[str, Callable[[], None]] = {}
+        # 统一授权网关（由 DevSubmitTool 在提交前注入；None = 单测/旧接线）。
+        # 注册不产生长期文件/网络授权：注册动作本身经引擎判定，之后每次调用重新判定。
+        self.security = None
 
     def _set_stage(self, stage: str) -> None:
         """如实登记当前阶段（没有出口就什么都不做）。
@@ -159,6 +163,7 @@ class ToolLifecycle:
                 prepare=True,
                 approvals=self.approvals,
                 tool_name=definition.name,
+                security=self.security,
             )
             if not plan.ok:
                 # 依赖环境没准备好就不跑复测：不换成「没有依赖的解释器」制造假结论。
@@ -249,6 +254,39 @@ class ToolLifecycle:
         refused = await refuse_if_abandoned()
         if refused is not None:
             return refused
+
+        # 统一授权入口（契约 §2.3 TOOL_REGISTER）：注册动作本身也经引擎判定。
+        # 注册不产生长期文件/网络授权 —— 之后每次调用重新判定（CodeTool._authorize_call）。
+        if self.security is not None:
+            try:
+                decision = await security_gate.authorize(
+                    self.security,
+                    security_gate.tool_register_effect(
+                        "dev_submit_tool",
+                        definition.name,
+                        detail={"tool_type": definition.tool_type, "group_id": group_id},
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - 判定失败不注册（fail-closed）
+                return ToolOutcome(
+                    False,
+                    definition.name,
+                    "authorize",
+                    f"注册判定失败：{type(exc).__name__}: {exc}",
+                )
+            if security_gate.verdict_of(decision) == "deny":
+                reason = security_gate.reason_of(
+                    decision, "当前模式不允许注册自建工具"
+                )
+                await self.status.emit(
+                    group_id,
+                    PHASE_FAILED,
+                    label="创建失败",
+                    detail=reason,
+                    ok=False,
+                    tool_name=definition.name,
+                )
+                return ToolOutcome(False, definition.name, "authorize", reason)
 
         policy = default_policy_for(definition)
         definition.approved_policy_fingerprint = policy_fingerprint(policy)
