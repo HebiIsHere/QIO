@@ -65,8 +65,9 @@ def _route_declared(client) -> bool:
 # ---- 1. 副本内容可读，且读的是 QIO 自己的副本 ---------------------------------------
 
 
-def test_copy_content_is_served_after_the_source_file_is_gone(app_client, tmp_path):
-    client, _app = app_client
+def test_legacy_copy_content_is_served_after_the_source_file_is_gone(app_client, tmp_path):
+    """历史行（旧副本）：用户原文件删除后副本仍可打开 —— 历史回放能力保留。"""
+    client, app = app_client
     if not _route_declared(client):
         pytest.fail(
             "契约 §1.6：缺 GET /api/attachments/{id}/content（历史附件没有可用的打开链路）"
@@ -74,9 +75,12 @@ def test_copy_content_is_served_after_the_source_file_is_gone(app_client, tmp_pa
     body_bytes = "副本内容：这一行必须一字不差地读回来。\n".encode("utf-8")
     source = tmp_path / "原件.txt"
     source.write_bytes(body_bytes)
-    created = _post_source(client, source)
+    svc = app.state.ctx.attachments
+    att = svc.run_prepare(svc.prepare(str(source)).id)
+    created = svc.payload(att)
     meta = _wait_terminal(client, str(created["id"]))
     assert meta["state"] == "ready", meta
+    assert meta["stored_path"], meta
 
     # 用户把原文件删掉：副本仍然必须能打开（否则「打开副本」毫无意义）
     source.unlink()
@@ -113,32 +117,40 @@ def test_arbitrary_paths_are_never_served(app_client, tmp_path):
 # ---- 3. 引用型 / 非 ready 不提供内容 -----------------------------------------------
 
 
-def test_reference_attachment_is_not_served_directly(app_client, tmp_path):
-    """引用型只记位置（>100MB），不得由这个入口把任意路径的内容吐出来。"""
+def test_source_reference_content_reads_source_and_missing_is_409(app_client, tmp_path):
+    """源引用：/content 读源文件；源缺失 → 409 + missing（不读任何旧副本冒充）。"""
     client, _app = app_client
     if not _route_declared(client):
         pytest.fail("契约 §1.6：缺 GET /api/attachments/{id}/content")
-    source = tmp_path / "被引用的.bin"
-    with open(source, "wb") as handle:
-        handle.truncate(COPY_MAX + 1)
+    source = tmp_path / "被引用.bin"
+    source.write_bytes(b"source-bytes")
     created = _post_source(client, source)
     meta = _wait_terminal(client, str(created["id"]))
     assert meta["kind"] == "reference", meta
+    assert meta["stored_path"] in (None, ""), meta
 
+    served = client.get(f"/api/attachments/{created['id']}/content")
+    assert served.status_code == 200, (served.status_code, served.text[:200])
+    assert served.content == b"source-bytes"
+
+    source.unlink()
+    missing = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
+    assert str(missing.get("state")) == "missing", missing
+    assert missing.get("missing_reason"), missing
     resp = client.get(f"/api/attachments/{created['id']}/content")
-    assert resp.status_code >= 400, (
-        "引用型不得由内容入口直接提供（只读 QIO 管理的副本）",
-        resp.status_code,
-    )
+    assert resp.status_code == 409, (resp.status_code, resp.text[:200])
 
 
-def test_content_is_not_served_when_the_copy_is_gone(app_client, tmp_path):
-    client, _app = app_client
+def test_content_is_not_served_when_the_legacy_copy_is_gone(app_client, tmp_path):
+    """历史行（旧副本）：副本丢失 → 如实 409，不读源文件冒充副本。"""
+    client, app = app_client
     if not _route_declared(client):
         pytest.fail("契约 §1.6：缺 GET /api/attachments/{id}/content")
     source = tmp_path / "副本会消失.txt"
     source.write_text("副本马上被删掉", encoding="utf-8")
-    created = _post_source(client, source)
+    svc = app.state.ctx.attachments
+    att = svc.run_prepare(svc.prepare(str(source)).id)
+    created = svc.payload(att)
     meta = _wait_terminal(client, str(created["id"]))
     stored = str(meta.get("stored_path") or "")
     assert stored, meta
