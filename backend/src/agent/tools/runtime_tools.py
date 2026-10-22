@@ -57,6 +57,12 @@ class CodeTool(Tool):
                 recoverable=False,
                 code="readonly_execution_denied",
             )
+        # 审批执行器批准后重跑本工具（registry 的 approved 重跑标记）：审批已完成，
+        # 不再重复提交；只读检查已在上方生效（批准后切只读 → 这里仍不执行）。
+        from agent.tools.registry import current_approved_execution
+
+        if current_approved_execution() is not None:
+            return None
         effect = security_gate.script_effect(
             self.name,
             purpose=f"执行自建工具 {self.name}",

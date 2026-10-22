@@ -63,6 +63,15 @@ def current_narrative() -> Narrative | None:
     return _current_narrative.get()
 
 
+def current_approved_execution() -> str | None:
+    """当前是否处在「用户已批准」的重跑管线（返回 approval_id；否则 None）。
+
+    工具内部自带的授权入口（如自建工具每次调用重新判定）据此跳过**重复**审批；
+    审批执行器在领取前已完成模式/对象重核对，工具自己的只读兜底仍然生效。
+    """
+    return _approved_execution.get()
+
+
 def _exception_text(exc: BaseException) -> str:
     """把异常写成「类型 + 说明」；说明为空时给出可查的替代信息。
 

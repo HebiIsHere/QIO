@@ -47,7 +47,9 @@ class _FakeSandbox:
 
     @property
     def mode(self) -> str:
-        return "default"
+        # 这些用例只验证「取消语义 + 真实 I/O」，不验证权限：显式用 unrestricted 夹具，
+        # 避免新型权限语义（用户文件默认需要审批）干扰取消/线程这条链路本身。
+        return "unrestricted"
 
 
 class _FakeApproval:

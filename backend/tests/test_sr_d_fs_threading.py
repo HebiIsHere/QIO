@@ -29,7 +29,7 @@ from agent.tools.fs_tools import (
 
 
 class _FakeSandbox:
-    def __init__(self, root: Path, verdict: str = "auto", mode: str = "default") -> None:
+    def __init__(self, root: Path, verdict: str = "auto", mode: str = "unrestricted") -> None:
         self._root = root
         self._verdict = verdict
         self._mode = mode
@@ -154,20 +154,25 @@ async def test_fs_read_slow_io_does_not_block_loop(tmp_path):
 
 
 async def test_fs_write_io_off_event_loop_thread(tmp_path):
-    target = tmp_path / "w.txt"
-    real_open = builtins.open
-    io_threads: list[int] = []
+    """写入（现在是原子写）也必须在线程池执行，不在事件循环线程做真实 I/O。
 
-    def tracking_open(file, mode="r", *args, **kw):
+    原子写用 tempfile+os.replace，不再经过 builtins.open；这里替换 fs_tools 的
+    写入缝（_write_file）记录线程身份，真实落盘就在这个线程里完成。
+    """
+    target = tmp_path / "w.txt"
+    io_threads: list[int] = []
+    original_write = fs_tools._write_file
+
+    def tracking_write(path: Path, content: str) -> None:
         io_threads.append(threading.get_ident())
         time.sleep(0.1)
-        return real_open(file, mode, *args, **kw)
+        original_write(path, content)
 
-    builtins.open = tracking_open  # type: ignore[misc]
+    fs_tools._write_file = tracking_write
     try:
         res = await _tool_with(tmp_path, FsWriteTool).run(path=str(target), content="hi")
     finally:
-        builtins.open = real_open  # type: ignore[misc]
+        fs_tools._write_file = original_write
     assert res.ok
     assert target.read_text(encoding="utf-8") == "hi"
     assert io_threads
