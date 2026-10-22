@@ -22,7 +22,12 @@ describe("布局夹取", () => {
 
   it("右栏宽度不超过窗口允许的上限", () => {
     expect(clampRightWidth(200, 1440, 292)).toBe(RIGHT_MIN);
-    expect(clampRightWidth(9999, 1440, 292)).toBe(RIGHT_MAX);
+    // 1440 窗口、左栏 292：右栏上限同时受「中央最小可读宽度」约束
+    expect(clampRightWidth(9999, 1440, 292)).toBe(
+      Math.min(RIGHT_MAX, 1440 - 292 - 20 - CENTER_MIN),
+    );
+    // 窗口足够宽时才允许到最大宽度
+    expect(clampRightWidth(9999, 2560, 292)).toBe(RIGHT_MAX);
     // 1024 窗口且左栏已临时收起（48px）：右栏上限会被压低到刚好保住中央最小宽度
     const narrowed = clampRightWidth(9999, 1024, 48);
     expect(narrowed).toBeGreaterThanOrEqual(RIGHT_MIN);
