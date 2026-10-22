@@ -487,6 +487,267 @@ async def execute_proc_kill(
 
 
 # --------------------------------------------------------------------------
+# 附件（W3：services/attachments.py + services/attachment_access.py）
+# --------------------------------------------------------------------------
+
+
+def _w3_services():
+    """W3 的文件身份 / 回收站实现（延迟导入：模块还没合入时如实不可用）。"""
+    from agent.services import file_identity as w3_identity  # type: ignore
+
+    return w3_identity
+
+
+def _w3_identity_key(path: str) -> str | None:
+    try:
+        w3 = _w3_services()
+        found = w3.identity_of(Path(path))
+    except Exception:  # noqa: BLE001 - 身份读不到按不可核对处理
+        return None
+    return str(getattr(found, "key", "") or "") or None
+
+
+def _w3_content_sha(path: str) -> str | None:
+    try:
+        w3 = _w3_services()
+        return w3.content_sha256(Path(path))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def execute_attachment_write_back(
+    payload: dict,
+    ctx: ExecutionContext,
+    *,
+    attachments_getter: Callable[[], Any] | None,
+) -> ExecResult:
+    """attachment.write_back：批准后真正写回源文件（W3 的已授权实现）。"""
+    service = attachments_getter() if callable(attachments_getter) else None
+    if service is None:
+        return _failure(
+            "附件服务暂不可用：没有写回任何文件（需要应用完整装配）",
+            "attachment_service_unavailable",
+        )
+    attachment_id = str(payload.get("attachment_id") or "")
+    path = str(payload.get("path") or "")
+    encoded = payload.get("content_b64")
+    if not attachment_id or not path or encoded is None:
+        return _failure(
+            "审批单缺少 attachment_id/path/content_b64：未写回",
+            "missing_attachment_payload",
+        )
+    try:
+        import base64
+
+        data = base64.b64decode(str(encoded), validate=True)
+    except Exception as exc:  # noqa: BLE001 - 审批单内容不是合法 base64：不写
+        return _failure(
+            f"审批单里的写回内容不是合法 base64：未写回（{type(exc).__name__}）",
+            "invalid_content_encoding",
+            path=path,
+            attachment_id=attachment_id,
+        )
+    fingerprint = _fingerprint(ctx)
+    expected_new_sha = str(payload.get("sha256") or fingerprint.get("new_sha256") or "")
+    if expected_new_sha:
+        import hashlib as _hashlib
+
+        actual = _hashlib.sha256(data).hexdigest()
+        if actual != expected_new_sha:
+            return _failure(
+                "待写回内容与提交审批时不一致：本次未写回（需重新审批）",
+                "invalidated: new_content_sha256_mismatch",
+                invalidated=True,
+                path=path,
+                attachment_id=attachment_id,
+            )
+    expected_identity = str(fingerprint.get("identity") or payload.get("identity") or "")
+    expected_old_sha = str(fingerprint.get("content_sha256") or "")
+    if expected_identity:
+        current_key = _w3_identity_key(path)
+        if current_key is None or current_key != expected_identity:
+            return _failure(
+                "源文件已不是审批时的那一份（身份变化）：本次未写回（请重新读取后再确认）",
+                "invalidated: source_identity_changed",
+                invalidated=True,
+                path=path,
+                attachment_id=attachment_id,
+            )
+    if expected_old_sha:
+        current_sha = _w3_content_sha(path)
+        if current_sha is None or current_sha != expected_old_sha:
+            return _failure(
+                "源文件内容在审批期间发生了变化：本次未写回（请重新读取后再确认）",
+                "invalidated: source_content_changed",
+                invalidated=True,
+                path=path,
+                attachment_id=attachment_id,
+            )
+    try:
+        outcome = await asyncio.to_thread(
+            service._write_back_source_now,
+            attachment_id,
+            data,
+            expected_identity=expected_identity or None,
+            expected_sha256=expected_old_sha or None,
+        )
+    except Exception as exc:  # noqa: BLE001 - 写回失败/重核对失败都如实落库
+        return _failure(
+            f"写回源文件失败（原文件保留）：{_redacted(exc)}",
+            f"{type(exc).__name__}: {_redacted(exc)}",
+            path=path,
+            attachment_id=attachment_id,
+        )
+    outcome = dict(outcome or {})
+    return _success(
+        f"已写回源文件：{path}",
+        path=str(outcome.get("path") or path),
+        attachment_id=attachment_id,
+        bytes=int(outcome.get("bytes") or len(data)),
+        sha256=outcome.get("sha256"),
+        previous_sha256=outcome.get("previous_sha256"),
+        identity=outcome.get("identity"),
+        identity_changed=bool(outcome.get("identity_changed")),
+    )
+
+
+async def execute_attachment_recycle(
+    payload: dict,
+    ctx: ExecutionContext,
+    *,
+    recycle_mover: Callable[..., Any] | None = None,
+) -> ExecResult:
+    """attachment.recycle：批准后把用户材料逐个移入系统回收站（失败保留文件）。"""
+    targets = [dict(item) for item in (payload.get("targets") or []) if isinstance(item, dict)]
+    if not targets:
+        return _failure("审批单缺少待删除的用户材料清单：未删除", "missing_targets")
+    if recycle_mover is None:
+        try:
+            from agent.services import recycle_bin as recycle_module  # type: ignore
+
+            recycle_mover = recycle_module.send_to_recycle_bin
+        except Exception:  # noqa: BLE001 - W3 模块不可用：保留文件
+            return _failure(
+                "回收站路径暂不可用：文件全部保留，未删除（不会直接 unlink）",
+                "recycle_bin_unavailable",
+                file_preserved=True,
+            )
+    results: list[dict] = []
+    all_ok = True
+    for item in targets:
+        path = str(item.get("path") or "")
+        if not path:
+            results.append({"path": path, "ok": False, "reason": "缺少路径"})
+            all_ok = False
+            continue
+        expected_identity = str(item.get("identity") or "")
+        if expected_identity:
+            current_key = _w3_identity_key(path)
+            if current_key is None or current_key != expected_identity:
+                results.append(
+                    {
+                        "path": path,
+                        "ok": False,
+                        "identity_changed": True,
+                        "reason": "对象身份已变化，未删除（保留文件）",
+                    }
+                )
+                all_ok = False
+                continue
+        try:
+            outcome = recycle_mover(path)
+            if inspect.isawaitable(outcome):
+                outcome = await outcome
+        except Exception as exc:  # noqa: BLE001 - 失败保留文件
+            outcome = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+        outcome = dict(outcome or {})
+        ok = bool(outcome.get("ok"))
+        all_ok = all_ok and ok
+        results.append(
+            {
+                "attachment_id": item.get("attachment_id"),
+                "path": path,
+                "ok": ok,
+                "mechanism": outcome.get("mechanism"),
+                "reason": outcome.get("reason") or item.get("reason") or "",
+                "deleted_permanently": bool(outcome.get("deleted_permanently", False)),
+                "trashed_path": outcome.get("trashed_path"),
+            }
+        )
+    detail = {"results": results, "deleted_permanently": False}
+    if not all_ok:
+        return _failure(
+            "部分用户材料没有移入回收站：失败项已保留文件（未做永久删除）",
+            "recycle_partial_failure",
+            detail=detail,
+        )
+    return _success(
+        f"已把 {len(results)} 个用户材料移入系统回收站",
+        detail=detail,
+    )
+
+
+async def execute_attachment_read(
+    payload: dict,
+    ctx: ExecutionContext,
+    *,
+    attachments_getter: Callable[[], Any] | None,
+) -> ExecResult:
+    """attachment.read：批准后真正读取附件源文件（只读）。"""
+    service = attachments_getter() if callable(attachments_getter) else None
+    if service is None:
+        return _failure(
+            "附件服务暂不可用：本次没有读取任何内容",
+            "attachment_service_unavailable",
+        )
+    attachment_id = str(payload.get("attachment_id") or "")
+    if not attachment_id:
+        return _failure("审批单缺少 attachment_id：本次没有读取", "missing_attachment_id")
+    try:
+        offset = max(0, int(payload.get("offset") or 0))
+        limit = max(1, min(int(payload.get("limit") or 4000), 20000))
+    except (TypeError, ValueError):
+        offset, limit = 0, 4000
+    try:
+        resolved = await asyncio.to_thread(service.resolve_source, attachment_id)
+    except Exception as exc:  # noqa: BLE001
+        return _failure(
+            f"解析附件源文件失败：{_redacted(exc)}",
+            f"{type(exc).__name__}: {_redacted(exc)}",
+            attachment_id=attachment_id,
+        )
+    path = getattr(resolved, "path", None)
+    if path is None:
+        return _failure(
+            "附件源文件现在不可用：" + str(getattr(resolved, "reason", "") or "没有可读内容"),
+            "attachment_source_unavailable",
+            attachment_id=attachment_id,
+            state=str(getattr(resolved, "state", "") or ""),
+        )
+    try:
+        raw = await asyncio.to_thread(Path(str(path)).read_bytes)
+    except OSError as exc:
+        return _failure(
+            f"读取附件源文件失败：{_redacted(exc)}",
+            f"{type(exc).__name__}: {_redacted(exc)}",
+            attachment_id=attachment_id,
+            path=str(path),
+        )
+    text = raw.decode("utf-8", errors="replace")
+    preview = text[offset : offset + limit]
+    return _success(
+        f"已读取附件源文件：{Path(str(path)).name}（{len(raw)} 字节，本次返回 {len(preview)} 字符）",
+        attachment_id=attachment_id,
+        path=str(path),
+        size=len(raw),
+        offset=offset,
+        limit=limit,
+        truncated=offset + len(preview) < len(text),
+        preview=_redacted(preview),
+    )
+
+
+# --------------------------------------------------------------------------
 # 子智能体 / 未实现执行器
 # --------------------------------------------------------------------------
 
@@ -545,6 +806,7 @@ def register_approved_operations(
     computer: Any = None,
     security: Any = None,
     tool_lookup: Callable[[str], Any] | None = None,
+    attachments_getter: Callable[[], Any] | None = None,
 ) -> list[str]:
     """把审批后执行器注册到 OperationRegistry；重复接线时幂等替换。
 
@@ -595,6 +857,26 @@ def register_approved_operations(
         ),
     )
 
+    # 附件（W3）：写回源文件 / 读取 / 删除进系统回收站（均用 W3 已授权实现）。
+    if callable(attachments_getter):
+        add(
+            "attachment.write_back",
+            lambda payload, ctx: execute_attachment_write_back(
+                payload, ctx, attachments_getter=attachments_getter
+            ),
+        )
+        add(
+            "attachment.read",
+            lambda payload, ctx: execute_attachment_read(
+                payload, ctx, attachments_getter=attachments_getter
+            ),
+        )
+    else:
+        reason = "附件服务没有接线：附件写回/读取执行器暂不可用，本次未执行"
+        add("attachment.write_back", _unavailable(reason))
+        add("attachment.read", _unavailable(reason))
+    add("attachment.recycle", execute_attachment_recycle)
+
     # 当前还没有独立执行器的类型：显式注册「不可用」，不允许静默丢单。
     add(
         "dep.install",
@@ -628,4 +910,7 @@ __all__ = [
     "execute_proc_shell",
     "execute_proc_kill",
     "execute_subagent_create",
+    "execute_attachment_write_back",
+    "execute_attachment_recycle",
+    "execute_attachment_read",
 ]

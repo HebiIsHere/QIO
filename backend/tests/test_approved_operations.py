@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +20,7 @@ from agent.tools.approved_operations import register_approved_operations
 from agent.tools.base import ToolResult
 
 
-def _security(tmp_path, db_conn, *, mode="restricted"):
+def _security(tmp_path, db_conn, *, mode="restricted", attachments_getter=None):
     security = make_security(tmp_path, db_conn, mode=mode)
     computer = ComputerSandbox(
         resolve_root=lambda: str(security.workspace),
@@ -32,8 +33,17 @@ def _security(tmp_path, db_conn, *, mode="restricted"):
         computer=computer,
         security=security.engine,
         tool_lookup=lambda name: None,
+        attachments_getter=attachments_getter,
     )
     return security, computer, kinds
+
+
+def _attachment_service(tmp_path, db_conn):
+    from agent.services.attachments import AttachmentService
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(exist_ok=True)
+    return AttachmentService(db_conn, data_dir)
 
 
 def _ctx(
@@ -91,6 +101,9 @@ def test_registers_all_expected_operation_kinds(tmp_path, db_conn):
         "proc.shell",
         "proc.kill",
         "subagent.create",
+        "attachment.write_back",
+        "attachment.recycle",
+        "attachment.read",
         "dep.install",
         "net.egress",
         "internal.data_write",
@@ -479,3 +492,165 @@ async def test_failed_execution_is_persisted_as_failed(tmp_path, db_conn):
         stored = json.loads(stored or "{}")
     assert dict(stored).get("invalidated") is True
     assert target.read_text(encoding="utf-8") == "changed", "失败时不得覆盖目标"
+
+
+# --------------------------------------------------------------------------
+# 附件（W3）：写回源文件 / 读取 / 删除进系统回收站
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_attachment_write_back_really_writes_source(tmp_path, db_conn):
+    import base64
+    import hashlib
+
+    service = _attachment_service(tmp_path, db_conn)
+    source = tmp_path / "source.txt"
+    source.write_text("原始内容", encoding="utf-8")
+    att = service.register_source(path=str(source), source_kind="desktop_path")
+    resolved = service.resolve_source(att.id, for_write=True)
+    new_bytes = "批准后写回的新内容".encode("utf-8")
+    new_sha = hashlib.sha256(new_bytes).hexdigest()
+    security, _computer, _kinds = _security(
+        tmp_path, db_conn, attachments_getter=lambda: service
+    )
+    payload = {
+        "attachment_id": att.id,
+        "path": str(resolved.path),
+        "identity": resolved.identity.key,
+        "content_b64": base64.b64encode(new_bytes).decode("ascii"),
+        "sha256": new_sha,
+    }
+    fingerprint = {
+        "identity": resolved.identity.key,
+        "content_sha256": resolved.current_sha256,
+        "new_sha256": new_sha,
+    }
+    ctx = _ctx(security, kind="attachment.write_back", payload=payload, fingerprint=fingerprint)
+
+    result = await security.operations.execute("attachment.write_back", payload, ctx)
+
+    assert result.ok is True, result.error
+    assert source.read_text(encoding="utf-8") == new_bytes.decode("utf-8")
+    after = service.resolve_source(att.id, for_write=True)
+    assert after.current_sha256 == new_sha, "写回后必须重核并更新登记内容哈希"
+
+
+@pytest.mark.asyncio
+async def test_attachment_write_back_refuses_changed_source(tmp_path, db_conn):
+    import base64
+    import hashlib
+
+    service = _attachment_service(tmp_path, db_conn)
+    source = tmp_path / "source2.txt"
+    source.write_text("原始内容", encoding="utf-8")
+    att = service.register_source(path=str(source), source_kind="desktop_path")
+    resolved = service.resolve_source(att.id, for_write=True)
+    new_bytes = "批准后的内容".encode("utf-8")
+    new_sha = hashlib.sha256(new_bytes).hexdigest()
+    security, _computer, _kinds = _security(
+        tmp_path, db_conn, attachments_getter=lambda: service
+    )
+    payload = {
+        "attachment_id": att.id,
+        "path": str(resolved.path),
+        "identity": resolved.identity.key,
+        "content_b64": base64.b64encode(new_bytes).decode("ascii"),
+        "sha256": new_sha,
+    }
+    fingerprint = {
+        "identity": resolved.identity.key,
+        "content_sha256": resolved.current_sha256,
+        "new_sha256": new_sha,
+    }
+    # 审批期间源文件被别的程序改了
+    source.write_text("被别的程序改了", encoding="utf-8")
+    ctx = _ctx(security, kind="attachment.write_back", payload=payload, fingerprint=fingerprint)
+
+    result = await security.operations.execute("attachment.write_back", payload, ctx)
+
+    assert result.ok is False
+    assert result.detail.get("invalidated") is True
+    assert source.read_text(encoding="utf-8") == "被别的程序改了", "不得覆盖已变化的源文件"
+
+
+@pytest.mark.asyncio
+async def test_attachment_recycle_really_uses_system_recycle_bin(tmp_path, db_conn):
+    from agent.services.file_identity import identity_of
+
+    security, _computer, _kinds = _security(tmp_path, db_conn)
+    victim = tmp_path / "用户材料.txt"
+    victim.write_text("要删除的内容", encoding="utf-8")
+    identity = identity_of(victim)
+    payload = {
+        "targets": [
+            {
+                "attachment_id": None,
+                "path": str(victim),
+                "identity": identity.key,
+                "reason": "测试删除",
+            }
+        ]
+    }
+    ctx = _ctx(
+        security,
+        kind="attachment.recycle",
+        payload=payload,
+        fingerprint={"paths": [str(victim)]},
+    )
+
+    result = await security.operations.execute("attachment.recycle", payload, ctx)
+
+    assert result.ok is True, result.error
+    assert not victim.exists(), "批准后必须真的移入回收站"
+    assert result.detail.get("deleted_permanently") is False
+    mechanism = result.detail["results"][0]["mechanism"]
+    assert mechanism in ("windows_recycle_bin", "freedesktop_trash")
+
+
+@pytest.mark.asyncio
+async def test_attachment_recycle_failure_keeps_file(tmp_path, db_conn, monkeypatch):
+    security, _computer, _kinds = _security(tmp_path, db_conn)
+    victim = tmp_path / "保留我.txt"
+    victim.write_text("必须保留", encoding="utf-8")
+    from agent.services import recycle_bin as recycle_module
+
+    monkeypatch.setattr(
+        recycle_module,
+        "send_to_recycle_bin",
+        lambda path: {
+            "ok": False,
+            "path": str(path),
+            "mechanism": "none",
+            "reason": "模拟回收站失败",
+            "deleted_permanently": False,
+        },
+    )
+    payload = {"targets": [{"attachment_id": None, "path": str(victim), "identity": None}]}
+    ctx = _ctx(security, kind="attachment.recycle", payload=payload)
+
+    result = await security.operations.execute("attachment.recycle", payload, ctx)
+
+    assert result.ok is False
+    assert victim.exists(), "回收站失败时必须保留文件"
+    assert result.detail.get("deleted_permanently") is False
+
+
+@pytest.mark.asyncio
+async def test_attachment_read_returns_source_path_and_preview(tmp_path, db_conn):
+    service = _attachment_service(tmp_path, db_conn)
+    source = tmp_path / "readme.txt"
+    source.write_text("0123456789abcdef", encoding="utf-8")
+    att = service.register_source(path=str(source), source_kind="desktop_path")
+    security, _computer, _kinds = _security(
+        tmp_path, db_conn, attachments_getter=lambda: service
+    )
+    payload = {"attachment_id": att.id, "offset": 0, "limit": 5}
+    ctx = _ctx(security, kind="attachment.read", payload=payload)
+
+    result = await security.operations.execute("attachment.read", payload, ctx)
+
+    assert result.ok is True, result.error
+    assert Path(str(result.detail["path"])).resolve() == source.resolve()
+    assert result.detail["preview"] == "01234"
+    assert result.detail["size"] == len("0123456789abcdef")
