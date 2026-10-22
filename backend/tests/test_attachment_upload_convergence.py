@@ -78,10 +78,12 @@ def _break_target_dir(ctx) -> Path:
     目录名与 AttachmentService.copy_path 一致（root/YYYY/MM）：用同一个 _local_month 取。
     """
     year, month = attachments_mod._local_month()
-    parent = ctx.attachments.root / year / month
-    parent.parent.mkdir(parents=True, exist_ok=True)
-    parent.write_text("我不是目录", "utf-8")
-    return parent
+    # 新语义：上传首次落盘到 workspace/materials/<yyyy>/<mm>/，失败注入点也在这里
+    parent = ctx.attachments.materials_root / year / month
+    parent.parent.parent.mkdir(parents=True, exist_ok=True)
+    placeholder = parent.parent
+    placeholder.write_text("我不是目录", "utf-8")
+    return placeholder
 
 
 def _chunked_body(
@@ -130,8 +132,8 @@ async def _wait_until(predicate, *, timeout: float = DEADLINE, what: str = ""):
 
 
 def _leftovers(ctx, *ignore: Path) -> list[Path]:
-    """附件根目录下的文件（可排除测试自己放的占位文件）。"""
-    root = ctx.attachments.root
+    """材料落盘根目录下的文件（可排除测试自己放的占位文件）。"""
+    root = ctx.attachments.materials_root
     if not root.is_dir():
         return []
     ignored = {str(path) for path in ignore}

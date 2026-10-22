@@ -305,6 +305,24 @@ def _turn_starts(ctx) -> list:
     return [e for e in ctx.bus._history if e.type.value == "TURN_START"]
 
 
+async def _legacy_registered_with_background_prepare(ctx, source, topic=None):
+    """**历史行夹具**：登记旧副本行并在后台按真实准备管线跑首次准备。
+
+    新 HTTP 入口只登记源文件引用（不复制）；旧副本/等待准备的覆盖继续用
+    source_kind=NULL 的历史行，避免把产品行为测回旧语义。
+    """
+    att = ctx.attachments.prepare(str(source), topic_id=topic)
+    generation = ctx.attachments.prepare_generation(att.id)
+
+    async def _run():
+        outcome = await asyncio.to_thread(
+            ctx.attachments.copy_to_disk, att, generation=generation
+        )
+        ctx.attachments.apply_outcome(att.id, outcome, generation=generation)
+
+    task = asyncio.create_task(_run())
+    return att, task
+
 async def test_http_send_waits_for_first_preparation_instead_of_running(
     async_app, tmp_path: Path, monkeypatch
 ):
@@ -323,10 +341,10 @@ async def test_http_send_waits_for_first_preparation_instead_of_running(
     entered, release = _gate_first_copy(monkeypatch)
 
     async with _live(async_app) as ac:
-        created = (
-            await ac.post("/api/attachments", json={"source_path": str(source), "topic_id": topic})
-        ).json()["attachment"]
-        assert created["state"] == "prepared"
+        created, prep_task = await _legacy_registered_with_background_prepare(
+            ctx, source, topic
+        )
+        assert created.state == "prepared"
         assert await asyncio.to_thread(entered.wait, GATE_DEADLINE), "复制没有进到闸门"
 
         send = asyncio.create_task(
@@ -335,7 +353,7 @@ async def test_http_send_waits_for_first_preparation_instead_of_running(
                 json={
                     "message": "带附件发送",
                     "topic_id": topic,
-                    "attachment_ids": [created["id"]],
+                    "attachment_ids": [created.id],
                 },
             )
         )
@@ -345,7 +363,7 @@ async def test_http_send_waits_for_first_preparation_instead_of_running(
         assert adapter.calls == 0, "附件还没就绪，模型一次都不能被调用"
         assert _turn_starts(ctx) == [], "附件还没就绪，不得发 TURN_START"
         assert not send.done(), "附件还没就绪，请求不得被受理"
-        row = ctx.attachments.get(created["id"], check=False)
+        row = ctx.attachments.get(created.id, check=False)
         assert row is not None and row.turn_id is None, "准备期间不得先把归属写上"
 
         release.set()
@@ -353,8 +371,9 @@ async def test_http_send_waits_for_first_preparation_instead_of_running(
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["accepted"] is True
-        assert body["bound_attachment_ids"] == [created["id"]]
-        row = ctx.attachments.get(created["id"], check=False)
+        assert body["bound_attachment_ids"] == [created.id]
+        await asyncio.wait_for(prep_task, timeout=10)
+        row = ctx.attachments.get(created.id, check=False)
         assert row.state == "ready" and row.turn_id == body["turn_id"]
 
         # 放行之后模型才开始（假 provider 只回答一次）
@@ -389,9 +408,9 @@ async def test_http_old_client_missing_field_waits_for_preparation(
     entered, release = _gate_first_copy(monkeypatch)
 
     async with _live(async_app) as ac:
-        created = (
-            await ac.post("/api/attachments", json={"source_path": str(source), "topic_id": topic})
-        ).json()["attachment"]
+        created, prep_task = await _legacy_registered_with_background_prepare(
+            ctx, source, topic
+        )
         assert await asyncio.to_thread(entered.wait, GATE_DEADLINE)
 
         send = asyncio.create_task(
@@ -406,8 +425,9 @@ async def test_http_old_client_missing_field_waits_for_preparation(
         resp = await asyncio.wait_for(send, timeout=GATE_DEADLINE)
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["bound_attachment_ids"] == [created["id"]], "放行后必须真的绑上"
-        assert ctx.attachments.get(created["id"], check=False).state == "ready"
+        assert body["bound_attachment_ids"] == [created.id], "放行后必须真的绑上"
+        await asyncio.wait_for(prep_task, timeout=10)
+        assert ctx.attachments.get(created.id, check=False).state == "ready"
 
         for _ in range(400):
             if adapter.calls:
@@ -437,21 +457,14 @@ async def test_http_multi_attachment_last_preparing_blocks(
 
     entered, release = _gate_first_copy(monkeypatch)
     async with _live(async_app) as ac:
-        # 第一条：正常准备到 ready
-        first = (
-            await ac.post("/api/attachments", json={"source_path": str(small), "topic_id": topic})
-        ).json()["attachment"]
-        for _ in range(400):
-            row = (await ac.get(f"/api/attachments/{first['id']}")).json()["attachment"]
-            if row["state"] == "ready":
-                break
-            await asyncio.sleep(0.02)
-        assert row["state"] == "ready"
-
-        # 第二条：闸门卡在首次复制里
-        second = (
-            await ac.post("/api/attachments", json={"source_path": str(big), "topic_id": topic})
-        ).json()["attachment"]
+        # 第一条：历史行夹具，正常准备到 ready
+        first = ctx.attachments.run_prepare(
+            ctx.attachments.prepare(str(small), topic_id=topic).id
+        )
+        # 第二条：闸门卡在首次复制里（历史行夹具）
+        second, prep_task = await _legacy_registered_with_background_prepare(
+            ctx, big, topic
+        )
         assert await asyncio.to_thread(entered.wait, GATE_DEADLINE)
 
         send = asyncio.create_task(
@@ -460,7 +473,7 @@ async def test_http_multi_attachment_last_preparing_blocks(
                 json={
                     "message": "多附件最后一个未就绪",
                     "topic_id": topic,
-                    "attachment_ids": [first["id"], second["id"]],
+                    "attachment_ids": [first.id, second.id],
                 },
             )
         )
@@ -468,14 +481,15 @@ async def test_http_multi_attachment_last_preparing_blocks(
         assert adapter.calls == 0, "最后一条没就绪时整轮不得开始执行"
         assert _turn_starts(ctx) == []
         assert not send.done()
-        assert ctx.attachments.get(first["id"], check=False).turn_id is None, "也不得先半绑第一条"
+        assert ctx.attachments.get(first.id, check=False).turn_id is None, "也不得先半绑第一条"
 
         release.set()
         resp = await asyncio.wait_for(send, timeout=GATE_DEADLINE)
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["bound_attachment_ids"] == [first["id"], second["id"]]
-        for attachment_id in (first["id"], second["id"]):
+        assert body["bound_attachment_ids"] == [first.id, second.id]
+        await asyncio.wait_for(prep_task, timeout=10)
+        for attachment_id in (first.id, second.id):
             assert ctx.attachments.get(attachment_id, check=False).turn_id == body["turn_id"]
 
         for _ in range(400):
@@ -719,10 +733,10 @@ async def test_http_legacy_send_rejects_when_preparation_really_fails(
     _fail_copy_at_commit(monkeypatch)
 
     async with _live(async_app) as ac:
-        created = (
-            await ac.post("/api/attachments", json={"source_path": str(source), "topic_id": topic})
-        ).json()["attachment"]
-        assert created["state"] == "prepared"
+        created, prep_task = await _legacy_registered_with_background_prepare(
+            ctx, source, topic
+        )
+        assert created.state == "prepared"
         assert await asyncio.to_thread(entered.wait, GATE_DEADLINE)
 
         send = asyncio.create_task(
@@ -744,11 +758,12 @@ async def test_http_legacy_send_rejects_when_preparation_really_fails(
             "turn_starts": len(_turn_starts(ctx)),
         }
         detail = resp.json()["detail"]
-        assert [item["id"] for item in detail["rejected"]] == [created["id"]], detail
+        await asyncio.wait_for(prep_task, timeout=10)
+        assert [item["id"] for item in detail["rejected"]] == [created.id], detail
         assert detail["rejected"][0]["reason"], "必须有人话原因"
         assert adapter.calls == 0, "被拒绝的轮次不得调用模型"
         assert _turn_starts(ctx) == [], "被拒绝的轮次不得发 TURN_START"
-        row = ctx.attachments.get(created["id"], check=False)
+        row = ctx.attachments.get(created.id, check=False)
         assert row.state == "failed" and row.turn_id is None, "失败附件不得被静默吞掉"
 
         # 草稿可重试：这条失败已经是**历史记录**，不阻断后续发送

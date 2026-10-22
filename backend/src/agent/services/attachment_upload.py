@@ -313,6 +313,23 @@ class UploadJob:
             )
 
 
+def run_material_worker(service, att, job: UploadJob, *, max_bytes: int) -> DiskOutcome:
+    """工作线程入口（R9 首次落盘用户材料）：**只做文件 I/O**（+ 作业终态），绝不碰数据库。"""
+    job.worker_started.set()
+    try:
+        outcome = service.write_material_stream(
+            att, job.consume(), max_bytes=max_bytes, generation=job.generation
+        )
+    except BaseException as exc:  # noqa: BLE001 - 任何退出路径都要先给接收端一个准确终态
+        job.worker_failed(exc)
+        raise
+    else:
+        job.worker_finished(outcome)
+        return outcome
+    finally:
+        job.worker_exited()
+
+
 def run_upload_worker(service, att, job: UploadJob, *, max_bytes: int) -> DiskOutcome:
     """工作线程入口：**只做文件 I/O**（+ 作业终态），绝不碰数据库。"""
     job.worker_started.set()

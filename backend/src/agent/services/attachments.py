@@ -1172,6 +1172,227 @@ class AttachmentService:
         )
         return self._insert(att)
 
+    def material_path(self, att: Attachment) -> Path:
+        """这条材料在 workspace/materials/ 下的落盘路径（可预测，用于收尾清理）。"""
+        return self._material_target(att.id, att.original_name)
+
+    def is_material_path(self, path: str | Path) -> bool:
+        try:
+            target = Path(path).resolve()
+            root = self.materials_root.resolve()
+        except OSError:
+            return False
+        return target == root or root in target.parents
+
+    def begin_material(
+        self,
+        *,
+        name: str | None = None,
+        source_kind: str = "browser_upload",
+        topic_id: str | None = None,
+        user_note: str = "",
+        message_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> Attachment:
+        """上传第一步（事件循环线程）：登记一行 prepared；字节由工作线程首次落盘。
+
+        只有字节没有原位置的入口（契约 §6.3）：source_kind=browser_upload /
+        clipboard_image，origin=user_saved_material；不伪造路径。
+        """
+        if source_kind not in MATERIAL_SOURCE_KINDS:
+            raise AttachmentError(
+                "上传入口只接受 source_kind=browser_upload / clipboard_image"
+            )
+        now = self._clock()
+        att = Attachment(
+            id=f"att_{uuid.uuid4().hex[:12]}",
+            message_id=str(message_id) if message_id else None,
+            turn_id=str(turn_id) if turn_id else None,
+            topic_id=str(topic_id) if topic_id else None,
+            kind="reference",
+            original_name=safe_name(name or "attachment"),
+            stored_path=None,
+            source_path=None,
+            size_bytes=0,
+            mtime=None,
+            sha256=None,
+            state=STATE_PREPARED,
+            error=None,
+            created_at=now,
+            updated_at=now,
+            source_kind=source_kind,
+            origin="user_saved_material",
+            material_enabled=1,
+            user_note=str(user_note or ""),
+            legacy_paths="[]",
+        )
+        inserted = self._insert(att)
+        self._mark_preparing(inserted.id)
+        return inserted
+
+    def write_material_stream(
+        self,
+        att: Attachment,
+        chunks: Iterable[bytes],
+        *,
+        max_bytes: int | None = None,
+        generation: int | None = None,
+    ) -> DiskOutcome:
+        """工作线程：把上传字节**首次落盘**到 workspace/materials/（只做文件 I/O）。
+
+        与旧副本路径相同的提交纪律：临时文件独有名字、成功才 os.replace、
+        取消/超限/写失败清理临时文件；不在这里碰数据库。
+        """
+        limit = int(max_bytes if max_bytes is not None else self.max_upload_bytes)
+        target = self.material_path(att)
+        bound_generation = (
+            self.prepare_generation(att.id) if generation is None else int(generation)
+        )
+        ticket = self._begin_commit_scope(att.id, bound_generation)
+        temp = temp_path_for(target)
+        digest = hashlib.sha256()
+        written = 0
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return DiskOutcome(
+                state=STATE_FAILED,
+                error=self._describe_oserror(exc, target=target),
+                commit_generation=bound_generation,
+                commit_ticket=ticket,
+            )
+        try:
+            with open(temp, "wb") as handle:
+                for piece in chunks:
+                    if self.is_cancel_requested(att.id):
+                        raise UploadAborted("上传被取消；没有保存任何数据")
+                    payload = bytes(piece or b"")
+                    if not payload:
+                        continue
+                    written += len(payload)
+                    if written > limit:
+                        raise UploadTooLarge(written, limit)
+                    handle.write(payload)
+                    digest.update(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if written <= 0:
+                raise AttachmentError("上传内容为空")
+            os.replace(temp, target)
+        except UploadAborted as exc:
+            _unlink_quiet(temp)
+            return DiskOutcome(
+                state=STATE_CANCELLED,
+                error=str(exc),
+                commit_generation=bound_generation,
+                commit_ticket=ticket,
+            )
+        except UploadTooLarge:
+            _unlink_quiet(temp)
+            raise
+        except AttachmentError as exc:
+            _unlink_quiet(temp)
+            return DiskOutcome(
+                state=STATE_FAILED,
+                error=str(exc),
+                commit_generation=bound_generation,
+                commit_ticket=ticket,
+            )
+        except OSError as exc:
+            _unlink_quiet(temp)
+            return DiskOutcome(
+                state=STATE_FAILED,
+                error=self._describe_oserror(exc, target=target),
+                commit_generation=bound_generation,
+                commit_ticket=ticket,
+            )
+        try:
+            stat = target.stat()
+        except OSError as exc:
+            _unlink_quiet(target)
+            return DiskOutcome(
+                state=STATE_FAILED,
+                error="材料落盘后读不到：" + redact_text(str(exc)),
+                commit_generation=bound_generation,
+                commit_ticket=ticket,
+            )
+        return DiskOutcome(
+            state=STATE_READY,
+            error=None,
+            stored_path=str(target),
+            sha256=digest.hexdigest(),
+            size_bytes=int(stat.st_size),
+            mtime=float(stat.st_mtime),
+            commit_generation=bound_generation,
+            commit_ticket=ticket,
+        )
+
+    def apply_material_outcome(
+        self,
+        attachment_id: str,
+        outcome: DiskOutcome,
+        *,
+        generation: int | None = None,
+    ) -> Attachment | None:
+        """事件循环线程：把首次落盘的磁盘事实落到行上（ready / failed / cancelled）。
+
+        行已被删除时清理这次刚写出的材料（孤儿）；取消/失败时清理未提交内容。
+        成功时**只**更新源引用字段（stored_path 恒为 NULL）。
+        """
+        effective_generation = (
+            generation if generation is not None else outcome.commit_generation
+        )
+        if not self._generation_current(attachment_id, effective_generation):
+            return self.get(attachment_id, check=False)
+        att = self.get(attachment_id, check=False)
+        target = Path(str(outcome.stored_path)) if outcome.stored_path else None
+        if att is None:
+            if target is not None and self.is_material_path(target):
+                _unlink_quiet(target)
+            return None
+        if self.is_cancel_requested(att.id) or outcome.state == STATE_CANCELLED:
+            if target is not None:
+                _unlink_quiet(target)
+            self._update(
+                att.id,
+                state=STATE_CANCELLED,
+                error=outcome.error or "上传已取消；没有保存任何数据",
+                source_path=None,
+                size_bytes=0,
+                mtime=None,
+                sha256=None,
+            )
+            self._clear_preparing(att.id, generation=effective_generation)
+            return self.get(att.id, check=False)
+        if outcome.state != STATE_READY or target is None:
+            if target is not None:
+                _unlink_quiet(target)
+            self._update(
+                att.id,
+                state=STATE_FAILED,
+                error=outcome.error or "上传失败：没有保存任何数据",
+            )
+            self._clear_preparing(att.id, generation=effective_generation)
+            return self.get(att.id, check=False)
+        identity = identity_of(target)
+        fields: dict = {
+            "source_path": str(target.absolute()),
+            "stored_path": None,
+            "size_bytes": int(outcome.size_bytes or 0),
+            "mtime": outcome.mtime,
+            "sha256": outcome.sha256,
+            "content_sha256": outcome.sha256,
+            "file_id": identity.key if identity is not None else None,
+            "state": STATE_READY,
+            "error": None,
+            "last_verified_at": self._clock(),
+        }
+        if "reference_state" in self._source_columns:
+            fields["reference_state"] = REFERENCE_AVAILABLE
+        self._update(att.id, **fields)
+        self._clear_preparing(att.id, generation=effective_generation)
+        return self.get(att.id, check=False)
+
     def write_material_bytes(self, data: bytes, **kwargs) -> Attachment:
         """write_material 的字节便捷入口（测试与小型剪贴板内容用）。"""
         return self.write_material(stream=[bytes(data or b"")], **kwargs)
@@ -4150,6 +4371,10 @@ class AttachmentService:
         写回必须用户确认，绝不覆盖）。
         """
         if not att.source_path:
+            # failed 粘性（契约 §1.4）：只有字节的上传从未成功时，不得被 GET 改判成
+            # missing 覆盖原始原因；用户唯一真能成功的动作是重新上传。
+            if att.state == STATE_FAILED:
+                return att
             return self._transition(
                 att, STATE_MISSING, "没有记录源文件位置；可以重新指定位置",
                 reference_state=REFERENCE_MISSING,
@@ -4244,6 +4469,13 @@ class AttachmentService:
             # 同一文件被编辑（内容变化不是错误）；位置修复才需要 relocate
             return []
         if self.is_source_ref(att):
+            if not att.source_path:
+                # 只有字节的上传失败：服务端没有内容可重放，只能重新上传
+                return ["reupload"] if att.state in (
+                    STATE_FAILED,
+                    STATE_MISSING,
+                    STATE_CANCELLED,
+                ) else []
             return ["relocate"] if att.state in (
                 STATE_FAILED,
                 STATE_MISSING,
@@ -4314,7 +4546,11 @@ class AttachmentService:
             "source_present": source_present,
             "source_changed": source_changed,
             "checked_at": self._clock(),
-            "note": REFERENCE_CAVEAT if att.kind == "reference" else None,
+            "note": (
+                None
+                if self.is_source_ref(att)
+                else (REFERENCE_CAVEAT if att.kind == "reference" else None)
+            ),
             "reference_state": att.reference_state,
             "material_enabled": bool(att.material_enabled),
         }
@@ -4383,7 +4619,11 @@ class AttachmentService:
             "readability": mode,
             "readability_label": label,
             "readability_note": note,
-            "caveat": REFERENCE_CAVEAT if att.kind == "reference" else None,
+            "caveat": (
+                None
+                if self.is_source_ref(att)
+                else (REFERENCE_CAVEAT if att.kind == "reference" else None)
+            ),
             "retryable": att.state in (STATE_FAILED, STATE_CANCELLED, STATE_CHANGED, STATE_MISSING),
             # 契约 §1.4：可用操作按 kind 区分（界面按钮的唯一依据），
             # 以及「QIO 能不能自己从已知位置恢复」（浏览器上传永远不能）。

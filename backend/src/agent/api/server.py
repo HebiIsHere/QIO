@@ -59,9 +59,9 @@ from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
 # 附件路由的错误类型与可绑状态：模块级导入（无循环依赖）
 from agent.services.attachments import (
     MATERIAL_SOURCE_KINDS,
+    USER_PATH_SOURCE_KINDS,
     REFERENCE_AMBIGUOUS,
     REFERENCE_MISSING,
-    TEMP_SUFFIX,
     STATE_CANCELLED as DISK_CANCELLED,
     STATE_FAILED as DISK_FAILED,
     AttachmentConfirmationRequired,
@@ -81,7 +81,7 @@ from agent.services.attachment_upload import (
     UploadJobEnded,
     abort_jobs_for,
     active_jobs as upload_active_jobs,
-    run_upload_worker,
+    run_material_worker,
 )
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
 from agent.trace.redact import redact_text
@@ -388,9 +388,9 @@ def create_app(
                     "attachment migration failed", exc_info=True
                 )
 
-        attachment_migration_task = asyncio.create_task(
-            _run_attachment_migration_once()
-        )
+        # 在 yield（应用可服务）之前完成：迁移与请求并发会改变「历史行/新行」的归类，
+        # 造成同一行在请求处理中途被迁移改写。迁移本身幂等、行数有限，启动期执行一次。
+        await _run_attachment_migration_once()
         hb_log = logging.getLogger(__name__)
         heartbeat_stop = asyncio.Event()
 
@@ -420,16 +420,6 @@ def create_app(
                 pass
             except Exception:  # noqa: BLE001
                 hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
-            # 附件迁移任务：DB 关闭前收尾（迁移是幂等的，被打断下次会从审计断点续跑）
-            attachment_migration_task.cancel()
-            try:
-                await attachment_migration_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:  # noqa: BLE001
-                hb_log.warning(
-                    "attachment migration task ended with an error", exc_info=True
-                )
             try:
                 report = await ctx.aclose()
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
@@ -1314,92 +1304,44 @@ def create_app(
         读取/预览/获准写回都作用于这个源文件。
         不带 source_kind 的分支只保留给历史数据回放与迁移测试（新入口不再产生副本）。
         """
-        source_path = str(body.get("source_path") or "")
+        source_path = str(body.get("source_path") or "").strip()
         raw_name = body.get("name")
         topic_id = body.get("topic_id")
-        source_kind = str(body.get("source_kind") or "").strip()
-        if source_kind:
-            try:
-                att = attachments.register_source(
-                    path=source_path,
-                    source_kind=source_kind,
-                    origin=str(body.get("origin") or "user_original"),
-                    topic_id=str(topic_id) if topic_id else None,
-                    name=str(raw_name) if raw_name else None,
-                    user_note=str(body.get("user_note") or ""),
-                )
-            except AttachmentError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            return {"ok": True, "attachment": attachments.payload(att, check=False)}
-        # 历史兼容分支：只服务旧数据回放/迁移测试，不接新入口
-        try:
-            att = attachments.prepare(
-                source_path,
-                name=str(raw_name) if raw_name else None,
-                size=body.get("size"),
-                topic_id=str(topic_id) if topic_id else None,
+        if not source_path:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "登记附件需要真实 source_path（桌面选择/拖放）；"
+                    "只有字节的内容请走 POST /api/attachments/upload"
+                ),
             )
-        except AttachmentError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        _schedule_prepare(att.id)
-        return {"ok": True, "attachment": attachments.payload(att, check=False)}
-
-    async def _receive_material_upload(request: Request, source_kind: str) -> dict:
-        """只有字节、没有原位置的入口：首次落盘到 workspace/materials/（契约 §6.3）。
-
-        没有真实路径可登记：上传内容只是本机新落盘的用户材料，不伪造路径，
-        也不声称能修改上传设备上的原文件。max_upload_bytes 是传输资源限制，
-        与旧的"≤100MB 才复制"副本策略无关（任意大小的桌面路径都不复制）。
-        """
-        limit = attachments.max_upload_bytes
-        declared = request.headers.get("content-length")
-        if declared and declared.isdigit() and int(declared) > limit:
-            raise HTTPException(status_code=413, detail=_upload_limit_detail())
-        from urllib.parse import unquote
-
-        raw_name = request.headers.get("x-qio-name") or "attachment"
+        requested_kind = str(body.get("source_kind") or "").strip()
+        # 新入口只产生源文件引用：没有显式来源时按桌面路径登记（不再有复制分支）。
+        source_kind = (
+            requested_kind if requested_kind in USER_PATH_SOURCE_KINDS else "desktop_path"
+        )
         try:
-            name = unquote(raw_name)
-        except Exception:  # noqa: BLE001 - 解不出来就退回原名
-            name = raw_name
-        raw_note = request.headers.get("x-qio-user-note") or ""
-        try:
-            user_note = unquote(raw_note)
-        except Exception:  # noqa: BLE001
-            user_note = raw_note
-        topic_id = request.headers.get("x-qio-topic-id") or None
-        pieces: list[bytes] = []
-        received = 0
-        async for chunk in request.stream():
-            if not chunk:
-                continue
-            received += len(chunk)
-            if received > limit:
-                raise HTTPException(status_code=413, detail=_upload_limit_detail())
-            pieces.append(bytes(chunk))
-        try:
-            att = attachments.write_material(
-                stream=pieces,
-                name=name,
+            att = attachments.register_source(
+                path=source_path,
                 source_kind=source_kind,
+                origin=str(body.get("origin") or "user_original"),
                 topic_id=str(topic_id) if topic_id else None,
-                user_note=user_note,
-                max_bytes=limit,
+                name=str(raw_name) if raw_name else None,
+                user_note=str(body.get("user_note") or ""),
             )
-        except UploadTooLarge as exc:
-            raise HTTPException(status_code=413, detail=_upload_limit_detail()) from exc
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
 
     def _upload_limit_detail() -> str:
+        """上传大小限制是**传输资源限制**（不是旧的「≤100MB 才复制」副本规则）。"""
         from agent.services.attachments import human_size
 
         limit = attachments.max_upload_bytes
         return (
-            f"浏览器上传只用于 <= {human_size(limit)} 的文件；这个文件更大，"
-            "请用桌面端拖入或选择本地路径"
-            f"（大于 {human_size(limit)} 的文件只记位置，不复制内容）"
+            f"浏览器上传单次最多 {human_size(limit)}（传输限制，避免把超大内容读进内存）；"
+            "更大的文件请用桌面端拖入或选择本地路径登记源文件引用（不复制内容）"
         )
 
     def _converge_upload(
@@ -1420,7 +1362,7 @@ def create_app(
         更新的 ready 行改写成 failed/cancelled。**没有更新的准备时仍然照写**（当前的
         失败/取消照旧如实收敛），所以它不是「一律不写」。
         """
-        attachments.apply_outcome(
+        attachments.apply_material_outcome(
             attachment_id, DiskOutcome(state=state, error=reason), generation=generation
         )
 
@@ -1432,47 +1374,39 @@ def create_app(
             return None
         return (int(stat.st_dev), int(stat.st_ino))
 
-    def _purge_uncommitted_copy(att, *, generation: int | None = None) -> None:
-        """取消竞态清理：工作线程可能已经把正式副本提交到位（os.replace 之后才被丢弃），
+    def _purge_uncommitted_material(att, *, generation: int | None = None) -> None:
+        """取消竞态清理：工作线程可能已经把材料提交到位（os.replace 之后才被丢弃），
 
-        而它的结果已经落不到库里 —— 按**可预测的副本路径**（QIO 自己的管理目录）清掉它，
-        避免留下无人认领的副本。用户原文件永远不在此列。
-
-        generation：本操作自己的代际。目标已经被更新的准备（重新定位 / 重试）接管时
-        （当前代际已经不是它），磁盘上那份是**更新的成果**，绝不删（R1 的纪律）。
-        临时文件 <目标>.<token>.part 由工作线程自己清（每个操作一个 token，谁也删不到别人的）；
-        这里绝不按通配符清理，免得误删另一个在飞操作正在写的临时文件。
+        按**可预测的材料路径**（workspace/materials/...）清掉它，避免留下无人认领的文件。
+        这不是用户原文件：它是本次上传刚写出的材料。目标已经被更新的操作接管时绝不删。
         """
         with contextlib.suppress(Exception):
             if generation is not None and attachments.prepare_generation(att.id) != generation:
                 logger.debug(
-                    "取消收尾跳过：附件 %s 已经被更新的准备接管（不删更新的成果）",
+                    "取消收尾跳过：附件 %s 已经被更新的操作接管（不删更新的成果）",
                     redact_text(str(att.id)),
                 )
                 return
-            path = attachments.copy_path(att)
-            if attachments.is_managed_path(path):
+            path = attachments.material_path(att)
+            if attachments.is_material_path(path):
                 Path(path).unlink(missing_ok=True)
-                Path(str(path) + TEMP_SUFFIX).unlink(missing_ok=True)
 
     async def _settle_upload_worker(
         worker: asyncio.Task, job: UploadJob, *, attachment_id: str
     ) -> DiskOutcome | None:
         """请求被取消（服务关闭 / 客户端离开）：解除工作线程阻塞读、有界等它收尾，返回磁盘结果。
 
-        收尾纪律：**不留临时文件、不留孤儿副本**。
+        收尾纪律：**不留临时文件、不留孤儿材料**。
         * 先置服务侧取消标志（工作线程提交前的最后一道闸会看到它，不再 os.replace）；
         * 再置作业终态（解除它在 queue.get 上的阻塞）；
-        * 工作线程如果已经提交了正式副本（竞态），这里把它当作孤儿清掉 —— 行不会落成 ready。
+        * 工作线程如果已经提交了材料（竞态），这里把它当作孤儿清掉 —— 行不会落成 ready。
         """
         attachments.cancel(attachment_id)
-        job.abort("上传被取消（服务关闭或请求中断）；没有保存任何副本")
+        job.abort("上传被取消（服务关闭或请求中断）；没有保存任何数据")
         outcome: DiskOutcome | None = None
         # 收尾等待必须在**屏蔽外层取消**的作用域里跑（anyio 是流式中间件的取消原语）：
         # 请求被取消后，BaseHTTPMiddleware 的取消作用域会在每个 await 点重复投递
-        # CancelledError。实测：不屏蔽时这个等待 0.02s 就被打断，工作线程被丢在后台继续跑，
-        # 它刚建的 <目标>.<token>.part 就留在磁盘上（_purge_uncommitted_copy 只认旧的
-        # <目标>.part，删不到）。屏蔽只去掉「被打断」，有界期限仍然是 UPLOAD_SETTLE_SECONDS。
+        # CancelledError。屏蔽只去掉「被打断」，有界期限仍然是 UPLOAD_SETTLE_SECONDS。
         with anyio.CancelScope(shield=True):
             with contextlib.suppress(BaseException):
                 outcome = await asyncio.wait_for(
@@ -1480,57 +1414,67 @@ def create_app(
                 )
         if outcome is not None and outcome.stored_path:
             stored = Path(str(outcome.stored_path))
-            # R1：只删**本操作自己提交的那一份** —— 路径 + 文件身份都对得上才动手。
-            # 目标已经被更新的操作换掉时，那是别人的成果，绝不删。
-            if attachments.is_managed_path(stored) and (
+            # 只删**本操作自己提交的那一份** —— 路径 + 文件身份都对得上才动手。
+            if attachments.is_material_path(stored) and (
                 outcome.identity is None or _file_identity(stored) == outcome.identity
             ):
                 try:
                     stored.unlink(missing_ok=True)
                 except OSError as exc:  # noqa: BLE001 - 清理失败不能掩盖取消
                     logging.getLogger(__name__).warning(
-                        "清理被取消上传的副本失败：%s", redact_text(str(exc))
+                        "清理被取消上传的材料失败：%s", redact_text(str(exc))
                     )
         return outcome
 
     @app.post("/api/attachments/upload")
     async def upload_attachment(request: Request) -> dict:
-        """浏览器回退：请求体就是**原始字节**（不引入 multipart 依赖）。
+        """只有字节、没有原位置的入口：**首次落盘**为 workspace/materials/ 的用户材料。
 
-        头：X-QIO-Name（URL 编码的 UTF-8 文件名）、X-QIO-Topic-Id（可选）。
-        没有真实路径：只存副本；超过阈值的字节明确拒绝，不偷偷存一个大副本。
+        头：X-QIO-Name（URL 编码的 UTF-8 文件名）、X-QIO-Topic-Id（可选）、
+        X-QIO-Source-Kind（browser_upload / clipboard_image，缺省 browser_upload）、
+        X-QIO-User-Note（可选，URL 编码）。
+        没有真实路径可登记，也不伪造路径：内容只是本机新落盘的材料，
+        记 source_kind 与 origin=user_saved_material；max_upload_bytes 是**传输限制**，
+        不是旧的副本策略（桌面路径登记任意大小都不复制）。
 
         有界接收（审计问题 6）：**不把整包读进内存**，没有 Content-Length 时照样强制上限
         （每收一块累加校验，超限立刻中止并清理）。写临时文件 + 算 sha256 在工作线程
-        （纯文件 I/O），登记与落状态在事件循环线程 —— 同一个 sqlite 连接永不被两个线程碰，
-        见 services/attachments.py 顶部的线程纪律。
+        （纯文件 I/O），登记与落状态在事件循环线程 —— 同一个 sqlite 连接永不被两个线程碰。
         """
-        source_kind = (request.headers.get("x-qio-source-kind") or "").strip()
-        if source_kind:
-            if source_kind not in MATERIAL_SOURCE_KINDS:
-                raise HTTPException(
-                    status_code=400,
-                    detail="X-QIO-Source-Kind 只接受 browser_upload / clipboard_image",
-                )
-            return await _receive_material_upload(request, source_kind)
+        from urllib.parse import unquote
+
+        source_kind = (
+            request.headers.get("x-qio-source-kind") or ""
+        ).strip() or "browser_upload"
+        if source_kind not in MATERIAL_SOURCE_KINDS:
+            raise HTTPException(
+                status_code=400,
+                detail="X-QIO-Source-Kind 只接受 browser_upload / clipboard_image",
+            )
+        raw_note = request.headers.get("x-qio-user-note") or ""
+        try:
+            user_note = unquote(raw_note)
+        except Exception:  # noqa: BLE001 - 解不出来就按原文记录
+            user_note = raw_note
         limit = attachments.max_upload_bytes
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > limit:
             raise HTTPException(status_code=413, detail=_upload_limit_detail())
         raw_name = request.headers.get("x-qio-name") or "attachment"
         try:
-            from urllib.parse import unquote
-
             name = unquote(raw_name)
         except Exception:  # noqa: BLE001 - 头里的名字解不出来就退回原名
             name = raw_name
         topic_id = request.headers.get("x-qio-topic-id") or None
-        # 先登记一行（prepared）：字节由工作线程落盘，状态由事件循环线程落库
-        att = attachments.begin_upload(
-            name=name, topic_id=str(topic_id) if topic_id else None
+        # 先登记一行（prepared）：字节由工作线程首次落盘，状态由事件循环线程落库
+        att = attachments.begin_material(
+            name=name,
+            source_kind=source_kind,
+            topic_id=str(topic_id) if topic_id else None,
+            user_note=user_note,
         )
-        # 本操作自己的代际（begin_upload 已经登记过一次准备）：之后任何更新的准备
-        # （重新定位 / 重试）都会把它顶掉 —— 这次上传的收尾与结果因此可以被判为过期。
+        # 本操作自己的代际（begin_material 已经登记过一次准备）：之后任何更新的操作
+        # 都会把它顶掉 —— 这次上传的收尾与结果因此可以被判为过期。
         upload_generation = attachments.prepare_generation(att.id)
         # 一次上传 = 一个作业：队列 + 终态 + 工作线程句柄，接收端/工作线程/取消清理共享它。
         # 这样「工作线程死了」不再表现为「队列永远等不到空位」，取消也能解除工作线程的阻塞读。
@@ -1544,7 +1488,7 @@ def create_app(
             generation=upload_generation,
         )
         worker = asyncio.create_task(
-            asyncio.to_thread(run_upload_worker, attachments, att, job, max_bytes=limit)
+            asyncio.to_thread(run_material_worker, attachments, att, job, max_bytes=limit)
         )
         received = 0
         too_large = False
@@ -1597,10 +1541,10 @@ def create_app(
             await _settle_upload_worker(worker, job, attachment_id=att.id)
             _converge_upload(
                 att.id,
-                "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                "上传被取消（服务关闭或请求中断）；没有保存任何数据",
                 generation=upload_generation,
             )
-            _purge_uncommitted_copy(att, generation=upload_generation)
+            _purge_uncommitted_material(att, generation=upload_generation)
             job.close()
             raise
         except Exception as exc:  # noqa: BLE001 - 客户端断开/协议错误：按中止处理
@@ -1617,7 +1561,7 @@ def create_app(
             with contextlib.suppress(BaseException):
                 await stream.aclose()
             if read_error is not None:
-                job.abort(f"上传被中断：{redact_text(str(read_error))}；没有保存任何副本")
+                job.abort(f"上传被中断：{redact_text(str(read_error))}；没有保存任何数据")
             with contextlib.suppress(UploadJobEnded):
                 await job.close_input(abort=bool(too_large or read_error))
         try:
@@ -1632,20 +1576,20 @@ def create_app(
                 attachments.cancel(att.id)  # 迟到结果的最后一道闸：不得提交 ready
                 _converge_upload(
                     att.id,
-                    "上传收尾超时（磁盘调用没有返回）；没有提交副本",
+                    "上传收尾超时（磁盘调用没有返回）；没有提交任何材料",
                     generation=upload_generation,
                 )
-                _purge_uncommitted_copy(att, generation=upload_generation)
+                _purge_uncommitted_material(att, generation=upload_generation)
                 # 安排可靠清理：工作线程真正退出时再清一次 —— 它可能刚好在 os.replace
                 # 里（提交发生在我们的清理之后），那一份副本同样不能留成孤儿。
                 worker.add_done_callback(
-                    lambda _task: _purge_uncommitted_copy(
+                    lambda _task: _purge_uncommitted_material(
                         att, generation=upload_generation
                     )
                 )
                 raise HTTPException(
                     status_code=500,
-                    detail="上传收尾超时：工作线程的磁盘调用没有返回；没有保存副本",
+                    detail="上传收尾超时：工作线程的磁盘调用没有返回；没有保存任何数据",
                 ) from None
             except (UploadTooLarge, UploadAborted) as exc:
                 # 超限/中止都不留行、不留文件：这不是「失败的附件」，是被拒绝的上传
@@ -1673,29 +1617,29 @@ def create_app(
                 await _settle_upload_worker(worker, job, attachment_id=att.id)
                 _converge_upload(
                     att.id,
-                    "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                    "上传被取消（服务关闭或请求中断）；没有保存任何数据",
                     generation=upload_generation,
                 )
-                _purge_uncommitted_copy(att, generation=upload_generation)
+                _purge_uncommitted_material(att, generation=upload_generation)
                 raise
             # 原因归属互不覆盖（契约 §1.2）：写盘失败 > 超限 > 客户端断开 > 用户取消 > 服务关闭。
             # 作业终态是「第一个到达的原因」（UploadJob._mark 幂等），这里按同一优先级映射 HTTP。
             if outcome.state == DISK_FAILED:
                 # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
                 # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
-                applied = attachments.apply_outcome(
+                applied = attachments.apply_material_outcome(
                     att.id, outcome, generation=upload_generation
                 )
                 if applied is None:
                     raise HTTPException(status_code=404, detail="上传期间附件已被移除")
                 raise HTTPException(
                     status_code=500,
-                    detail=outcome.error or "上传失败：没有保存副本",
+                    detail=outcome.error or "上传失败：没有保存任何数据",
                 )
             if too_large:
                 attachments.delete(att.id)
                 raise HTTPException(status_code=413, detail=_upload_limit_detail())
-            applied = attachments.apply_outcome(
+            applied = attachments.apply_material_outcome(
                 att.id, outcome, generation=upload_generation
             )
             if applied is None:
@@ -1845,6 +1789,14 @@ def create_app(
         att = attachments.get(attachment_id, check=False)
         if att is None:
             raise HTTPException(status_code=404, detail="没有这个附件")
+        if attachments.is_source_ref(att) and not att.source_path:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "这条附件来自浏览器上传：内容只在客户端，服务端没有可重放的字节；"
+                    "请重新上传（retry 不适用）"
+                ),
+            )
         # F24：先登记「已受理且正在准备」，再调度 —— 否则响应里只有上次的 missing/failed，
         # 界面会把它当最终失败而停止等待（副本其实正在重新复制）。
         attachments.mark_preparing_for_retry(att.id)

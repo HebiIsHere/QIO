@@ -63,8 +63,15 @@ def client(tmp_path: Path):
 def test_background_prepare_never_touches_the_shared_connection_off_the_loop_thread(
     client: TestClient, tmp_path: Path, monkeypatch
 ):
+    """历史行（source_kind=NULL）的**旧后台复制**仍须遵守单线程纪律。"""
     ctx = client.app.state.ctx
     service = ctx.attachments
+
+    source = tmp_path / "并发.txt"
+    source.write_bytes(b"x" * (2 * 1024 * 1024))
+    # 历史行夹具：先正常准备一份旧副本，再用旧重定位入口触发一次后台复制
+    legacy = service.run_prepare(service.prepare(str(source)).id)
+    assert legacy.source_kind is None
 
     seen: list[int] = []
     monkeypatch.setattr(service, "conn", _ThreadRecordingConn(ctx.conn, seen))
@@ -78,20 +85,20 @@ def test_background_prepare_never_touches_the_shared_connection_off_the_loop_thr
         assert release.wait(20), "测试没有放行复制（闸门超时）"
         return real_copy_once(att, **kwargs)
 
-    # 只在**文件 I/O** 这一层设闸门：它是新旧实现都有的缝，
-    # 且此时「工作线程是否碰数据库」正好是我们要区分的那件事。
     monkeypatch.setattr(service, "_copy_once", gated_copy_once)
 
-    source = tmp_path / "并发.txt"
-    source.write_bytes(b"x" * (2 * 1024 * 1024))
-    created = client.post("/api/attachments", json={"source_path": str(source)}).json()["attachment"]
-
+    moved = tmp_path / "并发-移动后.txt"
+    source.rename(moved)
+    resp = client.post(
+        f"/api/attachments/{legacy.id}/relocate", json={"source_path": str(moved)}
+    )
+    assert resp.status_code == 200, resp.text
     assert started.wait(20), "后台复制没有开始（后台任务没跑起来）"
 
     # 复制进行中：主线程高频读同一个附件。修好之前，工作线程此刻正持有并继续使用
     # 那个共享连接 —— 这里就会出现 InterfaceError / 幻影 404。
     for _ in range(READS_WHILE_COPYING):
-        resp = client.get(f"/api/attachments/{created['id']}")
+        resp = client.get(f"/api/attachments/{legacy.id}")
         assert resp.status_code == 200, f"复制期间 GET 到了 {resp.status_code}：{resp.text[:200]}"
         assert resp.json()["attachment"]["state"] in ("prepared", "ready")
 
@@ -99,7 +106,7 @@ def test_background_prepare_never_touches_the_shared_connection_off_the_loop_thr
     deadline = time.time() + 20
     state = "prepared"
     while time.time() < deadline:
-        state = client.get(f"/api/attachments/{created['id']}").json()["attachment"]["state"]
+        state = client.get(f"/api/attachments/{legacy.id}").json()["attachment"]["state"]
         if state in TERMINAL:
             break
         time.sleep(0.02)

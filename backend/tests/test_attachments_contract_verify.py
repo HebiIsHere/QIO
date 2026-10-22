@@ -19,7 +19,9 @@ import pytest
 
 from agent.adapters.base import ToolCall
 
-THRESHOLD = 100_000_000  # 契约 §4.1：十进制 MB，size <= 阈值 → 保存副本
+# R9：旧的「≤100MB 自动复制 / >100MB 只记路径」副本策略已删除。
+# 任意大小的桌面路径都只登记源文件引用、不复制；上传大小限制是**传输资源限制**。
+LEGACY_COPY_THRESHOLD = 100_000_000
 TERMINAL_STATES = {"ready", "failed", "missing", "changed"}
 
 
@@ -73,54 +75,57 @@ def _wait_terminal(client, attachment_id: str, timeout: float = 60.0) -> dict:
 # ---- 1. 保存规则与阈值边界（契约 §4.1） -----------------------------------------
 
 
-def test_small_file_is_copied_and_readable(app_client, tmp_path):
+def test_small_file_is_registered_without_copy(app_client, tmp_path):
     client, _app = app_client
     source = tmp_path / "笔记.txt"
     source.write_text("真实读入的内容：附件验证第一行。", encoding="utf-8")
+    before = source.stat()
 
     created = _post_source(client, source)
-    assert str(created["kind"]) == "copy", created
-    assert "副本" in str(created.get("display") or ""), created
+    assert str(created["kind"]) == "reference", created
+    assert "源文件引用" in str(created.get("display") or ""), created
     assert int(created["size_bytes"]) == source.stat().st_size, created
 
     meta = _wait_terminal(client, str(created["id"]))
     assert meta["state"] == "ready", meta
-    assert meta.get("stored_path"), meta
-    assert source.exists(), "保存副本不得动用户原文件"
+    assert meta.get("stored_path") in (None, ""), "新入口不得产生副本"
+    assert str(meta.get("source_path")) == str(source), meta
+    after = source.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert not (tmp_path / "data" / "attachments").exists()
 
-    stored = tmp_path / "stored-copy.bin"
-    stored.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-    assert stored.read_text(encoding="utf-8").startswith("真实读入的内容"), "副本内容必须与原文一致"
 
-
-def test_file_below_threshold_is_copied(app_client, tmp_path):
+def test_any_size_path_registration_never_copies(app_client, tmp_path):
+    """替代旧的阈值用例：任意大小（<、=、> 100MB）都只登记源引用、不复制。"""
     client, _app = app_client
-    source = _sparse(tmp_path / "below.bin", THRESHOLD - 1)
-    created = _post_source(client, source)
-    assert str(created["kind"]) == "copy", created
-    assert int(created["size_bytes"]) == THRESHOLD - 1, created
+    sizes = [1, LEGACY_COPY_THRESHOLD - 1, LEGACY_COPY_THRESHOLD, LEGACY_COPY_THRESHOLD + 1]
+    for index, size in enumerate(sizes):
+        source = _sparse(tmp_path / f"size-{index}.bin", size)
+        created = _post_source(client, source)
+        assert str(created["kind"]) == "reference", (size, created)
+        assert created.get("stored_path") in (None, ""), (
+            f"{size} 字节也不得复制",
+            created,
+        )
+        assert int(created["size_bytes"]) == size, (size, created)
+        assert str(created.get("source_path")) == str(source), (size, created)
+    assert not (tmp_path / "data" / "attachments").exists(), "任何大小都不得产生 QIO 副本"
 
 
-def test_file_exactly_at_threshold_is_copied(app_client, tmp_path):
-    """"size <= 100_000_000 → 保存独立副本"：边界上取等号也必须复制。"""
-    client, _app = app_client
-    source = _sparse(tmp_path / "exact.bin", THRESHOLD)
-    created = _post_source(client, source)
-    assert str(created["kind"]) == "copy", ("等于阈值必须保存副本", created)
-    assert int(created["size_bytes"]) == THRESHOLD, created
-
-
-def test_file_above_threshold_is_referenced(app_client, tmp_path):
-    """"size > 100_000_000 → 引用本地文件"，只存路径 + 元数据。"""
-    client, _app = app_client
-    source = _sparse(tmp_path / "above.bin", THRESHOLD + 1)
-    created = _post_source(client, source)
-    assert str(created["kind"]) == "reference", ("超过阈值必须只引用，不得复制", created)
-    assert "引用" in str(created.get("display") or ""), created
-    assert int(created["size_bytes"]) == THRESHOLD + 1, created
-    meta = _wait_terminal(client, str(created["id"]))
-    assert str(meta.get("source_path") or "") == str(source), meta
-    assert meta.get("stored_path") in (None, "",), ("引用文件不得产生 QIO 副本", meta)
+def test_upload_size_limit_is_a_transport_limit_not_copy_rule(app_client, tmp_path):
+    """上传大小限制是传输资源限制，与「副本策略」无关（独立说明与独立拒绝）。"""
+    client, app = app_client
+    service = app.state.ctx.attachments
+    service.max_upload_bytes = 16
+    resp = client.post(
+        "/api/attachments/upload",
+        content=b"x" * 32,
+        headers={"Content-Type": "application/octet-stream", "X-QIO-Name": "too-big.bin"},
+    )
+    assert resp.status_code == 413, (resp.status_code, resp.text)
+    materials = service.materials_root
+    leftovers = [p for p in materials.rglob("*") if p.is_file()] if materials.is_dir() else []
+    assert leftovers == [], f"超限上传不得留下材料文件：{leftovers}"
 
 
 def test_missing_source_path_fails_honestly(app_client, tmp_path):
@@ -146,66 +151,73 @@ def test_same_name_files_are_kept_apart(app_client, tmp_path):
     meta_one = _wait_terminal(client, str(one["id"]))
     meta_two = _wait_terminal(client, str(two["id"]))
     assert meta_one["state"] == meta_two["state"] == "ready", (meta_one, meta_two)
-    assert str(meta_one.get("stored_path")) != str(meta_two.get("stored_path")), (meta_one, meta_two)
+    assert meta_one.get("stored_path") in (None, "") and meta_two.get("stored_path") in (None, ""), (
+        "同名文件都不得产生副本",
+    )
+    assert meta_one.get("source_path") != meta_two.get("source_path"), (meta_one, meta_two)
+    # 同名不同文件：文件身份不同，绝不能被当成同一份
+    assert meta_one.get("file_id") != meta_two.get("file_id"), (meta_one, meta_two)
 
 
 # ---- 2. 删除与重定位（契约 §4.2） ------------------------------------------------
 
 
-def test_delete_removes_only_qio_copy(app_client, tmp_path):
+def test_delete_removes_only_reference(app_client, tmp_path):
     client, _app = app_client
     source = tmp_path / "原件.txt"
     source.write_text("用户原件", encoding="utf-8")
     created = _post_source(client, source)
-    meta = _wait_terminal(client, str(created["id"]))
-    stored_path = meta.get("stored_path")
+    _wait_terminal(client, str(created["id"]))
     assert source.exists()
 
     resp = client.delete(f"/api/attachments/{created['id']}")
     assert resp.status_code in (200, 204), (resp.status_code, resp.text)
+    body = resp.json()
+    assert body.get("deleted_copy") in (None, ""), "新语义不删任何文件"
+    assert body.get("kept_source") == str(source)
     assert source.exists(), "删除附件绝不能动用户原文件"
     assert source.read_text(encoding="utf-8") == "用户原件", "原文件内容也不得被改"
-    if stored_path:
-        from pathlib import Path
-
-        assert not Path(str(stored_path)).exists(), ("QIO 副本应当被删掉", stored_path)
 
 
 def test_missing_and_changed_reference_are_reported(app_client, tmp_path):
     client, _app = app_client
-    source = _sparse(tmp_path / "被引用.bin", THRESHOLD + 1)
+    source = _sparse(tmp_path / "被引用.bin", LEGACY_COPY_THRESHOLD + 1)
     created = _post_source(client, source)
     meta = _wait_terminal(client, str(created["id"]))
     assert meta["state"] == "ready", meta
 
     source.unlink()
     missing = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
-    assert missing["state"] == "missing", ("引用文件不在了必须如实说 missing", missing)
+    assert missing["state"] == "missing", ("源文件不在了必须如实说 missing", missing)
+    assert missing.get("missing_reason"), missing
 
-    source = _sparse(tmp_path / "被引用.bin", THRESHOLD + 2)
+    # 在同一个路径上换了一份新文件：文件身份不同 → 如实 changed（不得继续冒充 ready）
+    source = _sparse(tmp_path / "被引用.bin", LEGACY_COPY_THRESHOLD + 2)
     changed = _unwrap(client.get(f"/api/attachments/{created['id']}").json())
-    assert changed["state"] in {"changed", "missing"}, (
-        "引用文件变了必须如实说 changed（不得继续冒充 ready）",
+    assert changed["state"] == "changed", (
+        "路径上的文件换了一份必须如实说 changed（不得继续冒充 ready）",
         changed,
     )
+    assert changed.get("reference_state") == "ambiguous", changed
 
 
-def test_relocate_points_at_a_new_path(app_client, tmp_path):
+def test_relocate_after_move_keeps_identity(app_client, tmp_path):
     client, _app = app_client
-    source = _sparse(tmp_path / "移动前.bin", THRESHOLD + 1)
+    source = _sparse(tmp_path / "移动前.bin", LEGACY_COPY_THRESHOLD + 1)
     created = _post_source(client, source)
     _wait_terminal(client, str(created["id"]))
 
     moved = tmp_path / "移动后.bin"
-    moved.write_bytes(b"")
-    with open(moved, "wb") as handle:
-        handle.truncate(THRESHOLD + 1)
+    source.rename(moved)  # 同卷移动/改名：文件身份不变
 
-    resp = client.post(f"/api/attachments/{created['id']}/relocate", json={"source_path": str(moved)})
+    resp = client.post(
+        f"/api/attachments/{created['id']}/relocate", json={"source_path": str(moved)}
+    )
     assert resp.status_code in (200, 201, 202), (resp.status_code, resp.text)
     meta = _wait_terminal(client, str(created["id"]))
     assert str(meta.get("source_path") or "") == str(moved), meta
     assert meta["state"] == "ready", meta
+    assert meta["reference_state"] == "relocated", meta
 
 
 # ---- 3. 真实读入内容 + 分段读取（契约 §4.2 工具） ---------------------------------

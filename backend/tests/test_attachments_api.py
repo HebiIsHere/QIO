@@ -69,25 +69,31 @@ def _drain_turns(client: TestClient, timeout: float = 10.0) -> None:
         time.sleep(0.02)
 
 
-def test_create_copies_small_file(client: TestClient, tmp_path: Path):
+def test_create_registers_source_without_copy(client: TestClient, tmp_path: Path):
+    """新入口：桌面路径登记 = 源文件引用（不复制、不移动、不改名）。"""
     source = tmp_path / "会议纪要.txt"
-    source.write_bytes("第一行\n第二行\n".encode("utf-8"))
+    payload = "第一行\n第二行\n".encode("utf-8")
+    source.write_bytes(payload)
+    before = source.stat()
 
     resp = client.post("/api/attachments", json={"source_path": str(source), "topic_id": "t1"})
     assert resp.status_code == 200, resp.text
     created = resp.json()["attachment"]
     assert created["id"].startswith("att_")
-    assert created["kind"] == "copy"
-    assert created["display"] == "已保存副本"
+    assert created["kind"] == "reference"
+    assert created["display"] == "源文件引用"
     assert created["name"] == "会议纪要.txt"
-    assert created["state"] in ("prepared", "ready")
-
-    ready = _wait_terminal(client, created["id"])
-    assert ready["state"] == "ready"
-    assert ready["sha256"]
-    stored = Path(ready["stored_path"])
-    assert stored.read_bytes() == "第一行\n第二行\n".encode("utf-8")
-    assert source.read_bytes() == "第一行\n第二行\n".encode("utf-8")  # 原文件没有被搬走
+    assert created["state"] == "ready"
+    assert created["stored_path"] is None, "新记录不得有副本路径"
+    assert created["source_path"] == str(source)
+    assert created["source_kind"] == "desktop_path"
+    assert created["origin"] == "user_original"
+    assert created["size"] == len(payload)
+    assert client.get(f"/api/attachments/{created['id']}/content").content == payload
+    # 源文件没有被改动，也没有产生副本
+    after = source.stat()
+    assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+    assert not (tmp_path / "data" / "attachments").exists()
 
 
 def test_create_rejects_fakepath(client: TestClient):
@@ -96,8 +102,8 @@ def test_create_rejects_fakepath(client: TestClient):
     assert "找不到这个文件" in resp.json()["detail"]
 
 
-def test_upload_raw_bytes_without_multipart(client: TestClient):
-    """浏览器回退：原始字节体 + X-QIO-Name 头，不需要 multipart 依赖。"""
+def test_upload_raw_bytes_lands_material_once(client: TestClient, tmp_path: Path):
+    """只有字节的上传：缺省按 browser_upload **首次落盘**到 workspace/materials/。"""
     payload = "上传的内容\n第二行\n".encode("utf-8")
     resp = client.post(
         "/api/attachments/upload",
@@ -110,11 +116,17 @@ def test_upload_raw_bytes_without_multipart(client: TestClient):
     )
     assert resp.status_code == 200, resp.text
     att = resp.json()["attachment"]
-    assert att["kind"] == "copy"
+    assert att["kind"] == "reference"
+    assert att["stored_path"] is None
     assert att["state"] == "ready"
     assert att["name"] == "中文名.txt"
     assert att["topic_id"] == "t_upload"
-    assert Path(att["stored_path"]).read_bytes() == payload
+    assert att["source_kind"] == "browser_upload", "缺省必须标注浏览器上传来源"
+    assert att["origin"] == "user_saved_material"
+    landed = Path(att["source_path"])
+    assert landed.read_bytes() == payload
+    assert "materials" in landed.parts
+    assert client.get(f"/api/attachments/{att['id']}/content").content == payload
 
 
 def test_get_and_list(client: TestClient, tmp_path: Path):
@@ -140,59 +152,69 @@ def test_get_and_list(client: TestClient, tmp_path: Path):
     assert client.get("/api/attachments/att_missing").status_code == 404
 
 
-def test_delete_removes_copy_but_keeps_source(client: TestClient, tmp_path: Path):
+def test_delete_reference_keeps_source_file(client: TestClient, tmp_path: Path):
     source = tmp_path / "原件.txt"
     source.write_bytes("原件内容".encode("utf-8"))
     created = client.post("/api/attachments", json={"source_path": str(source)}).json()["attachment"]
-    ready = _wait_terminal(client, created["id"])
-    stored = Path(ready["stored_path"])
-    assert stored.is_file()
 
     deleted = client.delete(f"/api/attachments/{created['id']}")
     assert deleted.status_code == 200
     body = deleted.json()
     assert body["ok"] is True and body["removed"] is True
-    assert body["deleted_copy"] == str(stored)
-    assert not stored.exists()
+    assert body["deleted_copy"] is None, "新语义删除引用不删任何文件"
+    assert body["kept_source"] == str(source)
     assert source.read_bytes() == "原件内容".encode("utf-8")  # 用户原文件必须还在
     assert client.get(f"/api/attachments/{created['id']}").status_code == 404
     assert client.delete("/api/attachments/att_missing").status_code == 404
+
+
+def test_delete_legacy_row_removes_managed_copy(client: TestClient, tmp_path: Path):
+    """历史行（source_kind=NULL）保留旧清理：只删 QIO 管理目录下的旧副本。"""
+    ctx = client.app.state.ctx
+    source = tmp_path / "历史原件.txt"
+    source.write_bytes("历史内容".encode("utf-8"))
+    legacy = ctx.attachments.run_prepare(ctx.attachments.prepare(str(source)).id)
+    stored = Path(legacy.stored_path)
+    assert legacy.source_kind is None and stored.is_file()
+
+    deleted = client.delete(f"/api/attachments/{legacy.id}")
+    assert deleted.status_code == 200
+    body = deleted.json()
+    assert body["deleted_copy"] == str(stored)
+    assert not stored.exists()
+    assert source.read_bytes() == "历史内容".encode("utf-8")
 
 
 def test_relocate_after_user_moved_the_file(client: TestClient, tmp_path: Path):
     source = tmp_path / "会被移动.txt"
     source.write_bytes("移动前".encode("utf-8"))
     created = client.post("/api/attachments", json={"source_path": str(source)}).json()["attachment"]
-    _wait_terminal(client, created["id"])
 
     moved = tmp_path / "新目录" / "改名后.txt"
     moved.parent.mkdir(parents=True, exist_ok=True)
     source.rename(moved)
 
+    # 同卷移动/改名：文件身份不变 → 重定位直接自动接受（无需用户再确认）
     resp = client.post(
         f"/api/attachments/{created['id']}/relocate", json={"source_path": str(moved)}
     )
     assert resp.status_code == 200, resp.text
-    # 重定位现在是**受理事实**（文件 I/O 在工作线程、状态回事件循环线程落库，见问题 6）：
-    # prepared 不是成功，必须按 GET 跟到终态之后再断言内容。
-    assert resp.json()["attachment"]["id"] == created["id"]
-    relocated = _wait_terminal(client, created["id"])
+    relocated = resp.json()["attachment"]
+    assert relocated["id"] == created["id"]
     assert relocated["state"] == "ready"
     assert relocated["source_path"] == str(moved)
-    assert Path(relocated["stored_path"]).read_bytes() == "移动前".encode("utf-8")
+    assert relocated["reference_state"] == "relocated"
+    assert client.get(f"/api/attachments/{created['id']}/content").content == "移动前".encode("utf-8")
 
 
-def test_reference_file_moved_away_is_missing_and_relocatable(client: TestClient, tmp_path: Path, monkeypatch):
-    from agent.services import attachments as attachments_mod
-
-    monkeypatch.setattr(attachments_mod, "COPY_MAX_BYTES", 16)
+def test_source_file_moved_away_is_missing_and_relocatable(client: TestClient, tmp_path: Path):
     source = tmp_path / "大文件.bin"
     source.write_bytes(b"v" * 32)
 
     created = client.post("/api/attachments", json={"source_path": str(source)}).json()["attachment"]
     assert created["kind"] == "reference"
-    assert created["display"] == "引用本地文件"
-    assert created["caveat"] == "历史保留的是位置，不保证内容仍然存在"
+    assert created["display"] == "源文件引用"
+    assert created["caveat"] is None
     ready = _wait_terminal(client, created["id"])
     assert ready["state"] == "ready"
     assert ready["stored_path"] is None
@@ -200,41 +222,44 @@ def test_reference_file_moved_away_is_missing_and_relocatable(client: TestClient
     source.unlink()
     missing = client.get(f"/api/attachments/{created['id']}").json()["attachment"]
     assert missing["state"] == "missing"
-    assert missing["retryable"] is True
+    assert missing["missing_reason"]
+    assert missing["actions"] == ["relocate"]
 
+    # 用户指定新位置：内容相同但身份不同 → 必须显式确认后才采纳
     restored = tmp_path / "换了个地方" / "大文件.bin"
     restored.parent.mkdir(parents=True, exist_ok=True)
     restored.write_bytes(b"v" * 32)
-    assert client.post(
+    unconfirmed = client.post(
         f"/api/attachments/{created['id']}/relocate", json={"source_path": str(restored)}
-    ).status_code == 200
-    fixed = _wait_terminal(client, created["id"])  # 受理事实 → 跟到终态（问题 6：后台化）
+    )
+    assert unconfirmed.status_code == 409
+    assert unconfirmed.json()["detail"]["code"] == "identity_confirmation_required"
+    confirmed = client.post(
+        f"/api/attachments/{created['id']}/relocate",
+        json={"source_path": str(restored), "confirmed_identity": True},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    fixed = confirmed.json()["attachment"]
     assert fixed["state"] == "ready"
     assert fixed["source_path"] == str(restored)
 
 
-def test_retry_failed_attachment_reuses_the_same_record(client: TestClient, tmp_path: Path):
+def test_retry_legacy_row_rebuilds_managed_copy(client: TestClient, tmp_path: Path):
+    """重试只服务历史行（旧副本代码路径）：同一行重做副本，不新建附件。"""
+    ctx = client.app.state.ctx
     source = tmp_path / "重试.txt"
     source.write_bytes("重试内容".encode("utf-8"))
-    created = client.post("/api/attachments", json={"source_path": str(source)}).json()["attachment"]
-    _wait_terminal(client, created["id"])
-
-    ctx = client.app.state.ctx
-    # 造一个**真实的**失败：副本不在 + 记录 failed。
-    # （只改状态列、副本还在且 sha256 一致时，按契约 §1.4 属于「可验证的恢复」，
-    #   GET 会如实转 ready —— 那样就不是失败态了。）
-    stored = Path(created["stored_path"]) if created.get("stored_path") else None
-    ready_row = client.get(f"/api/attachments/{created['id']}").json()["attachment"]
-    stored = Path(ready_row["stored_path"])
+    legacy = ctx.attachments.run_prepare(ctx.attachments.prepare(str(source)).id)
+    stored = Path(legacy.stored_path)
     stored.unlink()
-    ctx.attachments._update(created["id"], state="failed", error="模拟失败")
-    failed = client.get(f"/api/attachments/{created['id']}").json()["attachment"]
+    ctx.attachments._update(legacy.id, state="failed", error="模拟失败")
+    failed = client.get(f"/api/attachments/{legacy.id}").json()["attachment"]
     assert failed["state"] == "failed" and failed["retryable"] is True
 
-    resp = client.post(f"/api/attachments/{created['id']}/retry")
+    resp = client.post(f"/api/attachments/{legacy.id}/retry")
     assert resp.status_code == 200
-    again = _wait_state(client, created["id"], "ready")
-    assert again["id"] == created["id"]  # 同一行重做，不新建附件
+    again = _wait_state(client, legacy.id, "ready")
+    assert again["id"] == legacy.id  # 同一行重做，不新建附件
     assert Path(again["stored_path"]).read_bytes() == "重试内容".encode("utf-8")
 
 

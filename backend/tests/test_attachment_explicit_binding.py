@@ -85,6 +85,22 @@ def _create(
     return _wait_terminal(client, created["id"])
 
 
+def _create_legacy_copy(
+    client: TestClient,
+    tmp_path: Path,
+    name: str,
+    *,
+    topic_id: str | None = "t_exp",
+    body: bytes = b"x",
+) -> dict:
+    """**历史行夹具**：旧副本（source_kind=NULL），用于 failed/missing 语义覆盖。"""
+    svc = client.app.state.ctx.attachments
+    source = tmp_path / name
+    source.write_bytes(body)
+    att = svc.run_prepare(svc.prepare(str(source), topic_id=topic_id).id)
+    return svc.payload(svc.get(att.id, check=False))
+
+
 def _turn_row(client: TestClient, attachment_id: str) -> str | None:
     return client.app.state.ctx.attachments.get(attachment_id, check=False).turn_id
 
@@ -179,8 +195,8 @@ def test_explicit_ids_skip_failed_and_missing(client: TestClient, tmp_path: Path
 
     状态校验按**现在的事实**（GET 之后 missing/changed），拒绝要让用户看到是哪一条、为什么。
     """
-    failed = _create(client, tmp_path, "失败.txt", topic_id="t_bad")
-    missing = _create(client, tmp_path, "丢了副本.txt", topic_id="t_bad")
+    failed = _create_legacy_copy(client, tmp_path, "失败.txt", topic_id="t_bad")
+    missing = _create_legacy_copy(client, tmp_path, "丢了副本.txt", topic_id="t_bad")
     ctx = client.app.state.ctx
     # 造一个**真实的**失败：副本不在 + 记录 failed。
     # （只改状态列、副本还在且 sha256 一致时，按契约 §1.4 属于「可验证的恢复」，
