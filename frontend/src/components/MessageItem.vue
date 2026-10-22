@@ -281,7 +281,8 @@ function previewCodeBlock(block: CodeBlockRef): void {
     // 标签本身会带上类别（「代码」）；这里只给语言，避免出现「ts 代码代码」。
     title: block.language || "回复中的代码",
   });
-  replyCodeNotice.value = ok ? "已在右侧打开这段代码的只读预览" : "右侧预览还没有接上（不会打开空白面板）";
+  // 成功不弹说明：右侧预览打开本身就是反馈；只在真的没接上时保留失败原因。
+  replyCodeNotice.value = ok ? "" : "右侧预览还没有接上（不会打开空白面板）";
 }
 function canPreview(attachment: MessageAttachment): boolean {
   return previewAvailable && canPreviewAttachment({ name: attachment.name });

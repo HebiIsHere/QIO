@@ -19,6 +19,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import router from "../router";
+import brandLogo from "../assets/qio-orbit-logo.png";
 
 /** @tauri-apps/api/window 里我们真正用到的那几个方法（只声明用到的部分，便于测试替身）。 */
 interface ShellWindow {
@@ -29,8 +30,8 @@ interface ShellWindow {
   onResized(handler: () => void): Promise<() => void>;
 }
 
-/** 对话页的全局栏高度：8px 外边距 + 62px 圆角栏 + 10px 呼吸，给下方卡片留出同一条顶线。 */
-const CONVERSATION_TITLEBAR_HEIGHT = "80px";
+/** 对话页的全局栏高度：8px 外边距 + 52px 圆角栏 + 10px 呼吸，给下方卡片留出同一条顶线。 */
+const CONVERSATION_TITLEBAR_HEIGHT = "70px";
 
 function tauriInternals(): unknown {
   return (globalThis as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -162,14 +163,17 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- QIO 字标：对话页按全局栏规格显示 PERSONAL AGENT 副标；其他页保持克制的一行字。
-         pointer-events 关掉，点在字标上仍可拖窗口。 -->
+    <!-- 对话页：左侧用轨道标志 + PERSONAL AGENT；其他页保持原来克制的 QIO 字标。
+         pointer-events 关掉，点在品牌区上仍可拖窗口。 -->
     <div class="brand" aria-hidden="true">
-      <span class="brand-dot"></span>
-      <span class="brand-name">QIO</span>
       <template v-if="isConversation">
+        <img class="brand-logo" :src="brandLogo" alt="" />
         <span class="brand-sep"></span>
         <span class="brand-caption">PERSONAL AGENT</span>
+      </template>
+      <template v-else>
+        <span class="brand-dot"></span>
+        <span class="brand-name">QIO</span>
       </template>
     </div>
 
@@ -363,7 +367,7 @@ onBeforeUnmount(() => {
   top: 8px;
   left: 8px;
   right: 8px;
-  height: 62px;
+  height: 52px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-xl);
   background: var(--bg-surface);
@@ -374,8 +378,15 @@ onBeforeUnmount(() => {
   border-radius: inherit;
 }
 .conversation-bar .brand {
-  left: 20px;
-  gap: 10px;
+  left: 18px;
+  gap: 9px;
+}
+.conversation-bar .brand-logo {
+  width: auto;
+  height: 30px;
+  display: block;
+  flex: none;
+  object-fit: contain;
 }
 .conversation-bar .brand-dot {
   width: 8px;
@@ -406,15 +417,15 @@ onBeforeUnmount(() => {
   align-items: center;
 }
 .conversation-bar .wc-btn {
-  width: 46px;
-  height: 44px;
+  width: 44px;
+  height: 38px;
   border-radius: var(--r-sm);
 }
 .conversation-bar .chrome-actions {
   right: 20px;
 }
 .conversation-bar .chrome-actions.with-controls {
-  right: 160px;
+  right: 152px;
 }
 .conversation-bar .chrome-btn {
   width: 30px;
