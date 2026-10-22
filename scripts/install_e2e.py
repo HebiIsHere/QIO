@@ -792,6 +792,9 @@ class Client:
     def post(self, path: str, payload=None, **kw):
         return self.request("POST", path, payload if payload is not None else {}, **kw)
 
+    def put(self, path: str, payload=None, **kw):
+        return self.request("PUT", path, payload if payload is not None else {}, **kw)
+
 
 class SseReader:
     """后台读 SSE；主线程按需取事件。"""
