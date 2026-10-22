@@ -65,12 +65,12 @@ export async function requestClose(action: CloseAction): Promise<CloseOutcome> {
 /** 监听壳发来的事件（关闭请求 / 托盘退出）。浏览器预览里返回空取消函数。 */
 export async function listenShellEvent(
   event: "qio://close-requested" | "qio://tray-quit",
-  handler: () => void,
+  handler: (payload?: unknown) => void,
 ): Promise<() => void> {
   if (!inTauriShell()) return () => {};
   try {
     const { listen } = await import("@tauri-apps/api/event");
-    const unlisten = await listen(event, () => handler());
+    const unlisten = await listen(event, (raw) => handler((raw as { payload?: unknown } | null)?.payload));
     return () => {
       try {
         unlisten();

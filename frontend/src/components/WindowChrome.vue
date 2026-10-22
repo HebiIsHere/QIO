@@ -123,13 +123,19 @@ async function quitNow() {
   }
 }
 
-/** 统一关闭入口（契约 §11）。 */
-async function handleCloseRequest() {
+/** 从壳事件里取「无人值守覆盖」（QIO_CLOSE_BEHAVIOR，仅真机验证脚本用）。 */
+function forcedBehaviorOf(payload: unknown): CloseBehavior | undefined {
+  const raw = (payload as { forcedBehavior?: unknown } | null | undefined)?.forcedBehavior;
+  return raw === "ask" || raw === "tray" || raw === "quit" ? raw : undefined;
+}
+
+/** 统一关闭入口（契约 §11）。`forced` 只来自壳的无人值守覆盖，不参与用户设置。 */
+async function handleCloseRequest(forced?: CloseBehavior) {
   if (handlingClose || busy.value) return;
   handlingClose = true;
   try {
     await ensureBehaviorLoaded();
-    const behavior = currentBehavior();
+    const behavior = forced ?? currentBehavior();
     if (behavior === "tray") {
       await hideToTray();
       return;
@@ -203,8 +209,8 @@ onMounted(async () => {
     }
     // 系统关闭（Alt+F4 / 任务栏关闭 / WM_CLOSE）由 Rust 拦下并发这个事件：
     // 和标题条按钮走完全相同的关闭行为判断。
-    unlistenClose = await listenShellEvent("qio://close-requested", () => {
-      void handleCloseRequest();
+    unlistenClose = await listenShellEvent("qio://close-requested", (payload) => {
+      void handleCloseRequest(forcedBehaviorOf(payload));
     });
     // 托盘菜单「退出 QIO」：用户已明确选择退出，不再弹 ask 确认框。
     unlistenTrayQuit = await listenShellEvent("qio://tray-quit", () => {
@@ -253,7 +259,7 @@ onBeforeUnmount(() => {
         </svg>
       </button>
       <!-- R9 §11：不再直接 close()，而是走关闭行为（ask/tray/quit） -->
-      <button class="wc-btn wc-close" type="button" aria-label="关闭" title="关闭窗口" @click="handleCloseRequest">
+      <button class="wc-btn wc-close" type="button" aria-label="关闭" title="关闭窗口" @click="handleCloseRequest()">
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
       </button>
     </div>
