@@ -1,14 +1,14 @@
-"""问题一（plan §1.1）：准备阶段的**可确认取消**（真 uvicorn + 真 TCP 客户端）。
+"""问题一（plan §1.1，R9 适配）：准备阶段的**可确认取消**（真 uvicorn + 真 TCP 客户端）。
 
-真缺陷（plan §0 第 1 条）：
+R9 适配说明（docs/r9-contracts.md §6）：
+* 旧装置把"首次后台复制"卡在 os.link/copyfile 闸门里制造准备期；R9 取消本地副本策略
+  （附件 = 源文件引用，register_source 不复制、不移动），该注入缝已随产品逻辑删除。
+* 准备期仍真实存在：**浏览器上传的首次落盘**（begin_material → prepared → bind_for_turn
+  有界等待）。用例用它让轮次真的停在准备中，不再注入任何已删除的 copy 缝。
+* 覆盖不减少：准备期间①真实 TCP 断连、②显式取消端点都必须让这一轮**不启动**
+  （模型 0 次、无 TURN_START、无队列/绑定残留）；重复取消幂等；已放行如实 already_started。
 
-* 前端只对请求做 AbortController.abort()；
-* 后端在附件准备完成后**直接 activate()** —— 真实 HTTP 断连没有被当成取消证据：
-  用户已经中止/断开，模型仍然被调用（1 次调用 + TURN_START + 克隆保留）；
-* 也没有可确认的取消端点（今天 POST /api/turns/prepare/{prepare_id}/cancel 是 404）。
-
-装置按契约 §3：真 uvicorn + 真 TCP；复制卡在服务内部的线程事件闸门里（独立线程池，
-不占共享执行器），闸门关闭期间观察，再放行。
+装置按契约 §3：真 uvicorn + 真 TCP；准备行由服务内部首次落盘在飞造成（不是测试端假等待）。
 """
 
 from __future__ import annotations
@@ -31,16 +31,16 @@ from agent.adapters.base import ChatMessage, Completion
 from agent.api.server import create_app
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
-from agent.services import attachments as attachments_mod
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
-MARKER = "R7 原轮副本内容：只有这份副本里才有的标记 7c31"
 #: 断连用例的消息（台账握手按它定位这一轮）
 MESSAGE_DISCONNECT = "重试（准备中断开）"
+#: 取消用例的消息
+MESSAGE_CANCEL = "重试（会被取消）"
 #: 等待「缺陷出现 / 取消收尾」的上界（失败判定，不是等待手段）
 DEADLINE = 25.0
-#: 装置前置条件（服务起来、附件就绪、复制进闸门）的上界
+#: 装置前置条件（服务起来、准备行建好）的上界
 SETUP_DEADLINE = 60.0
 #: 取消之后观察「不得又开始执行」的有界窗口
 QUIET_WINDOW = 0.6
@@ -50,7 +50,7 @@ class _CountingAdapter:
     """假 provider：只数调用次数（不联网、不需要凭据）。"""
 
     mode = "text"
-    model = "fake-r7-cancel"
+    model = "fake-r9-cancel"
     supports_stream = False
 
     def __init__(self) -> None:
@@ -98,7 +98,7 @@ class _LiveServer:
 
 
 @pytest.fixture()
-def live(tmp_path: Path, monkeypatch):
+def live(tmp_path: Path):
     conn = connect(tmp_path / "r7_cancel.db")
     apply_migrations(conn)
     app = create_app(Settings(data_dir=tmp_path / "data"), conn)
@@ -106,6 +106,8 @@ def live(tmp_path: Path, monkeypatch):
     ctx.credentials._kr = MemoryKeyring()
     # 测试污染防护：QIO_DATA_DIR 会覆盖 Settings(data_dir=...)，再钉一次附件落点
     ctx.attachments.data_dir = tmp_path / "data"
+    # 有界等待压短：取消/断连正确时立即取消；没被当成取消时 3s 后结构化拒绝（可区分）。
+    ctx.attachments.prepare_wait_seconds = 3.0
     adapter = _CountingAdapter()
     ctx.build_adapter = AsyncMock(return_value=adapter)
     topic = ctx.topics.nodes.create_topic("准备取消").id  # 起服务之前建好（单线程）
@@ -117,69 +119,13 @@ def live(tmp_path: Path, monkeypatch):
         server.stop()
 
 
-# -- 装置：闸门 / 强制复制退路 ------------------------------------------------
+# -- 装置：真实在飞的首次落盘（准备期） ---------------------------------------
 
 
-def _break_link(monkeypatch) -> None:
-    """强制走复制退路（os.link 失败 → copyfile）；只影响 attachments 服务看到的 os。"""
-    import os as real_os
-
-    class _OsShim:
-        def __getattr__(self, name):
-            return getattr(real_os, name)
-
-        @staticmethod
-        def link(*_args, **_kwargs):
-            raise OSError("跨卷 / 不支持硬链接（测试强制复制退路）")
-
-    monkeypatch.setattr(attachments_mod, "os", _OsShim())
-
-
-def _gate_copy(monkeypatch) -> tuple[threading.Event, threading.Event]:
-    """把复制卡在**服务内部**的线程事件闸门里（独立线程池，不占共享执行器）。"""
-    import asyncio as real_asyncio
-    import os as real_os
-    import shutil as real_shutil
-    from concurrent.futures import ThreadPoolExecutor
-    from functools import partial
-
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="qio-r7-test-copy")
-    entered = threading.Event()
-    release = threading.Event()
-    real_copyfile = real_shutil.copyfile
-
-    def gated_copyfile(src, dst, *args, **kwargs):
-        entered.set()
-        assert release.wait(SETUP_DEADLINE), "测试没有放行 copyfile"
-        return real_copyfile(src, dst, *args, **kwargs)
-
-    class _ShutilShim:
-        copyfile = staticmethod(gated_copyfile)
-
-        def __getattr__(self, name):
-            return getattr(real_shutil, name)
-
-    class _OsShim:
-        def __getattr__(self, name):
-            return getattr(real_os, name)
-
-        @staticmethod
-        def link(*_args, **_kwargs):
-            raise OSError("不支持硬链接（测试强制复制退路）")
-
-    class _AsyncioShim:
-        def __getattr__(self, name):
-            return getattr(real_asyncio, name)
-
-        @staticmethod
-        def to_thread(func, /, *args, **kwargs):
-            loop = real_asyncio.get_running_loop()
-            return loop.run_in_executor(pool, partial(func, *args, **kwargs))
-
-    monkeypatch.setattr(attachments_mod, "shutil", _ShutilShim())
-    monkeypatch.setattr(attachments_mod, "os", _OsShim())
-    monkeypatch.setattr(attachments_mod, "asyncio", _AsyncioShim())
-    return entered, release
+def _prepared_upload(ctx, topic: str, *, name: str) -> str:
+    """浏览器上传第一步：行 prepared，字节尚未提交 —— 发送这一轮会真的等在这。"""
+    att = ctx.attachments.begin_material(name=name, source_kind="browser_upload", topic_id=topic)
+    return str(att.id)
 
 
 # -- 观察：只读、线程安全的事实 ----------------------------------------------
@@ -190,33 +136,14 @@ def _starts(ctx) -> int:
 
 
 def _journal_row(ctx, message: str):
-    """按消息文本读台账行（只读 sqlite；并发写入的短暂锁只当「还没写」）。
-
-    用来做**显式握手**：abandon 会先写台账终态（cancelled + reason），
-    所以「台账里出现 cancelled 行」= 服务端确实把这次断连当成取消处理过了。
-    """
+    """按消息文本读台账行（只读 sqlite；并发写入的短暂锁只当「还没写」）。"""
     try:
         return ctx.conn.execute(
-            "SELECT status, reason FROM turn_journal WHERE message = ?"
-            " ORDER BY created_at DESC LIMIT 1",
+            "SELECT status, reason FROM turn_journal WHERE message = ? ORDER BY created_at DESC LIMIT 1",
             (message,),
         ).fetchone()
     except sqlite3.Error:
         return None
-
-
-def _attachments(client: httpx.Client) -> list[dict]:
-    data = client.get("/api/attachments").json()
-    rows = data.get("attachments") if isinstance(data, dict) else data
-    return list(rows or [])
-
-
-def _clones_of(client: httpx.Client, source_id: str) -> list[dict]:
-    return [a for a in _attachments(client) if a.get("source_attachment_id") == source_id]
-
-
-def _queue(client: httpx.Client) -> dict:
-    return client.get("/api/turns/queue").json()
 
 
 def _wait_for(predicate, *, timeout: float = SETUP_DEADLINE, what: str = "") -> None:
@@ -228,37 +155,8 @@ def _wait_for(predicate, *, timeout: float = SETUP_DEADLINE, what: str = "") -> 
     raise AssertionError(f"没有在 {timeout}s 内满足：{what}")
 
 
-def _upload_ready(client: httpx.Client, tmp_path: Path, topic: str, name: str) -> tuple[Path, str]:
-    source = tmp_path / name
-    source.write_text(MARKER, encoding="utf-8")
-    created = client.post(
-        "/api/attachments", json={"source_path": str(source), "topic_id": topic}
-    ).json()["attachment"]
-    state = {}
-    deadline = time.time() + SETUP_DEADLINE
-    while time.time() < deadline:
-        state = client.get(f"/api/attachments/{created['id']}").json()["attachment"]
-        if state["state"] != "prepared":
-            break
-        time.sleep(0.02)
-    assert state["state"] == "ready", state
-    return source, created["id"]
-
-
-def _run_binding_turn(client: httpx.Client, ctx, topic: str, attachment_id: str) -> str:
-    """跑一轮真实的（假 provider）turn，把附件绑到它名下 —— 之后才能用 retry_of 克隆它。"""
-    before = _starts(ctx)
-    resp = client.post(
-        "/api/turns", json={"message": "原轮", "topic_id": topic, "attachment_ids": [attachment_id]}
-    )
-    assert resp.status_code == 200, resp.text
-    turn_id = resp.json()["turn_id"]
-    _wait_for(lambda: _starts(ctx) > before, what="原轮没有开始执行")
-    _wait_for(
-        lambda: _queue(client)["running"] is None and not _queue(client)["queued"],
-        what="原轮没有结束",
-    )
-    return turn_id
+def _queue(client: httpx.Client) -> dict:
+    return client.get("/api/turns/queue").json()
 
 
 def _raw_post(server: _LiveServer, path: str, body: dict, headers: dict) -> socket.socket:
@@ -277,134 +175,104 @@ def _raw_post(server: _LiveServer, path: str, body: dict, headers: dict) -> sock
     return sock
 
 
+def _wait_journal(ctx, message: str, wanted: tuple[str, ...], timeout: float = 20.0):
+    deadline = time.time() + timeout
+    row = None
+    while time.time() < deadline:
+        row = _journal_row(ctx, message)
+        if row is not None and row[0] in wanted:
+            return row
+        time.sleep(0.02)
+    return row
+
+
 # -- 用例 --------------------------------------------------------------------
 
 
-def test_disconnect_during_prepare_never_starts_the_turn(live, monkeypatch):
+def test_disconnect_during_prepare_never_starts_the_turn(live):
     """契约 §1.1/§3：准备期间**真实 TCP 断连** → 不得放行、模型 0 次、无 TURN_START。"""
     server, ctx, adapter, tmp_path, topic = live
     with httpx.Client(base_url=server.base, timeout=30.0) as client:
-        source, att = _upload_ready(client, tmp_path, topic, "断连副本.txt")
-        original = _run_binding_turn(client, ctx, topic, att)
-        source.unlink()  # 只能用 QIO 保存的那份副本
-
-        _break_link(monkeypatch)
-        entered, release = _gate_copy(monkeypatch)
+        att = _prepared_upload(ctx, topic, name="断连用例准备中的上传.txt")
         before = _starts(ctx)
-        # 原轮自己也调过模型：判据必须看**增量**，不能用绝对次数
         calls_before = adapter.calls
+        attachments_before = len(client.get("/api/attachments").json().get("attachments") or [])
 
         sock = None
         try:
             sock = _raw_post(
                 server,
                 "/api/turns",
-                {
-                    "message": MESSAGE_DISCONNECT,
-                    "topic_id": topic,
-                    "attachment_ids": [att],
-                    "retry_of_turn_id": original,
-                },
+                {"message": MESSAGE_DISCONNECT, "topic_id": topic, "attachment_ids": [att]},
                 {"X-QIO-Prepare-Id": uuid.uuid4().hex, "Connection": "keep-alive"},
             )
-            assert entered.wait(SETUP_DEADLINE), "复制没有进入服务内部的闸门"
+            # 装置前置：这一轮已经**预留**（台账 queued），且请求尚未返回。
+            row = _wait_journal(ctx, MESSAGE_DISCONNECT, ("queued",))
+            assert row is not None and row[0] == "queued", (
+                "这一刻台账里应当是准备中（queued）的预留行", dict(row) if row else None
+            )
+            sock.settimeout(0.5)
+            responded_early = False
+            try:
+                responded_early = bool(sock.recv(1))
+            except socket.timeout:
+                responded_early = False
+            assert not responded_early, "准备期间服务端已经回了响应 —— 没有真的等首次落盘"
             assert adapter.calls == calls_before, "前置：准备期间不该已经开始执行"
             assert _starts(ctx) == before, "前置：准备期间不该已经发过 TURN_START"
-            # 闸门还关着：先确认这一轮**确实已经登记为准备中**（reserve 就写了台账行）——
-            # 装置前置条件（不是就绪判据），保证下面的握手等的是本次那一轮。
-            prepared_row = _journal_row(ctx, MESSAGE_DISCONNECT)
-            assert prepared_row is not None and prepared_row["status"] == "queued", (
-                "这一刻台账里应当是准备中（queued）的预留行",
-                dict(prepared_row) if prepared_row is not None else None,
-            )
 
-            sock.close()  # 真实 TCP 断连（等价于用户中止 / 网络断开）
-            # CI Linux 教训（2026-10-09）：**断连到达**与**复制完成**是两个独立的异步事实，
-            # 谁先到不该由机器调度决定 —— 先放行磁盘闸门时，Linux 上复制常常先完成，
-            # 于是这一轮被正常放行（模型 1 次调用），用例读成「断连没有成为取消证据」。
-            # 所以在放行之前，先等「服务端已经看见这次断连」这个**事实**：
-            # 观测点 = 本次克隆行被丢弃（取消清理在磁盘闸门仍关闭时就完成）。
-            # **显式握手**（CI Linux/py3.11 教训）：等「服务端确实把这次断连当成取消」这个
-            # **持久事实**再放行磁盘闸门 —— 观测点 = 台账里这一轮被 abandon 成 cancelled
-            # （reason=cancelled_during_prepare）。断连到达与复制完成是两个独立的异步事实，
-            # 先放行时慢一点的机器上复制会先完成 → 这一轮被正常放行（模型 1 次调用），
-            # 用例就被读成「断连没有成为取消证据」。这里等的是产品状态（轮询**事实**），
-            # 不是固定 sleep 去放大竞速窗口。
-            disconnect_seen = False
-            deadline = time.time() + DEADLINE
-            while time.time() < deadline:
-                row = _journal_row(ctx, MESSAGE_DISCONNECT)
-                if row is not None and row["status"] == "cancelled":
-                    disconnect_seen = True
-                    break
-                time.sleep(0.02)
-            # 看不到也不在这里判红：让后面的「模型 0 次」断言给结论（修复前就是它红）
-            print(f"disconnect_seen={disconnect_seen}", flush=True)
+            sock.close()  # 真实 TCP 断连（FIN）
         finally:
-            release.set()  # 无论断言怎么走，都要放行磁盘闸门（否则复制线程会挂住）
+            if sock is not None:
+                sock.close()
 
-        # 有界观察：要么缺陷行为出现（模型被调用 / TURN_START），要么取消已经收尾（克隆被清掉）
-        observed_cancel_at = None
-        deadline = time.time() + DEADLINE
-        while time.time() < deadline:
-            if adapter.calls > calls_before or _starts(ctx) > before:
-                break
-            if observed_cancel_at is None and not _clones_of(client, att):
-                observed_cancel_at = time.time()
-            if observed_cancel_at is not None and time.time() - observed_cancel_at >= QUIET_WINDOW:
-                break
-            time.sleep(0.02)
+        row = _wait_journal(ctx, MESSAGE_DISCONNECT, ("cancelled", "completed", "running", "failed"))
+        time.sleep(QUIET_WINDOW)
 
+        assert row is not None, "断连之后台账没有这一轮的任何终态事实"
+        assert row[0] == "cancelled", ("准备期间的断连必须取消这一轮", dict(row))
+        assert row[1] == "cancelled_during_prepare", (
+            "断连必须被当成取消证据（不是等待超时/准备失败）", dict(row)
+        )
         assert adapter.calls == calls_before, (
             f"用户已经断开，模型仍被调用 {adapter.calls - calls_before} 次（断连没有成为取消证据）"
         )
         assert _starts(ctx) == before, "用户已经断开，仍然发了 TURN_START"
         snapshot = _queue(client)
         assert snapshot["running"] is None and not snapshot["queued"], (
-            "取消之后不得留下可执行的队列项",
-            snapshot,
+            "取消之后不得留下可执行的队列项", snapshot
         )
-        assert not _clones_of(client, att), "取消之后本次克隆行没有清理"
-        original_row = client.get(f"/api/attachments/{att}").json()["attachment"]
-        assert original_row["state"] == "ready", ("原轮副本不得被删除", original_row)
+        attachment = client.get(f"/api/attachments/{att}").json()["attachment"]
+        attachments_now = len(client.get("/api/attachments").json().get("attachments") or [])
+        assert not attachment.get("turn_id"), ("断连的轮次不得留下绑定", attachment.get("turn_id"))
+        assert str(attachment.get("state")) == "prepared", ("准备中的材料行不应被断连误删", attachment.get("state"))
+        assert attachments_now == attachments_before, ("断连不得产生新的附件行/克隆", attachments_before, attachments_now)
 
 
-def test_cancel_endpoint_stops_a_preparing_turn(live, monkeypatch):
+def test_cancel_endpoint_stops_a_preparing_turn(live):
     """显式取消端点：准备期间取消 → 已取消 + 不放行 + 重复取消幂等。"""
     server, ctx, adapter, tmp_path, topic = live
     with httpx.Client(base_url=server.base, timeout=30.0) as client:
-        source, att = _upload_ready(client, tmp_path, topic, "取消副本.txt")
-        original = _run_binding_turn(client, ctx, topic, att)
-        source.unlink()
-
-        _break_link(monkeypatch)
-        entered, release = _gate_copy(monkeypatch)
+        att = _prepared_upload(ctx, topic, name="取消用例准备中的上传.txt")
         before = _starts(ctx)
-        calls_before = adapter.calls  # 原轮自己也调过模型：判据只看增量
+        calls_before = adapter.calls
         prepare_id = uuid.uuid4().hex
-        body = {
-            "message": "重试（会被取消）",
-            "topic_id": topic,
-            "attachment_ids": [att],
-            "retry_of_turn_id": original,
-        }
+        body = {"message": MESSAGE_CANCEL, "topic_id": topic, "attachment_ids": [att]}
 
         with ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(
-                client.post,
-                "/api/turns",
-                json=body,
-                headers={"X-QIO-Prepare-Id": prepare_id},
+                client.post, "/api/turns", json=body, headers={"X-QIO-Prepare-Id": prepare_id}
             )
-            assert entered.wait(SETUP_DEADLINE), "复制没有进入服务内部的闸门"
+            row = _wait_journal(ctx, MESSAGE_CANCEL, ("queued",))
+            assert row is not None and row[0] == "queued", ("准备行没有出现（装置失效）", row)
+            assert not pending.done(), "B 不该在准备完成前返回（装置失效）"
 
             cancelled = client.post(f"/api/turns/prepare/{prepare_id}/cancel")
             assert cancelled.status_code == 200, cancelled.text
             payload = cancelled.json()
             assert payload.get("ok") is True, payload
             assert payload.get("cancelled") is True, (
-                "准备期间取消没有被确认（今天直接 activate，用户中止后模型仍会被调用）",
-                payload,
+                "准备期间取消没有被确认（用户中止后模型仍会被调用）", payload
             )
             turn_id = payload.get("turn_id")
             assert turn_id, payload
@@ -415,7 +283,6 @@ def test_cancel_endpoint_stops_a_preparing_turn(live, monkeypatch):
             assert again.json().get("cancelled") is True, again.json()
             assert again.json().get("turn_id") == turn_id, again.json()
 
-            release.set()
             response = pending.result(timeout=DEADLINE)
 
         assert response.status_code == 200, response.text
@@ -431,8 +298,8 @@ def test_cancel_endpoint_stops_a_preparing_turn(live, monkeypatch):
         assert _starts(ctx) == before, "取消之后仍然发了 TURN_START"
         snapshot = _queue(client)
         assert snapshot["running"] is None and not snapshot["queued"], snapshot
-        assert not _clones_of(client, att), "取消之后本次克隆行没有清理"
-        assert client.get(f"/api/attachments/{att}").json()["attachment"]["state"] == "ready"
+        attachment = client.get(f"/api/attachments/{att}").json()["attachment"]
+        assert not attachment.get("turn_id"), ("取消的轮次不得留下绑定", attachment.get("turn_id"))
 
 
 def test_cancel_endpoint_reports_already_started_and_unknown(live):
@@ -453,8 +320,7 @@ def test_cancel_endpoint_reports_already_started_and_unknown(live):
         payload = started.json()
         assert payload.get("ok") is True, payload
         assert payload.get("already_started") is True, (
-            "已经放行的轮次必须如实回 already_started（不得假装没发送）",
-            payload,
+            "已经放行的轮次必须如实回 already_started（不得假装没发送）", payload
         )
         assert payload.get("cancelled") is False, payload
         assert payload.get("turn_id") == turn_id, payload

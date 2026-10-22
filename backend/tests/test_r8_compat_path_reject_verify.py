@@ -1,30 +1,20 @@
-r"""D 独立验证（R8 问题三）：兼容路径（旧客户端无 attachment_ids）**固定集合 + 整体拒绝**。
+r"""D 独立验证（R8 问题三，R9 适配）：兼容路径（旧客户端无 attachment_ids）**固定集合 + 整体拒绝**。
 
-契约：docs/plans/2026-10-09-send-cancel-integrity.md §1.3（冻结）。
-基线 9f5bc07 缺陷（services/attachments.py:1235-1238）：兼容分支先等首次准备，随后**重新枚举**未绑定附件；
-_bindable 不满足就 continue —— 等待期间的失败/取消/删除/不可读**被静默丢掉**
-（反例实测：复制在闸门期间真实 failed → 发送 200 accepted、rejected=[]、模型 1 次）。
+R9 适配说明（docs/r9-contracts.md §6）：
+* 旧装置把"首次背景复制"的提交步骤（os.replace）挂起/注入 ENOSPC 来制造"等待期间失败"；
+  R9 取消本地副本策略，该注入缝已随产品逻辑一起删除，不得再使用。
+* 准备期仍然真实存在：**浏览器上传的首次落盘**（begin_material → prepared → bind_for_turn
+  有界等待）。用例用它制造"兼容路径真的在等待"的窗口；等待期间用**源文件引用缺失**
+  （删除源文件）制造失败事实 —— 这是新契约下用户可见的等价失败（§6.2 resolve_source）。
+* 判定规则不变：进入本次兼容发送时固定附件集合；集合内任一附件失败/缺失/不可用 →
+  **结构化拒绝整轮**（模型 0 次、无 TURN_START、不留部分绑定）；显式 [] 与正常兼容路径照样通过。
 
-判定规则（用户可见结果）：
-* 进入本次兼容发送时固定附件集合；集合内任一附件在等待期间失败/取消/删除/不可读 → **结构化拒绝整轮**；
-* 被拒后：模型/工具 **0 次**、**无 TURN_START**、**不留部分绑定**（附件不得被绑到这个被拒的轮次）；
-* 显式 attachment_ids: [] 仍表示不带附件；正常路径（首次准备成功后执行/显式列表/重试）照样通过。
-
-装置同步点（2026-10-09 acc-e2 补，**只补同步点，不放宽任何断言**）：
-用例 1/2 原来「登记 bad 附件后立刻发送」，与后台首次准备的完成是竞态 —— 注入的失败若在
-兼容路径枚举之前落库，这条附件进入时就已是 failed（契约 §1.3 的历史记录），测到的就不是
-「等待期间失败」语义（实测：负载下 200 / 只绑好附件 / rejected=[]）。现在用
-_gated_fail_prepare_copy 把提交（os.replace）卡到兼容路径**真的进入等待**之后再放行，
-语义被确定性地测到；用例 3 早已用 _gated_prepare_copy 做过同样的事（不可读必须发生在
-快照之后）。
-
-运行：cd backend; $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_r8_compat_path_reject_verify.py -q
+运行：cd backend; uv run --frozen pytest -q tests/test_r8_compat_path_reject_verify.py
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import importlib.util
 import threading
 import time
@@ -35,12 +25,11 @@ import pytest
 from agent.api.server import create_app
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
-from agent.services import attachments as attachments_mod
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MARKER = "R8 兼容路径：只有这份副本里才有的标记 8c02"
+MARKER = "R8 兼容路径（R9 源文件引用）：只有这份源文件里才有的标记 8c02"
 TERMINAL = ("ready", "failed", "changed", "missing", "cancelled")
 
 
@@ -73,6 +62,8 @@ def app(tmp_path: Path, provider):
     app = create_app(Settings(data_dir=tmp_path / "data"), conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
     app.state.ctx.attachments.data_dir = tmp_path / "data"
+    # 让"等待在飞的首次落盘"在秒级内给出结论（判定语义不变）。
+    app.state.ctx.attachments.prepare_wait_seconds = 1.5
     return app
 
 
@@ -119,7 +110,7 @@ def _turns_for(app, message: str) -> list[dict]:
     return [{"turn_id": r[0], "status": r[1]} for r in rows]
 
 
-async def _wait_state(client, attachment_id: str, states: tuple[str, ...], timeout: float = 90.0) -> dict:
+async def _wait_state(client, attachment_id: str, states: tuple[str, ...], timeout: float = 30.0) -> dict:
     deadline = time.monotonic() + timeout
     last: dict = {}
     while time.monotonic() < deadline:
@@ -136,222 +127,145 @@ def _write_source(tmp_path: Path, name: str) -> Path:
     return src
 
 
-@contextlib.contextmanager
-def _fail_prepare_copy(mode: str):
-    """**首次准备（登记）**的复制必然失败：真实调用点是 <目标>.part 写完后 \`os.replace\` 提交
-    （不是 shutil.copyfile —— 那是重试克隆的退路；r6 的教训：Linux 上包 builtins.open 也打不到）。
-    """
-    import errno
-
-    real_replace = attachments_mod.os.replace
-    state = {"fired": False}
-
-    def _boom(src, dst):  # noqa: ANN001
-        state["fired"] = True
-        raise OSError(errno.ENOSPC, "No space left on device（受控错误：%s）" % mode)
-
-    attachments_mod.os.replace = _boom
-    try:
-        yield state
-    finally:
-        attachments_mod.os.replace = real_replace
+async def _register(client, path: Path) -> str:
+    resp = await client.post("/api/attachments", json={"source_path": str(path)})
+    assert resp.status_code == 200, (resp.status_code, resp.text[:200])
+    return str(resp.json()["attachment"]["id"])
 
 
-@contextlib.contextmanager
-def _gated_fail_prepare_copy(gate_event):
-    """把**登记的提交步骤**（os.replace）挂起，直到测试 release；放行后以真实 ENOSPC 失败收尾。
-
-    2026-10-09 acc-e2 补的**同步点**（不改变任何断言）：只挂起不够 —— 要保证「失败发生在
-    兼容路径进入等待之后」。登记后立刻发送与后台准备完成之间存在竞态：失败若先落库，
-    这条附件进入时就已是 failed（契约 §1.3 的**历史记录**），测到的就不是本用例要测的
-    「等待期间失败」语义。用闸门把它钉死。
-    """
-    import errno
-
-    real_replace = attachments_mod.os.replace
-    state = {"fired": False}
-
-    def _boom(src, dst):  # noqa: ANN001
-        gate_event.wait()
-        state["fired"] = True
-        raise OSError(errno.ENOSPC, "No space left on device（受控错误：等待期间失败）")
-
-    attachments_mod.os.replace = _boom
-    try:
-        yield state
-    finally:
-        attachments_mod.os.replace = real_replace
+def _begin_prepared_upload(app, *, name: str = "兼容路径准备中的上传.txt") -> str:
+    """真实在飞的首次落盘（准备期）：兼容路径会在这里真的等一会儿。"""
+    att = app.state.ctx.attachments.begin_material(name=name, source_kind="browser_upload")
+    return str(att.id)
 
 
-@contextlib.contextmanager
-def _gated_prepare_copy(gate_event):
-    """把登记的提交步骤（os.replace）挂起，直到测试 release（用于构造「等待期间变化」）。"""
-    real_replace = attachments_mod.os.replace
-
-    def _gated(src, dst):  # noqa: ANN001
-        gate_event.wait()  # 不设超时：只有测试显式 release 才放行
-        return real_replace(src, dst)
-
-    attachments_mod.os.replace = _gated
-    try:
-        yield
-    finally:
-        attachments_mod.os.replace = real_replace
+def _started(turns: list[dict]) -> list[dict]:
+    return [t for t in turns if str(t["status"]) in ("running", "completed", "done", "accepted", "queued")]
 
 
-def _bound_ids(resp) -> list[str]:
-    body = resp.json() if hasattr(resp, "json") else {}
-    return [str(x) for x in (body.get("bound_attachment_ids") or [])]
-
-
-# ---- 1. 核心：兼容路径等待期间复制真实 failed → 整轮拒绝 -----------------------------
+# ---- 1. 核心：兼容路径等待期间附件失效 → 整轮拒绝 --------------------------------
 
 
 async def test_legacy_wait_failure_rejects_the_whole_turn(app, provider, tmp_path: Path):
-    message = "旧客户端（无 attachment_ids）在等待期间复制失败"
+    """旧用例：等待期间复制 ENOSPC 失败 → 整轮拒绝。
+    R9 等价：等待期间另一条附件的**源文件被删除**（resolve 失败）→ 整轮拒绝。
+    """
+    message = "旧客户端（无 attachment_ids）在等待期间源文件失效"
     async with _client(app) as client:
         await _prepare_credential(client, provider)
         await _script(provider, [{"chunks": ["我不该在这一轮被调用。"]}])
         calls_before = await _calls(provider)
-        src = _write_source(tmp_path, "r8-legacy-fail.txt")
+        ready_src = _write_source(tmp_path, "r8-legacy-ready.txt")
+        ready_id = await _register(client, ready_src)
+        ready_row = await _wait_state(client, ready_id, ("ready",) + TERMINAL)
+        assert str(ready_row.get("state")) == "ready", ready_row
+        waiting_id = _begin_prepared_upload(app)
 
-        gate = threading.Event()
-        # 2026-10-09 acc-e2：**只补同步点，不放宽任何断言**。原来「登记后立刻发送」与后台
-        # 准备的完成是竞态：注入的失败若在兼容路径枚举之前落库，这条附件进入时就已是
-        # failed（契约 §1.3 的历史记录）。见文件头部「装置同步点」与本轮 acc-e2 报告。
-        with _gated_fail_prepare_copy(gate) as injected:
-            registered = await client.post("/api/attachments", json={"source_path": str(src)})
-            assert registered.status_code == 200, registered.text[:200]
-            attachment_id = str(registered.json()["attachment"]["id"])
-            # 旧客户端：body 里**没有** attachment_ids 字段（走兼容兜底路径）
-            send = asyncio.create_task(client.post("/api/turns", json={"message": message}))
-            await asyncio.sleep(1.0)          # 让兼容路径真的进入「等待附件就绪」
-            assert not send.done(), "首次准备还没结束，兼容路径不得先受理"
-            gate.set()                        # 放行提交 → 以真实 ENOSPC 失败收尾
-            response = await asyncio.wait_for(send, timeout=120)
-            await asyncio.sleep(1.0)
-            calls_during = (await _calls(provider)) - calls_before
-            row = (await client.get("/api/attachments/%s" % attachment_id)).json().get("attachment") or {}
-            turns = _turns_for(app, message)
-            queue = (await client.get("/api/turns/queue")).json()
+        send = asyncio.create_task(client.post("/api/turns", json={"message": message}))
+        await asyncio.sleep(0.4)  # 兼容路径已经固定集合并进入"等首次落盘"
+        assert not send.done(), "准备还没结束，兼容路径不得先受理"
+        ready_src.unlink()  # 等待期间：源文件缺失（resolve 失败）
+        response = await asyncio.wait_for(send, timeout=60)
+        await asyncio.sleep(0.2)
+        calls_during = (await _calls(provider)) - calls_before
+        ready_after = (await client.get("/api/attachments/%s" % ready_id)).json().get("attachment") or {}
+        waiting_after = (
+            await client.get("/api/attachments/%s" % waiting_id)
+        ).json().get("attachment") or {}
+        turns = _turns_for(app, message)
+        queue = (await client.get("/api/turns/queue")).json()
 
-    assert injected["fired"], "复制失败注入没有触发（装置失效：没走到复制）"
     assert response.status_code >= 400, (
-        "兼容路径等待期间附件真实失败，却仍然 200 accepted（基线缺陷：重新枚举丢掉失败事实）",
-        {"status": response.status_code, "body": response.text[:240], "turns": turns},
+        "兼容路径等待期间源文件失效，却仍然 200 accepted（失败事实被静默丢掉）",
+        response.status_code,
+        response.text[:240],
     )
     assert calls_during == 0, ("被拒的轮次不得调用模型", calls_during)
-    assert not [t for t in turns if t["status"] in ("running", "completed", "done")], (
-        "被拒的轮次仍然开始执行了（TURN_START）", turns
-    )
-    assert str(row.get("state")) == "failed", ("附件的失败事实必须如实保留", row.get("state"), row.get("error"))
-    assert str(row.get("turn_id") or "") not in {t["turn_id"] for t in turns}, (
-        "被拒的轮次留下了部分绑定（附件被绑到它上面）", row.get("turn_id"), turns
-    )
-    print("[诊断] 兼容路径失败：HTTP=%d；模型调用=%d；台账=%s；附件=%s；原因=%s"
-          % (response.status_code, calls_during, turns, row.get("state"), str(row.get("error"))[:80]))
+    assert not _started(turns), ("被拒的轮次仍然开始执行了（TURN_START）", turns)
+    assert not (queue.get("running") or queue.get("queued")), queue
+    assert str(ready_after.get("state")) == "missing", ("缺失事实必须如实保留", ready_after.get("state"))
+    assert not ready_after.get("turn_id"), ("好附件被半绑定到被拒的轮次上", ready_after.get("turn_id"))
+    assert not waiting_after.get("turn_id"), waiting_after.get("turn_id")
+    print("[诊断] 兼容路径等待期失效：HTTP=%d；调用=%d；台账=%s；好附件=%s"
+          % (response.status_code, calls_during, turns, ready_after.get("state")))
 
 
-# ---- 2. 多附件：任一失败 → 整轮拒绝且无半绑定 ----------------------------------------
+# ---- 2. 多附件：任一失败 → 整轮拒绝且无半绑定 --------------------------------------
 
 
 async def test_legacy_multi_attachment_any_failure_rejects_all(app, provider, tmp_path: Path):
-    message = "旧客户端多附件（一个失败）"
+    """旧用例：多附件里一个复制失败 → 整轮拒绝。
+    R9 等价：进入时集合内已有一条源文件缺失（历史失败事实），整轮拒绝、无半绑定。
+    """
+    message = "旧客户端多附件（一个源文件缺失）"
     async with _client(app) as client:
         await _prepare_credential(client, provider)
         await _script(provider, [{"chunks": ["我不该在这一轮被调用。"]}])
         calls_before = await _calls(provider)
-        ok_src = _write_source(tmp_path, "r8-multi-ok.txt")
+        ok_id = await _register(client, _write_source(tmp_path, "r8-multi-ok.txt"))
         bad_src = _write_source(tmp_path, "r8-multi-bad.txt")
-        ok_registered = await client.post("/api/attachments", json={"source_path": str(ok_src)})
-        ok_id = str(ok_registered.json()["attachment"]["id"])
-        ok_row = await _wait_state(client, ok_id, ("ready",) + TERMINAL)
-        assert str(ok_row.get("state")) == "ready", ok_row
+        bad_id = await _register(client, bad_src)
+        bad_src.unlink()
 
-        gate = threading.Event()
-        # 同步点（只补装置，不放宽断言）：把 bad 的提交卡住，等兼容路径进入等待后再以真实
-        # 失败放行 —— 这样「多附件里有一个在等待期间失败」不再取决于后台准备与枚举的先后。
-        with _gated_fail_prepare_copy(gate) as injected:
-            bad_registered = await client.post("/api/attachments", json={"source_path": str(bad_src)})
-            bad_id = str(bad_registered.json()["attachment"]["id"])
-            send = asyncio.create_task(client.post("/api/turns", json={"message": message}))
-            await asyncio.sleep(1.0)          # 兼容路径进入等待（bad 仍是 prepared）
-            assert not send.done(), "首次准备还没结束，兼容路径不得先受理"
-            gate.set()                        # 放行提交 → 以真实 ENOSPC 失败收尾
-            response = await asyncio.wait_for(send, timeout=120)
-            await asyncio.sleep(1.0)
-            calls_during = (await _calls(provider)) - calls_before
-            turns = _turns_for(app, message)
-            ok_after = (await client.get("/api/attachments/%s" % ok_id)).json().get("attachment") or {}
-            bad_after = (await client.get("/api/attachments/%s" % bad_id)).json().get("attachment") or {}
+        response = await client.post("/api/turns", json={"message": message})
+        await asyncio.sleep(0.3)
+        calls_during = (await _calls(provider)) - calls_before
+        turns = _turns_for(app, message)
+        ok_after = (await client.get("/api/attachments/%s" % ok_id)).json().get("attachment") or {}
+        bad_after = (await client.get("/api/attachments/%s" % bad_id)).json().get("attachment") or {}
 
-    assert injected["fired"], "复制失败注入没有触发（装置失效）"
     assert response.status_code >= 400, (
         "多附件里有一个失败必须**整轮拒绝**", response.status_code, response.text[:240]
     )
     assert calls_during == 0, calls_during
-    assert not [t for t in turns if t["status"] in ("running", "completed", "done")], turns
-    turn_ids = {t["turn_id"] for t in turns}
-    assert str(ok_after.get("turn_id") or "") not in turn_ids, (
-        "好附件被半绑定到被拒的轮次上", ok_after.get("turn_id"), turns
-    )
-    assert str(bad_after.get("turn_id") or "") not in turn_ids, bad_after.get("turn_id")
-    assert str(bad_after.get("state")) == "failed", bad_after
+    assert not _started(turns), turns
+    assert not ok_after.get("turn_id"), ("好附件被半绑定到被拒的轮次上", ok_after.get("turn_id"))
+    assert not bad_after.get("turn_id"), bad_after.get("turn_id")
+    assert str(bad_after.get("state")) == "missing", bad_after.get("state")
     print("[诊断] 多附件任一失败：HTTP=%d；调用=%d；台账=%s；好附件状态=%s"
           % (response.status_code, calls_during, turns, ok_after.get("state")))
 
 
-# ---- 3. 等待期间副本被删（不可读）→ 整轮拒绝 ----------------------------------------
+# ---- 3. 集合内附件不可用（源文件已不是可读文件）→ 整轮拒绝 -------------------------
 
 
-async def test_legacy_unreadable_copy_rejects(app, provider, tmp_path: Path):
-    """等待期间副本变不可读 → 整轮拒绝（注意：进入时就不可读属于「历史记录」，契约 §1.3 集合政策
-    明确不阻断纯文字发送，所以不可读必须发生在**快照之后**）。"""
-    import os
-    import threading
-
-    message = "旧客户端（等待期间副本被删）"
-    gate = threading.Event()
+async def test_legacy_unusable_source_rejects(app, provider, tmp_path: Path):
+    """旧用例：等待期间副本被删（不可读）→ 整轮拒绝。
+    R9 等价：集合内一条附件的源文件已不是可读文件（同一路径变成目录）→ 整轮拒绝。
+    """
+    message = "旧客户端（集合内源文件不可用）"
     async with _client(app) as client:
         await _prepare_credential(client, provider)
         await _script(provider, [{"chunks": ["我不该在这一轮被调用。"]}])
         calls_before = await _calls(provider)
-        # 附件 #1：先就绪（它的文件会在等待期间被删）
-        first_src = _write_source(tmp_path, "r8-legacy-gone.txt")
-        first = await client.post("/api/attachments", json={"source_path": str(first_src)})
-        first_id = str(first.json()["attachment"]["id"])
-        first_ready = await _wait_state(client, first_id, ("ready",) + TERMINAL)
-        assert str(first_ready.get("state")) == "ready", first_ready
-        stored = str(first_ready.get("stored_path") or "")
-        assert stored and os.path.exists(stored), first_ready
+        first_id = await _register(client, _write_source(tmp_path, "r8-legacy-ok.txt"))
+        second_src = _write_source(tmp_path, "r8-legacy-gone.txt")
+        second_id = await _register(client, second_src)
+        second_src.unlink()
+        second_src.mkdir()
 
-        # 附件 #2：登记后卡在提交步骤 → 兼容路径会**等**它，给我们制造「等待期间」
-        second_src = _write_source(tmp_path, "r8-legacy-wait.txt")
-        with _gated_prepare_copy(gate):
-            second = await client.post("/api/attachments", json={"source_path": str(second_src)})
-            second_id = str(second.json()["attachment"]["id"])
-            send = asyncio.create_task(client.post("/api/turns", json={"message": message}))
-            await asyncio.sleep(1.0)          # 让兼容路径进入等待
-            os.unlink(stored)                  # 等待期间：#1 的副本变不可读
-            gate.set()                         # 放行 #2 的提交 → 触发落库前复核
-            response = await asyncio.wait_for(send, timeout=120)
-            calls_during = (await _calls(provider)) - calls_before
-            turns = _turns_for(app, message)
-            second_after = (await client.get("/api/attachments/%s" % second_id)).json().get("attachment") or {}
+        response = await client.post("/api/turns", json={"message": message})
+        await asyncio.sleep(0.3)
+        calls_during = (await _calls(provider)) - calls_before
+        turns = _turns_for(app, message)
+        first_after = (await client.get("/api/attachments/%s" % first_id)).json().get("attachment") or {}
+        second_after = (
+            await client.get("/api/attachments/%s" % second_id)
+        ).json().get("attachment") or {}
 
     assert response.status_code >= 400, (
-        "等待期间副本变不可读，仍 200 accepted（集合内任何一条变了都必须整轮拒绝）",
+        "集合内源文件不可用，仍 200 accepted（集合内任何一条变了都必须整轮拒绝）",
         {"status": response.status_code, "body": response.text[:240], "turns": turns},
     )
     assert calls_during == 0, ("被拒的轮次不得调用模型", calls_during)
-    assert not [t for t in turns if t["status"] in ("running", "completed", "done")], turns
-    assert str(second_after.get("turn_id") or "") not in {t["turn_id"] for t in turns}, (
-        "好附件被半绑定到被拒的轮次上", second_after.get("turn_id"), turns
-    )
-    print("[诊断] 等待期间不可读：HTTP=%d；调用=%d；台账=%s" % (response.status_code, calls_during, turns))
+    assert not _started(turns), turns
+    assert not first_after.get("turn_id"), ("好附件被半绑定到被拒的轮次上", first_after.get("turn_id"))
+    assert not second_after.get("turn_id"), second_after.get("turn_id")
+    assert str(second_after.get("state")) in ("failed", "missing"), second_after.get("state")
+    print("[诊断] 集合内不可用：HTTP=%d；调用=%d；台账=%s" % (response.status_code, calls_during, turns))
 
 
-# ---- 4. 绿守卫：显式空列表 / 正常兼容路径 -------------------------------------------
+# ---- 4. 绿守卫：显式空列表 / 正常兼容路径 -----------------------------------------
 
 
 async def test_explicit_empty_list_still_means_no_attachments(app, provider, tmp_path: Path):
@@ -370,21 +284,20 @@ async def test_explicit_empty_list_still_means_no_attachments(app, provider, tmp
     print("[诊断] 显式空列表：200 且照常执行")
 
 
-async def test_legacy_happy_path_waits_then_executes(app, provider, tmp_path: Path):
+async def test_legacy_happy_path_executes(app, provider, tmp_path: Path):
+    """旧用例：正常兼容路径等首次准备完成后执行 → R9 等价：正常引用发送通过。"""
     message = "旧客户端正常路径"
     async with _client(app) as client:
         await _prepare_credential(client, provider)
         await _script(provider, [{"chunks": ["附件就绪之后才回答。"]}])
         calls_before = await _calls(provider)
-        src = _write_source(tmp_path, "r8-legacy-ok.txt")
-        registered = await client.post("/api/attachments", json={"source_path": str(src)})
-        attachment_id = str(registered.json()["attachment"]["id"])
+        attachment_id = await _register(client, _write_source(tmp_path, "r8-legacy-ok.txt"))
         ready = await _wait_state(client, attachment_id, ("ready",) + TERMINAL)
         assert str(ready.get("state")) == "ready", ready
 
         response = await client.post("/api/turns", json={"message": message})
         assert response.status_code == 200, (response.status_code, response.text[:240])
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             if (await _calls(provider)) > calls_before:
                 break
@@ -393,6 +306,6 @@ async def test_legacy_happy_path_waits_then_executes(app, provider, tmp_path: Pa
         content = await client.get("/api/attachments/%s/content" % attachment_id)
 
     assert (await _calls(provider)) > calls_before, "正常兼容路径必须执行"
-    assert MARKER in content.text, ("副本内容必须正确", content.text[:60])
+    assert MARKER in content.text, ("读取必须走源文件", content.text[:80])
     assert [t for t in turns if t["status"] in ("completed", "running", "done")], turns
-    print("[诊断] 兼容路径正常：HTTP=200；台账=%s；副本内容正确" % turns)
+    print("[诊断] 兼容路径正常：HTTP=200；台账=%s；源文件内容正确" % turns)
