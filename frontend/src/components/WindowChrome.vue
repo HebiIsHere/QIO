@@ -1,20 +1,24 @@
 <script setup lang="ts">
 /**
- * 自定义标题条 —— 无边框窗口（tauri.conf.json: `decorations: false`）的「页眉」。
+ * 顶部全局栏（窗口层）—— 无边框窗口（tauri.conf.json: `decorations: false`）的页眉。
  *
- * 为什么需要它：去掉系统标题栏之后，窗口既没有可拖拽的区域，也没有最小化/
- * 最大化/关闭按钮。这两件事必须由前端补上，否则用户只能靠 Alt+F4 关窗口。
- *
- * 设计上的克制：
- * - 条内不放标题文字，只做拖拽面 + 三个按钮 —— 用户要的就是「没有页眉」；
- * - 按钮常驻但只用 muted 色，hover 才亮，关闭按钮才出现危险色；
- * - 条本身透明：星球页、对话页的底色直接透上来，不额外压一层色块。
+ * 这里承担四件事：
+ * 1. 可拖拽面（窗口没有系统标题栏，拖窗口只能靠它）；
+ * 2. 最小化 / 最大化还原 / 关闭三个窗口按钮（Tauri 语义保持原样，R9 会替换关闭/托盘实现）；
+ * 3. QIO 字标（克制的一行衬线字，不放副标题，也不显示当前话题标题 —— 话题在中央工作区顶部）；
+ * 4. 设置入口（只在对话页显示；打开现有完整设置页，返回时各 store 保留草稿/附件/阅读位置）。
  *
  * 拖拽面与按钮是**兄弟节点**而不是父子：Tauri 的拖拽区按命中元素判定，
  * 按钮若在拖拽面内部，点按钮就会先被拖拽逻辑截走（不同版本判定 `hasAttribute`
- * 或 `closest` 的行为还不一致），拆开两种判定都安全。
+ * 或 `closest` 的行为还不一致），拆开两种判定都安全。字标同理：pointer-events 关掉，
+ * 点在字标上也还能拖窗口。
+ *
+ * 高度：对话页需要一条真正放得下字标与设置入口的全局栏，所以只在对话路由把
+ * `--titlebar-height` 调高（documentElement 内联变量），离开时恢复。其他页面的
+ * 标题条高度、定位与交互完全不变。
  */
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import router from "../router";
 
 /** @tauri-apps/api/window 里我们真正用到的那几个方法（只声明用到的部分，便于测试替身）。 */
 interface ShellWindow {
@@ -25,18 +29,27 @@ interface ShellWindow {
   onResized(handler: () => void): Promise<() => void>;
 }
 
+/** 对话页的全局栏高度：字标 + 设置 + 窗口按钮，留出呼吸但仍是「页眉」而不是卡片。 */
+const CONVERSATION_TITLEBAR_HEIGHT = "44px";
+
 function tauriInternals(): unknown {
   return (globalThis as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
 }
 
-/** 是否在 Tauri 壳里。浏览器开发预览（IAB）里没有它，此时不画按钮：
+/** 是否在 Tauri 壳里。浏览器开发预览（IAB）里没有它，此时不画窗口按钮：
  *  画了也点不动 —— 那正是「看起来能用、其实不能用」。 */
 const inShell = ref(false);
 const maximized = ref(false);
 
+/** 当前是否对话页（设置入口只属于对话页；其他页的页眉保持原样）。 */
+const isConversation = computed(() => router.currentRoute.value.name === "conversation");
+
 let shell: ShellWindow | null = null;
 let unlisten: (() => void) | null = null;
 let disposed = false;
+/** 进入对话页前 documentElement 上的内联标题条高度（离开时原样恢复）。 */
+let previousTitlebarHeight: string | null = null;
+let previousTitlebarPriority = "";
 
 async function syncMaximized() {
   if (!shell) return;
@@ -54,9 +67,43 @@ async function run(action: "minimize" | "toggleMaximize" | "close") {
     if (action !== "close") await syncMaximized();
   } catch (err) {
     // 不静默：窗口按钮失灵时至少要留下可查的原因（多半是 capabilities 少了权限）
-    console.error(`[qio] 窗口操作 ${action} 失败`, err);
+    console.error("[qio] 窗口操作 " + action + " 失败", err);
   }
 }
+
+function openSettings() {
+  if (!isConversation.value) return;
+  void router.push({ name: "settings" });
+}
+
+/**
+ * 只在对话路由加高标题条。
+ *
+ * 直接改 documentElement 的内联变量：App.vue 的 padding-top 与自家 height 读同一个
+ * 令牌，两边自动一致；离开对话页时恢复原值，设置/星球/互动页不受影响。
+ */
+function applyConversationChrome(on: boolean) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (on) {
+    if (previousTitlebarHeight === null) {
+      previousTitlebarHeight = root.style.getPropertyValue("--titlebar-height");
+      previousTitlebarPriority = root.style.getPropertyPriority("--titlebar-height");
+    }
+    root.style.setProperty("--titlebar-height", CONVERSATION_TITLEBAR_HEIGHT);
+    return;
+  }
+  if (previousTitlebarHeight === null) return;
+  if (previousTitlebarHeight) {
+    root.style.setProperty("--titlebar-height", previousTitlebarHeight, previousTitlebarPriority);
+  } else {
+    root.style.removeProperty("--titlebar-height");
+  }
+  previousTitlebarHeight = null;
+  previousTitlebarPriority = "";
+}
+
+watch(isConversation, (value) => applyConversationChrome(value), { immediate: true });
 
 onMounted(async () => {
   if (!tauriInternals()) return;
@@ -85,11 +132,12 @@ onBeforeUnmount(() => {
   unlisten?.();
   unlisten = null;
   shell = null;
+  applyConversationChrome(false);
 });
 </script>
 
 <template>
-  <div class="window-chrome">
+  <div class="window-chrome" :class="{ 'conversation-bar': isConversation }">
     <!-- 拖拽面：双击由 Tauri 内置逻辑转成「最大化/还原」 -->
     <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
     <div v-if="inShell" class="window-controls">
@@ -112,6 +160,29 @@ onBeforeUnmount(() => {
       <button class="wc-btn wc-close" type="button" aria-label="关闭" title="关闭窗口" @click="run('close')">
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
       </button>
+    </div>
+
+    <!-- QIO 字标：不显示话题标题/说明，也不加副标题。pointer-events 关掉，点在字标上仍可拖窗口。 -->
+    <div class="brand" aria-hidden="true">
+      <span class="brand-dot"></span>
+      <span class="brand-name">QIO</span>
+    </div>
+
+    <!-- 设置入口：只在对话页出现，固定排在窗口按钮左边（最右仍是窗口控制）。 -->
+    <div v-if="isConversation" class="chrome-actions" :class="{ 'with-controls': inShell }">
+      <button
+        class="chrome-btn"
+        type="button"
+        aria-label="设置"
+        title="打开设置"
+        @click="openSettings"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="2.1" />
+          <path d="M8 2.2v1.5M8 12.3v1.5M2.2 8h1.5M12.3 8h1.5M3.9 3.9l1.1 1.1M11 11l1.1 1.1M12.1 3.9 11 5M5 11l-1.1 1.1" />
+        </svg>
+      </button>
+      <span class="chrome-sep" aria-hidden="true"></span>
     </div>
   </div>
 </template>
@@ -185,5 +256,93 @@ onBeforeUnmount(() => {
 .wc-close:active {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+/* ---- 品牌字标 ---- */
+.brand {
+  position: absolute;
+  top: 0;
+  left: 16px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  pointer-events: none;
+  z-index: 1;
+}
+.brand-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.9;
+}
+.brand-name {
+  font-family: var(--serif);
+  font-size: 14px;
+  letter-spacing: 0.16em;
+  line-height: 1;
+  color: var(--text-strong);
+  opacity: 0.86;
+}
+
+/* ---- 设置入口（只在对话页出现） ---- */
+.chrome-actions {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 1;
+  pointer-events: none;
+}
+/* 窗口按钮占 3 × 46px：设置固定在它们左边，最右仍是窗口控制。 */
+.chrome-actions.with-controls {
+  right: 146px;
+}
+.chrome-btn {
+  pointer-events: auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+.chrome-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.chrome-btn:hover {
+  color: var(--text-strong);
+  background: var(--layer-hover);
+  border-color: var(--border-subtle);
+}
+.chrome-btn:active {
+  background: var(--bg-elevated);
+}
+.chrome-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+.chrome-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--border-subtle);
 }
 </style>
