@@ -70,10 +70,11 @@ async def _wait_terminal(client, attachment_id: str, timeout: float = 120.0) -> 
     raise AssertionError("附件没有在 %.0fs 内进入终态：%r" % (timeout, last))
 
 
-async def _register(client, path: Path) -> dict:
-    resp = await client.post("/api/attachments", json={"source_path": str(path)})
-    assert resp.status_code == 200, (resp.status_code, resp.text[:200])
-    return await _wait_terminal(client, resp.json()["attachment"]["id"])
+async def _register(app, path: Path) -> dict:
+    """**历史行夹具**（source_kind=NULL）：重试克隆复用旧副本是历史数据的维护能力。"""
+    svc = app.state.ctx.attachments
+    att = svc.run_prepare(svc.prepare(str(path)).id)
+    return svc.payload(att)
 
 
 def _bound_ids(resp) -> list[str]:
@@ -181,7 +182,7 @@ async def test_clone_fallback_runs_in_worker_thread_and_loop_stays_alive(app, tm
     watch_thread: threading.Thread | None = None
     try:
         async with _client(app) as client:
-            att = await _register(client, src)
+            att = await _register(app, src)
             assert att["kind"] == "copy", att
             first = await client.post(
                 "/api/turns", json={"message": "第一轮带附件", "attachment_ids": [att["id"]]}
@@ -252,7 +253,7 @@ async def test_clone_copy_at_the_100mb_equality_boundary(app, tmp_path: Path):
     clone_id: str | None = None
     try:
         async with _client(app) as client:
-            att = await _register(client, src)
+            att = await _register(app, src)
             assert att["kind"] == "copy", ("等号边界（= 100,000,000）仍然必须存副本", att["kind"])
             assert int(att["size_bytes"]) == COPY_LIMIT, att["size_bytes"]
             first = await client.post(

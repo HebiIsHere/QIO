@@ -473,8 +473,12 @@ async def test_upload_does_not_block_the_event_loop(async_app, tmp_path):
 
 
 async def test_relocate_does_not_block_the_event_loop(async_app, tmp_path):
-    """重定位（重新复制 + 哈希）同样不能占住事件循环。"""
-    source = tmp_path / "被引用的.bin"
+    """重定位（源文件身份修复）同样不能占住事件循环。
+
+    新契约下桌面路径登记不复制；同卷移动/改名按文件身份自动修复，事件循环只做
+    有限范围解析与 DB 记录，文件 I/O 不得回到事件循环线程。
+    """
+    source = tmp_path / "被引用.bin"
     with open(source, "wb") as handle:
         handle.truncate(COPY_MAX + 1)  # 稀疏：只登记引用，不复制
 
@@ -483,36 +487,27 @@ async def test_relocate_does_not_block_the_event_loop(async_app, tmp_path):
             await client.post("/api/attachments", json={"source_path": str(source)})
         ).json()["attachment"]
         attachment_id = str(created["id"])
-        # 等到引用登记完成
-        for _ in range(200):
-            meta = (await client.get("/api/attachments/" + attachment_id)).json()["attachment"]
-            if str(meta.get("state")) != "prepared":
-                break
-            await asyncio.sleep(0.02)
+        meta = (await client.get("/api/attachments/" + attachment_id)).json()["attachment"]
         assert str(meta.get("state")) == "ready", meta
+        assert meta.get("stored_path") in (None, ""), meta
 
     moved = tmp_path / "移动后的.bin"
-    with open(moved, "wb") as handle:
-        handle.write(b"z" * (90 * MB))
+    source.rename(moved)  # 同卷移动：文件身份不变 → 自动修复，不需要复制
 
     async def _work():
         status = 0
         state = ""
         async with _client(async_app) as client:
-            for _ in range(3):
+            for _ in range(50):
                 resp = await client.post(
                     "/api/attachments/%s/relocate" % attachment_id,
                     json={"source_path": str(moved)},
                 )
                 status = resp.status_code
-                for _ in range(300):
-                    meta = (
-                        await client.get("/api/attachments/" + attachment_id)
-                    ).json()["attachment"]
-                    state = str(meta.get("state"))
-                    if state != "prepared":
-                        break
-                    await asyncio.sleep(0.02)
+                meta = (
+                    await client.get("/api/attachments/" + attachment_id)
+                ).json()["attachment"]
+                state = str(meta.get("state"))
         return status, state
 
     floor_ms = await _control_floor_ms(async_app)
@@ -520,22 +515,20 @@ async def test_relocate_does_not_block_the_event_loop(async_app, tmp_path):
         (status, state), max_gap_ms, blocked_ms, stats = await _measure_loop_lag(
             _work, probe_factory=lambda: _client(async_app)
         )
-    _report("重定位（3 × 90 MB）", max_gap_ms, blocked_ms, stats, floor_ms=floor_ms)
+    _report("重定位（50 次源引用修复）", max_gap_ms, blocked_ms, stats, floor_ms=floor_ms)
     print("[诊断] 重定位档确定性判据：%s" % watcher.summary())
     assert status in (200, 201, 202), (status, state)
-    assert state == "ready", ("重定位最终必须真的把副本做出来", state)
+    assert state == "ready", ("重定位后必须回到 ready（源引用可用）", state)
 
     assert not watcher.violations, (
         "重定位期间**事件循环线程**上出现了文件 I/O / 哈希（确定性判据）—— "
-        "复制与哈希必须全部在工作线程：%s" % watcher.violations
+        "解析与哈希必须留在工作线程/按需路径：%s" % watcher.violations
     )
     assert stats["during"] >= 3, (
         "重定位期间其它请求必须确实在推进（工作窗口内完成的探针请求数 %d）" % stats["during"]
     )
     assert max_gap_ms <= SMOKE_MAX_STALL_MS, (
-        "重定位期间事件循环出现 %.0f ms 的单次停顿（smoke 上限 %.0f ms，地板 %.0f ms，累计 %.0f ms）："
-        "CI 上这类数字更像事件循环线程的 sqlite COMMIT（fsync，虚拟磁盘偶发数百 ms）—— **推断**，"
-        "确定性判据（本轮新增）才是主判据"
+        "重定位期间事件循环出现 %.0f ms 的单次停顿（smoke 上限 %.0f ms，地板 %.0f ms，累计 %.0f ms）"
         % (max_gap_ms, SMOKE_MAX_STALL_MS, floor_ms, blocked_ms)
     )
 

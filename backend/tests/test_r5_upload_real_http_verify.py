@@ -142,11 +142,11 @@ def test_paused_upload_failure_converges_over_real_http(http_server):
             except Exception as exc:  # noqa: BLE001 - 连接被中止也算「结束了」
                 outcome.update({"status": "exception", "text": "%s: %s" % (type(exc).__name__, exc)})
 
-    with _mkdir_failure(Path(ctx.attachments.root)) as injected:
+    with _mkdir_failure(Path(ctx.attachments.materials_root)) as injected:
         worker = threading.Thread(target=_post, daemon=True)
         worker.start()
         # 用**独立连接**轮询服务端收敛（这也同时证明：上传挂起时其它 API 仍能推进）
-        root = Path(ctx.attachments.root)
+        root = Path(ctx.attachments.materials_root)
         snapshot: dict = {}
         converged = False
         deadline = time.monotonic() + 15

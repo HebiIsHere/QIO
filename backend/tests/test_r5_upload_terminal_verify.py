@@ -61,7 +61,7 @@ def _client(app):
 
 
 def _root(app) -> Path:
-    return Path(app.state.ctx.attachments.root)
+    return Path(app.state.ctx.attachments.materials_root)
 
 
 def _temp_files(root: Path) -> list[str]:
