@@ -209,6 +209,12 @@ interface GroupDragState {
 }
 const groupDragging = ref<GroupDragState | null>(null);
 const spaceDown = ref(false);
+/**
+ * 视口尺寸与首次载入自动回到内容（2026-10-22 用户反馈：窗口较小时刷新后像"板面空了"）。
+ * 只做一次：用户自己平移/缩放后不再抢他的查看位置；之后用「回到内容」按钮兜底。
+ */
+const viewportSize = ref({ w: 0, h: 0 });
+const autoCentered = ref(false);
 const editingLinkId = ref<string | null>(null);
 const linkMeaning = ref("");
 const linkDirection = ref(false);
@@ -942,6 +948,40 @@ function applyScroll(next: { x: number; y: number }) {
   });
 }
 
+/** 量一次可视区尺寸（用于判断卡片是否全在视野外）。 */
+function measureViewport() {
+  const element = viewportEl.value;
+  if (!element) return;
+  viewportSize.value = { w: element.clientWidth || 0, h: element.clientHeight || 0 };
+}
+
+/** 这张卡片当前是否至少有一部分落在可视区里（纯查看，不改任何板面状态）。 */
+function cardIntersectsViewport(card: BoardCardModel): boolean {
+  const { w, h } = viewportSize.value;
+  if (!w || !h) return true;
+  const rect = displayRect(card);
+  const scale = scaleSafe.value;
+  const left = rect.x * scale - scroll.value.x;
+  const top = rect.y * scale - scroll.value.y;
+  return left + rect.w * scale > 0 && left < w && top + rect.h * scale > 0 && top < h;
+}
+
+/** 所有卡片都在视野外：此时板面看起来是空的，需要显式提醒并可回到内容。 */
+const cardsOutOfView = computed(
+  () => liveCards.value.length > 0 && !liveCards.value.some((card) => cardIntersectsViewport(card)),
+);
+
+/** 把视野滚到内容左上角附近（只改查看位置，卡片不动、不产生板面改动）。 */
+function centerViewOnContent() {
+  const cards = liveCards.value;
+  if (!cards.length) return;
+  const minX = Math.min(...cards.map((card) => card.x));
+  const minY = Math.min(...cards.map((card) => card.y));
+  const scale = scaleSafe.value;
+  applyScroll({ x: Math.max(0, minX * scale - 48), y: Math.max(0, minY * scale - 48) });
+  view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
+}
+
 /**
  * 用户直接拖动滚动条 / 触控板滚动时，把滚动量同步进 ref。
  * 只在容器**真的能滚动**时同步：jsdom 没有真实布局，scrollLeft 会被浏览器取整或钳制，
@@ -1607,6 +1647,7 @@ let anchorFromDom = false;
 let cardResizeObserver: ResizeObserver | null = null;
 let toolbarResizeObserver: ResizeObserver | null = null;
 let hostResizeObserver: ResizeObserver | null = null;
+let viewportSizeObserver: ResizeObserver | null = null;
 let observedToolbarEl: HTMLElement | null = null;
 /** 上一次实测到的工具栏宽度（收起时量不到，用它避免把可见性自锁在 false）。 */
 let lastToolbarWidth = 0;
@@ -2432,6 +2473,22 @@ function onKeyUp(event: KeyboardEvent) {
 
 // --- 生命周期 -------------------------------------------------------------
 
+/**
+ * 首次载入时如果所有卡片都在视野外（常见于窄窗口），自动把视野移到内容左上角一次。
+ * 只自动做一次；之后由「回到内容」按钮兜底，不抢用户自己平移 / 缩放后的查看位置。
+ */
+watch(
+  () => [liveCards.value.length, viewportSize.value.w, viewportSize.value.h] as const,
+  () => {
+    if (autoCentered.value || !liveCards.value.length || !viewportSize.value.w) return;
+    autoCentered.value = true;
+    void nextTick(() => {
+      if (cardsOutOfView.value) centerViewOnContent();
+    });
+  },
+  { immediate: true },
+);
+
 onMounted(() => {
   // 滚轮要 preventDefault（否则浏览器会把页面也滚走），所以显式用非被动监听
   viewportEl.value?.addEventListener("wheel", onWheel, { passive: false });
@@ -2445,6 +2502,12 @@ onMounted(() => {
   document.addEventListener("visibilitychange", onVisibilityChange);
   window.addEventListener("qio:interactive:locate-preview", onLocatePreview as EventListener);
   window.addEventListener("qio:interactive:locate-card", onLocateCard as EventListener);
+  // 视口尺寸（板面可视区）变化：判断“卡片是否全在视野外”要用真实像素
+  measureViewport();
+  if (typeof ResizeObserver === "function" && viewportEl.value) {
+    viewportSizeObserver = new ResizeObserver(() => measureViewport());
+    viewportSizeObserver.observe(viewportEl.value);
+  }
   // 工具栏宿主自己的尺寸变化（窗口 / 布局变化）也要重新定位
   if (typeof ResizeObserver === "function" && toolbarHostEl.value) {
     hostResizeObserver = new ResizeObserver(() => requestPlacement());
@@ -2482,6 +2545,8 @@ onBeforeUnmount(() => {
   placementDirty = false;
   hostResizeObserver?.disconnect();
   hostResizeObserver = null;
+  viewportSizeObserver?.disconnect();
+  viewportSizeObserver = null;
   unbindAnchor();
   cardHandles.clear();
   cardRefHandlers.clear();
@@ -2509,6 +2574,19 @@ onBeforeUnmount(() => {
     </p>
 
     <div class="board-main">
+      <!--
+        全部卡片都在视野外时（窗口较小时刷新 / 用户平移过头）：
+        不给“空白板面”，给一个明确的回到内容入口（只改查看位置，不产生板面改动）。
+      -->
+      <button
+        v-if="cardsOutOfView"
+        class="off-screen-hint"
+        type="button"
+        data-im="board-off-screen-hint"
+        @click="centerViewOnContent"
+      >
+        板面上有 {{ liveCards.length }} 张卡片 · 回到内容
+      </button>
       <!--
         板面滚动区：策略 **hidden**（统一滚动规则）。
         - 原生滚动条与 QIO 指示条都不出现（板面上已经有「拖动空白处平移」这条显式手势，
@@ -2710,6 +2788,31 @@ onBeforeUnmount(() => {
 .banner.drag { color: var(--text-strong); background: var(--bg-accent-subtle); }
 .banner.view-hint { color: var(--text-faint); }
 .board-main { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
+/*
+ * “卡片全在视野外”时的回到内容按钮：空板面不给空白，给一个明确的出口。
+ * 只落在板面可视区中心，不挡工具栏（工具栏在高 z-index 层，但这里位于空白处）。
+ */
+.off-screen-hint {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 55;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  font: inherit;
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+}
+.off-screen-hint:hover { border-color: var(--accent); color: var(--text-strong); }
+.off-screen-hint:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /*
   工具栏宿主层：只有这一层（外加已打开菜单）接收指针事件，其余区域全部穿透。
   z-index 只要高过 BoardResizeLayer（45）这一层即可 —— 不靠无限抬 z-index 掩盖层级问题。
