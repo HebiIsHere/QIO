@@ -82,10 +82,14 @@ def test_migrations_49_50_51_registered_and_versions_converged():
     table = _by_number()
     for number in (49, 50, 51):
         assert table[number], f"{CLAUSE}：迁移 {number} 没有 SQL 语句"
-    assert max(int(n) for n, _ in MIGRATIONS) == 51
-    assert SCHEMA_VERSION == 51, f"{CLAUSE}：SCHEMA_VERSION 必须为 51（实际 {SCHEMA_VERSION}）"
-    assert COMPENSATION_VERSION == 51, (
-        f"{CLAUSE}：COMPENSATION_VERSION 必须为 51（实际 {COMPENSATION_VERSION}）")
+    # R9（2026-10-22）追加迁移 52/53 与补偿 54 后，阶段三的 49/50/51 仍是历史事实；
+    # 收敛断言改为"最新迁移 = SCHEMA_VERSION = COMPENSATION_VERSION 且不小于 51"，
+    # 既保持阶段三契约（51 已登记）又允许后续追加（只追加，不推翻历史编号）。
+    latest = max(int(n) for n, _ in MIGRATIONS)
+    assert latest >= 51
+    assert SCHEMA_VERSION == latest, f"{CLAUSE}：SCHEMA_VERSION 必须等于最新迁移（实际 {SCHEMA_VERSION} / {latest}）"
+    assert COMPENSATION_VERSION == latest, (
+        f"{CLAUSE}：COMPENSATION_VERSION 必须等于最新迁移（实际 {COMPENSATION_VERSION} / {latest}）")
 
 
 def test_compensation_51_equals_48_plus_49_plus_50():
@@ -180,20 +184,21 @@ def test_fresh_database_reaches_51_and_is_idempotent(tmp_path):
 
     conn: sqlite3.Connection = connect(tmp_path / "p3.db")
     try:
-        assert apply_migrations(conn) == 51
-        assert current_version(conn) == 51
+        assert apply_migrations(conn) == COMPENSATION_VERSION
+        assert current_version(conn) == COMPENSATION_VERSION
         assert migrate_module.missing_objects(conn) == {
             "tables": [], "columns": [], "indexes": []}
-        assert apply_migrations(conn) == 51
+        # 幂等：第二次 apply 仍返回当前补偿版本（不再改动库）。
+        assert apply_migrations(conn) == COMPENSATION_VERSION
     finally:
         conn.close()
 
 
 def test_required_objects_have_compensation_statements():
-    """§13.6：REQUIRED_OBJECTS 的每一项都必须在补偿 51 里有对应建对象语句。"""
+    """§13.6：REQUIRED_OBJECTS 的每一项都必须在当前补偿迁移里有对应建对象语句。"""
     if _missing():
         pytest.fail(f"{CLAUSE}：迁移 51 未登记，无法核对 REQUIRED_OBJECTS。", pytrace=False)
-    blob = "\n".join(" ".join(str(s).split()) for s in _by_number()[51])
+    blob = "\n".join(" ".join(str(s).split()) for s in _by_number()[COMPENSATION_VERSION])
     for spec in REQUIRED_OBJECTS["columns"]:
         table, _, column = str(spec).partition(".")
         assert f"ADD COLUMN {column}" in blob and table in blob, (

@@ -117,6 +117,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_waiting",
         "board_intent_versions",
         "board_operations",
+        # R9（迁移 52/53）：附件迁移审计 / 冗余材料清理清单 / 审批审计与结果历史。
+        "attachment_migration_audit",
+        "material_cleanup_candidates",
+        "approval_audit",
+        "approval_history",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -160,6 +165,34 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_intents.outcome",
         "board_intents.attempt",
         "board_intents.finished_at",
+        # R9（迁移 52）：附件源文件引用。缺了它们，附件又退回复制副本模型，
+        # 无法区分"同一文件被编辑"与"同内容的另一份文件"，也无法记录归属。
+        "attachments.source_kind",
+        "attachments.origin",
+        "attachments.file_id",
+        "attachments.content_sha256",
+        "attachments.reference_state",
+        "attachments.material_enabled",
+        "attachments.user_note",
+        "attachments.last_verified_at",
+        "attachments.legacy_paths",
+        # R9（迁移 53）：审批生命周期 v2。缺了它们，批准后无法在重启后续接，
+        # 也无法原子领取/重核对，只能退回"弹窗内容 + 内存 Future"的旧模型。
+        "pending_approvals.state",
+        "pending_approvals.operation",
+        "pending_approvals.instruction_id",
+        "pending_approvals.instruction_text",
+        "pending_approvals.purpose",
+        "pending_approvals.fingerprint",
+        "pending_approvals.mode_at_request",
+        "pending_approvals.mode_at_approval",
+        "pending_approvals.confirmed_stage",
+        "pending_approvals.revisions",
+        "pending_approvals.attempt",
+        "pending_approvals.claimed_at",
+        "pending_approvals.result",
+        "pending_approvals.error",
+        "pending_approvals.resumed_at",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -182,6 +215,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 稳定提交请求身份（迁移 39）：
         # (board_id, client_request_id) 的部分唯一索引（空串不参与）。
         "idx_board_submissions_client_request",
+        # R9（迁移 52/53）：迁移审计 / 清理清单 / 审批状态与过期查询。
+        "idx_attachment_migration_audit_step",
+        "idx_material_cleanup_state",
+        "idx_pending_approvals_state",
+        "idx_pending_approvals_expiry",
     ),
 }
 

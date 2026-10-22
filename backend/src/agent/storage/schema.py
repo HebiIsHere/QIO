@@ -1536,5 +1536,29 @@ MIGRATIONS.append(
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 COMPENSATION_VERSION = 51
 
+# ── R9：统一授权 / 源文件引用（2026-10-22）──────────────────────────────────
+# 契约：docs/r9-contracts.md §6、§9、§10。只追加，不改历史迁移语义。
+# 迁移 52：附件源文件引用（来源/归属/文件身份/内容摘要/作为互动材料/迁移审计）。
+# 迁移 53：审批生命周期 v2（可恢复操作/状态机/原子领取/三次确认/审计）。
+from agent.storage.migration_r9_approvals import MIGRATION as _R9_APPROVAL  # noqa: E402
+from agent.storage.migration_r9_attachments import MIGRATION as _R9_ATTACH  # noqa: E402
+
+MIGRATIONS.append(_R9_ATTACH)
+MIGRATIONS.append(_R9_APPROVAL)
+
+# 补偿入口（新，54）：迁移 51 的全部语句 + 52 + 53。
+# 与 36 / 38 / 40 / 43 / 45 / 48 / 51 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append(
+    (
+        54,
+        [stmt for target, stmts in MIGRATIONS if target == 51 for stmt in stmts]
+        + list(_R9_ATTACH[1])
+        + list(_R9_APPROVAL[1]),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 54
+
 
 
