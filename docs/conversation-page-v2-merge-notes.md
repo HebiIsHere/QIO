@@ -51,14 +51,14 @@
 | --- | --- | --- |
 | 前端类型 | `cd frontend; npx vue-tsc --noEmit` | 通过（0 错误） |
 | 前端构建 | `cd frontend; npm run build` | 通过（生产构建成功） |
-| 前端全量用例 | `cd frontend; npx vitest run` | 首轮全量：大部分用例通过；失败项全部是仍指向旧界面位置的断言（发送恢复/被让位草稿/设计守卫/不完整结局提示等）。按 v2 位置更新受影响文件后定向复跑通过（行为断言未放宽）。 |
+| 前端全量用例 | `cd frontend; npx vitest run` | 最终 3745 项全部通过。首轮全量失败项是仍指向旧界面位置的断言（发送恢复/被让位草稿/设计守卫/不完整结局提示等），按 v2 位置更新后通过；另有一个只在 UTC 环境失败的时区相关断言，改为本地时间构造后通过。行为断言未放宽。 |
 | 后端任务栏 / 知识审批定向 | `cd backend; uv run --frozen pytest tests/test_cv_task_feed.py tests/test_knowledge_approval_api.py tests/test_settings_ui_api.py` | 通过 |
-| 后端全量 | `cd backend; uv run --frozen pytest` | 4610 通过 / 51 跳过 / 1 失败；失败项是迁移升级路径用例里「首次补列迁移」的自适应逻辑（补偿迁移复述补列语句后，用例取 max 号导致回退断言失配），已改为取首次引入迁移；该文件定向复跑通过。 |
+| 后端全量 | `cd backend; uv run --frozen pytest` | 4610 通过 / 51 跳过。首轮有 1 个失败：迁移升级路径用例里「首次补列迁移」的自适应逻辑（补偿迁移复述补列语句后，用例取 max 号导致回退断言失配），已改为取首次引入迁移；该文件定向复跑通过，完整 CI 亦通过。 |
 | 离线评估 | `cd backend; uv run --frozen python -c "...run_all()..."` | sha16 = `d1a8ff768a8afad6`，与 P72 记录的有效基线一致；topic/retrieval 未退化。 |
 | 真实界面 | Chrome 真实渲染 + 隔离数据域 | 见下方「真实界面检查」与截图目录 |
 | 文档一致性 | `python scripts/check_docs.py` | 通过 |
 | 真实界面检查 | 实际运行后端 + 前端（隔离数据域），Chrome 真实渲染截图 | 1440×900 / 1024×768 / 800×600 / 480×600，亮色/暗色/减少动画；左右栏拖动与收起、窄窗口全窗口预览、五入口互斥展开、审批自动弹出与暂缓、任务多项展开、历史阅读与回到最新、长网址/代码/宽表格不横向溢出、多标签预览与全窗口、对话与设置往返、记忆问题定位；截图见 `docs/conversation-ui-screenshots-v2/` |
-| 完整 CI | 推送最终分支后运行 | 见「最终记录」 |
+| 完整 CI | 推送最终分支后运行 | run `39762585293`：全部 job 通过（详见「最终记录」）；首轮 run `39759115586` 仅 frontend 因时区用例失败，其余 job 通过，修复后重跑全绿 |
 
 - 模型调用：本任务没有改变主对话提示词体系，没有新增真实模型调用；所有后端测试继续使用
   fake/mock provider，无需真实密钥。
@@ -87,4 +87,17 @@ git merge --no-ff cv/main
 
 ## 6. 最终记录
 
-（最终 SHA / CI 运行号 / 全量结果在推送后回填。）
+- **代码 SHA（CI 验证对象）**：`4607a4b15b0f9e0af6850ef21cc5827f00cb644b`
+  （远程分支 `feat/conversation-page-v2` 的代码提交；本文档记录提交在它之后，带 `[skip ci]`，不改变代码）
+- **完整 CI**：run `39762585293` —— 10/10 job 通过
+  - URL: https://github.com/HebiIsHere/QIO/actions/runs/39762585293
+  - jobs: docs consistency / frontend / backend (py3.11) / backend (py3.12) /
+    backend (windows-latest) / rust (ubuntu-24.04) / rust (windows-latest) /
+    frozen worker (windows) / install e2e (windows-latest) / ci dedup preflight
+- **首轮完整 CI**（`39759115586`，SHA `71099395`）：9/10 job 通过；仅 frontend 因
+  `entries.whenText` 用例在不同时区下的预期值写死（本地 +08 通过、CI UTC 失败）而红。
+  该断言已改为按本地时间构造并转 ISO，随后重跑完整 CI 全绿。
+- **本地最终结果**：`npx vue-tsc --noEmit` 通过；`npm run build` 通过；
+  `npx vitest run` 3745 项通过；后端全量 4610 通过 / 51 跳过（首轮唯一失败已修复）；
+  离线评估 `sha16=d1a8ff768a8afad6`（与 P72 有效基线一致）；`python scripts/check_docs.py` 通过。
+- **状态**：已准备合并，但未自行合并 main、未打包、未发布；工作分支与 worktree 保留。
