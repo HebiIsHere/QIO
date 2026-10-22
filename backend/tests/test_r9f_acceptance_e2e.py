@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import time
@@ -96,6 +97,43 @@ def _authorize(client: TestClient, effect: Effect):
         return await client.app.state.ctx.authorization.authorize(effect)
 
     return client.portal.call(_do)
+
+
+class _FakeReviewer:
+    """可编程授权审查器替身：只替代模型调用，三态/校验仍走真实 review 模块。"""
+
+    def __init__(self, decision=None):
+        from agent.security.review import ReviewDecision
+
+        self.decision = decision or ReviewDecision.ALLOW
+        self.calls = []
+
+    async def review(self, request):
+        from agent.security.review import ReviewDecision, ReviewOutcome
+
+        self.calls.append(request)
+        allow = self.decision == ReviewDecision.ALLOW
+        op = request.operation
+        return ReviewOutcome(
+            decision=self.decision,
+            reason="依据用户要求",
+            requirement_id=request.requirement.requirement_id,
+            allowed_operations=(op.kind,) if allow else (),
+            objects=op.objects if allow else (),
+            limits=("仅限本次操作",) if allow else (),
+            purpose=op.summary or "用户要求",
+        )
+
+
+def _install_reviewer(client: TestClient, *, text: str, decision=None):
+    """登记一条真实用户要求并注入审查替身（模型调用是唯一允许的 fake）。"""
+    ctx = client.app.state.ctx
+    requirement = ctx.requirements.record_user_message(
+        text=text, message_id="msg_fake", turn_id="turn_fake", topic_id=None
+    )
+    reviewer = _FakeReviewer(decision)
+    ctx.authorization.reviewer = reviewer
+    return ctx, requirement, reviewer
 
 
 def _internal_target(client: TestClient) -> str:
@@ -238,24 +276,43 @@ def test_qio_generated_workspace_write_is_autonomous_in_restricted(app_client):
     assert delete.verdict == Verdict.ALLOW, delete
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W3)
-def test_workspace_created_file_stays_autonomous_after_restart(app_client, db_conn):
-    """C 的完整链路：自然语言"整理报告"创建文件 → 后续修改/删除自主，重启后仍成立。
+def test_workspace_created_file_stays_autonomous_after_restart(app_client):
+    """C：真实用户要求下创建的工作区报告 → 后续修改自主；重启（新 store 实例）后仍自主。
 
-    需要 W3 的 FileOriginStore 把来源持久化（契约 §3.4），并在 fs_write 创建后
-    由受控服务登记；当前分支没有 file_origins.py，因此待集成。
+    首次创建走模型审查 ALLOW 并形成有界授权记录；创建后由受控服务登记
+    qio_generated，之后修改命中固定规则（不再调用模型、不再审批）。
     """
-    from agent.services.file_origins import FileOriginStore  # noqa: F401  （W3 合入前 ImportError → xfail）
+    from agent.services import file_origins
+    from agent.services.file_origins import FileOriginStore
 
     client = app_client
+    _set_mode(client, "restricted")
+    ctx, _requirement, reviewer = _install_reviewer(
+        client, text="帮我整理一份报告并保存到工作区"
+    )
     report = client.workspace / "整理报告.md"
-    result = _exec(client, "fs_write", {"path": str(report), "content": "# 报告"})
-    assert result.ok is True, result.error
-    assert report.exists()
-    # 再改一次：必须自主（不产生审批）
+
+    created = _exec(client, "fs_write", {"path": str(report), "content": "# 报告"})
+    assert created.ok is True, created.error
+    assert report.exists(), "审查 ALLOW 后创建应真实执行"
+    assert len(reviewer.calls) == 1
+    assert file_origins.origin_for_path(report) == file_origins.ORIGIN_QIO_GENERATED
+
+    # 再改一次：QIO 生成文件命中固定规则，不再调用模型、不再审批
     again = _exec(client, "fs_write", {"path": str(report), "content": "# 报告 v2"})
     assert again.ok is True, again.error
+    assert report.read_text(encoding="utf-8") == "# 报告 v2"
+    assert len(reviewer.calls) == 1, "已生成文件的修改不应再调用审查"
     assert _pending(client) == [], "工作区自主创建的产物不该再要求审批"
+
+    # 模拟重启：新 store 实例读同一 DB 仍能查到来源；引擎按来源自主放行
+    fresh = FileOriginStore(ctx.conn, ctx.computer.root())
+    record = fresh.lookup(report)
+    assert record is not None and record.origin == file_origins.ORIGIN_QIO_GENERATED
+    file_origins.set_default_store(fresh)
+    resumed = _authorize(client, _write_effect(report))
+    assert resumed.verdict == Verdict.ALLOW, "重启后同一生成文件仍应自主"
+    assert len(reviewer.calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -335,34 +392,49 @@ def test_project_command_currently_pends_every_time(app_client):
             _decide(client, item["approval_id"], "cancel")
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1 + "；W2 的 permit 绑定同样必需")
 def test_project_command_with_user_requirement_is_not_reasked(app_client):
-    """D 目标：真实用户要求（"在 <项目> 里运行测试并修复"）下的真实测试命令不反复审批。
+    """D：真实用户要求（"在 <项目> 里运行测试并修复"）下的真实测试命令不反复审批。
 
-    需要 W1 的模型审查产生**有界 AuthorizationRecord**（绑定 program/argv/cwd），
-    由 W2 的 permit 在执行前重核对；新程序/新参数仍必须重新判断。
+    模型审查产生有界 AuthorizationRecord（绑定 program/argv/cwd）；同一命令复用记录，
+    不重复调用模型/审批；换了 argv 或程序必须重新判断（不能靠目录命中放行任意程序）。
     """
     client = app_client
     _set_mode(client, "restricted")
     project = client.workspace / "project"
     project.mkdir()
-    ctx = client.app.state.ctx
-    instruction = ctx.instructions.begin(
-        turn_id="turn_proj_goal", text=f"在 {project} 里运行测试并修复问题"
+    _ctx, _requirement, reviewer = _install_reviewer(
+        client, text=f"在 {project} 里运行测试并修复问题"
     )
-    try:
-        with instruction_context(instruction):
-            first = _exec(
-                client,
-                "run_program",
-                {"program": sys.executable, "args": ["-c", "print('PROJ')"], "cwd": str(project)},
-            )
-        assert first.ok is True, first.error
-        assert _pending(client) == [], (
-            "真实用户要求范围内的测试命令不该每次都要审批（D 目标）", _pending(client)
-        )
-    finally:
-        ctx.instructions.end(instruction)
+    args = ["-c", "print('PROJ')"]
+    first = _exec(
+        client,
+        "run_program",
+        {"program": sys.executable, "args": args, "cwd": str(project)},
+    )
+    assert first.ok is True, first.error
+    assert _pending(client) == [], (
+        "真实用户要求范围内的测试命令不该每次都要审批（D 目标）", _pending(client)
+    )
+    assert len(reviewer.calls) == 1
+
+    # 同一程序同一参数再跑：复用有界授权记录，不再调用模型、不再审批
+    second = _exec(
+        client,
+        "run_program",
+        {"program": sys.executable, "args": args, "cwd": str(project)},
+    )
+    assert second.ok is True, second.error
+    assert _pending(client) == []
+    assert len(reviewer.calls) == 1, "同一 fingerprint 不应重复审查"
+
+    # 换成另一条真实测试命令：必须重新判断（目录命中不等于放行任意程序）
+    third = _exec(
+        client,
+        "run_program",
+        {"program": sys.executable, "args": ["-c", "print('OTHER')"], "cwd": str(project)},
+    )
+    assert third.ok is True, third.error
+    assert len(reviewer.calls) == 2, "新程序/新参数必须重新审查"
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +442,6 @@ def test_project_command_with_user_requirement_is_not_reasked(app_client):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_negated_instruction_does_not_authorize_write(app_client):
     """B：否定句不得被关键词当成许可（"不要修改 X" 不能授权写 X）。"""
     client = app_client
@@ -389,7 +460,6 @@ def test_negated_instruction_does_not_authorize_write(app_client):
             _decide(client, item["approval_id"], "cancel")
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_reviewer_tri_state_and_backend_validation(app_client):
     """B：审查三态（ALLOW/CONFIRM/DENY）+ 后端校验（对象/操作不得越界）。"""
     from agent.security.review import (  # noqa: PLC0415
@@ -426,13 +496,15 @@ def test_reviewer_tri_state_and_backend_validation(app_client):
         (ReviewDecision.CONFIRM, Verdict.APPROVE),
         (ReviewDecision.DENY, Verdict.DENY),
     ):
+        allow = decision == ReviewDecision.ALLOW
         outcome = ReviewOutcome(
             decision=decision,
             reason="依据用户要求",
             requirement_id=requirement.requirement_id,
-            allowed_operations=("write",),
-            objects=request.operation.objects,
-            limits=(),
+            allowed_operations=("write",) if allow else (),
+            objects=request.operation.objects if allow else (),
+            # 契约：ALLOW 必须给出 limits/purpose（不是可选装饰）。
+            limits=("仅限本次操作",) if allow else (),
             purpose="写报告",
         )
         validated = validate_outcome(outcome, request)
@@ -452,7 +524,6 @@ def test_reviewer_tri_state_and_backend_validation(app_client):
         validate_outcome(rogue, request)
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_review_unavailable_is_not_silent_allow(app_client):
     """B：模型不可用/超时/输出非法 → 不默认允许（APPROVE，不自动切模式）。"""
     from agent.security.review import (  # noqa: PLC0415
@@ -466,16 +537,28 @@ def test_review_unavailable_is_not_silent_allow(app_client):
         async def complete(self, messages, tools=None, **kwargs):
             raise RuntimeError("model down")
 
+    from agent.security.review import ReviewObject, ReviewOperation, ReviewRequest
+
     reviewer = ModelAuthorizationReviewer(adapter_factory=lambda: _BoomAdapter())
     ctx = client.app.state.ctx
     requirement = ctx.requirements.record_user_message(
         text="把报告发到 example.com", message_id="m2", turn_id="t2", topic_id=None
     )
-    import asyncio
-
+    request = ReviewRequest(
+        requirement=requirement,
+        corrections=(),
+        limits=(),
+        mode="restricted",
+        operation=ReviewOperation(
+            kind="egress",
+            objects=(ReviewObject(kind="service", value="https://example.com"),),
+            network_hosts=("example.com",),
+            summary="把报告发到 example.com",
+        ),
+        related_grants=(),
+        prior_decisions=(),
+        approvals=(),
+        user_constraints=(),
+    )
     with pytest.raises(ReviewUnavailable):
-        asyncio.get_event_loop().run_until_complete(
-            reviewer.review(
-                type("R", (), {"requirement": requirement, "operation": None})()
-            )
-        )
+        asyncio.run(reviewer.review(request))
