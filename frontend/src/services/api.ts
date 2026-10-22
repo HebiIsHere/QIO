@@ -1,6 +1,7 @@
 /** 后端 API 客户端（本机 HTTP + 会话令牌）。 */
 import { authHeaders, resetBackend, resolveBackend } from "./backend";
 import { takeNextSendRequestId } from "./sendIdentity";
+import type { ConversationLayoutPrefs, TaskDetail, TaskFeedPage } from "../conversation/contracts";
 
 /** API 错误：带上状态码，调用方才能区分「没权限」和「真的坏了」。 */
 export class ApiError extends Error {
@@ -1380,12 +1381,38 @@ export const api = {
       },
     ),
   getUISettings: () =>
-    request<{ typewriter_cps: number }>("/api/settings/ui"),
+    request<{ typewriter_cps: number; conversation_layout?: unknown }>("/api/settings/ui"),
   updateUISettings: (typewriterCps: number) =>
     request<{ ok: boolean; typewriter_cps: number }>("/api/settings/ui", {
       method: "PUT",
       body: JSON.stringify({ typewriter_cps: typewriterCps }),
     }),
+  /**
+   * 对话页布局偏好（窗口/栏宽/收起/标签/阅读位置）。
+   * 只存轻量偏好：正文、原始输出、密钥一律不进这里。
+   */
+  saveConversationLayout: (layout: ConversationLayoutPrefs) =>
+    request<{ ok: boolean; conversation_layout?: unknown }>("/api/settings/ui", {
+      method: "PUT",
+      body: JSON.stringify({ conversation_layout: JSON.stringify(layout) }),
+    }),
+  /** 左侧任务栏：当前/历史两个视图的权威快照（分页）。 */
+  getTaskFeed: (opts: { view: "current" | "history"; cursor?: string | null; limit?: number }) => {
+    const params = new URLSearchParams();
+    params.set("view", opts.view);
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return request<TaskFeedPage>(`/api/tasks?${params.toString()}`);
+  },
+  getTaskDetail: (id: string) =>
+    request<TaskDetail>(`/api/tasks/${encodeURIComponent(id)}`, { timeoutMs: API_TIMEOUT_MS.long }),
+  ackTask: (id: string) =>
+    request<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(id)}/ack`, { method: "POST" }),
+  cancelTask: (id: string) =>
+    request<{ ok: boolean; accepted?: boolean; detail?: string }>(
+      `/api/tasks/${encodeURIComponent(id)}/cancel`,
+      { method: "POST", timeoutMs: API_TIMEOUT_MS.long },
+    ),
   getComputerSettings: () =>
     request<ComputerSettings>("/api/settings/computer"),
   updateComputerSettings: (body: Record<string, unknown>) =>
