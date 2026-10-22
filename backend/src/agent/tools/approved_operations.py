@@ -328,40 +328,105 @@ async def _move_to_recycle_bin(path: str) -> tuple[bool, str, str]:
     return ok, ("recycled" if ok else "recycle_bin_failed"), ""
 
 
+def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
+    """审批单 → 待删除清单（兼容新 paths 列表与旧的单 path 形状）。"""
+    rows: list[dict] = []
+    fingerprint_rows = (
+        fingerprint.get("paths") if isinstance(fingerprint.get("paths"), list) else []
+    )
+    raw_paths = payload.get("paths")
+    if isinstance(raw_paths, list):
+        for index, item in enumerate(raw_paths):
+            if isinstance(item, dict):
+                path = str(item.get("path") or "").strip()
+                identity = item.get("identity")
+            else:
+                path = str(item or "").strip()
+                identity = None
+            if identity is None and index < len(fingerprint_rows):
+                candidate = fingerprint_rows[index]
+                if isinstance(candidate, dict):
+                    identity = candidate.get("identity")
+            if path:
+                rows.append({"path": path, "identity": identity})
+    elif str(payload.get("path") or "").strip():
+        rows.append(
+            {
+                "path": str(payload.get("path")).strip(),
+                "identity": fingerprint.get("identity"),
+            }
+        )
+    return rows
+
+
+def _identity_matches(path: str, expected: Any) -> tuple[bool, str]:
+    """执行前身份核对：dict 指纹走 recheck_identity；身份键字符串直接对比。"""
+    if isinstance(expected, dict) and expected:
+        return security_gate.recheck_identity(path, expected)
+    if isinstance(expected, str) and expected:
+        current = security_gate.file_identity(path)
+        current_key = security_gate.identity_key(current)
+        if current_key is None or current_key != expected:
+            return False, "目标已不是审批时的那一个文件（身份不一致），不删除"
+        return True, ""
+    return _check_identity(path, {})
+
+
 async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
-    path = str(payload.get("path") or "").strip()
-    if not path:
-        return _failure("审批单缺少目标路径：未执行", "missing_path")
     fingerprint = _fingerprint(ctx)
-
-    blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
-    if blocked is not None:
-        return blocked
-
-    expected = _expected_identity(payload, fingerprint)
-    same, reason = _check_identity(path, expected)
-    if not same:
+    rows = _delete_rows(payload, fingerprint)
+    if not rows:
+        return _failure("审批单缺少目标路径：未执行", "missing_path")
+    results: list[dict] = []
+    failed: list[dict] = []
+    for row in rows:
+        path = row["path"]
+        blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
+        if blocked is not None:
+            item = {
+                "path": path,
+                "ok": False,
+                "invalidated": True,
+                "reason": blocked.summary,
+            }
+            results.append(item)
+            failed.append(item)
+            continue
+        same, reason = _identity_matches(path, row.get("identity"))
+        if not same:
+            item = {
+                "path": path,
+                "ok": False,
+                "invalidated": True,
+                "reason": reason,
+            }
+            results.append(item)
+            failed.append(item)
+            continue
+        ok, code, detail = await _move_to_recycle_bin(path)
+        item = {
+            "path": path,
+            "ok": bool(ok),
+            "mechanism": code if ok else None,
+            "reason": detail,
+            "deleted_permanently": False,
+        }
+        results.append(item)
+        if not ok:
+            item["code"] = code
+            failed.append(item)
+    detail_data = {"results": results, "deleted_permanently": False}
+    if failed:
         return _failure(
-            f"对象已变化，本次未删除：{reason}",
-            f"invalidated: {reason}",
-            invalidated=True,
-            path=path,
+            "部分文件没有移入系统回收站：失败项已保留文件（未做永久删除）",
+            "recycle_partial_failure",
+            detail=detail_data,
         )
-    ok, code, detail = await _move_to_recycle_bin(path)
-    if not ok:
-        unavailable = code == "recycle_bin_unavailable"
-        return _failure(
-            (
-                "回收站路径暂不可用：文件已保留，未删除（不会直接 unlink）"
-                if unavailable
-                else "回收站操作失败：文件已保留，未删除（不会直接 unlink）"
-            )
-            + (f"；原因：{detail}" if detail else ""),
-            f"{code}: {detail}" if detail else code,
-            path=path,
-            file_preserved=True,
-        )
-    return _success(f"已移入系统回收站：{path}", path=path, recycled=True)
+    return _success(
+        f"已把 {len(results)} 个文件移入系统回收站",
+        detail=detail_data,
+        recycled=True,
+    )
 
 
 # --------------------------------------------------------------------------

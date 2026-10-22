@@ -186,3 +186,85 @@ uv run --frozen python -m pytest <13 个契约文件 + approval lifecycle/restar
   -o addopts='' -q --tb=short
 uv run --frozen python -c "import agent.services.app, agent.tools.approved_operations"
 ```
+
+---
+
+## 六、补口（验收缺口）：fs_delete 生产者 + 命令行永久删除拒绝
+
+> 追加于最终提交之后（新提交号见提交信息）。缺口证据：全仓 git grep 找不到
+> `EffectKind.DELETE` 的生产者；`run_program`/`run_shell` 审批通过后可执行
+> rm/del 等永久删除，绕过"用户文件删除必须进系统回收站"。
+
+### 已实现
+
+1. **新增 `FsDeleteTool`（工具名 `fs_delete`，注入 computer/approvals/security）**
+   - 参数 `paths`（字符串数组，至少 1 个），逐条 `resolve` 到真实路径并去重；
+   - 构造 **`EffectKind.DELETE`**（每个 path 一个 Target，带身份/存在性；命中内部运行
+     数据时改用 `INTERNAL_DATA` 以进入三次确认）；
+   - ALLOW（指令明确删除授权 / QIO 生成文件）→ 直接走
+     `agent.services.recycle_bin.send_to_recycle_bin` 逐条回收，逐条结果如实返回；
+   - APPROVE → 提交 `PendingOperation(kind="fs.delete")`，payload 含每条
+     `path/identity/exists`，返回 `pending_approval`（批准后执行器回收）；
+   - DENY → 中文拒绝；失败/回收站不可用 → 文件保留 + 如实报告（绝不 unlink）；
+   - 描述/参数文案进 `prompts.TOOL_DESCRIPTIONS["fs_delete"]` /
+     `ARGUMENT_DESCRIPTIONS["paths"]`，展示名进 `tools/display.py TOOL_LABELS`；
+     `services/app.py` 注册 `FsDeleteTool()`。
+   - `git grep EffectKind.DELETE` 现在能看到生产点：
+     `backend/src/agent/tools/fs_tools.py:659`（`engine.py` 的判定分支、
+     `attachment_access.delete_effect` 的适配层也在）。
+2. **`approved_operations.execute_fs_delete` 支持多路径**：兼容新 `paths` 与旧单
+   `path` 形状；逐条重核对身份键（字符串直接对比 / dict 走 recheck_identity）后进
+   回收站；部分失败 → failed + 逐条事实 `detail.results`，全部保留未成功项。
+3. **cmd_tools 永久删除程序/命令一律拒绝（所有模式）**：
+   - `run_program`：程序名 `rm/del/erase/rd/rmdir/Remove-Item/ri/unlink/shred` 一律拒绝；
+     经 `cmd/powershell/pwsh/bash/sh/wsl` 包装、参数里出现删除命令同样拒绝；
+   - `run_shell`：命令 token 里出现上述删除命令一律拒绝，不交给 shell 执行；
+   - 统一中文说明："QIO 不通过命令行永久删除文件：删除操作会进系统回收站。请使用
+     fs_delete 工具发起删除（必要时会先让你确认）。"（`code=permanent_delete_blocked`）
+   - 这是**有意的能力限制**：命令行删除无法保证可恢复，也无法可靠地"还原进回收站"。
+4. **测试**：新增 `backend/tests/test_fs_delete_recycle.py`（20 例）：
+   - 无授权 → approve 且文件仍在；批准后执行器 → 系统回收站且原路径消失；
+   - 回收站失败 → 文件保留、如实报告；QIO 生成文件 allow → 直接回收；
+   - 只读模式 → 中文拒绝且文件保留；`paths` 为空 → 拒绝；
+   - `run_program/run_shell` 的 rm/del/erase/rd/rmdir/Remove-Item/cmd 包装/powershell
+     包装全部拒绝；普通只读命令不被误拦。
+
+### 已运行验证（补充提交）
+
+```
+cd D:\qio-dev\qio-r9-w2b\backend
+# 原定向矩阵 + 新删除/命令/prompts/router 相关测试
+uv run --frozen python -m pytest \
+  <13 个契约测试文件> tests/test_approved_operations.py tests/test_approval_lifecycle.py \
+  tests/test_approval_restart.py tests/test_app_lifecycle.py tests/test_fs_delete_recycle.py \
+  tests/test_cmd_tools.py tests/test_tool_display.py tests/test_p1_a_prompts.py \
+  tests/test_p1_d_prompts_contract.py tests/test_p1_d_knowledge_contract.py \
+  tests/test_tool_router.py tests/test_tool_router_cache.py \
+  -o addopts='' -q --tb=short
+→ 333 passed, 1 warning in 65.08s
+
+uv run --frozen python -m pytest tests/test_fs_delete_recycle.py -o addopts='' -q
+→ 20 passed in 1.38s
+
+# W2 补充回归批（开发/依赖环境等 14 文件）
+→ 240 passed, 1 skipped in 35.37s
+```
+
+旧用例 → 替代用例（覆盖不减少）：`tests/test_cmd_tools.py::test_run_shell_rejected`
+原先用 `rm -rf /tmp/x` 验证"审批拒绝的说法"；新契约下永久删除命令在审批前就被拒绝，
+该用例改为普通命令 `curl`（继续验证超时/拒绝/取消三种审批结局），永久删除拒绝由
+`test_fs_delete_recycle.py` 新增 7 条用例覆盖。
+
+### 未完成边界（诚实说明）
+
+1. **命令层只拦"删除类命令名"**：解释器/自建工具里的代码删除（如
+   `python -c "os.remove(...)"`、工具代码里的 `os.unlink`、`git rm` 等间接路径）
+   无法在命令行层可靠识别；这些走执行层约束（read_only 拒绝脚本、restricted 需审批、
+   事后 guard 上报越界），不宣称命令行层能完全阻止。
+2. **run_shell 的 token 扫描有意保守**：命令里出现 `rm`/`del` 等 token 即拒绝，
+   因此像 `echo rm`、`grep rm file` 这类**提及**删除词的无害命令也会被拒；
+   这是"宁可误拦也不放行永久删除"的安全取舍（报告与代码注释均写明）。
+3. `fs_delete` 的"QIO 生成文件自动 allow"由引擎判定（工具不自行判断）；本机用
+   fake gateway 覆盖了 allow 分支，真实引擎的分支由引擎自身测试覆盖。
+4. 真实系统回收站在本机 Windows 实测（`windows_recycle_bin`）；POSIX freedesktop
+   分支仍未在 Linux 实跑；未跑全量 pytest/CI（纪律，由 Lead 跑一次）。

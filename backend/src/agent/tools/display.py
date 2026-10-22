@@ -27,6 +27,7 @@ TOOL_LABELS: dict[str, str] = {
     "fs_list": "列出目录",
     "fs_find": "查找文件",
     "fs_info": "文件信息",
+    "fs_delete": "删除文件（进回收站）",
     "run_program": "运行程序",
     "run_shell": "执行 shell 命令",
     "sys_info": "系统信息",
