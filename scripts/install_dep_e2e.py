@@ -1080,11 +1080,18 @@ def main() -> int:
         base.evidence("dep-tool-ends", json.dumps(tool_ends, ensure_ascii=False, indent=2))
         kinds = [a.get("kind") for a in approvals]
         dep = next((a for a in approvals if a.get("kind") == "dependency_install"), None)
-        base.record("D-011", "dependency_install 审批真的发生过", "PASS" if dep else "FAIL",
-                    "审批种类=%s" % kinds)
+        run_tests = next((t for t in tool_ends if t.get("tool") == "dev_run_tests"), None)
+        # R9 契约 §7.6：QIO 专用环境内安装依赖**可以自主进行**（不再逐次审批）；
+        # 系统级安装才需要确认。所以旧断言"必须出现 dependency_install 审批"与现行产品
+        # 规则冲突。这里的等价断言是：要么仍有审批（旧路径），要么专用环境内安装由
+        # dev_run_tests 真实完成（D-012/D-022 再核对测试通过与锁定版本）。
+        dep_ok = bool(dep) or bool(run_tests and run_tests.get("ok"))
+        base.record("D-011", "依赖安装的授权路径符合当前契约（专用环境内自主 / 或出现审批）",
+                    "PASS" if dep_ok else "FAIL",
+                    "审批种类=%s；dev_run_tests ok=%s" % (
+                        kinds, bool(run_tests and run_tests.get("ok"))))
         if dep:
             base.evidence("dep-approval-payload", json.dumps(dep, ensure_ascii=False, indent=2))
-        run_tests = next((t for t in tool_ends if t.get("tool") == "dev_run_tests"), None)
         # 注意：tool 失败时 content_preview 往往是空的，只印它会得出"没有事件"这种**误导性的**
         # 结论（本机实测踩到：明明有 TOOL_END，却因为 preview 为空被印成"没有 dev_run_tests 事件"）。
         base.record("D-012", "dev_run_tests（装依赖 + 跑测试）",
