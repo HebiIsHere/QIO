@@ -473,14 +473,14 @@ onBeforeUnmount(() => {
       />
     </div>
 
-    <!-- 全窗口预览：覆盖工作区，返回后恢复原布局、标签与阅读位置（内容与返回按钮由 C 负责） -->
-    <PreviewPanel
-      v-if="shell.rightVisible && shell.effectivePreviewFull"
-      class="preview-overlay"
-      full
-      @close="shell.setRightOpen(false)"
-      @toggle-full="shell.setPreviewFull(false)"
-    />
+    <!-- 全窗口预览：外层负责卡片网格的内缩/圆角，内层只填满它 -->
+    <div v-if="shell.rightVisible && shell.effectivePreviewFull" class="preview-overlay">
+      <PreviewPanel
+        full
+        @close="shell.setRightOpen(false)"
+        @toggle-full="shell.setPreviewFull(false)"
+      />
+    </div>
 
     <!-- 任务栏被窗口宽度临时收起时的抽屉（不改写偏好；Esc / 点外部关闭） -->
     <div v-if="railDrawer" class="rail-drawer-layer">
@@ -547,16 +547,18 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .conversation-workspace {
+  /* 卡片之间唯一间距来源：顶栏→卡片、左栏→话题、话题→消息、左右预览都用它 */
+  --conversation-card-gap: 12px;
   position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  background:
-    radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%),
-    var(--bg-base);
+  /* 背景改由整窗 ::before 承担：从窗口 y=0 开始，而不是从 workspace 的 y=80 开始 */
+  background: transparent;
   color: var(--text-primary);
   font-family: var(--sans);
   animation: workspace-in var(--dur-page-out) var(--ease-out) both;
@@ -565,13 +567,24 @@ onBeforeUnmount(() => {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+/* 整窗背景层：fixed 到视口，覆盖全局栏四周；全局栏/卡片仍是表面色，不被染色 */
+.conversation-workspace::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%),
+    var(--bg-base);
+}
 .workspace-row {
   display: flex;
   flex: 1;
   min-height: 0;
   min-width: 0;
-  /* 和 8px 外边距的全局栏共用同一条左右基线；底部也留出 8px，卡片不再贴窗口边 */
-  padding: 6px 8px 8px;
+  /* 顶栏下沿 y=70 → 卡片顶 y=82（12px 间距）；左右/底边保持 8px 外沿 */
+  padding: 2px 8px 8px;
   gap: 0;
   overflow: hidden;
 }
@@ -601,7 +614,7 @@ onBeforeUnmount(() => {
 }
 .splitter {
   flex: none;
-  width: 10px;
+  width: var(--conversation-card-gap, 12px);
   position: relative;
   cursor: col-resize;
   touch-action: none;
@@ -612,7 +625,7 @@ onBeforeUnmount(() => {
   width: 2px;
   top: 42%;
   height: 40px;
-  left: 4px;
+  left: calc(50% - 1px);
   border-radius: 5px;
   background: transparent;
   transition: background var(--dur-fast) var(--ease-1);
@@ -633,6 +646,8 @@ onBeforeUnmount(() => {
 .collapsed-rail {
   flex: none;
   width: 48px;
+  /* 收起后仍保留和其他卡片一样的 12px 槽位，避免左→中变成 0 */
+  margin-right: var(--conversation-card-gap, 12px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -697,8 +712,11 @@ onBeforeUnmount(() => {
 /* ---- 全窗口预览 ---- */
 .preview-overlay {
   position: absolute;
-  inset: 6px 8px 8px;
+  /* 与话题/左栏同一条卡片顶线：y=82；左右/底边与全局栏同一 8px 外沿 */
+  inset: 2px 8px 8px;
   z-index: 30;
+  border-radius: var(--r-lg);
+  overflow: hidden;
   box-shadow: var(--shadow-3);
 }
 

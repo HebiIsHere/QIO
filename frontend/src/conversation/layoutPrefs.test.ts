@@ -5,6 +5,7 @@ import {
   LEFT_MIN,
   RIGHT_MAX,
   RIGHT_MIN,
+  SPLITTER_WIDTH,
   clampLeftWidth,
   clampRightWidth,
   defaultLayoutPrefs,
@@ -24,14 +25,14 @@ describe("布局夹取", () => {
     expect(clampRightWidth(200, 1440, 292)).toBe(RIGHT_MIN);
     // 1440 窗口、左栏 292：右栏上限同时受「中央最小可读宽度」约束
     expect(clampRightWidth(9999, 1440, 292)).toBe(
-      Math.min(RIGHT_MAX, 1440 - 292 - 20 - CENTER_MIN),
+      Math.min(RIGHT_MAX, 1440 - 292 - SPLITTER_WIDTH * 2 - CENTER_MIN),
     );
     // 窗口足够宽时才允许到最大宽度
     expect(clampRightWidth(9999, 2560, 292)).toBe(RIGHT_MAX);
     // 1024 窗口且左栏已临时收起（48px）：右栏上限会被压低到刚好保住中央最小宽度
     const narrowed = clampRightWidth(9999, 1024, 48);
     expect(narrowed).toBeGreaterThanOrEqual(RIGHT_MIN);
-    expect(1024 - 48 - 20 - narrowed).toBeGreaterThanOrEqual(CENTER_MIN);
+    expect(1024 - 48 - SPLITTER_WIDTH * 2 - narrowed).toBeGreaterThanOrEqual(CENTER_MIN);
   });
 });
 

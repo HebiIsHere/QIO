@@ -529,22 +529,14 @@ function removeOne(id: string) {
           <AttachmentChip
             :attachment="a"
             :busy="attachBusyId === a.id"
+            :previewable="canPreview(a)"
             @open="openOne"
             @relocate="relocateOne"
             @retry="retryOne"
             @reupload="reuploadOne"
             @remove="removeOne"
+            @preview="previewOne(a)"
           />
-          <button
-            v-if="canPreview(a)"
-            class="preview-open"
-            type="button"
-            :aria-label="`在右侧预览：${a.name}`"
-            title="在右侧只读预览（不改源文件）"
-            @click="previewOne(a)"
-          >
-            在右侧查看
-          </button>
         </span>
       </div>
       <!--

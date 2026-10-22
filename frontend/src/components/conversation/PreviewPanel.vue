@@ -165,13 +165,16 @@ onBeforeUnmount(() => {
   border-left: 1px solid var(--border-subtle);
 }
 .preview-panel.full {
-  position: absolute;
-  inset: 0;
-  z-index: 30;
+  /* 位置由父层 .preview-overlay 的 8px 卡片网格决定；这里只负责填满它。
+     之前 inset:0 的绝对定位会覆盖父层 inset，导致预览贴死窗口左/右/下边。 */
+  position: relative;
+  inset: auto;
+  z-index: 1;
+  height: 100%;
   border-left: 0;
-  border-radius: var(--r-lg);
+  border-radius: inherit;
   background: var(--bg-surface);
-  box-shadow: var(--shadow-3);
+  box-shadow: none;
 }
 .pv-head {
   flex: none;

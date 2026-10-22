@@ -68,6 +68,9 @@ export function measureComposer(): ComposerMetrics {
   // 找不到 textarea 就不再读第二次布局：退回面板上缘
   const inputEl = panel.querySelector<HTMLElement>("textarea");
   const inputTop = inputEl ? inputEl.getBoundingClientRect().top || rect.top : rect.top;
+  // 「回到最新消息」要跟输入胶囊中心对齐，而不是跟包含模式/星球的整行中心。
+  const stack = panel.querySelector<HTMLElement>(".composer-stack");
+  const centerRect = stack?.getBoundingClientRect() ?? rect;
   // 局部像素 → 视口像素：offsetHeight 是布局像素，rect.height 是视口像素
   const scale = panel.offsetHeight > 0 ? rect.height / panel.offsetHeight : 1;
   return {
@@ -75,7 +78,7 @@ export function measureComposer(): ComposerMetrics {
     height: rect.height,
     top: rect.top,
     inputTop,
-    centerX: rect.left + rect.width / 2,
+    centerX: centerRect.left + centerRect.width / 2,
     scale: scale > 0 ? scale : 1,
   };
 }

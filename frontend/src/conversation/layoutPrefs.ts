@@ -25,7 +25,7 @@ export const LEFT_AUTO_COLLAPSE_BELOW = 1180;
 /** 收起左栏后仍放不下「中央 + 右栏」时，预览改为全窗口。 */
 export const PREVIEW_FULL_BELOW = 980;
 
-export const SPLITTER_WIDTH = 10;
+export const SPLITTER_WIDTH = 12;
 /** 收起后的左侧任务入口宽度。 */
 export const LEFT_RAIL_WIDTH = 48;
 

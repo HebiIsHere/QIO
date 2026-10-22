@@ -640,9 +640,17 @@ const phaseLabel = computed(() => {
         ...(latestCenterX === null ? {} : { left: `${latestCenterX}px` }),
       }"
     >
-      <button class="back-latest" type="button" @click="backToLatest">
-        <span class="arrow">↓</span>
-        回到最新消息<span v-if="unseen > 0" class="count mono qio-state info">{{ unseen }}</span>
+      <button
+        class="back-latest"
+        type="button"
+        :aria-label="unseen > 0 ? `回到最新消息（${unseen} 条新消息）` : '回到最新消息'"
+        title="回到最新消息"
+        @click="backToLatest"
+      >
+        <svg class="latest-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v14M5 12l7 7 7-7" />
+        </svg>
+        <span v-if="unseen > 0" class="count mono" aria-hidden="true">{{ unseen }}</span>
       </button>
     </div>
     <ContinueBar />
@@ -809,16 +817,18 @@ const phaseLabel = computed(() => {
   pointer-events: auto;
 }
 .back-latest {
+  /* 38px 圆形图标按钮：和入口/附件动作共用同一套圆形语言；文字只留 aria-label/tooltip */
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  border-radius: var(--r-pill);
-  border: 1px solid var(--border-strong);
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   color: var(--text-secondary);
-  font-family: var(--sans);
-  font-size: 12px;
   cursor: pointer;
   box-shadow: var(--shadow-1);
   transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
@@ -831,11 +841,30 @@ const phaseLabel = computed(() => {
 .back-latest:active {
   transform: translateY(var(--press-shift));
 }
+.latest-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .back-latest .count {
-  /* 计数走统一状态徽章原语（info 语义 = 「有新内容」）；这里只保留布局相关属性 */
-  min-width: 18px;
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  border: 2px solid var(--bg-elevated);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9.5px;
+  line-height: 13px;
   text-align: center;
-  font-size: 10.5px;
+  box-sizing: border-box;
 }
 @keyframes typing-bounce {
   0%, 60%, 100% {

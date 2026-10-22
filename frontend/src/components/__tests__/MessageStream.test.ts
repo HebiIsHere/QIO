@@ -206,8 +206,9 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     expect(stream.scrollTop).toBe(120); // 没有被强行拉回
     const btn = w.find(".back-latest");
     expect(btn.exists()).toBe(true);
-    expect(btn.text()).toContain("回到最新消息");
-    expect(btn.text()).toContain("2"); // 未读计数
+    expect(btn.attributes("aria-label")).toContain("回到最新消息");
+    expect(btn.attributes("aria-label")).toContain("2 条新消息"); // 未读计数
+    expect(btn.find(".count").text()).toBe("2");
 
     await btn.trigger("click");
     await settle();

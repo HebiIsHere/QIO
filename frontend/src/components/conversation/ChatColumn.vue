@@ -457,8 +457,8 @@ onBeforeUnmount(() => {
 /* ---- 话题栏 ---- */
 .topic-bar {
   flex: none;
-  /* 作为中央列的第一块，顶边与左栏/预览卡同一条线；不再额外下移 8px */
-  margin: 0 0 8px;
+  /* 作为中央列的第一块，顶边与左栏/预览卡同一条线；与消息框共用 12px 间距 */
+  margin: 0 0 var(--conversation-card-gap, 12px);
   min-width: 0;
 }
 .topic-main {
@@ -734,7 +734,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  margin-top: 8px;
+  margin-top: var(--conversation-card-gap, 12px);
 }
 .candidates {
   display: flex;

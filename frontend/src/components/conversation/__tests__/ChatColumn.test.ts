@@ -256,7 +256,7 @@ describe("消息流空 / 加载 / 失败三态（真实 MessageStream）", () =>
 
     const button = w.find(".back-latest");
     expect(button.exists()).toBe(true);
-    expect(button.text()).toContain("回到最新消息");
+    expect(button.attributes("aria-label")).toContain("回到最新消息");
     expect(button.find(".count").exists()).toBe(true);
     expect(button.find(".count").text()).toBe("1");
     w.unmount();
