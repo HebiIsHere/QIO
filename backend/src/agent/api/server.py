@@ -567,6 +567,12 @@ def create_app(
             "X-QIO-Prepare-Id",
             "X-QIO-Name",
             "X-QIO-Topic-Id",
+            # R9：浏览器/剪贴板上传要标明材料来源（browser_upload / clipboard_image）
+            # 与用户说明。漏了它们，浏览器上传会先发预检并被 400 拒掉 —— 界面表现为
+            # 「一直失败」，后端看不到任何请求。守护测试会把前端源码里出现的每个
+            # X-QIO-* 头都预检一遍。
+            "X-QIO-Source-Kind",
+            "X-QIO-User-Note",
         ],
     )
     from agent.tools.approval import ApprovalService

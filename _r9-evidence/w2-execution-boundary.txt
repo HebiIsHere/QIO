@@ -1,9 +1,9 @@
 R9 W2 执行边界真机探针
 ========================================================================
-时间（UTC）: 2026-10-22T06:36:06.544575+00:00
+时间（UTC）: 2026-10-22T07:30:14.694451+00:00
 平台: Windows-10-10.0.26200-SP0
-Python: 3.11.15 (D:\qio-dev\qio-r9-w2\backend\.venv\Scripts\python.exe)
-仓库根: D:\qio-dev\qio-r9-w2
+Python: 3.11.15 (D:\qio-dev\qio-r9-main\backend\.venv\Scripts\python.exe)
+仓库根: D:\qio-dev\qio-r9-main
 Windows: True
 
 
@@ -32,7 +32,7 @@ Windows: True
     "active_processes": 32,
     "kill_on_close": true
   },
-  "孙进程 pid": 151924,
+  "孙进程 pid": 180708,
   "释放前孙进程存活": true,
   "释放后子进程消失": true,
   "释放后孙进程消失": true
