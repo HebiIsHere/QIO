@@ -3,15 +3,16 @@
 R9 契约 §2 把统一授权模型定义在 agent/security/ 包（W1 负责）。本 worktree
 （r9/w2-exec）从契约提交拉出时该包尚未合入，因此这里做**只读的**类型桥接：
 
-* 包已经存在（W1 合入后）→ 直接导入契约里的权威类型，不做任何复制；
+* agent.security 包存在（W1 合入后）→ **无条件 re-export** 契约里的权威类型；
+  不保留同名字段的独立 dataclass、不做第二套定义；
 * 包还不存在（本分支单独运行时）→ 提供与契约字段完全一致的临时数据类，
   仅用于让工具层按契约写调用、让测试用 fake gateway 跑起来。
 
-这里**没有**任何权限判定逻辑：判定永远在 AuthorizationEngine（W1）里。合入
-W1 分支后本模块的所有名字都会解析到 agent.security.*，临时定义不会被使用。
+这里**没有任何权限判定逻辑**：判定永远在 AuthorizationEngine（W1）里。
 
-引入本模块的意义：工具层可以无条件 from agent.tools.security_types import
-Effect, EffectKind, Target, ... 按契约构造 effect，而不必等到 W1 合入才写代码。
+集成约定（Lead 已确认）：agent.security 合入后本模块所有名字都解析到
+agent.security.*；若契约符号不在预期模块里，re-export 会尝试 engine/gateway
+等备选模块，**不会**退回本地定义。
 """
 
 from __future__ import annotations
@@ -20,26 +21,85 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-BRIDGED_FROM_SECURITY = True
+# 先判断包是否存在：只要存在就必须 re-export 权威类型（Lead 集成检查项）。
+try:
+    import agent.security as _security_package  # noqa: F401
+
+    _HAS_SECURITY = True
+except Exception:  # noqa: BLE001 - 包尚未合入（W1 分支未合）
+    _HAS_SECURITY = False
+
+BRIDGED_FROM_SECURITY = _HAS_SECURITY
 
 
-def _import(module: str, *names: str):
-    """逐个导入契约符号；整包不存在时返回 None（由调用方用本地定义兜底）。"""
+def _require(*names: str, modules: tuple[str, ...]):
+    """在候选模块里找契约符号；找不到就明确报 ImportError（不退回本地定义）。"""
+    last_error: Exception | None = None
+    for module in modules:
+        try:
+            imported = __import__(module, fromlist=list(names))
+        except Exception as exc:  # noqa: BLE001 - 模块可能还没写/正在开发
+            last_error = exc
+            continue
+        missing = [name for name in names if not hasattr(imported, name)]
+        if missing:
+            last_error = ImportError(f"{module} 缺少契约符号：{', '.join(missing)}")
+            continue
+        return tuple(getattr(imported, name) for name in names)
+    raise ImportError(
+        "agent.security 已存在，但找不到契约符号 "
+        + "、".join(names)
+        + f"（候选模块：{'、'.join(modules)}）：{last_error}"
+    )
+
+
+if _HAS_SECURITY:
+    # -- 契约 §2.1 公共类型（effects 模块；engine/gateway 为契约未写死位置的备选） --
+    EffectKind, Target, Effect, Verdict, AuthDecision = _require(
+        "EffectKind",
+        "Target",
+        "Effect",
+        "Verdict",
+        "AuthDecision",
+        modules=(
+            "agent.security.effects",
+            "agent.security.engine",
+            "agent.security",
+        ),
+    )
+    # -- 契约 §5.3 待审批操作 --
+    PendingOperation, ApprovalTicket = _require(
+        "PendingOperation",
+        "ApprovalTicket",
+        modules=("agent.security.operations", "agent.security"),
+    )
+    # -- 契约 §2.4 子智能体能力子集 --
+    (AgentScope,) = _require(
+        "AgentScope",
+        modules=("agent.security.context", "agent.security.instructions", "agent.security"),
+    )
+    # -- 契约 §2.2 指令与授权 --
+    InstructionContext, Grant, Scope = _require(
+        "InstructionContext",
+        "Grant",
+        "Scope",
+        modules=("agent.security.instructions", "agent.security"),
+    )
+    # -- 契约 §1 权限模式 --
+    PermissionMode, normalize_mode = _require(
+        "PermissionMode",
+        "normalize_mode",
+        modules=("agent.security.modes", "agent.security"),
+    )
     try:
-        imported = __import__(module, fromlist=list(names))
-    except Exception:  # noqa: BLE001 - 包可能只存在一部分（W1 正在开发）
-        return None
-    return tuple(getattr(imported, name, None) for name in names)
-
-
-# -- agent/security/effects.py ---------------------------------------------
-
-_effects = _import("agent.security.effects", "EffectKind", "Target", "Effect", "Verdict", "AuthDecision")
-if _effects is not None and all(item is not None for item in _effects):
-    EffectKind, Target, Effect, Verdict, AuthDecision = _effects  # type: ignore[assignment]
-    BRIDGED_FROM_SECURITY = True
+        from agent.security.modes import MODE_LABELS  # type: ignore
+    except Exception:  # noqa: BLE001 - 契约没写死常量位置；按契约 §1 的值给出
+        MODE_LABELS = {
+            "read_only": "只读模式",
+            "restricted": "受限模式",
+            "unrestricted": "完全无限制模式",
+        }
 else:
-    BRIDGED_FROM_SECURITY = False
 
     class EffectKind(str, Enum):  # type: ignore[no-redef]
         READ = "read"
@@ -83,16 +143,6 @@ else:
         effects: tuple = ()
         scope_id: str | None = None
 
-
-# -- agent/security/operations.py（契约 §5.3） ------------------------------
-
-_operations = _import(
-    "agent.security.operations", "PendingOperation", "ApprovalTicket", "ExecutionContext", "ExecResult"
-)
-if _operations is not None and _operations[0] is not None and _operations[1] is not None:
-    PendingOperation, ApprovalTicket = _operations[0], _operations[1]  # type: ignore[assignment]
-else:
-
     @dataclass
     class PendingOperation:  # type: ignore[no-redef]
         kind: str
@@ -113,14 +163,6 @@ else:
         expires_at: str = ""
         confirmations_required: int = 1
 
-
-# -- agent/security/context.py / instructions.py ---------------------------
-
-_context = _import("agent.security.context", "AgentScope")
-if _context is not None and _context[0] is not None:
-    AgentScope = _context[0]  # type: ignore[assignment]
-else:
-
     @dataclass
     class AgentScope:  # type: ignore[no-redef]
         """子智能体能力子集（父 grant 子集 + 深度 + 用途）。
@@ -134,13 +176,6 @@ else:
         depth: int = 1
         max_depth: int = 1
         purpose: str = ""
-
-    _context = None
-
-_instructions = _import("agent.security.instructions", "InstructionContext", "Grant", "Scope")
-if _instructions is not None and _instructions[0] is not None:
-    InstructionContext, Grant, Scope = _instructions  # type: ignore[assignment]
-else:
 
     @dataclass
     class Scope:  # type: ignore[no-redef]
@@ -166,19 +201,6 @@ else:
         topic_id: str | None = None
         created_at: str = ""
         grants: list = field(default_factory=list)
-
-
-# -- agent/security/modes.py（契约 §1） ------------------------------------
-
-_modes = _import("agent.security.modes", "PermissionMode", "normalize_mode", "MODE_LABELS", "LEGACY_MODE_MAP", "DEFAULT_MODE")
-if _modes is not None and _modes[0] is not None:
-    PermissionMode, normalize_mode = _modes[0], _modes[1]  # type: ignore[assignment]
-    MODE_LABELS = _modes[2] if _modes[2] is not None else {
-        "read_only": "只读模式",
-        "restricted": "受限模式",
-        "unrestricted": "完全无限制模式",
-    }
-else:
 
     class PermissionMode(str, Enum):  # type: ignore[no-redef]
         READ_ONLY = "read_only"

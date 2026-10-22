@@ -294,3 +294,154 @@ async def test_real_low_integrity_child_cannot_write_medium_file(tmp_path):
     assert child.returncode == 3, (child.returncode, stdout, stderr)
     assert b"WRITE-DENIED" in stderr and b"PermissionError" in stderr
     assert protected.read_text(encoding="utf-8") == "original", "低完整性进程不得写 Medium 文件"
+
+
+# --------------------------------------------------------------------------
+# 事后核验（契约 §3.1）：自动放行的执行前后做受保护范围快照比对
+# --------------------------------------------------------------------------
+
+
+def test_execution_guard_detects_added_modified_deleted(tmp_path):
+    from agent.tools.execution_guard import ExecutionGuard
+
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    modified = protected / "modified.txt"
+    modified.write_text("before", encoding="utf-8")
+    deleted = protected / "deleted.txt"
+    deleted.write_text("gone", encoding="utf-8")
+
+    guard = ExecutionGuard(lambda: [protected])
+    before = guard.capture()
+
+    modified.write_text("after-change", encoding="utf-8")
+    (protected / "added.txt").write_text("new", encoding="utf-8")
+    deleted.unlink()
+
+    report = guard.compare(before, guard.capture())
+
+    assert report["ok"] is False
+    changes = {item["path"]: item["change"] for item in report["violations"]}
+    assert str(modified) in changes and "修改" in changes[str(modified)]
+    assert str(protected / "added.txt") in changes and changes[str(protected / "added.txt")] == "新增"
+    assert str(deleted) in changes and changes[str(deleted)] == "删除"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_marks_violation_when_protected_file_changes(tmp_path, monkeypatch):
+    """真实脚本执行后仍改动了受保护文件 → 结果必须标记越界（不能静默放过）。"""
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    victim = protected / "business.txt"
+    victim.write_text("original", encoding="utf-8")
+
+    # 用真实 worker 执行；为了不依赖 Low IL，这里只保留 Job Object 这一层。
+    def _fake_harden(process, **kwargs):
+        return isolation.IsolationOutcome(applied=True, mechanisms=("job_object",))
+
+    monkeypatch.setattr(isolation, "harden", _fake_harden)
+    executor = SandboxExecutor(
+        mode_provider=lambda: "restricted",
+        protected_scope_provider=lambda: [str(protected)],
+    )
+    code = (
+        "def run(**kwargs):\n"
+        "    with open(kwargs['target'], 'w', encoding='utf-8') as handle:\n"
+        "        handle.write('tampered')\n"
+        "    return {'ok': 1}\n"
+    )
+
+    result = await executor.execute(code, {"target": str(victim)})
+
+    assert result.ok is False
+    assert result.category == "boundary_violation"
+    assert "执行越界" in (result.error or "")
+    assert result.guard is not None and result.guard["violated"] is True
+    assert any(item["path"] == str(victim) for item in result.guard["violations"])
+
+
+@pytest.mark.asyncio
+async def test_script_mentioning_internal_data_requires_three_confirmations(
+    tmp_path, monkeypatch
+):
+    """脚本边界（契约 §4）：内容明确涉及内部数据 → 执行前拒绝，必须先三次确认。"""
+    data_dir = tmp_path / "qio-data"
+    data_dir.mkdir()
+    target = data_dir / "qio.db"
+    gateway = FakeGateway(mode="unrestricted", internal_paths=[data_dir])
+    executor = SandboxExecutor(security=gateway)
+    spawned: list = []
+
+    async def _never(*args, **kwargs):
+        spawned.append((args, kwargs))
+        raise AssertionError("涉及内部数据的脚本不得先执行")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _never)
+    code = (
+        "def run(**kwargs):\n"
+        "    with open(r'" + str(target) + "', 'a', encoding='utf-8') as handle:\n"
+        "        handle.write('x')\n"
+        "    return {'ok': 1}\n"
+    )
+
+    result = await executor.execute(code, {}, internal_data_confirmed=False)
+
+    assert result.ok is False
+    assert result.category == "permission"
+    assert "三次确认" in (result.error or "")
+    assert spawned == [], "未完成三次确认前不得启动脚本"
+    assert not target.exists()
+
+
+# --------------------------------------------------------------------------
+# proc_kill：只允许结束本实例管理的 pid；其它 pid 必须经统一授权
+# --------------------------------------------------------------------------
+
+
+class _KillProc:
+    returncode = 0
+
+    async def communicate(self):
+        return (b"", b"")
+
+
+@pytest.mark.asyncio
+async def test_proc_kill_managed_pid_is_allowed(tmp_path, monkeypatch):
+    from agent.tools.cmd_tools import ProcKillTool
+
+    gateway = FakeGateway(mode="restricted", verdicts={"execute": Verdict.ALLOW})
+    tool = ProcKillTool(computer=_sandbox(tmp_path), security=gateway)
+    monkeypatch.setattr(isolation, "is_managed_pid", lambda pid: pid == 12345)
+
+    async def _fake_spawn(*args, **kwargs):
+        return _KillProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_spawn)
+    result = await tool.run(pid="12345")
+
+    assert result.ok is True, result.error
+    assert len(gateway.calls) == 1
+    assert gateway.calls[0].detail["managed_by_this_instance"] is True
+
+
+@pytest.mark.asyncio
+async def test_proc_kill_unmanaged_pid_needs_approval(tmp_path, monkeypatch):
+    from agent.tools.cmd_tools import ProcKillTool
+
+    gateway = FakeGateway(mode="restricted", verdicts={"execute": Verdict.APPROVE})
+    tool = ProcKillTool(computer=_sandbox(tmp_path), security=gateway)
+    monkeypatch.setattr(isolation, "is_managed_pid", lambda pid: False)
+    spawned: list = []
+
+    async def _never(*args, **kwargs):
+        spawned.append(args)
+        raise AssertionError("待审批时不得结束进程")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _never)
+
+    result = await tool.run(pid="54321")
+
+    assert result.ok is True and result.code == "pending_approval"
+    assert gateway.submitted and gateway.submitted[0].kind == "proc.kill"
+    assert gateway.calls[0].detail["managed_by_this_instance"] is False
+    assert spawned == []
