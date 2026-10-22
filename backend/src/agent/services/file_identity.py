@@ -153,7 +153,10 @@ def _windows_identity(path: str) -> tuple[str, str] | None:
         )
         if not ok:
             return None
-        volume = str(int(info.VolumeSerialNumber))
+        # FILE_ID_INFO.VolumeSerialNumber 是 ULONGLONG 字段，但卷序列号本身只有
+        # 32 位（GetVolumeInformationW 返回 DWORD）；高 32 位不是卷序列号的一部分，
+        # 丢弃它才能与系统 API 的卷序列号对上、也避免不同 API 间比较失败。
+        volume = str(int(info.VolumeSerialNumber) & 0xFFFFFFFF)
         file_id = "".join(f"{byte:02x}" for byte in bytes(info.FileId))
         return volume, file_id
     finally:

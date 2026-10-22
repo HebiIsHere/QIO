@@ -370,6 +370,27 @@ def create_app(
         # 实例心跳（契约 C1）：别的实例靠「心跳新鲜」确认本实例还活着，
         # 所以它必须**持续**刷新，而不是只在启动时写一次。崩溃时它自然停止，
         # TTL 到期 + pid 不存在 → 下一个实例才会恢复本实例的记录。
+        # R9 §9：旧附件数据迁移 —— 启动后台执行一次（有未迁移旧记录才跑；幂等、断点续跑）。
+        # 与附件服务共用同一个 sqlite 连接，所以迁移在本事件循环线程里执行（不在工作线程碰 DB）。
+        async def _run_attachment_migration_once() -> None:
+            try:
+                from agent.storage import attachment_migration
+
+                result = attachment_migration.run_if_pending(
+                    ctx.conn, ctx.settings.data_dir
+                )
+                if result.get("ran"):
+                    logging.getLogger(__name__).info(
+                        "attachment migration: %s", result.get("report")
+                    )
+            except Exception:  # noqa: BLE001 - 迁移失败不能让应用起不来
+                logging.getLogger(__name__).warning(
+                    "attachment migration failed", exc_info=True
+                )
+
+        attachment_migration_task = asyncio.create_task(
+            _run_attachment_migration_once()
+        )
         hb_log = logging.getLogger(__name__)
         heartbeat_stop = asyncio.Event()
 
@@ -399,6 +420,16 @@ def create_app(
                 pass
             except Exception:  # noqa: BLE001
                 hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
+            # 附件迁移任务：DB 关闭前收尾（迁移是幂等的，被打断下次会从审计断点续跑）
+            attachment_migration_task.cancel()
+            try:
+                await attachment_migration_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001
+                hb_log.warning(
+                    "attachment migration task ended with an error", exc_info=True
+                )
             try:
                 report = await ctx.aclose()
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
@@ -1716,6 +1747,10 @@ def create_app(
         if att is None:
             raise HTTPException(status_code=404, detail="没有这个附件")
         headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
+        from agent.services import attachment_access
+
+        auth_path: Path | None = None
+        auth_identity = getattr(att, "file_id", None)
         if attachments.is_source_ref(att):
             resolved = attachments.resolve_source(attachment_id)
             if resolved.path is None or resolved.state == REFERENCE_MISSING:
@@ -1727,11 +1762,37 @@ def create_app(
             headers["X-QIO-Reference-State"] = str(resolved.state or "")
             if resolved.state == REFERENCE_AMBIGUOUS:
                 headers["X-QIO-Identity-Warning"] = "1"
+            auth_path = path
         else:
             try:
                 path, name = attachments.content_target(attachment_id)
             except AttachmentContentError as exc:
                 raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            auth_path = path
+        # 读取是一次 READ effect：必须经统一授权网关（契约 §3.1）。
+        decision = await attachment_access.authorize_read(
+            attachment_access.gateway_of(ctx),
+            path=auth_path,
+            identity=auth_identity,
+            purpose=f"打开附件「{att.original_name}」",
+            tool="attachment.content",
+            detail={"attachment_id": attachment_id},
+        )
+        if decision["verdict"] == "deny":
+            raise HTTPException(
+                status_code=403,
+                detail=decision["reason"] or "读取附件被授权拒绝",
+            )
+        if decision["verdict"] == "approve":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "pending_approval",
+                    "message": "打开附件需要用户批准；批准后会自动执行",
+                    "approval_id": decision.get("approval_id"),
+                    "reason": decision["reason"],
+                },
+            )
         media_type = INLINE_SAFE_SUFFIXES.get(Path(name).suffix.lower(), "application/octet-stream")
         return FileResponse(
             path,
@@ -3458,6 +3519,112 @@ def create_app(
             "current_id": outcome.current_id,
             "current_version": outcome.current_version,
         }
+
+    # -- 附件旧数据迁移（R9 §9）--------------------------------------------
+
+    @app.get("/api/maintenance/attachments/migration")
+    async def attachment_migration_status() -> dict:
+        """盘点 + 审计 + 清理清单（只读）。维护接口可反复查看，不触发迁移。"""
+        from agent.storage import attachment_migration
+
+        data_dir = ctx.settings.data_dir
+        return {
+            "ok": True,
+            "inventory": attachment_migration.inventory(ctx.conn, data_dir),
+            "pending": attachment_migration.pending_count(ctx.conn),
+            "audit": attachment_migration.audit_rows(ctx.conn)[-500:],
+            "cleanup_candidates": attachment_migration.cleanup_candidates(ctx.conn),
+        }
+
+    @app.post("/api/maintenance/attachments/migration")
+    async def run_attachment_migration(body: dict | None = None) -> dict:
+        """重新运行旧附件迁移（幂等、断点续跑）。
+
+        body.apply=false 只做盘点/计划，不写任何附件行；默认 apply=true。
+        """
+        from agent.storage import attachment_migration
+
+        apply = True
+        if isinstance(body, dict) and "apply" in body:
+            apply = bool(body.get("apply"))
+        data_dir = ctx.settings.data_dir
+        report = attachment_migration.migrate(ctx.conn, data_dir, apply=apply)
+        return {
+            "ok": True,
+            "report": report,
+            "inventory": (
+                attachment_migration.inventory(ctx.conn, data_dir)
+                if apply
+                else None
+            ),
+            "cleanup_candidates": attachment_migration.cleanup_candidates(ctx.conn),
+        }
+
+    @app.post("/api/maintenance/attachments/cleanup")
+    async def cleanup_attachment_materials(body: dict | None = None) -> dict:
+        """清理迁移产生的冗余材料：DELETE effect → 授权 → **系统回收站**。
+
+        body: {"attachment_ids": [id...]}（缺省 = 全部 cleanup candidate，但只处理
+        明确指定的候选，绝不按通配清理）；approve 时提交待审批清单，allow 时才回收。
+        回收失败保留文件并如实返回；绝不永久删除。
+        """
+        from agent.services import attachment_access
+        from agent.storage import attachment_migration
+
+        payload = body if isinstance(body, dict) else {}
+        wanted = {str(item) for item in (payload.get("attachment_ids") or []) if str(item)}
+        candidates = attachment_migration.cleanup_candidates(ctx.conn)
+        if wanted:
+            candidates = [row for row in candidates if str(row["attachment_id"]) in wanted]
+        candidates = [row for row in candidates if str(row.get("state") or "") == "candidate"]
+        targets = []
+        for row in candidates:
+            path = str(row.get("path") or "")
+            if not path:
+                continue
+            identity = None
+            try:
+                from agent.services.file_identity import identity_of
+
+                found = identity_of(Path(path))
+                identity = found.key if found is not None else None
+            except Exception:  # noqa: BLE001 - 身份拿不到不影响审批（写回前会重核对）
+                identity = None
+            targets.append(
+                {
+                    "attachment_id": str(row.get("attachment_id") or ""),
+                    "path": path,
+                    "identity": identity,
+                    "reason": str(row.get("reason") or ""),
+                }
+            )
+        if not targets:
+            return {"ok": True, "results": [], "pending_approval": False}
+        try:
+            outcome = await ctx.attachments.recycle_material_files(
+                targets,
+                gateway=attachment_access.gateway_of(ctx),
+                purpose="清理迁移后已被源文件引用取代的历史副本",
+            )
+        except Exception as exc:  # noqa: BLE001 - 统一授权拒绝要如实反馈
+            from agent.services.attachments import AttachmentPermissionDenied
+
+            if isinstance(exc, AttachmentPermissionDenied):
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise
+        if outcome.get("pending_approval"):
+            return outcome
+        # 回收成功/失败的候选状态如实落库（失败保持 candidate，可重试）
+        by_id = {
+            str(item.get("attachment_id") or ""): item
+            for item in outcome.get("results") or []
+        }
+        for attachment_id, item in by_id.items():
+            state = "recycled" if item.get("ok") else "failed"
+            attachment_migration.mark_cleanup_candidate_state(
+                ctx.conn, attachment_id, state
+            )
+        return outcome
 
     # -- maintenance -------------------------------------------------------
 

@@ -1312,6 +1312,98 @@ class AppContext:
         result["work_dir"] = resolved.get("work_dir")
         return result
 
+    # -- 附件读取授权 / 互动材料事实（R9 §3.1 / §6.4 / §8）--------------------
+
+    async def authorize_attachment_reads_for_turn(
+        self,
+        turn_id: str | None,
+        *,
+        gateway: Any = None,
+        purpose: str = "本轮互动材料读取",
+    ) -> dict:
+        """本轮附件的 READ effect 统一授权（异步边界）；同步材料构造只查结果表。
+
+        * 只对 material_enabled 的附件产生读取授权（关掉 = 不主动纳入，不是 OS 权限）；
+        * 权限判定全部来自 W1 的网关（经 services/attachment_access 适配层）；
+        * 返回 {"allowed","denied","degraded"}；调用方把 allowed 放进
+          attachment_access.current_read_grants，同步材料层据此查表，不复制判定。
+        """
+        from agent.services import attachment_access
+
+        result: dict = {"allowed": [], "denied": [], "degraded": False}
+        service = self._attachment_service()
+        if service is None or not turn_id:
+            return result
+        gw = gateway if gateway is not None else getattr(self, "authorization", None)
+        try:
+            items = service.list(turn_id=str(turn_id), limit=100, check=False)
+        except Exception:  # noqa: BLE001 - 列附件失败 = 本轮没有可授权材料
+            return result
+        for att in items:
+            if not bool(getattr(att, "material_enabled", 1)):
+                continue
+            try:
+                resolved = service.resolve_source(att.id)
+            except Exception:  # noqa: BLE001 - 解析失败按不可读处理
+                result["denied"].append(
+                    {"attachment_id": att.id, "reason": "源文件解析失败", "verdict": "unavailable"}
+                )
+                continue
+            if resolved.path is None:
+                result["denied"].append(
+                    {
+                        "attachment_id": att.id,
+                        "reason": resolved.reason,
+                        "verdict": "unavailable",
+                    }
+                )
+                continue
+            identity = (
+                resolved.identity.key
+                if resolved.identity is not None
+                else getattr(att, "file_id", None)
+            )
+            decision = await attachment_access.authorize_read(
+                gw,
+                path=resolved.path,
+                identity=identity,
+                purpose=purpose,
+                tool="interactive.materials",
+                detail={"attachment_id": att.id, "turn_id": str(turn_id)},
+            )
+            if decision.get("verdict") == "allow":
+                result["allowed"].append(att.id)
+            else:
+                result["denied"].append(
+                    {
+                        "attachment_id": att.id,
+                        "reason": decision.get("reason"),
+                        "verdict": decision.get("verdict"),
+                    }
+                )
+                result["degraded"] = result["degraded"] or bool(decision.get("degraded"))
+        return result
+
+    def attachment_materials_facts(self, turn_id: str | None) -> list[dict]:
+        """本轮附件的 §6.4 引用事实 + 用户说明（互动上下文结构化块用）。"""
+        service = self._attachment_service()
+        if service is None or not turn_id:
+            return []
+        try:
+            items = service.list(turn_id=str(turn_id), limit=100, check=False)
+        except Exception:  # noqa: BLE001 - 附件事实是旁路
+            return []
+        facts: list[dict] = []
+        for att in items:
+            try:
+                ref = service.file_ref(att, check=False)
+            except Exception:  # noqa: BLE001 - 单条引用事实失败不影响其它材料
+                continue
+            ref["material_enabled"] = bool(getattr(att, "material_enabled", 1))
+            ref["user_note"] = str(getattr(att, "user_note", "") or "")
+            facts.append(ref)
+        return facts
+
     # -- execution narrative（模型怎么表达，见 core/narrative.py） -------------
 
     def _append_narrative(self, binding, narrative, call, turn_id, raw) -> str | None:

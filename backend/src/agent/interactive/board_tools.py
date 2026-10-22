@@ -156,8 +156,74 @@ def _link_by_id(state: Mapping[str, Any], link_id: str) -> dict | None:
     return None
 
 
-def _card_snapshot(card: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+def _attachments(tool: Any) -> Any | None:
+    """板面工具绑定的附件服务（AppContext.attachments）；拿不到就 None。"""
+    app = getattr(tool, "app", None)
+    if app is None:
+        return None
+    service = getattr(app, "attachments", None)
+    if service is None:
+        getter = getattr(app, "_attachment_service", None)
+        if callable(getter):
+            try:
+                service = getter()
+            except Exception:  # noqa: BLE001 - 拿不到服务按不可用处理
+                service = None
+    return service
+
+
+def _card_file_ref(card: Mapping[str, Any], service: Any | None) -> dict[str, Any]:
+    """卡片快照里的源引用事实（契约 §6.4）：no fabricated fields when absent。"""
+    meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+    block = meta.get("file") if isinstance(meta.get("file"), dict) else {}
+    raw_id = ""
+    for key in ("attachmentId", "attachment_id"):
+        value = block.get(key) or meta.get(key)
+        if value:
+            raw_id = str(value).strip()
+            break
+    base = {
+        "attachment_id": raw_id or None,
+        "filename": str(block.get("name") or meta.get("name") or ""),
+        "media_kind": "",
+        "origin": None,
+        "source_kind": None,
+        "availability": None,
+        "size": 0,
+        "user_note": "",
+        "material_enabled": False,
+        "missing_reason": None,
+        "reference_id": raw_id or None,
+    }
+    if not raw_id:
+        base["missing_reason"] = "这张卡片还没有关联已保存的附件"
+        return base
+    if service is None:
+        base["missing_reason"] = "附件服务当前不可用，无法给出源文件引用事实"
+        return base
+    try:
+        att = service.get(raw_id, check=False)
+    except Exception:  # noqa: BLE001 - 附件查询失败按不可用处理
+        att = None
+    if att is None:
+        base["missing_reason"] = f"找不到这个附件记录：{raw_id}"
+        return base
+    try:
+        ref = service.file_ref(att, check=False)
+    except Exception:  # noqa: BLE001 - 引用事实是旁路，不影响快照主体
+        ref = dict(base)
+        ref["missing_reason"] = "读取源文件引用事实失败"
+    merged = dict(base)
+    merged.update(ref)
+    merged["attachment_id"] = str(getattr(att, "id", raw_id))
+    merged["reference_id"] = str(getattr(att, "id", raw_id))
+    return merged
+
+
+def _card_snapshot(
+    card: Mapping[str, Any], *, attachment_service: Any | None = None
+) -> dict[str, Any]:
+    snapshot = {
         "id": str(card.get("id") or ""),
         "kind": str(card.get("kind") or ""),
         "version": int(card.get("version", 1) or 1),
@@ -170,6 +236,8 @@ def _card_snapshot(card: Mapping[str, Any]) -> dict[str, Any]:
         "checked": bool(card.get("checked", False)),
         "hidden": bool(card.get("hidden", False)),
     }
+    snapshot["file_ref"] = _card_file_ref(card, attachment_service)
+    return snapshot
 
 
 def _group_snapshot(group: Mapping[str, Any]) -> dict[str, Any]:
@@ -747,7 +815,7 @@ class BoardCreateCardTool(_BoardTool):
             )
             if created is None:
                 raise ValueError("创建卡片失败：板面状态没有产生新卡片")
-            snapshot = _card_snapshot(created)
+            snapshot = _card_snapshot(created, attachment_service=_attachments(self))
             return new_state, {
                 "after": snapshot,
                 "result": {
@@ -798,14 +866,14 @@ class BoardUpdateCardTool(_BoardTool):
             meta = dict(current.get("meta") or {}) if isinstance(current.get("meta"), dict) else {}
             meta["title"] = str(patch.pop("title"))
             patch["meta"] = meta
-        before = _card_snapshot(current)
+        before = _card_snapshot(current, attachment_service=_attachments(self))
 
         def mutate(state_in: dict) -> tuple[dict, dict]:
             new_state = board.update_card(state_in, card_id, patch)
             updated = _card_by_id(new_state, card_id)
             if updated is None:
                 raise ValueError("更新卡片失败：目标卡片不存在")
-            snapshot = _card_snapshot(updated)
+            snapshot = _card_snapshot(updated, attachment_service=_attachments(self))
             return new_state, {
                 "after": snapshot,
                 "result": {
@@ -848,14 +916,14 @@ class BoardMoveCardTool(_BoardTool):
         position, position_error = _resolve_position(self, turn, state, args.position)
         if position_error is not None:
             return _fail(self.name, "invalid_position", position_error)
-        before = _card_snapshot(current)
+        before = _card_snapshot(current, attachment_service=_attachments(self))
 
         def mutate(state_in: dict) -> tuple[dict, dict]:
             new_state = board.update_card(state_in, card_id, {"x": position["x"], "y": position["y"]})
             updated = _card_by_id(new_state, card_id)
             if updated is None:
                 raise ValueError("移动卡片失败：目标卡片不存在")
-            snapshot = _card_snapshot(updated)
+            snapshot = _card_snapshot(updated, attachment_service=_attachments(self))
             return new_state, {
                 "after": snapshot,
                 "result": {"card_id": card_id, "card": snapshot, "position": position},
@@ -952,7 +1020,7 @@ class BoardGroupCardsTool(_BoardTool):
                 group_id = target_group_id
             snapshot = _group_snapshot(group)
             card_snapshots = [
-                _card_snapshot(card)
+                _card_snapshot(card, attachment_service=_attachments(self))
                 for card in new_state.get("cards") or []
                 if isinstance(card, dict) and str(card.get("id")) in card_ids
             ]
@@ -1014,7 +1082,7 @@ class BoardOrderGroupTool(_BoardTool):
                 "顺序调整必须提供全部受影响卡片的 expected_versions",
                 data={"missing": missing},
             )
-        before = {"group": _group_snapshot(group), "cards": [_card_snapshot(_card_by_id(state, cid)) for cid in live_members if _card_by_id(state, cid) is not None]}
+        before = {"group": _group_snapshot(group), "cards": [_card_snapshot(_card_by_id(state, cid), attachment_service=_attachments(self)) for cid in live_members if _card_by_id(state, cid) is not None]}
 
         def mutate(state_in: dict) -> tuple[dict, dict]:
             new_state = state_in
@@ -1040,7 +1108,7 @@ class BoardOrderGroupTool(_BoardTool):
             if final_group is None:
                 raise ValueError("顺序调整失败：分组不存在")
             card_snapshots = [
-                _card_snapshot(card)
+                _card_snapshot(card, attachment_service=_attachments(self))
                 for card in new_state.get("cards") or []
                 if isinstance(card, dict) and str(card.get("id")) in member_order
             ]
@@ -1147,7 +1215,7 @@ class BoardAddLinkTool(_BoardTool):
             turn,
             args,
             action="add_link",
-            before={"cards": [_card_snapshot(_card_by_id(state, src)), _card_snapshot(_card_by_id(state, dst))]},
+            before={"cards": [_card_snapshot(_card_by_id(state, src), attachment_service=_attachments(self)), _card_snapshot(_card_by_id(state, dst), attachment_service=_attachments(self))]},
             expected_versions={str(key): int(value) for key, value in expected.items()},
             mutate=mutate,
         )

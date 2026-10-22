@@ -286,6 +286,14 @@ class AttachmentSourceUnavailable(AttachmentContentError):
     """源文件当前读不到（缺失 / 待确认）：读取方必须如实报告，不得读旧副本冒充。"""
 
 
+class AttachmentPermissionDenied(AttachmentError):
+    """统一授权网关拒绝（或写/删路径没有可用的授权网关）。
+
+    权限判定只来自 agent.security 的引擎（经 services/attachment_access 适配层），
+    附件服务不自己判定。
+    """
+
+
 @dataclass
 class Attachment:
     id: str
@@ -1675,9 +1683,178 @@ class AttachmentService:
             "deleted_legacy_copy": None,
         }
 
+    # -- 删除用户材料：DELETE effect + 系统回收站（契约 §0.8 / §3.1）----------
+
+    async def recycle_material_files(
+        self,
+        targets: list[dict],
+        *,
+        gateway: object | None = None,
+        purpose: str = "清理冗余用户材料（迁移后重复的历史副本）",
+        ctx: object | None = None,
+    ) -> dict:
+        """删除用户材料的生产入口：DELETE effect → 授权 → 系统回收站。
+
+        * allow：逐个调用 services/recycle_bin（Windows SHFileOperationW /
+          POSIX freedesktop Trash）；失败保留文件并如实报告，绝不永久删除；
+        * approve：构造待审批操作（含待删除清单）后立即返回，不阻塞等待；
+        * deny：直接拒绝，一个文件都不动。
+
+        targets: [{"attachment_id": str|None, "path": str, "identity": str|None, "reason": str}]
+        """
+        from agent.services import attachment_access
+        from agent.services import recycle_bin as recycle_bin_service
+
+        rows = [dict(item) for item in (targets or []) if str(item.get("path") or "")]
+        if not rows:
+            return {"ok": True, "results": [], "pending_approval": False, "reason": "没有待删除的用户材料"}
+        effect_targets = [
+            (str(item["path"]), item.get("identity")) for item in rows
+        ]
+        decision = await attachment_access.authorize_delete(
+            gateway,
+            targets=effect_targets,
+            purpose=purpose,
+            detail={"paths": [item["path"] for item in rows]},
+        )
+        if decision["verdict"] == "deny":
+            raise AttachmentPermissionDenied(decision["reason"] or "授权拒绝删除用户材料")
+        if decision["verdict"] == "approve":
+            operation = attachment_access.build_pending_operation(
+                kind="attachment.recycle",
+                label="把用户材料移入系统回收站",
+                effect=attachment_access.delete_effect(
+                    "attachment.delete_material",
+                    targets=effect_targets,
+                    purpose=purpose,
+                ),
+                payload={"targets": rows},
+                fingerprint={"paths": [item["path"] for item in rows]},
+                purpose=purpose,
+                instruction=attachment_access.instruction_snapshot(gateway),
+                mode_at_request=attachment_access.mode_value(gateway),
+            )
+            ticket = await attachment_access.submit(gateway, operation, ctx=ctx)
+            if ticket is None:
+                raise AttachmentPermissionDenied(
+                    "删除用户材料需要用户批准，但当前授权网关不支持提交待审批操作"
+                )
+            return {
+                "ok": True,
+                "pending_approval": True,
+                "reason": decision["reason"] or "需要用户批准后才能删除",
+                "operation": "attachment.recycle",
+                "approval": attachment_access.ticket_summary(ticket),
+                "results": [],
+            }
+        results: list[dict] = []
+        all_ok = True
+        for item in rows:
+            outcome = recycle_bin_service.send_to_recycle_bin(str(item["path"]))
+            all_ok = all_ok and bool(outcome.get("ok"))
+            results.append(
+                {
+                    "attachment_id": item.get("attachment_id"),
+                    "path": str(item["path"]),
+                    "reason": item.get("reason") or "",
+                    **outcome,
+                }
+            )
+        return {
+            "ok": all_ok,
+            "pending_approval": False,
+            "deleted_permanently": False,
+            "results": results,
+        }
+
     # -- 写回：重核对 identity + hash 后原子写（契约 §6.2 / §3.1）-------------
 
-    def write_back_source(
+    async def write_back_source(
+        self,
+        attachment_id: str,
+        data: bytes,
+        *,
+        gateway: object | None = None,
+        purpose: str = "写回源文件",
+        expected_identity: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> dict:
+        """写回源文件的**生产入口**：先走统一授权网关（WRITE effect），获批后才写。
+
+        权限判定不在这里：WRITE effect 交给 agent.security 的引擎（经
+        services/attachment_access 适配层）。allow 才执行；approve 提交待审批操作后
+        立即返回（不阻塞等待用户点按钮，契约 §2.1）；deny 直接抛 AttachmentPermissionDenied。
+        写之前 _write_back_source_now 会重新核对 identity+content hash 并原子写。
+        """
+        from agent.services import attachment_access
+
+        resolved = self.resolve_source(attachment_id, for_write=True)
+        if resolved.path is None:
+            raise AttachmentContentError(resolved.reason or "源文件当前不可用，没有写入", 409)
+        target = str(resolved.path)
+        identity = resolved.identity.key if resolved.identity is not None else None
+        decision = await attachment_access.authorize_write(
+            gateway,
+            path=target,
+            identity=identity,
+            purpose=purpose,
+            content_sha256=resolved.current_sha256,
+            detail={"attachment_id": str(attachment_id), "size": len(bytes(data or b""))},
+        )
+        if decision["verdict"] == "deny":
+            raise AttachmentPermissionDenied(decision["reason"] or "授权拒绝写回源文件")
+        if decision["verdict"] == "approve":
+            import base64
+
+            operation = attachment_access.build_pending_operation(
+                kind="attachment.write_back",
+                label=f"写回源文件「{resolved.path.name}」",
+                effect=attachment_access.write_effect(
+                    "attachment.write_back",
+                    path=target,
+                    identity=identity,
+                    purpose=purpose,
+                    content_sha256=resolved.current_sha256,
+                ),
+                payload={
+                    "attachment_id": str(attachment_id),
+                    "path": target,
+                    "identity": identity,
+                    "content_b64": base64.b64encode(bytes(data or b"")).decode("ascii"),
+                    "sha256": hashlib.sha256(bytes(data or b"")).hexdigest(),
+                },
+                fingerprint={
+                    "identity": identity,
+                    "content_sha256": resolved.current_sha256,
+                    "new_sha256": hashlib.sha256(bytes(data or b"")).hexdigest(),
+                },
+                purpose=purpose,
+                instruction=attachment_access.instruction_snapshot(gateway),
+                mode_at_request=attachment_access.mode_value(gateway),
+            )
+            ticket = await attachment_access.submit(gateway, operation)
+            if ticket is None:
+                raise AttachmentPermissionDenied(
+                    "写回源文件需要用户批准，但当前授权网关不支持提交待审批操作"
+                )
+            return {
+                "ok": True,
+                "pending_approval": True,
+                "reason": decision["reason"] or "需要用户批准后才能写回源文件",
+                "operation": "attachment.write_back",
+                "approval": attachment_access.ticket_summary(ticket),
+                "attachment_id": str(attachment_id),
+                "path": target,
+                "bytes": len(bytes(data or b"")),
+            }
+        return self._write_back_source_now(
+            attachment_id,
+            bytes(data or b""),
+            expected_identity=expected_identity,
+            expected_sha256=expected_sha256,
+        )
+
+    def _write_back_source_now(
         self,
         attachment_id: str,
         data: bytes,
@@ -1685,7 +1862,7 @@ class AttachmentService:
         expected_identity: str | None = None,
         expected_sha256: str | None = None,
     ) -> dict:
-        """把获准修改后的字节写回源文件。
+        """把获准修改后的字节写回源文件（**调用方已完成授权**的同步实现）。
 
         写前重新解析 + 重核对：文件身份、登记时内容哈希、调用方手里那份的身份/哈希；
         任一项不符 → **不覆盖**并如实说明。写采用同目录临时文件 + os.replace。
