@@ -135,6 +135,32 @@ def _flatten_limit(limit: dict) -> str:
     return text[:MAX_PERSISTED_LIMIT_CHARS]
 
 
+def _normalize_limits_tolerant(
+    raw: Sequence[object],
+) -> tuple[tuple[dict, ...], bool]:
+    """逐条规范化模型限制；坏条目跳过并标记 invalid，保留其余可靠条目。
+
+    R9-H4 §2：个别条目无法处理时不能清空全部；调用方用 returned_invalid
+    把状态标 unresolved，但已接受的结构化条目仍要持久化（限制只收紧）。
+    """
+    valid: list[dict] = []
+    invalid = False
+    for item in raw or ():
+        if not isinstance(item, dict):
+            invalid = True
+            continue
+        try:
+            normalized = requirement_limits.normalize_limits([item])
+        except ValueError:
+            invalid = True
+            continue
+        valid.extend(normalized)
+    try:
+        return requirement_limits.normalize_limits(valid), invalid
+    except ValueError:  # pragma: no cover - 逐条已校验，兜底
+        return (), True
+
+
 def _sanitize_error_text(exc: object) -> str:
     try:
         from agent.trace.redact import sanitize_error_text
@@ -769,6 +795,58 @@ class RequirementLedger:
             raise RuntimeError("用户要求写入后无法读回（数据库异常）")
         return stored
 
+    @staticmethod
+    def _child_structured_limits(
+        parent: UserRequirement,
+        *,
+        added: Sequence[dict],
+        removed: Sequence[dict],
+    ) -> tuple[tuple[dict, ...] | None, str, str | None]:
+        """计算 amend 子要求的结构化限制与状态（R9-H4 §4）。
+
+        返回 (child_limits, child_state, ambiguity_code)。
+        * 父 structured：精确合并 added/removed，结果 structured；
+        * 父 legacy/unresolved 但已有 known limits：**继承 known** 再做精确合并，
+          状态保持 legacy/unresolved（部分已知不等于完整）；
+        * removed 无法精确表达：保留父 known，标 unresolved，返回 ambiguity_code；
+        * 父没有 known 列：只能保存本次新增（若有），状态 unresolved。
+        """
+        parent_known = requirement_limits.known_limits_from_requirement(parent)
+        parent_state = str(
+            getattr(parent, "structured_limits_state", requirement_limits.STATE_LEGACY)
+            or requirement_limits.STATE_LEGACY
+        )
+        if parent_known is None:
+            added_limits = requirement_limits.normalize_limits(list(added or ()))
+            child_state = (
+                parent_state
+                if parent_state != requirement_limits.STATE_STRUCTURED
+                else requirement_limits.STATE_UNRESOLVED
+            )
+            ambiguity = "unknown_parent"
+            if removed:
+                ambiguity = "removed_unknown_parent"
+            return (
+                added_limits if added_limits else None,
+                child_state,
+                ambiguity,
+            )
+        try:
+            merged = requirement_limits.merge_limits(
+                parent_known, added=added, removed=removed
+            )
+        except requirement_limits.LimitRemovalAmbiguous:
+            return parent_known, requirement_limits.STATE_UNRESOLVED, "removed_ambiguous"
+        child_state = (
+            requirement_limits.STATE_STRUCTURED
+            if parent_state == requirement_limits.STATE_STRUCTURED
+            else parent_state
+        )
+        ambiguity = None
+        if parent_state != requirement_limits.STATE_STRUCTURED:
+            ambiguity = "partial_parent_known"
+        return merged, child_state, ambiguity
+
     def add_correction(
         self,
         requirement_id: str,
@@ -829,30 +907,19 @@ class RequirementLedger:
                 if flattened and flattened not in limits:
                     limits.append(flattened[:MAX_PERSISTED_LIMIT_CHARS])
         else:
-            parent_limits = requirement_limits.limits_from_requirement(parent)
-            child_state = (
-                requirement_limits.STATE_STRUCTURED
-                if parent_limits is not None
-                else parent.structured_limits_state
+            child_structured, child_state, ambiguity = self._child_structured_limits(
+                parent, added=added_structured, removed=removed_structured
             )
             child_source = structured_source or parent.structured_limits_source
-            if parent_limits is not None:
-                child_structured = requirement_limits.merge_limits(
-                    parent_limits,
-                    added=added_structured,
-                    removed=removed_structured,
-                )
-                for item in added_structured:
-                    flattened = _flatten_limit(dict(item))
-                    if flattened and flattened not in limits:
-                        limits.append(flattened[:MAX_PERSISTED_LIMIT_CHARS])
-            else:
-                child_structured = (
-                    requirement_limits.normalize_limits(added_structured)
-                    if added_structured
-                    else None
-                )
-                child_source = structured_source or "unresolved_parent"
+            if child_state != requirement_limits.STATE_STRUCTURED:
+                child_source = (
+                    (child_source or "unresolved_parent")
+                    + ("" if ambiguity is None else ";" + ambiguity)
+                )[:300]
+            for item in added_structured:
+                flattened = _flatten_limit(dict(item))
+                if flattened and flattened not in limits:
+                    limits.append(flattened[:MAX_PERSISTED_LIMIT_CHARS])
         structured_json = (
             requirement_limits.serialize_limits(child_structured)
             if child_structured is not None
@@ -951,17 +1018,9 @@ class RequirementLedger:
         )
         raw_limits = list(getattr(resolution, "limits", ()) or ())
         raw_removed = list(getattr(resolution, "removed_limits", ()) or ())
-        limits_invalid = False
-        try:
-            structured_limits = requirement_limits.normalize_limits(raw_limits)
-        except ValueError:
-            structured_limits = ()
-            limits_invalid = True
-        try:
-            removed_limits = requirement_limits.normalize_limits(raw_removed)
-        except ValueError:
-            removed_limits = ()
-            limits_invalid = True
+        # R9-H4 §2：逐条容错；个别非法条目只标 unresolved，不能清空全部可靠限制。
+        structured_limits, limits_invalid = _normalize_limits_tolerant(raw_limits)
+        removed_limits, removed_invalid = _normalize_limits_tolerant(raw_removed)
         reason = str(getattr(resolution, "reason", "") or "")[:500]
         model = str(getattr(resolution, "model", "") or "") or None
         prompt_version = str(getattr(resolution, "prompt_version", "") or "") or None
@@ -988,11 +1047,16 @@ class RequirementLedger:
                 requirement = self.record_user_message(
                     text=text, message_id=message_id, turn_id=turn_id, topic_id=topic_id
                 )
+                new_state = (
+                    requirement_limits.STATE_UNRESOLVED
+                    if limits_invalid
+                    else limit_state
+                )
                 requirement = self.set_structured_limits(
                     requirement.requirement_id,
-                    () if limits_invalid else structured_limits,
+                    structured_limits,
                     source=limit_source + (";invalid_limits" if limits_invalid else ""),
-                    state=(limit_state if not limits_invalid else requirement_limits.STATE_UNRESOLVED),
+                    state=new_state,
                 )
                 applied = AppliedResolution(
                     resolution_id=resolution_id,
@@ -1003,10 +1067,12 @@ class RequirementLedger:
                     limits=structured_limits,
                     corrections=corrections,
                     reason=reason,
-                    limits_state=(
-                        limit_state if not limits_invalid else requirement_limits.STATE_UNRESOLVED
+                    limits_state=new_state,
+                    structured_limits=(
+                        structured_limits
+                        if structured_limits or not limits_invalid
+                        else None
                     ),
-                    structured_limits=(None if limits_invalid else structured_limits),
                 )
             elif relation == RequirementRelation.AMEND.value:
                 if not target_id:
@@ -1015,33 +1081,64 @@ class RequirementLedger:
                 if not corrections and message is None:
                     raise ValueError("amend 缺少用户补充/修正内容")
                 child_text = str(message) if message is not None else "\n".join(corrections)
-                parent_limits = requirement_limits.limits_from_requirement(parent)
-                if limits_invalid:
-                    child_limits = None
-                    child_state = requirement_limits.STATE_UNRESOLVED
-                elif parent_limits is not None:
-                    child_limits = requirement_limits.merge_limits(
-                        parent_limits,
-                        added=structured_limits,
-                        removed=removed_limits,
-                    )
-                    child_state = requirement_limits.STATE_STRUCTURED
-                else:
-                    # 父限制未知（legacy/unresolved）：保留未解决状态，可保存已知新增，
-                    # 但不得声称完整（用户只补充一句话更不得清空父限制）。
+                parent_known = requirement_limits.known_limits_from_requirement(parent)
+                parent_state = str(
+                    getattr(parent, "structured_limits_state", requirement_limits.STATE_LEGACY)
+                    or requirement_limits.STATE_LEGACY
+                )
+                ambiguity: str | None = None
+                if parent_known is None:
+                    # 父限制列未知：可保存本次可靠新增，但不得声称完整；removed 无法核对。
                     child_limits = structured_limits if structured_limits else None
-                    child_state = parent.structured_limits_state
+                    child_state = (
+                        parent_state
+                        if parent_state != requirement_limits.STATE_STRUCTURED
+                        else requirement_limits.STATE_UNRESOLVED
+                    )
+                    codes: list[str] = []
+                    if limits_invalid:
+                        codes.append("invalid_limits")
+                    if removed_invalid:
+                        codes.append("removed_invalid")
+                    if removed_limits:
+                        codes.append("removed_unknown_parent")
+                    ambiguity = ";".join(codes) or "unknown_parent"
+                else:
+                    try:
+                        child_limits = requirement_limits.merge_limits(
+                            parent_known,
+                            added=structured_limits,
+                            removed=removed_limits,
+                        )
+                    except requirement_limits.LimitRemovalAmbiguous:
+                        # 无法精确确定解除范围：保留父 known，标 unresolved，不猜测。
+                        child_limits = parent_known
+                        child_state = requirement_limits.STATE_UNRESOLVED
+                        ambiguity = "removed_ambiguous"
+                    else:
+                        codes = []
+                        if limits_invalid:
+                            codes.append("invalid_limits")
+                        if removed_invalid:
+                            codes.append("removed_invalid")
+                        if codes:
+                            child_state = requirement_limits.STATE_UNRESOLVED
+                            ambiguity = ";".join(codes)
+                        elif parent_state != requirement_limits.STATE_STRUCTURED:
+                            child_state = parent_state
+                            ambiguity = "partial_parent_known"
+                        else:
+                            child_state = requirement_limits.STATE_STRUCTURED
+                child_source = limit_source
+                if child_state != requirement_limits.STATE_STRUCTURED:
+                    child_source += ";" + (ambiguity or "unresolved_parent")
                 child = self.add_correction(
                     parent.requirement_id,
                     child_text,
                     message_id=message_id,
                     structured_limits=tuple(child_limits or ()),
                     structured_state=child_state,
-                    structured_source=limit_source + (
-                        ";unresolved_parent"
-                        if child_state != requirement_limits.STATE_STRUCTURED
-                        else ""
-                    ),
+                    structured_source=child_source[:300],
                 )
                 applied = AppliedResolution(
                     resolution_id=resolution_id,

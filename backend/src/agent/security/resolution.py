@@ -73,28 +73,10 @@ MAX_CONTEXT_JSON_CHARS = 2000
 #: 要求链恢复的防御上限：真实父子链通常几条；超过上限视为上下文异常（不静默截断）。
 MAX_CHAIN_NODES = 64
 
-#: 结构化限制里允许出现的稳定操作名（契约 §3 limits.operations）。
-ALLOWED_LIMIT_OPERATIONS = frozenset(
-    {
-        "read",
-        "write",
-        "create",
-        "delete",
-        "execute",
-        "shell",
-        "install",
-        "egress",
-        "system_change",
-        "internal_data",
-        "tool_register",
-        "subagent",
-    }
-)
-
-#: 结构化限制里允许的对象类别（与 ReviewObject.kind 对齐，另加 record/other 表示后端可核对对象）。
-LIMIT_OBJECT_KINDS = frozenset(
-    {"path", "directory", "program", "service", "material", "record", "other"}
-)
+#: R9-H4 §2：解析器与保存层使用**同一**规范操作名/对象 kind，避免"模型接受后
+#: 保存层拒绝"。单一来源：security/requirement_limits.py。
+ALLOWED_LIMIT_OPERATIONS = requirement_limits.LIMIT_OPERATIONS
+LIMIT_OBJECT_KINDS = requirement_limits.LIMIT_OBJECT_KINDS
 
 RELATION_VALUES = frozenset({"new", "amend", "withdraw"})
 
@@ -356,11 +338,11 @@ def _parse_limits(data: dict, *, key: str = "limits", label: str | None = None) 
             if isinstance(obj, str):
                 text = obj.strip()
                 if text:
-                    objects.append({"kind": "other", "value": text})
+                    objects.append({"kind": "path", "value": text})
                 continue
             if not isinstance(obj, dict):
                 raise _invalid(name + ".objects 每一项必须是对象或字符串")
-            kind = str(obj.get("kind") or "other").strip().lower()
+            kind = str(obj.get("kind") or "path").strip().lower()
             object_value = str(obj.get("value") or "").strip()
             if not object_value:
                 raise _invalid(name + ".objects 每一项必须有非空 value")
@@ -438,7 +420,7 @@ def parse_resolution_outcome(
 def _normalize_object_key(kind: object, value: object) -> tuple[str, str]:
     object_kind = str(kind or "other").strip().lower() or "other"
     text = str(value or "").strip()
-    if object_kind in ("path", "directory", "program"):
+    if object_kind in ("path", "path_prefix", "directory", "program"):
         try:
             text = os.path.normcase(os.path.normpath(text))
         except (OSError, ValueError):  # pragma: no cover - 极端输入
@@ -507,23 +489,25 @@ def _clean_limit_entries(
             for item in (limit.get("operations") or ())
             if str(item).strip()
         ]
-        if not operations:
-            raise RequirementResolutionUnavailable(label + " 缺少 operations")
+        objects_raw = limit.get("objects") or ()
+        if not isinstance(objects_raw, (list, tuple)):
+            raise RequirementResolutionUnavailable(label + ".objects 必须是数组")
+        if not operations and not objects_raw:
+            raise RequirementResolutionUnavailable(
+                label + " 必须至少给出 operations 或 objects"
+            )
         unknown = [item for item in operations if item not in ALLOWED_LIMIT_OPERATIONS]
         if unknown:
             raise RequirementResolutionUnavailable(
                 label + " 含未知操作：" + ", ".join(sorted(set(unknown))[:6])
             )
-        objects_raw = limit.get("objects") or ()
-        if not isinstance(objects_raw, (list, tuple)):
-            raise RequirementResolutionUnavailable(label + ".objects 必须是数组")
         objects: list[dict] = []
         for item in list(objects_raw)[:MAX_LIMIT_OBJECTS]:
             if isinstance(item, dict):
-                kind = str(item.get("kind") or "other").strip().lower()
+                kind = str(item.get("kind") or "path").strip().lower()
                 value = str(item.get("value") or "").strip()
             else:
-                kind = "other"
+                kind = "path"
                 value = str(item or "").strip()
             if not value:
                 raise RequirementResolutionUnavailable(label + ".objects 含空对象")
