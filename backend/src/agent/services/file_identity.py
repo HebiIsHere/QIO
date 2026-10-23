@@ -334,8 +334,84 @@ def _windows_stat_birth_key(path: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _linux_statx_birthtime_ns(path: str) -> int | None:
+    """Linux statx 的 btime（真实创建时间）；文件系统/内核不支持时 None。
+
+    Python 3.11 的 os.stat 不暴露 btime；ctime 会随 chmod/写入变化，不能当生命周期
+    依据。这里只取 statx Statx_birth，不猜内容/大小/mtime。
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+        import ctypes.util
+
+        libc_name = ctypes.util.find_library("c") or "libc.so.6"
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+
+        class _Timestamp(ctypes.Structure):
+            _fields_ = [
+                ("tv_sec", ctypes.c_longlong),
+                ("tv_nsec", ctypes.c_uint),
+                ("__reserved", ctypes.c_int),
+            ]
+
+        class _Statx(ctypes.Structure):
+            _fields_ = [
+                ("stx_mask", ctypes.c_uint32),
+                ("stx_blksize", ctypes.c_uint32),
+                ("stx_attributes", ctypes.c_uint64),
+                ("stx_nlink", ctypes.c_uint32),
+                ("stx_uid", ctypes.c_uint32),
+                ("stx_gid", ctypes.c_uint32),
+                ("stx_mode", ctypes.c_uint16),
+                ("__spare0", ctypes.c_uint16 * 1),
+                ("stx_ino", ctypes.c_uint64),
+                ("stx_size", ctypes.c_uint64),
+                ("stx_blocks", ctypes.c_uint64),
+                ("stx_attributes_mask", ctypes.c_uint64),
+                ("stx_atime", _Timestamp),
+                ("stx_btime", _Timestamp),
+                ("stx_ctime", _Timestamp),
+                ("stx_mtime", _Timestamp),
+                ("stx_rdev_major", ctypes.c_uint32),
+                ("stx_rdev_minor", ctypes.c_uint32),
+                ("stx_dev_major", ctypes.c_uint32),
+                ("stx_dev_minor", ctypes.c_uint32),
+                ("__spare2", ctypes.c_uint64 * 14),
+            ]
+
+        buffer = _Statx()
+        fn = libc.statx
+        fn.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_uint,
+            ctypes.POINTER(_Statx),
+        ]
+        fn.restype = ctypes.c_int
+        AT_FDCWD = -100
+        AT_STATX_SYNC_AS_STAT = 0
+        STATX_BTIME = 0x00000800
+        result = fn(
+            AT_FDCWD,
+            str(path).encode("utf-8", errors="surrogateescape"),
+            AT_STATX_SYNC_AS_STAT,
+            STATX_BTIME,
+            ctypes.byref(buffer),
+        )
+        if result != 0 or not (int(buffer.stx_mask) & STATX_BTIME):
+            return None
+        return int(buffer.stx_btime.tv_sec) * 1_000_000_000 + int(
+            buffer.stx_btime.tv_nsec
+        )
+    except Exception:  # noqa: BLE001 - 内核/文件系统不支持时按未知
+        return None
+
+
 def _posix_identity_full(path: str) -> tuple[str, str, str | None] | None:
-    """取 (volume, file_id, birth_key)；POSIX 优先 birthtime，回退 ctime（弱依据）。"""
+    """取 (volume, file_id, birth_key)；POSIX 优先真实 birthtime，取不到返回 None。"""
     try:
         stat = os.stat(path)
     except OSError:
@@ -347,10 +423,11 @@ def _posix_identity_full(path: str) -> tuple[str, str, str | None] | None:
     if birthtime_ns is not None:
         birth_key = f"posix:birth:{int(birthtime_ns)}"
     else:
-        ctime_ns = getattr(stat, "st_ctime_ns", None)
-        if ctime_ns is None:
-            ctime_ns = int(float(getattr(stat, "st_ctime", 0)) * 1_000_000_000)
-        birth_key = f"posix:ctime:{int(ctime_ns)}"
+        birthtime_ns = _linux_statx_birthtime_ns(path)
+        if birthtime_ns is not None:
+            birth_key = f"posix:birth:{int(birthtime_ns)}"
+        # 取不到真实 btime 时保持 None：调用方按生命周期未知处理，不能用会变化的
+        # ctime 冒充创建时间。
     return str(int(stat.st_dev)), _hex(int(stat.st_ino)), birth_key
 
 
