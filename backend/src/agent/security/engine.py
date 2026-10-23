@@ -78,6 +78,9 @@ class AuthorizationEngine(AuthorizationGateway):
         reviewer: Any = None,
         origin_provider: Callable[[Path], str | None] | None = None,
         prompt_version: str = "",
+        # R9-H2 §5：内部数据真实对象身份登记（C 提供；缺省按路径兜底）。
+        internal_data_identity_keys: Callable[[], object] | None = None,
+        internal_data_known_paths: Callable[[], object] | None = None,
     ) -> None:
         self.conn = conn
         self.approvals = approvals
@@ -91,6 +94,8 @@ class AuthorizationEngine(AuthorizationGateway):
         self.reviewer = reviewer
         self.origin_provider = origin_provider
         self.prompt_version = prompt_version
+        self._internal_data_identity_keys = internal_data_identity_keys
+        self._internal_data_known_paths = internal_data_known_paths
 
     # -- 模式：读取归一；写入只接受用户发起 ---------------------------------
 
@@ -602,15 +607,18 @@ class AuthorizationEngine(AuthorizationGateway):
             )
         # 复用键 = (requirement_id, operation fingerprint)：修正产生新的要求行/版本，
         # requirement_id 变化后旧记录自然不命中；同一个要求的版本差由 Ledger 的
-        # active/版本校验兜底。
-        try:
-            record = self.authorizations.reuse(
-                requirement_id=requirement.requirement_id,
-                operation_kind=operation.kind,
-                fingerprint=fingerprint,
-            )
-        except Exception:  # noqa: BLE001 - 复用查询失败按未命中（会重新审查）
-            record = None
+        # active/版本校验兜底。R9-H2 §4.3：限制状态 legacy/unresolved 时禁止复用
+        # 旧授权记录（即使 fingerprint 命中），必须走当前审查/审批。
+        record = None
+        if not self._limits_unresolved(requirement):
+            try:
+                record = self.authorizations.reuse(
+                    requirement_id=requirement.requirement_id,
+                    operation_kind=operation.kind,
+                    fingerprint=fingerprint,
+                )
+            except Exception:  # noqa: BLE001 - 复用查询失败按未命中（会重新审查）
+                record = None
         if record is not None:
             return (
                 Verdict.ALLOW,
@@ -817,6 +825,37 @@ class AuthorizationEngine(AuthorizationGateway):
         except Exception:  # noqa: BLE001 - 路径清单失败不能放行内部数据
             return []
 
+    def _internal_identity_kwargs(self) -> dict[str, object]:
+        """C 提供对象身份登记时传给 internal_data；未合入/读失败不传（路径兜底）。"""
+        kwargs: dict[str, object] = {}
+        for key, provider in (
+            ("identity_keys", self._internal_data_identity_keys),
+            ("known_paths", self._internal_data_known_paths),
+        ):
+            if not callable(provider):
+                continue
+            try:
+                value = provider()
+            except Exception:  # noqa: BLE001 - 身份登记读失败不能让它变成放行依据
+                continue
+            if value is not None:
+                kwargs[key] = value
+        return kwargs
+
+    def _effect_is_internal(self, effect: Effect, protected: list[Path]) -> bool:
+        """内部运行数据判定：路径 + 真实对象身份（C 接口存在时）。"""
+        kwargs = self._internal_identity_kwargs()
+        if kwargs:
+            try:
+                return bool(
+                    internal_data.effect_targets_internal_data(
+                        effect, protected, **kwargs
+                    )
+                )
+            except TypeError:  # C 分支未合入：退回路径判定（不静默降级为“非内部”之外的放行）
+                pass
+        return bool(internal_data.effect_targets_internal_data(effect, protected))
+
     def _inside_workspace(self, path: object) -> bool:
         root = self._workspace_root_path()
         candidate = internal_data.normalize_path(path)
@@ -918,7 +957,7 @@ class AuthorizationEngine(AuthorizationGateway):
     ) -> tuple[Verdict, str, str | None]:
         protected = self._internal_paths()
         # 1) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
-        if internal_data.effect_targets_internal_data(effect, protected):
+        if self._effect_is_internal(effect, protected):
             if effect.kind == EffectKind.READ:
                 if mode == PermissionMode.UNRESTRICTED:
                     return Verdict.ALLOW, "完全无限制模式下允许读取；仍受系统账户权限约束", None
@@ -1211,7 +1250,12 @@ class AuthorizationEngine(AuthorizationGateway):
         # 受限：只有用户对相同对象/行为的明确人工确认可以覆盖；模型审查/一般授权
         # 记录不能替代。已有仍有效且明确覆盖的确认可复用。
         fingerprint = self._permanent_delete_fingerprint(effect, intent)
-        if self.authorizations is not None and requirement is not None:
+        # R9-H2 §4.3：历史限制未可靠恢复时，旧 allow 记录不能绕过 unresolved。
+        if (
+            self.authorizations is not None
+            and requirement is not None
+            and not self._limits_unresolved(requirement)
+        ):
             try:
                 record = self.authorizations.reuse(
                     requirement_id=getattr(requirement, "requirement_id", ""),
@@ -1297,7 +1341,7 @@ class AuthorizationEngine(AuthorizationGateway):
         complete = int(confirmations_required or 1) <= 1 or int(confirmed_stage or 0) >= int(
             confirmations_required or 1
         )
-        internal = effect.kind == EffectKind.INTERNAL_DATA or internal_data.effect_targets_internal_data(
+        internal = effect.kind == EffectKind.INTERNAL_DATA or self._effect_is_internal(
             effect, self._internal_paths()
         )
         if internal:
