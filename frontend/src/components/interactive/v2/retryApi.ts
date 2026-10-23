@@ -270,6 +270,9 @@ export function retryStatusLabel(status: string | null | undefined): string {
   const value = String(status ?? "").trim();
   const labels: Record<string, string> = {
     idle: "等待首次尝试",
+    pending: "等待自动重试",
+    stopped: "已停止自动重试",
+    completed: "已完成",
     scheduled: "已安排自动重试",
     auto_retry_scheduled: "已安排自动重试",
     retrying: "正在重试",
@@ -290,7 +293,14 @@ export function retryStatusLabel(status: string | null | undefined): string {
 /** 服务端正在重试时，手动按钮要禁用（避免同一系列并行两次）。 */
 export function retryInFlight(status: string | null | undefined): boolean {
   const value = String(status ?? "").trim();
-  return ["scheduled", "auto_retry_scheduled", "retrying", "running", "manual_pending"].includes(value);
+  return [
+    "pending",
+    "scheduled",
+    "auto_retry_scheduled",
+    "retrying",
+    "running",
+    "manual_pending",
+  ].includes(value);
 }
 
 /** 次数事实：只显示服务端给的；上限缺失时明确说「上限以服务端为准」。 */

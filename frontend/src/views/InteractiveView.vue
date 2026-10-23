@@ -8,7 +8,7 @@
   - 统一审批层只挂这一处，旧 ApprovalEntry / ApprovalModal 在聊天路由让位（App.vue 门控）。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
@@ -39,6 +39,12 @@ const store = useInteractiveStore();
 const workbenchOpen = ref(false);
 /** 书签栏纯查看状态；由工具栏切换，不写板面、不产生意图。 */
 const bookmarksOpen = ref(false);
+/** 底聊展开时的最大高度：保证板面始终留出约 220px，而不是把板面压到 128px。 */
+const conversationMaxHeight = ref(420);
+function syncConversationMaxHeight(): void {
+  if (typeof window === "undefined") return;
+  conversationMaxHeight.value = Math.max(220, Math.min(720, window.innerHeight - 470));
+}
 /** 新链意图视图（服务端事实；不用旧 store.intents 冒充）。 */
 const intentViews = ref<IntentViewWithDisplay[]>([]);
 const intentDisplay = ref<Record<string, { x: number; y: number }>>({});
@@ -129,8 +135,13 @@ async function onIntentDisplayChange(payload: { intentId: string; x: number; y: 
 }
 
 onMounted(() => {
+  syncConversationMaxHeight();
+  window.addEventListener("resize", syncConversationMaxHeight);
   readIntentDisplay();
   void store.load().then(() => loadIntents());
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", syncConversationMaxHeight);
 });
 watch(
   () => store.lastSubmission?.submission?.id,
@@ -312,6 +323,7 @@ const boardSize = computed(() => {
             <InteractiveConversation
               v-model:expanded="store.chatOpen"
               :binding="store.chatBinding"
+              :max-height="conversationMaxHeight"
               :auto-collapse-on-board-action="true"
               :extra-entries="recoveryEntries"
             >
@@ -356,9 +368,6 @@ const boardSize = computed(() => {
 }
 .im-mode-switch {
   padding-bottom: 8px;
-}
-@media (max-width: 900px) {
-  .im-conversation-slot { flex: 1 1 auto; }
 }
 @media (max-width: 700px) {
   .im-mode-switch { padding-bottom: 6px; }

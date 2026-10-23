@@ -225,9 +225,10 @@ function ensureOutside() {
 }
 .menu-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 10px;
+  gap: 2px 10px;
   width: 100%;
   padding: 7px 9px;
   border: none;
@@ -254,7 +255,9 @@ function ensureOutside() {
 }
 .item-note {
   flex: none;
+  min-width: 0;
   color: var(--text-muted);
   font-size: 10.5px;
+  white-space: normal;
 }
 </style>
