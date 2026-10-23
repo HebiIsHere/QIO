@@ -123,7 +123,7 @@ def limits_from_requirement(requirement) -> tuple[dict, ...] | None
 | `r9h/main` qio-r9h-main | Lead：engine.py/context.py/recheck.py/gateway.py、集成、最终验收、文档 | engine.py、context.py、recheck.py、gateway.py、storage 只读审查、docs/status、docs/r9h-* |
 | `r9h/a-binding` qio-r9h-a | A：要求绑定/原话/主流程接线 | services/app.py、security/resolution.py、prompts.py 解析段、tests/test_r9h_binding_flow.py |
 | `r9h/b-content` qio-r9h-b | B：审查对象/内容绑定/复用 | security/review.py、tools/fs_tools.py、tools/attachment_tools.py、services/attachment_access.py、services/attachments.py、tools/cmd_tools.py、tools/approved_operations.py、tests/test_r9h_content_binding.py |
-| `r9h/c-limits` qio-r9h-c | C：名称清理 + 结构化限制持久化/恢复 | security/internal_data.py、security/requirements.py、security/requirement_limits.py、storage/migration_r9h_limits.py、storage/schema.py、storage/migrate.py、tests/test_r9h_internal_data.py、test_r9h_limits.py |
+| `r9h/c-limits` qio-r9h-c | C：名称清理 + 结构化限制持久化/恢复 | security/internal_data.py、services/computer.py（名称红线）、security/requirements.py、security/requirement_limits.py、storage/migration_r9h_limits.py、storage/schema.py、storage/migrate.py、tests/test_r9h_internal_data.py、test_r9h_limits.py、tests/test_computer_sandbox.py |
 | `r9h/d-verify` qio-r9h-d | D：固定查询/真实流程回归/CI 排查 | security/fixed_queries.py、tests/test_r9g_fixed_queries.py、tests/test_r9h_fixed_queries_platform.py、scripts/r9h_*.py、docs/r9h-reports/D.md |
 
 - 只提交自己分支；不 push、不 merge main；Lead 统一推送/集成/完整 CI。

@@ -112,9 +112,28 @@ class RecheckService:
         try:
             from agent.security.gateway import AuthContext
 
+            # 重建 AuthContext 时必须带上已持久化的限制/解析状态（R9-H §6）：
+            # 不能因为重新构造上下文而丢失用户限制或把 legacy 当成“无限制”。
+            requirement_state = str(
+                getattr(requirement, "structured_limits_state", "structured")
+                or "structured"
+            )
+            requirement_limits = tuple(
+                item
+                for item in (getattr(requirement, "structured_limits", None) or ())
+                if isinstance(item, dict)
+            )
             ctx = AuthContext(
                 requirement=getattr(binding, "requirement", None),
                 origin=str(getattr(context, "origin", "user") if context is not None else "user"),
+                extra={
+                    "resolution_limits": (
+                        requirement_limits if requirement_state == "structured" else ()
+                    ),
+                    "requirement_resolution_status": (
+                        "resolved" if requirement_state == "structured" else "unavailable"
+                    ),
+                },
             )
             decision = await self.engine.authorize(effect, ctx=ctx)
         except Exception as exc:  # noqa: BLE001 - 重核对失败不能默认允许
