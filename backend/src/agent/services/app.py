@@ -40,6 +40,7 @@ from agent.graph.topics import TopicService
 from agent.memory.fragment import FragmentManager
 from agent.memory.index import IndexBuilder
 from agent.memory.ingest import MemoryWriter
+from agent.security import internal_data
 from agent.selector.selector import Selector
 from agent.services.heavy import HeavyWork
 from agent.services.lifecycle import (
@@ -441,6 +442,9 @@ class AppContext:
             # AttachmentService 由 create_app 稍后注册到 services；用 getter 延迟取。
             attachments_getter=lambda: self._attachment_service(),
         )
+        # R9-H3 §4：可信写入（审批通过后的真实执行器）提交成功后立即更新内部对象
+        # 身份；失败记录明确错误，不静默降级，也不影响已成功的真实文件操作。
+        self._install_trusted_write_identity_hook()
         for _tool in (
             FsReadTool(),
             FsWriteTool(),
@@ -824,6 +828,186 @@ class AppContext:
             return frozenset(store.known_paths())
         except Exception:  # noqa: BLE001
             return frozenset()
+
+    # -- R9-H3 §4：可信写入提交后的身份自动更新 ----------------------------
+
+    def _install_trusted_write_identity_hook(self) -> None:
+        """把身份更新挂到真实可信写入入口（审批通过后的执行器）里。
+
+        不是模型/普通工具可调用的接口：这里包装的是 AppContext 自己的 operations
+        执行器；只有在真实执行**成功提交**后才按实际目标路径更新登记。普通工具直接
+        读取/声称自己的写入不经过这里，不能自报身份。
+        """
+        original = self.operations.execute
+
+        async def execute_with_identity_update(kind, payload, ctx):  # noqa: ANN001
+            result = await original(kind, payload, ctx)
+            try:
+                self._note_identity_after_trusted_commit(kind, payload, result)
+            except Exception as exc:  # noqa: BLE001 - 身份更新失败不能伪装成功
+                self._record_identity_update_error(
+                    "trusted_commit", exc, extra={"kind": str(kind)}
+                )
+            return result
+
+        self.operations.execute = execute_with_identity_update  # type: ignore[method-assign]
+
+    @staticmethod
+    def _trusted_commit_paths(kind: object, payload: dict) -> list[str]:
+        """从真实执行器 payload 取**实际变更对象**路径（有界，不扫描）。"""
+        kind_text = str(kind or "")
+        data = payload if isinstance(payload, dict) else {}
+        paths: list[str] = []
+        if kind_text in ("fs.write", "fs.patch"):
+            raw = str(data.get("path") or "").strip()
+            if raw:
+                paths.append(raw)
+        elif kind_text == "fs.delete":
+            raw_rows = data.get("paths")
+            if isinstance(raw_rows, list):
+                for item in raw_rows:
+                    if isinstance(item, dict):
+                        candidate = str(item.get("path") or "").strip()
+                    else:
+                        candidate = str(item or "").strip()
+                    if candidate:
+                        paths.append(candidate)
+            single = str(data.get("path") or "").strip()
+            if single:
+                paths.append(single)
+            for item in data.get("items") or []:
+                if isinstance(item, dict):
+                    candidate = str(item.get("path") or "").strip()
+                    if candidate:
+                        paths.append(candidate)
+        # 去重 + 有界（一次审批最多 50 个明确对象）。
+        seen: set[str] = set()
+        bounded: list[str] = []
+        for raw in paths:
+            if raw in seen:
+                continue
+            seen.add(raw)
+            bounded.append(raw)
+            if len(bounded) >= 50:
+                break
+        return bounded
+
+    def _note_identity_after_trusted_commit(
+        self, kind: object, payload: dict, result: object
+    ) -> None:
+        """真实执行成功提交后立即登记新对象身份（旧对象 retired / 新对象 active）。"""
+        if not getattr(result, "ok", False):
+            return
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return
+        committed = self._trusted_commit_paths(kind, payload)
+        if not committed:
+            return
+        try:
+            protected = self._internal_data_paths()
+        except Exception:  # noqa: BLE001 - 读路径失败按空处理；store 历史路径仍可命中
+            protected = []
+        known: set[str] = set()
+        try:
+            known = set(store.known_paths())
+        except Exception:  # noqa: BLE001
+            known = set()
+        updates: list[dict] = []
+        failures: list[dict] = []
+        for raw in committed:
+            target = internal_data.normalize_path(raw)
+            if target is None:
+                continue
+            in_scope = internal_data.is_internal_data_path(target, protected)
+            if not in_scope and str(target) not in known:
+                # 普通用户文件：不登记、不扫描（与内部数据无关）。
+                continue
+            outcome = store.note_committed_path(target, source="approved:" + str(kind))
+            updates.append(outcome)
+            if not outcome.get("ok"):
+                failures.append(outcome)
+        if not updates:
+            return
+        detail = getattr(result, "detail", None)
+        if failures:
+            messages = [
+                str((item or {}).get("reason") or (item or {}).get("code") or "identity_update_failed")
+                for item in failures
+            ]
+            if isinstance(detail, dict):
+                detail["internal_identity_error"] = messages
+            self._record_identity_update_error(
+                "trusted_commit",
+                RuntimeError("; ".join(messages)),
+                extra={"kind": str(kind), "paths": len(failures)},
+            )
+
+    def _record_identity_update_error(
+        self, phase: str, exc: BaseException, *, extra: dict | None = None
+    ) -> None:
+        """身份更新失败：保留事实、明确记录；不静默降级、不把失败报成成功。"""
+        message = type(exc).__name__ + ": " + str(exc)
+        self.internal_data_identity_error = message
+        logging.getLogger(__name__).warning(
+            "内部数据身份自动更新失败（保留已有登记；路径判定仍兜底）"
+            " phase=%s extra=%s: %s",
+            phase,
+            extra or {},
+            message,
+        )
+
+    def note_trusted_internal_commit(
+        self, paths: object, *, source: str = "trusted_write"
+    ) -> dict:
+        """其它可信写入入口（如设置保存）提交成功后调用：只刷新明确变更对象。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return {
+                "ok": False,
+                "reason": self.internal_data_identity_error or "身份登记不可用",
+                "updates": [],
+            }
+        try:
+            raw_paths = paths if isinstance(paths, (list, tuple, set, frozenset)) else [paths]
+            # 只允许真实注册范围/历史登记中的路径：普通工具/普通用户文件不能借
+            # 这个入口自报为内部数据对象（不扩大保护范围、不登记无关文件）。
+            try:
+                protected = self._internal_data_paths()
+            except Exception:  # noqa: BLE001 - 路径读取失败按空；历史登记仍可命中
+                protected = []
+            try:
+                known = set(store.known_paths())
+            except Exception:  # noqa: BLE001
+                known = set()
+            scoped: list[str] = []
+            for raw in raw_paths:
+                target = internal_data.normalize_path(raw)
+                if target is None:
+                    continue
+                if internal_data.is_internal_data_path(target, protected) or (
+                    str(target) in known
+                ):
+                    scoped.append(str(target))
+            if not scoped:
+                return {"ok": True, "updates": [], "skipped": len(list(raw_paths))}
+            updates = store.note_committed_paths(scoped, source=source, limit=50)
+            failures = [item for item in updates if not item.get("ok")]
+            if failures:
+                self._record_identity_update_error(
+                    "trusted_commit",
+                    RuntimeError(
+                        "; ".join(
+                            str((item or {}).get("reason") or (item or {}).get("code") or "")
+                            for item in failures
+                        )
+                    ),
+                    extra={"source": source, "paths": len(failures)},
+                )
+            return {"ok": not failures, "updates": updates}
+        except Exception as exc:  # noqa: BLE001 - 记录明确错误，不影响已成功的业务提交
+            self._record_identity_update_error("trusted_commit", exc, extra={"source": source})
+            return {"ok": False, "reason": type(exc).__name__ + ": " + str(exc), "updates": []}
 
     def refresh_internal_data_identities(self, path: object | None = None) -> dict:
         """刷新内部数据身份登记（启动后新增/替换对象时调用；失败如实返回）。"""
