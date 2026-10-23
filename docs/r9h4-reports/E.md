@@ -147,6 +147,6 @@
 
 - 分支：`r9h4/e`
 - 基线：`67fa88c6`
-- 实现提交：`fcb8d84c`（代码 + 测试 + 报告初版；工作树干净，不 push/不 merge）
+- 实现提交：`033c48d7`（代码 + 测试 + 本报告初版；工作树干净，不 push/不 merge）
 - 本报告的 SHA 回写修正提交即本分支当前 HEAD（最终 SHA 以交接汇报中的 `git log -1` 为准）
 - 改动文件：`backend/src/agent/services/file_identity.py`、`backend/src/agent/security/internal_data_identity.py`、`backend/src/agent/security/internal_data.py`、`backend/tests/test_r9h4_identity_lifecycle.py`、`docs/r9h4-reports/E.md`
