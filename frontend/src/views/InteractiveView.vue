@@ -40,7 +40,11 @@ const workbenchOpen = ref(false);
 /** 书签栏纯查看状态；由工具栏切换，不写板面、不产生意图。 */
 const bookmarksOpen = ref(false);
 /** 底聊展开时的最大高度：保证板面始终留出约 220px，而不是把板面压到 128px。 */
-const conversationMaxHeight = ref(420);
+const conversationMaxHeight = ref(
+  typeof window === "undefined"
+    ? 420
+    : Math.max(220, Math.min(720, window.innerHeight - 470)),
+);
 function syncConversationMaxHeight(): void {
   if (typeof window === "undefined") return;
   conversationMaxHeight.value = Math.max(220, Math.min(720, window.innerHeight - 470));

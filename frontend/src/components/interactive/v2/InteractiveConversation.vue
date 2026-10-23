@@ -141,6 +141,14 @@ watch(
   },
 );
 
+/** 父级收紧/放宽高度预算（例如窄窗口给板面留空间）时，立即把面板夹回合法范围。 */
+watch(
+  () => [props.minHeight, props.maxHeight] as const,
+  () => {
+    panelHeight.value = effectiveHeight(panelHeight.value);
+  },
+);
+
 watch(panelHeight, (value) => writeStoredHeight(value));
 
 onMounted(() => {
