@@ -12,7 +12,7 @@
 | 开工核对 | fetch 后 origin/r9h/main 仍为 6ee961d2，无后续提交；工作区干净 |
 | 修复分支 | r9h2/main |
 | 子分支 | A r9h2/a-chain = e818a8b5；B r9h2/b-state = ed8f8a1f；C r9h2/c-identity = ea255897 |
-| 最终代码 SHA | 见最终报告（本文件随代码提交；CI 以最终代码提交为准） |
+| 最终代码 SHA | 8cb92eab6d9724c910ed8b7b8642c149be0c5bde（完整 CI 验证；其后仅 docs/evidence 更新 [skip ci]） |
 | 集成 | 契约/迁移 a6732f4c → 迁移纠正测试 fad44f08 → C 合并 96292b38 → A 合并 5867e584 → B 合并 c56d58d8 → 真实流程集成 8884a8d1 → 平台测试修复 ea60595b |
 
 ## 2. 三个缺口
@@ -38,7 +38,10 @@
 - 宽回归：382 passed（R9-H2 新增 + 引擎/审批/工具/固定查询/内部数据/迁移相关）。
 - 受影响套件：345 passed（迁移/应用/turn/审批/附件/fs/删除/固定查询/安全模式/提示词）。
 - Linux 定向 CI：run 39958384570（backend-py311，SHA ea60595b）success，覆盖新测试与相关内部数据/绑定/限制测试。
-- 完整 CI：见最终运行记录（此前 R9-H 已用 1 次；本轮最多再用 1 次；不以定向 CI 冒充完整 CI）。
+- 完整 CI（R9-H2 最终代码）：run 39958699070，SHA 8cb92eab6d9724c910ed8b7b8642c149be0c5bde，结论 success，10/10 jobs 绿
+  （docs consistency / frontend / rust×2 / frozen worker / install e2e / backend py3.11 / py3.12 / windows）；首次运行即通过，无失败 job 重跑。
+- 累计完整 CI：R9-H 39930482370 success + R9-H2 39958699070 success = 2/2；未用定向 CI 冒充完整 CI。
+- Linux 定向 CI：39958384570（backend-py311，SHA ea60595b）success；此前 39958035325 暴露 POSIX inode 立即复用导致测试假设错误，已修正并复跑通过。
 
 ## 4. 兼容与边界
 

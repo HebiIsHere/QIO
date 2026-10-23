@@ -6,7 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
-最后核对：2026-10-23（**R9-H2 第三轮后续补修已完成实现、集成与定向验证**：①历史 legacy 要求补充后按真实父子链重新理解完整有效限制，不再只喂补充句；②解析失败/超时/缺失/非法输出保存 unresolved，不再落成 structured/[]，旧错误记录按审计证据追加迁移纠正；③内部运行数据按真实对象身份（volume:file_id）识别硬链接/移动/改名，路径与身份双重保护。完整 CI 以最终运行记录为准；**未合并 main、未发布安装包**。细节见 P77、docs/r9h2-contracts.md。）
+最后核对：2026-10-23（**R9-H2 第三轮后续补修已完成实现、集成与定向验证**：①历史 legacy 要求补充后按真实父子链重新理解完整有效限制，不再只喂补充句；②解析失败/超时/缺失/非法输出保存 unresolved，不再落成 structured/[]，旧错误记录按审计证据追加迁移纠正；③内部运行数据按真实对象身份（volume:file_id）识别硬链接/移动/改名，路径与身份双重保护。完整 CI 39958699070 最终 success（10/10 jobs）；**未合并 main、未发布安装包**。细节见 P77、docs/r9h2-contracts.md。）
 最后核对：2026-10-23（**R9-H 审批与授权第三轮修复已完成实现与集成**：①要求解析成功后主流程从 AppliedResolution.requirement 取得真实有效绑定（new/amend 版本、withdraw 失效），原话/来源真实保存；②内容摘要/前置状态/启动规格/删除方式/条件贯通真实工具→引擎审查对象→授权记录/审批单/执行前重核对，内容变化不再复用旧授权；③名称/目录名/后缀不再直接决定权限（internal_data 与 computer 红线清理，内部数据只按真实注册路径与对象身份）；④结构化限制迁移 59/补偿 60 持久化、继承与恢复，后台/审批恢复/重启后仍生效；历史 legacy 要求由模型重新理解并记录依据。完整 CI 结果见 docs/r9h-merge-notes.md；**未合并 main、未发布安装包**。细节见 P76、docs/r9h-contracts.md。）
 最后核对：2026-10-23（**R9-G 审批与授权机制修复已完成实现与集成**：①删除关键词/句式授权判断（关键词提取模块整体删除，审查守卫/引擎禁止表/命令删词扫描移除）；②批量操作逐项核对、逐项状态与单次合并审批；③操作绑定具体用户要求及版本（模型理解 new/amend/withdraw，后端校验，迁移 57/补偿 58），不再取「最近一条 active」；④审查/授权复用/人工批准/实际执行内容一致（独立操作摘要防篡改）；⑤每个实际操作开始前统一重核对模式/要求/授权/审批/确认/对象/内容/前置状态/条件。全量 pytest 与完整 CI 结果见 docs/r9g-merge-notes.md；**未合并 main、未发布安装包**。细节见 P75、docs/r9g-contracts.md。）
 最后核对：2026-10-22（**R9-F 授权与执行修复 / 受限模式模型审查已完成实现与定向验证**：A 普通程序/shell/自建工具统一受控启动（spec_digest 前后核对、审批后重放重核对 payload/对象/程序，变化即 invalidated）；B 删除关键词授权、受限模式改为用户主模型单独授权审查（后端组装输入+结构/对象/操作/limits 校验+有界授权记录复用，模型不可用不默认放行）；C 文件来源持久化（迁移 55）与工作区 QIO 生成物自主；D 项目执行记录绑定 program/argv/cwd、不再靠目录命中；用户明确禁止三模式均生效。仅跑失败项/直接受影响定向测试，未跑全量 pytest/完整 CI；安装版 A-075 路径未复验。细节见 P74、`docs/r9f-contracts.md`、`docs/r9f-merge-notes.md`。**未合并 main、未发布安装包**。）
@@ -5594,7 +5594,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 
 ### P77 — R9-H2 第三轮后续补修（2026-10-23）
 
-- **Status：** active（实现、集成与定向验证完成；完整 CI 以最终运行记录为准；安装版未复验）
+- **Status：** completed（实现、集成、定向验证与完整 CI 已完成；安装版未复验）
 - **范围与基线**：基线 r9h/main = 6ee961d293ec9d06390ca36c00fa491b895b4647（代码提交 bb260107f61f47a2874296de84f4a29f140f7959，完整 CI 39930482370 success）；
   补修分支 r9h2/main；契约 docs/r9h2-contracts.md。只修三个已复现缺口，不新增产品功能、不改变既定权限政策。
 - **历史要求修正链恢复**：RequirementLedger.recovery_context 按真实 parent_id 组装根->当前完整链（原话/顺序/父子/版本/状态/已知限制/来源），缺父/环/版本不连续/非 active → complete=False；
@@ -5608,6 +5608,9 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   internal_data.effect_targets_internal_data 支持路径 + target.identity + 身份登记 + known_paths 保守命中；engine/app 启动同步并注入；普通同名文件仍按普通规则，不新增名称/后缀判断。
 - **验证**：A 17 项、B 16 项、C 身份/内部数据、迁移 61 纠正、Lead 真实主流程 3 项（含 Windows 硬链接实际执行）、宽回归 382 项、受影响套件 345 项通过；
   Linux 定向 CI run 39958384570（backend-py311，SHA ea60595b）success，验证新测试在 POSIX 上通过。
-- **预算**：本轮沿用 R9-H 累计额度；此前完整 CI 已用 1 次（39930482370），本轮完整 CI 以最终运行记录为准；本地全量未完成（不把定向当全量）。
+- **完整 CI（R9-H2 最终代码，run 39958699070，SHA 8cb92eab6d9724c910ed8b7b8642c149be0c5bde）：** 结论 success；10/10 jobs 绿
+  （docs consistency / frontend / rust×2 / frozen worker / install e2e / backend py3.11 / py3.12 / windows）。首次运行即通过，无失败 job 重跑。
+- **预算**：R9-H + R9-H2 累计完整 CI 2/2（39930482370、39958699070），均 success；本地全量未完成（不把定向当全量）；Linux 定向 CI 39958384570 success（backend-py311）。
+
 - **已知边界**：POSIX 硬链接/身份语义由定向 CI 验证，POSIX 符号链接能力未单独真机；文件系统不支持 file id 时只能 known_paths 保守命中（新路径不猜）；跨卷移动身份变化按新对象；
   conditions 字段无真实工具产生；无 move/copy/外发工具；批量附件部分子项失效 E2E 未覆盖；安装版未复验；真实模型链恢复效果依赖模型可用。
