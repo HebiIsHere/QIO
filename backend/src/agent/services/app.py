@@ -364,6 +364,30 @@ class AppContext:
                 type(exc).__name__,
                 exc,
             )
+        # R9-H2 §5：内部运行数据真实对象身份登记（C 分支）。失败只告警，路径判定
+        # 仍兜底（不能因为登记不可用就静默把已注册对象当普通文件）。
+        self.internal_data_identity = None
+        self.internal_data_identity_error: str | None = None
+        try:
+            from agent.security.internal_data_identity import InternalDataIdentityStore
+
+            self.internal_data_identity = InternalDataIdentityStore(conn)
+            counts = self.internal_data_identity.sync(
+                self._internal_data_paths(), source="app_startup"
+            )
+            logging.getLogger(__name__).info(
+                "内部数据身份登记完成：added=%s retired=%s active=%s",
+                (counts or {}).get("added"),
+                (counts or {}).get("retired"),
+                (counts or {}).get("active"),
+            )
+        except Exception as exc:  # noqa: BLE001 - 身份登记失败不静默降级；路径判定仍兜底
+            self.internal_data_identity_error = type(exc).__name__ + ": " + str(exc)
+            logging.getLogger(__name__).warning(
+                "R9-H2 内部数据身份登记未启用（路径判定仍兜底）：%s: %s",
+                type(exc).__name__,
+                exc,
+            )
         self.authorization = AuthorizationEngine(
             conn=conn,
             approvals=self.approvals,
@@ -375,6 +399,9 @@ class AppContext:
             authorizations=self.authorizations,
             reviewer=self.reviewer,
             origin_provider=self._file_origin_for,
+            # 引擎按真实对象身份判定内部数据；登记不可用时返回空集合，路径判定兜底。
+            internal_data_identity_keys=lambda: self._internal_identity_keys(),
+            internal_data_known_paths=lambda: self._internal_identity_known_paths(),
         )
         # R9-G：统一执行前重核对服务（模式/要求/授权/审批/对象/内容/条件）；
         # 挂在 AppContext 与引擎上，执行器/审批恢复可按统一接口调用。
@@ -777,6 +804,46 @@ class AppContext:
         except OSError:  # pragma: no cover - 数据目录不可读时按已收集路径
             pass
         return paths
+
+    def _internal_identity_keys(self) -> frozenset[str]:
+        """引擎读取的 active 身份集合；登记不可用时为空（路径判定兜底）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return frozenset()
+        try:
+            return frozenset(store.active_keys())
+        except Exception:  # noqa: BLE001 - 读失败按空集合（不伪造保护范围）
+            return frozenset()
+
+    def _internal_identity_known_paths(self) -> frozenset[str]:
+        """历史登记路径（身份读取失败时不静默降级为普通文件）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return frozenset()
+        try:
+            return frozenset(store.known_paths())
+        except Exception:  # noqa: BLE001
+            return frozenset()
+
+    def refresh_internal_data_identities(self, path: object | None = None) -> dict:
+        """刷新内部数据身份登记（启动后新增/替换对象时调用；失败如实返回）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return {
+                "ok": False,
+                "reason": self.internal_data_identity_error or "身份登记不可用",
+            }
+        try:
+            if path is not None:
+                key = store.refresh_path(path, source="manual_refresh")
+                return {"ok": True, "path": str(path), "identity_key": key}
+            counts = store.sync(self._internal_data_paths(), source="manual_refresh")
+            return {"ok": True, "counts": dict(counts or {})}
+        except Exception as exc:  # noqa: BLE001 - 刷新失败保留已有登记
+            logging.getLogger(__name__).warning(
+                "内部数据身份刷新失败（保留已有登记）", exc_info=True
+            )
+            return {"ok": False, "reason": type(exc).__name__ + ": " + str(exc)}
 
     def _file_origin_for(self, path: Path) -> str | None:
         """后端持久化文件来源查询（供授权引擎核实 qio_generated / 用户材料）。
@@ -2724,6 +2791,18 @@ class AppContext:
                     turn_id=turn_id,
                     candidates=candidates,
                 )
+                if resolution is None:
+                    # 解析器返回 None / 输出未通过结构校验：同样属于“未成功解析”。
+                    failure_class = "invalid_output"
+                    self._note_requirement_issue(
+                        ctx,
+                        code="resolution_unavailable",
+                        error=RuntimeError("解析器输出非法或为空"),
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        model=getattr(resolver, "model", None),
+                        prompt_version=getattr(resolver, "prompt_version", None),
+                    )
             except Exception as exc:  # noqa: BLE001 - 解析失败按新要求继续
                 failure_class = type(exc).__name__
                 self._note_requirement_issue(
