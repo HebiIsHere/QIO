@@ -292,6 +292,8 @@ def test_unchecked_then_deleted_note_never_leaks_back(db_conn, marking):
 
     stored = _stored_cards(db_conn)
     gone = dict(stored[secret["id"]])
+    # Phase 2：参与状态是唯一事实源（checked 只是历史兼容字段）。
+    gone["participation"] = "excluded"
     gone["checked"] = False
     gone["deleted"] = True
     # other 保持允许查看（提交成功会清空勾选，这里重新勾上）
@@ -331,6 +333,7 @@ def test_hidden_then_deleted_note_never_leaks_back(db_conn, marking):
     assert _submit(db_conn)["status"] == "succeeded"
 
     hidden = dict(_stored_cards(db_conn)[note["id"]])
+    hidden["participation"] = "excluded"
     hidden["checked"] = False
     hidden["hidden"] = True
     hidden["deleted"] = True
@@ -1007,7 +1010,9 @@ def test_api_validation_errors(client):
 def test_api_material_visible_without_check(client):
     """验收场景 1：两份材料 + 两条注释、只勾选一条 → 前后状态看得到材料、看不到未勾选注释。"""
     material_a = _material("file", "材料一.pdf", meta={"name": "材料一.pdf"})
-    material_b = _material("url", "https://example.com/spec", meta={"href": "https://example.com/spec"})
+    # Phase 2：旧 url 卡不再作为默认可见的材料通道（旧 code/url -> excluded）；
+    # 这份测试关心的是「材料不需要勾选即可见」，因此第二份材料也用文件卡。
+    material_b = _material("file", "规格.pdf", meta={"name": "规格.pdf"})
     note_checked = _note("这条允许查看", checked=True)
     note_unchecked = _note(SECRET_NOTE)
     client.put(

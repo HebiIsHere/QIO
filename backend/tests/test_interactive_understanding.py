@@ -709,9 +709,9 @@ async def test_material_honesty_records_truncation_and_unread(db_conn, fake_mate
     assert context["limits"]["truncated"] is True
     assert context["limits"]["unreadRanges"]
     material_ids = {m["cardId"] for m in context["materials"]}
-    assert "c_url" in material_ids, "旧 url 卡迁移成文字卡后随整卡许可一起交付（契约 §2.1）"
-    migrated_url = [m for m in context["materials"] if m["cardId"] == "c_url"][0]
-    assert "https://example.invalid/page" in migrated_url["text"], "链接地址在整卡材料里"
+    # Phase 2：旧 url 卡迁移成文字卡后仍 excluded（旧 code/url -> excluded）。
+    assert "c_url" not in material_ids
+    assert all("https://example.invalid/page" not in str(m.get("text") or "") for m in context["materials"])
     truncated = [m for m in context["materials"] if m["cardId"] == "c_long"][0]
     assert truncated["truncated"] is True
     assert len(truncated["text"]) <= u.MAX_MATERIAL_CHARS

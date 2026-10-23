@@ -120,7 +120,8 @@ def _ids(snapshot: dict) -> set[str]:
 def test_scenario1_visibility_boundary_and_license_kept(client: TestClient) -> None:
     materials = [
         _card("m_file", "file", "访谈记录", meta={"name": "访谈记录.pdf"}),
-        _card("m_url", "url", "参考链接", meta={"href": "https://example.com/a"}),
+        # Phase 2：旧 url 卡不再默认可见（旧 code/url -> excluded）；第二份材料用文件卡。
+        _card("m_url", "file", "参考链接", meta={"name": "参考链接.pdf"}),
     ]
     notes = [
         _card("n_visible", "text", "这个方案的成本需要再确认", checked=True),

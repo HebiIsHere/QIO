@@ -1804,11 +1804,19 @@ def _attachment_version(att: Attachment) -> str:
 
 
 def _content_version(card: dict, *extra: str) -> str:
+    """材料语义版本：kind + 正文 + meta（**排除纯展示的 meta.display**）。
+
+    Phase 2：图片显示比例（width/height/aspectRatio）只影响渲染，不改变材料语义；
+    附件版本仍由 _attachment_version 参与（见文件卡条目），参与状态 / 关系 / 组成员
+    分别在 card / link / group 语义里参与，不在这里冒充材料内容。
+    """
+    meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+    semantic_meta = {key: value for key, value in meta.items() if key != "display"}
     payload = json.dumps(
         {
             "kind": card.get("kind"),
             "content": str(card.get("content") or ""),
-            "meta": card.get("meta") or {},
+            "meta": semantic_meta,
             "extra": list(extra),
         },
         sort_keys=True,

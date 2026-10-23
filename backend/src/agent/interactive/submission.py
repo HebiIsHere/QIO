@@ -11,8 +11,9 @@
    delivery.status='accepted'，响应带 turnId / waiting，并写「提交—turn 绑定」（迁移 49）；
    没有受理器 / 受理失败 → 这次提交按 failed 处理：不更新基准、不改动勾选、如实返回原因，
    绝不假装 QIO 受理了，也绝不回退旧理解路径。旧 board_understanding 记录保持只读兼容。
-2. 未勾选的注释、明确隐藏的卡片：文字与链接都不得进入 before / after；
-   链接必须两端都在范围内才出现；一名可见成员都没有的组整体不出现。
+2. 未参与（participation=excluded）的卡片、明确隐藏的卡片：文字与链接都不得进入
+   before / after；链接必须两端都在范围内才出现（组端点要求该组至少一名 included 成员）；
+   一名可见成员都没有的组整体不出现。
 3. 提交成功才更新「上次成功提交」基准；失败保留改动与本次注释选择。
 4. 空提交 / 重复点击必须幂等：不更新基准、不调用 QIO。
 
@@ -82,7 +83,10 @@ def _snippet(value: Any) -> str:
 
 
 def _meta_key(meta: Any) -> str:
-    return json.dumps(meta or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    # Phase 2：meta.display 只是图片显示比例，不参与材料语义（也不算内容变化）。
+    clean = meta if isinstance(meta, dict) else {}
+    semantic = {key: value for key, value in clean.items() if key != "display"}
+    return json.dumps(semantic, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def card_label(card: dict) -> str:
@@ -193,12 +197,8 @@ def project_snapshot(state: dict) -> dict:
         item = dict(group)
         item["members"] = members
         groups.append(item)
-    links: list[dict] = []
-    for link in state.get("links", []):
-        if link.get("deleted"):
-            continue
-        if link.get("src") in visible_ids and link.get("dst") in visible_ids:
-            links.append(dict(link))
+    # Phase 2：组端点走 models.link_visible 的同一规则；不可见组不得通过连线泄露。
+    links: list[dict] = [dict(link) for link in models.visible_links(state)]
     selection = [cid for cid in state.get("selection", []) if cid in visible_ids]
     snapshot = {
         "cards": [dict(card) for card in visible_cards],
@@ -246,7 +246,7 @@ def project_baseline(baseline: dict | None, state: dict) -> dict:
             current = current_cards.get(cid)
             if current is not None and models.visible_except_deleted(current):
                 keep[cid] = dict(card)
-        # 未勾选 / 被隐藏：整条丢弃，文字与链接都不得重新进入载荷
+        # 未参与（excluded）/ 被隐藏：整条丢弃，文字与链接都不得重新进入载荷
     groups: list[dict] = []
     for group in stored.get("groups", []):
         members = [cid for cid in group.get("members", []) if cid in keep]
@@ -255,11 +255,23 @@ def project_baseline(baseline: dict | None, state: dict) -> dict:
         item = dict(group)
         item["members"] = members
         groups.append(item)
-    links = [
-        dict(link)
-        for link in stored.get("links", [])
-        if link.get("src") in keep and link.get("dst") in keep
-    ]
+    visible_groups = models.visible_group_ids(state)
+
+    def link_kept(link: dict) -> bool:
+        for endpoint in (link.get("src"), link.get("dst")):
+            parsed = models.parse_link_endpoint(endpoint)
+            if parsed is None:
+                return False
+            kind, endpoint_id = parsed
+            if kind == "group":
+                # 组端点：当前仍可见才保留在 before（已解散的组不借 before 重现名字/成员）。
+                if endpoint_id not in visible_groups:
+                    return False
+            elif endpoint_id not in keep:
+                return False
+        return True
+
+    links = [dict(link) for link in stored.get("links", []) if link_kept(link)]
     selection = [cid for cid in stored.get("selection", []) if cid in keep]
     snapshot = {
         "cards": [dict(card) for card in keep.values()],
@@ -283,13 +295,36 @@ def _link_key(link: dict) -> tuple:
     return (src, dst) if link.get("direction") else tuple(sorted((src, dst)))
 
 
-def _link_text(link: dict, cards: dict[str, dict]) -> str:
-    src = card_label(cards.get(str(link.get("src")), {}))
-    dst = card_label(cards.get(str(link.get("dst")), {}))
+def _endpoint_label(endpoint: Any, cards: dict[str, dict], groups: dict[str, dict]) -> str:
+    parsed = models.parse_link_endpoint(endpoint)
+    if parsed is None:
+        return "（未知对象）"
+    kind, endpoint_id = parsed
+    if kind == "group":
+        group = groups.get(endpoint_id)
+        name = str((group or {}).get("name") or "").strip()
+        return f"组「{name}」" if name else "分组"
+    card = cards.get(endpoint_id)
+    return card_label(card) if card else "（未知对象）"
+
+
+def _link_text(link: dict, cards: dict[str, dict], groups: dict[str, dict]) -> str:
+    src = _endpoint_label(link.get("src"), cards, groups)
+    dst = _endpoint_label(link.get("dst"), cards, groups)
     arrow = "→" if link.get("direction") else "—"
     meaning = str(link.get("meaning") or "").strip()
     text = f"{src} {arrow} {dst}"
     return f"{text}（含义：{_snippet(meaning)}）" if meaning else text
+
+
+def _link_card_ids(link: dict) -> list[str]:
+    """表达式里的 cardIds 只放**卡片**端点；组端点由 linkId + 摘要表达，不伪装成卡片 id。"""
+    ids: list[str] = []
+    for endpoint in (link.get("src"), link.get("dst")):
+        parsed = models.parse_link_endpoint(endpoint)
+        if parsed is not None and parsed[0] == "card":
+            ids.append(parsed[1])
+    return ids
 
 
 def diff_states(before: dict, after: dict) -> list[dict]:
@@ -417,9 +452,9 @@ def diff_states(before: dict, after: dict) -> list[dict]:
         expressions.append(
             _expr(
                 "link_added",
-                card_ids=[str(link.get("src")), str(link.get("dst"))],
+                card_ids=_link_card_ids(link),
                 link_id=link.get("id"),
-                summary=f"新增关系：{_link_text(link, a_cards)}",
+                summary=f"新增关系：{_link_text(link, a_cards, a_groups)}",
             )
         )
     for key in sorted(b_links.keys() - a_links.keys()):
@@ -427,9 +462,9 @@ def diff_states(before: dict, after: dict) -> list[dict]:
         expressions.append(
             _expr(
                 "link_removed",
-                card_ids=[str(link.get("src")), str(link.get("dst"))],
+                card_ids=_link_card_ids(link),
                 link_id=link.get("id"),
-                summary=f"移除关系：{_link_text(link, b_cards)}",
+                summary=f"移除关系：{_link_text(link, b_cards, b_groups)}",
             )
         )
     for key in sorted(a_links.keys() & b_links.keys()):
@@ -442,10 +477,11 @@ def diff_states(before: dict, after: dict) -> list[dict]:
             expressions.append(
                 _expr(
                     "link_meaning_changed",
-                    card_ids=[str(new.get("src")), str(new.get("dst"))],
+                    card_ids=_link_card_ids(new),
                     link_id=new.get("id"),
                     summary=(
-                        f"修改关系含义：{_link_text(old, b_cards)} → {_link_text(new, a_cards)}"
+                        f"修改关系含义：{_link_text(old, b_cards, b_groups)} → "
+                        f"{_link_text(new, a_cards, a_groups)}"
                     ),
                 )
             )
@@ -572,11 +608,13 @@ def content_fingerprint(snapshot: dict) -> str:
     cards = {c["id"]: c for c in snapshot.get("cards", []) if c.get("id")}
 
     def card_fp(card: dict) -> str:
+        meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+        semantic_meta = {key: value for key, value in meta.items() if key != "display"}
         return json.dumps(
             {
                 "kind": card.get("kind"),
                 "content": str(card.get("content") or ""),
-                "meta": card.get("meta") or {},
+                "meta": semantic_meta,
             },
             sort_keys=True,
             ensure_ascii=False,

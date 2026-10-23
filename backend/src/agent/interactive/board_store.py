@@ -227,16 +227,29 @@ def save_board(
     if not isinstance(state, dict):
         raise ValueError("state 必须是 JSON 对象")
     info = ensure_board(conn, board_id=board_id)
+    # Phase 2：保存前先取数据库里的**上一份已保存板面**，作为对象版本的权威基线。
+    # 即使客户端没带 version、或进程刚重启，也不会把已有版本退回 1。
+    row = conn.execute(
+        "SELECT seq, state FROM board_states WHERE board_id = ?", (info["id"],)
+    ).fetchone()
+    previous_state: dict | None = None
+    if row is not None:
+        raw_previous = models.loads(row["state"], None)
+        if isinstance(raw_previous, dict):
+            raw_previous["boardId"] = info["id"]
+            raw_previous["seq"] = int(row["seq"])
+            previous_migrated, _previous_migrated_changed = text_migration.migrate_state(raw_previous)
+            previous_state = board.normalize_state(previous_migrated)
     # 写入即规范化（契约 §2.2：「迁移只发生在板面状态加载 / 保存这一层」）：历史 code / url
     # 卡与缺 meta.doc 的文字卡在这里补齐，于是**保存返回的 seq 就是数据库里的 seq** ——
     # 不然保存内部的重算会顺手触发一次加载迁移，让调用方手里的版本号悄悄变旧。
     migrated_state, _migrated = text_migration.migrate_state({**state, "boardId": info["id"]})
     payload = board.normalize_state(migrated_state)
-    row = conn.execute("SELECT seq FROM board_states WHERE board_id = ?", (info["id"],)).fetchone()
     seq = (int(row["seq"]) if row else 0) + 1
     stamp = _now()
     payload["seq"] = seq
     payload["updatedAt"] = stamp
+    board.apply_versions_from_previous(payload, previous_state)
     dumped = models.dumps(payload)
     label = _clip(reason or "op", limit=64)
     from agent.storage.db import transaction
@@ -685,6 +698,8 @@ def write_board_cas(
         payload = board.normalize_state({**new_state, "boardId": info["id"]})
         payload["seq"] = seq
         payload["updatedAt"] = stamp
+        # 工具写入同样以事务内读到的当前已保存状态为版本基线（纯布局不推进）。
+        board.apply_versions_from_previous(payload, state)
         dumped = models.dumps(payload)
         label = _clip(reason or "board_tool", limit=64)
         conn.execute(

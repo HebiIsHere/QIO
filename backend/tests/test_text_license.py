@@ -296,13 +296,17 @@ def test_legacy_code_card_submits_successfully_with_consistent_seq(db_conn):
     """真实提交路径（Lead 要求）：板面里有旧 code 卡时，提交必须**成功**（不是 StaleState），
     并且提交后的 seq 与库里完全一致 —— 保存内部的规范化不能悄悄把版本推高。"""
     code = models.new_card("code", "print('legacy')", meta={"language": "python"})
-    saved = _save(db_conn, _state([code]))
+    # Phase 2：旧 code / url -> excluded（仍不可交付）；提交能成功是因为还有一条可见注释。
+    visible = _text_card("仍然可见的注释", checked=True)
+    saved = _save(db_conn, _state([code, visible]))
     assert saved["seq"] == 1
 
     loaded = board_store.load_board(db_conn, BOARD)
     assert loaded["seq"] == 1, "保存即规范化：加载不会再偷偷 +1"
     assert loaded["migratedFromSeq"] is None
-    assert loaded["state"]["cards"][0]["kind"] == "text"
+    migrated_code = loaded["state"]["cards"][0]
+    assert migrated_code["kind"] == "text"
+    assert migrated_code["participation"] == "excluded", "旧 code 卡迁移后仍不可交付"
 
     result = _submit(db_conn, base_state_version=1)
     assert result["status"] == "succeeded", result.get("error")
@@ -311,9 +315,10 @@ def test_legacy_code_card_submits_successfully_with_consistent_seq(db_conn):
         "SELECT seq FROM board_states WHERE board_id = ?", (BOARD,)
     ).fetchone()["seq"]
     assert stored_seq == board_store.load_board(db_conn, BOARD)["seq"] == 1
-    # 迁移后的旧代码卡是文字卡（整卡许可为真）：代码正文照常在可见范围里
-    assert result["after"]["cards"][0]["kind"] == "text"
-    assert "print('legacy')" in result["after"]["cards"][0]["content"]
+    # 旧代码卡迁移成文字卡但保持 excluded：正文不得进入本次载荷；可见注释照常在范围里。
+    after_ids = [card["id"] for card in result["after"]["cards"]]
+    assert visible["id"] in after_ids
+    assert "print('legacy')" not in models.dumps(result["after"])
 
 
 def test_load_migration_does_not_make_inflight_submit_stale(db_conn):
@@ -323,7 +328,9 @@ def test_load_migration_does_not_make_inflight_submit_stale(db_conn):
     而实际上内容一个字都没变，只是系统把旧卡迁成了文字卡。
     """
     code = models.new_card("code", "print('legacy-on-disk')", meta={"language": "python"})
-    _put_legacy_state(db_conn, _state([code]), seq=1)
+    # 旧 code 迁移后仍 excluded；另放一条可见注释，保证这次提交有真实内容。
+    visible = _text_card("迁移期间仍然可见", checked=True)
+    _put_legacy_state(db_conn, _state([code, visible]), seq=1)
 
     # 升级后的第一次加载就是这次提交：迁移在提交内部顺带发生（seq 1→2），
     # 但这次提交仍然基于迁移前那个版本 1。
