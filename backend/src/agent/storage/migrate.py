@@ -127,6 +127,8 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "authorization_records",
         "authorization_review_audit",
         "file_origins",
+        # R9-G（迁移 57）：模型要求解析审计（补充/修正/撤回/新要求）。
+        "requirement_resolutions",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -198,6 +200,12 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "pending_approvals.result",
         "pending_approvals.error",
         "pending_approvals.resumed_at",
+        # R9-G（迁移 57）：操作绑定具体用户要求及版本，不能取"最近一条 active"。
+        "user_requirements.version",
+        "pending_approvals.requirement_id",
+        "pending_approvals.requirement_version",
+        "authorization_records.requirement_version",
+        "authorization_review_audit.requirement_version",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -230,6 +238,8 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_authorization_records_req",
         "idx_authorization_review_audit_req",
         "idx_file_origins_path",
+        # R9-G（迁移 57）：要求解析审计按目标要求检索。
+        "idx_requirement_resolutions_target",
     ),
 }
 

@@ -1544,23 +1544,24 @@ from agent.storage.migration_r9_approvals import MIGRATION as _R9_APPROVAL  # no
 from agent.storage.migration_r9_attachments import MIGRATION as _R9_ATTACH  # noqa: E402
 
 from agent.storage.migration_r9f_review_origins import MIGRATION as _R9F_REVIEW  # noqa: E402
+from agent.storage.migration_r9g_requirement_binding import MIGRATION as _R9G_BINDING  # noqa: E402
 
 MIGRATIONS.append(_R9_ATTACH)
 MIGRATIONS.append(_R9_APPROVAL)
 MIGRATIONS.append(_R9F_REVIEW)
+MIGRATIONS.append(_R9G_BINDING)
 
-# 补偿入口（新，56）：迁移 51 的全部语句 + 52 + 53 + 55。
-# 与 36 / 38 / 40 / 43 / 45 / 48 / 51 / 54 的追加方式一致（不手抄历史语句）。
+# 补偿入口（新，58）：迁移 56 的全部语句 + 57。
 MIGRATIONS.append(
     (
-        56,
-        [stmt for target, stmts in MIGRATIONS if target == 54 for stmt in stmts]
-        + list(_R9F_REVIEW[1]),
+        58,
+        [stmt for target, stmts in MIGRATIONS if target == 56 for stmt in stmts]
+        + list(_R9G_BINDING[1]),
     )
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 56
+COMPENSATION_VERSION = 58
 
 
 
