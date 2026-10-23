@@ -29,6 +29,7 @@ facts 再调用本分类器（`fixed_query_facts_from_detail` 提供同一份构
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import sys
 import tempfile
@@ -330,25 +331,164 @@ def _real_path(path: str) -> Path | None:
         return None
 
 
-#: POSIX 系统安装目录：npm/pnpm 等常以符号链接指向脚本入口（npm -> npm-cli.js）。
-#: 只对这些目录下的同族入口放宽"真实文件名同族"比对；cwd/临时/用户目录仍拒绝。
-_TRUSTED_POSIX_BIN_DIRS = (
-    "/usr/bin",
-    "/usr/local/bin",
+#: POSIX 系统安装 bin 目录（精确名单）：系统包管理器/运行时入口的默认位置。
+#: R9-H：这些目录里的**同族脚本入口符号链接**（npm -> npm-cli.js）按族放行；
+#: 目录本身只是"系统安装位置"，不放行任意程序（仍要求已知程序族 + 精确 argv）。
+_POSIX_SYSTEM_BIN_DIRS = (
     "/bin",
-    "/usr/sbin",
     "/sbin",
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/local/bin",
     "/opt/homebrew/bin",
     "/opt/local/bin",
+    "/snap/bin",
 )
 
+#: POSIX 系统安装根：包管理器脚本入口的**真实目标**必须位于这些根之内
+#: （防止系统目录里的入口指向工作区/用户目录/临时目录中的同名替身脚本）。
+_POSIX_SYSTEM_ROOTS = (
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/snap",
+    "/System",
+    "/Library",
+    "/var/lib",
+)
 
-def _is_trusted_posix_entry(path: str) -> bool:
+#: 允许"同族脚本入口符号链接"放宽的程序族（包管理器/运行时入口）。
+#: 其它程序（含 /opt 下的任意程序）不放宽：真实文件名必须与请求身份一致。
+_SCRIPT_ENTRY_FAMILIES = frozenset(
+    {"node", "npm", "npm3", "pnpm", "yarn", "pip", "pip3", "uv", "bun", "deno", "corepack"}
+)
+
+#: 脚本入口目标允许的包装后缀（POSIX 包管理器入口通常是这些脚本）。
+_SCRIPT_ENTRY_SUFFIXES = (".js", ".cjs", ".mjs", ".py", ".sh", ".pl", ".rb", ".ps1")
+
+
+def _is_posix_absolute(path: str) -> bool:
+    text = str(path or "").strip()
+    return text.startswith("/") and not text.startswith("//")
+
+
+def _is_posix_system_bin_dir(path: str) -> bool:
+    """POSIX 系统安装 bin 目录：精确名单 + /opt/<...>/bin 结构（不认整个 /opt）。
+
+    只看路径结构（不做文件系统访问），因此 Windows 上也能用 POSIX 字符串验证同一规则。
+    """
+    text = str(path or "").strip()
+    if not _is_posix_absolute(text):
+        return False
+    normalized = posixpath.normpath(text)
+    if normalized in _POSIX_SYSTEM_BIN_DIRS:
+        return True
+    parts = [part for part in normalized.split("/") if part]
+    # /opt/hostedtoolcache/node/20.19.0/x64/bin、/opt/node/bin：至少 opt/<name>/bin
+    return len(parts) >= 3 and parts[0] == "opt" and parts[-1] == "bin"
+
+
+def _under_posix_system_roots(path: str) -> bool:
+    """真实目标是否位于 POSIX 系统安装根之内（工作区/用户/临时目录一律 False）。"""
+    text = str(path or "").strip()
+    if not _is_posix_absolute(text):
+        return False
+    normalized = posixpath.normpath(text)
+    if normalized == "/":
+        return False
+    for root in _POSIX_SYSTEM_ROOTS:
+        if normalized == root or normalized.startswith(root + "/"):
+            return True
+    return False
+
+
+def _strip_script_suffix(name: str) -> tuple[str, bool]:
+    base = str(name or "").strip().lower()
+    for suffix in _SCRIPT_ENTRY_SUFFIXES:
+        if base.endswith(suffix):
+            return base[: -len(suffix)], True
+    return base, False
+
+
+def _family_from_script_target(name: str) -> str | None:
+    """脚本目标文件名 → 已知程序族（npm-cli.js → npm、pnpm.cjs → pnpm）。
+
+    只接受**脚本后缀 + 同族名前缀**（npm-cli、pnpm、yarn 等）；其它脚本一律 None。
+    注意：本函数只做名字映射，是否可放行还必须在 _resolved_script_family 里
+    同时满足"真实目标位于系统安装根内"。
+    """
+    base, had_suffix = _strip_script_suffix(name)
+    if not base:
+        return None
+    if not had_suffix:
+        return None
+    for family in _SCRIPT_ENTRY_FAMILIES:
+        if base == family or base.startswith(family + "-") or base.startswith(family + "."):
+            return family
+    return None
+
+
+def _resolved_script_family(real_path: str) -> str | None:
+    """resolve 后的脚本目标 → 程序族；只在 POSIX 系统安装根内生效。
+
+    用于真实工具流程：工具把 program_path 填成 resolve 后的真实文件
+    （/usr/local/lib/node_modules/npm/bin/npm-cli.js），入口名 npm 已丢失。
+    工作区/用户目录/临时目录里的同名脚本一律不识别（不因脚本名增权）。
+    """
+    real_text = str(real_path or "")
+    if not _is_posix_absolute(real_text):
+        return None
+    if not _under_posix_system_roots(real_text):
+        return None
+    return _family_from_script_target(posixpath.basename(posixpath.normpath(real_text)))
+
+
+def _script_target_family_related(family: str, real_path: str) -> bool:
+    if family not in _SCRIPT_ENTRY_FAMILIES:
+        return False
+    target_family = _family_from_script_target(posixpath.basename(posixpath.normpath(real_path)))
+    return target_family == family
+
+
+def _posix_script_entry_allowed(entry_path: str, real_path: str, family: str) -> bool:
+    """POSIX 系统安装目录下的同族脚本入口（npm -> npm-cli.js）是否可放行。
+
+    三个条件同时成立：入口目录是系统 bin 目录（含 /opt/<...>/bin）；真实目标位于
+    系统安装根内（不是工作区/用户/临时可写目录）；目标是同族脚本文件名。
+    """
+    entry_text = str(entry_path or "").strip()
+    real_text = str(real_path or "").strip()
+    if not _is_posix_absolute(entry_text) or not _is_posix_absolute(real_text):
+        return False
+    if family not in _SCRIPT_ENTRY_FAMILIES:
+        return False
+    entry_dir = posixpath.dirname(posixpath.normpath(entry_text))
+    if not _is_posix_system_bin_dir(entry_dir):
+        return False
+    if not _under_posix_system_roots(real_text):
+        return False
+    return _script_target_family_related(family, real_text)
+
+
+def _path_within(child: str, parent: str) -> bool:
+    """child 是否等于 parent 或位于其下（POSIX 字符串用 posixpath，其余按宿主平台）。"""
+    child_text = str(child or "").strip()
+    parent_text = str(parent or "").strip()
+    if not child_text or not parent_text:
+        return False
+    if _is_posix_absolute(child_text) and _is_posix_absolute(parent_text):
+        child_norm = posixpath.normpath(child_text.replace(chr(92), "/"))
+        parent_norm = posixpath.normpath(parent_text.replace(chr(92), "/"))
+        return child_norm == parent_norm or child_norm.startswith(parent_norm.rstrip("/") + "/")
     try:
-        parent = str(Path(str(path)).parent)
+        child_abs = os.path.normcase(os.path.abspath(child_text))
+        parent_abs = os.path.normcase(os.path.abspath(parent_text))
     except (OSError, ValueError):
         return False
-    return any(parent == root for root in _TRUSTED_POSIX_BIN_DIRS)
+    return child_abs == parent_abs or child_abs.startswith(parent_abs.rstrip("\\/") + os.sep)
 
 
 def _identity_problem(facts: FixedQueryFacts) -> str | None:
@@ -366,41 +506,44 @@ def _identity_problem(facts: FixedQueryFacts) -> str | None:
         return "程序路径不可读"
     if not WINDOWS and not os.access(str(real), os.X_OK):
         return "程序文件没有可执行权限"
+    return _identity_rule_problem(facts, raw_path=raw_path, real_text=str(real))
+
+
+def _identity_rule_problem(
+    facts: FixedQueryFacts, *, raw_path: str, real_text: str
+) -> str | None:
+    """程序身份的纯路径规则（无文件系统访问，便于跨平台验证 POSIX 规则）。
+
+    规则：
+    * 真实文件名与入口名不同时，只允许**同族**（python3 -> python3.11）或
+      POSIX 系统安装目录下的**同族脚本入口**（npm -> npm-cli.js）；
+    * 请求身份（program_name）必须与入口同族；
+    * 真实程序不能在命令自己的 cwd / 临时目录之内。
+    """
     display_name = _normalize_name(raw_path)
     if not display_name:
         return "程序文件名为空"
-    if _basename(str(real)) and _normalize_name(str(real)) != display_name:
+    real_name = _normalize_name(real_text)
+    if _basename(real_text) and real_name != display_name:
         # 符号链接允许（python3 -> python3.11），但必须属于同一已知程序族。
-        # POSIX 系统安装目录下的包管理器入口（/usr/local/bin/npm -> npm-cli.js）
-        # 属于已知族且入口受系统目录约束，允许；用户目录/cwd/临时目录仍拒绝。
-        if _family(_normalize_name(str(real))) != _family(display_name):
+        # R9-H：POSIX 系统安装目录（含 /opt/<...>/bin）下的同族脚本入口
+        # （npm -> npm-cli.js）允许；用户目录/cwd/临时目录/任意脚本仍拒绝。
+        if _family(real_name) != _family(display_name):
+            family = _family(display_name)
             if not (
-                _family(display_name) is not None
-                and _is_trusted_posix_entry(raw_path)
-                and not WINDOWS
+                family is not None
+                and _posix_script_entry_allowed(raw_path, real_text, family)
             ):
                 return "真实程序文件名与请求的程序身份不一致（可能同名替身）"
-    requested = _normalize_name(facts.program_name)
+    requested = _normalize_name(getattr(facts, "program_name", ""))
     if requested and _family(requested) != _family(display_name):
         return "请求的程序与真实解析出的程序不是同一身份（可能同名替身）"
-    cwd_text = str(facts.cwd or "").strip()
-    if cwd_text:
-        try:
-            cwd_real = Path(os.path.realpath(cwd_text))
-        except (OSError, ValueError):
-            cwd_real = None
-        if cwd_real is not None:
-            try:
-                if real == cwd_real or real.is_relative_to(cwd_real):
-                    return "程序位于命令自己的工作目录之内（可能是同名替身）"
-            except (OSError, ValueError):
-                pass
+    cwd_text = str(getattr(facts, "cwd", "") or "").strip()
+    if cwd_text and _path_within(real_text, cwd_text):
+        return "程序位于命令自己的工作目录之内（可能是同名替身）"
     for root in _temp_roots():
-        try:
-            if real.is_relative_to(Path(root)):
-                return "程序位于临时目录（可能是同名替身/一次性程序）"
-        except (OSError, ValueError):
-            continue
+        if _path_within(real_text, root):
+            return "程序位于临时目录（可能是同名替身/一次性程序）"
     return None
 
 
@@ -605,6 +748,10 @@ def classify_fixed_query(facts: FixedQueryFacts) -> FixedQuery | None:
             return None
         real_name = _normalize_name(str(facts.program_path))
         family = _family(real_name)
+        if family is None:
+            # R9-H：真实工具流程传的是 resolve 后的脚本目标（npm-cli.js），入口名
+            # 已丢失；只有目标位于 POSIX 系统安装根内时才按同族脚本识别。
+            family = _resolved_script_family(str(facts.program_path))
         if family is None:
             # 解释器/未知程序不做固定查询豁免（即使 argv 看起来像版本参数）
             return None

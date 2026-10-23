@@ -1,0 +1,27 @@
+FFFFFFFF...                                                              [100%]
+================================== FAILURES ===================================
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_identity_rule_problem'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:71: AttributeError: module 'agent.security.fixed_queries' has no attribute '_identity_rule_problem'
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_is_posix_system_bin_dir'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:97: AttributeError: module 'agent.security.fixed_queries' has no attribute '_is_posix_system_bin_dir'
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_posix_script_entry_allowed'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:109: AttributeError: module 'agent.security.fixed_queries' has no attribute '_posix_script_entry_allowed'
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_is_posix_system_bin_dir'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:137: AttributeError: module 'agent.security.fixed_queries' has no attribute '_is_posix_system_bin_dir'
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_under_posix_system_roots'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:143: AttributeError: module 'agent.security.fixed_queries' has no attribute '_under_posix_system_roots'
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_identity_rule_problem'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:71: AttributeError: module 'agent.security.fixed_queries' has no attribute '_identity_rule_problem'
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_family_from_script_target'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:169: AttributeError: module 'agent.security.fixed_queries' has no attribute '_family_from_script_target'
+E   AttributeError: module 'agent.security.fixed_queries' has no attribute '_posix_script_entry_allowed'
+D:\qio-dev\qio-r9h-d\backend\tests\test_r9h_fixed_queries_platform.py:185: AttributeError: module 'agent.security.fixed_queries' has no attribute '_posix_script_entry_allowed'
+=========================== short test summary info ===========================
+FAILED tests/test_r9h_fixed_queries_platform.py::test_ci_py312_usr_local_npm_entry_is_fixed_query_identity
+FAILED tests/test_r9h_fixed_queries_platform.py::test_opt_hostedtoolcache_npm_entry_is_fixed_query_identity
+FAILED tests/test_r9h_fixed_queries_platform.py::test_opt_pnpm_and_yarn_entries_are_family_related_scripts
+FAILED tests/test_r9h_fixed_queries_platform.py::test_posix_system_bin_dir_accepts_only_real_system_layouts
+FAILED tests/test_r9h_fixed_queries_platform.py::test_posix_system_roots_reject_workspace_and_temp_targets
+FAILED tests/test_r9h_fixed_queries_platform.py::test_imposter_entries_and_targets_are_rejected
+FAILED tests/test_r9h_fixed_queries_platform.py::test_resolved_script_target_derives_family_only_inside_system_roots
+FAILED tests/test_r9h_fixed_queries_platform.py::test_arbitrary_program_under_opt_is_not_a_fixed_query
