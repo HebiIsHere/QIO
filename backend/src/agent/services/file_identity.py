@@ -208,6 +208,12 @@ def identity_of(path: Path | str) -> FileIdentity | None:
     )
 
 
+def identity_key_of(path: Path | str) -> str | None:
+    """路径当前对象的统一身份键（volume:file_id）；读不到返回 None（不猜）。"""
+    found = identity_of(path)
+    return found.key if found is not None else None
+
+
 def same_file(a: FileIdentity | None, b: FileIdentity | None) -> bool:
     """是否同一份文件：**只能**靠 volume + file_id（契约 §7）。
 

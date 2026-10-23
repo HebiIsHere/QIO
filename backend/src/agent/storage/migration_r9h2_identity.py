@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 #: 一次性数据纠正（只在迁移 61 执行；不进补偿迁移）。
-_DATA_CORRECTION = """
+DATA_CORRECTION = """
 UPDATE user_requirements
 SET structured_limits_state = 'unresolved',
     structured_limits_source = 'migration_61:resolution_unavailable'
@@ -55,5 +55,5 @@ COMPENSATION_STATEMENTS: list[str] = [
 
 MIGRATION: tuple[int, list[str]] = (
     61,
-    [*COMPENSATION_STATEMENTS, _DATA_CORRECTION],
+    [*COMPENSATION_STATEMENTS, DATA_CORRECTION],
 )
