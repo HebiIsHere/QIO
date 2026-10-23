@@ -95,3 +95,45 @@
 - C 卡片/图片：BoardCard.vue、CardInlinePreview.vue、interactive/renderers/** 及测试；不改 BoardCanvas。
 - D 后端板面：backend/src/agent/interactive/{models,board,board_tools,tool_models}.py 与定向测试；迁移只能追加。
 - Lead：BoardCanvas.vue、stores/interactive.ts、types.ts、board.ts、services/interactive.ts、InteractiveView.vue 的最终接线。
+
+
+## 6. Phase 3 冻结字段（Lead 决策）
+
+### 6.1 新链意图视图
+- IntentView 追加 display?: { x:number; y:number }（稳定 intent_id 绑定的显示位置；与目标/授权版本分开）。
+- 后端持久化到 board_intents 新列 display（JSON；只追加迁移）；旧数据缺省 null。
+- 意图状态只用新链：proposed / awaiting_confirmation / approved / running / paused / completed / partially_completed / failed / cancelled / rejected；legacy 只读、不冒充新状态。
+- 意图确认前是虚拟层，不执行真实板面改动；位置只影响预览/成果优先落点。
+- 确认/批量确认必须显式 ids；服务端依赖/冲突/授权检查；部分失败分别反馈。
+
+### 6.2 确认后真实续作
+- confirm / batch-confirm 成功后，必须由服务端为主循环创建/恢复互动 Turn：
+  - board / submission / intent ids / authorization version / attempt / operation key / topic 绑定由程序提供；
+  - 不把“确认成功”只写成 approved 后停下；
+  - 主循环/受理不可用时，不得假装已开始；响应必须带真实 turn_id 或明确失败。
+- recover 同理：恢复成功必须触发续作，而不是只改状态。
+- 同一意图同一时刻只有一个有效执行；重复确认/旧回调不能并行。
+- 返回结构追加 turnId?: string、resume?: boolean；保持旧字段兼容。
+
+### 6.3 自动/手动重试
+- 新增持久化 retry 系列（迁移追加）；字段至少 series_id、intent_id、authorization_version、attempts、limit=3、status、last_error、next_action、updated_at。
+- 首次失败不算自动重试次数；最多三次自动重试；耗尽停止并只呈现一次最终失败说明。
+- 后续手动重试一次点击一次尝试；不重新赠送三次；重启/重连不重置。
+- 自动重试由服务端调度，不用前端 setTimeout。
+
+### 6.4 对话/审批
+- 互动底聊复用现有 MessageStream/Composer/ComposerEntries/会话 store；不新建简化模型；Composer 需接受互动绑定（board/submission/intent），不透传模型自报权限。
+- 输入区上方事项行最多展开一个普通事项；审批入口唯一；UnifiedApprovalLayer 唯一挂载；旧 ApprovalEntry/Modal 在聊天路由让位。
+- 发送/停止/排队/历史继续/话题建议/附件/失败恢复保留；板面提交与聊天发送分离。
+
+### 6.5 模型固定文案
+- 只修改 backend/src/agent/prompts.py 的 INTERACTIVE_POLICY、INTERACTIVE_RETRY_POLICY、TOOL_DESCRIPTIONS 指定键；不得在其他文件复制正文。
+- 本轮实际新增/修改固定文案必须在最终报告全文列出。
+
+### 6.6 Phase 3 文件唯一归属
+- A 意图虚拟层/位置/确认 UI：frontend/src/components/interactive/Intent*.vue、v2/IntentLayer.vue（新增）及测试；不改 store/board.ts/InteractiveView。
+- B 底聊/输入区：v2/InteractiveConversation.vue（新增）、ChatDock 相关组件；不改 InteractiveView/store。
+- C 审批/恢复 UI：approval/*、ComposerEntries 相关；不改 App.vue/WindowChrome。
+- D 后端续作/重试/提示词：backend/src/agent/interactive/intent_service.py、submission.py、services/turn_orchestrator.py、backend/src/agent/prompts.py、新迁移/测试。
+- Lead：App.vue、InteractiveView.vue、stores/interactive.ts、platform 接线和最终集成。
+
