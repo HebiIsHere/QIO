@@ -2999,6 +2999,9 @@ onBeforeUnmount(() => {
             :height="surfaceSize.h"
           />
 
+          <!-- 虚拟意图层等板面坐标系叠层：由页面注入，随画布一起缩放/平移。 -->
+          <slot name="overlay" :scale="scaleSafe" :width="surfaceSize.w" :height="surfaceSize.h" />
+
             <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
           </div>
 

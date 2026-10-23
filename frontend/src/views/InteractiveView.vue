@@ -8,27 +8,115 @@
   - 统一审批层只挂这一处，旧 ApprovalEntry / ApprovalModal 在聊天路由让位（App.vue 门控）。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
-import ChatDock from "../components/interactive/ChatDock.vue";
 import IntentBatchTray from "../components/interactive/IntentBatchTray.vue";
 import IntentStatusPopover from "../components/interactive/IntentStatusPopover.vue";
 import ImpactConfirmDialog from "../components/interactive/ImpactConfirmDialog.vue";
 import IntentWorkbench from "../components/interactive/IntentWorkbench.vue";
 import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
-import UnifiedApprovalEntry from "../components/approval/UnifiedApprovalEntry.vue";
-import { InteractiveWorkspace, InteractiveChromeTools } from "../components/interactive/v2";
+import {
+  InteractiveWorkspace,
+  InteractiveChromeTools,
+  InteractiveConversation,
+  RecoveryPanel,
+  SaveFailureBanner,
+  RECOVERY_ENTRY_TEXT,
+  recoveryEntryVisible,
+} from "../components/interactive/v2";
+import IntentLayer from "../components/interactive/v2/IntentLayer.vue";
+import type { IntentViewWithDisplay } from "../components/interactive/v2/intentDisplay";
+import { canRecover } from "../interactive/intentWorkbench";
+import { fetchIntentViews } from "../services/interactive";
 import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
 /** 意图与结果工作台：保留旧能力入口，Phase 3 再迁到虚拟意图/底部操作。 */
 const workbenchOpen = ref(false);
+/** 新链意图视图（服务端事实；不用旧 store.intents 冒充）。 */
+const intentViews = ref<IntentViewWithDisplay[]>([]);
+const intentDisplay = ref<Record<string, { x: number; y: number }>>({});
+/** 事项行徽标：只由真实 store/意图事实构成；面板可回填更完整的服务端计数。 */
+const recoveryPanelCount = ref(0);
+const recoveryEntries = computed(() => {
+  const fallback =
+    (store.saveStatus === "error" ? 1 : 0) +
+    (store.submitRefreshState === "error" ? 1 : 0) +
+    (store.submitResultUnknown ? 1 : 0) +
+    intentViews.value.filter((view) => canRecover(view)).length;
+  const count = Math.max(fallback, recoveryPanelCount.value);
+  return [
+    {
+      ...RECOVERY_ENTRY_TEXT,
+      id: "recovery",
+      count,
+      tone: "warn" as const,
+      visible: recoveryEntryVisible(count),
+    },
+  ];
+});
+
+function displayStorageKey(): string {
+  return "qio-interactive-intent-display:" + (store.board?.boardId ?? "board_default");
+}
+
+function readIntentDisplay(): void {
+  try {
+    const raw = localStorage.getItem(displayStorageKey());
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const next: Record<string, { x: number; y: number }> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") continue;
+      const point = value as { x?: unknown; y?: unknown };
+      if (typeof point.x === "number" && Number.isFinite(point.x) && typeof point.y === "number" && Number.isFinite(point.y)) {
+        next[id] = { x: point.x, y: point.y };
+      }
+    }
+    intentDisplay.value = next;
+  } catch {
+    // 本机显示位置不可用不影响意图真实状态
+  }
+}
+
+function writeIntentDisplay(): void {
+  try {
+    localStorage.setItem(displayStorageKey(), JSON.stringify(intentDisplay.value));
+  } catch {
+    // 同上
+  }
+}
+
+async function loadIntents(): Promise<void> {
+  const boardId = store.board?.boardId;
+  if (!boardId) return;
+  try {
+    const payload = await fetchIntentViews(boardId);
+    intentViews.value = (payload.intents ?? []) as IntentViewWithDisplay[];
+  } catch {
+    // 读取失败不伪造意图；旧工作台仍可单独重试
+    intentViews.value = [];
+  }
+}
+
+function onIntentDisplayChange(payload: { intentId: string; x: number; y: number }): void {
+  intentDisplay.value = {
+    ...intentDisplay.value,
+    [payload.intentId]: { x: payload.x, y: payload.y },
+  };
+  writeIntentDisplay();
+}
 
 onMounted(() => {
-  void store.load();
+  readIntentDisplay();
+  void store.load().then(() => loadIntents());
 });
+watch(
+  () => store.lastSubmission?.submission?.id,
+  () => void loadIntents(),
+);
 
 const uText = computed(() => {
   if (!store.understandingStatus && store.submitStatus === "succeeded") {
@@ -82,15 +170,28 @@ const boardSize = computed(() => {
   <div class="interactive">
     <!-- 互动页的搜索 + 唯一保存状态：Teleport 到 WindowChrome 的挂载点。 -->
     <InteractiveChromeTools />
-    <!-- 统一审批：互动页恰好一套；记忆提醒没有星球落点，先不渲染。 -->
+    <!-- 统一审批：互动页恰好一套；入口由输入区事项行第⑤项提供，不再另挂浮动入口。 -->
     <UnifiedApprovalLayer :show-memory="false" />
-    <!-- 过渡入口：Phase 3 迁移到输入区事项行后删除。 -->
-    <UnifiedApprovalEntry />
 
     <InteractiveWorkspace>
       <template #board>
         <div class="im-board-stage" data-im="interactive-stage">
-          <BoardCanvas />
+          <BoardCanvas>
+            <template #overlay="{ scale, width, height }">
+              <IntentLayer
+                v-if="intentViews.length"
+                :views="intentViews"
+                :board-id="store.board?.boardId ?? ''"
+                :width="width"
+                :height="height"
+                :scale="scale"
+                :display-overrides="intentDisplay"
+                :disabled="store.saveStatus === 'saving'"
+                @display-change="onIntentDisplayChange"
+                @refresh="loadIntents"
+              />
+            </template>
+          </BoardCanvas>
 
           <!-- 板面 HUD：板面名 / 数量 / 真实理解状态 / 旧能力入口；不再占一条标题栏。 -->
           <div class="im-board-hud">
@@ -160,7 +261,6 @@ const boardSize = computed(() => {
           <BoardToolbar />
           <IntentStatusPopover />
           <IntentBatchTray />
-          <ChatDock />
           <ImpactConfirmDialog />
           <IntentWorkbench v-if="workbenchOpen" @close="workbenchOpen = false" />
 
@@ -172,6 +272,26 @@ const boardSize = computed(() => {
             上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
           </p>
         </div>
+      </template>
+
+      <!-- 底部互动对话：输入区在下，会话流向上展开；复用对话页的会话与五入口。 -->
+      <template #composer>
+        <SaveFailureBanner />
+        <InteractiveConversation
+          v-model:expanded="store.chatOpen"
+          :binding="store.chatBinding"
+          :auto-collapse-on-board-action="true"
+          :extra-entries="recoveryEntries"
+        >
+          <template #extra-panel="{ id }">
+            <RecoveryPanel
+              v-if="id === 'recovery'"
+              :board-id="store.board?.boardId ?? ''"
+              :active="store.chatOpen"
+              @updated="recoveryPanelCount = $event"
+            />
+          </template>
+        </InteractiveConversation>
       </template>
     </InteractiveWorkspace>
   </div>

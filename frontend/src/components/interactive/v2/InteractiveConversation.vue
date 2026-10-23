@@ -17,6 +17,7 @@ import Composer from "../../Composer.vue";
 import ComposerEntries from "../../conversation/ComposerEntries.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import { useSessionStore } from "../../../stores/session";
+import type { ExtraComposerEntry } from "../../conversation/ComposerEntries.vue";
 import {
   CONVERSATION_DEFAULT_HEIGHT,
   CONVERSATION_KEYBOARD_STEP,
@@ -44,6 +45,8 @@ const props = withDefaults(
     binding?: ConversationBinding;
     /** 高度记忆的存储键（缺省按板面身份）。 */
     storageKey?: string;
+    /** 额外事项行入口（Phase 3-C：恢复与收尾）。 */
+    extraEntries?: ExtraComposerEntry[];
   }>(),
   {
     expanded: false,
@@ -53,6 +56,7 @@ const props = withDefaults(
     autoCollapseOnBoardAction: true,
     title: "对话",
     storageKey: "",
+    extraEntries: () => [],
   },
 );
 
@@ -335,7 +339,11 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
 
       <!-- 五入口（附件 / 失败恢复 / 排队 / 历史继续 / 话题建议 / 审批）：始终在输入区正上方 -->
       <div class="ic-entries">
-        <ComposerEntries />
+        <ComposerEntries context="interactive" :extra-entries="props.extraEntries">
+          <template #extra-panel="scope">
+            <slot name="extra-panel" v-bind="scope" />
+          </template>
+        </ComposerEntries>
       </div>
 
       <!-- 输入区：始终挂载；收起只改变可见区域，不清草稿 / 附件 / 排队，也不停止回复 -->
