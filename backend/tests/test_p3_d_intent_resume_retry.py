@@ -366,6 +366,30 @@ def test_retry_persists_across_new_connection(tmp_path):
         conn2.close()
 
 
+def test_startup_recovery_releases_stale_claim_and_resumes_pending_retry(board_env):
+    from agent.interactive import startup_recovery
+
+    conn = board_env
+    intent_id = _approved_intent(conn)
+    intent_service.record_retry_failure(
+        conn, board_id=BOARD, intent_ids=[intent_id], reason="temporary timeout"
+    )
+    conn.execute(
+        "INSERT INTO board_intent_turns"
+        " (intent_id, board_id, submission_id, turn_id, attempt, source, status, reason, created_at, updated_at)"
+        " VALUES (?, ?, ?, '', 1, 'confirm', 'claiming', '', ?, ?)",
+        (intent_id, BOARD, SUBMISSION, "old", "old"),
+    )
+    turns = FakeTurns()
+    recovered = startup_recovery.recover_startup(conn, turns.submit)
+    assert recovered["released"] == 1
+    assert recovered["started"] == 1
+    assert len(turns.calls) == 1
+    state = intent_service.retry_state(conn, intent_id)
+    assert state["status"] == "running"
+    assert state["turn_id"] == "turn_fake_1"
+
+
 def test_orchestrator_schedules_automatic_retry_after_failure(board_env):
     from agent.services.turn_orchestrator import TurnOrchestrator
 

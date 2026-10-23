@@ -1213,10 +1213,12 @@ class TurnOrchestrator:
                 if completed:
                     _intent_service.complete_retries_for_intents(conn, completed)
             # 服务端调度：每轮最多排一条自动重试，避免一次失败引发并发风暴。
+            # 只调度本轮真正相关的意图：聊天型互动 Turn（没有 intent_ids）不得
+            # 顺手触发整板其它工作的自动重试。
             candidates = _intent_service.pending_auto_retries(
                 conn,
                 board_id=board_id,
-                intent_ids=intent_ids or None,
+                intent_ids=intent_ids,
             )
             if not candidates:
                 return
@@ -1241,11 +1243,17 @@ class TurnOrchestrator:
                     conn, str(series["series_id"]), str(started["turnId"])
                 )
             else:
+                reason = str(started.get("reason") or "retry_turn_unavailable")
+                # 主循环暂时不可用不是业务失败：放回 pending，不把剩余次数永久停掉。
+                transient = any(
+                    token in reason.lower()
+                    for token in ("turn_unavailable", "temporarily", "暂时", "不可用")
+                )
                 _intent_service.release_retry(
                     conn,
                     str(series["series_id"]),
-                    status="stopped",
-                    reason=str(started.get("reason") or "retry_turn_unavailable"),
+                    status="pending" if transient else "stopped",
+                    reason=reason,
                 )
         except Exception:  # noqa: BLE001 - 互动收尾失败不能吞掉主轮事实，只记日志
             logging.getLogger(__name__).warning(
