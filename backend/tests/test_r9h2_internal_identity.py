@@ -230,6 +230,10 @@ def test_identity_read_failure_does_not_silently_downgrade(env):
     _sync_protected(env)
     key = _key(env["app_db"])
     known = env["store"].known_paths()
+    # 先在旧对象仍存在时创建替换文件，避免 POSIX 立即复用刚释放的 inode，
+    # 保证这里验证的是“另一份身份”的顶替，而不是文件系统 inode 复用。
+    replacement = env["app_db"].with_name("other.new")
+    replacement.write_text("different-object", encoding="utf-8")
     os.unlink(env["app_db"])
     # 身份读不到 + 路径是历史登记 → 保守当作内部数据对象（不静默降级）
     assert internal_data.is_internal_data_object(
@@ -239,8 +243,6 @@ def test_identity_read_failure_does_not_silently_downgrade(env):
         env["app_db"], [], known_paths=known
     ), "身份不可读时历史登记路径必须保守命中"
     # 同一路径被另一份内容/身份的文件顶替：身份可读且不是登记对象 → 不误保护
-    replacement = env["app_db"].with_name("other.new")
-    replacement.write_text("different-object", encoding="utf-8")
     os.replace(replacement, env["app_db"])
     replacement_key = _key(env["app_db"])
     assert replacement_key != key
