@@ -81,7 +81,14 @@ const emit = defineEmits<{
  * 收起概览使用**固定槽位**：位置只由槽位序号决定，与卡片 id / 组是否有序无关，
  * 也不显示序号 —— 显示槽位不是执行顺序。
  */
-const overview = computed(() => groupOverviewSlots({ group: props.group, cards: props.cards }));
+/** 收起后的紧凑外框高度：组框只保留标题 + 一行固定槽位，不保留成员区域的整块空白。 */
+const COLLAPSED_GROUP_H = 120;
+const frameH = computed(() =>
+  props.collapsed ? Math.min(COLLAPSED_GROUP_H, Math.max(56, props.group.h)) : props.group.h,
+);
+const overview = computed(() =>
+  groupOverviewSlots({ group: { ...props.group, h: frameH.value }, cards: props.cards }),
+);
 const overviewLabel = computed(
   () => "组「" + (props.group.name || "未命名组") + "」成员概览（只显示成员，不代表执行顺序）",
 );
@@ -89,7 +96,7 @@ const overviewStyle = computed(() => ({
   left: GROUP_PAD_X + "px",
   top: GROUP_HEADER_HEIGHT + "px",
   width: Math.max(0, props.group.w - GROUP_PAD_X * 2) + "px",
-  height: Math.max(0, props.group.h - GROUP_HEADER_HEIGHT - GROUP_PAD_BOTTOM) + "px",
+  height: Math.max(0, frameH.value - GROUP_HEADER_HEIGHT - GROUP_PAD_BOTTOM) + "px",
 }));
 const handles = computed(() =>
   props.resizable && !props.collapsed
@@ -265,7 +272,7 @@ const style = computed(() => ({
   left: props.group.x + "px",
   top: props.group.y + "px",
   width: props.group.w + "px",
-  height: props.group.h + "px",
+  height: frameH.value + "px",
 }));
 
 const memberCards = computed(() =>
@@ -784,4 +791,10 @@ defineExpose({ focusName });
 .resize-handle[data-edge="s"] { cursor: ns-resize; }
 .resize-handle[data-edge="se"] { cursor: nwse-resize; }
 .resize-handle:hover { border-color: var(--accent); }
+
+@media (max-width: 900px) {
+  /* 窄窗：说明性文字让位给组名、成员管理与收起组；有序状态仍由序号表达。 */
+  .mode,
+  .badge.default-name { display: none; }
+}
 </style>

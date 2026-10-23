@@ -207,10 +207,11 @@ const boardSize = computed(() => {
   z-index: 30;
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: var(--sp-3);
   pointer-events: none;
 }
+/* 板面名让位给全局栏；HUD 只保留真实状态与旧能力入口，避免压住组标题。 */
 .im-hud-left,
 .im-hud-right {
   display: flex;
@@ -219,6 +220,7 @@ const boardSize = computed(() => {
   min-width: 0;
   pointer-events: auto;
 }
+.im-hud-left { display: none !important; }
 .im-hud-left {
   padding: 5px 10px;
   border: 1px solid var(--border-subtle);
@@ -297,7 +299,13 @@ const boardSize = computed(() => {
   .im-count { display: none; }
   .im-board-hud { top: 50px; left: 8px; right: 8px; }
   .im-hud-right { gap: 4px; }
-  .im-note { max-width: 30vw; }
-  .im-chip { padding: 4px 7px; }
+  .im-note { display: none; }
+  .im-hud-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: calc(100vw - 32px);
+    gap: 4px;
+  }
+  .im-chip { padding: 3px 7px; font-size: 10px; }
 }
 </style>

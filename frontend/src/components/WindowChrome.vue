@@ -499,4 +499,25 @@ onBeforeUnmount(() => {
 .conversation-bar.interactive-bar {
   overflow: visible;
 }
+
+/* 窄窗：品牌只留标志，副标与分隔线让位给搜索/保存；否则 480px 会互相压住。 */
+@media (max-width: 760px) {
+  .conversation-bar .brand {
+    left: 12px;
+    gap: 6px;
+  }
+  .conversation-bar .brand-logo {
+    height: 24px;
+  }
+  .conversation-bar .brand-caption,
+  .conversation-bar .brand-sep {
+    display: none;
+  }
+  .conversation-bar .chrome-extra {
+    max-width: min(160px, calc(100vw - 160px));
+  }
+  .conversation-bar .chrome-actions {
+    right: 12px;
+  }
+}
 </style>

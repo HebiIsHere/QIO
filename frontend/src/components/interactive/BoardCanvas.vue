@@ -692,7 +692,11 @@ const displayGroups = computed<BoardGroup[]>(() => {
     if (left === group.x && top === group.y && right === group.x + group.w && bottom === group.y + group.h) {
       return group;
     }
-    return { ...group, x: left, y: top, w: Math.max(1, right - left), h: Math.max(1, bottom - top) };
+    const display = { ...group, x: left, y: top, w: Math.max(1, right - left), h: Math.max(1, bottom - top) };
+    // 收起组：显示外框压成标题 + 一行概览，连线/命中读同一份紧凑框；存储的组几何不变。
+    return collapsedGroupSet.value.has(group.id)
+      ? { ...display, h: Math.min(120, Math.max(56, display.h)) }
+      : display;
   });
 });
 
@@ -3213,5 +3217,7 @@ onBeforeUnmount(() => {
 .btn.danger { color: var(--danger); }
 @media (max-width: 900px) {
   .link-editor { left: var(--sp-2); bottom: var(--sp-2); }
+  /* 窄窗隐藏首次使用提示条：两行提示会盖住板面顶部与组标题；手势本身仍可用。 */
+  .banner.view-hint { display: none; }
 }
 </style>
