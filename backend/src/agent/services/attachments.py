@@ -59,7 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-from agent.services import file_origins
+from agent.services import attachment_access, file_origins
 from agent.services.file_identity import (
     FileIdentity,
     content_sha256,
@@ -103,6 +103,285 @@ MATERIAL_SOURCE_KINDS = ("browser_upload", "clipboard_image")
 
 #: 归属：用户原文件 / 用户提供、QIO 首次落盘的材料 / QIO 自主生成的工作文件
 ORIGINS = ("user_original", "user_saved_material", "qio_generated")
+
+
+# ==========================================================================
+# R9-G：要求绑定 / 批量逐项 / 执行前重核对（契约 §3、§6、§7；W3）
+# ==========================================================================
+
+REQUIREMENT_BINDING_KEY = "requirement_binding"
+REQUIREMENT_BINDING_SOURCE_KEY = "requirement_binding_source"
+
+BATCH_ALLOWED = "allowed"
+BATCH_DENIED = "denied"
+BATCH_WAITING = "waiting"
+BATCH_INVALIDATED = "invalidated"
+BATCH_COMPLETED = "completed"
+BATCH_FAILED = "failed"
+
+
+def _binding_payload(value: object) -> dict | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        requirement_id = value.get("requirement_id") or value.get("id")
+        version = value.get("version", 1)
+    else:
+        requirement_id = getattr(value, "requirement_id", None)
+        version = getattr(value, "version", 1)
+    if not requirement_id:
+        return None
+    try:
+        version = int(version or 1)
+    except (TypeError, ValueError):
+        version = 1
+    return {"requirement_id": str(requirement_id), "version": version}
+
+
+def requirement_binding_from_context(gateway: object = None, owner: object = None) -> dict | None:
+    """读取后端注入的当前要求绑定（不调用 requirements.current()）。"""
+    candidates: list[object] = []
+    for source in (owner, gateway):
+        if source is None:
+            continue
+        for name in ("requirement_binding", "current_requirement_binding", "binding"):
+            value = getattr(source, name, None)
+            if value is not None:
+                candidates.append(value() if callable(value) else value)
+    try:
+        from agent.security import context as security_context  # type: ignore
+
+        for name in (
+            "current_requirement_binding",
+            "requirement_binding",
+            "current_requirement",
+        ):
+            holder = getattr(security_context, name, None)
+            getter = getattr(holder, "get", None)
+            if callable(getter):
+                try:
+                    candidates.append(getter())
+                except Exception:  # noqa: BLE001 - contextvar 未初始化
+                    continue
+    except Exception:  # noqa: BLE001 - Lead 的改动尚未合入
+        pass
+    for value in candidates:
+        binding = _binding_payload(value)
+        if binding is not None:
+            return binding
+    return None
+
+
+def _attach_binding(effect: object, binding: dict | None) -> None:
+    detail = getattr(effect, "detail", None)
+    if isinstance(detail, dict):
+        detail[REQUIREMENT_BINDING_KEY] = binding
+        detail[REQUIREMENT_BINDING_SOURCE_KEY] = (
+            "security.context" if binding is not None else "unavailable"
+        )
+
+
+async def _authorize_item(gateway: object, effect: object) -> dict:
+    """逐项判定（契约 §6：一个对象的允许不得覆盖整批）。"""
+    if gateway is None or not callable(getattr(gateway, "authorize", None)):
+        return {
+            "verdict": "approve",
+            "reason": "统一授权网关未接入：需要人工确认本次操作",
+            "decision": None,
+        }
+    try:
+        decision = await attachment_access.authorize(gateway, effect)
+    except Exception as exc:  # noqa: BLE001 - 失败关闭
+        return {
+            "verdict": "deny",
+            "reason": f"授权网关调用失败：{type(exc).__name__}（本次没有执行）",
+            "decision": None,
+        }
+    return decision
+
+
+def _recheck_service(gateway: object) -> object | None:
+    for name in ("recheck", "recheck_service"):
+        candidate = getattr(gateway, name, None)
+        if candidate is not None and callable(getattr(candidate, "recheck", None)):
+            return candidate
+    try:
+        from agent.security import recheck as recheck_module  # type: ignore
+    except Exception:  # noqa: BLE001 - Lead 尚未合入
+        return None
+    for name in ("get_recheck_service", "default_recheck_service", "recheck_service"):
+        candidate = getattr(recheck_module, name, None)
+        if callable(candidate):
+            try:
+                candidate = candidate()
+            except Exception:  # noqa: BLE001
+                continue
+        if candidate is not None and callable(getattr(candidate, "recheck", None)):
+            return candidate
+    return None
+
+
+async def _recheck_item(
+    gateway: object,
+    effect: object,
+    *,
+    mode_at_request: str = "",
+    expected_identity: str | None = None,
+    expected_sha256: str | None = None,
+) -> dict:
+    """执行前重核对（契约 §7）；优先 Lead 的 RecheckService，未合入时同语义回退。"""
+    binding = (getattr(effect, "detail", {}) or {}).get(REQUIREMENT_BINDING_KEY)
+    service = _recheck_service(gateway)
+    if service is not None:
+        operation_binding = _build_operation_binding(
+            effect=effect, binding=binding, gateway=gateway
+        )
+        if operation_binding is None:
+            return {
+                "ok": False,
+                "code": "recheck_binding_unbuildable",
+                "reason": "执行前无法构造操作绑定（security/recheck.py 接口不匹配）：未执行",
+                "needs_user_decision": False,
+            }
+        try:
+            result = await service.recheck(operation_binding, effect=effect)
+        except Exception as exc:  # noqa: BLE001 - 失败关闭
+            return {
+                "ok": False,
+                "code": "recheck_service_error",
+                "reason": f"执行前重核对失败（{type(exc).__name__}）：未执行",
+                "needs_user_decision": False,
+            }
+        ok = bool(getattr(result, "ok", False))
+        verdict = str(getattr(result, "verdict", "") or "")
+        return {
+            "ok": ok,
+            "code": str(getattr(result, "code", "") or ("ok" if ok else "recheck_failed")),
+            "reason": str(getattr(result, "reason", "") or ""),
+            "needs_user_decision": verdict == "approve",
+        }
+    # 回退：用当前模式重新走一次授权 + 校验要求仍有效 + 对象身份/内容摘要未变
+    if gateway is not None and callable(getattr(gateway, "authorize", None)):
+        decision = await _authorize_item(gateway, effect)
+        if decision.get("verdict") == "deny":
+            return {
+                "ok": False,
+                "code": "recheck_denied",
+                "reason": decision.get("reason") or "当前授权已失效：未执行",
+                "needs_user_decision": False,
+            }
+        if decision.get("verdict") == "approve":
+            return {
+                "ok": False,
+                "code": "recheck_needs_user_decision",
+                "reason": decision.get("reason") or "当前状态需要用户确认后才能继续",
+                "needs_user_decision": True,
+            }
+    if binding:
+        ledger = getattr(gateway, "requirements", None) if gateway is not None else None
+        validate = getattr(ledger, "validate_binding", None)
+        if callable(validate):
+            try:
+                try:
+                    from agent.security.requirements import RequirementBinding  # type: ignore
+
+                    target_binding: object = RequirementBinding(
+                        requirement_id=str(binding["requirement_id"]),
+                        version=int(binding["version"]),
+                    )
+                except Exception:  # noqa: BLE001
+                    target_binding = binding
+                valid = bool(validate(target_binding))
+            except TypeError:
+                try:
+                    valid = bool(
+                        validate(
+                            requirement_id=binding["requirement_id"],
+                            version=binding["version"],
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    valid = False
+            except Exception:  # noqa: BLE001
+                valid = False
+            if not valid:
+                return {
+                    "ok": False,
+                    "code": "recheck_requirement_invalid",
+                    "reason": "对应的用户要求已被修正/撤回或版本不符：未执行",
+                    "needs_user_decision": False,
+                }
+    for target in getattr(effect, "targets", ()) or ():
+        if getattr(target, "kind", "") != "path":
+            continue
+        path = str(getattr(target, "value", ""))
+        if expected_identity:
+            current = identity_of(Path(path))
+            current_key = current.key if current is not None else None
+            if current_key != expected_identity:
+                return {
+                    "ok": False,
+                    "code": "recheck_identity_changed",
+                    "reason": "对象已不是原来的那一个（身份变化）：未执行",
+                    "needs_user_decision": False,
+                }
+        if expected_sha256:
+            current_sha = content_sha256(Path(path))
+            if current_sha != expected_sha256:
+                return {
+                    "ok": False,
+                    "code": "recheck_content_changed",
+                    "reason": "对象内容在执行前发生了变化：未执行",
+                    "needs_user_decision": False,
+                }
+    return {"ok": True, "code": "ok", "reason": "", "needs_user_decision": False}
+
+
+def _build_operation_binding(*, effect: object, binding: dict | None, gateway: object):
+    """按 Lead 的 security/recheck.py OperationBinding 构造（未合入返回 None）。"""
+    try:
+        from agent.security.recheck import OperationBinding  # type: ignore
+        from agent.security.requirements import RequirementBinding  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    mode = attachment_access.mode_value(gateway)
+    requirement = None
+    if binding:
+        try:
+            requirement = RequirementBinding(
+                requirement_id=str(binding["requirement_id"]),
+                version=int(binding["version"]),
+            )
+        except Exception:  # noqa: BLE001
+            requirement = binding
+    detail = getattr(effect, "detail", {}) or {}
+    content_digest = detail.get("content_sha256")
+    digests: list[tuple[str, str]] = []
+    for target in getattr(effect, "targets", ()) or ():
+        value = str(getattr(target, "value", ""))
+        identity = getattr(target, "identity", None)
+        if content_digest:
+            digests.append((value, str(content_digest)))
+        elif identity:
+            digests.append((value, str(identity)))
+    kind = getattr(getattr(effect, "kind", None), "value", getattr(effect, "kind", ""))
+    values = {
+        "requirement": requirement,
+        "mode": mode,
+        "operation_kind": str(kind),
+        "fingerprint": str(detail.get("fingerprint") or ""),
+        "spec_digest": None,
+        "content_digests": tuple(digests),
+        "conditions": (),
+        "authorization_id": None,
+        "delegation": None,
+    }
+    try:
+        names = set(getattr(OperationBinding, "__dataclass_fields__", {}) or {})
+        return OperationBinding(**{k: v for k, v in values.items() if k in names})
+    except Exception:  # noqa: BLE001
+        return None
+
 
 #: reference_state 取值（契约 §6.1）：可用 / 缺失 / 待用户确认 / 已修复位置
 REFERENCE_AVAILABLE = "available"
@@ -2025,31 +2304,153 @@ class AttachmentService:
         rows = [dict(item) for item in (targets or []) if str(item.get("path") or "")]
         if not rows:
             return {"ok": True, "results": [], "pending_approval": False, "reason": "没有待删除的用户材料"}
-        effect_targets = [
-            (str(item["path"]), item.get("identity")) for item in rows
-        ]
-        decision = await attachment_access.authorize_delete(
-            gateway,
-            targets=effect_targets,
-            purpose=purpose,
-            detail={"paths": [item["path"] for item in rows]},
-        )
-        if decision["verdict"] == "deny":
-            raise AttachmentPermissionDenied(decision["reason"] or "授权拒绝删除用户材料")
-        if decision["verdict"] == "approve":
+        binding = requirement_binding_from_context(gateway, self)
+        mode_at_request = attachment_access.mode_value(gateway)
+
+        # -- 逐项展开（契约 §6）：每个用户材料独立对象/动作，逐项核对 ----------------
+        items: list[dict] = []
+        for index, item in enumerate(rows):
+            path = str(item["path"])
+            identity = item.get("identity")
+            if not identity:
+                try:
+                    found = identity_of(Path(path))
+                    identity = found.key if found is not None else None
+                except Exception:  # noqa: BLE001 - 身份读不到不猜
+                    identity = None
+            item_id = f"item_{index + 1}"
+            effect = attachment_access.delete_effect(
+                "attachment.delete_material",
+                targets=[(path, identity)],
+                purpose=purpose,
+                detail={
+                    "paths": [path],
+                    "batch_item_id": item_id,
+                    "attachment_id": item.get("attachment_id"),
+                },
+            )
+            _attach_binding(effect, binding)
+            items.append(
+                {
+                    "item_id": item_id,
+                    "row": dict(item),
+                    "effect": effect,
+                    "identity": identity,
+                    "status": "pending",
+                    "reason": "",
+                    "outcome": {},
+                }
+            )
+
+        # -- 逐项判定：一个对象的允许绝不覆盖整批 --------------------------------
+        for item in items:
+            decision = await _authorize_item(gateway, item["effect"])
+            verdict = str(decision.get("verdict") or "deny")
+            item["status"] = {
+                "allow": BATCH_ALLOWED,
+                "approve": BATCH_WAITING,
+                "deny": BATCH_DENIED,
+            }.get(verdict, BATCH_DENIED)
+            item["reason"] = str(decision.get("reason") or "")
+
+        # 全部被拒：保持旧的生产入口语义（抛 AttachmentPermissionDenied，一处也不动），
+        # 混合批次才返回逐项状态（已允许项照常执行，被拒项如实列出）。
+        if not any(
+            entry["status"] in (BATCH_ALLOWED, BATCH_WAITING) for entry in items
+        ):
+            reasons = "；".join(
+                str(entry["row"].get("path"))
+                + "（"
+                + (entry["reason"] or "未获授权")
+                + "）"
+                for entry in items
+            )
+            raise AttachmentPermissionDenied(
+                "授权拒绝删除用户材料：" + (reasons or "没有可执行项")
+            )
+
+        # -- 已允许项：逐项执行前重核对（模式/要求/授权/身份）后进回收站 -----------
+        for item in [entry for entry in items if entry["status"] == BATCH_ALLOWED]:
+            recheck = await _recheck_item(
+                gateway,
+                item["effect"],
+                mode_at_request=mode_at_request,
+                expected_identity=item["identity"],
+            )
+            if not recheck["ok"]:
+                if recheck.get("needs_user_decision"):
+                    item["status"] = BATCH_WAITING
+                    item["reason"] = recheck["reason"] or "执行前状态变化：需要重新确认"
+                else:
+                    item["status"] = BATCH_INVALIDATED
+                    item["reason"] = recheck["reason"] or "执行前重核对未通过"
+                continue
+            try:
+                outcome = recycle_bin_service.send_to_recycle_bin(str(item["row"]["path"]))
+            except Exception as exc:  # noqa: BLE001 - 失败保留文件
+                outcome = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
+            outcome = dict(outcome or {})
+            item["outcome"] = outcome
+            item["status"] = BATCH_COMPLETED if outcome.get("ok") else BATCH_FAILED
+            item["reason"] = (
+                ""
+                if outcome.get("ok")
+                else str(outcome.get("reason") or "移入系统回收站失败")
+            )
+            if outcome.get("ok"):
+                self.note_origin_after_recycle(item["row"]["path"])
+
+        # -- 需要确认的项合并为一个审批操作（列明对象/身份/动作，不逐项弹窗） -------
+        waiting = [entry for entry in items if entry["status"] == BATCH_WAITING]
+        if waiting:
+            waiting_rows = [entry["row"] for entry in waiting]
+            batch_effect = attachment_access.delete_effect(
+                "attachment.delete_material",
+                targets=[
+                    (str(entry["row"]["path"]), entry["identity"]) for entry in waiting
+                ],
+                purpose=purpose,
+                detail={
+                    "paths": [str(entry["row"]["path"]) for entry in waiting],
+                    "items": [
+                        {
+                            "item_id": entry["item_id"],
+                            "path": str(entry["row"]["path"]),
+                            "identity": entry["identity"],
+                            "attachment_id": entry["row"].get("attachment_id"),
+                            "action": "recycle",
+                        }
+                        for entry in waiting
+                    ],
+                    "requirement_binding": binding,
+                },
+            )
             operation = attachment_access.build_pending_operation(
                 kind="attachment.recycle",
-                label="把用户材料移入系统回收站",
-                effect=attachment_access.delete_effect(
-                    "attachment.delete_material",
-                    targets=effect_targets,
-                    purpose=purpose,
-                ),
-                payload={"targets": rows},
-                fingerprint={"paths": [item["path"] for item in rows]},
+                label="把 %d 个用户材料移入系统回收站（一次批量审批）" % len(waiting),
+                effect=batch_effect,
+                payload={
+                    "targets": waiting_rows,
+                    "items": [
+                        {"item_id": entry["item_id"], **entry["row"]}
+                        for entry in waiting
+                    ],
+                    "requirement_binding": binding,
+                },
+                fingerprint={
+                    "paths": [str(entry["row"]["path"]) for entry in waiting],
+                    "items": [
+                        {
+                            "path": str(entry["row"]["path"]),
+                            "identity": entry["identity"],
+                        }
+                        for entry in waiting
+                    ],
+                    "requirement_binding": binding,
+                },
                 purpose=purpose,
                 instruction=attachment_access.instruction_snapshot(gateway),
-                mode_at_request=attachment_access.mode_value(gateway),
+                mode_at_request=mode_at_request,
             )
             ticket = await attachment_access.submit(gateway, operation, ctx=ctx)
             if ticket is None:
@@ -2059,30 +2460,62 @@ class AttachmentService:
             return {
                 "ok": True,
                 "pending_approval": True,
-                "reason": decision["reason"] or "需要用户批准后才能删除",
+                "batch": True,
+                "reason": "需要用户批准后才会删除列明的用户材料",
                 "operation": "attachment.recycle",
                 "approval": attachment_access.ticket_summary(ticket),
-                "results": [],
+                "items": [
+                    {
+                        "item_id": entry["item_id"],
+                        "path": str(entry["row"]["path"]),
+                        "status": entry["status"],
+                        "reason": entry["reason"],
+                    }
+                    for entry in items
+                ],
+                "results": [
+                    {
+                        "attachment_id": entry["row"].get("attachment_id"),
+                        "path": str(entry["row"]["path"]),
+                        "ok": entry["status"] == BATCH_COMPLETED,
+                        "status": entry["status"],
+                        "reason": entry["reason"],
+                    }
+                    for entry in items
+                ],
             }
+
         results: list[dict] = []
         all_ok = True
-        for item in rows:
-            outcome = recycle_bin_service.send_to_recycle_bin(str(item["path"]))
-            all_ok = all_ok and bool(outcome.get("ok"))
+        for entry in items:
+            row = entry["row"]
+            outcome = dict(entry["outcome"] or {})
+            ok = entry["status"] == BATCH_COMPLETED
+            all_ok = all_ok and ok
             results.append(
                 {
-                    "attachment_id": item.get("attachment_id"),
-                    "path": str(item["path"]),
-                    "reason": item.get("reason") or "",
+                    "attachment_id": row.get("attachment_id"),
+                    "path": str(row["path"]),
+                    "reason": str(row.get("reason") or ""),
+                    "ok": ok,
+                    "status": entry["status"],
                     **outcome,
                 }
             )
-            if outcome.get("ok"):
-                self.note_origin_after_recycle(item["path"])
         return {
             "ok": all_ok,
             "pending_approval": False,
+            "batch": True,
             "deleted_permanently": False,
+            "items": [
+                {
+                    "item_id": entry["item_id"],
+                    "path": str(entry["row"]["path"]),
+                    "status": entry["status"],
+                    "reason": entry["reason"],
+                }
+                for entry in items
+            ],
             "results": results,
         }
 
@@ -2112,45 +2545,50 @@ class AttachmentService:
             raise AttachmentContentError(resolved.reason or "源文件当前不可用，没有写入", 409)
         target = str(resolved.path)
         identity = resolved.identity.key if resolved.identity is not None else None
-        decision = await attachment_access.authorize_write(
-            gateway,
+        binding = requirement_binding_from_context(gateway, self)
+        mode_at_request = attachment_access.mode_value(gateway)
+        effect = attachment_access.write_effect(
+            "attachment.write_back",
             path=target,
             identity=identity,
             purpose=purpose,
             content_sha256=resolved.current_sha256,
             detail={"attachment_id": str(attachment_id), "size": len(bytes(data or b""))},
         )
-        if decision["verdict"] == "deny":
-            raise AttachmentPermissionDenied(decision["reason"] or "授权拒绝写回源文件")
-        if decision["verdict"] == "approve":
+        _attach_binding(effect, binding)
+
+        def _pending_operation(reason: str) -> dict:
             import base64
 
             operation = attachment_access.build_pending_operation(
                 kind="attachment.write_back",
                 label=f"写回源文件「{resolved.path.name}」",
-                effect=attachment_access.write_effect(
-                    "attachment.write_back",
-                    path=target,
-                    identity=identity,
-                    purpose=purpose,
-                    content_sha256=resolved.current_sha256,
-                ),
+                effect=effect,
                 payload={
                     "attachment_id": str(attachment_id),
                     "path": target,
                     "identity": identity,
                     "content_b64": base64.b64encode(bytes(data or b"")).decode("ascii"),
                     "sha256": hashlib.sha256(bytes(data or b"")).hexdigest(),
+                    "requirement_binding": binding,
                 },
                 fingerprint={
                     "identity": identity,
                     "content_sha256": resolved.current_sha256,
                     "new_sha256": hashlib.sha256(bytes(data or b"")).hexdigest(),
+                    "requirement_binding": binding,
                 },
                 purpose=purpose,
                 instruction=attachment_access.instruction_snapshot(gateway),
-                mode_at_request=attachment_access.mode_value(gateway),
+                mode_at_request=mode_at_request,
             )
+            return operation
+
+        decision = await attachment_access.authorize(gateway, effect)
+        if decision["verdict"] == "deny":
+            raise AttachmentPermissionDenied(decision["reason"] or "授权拒绝写回源文件")
+        if decision["verdict"] == "approve":
+            operation = _pending_operation(decision["reason"])
             ticket = await attachment_access.submit(gateway, operation)
             if ticket is None:
                 raise AttachmentPermissionDenied(
@@ -2166,6 +2604,39 @@ class AttachmentService:
                 "path": target,
                 "bytes": len(bytes(data or b"")),
             }
+
+        # 执行前重核对（契约 §7）：写前重新判定模式/要求/授权是否仍覆盖，
+        # 并核对对象身份与内容摘要；失效则保留文件并给出明确状态。
+        recheck = await _recheck_item(
+            gateway,
+            effect,
+            mode_at_request=mode_at_request,
+            expected_identity=identity,
+            expected_sha256=resolved.current_sha256,
+        )
+        if not recheck["ok"]:
+            if recheck.get("needs_user_decision"):
+                operation = _pending_operation(recheck.get("reason") or "")
+                ticket = await attachment_access.submit(gateway, operation)
+                if ticket is None:
+                    raise AttachmentPermissionDenied(
+                        "执行前状态变化需要重新确认，但当前授权网关不支持提交待审批操作"
+                    )
+                return {
+                    "ok": True,
+                    "pending_approval": True,
+                    "reason": recheck.get("reason")
+                    or "执行前状态变化：需要重新确认后才能写回",
+                    "operation": "attachment.write_back",
+                    "approval": attachment_access.ticket_summary(ticket),
+                    "attachment_id": str(attachment_id),
+                    "path": target,
+                    "bytes": len(bytes(data or b"")),
+                }
+            raise AttachmentError(
+                recheck.get("reason") or "执行前重核对未通过：没有写回源文件"
+            )
+
         outcome = self._write_back_source_now(
             attachment_id,
             bytes(data or b""),
@@ -2176,6 +2647,229 @@ class AttachmentService:
         # （写回用户源文件不得变成"QIO 生成物"）。
         self.note_origin_after_write_back(attachment_id, outcome)
         return outcome
+
+    async def write_back_many(
+        self,
+        items: list[dict],
+        *,
+        gateway: object | None = None,
+        purpose: str = "批量写回源文件",
+        ctx: object | None = None,
+    ) -> dict:
+        """批量写回：逐项展开核对，**一次**审批覆盖列明对象，逐项保留状态（契约 §6）。
+
+        items: [{"attachment_id": str, "data": bytes, "expected_identity": str|None,
+                 "expected_sha256": str|None}]
+        """
+        from agent.services import attachment_access
+
+        binding = requirement_binding_from_context(gateway, self)
+        mode_at_request = attachment_access.mode_value(gateway)
+        entries: list[dict] = []
+        for index, item in enumerate(items or []):
+            attachment_id = str(item.get("attachment_id") or "")
+            payload = bytes(item.get("data") or b"")
+            item_id = f"item_{index + 1}"
+            resolved = None
+            target = ""
+            identity = None
+            try:
+                resolved = self.resolve_source(attachment_id, for_write=True)
+                if resolved.path is not None:
+                    target = str(resolved.path)
+                    identity = resolved.identity.key if resolved.identity is not None else None
+            except Exception:  # noqa: BLE001 - 下面按不可用项如实报告
+                resolved = None
+            if resolved is None or resolved.path is None:
+                entries.append(
+                    {
+                        "item_id": item_id,
+                        "attachment_id": attachment_id,
+                        "path": target,
+                        "data": payload,
+                        "resolved": resolved,
+                        "identity": identity,
+                        "status": BATCH_FAILED,
+                        "reason": (resolved.reason if resolved is not None else "附件不可用"),
+                        "effect": None,
+                    }
+                )
+                continue
+            effect = attachment_access.write_effect(
+                "attachment.write_back",
+                path=target,
+                identity=identity,
+                purpose=purpose,
+                content_sha256=resolved.current_sha256,
+                detail={
+                    "attachment_id": attachment_id,
+                    "size": len(payload),
+                    "batch_item_id": item_id,
+                },
+            )
+            _attach_binding(effect, binding)
+            entries.append(
+                {
+                    "item_id": item_id,
+                    "attachment_id": attachment_id,
+                    "path": target,
+                    "data": payload,
+                    "resolved": resolved,
+                    "identity": identity,
+                    "status": "pending",
+                    "reason": "",
+                    "effect": effect,
+                }
+            )
+        for entry in entries:
+            if entry["effect"] is None:
+                continue
+            decision = await _authorize_item(gateway, entry["effect"])
+            verdict = str(decision.get("verdict") or "deny")
+            entry["status"] = {
+                "allow": BATCH_ALLOWED,
+                "approve": BATCH_WAITING,
+                "deny": BATCH_DENIED,
+            }.get(verdict, BATCH_DENIED)
+            entry["reason"] = str(decision.get("reason") or "")
+        # 已允许项：逐项重核对后执行
+        for entry in [item for item in entries if item["status"] == BATCH_ALLOWED]:
+            recheck = await _recheck_item(
+                gateway,
+                entry["effect"],
+                mode_at_request=mode_at_request,
+                expected_identity=entry["identity"],
+                expected_sha256=entry["resolved"].current_sha256,
+            )
+            if not recheck["ok"]:
+                if recheck.get("needs_user_decision"):
+                    entry["status"] = BATCH_WAITING
+                    entry["reason"] = recheck["reason"] or "执行前状态变化：需要重新确认"
+                else:
+                    entry["status"] = BATCH_INVALIDATED
+                    entry["reason"] = recheck["reason"] or "执行前重核对未通过"
+                continue
+            try:
+                outcome = self._write_back_source_now(
+                    entry["attachment_id"],
+                    entry["data"],
+                    expected_identity=entry.get("expected_identity"),
+                    expected_sha256=entry.get("expected_sha256"),
+                )
+            except Exception as exc:  # noqa: BLE001 - 失败保留文件并如实报告
+                entry["status"] = BATCH_FAILED
+                entry["reason"] = f"{type(exc).__name__}: {exc}"
+                continue
+            entry["status"] = BATCH_COMPLETED
+            entry["outcome"] = outcome
+            self.note_origin_after_write_back(entry["attachment_id"], outcome)
+        # 需要确认的项合并为一个审批操作
+        waiting = [item for item in entries if item["status"] == BATCH_WAITING]
+        if waiting:
+            import base64
+
+            batch_effect = attachment_access.write_effect(
+                "attachment.write_back",
+                path=waiting[0]["path"],
+                identity=waiting[0]["identity"],
+                purpose=purpose,
+                content_sha256=waiting[0]["resolved"].current_sha256,
+                detail={
+                    "items": [
+                        {
+                            "item_id": entry["item_id"],
+                            "attachment_id": entry["attachment_id"],
+                            "path": entry["path"],
+                            "identity": entry["identity"],
+                        }
+                        for entry in waiting
+                    ],
+                    "requirement_binding": binding,
+                },
+            )
+            operation = attachment_access.build_pending_operation(
+                kind="attachment.batch_write_back",
+                label="批量写回 %d 个附件源文件（一次审批）" % len(waiting),
+                effect=batch_effect,
+                payload={
+                    "items": [
+                        {
+                            "item_id": entry["item_id"],
+                            "attachment_id": entry["attachment_id"],
+                            "path": entry["path"],
+                            "identity": entry["identity"],
+                            "content_b64": base64.b64encode(entry["data"]).decode("ascii"),
+                            "sha256": hashlib.sha256(entry["data"]).hexdigest(),
+                        }
+                        for entry in waiting
+                    ],
+                    "requirement_binding": binding,
+                },
+                fingerprint={
+                    "items": [
+                        {
+                            "attachment_id": entry["attachment_id"],
+                            "path": entry["path"],
+                            "identity": entry["identity"],
+                            "content_sha256": entry["resolved"].current_sha256,
+                        }
+                        for entry in waiting
+                    ],
+                    "requirement_binding": binding,
+                },
+                purpose=purpose,
+                instruction=attachment_access.instruction_snapshot(gateway),
+                mode_at_request=mode_at_request,
+            )
+            ticket = await attachment_access.submit(gateway, operation, ctx=ctx)
+            if ticket is None:
+                raise AttachmentPermissionDenied(
+                    "批量写回需要用户批准，但当前授权网关不支持提交待审批操作"
+                )
+            return {
+                "ok": True,
+                "pending_approval": True,
+                "batch": True,
+                "reason": "需要用户批准后才会写回列明的源文件",
+                "operation": "attachment.batch_write_back",
+                "approval": attachment_access.ticket_summary(ticket),
+                "items": [
+                    {
+                        "item_id": entry["item_id"],
+                        "attachment_id": entry["attachment_id"],
+                        "path": entry["path"],
+                        "status": entry["status"],
+                        "reason": entry["reason"],
+                    }
+                    for entry in entries
+                ],
+            }
+        all_ok = all(entry["status"] == BATCH_COMPLETED for entry in entries)
+        return {
+            "ok": all_ok,
+            "pending_approval": False,
+            "batch": True,
+            "items": [
+                {
+                    "item_id": entry["item_id"],
+                    "attachment_id": entry["attachment_id"],
+                    "path": entry["path"],
+                    "status": entry["status"],
+                    "reason": entry["reason"],
+                }
+                for entry in entries
+            ],
+            "results": [
+                {
+                    "attachment_id": entry["attachment_id"],
+                    "path": entry["path"],
+                    "ok": entry["status"] == BATCH_COMPLETED,
+                    "status": entry["status"],
+                    "reason": entry["reason"],
+                }
+                for entry in entries
+            ],
+        }
 
     def _write_back_source_now(
         self,

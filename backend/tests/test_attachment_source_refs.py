@@ -275,7 +275,8 @@ async def test_write_back_requires_write_effect_and_rechecks(service: Attachment
     )
     assert result["ok"] is True and result.get("pending_approval") is not True
     assert source.read_bytes() == "新内容".encode("utf-8")
-    assert [ _effect_kind(item) for item in gateway.effects ] == ["write"], gateway.effects
+    # R9-G §7：判定 + 执行前重核对各一次（两次都必须是 write，且对象一致）
+    assert [_effect_kind(item) for item in gateway.effects] == ["write", "write"], gateway.effects
     target = gateway.effects[0].targets[0]
     assert str(target.value) == str(source)
     assert target.identity
@@ -341,7 +342,8 @@ async def test_read_tool_deny_and_allow_via_gateway(service: AttachmentService, 
     )
     allowed = await allowed_tool.run(attachment_id=att.id)
     assert allowed.ok is True and "正文" in allowed.content
-    assert [_effect_kind(item) for item in allow_gateway.effects] == ["read"]
+    # R9-G §7：读取也必须在真正读文件前重新核对一次（两次都是 read）
+    assert [_effect_kind(item) for item in allow_gateway.effects] == ["read", "read"]
 
 
 def test_content_route_denied_by_gateway(client: TestClient, tmp_path: Path):

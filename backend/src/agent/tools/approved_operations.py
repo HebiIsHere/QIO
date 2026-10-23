@@ -125,6 +125,169 @@ def _expected_identity(payload: dict, fingerprint: dict) -> dict:
     )
 
 
+REQUIREMENT_BINDING_KEY = "requirement_binding"
+
+
+def _normalize_binding(value: Any) -> dict | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        requirement_id = value.get("requirement_id") or value.get("id")
+        version = value.get("version", 1)
+    else:
+        requirement_id = getattr(value, "requirement_id", None)
+        version = getattr(value, "version", 1)
+    if not requirement_id:
+        return None
+    try:
+        version = int(version or 1)
+    except (TypeError, ValueError):
+        version = 1
+    return {"requirement_id": str(requirement_id), "version": version}
+
+
+def _binding_from_operation(payload: dict, fingerprint: dict) -> dict | None:
+    return _normalize_binding(
+        payload.get(REQUIREMENT_BINDING_KEY) or fingerprint.get(REQUIREMENT_BINDING_KEY)
+    )
+
+
+def _engine_of(ctx: ExecutionContext) -> Any:
+    return getattr(ctx, "engine", None)
+
+
+def _requirements_of(ctx: ExecutionContext) -> Any:
+    engine = _engine_of(ctx)
+    return getattr(engine, "requirements", None) if engine is not None else None
+
+
+def _effect_from_operation(ctx: ExecutionContext) -> Any:
+    """审批单里持久化的 effect 摘要 → 契约 Effect（用于执行前重新走引擎判定）。"""
+    raw = dict(getattr(getattr(ctx, "operation", None), "effect", None) or {})
+    if not raw:
+        return None
+    try:
+        from agent.security.effects import Effect, EffectKind, Target
+    except Exception:  # noqa: BLE001 - 核心类型不可用则不重放判定（其余核对仍做）
+        return None
+    kind_raw = str(raw.get("kind") or "")
+    try:
+        kind = EffectKind(kind_raw)
+    except Exception:  # noqa: BLE001
+        return None
+    targets = []
+    for item in raw.get("targets") or []:
+        if not isinstance(item, dict):
+            continue
+        targets.append(
+            Target(
+                kind=str(item.get("kind") or "path"),
+                value=str(item.get("value") or ""),
+                identity=item.get("identity"),
+                exists=item.get("exists"),
+            )
+        )
+    return Effect(
+        kind=kind,
+        targets=tuple(targets),
+        purpose=str(raw.get("purpose") or ""),
+        tool=raw.get("tool"),
+        detail=dict(raw.get("detail") or {}),
+        reversible=bool(raw.get("reversible", False)),
+    )
+
+
+async def _recheck_requirement_and_mode(
+    ctx: ExecutionContext,
+    *,
+    payload: dict,
+    fingerprint: dict,
+    path: str,
+) -> ExecResult | None:
+    """批准后执行前重核对（契约 §7）：模式快照/要求版本/授权/审批有效期/对象。
+
+    返回 None 表示仍覆盖；返回 ExecResult 表示不得执行（保留文件并如实报状态）。
+    """
+    authorize_started = getattr(ctx, "authorize_started", None)
+    if callable(authorize_started):
+        try:
+            allowed, reason = await authorize_started()
+        except Exception:  # noqa: BLE001 - 重核对异常按未通过（失败关闭）
+            return _failure(
+                "执行前重核对失败：本次未执行",
+                "invalidated: recheck_error",
+                invalidated=True,
+                path=path,
+            )
+        if not allowed:
+            return _failure(
+                reason or "当前模式/审批状态已变化，本次未执行",
+                "invalidated: mode_changed",
+                invalidated=True,
+                path=path,
+            )
+    # 要求绑定：仍 active 且版本一致（补充/修正/撤回后不得沿用旧允许）。
+    binding = _binding_from_operation(payload, fingerprint)
+    ledger = _requirements_of(ctx)
+    validate = getattr(ledger, "validate_binding", None)
+    if binding and callable(validate):
+        try:
+            try:
+                from agent.security.requirements import RequirementBinding  # type: ignore
+
+                target = RequirementBinding(
+                    requirement_id=str(binding["requirement_id"]),
+                    version=int(binding["version"]),
+                )
+            except Exception:  # noqa: BLE001
+                target = binding
+            valid = bool(validate(target))
+        except TypeError:
+            try:
+                valid = bool(
+                    validate(
+                        requirement_id=binding["requirement_id"],
+                        version=binding["version"],
+                    )
+                )
+            except Exception:  # noqa: BLE001
+                valid = False
+        except Exception:  # noqa: BLE001
+            valid = False
+        if not valid:
+            return _failure(
+                "对应的用户要求已被修正/撤回或版本不符：本次未执行（需重新提出）",
+                "invalidated: requirement_invalid",
+                invalidated=True,
+                path=path,
+            )
+    # 用当前模式重新走一次引擎判定：明确拒绝 → 不执行；需要重新确认 → 不自动执行。
+    engine = _engine_of(ctx)
+    effect = _effect_from_operation(ctx)
+    if engine is not None and effect is not None and callable(getattr(engine, "authorize", None)):
+        try:
+            decision = await engine.authorize(effect)
+        except Exception:  # noqa: BLE001 - 引擎异常按未通过（失败关闭）
+            return _failure(
+                "执行前重新判定失败：本次未执行",
+                "invalidated: recheck_error",
+                invalidated=True,
+                path=path,
+            )
+        verdict = security_gate.verdict_of(decision)
+        if verdict == "deny":
+            return _failure(
+                f"当前授权已不允许这次操作：{security_gate.reason_of(decision, '拒绝')}（本次未执行）",
+                "invalidated: authorization_denied",
+                invalidated=True,
+                path=path,
+            )
+        # approve 不自动放行：审批单本身是用户的明确决定，但若当前需要新的确认，
+        # 交由上层（Lead 的 RecheckService / 审批恢复流程）按最新状态处理；这里
+        # 至少保证不执行「当前明确拒绝」的操作。
+    return None
+
+
 def _redacted(text: Any, limit: int = 2000) -> str:
     return redact_text(str(text or "")[:limit])
 
@@ -207,6 +370,11 @@ async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
     blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
     if blocked is not None:
         return blocked
+    blocked = await _recheck_requirement_and_mode(
+        ctx, payload=payload, fingerprint=fingerprint, path=path
+    )
+    if blocked is not None:
+        return blocked
 
     expected = _expected_identity(payload, fingerprint)
     same, reason = _check_identity(path, expected)
@@ -277,6 +445,11 @@ async def execute_fs_patch(payload: dict, ctx: ExecutionContext) -> ExecResult:
     fingerprint = _fingerprint(ctx)
 
     blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
+    if blocked is not None:
+        return blocked
+    blocked = await _recheck_requirement_and_mode(
+        ctx, payload=payload, fingerprint=fingerprint, path=path
+    )
     if blocked is not None:
         return blocked
 
@@ -420,6 +593,14 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                 "identity": fingerprint.get("identity"),
             }
         )
+    # 批量审批单的 items 列表携带逐项 item_id（批次状态/恢复只继续未执行项）。
+    item_ids: dict[str, str] = {}
+    for entry in payload.get("items") or []:
+        if isinstance(entry, dict) and entry.get("path"):
+            item_ids[str(entry["path"])] = str(entry.get("item_id") or "")
+    if item_ids:
+        for row in rows:
+            row["item_id"] = item_ids.get(str(row.get("path")), "")
     return rows
 
 
@@ -445,11 +626,30 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
     failed: list[dict] = []
     for row in rows:
         path = row["path"]
+        item_id = str(row.get("item_id") or "")
         blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
         if blocked is not None:
             item = {
+                "item_id": item_id,
                 "path": path,
                 "ok": False,
+                "status": "invalidated",
+                "invalidated": True,
+                "reason": blocked.summary,
+            }
+            results.append(item)
+            failed.append(item)
+            continue
+        # R9-G §7：批准后重放前逐项重核对（模式/要求版本/授权/审批/对象）
+        blocked = await _recheck_requirement_and_mode(
+            ctx, payload=payload, fingerprint=fingerprint, path=path
+        )
+        if blocked is not None:
+            item = {
+                "item_id": item_id,
+                "path": path,
+                "ok": False,
+                "status": "invalidated",
                 "invalidated": True,
                 "reason": blocked.summary,
             }
@@ -459,8 +659,10 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
         same, reason = _identity_matches(path, row.get("identity"))
         if not same:
             item = {
+                "item_id": item_id,
                 "path": path,
                 "ok": False,
+                "status": "invalidated",
                 "invalidated": True,
                 "reason": reason,
             }
@@ -471,8 +673,10 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
         if ok:
             await asyncio.to_thread(_note_recycled_origin, path)
         item = {
+            "item_id": item_id,
             "path": path,
             "ok": bool(ok),
+            "status": "completed" if ok else "failed",
             "mechanism": code if ok else None,
             "reason": detail,
             "deleted_permanently": False,
@@ -481,7 +685,20 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
         if not ok:
             item["code"] = code
             failed.append(item)
-    detail_data = {"results": results, "deleted_permanently": False}
+    detail_data = {
+        "results": results,
+        "items": [
+            {
+                "item_id": item.get("item_id"),
+                "path": item.get("path"),
+                "status": item.get("status"),
+                "ok": item.get("ok"),
+                "reason": item.get("reason"),
+            }
+            for item in results
+        ],
+        "deleted_permanently": False,
+    }
     if failed:
         return _failure(
             "部分文件没有移入系统回收站：失败项已保留文件（未做永久删除）",
@@ -940,6 +1157,11 @@ async def execute_attachment_write_back(
                 path=path,
                 attachment_id=attachment_id,
             )
+    blocked = await _recheck_requirement_and_mode(
+        ctx, payload=payload, fingerprint=fingerprint, path=path
+    )
+    if blocked is not None:
+        return blocked
     try:
         outcome = await asyncio.to_thread(
             service._write_back_source_now,
@@ -975,6 +1197,124 @@ async def execute_attachment_write_back(
     )
 
 
+async def execute_attachment_batch_write_back(
+    payload: dict,
+    ctx: ExecutionContext,
+    *,
+    attachments_getter: Callable[[], Any] | None,
+) -> ExecResult:
+    """attachment.batch_write_back：批准后批量写回，逐项重核对 + 逐项状态（契约 §6）。"""
+    service = attachments_getter() if callable(attachments_getter) else None
+    if service is None:
+        return _failure(
+            "附件服务暂不可用：没有写回任何文件（需要应用完整装配）",
+            "attachment_service_unavailable",
+        )
+    items = [dict(item) for item in (payload.get("items") or []) if isinstance(item, dict)]
+    if not items:
+        return _failure("审批单缺少批量写回清单：未写回", "missing_batch_items")
+    fingerprint = _fingerprint(ctx)
+    fingerprint_items = {
+        str(entry.get("attachment_id") or ""): entry
+        for entry in (fingerprint.get("items") or [])
+        if isinstance(entry, dict)
+    }
+    import base64 as _base64
+    import hashlib as _hashlib
+
+    results: list[dict] = []
+    all_ok = True
+    for item in items:
+        item_id = str(item.get("item_id") or "")
+        attachment_id = str(item.get("attachment_id") or "")
+        path = str(item.get("path") or "")
+        reason = ""
+        status = "failed"
+        outcome: dict = {}
+        blocked = None
+        try:
+            data = _base64.b64decode(str(item.get("content_b64") or ""), validate=True)
+        except Exception as exc:  # noqa: BLE001 - 非法内容不写
+            data = None
+            reason = f"写回内容不是合法 base64：{type(exc).__name__}"
+        if data is not None:
+            expected_new_sha = str(item.get("sha256") or "")
+            if expected_new_sha and _hashlib.sha256(data).hexdigest() != expected_new_sha:
+                reason = "待写回内容与提交审批时不一致（需重新审批）"
+                blocked = True
+        if data is not None and blocked is None:
+            blocked_result = await _recheck_requirement_and_mode(
+                ctx, payload=payload, fingerprint=fingerprint, path=path
+            )
+            if blocked_result is not None:
+                reason = blocked_result.summary
+                blocked = True
+        if data is not None and blocked is None:
+            expected_identity = str(item.get("identity") or "")
+            expected_old_sha = str(
+                (fingerprint_items.get(attachment_id) or {}).get("content_sha256") or ""
+            )
+            if expected_identity:
+                current_key = _w3_identity_key(path)
+                if current_key is None or current_key != expected_identity:
+                    reason = "源文件已不是审批时的那一份（身份变化）"
+                    blocked = True
+            if blocked is None and expected_old_sha:
+                current_sha = _w3_content_sha(path)
+                if current_sha is None or current_sha != expected_old_sha:
+                    reason = "源文件内容在审批期间发生了变化"
+                    blocked = True
+        if data is not None and blocked is None:
+            try:
+                outcome = await asyncio.to_thread(
+                    service._write_back_source_now,
+                    attachment_id,
+                    data,
+                    expected_identity=str(item.get("identity") or "") or None,
+                    expected_sha256=str(
+                        (fingerprint_items.get(attachment_id) or {}).get("content_sha256")
+                        or ""
+                    )
+                    or None,
+                )
+                status = "completed"
+            except Exception as exc:  # noqa: BLE001 - 失败保留文件
+                reason = f"{type(exc).__name__}: {_redacted(exc)}"
+        ok = status == "completed"
+        all_ok = all_ok and ok
+        if ok:
+            note = getattr(service, "note_origin_after_write_back", None)
+            if callable(note):
+                try:
+                    note(attachment_id, outcome)
+                except Exception:  # noqa: BLE001
+                    pass
+        results.append(
+            {
+                "item_id": item_id,
+                "attachment_id": attachment_id,
+                "path": path,
+                "ok": ok,
+                "status": status if not blocked else "invalidated",
+                "reason": reason,
+                "sha256": outcome.get("sha256"),
+            }
+        )
+    detail = {
+        "batch": True,
+        "items": results,
+        "results": results,
+        "deleted_permanently": False,
+    }
+    if not all_ok:
+        return _failure(
+            "批量写回未全部完成：失效/失败的项已保留文件",
+            "batch_partial_failure",
+            detail=detail,
+        )
+    return _success("已批量写回 %d 个附件源文件" % len(results), detail=detail)
+
+
 async def execute_attachment_recycle(
     payload: dict,
     ctx: ExecutionContext,
@@ -1002,6 +1342,23 @@ async def execute_attachment_recycle(
         path = str(item.get("path") or "")
         if not path:
             results.append({"path": path, "ok": False, "reason": "缺少路径"})
+            all_ok = False
+            continue
+        blocked = await _recheck_requirement_and_mode(
+            ctx, payload=payload, fingerprint=_fingerprint(ctx), path=path
+        )
+        if blocked is not None:
+            results.append(
+                {
+                    "attachment_id": item.get("attachment_id"),
+                    "item_id": item.get("item_id"),
+                    "path": path,
+                    "ok": False,
+                    "status": "invalidated",
+                    "invalidated": True,
+                    "reason": blocked.summary,
+                }
+            )
             all_ok = False
             continue
         expected_identity = str(item.get("identity") or "")
@@ -1032,8 +1389,10 @@ async def execute_attachment_recycle(
         results.append(
             {
                 "attachment_id": item.get("attachment_id"),
+                "item_id": item.get("item_id"),
                 "path": path,
                 "ok": ok,
+                "status": "completed" if ok else "failed",
                 "mechanism": outcome.get("mechanism"),
                 "reason": outcome.get("reason") or item.get("reason") or "",
                 "deleted_permanently": bool(outcome.get("deleted_permanently", False)),
@@ -1242,6 +1601,12 @@ def register_approved_operations(
         add("attachment.write_back", _unavailable(reason))
         add("attachment.read", _unavailable(reason))
     add("attachment.recycle", execute_attachment_recycle)
+    add(
+        "attachment.batch_write_back",
+        lambda payload, ctx: execute_attachment_batch_write_back(
+            payload, ctx, attachments_getter=attachments_getter
+        ),
+    )
 
     # 当前还没有独立执行器的类型：显式注册「不可用」，不允许静默丢单。
     add(
