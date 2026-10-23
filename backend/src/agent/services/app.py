@@ -319,6 +319,7 @@ class AppContext:
         self.authorizations = None
         self.review_audit = None
         self.reviewer = None
+        self.requirement_resolver = None
         try:
             from agent.security.requirements import (
                 AuthorizationLedger,
@@ -336,6 +337,27 @@ class AppContext:
                 adapter_factory=self.build_adapter,
                 audit=self.review_audit,
             )
+            # R9-G：模型理解"这条用户消息是新要求/补充/修正/撤回"；不是授权审查，
+            # 不产生许可；失败时后端按新要求继续并标注 unavailable（不关键词兜底）。
+            try:
+                from agent.security.resolution import ModelRequirementResolver
+                import inspect as _inspect
+
+                params = _inspect.signature(ModelRequirementResolver).parameters
+                resolver_kwargs = {"adapter_factory": self.build_adapter}
+                if "requirements" in params:
+                    resolver_kwargs["requirements"] = self.requirements
+                if "audit" in params and "audit" in _inspect.signature(
+                    ModelRequirementResolver
+                ).parameters:
+                    resolver_kwargs["audit"] = self.requirements
+                self.requirement_resolver = ModelRequirementResolver(**resolver_kwargs)
+            except Exception as exc:  # noqa: BLE001 - 解析器不可用：按新要求继续
+                logging.getLogger(__name__).warning(
+                    "R9-G 要求解析器未启用（本次按新要求继续）：%s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
         except Exception as exc:  # noqa: BLE001 - 降级必须可见，不静默假装已启用
             logging.getLogger(__name__).warning(
                 "R9-F 授权审查组件未启用（受限模式退回普通审批）：%s: %s",
@@ -2508,7 +2530,12 @@ class AppContext:
         R9：每轮用户指令建立独立的 InstructionContext（授权依据），轮末即关闭
         全部 grant —— 绝不因为同话题/同目录/历史许可而延续到后续指令。
         """
-        from agent.security.context import approval_origin_context, instruction_context
+        from agent.security.context import (
+            approval_origin_context,
+            instruction_context,
+            requirement_context,
+            requirement_resolution_context,
+        )
 
         instruction = None
         try:
@@ -2519,24 +2546,66 @@ class AppContext:
             )
         except Exception:  # noqa: BLE001 - 指令提取失败不能挡住一轮（保守=没有 grant）
             logging.getLogger(__name__).warning("instruction begin failed", exc_info=True)
-        # R9-F：把这次用户要求写入需求台账（原话 + 真实来源），后续受限模式
-        # 模型审查引用它作为授权依据；轮末不撤销需求本身（同一要求的后台工作
-        # 可能还在继续），但需求会被新的用户要求 supersede。
+        # R9-G（契约 §3）：先由模型理解这条用户消息是新要求/补充/修正/撤回，再由
+        # 后端应用并形成**具体要求的版本绑定**；操作只使用这个绑定，不再取
+        # "最近一条 active 要求"。解析器不可用/失败时按新要求继续并标注 unavailable
+        # （不关键词兜底，也不静默扩大旧要求）。
+        requirement_binding = None
+        resolution_status = "unavailable"
+        requirement_id = None
+        message_id = str(getattr(ctx, "message_id", "") or "")
+        turn_id = str(getattr(ctx, "turn_id", "") or "")
         if instruction is not None and self.requirements is not None:
             try:
-                self.requirements.record_user_message(
-                    text=instruction.text,
-                    message_id=str(getattr(ctx, "message_id", "") or ""),
-                    turn_id=str(getattr(ctx, "turn_id", "") or ""),
-                    topic_id=getattr(ctx, "initial_topic", None),
-                )
+                resolution = None
+                resolver = getattr(self, "requirement_resolver", None)
+                if resolver is not None:
+                    try:
+                        candidates = self.requirements.candidates(limit=12)
+                        resolution = await resolver.resolve(
+                            message=instruction.text,
+                            message_id=message_id,
+                            turn_id=turn_id,
+                            candidates=candidates,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 解析失败按新要求继续
+                        resolution_status = "unavailable"
+                        logging.getLogger(__name__).warning(
+                            "要求关系解析失败（按新要求继续，不用关键词兜底）：%s: %s",
+                            type(exc).__name__,
+                            exc,
+                        )
+                if resolution is not None:
+                    applied = self.requirements.apply_resolution(
+                        resolution, message_id=message_id, turn_id=turn_id
+                    )
+                    requirement_id = getattr(applied, "requirement_id", None) or getattr(
+                        applied, "id", None
+                    )
+                    resolution_status = "ok"
+                    binder = getattr(self.requirements, "binding_for", None)
+                    if requirement_id and callable(binder):
+                        requirement_binding = binder(str(requirement_id))
+                if requirement_binding is None and resolution is None:
+                    recorded = self.requirements.record_user_message(
+                        text=instruction.text,
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        topic_id=getattr(ctx, "initial_topic", None),
+                    )
+                    requirement_id = getattr(recorded, "requirement_id", None)
+                    binder = getattr(self.requirements, "binding_for", None)
+                    if requirement_id and callable(binder):
+                        requirement_binding = binder(str(requirement_id))
             except Exception:  # noqa: BLE001 - 台账失败不阻塞用户轮，但审查会因缺少要求退回审批
                 logging.getLogger(__name__).warning("requirement record failed", exc_info=True)
         try:
             if instruction is None:
                 await self.turn_orchestrator.execute(ctx)
             else:
-                with instruction_context(instruction), approval_origin_context("user"):
+                with instruction_context(instruction), approval_origin_context("user"), \
+                        requirement_context(requirement_binding), \
+                        requirement_resolution_context(resolution_status):
                     await self.turn_orchestrator.execute(ctx)
         finally:
             if instruction is not None:

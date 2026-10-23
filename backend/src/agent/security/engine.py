@@ -22,6 +22,8 @@ from agent.security.context import (
     agent_scope as agent_scope_var,
     approval_origin,
     current_instruction,
+    current_requirement,
+    requirement_resolution_status,
 )
 from agent.security.effects import (
     AuthDecision,
@@ -171,6 +173,12 @@ class AuthorizationEngine(AuthorizationGateway):
             instruction=instruction,
             agent_scope=scope,
             origin=str(approval_origin.get() or "user"),
+            requirement=current_requirement.get(),
+            extra={
+                "requirement_resolution_status": str(
+                    requirement_resolution_status.get() or "ok"
+                )
+            },
         )
 
     async def authorize(self, effect: Effect, *, ctx: AuthContext | None = None) -> AuthDecision:
@@ -201,7 +209,16 @@ class AuthorizationEngine(AuthorizationGateway):
             decision=decision,
             mode=mode.value,
             instruction_id=instruction.instruction_id if instruction is not None else None,
-            detail={"origin": context.origin, "needs_review": needs_review},
+            detail={
+                "origin": context.origin,
+                "needs_review": needs_review,
+                "requirement_id": getattr(
+                    getattr(context, "requirement", None), "requirement_id", None
+                ),
+                "requirement_version": getattr(
+                    getattr(context, "requirement", None), "version", None
+                ),
+            },
         )
         return decision
 
@@ -258,6 +275,19 @@ class AuthorizationEngine(AuthorizationGateway):
         )
         return decision
 
+    async def authorize_batch(
+        self, effects: Sequence[Effect], *, ctx: AuthContext | None = None
+    ) -> list[AuthDecision]:
+        """批量操作逐项判定（R9-G 契约 §6）：每项独立得到结论，绝不用一项覆盖整批。
+
+        调用方（文件/附件等批量入口）负责把一批操作展开为逐项 effect，按项执行
+        allowed、按需把 waiting 项合并成一个审批操作；本方法不聚合。
+        """
+        decisions: list[AuthDecision] = []
+        for effect in effects:
+            decisions.append(await self.authorize(effect, ctx=ctx))
+        return decisions
+
     async def authorize_tool_invocation(
         self,
         *,
@@ -313,6 +343,19 @@ class AuthorizationEngine(AuthorizationGateway):
             operation.instruction_text = operation.instruction_text or instruction.text
         if not operation.purpose and instruction is not None:
             operation.purpose = str(instruction.text or "")[:200]
+        # R9-G：审批单绑定操作实际依据的具体用户要求及版本（执行前核对；
+        # 没有绑定就是没有绑定，不能用"最近一条 active"补）。
+        binding = getattr(context, "requirement", None) or current_requirement.get()
+        if binding is not None:
+            requirement_id = getattr(binding, "requirement_id", None)
+            version = getattr(binding, "version", None)
+            if requirement_id:
+                operation.requirement_id = operation.requirement_id or str(requirement_id)
+            if version is not None and operation.requirement_version is None:
+                try:
+                    operation.requirement_version = int(version)
+                except (TypeError, ValueError):
+                    pass
         return await self.approvals.submit(
             operation, mode=operation.mode_at_request, origin=context.origin
         )
@@ -361,13 +404,32 @@ class AuthorizationEngine(AuthorizationGateway):
                 effect.detail["origin"] = str(origin)
                 return
 
-    def _current_requirement(self) -> Any:
+    def _requirement_for(self, context: AuthContext) -> Any:
+        """取出这次操作依据的**绑定要求**（R9-G）；没有绑定不回退"最近一条"。
+
+        绑定必须指向仍 active、且版本一致的具体用户要求；否则视为没有可对照要求
+        （需要人工确认），绝不用另一条更有利的要求替代。
+        """
+        binding = getattr(context, "requirement", None) or current_requirement.get()
+        if binding is None:
+            return None
+        requirement_id = getattr(binding, "requirement_id", None)
+        version = getattr(binding, "version", None)
+        if not requirement_id and isinstance(binding, str):
+            requirement_id = binding
+        if not requirement_id:
+            return None
         if self.requirements is None:
             return None
         try:
-            return self.requirements.current()
-        except Exception:  # noqa: BLE001 - 台账不可用按"没有可对照要求"
+            requirement = self.requirements.by_id(str(requirement_id))
+        except Exception:  # noqa: BLE001 - 台账不可用按无绑定处理
             return None
+        if requirement is None or str(getattr(requirement, "status", "")) != "active":
+            return None
+        if version is not None and int(getattr(requirement, "version", 1) or 1) != int(version):
+            return None
+        return requirement
 
     @staticmethod
     def _operation_fingerprint(requirement_id: str, mode: str, operation: Any) -> str:
@@ -453,7 +515,7 @@ class AuthorizationEngine(AuthorizationGateway):
         unavailable_note = "（暂时无法确认授权范围；本次没有执行，你可以对这条具体操作手动审批）"
         if self.reviewer is None or self.requirements is None or self.authorizations is None:
             return Verdict.APPROVE, reason + unavailable_note, scope_id, True
-        requirement = self._current_requirement()
+        requirement = self._requirement_for(context)
         if requirement is None:
             return (
                 Verdict.APPROVE,
@@ -475,6 +537,7 @@ class AuthorizationEngine(AuthorizationGateway):
         operation = self._review_operation(effect)
         # fingerprint 用审查模块的单一实现（含操作类型/对象身份/程序/argv/cwd/
         # 脚本摘要/接收方/模式）；后端自算版本只作为模块缺失时的兜底。
+        requirement_version = int(getattr(requirement, "version", 1) or 1)
         try:
             from agent.security.review import operation_fingerprint as _op_fingerprint
 
@@ -483,6 +546,9 @@ class AuthorizationEngine(AuthorizationGateway):
             fingerprint = self._operation_fingerprint(
                 requirement.requirement_id, mode.value, operation
             )
+        # 复用键 = (requirement_id, operation fingerprint)：修正产生新的要求行/版本，
+        # requirement_id 变化后旧记录自然不命中；同一个要求的版本差由 Ledger 的
+        # active/版本校验兜底。
         try:
             record = self.authorizations.reuse(
                 requirement_id=requirement.requirement_id,
@@ -516,17 +582,65 @@ class AuthorizationEngine(AuthorizationGateway):
                 for grant in instruction.active_grants()
             )
         user_limits = tuple(getattr(requirement, "limits", ()) or ())
-        request = ReviewRequest(
+        corrections = ()
+        try:
+            loader = getattr(self.requirements, "corrections_for", None)
+            if callable(loader):
+                corrections = tuple(loader(requirement.requirement_id) or ())
+        except Exception:  # noqa: BLE001 - 读取修正失败不阻断（审查输入会缺上下文）
+            corrections = ()
+        prior_decisions = ()
+        try:
+            rows = self.authorizations.records_for_requirement(
+                requirement.requirement_id
+            )
+            prior_decisions = tuple(
+                {
+                    "kind": getattr(row, "operation_kind", ""),
+                    "decision": getattr(row, "decision", ""),
+                    "reason": getattr(row, "reason", ""),
+                    "revoked_at": getattr(row, "revoked_at", None),
+                }
+                for row in rows
+            )
+        except Exception:  # noqa: BLE001
+            prior_decisions = ()
+        request_kwargs: dict[str, Any] = dict(
             requirement=requirement,
-            corrections=tuple(getattr(requirement, "corrections", ()) or ()),
+            corrections=corrections,
             limits=user_limits,
             mode=mode.value,
             operation=operation,
             related_grants=related_grants,
-            prior_decisions=(),
+            prior_decisions=prior_decisions,
             approvals=(),
             user_constraints=user_limits,
         )
+        # R9-G 给 ReviewRequest 增加字段（版本/相关要求/条件/解析状态/材料）；
+        # 用 dataclass 字段过滤，保证 W1 分支合入前后都能构造。
+        try:
+            import dataclasses as _dc
+
+            known = {item.name for item in _dc.fields(ReviewRequest)}
+        except Exception:  # noqa: BLE001
+            known = set(request_kwargs)
+        optional_kwargs = {
+            "requirement_version": requirement_version,
+            "resolution_status": str(
+                (context.extra or {}).get("requirement_resolution_status") or "ok"
+            ),
+            "related_requirements": (),
+            "condition_evidence": tuple(
+                (context.extra or {}).get("condition_evidence") or ()
+            ),
+            "untrusted_material": tuple(
+                (context.extra or {}).get("untrusted_material") or ()
+            ),
+        }
+        for key, value in optional_kwargs.items():
+            if key in known:
+                request_kwargs[key] = value
+        request = ReviewRequest(**request_kwargs)
         try:
             outcome = await self.reviewer.review(request)
         except ReviewUnavailable as exc:
@@ -560,9 +674,8 @@ class AuthorizationEngine(AuthorizationGateway):
 
                 import uuid
 
-                record = AuthorizationRecord(
-                    # record_id 只是行身份；复用键是 (requirement_id, fingerprint)，
-                    # 不同要求下相同操作也不能撞主键。
+                record_kwargs = dict(
+                    # record_id 只是行身份；复用键是 (requirement_id, fingerprint)。
                     record_id="authz_" + uuid.uuid4().hex[:16],
                     requirement_id=requirement.requirement_id,
                     operation_kind=operation.kind,
@@ -579,6 +692,15 @@ class AuthorizationEngine(AuthorizationGateway):
                     revoked_at=None,
                     review_id=None,
                 )
+                try:
+                    import dataclasses as _dc
+
+                    known = {item.name for item in _dc.fields(AuthorizationRecord)}
+                except Exception:  # noqa: BLE001
+                    known = set(record_kwargs)
+                if "requirement_version" in known:
+                    record_kwargs["requirement_version"] = requirement_version
+                record = AuthorizationRecord(**record_kwargs)
                 self.authorizations.record(record)
             except Exception as exc:  # noqa: BLE001 - 记录不了授权就不放行
                 logger.warning("授权记录保存失败：%s", exc)
@@ -748,13 +870,24 @@ class AuthorizationEngine(AuthorizationGateway):
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
             return Verdict.APPROVE, limit_reason, None
-        # 4) 用户明确禁止（R9-F 契约 §5.3）：三种模式都必须遵守。
-        # 这是**限制**检测：只把"不要修改/只分析/禁止删除/不要外发"等用户原话
-        # 转成拒绝，永远不会产生许可；误判方向是更保守（多拒绝一次），不是放行。
-        prohibited = self._user_prohibition(effect)
-        if prohibited:
-            return Verdict.DENY, prohibited, None
-        # 5) 三种模式。
+        # 4) 用户结构化限制（R9-G 契约 §2/§8）：限制来自模型对用户要求的理解
+        #    （结构化 limits，如对象/操作/原因），不再扫描原话里的关键词；限制只做
+        #    拒绝，不产生许可。旧版纯文本 limits 不参与判定（不解析、不误判）。
+        requirement = self._requirement_for(context)
+        conflict = self._limit_conflict(effect, requirement)
+        if conflict:
+            return Verdict.DENY, conflict, None
+        # 5) 永久删除政策（结构化删除意图，按契约 §5；模型 ALLOW/一般授权不能替代
+        #    受限模式下的明确人工确认）。
+        permanent = self._permanent_delete_decision(effect, mode, requirement)
+        if permanent is not None:
+            return permanent
+        # 6) 已验证的固定查询：三种模式直接允许；判定来自真实程序身份/argv 结构，
+        #    不按字符串搜索，也不整程序放行。
+        fixed = self._fixed_query_decision(effect)
+        if fixed is not None:
+            return fixed
+        # 7) 三种模式。
         if mode == PermissionMode.READ_ONLY:
             return self._read_only(effect)
         if mode == PermissionMode.UNRESTRICTED:
@@ -765,61 +898,200 @@ class AuthorizationEngine(AuthorizationGateway):
             )
         return self._restricted(effect, context)
 
-    #: 用户"只分析/不许改"类明确禁止 → 拒绝所有会改状态的效果。
-    _MUTATION_PROHIBITIONS = (
-        "只分析",
-        "只读分析",
-        "不要修改",
-        "别修改",
-        "不要改",
-        "别改",
-        "禁止修改",
-        "不许修改",
-        "不要动",
-        "不要写",
-        "别写",
-    )
-    _DELETE_PROHIBITIONS = ("不要删除", "别删除", "禁止删除", "不许删除", "不要删")
-    _EGRESS_PROHIBITIONS = (
-        "不要发送",
-        "别发送",
-        "不要外发",
-        "禁止外发",
-        "不要上传",
-        "禁止上传",
-        "不要发给",
-    )
+    # -- R9-G：结构化限制 / 固定查询 / 永久删除 -----------------------------
 
-    def _user_prohibition(self, effect: Effect) -> str | None:
-        """从当前用户要求原话里识别**禁止**（只用于拒绝，不产生任何许可）。
+    _LIMIT_OPERATION_NAMES = {
+        EffectKind.WRITE: "write",
+        EffectKind.CREATE: "create",
+        EffectKind.DELETE: "delete",
+        EffectKind.EXECUTE: "execute",
+        EffectKind.INSTALL_DEPS: "install",
+        EffectKind.SYSTEM_CHANGE: "system_change",
+        EffectKind.NETWORK_EGRESS: "egress",
+    }
 
-        完全无限制模式也遵守用户明确禁止（契约 §5.3）；受限模式同理，
-        且禁止优先于模型审查（不让模型把用户刚说出的限制推翻）。
+    @staticmethod
+    def _limit_path_matches(path: str, item: dict) -> bool:
+        """限制对象与 effect 对象做**结构化**路径核对（不解析文字）。"""
+        kind = str(item.get("kind") or "path")
+        value = str(item.get("value") or "")
+        if not value:
+            return False
+        candidate = internal_data.normalize_path(path)
+        target = internal_data.normalize_path(value)
+        if candidate is None or target is None:
+            return False
+        try:
+            if kind == "path_prefix" or kind == "directory":
+                return candidate == target or candidate.is_relative_to(target)
+            return candidate == target
+        except (OSError, ValueError):
+            return False
+
+    def _limit_conflict(self, effect: Effect, requirement: Any) -> str | None:
+        """检查模型理解出的结构化用户限制是否覆盖这次操作（只做拒绝）。
+
+        限制存于 requirement.limits（JSON list[dict]）：
+        {"operations": ["write", ...], "objects": [{"kind":"path|path_prefix","value":...}],
+         "reason": "..."}。旧版纯文本 limits 不参与判定（R9-G 契约 §10 兼容策略）。
         """
-        requirement = self._current_requirement()
         if requirement is None:
             return None
-        parts = [str(getattr(requirement, "text", "") or "")]
         limits = getattr(requirement, "limits", ()) or ()
-        parts.extend(str(item) for item in limits)
-        text = "\n".join(item for item in parts if item)
-        if not text.strip():
+        if not limits or isinstance(limits, (str, bytes)):
             return None
-        compact = text.replace(" ", "").lower()
-        kind = effect.kind
-        if kind in MUTATING_EFFECTS and any(
-            token in compact for token in self._MUTATION_PROHIBITIONS
-        ):
-            return "你明确要求只分析/不要修改；这次操作会改变状态，本次没有执行。"
-        if kind == EffectKind.DELETE and any(
-            token in compact for token in self._DELETE_PROHIBITIONS
-        ):
-            return "你明确要求不要删除；本次没有执行。"
-        if kind == EffectKind.NETWORK_EGRESS and any(
-            token in compact for token in self._EGRESS_PROHIBITIONS
-        ):
-            return "你明确要求不要外发/上传；本次没有执行。"
+        operation = self._LIMIT_OPERATION_NAMES.get(effect.kind)
+        if operation is None:
+            return None
+        path_targets = [target.value for target in effect.path_targets()]
+        for raw in limits:
+            if not isinstance(raw, dict):
+                continue
+            operations = raw.get("operations") or ()
+            if operations and "*" not in operations:
+                if operation not in operations and not any(
+                    str(item).strip().lower() == operation for item in operations
+                ):
+                    continue
+            objects = raw.get("objects") or ()
+            if not path_targets:
+                # 没有对象的目标（如 shell）只按操作限制处理：模型明确限制该操作即拒绝。
+                if not objects:
+                    return str(raw.get("reason") or "你已明确限制这类操作；本次没有执行。")
+                continue
+            if not objects:
+                return str(raw.get("reason") or "你已明确限制这类操作；本次没有执行。")
+            matched = any(
+                self._limit_path_matches(path, item)
+                for path in path_targets
+                for item in objects
+                if isinstance(item, dict)
+            )
+            if matched:
+                return str(raw.get("reason") or "这个对象在用户明确限制的范围内；本次没有执行。")
         return None
+
+    def _fixed_query_decision(self, effect: Effect) -> tuple[Verdict, str, None] | None:
+        """已验证的固定查询在三种模式直接允许；判定由分类器按真实结构完成。"""
+        if effect.kind != EffectKind.EXECUTE:
+            return None
+        fixed = self._classify_fixed_query(effect)
+        if fixed is None:
+            return None
+        reason = str(getattr(fixed, "reason", "") or "").strip()
+        return Verdict.ALLOW, "已验证属于固定查询（只读、无修改行为）：" + reason[:160], None
+
+    def _classify_fixed_query(self, effect: Effect) -> Any:
+        try:
+            from agent.security.fixed_queries import FixedQueryFacts, classify_fixed_query
+        except Exception:  # noqa: BLE001 - 模块未就绪：不把执行当固定查询
+            return None
+        detail = effect.detail or {}
+        raw_facts = detail.get("launch_facts")
+        facts: dict[str, Any] = dict(raw_facts) if isinstance(raw_facts, dict) else {}
+        program_targets = [str(t.value) for t in effect.targets if t.kind == "program"]
+        program_value = program_targets[0] if program_targets else str(detail.get("program") or "")
+        facts.setdefault("kind", "shell" if detail.get("shell") else "program")
+        facts.setdefault("program_name", Path(program_value).name.lower() if program_value else "")
+        facts.setdefault("program_path", program_value or None)
+        facts.setdefault("argv", tuple(str(item) for item in (detail.get("argv") or [])))
+        facts.setdefault("cwd", detail.get("cwd"))
+        facts.setdefault("shell", bool(detail.get("shell")))
+        try:
+            import dataclasses as _dc
+
+            known = {item.name for item in _dc.fields(FixedQueryFacts)}
+            filtered = {key: value for key, value in facts.items() if key in known}
+            return classify_fixed_query(FixedQueryFacts(**filtered))
+        except Exception:  # noqa: BLE001 - 结构不完整 / 分类失败：退出固定查询
+            return None
+
+    def _delete_intent(self, effect: Effect) -> Any:
+        try:
+            from agent.security.deletion import detect_delete_intent
+        except Exception:  # noqa: BLE001
+            return None
+        detail = dict(effect.detail or {})
+        facts = detail.get("launch_facts")
+        facts_dict = dict(facts) if isinstance(facts, dict) else {}
+        try:
+            return detect_delete_intent(
+                effect_kind=effect.kind.value, detail=detail, facts=facts_dict
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _permanent_delete_decision(
+        self, effect: Effect, mode: PermissionMode, requirement: Any
+    ) -> tuple[Verdict, str, str | None] | None:
+        intent = self._delete_intent(effect)
+        if intent is None or not bool(getattr(intent, "permanent", False)):
+            return None
+        if not bool(getattr(intent, "verified", False)):
+            # 无法从真实程序/参数完整解析：不进入永久删除规则，按普通流程处理。
+            return None
+        objects = []
+        for item in getattr(intent, "objects", ()) or ():
+            path = getattr(item, "path", None) or (item.get("path") if isinstance(item, dict) else None)
+            if path:
+                objects.append(str(path))
+        object_text = "、".join(objects[:8]) + ("等" if len(objects) > 8 else "")
+        if mode == PermissionMode.READ_ONLY:
+            return (
+                Verdict.DENY,
+                "只读模式下不能永久删除文件（只读规则不允许删除业务文件）",
+                None,
+            )
+        if mode == PermissionMode.UNRESTRICTED:
+            return (
+                Verdict.ALLOW,
+                "完全无限制模式下允许永久删除（不会进入回收站，删除后不可恢复）",
+                None,
+            )
+        # 受限：只有用户对相同对象/行为的明确人工确认可以覆盖；模型审查/一般授权
+        # 记录不能替代。已有仍有效且明确覆盖的确认可复用。
+        fingerprint = self._permanent_delete_fingerprint(effect, intent)
+        if self.authorizations is not None and requirement is not None:
+            try:
+                record = self.authorizations.reuse(
+                    requirement_id=getattr(requirement, "requirement_id", ""),
+                    operation_kind="delete_permanent",
+                    fingerprint=fingerprint,
+                )
+            except Exception:  # noqa: BLE001
+                record = None
+            if record is not None:
+                return (
+                    Verdict.ALLOW,
+                    "已有明确覆盖相同对象的永久删除确认（不会进入回收站）",
+                    str(getattr(record, "record_id", "") or ""),
+                )
+        return (
+            Verdict.APPROVE,
+            "这是永久删除（目标：" + (object_text or "未列出对象") + "）：不会进入系统回收站，删除后不可恢复；"
+            "需要你明确确认后才会执行",
+            None,
+        )
+
+    @staticmethod
+    def _permanent_delete_fingerprint(effect: Effect, intent: Any) -> str:
+        import hashlib
+        import json
+
+        payload = {
+            "action": "permanent_delete",
+            "objects": [
+                {
+                    "path": str(getattr(item, "path", "") or ""),
+                    "identity": getattr(item, "identity", None),
+                    "is_directory": bool(getattr(item, "is_directory", False)),
+                }
+                for item in getattr(intent, "objects", ()) or ()
+            ],
+            "method": getattr(intent, "method", ""),
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _read_only(self, effect: Effect) -> tuple[Verdict, str, str | None]:
         kind = effect.kind

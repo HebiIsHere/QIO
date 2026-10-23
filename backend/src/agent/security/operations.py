@@ -30,6 +30,9 @@ class PendingOperation:
     source: str = "tool"  # tool | subagent | background | user
     turn_id: str | None = None
     session_id: str | None = None
+    #: R9-G：这条待执行操作依据的具体用户要求及版本（执行前必须核对）。
+    requirement_id: str | None = None
+    requirement_version: int | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -46,6 +49,8 @@ class PendingOperation:
             "source": self.source,
             "turn_id": self.turn_id,
             "session_id": self.session_id,
+            "requirement_id": self.requirement_id,
+            "requirement_version": self.requirement_version,
         }
 
     @classmethod
@@ -65,6 +70,12 @@ class PendingOperation:
             source=str(raw.get("source") or "tool"),
             turn_id=raw.get("turn_id"),
             session_id=raw.get("session_id"),
+            requirement_id=raw.get("requirement_id"),
+            requirement_version=(
+                int(raw["requirement_version"])
+                if raw.get("requirement_version") not in (None, "")
+                else None
+            ),
         )
 
     def summary(self) -> dict:
@@ -75,6 +86,8 @@ class PendingOperation:
             "purpose": self.purpose,
             "source": self.source,
             "confirmations_required": int(self.confirmations_required or 1),
+            "requirement_id": self.requirement_id,
+            "requirement_version": self.requirement_version,
         }
 
 
@@ -135,19 +148,57 @@ class ExecutionContext:
         except Exception:  # noqa: BLE001 - 模式读取失败不能伪造成功
             return self.mode_at_approval or self.mode_at_request
 
-    async def authorize_started(self) -> tuple[bool, str]:
-        """真实执行前再走一次引擎判定（模式快照 + 重核对）。
+    def requirement_binding(self) -> Any:
+        """审批单绑定的具体用户要求（id + version）；缺失时返回 None。"""
+        if not self.operation.requirement_id:
+            return None
+        try:
+            from agent.security.requirements import RequirementBinding
 
-        返回 (是否允许, 中文原因)。批准后若当前模式变严格、且该操作在新模式下
-        会被拒绝，则不得执行（契约 §1「严格→宽松/宽松→严格」重核对）。
+            return RequirementBinding(
+                requirement_id=str(self.operation.requirement_id),
+                version=int(self.operation.requirement_version or 1),
+            )
+        except Exception:  # noqa: BLE001 - 兼容 W1 分支尚未提供 dataclass 时
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                requirement_id=str(self.operation.requirement_id),
+                version=int(self.operation.requirement_version or 1),
+            )
+
+    async def authorize_started(self) -> tuple[bool, str]:
+        """真实执行前重核对：当前模式 + 绑定要求 + 审批/确认是否仍允许这次操作。
+
+        返回 (是否允许, 中文原因)。批准后若模式变化、要求被修正/撤回、授权/审批失效，
+        不得执行。没有绑定具体用户要求的审批单不能直接执行（需要重新判断）。
         """
         if self.engine is None:
             return True, ""
-        mode_now = self.current_mode()
-        before = self.mode_at_request or mode_now
-        if mode_now == "read_only" and before != "read_only":
-            return False, "当前已切换到只读模式，这次批准不再允许执行（未执行，需重新提出）"
-        return True, ""
+        binding = self.requirement_binding()
+        if binding is None:
+            return (
+                False,
+                "这项操作没有绑定具体用户要求，不能直接执行（需要重新判断，不是继续执行）",
+            )
+        try:
+            from agent.security.gateway import AuthContext
+            from agent.tools import security_gate
+
+            effect = security_gate.effect_from_dict(self.operation.effect)
+            if effect is None:
+                return False, "审批单缺少可核对的执行效果，本次没有执行"
+            decision = await self.engine.authorize(
+                effect, ctx=AuthContext(requirement=binding, origin="background")
+            )
+        except Exception as exc:  # noqa: BLE001 - 重核对失败不能默认允许
+            return False, "执行前无法重新确认授权（本次没有执行）：" + type(exc).__name__
+        verdict = getattr(getattr(decision, "verdict", None), "value", None) or str(
+            getattr(decision, "verdict", "")
+        )
+        if verdict == "allow":
+            return True, ""
+        return False, str(getattr(decision, "reason", "") or "当前状态不再允许这次操作")
 
 
 OperationHandler = Callable[[dict, ExecutionContext], Awaitable[ExecResult]]

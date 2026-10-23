@@ -278,6 +278,41 @@ def effect_to_dict(effect: Any) -> dict:
     }
 
 
+def effect_from_dict(data: dict | None) -> Effect | None:
+    """把审计/审批载荷里的 effect 快照还原为 Effect（只用于执行前重核对）。
+
+    还原失败返回 None：调用方必须按"无法核对"处理，不得默认允许。
+    """
+    if not isinstance(data, dict):
+        return None
+    kind_raw = str(data.get("kind") or "")
+    for kind in EffectKind:
+        if kind.value == kind_raw:
+            break
+    else:
+        return None
+    targets = []
+    for item in data.get("targets") or ():
+        if not isinstance(item, dict):
+            continue
+        targets.append(
+            Target(
+                kind=str(item.get("kind") or ""),
+                value=str(item.get("value") or ""),
+                identity=item.get("identity"),
+                exists=item.get("exists"),
+            )
+        )
+    return Effect(
+        kind=kind,
+        targets=tuple(targets),
+        purpose=str(data.get("purpose") or ""),
+        tool=data.get("tool"),
+        detail=dict(data.get("detail") or {}),
+        reversible=bool(data.get("reversible", False)),
+    )
+
+
 # --------------------------------------------------------------------------
 # 网关调用
 # --------------------------------------------------------------------------

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Iterator
 
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型标注，避免循环导入
     from agent.security.instructions import Grant, InstructionContext
+    from agent.security.requirements import RequirementBinding
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,19 @@ class AgentScope:
 #: 本轮用户指令上下文（授权依据）。
 current_instruction: ContextVar["InstructionContext | None"] = ContextVar(
     "qio_current_instruction", default=None
+)
+
+#: 当前操作依据的具体用户要求绑定（R9-G 契约 §3）：requirement_id + version。
+#: 由 turn 运行时在解析用户消息后设置；工具/引擎只使用这个绑定，**不再回退**
+#: 到"数据库里最近一条 active 要求"。子智能体继承父绑定，不得改绑。
+current_requirement: ContextVar["RequirementBinding | None"] = ContextVar(
+    "qio_current_requirement", default=None
+)
+
+#: 本轮"用户要求关系解析"的结果状态（ok / unavailable）。解析不可用时不使用
+#: 关键词兜底，但审查输入必须如实标注，避免把"没解析"当成"已确认"。
+requirement_resolution_status: ContextVar[str] = ContextVar(
+    "qio_requirement_resolution_status", default="ok"
 )
 
 #: 当前子智能体能力子集。
@@ -61,6 +75,29 @@ def instruction_context(instruction: "InstructionContext | None") -> Iterator[No
         yield
     finally:
         current_instruction.reset(token)
+
+
+@contextmanager
+def requirement_context(binding: "RequirementBinding | None") -> Iterator[None]:
+    """在 with 块内把"当前操作依据的用户要求绑定"设为 *binding*，退出时恢复。
+
+    绑定只描述"这条操作依据哪条用户要求及哪个版本"；它本身不是许可，仍需
+    引擎按当前模式、固定规则、模型审查/审批规则判定。
+    """
+    token: Token = current_requirement.set(binding)
+    try:
+        yield
+    finally:
+        current_requirement.reset(token)
+
+
+@contextmanager
+def requirement_resolution_context(status: str) -> Iterator[None]:
+    token: Token = requirement_resolution_status.set(str(status or "ok"))
+    try:
+        yield
+    finally:
+        requirement_resolution_status.reset(token)
 
 
 @contextmanager

@@ -663,7 +663,28 @@ class ApprovalService:
             # 已被别的执行器领取 / 状态已变：不重复执行。
             return
         await self._publish_phase("executing", claimed)
-        result = await self.operations.execute(operation.kind, operation.payload, ctx)
+        # R9-G：执行器内部工具/引擎判定必须使用这条审批单绑定的具体要求；
+        # 没有绑定就保持无绑定（引擎/执行前重核对会要求重新判断，不回退"最近一条"）。
+        binding = None
+        if getattr(operation, "requirement_id", None):
+            try:
+                from agent.security.requirements import RequirementBinding
+
+                binding = RequirementBinding(
+                    requirement_id=str(operation.requirement_id),
+                    version=int(operation.requirement_version or 1),
+                )
+            except Exception:  # noqa: BLE001 - W1 分支未提供 dataclass 时用最小对象
+                from types import SimpleNamespace
+
+                binding = SimpleNamespace(
+                    requirement_id=str(operation.requirement_id),
+                    version=int(operation.requirement_version or 1),
+                )
+        from agent.security.context import requirement_context
+
+        with requirement_context(binding):
+            result = await self.operations.execute(operation.kind, operation.payload, ctx)
         finished = self.store.finish(approval_id, result)
         phase = "executed" if result.ok else "failed"
         await self._publish_phase(

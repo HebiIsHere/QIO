@@ -28,6 +28,9 @@ class AuthContext:
     origin: str = "user"  # user | background | subagent
     turn_id: str | None = None
     session_id: str | None = None
+    #: R9-G：这次操作依据的具体用户要求（id + version）。缺省时为 None ——
+    #: 引擎不得回退到"最近一条 active 要求"；没有绑定就按需要确认处理。
+    requirement: object | None = None
     extra: dict = field(default_factory=dict)
 
 
