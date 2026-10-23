@@ -37,6 +37,7 @@ import {
   joinGroup,
   mergeGroups,
   normalizeState,
+  participationOf,
   pointInRect,
   previewDrop,
   removeCard,
@@ -79,6 +80,27 @@ import {
 } from "../../interactive/viewport";
 import { cardSizeLimits, DEFAULT_LAYOUT_GAP, type LayoutRect } from "../../interactive/cardLayout";
 import { resolvePlacement, type PlacementResult } from "../../interactive/geometry";
+// Phase 2 集成（task-14）：统一几何（Phase 2-A）/ 图片比例（Phase 2-C）/ 组端点（Phase 2-B）。
+// 显示矩形、组缩放、避让都走同一份纯函数，画布不再自己维护第二套坐标。
+import {
+  avoidOverlaps,
+  groupResizeFrameChanges,
+  planGroupResize,
+  resolveDisplayFrames,
+  type FrameObject,
+  type V2Rect,
+} from "../../interactive/v2/geometry";
+import {
+  constrainCardSizeForCard,
+  imageRatioForCard,
+  isAspectSatisfied,
+} from "../../interactive/renderers/imageDisplay";
+import {
+  GROUP_ENDPOINT_PREFIX,
+  GROUP_HEADER_HEIGHT,
+  GROUP_PAD_BOTTOM,
+  GROUP_PAD_X,
+} from "../../interactive/linkEndpoints";
 import { publishBoardScale } from "../../interactive/submission";
 import { useResizeGesture } from "../../composables/useResizeGesture";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
@@ -264,6 +286,122 @@ const groups = computed(() => boardState.value?.groups ?? []);
 const links = computed(() => boardState.value?.links ?? []);
 const selection = computed(() => boardState.value?.selection ?? []);
 
+// --- Phase 2 集成状态（全部是显示态 / 临时手势，不写板面、不进材料范围） -----
+
+/** 组收起：纯显示状态，只决定「组内成员卡片是否还单独画」。 */
+const collapsedGroupIds = ref<string[]>([]);
+const collapsedGroupSet = computed(() => new Set(collapsedGroupIds.value));
+/** 收起组的成员：只隐藏卡片本体，仍是正式状态与全部连线的真实端点。 */
+const hiddenMemberIds = computed(() => {
+  const hidden = new Set<string>();
+  for (const group of groups.value) {
+    if (!collapsedGroupSet.value.has(group.id)) continue;
+    for (const cardId of group.members) hidden.add(cardId);
+  }
+  return hidden;
+});
+/** 真正画在板面上的卡片：收起的组只留组框概览。 */
+const renderedCards = computed(() => liveCards.value.filter((card) => !hiddenMemberIds.value.has(card.id)));
+
+/** 参与范围（§5.1 participation 是唯一事实源）：给连线层与卡片参与控件。 */
+const includedCardIds = computed(() =>
+  liveCards.value.filter((card) => participationOf(card) === "included").map((card) => card.id),
+);
+
+interface GroupDragState {
+  groupId: string;
+  delta: { x: number; y: number };
+  moved: boolean;
+  startClient: { x: number; y: number };
+}
+/** 组标题拖动整组：只预演（显示坐标），松手才一次提交。 */
+const groupDrag = ref<GroupDragState | null>(null);
+
+type GroupResizeEdge = "e" | "s" | "se";
+
+interface GroupResizePreview {
+  slots: Record<string, V2Rect>;
+  frame: V2Rect;
+  issues: string[];
+}
+interface GroupResizeState {
+  groupId: string;
+  edge: GroupResizeEdge;
+  moved: boolean;
+  preview: GroupResizePreview | null;
+}
+/** 组框缩放：成员槽位由 A 的 planGroupResize 算，拖动中只预演，松手一次提交。 */
+const groupResize = ref<GroupResizeState | null>(null);
+
+function groupRect(group: BoardGroup): V2Rect {
+  return { x: group.x, y: group.y, w: group.w, h: group.h };
+}
+
+/** 收起 / 展开一个组（纯显示状态；不改成员、顺序、材料范围）。 */
+function onGroupToggleCollapse(groupId: string, collapsed: boolean): void {
+  const next = new Set(collapsedGroupSet.value);
+  if (collapsed) next.add(groupId);
+  else next.delete(groupId);
+  collapsedGroupIds.value = [...next];
+  notice.value = collapsed ? "已收起这个组：只显示组框概览，成员没有变化。" : "已展开这个组。";
+}
+
+function isGroupCollapsed(groupId: string): boolean {
+  return collapsedGroupSet.value.has(groupId);
+}
+
+/** 传给连线层：收起组的成员的对外连线汇聚到组边缘（真实端点身份不变）。 */
+const foldedGroupIds = computed(() =>
+  [...collapsedGroupSet.value].filter((id) => groups.value.some((group) => group.id === id && !group.deleted)),
+);
+
+/** 组拖动 / 缩放的临时状态在切换手势时一次清掉（与既有手势同一条规则）。 */
+function releaseGroupGestures(): void {
+  groupDrag.value = null;
+  groupResize.value = null;
+}
+
+// --- 显示帧：A 的 geometry.resolveDisplayFrames 是唯一来源 --------------------
+//
+// 拖动卡片 / 整组时，卡片、组框、连线、命中测试读**同一份**显示帧（契约 §11.10）：
+// 拖动中线与组框实时跟随，松手前板面状态一个字段都不改。
+
+/** 当前有效的临时位移（卡片或整组）；没有拖动时为 null。 */
+const liveDragDelta = computed<{ id: string; deltaX: number; deltaY: number } | null>(() => {
+  if (groupDrag.value) {
+    return { id: groupDrag.value.groupId, deltaX: groupDrag.value.delta.x, deltaY: groupDrag.value.delta.y };
+  }
+  const drag = dragging.value;
+  if (!drag || !drag.moved) return null;
+  const current = boardState.value;
+  const card = current ? cardById(current, drag.cardId) : null;
+  if (!card) return null;
+  return { id: drag.cardId, deltaX: drag.x - card.x, deltaY: drag.y - card.y };
+});
+
+const groupIdByCard = computed(() => {
+  const map = new Map<string, string>();
+  for (const group of groups.value) {
+    for (const cardId of group.members) map.set(cardId, group.id);
+  }
+  return map;
+});
+
+/** 每个卡片 / 组的这一帧显示矩形（板面坐标；拖动组时组框与成员同位移）。 */
+const displayFrameIndex = computed<Record<string, V2Rect>>(() => {
+  const current = boardState.value;
+  if (!current) return {};
+  const groupOf = groupIdByCard.value;
+  const objects: FrameObject[] = [];
+  for (const card of liveCards.value) {
+    objects.push({ id: card.id, kind: "card", frame: cardRect(card), groupId: groupOf.get(card.id) ?? null });
+  }
+  for (const group of groups.value) {
+    objects.push({ id: group.id, kind: "group", frame: groupRect(group), groupId: null });
+  }
+  return resolveDisplayFrames({ objects, drag: liveDragDelta.value }).frames;
+});
+
 // --- 显示几何：正式矩形是唯一权威（F1；展开不再产生临时槽位） ---------------
 
 /** 窗口尺寸变化后重新读一次容器尺寸（clientWidth 不是响应式的） */
@@ -441,10 +579,17 @@ function slotOf(card: BoardCardModel): LayoutRect {
  */
 function displayRect(card: BoardCardModel): LayoutRect {
   const slot = slotOf(card);
-  const drag = dragging.value;
-  if (drag && drag.cardId === card.id) return { x: drag.x, y: drag.y, w: slot.w, h: slot.h };
+  // 单卡尺寸预览（未被图片比例约束后的最终帧）
   const size = resizing.value;
   if (size && size.cardId === card.id) return size.box;
+  // 组缩放预览：成员槽位是这一帧的显示矩形（图片比例已在 planGroupResize 里约束）
+  const groupSlot = groupResize.value?.preview?.slots?.[card.id];
+  if (groupSlot) return groupSlot;
+  // 拖动（卡片 / 整组）：统一读 A 的显示帧，连线与命中用同一份坐标
+  const frame = displayFrameIndex.value[card.id];
+  if (frame && (frame.x !== slot.x || frame.y !== slot.y || frame.w !== slot.w || frame.h !== slot.h)) {
+    return frame;
+  }
   return slot;
 }
 
@@ -507,8 +652,12 @@ const displayCards = computed<BoardCardModel[]>(() => {
   const drag = dragging.value;
   const moved = drag && drag.moved ? drag : null;
   const size = resizing.value;
-  // 没有展开、也没有进行中的拖动 / 尺寸预览时原样返回（与改动前完全一致，避免无谓的对象重建）
-  if (!moved && !size) return liveCards.value;
+  /**
+   * 没有任何进行中的手势（单卡拖动 / 单卡尺寸预览 / 整组拖动 / 组框缩放预览）时原样返回，
+   * 避免无谓的对象重建；有手势时逐张走 displayRect，连线层与组框读同一份临时坐标。
+   */
+  const gestureActive = Boolean(moved || size || groupDrag.value || groupResize.value?.preview);
+  if (!gestureActive) return liveCards.value;
   return liveCards.value.map((card) => {
     const rect = displayRect(card);
     if (rect.x === card.x && rect.y === card.y && rect.w === card.w && rect.h === card.h) return card;
@@ -582,11 +731,37 @@ const resizeGesture = useResizeGesture({
  */
 function clampToCardCaliber(box: ResizeBox): ResizeBox {
   const limits = resizeLimits.value;
-  const w = Math.max(Math.min(limits.minW, resizeStartBox.value.w), Math.min(limits.maxW, box.w));
-  const h = Math.max(Math.min(limits.minH, resizeStartBox.value.h), Math.min(limits.maxH, box.h));
+  const anchor = resizeStartBox.value;
+  let w = Math.max(Math.min(limits.minW, anchor.w), Math.min(limits.maxW, box.w));
+  let h = Math.max(Math.min(limits.minH, anchor.h), Math.min(limits.maxH, box.h));
+  /**
+   * Phase 2-C（契约 §5.2）：图片卡的宽高必须满足原图比例，所有尺寸路径共用同一份约束。
+   * 非图片卡 ratio 为 null，**一个字段都不改**（旧口径原样保留）。
+   * driver=auto：拖哪条边就以变化更大的那一维为准，东西 / 南北拖动都跟手。
+   */
+  const cardId = resizeTargetId;
+  const current = boardState.value;
+  const card = cardId && current ? cardById(current, cardId) : null;
+  if (card && imageRatioForCard(card) !== null) {
+    const constrained = constrainCardSizeForCard(
+      card,
+      { w: anchor.w, h: anchor.h },
+      { w, h },
+      {
+        driver: "auto",
+        limits: {
+          minW: limits.minW,
+          minH: limits.minH,
+          maxW: limits.maxW,
+          maxH: limits.maxH,
+        },
+      },
+    );
+    w = constrained.w;
+    h = constrained.h;
+  }
   if (w === box.w && h === box.h) return box;
   // 夹紧后保持被拖动的边（对边不动）：拉西 / 拉北时回推左上角
-  const anchor = resizeStartBox.value;
   const x = box.x === anchor.x ? box.x : anchor.x + anchor.w - w;
   const y = box.y === anchor.y ? box.y : anchor.y + anchor.h - h;
   return { x, y, w, h };
@@ -659,6 +834,26 @@ function sameSize(a: number, b: number): boolean {
 }
 
 /**
+ * 图片卡把尺寸收敛到原图比例（契约 §5.2）。
+ * 非图片卡（ratio=null）原样返回 —— 这条路径**只**服务图片，不改任何别的卡片口径。
+ */
+function constrainImageCardState(state: BoardState, cardId: string): BoardState {
+  const card = cardById(state, cardId);
+  if (!card) return state;
+  const ratio = imageRatioForCard(card);
+  // 已经满足比例（含像素取整的 2% 容差）就不动尺寸：避免每次落点都改 ±1px
+  if (ratio === null || isAspectSatisfied({ w: card.w, h: card.h }, ratio)) return state;
+  const size = constrainCardSizeForCard(
+    card,
+    { w: card.w, h: card.h },
+    { w: card.w, h: card.h },
+    { driver: "width" },
+  );
+  if (sameSize(size.w, card.w) && sameSize(size.h, card.h)) return state;
+  return updateCard(state, cardId, { w: size.w, h: size.h });
+}
+
+/**
  * 松手 / 键盘步进：**一次** `updateCard` + `store.commit`，标签固定「调整卡片尺寸」。
  *
  * 提交口径（F1/F2 之后只有一条）：外框就是正式几何，提交 { x, y, w, h }；
@@ -715,6 +910,8 @@ const resizeBoxes = computed<Record<string, LayoutRect>>(() => {
      * 这时不摆把手，免得把手画在卡片外面（先展开再调尺寸）。
      */
     if (card.folded) continue;
+    // 收起的组里成员卡片不画，把手也就不该出现在空处
+    if (hiddenMemberIds.value.has(cardId)) continue;
     out[cardId] = displayRect(card);
   }
   return out;
@@ -746,6 +943,7 @@ function releaseGestures(): void {
   panning.value = null;
   rectSelect.value = null;
   resizing.value = null;
+  releaseGroupGestures();
   // 尺寸手势自带 document / window 监听：必须走它自己的取消入口，不能只清显示
   resizeGesture.cancel();
   detachPointerListeners();
@@ -1006,7 +1204,8 @@ function onPointerMove(event: PointerEvent) {
   const draft = linkDraft.value;
   if (draft) {
     draft.point = boardPointOf(event);
-    draft.targetId = hitCardAt(draft.point, draft.fromId);
+    // 目标可以是卡片，也可以是组框（group:<id>，契约 §5.3）
+    draft.targetId = hitEndpointAt(draft.point, draft.fromId);
   }
 }
 
@@ -1033,7 +1232,8 @@ function onPointerUp() {
         并把视图滚动量补上同样的量 —— 卡片在屏幕上原地不动，用户察觉不到坐标系换了原点。
         这样卡片的 x/y 永远是"相对画布原点"的非负值，渲染 / 连线 / 组框 / 工具栏换算都不用改。
       */
-      let nextState = result.state;
+      // 图片卡落点后再收敛一次尺寸（比例来自 meta.display；非图片卡不受影响）
+      let nextState = constrainImageCardState(result.state, drag.cardId);
       // 阈值是 0：只有真的拖到负坐标才重定位（用留白当阈值会让普通拖动也整体平移）
       const rebase = rebaseToFit(nextState, 0);
       if (rebase.dx || rebase.dy) {
@@ -1830,7 +2030,7 @@ const connectBoxes = computed<Record<string, LayoutRect>>(() => {
   const cardId = primarySelectedId.value;
   if (!current || !cardId) return out;
   const card = current.cards.find((item) => item.id === cardId);
-  if (!card || card.deleted || card.folded) return out;
+  if (!card || card.deleted || card.folded || hiddenMemberIds.value.has(cardId)) return out;
   out[cardId] = displayRect(card);
   return out;
 });
@@ -1840,7 +2040,26 @@ const connectBoxes = computed<Record<string, LayoutRect>>(() => {
 function onCardPatch(cardId: string, patch: Partial<BoardCardModel>, label: string) {
   const current = boardState.value;
   if (!current) return;
-  commit(updateCard(current, cardId, patch), label);
+  let next = updateCard(current, cardId, patch);
+  /**
+   * Phase 2-C「恢复」路径：图片解码后 BoardCard 通过 patch 写入 meta.display（真实比例）。
+   * 比例一出现就把这张卡的 w/h 收敛到它 —— 与拖动 / 键盘 / 组缩放 / resize 同一份约束；
+   * 非图片卡 ratio 为 null，一个字段都不改。
+   */
+  const card = cardById(next, cardId);
+  const ratio = card ? imageRatioForCard(card) : null;
+  if (card && ratio !== null && !isAspectSatisfied({ w: card.w, h: card.h }, ratio)) {
+    const size = constrainCardSizeForCard(
+      card,
+      { w: card.w, h: card.h },
+      { w: card.w, h: card.h },
+      { driver: "width" },
+    );
+    if (!sameSize(size.w, card.w) || !sameSize(size.h, card.h)) {
+      next = updateCard(next, cardId, { w: size.w, h: size.h });
+    }
+  }
+  commit(next, label);
 }
 
 function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked") {
@@ -1849,11 +2068,20 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
   const card = cardById(current, cardId);
   if (!card) return;
   if (flag === "checked") {
-    commit(updateCard(current, cardId, { checked: !card.checked }), card.checked ? "取消勾选" : "勾选注释（本次允许 QIO 查看）");
+    const checked = !card.checked;
+    // 参与状态是 v2 的唯一事实源（§5.1）：勾选 / 取消必须同时写 participation，避免旧 checked 与它打架
+    commit(
+      updateCard(current, cardId, { checked, participation: checked ? "included" : "excluded" }),
+      checked ? "勾选注释（本次允许 QIO 查看）" : "取消勾选",
+    );
     return;
   }
   if (flag === "hidden") {
-    commit(updateCard(current, cardId, { hidden: !card.hidden }), card.hidden ? "取消隐藏" : "隐藏卡片（退出讨论范围）");
+    const hidden = !card.hidden;
+    commit(
+      updateCard(current, cardId, { hidden, participation: hidden ? "excluded" : "included" }),
+      hidden ? "隐藏卡片（退出讨论范围）" : "取消隐藏",
+    );
     return;
   }
   if (flag === "folded") {
@@ -1997,6 +2225,271 @@ function onLeaveMember(groupId: string, cardId: string) {
   commit(removeFromGroup(current, cardId), "把卡片移出组");
 }
 
+// --- Phase 2-B 接线：组标题拖整组 / 组框缩放（组件只发意图，这里落板面） ---
+
+interface BoardObstacle {
+  id: string;
+  kind: "card" | "group";
+  frame: V2Rect;
+  groupId: string | null;
+}
+
+/** 组以外的全部对象（其它组框 + 不在本组的卡片）：避让的最小障碍集合。 */
+function otherBoardObjects(groupId: string): BoardObstacle[] {
+  const group = groups.value.find((item) => item.id === groupId);
+  const memberIds = new Set(group?.members ?? []);
+  const others: BoardObstacle[] = [];
+  for (const item of groups.value) {
+    if (item.id === groupId || item.deleted) continue;
+    others.push({ id: item.id, kind: "group", frame: groupRect(item), groupId: null });
+  }
+  for (const card of liveCards.value) {
+    if (memberIds.has(card.id)) continue;
+    others.push({ id: card.id, kind: "card", frame: cardRect(card), groupId: groupIdOf(card.id) });
+  }
+  return others;
+}
+
+function onGroupDragStart(groupId: string, point: { x: number; y: number }): void {
+  // 同一指针只驱动一种手势：开始拖整组前把别的临时手势清掉（不碰板面状态）
+  releaseGestures();
+  const current = boardState.value;
+  const group = current ? groupById(current, groupId) : null;
+  if (!group) return;
+  groupDrag.value = {
+    groupId,
+    delta: { x: 0, y: 0 },
+    moved: false,
+    startClient: { x: point.x, y: point.y },
+  };
+  notice.value = "";
+}
+
+function onGroupDragMove(groupId: string, delta: { dx: number; dy: number }): void {
+  const state = groupDrag.value;
+  if (!state || state.groupId !== groupId) return;
+  if (!state.moved && (Math.abs(delta.dx) > 3 || Math.abs(delta.dy) > 3)) state.moved = true;
+  if (!state.moved) return;
+  // 屏幕位移 → 板面位移（画布缩放是查看方式，不参与板面坐标）
+  state.delta = { x: delta.dx / scaleSafe.value, y: delta.dy / scaleSafe.value };
+  requestPlacement();
+}
+
+function onGroupDragEnd(groupId: string, delta: { dx: number; dy: number }): void {
+  const state = groupDrag.value;
+  groupDrag.value = null;
+  const moved = Boolean(state?.moved) || Math.abs(delta.dx) > 3 || Math.abs(delta.dy) > 3;
+  if (!moved) {
+    notice.value = "组没有移动：板面没有产生改动。";
+    return;
+  }
+  commitGroupMove(groupId, {
+    x: delta.dx / scaleSafe.value,
+    y: delta.dy / scaleSafe.value,
+  });
+}
+
+function onGroupDragCancel(groupId: string): void {
+  if (groupDrag.value?.groupId === groupId) groupDrag.value = null;
+  notice.value = "已取消移动组：板面没有改动。";
+}
+
+/**
+ * 组移动：组框与成员**统一移动一次提交**（组框由 board.ts reflowGroup 从成员派生）。
+ *
+ * 避让用 A 的 geometry.avoidOverlaps：组是障碍单元、组与自身成员不互算；
+ * 到达轮数 / 位移上限仍重叠时如实提示 limited，绝不无限推挤。
+ */
+function commitGroupMove(groupId: string, boardDelta: { x: number; y: number }): void {
+  const current = boardState.value;
+  if (!current) return;
+  const group = groupById(current, groupId);
+  if (!group) return;
+  const members = group.members
+    .map((cardId) => cardById(current, cardId))
+    .filter((card): card is BoardCardModel => Boolean(card));
+  if (!members.length) return;
+
+  const movedFrame: V2Rect = {
+    x: group.x + boardDelta.x,
+    y: group.y + boardDelta.y,
+    w: group.w,
+    h: group.h,
+  };
+  const avoided = avoidOverlaps({
+    moved: { id: groupId, kind: "group", frame: movedFrame, groupId: null },
+    others: otherBoardObjects(groupId),
+    gap: DEFAULT_LAYOUT_GAP,
+  });
+  const applied = { x: avoided.frame.x - group.x, y: avoided.frame.y - group.y };
+
+  let next = current;
+  for (const member of members) {
+    next = updateCard(next, member.id, {
+      x: Math.round(member.x + applied.x),
+      y: Math.round(member.y + applied.y),
+    });
+  }
+  if (!stateDiffers(normalizeState(current), normalizeState(next))) {
+    notice.value = "组没有移动：板面没有产生改动。";
+    return;
+  }
+  commit(next, "移动组（组框与成员一起移动）");
+  if (avoided.limited) {
+    notice.value = "组与其它对象仍有重叠（" + avoided.blockers.length + " 处）：已停在能到达的位置，没有无限推挤。";
+  } else if (avoided.adjusted) {
+    notice.value = "组已让开其它对象（不会移动别的卡片）。";
+  }
+}
+
+/** 组框内部的成员区域（与 board.ts reflowGroup 同一份留白）。 */
+function groupMemberAreaOf(rect: V2Rect): V2Rect {
+  return {
+    x: rect.x + GROUP_PAD_X,
+    y: rect.y + GROUP_HEADER_HEIGHT,
+    w: Math.max(1, rect.w - GROUP_PAD_X * 2),
+    h: Math.max(1, rect.h - GROUP_HEADER_HEIGHT - GROUP_PAD_BOTTOM),
+  };
+}
+
+/** 由成员槽位反推组框（与 reflowGroup 同口径；用于如实说明缩放后的组框位置）。 */
+function frameOfSlots(slots: Record<string, V2Rect>): V2Rect | null {
+  const values = Object.values(slots);
+  if (!values.length) return null;
+  const left = Math.min(...values.map((rect) => rect.x)) - GROUP_PAD_X;
+  const top = Math.min(...values.map((rect) => rect.y)) - GROUP_HEADER_HEIGHT;
+  const right = Math.max(...values.map((rect) => rect.x + rect.w)) + GROUP_PAD_X;
+  const bottom = Math.max(...values.map((rect) => rect.y + rect.h)) + GROUP_PAD_BOTTOM;
+  return { x: left, y: top, w: Math.max(1, right - left), h: Math.max(1, bottom - top) };
+}
+
+/**
+ * 组缩放的一次规划（A 的 planGroupResize）：右 / 下 / 右下把手改变组框，成员按比例适配。
+ *
+ * 图片成员的 aspectRatio 来自 C 的 meta.display（未知传 null → 按普通成员处理，不猜比例）；
+ * 组框与全部成员槽位摊成**一份原子清单**（groupResizeFrameChanges），一次提交。
+ */
+function planGroupResizeFor(
+  groupId: string,
+  edge: GroupResizeEdge,
+  boardDelta: { x: number; y: number },
+): GroupResizePreview | null {
+  const current = boardState.value;
+  const group = current ? groupById(current, groupId) : null;
+  if (!current || !group) return null;
+  const startGroup = groupRect(group);
+  const nextGroup: V2Rect = {
+    x: startGroup.x,
+    y: startGroup.y,
+    w: Math.max(1, startGroup.w + (edge === "e" || edge === "se" ? boardDelta.x : 0)),
+    h: Math.max(1, startGroup.h + (edge === "s" || edge === "se" ? boardDelta.y : 0)),
+  };
+  const members = group.members
+    .map((cardId) => cardById(current, cardId))
+    .filter((card): card is BoardCardModel => Boolean(card))
+    .map((card) => ({ id: card.id, frame: cardRect(card), aspectRatio: imageRatioForCard(card) }));
+  if (!members.length) return null;
+
+  const result = planGroupResize({
+    frame: groupMemberAreaOf(startGroup),
+    nextFrame: groupMemberAreaOf(nextGroup),
+    members,
+    gap: DEFAULT_LAYOUT_GAP,
+    padding: 0,
+  });
+  const slots: Record<string, V2Rect> = {};
+  for (const change of groupResizeFrameChanges(groupId, result)) {
+    if (change.kind === "card") slots[change.id] = { ...change.frame };
+  }
+  return { slots, frame: frameOfSlots(slots) ?? groupRect(group), issues: [...result.issues] };
+}
+
+function onGroupResizeStart(groupId: string, edge: GroupResizeEdge, _point: { x: number; y: number }): void {
+  releaseGestures();
+  const current = boardState.value;
+  const group = current ? groupById(current, groupId) : null;
+  if (!group) return;
+  groupResize.value = { groupId, edge, moved: false, preview: null };
+  notice.value = "";
+}
+
+function onGroupResizeMove(
+  groupId: string,
+  edge: GroupResizeEdge,
+  delta: { dx: number; dy: number },
+): void {
+  const state = groupResize.value;
+  if (!state || state.groupId !== groupId) return;
+  if (!state.moved && (Math.abs(delta.dx) > 3 || Math.abs(delta.dy) > 3)) state.moved = true;
+  if (!state.moved) return;
+  state.preview = planGroupResizeFor(groupId, edge, {
+    x: delta.dx / scaleSafe.value,
+    y: delta.dy / scaleSafe.value,
+  });
+  requestPlacement();
+}
+
+function onGroupResizeEnd(groupId: string, edge: GroupResizeEdge, delta: { dx: number; dy: number }): void {
+  const state = groupResize.value;
+  groupResize.value = null;
+  const moved = Boolean(state?.moved) || Math.abs(delta.dx) > 3 || Math.abs(delta.dy) > 3;
+  if (!moved) {
+    notice.value = "组框尺寸没有改动：板面没有产生改动。";
+    return;
+  }
+  const preview = planGroupResizeFor(groupId, edge, {
+    x: delta.dx / scaleSafe.value,
+    y: delta.dy / scaleSafe.value,
+  });
+  if (!preview) return;
+  commitGroupResize(groupId, preview);
+}
+
+function onGroupResizeCancel(groupId: string): void {
+  if (groupResize.value?.groupId === groupId) groupResize.value = null;
+  notice.value = "已取消调整组框尺寸：板面没有改动。";
+}
+
+/** 组框缩放：成员槽位一次提交（组框由 reflowGroup 派生）；图片比例已在规划里约束。 */
+function commitGroupResize(groupId: string, preview: GroupResizePreview): void {
+  const current = boardState.value;
+  if (!current) return;
+  let next = current;
+  for (const [cardId, rect] of Object.entries(preview.slots)) {
+    const card = cardById(next, cardId);
+    if (!card) continue;
+    const x = Math.round(rect.x);
+    const y = Math.round(rect.y);
+    const w = Math.max(1, Math.round(rect.w));
+    const h = Math.max(1, Math.round(rect.h));
+    if (sameSize(x, card.x) && sameSize(y, card.y) && sameSize(w, card.w) && sameSize(h, card.h)) continue;
+    next = updateCard(next, cardId, { x, y, w, h });
+  }
+  if (!stateDiffers(normalizeState(current), normalizeState(next))) {
+    notice.value = "组框尺寸没有改动：板面没有产生改动。";
+    return;
+  }
+  const nextGroup = groupById(next, groupId);
+  commit(next, "调整组框尺寸（成员按比例适配）");
+  if (preview.issues.includes("min_clamped")) {
+    notice.value = "组框已停在成员最小尺寸上（成员不会小于卡片最小尺寸）。";
+  }
+  /**
+   * 缩放后的组框与其它对象重叠时如实说明（契约 §17.1：绝不为了避让移动别的卡片）。
+   * 这里仍走 A 的 avoidOverlaps 判定，limited 时说法与拖动路径一致。
+   */
+  if (nextGroup) {
+    const avoided = avoidOverlaps({
+      moved: { id: groupId, kind: "group", frame: groupRect(nextGroup), groupId: null },
+      others: otherBoardObjects(groupId),
+      gap: DEFAULT_LAYOUT_GAP,
+    });
+    if (avoided.limited) {
+      notice.value = "缩放后的组框与其它对象仍有重叠：不会自动推开别的卡片，可再调整尺寸。";
+    }
+  }
+}
+
 // --- 关系链接：连接点拖线 -------------------------------------------------
 
 /**
@@ -2013,12 +2506,42 @@ function hitCardAt(point: { x: number; y: number }, excludeId: string | null): s
   let best: { id: string; area: number } | null = null;
   for (const card of current.cards) {
     if (card.deleted || card.id === excludeId) continue;
+    // 收起的组只画组框：成员卡片不在画布上，也就不能被指针命中（端点身份仍然是它们自己）
+    if (hiddenMemberIds.value.has(card.id)) continue;
     const rect = displayRect(card);
     if (!pointInRect(point.x, point.y, rect)) continue; // board.ts 的签名是 (x, y, rect)
     const area = rect.w * rect.h;
     if (!best || area < best.area) best = { id: card.id, area };
   }
   return best ? best.id : null;
+}
+
+/**
+ * 指针下的组框（收起 / 展开都算）：返回 group:<id>。
+ *
+ * 组框是**关系端点**（契约 §5.3）：拖线可以落在组上。这里只决定「落点指向哪个组」，
+ * 是否真的能建链由 finishLinkDraft 按当前板面模型如实回答。
+ */
+function hitGroupAt(point: { x: number; y: number }, excludeEndpoint: string | null): string | null {
+  const current = boardState.value;
+  if (!current) return null;
+  for (let index = displayGroups.value.length - 1; index >= 0; index -= 1) {
+    const group = displayGroups.value[index];
+    if (!group || group.deleted) continue;
+    const value = GROUP_ENDPOINT_PREFIX + group.id;
+    if (value === excludeEndpoint) continue;
+    if (pointInRect(point.x, point.y, group)) return value;
+  }
+  return null;
+}
+
+/** 拖线落点：先卡片（更具体），再组框；返回裸卡片 id 或 group:<id>。 */
+function hitEndpointAt(point: { x: number; y: number }, fromId: string | null): string | null {
+  const card = hitCardAt(point, fromId);
+  if (card) return card;
+  const fromGroup = fromId ? groupIdOf(fromId) : null;
+  const ownGroup = fromGroup ? GROUP_ENDPOINT_PREFIX + fromGroup : null;
+  return hitGroupAt(point, ownGroup);
 }
 
 function onConnectStart(cardId: string, event: PointerEvent) {
@@ -2029,7 +2552,7 @@ function onConnectStart(cardId: string, event: PointerEvent) {
    */
   releaseGestures();
   linkDraft.value = { fromId: cardId, point: boardPointOf(event), targetId: null };
-  notice.value = "从连接点拖到另一张卡片上建立关系；拖到无效位置或取消不会建立任何链接。";
+  notice.value = "从连接点拖到另一张卡片或一个组上建立关系；拖到无效位置或取消不会建立任何链接。";
   attachPointerListeners();
 }
 
@@ -2043,14 +2566,26 @@ function finishLinkDraft(allowCreate: boolean) {
     notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
     return;
   }
+  const targetIsGroup = draft.targetId.startsWith(GROUP_ENDPOINT_PREFIX);
   const next = addLink(current, draft.fromId, draft.targetId, false, "");
-  commit(next, "新建关系（方向与含义由你写明）");
   const created = next.links.find(
     (link) =>
       (link.src === draft.fromId && link.dst === draft.targetId) ||
       (link.src === draft.targetId && link.dst === draft.fromId),
   );
-  if (created) openLinkEditor(created.id);
+  if (!created) {
+    /*
+     * 组端点：板面模型（board.ts 的 addLink / normalizeState）目前只接受**卡片**端点，
+     * 组端点会被整条丢掉。这里如实说明并保持板面不变 —— 不伪造一条「存下来也会消失」的链接；
+     * 真正的组端点创建要等 board.ts / 后端同步（Lead 侧接线）。
+     */
+    notice.value = targetIsGroup
+      ? "没有建立关系：当前板面模型只接受卡片端点（组端点需要 board.ts 支持 group: 端点）；没有保存半条链接。"
+      : "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+    return;
+  }
+  commit(next, "新建关系（方向与含义由你写明）");
+  openLinkEditor(created.id);
 }
 
 /** 关系模式（工具栏选择模式）里依次点两张卡片也能建立关系。 */
@@ -2391,16 +2926,26 @@ onBeforeUnmount(() => {
             :drop-merge="dragging !== null && dragging.preview.mergesWith === group.id"
             :drop-index="dragging !== null && dragging.preview.groupId === group.id ? dragging.preview.index : null"
             :drop-card-id="dragging ? dragging.cardId : null"
+            :collapsed="isGroupCollapsed(group.id)"
             @rename="onGroupRename"
             @toggle-ordered="onToggleOrdered"
             @dissolve="onDissolveGroup"
             @move-member="onMoveMember"
             @leave="onLeaveMember"
             @select-member="(cardId) => onSelect(cardId, false)"
+            @toggle-collapse="onGroupToggleCollapse"
+            @group-drag-start="onGroupDragStart"
+            @group-drag-move="onGroupDragMove"
+            @group-drag-end="onGroupDragEnd"
+            @group-drag-cancel="onGroupDragCancel"
+            @group-resize-start="onGroupResizeStart"
+            @group-resize-move="onGroupResizeMove"
+            @group-resize-end="onGroupResizeEnd"
+            @group-resize-cancel="onGroupResizeCancel"
           />
 
           <BoardCard
-            v-for="card in liveCards"
+            v-for="card in renderedCards"
             :key="card.id"
             :ref="cardRefFor(card.id)"
             :card="renderCard(card)"
@@ -2436,6 +2981,9 @@ onBeforeUnmount(() => {
             :draft-from-id="linkDraft ? linkDraft.fromId : null"
             :draft-point="linkDraft ? linkDraft.point : null"
             :draft-target-id="linkDraft ? linkDraft.targetId : null"
+            :groups="displayGroups"
+            :folded-group-ids="foldedGroupIds"
+            :included-card-ids="includedCardIds"
             @select-link="openLinkEditor"
           />
 
