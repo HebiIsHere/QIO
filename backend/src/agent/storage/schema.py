@@ -1547,6 +1547,10 @@ from agent.storage.migration_r9f_review_origins import MIGRATION as _R9F_REVIEW 
 from agent.storage.migration_r9g_requirement_binding import MIGRATION as _R9G_BINDING  # noqa: E402
 
 from agent.storage.migration_r9h_limits import MIGRATION as _R9H_LIMITS  # noqa: E402
+from agent.storage.migration_r9h2_identity import (  # noqa: E402
+    COMPENSATION_STATEMENTS as _R9H2_IDENTITY_ADDITIVE,
+)
+from agent.storage.migration_r9h2_identity import MIGRATION as _R9H2_IDENTITY  # noqa: E402
 
 MIGRATIONS.append(_R9_ATTACH)
 MIGRATIONS.append(_R9_APPROVAL)
@@ -1595,8 +1599,22 @@ MIGRATIONS.append(
     )
 )
 
+MIGRATIONS.append(_R9H2_IDENTITY)
+
+# 补偿入口（新，62）：补偿 60 的全部语句 + 迁移 61（内部数据身份登记 + 解析失败纠正），去重。
+# R9-H2 契约 §4/§5：SCHEMA_VERSION = COMPENSATION_VERSION = 62。
+MIGRATIONS.append(
+    (
+        62,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 60 for stmt in stmts]
+            + list(_R9H2_IDENTITY_ADDITIVE)
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 60
+COMPENSATION_VERSION = 62
 
 
 

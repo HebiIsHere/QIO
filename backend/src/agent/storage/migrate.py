@@ -129,6 +129,8 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "file_origins",
         # R9-G（迁移 57）：模型要求解析审计（补充/修正/撤回/新要求）。
         "requirement_resolutions",
+        # R9-H2（迁移 61）：内部数据真实对象身份登记（硬链接/移动/改名保护）。
+        "internal_data_identities",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -245,6 +247,9 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_file_origins_path",
         # R9-G（迁移 57）：要求解析审计按目标要求检索。
         "idx_requirement_resolutions_target",
+        # R9-H2（迁移 61）：内部数据身份登记按路径/active 检索。
+        "idx_internal_data_identities_path",
+        "idx_internal_data_identities_active",
     ),
 }
 
