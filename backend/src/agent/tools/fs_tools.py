@@ -45,6 +45,409 @@ FIND_LIMIT = 50
 CANCELLED_WRITE_UNCONFIRMED = "已取消，但写入可能已在后台完成（状态未确认）"
 
 # ==========================================================================
+# R9-H4：实际影响（limit_impacts）/ 目录影响依据 / 批量路径去重（契约 §3、§6、§7）
+# ==========================================================================
+
+LIMIT_IMPACTS_KEY = "limit_impacts"
+LIMIT_IMPACTS_COMPLETE_KEY = "limit_impacts_complete"
+LIMIT_IMPACTS_REASON_KEY = "limit_impacts_reason"
+DIRECTORY_IMPACT_KEY = "directory_impact"
+DIRECTORY_IMPACT_DIGEST_KEY = "directory_impact_digest"
+INTERNAL_DATA_ENTRIES_KEY = "internal_data_entries"
+
+#: 目录影响枚举上限（有界；达到上限必须明确"不确定"，不能假装完整）。
+DIRECTORY_IMPACT_MAX_ENTRIES = 500
+DIRECTORY_IMPACT_MAX_DEPTH = 8
+#: 只对不超过该大小的文件算内容摘要；更大的文件用（大小,mtime）参与条目摘要，
+#: 避免为了审批去读整份大文件（有界，不做全内容扫描）。
+DIRECTORY_CONTENT_HASH_MAX_BYTES = 512 * 1024
+
+
+def path_dedupe_key(path: object, *, windows: bool | None = None) -> str:
+    """按平台文件系统语义的去重键：Windows 规范化（大小写/分隔符不敏感），POSIX 原样。"""
+    text = os.path.normpath(os.fspath(path))
+    if windows is None:
+        windows = os.name == "nt"
+    return os.path.normcase(text) if windows else text
+
+
+def make_limit_impact(operation: str, objects: Sequence[dict]) -> dict:
+    """契约 §2：{operation, objects:[{kind,value}]}，objects 去重且保持顺序。"""
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict] = []
+    for item in objects or ():
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "").strip()
+        value = str(item.get("value") or "")
+        if not kind or not value:
+            continue
+        key = (kind, value)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append({"kind": kind, "value": value})
+    return {"operation": str(operation or "").strip(), "objects": unique}
+
+
+def _impact_objects(paths: Sequence[object], *, kind: str = "path") -> list[dict]:
+    return [{"kind": kind, "value": str(path)} for path in paths or ()]
+
+
+def read_limit_impacts(path: object) -> list[dict]:
+    return [make_limit_impact("read", _impact_objects([path]))]
+
+
+def write_limit_impacts(
+    path: object, *, created: bool = False, operation: str | None = None
+) -> list[dict]:
+    op = operation or ("create" if created else "write")
+    return [make_limit_impact(op, _impact_objects([path]))]
+
+
+def delete_limit_impacts(
+    path: object,
+    *,
+    directory_impact_data: dict | None = None,
+) -> list[dict]:
+    """删除影响：普通文件 = 该 path；目录 = 目录自身 + 有界枚举到的所有子对象。"""
+    if directory_impact_data is not None:
+        return directory_limit_impacts(directory_impact_data)
+    return [make_limit_impact("delete", _impact_objects([path]))]
+
+
+def attach_limit_impacts(
+    effect: Any,
+    impacts: Sequence[dict],
+    *,
+    complete: bool = True,
+    reason: str | None = None,
+) -> None:
+    """把实际影响写进 effect.detail（供引擎/审查/审批/执行前核对使用）。
+
+    只向已存在的 detail dict 追加（Effect 本身是不可变 dataclass）；detail 不存在时无操作。
+    """
+    detail = getattr(effect, "detail", None)
+    if not isinstance(detail, dict):
+        return
+    merged: list[dict] = []
+    existing = detail.get(LIMIT_IMPACTS_KEY)
+    if isinstance(existing, (list, tuple)):
+        merged.extend(item for item in existing if isinstance(item, dict))
+    merged.extend(item for item in impacts or () if isinstance(item, dict))
+    detail[LIMIT_IMPACTS_KEY] = merged
+    detail[LIMIT_IMPACTS_COMPLETE_KEY] = bool(complete)
+    if not complete:
+        detail[LIMIT_IMPACTS_REASON_KEY] = reason or "影响范围达到有界枚举上限，剩余影响未知"
+    elif reason:
+        detail[LIMIT_IMPACTS_REASON_KEY] = str(reason)
+
+
+def aggregate_limit_impacts(impacts: Sequence[Sequence[dict]]) -> list[dict]:
+    """批量合并：同 operation 的对象合并去重（汇总不漏项）。"""
+    merged: dict[str, dict] = {}
+    order: list[str] = []
+    for group in impacts or ():
+        for item in group or ():
+            if not isinstance(item, dict):
+                continue
+            operation = str(item.get("operation") or "")
+            objects = [entry for entry in (item.get("objects") or []) if isinstance(entry, dict)]
+            if operation not in merged:
+                merged[operation] = {"operation": operation, "objects": []}
+                order.append(operation)
+            candidate = make_limit_impact(operation, merged[operation]["objects"] + objects)
+            merged[operation]["objects"] = candidate["objects"]
+    return [merged[name] for name in order]
+
+
+def _bounded_identity(path: Path) -> str | None:
+    try:
+        return security_gate.identity_key(security_gate.file_identity(path))
+    except Exception:  # noqa: BLE001 - 身份读不到按不可确认
+        return None
+
+
+def _bounded_content_sha(path: Path) -> str | None:
+    try:
+        if path.stat().st_size > DIRECTORY_CONTENT_HASH_MAX_BYTES:
+            return None
+        return security_gate.content_sha256(path)
+    except OSError:
+        return None
+
+
+def _entry_record(path: Path, *, is_protected: Any = None) -> dict:
+    try:
+        st = path.stat()
+    except OSError:
+        st = None
+    try:
+        is_dir = path.is_dir() and not path.is_symlink()
+    except OSError:
+        is_dir = False
+    content_sha = None if is_dir else _bounded_content_sha(path)
+    record = {
+        "path": str(path),
+        "kind": "directory" if is_dir else "file",
+        "identity": _bounded_identity(path),
+        # 内容摘要只对小文件计算；大文件用 size+mtime 参与条目摘要（有界）。
+        "content_sha256": content_sha,
+        "size": int(getattr(st, "st_size", 0) or 0) if st is not None else None,
+        "mtime_ns": int(getattr(st, "st_mtime_ns", 0) or 0) if st is not None else None,
+    }
+    if callable(is_protected):
+        try:
+            record["protected"] = bool(is_protected(path))
+        except Exception:  # noqa: BLE001 - 保护判定失败按未知（不冒充已检查）
+            record["protected"] = None
+    return record
+
+
+def _impact_digest(impact: dict) -> str:
+    payload = {
+        "operation": impact.get("operation"),
+        "root": impact.get("root"),
+        "complete": bool(impact.get("complete")),
+        "entries": sorted(
+            [
+                [
+                    path_dedupe_key(entry.get("path")),
+                    entry.get("kind"),
+                    entry.get("identity"),
+                    entry.get("content_sha256"),
+                    entry.get("size"),
+                    entry.get("mtime_ns"),
+                    entry.get("protected"),
+                ]
+                for entry in (impact.get("entries") or [])
+                if isinstance(entry, dict)
+            ]
+        ),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def directory_impact(
+    root: object,
+    *,
+    operation: str = "delete",
+    is_protected: Any = None,
+    max_entries: int | None = None,
+    max_depth: int | None = None,
+) -> dict:
+    """对目录做**有界**影响枚举：目录自身 + 子文件/子目录（含受保护/内部数据子对象）。
+
+    * 不跟随目录符号链接（避免环/逃逸）；
+    * 达到 max_entries / max_depth 时 complete=False、reason 明确，digest 仍可比较前缀，
+      但调用方/执行前核对必须把它当"影响不确定"，不能假装完整；
+    * 同一路径按平台语义排序，保证审批与执行比较一致。
+    """
+    base = Path(root)
+    entries: list[dict] = []
+    complete = True
+    reason = ""
+    max_entries = int(
+        max_entries if max_entries is not None else DIRECTORY_IMPACT_MAX_ENTRIES
+    )
+    max_depth = int(
+        max_depth if max_depth is not None else DIRECTORY_IMPACT_MAX_DEPTH
+    )
+    try:
+        root_entry = _entry_record(base, is_protected=is_protected)
+        root_entry["kind"] = "directory"
+        entries.append(root_entry)
+    except OSError:  # pragma: no cover - 极端路径
+        pass
+    stack: list[tuple[Path, int]] = [(base, 0)]
+    seen_dirs: set[str] = set()
+    while stack:
+        current, depth = stack.pop(0)
+        try:
+            key = path_dedupe_key(current)
+            if key in seen_dirs:
+                continue
+            seen_dirs.add(key)
+            children = sorted(os.scandir(current), key=lambda item: path_dedupe_key(item.name))
+        except OSError:
+            complete = False
+            reason = reason or f"目录无法完整读取：{current}"
+            continue
+        for entry in children:
+            try:
+                entry_path = Path(entry.path)
+                is_dir = entry.is_dir(follow_symlinks=False)
+            except OSError:
+                complete = False
+                reason = reason or f"目录项状态无法读取：{entry.path}"
+                continue
+            if len(entries) >= max(1, int(max_entries)):
+                complete = False
+                reason = (
+                    f"影响枚举达到上限 {max_entries} 项：剩余对象未枚举，影响不确定"
+                )
+                break
+            entries.append(_entry_record(entry_path, is_protected=is_protected))
+            if is_dir:
+                if depth + 1 > max(0, int(max_depth)):
+                    complete = False
+                    reason = (
+                        f"目录层级超过上限 {max_depth}：更深层对象未枚举，影响不确定"
+                    )
+                    continue
+                stack.append((entry_path, depth + 1))
+        if not complete and len(entries) >= max(1, int(max_entries)):
+            break
+    entries.sort(key=lambda item: (item.get("kind") != "directory", path_dedupe_key(item.get("path"))))
+    impact = {
+        "operation": str(operation or "delete"),
+        "root": str(base),
+        "complete": complete,
+        "truncated": not complete,
+        "reason": reason,
+        "entries": entries,
+        "entry_count": len(entries),
+        "max_entries": int(max_entries),
+        "max_depth": int(max_depth),
+    }
+    impact["digest"] = _impact_digest(impact)
+    impact["internal_data_entries"] = [
+        entry.get("path")
+        for entry in entries
+        if entry.get("protected") is True
+    ]
+    return impact
+
+
+def directory_limit_impacts(impact: dict) -> list[dict]:
+    """目录影响 → limit_impacts：目录对象 + 每个枚举子对象；不完整时补 path_prefix。"""
+    objects: list[dict] = [{"kind": "directory", "value": str(impact.get("root") or "")}]
+    for entry in impact.get("entries") or ():
+        if not isinstance(entry, dict):
+            continue
+        value = str(entry.get("path") or "")
+        if not value:
+            continue
+        if str(entry.get("path")) == str(impact.get("root")):
+            continue
+        kind = "directory" if entry.get("kind") == "directory" else "path"
+        objects.append({"kind": kind, "value": value})
+    if not impact.get("complete", True):
+        prefix = os.path.join(str(impact.get("root") or ""), "")
+        objects.append({"kind": "path_prefix", "value": prefix})
+    return [make_limit_impact(impact.get("operation") or "delete", objects)]
+
+
+def verify_directory_impact(
+    expected: dict | None,
+    root: object,
+    *,
+    is_protected: Any = None,
+    max_entries: int | None = None,
+    max_depth: int | None = None,
+) -> dict:
+    """执行前比较目录影响：新增/移除/替换（身份/内容/条目）→ 旧批准失效。
+
+    * 审批时影响不完整（达到上限）→ 明确返不通过（不能假装没变化）；
+    * 只做同一目录的有界重算，不扫描其它路径。
+    """
+    expected = dict(expected or {})
+    if not expected:
+        return {
+            "ok": False,
+            "code": "directory_impact_missing",
+            "reason": "审批记录缺少目录影响依据：无法可靠比较，需重新确认",
+            "added": [],
+            "removed": [],
+            "replaced": [],
+        }
+    current = directory_impact(
+        root,
+        operation=str(expected.get("operation") or "delete"),
+        is_protected=is_protected,
+        max_entries=int(max_entries or expected.get("max_entries") or DIRECTORY_IMPACT_MAX_ENTRIES),
+        max_depth=int(max_depth or expected.get("max_depth") or DIRECTORY_IMPACT_MAX_DEPTH),
+    )
+    if not expected.get("complete", True):
+        return {
+            "ok": False,
+            "code": "directory_impact_incomplete",
+            "reason": str(
+                expected.get("reason")
+                or "审批时目录影响未完整枚举（达到上限）：无法确认没有新增影响，需重新确认"
+            ),
+            "added": [],
+            "removed": [],
+            "replaced": [],
+            "expected_digest": expected.get("digest"),
+            "current_digest": current.get("digest"),
+        }
+    expected_entries = {
+        path_dedupe_key(entry.get("path")): entry
+        for entry in expected.get("entries") or ()
+        if isinstance(entry, dict)
+    }
+    current_entries = {
+        path_dedupe_key(entry.get("path")): entry
+        for entry in current.get("entries") or ()
+        if isinstance(entry, dict)
+    }
+    added = sorted(
+        str(current_entries[key].get("path"))
+        for key in current_entries
+        if key not in expected_entries
+    )
+    removed = sorted(
+        str(expected_entries[key].get("path"))
+        for key in expected_entries
+        if key not in current_entries
+    )
+    replaced: list[str] = []
+    for key in expected_entries:
+        if key not in current_entries:
+            continue
+        before = expected_entries[key]
+        after = current_entries[key]
+        if (
+            before.get("kind") != after.get("kind")
+            or before.get("identity") != after.get("identity")
+            or before.get("content_sha256") != after.get("content_sha256")
+            or int(before.get("size") or 0) != int(after.get("size") or 0)
+            or int(before.get("mtime_ns") or 0) != int(after.get("mtime_ns") or 0)
+            or bool(before.get("protected")) != bool(after.get("protected"))
+        ):
+            replaced.append(str(after.get("path")))
+    if not current.get("complete", True):
+        return {
+            "ok": False,
+            "code": "directory_impact_incomplete_now",
+            "reason": str(
+                current.get("reason") or "执行前目录影响无法完整枚举：需重新确认"
+            ),
+            "added": added,
+            "removed": removed,
+            "replaced": replaced,
+            "expected_digest": expected.get("digest"),
+            "current_digest": current.get("digest"),
+        }
+    changed = bool(added or removed or replaced)
+    return {
+        "ok": not changed,
+        "code": "" if not changed else "directory_impact_changed",
+        "reason": (
+            ""
+            if not changed
+            else "目录内容在审批/执行前发生变化（新增/移除/替换），旧批准失效：需重新确认"
+        ),
+        "added": added,
+        "removed": removed,
+        "replaced": replaced,
+        "expected_digest": expected.get("digest"),
+        "current_digest": current.get("digest"),
+    }
+
+# ==========================================================================
 # R9-G：操作绑定 / 批量逐项 / 执行前重核对（契约 §3、§6、§7；W3）
 # ==========================================================================
 
@@ -851,6 +1254,7 @@ class FsReadTool(_FsTool):
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
         effect = security_gate.read_effect("fs_read", target, purpose="读取文件内容")
+        attach_limit_impacts(effect, read_limit_impacts(target))
         blocked = await self._permitted(
             self.computer.read_verdict(str(target)),
             {"action": "read", "path": str(target)},
@@ -918,8 +1322,12 @@ class FsWriteTool(_FsTool):
                 # R9-H §4 字段映射：拟写入内容摘要 + 覆盖前对象状态摘要。
                 "content_digest": digest,
                 "precondition_digest": precondition,
+                "identity": identity_key,
             },
             internal=internal_root is not None,
+        )
+        attach_limit_impacts(
+            effect, write_limit_impacts(target, created=not existed_before)
         )
         attach_requirement_binding(effect, binding)
         pending = (
@@ -940,6 +1348,9 @@ class FsWriteTool(_FsTool):
                 "base_content_sha256": base_content_sha,
                 "content_sha256": digest,
                 "precondition_digest": precondition,
+                "identity_key": identity_key,
+                "limit_impacts": write_limit_impacts(target, created=not existed_before),
+                "limit_impacts_complete": True,
                 "operation_binding": self._operation_binding_record(effect),
                 "internal_data_root": str(internal_root) if internal_root else None,
                 "requirement_binding": binding,
@@ -1030,9 +1441,11 @@ class FsPatchTool(_FsTool):
                 "file_exists": True,
                 "content_digest": digest,
                 "precondition_digest": precondition,
+                "identity": identity_key,
             },
             internal=internal_root is not None,
         )
+        attach_limit_impacts(effect, write_limit_impacts(target))
         attach_requirement_binding(effect, binding)
         pending = (
             "fs.patch",
@@ -1052,6 +1465,9 @@ class FsPatchTool(_FsTool):
                 "base_content_sha256": base_content_sha,
                 "content_sha256": digest,
                 "precondition_digest": precondition,
+                "identity_key": identity_key,
+                "limit_impacts": write_limit_impacts(target),
+                "limit_impacts_complete": True,
                 "operation_binding": self._operation_binding_record(effect),
                 "internal_data_root": str(internal_root) if internal_root else None,
                 "requirement_binding": binding,
@@ -1100,6 +1516,7 @@ class FsListTool(_FsTool):
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
         effect = security_gate.read_effect("fs_list", target, purpose="列出目录内容")
+        attach_limit_impacts(effect, read_limit_impacts(target))
         blocked = await self._permitted(
             self.computer.read_verdict(str(target)),
             {"action": "list", "path": str(target)},
@@ -1133,6 +1550,7 @@ class FsFindTool(_FsTool):
         # 默认（以及相对路径）都以工作区根为基准，而不是后端进程的 cwd
         root = self._resolve(directory) if directory else self.computer.root()
         effect = security_gate.read_effect("fs_find", root, purpose="按文件名查找")
+        attach_limit_impacts(effect, read_limit_impacts(root))
         blocked = await self._permitted(
             self.computer.read_verdict(str(root)),
             {"action": "find", "path": str(root)},
@@ -1162,6 +1580,7 @@ class FsInfoTool(_FsTool):
             return ToolResult(ok=False, error="path 必填")
         target = self._resolve(path)
         effect = security_gate.read_effect("fs_info", target, purpose="读取文件信息")
+        attach_limit_impacts(effect, read_limit_impacts(target))
         blocked = await self._permitted(
             self.computer.read_verdict(str(target)),
             {"action": "info", "path": str(target)},
@@ -1318,7 +1737,8 @@ class FsDeleteTool(_FsTool):
             except Exception as exc:  # noqa: BLE001 - 无法定位的路径不能猜着删
                 skipped.append(f"{text}（路径无法解析：{exc}）")
                 continue
-            key = str(target).lower()
+            # 平台语义去重：Windows 规范化（大小写/分隔符不敏感）；POSIX 大小写敏感。
+            key = path_dedupe_key(target)
             if key in seen:
                 continue
             seen.add(key)
@@ -1341,17 +1761,61 @@ class FsDeleteTool(_FsTool):
             origin_record = self._origin_record(target)
             origin = origin_record.origin if origin_record is not None else None
             is_directory = target.is_dir() if exists else False
+            # R9-H4 §7：删除目录不能只查目录本身 —— 有界枚举子对象（含受保护/内部
+            # 数据子对象）作为真实影响；达到上限时 complete=False（影响不确定）。
+            directory_impact_data: dict | None = None
+            if is_directory:
+                try:
+                    directory_impact_data = directory_impact(
+                        target,
+                        operation="delete",
+                        is_protected=lambda path: (
+                            security_gate.match_internal_data(self.security, path)
+                            is not None
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - 枚举失败按影响不确定处理
+                    directory_impact_data = {
+                        "operation": "delete",
+                        "root": str(target),
+                        "complete": False,
+                        "truncated": True,
+                        "reason": "目录影响枚举失败：影响不确定，需重新确认",
+                        "entries": [],
+                        "entry_count": 0,
+                        "digest": "",
+                    }
             item_content_sha = (
                 security_gate.content_sha256(target)
                 if exists and not is_directory
                 else None
             )
-            # R9-H §4：删除前的对象状态摘要（身份 + 内容；不存在用 absent 标记）。
+            directory_digest = (
+                str(directory_impact_data.get("digest") or "")
+                if directory_impact_data is not None
+                else None
+            )
+            limit_impacts = delete_limit_impacts(
+                target, directory_impact_data=directory_impact_data
+            )
+            impacts_complete = (
+                bool(directory_impact_data.get("complete", True))
+                if directory_impact_data is not None
+                else True
+            )
+            impacts_reason = (
+                str(directory_impact_data.get("reason") or "")
+                if directory_impact_data is not None
+                else ""
+            )
+            # R9-H §4：删除前的对象状态摘要（身份 + 内容/目录影响摘要；不存在用 absent）。
             item_precondition = object_state_digest(
                 path=target,
                 exists=exists,
                 identity=identity_key,
-                content_sha256=item_content_sha,
+                content_sha256=(
+                    directory_digest if is_directory else item_content_sha
+                ),
                 is_directory=is_directory,
             )
             found_root = security_gate.match_internal_data(self.security, target)
@@ -1376,6 +1840,18 @@ class FsDeleteTool(_FsTool):
                     "internal_data_root": str(found_root) if found_root else None,
                     # R9-H §4：删除前状态进入审查对象/复用键。
                     "precondition_digest": item_precondition,
+                    # R9-H4 §3/§7：真实删除影响（目录为枚举子对象；不完整明确标记）。
+                    LIMIT_IMPACTS_KEY: limit_impacts,
+                    LIMIT_IMPACTS_COMPLETE_KEY: impacts_complete,
+                    LIMIT_IMPACTS_REASON_KEY: impacts_reason or None,
+                    DIRECTORY_IMPACT_KEY: directory_impact_data,
+                    DIRECTORY_IMPACT_DIGEST_KEY: directory_digest,
+                    INTERNAL_DATA_ENTRIES_KEY: (
+                        directory_impact_data.get("internal_data_entries") or []
+                        if directory_impact_data is not None
+                        else []
+                    ),
+                    "identity": identity_key,
                 },
             )
             attach_requirement_binding(item_effect, binding)
@@ -1390,6 +1866,8 @@ class FsDeleteTool(_FsTool):
                         "identity": identity_key,
                         "exists": exists,
                         "file_origin": origin,
+                        "directory_impact_digest": directory_digest,
+                        "limit_impacts_complete": impacts_complete,
                     },
                     fingerprint={
                         "path": str(target),
@@ -1400,6 +1878,17 @@ class FsDeleteTool(_FsTool):
                         "is_directory": is_directory,
                         "precondition_digest": item_precondition,
                         "delete_mode": "recycle_bin",
+                        "identity_key": identity_key,
+                        "limit_impacts": limit_impacts,
+                        "limit_impacts_complete": impacts_complete,
+                        "limit_impacts_reason": impacts_reason or None,
+                        "directory_impact": directory_impact_data,
+                        "directory_impact_digest": directory_digest,
+                        "internal_data_entries": (
+                            directory_impact_data.get("internal_data_entries") or []
+                            if directory_impact_data is not None
+                            else []
+                        ),
                         "operation_binding": self._operation_binding_record(item_effect),
                         "file_origin": origin,
                     },
@@ -1466,12 +1955,34 @@ class FsDeleteTool(_FsTool):
                         "identity": security_gate.identity_key(
                             dict(entry.fingerprint.get("identity") or {})
                         ),
-                        "content_sha256": entry.fingerprint.get("content_sha256"),
+                        # 目录用有界影响摘要作为"内容摘要"参与批次前置状态。
+                        "content_sha256": entry.fingerprint.get(
+                            "directory_impact_digest"
+                        )
+                        or entry.fingerprint.get("content_sha256"),
                         "is_directory": bool(entry.fingerprint.get("is_directory")),
                     }
                     for entry in waiting
                 ]
             )
+            batch_limit_impacts = aggregate_limit_impacts(
+                [entry.fingerprint.get("limit_impacts") or [] for entry in waiting]
+            )
+            batch_impacts_complete = all(
+                bool(entry.fingerprint.get("limit_impacts_complete", True))
+                for entry in waiting
+            )
+            batch_impacts_reason = "；".join(
+                str(entry.fingerprint.get("limit_impacts_reason") or "")
+                for entry in waiting
+                if entry.fingerprint.get("limit_impacts_reason")
+            )
+            batch_internal_entries: list[str] = []
+            for entry in waiting:
+                batch_internal_entries.extend(
+                    str(item)
+                    for item in (entry.fingerprint.get("internal_data_entries") or [])
+                )
             batch_effect = security_gate.make_effect(
                 batch_kind,
                 batch_effect_targets,
@@ -1484,6 +1995,11 @@ class FsDeleteTool(_FsTool):
                     "delete_mode": "recycle_bin",
                     # R9-H §4：批量前置状态摘要（任一对象变化 → 旧记录不命中）。
                     "precondition_digest": batch_precondition,
+                    # R9-H4：批量真实影响汇总（逐项目标；不完整明确标记）。
+                    LIMIT_IMPACTS_KEY: batch_limit_impacts,
+                    LIMIT_IMPACTS_COMPLETE_KEY: batch_impacts_complete,
+                    LIMIT_IMPACTS_REASON_KEY: batch_impacts_reason or None,
+                    INTERNAL_DATA_ENTRIES_KEY: batch_internal_entries,
                     "requirement_binding": binding,
                 },
             )
@@ -1505,6 +2021,21 @@ class FsDeleteTool(_FsTool):
                 "deleted_to_recycle_bin": True,
                 "delete_mode": "recycle_bin",
                 "precondition_digest": batch_precondition,
+                "identity_key": [entry.payload.get("identity") for entry in waiting],
+                "limit_impacts": batch_limit_impacts,
+                "limit_impacts_complete": batch_impacts_complete,
+                "limit_impacts_reason": batch_impacts_reason or None,
+                "directory_impacts": [
+                    {
+                        "path": entry.payload.get("path"),
+                        "digest": entry.fingerprint.get("directory_impact_digest"),
+                        "complete": entry.fingerprint.get(
+                            "limit_impacts_complete", True
+                        ),
+                    }
+                    for entry in waiting
+                ],
+                "internal_data_entries": batch_internal_entries,
                 "operation_binding": self._operation_binding_record(batch_effect),
                 "requirement_binding": binding,
             }

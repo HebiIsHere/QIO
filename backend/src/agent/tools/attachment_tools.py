@@ -52,6 +52,7 @@ from agent.services.attachments import (
     classify_readability,
     requirement_binding_from_context,
 )
+from agent.tools import fs_tools
 from agent.tools.base import Tool, ToolResult
 
 DEFAULT_LIMIT = 200
@@ -604,6 +605,9 @@ class ReadAttachmentTool(Tool):
             "limit": limit,
             "requirement_binding": binding,
         }
+        # R9-H4 §3：附件读取的真实影响对象（读的是登记过的这个路径）。
+        read_detail[fs_tools.LIMIT_IMPACTS_KEY] = fs_tools.read_limit_impacts(path)
+        read_detail[fs_tools.LIMIT_IMPACTS_COMPLETE_KEY] = True
         try:
             decision = await attachment_access.authorize_read(
                 getattr(self, "security", None),
@@ -638,6 +642,7 @@ class ReadAttachmentTool(Tool):
                     path=path,
                     identity=getattr(att, "file_id", None),
                     purpose=f"读取附件「{att.original_name}」",
+                    detail=read_detail,
                 ),
                 payload={
                     "attachment_id": att.id,
