@@ -40,6 +40,9 @@ from typing import Any, Callable, Protocol, Sequence
 
 from agent.adapters.base import ChatMessage
 from agent.prompts import (
+    LIMIT_EXTRACTION_CHAIN_INSTRUCTION,
+    LIMIT_EXTRACTION_CHAIN_SCHEMA_VERSION,
+    LIMIT_EXTRACTION_CHAIN_SYSTEM,
     LIMIT_EXTRACTION_INSTRUCTION,
     LIMIT_EXTRACTION_SCHEMA_VERSION,
     LIMIT_EXTRACTION_SYSTEM,
@@ -47,6 +50,7 @@ from agent.prompts import (
     REQUIREMENT_RESOLUTION_SCHEMA_VERSION,
     REQUIREMENT_RESOLUTION_SYSTEM,
 )
+from agent.security import requirement_limits
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,8 @@ MAX_REASON_CHARS = 500
 MAX_TARGET_CHARS = 200
 MAX_CONTEXT_ITEMS = 12
 MAX_CONTEXT_JSON_CHARS = 2000
+#: 要求链恢复的防御上限：真实父子链通常几条；超过上限视为上下文异常（不静默截断）。
+MAX_CHAIN_NODES = 64
 
 #: 结构化限制里允许出现的稳定操作名（契约 §3 limits.operations）。
 ALLOWED_LIMIT_OPERATIONS = frozenset(
@@ -697,6 +703,149 @@ def parse_extracted_limits(
 
 
 # ---------------------------------------------------------------------------
+# R9-H2 §3.2：完整要求链 -> 目标版本当前完整限制
+# ---------------------------------------------------------------------------
+
+
+def _chain_node_payload(node: Any, order: int) -> dict:
+    structured = getattr(node, "structured_limits", None)
+    return {
+        "order": int(order),
+        "requirement_id": str(getattr(node, "requirement_id", "") or ""),
+        "version": int(getattr(node, "version", 0) or 0),
+        "parent_id": (
+            None
+            if getattr(node, "parent_id", None) is None
+            else str(getattr(node, "parent_id"))
+        ),
+        "status": str(getattr(node, "status", "") or ""),
+        "text": _clip(getattr(node, "text", "") or "", MAX_MESSAGE_CHARS),
+        "provenance": _safe_json_value(
+            dict(getattr(node, "provenance", {}) or {}), max_chars=500
+        ),
+        "structured_limits": (
+            None
+            if structured is None
+            else [
+                dict(item)
+                for item in structured
+                if isinstance(item, dict)
+            ][:MAX_LIMITS]
+        ),
+        "structured_limits_state": str(
+            getattr(node, "structured_limits_state", "") or ""
+        ),
+        "structured_limits_source": (
+            None
+            if getattr(node, "structured_limits_source", None) is None
+            else str(getattr(node, "structured_limits_source"))[:300]
+        ),
+    }
+
+
+def build_limit_extraction_context_payload(
+    context: Any,
+    *,
+    requirement_id: str | None = None,
+    version: int | None = None,
+) -> dict:
+    """组装要求链恢复输入（唯一入口；只喂真实链节点，不喂展平文字/摘要）。
+
+    要求 context 是 requirements.RequirementRecoveryContext：
+    * 目标 id/version 必须与入参一致，且 complete=True，否则抛 Unavailable；
+    * chain 按根 -> 当前顺序原样进入 payload，text 是用户原话；
+    * 每个节点携带版本/父子/状态/已知 structured_limits/state/source；
+    * 超过 MAX_CHAIN_NODES 视为上下文异常（不静默截断后声称完整）。
+    """
+    context_id = str(getattr(context, "requirement_id", "") or "")
+    context_version = int(getattr(context, "version", 0) or 0)
+    target_id = context_id if requirement_id is None else str(requirement_id)
+    target_version = (
+        context_version if version is None else int(version)
+    )
+    if not context_id or not context_version:
+        raise RequirementResolutionUnavailable("要求恢复上下文缺少目标要求/版本")
+    if target_id != context_id or target_version != context_version:
+        raise RequirementResolutionUnavailable(
+            "恢复上下文与目标要求/版本不一致（期望 %s v%s，上下文 %s v%s）"
+            % (target_id, target_version, context_id, context_version)
+        )
+    if not bool(getattr(context, "complete", False)):
+        raise RequirementResolutionUnavailable(
+            "要求链不完整，不能恢复：" + str(getattr(context, "reason", "") or "unknown")
+        )
+    chain = getattr(context, "chain", None)
+    if isinstance(chain, (str, bytes)) or not isinstance(chain, (list, tuple)):
+        raise RequirementResolutionUnavailable("要求恢复上下文缺少 chain 数组")
+    if len(chain) > MAX_CHAIN_NODES:
+        raise RequirementResolutionUnavailable(
+            "要求链节点过多（%d > %d），拒绝恢复" % (len(chain), MAX_CHAIN_NODES)
+        )
+    nodes = [_chain_node_payload(node, index + 1) for index, node in enumerate(chain)]
+    if not nodes:
+        raise RequirementResolutionUnavailable("要求链为空，无法恢复")
+    digest = str(getattr(context, "chain_digest", "") or "")
+    if not digest:
+        raise RequirementResolutionUnavailable("要求恢复上下文缺少 chain_digest")
+    return {
+        "prompt_version": LIMIT_EXTRACTION_CHAIN_SCHEMA_VERSION,
+        "target_requirement_id": context_id,
+        "target_version": context_version,
+        "target_status": str(getattr(context, "status", "") or ""),
+        "target_parent_id": (
+            None
+            if getattr(context, "parent_id", None) is None
+            else str(getattr(context, "parent_id"))
+        ),
+        "chain_digest": digest,
+        "complete": True,
+        "chain": nodes,
+    }
+
+
+def render_limit_extraction_context_messages(
+    context: Any,
+    *,
+    requirement_id: str | None = None,
+    version: int | None = None,
+) -> list[ChatMessage]:
+    payload = build_limit_extraction_context_payload(
+        context, requirement_id=requirement_id, version=version
+    )
+    payload_text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    instruction = Template(LIMIT_EXTRACTION_CHAIN_INSTRUCTION).substitute(
+        payload=payload_text
+    )
+    return [
+        ChatMessage(role="system", content=LIMIT_EXTRACTION_CHAIN_SYSTEM),
+        ChatMessage(role="user", content=instruction),
+    ]
+
+
+def parse_extracted_context_limits(raw_text: object) -> tuple[dict, ...]:
+    """解析模型返回的"目标版本完整限制"，并用 requirement_limits 校验结构。
+
+    * 空数组合法（完整理解后确认没有限制）；
+    * 结构非法/操作名或对象类别超出冻结 schema → RequirementResolutionUnavailable；
+    * 不返回部分结果，不把非法输出当"无限制"。
+    """
+    payload = _extract_json_object(raw_text)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RequirementResolutionUnavailable("要求链限制输出不是合法 JSON") from exc
+    if not isinstance(data, dict):
+        raise RequirementResolutionUnavailable("要求链限制输出顶层必须是 JSON 对象")
+    limits = _parse_limits(data, key="limits")
+    try:
+        return requirement_limits.normalize_limits(list(limits))
+    except ValueError as exc:
+        raise RequirementResolutionUnavailable(
+            "要求链限制结构非法：" + str(exc)[:200]
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
 # 模型解析器
 # ---------------------------------------------------------------------------
 
@@ -757,6 +906,9 @@ class ModelRequirementResolver:
         # 审计来源：app/requirements 写入 prompt_version / source 时使用（不猜）。
         self.prompt_version = REQUIREMENT_RESOLUTION_SCHEMA_VERSION
         self.limit_extraction_prompt_version = LIMIT_EXTRACTION_SCHEMA_VERSION
+        self.limit_extraction_chain_prompt_version = (
+            LIMIT_EXTRACTION_CHAIN_SCHEMA_VERSION
+        )
 
     async def resolve(
         self,
@@ -851,6 +1003,49 @@ class ModelRequirementResolver:
                 "历史限制提取结果校验失败：" + _sanitize_error(exc)
             ) from exc
 
+    async def extract_limits_from_context(
+        self,
+        context: Any,
+        *,
+        requirement_id: str,
+        version: int,
+    ) -> tuple[dict, ...]:
+        """R9-H2 §3.2：用完整要求链恢复目标版本当前的完整结构化限制。
+
+        * 输入 RequirementRecoveryContext（根->当前原话/顺序/父子/版本/已知限制）；
+        * 单次主模型调用 tools=[]；只做语义理解，不产生许可、不写库；
+        * 链不完整/目标不一致/超时/异常/输出非法 → RequirementResolutionUnavailable；
+        * 返回空元组仅表示"完整理解后确认无限制"（不是失败）；
+        * 与旧 extract_limits(text) 共用结构校验，但 app 的历史恢复必须走本方法。
+        """
+        try:
+            messages = render_limit_extraction_context_messages(
+                context, requirement_id=requirement_id, version=version
+            )
+            raw_text, _model = await asyncio.wait_for(
+                self._call_model(messages), timeout=self.timeout_seconds
+            )
+        except asyncio.TimeoutError as exc:
+            raise RequirementResolutionUnavailable(
+                "要求链限制恢复模型超时（超过 "
+                + str(self.timeout_seconds)
+                + " 秒），标记 unresolved"
+            ) from exc
+        except RequirementResolutionUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 模型异常不能变成"没有限制"
+            raise RequirementResolutionUnavailable(
+                "要求链限制恢复模型调用失败：" + _sanitize_error(exc)
+            ) from exc
+        try:
+            return parse_extracted_context_limits(raw_text)
+        except RequirementResolutionUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 校验器异常同样视为不可用
+            raise RequirementResolutionUnavailable(
+                "要求链限制恢复结果校验失败：" + _sanitize_error(exc)
+            ) from exc
+
     def _context(self) -> list[dict]:
         provider = self.context_provider
         if provider is None:
@@ -906,11 +1101,15 @@ __all__ = [
     "RequirementResolutionUnavailable",
     "RequirementResolver",
     "ResolutionOutcome",
+    "MAX_CHAIN_NODES",
+    "build_limit_extraction_context_payload",
     "build_limit_extraction_payload",
     "build_resolution_payload",
     "normalize_candidate",
+    "parse_extracted_context_limits",
     "parse_extracted_limits",
     "parse_resolution_outcome",
+    "render_limit_extraction_context_messages",
     "render_limit_extraction_messages",
     "render_resolution_messages",
     "validate_resolution",

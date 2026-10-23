@@ -182,6 +182,87 @@ class AppliedResolution:
     structured_limits: tuple[dict, ...] | None = None
 
 
+#: 要求链恢复：单个祖先/当前节点（原样读自 user_requirements）。
+#: 注意：structured_limits=None 表示历史未知；state=legacy/unresolved 时即使
+#: 有已知结构化内容也不得当作"完整限制"。
+@dataclass(frozen=True)
+class RequirementChainNode:
+    requirement_id: str
+    version: int
+    parent_id: str | None
+    text: str
+    status: str
+    provenance: dict
+    structured_limits: tuple[dict, ...] | None
+    structured_limits_state: str
+    structured_limits_source: str | None
+
+    def as_dict(self) -> dict:
+        return {
+            "requirement_id": self.requirement_id,
+            "version": int(self.version),
+            "parent_id": self.parent_id,
+            "text": self.text,
+            "status": self.status,
+            "provenance": dict(self.provenance),
+            "structured_limits": (
+                [dict(item) for item in self.structured_limits]
+                if self.structured_limits is not None
+                else None
+            ),
+            "structured_limits_state": self.structured_limits_state,
+            "structured_limits_source": self.structured_limits_source,
+        }
+
+
+#: 历史要求链恢复上下文（R9-H2 契约 §3.1）；由 RequirementLedger.recovery_context 组装，
+#: resolution.py 的 extract_limits_from_context 消费，app.py（B）据此做条件写回。
+#: chain 只在完整（complete=True）且当前 active 时可用于恢复；否则调用方不得标 structured。
+@dataclass(frozen=True)
+class RequirementRecoveryContext:
+    requirement_id: str
+    version: int
+    status: str
+    parent_id: str | None
+    chain: tuple[RequirementChainNode, ...]
+    complete: bool
+    reason: str
+    chain_digest: str
+
+    def as_dict(self) -> dict:
+        return {
+            "requirement_id": self.requirement_id,
+            "version": int(self.version),
+            "status": self.status,
+            "parent_id": self.parent_id,
+            "chain": [node.as_dict() for node in self.chain],
+            "complete": bool(self.complete),
+            "reason": self.reason,
+            "chain_digest": self.chain_digest,
+        }
+
+
+def _requirement_chain_digest(nodes: Sequence["RequirementChainNode"]) -> str:
+    """对 (requirement_id, version, parent_id, text, status) 有序序列做 sha256。
+
+    text 原样参与（用户原话）；不含模型摘要/推理，不含密钥。
+    """
+    import hashlib
+
+    payload = [
+        [
+            str(node.requirement_id),
+            int(node.version),
+            None if node.parent_id is None else str(node.parent_id),
+            str(node.text),
+            str(node.status),
+        ]
+        for node in nodes
+    ]
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 class RequirementVersionMismatch(ValueError):
     """模型解析出的目标版本与当前库中的版本不一致（要求已被修正/替换）。"""
 
@@ -358,6 +439,109 @@ class RequirementLedger:
             return False
         return int(requirement.version) == int(binding.version)
 
+    # -- 历史要求链恢复（R9-H2 契约 §3.1）------------------------------------
+
+    @staticmethod
+    def _chain_node(requirement: UserRequirement) -> RequirementChainNode:
+        return RequirementChainNode(
+            requirement_id=requirement.requirement_id,
+            version=int(requirement.version),
+            parent_id=requirement.parent_id,
+            text=requirement.text,
+            status=requirement.status,
+            provenance=dict(requirement.provenance),
+            structured_limits=requirement.structured_limits,
+            structured_limits_state=requirement.structured_limits_state,
+            structured_limits_source=requirement.structured_limits_source,
+        )
+
+    def recovery_context(self, requirement_id: str) -> RequirementRecoveryContext:
+        """按真实 parent_id 链组装"根 -> 当前"恢复上下文（R9-H2 §3.1）。
+
+        * 只用台账真实父子关系，不看 candidates/最近 active/全部历史消息；
+        * 父行缺失、id 循环、版本不连续、当前非 active → complete=False + reason，
+          **不抛异常**；
+        * text/provenance/state/source 原样；chain_digest 覆盖有序
+          (requirement_id, version, parent_id, text, status)。
+        """
+        empty_digest = _requirement_chain_digest(())
+        rid = str(requirement_id or "").strip()
+        if not rid:
+            return RequirementRecoveryContext(
+                requirement_id="",
+                version=0,
+                status="",
+                parent_id=None,
+                chain=(),
+                complete=False,
+                reason="要求 id 为空",
+                chain_digest=empty_digest,
+            )
+        current = self.by_id(rid)
+        if current is None:
+            return RequirementRecoveryContext(
+                requirement_id=rid,
+                version=0,
+                status="",
+                parent_id=None,
+                chain=(),
+                complete=False,
+                reason="要求不存在：" + rid,
+                chain_digest=empty_digest,
+            )
+
+        reverse_chain: list[UserRequirement] = []
+        seen: set[str] = set()
+        reason = ""
+        node: UserRequirement | None = current
+        while node is not None:
+            if node.requirement_id in seen:
+                reason = "父链存在循环：" + node.requirement_id
+                break
+            seen.add(node.requirement_id)
+            reverse_chain.append(node)
+            if not node.parent_id:
+                break
+            parent = self.by_id(node.parent_id)
+            if parent is None:
+                reason = "父要求缺失：" + str(node.parent_id)
+                break
+            if parent.requirement_id in seen:
+                reason = "父链存在循环：" + parent.requirement_id
+                break
+            if int(node.version) != int(parent.version) + 1:
+                reason = (
+                    "版本不连续：子要求 %s(v=%s) 的父要求 %s(v=%s) 不满足 parent+1"
+                    % (
+                        node.requirement_id,
+                        node.version,
+                        parent.requirement_id,
+                        parent.version,
+                    )
+                )
+                break
+            node = parent
+
+        chain = tuple(
+            self._chain_node(item) for item in reversed(reverse_chain)
+        )
+        complete = not reason
+        if complete and current.status != STATUS_ACTIVE:
+            complete = False
+            reason = "当前要求不是 active（status=" + str(current.status) + "）"
+        if not reason:
+            reason = ""
+        return RequirementRecoveryContext(
+            requirement_id=current.requirement_id,
+            version=int(current.version),
+            status=current.status,
+            parent_id=current.parent_id,
+            chain=chain,
+            complete=complete,
+            reason=reason,
+            chain_digest=_requirement_chain_digest(chain),
+        )
+
     # -- 结构化限制（R9-H 契约 §6）------------------------------------------
 
     def set_structured_limits(
@@ -367,12 +551,21 @@ class RequirementLedger:
         *,
         source: object = "manual_recovery",
         state: str = requirement_limits.STATE_STRUCTURED,
+        expected_version: int | None = None,
+        expected_status: str | None = None,
+        expected_chain_digest: str | None = None,
     ) -> UserRequirement:
         """写入/恢复一条要求的结构化限制（恢复入口 + apply_resolution 共用）。
 
         * state=structured：limits 必须是数组（空数组 = 明确无限制），持久化为 JSON；
         * state=unresolved：可保存**已知新增**，但状态保持未解决（不得声称完整）；
         * state=legacy：不接受结构化内容（列置 NULL）；
+        * limits=None 且 state!=legacy：保留该要求已有的 known limits（避免恢复失败时
+          被空数组误清空）；显式 () 表示"已知集合为空"。
+        * **条件写入（R9-H2 §3.1）**：expected_version / expected_status /
+          expected_chain_digest 在**同一事务**内重新读取并核对（chain_digest 用
+          recovery_context 现场重算），任一不匹配抛 RequirementVersionMismatch；
+          UPDATE 同时带 id/version/status 条件并核对 rowcount，绝不覆盖新版本/已撤回要求。
         * 展平文字 limits 同步追加可读文本（保留历史展示/审查材料），不覆盖旧文本；
         * 非法结构抛 ValueError（不写到库里，不静默降级为"无限制"）。
         """
@@ -386,7 +579,12 @@ class RequirementLedger:
             known: tuple[dict, ...] | None = None
             structured_json = None
         else:
-            known = requirement_limits.normalize_limits(list(limits or ()))
+            raw_limits: Sequence[dict]
+            if limits is None:
+                raw_limits = requirement.structured_limits or ()
+            else:
+                raw_limits = limits
+            known = requirement_limits.normalize_limits(list(raw_limits or ()))
             structured_json = requirement_limits.serialize_limits(known)
         flattened = [
             _flatten_limit(dict(item))
@@ -396,11 +594,38 @@ class RequirementLedger:
         for piece in flattened:
             if piece and piece not in limits_text:
                 limits_text.append(piece[:MAX_PERSISTED_LIMIT_CHARS])
+        expected_chain_value = (
+            None if expected_chain_digest is None else str(expected_chain_digest)
+        )
         with transaction(self.conn):
-            self.conn.execute(
+            row = self._row(str(requirement_id))
+            if row is None:
+                raise RequirementVersionMismatch(
+                    "用户要求已被删除/替换：" + str(requirement_id)
+                )
+            current = self._from_row(row)
+            if expected_version is not None and int(current.version) != int(expected_version):
+                raise RequirementVersionMismatch(
+                    "要求版本已变化（期望=%r，当前=%r），拒绝写入结构化限制"
+                    % (expected_version, current.version)
+                )
+            if expected_status is not None and str(current.status) != str(expected_status):
+                raise RequirementVersionMismatch(
+                    "要求状态已变化（期望=%r，当前=%r），拒绝写入结构化限制"
+                    % (expected_status, current.status)
+                )
+            if expected_chain_value is not None:
+                ctx = self.recovery_context(str(requirement_id))
+                if ctx.chain_digest != expected_chain_value:
+                    raise RequirementVersionMismatch(
+                        "要求链已变化（期望 digest=%s，当前=%s），拒绝写入旧恢复结果"
+                        % (expected_chain_value[:16], ctx.chain_digest[:16])
+                    )
+            cursor = self.conn.execute(
                 "UPDATE user_requirements SET structured_limits = ?,"
                 " structured_limits_state = ?, structured_limits_source = ?,"
-                " limits = ?, updated_at = ? WHERE id = ?",
+                " limits = ?, updated_at = ?"
+                " WHERE id = ? AND version = ? AND status = ?",
                 (
                     structured_json,
                     target_state,
@@ -408,8 +633,14 @@ class RequirementLedger:
                     _dumps(limits_text),
                     _now_iso(),
                     str(requirement_id),
+                    int(current.version),
+                    str(current.status),
                 ),
             )
+            if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                raise RequirementVersionMismatch(
+                    "要求行在事务内已变化（更新未命中），拒绝写入结构化限制"
+                )
         reloaded = self.by_id(requirement_id)
         if reloaded is None:  # pragma: no cover - 写入后读不到说明库已损坏
             raise RuntimeError("结构化限制写入后无法读回（数据库异常）")
@@ -473,12 +704,20 @@ class RequirementLedger:
         message_id: object = None,
         turn_id: object = None,
         topic_id: object = None,
+        structured_state: str = requirement_limits.STATE_STRUCTURED,
+        structured_limits: Sequence[dict] = (),
+        structured_source: object = "user_message",
     ) -> UserRequirement:
         """把一条用户消息登记为 active 要求（每条用户消息一个，不自动复用旧要求）。
 
         说明：这里**不**自动 supersede 其它 active 要求。每条消息都是独立要求；
         是否延续原要求由调用方显式表达（修正用 add_correction；替换用 supersede）。
         授权记录按 requirement_id 绑定，因此新要求天然不会命中旧记录。
+
+        R9-H2 §3.1：结构化限制状态/内容/来源由调用方显式给出：
+        * 默认 structured + 空数组 + "user_message"（兼容旧直接调用）；
+        * **生产 fallback 必须显式传 STATE_UNRESOLVED**（解析失败不是"确认无限制"）；
+        * state=legacy 时不接受结构化内容（列 NULL）；非法 state 抛 ValueError。
         """
         requirement_id = "req_" + uuid.uuid4().hex[:16]
         now = _now_iso()
@@ -488,25 +727,41 @@ class RequirementLedger:
             "turn_id": None if turn_id is None else str(turn_id),
             "topic_id": None if topic_id is None else str(topic_id),
         }
+        target_state = str(structured_state or requirement_limits.STATE_STRUCTURED)
+        if target_state not in requirement_limits.STRUCTURED_LIMIT_STATES:
+            raise ValueError("非法结构化限制状态：" + target_state)
+        if target_state == requirement_limits.STATE_LEGACY:
+            known: tuple[dict, ...] | None = None
+            structured_json = None
+        else:
+            known = requirement_limits.normalize_limits(list(structured_limits or ()))
+            structured_json = requirement_limits.serialize_limits(known)
+        limits_text: list[str] = []
+        for item in known or ():
+            piece = _flatten_limit(dict(item))
+            if piece and piece not in limits_text:
+                limits_text.append(piece[:MAX_PERSISTED_LIMIT_CHARS])
         with transaction(self.conn):
             self.conn.execute(
                 "INSERT INTO user_requirements"
                 " (id, text, provenance, parent_id, status, limits, turn_id, topic_id,"
                 "  created_at, updated_at, version, structured_limits,"
                 "  structured_limits_state, structured_limits_source)"
-                " VALUES (?, ?, ?, NULL, ?, '[]', ?, ?, ?, ?, ?, '[]', ?, ?)",
+                " VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     requirement_id,
                     str(text if text is not None else ""),
                     _dumps(provenance),
                     STATUS_ACTIVE,
+                    _dumps(limits_text),
                     provenance["turn_id"],
                     provenance["topic_id"],
                     now,
                     now,
                     DEFAULT_REQUIREMENT_VERSION,
-                    requirement_limits.STATE_STRUCTURED,
-                    "user_message",
+                    structured_json,
+                    target_state,
+                    None if structured_source is None else str(structured_source)[:300],
                 ),
             )
         stored = self.by_id(requirement_id)
