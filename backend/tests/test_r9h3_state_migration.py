@@ -58,16 +58,17 @@ def test_revoke_only_targeted_unrestricted_review_records(db_conn):
 
 
 def test_versions_and_compensation_are_additive_only():
-    assert SCHEMA_VERSION == COMPENSATION_VERSION == 64
+    # R9-H4 迁移 65/66 在其后追加；本用例核对 63/64 仍在最终补偿链中。
+    assert SCHEMA_VERSION == COMPENSATION_VERSION >= 64
     targets = {target for target, _ in MIGRATIONS}
-    assert 63 in targets and 64 in targets
+    assert 63 in targets and 64 in targets and 65 in targets and 66 in targets
     statements = [
         str(stmt)
         for target, stmts in MIGRATIONS
         if target == COMPENSATION_VERSION
         for stmt in stmts
     ]
-    assert statements, "补偿 64 必须包含追加 DDL 才能补齐对象"
+    assert statements, "最终补偿必须包含追加 DDL 才能补齐对象"
     for stmt in statements:
         head = " ".join(str(stmt).strip().split()).upper()
         assert not head.startswith(("UPDATE ", "DELETE ", "DROP ", "TRUNCATE")), stmt[:80]

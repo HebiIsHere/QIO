@@ -342,5 +342,5 @@ async def test_engine_child_scope_really_bounds_subagent_effects(
         "子集必须恰好是父指令的授权集合（W1 child_scope 的语义）"
     )
     assert captured["inside"] == "allow", "项目授权范围内的写应允许"
-    assert captured["outside"] == "approve", "项目外的写必须重新审批，不能借子智能体扩权"
+    assert captured["outside"] == "deny", "子智能体范围外的写必须拒绝，不能借审查/审批扩权"
     assert security_gate.current_agent_scope() is None, "子任务结束后上下文必须恢复"

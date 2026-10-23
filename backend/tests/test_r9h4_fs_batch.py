@@ -179,7 +179,8 @@ async def test_fs_delete_directory_impacts_include_children_and_protected(
     protected_child = directory / "secret.db"
     protected_child.write_text("internal", encoding="utf-8")
     gateway = RecordingGateway(
-        verdicts={"delete": Verdict.APPROVE},
+        # 目录自身不注册、但枚举到受保护子对象：该删除按内部数据维护审批。
+        verdicts={"delete": Verdict.APPROVE, "internal_data": Verdict.APPROVE},
         internal_paths=[protected_child],
     )
     tool = FsDeleteTool(computer=_sandbox(workspace), security=gateway)

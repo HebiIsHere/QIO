@@ -382,6 +382,11 @@ class AppContext:
                 (counts or {}).get("retired"),
                 (counts or {}).get("active"),
             )
+            health = getattr(self.internal_data_identity, "health", None)
+            if callable(health):
+                last_error = (health() or {}).get("last_error")
+                if last_error:
+                    self.internal_data_identity_error = str(last_error)
         except Exception as exc:  # noqa: BLE001 - 身份登记失败不静默降级；路径判定仍兜底
             self.internal_data_identity_error = type(exc).__name__ + ": " + str(exc)
             logging.getLogger(__name__).warning(
@@ -403,6 +408,11 @@ class AppContext:
             # 引擎按真实对象身份判定内部数据；登记不可用时返回空集合，路径判定兜底。
             internal_data_identity_keys=lambda: self._internal_identity_keys(),
             internal_data_known_paths=lambda: self._internal_identity_known_paths(),
+            # R9-H4 §8：identity + birth 生命周期查询（编号复用不误认）。
+            internal_data_identity_lookup=lambda *args, **kwargs: (
+                self._internal_identity_lookup(*args, **kwargs)
+            ),
+            internal_data_identity_tokens=lambda: self._internal_identity_tokens(),
         )
         # R9-G：统一执行前重核对服务（模式/要求/授权/审批/对象/内容/条件）；
         # 挂在 AppContext 与引擎上，执行器/审批恢复可按统一接口调用。
@@ -810,14 +820,35 @@ class AppContext:
         return paths
 
     def _internal_identity_keys(self) -> frozenset[str]:
-        """引擎读取的 active 身份集合；登记不可用时为空（路径判定兜底）。"""
+        """引擎读取的身份匹配键（R9-H4 §8：identity+birth，含仍可能存在的被替换旧对象）。"""
         store = getattr(self, "internal_data_identity", None)
         if store is None:
             return frozenset()
         try:
+            tokens = getattr(store, "protected_tokens", None)
+            if callable(tokens):
+                return frozenset(tokens())
             return frozenset(store.active_keys())
         except Exception:  # noqa: BLE001 - 读失败按空集合（不伪造保护范围）
             return frozenset()
+
+    def _internal_identity_lookup(self, identity: object, birth_key: object = None) -> dict:
+        """身份+birth 三态查询（E 接口；失败按未知，不声称同一文件）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return {"state": "unknown", "reason": "身份登记不可用"}
+        lookup = getattr(store, "match_identity", None)
+        if not callable(lookup):
+            return {"state": "unknown", "reason": "身份登记不支持生命周期查询"}
+        try:
+            return dict(lookup(identity, birth_key) or {})
+        except Exception as exc:  # noqa: BLE001 - 查询失败按未知（路径/历史仍兜底）
+            self._record_identity_update_error("identity_lookup", exc)
+            return {"state": "unknown", "reason": type(exc).__name__ + ": " + str(exc)}
+
+    def _internal_identity_tokens(self) -> frozenset[str]:
+        """identity+birth token 集合（含 retired_replaced 中仍可能存在的旧对象）。"""
+        return self._internal_identity_keys()
 
     def _internal_identity_known_paths(self) -> frozenset[str]:
         """历史登记路径（身份读取失败时不静默降级为普通文件）。"""
@@ -904,6 +935,34 @@ class AppContext:
         committed = self._trusted_commit_paths(kind, payload)
         if not committed:
             return
+        # R9-H4 §8：可信删除与写入分开处理。删除只能退休已被证明不存在的对象；
+        # 不能复用“读新身份”的写入逻辑把删除误报成登记失败。
+        if str(kind or "") == "fs.delete":
+            completed = self._completed_delete_paths(payload, result)
+            if not completed:
+                return
+            try:
+                outcomes = store.note_committed_delete(
+                    completed, source="approved:fs.delete"
+                )
+            except Exception as exc:  # noqa: BLE001 - 身份更新失败不能伪装成功
+                self._record_identity_update_error("trusted_delete", exc)
+                return
+            failures = [item for item in outcomes if not item.get("ok")]
+            if failures:
+                messages = [
+                    str(item.get("reason") or item.get("code") or "identity_update_failed")
+                    for item in failures
+                ]
+                detail = getattr(result, "detail", None)
+                if isinstance(detail, dict):
+                    detail["internal_identity_error"] = messages
+                self._record_identity_update_error(
+                    "trusted_delete",
+                    RuntimeError("; ".join(messages)),
+                    extra={"kind": str(kind), "paths": len(failures)},
+                )
+            return
         try:
             protected = self._internal_data_paths()
         except Exception:  # noqa: BLE001 - 读路径失败按空处理；store 历史路径仍可命中
@@ -942,6 +1001,22 @@ class AppContext:
                 RuntimeError("; ".join(messages)),
                 extra={"kind": str(kind), "paths": len(failures)},
             )
+
+    def _completed_delete_paths(self, payload: dict, result: object) -> list[str]:
+        """只取真实执行结果里已完成的删除项；部分失败不得误退休未完成对象。"""
+        detail = getattr(result, "detail", None)
+        completed: list[str] = []
+        if isinstance(detail, dict):
+            for item in detail.get("results") or ():
+                if isinstance(item, dict) and item.get("ok"):
+                    path = str(item.get("path") or "").strip()
+                    if path:
+                        completed.append(path)
+            if completed:
+                return completed[:50]
+        if getattr(result, "ok", False):
+            return self._trusted_commit_paths("fs.delete", payload)
+        return []
 
     def _record_identity_update_error(
         self, phase: str, exc: BaseException, *, extra: dict | None = None

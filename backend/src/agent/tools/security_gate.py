@@ -515,17 +515,59 @@ def internal_data_roots(gateway: Any | None) -> list[Path]:
 
 
 def match_internal_data(gateway: Any | None, path: Any) -> Path | None:
-    """目标是否落在内部运行数据范围；返回命中的根（便于审批单写明范围）。"""
+    """目标是否属于内部运行数据；返回命中的根/对象路径（供审批单写明范围）。
+
+    R9-H4 §8：除真实注册路径外，还要按 identity+birth 生命周期识别硬链接/改名/
+    移动后的同一对象；普通同名/同内容复制件不命中。识别失败时不得把已登记对象
+    静默降级为普通文件。
+    """
     try:
         candidate = Path(str(path)).resolve()
     except (OSError, ValueError):
         return None
-    for root in internal_data_roots(gateway):
+    roots = internal_data_roots(gateway)
+    for root in roots:
         try:
             if candidate == root or candidate.is_relative_to(root):
                 return root
         except (OSError, ValueError):
             continue
+    if gateway is None:
+        return None
+    tokens = ()
+    known = ()
+    lookup = None
+    try:
+        tokens_fn = getattr(gateway, "internal_data_identity_tokens", None)
+        if callable(tokens_fn):
+            tokens = tuple(tokens_fn() or ())
+        known_fn = getattr(gateway, "internal_data_identity_known_paths", None)
+        if callable(known_fn):
+            known = tuple(known_fn() or ())
+        lookup = getattr(gateway, "internal_data_identity_lookup", None)
+        if not callable(lookup):
+            lookup = None
+    except Exception:  # noqa: BLE001 - 身份登记读失败不能伪造普通文件
+        return None
+    if not tokens and not known and lookup is None:
+        return None
+    try:
+        from agent.security import internal_data as internal_data_module
+        from agent.services.file_identity import identity_of
+
+        matched = internal_data_module.is_internal_data_object(
+            candidate,
+            roots,
+            identity_keys=tokens,
+            known_paths=known,
+            identity_of=identity_of,
+            identity_lookup=lookup,
+        )
+    except Exception:  # noqa: BLE001 - 身份核对异常不能把可能受保护对象当普通文件
+        return candidate if known else None
+    if matched:
+        # 对象路径作为“命中位置”返回（可能不在原注册根下，但仍属于同一内部对象）。
+        return candidate
     return None
 
 

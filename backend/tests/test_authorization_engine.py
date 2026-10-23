@@ -305,8 +305,9 @@ async def test_subagent_cannot_expand_parent_scope(db_conn, tmp_path):
             inside_decision = await security.engine.authorize(inside)
             outside_decision = await security.engine.authorize(outside)
     assert inside_decision.verdict == Verdict.ALLOW
-    assert outside_decision.verdict == Verdict.APPROVE
-    assert "主智能体" in outside_decision.reason
+    # R9-H4 §9：子智能体范围不足必须明确拒绝；普通审查/审批不能覆盖范围不足。
+    assert outside_decision.verdict == Verdict.DENY
+    assert "范围" in outside_decision.reason or "主智能体" in outside_decision.reason
     security.instructions.end(instruction)
 
 

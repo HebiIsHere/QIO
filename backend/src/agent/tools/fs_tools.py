@@ -1819,6 +1819,15 @@ class FsDeleteTool(_FsTool):
                 is_directory=is_directory,
             )
             found_root = security_gate.match_internal_data(self.security, target)
+            internal_entries = (
+                directory_impact_data.get("internal_data_entries") or []
+                if directory_impact_data is not None
+                else []
+            )
+            if found_root is None and internal_entries:
+                # 目录本身不在注册路径下，但枚举到受保护/内部数据子对象：
+                # 删除父目录同样属于内部数据维护（不能只查目录本身）。
+                found_root = Path(str(internal_entries[0]))
             item_kind = (
                 security_gate.EffectKind.INTERNAL_DATA
                 if found_root is not None

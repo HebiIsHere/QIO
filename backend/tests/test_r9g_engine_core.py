@@ -181,8 +181,10 @@ def test_withdrawn_requirement_binding_is_invalid(db_conn, tmp_path):
 
     with requirement_context(binding):
         decision = asyncio.run(engine.authorize(write_effect(tmp_path / "a.txt")))
-    assert decision.verdict == Verdict.APPROVE
-    assert decision.needs_review is True
+    # R9-H4 §5：绑定要求已撤回/替换/版本不一致必须明确拒绝，不能当作“没有要求”
+    # 进入普通审查/审批或 unrestricted 允许分支。
+    assert decision.verdict == Verdict.DENY
+    assert "撤回" in decision.reason or "失效" in decision.reason
 
 
 # -- 批量：逐项判定，不聚合 ------------------------------------------------------

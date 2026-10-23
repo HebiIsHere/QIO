@@ -1,4 +1,4 @@
-"""R9-H4 D：程序/脚本启动事实、审查内容一致性、进程操作（真实 cmd/launch/engine）。
+﻿"""R9-H4 D：程序/脚本启动事实、审查内容一致性、进程操作（真实 cmd/launch/engine）。
 
 覆盖契约 §2/§3/§6：
 * 命令/脚本 effect 补真实 limit_impacts（execute/program 真实身份 + 已解析删除对象 delete 影响），
@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from agent.security import launch as launch_boundary
+from agent.security.context import requirement_context
 from agent.security.operations import ExecutionContext, PendingOperation
 from agent.services.computer import ComputerSandbox
 from agent.tools.approved_operations import execute_proc_run_program
@@ -416,7 +417,6 @@ def _limit_engine(limit: dict):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=False, reason=PENDING_B)
 async def test_user_limit_on_program_blocks_real_execution(tmp_path):
     executed = tmp_path / "limit_program.marker"
     limit = {
@@ -435,25 +435,27 @@ async def test_user_limit_on_program_blocks_real_execution(tmp_path):
         timeout=60,
     )
     effect = capture.effects[-1]
-    decision = await engine.authorize(effect)
+    binding = types.SimpleNamespace(requirement_id="req_limit", version=1)
+    with requirement_context(binding):
+        decision = await engine.authorize(effect)
     assert decision.verdict == Verdict.DENY, (
         "用户限制的程序必须 DENY（实际程序身份匹配）", decision.verdict, decision.reason
     )
     assert "用户明确禁止运行这个程序" in str(decision.reason or ""), decision.reason
 
     tool = RunProgramTool(computer=_sandbox(tmp_path), security=engine)
-    result = await tool.run(
-        program=PY,
-        args=["-c", f"open(r'{executed}', 'w').write('ran')"],
-        cwd=str(tmp_path),
-        timeout=60,
-    )
+    with requirement_context(binding):
+        result = await tool.run(
+            program=PY,
+            args=["-c", f"open(r'{executed}', 'w').write('ran')"],
+            cwd=str(tmp_path),
+            timeout=60,
+        )
     assert result.ok is False, (result.ok, result.error)
     assert not executed.exists(), "被限制的程序不得启动"
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=False, reason=PENDING_B)
 async def test_user_limit_on_delete_object_blocks_delete_command(tmp_path):
     victim = tmp_path / "b.txt"
     victim.write_text("keep", encoding="utf-8")
@@ -467,7 +469,9 @@ async def test_user_limit_on_delete_object_blocks_delete_command(tmp_path):
     capture_tool = RunCmdTool(computer=_sandbox(tmp_path), security=capture)
     await _submit(capture_tool, cmd=_delete_command(victim), cwd=str(tmp_path))
     effect = capture.effects[-1]
-    decision = await engine.authorize(effect)
+    binding = types.SimpleNamespace(requirement_id="req_limit", version=1)
+    with requirement_context(binding):
+        decision = await engine.authorize(effect)
     assert decision.verdict == Verdict.DENY, (
         "用户限制的删除对象必须 DENY（不能走普通审批/模型允许）",
         decision.verdict,
@@ -475,3 +479,4 @@ async def test_user_limit_on_delete_object_blocks_delete_command(tmp_path):
     )
     assert "用户明确禁止删除这个文件" in str(decision.reason or ""), decision.reason
     assert victim.exists()
+

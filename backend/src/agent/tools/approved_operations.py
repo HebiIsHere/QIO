@@ -674,6 +674,7 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                 identity = None
             content_sha256 = None
             is_directory = False
+            directory_impact_data = None
             if index < len(fingerprint_rows):
                 candidate = fingerprint_rows[index]
                 if isinstance(candidate, dict):
@@ -681,6 +682,12 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                         identity = candidate.get("identity")
                     content_sha256 = candidate.get("content_sha256")
                     is_directory = bool(candidate.get("is_directory"))
+                    directory_impact_data = candidate.get("directory_impact")
+            if isinstance(item, dict):
+                # R9-H4：payload 里逐项携带的真实目录影响（审批快照）优先。
+                directory_impact_data = item.get("directory_impact") or directory_impact_data
+                if item.get("is_directory") is not None:
+                    is_directory = bool(item.get("is_directory"))
             if path:
                 rows.append(
                     {
@@ -688,6 +695,7 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                         "identity": identity,
                         "content_sha256": content_sha256,
                         "is_directory": is_directory,
+                        "directory_impact": directory_impact_data,
                     }
                 )
     elif str(payload.get("path") or "").strip():
@@ -719,6 +727,36 @@ def _identity_matches(path: str, expected: Any) -> tuple[bool, str]:
             return False, "目标已不是审批时的那一个文件（身份不一致），不删除"
         return True, ""
     return _check_identity(path, {})
+
+
+def _check_directory_impact(expected: Any, path: str, ctx: ExecutionContext) -> str | None:
+    """R9-H4 §7：目录删除执行前重算影响；新增/移除/替换或不完整 → 该项失效。"""
+    from agent.security import internal_data
+    from agent.tools import fs_tools
+
+    if not isinstance(expected, dict) or not expected:
+        return "审批记录缺少目录影响依据：无法可靠比较，需重新确认"
+    protected = []
+    engine = getattr(ctx, "engine", None)
+    paths_fn = getattr(engine, "internal_data_paths", None)
+    if callable(paths_fn):
+        try:
+            protected = list(paths_fn() or ())
+        except Exception:  # noqa: BLE001 - 保护范围读不到仍按无保护比较，但不放宽
+            protected = []
+    result = fs_tools.verify_directory_impact(
+        expected,
+        path,
+        is_protected=lambda candidate: internal_data.is_internal_data_path(
+            candidate, protected
+        ),
+    )
+    if bool(result.get("ok")):
+        return None
+    return str(
+        result.get("reason")
+        or "目录内容在审批期间发生变化：本次未执行（需重新确认）"
+    )
 
 
 async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
@@ -776,6 +814,26 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             results.append(item)
             failed.append(item)
             continue
+        if row.get("is_directory"):
+            directory_error = await asyncio.to_thread(
+                _check_directory_impact,
+                row.get("directory_impact"),
+                path,
+                ctx,
+            )
+            if directory_error:
+                item = {
+                    "item_id": item_id,
+                    "path": path,
+                    "ok": False,
+                    "status": "invalidated",
+                    "invalidated": True,
+                    "reason": directory_error,
+                    "code": "invalidated: directory_changed",
+                }
+                results.append(item)
+                failed.append(item)
+                continue
         expected_content = row.get("content_sha256")
         if expected_content and not row.get("is_directory"):
             current_content = await asyncio.to_thread(_w3_content_sha, path)
@@ -1484,12 +1542,15 @@ async def execute_proc_kill(
     pid = str(payload.get("pid") or "").strip()
     if not pid:
         return _failure("审批单缺少 pid：未执行", "missing_pid")
+    from agent.security.operations import replay_gateway_kwargs
     from agent.tools.cmd_tools import ProcKillTool
 
+    # R9-H4 §10.2：结束进程重放必须携带原审批快照/操作依据，否则永远报
+    # “没有审批记录”。这里与 run_program/shell 使用同一快照接口。
     tool = ProcKillTool(
         computer=computer,
         approvals=None,
-        security=_ApprovedReplayGateway(security),
+        security=_ApprovedReplayGateway(security, **replay_gateway_kwargs(ctx)),
     )
     return await _run_approved_tool(tool, {"pid": pid}, label="proc.kill")
 
