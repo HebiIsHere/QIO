@@ -46,6 +46,14 @@ import {
   type WaitingResponse,
   type WaitingView,
 } from "../../interactive/intentWorkbench";
+// Phase 3-A：确认结果逐项显式 ids / 部分失败 / 真实 turn_id（纯函数，与 v2 虚拟层共用）
+import {
+  confirmBlockReason,
+  confirmBlockText,
+  isNeedsUpdate,
+  summarizeConfirm,
+  type ConfirmSummary,
+} from "./v2/intentDisplay";
 import IntentResultCards from "./IntentResultCards.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
@@ -71,6 +79,8 @@ const resultsError = ref("");
 const actionBusy = ref("");
 const notice = ref("");
 const actionError = ref("");
+/** 最近一次确认的逐项结果（显式 ids；只认服务端真实 status / turn_id） */
+const confirmSummary = ref<ConfirmSummary | null>(null);
 
 const recoveryTargetId = ref("");
 const recoveryPreview = ref<RecoveryPreviewView | null>(null);
@@ -179,13 +189,16 @@ async function load(): Promise<void> {
 }
 
 async function confirmOne(view: IntentView): Promise<void> {
-  if (actionBusy.value || !isConfirmable(view)) return;
+  // 可确认判定只走一次口径：needs_update / 未知状态 / 已开始都不冒充可确认
+  if (actionBusy.value || confirmBlockReason(view) !== null) return;
   actionBusy.value = view.intent_id;
   notice.value = "";
   actionError.value = "";
   try {
     const result = await confirmSingleIntent(view.intent_id, boardId.value);
-    notice.value = confirmOutcomeText(result);
+    // 显式单 id；结果逐项可见，只有服务端 completed 才算完成
+    confirmSummary.value = summarizeConfirm(result, [view.intent_id], { batch: false });
+    notice.value = confirmSummary.value.notice || confirmOutcomeText(result);
     await load();
   } catch (error) {
     actionError.value = "确认没有完成：" + errorMessage(error);
@@ -203,7 +216,9 @@ async function confirmBatch(): Promise<void> {
   actionError.value = "";
   try {
     const result = await batchConfirmIntents(boardId.value, intentIds);
-    notice.value = confirmOutcomeText(result);
+    // 显式 ids（只含可确认的已选项）；部分失败会逐项列出
+    confirmSummary.value = summarizeConfirm(result, intentIds, { batch: true });
+    notice.value = confirmSummary.value.notice || confirmOutcomeText(result);
     selectedIds.value = [];
     await load();
   } catch (error) {
@@ -329,6 +344,27 @@ onMounted(() => {
     <p v-if="notice" class="iw-notice" role="status" data-im="iw-notice">{{ notice }}</p>
     <p v-if="actionError" class="iw-error" role="alert" data-im="iw-action-error">{{ actionError }}</p>
 
+    <!-- Phase 3-A：确认结果逐项（显式 id / 真实 turn_id / 部分失败分开列） -->
+    <div v-if="confirmSummary" class="iw-confirm" data-im="iw-confirm-summary">
+      <ul class="iw-rows" data-im="iw-confirm-rows">
+        <li
+          v-for="row in confirmSummary.rows"
+          :key="row.intentId"
+          data-im="iw-confirm-row"
+          :data-intent-id="row.intentId"
+          :data-ok="row.ok ? 'true' : 'false'"
+          :data-turn-id="row.turnId ?? ''"
+          :data-completed="row.completed ? 'true' : 'false'"
+        >{{ row.intentId }} · {{ row.statusText }}<span v-if="row.turnId"> · 执行轮次 {{ row.turnId }}</span><span v-if="row.reason"> · {{ row.reason }}</span></li>
+      </ul>
+      <p v-if="confirmSummary.failedIds.length" class="iw-row iw-warn" data-im="iw-confirm-partial">
+        部分失败：{{ confirmSummary.failedIds.join("、") }}
+      </p>
+      <p v-if="confirmSummary.startedUnknownIds.length" class="iw-row iw-warn" data-im="iw-confirm-started-unknown">
+        没有返回执行轮次：{{ confirmSummary.startedUnknownIds.join("、") }}（不能认为已经开始执行）
+      </p>
+    </div>
+
     <div class="iw-body" v-qio-scrollbar="{ policy: 'auto', axis: 'y' }">
       <!-- 同批批量确认（门槛两条，前后端同口径） -->
       <div class="iw-batch-bar" data-im="iw-batch-bar">
@@ -392,6 +428,9 @@ onMounted(() => {
             </p>
             <p v-if="operationsSummaryText(view)" class="iw-row" data-im="iw-operations">
               <span class="iw-label">操作账本</span>{{ operationsSummaryText(view) }}
+            </p>
+            <p v-if="isNeedsUpdate(view)" class="iw-row iw-warn" data-im="iw-needs-update">
+              <span class="iw-label">需要更新</span>{{ confirmBlockText(view) }}
             </p>
             <p v-if="view.authorization_valid === false" class="iw-row iw-warn" data-im="iw-auth">
               <span class="iw-label">授权</span>旧授权已失效：需要重新确认当前目标与影响范围。
