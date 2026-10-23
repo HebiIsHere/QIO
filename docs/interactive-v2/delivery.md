@@ -81,5 +81,5 @@
 ## 7. 交付状态
 - 最终集成分支 HEAD：`git rev-parse HEAD`（见最终回复）。
 - 未合并、未打包、未发布。
-- 完整后端全量已通过。
-- 完整 CI run 40033918863 已全部成功，SHA 64ef4e50；docs、install e2e、frontend、三套后端、两套 rust、frozen worker、dedup 均为 success。文档-only 后续提交不改变代码验证结论。
+- 完整后端全量已通过（最终 code SHA 之前一轮 `d4109e71`，exit 0）。
+- 第一次完整 CI run 40033918863 已全部成功（SHA 64ef4e50）；当前代码又包含组缩放避让/旧托盘让位/重试收尾修复，需在最终 SHA 上跑第二次完整 CI 后才能称为最终验收。
