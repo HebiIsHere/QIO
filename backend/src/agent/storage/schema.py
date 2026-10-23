@@ -1546,6 +1546,8 @@ from agent.storage.migration_r9_attachments import MIGRATION as _R9_ATTACH  # no
 from agent.storage.migration_r9f_review_origins import MIGRATION as _R9F_REVIEW  # noqa: E402
 from agent.storage.migration_r9g_requirement_binding import MIGRATION as _R9G_BINDING  # noqa: E402
 
+from agent.storage.migration_r9h_limits import MIGRATION as _R9H_LIMITS  # noqa: E402
+
 MIGRATIONS.append(_R9_ATTACH)
 MIGRATIONS.append(_R9_APPROVAL)
 MIGRATIONS.append(_R9F_REVIEW)
@@ -1579,8 +1581,22 @@ MIGRATIONS.append(
     )
 )
 
+MIGRATIONS.append(_R9H_LIMITS)
+
+# 补偿入口（新，60）：补偿 58 的全部语句 + 迁移 59（结构化限制三列），去重。
+# R9-H 契约 §6：SCHEMA_VERSION = COMPENSATION_VERSION = 60。
+MIGRATIONS.append(
+    (
+        60,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 58 for stmt in stmts]
+            + list(_R9H_LIMITS[1])
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 58
+COMPENSATION_VERSION = 60
 
 
 

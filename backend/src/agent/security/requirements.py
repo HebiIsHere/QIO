@@ -36,6 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
+from agent.security import requirement_limits
 from agent.storage.db import transaction
 
 if TYPE_CHECKING:  # pragma: no cover - 仅类型标注
@@ -83,6 +84,14 @@ def _loads(raw: object, fallback: Any) -> Any:
     except (TypeError, ValueError):
         logger.warning("用户要求/授权记录里的 JSON 列损坏，按空值处理", exc_info=False)
         return fallback
+
+
+def _row_value(row: Any, name: str, default: Any = None) -> Any:
+    """按列名读取一行（兼容老库/最小测试库没有新增列）。"""
+    try:
+        return row[name]
+    except (KeyError, IndexError, TypeError):
+        return default
 
 
 def _tuple_of_str(value: object) -> tuple[str, ...]:
@@ -167,6 +176,10 @@ class AppliedResolution:
     limits: tuple[dict, ...]
     corrections: tuple[str, ...]
     reason: str
+    #: 结构化限制状态/内容（R9-H 契约 §6 允许只追加字段）：
+    #: structured = 已理解并持久化；legacy/unresolved = 未解决（不得当作无限制）。
+    limits_state: str = requirement_limits.STATE_LEGACY
+    structured_limits: tuple[dict, ...] | None = None
 
 
 class RequirementVersionMismatch(ValueError):
@@ -195,6 +208,11 @@ class UserRequirement:
     #: 要求版本（R9-G 契约 §3）：新要求为 1，修正子要求为 parent.version + 1。
     #: 操作授权记录与审批单都绑定这个版本；版本变化后旧记录不得复用。
     version: int = DEFAULT_REQUIREMENT_VERSION
+    #: 结构化限制（R9-H 契约 §6）：tuple（可为空 = 明确无限制）或 None（未知）。
+    #: state=legacy/unresolved 时即使有已知新增也不得当作完整限制。
+    structured_limits: tuple[dict, ...] | None = None
+    structured_limits_state: str = requirement_limits.STATE_LEGACY
+    structured_limits_source: str | None = None
 
     def as_dict(self) -> dict:
         """供审查输入/审计使用的只读结构（不包含模型推理，不含密钥）。"""
@@ -208,6 +226,13 @@ class UserRequirement:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "version": int(self.version),
+            "structured_limits": (
+                [dict(item) for item in self.structured_limits]
+                if self.structured_limits is not None
+                else None
+            ),
+            "structured_limits_state": self.structured_limits_state,
+            "structured_limits_source": self.structured_limits_source,
         }
 
     def as_binding(self) -> RequirementBinding:
@@ -240,6 +265,16 @@ class RequirementLedger:
             version = int(row["version"] or DEFAULT_REQUIREMENT_VERSION)
         except (KeyError, IndexError, TypeError, ValueError):  # pragma: no cover - 旧库/异常行
             version = DEFAULT_REQUIREMENT_VERSION
+        structured_state = str(
+            _row_value(row, "structured_limits_state", requirement_limits.STATE_LEGACY)
+            or requirement_limits.STATE_LEGACY
+        )
+        if structured_state not in requirement_limits.STRUCTURED_LIMIT_STATES:
+            structured_state = requirement_limits.STATE_LEGACY
+        structured_source = _row_value(row, "structured_limits_source", None)
+        structured = requirement_limits.deserialize_limits(
+            _row_value(row, "structured_limits", None)
+        )
         return UserRequirement(
             requirement_id=str(row["id"]),
             text=str(row["text"] or ""),
@@ -250,6 +285,11 @@ class RequirementLedger:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
             version=version,
+            structured_limits=structured,
+            structured_limits_state=structured_state,
+            structured_limits_source=(
+                None if structured_source is None else str(structured_source)
+            ),
         )
 
     def by_id(self, requirement_id: str) -> UserRequirement | None:
@@ -318,6 +358,82 @@ class RequirementLedger:
             return False
         return int(requirement.version) == int(binding.version)
 
+    # -- 结构化限制（R9-H 契约 §6）------------------------------------------
+
+    def set_structured_limits(
+        self,
+        requirement_id: str,
+        limits: Sequence[dict] | None,
+        *,
+        source: object = "manual_recovery",
+        state: str = requirement_limits.STATE_STRUCTURED,
+    ) -> UserRequirement:
+        """写入/恢复一条要求的结构化限制（恢复入口 + apply_resolution 共用）。
+
+        * state=structured：limits 必须是数组（空数组 = 明确无限制），持久化为 JSON；
+        * state=unresolved：可保存**已知新增**，但状态保持未解决（不得声称完整）；
+        * state=legacy：不接受结构化内容（列置 NULL）；
+        * 展平文字 limits 同步追加可读文本（保留历史展示/审查材料），不覆盖旧文本；
+        * 非法结构抛 ValueError（不写到库里，不静默降级为"无限制"）。
+        """
+        requirement = self.by_id(requirement_id)
+        if requirement is None:
+            raise KeyError("用户要求不存在：" + str(requirement_id))
+        target_state = str(state or requirement_limits.STATE_LEGACY)
+        if target_state not in requirement_limits.STRUCTURED_LIMIT_STATES:
+            raise ValueError("非法结构化限制状态：" + target_state)
+        if target_state == requirement_limits.STATE_LEGACY:
+            known: tuple[dict, ...] | None = None
+            structured_json = None
+        else:
+            known = requirement_limits.normalize_limits(list(limits or ()))
+            structured_json = requirement_limits.serialize_limits(known)
+        flattened = [
+            _flatten_limit(dict(item))
+            for item in (known or ())
+        ]
+        limits_text = list(requirement.limits)
+        for piece in flattened:
+            if piece and piece not in limits_text:
+                limits_text.append(piece[:MAX_PERSISTED_LIMIT_CHARS])
+        with transaction(self.conn):
+            self.conn.execute(
+                "UPDATE user_requirements SET structured_limits = ?,"
+                " structured_limits_state = ?, structured_limits_source = ?,"
+                " limits = ?, updated_at = ? WHERE id = ?",
+                (
+                    structured_json,
+                    target_state,
+                    None if source is None else str(source)[:300],
+                    _dumps(limits_text),
+                    _now_iso(),
+                    str(requirement_id),
+                ),
+            )
+        reloaded = self.by_id(requirement_id)
+        if reloaded is None:  # pragma: no cover - 写入后读不到说明库已损坏
+            raise RuntimeError("结构化限制写入后无法读回（数据库异常）")
+        return reloaded
+
+    def structured_limits_for(self, requirement_id: str) -> tuple[dict, ...] | None:
+        """按 requirement_id 重新加载结构化限制（执行前重核对/恢复用）。"""
+        requirement = self.by_id(requirement_id)
+        return requirement_limits.limits_from_requirement(requirement)
+
+    def legacy_requirements(self, *, limit: int = 50) -> list[UserRequirement]:
+        """待重新理解/恢复的历史要求（state=legacy/unresolved），供模型重新理解。"""
+        count = max(1, min(int(limit or 50), 500))
+        rows = self.conn.execute(
+            "SELECT * FROM user_requirements WHERE structured_limits_state IN (?, ?)"
+            " ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+            (
+                requirement_limits.STATE_LEGACY,
+                requirement_limits.STATE_UNRESOLVED,
+                count,
+            ),
+        ).fetchall()
+        return [self._from_row(row) for row in rows]
+
     def candidates(self, *, limit: int = 12) -> list[dict]:
         """给模型要求解析用的有限候选（契约 §3：id/原话摘录/版本/时间）。
 
@@ -376,8 +492,9 @@ class RequirementLedger:
             self.conn.execute(
                 "INSERT INTO user_requirements"
                 " (id, text, provenance, parent_id, status, limits, turn_id, topic_id,"
-                "  created_at, updated_at)"
-                " VALUES (?, ?, ?, NULL, ?, '[]', ?, ?, ?, ?)",
+                "  created_at, updated_at, version, structured_limits,"
+                "  structured_limits_state, structured_limits_source)"
+                " VALUES (?, ?, ?, NULL, ?, '[]', ?, ?, ?, ?, ?, '[]', ?, ?)",
                 (
                     requirement_id,
                     str(text if text is not None else ""),
@@ -387,6 +504,9 @@ class RequirementLedger:
                     provenance["topic_id"],
                     now,
                     now,
+                    DEFAULT_REQUIREMENT_VERSION,
+                    requirement_limits.STATE_STRUCTURED,
+                    "user_message",
                 ),
             )
         stored = self.by_id(requirement_id)
@@ -401,15 +521,21 @@ class RequirementLedger:
         *,
         message_id: object = None,
         extra_limits: Sequence[str] = (),
+        structured_limits: Sequence[dict] = (),
+        removed_limits: Sequence[dict] = (),
+        structured_state: str | None = None,
+        structured_source: str | None = None,
     ) -> UserRequirement:
         """追加一条用户修正：新建子要求（version=parent+1），父要求 superseded。
 
-        契约语义「修正 = append」（R9-G §3）：
+        契约语义「修正 = append」（R9-G §3 / R9-H §6）：
         * 原要求行保留（历史可回溯），只改状态；
         * 子要求 text 是用户这次修正的原话（调用方应传真实用户消息），parent_id 指向父要求；
         * 子要求 version = parent.version + 1；父链授权记录立即失效（旧版本不得复用）；
-        * limits 继承父要求并追加本次修正原话与调用方提供的额外限制文本
-          （limits 定义明确包含"后续修正"）。
+        * limits（展平文字）继承父要求并追加本次修正原话与调用方提供的额外限制文本；
+        * **结构化限制**：父 state=structured 时默认继承并与新增/解除合并（只补充一句话
+          不得清空父限制；明确 removed 才移除）；父 legacy/unresolved 时保留未解决状态，
+          可保存已知新增但不得声称完整；apply_resolution 传入已算好的最终状态时不重复合并。
         """
         parent = self.by_id(requirement_id)
         if parent is None:
@@ -427,6 +553,56 @@ class RequirementLedger:
             if piece:
                 limits.append(piece[:MAX_PERSISTED_LIMIT_CHARS])
         child_version = int(parent.version) + 1
+
+        added_structured = list(structured_limits or ())
+        removed_structured = list(removed_limits or ())
+        if structured_state is not None:
+            child_state = str(structured_state or requirement_limits.STATE_LEGACY)
+            if child_state not in requirement_limits.STRUCTURED_LIMIT_STATES:
+                raise ValueError("非法结构化限制状态：" + child_state)
+            child_structured: tuple[dict, ...] | None
+            if child_state == requirement_limits.STATE_STRUCTURED:
+                child_structured = requirement_limits.normalize_limits(added_structured)
+            elif added_structured:
+                child_structured = requirement_limits.normalize_limits(added_structured)
+            else:
+                child_structured = None
+            child_source = structured_source
+            # apply_resolution 已经把最终集合算好；展平文字仍用于历史可读性。
+            for item in child_structured or ():
+                flattened = _flatten_limit(dict(item))
+                if flattened and flattened not in limits:
+                    limits.append(flattened[:MAX_PERSISTED_LIMIT_CHARS])
+        else:
+            parent_limits = requirement_limits.limits_from_requirement(parent)
+            child_state = (
+                requirement_limits.STATE_STRUCTURED
+                if parent_limits is not None
+                else parent.structured_limits_state
+            )
+            child_source = structured_source or parent.structured_limits_source
+            if parent_limits is not None:
+                child_structured = requirement_limits.merge_limits(
+                    parent_limits,
+                    added=added_structured,
+                    removed=removed_structured,
+                )
+                for item in added_structured:
+                    flattened = _flatten_limit(dict(item))
+                    if flattened and flattened not in limits:
+                        limits.append(flattened[:MAX_PERSISTED_LIMIT_CHARS])
+            else:
+                child_structured = (
+                    requirement_limits.normalize_limits(added_structured)
+                    if added_structured
+                    else None
+                )
+                child_source = structured_source or "unresolved_parent"
+        structured_json = (
+            requirement_limits.serialize_limits(child_structured)
+            if child_structured is not None
+            else None
+        )
         provenance = {
             "kind": "user_correction",
             "message_id": None if message_id is None else str(message_id),
@@ -439,8 +615,9 @@ class RequirementLedger:
             self.conn.execute(
                 "INSERT INTO user_requirements"
                 " (id, text, provenance, parent_id, status, limits, turn_id, topic_id,"
-                "  created_at, updated_at, version)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "  created_at, updated_at, version, structured_limits,"
+                "  structured_limits_state, structured_limits_source)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     requirement_id_new,
                     correction_text,
@@ -453,6 +630,9 @@ class RequirementLedger:
                     now,
                     now,
                     child_version,
+                    structured_json,
+                    child_state,
+                    child_source,
                 ),
             )
             self._set_status(parent.requirement_id, STATUS_SUPERSEDED)
@@ -462,6 +642,7 @@ class RequirementLedger:
         if stored is None:  # pragma: no cover - 写入后读不到说明库已损坏
             raise RuntimeError("用户修正写入后无法读回（数据库异常）")
         return stored
+
 
     def withdraw(self, requirement_id: str) -> None:
         """撤回要求：要求及全部后代 withdrawn，相关授权记录全部撤销。"""
@@ -513,12 +694,31 @@ class RequirementLedger:
         corrections = tuple(
             str(item).strip() for item in (getattr(resolution, "corrections", ()) or ()) if str(item).strip()
         )
-        structured_limits = tuple(
-            dict(item) for item in (getattr(resolution, "limits", ()) or ()) if isinstance(item, dict)
-        )
+        raw_limits = list(getattr(resolution, "limits", ()) or ())
+        raw_removed = list(getattr(resolution, "removed_limits", ()) or ())
+        limits_invalid = False
+        try:
+            structured_limits = requirement_limits.normalize_limits(raw_limits)
+        except ValueError:
+            structured_limits = ()
+            limits_invalid = True
+        try:
+            removed_limits = requirement_limits.normalize_limits(raw_removed)
+        except ValueError:
+            removed_limits = ()
+            limits_invalid = True
         reason = str(getattr(resolution, "reason", "") or "")[:500]
         model = str(getattr(resolution, "model", "") or "") or None
         prompt_version = str(getattr(resolution, "prompt_version", "") or "") or None
+        limit_state = (
+            requirement_limits.STATE_UNRESOLVED
+            if limits_invalid
+            else requirement_limits.STATE_STRUCTURED
+        )
+        limit_source = "resolution:%s:%s" % (
+            model or "unknown",
+            prompt_version or "unknown",
+        )
         resolution_id = "reqres_" + uuid.uuid4().hex[:16]
         relation_values = {
             RequirementRelation.NEW.value,
@@ -533,9 +733,12 @@ class RequirementLedger:
                 requirement = self.record_user_message(
                     text=text, message_id=message_id, turn_id=turn_id, topic_id=topic_id
                 )
-                flattened = [_flatten_limit(item) for item in structured_limits]
-                if flattened:
-                    requirement = self._append_persisted_limits(requirement.requirement_id, flattened)
+                requirement = self.set_structured_limits(
+                    requirement.requirement_id,
+                    () if limits_invalid else structured_limits,
+                    source=limit_source + (";invalid_limits" if limits_invalid else ""),
+                    state=(limit_state if not limits_invalid else requirement_limits.STATE_UNRESOLVED),
+                )
                 applied = AppliedResolution(
                     resolution_id=resolution_id,
                     relation=relation,
@@ -545,6 +748,10 @@ class RequirementLedger:
                     limits=structured_limits,
                     corrections=corrections,
                     reason=reason,
+                    limits_state=(
+                        limit_state if not limits_invalid else requirement_limits.STATE_UNRESOLVED
+                    ),
+                    structured_limits=(None if limits_invalid else structured_limits),
                 )
             elif relation == RequirementRelation.AMEND.value:
                 if not target_id:
@@ -553,12 +760,33 @@ class RequirementLedger:
                 if not corrections and message is None:
                     raise ValueError("amend 缺少用户补充/修正内容")
                 child_text = str(message) if message is not None else "\n".join(corrections)
-                flattened = [_flatten_limit(item) for item in structured_limits]
+                parent_limits = requirement_limits.limits_from_requirement(parent)
+                if limits_invalid:
+                    child_limits = None
+                    child_state = requirement_limits.STATE_UNRESOLVED
+                elif parent_limits is not None:
+                    child_limits = requirement_limits.merge_limits(
+                        parent_limits,
+                        added=structured_limits,
+                        removed=removed_limits,
+                    )
+                    child_state = requirement_limits.STATE_STRUCTURED
+                else:
+                    # 父限制未知（legacy/unresolved）：保留未解决状态，可保存已知新增，
+                    # 但不得声称完整（用户只补充一句话更不得清空父限制）。
+                    child_limits = structured_limits if structured_limits else None
+                    child_state = parent.structured_limits_state
                 child = self.add_correction(
                     parent.requirement_id,
                     child_text,
                     message_id=message_id,
-                    extra_limits=flattened,
+                    structured_limits=tuple(child_limits or ()),
+                    structured_state=child_state,
+                    structured_source=limit_source + (
+                        ";unresolved_parent"
+                        if child_state != requirement_limits.STATE_STRUCTURED
+                        else ""
+                    ),
                 )
                 applied = AppliedResolution(
                     resolution_id=resolution_id,
@@ -566,9 +794,11 @@ class RequirementLedger:
                     requirement=child,
                     target_requirement_id=parent.requirement_id,
                     superseded_requirement_id=parent.requirement_id,
-                    limits=structured_limits,
+                    limits=tuple(child_limits or ()),
                     corrections=corrections,
                     reason=reason,
+                    limits_state=child_state,
+                    structured_limits=child_limits,
                 )
             else:
                 if not target_id:
@@ -581,9 +811,11 @@ class RequirementLedger:
                     requirement=self.by_id(parent.requirement_id),
                     target_requirement_id=parent.requirement_id,
                     superseded_requirement_id=None,
-                    limits=structured_limits,
+                    limits=(),
                     corrections=corrections,
                     reason=reason,
+                    limits_state=parent.structured_limits_state,
+                    structured_limits=parent.structured_limits,
                 )
         except Exception as exc:  # noqa: BLE001 - 失败要留审计并原样抛出，绝不静默新建
             self._record_resolution(

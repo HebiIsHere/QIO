@@ -43,9 +43,10 @@ class CommandRisk(str, Enum):
     DANGER = "danger"
 
 
-# 绝对红线：即使在工作区内也拒绝
-REDLINE_NAMES = {".env", ".git", ".ssh", ".config", "credentials"}
-REDLINE_SUFFIXES = ("id_rsa", "id_ed25519", ".pem", "cookie", "cookies.sqlite")
+# 重要（R9-H 契约 §5）：这里**没有**按目录名/文件名/后缀判定红线的词表。
+# 工作区内的普通 .env/.git/.ssh/.config/credentials/.pem 等按根内规则（auto）处理；
+# 根外路径按既有规则 approve；真实内部运行数据由 AppContext 注册路径 +
+# 对象身份在上层（internal_data / 引擎）判断，名称不单独产生允许/拒绝/确认。
 
 # shell 元字符：出现即说明「安全判断」与「实际执行」不是同一个对象
 SHELL_METACHARACTERS = ("|", ">", "<", "&", ";", "`", "$(", "${", "\n", "\r")
@@ -218,15 +219,6 @@ class ComputerSandbox:
             candidate = self._root() / candidate
         return candidate.resolve()
 
-    def _is_redline(self, p: Path) -> bool:
-        for part in p.parts:
-            if part.lower() in REDLINE_NAMES:
-                return True
-        low = p.name.lower()
-        if low in REDLINE_NAMES:
-            return True
-        return any(low.endswith(s) for s in REDLINE_SUFFIXES)
-
     def _inside_root(self, p: Path) -> bool:
         try:
             return p.is_relative_to(self._root())
@@ -239,8 +231,7 @@ class ComputerSandbox:
             p = _normalize(path)
         except Exception:
             return "deny"
-        if self._is_redline(p):
-            return "deny"
+        # R9-H §5：名称不再决定权限；只按规范化后的路径关系（根内 auto / 根外 approve）。
         return "auto" if self._inside_root(p) else "approve"
 
     def has_shell_metacharacters(self, cmd: str) -> bool:
@@ -362,9 +353,7 @@ class ComputerSandbox:
                 if i + 1 >= len(argv):
                     return CommandRisk.HIGH, path_state  # -C 缺值：fail-closed
                 target = self._resolve_operand(argv[i + 1], cwd)
-                if self._is_redline(target):
-                    path_state = "deny"
-                elif not self.contains(target):
+                if not self.contains(target):
                     return CommandRisk.HIGH, path_state
                 i += 2
                 continue
@@ -463,9 +452,7 @@ class ComputerSandbox:
         # 文件路径操作数一致性：与 fs_read 同一红线/根内/根外规则
         for raw in self._path_operands(prog, argv):
             target = self._resolve_operand(raw)
-            if self._is_redline(target):
-                path_state = "deny"
-            elif not self.contains(target):
+            if not self.contains(target):
                 if path_state != "deny":
                     path_state = "approve"
         return CommandRisk.LOW, path_state

@@ -39,10 +39,23 @@ def test_check_path_within_root_auto():
     assert s.check_path("C:/work/a.txt") == "auto"
 
 
-def test_check_path_redline_deny():
+def test_check_path_ordinary_names_are_not_denied_by_name():
+    """R9-H §5：名称不再单独决定权限；根内按普通路径规则 auto。"""
     s = _make()
-    assert s.check_path("C:/work/.env") == "deny"
-    assert s.check_path("C:/work/.git/config") == "deny"
+    for ordinary in (
+        "C:/work/.env",
+        "C:/work/.git/config",
+        "C:/work/.ssh/id_rsa",
+        "C:/work/credentials/token.json",
+        "C:/work/.config/app.toml",
+        "C:/work/service.pem",
+        "C:/work/server.key",
+        "C:/work/bundle.crt",
+    ):
+        assert s.check_path(ordinary) == "auto", ordinary
+    # 根外同名文件仍按根外规则（需审批），不是名称拒绝
+    assert s.check_path("C:/other/.env") == "approve"
+    assert s.check_path("C:/other/service.pem") == "approve"
 
 
 def test_check_path_outside_root_approve():
@@ -64,7 +77,9 @@ def test_read_verdict_default():
     s = _make()
     assert s.read_verdict("C:/work/a.txt") == "auto"
     assert s.read_verdict("C:/other/a.txt") == "approve"
-    assert s.read_verdict("C:/work/.env") == "deny"
+    # R9-H §5：普通 .env 不再被名称判红；根内仍按普通规则 auto。
+    assert s.read_verdict("C:/work/.env") == "auto"
+    assert s.read_verdict("C:/other/.env") == "approve"
 
 
 def test_write_verdict_default_and_accept_edits():
@@ -73,8 +88,9 @@ def test_write_verdict_default_and_accept_edits():
     assert _make(mode="accept-edits").write_verdict("C:/work/a.txt") == "auto"
     # plan：只读，拒绝写
     assert _make(mode="plan").write_verdict("C:/work/a.txt") == "deny"
-    # 红线在任何模式都拒绝
-    assert _make(mode="accept-edits").write_verdict("C:/work/.env") == "deny"
+    # R9-H §5：普通 .env 不再被名称判红；按普通路径 + 模式规则处理。
+    assert _make(mode="accept-edits").write_verdict("C:/work/.env") == "auto"
+    assert _make(mode="plan").write_verdict("C:/work/.env") == "deny"
 
 
 def test_command_verdict():

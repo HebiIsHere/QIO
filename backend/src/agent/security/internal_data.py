@@ -27,21 +27,10 @@ CONFIRMATIONS_REQUIRED = 3
 #: 鲜明警告（前端只呈现，后端校验状态）。
 INTERNAL_DATA_WARNING = "这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么"
 
-#: 凭据 / 版本库内部数据：直接改写属于内部运行数据规则；读取属敏感红线。
-SENSITIVE_DIR_NAMES = frozenset({".git", ".ssh", "credentials", ".config"})
-SENSITIVE_FILE_NAMES = frozenset(
-    {
-        ".env",
-        "credentials",
-        "credentials.json",
-        "cookies.sqlite",
-        "id_rsa",
-        "id_ed25519",
-        ".netrc",
-        ".pgpass",
-    }
-)
-SENSITIVE_SUFFIXES = (".pem", ".key", ".crt", ".p12", ".pfx")
+# 重要（R9-H 契约 §5）：这里**没有**按目录名/文件名/后缀判定敏感的词表。
+# 普通 .key/.pem/.crt、普通 credentials/.config 同名目录不是内部数据；只有 AppContext
+# 真实注册的路径（+ 路径规范化）才受内部运行数据规则保护。名称/关键词/正则一律
+# 不得单独产生允许/拒绝/确认。
 
 
 def normalize_path(path: object) -> Path | None:
@@ -75,20 +64,6 @@ def is_internal_data_path(path: object, protected: list[Path] | None) -> bool:
         except (OSError, ValueError):  # pragma: no cover
             continue
     return False
-
-
-def is_sensitive_credential_path(path: object) -> bool:
-    """是否凭据/版本库内部数据（读取红线；直接改写走内部数据规则）。"""
-    candidate = normalize_path(path)
-    if candidate is None:
-        return False
-    parts = [part.lower() for part in candidate.parts]
-    if any(part in SENSITIVE_DIR_NAMES for part in parts):
-        return True
-    name = candidate.name.lower()
-    if name in SENSITIVE_FILE_NAMES:
-        return True
-    return any(name.endswith(suffix) for suffix in SENSITIVE_SUFFIXES)
 
 
 def effect_targets_internal_data(effect: Effect, protected: list[Path] | None) -> bool:
