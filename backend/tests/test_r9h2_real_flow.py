@@ -178,7 +178,14 @@ async def test_legacy_chain_auto_recovery_keeps_restriction_in_real_turn(ctx, tm
     assert allowed.verdict == Verdict.ALLOW, allowed.reason
 
 
-async def test_parse_failure_unresolved_uses_targeted_review_not_blanket_block(ctx, tmp_path):
+async def test_parse_failure_unresolved_uses_specific_confirmation_not_independent_review(
+    ctx, tmp_path
+):
+    """H3 §3.1：unrestricted + unresolved 不再走普通独立授权审查。
+
+    保留"解析失败持久化 unresolved/source、无关读取允许"等仍然有效的事实；
+    旧 H2 的 targeted review（B DENY/A ALLOW/reviewer>=2）已按冻结契约删除。
+    """
     b_path = tmp_path / "proj" / "B.py"
     a_path = tmp_path / "proj" / "A.py"
     resolver = FakeResolver(error=RequirementResolutionUnavailable("解析器不可用"))
@@ -197,13 +204,14 @@ async def test_parse_failure_unresolved_uses_targeted_review_not_blanket_block(c
     ctx.authorization.reviewer = reviewer
     ctx.settings_store.set("computer.permission_mode", "unrestricted")
     with requirement_context(binding):
-        denied = await ctx.authorization.authorize(_write(b_path))
-        allowed = await ctx.authorization.authorize(_write(a_path))
+        denied_unresolved = await ctx.authorization.authorize(_write(b_path))
+        allowed_unresolved = await ctx.authorization.authorize(_write(a_path))
         read = await ctx.authorization.authorize(_read(b_path))
-    assert denied.verdict == Verdict.DENY, denied.reason
-    assert allowed.verdict == Verdict.ALLOW, "无关工作不能因限制未知被一律阻塞"
+    # H3：unresolved 相关操作只给具体确认，不调用普通独立授权审查；读仍允许。
+    assert denied_unresolved.verdict == Verdict.APPROVE, denied_unresolved.reason
+    assert allowed_unresolved.verdict == Verdict.APPROVE, allowed_unresolved.reason
     assert read.verdict == Verdict.ALLOW
-    assert len(reviewer.calls) >= 2
+    assert reviewer.calls == [], "unrestricted 不得调用普通独立授权审查"
 
 
 async def test_hardlink_and_moved_internal_file_still_protected(ctx, tmp_path):

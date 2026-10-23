@@ -680,10 +680,11 @@ async def test_restart_and_recheck_preserve_unresolved_state(ctx):
     seed_allow_record(ctx, reloaded, fingerprint=fingerprint)
     with requirement_context(binding):
         decision = await old_engine.authorize(effect)
-    # R9-H2：unresolved 时不得复用旧 allow 记录；本用例提供 reviewer，
-    # 走针对性语义审查后按模型结论 ALLOW（不是缓存复用），审查必须被调用。
-    assert decision.verdict == Verdict.ALLOW
-    assert len(reviewer.calls) == 1, "unresolved 必须重新审查，不能复用旧 allow 记录"
+    # R9-H3 §3.1：unrestricted 不再调用普通独立授权审查；unresolved 未恢复部分
+    # 返回具体确认（APPROVE），旧 allow 记录同样不能复用。
+    # （H2 旧预期曾是"针对性审查后 ALLOW、reviewer=1"，已按 H3 冻结契约更新。）
+    assert decision.verdict == Verdict.APPROVE
+    assert len(reviewer.calls) == 0, "unrestricted 不得调用普通独立授权审查"
 
 
 @pytest.mark.asyncio

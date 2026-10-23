@@ -122,6 +122,8 @@ class RecheckService:
                 getattr(requirement, "structured_limits_state", "structured")
                 or "structured"
             )
+            # R9-H3 §2.2：执行前核对必须使用**最新有效限制**；legacy/unresolved
+            # 状态下已保存的 known limits 也参与冲突判定，不能因状态未知而丢弃。
             requirement_limits = tuple(
                 item
                 for item in (getattr(requirement, "structured_limits", None) or ())
@@ -131,9 +133,7 @@ class RecheckService:
                 requirement=getattr(binding, "requirement", None),
                 origin=str(getattr(context, "origin", "user") if context is not None else "user"),
                 extra={
-                    "resolution_limits": (
-                        requirement_limits if requirement_state == "structured" else ()
-                    ),
+                    "resolution_limits": requirement_limits,
                     "requirement_resolution_status": (
                         "resolved" if requirement_state == "structured" else "unavailable"
                     ),
