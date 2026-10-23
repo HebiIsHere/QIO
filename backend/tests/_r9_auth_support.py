@@ -29,6 +29,13 @@ def make_security(tmp_path, conn, *, mode=None, protected=None, workspace=None):
     bus = EventBus()
     approvals = ApprovalService(bus, conn=conn)
     operations = OperationRegistry()
+    requirements = None
+    try:
+        from agent.security.requirements import RequirementLedger
+
+        requirements = RequirementLedger(conn)
+    except Exception:  # noqa: BLE001 - W1 分支未合入时保持旧装配
+        requirements = None
     engine = AuthorizationEngine(
         conn=conn,
         approvals=approvals,
@@ -36,6 +43,7 @@ def make_security(tmp_path, conn, *, mode=None, protected=None, workspace=None):
         instance_id="inst_test",
         workspace_root=lambda: workspace_path,
         internal_data_paths=lambda: list(protected or []),
+        requirements=requirements,
     )
     approvals.set_engine(engine)
     approvals.set_operations(operations)
@@ -48,7 +56,25 @@ def make_security(tmp_path, conn, *, mode=None, protected=None, workspace=None):
         operations=operations,
         instructions=InstructionRegistry(),
         workspace=workspace_path,
+        requirements=requirements,
     )
+
+
+def bind_requirement(security, operation, *, text="按用户要求执行这次操作"):
+    """给测试里的待审批操作绑定一个真实存在的要求（R9-G：操作必须有依据）。
+
+    生产由 turn 运行时的要求解析创建；测试直接登记一条要求模拟该上下文，
+    不用"最近一条 active 要求"的旧逻辑。
+    """
+    ledger = getattr(security, "requirements", None)
+    if ledger is None:
+        raise AssertionError("测试装配缺少 RequirementLedger，无法验证要求绑定")
+    requirement = ledger.record_user_message(
+        text=text, message_id="msg_test", turn_id="turn_test"
+    )
+    operation.requirement_id = requirement.requirement_id
+    operation.requirement_version = int(getattr(requirement, "version", 1) or 1)
+    return operation
 
 
 @asynccontextmanager

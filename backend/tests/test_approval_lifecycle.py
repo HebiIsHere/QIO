@@ -18,6 +18,7 @@ from agent.storage.approvals import (
 from agent.tools.approval import ApprovalService
 
 from _r9_auth_support import (
+    bind_requirement,
     counting_executor,
     make_security,
     record_events,
@@ -25,9 +26,9 @@ from _r9_auth_support import (
 )
 
 
-def make_operation(*, kind="test.op", label="测试操作", path=None, confirmations=1, payload=None):
+def make_operation(security=None, *, kind="test.op", label="测试操作", path=None, confirmations=1, payload=None):
     target = str(path or "C:\\work\\a.txt")
-    return PendingOperation(
+    operation = PendingOperation(
         kind=kind,
         label=label,
         payload=dict(payload or {"value": 1}),
@@ -43,6 +44,9 @@ def make_operation(*, kind="test.op", label="测试操作", path=None, confirmat
         confirmations_required=confirmations,
         source="tool",
     )
+    if security is not None:
+        bind_requirement(security, operation)
+    return operation
 
 
 def test_default_time_limit_is_600_seconds():
@@ -62,7 +66,7 @@ async def test_submit_is_non_blocking_and_returns_waiting_ticket(db_conn, tmp_pa
     events = record_events(security.bus)
 
     ticket = await asyncio.wait_for(
-        security.approvals.submit(make_operation()), timeout=2.0
+        security.approvals.submit(make_operation(security=security)), timeout=2.0
     )
     assert ticket.state == "waiting"
     assert ticket.approval_id.startswith("appr_")
@@ -91,7 +95,7 @@ async def test_approve_executes_once_and_duplicate_decisions_are_rejected(db_con
     counter: list = []
     security.operations.register("test.op", counting_executor(counter))
     events = record_events(security.bus)
-    ticket = await security.approvals.submit(make_operation())
+    ticket = await security.approvals.submit(make_operation(security=security))
 
     row = await security.approvals.decide(ticket.approval_id, "approve")
     assert row["state"] in ("approved", "executing", "completed") or row["state"] == "approved"
@@ -111,7 +115,7 @@ async def test_approve_executes_once_and_duplicate_decisions_are_rejected(db_con
 
 async def test_atomic_claim_prevents_double_execution(db_conn, tmp_path):
     security = make_security(tmp_path, db_conn, mode="restricted")
-    row = security.approvals.store.create(make_operation())
+    row = security.approvals.store.create(make_operation(security=security))
     store = security.approvals.store
     store.decide(row["approval_id"], "approve")
     first = store.claim(row["approval_id"])
@@ -134,7 +138,7 @@ async def test_expired_approval_cannot_be_approved(db_conn, tmp_path):
         return fixed
 
     clock_store = ApprovalStore(db_conn, clock=clock_now)
-    row = clock_store.create(make_operation(), timeout_seconds=10)
+    row = clock_store.create(make_operation(security=security), timeout_seconds=10)
     # 时间推进 11 秒
     fixed2 = fixed + _dt.timedelta(seconds=11)
     clock_store._clock = lambda: fixed2
@@ -149,10 +153,10 @@ async def test_reject_and_cancel_are_terminal(db_conn, tmp_path):
     security = make_security(tmp_path, db_conn, mode="restricted")
     counter: list = []
     security.operations.register("test.op", counting_executor(counter))
-    rejected = await security.approvals.submit(make_operation(label="拒绝我"))
+    rejected = await security.approvals.submit(make_operation(security=security, label="拒绝我"))
     await security.approvals.decide(rejected.approval_id, "reject")
     assert (security.approvals.store.get(rejected.approval_id) or {})["state"] == "rejected"
-    cancelled = await security.approvals.submit(make_operation(label="取消我"))
+    cancelled = await security.approvals.submit(make_operation(security=security, label="取消我"))
     await security.approvals.decide(cancelled.approval_id, "cancel")
     assert (security.approvals.store.get(cancelled.approval_id) or {})["state"] == "cancelled"
     assert counter == []
@@ -167,7 +171,7 @@ async def test_mode_change_to_strict_invalidates_before_execution(db_conn, tmp_p
     security = make_security(tmp_path, db_conn, mode="restricted")
     counter: list = []
     security.operations.register("test.op", counting_executor(counter))
-    ticket = await security.approvals.submit(make_operation(), mode="restricted")
+    ticket = await security.approvals.submit(make_operation(security=security), mode="restricted")
     # 用户切到只读（模拟审批后、执行前的模式变化）
     security.store.set("computer.permission_mode", "read_only")
     await security.approvals.decide(ticket.approval_id, "approve")
@@ -190,6 +194,7 @@ async def test_internal_data_confirmations_within_lifecycle(db_conn, tmp_path):
     security.operations.register("internal.data_write", counting_executor(counter))
     events = record_events(security.bus)
     operation = make_operation(
+        security=security,
         kind="internal.data_write",
         label="直接维护内部数据库",
         path=protected,

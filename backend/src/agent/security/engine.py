@@ -1101,6 +1101,98 @@ class AuthorizationEngine(AuthorizationGateway):
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+    def recheck_approved(
+        self,
+        effect: Effect,
+        *,
+        context: AuthContext | None = None,
+        approval_kind: str = "",
+        confirmations_required: int = 1,
+        confirmed_stage: int = 0,
+    ) -> AuthDecision:
+        """已获用户批准/确认的操作，在执行前按**当前**状态核对模式与限制。
+
+        这不是再走一次"是否需要授权审查"（那样会把已批准操作重新变成待审批），
+        而是核对：当前模式仍允许这类操作、用户限制仍不冲突、要求绑定仍有效、
+        永久删除仍有明确确认、内部数据确认次数已完成。对象/内容/审批有效期由
+        调用方（RecheckService/执行器）另行核对。
+        """
+        context = self._context(context)
+        mode = self.mode()
+        self._enrich_origin(effect)
+        requirement = self._requirement_for(context)
+        conflict = self._limit_conflict(effect, requirement)
+        if conflict:
+            return AuthDecision(verdict=Verdict.DENY, reason=conflict, effects=(effect,))
+        limited, limit_reason = self._scope_limited(effect, context, mode)
+        if limited:
+            return AuthDecision(verdict=Verdict.DENY, reason=limit_reason, effects=(effect,))
+        complete = int(confirmations_required or 1) <= 1 or int(confirmed_stage or 0) >= int(
+            confirmations_required or 1
+        )
+        internal = effect.kind == EffectKind.INTERNAL_DATA or internal_data.effect_targets_internal_data(
+            effect, self._internal_paths()
+        )
+        if internal:
+            if not complete:
+                return AuthDecision(
+                    verdict=Verdict.APPROVE,
+                    reason="内部运行数据的确认次数尚未完成，本次没有执行",
+                    effects=(effect,),
+                )
+            if effect.kind == EffectKind.READ or effect.kind == EffectKind.NETWORK_EGRESS:
+                pass
+            else:
+                return AuthDecision(
+                    verdict=Verdict.ALLOW,
+                    reason="内部运行数据按既定确认次数完成，执行前核对通过",
+                    effects=(effect,),
+                )
+        permanent = self._permanent_delete_decision(effect, mode, requirement)
+        if permanent is not None:
+            verdict, reason, scope_id = permanent
+            explicit_kinds = {
+                "delete_permanent",
+                "fs.permanent_delete",
+                "proc.delete",
+                "proc.permanent_delete",
+            }
+            if verdict == Verdict.APPROVE and approval_kind in explicit_kinds:
+                return AuthDecision(
+                    verdict=Verdict.ALLOW,
+                    reason="已有用户对相同永久删除对象的明确确认，执行前核对通过",
+                    effects=(effect,),
+                    scope_id=scope_id,
+                )
+            return AuthDecision(
+                verdict=verdict, reason=reason, effects=(effect,), scope_id=scope_id
+            )
+        fixed = self._fixed_query_decision(effect)
+        if fixed is not None:
+            return AuthDecision(verdict=fixed[0], reason=fixed[1], effects=(effect,))
+        if mode == PermissionMode.READ_ONLY:
+            verdict, reason, scope_id = self._read_only(effect)
+            return AuthDecision(
+                verdict=verdict, reason=reason, effects=(effect,), scope_id=scope_id
+            )
+        if mode == PermissionMode.UNRESTRICTED:
+            return AuthDecision(
+                verdict=Verdict.ALLOW,
+                reason="完全无限制模式下按最新状态核对通过（仍受操作系统账户权限约束）",
+                effects=(effect,),
+            )
+        if not complete:
+            return AuthDecision(
+                verdict=Verdict.APPROVE,
+                reason="确认次数尚未完成，本次没有执行",
+                effects=(effect,),
+            )
+        return AuthDecision(
+            verdict=Verdict.ALLOW,
+            reason="已有有效人工审批，按当前模式重新核对通过",
+            effects=(effect,),
+        )
+
     def _read_only(self, effect: Effect) -> tuple[Verdict, str, str | None]:
         kind = effect.kind
         if kind == EffectKind.READ:

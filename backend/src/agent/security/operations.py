@@ -176,6 +176,8 @@ class ExecutionContext:
     instruction: Any = None
     #: 审批原始截止时间（重启/排队后仍按它核对，不续期）。
     expires_at: str | None = None
+    #: 已完成的连续确认次数（内部运行数据为 3）；执行前重核对必须看到它。
+    confirmed_stage: int = 0
 
     def current_mode(self) -> str:
         if self.mode_getter is None:
@@ -237,9 +239,21 @@ class ExecutionContext:
             effect = security_gate.effect_from_dict(self.operation.effect)
             if effect is None:
                 return False, "审批单缺少可核对的执行效果，本次没有执行"
-            decision = await self.engine.authorize(
-                effect, ctx=AuthContext(requirement=binding, origin="background")
-            )
+            recheck = getattr(self.engine, "recheck_approved", None)
+            if callable(recheck):
+                decision = recheck(
+                    effect,
+                    context=AuthContext(requirement=binding, origin="background"),
+                    approval_kind=str(self.operation.kind or ""),
+                    confirmations_required=int(
+                        self.operation.confirmations_required or 1
+                    ),
+                    confirmed_stage=int(self.confirmed_stage or 0),
+                )
+            else:  # 兼容旧引擎：只做模式判定
+                decision = await self.engine.authorize(
+                    effect, ctx=AuthContext(requirement=binding, origin="background")
+                )
         except Exception as exc:  # noqa: BLE001 - 重核对失败不能默认允许
             return False, "执行前无法重新确认授权（本次没有执行）：" + type(exc).__name__
         verdict = getattr(getattr(decision, "verdict", None), "value", None) or str(

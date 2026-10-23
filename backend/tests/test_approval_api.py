@@ -38,6 +38,13 @@ def _submit(client, *, kind="test.op", label="测试操作", confirmations=1, pa
             confirmations_required=confirmations,
             source="tool",
         )
+        # R9-G：审批单必须绑定具体用户要求；测试在真实 app 的台账里登记一条要求。
+        if getattr(ctx, "requirements", None) is not None:
+            requirement = ctx.requirements.record_user_message(
+                text="把文件改成 X 并保存", message_id="msg_api", turn_id="turn_api"
+            )
+            operation.requirement_id = requirement.requirement_id
+            operation.requirement_version = int(getattr(requirement, "version", 1) or 1)
         return await ctx.approvals.submit(operation)
 
     return client.portal.call(_do)

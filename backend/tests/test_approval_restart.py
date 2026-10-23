@@ -14,8 +14,8 @@ from agent.tools.approval import ApprovalService
 from _r9_auth_support import counting_executor, make_security, record_events, wait_for
 
 
-def make_operation(*, label="可恢复操作", path="C:\\work\\a.txt"):
-    return PendingOperation(
+def make_operation(security=None, *, label="可恢复操作", path="C:\\work\\a.txt"):
+    operation = PendingOperation(
         kind="test.op",
         label=label,
         payload={"value": 1},
@@ -27,11 +27,16 @@ def make_operation(*, label="可恢复操作", path="C:\\work\\a.txt"):
         confirmations_required=1,
         source="tool",
     )
+    if security is not None:
+        from _r9_auth_support import bind_requirement
+
+        bind_requirement(security, operation)
+    return operation
 
 
 async def test_waiting_approval_is_restored_not_cancelled(db_conn, tmp_path):
     security = make_security(tmp_path, db_conn, mode="restricted")
-    ticket = await security.approvals.submit(make_operation())
+    ticket = await security.approvals.submit(make_operation(security=security))
     expires_before = ticket.expires_at
 
     restarted = ApprovalService(EventBus(), conn=db_conn)
@@ -74,7 +79,7 @@ async def test_executing_becomes_interrupted_unverified_without_replay(db_conn, 
     security = make_security(tmp_path, db_conn, mode="restricted")
     counter: list = []
     security.operations.register("test.op", counting_executor(counter))
-    row = security.approvals.store.create(make_operation())
+    row = security.approvals.store.create(make_operation(security=security))
     security.approvals.store.decide(row["approval_id"], "approve")
     claimed = security.approvals.store.claim(row["approval_id"])
     assert claimed is not None and claimed["state"] == "executing"

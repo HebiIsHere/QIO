@@ -11,11 +11,11 @@ from agent.security.effects import Effect, EffectKind, Target, Verdict
 from agent.security.operations import PendingOperation
 from agent.storage.approvals import ApprovalConflict, ApprovalConfirmRequired
 
-from _r9_auth_support import counting_executor, make_security, record_events, wait_for
+from _r9_auth_support import bind_requirement, counting_executor, make_security, record_events, wait_for
 
 
-def internal_operation(path, *, payload=None, kind="internal.data_write", confirmations=3):
-    return PendingOperation(
+def internal_operation(path, *, security=None, payload=None, kind="internal.data_write", confirmations=3):
+    operation = PendingOperation(
         kind=kind,
         label="直接维护 QIO 内部运行数据",
         payload=dict(payload or {"content": "v1"}),
@@ -31,6 +31,9 @@ def internal_operation(path, *, payload=None, kind="internal.data_write", confir
         confirmations_required=confirmations,
         source="tool",
     )
+    if security is not None:
+        bind_requirement(security, operation)
+    return operation
 
 
 def test_protected_path_detection(tmp_path):
@@ -83,7 +86,7 @@ async def test_three_confirmations_cas_and_execution(db_conn, tmp_path):
     security.operations.register("internal.data_write", counting_executor(counter))
     events = record_events(security.bus)
 
-    ticket = await security.approvals.submit(internal_operation(protected))
+    ticket = await security.approvals.submit(internal_operation(protected, security=security))
     assert ticket.confirmations_required == 3
     # 未完成三次确认前不能直接批准
     with pytest.raises(ApprovalConfirmRequired):
@@ -100,7 +103,7 @@ async def test_three_confirmations_cas_and_execution(db_conn, tmp_path):
     assert await wait_for(
         lambda: (security.approvals.store.get(ticket.approval_id) or {}).get("state") == "completed"
     )
-    assert counter == [internal_operation(protected).payload]
+    assert counter == [internal_operation(protected, security=security).payload]
     stages = [
         event.data.get("confirmed_stage")
         for event in events
@@ -115,7 +118,7 @@ async def test_cancel_at_any_stage_stops(db_conn, tmp_path):
     security = make_security(tmp_path, db_conn, mode="restricted", protected=[protected])
     counter: list = []
     security.operations.register("internal.data_write", counting_executor(counter))
-    ticket = await security.approvals.submit(internal_operation(protected))
+    ticket = await security.approvals.submit(internal_operation(protected, security=security))
     await security.approvals.confirm(ticket.approval_id, 1)
     cancelled = await security.approvals.decide(ticket.approval_id, "cancel")
     assert cancelled["state"] == "cancelled"
@@ -131,10 +134,10 @@ async def test_scope_or_content_change_needs_new_approval(db_conn, tmp_path):
     security = make_security(tmp_path, db_conn, mode="restricted", protected=[protected])
     counter: list = []
     security.operations.register("internal.data_write", counting_executor(counter))
-    first = await security.approvals.submit(internal_operation(protected, payload={"content": "v1"}))
+    first = await security.approvals.submit(internal_operation(protected, security=security, payload={"content": "v1"}))
     await security.approvals.confirm(first.approval_id, 1)
     # 内容变化 -> 新审批单（确认阶段从 0 开始，不复用旧状态）
-    second = await security.approvals.submit(internal_operation(protected, payload={"content": "v2"}))
+    second = await security.approvals.submit(internal_operation(protected, security=security, payload={"content": "v2"}))
     second_row = security.approvals.store.get(second.approval_id)
     assert second.approval_id != first.approval_id
     assert second_row["confirmed_stage"] == 0

@@ -690,6 +690,7 @@ class ApprovalService:
             engine=self.engine,
             mode_getter=self.current_mode_value,
             expires_at=str(approved.get("expires_at") or "") or None,
+            confirmed_stage=int(approved.get("confirmed_stage") or 0),
         )
         allowed, reason = await ctx.authorize_started()
         if not allowed:

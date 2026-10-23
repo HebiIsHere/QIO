@@ -102,6 +102,12 @@ def _ctx(security, *, kind, payload, fingerprint=None, confirmations=1):
         mode_at_request="restricted",
         source="tool",
     )
+    if security is not None and getattr(security, "requirements", None) is not None:
+        requirement = security.requirements.record_user_message(
+            text="按用户要求执行这次操作", message_id="msg_ctx", turn_id="turn_test"
+        )
+        operation.requirement_id = requirement.requirement_id
+        operation.requirement_version = int(getattr(requirement, "version", 1) or 1)
     return ExecutionContext(
         approval_id="appr_r9f",
         operation=operation,
