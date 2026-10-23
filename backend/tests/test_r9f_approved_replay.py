@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import types
 
 import pytest
 
@@ -33,8 +34,27 @@ from agent.tools.approved_operations import (
 PY = sys.executable
 
 
+class _FakeRequirements:
+    """W1 RequirementLedger 的最小只读替身（R9-G 版本/状态核对用）。"""
+
+    def __init__(self, *, status: str = "active", version: int = 1) -> None:
+        self.status = status
+        self.version = version
+
+    def by_id(self, requirement_id: str):
+        if requirement_id != "req_test":
+            return None
+        return types.SimpleNamespace(
+            requirement_id=requirement_id,
+            status=self.status,
+            version=self.version,
+            text="测试要求",
+        )
+
+
 def _security(tmp_path, db_conn, *, mode="restricted"):
     security = make_security(tmp_path, db_conn, mode=mode)
+    security.engine.requirements = _FakeRequirements()
     computer = ComputerSandbox(
         resolve_root=lambda: str(security.workspace),
         permission_mode=lambda: security.store.get("computer.permission_mode", "restricted"),
@@ -65,15 +85,35 @@ def _fingerprint(computer, *, kind: str, payload: dict, program=None, args=(), c
         timeout=float(payload.get("timeout") or 30),
     )
     facts = launch_boundary.build_spec_facts(spec, computer=computer)
+    digest = launch_boundary.compute_spec_digest(spec, computer=computer)
+    operation_kind = "proc.run_program" if kind == "program" else "proc.shell"
+    requirement = {
+        "requirement_id": "req_test",
+        "requirement_version": 1,
+        "source": "binding",
+    }
     return {
-        "kind": "proc.run_program" if kind == "program" else "proc.shell",
+        "kind": operation_kind,
         "argv": [str(program or ""), *[str(a) for a in args]] if kind == "program" else None,
         "cwd": cwd,
-        "spec_digest": launch_boundary.compute_spec_digest(spec, computer=computer),
+        "spec_digest": digest,
         "program_sha256": (facts.get("program_facts") or {}).get("sha256"),
         "allowed_roots": list(launch_boundary.write_roots_for(computer, "restricted")),
         "payload_digest": _payload_digest(payload),
         "internal_data_roots": [],
+        "requirement": requirement,
+        "operation_binding": {
+            "requirement": {"requirement_id": "req_test", "version": 1},
+            "mode": "restricted",
+            "operation_kind": operation_kind,
+            "fingerprint": "test-operation-fingerprint",
+            "spec_digest": digest,
+            "content_digests": [],
+            "conditions": [],
+            "authorization_id": None,
+            "delegation": None,
+            "permanent_delete": None,
+        },
     }
 
 
@@ -388,6 +428,9 @@ class _ApproveGateway:
 
     def instruction(self):
         return None
+
+    def current_requirement_binding(self):
+        return {"requirement_id": "req_test", "requirement_version": 1}
 
 
 @pytest.mark.parametrize("kind", ["program", "shell"])

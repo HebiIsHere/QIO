@@ -563,6 +563,9 @@ class _ApprovedReplayGateway:
                 for item in (effect.get("targets") or [])
                 if isinstance(item, dict)
             ],
+            # R9-G：执行事实与永久删除绑定做逐项核对（旧审批单没有这些字段则跳过）
+            "execution": dict(detail.get("execution") or {}),
+            "delete_intent": dict(detail.get("delete_intent") or {}),
         }
         # 旧审批单可能没有 effect 快照：仍然按 payload 绑定（不是无条件放行）。
         if shape["argv"] is None and str(getattr(operation, "kind", "")) == "proc.run_program":
@@ -609,6 +612,30 @@ class _ApprovedReplayGateway:
         ]
         if expected_paths and expected_paths != actual_paths:
             return "审批记录的对象/工作目录与本次执行不一致"
+        # R9-G：执行事实（真实程序身份/argv/cwd/规格摘要）与永久删除绑定必须一致
+        expected_execution = dict(expected.get("execution") or {})
+        actual_execution = dict(actual_detail.get("execution") or {})
+        if expected_execution:
+            for key in ("kind", "program_path", "program_name", "shell", "spec_digest"):
+                if key in expected_execution and expected_execution.get(key) != actual_execution.get(key):
+                    return (
+                        "审批记录的执行事实（" + key + "）与本次执行不一致："
+                        "程序/参数/工作目录/脚本内容必须与批准时完全相同"
+                    )
+        expected_delete = dict(expected.get("delete_intent") or {})
+        actual_delete = dict(actual_detail.get("delete_intent") or {})
+        if expected_delete.get("permanent") != actual_delete.get("permanent"):
+            return "审批记录的永久删除意图与本次执行不一致"
+        if expected_delete.get("permanent"):
+            expected_set = _delete_identity_set(expected_delete)
+            actual_set = _delete_identity_set(actual_delete)
+            if expected_set != actual_set:
+                return "审批记录的永久删除对象集合/身份与本次执行不一致"
+            if not bool(expected_delete.get("verified")) and bool(actual_delete.get("verified")):
+                return "审批记录与本次执行的永久删除可解析性不一致"
+            operation_payload = dict(getattr(self._operation, "payload", {}) or {})
+            if not bool(operation_payload.get("explicit_confirmation_required")):
+                return "审批单没有明确人工确认标记，不能按永久删除执行"
         return None
 
     async def authorize(self, effect, *, ctx=None):
@@ -668,17 +695,207 @@ def _reject_if_payload_changed(payload: dict, ctx: ExecutionContext) -> ExecResu
     return None
 
 
-def _recheck_proc_launch(
+def _delete_identity_set(delete_data: dict) -> list[list]:
+    objects = []
+    for item in (dict(delete_data or {}).get("objects") or ()):
+        if isinstance(item, dict):
+            objects.append(
+                [
+                    str(item.get("path") or ""),
+                    str(item.get("identity") or ""),
+                    bool(item.get("is_directory")),
+                ]
+            )
+    return objects
+
+
+async def _maybe_service_recheck(
+    ctx: ExecutionContext, *, binding: dict, effect: dict
+) -> tuple[bool, str, str] | None:
+    """契约 §7 接线点：审批执行器/AppContext 注入的 RecheckService。
+
+    约定（Lead 接线）：`ExecutionContext.recheck(binding, *, effect)` 或
+    `ExecutionContext.recheck_service.recheck(binding, *, effect)` 返回
+    `RecheckResult(ok, code, reason, refreshed)`。本模块不自行构造
+    RecheckService（不猜构造签名）；未注入时返回 None，由本地重核对兜底并在结果
+    detail 上如实标注 `recheck_mode=local_fallback`。
+    """
+    import inspect
+
+    candidate = getattr(ctx, "recheck", None) or getattr(ctx, "recheck_service", None)
+    if candidate is None:
+        return None
+    callback = getattr(candidate, "recheck", candidate)
+    try:
+        outcome = callback(binding, effect=effect)
+    except TypeError:
+        try:
+            outcome = callback(binding)
+        except Exception as exc:  # noqa: BLE001 - 重核对失败不能放行
+            return False, "recheck_error", f"重核对服务调用失败：{type(exc).__name__}: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        return False, "recheck_error", f"重核对服务调用失败：{type(exc).__name__}: {exc}"
+    if inspect.isawaitable(outcome):
+        try:
+            outcome = await outcome
+        except Exception as exc:  # noqa: BLE001
+            return False, "recheck_error", f"重核对服务执行失败：{type(exc).__name__}: {exc}"
+    if isinstance(outcome, tuple) and len(outcome) >= 2:
+        return bool(outcome[0]), str(outcome[1] if len(outcome) == 2 else outcome[1]), ""
+    return (
+        bool(getattr(outcome, "ok", False)),
+        str(getattr(outcome, "code", "") or ""),
+        str(getattr(outcome, "reason", "") or ""),
+    )
+
+
+def _requirement_recheck_error(
+    ctx: ExecutionContext, fingerprint: dict, payload: dict
+) -> str | None:
+    """执行前核对要求绑定：与 payload 一致、要求仍 active/版本一致。"""
+    from agent.tools.cmd_tools import verify_requirement_binding_record
+
+    from agent.tools.cmd_tools import _requirement_record_from_value
+
+    binding = dict(fingerprint.get("operation_binding") or {})
+    requirement = dict(binding.get("requirement") or fingerprint.get("requirement") or {})
+    requirement_record = _requirement_record_from_value(requirement)
+    payload_requirement = _requirement_record_from_value(payload.get("requirement_binding"))
+    if payload_requirement.get("requirement_id") and requirement_record.get("requirement_id"):
+        if (
+            str(payload_requirement.get("requirement_id"))
+            != str(requirement_record.get("requirement_id"))
+            or payload_requirement.get("requirement_version")
+            != requirement_record.get("requirement_version")
+        ):
+            return (
+                "审批单 payload 与指纹中的用户要求绑定不一致（可能被改动）："
+                "本次未执行，需要重新提出"
+            )
+    engine = getattr(ctx, "engine", None)
+    ok, reason = verify_requirement_binding_record(
+        requirement_record, security=engine, engine=engine
+    )
+    if ok:
+        return None
+    return "审批失效：" + reason + "（本次未执行）"
+
+
+def _delete_recheck_error(
+    fingerprint: dict, payload: dict, intent: Any
+) -> str | None:
+    """永久删除的确认绑定与对象身份重核对（契约 §5/§7）。"""
+    fp_delete = dict(fingerprint.get("delete_intent") or {})
+    fp_explicit = bool(fingerprint.get("explicit_confirmation_required"))
+    payload_explicit = bool(payload.get("explicit_confirmation_required"))
+    fp_permanent = bool(fp_delete.get("permanent"))
+    current = None if intent is None else intent.as_dict()
+    current_permanent = bool(current and current.get("permanent"))
+    if not (fp_explicit or fp_permanent):
+        if current_permanent:
+            return (
+                "审批单没有绑定永久删除（当前执行结构会永久删除对象）："
+                "本次未执行，需要重新提出明确人工确认"
+            )
+        if payload_explicit:
+            return "审批单 payload 声称永久删除但审批指纹没有绑定：本次未执行，需要重新提出"
+        return None
+    if not payload_explicit:
+        return "审批单缺少明确人工确认标记（explicit_confirmation_required）：本次未执行"
+    if not current_permanent:
+        return (
+            "审批时是永久删除，但当前执行结构不再是永久删除："
+            "结构与审批记录不一致，本次未执行"
+        )
+    expected_set = _delete_identity_set(fp_delete)
+    actual_set = [
+        [str(path), str(identity or ""), bool(is_directory)]
+        for path, identity, is_directory in intent.identity_set()
+    ]
+    if expected_set != actual_set:
+        return (
+            "永久删除的对象集合/身份与审批时不一致（对象被替换或命令被改动）："
+            "本次未执行，需要重新确认"
+        )
+    if bool(fp_delete.get("verified")) != bool(intent.verified):
+        return "永久删除的可解析性在审批后发生变化：本次未执行，需要重新确认"
+    for item in intent.objects:
+        if not item.identity and Path(item.path).exists():
+            return (
+                "永久删除对象在审批时没有可靠身份，现在却已存在："
+                "无法核对是否为同一对象，本次未执行"
+            )
+    return None
+
+
+def _execution_and_intent(payload: dict, computer: Any, *, shell: bool) -> tuple[Any, dict, Any]:
+    """用 cmd_tools 同一套事实生成逻辑重建 spec/execution/delete intent（单一来源）。"""
+    from agent.security import launch as launch_boundary
+    from agent.tools.cmd_tools import RunCmdTool, RunProgramTool
+
+    tool = (RunCmdTool if shell else RunProgramTool)(
+        computer=computer, approvals=None, security=None
+    )
+    timeout = float(payload.get("timeout") or 30)
+    cwd = str(payload.get("cwd") or "") or None
+    if shell:
+        spec = launch_boundary.LaunchSpec(
+            kind="shell",
+            program=None,
+            argv=(),
+            cwd=cwd,
+            shell_cmd=str(payload.get("cmd") or ""),
+            timeout=timeout,
+        )
+    else:
+        spec = launch_boundary.LaunchSpec(
+            kind="program",
+            program=str(payload.get("program") or ""),
+            argv=tuple(str(item) for item in (payload.get("args") or ())),
+            cwd=cwd,
+            timeout=timeout,
+        )
+    execution = tool._execution_facts(spec, shell=shell)
+    execution["internal_data_roots"] = list(payload.get("internal_data_roots") or ())
+    intent = tool._delete_intent(execution)
+    return spec, execution, intent
+
+
+async def _recheck_proc_launch(
     ctx: ExecutionContext,
-    spec: Any,
     *,
+    payload: dict,
     computer: Any,
-) -> tuple[Any | None, ExecResult | None]:
-    """构造并核对 permit：指纹/spec_digest/effect 快照不一致 → 不执行。"""
+    shell: bool,
+) -> tuple[Any | None, ExecResult | None, dict]:
+    """执行前重核对（契约 §7）：不通过 → 返回 invalidated ExecResult、不执行。
+
+    本地兜底核对：payload/effect 快照/spec_digest/程序身份/脚本内容摘要/要求绑定/
+    模式（无限制→受限）/内部数据三次确认/永久删除确认绑定与对象身份。
+    若审批执行器/AppContext 注入了 RecheckService（ctx.recheck 或
+    ctx.recheck_service），再调用它重新走引擎判定（契约 §7 接线点）。
+    """
     from agent.security import launch as launch_boundary
 
+    spec, execution, intent = _execution_and_intent(payload, computer, shell=shell)
     fingerprint = _fingerprint(ctx)
     effect = dict(getattr(ctx.operation, "effect", {}) or {})
+    recheck_detail = {
+        "mode": "local_fallback",
+        "checks": [
+            "payload",
+            "effect_snapshot",
+            "spec_digest",
+            "program_identity",
+            "content_digests",
+            "requirement_binding",
+            "mode",
+            "internal_data_confirmations",
+            "delete_confirmation_binding",
+            "delete_object_identity",
+        ],
+        "approval_expiry": "checked_by_approval_executor",
+    }
     unchanged, reason, digest = launch_boundary.recheck_approved_spec(
         spec,
         fingerprint,
@@ -687,26 +904,117 @@ def _recheck_proc_launch(
         payload=ctx.operation.payload,
     )
     if not unchanged:
-        return None, _failure(
-            "审批失效：" + reason + "（本次未执行）",
-            "invalidated: " + (reason or "spec_changed"),
-            invalidated=True,
-            spec_digest=digest,
+        return (
+            None,
+            _failure(
+                "审批失效：" + reason + "（本次未执行）",
+                "invalidated: " + (reason or "spec_changed"),
+                invalidated=True,
+                spec_digest=digest,
+            ),
+            recheck_detail,
         )
+    recheck_detail["spec_digest"] = digest
+
+    requirement_error = _requirement_recheck_error(ctx, fingerprint, payload)
+    if requirement_error:
+        return (
+            None,
+            _failure(
+                requirement_error,
+                "invalidated: requirement_binding",
+                invalidated=True,
+            ),
+            recheck_detail,
+        )
+
     mode_now = _mode_text(ctx.current_mode())
+    binding = dict(fingerprint.get("operation_binding") or {})
+    binding_mode = str(binding.get("mode") or "")
+    recheck_detail["mode_now"] = mode_now
+    recheck_detail["binding_mode"] = binding_mode or None
     if mode_now == "read_only":
-        return None, _failure(
-            "当前已切换到只读模式：这次批准不再允许执行程序/命令"
-            "（只读模式不能被审批绕过），本次未执行，需重新提出",
-            "invalidated: mode_read_only",
-            invalidated=True,
+        return (
+            None,
+            _failure(
+                "当前已切换到只读模式：这次批准不再允许执行程序/命令"
+                "（只读模式不能被审批绕过），本次未执行，需重新提出",
+                "invalidated: mode_read_only",
+                invalidated=True,
+            ),
+            recheck_detail,
         )
+    if binding_mode and binding_mode != mode_now and binding_mode == "unrestricted":
+        return (
+            None,
+            _failure(
+                "审批时是完全无限制模式，现在已切回受限模式："
+                "需要按当前模式重新判定（固定规则/授权/审批），本次未执行，需重新提出",
+                "invalidated: mode_binding_changed",
+                invalidated=True,
+            ),
+            recheck_detail,
+        )
+
+    internal_roots = [str(item) for item in (fingerprint.get("internal_data_roots") or ())]
+    try:
+        confirmations = int(getattr(ctx.operation, "confirmations_required", 1) or 1)
+    except (TypeError, ValueError):
+        confirmations = 1
+    recheck_detail["confirmations_required"] = confirmations
+    if internal_roots and confirmations < 3:
+        return (
+            None,
+            _failure(
+                "目标是 QIO 内部运行数据，但没有完成连续三次确认："
+                "普通一次确认不能替代三次，本次未执行",
+                "internal_confirmations_missing",
+                invalidated=True,
+            ),
+            recheck_detail,
+        )
+
+    delete_error = _delete_recheck_error(fingerprint, payload, intent)
+    if delete_error:
+        return (
+            None,
+            _failure(
+                delete_error,
+                "invalidated: delete_binding",
+                invalidated=True,
+            ),
+            recheck_detail,
+        )
+    if intent is not None and intent.permanent:
+        recheck_detail["delete_binding"] = "verified"
+
+    service_outcome = await _maybe_service_recheck(ctx, binding=binding, effect=effect)
+    if service_outcome is not None:
+        ok, code, service_reason = service_outcome
+        recheck_detail.update(
+            {
+                "mode": "service",
+                "service_code": str(code or "")[:120],
+                "service_reason": str(service_reason or "")[:300],
+            }
+        )
+        if not ok:
+            return (
+                None,
+                _failure(
+                    "执行前重核对失败："
+                    + (service_reason or code or "recheck_failed")
+                    + "（本次未执行）",
+                    "invalidated: recheck_service",
+                    invalidated=True,
+                ),
+                recheck_detail,
+            )
+
     allow_roots = tuple(
         str(item) for item in (fingerprint.get("allowed_roots") or ()) if str(item)
     ) or launch_boundary.write_roots_for(computer, mode_now)
-    confirmed = bool(fingerprint.get("internal_data_roots")) and (
-        int(getattr(ctx.operation, "confirmations_required", 1) or 1) >= 3
-    )
+    confirmed = bool(internal_roots) and confirmations >= 3
     permit = launch_boundary.build_permit(
         spec,
         computer=computer,
@@ -717,15 +1025,17 @@ def _recheck_proc_launch(
         internal_data_confirmed=confirmed,
         approval_id=ctx.approval_id,
         source="approval",
-        reason="用户已批准这次操作；执行前已重核对 payload/程序身份/spec_digest/spec 一致",
+        reason=(
+            "用户已批准这次操作；执行前已重核对 payload/要求绑定/模式/程序身份/"
+            "内容摘要/永久删除确认绑定"
+        ),
     )
-    return permit, None
+    return permit, None, recheck_detail
 
 
 async def execute_proc_run_program(
     payload: dict, ctx: ExecutionContext, *, computer: Any, security: Any = None
 ) -> ExecResult:
-    from agent.security import launch as launch_boundary
     from agent.tools.cmd_tools import RunProgramTool
 
     changed = _reject_if_payload_changed(payload, ctx)
@@ -737,10 +1047,9 @@ async def execute_proc_run_program(
     args = [str(item) for item in (payload.get("args") or [])]
     timeout = float(payload.get("timeout") or 30)
     cwd = str(payload.get("cwd") or "") or None
-    spec = launch_boundary.LaunchSpec(
-        kind="program", program=program, argv=tuple(args), cwd=cwd, timeout=timeout
+    permit, rejected, recheck_detail = await _recheck_proc_launch(
+        ctx, payload=payload, computer=computer, shell=False
     )
-    permit, rejected = _recheck_proc_launch(ctx, spec, computer=computer)
     if rejected is not None:
         return rejected
     tool = RunProgramTool(
@@ -764,6 +1073,7 @@ async def execute_proc_run_program(
     detail = dict(result.detail or {})
     detail["permit"] = permit.as_dict()
     detail["approval_id"] = ctx.approval_id
+    detail["recheck"] = recheck_detail
     return ExecResult(
         ok=result.ok,
         state=result.state,
@@ -776,7 +1086,6 @@ async def execute_proc_run_program(
 async def execute_proc_shell(
     payload: dict, ctx: ExecutionContext, *, computer: Any, security: Any = None
 ) -> ExecResult:
-    from agent.security import launch as launch_boundary
     from agent.tools.cmd_tools import RunCmdTool
 
     changed = _reject_if_payload_changed(payload, ctx)
@@ -787,15 +1096,9 @@ async def execute_proc_shell(
         return _failure("审批单缺少 cmd：未执行", "missing_cmd")
     timeout = float(payload.get("timeout") or 30)
     cwd = str(payload.get("cwd") or "") or None
-    spec = launch_boundary.LaunchSpec(
-        kind="shell",
-        program=None,
-        argv=(),
-        cwd=cwd,
-        shell_cmd=cmd,
-        timeout=timeout,
+    permit, rejected, recheck_detail = await _recheck_proc_launch(
+        ctx, payload=payload, computer=computer, shell=True
     )
-    permit, rejected = _recheck_proc_launch(ctx, spec, computer=computer)
     if rejected is not None:
         return rejected
     tool = RunCmdTool(
@@ -818,6 +1121,7 @@ async def execute_proc_shell(
     detail = dict(result.detail or {})
     detail["permit"] = permit.as_dict()
     detail["approval_id"] = ctx.approval_id
+    detail["recheck"] = recheck_detail
     return ExecResult(
         ok=result.ok,
         state=result.state,
