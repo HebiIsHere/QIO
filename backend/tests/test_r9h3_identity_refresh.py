@@ -178,8 +178,8 @@ async def test_approved_create_registers_new_internal_file(ctx, app_env):
     )
     # 原路径/相对/规范化判定一致。
     assert internal_data.is_internal_data_object(new_path, [app_env.logs_dir.resolve()])
+    (app_env.logs_dir / "sub").mkdir(exist_ok=True)
     alias = app_env.logs_dir / "sub" / ".." / "created.jsonl"
-    alias.parent.mkdir(exist_ok=True)
     assert internal_data.is_internal_data_object(
         alias, [], identity_keys=ctx._internal_identity_keys()
     )
