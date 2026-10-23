@@ -61,7 +61,7 @@
 - 关键失败已修：提示词冻结面同步、claiming 窗口并发认领拒绝；P4-B 报告中的其余风险保留在 `phase4-backend.md`。
 
 ## 4. 固定提示词唯一位置
-`backend/src/agent/prompts.py`：`INTERACTIVE_POLICY`、`INTERACTIVE_RETRY_POLICY`、`TOOL_DESCRIPTIONS` 的 board_inspect / board_create_card / board_update_card / board_add_link / board_group_cards。其他模块只引用。
+`backend/src/agent/prompts.py`：`INTERACTIVE_POLICY`、`INTERACTIVE_RETRY_POLICY`、`TOOL_DESCRIPTIONS` 的 board_inspect / board_create_card / board_update_card / board_add_link / board_group_cards。其他模块只引用。全文归档见 `docs/interactive-v2/prompts-frozen.md`。
 
 ## 5. 视觉对照
 - `D:\qio-dev\.cv-shots\design-review\i2-side-by-side.png`（对话/互动并排）
