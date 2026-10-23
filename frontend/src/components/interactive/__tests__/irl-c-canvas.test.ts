@@ -397,9 +397,13 @@ describe("组框与关系线继续走同一份显示坐标", () => {
     const a = rectOfCard(view, "a");
     const b = rectOfCard(view, "b");
     const line = view.get("line.hit");
-    expect(Number(line.attributes("x1"))).toBe(a.x + a.w / 2);
+    /*
+     * Phase 2-B（契约 §5.3）：连线锚定**最终显示矩形的边缘**，不再是卡片中心点。
+     * 两个矩形同高、水平相邻 → 起点 = a 的右边中点，终点 = b 的左边中点。
+     */
+    expect(Number(line.attributes("x1"))).toBe(a.x + a.w);
     expect(Number(line.attributes("y1"))).toBe(a.y + a.h / 2);
-    expect(Number(line.attributes("x2"))).toBe(b.x + b.w / 2);
+    expect(Number(line.attributes("x2"))).toBe(b.x);
     expect(Number(line.attributes("y2"))).toBe(b.y + b.h / 2);
   });
 });
