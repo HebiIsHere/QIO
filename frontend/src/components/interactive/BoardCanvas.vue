@@ -38,6 +38,7 @@ import {
   mergeGroups,
   normalizeState,
   participationOf,
+  setParticipation,
   pointInRect,
   previewDrop,
   removeCard,
@@ -2062,11 +2063,19 @@ function onCardPatch(cardId: string, patch: Partial<BoardCardModel>, label: stri
   commit(next, label);
 }
 
-function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked") {
+function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked" | "participation") {
   const current = boardState.value;
   if (!current) return;
   const card = cardById(current, cardId);
   if (!card) return;
+  if (flag === "participation") {
+    const included = participationOf(card) !== "included";
+    commit(
+      setParticipation(current, cardId, included),
+      included ? "加入讨论范围" : "退出讨论范围",
+    );
+    return;
+  }
   if (flag === "checked") {
     const checked = !card.checked;
     // 参与状态是 v2 的唯一事实源（§5.1）：勾选 / 取消必须同时写 participation，避免旧 checked 与它打架
@@ -2566,7 +2575,6 @@ function finishLinkDraft(allowCreate: boolean) {
     notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
     return;
   }
-  const targetIsGroup = draft.targetId.startsWith(GROUP_ENDPOINT_PREFIX);
   const next = addLink(current, draft.fromId, draft.targetId, false, "");
   const created = next.links.find(
     (link) =>
@@ -2574,14 +2582,7 @@ function finishLinkDraft(allowCreate: boolean) {
       (link.src === draft.targetId && link.dst === draft.fromId),
   );
   if (!created) {
-    /*
-     * 组端点：板面模型（board.ts 的 addLink / normalizeState）目前只接受**卡片**端点，
-     * 组端点会被整条丢掉。这里如实说明并保持板面不变 —— 不伪造一条「存下来也会消失」的链接；
-     * 真正的组端点创建要等 board.ts / 后端同步（Lead 侧接线）。
-     */
-    notice.value = targetIsGroup
-      ? "没有建立关系：当前板面模型只接受卡片端点（组端点需要 board.ts 支持 group: 端点）；没有保存半条链接。"
-      : "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+    notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
     return;
   }
   commit(next, "新建关系（方向与含义由你写明）");

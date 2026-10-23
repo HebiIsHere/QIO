@@ -397,7 +397,7 @@ describe("组框缩放：成员按比例适配，取消不落库", () => {
 });
 
 describe("拖线落点支持组框（group:<id>）与参与范围", () => {
-  it("拖到组框空白处：待建连线目标是 group:<id>；当前板面模型不接受组端点时如实说明", async () => {
+  it("拖到组框空白处：待建连线目标是 group:<id>，松手后真实建立组端点关系", async () => {
     setBoard(
       boardState(
         [
@@ -424,9 +424,9 @@ describe("拖线落点支持组框（group:<id>）与参与范围", () => {
 
     window.dispatchEvent(pointer("pointerup", target.x, target.y));
     await nextTick();
-    expect(store.board!.links).toHaveLength(0);
-    expect(labels.filter((label) => label.includes("新建关系"))).toHaveLength(0);
-    expect(view.text()).toContain("组端点");
+    expect(store.board!.links).toHaveLength(1);
+    expect(store.board!.links[0]).toMatchObject({ src: "a", dst: "group:" + group.id });
+    expect(labels.filter((label) => label.includes("新建关系"))).toHaveLength(1);
   });
 
   it("参与的卡片 id 传给连线层（includedCardIds）", async () => {

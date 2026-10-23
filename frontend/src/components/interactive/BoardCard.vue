@@ -26,7 +26,7 @@ import {
   restoreCardDraftInput,
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
-import { CARD_KIND_LABELS, CHECKABLE_KINDS, defaultCardSeed } from "../../interactive/board";
+import { CARD_KIND_LABELS, CHECKABLE_KINDS, defaultCardSeed, participationOf } from "../../interactive/board";
 import {
   cardDocFields,
   docFromCard,
@@ -120,7 +120,7 @@ const emit = defineEmits<{
   (e: "select", cardId: string, additive: boolean): void;
   (e: "drag-start", cardId: string, event: PointerEvent): void;
   (e: "patch", cardId: string, patch: Partial<BoardCard>, label: string): void;
-  (e: "toggle", cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked"): void;
+  (e: "toggle", cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked" | "participation"): void;
   (e: "remove", cardId: string): void;
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
@@ -541,6 +541,7 @@ const imageDetailTitle = computed(() =>
     ? imageDetailHint(imageDisplay.value)
     : "查看图片详情（只改查看方式，不改内容与卡片尺寸）",
 );
+const participationIncluded = computed(() => participationOf(props.card) === "included");
 const imageDetailToggleText = computed(() => imageDetailLabel(imageDetailVisible.value));
 
 function toggleImageDetail(): void {
@@ -1454,6 +1455,21 @@ watch(
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
       <span v-if="titleText" class="title" data-im="card-title" :title="titleText">{{ titleText }}</span>
+      <!-- 参与讨论：所有卡片都有的小控件；与选中/书签/阅读状态无关。图片详情态同样浮在图上。 -->
+      <button
+        class="participation"
+        :class="{ 'is-on': participationIncluded }"
+        type="button"
+        data-im="card-participation"
+        :data-card-id="card.id"
+        :data-participation="participationIncluded ? 'included' : 'excluded'"
+        :aria-pressed="participationIncluded"
+        :title="participationIncluded
+          ? '参与讨论：QIO 本次可读取这张卡；点击退出讨论范围'
+          : '不参与：QIO 本次看不到这张卡；点击重新加入讨论'"
+        @pointerdown.stop
+        @click.stop="emit('toggle', card.id, 'participation')"
+      >{{ participationIncluded ? "参与" : "不参与" }}</button>
       <!--
         整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
         允不允许 QIO 查看。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，
@@ -2136,6 +2152,24 @@ watch(
 }
 .card.highlight { outline: 2px dashed var(--warning); outline-offset: 2px; }
 .card.dragging { cursor: grabbing; opacity: 0.92; border-style: dashed; border-color: var(--accent); }
+.participation {
+  flex: none;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 10px;
+  cursor: pointer;
+}
+.participation.is-on {
+  color: var(--link);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.participation:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .card.hidden { border-style: dashed; }
 .card.reply { border-left: 3px solid var(--link); }
 
