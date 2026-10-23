@@ -17,7 +17,7 @@
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
   cardDraftKey,
@@ -53,6 +53,15 @@ import {
   uploadAttachment,
   waitUntilSettled,
 } from "../../services/attachments";
+// 图片显示比例（Phase 2-C 冻结字段 meta.display）：纯函数在 renderers/imageDisplay.ts
+import {
+  decodeDisplayMeta,
+  imageDetailHint,
+  imageDetailLabel,
+  readImageDisplay,
+  shouldOfferImageDetail,
+  writeImageDisplay,
+} from "../../interactive/renderers/imageDisplay";
 import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
@@ -501,6 +510,137 @@ const coverPlan = computed(() =>
 const attachmentIsImage = computed(
   () => Boolean(attachKind.value) && coverPlan.value.imagePreviewable && coverPlan.value.state === "linked",
 );
+
+/* ------------------------------------------------------------------------
+ * 图片显示比例与「详情」状态（Phase 2-C 契约 §5.2）
+ *
+ * 三条边界（与 docs/interactive-page-v2-contract.md §5.2 逐条对应）：
+ * 1. 比例只记录**浏览器解码出的真实显示像素**（meta.display = {width,height,aspectRatio}）；
+ *    0 / NaN / 非整数 / 超范围一律不写 —— 宁可没有，也不写一个猜出来的比例；
+ * 2. 详细状态：图片铺满卡片、圆角裁切、不保留普通标题栏高度，等比完整显示（contain），
+ *    不用 cover 遮主体、不拉伸；名称 / 尺寸事实 / 收起入口浮在图上；
+ * 3. 简洁（常态）状态仍按原比例完整显示（封面层 contain），长图 / 竖图始终有详情入口，
+ *    不会被简洁态永远锁住。
+ *
+ * 比例写入走既有 emit("patch")（由 BoardCanvas commit），不在这里改板面状态；
+ * 只写 meta.display，**不改 card.w/h**（§16.3 / §17.1：图片加载不得自动改几何）。
+ * ---------------------------------------------------------------------- */
+const imageDisplay = computed(() =>
+  readImageDisplay((props.card.meta ?? {}) as Record<string, unknown>),
+);
+/** 详情态是否可用：只有「已关联的图片附件」才有；其它材料沿用既有阅读展开。 */
+const imageDetailAvailable = computed(() => attachmentIsImage.value);
+const imageDetailOpen = ref(false);
+const imageDetailVisible = computed(() => imageDetailOpen.value && imageDetailAvailable.value);
+const imageCardSize = computed(() => ({ w: props.card.w, h: props.card.h }));
+const imageDetailNeeded = computed(() =>
+  shouldOfferImageDetail(imageDisplay.value, imageCardSize.value),
+);
+const imageDetailTitle = computed(() =>
+  imageDetailNeeded.value
+    ? imageDetailHint(imageDisplay.value)
+    : "查看图片详情（只改查看方式，不改内容与卡片尺寸）",
+);
+const imageDetailToggleText = computed(() => imageDetailLabel(imageDetailVisible.value));
+
+function toggleImageDetail(): void {
+  imageDetailOpen.value = !imageDetailOpen.value;
+}
+
+function closeImageDetail(): void {
+  imageDetailOpen.value = false;
+}
+
+/**
+ * 本次会话里已经写过 meta.display 的身份（卡片 + 附件 id + 附件版本）。
+ * 用途：解码结果回来之前卡片可能重渲染多次，同一身份只发一次 patch ——
+ * 不因为重复渲染 / 版本未回执而反复写板面、反复把用户尺寸重置成默认值。
+ */
+const writtenDisplayKeys = new Set<string>();
+
+function imageDisplayKey(): string {
+  const meta = (props.card.meta ?? {}) as Record<string, unknown>;
+  const file = meta.file && typeof meta.file === "object" ? (meta.file as Record<string, unknown>) : {};
+  return [props.card.id, cardAttachmentId(props.card.meta, props.card.kind), String(file.version ?? file.attachmentVersion ?? "")].join("|");
+}
+
+/**
+ * 记录图片的真实显示比例（只写 meta.display）。
+ *
+ * **从哪里取真实像素**：封面层里那张已经带认证 blob URL 的 <img> 解码结果
+ * （naturalWidth / naturalHeight，浏览器已按 EXIF 方向解码）。
+ * 不再单独发一次请求、也不再新建一个 blob URL —— 既有取字节 / 释放路径一字不动
+ * （CardAttachmentPreview 仍然只持有一个 URL，测试里的取字节次数与 URL 计数保持不变）。
+ *
+ * 三条边界：
+ * * 只有真实解码出的正整数像素才写；0 / NaN / 负值 / 超范围 → 什么都不写（不猜、不写 0）；
+ * * 同一身份（卡片 id + 附件 id + 附件版本）只写一次（writtenDisplayKeys）：
+ *   重复渲染 / 回执未到都不会反复写板面，更不会借机重置用户设置的尺寸；
+ * * 只改 meta.display，**不改 card.w/h**（§16.3 / §17.1）。
+ */
+function captureCoverDisplay(): void {
+  if (!attachmentIsImage.value || imageDisplay.value) return;
+  const img = cardEl.value?.querySelector<HTMLImageElement>('img[data-im="card-cover-img"]') ?? null;
+  if (!img) return;
+  const width = img.naturalWidth;
+  const height = img.naturalHeight;
+  const display = decodeDisplayMeta(width, height);
+  if (!display) return; // 还没解码完 / 解码失败：不写任何值
+  const key = imageDisplayKey();
+  if (writtenDisplayKeys.has(key)) return;
+  const nextMeta = writeImageDisplay((props.card.meta ?? {}) as Record<string, unknown>, display);
+  writtenDisplayKeys.add(key);
+  emit("patch", props.card.id, { meta: nextMeta }, "记录图片显示比例");
+}
+
+/**
+ * 封面图解码完成 / 换图：量一次真实像素。
+ *
+ * 用**捕获阶段的事件委托**（load 不冒泡，但捕获阶段会经过祖先）：
+ * 封面图是异步 blob URL 挂上去的，元素可能在绑定之后才出现、也可能整块被替换，
+ * 逐个元素挂监听一定会漏 —— 委托到卡片根节点就与渲染时序无关。
+ */
+function onCoverImgLoad(event: Event): void {
+  const target = event.target as Element | null;
+  if (!target || target.tagName !== "IMG") return;
+  if (!target.hasAttribute("data-im") || target.getAttribute("data-im") !== "card-cover-img") return;
+  captureCoverDisplay();
+}
+
+function measureCoverIfReady(): void {
+  const img = cardEl.value?.querySelector<HTMLImageElement>('img[data-im="card-cover-img"]') ?? null;
+  if (img && img.complete && img.naturalWidth > 0) captureCoverDisplay();
+}
+
+onMounted(() => {
+  cardEl.value?.addEventListener("load", onCoverImgLoad, true);
+  measureCoverIfReady();
+});
+
+onBeforeUnmount(() => {
+  cardEl.value?.removeEventListener("load", onCoverImgLoad, true);
+});
+
+watch(
+  [
+    () => props.card.id,
+    () => cardAttachmentId(props.card.meta, props.card.kind),
+    imageDisplay,
+    attachmentIsImage,
+  ],
+  async () => {
+    if (!imageDetailAvailable.value) imageDetailOpen.value = false;
+    await nextTick();
+    measureCoverIfReady();
+  },
+  { immediate: true },
+);
+watch(
+  () => props.card.folded,
+  (folded) => {
+    if (folded) imageDetailOpen.value = false;
+  },
+);
 const coverMode = computed(
   () =>
     // 图片卡 + 「附件是图片」的文件卡都铺封面（2026-10-14 第六个问题；
@@ -844,7 +984,13 @@ function togglePreview(): void {
  * 四种状态都不写板面状态、不产生表达：折叠只改显示，阅读展开只在前端内存，
  * 编辑内容进既有草稿通道。尺寸调整不在这里参与判断。
  * ---------------------------------------------------------------------- */
-type CardDisplayState = "normal" | "reading" | "editing" | "folded";
+/**
+ * 五种显示状态：常态 / 阅读展开 / 编辑 / 折叠 / **图片详情**（Phase 2-C）。
+ *
+ * 图片详情是「详细状态」的落地：它只属于已关联图片附件的文件卡，
+ * 主体是一整张铺满卡片的图（不保留普通标题栏高度），退出即回到常态封面。
+ */
+type CardDisplayState = "normal" | "reading" | "editing" | "folded" | "image-detail";
 
 /** 有没有可读材料：文件 / 图片要有**真实已保存的附件**；其它卡片的正文本身就是材料 */
 const readingAvailable = computed(() => (attachKind.value ? attachmentLinked.value : true));
@@ -864,6 +1010,8 @@ const previewToggleAvailable = computed(() => readingAvailable.value && !attachm
 const displayState = computed<CardDisplayState>(() => {
   if (props.card.folded) return "folded";
   if (editing.value) return "editing";
+  // 图片详情优先于阅读展开：图片不进入阅读态（store 也不把图片放进展开列表）
+  if (imageDetailVisible.value) return "image-detail";
   if (previewExpanded.value && previewToggleAvailable.value) return "reading";
   return "normal";
 });
@@ -1254,6 +1402,8 @@ watch(
       'is-compact': compactChrome,
       // 封面式：图片铺满整张卡，头部 / 正文 / 页脚浮在封面之上（见 CardAttachmentPreview 的 cover 变体）
       'is-cover': coverMode,
+      // 图片详情：整张卡就是一张图（无普通标题栏留白，圆角裁切，见 .card.is-image-detail）
+      'is-image-detail': displayState === 'image-detail',
     }"
     :style="style"
     data-im="card"
@@ -1261,6 +1411,8 @@ watch(
     :data-card-state="displayState"
     @pointerdown="onPointerDown"
     :data-cover="coverMode ? '1' : undefined"
+    :data-image-detail="imageDetailVisible ? '1' : '0'"
+    :data-image-ratio="imageDisplay ? String(imageDisplay.aspectRatio) : undefined"
   >
     <!--
       封面层：图片铺满整张卡作为背景（纯呈现，不进板面状态）。
@@ -1276,6 +1428,28 @@ watch(
       :card-id="card.id"
       @relink-attachment="pickAttachment"
     />
+    <!--
+      图片详情态（Phase 2-C 契约 §5.2）：主体是**一整张图**，直接铺满卡片。
+      它不挂在 .card-body 里（正文层有内边距，会在图片四周留出一圈「普通标题栏」似的空白）；
+      这里用 absolute inset:0 的宿主铺满卡片，圆角由卡片本身裁切。
+    -->
+    <div
+      v-if="displayState === 'image-detail'"
+      class="card-image-detail-host"
+      data-im="card-image-detail-host"
+      :data-card-id="card.id"
+    >
+      <CardInlinePreview
+        :card="card"
+        :active="true"
+        :on-close="closeImageDetail"
+        context="material"
+        mode="image-detail"
+        @position="onPreviewPosition"
+      />
+    </div>
+
+    <!-- 图片详情态下头部不占布局高度但也**不消失**：名称 / 许可 / 收起详情浮在图上（见 CSS） -->
     <header class="card-head" data-im="card-head">
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
@@ -1332,6 +1506,23 @@ watch(
       >
         {{ previewExpanded ? "收起预览" : "展开预览" }}
       </button>
+      <!--
+        图片详情入口（Phase 2-C）：图片不进入阅读态，但必须能看完整画面。
+        长图 / 竖图 / 比例与卡片不符时一直都在（不会被简洁态永远锁住）；
+        文案用「查看详情 / 收起详情」，与文字卡的「展开预览」区分开。
+      -->
+      <button
+        v-if="displayState !== 'editing' && imageDetailAvailable"
+        class="chip-btn"
+        type="button"
+        data-im="card-image-detail-toggle"
+        :data-card-id="card.id"
+        :aria-expanded="imageDetailVisible"
+        :title="imageDetailTitle"
+        @click="toggleImageDetail"
+      >
+        {{ imageDetailToggleText }}
+      </button>
     </header>
 
     <!--
@@ -1342,7 +1533,7 @@ watch(
         真正的横向不溢出靠子元素的 min-width:0 与换行规则，不靠裁切。
     -->
     <div
-      v-if="displayState !== 'folded'"
+      v-if="displayState !== 'folded' && displayState !== 'image-detail'"
       class="card-body"
       :class="{ 'card-body-editing-text': displayState === 'editing' && isTextCard }"
       data-im="card-body"
@@ -1661,7 +1852,7 @@ watch(
       元信息：必要状态 + 更新时间。状态在任何尺寸下都必须留着（§3.5）；
       更新时间是次级信息，窄 / 矮卡片里让位给内容区，保证内容区高度仍然 > 0。
     -->
-    <footer class="card-meta" data-im="card-meta">
+    <footer v-if="displayState !== 'image-detail'" class="card-meta" data-im="card-meta">
       <span class="status" role="status">{{ statusText }}</span>
       <span v-if="!compactChrome" class="time mono">{{ updatedText }}</span>
     </footer>
@@ -1934,6 +2125,7 @@ watch(
   z-index: 1;
   background: transparent;
 }
+
 
 /* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
 .card:hover { border-color: var(--border-strong); }
@@ -2506,5 +2698,46 @@ watch(
 /* 紧凑档的卡片内边距是 --sp-2，负外边距跟着换一档（只作用在封面页脚，不动那条被守卫锁定的紧凑规则） */
 .card.is-compact.is-cover > .card-meta {
   --card-pad: var(--sp-2);
+}
+
+/*
+  图片详情态（Phase 2-C 契约 §5.2）：整张卡就是一张图。
+  - 去掉卡片内边距：否则图片四周会留出一圈看起来像「普通标题栏」的空白；
+  - 圆角裁切：卡片 overflow: hidden + 宿主 border-radius: inherit；
+  - 宿主 absolute inset:0 铺满卡片，图片在宿主里等比完整显示（contain）；
+  - 卡片尺寸仍由 w/h 决定：这里只改外观，不动几何（§16.3 / §17.1）。
+*/
+.card.is-image-detail {
+  padding: 0;
+  overflow: hidden;
+}
+/*
+  详情态的头部：**浮在图上**而不是占一行布局高度（这就是「不保留普通标题栏留白」）——
+  名称、许可徽章、收起详情仍在原位可读可点（参与控件后续也挂在头部），
+  底部一条窄渐变保证文字压在图片上也清楚；连接点与缩放手柄在卡片外侧，不受影响。
+*/
+.card.is-image-detail > .card-head {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  padding: var(--sp-2) var(--sp-3);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg-surface) 88%, transparent),
+    transparent
+  );
+  pointer-events: none;
+}
+.card.is-image-detail > .card-head .chip-btn,
+.card.is-image-detail > .card-head .license {
+  pointer-events: auto;
+}
+.card-image-detail-host {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
 }
 </style>
