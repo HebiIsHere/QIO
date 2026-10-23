@@ -40,6 +40,9 @@ from typing import Any, Callable, Protocol, Sequence
 
 from agent.adapters.base import ChatMessage
 from agent.prompts import (
+    LIMIT_EXTRACTION_INSTRUCTION,
+    LIMIT_EXTRACTION_SCHEMA_VERSION,
+    LIMIT_EXTRACTION_SYSTEM,
     REQUIREMENT_RESOLUTION_INSTRUCTION,
     REQUIREMENT_RESOLUTION_SCHEMA_VERSION,
     REQUIREMENT_RESOLUTION_SYSTEM,
@@ -124,6 +127,9 @@ class ResolutionOutcome:
     #: 模型解析时看到的目标要求版本（R9-G §3 版本绑定）。
     #: amend/withdraw 必须给出并与候选版本一致；new 为 None。
     target_version: int | None = None
+    #: R9-H §6：amend 时用户明确解除的限制（结构与 limits 条目相同）。
+    #: 默认空表示"没有解除任何限制"；非 amend 时必须为空，不得借清空假装修正。
+    removed_limits: tuple[dict, ...] = ()
 
     def as_dict(self) -> dict:
         return {
@@ -132,6 +138,7 @@ class ResolutionOutcome:
             "target_version": self.target_version,
             "corrections": list(self.corrections),
             "limits": [dict(item) for item in self.limits],
+            "removed_limits": [dict(item) for item in self.removed_limits],
             "reason": self.reason,
             "model": self.model,
             "prompt_version": self.prompt_version,
@@ -313,29 +320,31 @@ def _optional_str(data: dict, key: str, *, max_chars: int) -> str:
     return _clip(value.strip(), max_chars)
 
 
-def _parse_limits(data: dict) -> tuple[dict, ...]:
-    value = data.get("limits", [])
+def _parse_limits(data: dict, *, key: str = "limits", label: str | None = None) -> tuple[dict, ...]:
+    """解析结构化限制数组（limits / removed_limits 共用同一结构）。"""
+    name = label or key
+    value = data.get(key, [])
     if value is None:
         return ()
     if not isinstance(value, list):
-        raise _invalid("limits 必须是对象数组")
+        raise _invalid(name + " 必须是对象数组")
     result: list[dict] = []
     for item in value[:MAX_LIMITS]:
         if not isinstance(item, dict):
-            raise _invalid("limits 每一项必须是对象")
+            raise _invalid(name + " 每一项必须是对象")
         operations_raw = item.get("operations", [])
         if not isinstance(operations_raw, list):
-            raise _invalid("limits.operations 必须是字符串数组")
+            raise _invalid(name + ".operations 必须是字符串数组")
         operations: list[str] = []
         for op in operations_raw[:MAX_LIMIT_OPERATIONS]:
             if not isinstance(op, str):
-                raise _invalid("limits.operations 只能包含字符串")
+                raise _invalid(name + ".operations 只能包含字符串")
             text = op.strip().lower()
             if text:
                 operations.append(text)
         objects_raw = item.get("objects", [])
         if not isinstance(objects_raw, list):
-            raise _invalid("limits.objects 必须是数组")
+            raise _invalid(name + ".objects 必须是数组")
         objects: list[dict] = []
         for obj in objects_raw[:MAX_LIMIT_OBJECTS]:
             if isinstance(obj, str):
@@ -344,11 +353,11 @@ def _parse_limits(data: dict) -> tuple[dict, ...]:
                     objects.append({"kind": "other", "value": text})
                 continue
             if not isinstance(obj, dict):
-                raise _invalid("limits.objects 每一项必须是对象或字符串")
+                raise _invalid(name + ".objects 每一项必须是对象或字符串")
             kind = str(obj.get("kind") or "other").strip().lower()
             object_value = str(obj.get("value") or "").strip()
             if not object_value:
-                raise _invalid("limits.objects 每一项必须有非空 value")
+                raise _invalid(name + ".objects 每一项必须有非空 value")
             objects.append({"kind": kind, "value": object_value})
         reason = _optional_str(item, "reason", max_chars=MAX_LIMIT_REASON_CHARS)
         result.append(
@@ -404,7 +413,8 @@ def parse_resolution_outcome(
         text = item.strip()
         if text:
             corrections.append(_clip(text, MAX_CORRECTION_CHARS))
-    limits = _parse_limits(data)
+    limits = _parse_limits(data, key="limits")
+    removed_limits = _parse_limits(data, key="removed_limits")
     reason = _optional_str(data, "reason", max_chars=MAX_REASON_CHARS)
     return ResolutionOutcome(
         relation=relation,
@@ -415,6 +425,7 @@ def parse_resolution_outcome(
         model=str(model or "")[:200],
         prompt_version=str(prompt_version or REQUIREMENT_RESOLUTION_SCHEMA_VERSION)[:100],
         target_version=target_version,
+        removed_limits=removed_limits,
     )
 
 
@@ -462,6 +473,72 @@ def _candidate_object_keys(candidates: Sequence[dict]) -> tuple[set[tuple[str, s
     return _allowed_object_keys(values)
 
 
+def _clean_limit_entries(
+    entries: Sequence[dict],
+    *,
+    label: str,
+    typed_allowed: set[tuple[str, str]],
+    bare_allowed: set[str],
+    require_known_objects: bool = True,
+) -> tuple[dict, ...]:
+    """校验并规范化结构化限制条目（limits / removed_limits / 历史提取共用）。
+
+    只做事实核对：operations 必须是稳定操作名；objects.kind 合法。语义由模型判断，
+    不做词句匹配。
+
+    require_known_objects=False 用于两种"只收紧、不产生授权"的场景：
+    * removed_limits：解除限制只是放宽，解除对象可能来自旧要求、当前候选里没有；
+    * 历史原话提取：旧要求里的对象不一定能对上本轮后端可解析对象。
+    这两类对象即使写错也不会产生许可，执行前仍按真实对象核对；因此只做结构校验，
+    避免把合法历史限制误判成 Unavailable。
+    """
+    cleaned: list[dict] = []
+    for limit in list(entries)[:MAX_LIMITS]:
+        if not isinstance(limit, dict):
+            raise RequirementResolutionUnavailable(label + " 每一项必须是对象")
+        operations = [
+            str(item).strip().lower()
+            for item in (limit.get("operations") or ())
+            if str(item).strip()
+        ]
+        if not operations:
+            raise RequirementResolutionUnavailable(label + " 缺少 operations")
+        unknown = [item for item in operations if item not in ALLOWED_LIMIT_OPERATIONS]
+        if unknown:
+            raise RequirementResolutionUnavailable(
+                label + " 含未知操作：" + ", ".join(sorted(set(unknown))[:6])
+            )
+        objects_raw = limit.get("objects") or ()
+        if not isinstance(objects_raw, (list, tuple)):
+            raise RequirementResolutionUnavailable(label + ".objects 必须是数组")
+        objects: list[dict] = []
+        for item in list(objects_raw)[:MAX_LIMIT_OBJECTS]:
+            if isinstance(item, dict):
+                kind = str(item.get("kind") or "other").strip().lower()
+                value = str(item.get("value") or "").strip()
+            else:
+                kind = "other"
+                value = str(item or "").strip()
+            if not value:
+                raise RequirementResolutionUnavailable(label + ".objects 含空对象")
+            if kind not in LIMIT_OBJECT_KINDS:
+                raise RequirementResolutionUnavailable(label + ".objects.kind 非法：" + kind[:40])
+            typed_key = _normalize_object_key(kind, value)
+            if require_known_objects and (typed_allowed or bare_allowed):
+                if (
+                    typed_key not in typed_allowed
+                    and typed_key[1] not in bare_allowed
+                    and str(value) not in bare_allowed
+                ):
+                    raise RequirementResolutionUnavailable(
+                        label + " 引用了候选/后端可解析对象之外的标识：" + value[:120]
+                    )
+            objects.append({"kind": kind, "value": value})
+        reason = str(limit.get("reason") or "").strip()[:MAX_LIMIT_REASON_CHARS]
+        cleaned.append({"operations": sorted(set(operations)), "objects": objects, "reason": reason})
+    return tuple(cleaned)
+
+
 def validate_resolution(
     outcome: ResolutionOutcome,
     *,
@@ -494,56 +571,27 @@ def validate_resolution(
         if str(item).strip()
     )[:MAX_CORRECTIONS]
     limits = tuple(dict(item) for item in (outcome.limits or ()) if isinstance(item, dict))[:MAX_LIMITS]
+    removed_limits = tuple(
+        dict(item) for item in (getattr(outcome, "removed_limits", ()) or ()) if isinstance(item, dict)
+    )[:MAX_LIMITS]
 
     typed_allowed, bare_allowed = _allowed_object_keys(allowed_objects)
     candidate_typed, candidate_bare = _candidate_object_keys(list(candidate_map.values()))
     typed_allowed |= candidate_typed
     bare_allowed |= candidate_bare
 
-    cleaned_limits: list[dict] = []
-    for limit in limits:
-        operations = [
-            str(item).strip().lower()
-            for item in (limit.get("operations") or ())
-            if str(item).strip()
-        ]
-        if not operations:
-            raise RequirementResolutionUnavailable("要求解析的 limits 缺少 operations")
-        unknown = [item for item in operations if item not in ALLOWED_LIMIT_OPERATIONS]
-        if unknown:
-            raise RequirementResolutionUnavailable(
-                "要求解析的 limits.operations 含未知操作：" + ", ".join(sorted(set(unknown))[:6])
-            )
-        objects_raw = limit.get("objects") or ()
-        if not isinstance(objects_raw, (list, tuple)):
-            raise RequirementResolutionUnavailable("要求解析的 limits.objects 必须是数组")
-        objects: list[dict] = []
-        for item in list(objects_raw)[:MAX_LIMIT_OBJECTS]:
-            if isinstance(item, dict):
-                kind = str(item.get("kind") or "other").strip().lower()
-                value = str(item.get("value") or "").strip()
-            else:
-                kind = "other"
-                value = str(item or "").strip()
-            if not value:
-                raise RequirementResolutionUnavailable("要求解析的 limits.objects 含空对象")
-            if kind not in LIMIT_OBJECT_KINDS:
-                raise RequirementResolutionUnavailable("要求解析的 limits.objects.kind 非法：" + kind[:40])
-            typed_key = _normalize_object_key(kind, value)
-            if typed_allowed or bare_allowed:
-                if (
-                    typed_key not in typed_allowed
-                    and typed_key[1] not in bare_allowed
-                    and str(value) not in bare_allowed
-                ):
-                    raise RequirementResolutionUnavailable(
-                        "要求解析的 limits 引用了候选/后端可解析对象之外的标识：" + value[:120]
-                    )
-            objects.append({"kind": kind, "value": value})
-        reason = str(limit.get("reason") or "").strip()[:MAX_LIMIT_REASON_CHARS]
-        cleaned_limits.append(
-            {"operations": sorted(set(operations)), "objects": objects, "reason": reason}
-        )
+    cleaned_limits = _clean_limit_entries(
+        limits, label="limits", typed_allowed=typed_allowed, bare_allowed=bare_allowed
+    )
+    cleaned_removed = _clean_limit_entries(
+        removed_limits,
+        label="removed_limits",
+        typed_allowed=typed_allowed,
+        bare_allowed=bare_allowed,
+        require_known_objects=False,  # 解除限制只放宽；对象可能来自旧要求
+    )
+    if cleaned_removed and outcome.relation != RequirementRelation.AMEND:
+        raise RequirementResolutionUnavailable("只有 amend 可以解除已有要求上的限制")
 
     if outcome.relation == RequirementRelation.NEW:
         if outcome.target_requirement_id:
@@ -582,6 +630,69 @@ def validate_resolution(
         model=str(outcome.model or "")[:200],
         prompt_version=str(outcome.prompt_version or REQUIREMENT_RESOLUTION_SCHEMA_VERSION)[:100],
         target_version=target_version,
+        removed_limits=cleaned_removed,
+    )
+
+
+# ---------------------------------------------------------------------------
+# R9-H §6：历史要求原话 → 结构化限制（重新理解，不解析展平文字）
+# ---------------------------------------------------------------------------
+
+
+def build_limit_extraction_payload(
+    *,
+    text: object,
+    requirement_id: str | None = None,
+    version: int | None = None,
+) -> dict:
+    """组装历史限制提取输入（唯一入口；只喂用户原话与来源标识，不喂展平文字）。"""
+    payload: dict = {
+        "prompt_version": LIMIT_EXTRACTION_SCHEMA_VERSION,
+        "text": _clip(text, MAX_MESSAGE_CHARS),
+        "requirement_id": None if requirement_id is None else str(requirement_id)[:MAX_TARGET_CHARS],
+        "version": None if version is None else int(version),
+    }
+    return payload
+
+
+def render_limit_extraction_messages(
+    *,
+    text: object,
+    requirement_id: str | None = None,
+    version: int | None = None,
+) -> list[ChatMessage]:
+    payload_text = json.dumps(
+        build_limit_extraction_payload(text=text, requirement_id=requirement_id, version=version),
+        ensure_ascii=False,
+        indent=2,
+        default=str,
+    )
+    instruction = Template(LIMIT_EXTRACTION_INSTRUCTION).substitute(payload=payload_text)
+    return [
+        ChatMessage(role="system", content=LIMIT_EXTRACTION_SYSTEM),
+        ChatMessage(role="user", content=instruction),
+    ]
+
+
+def parse_extracted_limits(
+    raw_text: object, *, allowed_objects: Sequence[Any] | None = ()
+) -> tuple[dict, ...]:
+    """解析并规范化模型返回的历史限制（结构/操作名/对象来源核对；不做关键词判断）。
+
+    返回空元组表示模型语义判断"用户原话没有明确限制"——这是合法结果；
+    任何结构非法/对象不可核对都抛 RequirementResolutionUnavailable，由调用方标 unresolved。
+    """
+    payload = _extract_json_object(raw_text)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise RequirementResolutionUnavailable("历史限制提取输出不是合法 JSON") from exc
+    if not isinstance(data, dict):
+        raise RequirementResolutionUnavailable("历史限制提取输出顶层必须是 JSON 对象")
+    limits = _parse_limits(data, key="limits")
+    typed_allowed, bare_allowed = _allowed_object_keys(allowed_objects)
+    return _clean_limit_entries(
+        limits, label="limits", typed_allowed=typed_allowed, bare_allowed=bare_allowed
     )
 
 
@@ -643,6 +754,9 @@ class ModelRequirementResolver:
             self.timeout_seconds = DEFAULT_TIMEOUT_SECONDS
         self.context_provider = context_provider
         self.allowed_objects_provider = allowed_objects_provider
+        # 审计来源：app/requirements 写入 prompt_version / source 时使用（不猜）。
+        self.prompt_version = REQUIREMENT_RESOLUTION_SCHEMA_VERSION
+        self.limit_extraction_prompt_version = LIMIT_EXTRACTION_SCHEMA_VERSION
 
     async def resolve(
         self,
@@ -694,6 +808,48 @@ class ModelRequirementResolver:
             int((time.monotonic() - started) * 1000),
         )
         return validated
+
+    async def extract_limits(
+        self,
+        text: object,
+        *,
+        requirement_id: str | None = None,
+        version: int | None = None,
+    ) -> tuple[dict, ...]:
+        """R9-H §6：从历史用户原话重新理解结构化限制（单次主模型调用，tools 为空）。
+
+        * 只喂用户原话与来源标识；**不解析** R9-G 之前的展平文字、不做关键词判断；
+        * 输出结构必须与 ResolutionOutcome.limits 条目一致；结构非法/超时/异常 →
+          RequirementResolutionUnavailable（调用方标 unresolved，绝不把 legacy 当无限制）；
+        * 返回空元组 = 模型语义判断"原话没有明确限制"。
+        """
+        try:
+            messages = render_limit_extraction_messages(
+                text=text, requirement_id=requirement_id, version=version
+            )
+            raw_text, _model = await asyncio.wait_for(
+                self._call_model(messages), timeout=self.timeout_seconds
+            )
+        except asyncio.TimeoutError as exc:
+            raise RequirementResolutionUnavailable(
+                "历史限制提取模型超时（超过 " + str(self.timeout_seconds) + " 秒），标记 unresolved"
+            ) from exc
+        except RequirementResolutionUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 模型异常不能变成"没有限制"
+            raise RequirementResolutionUnavailable(
+                "历史限制提取模型调用失败：" + _sanitize_error(exc)
+            ) from exc
+        try:
+            # 历史原话里的对象是旧要求的事实，当前后端对象清单不一定覆盖；
+            # 提取结果只用于"限制"（只收紧、不产生授权），因此只做结构校验。
+            return parse_extracted_limits(raw_text, allowed_objects=())
+        except RequirementResolutionUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 校验器异常同样视为不可用
+            raise RequirementResolutionUnavailable(
+                "历史限制提取结果校验失败：" + _sanitize_error(exc)
+            ) from exc
 
     def _context(self) -> list[dict]:
         provider = self.context_provider
@@ -750,9 +906,12 @@ __all__ = [
     "RequirementResolutionUnavailable",
     "RequirementResolver",
     "ResolutionOutcome",
+    "build_limit_extraction_payload",
     "build_resolution_payload",
     "normalize_candidate",
+    "parse_extracted_limits",
     "parse_resolution_outcome",
+    "render_limit_extraction_messages",
     "render_resolution_messages",
     "validate_resolution",
 ];
