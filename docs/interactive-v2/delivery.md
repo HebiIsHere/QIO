@@ -67,7 +67,8 @@
 ## 5. 视觉对照
 - `D:\qio-dev\.cv-shots\design-review\i2-side-by-side.png`（对话/互动并排）
 - `i2-final4-1440.png`、`i2-conv2-1440.png`、`i2-dark-1440.png`
-- `i2-final2-bookmarks.png`、`i2-phase3-chat.png`、`i2-480x640-chat.png`、`i2-320.png`、`i2-tauri-interactive.png`
+- `i2-final2-bookmarks.png`、`i2-phase3-chat.png`、`i2-480x640-chat.png`、`i2-320.png`
+- `i2-tauri-final.png`（Tauri 1200×800：共用全局栏/窗口按钮/板面/工具栏/模式切换）
 
 ## 6. 审计报告
 - `docs/interactive-v2/phase1-data-audit.md`
@@ -80,4 +81,5 @@
 ## 7. 交付状态
 - 最终集成分支 HEAD：`git rev-parse HEAD`（见最终回复）。
 - 未合并、未打包、未发布。
-- 完整后端全量已通过；**完整 CI 尚未运行**，本文件不把本地测试冒充 CI 验收。
+- 完整后端全量已通过。
+- 完整 CI run 40033918863 已全部成功，SHA 64ef4e50；docs、install e2e、frontend、三套后端、两套 rust、frozen worker、dedup 均为 success。文档-only 后续提交不改变代码验证结论。
