@@ -166,6 +166,9 @@ class ReviewRequest:
     requirement_resolution_status: str = RESOLUTION_STATUS_UNAVAILABLE
     #: 要求解析得到的结构化限制（用户明确表达的限制，只用于展示；本身不产生授权）。
     resolution_limits: tuple[dict, ...] = ()
+    #: R9-H2：完全无限制模式下，仅当用户限制尚未可靠恢复时做一次针对性审查；
+    #: 不是普通授权审查，也不能用于 structured/已知要求。
+    targeted_limits_review: bool = False
 
 
 @dataclass(frozen=True)
@@ -697,8 +700,21 @@ def _validate_request_shape(request: ReviewRequest) -> None:
         raise ReviewUnavailable("授权审查请求缺少真实用户要求，不能进行审查")
     if not isinstance(request.operation, ReviewOperation):
         raise ReviewUnavailable("授权审查请求的操作结构非法")
-    if str(request.mode or "") != REVIEW_MODE:
-        raise ReviewUnavailable("只有受限模式才允许模型授权审查（当前模式：" + str(request.mode) + "）")
+    mode = str(request.mode or "")
+    targeted = bool(getattr(request, "targeted_limits_review", False))
+    requirement_state = str(
+        getattr(requirement, "structured_limits_state", "structured") or "structured"
+    )
+    if mode != REVIEW_MODE and not (
+        mode == "unrestricted"
+        and targeted
+        and requirement_state in {"legacy", "unresolved"}
+    ):
+        raise ReviewUnavailable(
+            "只有受限模式（或限制未恢复的针对性审查）才允许模型授权审查（当前模式："
+            + mode
+            + "）"
+        )
     for item in request.operation.objects:
         if not isinstance(item, ReviewObject):
             raise ReviewUnavailable("授权审查请求的对象结构非法")

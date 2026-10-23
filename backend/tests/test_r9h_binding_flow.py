@@ -31,6 +31,7 @@ from agent.api.server import create_app
 from agent.config import Settings
 from agent.core.turn import TurnContext
 from agent.prompts import (
+    LIMIT_EXTRACTION_CHAIN_SCHEMA_VERSION,
     LIMIT_EXTRACTION_SCHEMA_VERSION,
     REQUIREMENT_RESOLUTION_SCHEMA_VERSION,
 )
@@ -802,7 +803,10 @@ async def test_real_resolver_extract_limits_is_wired_through_execute_turn(ctx):
     assert len(adapter.requests) == 2
     assert all(item["tools"] == [] for item in adapter.requests)
     assert shim.set_calls and shim.set_calls[-1]["state"] == "structured"
-    assert shim.set_calls[-1]["source"] == LIMIT_EXTRACTION_SCHEMA_VERSION
+    # R9-H2：历史恢复改走完整链上下文，source 记录链提示词/摘要/目标版本。
+    source = shim.set_calls[-1]["source"]
+    assert source.startswith(LIMIT_EXTRACTION_CHAIN_SCHEMA_VERSION), source
+    assert ";chain=" in source and ";version=" in source, source
     assert shim.set_calls[-1]["limits"][0]["reason"] == "只改标题"
     extraction_text = adapter.requests[1]["messages"][1].content
     assert message in extraction_text

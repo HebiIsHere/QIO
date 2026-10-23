@@ -664,13 +664,14 @@ async def test_restart_and_recheck_preserve_unresolved_state(ctx):
     assert result.code in ("needs_confirmation", "denied")
 
     # 旧 allow 记录在重启后的引擎实例上同样不能绕过 unresolved
+    reviewer = StubReviewer()
     old_engine = AuthorizationEngine(
         conn=ctx.conn,
         approvals=ctx.approvals,
         settings=ctx.settings_store,
         requirements=reloaded_ledger,
         authorizations=ctx.authorizations,
-        reviewer=StubReviewer(),
+        reviewer=reviewer,
     )
     effect = write_effect(target)
     fingerprint = operation_fingerprint(
@@ -679,7 +680,10 @@ async def test_restart_and_recheck_preserve_unresolved_state(ctx):
     seed_allow_record(ctx, reloaded, fingerprint=fingerprint)
     with requirement_context(binding):
         decision = await old_engine.authorize(effect)
-    assert decision.verdict == Verdict.APPROVE
+    # R9-H2：unresolved 时不得复用旧 allow 记录；本用例提供 reviewer，
+    # 走针对性语义审查后按模型结论 ALLOW（不是缓存复用），审查必须被调用。
+    assert decision.verdict == Verdict.ALLOW
+    assert len(reviewer.calls) == 1, "unresolved 必须重新审查，不能复用旧 allow 记录"
 
 
 @pytest.mark.asyncio

@@ -199,14 +199,30 @@ class AuthorizationEngine(AuthorizationGateway):
         self._enrich_origin(effect)
         verdict, reason, scope_id = self._verdict(effect, context, mode)
         needs_review = False
-        if (
+        # R9-H2 §4：限制尚未可靠恢复时，unrestricted 不能把所有相关操作一律变成
+        # 人工确认（无关工作会被全部阻塞），也不能静默允许；只对这类操作复用既有
+        # 受限审查流程，由模型按真实要求语义判断。审查不可用仍退回具体确认。
+        unresolved_requirement = self._requirement_for(context)
+        unresolved_review = bool(
+            mode == PermissionMode.UNRESTRICTED
+            and verdict == Verdict.APPROVE
+            and unresolved_requirement is not None
+            and self._limits_unresolved(unresolved_requirement)
+            and self._review_candidate(effect)
+        )
+        if unresolved_review or (
             mode == PermissionMode.RESTRICTED
             and verdict == Verdict.APPROVE
             and self._review_candidate(effect)
             and not self._permanent_delete_pending(effect)
         ):
             verdict, reason, scope_id, needs_review = await self._apply_review(
-                effect, context, mode, reason, scope_id
+                effect,
+                context,
+                mode,
+                reason,
+                scope_id,
+                targeted_limits_review=unresolved_review,
             )
         decision = AuthDecision(
             verdict=verdict,
@@ -249,13 +265,26 @@ class AuthorizationEngine(AuthorizationGateway):
         for effect in tuples:
             self._enrich_origin(effect)
             verdict, reason, hit_scope = self._verdict(effect, context, mode)
-            if (
+            unresolved_requirement = self._requirement_for(context)
+            unresolved_review = bool(
+                mode == PermissionMode.UNRESTRICTED
+                and verdict == Verdict.APPROVE
+                and unresolved_requirement is not None
+                and self._limits_unresolved(unresolved_requirement)
+                and self._review_candidate(effect)
+            )
+            if unresolved_review or (
                 mode == PermissionMode.RESTRICTED
                 and verdict == Verdict.APPROVE
                 and self._review_candidate(effect)
             ):
                 verdict, reason, hit_scope, _ = await self._apply_review(
-                    effect, context, mode, reason, hit_scope
+                    effect,
+                    context,
+                    mode,
+                    reason,
+                    hit_scope,
+                    targeted_limits_review=unresolved_review,
                 )
             scope_id = scope_id or hit_scope
             if verdict == Verdict.DENY:
@@ -565,8 +594,10 @@ class AuthorizationEngine(AuthorizationGateway):
         mode: PermissionMode,
         reason: str,
         scope_id: str | None,
+        *,
+        targeted_limits_review: bool = False,
     ) -> tuple[Verdict, str, str | None, bool]:
-        """受限模式下把"需要自然语言理解"的操作交给模型审查（后端验证后生效）。
+        """受限模式（或限制未恢复的针对性审查）把需要语义理解的操作交给模型审查。
 
         模型不可用/超时/输出非法/对象无法核实 → 不默认允许，退回普通审批并写明原因；
         用户仍可对这条具体操作手动审批（审批单会列明对象与操作）。
@@ -673,6 +704,7 @@ class AuthorizationEngine(AuthorizationGateway):
             limits=user_limits,
             mode=mode.value,
             operation=operation,
+            targeted_limits_review=bool(targeted_limits_review),
             related_grants=related_grants,
             prior_decisions=prior_decisions,
             approvals=(),

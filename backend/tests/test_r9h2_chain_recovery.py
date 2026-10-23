@@ -165,6 +165,12 @@ async def run_turn(ctx, *, message: str, resolver: FakeChainResolver):
         observed["status"] = requirement_resolution_status.get()
 
     ctx.turn_orchestrator.execute = execute
+    # A 文件验证 A 的链上下文/条件写回接口；B 的生产 app 会自动链恢复，其真实主流程
+    # 由 Lead 的 test_r9h2_real_flow 覆盖。这里临时关闭自动恢复，保留显式 recover() 测试。
+    async def _skip_auto_recovery(*args, **kwargs):
+        return None
+
+    ctx._ensure_legacy_structured_limits = _skip_auto_recovery  # type: ignore[method-assign]
     turn_ctx = TurnContext(
         turn_id=turn_id,
         message=message,

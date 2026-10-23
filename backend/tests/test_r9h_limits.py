@@ -375,7 +375,8 @@ def test_merge_limits_add_remove_and_dedupe():
 
 
 def test_migration_59_and_compensation_60_real_db(conn):
-    assert SCHEMA_VERSION == COMPENSATION_VERSION == 60
+    # R9-H2 把版本推到 62；本用例核对迁移 59/60 的对象仍在最终补偿链中。
+    assert SCHEMA_VERSION == COMPENSATION_VERSION >= 60
     targets = {target for target, _ in MIGRATIONS}
     assert 59 in targets and 60 in targets
     for column in (
