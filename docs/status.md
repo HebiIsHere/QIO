@@ -5558,7 +5558,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 
 ### P76 — R9-H 审批与授权第三轮修复（2026-10-23）
 
-- **Status：** active（实现、集成与定向验证完成；完整 CI 以最终运行记录为准；安装版未复验）
+- **Status：** completed（实现、集成、定向验证与完整 CI 已完成；安装版未复验）
 - **范围与基线**：基线 r9g/main = 60208e325679303a545f1cac47bef2f0edb56b21；分支 r9h/main；契约 docs/r9h-contracts.md；
   只修前两轮已确定功能的真实接线/一致性/限制恢复/验证缺口，不新增产品功能、不新增沙箱/隔离机制。
 - **要求绑定与真实原话**：app._execute_turn 改读 AppliedResolution.requirement，new/amend 用 binding_for 取有效版本并核对版本，
@@ -5579,6 +5579,14 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   真实目标必须在系统安装根内；工作区/cwd/临时目录/任意脚本/同名替身仍拒绝；Windows/POSIX 平台规则测试覆盖。
 - **验证**：定向批次（R9-H 新增 + 受影响安全/审批/工具/迁移/turn 套件）通过；完整 CI 运行号/结论见 docs/r9h-merge-notes.md；
   本轮独立预算：全量 pytest 最多 2 次、完整 CI 最多 2 次。
+- **完整 CI（本轮唯一完整矩阵运行，run 39930482370，SHA bb260107f61f47a2874296de84f4a29f140f7959）：** 结论 success；
+  10/10 jobs 绿（docs consistency / frontend / rust×2 / frozen worker / install e2e / backend py3.11 / py3.12 / windows）。
+  首次运行中 py3.12 仅 test_health_probe_stays_responsive_while_slow_prediction_runs 746ms>300ms（同一 run py3.11 通过，既有 runner 调度地板 flake），
+  windows 仅 test_timing_contract_verify 排队时长断言 864<647（仓库既有负载型 flake，docs/verification-acc-phase2.md 有记录）；
+  按纪律仅重跑失败 job：py3.12 通过；windows 第一次重跑出现已知 sqlite 跨线程 InterfaceError（测试线程直接读共享连接，docs/status 历史记录），
+  再次仅重跑 windows 后通过。未新增完整 CI 运行、未删检查/降阈值/放宽断言。
+- **定向 CI（固定查询 Linux 平台）：** run 39925645309（backend-py311）success、run 39925793535（backend-py312）success（SHA c363fa33，
+  覆盖 test_r9h_fixed_queries_platform.py / test_r9g_fixed_queries.py / test_r9g_deletion.py / test_r9g_cmd_binding.py）。
 - **已知边界**：受限子进程不是安全沙箱；Low IL 只阻止写、不阻止读/网络；解释器内联代码/xargs/sudo/嵌套 shell 等无法结构性约束；
   conditions 已有结构贯通但当前无产生结构化条件的真实工具；move/copy/外发工具不存在，未伪造来源/目的地；批量附件部分子项失效 E2E 未覆盖；
   安装版未复验；旧数据 legacy 重新理解依赖模型可用，失败时只对相关操作要求确认、不清空全部授权。

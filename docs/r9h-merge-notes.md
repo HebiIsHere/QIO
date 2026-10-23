@@ -13,7 +13,7 @@
 | 契约/引擎预接线 | 39c0f48e（契约 + 引擎内容字段/名称清理/结构化限制读取预接线） |
 | 子分支 | A r9h/a-binding = f954c6b0；B r9h/b-content = 384511c3 + dc287d87；C r9h/c-limits = e889dd8c；D r9h/d-verify = cd9a6a7e |
 | Lead 集成 | 2d0b4693（引擎测试适配）→ c363fa33（合入 D）→ 97a3918e（合入 A/C）→ 7f75348b（合入 B 核心）→ ccbd0ab9（合入 B 修复）→ 最终提交见 CI 记录 |
-| 最终代码 SHA | 见 docs 末尾/最终运行记录（CI 以最终代码提交为准） |
+| 最终代码 SHA | bb260107f61f47a2874296de84f4a29f140f7959（完整 CI 验证；其后仅 docs 更新提交 [skip ci]） |
 
 ## 2. 四个问题：根因、修改、真实流程验证
 
@@ -51,8 +51,12 @@
   - 271 项受影响套件（迁移/应用/turn/审批/附件/fs/删除/固定查询/安全模式/提示词）通过；
   - 90 项 CI 相关补充（dev workflow/tool restore/legacy cleanup/R9 验收/健康探测）通过（6 skipped 为既有环境跳过）；
   - A 22 项、B 16 项、C 新测试/迁移套件、D 平台测试均在本分支定向通过。
-- 全量 pytest：本轮未在本地完成全量（按预算以完整 CI 矩阵为主；如最终报告记录，不把定向当全量）。
-- 完整 CI：见最终运行记录（本轮独立预算最多 2 次；不以定向 CI 成功冒充完整 CI 成功）。
+- 全量 pytest：本轮未在本地完成全量（按预算以完整 CI 矩阵为主；不把定向当全量；完整 CI 覆盖三平台全量）。
+- 完整 CI（本轮唯一完整矩阵运行）：run 39930482370，SHA bb260107f61f47a2874296de84f4a29f140f7959，结论 success，10/10 jobs 绿
+  （docs consistency / frontend / rust×2 / frozen worker / install e2e / backend py3.11 / py3.12 / windows）。
+  首次运行失败项均为既有 flake：py3.12 健康探测 746ms>300ms（同 run py3.11 通过）、windows timing 排队断言 864<647（docs/verification-acc-phase2.md 记录）；
+  按纪律仅重跑失败 job：py3.12 通过；windows 首次重跑出现已知 sqlite 跨线程 InterfaceError（测试线程直接读共享连接），再次重跑 windows 后通过。
+  未新增完整 CI 运行、未删检查/降阈值/放宽断言；不以定向 CI 成功冒充完整 CI 成功。
 
 ## 5. 历史数据兼容与边界
 
