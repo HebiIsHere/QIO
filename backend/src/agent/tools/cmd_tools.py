@@ -490,6 +490,28 @@ class _CmdTool(Tool):
             "content_digests": content_digests,
         }
 
+    def _limit_impacts(self, execution: dict, delete_intent, *, shell: bool) -> list[dict]:
+        """契约 §2/§3：真实影响集合（execute/program + delete/path），供引擎限制匹配。"""
+        return launch_boundary.build_limit_impacts(
+            execution, delete_intent=delete_intent, shell=shell
+        )
+
+    def _launch_facts(self, execution: dict) -> dict:
+        """与 launch.build_launch_facts 同形状的启动事实（effect/审批/重核对共用）。"""
+        # 形状与 launch.build_launch_facts 一致（同一份事实，避免工具/引擎各写一套）。
+        return {
+            "kind": execution.get("kind"),
+            "program_path": execution.get("program_path"),
+            "program_sha256": execution.get("program_sha256"),
+            "argv": [str(item) for item in (execution.get("argv") or ())],
+            "cwd": execution.get("cwd"),
+            "shell": bool(execution.get("shell")),
+            "shell_cmd": execution.get("shell_cmd"),
+            "script_sha256": execution.get("script_sha256"),
+            "argument_files": list(execution.get("argument_files") or ()),
+            "spec_digest": execution.get("spec_digest"),
+        }
+
     def _fixed_query(self, execution: dict):
         """固定查询分类器（契约 §4 单一来源；不搜索文字、只看真实身份+argv 结构）。"""
         facts = fixed_queries.FixedQueryFacts(
@@ -545,12 +567,13 @@ class _CmdTool(Tool):
     ):
         """EXECUTE effect：detail 携带启动方从真实 LaunchSpec 生成的结构化事实。"""
         targets = []
+        resolved_program = str(execution.get("program_path") or "").strip()
         if shell:
-            targets.append(security_gate.program_target("shell"))
+            # shell 的真实身份是解析后的 COMSPEC/sh（不是 "shell" 占位），
+            # 限制「禁止运行程序 X」与审查/审批必须看到同一身份。
+            targets.append(security_gate.program_target(resolved_program or "shell"))
         else:
-            targets.append(
-                security_gate.program_target(str(execution.get("program_path") or program))
-            )
+            targets.append(security_gate.program_target(resolved_program or program))
         if cwd:
             targets.append(security_gate.path_target(str(cwd)))
         if delete_intent is not None:
@@ -564,18 +587,24 @@ class _CmdTool(Tool):
             delete_intent is not None
             and getattr(delete_intent, "permanent", False)
         )
+        launch_facts = self._launch_facts(execution)
+        limit_impacts = self._limit_impacts(execution, delete_intent, shell=shell)
         detail = {
-            "program": execution.get("program_path") or program,
+            "program": resolved_program or program,
             "argv": (
                 [str(program), *[str(item) for item in args]]
                 if not shell
                 else ["shell", *[str(item) for item in args]]
             ),
-            "cwd": cwd,
+            "cwd": execution.get("cwd") or cwd,
             "shell": bool(shell),
             "command": execution.get("shell_cmd") if shell else None,
             "script_sha256": execution.get("script_sha256"),
             "execution": execution,
+            # R9-H4 §2/§3：真实影响（含 execute 入口下的 delete 影响、resolve 后程序身份）
+            "limit_impacts": limit_impacts,
+            # R9-H4 §3/§6：与 launch spec 同一份事实（审查/审批/重核对可逐项比较）
+            "launch_facts": launch_facts,
             "delete_intent": None if delete_intent is None else delete_intent.as_dict(),
             # R9-H §4：命令中的永久删除方式进入审查/授权/审批绑定（其余命令不设置）。
             "delete_mode": "permanent" if permanent else None,
@@ -619,6 +648,15 @@ class _CmdTool(Tool):
             "program_sha256": program_facts.get("sha256"),
             "allowed_roots": list(self._write_roots()),
             "payload_digest": _payload_digest(payload),
+            # R9-H4 §3：审批/授权绑定实际影响与真实启动事实（执行前重核对逐项比较）
+            "limit_impacts": launch_boundary.build_limit_impacts(
+                execution,
+                delete_intent=delete_intent,
+                shell=str(getattr(spec, "kind", "")) == "shell",
+            ),
+            "launch_facts": launch_boundary.build_launch_facts(
+                spec, computer=self.computer
+            ),
             "internal_data_roots": list(internal_roots),
             "requirement": requirement,
             "operation_binding": build_operation_binding_record(
@@ -1127,6 +1165,7 @@ class RunProgramTool(_CmdTool):
                 "spec_digest": execution.get("spec_digest"),
                 "script_sha256": execution.get("script_sha256"),
             },
+            "limit_impacts": self._limit_impacts(execution, delete_intent, shell=False),
         }
         if fixed_query is not None:
             # 仅供审计展示：引擎会自己用 effect.detail 重新分类，不采信本字段。
@@ -1276,6 +1315,7 @@ class RunCmdTool(_CmdTool):
                 "shell": True,
                 "spec_digest": execution.get("spec_digest"),
             },
+            "limit_impacts": self._limit_impacts(execution, delete_intent, shell=True),
         }
         if delete_binding is not None:
             payload.update(

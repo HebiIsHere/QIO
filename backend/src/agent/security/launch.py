@@ -425,6 +425,74 @@ def compute_spec_digest(
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: Effect.detail.limit_impacts 的规范操作名（契约 §2）。
+LIMIT_IMPACT_EXECUTE = "execute"
+LIMIT_IMPACT_DELETE = "delete"
+
+
+def build_limit_impacts(
+    facts: Mapping[str, Any] | None,
+    *,
+    delete_intent: Any = None,
+    shell: bool | None = None,
+) -> list[dict]:
+    """从真实执行事实 + 已解析删除对象构造 Effect.detail.limit_impacts（契约 §2/§3）。
+
+    * execute 影响：真实 resolve 后的程序身份（program kind）——命令入口是 execute 时
+      不能只看 argv 文本，限制「禁止运行程序 X」必须能对上真实程序；
+    * delete 影响：命令里的删除程序（rm/del/…）已解析出的对象（path kind）——
+      不能因为 effect.kind 是 EXECUTE 就丢掉删除影响；
+    * shell 程序身份取 resolve 后的 shell 可执行文件（不是 "shell" 占位）。
+    同一份函数给工具（构造 effect/payload）与测试/审计复用，避免多处手写。
+    """
+    data = dict(facts or {})
+    program_facts = dict(data.get("program_facts") or {})
+    program_path = str(
+        data.get("program_path") or program_facts.get("resolved") or ""
+    ).strip()
+    kind = str(data.get("kind") or ("shell" if shell else "program"))
+    program_value = program_path or ("shell" if kind == "shell" else "")
+    impacts: list[dict] = []
+    if program_value:
+        impacts.append(
+            {
+                "operation": LIMIT_IMPACT_EXECUTE,
+                "objects": [{"kind": "program", "value": program_value}],
+            }
+        )
+    delete_objects: list[dict] = []
+    for item in getattr(delete_intent, "objects", ()) or ():
+        path = str(getattr(item, "path", "") or "").strip()
+        if path:
+            delete_objects.append({"kind": "path", "value": path})
+    if delete_objects:
+        impacts.append({"operation": LIMIT_IMPACT_DELETE, "objects": delete_objects})
+    return impacts
+
+
+def build_launch_facts(spec: LaunchSpec, *, computer: Any = None) -> dict:
+    """审查/审批/执行三方共用的可比较启动事实（含 spec_digest）。
+
+    与 build_spec_facts 的差别：只保留与"这次到底要启动什么"有关、可比较的字段，
+    供 effect.detail.launch_facts / 审批指纹 / 执行前重核对使用同一份形状。
+    spec_digest 覆盖程序身份（含内容摘要）、argv、cwd、shell 文本、脚本内容摘要。
+    """
+    facts = build_spec_facts(spec, computer=computer)
+    program_facts = dict(facts.get("program_facts") or {})
+    return {
+        "kind": facts.get("kind"),
+        "program_path": program_facts.get("resolved"),
+        "program_sha256": program_facts.get("sha256"),
+        "argv": [str(item) for item in (facts.get("argv") or ())],
+        "cwd": facts.get("cwd"),
+        "shell": str(facts.get("kind") or "") == "shell",
+        "shell_cmd": facts.get("shell_cmd"),
+        "script_sha256": facts.get("script_sha256"),
+        "argument_files": list(facts.get("argument_files") or ()),
+        "spec_digest": compute_spec_digest(spec, computer=computer, facts=facts),
+    }
+
+
 def build_permit(
     spec: LaunchSpec,
     *,
@@ -531,6 +599,34 @@ def recheck_approved_spec(
     # 审批时保存的 effect 快照：argv / cwd / shell 命令逐项核对
     expected_effect = dict(effect or {})
     detail = dict(expected_effect.get("detail") or {})
+    # R9-H4 §6：优先用审批时保存的 launch_facts 与当前真实事实逐项比较
+    # （程序 resolve 后路径/内容摘要/argv/cwd/脚本内容）；spec_digest 已覆盖全量，
+    # 这里给出一致性失败时的精确原因，避免只报"摘要不一致"。
+    expected_facts = dict(detail.get("launch_facts") or {})
+    if expected_facts:
+        current_facts = build_launch_facts(spec, computer=computer)
+        mismatched = []
+        for key in (
+            "kind",
+            "program_path",
+            "program_sha256",
+            "argv",
+            "cwd",
+            "shell",
+            "shell_cmd",
+            "script_sha256",
+        ):
+            if key not in expected_facts:
+                continue
+            if expected_facts.get(key) != current_facts.get(key):
+                mismatched.append(key)
+        if mismatched:
+            return (
+                False,
+                "审批单记录的启动事实与本次执行不一致（" + "、".join(mismatched) + "）："
+                "许可已失效，本次不执行，请重新提出",
+                digest,
+            )
     expected_argv = detail.get("argv")
     if expected_argv and str(spec.kind) == "program":
         actual_argv = [str(spec.program or ""), *[str(item) for item in spec.argv]]
