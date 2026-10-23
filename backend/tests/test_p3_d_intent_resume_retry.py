@@ -97,6 +97,21 @@ def test_intent_view_includes_display_and_retry(board_env):
     assert view["retry"] is None
 
 
+def test_set_intent_display_does_not_bump_semantic_version(board_env):
+    conn = board_env
+    intent_id = _approved_intent(conn)
+    before = intent_service.get_intent(conn, BOARD, intent_id)
+    result = intent_service.set_intent_display(
+        conn, board_id=BOARD, intent_id=intent_id, x=17.25, y=-3.5
+    )
+    assert result["ok"] is True
+    assert result["display"] == {"x": 17.25, "y": -3.5}
+    after = intent_service.get_intent(conn, BOARD, intent_id)
+    assert after["display"] == {"x": 17.25, "y": -3.5}
+    assert after["version"] == before["version"]
+    assert intent_service.list_retry_series(conn, board_id=BOARD) == []
+
+
 def models_dumps(value) -> str:
     from agent.interactive import models
 

@@ -567,6 +567,7 @@ defineExpose({ focusName });
   正式内容用实线；虚线只属于「待审批完成后才会出现的预览」，并且一定配文字说明。
 */
 .group {
+  container-type: inline-size;
   position: absolute;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
@@ -796,5 +797,14 @@ defineExpose({ focusName });
   /* 窄窗：说明性文字让位给组名、成员管理与收起组；有序状态仍由序号表达。 */
   .mode,
   .badge.default-name { display: none; }
+}
+
+/* 组框本身很窄时同样让位：组名、成员数与两个必要动作优先，不让按钮被裁掉。 */
+@container (max-width: 560px) {
+  .head-row { gap: 4px; }
+  .head-row .mode,
+  .head-row .badge.default-name { display: none; }
+  .group-name { max-width: 96px; min-width: 56px; }
+  .btn { padding: 0 4px; }
 }
 </style>
