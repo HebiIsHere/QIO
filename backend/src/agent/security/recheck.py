@@ -59,6 +59,20 @@ class RecheckResult:
     #: 审计“状态是否在重建上下文时丢失”；legacy/unresolved 不得当作无限制。
     requirement_state: str = ""
 
+    @property
+    def verdict(self) -> str:
+        """本次重新判定的结论（allow/approve/deny），从 decision 正确读取。
+
+        H4 §6：部分调用方会读取 result.verdict；不能因为字段不存在而把
+        “需要新确认”误报成普通重核对失败。本属性不复制判定逻辑，只暴露
+        RecheckResult.decision 的真实结论。
+        """
+        decision = getattr(self, "decision", None)
+        value = getattr(decision, "verdict", None)
+        if value is None:
+            return ""
+        return str(getattr(value, "value", value) or "")
+
 
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
@@ -129,15 +143,24 @@ class RecheckService:
                 for item in (getattr(requirement, "structured_limits", None) or ())
                 if isinstance(item, dict)
             )
+            # H4 §6：重核对不得丢调用方的对象身份/原内容依据/委派范围等上下文。
+            base_context = context if context is not None else None
+            base_extra = getattr(base_context, "extra", None)
+            extra = dict(base_extra) if isinstance(base_extra, dict) else {}
+            extra["resolution_limits"] = requirement_limits
+            extra["requirement_resolution_status"] = (
+                "resolved" if requirement_state == "structured" else "unavailable"
+            )
             ctx = AuthContext(
+                instruction=getattr(base_context, "instruction", None),
+                agent_scope=getattr(base_context, "agent_scope", None),
                 requirement=getattr(binding, "requirement", None),
-                origin=str(getattr(context, "origin", "user") if context is not None else "user"),
-                extra={
-                    "resolution_limits": requirement_limits,
-                    "requirement_resolution_status": (
-                        "resolved" if requirement_state == "structured" else "unavailable"
-                    ),
-                },
+                origin=str(
+                    getattr(base_context, "origin", "user") if base_context is not None else "user"
+                ),
+                turn_id=getattr(base_context, "turn_id", None),
+                session_id=getattr(base_context, "session_id", None),
+                extra=extra,
             )
             decision = await self.engine.authorize(effect, ctx=ctx)
         except Exception as exc:  # noqa: BLE001 - 重核对失败不能默认允许
@@ -152,6 +175,29 @@ class RecheckService:
                 code="denied",
                 reason=str(getattr(decision, "reason", "") or "当前规则不允许这次操作"),
                 decision=decision,
+                requirement_state=requirement_state,
+            )
+        binding_mode = str(getattr(binding, "mode", "") or "")
+        current_mode = str(
+            getattr(getattr(self.engine, "mode", lambda: "")(), "value", "")
+        )
+        if verdict == "allow" and binding_mode and current_mode and binding_mode != current_mode:
+            from agent.security.effects import AuthDecision, Verdict
+
+            reason = (
+                "权限模式已变化（审批/审查时："
+                + binding_mode
+                + "，当前："
+                + current_mode
+                + "）；旧结论不能继续执行，需要重新确认"
+            )
+            return RecheckResult(
+                ok=False,
+                code="needs_confirmation",
+                reason=reason,
+                decision=AuthDecision(
+                    verdict=Verdict.APPROVE, reason=reason, effects=()
+                ),
                 requirement_state=requirement_state,
             )
         if verdict != "allow":
@@ -234,8 +280,12 @@ class RecheckService:
 
     def _bound_requirement(self, binding: OperationBinding) -> Any:
         reference = getattr(binding, "requirement", None)
-        requirement_id = getattr(reference, "requirement_id", None)
-        version = getattr(reference, "version", None)
+        if isinstance(reference, dict):
+            requirement_id = reference.get("requirement_id")
+            version = reference.get("version")
+        else:
+            requirement_id = getattr(reference, "requirement_id", None)
+            version = getattr(reference, "version", None)
         if not requirement_id and isinstance(reference, str):
             requirement_id = reference
         if not requirement_id or self.requirements is None:
