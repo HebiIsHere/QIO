@@ -420,6 +420,80 @@ def operation_fingerprint(operation: ReviewOperation, *, mode: str) -> str:
 
 
 # JSON 输出解析用代码围栏识别（只解析模型输出格式，不参与任何授权判断）。
+# ---------------------------------------------------------------------------
+# 前置状态摘要（R9-H §4：效果事实 → 审查/授权/审批/重核对共用同一份绑定）
+# ---------------------------------------------------------------------------
+
+
+def _canonical_state(
+    *,
+    path: str,
+    exists: bool,
+    identity: str | None = None,
+    content_sha256: str | None = None,
+    is_directory: bool = False,
+) -> dict:
+    normalized = os.path.normcase(os.path.normpath(str(path)))
+    return {
+        "path": normalized,
+        "exists": bool(exists),
+        "identity": None if identity is None else str(identity),
+        "content_sha256": None if content_sha256 is None else str(content_sha256),
+        "is_directory": bool(is_directory),
+    }
+
+
+def _canonical_state_from_mapping(item: object) -> dict:
+    if not isinstance(item, dict):
+        raise ValueError("对象状态必须是对象（path/exists/identity/content_sha256/is_directory）")
+    return _canonical_state(
+        path=str(item.get("path") or ""),
+        exists=bool(item.get("exists")),
+        identity=item.get("identity"),
+        content_sha256=item.get("content_sha256"),
+        is_directory=bool(item.get("is_directory")),
+    )
+
+
+def object_state_digest(
+    *,
+    path: str | os.PathLike[str],
+    exists: bool,
+    identity: str | None = None,
+    content_sha256: str | None = None,
+    is_directory: bool = False,
+) -> str:
+    """单个对象在某一时刻的状态摘要（R9-H §4 字段映射）。
+
+    用于 effect.detail["precondition_digest"]：覆盖前/删除前的对象身份+内容；
+    新文件用 exists=False（absent）标记。只含摘要，不含内容明文。审查请求、
+    授权记录、审批单、执行前重核对都使用这个规范化值。
+    """
+    state = _canonical_state(
+        path=str(path),
+        exists=bool(exists),
+        identity=identity,
+        content_sha256=content_sha256,
+        is_directory=is_directory,
+    )
+    raw = json.dumps(state, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def precondition_digest(states: Sequence[dict]) -> str:
+    """多个对象的前置状态组合摘要（多目标/批量操作）。
+
+    顺序无关（按规范化状态排序后取摘要）；任一对象的路径/身份/内容/存在性变化
+    都会得到不同摘要。空集合也会得到确定值（调用方应避免空集合冒充"已核对"）。
+    """
+    canonical = sorted(
+        (_canonical_state_from_mapping(item) for item in (states or ())),
+        key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
+    )
+    raw = json.dumps(canonical, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 _BACKTICK = chr(96)
 _FENCE_RE = re.compile(
     _BACKTICK * 3 + r"(?:json)?\s*(.*?)" + _BACKTICK * 3, re.IGNORECASE | re.DOTALL
@@ -1032,8 +1106,10 @@ __all__ = [
     "ReviewUnavailable",
     "VALID_RESOLUTION_STATUSES",
     "build_review_payload",
+    "object_state_digest",
     "operation_fingerprint",
     "parse_review_outcome",
+    "precondition_digest",
     "render_review_messages",
     "review_payload_json",
     "review_request_digest",

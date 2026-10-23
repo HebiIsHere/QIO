@@ -197,6 +197,66 @@ def _effect_from_operation(ctx: ExecutionContext) -> Any:
     )
 
 
+def _stored_operation_binding(ctx: ExecutionContext) -> dict:
+    return dict(_fingerprint(ctx).get("operation_binding") or {})
+
+
+def _review_binding_mismatch(ctx: ExecutionContext) -> str | None:
+    """审批单里的操作绑定指纹必须与 effect 快照重算结果一致（R9-H §4）。
+
+    内容/前置状态/程序/参数/cwd/脚本摘要任一变化 → 审查指纹不同 → 旧审批不能
+    继续执行。历史审批没有该字段时返回 None，由既有的要求/对象重核对兜底。
+    """
+    stored = _stored_operation_binding(ctx)
+    expected = str(stored.get("fingerprint") or "")
+    if not expected:
+        return None
+    engine = _engine_of(ctx)
+    effect = _effect_from_operation(ctx)
+    if engine is None or effect is None:
+        return "审批单绑定了操作事实指纹，但当前无法重算（审批环境不完整）：本次未执行"
+    try:
+        from agent.security.review import operation_fingerprint
+
+        operation = engine._review_operation(effect)
+        mode = str(
+            stored.get("mode")
+            or getattr(getattr(ctx, "operation", None), "mode_at_request", "")
+            or "restricted"
+        )
+        actual = str(operation_fingerprint(operation, mode=mode))
+    except Exception:  # noqa: BLE001 - 重算失败不能当作一致
+        return "审批单绑定的操作事实无法重算：本次未执行（需重新审批）"
+    if not actual or actual != expected:
+        return (
+            "审批单记录的操作事实（内容/前置状态/程序/参数/cwd/脚本摘要）与本次执行不一致："
+            "本次未执行（需重新审批）"
+        )
+    return None
+
+
+def _payload_content_mismatch(ctx: ExecutionContext, payload: dict) -> str | None:
+    """审批指纹记录的内容摘要必须与本次真正执行的 payload 内容一致。"""
+    stored = _stored_operation_binding(ctx)
+    expected = str(
+        stored.get("content_digest")
+        or _fingerprint(ctx).get("content_sha256")
+        or ""
+    )
+    if not expected:
+        return None
+    actual = str(
+        payload.get("content_sha256")
+        or payload.get("sha256")
+        or ""
+    )
+    if not actual:
+        return None
+    if actual != expected:
+        return "待执行内容与审批时绑定的内容摘要不一致：本次未执行（需重新审批）"
+    return None
+
+
 async def _recheck_requirement_and_mode(
     ctx: ExecutionContext,
     *,
@@ -228,6 +288,14 @@ async def _recheck_requirement_and_mode(
             )
     # 要求绑定：仍 active 且版本一致（补充/修正/撤回后不得沿用旧允许）。
     binding = _binding_from_operation(payload, fingerprint)
+    if binding is None:
+        # 审批执行器会把提交时的要求绑定写在 PendingOperation 上；payload/fingerprint
+        # 缺失（旧记录/兼容形状）时以审批单自身绑定的要求为唯一来源，不回退"最近一条"。
+        operation = getattr(ctx, "operation", None)
+        requirement_id = str(getattr(operation, "requirement_id", "") or "")
+        if requirement_id:
+            version = getattr(operation, "requirement_version", None)
+            binding = {"requirement_id": requirement_id, "version": int(version or 1)}
     ledger = _requirements_of(ctx)
     validate = getattr(ledger, "validate_binding", None)
     if binding and callable(validate):
@@ -367,6 +435,9 @@ async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
     content = str(payload.get("content"))
     fingerprint = _fingerprint(ctx)
 
+    binding_error = _review_binding_mismatch(ctx) or _payload_content_mismatch(ctx, payload)
+    if binding_error:
+        return _failure(binding_error, "invalidated: operation_binding", invalidated=True, path=path)
     blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
     if blocked is not None:
         return blocked
@@ -444,6 +515,9 @@ async def execute_fs_patch(payload: dict, ctx: ExecutionContext) -> ExecResult:
     new_text = str(new)
     fingerprint = _fingerprint(ctx)
 
+    binding_error = _review_binding_mismatch(ctx) or _payload_content_mismatch(ctx, payload)
+    if binding_error:
+        return _failure(binding_error, "invalidated: operation_binding", invalidated=True, path=path)
     blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
     if blocked is not None:
         return blocked
@@ -580,12 +654,24 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
             else:
                 path = str(item or "").strip()
                 identity = None
-            if identity is None and index < len(fingerprint_rows):
+            content_sha256 = None
+            is_directory = False
+            if index < len(fingerprint_rows):
                 candidate = fingerprint_rows[index]
                 if isinstance(candidate, dict):
-                    identity = candidate.get("identity")
+                    if identity is None:
+                        identity = candidate.get("identity")
+                    content_sha256 = candidate.get("content_sha256")
+                    is_directory = bool(candidate.get("is_directory"))
             if path:
-                rows.append({"path": path, "identity": identity})
+                rows.append(
+                    {
+                        "path": path,
+                        "identity": identity,
+                        "content_sha256": content_sha256,
+                        "is_directory": is_directory,
+                    }
+                )
     elif str(payload.get("path") or "").strip():
         rows.append(
             {
@@ -619,6 +705,9 @@ def _identity_matches(path: str, expected: Any) -> tuple[bool, str]:
 
 async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
     fingerprint = _fingerprint(ctx)
+    binding_error = _review_binding_mismatch(ctx)
+    if binding_error:
+        return _failure(binding_error, "invalidated: operation_binding", invalidated=True)
     rows = _delete_rows(payload, fingerprint)
     if not rows:
         return _failure("审批单缺少目标路径：未执行", "missing_path")
@@ -669,6 +758,22 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             results.append(item)
             failed.append(item)
             continue
+        expected_content = row.get("content_sha256")
+        if expected_content and not row.get("is_directory"):
+            current_content = await asyncio.to_thread(_w3_content_sha, path)
+            if current_content is None or current_content != expected_content:
+                item = {
+                    "item_id": item_id,
+                    "path": path,
+                    "ok": False,
+                    "status": "invalidated",
+                    "invalidated": True,
+                    "reason": "目标文件内容在审批期间发生了变化：未删除（保留原文件，需重新确认）",
+                    "code": "invalidated: content_changed",
+                }
+                results.append(item)
+                failed.append(item)
+                continue
         ok, code, detail = await _move_to_recycle_bin(path)
         if ok:
             await asyncio.to_thread(_note_recycled_origin, path)
@@ -700,8 +805,15 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
         "deleted_permanently": False,
     }
     if failed:
+        failure_line = "部分文件没有移入系统回收站：失败项已保留文件（未做永久删除）"
+        first_reason = next(
+            (str(item.get("reason") or "") for item in failed if item.get("reason")),
+            "",
+        )
+        if first_reason:
+            failure_line += "；" + first_reason
         return _failure(
-            "部分文件没有移入系统回收站：失败项已保留文件（未做永久删除）",
+            failure_line,
             "recycle_partial_failure",
             detail=detail_data,
         )
@@ -1426,6 +1538,15 @@ async def execute_attachment_write_back(
             attachment_id=attachment_id,
         )
     fingerprint = _fingerprint(ctx)
+    binding_error = _review_binding_mismatch(ctx) or _payload_content_mismatch(ctx, payload)
+    if binding_error:
+        return _failure(
+            binding_error,
+            "invalidated: operation_binding",
+            invalidated=True,
+            path=path,
+            attachment_id=attachment_id,
+        )
     expected_new_sha = str(payload.get("sha256") or fingerprint.get("new_sha256") or "")
     if expected_new_sha:
         import hashlib as _hashlib
@@ -1523,6 +1644,9 @@ async def execute_attachment_batch_write_back(
         for entry in (fingerprint.get("items") or [])
         if isinstance(entry, dict)
     }
+    binding_error = _review_binding_mismatch(ctx)
+    if binding_error:
+        return _failure(binding_error, "invalidated: operation_binding", invalidated=True)
     import base64 as _base64
     import hashlib as _hashlib
 
@@ -1629,6 +1753,9 @@ async def execute_attachment_recycle(
     targets = [dict(item) for item in (payload.get("targets") or []) if isinstance(item, dict)]
     if not targets:
         return _failure("审批单缺少待删除的用户材料清单：未删除", "missing_targets")
+    binding_error = _review_binding_mismatch(ctx)
+    if binding_error:
+        return _failure(binding_error, "invalidated: operation_binding", invalidated=True)
     if recycle_mover is None:
         try:
             from agent.services import recycle_bin as recycle_module  # type: ignore
@@ -1640,6 +1767,15 @@ async def execute_attachment_recycle(
                 "recycle_bin_unavailable",
                 file_preserved=True,
             )
+    fingerprint = _fingerprint(ctx)
+    fingerprint_items: dict[str, dict] = {}
+    for entry in fingerprint.get("items") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("attachment_id"):
+            fingerprint_items[str(entry.get("attachment_id"))] = entry
+        if entry.get("path"):
+            fingerprint_items[str(entry.get("path"))] = entry
     results: list[dict] = []
     all_ok = True
     for item in targets:
@@ -1649,7 +1785,7 @@ async def execute_attachment_recycle(
             all_ok = False
             continue
         blocked = await _recheck_requirement_and_mode(
-            ctx, payload=payload, fingerprint=_fingerprint(ctx), path=path
+            ctx, payload=payload, fingerprint=fingerprint, path=path
         )
         if blocked is not None:
             results.append(
@@ -1675,6 +1811,24 @@ async def execute_attachment_recycle(
                         "ok": False,
                         "identity_changed": True,
                         "reason": "对象身份已变化，未删除（保留文件）",
+                    }
+                )
+                all_ok = False
+                continue
+        meta = fingerprint_items.get(str(item.get("attachment_id") or "")) or fingerprint_items.get(path) or {}
+        expected_content = str(meta.get("content_sha256") or "")
+        if expected_content and not bool(meta.get("is_directory")):
+            current_content = await asyncio.to_thread(_w3_content_sha, path)
+            if current_content is None or current_content != expected_content:
+                results.append(
+                    {
+                        "attachment_id": item.get("attachment_id"),
+                        "item_id": item.get("item_id"),
+                        "path": path,
+                        "ok": False,
+                        "status": "invalidated",
+                        "invalidated": True,
+                        "reason": "文件内容在审批期间发生了变化：未删除（保留文件，需重新确认）",
                     }
                 )
                 all_ok = False
