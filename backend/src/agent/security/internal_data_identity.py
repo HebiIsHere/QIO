@@ -264,6 +264,134 @@ class InternalDataIdentityStore:
             )
         return counts
 
+    # -- 可信写入提交后的身份更新（R9-H3 契约 §4） ----------------------------
+
+    def note_committed_path(
+        self,
+        path: object,
+        *,
+        source: str = "trusted_write",
+        previous_identity: object = None,
+        kind: str | None = None,
+    ) -> dict:
+        """可信应用写入/原子替换**提交成功后**立即登记新对象身份。
+
+        * 读取当前真实身份；读取失败返回明确错误（不删除旧登记、不静默降级）；
+        * 同一路径上的旧身份（atomic replace）→ retired(replaced)；
+        * previous_identity 明确给出时，若与当前不同则一并退休该 key；
+        * 只更新这一个路径，不做扫描；普通工具没有调用入口（仅 AppContext 可信写入钩子）。
+        返回 {ok, code?, reason?, path?, identity_key?, retired?}。
+        """
+        target = _normalize(path)
+        if target is None:
+            return {
+                "ok": False,
+                "code": "invalid_path",
+                "reason": "路径为空或无法规范化",
+                "path": str(path or ""),
+            }
+        identity = file_identity.identity_of(target)
+        if identity is None:
+            return {
+                "ok": False,
+                "code": "identity_unavailable",
+                "reason": "当前对象身份读不到（文件系统不支持/路径暂不可用）；已保留旧登记",
+                "path": str(target),
+            }
+        now = _now_iso()
+        counts = {"active": 0, "added": 0, "retired": 0, "errors": 0}
+        try:
+            actual_kind = KIND_DIRECTORY if target.is_dir() else KIND_FILE
+        except OSError:
+            actual_kind = kind or KIND_FILE
+        retired = self._retire_for_path(
+            str(target), str(identity.key), source=source, now=now
+        )
+        counts["retired"] += retired
+        old_key = str(previous_identity or "").strip()
+        if old_key and old_key != str(identity.key):
+            try:
+                cursor = self.conn.execute(
+                    "UPDATE internal_data_identities SET active = 0,"
+                    " retired_reason = ?, updated_at = ?, source = ?"
+                    " WHERE identity_key = ? AND active = 1",
+                    (RETIRED_REPLACED, now, str(source or "")[:200], old_key),
+                )
+                counts["retired"] += int(cursor.rowcount or 0)
+            except Exception:  # noqa: BLE001 - 旧身份退休失败仍需如实返回
+                counts["errors"] += 1
+        self._upsert_identity(
+            identity,
+            str(target),
+            actual_kind,
+            source=source,
+            now=now,
+            counts=counts,
+        )
+        if counts["errors"]:
+            return {
+                "ok": False,
+                "code": "identity_update_failed",
+                "reason": "身份登记写入数据库失败（旧登记保留；路径判定仍兜底）",
+                "path": str(target),
+                "identity_key": str(identity.key),
+                "retired": counts["retired"],
+            }
+        return {
+            "ok": True,
+            "path": str(target),
+            "identity_key": str(identity.key),
+            "retired": counts["retired"],
+        }
+
+    def note_committed_paths(
+        self,
+        paths: Iterable[object],
+        *,
+        source: str = "trusted_write",
+        limit: int = 50,
+    ) -> list[dict]:
+        """有界批量入口（一次可信提交最多更新 limit 个明确变更对象）。"""
+        results: list[dict] = []
+        seen: set[str] = set()
+        for raw in paths or ():
+            if len(results) >= max(1, int(limit or 1)):
+                break
+            target = _normalize(raw)
+            if target is None:
+                continue
+            key = str(target)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(self.note_committed_path(target, source=source))
+        return results
+
+    def retire_path(
+        self, path: object, *, reason: str = "deleted", source: str = "trusted_delete"
+    ) -> dict:
+        """把某路径上的 active 身份标记退休（保留历史行，不删除任何登记）。
+
+        说明：删除路径上的对象若仍被硬链接引用，身份本身仍然存在；一般删除不应调用
+        本方法（本方法只用于明确"对象已不存在且不再被引用"的场景）。
+        """
+        target = _normalize(path)
+        if target is None:
+            return {"ok": False, "code": "invalid_path", "retired": 0}
+        if not self._ready():
+            return {"ok": False, "code": "store_unavailable", "retired": 0}
+        try:
+            cursor = self.conn.execute(
+                "UPDATE internal_data_identities SET active = 0, retired_reason = ?,"
+                " updated_at = ?, source = ?"
+                " WHERE path = ? AND active = 1",
+                (str(reason or "deleted")[:100], _now_iso(), str(source or "")[:200], str(target)),
+            )
+            self.conn.commit()
+            return {"ok": True, "path": str(target), "retired": int(cursor.rowcount or 0)}
+        except Exception:  # noqa: BLE001 - 失败保留登记并如实报告
+            return {"ok": False, "code": "identity_update_failed", "retired": 0}
+
     # -- 查询 -------------------------------------------------------------
 
     def active_keys(self) -> frozenset[str]:
