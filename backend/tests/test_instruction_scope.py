@@ -3,8 +3,9 @@
 R9 旧实现用"句子里出现修改/删除动作词"直接生成 grant；审查发现这会把
 "不要修改 X"也当成授权。R9-F 起：
 
-* `extract_grants` 永久停用（恒返回空），自然语言许可由受限模式模型授权审查
-  （security/review.py）理解后经后端验证形成**有界授权记录**；
+* 关键词提取模块 `agent/security/intent.py` 已整体删除（不是恒返回空保留），
+  自然语言许可由受限模式模型授权审查（security/review.py）理解后经后端验证
+  形成**有界授权记录**；
 * 指令对象仍维护 grant 生命周期（申请/关闭/不继承），但 grant 只能由审批服务
   在用户批准后通过 `add_grant` 追加（source=user_approved）。
 """
@@ -16,50 +17,19 @@ import asyncio
 from agent.security.context import instruction_context
 from agent.security.effects import Effect, EffectKind, Target, Verdict
 from agent.security.instructions import InstructionRegistry, Scope
-from agent.security.intent import extract_grants
 
 from _r9_auth_support import make_security, with_instruction
 
 
-def grants(text: str):
-    return extract_grants(
-        text, instruction_id="instr_test", created_at="2026-10-22T00:00:00+00:00"
+# -- 关键词授权已彻底移除：提取模块不存在，任何句子都不会直接产生许可 -------
+
+
+def test_keyword_grant_extractor_module_is_removed():
+    import importlib.util
+
+    assert importlib.util.find_spec("agent.security.intent") is None, (
+        "关键词授权提取模块必须整体删除，不能改名保留"
     )
-
-
-def _ops(grant_list) -> set[str]:
-    out: set[str] = set()
-    for grant in grant_list:
-        out |= set(grant.operations)
-    return out
-
-
-# -- 关键词授权已停用：肯定句也不能再直接产生许可 ---------------------------
-
-
-def test_explicit_file_write_sentence_does_not_produce_grant(tmp_path):
-    target = tmp_path / "a.docx"
-    assert grants("把 " + str(target) + " 第 3 段改成 X 并保存") == []
-
-
-def test_fix_project_sentence_does_not_produce_execute_grant(tmp_path):
-    project = tmp_path / "proj"
-    project.mkdir()
-    grant_list = grants("修复 " + str(project) + " 里的这个项目")
-    assert grant_list == []
-    assert _ops(grant_list) == set()
-
-
-def test_delete_sentence_does_not_produce_grant(tmp_path):
-    target = tmp_path / "a.tmp"
-    assert grants("删除 " + str(target)) == []
-
-
-def test_negated_sentence_does_not_authorize(tmp_path):
-    target = tmp_path / "a.docx"
-    # 审查发现的伪造授权案例：否定句在旧实现里会生成写权限。
-    assert grants("不要修改 " + str(target)) == []
-    assert grants("不要删除 " + str(target)) == []
 
 
 def test_instruction_begin_does_not_extract_grants(tmp_path):
@@ -138,4 +108,3 @@ def test_engine_has_no_model_facing_grant_api(db_conn, tmp_path):
     security = make_security(tmp_path, db_conn, mode="restricted")
     assert not hasattr(security.engine, "add_grant")
     assert not hasattr(security.engine, "grant")
-    assert grants("") == []
