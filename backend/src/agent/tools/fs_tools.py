@@ -1175,6 +1175,15 @@ class _FsTool(Tool):
     async def _submit_batch_pending(self, pending: tuple, effect) -> ToolResult | None:
         """一次明确批量授权 → **一个**审批操作（payload 逐项列明对象/动作/内容摘要）。"""
         kind, label, pending_payload, fingerprint = pending
+        detail = dict(getattr(effect, "detail", {}) or {})
+        batch_internal = bool(
+            getattr(effect, "kind", None)
+            == security_gate.EffectKind.INTERNAL_DATA
+            or detail.get(INTERNAL_DATA_ENTRIES_KEY)
+        )
+        confirmations = (
+            security_gate.INTERNAL_DATA_CONFIRMATIONS if batch_internal else 1
+        )
         operation = security_gate.build_pending_operation(
             kind=kind,
             label=label,
@@ -1183,7 +1192,7 @@ class _FsTool(Tool):
             fingerprint=fingerprint,
             purpose=effect.purpose,
             mode_at_request=self._mode_at_request(),
-            confirmations_required=1,
+            confirmations_required=confirmations,
             instruction=security_gate.instruction_snapshot(self.security),
         )
         try:
@@ -1200,7 +1209,7 @@ class _FsTool(Tool):
         return security_gate.pending_result(
             ticket,
             operation_label=label,
-            confirmations_required=1,
+            confirmations_required=confirmations,
             extra={
                 "batch": True,
                 "effect": security_gate.effect_to_dict(effect),

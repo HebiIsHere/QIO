@@ -744,12 +744,15 @@ def _check_directory_impact(expected: Any, path: str, ctx: ExecutionContext) -> 
             protected = list(paths_fn() or ())
         except Exception:  # noqa: BLE001 - 保护范围读不到仍按无保护比较，但不放宽
             protected = []
+    # 保护属性必须与审批时使用同一识别口径（路径 + identity/birth），否则目录里
+    # 的硬链接/移动内部对象会被误判为“替换”，导致合法删除永远失效。
     result = fs_tools.verify_directory_impact(
         expected,
         path,
-        is_protected=lambda candidate: internal_data.is_internal_data_path(
-            candidate, protected
-        ),
+        is_protected=lambda candidate: security_gate.match_internal_data(
+            engine, candidate
+        )
+        is not None,
     )
     if bool(result.get("ok")):
         return None
