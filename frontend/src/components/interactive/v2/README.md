@@ -99,7 +99,53 @@ import { saveStatusView } from "./v2/saveStatus";
 - `placeChromePopover(anchor, viewport, { margin, gap, width, maxWidth })` 返回 `{ left, top, width, maxHeight }`。
 - `saveStatusView({ status, dirty, error })` 返回 `{ text, tone: "ok"|"busy"|"err", detail }`。
 
-## 5. 验证
+## 5. Phase 3-B：底部互动对话区（InteractiveConversation.vue）
+
+契约：`docs/interactive-page-v2-contract.md` §6.4。复用现有 `MessageStream / Composer / ComposerEntries`
+与会话 store，**不新建简化模型**。
+
+```vue
+<InteractiveConversation
+  v-model:expanded="conversationOpen"
+  :height="conversationHeight"
+  :binding="{ boardId, submissionId, intentId }"
+  :auto-collapse-on-board-action="true"
+  @update:height="conversationHeight = $event"
+>
+  <template #leading><!-- 模式切换等（Composer 的 leading 槽） --></template>
+  <template #header-extra><!-- 收起条右侧的附加控件 --></template>
+</InteractiveConversation>
+```
+
+- **props**
+  - `expanded?: boolean`（默认 false）：展开 / 收起；支持 `v-model:expanded`，不传也能自己切换。
+  - `height?: number`（默认 0 = 本机记忆 / 默认 420）：展开面板高度。
+  - `minHeight? / maxHeight?`（默认 220 / 720）：高度口径；视口较矮时按 80% 收紧。
+  - `autoCollapseOnBoardAction?: boolean`（默认 true）：**板面操作**（interactive store 的 `lastOpLabel`
+    前进）时自动收起；只收显示，不停止回复、不清草稿附件、不动排队。
+  - `title?: string`（默认「对话」）、`storageKey?: string`（高度记忆键，缺省按 boardId）。
+  - `binding?: { mode?: "interactive"|"normal"; boardId?: string; submissionId?: string; intentId?: string }`
+    —— **可信 props**：只投影成 `session.send` 的 `options.interactive`（mode/boardId/submissionId），
+    不拼进用户原文；`intentId` 目前只保留在 props 上（会话层还没有该发送字段）。
+- **emits**：`update:expanded`、`expand`、`collapse`、`update:height`、`resize-start`、`resize-end`。
+- **slots**：`leading`（传给 Composer 的 leading 槽）、`header-extra`（收起条右侧）。
+- **expose**：`expand() / collapse() / toggle() / focusInput() / expanded / height`。
+- **行为**
+  - 会话流在输入区**上方**；第一次展开才挂载，之后 `v-show` 保留滚动位置与已渲染内容。
+  - Composer 始终挂载：收起不清草稿 / 附件 / 排队，不停止回复（会话 store 一个方法都不调用）。
+  - 分隔条：指针拖动（向上拖变高）+ 键盘 ↑/↓（±24）、Home/End；Esc / pointercancel 恢复拖动前高度。
+  - 高度记在本机 `localStorage`（按板面），损坏值忽略。
+  - 收起条用真实会话状态说话：正在回复/已排队 N 条/草稿已保留/点开继续对话。
+
+### Composer / ChatDock 的绑定接口
+
+- `Composer.vue` 新增可选 prop `chatBinding`：只作为 `session.send` 的 `options.interactive` 传下去；
+  不传 → 对话页行为完全不变（请求体不带板面身份）。Composer **不读 interactive store**。
+- `ChatDock.vue` 新增可选 prop `binding`：不传时仍用 `store.chatBinding`（旧调用方不变）；
+  传了就以 props 为准。
+
+## 6. 验证
 
 - `npx vue-tsc --noEmit`
 - `npx vitest run src/components/interactive/__tests__/p1b-v2-layout.test.ts src/components/interactive/__tests__/p1b-v2-workspace.test.ts src/components/interactive/__tests__/p1b-v2-chrome-tools.test.ts`
+- Phase 3-B：`npx vitest run src/components/interactive/v2/__tests__/conversationLayout.test.ts src/components/interactive/v2/__tests__/InteractiveConversation.test.ts src/components/__tests__/p3b-composer-binding.test.ts src/components/interactive/__tests__/p3b-chatdock-binding.test.ts`
