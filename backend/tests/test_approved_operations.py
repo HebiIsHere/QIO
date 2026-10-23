@@ -102,6 +102,7 @@ def test_registers_all_expected_operation_kinds(tmp_path, db_conn):
         "proc.kill",
         "subagent.create",
         "attachment.write_back",
+        "attachment.batch_write_back",
         "attachment.recycle",
         "attachment.read",
         "dep.install",

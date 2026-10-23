@@ -144,8 +144,13 @@ async def test_qio_generated_file_can_be_deleted_directly(tmp_path):
     assert result.ok is True, result.error
     assert not generated.exists()
     assert gateway.submitted == [], "allow 时不得再提交审批"
-    assert len(gateway.effects) == 1
-    assert str(getattr(gateway.effects[0].kind, "value", gateway.effects[0].kind)) == "delete"
+    # R9-G §7：执行前必须重新走一次授权（模式/要求/授权是否仍覆盖），
+    # 所以一次删除会有「判定 + 执行前重核对」两次 authorize；两次都必须是 delete。
+    assert gateway.effects, "删除必须经过统一授权网关"
+    assert all(
+        str(getattr(effect.kind, "value", effect.kind)) == "delete"
+        for effect in gateway.effects
+    ), [getattr(effect.kind, "value", effect.kind) for effect in gateway.effects]
 
 
 @pytest.mark.asyncio
