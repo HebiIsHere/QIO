@@ -891,13 +891,31 @@ async def test_chain_payload_contains_full_ordered_chain(ctx):
     assert parse_extracted_context_limits(json.dumps({"limits": []})) == ()
     with pytest.raises(RequirementResolutionUnavailable):
         parse_extracted_context_limits("not json")
+    # R9-H4 §2：read 与 program 对象是规范限制操作/对象，必须被解析接受
+    accepted = parse_extracted_context_limits(
+        json.dumps(
+            {
+                "limits": [
+                    {"operations": ["read"], "objects": [], "reason": "不要读取"},
+                    {
+                        "operations": ["execute"],
+                        "objects": [{"kind": "program", "value": "python"}],
+                        "reason": "不要运行 python",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+    assert accepted[0]["operations"] == ["read"]
+    assert accepted[1]["objects"][0]["kind"] == "program"
     with pytest.raises(RequirementResolutionUnavailable):
-        # read 不在 requirement_limits 的冻结操作白名单里
+        # 非规范操作名仍然拒绝
         parse_extracted_context_limits(
             json.dumps(
                 {
                     "limits": [
-                        {"operations": ["read"], "objects": [], "reason": "x"}
+                        {"operations": ["keyword_allow"], "objects": [], "reason": "x"}
                     ]
                 }
             )
