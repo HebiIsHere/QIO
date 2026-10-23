@@ -1551,6 +1551,7 @@ from agent.storage.migration_r9h2_identity import (  # noqa: E402
     COMPENSATION_STATEMENTS as _R9H2_IDENTITY_ADDITIVE,
 )
 from agent.storage.migration_r9h2_identity import MIGRATION as _R9H2_IDENTITY  # noqa: E402
+from agent.storage.migration_r9h3_review_records import MIGRATION as _R9H3_REVIEW_RECORDS  # noqa: E402
 
 MIGRATIONS.append(_R9_ATTACH)
 MIGRATIONS.append(_R9_APPROVAL)
@@ -1613,8 +1614,21 @@ MIGRATIONS.append(
     )
 )
 
+MIGRATIONS.append(_R9H3_REVIEW_RECORDS)
+
+# 补偿入口（新，64）：补偿 62 的全部语句（追加 DDL），不重放迁移 63 的数据 UPDATE。
+# R9-H3 契约 §3.3：SCHEMA_VERSION = COMPENSATION_VERSION = 64。
+MIGRATIONS.append(
+    (
+        64,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 62 for stmt in stmts]
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 62
+COMPENSATION_VERSION = 64
 
 
 
