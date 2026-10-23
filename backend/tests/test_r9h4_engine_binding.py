@@ -1291,3 +1291,71 @@ def test_limit_program_matches_resolved_program(db_conn, tmp_path):
     )
     assert absolute_denied.verdict == Verdict.DENY
     assert "不要运行这个 python" in absolute_denied.reason
+
+
+def test_cmd_effect_limit_impacts_with_effect_binding_denies(db_conn, tmp_path):
+    """D 形状：命令 effect 带 limit_impacts + 后端核实 requirement_binding（无 ctx）。
+
+    D 的 xfail 用例若没有把绑定放进 effect/context，引擎按契约不会回退“最近 active”；
+    本用例证明只要 D/执行器把真实绑定写进 effect.detail，B 引擎即可 DENY。
+    """
+    import asyncio
+
+    victim = tmp_path / "b.txt"
+    victim.write_text("keep", encoding="utf-8")
+    security = make_security(db_conn, tmp_path, mode="restricted")
+    requirement = make_requirement(
+        security,
+        limits=(
+            limit(
+                operations=("delete",),
+                objects=(path_object(victim),),
+                reason="用户明确禁止删除这个文件",
+            ),
+        ),
+    )
+    effect = execute_effect(
+        "cmd",
+        limit_impacts=(
+            {"operation": "execute", "objects": [{"kind": "program", "value": "cmd"}]},
+            {"operation": "delete", "objects": [path_object(victim)]},
+        ),
+        limit_impacts_complete=True,
+        requirement_binding={
+            "requirement_id": requirement.requirement_id,
+            "requirement_version": int(requirement.version),
+        },
+    )
+    decision = asyncio.run(security.engine.authorize(effect))
+    assert decision.verdict == Verdict.DENY
+    assert "用户明确禁止删除这个文件" in decision.reason
+
+
+def test_cmd_effect_without_binding_does_not_use_recent_active_requirement(db_conn, tmp_path):
+    """契约 §2/§5：没有操作绑定不得回退“最近 active”要求（不伪造绑定）。"""
+    import asyncio
+
+    victim = tmp_path / "b.txt"
+    victim.write_text("keep", encoding="utf-8")
+    security = make_security(db_conn, tmp_path, mode="unrestricted")
+    make_requirement(
+        security,
+        limits=(
+            limit(
+                operations=("delete",),
+                objects=(path_object(victim),),
+                reason="不要删除 b",
+            ),
+        ),
+    )
+    effect = execute_effect(
+        "cmd",
+        limit_impacts=(
+            {"operation": "delete", "objects": [path_object(victim)]},
+        ),
+        limit_impacts_complete=True,
+    )
+    decision = asyncio.run(security.engine.authorize(effect))
+    assert decision.verdict != Verdict.DENY, (
+        "没有绑定就不应套用最近 active 要求（否则生产会误伤无关操作）"
+    )
