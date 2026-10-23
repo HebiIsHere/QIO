@@ -1,0 +1,21 @@
+.........xxx.......xxxxxxxxxxx.x.x..xxx                                  [100%]
+=========================== short test summary info ===========================
+XFAIL tests/test_r9g_acceptance_e2e.py::test_question_text_does_not_block_model_allow - R9-G W1（删关键词守卫/要求版本绑定/要求解析）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_negation_elsewhere_does_not_block_model_allow - R9-G W1（删关键词守卫/要求版本绑定/要求解析）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_structured_limits_from_resolution_are_enforced - R9-G W1（删关键词守卫/要求版本绑定/要求解析）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_fixed_query_allowed_in_read_only_and_restricted - R9-G W2（fixed_queries/deletion 结构化）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_fixed_query_classifier_rejects_scripts_and_metacharacters - R9-G W2（fixed_queries/deletion 结构化）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_permanent_delete_policy_three_modes - R9-G W2（fixed_queries/deletion 结构化）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_model_allow_cannot_replace_permanent_delete_confirmation - R9-G W2（fixed_queries/deletion 结构化）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_app_managed_marker_cannot_bypass_read_only - R9-G Lead（recheck/批量/应用受控运行接线）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_batch_items_expand_and_authorize_individually - R9-G W3（fs/附件逐项与批次状态）未合入本分支：待集成后转绿；Lead 批量接线
+XFAIL tests/test_r9g_acceptance_e2e.py::test_batch_consolidates_needing_confirmation_items - R9-G W3（fs/附件逐项与批次状态）未合入本分支：待集成后转绿；Lead 批量接线
+XFAIL tests/test_r9g_acceptance_e2e.py::test_batch_new_object_does_not_inherit_authorization - R9-G W3（fs/附件逐项与批次状态）未合入本分支：待集成后转绿；Lead 批量接线
+XFAIL tests/test_r9g_acceptance_e2e.py::test_requirement_version_binding_prevents_cross_use - R9-G W1（删关键词守卫/要求版本绑定/要求解析）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_background_and_subagent_inherit_requirement_binding - R9-G W1（删关键词守卫/要求版本绑定/要求解析）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_requirement_resolution_new_amend_withdraw - R9-G W1（删关键词守卫/要求版本绑定/要求解析）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_argv_change_in_approval_record_is_not_executed - R9-G Lead（recheck/批量/应用受控运行接线）未合入本分支：待集成后转绿：执行器需要独立于 payload 的绑定摘要
+XFAIL tests/test_r9g_acceptance_e2e.py::test_expired_approval_does_not_execute - R9-G Lead（recheck/批量/应用受控运行接线）未合入本分支：待集成后转绿：decide/执行前未核对 expires_at（实测过期审批仍可执行）
+XFAIL tests/test_r9g_acceptance_e2e.py::test_confirmations_bind_same_object_and_content - R9-G Lead（recheck/批量/应用受控运行接线）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_recheck_service_revalidates_mode_requirement_objects - R9-G Lead（recheck/批量/应用受控运行接线）未合入本分支：待集成后转绿
+XFAIL tests/test_r9g_acceptance_e2e.py::test_queue_wait_mode_change_affects_only_unstarted - R9-G Lead（recheck/批量/应用受控运行接线）未合入本分支：待集成后转绿
