@@ -1,0 +1,4 @@
+...........xx                                                            [100%]
+=========================== short test summary info ===========================
+XFAIL tests/test_r9h4_cmd_program.py::test_user_limit_on_program_blocks_real_execution - R9-H4 B（引擎 limit_impacts/program 对象匹配）未合入本分支：待集成后转绿
+XFAIL tests/test_r9h4_cmd_program.py::test_user_limit_on_delete_object_blocks_delete_command - R9-H4 B（引擎 limit_impacts/program 对象匹配）未合入本分支：待集成后转绿
