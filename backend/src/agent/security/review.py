@@ -1,18 +1,21 @@
 # -*- coding: utf-8 -*-
-"""受限模式自然语言授权的模型审查（R9-F，契约 docs/r9f-contracts.md §3.2、§4.3）。
+"""受限模式自然语言授权的语义审查（R9-G，契约 docs/r9g-contracts.md §1、§2、§7）。
 
 职责边界（本模块只做这些，不接 engine/gateway）：
-1. 由**后端**组装审查输入：用户原话+来源、修正/限制、具体操作、后端核实过的对象
-   （路径/身份/来源/接收服务）、既有授权与批准/拒绝记录；文件/网页/工具结果内容
-   只作为**不可信材料**单独标注（untrusted_material），不混入用户要求。
+1. 由**后端**组装审查输入：用户原话+版本+来源、补充/修正、结构化限制、具体操作、
+   后端核实过的对象（路径/身份/来源/接收服务）、既有授权与批准/拒绝记录；
+   文件/网页/工具结果内容只作为**不可信材料**单独标注（untrusted_material），
+   不混入用户要求、也不能创建或扩大授权。
 2. 用用户已配置的**主模型**做一次普通 complete（tools 为空，不新建 Agent，不暴露
-   工具/文件/设置能力），超时/异常/非法 JSON 一律抛 ReviewUnavailable（绝不默认允许）。
-3. 后端 validate_outcome 校验：结构合法；requirement_id 真实且要求仍 active；
-   objects/operations 是请求子集；ALLOW 必须覆盖全部目标并带 limits/purpose；
-   不得把一次操作扩成长期/更大范围；reason 非空。另有只收紧、不放宽的确定性兜底
-   （否定/条件/引用材料里的话不得成为 ALLOW 依据）。
-4. 提供 operation_fingerprint（含对象身份与模式）作为复用缓存键；提供
-   ReviewAuditLedger 落 authorization_review_audit（模型/提示词版本/耗时/错误）。
+   工具/文件/设置能力），超时/异常/非法 JSON 一律抛 ReviewUnavailable。
+3. 后端 validate_outcome **只**校验结构、来源与对象/操作一致、范围可落实：
+   requirement 真实、active 且版本绑定；objects/allowed_operations 是请求子集；
+   ALLOW 覆盖全部目标并带 limits/purpose；reason 非空。
+   **不做任何关键词/句式/否定词/条件词/问号/引号判断**（契约 §1、§2）：
+   语义由模型理解，后端不因用户措辞推翻模型 ALLOW。
+4. operation_fingerprint（对象身份/程序/argv/cwd/脚本摘要/内容摘要/前置状态/接收方/
+   模式）作为复用缓存键；ReviewAuditLedger 落 authorization_review_audit
+   （模型/提示词版本/要求版本/耗时/错误）。
 
 提示词单一来源：agent/prompts.py 的 AUTHORIZATION_REVIEW_* 常量；本模块不写第二套。
 """
@@ -77,6 +80,14 @@ MAX_SUMMARY_CHARS = 1000
 #: 审查超时默认值（秒）。慢模型应按调用方配置调整，但超时一律不可用而非允许。
 DEFAULT_TIMEOUT_SECONDS = 20.0
 
+#: 授权审查请求携带的要求解析状态（契约 §3：解析失败时标记 unavailable，后端不补关键词）。
+RESOLUTION_STATUS_RESOLVED = "resolved"
+RESOLUTION_STATUS_UNAVAILABLE = "unavailable"
+RESOLUTION_STATUS_NOT_ATTEMPTED = "not_attempted"
+VALID_RESOLUTION_STATUSES = frozenset(
+    {RESOLUTION_STATUS_RESOLVED, RESOLUTION_STATUS_UNAVAILABLE, RESOLUTION_STATUS_NOT_ATTEMPTED}
+)
+
 
 class ReviewUnavailable(Exception):
     """审查不可用：模型缺失/超时/异常/输出结构非法/校验不通过。
@@ -108,6 +119,14 @@ class ReviewObject:
 
 @dataclass(frozen=True)
 class ReviewOperation:
+    """一次拟执行的**具体操作**（后端从真实工具/执行器输入核实后组装，模型不能改写）。
+
+    R9-G 契约 §1.4/§7：操作绑定必须覆盖动作、对象、范围、来源/目的、删除方式、
+    程序/参数/cwd/执行上下文、脚本内容或可靠摘要、写入内容/补丁摘要、前置状态与
+    条件证据。这里承载这些事实；它们全部参与 operation_fingerprint，任何一项变化
+    都会导致旧授权记录不能复用。校验只核对结构与一致性，不按文字判断许可。
+    """
+
     kind: str  # write | create | delete | execute | shell | install | egress | system_change
     objects: tuple[ReviewObject, ...]
     program: str | None = None
@@ -116,6 +135,16 @@ class ReviewOperation:
     script_sha256: str | None = None
     network_hosts: tuple[str, ...] = ()
     summary: str = ""
+    #: 启动类操作的规范化 spec 摘要（程序身份/argv/cwd/脚本内容），与 recheck 的 spec_digest 对齐。
+    spec_digest: str | None = None
+    #: 写入内容/补丁的内容摘要（防止"审查后内容被替换再执行"）。
+    content_digest: str | None = None
+    #: 前置状态摘要（覆盖前/删除前的对象身份/版本/摘要）。
+    precondition_digest: str | None = None
+    #: 删除方式：recycle_bin（默认，进系统回收站）| permanent（永久删除）。
+    delete_mode: str | None = None
+    #: 条件与证据（结构由后端提供；审查模型只能据此判断语义，不执行条件）。
+    conditions: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -132,6 +161,11 @@ class ReviewRequest:
     #: 契约 §3.2 模型调用规范要求单独标注的不可信材料（文件/网页/工具结果内容）。
     #: 只作为数据展示，永远不能增加授权。
     untrusted_material: tuple[dict, ...] = ()
+    #: 该要求来自哪次模型要求解析（R9-G 契约 §3）：resolved / unavailable / not_attempted。
+    #: 解析失败时审查请求必须标记 unavailable；后端不补关键词、不猜测用户限制。
+    requirement_resolution_status: str = RESOLUTION_STATUS_UNAVAILABLE
+    #: 要求解析得到的结构化限制（用户明确表达的限制，只用于展示；本身不产生授权）。
+    resolution_limits: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -229,6 +263,7 @@ def build_review_payload(request: ReviewRequest) -> dict:
         provenance = getattr(requirement, "provenance", None) or {}
         requirement_payload = {
             "requirement_id": str(getattr(requirement, "requirement_id", "") or ""),
+            "version": int(getattr(requirement, "version", 1) or 1),
             "text": _clip(getattr(requirement, "text", ""), MAX_TEXT_CHARS),
             "provenance": _safe_json_value(provenance, max_chars=500),
             "parent_id": (
@@ -253,6 +288,26 @@ def build_review_payload(request: ReviewRequest) -> dict:
             _clip(item, 300) for item in list(operation.network_hosts)[:16] if str(item or "").strip()
         ],
         "summary": _clip(operation.summary, MAX_SUMMARY_CHARS),
+        "spec_digest": (
+            None if getattr(operation, "spec_digest", None) is None else _clip(operation.spec_digest, 128)
+        ),
+        "content_digest": (
+            None
+            if getattr(operation, "content_digest", None) is None
+            else _clip(operation.content_digest, 128)
+        ),
+        "precondition_digest": (
+            None
+            if getattr(operation, "precondition_digest", None) is None
+            else _clip(operation.precondition_digest, 128)
+        ),
+        "delete_mode": (
+            None if getattr(operation, "delete_mode", None) is None else _clip(operation.delete_mode, 40)
+        ),
+        "conditions": [
+            _safe_json_value(item, max_chars=MAX_CONTEXT_JSON_CHARS)
+            for item in list(getattr(operation, "conditions", ()) or ())[:MAX_CONTEXT_ITEMS]
+        ],
     }
     return {
         "prompt_version": AUTHORIZATION_REVIEW_SCHEMA_VERSION,
@@ -267,6 +322,16 @@ def build_review_payload(request: ReviewRequest) -> dict:
         "user_constraints": _bounded_str_list(
             request.user_constraints, max_items=MAX_LIMITS, max_chars=MAX_LIMIT_CHARS
         ),
+        "requirement_resolution": {
+            "status": str(
+                getattr(request, "requirement_resolution_status", RESOLUTION_STATUS_UNAVAILABLE)
+                or RESOLUTION_STATUS_UNAVAILABLE
+            ),
+            "limits": [
+                _safe_json_value(item, max_chars=MAX_CONTEXT_JSON_CHARS)
+                for item in list(getattr(request, "resolution_limits", ()) or ())[:MAX_LIMITS]
+            ],
+        },
         "operation": operation_payload,
         "related_grants": [
             _safe_json_value(item, max_chars=MAX_CONTEXT_JSON_CHARS)
@@ -332,190 +397,33 @@ def operation_fingerprint(operation: ReviewOperation, *, mode: str) -> str:
         "cwd": None if operation.cwd is None else os.path.normcase(os.path.normpath(str(operation.cwd))),
         "script_sha256": None if operation.script_sha256 is None else str(operation.script_sha256),
         "network_hosts": sorted({str(item).strip().lower() for item in operation.network_hosts if str(item).strip()}),
+        # R9-G：以下事实任一变化都必须重新审查/重新审批，不能沿用旧允许。
+        "spec_digest": None if getattr(operation, "spec_digest", None) is None else str(operation.spec_digest),
+        "content_digest": (
+            None if getattr(operation, "content_digest", None) is None else str(operation.content_digest)
+        ),
+        "precondition_digest": (
+            None
+            if getattr(operation, "precondition_digest", None) is None
+            else str(operation.precondition_digest)
+        ),
+        "delete_mode": (
+            None if getattr(operation, "delete_mode", None) is None else str(operation.delete_mode)
+        ),
+        "conditions": sorted(
+            json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+            for item in (getattr(operation, "conditions", ()) or ())
+        ),
     }
     raw = json.dumps(canonical, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-# ---------------------------------------------------------------------------
-# 确定性兜底（只收紧、不放宽；ALLOW 必须同时通过模型判定与这里的检查）
-# ---------------------------------------------------------------------------
-
-_ACTION_VERBS: dict[str, tuple[str, ...]] = {
-    "write": (
-        "修改", "编辑", "改动", "改", "写入", "写", "保存", "覆盖", "重写", "替换", "更新",
-        "整理", "修复", "补全", "添加", "追加", "合并", "汇总", "格式化",
-        "modify", "edit", "write", "save", "overwrite", "update", "fix", "rewrite", "replace",
-    ),
-    "create": (
-        "创建", "新建", "生成", "建立", "制作", "输出",
-        "create", "generate", "make", "new",
-    ),
-    "delete": (
-        "删除", "删掉", "删", "移除", "清理", "清空", "移到回收站",
-        "delete", "remove", "erase", "clear", "trash",
-    ),
-    "execute": (
-        "执行", "运行", "跑", "测试", "构建", "编译", "检查", "诊断", "验证",
-        "run", "execute", "launch", "test", "build", "compile", "check", "diagnose",
-    ),
-    "shell": ("命令行", "终端", "命令", "shell", "powershell", "cmd", "terminal"),
-    "install": ("安装", "装依赖", "装", "依赖", "install", "pip", "npm", "uv"),
-    "egress": (
-        "发送", "发给", "外发", "上传", "发布", "分享", "传给", "同步到",
-        "send", "upload", "publish", "share", "post", "sync",
-    ),
-    "system": (
-        "设置", "配置", "系统", "注册表", "环境变量", "权限",
-        "setting", "settings", "configure", "config", "registry", "system", "environment",
-    ),
-}
-
-_FAMILIES_FOR_OPERATION: dict[str, tuple[str, ...]] = {
-    "write": ("write",),
-    "create": ("write", "create"),
-    "delete": ("delete",),
-    "execute": ("execute",),
-    "shell": ("execute", "shell"),
-    "install": ("install", "system"),
-    "egress": ("egress",),
-    "system_change": ("system",),
-}
-
-_REFUSAL_PREFIXES = ("不要", "不用", "不必", "无需", "禁止", "不准", "不得", "不能", "不可", "请勿", "不允许", "别")
-
-_CONDITIONAL_RE = re.compile(
-    r"(?:如果|假如|假设|要是|万一|若是|倘若|除非|是否|能不能|可不可以|行不行|行吗|好吗|要不要|需不需要)"
-)
-_CONDITIONAL_EN_RE = re.compile(
-    r"\b(?:if|whether|unless|maybe|perhaps|can you|could you|would you|should i)\b", re.IGNORECASE
-)
-_QUESTION_TAIL_RE = re.compile(r"(?:吗|呢)\s*[。.!！~～]*$")
-
-# 引号/代码块识别用程序拼接，避免在正则源码里出现字面反引号。
+# JSON 输出解析用代码围栏识别（只解析模型输出格式，不参与任何授权判断）。
 _BACKTICK = chr(96)
-_QUOTED_RE = re.compile(
-    "|".join(
-        [
-            _BACKTICK * 3 + r".*?" + _BACKTICK * 3,
-            _BACKTICK + r"[^" + _BACKTICK + r"]*" + _BACKTICK,
-            r'"[^"\\]*(?:\\.[^"\\]*)*"',
-            r"'[^'\\]*(?:\\.[^'\\]*)*'",
-            r"“[^”]*”",
-            r"‘[^’]*’",
-            r"「[^」]*」",
-            r"『[^』]*』",
-        ]
-    ),
-    re.DOTALL,
-)
-_QUOTE_MARKS = "\"'“”‘’「」『』" + _BACKTICK
-_GENERIC_REFUSAL_RE = re.compile(
-    r"(?:不要|别|请勿|不准|禁止|不得)\s*(?:动|碰|操作|开始|执行|进行|下手|做)"
-)
 _FENCE_RE = re.compile(
     _BACKTICK * 3 + r"(?:json)?\s*(.*?)" + _BACKTICK * 3, re.IGNORECASE | re.DOTALL
 )
-
-
-def _family_verbs(operation_kind: str) -> tuple[str, ...]:
-    verbs: list[str] = []
-    for family in _FAMILIES_FOR_OPERATION.get(str(operation_kind), ()):
-        verbs.extend(_ACTION_VERBS.get(family, ()))
-    return tuple(verbs)
-
-
-def _verb_pattern(verb: str) -> str:
-    if verb.isascii():
-        return r"\b" + re.escape(verb) + r"\b"
-    return re.escape(verb)
-
-
-def _text_mentions_operation(text: str, operation: ReviewOperation) -> bool:
-    for verb in _family_verbs(operation.kind):
-        if re.search(_verb_pattern(verb), text, re.IGNORECASE):
-            return True
-    return False
-
-
-#: 「不要改其他内容 / 不要删除其他文件」是对**范围外**对象的限制，不是否定本次操作；
-#: 否定词后紧跟这些词时不算阻断本次 ALLOW（否则会把合法的"别动其他部分"误判为拒绝）。
-_REFUSAL_EXEMPT_TAILS = ("其他", "其它", "别的", "其余", "之外", "无关", "别处")
-
-
-def _refusal_is_scope_limit(match: "re.Match[str]") -> bool:
-    tail = match.string[match.end() : match.end() + 8].lstrip(" 　：:，,。；;、")
-    return tail.startswith(_REFUSAL_EXEMPT_TAILS)
-
-
-def _has_explicit_refusal(text: str, operation: ReviewOperation) -> bool:
-    """用户原话里是否明确否定本次（或同类）操作。
-
-    「不要改 X 的其他内容」「别动其他文件」属于范围限制，不阻断对 X 本身的授权；
-    真正否定操作本身的句式（如"不要修改 X"）才返回 True。
-    """
-    verbs = _family_verbs(operation.kind)
-    if verbs:
-        alt = "|".join(_verb_pattern(verb) for verb in sorted(verbs, key=len, reverse=True))
-        prefix = "|".join(_REFUSAL_PREFIXES)
-        pattern = re.compile(
-            r"(?:" + prefix + r")\s*(?:再|去|帮我|给我|随便|直接|立刻|马上)?\s*(?:" + alt + r")",
-            re.IGNORECASE,
-        )
-        for match in pattern.finditer(text):
-            if not _refusal_is_scope_limit(match):
-                return True
-    if operation.kind != "write":
-        for match in _GENERIC_REFUSAL_RE.finditer(text):
-            if not _refusal_is_scope_limit(match):
-                return True
-    return False
-
-
-def _has_conditional_or_question(text: str) -> bool:
-    if not text.strip():
-        return False
-    if _CONDITIONAL_RE.search(text) or _CONDITIONAL_EN_RE.search(text):
-        return True
-    if "？" in text or "?" in text:
-        return True
-    return bool(_QUESTION_TAIL_RE.search(text.strip()))
-
-
-def _has_quote_marks(text: str) -> bool:
-    return any(mark in text for mark in _QUOTE_MARKS)
-
-
-def _strip_quoted(text: str) -> str:
-    return _QUOTED_RE.sub(" ", text)
-
-
-def deterministic_allow_guard(request: ReviewRequest) -> str | None:
-    """ALLOW 的确定性兜底：返回中文原因表示必须拒绝这次 ALLOW；None 表示不额外阻断。
-
-    这些规则只**收紧**、不放宽：即使模型误判为 allow，以下情况也不会被接受。
-    * 用户原话明确否定本次操作（如"不要修改 X"）；
-    * 疑问句 / 条件句 / 假设（条件无法由后端核实）；
-    * 存在引用材料/不可信材料时，去掉引号内文字后用户原话没有明确要求这次操作
-      （材料里的"允许/请执行"不构成授权）。
-    """
-    requirement = getattr(request, "requirement", None)
-    if requirement is None:
-        return "没有可依据的用户要求"
-    text = str(getattr(requirement, "text", "") or "")
-    corrections = " ".join(str(item) for item in (request.corrections or ()) if str(item).strip())
-    combined = text + "\n" + corrections if corrections else text
-    if not combined.strip():
-        return "用户没有留下可依据的原话"
-    if _has_explicit_refusal(combined, request.operation):
-        return "用户原话包含对这次操作的明确否定（如“不要修改/删除”），不能解释为授权"
-    if _has_conditional_or_question(combined):
-        return "用户原话是疑问句/条件句/假设，条件无法由后端核实，不构成明确授权"
-    if request.untrusted_material or _has_quote_marks(combined):
-        bare = _strip_quoted(combined)
-        if not _text_mentions_operation(bare, request.operation):
-            return "引用/材料中的表述不是用户授权；去掉引用内容后，用户原话没有明确要求这次操作"
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -725,20 +633,41 @@ def _validate_request_shape(request: ReviewRequest) -> None:
         # 契约字段类型是 tuple；实际接线从 DB/服务层组装时允许 list（只读取，不改原对象）。
         if not isinstance(values, (tuple, list)) or any(not isinstance(item, str) for item in values):
             raise ReviewUnavailable("授权审查请求的 " + field_name + " 必须是字符串序列")
+    status = str(getattr(request, "requirement_resolution_status", "") or "")
+    if status not in VALID_RESOLUTION_STATUSES:
+        raise ReviewUnavailable("授权审查请求的 requirement_resolution_status 非法：" + status[:40])
+    resolution_limits = getattr(request, "resolution_limits", ()) or ()
+    if not isinstance(resolution_limits, (tuple, list)) or any(
+        not isinstance(item, dict) for item in resolution_limits
+    ):
+        raise ReviewUnavailable("授权审查请求的 resolution_limits 必须是对象数组")
+    operation = request.operation
+    for digest_name in ("spec_digest", "content_digest", "precondition_digest"):
+        digest = getattr(operation, digest_name, None)
+        if digest is not None and not isinstance(digest, str):
+            raise ReviewUnavailable("授权审查请求的 operation." + digest_name + " 必须是字符串或 null")
+    delete_mode = getattr(operation, "delete_mode", None)
+    if delete_mode not in (None, "recycle_bin", "permanent"):
+        raise ReviewUnavailable("授权审查请求的 operation.delete_mode 非法：" + str(delete_mode)[:40])
+    conditions = getattr(operation, "conditions", ()) or ()
+    if not isinstance(conditions, (tuple, list)) or any(not isinstance(item, dict) for item in conditions):
+        raise ReviewUnavailable("授权审查请求的 operation.conditions 必须是对象数组")
 
 
 def validate_outcome(outcome: ReviewOutcome, request: ReviewRequest) -> ReviewOutcome:
-    """后端校验模型审查结果（契约 §3.2）。
+    """后端校验模型审查结果（R9-G 契约 §1、§2、§7）。
 
-    校验项：
+    只做**事实核对**，不做语义/措辞判断：
     * 结构合法（ReviewOutcome / decision / 字段类型）；
-    * requirement_id 真实存在（当前要求或其父要求），且要求仍为 active；
+    * 来源一致：requirement_id 必须是请求里的那条真实要求，且要求仍 active、
+      版本有效（操作绑定到具体要求版本，不是"最近一条"）；
     * 只在受限模式、合法操作类型上生效；
-    * objects / allowed_operations 是请求集合的子集，对象身份与来源以请求为准；
-    * ALLOW 覆盖全部目标对象、allowed_operations 只含本次操作类型、必须有 limits/purpose；
-    * 否定/条件/引用材料等确定性兜底；
+    * objects / allowed_operations 是请求集合的子集，对象身份与来源以请求（后端核实）为准；
+    * ALLOW 覆盖全部目标对象、allowed_operations 只含本次操作类型、必须有 limits/purpose，
+      并且有用户原话/补充作为来源；
     * reason 非空。
     任何不通过都抛 ReviewUnavailable（调用方不得把它当 ALLOW）。
+    语义判断（疑问/礼貌/否定/条件/引用等）由模型完成，后端**不**用任何词句规则推翻。
     """
     _validate_request_shape(request)
     if not isinstance(outcome, ReviewOutcome):
@@ -746,14 +675,13 @@ def validate_outcome(outcome: ReviewOutcome, request: ReviewRequest) -> ReviewOu
     if not isinstance(outcome.decision, ReviewDecision):
         raise ReviewUnavailable("授权审查结果的 decision 非法")
     requirement = request.requirement
-    valid_ids = {str(requirement.requirement_id)}
-    parent_id = getattr(requirement, "parent_id", None)
-    if parent_id:
-        valid_ids.add(str(parent_id))
-    if str(outcome.requirement_id or "") not in valid_ids:
-        raise ReviewUnavailable("授权审查结果引用了不存在的用户要求，不能作为授权依据")
+    if str(outcome.requirement_id or "") != str(requirement.requirement_id):
+        raise ReviewUnavailable("授权审查结果引用的用户要求与请求不一致，不能作为授权依据")
     if str(getattr(requirement, "status", "")) != "active":
         raise ReviewUnavailable("用户要求已失效（status=" + str(getattr(requirement, "status", "")) + "），审查结果不能使用")
+    version = getattr(requirement, "version", None)
+    if not isinstance(version, int) or version < 1:
+        raise ReviewUnavailable("用户要求缺少有效版本，无法绑定本次操作")
     operation = request.operation
     if str(operation.kind) not in REVIEWABLE_OPERATION_KINDS:
         raise ReviewUnavailable("不支持的审查操作类型：" + str(operation.kind))
@@ -767,9 +695,11 @@ def validate_outcome(outcome: ReviewOutcome, request: ReviewRequest) -> ReviewOu
 def _validate_allow(outcome: ReviewOutcome, request: ReviewRequest) -> ReviewOutcome:
     requirement = request.requirement
     operation = request.operation
-    guard = deterministic_allow_guard(request)
-    if guard:
-        raise ReviewUnavailable("授权审查结果被后端确定性规则否决：" + guard)
+    # 来源完整性：ALLOW 必须能追溯到用户原话或用户补充（不接模型编造的要求）。
+    text = str(getattr(requirement, "text", "") or "").strip()
+    corrections = tuple(str(item).strip() for item in (request.corrections or ()) if str(item).strip())
+    if not text and not corrections:
+        raise ReviewUnavailable("ALLOW 缺少用户原话/补充作为依据，不能作为授权")
 
     request_objects = list(operation.objects)
     outcome_objects = list(outcome.objects)
@@ -857,6 +787,7 @@ class ReviewAuditLedger:
         request_digest: str,
         outcome: str,
         requirement_id: str | None = None,
+        requirement_version: int | None = None,
         model: str | None = None,
         prompt_version: str | None = AUTHORIZATION_REVIEW_SCHEMA_VERSION,
         decision: str | None = None,
@@ -865,14 +796,25 @@ class ReviewAuditLedger:
         error: str | None = None,
     ) -> str:
         audit_id = "revaudit_" + uuid.uuid4().hex[:16]
+        if requirement_version is None and requirement_id:
+            # 审计行必须能定位当时依据的要求版本；调用方没给就从台账读当前版本。
+            try:
+                row = self.conn.execute(
+                    "SELECT version FROM user_requirements WHERE id = ?", (str(requirement_id),)
+                ).fetchone()
+                if row is not None:
+                    requirement_version = int(row["version"] or 1)
+            except Exception:  # noqa: BLE001 - 审计版本缺失不影响判定本身
+                requirement_version = None
         self.conn.execute(
             "INSERT INTO authorization_review_audit"
-            " (id, requirement_id, request_digest, model, prompt_version, outcome,"
-            "  decision, reason, latency_ms, error, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " (id, requirement_id, requirement_version, request_digest, model,"
+            "  prompt_version, outcome, decision, reason, latency_ms, error, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 audit_id,
                 None if requirement_id is None else str(requirement_id),
+                None if requirement_version is None else int(requirement_version),
                 str(request_digest or ""),
                 None if model is None else str(model)[:200],
                 None if prompt_version is None else str(prompt_version)[:100],
@@ -956,6 +898,9 @@ class ModelAuthorizationReviewer:
         started = time.monotonic()
         digest = review_request_digest(request)
         requirement_id = str(getattr(getattr(request, "requirement", None), "requirement_id", "") or "")
+        requirement_version = getattr(getattr(request, "requirement", None), "version", None)
+        if not isinstance(requirement_version, int):
+            requirement_version = None
         model: str | None = None
         try:
             messages = render_review_messages(request)
@@ -965,20 +910,23 @@ class ModelAuthorizationReviewer:
         except asyncio.TimeoutError as exc:
             error = "授权审查模型超时（超过 " + str(self.timeout_seconds) + " 秒），本次不默认允许"
             self._write_audit(
-                digest=digest, requirement_id=requirement_id, outcome="unavailable",
+                digest=digest, requirement_id=requirement_id,
+                requirement_version=requirement_version, outcome="unavailable",
                 model=model, latency_ms=_elapsed_ms(started), error=error,
             )
             raise ReviewUnavailable(error) from exc
         except ReviewUnavailable as exc:
             self._write_audit(
-                digest=digest, requirement_id=requirement_id, outcome="unavailable",
+                digest=digest, requirement_id=requirement_id,
+                requirement_version=requirement_version, outcome="unavailable",
                 model=model, latency_ms=_elapsed_ms(started), error=_sanitize_error(exc),
             )
             raise
         except Exception as exc:  # noqa: BLE001 - 任何模型异常都不能变成允许
             error = "授权审查模型调用失败：" + _sanitize_error(exc)
             self._write_audit(
-                digest=digest, requirement_id=requirement_id, outcome="unavailable",
+                digest=digest, requirement_id=requirement_id,
+                requirement_version=requirement_version, outcome="unavailable",
                 model=model, latency_ms=_elapsed_ms(started), error=error,
             )
             raise ReviewUnavailable(error) from exc
@@ -987,20 +935,23 @@ class ModelAuthorizationReviewer:
             validated = validate_outcome(outcome, request)
         except ReviewUnavailable as exc:
             self._write_audit(
-                digest=digest, requirement_id=requirement_id, outcome="unavailable",
+                digest=digest, requirement_id=requirement_id,
+                requirement_version=requirement_version, outcome="unavailable",
                 model=model, latency_ms=_elapsed_ms(started), error=_sanitize_error(exc),
             )
             raise
         except Exception as exc:  # noqa: BLE001 - 校验器自身异常同样视为不可用
             error = "授权审查结果校验失败：" + _sanitize_error(exc)
             self._write_audit(
-                digest=digest, requirement_id=requirement_id, outcome="unavailable",
+                digest=digest, requirement_id=requirement_id,
+                requirement_version=requirement_version, outcome="unavailable",
                 model=model, latency_ms=_elapsed_ms(started), error=error,
             )
             raise ReviewUnavailable(error) from exc
         self._write_audit(
             digest=digest,
             requirement_id=requirement_id,
+            requirement_version=requirement_version,
             outcome=validated.decision.value,
             decision=validated.decision.value,
             reason=validated.reason,
@@ -1033,6 +984,7 @@ class ModelAuthorizationReviewer:
         digest: str,
         requirement_id: str,
         outcome: str,
+        requirement_version: int | None = None,
         model: str | None = None,
         decision: str | None = None,
         reason: str | None = None,
@@ -1045,6 +997,7 @@ class ModelAuthorizationReviewer:
             self.audit.record(
                 request_digest=digest,
                 requirement_id=requirement_id or None,
+                requirement_version=requirement_version,
                 outcome=outcome,
                 model=model,
                 decision=decision,
@@ -1067,6 +1020,9 @@ __all__ = [
     "OBJECT_KINDS",
     "REVIEWABLE_OPERATION_KINDS",
     "REVIEW_MODE",
+    "RESOLUTION_STATUS_NOT_ATTEMPTED",
+    "RESOLUTION_STATUS_RESOLVED",
+    "RESOLUTION_STATUS_UNAVAILABLE",
     "ReviewAuditLedger",
     "ReviewDecision",
     "ReviewObject",
@@ -1074,8 +1030,8 @@ __all__ = [
     "ReviewOutcome",
     "ReviewRequest",
     "ReviewUnavailable",
+    "VALID_RESOLUTION_STATUSES",
     "build_review_payload",
-    "deterministic_allow_guard",
     "operation_fingerprint",
     "parse_review_outcome",
     "render_review_messages",
