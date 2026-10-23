@@ -6,6 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
+最后核对：2026-10-23（**R9-H3 第三轮后续补修已完成实现、集成与定向验证**：①已保存的用户限制先于模型审查/旧授权/人工批准/内部数据确认生效，命中即拒绝；②移除完全无限制模式的 targeted 独立授权审查，恢复仅受限模式审查；③正常可信写入提交后自动登记内部文件新身份，硬链接等访问路径立即延续保护。完整 CI 未新增（累计额度 2/2 已用尽）；最终代码仅完成定向验证；**未合并 main、未发布安装包**。细节见 P78、docs/r9h3-contracts.md。）
 最后核对：2026-10-23（**R9-H2 第三轮后续补修已完成实现、集成与定向验证**：①历史 legacy 要求补充后按真实父子链重新理解完整有效限制，不再只喂补充句；②解析失败/超时/缺失/非法输出保存 unresolved，不再落成 structured/[]，旧错误记录按审计证据追加迁移纠正；③内部运行数据按真实对象身份（volume:file_id）识别硬链接/移动/改名，路径与身份双重保护。完整 CI 39958699070 最终 success（10/10 jobs）；**未合并 main、未发布安装包**。细节见 P77、docs/r9h2-contracts.md。）
 最后核对：2026-10-23（**R9-H 审批与授权第三轮修复已完成实现与集成**：①要求解析成功后主流程从 AppliedResolution.requirement 取得真实有效绑定（new/amend 版本、withdraw 失效），原话/来源真实保存；②内容摘要/前置状态/启动规格/删除方式/条件贯通真实工具→引擎审查对象→授权记录/审批单/执行前重核对，内容变化不再复用旧授权；③名称/目录名/后缀不再直接决定权限（internal_data 与 computer 红线清理，内部数据只按真实注册路径与对象身份）；④结构化限制迁移 59/补偿 60 持久化、继承与恢复，后台/审批恢复/重启后仍生效；历史 legacy 要求由模型重新理解并记录依据。完整 CI 结果见 docs/r9h-merge-notes.md；**未合并 main、未发布安装包**。细节见 P76、docs/r9h-contracts.md。）
 最后核对：2026-10-23（**R9-G 审批与授权机制修复已完成实现与集成**：①删除关键词/句式授权判断（关键词提取模块整体删除，审查守卫/引擎禁止表/命令删词扫描移除）；②批量操作逐项核对、逐项状态与单次合并审批；③操作绑定具体用户要求及版本（模型理解 new/amend/withdraw，后端校验，迁移 57/补偿 58），不再取「最近一条 active」；④审查/授权复用/人工批准/实际执行内容一致（独立操作摘要防篡改）；⑤每个实际操作开始前统一重核对模式/要求/授权/审批/确认/对象/内容/前置状态/条件。全量 pytest 与完整 CI 结果见 docs/r9g-merge-notes.md；**未合并 main、未发布安装包**。细节见 P75、docs/r9g-contracts.md。）
@@ -5614,3 +5615,25 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 
 - **已知边界**：POSIX 硬链接/身份语义由定向 CI 验证，POSIX 符号链接能力未单独真机；文件系统不支持 file id 时只能 known_paths 保守命中（新路径不猜）；跨卷移动身份变化按新对象；
   conditions 字段无真实工具产生；无 move/copy/外发工具；批量附件部分子项失效 E2E 未覆盖；安装版未复验；真实模型链恢复效果依赖模型可用。
+
+### P78 — R9-H3 第三轮后续补修（2026-10-23）
+
+- **Status：** active（实现、集成、定向验证完成；完整 CI 未新增，累计额度 2/2 已用尽；安装版未复验）
+- **基线与范围**：基线 r9h2/main = 7b66092e01f57121067c48588e8c3a30237367d0（代码 8cb92eab6d9724c910ed8b7b8642c149be0c5bde；完整 CI 39958699070 success）；
+  修复分支 r9h3/main；契约 docs/r9h3-contracts.md。只修三处已复现问题，不新增产品功能、不改变既定权限政策。
+- **已知限制优先级**：引擎判定顺序改为先计算当前绑定要求与有效限制（含 legacy/unresolved 已保存 known limits、context resolution_limits），
+  先做限制冲突核对，命中即 DENY；之后才内部数据特殊规则、子智能体范围、永久删除、固定查询、模式、未恢复部分的具体确认。
+  单项/批量/审批恢复/执行前重核对共用；旧 allow、人工批准、内部数据三次确认、权限模式均不能覆盖仍有效禁止；INTERNAL_DATA 映射为 write 参与限制核对；
+  用户真实补充解除限制后按原版本/语义机制恢复正常。
+- **恢复完全无限制模式**：删除 ReviewRequest.targeted_limits_review 字段/参数与校验例外；删除 engine 的 unresolved 普通审查路径；
+  完全无限制模式不再调用 ModelAuthorizationReviewer（普通独立授权审查仅 restricted）；限制恢复仍由专用语义流程完成，不判断具体操作授权、不生成普通授权记录；
+  unresolved/legacy 在 unrestricted 对相关操作返回具体确认（APPROVE），已知限制先 DENY；恢复成功后按既定规则继续；restricted/read_only/内部数据/永久删除规则保持不变。
+  迁移 63 撤销可明确识别的 targeted 例外授权记录（unrestricted + model_review），保留行/审计；补偿 64 只重放 DDL；版本 64。
+- **内部文件身份自动更新**：InternalDataIdentityStore 新增 note_committed_path/note_committed_paths/retire_path；AppContext 包装真实审批执行器 operations.execute，
+  在 fs.write/fs.patch 真实提交成功后按明确 payload 目标更新身份；SettingsService 真实提交成功后通知 DB 路径；失败记录 internal_data_identity_error/ExecResult.detail，不把已成功写入改报失败、不静默降级；
+  普通工具、tool.invoke、proc 不猜；只针对实际变更对象有界更新；启动 sync 与显式 refresh 保留但正常保护不依赖手动刷新。
+- **验证**：A 11 项、B 14 项、C 10 项真实引擎/台账/执行器测试通过；宽回归 431 项、受影响套件 330 项通过；审查清理回归 124 项通过；
+  Linux 定向 CI 与最终集成 SHA 定向 CI 结果见 docs/r9h3-merge-notes.md（完整 CI 未新增）。
+- **预算**：累计完整 CI 2/2（39930482370、39958699070）已用尽；本轮不得触发第三次完整 CI；最终代码只做定向 CI，不把定向/基线绿色写成完整 CI 成功。
+- **已知边界**：凭据无独立文件未单独接线（SQLite+OS keyring）；进程外日志轮转 Python 不可感知；原子替换退休旧身份但不全盘扫描旧对象可达性；
+  POSIX 只做定向 CI，Windows 本机硬链接验证；安装版/真实模型/完整矩阵未验证；完整 CI 需额外运行额度。
