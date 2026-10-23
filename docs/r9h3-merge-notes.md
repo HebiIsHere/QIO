@@ -12,7 +12,7 @@
 | 开工核对 | fetch 后 origin/r9h2/main 仍为 7b66092e，无后续提交；工作区干净 |
 | 修复分支 | r9h3/main |
 | 子分支 | A r9h3/a-limits = c204195d；B r9h3/b-unrestricted = b75673ed；C r9h3/c-identity = d5e5fbab |
-| 最终代码 SHA | 见最终报告（本文件随代码提交；定向 CI 以最终代码提交为准） |
+| 最终代码 SHA | 7f877bf3547b85a38c6209acb91971c453d3596d（定向 CI 验证；其后仅 docs/evidence 更新 [skip ci]） |
 | 集成 | 契约/迁移 8d97904f → A/B/C 合并 beef5163/26f44445/b596e1d6 → 审查清理 f714fe79 |
 
 ## 2. 三处问题
@@ -35,7 +35,11 @@
 ## 3. 定向验证与 CI
 
 - A 11、B 14、C 10、迁移 63/64 测试通过；宽回归 431 passed；受影响套件 330 passed；审查清理回归 124 passed。
-- 最终代码定向 CI：见最终运行记录（backend-py311/py312，过滤本次相关测试）；不使用完整 CI。
+- 最终代码定向 CI（SHA 7f877bf3547b85a38c6209acb91971c453d3596d）：
+  - run 39979313725（backend-py311）success；
+  - run 39979659563（backend-py312）success；
+  - run 39979919730（backend-windows）success。
+  - 首次定向 run 39978484989 暴露 C 测试在 POSIX 上 logs/sub/.. 未建父目录的平台假设错误，已修测试并重跑成功，未放宽产品断言。
 - **完整 CI 未新增**：累计 2/2（39930482370、39958699070）均 Success，仅作基线证据；本轮最终代码没有完整矩阵结果，需额外额度才能声称完整 CI 成功。
 - 不删除检查、不降低阈值、不放宽断言；未通过 skip/xfail/continue-on-error 隐藏失败。
 
