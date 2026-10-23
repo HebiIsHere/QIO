@@ -55,6 +55,9 @@ class RecheckResult:
     reason: str = ""
     decision: Any = None  # 重新判定得到的 AuthDecision（ok=False 时可用于展示原因）
     refreshed: OperationBinding | None = None
+    #: 从台账重新加载的结构化限制状态（structured/legacy/unresolved），供调用方
+    #: 审计“状态是否在重建上下文时丢失”；legacy/unresolved 不得当作无限制。
+    requirement_state: str = ""
 
 
 def _sha256_text(text: str) -> str:
@@ -108,6 +111,7 @@ class RecheckService:
                 "requirement_invalid",
                 "这条操作依据的用户要求已不存在、已失效、已被修正或版本不一致；本次没有执行，需要重新判断",
             )
+        requirement_state = self._requirement_state(requirement)
         # 1) 当前模式 + 绑定的要求重新走统一引擎（固定规则/审查复用/审批规则）。
         try:
             from agent.security.gateway import AuthContext
@@ -148,6 +152,7 @@ class RecheckService:
                 code="denied",
                 reason=str(getattr(decision, "reason", "") or "当前规则不允许这次操作"),
                 decision=decision,
+                requirement_state=requirement_state,
             )
         if verdict != "allow":
             # approve：需要用户重新决策/确认；不是"继续执行"。
@@ -156,6 +161,7 @@ class RecheckService:
                 code="needs_confirmation",
                 reason=str(getattr(decision, "reason", "") or "这次操作需要重新确认"),
                 decision=decision,
+                requirement_state=requirement_state,
             )
         # 2) 操作指纹：对象/程序/参数/cwd/脚本内容/接收方/模式与审查/批准时一致。
         expected = str(getattr(binding, "fingerprint", "") or "")
@@ -207,9 +213,24 @@ class RecheckService:
                     "approval_invalid",
                     "这条操作对应的人工审批已过期、被拒绝或已失效；本次没有执行",
                 )
-        return RecheckResult(ok=True, code="ok", reason="执行前重核对通过", decision=decision, refreshed=binding)
+        return RecheckResult(
+            ok=True,
+            code="ok",
+            reason="执行前重核对通过",
+            decision=decision,
+            refreshed=binding,
+            requirement_state=requirement_state,
+        )
 
     # -- 内部 -------------------------------------------------------------
+
+    @staticmethod
+    def _requirement_state(requirement: Any) -> str:
+        """从台账重新加载的结构化限制状态；未知按 unresolved（不得当无限制）。"""
+        state = str(
+            getattr(requirement, "structured_limits_state", "unresolved") or "unresolved"
+        )
+        return state if state in {"structured", "legacy", "unresolved"} else "unresolved"
 
     def _bound_requirement(self, binding: OperationBinding) -> Any:
         reference = getattr(binding, "requirement", None)
@@ -272,5 +293,7 @@ class RecheckService:
         return str(getattr(item, "state", "") or "") or None
 
     @staticmethod
-    def _fail(code: str, reason: str) -> RecheckResult:
-        return RecheckResult(ok=False, code=code, reason=reason)
+    def _fail(code: str, reason: str, *, requirement_state: str = "") -> RecheckResult:
+        return RecheckResult(
+            ok=False, code=code, reason=reason, requirement_state=requirement_state
+        )

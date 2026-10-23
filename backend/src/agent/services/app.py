@@ -364,6 +364,30 @@ class AppContext:
                 type(exc).__name__,
                 exc,
             )
+        # R9-H2 §5：内部运行数据真实对象身份登记（C 分支）。失败只告警，路径判定
+        # 仍兜底（不能因为登记不可用就静默把已注册对象当普通文件）。
+        self.internal_data_identity = None
+        self.internal_data_identity_error: str | None = None
+        try:
+            from agent.security.internal_data_identity import InternalDataIdentityStore
+
+            self.internal_data_identity = InternalDataIdentityStore(conn)
+            counts = self.internal_data_identity.sync(
+                self._internal_data_paths(), source="app_startup"
+            )
+            logging.getLogger(__name__).info(
+                "内部数据身份登记完成：added=%s retired=%s active=%s",
+                (counts or {}).get("added"),
+                (counts or {}).get("retired"),
+                (counts or {}).get("active"),
+            )
+        except Exception as exc:  # noqa: BLE001 - 身份登记失败不静默降级；路径判定仍兜底
+            self.internal_data_identity_error = type(exc).__name__ + ": " + str(exc)
+            logging.getLogger(__name__).warning(
+                "R9-H2 内部数据身份登记未启用（路径判定仍兜底）：%s: %s",
+                type(exc).__name__,
+                exc,
+            )
         self.authorization = AuthorizationEngine(
             conn=conn,
             approvals=self.approvals,
@@ -375,6 +399,9 @@ class AppContext:
             authorizations=self.authorizations,
             reviewer=self.reviewer,
             origin_provider=self._file_origin_for,
+            # 引擎按真实对象身份判定内部数据；登记不可用时返回空集合，路径判定兜底。
+            internal_data_identity_keys=lambda: self._internal_identity_keys(),
+            internal_data_known_paths=lambda: self._internal_identity_known_paths(),
         )
         # R9-G：统一执行前重核对服务（模式/要求/授权/审批/对象/内容/条件）；
         # 挂在 AppContext 与引擎上，执行器/审批恢复可按统一接口调用。
@@ -777,6 +804,46 @@ class AppContext:
         except OSError:  # pragma: no cover - 数据目录不可读时按已收集路径
             pass
         return paths
+
+    def _internal_identity_keys(self) -> frozenset[str]:
+        """引擎读取的 active 身份集合；登记不可用时为空（路径判定兜底）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return frozenset()
+        try:
+            return frozenset(store.active_keys())
+        except Exception:  # noqa: BLE001 - 读失败按空集合（不伪造保护范围）
+            return frozenset()
+
+    def _internal_identity_known_paths(self) -> frozenset[str]:
+        """历史登记路径（身份读取失败时不静默降级为普通文件）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return frozenset()
+        try:
+            return frozenset(store.known_paths())
+        except Exception:  # noqa: BLE001
+            return frozenset()
+
+    def refresh_internal_data_identities(self, path: object | None = None) -> dict:
+        """刷新内部数据身份登记（启动后新增/替换对象时调用；失败如实返回）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return {
+                "ok": False,
+                "reason": self.internal_data_identity_error or "身份登记不可用",
+            }
+        try:
+            if path is not None:
+                key = store.refresh_path(path, source="manual_refresh")
+                return {"ok": True, "path": str(path), "identity_key": key}
+            counts = store.sync(self._internal_data_paths(), source="manual_refresh")
+            return {"ok": True, "counts": dict(counts or {})}
+        except Exception as exc:  # noqa: BLE001 - 刷新失败保留已有登记
+            logging.getLogger(__name__).warning(
+                "内部数据身份刷新失败（保留已有登记）", exc_info=True
+            )
+            return {"ok": False, "reason": type(exc).__name__ + ": " + str(exc)}
 
     def _file_origin_for(self, path: Path) -> str | None:
         """后端持久化文件来源查询（供授权引擎核实 qio_generated / 用户材料）。
@@ -2704,7 +2771,18 @@ class AppContext:
         topic_id = getattr(ctx, "initial_topic", None)
         resolver = getattr(self, "requirement_resolver", None)
         resolution = None
-        if resolver is not None:
+        failure_class = "resolver_missing"
+        if resolver is None:
+            self._note_requirement_issue(
+                ctx,
+                code="resolution_unavailable",
+                error=RuntimeError("要求解析器未启用"),
+                message_id=message_id,
+                turn_id=turn_id,
+                model=None,
+                prompt_version=None,
+            )
+        else:
             try:
                 candidates = requirements.candidates(limit=12)
                 resolution = await resolver.resolve(
@@ -2713,7 +2791,20 @@ class AppContext:
                     turn_id=turn_id,
                     candidates=candidates,
                 )
+                if resolution is None:
+                    # 解析器返回 None / 输出未通过结构校验：同样属于“未成功解析”。
+                    failure_class = "invalid_output"
+                    self._note_requirement_issue(
+                        ctx,
+                        code="resolution_unavailable",
+                        error=RuntimeError("解析器输出非法或为空"),
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        model=getattr(resolver, "model", None),
+                        prompt_version=getattr(resolver, "prompt_version", None),
+                    )
             except Exception as exc:  # noqa: BLE001 - 解析失败按新要求继续
+                failure_class = type(exc).__name__
                 self._note_requirement_issue(
                     ctx,
                     code="resolution_unavailable",
@@ -2794,9 +2885,11 @@ class AppContext:
                         prompt_version=getattr(resolution, "prompt_version", None),
                     )
                     return None, "unavailable", limits, error
-                await self._ensure_legacy_structured_limits(
+                recovered_limits = await self._ensure_legacy_structured_limits(
                     ctx, binding, message_id=message_id, turn_id=turn_id
                 )
+                if recovered_limits is not None:
+                    limits = recovered_limits
                 return binding, "ok", limits, None
 
             if relation == "withdraw":
@@ -2831,13 +2924,15 @@ class AppContext:
             )
             return None, "unavailable", limits, error
 
-        # 解析失败/解析器缺失：按新要求登记并标 unavailable（既有行为；不关键词兜底）
+        # 解析失败/解析器缺失：按新要求登记并**显式**标 unresolved（R9-H2 §4）：
+        # 不能把"未解析成功"落成 structured/[]（那会被当成"已确认无限制"）。
         try:
-            recorded = requirements.record_user_message(
+            recorded = await self._record_unresolved_requirement(
                 text=instruction.text,
                 message_id=message_id,
                 turn_id=turn_id,
                 topic_id=topic_id,
+                failure_class=failure_class,
             )
         except Exception as exc:  # noqa: BLE001 - 台账失败不阻塞用户轮，但审查会退回审批
             error = self._note_requirement_issue(
@@ -2865,10 +2960,388 @@ class AppContext:
                 target_requirement_id=str(getattr(recorded, "requirement_id", "")) or None,
             )
             return None, "unavailable", (), error
-        await self._ensure_legacy_structured_limits(
-            ctx, binding, message_id=message_id, turn_id=turn_id
-        )
+        # 解析失败的新消息本身不立即再送模型"重新理解成 structured"（R9-H2 §4.2）；
+        # 历史恢复只针对已有 legacy/unresolved 且用户继续操作的要求，由下一次
+        # 解析成功的 new/amend 路径触发 _ensure_legacy_structured_limits。
         return binding, "unavailable", (), None
+
+    @staticmethod
+    async def _maybe_await(value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    @staticmethod
+    def _setter_parameter_names(setter: Any) -> set[str]:
+        try:
+            return set(inspect.signature(setter).parameters)
+        except (TypeError, ValueError):  # pragma: no cover - 内置/动态签名
+            return set()
+
+    async def _call_structured_setter(
+        self,
+        requirement_id: str,
+        limits: Sequence[dict],
+        *,
+        source: str,
+        state: str,
+        expected: dict | None = None,
+    ) -> Any:
+        """调用台账 setter；A 分支的 expected_* 条件参数存在才传（兼容旧分支）。"""
+        setter = getattr(self.requirements, "set_structured_limits", None)
+        if not callable(setter):
+            return None
+        kwargs: dict[str, Any] = {"source": str(source)[:300], "state": str(state)}
+        supported = self._setter_parameter_names(setter)
+        for key, value in dict(expected or {}).items():
+            if value is not None and key in supported:
+                kwargs[key] = value
+        try:
+            written = setter(requirement_id, tuple(limits), **kwargs)
+        except TypeError:
+            # 旧分支没有条件写参数：退回最小参数（调用方仍会重读核对）。
+            written = setter(requirement_id, tuple(limits), source=str(source)[:300], state=str(state))
+        return await self._maybe_await(written)
+
+    async def _record_unresolved_requirement(
+        self,
+        *,
+        text: str,
+        message_id: str | None,
+        turn_id: str,
+        topic_id: str | None,
+        failure_class: str,
+    ) -> Any:
+        """解析失败时登记新要求：显式 unresolved，绝不当成 structured/[]。
+
+        A 分支的 record_user_message 支持 structured_state/structured_source；
+        未合入时退回真实台账已有的 set_structured_limits（仍保证持久化状态一致）。
+        """
+        from agent.security import requirement_limits
+
+        source = "resolution_unavailable:" + str(failure_class or "unknown")
+        base = dict(
+            text=text,
+            message_id=message_id,
+            turn_id=turn_id,
+            topic_id=topic_id,
+        )
+        recorded = None
+        try:
+            recorded = self.requirements.record_user_message(
+                **base,
+                structured_state=requirement_limits.STATE_UNRESOLVED,
+                structured_source=source,
+            )
+            recorded = await self._maybe_await(recorded)
+        except TypeError:
+            recorded = self.requirements.record_user_message(**base)
+            recorded = await self._maybe_await(recorded)
+        requirement_id = str(getattr(recorded, "requirement_id", "") or "")
+        if not requirement_id:
+            return recorded
+        current = None
+        try:
+            current = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001 - 读不到时直接用返回值判断
+            current = recorded
+        state = str(getattr(current, "structured_limits_state", "") or "")
+        if state == requirement_limits.STATE_UNRESOLVED:
+            return current or recorded
+        try:
+            written = await self._call_structured_setter(
+                requirement_id,
+                (),
+                source=source,
+                state=requirement_limits.STATE_UNRESOLVED,
+            )
+            if written is not None:
+                return written
+        except Exception:  # noqa: BLE001 - setter 不可用/失败：继续尝试兼容写
+            logging.getLogger(__name__).warning(
+                "解析失败后的 unresolved 状态写入失败", exc_info=True
+            )
+        # 最后的兼容兜底：直接更新台账状态（绝不留成 structured/[]）。
+        conn = getattr(self.requirements, "conn", None)
+        if conn is not None:
+            try:
+                from agent.storage.db import transaction
+
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE user_requirements SET structured_limits_state = ?,"
+                        " structured_limits_source = ? WHERE id = ?",
+                        (
+                            requirement_limits.STATE_UNRESOLVED,
+                            source[:300],
+                            requirement_id,
+                        ),
+                    )
+            except Exception:  # noqa: BLE001 - 持久化失败本轮仍需继续（但状态未确认）
+                logging.getLogger(__name__).warning(
+                    "解析失败后的 unresolved 状态兼容写入失败", exc_info=True
+                )
+        return current or recorded
+
+    @staticmethod
+    def _limit_prompt_version(resolver: Any, *, chain: bool) -> str:
+        names = (
+            ("limit_extraction_chain_prompt_version", "chain_limit_extraction_prompt_version")
+            if chain
+            else ("limit_extraction_prompt_version",)
+        )
+        for name in names + ("prompt_version",):
+            value = getattr(resolver, name, None)
+            if value:
+                return str(value)
+        return "r9h2-limit-extraction-chain-v1" if chain else "r9h-limit-extraction-v1"
+
+    @staticmethod
+    def _requirement_key_state(requirement: Any) -> dict:
+        return {
+            "requirement_id": str(getattr(requirement, "requirement_id", "") or ""),
+            "version": int(getattr(requirement, "version", 0) or 0),
+            "status": str(getattr(requirement, "status", "") or ""),
+            "parent_id": (
+                None
+                if getattr(requirement, "parent_id", None) is None
+                else str(getattr(requirement, "parent_id"))
+            ),
+        }
+
+    def _append_history_notice(self, ctx: Any, message: str) -> None:
+        notices = getattr(ctx, "notices", None)
+        if isinstance(notices, list):
+            notices.append(str(message))
+
+    async def _mark_limits_unresolved(
+        self,
+        ctx: Any,
+        requirement: Any,
+        *,
+        code: str,
+        version: int | None = None,
+        chain_digest: str | None = None,
+    ) -> None:
+        """恢复失败：保留已有 known limits，写 unresolved，不覆盖为“无限制”。"""
+        from agent.security import requirement_limits
+
+        known_raw = getattr(requirement, "structured_limits", None)
+        known = tuple(
+            dict(item) for item in (known_raw or ()) if isinstance(item, dict)
+        )
+        source = str(code)
+        if chain_digest:
+            source += ";chain=" + str(chain_digest)
+        if version is not None:
+            source += ";version=" + str(version)
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        try:
+            await self._call_structured_setter(
+                requirement_id,
+                known,
+                source=source,
+                state=requirement_limits.STATE_UNRESOLVED,
+                expected={
+                    "expected_version": version,
+                    "expected_status": "active",
+                    "expected_chain_digest": chain_digest,
+                },
+            )
+        except Exception:  # noqa: BLE001 - 失败保留原状态，不阻塞本轮
+            logging.getLogger(__name__).warning(
+                "历史要求限制 unresolved 状态写入失败", exc_info=True
+            )
+        self._append_history_notice(ctx, "历史用户限制暂时无法恢复，相关操作需要确认")
+
+    @staticmethod
+    def _recovery_context_matches(
+        expected: Any, fresh: Any, requirement: Any, *, requirement_id: str, version: int
+    ) -> bool:
+        """恢复返回后重新读：id/version/status/parent/chain_digest 任一变化即丢弃。"""
+        if fresh is None or requirement is None:
+            return False
+        if str(getattr(requirement, "status", "")) != "active":
+            return False
+        if str(getattr(requirement, "requirement_id", "")) != requirement_id:
+            return False
+        if int(getattr(requirement, "version", 0) or 0) != int(version):
+            return False
+        expected_parent = getattr(expected, "parent_id", None)
+        fresh_parent = getattr(fresh, "parent_id", None)
+        if str(expected_parent or "") != str(fresh_parent or ""):
+            return False
+        expected_digest = str(getattr(expected, "chain_digest", "") or "")
+        fresh_digest = str(getattr(fresh, "chain_digest", "") or "")
+        if expected_digest and fresh_digest and expected_digest != fresh_digest:
+            return False
+        if not bool(getattr(fresh, "complete", False)):
+            return False
+        return True
+
+    async def _recover_limits_from_chain(
+        self,
+        ctx: Any,
+        requirement: Any,
+        *,
+        recovery: Any,
+        extractor: Any,
+    ) -> tuple[dict, ...] | None:
+        """A 分支：完整祖先链 + extract_limits_from_context → 条件写回。"""
+        from agent.security import requirement_limits
+
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        version = int(getattr(requirement, "version", 1) or 1)
+        try:
+            context = await self._maybe_await(recovery(requirement_id))
+        except Exception as exc:  # noqa: BLE001 - 上下文读取失败按恢复失败
+            await self._mark_limits_unresolved(
+                ctx, requirement, code="recovery_context_failed:" + type(exc).__name__, version=version
+            )
+            return None
+        if context is None or not bool(getattr(context, "complete", False)):
+            reason = str(getattr(context, "reason", "") or "上下文不完整") if context else "上下文不存在"
+            logging.getLogger(__name__).warning(
+                "历史要求限制恢复上下文不完整：%s（%s）", requirement_id, reason[:200]
+            )
+            self._append_history_notice(ctx, "历史用户限制上下文不完整，相关操作需要确认")
+            return None
+        chain_digest = str(getattr(context, "chain_digest", "") or "")
+        prompt_version = self._limit_prompt_version(self.requirement_resolver, chain=True)
+        try:
+            limits = await self._maybe_await(
+                extractor(context, requirement_id=requirement_id, version=version)
+            )
+        except Exception as exc:  # noqa: BLE001 - 失败标 unresolved，保留 known
+            await self._mark_limits_unresolved(
+                ctx,
+                requirement,
+                code="extract_limits_failed:" + type(exc).__name__,
+                version=version,
+                chain_digest=chain_digest,
+            )
+            return None
+        # 恢复结果返回后重新读 requirement/context，发生变化就丢弃。
+        fresh_requirement = None
+        fresh_context = None
+        try:
+            fresh_requirement = self.requirements.by_id(requirement_id)
+            fresh_context = await self._maybe_await(recovery(requirement_id))
+        except Exception:  # noqa: BLE001 - 读不到就不写
+            fresh_requirement = None
+            fresh_context = None
+        if not self._recovery_context_matches(
+            context, fresh_context, fresh_requirement,
+            requirement_id=requirement_id, version=version,
+        ):
+            logging.getLogger(__name__).warning(
+                "历史要求限制恢复结果已过期（要求/版本/链已变化），丢弃不写：%s",
+                requirement_id,
+            )
+            self._append_history_notice(ctx, "历史用户限制恢复结果已过期，相关操作需要确认")
+            return None
+        source = prompt_version + ";chain=" + chain_digest + ";version=" + str(version)
+        try:
+            written = await self._call_structured_setter(
+                requirement_id,
+                tuple(dict(item) for item in (limits or ()) if isinstance(item, dict)),
+                source=source,
+                state=requirement_limits.STATE_STRUCTURED,
+                expected={
+                    "expected_version": version,
+                    "expected_status": "active",
+                    "expected_chain_digest": chain_digest,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 版本变化/写失败：保留 known，不覆盖
+            await self._mark_limits_unresolved(
+                ctx,
+                fresh_requirement or requirement,
+                code="set_structured_limits_failed:" + type(exc).__name__,
+                version=version,
+                chain_digest=chain_digest,
+            )
+            return None
+        reloaded = None
+        try:
+            reloaded = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001
+            reloaded = None
+        recovered = getattr(reloaded, "structured_limits", None) if reloaded is not None else None
+        if recovered is None:
+            # 写后读不到明确限制：不能声称成功恢复；保持 unresolved。
+            await self._mark_limits_unresolved(
+                ctx,
+                fresh_requirement or requirement,
+                code="structured_limits_reload_missing",
+                version=version,
+                chain_digest=chain_digest,
+            )
+            return None
+        return tuple(dict(item) for item in recovered if isinstance(item, dict))
+
+    async def _recover_limits_legacy(
+        self, ctx: Any, requirement: Any, *, resolver: Any
+    ) -> tuple[dict, ...] | None:
+        """兼容路径（A 未合入）：只喂当前要求原话，行为与 R9-H 相同。"""
+        from agent.security import requirement_limits
+
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        version = int(getattr(requirement, "version", 1) or 1)
+        extractor = getattr(resolver, "extract_limits", None) if resolver is not None else None
+        if not callable(extractor):
+            await self._mark_limits_unresolved(
+                ctx, requirement, code="extract_limits_unavailable:missing", version=version
+            )
+            return None
+        prompt_version = self._limit_prompt_version(resolver, chain=False)
+        try:
+            limits = await self._maybe_await(
+                extractor(
+                    str(getattr(requirement, "text", "") or ""),
+                    requirement_id=requirement_id,
+                    version=version,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - 失败标 unresolved，不当无限制
+            await self._mark_limits_unresolved(
+                ctx,
+                requirement,
+                code="extract_limits_failed:" + type(exc).__name__,
+                version=version,
+            )
+            return None
+        try:
+            written = await self._call_structured_setter(
+                requirement_id,
+                tuple(dict(item) for item in (limits or ()) if isinstance(item, dict)),
+                source=prompt_version,
+                state=requirement_limits.STATE_STRUCTURED,
+                expected={"expected_version": version, "expected_status": "active"},
+            )
+        except Exception as exc:  # noqa: BLE001 - 持久化失败保持原状态（不得当无限制）
+            logging.getLogger(__name__).warning(
+                "历史要求结构化限制持久化失败", exc_info=True
+            )
+            await self._mark_limits_unresolved(
+                ctx,
+                requirement,
+                code="set_structured_limits_failed:" + type(exc).__name__,
+                version=version,
+            )
+            return None
+        reloaded = None
+        try:
+            reloaded = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001
+            reloaded = None
+        recovered = getattr(reloaded, "structured_limits", None) if reloaded is not None else None
+        if recovered is None:
+            await self._mark_limits_unresolved(
+                ctx, requirement, code="structured_limits_reload_missing", version=version
+            )
+            return None
+        return tuple(dict(item) for item in recovered if isinstance(item, dict))
 
     async def _ensure_legacy_structured_limits(
         self,
@@ -2877,78 +3350,38 @@ class AppContext:
         *,
         message_id: str | None,
         turn_id: str,
-    ) -> None:
-        """R9-H §6：历史要求（legacy/unresolved）用模型重新理解原话并持久化结构化限制。
+    ) -> tuple[dict, ...] | None:
+        """R9-H2 §3/§4：历史 legacy/unresolved 要求恢复完整结构化限制。
 
-        失败 → 标 unresolved（不得把 legacy 当无限制）；绝不阻塞本轮正常绑定。
-        依赖 C 提供的 RequirementLedger.set_structured_limits 与
-        UserRequirement.structured_limits_state/structured_limits；用 getattr 兼容。
+        * A 分支接口存在：RequirementLedger.recovery_context +
+          ModelRequirementResolver.extract_limits_from_context，走祖先链；
+        * 未合入：退回只喂当前原话的兼容路径（不阻塞、不把失败当无限制）；
+        * 成功返回本轮应使用的结构化限制；失败返回 None（状态已标 unresolved，
+          已有 known limits 保留）。
         """
         requirement = None
         try:
             requirement = self.requirements.by_id(str(getattr(binding, "requirement_id", "")))
-        except Exception:  # noqa: BLE001 - 读不到就按无历史限制处理（引擎仍会按 unresolved 把关）
+        except Exception:  # noqa: BLE001 - 读不到就按无历史限制处理（引擎仍按 unresolved 把关）
             logging.getLogger(__name__).warning("历史要求读取失败", exc_info=True)
-            return
+            return None
         if requirement is None:
-            return
+            return None
         state = str(getattr(requirement, "structured_limits_state", None) or "")
         if state not in ("legacy", "unresolved"):
-            return
+            return None
         resolver = getattr(self, "requirement_resolver", None)
-        extractor = getattr(resolver, "extract_limits", None) if resolver is not None else None
-        setter = getattr(self.requirements, "set_structured_limits", None)
-        if not callable(extractor) or not callable(setter):
-            logging.getLogger(__name__).warning(
-                "历史要求结构化限制无法重新理解（缺少 extract_limits/set_structured_limits）：%s state=%s",
-                getattr(requirement, "requirement_id", ""),
-                state,
-            )
-            return
-        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
-        version = int(getattr(requirement, "version", 1) or 1)
-        source = str(
-            getattr(resolver, "limit_extraction_prompt_version", "")
-            or "r9h-limit-extraction-v1"
+        recovery = getattr(self.requirements, "recovery_context", None)
+        chain_extractor = (
+            getattr(resolver, "extract_limits_from_context", None)
+            if resolver is not None
+            else None
         )
-        try:
-            limits = extractor(
-                str(getattr(requirement, "text", "") or ""),
-                requirement_id=requirement_id,
-                version=version,
+        if callable(recovery) and callable(chain_extractor):
+            return await self._recover_limits_from_chain(
+                ctx, requirement, recovery=recovery, extractor=chain_extractor
             )
-            if inspect.isawaitable(limits):
-                limits = await limits
-        except Exception as exc:  # noqa: BLE001 - 失败标 unresolved，不当无限制
-            code = "extract_limits_failed:" + type(exc).__name__
-            logging.getLogger(__name__).warning(
-                "历史要求限制重新理解失败（%s）：%s", code, str(exc)[:300]
-            )
-            notices = getattr(ctx, "notices", None)
-            if isinstance(notices, list):
-                notices.append("历史用户限制暂时无法恢复，相关操作需要确认")
-            try:
-                written = setter(
-                    requirement_id, (), source=code[:100], state="unresolved"
-                )
-                if inspect.isawaitable(written):
-                    await written
-            except Exception:  # noqa: BLE001 - 持久化失败也不阻塞本轮
-                logging.getLogger(__name__).warning(
-                    "历史要求限制 unresolved 状态写入失败", exc_info=True
-                )
-            return
-        try:
-            written = setter(requirement_id, tuple(limits), source=source, state="structured")
-            if inspect.isawaitable(written):
-                await written
-        except Exception:  # noqa: BLE001 - 持久化失败保持原状态（不得当无限制）
-            logging.getLogger(__name__).warning(
-                "历史要求结构化限制持久化失败", exc_info=True
-            )
-            notices = getattr(ctx, "notices", None)
-            if isinstance(notices, list):
-                notices.append("历史用户限制持久化失败，相关操作需要确认")
+        return await self._recover_limits_legacy(ctx, requirement, resolver=resolver)
 
     # -- fragment close: summary + entities + knowledge extraction --------
 
