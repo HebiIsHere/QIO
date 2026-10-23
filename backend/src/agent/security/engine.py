@@ -199,18 +199,10 @@ class AuthorizationEngine(AuthorizationGateway):
         self._enrich_origin(effect)
         verdict, reason, scope_id = self._verdict(effect, context, mode)
         needs_review = False
-        # R9-H2 §4：限制尚未可靠恢复时，unrestricted 不能把所有相关操作一律变成
-        # 人工确认（无关工作会被全部阻塞），也不能静默允许；只对这类操作复用既有
-        # 受限审查流程，由模型按真实要求语义判断。审查不可用仍退回具体确认。
-        unresolved_requirement = self._requirement_for(context)
-        unresolved_review = bool(
-            mode == PermissionMode.UNRESTRICTED
-            and verdict == Verdict.APPROVE
-            and unresolved_requirement is not None
-            and self._limits_unresolved(unresolved_requirement)
-            and self._review_candidate(effect)
-        )
-        if unresolved_review or (
+        # R9-H3 §3：普通独立授权审查只在 restricted 模式。unrestricted 的
+        # legacy/unresolved 未恢复部分由 _verdict 返回具体确认（APPROVE），
+        # 不再调用 ModelAuthorizationReviewer（不重新引入独立授权审查）。
+        if (
             mode == PermissionMode.RESTRICTED
             and verdict == Verdict.APPROVE
             and self._review_candidate(effect)
@@ -222,7 +214,6 @@ class AuthorizationEngine(AuthorizationGateway):
                 mode,
                 reason,
                 scope_id,
-                targeted_limits_review=unresolved_review,
             )
         decision = AuthDecision(
             verdict=verdict,
@@ -265,15 +256,8 @@ class AuthorizationEngine(AuthorizationGateway):
         for effect in tuples:
             self._enrich_origin(effect)
             verdict, reason, hit_scope = self._verdict(effect, context, mode)
-            unresolved_requirement = self._requirement_for(context)
-            unresolved_review = bool(
-                mode == PermissionMode.UNRESTRICTED
-                and verdict == Verdict.APPROVE
-                and unresolved_requirement is not None
-                and self._limits_unresolved(unresolved_requirement)
-                and self._review_candidate(effect)
-            )
-            if unresolved_review or (
+            # 与 authorize 同一顺序：unrestricted 不调用普通独立授权审查。
+            if (
                 mode == PermissionMode.RESTRICTED
                 and verdict == Verdict.APPROVE
                 and self._review_candidate(effect)
@@ -284,7 +268,6 @@ class AuthorizationEngine(AuthorizationGateway):
                     mode,
                     reason,
                     hit_scope,
-                    targeted_limits_review=unresolved_review,
                 )
             scope_id = scope_id or hit_scope
             if verdict == Verdict.DENY:
@@ -594,10 +577,8 @@ class AuthorizationEngine(AuthorizationGateway):
         mode: PermissionMode,
         reason: str,
         scope_id: str | None,
-        *,
-        targeted_limits_review: bool = False,
     ) -> tuple[Verdict, str, str | None, bool]:
-        """受限模式（或限制未恢复的针对性审查）把需要语义理解的操作交给模型审查。
+        """受限模式把需要语义理解的操作交给模型审查（unrestricted 不再调用）。
 
         模型不可用/超时/输出非法/对象无法核实 → 不默认允许，退回普通审批并写明原因；
         用户仍可对这条具体操作手动审批（审批单会列明对象与操作）。
@@ -704,7 +685,6 @@ class AuthorizationEngine(AuthorizationGateway):
             limits=user_limits,
             mode=mode.value,
             operation=operation,
-            targeted_limits_review=bool(targeted_limits_review),
             related_grants=related_grants,
             prior_decisions=prior_decisions,
             approvals=(),
@@ -987,8 +967,29 @@ class AuthorizationEngine(AuthorizationGateway):
     def _verdict(
         self, effect: Effect, context: AuthContext, mode: PermissionMode
     ) -> tuple[Verdict, str, str | None]:
+        """统一判定顺序（R9-H3 §2.1，单项/批量/审批恢复共用）。
+
+        1) 当前绑定要求与当前有效限制（structured；legacy/unresolved 也使用已保存
+           的 known limits；context.extra 的 resolution_limits 同）；
+        2) 先做限制冲突核对，命中即 DENY：不调用模型审查、不复用旧 allow、不进入
+           内部数据确认/普通审批；
+        3) 内部数据特殊规则、子智能体范围、永久删除、固定查询、模式；
+        4) 最后处理未恢复部分：unrestricted 对相关操作返回具体确认（APPROVE），
+           不调用普通独立授权审查；restricted 仍走原有审查。
+        """
+        # 0) 先取要求与有效限制（legacy/unresolved 的已知限制也会被 _limit_conflict 使用）。
+        requirement = self._requirement_for(context)
+        extra_limits = tuple((context.extra or {}).get("resolution_limits") or ())
+        # 1) 有效限制优先：命中即 DENY，先于内部数据/审批/模式/审查。
+        conflict = self._limit_conflict(
+            effect, requirement, extra_limits=extra_limits
+        )
+        if conflict:
+            return Verdict.DENY, conflict, None
+
         protected = self._internal_paths()
-        # 1) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
+        # 2) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
+        #    注意：有效禁止已在上一步 DENY，内部数据确认不能绕过它。
         if self._effect_is_internal(effect, protected):
             if effect.kind == EffectKind.READ:
                 if mode == PermissionMode.UNRESTRICTED:
@@ -1004,16 +1005,24 @@ class AuthorizationEngine(AuthorizationGateway):
                 + "（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）",
                 None,
             )
-        # 2) 名称/后缀/目录名不再直接决定权限（R9-H §5）：只按 AppContext 真实注册
-        #    的内部运行数据路径（上面的内部数据分支）与对象身份/路径规范化判断。
-        # 3) 子智能体范围（只能缩小，不能扩大）。
+        # 3) 名称/后缀/目录名不再直接决定权限（R9-H §5）：只按 AppContext 真实注册
+        #    的内部运行数据路径与对象身份/路径规范化判断。
+        # 4) 子智能体范围（只能缩小，不能扩大）。
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
             return Verdict.APPROVE, limit_reason, None
-        # 4) 用户结构化限制（R9-G 契约 §2/§8）：限制来自模型对用户要求的理解
-        #    （结构化 limits，如对象/操作/原因），不再扫描原话里的关键词；限制只做
-        #    拒绝，不产生许可。旧版纯文本 limits 不参与判定（不解析、不误判）。
-        requirement = self._requirement_for(context)
+        # 5) 永久删除政策（结构化删除意图，按契约 §5；模型 ALLOW/一般授权不能替代
+        #    受限模式下的明确人工确认；已知限制已在上一步优先 DENY）。
+        permanent = self._permanent_delete_decision(effect, mode, requirement)
+        if permanent is not None:
+            return permanent
+        # 6) 已验证的固定查询：三种模式直接允许；判定来自真实程序身份/argv 结构，
+        #    不按字符串搜索，也不整程序放行。
+        fixed = self._fixed_query_decision(effect)
+        if fixed is not None:
+            return fixed
+        # 7) 尚未可靠恢复的限制：unrestricted 对相关操作给出具体确认，不自动放行，
+        #    也不调用普通独立授权审查；restricted 继续走原审查/审批。
         if (
             requirement is not None
             and mode == PermissionMode.UNRESTRICTED
@@ -1026,24 +1035,7 @@ class AuthorizationEngine(AuthorizationGateway):
                 "请确认或等待重新理解后再继续（只影响相关操作）",
                 None,
             )
-        conflict = self._limit_conflict(
-            effect,
-            requirement,
-            extra_limits=tuple((context.extra or {}).get("resolution_limits") or ()),
-        )
-        if conflict:
-            return Verdict.DENY, conflict, None
-        # 5) 永久删除政策（结构化删除意图，按契约 §5；模型 ALLOW/一般授权不能替代
-        #    受限模式下的明确人工确认）。
-        permanent = self._permanent_delete_decision(effect, mode, requirement)
-        if permanent is not None:
-            return permanent
-        # 6) 已验证的固定查询：三种模式直接允许；判定来自真实程序身份/argv 结构，
-        #    不按字符串搜索，也不整程序放行。
-        fixed = self._fixed_query_decision(effect)
-        if fixed is not None:
-            return fixed
-        # 7) 三种模式。
+        # 8) 三种模式。
         if mode == PermissionMode.READ_ONLY:
             return self._read_only(effect)
         if mode == PermissionMode.UNRESTRICTED:
@@ -1064,6 +1056,10 @@ class AuthorizationEngine(AuthorizationGateway):
         EffectKind.INSTALL_DEPS: "install",
         EffectKind.SYSTEM_CHANGE: "system_change",
         EffectKind.NETWORK_EGRESS: "egress",
+        # R9-H3 §2.1：内部数据写入/维护 effect 在引擎里是独立 kind，但语义上是
+        # "写/改内部对象"；有效限制必须能命中它，不能因为 kind 不在表里而绕过
+        # 内部数据三次确认分支（对象仍按 path target 结构化核对）。
+        EffectKind.INTERNAL_DATA: "write",
     }
 
     @staticmethod
@@ -1349,6 +1345,16 @@ class AuthorizationEngine(AuthorizationGateway):
         mode = self.mode()
         self._enrich_origin(effect)
         requirement = self._requirement_for(context)
+        # R9-H3 §2.2：先按**最新**有效限制核对（legacy/unresolved 的 known limits 也生效）；
+        # 命中即 DENY，旧审批/旧 allow/内部数据确认/模式都不能覆盖有效禁止。
+        conflict = self._limit_conflict(
+            effect,
+            requirement,
+            extra_limits=tuple((context.extra or {}).get("resolution_limits") or ()),
+        )
+        if conflict:
+            return AuthDecision(verdict=Verdict.DENY, reason=conflict, effects=(effect,))
+        # 未恢复部分：unrestricted 相关操作在执行前核对也只给具体确认，不自动放行。
         if (
             requirement is not None
             and mode == PermissionMode.UNRESTRICTED
@@ -1360,13 +1366,6 @@ class AuthorizationEngine(AuthorizationGateway):
                 reason="这条用户要求的历史结构化限制尚未可靠恢复；执行前核对不自动放行",
                 effects=(effect,),
             )
-        conflict = self._limit_conflict(
-            effect,
-            requirement,
-            extra_limits=tuple((context.extra or {}).get("resolution_limits") or ()),
-        )
-        if conflict:
-            return AuthDecision(verdict=Verdict.DENY, reason=conflict, effects=(effect,))
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
             return AuthDecision(verdict=Verdict.DENY, reason=limit_reason, effects=(effect,))
