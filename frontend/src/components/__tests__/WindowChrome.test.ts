@@ -5,7 +5,8 @@
  * - 浏览器预览里不许画点了没反应的窗口按钮；设置入口是真的可用的（会进设置页）；
  * - 三个窗口按钮必须真的调到壳的窗口接口，且最大化状态跟着系统走；
  * - 按钮/字标不能长在拖拽区里面；拖拽面始终存在；
- * - 标题条只在对话页加高，离开时恢复，不影响设置/星球/互动页。
+ * - 标题条只在共用全局栏的路由（对话 / 互动）加高，离开时恢复，不影响设置/星球等页面
+ *   （互动页与挂载点的专项用例见 p1a-shared-global-bar.test.ts）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -110,7 +111,7 @@ describe("顶部全局栏布局", () => {
     w.unmount();
   });
 
-  it("离开对话页后不再显示对话页专属的设置入口", async () => {
+  it("离开共用全局栏的页面后不再显示设置入口", async () => {
     const w = await mountChrome();
     expect(w.find('button[aria-label="设置"]').exists()).toBe(true);
     setRouteName("settings");
@@ -190,7 +191,7 @@ describe("窗口控制语义不变", () => {
   });
 });
 
-describe("标题条高度只在对话页生效", () => {
+describe("标题条高度只在共用全局栏的路由生效", () => {
   it("对话页把标题条加高，离开后恢复，不波及其他页面", async () => {
     document.documentElement.style.setProperty(TITLEBAR_PROPERTY, "56px");
     const w = await mountChrome();

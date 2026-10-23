@@ -1,34 +1,59 @@
 <script setup lang="ts">
 /**
- * 底部输入区旁的模式切换入口（B）：对话模式 ⇄ 互动模式。
+ * 底部输入区旁的模式切换入口：对话模式 ⇄ 互动模式（互动页 v2 契约 §2.2）。
  *
- * 规则（契约 §6 / 任务书）：
- * - 切换的是**整个页面**（router push /interactive），不在顶部再放一个重复入口；
- * - 切换页面不取消任务、不清空草稿、不丢审批、不丢附件（这些状态都在各自的 store /
- *   本机存储里，本组件只负责导航，不碰任何业务状态），也不重复提交；
- * - 菜单里明确标出当前模式；键盘可操作（Enter / Esc）。
+ * 规则：
+ * - 同一组件显示**当前路由模式**：按钮文字与 aria-label 都跟着当前模式走，不写死对话模式；
+ * - 两个菜单项都是可导航的真实按钮（对话页能去互动页，互动页也能回对话页）；
+ *   当前项带 aria-current 与「当前」标记，非当前项写清它是什么；
+ * - 切换的是**整个页面**（router push），不在顶部再放一个重复入口；
+ * - 切换只导航：不取消任务、不清空草稿、不丢审批、不丢附件（这些状态都在各自的 store /
+ *   本机存储里），也不重复提交；点当前项不重复导航（同一地址不产生第二条历史）；
+ * - 键盘可操作（Enter / Esc）。
  */
 import { computed, onBeforeUnmount, ref } from "vue";
 import { useRouter } from "vue-router";
 
+/** 两种页面模式：菜单顺序、说明文字与目标地址只在这里写一次。 */
+interface PageMode {
+  id: "conversation" | "interactive";
+  label: string;
+  /** 切到这一页能做什么（当前项不显示这句，改为显示「当前」） */
+  note: string;
+  path: string;
+}
+
+const MODES: readonly PageMode[] = [
+  { id: "conversation", label: "对话模式", note: "边聊边整理材料", path: "/" },
+  { id: "interactive", label: "互动模式", note: "一起整理材料与关系", path: "/interactive" },
+];
+
 const router = useRouter();
 const open = ref(false);
 
-const current = computed(() => {
+/** 当前路由对应的模式；读不到路由（组件单测）时按对话模式显示。 */
+const current = computed<PageMode>(() => {
   const name = router?.currentRoute?.value?.name;
-  return name === "interactive" ? "interactive" : "conversation";
+  return MODES.find((mode) => mode.id === name) ?? MODES[0];
 });
+
+const modeButtonLabel = computed(() => `切换页面模式（当前为${current.value.label}）`);
+
+const menuItems = computed(() =>
+  MODES.map((mode) => ({ ...mode, isCurrent: mode.id === current.value.id })),
+);
 
 function toggle() {
   open.value = !open.value;
 }
 
-function goInteractive() {
+/** 只切页面：任务、草稿、审批、附件状态都不由这里清空或提交。 */
+function go(mode: PageMode) {
   open.value = false;
   if (!router) return;
-  if (router.currentRoute.value.name === "interactive") return;
-  // 只切页面：任务、草稿、审批、附件状态都不由这里清空或提交
-  void router.push("/interactive");
+  // 已经在这一页：不再 push，避免同一地址堆出两条历史记录
+  if (mode.id === current.value.id) return;
+  void router.push(mode.path);
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -84,12 +109,12 @@ function ensureOutside() {
       type="button"
       aria-haspopup="menu"
       :aria-expanded="open ? 'true' : 'false'"
-      aria-label="切换页面模式（当前为对话模式）"
+      :aria-label="modeButtonLabel"
       title="切换页面模式：对话模式 / 互动模式"
       @click="toggle"
     >
       <span class="mode-dot" aria-hidden="true"></span>
-      <span class="mode-text">{{ current === "interactive" ? "互动模式" : "对话模式" }}</span>
+      <span class="mode-text">{{ current.label }}</span>
       <span class="chev" :class="{ open }" aria-hidden="true">
         <svg viewBox="0 0 24 24">
           <path d="M6 9l6 6 6-6" />
@@ -97,14 +122,17 @@ function ensureOutside() {
       </span>
     </button>
     <ul v-if="open" class="menu" role="menu" aria-label="页面模式">
-      <li class="menu-item" role="menuitem" aria-current="true">
-        <span class="item-name">对话模式</span>
-        <span class="item-note mono">当前</span>
-      </li>
-      <li>
-        <button class="menu-item as-btn" type="button" role="menuitem" @click="goInteractive">
-          <span class="item-name">互动模式</span>
-          <span class="item-note">一起整理材料与关系</span>
+      <li v-for="item in menuItems" :key="item.id">
+        <button
+          class="menu-item as-btn"
+          type="button"
+          role="menuitem"
+          :aria-current="item.isCurrent ? 'true' : undefined"
+          :title="item.isCurrent ? '当前页面' : `切换到${item.label}`"
+          @click="go(item)"
+        >
+          <span class="item-name">{{ item.label }}</span>
+          <span class="item-note" :class="{ mono: item.isCurrent }">{{ item.isCurrent ? "当前" : item.note }}</span>
         </button>
       </li>
     </ul>
