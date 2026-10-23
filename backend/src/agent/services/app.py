@@ -2564,75 +2564,22 @@ class AppContext:
             )
         except Exception:  # noqa: BLE001 - 指令提取失败不能挡住一轮（保守=没有 grant）
             logging.getLogger(__name__).warning("instruction begin failed", exc_info=True)
-        # R9-G（契约 §3）：先由模型理解这条用户消息是新要求/补充/修正/撤回，再由
+        # R9-H（契约 §3）：先由模型理解这条用户消息是新要求/补充/修正/撤回，再由
         # 后端应用并形成**具体要求的版本绑定**；操作只使用这个绑定，不再取
         # "最近一条 active 要求"。解析器不可用/失败时按新要求继续并标注 unavailable
         # （不关键词兜底，也不静默扩大旧要求）。
         requirement_binding = None
         resolution_status = "unavailable"
         resolution_limits: tuple[dict, ...] = ()
-        requirement_id = None
-        message_id = str(getattr(ctx, "message_id", "") or "")
+        requirement_error: str | None = None
         turn_id = str(getattr(ctx, "turn_id", "") or "")
         if instruction is not None and self.requirements is not None:
-            try:
-                resolution = None
-                resolver = getattr(self, "requirement_resolver", None)
-                if resolver is not None:
-                    try:
-                        candidates = self.requirements.candidates(limit=12)
-                        resolution = await resolver.resolve(
-                            message=instruction.text,
-                            message_id=message_id,
-                            turn_id=turn_id,
-                            candidates=candidates,
-                        )
-                    except Exception as exc:  # noqa: BLE001 - 解析失败按新要求继续
-                        resolution_status = "unavailable"
-                        recorder = getattr(
-                            self.requirements, "record_resolution_failure", None
-                        )
-                        if callable(recorder):
-                            try:
-                                recorder(
-                                    error=exc,
-                                    message_id=message_id,
-                                    turn_id=turn_id,
-                                )
-                            except Exception:  # noqa: BLE001 - 审计失败不挡住用户轮
-                                logging.getLogger(__name__).warning(
-                                    "要求解析失败审计写入失败", exc_info=True
-                                )
-                        logging.getLogger(__name__).warning(
-                            "要求关系解析失败（按新要求继续，不用关键词兜底）：%s: %s",
-                            type(exc).__name__,
-                            exc,
-                        )
-                if resolution is not None:
-                    applied = self.requirements.apply_resolution(
-                        resolution, message_id=message_id, turn_id=turn_id
-                    )
-                    requirement_id = getattr(applied, "requirement_id", None) or getattr(
-                        applied, "id", None
-                    )
-                    resolution_limits = tuple(getattr(applied, "limits", ()) or ())
-                    resolution_status = "ok"
-                    binder = getattr(self.requirements, "binding_for", None)
-                    if requirement_id and callable(binder):
-                        requirement_binding = binder(str(requirement_id))
-                if requirement_binding is None and resolution is None:
-                    recorded = self.requirements.record_user_message(
-                        text=instruction.text,
-                        message_id=message_id,
-                        turn_id=turn_id,
-                        topic_id=getattr(ctx, "initial_topic", None),
-                    )
-                    requirement_id = getattr(recorded, "requirement_id", None)
-                    binder = getattr(self.requirements, "binding_for", None)
-                    if requirement_id and callable(binder):
-                        requirement_binding = binder(str(requirement_id))
-            except Exception:  # noqa: BLE001 - 台账失败不阻塞用户轮，但审查会因缺少要求退回审批
-                logging.getLogger(__name__).warning("requirement record failed", exc_info=True)
+            (
+                requirement_binding,
+                resolution_status,
+                resolution_limits,
+                requirement_error,
+            ) = await self._prepare_requirement_binding(ctx, instruction)
         # 要求解析是本轮开始前的一次模型调用；如果用户在这期间点了停止，本轮
         # 可能还没进入编排器就结束。此时仍要留下「已取消」的轮绑定（不能因为
         # 提前取消就没有任何终态记录）。
@@ -2660,6 +2607,348 @@ class AppContext:
                 self.instructions.end(instruction)
             # 轮末尝试取一条子任务通知（不打断刚结束的交流；有排队用户轮时延后）。
             self._schedule_subtask_notification_pump()
+
+    # -- R9-H：要求解析 → 有效版本绑定 → 历史限制重新理解 -------------------
+
+    @staticmethod
+    def _turn_message_id(ctx: Any) -> str | None:
+        """本轮真实用户消息 id；拿不到时为 None，**不**用 turn_id/topic_id 冒充。
+
+        解析发生在编排器写用户消息之前：新轮通常还没有 message_id；恢复/续作轮
+        ctx.user_message_id 可能已由台账恢复，此时原样使用。两者互不串用。
+        """
+        value = getattr(ctx, "user_message_id", None)
+        if value is None:
+            value = getattr(ctx, "message_id", None)
+        return None if value is None or str(value) == "" else str(value)
+
+    @staticmethod
+    def _applied_limits(applied: Any) -> tuple[dict, ...]:
+        """取 AppliedResolution 的结构化限制（C 新增 structured_limits 时优先）。"""
+        values = getattr(applied, "structured_limits", None)
+        if values is None:
+            values = getattr(applied, "limits", ())
+        return tuple(dict(item) for item in (values or ()) if isinstance(item, dict))
+
+    @staticmethod
+    def _applied_relation(applied: Any) -> str:
+        relation = getattr(applied, "relation", None)
+        return str(getattr(relation, "value", relation) or "").strip().lower()
+
+    def _binding_for_requirement(self, requirement: Any) -> Any:
+        if requirement is None or self.requirements is None:
+            return None
+        binder = getattr(self.requirements, "binding_for", None)
+        if not callable(binder):
+            return None
+        try:
+            return binder(str(getattr(requirement, "requirement_id", "")))
+        except Exception:  # noqa: BLE001 - 台账异常按"没有有效绑定"处理（需确认）
+            logging.getLogger(__name__).warning("读取要求绑定失败", exc_info=True)
+            return None
+
+    def _note_requirement_issue(
+        self,
+        ctx: Any,
+        *,
+        code: str,
+        error: Any,
+        message_id: str | None,
+        turn_id: str,
+        relation: str | None = None,
+        target_requirement_id: str | None = None,
+        model: str | None = None,
+        prompt_version: str | None = None,
+        audit: bool = True,
+    ) -> str:
+        """记录"解析成功但绑定失败"等明确错误（日志 + 轮上下文 + 台账审计）。"""
+        detail = str(code) + ": " + type(error).__name__ + ": " + str(error)[:300]
+        logging.getLogger(__name__).warning("要求解析/绑定异常（%s）：%s", code, detail)
+        notices = getattr(ctx, "notices", None)
+        if isinstance(notices, list):
+            notices.append("要求解析/绑定异常（" + str(code) + "），本轮相关操作需要确认")
+        if audit and self.requirements is not None:
+            recorder = getattr(self.requirements, "record_resolution_failure", None)
+            if callable(recorder):
+                try:
+                    recorder(
+                        error=detail,
+                        message_id=message_id or None,
+                        turn_id=turn_id or None,
+                        relation=relation,
+                        target_requirement_id=target_requirement_id,
+                        model=model,
+                        prompt_version=prompt_version,
+                    )
+                except Exception:  # noqa: BLE001 - 审计失败不挡住用户轮
+                    logging.getLogger(__name__).warning(
+                        "要求绑定失败审计写入失败", exc_info=True
+                    )
+        return detail
+
+    async def _prepare_requirement_binding(
+        self, ctx: Any, instruction: Any
+    ) -> tuple[Any, str, tuple[dict, ...], str | None]:
+        """把"这条用户消息"落实成真实要求 + 有效版本绑定（R9-H 契约 §3）。
+
+        返回 (binding, resolution_status, resolution_limits, error)。
+        * new/amend 必须用 AppliedResolution.requirement + binding_for 建立绑定；
+          建立失败 → 记录明确错误、status=unavailable，**不**回退登记另一条要求；
+        * withdraw 不绑定已撤回要求（binding=None，status=ok）；
+        * 解析失败 → 按新要求登记并标 unavailable（不扩大旧授权）；
+        * 取得绑定后按需重新理解历史结构化限制（legacy/unresolved）。
+        """
+        requirements = self.requirements
+        message_id = self._turn_message_id(ctx)
+        turn_id = str(getattr(ctx, "turn_id", "") or "")
+        topic_id = getattr(ctx, "initial_topic", None)
+        resolver = getattr(self, "requirement_resolver", None)
+        resolution = None
+        if resolver is not None:
+            try:
+                candidates = requirements.candidates(limit=12)
+                resolution = await resolver.resolve(
+                    message=instruction.text,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    candidates=candidates,
+                )
+            except Exception as exc:  # noqa: BLE001 - 解析失败按新要求继续
+                self._note_requirement_issue(
+                    ctx,
+                    code="resolution_unavailable",
+                    error=exc,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    model=getattr(resolver, "model", None),
+                    prompt_version=getattr(resolver, "prompt_version", None),
+                )
+                resolution = None
+
+        if resolution is not None:
+            resolved_relation = str(
+                getattr(getattr(resolution, "relation", None), "value", getattr(resolution, "relation", ""))
+                or ""
+            ).lower()
+            try:
+                applied = requirements.apply_resolution(
+                    resolution,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    topic_id=topic_id,
+                    message=instruction.text,
+                )
+            except Exception as exc:  # noqa: BLE001 - apply 失败不得回退登记/静默成功
+                error = self._note_requirement_issue(
+                    ctx,
+                    code="apply_resolution_failed",
+                    error=exc,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    relation=resolved_relation or None,
+                    target_requirement_id=getattr(resolution, "target_requirement_id", None),
+                    model=getattr(resolver, "model", None),
+                    prompt_version=getattr(resolution, "prompt_version", None),
+                    audit=False,  # apply_resolution 已写 rejected 审计，不重复
+                )
+                return None, "unavailable", (), error
+
+            relation = self._applied_relation(applied)
+            requirement = getattr(applied, "requirement", None)
+            limits = self._applied_limits(applied)
+            if relation in ("new", "amend"):
+                problem: Exception | None = None
+                if requirement is None:
+                    problem = RuntimeError(
+                        "AppliedResolution.requirement 为空：无法按真实要求建立绑定"
+                    )
+                else:
+                    binding = self._binding_for_requirement(requirement)
+                    if binding is None:
+                        problem = RuntimeError(
+                            "new/amend 后无法取得有效版本绑定（要求 id="
+                            + str(getattr(requirement, "requirement_id", ""))
+                            + "）"
+                        )
+                    else:
+                        requirement_version = int(getattr(requirement, "version", -1) or -1)
+                        binding_version = int(getattr(binding, "version", -1) or -1)
+                        if requirement_version != binding_version:
+                            problem = RuntimeError(
+                                "要求版本与绑定版本不一致（要求=%r，绑定=%r）"
+                                % (requirement_version, binding_version)
+                            )
+                if problem is not None:
+                    error = self._note_requirement_issue(
+                        ctx,
+                        code="binding_unavailable",
+                        error=problem,
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        relation=relation,
+                        target_requirement_id=(
+                            None
+                            if requirement is None
+                            else str(getattr(requirement, "requirement_id", "")) or None
+                        ),
+                        prompt_version=getattr(resolution, "prompt_version", None),
+                    )
+                    return None, "unavailable", limits, error
+                await self._ensure_legacy_structured_limits(
+                    ctx, binding, message_id=message_id, turn_id=turn_id
+                )
+                return binding, "ok", limits, None
+
+            if relation == "withdraw":
+                if requirement is not None and str(getattr(requirement, "status", "")) == "active":
+                    problem = RuntimeError("withdraw 后要求仍为 active，台账状态异常")
+                    error = self._note_requirement_issue(
+                        ctx,
+                        code="withdraw_state_invalid",
+                        error=problem,
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        relation=relation,
+                        target_requirement_id=str(
+                            getattr(requirement, "requirement_id", "") or ""
+                        )
+                        or None,
+                        prompt_version=getattr(resolution, "prompt_version", None),
+                    )
+                    return None, "unavailable", limits, error
+                # 撤回成功：不得绑定已撤回要求；本轮后续需要确认，不沿用旧授权。
+                return None, "ok", limits, None
+
+            problem = RuntimeError("未知的要求关系：" + str(relation))
+            error = self._note_requirement_issue(
+                ctx,
+                code="unknown_relation",
+                error=problem,
+                message_id=message_id,
+                turn_id=turn_id,
+                relation=relation or None,
+                prompt_version=getattr(resolution, "prompt_version", None),
+            )
+            return None, "unavailable", limits, error
+
+        # 解析失败/解析器缺失：按新要求登记并标 unavailable（既有行为；不关键词兜底）
+        try:
+            recorded = requirements.record_user_message(
+                text=instruction.text,
+                message_id=message_id,
+                turn_id=turn_id,
+                topic_id=topic_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - 台账失败不阻塞用户轮，但审查会退回审批
+            error = self._note_requirement_issue(
+                ctx,
+                code="fallback_record_failed",
+                error=exc,
+                message_id=message_id,
+                turn_id=turn_id,
+            )
+            return None, "unavailable", (), error
+        binding = self._binding_for_requirement(recorded)
+        if binding is None:
+            problem = RuntimeError(
+                "解析失败后登记的新要求无法取得有效绑定（要求 id="
+                + str(getattr(recorded, "requirement_id", ""))
+                + "）"
+            )
+            error = self._note_requirement_issue(
+                ctx,
+                code="fallback_binding_unavailable",
+                error=problem,
+                message_id=message_id,
+                turn_id=turn_id,
+                relation="new",
+                target_requirement_id=str(getattr(recorded, "requirement_id", "")) or None,
+            )
+            return None, "unavailable", (), error
+        await self._ensure_legacy_structured_limits(
+            ctx, binding, message_id=message_id, turn_id=turn_id
+        )
+        return binding, "unavailable", (), None
+
+    async def _ensure_legacy_structured_limits(
+        self,
+        ctx: Any,
+        binding: Any,
+        *,
+        message_id: str | None,
+        turn_id: str,
+    ) -> None:
+        """R9-H §6：历史要求（legacy/unresolved）用模型重新理解原话并持久化结构化限制。
+
+        失败 → 标 unresolved（不得把 legacy 当无限制）；绝不阻塞本轮正常绑定。
+        依赖 C 提供的 RequirementLedger.set_structured_limits 与
+        UserRequirement.structured_limits_state/structured_limits；用 getattr 兼容。
+        """
+        requirement = None
+        try:
+            requirement = self.requirements.by_id(str(getattr(binding, "requirement_id", "")))
+        except Exception:  # noqa: BLE001 - 读不到就按无历史限制处理（引擎仍会按 unresolved 把关）
+            logging.getLogger(__name__).warning("历史要求读取失败", exc_info=True)
+            return
+        if requirement is None:
+            return
+        state = str(getattr(requirement, "structured_limits_state", None) or "")
+        if state not in ("legacy", "unresolved"):
+            return
+        resolver = getattr(self, "requirement_resolver", None)
+        extractor = getattr(resolver, "extract_limits", None) if resolver is not None else None
+        setter = getattr(self.requirements, "set_structured_limits", None)
+        if not callable(extractor) or not callable(setter):
+            logging.getLogger(__name__).warning(
+                "历史要求结构化限制无法重新理解（缺少 extract_limits/set_structured_limits）：%s state=%s",
+                getattr(requirement, "requirement_id", ""),
+                state,
+            )
+            return
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        version = int(getattr(requirement, "version", 1) or 1)
+        source = str(
+            getattr(resolver, "limit_extraction_prompt_version", "")
+            or "r9h-limit-extraction-v1"
+        )
+        try:
+            limits = extractor(
+                str(getattr(requirement, "text", "") or ""),
+                requirement_id=requirement_id,
+                version=version,
+            )
+            if inspect.isawaitable(limits):
+                limits = await limits
+        except Exception as exc:  # noqa: BLE001 - 失败标 unresolved，不当无限制
+            code = "extract_limits_failed:" + type(exc).__name__
+            logging.getLogger(__name__).warning(
+                "历史要求限制重新理解失败（%s）：%s", code, str(exc)[:300]
+            )
+            notices = getattr(ctx, "notices", None)
+            if isinstance(notices, list):
+                notices.append("历史用户限制暂时无法恢复，相关操作需要确认")
+            try:
+                written = setter(
+                    requirement_id, (), source=code[:100], state="unresolved"
+                )
+                if inspect.isawaitable(written):
+                    await written
+            except Exception:  # noqa: BLE001 - 持久化失败也不阻塞本轮
+                logging.getLogger(__name__).warning(
+                    "历史要求限制 unresolved 状态写入失败", exc_info=True
+                )
+            return
+        try:
+            written = setter(requirement_id, tuple(limits), source=source, state="structured")
+            if inspect.isawaitable(written):
+                await written
+        except Exception:  # noqa: BLE001 - 持久化失败保持原状态（不得当无限制）
+            logging.getLogger(__name__).warning(
+                "历史要求结构化限制持久化失败", exc_info=True
+            )
+            notices = getattr(ctx, "notices", None)
+            if isinstance(notices, list):
+                notices.append("历史用户限制持久化失败，相关操作需要确认")
 
     # -- fragment close: summary + entities + knowledge extraction --------
 
