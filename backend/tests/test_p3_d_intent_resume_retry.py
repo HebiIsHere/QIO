@@ -366,6 +366,37 @@ def test_retry_persists_across_new_connection(tmp_path):
         conn2.close()
 
 
+def test_success_turn_does_not_leave_retry_series_running(board_env):
+    from agent.services.turn_orchestrator import TurnOrchestrator
+
+    conn = board_env
+    intent_id = _approved_intent(conn)
+    intent_service.record_retry_failure(
+        conn, board_id=BOARD, intent_ids=[intent_id], reason="temporary timeout"
+    )
+    series = intent_service.retry_state(conn, intent_id)
+    claimed = intent_service.claim_auto_retry(conn, series["series_id"])
+    assert claimed["ok"] is True
+    conn.execute("UPDATE board_intents SET status = 'paused' WHERE id = ?", (intent_id,))
+    turns = FakeTurns()
+    app = SimpleNamespace(conn=conn, turns=turns)
+    orchestrator = TurnOrchestrator(app)
+    ctx = SimpleNamespace(
+        mode="interactive",
+        notify=False,
+        board_id=BOARD,
+        board_intent_ids=(intent_id,),
+        status="completed",
+        error="",
+        cancelled=False,
+        turn_id="turn_success_without_finish",
+    )
+    orchestrator._finish_interactive_turn(ctx)
+    after = intent_service.retry_state(conn, intent_id)
+    assert after is not None
+    assert after["status"] == "stopped"
+
+
 def test_startup_recovery_releases_stale_claim_and_resumes_pending_retry(board_env):
     from agent.interactive import startup_recovery
 
@@ -406,12 +437,12 @@ def test_orchestrator_schedules_automatic_retry_after_failure(board_env):
         notify=False,
         board_id=BOARD,
         board_intent_ids=(intent_id,),
-        status="completed",
-        error="",
+        status="failed",
+        error="temporary timeout",
         cancelled=False,
         turn_id="turn_old",
     )
-    orchestrator._finish_interactive_turn(ctx)
+    orchestrator._finish_interactive_turn(ctx, failed=True)
     assert len(turns.calls) == 1, "首次失败后服务端应排一次自动重试"
     state = intent_service.retry_state(conn, intent_id)
     assert state["attempts"] == 1

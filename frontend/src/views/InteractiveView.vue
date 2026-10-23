@@ -296,8 +296,9 @@ const boardSize = computed(() => {
             :bookmarks-open="bookmarksOpen"
             @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
           />
-          <IntentStatusPopover />
-          <IntentBatchTray />
+          <!-- 新链有 IntentView 时由 IntentLayer 接管；旧托盘只服务于旧链兼容记录。 -->
+          <IntentStatusPopover v-if="!intentViews.length" />
+          <IntentBatchTray v-if="!intentViews.length" />
           <ImpactConfirmDialog />
           <IntentWorkbench v-if="workbenchOpen" @close="workbenchOpen = false" />
 

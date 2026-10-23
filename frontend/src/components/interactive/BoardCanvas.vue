@@ -2482,14 +2482,11 @@ function commitGroupResize(groupId: string, preview: GroupResizePreview): void {
     notice.value = "组框尺寸没有改动：板面没有产生改动。";
     return;
   }
-  const nextGroup = groupById(next, groupId);
-  commit(next, "调整组框尺寸（成员按比例适配）");
-  if (preview.issues.includes("min_clamped")) {
-    notice.value = "组框已停在成员最小尺寸上（成员不会小于卡片最小尺寸）。";
-  }
+  let nextGroup = groupById(next, groupId);
+  let limited = false;
   /**
-   * 缩放后的组框与其它对象重叠时如实说明（契约 §17.1：绝不为了避让移动别的卡片）。
-   * 这里仍走 A 的 avoidOverlaps 判定，limited 时说法与拖动路径一致。
+   * 缩放后若与其它对象冲突：先对**组本身**做确定性最小避让（整组平移），
+   * 不移动无关卡片、不改成员顺序；避让受限时保留用户尺寸并如实提示。
    */
   if (nextGroup) {
     const avoided = avoidOverlaps({
@@ -2497,9 +2494,28 @@ function commitGroupResize(groupId: string, preview: GroupResizePreview): void {
       others: otherBoardObjects(groupId),
       gap: DEFAULT_LAYOUT_GAP,
     });
-    if (avoided.limited) {
-      notice.value = "缩放后的组框与其它对象仍有重叠：不会自动推开别的卡片，可再调整尺寸。";
+    if (!avoided.limited && avoided.adjusted) {
+      const dx = Math.round(avoided.frame.x - nextGroup.x);
+      const dy = Math.round(avoided.frame.y - nextGroup.y);
+      const shifted = groupById(next, groupId);
+      if (shifted && (dx !== 0 || dy !== 0)) {
+        for (const cardId of shifted.members) {
+          const card = cardById(next, cardId);
+          if (!card) continue;
+          next = updateCard(next, cardId, { x: card.x + dx, y: card.y + dy });
+        }
+        nextGroup = groupById(next, groupId);
+      }
+    } else if (avoided.limited) {
+      limited = true;
     }
+  }
+  commit(next, "调整组框尺寸（成员按比例适配）");
+  if (preview.issues.includes("min_clamped")) {
+    notice.value = "组框已停在成员最小尺寸上（成员不会小于卡片最小尺寸）。";
+  }
+  if (limited) {
+    notice.value = "缩放后的组框与其它对象仍有重叠：不会无限推挤，可再调整尺寸。";
   }
 }
 

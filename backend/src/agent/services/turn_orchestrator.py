@@ -1212,6 +1212,40 @@ class TurnOrchestrator:
                 completed = [str(row["id"]) for row in rows if str(row["status"]) == "completed"]
                 if completed:
                     _intent_service.complete_retries_for_intents(conn, completed)
+                # Turn 正常结束但意图没有 completed：不能让重试系列停在 running。
+                # failed / partially_completed 记一次真实失败；其余非完成状态停止自动重试，
+                # 由用户查看实际状态后再决定，不伪造完成。
+                for row in rows:
+                    intent_id = str(row["id"])
+                    intent_status = str(row["status"])
+                    if intent_id in completed:
+                        continue
+                    series = _intent_service.retry_state(conn, intent_id)
+                    if series is None:
+                        if intent_status in ("failed", "partially_completed"):
+                            _intent_service.record_retry_failure(
+                                conn,
+                                board_id=board_id,
+                                intent_ids=[intent_id],
+                                reason="turn_ended_without_completion",
+                                turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                            )
+                        continue
+                    if intent_status in ("failed", "partially_completed"):
+                        _intent_service.record_retry_failure(
+                            conn,
+                            board_id=board_id,
+                            intent_ids=[intent_id],
+                            reason="turn_ended_without_completion",
+                            turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                        )
+                    else:
+                        _intent_service.release_retry(
+                            conn,
+                            str(series["series_id"]),
+                            status="stopped",
+                            reason="turn_ended_without_completion",
+                        )
             # 服务端调度：每轮最多排一条自动重试，避免一次失败引发并发风暴。
             # 只调度本轮真正相关的意图：聊天型互动 Turn（没有 intent_ids）不得
             # 顺手触发整板其它工作的自动重试。
