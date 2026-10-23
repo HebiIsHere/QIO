@@ -190,7 +190,6 @@ def make_request(
     mode: str,
     path: Path,
     requirement=None,
-    **legacy,
 ) -> ReviewRequest:
     requirement = requirement or ledger.record_user_message(
         text="修改报告。", message_id="m_req", turn_id="t_req"
@@ -211,7 +210,6 @@ def make_request(
         approvals=(),
         user_constraints=(),
         requirement_resolution_status="resolved",
-        **legacy,
     )
 
 
@@ -224,10 +222,16 @@ def test_review_request_no_longer_has_targeted_field(tmp_path, db_conn):
     names = {item.name for item in dataclasses.fields(ReviewRequest)}
     assert "targeted_limits_review" not in names
     ledger = RequirementLedger(db_conn)
-    request = make_request(
-        ledger, mode="unrestricted", path=tmp_path / "a.md", targeted_limits_review=True
-    )
-    assert not hasattr(request, "targeted_limits_review"), "旧 engine 传参只做兼容忽略，不保留字段"
+    # H3：字段/兼容参数都已删除；旧调用应直接 TypeError，而不是被静默忽略。
+    with pytest.raises(TypeError):
+        make_request(
+            ledger,
+            mode="unrestricted",
+            path=tmp_path / "a.md",
+            targeted_limits_review=True,
+        )
+    request = make_request(ledger, mode="unrestricted", path=tmp_path / "a.md")
+    assert not hasattr(request, "targeted_limits_review")
     payload = build_review_payload(request)
     assert "targeted_limits_review" not in payload
     assert "targeted" not in json.dumps(payload, ensure_ascii=False)

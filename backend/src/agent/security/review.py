@@ -181,16 +181,8 @@ class ReviewRequest:
         untrusted_material=(),
         requirement_resolution_status=RESOLUTION_STATUS_UNAVAILABLE,
         resolution_limits=(),
-        **legacy_kwargs,
     ) -> None:
         # R9-H3 §3：完全无限制模式的 targeted 例外已删除；普通授权审查只允许 restricted。
-        # A 分支尚未移除 engine 的传参时，这里只为兼容旧调用而忽略该关键字——
-        # 不保存为字段、不进入模型输入、不改变“只有 restricted 可审查”的判定。
-        legacy_kwargs.pop("targeted_limits_review", None)
-        if legacy_kwargs:
-            raise TypeError(
-                "ReviewRequest 不支持的字段: " + ", ".join(sorted(legacy_kwargs))
-            )
         object.__setattr__(self, "requirement", requirement)
         object.__setattr__(self, "corrections", tuple(corrections or ()))
         object.__setattr__(self, "limits", tuple(limits or ()))
