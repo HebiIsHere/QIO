@@ -213,6 +213,8 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "user_requirements.structured_limits",
         "user_requirements.structured_limits_state",
         "user_requirements.structured_limits_source",
+        # R9-H4（迁移 65）：内部数据身份生命周期依据（编号复用区分）。
+        "internal_data_identities.birth_key",
     ),
     "indexes": (
         "idx_instances_heartbeat",

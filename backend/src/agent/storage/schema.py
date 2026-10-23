@@ -1552,6 +1552,7 @@ from agent.storage.migration_r9h2_identity import (  # noqa: E402
 )
 from agent.storage.migration_r9h2_identity import MIGRATION as _R9H2_IDENTITY  # noqa: E402
 from agent.storage.migration_r9h3_review_records import MIGRATION as _R9H3_REVIEW_RECORDS  # noqa: E402
+from agent.storage.migration_r9h4_identity_birth import MIGRATION as _R9H4_IDENTITY_BIRTH  # noqa: E402
 
 MIGRATIONS.append(_R9_ATTACH)
 MIGRATIONS.append(_R9_APPROVAL)
@@ -1627,8 +1628,22 @@ MIGRATIONS.append(
     )
 )
 
+MIGRATIONS.append(_R9H4_IDENTITY_BIRTH)
+
+# 补偿入口（新，66）：补偿 64 的全部语句 + 迁移 65（birth_key），去重。
+# R9-H4 契约 §8：SCHEMA_VERSION = COMPENSATION_VERSION = 66。
+MIGRATIONS.append(
+    (
+        66,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 64 for stmt in stmts]
+            + list(_R9H4_IDENTITY_BIRTH[1])
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 64
+COMPENSATION_VERSION = 66
 
 
 
