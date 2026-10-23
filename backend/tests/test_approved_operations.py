@@ -17,6 +17,7 @@ from agent.security.operations import ExecutionContext, PendingOperation
 from agent.services.computer import ComputerSandbox
 from agent.tools import security_gate
 from agent.tools.approved_operations import register_approved_operations
+from agent.security.review import object_state_digest
 from agent.tools.base import ToolResult
 
 
@@ -602,6 +603,17 @@ async def test_attachment_write_back_really_writes_source(tmp_path, db_conn):
     }
     fingerprint = {
         "identity": resolved.identity.key,
+        # R9-H §4 契约形状：content_digest = 拟写入内容（新内容），
+        # precondition_digest = 覆盖前的对象身份 + 内容状态。
+        "content_digest": new_sha,
+        "precondition_digest": object_state_digest(
+            path=str(resolved.path),
+            exists=True,
+            identity=resolved.identity.key,
+            content_sha256=resolved.current_sha256,
+            is_directory=False,
+        ),
+        # 兼容旧字段（生产审批单同时保留；执行器按操作类型选择新内容摘要）。
         "content_sha256": resolved.current_sha256,
         "new_sha256": new_sha,
     }
