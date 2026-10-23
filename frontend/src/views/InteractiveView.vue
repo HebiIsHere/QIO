@@ -201,10 +201,10 @@ const boardSize = computed(() => {
 /* HUD 是轻量浮层，不占布局、不形成第二条标题栏。 */
 .im-board-hud {
   position: absolute;
-  top: 10px;
+  top: 52px;
   left: 12px;
   right: 12px;
-  z-index: 5;
+  z-index: 30;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -295,7 +295,7 @@ const boardSize = computed(() => {
 .im-notice.warn { color: var(--warning); }
 @media (max-width: 900px) {
   .im-count { display: none; }
-  .im-board-hud { top: 8px; left: 8px; right: 8px; }
+  .im-board-hud { top: 50px; left: 8px; right: 8px; }
   .im-hud-right { gap: 4px; }
   .im-note { max-width: 30vw; }
   .im-chip { padding: 4px 7px; }
