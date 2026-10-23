@@ -178,6 +178,38 @@ class ExecutionContext:
     expires_at: str | None = None
     #: 已完成的连续确认次数（内部运行数据为 3）；执行前重核对必须看到它。
     confirmed_stage: int = 0
+    #: R9-H4 §10：本次执行前重核对的依据（模式/要求/内容/范围/条件是否一致），
+    #: 由 authorize_started 写入，执行器/审批结果/审计共同引用（不是重新生成授权）。
+    authorization_basis: dict = field(default_factory=dict)
+
+    def replay_basis(self) -> dict:
+        """本次重放要完整传递的「原审批快照 + 操作依据」。
+
+        结束进程/程序/脚本等审批执行器必须使用它核对「本次执行 == 被批准的同一操作」；
+        不得因为拿不到快照就一律报「没有审批记录」。
+        """
+        op = self.operation
+        return {
+            "approval_id": str(self.approval_id or ""),
+            "kind": str(op.kind or ""),
+            "label": str(op.label or ""),
+            "payload": dict(op.payload or {}),
+            "effect": dict(op.effect or {}),
+            "fingerprint": dict(op.fingerprint or {}),
+            "instruction_id": op.instruction_id,
+            "instruction_text": op.instruction_text,
+            "purpose": str(op.purpose or ""),
+            "mode_at_request": str(self.mode_at_request or op.mode_at_request or ""),
+            "mode_at_approval": str(self.mode_at_approval or ""),
+            "requirement_id": op.requirement_id,
+            "requirement_version": op.requirement_version,
+            "confirmations_required": int(op.confirmations_required or 1),
+            "confirmed_stage": int(self.confirmed_stage or 0),
+            "expires_at": self.expires_at,
+            "source": str(op.source or "tool"),
+            "turn_id": op.turn_id,
+            "session_id": op.session_id,
+        }
 
     def current_mode(self) -> str:
         if self.mode_getter is None:
@@ -232,6 +264,24 @@ class ExecutionContext:
                 False,
                 "这项操作没有绑定具体用户要求，不能直接执行（需要重新判断，不是继续执行）",
             )
+        # R9-H4 §5/§10.1：绑定要求在该时刻必须仍 active 且版本一致。若已被撤回/修正/
+        # 替换，不能因为引擎「没有可对照要求」而落到更宽松的分支（尤其 unrestricted）。
+        try:
+            from agent.security.gateway import AuthContext as _AuthContext
+
+            resolver = getattr(self.engine, "_requirement_for", None)
+            if callable(resolver):
+                resolved_requirement = resolver(
+                    _AuthContext(requirement=binding, origin="background")
+                )
+                if resolved_requirement is None:
+                    return (
+                        False,
+                        "审批单绑定的用户要求已失效（被撤回/修正或版本不一致），"
+                        "本次没有执行（需要重新判断，不是继续执行）",
+                    )
+        except Exception:  # noqa: BLE001 - 核对失败按不能执行（保守）
+            return False, "执行前无法核对审批绑定的用户要求，本次没有执行"
         try:
             from agent.security.gateway import AuthContext
             from agent.tools import security_gate
@@ -259,9 +309,96 @@ class ExecutionContext:
         verdict = getattr(getattr(decision, "verdict", None), "value", None) or str(
             getattr(decision, "verdict", "")
         )
+        reason = str(getattr(decision, "reason", "") or "当前状态不再允许这次操作")
+        basis_common = {
+            "approval_id": str(self.approval_id or ""),
+            "operation_kind": str(self.operation.kind or ""),
+            "requirement_id": self.operation.requirement_id,
+            "requirement_version": self.operation.requirement_version,
+            "mode": self.current_mode(),
+            "confirmed_stage": int(self.confirmed_stage or 0),
+            "confirmations_required": int(self.operation.confirmations_required or 1),
+            "reason": reason,
+        }
         if verdict == "allow":
+            self.authorization_basis = {
+                **basis_common,
+                "kind": "recheck_allow",
+                "does_not_grant_long_term": True,
+            }
             return True, ""
-        return False, str(getattr(decision, "reason", "") or "当前状态不再允许这次操作")
+        # R9-H4 §10.1：unresolved 下用户对**这个具体操作**的有效批准可以完成本次操作。
+        # recheck_approved 已先核对最新已知限制（命中即 DENY，走不到这里）；这里的
+        # APPROVE 仅表示「历史结构化限制未可靠恢复」这一状态本身，审批单已绑定同一条
+        # 要求/版本/内容/范围/条件。因此只放行这一次批准，不改写要求、不清除未知限制、
+        # 不解除已知禁止、不形成长期授权；下一次操作仍需重新判断。
+        if verdict == "approve" and self._approve_completes_unresolved(reason):
+            self.authorization_basis = {
+                **basis_common,
+                "kind": "specific_approval_completed_unresolved",
+                "known_limits_checked": True,
+                "unresolved_requirement_kept": True,
+                "does_not_clear_unknown_limits": True,
+                "does_not_lift_known_prohibitions": True,
+                "does_not_grant_long_term": True,
+            }
+            return True, ""
+        return False, reason
+
+    def _approve_completes_unresolved(self, reason: str) -> bool:
+        """只有「unresolved 限制尚未恢复」这一种 APPROVE 可被具体批准完成。
+
+        * 必须绑定具体用户要求且当前仍 active / 版本一致（执行前核对的就是它）；
+        * 该要求必须确实处于 legacy/unresolved（不是 internal 三次确认/永久删除/
+          子智能体范围/普通确认次数不足等其它 APPROVE 原因）；
+        * 已知限制已在 recheck_approved 的 _limit_conflict 里先行 DENY，因此这里
+          不重复放行任何已知禁止。
+        """
+        if "历史结构化限制尚未可靠恢复" not in str(reason or ""):
+            return False
+        binding = self.requirement_binding()
+        if binding is None:
+            return False
+        requirement = None
+        try:
+            from agent.security.gateway import AuthContext
+
+            getter = getattr(self.engine, "_requirement_for", None)
+            if callable(getter):
+                requirement = getter(
+                    AuthContext(requirement=binding, origin="background")
+                )
+        except Exception:  # noqa: BLE001 - 读不到按不能放行（保守）
+            requirement = None
+        if requirement is None:
+            return False
+        if str(getattr(requirement, "status", "")) != "active":
+            return False
+        try:
+            if int(getattr(requirement, "version", 1) or 1) != int(binding.version):
+                return False
+        except (TypeError, ValueError):
+            return False
+        state = str(
+            getattr(requirement, "structured_limits_state", "unresolved")
+            or "unresolved"
+        )
+        return state in {"legacy", "unresolved"}
+
+
+def replay_gateway_kwargs(ctx: ExecutionContext) -> dict:
+    """Lead 接线帮助：把「原审批快照 + 操作依据」原样交给审批重放网关。
+
+    approved_operations.execute_proc_kill 等执行器应使用：
+
+        _ApprovedReplayGateway(security, **replay_gateway_kwargs(ctx))
+
+    而不是只传 security（那会因为没有 operation 快照一律报「没有审批记录」）。
+    """
+    return {
+        "operation": ctx.operation,
+        "approval_id": str(getattr(ctx, "approval_id", "") or ""),
+    }
 
 
 OperationHandler = Callable[[dict, ExecutionContext], Awaitable[ExecResult]]

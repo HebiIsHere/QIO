@@ -20,8 +20,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from agent.security.operations import ExecResult, PendingOperation, operation_digest
 from agent.storage.db import transaction
@@ -106,6 +107,30 @@ def _loads(text: Any, fallback: Any) -> Any:
     except (TypeError, ValueError):
         return fallback
     return value if isinstance(value, type(fallback)) else fallback
+
+
+@contextmanager
+def _write_transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    """审批状态写入的事务边界（BEGIN IMMEDIATE：先拿写锁，再读-核对-写）。
+
+    为什么不用 BEGIN 延迟事务：两个连接同时「读状态 → 判断 → 写」时，延迟事务会
+    在升级写锁时才冲突（busy/或读到旧值后覆盖）。这里一开始就拿写锁，把
+    「核对前一状态 + CAS 更新 + 审计」放在同一个串行区间里；真正的防丢更新仍靠
+    每条 UPDATE 的 revision/confirmed_stage CAS 条件（旧请求不能覆盖新状态）。
+    已在外层事务中时不嵌套 BEGIN（SQLite 不支持嵌套）。
+    """
+    if conn.in_transaction:
+        yield conn
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
 
 
 class ApprovalStore:
@@ -254,7 +279,12 @@ class ApprovalStore:
                     None,
                 ),
             )
-            self._audit(identifier, "created", {"kind": operation.kind, "label": operation.label})
+            self._audit(
+                identifier,
+                "created",
+                {"kind": operation.kind, "label": operation.label},
+                strict=True,
+            )
         row = self.conn.execute(
             "SELECT * FROM pending_approvals WHERE approval_id = ?", (identifier,)
         ).fetchone()
@@ -366,7 +396,12 @@ class ApprovalStore:
         return actual != expected
 
     def _ensure_waiting_binding(self, row: Any, approval_id: str) -> None:
-        """等待中的审批：过期先标 expired；操作内容被改动则重置确认并拒绝。"""
+        """等待中的审批：过期先标 expired；操作内容被改动则重置确认并拒绝。
+
+        R9-H4 §10.3：重置确认必须按「读到的前一状态（revision/confirmed_stage）」
+        做 CAS 并提交后才报错；并发中若别的请求已推进/撤销，本次不得把阶段回退，
+        而是报冲突让调用方刷新。
+        """
         if self.state_of(row) != "waiting":
             return
         if self._row_expired(row):
@@ -374,21 +409,51 @@ class ApprovalStore:
             raise ApprovalConflict(
                 "这条审批已超过原始有效期（不会重新获得 10 分钟），请重新提出"
             )
-        if self._operation_changed(row):
-            self.conn.execute(
+        if not self._operation_changed(row):
+            return
+        revision = int(row["revisions"] or 0)
+        stage = int(row["confirmed_stage"] or 0)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            current = self.get_raw(approval_id)
+            if current is None:
+                self.conn.execute("ROLLBACK")
+                raise ApprovalNotFound("没有找到这条审批（可能已被处理或已过期）")
+            if (
+                self.state_of(current) != "waiting"
+                or int(current["revisions"] or 0) != revision
+                or int(current["confirmed_stage"] or 0) != stage
+            ):
+                self.conn.execute("ROLLBACK")
+                raise ApprovalConflict(
+                    "这条审批已被其它请求更新（确认阶段或内容绑定已变化），请刷新后再确认"
+                )
+            cur = self.conn.execute(
                 "UPDATE pending_approvals SET confirmed_stage = 0,"
-                " revisions = revisions + 1 WHERE approval_id = ? AND state = 'waiting'",
-                (str(approval_id),),
+                " revisions = revisions + 1"
+                " WHERE approval_id = ? AND state = 'waiting' AND revisions = ?"
+                " AND confirmed_stage = ?",
+                (str(approval_id), revision, stage),
             )
-            self.conn.commit()
+            if int(cur.rowcount or 0) != 1:
+                self.conn.execute("ROLLBACK")
+                raise ApprovalConflict(
+                    "并发冲突：确认重置未命中（这条审批已被其它请求更新），请刷新"
+                )
             self._audit(
                 approval_id,
                 "binding_reset",
                 {"reason": "operation_changed_after_submission"},
+                strict=True,
             )
-            raise ApprovalConflict(
-                "审批单绑定的操作内容在提交后被改动；确认已重置，请重新确认"
-            )
+            self.conn.execute("COMMIT")
+        except BaseException:
+            if self.conn.in_transaction:
+                self.conn.execute("ROLLBACK")
+            raise
+        raise ApprovalConflict(
+            "审批单绑定的操作内容在提交后被改动；确认已重置，请重新确认"
+        )
 
     def decide(
         self,
@@ -422,7 +487,7 @@ class ApprovalStore:
             self._transition(
                 approval_id,
                 from_states=("waiting", "approved"),
-                expected_revision=None,
+                expected_revision=int(row["revisions"] or 0),
                 sets={
                     "state": target,
                     "status": status,
@@ -447,7 +512,8 @@ class ApprovalStore:
         self._transition(
             approval_id,
             from_states=("waiting",),
-            expected_revision=None,
+            expected_revision=int(row["revisions"] or 0),
+            expected_confirmed_stage=confirmed,
             sets={
                 "state": "approved",
                 "status": "approved",
@@ -488,8 +554,6 @@ class ApprovalStore:
             raise ApprovalConflict(
                 "确认阶段不连续：应为第 " + str(expected_stage) + " 次确认（当前 " + str(current) + "/" + str(required) + "）"
             )
-        if int(row["revisions"] or 0) != int(row["revisions"] or 0):  # pragma: no cover
-            raise ApprovalConflict("并发冲突")
         sets: dict[str, Any] = {
             "confirmed_stage": int(stage),
             "revisions": int(row["revisions"] or 0) + 1,
@@ -501,7 +565,8 @@ class ApprovalStore:
         self._transition(
             approval_id,
             from_states=("waiting",),
-            expected_revision=None,
+            expected_revision=int(row["revisions"] or 0),
+            expected_confirmed_stage=current,
             sets=sets,
             action="confirmed" if int(stage) < required else "confirm_completed",
             actor=actor,
@@ -512,30 +577,47 @@ class ApprovalStore:
     # -- 执行领取 / 收口 ----------------------------------------------------
 
     def claim(self, approval_id: str) -> dict | None:
-        """原子领取：只有 state='approved' 且未过期、操作内容未变的那一行会被改成 executing。"""
-        row = self.get_raw(approval_id)
-        if row is None:
-            return None
-        if self.state_of(row) == "approved":
+        """原子领取：只有 state='approved'、未过期、内容未变的那一行会被改成 executing。
+
+        R9-H4 §10.3：读到的 revision/confirmed_stage 作为 CAS 条件；并发领取只有一个
+        成功（另一个拿到 rowcount=0，不重复执行）。过期/内容变化在同一事务内先收口，
+        不会「先标 expired 又被另一个连接领取」。
+        """
+        with _write_transaction(self.conn):
+            row = self.get_raw(approval_id)
+            if row is None:
+                return None
+            if self.state_of(row) != "approved":
+                self._audit(
+                    approval_id,
+                    "claim_rejected",
+                    {"reason": "not_approved_or_taken", "state": self.state_of(row)},
+                )
+                return None
             if self._row_expired(row):
                 self.mark_expired(approval_id)
                 return None
             if self._operation_changed(row):
                 self.mark_invalidated(approval_id, "operation_changed_after_approval")
                 return None
-        moment = _iso(self.now())
-        cur = self.conn.execute(
-            "UPDATE pending_approvals SET state = 'executing', status = 'approved',"
-            " attempt = attempt + 1, claimed_at = ?, revisions = revisions + 1"
-            " WHERE approval_id = ? AND state = 'approved'"
-            " AND (expires_at IS NULL OR expires_at >= ?)",
-            (moment, str(approval_id), moment),
-        )
-        if int(cur.rowcount or 0) != 1:
-            self._audit(approval_id, "claim_rejected", {"reason": "not_approved_or_taken"})
-            return None
-        self._audit(approval_id, "claimed", {})
-        return self.get(approval_id)
+            revision = int(row["revisions"] or 0)
+            stage = int(row["confirmed_stage"] or 0)
+            moment = _iso(self.now())
+            cur = self.conn.execute(
+                "UPDATE pending_approvals SET state = 'executing', status = 'approved',"
+                " attempt = attempt + 1, claimed_at = ?, revisions = revisions + 1"
+                " WHERE approval_id = ? AND state = 'approved' AND revisions = ?"
+                " AND confirmed_stage = ?"
+                " AND (expires_at IS NULL OR expires_at >= ?)",
+                (moment, str(approval_id), revision, stage, moment),
+            )
+            if int(cur.rowcount or 0) != 1:
+                self._audit(
+                    approval_id, "claim_rejected", {"reason": "not_approved_or_taken"}
+                )
+                return None
+            self._audit(approval_id, "claimed", {"attempt": int(row["attempt"] or 0) + 1})
+            return self.get(approval_id)
 
     def finish(self, approval_id: str, result: ExecResult) -> dict:
         state = result.state if result.state in ("completed", "failed", "interrupted_unverified") else (
@@ -552,11 +634,23 @@ class ApprovalStore:
             "interrupted_unverified": "interrupted_unverified",
         }[state]
         detail = dict(result.detail or {})
-        with transaction(self.conn):
-            self.conn.execute(
+        with _write_transaction(self.conn):
+            row = self.get_raw(approval_id)
+            if row is None:
+                return {}
+            if self.state_of(row) != "executing":
+                # 终态只能从 executing 收口一次；迟到的旧结果不得覆盖已完成/已作废的行。
+                self._audit(
+                    approval_id,
+                    "finish_rejected",
+                    {"reason": "not_executing", "state": self.state_of(row)},
+                )
+                return self.get(approval_id) or {}
+            revision = int(row["revisions"] or 0)
+            cur = self.conn.execute(
                 "UPDATE pending_approvals SET state = ?, status = ?, result = ?, error = ?,"
                 " resolved_at = ?, revisions = revisions + 1"
-                " WHERE approval_id = ?",
+                " WHERE approval_id = ? AND state = 'executing' AND revisions = ?",
                 (
                     state,
                     status,
@@ -564,8 +658,16 @@ class ApprovalStore:
                     result.error,
                     _iso(self.now()),
                     str(approval_id),
+                    revision,
                 ),
             )
+            if int(cur.rowcount or 0) != 1:
+                self._audit(
+                    approval_id,
+                    "finish_rejected",
+                    {"reason": "revision_conflict", "expected_revision": revision},
+                )
+                return self.get(approval_id) or {}
             self.conn.execute(
                 "INSERT OR REPLACE INTO approval_history"
                 " (approval_id, kind, summary, outcome, detail, at)"
@@ -579,53 +681,127 @@ class ApprovalStore:
                     _iso(self.now()),
                 ),
             )
-            self._audit(approval_id, outcome, {"summary": result.summary, "ok": bool(result.ok)})
+            audit_detail: dict[str, Any] = {
+                "summary": result.summary,
+                "ok": bool(result.ok),
+                "state": state,
+            }
+            basis = detail.get("authorization_basis")
+            if basis:
+                audit_detail["authorization_basis"] = basis
+            self._audit(approval_id, outcome, audit_detail, strict=True)
         return self.get(approval_id) or {}
 
     def mark_invalidated(self, approval_id: str, reason: str) -> dict:
-        with transaction(self.conn):
-            self.conn.execute(
+        with _write_transaction(self.conn):
+            row = self.get_raw(approval_id)
+            if row is None:
+                return {}
+            state = self.state_of(row)
+            if state not in ("approved", "waiting", "executing"):
+                # 终态/已作废：旧请求不得再覆盖（例如执行完成后迟到的 invalidated）。
+                self._audit(
+                    approval_id,
+                    "invalidated_rejected",
+                    {"reason": str(reason or "")[:300], "state": state},
+                )
+                return self.get(approval_id) or {}
+            revision = int(row["revisions"] or 0)
+            cur = self.conn.execute(
                 "UPDATE pending_approvals SET state = 'invalidated', status = 'invalidated',"
                 " error = ?, resolved_at = ?, revisions = revisions + 1"
-                " WHERE approval_id = ? AND state IN ('approved','waiting','executing')",
-                (str(reason or ""), _iso(self.now()), str(approval_id)),
+                " WHERE approval_id = ? AND revisions = ?"
+                " AND state IN ('approved','waiting','executing')",
+                (str(reason or ""), _iso(self.now()), str(approval_id), revision),
             )
-            self._audit(approval_id, "invalidated", {"reason": str(reason or "")[:300]})
-        self._write_history(
-            approval_id,
-            summary=str(reason or "批准后重核对失败，本次未执行"),
-            outcome="invalidated",
-            detail={"reason": str(reason or "")},
-        )
+            if int(cur.rowcount or 0) != 1:
+                self._audit(
+                    approval_id,
+                    "invalidated_rejected",
+                    {"reason": "revision_conflict", "expected_revision": revision},
+                )
+                return self.get(approval_id) or {}
+            self._audit(
+                approval_id,
+                "invalidated",
+                {"reason": str(reason or "")[:300]},
+                strict=True,
+            )
+            self._write_history(
+                approval_id,
+                summary=str(reason or "批准后重核对失败，本次未执行"),
+                outcome="invalidated",
+                detail={"reason": str(reason or "")},
+            )
         return self.get(approval_id) or {}
 
     def mark_expired(self, approval_id: str) -> dict:
-        with transaction(self.conn):
-            self.conn.execute(
+        with _write_transaction(self.conn):
+            row = self.get_raw(approval_id)
+            if row is None:
+                return {}
+            state = self.state_of(row)
+            if state not in ("waiting", "approved"):
+                self._audit(
+                    approval_id, "expired_rejected", {"state": state}
+                )
+                return self.get(approval_id) or {}
+            revision = int(row["revisions"] or 0)
+            cur = self.conn.execute(
                 "UPDATE pending_approvals SET state = 'expired', status = 'timeout',"
                 " resolved_at = ?, revisions = revisions + 1"
-                " WHERE approval_id = ? AND state IN ('waiting','approved')",
-                (_iso(self.now()), str(approval_id)),
+                " WHERE approval_id = ? AND revisions = ? AND state IN ('waiting','approved')",
+                (_iso(self.now()), str(approval_id), revision),
             )
-            self._audit(approval_id, "expired", {})
+            if int(cur.rowcount or 0) != 1:
+                self._audit(
+                    approval_id,
+                    "expired_rejected",
+                    {"reason": "revision_conflict", "expected_revision": revision},
+                )
+                return self.get(approval_id) or {}
+            self._audit(approval_id, "expired", {}, strict=True)
         return self.get(approval_id) or {}
 
     def mark_interrupted_unverified(self, approval_id: str, reason: str) -> dict:
         """执行中崩溃：不自动重放，界面给「待核对」入口。"""
-        with transaction(self.conn):
-            self.conn.execute(
+        with _write_transaction(self.conn):
+            row = self.get_raw(approval_id)
+            if row is None:
+                return {}
+            if self.state_of(row) != "executing":
+                self._audit(
+                    approval_id,
+                    "interrupted_rejected",
+                    {"state": self.state_of(row)},
+                )
+                return self.get(approval_id) or {}
+            revision = int(row["revisions"] or 0)
+            cur = self.conn.execute(
                 "UPDATE pending_approvals SET state = 'interrupted_unverified',"
                 " status = 'interrupted', error = ?, resolved_at = ?, revisions = revisions + 1"
-                " WHERE approval_id = ? AND state = 'executing'",
-                (str(reason or ""), _iso(self.now()), str(approval_id)),
+                " WHERE approval_id = ? AND state = 'executing' AND revisions = ?",
+                (str(reason or ""), _iso(self.now()), str(approval_id), revision),
             )
-            self._audit(approval_id, "interrupted_unverified", {"reason": str(reason or "")[:300]})
-        self._write_history(
-            approval_id,
-            summary=str(reason or "上次进程在执行中退出，未自动重放"),
-            outcome="interrupted_unverified",
-            detail={"reason": str(reason or "")},
-        )
+            if int(cur.rowcount or 0) != 1:
+                self._audit(
+                    approval_id,
+                    "interrupted_rejected",
+                    {"reason": "revision_conflict", "expected_revision": revision},
+                )
+                return self.get(approval_id) or {}
+            self._audit(
+                approval_id,
+                "interrupted_unverified",
+                {"reason": str(reason or "")[:300]},
+                strict=True,
+            )
+            self._write_history(
+                approval_id,
+                summary=str(reason or "上次进程在执行中退出，未自动重放"),
+                outcome="interrupted_unverified",
+                detail={"reason": str(reason or "")},
+            )
         return self.get(approval_id) or {}
 
     # -- 过期 / 启动恢复 ----------------------------------------------------
@@ -725,7 +901,14 @@ class ApprovalStore:
         action: str,
         actor: str,
         detail: dict | None = None,
+        expected_confirmed_stage: int | None = None,
     ) -> None:
+        """唯一的状态推进入口：BEGIN IMMEDIATE 内「读 → 核对前一状态 → CAS → 审计」。
+
+        R9-H4 §10.3：expected_revision / expected_confirmed_stage 是**读到的旧状态**；
+        UPDATE 把它们写进 WHERE。并发时只有一个请求命中（同一个确认阶段只能推进一次），
+        旧请求不能覆盖新阶段、不能把次数改小、不能绕过撤回（revision 已被撤回动作递增）。
+        """
         allowed = set(from_states)
         if not set(from_states).issubset({"waiting", "approved", "executing"}):
             raise ValueError("invalid from_states")
@@ -738,17 +921,36 @@ class ApprovalStore:
         )
         params.append(str(approval_id))
         params.extend(from_states)
-        current = self.get_raw(approval_id)
-        if current is None:
-            raise ApprovalNotFound("没有找到这条审批")
-        if self.state_of(current) not in allowed:
-            raise ApprovalConflict("这条审批已经被处理过")
-        cur = self.conn.execute(sql, params)
-        if int(cur.rowcount or 0) != 1:
-            raise ApprovalConflict("并发冲突：这条审批已被其它请求处理，请刷新")
-        payload = {"actor": actor}
-        payload.update(detail or {})
-        self._audit(approval_id, action, payload)
+        if expected_revision is not None:
+            sql += " AND revisions = ?"
+            params.append(int(expected_revision))
+        if expected_confirmed_stage is not None:
+            sql += " AND confirmed_stage = ?"
+            params.append(int(expected_confirmed_stage))
+        with _write_transaction(self.conn):
+            current = self.get_raw(approval_id)
+            if current is None:
+                raise ApprovalNotFound("没有找到这条审批")
+            if self.state_of(current) not in allowed:
+                raise ApprovalConflict("这条审批已经被处理过")
+            if expected_revision is not None and int(
+                current["revisions"] or 0
+            ) != int(expected_revision):
+                raise ApprovalConflict(
+                    "这条审批已经被更新过（revision 不匹配），请刷新后再操作"
+                )
+            if expected_confirmed_stage is not None and int(
+                current["confirmed_stage"] or 0
+            ) != int(expected_confirmed_stage):
+                raise ApprovalConflict(
+                    "确认阶段已变化（可能已被并发推進/重置），请刷新后再确认"
+                )
+            cur = self.conn.execute(sql, params)
+            if int(cur.rowcount or 0) != 1:
+                raise ApprovalConflict("并发冲突：这条审批已被其它请求处理，请刷新")
+            payload = {"actor": actor}
+            payload.update(detail or {})
+            self._audit(approval_id, action, payload, strict=True)
 
     def _write_history(
         self,
@@ -778,7 +980,20 @@ class ApprovalStore:
         except sqlite3.Error:  # pragma: no cover - 历史失败不能挡住状态收口
             pass
 
-    def _audit(self, approval_id: str, action: str, detail: dict | None = None) -> None:
+    def _audit(
+        self,
+        approval_id: str,
+        action: str,
+        detail: dict | None = None,
+        *,
+        strict: bool = False,
+    ) -> None:
+        """写审计。
+
+        strict=True 用于「状态迁移 + 审计必须一起成功」的调用点（在 _write_transaction
+        内）：审计写不进去就抛错回滚，不允许状态变了而审计缺失。默认非 strict 只用于
+        恢复/领取代拒绝这类不影响状态迁移的诊断事件。
+        """
         try:
             row = self.conn.execute(
                 "SELECT COALESCE(MAX(seq), 0) AS m FROM approval_audit WHERE approval_id = ?",
@@ -790,5 +1005,8 @@ class ApprovalStore:
                 " VALUES (?,?,?,?,?)",
                 (str(approval_id), seq, str(action), _json(detail or {}), _iso(self.now())),
             )
-        except sqlite3.Error:  # pragma: no cover - 审计失败不能挡住状态迁移
-            pass
+        except sqlite3.Error as exc:
+            if strict:
+                raise ApprovalError(
+                    "审批审计写入失败，状态迁移已回滚（本次没有生效）"
+                ) from exc

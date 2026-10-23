@@ -725,16 +725,25 @@ class ApprovalService:
 
         with requirement_context(binding):
             result = await self.operations.execute(operation.kind, operation.payload, ctx)
+        # R9-H4 §10.1/§10.4：把这次执行前重核对的依据写进结果与审计，证明
+        # 「unresolved 下具体批准只完成这一次」不是靠猜，也没有变成长期授权。
+        basis = dict(getattr(ctx, "authorization_basis", {}) or {})
+        if basis:
+            result.detail = dict(result.detail or {})
+            result.detail["authorization_basis"] = basis
         finished = self.store.finish(approval_id, result)
         phase = "executed" if result.ok else "failed"
+        extra = {
+            "ok": bool(result.ok),
+            "summary": result.summary,
+            "detail": dict(result.detail or {}),
+        }
+        if basis:
+            extra["authorization_basis"] = basis
         await self._publish_phase(
             phase,
             finished,
-            extra={
-                "ok": bool(result.ok),
-                "summary": result.summary,
-                "detail": dict(result.detail or {}),
-            },
+            extra=extra,
         )
         await self._notify(finished, ok=bool(result.ok), summary=result.summary)
 
