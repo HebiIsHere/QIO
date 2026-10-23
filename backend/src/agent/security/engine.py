@@ -494,6 +494,31 @@ class AuthorizationEngine(AuthorizationGateway):
             "network_egress": "egress",
         }
         detail = effect.detail or {}
+        execution = dict(detail.get("execution") or {})
+        # 内容/前置状态/启动规格/删除方式/条件必须来自真实工具与执行器写入的
+        # effect.detail；不能只靠数据类字段（R9-H §4）。字段映射见 docs/r9h-contracts.md。
+        content_digest = (
+            detail.get("content_digest")
+            or detail.get("content_sha256")
+            or execution.get("content_digest")
+        )
+        precondition_digest = (
+            detail.get("precondition_digest")
+            or detail.get("base_content_sha256")
+            or execution.get("precondition_digest")
+        )
+        spec_digest = (
+            detail.get("spec_digest")
+            or execution.get("spec_digest")
+            or execution.get("launch_spec_digest")
+        )
+        delete_mode = detail.get("delete_mode")
+        if not delete_mode and effect.kind == EffectKind.DELETE:
+            delete_mode = (
+                "permanent"
+                if detail.get("permanent") is True or detail.get("permanent_delete") is True
+                else "recycle_bin"
+            )
         return ReviewOperation(
             kind=kind_map.get(effect.kind.value, effect.kind.value),
             objects=tuple(objects),
@@ -505,6 +530,15 @@ class AuthorizationEngine(AuthorizationGateway):
             ),
             network_hosts=tuple(str(item) for item in (detail.get("network_hosts") or [])),
             summary=str(effect.purpose or "")[:300],
+            spec_digest=(str(spec_digest) if spec_digest else None),
+            content_digest=(str(content_digest) if content_digest else None),
+            precondition_digest=(
+                str(precondition_digest) if precondition_digest else None
+            ),
+            delete_mode=(str(delete_mode) if delete_mode else None),
+            conditions=tuple(
+                item for item in (detail.get("conditions") or ()) if isinstance(item, dict)
+            ),
         )
 
     def _permanent_delete_pending(self, effect: Effect) -> bool:
@@ -644,19 +678,33 @@ class AuthorizationEngine(AuthorizationGateway):
             known = {item.name for item in _dc.fields(ReviewRequest)}
         except Exception:  # noqa: BLE001
             known = set(request_kwargs)
+        requirement_state = str(
+            getattr(requirement, "structured_limits_state", "structured") or "structured"
+        )
         resolution_raw = str(
-            (context.extra or {}).get("requirement_resolution_status") or "unavailable"
+            (context.extra or {}).get("requirement_resolution_status")
+            or (
+                "resolved"
+                if requirement_state == "structured"
+                else "unavailable"
+            )
         )
         resolution_status = "resolved" if resolution_raw in ("ok", "resolved") else (
             resolution_raw if resolution_raw in ("resolved", "unavailable", "not_attempted") else "unavailable"
+        )
+        context_limits = tuple(
+            (context.extra or {}).get("resolution_limits") or ()
+        )
+        requirement_limits = tuple(
+            item
+            for item in (getattr(requirement, "structured_limits", None) or ())
+            if isinstance(item, dict)
         )
         optional_kwargs = {
             "requirement_version": requirement_version,
             "resolution_status": resolution_status,
             "requirement_resolution_status": resolution_status,
-            "resolution_limits": tuple(
-                (context.extra or {}).get("resolution_limits") or ()
-            ),
+            "resolution_limits": context_limits or requirement_limits,
             "related_requirements": (),
             "condition_evidence": tuple(
                 (context.extra or {}).get("condition_evidence") or ()
@@ -885,23 +933,8 @@ class AuthorizationEngine(AuthorizationGateway):
                 + "（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）",
                 None,
             )
-        # 2) 凭据 / 版本库内部数据：读取红线；直接改写按内部数据规则。
-        sensitive = any(
-            internal_data.is_sensitive_credential_path(target.value)
-            for target in effect.targets
-            if target.kind == "path"
-        )
-        if sensitive:
-            if effect.kind == EffectKind.READ:
-                if mode == PermissionMode.UNRESTRICTED:
-                    return Verdict.ALLOW, "完全无限制模式下允许读取；仍受系统账户权限约束", None
-                return Verdict.DENY, "凭据与版本库内部数据不能通过文件工具读取", None
-            if effect.kind in MUTATING_EFFECTS:
-                return (
-                    Verdict.APPROVE,
-                    "这是凭据/版本库内部数据，直接改写需要你连续三次确认（后端校验确认状态）",
-                    None,
-                )
+        # 2) 名称/后缀/目录名不再直接决定权限（R9-H §5）：只按 AppContext 真实注册
+        #    的内部运行数据路径（上面的内部数据分支）与对象身份/路径规范化判断。
         # 3) 子智能体范围（只能缩小，不能扩大）。
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
@@ -910,6 +943,18 @@ class AuthorizationEngine(AuthorizationGateway):
         #    （结构化 limits，如对象/操作/原因），不再扫描原话里的关键词；限制只做
         #    拒绝，不产生许可。旧版纯文本 limits 不参与判定（不解析、不误判）。
         requirement = self._requirement_for(context)
+        if (
+            requirement is not None
+            and mode == PermissionMode.UNRESTRICTED
+            and self._limits_unresolved(requirement)
+            and effect.kind in self._LIMIT_OPERATION_NAMES
+        ):
+            return (
+                Verdict.APPROVE,
+                "这条用户要求的历史结构化限制尚未可靠恢复；本次不自动执行，"
+                "请确认或等待重新理解后再继续（只影响相关操作）",
+                None,
+            )
         conflict = self._limit_conflict(
             effect,
             requirement,
@@ -968,6 +1013,19 @@ class AuthorizationEngine(AuthorizationGateway):
         except (OSError, ValueError):
             return False
 
+    @staticmethod
+    def _limits_unresolved(requirement: Any) -> bool:
+        """历史/无法可靠恢复的结构化限制不得当作“明确无限制”（R9-H §6）。"""
+        if requirement is None:
+            return False
+        state = str(
+            getattr(requirement, "structured_limits_state", "structured") or "structured"
+        )
+        structured = getattr(requirement, "structured_limits", ())
+        if state in {"legacy", "unresolved"}:
+            return True
+        return structured is None
+
     def _limit_conflict(
         self,
         effect: Effect,
@@ -975,17 +1033,18 @@ class AuthorizationEngine(AuthorizationGateway):
         *,
         extra_limits: Sequence[dict] = (),
     ) -> str | None:
-        """检查模型理解出的结构化用户限制是否覆盖这次操作（只做拒绝）。
+        """检查结构化用户限制是否覆盖这次操作（只做拒绝，不产生许可）。
 
-        限制存于 requirement.limits（JSON list[dict]）：
-        {"operations": ["write", ...], "objects": [{"kind":"path|path_prefix","value":...}],
-         "reason": "..."}。旧版纯文本 limits 不参与判定（R9-G 契约 §10 兼容策略）。
+        R9-H：限制来自 requirement.structured_limits（持久化 JSON）；旧版纯文本
+        limits 不解析、不参与判定。历史 NULL/legacy 由 _limits_unresolved 单独处理。
         """
-        limits = list(getattr(requirement, "limits", ()) or ()) if requirement is not None else []
-        limits.extend(extra_limits or ())
-        if not limits or any(isinstance(item, (str, bytes)) for item in limits):
-            # 旧版纯文本 limits 不参与判定（不解析、不误判）；结构化限制可混排。
-            limits = [item for item in limits if isinstance(item, dict)]
+        structured = (
+            getattr(requirement, "structured_limits", None)
+            if requirement is not None
+            else None
+        )
+        limits = [dict(item) for item in (structured or ()) if isinstance(item, dict)]
+        limits.extend(item for item in (extra_limits or ()) if isinstance(item, dict))
         if not limits:
             return None
         operation = self._LIMIT_OPERATION_NAMES.get(effect.kind)
@@ -1214,6 +1273,17 @@ class AuthorizationEngine(AuthorizationGateway):
         mode = self.mode()
         self._enrich_origin(effect)
         requirement = self._requirement_for(context)
+        if (
+            requirement is not None
+            and mode == PermissionMode.UNRESTRICTED
+            and self._limits_unresolved(requirement)
+            and effect.kind in self._LIMIT_OPERATION_NAMES
+        ):
+            return AuthDecision(
+                verdict=Verdict.APPROVE,
+                reason="这条用户要求的历史结构化限制尚未可靠恢复；执行前核对不自动放行",
+                effects=(effect,),
+            )
         conflict = self._limit_conflict(
             effect,
             requirement,
