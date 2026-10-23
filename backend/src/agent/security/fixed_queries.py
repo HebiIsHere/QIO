@@ -330,6 +330,27 @@ def _real_path(path: str) -> Path | None:
         return None
 
 
+#: POSIX 系统安装目录：npm/pnpm 等常以符号链接指向脚本入口（npm -> npm-cli.js）。
+#: 只对这些目录下的同族入口放宽"真实文件名同族"比对；cwd/临时/用户目录仍拒绝。
+_TRUSTED_POSIX_BIN_DIRS = (
+    "/usr/bin",
+    "/usr/local/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+    "/opt/homebrew/bin",
+    "/opt/local/bin",
+)
+
+
+def _is_trusted_posix_entry(path: str) -> bool:
+    try:
+        parent = str(Path(str(path)).parent)
+    except (OSError, ValueError):
+        return False
+    return any(parent == root for root in _TRUSTED_POSIX_BIN_DIRS)
+
+
 def _identity_problem(facts: FixedQueryFacts) -> str | None:
     """真实程序身份校验：不存在/不是文件/同名替身/位于 cwd 或临时目录 → 拒绝。"""
     raw_path = str(facts.program_path or "").strip()
@@ -349,9 +370,16 @@ def _identity_problem(facts: FixedQueryFacts) -> str | None:
     if not display_name:
         return "程序文件名为空"
     if _basename(str(real)) and _normalize_name(str(real)) != display_name:
-        # 符号链接允许（python3 -> python3.11），但必须属于同一已知程序族
+        # 符号链接允许（python3 -> python3.11），但必须属于同一已知程序族。
+        # POSIX 系统安装目录下的包管理器入口（/usr/local/bin/npm -> npm-cli.js）
+        # 属于已知族且入口受系统目录约束，允许；用户目录/cwd/临时目录仍拒绝。
         if _family(_normalize_name(str(real))) != _family(display_name):
-            return "真实程序文件名与请求的程序身份不一致（可能同名替身）"
+            if not (
+                _family(display_name) is not None
+                and _is_trusted_posix_entry(raw_path)
+                and not WINDOWS
+            ):
+                return "真实程序文件名与请求的程序身份不一致（可能同名替身）"
     requested = _normalize_name(facts.program_name)
     if requested and _family(requested) != _family(display_name):
         return "请求的程序与真实解析出的程序不是同一身份（可能同名替身）"

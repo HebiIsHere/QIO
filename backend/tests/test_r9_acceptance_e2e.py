@@ -41,11 +41,36 @@ def app_client(db_conn, settings: Settings, tmp_path):
         yield client
 
 
+def _binding_for_client(client: TestClient):
+    """R9-G：工具调用必须绑定具体用户要求（生产由 turn 要求解析建立）。"""
+    binding = getattr(client, "_r9g_binding", None)
+    if binding is not None:
+        return binding
+    from types import SimpleNamespace
+
+    ctx = client.app.state.ctx
+    requirement = ctx.requirements.record_user_message(
+        text="按我的要求执行这次操作", message_id="msg_r9", turn_id="turn_r9"
+    )
+    binder = getattr(ctx.requirements, "binding_for", None)
+    binding = binder(requirement.requirement_id) if callable(binder) else None
+    if binding is None:
+        binding = SimpleNamespace(
+            requirement_id=requirement.requirement_id,
+            version=int(getattr(requirement, "version", 1) or 1),
+        )
+    client._r9g_binding = binding
+    return binding
+
+
 def _exec(client: TestClient, name: str, arguments: dict):
     async def _do():
-        return await client.app.state.ctx.registry.execute(
-            ToolCall(id="call_e2e", name=name, arguments=arguments)
-        )
+        from agent.security.context import requirement_context
+
+        with requirement_context(_binding_for_client(client)):
+            return await client.app.state.ctx.registry.execute(
+                ToolCall(id="call_e2e", name=name, arguments=arguments)
+            )
 
     return client.portal.call(_do)
 

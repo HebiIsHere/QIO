@@ -41,7 +41,14 @@ async def test_restore_agent_tool_after_restart(tmp_path):
     assert tool is not None, "agent tool should be restored after restart"
     # 新语义（契约 §2.3/§5.3）：自建工具每次调用要经审批。第一次调用必须返回
     # pending（不是直接执行）；批准后由审批执行器重跑管线拿到真实结果。
-    pending = await tool.run(x=41)
+    from agent.security.context import requirement_context
+
+    requirement = ctx2.requirements.record_user_message(
+        text="试用重启后恢复的工具", message_id="msg_restore", turn_id="turn_restore"
+    )
+    binding = ctx2.requirements.binding_for(requirement.requirement_id)
+    with requirement_context(binding):
+        pending = await tool.run(x=41)
     assert pending.ok is True and pending.code == "pending_approval", pending
     approval_id = pending.data["approval_id"]
     await ctx2.approvals.decide(approval_id, "approve")
