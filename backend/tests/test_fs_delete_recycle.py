@@ -5,11 +5,13 @@
 * 回收站失败/不可用 → 文件保留、如实报告；
 * QIO 生成文件（引擎 allow）→ 直接进回收站；
 * 只读模式 → 中文拒绝且文件保留；
-* run_program / run_shell 的 rm/del/erase/rd/rmdir/Remove-Item 等一律拒绝（所有模式）。
+* 命令行永久删除：read_only 拒绝；restricted 必须有明确人工确认（模型 ALLOW 不可替代）；
+  unrestricted 允许；shell 含管道/重定向/串联/嵌套时不视为可解析的永久删除（普通流程）。
 """
 
 from __future__ import annotations
 
+import sys
 import types
 
 import pytest
@@ -186,62 +188,150 @@ async def test_fs_delete_requires_at_least_one_path(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# 命令行永久删除一律拒绝（所有模式）
+# 命令行永久删除（R9-G 契约 §5）：read_only 拒绝 / restricted 明确人工确认 /
+# unrestricted 允许；模型 ALLOW 不可替代人工确认；shell 控制字符 → 普通流程
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "program,args",
-    [
-        ("rm", ["-rf", "/tmp/x"]),
-        ("del", ["/f", "/s", "/q", "x.txt"]),
-        ("erase", ["x.txt"]),
-        ("rd", ["/s", "/q", "somedir"]),
-        ("rmdir", ["somedir"]),
-        ("cmd", ["/c", "del", "x.txt"]),
-        ("powershell", ["-Command", "Remove-Item", "x.txt"]),
-    ],
-)
-async def test_run_program_refuses_permanent_delete(tmp_path, program, args):
-    target = tmp_path / "x.txt"
-    target.write_text("keep", encoding="utf-8")
-    tool = RunProgramTool(computer=_sandbox(tmp_path), security=FakeGateway())
+def _delete_command(path) -> str:
+    if sys.platform == "win32":
+        return "del /f /q " + str(path)
+    return "rm -f " + str(path)
 
-    result = await tool.run(program=program, args=args)
+
+def _delete_dir_command(path) -> str:
+    if sys.platform == "win32":
+        return "rd /s /q " + str(path)
+    return "rm -rf " + str(path)
+
+
+@pytest.mark.asyncio
+async def test_restricted_permanent_delete_requires_explicit_confirmation(tmp_path):
+    """模型 ALLOW 不能替代明确人工确认：restricted 下永久删除必须提交审批单。"""
+    target = tmp_path / "victim.txt"
+    target.write_text("keep", encoding="utf-8")
+    gateway = FakeGateway()  # 默认 execute=ALLOW（模拟模型/一般授权允许）
+    tool = RunCmdTool(computer=_sandbox(tmp_path), security=gateway)
+
+    result = await tool.run(cmd=_delete_command(target))
+
+    assert result.ok is True and result.code == "pending_approval"
+    assert "永久删除" in (result.content or "")
+    assert target.exists(), "待确认时不得先删除"
+    assert len(gateway.submitted) == 1, "必须提交一条明确的永久删除审批"
+    operation = gateway.submitted[0]
+    assert operation.payload["explicit_confirmation_required"] is True
+    assert operation.payload["permanent_delete"]["permanent"] is True
+    assert operation.payload["recycle_bin"] is False
+    assert operation.payload["irreversible"] is True
+    assert "永久删除" in (operation.label or "")
+    assert operation.fingerprint.get("explicit_confirmation_required") is True
+    assert operation.fingerprint.get("permanent_delete", {}).get("warning")
+
+
+@pytest.mark.asyncio
+async def test_read_only_permanent_delete_is_denied(tmp_path):
+    target = tmp_path / "victim.txt"
+    target.write_text("keep", encoding="utf-8")
+    gateway = FakeGateway(mode="read_only")
+    tool = RunCmdTool(computer=_sandbox(tmp_path), security=gateway)
+
+    result = await tool.run(cmd=_delete_command(target))
 
     assert result.ok is False
-    assert "不通过命令行永久删除文件" in (result.error or "")
-    assert result.code == "permanent_delete_blocked"
+    assert result.code == "readonly_execution_denied"
     assert target.exists()
+    assert gateway.submitted == [], "只读模式不得提交永久删除审批"
+    assert gateway.effects == [], "只读模式在执行层就拒绝，不进入引擎判定"
+
+
+@pytest.mark.asyncio
+async def test_unrestricted_permanent_delete_is_allowed(tmp_path):
+    target = tmp_path / "victim.txt"
+    target.write_text("delete me", encoding="utf-8")
+    gateway = FakeGateway(mode="unrestricted")
+    tool = RunCmdTool(computer=_sandbox(tmp_path), security=gateway)
+
+    result = await tool.run(cmd=_delete_command(target), timeout=60)
+
+    assert result.ok is True, (result.error, result.content)
+    assert not target.exists(), "完全无限制模式允许永久删除"
+    assert gateway.submitted == [], "无限制模式不需要额外确认"
+
+
+@pytest.mark.asyncio
+async def test_discussion_text_does_not_trigger_permanent_delete(tmp_path):
+    """讨论/引用/输出里出现 rm/del 等文字不改变授权（不全文搜索命令文字）。"""
+    gateway = FakeGateway()
+    tool = RunCmdTool(computer=_sandbox(tmp_path), security=gateway)
+
+    result = await tool.run(cmd="echo rm -rf /tmp/x")
+
+    assert result.code != "pending_approval"
+    assert gateway.submitted == []
+    assert result.ok is True
+    assert "rm -rf /tmp/x" in (result.content or "")
+
+    # run_program：argv 里出现 "rm -rf" 字样但程序身份不是删除程序 → 不触发
+    program_tool = RunProgramTool(computer=_sandbox(tmp_path), security=FakeGateway())
+    program_result = await program_tool.run(program="git", args=["log", "--grep", "rm -rf"])
+    assert program_result.code != "pending_approval"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "cmd",
     [
-        "rm -rf /tmp/x",
-        "del /f /s /q x.txt",
-        "erase x.txt",
-        "rd /s /q somedir",
-        "rmdir somedir",
-        "Remove-Item x.txt",
-        "powershell -Command Remove-Item x.txt",
+        "echo hi | rm -f x",
+        "echo hi > rm.txt",
+        "echo hi && rm -f x",
+        "echo hi; rm -f x",
     ],
 )
-async def test_run_shell_refuses_permanent_delete(tmp_path, cmd):
-    tool = RunCmdTool(computer=_sandbox(tmp_path), security=FakeGateway())
+async def test_shell_control_chars_are_not_parseable_permanent_delete(tmp_path, cmd):
+    """shell 含管道/重定向/串联 → 不视为可解析的永久删除（走普通流程）。"""
+    gateway = FakeGateway()
+    tool = RunCmdTool(computer=_sandbox(tmp_path), security=gateway)
 
     result = await tool.run(cmd=cmd)
 
-    assert result.ok is False
-    assert "不通过命令行永久删除文件" in (result.error or "")
-    assert result.code == "permanent_delete_blocked"
+    assert result.code != "pending_approval", "含控制字符的 shell 不属于可解析的永久删除"
+    assert gateway.submitted == []
 
 
 @pytest.mark.asyncio
-async def test_non_delete_commands_are_not_blocked(tmp_path):
-    """拒绝只针对永久删除：普通只读命令不受影响。"""
-    tool = RunCmdTool(computer=_sandbox(tmp_path), security=FakeGateway())
-    result = await tool.run(cmd="echo hi")
-    assert result.code != "permanent_delete_blocked"
+async def test_internal_data_three_confirmations_priority_over_permanent_delete(tmp_path):
+    """内部运行数据：三次确认优先，不叠加第四次确认。"""
+    internal = tmp_path / "qio-data"
+    internal.mkdir()
+    victim = internal / "qio.db"
+    victim.write_text("db", encoding="utf-8")
+    gateway = FakeGateway()
+    gateway.internal_data_paths = [internal]
+    tool = RunCmdTool(computer=_sandbox(tmp_path), security=gateway)
+
+    result = await tool.run(cmd=_delete_command(victim))
+
+    assert result.ok is True and result.code == "pending_approval"
+    assert len(gateway.submitted) == 1, "只提交一次审批（三次确认，不叠加第四次）"
+    operation = gateway.submitted[0]
+    assert operation.confirmations_required == 3
+    assert operation.payload.get("permanent_delete", {}).get("permanent") is True
+    assert "永久删除" in (operation.label or "")
+    assert victim.exists(), "确认前不得删除内部数据"
+
+
+@pytest.mark.asyncio
+async def test_nested_shell_delete_goes_through_normal_flow(tmp_path):
+    """run_program 用 shell 程序包装删除（嵌套）：不属可解析的永久删除，走普通流程。"""
+    gateway = FakeGateway()
+    tool = RunProgramTool(computer=_sandbox(tmp_path), security=gateway)
+    if sys.platform == "win32":
+        program, args = "cmd", ["/c", "del", str(tmp_path / "missing.txt")]
+    else:
+        program, args = "sh", ["-c", "rm -f " + str(tmp_path / "missing.txt")]
+
+    result = await tool.run(program=program, args=args, timeout=60)
+
+    assert result.code != "pending_approval"
+    assert gateway.submitted == []

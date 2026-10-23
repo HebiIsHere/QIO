@@ -23,10 +23,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import platform
 import sys
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from agent.security import deletion, fixed_queries
 from agent.security import launch as launch_boundary
 from agent.tools import isolation, proc_cleanup, security_gate
 from agent.tools.approval import DEFAULT_TIMEOUT_SECONDS, refusal_reason
@@ -45,53 +49,259 @@ _TERM_VERIFY_SECONDS = 10.0
 # 合并输出里 stderr 的分隔标记（不写反斜杠转义，保持与旧格式一致）。
 _STDERR_DELIM = chr(10) + "[stderr]" + chr(10)
 
-# 永久删除类程序/命令：**所有模式一律拒绝**（QIO 契约 §0.8：用户业务文件删除一律进
-# 系统回收站）。这是有意的能力限制：rm/del/erase/rd/rmdir/Remove-Item 等无法保证可恢复，
-# 也无法可靠地「还原到回收站」；宁可少一条能力，也不允许命令行绕过回收规则。
-PERMANENT_DELETE_PROGRAMS = frozenset(
-    {"rm", "del", "erase", "rd", "rmdir", "remove-item", "ri", "unlink", "shred"}
+#: 永久删除（不进回收站、不可恢复）的审批警告文案（审批单与结果都要出现）。
+_PERMANENT_DELETE_WARNING = (
+    "永久删除：不会进入系统回收站、不可恢复。只在你明确确认这组具体对象后才执行。"
 )
-_SHELL_PROGRAMS = frozenset(
-    {"cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
-     "sh", "bash", "dash", "zsh", "wsl", "wsl.exe"}
-)
-_PERMANENT_DELETE_MESSAGE = (
-    "QIO 不通过命令行永久删除文件：删除操作会进系统回收站。"
-    "请使用 fs_delete 工具发起删除（必要时会先让你确认）。"
+
+_REQUIREMENT_BINDING_ATTRS = (
+    "current_requirement_binding",
+    "requirement_binding",
+    "current_requirement",
 )
 
 
-def _program_basename(value: Any) -> str:
-    text = str(value or "").strip().strip('"')
-    if not text:
-        return ""
-    return text.replace("\\", "/").rsplit("/", 1)[-1].lower()
+def _requirement_record_from_value(value: Any) -> dict:
+    """RequirementBinding/UserRequirement/dict → {requirement_id, requirement_version}。"""
+    if value is None:
+        return {"requirement_id": None, "requirement_version": None, "source": "unavailable"}
+    if isinstance(value, dict):
+        requirement_id = value.get("requirement_id") or value.get("id")
+        version = value.get("requirement_version", value.get("version"))
+        source = str(value.get("source") or "binding")
+    else:
+        requirement_id = getattr(value, "requirement_id", None) or getattr(value, "id", None)
+        version = getattr(value, "requirement_version", getattr(value, "version", None))
+        source = "binding"
+    try:
+        version_int = int(version) if version is not None else None
+    except (TypeError, ValueError):
+        version_int = None
+    return {
+        "requirement_id": str(requirement_id) if requirement_id else None,
+        "requirement_version": version_int,
+        "source": source,
+    }
 
 
-def _command_tokens(value: Any) -> list[str]:
-    import re
+def current_requirement_binding_record(security: Any = None) -> dict:
+    """当前操作绑定的用户要求（契约 §3 上下文绑定；Lead 接线点）。
 
-    return [tok for tok in re.split(r"[^\w\-\.]+", str(value or "").lower()) if tok]
+    读取顺序：security.context 的 RequirementBinding contextvar（契约接口）→ 显式注入
+    到 security 引擎/网关上的绑定（AppContext、审批执行器可注入）→ 无法获得时
+    requirement_id=None（**不**回退“数据库最近一条 active 要求”）。
+    """
+    try:
+        from agent.security import context as security_context
+    except Exception:  # noqa: BLE001 - 上下文模块不可用按未绑定处理
+        security_context = None
+    if security_context is not None:
+        for attr in _REQUIREMENT_BINDING_ATTRS:
+            holder = getattr(security_context, attr, None)
+            if holder is None:
+                continue
+            try:
+                value = holder.get() if hasattr(holder, "get") else holder
+            except Exception:  # noqa: BLE001
+                value = None
+            record = _requirement_record_from_value(value)
+            if record.get("requirement_id"):
+                return record
+    if security is not None:
+        for attr in _REQUIREMENT_BINDING_ATTRS:
+            holder = getattr(security, attr, None)
+            if holder is None:
+                continue
+            try:
+                value = holder() if callable(holder) else holder
+            except Exception:  # noqa: BLE001
+                value = None
+            record = _requirement_record_from_value(value)
+            if record.get("requirement_id"):
+                return record
+    return {"requirement_id": None, "requirement_version": None, "source": "unavailable"}
 
 
-def _permanent_delete_program_reason(program: str, args: list[str] | None = None) -> str | None:
-    """run_program：永久删除类程序（或经 shell 包装的删除命令）一律拒绝。"""
-    name = _program_basename(program)
-    if name in PERMANENT_DELETE_PROGRAMS:
-        return _PERMANENT_DELETE_MESSAGE
-    if name in _SHELL_PROGRAMS:
-        for token in _command_tokens(" ".join(str(a) for a in (args or []))):
-            if token in PERMANENT_DELETE_PROGRAMS:
-                return _PERMANENT_DELETE_MESSAGE
-    return None
+def verify_requirement_binding_record(
+    record: Any, *, security: Any = None, engine: Any = None
+) -> tuple[bool, str]:
+    """执行前核对要求绑定是否仍有效（修正/撤回/版本变化/不存在 → 失效）。
+
+    优先用 W1 的 RequirementLedger.validate_binding（契约 §3）；未合入时退回
+    by_id + status/version 的只读核对；没有任何台账/上下文证据时**不默认放行**。
+    """
+    data = _requirement_record_from_value(record)
+    requirement_id = data.get("requirement_id")
+    version = data.get("requirement_version")
+    if not requirement_id:
+        return (
+            False,
+            "审批单没有绑定用户要求（缺少 requirement_id），无法可靠恢复：需要重新判断（新审批）",
+        )
+    ledger = None
+    for owner in (engine, security):
+        if owner is None:
+            continue
+        ledger = getattr(owner, "requirements", None)
+        if ledger is not None:
+            break
+    if ledger is not None:
+        validator = getattr(ledger, "validate_binding", None)
+        if callable(validator):
+            try:
+                from agent.security.requirements import RequirementBinding
+
+                binding = RequirementBinding(
+                    requirement_id=str(requirement_id),
+                    version=int(version or 0),
+                )
+            except Exception:  # noqa: BLE001 - W1 版本接口尚未合入时退回只读检查
+                binding = None
+            if binding is not None:
+                try:
+                    if validator(binding):
+                        return True, ""
+                    return False, "用户要求已被修正/撤回或版本已变化（按最新状态处理）"
+                except Exception as exc:  # noqa: BLE001 - 核对失败按不能确认处理
+                    return (
+                        False,
+                        "要求版本核对失败（不能确认是否仍有效）：" + type(exc).__name__,
+                    )
+        by_id = getattr(ledger, "by_id", None)
+        if callable(by_id):
+            try:
+                requirement = by_id(str(requirement_id))
+            except Exception:  # noqa: BLE001
+                requirement = None
+            if requirement is None:
+                return False, "绑定的用户要求不存在（可能已被替换/撤回）：需要重新判断"
+            status = str(getattr(requirement, "status", "") or "")
+            if status != "active":
+                return False, "绑定的用户要求已不是 active 状态（被修正/撤回/替换）：需要重新判断"
+            current_version = getattr(requirement, "version", None)
+            if current_version is not None and version is not None:
+                try:
+                    if int(current_version) != int(version):
+                        return False, "用户要求版本已变化：需要按最新要求重新判断"
+                except (TypeError, ValueError):
+                    return False, "用户要求版本无法核对"
+            return True, ""
+    current = current_requirement_binding_record(security=security)
+    current_id = current.get("requirement_id")
+    if current_id:
+        same_id = current_id == requirement_id
+        same_version = (
+            current.get("requirement_version") == version
+            or current.get("requirement_version") is None
+            or version is None
+        )
+        if same_id and same_version:
+            return True, ""
+        return False, "当前用户要求与审批单绑定的要求不一致：需要按最新要求重新判断"
+    return False, "无法核对用户要求版本（要求台账/上下文未接线）：需要重新判断"
 
 
-def _permanent_delete_shell_reason(cmd: str) -> str | None:
-    """run_shell：命令里出现永久删除类命令一律拒绝（不交给 shell 执行）。"""
-    for token in _command_tokens(cmd):
-        if token in PERMANENT_DELETE_PROGRAMS:
-            return _PERMANENT_DELETE_MESSAGE
-    return None
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _operation_fingerprint_value(
+    *, mode: str, operation_kind: str, execution: dict, delete_intent: Any
+) -> str:
+    """操作指纹：优先 review.operation_fingerprint（契约 §7 单一实现），否则等价自算。"""
+    try:
+        from agent.security.review import ReviewObject, ReviewOperation, operation_fingerprint
+
+        objects = []
+        for item in (delete_intent.objects if delete_intent is not None else ()):
+            objects.append(ReviewObject(kind="path", value=item.path, identity_key=item.identity))
+        cwd = execution.get("cwd")
+        if cwd:
+            objects.append(ReviewObject(kind="path", value=str(cwd)))
+        raw_argv = execution.get("argv")
+        if not raw_argv and execution.get("shell_cmd"):
+            raw_argv = [str(execution.get("shell_cmd"))]
+        operation = ReviewOperation(
+            kind="shell" if execution.get("shell") else "execute",
+            objects=tuple(objects),
+            program=(
+                str(execution.get("program_path"))
+                if execution.get("program_path")
+                else (str(execution.get("program_name") or "") or None)
+            ),
+            argv=tuple(str(item) for item in (raw_argv or ())),
+            cwd=(str(cwd) if cwd else None),
+            script_sha256=(
+                str(execution["script_sha256"]) if execution.get("script_sha256") else None
+            ),
+            network_hosts=(),
+            summary=str(operation_kind),
+        )
+        return operation_fingerprint(operation, mode=mode)
+    except Exception:  # noqa: BLE001 - 审查模块不可用时用等价摘要（含全部绑定维度）
+        payload = {
+            "mode": mode,
+            "operation_kind": operation_kind,
+            "execution": _jsonable(execution),
+            "delete_identity_set": (
+                [list(item) for item in delete_intent.identity_set()]
+                if delete_intent is not None
+                else []
+            ),
+        }
+        raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def build_operation_binding_record(
+    *,
+    requirement: dict,
+    mode: str,
+    operation_kind: str,
+    execution: dict,
+    delete_intent: Any = None,
+    authorization_id: str | None = None,
+) -> dict:
+    """契约 §7 OperationBinding 的 dict 形式（审批单/授权记录/队列项共用同一份）。"""
+    content_digests = [list(item) for item in (execution.get("content_digests") or ())]
+    if delete_intent is not None:
+        for item in delete_intent.objects:
+            content_digests.append([item.path, str(item.identity or "")])
+    return {
+        "requirement": {
+            "requirement_id": requirement.get("requirement_id"),
+            "version": requirement.get("requirement_version"),
+        },
+        "mode": str(mode),
+        "operation_kind": str(operation_kind),
+        "fingerprint": _operation_fingerprint_value(
+            mode=mode,
+            operation_kind=operation_kind,
+            execution=execution,
+            delete_intent=delete_intent,
+        ),
+        "spec_digest": execution.get("spec_digest"),
+        "content_digests": content_digests,
+        "conditions": [],
+        "authorization_id": authorization_id,
+        "delegation": None,
+        "permanent_delete": (
+            None
+            if delete_intent is None
+            else {
+                "permanent": True,
+                "verified": bool(delete_intent.verified),
+                "method": delete_intent.method,
+                "identity_set": [list(item) for item in delete_intent.identity_set()],
+            }
+        ),
+    }
 
 
 def _merged_text(stdout: str, stderr: str) -> str:
@@ -227,6 +437,151 @@ class _CmdTool(Tool):
         except Exception:  # noqa: BLE001 - 识别失败不阻断：launcher 会做同一次识别
             return []
 
+    # -- R9-G：结构化执行事实 / 固定查询 / 永久删除事实 ---------------------
+
+    def _execution_facts(self, spec, *, shell: bool) -> dict:
+        """从真实 LaunchSpec 生成执行事实（固定查询/永久删除/绑定都基于它）。"""
+        facts = launch_boundary.build_spec_facts(spec, computer=self.computer)
+        program_facts = dict(facts.get("program_facts") or {})
+        program_path = str(program_facts.get("resolved") or "") or None
+        program_name = ""
+        if program_path:
+            program_name = program_path.replace(chr(92), "/").rsplit("/", 1)[-1]
+        if not program_name and not shell:
+            requested = str(getattr(spec, "program", "") or "").strip().strip(chr(34))
+            if requested:
+                program_name = requested.replace(chr(92), "/").rsplit("/", 1)[-1]
+        if shell:
+            program_name = program_name or "shell"
+        argv = [str(item) for item in tuple(getattr(spec, "argv", ()) or ())]
+        argument_files = list(facts.get("argument_files") or ())
+        content_digests: list[list[str]] = []
+        if program_facts.get("sha256"):
+            content_digests.append(
+                ["program:" + str(program_path), str(program_facts["sha256"])]
+            )
+        for item in argument_files:
+            if isinstance(item, dict) and item.get("sha256"):
+                content_digests.append([str(item.get("path")), str(item.get("sha256"))])
+        script_sha = ""
+        if argument_files:
+            script_sha = hashlib.sha256(
+                json.dumps(argument_files, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()
+        cwd_value = getattr(spec, "cwd", None)
+        cwd_resolved = None
+        if cwd_value:
+            try:
+                cwd_resolved = str(Path(str(cwd_value)).resolve())
+            except (OSError, ValueError):
+                cwd_resolved = str(cwd_value)
+        return {
+            "kind": "shell" if shell else "program",
+            "program_path": program_path,
+            "program_name": program_name,
+            "argv": [] if shell else argv,
+            "cwd": cwd_resolved,
+            "shell": bool(shell),
+            "shell_cmd": getattr(spec, "shell_cmd", None) if shell else None,
+            "spec_digest": launch_boundary.compute_spec_digest(spec, computer=self.computer),
+            "program_sha256": program_facts.get("sha256"),
+            "argument_files": argument_files,
+            "script_sha256": script_sha or None,
+            "content_digests": content_digests,
+        }
+
+    def _fixed_query(self, execution: dict):
+        """固定查询分类器（契约 §4 单一来源；不搜索文字、只看真实身份+argv 结构）。"""
+        facts = fixed_queries.FixedQueryFacts(
+            kind=str(execution.get("kind") or "program"),
+            program_path=execution.get("program_path"),
+            program_name=str(execution.get("program_name") or ""),
+            argv=tuple(str(item) for item in (execution.get("argv") or ())),
+            cwd=execution.get("cwd"),
+            shell=bool(execution.get("shell")),
+        )
+        return fixed_queries.classify_fixed_query(facts)
+
+    def _delete_intent(self, execution: dict):
+        """永久删除结构化识别（契约 §5；不全文搜索命令文字）。"""
+        return deletion.detect_delete_intent(
+            effect_kind="execute",
+            detail={"execution": execution},
+        )
+
+    def _requirement_binding(self) -> dict:
+        return current_requirement_binding_record(self.security)
+
+    def _delete_binding(self, intent) -> dict | None:
+        if intent is None or not bool(getattr(intent, "permanent", False)):
+            return None
+        objects = [item.as_dict() for item in intent.objects]
+        shown = "、".join(item.path for item in intent.objects[:5])
+        if not shown:
+            shown = "（命令含展开/引用/嵌套，无法可靠列出对象集合）"
+        return {
+            "intent": intent.as_dict(),
+            "identity_set": [list(item) for item in intent.identity_set()],
+            "objects": objects,
+            "verified": bool(intent.verified),
+            "warning": _PERMANENT_DELETE_WARNING,
+            "recycle_bin": False,
+            "irreversible": True,
+            "label": "永久删除（不可恢复，不进回收站）：" + shown,
+            "purpose": "用户明确确认的永久删除操作（对象身份与动作摘要进入审批指纹）",
+        }
+
+    def _execute_effect(
+        self,
+        *,
+        tool: str,
+        program: str,
+        args: list[str],
+        cwd: str | None,
+        shell: bool,
+        execution: dict,
+        delete_intent,
+        purpose: str,
+    ):
+        """EXECUTE effect：detail 携带启动方从真实 LaunchSpec 生成的结构化事实。"""
+        targets = []
+        if shell:
+            targets.append(security_gate.program_target("shell"))
+        else:
+            targets.append(
+                security_gate.program_target(str(execution.get("program_path") or program))
+            )
+        if cwd:
+            targets.append(security_gate.path_target(str(cwd)))
+        if delete_intent is not None:
+            for item in delete_intent.objects:
+                targets.append(
+                    security_gate.path_target(
+                        item.path, identity=item.identity, exists=True
+                    )
+                )
+        detail = {
+            "program": execution.get("program_path") or program,
+            "argv": (
+                [str(program), *[str(item) for item in args]]
+                if not shell
+                else ["shell", *[str(item) for item in args]]
+            ),
+            "cwd": cwd,
+            "shell": bool(shell),
+            "command": execution.get("shell_cmd") if shell else None,
+            "script_sha256": execution.get("script_sha256"),
+            "execution": execution,
+            "delete_intent": None if delete_intent is None else delete_intent.as_dict(),
+        }
+        return security_gate.make_effect(
+            security_gate.EffectKind.EXECUTE,
+            targets,
+            purpose=purpose,
+            tool=tool,
+            detail=detail,
+        )
+
     def _pending_facts(
         self,
         kind: str,
@@ -235,11 +590,17 @@ class _CmdTool(Tool):
         *,
         risk: str | None = None,
         internal_roots=(),
+        execution: dict | None = None,
+        delete_intent: Any = None,
+        mode: str | None = None,
     ) -> dict:
-        """审批单指纹：重放前用它重核对 payload/程序身份/digest（重放网关消费）。"""
+        """审批单指纹：操作绑定 + 要求绑定 + spec/内容摘要（执行前重核对消费）。"""
         facts = launch_boundary.build_spec_facts(spec, computer=self.computer)
         program_facts = facts.get("program_facts") or {}
-        return {
+        execution = dict(execution or {})
+        requirement = self._requirement_binding()
+        binding_mode = str(mode or self._mode())
+        data = {
             "kind": kind,
             "argv": (
                 [str(spec.program or ""), *[str(item) for item in spec.argv]]
@@ -253,7 +614,18 @@ class _CmdTool(Tool):
             "allowed_roots": list(self._write_roots()),
             "payload_digest": _payload_digest(payload),
             "internal_data_roots": list(internal_roots),
+            "requirement": requirement,
+            "operation_binding": build_operation_binding_record(
+                requirement=requirement,
+                mode=binding_mode,
+                operation_kind=kind,
+                execution=execution,
+                delete_intent=delete_intent,
+            ),
         }
+        if delete_intent is not None:
+            data["delete_intent"] = delete_intent.as_dict()
+        return data
 
     def _permit_for(
         self,
@@ -327,11 +699,19 @@ class _CmdTool(Tool):
                 recoverable=False,
             )
         if ticket is not None:
+            extra = {
+                "internal_data_roots": mentions,
+                "confirmations_required": security_gate.INTERNAL_DATA_CONFIRMATIONS,
+            }
+            delete_data = fingerprint.get("delete_intent") or {}
+            if delete_data.get("permanent"):
+                extra["permanent_delete"] = delete_data
+                extra["warning"] = _PERMANENT_DELETE_WARNING
             return security_gate.pending_result(
                 ticket,
                 operation_label=label,
                 confirmations_required=security_gate.INTERNAL_DATA_CONFIRMATIONS,
-                extra={"internal_data_roots": mentions},
+                extra=extra,
             )
         return ToolResult(
             ok=False,
@@ -439,24 +819,94 @@ class _CmdTool(Tool):
         result = await self._new_launcher().launch(spec, permit, enforce_write_scope=False)
         return self._launch_result_to_tool(result, label=label, program=program)
 
-    def _readonly_program_proof(self, program: str, args: list[str]) -> str | None:
-        """只读模式下「能可靠证明只读」的 run_program：白名单 + shell=False + 无元字符。
-
-        返回 None = 可以执行；返回中文原因 = 执行层拒绝（不是引擎判定，而是
-        执行层无法证明只读时的兜底 —— 契约 §2.3 read_only）。
-        """
-        if self.computer is None:
-            return "当前环境没有可用的程序风险分类器，无法证明这个程序只读"
+    async def _submit_permanent_delete_operation(
+        self, *, pending, effect, mode: str, delete_binding: dict
+    ) -> ToolResult | None:
+        """restricted 模式的永久删除：必须由用户对**这组具体对象**明确确认。"""
+        if pending is None:
+            return ToolResult(
+                ok=False,
+                error=(
+                    "永久删除需要明确的人工确认，但当前没有可提交的审批操作："
+                    "本次没有执行（没有任何文件被删除）。"
+                ),
+                category="permission",
+                recoverable=False,
+                code="permanent_delete_confirmation_unavailable",
+            )
+        kind, _label, payload, fingerprint = pending
+        if self.security is None:
+            legacy_payload = dict(payload)
+            legacy_payload.update(
+                {
+                    "action": legacy_payload.get("action") or kind,
+                    "permanent_delete": delete_binding["intent"],
+                    "explicit_confirmation_required": True,
+                    "warning": _PERMANENT_DELETE_WARNING,
+                }
+            )
+            return await self._legacy_approve(legacy_payload, "永久删除被拒绝")
+        explicit_payload = dict(payload)
+        explicit_payload.update(
+            {
+                "permanent_delete": delete_binding["intent"],
+                "explicit_confirmation_required": True,
+                "recycle_bin": False,
+                "irreversible": True,
+                "warning": _PERMANENT_DELETE_WARNING,
+            }
+        )
+        explicit_fingerprint = dict(fingerprint)
+        explicit_fingerprint.update(
+            {
+                "explicit_confirmation_required": True,
+                "permanent_delete": delete_binding,
+                # 明确确认改变了 payload（增加了确认标记/警告），摘要必须同步重算，
+                # 否则执行前 payload 重核对会把合法审批误判为被篡改。
+                "payload_digest": _payload_digest(explicit_payload),
+            }
+        )
+        operation = security_gate.build_pending_operation(
+            kind=kind,
+            label=str(delete_binding["label"]),
+            payload=explicit_payload,
+            effect=effect,
+            fingerprint=explicit_fingerprint,
+            purpose=str(delete_binding["purpose"]),
+            mode_at_request=mode,
+            confirmations_required=1,
+            instruction=security_gate.instruction_snapshot(self.security),
+        )
         try:
-            argv_risk = self.computer.classify_argv(program, args)
-        except Exception:  # noqa: BLE001 - 分类失败即无法证明
-            return "无法证明这个程序只读（风险分类失败）"
-        risk_value = getattr(argv_risk, "value", str(argv_risk))
-        if risk_value != "low":
-            return "这个程序的参数不是可证明的只读形态（只读模式只允许白名单程序的只读用法）"
-        if any(meta in str(program) for meta in ("|", ">", "<", "&", ";", "`", "$(")):
-            return "程序名里含有 shell 元字符"
-        return None
+            ticket = await security_gate.submit_pending(self.security, operation)
+        except Exception as exc:  # noqa: BLE001 - 提交失败不能假装已提交
+            return ToolResult(
+                ok=False,
+                error=f"提交永久删除审批失败：{type(exc).__name__}: {exc}（本次没有执行）",
+                category="permission",
+                recoverable=False,
+            )
+        if ticket is not None:
+            return security_gate.pending_result(
+                ticket,
+                operation_label=str(delete_binding["label"]),
+                extra={
+                    "permanent_delete": delete_binding["intent"],
+                    "warning": _PERMANENT_DELETE_WARNING,
+                    "explicit_confirmation_required": True,
+                    "confirmations_required": 1,
+                },
+            )
+        return ToolResult(
+            ok=False,
+            error=(
+                "永久删除需要明确的人工确认，但当前没有可用的审批执行器："
+                "本次没有执行（没有任何文件被删除）。"
+            ),
+            category="permission",
+            recoverable=False,
+            code="approval_unavailable",
+        )
 
     async def _legacy_approve(self, payload: dict, denied: str) -> ToolResult | None:
         if self.approvals is None:
@@ -494,10 +944,13 @@ class _CmdTool(Tool):
         pending: tuple | None = None,
         readonly_allowed: bool = False,
         readonly_reason: str = "",
+        permanent_delete: dict | None = None,
     ) -> ToolResult | None:
-        """统一执行入口：read_only 执行层兜底 + 网关判定 + 待审批提交。
+        """统一执行入口：只读层兜底 + 网关判定 + 待审批提交 + 永久删除确认。
 
-        返回 None 表示可以执行；返回 ToolResult 表示应当直接返回（拒绝/待审批）。
+        永久删除政策（契约 §5）：read_only 由只读兜底拒绝；restricted 必须由用户对
+        同一组具体对象明确确认 —— 模型 ALLOW/一般授权记录不能替代（只有 decision 带
+        authorization_record/approval_id 的明确人工确认可直接复用）；unrestricted 放行。
         """
         mode = self._mode()
         if mode == "read_only" and not readonly_allowed:
@@ -516,14 +969,31 @@ class _CmdTool(Tool):
             if legacy_verdict == "deny":
                 return ToolResult(ok=False, error=denied)
             if legacy_verdict == "approve":
-                return await self._legacy_approve(legacy_payload, denied)
+                merged = dict(legacy_payload)
+                if permanent_delete is not None:
+                    merged["permanent_delete"] = permanent_delete["intent"]
+                    merged["explicit_confirmation_required"] = True
+                    merged["warning"] = _PERMANENT_DELETE_WARNING
+                return await self._legacy_approve(merged, denied)
             return None
         decision = await security_gate.authorize(self.security, effect)
         verdict = security_gate.verdict_of(decision)
-        if verdict == "allow":
-            return None
         if verdict == "deny":
             return security_gate.denied_result(decision, denied)
+        if permanent_delete is not None and mode == "restricted":
+            if verdict == "allow":
+                explicit_reference = security_gate.approval_id_of(decision)
+                if explicit_reference:
+                    # 来自明确人工确认记录的复用（契约 §5 复用条款）
+                    return None
+            return await self._submit_permanent_delete_operation(
+                pending=pending,
+                effect=effect,
+                mode=mode,
+                delete_binding=permanent_delete,
+            )
+        if verdict == "allow":
+            return None
         if pending is not None:
             kind, label, pending_payload, fingerprint = pending
             operation = security_gate.build_pending_operation(
@@ -556,7 +1026,6 @@ class _CmdTool(Tool):
             recoverable=False,
             code="approval_unavailable",
         )
-
 
 class RunProgramTool(_CmdTool):
     """安全路径：argv 白名单，不经 shell。"""
@@ -596,16 +1065,6 @@ class RunProgramTool(_CmdTool):
         if not isinstance(raw_args, (list, tuple)):
             return ToolResult(ok=False, error="args 必须是字符串数组")
         args = [str(a) for a in raw_args]
-        # 契约 §0.8：永久删除类程序一律拒绝（所有模式），删除只能走 fs_delete → 系统回收站。
-        delete_block = _permanent_delete_program_reason(program, args)
-        if delete_block:
-            return ToolResult(
-                ok=False,
-                error=delete_block,
-                category="permission",
-                recoverable=False,
-                code="permanent_delete_blocked",
-            )
         # Lead 接线（契约 1）：把请求里的 cwd 交给裁决 —— cwd 内同名替身
         # 不能仅凭程序名得到自动放行（resolve_program 会因此升级 HIGH）。
         cwd_arg = str(kwargs.get("cwd") or "") or None
@@ -614,10 +1073,8 @@ class RunProgramTool(_CmdTool):
         verdict, risk = self.computer.command_verdict_for_program(
             program, args, cwd=cwd_arg
         )
-        # 执行层兜底（契约 §2.3 read_only）：只有白名单 + shell=False 的只读
-        # argv 才允许在只读模式下执行；其余明确拒绝，不静默降级。
-        proof = self._readonly_program_proof(program, args) if mode == "read_only" else None
-        # 契约 §3.3：真实启动的东西由 LaunchSpec 描述；授权后 permit 绑定它的摘要。
+        # 契约 §3.3：真实启动由 LaunchSpec 描述；§4 固定查询 / §5 永久删除 / 操作绑定
+        # 全部只从这里的真实事实生成（不采信模型文本、不搜索命令文字）。
         spec = launch_boundary.LaunchSpec(
             kind="program",
             program=program,
@@ -625,26 +1082,71 @@ class RunProgramTool(_CmdTool):
             cwd=cwd_arg,
             timeout=timeout,
         )
-        effect = security_gate.execute_effect(
-            "run_program",
-            program,
-            args,
+        execution = self._execution_facts(spec, shell=False)
+        fixed_query = self._fixed_query(execution)
+        delete_intent = self._delete_intent(execution)
+        delete_binding = self._delete_binding(delete_intent)
+        internal_roots = self._internal_mentions(" ".join([program, *args]))
+        execution["internal_data_roots"] = internal_roots
+        requirement = self._requirement_binding()
+        label = (
+            str(delete_binding["label"])
+            if delete_binding is not None
+            else f"运行程序 {program}"
+        )
+        effect = self._execute_effect(
+            tool="run_program",
+            program=program,
+            args=args,
             cwd=cwd_arg,
             shell=False,
-            purpose="运行程序（argv 白名单、shell=False）",
-            detail={"risk": risk.value},
+            execution=execution,
+            delete_intent=delete_intent,
+            purpose="运行程序（程序身份/argv 结构化判定；shell=False）",
         )
-        payload = {"program": program, "args": args, "cwd": cwd_arg, "risk": risk.value}
+        payload: dict[str, Any] = {
+            "program": program,
+            "args": args,
+            "cwd": cwd_arg,
+            "risk": risk.value,
+            "operation_kind": "proc.run_program",
+            "operation_summary": label,
+            "requirement_binding": requirement,
+            "execution_facts": {
+                "kind": execution.get("kind"),
+                "program_path": execution.get("program_path"),
+                "program_name": execution.get("program_name"),
+                "cwd": execution.get("cwd"),
+                "shell": False,
+                "spec_digest": execution.get("spec_digest"),
+                "script_sha256": execution.get("script_sha256"),
+            },
+        }
+        if fixed_query is not None:
+            # 仅供审计展示：引擎会自己用 effect.detail 重新分类，不采信本字段。
+            payload["fixed_query_kind"] = fixed_query.kind
+        if delete_binding is not None:
+            payload.update(
+                {
+                    "permanent_delete": delete_binding["intent"],
+                    "explicit_confirmation_required": True,
+                    "warning": _PERMANENT_DELETE_WARNING,
+                }
+            )
         fingerprint = self._pending_facts(
             "proc.run_program",
             spec,
             payload,
             risk=risk.value,
-            internal_roots=self._internal_mentions(" ".join([program, *args])),
+            internal_roots=internal_roots,
+            execution=execution,
+            delete_intent=delete_intent,
+            mode=mode,
         )
+        # 内部运行数据三次确认优先（不叠加第四次）；确认前不执行。
         internal_pending = await self._submit_internal_data_operation(
             kind="proc.run_program",
-            label=f"运行程序 {program}",
+            label=label,
             spec=spec,
             payload=payload,
             fingerprint=fingerprint,
@@ -653,23 +1155,37 @@ class RunProgramTool(_CmdTool):
         )
         if internal_pending is not None:
             return internal_pending
-        pending = ("proc.run_program", f"运行程序 {program}", payload, fingerprint)
+        fixed_ok = fixed_query is not None and delete_binding is None
+        readonly_allowed = (mode != "read_only") or fixed_ok
+        readonly_reason = (
+            "只读模式只允许固定查询（程序版本/当前目录/系统基础信息/目录列表/文件属性）："
+            "这条命令的程序身份/argv 结构不属固定查询"
+            + ("；永久删除在只读模式一律拒绝" if delete_binding is not None else "")
+            + "。本次已拒绝（没有任何程序被执行）。"
+        )
+        pending = ("proc.run_program", label, payload, fingerprint)
         blocked = await self._authorize_execution(
             effect,
             legacy_verdict=verdict,
-            legacy_payload={"action": "run_program", "program": program, "args": args, "risk": risk.value},
+            legacy_payload={
+                "action": "run_program",
+                "program": program,
+                "args": args,
+                "risk": risk.value,
+                "permanent_delete": (
+                    None if delete_binding is None else delete_binding["intent"]
+                ),
+            },
             denied=f"程序在当前模式下被拒绝（{risk.value}）",
             pending=pending,
-            readonly_allowed=proof is None,
-            readonly_reason=(
-                "只读模式下只能执行可证明只读的程序（白名单 + shell=False）："
-                f"{proof}。本次已拒绝。"
-            ),
+            readonly_allowed=readonly_allowed,
+            readonly_reason=readonly_reason,
+            permanent_delete=delete_binding,
         )
         if blocked is not None:
             return blocked
         permit = self._launch_permit_for_call(
-            kwargs, spec, readonly_proof=(mode == "read_only" and proof is None)
+            kwargs, spec, readonly_proof=bool(mode == "read_only" and fixed_ok)
         )
         return await self._exec(spec, permit, label="程序", program=program)
 
@@ -703,17 +1219,6 @@ class RunCmdTool(_CmdTool):
         cmd = str(kwargs.get("cmd") or "").strip()
         if not cmd:
             return ToolResult(ok=False, error="cmd 必填")
-        # 契约 §0.8：命令里出现 rm/del/erase/rd/rmdir/Remove-Item 等永久删除命令
-        # 一律拒绝（所有模式），不交给 shell；删除只能走 fs_delete → 系统回收站。
-        delete_block = _permanent_delete_shell_reason(cmd)
-        if delete_block:
-            return ToolResult(
-                ok=False,
-                error=delete_block,
-                category="permission",
-                recoverable=False,
-                code="permanent_delete_blocked",
-            )
         cwd = str(kwargs.get("cwd") or "") or None
         timeout = float(kwargs.get("timeout") or 30)
         mode = self._mode()
@@ -727,26 +1232,66 @@ class RunCmdTool(_CmdTool):
             shell_cmd=cmd,
             timeout=timeout,
         )
-        effect = security_gate.execute_effect(
-            "run_shell",
-            "shell",
-            [cmd],
+        execution = self._execution_facts(spec, shell=True)
+        # shell=True 永远不是固定查询（无法证明无重定向/串联/嵌套）。
+        delete_intent = self._delete_intent(execution)
+        delete_binding = self._delete_binding(delete_intent)
+        internal_roots = self._internal_mentions(cmd)
+        execution["internal_data_roots"] = internal_roots
+        requirement = self._requirement_binding()
+        label = (
+            str(delete_binding["label"])
+            if delete_binding is not None
+            else "运行一条 shell 命令"
+        )
+        effect = self._execute_effect(
+            tool="run_shell",
+            program="shell",
+            args=[cmd],
             cwd=cwd,
             shell=True,
+            execution=execution,
+            delete_intent=delete_intent,
             purpose="运行自由 shell 命令",
-            detail={"risk": risk.value, "command": cmd},
         )
-        payload = {"cmd": cmd, "cwd": cwd, "risk": risk.value}
+        payload: dict[str, Any] = {
+            "cmd": cmd,
+            "cwd": cwd,
+            "risk": risk.value,
+            "shell": True,
+            "operation_kind": "proc.shell",
+            "operation_summary": label,
+            "requirement_binding": requirement,
+            "execution_facts": {
+                "kind": "shell",
+                "program_path": execution.get("program_path"),
+                "program_name": execution.get("program_name"),
+                "cwd": execution.get("cwd"),
+                "shell": True,
+                "spec_digest": execution.get("spec_digest"),
+            },
+        }
+        if delete_binding is not None:
+            payload.update(
+                {
+                    "permanent_delete": delete_binding["intent"],
+                    "explicit_confirmation_required": True,
+                    "warning": _PERMANENT_DELETE_WARNING,
+                }
+            )
         fingerprint = self._pending_facts(
             "proc.shell",
             spec,
             payload,
             risk=risk.value,
-            internal_roots=self._internal_mentions(cmd),
+            internal_roots=internal_roots,
+            execution=execution,
+            delete_intent=delete_intent,
+            mode=mode,
         )
         internal_pending = await self._submit_internal_data_operation(
             kind="proc.shell",
-            label="运行一条 shell 命令",
+            label=label,
             spec=spec,
             payload=payload,
             fingerprint=fingerprint,
@@ -755,11 +1300,18 @@ class RunCmdTool(_CmdTool):
         )
         if internal_pending is not None:
             return internal_pending
-        pending = ("proc.shell", "运行一条 shell 命令", payload, fingerprint)
+        pending = ("proc.shell", label, payload, fingerprint)
         blocked = await self._authorize_execution(
             effect,
             legacy_verdict=verdict,
-            legacy_payload={"action": "run_shell", "cmd": cmd, "risk": risk.value},
+            legacy_payload={
+                "action": "run_shell",
+                "cmd": cmd,
+                "risk": risk.value,
+                "permanent_delete": (
+                    None if delete_binding is None else delete_binding["intent"]
+                ),
+            },
             denied=f"命令在当前模式下被拒绝（{risk.value}）：shell 命令需要用户批准",
             pending=pending,
             readonly_allowed=False,
@@ -767,6 +1319,7 @@ class RunCmdTool(_CmdTool):
                 "只读模式下 QIO 不能运行 shell 命令：管道/重定向/命令替换无法证明只读，"
                 "本次已拒绝（没有任何命令被执行）。"
             ),
+            permanent_delete=delete_binding,
         )
         if blocked is not None:
             return blocked
