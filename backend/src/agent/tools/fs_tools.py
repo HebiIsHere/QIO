@@ -64,11 +64,20 @@ DIRECTORY_CONTENT_HASH_MAX_BYTES = 512 * 1024
 
 
 def path_dedupe_key(path: object, *, windows: bool | None = None) -> str:
-    """按平台文件系统语义的去重键：Windows 规范化（大小写/分隔符不敏感），POSIX 原样。"""
-    text = os.path.normpath(os.fspath(path))
+    """按平台文件系统语义的去重键：Windows 规范化（大小写/分隔符不敏感），POSIX 原样。
+
+    必须用 ntpath/posixpath 的纯规则，不能用 os.path（它在 POSIX 上不会因
+    windows=True 而大小写归一，测试/跨平台调度会得到错误键）。
+    """
+    import ntpath
+    import posixpath
+
+    text = os.fspath(path)
     if windows is None:
         windows = os.name == "nt"
-    return os.path.normcase(text) if windows else text
+    if windows:
+        return ntpath.normcase(ntpath.normpath(str(text)))
+    return posixpath.normpath(str(text))
 
 
 def make_limit_impact(operation: str, objects: Sequence[dict]) -> dict:
