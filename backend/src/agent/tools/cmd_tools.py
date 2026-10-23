@@ -560,6 +560,10 @@ class _CmdTool(Tool):
                         item.path, identity=item.identity, exists=True
                     )
                 )
+        permanent = bool(
+            delete_intent is not None
+            and getattr(delete_intent, "permanent", False)
+        )
         detail = {
             "program": execution.get("program_path") or program,
             "argv": (
@@ -573,6 +577,8 @@ class _CmdTool(Tool):
             "script_sha256": execution.get("script_sha256"),
             "execution": execution,
             "delete_intent": None if delete_intent is None else delete_intent.as_dict(),
+            # R9-H §4：命令中的永久删除方式进入审查/授权/审批绑定（其余命令不设置）。
+            "delete_mode": "permanent" if permanent else None,
         }
         return security_gate.make_effect(
             security_gate.EffectKind.EXECUTE,

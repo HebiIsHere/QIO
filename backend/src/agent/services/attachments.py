@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+from agent.security.review import object_state_digest, precondition_digest
 from agent.services import attachment_access, file_origins
 from agent.services.file_identity import (
     FileIdentity,
@@ -179,6 +180,44 @@ def _attach_binding(effect: object, binding: dict | None) -> None:
         detail[REQUIREMENT_BINDING_SOURCE_KEY] = (
             "security.context" if binding is not None else "unavailable"
         )
+
+
+def _operation_binding_record(effect: object, gateway: object) -> dict:
+    """审查/授权/审批/重核对共用同一份操作绑定（R9-H §4）。
+
+    指纹用 review.operation_fingerprint（引擎从同一份 effect.detail 组装
+    ReviewOperation）；内容/前置状态/spec/条件/删除方式一并保存到审批指纹。
+    """
+    mode = attachment_access.mode_value(gateway)
+    review_operation = None
+    getter = getattr(gateway, "_review_operation", None)
+    if callable(getter):
+        try:
+            review_operation = getter(effect)
+        except Exception:  # noqa: BLE001 - 组装失败按无指纹
+            review_operation = None
+    fingerprint = ""
+    if review_operation is not None:
+        try:
+            from agent.security.review import operation_fingerprint
+
+            fingerprint = str(operation_fingerprint(review_operation, mode=mode))
+        except Exception:  # noqa: BLE001
+            fingerprint = ""
+    detail = getattr(effect, "detail", {}) or {}
+    return {
+        "fingerprint": fingerprint,
+        "mode": mode,
+        "content_digest": detail.get("content_digest")
+        or detail.get("content_sha256"),
+        "precondition_digest": detail.get("precondition_digest")
+        or detail.get("base_content_sha256"),
+        "spec_digest": detail.get("spec_digest"),
+        "conditions": [
+            dict(item) for item in (detail.get("conditions") or ()) if isinstance(item, dict)
+        ],
+        "delete_mode": detail.get("delete_mode"),
+    }
 
 
 async def _authorize_item(gateway: object, effect: object) -> dict:
@@ -2319,6 +2358,26 @@ class AttachmentService:
                 except Exception:  # noqa: BLE001 - 身份读不到不猜
                     identity = None
             item_id = f"item_{index + 1}"
+            try:
+                item_path = Path(path)
+                item_exists = item_path.exists()
+                item_is_directory = item_path.is_dir()
+            except OSError:
+                item_exists = False
+                item_is_directory = False
+            item_content_sha = (
+                content_sha256(Path(path))
+                if item_exists and not item_is_directory
+                else None
+            )
+            # R9-H §4：删除前对象状态摘要（身份 + 内容；回收站删除方式）。
+            item_precondition = object_state_digest(
+                path=path,
+                exists=item_exists,
+                identity=identity,
+                content_sha256=item_content_sha,
+                is_directory=item_is_directory,
+            )
             effect = attachment_access.delete_effect(
                 "attachment.delete_material",
                 targets=[(path, identity)],
@@ -2327,6 +2386,8 @@ class AttachmentService:
                     "paths": [path],
                     "batch_item_id": item_id,
                     "attachment_id": item.get("attachment_id"),
+                    "delete_mode": "recycle_bin",
+                    "precondition_digest": item_precondition,
                 },
             )
             _attach_binding(effect, binding)
@@ -2336,6 +2397,10 @@ class AttachmentService:
                     "row": dict(item),
                     "effect": effect,
                     "identity": identity,
+                    "exists": item_exists,
+                    "is_directory": item_is_directory,
+                    "content_sha256": item_content_sha,
+                    "precondition_digest": item_precondition,
                     "status": "pending",
                     "reason": "",
                     "outcome": {},
@@ -2376,6 +2441,7 @@ class AttachmentService:
                 item["effect"],
                 mode_at_request=mode_at_request,
                 expected_identity=item["identity"],
+                expected_sha256=item["content_sha256"],
             )
             if not recheck["ok"]:
                 if recheck.get("needs_user_decision"):
@@ -2404,6 +2470,18 @@ class AttachmentService:
         waiting = [entry for entry in items if entry["status"] == BATCH_WAITING]
         if waiting:
             waiting_rows = [entry["row"] for entry in waiting]
+            batch_precondition = precondition_digest(
+                [
+                    {
+                        "path": str(entry["row"]["path"]),
+                        "exists": bool(entry.get("exists")),
+                        "identity": entry["identity"],
+                        "content_sha256": entry.get("content_sha256"),
+                        "is_directory": bool(entry.get("is_directory")),
+                    }
+                    for entry in waiting
+                ]
+            )
             batch_effect = attachment_access.delete_effect(
                 "attachment.delete_material",
                 targets=[
@@ -2418,10 +2496,13 @@ class AttachmentService:
                             "path": str(entry["row"]["path"]),
                             "identity": entry["identity"],
                             "attachment_id": entry["row"].get("attachment_id"),
+                            "content_sha256": entry.get("content_sha256"),
                             "action": "recycle",
                         }
                         for entry in waiting
                     ],
+                    "delete_mode": "recycle_bin",
+                    "precondition_digest": batch_precondition,
                     "requirement_binding": binding,
                 },
             )
@@ -2443,9 +2524,15 @@ class AttachmentService:
                         {
                             "path": str(entry["row"]["path"]),
                             "identity": entry["identity"],
+                            "content_sha256": entry.get("content_sha256"),
+                            "is_directory": bool(entry.get("is_directory")),
+                            "precondition_digest": entry.get("precondition_digest"),
                         }
                         for entry in waiting
                     ],
+                    "delete_mode": "recycle_bin",
+                    "precondition_digest": batch_precondition,
+                    "operation_binding": _operation_binding_record(batch_effect, gateway),
                     "requirement_binding": binding,
                 },
                 purpose=purpose,
@@ -2547,13 +2634,28 @@ class AttachmentService:
         identity = resolved.identity.key if resolved.identity is not None else None
         binding = requirement_binding_from_context(gateway, self)
         mode_at_request = attachment_access.mode_value(gateway)
+        new_sha = hashlib.sha256(bytes(data or b"")).hexdigest()
+        # R9-H §4：content_digest = 拟写回内容摘要；precondition_digest = 写回前的
+        # 对象身份 + 当前内容摘要（审批/执行前重核对要用同一份事实）。
+        precondition = object_state_digest(
+            path=target,
+            exists=True,
+            identity=identity,
+            content_sha256=resolved.current_sha256,
+            is_directory=False,
+        )
         effect = attachment_access.write_effect(
             "attachment.write_back",
             path=target,
             identity=identity,
             purpose=purpose,
-            content_sha256=resolved.current_sha256,
-            detail={"attachment_id": str(attachment_id), "size": len(bytes(data or b""))},
+            content_sha256=new_sha,
+            detail={
+                "attachment_id": str(attachment_id),
+                "size": len(bytes(data or b"")),
+                "content_digest": new_sha,
+                "precondition_digest": precondition,
+            },
         )
         _attach_binding(effect, binding)
 
@@ -2569,13 +2671,17 @@ class AttachmentService:
                     "path": target,
                     "identity": identity,
                     "content_b64": base64.b64encode(bytes(data or b"")).decode("ascii"),
-                    "sha256": hashlib.sha256(bytes(data or b"")).hexdigest(),
+                    "sha256": new_sha,
+                    "precondition_digest": precondition,
                     "requirement_binding": binding,
                 },
                 fingerprint={
                     "identity": identity,
                     "content_sha256": resolved.current_sha256,
-                    "new_sha256": hashlib.sha256(bytes(data or b"")).hexdigest(),
+                    "new_sha256": new_sha,
+                    "content_digest": new_sha,
+                    "precondition_digest": precondition,
+                    "operation_binding": _operation_binding_record(effect, gateway),
                     "requirement_binding": binding,
                 },
                 purpose=purpose,
@@ -2695,16 +2801,26 @@ class AttachmentService:
                     }
                 )
                 continue
+            new_sha = hashlib.sha256(payload).hexdigest()
+            precondition = object_state_digest(
+                path=target,
+                exists=True,
+                identity=identity,
+                content_sha256=resolved.current_sha256,
+                is_directory=False,
+            )
             effect = attachment_access.write_effect(
                 "attachment.write_back",
                 path=target,
                 identity=identity,
                 purpose=purpose,
-                content_sha256=resolved.current_sha256,
+                content_sha256=new_sha,
                 detail={
                     "attachment_id": attachment_id,
                     "size": len(payload),
                     "batch_item_id": item_id,
+                    "content_digest": new_sha,
+                    "precondition_digest": precondition,
                 },
             )
             _attach_binding(effect, binding)
@@ -2716,6 +2832,8 @@ class AttachmentService:
                     "data": payload,
                     "resolved": resolved,
                     "identity": identity,
+                    "new_sha256": new_sha,
+                    "precondition_digest": precondition,
                     "status": "pending",
                     "reason": "",
                     "effect": effect,
@@ -2753,8 +2871,8 @@ class AttachmentService:
                 outcome = self._write_back_source_now(
                     entry["attachment_id"],
                     entry["data"],
-                    expected_identity=entry.get("expected_identity"),
-                    expected_sha256=entry.get("expected_sha256"),
+                    expected_identity=entry.get("identity"),
+                    expected_sha256=entry["resolved"].current_sha256,
                 )
             except Exception as exc:  # noqa: BLE001 - 失败保留文件并如实报告
                 entry["status"] = BATCH_FAILED
@@ -2768,12 +2886,36 @@ class AttachmentService:
         if waiting:
             import base64
 
+            batch_new_digest = precondition_digest(
+                [
+                    {
+                        "path": entry["path"],
+                        "exists": True,
+                        "identity": entry["identity"],
+                        "content_sha256": entry["new_sha256"],
+                        "is_directory": False,
+                    }
+                    for entry in waiting
+                ]
+            )
+            batch_precondition = precondition_digest(
+                [
+                    {
+                        "path": entry["path"],
+                        "exists": True,
+                        "identity": entry["identity"],
+                        "content_sha256": entry["resolved"].current_sha256,
+                        "is_directory": False,
+                    }
+                    for entry in waiting
+                ]
+            )
             batch_effect = attachment_access.write_effect(
                 "attachment.write_back",
                 path=waiting[0]["path"],
                 identity=waiting[0]["identity"],
                 purpose=purpose,
-                content_sha256=waiting[0]["resolved"].current_sha256,
+                content_sha256=batch_new_digest,
                 detail={
                     "items": [
                         {
@@ -2781,9 +2923,13 @@ class AttachmentService:
                             "attachment_id": entry["attachment_id"],
                             "path": entry["path"],
                             "identity": entry["identity"],
+                            "content_sha256": entry["new_sha256"],
+                            "precondition_digest": entry["precondition_digest"],
                         }
                         for entry in waiting
                     ],
+                    "content_digest": batch_new_digest,
+                    "precondition_digest": batch_precondition,
                     "requirement_binding": binding,
                 },
             )
@@ -2812,9 +2958,14 @@ class AttachmentService:
                             "path": entry["path"],
                             "identity": entry["identity"],
                             "content_sha256": entry["resolved"].current_sha256,
+                            "new_sha256": entry["new_sha256"],
+                            "precondition_digest": entry["precondition_digest"],
                         }
                         for entry in waiting
                     ],
+                    "content_digest": batch_new_digest,
+                    "precondition_digest": batch_precondition,
+                    "operation_binding": _operation_binding_record(batch_effect, gateway),
                     "requirement_binding": binding,
                 },
                 purpose=purpose,

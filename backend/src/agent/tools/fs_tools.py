@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agent import prompts
+from agent.security.review import object_state_digest, precondition_digest
 from agent.services import file_origins
 from agent.tools import security_gate
 from agent.tools.base import Tool, ToolResult
@@ -542,6 +543,44 @@ class _FsTool(Tool):
         except Exception:  # noqa: BLE001 - 记账失败不改变写入结果（安全侧按未知/用户文件）
             return
 
+    def _operation_binding_record(self, effect) -> dict:
+        """审查/授权/审批/重核对共用同一份操作绑定（R9-H §4）。
+
+        指纹用 review.operation_fingerprint（引擎从真实 effect.detail 组装同一份
+        ReviewOperation）；内容/前置状态/spec/条件/删除方式一并记录。
+        引擎不可用时指纹为空字符串，审批/执行器按“无法核对绑定”显式处理。
+        """
+        mode = security_gate.mode_of(self.security, self.computer)
+        review_operation = None
+        getter = getattr(self.security, "_review_operation", None)
+        if callable(getter):
+            try:
+                review_operation = getter(effect)
+            except Exception:  # noqa: BLE001 - 组装失败按无指纹
+                review_operation = None
+        fingerprint = ""
+        if review_operation is not None:
+            try:
+                from agent.security.review import operation_fingerprint
+
+                fingerprint = str(operation_fingerprint(review_operation, mode=mode))
+            except Exception:  # noqa: BLE001
+                fingerprint = ""
+        detail = dict(getattr(effect, "detail", {}) or {})
+        execution = dict(detail.get("execution") or {})
+        return {
+            "fingerprint": fingerprint,
+            "mode": mode,
+            "content_digest": detail.get("content_digest")
+            or detail.get("content_sha256"),
+            "precondition_digest": detail.get("precondition_digest")
+            or detail.get("base_content_sha256"),
+            "spec_digest": detail.get("spec_digest")
+            or execution.get("spec_digest"),
+            "conditions": [dict(item) for item in (detail.get("conditions") or ()) if isinstance(item, dict)],
+            "delete_mode": detail.get("delete_mode"),
+        }
+
     def _resolve(self, raw: str) -> Path:
         """相对路径以工作区根为基准解析，返回规范化后的绝对路径。"""
         return self.computer.resolve_in_root(raw)
@@ -848,13 +887,26 @@ class FsWriteTool(_FsTool):
         binding = self._requirement_binding()
         mode_at_request = self._mode_at_request()
         digest = security_gate.text_sha256(content)
+        identity_key = security_gate.identity_key(identity)
+        # R9-H §4：前置状态（覆盖前的对象身份 + 内容；新文件用 absent 标记）
+        # 由真实工具写入 effect.detail，引擎从同一事实组装审查对象与复用键。
+        base_content_sha = (
+            security_gate.content_sha256(target) if existed_before else None
+        )
+        precondition = object_state_digest(
+            path=target,
+            exists=existed_before,
+            identity=identity_key,
+            content_sha256=base_content_sha,
+            is_directory=False,
+        )
         internal_root = security_gate.match_internal_data(self.security, target)
         effect = security_gate.write_effect(
             "fs_write",
             target,
             purpose="写入文件内容",
             content_sha256=digest,
-            identity=security_gate.identity_key(identity),
+            identity=identity_key,
             exists=bool(identity.get("exists")),
             detail={
                 "action": "write",
@@ -863,6 +915,9 @@ class FsWriteTool(_FsTool):
                 # 模型传入的 origin 字段不参与判定。
                 "file_origin": pre_record.origin if pre_record is not None else None,
                 "file_exists": existed_before,
+                # R9-H §4 字段映射：拟写入内容摘要 + 覆盖前对象状态摘要。
+                "content_digest": digest,
+                "precondition_digest": precondition,
             },
             internal=internal_root is not None,
         )
@@ -882,12 +937,10 @@ class FsWriteTool(_FsTool):
                 "identity": identity,
                 # 提交审批时目标文件的内容摘要：执行前核对「审批期间内容有没有被改」。
                 # 文件身份 volume+file_id 在编辑后不变，光靠身份挡不住覆盖别人刚改的内容。
-                "base_content_sha256": (
-                    security_gate.content_sha256(target)
-                    if identity.get("exists")
-                    else None
-                ),
+                "base_content_sha256": base_content_sha,
                 "content_sha256": digest,
+                "precondition_digest": precondition,
+                "operation_binding": self._operation_binding_record(effect),
                 "internal_data_root": str(internal_root) if internal_root else None,
                 "requirement_binding": binding,
             },
@@ -950,13 +1003,23 @@ class FsPatchTool(_FsTool):
             return ToolResult(ok=False, error="未找到待替换的内容 old")
         text = text.replace(old, new, 1)
         digest = security_gate.text_sha256(text)
+        identity_key = security_gate.identity_key(identity)
+        # R9-H §4：补丁内容的摘要 + 打补丁前（当前磁盘内容）的前置状态。
+        base_content_sha = security_gate.content_sha256(target)
+        precondition = object_state_digest(
+            path=target,
+            exists=True,
+            identity=identity_key,
+            content_sha256=base_content_sha,
+            is_directory=False,
+        )
         internal_root = security_gate.match_internal_data(self.security, target)
         effect = security_gate.write_effect(
             "fs_patch",
             target,
             purpose="修改文件内容",
             content_sha256=digest,
-            identity=security_gate.identity_key(identity),
+            identity=identity_key,
             exists=True,
             detail={
                 "action": "patch",
@@ -965,6 +1028,8 @@ class FsPatchTool(_FsTool):
                 # 编辑不改变归属：后端核实过的来源随 effect 给授权引擎。
                 "file_origin": pre_record.origin if pre_record is not None else None,
                 "file_exists": True,
+                "content_digest": digest,
+                "precondition_digest": precondition,
             },
             internal=internal_root is not None,
         )
@@ -984,8 +1049,10 @@ class FsPatchTool(_FsTool):
                 "kind": "fs.patch",
                 "path": str(target),
                 "identity": identity,
-                "base_content_sha256": security_gate.content_sha256(target),
+                "base_content_sha256": base_content_sha,
                 "content_sha256": digest,
+                "precondition_digest": precondition,
+                "operation_binding": self._operation_binding_record(effect),
                 "internal_data_root": str(internal_root) if internal_root else None,
                 "requirement_binding": binding,
             },
@@ -1273,6 +1340,20 @@ class FsDeleteTool(_FsTool):
             identity_key = security_gate.identity_key(identity)
             origin_record = self._origin_record(target)
             origin = origin_record.origin if origin_record is not None else None
+            is_directory = target.is_dir() if exists else False
+            item_content_sha = (
+                security_gate.content_sha256(target)
+                if exists and not is_directory
+                else None
+            )
+            # R9-H §4：删除前的对象状态摘要（身份 + 内容；不存在用 absent 标记）。
+            item_precondition = object_state_digest(
+                path=target,
+                exists=exists,
+                identity=identity_key,
+                content_sha256=item_content_sha,
+                is_directory=is_directory,
+            )
             found_root = security_gate.match_internal_data(self.security, target)
             item_kind = (
                 security_gate.EffectKind.INTERNAL_DATA
@@ -1289,9 +1370,12 @@ class FsDeleteTool(_FsTool):
                     "paths": [str(target)],
                     "batch_item_id": item_id,
                     "deleted_to_recycle_bin": True,
+                    "delete_mode": "recycle_bin",
                     "file_origin": origin,
                     "file_origins": [{"path": str(target), "file_origin": origin}],
                     "internal_data_root": str(found_root) if found_root else None,
+                    # R9-H §4：删除前状态进入审查对象/复用键。
+                    "precondition_digest": item_precondition,
                 },
             )
             attach_requirement_binding(item_effect, binding)
@@ -1312,6 +1396,11 @@ class FsDeleteTool(_FsTool):
                         "action": "delete",
                         "identity": identity,
                         "exists": exists,
+                        "content_sha256": item_content_sha,
+                        "is_directory": is_directory,
+                        "precondition_digest": item_precondition,
+                        "delete_mode": "recycle_bin",
+                        "operation_binding": self._operation_binding_record(item_effect),
                         "file_origin": origin,
                     },
                 )
@@ -1369,6 +1458,20 @@ class FsDeleteTool(_FsTool):
                 for entry in waiting
             ):
                 batch_kind = security_gate.EffectKind.INTERNAL_DATA
+            batch_precondition = precondition_digest(
+                [
+                    {
+                        "path": entry.fingerprint.get("path"),
+                        "exists": bool(entry.fingerprint.get("exists")),
+                        "identity": security_gate.identity_key(
+                            dict(entry.fingerprint.get("identity") or {})
+                        ),
+                        "content_sha256": entry.fingerprint.get("content_sha256"),
+                        "is_directory": bool(entry.fingerprint.get("is_directory")),
+                    }
+                    for entry in waiting
+                ]
+            )
             batch_effect = security_gate.make_effect(
                 batch_kind,
                 batch_effect_targets,
@@ -1378,6 +1481,9 @@ class FsDeleteTool(_FsTool):
                     "paths": [entry.payload["path"] for entry in waiting],
                     "items": [entry.payload for entry in waiting],
                     "deleted_to_recycle_bin": True,
+                    "delete_mode": "recycle_bin",
+                    # R9-H §4：批量前置状态摘要（任一对象变化 → 旧记录不命中）。
+                    "precondition_digest": batch_precondition,
                     "requirement_binding": binding,
                 },
             )
@@ -1397,6 +1503,9 @@ class FsDeleteTool(_FsTool):
                 "paths": [entry.fingerprint for entry in waiting],
                 "items": [entry.fingerprint for entry in waiting],
                 "deleted_to_recycle_bin": True,
+                "delete_mode": "recycle_bin",
+                "precondition_digest": batch_precondition,
+                "operation_binding": self._operation_binding_record(batch_effect),
                 "requirement_binding": binding,
             }
             submitted = await self._submit_batch_pending(
