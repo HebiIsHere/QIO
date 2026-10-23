@@ -6,6 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
+最后核对：2026-10-23（**R9-H 审批与授权第三轮修复已完成实现与集成**：①要求解析成功后主流程从 AppliedResolution.requirement 取得真实有效绑定（new/amend 版本、withdraw 失效），原话/来源真实保存；②内容摘要/前置状态/启动规格/删除方式/条件贯通真实工具→引擎审查对象→授权记录/审批单/执行前重核对，内容变化不再复用旧授权；③名称/目录名/后缀不再直接决定权限（internal_data 与 computer 红线清理，内部数据只按真实注册路径与对象身份）；④结构化限制迁移 59/补偿 60 持久化、继承与恢复，后台/审批恢复/重启后仍生效；历史 legacy 要求由模型重新理解并记录依据。完整 CI 结果见 docs/r9h-merge-notes.md；**未合并 main、未发布安装包**。细节见 P76、docs/r9h-contracts.md。）
 最后核对：2026-10-23（**R9-G 审批与授权机制修复已完成实现与集成**：①删除关键词/句式授权判断（关键词提取模块整体删除，审查守卫/引擎禁止表/命令删词扫描移除）；②批量操作逐项核对、逐项状态与单次合并审批；③操作绑定具体用户要求及版本（模型理解 new/amend/withdraw，后端校验，迁移 57/补偿 58），不再取「最近一条 active」；④审查/授权复用/人工批准/实际执行内容一致（独立操作摘要防篡改）；⑤每个实际操作开始前统一重核对模式/要求/授权/审批/确认/对象/内容/前置状态/条件。全量 pytest 与完整 CI 结果见 docs/r9g-merge-notes.md；**未合并 main、未发布安装包**。细节见 P75、docs/r9g-contracts.md。）
 最后核对：2026-10-22（**R9-F 授权与执行修复 / 受限模式模型审查已完成实现与定向验证**：A 普通程序/shell/自建工具统一受控启动（spec_digest 前后核对、审批后重放重核对 payload/对象/程序，变化即 invalidated）；B 删除关键词授权、受限模式改为用户主模型单独授权审查（后端组装输入+结构/对象/操作/limits 校验+有界授权记录复用，模型不可用不默认放行）；C 文件来源持久化（迁移 55）与工作区 QIO 生成物自主；D 项目执行记录绑定 program/argv/cwd、不再靠目录命中；用户明确禁止三模式均生效。仅跑失败项/直接受影响定向测试，未跑全量 pytest/完整 CI；安装版 A-075 路径未复验。细节见 P74、`docs/r9f-contracts.md`、`docs/r9f-merge-notes.md`。**未合并 main、未发布安装包**。）
 最后核对：2026-10-22（**R9 统一授权 / 源文件引用 / 桌面关闭与退出已完成实现、集成与定向/真机验证**：三种权限模式（只读/受限/完全无限制，默认受限）与统一 AuthorizationGateway、指令授权不跨要求继承、内部运行数据三连确认（全模式）、审批 v2（600 秒原始期限/持久化状态机/原子领取/重启恢复/非阻塞 deferred/执行前重核对）、本地附件改为源文件引用（不复制、文件身份与移动修复、旧数据迁移）、文件卡"作为互动材料"与引用信息、用户文件删除走系统回收站、桌面关闭行为（每次询问/最小化到托盘/直接退出）与有界真正退出。全量测试/完整 CI/安装版验收记录见 `docs/r9-merge-notes.md` 与 `docs/r9-acceptance-matrix.md`；**未合并 main、未发布安装包**。细节见 P73。）
@@ -5555,3 +5556,29 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   受当前 schema 限制，已记录）；历史审批/授权缺 requirement 绑定字段时不默认补成宽泛有效授权，按重新判断处理；
   真实模型评估为固定合成案例，未做多模型/多次稳定性统计；前端未改（仅只读检查文案），安装版未复验。
 
+### P76 — R9-H 审批与授权第三轮修复（2026-10-23）
+
+- **Status：** active（实现、集成与定向验证完成；完整 CI 以最终运行记录为准；安装版未复验）
+- **范围与基线**：基线 r9g/main = 60208e325679303a545f1cac47bef2f0edb56b21；分支 r9h/main；契约 docs/r9h-contracts.md；
+  只修前两轮已确定功能的真实接线/一致性/限制恢复/验证缺口，不新增产品功能、不新增沙箱/隔离机制。
+- **要求绑定与真实原话**：app._execute_turn 改读 AppliedResolution.requirement，new/amend 用 binding_for 取有效版本并核对版本，
+  withdraw 不绑定已撤回要求；解析成功但绑定建立失败记录异常/审计并阻止沿错误依据继续（不回退最近一条 active）；
+  apply_resolution 传真实原话 message、message_id/turn_id/topic_id；resolution 增加 removed_limits 与 extract_limits（历史 legacy 限制重新理解），
+  模型 corrections 不替代原话。
+- **内容绑定**：工具为真实操作生产 content_digest/precondition_digest/spec_digest/script_sha256/delete_mode/conditions/来源目的地；
+  引擎 _review_operation 从 effect.detail 读取并进入 operation_fingerprint；授权记录/审批单/执行前重核对/模型审查与人工批准共用同一操作事实；
+  同文件身份不同内容、同路径脚本不同内容、内联代码/argv/cwd/前置状态变化不复用；正确内容在有效期内正常复用。
+- **名称判定清理**：internal_data 删除 SENSITIVE_* 与 is_sensitive_credential_path；computer 删除 REDLINE_NAMES/REDLINE_SUFFIXES/_is_redline；
+  内部运行数据只按 AppContext 真实注册路径 + 路径规范化/对象身份识别；普通 .key/.pem/.crt、credentials/.config 同名材料按普通规则；
+  改名/符号链接/相对路径不绕过真实注册范围；不新增名称词表/正则/全盘扫描。
+- **结构化限制持久化与恢复**：迁移 59 增加 structured_limits/structured_limits_state/structured_limits_source；补偿 60 = 补偿 58 全部 + 59；
+  security/requirement_limits.py 提供规范化/序列化/合并；requirements 增加字段与 set_structured_limits/structured_limits_for/legacy_requirements；
+  new/amend/withdraw 正确继承/修改/解除/失效；legacy/NULL 不当作明确无限制，unrestricted 相关操作不自动放行；
+  RecheckService 重建 AuthContext 时从台账加载限制；后台/子智能体/审批恢复/重启沿用同一要求版本。
+- **固定查询**：fixed_queries 兼容 POSIX 系统 bin 目录（含 /opt/<...>/bin）与 resolve 后同族脚本入口（npm-cli.js→npm），
+  真实目标必须在系统安装根内；工作区/cwd/临时目录/任意脚本/同名替身仍拒绝；Windows/POSIX 平台规则测试覆盖。
+- **验证**：定向批次（R9-H 新增 + 受影响安全/审批/工具/迁移/turn 套件）通过；完整 CI 运行号/结论见 docs/r9h-merge-notes.md；
+  本轮独立预算：全量 pytest 最多 2 次、完整 CI 最多 2 次。
+- **已知边界**：受限子进程不是安全沙箱；Low IL 只阻止写、不阻止读/网络；解释器内联代码/xargs/sudo/嵌套 shell 等无法结构性约束；
+  conditions 已有结构贯通但当前无产生结构化条件的真实工具；move/copy/外发工具不存在，未伪造来源/目的地；批量附件部分子项失效 E2E 未覆盖；
+  安装版未复验；旧数据 legacy 重新理解依赖模型可用，失败时只对相关操作要求确认、不清空全部授权。
