@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Sequence
 
 from agent.security import internal_data
@@ -81,6 +82,10 @@ class AuthorizationEngine(AuthorizationGateway):
         # R9-H2 §5：内部数据真实对象身份登记（C 提供；缺省按路径兜底）。
         internal_data_identity_keys: Callable[[], object] | None = None,
         internal_data_known_paths: Callable[[], object] | None = None,
+        # R9-H4 §8（E 接口）：对象身份 + 生命周期 token 查询/集合（app 注入
+        # InternalDataIdentityStore.match_identity / active_tokens 等）。
+        internal_data_identity_lookup: Callable[..., Any] | None = None,
+        internal_data_identity_tokens: Callable[[], object] | None = None,
     ) -> None:
         self.conn = conn
         self.approvals = approvals
@@ -96,6 +101,8 @@ class AuthorizationEngine(AuthorizationGateway):
         self.prompt_version = prompt_version
         self._internal_data_identity_keys = internal_data_identity_keys
         self._internal_data_known_paths = internal_data_known_paths
+        self._internal_data_identity_lookup = internal_data_identity_lookup
+        self._internal_data_identity_tokens = internal_data_identity_tokens
 
     # -- 模式：读取归一；写入只接受用户发起 ---------------------------------
 
@@ -429,32 +436,115 @@ class AuthorizationEngine(AuthorizationGateway):
                 effect.detail["origin"] = str(origin)
                 return
 
-    def _requirement_for(self, context: AuthContext) -> Any:
-        """取出这次操作依据的**绑定要求**（R9-G）；没有绑定不回退"最近一条"。
+    #: 绑定要求状态：ok / missing（没有绑定上下文）/ invalid（绑定了但已失效）。
+    _BINDING_OK = "ok"
+    _BINDING_MISSING = "missing"
+    _BINDING_INVALID = "invalid"
 
-        绑定必须指向仍 active、且版本一致的具体用户要求；否则视为没有可对照要求
-        （需要人工确认），绝不用另一条更有利的要求替代。
+    @staticmethod
+    def _binding_field(binding: Any, name: str) -> Any:
+        """兼容 RequirementBinding 对象与调用方传入的 dict 绑定。"""
+        if isinstance(binding, dict):
+            return binding.get(name)
+        return getattr(binding, name, None)
+
+    @staticmethod
+    def _binding_from_effect(effect: Effect | None) -> Any:
+        """从 effect.detail 的后端核实绑定读取要求引用（工具/执行器真实绑定）。
+
+        H4 §5：直接执行/批量/审批恢复必须核对**操作绑定**；部分入口把绑定放在
+        effect.detail（fs/cmd/附件工具由 security_gate 核实后写入），不能因为
+        context.requirement 缺失就当没有要求。
         """
-        binding = getattr(context, "requirement", None) or current_requirement.get()
-        if binding is None:
+        if effect is None:
             return None
-        requirement_id = getattr(binding, "requirement_id", None)
-        version = getattr(binding, "version", None)
+        detail = effect.detail or {}
+        raw = detail.get("requirement_binding")
+        if not isinstance(raw, dict):
+            return None
+        requirement_id = raw.get("requirement_id")
+        if not requirement_id:
+            return None
+        version = raw.get("version")
+        if version is None:
+            version = raw.get("requirement_version")
+        return SimpleNamespace(requirement_id=str(requirement_id), version=version)
+
+    def _requirement_binding_state(
+        self, context: AuthContext, effect: Effect | None = None
+    ) -> tuple[Any, str, str]:
+        """读取操作绑定的具体要求，并区分 missing / ok / invalid。
+
+        H4 §5：绑定了要求但要求不存在、已撤回/替换、版本不一致时，不能当作
+        “没有要求”继续进入 unrestricted 允许；必须返回 invalid 由调用方明确拒绝。
+        绑定优先取 context/contextvar，其次取 effect.detail 的后端核实绑定；
+        完全没有绑定（旧工具/应用内部路径）保持原有判定，不伪造最近要求。
+        """
+        try:
+            binding = getattr(context, "requirement", None) or current_requirement.get()
+        except Exception:  # noqa: BLE001 - contextvar 未初始化
+            binding = getattr(context, "requirement", None)
+        if binding is None:
+            binding = self._binding_from_effect(effect)
+        if binding is None:
+            return None, self._BINDING_MISSING, ""
+        requirement_id = self._binding_field(binding, "requirement_id")
+        version = self._binding_field(binding, "version")
         if not requirement_id and isinstance(binding, str):
             requirement_id = binding
         if not requirement_id:
-            return None
+            return None, self._BINDING_INVALID, "操作绑定的用户要求缺少 id"
         if self.requirements is None:
-            return None
+            return None, self._BINDING_INVALID, "要求台账不可用，无法确认绑定要求是否仍有效"
         try:
             requirement = self.requirements.by_id(str(requirement_id))
-        except Exception:  # noqa: BLE001 - 台账不可用按无绑定处理
-            return None
-        if requirement is None or str(getattr(requirement, "status", "")) != "active":
-            return None
-        if version is not None and int(getattr(requirement, "version", 1) or 1) != int(version):
-            return None
-        return requirement
+        except Exception:  # noqa: BLE001 - 台账不可用按失效处理（失败关闭）
+            requirement = None
+        if requirement is None:
+            return None, self._BINDING_INVALID, "这条操作依据的用户要求已不存在"
+        status = str(getattr(requirement, "status", "") or "")
+        if status != "active":
+            return (
+                None,
+                self._BINDING_INVALID,
+                "这条操作依据的用户要求已撤回/失效（当前状态：" + (status or "unknown") + "）",
+            )
+        if version is not None:
+            try:
+                current_version = int(getattr(requirement, "version", 1) or 1)
+                bound_version = int(version)
+            except (TypeError, ValueError):
+                return None, self._BINDING_INVALID, "绑定要求的版本号非法"
+            if current_version != bound_version:
+                return (
+                    None,
+                    self._BINDING_INVALID,
+                    "这条操作依据的用户要求版本已变化（绑定 v"
+                    + str(bound_version)
+                    + "，当前 v"
+                    + str(current_version)
+                    + "）",
+                )
+        return requirement, self._BINDING_OK, ""
+
+    def _requirement_for(self, context: AuthContext) -> Any:
+        """取出这次操作依据的**绑定要求**（R9-G）；没有绑定不回退"最近一条"。
+
+        只返回仍 active、版本一致的具体要求；invalid 由 _requirement_binding_state
+        单独报告，调用方必须明确拒绝而不能当“没有要求”。
+        """
+        requirement, state, _problem = self._requirement_binding_state(context)
+        return requirement if state == self._BINDING_OK else None
+
+    def _binding_rejection_required(self, effect: Effect) -> bool:
+        """绑定要求失效时是否必须明确拒绝：应用正常功能/普通读取/固定查询不受影响。"""
+        if self._is_app_managed(effect):
+            return False
+        if effect.kind == EffectKind.READ:
+            return False
+        if self._fixed_query_decision(effect) is not None:
+            return False
+        return True
 
     @staticmethod
     def _operation_fingerprint(requirement_id: str, mode: str, operation: Any) -> str:
@@ -586,14 +676,18 @@ class AuthorizationEngine(AuthorizationGateway):
         unavailable_note = "（暂时无法确认授权范围；本次没有执行，你可以对这条具体操作手动审批）"
         if self.reviewer is None or self.requirements is None or self.authorizations is None:
             return Verdict.APPROVE, reason + unavailable_note, scope_id, True
-        requirement = self._requirement_for(context)
+        requirement, binding_state, binding_problem = self._requirement_binding_state(
+            context, effect
+        )
         if requirement is None:
-            return (
-                Verdict.APPROVE,
-                reason + "（没有可对照的具体用户要求；你可以对这条具体操作手动审批）",
-                scope_id,
-                True,
+            note = (
+                "（这条操作依据的用户要求已撤回、已被替换或版本不一致："
+                + binding_problem
+                + "；旧结论不能用于授权，你可以重新确认要求后再操作）"
+                if binding_state == self._BINDING_INVALID
+                else "（没有可对照的具体用户要求；你可以对这条具体操作手动审批）"
             )
+            return Verdict.APPROVE, reason + note, scope_id, True
         try:
             from agent.security.review import (
                 ReviewDecision,
@@ -764,6 +858,71 @@ class AuthorizationEngine(AuthorizationGateway):
                 scope_id,
                 True,
             )
+        # H4 §5/§6：模型返回后重新读要求/版本/状态与操作事实；审查等待期间失效
+        # 的结果一律不采用，更不能据此建立有效授权记录。
+        current_requirement, current_state, current_problem = (
+            self._requirement_binding_state(context, effect)
+        )
+        if (
+            current_state != self._BINDING_OK
+            or current_requirement is None
+            or current_requirement.requirement_id != requirement.requirement_id
+            or int(getattr(current_requirement, "version", 1) or 1) != requirement_version
+        ):
+            reason_invalid = (
+                current_problem
+                if current_state != self._BINDING_OK
+                else "审查返回时要求版本/身份已变化"
+            )
+            return (
+                Verdict.APPROVE,
+                reason
+                + "（审查期间用户要求已撤回、被替换或版本不一致："
+                + str(reason_invalid)
+                + "；旧审查结果不采用，本次没有执行）",
+                scope_id,
+                True,
+            )
+        initial_limits = tuple(
+            item
+            for item in (getattr(requirement, "structured_limits", None) or ())
+            if isinstance(item, dict)
+        )
+        current_limits = tuple(
+            item
+            for item in (
+                getattr(current_requirement, "structured_limits", None) or ()
+            )
+            if isinstance(item, dict)
+        )
+        if current_limits != initial_limits:
+            return (
+                Verdict.APPROVE,
+                reason
+                + "（审查期间用户限制已更新；旧审查结果不采用，本次没有执行，请重新确认）",
+                scope_id,
+                True,
+            )
+        try:
+            from agent.security.review import (
+                operation_fingerprint as _current_op_fingerprint,
+            )
+
+            current_operation = self._review_operation(effect)
+            current_fingerprint = _current_op_fingerprint(
+                current_operation, mode=mode.value
+            )
+        except Exception:  # noqa: BLE001 - 无法复核操作事实时不采用旧结果
+            current_fingerprint = ""
+        if not current_fingerprint or current_fingerprint != fingerprint:
+            return (
+                Verdict.APPROVE,
+                reason
+                + "（审查等待期间实际操作内容/对象/程序/参数/前置状态发生变化；"
+                "旧审查结果不采用，本次没有执行，请重新确认）",
+                scope_id,
+                True,
+            )
         if outcome.decision == ReviewDecision.ALLOW:
             try:
                 from dataclasses import asdict
@@ -837,8 +996,70 @@ class AuthorizationEngine(AuthorizationGateway):
         except Exception:  # noqa: BLE001 - 路径清单失败不能放行内部数据
             return []
 
+    def internal_data_identity_lookup(
+        self, identity_key: object, birth_key: object = None
+    ) -> Any:
+        """公开的身份+生命周期查询（供 security_gate.match_internal_data 复用）。
+
+        返回注入的 InternalDataIdentityStore.match_identity 的结果（通常是
+        {state, identity_key, birth_key, active, reason}）；未注入时返回 None。
+        不在引擎里猜测生命周期：identity 相同但 birth 不同由 E 的 store 判定。
+        """
+        provider = self._internal_data_identity_lookup
+        if not callable(provider):
+            return None
+        key = str(identity_key or "").strip()
+        birth = str(birth_key or "").strip() or None
+        identity = {"identity_key": key, "birth_key": birth}
+        try:
+            return provider(identity, birth)
+        except TypeError:
+            try:
+                return provider(key, birth)
+            except TypeError:
+                return provider(identity)
+        except Exception:  # noqa: BLE001 - 查询失败按未知，不声称同一对象
+            return None
+
+    def internal_data_identity_tokens(self) -> frozenset[str]:
+        """当前登记的身份+生命周期 token 集合（供 security_gate 复用）。"""
+        provider = self._internal_data_identity_tokens
+        if callable(provider):
+            try:
+                value = provider()
+            except Exception:  # noqa: BLE001
+                value = None
+            if value is not None:
+                return frozenset(str(item) for item in value if str(item or ""))
+        # 兼容旧注入：没有 token 集合时退回 active identity keys（不含 birth 的旧登记）。
+        return frozenset(self._internal_identity_keys())
+
+    def internal_data_identity_known_paths(self) -> frozenset[str]:
+        """历史登记路径集合（身份读不到时的保守保护依据）。"""
+        return frozenset(self._internal_identity_known_paths())
+
+    def _internal_identity_keys(self) -> frozenset[str]:
+        provider = self._internal_data_identity_keys
+        if not callable(provider):
+            return frozenset()
+        try:
+            value = provider()
+        except Exception:  # noqa: BLE001
+            return frozenset()
+        return frozenset(str(item) for item in (value or ()) if str(item or ""))
+
+    def _internal_identity_known_paths(self) -> frozenset[str]:
+        provider = self._internal_data_known_paths
+        if not callable(provider):
+            return frozenset()
+        try:
+            value = provider()
+        except Exception:  # noqa: BLE001
+            return frozenset()
+        return frozenset(str(item) for item in (value or ()) if str(item or ""))
+
     def _internal_identity_kwargs(self) -> dict[str, object]:
-        """C 提供对象身份登记时传给 internal_data；未合入/读失败不传（路径兜底）。"""
+        """E 提供对象身份登记时传给 internal_data；未合入/读失败不传（路径兜底）。"""
         kwargs: dict[str, object] = {}
         for key, provider in (
             ("identity_keys", self._internal_data_identity_keys),
@@ -852,6 +1073,10 @@ class AuthorizationEngine(AuthorizationGateway):
                 continue
             if value is not None:
                 kwargs[key] = value
+        if callable(self._internal_data_identity_lookup):
+            # E 的 internal_data 接受 identity_lookup 时用它核对 identity+birth；
+            # 旧签名（尚未合入）由 _effect_is_internal 的 TypeError 兼容回退处理。
+            kwargs["identity_lookup"] = self._internal_data_identity_lookup
         return kwargs
 
     def _effect_is_internal(self, effect: Effect, protected: list[Path]) -> bool:
@@ -864,8 +1089,24 @@ class AuthorizationEngine(AuthorizationGateway):
                         effect, protected, **kwargs
                     )
                 )
-            except TypeError:  # C 分支未合入：退回路径判定（不静默降级为“非内部”之外的放行）
-                pass
+            except TypeError:
+                # E 分支未合入（旧 internal_data 不接受 identity_lookup）：
+                # 去掉新参数但**保留** identity_keys/known_paths 重试，不能因此
+                # 丢掉身份登记、静默降级成只看路径。
+                legacy_kwargs = {
+                    key: value
+                    for key, value in kwargs.items()
+                    if key != "identity_lookup"
+                }
+                if legacy_kwargs:
+                    try:
+                        return bool(
+                            internal_data.effect_targets_internal_data(
+                                effect, protected, **legacy_kwargs
+                            )
+                        )
+                    except TypeError:
+                        pass
         return bool(internal_data.effect_targets_internal_data(effect, protected))
 
     def _inside_workspace(self, path: object) -> bool:
@@ -944,24 +1185,157 @@ class AuthorizationEngine(AuthorizationGateway):
                 return False, None
         return True, hit_scope
 
+    @staticmethod
+    def _scope_operation_names(effect: Effect) -> tuple[str, ...]:
+        names = operations_for(effect)
+        if names:
+            return tuple(names)
+        if effect.kind == EffectKind.INTERNAL_DATA:
+            detail = effect.detail or {}
+            raw = detail.get("internal_operation")
+            if not raw:
+                raw = (detail.get("execution") or {}).get("internal_operation")
+            normalized = str(raw or "").strip().lower()
+            mapping = {
+                "write": ("write", "create"),
+                "create": ("create", "write"),
+                "delete": ("delete",),
+                "execute": ("execute",),
+                "install": ("install_deps",),
+                "system_change": ("system_change",),
+            }
+            return mapping.get(normalized, ())
+        return ()
+
+    @staticmethod
+    def _scope_facts(effect: Effect) -> tuple[list[str], list[str], list[str]]:
+        """收集子智能体范围核对所需的对象事实（不只 path target）。
+
+        H4 §2/§9：实际影响（detail.limit_impacts）、程序目标、服务接收方也要核对；
+        目录/批量由调用方提供可比较影响，引擎逐项核对，不自己猜。
+        """
+        paths: list[str] = []
+        programs: list[str] = []
+        services: list[str] = []
+
+        def add_paths(items: Any) -> None:
+            for item in items or ():
+                if isinstance(item, dict):
+                    kind = str(item.get("kind") or "path").strip().lower()
+                    value = str(item.get("value") or "").strip()
+                else:
+                    kind = "path"
+                    value = str(item or "").strip()
+                if not value:
+                    continue
+                if kind in {"path", "path_prefix", "directory"}:
+                    paths.append(value)
+                elif kind == "program":
+                    programs.append(value)
+                elif kind in {"service", "url_host"}:
+                    services.append(value)
+
+        for target in effect.targets:
+            if target.kind == "path":
+                paths.append(str(target.value))
+            elif target.kind == "program":
+                programs.append(str(target.value))
+            elif target.kind == "url":
+                services.append(str(target.value))
+        detail = effect.detail or {}
+        execution = detail.get("execution") or {}
+        for program in (detail.get("program"), execution.get("program")):
+            text = str(program or "").strip()
+            if text:
+                programs.append(text)
+        for host in detail.get("network_hosts") or ():
+            text = str(host or "").strip()
+            if text:
+                services.append(text)
+        for raw_impact in detail.get("limit_impacts") or ():
+            if isinstance(raw_impact, dict):
+                add_paths(raw_impact.get("objects") or ())
+            else:
+                add_paths((raw_impact,))
+        return paths, programs, services
+
     def _scope_limited(self, effect: Effect, context: AuthContext, mode: PermissionMode) -> tuple[bool, str]:
-        """子智能体能力子集：超出父级授权时必须由主智能体统一申请。"""
+        """子智能体能力子集：三种模式都必须保留委托边界，范围不足明确拒绝。
+
+        H4 §9：普通审查/always-ALLOW/完全无限制模式都不能覆盖“不属于子智能体
+        被分配范围”的操作；引擎不自行扩大范围，也不冒充主智能体授予新范围。
+        """
         scope: AgentScope | None = context.agent_scope or agent_scope_var.get()
-        if scope is None or mode == PermissionMode.UNRESTRICTED:
+        if scope is None:
+            return False, ""
+        if self._is_app_managed(effect):
+            return False, ""
+        if effect.kind == EffectKind.READ:
+            paths, _programs, _services = self._scope_facts(effect)
+            if not paths:
+                return False, ""
+            for path in paths:
+                covered = any(
+                    scope_item.matches_path(path)
+                    for grant in scope.grants
+                    for scope_item in (grant.objects or ())
+                    if scope_item.kind in {"path", "path_prefix"}
+                )
+                if not covered:
+                    return (
+                        True,
+                        "这个读取超出子智能体获得的授权范围，需要主智能体统一向你申请",
+                    )
             return False, ""
         if effect.kind not in MUTATING_EFFECTS and effect.kind != EffectKind.NETWORK_EGRESS:
             return False, ""
-        path_targets = effect.path_targets()
-        if not path_targets:
-            return False, ""
-        for target in path_targets:
+        paths, programs, services = self._scope_facts(effect)
+        if not paths and not programs and not services:
+            # 没有可核对的对象事实：不能凭空判定“范围足够”，也不能伪造范围
+            # （固定查询/应用受控路径已在 _verdict 的固定查询分支单独处理）。
+            return (
+                True,
+                "这个操作缺少可核对的子智能体范围依据，需要主智能体统一向你申请",
+            )
+        operation_names = self._scope_operation_names(effect) or (
+            "write",
+            "create",
+            "delete",
+            "execute",
+        )
+        for path in paths:
             covered = False
             for grant in scope.grants:
-                if instruction_allows_path(effect, target.value, grant):
-                    covered = True
+                for operation in operation_names:
+                    if grant.allows(operation, path=path):
+                        covered = True
+                        break
+                if covered:
                     break
             if not covered:
-                return True, "这个操作超出子智能体获得的授权范围，需要主智能体统一向你申请"
+                return (
+                    True,
+                    "这个操作超出子智能体获得的授权范围，需要主智能体统一申请",
+                )
+        for program in programs:
+            covered = any(
+                grant.allows(OPERATION_EXECUTE, program=program)
+                for grant in scope.grants
+            )
+            if not covered:
+                return (
+                    True,
+                    "这个程序不在子智能体获得的授权范围内，需要主智能体统一申请",
+                )
+        for host in services:
+            covered = any(
+                grant.allows("network_egress", url_host=host) for grant in scope.grants
+            )
+            if not covered:
+                return (
+                    True,
+                    "这个接收服务不在子智能体获得的授权范围内，需要主智能体统一申请",
+                )
         return False, ""
 
     def _verdict(
@@ -978,7 +1352,9 @@ class AuthorizationEngine(AuthorizationGateway):
            不调用普通独立授权审查；restricted 仍走原有审查。
         """
         # 0) 先取要求与有效限制（legacy/unresolved 的已知限制也会被 _limit_conflict 使用）。
-        requirement = self._requirement_for(context)
+        requirement, binding_state, binding_problem = self._requirement_binding_state(
+            context, effect
+        )
         extra_limits = tuple((context.extra or {}).get("resolution_limits") or ())
         # 1) 有效限制优先：命中即 DENY，先于内部数据/审批/模式/审查。
         conflict = self._limit_conflict(
@@ -986,6 +1362,19 @@ class AuthorizationEngine(AuthorizationGateway):
         )
         if conflict:
             return Verdict.DENY, conflict, None
+        # 2) 绑定要求已撤回/替换/版本不一致/不存在：不能当作“没有要求”继续，
+        #    明确拒绝（应用受控功能、普通读取、固定查询保持可用）。
+        if (
+            binding_state == self._BINDING_INVALID
+            and self._binding_rejection_required(effect)
+        ):
+            return (
+                Verdict.DENY,
+                "这条操作依据的用户要求已撤回、已被替换或版本不一致（"
+                + binding_problem
+                + "）；本次没有执行，请重新确认要求后再继续",
+                None,
+            )
 
         protected = self._internal_paths()
         # 2) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
@@ -1010,7 +1399,8 @@ class AuthorizationEngine(AuthorizationGateway):
         # 4) 子智能体范围（只能缩小，不能扩大）。
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
-            return Verdict.APPROVE, limit_reason, None
+            # H4 §9：范围不足必须 DENY，不能被普通审查/always-ALLOW 覆盖。
+            return Verdict.DENY, limit_reason, None
         # 5) 永久删除政策（结构化删除意图，按契约 §5；模型 ALLOW/一般授权不能替代
         #    受限模式下的明确人工确认；已知限制已在上一步优先 DENY）。
         permanent = self._permanent_delete_decision(effect, mode, requirement)
@@ -1048,6 +1438,10 @@ class AuthorizationEngine(AuthorizationGateway):
 
     # -- R9-G：结构化限制 / 固定查询 / 永久删除 -----------------------------
 
+    # R9-H3 遗留：这个映射只用于判定“哪些 effect kind 属于相关操作集合”（未恢复
+    # 限制的具体确认分支），**不再**用来把 EffectKind.INTERNAL_DATA 固定映射成 write。
+    # INTERNAL_DATA 的实际操作由 detail.internal_operation 或明确事实决定；无法确定
+    # 时按“不确定”参与限制核对（不能当无限制）。H4 §2/§3。
     _LIMIT_OPERATION_NAMES = {
         EffectKind.WRITE: "write",
         EffectKind.CREATE: "create",
@@ -1056,29 +1450,310 @@ class AuthorizationEngine(AuthorizationGateway):
         EffectKind.INSTALL_DEPS: "install",
         EffectKind.SYSTEM_CHANGE: "system_change",
         EffectKind.NETWORK_EGRESS: "egress",
-        # R9-H3 §2.1：内部数据写入/维护 effect 在引擎里是独立 kind，但语义上是
-        # "写/改内部对象"；有效限制必须能命中它，不能因为 kind 不在表里而绕过
-        # 内部数据三次确认分支（对象仍按 path target 结构化核对）。
         EffectKind.INTERNAL_DATA: "write",
     }
 
+    _LIMIT_BASE_OPERATIONS = {
+        EffectKind.READ: "read",
+        EffectKind.WRITE: "write",
+        EffectKind.CREATE: "create",
+        EffectKind.DELETE: "delete",
+        EffectKind.EXECUTE: "execute",
+        EffectKind.INSTALL_DEPS: "install",
+        EffectKind.SYSTEM_CHANGE: "system_change",
+        EffectKind.NETWORK_EGRESS: "egress",
+    }
+    _LIMIT_OPERATION_ALIASES = {
+        "read": "read",
+        "write": "write",
+        "create": "create",
+        "delete": "delete",
+        "execute": "execute",
+        "install": "install",
+        "install_deps": "install",
+        "system_change": "system_change",
+        "system": "system_change",
+        "egress": "egress",
+        "network_egress": "egress",
+    }
+    _INTERNAL_OPERATION_NAMES = {
+        "read": "read",
+        "write": "write",
+        "create": "create",
+        "delete": "delete",
+        "execute": "execute",
+        "install": "install",
+        "install_deps": "install",
+        "system_change": "system_change",
+    }
+    _LIMIT_PATH_KINDS = frozenset({"path", "path_prefix", "directory"})
+
+    @classmethod
+    def _normalize_limit_operation(cls, value: object) -> str | None:
+        text_item = str(value or "").strip().lower()
+        if not text_item:
+            return None
+        return cls._LIMIT_OPERATION_ALIASES.get(text_item, text_item or None)
+
+    @classmethod
+    def _limit_operation_set(cls, raw: object) -> frozenset[str]:
+        if raw is None:
+            return frozenset()
+        if isinstance(raw, str):
+            items: Sequence[object] = (raw,)
+        else:
+            try:
+                items = tuple(raw)  # type: ignore[arg-type]
+            except TypeError:
+                return frozenset()
+        output: set[str] = set()
+        for item in items:
+            if str(item or "").strip() == "*":
+                return frozenset()
+            normalized = cls._normalize_limit_operation(item)
+            if normalized:
+                output.add(normalized)
+        return frozenset(output)
+
+    def _internal_operation(self, effect: Effect) -> str | None:
+        """EffectKind.INTERNAL_DATA 的真实操作；不能固定当 write。"""
+        detail = effect.detail or {}
+        raw = detail.get("internal_operation")
+        if not raw:
+            raw = (detail.get("execution") or {}).get("internal_operation")
+        return self._INTERNAL_OPERATION_NAMES.get(str(raw or "").strip().lower())
+
+    def _base_limit_operation(self, effect: Effect) -> str | None:
+        if effect.kind == EffectKind.INTERNAL_DATA:
+            return self._internal_operation(effect)
+        return self._LIMIT_BASE_OPERATIONS.get(effect.kind)
+
+    def _limit_bases(self, effect: Effect) -> tuple[Path | None, Path | None]:
+        """返回 (workspace_root, effect 的工作位置基准)。
+
+        相对路径限制以 workspace_root 规范化；工具 detail cwd 明确时 effect 侧
+        使用 cwd。两者都不可确定时返回 None（调用方按不确定处理，不当无限制）。
+        """
+        workspace = self._workspace_root_path()
+        detail = effect.detail or {}
+        cwd = detail.get("cwd") or (detail.get("execution") or {}).get("cwd")
+        effect_base: Path | None = None
+        if cwd:
+            raw = Path(str(cwd)).expanduser()
+            if not raw.is_absolute():
+                if workspace is not None:
+                    raw = workspace / raw
+                else:
+                    raw = Path.cwd() / raw
+            try:
+                effect_base = raw.resolve()
+            except (OSError, ValueError):
+                effect_base = None
+        return workspace, effect_base or workspace
+
     @staticmethod
-    def _limit_path_matches(path: str, item: dict) -> bool:
-        """限制对象与 effect 对象做**结构化**路径核对（不解析文字）。"""
-        kind = str(item.get("kind") or "path")
-        value = str(item.get("value") or "")
+    def _resolve_limit_path(value: object, base: Path | None) -> Path | None:
+        text_item = str(value or "").strip()
+        if not text_item:
+            return None
+        try:
+            candidate = Path(text_item).expanduser()
+            if not candidate.is_absolute():
+                if base is None:
+                    return None
+                candidate = base / candidate
+            return candidate.resolve()
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _same_path_text(left: object, right: object) -> bool:
+        def _norm(value: object) -> str:
+            return str(value or "").replace("\\", "/").rstrip("/").lower()
+
+        a = _norm(left)
+        b = _norm(right)
+        return bool(a) and a == b
+
+    def _limit_path_matches(
+        self, path_value: object, item: dict, *, effect: Effect | None = None
+    ) -> bool:
+        """限制对象与实际影响对象做结构化路径核对（相对路径按后端起点的规范化）。"""
+        kind = str(item.get("kind") or "path").strip().lower()
+        value = str(item.get("value") or "").strip()
         if not value:
             return False
-        candidate = internal_data.normalize_path(path)
-        target = internal_data.normalize_path(value)
-        if candidate is None or target is None:
+        if kind not in self._LIMIT_PATH_KINDS:
             return False
+        workspace, effect_base = self._limit_bases(effect) if effect is not None else (None, None)
+        limit_base = workspace if workspace is not None else effect_base
+        candidate = self._resolve_limit_path(path_value, effect_base)
+        target = self._resolve_limit_path(value, limit_base)
+        if candidate is None or target is None:
+            # 基准不可确定：只接受可证明相同的文本路径，绝不因此把限制当无限制。
+            return self._same_path_text(path_value, value)
         try:
-            if kind == "path_prefix" or kind == "directory":
+            if kind in {"path_prefix", "directory"}:
                 return candidate == target or candidate.is_relative_to(target)
             return candidate == target
         except (OSError, ValueError):
             return False
+
+    @staticmethod
+    def _limit_program_matches(program_value: object, item: dict) -> bool:
+        left = str(program_value or "").strip()
+        right = str(item.get("value") or "").strip()
+        if not left or not right:
+            return False
+        left_norm = left.replace("\\", "/").rstrip("/").lower()
+        right_norm = right.replace("\\", "/").rstrip("/").lower()
+        if left_norm == right_norm:
+            return True
+        left_name = left_norm.rsplit("/", 1)[-1]
+        right_name = right_norm.rsplit("/", 1)[-1]
+        if not left_name or not right_name:
+            return False
+        if left_name == right_name:
+            return True
+        # resolve 后程序与模型给出的裸名（python vs python.exe）按可执行名主干比较；
+        # 仍只按结构化 program 对象，不做关键词/后缀授权判断。
+        left_stem = left_name.rsplit(".", 1)[0] if "." in left_name else left_name
+        right_stem = (
+            right_name.rsplit(".", 1)[0] if "." in right_name else right_name
+        )
+        return bool(left_stem) and left_stem == right_stem
+
+    @staticmethod
+    def _limit_service_matches(service_value: object, item: dict) -> bool:
+        left = str(service_value or "").strip().lower()
+        right = str(item.get("value") or "").strip().lower()
+        if not left or not right:
+            return False
+        return left == right or left.split("/")[0] == right.split("/")[0]
+
+    def _limit_impacts(self, effect: Effect) -> tuple[list[dict], bool]:
+        """把 base effect 与 detail.limit_impacts 展开为可核对的实际影响列表。
+
+        返回 (impacts, uncertain)；每个 impact = {operation: str|None, objects: list}。
+        limit_impacts 是 C/D 提供的真实影响（多实际影响、目录子对象、命令删除对象、
+        程序目标等），不是自然语言标记。
+        """
+        impacts: list[dict] = []
+        uncertain = False
+        detail = effect.detail or {}
+        if detail.get("limit_impacts_complete") is False:
+            # D 明确报告影响枚举有界/不完整：剩余影响不能被忽略（H4 §3/§7）。
+            uncertain = True
+        base_operation = self._base_limit_operation(effect)
+        objects: list[dict] = []
+        detail = effect.detail or {}
+        for target in effect.targets:
+            if target.kind == "path":
+                objects.append({"kind": "path", "value": str(target.value)})
+            elif target.kind == "program":
+                objects.append({"kind": "program", "value": str(target.value)})
+            elif target.kind == "url":
+                objects.append({"kind": "service", "value": str(target.value)})
+        execution = detail.get("execution") or {}
+        for program in (
+            detail.get("program"),
+            execution.get("program"),
+            detail.get("resolved_program"),
+            detail.get("program_resolved"),
+            execution.get("resolved_program"),
+            execution.get("program_resolved"),
+        ):
+            text_program = str(program or "").strip()
+            if text_program and not any(
+                item.get("kind") == "program" and item.get("value") == text_program
+                for item in objects
+            ):
+                objects.append({"kind": "program", "value": text_program})
+        for host in detail.get("network_hosts") or ():
+            text_host = str(host or "").strip()
+            if text_host:
+                objects.append({"kind": "service", "value": text_host})
+        if base_operation is not None or objects:
+            impacts.append({"operation": base_operation, "objects": objects})
+
+        raw_impacts = detail.get("limit_impacts")
+        if raw_impacts is not None:
+            try:
+                raw_items = tuple(raw_impacts)
+            except TypeError:
+                raw_items = ()
+                uncertain = True
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    uncertain = True
+                    continue
+                raw_operation = raw.get("operation")
+                operation = self._normalize_limit_operation(raw_operation)
+                if raw_operation is not None and operation is None:
+                    uncertain = True
+                raw_objects: list[dict] = []
+                raw_objects_value = raw.get("objects")
+                if raw_objects_value is not None and not isinstance(
+                    raw_objects_value, (list, tuple)
+                ):
+                    uncertain = True
+                    raw_objects_value = ()
+                for item in raw_objects_value or ():
+                    if not isinstance(item, dict):
+                        uncertain = True
+                        continue
+                    kind = str(item.get("kind") or "path").strip().lower()
+                    value = str(item.get("value") or "").strip()
+                    if not value:
+                        uncertain = True
+                        continue
+                    if kind not in self._LIMIT_PATH_KINDS | {"program", "service"}:
+                        uncertain = True
+                        continue
+                    raw_objects.append({"kind": kind, "value": value})
+                impacts.append({"operation": operation, "objects": raw_objects})
+        return impacts, uncertain
+
+    def _limit_matches_impact(
+        self, raw: dict, impact: dict, effect: Effect
+    ) -> bool:
+        raw_operations = self._limit_operation_set(raw.get("operations"))
+        impact_operation = impact.get("operation")
+        if raw_operations:
+            if impact_operation is not None and impact_operation not in raw_operations:
+                return False
+            # impact_operation 为 None：操作无法确定（如 INTERNAL_DATA 未给
+            # internal_operation）→ 按“可能命中”保守处理，不能当无限制。
+        raw_objects = [
+            item for item in (raw.get("objects") or ()) if isinstance(item, dict)
+        ]
+        if not raw_objects:
+            return True
+        impact_objects = [
+            item for item in (impact.get("objects") or ()) if isinstance(item, dict)
+        ]
+        if not impact_objects:
+            return False
+        for item in raw_objects:
+            kind = str(item.get("kind") or "path").strip().lower()
+            for obj in impact_objects:
+                object_kind = str(obj.get("kind") or "path").strip().lower()
+                if kind in self._LIMIT_PATH_KINDS:
+                    if object_kind not in self._LIMIT_PATH_KINDS:
+                        continue
+                    if self._limit_path_matches(obj.get("value"), item, effect=effect):
+                        return True
+                elif kind == "program":
+                    if object_kind != "program":
+                        continue
+                    if self._limit_program_matches(obj.get("value"), item):
+                        return True
+                elif kind == "service":
+                    if object_kind not in {"service", "url", "url_host"}:
+                        continue
+                    if self._limit_service_matches(obj.get("value"), item):
+                        return True
+        return False
 
     @staticmethod
     def _limits_unresolved(requirement: Any) -> bool:
@@ -1102,8 +1777,10 @@ class AuthorizationEngine(AuthorizationGateway):
     ) -> str | None:
         """检查结构化用户限制是否覆盖这次操作（只做拒绝，不产生许可）。
 
-        R9-H：限制来自 requirement.structured_limits（持久化 JSON）；旧版纯文本
-        limits 不解析、不参与判定。历史 NULL/legacy 由 _limits_unresolved 单独处理。
+        H4 §3：同时核对 base effect 与 detail.limit_impacts（多实际影响）、程序对象、
+        目录影响、read/delete/program、INTERNAL_DATA 的 internal_operation；任一实际
+        影响命中即 DENY。相对路径按 workspace_root / detail cwd 规范化；无法确定
+        操作动作时保守按可能命中处理（不能当无限制）。
         """
         structured = (
             getattr(requirement, "structured_limits", None)
@@ -1114,37 +1791,22 @@ class AuthorizationEngine(AuthorizationGateway):
         limits.extend(item for item in (extra_limits or ()) if isinstance(item, dict))
         if not limits:
             return None
-        operation = self._LIMIT_OPERATION_NAMES.get(effect.kind)
-        if operation is None:
-            return None
-        path_targets = [target.value for target in effect.path_targets()]
+        impacts, incomplete = self._limit_impacts(effect)
         for raw in limits:
-            if not isinstance(raw, dict):
-                continue
-            operations = raw.get("operations") or ()
-            if operations and "*" not in operations:
-                if operation not in operations and not any(
-                    str(item).strip().lower() == operation for item in operations
-                ):
-                    continue
-            objects = raw.get("objects") or ()
-            if not path_targets:
-                # 没有对象的目标（如 shell）只按操作限制处理：模型明确限制该操作即拒绝。
-                if not objects:
-                    return str(raw.get("reason") or "你已明确限制这类操作；本次没有执行。")
-                continue
-            if not objects:
-                return str(raw.get("reason") or "你已明确限制这类操作；本次没有执行。")
-            matched = any(
-                self._limit_path_matches(path, item)
-                for path in path_targets
-                for item in objects
-                if isinstance(item, dict)
+            for impact in impacts:
+                if self._limit_matches_impact(raw, impact, effect):
+                    return str(
+                        raw.get("reason")
+                        or "这个操作在用户明确限制的范围内；本次没有执行。"
+                    )
+        if incomplete:
+            # 实际影响无法完整枚举（有界枚举/解析不完整）：不能声称“不在限制范围”，
+            # 也不能把剩余影响当无限制；明确要求确认/拒绝。
+            return (
+                "这次操作的实际影响无法完整确定（可能还有未列出的对象/子项），"
+                "不能确认是否违反你的限制；本次没有执行，请重新确认或缩小操作范围。"
             )
-            if matched:
-                return str(raw.get("reason") or "这个对象在用户明确限制的范围内；本次没有执行。")
         return None
-
     def _fixed_query_decision(self, effect: Effect) -> tuple[Verdict, str, None] | None:
         """已验证的固定查询在三种模式直接允许；判定由分类器按真实结构完成。"""
         if effect.kind != EffectKind.EXECUTE:
@@ -1344,7 +2006,9 @@ class AuthorizationEngine(AuthorizationGateway):
         context = self._context(context)
         mode = self.mode()
         self._enrich_origin(effect)
-        requirement = self._requirement_for(context)
+        requirement, binding_state, binding_problem = self._requirement_binding_state(
+            context, effect
+        )
         # R9-H3 §2.2：先按**最新**有效限制核对（legacy/unresolved 的 known limits 也生效）；
         # 命中即 DENY，旧审批/旧 allow/内部数据确认/模式都不能覆盖有效禁止。
         conflict = self._limit_conflict(
@@ -1354,6 +2018,19 @@ class AuthorizationEngine(AuthorizationGateway):
         )
         if conflict:
             return AuthDecision(verdict=Verdict.DENY, reason=conflict, effects=(effect,))
+        if (
+            binding_state == self._BINDING_INVALID
+            and self._binding_rejection_required(effect)
+        ):
+            return AuthDecision(
+                verdict=Verdict.DENY,
+                reason=(
+                    "这条已批准操作依据的用户要求已撤回、已被替换或版本不一致（"
+                    + binding_problem
+                    + "）；执行前核对不通过，本次没有执行"
+                ),
+                effects=(effect,),
+            )
         # 未恢复部分：unrestricted 相关操作在执行前核对也只给具体确认，不自动放行。
         if (
             requirement is not None
