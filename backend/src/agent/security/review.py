@@ -147,7 +147,7 @@ class ReviewOperation:
     conditions: tuple[dict, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ReviewRequest:
     requirement: "UserRequirement"
     corrections: tuple[str, ...]
@@ -166,9 +166,47 @@ class ReviewRequest:
     requirement_resolution_status: str = RESOLUTION_STATUS_UNAVAILABLE
     #: 要求解析得到的结构化限制（用户明确表达的限制，只用于展示；本身不产生授权）。
     resolution_limits: tuple[dict, ...] = ()
-    #: R9-H2：完全无限制模式下，仅当用户限制尚未可靠恢复时做一次针对性审查；
-    #: 不是普通授权审查，也不能用于 structured/已知要求。
-    targeted_limits_review: bool = False
+
+    def __init__(
+        self,
+        requirement,
+        corrections,
+        limits,
+        mode,
+        operation,
+        related_grants,
+        prior_decisions,
+        approvals,
+        user_constraints,
+        untrusted_material=(),
+        requirement_resolution_status=RESOLUTION_STATUS_UNAVAILABLE,
+        resolution_limits=(),
+        **legacy_kwargs,
+    ) -> None:
+        # R9-H3 §3：完全无限制模式的 targeted 例外已删除；普通授权审查只允许 restricted。
+        # A 分支尚未移除 engine 的传参时，这里只为兼容旧调用而忽略该关键字——
+        # 不保存为字段、不进入模型输入、不改变“只有 restricted 可审查”的判定。
+        legacy_kwargs.pop("targeted_limits_review", None)
+        if legacy_kwargs:
+            raise TypeError(
+                "ReviewRequest 不支持的字段: " + ", ".join(sorted(legacy_kwargs))
+            )
+        object.__setattr__(self, "requirement", requirement)
+        object.__setattr__(self, "corrections", tuple(corrections or ()))
+        object.__setattr__(self, "limits", tuple(limits or ()))
+        object.__setattr__(self, "mode", str(mode or ""))
+        object.__setattr__(self, "operation", operation)
+        object.__setattr__(self, "related_grants", tuple(related_grants or ()))
+        object.__setattr__(self, "prior_decisions", tuple(prior_decisions or ()))
+        object.__setattr__(self, "approvals", tuple(approvals or ()))
+        object.__setattr__(self, "user_constraints", tuple(user_constraints or ()))
+        object.__setattr__(self, "untrusted_material", tuple(untrusted_material or ()))
+        object.__setattr__(
+            self,
+            "requirement_resolution_status",
+            str(requirement_resolution_status or RESOLUTION_STATUS_UNAVAILABLE),
+        )
+        object.__setattr__(self, "resolution_limits", tuple(resolution_limits or ()))
 
 
 @dataclass(frozen=True)
@@ -701,17 +739,9 @@ def _validate_request_shape(request: ReviewRequest) -> None:
     if not isinstance(request.operation, ReviewOperation):
         raise ReviewUnavailable("授权审查请求的操作结构非法")
     mode = str(request.mode or "")
-    targeted = bool(getattr(request, "targeted_limits_review", False))
-    requirement_state = str(
-        getattr(requirement, "structured_limits_state", "structured") or "structured"
-    )
-    if mode != REVIEW_MODE and not (
-        mode == "unrestricted"
-        and targeted
-        and requirement_state in {"legacy", "unresolved"}
-    ):
+    if mode != REVIEW_MODE:
         raise ReviewUnavailable(
-            "只有受限模式（或限制未恢复的针对性审查）才允许模型授权审查（当前模式："
+            "只有受限模式才允许模型授权审查（普通独立授权审查不得用于完全无限制模式；当前模式："
             + mode
             + "）"
         )
@@ -985,6 +1015,13 @@ class ModelAuthorizationReviewer:
         self.audit = audit
 
     async def review(self, request: ReviewRequest) -> ReviewOutcome:
+        # R9-H3 §3：普通独立授权审查只允许 restricted。即使在 engine 尚未移除
+        # targeted 分支（A 分支未合入）时被调用，也必须在调用模型之前拒绝。
+        mode = str(getattr(request, "mode", "") or "")
+        if mode != REVIEW_MODE:
+            raise ReviewUnavailable(
+                "只有受限模式才允许普通授权审查（当前模式：" + mode + "）"
+            )
         started = time.monotonic()
         digest = review_request_digest(request)
         requirement_id = str(getattr(getattr(request, "requirement", None), "requirement_id", "") or "")
