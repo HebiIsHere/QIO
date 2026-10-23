@@ -502,7 +502,7 @@ export function fetchRecoveryPreview(intentId: string): Promise<RecoveryPreviewR
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/recovery-preview`);
 }
 
-/** 恢复（按版本 CAS）：只把可恢复的意图放回可继续状态，不自动执行操作。 */
+/** 恢复（按版本 CAS）：放回可继续状态，并启动真实续作 Turn；失败不在响应里伪装成功。 */
 export function recoverIntent(
   intentId: string,
   boardId: string,
@@ -511,6 +511,19 @@ export function recoverIntent(
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/recover`, {
     method: "POST",
     body: JSON.stringify({ boardId, expectedVersion }),
+  });
+}
+
+/** 保存虚拟意图显示位置：只写 display，不推进语义版本或授权。 */
+export function saveIntentDisplay(
+  intentId: string,
+  boardId: string,
+  x: number,
+  y: number,
+): Promise<{ ok: boolean; display: { x: number; y: number } }> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/display`, {
+    method: "POST",
+    body: JSON.stringify({ boardId, x, y }),
   });
 }
 

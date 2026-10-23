@@ -964,3 +964,85 @@ async def recover_intent(intent_id: str, request: Request, body: dict | None = N
     return response
 
 
+# -- 虚拟意图显示位置（Phase 3 §6.1） ---------------------------------------
+
+
+@router.post("/api/interactive/intents/{intent_id}/display")
+async def set_intent_display(intent_id: str, request: Request, body: dict | None = None) -> dict:
+    """按 intent_id 保存虚拟意图显示位置；位置不属于材料语义，不推进授权版本。"""
+    payload = _body_dict(body)
+    board_id = str(payload.get("boardId") or "").strip()
+    if not board_id:
+        raise HTTPException(status_code=400, detail="需要 boardId（意图属于哪个板面）")
+    try:
+        x = float(payload.get("x"))
+        y = float(payload.get("y"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="display 需要有限的 x / y") from None
+    service = _require_intent_service(request)
+    result = _service_call(
+        service,
+        "set_intent_display",
+        _conn(request),
+        board_id=board_id,
+        intent_id=str(intent_id),
+        x=x,
+        y=y,
+    )
+    response = dict(result) if isinstance(result, dict) else {"ok": False, "result": result}
+    if not response.get("ok"):
+        raise HTTPException(status_code=404, detail=str(response.get("reason") or "意图不存在"))
+    return response
+
+
+# -- 重试系列（Phase 3 §6.3） -----------------------------------------------
+
+
+@router.get("/api/interactive/boards/{board_id}/retry-series")
+async def board_retry_series(request: Request, board_id: str) -> dict:
+    """整块板面的持久化重试系列；只读，不调度、不改次数。"""
+    service = _require_intent_service(request)
+    series = _service_call(service, "list_retry_series", _conn(request), board_id=board_id)
+    return {"available": True, "board_id": board_id, "series": list(series or [])}
+
+
+@router.get("/api/interactive/intents/{intent_id}/retry-series")
+async def intent_retry_series(request: Request, intent_id: str) -> dict:
+    """单条意图最近的重试系列；只读。"""
+    service = _require_intent_service(request)
+    series = _service_call(service, "list_retry_series", _conn(request), intent_id=intent_id)
+    return {"available": True, "intent_id": intent_id, "series": list(series or [])}
+
+
+@router.post("/api/interactive/intents/{intent_id}/retry")
+async def manual_retry_intent(intent_id: str, request: Request, body: dict | None = None) -> dict:
+    """用户明确点击一次手动重试：一次点击对应一次尝试；不重置自动重试次数。"""
+    payload = _body_dict(body)
+    board_id = str(payload.get("boardId") or "").strip()
+    if not board_id:
+        raise HTTPException(status_code=400, detail="需要 boardId（意图属于哪个板面）")
+    service = _require_intent_service(request)
+    view = _service_call(service, "get_intent", _conn(request), board_id, str(intent_id))
+    if not isinstance(view, dict):
+        raise HTTPException(status_code=404, detail="意图不存在")
+    started = _start_intent_turn(
+        request,
+        board_id=board_id,
+        intent_ids=[str(intent_id)],
+        source="manual_retry",
+        submission_id=str(view.get("submission_id") or ""),
+        manual_retry=True,
+    )
+    series = started.get("manualRetry")
+    if not isinstance(series, dict):
+        series = _service_call(service, "retry_state", _conn(request), str(intent_id))
+    return {
+        "ok": bool(started.get("ok")),
+        "reason": str(started.get("reason") or "") if not started.get("ok") else "",
+        "turnId": started.get("turnId"),
+        "series": series if isinstance(series, dict) else None,
+        "turnStart": started,
+    }
+
+
+

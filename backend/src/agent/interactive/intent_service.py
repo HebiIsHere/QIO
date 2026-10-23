@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 from typing import Any, Iterable, Mapping
 
@@ -499,6 +500,52 @@ def record_retry_failure(
                 )
             out.append(retry_state(conn, intent_id) or {})
     return out
+
+
+def list_retry_series(
+    conn: sqlite3.Connection, *, board_id: str = "", intent_id: str = ""
+) -> list[dict[str, Any]]:
+    """只读列出重试系列：板面视图 / 单意图视图共用同一稳定形状。"""
+    try:
+        if intent_id:
+            row = _latest_retry_row(conn, str(intent_id))
+            view = _retry_view(row)
+            return [view] if view else []
+        rows = conn.execute(
+            "SELECT * FROM board_intent_retries WHERE board_id = ?"
+            " ORDER BY updated_at DESC, created_at DESC LIMIT 100",
+            (str(board_id),),
+        ).fetchall()
+        return [view for row in rows if (view := _retry_view(row)) is not None]
+    except sqlite3.Error:
+        return []
+
+
+def set_intent_display(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    intent_id: str,
+    x: float,
+    y: float,
+) -> dict[str, Any]:
+    """保存意图虚拟层的显示位置：按 intent_id 绑定，不改 goal / version / 授权。"""
+    row = _get_row(conn, intent_id)
+    if row is None or str(row["board_id"]) != str(board_id):
+        return _fail("intent_not_found", "意图不存在", status="not_found")
+    if not math.isfinite(x) or not math.isfinite(y):
+        return _fail("invalid_display", "位置必须是有限数")
+    payload = {"x": round(float(x), 3), "y": round(float(y), 3)}
+    try:
+        with transaction(conn):
+            # 显示位置不属于材料语义：不推进 version / updated_at / 授权快照
+            conn.execute(
+                "UPDATE board_intents SET display = ? WHERE id = ?",
+                (_dumps(payload), str(intent_id)),
+            )
+    except sqlite3.Error as exc:
+        return _fail("display_save_failed", f"位置未保存：{exc}")
+    return {"ok": True, "intent_id": str(intent_id), "display": payload}
 
 
 def pending_auto_retries(

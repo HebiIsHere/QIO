@@ -128,7 +128,7 @@ describe("显示位置：按 intent_id 绑定 + 确定性 fallback", () => {
     expect(readIntentDisplay(view({ display: { x: 120, y: 80 } }))).toEqual({ x: 120, y: 80 });
     expect(readIntentDisplay(view({ display: null }))).toBeNull();
     expect(readIntentDisplay(view({ display: { x: Number.NaN, y: 10 } }))).toBeNull();
-    expect(readIntentDisplay(view({ display: { x: 1 } }))).toBeNull();
+    expect(readIntentDisplay(view({ display: { x: 1 } as unknown as { x: number; y: number } }))).toBeNull();
     expect(readIntentDisplay(view({}))).toBeNull();
   });
 

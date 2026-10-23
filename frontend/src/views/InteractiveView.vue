@@ -29,7 +29,7 @@ import {
 import IntentLayer from "../components/interactive/v2/IntentLayer.vue";
 import type { IntentViewWithDisplay } from "../components/interactive/v2/intentDisplay";
 import { canRecover } from "../interactive/intentWorkbench";
-import { fetchIntentViews } from "../services/interactive";
+import { fetchIntentViews, saveIntentDisplay } from "../services/interactive";
 import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
@@ -38,6 +38,7 @@ const workbenchOpen = ref(false);
 /** 新链意图视图（服务端事实；不用旧 store.intents 冒充）。 */
 const intentViews = ref<IntentViewWithDisplay[]>([]);
 const intentDisplay = ref<Record<string, { x: number; y: number }>>({});
+const intentDisplayError = ref("");
 /** 事项行徽标：只由真实 store/意图事实构成；面板可回填更完整的服务端计数。 */
 const recoveryPanelCount = ref(0);
 const recoveryEntries = computed(() => {
@@ -101,12 +102,26 @@ async function loadIntents(): Promise<void> {
   }
 }
 
-function onIntentDisplayChange(payload: { intentId: string; x: number; y: number }): void {
+async function onIntentDisplayChange(payload: { intentId: string; x: number; y: number }): Promise<void> {
+  const previous = intentDisplay.value;
   intentDisplay.value = {
     ...intentDisplay.value,
     [payload.intentId]: { x: payload.x, y: payload.y },
   };
   writeIntentDisplay();
+  const boardId = store.board?.boardId;
+  if (!boardId) {
+    intentDisplayError.value = "板面身份还没准备好，位置只保存在本机。";
+    return;
+  }
+  try {
+    await saveIntentDisplay(payload.intentId, boardId, payload.x, payload.y);
+    intentDisplayError.value = "";
+  } catch (err) {
+    intentDisplay.value = previous;
+    writeIntentDisplay();
+    intentDisplayError.value = "意图位置没有保存到服务端：" + ((err as Error)?.message ?? "原因未知");
+  }
 }
 
 onMounted(() => {
@@ -267,6 +282,9 @@ const boardSize = computed(() => {
           <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
             板面读取失败：{{ store.loadError }}
             <button class="im-link" type="button" @click="store.load()">重试</button>
+          </p>
+          <p v-if="intentDisplayError" class="im-notice warn" role="status" data-im="intent-display-error">
+            {{ intentDisplayError }}
           </p>
           <p v-if="store.recoverNotice.length" class="im-notice warn" role="status" data-im="recover-notice">
             上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
