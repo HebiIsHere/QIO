@@ -70,6 +70,7 @@ from agent.services.file_identity import (
     same_file,
 )
 from agent.storage.db import transaction
+from agent.tools import fs_tools
 from agent.trace.redact import redact_text
 
 logger = logging.getLogger(__name__)
@@ -2370,12 +2371,57 @@ class AttachmentService:
                 if item_exists and not item_is_directory
                 else None
             )
-            # R9-H §4：删除前对象状态摘要（身份 + 内容；回收站删除方式）。
+            # R9-H4 §7：材料目录删除按有界子对象影响判断（含受保护/内部数据子对象）。
+            directory_impact_data: dict | None = None
+            if item_is_directory:
+                try:
+                    directory_impact_data = fs_tools.directory_impact(
+                        Path(path),
+                        operation="delete",
+                        is_protected=lambda candidate: (
+                            fs_tools.security_gate.match_internal_data(
+                                gateway, candidate
+                            )
+                            is not None
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - 枚举失败按影响不确定
+                    directory_impact_data = {
+                        "operation": "delete",
+                        "root": str(path),
+                        "complete": False,
+                        "truncated": True,
+                        "reason": "目录影响枚举失败：影响不确定，需重新确认",
+                        "entries": [],
+                        "entry_count": 0,
+                        "digest": "",
+                    }
+            directory_digest = (
+                str(directory_impact_data.get("digest") or "")
+                if directory_impact_data is not None
+                else None
+            )
+            limit_impacts = fs_tools.delete_limit_impacts(
+                path, directory_impact_data=directory_impact_data
+            )
+            impacts_complete = (
+                bool(directory_impact_data.get("complete", True))
+                if directory_impact_data is not None
+                else True
+            )
+            impacts_reason = (
+                str(directory_impact_data.get("reason") or "")
+                if directory_impact_data is not None
+                else ""
+            )
+            # R9-H §4：删除前对象状态摘要（身份 + 内容/目录影响；回收站删除方式）。
             item_precondition = object_state_digest(
                 path=path,
                 exists=item_exists,
                 identity=identity,
-                content_sha256=item_content_sha,
+                content_sha256=(
+                    directory_digest if item_is_directory else item_content_sha
+                ),
                 is_directory=item_is_directory,
             )
             effect = attachment_access.delete_effect(
@@ -2388,6 +2434,17 @@ class AttachmentService:
                     "attachment_id": item.get("attachment_id"),
                     "delete_mode": "recycle_bin",
                     "precondition_digest": item_precondition,
+                    "identity": identity,
+                    fs_tools.LIMIT_IMPACTS_KEY: limit_impacts,
+                    fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: impacts_complete,
+                    fs_tools.LIMIT_IMPACTS_REASON_KEY: impacts_reason or None,
+                    fs_tools.DIRECTORY_IMPACT_KEY: directory_impact_data,
+                    fs_tools.DIRECTORY_IMPACT_DIGEST_KEY: directory_digest,
+                    fs_tools.INTERNAL_DATA_ENTRIES_KEY: (
+                        directory_impact_data.get("internal_data_entries") or []
+                        if directory_impact_data is not None
+                        else []
+                    ),
                 },
             )
             _attach_binding(effect, binding)
@@ -2401,6 +2458,16 @@ class AttachmentService:
                     "is_directory": item_is_directory,
                     "content_sha256": item_content_sha,
                     "precondition_digest": item_precondition,
+                    "limit_impacts": limit_impacts,
+                    "limit_impacts_complete": impacts_complete,
+                    "limit_impacts_reason": impacts_reason or None,
+                    "directory_impact": directory_impact_data,
+                    "directory_impact_digest": directory_digest,
+                    "internal_data_entries": (
+                        directory_impact_data.get("internal_data_entries") or []
+                        if directory_impact_data is not None
+                        else []
+                    ),
                     "status": "pending",
                     "reason": "",
                     "outcome": {},
@@ -2476,12 +2543,29 @@ class AttachmentService:
                         "path": str(entry["row"]["path"]),
                         "exists": bool(entry.get("exists")),
                         "identity": entry["identity"],
-                        "content_sha256": entry.get("content_sha256"),
+                        "content_sha256": entry.get("directory_impact_digest")
+                        or entry.get("content_sha256"),
                         "is_directory": bool(entry.get("is_directory")),
                     }
                     for entry in waiting
                 ]
             )
+            batch_limit_impacts = fs_tools.aggregate_limit_impacts(
+                [entry.get("limit_impacts") or [] for entry in waiting]
+            )
+            batch_impacts_complete = all(
+                bool(entry.get("limit_impacts_complete", True)) for entry in waiting
+            )
+            batch_impacts_reason = "；".join(
+                str(entry.get("limit_impacts_reason") or "")
+                for entry in waiting
+                if entry.get("limit_impacts_reason")
+            )
+            batch_internal_entries: list[str] = []
+            for entry in waiting:
+                batch_internal_entries.extend(
+                    str(item) for item in (entry.get("internal_data_entries") or [])
+                )
             batch_effect = attachment_access.delete_effect(
                 "attachment.delete_material",
                 targets=[
@@ -2503,6 +2587,10 @@ class AttachmentService:
                     ],
                     "delete_mode": "recycle_bin",
                     "precondition_digest": batch_precondition,
+                    fs_tools.LIMIT_IMPACTS_KEY: batch_limit_impacts,
+                    fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: batch_impacts_complete,
+                    fs_tools.LIMIT_IMPACTS_REASON_KEY: batch_impacts_reason or None,
+                    fs_tools.INTERNAL_DATA_ENTRIES_KEY: batch_internal_entries,
                     "requirement_binding": binding,
                 },
             )
@@ -2527,11 +2615,34 @@ class AttachmentService:
                             "content_sha256": entry.get("content_sha256"),
                             "is_directory": bool(entry.get("is_directory")),
                             "precondition_digest": entry.get("precondition_digest"),
+                            "directory_impact": entry.get("directory_impact"),
+                            "directory_impact_digest": entry.get(
+                                "directory_impact_digest"
+                            ),
+                            "limit_impacts": entry.get("limit_impacts"),
+                            "limit_impacts_complete": entry.get(
+                                "limit_impacts_complete", True
+                            ),
+                            "internal_data_entries": entry.get(
+                                "internal_data_entries"
+                            ),
                         }
                         for entry in waiting
                     ],
                     "delete_mode": "recycle_bin",
                     "precondition_digest": batch_precondition,
+                    "limit_impacts": batch_limit_impacts,
+                    "limit_impacts_complete": batch_impacts_complete,
+                    "limit_impacts_reason": batch_impacts_reason or None,
+                    "directory_impacts": [
+                        {
+                            "path": str(entry["row"]["path"]),
+                            "digest": entry.get("directory_impact_digest"),
+                            "complete": entry.get("limit_impacts_complete", True),
+                        }
+                        for entry in waiting
+                    ],
+                    "internal_data_entries": batch_internal_entries,
                     "operation_binding": _operation_binding_record(batch_effect, gateway),
                     "requirement_binding": binding,
                 },
@@ -2655,6 +2766,9 @@ class AttachmentService:
                 "size": len(bytes(data or b"")),
                 "content_digest": new_sha,
                 "precondition_digest": precondition,
+                "identity": identity,
+                fs_tools.LIMIT_IMPACTS_KEY: fs_tools.write_limit_impacts(target),
+                fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: True,
             },
         )
         _attach_binding(effect, binding)
@@ -2681,6 +2795,8 @@ class AttachmentService:
                     "new_sha256": new_sha,
                     "content_digest": new_sha,
                     "precondition_digest": precondition,
+                    "limit_impacts": fs_tools.write_limit_impacts(target),
+                    "limit_impacts_complete": True,
                     "operation_binding": _operation_binding_record(effect, gateway),
                     "requirement_binding": binding,
                 },
@@ -2821,6 +2937,9 @@ class AttachmentService:
                     "batch_item_id": item_id,
                     "content_digest": new_sha,
                     "precondition_digest": precondition,
+                    "identity": identity,
+                    fs_tools.LIMIT_IMPACTS_KEY: fs_tools.write_limit_impacts(target),
+                    fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: True,
                 },
             )
             _attach_binding(effect, binding)
@@ -2834,6 +2953,8 @@ class AttachmentService:
                     "identity": identity,
                     "new_sha256": new_sha,
                     "precondition_digest": precondition,
+                    "limit_impacts": fs_tools.write_limit_impacts(target),
+                    "limit_impacts_complete": True,
                     "status": "pending",
                     "reason": "",
                     "effect": effect,
@@ -2925,11 +3046,19 @@ class AttachmentService:
                             "identity": entry["identity"],
                             "content_sha256": entry["new_sha256"],
                             "precondition_digest": entry["precondition_digest"],
+                            "limit_impacts": entry.get("limit_impacts"),
                         }
                         for entry in waiting
                     ],
                     "content_digest": batch_new_digest,
                     "precondition_digest": batch_precondition,
+                    fs_tools.LIMIT_IMPACTS_KEY: fs_tools.aggregate_limit_impacts(
+                        [entry.get("limit_impacts") or [] for entry in waiting]
+                    ),
+                    fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: all(
+                        bool(entry.get("limit_impacts_complete", True))
+                        for entry in waiting
+                    ),
                     "requirement_binding": binding,
                 },
             )
@@ -2960,11 +3089,19 @@ class AttachmentService:
                             "content_sha256": entry["resolved"].current_sha256,
                             "new_sha256": entry["new_sha256"],
                             "precondition_digest": entry["precondition_digest"],
+                            "limit_impacts": entry.get("limit_impacts"),
                         }
                         for entry in waiting
                     ],
                     "content_digest": batch_new_digest,
                     "precondition_digest": batch_precondition,
+                    "limit_impacts": fs_tools.aggregate_limit_impacts(
+                        [entry.get("limit_impacts") or [] for entry in waiting]
+                    ),
+                    "limit_impacts_complete": all(
+                        bool(entry.get("limit_impacts_complete", True))
+                        for entry in waiting
+                    ),
                     "operation_binding": _operation_binding_record(batch_effect, gateway),
                     "requirement_binding": binding,
                 },
