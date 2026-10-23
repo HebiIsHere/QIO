@@ -44,11 +44,17 @@ async def test_read_only_allows_read_but_denies_mutation(db_conn, tmp_path):
         assert "只读模式" in decision.reason
 
 
-async def test_read_only_still_denies_credential_reads(db_conn, tmp_path):
-    security = make_security(tmp_path, db_conn, mode="read_only")
-    decision = await verdict(security.engine, path_effect(EffectKind.READ, tmp_path / ".env"))
+async def test_read_only_still_denies_registered_internal_data_reads(db_conn, tmp_path):
+    # R9-H：名称不再决定权限；真实注册的内部运行数据仍拒绝读取。
+    protected = tmp_path / "app.db"
+    protected.write_text("db", encoding="utf-8")
+    security = make_security(tmp_path, db_conn, mode="read_only", protected=[protected])
+    decision = await verdict(security.engine, path_effect(EffectKind.READ, protected))
     assert decision.verdict == Verdict.DENY
-    assert "凭据" in decision.reason
+    assert "内部运行数据" in decision.reason
+    # 普通 .env 同名材料只按普通读取规则，不因名字自动敏感。
+    ordinary = await verdict(security.engine, path_effect(EffectKind.READ, tmp_path / ".env"))
+    assert ordinary.verdict == Verdict.ALLOW
 
 
 # -- restricted --------------------------------------------------------------

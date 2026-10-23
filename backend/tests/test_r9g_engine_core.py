@@ -29,12 +29,17 @@ class FakeRequirements:
 
     def add(self, *, text="要求", version=1, status="active", limits=()):
         requirement_id = "req_%d" % (len(self.items) + 1)
+        structured = tuple(item for item in limits if isinstance(item, dict))
         self.items[requirement_id] = SimpleNamespace(
             requirement_id=requirement_id,
             text=text,
             version=version,
             status=status,
             limits=tuple(limits),
+            # R9-H：引擎从持久化结构化限制读取；旧纯文本 limits 不参与判定。
+            structured_limits=structured,
+            structured_limits_state="structured",
+            structured_limits_source="test",
             parent_id=None,
             corrections=(),
         )
