@@ -121,6 +121,21 @@ def models_dumps(value) -> str:
 # --- §6.2 真实续作 Turn -----------------------------------------------------
 
 
+def test_claim_rejects_second_claim_during_claiming_window(board_env):
+    conn = board_env
+    intent_id = _approved_intent(conn)
+    first = submission.claim_intent_turns(conn, board_id=BOARD, intent_ids=[intent_id])
+    assert first["ok"] is True
+    row = conn.execute(
+        "SELECT status FROM board_intent_turns WHERE intent_id = ?", (intent_id,)
+    ).fetchone()
+    assert str(row["status"]) == "claiming"
+    second = submission.claim_intent_turns(conn, board_id=BOARD, intent_ids=[intent_id])
+    assert second["ok"] is False
+    assert second["code"] == "intent_turn_active"
+
+
+
 def test_start_turn_claims_intent_and_duplicate_confirm_does_not_parallel(board_env):
     conn = board_env
     intent_id = _approved_intent(conn)

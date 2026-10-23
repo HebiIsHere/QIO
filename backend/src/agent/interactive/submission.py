@@ -1573,7 +1573,7 @@ def claim_intent_turns(
             row = conn.execute(
                 "SELECT * FROM board_intent_turns WHERE intent_id = ?", (intent_id,)
             ).fetchone()
-            if row is not None and str(row["status"]) == "active":
+            if row is not None and str(row["status"]) in ("active", "claiming"):
                 active.append(
                     {
                         "intentId": intent_id,
