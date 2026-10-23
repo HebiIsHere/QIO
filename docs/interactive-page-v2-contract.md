@@ -55,3 +55,43 @@
 - 组端点连线需要前后端同步；不能只画前端线。
 - 模型固定文案只能在 backend/src/agent/prompts.py（Phase 3）。
 - 不 push、不建 PR、不触发完整 CI、不合并其他分支。
+
+
+## 5. Phase 2 冻结字段（Lead 决策）
+
+### 5.1 参与讨论（唯一状态）
+- 每张卡新增 participation: "included" | "excluded"；它是参与范围的唯一事实源。
+- 选中/多选/框选不改变 participation；提交后不清除。
+- 新文件/文字卡默认 included；QIO 结果卡默认 excluded（与旧 reply 语义一致），用户显式打开后 included。
+- 组没有独立 participation 字段：由成员派生 all/none/partial；组控件批量改成员。
+- checked/hidden 保留为历史兼容字段，迁移后不再决定可见性；迁移一次性：
+  - hidden=true -> excluded
+  - text/reply -> 保留旧 checked 意图
+  - file -> included（旧规则默认可见，即使 checked=false）
+  - 旧 code/url -> excluded（仍不可交付）
+- 前端范围预览、后端 visible_range、selectable_cards、before/after、删除/撤回、draft 提升、board_inspect/read、工具授权必须共用同一规则。迁移标记放板面状态 participationVersion=1，不新增用户可见历史页。
+
+### 5.2 图片比例
+- 图片仍是 file 卡附件，不新增 kind。
+- meta.display = { width, height, aspectRatio } 记录浏览器解码后的真实显示像素和比例；不参与材料语义版本。
+- 卡片 w/h 必须满足该比例；拖动/键盘/组缩放/工具尺寸/恢复统一走比例约束。
+- meta.display 未知时不写 0/NaN/猜测比例；渲染加载/失败状态，失败不破布局。
+- 详细状态不保留普通标题栏高度；图片铺满卡片，圆角裁切，不用 cover 伪装，不拉伸。
+
+### 5.3 连线端点
+- 端点字符串继续使用 src/dst：卡片仍为裸 card id；组写 group:<groupId>。
+- 新增纯函数解析/校验/归一化；旧数据裸 card id 不变，不需要全量迁移。
+- 组端点必须校验组存在/未删/获准成员；模型可见范围不得通过组名/成员/几何/连线泄露未参与内容。
+- 组收起时成员对外连线可视觉汇聚到组边缘，但真实端点身份不变；解散组删除以组本身为端点的线，成员卡片线保留。
+
+### 5.4 版本与语义
+- 卡片/组/连线如带 version 必须在前端归一化中保留；后端权威自增。
+- 纯布局（移动/缩放/书签/阅读位置）不改变材料语义版本，不使意图依据失效。
+- 语义变化（正文、附件版本、参与、关系含义、组成员）进入材料版本/意图依据核对（Phase 3）。
+
+### 5.5 Phase 2 文件唯一归属
+- A 纯几何/避让：interactive/v2/geometry.ts（新增）及测试；不改 BoardCanvas。
+- B 组/连线组件：BoardGroupFrame.vue、BoardLinkLayer.vue、interactive/linkEndpoints.ts（新增）及测试；不改 BoardCanvas。
+- C 卡片/图片：BoardCard.vue、CardInlinePreview.vue、interactive/renderers/** 及测试；不改 BoardCanvas。
+- D 后端板面：backend/src/agent/interactive/{models,board,board_tools,tool_models}.py 与定向测试；迁移只能追加。
+- Lead：BoardCanvas.vue、stores/interactive.ts、types.ts、board.ts、services/interactive.ts、InteractiveView.vue 的最终接线。
