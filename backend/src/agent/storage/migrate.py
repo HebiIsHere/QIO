@@ -206,6 +206,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "pending_approvals.requirement_version",
         "authorization_records.requirement_version",
         "authorization_review_audit.requirement_version",
+        # R9-H（迁移 59）：结构化限制持久化。缺了它们，历史/重启/审批恢复只能看到
+        # 展平文字，引擎无法可靠地拒绝"用户明确限制过"的操作（NULL/legacy 不等于无限制）。
+        "user_requirements.structured_limits",
+        "user_requirements.structured_limits_state",
+        "user_requirements.structured_limits_source",
     ),
     "indexes": (
         "idx_instances_heartbeat",

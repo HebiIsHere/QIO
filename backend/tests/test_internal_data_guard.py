@@ -42,9 +42,24 @@ def test_protected_path_detection(tmp_path):
     assert internal_data.is_internal_data_path(db_path, protected)
     assert internal_data.is_internal_data_path(tmp_path / "config.toml", protected)
     assert not internal_data.is_internal_data_path(tmp_path / "workspace" / "a.txt", protected)
-    assert internal_data.is_sensitive_credential_path(tmp_path / ".env")
-    assert internal_data.is_sensitive_credential_path(tmp_path / ".git" / "config")
-    assert not internal_data.is_sensitive_credential_path(tmp_path / "a.txt")
+    # R9-H 契约 §5：名称/后缀不再直接决定权限（已删除词表与 is_sensitive_credential_path）。
+    for removed_name in (
+        "SENSITIVE_DIR_NAMES",
+        "SENSITIVE_FILE_NAMES",
+        "SENSITIVE_SUFFIXES",
+        "is_sensitive_credential_path",
+    ):
+        assert not hasattr(internal_data, removed_name), removed_name
+    # 普通 .key/.pem/.crt、credentials/.config 同名目录不是内部运行数据。
+    for ordinary in (
+        tmp_path / "a.key",
+        tmp_path / "service.pem",
+        tmp_path / "server.crt",
+        tmp_path / "credentials" / "token.json",
+        tmp_path / ".config" / "app.toml",
+        tmp_path / ".git" / "config",
+    ):
+        assert not internal_data.is_internal_data_path(ordinary, protected), ordinary
     assert internal_data.CONFIRMATIONS_REQUIRED == 3
     assert "内部运行数据" in internal_data.INTERNAL_DATA_WARNING
 

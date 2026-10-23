@@ -279,10 +279,14 @@ def test_git_dash_c_inside_root_continues_readonly(tmp_path):
     assert verdict == "auto" and risk == CommandRisk.LOW
 
 
-def test_git_dash_c_redline_is_denied(tmp_path):
+def test_git_dash_c_ordinary_name_is_not_denied_by_name(tmp_path, tmp_path_factory):
+    """R9-H §5：git -C 指向工作区内普通 .env 不再因名称被拒绝（根内按普通规则）。"""
     s = _sandbox(tmp_path)
     verdict, _ = s.command_verdict_for_program("git", ["-C", ".env", "status"])
-    assert verdict == "deny"
+    assert verdict == "auto", "根内普通路径按普通规则，不因名称 deny"
+    outside = tmp_path_factory.mktemp("outside")
+    verdict, _ = s.command_verdict_for_program("git", ["-C", str(outside), "status"])
+    assert verdict == "approve", "根外 -C 仍需审批（不是名称判定，也不是自动放行）"
 
 
 def test_git_dash_c_missing_value_is_not_auto(tmp_path):
@@ -301,10 +305,11 @@ def test_cat_inside_root_relative_auto(tmp_path):
     assert verdict == "auto"
 
 
-def test_cat_inside_root_env_denied(tmp_path):
+def test_cat_inside_root_env_is_ordinary(tmp_path):
+    """R9-H §5：普通 .env 不因名称被拒绝；根内读取按普通规则 auto。"""
     s = _sandbox(tmp_path)
     verdict, _ = s.command_verdict_for_program("cat", [".env"])
-    assert verdict == "deny"
+    assert verdict == "auto"
 
 
 def test_cat_relative_traversal_outside_root_approve(tmp_path):
@@ -534,7 +539,8 @@ async def test_plan_mode_tool_denies_git_write_without_approval(git_repo):
 
 
 @pytest.mark.asyncio
-async def test_cat_outside_env_denied_like_fs_read(tmp_path):
+async def test_cat_outside_env_requires_approval_like_fs_read(tmp_path):
+    """R9-H §5：根外普通 .env 不再因名称被拒；按根外规则走审批（fs_read 与命令一致）。"""
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "outside"
@@ -543,21 +549,21 @@ async def test_cat_outside_env_denied_like_fs_read(tmp_path):
     env_file.write_text("SR_A_TEST_MARKER=1\n", encoding="utf-8")
     s = _sandbox(root)
 
-    # fs_read：红线拒绝
+    # fs_read：根外 → 需要审批（不是名称红线）
     fs = FsReadTool()
     _install(fs, s, (fs_appr := _RejectingApprovals()))
     r_fs = await fs.run(path=str(env_file))
     assert r_fs.ok is False
-    assert not fs_appr.calls, "红线路径连审批都不进入"
+    assert len(fs_appr.calls) == 1, "根外路径应进入审批（由上层授权/模式判断）"
 
-    # run_program cat 同一路径：不得 auto（deny），且真实执行被拦
+    # run_program cat 同一路径：同样 approve（不再 deny），真实执行被审批拦住
     verdict, _ = s.command_verdict_for_program("cat", [str(env_file)])
-    assert verdict == "deny"
+    assert verdict == "approve"
     t = RunProgramTool()
     _install(t, s, (appr := _RejectingApprovals()))
     res = await t.run(program="cat", args=[str(env_file)])
     assert res.ok is False
-    assert not appr.calls
+    assert len(appr.calls) == 1
 
 
 @pytest.mark.asyncio
