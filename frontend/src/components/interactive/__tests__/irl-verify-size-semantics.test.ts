@@ -14,7 +14,7 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import { nextTick } from "vue";
 import BoardCanvas from "../BoardCanvas.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
-import { emptyState } from "../../../interactive/board";
+import { emptyState, normalizeState } from "../../../interactive/board";
 import type { BoardCard as BoardCardModel, BoardState } from "../../../interactive/types";
 
 const VIEW_LEFT = 40;
@@ -179,7 +179,8 @@ describe("尺寸操作 ↔ 任务语义分离", () => {
       },
     );
     const view = mountCanvas();
-    const before = JSON.parse(JSON.stringify(store.board)) as BoardState;
+    // 基线归一化后再取快照：participation / version 是归一化补上的状态，不是尺寸拖动造成的语义变化。
+    const before = JSON.parse(JSON.stringify(normalizeState(store.board!))) as BoardState;
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockClear();
 
