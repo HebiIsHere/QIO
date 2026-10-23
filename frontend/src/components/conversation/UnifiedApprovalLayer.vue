@@ -22,6 +22,14 @@ import UnifiedApprovalModal from "../approval/UnifiedApprovalModal.vue";
 import MemoryQuestionReminder from "./MemoryQuestionReminder.vue";
 import type { MemoryOpenTarget } from "../../stores/memoryQuestions";
 
+const props = withDefaults(
+  defineProps<{
+    /** 互动页没有记忆星球落点：默认隐藏记忆提醒，避免点击无效。 */
+    showMemory?: boolean;
+  }>(),
+  { showMemory: true },
+);
+
 const emit = defineEmits<{
   /** 外层把它接到「打开星球并定位到待确认问题」 */
   "open-memory": [target: MemoryOpenTarget];
@@ -152,7 +160,7 @@ watch(
     <!-- 入口统一放到输入区上方的五图标入口（⑤）：对话页只有这一处审批入口，
          这里不再额外渲染顶部浮动条，避免同一时刻出现两个入口。 -->
     <UnifiedApprovalModal />
-    <MemoryQuestionReminder @open="onOpenMemory" />
+    <MemoryQuestionReminder v-if="props.showMemory" @open="onOpenMemory" />
     <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>
   </div>
 </template>
