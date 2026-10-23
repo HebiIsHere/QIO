@@ -406,7 +406,21 @@ def _require_internal_data_confirmations(
 ) -> ExecResult | None:
     """内部运行数据必须走完三次确认才执行（契约 §4；确认状态由后端校验）。"""
     root = fingerprint.get("internal_data_root")
-    if not root:
+    entries = fingerprint.get("internal_data_entries") or ()
+    # R9-H4 §8：执行开始前按**当前**对象识别复核最低确认次数，不能只信审批单里
+    # 写入的一次旧判断。目录内枚举到受保护子对象也属于内部数据维护。
+    current_internal = bool(root) or bool(entries)
+    if not current_internal:
+        engine = getattr(ctx, "engine", None)
+        try:
+            current_internal = (
+                security_gate.match_internal_data(engine, path) is not None
+                if engine is not None
+                else False
+            )
+        except Exception:  # noqa: BLE001 - 识别失败不能静默降级
+            current_internal = True
+    if not current_internal:
         return None
     try:
         required = int(getattr(ctx.operation, "confirmations_required", 1) or 1)
@@ -418,7 +432,7 @@ def _require_internal_data_confirmations(
             "internal_confirmations_missing",
             invalidated=True,
             path=path,
-            internal_data_root=str(root),
+            internal_data_root=str(root or path),
         )
     return None
 
@@ -813,6 +827,25 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
                 "status": "invalidated",
                 "invalidated": True,
                 "reason": reason,
+            }
+            results.append(item)
+            failed.append(item)
+            continue
+        # 旧形状/手写单 path 的目录删除没有目录影响依据：必须 fail-closed 重新确认，
+        # 不能因为缺少 is_directory 字段就跳过新增/移除/替换子对象核对。
+        try:
+            path_is_dir = await asyncio.to_thread(lambda: Path(path).is_dir())
+        except OSError:
+            path_is_dir = False
+        if path_is_dir and not row.get("is_directory"):
+            item = {
+                "item_id": item_id,
+                "path": path,
+                "ok": False,
+                "status": "invalidated",
+                "invalidated": True,
+                "reason": "审批记录没有目录影响依据（旧审批/手写 path）：无法可靠比较子对象变化，需重新确认",
+                "code": "invalidated: directory_impact_missing",
             }
             results.append(item)
             failed.append(item)
@@ -1542,9 +1575,23 @@ async def execute_proc_shell(
 async def execute_proc_kill(
     payload: dict, ctx: ExecutionContext, *, computer: Any, security: Any = None
 ) -> ExecResult:
+    changed = _reject_if_payload_changed(payload, ctx)
+    if changed is not None:
+        return changed
     pid = str(payload.get("pid") or "").strip()
     if not pid:
         return _failure("审批单缺少 pid：未执行", "missing_pid")
+    expected_created = str(payload.get("process_created_at") or "").strip()
+    if expected_created:
+        from agent.tools.cmd_tools import process_creation_token
+
+        current_created = process_creation_token(pid)
+        if not current_created or current_created != expected_created:
+            return _failure(
+                "审批失效：pid 已指向另一个进程（进程生命周期不一致），本次未结束任何进程",
+                "invalidated: process_identity_changed",
+                invalidated=True,
+            )
     from agent.security.operations import replay_gateway_kwargs
     from agent.tools.cmd_tools import ProcKillTool
 

@@ -2654,6 +2654,8 @@ def create_app(
             # 结束事实（R4 S6）：RESYNC 时把「当前相关轮次」（运行 / 排队 / 刚取消 /
             # 上一个进程留下的未完成轮）的事实一并给前端，按 turn_id 合并。
             "turn_facts": _turn_facts_for(_current_turn_ids()),
+            # R9-H4 §8：内部数据身份登记失败必须可见（不静默降级）。
+            "internal_data_identity": _internal_data_identity_state(ctx),
         }
 
     @app.post("/api/turns/prepare/{prepare_id}/cancel")
@@ -2889,6 +2891,24 @@ def create_app(
         ids.extend(str(item.get("turn_id") or "") for item in snapshot.get("cancelled") or [])
         ids.extend(str(row.get("turn_id") or "") for row in ctx.turn_journal.unfinished())
         return ids
+
+    def _internal_data_identity_state(ctx) -> dict:
+        """内部数据身份登记诊断：失败可见，不把读取失败当“没有登记”。"""
+        store = getattr(ctx, "internal_data_identity", None)
+        health: dict = {}
+        get_health = getattr(store, "health", None)
+        if callable(get_health):
+            try:
+                health = dict(get_health() or {})
+            except Exception as exc:  # noqa: BLE001 - 诊断失败也只如实返回
+                health = {
+                    "ready": False,
+                    "last_error": type(exc).__name__ + ": " + str(exc),
+                }
+        return {
+            "error": getattr(ctx, "internal_data_identity_error", None),
+            "health": health,
+        }
 
     def _turn_facts_for(turn_ids) -> list[dict]:
         """这一页 / 当前相关轮次的结束事实（R4 S6）：**一次批量查询**，绝不 N+1。

@@ -589,6 +589,15 @@ class _CmdTool(Tool):
         )
         launch_facts = self._launch_facts(execution)
         limit_impacts = self._limit_impacts(execution, delete_intent, shell=shell)
+        # 删除意图存在但对象无法可靠枚举（展开/变量/引号/嵌套/未验证）时，
+        # 不能假装影响完整；引擎/审批必须把它当不确定，避免漏判删除限制。
+        delete_incomplete = bool(
+            delete_intent is not None
+            and (
+                not bool(getattr(delete_intent, "verified", False))
+                or not tuple(getattr(delete_intent, "objects", ()) or ())
+            )
+        )
         detail = {
             "program": resolved_program or program,
             "argv": (
@@ -603,6 +612,14 @@ class _CmdTool(Tool):
             "execution": execution,
             # R9-H4 §2/§3：真实影响（含 execute 入口下的 delete 影响、resolve 后程序身份）
             "limit_impacts": limit_impacts,
+            "limit_impacts_complete": not delete_incomplete,
+            "limit_impacts_reason": (
+                "命令中的删除对象无法可靠完整枚举（展开/变量/引号/嵌套或未验证）：影响不确定"
+                if delete_incomplete
+                else None
+            ),
+            # H4 §5：无 contextvar 的直接/后台/审批恢复入口也要能核对绑定要求。
+            "requirement_binding": self._requirement_binding(),
             # R9-H4 §3/§6：与 launch spec 同一份事实（审查/审批/重核对可逐项比较）
             "launch_facts": launch_facts,
             "delete_intent": None if delete_intent is None else delete_intent.as_dict(),
@@ -1422,6 +1439,66 @@ class ProcListTool(_CmdTool):
         return await _run_child(_create, timeout=20, label="进程列表")
 
 
+def process_creation_token(pid: object) -> str | None:
+    """进程生命周期依据：Windows 创建时间 / POSIX /proc 启动时间。
+
+    不是安全沙箱或全盘扫描；只用于确认批准后到执行前 pid 仍指向同一进程，
+    防止 pid 复用后结束无关进程。取不到时返回 None（调用方不得声称同进程）。
+    """
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    try:
+        if platform.system().lower() == "windows":
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.OpenProcess.argtypes = [
+                wintypes.DWORD,
+                wintypes.BOOL,
+                wintypes.DWORD,
+            ]
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            handle = kernel32.OpenProcess(0x1000, False, value)  # QUERY_LIMITED_INFORMATION
+            if not handle:
+                return None
+            try:
+                creation = wintypes.FILETIME()
+                exit_time = wintypes.FILETIME()
+                kernel = wintypes.FILETIME()
+                user = wintypes.FILETIME()
+                ok = kernel32.GetProcessTimes(
+                    handle,
+                    ctypes.byref(creation),
+                    ctypes.byref(exit_time),
+                    ctypes.byref(kernel),
+                    ctypes.byref(user),
+                )
+                if not ok:
+                    return None
+                ticks = (int(creation.dwHighDateTime) << 32) | int(
+                    creation.dwLowDateTime
+                )
+                return "win:" + str(ticks)
+            finally:
+                kernel32.CloseHandle(handle)
+        stat_path = "/proc/%d/stat" % value
+        with open(stat_path, "r", encoding="utf-8", errors="replace") as handle:
+            raw = handle.read()
+        close = raw.rfind(")")
+        fields = raw[close + 2 :].split()
+        # /proc/<pid>/stat 字段 22 是 starttime（1-based；去掉了 pid/comm 后索引 19）。
+        if len(fields) > 19:
+            return "posix:" + fields[19]
+    except Exception:  # noqa: BLE001 - 平台/进程不可读按不可确认
+        return None
+    return None
+
+
 class ProcKillTool(_CmdTool):
     name = "proc_kill"
     description = prompts.TOOL_DESCRIPTIONS["proc_kill"]
@@ -1446,18 +1523,32 @@ class ProcKillTool(_CmdTool):
         # 必须经过统一授权（默认需要用户批准）。
         managed = isolation.is_managed_pid(int(pid))
         verdict = self.computer.command_verdict(f"kill {pid}")[0]
+        created_at = process_creation_token(pid)
         effect = security_gate.execute_effect(
             "proc_kill",
             "taskkill" if platform.system().lower() == "windows" else "kill",
             [pid],
             purpose="结束本实例管理的进程" if managed else "结束进程",
-            detail={"pid": pid, "managed_by_this_instance": managed},
+            detail={
+                "pid": pid,
+                "managed_by_this_instance": managed,
+                "process_created_at": created_at,
+            },
         )
         pending = (
             "proc.kill",
             f"结束进程 {pid}",
-            {"pid": pid, "managed_by_this_instance": managed},
-            {"kind": "proc.kill", "pid": pid, "managed": managed},
+            {
+                "pid": pid,
+                "managed_by_this_instance": managed,
+                "process_created_at": created_at,
+            },
+            {
+                "kind": "proc.kill",
+                "pid": pid,
+                "managed": managed,
+                "process_created_at": created_at,
+            },
         )
         blocked = await self._authorize_execution(
             effect,

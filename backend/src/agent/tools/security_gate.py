@@ -555,13 +555,38 @@ def match_internal_data(gateway: Any | None, path: Any) -> Path | None:
         from agent.security import internal_data as internal_data_module
         from agent.services.file_identity import identity_of
 
+        # engine 公开方法是 (identity_key, birth_key=None)；internal_data 回调会传
+        # FileIdentity。这里适配两者，避免把 repr 当身份键导致 lookup 永远 unknown。
+        raw_lookup = lookup
+
+        def _lookup_adapter(identity: object):
+            if raw_lookup is None:
+                return {"state": "unknown", "reason": "没有生命周期查询"}
+            if hasattr(identity, "key"):
+                identity_key = str(getattr(identity, "key") or "")
+                birth_key = getattr(identity, "birth_key", None)
+            elif isinstance(identity, dict):
+                identity_key = str(
+                    identity.get("key")
+                    or identity.get("identity_key")
+                    or ""
+                )
+                birth_key = identity.get("birth_key")
+            else:
+                identity_key = str(identity or "")
+                birth_key = None
+            try:
+                return raw_lookup(identity_key, birth_key)
+            except TypeError:
+                return raw_lookup(identity_key)
+
         matched = internal_data_module.is_internal_data_object(
             candidate,
             roots,
             identity_keys=tokens,
             known_paths=known,
             identity_of=identity_of,
-            identity_lookup=lookup,
+            identity_lookup=_lookup_adapter if raw_lookup is not None else None,
         )
     except Exception:  # noqa: BLE001 - 身份核对异常不能把可能受保护对象当普通文件
         return candidate if known else None

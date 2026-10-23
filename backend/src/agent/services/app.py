@@ -387,6 +387,10 @@ class AppContext:
                 last_error = (health() or {}).get("last_error")
                 if last_error:
                     self.internal_data_identity_error = str(last_error)
+            # R9-H4 升级兼容：旧行 birth NULL 且登记路径仍存在时，有界回填一次；
+            # 只读已登记路径，不扫描全盘。已移动且原路径不存在的旧对象无法回填，
+            # 保持历史路径/保守边界（不凭裸编号声称同一文件）。
+            self._backfill_identity_births()
         except Exception as exc:  # noqa: BLE001 - 身份登记失败不静默降级；路径判定仍兜底
             self.internal_data_identity_error = type(exc).__name__ + ": " + str(exc)
             logging.getLogger(__name__).warning(
@@ -829,8 +833,37 @@ class AppContext:
             if callable(tokens):
                 return frozenset(tokens())
             return frozenset(store.active_keys())
-        except Exception:  # noqa: BLE001 - 读失败按空集合（不伪造保护范围）
+        except Exception as exc:  # noqa: BLE001 - 读失败不能静默降级
+            self._record_identity_update_error("identity_keys", exc)
             return frozenset()
+
+    def _backfill_identity_births(self) -> None:
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return
+        snapshot = getattr(store, "snapshot", None)
+        refresh = getattr(store, "refresh_path", None)
+        if not callable(snapshot) or not callable(refresh):
+            return
+        try:
+            rows = list(snapshot() or ())
+        except Exception as exc:  # noqa: BLE001 - 回填失败不阻塞启动，但记录事实
+            self._record_identity_update_error("birth_backfill_snapshot", exc)
+            return
+        for row in rows[:100]:
+            if not isinstance(row, dict) or not row.get("active"):
+                continue
+            if row.get("birth_key"):
+                continue
+            path = str(row.get("path") or "")
+            if not path:
+                continue
+            try:
+                if not Path(path).exists():
+                    continue
+                refresh(path, source="startup_birth_backfill")
+            except Exception as exc:  # noqa: BLE001 - 单个失败不降级其它登记
+                self._record_identity_update_error("birth_backfill", exc)
 
     def _internal_identity_lookup(self, identity: object, birth_key: object = None) -> dict:
         """身份+birth 三态查询（E 接口；失败按未知，不声称同一文件）。"""
@@ -857,7 +890,8 @@ class AppContext:
             return frozenset()
         try:
             return frozenset(store.known_paths())
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 读失败不能静默降级
+            self._record_identity_update_error("identity_known_paths", exc)
             return frozenset()
 
     # -- R9-H3 §4：可信写入提交后的身份自动更新 ----------------------------
@@ -949,6 +983,31 @@ class AppContext:
                 self._record_identity_update_error("trusted_delete", exc)
                 return
             failures = [item for item in outcomes if not item.get("ok")]
+            # 目录删除：只按已登记路径做前缀有界退休，不做全盘扫描。
+            try:
+                known = set(store.known_paths())
+            except Exception:  # noqa: BLE001
+                known = set()
+            descendants: list[str] = []
+            for root_path in completed:
+                prefix = str(root_path).rstrip("\\/") + os.sep
+                for known_path in known:
+                    if str(known_path).startswith(prefix) and str(known_path) != root_path:
+                        descendants.append(str(known_path))
+                        if len(descendants) >= 50:
+                            break
+                if len(descendants) >= 50:
+                    break
+            if descendants:
+                try:
+                    child_outcomes = store.note_committed_delete(
+                        descendants, source="approved:fs.delete_tree"
+                    )
+                    failures.extend(
+                        item for item in child_outcomes if not item.get("ok")
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self._record_identity_update_error("trusted_delete_tree", exc)
             if failures:
                 messages = [
                     str(item.get("reason") or item.get("code") or "identity_update_failed")
