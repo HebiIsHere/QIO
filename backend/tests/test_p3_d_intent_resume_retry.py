@@ -420,6 +420,33 @@ def test_orchestrator_schedules_automatic_retry_after_failure(board_env):
 
 
 
+def test_display_and_retry_series_api(board_env):
+    conn = board_env
+    intent_id = _approved_intent(conn)
+    app = FastAPI()
+    app.state.ctx = SimpleNamespace(
+        conn=conn,
+        turns=FakeTurns(),
+        current_topic=lambda: "topic-api",
+    )
+    app.include_router(api_module.router)
+    client = TestClient(app)
+    display = client.post(
+        f"/api/interactive/intents/{intent_id}/display",
+        json={"boardId": BOARD, "x": 21.5, "y": 33},
+    )
+    assert display.status_code == 200
+    assert display.json()["display"] == {"x": 21.5, "y": 33.0}
+    view = intent_service.get_intent(conn, BOARD, intent_id)
+    assert view["display"] == {"x": 21.5, "y": 33.0}
+    series = client.get(f"/api/interactive/boards/{BOARD}/retry-series")
+    assert series.status_code == 200
+    assert series.json()["series"] == []
+    single = client.get(f"/api/interactive/intents/{intent_id}/retry-series")
+    assert single.status_code == 200
+    assert single.json()["series"] == []
+
+
 def test_confirm_api_reports_turn_failure_when_main_loop_rejects(board_env):
     conn = board_env
     intent_id = _approved_intent(conn)
