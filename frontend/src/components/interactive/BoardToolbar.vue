@@ -25,10 +25,24 @@ import AddMenu from "./AddMenu.vue";
 import BoardSearchPanel from "./BoardSearchPanel.vue";
 import SubmitCluster from "./SubmitCluster.vue";
 
+const props = withDefaults(
+  defineProps<{
+    /** 侧边书签栏是否展开（纯查看状态；由页面壳持有）。 */
+    bookmarksOpen?: boolean;
+  }>(),
+  { bookmarksOpen: false },
+);
+const emit = defineEmits<{
+  (e: "toggle-bookmarks"): void;
+  (e: "annotate", tool: "pen" | "eraser"): void;
+}>();
+
 const store = useInteractiveStore();
 
 /** 板内搜索浮层是否展开（只影响查看，不改板面数据）。 */
 const searchOpen = ref(false);
+/** 标注菜单：本轮只有准确的占位提示，不创建笔迹、不改变鼠标模式。 */
+const annotateOpen = ref(false);
 /**
  * 一次操作后的短回执：浮在功能栏上方，**不参与功能栏高度**，
  * 所以功能栏在操作前后保持同一高度（避免「点一下长高一截」）。
@@ -176,6 +190,44 @@ function toggleSearch(): void {
         </button>
 
         <span class="tb-sep" aria-hidden="true"></span>
+
+        <!-- 标注：本轮只给准确的「正在开发中」提示，不创建笔迹、不改变鼠标模式。 -->
+        <button
+          class="tb-btn tb-icon-btn"
+          type="button"
+          data-im="annotate-toggle"
+          aria-label="标注"
+          title="标注（画笔 / 橡皮）"
+          :aria-expanded="annotateOpen"
+          @click="annotateOpen = !annotateOpen"
+        >
+          <svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2.8 11.2 11.9 2.1a1.5 1.5 0 0 1 2.1 2.1l-9.1 9.1-2.8.7z" />
+              <path d="M10.8 3.2 12.8 5.2" />
+            </g>
+          </svg>
+        </button>
+        <div v-if="annotateOpen" class="tb-annotate" data-im="annotate-menu" role="menu">
+          <button type="button" class="tb-annotate-item" role="menuitem" @click="say('正在开发中，敬请期待'); annotateOpen = false; emit('annotate', 'pen')">画笔</button>
+          <button type="button" class="tb-annotate-item" role="menuitem" @click="say('正在开发中，敬请期待'); annotateOpen = false; emit('annotate', 'eraser')">橡皮</button>
+          <p class="tb-annotate-note">正在开发中，敬请期待</p>
+        </div>
+
+        <button
+          class="tb-btn tb-icon-btn"
+          type="button"
+          data-im="bookmarks-toggle"
+          :class="{ on: props.bookmarksOpen }"
+          :aria-label="props.bookmarksOpen ? '收起书签栏' : '打开书签栏'"
+          :aria-pressed="props.bookmarksOpen"
+          :title="props.bookmarksOpen ? '收起书签栏' : '打开书签栏'"
+          @click="emit('toggle-bookmarks')"
+        >
+          <svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <path d="M4 2.5h8v11l-4-2.6-4 2.6z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+          </svg>
+        </button>
 
         <!-- 2026-10-14：用户要求删除「操作说明」入口与浮层（手势说明不再常驻界面） -->
       </div>
@@ -393,6 +445,34 @@ function toggleSearch(): void {
 .tb-help-pop ul { margin: 0; padding-left: 1.1em; }
 .tb-help-pop li { font-size: var(--fs-xs); line-height: 1.6; color: var(--text-secondary); }
 .tb-help-pop .help-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); }
+/* 标注占位菜单：轻量浮层，只说明尚未开发，不生成任何数据。 */
+.tb-annotate {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + var(--sp-2));
+  z-index: 22;
+  min-width: 150px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
+}
+.tb-annotate-item {
+  display: block;
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.tb-annotate-item:hover { background: var(--layer-hover); color: var(--text-strong); }
+.tb-annotate-note { margin: var(--sp-1) var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs); }
 
 /*
   提交区容器：display: contents —— 它自己不生成盒子，内部的历史 / 统计 / 操作组

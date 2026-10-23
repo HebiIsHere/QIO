@@ -27,6 +27,7 @@ import {
   recoveryEntryVisible,
 } from "../components/interactive/v2";
 import IntentLayer from "../components/interactive/v2/IntentLayer.vue";
+import InteractiveBookmarks from "../components/interactive/v2/InteractiveBookmarks.vue";
 import type { IntentViewWithDisplay } from "../components/interactive/v2/intentDisplay";
 import { canRecover } from "../interactive/intentWorkbench";
 import { fetchIntentViews, saveIntentDisplay } from "../services/interactive";
@@ -35,6 +36,8 @@ import { understandingSettled, understandingText } from "../interactive/approval
 const store = useInteractiveStore();
 /** 意图与结果工作台：保留旧能力入口，Phase 3 再迁到虚拟意图/底部操作。 */
 const workbenchOpen = ref(false);
+/** 书签栏纯查看状态；由工具栏切换，不写板面、不产生意图。 */
+const bookmarksOpen = ref(false);
 /** 新链意图视图（服务端事实；不用旧 store.intents 冒充）。 */
 const intentViews = ref<IntentViewWithDisplay[]>([]);
 const intentDisplay = ref<Record<string, { x: number; y: number }>>({});
@@ -188,7 +191,7 @@ const boardSize = computed(() => {
     <!-- 统一审批：互动页恰好一套；入口由输入区事项行第⑤项提供，不再另挂浮动入口。 -->
     <UnifiedApprovalLayer :show-memory="false" />
 
-    <InteractiveWorkspace>
+    <InteractiveWorkspace :bookmarks-open="bookmarksOpen">
       <template #board>
         <div class="im-board-stage" data-im="interactive-stage">
           <BoardCanvas>
@@ -273,7 +276,10 @@ const boardSize = computed(() => {
           </div>
 
           <!-- 旧浮层仍是板面舞台的绝对定位子层；Phase 2/3 再迁入 workspace 的 toolbar/chat 槽。 -->
-          <BoardToolbar />
+          <BoardToolbar
+            :bookmarks-open="bookmarksOpen"
+            @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
+          />
           <IntentStatusPopover />
           <IntentBatchTray />
           <ImpactConfirmDialog />
@@ -290,6 +296,10 @@ const boardSize = computed(() => {
             上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
           </p>
         </div>
+      </template>
+
+      <template #bookmarks>
+        <InteractiveBookmarks @close="bookmarksOpen = false" />
       </template>
 
       <!-- 底部互动对话：输入区在下，会话流向上展开；复用对话页的会话与五入口。 -->
