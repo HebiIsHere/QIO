@@ -29,7 +29,9 @@ from agent.security.requirements import AuthorizationLedger, RequirementLedger
 from agent.security.review import (
     ReviewDecision,
     ReviewOutcome,
+    ReviewRequest,
     build_review_payload,
+    object_state_digest,
     operation_fingerprint,
 )
 from agent.services.computer import ComputerSandbox
@@ -525,3 +527,249 @@ async def test_fs_write_replay_uses_bound_content_and_rejects_content_mismatch(
         current_requirement.reset(token)
     assert rejected.ok is False
     assert not target2.exists(), "内容不一致时不得写任何内容"
+
+
+# --------------------------------------------------------------------------
+# 6) 前置状态变化 / 目的地（cwd）/ 批量子项独立 / 命令永久删除 delete_mode
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_precondition_state_change_prevents_reuse(bound):
+    target = bound.workspace / "已有文件.txt"
+    target.write_text("初始内容", encoding="utf-8")
+
+    first_gateway = CaptureGateway(verdict="allow")
+    first_tool = FsWriteTool(computer=bound.computer, security=first_gateway)
+    await first_tool.run(path=str(target), content="新一版")
+    first_effect = first_gateway.effects[0]
+
+    # 审批/审查之后、下一次操作之前，用户在外部改了同一文件（身份不变、前置内容变）
+    target.write_text("外部改动", encoding="utf-8")
+    second_gateway = CaptureGateway(verdict="allow")
+    second_tool = FsWriteTool(computer=bound.computer, security=second_gateway)
+    await second_tool.run(path=str(target), content="新一版")
+    second_effect = second_gateway.effects[0]
+
+    await bound.engine.authorize(first_effect)
+    await bound.engine.authorize(second_effect)
+    assert len(bound.reviewer.calls) == 2, "前置状态变化不得复用旧审查记录"
+    first_operation = bound.reviewer.calls[0].operation
+    second_operation = bound.reviewer.calls[1].operation
+    assert first_operation.content_digest == second_operation.content_digest
+    assert first_operation.precondition_digest != second_operation.precondition_digest
+
+
+@pytest.mark.asyncio
+async def test_cwd_change_prevents_reuse(bound, tmp_path):
+    tool = RunProgramTool(
+        computer=bound.computer,
+        security=bound.engine,
+        approvals=bound.approvals,
+    )
+    first = await tool.run(
+        program=PY, args=["-c", "print(1)"], cwd=str(bound.workspace)
+    )
+    assert first.ok is True, (first.error, first.content)
+    second = await tool.run(program=PY, args=["-c", "print(1)"], cwd=str(tmp_path))
+    assert second.ok is True, (second.error, second.content)
+    assert len(bound.reviewer.calls) == 2, "cwd（执行目的地）变化不得复用旧授权"
+    assert (
+        bound.reviewer.calls[0].operation.spec_digest
+        != bound.reviewer.calls[1].operation.spec_digest
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_delete_items_bind_independent_content_and_precondition(bound):
+    first = bound.workspace / "批量一.txt"
+    second = bound.workspace / "批量二.txt"
+    first.write_text("第一个文件的内容", encoding="utf-8")
+    second.write_text("第二个文件的另一段内容", encoding="utf-8")
+    gateway = CaptureGateway(
+        verdict="approve", review_engine=bound.engine, requirement=bound.binding
+    )
+    tool = FsDeleteTool(computer=bound.computer, security=gateway)
+
+    result = await tool.run(paths=[str(first), str(second)])
+    assert result.code == "pending_approval"
+    operation = gateway.submitted[-1]
+    items = operation.fingerprint.get("items") or []
+    assert len(items) == 2, "批量子项必须逐项绑定，不得合并成一个对象"
+    assert items[0]["content_sha256"] == hashlib.sha256(
+        "第一个文件的内容".encode("utf-8")
+    ).hexdigest()
+    assert items[1]["content_sha256"] == hashlib.sha256(
+        "第二个文件的另一段内容".encode("utf-8")
+    ).hexdigest()
+    assert items[0]["content_sha256"] != items[1]["content_sha256"]
+    assert (
+        items[0]["precondition_digest"] != items[1]["precondition_digest"]
+    ), "两个不同对象的前置状态摘要必须不同"
+    for item in items:
+        assert item.get("operation_binding", {}).get("fingerprint")
+
+    batch_effect = effect_from_pending(operation)
+    batch_operation = review_of_effect(bound.engine, batch_effect)
+    assert batch_operation.delete_mode == "recycle_bin"
+    assert batch_operation.precondition_digest
+    assert first.exists() and second.exists(), "待审批不删除任一项"
+
+
+@pytest.mark.asyncio
+async def test_cmd_permanent_delete_effect_has_delete_mode(bound, tmp_path):
+    from agent.tools.cmd_tools import RunCmdTool
+
+    victim = tmp_path / "命令删除目标.txt"
+    victim.write_text("要删除", encoding="utf-8")
+    command = (
+        ("del /f /q " + str(victim))
+        if sys.platform == "win32"
+        else ("rm -f " + str(victim))
+    )
+    gateway = CaptureGateway(verdict="approve", requirement=bound.binding)
+    tool = RunCmdTool(computer=bound.computer, security=gateway)
+
+    result = await tool.run(cmd=command)
+    assert result.code == "pending_approval", result
+    operation = gateway.submitted[-1]
+    effect = effect_from_pending(operation)
+    review_operation = review_of_effect(bound.engine, effect)
+    assert review_operation.delete_mode == "permanent"
+    assert review_operation.kind == "execute"
+    payload = build_review_payload(
+        ReviewRequest(
+            requirement=bound.requirement,
+            corrections=(),
+            limits=(),
+            mode="restricted",
+            operation=review_operation,
+            related_grants=(),
+            prior_decisions=(),
+            approvals=(),
+            user_constraints=(),
+            requirement_resolution_status="resolved",
+        )
+    )
+    assert payload["operation"]["delete_mode"] == "permanent"
+    assert victim.exists(), "待审批不执行命令"
+
+
+# --------------------------------------------------------------------------
+# 7) 附件写回审批恢复：源文件在审批期间变化 → 不写回
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_attachment_write_back_replay_invalidates_when_source_changed(bound, tmp_path):
+    from agent.services.attachments import AttachmentService
+    from agent.tools.approved_operations import execute_attachment_write_back
+
+    service = AttachmentService(bound.engine.conn, tmp_path / "data")
+    source = tmp_path / "写回源.txt"
+    source.write_text("原始内容", encoding="utf-8")
+    attachment = service.register_source(path=str(source), source_kind="desktop_path")
+    gateway = CaptureGateway(verdict="approve", requirement=bound.binding)
+    pending = await service.write_back_source(
+        attachment.id, "审批内容".encode("utf-8"), gateway=gateway
+    )
+    assert pending["pending_approval"] is True
+    operation = gateway.submitted[-1]
+
+    source.write_text("用户在审批期间改成了别的", encoding="utf-8")
+    token = current_requirement.set(bound.binding)
+    try:
+        executed = await execute_attachment_write_back(
+            operation.payload,
+            context_for(operation, bound),
+            attachments_getter=lambda: service,
+        )
+    finally:
+        current_requirement.reset(token)
+    assert executed.ok is False
+    assert executed.detail.get("invalidated") is True
+    assert source.read_text(encoding="utf-8") == "用户在审批期间改成了别的", (
+        "源文件已变时不得按旧审批写回"
+    )
+
+@pytest.mark.asyncio
+async def test_attachment_write_back_legacy_fingerprint_shape_is_checked_against_new_content(
+    bound, tmp_path
+):
+    """兼容旧审批形状：content_sha256=覆盖前内容、new_sha256=新内容。
+
+    执行器必须用 new_sha256 作为「拟写入内容」比较，不能把覆盖前摘要当新内容；
+    同时仍核对覆盖前状态（身份/内容）未变，成功后登记摘要更新。
+    """
+    import base64
+
+    from agent.services.attachments import AttachmentService
+    from agent.tools.approved_operations import execute_attachment_write_back
+
+    service = AttachmentService(bound.engine.conn, tmp_path / "data")
+    source = tmp_path / "旧形状源.txt"
+    source.write_text("原始内容", encoding="utf-8")
+    attachment = service.register_source(path=str(source), source_kind="desktop_path")
+    resolved = service.resolve_source(attachment.id, for_write=True)
+    new_bytes = "新内容".encode("utf-8")
+    new_sha = hashlib.sha256(new_bytes).hexdigest()
+    binding = {
+        "requirement_id": bound.requirement.requirement_id,
+        "version": int(bound.requirement.version or 1),
+    }
+    payload = {
+        "attachment_id": attachment.id,
+        "path": str(resolved.path),
+        "identity": resolved.identity.key,
+        "content_b64": base64.b64encode(new_bytes).decode("ascii"),
+        "sha256": new_sha,
+        "requirement_binding": dict(binding),
+    }
+    fingerprint = {
+        "identity": resolved.identity.key,
+        "content_sha256": resolved.current_sha256,
+        "new_sha256": new_sha,
+        "requirement_binding": dict(binding),
+    }
+    from agent.services import attachment_access
+
+    effect = attachment_access.write_effect(
+        "attachment.write_back",
+        path=str(resolved.path),
+        identity=resolved.identity.key,
+        purpose="旧形状写回测试",
+        content_sha256=new_sha,
+        detail={
+            "content_digest": new_sha,
+            "precondition_digest": object_state_digest(
+                path=str(resolved.path),
+                exists=True,
+                identity=resolved.identity.key,
+                content_sha256=resolved.current_sha256,
+                is_directory=False,
+            ),
+        },
+    )
+    operation = PendingOperation(
+        kind="attachment.write_back",
+        label="旧形状写回测试",
+        payload=dict(payload),
+        effect=attachment_access.effect_to_dict(effect),
+        fingerprint=dict(fingerprint),
+        mode_at_request="restricted",
+        requirement_id=bound.requirement.requirement_id,
+        requirement_version=int(bound.requirement.version or 1),
+    )
+    ctx = context_for(operation, bound)
+    token = current_requirement.set(bound.binding)
+    try:
+        result = await execute_attachment_write_back(
+            payload, ctx, attachments_getter=lambda: service
+        )
+    finally:
+        current_requirement.reset(token)
+    assert result.ok is True, (result.error, result.summary)
+    assert source.read_text(encoding="utf-8") == "新内容"
+    after = service.resolve_source(attachment.id, for_write=True)
+    assert after.current_sha256 == new_sha, "写回后登记内容摘要必须更新"
+

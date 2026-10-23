@@ -236,20 +236,38 @@ def _review_binding_mismatch(ctx: ExecutionContext) -> str | None:
 
 
 def _payload_content_mismatch(ctx: ExecutionContext, payload: dict) -> str | None:
-    """审批指纹记录的内容摘要必须与本次真正执行的 payload 内容一致。"""
+    """审批指纹记录的**拟写入内容**摘要必须与本次真正执行的 payload 内容一致。
+
+    契约字段语义（docs/r9h-contracts.md §4）：
+    * content_digest = 拟写入内容/补丁/附件写回内容摘要（新内容）；
+    * precondition_digest（旧字段 base_content_sha256/content_sha256 同义）= 覆盖前状态。
+    附件写回的旧审批形状用 content_sha256 表示**覆盖前**内容、new_sha256 表示新内容，
+    因此按操作类型选择"新内容"来源，不能把旧内容摘要当新内容比较。
+    """
+    fingerprint = _fingerprint(ctx)
     stored = _stored_operation_binding(ctx)
-    expected = str(
-        stored.get("content_digest")
-        or _fingerprint(ctx).get("content_sha256")
-        or ""
-    )
+    operation = getattr(ctx, "operation", None)
+    kind = str(getattr(operation, "kind", "") or "")
+    if kind.startswith("attachment.write_back") or kind.startswith(
+        "attachment.batch_write_back"
+    ):
+        expected = str(
+            stored.get("content_digest")
+            or fingerprint.get("content_digest")
+            or fingerprint.get("new_sha256")
+            or ""
+        )
+    else:
+        expected = str(
+            stored.get("content_digest")
+            or fingerprint.get("content_digest")
+            or fingerprint.get("content_sha256")
+            or fingerprint.get("new_sha256")
+            or ""
+        )
     if not expected:
         return None
-    actual = str(
-        payload.get("content_sha256")
-        or payload.get("sha256")
-        or ""
-    )
+    actual = str(payload.get("content_sha256") or payload.get("sha256") or "")
     if not actual:
         return None
     if actual != expected:
