@@ -181,7 +181,10 @@ async def test_cancel_during_preparation_targets_that_turn(app, provider):
     assert final_a == "completed", ("A 必须继续跑完", final_a)
     assert status_b_later == "cancelled", ("被取消的 B 不得随后开始执行", status_b_later)
     assert not (queue_later.get("running") and str(queue_later["running"].get("turn_id")) == turn_b), queue_later
-    assert calls_after <= 2, ("被取消的 B 不得产生模型调用", {"calls": calls_after, "at_cancel": calls_after_cancel})
+    assert calls_after == calls_after_cancel, (
+        "取消后不得新增模型调用（B 不得产生；R9-G 每轮开始的要求解析是 A 自己的调用）",
+        {"calls": calls_after, "at_cancel": calls_after_cancel},
+    )
     print("[诊断] 准备中取消：回执 turn_id=%s（A=%s）；B=%s→%s；A=%s；模型调用=%d"
           % (turn_b, turn_a, status_b, status_b_later, final_a, calls_after))
 
@@ -245,6 +248,7 @@ async def test_repeated_cancel_and_unknown_id_are_idempotent(app, provider):
         first = (await client.post("/api/turns/prepare/r8-prep-idem/cancel")).json()
         second = (await client.post("/api/turns/prepare/r8-prep-idem/cancel")).json()
         unknown = (await client.post("/api/turns/prepare/r8-prep-no-such-id/cancel")).json()
+        calls_at_cancel = await _calls(provider)
         with contextlib.suppress(Exception):
             await asyncio.wait_for(b_task, timeout=60)
         turn_b = str(first.get("turn_id"))
@@ -256,5 +260,5 @@ async def test_repeated_cancel_and_unknown_id_are_idempotent(app, provider):
     assert second.get("cancelled") is True and second.get("turn_id") == turn_b, ("重复取消必须幂等", second)
     assert unknown.get("unknown") is True, ("未知标识必须幂等返回 unknown", unknown)
     assert status_b == "cancelled", ("B 不得因为重复取消/放行而开始执行", status_b)
-    assert calls_after <= 2, ("被取消的 B 不得产生模型调用", calls_after)
+    assert calls_after == calls_at_cancel, ("被取消的 B 不得产生模型调用", {"calls": calls_after, "at_cancel": calls_at_cancel})
     print("[诊断] 幂等：first=%s；second=%s；unknown=%s；B=%s" % (first, second, unknown, status_b))

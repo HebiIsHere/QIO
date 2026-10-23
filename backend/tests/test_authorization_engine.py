@@ -171,42 +171,84 @@ async def test_unrestricted_allows_normal_operations(db_conn, tmp_path):
 
 
 def _set_requirement(security, text: str, *, limits=()):
-    """注入一个最小需求台账替身（生产由 AppContext 的 RequirementLedger 提供）。"""
-    from types import SimpleNamespace
-
-    class _Ledger:
-        def current(self):
-            return SimpleNamespace(
-                requirement_id="req_test", text=text, limits=tuple(limits)
-            )
-
-    security.engine.requirements = _Ledger()
+    """登记一条真实要求并返回绑定 + 结构化限制（R9-G：要求解析模型输出）。"""
+    requirement = security.requirements.record_user_message(
+        text=text, message_id="msg_test", turn_id="turn_test"
+    )
+    binding = security.requirements.binding_for(requirement.requirement_id)
+    return binding, tuple(limits)
 
 
-async def test_unrestricted_honors_explicit_prohibition(db_conn, tmp_path):
+async def test_unrestricted_keys_off_text_but_structured_limit_denies(db_conn, tmp_path):
+    """关键词不再决定权限：纯文本"只分析/不要修改"不产生 DENY；结构化限制才生效。"""
+    from agent.security.context import requirement_context, requirement_limits_context
+
     security = make_security(tmp_path, db_conn, mode="unrestricted")
-    _set_requirement(security, "只分析这个项目，不要修改任何文件")
-    write = await verdict(security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.py"))
-    assert write.verdict == Verdict.DENY
-    assert "不要修改" in write.reason or "只分析" in write.reason
-    read = await verdict(security.engine, path_effect(EffectKind.READ, tmp_path / "a.py"))
+    binding, _ = _set_requirement(security, "只分析这个项目，不要修改任何文件")
+    with requirement_context(binding):
+        write = await verdict(
+            security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.py")
+        )
+        read = await verdict(
+            security.engine, path_effect(EffectKind.READ, tmp_path / "a.py")
+        )
+    assert write.verdict == Verdict.ALLOW, "纯文本限制不再由关键词判定（语义由模型理解）"
     assert read.verdict == Verdict.ALLOW
 
+    structured = (
+        {
+            "operations": ["write"],
+            "objects": [{"kind": "path_prefix", "value": str(tmp_path)}],
+            "reason": "用户明确限制不要修改这个目录",
+        },
+    )
+    with requirement_context(binding), requirement_limits_context(structured):
+        write2 = await verdict(
+            security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.py")
+        )
+    assert write2.verdict == Verdict.DENY
+    assert "限制" in write2.reason
 
-async def test_restricted_prohibition_beats_authorization_review(db_conn, tmp_path):
+
+async def test_structured_limit_denies_delete_in_restricted(db_conn, tmp_path):
+    from agent.security.context import requirement_context, requirement_limits_context
+
     security = make_security(tmp_path, db_conn, mode="restricted")
-    _set_requirement(security, "只分析，不要删除这个文件")
-    delete = await verdict(security.engine, path_effect(EffectKind.DELETE, tmp_path / "a.txt"))
+    binding, _ = _set_requirement(security, "只分析，不要删除这个文件")
+    delete_effect = path_effect(EffectKind.DELETE, tmp_path / "a.txt")
+    structured = (
+        {
+            "operations": ["delete"],
+            "objects": [{"kind": "path", "value": str(tmp_path / "a.txt")}],
+            "reason": "用户明确不要删除这个文件",
+        },
+    )
+    with requirement_context(binding), requirement_limits_context(structured):
+        delete = await verdict(security.engine, delete_effect)
     assert delete.verdict == Verdict.DENY
-    assert "没有执行" in delete.reason
+    assert "删除" in delete.reason or "限制" in delete.reason
 
 
-async def test_prohibition_only_denies_matching_effect_kind(db_conn, tmp_path):
+async def test_structured_limit_only_denies_matching_effect_kind(db_conn, tmp_path):
+    from agent.security.context import requirement_context, requirement_limits_context
+
     security = make_security(tmp_path, db_conn, mode="unrestricted")
-    _set_requirement(security, "不要删除这些文件，但可以修改")
-    write = await verdict(security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.txt"))
+    binding, _ = _set_requirement(security, "不要删除这些文件，但可以修改")
+    structured = (
+        {
+            "operations": ["delete"],
+            "objects": [{"kind": "path_prefix", "value": str(tmp_path)}],
+            "reason": "用户明确不要删除这些文件",
+        },
+    )
+    with requirement_context(binding), requirement_limits_context(structured):
+        write = await verdict(
+            security.engine, path_effect(EffectKind.WRITE, tmp_path / "a.txt")
+        )
+        delete = await verdict(
+            security.engine, path_effect(EffectKind.DELETE, tmp_path / "a.txt")
+        )
     assert write.verdict == Verdict.ALLOW
-    delete = await verdict(security.engine, path_effect(EffectKind.DELETE, tmp_path / "a.txt"))
     assert delete.verdict == Verdict.DENY
 
 

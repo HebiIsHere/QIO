@@ -1551,12 +1551,31 @@ MIGRATIONS.append(_R9_APPROVAL)
 MIGRATIONS.append(_R9F_REVIEW)
 MIGRATIONS.append(_R9G_BINDING)
 
-# 补偿入口（新，58）：迁移 56 的全部语句 + 57。
+# 补偿入口（新，58）：补偿 51 的全部语句 + 52 附件 + 53 审批 v2 + 55 审查/来源
+# + 57 要求绑定。按对象复核时任一必需对象缺失都会重放这里；必须完整覆盖，
+# 不能只抄最近一条迁移（否则存量库丢表/丢列时补不回来）。
+def _dedupe_statements(statements):
+    seen = set()
+    result = []
+    for statement in statements:
+        key = str(statement)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(statement)
+    return result
+
+
 MIGRATIONS.append(
     (
         58,
-        [stmt for target, stmts in MIGRATIONS if target == 56 for stmt in stmts]
-        + list(_R9G_BINDING[1]),
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 51 for stmt in stmts]
+            + list(_R9_ATTACH[1])
+            + list(_R9_APPROVAL[1])
+            + list(_R9F_REVIEW[1])
+            + list(_R9G_BINDING[1])
+        ),
     )
 )
 

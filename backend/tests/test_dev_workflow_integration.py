@@ -133,8 +133,16 @@ async def test_full_dev_workflow_registers_tool(ctx: AppContext, monkeypatch):
     # 工作区保留：已完成任务的项目文件、需求与测试证据都要留下来
     assert ctx.dev_workspaces.task(ws.id) is not None
     assert ctx.dev_workspaces.status(ws.id)["submitted"] is True
-    # 新工具可调用：每次调用经审批（新语义），批准后由审批执行器重跑拿到真实结果
-    pending = await tool.run(a=2, b=3)
+    # 新工具可调用：每次调用经审批（新语义），批准后由审批执行器重跑拿到真实结果。
+    # R9-G：审批单必须绑定具体用户要求；这里模拟"用户要求试用刚开发的工具"的 turn 上下文。
+    from agent.security.context import requirement_context
+
+    requirement = ctx.requirements.record_user_message(
+        text="试用刚开发的求和工具", message_id="msg_dev", turn_id="turn_dev"
+    )
+    binding = ctx.requirements.binding_for(requirement.requirement_id)
+    with requirement_context(binding):
+        pending = await tool.run(a=2, b=3)
     assert pending.ok is True and pending.code == "pending_approval", pending
     approval_id = pending.data["approval_id"]
     await ctx.approvals.decide(approval_id, "approve")
