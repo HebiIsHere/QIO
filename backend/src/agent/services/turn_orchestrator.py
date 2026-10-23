@@ -284,12 +284,17 @@ class TurnOrchestrator:
         # 会话身份以前从没被传进来，pending_approvals.session_id 永远是 NULL，
         # respond() 里那条比对因此是死代码 —— 现在它真的会被写入并比对。
         app.approvals.set_context(turn_id=ctx.turn_id, session_id=app.session_id)
+        failed = False
         try:
             await self._execute_turn(ctx)
+        except BaseException:
+            failed = True
+            raise
         finally:
             app.approvals.set_context(turn_id=None, session_id=app.session_id)
             set_tool_nav_turn(None)
             clear_tool_navigation(ctx.turn_id)
+            self._finish_interactive_turn(ctx, failed=failed)
 
     async def _execute_turn(self, ctx) -> None:
         """阶段必须铺满时间轴（见 trace/phases.py）。
@@ -763,6 +768,10 @@ class TurnOrchestrator:
                 ),
                 "attempt": int(getattr(ctx, "board_attempt", 1) or 1),
                 "resume": bool(getattr(ctx, "board_resume", False)),
+                "source": str(getattr(ctx, "board_turn_source", "") or "confirm"),
+                "retry": bool(getattr(ctx, "board_retry", False)),
+                "retry_series": str(getattr(ctx, "board_retry_series", "") or ""),
+                "retry_attempt": int(getattr(ctx, "board_retry_attempt", 0) or 0),
                 "intent_ids": list(getattr(ctx, "board_intent_ids", ()) or ()),
                 "resolved_question_ids": list(
                     getattr(ctx, "board_resolved_question_ids", ()) or ()
@@ -953,6 +962,13 @@ class TurnOrchestrator:
                 from agent import prompts as _prompts
 
                 mode_rules = _prompts.PROMPTS["INTERACTIVE_POLICY"]
+            # 自动 / 手动重试轮：在基础互动政策后追加固定重试政策；不复制正文到别处。
+            if bool(getattr(ctx, "board_retry", False)):
+                from agent import prompts as _prompts
+
+                retry_policy = _prompts.PROMPTS.get("INTERACTIVE_RETRY_POLICY", "")
+                if retry_policy:
+                    mode_rules = (str(mode_rules).rstrip() + "\n\n" + retry_policy).strip()
         else:
             mode_getter = getattr(adapter, "mode_rules_text", None)
             if callable(mode_getter):
@@ -1130,6 +1146,115 @@ class TurnOrchestrator:
         ).fetchone()
         ctx.position_fragment_id = row["fragment_id"] if row is not None else None
         return final_topic
+
+
+    def _finish_interactive_turn(self, ctx, *, failed: bool = False) -> None:
+        """互动 Turn 收尾：释放意图执行认领、记录真实失败、由服务端安排自动重试。
+
+        这里只依据程序事实（ctx.status / ctx.error / 意图行 / 重试表）：
+        - 成功：只关闭已经 completed 的意图对应重试系列；
+        - 失败：首次失败不占自动次数；最多三次自动尝试由本方法排下一轮；
+        - 取消 / 用户停止 / 不可恢复原因：停止自动重试，只记录一次最终说明时间；
+        - 主循环不可提交时如实把系列标为 stopped，不伪造已重试。
+        """
+        if getattr(ctx, "mode", "normal") != "interactive" or bool(getattr(ctx, "notify", False)):
+            return
+        board_id = str(getattr(ctx, "board_id", "") or "")
+        if not board_id:
+            return
+        intent_ids = [str(item) for item in (getattr(ctx, "board_intent_ids", ()) or ()) if str(item)]
+        status = str(getattr(ctx, "status", "") or "")
+        error_text = str(getattr(ctx, "error", "") or "")
+        cancelled = bool(getattr(ctx, "cancelled", False)) or status == "cancelled"
+        turn_failed = bool(failed) or status in ("failed", "unavailable")
+        reason = error_text or ("turn_cancelled" if cancelled else "turn_failed")
+        try:
+            from agent.interactive import intent_service as _intent_service
+            from agent.interactive import submission as _submission
+
+            conn = self.app.conn
+            release_status = "cancelled" if cancelled else ("failed" if turn_failed else "done")
+            _submission.release_intent_turns(
+                conn,
+                intent_ids=intent_ids,
+                turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                status=release_status,
+                reason=reason[:300],
+            )
+            if intent_ids and (cancelled or turn_failed):
+                if cancelled:
+                    # 用户停止不是临时故障：不自动重试，但保留一次最终事实。
+                    for intent_id in intent_ids:
+                        series = _intent_service.retry_state(conn, intent_id)
+                        if series is not None:
+                            _intent_service.release_retry(
+                                conn,
+                                series["series_id"],
+                                status="stopped",
+                                reason="user_stopped",
+                            )
+                else:
+                    _intent_service.record_retry_failure(
+                        conn,
+                        board_id=board_id,
+                        intent_ids=intent_ids,
+                        reason=reason,
+                        turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                        retryable=_intent_service.retry_reason_is_recoverable(reason),
+                    )
+            elif intent_ids:
+                # 成功轮：只关闭真的 completed 的意图；failed / paused 仍保留重试系列。
+                placeholders = ", ".join("?" for _ in intent_ids)
+                rows = conn.execute(
+                    "SELECT id, status FROM board_intents WHERE id IN (" + placeholders + ")",
+                    tuple(intent_ids),
+                ).fetchall()
+                completed = [str(row["id"]) for row in rows if str(row["status"]) == "completed"]
+                if completed:
+                    _intent_service.complete_retries_for_intents(conn, completed)
+            # 服务端调度：每轮最多排一条自动重试，避免一次失败引发并发风暴。
+            candidates = _intent_service.pending_auto_retries(
+                conn,
+                board_id=board_id,
+                intent_ids=intent_ids or None,
+            )
+            if not candidates:
+                return
+            series = candidates[0]
+            claim = _intent_service.claim_auto_retry(conn, str(series["series_id"]))
+            if not claim.get("ok"):
+                return
+            started = _submission.start_interactive_turn(
+                conn,
+                turn_submitter=lambda message, topic: self.app.turns.submit(message, topic),
+                board_id=board_id,
+                intent_ids=[str(series["intent_id"])],
+                submission_id=str(series.get("submission_id") or ""),
+                source="retry",
+                resume=True,
+                retry_series_id=str(series["series_id"]),
+                retry_attempt=int(claim.get("attempt") or 1),
+                retry_limit=int(claim.get("limit") or 3),
+            )
+            if started.get("ok") and started.get("turnId"):
+                _intent_service.set_retry_turn(
+                    conn, str(series["series_id"]), str(started["turnId"])
+                )
+            else:
+                _intent_service.release_retry(
+                    conn,
+                    str(series["series_id"]),
+                    status="stopped",
+                    reason=str(started.get("reason") or "retry_turn_unavailable"),
+                )
+        except Exception:  # noqa: BLE001 - 互动收尾失败不能吞掉主轮事实，只记日志
+            logging.getLogger(__name__).warning(
+                "finish interactive turn failed board=%s turn=%s",
+                board_id,
+                getattr(ctx, "turn_id", ""),
+                exc_info=True,
+            )
+
 
     def _persist_interactive_state(self, ctx) -> None:
         """阶段三：把本轮互动结果持久化到提交等待 / 续作绑定。

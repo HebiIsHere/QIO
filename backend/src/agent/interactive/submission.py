@@ -1521,6 +1521,429 @@ def submission_binding(conn: sqlite3.Connection, submission_id: str) -> dict | N
     }
 
 
+
+# --- 已确认意图的真实续作 Turn（Phase 3 §6.2） ------------------------------
+
+TURN_SOURCES = ("confirm", "batch_confirm", "recover", "retry")
+
+
+def active_intent_turn(conn: sqlite3.Connection, intent_id: str) -> dict | None:
+    """这条意图当前是否有活跃 Turn（同一意图同一时刻只有一个有效执行）。"""
+    try:
+        row = conn.execute(
+            "SELECT * FROM board_intent_turns WHERE intent_id = ? AND status = 'active'",
+            (str(intent_id),),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    return {
+        "intentId": str(row["intent_id"]),
+        "turnId": str(row["turn_id"] or ""),
+        "boardId": str(row["board_id"]),
+        "submissionId": str(row["submission_id"] or ""),
+        "attempt": int(row["attempt"] or 1),
+        "source": str(row["source"] or ""),
+    }
+
+
+def claim_intent_turns(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    intent_ids: Sequence[str],
+    submission_id: str = "",
+    attempt: int = 1,
+    source: str = "confirm",
+) -> dict:
+    """在提交主循环 Turn 前认领这些意图；已有活跃 Turn 时整批拒绝（不并行）。
+
+    claim 只写「正在争取执行」；拿到真实 turn_id 后由 start_interactive_turn 落定。
+    调用方启动失败时必须 release_intent_turns(status="failed")。
+    """
+    bid = str(board_id or "").strip()
+    ids = [str(item) for item in intent_ids or [] if str(item).strip()]
+    if not bid or not ids:
+        return {"ok": False, "code": "intent_ids_required", "reason": "至少需要一个意图 id"}
+    stamp = models.now_iso()
+    active: list[dict] = []
+    with transaction(conn):
+        for intent_id in ids:
+            row = conn.execute(
+                "SELECT * FROM board_intent_turns WHERE intent_id = ?", (intent_id,)
+            ).fetchone()
+            if row is not None and str(row["status"]) == "active":
+                active.append(
+                    {
+                        "intentId": intent_id,
+                        "turnId": str(row["turn_id"] or ""),
+                        "source": str(row["source"] or ""),
+                    }
+                )
+        if active:
+            return {
+                "ok": False,
+                "code": "intent_turn_active",
+                "reason": "同一意图已有正在执行的 Turn；不会并行开始第二次",
+                "active": active,
+                "activeTurnId": active[0]["turnId"],
+            }
+        for intent_id in ids:
+            conn.execute(
+                "INSERT INTO board_intent_turns"
+                " (intent_id, board_id, submission_id, turn_id, attempt, source, status, reason, created_at, updated_at)"
+                " VALUES (?, ?, ?, '', ?, ?, 'claiming', '', ?, ?)"
+                " ON CONFLICT(intent_id) DO UPDATE SET"
+                " board_id = excluded.board_id, submission_id = excluded.submission_id,"
+                " turn_id = '', attempt = excluded.attempt, source = excluded.source,"
+                " status = 'claiming', reason = '', updated_at = excluded.updated_at",
+                (intent_id, bid, str(submission_id or ""), int(attempt), str(source), stamp, stamp),
+            )
+    return {"ok": True, "intentIds": ids, "attempt": int(attempt), "source": str(source)}
+
+
+def bind_claimed_turn(
+    conn: sqlite3.Connection,
+    *,
+    intent_ids: Sequence[str],
+    turn_id: str,
+) -> None:
+    """把认领结果落到真实 turn_id；失败时由 release_intent_turns 结算。"""
+    tid = str(turn_id or "").strip()
+    if not tid:
+        return
+    stamp = models.now_iso()
+    with transaction(conn):
+        for intent_id in intent_ids:
+            conn.execute(
+                "UPDATE board_intent_turns SET turn_id = ?, status = 'active', updated_at = ?"
+                " WHERE intent_id = ? AND status = 'claiming'",
+                (tid, stamp, str(intent_id)),
+            )
+
+
+def release_intent_turns(
+    conn: sqlite3.Connection,
+    *,
+    intent_ids: Iterable[str] | None = None,
+    turn_id: str | None = None,
+    status: str = "done",
+    reason: str = "",
+) -> int:
+    """释放意图 Turn 认领；Turn 结束 / 失败 / 取消都必须调用（不留下假活跃）。"""
+    if status not in ("done", "failed", "cancelled"):
+        status = "failed"
+    clauses: list[str] = ["status IN ('active', 'claiming')"]
+    where_params: list[Any] = []
+    ids = [str(item) for item in intent_ids or [] if str(item).strip()]
+    if ids:
+        clauses.append("intent_id IN (" + ", ".join("?" for _ in ids) + ")")
+        where_params.extend(ids)
+    tid = str(turn_id or "").strip()
+    if tid:
+        clauses.append("turn_id = ?")
+        where_params.append(tid)
+    try:
+        with transaction(conn):
+            cursor = conn.execute(
+                "UPDATE board_intent_turns SET status = ?, reason = ?, updated_at = ?"
+                " WHERE " + " AND ".join(clauses),
+                (status, str(reason or "")[:500], models.now_iso(), *where_params),
+            )
+            return int(cursor.rowcount or 0)
+    except sqlite3.Error:
+        return 0
+
+
+def interactive_turn_message(
+    *,
+    board_id: str,
+    submission_id: str,
+    intent_ids: Sequence[str],
+    attempt: int,
+    source: str,
+    authorization_versions: Mapping[str, Any] | None = None,
+    retry_attempt: int | None = None,
+    retry_limit: int | None = None,
+) -> str:
+    """程序生成的一次真实续作请求（只放程序事实，不冒充用户提交）。"""
+    lines = [
+        "【互动意图续作】这是程序绑定的一次真实续作，不是新的用户提交。",
+        f"板面：{str(board_id or '').strip() or '（无）'}",
+        f"提交：{str(submission_id or '').strip() or '（无提交绑定）'}",
+        "意图：" + ", ".join(str(item) for item in intent_ids),
+        f"来源：{str(source or 'confirm')}",
+        f"尝试：第 {int(attempt)} 次",
+    ]
+    versions = authorization_versions or {}
+    if versions:
+        lines.append(
+            "授权版本："
+            + ", ".join(f"{key}=v{value}" for key, value in versions.items())
+        )
+    if retry_attempt is not None:
+        lines.append(
+            f"自动重试：第 {int(retry_attempt)} 次（上限 {int(retry_limit or 0)}）"
+        )
+    lines.append(
+        "只执行这些已确认意图的未完成部分，保护用户后来编辑；不得重新提案、扩大范围或重复已完成操作。"
+    )
+    lines.append("真实结果必须通过 board_finish_intent 记录；没有工具核验不得声称完成。")
+    return "\n".join(lines)
+
+
+def _turn_id_of(turn: Any) -> str:
+    if isinstance(turn, dict):
+        return str(turn.get("turnId") or turn.get("turn_id") or "").strip()
+    return str(getattr(turn, "turn_id", "") or "").strip()
+
+
+def _bind_turn_facts(turn: Any, facts: Mapping[str, Any]) -> None:
+    """把程序事实写到 TurnContext（对象属性）或测试替身（dict 键）。"""
+    if isinstance(turn, dict):
+        turn.update({str(key): value for key, value in facts.items()})
+        return
+    for key, value in facts.items():
+        try:
+            setattr(turn, str(key), value)
+        except Exception:  # noqa: BLE001 - 只读替身不阻断真实绑定失败
+            logging.getLogger(__name__).warning("bind interactive turn fact failed: %s", key)
+
+
+def start_interactive_turn(
+    conn: sqlite3.Connection,
+    *,
+    turn_submitter: Callable[[str, str | None], Any] | None,
+    board_id: str,
+    intent_ids: Sequence[str],
+    submission_id: str = "",
+    attempt: int | None = None,
+    resume: bool = True,
+    source: str = "confirm",
+    topic_id: str | None = None,
+    retry_series_id: str | None = None,
+    retry_attempt: int | None = None,
+    retry_limit: int | None = None,
+) -> dict:
+    """确认 / 恢复 / 重试成功后，为这些意图**真实**创建一次互动主循环 Turn。
+
+    - 主循环不可用、绑定校验失败、提交失败或没有 turn_id → 明确失败（不伪造开始）；
+    - 同一意图已有活跃 Turn → 不并行，返回已有 turnId（reused=True）；
+    - 成功才写 board_intent_turns 的活跃 turn_id 与 submission 绑定。
+    """
+    bid = str(board_id or "").strip()
+    ids = [str(item) for item in intent_ids or [] if str(item).strip()]
+    if not bid or not ids:
+        return {
+            "ok": False,
+            "availability": "unavailable",
+            "code": "invalid_binding",
+            "reason": "缺少板面或意图 id",
+        }
+    if turn_submitter is None:
+        return {
+            "ok": False,
+            "availability": "unavailable",
+            "code": "turn_unavailable",
+            "reason": "主循环不可用：没有可提交的 Turn 受理器，本次没有开始执行",
+            "turnId": None,
+            "resume": False,
+        }
+    rows = []
+    for intent_id in ids:
+        row = conn.execute(
+            "SELECT id, board_id, submission_id, status, version, authorization"
+            " FROM board_intents WHERE id = ?",
+            (intent_id,),
+        ).fetchone()
+        if row is None:
+            return {
+                "ok": False,
+                "availability": "invalid",
+                "code": "intent_not_found",
+                "reason": f"意图不存在：{intent_id}",
+            }
+        if str(row["board_id"]) != bid:
+            return {
+                "ok": False,
+                "availability": "invalid",
+                "code": "board_mismatch",
+                "reason": "意图不属于这个板面",
+            }
+        if str(row["status"]) not in (
+            "approved",
+            "running",
+            "paused",
+            "partially_completed",
+            "failed",
+        ):
+            return {
+                "ok": False,
+                "availability": "invalid",
+                "code": "invalid_status",
+                "reason": f"意图状态为 {str(row['status'])}，不能开始执行",
+            }
+        rows.append(row)
+    submission_ids = [str(row["submission_id"] or "") for row in rows if str(row["submission_id"] or "")]
+    sid = str(submission_id or "").strip()
+    if not sid:
+        sid = submission_ids[0] if submission_ids else ""
+    if len(set(submission_ids)) > 1:
+        return {
+            "ok": False,
+            "availability": "invalid",
+            "code": "intent_submission_mismatch",
+            "reason": "同一次续作 Turn 不能绑定属于不同提交的意图",
+        }
+    if sid and submission_ids and sid not in submission_ids:
+        return {
+            "ok": False,
+            "availability": "invalid",
+            "code": "submission_mismatch",
+            "reason": "提交与意图不属于同一次提交",
+        }
+    resolved_attempt = int(attempt or 0)
+    if resolved_attempt < 1:
+        if sid:
+            count = conn.execute(
+                "SELECT COUNT(*) AS n FROM board_submission_turns WHERE submission_id = ?",
+                (sid,),
+            ).fetchone()
+            resolved_attempt = int(count["n"] or 0) + 1
+        else:
+            resolved_attempt = 1
+    versions: dict[str, int] = {}
+    for row in rows:
+        authorization = models.loads(row["authorization"], {})
+        try:
+            versions[str(row["id"])] = int((authorization or {}).get("version") or 0)
+        except (TypeError, ValueError):
+            versions[str(row["id"])] = 0
+    if not topic_id and sid:
+        binding = submission_binding(conn, sid)
+        if binding is not None:
+            topic_id = str(binding["resumeState"].get("topicId") or "") or None
+    # 部分意图已经在执行：只对尚未开始的意图发起一次 Turn；全部在跑则复用已有 turnId。
+    # 绝不因为一次批量确认把已在执行的意图并行开第二次。
+    active = [item for item in (active_intent_turn(conn, intent_id) for intent_id in ids) if item]
+    already_running: list[dict] = [item for item in active if item]
+    if active:
+        running_ids = {str(item["intentId"]) for item in active}
+        remaining = [intent_id for intent_id in ids if intent_id not in running_ids]
+        if not remaining:
+            first = active[0]
+            return {
+                "ok": True,
+                "availability": "already_running",
+                "reused": True,
+                "turnId": str(first.get("turnId") or "") or None,
+                "resume": True,
+                "attempt": resolved_attempt,
+                "reason": "这些意图已有正在执行的 Turn；不会并行开始第二次",
+                "active": active,
+            }
+        ids = remaining
+        versions = {key: value for key, value in versions.items() if key in ids}
+    claim = claim_intent_turns(
+        conn,
+        board_id=bid,
+        intent_ids=ids,
+        submission_id=sid,
+        attempt=resolved_attempt,
+        source=source if source in TURN_SOURCES else "confirm",
+    )
+    if not claim.get("ok"):
+        if claim.get("code") == "intent_turn_active":
+            return {
+                "ok": True,
+                "availability": "already_running",
+                "reused": True,
+                "turnId": claim.get("activeTurnId") or None,
+                "resume": True,
+                "attempt": resolved_attempt,
+                "reason": claim.get("reason"),
+                "active": claim.get("active") or [],
+            }
+        return {"ok": False, "availability": "invalid", **claim}
+    message = interactive_turn_message(
+        board_id=bid,
+        submission_id=sid,
+        intent_ids=ids,
+        attempt=resolved_attempt,
+        source=source,
+        authorization_versions=versions,
+        retry_attempt=retry_attempt,
+        retry_limit=retry_limit,
+    )
+    try:
+        turn = turn_submitter(message, topic_id)
+    except Exception as exc:  # noqa: BLE001 - 受理失败如实返回，不假装开始
+        release_intent_turns(conn, intent_ids=ids, status="failed", reason=str(exc)[:300])
+        return {
+            "ok": False,
+            "availability": "unavailable",
+            "code": "turn_submit_failed",
+            "reason": f"主循环受理失败：{type(exc).__name__}: {str(exc)[:200]}",
+            "turnId": None,
+            "resume": False,
+        }
+    turn_id = _turn_id_of(turn)
+    if not turn_id:
+        release_intent_turns(conn, intent_ids=ids, status="failed", reason="turn_id_missing")
+        return {
+            "ok": False,
+            "availability": "unavailable",
+            "code": "turn_id_missing",
+            "reason": "主循环没有返回可核对的 turn_id：本次不算开始执行",
+            "turnId": None,
+            "resume": False,
+        }
+    facts = {
+        "mode": MODE_INTERACTIVE,
+        "board_id": bid,
+        "board_submission_id": sid,
+        "board_topic_id": str(topic_id or ""),
+        "board_resume": bool(resume),
+        "board_intent_ids": tuple(ids),
+        "board_resolved_question_ids": (),
+        "board_attempt": resolved_attempt,
+        "board_retry": retry_series_id is not None,
+        "board_retry_series": str(retry_series_id or ""),
+        "board_retry_attempt": int(retry_attempt or 0),
+        "board_turn_source": str(source),
+    }
+    _bind_turn_facts(turn, facts)
+    bind_claimed_turn(conn, intent_ids=ids, turn_id=turn_id)
+    if sid:
+        bind_submission_turn(
+            conn,
+            submission_id=sid,
+            turn_id=turn_id,
+            resume_state={
+                "kind": "intent_resume",
+                "topicId": str(topic_id or ""),
+                "attempt": resolved_attempt,
+                "source": str(source),
+                "intentIds": ids,
+                "authorizationVersions": versions,
+            },
+        )
+    return {
+        "ok": True,
+        "availability": "started",
+        "turnId": turn_id,
+        "resume": bool(resume),
+        "attempt": resolved_attempt,
+        "submissionId": sid,
+        "intentIds": ids,
+        "topicId": str(topic_id or ""),
+        "authorizationVersions": versions,
+        "alreadyRunning": already_running,
+        "message": message,
+    }
+
+
 def resolve_chat_binding(
     conn: sqlite3.Connection,
     *,

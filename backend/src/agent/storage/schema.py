@@ -1595,3 +1595,22 @@ MIGRATIONS.append(
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 COMPENSATION_VERSION = 55
+
+# ── 阶段三（P3-D）：意图显示位置 / 单意图有效 Turn / 持久化重试系列（2026-10-24）──────
+# 契约：docs/interactive-page-v2-contract.md §6.1–§6.3。只追加，不改历史迁移。
+from agent.storage.migration_p3_d import MIGRATION as _P3_D_MIGRATION  # noqa: E402
+
+MIGRATIONS.append(_P3_D_MIGRATION)
+
+# 补偿入口（新，57）：迁移 55 的全部语句 + 56 新增对象。
+# 与 36/38/40/43/45/48/51/55 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append(
+    (
+        57,
+        [stmt for target, stmts in MIGRATIONS if target == 55 for stmt in stmts]
+        + list(_P3_D_MIGRATION[1]),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 57
