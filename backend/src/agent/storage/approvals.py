@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from agent.security.operations import ExecResult, PendingOperation
+from agent.security.operations import ExecResult, PendingOperation, operation_digest
 from agent.storage.db import transaction
 
 DEFAULT_TIMEOUT_SECONDS = 600.0
@@ -345,6 +345,51 @@ class ApprovalStore:
 
     # -- 决定 / 确认（CAS） ------------------------------------------------
 
+    def _row_expired(self, row: Any) -> bool:
+        expires = _parse_iso(row["expires_at"])
+        return expires is not None and expires < self.now()
+
+    def _operation_changed(self, row: Any) -> bool:
+        """审批记录里的操作内容在提交后是否被改动（独立摘要比对）。"""
+        raw = _loads(row["operation"], {})
+        if not isinstance(raw, dict) or not raw:
+            return False
+        expected = str(
+            (_loads(row["fingerprint"], {}) or {}).get("operation_digest") or ""
+        )
+        if not expected:
+            return False
+        try:
+            actual = operation_digest(PendingOperation.from_dict(raw))
+        except Exception:  # noqa: BLE001 - 解析不了就按"无法核对"处理
+            return True
+        return actual != expected
+
+    def _ensure_waiting_binding(self, row: Any, approval_id: str) -> None:
+        """等待中的审批：过期先标 expired；操作内容被改动则重置确认并拒绝。"""
+        if self.state_of(row) != "waiting":
+            return
+        if self._row_expired(row):
+            self.mark_expired(approval_id)
+            raise ApprovalConflict(
+                "这条审批已超过原始有效期（不会重新获得 10 分钟），请重新提出"
+            )
+        if self._operation_changed(row):
+            self.conn.execute(
+                "UPDATE pending_approvals SET confirmed_stage = 0,"
+                " revisions = revisions + 1 WHERE approval_id = ? AND state = 'waiting'",
+                (str(approval_id),),
+            )
+            self.conn.commit()
+            self._audit(
+                approval_id,
+                "binding_reset",
+                {"reason": "operation_changed_after_submission"},
+            )
+            raise ApprovalConflict(
+                "审批单绑定的操作内容在提交后被改动；确认已重置，请重新确认"
+            )
+
     def decide(
         self,
         approval_id: str,
@@ -391,6 +436,7 @@ class ApprovalStore:
         # approve
         if state != "waiting":
             raise ApprovalConflict("这条审批当前状态是「" + state + "」，不能重复批准")
+        self._ensure_waiting_binding(row, approval_id)
         operation = _loads(row["operation"], {})
         required = int(operation.get("confirmations_required") or 1)
         confirmed = int(row["confirmed_stage"] or 0)
@@ -428,6 +474,8 @@ class ApprovalStore:
         state = self.state_of(row)
         if state != "waiting":
             raise ApprovalConflict("这条审批当前状态是「" + state + "」，不能继续确认")
+        self._ensure_waiting_binding(row, approval_id)
+        row = self.get_raw(approval_id) or row
         operation = _loads(row["operation"], {})
         required = int(operation.get("confirmations_required") or 1)
         if required <= 1:
@@ -464,13 +512,24 @@ class ApprovalStore:
     # -- 执行领取 / 收口 ----------------------------------------------------
 
     def claim(self, approval_id: str) -> dict | None:
-        """原子领取：只有 state='approved' 的那一行会被改成 executing（幂等防重）。"""
+        """原子领取：只有 state='approved' 且未过期、操作内容未变的那一行会被改成 executing。"""
+        row = self.get_raw(approval_id)
+        if row is None:
+            return None
+        if self.state_of(row) == "approved":
+            if self._row_expired(row):
+                self.mark_expired(approval_id)
+                return None
+            if self._operation_changed(row):
+                self.mark_invalidated(approval_id, "operation_changed_after_approval")
+                return None
         moment = _iso(self.now())
         cur = self.conn.execute(
             "UPDATE pending_approvals SET state = 'executing', status = 'approved',"
             " attempt = attempt + 1, claimed_at = ?, revisions = revisions + 1"
-            " WHERE approval_id = ? AND state = 'approved'",
-            (moment, str(approval_id)),
+            " WHERE approval_id = ? AND state = 'approved'"
+            " AND (expires_at IS NULL OR expires_at >= ?)",
+            (moment, str(approval_id), moment),
         )
         if int(cur.rowcount or 0) != 1:
             self._audit(approval_id, "claim_rejected", {"reason": "not_approved_or_taken"})

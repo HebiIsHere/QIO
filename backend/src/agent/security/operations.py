@@ -10,8 +10,43 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+
+
+def operation_digest(operation: "PendingOperation") -> str:
+    """审批单操作内容的独立摘要（防"批准后 operation_detail 被改动"）。
+
+    只覆盖会改变实际执行的字段（动作/参数/效果/要求绑定/确认次数/来源），不含
+    result/error 等执行后字段。提交时写入 fingerprint 列（独立于 operation 列），
+    批准/领取/执行前用同一函数重算比对。
+    """
+    fingerprint_without_digest = {
+        str(key): value
+        for key, value in dict(operation.fingerprint or {}).items()
+        if key != "operation_digest"
+    }
+    payload = {
+        "kind": operation.kind,
+        "label": operation.label,
+        "payload": operation.payload,
+        "effect": operation.effect,
+        "fingerprint": fingerprint_without_digest,
+        "instruction_id": operation.instruction_id,
+        "instruction_text": operation.instruction_text,
+        "purpose": operation.purpose,
+        "mode_at_request": operation.mode_at_request,
+        "confirmations_required": int(operation.confirmations_required or 1),
+        "source": operation.source,
+        "turn_id": operation.turn_id,
+        "session_id": operation.session_id,
+        "requirement_id": operation.requirement_id,
+        "requirement_version": operation.requirement_version,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -139,6 +174,8 @@ class ExecutionContext:
     engine: Any = None
     mode_getter: Callable[[], str] | None = None
     instruction: Any = None
+    #: 审批原始截止时间（重启/排队后仍按它核对，不续期）。
+    expires_at: str | None = None
 
     def current_mode(self) -> str:
         if self.mode_getter is None:
@@ -175,6 +212,18 @@ class ExecutionContext:
         """
         if self.engine is None:
             return True, ""
+        if self.expires_at:
+            try:
+                from datetime import datetime, timezone
+
+                deadline = datetime.fromisoformat(str(self.expires_at))
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > deadline:
+                    return False, "这条审批已超过原始有效期（不会重新获得 10 分钟），本次没有执行"
+            except (TypeError, ValueError):
+                # 截止时间读不了：不能当作无限期有效。
+                return False, "审批截止时间无法核对，本次没有执行（需要重新提出）"
         binding = self.requirement_binding()
         if binding is None:
             return (

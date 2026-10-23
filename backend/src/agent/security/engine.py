@@ -757,10 +757,18 @@ class AuthorizationEngine(AuthorizationGateway):
             effect.detail.get("qio_generated")
         )
 
-    @staticmethod
-    def _is_app_managed(effect: Effect) -> bool:
+    #: 应用自身受控运行（设置/记忆/日志/审批落库）只能由代码内部受控路径产生，
+    #: 不能由模型可控的工具参数自报标记。约定：这类 effect 的 tool 以 "internal."
+    #: 开头（由服务代码设置），引擎才认作应用自身运行；普通工具自报 app_managed
+    #: 一律无效（不能靠标记豁免只读/审批）。
+    _TRUSTED_INTERNAL_TOOL_PREFIX = "internal."
+
+    @classmethod
+    def _is_app_managed(cls, effect: Effect) -> bool:
         """应用受控行为（审批落库/日志/解析临时文件）——不是模型的任意写能力。"""
-        return bool(effect.detail.get("app_managed"))
+        if not effect.detail.get("app_managed"):
+            return False
+        return str(effect.tool or "").startswith(cls._TRUSTED_INTERNAL_TOOL_PREFIX)
 
     def _grant_scope_id(
         self, effect: Effect, context: AuthContext

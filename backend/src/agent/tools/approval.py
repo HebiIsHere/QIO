@@ -496,6 +496,12 @@ class ApprovalService:
             operation.mode_at_request = mode or self.current_mode_value()
         if not operation.source:
             operation.source = str(origin or "tool")
+        # R9-G：提交时对"实际要执行的内容"做独立摘要，存进单独的 fingerprint 列；
+        # 批准/领取/执行前重算比对，operation_detail 被改动后不得重放。
+        from agent.security.operations import operation_digest
+
+        operation.fingerprint = dict(operation.fingerprint or {})
+        operation.fingerprint.setdefault("operation_digest", operation_digest(operation))
         row = self.store.create(
             operation,
             timeout_seconds=self.timeout_seconds,
@@ -643,6 +649,38 @@ class ApprovalService:
         if approved is None or str(approved.get("state") or "") != "approved":
             return
         operation = PendingOperation.from_dict(approved.get("operation_detail") or {})
+        # R9-G：审批记录里的操作内容必须与提交时一致（独立摘要）；截止时间不得续期。
+        from agent.security.operations import operation_digest
+
+        expected_digest = str(
+            (approved.get("fingerprint") or {}).get("operation_digest") or ""
+        )
+        if expected_digest and operation_digest(operation) != expected_digest:
+            reason = "审批单绑定的操作内容在提交后被改动；本次没有执行（需要重新提出）"
+            row = self.store.mark_invalidated(approval_id, reason)
+            await self._publish_phase("invalidated", row, extra={"summary": reason})
+            await self._notify(row, ok=False, summary=reason)
+            return
+        expires_at = str(approved.get("expires_at") or "")
+        if expires_at:
+            try:
+                from datetime import datetime, timezone
+
+                deadline = datetime.fromisoformat(expires_at)
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > deadline:
+                    reason = "这条审批已超过原始有效期（不会重新获得 10 分钟）；本次没有执行"
+                    row = self.store.mark_expired(approval_id)
+                    await self._publish_phase("invalidated", row, extra={"summary": reason})
+                    await self._notify(row, ok=False, summary=reason)
+                    return
+            except (TypeError, ValueError):
+                reason = "审批截止时间无法核对；本次没有执行"
+                row = self.store.mark_invalidated(approval_id, reason)
+                await self._publish_phase("invalidated", row, extra={"summary": reason})
+                await self._notify(row, ok=False, summary=reason)
+                return
         ctx = ExecutionContext(
             approval_id=approval_id,
             operation=operation,
@@ -651,6 +689,7 @@ class ApprovalService:
             attempt=int(approved.get("attempt") or 0) + 1,
             engine=self.engine,
             mode_getter=self.current_mode_value,
+            expires_at=str(approved.get("expires_at") or "") or None,
         )
         allowed, reason = await ctx.authorize_started()
         if not allowed:
