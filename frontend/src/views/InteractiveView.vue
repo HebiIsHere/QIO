@@ -12,6 +12,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
+import ConversationModeSwitch from "../components/conversation/ConversationModeSwitch.vue";
 import IntentBatchTray from "../components/interactive/IntentBatchTray.vue";
 import IntentStatusPopover from "../components/interactive/IntentStatusPopover.vue";
 import ImpactConfirmDialog from "../components/interactive/ImpactConfirmDialog.vue";
@@ -304,22 +305,27 @@ const boardSize = computed(() => {
 
       <!-- 底部互动对话：输入区在下，会话流向上展开；复用对话页的会话与五入口。 -->
       <template #composer>
-        <SaveFailureBanner />
-        <InteractiveConversation
-          v-model:expanded="store.chatOpen"
-          :binding="store.chatBinding"
-          :auto-collapse-on-board-action="true"
-          :extra-entries="recoveryEntries"
-        >
-          <template #extra-panel="{ id }">
-            <RecoveryPanel
-              v-if="id === 'recovery'"
-              :board-id="store.board?.boardId ?? ''"
-              :active="store.chatOpen"
-              @updated="recoveryPanelCount = $event"
-            />
-          </template>
-        </InteractiveConversation>
+        <div class="im-composer-row">
+          <ConversationModeSwitch class="im-mode-switch" />
+          <div class="im-conversation-slot">
+            <SaveFailureBanner />
+            <InteractiveConversation
+              v-model:expanded="store.chatOpen"
+              :binding="store.chatBinding"
+              :auto-collapse-on-board-action="true"
+              :extra-entries="recoveryEntries"
+            >
+              <template #extra-panel="{ id }">
+                <RecoveryPanel
+                  v-if="id === 'recovery'"
+                  :board-id="store.board?.boardId ?? ''"
+                  :active="store.chatOpen"
+                  @updated="recoveryPanelCount = $event"
+                />
+              </template>
+            </InteractiveConversation>
+          </div>
+        </div>
       </template>
     </InteractiveWorkspace>
   </div>
@@ -337,6 +343,27 @@ const boardSize = computed(() => {
   font-family: var(--sans);
 }
 /* 板面槽内舞台：现有 BoardCanvas / ChatDock / BoardToolbar 的定位祖先。 */
+.im-composer-row {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
+.im-conversation-slot {
+  flex: 0 1 860px;
+  min-width: 0;
+}
+.im-mode-switch {
+  padding-bottom: 8px;
+}
+@media (max-width: 900px) {
+  .im-conversation-slot { flex: 1 1 auto; }
+}
+@media (max-width: 700px) {
+  .im-mode-switch { padding-bottom: 6px; }
+}
+
 .im-board-stage {
   position: relative;
   flex: 1;
