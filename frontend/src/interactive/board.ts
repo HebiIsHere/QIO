@@ -99,6 +99,69 @@ export function defaultCardSeed(kind: CardKind): { kind: CardKind; content: stri
  */
 export const CHECKABLE_KINDS: CardKind[] = ["text", "reply"];
 
+/** 参与讨论的唯一状态；选中/多选/框选不改变它。 */
+export type Participation = "included" | "excluded";
+
+/**
+ * 一张卡当前是否参与讨论。
+ * 新版显式 participation 优先；旧数据按一次性迁移规则推导（见下方 migrateParticipation）。
+ */
+export function participationOf(card: Pick<BoardCard, "participation" | "hidden" | "checked" | "kind">): Participation {
+  if (card.participation === "included" || card.participation === "excluded") return card.participation;
+  if (card.hidden) return "excluded";
+  if (card.kind === "file") return "included";
+  if (card.kind === "text" || card.kind === "reply") return card.checked ? "included" : "excluded";
+  return "excluded";
+}
+
+/** 是否允许 QIO 读取这张卡（参与状态；与选中/书签/阅读状态正交）。 */
+export function isParticipating(card: Pick<BoardCard, "participation" | "hidden" | "checked" | "kind">): boolean {
+  return participationOf(card) === "included";
+}
+
+/** 显式设置单卡参与状态；保留旧 checked/hidden 字段以兼容旧服务端。 */
+export function setParticipation(state: BoardState, cardId: string, included: boolean): BoardState {
+  const work = normalizeState(state);
+  const card = cardById(work, cardId);
+  if (!card) return work;
+  const participation: Participation = included ? "included" : "excluded";
+  if (participationOf(card) === participation && card.participation === participation) return work;
+  card.participation = participation;
+  if (included) {
+    card.hidden = false;
+    if (card.kind === "text" || card.kind === "reply") card.checked = true;
+  } else if (card.kind === "text" || card.kind === "reply") {
+    card.checked = false;
+  }
+  card.updatedAt = nowIso();
+  work.updatedAt = nowIso();
+  return normalizeState(work);
+}
+
+/** 组级参与：全部参与 / 全部不参与；组本身没有独立 participation。 */
+export function setGroupParticipation(state: BoardState, groupId: string, included: boolean): BoardState {
+  const work = normalizeState(state);
+  const group = work.groups.find((item) => item.id === groupId && !item.deleted);
+  if (!group) return work;
+  let next = work;
+  for (const cardId of group.members) next = setParticipation(next, cardId, included);
+  return next;
+}
+
+/** 组的参与状态派生：全参与 / 全不参与 / 部分参与。 */
+export function groupParticipation(state: BoardState, groupId: string): "none" | "all" | "partial" {
+  const group = state.groups.find((item) => item.id === groupId && !item.deleted);
+  if (!group || !group.members.length) return "none";
+  const values = group.members
+    .map((id) => cardById(state, id))
+    .filter((card): card is BoardCard => Boolean(card) && card!.deleted === false)
+    .map((card) => isParticipating(card));
+  if (!values.length) return "none";
+  if (values.every(Boolean)) return "all";
+  if (values.every((value) => !value)) return "none";
+  return "partial";
+}
+
 //: 组框相对成员的留白（顶部留两行：组名一行 + 序号 / 成员一行，序号条不压住卡片）。
 //: 位置只影响显示，不是意图依据。
 const GROUP_PAD_X = 16;
@@ -335,6 +398,13 @@ function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
     w: Math.max(1, asFloat(source.w, DEFAULT_CARD_W)),
     h: Math.max(1, asFloat(source.h, DEFAULT_CARD_H)),
   });
+  const explicitParticipation =
+    source.participation === "included" || source.participation === "excluded"
+      ? source.participation
+      : undefined;
+  const participation: Participation =
+    explicitParticipation ??
+    (hidden ? "excluded" : kind === "file" ? "included" : kind === "text" || kind === "reply" ? (checked ? "included" : "excluded") : "excluded");
   return {
     id: String(source.id ?? "") || newId("c"),
     kind,
@@ -344,6 +414,10 @@ function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
     y: bounded.y,
     w: bounded.w,
     h: bounded.h,
+    participation,
+    ...(typeof source.version === "number" && Number.isFinite(source.version)
+      ? { version: source.version }
+      : {}),
     // G6 明确隐藏与勾选互斥（F4：结果卡同样保留用户明确给出的许可）
     checked: hidden ? false : checked,
     hidden,
@@ -410,6 +484,9 @@ function normalizeGroup(
     deleted: false,
     createdAt: asText(source.createdAt) || ctx.stamp,
     updatedAt: asText(source.updatedAt) || asText(source.createdAt) || ctx.stamp,
+    ...(typeof source.version === "number" && Number.isFinite(source.version)
+      ? { version: source.version }
+      : {}),
   };
   reflowGroup(group, ctx.cards);
   return group;
@@ -432,6 +509,9 @@ function normalizeLink(raw: unknown, live: Set<string>, stamp: string): BoardLin
     deleted: false,
     createdAt: asText(source.createdAt) || stamp,
     updatedAt: asText(source.updatedAt) || asText(source.createdAt) || stamp,
+    ...(typeof source.version === "number" && Number.isFinite(source.version)
+      ? { version: source.version }
+      : {}),
   };
 }
 
@@ -483,6 +563,10 @@ export function normalizeState(state: BoardState): BoardState {
     groups,
     links,
     selection,
+    ...(typeof source.participationVersion === "number" &&
+    Number.isFinite(source.participationVersion)
+      ? { participationVersion: source.participationVersion }
+      : {}),
   };
 }
 
@@ -525,10 +609,15 @@ export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: Ca
     y: size.y,
     w: size.w,
     h: size.h,
-    // 文字卡默认提交给 QIO；结果卡（reply）默认**不**许可（F4），明确传入时尊重它；
-    // 材料卡不需要这个勾选（默认在允许范围内）
-    checked:
-      card.checked === undefined ? card.kind === "text" : Boolean(card.checked),
+    // 参与状态是 v2 的唯一事实源：文件/文字默认参与，结果卡默认不参与；
+    // 旧 checked/hidden 仍写入以兼容旧服务端。
+    participation:
+      card.participation === "included" || card.participation === "excluded"
+        ? card.participation
+        : card.kind === "file" || card.kind === "text"
+          ? "included"
+          : "excluded",
+    checked: card.checked === undefined ? card.kind === "text" : Boolean(card.checked),
     hidden: Boolean(card.hidden),
     folded: Boolean(card.folded),
     bookmarked: Boolean(card.bookmarked),
@@ -622,6 +711,10 @@ export function updateCard(state: BoardState, cardId: string, patch: Partial<Boa
     assign("w", bounded.w);
     assign("h", bounded.h);
   }
+  if (patch.participation === "included" || patch.participation === "excluded") {
+    assign("participation", patch.participation);
+    if (patch.participation === "included" && card.kind !== "file") card.hidden = false;
+  }
   if (patch.checked !== undefined) assign("checked", Boolean(patch.checked));
   if (patch.hidden !== undefined) assign("hidden", Boolean(patch.hidden));
   if (patch.folded !== undefined) assign("folded", Boolean(patch.folded));
@@ -653,6 +746,7 @@ export function duplicateCard(state: BoardState, cardId: string): BoardState {
     y: source.y + DUPLICATE_OFFSET,
     checked: false,
     hidden: false,
+    participation: source.participation ?? (source.kind === "reply" ? "excluded" : "included"),
     deleted: false,
     createdAt: stamp,
     updatedAt: stamp,
@@ -951,8 +1045,10 @@ export function setChecked(state: BoardState, cardId: string, checked: boolean):
   const card = cardById(work, cardId);
   if (!card || card.deleted || !CHECKABLE_KINDS.includes(card.kind)) return work;
   const value = Boolean(checked);
-  if (card.checked === value && !(value && card.hidden)) return work;
+  const participation = value ? "included" : "excluded";
+  if (card.checked === value && card.participation === participation && !(value && card.hidden)) return work;
   card.checked = value;
+  card.participation = participation;
   if (value) card.hidden = false;
   card.updatedAt = nowIso();
   work.updatedAt = card.updatedAt;
@@ -965,6 +1061,7 @@ export function setHidden(state: BoardState, cardId: string, hidden: boolean): B
   const card = cardById(work, cardId);
   if (!card || card.deleted || card.hidden === Boolean(hidden)) return work;
   card.hidden = Boolean(hidden);
+  card.participation = card.hidden ? "excluded" : "included";
   if (card.hidden) card.checked = false;
   card.updatedAt = nowIso();
   work.updatedAt = card.updatedAt;

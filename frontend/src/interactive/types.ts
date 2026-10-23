@@ -19,6 +19,10 @@ export interface BoardCard {
   checked: boolean;
   /** 明确隐藏 = 退出讨论范围；与 checked 互斥 */
   hidden: boolean;
+  /** 参与讨论：唯一事实源；included = 本次允许 QIO 读取，excluded = 退出范围 */
+  participation?: "included" | "excluded";
+  /** 服务端权威对象版本（CAS）；前端归一化必须保留，不能用内容重算成 1 */
+  version?: number;
   /** 折叠只改变显示 */
   folded: boolean;
   /** 书签只提高查找优先级，不产生意图 */
@@ -66,6 +70,8 @@ export interface BoardState {
   links: BoardLink[];
   /** 提交时仍然有效的多选 / 区域选择 */
   selection: string[];
+  /** 参与状态一次性迁移标记；1 = 已按 v2 规则迁移 */
+  participationVersion?: number;
 }
 
 /** 提交载荷里的板面状态：只含本次允许查看的范围 */
