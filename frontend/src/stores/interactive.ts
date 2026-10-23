@@ -23,7 +23,14 @@ import {
   understandingSettled,
   understandingStatusLabel,
 } from "../interactive/approval";
-import { CHECKABLE_KINDS, clampBoardBounds } from "../interactive/board";
+import {
+  CHECKABLE_KINDS,
+  applyParticipation,
+  clampBoardBounds,
+  participationOf,
+  participationVisibleRange,
+  syncLegacyParticipation,
+} from "../interactive/board";
 import { cardAttachmentIsImage } from "../interactive/materials";
 import {
   cardDraftKey,
@@ -59,6 +66,7 @@ import {
   type Intent,
   type IntentPreview,
   type IntentStatus,
+  type Participation,
   type SubmissionRecord,
   type SubmissionResult,
   type Understanding,
@@ -239,6 +247,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const lastAcceptance = ref<AcceptanceLookup | null>(null);
 
   const visibleRange = ref<VisibleRange | null>(null);
+  /**
+   * 本地「本次允许 QIO 查看的范围」（Phase 2 §5.1 唯一规则）：与 participation 同源，
+   * 供提交前预览 / 范围说明使用；权威结果仍以服务端 visible_range 为准。
+   */
+  const participationRange = computed<VisibleRange>(() => participationVisibleRange(board.value));
 
   const intents = ref<Intent[]>([]);
   const conflicts = ref<string[][]>([]);
@@ -601,6 +614,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   const localCheckedChoices = new Map<string, boolean>();
   /**
+   * Phase 2 §5.1：参与状态是唯一事实源。用户做过的参与选择（还没被服务器事实确认）在这里留一份：
+   * 旧后端的「提交成功清勾选」只回 checked=false，不能因此把参与状态也清掉
+   * —— 界面显示的范围与服务端后续保存必须仍是用户选的那一份。
+   */
+  const localParticipationChoices = new Map<string, Participation>();
+  /**
    * 本页**自己**最后成功写下的本机记录版本（每个草稿键）。
    * 用于在重试补写本机副本时判断「磁盘上的是不是另一个页面写下的更新记录」——
    * 能证明是别人的更新版本就保留它，绝不覆盖（F2 的同类保护，针对写入而不是删除）。
@@ -774,6 +793,86 @@ export const useInteractiveStore = defineStore("interactive", () => {
   }
 
   /**
+   * Phase 2 §5.1：参与选择的三件套（与勾选同一套「用户选择优先、服务器确认后释放」口径）。
+   * - track：用户这一版改了参与 → 记下来；
+   * - force：把还没被服务器确认的选择重新贴回候选（迟到的旧事实不许把它改回去）；
+   * - reconcile：服务器事实与选择一致 → 这条本地选择已经落地，可以释放。
+   */
+  function trackParticipationChanges(previous: BoardState | null, next: BoardState): void {
+    if (!previous) return;
+    const before = new Map(previous.cards.map((card) => [card.id, participationOf(card)]));
+    for (const card of next.cards) {
+      const was = before.get(card.id);
+      if (was === undefined) continue;
+      const now = participationOf(card);
+      if (was !== now) localParticipationChoices.set(card.id, now);
+    }
+  }
+
+  function forceParticipationChoices(state: BoardState): BoardState {
+    if (!localParticipationChoices.size) return state;
+    let changed = false;
+    const cards = state.cards.map((card) => {
+      const choice = localParticipationChoices.get(card.id);
+      if (!choice || participationOf(card) === choice) return card;
+      /*
+        hidden / 遗留不可交付卡在参与判定里优先级更高（与后端一致）：
+        本地选择不能把明确隐藏的内容拉回范围。
+      */
+      if (card.hidden) return card;
+      const kind = card.kind;
+      if (kind === "code" || kind === "url") return card;
+      if (kind === "text" && card.meta && (typeof card.meta.language === "string" || (card.meta.url && typeof card.meta.url === "object"))) {
+        return card;
+      }
+      changed = true;
+      const next: typeof card = { ...card, participation: choice };
+      if (choice === "included") next.hidden = false;
+      syncLegacyParticipation(next);
+      return next;
+    });
+    return changed ? { ...state, cards } : state;
+  }
+
+  function reconcileParticipationChoices(server: BoardState): void {
+    for (const [cardId, choice] of [...localParticipationChoices]) {
+      const card = (server.cards ?? []).find((item) => item.id === cardId);
+      if (card && participationOf(card) === choice) localParticipationChoices.delete(cardId);
+    }
+  }
+
+  /**
+   * Phase 2 §5.4：服务器接受的这一版带着权威 version（后端权威自增）。
+   * 被更新候选接手的保存**仍要吸收**这些版本号 —— 否则候选下次保存会拿 1 去覆盖
+   * 服务端已经推进的版本（CAS 退化），这正是本轮要修的问题之一。
+   */
+  function absorbAuthoritativeVersions(candidate: BoardState, server: BoardState): BoardState {
+    const mergeList = <T extends { id: string; version?: number }>(
+      local: T[] | undefined,
+      remote: T[] | undefined,
+    ): T[] => {
+      const byId = new Map((remote ?? []).map((item) => [item.id, item]));
+      return (local ?? []).map((item) => {
+        const source = byId.get(item.id);
+        if (!source || typeof source.version !== "number" || !Number.isFinite(source.version)) {
+          return item;
+        }
+        if (item.version === source.version) return item;
+        return { ...item, version: source.version };
+      });
+    };
+    const cards = mergeList(candidate.cards, server.cards);
+    const groups = mergeList(candidate.groups, server.groups);
+    const links = mergeList(candidate.links, server.links);
+    const serverParticipationVersion = Number(server.participationVersion);
+    const participationVersion =
+      Number.isFinite(serverParticipationVersion) && serverParticipationVersion > 0
+        ? Math.max(serverParticipationVersion, Number(candidate.participationVersion) || 0)
+        : candidate.participationVersion;
+    return { ...candidate, cards, groups, links, participationVersion };
+  }
+
+  /**
    * N6：这条本机记录里是否带着**只在本机存在的**附加字段快照。
    *
    * 附加字段（网址/标题/文件名/图片名/代码语言）不进服务器草稿通道（那份只放正文），
@@ -810,10 +909,15 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   function commit(next: BoardState, label: string) {
     const current = board.value;
-    trackCheckedChanges(current ?? null, next);
-    settleContentConflicts(current ?? null, next);
+    // Phase 2 §5.1：参与的旧兼容字段（checked / hidden）与 participation 同口径；
+    // 对齐不补时间戳（否则等于凭空造出一次改动）。
+    const aligned = applyParticipation({ ...next, boardId: boardId.value });
+    const alignedCurrent = current ? applyParticipation(current) : null;
+    trackCheckedChanges(alignedCurrent, aligned);
+    trackParticipationChanges(alignedCurrent, aligned);
+    settleContentConflicts(alignedCurrent, aligned);
     if (current) pushUndo(current);
-    board.value = { ...next, boardId: boardId.value };
+    board.value = aligned;
     lastOpLabel.value = label;
     // 新的改动让既有影响确认授权失效：它只授权它当时那一版（08 路径2）
     confirmedCheck = null;
@@ -1138,14 +1242,27 @@ export const useInteractiveStore = defineStore("interactive", () => {
           if (newerCandidate && cleanUnchanged && board.value) {
             boardCleanRev = putRev;
             if (Number.isFinite(acceptedServerSeq)) {
-              board.value = {
+              /*
+                Phase 2 §5.4：服务器接受的这一版带着权威 version。候选被更新的编辑接手时，
+                旧回执**不覆盖正文**，但必须吸收这些版本号 —— 否则下一次保存会拿过期 version
+                去写，CAS 退化（后端权威自增的版本被前端旧值覆盖）。
+              */
+              const aligned = applyParticipation({
                 ...board.value,
                 seq: acceptedServerSeq,
                 updatedAt: result.savedAt ?? board.value.updatedAt,
-              };
+              });
+              board.value = result.state
+                ? absorbAuthoritativeVersions(aligned, applyParticipation(result.state))
+                : aligned;
+            } else if (result.state) {
+              board.value = absorbAuthoritativeVersions(
+                board.value,
+                applyParticipation(result.state),
+              );
             }
             // 被接受的这一版就是新的「与服务器一致」事实（F1 的撤回基线随之前进）
-            if (result.state) cleanState = cloneState(result.state);
+            if (result.state) cleanState = cloneState(applyParticipation(result.state));
           }
           dirty.value = newerCandidate;
           if (newerCandidate) {
@@ -1162,7 +1279,13 @@ export const useInteractiveStore = defineStore("interactive", () => {
         settleCancelRecovery(true, null);
         saveRecoveryRev = putRev;
         saveRecoveryAttempts = 0;
-        board.value = clampBoardBounds(result.state);
+        /*
+          Phase 2：保存回执同样是服务器事实 —— 对齐参与口径，并把还没被服务器确认的
+          用户参与选择保留下来（旧后端的回执里没有 participation 时不能把它抹掉）。
+        */
+        const savedState = applyParticipation(clampBoardBounds(result.state));
+        reconcileParticipationChoices(savedState);
+        board.value = forceParticipationChoices(savedState);
         cleanState = cloneState(board.value);
         reconcileCheckedChoices(board.value);
         boardCleanRev = putRev;
@@ -1477,18 +1600,22 @@ export const useInteractiveStore = defineStore("interactive", () => {
   function adoptServerFacts(
     server: BoardState,
   ): { conflicts: BoardContentConflict[]; removalConflicts: RemovalConflict[] } {
-    const candidate = board.value;
-    const base = cleanState;
-    const serverSeq = Number(server?.seq ?? 0);
+    /*
+      Phase 2：服务器事实与候选都先对齐**参与口径**再进入三路合并。
+      这里用 applyParticipation（只补 participation / 旧镜像 / 迁移标记），
+      **不用 normalizeState** —— 后者会给缺 updatedAt 的卡片补当前时间，
+      等于凭空造出一次「无关改动」，让 F07 的删除合并误判成冲突（全量测试抓到过）。
+    */
+    const serverState = applyParticipation(server);
+    const candidate = board.value ? applyParticipation(board.value) : null;
+    // 基线同样对齐参与口径：三路比较必须在同一套字段上做，否则会把「迁移补齐的字段」当成改动。
+    const base = cleanState ? applyParticipation(cleanState) : null;
+    const serverSeq = Number(serverState?.seq ?? server?.seq ?? 0);
     if (Number.isFinite(serverSeq)) knownServerSeq = Math.max(knownServerSeq, serverSeq);
     if (!candidate) {
-      /*
-        这里**不做归一化**：adoptServerFacts 之后要按时间戳 / seq 比对「服务器改了哪些卡片」，
-        normalizeState 会给缺 updatedAt 的卡片补上当前时间，等于凭空造出一次「无关改动」，
-        让 F07 的删除合并误判成冲突（全量测试抓到过）。画布范围由加载路径与写入路径保证。
-      */
-      cleanState = cloneState(server);
-      board.value = server;
+      cleanState = cloneState(serverState);
+      board.value = forceParticipationChoices(serverState);
+      reconcileParticipationChoices(serverState);
       boardLocalRev += 1;
       boardCleanRev = boardLocalRev;
       dirty.value = false;
@@ -1496,8 +1623,14 @@ export const useInteractiveStore = defineStore("interactive", () => {
       return { conflicts: [], removalConflicts: [] };
     }
     const hadCandidate = boardLocalRev > boardCleanRev;
-    const outcome = mergeServerInto(candidate, server, base);
-    reconcileCheckedChoices(server);
+    const outcome = mergeServerInto(candidate, serverState, base);
+    reconcileCheckedChoices(serverState);
+    reconcileParticipationChoices(serverState);
+    /*
+      §5.1：用户自己重新选过的参与状态以用户为准 —— 服务器上的迟到事实
+      （旧后端的勾选清理 / 旧回执）不许把它改回去，直到服务器事实与它一致。
+    */
+    outcome.state = forceParticipationChoices(outcome.state);
     /**
      * N5：用户在基线之后自己动过的勾选，以**用户当前这一版**为准 ——
      * 服务器上的迟到事实（例如提交清理、旧回执）不许把用户重新做的选择取消掉。
@@ -1515,7 +1648,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
       });
       if (forced) outcome.state = { ...outcome.state, cards };
     }
-    cleanState = cloneState(server);
+    cleanState = cloneState(serverState);
     board.value = outcome.state;
     boardLocalRev += 1;
     if (hadCandidate) {
@@ -1642,11 +1775,23 @@ export const useInteractiveStore = defineStore("interactive", () => {
       服务器事实入口统一归一化（2026-10-14 第七个问题）：画布范围是**状态不变量** ——
       已存成负坐标的卡片（实测 y = −63.84）顶部永远看不见，加载时就夹回画布内。
     */
-    board.value = clampBoardBounds(payload.state);
+    /*
+      Phase 2 §5.1：整块采用服务器事实之前先对齐参与口径（补 participation / 同步旧镜像 /
+      补迁移标记），再把用户还没被服务器确认的参与选择贴回去 —— 旧后端的勾选清理
+      不能把参与状态一起清掉。
+    */
+    const serverState = applyParticipation(payload.state);
+    reconcileParticipationChoices(serverState);
+    /*
+      整块采用**刷新读到的服务器事实**：不贴回本地参与选择 —— 这是一次权威读取，
+      服务端明确给出的 participation / checked 就是当前事实（既有「以服务端事实为准」不变量）。
+      本地参与选择只在「有未保存候选、合并服务器事实」时生效（adoptServerFacts）。
+    */
+    board.value = applyParticipation(clampBoardBounds(serverState));
     cleanState = cloneState(board.value);
     reconcileCheckedChoices(board.value);
     // 整块采用服务器事实：与它不一致的本地勾选选择记录一并作废（不能留到下次合并又冒出来）
-    dropCheckedChoicesNotIn(payload.state);
+    dropCheckedChoicesNotIn(board.value);
     boardCleanRev = boardLocalRev;
     boardReadAppliedSeq = Math.max(boardReadAppliedSeq, readSeq);
     undoStack.value = [];
@@ -3135,11 +3280,23 @@ export const useInteractiveStore = defineStore("interactive", () => {
     const cards = board.value.cards.map((card) => {
       if (!ids.includes(card.id)) return card;
       if ((cardCheckedSeq.get(card.id) ?? 0) !== (atSeq.get(card.id) ?? 0)) return card;
-      if (!card.checked) return card;
+      /*
+        Phase 2 §5.1：**提交后不清除参与**。旧服务端回执里的 checkedCleared 只是旧兼容字段，
+        这里保留参与与 checked 镜像，并记成本地参与选择 —— 后续迟到的读取不能把它改回 excluded。
+      */
+      if (participationOf(card) === "included") {
+        if (card.checked) return card;
+        changed = true;
+        const next: typeof card = { ...card, checked: true };
+        syncLegacyParticipation(next);
+        return next;
+      }
+      if (!card.checked && card.participation === "excluded") return card;
       changed = true;
       cardCheckedSeq.set(card.id, ++checkedMutationSeq);
       localCheckedChoices.delete(card.id);
-      return { ...card, checked: false };
+      const excluded: typeof card = { ...card, checked: false, participation: "excluded" };
+      return excluded;
     });
     if (!changed) return;
     const wasClean = boardLocalRev === boardCleanRev;
@@ -4333,6 +4490,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     submitNoteOwnsCurrentStage,
     understandingNoteOwnsCurrentStage,
     visibleRange,
+    /** §5.1：本地按 participation 推导的可见范围（提交前预览用；权威以服务端为准） */
+    participationRange,
     intents,
     conflicts,
     batchAvailable,

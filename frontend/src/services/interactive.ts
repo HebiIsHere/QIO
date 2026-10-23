@@ -119,12 +119,23 @@ export function fetchBoardState(boardId: string): Promise<BoardStateResponse> {
  * `confirm`（M4）：影响确认句柄。带它表示用户已经为这次改动做过影响确认；
  * 服务端会校验 checkId 与当前已保存版本，过期就 409 stale_check（不落库）。
  */
+/** 保存回执（与后端 D 的 PUT /state 响应同形）。 */
+export interface SaveBoardStateResult {
+  ok: boolean;
+  seq: number;
+  savedAt: string;
+  /** 服务端归一化后的权威状态：带 participation / collapsed / meta.display 与权威 version */
+  state: BoardState;
+  /** 保存时真实暂停的任务（旧链，可选） */
+  materialImpact?: { paused?: Intent[] };
+}
+
 export function saveBoardState(
   boardId: string,
   state: BoardState,
   reason = "op",
   confirm?: { checkId: string; stateVersion?: number },
-): Promise<{ ok: boolean; seq: number; savedAt: string; state: BoardState }> {
+): Promise<SaveBoardStateResult> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/state`, {
     method: "PUT",
     body: JSON.stringify({ state, reason, ...(confirm ? { confirm } : {}) }),

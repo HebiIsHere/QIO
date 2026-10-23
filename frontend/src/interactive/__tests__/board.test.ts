@@ -586,14 +586,18 @@ describe("选择 / 勾选 / 隐藏 / 折叠 / 书签 / 搜索", () => {
     expect(board.cardById(board.setChecked(checked, "t", false), "t")?.checked).toBe(false);
   });
 
-  it("隐藏会清掉勾选，取消隐藏不会重新勾选", () => {
+  it("隐藏 = 退出参与（清掉勾选镜像）；取消隐藏 = 重新参与（Phase 2 §5.1 唯一事实源）", () => {
     const state = mkState([mkCard("t", 0, 0, { checked: true })]);
     const hidden = board.setHidden(state, "t", true);
     expect(board.cardById(hidden, "t")?.hidden).toBe(true);
     expect(board.cardById(hidden, "t")?.checked).toBe(false);
+    expect(board.cardById(hidden, "t")?.participation).toBe("excluded");
+    // 旧口径「取消隐藏不会重新勾选」被 participation 唯一事实源取代：
+    // 取消隐藏就是重新参与，checked 只是兼容镜像（迁移后不再决定可见性）。
     const shown = board.setHidden(hidden, "t", false);
     expect(board.cardById(shown, "t")?.hidden).toBe(false);
-    expect(board.cardById(shown, "t")?.checked).toBe(false);
+    expect(board.cardById(shown, "t")?.participation).toBe("included");
+    expect(board.cardById(shown, "t")?.checked).toBe(true);
   });
 
   it("折叠与书签只影响显示", () => {
