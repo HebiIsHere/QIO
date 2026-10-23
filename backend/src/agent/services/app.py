@@ -2633,6 +2633,19 @@ class AppContext:
                         requirement_binding = binder(str(requirement_id))
             except Exception:  # noqa: BLE001 - 台账失败不阻塞用户轮，但审查会因缺少要求退回审批
                 logging.getLogger(__name__).warning("requirement record failed", exc_info=True)
+        # 要求解析是本轮开始前的一次模型调用；如果用户在这期间点了停止，本轮
+        # 可能还没进入编排器就结束。此时仍要留下「已取消」的轮绑定（不能因为
+        # 提前取消就没有任何终态记录）。
+        if getattr(ctx, "cancelled", False) and str(turn_id):
+            try:
+                if self.bindings.binding_for(turn_id) is None:
+                    topic = getattr(ctx, "initial_topic", None) or ""
+                    self.bindings.record_binding(turn_id, topic)
+                    self.bindings.mark_status(turn_id, "cancelled")
+            except Exception:  # noqa: BLE001 - 终态记录失败不挡住取消返回
+                logging.getLogger(__name__).warning(
+                    "取消轮绑定记录失败", exc_info=True
+                )
         try:
             if instruction is None:
                 await self.turn_orchestrator.execute(ctx)
