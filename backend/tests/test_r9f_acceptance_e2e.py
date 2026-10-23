@@ -55,11 +55,41 @@ def app_client(db_conn, settings: Settings, tmp_path):
         yield client
 
 
+def _binding_for_client(client: TestClient):
+    """R9-G：给工具/引擎一个真实存在的用户要求绑定（生产由 turn 要求解析建立）。"""
+    binding = getattr(client, "_r9g_binding", None)
+    if binding is not None:
+        return binding
+    from agent.security.context import current_requirement
+
+    binding = current_requirement.get()
+    if binding is not None:
+        return binding
+    ctx = client.app.state.ctx
+    requirement = ctx.requirements.record_user_message(
+        text="按我的要求执行这次操作", message_id="msg_r9f", turn_id="turn_r9f"
+    )
+    binder = getattr(ctx.requirements, "binding_for", None)
+    binding = binder(requirement.requirement_id) if callable(binder) else None
+    if binding is None:
+        from types import SimpleNamespace
+
+        binding = SimpleNamespace(
+            requirement_id=requirement.requirement_id,
+            version=int(getattr(requirement, "version", 1) or 1),
+        )
+    client._r9g_binding = binding
+    return binding
+
+
 def _exec(client: TestClient, name: str, arguments: dict):
     async def _do():
-        return await client.app.state.ctx.registry.execute(
-            ToolCall(id="call_r9f", name=name, arguments=arguments)
-        )
+        from agent.security.context import requirement_context
+
+        with requirement_context(_binding_for_client(client)):
+            return await client.app.state.ctx.registry.execute(
+                ToolCall(id="call_r9f", name=name, arguments=arguments)
+            )
 
     return client.portal.call(_do)
 
@@ -94,7 +124,10 @@ def _decide(client: TestClient, approval_id: str, decision: str):
 
 def _authorize(client: TestClient, effect: Effect):
     async def _do():
-        return await client.app.state.ctx.authorization.authorize(effect)
+        from agent.security.context import requirement_context
+
+        with requirement_context(_binding_for_client(client)):
+            return await client.app.state.ctx.authorization.authorize(effect)
 
     return client.portal.call(_do)
 
@@ -131,6 +164,16 @@ def _install_reviewer(client: TestClient, *, text: str, decision=None):
     requirement = ctx.requirements.record_user_message(
         text=text, message_id="msg_fake", turn_id="turn_fake", topic_id=None
     )
+    binder = getattr(ctx.requirements, "binding_for", None)
+    binding = binder(requirement.requirement_id) if callable(binder) else None
+    if binding is None:
+        from types import SimpleNamespace
+
+        binding = SimpleNamespace(
+            requirement_id=requirement.requirement_id,
+            version=int(getattr(requirement, "version", 1) or 1),
+        )
+    client._r9g_binding = binding
     reviewer = _FakeReviewer(decision)
     ctx.authorization.reviewer = reviewer
     return ctx, requirement, reviewer

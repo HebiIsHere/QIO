@@ -195,7 +195,18 @@ def _recheck_service(gateway: Any) -> Any | None:
     return None
 
 
-def _operation_fingerprint(effect: Any, binding: dict | None, mode: str) -> str:
+def _operation_fingerprint(
+    effect: Any, binding: dict | None, mode: str, gateway: Any = None
+) -> str:
+    # Lead 的 security/recheck.py 已提供统一指纹（含对象身份/程序/脚本摘要/接收方/
+    # 模式）时优先用它；两边必须用同一个函数，否则执行前重核对会误判内容变化。
+    if gateway is not None and callable(getattr(gateway, "_review_operation", None)):
+        try:
+            from agent.security.review import operation_fingerprint as _lead_fingerprint
+
+            return str(_lead_fingerprint(gateway._review_operation(effect), mode=mode))
+        except Exception:  # noqa: BLE001 - 老分支/自定义网关退回本地实现
+            pass
     payload = {
         "kind": str(getattr(getattr(effect, "kind", None), "value", getattr(effect, "kind", ""))),
         "targets": [
@@ -237,22 +248,17 @@ def _build_operation_binding(
             )
         except Exception:  # noqa: BLE001 - 类型不一致时退回 dict
             requirement = binding
+    # 内容/前置状态由本工具在 recheck_before_execute 里用 expected_identity /
+    # expected_sha256 精确核对；对象身份已进统一指纹。这里不把 identity 字典
+    # 误当内容摘要传给 RecheckService（否则新文件/身份字符串会被误判变化）。
     content_digests: list[tuple[str, str]] = []
-    detail = getattr(effect, "detail", {}) or {}
-    content_digest = detail.get("content_sha256")
-    for target in getattr(effect, "targets", ()) or ():
-        value = str(getattr(target, "value", ""))
-        if content_digest:
-            content_digests.append((value, str(content_digest)))
-        elif getattr(target, "identity", None):
-            content_digests.append((value, str(target.identity)))
     values = {
         "requirement": requirement,
         "mode": mode,
         "operation_kind": str(
             getattr(getattr(effect, "kind", None), "value", getattr(effect, "kind", ""))
         ),
-        "fingerprint": _operation_fingerprint(effect, binding, mode),
+        "fingerprint": _operation_fingerprint(effect, binding, mode, gateway),
         "spec_digest": None,
         "content_digests": tuple(content_digests),
         "conditions": (),

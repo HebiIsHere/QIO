@@ -79,9 +79,32 @@ def bind_requirement(security, operation, *, text="按用户要求执行这次�
 
 @asynccontextmanager
 async def with_instruction(security, text, *, turn_id="turn_test"):
+    """进入一个用户 turn：指令上下文 + 具体要求的版本绑定（R9-G）。
+
+    生产由 turn 运行时的要求解析建立；测试直接登记一条要求并绑定，避免回退
+    "最近一条 active 要求"。
+    """
     instruction = security.instructions.begin(turn_id=turn_id, text=text)
+    binding = None
+    ledger = getattr(security, "requirements", None)
+    if ledger is not None:
+        try:
+            requirement = ledger.record_user_message(
+                text=text, message_id="msg_" + str(turn_id), turn_id=turn_id
+            )
+            binder = getattr(ledger, "binding_for", None)
+            binding = binder(requirement.requirement_id) if callable(binder) else None
+            if binding is None:
+                binding = SimpleNamespace(
+                    requirement_id=requirement.requirement_id,
+                    version=int(getattr(requirement, "version", 1) or 1),
+                )
+        except Exception:  # noqa: BLE001 - 台账异常按无绑定（测试会显式断言）
+            binding = None
     try:
-        with instruction_context(instruction):
+        from agent.security.context import requirement_context
+
+        with instruction_context(instruction), requirement_context(binding):
             yield instruction
     finally:
         security.instructions.end(instruction)

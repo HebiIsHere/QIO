@@ -23,6 +23,7 @@ from agent.security.context import (
     approval_origin,
     current_instruction,
     current_requirement,
+    requirement_limits,
     requirement_resolution_status,
 )
 from agent.security.effects import (
@@ -157,6 +158,11 @@ class AuthorizationEngine(AuthorizationGateway):
             grants=base,
             depth=depth,
             purpose=str(purpose or ""),
+            requirement=(
+                parent_scope.requirement
+                if parent_scope is not None
+                else current_requirement.get()
+            ),
         )
 
     # -- 判定 ---------------------------------------------------------------
@@ -177,7 +183,8 @@ class AuthorizationEngine(AuthorizationGateway):
             extra={
                 "requirement_resolution_status": str(
                     requirement_resolution_status.get() or "ok"
-                )
+                ),
+                "resolution_limits": tuple(requirement_limits.get() or ()),
             },
         )
 
@@ -191,6 +198,7 @@ class AuthorizationEngine(AuthorizationGateway):
             mode == PermissionMode.RESTRICTED
             and verdict == Verdict.APPROVE
             and self._review_candidate(effect)
+            and not self._permanent_delete_pending(effect)
         ):
             verdict, reason, scope_id, needs_review = await self._apply_review(
                 effect, context, mode, reason, scope_id
@@ -499,6 +507,18 @@ class AuthorizationEngine(AuthorizationGateway):
             summary=str(effect.purpose or "")[:300],
         )
 
+    def _permanent_delete_pending(self, effect: Effect) -> bool:
+        """永久删除必须走"明确人工确认"，模型审查 ALLOW 不能替代（契约 §5）。"""
+        try:
+            intent = self._delete_intent(effect)
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(
+            intent is not None
+            and getattr(intent, "permanent", False)
+            and getattr(intent, "verified", False)
+        )
+
     async def _apply_review(
         self,
         effect: Effect,
@@ -624,10 +644,18 @@ class AuthorizationEngine(AuthorizationGateway):
             known = {item.name for item in _dc.fields(ReviewRequest)}
         except Exception:  # noqa: BLE001
             known = set(request_kwargs)
+        resolution_raw = str(
+            (context.extra or {}).get("requirement_resolution_status") or "unavailable"
+        )
+        resolution_status = "resolved" if resolution_raw in ("ok", "resolved") else (
+            resolution_raw if resolution_raw in ("resolved", "unavailable", "not_attempted") else "unavailable"
+        )
         optional_kwargs = {
             "requirement_version": requirement_version,
-            "resolution_status": str(
-                (context.extra or {}).get("requirement_resolution_status") or "ok"
+            "resolution_status": resolution_status,
+            "requirement_resolution_status": resolution_status,
+            "resolution_limits": tuple(
+                (context.extra or {}).get("resolution_limits") or ()
             ),
             "related_requirements": (),
             "condition_evidence": tuple(
@@ -882,7 +910,11 @@ class AuthorizationEngine(AuthorizationGateway):
         #    （结构化 limits，如对象/操作/原因），不再扫描原话里的关键词；限制只做
         #    拒绝，不产生许可。旧版纯文本 limits 不参与判定（不解析、不误判）。
         requirement = self._requirement_for(context)
-        conflict = self._limit_conflict(effect, requirement)
+        conflict = self._limit_conflict(
+            effect,
+            requirement,
+            extra_limits=tuple((context.extra or {}).get("resolution_limits") or ()),
+        )
         if conflict:
             return Verdict.DENY, conflict, None
         # 5) 永久删除政策（结构化删除意图，按契约 §5；模型 ALLOW/一般授权不能替代
@@ -936,17 +968,25 @@ class AuthorizationEngine(AuthorizationGateway):
         except (OSError, ValueError):
             return False
 
-    def _limit_conflict(self, effect: Effect, requirement: Any) -> str | None:
+    def _limit_conflict(
+        self,
+        effect: Effect,
+        requirement: Any,
+        *,
+        extra_limits: Sequence[dict] = (),
+    ) -> str | None:
         """检查模型理解出的结构化用户限制是否覆盖这次操作（只做拒绝）。
 
         限制存于 requirement.limits（JSON list[dict]）：
         {"operations": ["write", ...], "objects": [{"kind":"path|path_prefix","value":...}],
          "reason": "..."}。旧版纯文本 limits 不参与判定（R9-G 契约 §10 兼容策略）。
         """
-        if requirement is None:
-            return None
-        limits = getattr(requirement, "limits", ()) or ()
-        if not limits or isinstance(limits, (str, bytes)):
+        limits = list(getattr(requirement, "limits", ()) or ()) if requirement is not None else []
+        limits.extend(extra_limits or ())
+        if not limits or any(isinstance(item, (str, bytes)) for item in limits):
+            # 旧版纯文本 limits 不参与判定（不解析、不误判）；结构化限制可混排。
+            limits = [item for item in limits if isinstance(item, dict)]
+        if not limits:
             return None
         operation = self._LIMIT_OPERATION_NAMES.get(effect.kind)
         if operation is None:
@@ -990,11 +1030,24 @@ class AuthorizationEngine(AuthorizationGateway):
         return Verdict.ALLOW, "已验证属于固定查询（只读、无修改行为）：" + reason[:160], None
 
     def _classify_fixed_query(self, effect: Effect) -> Any:
-        try:
-            from agent.security.fixed_queries import FixedQueryFacts, classify_fixed_query
-        except Exception:  # noqa: BLE001 - 模块未就绪：不把执行当固定查询
-            return None
         detail = effect.detail or {}
+        try:
+            from agent.security.fixed_queries import (
+                FixedQueryFacts,
+                classify_fixed_query,
+                fixed_query_facts_from_detail,
+            )
+
+            # 优先用 W2 的单一事实提取（读 effect.detail["execution"]，由真实
+            # LaunchSpec 生成），不采信工具自报的 fixed_query 结论。
+            facts_obj = fixed_query_facts_from_detail(detail)
+            if facts_obj is not None:
+                return classify_fixed_query(facts_obj)
+        except Exception:  # noqa: BLE001 - 模块未就绪：不把执行当固定查询
+            FixedQueryFacts = None  # type: ignore[assignment]
+            classify_fixed_query = None  # type: ignore[assignment]
+        if FixedQueryFacts is None or classify_fixed_query is None:
+            return None
         raw_facts = detail.get("launch_facts")
         facts: dict[str, Any] = dict(raw_facts) if isinstance(raw_facts, dict) else {}
         program_targets = [str(t.value) for t in effect.targets if t.kind == "program"]
@@ -1020,6 +1073,26 @@ class AuthorizationEngine(AuthorizationGateway):
         except Exception:  # noqa: BLE001
             return None
         detail = dict(effect.detail or {})
+        # 文件工具明确声明的永久删除（结构化字段，不是文字搜索）：优先于命令级
+        # 默认回收站意图；执行前仍会核对对象身份与人工确认。
+        if effect.kind == EffectKind.DELETE and (
+            detail.get("permanent") is True or detail.get("permanent_delete") is True
+        ):
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                permanent=True,
+                verified=True,
+                objects=tuple(
+                    SimpleNamespace(
+                        path=str(target.value),
+                        identity=getattr(target, "identity", None),
+                        is_directory=False,
+                    )
+                    for target in effect.path_targets()
+                ),
+                method="fs.permanent_delete",
+            )
         facts = detail.get("launch_facts")
         facts_dict = dict(facts) if isinstance(facts, dict) else {}
         try:
@@ -1033,6 +1106,26 @@ class AuthorizationEngine(AuthorizationGateway):
         self, effect: Effect, mode: PermissionMode, requirement: Any
     ) -> tuple[Verdict, str, str | None] | None:
         intent = self._delete_intent(effect)
+        # 文件工具显式声明永久删除（结构字段，不是文字搜索）：即使 deletion 模块
+        # 没有给出命令级意图，也按永久删除政策处理。
+        if intent is None and effect.kind == EffectKind.DELETE:
+            detail = effect.detail or {}
+            if detail.get("permanent") is True or detail.get("permanent_delete") is True:
+                from types import SimpleNamespace
+
+                intent = SimpleNamespace(
+                    permanent=True,
+                    verified=True,
+                    objects=tuple(
+                        SimpleNamespace(
+                            path=str(target.value),
+                            identity=getattr(target, "identity", None),
+                            is_directory=False,
+                        )
+                        for target in effect.path_targets()
+                    ),
+                    method="fs.permanent_delete",
+                )
         if intent is None or not bool(getattr(intent, "permanent", False)):
             return None
         if not bool(getattr(intent, "verified", False)):
@@ -1121,7 +1214,11 @@ class AuthorizationEngine(AuthorizationGateway):
         mode = self.mode()
         self._enrich_origin(effect)
         requirement = self._requirement_for(context)
-        conflict = self._limit_conflict(effect, requirement)
+        conflict = self._limit_conflict(
+            effect,
+            requirement,
+            extra_limits=tuple((context.extra or {}).get("resolution_limits") or ()),
+        )
         if conflict:
             return AuthDecision(verdict=Verdict.DENY, reason=conflict, effects=(effect,))
         limited, limit_reason = self._scope_limited(effect, context, mode)

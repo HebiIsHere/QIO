@@ -110,9 +110,9 @@ def _decide(client: TestClient, approval_id: str, decision: str):
 
 
 def _row(client: TestClient, approval_id: str):
-    return client.app.state.ctx.conn.execute(
-        "SELECT * FROM pending_approvals WHERE approval_id = ?", (approval_id,)
-    ).fetchone()
+    # 用审批存储的读取形状（含 operation_detail/state/confirmed_stage），
+    # 不直接依赖底层 raw 列名，测试改 operation_detail 时与执行器看到的一致。
+    return client.app.state.ctx.approvals.store.get(approval_id)
 
 
 def _wait_terminal(client: TestClient, approval_id: str, states: set[str], *, timeout: float = 20.0):
@@ -415,7 +415,6 @@ def test_discussion_text_does_not_change_write_verdict(app_client):
     assert decision.verdict == Verdict.APPROVE, decision
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_question_text_does_not_block_model_allow(app_client):
     """R9-G §1/§2：模型 ALLOW 不再因疑问句文字被后端关键词守卫推翻。"""
     client = app_client
@@ -425,7 +424,6 @@ def test_question_text_does_not_block_model_allow(app_client):
     assert decision.verdict == Verdict.ALLOW, decision
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_negation_elsewhere_does_not_block_model_allow(app_client):
     """R9-G §1：否定词出现在别处（针对另一个对象）时，不得靠文本包含推翻模型 ALLOW。"""
     client = app_client
@@ -438,7 +436,6 @@ def test_negation_elsewhere_does_not_block_model_allow(app_client):
     assert decision.verdict == Verdict.ALLOW, decision
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_structured_limits_from_resolution_are_enforced(app_client):
     """R9-G §3：无限制模式的用户限制来自要求解析的结构化 limits（不是关键词）。"""
     from agent.security.resolution import ResolutionOutcome, RequirementRelation  # noqa: F401
@@ -521,7 +518,6 @@ def test_unrestricted_skips_model_review(app_client):
     assert reviewer.calls == [], "无限制模式不调用普通授权审查"
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W2)
 def test_fixed_query_allowed_in_read_only_and_restricted(app_client):
     """R9-G §4：固定查询（python --version）在只读/受限都直接 ALLOW，不审查不弹确认。"""
     from agent.security.fixed_queries import FixedQueryFacts, classify_fixed_query  # noqa: F401
@@ -534,7 +530,6 @@ def test_fixed_query_allowed_in_read_only_and_restricted(app_client):
         assert _pending(client) == [], (mode, _pending(client))
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W2)
 def test_fixed_query_classifier_rejects_scripts_and_metacharacters(app_client):
     """R9-G §4：解释器脚本、重定向/串联/嵌套都不算固定查询（解析不确定 → None）。"""
     from agent.security.fixed_queries import FixedQueryFacts, classify_fixed_query
@@ -559,7 +554,6 @@ def test_fixed_query_classifier_rejects_scripts_and_metacharacters(app_client):
     assert classify_fixed_query(shell_facts) is None
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W2)
 def test_permanent_delete_policy_three_modes(app_client):
     """R9-G §5：永久删除 read_only DENY / restricted 需人工确认 / unrestricted ALLOW。"""
     from agent.security.deletion import DeleteIntent, detect_delete_intent  # noqa: F401
@@ -574,7 +568,6 @@ def test_permanent_delete_policy_three_modes(app_client):
         assert decision.verdict == want, (mode, decision)
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W2)
 def test_model_allow_cannot_replace_permanent_delete_confirmation(app_client):
     """R9-G §5：restricted 下模型 ALLOW 不能替代永久删除的人工确认。"""
     client = app_client
@@ -585,7 +578,6 @@ def test_model_allow_cannot_replace_permanent_delete_confirmation(app_client):
     assert decision.verdict == Verdict.APPROVE, "永久删除必须人工确认，模型 ALLOW 不可替代"
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_LEAD)
 def test_app_managed_marker_cannot_bypass_read_only(app_client):
     """R9-G §8：应用受控运行必须用可信内部操作类型/路径区分，任意 detail 自报标记不得豁免。"""
     client = app_client
@@ -600,7 +592,6 @@ def test_app_managed_marker_cannot_bypass_read_only(app_client):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W3 + "；Lead 批量接线")
 def test_batch_items_expand_and_authorize_individually(app_client):
     from agent.security.batch import BatchItem  # noqa: F401
 
@@ -609,21 +600,18 @@ def test_batch_items_expand_and_authorize_individually(app_client):
     assert hasattr(ctx.authorization, "authorize_batch")
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W3 + "；Lead 批量接线")
 def test_batch_consolidates_needing_confirmation_items(app_client):
     client = app_client
     ctx = client.app.state.ctx
     assert hasattr(ctx.authorization, "authorize_batch"), "批量应合并为一个审批操作"
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W3 + "；Lead 批量接线")
 def test_batch_new_object_does_not_inherit_authorization(app_client):
     client = app_client
     ctx = client.app.state.ctx
     assert hasattr(ctx.authorization, "authorize_batch")
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_requirement_version_binding_prevents_cross_use(app_client):
     """R9-G §3：操作绑定显式要求（版本），不得回退"最近一条 active"。"""
     from agent.security.requirements import RequirementBinding  # noqa: F401
@@ -639,16 +627,17 @@ def test_requirement_version_binding_prevents_cross_use(app_client):
     assert ctx.requirements.validate_binding(binding) is False
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_background_and_subagent_inherit_requirement_binding(app_client):
     client = app_client
     ctx = client.app.state.ctx
     assert hasattr(ctx.authorization, "child_scope")
-    scope = ctx.authorization.child_scope(purpose="子任务")
+    from agent.security.context import requirement_context
+
+    with requirement_context(_binding_for_client(client)):
+        scope = ctx.authorization.child_scope(purpose="子任务")
     assert getattr(scope, "requirement", None) is not None, "子智能体应继承父要求绑定"
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_W1)
 def test_requirement_resolution_new_amend_withdraw(app_client):
     from agent.security.resolution import (  # noqa: F401
         RequirementRelation,
@@ -687,7 +676,6 @@ def test_script_change_invalidates_approval(app_client, tmp_path):
     assert not original_marker.exists()
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_LEAD + "：执行器需要独立于 payload 的绑定摘要")
 def test_argv_change_in_approval_record_is_not_executed(app_client, tmp_path):
     """审批记录里的 program/argv 被改动后，重放不得执行改动后的程序。
 
@@ -703,10 +691,11 @@ def test_argv_change_in_approval_record_is_not_executed(app_client, tmp_path):
     approval_id = _pending(client)[0]["approval_id"]
     ctx = client.app.state.ctx
     row = _row(client, approval_id)
-    detail = json.loads(row["operation_detail"])
+    raw_detail = row["operation_detail"]
+    detail = dict(raw_detail) if isinstance(raw_detail, dict) else json.loads(raw_detail)
     detail["payload"]["args"] = ["-c", f"open(r'{tampered_marker}', 'w').write('x')"]
     ctx.conn.execute(
-        "UPDATE pending_approvals SET operation_detail = ? WHERE approval_id = ?",
+        "UPDATE pending_approvals SET operation = ? WHERE approval_id = ?",
         (json.dumps(detail), approval_id),
     )
     ctx.conn.commit()
@@ -718,23 +707,48 @@ def test_argv_change_in_approval_record_is_not_executed(app_client, tmp_path):
 
 def test_mode_downgrade_before_execution_is_denied():
     """执行前重核对：模式快照为受限、当前已切只读 → 不允许执行。"""
-    from agent.security.operations import ExecutionContext
+    from agent.security.operations import ExecutionContext, PendingOperation
 
+    class _Engine:
+        """只验证接线：authorize_started 必须把当前模式变化交给引擎重核对。"""
+
+        def __init__(self):
+            self.calls: list = []
+
+        def recheck_approved(self, effect, **kwargs):
+            self.calls.append((effect, kwargs))
+            from agent.security.effects import Verdict
+
+            return SimpleNamespace(
+                verdict=Verdict.DENY,
+                reason="当前已切换到只读模式，这次批准不再允许执行",
+            )
+
+    engine = _Engine()
+    operation = PendingOperation(
+        kind="fs.write",
+        label="模式降级测试",
+        payload={},
+        effect={"kind": "write", "targets": [{"kind": "path", "value": "C:/work/a.txt"}]},
+        requirement_id="req_mode",
+        requirement_version=1,
+    )
     ctx = ExecutionContext(
         approval_id="a1",
-        operation=SimpleNamespace(),
+        operation=operation,
         mode_at_request="restricted",
         mode_at_approval="restricted",
-        engine=SimpleNamespace(),  # 非 None 才会走模式重核对分支
+        engine=engine,  # 非 None 才会走执行前重核对
         mode_getter=lambda: "read_only",
+        confirmed_stage=0,
     )
     import asyncio
 
     allowed, reason = asyncio.run(ctx.authorize_started())
     assert allowed is False and "只读" in reason, (allowed, reason)
+    assert engine.calls, "执行前必须调用引擎按当前模式重核对"
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_LEAD + "：decide/执行前未核对 expires_at（实测过期审批仍可执行）")
 def test_expired_approval_does_not_execute(app_client):
     """R9-G §9：过期审批不得执行。
 
@@ -786,7 +800,6 @@ def test_confirm_stage_must_be_sequential(app_client):
     assert resp.status_code >= 400, ("跳阶段必须被拒绝", resp.status_code, resp.text[:200])
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_LEAD)
 def test_confirmations_bind_same_object_and_content(app_client):
     """R9-G §9：三次确认必须绑定相同对象/动作/内容（内容变化 → 确认重置）。"""
     client = app_client
@@ -798,18 +811,21 @@ def test_confirmations_bind_same_object_and_content(app_client):
     client.post(f"/api/approvals/{approval_id}/confirm", json={"stage": 1})
     ctx = client.app.state.ctx
     row = _row(client, approval_id)
-    detail = json.loads(row["operation_detail"])
+    raw_detail = row["operation_detail"]
+    detail = dict(raw_detail) if isinstance(raw_detail, dict) else json.loads(raw_detail)
     detail["payload"]["content"] = "v2"
     ctx.conn.execute(
-        "UPDATE pending_approvals SET operation_detail = ? WHERE approval_id = ?",
+        "UPDATE pending_approvals SET operation = ? WHERE approval_id = ?",
         (json.dumps(detail), approval_id),
     )
     ctx.conn.commit()
+    # 下一次确认/批准时必须发现内容已变：拒绝并要求重新确认，且已累计的确认被重置。
+    resp = client.post(f"/api/approvals/{approval_id}/confirm", json={"stage": 2})
+    assert resp.status_code == 409, resp.text
     row_after = _row(client, approval_id)
     assert int(row_after["confirmed_stage"] or 0) == 0, "内容变化后确认必须重置为 0"
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_LEAD)
 def test_recheck_service_revalidates_mode_requirement_objects(app_client):
     from agent.security.recheck import OperationBinding, RecheckService  # noqa: F401
 
@@ -818,7 +834,6 @@ def test_recheck_service_revalidates_mode_requirement_objects(app_client):
     assert hasattr(ctx, "recheck") or hasattr(ctx.authorization, "recheck")
 
 
-@pytest.mark.xfail(strict=False, reason=PENDING_LEAD)
 def test_queue_wait_mode_change_affects_only_unstarted(app_client):
     """R9-G §7/§8：等待期间模式变化只影响尚未开始的操作。"""
     client = app_client

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.security.context import current_requirement
 from agent.security.effects import Effect, EffectKind, Target, Verdict
 from agent.security.engine import AuthorizationEngine
 from agent.security.review import (
@@ -54,6 +55,13 @@ def allow_outcome(request, *, reason="用户明确要求修改这个文件"):
     )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_requirement_context():
+    token = current_requirement.set(None)
+    yield
+    current_requirement.reset(token)
+
+
 def make_engine(tmp_path, conn, *, mode="restricted", reviewer=None, origin=None):
     store = SettingsStore(conn)
     store.set("computer.permission_mode", mode)
@@ -74,6 +82,10 @@ def make_engine(tmp_path, conn, *, mode="restricted", reviewer=None, origin=None
         turn_id="turn_1",
         topic_id="topic_1",
     )
+    # R9-G：操作必须显式绑定具体要求（不再回退"最近一条 active"）。测试在
+    # 当前测试上下文设置该绑定，模拟 turn 运行时的 requirement_context。
+    binding = requirements.binding_for(requirement.requirement_id)
+    current_requirement.set(binding)
     return engine, requirements, authorizations, requirement
 
 
@@ -198,9 +210,11 @@ async def test_new_requirement_does_not_reuse_old_record(db_conn, tmp_path):
     )
     assert (await engine.authorize(write_effect(tmp_path / "报告.md"))).verdict == Verdict.ALLOW
     requirements.supersede(first_requirement.requirement_id)
-    requirements.record_user_message(
+    second_requirement = requirements.record_user_message(
         text="把另一份报告也改一下", message_id="msg_2", turn_id="turn_2"
     )
+    # 新的用户要求 → turn 运行时会把绑定切到第二条（不沿用旧记录）。
+    current_requirement.set(requirements.binding_for(second_requirement.requirement_id))
     second = await engine.authorize(write_effect(tmp_path / "报告.md"))
     assert second.verdict == Verdict.ALLOW
     assert len(reviewer.calls) == 2, "新要求必须重新判断，不得继承旧记录"

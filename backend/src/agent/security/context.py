@@ -33,6 +33,8 @@ class AgentScope:
     depth: int = 0
     purpose: str = ""
     label: str = ""
+    #: R9-G：子智能体继承父级的具体用户要求绑定（不得改绑/扩大）。
+    requirement: object | None = None
 
 
 #: 本轮用户指令上下文（授权依据）。
@@ -51,6 +53,12 @@ current_requirement: ContextVar["RequirementBinding | None"] = ContextVar(
 #: 关键词兜底，但审查输入必须如实标注，避免把"没解析"当成"已确认"。
 requirement_resolution_status: ContextVar[str] = ContextVar(
     "qio_requirement_resolution_status", default="ok"
+)
+
+#: 要求解析模型理解出的**结构化限制**（本轮生效，不落纯文本解析）。跨重启的
+#: 持久化受当前 schema 限制（W1 报告已记录），历史纯文本 limits 不参与判定。
+requirement_limits: ContextVar[tuple[dict, ...]] = ContextVar(
+    "qio_requirement_limits", default=()
 )
 
 #: 当前子智能体能力子集。
@@ -98,6 +106,15 @@ def requirement_resolution_context(status: str) -> Iterator[None]:
         yield
     finally:
         requirement_resolution_status.reset(token)
+
+
+@contextmanager
+def requirement_limits_context(limits: tuple[dict, ...] | list[dict] | None) -> Iterator[None]:
+    token: Token = requirement_limits.set(tuple(limits or ()))
+    try:
+        yield
+    finally:
+        requirement_limits.reset(token)
 
 
 @contextmanager

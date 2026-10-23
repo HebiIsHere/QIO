@@ -46,6 +46,45 @@ def _attachment_service(tmp_path, db_conn):
     return AttachmentService(db_conn, data_dir)
 
 
+def _effect_snapshot(kind, payload):
+    """测试执行上下文里的 effect 快照（生产由工具在提交审批时写入）。"""
+    from agent.tools import security_gate
+
+    if kind.startswith("proc."):
+        if kind == "proc.shell":
+            return {
+                "kind": "execute",
+                "targets": [{"kind": "program", "value": str(payload.get("cmd") or "shell")}],
+                "purpose": "测试",
+                "detail": {
+                    "shell": True,
+                    "command": str(payload.get("cmd") or ""),
+                    "cwd": payload.get("cwd"),
+                },
+            }
+        program = str(payload.get("program") or "")
+        argv = payload.get("args") or []
+        return security_gate.effect_to_dict(
+            security_gate.execute_effect(
+                "run_program",
+                program,
+                list(argv),
+                cwd=payload.get("cwd"),
+                shell=False,
+                purpose="测试",
+            )
+        )
+    path = (
+        payload.get("path")
+        or payload.get("target")
+        or payload.get("destination")
+        or payload.get("source")
+    )
+    action = "delete" if ("delete" in kind or "recycle" in kind) else "write"
+    targets = [{"kind": "path", "value": str(path)}] if path else []
+    return {"kind": action, "targets": targets, "purpose": "测试", "detail": {}}
+
+
 def _ctx(
     security,
     *,
@@ -59,6 +98,7 @@ def _ctx(
         kind=kind,
         label="测试操作",
         payload=dict(payload),
+        effect=_effect_snapshot(kind, payload),
         fingerprint=dict(fingerprint or {}),
         confirmations_required=confirmations,
         mode_at_request=mode,
@@ -70,6 +110,31 @@ def _ctx(
         )
         operation.requirement_id = requirement.requirement_id
         operation.requirement_version = int(getattr(requirement, "version", 1) or 1)
+        # 过程执行器（W2）从 payload/fingerprint 读取绑定；测试也照生产的形状填。
+        operation.payload.setdefault("requirement_id", requirement.requirement_id)
+        operation.payload.setdefault(
+            "requirement_version", int(getattr(requirement, "version", 1) or 1)
+        )
+        # 过程执行器读取的结构化绑定形状（与 cmd_tools 生产 payload 一致）。
+        binding_shape = {
+            "requirement_id": requirement.requirement_id,
+            "version": int(getattr(requirement, "version", 1) or 1),
+        }
+        operation.payload.setdefault("requirement_binding", dict(binding_shape))
+        operation.fingerprint.setdefault("requirement_binding", dict(binding_shape))
+        requirement_record = {
+            "requirement_id": requirement.requirement_id,
+            "requirement_version": int(getattr(requirement, "version", 1) or 1),
+            "version": int(getattr(requirement, "version", 1) or 1),
+        }
+        operation.fingerprint.setdefault("requirement", dict(requirement_record))
+        operation.fingerprint.setdefault(
+            "operation_binding", {"requirement": dict(requirement_record)}
+        )
+        operation.fingerprint.setdefault("requirement_id", requirement.requirement_id)
+        operation.fingerprint.setdefault(
+            "requirement_version", int(getattr(requirement, "version", 1) or 1)
+        )
     return ExecutionContext(
         approval_id="appr_test",
         operation=operation,
@@ -453,6 +518,9 @@ async def test_approval_executes_once_and_persists_completed(tmp_path, db_conn):
         mode_at_request="restricted",
         source="tool",
     )
+    from _r9_auth_support import bind_requirement
+
+    bind_requirement(security, operation)
     ticket = await security.approvals.submit(operation)
     await security.approvals.decide(ticket.approval_id, "approve")
 
@@ -485,6 +553,9 @@ async def test_failed_execution_is_persisted_as_failed(tmp_path, db_conn):
         mode_at_request="restricted",
         source="tool",
     )
+    from _r9_auth_support import bind_requirement
+
+    bind_requirement(security, operation)
     ticket = await security.approvals.submit(operation)
     await security.approvals.decide(ticket.approval_id, "approve")
 

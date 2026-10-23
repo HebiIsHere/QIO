@@ -376,6 +376,23 @@ class AppContext:
             reviewer=self.reviewer,
             origin_provider=self._file_origin_for,
         )
+        # R9-G：统一执行前重核对服务（模式/要求/授权/审批/对象/内容/条件）；
+        # 挂在 AppContext 与引擎上，执行器/审批恢复可按统一接口调用。
+        self.recheck = None
+        try:
+            from agent.security.recheck import RecheckService
+
+            self.recheck = RecheckService(
+                engine=self.authorization,
+                requirements=self.requirements,
+                approvals=self.approvals,
+                authorizations=self.authorizations,
+            )
+            self.authorization.recheck = self.recheck
+        except Exception as exc:  # noqa: BLE001 - 重核对不可用不能静默放行
+            logging.getLogger(__name__).warning(
+                "R9-G 执行前重核对服务未启用：%s: %s", type(exc).__name__, exc
+            )
         self.approvals.set_engine(self.authorization)
         self.approvals.set_operations(self.operations)
         self.approvals.set_instruction_registry(self.instructions)
@@ -2534,6 +2551,7 @@ class AppContext:
             approval_origin_context,
             instruction_context,
             requirement_context,
+            requirement_limits_context,
             requirement_resolution_context,
         )
 
@@ -2552,6 +2570,7 @@ class AppContext:
         # （不关键词兜底，也不静默扩大旧要求）。
         requirement_binding = None
         resolution_status = "unavailable"
+        resolution_limits: tuple[dict, ...] = ()
         requirement_id = None
         message_id = str(getattr(ctx, "message_id", "") or "")
         turn_id = str(getattr(ctx, "turn_id", "") or "")
@@ -2570,6 +2589,20 @@ class AppContext:
                         )
                     except Exception as exc:  # noqa: BLE001 - 解析失败按新要求继续
                         resolution_status = "unavailable"
+                        recorder = getattr(
+                            self.requirements, "record_resolution_failure", None
+                        )
+                        if callable(recorder):
+                            try:
+                                recorder(
+                                    error=exc,
+                                    message_id=message_id,
+                                    turn_id=turn_id,
+                                )
+                            except Exception:  # noqa: BLE001 - 审计失败不挡住用户轮
+                                logging.getLogger(__name__).warning(
+                                    "要求解析失败审计写入失败", exc_info=True
+                                )
                         logging.getLogger(__name__).warning(
                             "要求关系解析失败（按新要求继续，不用关键词兜底）：%s: %s",
                             type(exc).__name__,
@@ -2582,6 +2615,7 @@ class AppContext:
                     requirement_id = getattr(applied, "requirement_id", None) or getattr(
                         applied, "id", None
                     )
+                    resolution_limits = tuple(getattr(applied, "limits", ()) or ())
                     resolution_status = "ok"
                     binder = getattr(self.requirements, "binding_for", None)
                     if requirement_id and callable(binder):
@@ -2605,7 +2639,8 @@ class AppContext:
             else:
                 with instruction_context(instruction), approval_origin_context("user"), \
                         requirement_context(requirement_binding), \
-                        requirement_resolution_context(resolution_status):
+                        requirement_resolution_context(resolution_status), \
+                        requirement_limits_context(resolution_limits):
                     await self.turn_orchestrator.execute(ctx)
         finally:
             if instruction is not None:
