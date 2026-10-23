@@ -46,7 +46,7 @@
 
 ### 保留占位/已知缺口
 - 组缩放后重叠只如实提示；没有覆盖所有路径的自动避让；卡片拖动仍保留既有成组语义。
-- 自动重试只在互动 Turn 收尾调度；进程启动不扫 pending；崩溃后 `board_intent_turns` 的 claiming/active 无实例归属回收，可能永久挡住新 Turn。
+- 自动重试有 Turn 收尾调度；启动恢复会释放上一进程遗留的 claiming/active，并重新受理 pending 自动重试（每次启动最多 10 个系列）。重启恢复已补，但真实进程崩溃/多实例边界仍未做端到端压测。
 - 任意互动 Turn 收尾都可能调度整板 pending 重试（需限制边界）；成功但未 completed 的 Turn 可能使 retry 系列停在 running。
 - 旧 IntentBatchTray/IntentStatusPopover 仍挂旧链，与新 IntentLayer 同页并存；暂停/继续/取消新链未全部迁移。
 - DemoIntentEntry 未挂载（按任务书演示状态不属于生产功能）。
@@ -58,7 +58,7 @@
 - 前端全量：`npx vitest run` → **436 files / 4072 tests passed**（最终 UI 轮）。
 - 前端 `npx vue-tsc --noEmit`：通过；`npm run build`：通过；文档一致性：通过。
 - 后端定向：P3-D 九文件重跑 **105 项全部通过**（含冻结面与 claiming 并发修复）；P4-C 后端 200+39 项通过；**完整后端全量未在最终 SHA 完成**。
-- 关键失败已修：提示词冻结面同步、claiming 窗口并发认领拒绝；P4-B 报告中的其余风险保留在 `phase4-backend.md`。
+- 关键失败已修：提示词冻结面同步、claiming 窗口并发认领拒绝、启动恢复 stale/pending 重试、展示/重试 HTTP 接口测试；P4-B 报告中的其余风险保留在 `phase4-backend.md`。
 
 ## 4. 固定提示词唯一位置
 `backend/src/agent/prompts.py`：`INTERACTIVE_POLICY`、`INTERACTIVE_RETRY_POLICY`、`TOOL_DESCRIPTIONS` 的 board_inspect / board_create_card / board_update_card / board_add_link / board_group_cards。其他模块只引用。全文归档见 `docs/interactive-v2/prompts-frozen.md`。
