@@ -601,6 +601,49 @@ def identity_key(identity: dict | None) -> str | None:
     )
 
 
+def path_identity_key(path: Any) -> str | None:
+    """路径当前对象的统一身份键（文件工具/审批恢复共用的唯一 helper）。
+
+    只读取真实文件身份（volume+file_id；实现缺失时沿用既有 stat 回退键），
+    **不做任何权限判定**。文件工具构造 path target、审批恢复重建 effect 时用它保证
+    target 带的是真实 identity，而不是路径字符串。
+    """
+    return identity_key(file_identity(path))
+
+
+def with_target_identity(effect: Any) -> Any:
+    """为 path target 补上真实 identity（已有值不覆盖）；不改变其它字段。
+
+    审批恢复会从持久化 effect 摘要重建 Effect；目标身份若缺失，重新读取真实身份补齐，
+    供内部数据对象身份核对/执行前重核对使用。取不到身份就保持缺席（按不可确认处理）。
+    """
+    import dataclasses
+
+    targets = []
+    changed = False
+    for target in getattr(effect, "targets", ()) or ():
+        if getattr(target, "kind", "") == "path" and not getattr(target, "identity", None):
+            key = path_identity_key(getattr(target, "value", ""))
+            if key:
+                targets.append(
+                    Target(
+                        kind=target.kind,
+                        value=target.value,
+                        identity=key,
+                        exists=getattr(target, "exists", None),
+                    )
+                )
+                changed = True
+                continue
+        targets.append(target)
+    if not changed:
+        return effect
+    try:
+        return dataclasses.replace(effect, targets=tuple(targets))
+    except Exception:  # noqa: BLE001 - 未知 Effect 形状：保持原对象
+        return effect
+
+
 def content_sha256(path: Any) -> str | None:
     target = Path(str(path))
     digest = hashlib.sha256()

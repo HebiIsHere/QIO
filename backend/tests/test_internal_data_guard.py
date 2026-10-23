@@ -168,3 +168,52 @@ async def test_scope_or_content_change_needs_new_approval(db_conn, tmp_path):
         lambda: (security.approvals.store.get(second.approval_id) or {}).get("state") == "completed"
     )
     assert counter == [{"content": "v2"}]
+
+
+def test_object_identity_arguments_are_backward_compatible(tmp_path):
+    """R9-H2 §5：旧调用签名保持兼容；target.identity 命中登记身份也算内部数据。"""
+    app_db = tmp_path / "app.db"
+    app_db.write_text("db", encoding="utf-8")
+    outside = tmp_path / "workspace" / "outside.txt"
+    outside.parent.mkdir()
+    outside.write_text("x", encoding="utf-8")
+    identity_key = "12345678:abcdef"
+    effect = Effect(
+        kind=EffectKind.WRITE,
+        targets=(Target("path", str(outside), identity=identity_key),),
+    )
+    # 旧签名（仅 protected）：目标路径不在注册范围 → False（不因 identity 字段自报）
+    assert not internal_data.effect_targets_internal_data(effect, [app_db])
+    # 新签名：identity_keys 由可信登记提供 → True
+    assert internal_data.effect_targets_internal_data(
+        effect, [app_db], identity_keys={identity_key}
+    )
+    assert internal_data.confirmations_for(
+        effect, [app_db], identity_keys={identity_key}
+    ) == internal_data.CONFIRMATIONS_REQUIRED
+    # 身份字段不匹配 / 为空 → 仍按普通路径
+    other = Effect(
+        kind=EffectKind.WRITE,
+        targets=(Target("path", str(outside), identity="other:key"),),
+    )
+    assert not internal_data.effect_targets_internal_data(
+        other, [app_db], identity_keys={identity_key}
+    )
+    # 路径命中真实注册范围时，identity 参数不影响结论
+    inside = Effect(kind=EffectKind.WRITE, targets=(Target("path", str(app_db)),))
+    assert internal_data.effect_targets_internal_data(inside, [app_db])
+
+
+def test_known_path_is_conservative_when_identity_unreadable(tmp_path):
+    """身份读不到时，历史登记路径不能静默降级为普通文件（R9-H2 §5）。"""
+    missing = tmp_path / "qio-internal" / "gone.db"
+    missing.parent.mkdir()
+    known = {str(missing.resolve())}
+    assert not internal_data.is_internal_data_object(missing, [])
+    assert internal_data.is_internal_data_object(missing, [], known_paths=known)
+    # 身份可读但不是登记对象（同内容复制件/顶替文件）→ 不因旧路径登记被误保护
+    replacement = missing.parent / "replacement.db"
+    replacement.write_text("another object", encoding="utf-8")
+    assert not internal_data.is_internal_data_object(
+        replacement, [], known_paths={str(replacement.resolve())}
+    )

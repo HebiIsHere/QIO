@@ -4,7 +4,8 @@
 * internal_data 模块不再有敏感名/后缀词表与 is_sensitive_credential_path（源码级检查）；
 * 普通 .key/.pem/.crt、credentials/.config 同名目录不因名字自动成为内部数据/敏感；
 * 真实注册的内部数据（目录/文件）仍按既定规则：读取拒绝、写入三次确认（全模式）；
-* 相对路径/..、符号链接（能创建时）、改名不绕过注册范围；移出注册范围不再受保护；
+* 相对路径/..、符号链接（能创建时）、改名不绕过注册范围；移出注册路径范围后仍按
+  真实对象身份受保护（R9-H2 对象身份登记）；
 * 固定查询不是绕过内部数据保护的入口（固定查询规则只作用于已验证命令，不参与文件读取）。
 """
 
@@ -109,10 +110,18 @@ def test_relative_path_and_rename_do_not_bypass_registration(tmp_path) -> None:
     renamed = internal_dir / "renamed.db"
     os.replace(protected_file, renamed)
     assert internal_data.is_internal_data_path(renamed, protected)
-    # 移出注册范围 → 按普通文件处理（不新增全盘敏感识别）
+    # R9-H2 §5：移出注册**路径**范围后，路径判定不再命中；同一真实对象按身份登记
+    # 仍受保护（不能把"移出注册范围"当作自动普通文件）。
     outside = tmp_path / "outside.db"
     os.replace(renamed, outside)
     assert not internal_data.is_internal_data_path(outside, protected)
+    from agent.services import file_identity
+
+    object_identity = file_identity.identity_of(outside)
+    assert object_identity is not None
+    assert internal_data.is_internal_data_object(
+        outside, [], identity_key=object_identity.key, identity_keys={object_identity.key}
+    )
 
 
 def test_symlink_or_normalized_alias_cannot_escape_protection(tmp_path) -> None:

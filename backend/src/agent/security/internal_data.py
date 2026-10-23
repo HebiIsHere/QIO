@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, Iterable
 
 from agent.security.effects import Effect, EffectKind
+from agent.services import file_identity
 
 #: 内部运行数据必须连续确认的次数（0 -> 1 -> 2 -> 3）。
 CONFIRMATIONS_REQUIRED = 3
@@ -66,22 +68,130 @@ def is_internal_data_path(path: object, protected: list[Path] | None) -> bool:
     return False
 
 
-def effect_targets_internal_data(effect: Effect, protected: list[Path] | None) -> bool:
-    if effect.kind == EffectKind.INTERNAL_DATA:
-        return True
-    for target in effect.targets:
-        if target.kind == "path" and is_internal_data_path(target.value, protected):
+def _identity_key_of(path: object, identity_of: Any = None) -> str | None:
+    """路径当前身份键；身份读不到 / 文件系统不支持 → None（不猜）。"""
+    finder = identity_of if callable(identity_of) else file_identity.identity_of
+    try:
+        found = finder(path)
+    except Exception:  # noqa: BLE001 - 身份读取失败不能把对象当普通文件
+        return None
+    if found is None:
+        return None
+    return str(getattr(found, "key", "") or "") or None
+
+
+def _known_path_matches(candidate: Path, known_paths: Iterable[object]) -> bool:
+    wanted = str(candidate)
+    for raw in known_paths or ():
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if text == wanted:
+            return True
+        normalized = normalize_path(text)
+        if normalized is not None and str(normalized) == wanted:
             return True
     return False
 
 
-def requires_three_confirmations(effect: Effect, protected: list[Path] | None) -> bool:
+def is_internal_data_object(
+    path: object,
+    protected: list[Path] | None,
+    *,
+    identity_key: str | None = None,
+    identity_keys: Iterable[str] = (),
+    known_paths: Iterable[object] = (),
+    identity_of: Any = None,
+) -> bool:
+    """某个路径当前指向的对象是否属于内部运行数据（R9-H2 契约 §5.1）。
+
+    判定顺序（只按真实事实，不按名称/后缀/内容）：
+    1. 路径命中 AppContext 真实注册范围（含子路径）→ True；
+    2. 当前对象身份（target.identity 或 identity_of(path)）在已登记 active 身份集合 → True
+       （硬链接/改名/移动后仍是同一对象）；
+    3. 身份读不到且路径在历史登记路径里 → True（不静默降级；文件系统不支持身份时保守）；
+    4. 否则 False —— 同内容不同身份的复制件不是原对象。
+    """
+    candidate = normalize_path(path)
+    if candidate is None:
+        return False
+    if is_internal_data_path(candidate, protected):
+        return True
+    keys = identity_keys or ()
+    key = str(identity_key or "").strip() or _identity_key_of(candidate, identity_of)
+    if key and key in keys:
+        return True
+    if key is None and _known_path_matches(candidate, known_paths):
+        return True
+    return False
+
+
+def effect_targets_internal_data(
+    effect: Effect,
+    protected: list[Path] | None,
+    *,
+    identity_keys: Iterable[str] = (),
+    known_paths: Iterable[object] = (),
+    identity_of: Any = None,
+) -> bool:
+    """effect 的目标是否涉及内部运行数据（路径注册 + 真实对象身份，契约 §5.1）。
+
+    旧调用签名保持兼容（新增参数都有默认值）；EffectKind.INTERNAL_DATA 仍直接为 True。
+    """
+    if effect.kind == EffectKind.INTERNAL_DATA:
+        return True
+    for target in effect.targets:
+        if target.kind != "path":
+            continue
+        if is_internal_data_object(
+            target.value,
+            protected,
+            identity_key=getattr(target, "identity", None),
+            identity_keys=identity_keys,
+            known_paths=known_paths,
+            identity_of=identity_of,
+        ):
+            return True
+    return False
+
+
+def requires_three_confirmations(
+    effect: Effect,
+    protected: list[Path] | None,
+    *,
+    identity_keys: Iterable[str] = (),
+    known_paths: Iterable[object] = (),
+    identity_of: Any = None,
+) -> bool:
     """该 effect 是否需要内部数据三次确认（写入/删除/脚本维护等）。"""
-    return effect_targets_internal_data(effect, protected)
+    return effect_targets_internal_data(
+        effect,
+        protected,
+        identity_keys=identity_keys,
+        known_paths=known_paths,
+        identity_of=identity_of,
+    )
 
 
-def confirmations_for(effect: Effect, protected: list[Path] | None) -> int:
-    return CONFIRMATIONS_REQUIRED if requires_three_confirmations(effect, protected) else 1
+def confirmations_for(
+    effect: Effect,
+    protected: list[Path] | None,
+    *,
+    identity_keys: Iterable[str] = (),
+    known_paths: Iterable[object] = (),
+    identity_of: Any = None,
+) -> int:
+    return (
+        CONFIRMATIONS_REQUIRED
+        if requires_three_confirmations(
+            effect,
+            protected,
+            identity_keys=identity_keys,
+            known_paths=known_paths,
+            identity_of=identity_of,
+        )
+        else 1
+    )
 
 
 def describe_scope(effect: Effect) -> str:
