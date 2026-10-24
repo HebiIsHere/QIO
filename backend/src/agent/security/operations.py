@@ -264,8 +264,9 @@ class ExecutionContext:
                 False,
                 "这项操作没有绑定具体用户要求，不能直接执行（需要重新判断，不是继续执行）",
             )
-        # 模式是整批共同条件：审批后模式变化不能被逐项执行绕过。
-        if self.mode_at_approval:
+        # 模式是整批共同条件：批量 common_only 先核对；单次审批仍由引擎
+        # recheck_approved 按模式给出精确拒绝原因（既有契约）。
+        if common_only and self.mode_at_approval:
             try:
                 current_mode = str(self.current_mode() or "")
             except Exception:  # noqa: BLE001 - 读不到模式按不能执行
