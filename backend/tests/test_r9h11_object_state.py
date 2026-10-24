@@ -20,6 +20,7 @@ import pytest
 
 from agent.security import effects as effects_module
 from agent.security import object_state
+from agent.security.effects import Effect, EffectKind, Target
 from agent.security.object_state import (
     IdentityComparison,
     LimitAssessment,
@@ -28,6 +29,7 @@ from agent.security.object_state import (
     ObjectState,
     ProgramResolution,
     compare_bound_identity,
+    decide_object,
     decision_code_for,
     resolve_path,
     resolve_program_name,
@@ -457,3 +459,1020 @@ def test_compare_bound_identity_accepts_injected_cache_facts(tmp_path):
     cache = {str(path): (identity.key, identity.birth_key)}
     comparison = compare_bound_identity("other:1", "birth:x", candidate_path=str(path), cache=cache)
     assert comparison.state == "different_object"
+
+# ===========================================================================
+# §3 判定语义表：decide_object 逐行覆盖
+# ===========================================================================
+
+
+def _identity(path: Path):
+    found = file_identity.identity_of(path)
+    assert found is not None, "身份读不到：" + str(path)
+    return found
+
+
+def _binding(path: Path, *, birth: bool = True) -> dict:
+    identity = _identity(path)
+    return {
+        "path": str(path.resolve()),
+        "identity": identity.key,
+        "birth_key": identity.birth_key if birth else None,
+        "source": "path_lookup",
+    }
+
+
+def _binding_item(name: str, binding: dict | None = None, operations=None) -> dict:
+    item: dict = {"kind": "program_name", "value": name}
+    if binding is not None:
+        item["program_binding"] = binding
+    if operations is not None:
+        item["operations"] = list(operations)
+    return item
+
+
+def _path_item(path: Path, kind: str = "path", operations=None) -> dict:
+    item: dict = {"kind": kind, "value": str(path)}
+    if operations is not None:
+        item["operations"] = list(operations)
+    return item
+
+
+def _candidate(kind: str, value) -> dict:
+    return {"kind": kind, "value": str(value)}
+
+
+def _fake_identity(path: Path, *, key: str, birth: str | None):
+    volume, _, file_id = key.partition(":")
+    return file_identity.FileIdentity(
+        volume=volume,
+        file_id=file_id,
+        path=str(path),
+        size=0,
+        mtime_ns=0,
+        birth_key=birth,
+        link_count=1,
+    )
+
+
+def _patch_identity_for(monkeypatch, mapping: dict) -> None:
+    """按真实路径选择性注入身份事实（模拟分支，与真实文件分支分开标注）。"""
+    real = file_identity.identity_of
+
+    def fake(candidate):  # noqa: ANN001
+        target = os.path.normcase(os.path.abspath(str(candidate)))
+        for path, value in mapping.items():
+            if os.path.normcase(os.path.abspath(str(path))) == target:
+                return value
+        return real(candidate)
+
+    monkeypatch.setattr(file_identity, "identity_of", fake)
+
+
+def _resolver(**resolution):
+    def resolver(name):  # noqa: ANN001
+        return ProgramResolution(name=name, **resolution)
+
+    return resolver
+
+
+def _other_birth(identity) -> str:
+    return "win:creation:1" if sys.platform == "win32" else "posix:birth:1"
+
+
+# ---------------------------------------------------------------- §3.1 操作范围
+
+
+def test_operation_out_of_scope_is_reliable_unrelated(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    decision = decide_object(
+        _path_item(path, operations=["write"]),
+        _candidate("path", path),
+        operation="read",
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "operation_out_of_scope"
+    facts = {fact.field: fact for fact in decision.facts}
+    assert facts["operation"].observed == "read"
+
+
+def test_operation_none_still_checks_the_object(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    decision = decide_object(
+        _path_item(path, operations=["write"]),
+        _candidate("path", path),
+        operation=None,
+    )
+    # 动作无法确定时不能据此判无关：仍然核对对象并命中。
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_same"
+
+
+def test_operation_in_scope_and_alias_wildcard(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    aliased = decide_object(
+        {"operations": ["install_deps"], "kind": "path", "value": str(path)},
+        _candidate("path", path),
+        operation="install",
+    )
+    assert aliased.state is ObjectState.MATCH
+    wildcard = decide_object(
+        {"operations": ["*"], "kind": "path", "value": str(path)},
+        _candidate("path", path),
+        operation="read",
+    )
+    assert wildcard.state is ObjectState.MATCH
+
+
+# ---------------------------------------------------------------- §3.2 path
+
+
+def test_path_exact_same_path_matches(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    decision = decide_object(_path_item(path), _candidate("path", path))
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_same"
+    assert decision.unrelated is False
+
+
+def test_path_unresolvable_same_text_matches_conservatively():
+    decision = decide_object(
+        {"kind": "path", "value": "rel/a\\b.TXT"},
+        {"kind": "path", "value": "rel/a/b.txt"},
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_text_same"
+
+
+def test_path_unresolvable_different_text_is_unknown():
+    decision = decide_object(
+        {"kind": "path", "value": "rel/a/b"},
+        {"kind": "path", "value": "rel/c/d"},
+    )
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "path_unresolvable"
+
+
+def test_path_prefix_contains_and_outside(tmp_path):
+    allowed = tmp_path / "allowed"
+    inside = allowed / "sub" / "file.txt"
+    outside = tmp_path / "outside" / "file.txt"
+    matched = decide_object(
+        {"kind": "path_prefix", "value": str(allowed)},
+        _candidate("path", inside),
+    )
+    assert matched.state is ObjectState.MATCH
+    assert matched.basis == "path_prefix_contains"
+    absent = decide_object(
+        {"kind": "path_prefix", "value": str(allowed)},
+        _candidate("path", outside),
+    )
+    assert absent.state is ObjectState.UNRELATED
+    assert absent.basis == "path_prefix_outside"
+
+
+def test_directory_limit_contains_itself(tmp_path):
+    decision = decide_object(
+        {"kind": "directory", "value": str(tmp_path)},
+        _candidate("path", tmp_path),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_prefix_contains"
+
+
+def test_path_hardlink_is_same_object(tmp_path):
+    original = tmp_path / "original.bin"
+    original.write_bytes(b"stable")
+    hard = tmp_path / "hardlink.bin"
+    if not _hardlink(original, hard):
+        pytest.skip("平台不支持硬链接")
+    decision = decide_object(_path_item(original), _candidate("path", hard))
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_hardlink_same_object"
+    facts = {fact.field: fact for fact in decision.facts}
+    assert facts["identity_key"].equal is True
+
+
+def test_path_same_content_copy_is_different_object(tmp_path):
+    original = tmp_path / "original.bin"
+    original.write_bytes(b"same-content")
+    copy = tmp_path / "copy.bin"
+    copy.write_bytes(b"same-content")
+    fixed = 1_700_000_000_000_000_000
+    os.utime(original, ns=(fixed, fixed))
+    os.utime(copy, ns=(fixed, fixed))
+    decision = decide_object(_path_item(original), _candidate("path", copy))
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "path_different_object"
+
+
+def test_path_different_lifecycle_is_other_object(tmp_path, monkeypatch):
+    """模拟分支：同一身份 + 不同生命周期 = 编号复用后的另一个对象。"""
+    original = tmp_path / "original.bin"
+    original.write_bytes(b"x")
+    other = tmp_path / "other.bin"
+    other.write_bytes(b"y")
+    identity = _identity(original)
+    _patch_identity_for(
+        monkeypatch,
+        {
+            str(original): _fake_identity(original, key=identity.key, birth=identity.birth_key),
+            str(other): _fake_identity(other, key=identity.key, birth=_other_birth(identity)),
+        },
+    )
+    decision = decide_object(_path_item(original), _candidate("path", other))
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "path_different_lifecycle"
+    facts = {fact.field: fact for fact in decision.facts}
+    assert facts["birth_key"].equal is False
+
+
+def test_path_candidate_identity_unreadable_is_unknown(tmp_path, monkeypatch):
+    original = tmp_path / "original.bin"
+    original.write_bytes(b"x")
+    candidate = tmp_path / "candidate.bin"
+    candidate.write_bytes(b"y")
+    _patch_identity_for(monkeypatch, {str(candidate): None})
+    decision = decide_object(_path_item(original), _candidate("path", candidate))
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "path_identity_unverifiable"
+    assert decision.fail_closed is True
+
+
+def test_path_limit_identity_unreadable_is_unrelated(tmp_path):
+    """§3.7：路径型限制（无保存身份）且限制路径当前不可读 -> 可靠无关。"""
+    missing_limit = tmp_path / "missing-limit.bin"
+    candidate = tmp_path / "exists.bin"
+    candidate.write_bytes(b"y")
+    decision = decide_object(_path_item(missing_limit), _candidate("path", candidate))
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "path_limit_identity_unavailable"
+
+
+def test_path_candidate_missing_is_unrelated(tmp_path):
+    original = tmp_path / "original.bin"
+    original.write_bytes(b"x")
+    missing = tmp_path / "missing-candidate.bin"
+    decision = decide_object(_path_item(original), _candidate("path", missing))
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "candidate_not_exists"
+
+
+def test_path_limit_vs_service_candidate_is_unrelated(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    decision = decide_object(_path_item(path), _candidate("service", "api.example.com"))
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "object_kind_out_of_scope"
+
+
+def test_path_limit_entry_name_resolves_to_same_file(tmp_path):
+    path = tmp_path / "program.bin"
+    path.write_bytes(b"program")
+    identity = _identity(path)
+    resolution = _resolver(
+        path=str(path.resolve()), identity_key=identity.key, birth_key=identity.birth_key
+    )
+    decision = decide_object(
+        _path_item(path),
+        _candidate("program_name", "runner"),
+        resolver=resolution,
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_same"
+
+
+def test_path_limit_entry_name_resolves_elsewhere(tmp_path):
+    path = tmp_path / "program.bin"
+    path.write_bytes(b"program")
+    other = tmp_path / "other.bin"
+    other.write_bytes(b"other")
+    other_identity = _identity(other)
+    resolution = _resolver(
+        path=str(other.resolve()),
+        identity_key=other_identity.key,
+        birth_key=other_identity.birth_key,
+    )
+    decision = decide_object(
+        _path_item(path),
+        _candidate("program_name", "runner"),
+        resolver=resolution,
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "path_different_object"
+
+
+def test_path_limit_entry_name_unresolved_is_unknown(tmp_path):
+    path = tmp_path / "program.bin"
+    path.write_bytes(b"program")
+    decision = decide_object(
+        _path_item(path),
+        _candidate("program_name", "runner"),
+        resolver=_resolver(error="program_not_found"),
+    )
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "entry_name_unresolved"
+
+
+def test_path_prefix_entry_name_inside_and_outside(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    inside = allowed / "tool.bin"
+    inside.write_bytes(b"tool")
+    outside = tmp_path / "outside" / "tool.bin"
+    outside.parent.mkdir()
+    outside.write_bytes(b"tool")
+    inside_identity = _identity(inside)
+    outside_identity = _identity(outside)
+    inside_decision = decide_object(
+        {"kind": "path_prefix", "value": str(allowed)},
+        _candidate("program_name", "tool"),
+        resolver=_resolver(
+            path=str(inside.resolve()),
+            identity_key=inside_identity.key,
+            birth_key=inside_identity.birth_key,
+        ),
+    )
+    assert inside_decision.state is ObjectState.MATCH
+    assert inside_decision.basis == "path_prefix_contains"
+    outside_decision = decide_object(
+        {"kind": "path_prefix", "value": str(allowed)},
+        _candidate("program_name", "tool"),
+        resolver=_resolver(
+            path=str(outside.resolve()),
+            identity_key=outside_identity.key,
+            birth_key=outside_identity.birth_key,
+        ),
+    )
+    assert outside_decision.state is ObjectState.UNRELATED
+    assert outside_decision.basis == "path_prefix_outside"
+
+
+# ---------------------------------------------------------------- §3.3 program
+
+
+def test_program_limit_same_program_path_matches(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    decision = decide_object(
+        {"kind": "program", "value": str(program)},
+        _candidate("program", program),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_same"
+
+
+def test_program_limit_hardlink_matches(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    hard = tmp_path / "progs" / "runner-hardlink.exe"
+    if not _hardlink(program, hard):
+        pytest.skip("平台不支持硬链接")
+    decision = decide_object(
+        {"kind": "program", "value": str(program)},
+        _candidate("program", hard),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "path_hardlink_same_object"
+
+
+def test_program_limit_different_program_is_unrelated(tmp_path):
+    program = _make_program(tmp_path / "progs-a", "runner")
+    other = _make_program(tmp_path / "progs-b", "runner")
+    decision = decide_object(
+        {"kind": "program", "value": str(program)},
+        _candidate("program", other),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "path_different_object"
+
+
+def test_program_limit_entry_name_resolves_to_limit_path(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    identity = _identity(program)
+    decision = decide_object(
+        {"kind": "program", "value": str(program)},
+        _candidate("program_name", "runner"),
+        resolver=_resolver(
+            path=str(program.resolve()),
+            identity_key=identity.key,
+            birth_key=identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "entry_resolves_to_limit_path"
+
+
+def test_program_limit_entry_name_resolves_elsewhere(tmp_path):
+    program = _make_program(tmp_path / "progs-a", "runner")
+    other = _make_program(tmp_path / "progs-b", "runner")
+    other_identity = _identity(other)
+    decision = decide_object(
+        {"kind": "program", "value": str(program)},
+        _candidate("program_name", "runner"),
+        resolver=_resolver(
+            path=str(other.resolve()),
+            identity_key=other_identity.key,
+            birth_key=other_identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "entry_resolves_elsewhere"
+
+
+def test_program_limit_entry_name_unresolved_is_unknown(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    decision = decide_object(
+        {"kind": "program", "value": str(program)},
+        _candidate("program_name", "runner"),
+        resolver=_resolver(error="program_not_found"),
+    )
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "entry_name_unresolved"
+
+
+def test_program_limit_entry_name_same_path_but_new_object_still_matches(tmp_path):
+    """显式程序路径限制：入口名解析回同一路径（对象被替换）仍属限制路径。"""
+    program = _make_program(tmp_path / "progs", "runner")
+    decision = decide_object(
+        {"kind": "program", "value": str(program)},
+        _candidate("program_name", "runner"),
+        resolver=_resolver(
+            path=str(program.resolve()), identity_key="vol:new", birth_key="birth:new"
+        ),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "entry_resolves_to_limit_path"
+
+
+# ---------------------------------------------------------------- §3.4 绑定存在
+
+
+def test_binding_same_object_matches(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    item = _binding_item("runner", _binding(program))
+    decision = decide_object(item, _candidate("program", program))
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "binding_identity+birth_same"
+    facts = {fact.field: fact for fact in decision.facts}
+    assert facts["identity_key"].equal is True
+    assert facts["birth_key"].equal is True
+    assert facts["identity_key"].source == "path_compare"
+
+
+def test_binding_hardlink_alias_matches(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    hard = tmp_path / "progs" / "runner-hardlink.exe"
+    if not _hardlink(program, hard):
+        pytest.skip("平台不支持硬链接")
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", hard),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "binding_identity+birth_same"
+
+
+def test_binding_without_birth_is_weak_match(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    item = _binding_item("runner", _binding(program, birth=False))
+    decision = decide_object(item, _candidate("program", program))
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "binding_identity_only"
+    facts = {fact.field: fact for fact in decision.facts}
+    assert facts["lifecycle_basis"].expected == "binding_without_birth"
+
+
+def test_binding_same_content_copy_is_unrelated(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    copy = tmp_path / "progs" / "runner-copy.exe"
+    copy.write_bytes(program.read_bytes())
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", copy),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "different_object_identity"
+
+
+def test_binding_lifecycle_reuse_is_invalid(tmp_path, monkeypatch):
+    """模拟分支：同一身份 + 不同生命周期 = 编号复用（绑定失效）。"""
+    program = _make_program(tmp_path / "progs", "runner")
+    candidate = _make_program(tmp_path / "progs", "runner-new")
+    identity = _identity(program)
+    _patch_identity_for(
+        monkeypatch,
+        {str(candidate): _fake_identity(candidate, key=identity.key, birth=_other_birth(identity))},
+    )
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", candidate),
+    )
+    assert decision.state is ObjectState.INVALID
+    assert decision.basis == "lifecycle_changed_same_identity"
+    assert decision.needs_recovery is True
+    assert "绑定" in decision.detail
+
+
+def test_binding_path_replaced_is_invalid(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    replacement = _make_program(tmp_path / "progs-b", "replacement")
+    item = _binding_item("runner", _binding(program))
+    os.replace(replacement, program)
+    decision = decide_object(item, _candidate("program", program))
+    assert decision.state is ObjectState.INVALID
+    assert decision.basis == "bound_path_object_replaced"
+    assert "绑定" in decision.detail
+
+
+def test_binding_path_missing_is_invalid(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    item = _binding_item("runner", _binding(program))
+    program.unlink()
+    decision = decide_object(item, _candidate("program", program))
+    assert decision.state is ObjectState.INVALID
+    assert decision.basis == "bound_path_object_replaced"
+    assert "绑定" in decision.detail
+
+
+def test_binding_candidate_missing_elsewhere_is_unrelated(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    missing = tmp_path / "missing" / "runner.exe"
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", missing),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "candidate_not_exists"
+
+
+def test_binding_candidate_identity_unreadable_is_unknown(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    candidate = _make_program(tmp_path / "progs", "runner-new")
+    _patch_identity_for(monkeypatch, {str(candidate): None})
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", candidate),
+    )
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "identity_unavailable"
+    assert "程序名称" in decision.detail
+    assert decision.fail_closed is True
+
+
+def test_binding_lifecycle_unverifiable_is_unknown(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    candidate = _make_program(tmp_path / "progs", "runner-new")
+    identity = _identity(program)
+    _patch_identity_for(
+        monkeypatch,
+        {str(candidate): _fake_identity(candidate, key=identity.key, birth=None)},
+    )
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", candidate),
+    )
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "lifecycle_unverifiable"
+    assert "程序名称" in decision.detail
+
+
+def test_binding_incomplete_is_unknown(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    item = _binding_item(
+        "runner",
+        {"path": str(program.resolve()), "identity": "", "source": "path_lookup"},
+    )
+    decision = decide_object(item, _candidate("program", program))
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "binding_incomplete"
+    assert "绑定" in decision.detail
+
+
+def test_binding_entry_name_same_object_same_matches(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    identity = _identity(program)
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program_name", "runner"),
+        resolver=_resolver(
+            path=str(program.resolve()),
+            identity_key=identity.key,
+            birth_key=identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "entry_name_same_object_same"
+
+
+def test_binding_entry_name_same_object_differs_is_invalid(tmp_path):
+    program = _make_program(tmp_path / "progs-a", "runner")
+    other = _make_program(tmp_path / "progs-b", "runner")
+    other_identity = _identity(other)
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program_name", "runner"),
+        resolver=_resolver(
+            path=str(other.resolve()),
+            identity_key=other_identity.key,
+            birth_key=other_identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.INVALID
+    assert decision.basis == "entry_name_same_object_differs"
+    assert "绑定" in decision.detail
+
+
+def test_binding_entry_name_same_unresolvable_is_invalid(tmp_path):
+    """§3.7：绑定 + 同一来源名，即使当前目标不可读也按 INVALID（不是 UNKNOWN）。"""
+    program = _make_program(tmp_path / "progs", "runner")
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program_name", "runner"),
+        resolver=_resolver(path=str(program.resolve()), error="identity_unavailable"),
+    )
+    assert decision.state is ObjectState.INVALID
+    assert decision.basis == "entry_name_same_object_differs"
+    assert "绑定" in decision.detail
+
+
+def test_binding_entry_name_different_alias_resolves_bound(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    identity = _identity(program)
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program_name", "runner-alias"),
+        resolver=_resolver(
+            path=str(program.resolve()),
+            identity_key=identity.key,
+            birth_key=identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "entry_resolves_to_bound_object"
+
+
+def test_binding_entry_name_different_resolves_elsewhere_is_unrelated(tmp_path):
+    program = _make_program(tmp_path / "progs-a", "runner")
+    other = _make_program(tmp_path / "progs-b", "other")
+    other_identity = _identity(other)
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program_name", "other"),
+        resolver=_resolver(
+            path=str(other.resolve()),
+            identity_key=other_identity.key,
+            birth_key=other_identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "different_entry_name"
+
+
+def test_binding_entry_name_different_unresolvable_is_unrelated(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program_name", "other"),
+        resolver=_resolver(error="program_not_found"),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "different_entry_name"
+
+
+def test_binding_program_kind_bare_name_uses_entry_branch(tmp_path):
+    """§3.7：cmd effect 拍平后 kind=program 的裸入口名要按入口名处理。"""
+    program = _make_program(tmp_path / "progs", "runner")
+    identity = _identity(program)
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", "runner"),
+        resolver=_resolver(
+            path=str(program.resolve()),
+            identity_key=identity.key,
+            birth_key=identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "entry_name_same_object_same"
+
+
+def test_effect_entry_name_same_source_dominates_path_unrelated(tmp_path, monkeypatch):
+    """真实入口名相同但 PATH 已指向新对象：路径候选无关也要按 INVALID 停住。"""
+    bound = _make_program(tmp_path / "bound", "runner")
+    current = _make_program(tmp_path / "current", "runner")
+    item = _binding_item("runner", _binding(bound))
+    monkeypatch.setenv("PATH", str(current.parent))
+    effect = Effect(
+        kind=EffectKind.EXECUTE,
+        targets=(Target("program", str(current)),),
+        detail={"requested_program": "runner"},
+    )
+    decision = decide_object(item, _candidate("program", current), effect=effect, operation="execute")
+    assert decision.state is ObjectState.INVALID
+    assert decision.basis == "entry_name_same_object_differs"
+    assert "绑定" in decision.detail
+
+
+def test_effect_entry_name_from_execution_program(tmp_path, monkeypatch):
+    bound = _make_program(tmp_path / "bound", "runner")
+    current = _make_program(tmp_path / "current", "runner")
+    item = _binding_item("runner", _binding(bound))
+    monkeypatch.setenv("PATH", str(current.parent))
+    effect = Effect(
+        kind=EffectKind.EXECUTE,
+        targets=(Target("program", str(current)),),
+        detail={"execution": {"program": "runner"}},
+    )
+    decision = decide_object(item, _candidate("program", current), effect=effect)
+    assert decision.state is ObjectState.INVALID
+    assert decision.basis == "entry_name_same_object_differs"
+
+
+def test_effect_requested_program_path_is_not_entry_name(tmp_path):
+    bound = _make_program(tmp_path / "bound", "runner")
+    current = _make_program(tmp_path / "current", "runner-other")
+    item = _binding_item("runner", _binding(bound))
+    effect = Effect(
+        kind=EffectKind.EXECUTE,
+        targets=(Target("program", str(current)),),
+        detail={"requested_program": str(current)},
+    )
+    decision = decide_object(item, _candidate("program", current), effect=effect)
+    # 带路径分隔符的 requested_program 不是入口名，不触发名称分支。
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "different_object_identity"
+
+
+def test_effect_different_entry_alias_to_bound_object_matches(tmp_path):
+    bound = _make_program(tmp_path / "bound", "runner")
+    identity = _identity(bound)
+    unrelated = _make_program(tmp_path / "other", "unrelated")
+    item = _binding_item("runner", _binding(bound))
+    effect = Effect(
+        kind=EffectKind.EXECUTE,
+        targets=(Target("program", str(unrelated)),),
+        detail={"requested_program": "runner-alias"},
+    )
+    decision = decide_object(
+        item,
+        _candidate("program", unrelated),
+        effect=effect,
+        resolver=_resolver(
+            path=str(bound.resolve()),
+            identity_key=identity.key,
+            birth_key=identity.birth_key,
+        ),
+    )
+    assert decision.state is ObjectState.MATCH
+    assert decision.basis == "entry_resolves_to_bound_object"
+
+
+# ---------------------------------------------------------------- §3.5 绑定缺失
+
+
+def test_unbound_same_object_is_unbound(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    monkeypatch.setenv("PATH", str(program.parent))
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program", program),
+    )
+    assert decision.state is ObjectState.UNBOUND
+    assert decision.basis == "binding_missing_same_object"
+    assert decision.needs_recovery is True
+    assert "程序名称" in decision.detail
+    assert (
+        decision_code_for(decision.state, "program_name")
+        == effects_module.DECISION_PROGRAM_NAME_UNRESOLVED
+    )
+
+
+def test_unbound_resolved_elsewhere_is_unrelated(tmp_path, monkeypatch):
+    bound_a = _make_program(tmp_path / "dir-a", "runner")
+    other = _make_program(tmp_path / "dir-b", "runner")
+    monkeypatch.setenv("PATH", str(bound_a.parent))
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program", other),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "binding_missing_resolved_elsewhere"
+
+
+def test_unbound_lookup_unresolved_is_unknown(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    program = _make_program(tmp_path / "progs", "runner")
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program", program),
+    )
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "binding_missing_lookup_unresolved"
+    assert "程序名称" in decision.detail
+    assert decision.fail_closed is True
+
+
+def test_unbound_candidate_identity_unreadable_is_unknown(tmp_path, monkeypatch):
+    resolved = _make_program(tmp_path / "dir-a", "runner")
+    candidate = _make_program(tmp_path / "dir-b", "runner")
+    monkeypatch.setenv("PATH", str(resolved.parent))
+    _patch_identity_for(monkeypatch, {str(candidate): None})
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program", candidate),
+    )
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "binding_missing_candidate_unreadable"
+    assert "程序名称" in decision.detail
+
+
+def test_unbound_candidate_missing_is_unrelated(tmp_path, monkeypatch):
+    resolved = _make_program(tmp_path / "dir-a", "runner")
+    monkeypatch.setenv("PATH", str(resolved.parent))
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program", tmp_path / "missing" / "runner.exe"),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "candidate_not_exists"
+
+
+def test_unbound_hardlink_alias_is_unbound(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    hard = tmp_path / "progs" / "runner-hardlink.exe"
+    if not _hardlink(program, hard):
+        pytest.skip("平台不支持硬链接")
+    monkeypatch.setenv("PATH", str(program.parent))
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program", hard),
+    )
+    assert decision.state is ObjectState.UNBOUND
+    assert decision.basis == "binding_missing_same_object"
+
+
+def test_unbound_entry_name_same_is_unbound(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    monkeypatch.setenv("PATH", str(program.parent))
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program_name", "runner"),
+    )
+    assert decision.state is ObjectState.UNBOUND
+    assert decision.basis == "binding_missing_entry_same"
+    assert "程序名称" in decision.detail
+
+
+def test_unbound_entry_name_different_is_unrelated(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    monkeypatch.setenv("PATH", str(program.parent))
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program_name", "other"),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "different_entry_name"
+
+
+def test_unbound_entry_name_case_is_platform_normalized(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    monkeypatch.setenv("PATH", str(program.parent))
+    candidate = "RUNNER" if os.name == "nt" else "runner"
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program_name", candidate),
+    )
+    assert decision.state is ObjectState.UNBOUND
+    assert decision.basis == "binding_missing_entry_same"
+
+
+def test_unbound_program_kind_bare_name_uses_entry_branch(tmp_path, monkeypatch):
+    program = _make_program(tmp_path / "progs", "runner")
+    monkeypatch.setenv("PATH", str(program.parent))
+    decision = decide_object(
+        {"kind": "program_name", "value": "runner"},
+        _candidate("program", "runner"),
+    )
+    assert decision.state is ObjectState.UNBOUND
+    assert decision.basis == "binding_missing_entry_same"
+
+
+# ---------------------------------------------------------------- §3.6 service
+
+
+def test_service_equal_and_scope_matches():
+    equal = decide_object(
+        {"kind": "service", "value": "api.example.com"},
+        _candidate("service", "api.example.com"),
+    )
+    assert equal.state is ObjectState.MATCH
+    assert equal.basis == "service_same"
+    scoped = decide_object(
+        {"kind": "service", "value": "api.example.com"},
+        _candidate("url", "api.example.com/v1/items"),
+    )
+    assert scoped.state is ObjectState.MATCH
+    assert scoped.basis == "service_scope_same"
+
+
+def test_service_outside_is_unrelated():
+    decision = decide_object(
+        {"kind": "service", "value": "api.example.com"},
+        _candidate("service", "other.example.com"),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "service_outside"
+
+
+def test_service_limit_vs_path_candidate_is_unrelated(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    decision = decide_object(
+        {"kind": "service", "value": "api.example.com"},
+        _candidate("path", path),
+    )
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "object_kind_out_of_scope"
+
+
+# ---------------------------------------------------------------- 其它/审计
+
+
+def test_unknown_candidate_kind_fails_closed(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    decision = decide_object(_path_item(path), {"kind": "material", "value": "x"})
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "unsupported_candidate_kind"
+    assert decision.unrelated is False
+
+
+def test_unsupported_limit_kind_fails_closed(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    decision = decide_object({"kind": "material", "value": "x"}, _candidate("path", path))
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "unsupported_limit_object_kind"
+
+
+def test_missing_values_are_unknown(tmp_path):
+    path = tmp_path / "doc.txt"
+    path.write_text("v1", encoding="utf-8")
+    assert (
+        decide_object({"kind": "path", "value": ""}, _candidate("path", path)).state
+        is ObjectState.UNKNOWN
+    )
+    missing_candidate = decide_object(_path_item(path), {"kind": "path", "value": ""})
+    assert missing_candidate.state is ObjectState.UNKNOWN
+    assert missing_candidate.basis == "candidate_missing_value"
+
+
+def test_decision_as_dict_does_not_leak_effect_detail_secrets(tmp_path):
+    program = _make_program(tmp_path / "progs", "runner")
+    effect = Effect(
+        kind=EffectKind.EXECUTE,
+        targets=(Target("program", str(program)),),
+        detail={
+            "requested_program": "runner",
+            "api_key": "sk-live-secret-value",
+            "authorization": "Bearer secret-token",
+        },
+    )
+    decision = decide_object(
+        _binding_item("runner", _binding(program)),
+        _candidate("program", program),
+        effect=effect,
+        operation="execute",
+    )
+    payload = decision.as_dict()
+    encoded = json.dumps(payload, ensure_ascii=False)
+    assert "sk-live-secret-value" not in encoded
+    assert "secret-token" not in encoded
+    assert payload["facts"]
+    for fact in payload["facts"]:
+        for name in ("field", "expected", "observed", "source"):
+            value = fact[name]
+            assert value is None or len(str(value)) <= object_state.MAX_AUDIT_CHARS
+
+
+def test_unknown_is_never_unrelated_and_blocks_pattern_allow(tmp_path):
+    missing_limit = tmp_path / "missing-limit.bin"
+    candidate = tmp_path / "candidate.bin"
+    candidate.write_bytes(b"x")
+    # 让限制路径存在但身份不可读：模拟权限/平台不支持。
+    decision = decide_object(
+        _path_item(missing_limit),
+        _candidate("path", tmp_path / "other.bin"),
+        cache={str(missing_limit): None},
+    )
+    assert decision.state is ObjectState.UNRELATED  # 限制路径不存在 -> 可靠无关
+    assert LimitAssessment(decisions=(decision,)).conflict is False
+    unreadable = decide_object(
+        _path_item(candidate),
+        _candidate("path", candidate),
+        operation="read",
+    )
+    assert unreadable.state is ObjectState.MATCH
+
