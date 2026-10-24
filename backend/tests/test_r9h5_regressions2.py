@@ -387,7 +387,9 @@ async def test_program_limit_path_does_not_expand_to_same_name(db_conn, tmp_path
         or "绑定" in by_name.reason
         or "对象" in by_name.reason
     ), by_name.reason
-    # 相邻的“应继续”案例：不同裸入口名是不同来源，可靠无关，仍按模式继续。
+    # R9-H12 §2/§3.2：未绑定 program_name 下，仅“入口名不同”不能证明无关；候选对象
+    # 存在但无法确认与保存候选/当前澄清对象的关系 -> UNKNOWN（失败关闭）。
+    # 旧断言 ALLOW（H7/H8 的“名称不同即不同来源”）正是本轮修掉的错误规则。
     unrelated_entry = Effect(
         kind=EffectKind.EXECUTE,
         targets=(Target("program", str(program_b)),),
@@ -399,7 +401,27 @@ async def test_program_limit_path_does_not_expand_to_same_name(db_conn, tmp_path
     )
     with requirement_context(name_binding):
         other_entry = await security.engine.authorize(unrelated_entry)
-    assert other_entry.verdict == Verdict.ALLOW, other_entry.reason
+    assert other_entry.verdict == Verdict.DENY, other_entry.reason
+    assert (
+        "程序名称" in other_entry.reason
+        or "对象" in other_entry.reason
+        or "绑定" in other_entry.reason
+    ), other_entry.reason
+    # 相邻“可靠无关仍继续”的三个证据（保留原测试意图：不扩大禁止范围）：
+    # 1) 操作范围外：限制只要 execute，读取同一程序文件按模式继续。
+    read_program = Effect(
+        kind=EffectKind.READ,
+        targets=(Target("path", str(program_b)),),
+        purpose="读取程序文件",
+    )
+    with requirement_context(name_binding):
+        scoped_read = await security.engine.authorize(read_program)
+    assert scoped_read.verdict == Verdict.ALLOW, scoped_read.reason
+    # 2) 候选对象不存在：不可能是被禁止对象（可靠无关）。
+    missing = effect_for(tmp_path / "missing-dir" / "tool.exe")
+    with requirement_context(name_binding):
+        missing_decision = await security.engine.authorize(missing)
+    assert missing_decision.verdict == Verdict.ALLOW, missing_decision.reason
 
     link = tmp_path / "alias-tool"
     try:
