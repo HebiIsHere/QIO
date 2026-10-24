@@ -712,13 +712,20 @@ def test_path_candidate_identity_unreadable_is_unknown(tmp_path, monkeypatch):
 
 
 def test_path_limit_identity_unreadable_is_unrelated(tmp_path):
-    """§3.7：路径型限制（无保存身份）且限制路径当前不可读 -> 可靠无关。"""
+    """R9-H12 §6.1 修订（原输入/步骤保留）：旧期望 UNRELATED -> UNKNOWN。
+
+    * 旧期望：state=UNRELATED、basis=path_limit_identity_unavailable；
+    * 新期望：state=UNKNOWN、basis=path_limit_target_unreadable；
+    * 依据：契约 §3.1（R9-H12）——限制路径不存在时，删除/替换后的旧对象可能仍在
+      别名路径存在，不能仅凭路径文本不同证明无关（失败关闭）。
+    """
     missing_limit = tmp_path / "missing-limit.bin"
     candidate = tmp_path / "exists.bin"
     candidate.write_bytes(b"y")
     decision = decide_object(_path_item(missing_limit), _candidate("path", candidate))
-    assert decision.state is ObjectState.UNRELATED
-    assert decision.basis == "path_limit_identity_unavailable"
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "path_limit_target_unreadable"
+    assert decision.fail_closed is True
 
 
 def test_path_candidate_missing_is_unrelated(tmp_path):
@@ -886,8 +893,10 @@ def test_program_limit_entry_name_resolves_elsewhere(tmp_path):
             birth_key=other_identity.birth_key,
         ),
     )
+    # R9-H12 §3.1：显式 program 路径与 path 限制共用 _path_core，
+    # 无关依据归并为注册表白名单 basis=path_different_object（两侧身份可读且不等）。
     assert decision.state is ObjectState.UNRELATED
-    assert decision.basis == "entry_resolves_elsewhere"
+    assert decision.basis == "path_different_object"
 
 
 def test_program_limit_entry_name_unresolved_is_unknown(tmp_path):
@@ -1123,6 +1132,11 @@ def test_binding_entry_name_different_alias_resolves_bound(tmp_path):
 
 
 def test_binding_entry_name_different_resolves_elsewhere_is_unrelated(tmp_path):
+    """R9-H12 §2/§3.2：可靠无关仍继续，但 basis 用注册表白名单名（对象事实）。
+
+    旧 basis=different_entry_name（依据是“名称不同”，禁止）；新 basis=
+    entry_resolves_to_other_object（已绑定 identity 可读且与入口解析对象不同）。
+    """
     program = _make_program(tmp_path / "progs-a", "runner")
     other = _make_program(tmp_path / "progs-b", "other")
     other_identity = _identity(other)
@@ -1136,18 +1150,26 @@ def test_binding_entry_name_different_resolves_elsewhere_is_unrelated(tmp_path):
         ),
     )
     assert decision.state is ObjectState.UNRELATED
-    assert decision.basis == "different_entry_name"
+    assert decision.basis == "entry_resolves_to_other_object"
 
 
 def test_binding_entry_name_different_unresolvable_is_unrelated(tmp_path):
+    """R9-H12 §6.1 修订（原输入/步骤保留）：旧期望 UNRELATED -> UNKNOWN。
+
+    * 旧期望：state=UNRELATED、basis=different_entry_name；
+    * 新期望：state=UNKNOWN、basis=entry_name_differs_unverifiable；
+    * 依据：契约 §3.2——入口名不同但当前解析失败/身份不可读时无法核对对象事实，
+      名称差异不能作为无关依据（失败关闭）。
+    """
     program = _make_program(tmp_path / "progs", "runner")
     decision = decide_object(
         _binding_item("runner", _binding(program)),
         _candidate("program_name", "other"),
         resolver=_resolver(error="program_not_found"),
     )
-    assert decision.state is ObjectState.UNRELATED
-    assert decision.basis == "different_entry_name"
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "entry_name_differs_unverifiable"
+    assert decision.fail_closed is True
 
 
 def test_binding_program_kind_bare_name_uses_entry_branch(tmp_path):
@@ -1259,6 +1281,13 @@ def test_unbound_same_object_is_unbound(tmp_path, monkeypatch):
 
 
 def test_unbound_resolved_elsewhere_is_unrelated(tmp_path, monkeypatch):
+    """R9-H12 §6.1 修订（原输入/步骤保留）：旧期望 UNRELATED -> UNKNOWN。
+
+    * 旧期望：state=UNRELATED、basis=binding_missing_resolved_elsewhere；
+    * 新期望：state=UNKNOWN、basis=binding_missing_resolved_elsewhere；
+    * 依据：契约 §3.2（无保存候选）——当前 PATH 把限制名称解析到别处只是查找环境
+      事实，不能证明本次对象与被禁止对象无关；保存时没有绑定，失败关闭。
+    """
     bound_a = _make_program(tmp_path / "dir-a", "runner")
     other = _make_program(tmp_path / "dir-b", "runner")
     monkeypatch.setenv("PATH", str(bound_a.parent))
@@ -1266,8 +1295,9 @@ def test_unbound_resolved_elsewhere_is_unrelated(tmp_path, monkeypatch):
         {"kind": "program_name", "value": "runner"},
         _candidate("program", other),
     )
-    assert decision.state is ObjectState.UNRELATED
+    assert decision.state is ObjectState.UNKNOWN
     assert decision.basis == "binding_missing_resolved_elsewhere"
+    assert decision.fail_closed is True
 
 
 def test_unbound_lookup_unresolved_is_unknown(tmp_path, monkeypatch):
@@ -1335,14 +1365,22 @@ def test_unbound_entry_name_same_is_unbound(tmp_path, monkeypatch):
 
 
 def test_unbound_entry_name_different_is_unrelated(tmp_path, monkeypatch):
+    """R9-H12 §6.1 修订（原输入/步骤保留）：旧期望 UNRELATED -> UNKNOWN。
+
+    * 旧期望：state=UNRELATED、basis=different_entry_name；
+    * 新期望：state=UNKNOWN、basis=unbound_entry_name_differs；
+    * 依据：契约 §3.2——保存时没有绑定，“调用入口名不同”不是对象事实，不能据此
+      放行；无保存候选且入口名不同 -> UNKNOWN（失败关闭）。
+    """
     program = _make_program(tmp_path / "progs", "runner")
     monkeypatch.setenv("PATH", str(program.parent))
     decision = decide_object(
         {"kind": "program_name", "value": "runner"},
         _candidate("program_name", "other"),
     )
-    assert decision.state is ObjectState.UNRELATED
-    assert decision.basis == "different_entry_name"
+    assert decision.state is ObjectState.UNKNOWN
+    assert decision.basis == "unbound_entry_name_differs"
+    assert decision.fail_closed is True
 
 
 def test_unbound_entry_name_case_is_platform_normalized(tmp_path, monkeypatch):
