@@ -12,7 +12,8 @@
 | 修复分支 | r9h11/main |
 | 协作分支 | r9h11/a（共同对象状态）、r9h11/b（绑定恢复）、r9h11/c（适配入口/审批恢复）、r9h11/d（独立验收） |
 | 工作区 | 独立 worktree：qio-r9h11-main/-a/-b/-c/-d；共享 venv（junction） |
-| 最终代码 SHA | 见最终报告（代码提交之后仅 docs/evidence 变化） |
+| 最终代码 SHA | d9d806b43b34b35f0b638dfdb6931ab878118594（定向 CI 三目标同一 SHA；其后仅 docs/evidence） |
+| 最终 HEAD | 见最终报告（其后仅 docs/evidence 提交） |
 
 ## 2. 四项修复
 
@@ -80,7 +81,35 @@
 
 ## 4. 测试命令与结果
 
-（集成完成后补：宽回归命令与 passed 数；文档一致性；agent.eval 是否需要）
+离线、无外部连接；模型一律 fake/mock；venv 为共享环境的 worktree junction。
+
+```
+cd <worktree>/backend
+# H11 新增（A/B/C/D）
+& .\.venv\Scripts\python.exe -m pytest tests/test_r9h11_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h11_regressions.py -q -p no:cacheprovider
+# 邻近核心（H4-H10）
+& .\.venv\Scripts\python.exe -m pytest tests/test_r9h4_engine_binding.py tests/test_r9h4_limits_semantics.py tests/test_r9h5_regressions2.py tests/test_r9h6_regressions.py tests/test_r9h7_regressions.py tests/test_r9h8_regressions.py tests/test_r9h9_regressions.py tests/test_r9h10_regressions.py -q -p no:cacheprovider
+# 宽回归（71 个受影响/邻近文件，含 r9 全系、authorization/approval/tools/fs/app/turn 装配）
+& .\.venv\Scripts\python.exe -m pytest @files -q -p no:cacheprovider --junitxml=_lead-wide-junit.xml
+# 文档一致性（stdlib）
+& .\backend\.venv\Scripts\python.exe scripts\check_docs.py; & .\backend\.venv\Scripts\python.exe scripts\check_docs.py --selftest
+# 运行时评估（与基线对比）
+& .\.venv\Scripts\python.exe -m agent.eval.run
+```
+
+| 运行 | 结果 |
+| --- | --- |
+| H11 新增（object_state 91 / binding_recovery 15 / cross_operation 22 / D 验收 18） | 146 passed |
+| 邻近核心 H4-H10（8 个回归文件） | 112 passed |
+| 合并后关键（H11 146 + H4-H10 112，最终证据见 _r9h11-evidence/lead/*.xml） | 258 passed |
+| 宽回归 71 文件 | 1015 项：1014 passed / 1 failed（`test_r9_content_binding::test_script_content_change_prevents_reuse` 在基线 80b06308 与修复后都以同一 Windows 环境原因失败，非本轮引入）/ 0 skipped |
+| Lead 原始复现探针（临时文件，不入库） | 基线 3/3 失败；修复后 3/3 通过 |
+| docs 一致性 | 通过（95 个里程碑条目）；--selftest 6 场景符合预期 |
+| agent.eval.run | 与基线 80b06308 输出逐字节相同（无回归） |
+
+首轮 Linux py311 定向 CI 在 A 的单元测试 `test_resolve_path_absolute_and_relative` 上暴露平台假设错误
+（Windows 反斜杠被当成 POSIX 分隔符的断言）；修正为按平台语义断言（POSIX 反斜杠是文件名字符）后重跑全绿。
+生产代码未因此改动。
 
 ## 5. 平台真实验证与模拟
 
@@ -95,7 +124,18 @@
 
 ## 6. 定向 CI
 
-（最终代码 SHA 的 py311/py312/Windows 运行结果，完成后补 run id 与结论）
+最终代码 SHA **d9d806b4**（= `d9d806b43b34b35f0b638dfdb6931ab878118594`；其后仅证据/文档提交）。三个目标使用同一 SHA、
+同一 pytest 筛选集（H11 四套 + H4-H10 + r9h2 链恢复 + r9h limits/binding flow + fs/cmd/approved_operations）：
+
+| 目标 | run | 结论 |
+| --- | --- | --- |
+| backend-py311 | 40114369702 | success |
+| backend-py312 | 40114727713 | success |
+| windows | 40114932045 | success |
+
+同一 SHA 前一次 py311（3215f2ca，run 40114085555）因上述平台假设测试失败，修正测试后按新 SHA 重跑成功；
+同一 SHA 的 windows（3215f2ca，run 40114096592）亦为 success（代码与最终 SHA 相同，仅测试断言不同）。
+每轮只重跑了必要项；未新增完整 CI（历史累计 2/2 已用尽）。
 
 ## 7. 边界与已知限制
 
