@@ -309,7 +309,9 @@ async def test_program_name_limit_blocks_real_run_program(ctx):
     )
     # 真实解释器名称（Windows python.exe / POSIX pythonX.Y）作为历史裸名称限制；
     # 基线把它当相对路径精确比较 → 不匹配并真实执行；修复后明确 program_name 生效。
-    program_name = Path(sys.executable).stem
+    # CI 的 sys.executable 可能是 python3.11，实际入口解析后名称不同；用解析后的
+    # 真实程序名称构造历史裸名称，避免测试假设解释器文件名固定。
+    program_name = Path(os.path.realpath(sys.executable)).stem
     requirement = ctx.requirements.record_user_message(
         text="禁止运行该解释器", message_id="m-name", turn_id="t-name"
     )
