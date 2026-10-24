@@ -28,7 +28,12 @@ import pytest
 
 from agent.api.server import create_app
 from agent.config import Settings
+from agent.core.turn import TurnContext
 from agent.security import requirement_limits
+from agent.security.context import (
+    current_requirement,
+    requirement_limits as context_requirement_limits,
+)
 from agent.security.requirements import (
     RequirementBinding,
     RequirementLedger,
@@ -368,7 +373,7 @@ async def test_structured_unbound_recovery_binds_from_backend_facts(
     assert raw_after != raw_before and "program_binding" in raw_after
 
     # 专用恢复不是普通授权：不生成授权记录、不进入普通审查、不弹审批。
-    assert ctx.authorizations.records_for_requirement(requirement.requirement_id) == ()
+    assert ctx.authorizations.records_for_requirement(requirement.requirement_id) == []
     assert review.calls == [], "专用恢复不得调用普通独立授权审查"
     assert ctx.approvals.pending() == []
     assert not any("恢复结果已过期" in item for item in recovery_ctx.notices)
@@ -469,6 +474,39 @@ async def test_recovery_discards_stale_result_after_withdraw(
     assert any("历史用户限制" in item for item in recovery_ctx.notices)
 
 
+async def test_recovery_discards_result_when_version_changes(
+    ctx, tmp_path, monkeypatch
+):
+    runner = _runner(tmp_path / "bin")
+    _prepend_path(monkeypatch, runner.parent)
+    requirement = _seed_structured_unbound(ctx.conn, ctx.requirements)
+    raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
+    real_probe = requirement_limits._probe_program_binding
+
+    def probe_then_bump_version(name):
+        ctx.conn.execute(
+            "UPDATE user_requirements SET version = version + 1 WHERE id = ?",
+            (requirement.requirement_id,),
+        )
+        ctx.conn.commit()
+        return real_probe(name)
+
+    monkeypatch.setattr(
+        requirement_limits, "_probe_program_binding", probe_then_bump_version
+    )
+
+    recovered, recovery_ctx = await _recover(ctx, requirement)
+
+    assert recovered is None, "恢复等待期间要求版本变化：结果必须丢弃"
+    assert _raw_limits(ctx.conn, requirement.requirement_id) == raw_before
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    assert stored is not None
+    assert stored.version == int(requirement.version) + 1
+    assert stored.structured_limits_state == "structured"
+    assert stored.structured_limits_source == "r9h8_saved_limit"
+    assert any("历史用户限制" in item for item in recovery_ctx.notices)
+
+
 async def test_recovery_discards_result_when_chain_digest_changes(
     ctx, tmp_path, monkeypatch
 ):
@@ -539,6 +577,66 @@ async def test_fully_bound_structured_requirement_is_not_rewritten(
     assert recovered is None, "已完整绑定：不需要专用恢复，也不得改写"
     assert seen["count"] == 0, "已保存绑定不能被环境变化重新解析"
     assert _raw_limits(ctx.conn, requirement.requirement_id) == raw_before
+
+
+async def test_real_turn_amend_of_unbound_history_binds_child_limit(
+    ctx, tmp_path, monkeypatch
+):
+    """真实主流程：历史 structured-but-unbound 被 amend 时进入专用绑定，不是无关。"""
+    runner = _runner(tmp_path / "bin")
+    _prepend_path(monkeypatch, runner.parent)
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    review = _RecordingReviewer()
+    ctx.authorization.reviewer = review
+    parent = _seed_structured_unbound(ctx.conn, ctx.requirements)
+    parent_raw = _raw_limits(ctx.conn, parent.requirement_id)
+    ctx.requirement_resolver = _FakeResolver(
+        ResolutionOutcome(
+            relation=RequirementRelation.AMEND,
+            target_requirement_id=parent.requirement_id,
+            target_version=int(parent.version),
+            corrections=("仍然禁止运行 runner。",),
+            limits=(),
+            reason="用户补充同一限制",
+            model="fake-r9h11-model",
+            prompt_version="fake-r9h11-prompt-v1",
+        )
+    )
+    observed = {"executed": False, "binding": None, "limits": ()}
+
+    async def stub_execute(turn_ctx):
+        observed["executed"] = True
+        observed["binding"] = current_requirement.get()
+        observed["limits"] = tuple(context_requirement_limits.get() or ())
+
+    ctx.turn_orchestrator.execute = stub_execute
+    topic_id = ctx.current_topic()
+    turn_ctx = TurnContext(
+        turn_id="turn-r9h11-amend",
+        message="仍然禁止运行 runner。",
+        initial_topic=topic_id,
+        current_topic=topic_id,
+    )
+    turn_ctx.cancelled = False
+    await ctx._execute_turn(turn_ctx)
+
+    assert observed["executed"] is True
+    binding = observed["binding"]
+    assert binding is not None and binding.requirement_id != parent.requirement_id
+    child = ctx.requirements.by_id(binding.requirement_id)
+    assert child is not None
+    assert int(child.version) == int(parent.version) + 1
+    child_obj = child.structured_limits[0]["objects"][0]
+    assert child_obj["program_binding"]["requirement_id"] == child.requirement_id
+    assert child_obj["program_binding"]["identity"]
+    # 历史行原始 JSON 不变：保存/恢复路径不得在读取时隐式补建绑定。
+    assert _raw_limits(ctx.conn, parent.requirement_id) == parent_raw
+    # 本轮生效限制携带已固化绑定（执行完整保留绑定字段）。
+    ctx_limits = observed["limits"]
+    assert ctx_limits, observed["limits"]
+    assert ctx_limits[0]["objects"][0].get("program_binding")
+    # unrestricted 模式也不因专用恢复进入普通审查。
+    assert review.calls == []
 
 
 # --------------------------------------------------------------------------
