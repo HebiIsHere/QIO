@@ -1257,8 +1257,8 @@ def test_limit_program_matches_resolved_program(db_conn, tmp_path):
             ctx=ctx_for(binding),
         )
     )
-    # R9-H7 §1：program_name 未绑定明确对象时不由执行层直接拒绝，进入具体确认。
-    assert denied.verdict == Verdict.APPROVE
+    # R9-H8 §2：program_name 明确禁止但未绑定对象时不能由普通批准绕过，直接拒绝。
+    assert denied.verdict == Verdict.DENY
     assert "程序名称" in denied.reason
 
     allowed = asyncio.run(

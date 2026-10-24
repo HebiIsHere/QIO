@@ -1406,7 +1406,9 @@ class AuthorizationEngine(AuthorizationGateway):
         if mode != PermissionMode.READ_ONLY:
             unresolved_program = self._program_name_unresolved(effect, requirement)
             if unresolved_program:
-                return Verdict.APPROVE, unresolved_program, None
+                # A 状态：明确存在名称禁止但对象尚未可靠绑定。普通批准不能解除；
+                # 必须先恢复/澄清对象，本次直接拒绝，避免用 approval 覆盖禁止。
+                return Verdict.DENY, unresolved_program, None
         protected = self._internal_paths()
         # 2) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
         #    注意：有效禁止已在上一步 DENY，内部数据确认不能绕过它。
@@ -1668,10 +1670,25 @@ class AuthorizationEngine(AuthorizationGateway):
         for raw in getattr(requirement, "structured_limits", ()) or ():
             objects = raw.get("objects") if isinstance(raw, dict) else None
             for item in objects or ():
-                if isinstance(item, dict) and self._program_entry_matches(item, effect):
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("kind") or "").strip().lower() != "program_name":
+                    continue
+                # 入口相同，或真实解析目标与该名称解析出的程序对象一致，都属于
+                # 这条明确禁止的相关对象；先恢复/澄清对象，不能直接执行。
+                matched = self._program_entry_matches(item, effect)
+                if not matched:
+                    for target in effect.targets:
+                        if target.kind == "program" and self._limit_program_matches(
+                            target.value, item, effect=effect
+                        ):
+                            matched = True
+                            break
+                if matched:
                     return (
                         "这条用户限制中的程序名称尚未可靠绑定到明确对象；"
-                        "本次调用入口与保存名称一致，需要具体确认或先完成限制恢复，不能仅按名称直接执行"
+                        "本次调用入口或解析目标与保存名称指向同一程序来源，"
+                        "需要先完成限制恢复/对象绑定，不能仅按名称直接执行"
                     )
         return None
 
@@ -1692,24 +1709,26 @@ class AuthorizationEngine(AuthorizationGateway):
         import os as _os
 
         if str(item.get("kind") or "") == "program_name":
-            # R9-H7 §1：程序名称不是执行层可直接推断的对象。只把用户真实调用
-            # 入口与保存的入口名称精确比较；绝不用解析后目标、basename、去后缀
-            # 或版本号推断范围。入口事实缺失时不命中（不按名称放行/拒绝）。
-            detail = getattr(effect, "detail", {}) or {}
-            execution = dict(detail.get("execution") or {})
-            requested = str(
-                detail.get("requested_program")
-                or execution.get("requested_program")
-                or execution.get("program")
-                or ""
-            ).strip()
-            if not requested:
+            # R9-H8 §2：程序名称是来源，不是权限字符串。这里只做“真实对象解析”：
+            # 用平台程序解析把保存名称绑定到真实路径，再与本次解析目标按对象身份比较；
+            # 不比较 basename/名称主体，不用版本号/后缀猜测。
+            import shutil as _shutil
+
+            try:
+                bound = _shutil.which(right)
+            except Exception:  # noqa: BLE001 - 解析失败按未绑定处理
+                bound = None
+            if not bound:
                 return False
-
-            def _entry_name(value: str) -> str:
-                return _os.path.normcase(value.strip()) if _os.name == "nt" else value.strip()
-
-            return bool(_entry_name(requested)) and _entry_name(requested) == _entry_name(right)
+            try:
+                left_real = _os.path.realpath(left)
+                bound_real = _os.path.realpath(bound)
+                if _os.name == "nt":
+                    left_real = _os.path.normcase(left_real)
+                    bound_real = _os.path.normcase(bound_real)
+                return left_real == bound_real
+            except (OSError, ValueError):
+                return False
 
         def _canonical(value: str) -> str:
             # 规范化 + 解析链接别名：同一目标的绝对路径/符号链接属于同一程序对象；
@@ -1826,13 +1845,20 @@ class AuthorizationEngine(AuthorizationGateway):
                 return False
             # impact_operation 为 None：操作无法确定（如 INTERNAL_DATA 未给
             # internal_operation）→ 按“可能命中”保守处理，不能当无限制。
+        all_objects = [
+            item for item in (raw.get("objects") or ()) if isinstance(item, dict)
+        ]
+        if not all_objects:
+            # R9-H8 §1：objects 为空表示“限制全部对应操作/对象”，不是“不匹配”。
+            return True
         raw_objects = [
             item
-            for item in (raw.get("objects") or ())
-            if isinstance(item, dict)
-            and str(item.get("kind") or "").strip().lower() != "program_name"
+            for item in all_objects
+            if str(item.get("kind") or "").strip().lower() != "program_name"
         ]
         if not raw_objects:
+            # 只有未解决程序名称来源：交给 _program_name_unresolved，不能当作
+            # 普通路径不匹配，也不能把“明确禁止待绑定”误当成无限制。
             return False
         impact_objects = [
             item for item in (impact.get("objects") or ()) if isinstance(item, dict)
@@ -2141,7 +2167,7 @@ class AuthorizationEngine(AuthorizationGateway):
         program_unresolved = self._program_name_unresolved(effect, requirement)
         if program_unresolved:
             return AuthDecision(
-                verdict=Verdict.APPROVE,
+                verdict=Verdict.DENY,
                 reason=program_unresolved,
                 effects=(effect,),
                 decision_code=DECISION_PROGRAM_NAME_UNRESOLVED,

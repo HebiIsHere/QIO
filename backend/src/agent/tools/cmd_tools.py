@@ -510,11 +510,11 @@ class _CmdTool(Tool):
         for item in argument_files:
             if isinstance(item, dict) and item.get("sha256"):
                 content_digests.append([str(item.get("path")), str(item.get("sha256"))])
-        script_sha = ""
-        if argument_files:
-            script_sha = hashlib.sha256(
-                json.dumps(argument_files, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            ).hexdigest()
+        # R9-H8 §6：script_sha256 只表示“单个脚本来源”的摘要；argv 参数文件集合
+        # 由 argument_files（对象+内容摘要）和 spec_digest 表达。旧实现把参数集合
+        # 合成摘要塞进 script_sha256，恢复时与 build_launch_facts 的脚本摘要比较，
+        # 未变化脚本也会误判。
+        script_sha = str(facts.get("script_sha256") or "")
         cwd_value = getattr(spec, "cwd", None)
         cwd_resolved = None
         if cwd_value:

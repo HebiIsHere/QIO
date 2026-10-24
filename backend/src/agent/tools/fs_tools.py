@@ -1552,13 +1552,16 @@ class FsWriteTool(_FsTool):
         internal_root = security_gate.match_internal_data(self.security, target)
         base_content_sha: str | None = None
         base_content_digest_kind = "absent" if not existed_before else "content"
+        base_size = int(identity.get("size") or 0) if existed_before else None
+        base_mtime_ns = int(identity.get("mtime_ns") or 0) if existed_before else None
         if existed_before and internal_root is None:
             blocked_read = await self._blocked_by_known_read_limit(target)
             if blocked_read is not None:
                 return blocked_read
             base_content_sha = security_gate.content_sha256(target)
         elif existed_before:
-            # 内部维护：没有正文快照，执行器仅按身份/存在性核对；确认前不读正文。
+            # 内部维护：没有正文快照，执行器仅按身份/存在性/元数据核对；确认前不读正文。
+            # R9-H8 §3：身份不变不等于内容不变，必须绑定确认前的 size/mtime 元数据。
             base_content_digest_kind = "internal_metadata"
         precondition = object_state_digest(
             path=target,
@@ -1586,6 +1589,8 @@ class FsWriteTool(_FsTool):
                 "precondition_digest": precondition,
                 "identity": identity_key,
                 "base_content_digest_kind": base_content_digest_kind,
+                "base_size": base_size,
+                "base_mtime_ns": base_mtime_ns,
                 "maintenance_read_required": False,
             },
             internal=internal_root is not None,
@@ -1615,6 +1620,8 @@ class FsWriteTool(_FsTool):
                 # 文件身份 volume+file_id 在编辑后不变，光靠身份挡不住覆盖别人刚改的内容。
                 "base_content_sha256": base_content_sha,
                 "base_content_digest_kind": base_content_digest_kind,
+                "base_size": base_size,
+                "base_mtime_ns": base_mtime_ns,
                 "content_sha256": digest,
                 "precondition_digest": precondition,
                 "identity_key": identity_key,
@@ -2065,31 +2072,79 @@ class FsDeleteTool(_FsTool):
             # R9-H7 §3：删除前的内容摘要/目录子文件正文读取必须晚于读取限制核对。
             # 先只枚举元数据（include_content=False，不读正文），核对读取限制后再
             # 计算真实目录影响；禁读时整个删除方案停止，不先读全部子文件。
+            probe_internal = security_gate.match_internal_data(
+                self.security, target
+            ) is not None
+            probe = None
             if exists and is_directory:
                 try:
                     probe = directory_impact(
                         target,
                         operation="delete",
                         include_content=False,
+                        is_protected=lambda path: (
+                            security_gate.match_internal_data(self.security, path)
+                            is not None
+                        ),
                     )
                     probe_paths = [
                         Path(str(entry.get("path")))
                         for entry in (probe.get("entries") or ())
                         if isinstance(entry, dict) and entry.get("path")
                     ]
+                    if any(
+                        isinstance(entry, dict) and entry.get("protected") is True
+                        for entry in (probe.get("entries") or ())
+                    ):
+                        probe_internal = True
                 except Exception:  # noqa: BLE001 - 枚举失败后续按影响不确定处理
                     probe_paths = [target]
+                    print_paths = probe_paths
                 blocked_read = await self._blocked_by_known_read_paths(
                     probe_paths, purpose="删除目录前读取子文件内容摘要"
                 )
                 if blocked_read is not None:
-                    return blocked_read
+                    item = BatchItem(
+                        item_id=f"item_{index + 1}",
+                        effect=security_gate.make_effect(
+                            security_gate.EffectKind.DELETE,
+                            [security_gate.path_target(target, identity=identity_key, exists=exists)],
+                            purpose=f"删除目录：{target}",
+                            tool=self.name,
+                            detail={"action": "delete", "read_denied": True},
+                        ),
+                        label=str(target),
+                        payload={"path": str(target), "action": "delete"},
+                        fingerprint={"path": str(target), "read_denied": True},
+                        status=BATCH_STATUS_DENIED,
+                        reason=blocked_read.error or "读取限制禁止读取目录内容",
+                        result={"ok": False, "reason": blocked_read.error, "code": blocked_read.code},
+                    )
+                    items.append(item)
+                    continue
             elif exists:
                 blocked_read = await self._blocked_by_known_read_paths(
                     [target], purpose="删除文件前读取内容摘要"
                 )
                 if blocked_read is not None:
-                    return blocked_read
+                    item = BatchItem(
+                        item_id=f"item_{index + 1}",
+                        effect=security_gate.make_effect(
+                            security_gate.EffectKind.DELETE,
+                            [security_gate.path_target(target, identity=identity_key, exists=exists)],
+                            purpose=f"删除文件：{target}",
+                            tool=self.name,
+                            detail={"action": "delete", "read_denied": True},
+                        ),
+                        label=str(target),
+                        payload={"path": str(target), "action": "delete"},
+                        fingerprint={"path": str(target), "read_denied": True},
+                        status=BATCH_STATUS_DENIED,
+                        reason=blocked_read.error or "读取限制禁止读取文件内容",
+                        result={"ok": False, "reason": blocked_read.error, "code": blocked_read.code},
+                    )
+                    items.append(item)
+                    continue
             # R9-H4 §7：删除目录不能只查目录本身 —— 有界枚举子对象（含受保护/内部
             # 数据子对象）作为真实影响；达到上限时 complete=False（影响不确定）。
             directory_impact_data: dict | None = None
@@ -2098,11 +2153,15 @@ class FsDeleteTool(_FsTool):
                     directory_impact_data = directory_impact(
                         target,
                         operation="delete",
+                        include_content=not probe_internal,
                         is_protected=lambda path: (
                             security_gate.match_internal_data(self.security, path)
                             is not None
                         ),
                     )
+                    if probe_internal:
+                        # 内部维护确认前只保存元数据快照，不读取正文/摘要。
+                        directory_impact_data["content_deferred"] = True
                 except Exception:  # noqa: BLE001 - 枚举失败按影响不确定处理
                     directory_impact_data = {
                         "operation": "delete",
@@ -2116,9 +2175,10 @@ class FsDeleteTool(_FsTool):
                     }
             item_content_sha = (
                 security_gate.content_sha256(target)
-                if exists and not is_directory
+                if exists and not is_directory and not probe_internal
                 else None
             )
+            content_deferred = bool(probe_internal)
             directory_digest = (
                 str(directory_impact_data.get("digest") or "")
                 if directory_impact_data is not None
@@ -2190,6 +2250,7 @@ class FsDeleteTool(_FsTool):
                         else []
                     ),
                     "identity": identity_key,
+                    "content_deferred": content_deferred,
                 },
             )
             attach_requirement_binding(item_effect, binding)
@@ -2213,6 +2274,9 @@ class FsDeleteTool(_FsTool):
                         "identity": identity,
                         "exists": exists,
                         "content_sha256": item_content_sha,
+                        "content_deferred": content_deferred,
+                        "base_size": int(identity.get("size") or 0) if exists else None,
+                        "base_mtime_ns": int(identity.get("mtime_ns") or 0) if exists else None,
                         "is_directory": is_directory,
                         "precondition_digest": item_precondition,
                         "delete_mode": "recycle_bin",
@@ -2240,6 +2304,9 @@ class FsDeleteTool(_FsTool):
             "deny": BATCH_STATUS_DENIED,
         }
         for item in items:
+            if item.status != "pending":
+                # 已在读取/枚举阶段形成明确子项结果（如禁读），不能重新授权覆盖。
+                continue
             decision = await authorize_item(self.security, item.effect)
             item.status = verdict_to_status.get(decision["verdict"], BATCH_STATUS_DENIED)
             item.reason = decision["reason"]

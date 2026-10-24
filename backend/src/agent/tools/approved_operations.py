@@ -603,6 +603,34 @@ async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
             invalidated=True,
             path=path,
         )
+    base_kind_write = str(fingerprint.get("base_content_digest_kind") or "")
+    if base_kind_write == "internal_metadata":
+        # R9-H8 §3：确认前不读正文，但必须核对确认前的 size/mtime 元数据；
+        # 身份不变不代表内容不变。等待期间原地编辑会在这里失效。
+        current_meta = await asyncio.to_thread(security_gate.file_identity, path)
+        if not current_meta.get("exists"):
+            return _failure(
+                "内部维护目标在确认期间被删除：本次未写入",
+                "invalidated: internal_target_missing",
+                invalidated=True,
+                path=path,
+            )
+        try:
+            same_meta = (
+                int(current_meta.get("size") or 0) == int(fingerprint.get("base_size") or 0)
+                and int(current_meta.get("mtime_ns") or 0)
+                == int(fingerprint.get("base_mtime_ns") or 0)
+            )
+        except (TypeError, ValueError):
+            same_meta = False
+        if not same_meta:
+            return _failure(
+                "内部维护目标在确认期间发生了变化（大小/修改时间不一致）："
+                "本次未写入，保留最新内容；需重新提出维护",
+                "invalidated: internal_metadata_changed",
+                invalidated=True,
+                path=path,
+            )
     base_digest = fingerprint.get("base_content_sha256")
     if base_digest:
         read_blocked = await _authorize_content_read(
@@ -821,6 +849,9 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
             content_sha256 = None
             is_directory = False
             directory_impact_data = None
+            content_deferred = False
+            base_size = None
+            base_mtime_ns = None
             if index < len(fingerprint_rows):
                 candidate = fingerprint_rows[index]
                 if isinstance(candidate, dict):
@@ -829,6 +860,9 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                     content_sha256 = candidate.get("content_sha256")
                     is_directory = bool(candidate.get("is_directory"))
                     directory_impact_data = candidate.get("directory_impact")
+                    content_deferred = bool(candidate.get("content_deferred"))
+                    base_size = candidate.get("base_size")
+                    base_mtime_ns = candidate.get("base_mtime_ns")
             if isinstance(item, dict):
                 # R9-H4：payload 里逐项携带的真实目录影响（审批快照）优先。
                 directory_impact_data = item.get("directory_impact") or directory_impact_data
@@ -840,6 +874,9 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                         "path": path,
                         "identity": identity,
                         "content_sha256": content_sha256,
+                        "content_deferred": content_deferred,
+                        "base_size": base_size,
+                        "base_mtime_ns": base_mtime_ns,
                         "is_directory": is_directory,
                         "directory_impact": directory_impact_data,
                     }
@@ -892,6 +929,25 @@ def _check_directory_impact(expected: Any, path: str, ctx: ExecutionContext) -> 
             protected = []
     # 保护属性必须与审批时使用同一识别口径（路径 + identity/birth），否则目录里
     # 的硬链接/移动内部对象会被误判为“替换”，导致合法删除永远失效。
+    if expected.get("content_deferred"):
+        # R9-H8 §5：内部维护确认前只保存元数据快照；执行时只比较元数据影响，
+        # 不读取正文/摘要。身份/大小/mtime/子项集合变化才失效。
+        current = fs_tools.directory_impact(
+            path,
+            operation="delete",
+            include_content=False,
+            is_protected=lambda candidate: security_gate.match_internal_data(
+                engine, candidate
+            )
+            is not None,
+        )
+        if (
+            str(current.get("digest") or "") != str(expected.get("digest") or "")
+            or bool(current.get("complete", True))
+            != bool(expected.get("complete", True))
+        ):
+            return "目录元数据在确认期间发生变化：本次未删除（需重新确认）"
+        return None
     result = fs_tools.verify_directory_impact(
         expected,
         path,
@@ -1009,6 +1065,30 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             results.append(item)
             failed.append(item)
             continue
+        if row.get("content_deferred") and not row.get("is_directory"):
+            current_meta = await asyncio.to_thread(security_gate.file_identity, path)
+            try:
+                same_meta = (
+                    bool(current_meta.get("exists"))
+                    and int(current_meta.get("size") or 0) == int(row.get("base_size") or 0)
+                    and int(current_meta.get("mtime_ns") or 0)
+                    == int(row.get("base_mtime_ns") or 0)
+                )
+            except (TypeError, ValueError):
+                same_meta = False
+            if not same_meta:
+                item = {
+                    "item_id": item_id,
+                    "path": path,
+                    "ok": False,
+                    "status": "invalidated",
+                    "invalidated": True,
+                    "reason": "内部维护目标在确认期间发生变化：本次未删除（保留最新内容）",
+                    "code": "invalidated: internal_metadata_changed",
+                }
+                results.append(item)
+                failed.append(item)
+                continue
         # 旧形状/手写单 path 的目录删除没有目录影响依据：必须 fail-closed 重新确认，
         # 不能因为缺少 is_directory 字段就跳过新增/移除/替换子对象核对。
         try:
@@ -1035,9 +1115,11 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
                 for entry in (snapshot.get("entries") or ())
                 if isinstance(entry, dict) and entry.get("path")
             ]
-            read_blocked = await _authorize_content_reads(
-                ctx, snapshot_paths or [path], purpose="删除目录前核对子文件内容快照"
-            )
+            read_blocked = None
+            if not snapshot.get("content_deferred"):
+                read_blocked = await _authorize_content_reads(
+                    ctx, snapshot_paths or [path], purpose="删除目录前核对子文件内容快照"
+                )
             if read_blocked is not None:
                 item = {
                     "item_id": item_id,

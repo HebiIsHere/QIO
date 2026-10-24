@@ -385,13 +385,10 @@ class ExecutionContext:
         绝不解析中文 reason、语言或关键词；旧审批没有 code 一律不能据此放行。
         还必须绑定 active/版本一致且当前确实 legacy/unresolved（结构化事实核对）。
         """
-        from agent.security.effects import (
-            DECISION_PROGRAM_NAME_UNRESOLVED,
-            DECISION_UNRESOLVED_LIMITS,
-        )
+        from agent.security.effects import DECISION_UNRESOLVED_LIMITS
 
         code = str(decision_code or "")
-        if code not in (DECISION_UNRESOLVED_LIMITS, DECISION_PROGRAM_NAME_UNRESOLVED):
+        if code != DECISION_UNRESOLVED_LIMITS:
             return False
         binding = self.requirement_binding()
         if binding is None:
@@ -416,9 +413,6 @@ class ExecutionContext:
                 return False
         except (TypeError, ValueError):
             return False
-        if code == DECISION_PROGRAM_NAME_UNRESOLVED:
-            # 具体批准只完成本次绑定操作；不把名称转成长期对象授权。
-            return True
         state = str(
             getattr(requirement, "structured_limits_state", "unresolved")
             or "unresolved"
