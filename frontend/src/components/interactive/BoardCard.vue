@@ -2224,6 +2224,7 @@ watch(
       <button class="tool-icon" type="button" data-im="card-icon-bookmark" :title="card.bookmarked ? '取消书签' : '加书签'" :aria-label="card.bookmarked ? '取消书签' : '加书签'" @click="emit('toggle', card.id, 'bookmarked')">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg>
       </button>
+      <SelectionMenu :open-up="menuOpensUp" />
       <button class="tool-icon danger" type="button" data-im="card-icon-delete" title="删除" aria-label="删除" @click="emit('remove', card.id)">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></svg>
       </button>
@@ -2947,7 +2948,7 @@ watch(
 .tool-icon.danger { color: var(--danger); }
 .tool-icon:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 /* 旧 SelectionMenu 的“整理”触发按钮：保留行为，外观变成第四/第六个圆形图标。 */
-.card-toolbar > :deep(.trigger) {
+.icon-tools :deep(.trigger) {
   width: 30px;
   height: 30px;
   display: inline-flex;
@@ -2960,12 +2961,12 @@ watch(
   color: var(--text-secondary);
   font-size: 0;
 }
-.card-toolbar > :deep(.trigger)::before {
+.icon-tools :deep(.trigger)::before {
   content: "▦";
   font-size: 15px;
   line-height: 1;
 }
-.card-toolbar > :deep(.trigger:hover) { color: var(--accent); border-color: var(--accent); }
+.icon-tools :deep(.trigger:hover) { color: var(--accent); border-color: var(--accent); }
 
 .card-toolbar {
   position: absolute;
