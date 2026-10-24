@@ -395,6 +395,22 @@ const boardSize = computed(() => {
     width: calc(100% - 12px);
   }
 }
+/* 320–420：模式切换不再和对话抢一行，避免输入区被压成一条缝。 */
+@media (max-width: 420px) {
+  .im-floating-chat .im-composer-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .im-floating-chat .im-mode-switch {
+    align-self: flex-start;
+    padding-bottom: 0;
+  }
+  .im-floating-chat .im-conversation-slot {
+    flex: 1 1 auto;
+    width: 100%;
+  }
+}
 /* 板面槽内舞台：现有 BoardCanvas / ChatDock / BoardToolbar 的定位祖先。 */
 .im-composer-row {
   display: flex;
