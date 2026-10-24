@@ -385,7 +385,9 @@ const boardSize = computed(() => {
   backdrop-filter: none;
 }
 .im-floating-chat :deep(.ic-stream) {
-  margin: 0;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
   border: 1px solid var(--border-strong);
   border-radius: var(--r-lg);
   background: var(--bg-elevated);
