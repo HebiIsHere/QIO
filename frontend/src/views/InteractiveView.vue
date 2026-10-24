@@ -375,19 +375,44 @@ const boardSize = computed(() => {
 .im-floating-chat > .im-composer-row {
   pointer-events: auto;
 }
+/* 三块彼此独立：消息面板、工具栏、输入胶囊各自有表面，不再套一张大卡片。 */
 .im-floating-chat :deep(.ic) {
-  padding: var(--sp-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  background: color-mix(in srgb, var(--bg-elevated) 94%, transparent);
-  box-shadow: var(--shadow-2);
-  backdrop-filter: blur(10px);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 .im-floating-chat :deep(.ic-stream) {
-  background: var(--bg-base);
+  margin: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
 }
 .im-floating-chat :deep(.ic-toolbar) {
-  max-width: none;
+  max-width: 860px;
+  margin-bottom: var(--sp-2);
+}
+.im-floating-chat :deep(.ic-toolbar .board-toolbar) {
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
+}
+.im-floating-chat :deep(.ic-dock) {
+  padding: 0;
+}
+.im-floating-chat :deep(.ic-composer) {
+  max-width: 860px;
+  margin: 0 auto;
+}
+.im-floating-chat :deep(.ic-bar) {
+  width: fit-content;
+  min-height: 26px;
+  margin-bottom: var(--sp-1);
 }
 @media (max-width: 700px) {
   .im-floating-chat {

@@ -3161,7 +3161,7 @@ onBeforeUnmount(() => {
 .board-viewport.framing { cursor: crosshair; }
 .board-scroll-content { position: relative; }
 .board-surface {
-  --board-dot: color-mix(in srgb, var(--accent) 8%, transparent);
+  --board-dot: color-mix(in srgb, var(--accent) 16%, transparent);
   position: relative;
   background-color: var(--bg-surface);
   background-image: radial-gradient(circle, var(--board-dot) 0 1px, transparent 1.1px);
@@ -3171,7 +3171,7 @@ onBeforeUnmount(() => {
 }
 /* 暗色底同主题色点阵，略提高一点点可见度；亮色保持白底。 */
 :global(:root:not([data-theme="light"])) .board-surface {
-  --board-dot: color-mix(in srgb, var(--accent) 12%, transparent);
+  --board-dot: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 /*
  * 尺寸拖动中：关掉卡片的几何过渡（left / top / width / height）。
