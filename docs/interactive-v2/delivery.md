@@ -45,14 +45,14 @@
 - 提示词固定文案集中在 `backend/src/agent/prompts.py` 的指定键。
 
 ### 保留占位/已知缺口
-- 组缩放后重叠只如实提示；没有覆盖所有路径的自动避让；卡片拖动仍保留既有成组语义。
+- 组缩放后会对组本身做确定性最小平移避让；卡片拖动仍保留既有成组语义，极端重叠只如实提示。
 - 自动重试有 Turn 收尾调度；启动恢复会释放上一进程遗留的 claiming/active，并重新受理 pending 自动重试（每次启动最多 10 个系列）。重启恢复已补，但真实进程崩溃/多实例边界仍未做端到端压测。
-- 任意互动 Turn 收尾都可能调度整板 pending 重试（需限制边界）；成功但未 completed 的 Turn 可能使 retry 系列停在 running。
-- 旧 IntentBatchTray/IntentStatusPopover 仍挂旧链，与新 IntentLayer 同页并存；暂停/继续/取消新链未全部迁移。
+- 自动重试调度已限定本轮 intent_ids；Turn 正常结束但意图未 completed 时，failed/partial 记失败、paused/cancelled 停止系列、不留下 running。启动恢复已补。
+- 旧 IntentBatchTray/IntentStatusPopover 在新链 IntentView 存在时让位给 IntentLayer，仅保留旧链兼容展示；旧 IntentWorkbench 仍可打开用于兼容/账本查看。暂停/继续/取消的新链完整迁移仍建议后续单独收口。
 - DemoIntentEntry 未挂载（按任务书演示状态不属于生产功能）。
 - 320px 输入胶囊偏窄；页面无结构横向滚动，板面内容按画布裁切/平移。
 - 待审批/失败/重试/部分完成的真实 UI 链路主要靠定向测试，无完整真实数据截图。
-- 桌面 Tauri 已启动并确认栏/窗口按钮存在；引导弹窗遮挡下的主界面未作为视觉通过证据，实机最终验收仍建议单列。
+- Tauri 已用关闭引导后的 1200×800 实机截图验证共用栏、窗口按钮、板面/工具栏/模式切换（见 `i2-tauri-final.png`）；真实模型界面级执行仍未跑。
 
 ## 3. 验证
 - 前端全量：`npx vitest run` → **436 files / 4072 tests passed**（最终 UI 轮）。
@@ -81,5 +81,6 @@
 ## 7. 交付状态
 - 最终集成分支 HEAD：`git rev-parse HEAD`（见最终回复）。
 - 未合并、未打包、未发布。
-- 完整后端全量已通过（最终 code SHA 之前一轮 `d4109e71`，exit 0）。
-- 第一次完整 CI run 40033918863 已全部成功（SHA 64ef4e50）；当前代码又包含组缩放避让/旧托盘让位/重试收尾修复，需在最终 SHA 上跑第二次完整 CI 后才能称为最终验收。
+- 完整后端全量已通过（最新 code SHA `d4109e71`，exit 0）。
+- 最终完整 CI：**run 40041195250 全部 job 成功**（SHA `627d0670`）——docs / install e2e / frontend / backend py3.11 / py3.12 / windows / rust Ubuntu+Windows / frozen worker / dedup 全部 success。
+- 对比：上一轮 CI run 40033918863 也成功（SHA `64ef4e50`），最终代码在其上补了组缩放避让、旧托盘让位、重试收尾。
