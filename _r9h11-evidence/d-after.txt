@@ -1,0 +1,110 @@
+R9-H11 D 集成后复跑绿证据（独立跨路径验收）
+====================================================
+
+- 日期：2026-10-25
+- 验收分支/worktree：r9h11/d / D:\qio-dev\qio-r9h11-d
+- 被验收集成：r9h11/main / D:\qio-dev\qio-r9h11-main
+- 最终集成 HEAD：3215f2ca02f613ca03e02a0d65e124bb317afa78
+  （含 A/B/C 合并；D 测试于 a4ba8229 合入 main）
+- 测试文件：backend/tests/test_r9h11_regressions.py
+  * git blob：ccae759bd0b28082f3a65916f63b7d405586d2dd（r9h11/main 与 r9h11/d 同 blob，内容一致）
+  * 内容 SHA256（LF，r9h11/d）：8B3B6AF532622CA70158861E064FE8DC6A23E6317F1473DB95E6B81A4B78E327
+  * main 工作区 SHA256（CRLF 检出）：6A9595E1407F93BEE42FE22792653FF2181E508B35DB23821721144FC050DD4B
+- 基线证据：_r9h11-evidence/d-baseline.txt（commit 168b7f55，基线 80b06308：3 passed / 15 failed）
+- 平台：win32 / Python 3.11.15 / pytest 9.1.1 / 真实硬链接可用 / 身份能力 win:creation（birth_strong=true）
+- 模型：全程 fake/mock，不联网；真实临时程序、真实 PATH、真实 SQLite 台账、真实审批服务
+
+定向命令（只读复跑，不在 main 工作区写 __pycache__/.pytest_cache）
+------------------------------------------------------------------
+cd D:\qio-dev\qio-r9h11-main\backend
+$env:PYTHONDONTWRITEBYTECODE='1'
+& .\.venv\Scripts\python.exe -m pytest tests/test_r9h11_regressions.py -v -o addopts="" -p no:cacheprovider -p no:logging --show-capture=no --tb=short
+
+结果：PYTEST_EXIT=0，18 passed in 10.55s（18/18，无 skip、无 error、无 xfail）
+另以默认 addopts（pyproject 的 -q）复跑一次：18 个点全绿、exit 0。
+
+18 个用例逐项 PASSED（上述命令原样输出）
+----------------------------------------
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- D:\qio-dev\qio-r9h11-main\backend\.venv\Scripts\python.exe
+rootdir: D:\qio-dev\qio-r9h11-main\backend
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 18 items
+
+tests/test_r9h11_regressions.py::test_p1_unbound_name_entry_denied_before_launch PASSED [  5%]
+tests/test_r9h11_regressions.py::test_p1_unbound_absolute_path_denied_before_launch PASSED [ 11%]
+tests/test_r9h11_regressions.py::test_p1_unbound_read_and_summary_denied_before_any_read PASSED [ 16%]
+tests/test_r9h11_regressions.py::test_p1_unbound_json_unchanged_after_env_change_and_reopen PASSED [ 22%]
+tests/test_r9h11_regressions.py::test_p1_unbound_approval_recovery_does_not_launch PASSED [ 27%]
+tests/test_r9h11_regressions.py::test_p1_unbound_does_not_block_other_operations_entries_or_objects PASSED [ 33%]
+tests/test_r9h11_regressions.py::test_p2_read_limit_hardlink_protected_after_original_path_replaced PASSED [ 38%]
+tests/test_r9h11_regressions.py::test_p2_write_limit_hardlink_protected_after_original_path_replaced PASSED [ 44%]
+tests/test_r9h11_regressions.py::test_p2_delete_limit_hardlink_protected_after_original_path_replaced PASSED [ 50%]
+tests/test_r9h11_regressions.py::test_p2_execute_limit_hardlink_and_invalidated_path_stopped_before_launch PASSED [ 55%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[kept] PASSED [ 61%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[deleted] PASSED [ 66%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[moved] PASSED [ 72%]
+tests/test_r9h11_regressions.py::test_p3_real_delete_recreate_new_object_denied_before_launch PASSED [ 77%]
+tests/test_r9h11_regressions.py::test_p3_number_reuse_same_identity_different_lifecycle_denied_before_start PASSED [ 83%]
+tests/test_r9h11_regressions.py::test_p3_old_hardlink_still_protected_after_number_reuse PASSED [ 88%]
+tests/test_r9h11_regressions.py::test_p3_lifecycle_unverifiable_denied_before_start PASSED [ 94%]
+tests/test_r9h11_regressions.py::test_p3_identity_unavailable_denied_before_start PASSED [100%]
+
+============================= 18 passed in 10.55s =============================
+
+与基线红逐项对应（基线 15 failed → 集成后 15 passed；基线 3 passed guard → 仍 passed）
+----------------------------------------------------------------------------------
+1) 问题一（历史无绑定 program_name 的绝对路径/读取/审批恢复绕过）
+   - test_p1_unbound_name_entry_denied_before_launch：RED→GREEN
+     名称入口 DENY 且 decision_code=program_name_requires_object_binding；0 次子进程、无 pending 审批、无 marker。
+   - test_p1_unbound_absolute_path_denied_before_launch：RED→GREEN
+     绝对路径执行启动前停止；0 次子进程、无 marker、原因指向对象未绑定/绑定。
+   - test_p1_unbound_read_and_summary_denied_before_any_read：RED→GREEN
+     读取正文/覆盖前摘要在读取前拒绝；读取次数 0（正文未被读取）。
+   - test_p1_unbound_json_unchanged_after_env_change_and_reopen：基线即 PASS，集成后仍 PASS
+     PATH 变化 + 关库重开后历史原始 JSON 逐字节不变，不补建绑定（保留语义 guard）。
+   - test_p1_unbound_approval_recovery_does_not_launch：RED→GREEN
+     审批恢复路径（authorize_started→recheck_approved）消费同一 assessment：state=failed/invalidated、0 次启动、无 marker。
+   - test_p1_unbound_does_not_block_other_operations_entries_or_objects：基线即 PASS，集成后仍 PASS
+     操作范围外读取、不同入口名、另一目录同名对象全部放行并真实执行（不过度阻塞 guard）。
+2) 问题二（原路径被替换后旧对象硬链接的文件操作保护）
+   - test_p2_read_limit_hardlink_protected_after_original_path_replaced：RED→GREEN
+     旧硬链接读取拒绝且 0 次正文读取；原路径新对象 DENY + decision_code=program_binding_invalidated；
+     同内容复制件/无关文件 ALLOW。
+   - test_p2_write_limit_hardlink_protected_after_original_path_replaced：RED→GREEN
+     旧硬链接写入拒绝且内容不变；原路径新对象失效拒绝；复制件/无关文件 ALLOW。
+   - test_p2_delete_limit_hardlink_protected_after_original_path_replaced：RED→GREEN
+     旧硬链接删除拒绝且文件保留；原路径新对象失效拒绝；无关文件删除允许（真实移入测试替身回收目录）。
+   - test_p2_execute_limit_hardlink_and_invalidated_path_stopped_before_launch：RED→GREEN
+     旧硬链接/原路径新对象执行均启动前停止（0 子进程、无 marker、非启动后失败）；复制件/无关程序 ALLOW。
+   - test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[kept]：基线即 PASS，仍 PASS。
+   - ...[deleted]/[moved]：RED→GREEN（原路径删除/移动后旧别名仍按保存的绑定身份受保护，0 次读取）。
+3) 问题三（编号复用/生命周期变化）
+   - test_p3_real_delete_recreate_new_object_denied_before_launch：RED→GREEN
+     真实删除+原路径重建（本机实测 identity 变化）：启动前停止（0 子进程/无 marker）+ decision_code=program_binding_invalidated。
+   - test_p3_number_reuse_same_identity_different_lifecycle_denied_before_start：RED→GREEN（模拟）
+     同 identity/不同 birth：读取 0 次、执行 0 次启动、DENY + program_binding_invalidated。
+   - test_p3_old_hardlink_still_protected_after_number_reuse：RED→GREEN（模拟）
+     编号复用后旧对象仍经真实硬链接引用：旧别名读取 0 次、执行 0 次启动且 MATCH 拒绝；原路径新对象 invalidated。
+   - test_p3_lifecycle_unverifiable_denied_before_start：RED→GREEN（模拟）
+     保存有生命周期、当前同编号但 birth 取不到 → DENY + object_state_unconfirmed，0 次启动。
+   - test_p3_identity_unavailable_denied_before_start：RED→GREEN（模拟）
+     候选身份不可读 → DENY + object_state_unconfirmed，0 次启动。
+
+真实/模拟边界（如实标注）
+------------------------
+- 真实：临时程序文件（Windows 复制 cmd.exe / POSIX 复制 sh，均为可真实启动的系统程序）、真实 PATH、
+  真实 SQLite 台账、真实审批服务、真实硬链接、真实文件替换/删除/移动、真实子进程启动计数、真实回收站替身。
+- 模拟：本机无法稳定复现操作系统 file_id 复用（基线探测：删除 40 个文件后重建 40 个，新旧 file_id 交集 0；
+  单文件删除重建 identity 亦变化），故「同 identity 不同 birth（编号复用）/生命周期缺失/身份不可读」
+  通过替换身份提供器边界 agent.services.file_identity.identity_of 注入事实；文件本体真实存在，
+  用例 docstring 以「模拟」开头，与真实验证分开。
+- 集成后模拟分支注入仍生效（A 的 object_state 与 EngineIdentity 均按模块属性调用 file_identity.identity_of）。
+
+集成后工作区影响
+----------------
+- 复跑使用 PYTHONDONTWRITEBYTECODE=1 且 -p no:cacheprovider：未在 r9h11/main 新建 __pycache__/.pytest_cache
+  （工作区仅保留 Lead 原有的未跟踪 backend/_lead-wide-log.txt，未改动）。
+- 本文件为证据提交；不修改任何产品代码/测试代码。
