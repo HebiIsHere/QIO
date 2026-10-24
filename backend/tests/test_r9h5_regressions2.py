@@ -378,9 +378,28 @@ async def test_program_limit_path_does_not_expand_to_same_name(db_conn, tmp_path
     name_binding = security.requirements.binding_for(name_requirement.requirement_id)
     with requirement_context(name_binding):
         by_name = await security.engine.authorize(effect_for(program_b))
-    # R9-H7 §1：program_name 不再由执行层按目标路径/名称主体猜范围；没有真实
-    # 调用入口事实时不能据此直接拒绝无关程序（历史来源由恢复/具体确认处理）。
-    assert by_name.verdict == Verdict.ALLOW, "无入口事实时 program_name 不能直接决定拒绝"
+    # R9-H11 问题一（按新语义修正旧断言）：program_name 没有保存对象、也没有
+    # 可靠依据证明本次对象无关时，不能把“没有入口事实”当成无关放行；必须先
+    # 恢复/澄清对象（普通批准不能解除）。旧断言 ALLOW 正是本次要修掉的绕过。
+    assert by_name.verdict == Verdict.DENY, "无对象依据时 program_name 不能静默放行"
+    assert (
+        "程序名称" in by_name.reason
+        or "绑定" in by_name.reason
+        or "对象" in by_name.reason
+    ), by_name.reason
+    # 相邻的“应继续”案例：不同裸入口名是不同来源，可靠无关，仍按模式继续。
+    unrelated_entry = Effect(
+        kind=EffectKind.EXECUTE,
+        targets=(Target("program", str(program_b)),),
+        purpose="运行无关入口",
+        detail={
+            "requested_program": "other-tool",
+            "execution": {"program": "other-tool"},
+        },
+    )
+    with requirement_context(name_binding):
+        other_entry = await security.engine.authorize(unrelated_entry)
+    assert other_entry.verdict == Verdict.ALLOW, other_entry.reason
 
     link = tmp_path / "alias-tool"
     try:

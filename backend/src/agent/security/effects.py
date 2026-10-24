@@ -73,6 +73,9 @@ class Verdict(str, Enum):
 #: 结构化决策码（授权行为只认它，不解析中文 reason）。
 DECISION_UNRESOLVED_LIMITS = "unresolved_limits_requires_confirmation"
 DECISION_PROGRAM_NAME_UNRESOLVED = "program_name_requires_object_binding"
+#: R9-H11：共同对象判定结论码（绑定失效 / 事实不足无法确认）。
+DECISION_BINDING_INVALIDATED = "program_binding_invalidated"
+DECISION_OBJECT_UNCONFIRMED = "object_state_unconfirmed"
 
 
 @dataclass(frozen=True)
@@ -88,3 +91,6 @@ class AuthDecision:
     #: R9-H5 §5：结构化决策码；调用方只能据此判断“本次具体批准可否完成”，
     #: 不得用 reason 文本、语言或关键词推断权限。
     decision_code: str | None = None
+    #: R9-H11：共同对象判定的结构化依据（state/basis/operation/object/facts）。
+    #: 原因文字只用于说明；调用方/审计/测试按 state 判断“无关/未绑定/失效/无法确认”。
+    object_decisions: tuple[dict, ...] = ()
