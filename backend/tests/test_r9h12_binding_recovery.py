@@ -529,7 +529,14 @@ def test_verify_recovered_bindings_detects_path_replacement(tmp_path):
     invalid = requirement_limits.verify_recovered_bindings(outcome.limits)
 
     assert invalid, "原路径对象被替换后重新核验必须失败"
-    assert invalid[0]["failure"] == "binding_identity_mismatch"
+    # 平台差异：tmpfs/部分文件系统会复用 file_id —— 删除重建后 identity 相同、
+    # 生命周期(birth)不同，给出 binding_lifecycle_mismatch；另一些平台/时机给出
+    # binding_identity_mismatch。两者都是“原对象已被替换”的结构化失败依据，
+    # 断言仍要求重新核验失败且失败原因属于这两类（不放宽为任意原因）。
+    assert invalid[0]["failure"] in (
+        "binding_identity_mismatch",
+        "binding_lifecycle_mismatch",
+    ), invalid[0]
 
 
 # --------------------------------------------------------------------------
