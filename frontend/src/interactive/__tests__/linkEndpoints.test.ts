@@ -25,6 +25,7 @@ import {
   endpointInVisibleRange,
   endpointKey,
   endpointValue,
+  groupEdgeAnchors,
   groupEndpoint,
   groupOverviewSlots,
   groupResizeHandles,
@@ -389,6 +390,65 @@ describe("显示层：真实端点身份不变，显示锚点可汇聚", () => {
     // 组内 a→b 在收起时被跳过，l2 是唯一画出来的线
     expect(buildDisplayLinks(input).links).toHaveLength(1);
     expect(buildDisplayLinks(input).links[0].active).toBe(true);
+  });
+});
+
+describe("组端点锚点：只画被关系实际使用的边缘位置", () => {
+  const base = { cards, groups };
+
+  it("组端点关系只产生一个锚点，位置与线端点一致（不是四条边各一个端口）", () => {
+    const anchors = groupEdgeAnchors({ ...base, links: [mkLink("l2", "group:g1", "c")] });
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toMatchObject({
+      groupId: "g1",
+      endpoint: "group:g1",
+      groupName: "发布计划",
+      side: "bottom",
+      linkIds: ["l2"],
+    });
+    // 组框 80..440 x 40..200；c 中心 (160,440) → 下边缘 x=235,y=200
+    expect(anchors[0].x).toBeCloseTo(235, 6);
+    expect(anchors[0].y).toBe(200);
+  });
+
+  it("不同方向的关系各留各的锚点；没有组端点关系时一个都不出现", () => {
+    const anchors = groupEdgeAnchors({
+      ...base,
+      links: [mkLink("l2", "group:g1", "c"), mkLink("l3", "group:g1", "excluded")],
+    });
+    expect(anchors.map((item) => [item.side, item.linkIds])).toEqual([
+      ["bottom", ["l2"]],
+      ["right", ["l3"]],
+    ]);
+    expect(anchors[1].x).toBe(440); // 组框右边
+
+    const cardOnly = groupEdgeAnchors({ ...base, links: [mkLink("l1", "a", "b")] });
+    expect(cardOnly).toEqual([]);
+    const missingGroup = groupEdgeAnchors({ ...base, links: [mkLink("gone", "group:g2", "c")] });
+    expect(missingGroup).toEqual([]);
+  });
+
+  it("组收起时成员线的汇聚不是组端点：不凭空长组锚点，真实身份仍是成员卡", () => {
+    const folded = groupEdgeAnchors({
+      ...base,
+      links: [mkLink("l3", "a", "c")],
+      foldedGroupIds: ["g1"],
+    });
+    expect(folded).toEqual([]);
+    const display = buildDisplayLinks({
+      ...base,
+      links: [mkLink("l3", "a", "c")],
+      foldedGroupIds: ["g1"],
+    });
+    expect(display.links[0]).toMatchObject({ src: "a", displaySrcId: "group:g1", aggregatedSrc: true });
+  });
+
+  it("组端点的锚点仍保留 curve 字段与既有几何（锚点不另算一套线）", () => {
+    const curve = { x: 18, y: -12 };
+    const anchors = groupEdgeAnchors({ ...base, links: [mkLink("l2", "group:g1", "c", { curve })] });
+    const display = buildDisplayLinks({ ...base, links: [mkLink("l2", "group:g1", "c", { curve })] });
+    expect(display.links[0].curve).toEqual(curve);
+    expect({ x: anchors[0].x, y: anchors[0].y }).toEqual({ x: display.links[0].x1, y: display.links[0].y1 });
   });
 });
 

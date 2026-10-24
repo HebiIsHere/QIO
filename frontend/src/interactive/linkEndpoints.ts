@@ -372,6 +372,108 @@ export function linkAnchor(a: BoardRect, b: BoardRect): { start: Point; end: Poi
   return { start: edgeAnchor(a, rectCenter(b)), end: edgeAnchor(b, rectCenter(a)) };
 }
 
+// --- 组端点锚点：只用关系实际用到的那些边缘位置 -----------------------------
+
+export type GroupAnchorSide = "top" | "right" | "bottom" | "left";
+
+/**
+ * 组作为**真实端点**时，关系线在组框边缘留下的锚点。
+ *
+ * 这里刻意不提供「四条边各一个端口」：只有真的被关系使用的边缘位置才出现。
+ * 锚点坐标与 {@link buildDisplayLinks} 的线端点逐字段相同，所以视觉圆点、
+ * 线的起止、命中目标永远在同一处；曲线与 curve 字段不受影响。
+ *
+ * 组收起后成员对外线的汇聚点不算组端点（真实端点仍是成员卡），因此不会
+ * 在这里凭空长出一个组锚点；成员卡自己的连接点仍由卡片端点层表示。
+ */
+export interface GroupAnchor {
+  groupId: string;
+  /** 组端点字符串：group:<id>（与关系的 src/dst 同一口径）。 */
+  endpoint: string;
+  groupName: string;
+  side: GroupAnchorSide;
+  /** 板面坐标：精确落在线与组框边缘的交点上。 */
+  x: number;
+  y: number;
+  /** 使用这个锚点的关系 id（同一位置的多条关系合并为一个锚点）。 */
+  linkIds: string[];
+}
+
+/** 点在矩形哪条边上；角点按「朝另一端的主要方向」判，保证结果确定。 */
+function groupAnchorSideOf(rect: BoardRect, point: Point, other: Point): GroupAnchorSide {
+  const epsilon = 0.75;
+  const onLeft = Math.abs(point.x - rect.x) <= epsilon;
+  const onRight = Math.abs(point.x - (rect.x + rect.w)) <= epsilon;
+  const onTop = Math.abs(point.y - rect.y) <= epsilon;
+  const onBottom = Math.abs(point.y - (rect.y + rect.h)) <= epsilon;
+  const horizontal: GroupAnchorSide | null = onLeft ? "left" : onRight ? "right" : null;
+  const vertical: GroupAnchorSide | null = onTop ? "top" : onBottom ? "bottom" : null;
+  if (horizontal && vertical) {
+    const dx = other.x - (rect.x + rect.w / 2);
+    const dy = other.y - (rect.y + rect.h / 2);
+    return Math.abs(dx) >= Math.abs(dy) ? horizontal : vertical;
+  }
+  if (horizontal) return horizontal;
+  if (vertical) return vertical;
+  // 兜底：取最近的一条边（只在浮点误差让四条边都不满足 epsilon 时走到）。
+  const distances: Array<{ side: GroupAnchorSide; distance: number }> = [
+    { side: "left", distance: Math.abs(point.x - rect.x) },
+    { side: "right", distance: Math.abs(point.x - (rect.x + rect.w)) },
+    { side: "top", distance: Math.abs(point.y - rect.y) },
+    { side: "bottom", distance: Math.abs(point.y - (rect.y + rect.h)) },
+  ];
+  distances.sort((a, b) => a.distance - b.distance);
+  return distances[0].side;
+}
+
+/**
+ * 从显示层关系里提取组端点锚点。
+ *
+ * - 只看**真实组端点**（srcKind/dstKind = group）；组收起时成员线汇聚到组边，
+ *   但那是显示汇聚，不是组端点，不产生锚点。
+ * - 同一组同一位置的多条关系合并成一个锚点（linkIds 保持关系出现顺序）。
+ * - 位置与 buildDisplayLinks 的输出完全一致，不另算一套几何。
+ */
+export function groupEdgeAnchors(input: DisplayLinksInput): GroupAnchor[] {
+  const groups = input.groups ?? [];
+  const anchors = new Map<string, GroupAnchor>();
+
+  const add = (link: DisplayLink, end: "src" | "dst"): void => {
+    const endpoint = end === "src" ? link.src : link.dst;
+    const kind = end === "src" ? link.srcKind : link.dstKind;
+    const aggregated = end === "src" ? link.aggregatedSrc : link.aggregatedDst;
+    if (kind !== "group" || aggregated) return;
+    const groupId = endpoint.slice(GROUP_ENDPOINT_PREFIX.length);
+    const group = groups.find((item) => item.id === groupId && !item.deleted);
+    if (!group) return;
+    const point: Point = end === "src" ? { x: link.x1, y: link.y1 } : { x: link.x2, y: link.y2 };
+    const other: Point = end === "src" ? { x: link.x2, y: link.y2 } : { x: link.x1, y: link.y1 };
+    const side = groupAnchorSideOf(groupRectOf(group), point, other);
+    const key = [groupId, Math.round(point.x * 10), Math.round(point.y * 10)].join("\u0000");
+    const existing = anchors.get(key);
+    if (existing) {
+      if (!existing.linkIds.includes(link.id)) existing.linkIds.push(link.id);
+      return;
+    }
+    anchors.set(key, {
+      groupId,
+      endpoint: GROUP_ENDPOINT_PREFIX + groupId,
+      groupName: group.name || "未命名组",
+      side,
+      x: point.x,
+      y: point.y,
+      linkIds: [link.id],
+    });
+  };
+
+  const display = buildDisplayLinks(input);
+  for (const link of display.links) {
+    add(link, "src");
+    add(link, "dst");
+  }
+  return [...anchors.values()];
+}
+
 // --- 组框缩放把手 -----------------------------------------------------------
 
 /** 组的缩放把手：右 / 下 / 右下（组框左上角由成员推出，因此只开放这三条边）。 */

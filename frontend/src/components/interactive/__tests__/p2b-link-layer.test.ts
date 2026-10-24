@@ -217,6 +217,36 @@ describe("拖线预览（目标可以是卡片或组）", () => {
     expect(draft.find(".draft-target").exists()).toBe(true);
   });
 
+  it("目标是卡片：浮标明确写「连接到卡片」，不是组", () => {
+    const frame = mountLayer({
+      draftFromId: "a",
+      draftPoint: { x: 400, y: 140 },
+      draftTargetId: "b",
+    });
+    const badge = frame.get('[data-im="link-target-badge"]');
+    expect(badge.attributes("data-target-kind")).toBe("card");
+    expect(badge.attributes("data-target")).toBe("b");
+    expect(badge.text()).toBe("连接到卡片");
+  });
+
+  it("目标是组：浮标明确写「连接到组」，不自动改写成成员卡", () => {
+    const frame = mountLayer({
+      draftFromId: "a",
+      draftPoint: { x: 300, y: 120 },
+      draftTargetId: "group:g1",
+    });
+    const badge = frame.get('[data-im="link-target-badge"]');
+    expect(badge.attributes("data-target-kind")).toBe("group");
+    expect(badge.attributes("data-target")).toBe("group:g1");
+    expect(badge.text()).toBe("连接到组");
+  });
+
+  it("没有有效目标时不出浮标（只说拖到卡片或组）", () => {
+    const frame = mountLayer({ draftFromId: "a", draftPoint: { x: 500, y: 140 } });
+    expect(frame.find('[data-im="link-target-badge"]').exists()).toBe(false);
+    expect(frame.get('[data-im="link-draft"]').text()).toContain("卡片或一个组");
+  });
+
   it("从组拖线：起点在组边缘；目标卡片同样有效", () => {
     const frame = mountLayer({
       draftFromId: "group:g1",

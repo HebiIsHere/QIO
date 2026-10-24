@@ -101,6 +101,9 @@ import {
   GROUP_HEADER_HEIGHT,
   GROUP_PAD_BOTTOM,
   GROUP_PAD_X,
+  groupEdgeAnchors,
+  parseEndpoint,
+  type GroupAnchor,
 } from "../../interactive/linkEndpoints";
 import { publishBoardScale } from "../../interactive/submission";
 import { useResizeGesture } from "../../composables/useResizeGesture";
@@ -111,6 +114,7 @@ import { titlebarHeight } from "../../utils/titlebar";
 import type { BoardCard as BoardCardModel, BoardGroup, BoardState, CardKind, Intent } from "../../interactive/types";
 import BoardCard from "./BoardCard.vue";
 import BoardGroupFrame from "./BoardGroupFrame.vue";
+import BoardGroupAnchorLayer from "./BoardGroupAnchorLayer.vue";
 import BoardLinkLayer from "./BoardLinkLayer.vue";
 import BoardPreviewLayer from "./BoardPreviewLayer.vue";
 import BoardResizeLayer from "./BoardResizeLayer.vue";
@@ -216,7 +220,24 @@ const spaceDown = ref(false);
 const editingLinkId = ref<string | null>(null);
 const linkMeaning = ref("");
 const linkDirection = ref(false);
+/** 指针悬停的组（纯显示）：只让该组的已有锚点从圆点变短条。 */
+const hoveredGroupId = ref<string | null>(null);
 const notice = ref("");
+
+/**
+ * 拖线目标按**端点类型**拆开：卡片给卡片高亮 / 「连接到卡片」，
+ * 组给组框高亮 / 「连接到组」。这里只读 linkDraft.targetId，
+ * 不把组里的卡片目标升级成组，也不反过来降级。
+ */
+const linkTarget = computed(() => {
+  const raw = linkDraft.value?.targetId ?? "";
+  const parsed = parseEndpoint(raw);
+  if (!parsed.ok) return { kind: null as "card" | "group" | null, cardId: null as string | null, groupId: null as string | null };
+  if (parsed.endpoint.kind === "group") {
+    return { kind: "group" as const, cardId: null, groupId: parsed.endpoint.id };
+  }
+  return { kind: "card" as const, cardId: parsed.endpoint.id, groupId: null };
+});
 /**
  * 板面操作提示**不常驻**（2026-10-14 修）。
  *
@@ -689,16 +710,35 @@ const displayGroups = computed<BoardGroup[]>(() => {
     const top = Math.min(...members.map((card) => card.y)) - padTop;
     const right = Math.max(...members.map((card) => card.x + card.w)) + padRight;
     const bottom = Math.max(...members.map((card) => card.y + card.h)) + padBottom;
+    const collapsed = collapsedGroupSet.value.has(group.id);
     if (left === group.x && top === group.y && right === group.x + group.w && bottom === group.y + group.h) {
-      return group;
+      // 收起组即使成员没动过，也要把显示外框压成紧凑框：连线 / 锚点 / 命中
+      // 必须和 BoardGroupFrame 的 120px 外框读同一份几何（存储几何保持不变）。
+      return collapsed ? { ...group, h: Math.min(120, Math.max(56, group.h)) } : group;
     }
     const display = { ...group, x: left, y: top, w: Math.max(1, right - left), h: Math.max(1, bottom - top) };
     // 收起组：显示外框压成标题 + 一行概览，连线/命中读同一份紧凑框；存储的组几何不变。
-    return collapsedGroupSet.value.has(group.id)
+    return collapsed
       ? { ...display, h: Math.min(120, Math.max(56, display.h)) }
       : display;
   });
 });
+
+/**
+ * 组端点锚点：只保留**真实组端点**用到的边缘位置（组收起时的成员汇聚不算）。
+ * 几何直接复用 buildDisplayLinks 的输出，因此锚点与线端点逐字段一致；
+ * 没有组端点关系时返回空数组 —— 组框上不会常驻四个端口。
+ */
+const groupAnchors = computed<GroupAnchor[]>(() =>
+  groupEdgeAnchors({
+    links: links.value,
+    cards: displayCards.value,
+    groups: displayGroups.value,
+    foldedGroupIds: foldedGroupIds.value,
+    includedCardIds: includedCardIds.value,
+    onlyInRange: false,
+  }),
+);
 
 function commit(next: BoardState, label: string) {
   store.commit(next, label);
@@ -948,6 +988,7 @@ function releaseGestures(): void {
   panning.value = null;
   rectSelect.value = null;
   resizing.value = null;
+  hoveredGroupId.value = null;
   releaseGroupGestures();
   // 尺寸手势自带 document / window 监听：必须走它自己的取消入口，不能只清显示
   resizeGesture.cancel();
@@ -2564,23 +2605,67 @@ function hitGroupAt(point: { x: number; y: number }, excludeEndpoint: string | n
   return null;
 }
 
-/** 拖线落点：先卡片（更具体），再组框；返回裸卡片 id 或 group:<id>。 */
+/** 拖线起点所在的组：起点是组端点就直接取组 id，是卡片就按成员关系找。 */
+function groupIdOfEndpoint(endpoint: string | null): string | null {
+  if (!endpoint) return null;
+  const parsed = parseEndpoint(endpoint);
+  if (parsed.ok) {
+    return parsed.endpoint.kind === "group" ? parsed.endpoint.id : groupIdOf(parsed.endpoint.id);
+  }
+  return groupIdOf(endpoint);
+}
+
+/**
+ * 拖线落点：**先卡片（更具体），再组框**；返回裸卡片 id 或 group:<id>。
+ *
+ * 这就是「不自动升级」的入口：指针在组内成员卡上时命中卡片，即使组框也在指针下面，
+ * 目标仍然是那张卡；只有指针落在组框标题 / 空白（没有卡片）时才命中组。
+ */
 function hitEndpointAt(point: { x: number; y: number }, fromId: string | null): string | null {
   const card = hitCardAt(point, fromId);
   if (card) return card;
-  const fromGroup = fromId ? groupIdOf(fromId) : null;
+  const fromGroup = groupIdOfEndpoint(fromId);
   const ownGroup = fromGroup ? GROUP_ENDPOINT_PREFIX + fromGroup : null;
   return hitGroupAt(point, ownGroup);
 }
 
-function onConnectStart(cardId: string, event: PointerEvent) {
+/** 指针悬停在组框上（纯显示）：组已有锚点因此可以从圆点变短条。 */
+function onBoardHoverMove(event: PointerEvent): void {
+  // 没有任何「被关系使用的组锚点」时，悬停状态没有可见效果，不必逐帧做命中测试。
+  if (!groupAnchors.value.length) {
+    hoveredGroupId.value = null;
+    return;
+  }
+  if (dragging.value || panning.value || rectSelect.value || resizing.value || groupDrag.value || groupResize.value || linkDraft.value) {
+    return;
+  }
+  const point = boardPointOf(event);
+  // 指针在卡片上时不算悬停组：卡片是更具体的对象。
+  if (hitCardAt(point, null)) {
+    hoveredGroupId.value = null;
+    return;
+  }
+  const endpoint = hitGroupAt(point, null);
+  hoveredGroupId.value = endpoint ? endpoint.slice(GROUP_ENDPOINT_PREFIX.length) : null;
+}
+
+function onBoardHoverLeave(): void {
+  hoveredGroupId.value = null;
+}
+
+/** 从组锚点开始拖线：起点身份就是 group:<id>，不是成员卡。 */
+function onGroupAnchorDown(anchor: GroupAnchor, event: PointerEvent): void {
+  onConnectStart(anchor.endpoint, event);
+}
+
+function onConnectStart(fromId: string, event: PointerEvent) {
   event.preventDefault();
   /**
    * 同一指针只驱动一种手势（0.2.5 §三.6）：从连接点开始拖线时，把可能残留的卡片拖动 /
    * 平移 / 框选 / **尺寸调整** 全部清掉 —— 拖线过程中不移动、不拉伸、不成组。
    */
   releaseGestures();
-  linkDraft.value = { fromId: cardId, point: boardPointOf(event), targetId: null };
+  linkDraft.value = { fromId, point: boardPointOf(event), targetId: null };
   notice.value = "从连接点拖到另一张卡片或一个组上建立关系；拖到无效位置或取消不会建立任何链接。";
   attachPointerListeners();
 }
@@ -2935,12 +3020,14 @@ onBeforeUnmount(() => {
         v-qio-scrollbar="'hidden'"
         :class="{ dragging: Boolean(dragging), panning: Boolean(panning), framing: Boolean(rectSelect) }"
         @pointerdown="onSurfacePointerDown"
+        @pointermove="onBoardHoverMove"
+        @pointerleave="onBoardHoverLeave"
       >
         <div class="board-scroll-content" :style="contentStyle">
           <div
             ref="surface"
             class="board-surface"
-            :class="{ resizing: Boolean(resizing), dragging: Boolean(dragging) }"
+            :class="{ resizing: Boolean(resizing), dragging: Boolean(dragging), 'link-target-card': linkTarget.kind === 'card' }"
             :style="surfaceStyle"
           >
           <BoardGroupFrame
@@ -2954,6 +3041,7 @@ onBeforeUnmount(() => {
             :drop-index="dragging !== null && dragging.preview.groupId === group.id ? dragging.preview.index : null"
             :drop-card-id="dragging ? dragging.cardId : null"
             :collapsed="isGroupCollapsed(group.id)"
+            :link-target="linkTarget.kind === 'group' && linkTarget.groupId === group.id"
             @rename="onGroupRename"
             @toggle-ordered="onToggleOrdered"
             @dissolve="onDissolveGroup"
@@ -2977,7 +3065,7 @@ onBeforeUnmount(() => {
             :ref="cardRefFor(card.id)"
             :card="renderCard(card)"
             :selected="selection.includes(card.id)"
-            :highlight="highlightId === card.id"
+            :highlight="highlightId === card.id || (linkTarget.kind === 'card' && linkTarget.cardId === card.id)"
             :dragging="dragging !== null && dragging.cardId === card.id"
             :x="displayX(card)"
             :y="displayY(card)"
@@ -3027,6 +3115,18 @@ onBeforeUnmount(() => {
 
             <div v-if="rectSelect" class="select-rect" :style="rectStyle"></div>
           </div>
+
+          <!--
+            组端点锚点层：只画已经被关系使用的组边缘锚点（不常驻四个端口）。
+            与卡片连接点同一套「未缩放屏幕像素」定位，位置 = 板面锚点 × scale。
+          -->
+          <BoardGroupAnchorLayer
+            :anchors="groupAnchors"
+            :scale="scaleSafe"
+            :selected-group-ids="selectedGroupIds"
+            :hovered-group-id="hoveredGroupId"
+            @anchor-down="onGroupAnchorDown"
+          />
 
           <!--
             尺寸把手 + 关系连接点层：放在**未缩放**的滚动内容层里（不在 .board-surface 内部）。
@@ -3189,6 +3289,16 @@ onBeforeUnmount(() => {
 .board-surface.resizing :deep(.card) { transition: none; }
 /* 拖动中同样关掉几何过渡：位置预览必须逐帧跟手，不能有"追着指针跑"的滞后（A4）。 */
 .board-surface.dragging :deep(.card) { transition: none; }
+/*
+  拖线落到成员卡：卡片通过既有的 highlight 布尔 prop 拿到 .highlight 高亮类
+  （BoardCard 根节点是 article + Teleport 片段，class 不能可靠透传；不改卡片组件）。
+  这里只在「拖线目标是卡片」时把高亮改成品牌色，组内成员卡优先于组框。
+*/
+.board-surface.link-target-card :deep(.card.highlight) {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow-1);
+}
 .select-rect {
   position: absolute;
   border: 1px dashed var(--accent);

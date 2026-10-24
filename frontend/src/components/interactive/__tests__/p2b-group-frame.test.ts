@@ -115,6 +115,23 @@ describe("既有入口回归（展开态不受影响）", () => {
   });
 });
 
+describe("拖线目标：组框只加显示高亮", () => {
+  it("linkTarget 时组框加 link-target 类；默认没有，松手前后都不改数据", async () => {
+    const plain = mountFrame();
+    expect(plain.get('[data-im="group"]').classes()).not.toContain("link-target");
+    expect(plain.get('[data-im="group"]').attributes("data-link-target")).toBeUndefined();
+    plain.unmount();
+
+    wrapper = mountFrame({ linkTarget: true });
+    const frame = wrapper.get('[data-im="group"]');
+    expect(frame.classes()).toContain("link-target");
+    expect(frame.attributes("data-link-target")).toBe("group");
+    // 只是显示态：组名 / 成员 / 顺序一个字段都没变
+    const group = (wrapper.props() as { group: BoardGroup }).group;
+    expect(group).toMatchObject({ id: "g1", name: "发布计划", members: ["a", "b"] });
+  });
+});
+
 describe("组收起概览（固定成员槽位，只显示不代表执行顺序）", () => {
   it("收起后显示固定槽位概览：没有序号、没有成员管理面板，无障碍文案说明不代表顺序", () => {
     const frame = mountFrame({

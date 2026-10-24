@@ -305,6 +305,14 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   >
     <!-- 会话流：第一次展开才挂载，之后只隐藏 —— 收起不等于清空阅读位置与已渲染内容 -->
     <div v-if="openedOnce" v-show="expandedState" class="ic-stream" data-ic-stream :id="panelId">
+      <button
+        class="ic-close"
+        type="button"
+        data-ic-close
+        aria-label="收起对话"
+        title="收起对话"
+        @click="collapse"
+      >×</button>
       <MessageStream />
     </div>
 
@@ -359,8 +367,9 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
         <slot name="toolbar" />
       </div>
 
-      <!-- 输入区：始终挂载；收起只改变可见区域，不清草稿 / 附件 / 排队，也不停止回复 -->
-      <div class="ic-composer">
+      <!-- 输入区：始终挂载；收起只改变可见区域，不清草稿 / 附件 / 排队，也不停止回复。
+           点击 / 聚焦输入区时自动展开消息面板。 -->
+      <div class="ic-composer" @focusin="expand">
         <div class="ic-composer-row">
           <slot name="composer-leading" />
           <div class="ic-composer-input">
@@ -391,6 +400,7 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   min-height: 0;
 }
 .ic-stream {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -400,6 +410,28 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   border-radius: var(--r-lg);
   background: var(--bg-base);
 }
+/* 消息面板右上角圆形收起按钮：只收显示，不打断正在进行的回复。 */
+.ic-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 4;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ic-close:hover { color: var(--accent); border-color: var(--accent); }
 .ic-stream :deep(.empty) {
   padding: 0 var(--sp-3);
 }

@@ -135,6 +135,16 @@ describe("从输入区向上展开 / 收起", () => {
     expect(w.get('[data-ic-toggle]').attributes("aria-controls")).toBe(stream.attributes("id"));
   });
 
+  it("点击/聚焦输入区自动展开，右上角圆形按钮收起", async () => {
+    const { wrapper: w } = mountConversation();
+    await w.get(".ic-composer").trigger("focusin");
+    await nextTick();
+    expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("true");
+    expect(w.find('[data-ic-close]').exists()).toBe(true);
+    await w.get('[data-ic-close]').trigger("click");
+    expect(w.get('[data-ic="conversation"]').attributes("data-ic-expanded")).toBe("false");
+  });
+
   it("展开后再次收起：会话流隐藏但不卸载（阅读位置与已渲染内容保留）", async () => {
     const { wrapper: w } = mountConversation({ expanded: true });
     expect(w.find('[data-stub="stream"]').isVisible()).toBe(true);

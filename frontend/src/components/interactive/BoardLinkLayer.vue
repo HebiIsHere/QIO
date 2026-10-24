@@ -247,6 +247,22 @@ const draft = computed<DraftDisplay | null>(() => {
     targetRect: target ? expandedRect(target.rect, target.kind === "group" ? 2 : 4) : null,
   };
 });
+
+/**
+ * 目标浮标：明确写出「连接到卡片」还是「连接到组」。
+ *
+ * 目标判定本身由 BoardCanvas 先卡片、再组框（更具体的优先）；
+ * 这里只把那个结果翻译成用户能读的一句话，不重新判一次目标、不自动升级。
+ */
+const targetBadge = computed(() => {
+  const current = draft.value;
+  if (!current || !current.valid || !current.targetKind) return null;
+  const text = current.targetKind === "group" ? "连接到组" : "连接到卡片";
+  const w = text.length * 12 + 18;
+  const x = Math.max(6, Math.min(current.x2 + 12, props.width - w - 6));
+  const y = Math.max(6, current.y2 - 32);
+  return { text, w, x, y, kind: current.targetKind };
+});
 </script>
 
 <template>
@@ -358,6 +374,18 @@ const draft = computed<DraftDisplay | null>(() => {
         :height="draft.targetRect.h"
         rx="8"
       />
+      <!-- 浮标：目标到底是卡片还是组，不用用户猜 -->
+      <g
+        v-if="targetBadge"
+        class="link-target-badge"
+        data-im="link-target-badge"
+        :data-target-kind="targetBadge.kind"
+        :data-target="draft.targetId ?? ''"
+        :transform="'translate(' + targetBadge.x + ' ' + targetBadge.y + ')'"
+      >
+        <rect :width="targetBadge.w" height="22" rx="6" />
+        <text x="9" y="15">{{ targetBadge.text }}</text>
+      </g>
       <text class="draft-text" :x="draft.x2 + 10" :y="draft.y2 - 8">
         {{ draft.valid ? "松开后建立关系（方向与含义由你写明）" : "拖到卡片或一个组上才能建立关系" }}
       </text>
@@ -399,5 +427,13 @@ const draft = computed<DraftDisplay | null>(() => {
 .draft-line.valid { stroke: var(--accent); stroke-width: 2; }
 .draft-dot { fill: var(--accent); }
 .draft-target { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; }
+/* 目标浮标：深底浅字，跟着端点走；只说明目标类型，不代替用户写含义。 */
+.link-target-badge { pointer-events: none; }
+.link-target-badge rect { fill: var(--text-strong); }
+.link-target-badge text {
+  fill: var(--bg-base);
+  font-size: var(--fs-xs);
+  font-family: var(--sans);
+}
 .draft-text { fill: var(--text-secondary); font-size: var(--fs-xs); font-family: var(--sans); }
 </style>

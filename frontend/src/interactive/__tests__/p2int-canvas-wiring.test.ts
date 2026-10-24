@@ -243,6 +243,48 @@ describe("组收起：成员卡片隐藏、组框概览与连线层同步", () =
     expect(view.findAll('[data-im="card"]')).toHaveLength(2);
     expect(view.findComponent(BoardGroupFrame).props("collapsed")).toBe(false);
   });
+
+  it("组收起 / 展开：组端点锚点跟着紧凑框走，真实端点身份不变，曲线字段不丢", async () => {
+    setBoard(
+      boardState(
+        [
+          mkCard("a", 0, 0, { w: 120, h: 80 }),
+          mkCard("b", 200, 0, { w: 120, h: 80 }),
+          mkCard("c", 100, 500, { w: 100, h: 60 }),
+        ],
+        { groups: [mkGroup("g1", ["a", "b"])] },
+      ),
+    );
+    store.board = boardLib.addLink(store.board!, "group:g1", "c", false, "归入组");
+    const created = store.board!.links[0];
+    store.board = boardLib.updateLink(store.board!, created.id, { curve: { x: 18, y: -9 } });
+    const view = mountCanvas();
+    const groupFrame = () => view.get('[data-im="group"]');
+    const anchor = () => view.get('[data-im="group-anchor"]');
+    const groupTop = () => Number((groupFrame().element as HTMLElement).style.top.replace("px", ""));
+    const anchorTop = () => Number((anchor().element as HTMLElement).style.top.replace("px", ""));
+
+    expect(anchor().attributes("data-endpoint")).toBe("group:g1");
+    const expandedTop = anchorTop();
+    expect(anchorTop() - groupTop()).toBeGreaterThan(120);
+
+    await view.get('[data-im="group-collapse-toggle"]').trigger("click");
+    await nextTick();
+    const link = view.get('[data-link-id]');
+    expect(link.attributes("data-src")).toBe("group:g1");
+    expect(link.attributes("data-dst")).toBe("c");
+    expect(link.attributes("data-src-kind")).toBe("group");
+    expect(link.attributes("data-display-src")).toBe("group:g1");
+    // 收起后组框 120px，高：锚点正好落在紧凑框下边缘，不挂在旧几何上
+    expect(Math.abs(anchorTop() - groupTop() - 120)).toBeLessThan(0.01);
+    expect(anchor().attributes("data-endpoint")).toBe("group:g1");
+
+    await view.get('[data-im="group-collapse-toggle"]').trigger("click");
+    await nextTick();
+    expect(anchorTop()).toBeCloseTo(expandedTop, 6);
+    expect(view.get('[data-link-id]').attributes("data-src")).toBe("group:g1");
+    expect(store.board!.links[0].curve).toEqual({ x: 18, y: -9 });
+  });
 });
 
 describe("组标题拖动整组：屏幕位移换算板面位移，一次提交", () => {
@@ -402,6 +444,120 @@ describe("拖线落点支持组框（group:<id>）与参与范围", () => {
     expect(store.board!.links).toHaveLength(1);
     expect(store.board!.links[0]).toMatchObject({ src: "a", dst: "group:" + group.id });
     expect(labels.filter((label) => label.includes("新建关系"))).toHaveLength(1);
+  });
+
+  it("拖到组内成员卡：目标仍是这张卡（不自动升级成组），卡片高亮并写裸 card id", async () => {
+    setBoard(
+      boardState(
+        [mkCard("a", 0, 0, { w: 100, h: 60 }), mkCard("b", 400, 100, { w: 120, h: 80 })],
+        { groups: [mkGroup("g1", ["b"])], selection: ["a"] },
+      ),
+    );
+    const view = mountCanvas();
+    const start = clientOf(100, 30);
+    view.findAll('[data-im="connect-point"]')[0].element.dispatchEvent(pointer("pointerdown", start.x, start.y));
+    const target = clientOf(460, 140); // b 的中心；组框也在指针下
+    window.dispatchEvent(pointer("pointermove", target.x, target.y));
+    await nextTick();
+
+    const draft = view.get('[data-im="link-draft"]');
+    expect(draft.attributes("data-target")).toBe("b");
+    expect(draft.attributes("data-target-kind")).toBe("card");
+    expect(view.get('[data-im="link-target-badge"]').text()).toBe("连接到卡片");
+    // 卡片高亮走 BoardCard 既有的 highlight prop；组框保持不变
+    expect(cardElement(view, "b")!.classes()).toContain("highlight");
+    expect(view.get('[data-im="group"]').classes()).not.toContain("link-target");
+
+    window.dispatchEvent(pointer("pointerup", target.x, target.y));
+    await nextTick();
+    expect(store.board!.links).toHaveLength(1);
+    expect(store.board!.links[0]).toMatchObject({ src: "a", dst: "b" });
+  });
+
+  it("拖到组框标题 / 空白：目标是 group:<id>，组框高亮并写组端点；锚点只出现在被使用的边缘", async () => {
+    setBoard(
+      boardState(
+        [mkCard("a", 0, 0, { w: 100, h: 60 }), mkCard("b", 400, 100, { w: 120, h: 80 })],
+        { groups: [mkGroup("g1", ["b"])], selection: ["a"] },
+      ),
+    );
+    const view = mountCanvas();
+    const group = store.board!.groups[0];
+    // 还没有组端点关系：组框上没有任何锚点（不是常驻四个端口）
+    expect(view.findAll('[data-im="group-anchor"]')).toHaveLength(0);
+
+    const start = clientOf(100, 30);
+    view.findAll('[data-im="connect-point"]')[0].element.dispatchEvent(pointer("pointerdown", start.x, start.y));
+    const target = clientOf(group.x + 8, group.y + 8); // 组框标题空白处，不压成员卡
+    window.dispatchEvent(pointer("pointermove", target.x, target.y));
+    await nextTick();
+
+    const draft = view.get('[data-im="link-draft"]');
+    expect(draft.attributes("data-target")).toBe("group:" + group.id);
+    expect(draft.attributes("data-target-kind")).toBe("group");
+    expect(view.get('[data-im="link-target-badge"]').text()).toBe("连接到组");
+    expect(view.get('[data-im="group"]').classes()).toContain("link-target");
+    expect(view.get('[data-im="group"]').attributes("data-link-target")).toBe("group");
+    expect(cardElement(view, "b")!.classes()).not.toContain("highlight");
+
+    window.dispatchEvent(pointer("pointerup", target.x, target.y));
+    await nextTick();
+    expect(store.board!.links).toHaveLength(1);
+    expect(store.board!.links[0]).toMatchObject({ src: "a", dst: "group:" + group.id });
+
+    // 建链后：只出现这个组端点真正用到的那个锚点（左边），不是四条边
+    const anchors = view.findAll('[data-im="group-anchor"]');
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0].attributes("data-group-id")).toBe(group.id);
+    expect(anchors[0].attributes("data-endpoint")).toBe("group:" + group.id);
+    expect(anchors[0].attributes("data-side")).toBe("left");
+    expect(anchors[0].classes()).not.toContain("is-active");
+
+    // 组悬停：锚点从空心圆点变短条（只影响显示）
+    const hover = clientOf(group.x + 8, group.y + 8);
+    view.get(".board-viewport").element.dispatchEvent(pointer("pointermove", hover.x, hover.y));
+    await nextTick();
+    expect(view.get('[data-im="group-anchor"]').classes()).toContain("is-active");
+    expect(store.board!.links).toHaveLength(1);
+  });
+
+  it("从组锚点拖线：起点身份是 group:<id>，不变成成员卡", async () => {
+    setBoard(
+      boardState(
+        [
+          mkCard("a", 0, 0, { w: 100, h: 60 }),
+          mkCard("b", 200, 0, { w: 120, h: 80 }),
+          mkCard("c", 800, 0, { w: 100, h: 60 }),
+          mkCard("d", 800, 500, { w: 100, h: 60 }),
+        ],
+        {
+          groups: [mkGroup("g1", ["a", "b"])],
+          selection: [],
+        },
+      ),
+    );
+    // 先有一个组端点关系：组框左边会出现锚点
+    store.board = boardLib.addLink(store.board!, "group:g1", "c", false, "已有关系");
+    const view = mountCanvas();
+    const anchor = view.get('[data-im="group-anchor"]');
+    expect(anchor.attributes("data-endpoint")).toBe("group:g1");
+    const group = store.board!.groups[0];
+    const anchorPoint = clientOf(Number((anchor.element as HTMLElement).style.left.replace("px", "")), Number((anchor.element as HTMLElement).style.top.replace("px", "")));
+    anchor.element.dispatchEvent(pointer("pointerdown", anchorPoint.x, anchorPoint.y));
+    await nextTick();
+    expect(view.get('[data-im="link-draft"]').attributes("data-from")).toBe("group:g1");
+
+    const target = clientOf(850, 530);
+    window.dispatchEvent(pointer("pointermove", target.x, target.y));
+    await nextTick();
+    expect(view.get('[data-im="link-draft"]').attributes("data-target")).toBe("d");
+    window.dispatchEvent(pointer("pointerup", target.x, target.y));
+    await nextTick();
+
+    const created = store.board!.links.find((link) => link.src === "group:g1" && link.dst === "d");
+    expect(created).toBeTruthy();
+    expect(store.board!.links.some((link) => link.src === "a" && link.dst === "d")).toBe(false);
+    expect(group.members).toEqual(["a", "b"]);
   });
 
   it("参与的卡片 id 传给连线层（includedCardIds）", async () => {

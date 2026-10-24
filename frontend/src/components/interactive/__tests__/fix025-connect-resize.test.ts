@@ -350,12 +350,20 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     expect(/\.connect-point\.top\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "").toMatch(/top:\s*-30px/);
     expect(/\.connect-point\.left\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "").toMatch(/left:\s*-30px/);
 
-    // 卡片边框自身在右下角加粗，圆角不断开
-    const afterBlock = /\.card::after\s*\{([^}]*)\}/.exec(view)?.[1] ?? "";
-    expect(afterBlock).toMatch(/border-right:\s*3px solid/);
-    expect(afterBlock).toMatch(/border-bottom:\s*3px solid/);
-    expect(afterBlock).toMatch(/width:\s*34px/);
-    expect(afterBlock).toMatch(/mask-image/);
+    // 卡片边框改为单条 evenodd 的 SVG 环形路径（2026-10-24 演示最终稿）：
+    // 外轮廓 + 内轮廓一次填充，右下角渐粗；旧的 CSS border + ::after 粗条不再显示。
+    const frameBlock = /\.card-frame\s*\{([^}]*)\}/.exec(view)?.[1] ?? "";
+    expect(frameBlock).toMatch(/position:\s*absolute/);
+    expect(frameBlock).toMatch(/pointer-events:\s*none/);
+    const framePathBlock = /\.card-frame-path\s*\{([^}]*)\}/.exec(view)?.[1] ?? "";
+    expect(framePathBlock).toMatch(/fill:\s*var\(--border-subtle\)/);
+    expect(/\.card\.selected \.card-frame-path\s*\{([^}]*)\}/.exec(view)?.[1] ?? "").toMatch(
+      /fill:\s*var\(--accent\)/,
+    );
+    expect(view).not.toMatch(/\.card::after\s*\{/);
+    expect(view).toContain('fill-rule="evenodd"');
+    // L 形缩放热区照旧（BoardResizeLayer 不改）
+    expect(layer).toContain("cornerHitPath");
   });
 
 });

@@ -15,6 +15,235 @@
   - 状态一律「文字 + 颜色」双通道，不能只靠颜色；
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
+<script lang="ts">
+/**
+ * 卡片边框：**一条** evenodd 的 SVG 环形路径（2026-10-24 互动演示最终稿）。
+ *
+ * 为什么不沿用 CSS border + ::after：
+ * - 旧实现是「1px 四边框 + 右下角 3px L 形粗条」两套笔画叠在一起，粗条只盖住一段，
+ *   转角处靠 mask 渐变收口，放大后能看到接缝 / 断角，而且颜色只能跟着 border-color；
+ * - 最终稿沿卡片外轮廓取 outer / inner 两条闭合轮廓，一次 evenodd 填充得到环带：
+ *   离右下角越近越粗（1px → 3px），整圈颜色只有一个来源（fill），悬停 / 选中只换颜色。
+ *
+ * 几何口径（与演示 HTML 的 roundedSamples / ringPath 一致，只把采样改成“只在变粗区间采样”）：
+ * - 外轮廓 = 卡片圆角矩形（半径与 .card 的 var(--r-lg) 相同）；
+ * - 内轮廓 = 外轮廓每点沿内法线缩进 t，t 由该点到右下角的距离平滑决定；
+ * - 两条轮廓都用闭合子路径，fill-rule=evenodd 只留下中间的环带；
+ * - 圆角段在粗细恒定的区域用真正的 A 圆弧，只有右下角变粗区间才采样成短折线 ——
+ *   采样步长 1.5 板面单位，视觉上连续，不会出现双线 / 断角。
+ *
+ * 这里导出的纯函数与组件模板使用同一份几何（测试可以直接钉住厚度与路径）。
+ */
+
+/** 与 .card 的 border-radius: var(--r-lg) 同一个数值（SVG d 不能读 CSS 变量）。 */
+export const CARD_FRAME_RADIUS = 14;
+/** 离右下角足够远时的边框厚度。 */
+export const CARD_FRAME_MIN_THICKNESS = 1;
+/** 右下角最粗处（“约 3px”）。 */
+export const CARD_FRAME_MAX_THICKNESS = 3;
+/** 从右下角往里多远的范围内开始加粗（板面单位）。 */
+const CARD_FRAME_FALLOFF = 52;
+/** 变粗区间的采样步长：越小越圆滑，1.5 已足够让 1–3px 的环带看不出折线。 */
+const CARD_FRAME_SAMPLE_STEP = 1.5;
+/** 求“到右下角距离 = 52”的交点时的二分次数（1e-9 级别，足够精确）。 */
+const CARD_FRAME_BISECT_STEPS = 34;
+/** 每段轮廓上找交点的粗采样数（直线 / 90° 圆弧各一段，32 已经足够）。 */
+const CARD_FRAME_SCAN_STEPS = 32;
+
+type FramePoint = { x: number; y: number };
+
+type FrameLine = {
+  kind: "line";
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  nx: number;
+  ny: number;
+};
+
+type FrameArc = {
+  kind: "arc";
+  cx: number;
+  cy: number;
+  r: number;
+  a0: number;
+  a1: number;
+};
+
+type FrameSegment = FrameLine | FrameArc;
+
+/** 轮廓的一段：u ∈ [u0, u1]；variable=true 时才需要采样（此区间内厚度在变）。 */
+type FramePiece = { u0: number; u1: number; variable: boolean };
+
+function frameRadius(w: number, h: number): number {
+  return Math.max(0, Math.min(CARD_FRAME_RADIUS, w / 2, h / 2));
+}
+
+/** 顺时针一圈：上边 → 右上圆角 → 右边 → 右下圆角 → 下边 → 左下圆角 → 左边 → 左上圆角。 */
+function frameSegments(w: number, h: number, r: number): FrameSegment[] {
+  const halfPi = Math.PI / 2;
+  return [
+    { kind: "line", x0: r, y0: 0, x1: w - r, y1: 0, nx: 0, ny: 1 },
+    { kind: "arc", cx: w - r, cy: r, r, a0: -halfPi, a1: 0 },
+    { kind: "line", x0: w, y0: r, x1: w, y1: h - r, nx: -1, ny: 0 },
+    { kind: "arc", cx: w - r, cy: h - r, r, a0: 0, a1: halfPi },
+    { kind: "line", x0: w - r, y0: h, x1: r, y1: h, nx: 0, ny: -1 },
+    { kind: "arc", cx: r, cy: h - r, r, a0: halfPi, a1: Math.PI },
+    { kind: "line", x0: 0, y0: h - r, x1: 0, y1: r, nx: 1, ny: 0 },
+    { kind: "arc", cx: r, cy: r, r, a0: Math.PI, a1: Math.PI * 1.5 },
+  ];
+}
+
+function framePointAt(segment: FrameSegment, u: number): FramePoint {
+  if (segment.kind === "line") {
+    return {
+      x: segment.x0 + (segment.x1 - segment.x0) * u,
+      y: segment.y0 + (segment.y1 - segment.y0) * u,
+    };
+  }
+  const angle = segment.a0 + (segment.a1 - segment.a0) * u;
+  return { x: segment.cx + Math.cos(angle) * segment.r, y: segment.cy + Math.sin(angle) * segment.r };
+}
+
+/** 指向卡片内部的单位法线（圆弧的圆心在卡片内侧）。 */
+function frameNormalAt(segment: FrameSegment, u: number): FramePoint {
+  if (segment.kind === "line") return { x: segment.nx, y: segment.ny };
+  const angle = segment.a0 + (segment.a1 - segment.a0) * u;
+  return { x: -Math.cos(angle), y: -Math.sin(angle) };
+}
+
+function frameSegmentLength(segment: FrameSegment): number {
+  if (segment.kind === "line") return Math.hypot(segment.x1 - segment.x0, segment.y1 - segment.y0);
+  return Math.abs(segment.a1 - segment.a0) * segment.r;
+}
+
+function frameDistanceToCorner(segment: FrameSegment, u: number, w: number, h: number): number {
+  const point = framePointAt(segment, u);
+  return Math.hypot(w - point.x, h - point.y);
+}
+
+/** 粗细：离右下角越近越粗，52 板面单位外回到 1px；平滑函数保证没有台阶。 */
+export function cardFrameThickness(w: number, h: number, x: number, y: number): number {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return CARD_FRAME_MIN_THICKNESS;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return CARD_FRAME_MIN_THICKNESS;
+  const distance = Math.hypot(w - x, h - y);
+  const k = Math.max(0, Math.min(1, (CARD_FRAME_FALLOFF - distance) / CARD_FRAME_FALLOFF));
+  const eased = k * k * (3 - 2 * k);
+  return CARD_FRAME_MIN_THICKNESS + (CARD_FRAME_MAX_THICKNESS - CARD_FRAME_MIN_THICKNESS) * eased;
+}
+
+function frameThicknessAt(segment: FrameSegment, u: number, w: number, h: number): number {
+  const point = framePointAt(segment, u);
+  return cardFrameThickness(w, h, point.x, point.y);
+}
+
+function frameInnerPointAt(segment: FrameSegment, u: number, w: number, h: number): FramePoint {
+  const point = framePointAt(segment, u);
+  const normal = frameNormalAt(segment, u);
+  const thickness = cardFrameThickness(w, h, point.x, point.y);
+  return { x: point.x + normal.x * thickness, y: point.y + normal.y * thickness };
+}
+
+function frameBisectCrossing(segment: FrameSegment, low: number, high: number, w: number, h: number): number {
+  let insideLow = frameDistanceToCorner(segment, low, w, h) < CARD_FRAME_FALLOFF;
+  let a = low;
+  let b = high;
+  for (let i = 0; i < CARD_FRAME_BISECT_STEPS; i += 1) {
+    const mid = (a + b) / 2;
+    const inside = frameDistanceToCorner(segment, mid, w, h) < CARD_FRAME_FALLOFF;
+    if (inside === insideLow) a = mid;
+    else b = mid;
+  }
+  return (a + b) / 2;
+}
+
+/** 把一段轮廓切成「粗细恒定 / 正在变粗」的连续区间；交点用二分求，保证两段端点严格相接。 */
+function framePieces(segment: FrameSegment, w: number, h: number): FramePiece[] {
+  const cuts: number[] = [0];
+  let previousInside = frameDistanceToCorner(segment, 0, w, h) < CARD_FRAME_FALLOFF;
+  for (let i = 1; i <= CARD_FRAME_SCAN_STEPS; i += 1) {
+    const u = i / CARD_FRAME_SCAN_STEPS;
+    const inside = frameDistanceToCorner(segment, u, w, h) < CARD_FRAME_FALLOFF;
+    if (inside !== previousInside) cuts.push(frameBisectCrossing(segment, (i - 1) / CARD_FRAME_SCAN_STEPS, u, w, h));
+    previousInside = inside;
+  }
+  cuts.push(1);
+  const pieces: FramePiece[] = [];
+  for (let i = 1; i < cuts.length; i += 1) {
+    const u0 = cuts[i - 1];
+    const u1 = cuts[i];
+    if (u1 - u0 <= 1e-6) continue;
+    pieces.push({ u0, u1, variable: frameDistanceToCorner(segment, (u0 + u1) / 2, w, h) < CARD_FRAME_FALLOFF });
+  }
+  return pieces;
+}
+
+/** 保留两位小数；-0 写成 0，避免 path 里出现 "-0"。 */
+function frameNumber(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
+function framePair(point: FramePoint): string {
+  return frameNumber(point.x) + " " + frameNumber(point.y);
+}
+
+/**
+ * 生成卡片边框路径：外轮廓 + 内轮廓两条闭合子路径，交给 fill-rule=evenodd 填充。
+ * 尺寸随 w/h 变化；右下角渐粗（1 → 3），其余三边 1px。
+ */
+export function cardFramePath(w: number, h: number): string {
+  const width = Number.isFinite(w) && w > 0 ? w : 1;
+  const height = Number.isFinite(h) && h > 0 ? h : 1;
+  const radius = frameRadius(width, height);
+  const segments = frameSegments(width, height, radius);
+
+  const outer: string[] = ["M " + framePair(framePointAt(segments[0], 0))];
+  for (const segment of segments) {
+    if (segment.kind === "line") {
+      outer.push("L " + framePair(framePointAt(segment, 1)));
+    } else {
+      outer.push("A " + frameNumber(radius) + " " + frameNumber(radius) + " 0 0 1 " + framePair(framePointAt(segment, 1)));
+    }
+  }
+  outer.push("Z");
+
+  const inner: string[] = ["M " + framePair(frameInnerPointAt(segments[0], 0, width, height))];
+  for (const segment of segments) {
+    for (const piece of framePieces(segment, width, height)) {
+      if (!piece.variable) {
+        const end = frameInnerPointAt(segment, piece.u1, width, height);
+        if (segment.kind === "line") {
+          inner.push("L " + framePair(end));
+        } else {
+          const thickness = frameThicknessAt(segment, piece.u0, width, height);
+          const innerRadius = Math.max(0.01, segment.r - thickness);
+          inner.push(
+            "A " +
+              frameNumber(innerRadius) +
+              " " +
+              frameNumber(innerRadius) +
+              " 0 0 1 " +
+              framePair(end),
+          );
+        }
+        continue;
+      }
+      const pieceLength = frameSegmentLength(segment) * (piece.u1 - piece.u0);
+      const steps = Math.max(2, Math.ceil(pieceLength / CARD_FRAME_SAMPLE_STEP));
+      for (let i = 1; i <= steps; i += 1) {
+        const u = piece.u0 + (piece.u1 - piece.u0) * (i / steps);
+        inner.push("L " + framePair(frameInnerPointAt(segment, u, width, height)));
+      }
+    }
+  }
+  inner.push("Z");
+
+  return outer.join(" ") + " " + inner.join(" ");
+}
+</script>
+
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
@@ -1074,6 +1303,72 @@ const editorMinHeight = computed(() => {
 const toolbarRoot = ref<HTMLElement | null>(null);
 /** <article data-im="card"> 的真实外框：BoardCanvas 只拿它当锚点（只读，不回写板面） */
 const cardEl = ref<HTMLElement | null>(null);
+/**
+ * 卡片外轮廓的实测尺寸：只给「高度 auto」的状态用（折叠 / 冲突未决）。
+ * 普通卡片的 w/h 是板面状态里的权威尺寸，不重新测量；折叠态高度由内容决定，
+ * 必须读一次真实布局，否则边框会在卡片底部多出 / 少掉一截。
+ *
+ * 读 clientWidth / clientHeight（布局单位，不受画布 transform: scale() 影响）；
+ * 能从 getBoundingClientRect 反推出比例时用比例还原小数，避免底边差半像素。
+ */
+const measuredFrame = ref({ w: 0, h: 0 });
+const frameSize = computed(() => {
+  const width = Number.isFinite(props.card.w) && props.card.w > 0 ? props.card.w : 1;
+  const autoHeight = props.card.folded || conflictExpanded.value;
+  const measuredHeight = measuredFrame.value.h;
+  const rawHeight = autoHeight && measuredHeight > 0 ? measuredHeight : props.card.h;
+  const height = Number.isFinite(rawHeight) && rawHeight > 0 ? rawHeight : 1;
+  // 实测高度可能是 52.00000000000001 这类浮点噪声：保留两位小数，viewBox 与 path 用同一份数。
+  return { w: Math.round(width * 100) / 100, h: Math.round(height * 100) / 100 };
+});
+/** 单一路径：外轮廓 + 内轮廓，fill-rule=evenodd 填充环带（见文件顶部的几何说明）。 */
+const framePath = computed(() => cardFramePath(frameSize.value.w, frameSize.value.h));
+let frameResizeObserver: ResizeObserver | null = null;
+
+function measureFrame(): void {
+  const element = cardEl.value;
+  if (!element) return;
+  const layoutWidth = element.offsetWidth || element.clientWidth || 0;
+  const layoutHeight = element.offsetHeight || element.clientHeight || 0;
+  if (!(layoutWidth > 0) || !(layoutHeight > 0)) return;
+  let width = layoutWidth;
+  let height = layoutHeight;
+  const rect =
+    typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : null;
+  if (rect && rect.width > 0) {
+    const scale = rect.width / layoutWidth;
+    if (Number.isFinite(scale) && scale > 0) {
+      width = rect.width / scale;
+      if (rect.height > 0) height = rect.height / scale;
+    }
+  }
+  if (measuredFrame.value.w === width && measuredFrame.value.h === height) return;
+  measuredFrame.value = { w: width, h: height };
+}
+
+function observeFrame(): void {
+  frameResizeObserver?.disconnect();
+  frameResizeObserver = null;
+  measureFrame();
+  const element = cardEl.value;
+  if (!element || typeof ResizeObserver !== "function") return;
+  frameResizeObserver = new ResizeObserver(() => measureFrame());
+  frameResizeObserver.observe(element);
+}
+
+onMounted(observeFrame);
+onBeforeUnmount(() => {
+  frameResizeObserver?.disconnect();
+  frameResizeObserver = null;
+});
+
+// 折叠 / 冲突展开 / 编辑态切换、卡片尺寸变化之后都补一次实测（ResizeObserver 在 jsdom 里没有）
+watch(
+  () => [props.card.w, props.card.h, props.card.folded, conflictExpanded.value, displayState.value],
+  () => {
+    void nextTick(measureFrame);
+  },
+);
 /** 「更多」面板元素：打开后量一次真实高度，供菜单方向判断 */
 const morePanel = ref<HTMLElement | null>(null);
 const moreOpen = ref(false);
@@ -1862,6 +2157,28 @@ watch(
       <span class="status" role="status">{{ statusText }}</span>
       <span v-if="!compactChrome" class="time mono">{{ updatedText }}</span>
     </footer>
+
+    <!--
+      卡片边框（2026-10-24 演示最终稿）：**一条** evenodd 的 SVG 路径。
+      外轮廓贴住卡片圆角，内轮廓沿内法线缩进；右下角越近越粗（1px → 3px），
+      平时 / 悬停 / 选中只换 fill，不再用 CSS border 与 ::after 粗条叠出第二圈线。
+      纯呈现、不接管指针；尺寸随卡片 w/h（折叠态量真实高度），封面与图片详情也在最上层。
+    -->
+    <svg
+      class="card-frame"
+      data-im="card-frame"
+      aria-hidden="true"
+      focusable="false"
+      :viewBox="'0 0 ' + frameSize.w + ' ' + frameSize.h"
+      preserveAspectRatio="none"
+    >
+      <path
+        class="card-frame-path"
+        data-im="card-frame-path"
+        fill-rule="evenodd"
+        :d="framePath"
+      />
+    </svg>
   </article>
 
   <!--
@@ -2078,7 +2395,8 @@ watch(
   --card-pad: var(--sp-3);
   overflow: hidden;
   background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
+  /* 边框不在这里：见文件顶部 cardFramePath + .card-frame（避免 border 与 SVG 环带叠成双线）。
+     圆角必须与 CARD_FRAME_RADIUS 一致：改 --r-lg 时同步改那个常量。 */
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
   color: var(--text-primary);
@@ -2115,46 +2433,46 @@ watch(
 .card.is-cover {
   overflow: hidden;
 }
-.card.is-cover > :not(.card-cover) {
+.card.is-cover > :not(.card-cover):not(.card-frame) {
   position: relative;
   z-index: 1;
   background: transparent;
 }
 
 
-/* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
-.card::after {
-  content: "";
+/*
+  卡片边框：只有这一条 evenodd 的 SVG 环带（2026-10-24 交互演示最终稿）。
+  - .card 自身不再画 border —— 两套笔画叠在一起就是「双线 / 断角」的来源；
+  - 环带由组件顶部的 cardFramePath 生成：外轮廓贴住卡片圆角，内轮廓往里缩，
+    右下角越近越粗（1px → 3px），整圈没有第二段描边；
+  - 颜色只换 fill：平时 --border-subtle，悬停 --border-strong，选中 --accent；
+  - pointer-events: none：边框是纯呈现，不吃卡片的选择 / 拖动 / 点击。
+*/
+.card-frame {
   position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 34px;
-  height: 34px;
-  border-right: 3px solid;
-  border-bottom: 3px solid;
-  border-color: inherit;
-  border-bottom-right-radius: inherit;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
   pointer-events: none;
-  opacity: 0.28;
-  -webkit-mask-image: linear-gradient(135deg, transparent 0 30%, var(--text-strong) 78%, var(--text-strong) 100%);
-  mask-image: linear-gradient(135deg, transparent 0 30%, var(--text-strong) 78%, var(--text-strong) 100%);
-  transition: opacity var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1);
+  z-index: 3;
 }
-.card:hover::after,
-.card.selected::after {
-  opacity: 1;
+.card-frame-path {
+  fill: var(--border-subtle);
+  transition: fill var(--dur-fast) var(--ease-1);
 }
-.card.dragging::after {
-  opacity: 0;
-}
-.card:hover { border-color: var(--border-strong); }
+/* 结果卡沿用 link 色，隐藏卡弱化到半透明：都是换 fill / 透明度，不是第二圈线 */
+.card.reply .card-frame-path { fill: var(--link); }
+.card.hidden .card-frame-path { opacity: 0.55; }
+.card:hover .card-frame-path { fill: var(--border-strong); }
+.card.selected .card-frame-path { fill: var(--accent); }
+.card.selected:hover .card-frame-path { fill: var(--accent); }
+.card.dragging .card-frame-path { fill: var(--accent); }
 .card.selected {
-  border-color: var(--accent);
   background: var(--bg-accent-subtle);
-  box-shadow: var(--shadow-1), 0 0 0 2px var(--accent-soft);
 }
 .card.highlight { outline: 2px dashed var(--warning); outline-offset: 2px; }
-.card.dragging { cursor: grabbing; opacity: 0.92; border-style: dashed; border-color: var(--accent); }
+.card.dragging { cursor: grabbing; opacity: 0.92; }
 .participation {
   flex: none;
   height: 22px;
@@ -2173,8 +2491,7 @@ watch(
   background: var(--accent-soft);
 }
 .participation:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.card.hidden { border-style: dashed; }
-.card.reply { border-left: 3px solid var(--link); }
+
 
 /*
   第一层：材料类型 + 标题 + 参与控件 + 阅读展开入口。

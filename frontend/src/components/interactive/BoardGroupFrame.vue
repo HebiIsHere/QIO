@@ -49,8 +49,10 @@ const props = withDefaults(
     draggable?: boolean;
     /** 组缩放把手（右 / 下 / 右下；只发意图）。 */
     resizable?: boolean;
+    /** 拖线当前落在这个组上：只高亮组框，不改变任何数据。 */
+    linkTarget?: boolean;
   }>(),
-  { collapsed: false, draggable: true, resizable: true },
+  { collapsed: false, draggable: true, resizable: true, linkTarget: false },
 );
 
 const emit = defineEmits<{
@@ -326,12 +328,13 @@ defineExpose({ focusName });
 <template>
   <div
     class="group"
-    :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge, collapsed }"
+    :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge, 'link-target': linkTarget, collapsed }"
     :style="style"
     data-im="group"
     :data-group-id="group.id"
     :data-ordered="group.ordered ? 'true' : 'false'"
     :data-collapsed="collapsed ? 'true' : 'false'"
+    :data-link-target="linkTarget ? 'group' : undefined"
   >
     <div
       class="group-head"
@@ -578,6 +581,12 @@ defineExpose({ focusName });
 .group.ordered { border-color: var(--border-strong); }
 .group.drop-target { border-color: var(--accent); background: var(--accent-soft); }
 .group.drop-merge { border-color: var(--warning); }
+/* 拖线落在组框标题 / 空白：组框本身高亮，说明「这一条关系连到组」。 */
+.group.link-target {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
 .badge {
   flex: none;
   font-size: var(--fs-tech, var(--fs-xs));
