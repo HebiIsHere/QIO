@@ -188,6 +188,11 @@ async def test_program_name_does_not_merge_different_versions(tmp_path, db_conn,
     program_312 = version_dir / ("python3.12" + suffix)
     program_311.write_text("version-3.11", encoding="utf-8")
     program_312.write_text("version-3.12", encoding="utf-8")
+    if os.name != "nt":
+        # POSIX 的 which/exec 需要可执行位；否则绑定创建会落到系统解释器/查不到，
+        # 不同平台结论不一致（CI py312 实测）。
+        os.chmod(program_311, 0o755)
+        os.chmod(program_312, 0o755)
     monkeypatch.setenv(
         "PATH", str(version_dir) + os.pathsep + os.environ.get("PATH", "")
     )

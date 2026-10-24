@@ -74,6 +74,9 @@ async def test_program_name_entry_and_target_version_are_distinct(ctx, monkeypat
     def version_program(version: str) -> Path:
         target = version_dir / ("python" + version + suffix)
         target.write_text("version-" + version, encoding="utf-8")
+        if os.name != "nt":
+            # POSIX 的 which/exec 需要可执行位；否则真实查找会落到系统解释器/查不到。
+            os.chmod(target, 0o755)
         return target
 
     program_311 = version_program("3.11")
