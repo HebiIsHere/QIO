@@ -25,6 +25,7 @@ import {
   endpointInVisibleRange,
   endpointKey,
   endpointValue,
+  cardEdgeAnchors,
   groupEdgeAnchors,
   groupEndpoint,
   groupOverviewSlots,
@@ -449,6 +450,33 @@ describe("组端点锚点：只画被关系实际使用的边缘位置", () => {
     const display = buildDisplayLinks({ ...base, links: [mkLink("l2", "group:g1", "c", { curve })] });
     expect(display.links[0].curve).toEqual(curve);
     expect({ x: anchors[0].x, y: anchors[0].y }).toEqual({ x: display.links[0].x1, y: display.links[0].y1 });
+  });
+});
+
+describe("卡片端点锚点：真实 src/dst 与线端点同源", () => {
+  const base = { cards, groups };
+
+  it("卡片—卡片关系只产生两个真实卡片锚点，不产生组锚点", () => {
+    const anchors = cardEdgeAnchors({ ...base, links: [mkLink("l1", "a", "b")] });
+    expect(anchors).toHaveLength(2);
+    expect(anchors.map((item) => item.endpoint)).toEqual(["a", "b"]);
+    expect(anchors.map((item) => item.side)).toEqual(["right", "left"]);
+    expect(anchors.map((item) => item.linkIds)).toEqual([["l1"], ["l1"]]);
+  });
+
+  it("组端点关系只为另一端真实卡片产生锚点", () => {
+    const anchors = cardEdgeAnchors({ ...base, links: [mkLink("l2", "group:g1", "c")] });
+    expect(anchors.map((item) => item.endpoint)).toEqual(["c"]);
+  });
+
+  it("组收起时成员线的视觉汇聚不是卡片端点", () => {
+    const folded = cardEdgeAnchors({
+      ...base,
+      links: [mkLink("l3", "a", "c")],
+      foldedGroupIds: ["g1"],
+    });
+    // c 仍是真实卡片；a 被汇聚到组，不能在国内层冒充卡片端点
+    expect(folded.map((item) => item.endpoint)).toEqual(["c"]);
   });
 });
 

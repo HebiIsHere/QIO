@@ -101,8 +101,10 @@ import {
   GROUP_HEADER_HEIGHT,
   GROUP_PAD_BOTTOM,
   GROUP_PAD_X,
+  cardEdgeAnchors,
   groupEdgeAnchors,
   parseEndpoint,
+  type CardAnchor,
   type GroupAnchor,
 } from "../../interactive/linkEndpoints";
 import { publishBoardScale } from "../../interactive/submission";
@@ -114,6 +116,7 @@ import { titlebarHeight } from "../../utils/titlebar";
 import type { BoardCard as BoardCardModel, BoardGroup, BoardState, CardKind, Intent } from "../../interactive/types";
 import BoardCard from "./BoardCard.vue";
 import BoardGroupFrame from "./BoardGroupFrame.vue";
+import BoardCardAnchorLayer from "./BoardCardAnchorLayer.vue";
 import BoardGroupAnchorLayer from "./BoardGroupAnchorLayer.vue";
 import BoardLinkLayer from "./BoardLinkLayer.vue";
 import BoardPreviewLayer from "./BoardPreviewLayer.vue";
@@ -222,6 +225,8 @@ const linkMeaning = ref("");
 const linkDirection = ref(false);
 /** 指针悬停的组（纯显示）：只让该组的已有锚点从圆点变短条。 */
 const hoveredGroupId = ref<string | null>(null);
+/** 指针悬停的卡片（纯显示）：只让该卡已有的锚点从圆点变短条。 */
+const hoveredCardId = ref<string | null>(null);
 const notice = ref("");
 
 /**
@@ -739,6 +744,58 @@ const groupAnchors = computed<GroupAnchor[]>(() =>
     onlyInRange: false,
   }),
 );
+
+/**
+ * 卡片端点锚点：只画真实卡片端点已使用的位置。
+ * 选中卡片仍由 BoardResizeLayer 的短条端口承载，避免同一边出现两套端口；
+ * 未选中卡片只显示已连接空心点，悬停时由锚点层变短条。
+ */
+const cardAnchors = computed<CardAnchor[]>(() =>
+  cardEdgeAnchors({
+    links: links.value,
+    cards: displayCards.value,
+    groups: displayGroups.value,
+    foldedGroupIds: foldedGroupIds.value,
+    includedCardIds: includedCardIds.value,
+    onlyInRange: false,
+  }).filter((anchor) => !selection.value.includes(anchor.cardId)),
+);
+
+/** 未选中卡片悬停时补四个可拖端口；已连接侧仍复用真实锚点，避免重复。 */
+const hoverCardAnchors = computed<CardAnchor[]>(() => {
+  if (!hoveredCardId.value || selection.value.includes(hoveredCardId.value)) return [];
+  const card = displayCards.value.find((item) => item.id === hoveredCardId.value && !item.deleted);
+  if (!card) return [];
+  const left = card.x;
+  const top = card.y;
+  const right = card.x + card.w;
+  const bottom = card.y + card.h;
+  const midX = left + card.w / 2;
+  const midY = top + card.h / 2;
+  const endpoint = card.id;
+  const make = (side: CardAnchor["side"], x: number, y: number): CardAnchor => ({
+    cardId: card.id,
+    endpoint,
+    side,
+    x,
+    y,
+    linkIds: [],
+  });
+  return [
+    make("top", midX, top),
+    make("right", right, midY),
+    make("bottom", midX, bottom),
+    make("left", left, midY),
+  ];
+});
+
+const renderedCardAnchors = computed<CardAnchor[]>(() => {
+  const keys = new Set(cardAnchors.value.map((anchor) => anchor.cardId + ":" + anchor.side));
+  return [
+    ...cardAnchors.value,
+    ...hoverCardAnchors.value.filter((anchor) => !keys.has(anchor.cardId + ":" + anchor.side)),
+  ];
+});
 
 function commit(next: BoardState, label: string) {
   store.commit(next, label);
@@ -1972,6 +2029,7 @@ function applyToolbarPlacement(stamp?: number): void {
     cardRect,
     hostRect,
     toolbarHeight,
+    toolbarWidth: toolbarRect && toolbarRect.right > toolbarRect.left ? toolbarRect.right - toolbarRect.left : lastToolbarWidth,
     gap: TOOLBAR_GAP,
     hostScale,
   });
@@ -2631,17 +2689,20 @@ function hitEndpointAt(point: { x: number; y: number }, fromId: string | null): 
 
 /** 指针悬停在组框上（纯显示）：组已有锚点因此可以从圆点变短条。 */
 function onBoardHoverMove(event: PointerEvent): void {
-  // 没有任何「被关系使用的组锚点」时，悬停状态没有可见效果，不必逐帧做命中测试。
-  if (!groupAnchors.value.length) {
+  // 没有任何被关系使用的锚点时，悬停状态没有可见效果，不必逐帧做命中测试。
+  if (!groupAnchors.value.length && !cardAnchors.value.length) {
     hoveredGroupId.value = null;
+    hoveredCardId.value = null;
     return;
   }
   if (dragging.value || panning.value || rectSelect.value || resizing.value || groupDrag.value || groupResize.value || linkDraft.value) {
     return;
   }
   const point = boardPointOf(event);
-  // 指针在卡片上时不算悬停组：卡片是更具体的对象。
-  if (hitCardAt(point, null)) {
+  // 指针在卡片上时，卡片锚点优先；组框其次。
+  const cardId = hitCardAt(point, null);
+  hoveredCardId.value = cardId;
+  if (cardId) {
     hoveredGroupId.value = null;
     return;
   }
@@ -2651,6 +2712,12 @@ function onBoardHoverMove(event: PointerEvent): void {
 
 function onBoardHoverLeave(): void {
   hoveredGroupId.value = null;
+  hoveredCardId.value = null;
+}
+
+/** 从卡片已连接锚点开始拖线：起点身份仍是裸 card id。 */
+function onCardAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
+  onConnectStart(anchor.endpoint, event);
 }
 
 /** 从组锚点开始拖线：起点身份就是 group:<id>，不是成员卡。 */
@@ -3126,6 +3193,17 @@ onBeforeUnmount(() => {
             :selected-group-ids="selectedGroupIds"
             :hovered-group-id="hoveredGroupId"
             @anchor-down="onGroupAnchorDown"
+          />
+
+          <!--
+            卡片端点锚点层：未选中卡片只显示已连接空心点，悬停变短条、悬停锚点向外半圆。
+            选中卡片的四向短条仍由 BoardResizeLayer 承载，避免同一边出现两套端口。
+          -->
+          <BoardCardAnchorLayer
+            :anchors="renderedCardAnchors"
+            :scale="scaleSafe"
+            :hovered-card-id="hoveredCardId"
+            @anchor-down="onCardAnchorDown"
           />
 
           <!--

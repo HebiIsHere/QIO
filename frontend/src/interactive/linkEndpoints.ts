@@ -399,6 +399,18 @@ export interface GroupAnchor {
   linkIds: string[];
 }
 
+export interface CardAnchor {
+  cardId: string;
+  /** 卡片端点字符串（裸 card id）。 */
+  endpoint: string;
+  side: GroupAnchorSide;
+  /** 板面坐标：精确落在线与卡片边缘的交点上。 */
+  x: number;
+  y: number;
+  /** 使用这个锚点的关系 id（同一位置的多条关系合并为一个锚点）。 */
+  linkIds: string[];
+}
+
 /** 点在矩形哪条边上；角点按「朝另一端的主要方向」判，保证结果确定。 */
 function groupAnchorSideOf(rect: BoardRect, point: Point, other: Point): GroupAnchorSide {
   const epsilon = 0.75;
@@ -468,6 +480,45 @@ export function groupEdgeAnchors(input: DisplayLinksInput): GroupAnchor[] {
 
   const display = buildDisplayLinks(input);
   for (const link of display.links) {
+    add(link, "src");
+    add(link, "dst");
+  }
+  return [...anchors.values()];
+}
+
+/**
+ * 从显示层关系里提取真实卡片端点锚点。
+ * 组收起时成员线的显示汇聚不是卡片端点，不产生锚点；同一位置多关系合并。
+ */
+export function cardEdgeAnchors(input: DisplayLinksInput): CardAnchor[] {
+  const cards = input.cards ?? [];
+  const anchors = new Map<string, CardAnchor>();
+  const add = (link: DisplayLink, end: "src" | "dst"): void => {
+    const endpoint = end === "src" ? link.src : link.dst;
+    const kind = end === "src" ? link.srcKind : link.dstKind;
+    const aggregated = end === "src" ? link.aggregatedSrc : link.aggregatedDst;
+    if (kind !== "card" || aggregated) return;
+    const card = cards.find((item) => item.id === endpoint && !item.deleted);
+    if (!card) return;
+    const point: Point = end === "src" ? { x: link.x1, y: link.y1 } : { x: link.x2, y: link.y2 };
+    const other: Point = end === "src" ? { x: link.x2, y: link.y2 } : { x: link.x1, y: link.y1 };
+    const side = groupAnchorSideOf(cardRectOf(card), point, other);
+    const key = [endpoint, Math.round(point.x * 10), Math.round(point.y * 10)].join("\u0000");
+    const existing = anchors.get(key);
+    if (existing) {
+      if (!existing.linkIds.includes(link.id)) existing.linkIds.push(link.id);
+      return;
+    }
+    anchors.set(key, {
+      cardId: endpoint,
+      endpoint,
+      side,
+      x: point.x,
+      y: point.y,
+      linkIds: [link.id],
+    });
+  };
+  for (const link of buildDisplayLinks(input).links) {
     add(link, "src");
     add(link, "dst");
   }

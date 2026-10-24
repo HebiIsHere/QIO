@@ -213,6 +213,11 @@ describe("选中对象附近的整理菜单（SelectionMenu）", () => {
     for (const hook of ["card-edit", "card-duplicate", "card-fold", "delete-card"]) {
       expect(toolbar.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
+    // 2026-10-24：视觉上六个圆形图标；旧按钮保留在 DOM 只作兼容
+    for (const hook of ["card-icon-edit", "card-icon-copy", "card-icon-hide", "card-icon-bookmark", "card-icon-delete"]) {
+      expect(toolbar.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
+    }
+    expect(toolbar.findAll('button[data-im^="card-icon-"]')).toHaveLength(5);
     // 整卡许可 UI 已移除：工具栏里不再有勾选框与许可「说明」
     expect(toolbar.find('[data-im="check"]').exists()).toBe(false);
     expect(toolbar.find(".check").exists()).toBe(false);

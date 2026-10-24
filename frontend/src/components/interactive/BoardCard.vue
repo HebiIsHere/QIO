@@ -2207,6 +2207,28 @@ watch(
       :aria-label="multi ? '所选卡片的共同操作' : kindLabel + '操作'"
       @pointerdown.stop
     >
+    <!--
+      2026-10-24 用户确认：局部工具栏改为六个独立圆形图标按钮。
+      旧按钮保留在 DOM 只作兼容与菜单承载，视觉上由本行接管。
+    -->
+    <div class="icon-tools" data-im="card-icon-tools">
+      <button class="tool-icon" type="button" data-im="card-icon-edit" title="编辑 / 完成编辑" aria-label="编辑" @click="toggleEdit">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13l1-4 7-7 3 3-7 7-4 1Z"/><path d="M9 4l3 3"/></svg>
+      </button>
+      <button class="tool-icon" type="button" data-im="card-icon-copy" title="复制" aria-label="复制" @click="emit('duplicate', card.id)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="9" rx="1"/><path d="M6 4V2h8v9h-2"/></svg>
+      </button>
+      <button class="tool-icon" type="button" data-im="card-icon-hide" :title="card.hidden ? '取消隐藏' : '隐藏'" :aria-label="card.hidden ? '取消隐藏' : '隐藏'" @click="emit('toggle', card.id, 'hidden')">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8s2.2-3.4 6-3.4S14 8 14 8s-2.2 3.4-6 3.4S2 8 2 8Z"/><circle cx="8" cy="8" r="1.5"/></svg>
+      </button>
+      <button class="tool-icon" type="button" data-im="card-icon-bookmark" :title="card.bookmarked ? '取消书签' : '加书签'" :aria-label="card.bookmarked ? '取消书签' : '加书签'" @click="emit('toggle', card.id, 'bookmarked')">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg>
+      </button>
+      <button class="tool-icon danger" type="button" data-im="card-icon-delete" title="删除" aria-label="删除" @click="emit('remove', card.id)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></svg>
+      </button>
+    </div>
+
     <!-- 多选：只显示共同适用的操作，不把单卡片编辑应用到整组 -->
     <template v-if="multi">
       <button class="tb" type="button" data-im="card-fold" :data-card-id="card.id" @click="emit('toggle', card.id, 'folded')">
@@ -2885,6 +2907,66 @@ watch(
   局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算。
   按钮字号用 --fs-sm：编辑 / 删除这些是主要操作，不缩成元信息字号。
 */
+
+/*
+ * 2026-10-24：局部工具栏视觉只保留六个圆形图标。
+ * 旧按钮 / 更多面板 / 分组菜单的 DOM 仍保留（兼容既有测试与命令路径），
+ * 但视觉上隐藏；新的 .icon-tools 接管主操作，旧的“整理”触发按钮改成第六个圆钮。
+ */
+.card-toolbar > .tb,
+.card-toolbar > .divider,
+.card-toolbar > .more-panel,
+.card-toolbar > .tb-note,
+.card-toolbar > .tb-status {
+  display: none !important;
+}
+.icon-tools { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.tool-icon {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tool-icon svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tool-icon:hover { color: var(--accent); border-color: var(--accent); background: var(--bg-elevated); }
+.tool-icon.danger { color: var(--danger); }
+.tool-icon:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* 旧 SelectionMenu 的“整理”触发按钮：保留行为，外观变成第四/第六个圆形图标。 */
+.card-toolbar > :deep(.trigger) {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0;
+}
+.card-toolbar > :deep(.trigger)::before {
+  content: "▦";
+  font-size: 15px;
+  line-height: 1;
+}
+.card-toolbar > :deep(.trigger:hover) { color: var(--accent); border-color: var(--accent); }
+
 .card-toolbar {
   position: absolute;
   z-index: 60;
