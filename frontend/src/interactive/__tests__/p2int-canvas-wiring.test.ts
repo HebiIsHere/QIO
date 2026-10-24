@@ -178,31 +178,6 @@ describe("图片卡尺寸：所有写回路径都满足原图比例", () => {
     expect(labels).toContain("移动卡片");
   });
 
-  it("键盘 ＋ 一步：图片卡按比例同时变宽变高，非图片卡仍只变一维", async () => {
-    setBoard(
-      boardState(
-        [
-          mkCard("img", 0, 0, { kind: "file", w: 400, h: 225, meta: imageMeta() }),
-          mkCard("txt", 600, 0, { w: 120, h: 70 }),
-        ],
-        { selection: ["img"] },
-      ),
-    );
-    const view = mountCanvas();
-    await view.get('[data-resize-card-id="img"] [data-resize-key="w+"]').trigger("click");
-    const img = store.board!.cards.find((card) => card.id === "img")!;
-    expect(img.w).toBeGreaterThan(400);
-    expect(Math.abs(ratioOf(img) - 16 / 9)).toBeLessThan(16 / 9 * 0.02);
-
-    // 换成非图片卡：＋ 只改宽度
-    setBoard(boardState([mkCard("txt2", 600, 0, { w: 120, h: 70 })], { selection: ["txt2"] }));
-    await nextTick();
-    await view.get('[data-resize-card-id="txt2"] [data-resize-key="w+"]').trigger("click");
-    const txt = store.board!.cards.find((card) => card.id === "txt2")!;
-    expect(txt.w).toBe(144);
-    expect(txt.h).toBe(70);
-  });
-
   it("指针 resize：图片卡拖动右下角后仍保持原图比例", async () => {
     setBoard(
       boardState([mkCard("img", 0, 0, { kind: "file", w: 320, h: 180, meta: imageMeta() })], {

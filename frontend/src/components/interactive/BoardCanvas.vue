@@ -3153,25 +3153,26 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  background: var(--bg-surface);
+  background-color: var(--bg-surface);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--accent) 16%, transparent) 0 1px, transparent 1.1px);
+  background-size: 24px 24px;
+  background-attachment: local;
   touch-action: none;
 }
 .board-viewport.dragging { user-select: none; }
 .board-viewport.panning { cursor: grabbing; }
 .board-viewport.framing { cursor: crosshair; }
-.board-scroll-content { position: relative; }
+.board-scroll-content { position: relative; min-width: 100%; min-height: 100%; }
 .board-surface {
-  --board-dot: color-mix(in srgb, var(--accent) 16%, transparent);
   position: relative;
-  background-color: var(--bg-surface);
-  background-image: radial-gradient(circle, var(--board-dot) 0 1px, transparent 1.1px);
-  background-size: 24px 24px;
-  background-position: 0 0;
+  min-width: 100%;
+  min-height: 100%;
+  background: transparent;
   will-change: transform;
 }
 /* 暗色底同主题色点阵，略提高一点点可见度；亮色保持白底。 */
-:global(:root:not([data-theme="light"])) .board-surface {
-  --board-dot: color-mix(in srgb, var(--accent) 20%, transparent);
+:global(:root:not([data-theme="light"])) .board-viewport {
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--accent) 20%, transparent) 0 1px, transparent 1.1px);
 }
 /*
  * 尺寸拖动中：关掉卡片的几何过渡（left / top / width / height）。

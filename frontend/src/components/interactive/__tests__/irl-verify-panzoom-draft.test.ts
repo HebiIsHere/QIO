@@ -174,7 +174,12 @@ describe("尺寸操作不丢草稿（§8.4 的一半）", () => {
     await nextTick();
     expect(store.draftFor(key)).toBe("展开期间的草稿");
 
-    await view.get('[data-resize-card-id="c1"] [data-resize-key="w+"]').trigger("click");
+    view.get('[data-resize-card-id="c1"] [data-resize-handle="se"]').element.dispatchEvent(
+      pointer("pointerdown", VIEW_LEFT + 220, VIEW_TOP + 180),
+    );
+    document.dispatchEvent(pointer("pointermove", VIEW_LEFT + 250, VIEW_TOP + 200));
+    document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 250, VIEW_TOP + 200));
+    await nextTick();
     expect(store.draftFor(key)).toBe("展开期间的草稿");
     expect(store.board!.cards[0].content).toBe("卡片 c1");
   });

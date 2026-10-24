@@ -16,19 +16,20 @@ function block(selector: string): string {
 }
 
 describe("板面点阵纸", () => {
-  it("亮色板面是白色底，不再使用灰黄底", () => {
+  it("点阵铺在整个视野上：白色底 + 视口自身背景", () => {
     const viewport = block(".board-viewport {");
     expect(viewport).toContain("--bg-surface");
+    expect(viewport).toContain("radial-gradient");
+    expect(viewport).toContain("background-attachment: local");
     expect(viewport).not.toContain("--bg-inset");
     const surface = block(".board-surface {");
-    expect(surface).toContain("--bg-surface");
+    expect(surface).toContain("background: transparent");
   });
 
   it("使用主题色点阵：24px 间距、1px 点、低透明度", () => {
-    const surface = block(".board-surface {");
-    expect(surface).toContain("radial-gradient");
-    expect(surface).toContain("24px 24px");
-    expect(surface).toMatch(/color-mix\([^)]*var\(--accent\)/);
-    expect(surface).toContain("1px");
+    const viewport = block(".board-viewport {");
+    expect(viewport).toContain("24px 24px");
+    expect(viewport).toMatch(/color-mix\([^)]*var\(--accent\)/);
+    expect(viewport).toContain("1px");
   });
 });

@@ -148,9 +148,10 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
     expect(view.find('[data-resize-card-id="c2"]').exists()).toBe(false);
     const host = view.get('[data-resize-card-id="c1"]');
     expect(styleOf(host.element)).toMatchObject({ left: "100px", top: "100px", width: "120px", height: "80px" });
-    // 八向热区 + 右下角标记 + 键盘 −/＋（由 ResizeHandles 自带）
-    expect(host.findAll("[data-resize-handle]")).toHaveLength(8);
-    expect(host.find("[data-resize-keys]").exists()).toBe(true);
+    // 唯一热区：右下角；其余边 / 角不再出现尺寸把手
+    expect(host.findAll("[data-resize-handle]")).toHaveLength(1);
+    expect(host.find('[data-resize-handle="se"]').exists()).toBe(true);
+    expect(host.find("[data-resize-keys]").exists()).toBe(false);
 
     // 缩放后：把手层在**未缩放**的内容层里，位置随缩放走，热区仍是 10px / 16px
     view.get(".board-viewport").element.dispatchEvent(
@@ -222,16 +223,6 @@ describe("尺寸把手层：位置对齐显示槽位，缩放后仍是真像素�
     expect(labels).toEqual([]);
     expect(rectOfCard(view, "c1")).toEqual({ x: 100, y: 100, w: 120, h: 80 });
     expect(store.board?.cards[0].w).toBe(120);
-  });
-
-  it("键盘 ＋ 一步：直接提交一次，宽度 +24", async () => {
-    store.board = board([mkCard("c1", 100, 100)], { selection: ["c1"] });
-    const view = mountCanvas();
-    await view.get('[data-resize-card-id="c1"] [data-resize-key="w+"]').trigger("click");
-    expect(labels).toEqual(["调整卡片尺寸"]);
-    expect(store.board?.cards[0].w).toBe(144);
-    expect(store.board?.cards[0].h).toBe(80);
-    expect(store.board?.groups).toEqual([]);
   });
 
   it("拉伸遇邻卡：预览与提交都停在邻卡边界 − gap（提交 == 预览），邻卡分毫不动", async () => {

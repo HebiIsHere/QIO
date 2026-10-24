@@ -29,7 +29,6 @@
 -->
 <script setup lang="ts">
 import { computed } from "vue";
-import ResizeHandles from "./ResizeHandles.vue";
 import type { LayoutRect } from "../../interactive/cardLayout";
 import type { ResizeHandle } from "../../interactive/resize";
 
@@ -132,6 +131,13 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
   event.preventDefault();
   emit("connect-start", cardId, event);
 }
+
+/** 右下角唯一缩放把手：只发 se 方向，其余边角不再有尺寸热区。 */
+function onCornerDown(cardId: string, event: PointerEvent): void {
+  event.stopPropagation();
+  event.preventDefault();
+  emit("handle-down", cardId, "se", event);
+}
 </script>
 
 <template>
@@ -143,17 +149,18 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
       :style="host.style"
       :data-resize-card-id="host.id"
     >
-      <!--
-        2026-10-14（用户要求）：板面上的卡片**不再出现宽 / 高那对按钮**（附截图为证）。
-        按钮仍渲染（组件契约与既有用例不变），但由下面的样式在**板面这一层**视觉隐藏：
-        八向拖动热区保留，键盘 / 读屏也拿不到它们。
-      -->
-      <ResizeHandles
-        :label="host.label"
+      <!-- 唯一缩放入口：右下角。其余边 / 角不再有尺寸热区。 -->
+      <button
+        class="corner-resize"
+        type="button"
+        data-im="corner-resize"
+        data-resize-handle="se"
+        :data-card-id="host.id"
+        :aria-label="host.label"
+        title="拖动右下角调整卡片大小"
         :disabled="props.disabled"
-        @handle-down="(handle, event) => emit('handle-down', host.id, handle, event)"
-        @nudge="(axis, direction) => emit('nudge', host.id, axis, direction)"
-      />
+        @pointerdown="onCornerDown(host.id, $event)"
+      ></button>
     </div>
 
     <!--
@@ -230,50 +237,133 @@ function onConnectDown(cardId: string, event: PointerEvent): void {
  * 贴在对应边的**热区内侧**（见下面的分侧规则），整个命中区仍在卡片内部 ——
  * 不会伸到卡片外面压住局部工具栏 / 相邻卡片，也不与边把手的 10px 热区重叠。
  */
+/* 唯一缩放把手：右下角 40px 热区，视觉由卡片边框自身变粗承担。 */
+.corner-resize {
+  position: absolute;
+  right: -12px;
+  bottom: -12px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: nwse-resize;
+  z-index: 3;
+}
+.corner-resize:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+.corner-resize:disabled {
+  pointer-events: none;
+}
+
+/*
+ * 连线端口：贴在卡片外侧边缘的短条，悬停时平滑变成圆点。
+ * 命中区 30×30（桌面）；视觉短条横边 16×6、竖边 6×16。
+ */
 .connect-point {
   position: absolute;
-  width: 18px;
-  height: 18px;
+  width: 30px;
+  height: 30px;
   pointer-events: auto;
   touch-action: none;
   cursor: crosshair;
 }
-/* 视觉圆点仍是 12px（命中区变大 ≠ 看起来变重）：颜色与描边沿用改动前的令牌 */
 .connect-point::after {
   content: "";
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 12px;
-  height: 12px;
+  width: 6px;
+  height: 16px;
   transform: translate(-50%, -50%);
-  border-radius: var(--r-pill);
-  background: var(--bg-elevated);
-  border: 1.5px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  opacity: 0.72;
+  box-shadow: 0 1px 5px var(--shadow-2);
+  transition:
+    width var(--dur-fast) var(--ease-1),
+    height var(--dur-fast) var(--ease-1),
+    border-radius var(--dur-fast) var(--ease-1),
+    opacity var(--dur-fast) var(--ease-1),
+    box-shadow var(--dur-fast) var(--ease-1);
 }
-/*
- * 各边的命中区**让开该边的 10px 尺寸热区**（与 ResizeHandles 的 .rz-hit-* 同厚度）：
- * 四边中点的命中共归属于尺寸把手，连接点从热区内侧开始命中。
- * 圆点（::after）与命中区同心 → 看到的圆点整个都能拖线。
- */
+.connect-point:hover::after,
+.connect-point:focus-visible::after {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  opacity: 1;
+  box-shadow: 0 0 0 5px var(--accent-soft);
+}
 .connect-point.top {
   left: 50%;
-  top: 10px;
+  top: -30px;
   transform: translateX(-50%);
 }
 .connect-point.right {
-  right: 10px;
+  right: -30px;
   top: 50%;
   transform: translateY(-50%);
 }
 .connect-point.bottom {
   left: 50%;
-  bottom: 10px;
+  bottom: -30px;
   transform: translateX(-50%);
 }
 .connect-point.left {
-  left: 10px;
+  left: -30px;
   top: 50%;
   transform: translateY(-50%);
+}
+.connect-point.top::after,
+.connect-point.bottom::after {
+  width: 16px;
+  height: 6px;
+}
+/* 方向规则在前、悬停形态在后：横边悬停也必须变成圆点，不能被方向尺寸覆盖。 */
+.connect-point.top:hover::after,
+.connect-point.bottom:hover::after,
+.connect-point.left:hover::after,
+.connect-point.right:hover::after,
+.connect-point.top:focus-visible::after,
+.connect-point.bottom:focus-visible::after,
+.connect-point.left:focus-visible::after,
+.connect-point.right:focus-visible::after {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  opacity: 1;
+  box-shadow: 0 0 0 5px var(--accent-soft);
+}
+@media (pointer: coarse) {
+  .connect-point {
+    width: 44px;
+    height: 44px;
+  }
+  .connect-point.top {
+    left: calc(50% - 22px);
+    top: -44px;
+  }
+  .connect-point.right {
+    right: -44px;
+    top: calc(50% - 22px);
+  }
+  .connect-point.bottom {
+    left: calc(50% - 22px);
+    bottom: -44px;
+  }
+  .connect-point.left {
+    left: -44px;
+    top: calc(50% - 22px);
+  }
+  .corner-resize {
+    width: 48px;
+    height: 48px;
+  }
 }
 </style>

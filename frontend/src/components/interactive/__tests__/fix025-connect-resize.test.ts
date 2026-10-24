@@ -263,7 +263,7 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
 
     // 两种操作同时可用：连接点 4 个、八向热区 8 个，同屏存在，不需要切换模式
     expect(view.find('[data-resize-card-id="a"]').exists()).toBe(true);
-    expect(resizeHandles()).toHaveLength(8);
+    expect(resizeHandles()).toHaveLength(1);
     await nextTick();
   });
 
@@ -318,146 +318,44 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     expect(connectHostStyle("a")).toEqual(resizeHostStyle("a"));
   });
 
-  it("样式守卫：命中区 ≥18px、圆点仍 12px、连接点在尺寸热区之上、尺寸热区没被缩小", () => {
+  it("样式守卫：只有右下角一个尺寸热区；连接点是外侧短条，悬停变圆点", () => {
     const layer = source("components/interactive/BoardResizeLayer.vue");
     const layerStyle = layer.slice(layer.indexOf("<style"));
-    const handles = source("components/interactive/ResizeHandles.vue");
-    const handleStyle = handles.slice(handles.indexOf("<style"));
-    const tokens = readFileSync(resolve(SRC, "styles/tokens.css"), "utf8");
+    const view = source("components/interactive/BoardCard.vue");
+
+    // 八向把手不再参与板面：不再引入 ResizeHandles
+    expect(layer).not.toMatch(/<ResizeHandles|import ResizeHandles/);
+    const cornerBlock = /\.corner-resize\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
+    expect(cornerBlock).toMatch(/width:\s*40px/);
+    expect(cornerBlock).toMatch(/height:\s*40px/);
+    expect(cornerBlock).toMatch(/cursor:\s*nwse-resize/);
+    expect(cornerBlock).toMatch(/right:\s*-12px/);
+    expect(cornerBlock).toMatch(/bottom:\s*-12px/);
 
     const pointBlock = /\.connect-point\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
-    expect(pointBlock).toMatch(/width:\s*18px/);
-    expect(pointBlock).toMatch(/height:\s*18px/);
-    expect(pointBlock).toMatch(/pointer-events:\s*auto/);
-    expect(pointBlock).toMatch(/cursor:\s*crosshair/);
-    // 视觉圆点仍是 12px（命中区变大，看起来没变重）
-    const dotBlock = /\.connect-point::after\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
-    expect(dotBlock).toMatch(/width:\s*12px/);
-    expect(dotBlock).toMatch(/height:\s*12px/);
+    expect(pointBlock).toMatch(/width:\s*30px/);
+    expect(pointBlock).toMatch(/height:\s*30px/);
+    const barBlock = /\.connect-point::after\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
+    expect(barBlock).toMatch(/width:\s*6px/);
+    expect(barBlock).toMatch(/height:\s*16px/);
+    expect(barBlock).toMatch(/border-radius:\s*8px/);
+    const hoverBlock = /\.connect-point:hover::after[^{]*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
+    expect(hoverBlock).toMatch(/width:\s*10px/);
+    expect(hoverBlock).toMatch(/height:\s*10px/);
+    expect(hoverBlock).toMatch(/border-radius:\s*50%/);
 
-    /*
-     * 同层 z-index：连接点宿主 > 尺寸宿主（沿用既有层级，避免连接点被悬停出现的
-     * 「宽 / 高」按钮面板压住）。**命中区不靠 z 序分配**：D1 之后连接点命中区已经
-     * 让开边把手的 10px 热区（见下面那条 D1 用例），四边中点稳定归尺寸把手。
-     */
-    const resizeHost = /\.resize-host\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
-    const connectHost = /\.connect-host\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
-    const layerRoot = /\.resize-layer\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
-    expect(Number(/z-index:\s*(\d+)/.exec(connectHost)?.[1])).toBeGreaterThan(Number(/z-index:\s*(\d+)/.exec(resizeHost)?.[1]));
-    expect(layerRoot).toMatch(/pointer-events:\s*none/);
-    expect(connectHost).toMatch(/pointer-events:\s*none/);
+    // 端口贴在卡片外侧：top / left 为负偏移
+    expect(/\.connect-point\.top\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "").toMatch(/top:\s*-30px/);
+    expect(/\.connect-point\.left\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "").toMatch(/left:\s*-30px/);
 
-    // 尺寸热区一个都没缩：边 10px、角 16px（与改动前逐字段相同）
-    expect(/\.rz-hit-n,\s*\.rz-hit-s\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "").toMatch(/height:\s*10px/);
-    expect(/\.rz-hit-e,\s*\.rz-hit-w\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "").toMatch(/width:\s*10px/);
-    const corner = /\.rz-hit-ne,\s*\.rz-hit-nw,\s*\.rz-hit-se,\s*\.rz-hit-sw\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "";
-    expect(corner).toMatch(/width:\s*16px/);
-    expect(corner).toMatch(/height:\s*16px/);
-
-    // 颜色只走令牌，且用到的令牌都在 tokens.css 里定义
-    expect(layerStyle).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
-    expect(layerStyle).not.toMatch(/\b(?:rgb|rgba|hsl|hsla)\(/);
-    const used = Array.from(layerStyle.matchAll(/var\((--[a-z0-9-]+)/g)).map((match) => match[1]);
-    const missing = Array.from(new Set(used)).filter((name) => !new RegExp(name + "\\s*:").test(tokens));
-    expect(missing).toEqual([]);
+    // 卡片边框自身在右下角加粗，圆角不断开
+    const afterBlock = /\.card::after\s*\{([^}]*)\}/.exec(view)?.[1] ?? "";
+    expect(afterBlock).toMatch(/border-right:\s*3px solid/);
+    expect(afterBlock).toMatch(/border-bottom:\s*3px solid/);
+    expect(afterBlock).toMatch(/width:\s*34px/);
+    expect(afterBlock).toMatch(/mask-image/);
   });
 
-  /*
-   * D1（真实浏览器验收发现）：连接点的 18×18 命中区从前骑在边的 10px 热区上，
-   * 而连接点宿主 z-index 更高 —— 「抓边正中」被连接点抢走命中，按下去是拉线、拉不动尺寸。
-   * 这条用例把「命中区域分配」算成几何事实：命中区与任何尺寸热区**零重叠**，
-   * 四边中点不在任何连接点命中区里，圆点与命中区同心（看到的圆点整个可拖线）。
-   */
-  it("D1：连接点命中区让开边把手热区 —— 四边中点归尺寸把手，圆点仍整个可拖线", () => {
-    const layer = source("components/interactive/BoardResizeLayer.vue");
-    const layerStyle = layer.slice(layer.indexOf("<style"));
-    const handles = source("components/interactive/ResizeHandles.vue");
-    const handleStyle = handles.slice(handles.indexOf("<style"));
-
-    const numberIn = (block: string, prop: string): number =>
-      Number(new RegExp(prop + ":\\s*(-?[\\d.]+)px").exec(block)?.[1] ?? Number.NaN);
-    const blockOf = (text: string, selector: string): string =>
-      new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*\\{([^}]*)\\}").exec(text)?.[1] ?? "";
-
-    // 热区厚度与角尺寸（ResizeHandles 是唯一来源）
-    const hBand = /\.rz-hit-n,\s*\.rz-hit-s\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "";
-    const vBand = /\.rz-hit-e,\s*\.rz-hit-w\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "";
-    const cornerBlock = /\.rz-hit-ne,\s*\.rz-hit-nw,\s*\.rz-hit-se,\s*\.rz-hit-sw\s*\{([^}]*)\}/.exec(handleStyle)?.[1] ?? "";
-    const band = numberIn(hBand, "height");
-    expect(band).toBe(10);
-    expect(numberIn(vBand, "width")).toBe(band);
-    const corner = numberIn(cornerBlock, "width");
-    expect(corner).toBe(16);
-
-    // 连接点命中区尺寸
-    const pointBlock = blockOf(layerStyle, ".connect-point");
-    const hit = { w: numberIn(pointBlock, "width"), h: numberIn(pointBlock, "height") };
-    expect(hit).toEqual({ w: 18, h: 18 });
-
-    // 命中区**让开**对应边的热区：偏移量必须等于热区厚度
-    expect(numberIn(blockOf(layerStyle, ".connect-point.top"), "top")).toBe(band);
-    expect(numberIn(blockOf(layerStyle, ".connect-point.bottom"), "bottom")).toBe(band);
-    expect(numberIn(blockOf(layerStyle, ".connect-point.left"), "left")).toBe(band);
-    expect(numberIn(blockOf(layerStyle, ".connect-point.right"), "right")).toBe(band);
-
-    // 圆点与命中区同心（否则「看起来能点的地方」与「真正能点的地方」会错开）
-    const dot = blockOf(layerStyle, ".connect-point::after");
-    expect(dot).toMatch(/left:\s*50%/);
-    expect(dot).toMatch(/top:\s*50%/);
-    expect(dot).toMatch(/transform:\s*translate\(-50%,\s*-50%\)/);
-
-    interface Rect { x: number; y: number; w: number; h: number }
-    const overlaps = (a: Rect, b: Rect): boolean =>
-      a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-    const inside = (p: { x: number; y: number }, r: Rect): boolean =>
-      p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
-
-    for (const card of [{ w: 180, h: 96 }, { w: 260, h: 170 }, { w: 560, h: 420 }, { w: 1200, h: 800 }]) {
-      const W = card.w;
-      const H = card.h;
-      const connect: Record<string, Rect> = {
-        top: { x: W / 2 - hit.w / 2, y: band, w: hit.w, h: hit.h },
-        bottom: { x: W / 2 - hit.w / 2, y: H - band - hit.h, w: hit.w, h: hit.h },
-        left: { x: band, y: H / 2 - hit.h / 2, w: hit.w, h: hit.h },
-        right: { x: W - band - hit.w, y: H / 2 - hit.h / 2, w: hit.w, h: hit.h },
-      };
-      const resizeHit: Rect[] = [
-        { x: band, y: 0, w: Math.max(0, W - band * 2), h: band },
-        { x: band, y: H - band, w: Math.max(0, W - band * 2), h: band },
-        { x: 0, y: band, w: band, h: Math.max(0, H - band * 2) },
-        { x: W - band, y: band, w: band, h: Math.max(0, H - band * 2) },
-        { x: 0, y: 0, w: corner, h: corner },
-        { x: W - corner, y: 0, w: corner, h: corner },
-        { x: 0, y: H - corner, w: corner, h: corner },
-        { x: W - corner, y: H - corner, w: corner, h: corner },
-      ];
-      for (const [side, rect] of Object.entries(connect)) {
-        for (const handle of resizeHit) {
-          expect(
-            overlaps(rect, handle),
-            side + " 连接点命中区与尺寸热区重叠（卡片 " + W + "×" + H + "）",
-          ).toBe(false);
-        }
-        // 命中区整体留在卡片内：不伸到卡片外压住局部工具栏 / 相邻卡片
-        expect(rect.x).toBeGreaterThanOrEqual(0);
-        expect(rect.y).toBeGreaterThanOrEqual(0);
-        expect(rect.x + rect.w).toBeLessThanOrEqual(W);
-        expect(rect.y + rect.h).toBeLessThanOrEqual(H);
-      }
-      // 四边中点不在连接点命中区里 —— 它们必须稳定地开始拉伸
-      const midpoints = [
-        { x: W / 2, y: 0 },
-        { x: W / 2, y: H },
-        { x: 0, y: H / 2 },
-        { x: W, y: H / 2 },
-      ];
-      for (const point of midpoints) {
-        for (const rect of Object.values(connect)) {
-          expect(inside(point, rect), "四边中点落进了连接点命中区（卡片 " + W + "×" + H + "）").toBe(false);
-        }
-      }
-    }
-  });
 });
 
 describe("命中与手势：连接点拖线、尺寸调整、正文拖动各归各", () => {
@@ -585,7 +483,7 @@ describe("命中与手势：连接点拖线、尺寸调整、正文拖动各归�
   it("拖线中尺寸把手让路，取消后立刻恢复：两种操作不需要切换模式", async () => {
     store.board = board([mkCard("a", 0, 0), mkCard("b", 400, 0)], { selection: ["a"] });
     const view = mountCanvas();
-    expect(resizeHandles()).toHaveLength(8);
+    expect(resizeHandles()).toHaveLength(1);
 
     await pressConnectPoint();
     // 拖线进行中：尺寸热区整体让路（同一个指针不驱动两件事），连接点照常在
@@ -595,7 +493,7 @@ describe("命中与手势：连接点拖线、尺寸调整、正文拖动各归�
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await nextTick();
     expect(wrapper!.find('[data-im="link-draft"]').exists()).toBe(false);
-    expect(view.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(8);
+    expect(view.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(1);
 
     // 恢复后尺寸拖动照常提交一次
     view.get('[data-resize-card-id="a"] [data-resize-handle="se"]').element.dispatchEvent(pointer("pointerdown", VIEW_LEFT + 100, VIEW_TOP + 60));
@@ -626,7 +524,7 @@ describe("取消路径：拖线在 Esc / 指针中断 / 失焦 / 卸载后都不
     await nextTick();
     expect(wrapper!.find('[data-im="link-draft"]').exists()).toBe(false);
     expect(store.board?.links).toHaveLength(0);
-    expect(wrapper!.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(8);
+    expect(wrapper!.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(1);
     // 松手也不会补建关系（监听已经摘掉）
     releaseAt(450, 30);
     await nextTick();
@@ -641,7 +539,7 @@ describe("取消路径：拖线在 Esc / 指针中断 / 失焦 / 卸载后都不
     await nextTick();
     expect(wrapper!.find('[data-im="link-draft"]').exists()).toBe(false);
     expect(store.board?.links).toHaveLength(0);
-    expect(wrapper!.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(8);
+    expect(wrapper!.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(1);
   });
 
   it("窗口失焦：半条拖线不再残留（原来这一条出口只判拖动 / 框选 / 平移）", async () => {
@@ -652,7 +550,7 @@ describe("取消路径：拖线在 Esc / 指针中断 / 失焦 / 卸载后都不
     await nextTick();
     expect(wrapper!.find('[data-im="link-draft"]').exists()).toBe(false);
     expect(store.board?.links).toHaveLength(0);
-    expect(wrapper!.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(8);
+    expect(wrapper!.findAll('[data-resize-card-id="a"] [data-resize-handle]')).toHaveLength(1);
   });
 
   it("卸载：草稿与 window 监听一起清掉，卸载后的松手不会补建关系", async () => {
@@ -707,7 +605,7 @@ describe("hitCardAt 认显示矩形：resize / 平移缩放之后落点仍然准
     store.board = board([mkCard("a", 0, 0), mkCard("b", 400, 0, 300, 60)], { selection: ["b"] });
     const view = mountCanvas();
     // 把 b 从 300 宽缩到 200 宽（最小 180）：右边界 700 → 600
-    view.get('[data-resize-card-id="b"] [data-resize-handle="e"]').element.dispatchEvent(pointer("pointerdown", VIEW_LEFT + 700, VIEW_TOP + 30));
+    view.get('[data-resize-card-id="b"] [data-resize-handle="se"]').element.dispatchEvent(pointer("pointerdown", VIEW_LEFT + 700, VIEW_TOP + 30));
     document.dispatchEvent(pointer("pointermove", VIEW_LEFT + 600, VIEW_TOP + 30));
     document.dispatchEvent(pointer("pointerup", VIEW_LEFT + 600, VIEW_TOP + 30));
     await nextTick();

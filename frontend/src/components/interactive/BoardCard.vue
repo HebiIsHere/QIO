@@ -2161,6 +2161,30 @@ watch(
 
 
 /* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
+.card::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 34px;
+  height: 34px;
+  border-right: 3px solid;
+  border-bottom: 3px solid;
+  border-color: inherit;
+  border-bottom-right-radius: inherit;
+  pointer-events: none;
+  opacity: 0.28;
+  -webkit-mask-image: linear-gradient(135deg, transparent 0 30%, var(--text-strong) 78%, var(--text-strong) 100%);
+  mask-image: linear-gradient(135deg, transparent 0 30%, var(--text-strong) 78%, var(--text-strong) 100%);
+  transition: opacity var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1);
+}
+.card:hover::after,
+.card.selected::after {
+  opacity: 1;
+}
+.card.dragging::after {
+  opacity: 0;
+}
 .card:hover { border-color: var(--border-strong); }
 .card.selected {
   border-color: var(--accent);
