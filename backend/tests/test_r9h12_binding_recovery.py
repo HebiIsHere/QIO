@@ -424,6 +424,53 @@ def test_recover_saved_candidate_identity_mismatch_not_adopted(tmp_path):
     assert outcome.unresolved[0]["failure"] == "candidate_identity_mismatch"
 
 
+def test_recover_uses_recorded_candidate_identity_and_birth(tmp_path):
+    """保存候选若已带 identity/birth，采纳时必须与当前观测一致且原样写入绑定。"""
+    a = _plain_file(tmp_path / "bin-a", "runner")
+    observed = file_identity.identity_of(a)
+    assert observed is not None
+    candidate = _candidate(a, identity=observed.key)
+    candidate["birth_key"] = observed.birth_key
+    limits = (_unbound_limit(candidates=[candidate]),)
+
+    outcome = requirement_limits.recover_program_bindings(
+        limits, requirement_id="req_recorded", version=2, status="active"
+    )
+
+    assert outcome.complete is True
+    binding = outcome.limits[0]["objects"][0]["program_binding"]
+    assert binding["identity"] == observed.key
+    assert binding["birth_key"] == observed.birth_key
+
+    # 记录的生命周期事实与当前不同 -> 不采纳（同一 identity 也不是同一生命周期对象）。
+    stale = _candidate(a, identity=observed.key)
+    stale["birth_key"] = "fake:creation:1"
+    stale_outcome = requirement_limits.recover_program_bindings(
+        (_unbound_limit(candidates=[stale]),),
+        requirement_id="req_stale_birth",
+        version=2,
+        status="active",
+    )
+    assert stale_outcome.complete is False
+    assert stale_outcome.unresolved[0]["failure"] == "candidate_lifecycle_mismatch"
+    assert "program_binding" not in stale_outcome.limits[0]["objects"][0]
+
+
+def test_current_binding_candidates_are_audit_only(tmp_path, monkeypatch):
+    a = _executable(tmp_path / "bin-a")
+    _set_path_only(monkeypatch, a.parent)
+    limits = requirement_limits.normalize_limits([_PROGRAM_LIMIT])
+
+    facts = requirement_limits.current_binding_candidates(limits)
+
+    assert facts and facts[0]["name"] == "runner"
+    assert os.path.normcase(os.path.realpath(facts[0]["path"])) == os.path.normcase(
+        os.path.realpath(str(a))
+    )
+    assert facts[0]["verified"] is False and facts[0]["audit_only"] is True
+    assert "program_binding" not in limits[0]["objects"][0], "审计事实不得写绑定"
+
+
 def test_recover_already_bound_object_untouched_by_any_candidate(tmp_path, monkeypatch):
     a = _plain_file(tmp_path / "bin-a", "runner")
     b = _plain_file(tmp_path / "bin-b", "runner")
