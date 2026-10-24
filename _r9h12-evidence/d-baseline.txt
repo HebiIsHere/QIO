@@ -1,0 +1,175 @@
+R9-H12 D 角色基线证据（独立验收 / baseline red）
+===================================================
+生成时间: 2026-10-25T02:00:32+08:00（Asia/Shanghai）
+worktree: D:/qio-dev/qio-r9h12-d
+分支: r9h12/d
+基线提交: 503df11a91a905dff6c1d774bcab08aec226ff09（r9h11/main HEAD）
+
+环境事实（命令实测）:
+python 3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]
+platform Windows-10-10.0.26200-SP0
+os.name nt
+pytest 9.1.1
+503df11a91a905dff6c1d774bcab08aec226ff09
+r9h12/d
+
+平台能力 / 真实边界:
+* 真实可执行程序：Windows 下复制真实 cmd.exe（shutil.copy2）为临时程序；真实 PATH 环境变量；
+  真实子进程启动（asyncio.create_subprocess_exec 只加计数 spy，仍真正启动）与真实 marker 文件；
+* 真实硬链接：os.link 在 NTFS 临时目录成功（P1/P2/P3 用例没有 skip），同一文件对象的不同入口名/路径真实存在；
+* 真实装配：真实 SQLite（migrations）+ 真实台账 RequirementLedger + 真实审批服务 + 真实引擎/工具；
+* 模型：本文件不调用任何模型（无 fake 模型参与，也不联网）；
+* 模拟（已标注）:
+  - P2 保存时 A 身份不可读：只在身份提供器边界 agent.services.file_identity.identity_of 注入
+    （保存后关闭注入，A 身份恢复可读）；A 文件真实存在；
+  - P2 恢复期当前候选解析器：fake requirement_limits._probe_program_binding 返回 B 的绑定事实
+    （同时真实 PATH 也确实解析到 B）；B 是独立复制件（与 A 是不同文件对象，identity 不同）；
+  - P3 限制路径身份不可读：只在身份提供器边界注入限制路径一条事实；限制路径/硬链接真实存在；
+* 本机无法稳定复现的操作系统事实（文件身份读取失败）用上述边界注入替代，其余全部真实。
+
+TDD 说明: 基线（未修复）上按契约期望运行，失败=预期红；失败点均落在契约要求的行为断言上，
+不是环境/导入错误。集成 r9h12/main 后同一文件必须绿（见 d-after.txt）。
+
+==============================================================================
+一、新增独立验收 tests/test_r9h12_regressions.py（基线红）
+命令: cd D:/qio-dev/qio-r9h12-d/backend; & ./.venv/Scripts/python.exe -m pytest tests/test_r9h12_regressions.py -o addopts="" -v -p no:cacheprovider --tb=line --show-capture=no
+预期: P1/P2/P3/规则反例 4 红；不完整绑定/可靠无关/已绑定不同入口 3 绿
+结果: 4 failed, 3 passed
+==============================================================================
+
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- D:\qio-dev\qio-r9h12-d\backend\.venv\Scripts\python.exe
+rootdir: D:\qio-dev\qio-r9h12-d\backend
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 7 items
+
+tests/test_r9h12_regressions.py::test_p1_unbound_hardlink_alternate_entry_launches FAILED [ 14%]
+tests/test_r9h12_regressions.py::test_p2_saved_candidate_not_rebound_to_current_path FAILED [ 28%]
+tests/test_r9h12_regressions.py::test_p3_limit_path_identity_unreadable_alias_read_denied FAILED [ 42%]
+tests/test_r9h12_regressions.py::test_rule_different_entry_name_and_lookup_elsewhere_not_allow FAILED [ 57%]
+tests/test_r9h12_regressions.py::test_rule_incomplete_binding_not_allow PASSED [ 71%]
+tests/test_r9h12_regressions.py::test_rule_reliable_unrelated_still_continues PASSED [ 85%]
+tests/test_r9h12_regressions.py::test_rule_bound_entry_resolves_to_other_object_allowed PASSED [100%]
+
+================================== FAILURES ===================================
+E   AssertionError: ('另一个入口名解析到保存时本应限制的同一程序对象，必须在启动前拒绝', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_digest': 'ecc185521243ef50f7ebc8cce6de12a130edb98692cebd453d9bdfb3bb82626c', 'category': None, 'isolation_mechanisms': ['job_object'], 'write_scope_pre_enforced': False, 'guard_boundary': 'not_checked', 'capability_boundaries': ['read_not_isolated：Low IL 不阻止读取当前账户可读的内容', 'network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）', 'unrestricted_mode：无限制模式不建立写范围/Low IL 边界', 'write_scope_not_pre_enforced：普通命令的写范围只做事后核验分类，没有事前阻断（任意程序/脚本的副作用无法在启动前可靠限定）', 'interpreter_side_effects_not_containable：解释器/脚本可执行任意副作用（写/删/外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+    assert True is False
+     +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_digest': 'ecc185521243ef50f7ebc8cce6de12a130edb98692cebd453d9bdfb3bb82626c', 'category': None, 'isolation_mechanisms': ['job_object'], 'write_scope_pre_enforced': False, 'guard_boundary': 'not_checked', 'capability_boundaries': ['read_not_isolated：Low IL 不阻止读取当前账户可读的内容', 'network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）', 'unrestricted_mode：无限制模式不建立写范围/Low IL 边界', 'write_scope_not_pre_enforced：普通命令的写范围只做事后核验分类，没有事前阻断（任意程序/脚本的副作用无法在启动前可靠限定）', 'interpreter_side_effects_not_containable：解释器/脚本可执行任意副作用（写/删/外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+D:\qio-dev\qio-r9h12-d\backend\tests\test_r9h12_regressions.py:444: AssertionError: ('另一个入口名解析到保存时本应限制的同一程序对象，必须在启动前拒绝', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_digest': 'ecc185521243ef50f7ebc8cce6de12a130edb98692cebd453d9bdfb3bb82626c', 'category': None, 'isolation_mechanisms': ['job_object'], 'write_scope_pre_enforced': False, 'guard_boundary': 'not_checked', 'capability_boundaries': ['read_not_isolated：Low IL 不阻止读取当前账户可读的内容', 'network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）', 'unrestricted_mode：无限制模式不建立写范围/Low IL 边界', 'write_scope_not_pre_enforced：普通命令的写范围只做事后核验分类，没有事前阻断（任意程序/脚本的副作用无法在启动前可靠限定）', 'interpreter_side_effects_not_containable：解释器/脚本可执行任意副作用（写/删/外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E   AssertionError: ('保存候选 A 仍是本限制的相关对象（未恢复），不得读取', ToolResult(ok=True, content='[read-by-r9h12-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+    assert True is False
+     +  where True = ToolResult(ok=True, content='[read-by-r9h12-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+D:\qio-dev\qio-r9h12-d\backend\tests\test_r9h12_regressions.py:527: AssertionError: ('保存候选 A 仍是本限制的相关对象（未恢复），不得读取', ToolResult(ok=True, content='[read-by-r9h12-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E   AssertionError: ('限制路径身份不可读时，硬链接正文不得返回（旧实现判无关并读取，红）', ToolResult(ok=True, content='[read-by-r9h12-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+    assert True is False
+     +  where True = ToolResult(ok=True, content='[read-by-r9h12-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+D:\qio-dev\qio-r9h12-d\backend\tests\test_r9h12_regressions.py:681: AssertionError: ('限制路径身份不可读时，硬链接正文不得返回（旧实现判无关并读取，红）', ToolResult(ok=True, content='[read-by-r9h12-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E   AssertionError: (<Verdict.ALLOW: 'allow'>, '完全无限制模式下不再加常规审批（仍受操作系统账户权限约束）')
+    assert <Verdict.ALLOW: 'allow'> == <Verdict.DENY: 'deny'>
+      
+      - deny
+      + allow
+D:\qio-dev\qio-r9h12-d\backend\tests\test_r9h12_regressions.py:269: AssertionError: (<Verdict.ALLOW: 'allow'>, '完全无限制模式下不再加常规审批（仍受操作系统账户权限约束）')
+=========================== short test summary info ===========================
+FAILED tests/test_r9h12_regressions.py::test_p1_unbound_hardlink_alternate_entry_launches
+FAILED tests/test_r9h12_regressions.py::test_p2_saved_candidate_not_rebound_to_current_path
+FAILED tests/test_r9h12_regressions.py::test_p3_limit_path_identity_unreadable_alias_read_denied
+FAILED tests/test_r9h12_regressions.py::test_rule_different_entry_name_and_lookup_elsewhere_not_allow
+========================= 4 failed, 3 passed in 6.65s =========================
+
+逐用例（基线）:
+* test_p1_unbound_hardlink_alternate_entry_launches: FAILED（红）—— 真实硬链接 alternate 按名称调用被基线
+  判为「不同入口名=无关」，程序真实启动并写出 marker；绝对路径调用在基线已被拒（保留断言）。
+* test_p2_saved_candidate_not_rebound_to_current_path: FAILED（红）—— 保存候选 A 在未恢复时被读取并
+  返回正文（当前 PATH 解析到 B -> 基线 UNRELATED）；恢复分支（绑定 B / A 之后可执行）由基线探针确认，见第三节。
+* test_p3_limit_path_identity_unreadable_alias_read_denied: FAILED（红）—— 限制路径身份不可读时读取真实
+  硬链接返回正文（基线判 path_limit_identity_unavailable=UNRELATED）。
+* test_rule_different_entry_name_and_lookup_elsewhere_not_allow: FAILED（红）—— 「不同入口名」与
+  「当前解析到别处」两条依据单独就把执行判成 ALLOW；契约 §2 禁止这种 UNRELATED。
+* test_rule_incomplete_binding_not_allow: PASSED（守住：不完整绑定不得放行，基线已是 UNKNOWN）。
+* test_rule_reliable_unrelated_still_continues: PASSED（守住：候选不存在/操作范围外/已绑定不同对象/前缀外仍放行）。
+* test_rule_bound_entry_resolves_to_other_object_allowed: PASSED（守住：已绑定 + 不同入口名且解析对象身份
+  可读且不同 -> 可靠无关，仍允许真实执行）。
+==============================================================================
+二、修订 tests/test_r9h11_regressions.py 的错误规则守卫（基线红 1 个）
+命令: cd D:/qio-dev/qio-r9h12-d/backend; & ./.venv/Scripts/python.exe -m pytest tests/test_r9h11_regressions.py -o addopts="" -v -p no:cacheprovider --tb=line --show-capture=no
+预期: 修订后的 test_p1_unbound_does_not_block_other_operations_entries_or_objects 红；其余 18 绿
+结果: 1 failed, 18 passed
+==============================================================================
+
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- D:\qio-dev\qio-r9h12-d\backend\.venv\Scripts\python.exe
+rootdir: D:\qio-dev\qio-r9h12-d\backend
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 19 items
+
+tests/test_r9h11_regressions.py::test_p1_unbound_name_entry_denied_before_launch PASSED [  5%]
+tests/test_r9h11_regressions.py::test_p1_unbound_absolute_path_denied_before_launch PASSED [ 10%]
+tests/test_r9h11_regressions.py::test_p1_unbound_read_and_summary_denied_before_any_read PASSED [ 15%]
+tests/test_r9h11_regressions.py::test_p1_unbound_json_unchanged_after_env_change_and_reopen PASSED [ 21%]
+tests/test_r9h11_regressions.py::test_p1_unbound_approval_recovery_does_not_launch PASSED [ 26%]
+tests/test_r9h11_regressions.py::test_p1_unbound_does_not_block_other_operations_entries_or_objects FAILED [ 31%]
+tests/test_r9h11_regressions.py::test_p1_reliable_unrelated_cases_still_continue PASSED [ 36%]
+tests/test_r9h11_regressions.py::test_p2_read_limit_hardlink_protected_after_original_path_replaced PASSED [ 42%]
+tests/test_r9h11_regressions.py::test_p2_write_limit_hardlink_protected_after_original_path_replaced PASSED [ 47%]
+tests/test_r9h11_regressions.py::test_p2_delete_limit_hardlink_protected_after_original_path_replaced PASSED [ 52%]
+tests/test_r9h11_regressions.py::test_p2_execute_limit_hardlink_and_invalidated_path_stopped_before_launch PASSED [ 57%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[kept] PASSED [ 63%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[deleted] PASSED [ 68%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[moved] PASSED [ 73%]
+tests/test_r9h11_regressions.py::test_p3_real_delete_recreate_new_object_denied_before_launch PASSED [ 78%]
+tests/test_r9h11_regressions.py::test_p3_number_reuse_same_identity_different_lifecycle_denied_before_start PASSED [ 84%]
+tests/test_r9h11_regressions.py::test_p3_old_hardlink_still_protected_after_number_reuse PASSED [ 89%]
+tests/test_r9h11_regressions.py::test_p3_lifecycle_unverifiable_denied_before_start PASSED [ 94%]
+tests/test_r9h11_regressions.py::test_p3_identity_unavailable_denied_before_start PASSED [100%]
+
+================================== FAILURES ===================================
+E   AssertionError: ('不同入口名单独不能算可靠无关（§2）：保存无绑定且无保存候选时必须失败关闭', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_digest': '188da98acbd3c94330003d10239dfee13eaafec626166586b26138a82f3f0c3c', 'category': None, 'isolation_mechanisms': ['job_object'], 'write_scope_pre_enforced': False, 'guard_boundary': 'not_checked', 'capability_boundaries': ['read_not_isolated：Low IL 不阻止读取当前账户可读的内容', 'network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）', 'unrestricted_mode：无限制模式不建立写范围/Low IL 边界', 'write_scope_not_pre_enforced：普通命令的写范围只做事后核验分类，没有事前阻断（任意程序/脚本的副作用无法在启动前可靠限定）', 'interpreter_side_effects_not_containable：解释器/脚本可执行任意副作用（写/删/外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+    assert True is False
+     +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_digest': '188da98acbd3c94330003d10239dfee13eaafec626166586b26138a82f3f0c3c', 'category': None, 'isolation_mechanisms': ['job_object'], 'write_scope_pre_enforced': False, 'guard_boundary': 'not_checked', 'capability_boundaries': ['read_not_isolated：Low IL 不阻止读取当前账户可读的内容', 'network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）', 'unrestricted_mode：无限制模式不建立写范围/Low IL 边界', 'write_scope_not_pre_enforced：普通命令的写范围只做事后核验分类，没有事前阻断（任意程序/脚本的副作用无法在启动前可靠限定）', 'interpreter_side_effects_not_containable：解释器/脚本可执行任意副作用（写/删/外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+D:\qio-dev\qio-r9h12-d\backend\tests\test_r9h11_regressions.py:706: AssertionError: ('不同入口名单独不能算可靠无关（§2）：保存无绑定且无保存候选时必须失败关闭', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_digest': '188da98acbd3c94330003d10239dfee13eaafec626166586b26138a82f3f0c3c', 'category': None, 'isolation_mechanisms': ['job_object'], 'write_scope_pre_enforced': False, 'guard_boundary': 'not_checked', 'capability_boundaries': ['read_not_isolated：Low IL 不阻止读取当前账户可读的内容', 'network_not_isolated：本机没有强制网络隔离（可发往任意可达主机）', 'unrestricted_mode：无限制模式不建立写范围/Low IL 边界', 'write_scope_not_pre_enforced：普通命令的写范围只做事后核验分类，没有事前阻断（任意程序/脚本的副作用无法在启动前可靠限定）', 'interpreter_side_effects_not_containable：解释器/脚本可执行任意副作用（写/删/外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+=========================== short test summary info ===========================
+FAILED tests/test_r9h11_regressions.py::test_p1_unbound_does_not_block_other_operations_entries_or_objects
+======================== 1 failed, 18 passed in 13.05s ========================
+
+旧期望 -> 新期望修订清单（保留原输入/复现，不删除用例）:
+1) test_p1_unbound_does_not_block_other_operations_entries_or_objects
+   原输入/步骤: 同一份保存（PATH 空目录保存 execute+program_name=runner，无绑定）、同一程序目录、
+   同一次执行（program='other' 与另一目录同名 runner 的绝对路径）。
+   旧期望: 不同入口名程序『放行且真正执行』；另一目录同名程序绝对路径『放行』。
+   新期望: 两者均失败关闭（工具拒绝且 0 次启动；引擎 DENY/UNKNOWN=object_state_unconfirmed）。
+   依据: 冻结契约 §2 明确禁止仅凭『入口名称不同』『当前 PATH 解析到别的对象』生成 UNRELATED；
+   §3.2 规定保存无绑定且无保存候选时，入口名不同/解析到别处 -> UNKNOWN（失败关闭）。
+   保留: 操作范围外读取同一程序文件仍放行（operation_out_of_scope 可靠无关）。
+2) 新增 test_p1_reliable_unrelated_cases_still_continue（补契约 §6.2 要求）
+   覆盖: 候选不存在、操作范围外、已绑定不同对象（真实执行）、前缀外；基线全绿（可靠无关继续）。
+未删除任何原用例；未放宽任何其它断言。
+==============================================================================
+三、基线行为探针（P2 恢复分支；临时探针脚本运行后已删除，未提交）
+说明: P2 用例在『未恢复读取 A』处已先红，因此同一基线探针单独确认恢复分支:
+  - 保存对象: {'kind': 'program_name', 'value': 'd12probe2prog', 'binding_state': 'unresolved',
+    'binding_failure': 'identity_unavailable', 'binding_candidates': [{'path': '...\\p2a\\d12probe2prog.exe', ...}]}
+  - 未恢复执行 A: ok=True, marker 出现（基线把 A 当无关）
+  - 调用 ctx._ensure_legacy_structured_limits（fake 当前候选解析器指向 B）后:
+    program_binding.path = ...\\p2b\\d12probe2prog.exe（基线把限制绑定到 B —— 契约 §4 禁止）
+  - 恢复后执行 A: ok=True, marker 出现（A 变成『无关』可执行 —— 契约要求 A 是绑定对象）
+P1 探针（同一基线）: 保存 lookup_failed -> 绝对路径 denied；alternate 按名称调用 ok=True 且 marker 存在；
+  authorize(alternate) = ALLOW。
+P3 探针（同一基线）: 读硬链接 ok=True、content='probe body'；authorize = ALLOW。
+以上与用例红点一致，证明红的原因就是契约要求被违反，不是测试装配问题。
+==============================================================================
+四、基线结论
+==============================================================================
+* 基线红 5 个: H12 新文件 4 红（P1/P2/P3/规则反例） + 修订后的 H11 守卫 1 红。
+* 守住绿 21 个: H12 文件 3 绿 + H11 修订文件 18 绿（含新增可靠无关守卫）。
+* 失败断言位置（--tb=line 实测）:
+  - test_r9h12_regressions.py:444（P1 alternate 被放行）
+  - test_r9h12_regressions.py:527（P2 未恢复读取 A 返回正文）
+  - test_r9h12_regressions.py:681（P3 限制路径身份不可读仍返回正文）
+  - test_r9h12_regressions.py:269（规则反例: 不同入口名 ALLOW）
+  - test_r9h11_regressions.py:706（修订后的旧守卫: 不同入口名仍放行）
+* 未改生产代码；本分支只改/新增 tests 与证据目录。

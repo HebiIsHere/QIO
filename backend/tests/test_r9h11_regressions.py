@@ -17,6 +17,15 @@ recheck_approved / 台账 / 审批恢复）与冻结契约里的状态码字符�
   （本机无法稳定复现操作系统 file_id 复用，见 test_p3_real_delete_recreate 的实测记录），
   注入点只替换 agent.services.file_identity.identity_of 这一身份提供器边界，
   文件本身仍真实存在；相关用例 docstring 均以「模拟」开头注明。
+
+R9-H12 修订（_R9H12-COMMON.md §6.2；保留原始输入与复现步骤，只改期望）：
+* test_p1_unbound_does_not_block_other_operations_entries_or_objects：
+  「不同入口名执行另一程序」「同名程序另一目录绝对路径」过去断言放行，
+  依据只是名称不同/当前解析到别处 —— 冻结契约 §2 明确禁止据此生成 UNRELATED。
+  现改为 UNKNOWN/DENY（§3.2：保存无绑定且无保存候选时，失败关闭）。
+  操作范围外仍然可靠无关（保留放行断言）。
+* 新增 test_p1_reliable_unrelated_cases_still_continue：补契约 §2 白名单的
+  可靠无关（候选不存在、操作范围外、已绑定不同对象、前缀外）必须继续放行。
 """
 
 from __future__ import annotations
@@ -644,7 +653,15 @@ async def test_p1_unbound_approval_recovery_does_not_launch(
 async def test_p1_unbound_does_not_block_other_operations_entries_or_objects(
     ctx, tmp_path, monkeypatch
 ):
-    """有可靠依据的无关对象不阻塞：操作范围外/不同入口名/不同对象。"""
+    """有可靠依据的无关对象不阻塞；不同入口名/同名不同路径不再单独算无关。
+
+    R9-H12 修订（_R9H12-COMMON.md §6.2，保留原始输入与复现步骤，只改期望）：
+    * 旧期望：执行不同入口名的另一程序 -> 放行且真正启动；同名程序（另一目录
+      绝对路径）-> 放行。依据只是「入口名不同/当前解析到别处」，而冻结契约 §2
+      明确禁止仅凭这两类事实生成 UNRELATED。
+    * 新期望：保存时查找失败（无绑定、无保存候选）时，两者都必须失败关闭
+      （§3.2 -> UNKNOWN/DENY）；操作范围外仍按可靠无关放行。
+    """
     program_dir = tmp_path / "p1-unrelated-bin"
     runner_text = _text_program(program_dir)
     other_program = _copy_program(program_dir, "other")
@@ -664,7 +681,7 @@ async def test_p1_unbound_does_not_block_other_operations_entries_or_objects(
     )
     binding = _binding(ctx, requirement.requirement_id)
 
-    # 1) 操作范围外：同一程序文件的读取不受 execute 限制阻塞。
+    # 1) 操作范围外：同一程序文件的读取不受 execute 限制阻塞（可靠无关，保持放行）。
     unrelated_text = tmp_path / "p1-unrelated-note.txt"
     unrelated_text.write_text("普通文件内容\n", encoding="utf-8")
     read_tool = FsReadTool(computer=ctx.computer, security=ctx.authorization)
@@ -674,20 +691,26 @@ async def test_p1_unbound_does_not_block_other_operations_entries_or_objects(
     assert note_read.ok is True, note_read
     assert program_read.ok is True, program_read
 
-    # 2) 不同入口名：执行另一个程序（不同名称）不被阻塞，且真正执行。
-    root = tmp_path / "p1-unrelated-root"
-    args, marker = _launch_args(root, "other-marker.txt")
+    launches = _spy_launch(monkeypatch)
     tool = RunProgramTool(
         computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization
     )
+
+    # 2) 不同入口名（R9-H12 修订）：旧期望「放行且真正执行」，新期望失败关闭。
+    root = tmp_path / "p1-unrelated-root"
+    args, marker = _launch_args(root, "other-marker.txt")
     with requirement_context(binding):
         other_result = await tool.run(
             program="other", args=args, cwd=str(marker.parent), timeout=30
         )
-    assert other_result.ok is True, other_result
-    assert marker.exists(), "不同入口名的无关程序应允许执行"
+    assert other_result.ok is False, (
+        "不同入口名单独不能算可靠无关（§2）：保存无绑定且无保存候选时必须失败关闭",
+        other_result,
+    )
+    assert not marker.exists(), "被失败关闭的操作不得真正启动程序"
 
-    # 3) 不同对象（另一目录同名程序，绝对路径）：不继承同名限制。
+    # 3) 同名程序（另一目录绝对路径）（R9-H12 修订）：旧期望「放行」，
+    #    新期望失败关闭 —— 当前解析到别处不能证明与保存对象无关（可能硬链接）。
     args2, marker2 = _launch_args(root, "same-name-marker.txt")
     with requirement_context(binding):
         same_name_result = await tool.run(
@@ -696,12 +719,96 @@ async def test_p1_unbound_does_not_block_other_operations_entries_or_objects(
             cwd=str(marker2.parent),
             timeout=30,
         )
-    assert same_name_result.ok is True, same_name_result
-    assert marker2.exists(), "另一目录的同名程序不是同一对象，应允许执行"
+    assert same_name_result.ok is False, (
+        "同名程序另一目录只证明路径不同；未绑定且无保存候选时不得按无关放行",
+        same_name_result,
+    )
+    assert not marker2.exists(), "被失败关闭的操作不得真正启动程序"
+    assert launches == [], "两条被拒绝的路径都不得启动任何程序"
 
-    # 引擎层同样按可靠依据放行不同入口名/不同对象。
+    # 引擎层同样失败关闭（结构化依据，不看原因文字）。
     decision = await _authorize(
         ctx, binding, _execute_effect(other_program, requested="other")
+    )
+    _assert_denied(decision, code=DECISION_UNKNOWN)
+
+
+async def test_p1_reliable_unrelated_cases_still_continue(ctx, tmp_path, monkeypatch):
+    """R9-H12 §6.2 补：契约 §2 白名单的可靠无关必须继续放行。
+
+    覆盖：候选不存在（candidate_not_exists）、操作范围外
+    （operation_out_of_scope）、已绑定不同对象（different_object_identity）、
+    前缀外（path_prefix_outside）。这些依据来自对象事实，不是名称差异。
+    """
+    program_dir = tmp_path / "p1-continue-bin"
+    runner_text = _text_program(program_dir, body="continue body\n")
+    other_program = _copy_program(program_dir, "continue-other")
+    _prepend_path(monkeypatch, program_dir)
+    _mode(ctx)
+    requirement = _new_requirement(ctx, "p1-continue")
+    _save_limits(
+        ctx,
+        requirement.requirement_id,
+        ["execute"],
+        reason="禁止运行 runner",
+        without_resolution=True,
+        monkeypatch=monkeypatch,
+        no_such_path=tmp_path / "p1-continue-no-bin",
+    )
+    binding = _binding(ctx, requirement.requirement_id)
+
+    # 1) 操作范围外：execute 限制不阻止读取同一程序文件。
+    read_tool = FsReadTool(computer=ctx.computer, security=ctx.authorization)
+    with requirement_context(binding):
+        program_read = await read_tool.run(path=str(runner_text))
+    assert program_read.ok is True, program_read
+
+    # 2) 候选不存在：不存在的对象不可能是被禁止对象。
+    missing = tmp_path / "p1-continue-definitely-missing"
+    decision = await _authorize(ctx, binding, _execute_effect(missing))
+    assert decision.verdict == Verdict.ALLOW, decision.reason
+
+    # 3) 前缀外：目录型限制对前缀外对象是可靠无关。
+    prefix_dir = tmp_path / "p1-continue-prefix"
+    prefix_dir.mkdir()
+    outside = tmp_path / "p1-continue-outside.txt"
+    outside.write_text("outside body\n", encoding="utf-8")
+    prefix_requirement = _new_requirement(ctx, "p1-continue-prefix")
+    ctx.requirements.set_structured_limits(
+        prefix_requirement.requirement_id,
+        [
+            {
+                "operations": ["read"],
+                "objects": [{"kind": "path_prefix", "value": str(prefix_dir)}],
+                "reason": "禁止读取该目录",
+            }
+        ],
+        source="test-r9h11",
+        state=requirement_limits.STATE_STRUCTURED,
+    )
+    prefix_binding = _binding(ctx, prefix_requirement.requirement_id)
+    decision = await _authorize(ctx, prefix_binding, _read_effect(outside))
+    assert decision.verdict == Verdict.ALLOW, decision.reason
+
+    # 4) 已绑定不同对象：完整绑定 + 另一个真实程序 -> 按身份比较放行（真实执行）。
+    bound_requirement = _new_requirement(ctx, "p1-continue-bound")
+    _save_limits(ctx, bound_requirement.requirement_id, ["execute"], reason="禁止运行 runner")
+    bound_binding = _binding(ctx, bound_requirement.requirement_id)
+    bound_obj = _first_object(ctx, bound_requirement.requirement_id)
+    assert isinstance(bound_obj.get("program_binding"), dict), bound_obj
+    root = tmp_path / "p1-continue-root"
+    args, marker = _launch_args(root, "other-marker.txt")
+    tool = RunProgramTool(
+        computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization
+    )
+    with requirement_context(bound_binding):
+        other_result = await tool.run(
+            program="continue-other", args=args, cwd=str(marker.parent), timeout=30
+        )
+    assert other_result.ok is True, other_result
+    assert marker.exists(), "已绑定不同对象（另一真实程序文件）应允许执行"
+    decision = await _authorize(
+        ctx, bound_binding, _execute_effect(other_program, requested="continue-other")
     )
     assert decision.verdict == Verdict.ALLOW, decision.reason
 
