@@ -19,6 +19,15 @@ False（=无关），再被模式规则或普通审批放行。本模块把判�
 
 本模块是纯判定：不写数据库、不补建绑定、不创建文件；resolve_program_name
 只是当前 PATH 的只读澄清（契约 §3.5）。
+
+R9-H12 证据契约（本模块内实现）：
+
+* UNRELATED 只能来自 UNRELATED_BASES 白名单（§2），每条依据必须带注册的必带
+  事实；_decision / _merge_decisions 会校验，未注册或事实不足直接拒绝；
+* 限制路径身份不可读（不存在 / 存在但读不到）不再返回 UNRELATED，而是 UNKNOWN
+  （§3.1：删除/替换后的旧对象可能仍在别名路径存在）；
+* 未绑定 program_name 的“入口名不同 = 无关”“当前解析到别处 = 无关”已删除：
+  保存候选（纯数据 binding_candidates）优先，无候选时失败关闭（§3.2）。
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ import shutil
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from agent.security.effects import DECISION_PROGRAM_NAME_UNRESOLVED
@@ -45,12 +55,15 @@ __all__ = [
     "ObjectState",
     "MAX_AUDIT_CHARS",
     "ProgramResolution",
+    "UNRELATED_BASES",
+    "UnrelatedBasis",
     "compare_bound_identity",
     "decide_object",
     "decision_code_for",
     "resolve_path",
     "resolve_program_name",
     "same_path_text",
+    "validate_unrelated_decision",
 ]
 
 #: 审计序列化里单个字符串的上界（路径/身份/说明文字都可能超长；审计必须可序列化）。
@@ -78,6 +91,7 @@ _CANDIDATE_KINDS = frozenset(
 )
 
 #: 聚合优先级（契约 §4.3）：MATCH > INVALID/UNBOUND > UNKNOWN > UNRELATED。
+#: R9-H12 §3.2 复核：UNKNOWN 必须高于 UNRELATED（事实不足不能当无关放行）。
 _STATE_PRIORITY = {
     "match": 3,
     "invalid": 2,
@@ -85,6 +99,86 @@ _STATE_PRIORITY = {
     "unknown": 1,
     "unrelated": 0,
 }
+
+
+@dataclass(frozen=True)
+class UnrelatedBasis:
+    """UNRELATED 白名单依据（契约 §2）：basis + 必带事实 + 成立条件说明。
+
+    * required_facts：判定 facts 里必须出现的字段名；
+    * required_equal：其中必须为指定值（True/False）的事实；
+    * condition：人类可读的成立条件（只用于审计/评审，不参与判定）。
+    """
+
+    basis: str
+    required_facts: tuple[str, ...] = ()
+    required_equal: tuple[tuple[str, bool], ...] = ()
+    condition: str = ""
+
+
+#: 契约 §2 UNRELATED 白名单（唯一允许的可靠无关依据）。
+#: 新增 UNRELATED 分支必须先在注册表登记依据与必带事实；判定工厂会强制校验，
+#: 未注册或证据不足的 UNRELATED 直接拒绝（不允许“名称不同/查找环境不同”当依据）。
+UNRELATED_BASES: Mapping[str, UnrelatedBasis] = MappingProxyType(
+    {
+        "operation_out_of_scope": UnrelatedBasis(
+            basis="operation_out_of_scope",
+            required_facts=("operation", "operation_scope"),
+            required_equal=(("operation_scope", False),),
+            condition="limit.operations 已知、本次 operation 已知且不在集合（操作范围先过滤）",
+        ),
+        "object_kind_out_of_scope": UnrelatedBasis(
+            basis="object_kind_out_of_scope",
+            required_facts=("limit_kind", "candidate"),
+            condition="限制对象类别与候选对象类别不相交（service↔路径/文件等）",
+        ),
+        "candidate_not_exists": UnrelatedBasis(
+            basis="candidate_not_exists",
+            required_facts=("exists",),
+            required_equal=(("exists", False),),
+            condition="候选路径真实不存在（exists=False）：不存在的对象不可能是被禁止对象",
+        ),
+        "path_prefix_outside": UnrelatedBasis(
+            basis="path_prefix_outside",
+            required_facts=("path_within",),
+            required_equal=(("path_within", False),),
+            condition="候选解析路径不在 path_prefix/directory 内（路径型限制既定语义）",
+        ),
+        "service_outside": UnrelatedBasis(
+            basis="service_outside",
+            required_facts=("service_scope",),
+            required_equal=(("service_scope", False),),
+            condition="service/url 作用域文本不同（服务限制语义）",
+        ),
+        "different_object_identity": UnrelatedBasis(
+            basis="different_object_identity",
+            required_facts=("identity_key",),
+            required_equal=(("identity_key", False),),
+            condition="保存绑定 identity 可读 + 候选 identity 可读 + 不相等",
+        ),
+        "path_different_object": UnrelatedBasis(
+            basis="path_different_object",
+            required_facts=("identity_key",),
+            required_equal=(("identity_key", False),),
+            condition="path 限制两侧身份都可读且不相等",
+        ),
+        "path_different_lifecycle": UnrelatedBasis(
+            basis="path_different_lifecycle",
+            required_facts=("identity_key", "birth_key"),
+            required_equal=(("identity_key", True), ("birth_key", False)),
+            condition="path 限制同一 identity、两侧 birth 都可读且不同",
+        ),
+        "entry_resolves_to_other_object": UnrelatedBasis(
+            basis="entry_resolves_to_other_object",
+            required_facts=("entry_name", "identity_key"),
+            required_equal=(("identity_key", False),),
+            condition=(
+                "已绑定 program_name：本次入口名≠限制名，且入口解析对象 identity "
+                "可读、与绑定 identity 不同"
+            ),
+        ),
+    }
+)
 
 
 class ObjectState(str, Enum):
@@ -186,6 +280,42 @@ class ObjectDecision:
             "facts": [fact.as_dict() for fact in self.facts],
             "detail": _bounded(self.detail),
         }
+
+
+def validate_unrelated_decision(decision: ObjectDecision) -> tuple[str, ...]:
+    """校验一条判定的 UNRELATED 依据（契约 §2 白名单 + 必带事实）。
+
+    返回问题码元组；空元组 = 依据已注册且事实齐全（可审计、可复核）。
+    非 UNRELATED 判定无需校验（返回空元组）。
+    """
+    if decision.state is not ObjectState.UNRELATED:
+        return ()
+    spec = UNRELATED_BASES.get(decision.basis)
+    if spec is None:
+        return ("unregistered_basis:" + _clean(decision.basis),)
+    facts: dict[str, ObjectFact] = {}
+    for fact in decision.facts:
+        facts.setdefault(fact.field, fact)
+    problems: list[str] = []
+    for field in spec.required_facts:
+        if field not in facts:
+            problems.append("missing_fact:" + field)
+    for field, expected in spec.required_equal:
+        fact = facts.get(field)
+        if fact is not None and fact.equal is not expected:
+            problems.append("fact_not_verified:" + field)
+    return tuple(problems)
+
+
+def _require_unrelated_evidence(decision: ObjectDecision) -> None:
+    problems = validate_unrelated_decision(decision)
+    if problems:
+        raise ValueError(
+            "UNRELATED 依据未注册或证据不足（"
+            + _clean(decision.basis)
+            + "）："
+            + ",".join(problems)
+        )
 
 
 @dataclass(frozen=True)
@@ -692,13 +822,37 @@ def _decision(
     facts: Sequence[ObjectFact] = (),
     detail: str = "",
 ) -> ObjectDecision:
-    return ObjectDecision(
+    decision = ObjectDecision(
         state=state,
         basis=basis,
         operation=operation,
         object_kind=candidate_kind,
         object_value=candidate_value,
         facts=tuple(facts),
+        detail=detail,
+    )
+    if state is ObjectState.UNRELATED:
+        _require_unrelated_evidence(decision)
+    return decision
+
+
+def _unrelated(
+    basis: str,
+    *,
+    operation: str | None,
+    candidate_kind: str,
+    candidate_value: str,
+    facts: Sequence[ObjectFact] = (),
+    detail: str = "",
+) -> ObjectDecision:
+    """UNRELATED 的唯一构造入口（契约 §2：basis 必须先注册且带足事实）。"""
+    return _decision(
+        ObjectState.UNRELATED,
+        basis,
+        operation=operation,
+        candidate_kind=candidate_kind,
+        candidate_value=candidate_value,
+        facts=facts,
         detail=detail,
     )
 
@@ -716,7 +870,7 @@ def _merge_decisions(primary: ObjectDecision, secondary: ObjectDecision) -> Obje
     for fact in secondary.facts:
         if fact not in facts:
             facts.append(fact)
-    return ObjectDecision(
+    merged = ObjectDecision(
         state=winner.state,
         basis=winner.basis,
         operation=primary.operation,
@@ -725,6 +879,9 @@ def _merge_decisions(primary: ObjectDecision, secondary: ObjectDecision) -> Obje
         facts=tuple(facts),
         detail=winner.detail,
     )
+    if merged.state is ObjectState.UNRELATED:
+        _require_unrelated_evidence(merged)
+    return merged
 
 
 def _candidate_entry_name(candidate_kind: str, candidate_value: str) -> str | None:
@@ -758,7 +915,11 @@ def _path_core(
     base_facts: Sequence[ObjectFact],
     cache: dict | None,
 ) -> ObjectDecision:
-    """§3.2 path/path_prefix/directory 的结构化核对（真实文件身份，不是文本猜测）。"""
+    """§3.1 path/path_prefix/directory 的结构化核对（真实文件身份，不是文本猜测）。
+
+    R9-H12 §3.1：限制路径身份不可读（不存在 / 存在但读不到）一律 UNKNOWN，
+    不再返回 UNRELATED（旧对象可能仍在别名路径存在）。显式 program 路径共用本分支。
+    """
     facts = list(base_facts)
     facts.append(
         _fact(
@@ -779,8 +940,16 @@ def _path_core(
                 candidate_value=candidate_value,
                 facts=facts,
             )
-        return _decision(
-            ObjectState.UNRELATED,
+        facts.append(
+            _fact(
+                "path_within",
+                expected=target,
+                observed=candidate_path,
+                source="path_compare",
+                equal=False,
+            )
+        )
+        return _unrelated(
             "path_prefix_outside",
             operation=operation,
             candidate_kind=candidate_kind,
@@ -797,9 +966,9 @@ def _path_core(
             facts=facts,
         )
     if not _exists(candidate_path):
-        # §3.7：候选不存在且不是限制路径本身 -> 不可能是已存在对象，可靠无关。
-        return _decision(
-            ObjectState.UNRELATED,
+        # §3.1：候选不存在且不是限制路径本身 -> 不可能是已存在对象，可靠无关（先判）。
+        facts.append(_fact("exists", observed="false", source="path_compare", equal=False))
+        return _unrelated(
             "candidate_not_exists",
             operation=operation,
             candidate_kind=candidate_kind,
@@ -808,15 +977,38 @@ def _path_core(
         )
     target_observed = _observe_path(target, cache)
     if target_observed is None:
-        # §3.7：路径型限制没有保存身份；限制路径当前不可读身份 -> 可靠无关。
+        # §3.1：限制路径身份不可读不能证明无关。
         facts.append(_fact("identity_key", observed=None, source="file_identity"))
+        if not _exists(target):
+            facts.append(
+                _fact(
+                    "exists",
+                    expected="true",
+                    observed="false",
+                    source="path_compare",
+                    equal=False,
+                )
+            )
+            return _decision(
+                ObjectState.UNKNOWN,
+                "path_limit_target_unreadable",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail=(
+                    "限制路径当前不存在：删除/替换后的旧对象可能仍以别名路径存在，"
+                    "不能仅凭路径文本不同判无关"
+                ),
+            )
         return _decision(
-            ObjectState.UNRELATED,
+            ObjectState.UNKNOWN,
             "path_limit_identity_unavailable",
             operation=operation,
             candidate_kind=candidate_kind,
             candidate_value=candidate_value,
             facts=facts,
+            detail="限制路径存在但文件身份不可读：无法确认是否为同一对象，不能判无关",
         )
     candidate_observed = observed if observed is not None else _observe_path(candidate_path, cache)
     if candidate_observed is None:
@@ -849,8 +1041,7 @@ def _path_core(
             facts=facts,
         )
     if comparison.state == IDENTITY_DIFFERENT_OBJECT:
-        return _decision(
-            ObjectState.UNRELATED,
+        return _unrelated(
             "path_different_object",
             operation=operation,
             candidate_kind=candidate_kind,
@@ -858,8 +1049,7 @@ def _path_core(
             facts=facts,
         )
     if comparison.state == IDENTITY_DIFFERENT_LIFECYCLE:
-        return _decision(
-            ObjectState.UNRELATED,
+        return _unrelated(
             "path_different_lifecycle",
             operation=operation,
             candidate_kind=candidate_kind,
@@ -989,7 +1179,11 @@ def _program_limit_name_decision(
     candidate_value: str,
     base_facts: Sequence[ObjectFact],
 ) -> ObjectDecision:
-    """§3.3：显式程序路径限制 + 入口名候选（解析对象与限制路径身份核对）。"""
+    """§3.1/§3.3：显式程序路径限制 + 入口名候选（与 path 限制共用 _path_core）。
+
+    * 入口名解析回同一路径文本 -> MATCH（路径文本/入口结构化完全匹配，契约 §1）；
+    * 其余交给 _path_core 用真实文件身份/生命周期核对，不再自造“解析到别处=无关”。
+    """
     target = resolve_path(limit_value, _limit_base(workspace, effect_base))
     if target is None:
         return _decision(
@@ -1001,15 +1195,6 @@ def _program_limit_name_decision(
             facts=base_facts,
         )
     resolution = resolver(name)
-    if resolution.path and _same_resolved_path(resolution.path, target):
-        return _decision(
-            ObjectState.MATCH,
-            "entry_resolves_to_limit_path",
-            operation=operation,
-            candidate_kind=candidate_kind,
-            candidate_value=candidate_value,
-            facts=base_facts,
-        )
     if not resolution.path:
         return _decision(
             ObjectState.UNKNOWN,
@@ -1020,54 +1205,29 @@ def _program_limit_name_decision(
             facts=base_facts,
             detail="入口名当前无法解析到真实对象，不能按名称猜测",
         )
-    target_observed = _observe_path(target, cache)
-    observed = None
-    if resolution.identity_key:
-        observed = (resolution.identity_key, _clean(resolution.birth_key) or None)
-    elif resolution.path:
-        observed = _observe_path(resolution.path, cache)
-    if target_observed is None or observed is None:
-        return _decision(
-            ObjectState.UNKNOWN,
-            "entry_identity_unverifiable",
-            operation=operation,
-            candidate_kind=candidate_kind,
-            candidate_value=candidate_value,
-            facts=base_facts,
-            detail="入口名解析对象与限制程序路径的身份不可读，不能确认同一对象",
-        )
-    comparison = compare_bound_identity(
-        target_observed[0],
-        target_observed[1],
-        observed_identity=observed[0],
-        observed_birth=observed[1],
-    )
-    facts = list(base_facts) + list(comparison.facts)
-    if comparison.state == IDENTITY_SAME:
+    candidate_path = resolve_path(resolution.path, None) or _clean(resolution.path)
+    if _same_resolved_path(candidate_path, target):
         return _decision(
             ObjectState.MATCH,
             "entry_resolves_to_limit_path",
             operation=operation,
             candidate_kind=candidate_kind,
             candidate_value=candidate_value,
-            facts=facts,
+            facts=base_facts,
         )
-    if comparison.state in (IDENTITY_DIFFERENT_OBJECT, IDENTITY_DIFFERENT_LIFECYCLE):
-        return _decision(
-            ObjectState.UNRELATED,
-            "entry_resolves_elsewhere",
-            operation=operation,
-            candidate_kind=candidate_kind,
-            candidate_value=candidate_value,
-            facts=facts,
-        )
-    return _decision(
-        ObjectState.UNKNOWN,
-        "entry_identity_unverifiable",
+    observed = None
+    if resolution.identity_key:
+        observed = (resolution.identity_key, _clean(resolution.birth_key) or None)
+    return _path_core(
+        "path",
+        target,
+        candidate_path,
+        observed,
         operation=operation,
         candidate_kind=candidate_kind,
         candidate_value=candidate_value,
-        facts=facts,
+        base_facts=base_facts,
+        cache=cache,
     )
 
 
@@ -1086,11 +1246,95 @@ def _binding_state(item: Mapping[str, Any]) -> tuple[Mapping[str, Any] | None, b
     return raw, False
 
 
+#: 保存候选（item["binding_candidates"]）的稳定数量上限（纯数据，不补采身份）。
+_SAVED_CANDIDATE_LIMIT = 4
+
+
+def _saved_candidates(item: Mapping[str, Any]) -> tuple[dict, ...]:
+    """对象条目上的保存候选事实（纯数据；读取绝不重新查找程序/采集身份）。"""
+    raw = item.get("binding_candidates")
+    if isinstance(raw, (str, bytes)) or not isinstance(raw, (list, tuple)):
+        return ()
+    candidates: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            continue
+        path = _clean(entry.get("path"))
+        if not path:
+            continue
+        candidates.append(
+            {
+                "path": path,
+                "source": _clean(entry.get("source")),
+                "state": _clean(entry.get("state")).lower(),
+                "identity": _clean(entry.get("identity")) or None,
+                "birth_key": _clean(entry.get("birth_key")) or None,
+            }
+        )
+        if len(candidates) >= _SAVED_CANDIDATE_LIMIT:
+            break
+    return tuple(candidates)
+
+
+def _saved_candidate_facts(item: Mapping[str, Any]) -> list[ObjectFact]:
+    """把保存时的绑定状态/失败依据/候选路径作为纯数据事实写进判定（审计用）。"""
+    facts: list[ObjectFact] = []
+    binding_state = _clean(item.get("binding_state")).lower()
+    if binding_state:
+        facts.append(_fact("binding_state", observed=binding_state, source="saved_binding"))
+    failure = _clean(item.get("binding_failure")).lower()
+    if failure:
+        facts.append(_fact("binding_failure", observed=failure, source="saved_binding"))
+    for candidate in _saved_candidates(item):
+        facts.append(
+            _fact(
+                "saved_candidate_path",
+                expected=candidate["identity"],
+                observed=candidate["path"],
+                source=candidate["source"] or "binding_candidates",
+            )
+        )
+    return facts
+
+
+def _saved_path_match(
+    candidate_path: str,
+    saved: Sequence[Mapping[str, Any]],
+    *,
+    effect_base: Any,
+) -> Mapping[str, Any] | None:
+    """候选路径与某条保存候选路径相同？只做路径规范化，不读对象身份。"""
+    for candidate in saved:
+        saved_path = resolve_path(candidate.get("path"), _coerce_base(effect_base)) or _clean(
+            candidate.get("path")
+        )
+        if saved_path and _same_resolved_path(candidate_path, saved_path):
+            return candidate
+    return None
+
+
+def _saved_identity_match(
+    observed: tuple[str, str | None] | None,
+    saved: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any] | None:
+    """候选身份与某条保存候选身份相同？（保存候选可能没记身份 -> 不可比）"""
+    if observed is None:
+        return None
+    identity = _clean(observed[0])
+    if not identity:
+        return None
+    for candidate in saved:
+        if _clean(candidate.get("identity")) == identity:
+            return candidate
+    return None
+
+
 def _name_branch(
     limit_value: str,
     name: str,
     *,
     binding: Mapping[str, Any] | None,
+    item: Mapping[str, Any],
     operation: str | None,
     cache: dict | None,
     resolver: Callable[[str], ProgramResolution],
@@ -1098,23 +1342,29 @@ def _name_branch(
     candidate_value: str,
     base_facts: Sequence[ObjectFact],
 ) -> ObjectDecision:
-    """§3.4/§3.5 入口名分支：只做平台规范化后的完全相等 + 解析对象身份核对。"""
+    """§3.2 入口名分支：平台规范化后的完全相等 + 解析对象身份核对。
+
+    R9-H12：删除“入口名不同 -> UNRELATED”的提前返回；名称差异不是对象事实。
+    """
     facts = list(base_facts)
     facts.append(_fact("entry_name", observed=name, source="effect"))
-    if binding is not None:
-        resolution = resolver(name)
-        if resolution.path:
-            facts.append(
-                _fact(
-                    "entry_path",
-                    expected=_clean(binding.get("path")) or None,
-                    observed=resolution.path,
-                    source="path_lookup",
-                )
+    entry_same = _entry_equal(name, limit_value)
+    resolution = resolver(name)
+    if resolution.path:
+        facts.append(
+            _fact(
+                "entry_path",
+                expected=_clean(binding.get("path")) if binding is not None else None,
+                observed=resolution.path,
+                source="path_lookup",
             )
-        if not resolution.resolved:
-            if _entry_equal(name, limit_value):
-                # §3.7：绑定 + 同一来源名，当前目标身份不可读也按 INVALID（不是 UNKNOWN）。
+        )
+    if binding is not None:
+        bound_identity = _clean(binding.get("identity"))
+        bound_birth = _clean(binding.get("birth_key")) or None
+        if entry_same:
+            if not resolution.resolved:
+                # 绑定 + 同一来源名：当前目标身份不可读也按 INVALID（不是 UNKNOWN）。
                 return _decision(
                     ObjectState.INVALID,
                     "entry_name_same_object_differs",
@@ -1124,22 +1374,13 @@ def _name_branch(
                     facts=facts,
                     detail="限制中的程序名称与本次调用入口相同，但当前无法解析到绑定的对象：绑定已失效，需先恢复/澄清绑定",
                 )
-            return _decision(
-                ObjectState.UNRELATED,
-                "different_entry_name",
-                operation=operation,
-                candidate_kind=candidate_kind,
-                candidate_value=candidate_value,
-                facts=facts,
+            comparison = compare_bound_identity(
+                bound_identity,
+                bound_birth,
+                observed_identity=resolution.identity_key,
+                observed_birth=resolution.birth_key,
             )
-        comparison = compare_bound_identity(
-            _clean(binding.get("identity")),
-            _clean(binding.get("birth_key")) or None,
-            observed_identity=resolution.identity_key,
-            observed_birth=resolution.birth_key,
-        )
-        facts.extend(comparison.facts)
-        if _entry_equal(name, limit_value):
+            facts.extend(comparison.facts)
             if comparison.state == IDENTITY_SAME:
                 return _decision(
                     ObjectState.MATCH,
@@ -1158,6 +1399,24 @@ def _name_branch(
                 facts=facts,
                 detail="限制中的程序名称与本次调用入口相同，但当前解析到的对象与保存绑定不一致：绑定已失效，需先恢复/澄清绑定",
             )
+        # 入口名不同：只有“入口解析对象 identity 可读且与绑定 identity 不同”才可靠无关。
+        if not resolution.resolved:
+            return _decision(
+                ObjectState.UNKNOWN,
+                "entry_name_differs_unverifiable",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="入口名不同，但当前解析失败/身份不可读：无法用对象事实证明无关，需先澄清",
+            )
+        comparison = compare_bound_identity(
+            bound_identity,
+            bound_birth,
+            observed_identity=resolution.identity_key,
+            observed_birth=resolution.birth_key,
+        )
+        facts.extend(comparison.facts)
         if comparison.state == IDENTITY_SAME:
             return _decision(
                 ObjectState.MATCH,
@@ -1167,15 +1426,24 @@ def _name_branch(
                 candidate_value=candidate_value,
                 facts=facts,
             )
+        if comparison.state == IDENTITY_DIFFERENT_OBJECT:
+            return _unrelated(
+                "entry_resolves_to_other_object",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+            )
         return _decision(
-            ObjectState.UNRELATED,
-            "different_entry_name",
+            ObjectState.UNKNOWN,
+            "entry_name_differs_unverifiable",
             operation=operation,
             candidate_kind=candidate_kind,
             candidate_value=candidate_value,
             facts=facts,
+            detail="入口解析对象与绑定对象的身份/生命周期关系不可确认，不能当作无关",
         )
-    if _entry_equal(name, limit_value):
+    if entry_same:
         return _decision(
             ObjectState.UNBOUND,
             "binding_missing_entry_same",
@@ -1185,13 +1453,39 @@ def _name_branch(
             facts=facts,
             detail="限制中的程序名称尚未可靠绑定到明确对象，本次调用的入口名与之相同：需要先完成程序名称的专用恢复/澄清",
         )
+    # 未绑定 + 入口名不同：只有保存候选 identity 与入口解析对象 identity 相同才相关。
+    if resolution.resolved:
+        matched = _saved_identity_match(
+            (resolution.identity_key, _clean(resolution.birth_key) or None),
+            _saved_candidates(item),
+        )
+        if matched is not None:
+            facts.append(
+                _fact(
+                    "saved_candidate_identity",
+                    expected=_clean(matched.get("identity")),
+                    observed=resolution.identity_key,
+                    source=_clean(matched.get("source")) or "binding_candidates",
+                    equal=True,
+                )
+            )
+            return _decision(
+                ObjectState.UNBOUND,
+                "binding_missing_saved_candidate_identity",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="入口名不同，但入口解析对象与保存候选身份相同：属于同一保存候选，需先完成程序名称的专用恢复/澄清",
+            )
     return _decision(
-        ObjectState.UNRELATED,
-        "different_entry_name",
+        ObjectState.UNKNOWN,
+        "unbound_entry_name_differs",
         operation=operation,
         candidate_kind=candidate_kind,
         candidate_value=candidate_value,
         facts=facts,
+        detail="保存时没有形成对象绑定，且无法用保存候选/入口解析对象证明关系：不能按名称差异放行",
     )
 
 
@@ -1233,6 +1527,7 @@ def _bound_path_decision(
             )
         )
     if not _exists(candidate_path):
+        facts.append(_fact("exists", observed="false", source="path_compare", equal=False))
         if same_bound_path:
             return _decision(
                 ObjectState.INVALID,
@@ -1319,8 +1614,7 @@ def _bound_path_decision(
             facts=facts,
             detail="原绑定路径上的对象已被替换：绑定已失效，需先恢复/澄清绑定",
         )
-    return _decision(
-        ObjectState.UNRELATED,
+    return _unrelated(
         "different_object_identity",
         operation=operation,
         candidate_kind=candidate_kind,
@@ -1333,6 +1627,7 @@ def _unbound_path_decision(
     limit_value: str,
     candidate_value: str,
     *,
+    item: Mapping[str, Any],
     operation: str | None,
     effect: Any,
     workspace: Any,
@@ -1342,11 +1637,16 @@ def _unbound_path_decision(
     candidate_kind: str,
     base_facts: Sequence[ObjectFact],
 ) -> ObjectDecision:
-    """§3.5：program_name 没有绑定（历史 UNBOUND）+ 候选是具体对象。"""
+    """§3.2 未绑定 program_name + 具体对象候选：保存候选优先，事实不足失败关闭。
+
+    R9-H12 删除“本次真实入口名不同 -> UNRELATED”的提前返回（H7/H8 旧语义），
+    并删除“当前路径解析到别处 -> UNRELATED”（查找环境不是对象事实）。
+    """
     facts = list(base_facts)
+    saved = _saved_candidates(item)
     resolution = resolver(limit_value) if limit_value else ProgramResolution(name="")
     candidate_path = resolve_path(candidate_value, _coerce_base(effect_base)) or _clean(candidate_value)
-    if resolution.resolved and resolution.path:
+    if resolution.path:
         facts.append(
             _fact(
                 "entry_path",
@@ -1356,26 +1656,80 @@ def _unbound_path_decision(
                 equal=_path_equal(candidate_path, resolution.path),
             )
         )
+    # 1) 候选不存在：可靠无关（先判；不存在的对象不可能是被禁止对象）。
+    if not _exists(candidate_path):
+        facts.append(_fact("exists", observed="false", source="path_compare", equal=False))
+        return _unrelated(
+            "candidate_not_exists",
+            operation=operation,
+            candidate_kind=candidate_kind,
+            candidate_value=candidate_value,
+            facts=facts,
+        )
+    # 2) 保存候选（纯数据）优先参与判断：路径/身份相关 -> UNBOUND，否则失败关闭。
+    if saved:
+        path_match = _saved_path_match(candidate_path, saved, effect_base=effect_base)
+        if path_match is not None:
+            facts.append(
+                _fact(
+                    "saved_candidate_match",
+                    expected=_clean(path_match.get("path")),
+                    observed=candidate_path,
+                    source="path_compare",
+                    equal=True,
+                )
+            )
+            return _decision(
+                ObjectState.UNBOUND,
+                "binding_missing_saved_candidate",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="本次对象与保存时记录的候选路径相同，但保存时没有形成对象绑定：需要先完成程序名称的专用恢复/澄清",
+            )
+        observed_for_saved = _observe_path(candidate_path, cache)
+        identity_match = _saved_identity_match(observed_for_saved, saved)
+        if identity_match is not None:
+            facts.append(
+                _fact(
+                    "saved_candidate_identity",
+                    expected=_clean(identity_match.get("identity")),
+                    observed=observed_for_saved[0],
+                    source="file_identity",
+                    equal=True,
+                )
+            )
+            return _decision(
+                ObjectState.UNBOUND,
+                "binding_missing_saved_candidate_identity",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="本次对象与保存时记录的候选身份相同，但保存时没有形成对象绑定：需要先完成程序名称的专用恢复/澄清",
+            )
+        return _decision(
+            ObjectState.UNKNOWN,
+            "binding_missing_candidate_not_in_saved",
+            operation=operation,
+            candidate_kind=candidate_kind,
+            candidate_value=candidate_value,
+            facts=facts,
+            detail="保存时记录了候选但没有形成绑定；本次对象与保存候选都不匹配，不能排除硬链接/别名，需先澄清",
+        )
+    # 3) 无保存候选：只有身份事实能建立“相关”或“无关”的可靠结论。
     if not resolution.resolved or not resolution.path:
         entry = _effect_entry_name(effect)
-        if entry and not _entry_equal(entry, limit_value):
-            # 本次真实入口名不同：不同入口名不互相阻塞（H7/H8 既有语义）。
+        if entry and _entry_equal(entry, limit_value):
             return _decision(
-                ObjectState.UNRELATED,
-                "different_entry_name",
+                ObjectState.UNBOUND,
+                "binding_missing_entry_same",
                 operation=operation,
                 candidate_kind=candidate_kind,
                 candidate_value=candidate_value,
                 facts=facts,
-            )
-        if not _exists(candidate_path):
-            return _decision(
-                ObjectState.UNRELATED,
-                "candidate_not_exists",
-                operation=operation,
-                candidate_kind=candidate_kind,
-                candidate_value=candidate_value,
-                facts=facts,
+                detail="限制中的程序名称尚未可靠绑定到明确对象，本次调用的入口名与之相同：需要先完成程序名称的专用恢复/澄清",
             )
         return _decision(
             ObjectState.UNKNOWN,
@@ -1385,15 +1739,6 @@ def _unbound_path_decision(
             candidate_value=candidate_value,
             facts=facts,
             detail="保存时没有形成对象绑定，当前也无法澄清程序名称对应的对象：不能静默放行",
-        )
-    if not _exists(candidate_path):
-        return _decision(
-            ObjectState.UNRELATED,
-            "candidate_not_exists",
-            operation=operation,
-            candidate_kind=candidate_kind,
-            candidate_value=candidate_value,
-            facts=facts,
         )
     observed = _observe_path(candidate_path, cache)
     if observed is None:
@@ -1425,12 +1770,13 @@ def _unbound_path_decision(
         )
     if comparison.state in (IDENTITY_DIFFERENT_OBJECT, IDENTITY_DIFFERENT_LIFECYCLE):
         return _decision(
-            ObjectState.UNRELATED,
+            ObjectState.UNKNOWN,
             "binding_missing_resolved_elsewhere",
             operation=operation,
             candidate_kind=candidate_kind,
             candidate_value=candidate_value,
             facts=facts,
+            detail="当前查找环境把限制名称解析到别的对象，但保存时没有形成绑定：查找环境事实不能证明无关（失败关闭）",
         )
     return _decision(
         ObjectState.UNKNOWN,
@@ -1457,6 +1803,7 @@ def _program_name_decision(
 ) -> ObjectDecision:
     limit_value = _clean(item.get("value"))
     base_facts = _base_facts(operation, candidate_kind, candidate_value)
+    base_facts.extend(_saved_candidate_facts(item))
     binding, binding_invalid = _binding_state(item)
     if binding_invalid:
         return _decision(
@@ -1475,6 +1822,7 @@ def _program_name_decision(
             limit_value,
             cand_entry,
             binding=binding,
+            item=item,
             operation=operation,
             cache=cache,
             resolver=resolver,
@@ -1496,6 +1844,7 @@ def _program_name_decision(
         primary = _unbound_path_decision(
             limit_value,
             candidate_value,
+            item=item,
             operation=operation,
             effect=effect,
             workspace=workspace,
@@ -1510,6 +1859,7 @@ def _program_name_decision(
             limit_value,
             entry_name,
             binding=binding,
+            item=item,
             operation=operation,
             cache=cache,
             resolver=resolver,
@@ -1557,8 +1907,7 @@ def _decide_object_impl(
                     equal=False,
                 )
             )
-            return _decision(
-                ObjectState.UNRELATED,
+            return _unrelated(
                 "operation_out_of_scope",
                 operation=operation,
                 candidate_kind=candidate_kind,
@@ -1600,13 +1949,14 @@ def _decide_object_impl(
     # §3.6 service（跨类别是可靠无关：URL/主机名不是文件系统对象）。
     if limit_kind == "service" or candidate_kind in _SERVICE_CANDIDATE_KINDS:
         if limit_kind != "service" or candidate_kind not in _SERVICE_CANDIDATE_KINDS:
-            return _decision(
-                ObjectState.UNRELATED,
+            facts = list(base_facts)
+            facts.append(_fact("limit_kind", observed=limit_kind, source="requirement_limit"))
+            return _unrelated(
                 "object_kind_out_of_scope",
                 operation=operation,
                 candidate_kind=candidate_kind,
                 candidate_value=candidate_value,
-                facts=base_facts,
+                facts=facts,
             )
         matched, scoped = _service_matches(candidate_value, limit_value)
         if matched:
@@ -1618,13 +1968,22 @@ def _decide_object_impl(
                 candidate_value=candidate_value,
                 facts=base_facts,
             )
-        return _decision(
-            ObjectState.UNRELATED,
+        facts = list(base_facts)
+        facts.append(
+            _fact(
+                "service_scope",
+                expected=limit_value,
+                observed=candidate_value,
+                source="requirement_limit",
+                equal=False,
+            )
+        )
+        return _unrelated(
             "service_outside",
             operation=operation,
             candidate_kind=candidate_kind,
             candidate_value=candidate_value,
-            facts=base_facts,
+            facts=facts,
         )
 
     if limit_kind in _PATH_KINDS:
