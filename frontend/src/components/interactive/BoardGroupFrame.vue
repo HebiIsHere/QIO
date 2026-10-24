@@ -637,7 +637,7 @@ defineExpose({ focusName });
   padding: var(--sp-1) var(--sp-2) var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
 }
 .tools-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
@@ -656,7 +656,7 @@ defineExpose({ focusName });
   color: var(--text-strong);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   min-width: 72px;
   max-width: 140px;
@@ -718,7 +718,7 @@ defineExpose({ focusName });
   color: var(--text-secondary);
   background: none;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   /* 操作按钮要能稳定点中：给足高度，不被同行的说明文字挤扁 */
   min-height: 22px;
@@ -758,7 +758,7 @@ defineExpose({ focusName });
   justify-content: center;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   background: var(--bg-surface);
   color: var(--text-muted);
   font-size: var(--fs-tech, var(--fs-xs));

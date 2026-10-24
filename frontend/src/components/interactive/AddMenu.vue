@@ -380,7 +380,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -421,7 +421,7 @@ onBeforeUnmount(() => {
   padding: var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   box-shadow: var(--elev-floating, var(--shadow-2));
 }
 .pop-title { margin: 0 var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-faint); }
@@ -431,7 +431,7 @@ onBeforeUnmount(() => {
   font: inherit;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }
@@ -471,7 +471,7 @@ onBeforeUnmount(() => {
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-left: 3px solid var(--border-strong);
-  border-radius: var(--r-sm, var(--r-md));
+  border-radius: var(--r-lg);
   box-shadow: var(--elev-floating, var(--shadow-2));
   font-size: var(--fs-xs);
   line-height: var(--lh-normal, 1.5);
@@ -492,7 +492,7 @@ onBeforeUnmount(() => {
   color: var(--link);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;

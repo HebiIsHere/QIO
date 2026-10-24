@@ -89,6 +89,8 @@ interface ResizeHost {
   id: string;
   label: string;
   style: Record<string, string>;
+  w: number;
+  h: number;
 }
 
 const hosts = computed<ResizeHost[]>(() => {
@@ -100,6 +102,8 @@ const hosts = computed<ResizeHost[]>(() => {
       id,
       label: props.labels?.[id] ?? "卡片尺寸调整",
       style: hostStyle(box, scale),
+      w: Math.max(1, box.w * scale),
+      h: Math.max(1, box.h * scale),
     });
   }
   return out;
@@ -138,6 +142,24 @@ function onCornerDown(cardId: string, event: PointerEvent): void {
   event.preventDefault();
   emit("handle-down", cardId, "se", event);
 }
+
+/**
+ * 右下角热区：沿边框加粗段走的 L 形带状路径，不是方形按钮。
+ * 取卡片右下角约 110px 的两条边，路径中心压在边框上，stroke 宽度 26px；
+ * 因此实际可抓区域覆盖加粗边框，并向外、向内各多出一圈。
+ */
+function cornerHitPath(w: number, h: number): string {
+  const arm = Math.min(110, Math.max(54, Math.min(w, h) * 0.42));
+  const x = Math.max(1, w - 1);
+  const y = Math.max(1, h - 1);
+  const r = Math.min(22, w / 2, h / 2);
+  return (
+    "M " + x + " " + (h - arm) +
+    " L " + x + " " + (h - r) +
+    " Q " + x + " " + y + " " + (w - r) + " " + y +
+    " L " + (w - arm) + " " + y
+  );
+}
 </script>
 
 <template>
@@ -149,18 +171,22 @@ function onCornerDown(cardId: string, event: PointerEvent): void {
       :style="host.style"
       :data-resize-card-id="host.id"
     >
-      <!-- 唯一缩放入口：右下角。其余边 / 角不再有尺寸热区。 -->
-      <button
+      <!-- 唯一缩放入口：贴合右下角加粗边框的 L 形带状热区，不是方块。 -->
+      <svg
+        v-if="!props.disabled"
         class="corner-resize"
-        type="button"
         data-im="corner-resize"
         data-resize-handle="se"
         :data-card-id="host.id"
+        :viewBox="'0 0 ' + host.w + ' ' + host.h"
         :aria-label="host.label"
-        title="拖动右下角调整卡片大小"
-        :disabled="props.disabled"
+        preserveAspectRatio="none"
+        role="button"
+        tabindex="0"
         @pointerdown="onCornerDown(host.id, $event)"
-      ></button>
+      >
+        <path class="corner-hit-path" :d="cornerHitPath(host.w, host.h)" />
+      </svg>
     </div>
 
     <!--
@@ -237,28 +263,37 @@ function onCornerDown(cardId: string, event: PointerEvent): void {
  * 贴在对应边的**热区内侧**（见下面的分侧规则），整个命中区仍在卡片内部 ——
  * 不会伸到卡片外面压住局部工具栏 / 相邻卡片，也不与边把手的 10px 热区重叠。
  */
-/* 唯一缩放把手：右下角 40px 热区，视觉由卡片边框自身变粗承担。 */
+/*
+ * 唯一缩放入口：沿右下角加粗边框走的 L 形带状热区。
+ * 视觉边框仍是卡片自己的轮廓；这里只是一层透明的 stroke 命中带，
+ * 宽度 26px，比看得见的加粗边框向外、向内各多一圈，不是方块按钮。
+ */
 .corner-resize {
   position: absolute;
-  right: -12px;
-  bottom: -12px;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  pointer-events: auto;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
   touch-action: none;
-  cursor: nwse-resize;
   z-index: 3;
 }
-.corner-resize:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-  border-radius: var(--r-sm);
+.corner-hit-path {
+  fill: none;
+  stroke: rgba(0, 0, 0, 0.001);
+  stroke-width: 26px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: stroke;
+  cursor: nwse-resize;
 }
-.corner-resize:disabled {
-  pointer-events: none;
+.corner-resize:focus-visible .corner-hit-path {
+  stroke: color-mix(in srgb, var(--focus-ring) 28%, transparent);
+}
+@media (pointer: coarse) {
+  .corner-hit-path {
+    stroke-width: 34px;
+  }
 }
 
 /*
@@ -360,10 +395,6 @@ function onCornerDown(cardId: string, event: PointerEvent): void {
   .connect-point.left {
     left: -44px;
     top: calc(50% - 22px);
-  }
-  .corner-resize {
-    width: 48px;
-    height: 48px;
   }
 }
 </style>

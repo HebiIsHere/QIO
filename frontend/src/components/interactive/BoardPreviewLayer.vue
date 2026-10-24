@@ -325,7 +325,7 @@ const rendered = computed<RenderedIntent[]>(() =>
   padding: var(--sp-1) var(--sp-2);
   overflow: hidden;
   border: 1px dashed var(--link);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--bg-surface);
   opacity: 0.9;
   color: var(--text-primary);

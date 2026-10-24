@@ -266,7 +266,7 @@ onBeforeUnmount(() => {
   padding: var(--sp-1) var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
   font-size: var(--fs-xs);
   line-height: var(--lh-tight);
@@ -390,7 +390,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -415,7 +415,7 @@ onBeforeUnmount(() => {
   width: min(420px, 80vw);
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
 }
@@ -432,7 +432,7 @@ onBeforeUnmount(() => {
   min-width: 150px;
   padding: var(--sp-1);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
 }
@@ -441,7 +441,7 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: var(--sp-1) var(--sp-2);
   border: 0;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   background: none;
   color: var(--text-secondary);
   font: inherit;

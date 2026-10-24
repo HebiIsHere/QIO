@@ -2117,7 +2117,7 @@ watch(
   overflow: hidden;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
   color: var(--text-primary);
   font-size: var(--fs-base);
@@ -2271,7 +2271,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   cursor: pointer;
 }
@@ -2361,7 +2361,7 @@ watch(
   font-family: var(--mono);
   font-size: var(--fs-sm);
   background: var(--bg-inset);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 2px;
 }
 /*
@@ -2376,7 +2376,7 @@ watch(
   min-width: 0;
   max-width: 100%;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: var(--bg-inset);
   overflow: clip;
 }
@@ -2396,7 +2396,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
 }
@@ -2444,7 +2444,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
 }
@@ -2460,7 +2460,7 @@ watch(
   margin: 0 0 var(--sp-2);
   padding: 2px var(--sp-2);
   border: 1px dashed var(--warning);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   line-height: var(--lh-tight);
@@ -2476,7 +2476,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: var(--sp-2);
   resize: vertical;
 }
@@ -2489,7 +2489,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
 }
 .draft-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-tight); }
@@ -2500,7 +2500,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-3);
   cursor: pointer;
 }
@@ -2535,7 +2535,7 @@ watch(
   color: var(--link);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -2608,7 +2608,7 @@ watch(
   margin: 0;
   padding: var(--sp-3);
   border: 1px dashed var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   color: var(--text-muted);
   font-size: var(--fs-xs);
   line-height: var(--lh-base);
@@ -2638,7 +2638,7 @@ watch(
   padding: var(--sp-1) var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--elev-floating, var(--shadow-2));
   font-size: var(--fs-sm);
 }
@@ -2667,7 +2667,7 @@ watch(
   padding: var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--elev-floating, var(--shadow-2));
   font-size: var(--fs-xs);
   line-height: var(--lh-base);
@@ -2692,7 +2692,7 @@ watch(
   padding: var(--sp-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--elev-floating, var(--shadow-2));
 }
 .more-panel.up { top: auto; bottom: calc(100% + var(--sp-1)); }
@@ -2704,7 +2704,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 1px var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -2734,7 +2734,7 @@ watch(
 .card.is-cover > .card-head,
 .card.is-cover > .card-meta {
   background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
 }
 

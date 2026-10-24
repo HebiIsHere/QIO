@@ -3200,7 +3200,7 @@ onBeforeUnmount(() => {
   color: var(--text-strong);
   background: var(--bg-elevated);
   border: 1px dashed var(--accent);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
   pointer-events: none;
 }
@@ -3216,7 +3216,7 @@ onBeforeUnmount(() => {
   padding: var(--sp-3);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
 }
 .link-title { margin: 0; font-size: var(--fs-sm); color: var(--text-strong); }
@@ -3229,7 +3229,7 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: var(--sp-1);
 }
 .link-actions { display: flex; gap: var(--sp-1); flex-wrap: wrap; }
@@ -3239,7 +3239,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }

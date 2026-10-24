@@ -994,7 +994,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -1059,7 +1059,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: var(--sp-1);
 }
 /*
@@ -1075,7 +1075,7 @@ defineExpose({
   min-width: 0;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   padding: var(--sp-2);
 }
 .cip-canvas-box[data-qio-pan="both"] {
@@ -1103,7 +1103,7 @@ defineExpose({
   padding: var(--sp-2);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   font-family: var(--mono);
   font-size: var(--fs-sm);
   line-height: var(--lh-tight);
@@ -1309,7 +1309,7 @@ defineExpose({
   margin: 0;
   max-width: 100%;
   padding: 2px var(--sp-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
   overflow-wrap: anywhere;
 }
@@ -1329,7 +1329,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
 }

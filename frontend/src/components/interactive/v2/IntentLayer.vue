@@ -527,7 +527,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   max-width: min(560px, 90%);
   padding: var(--sp-1) var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--bg-elevated);
 }
 .batch-hint { font-size: var(--fs-xs); color: var(--text-secondary); }
@@ -539,7 +539,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   gap: var(--sp-1);
   padding: var(--sp-2);
   border: 1px dashed var(--link);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: var(--fs-sm);
@@ -565,7 +565,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
 }
 .vi-status.open { color: var(--link); }
@@ -589,7 +589,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   gap: var(--sp-1);
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--bg-panel);
   box-shadow: var(--shadow-2);
   pointer-events: auto;
@@ -602,7 +602,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
 .tone-problem { color: var(--danger); }
 .tone-waiting { color: var(--warning); }
 .detail-actions { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
-.recovery { border: 1px dashed var(--border-strong); border-radius: var(--r-sm); padding: var(--sp-1); display: flex; flex-direction: column; gap: var(--sp-1); }
+.recovery { border: 1px dashed var(--border-strong); border-radius: var(--r-lg); padding: var(--sp-1); display: flex; flex-direction: column; gap: var(--sp-1); }
 .notice, .error {
   position: absolute;
   left: var(--sp-2);
@@ -610,7 +610,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   max-width: min(620px, 92%);
   margin: 0;
   padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   font-size: var(--fs-xs);
   z-index: 2;
 }
@@ -628,7 +628,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   gap: var(--sp-1);
   padding: var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--bg-elevated);
 }
 .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }

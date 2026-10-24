@@ -171,7 +171,7 @@ onMounted(async () => {
   padding: var(--sp-3);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   box-shadow: var(--elev-floating, var(--shadow-2));
 }
 
@@ -183,7 +183,7 @@ onMounted(async () => {
   color: var(--text-muted);
   background: none;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 1px var(--sp-2);
   cursor: pointer;
 }
@@ -198,7 +198,7 @@ input {
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: var(--sp-1) var(--sp-2);
 }
 input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
@@ -218,7 +218,7 @@ input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px;
   color: var(--text-primary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
 }

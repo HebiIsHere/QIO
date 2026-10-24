@@ -491,7 +491,7 @@ defineExpose({ load, count: totalCount, storeCount: storeOnlyCount });
   min-width: 0;
   padding: var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: var(--bg-inset);
 }
 .rp-head { display: flex; align-items: baseline; gap: var(--sp-2); }
@@ -520,7 +520,7 @@ defineExpose({ load, count: totalCount, storeCount: storeOnlyCount });
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }

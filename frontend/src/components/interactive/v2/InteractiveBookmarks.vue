@@ -50,9 +50,9 @@ function locate(cardId: string): void {
 .bk-title { font-size: var(--fs-sm); color: var(--text-strong); }
 .bk-count { font-size: var(--fs-xs); color: var(--text-muted); }
 .bk-close { margin-left: auto; font: inherit; font-size: var(--fs-xs); color: var(--text-secondary); background: none; border: 0; padding: 0; cursor: pointer; }
-.bk-empty { margin: var(--sp-2); padding: var(--sp-3); border: 1px dashed var(--border-subtle); border-radius: var(--r-sm); color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.7; }
+.bk-empty { margin: var(--sp-2); padding: var(--sp-3); border: 1px dashed var(--border-subtle); border-radius: var(--r-lg); color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.7; }
 .bk-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; min-height: 0; }
-.bk-row { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: var(--sp-1) var(--sp-2); border: 0; border-radius: var(--r-xs); background: none; color: var(--text-primary); text-align: left; cursor: pointer; }
+.bk-row { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: var(--sp-1) var(--sp-2); border: 0; border-radius: var(--r-lg); background: none; color: var(--text-primary); text-align: left; cursor: pointer; }
 .bk-row:hover { background: var(--layer-hover); }
 .bk-name { font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .bk-kind { color: var(--text-muted); font-size: 10px; }

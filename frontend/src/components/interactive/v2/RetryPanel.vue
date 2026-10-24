@@ -281,7 +281,7 @@ defineExpose({ load, retry: manualRetry });
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }
@@ -298,7 +298,7 @@ defineExpose({ load, retry: manualRetry });
   gap: var(--sp-1);
   padding: var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: var(--bg-inset);
   min-width: 0;
 }

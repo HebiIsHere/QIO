@@ -326,11 +326,13 @@ describe("结构：连接点与尺寸热区在同一个不随画布缩放的交�
     // 八向把手不再参与板面：不再引入 ResizeHandles
     expect(layer).not.toMatch(/<ResizeHandles|import ResizeHandles/);
     const cornerBlock = /\.corner-resize\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
-    expect(cornerBlock).toMatch(/width:\s*40px/);
-    expect(cornerBlock).toMatch(/height:\s*40px/);
-    expect(cornerBlock).toMatch(/cursor:\s*nwse-resize/);
-    expect(cornerBlock).toMatch(/right:\s*-12px/);
-    expect(cornerBlock).toMatch(/bottom:\s*-12px/);
+    expect(cornerBlock).toMatch(/inset:\s*0/);
+    expect(cornerBlock).toMatch(/pointer-events:\s*none/);
+    const hitBlock = /\.corner-hit-path\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
+    expect(hitBlock).toMatch(/stroke-width:\s*26px/);
+    expect(hitBlock).toMatch(/pointer-events:\s*stroke/);
+    expect(hitBlock).toMatch(/cursor:\s*nwse-resize/);
+    expect(layer).toContain("cornerHitPath");
 
     const pointBlock = /\.connect-point\s*\{([^}]*)\}/.exec(layerStyle)?.[1] ?? "";
     expect(pointBlock).toMatch(/width:\s*30px/);

@@ -110,7 +110,7 @@ async function retryRefresh(): Promise<void> {
   min-width: 0;
   padding: 4px var(--sp-2);
   border: 1px solid var(--danger);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-elevated));
   color: var(--danger);
   font-size: var(--fs-xs);
@@ -128,7 +128,7 @@ async function retryRefresh(): Promise<void> {
   color: var(--text-strong);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 1px var(--sp-2);
   cursor: pointer;
 }

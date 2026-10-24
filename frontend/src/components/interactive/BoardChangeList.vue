@@ -117,7 +117,7 @@ const summary = computed(() => summarizeChanges(props.expressions));
   flex: none;
   color: var(--link);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   white-space: nowrap;
 }
