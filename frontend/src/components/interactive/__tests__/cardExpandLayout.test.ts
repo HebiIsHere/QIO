@@ -267,56 +267,34 @@ describe("BoardCard：卡片自己的「展开预览 / 收起预览」", () => {
     return wrapper;
   }
 
-  it("未展开：有「展开预览」按钮，卡片里没有预览主体", async () => {
+  it("小卡片默认简洁，旧「展开预览」按钮不再出现", async () => {
     const card = store.board!.cards[0];
     const view = mountCard(card);
-    const toggle = view.get('[data-im="card-preview-toggle"]');
-    expect(toggle.text()).toBe("展开预览");
-    expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(view.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
+    expect(view.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     expect(view.find('[data-im="card-preview-host"]').exists()).toBe(false);
     await view.vm.$nextTick();
   });
 
-  it("点「展开预览」：按钮变「收起预览」，卡片内部出现预览挂载点；再点收回", async () => {
-    const card = store.board!.cards[0];
-    const view = mountCard(card);
-    await view.get('[data-im="card-preview-toggle"]').trigger("click");
-
-    expect(store.isCardPreviewExpanded(card.id)).toBe(true);
-    expect(view.get('[data-im="card-preview-toggle"]').text()).toBe("收起预览");
-    expect(view.get('[data-im="card-preview-toggle"]').attributes("aria-expanded")).toBe("true");
-    const host = view.get('[data-im="card-preview-host"]');
-    expect(host.attributes("data-card-id")).toBe(card.id);
-    // 挂载点必须在卡片**内部**（不是浮层）：不是弹窗、不盖别的卡片
-    expect(host.element.closest('[data-im="card"]')).not.toBeNull();
-
-    await view.get('[data-im="card-preview-toggle"]').trigger("click");
-    expect(store.isCardPreviewExpanded(card.id)).toBe(false);
-    expect(view.find('[data-im="card-preview-host"]').exists()).toBe(false);
-    expect(view.get('[data-im="card-preview-toggle"]').text()).toBe("展开预览");
-  });
-
-  it("展开 / 收起的全过程不动板面状态、不产生表达", async () => {
-    const card = store.board!.cards[0];
+  it("尺寸达到阈值时自动出现卡片内阅读主体，不写板面状态", async () => {
+    const card = mkCard("auto_detail", 100, 100, 420, 280);
+    store.board = { ...store.board!, cards: [card] };
     const view = mountCard(card);
     const before = snapshot(store.board);
-    await view.get('[data-im="card-preview-toggle"]').trigger("click");
-    await view.get('[data-im="card-preview-toggle"]').trigger("click");
+    await view.vm.$nextTick();
+    expect(view.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
+    const host = view.get('[data-im="card-preview-host"]');
+    expect(host.attributes("data-card-id")).toBe(card.id);
+    expect(host.element.closest('[data-im="card"]')).not.toBeNull();
     expect(snapshot(store.board)).toBe(before);
     expect(store.lastSubmission).toBeNull();
-    for (const fn of Object.values(imApi)) {
-      expect(vi.mocked(fn as () => unknown)).not.toHaveBeenCalled();
-    }
   });
 
-  it("折叠的卡片不显示预览入口（先展开卡片再说），也不渲染预览主体", async () => {
+  it("折叠的卡片不渲染阅读主体", async () => {
     const card = { ...store.board!.cards[0], folded: true };
-    store.toggleCardPreview(card.id);
     const view = mountCard(card);
     expect(view.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     expect(view.find('[data-im="card-preview-host"]').exists()).toBe(false);
-    // 展开状态本身没有被偷偷清掉：它是查看状态，折叠只改变显示
-    expect(store.isCardPreviewExpanded(card.id)).toBe(true);
   });
 });
 

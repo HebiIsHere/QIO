@@ -88,6 +88,11 @@ function imageCard(patch: Partial<BoardCardModel> = {}): BoardCardModel {
   };
 }
 
+/** 尺寸超过普通卡片进入阈值，也超过图片短边/面积阈值：用于自动详细态。 */
+function detailedImageCard(patch: Partial<BoardCardModel> = {}): BoardCardModel {
+  return imageCard({ w: 600, h: 450, ...patch });
+}
+
 let wrappers: VueWrapper[] = [];
 let created: string[] = [];
 let revoked: string[] = [];
@@ -160,18 +165,16 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-describe("详情入口：图片卡不再被简洁态永远锁住", () => {
-  it("图片卡有「查看详情」入口，默认不是详情态，也没有卡片内阅读入口", async () => {
+describe("图片详细状态：尺寸自动优先，极端比例才兜底", () => {
+  it("普通小图默认简洁，不再显示旧的查看详情文字按钮", async () => {
     const w = mountCard(imageCard());
     await flushPromises();
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
-    expect(w.find('[data-im="card-preview-toggle"]').exists(), "图片卡还在用文字卡的展开预览入口").toBe(false);
-    const toggle = w.get('[data-im="card-image-detail-toggle"]');
-    expect(toggle.text()).toBe("查看详情");
-    expect(toggle.attributes("aria-expanded")).toBe("false");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
+    expect(w.find('[data-im="card-image-detail-toggle"]').exists()).toBe(false);
   });
 
-  it("极端长图 / 竖图：标题说明点出「很长」，入口始终存在", async () => {
+  it("极端长图 / 竖图：保留小眼睛兜底，说明点出「长」", async () => {
     const long = mountCard(
       imageCard({
         id: "card_long",
@@ -181,6 +184,7 @@ describe("详情入口：图片卡不再被简洁态永远锁住", () => {
     await flushPromises();
     const toggle = long.get('[data-im="card-image-detail-toggle"]');
     expect(toggle.attributes("title")).toContain("长");
+    expect(toggle.attributes("aria-label")).toBe("查看完整图片");
     long.unmount();
 
     const tall = mountCard(
@@ -193,10 +197,10 @@ describe("详情入口：图片卡不再被简洁态永远锁住", () => {
     expect(tall.get('[data-im="card-image-detail-toggle"]').attributes("title")).toContain("长");
   });
 
-  it("比例未知时同样有详情入口（详情态会显示加载 / 失败状态，不假成功）", async () => {
+  it("比例未知的普通小图不显示兜底入口", async () => {
     const w = mountCard(imageCard({ meta: imageMeta() }));
     await flushPromises();
-    expect(w.find('[data-im="card-image-detail-toggle"]').exists()).toBe(true);
+    expect(w.find('[data-im="card-image-detail-toggle"]').exists()).toBe(false);
   });
 });
 
@@ -257,44 +261,35 @@ describe("meta.display：从真实解码尺寸记录原比例（不猜、不写 
 });
 
 describe("详情态：铺满卡片、无普通标题栏、圆角裁切、等比完整", () => {
-  it("打开详情：整卡是图，头部 / 页脚 / 封面都不再渲染", async () => {
-    const w = mountCard(imageCard());
-    await flushPromises();
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
+  it("尺寸达到阈值：整卡是图，头部 / 页脚 / 封面都不再渲染", async () => {
+    const w = mountCard(detailedImageCard());
     await flushPromises();
     await nextTick();
 
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("image-detail");
     expect(w.find('[data-im="card-image-detail-host"]').exists()).toBe(true);
-    // 头部仍然在（名称 / 许可 / 收起详情浮在图上），但正文 / 页脚 / 封面都不再渲染
     expect(w.find('[data-im="card-head"]').exists()).toBe(true);
     expect(w.get('[data-im="card-head"] [data-im="card-title"]').text()).toBe("照片.png");
-    expect(w.get('[data-im="card-image-detail-toggle"]').text()).toBe("收起详情");
+    expect(w.find('[data-im="card-image-detail-toggle"]').exists(), "自动详细态不应再出现文字/兜底按钮").toBe(false);
     expect(w.find('[data-im="card-meta"]').exists(), "详情态还留着页脚").toBe(false);
     expect(w.find('[data-im="card-cover"]').exists()).toBe(false);
     expect(w.find('[data-im="card-body"]').exists()).toBe(false);
   });
 
-  it("详情里的图片真的加载（blob URL），尺寸事实与收起入口浮在图上", async () => {
+  it("详情里的图片真的加载（blob URL），尺寸事实浮在图上", async () => {
     const w = mountCard(
-      imageCard({
+      detailedImageCard({
         meta: { ...imageMeta(), display: { width: 800, height: 600, aspectRatio: 4 / 3 } },
       }),
     );
     await flushPromises();
-    // 常态封面自己会取一次字节（既有行为），详情态再取一次 —— 计数从这里的基线起算
-    const fetchBaseline = mocks.fetchAttachmentContent.mock.calls.length;
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
-    await flushPromises();
     await nextTick();
 
-    expect(mocks.fetchAttachmentContent.mock.calls.length).toBe(fetchBaseline + 1);
-    expect(mocks.fetchAttachmentContent).toHaveBeenLastCalledWith("att_img");
+    expect(mocks.fetchAttachmentContent).toHaveBeenCalledWith("att_img");
     const img = w.get('[data-im="card-image-detail-img"]');
     expect(img.attributes("src")).toBe(created[created.length - 1]);
     expect(img.attributes("alt")).toContain("照片.png");
     expect(w.get('[data-im="card-image-detail-shape"]').text()).toContain("800×600");
-    // 名称由浮在图上的卡片头部承担，详情层不重复一遍
     expect(w.find('[data-im="card-image-detail-name"]').exists()).toBe(false);
   });
 
@@ -316,12 +311,11 @@ describe("详情态：铺满卡片、无普通标题栏、圆角裁切、等比�
     expect(card).toContain("overflow: hidden");
   });
 
-  it("收起详情：回到常态封面，图片仍按原比例完整显示", async () => {
-    const w = mountCard(imageCard());
+  it("缩小到退出阈值：回到常态封面，图片仍按原比例完整显示", async () => {
+    const model = detailedImageCard();
+    const w = mountCard(model);
     await flushPromises();
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
-    await flushPromises();
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
+    await w.setProps({ card: { ...model, w: 320, h: 260 } });
     await flushPromises();
     await nextTick();
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
@@ -332,10 +326,8 @@ describe("详情态：铺满卡片、无普通标题栏、圆角裁切、等比�
 
 describe("详情态的异步身份核对", () => {
   it("换附件：旧图不覆盖新图，旧 blob URL 被释放", async () => {
-    const model = imageCard();
+    const model = detailedImageCard();
     const w = mountCard(model);
-    await flushPromises();
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
     await flushPromises();
     const detailUrl = created[created.length - 1];
     const fetchBaseline = mocks.fetchAttachmentContent.mock.calls.length;
@@ -351,15 +343,12 @@ describe("详情态的异步身份核对", () => {
   });
 
   it("迟到的旧附件字节不写入新图（身份核对）", async () => {
-    const model = imageCard();
+    const model = detailedImageCard();
     let resolveOld: ((value: Blob) => void) | null = null;
     mocks.fetchAttachmentContent.mockImplementationOnce(
       () => new Promise<Blob>((resolve) => { resolveOld = resolve; }),
     );
     const w = mountCard(model);
-    await flushPromises();
-    const fetchBaseline = mocks.fetchAttachmentContent.mock.calls.length;
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
     await flushPromises();
 
     // 还没取回旧图就换附件：新附件立刻取到
@@ -382,10 +371,8 @@ describe("详情态的异步身份核对", () => {
   });
 
   it("换卡片 / 卸载：详情关闭并释放当前 blob URL", async () => {
-    const model = imageCard();
+    const model = detailedImageCard();
     const w = mountCard(model);
-    await flushPromises();
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
     await flushPromises();
     const detailUrl = created[created.length - 1];
     w.unmount();
@@ -394,26 +381,24 @@ describe("详情态的异步身份核对", () => {
 });
 
 describe("几何与板面：详情只改查看，不动尺寸、不写板面", () => {
-  it("打开 / 收起详情不改 w/h，也不产生 patch", async () => {
-    const model = imageCard();
+  it("尺寸驱动详情不修改传入的 w/h，也不产生 patch", async () => {
+    const model = detailedImageCard();
     const w = mountCard(model);
     await flushPromises();
     const geometry = JSON.stringify({ x: model.x, y: model.y, w: model.w, h: model.h });
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("image-detail");
 
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
-    await flushPromises();
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
+    await w.setProps({ card: { ...model, w: 320, h: 260 } });
     await flushPromises();
 
     expect(JSON.stringify({ x: model.x, y: model.y, w: model.w, h: model.h })).toBe(geometry);
     expect(w.emitted("patch"), "切换详情态不该写板面").toBeUndefined();
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
   });
 
   it("版本变化（附件 version 变了）不重置用户尺寸", async () => {
     const model = imageCard({ w: 517, h: 431 });
     const w = mountCard(model);
-    await flushPromises();
-    await w.get('[data-im="card-image-detail-toggle"]').trigger("click");
     await flushPromises();
 
     await w.setProps({ card: { ...model, meta: imageMeta("att_img", "照片.png", { version: "v2" }) } });

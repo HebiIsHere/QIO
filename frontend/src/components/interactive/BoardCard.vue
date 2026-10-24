@@ -27,6 +27,7 @@ import {
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
 import { CARD_KIND_LABELS, CHECKABLE_KINDS, defaultCardSeed, participationOf } from "../../interactive/board";
+import { shouldAutoDetail, shouldShowImageDetailFallback } from "../../interactive/cardDetail";
 import {
   cardDocFields,
   docFromCard,
@@ -57,9 +58,7 @@ import {
 import {
   decodeDisplayMeta,
   imageDetailHint,
-  imageDetailLabel,
   readImageDisplay,
-  shouldOfferImageDetail,
   writeImageDisplay,
 } from "../../interactive/renderers/imageDisplay";
 import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
@@ -532,17 +531,53 @@ const imageDisplay = computed(() =>
 const imageDetailAvailable = computed(() => attachmentIsImage.value);
 const imageDetailOpen = ref(false);
 const imageDetailVisible = computed(() => imageDetailOpen.value && imageDetailAvailable.value);
-const imageCardSize = computed(() => ({ w: props.card.w, h: props.card.h }));
-const imageDetailNeeded = computed(() =>
-  shouldOfferImageDetail(imageDisplay.value, imageCardSize.value),
+const imageAspectRatio = computed<number | null>(() => {
+  const display = imageDisplay.value;
+  if (!display || !(display.width > 0) || !(display.height > 0)) return null;
+  return display.width / display.height;
+});
+/**
+ * 自动详细状态：只按卡片真实尺寸（和图片比例）判断，不读板面 scale。
+ * previousDetailed 用上一次结果做迟滞，避免尺寸停在阈值附近时反复切换。
+ */
+const autoDetailed = ref(false);
+watch(
+  () => [props.card.w, props.card.h, imageAspectRatio.value, imageDetailAvailable.value] as const,
+  () => {
+    autoDetailed.value = shouldAutoDetail({
+      width: props.card.w,
+      height: props.card.h,
+      aspectRatio: imageDetailAvailable.value ? imageAspectRatio.value : null,
+      previousDetailed: autoDetailed.value,
+    });
+  },
+  { immediate: true },
+);
+/** 用户点了详细状态里的关闭：在尺寸再次变化前不再自动弹回，避免“关了又开”。 */
+const detailDismissed = ref(false);
+watch(
+  () => [props.card.w, props.card.h] as const,
+  ([width, height], [previousWidth, previousHeight]) => {
+    if (width !== previousWidth || height !== previousHeight) detailDismissed.value = false;
+  },
+);
+const autoDetailVisible = computed(() => autoDetailed.value && !detailDismissed.value);
+function closeAutoDetail(): void {
+  detailDismissed.value = true;
+}
+const imageFallbackVisible = computed(() =>
+  imageDetailAvailable.value &&
+  !autoDetailVisible.value &&
+  shouldShowImageDetailFallback({
+    width: props.card.w,
+    height: props.card.h,
+    aspectRatio: imageAspectRatio.value,
+  }),
 );
 const imageDetailTitle = computed(() =>
-  imageDetailNeeded.value
-    ? imageDetailHint(imageDisplay.value)
-    : "查看图片详情（只改查看方式，不改内容与卡片尺寸）",
+  imageDetailHint(imageDisplay.value) || "查看完整图片（只改查看方式，不改内容与卡片尺寸）",
 );
 const participationIncluded = computed(() => participationOf(props.card) === "included");
-const imageDetailToggleText = computed(() => imageDetailLabel(imageDetailVisible.value));
 
 function toggleImageDetail(): void {
   imageDetailOpen.value = !imageDetailOpen.value;
@@ -970,10 +1005,7 @@ const conflictExpanded = computed(
  * `interactive/cardLayout.ts` 的纯函数算好，再通过 x/y 与 card 传进来。
  * 点击「展开预览」不写板面状态、不产生表达、不触发意图 / 任务。
  */
-const previewExpanded = computed(() => store.isCardPreviewExpanded(props.card.id));
-function togglePreview(): void {
-  store.toggleCardPreview(props.card.id);
-}
+/** 旧 store 的展开状态只作为兼容状态保留，不再有按钮入口；实际显示由卡片尺寸决定。 */
 
 /* ------------------------------------------------------------------------
  * 卡片自己的四种显示状态（任务书 §6）：常态 / 阅读展开 / 编辑 / 折叠
@@ -1011,9 +1043,9 @@ const previewToggleAvailable = computed(() => readingAvailable.value && !attachm
 const displayState = computed<CardDisplayState>(() => {
   if (props.card.folded) return "folded";
   if (editing.value) return "editing";
-  // 图片详情优先于阅读展开：图片不进入阅读态（store 也不把图片放进展开列表）
-  if (imageDetailVisible.value) return "image-detail";
-  if (previewExpanded.value && previewToggleAvailable.value) return "reading";
+  // 图片详情优先于阅读展开：图片不进入阅读态。
+  if (imageDetailVisible.value || (autoDetailVisible.value && imageDetailAvailable.value)) return "image-detail";
+  if (autoDetailVisible.value && previewToggleAvailable.value) return "reading";
   return "normal";
 });
 
@@ -1412,7 +1444,7 @@ watch(
     :data-card-state="displayState"
     @pointerdown="onPointerDown"
     :data-cover="coverMode ? '1' : undefined"
-    :data-image-detail="imageDetailVisible ? '1' : '0'"
+    :data-image-detail="displayState === 'image-detail' ? '1' : '0'"
     :data-image-ratio="imageDisplay ? String(imageDisplay.aspectRatio) : undefined"
   >
     <!--
@@ -1504,40 +1536,25 @@ watch(
         恢复卡片
       </button>
       <!--
-        卡片内阅读展开的入口（契约 §3.5）：展开的是**这张卡本身**，不是弹窗、不盖别的卡片。
-        没有可读材料的卡片不出现这个入口（任务书 §6.4：不给假预览入口）；
-        编辑态不出现，避免一个点了不会变的入口（四态互斥）。
+        图片兜底入口：正常图片会随卡片尺寸自动进入详细状态，不显示按钮。
+        只有极端长图/竖图当前达不到自动阈值时，才在右上角出现一个小眼睛；
+        点击只改查看方式，不改内容、不改卡片尺寸。
       -->
       <button
-        v-else-if="displayState !== 'editing' && previewToggleAvailable"
-        class="chip-btn"
-        type="button"
-        data-im="card-preview-toggle"
-        :data-card-id="card.id"
-        :aria-expanded="previewExpanded"
-        :title="previewExpanded
-          ? '收起预览：回到常态卡片（不改内容）'
-          : '展开阅读：让正文或文件预览成为卡片主体（只改查看，不改内容）'"
-        @click="togglePreview"
-      >
-        {{ previewExpanded ? "收起预览" : "展开预览" }}
-      </button>
-      <!--
-        图片详情入口（Phase 2-C）：图片不进入阅读态，但必须能看完整画面。
-        长图 / 竖图 / 比例与卡片不符时一直都在（不会被简洁态永远锁住）；
-        文案用「查看详情 / 收起详情」，与文字卡的「展开预览」区分开。
-      -->
-      <button
-        v-if="displayState !== 'editing' && imageDetailAvailable"
-        class="chip-btn"
+        v-if="displayState !== 'editing' && imageFallbackVisible"
+        class="chip-btn card-image-fallback"
         type="button"
         data-im="card-image-detail-toggle"
         :data-card-id="card.id"
+        aria-label="查看完整图片"
         :aria-expanded="imageDetailVisible"
         :title="imageDetailTitle"
         @click="toggleImageDetail"
       >
-        {{ imageDetailToggleText }}
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M1.8 8s2.2-3.4 6.2-3.4S14.2 8 14.2 8 12 11.4 8 11.4 1.8 8 1.8 8Z" />
+          <circle cx="8" cy="8" r="1.6" />
+        </svg>
       </button>
     </header>
 
@@ -1855,7 +1872,7 @@ watch(
               v-if="hasPreviewMaterial"
               :card="card"
               :active="true"
-              :on-close="togglePreview"
+              :on-close="closeAutoDetail"
               context="material"
               @position="onPreviewPosition"
             />
@@ -2741,6 +2758,23 @@ watch(
   - 宿主 absolute inset:0 铺满卡片，图片在宿主里等比完整显示（contain）；
   - 卡片尺寸仍由 w/h 决定：这里只改外观，不动几何（§16.3 / §17.1）。
 */
+.card-image-fallback {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.card-image-fallback svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .card.is-image-detail {
   padding: 0;
   overflow: hidden;
