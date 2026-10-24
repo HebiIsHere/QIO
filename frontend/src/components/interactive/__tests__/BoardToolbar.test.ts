@@ -50,10 +50,11 @@ describe("BoardToolbar 接线", () => {
     });
   }
 
-  it("常态只留必要入口：添加 / 搜索 / 撤销重做 / 视图 / 提交，没有一组常驻的分组按钮", () => {
+  it("常态只留必要入口：添加 / 撤销重做 / 视图 / 提交，搜索只在全局栏", () => {
     const wrapper = mount(BoardToolbar);
     // 2026-10-14：用户要求删除「操作说明」入口（help-toggle），这里不再要求它存在
-    for (const hook of ["board-toolbar", "add-menu", "search-toggle", "undo", "redo", "submit"]) {
+    expect(wrapper.find('[data-im="search-toggle"]').exists()).toBe(false);
+    for (const hook of ["board-toolbar", "add-menu", "undo", "redo", "submit"]) {
       expect(wrapper.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
     // 反例（旧实现会挂）：分组类操作曾经常驻工具栏，且未选中时是一排禁用按钮
@@ -125,39 +126,11 @@ describe("BoardToolbar 接线", () => {
     wrapper.unmount();
   });
 
-  it("板内搜索浮层：默认不在 DOM，点开后能搜到未勾选的注释，点结果 dispatch locate-card", async () => {
-    // 新建文字卡默认已勾选（第十个问题），这条用例要的是「未勾选」的注释，显式关掉
-    setBoard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做", checked: false }));
-    const cardId = store.board?.cards[0].id as string;
-    const seen: string[] = [];
-    const onLocate = (event: Event) => {
-      const detail = (event as CustomEvent<{ cardId?: string }>).detail;
-      if (detail?.cardId) seen.push(detail.cardId);
-    };
-    window.addEventListener("qio:interactive:locate-card", onLocate);
-
+  it("板内搜索浮层已删除，底部工具栏不再提供第二个搜索入口", () => {
     const wrapper = mount(BoardToolbar);
+    expect(wrapper.find('[data-im="search-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="search-panel"]').exists()).toBe(false);
     expect(wrapper.find('[data-im="search"]').exists()).toBe(false);
-
-    await wrapper.get('[data-im="search-toggle"]').trigger("click");
-    expect(wrapper.find('[data-im="search-panel"]').exists()).toBe(true);
-    const input = wrapper.get('[data-im="search"]');
-    await input.setValue("预算");
-    await nextTick();
-
-    const result = wrapper.get('[data-im="search-result"]');
-    expect(result.attributes("data-card-id")).toBe(cardId);
-    // 2026-10-14：用户要求删除搜索面板的解释文案；这里只核对「未勾选的注释能被搜到」
-    expect(wrapper.get('[data-im="search-result"]').text()).toContain("未勾选");
-    expect(result.text()).toContain("未勾选");
-
-    await result.trigger("click");
-    expect(seen).toEqual([cardId]);
-    expect(wrapper.text()).toContain("已在板面上定位");
-
-    await wrapper.get('[data-im="search-close"]').trigger("click");
-    expect(wrapper.find('[data-im="search"]').exists()).toBe(false);
-    window.removeEventListener("qio:interactive:locate-card", onLocate);
     wrapper.unmount();
   });
 

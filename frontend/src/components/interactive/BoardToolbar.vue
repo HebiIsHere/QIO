@@ -22,7 +22,6 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { toolbarAvailableWidth, toolbarBand, type ToolbarBand } from "../../interactive/toolbarLayout";
 import AddMenu from "./AddMenu.vue";
-import BoardSearchPanel from "./BoardSearchPanel.vue";
 import SubmitCluster from "./SubmitCluster.vue";
 
 const props = withDefaults(
@@ -41,8 +40,6 @@ const emit = defineEmits<{
 
 const store = useInteractiveStore();
 
-/** 板内搜索浮层是否展开（只影响查看，不改板面数据）。 */
-const searchOpen = ref(false);
 /** 标注菜单：本轮只有准确的占位提示，不创建笔迹、不改变鼠标模式。 */
 const annotateOpen = ref(false);
 /**
@@ -105,9 +102,6 @@ onBeforeUnmount(() => {
   observer = null;
 });
 
-function toggleSearch(): void {
-  searchOpen.value = !searchOpen.value;
-}
 </script>
 
 <template>
@@ -134,24 +128,6 @@ function toggleSearch(): void {
     <div class="tb-main">
       <div class="tb-edit">
         <AddMenu />
-
-        <span class="tb-sep" aria-hidden="true"></span>
-
-        <button
-          class="tb-btn"
-          type="button"
-          data-im="search-toggle"
-          :class="{ on: searchOpen }"
-          :aria-pressed="searchOpen"
-          title="板内搜索：只查你自己的板面"
-          @click="toggleSearch"
-        >
-          <svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-            <circle cx="7" cy="7" r="4.1" fill="none" stroke="currentColor" stroke-width="1.4" />
-            <path d="M10.1 10.1 13.8 13.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-          </svg>
-          <span class="tb-label">搜索</span>
-        </button>
 
         <span class="tb-sep" aria-hidden="true"></span>
 
@@ -241,11 +217,10 @@ function toggleSearch(): void {
         这里只负责哪一档把这些区域放在哪一行哪一列。
       -->
       <div class="tb-submit">
-        <SubmitCluster />
+        <SubmitCluster :compact="floating" />
       </div>
     </div>
 
-    <BoardSearchPanel v-if="searchOpen" @close="searchOpen = false" />
   </div>
 </template>
 
