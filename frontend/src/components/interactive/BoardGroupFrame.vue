@@ -574,7 +574,8 @@ defineExpose({ focusName });
   position: absolute;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
-  background: var(--bg-inset);
+  background: color-mix(in srgb, var(--bg-surface) 92%, var(--accent-soft));
+  box-shadow: var(--shadow-1);
   pointer-events: none; /* 卡片要能拖动：只有头部两行接管指针 */
   z-index: 2;
 }
@@ -601,9 +602,9 @@ defineExpose({ focusName });
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 56px; /* 与 board.ts 的 GROUP_PAD_TOP 对齐，不压住成员卡片 */
+  max-height: 48px;
   overflow: hidden;
-  padding: 2px var(--sp-2);
+  padding: 5px var(--sp-3);
   /**
    * 组操作的层级（V1）：组框本身必须比卡片轻（z-index: 2，卡片 4），
    * 否则会反过来盖住卡片标题与拖动区；但**头部**是用户要点的操作，
@@ -622,11 +623,28 @@ defineExpose({ focusName });
    * 头部带一层很淡的底：卡片万一压到同一条带上也不会两层文字叠着读不请。
    * 只到组框自己的底色一档，不加边界、不加阴影，保持「组框比卡片轻」。
    */
-  background: var(--bg-inset);
+  background: transparent;
   border-bottom: 1px solid var(--border-subtle);
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   font-size: var(--fs-xs);
 }
+/* 组头只保留组名、成员数和必要操作；解释性长句不再占据一行。 */
+.group-head .mode,
+.group-head .badge.default-name { display: none; }
+.group-head .count {
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+}
+.group-name {
+  background: transparent;
+  border-color: transparent;
+  font-family: var(--serif);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.group-name:hover { background: var(--bg-inset); border-color: var(--border-subtle); }
 /*
  * 单行不折行：成员数 / 系统默认名 / 拖动提示再多也不能把这一行挤成三行
  * （头部高度是固定的 56px，被挤满就没有成员那一行了）。宽度不够时先压缩说明文字。
@@ -662,13 +680,14 @@ defineExpose({ focusName });
   font: inherit;
   font-family: var(--serif);
   font-size: var(--fs-sm);
+  font-weight: 600;
   color: var(--text-strong);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   min-width: 72px;
-  max-width: 140px;
+  max-width: 180px;
   min-height: 22px;
   box-sizing: border-box;
 }

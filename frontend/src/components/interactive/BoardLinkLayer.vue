@@ -53,7 +53,8 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: "select-link", linkId: string): void;
+  (e: "select-link", linkId: string, clientX?: number, clientY?: number): void;
+  (e: "edit-link", linkId: string, clientX?: number, clientY?: number): void;
   (e: "curve-change", linkId: string, curve: LinkCurve): void;
 }>();
 
@@ -142,9 +143,9 @@ function startLabelDrag(linkId: string, curve: LinkCurve, event: PointerEvent): 
   window.addEventListener("pointerup", up);
 }
 
-function onLabelClick(linkId: string): void {
+function onLabelClick(linkId: string, event?: MouseEvent): void {
   if (Date.now() < suppressClickUntil) return;
-  emit("select-link", linkId);
+  emit("select-link", linkId, event?.clientX, event?.clientY);
 }
 
 function labelOf(target: EventTarget | null): HTMLElement | null {
@@ -167,17 +168,29 @@ function handleClick(event: MouseEvent): void {
   const linkId = label.dataset.linkLabel ?? "";
   if (!linkId) return;
   event.stopPropagation();
-  onLabelClick(linkId);
+  onLabelClick(linkId, event);
+}
+
+function handleDoubleClick(event: MouseEvent): void {
+  const label = labelOf(event.target);
+  if (!label) return;
+  const linkId = label.dataset.linkLabel ?? "";
+  if (!linkId) return;
+  event.preventDefault();
+  event.stopPropagation();
+  emit("edit-link", linkId, event.clientX, event.clientY);
 }
 
 onMounted(() => {
   rootEl.value?.addEventListener("pointerdown", handlePointerDown, true);
   rootEl.value?.addEventListener("click", handleClick, true);
+  rootEl.value?.addEventListener("dblclick", handleDoubleClick, true);
 });
 
 onBeforeUnmount(() => {
   rootEl.value?.removeEventListener("pointerdown", handlePointerDown, true);
   rootEl.value?.removeEventListener("click", handleClick, true);
+  rootEl.value?.removeEventListener("dblclick", handleDoubleClick, true);
 });
 
 /** 端点解析上下文：显示层用真实板面数据；不在这里改任何状态。 */
@@ -299,7 +312,7 @@ const targetBadge = computed(() => {
       <path
         class="hit"
         :d="pathOf(item)"
-        @click="emit('select-link', item.id)"
+        @click="emit('select-link', item.id, $event.clientX, $event.clientY)"
       />
       <path
         class="line"

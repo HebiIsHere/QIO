@@ -514,6 +514,19 @@ describe("关系链接", () => {
     expect(invalid.links[0].curve).toEqual({ x: 0, y: 0 });
   });
 
+  it("组落点看指针位置，不看拖动卡片左上角", () => {
+    const state = mkState(
+      [mkCard("a", 0, 0), mkCard("b", 200, 0), mkCard("c", 800, 0)],
+      [mkGroup("g1", ["a", "b"])],
+    );
+    // 卡片左上角还在组外，但指针已经进入组框：应该能作为组目标。
+    const preview = board.previewDrop(state, "c", 800, 0, { x: 250, y: 50 });
+    expect(preview.groupId).toBe("g1");
+    expect(board.previewDrop(state, "c", 800, 0).groupId).toBeNull();
+    const dropped = board.dropCard(state, "c", 800, 0, { x: 250, y: 50 });
+    expect(membersOf(dropped.state, "g1")).toContain("c");
+  });
+
   it("合并组不影响卡片之间的链接", () => {
     const state = mkState(
       [mkCard("a", 0, 0), mkCard("b", 200, 0), mkCard("c", 600, 0)],

@@ -163,6 +163,8 @@ interface DragState {
   offsetY: number;
   x: number;
   y: number;
+  /** 当前指针在板面坐标系中的位置：组落点看它，不看卡片左上角。 */
+  pointer: { x: number; y: number };
   preview: DropPreview;
   fromGroupId: string | null;
   /** 是否真的移动过（超过 3px）：纯单击只是选中，松手时不许判落点、不许成组、不许保存 */
@@ -221,6 +223,8 @@ const rectSelect = ref<RectDrag | null>(null);
 const linkDraft = ref<LinkDraft | null>(null);
 const spaceDown = ref(false);
 const editingLinkId = ref<string | null>(null);
+const linkEditorOpen = ref(false);
+const linkEditorPos = ref<{ x: number; y: number } | null>(null);
 const linkMeaning = ref("");
 const linkDirection = ref(false);
 /** 指针悬停的组（纯显示）：只让该组的已有锚点从圆点变短条。 */
@@ -1030,7 +1034,7 @@ const resizeLabels = computed<Record<string, string>>(() => {
 });
 
 /** 关系编辑 / 拖线进行中：把手会让路，避免同一指针同时驱动两件事。 */
-const resizeDisabled = computed(() => Boolean(editingLinkId.value || linkDraft.value));
+const resizeDisabled = computed(() => Boolean(linkDraft.value));
 
 /**
  * 「同一个指针只驱动一种手势」（0.2.5 §三.6）：开始任何一种手势前，把其余手势的临时状态
@@ -1256,7 +1260,8 @@ function onDragStart(cardId: string, event: PointerEvent) {
     offsetY: point.y - card.y,
     x: card.x,
     y: card.y,
-    preview: previewDrop(current, cardId, card.x, card.y),
+    pointer: point,
+    preview: previewDrop(current, cardId, card.x, card.y, point),
     fromGroupId: from ? from.id : null,
     // 是否真的移动过：纯单击（用来选中卡片）**不是**拖动，松手时不许判落点、不许成组、不许保存
     moved: false,
@@ -1290,8 +1295,9 @@ function onPointerMove(event: PointerEvent) {
     const y = point.y - drag.offsetY;
       drag.x = x;
     drag.y = y;
+    drag.pointer = point;
     // 只预演：板面状态在松手前不变
-    drag.preview = previewDrop(current, drag.cardId, x, y);
+    drag.preview = previewDrop(current, drag.cardId, x, y, drag.pointer);
     // 拖动中也走同一个入口：只置脏标记、由同一帧 rAF 做一次测量与一次写入
     requestPlacement();
     return;
@@ -1323,7 +1329,7 @@ function onPointerUp() {
       requestPlacement();
       return;
     }
-    const result = dropCard(current, drag.cardId, drag.x, drag.y);
+    const result = dropCard(current, drag.cardId, drag.x, drag.y, drag.pointer);
     const formed = !drag.fromGroupId && Boolean(result.groupId);
     const label = dragLabel(drag, result.groupId, result.merged, formed);
     // 时间戳每次都不同，不能直接比较 JSON：只比较**真实含义**（位置 / 成员 / 顺序 / 选择 / 链接 / 勾选等）
@@ -2733,7 +2739,7 @@ function onConnectStart(fromId: string, event: PointerEvent) {
    */
   releaseGestures();
   linkDraft.value = { fromId, point: boardPointOf(event), targetId: null };
-  notice.value = "从连接点拖到另一张卡片或一个组上建立关系；拖到无效位置或取消不会建立任何链接。";
+  notice.value = "";
   attachPointerListeners();
 }
 
@@ -2783,20 +2789,46 @@ function pickLinkCard(cardId: string) {
   finishLinkDraft(true);
 }
 
-function openLinkEditor(linkId: string) {
+function openLinkEditor(linkId: string, clientX?: number, clientY?: number) {
   const current = boardState.value;
   if (!current) return;
   const link = current.links.find((item) => item.id === linkId);
   if (!link) return;
   editingLinkId.value = linkId;
+  linkEditorOpen.value = true;
   linkMeaning.value = link.meaning;
   linkDirection.value = link.direction;
+  const host = shell.value;
+  if (host && typeof clientX === "number" && typeof clientY === "number") {
+    const rect = host.getBoundingClientRect();
+    linkEditorPos.value = {
+      x: Math.max(8, Math.min(rect.width - 380, clientX - rect.left + 12)),
+      y: Math.max(8, Math.min(rect.height - 250, clientY - rect.top + 12)),
+    };
+  } else {
+    linkEditorPos.value = null;
+  }
 }
+
+const linkEditorStyle = computed<Record<string, string>>(() => {
+  if (linkEditorPos.value) {
+    const placed: Record<string, string> = { left: linkEditorPos.value.x + "px", top: linkEditorPos.value.y + "px" };
+    return placed;
+  }
+  const fallback: Record<string, string> = { right: "16px", top: "16px" };
+  return fallback;
+});
 
 function onLinkCurveChange(linkId: string, curve: { x: number; y: number }) {
   const current = boardState.value;
   if (!current) return;
   commit(updateLink(current, linkId, { curve }), "调整关系曲线");
+}
+
+/** 单击只选中并高亮关系，不弹出编辑卡；双击说明才编辑。 */
+function selectLink(linkId: string) {
+  editingLinkId.value = linkId;
+  linkEditorOpen.value = false;
 }
 
 function saveLinkEditor() {
@@ -2806,6 +2838,8 @@ function saveLinkEditor() {
   commit(updateLink(current, linkId, { meaning: linkMeaning.value, direction: linkDirection.value }), "修改关系含义 / 方向");
   notice.value = "已保存关系的方向与含义（含义是你写的原话，系统不补充解释）。";
   editingLinkId.value = null;
+  linkEditorOpen.value = false;
+  linkEditorPos.value = null;
 }
 
 function deleteEditingLink() {
@@ -2814,6 +2848,8 @@ function deleteEditingLink() {
   if (!current || !linkId) return;
   commit(removeLink(current, linkId), "删除关系（撤回这条关联）");
   editingLinkId.value = null;
+  linkEditorOpen.value = false;
+  linkEditorPos.value = null;
 }
 
 const editingLink = computed(() => {
@@ -3134,6 +3170,7 @@ onBeforeUnmount(() => {
             :selected="selection.includes(card.id)"
             :highlight="highlightId === card.id || (linkTarget.kind === 'card' && linkTarget.cardId === card.id)"
             :dragging="dragging !== null && dragging.cardId === card.id"
+            :group-dragging="groupDrag !== null && groupDrag.groupId === groupIdOf(card.id)"
             :x="displayX(card)"
             :y="displayY(card)"
             :group-name="groupNameOf(card.id)"
@@ -3166,7 +3203,8 @@ onBeforeUnmount(() => {
             :groups="displayGroups"
             :folded-group-ids="foldedGroupIds"
             :included-card-ids="includedCardIds"
-            @select-link="openLinkEditor"
+            @select-link="selectLink"
+            @edit-link="openLinkEditor"
             @curve-change="onLinkCurveChange"
           />
 
@@ -3257,7 +3295,7 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <div v-if="editingLink" class="link-editor" role="dialog" aria-label="关系编辑">
+    <div v-if="editingLink && linkEditorOpen" class="link-editor" :style="linkEditorStyle" role="dialog" aria-label="关系编辑">
       <p class="link-title">{{ editingLinkSummary }}</p>
       <label class="link-row">
         <input v-model="linkDirection" type="checkbox" data-im="link-direction" />
@@ -3270,7 +3308,7 @@ onBeforeUnmount(() => {
       <div class="link-actions">
         <button class="btn primary" type="button" @click="saveLinkEditor">保存方向与含义</button>
         <button class="btn danger" type="button" @click="deleteEditingLink">删除关系</button>
-        <button class="btn" type="button" @click="editingLinkId = null">关闭</button>
+        <button class="btn" type="button" @click="editingLinkId = null; linkEditorOpen = false; linkEditorPos = null">关闭</button>
       </div>
     </div>
   </section>
@@ -3401,8 +3439,6 @@ onBeforeUnmount(() => {
 }
 .link-editor {
   position: absolute;
-  left: var(--sp-4);
-  bottom: var(--sp-4);
   z-index: 70;
   width: min(420px, 92%);
   display: flex;

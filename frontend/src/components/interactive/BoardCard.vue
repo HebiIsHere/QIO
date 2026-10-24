@@ -310,6 +310,8 @@ const props = withDefaults(
     /** 板内搜索定位后的短暂高亮（只是显示） */
     highlight: boolean;
     dragging: boolean;
+    /** 整组拖动中：成员卡片必须同帧跟随，不能再走 left/top 过渡。 */
+    groupDragging?: boolean;
     x: number;
     y: number;
     groupName: string | null;
@@ -1713,6 +1715,7 @@ watch(
       selected,
       highlight,
       dragging,
+      'group-dragging': groupDragging,
       folded: card.folded,
       hidden: card.hidden,
       reply: card.kind === 'reply',
@@ -2224,7 +2227,7 @@ watch(
       <button class="tool-icon" type="button" data-im="card-icon-bookmark" :title="card.bookmarked ? '取消书签' : '加书签'" :aria-label="card.bookmarked ? '取消书签' : '加书签'" @click="emit('toggle', card.id, 'bookmarked')">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg>
       </button>
-      <SelectionMenu :open-up="menuOpensUp" />
+      <SelectionMenu v-if="multi" :open-up="menuOpensUp" />
       <button class="tool-icon danger" type="button" data-im="card-icon-delete" title="删除" aria-label="删除" @click="emit('remove', card.id)">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></svg>
       </button>
@@ -2432,13 +2435,14 @@ watch(
     :root[data-motion="reduced"] 统一关掉（同一份偏好来自 utils/motion.ts）。
   */
 }
-.card:not(.dragging) {
+.card:not(.dragging):not(.group-dragging) {
   transition:
     left var(--mo-2-move) var(--ease-2),
     top var(--mo-2-move) var(--ease-2),
     width var(--mo-2-move) var(--ease-2),
     height var(--mo-2-move) var(--ease-2);
 }
+.card.group-dragging { transition: none; }
 /*
   窄 / 矮卡片收一档（任务书 §3.5）：内边距与间隙各收一档，把高度让给内容区。
   最小可用尺寸 180×96（C 的 CARD_MIN_SIZE）下：标题仍在、主要操作仍可点、必要状态仍在、
@@ -2947,6 +2951,11 @@ watch(
 .tool-icon:hover { color: var(--accent); border-color: var(--accent); background: var(--bg-elevated); }
 .tool-icon.danger { color: var(--danger); }
 .tool-icon:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* 多选时才出现的整理菜单：面板不能继承 30px 圆钮父级的 max-width。 */
+.icon-tools :deep(.sel .panel[data-qio-fit]) {
+  width: min(272px, calc(100vw - var(--sp-6)));
+  max-width: min(272px, calc(100vw - var(--sp-6)));
+}
 /* 旧 SelectionMenu 的“整理”触发按钮：保留行为，外观变成第四/第六个圆形图标。 */
 .icon-tools :deep(.trigger) {
   width: 30px;
@@ -2971,6 +2980,11 @@ watch(
 .card-toolbar {
   position: absolute;
   z-index: 60;
+  /* 2026-10-25：按钮独立浮在卡外，不再有整块白色托板 / 边框 / 内边距。 */
+  background: transparent;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
   /*
     宿主（.card-toolbar-host）整层 pointer-events: none：工具栏这一块自己收回事件，
     只有工具栏与已打开的面板 / 菜单接收指针，其余地方照旧穿透到板面。
@@ -2980,12 +2994,13 @@ watch(
   align-items: center;
   flex-wrap: wrap;
   gap: var(--sp-1);
-  max-width: min(560px, calc(100vw - var(--sp-4)));
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  box-shadow: var(--elev-floating, var(--shadow-2));
+  max-width: none;
+  flex-wrap: nowrap;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   font-size: var(--fs-sm);
 }
 /*

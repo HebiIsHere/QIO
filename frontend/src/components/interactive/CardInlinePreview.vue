@@ -587,9 +587,9 @@ onBeforeUnmount(() => {
 
 /** 详情态下卡片被换附件 / 改名 / 换版本：重新取图（旧请求由身份核对丢弃）。 */
 watch(
-  () => [props.card.id, attachmentId.value, imageVersionKey(), imageDetailMode.value] as const,
-  () => {
-    if (!imageDetailMode.value || !props.active) {
+  [() => props.card.id, () => attachmentId.value, () => imageVersionKey(), () => imageDetailMode.value],
+  ([, , , mode]) => {
+    if (!mode || !props.active) {
       releaseImageDetail();
       return;
     }

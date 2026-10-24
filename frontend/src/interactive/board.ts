@@ -1671,16 +1671,22 @@ function overlappingFreeCards(state: BoardState, cardId: string, x: number, y: n
   return mergeCandidates(state, cardId, x, y).map((item) => item.card);
 }
 
+interface DropHitPoint { x: number; y: number }
+
 function resolveDrop(
   state: BoardState,
   cardId: string,
   x: number,
   y: number,
+  hit?: DropHitPoint,
 ): { target: BoardGroup | null; index: number | null; mergesWith: string | null } {
-  const target = groupAtPoint(state, x, y);
+  // 组落点看指针/当前视觉位置，而不是拖动卡片左上角：否则热区会随抓取点偏移。
+  const hitX = hit ? hit.x : x;
+  const hitY = hit ? hit.y : y;
+  const target = groupAtPoint(state, hitX, hitY);
   const current = groupOfCard(state, cardId);
   if (target) {
-    const index = insertIndex(state, target, cardId, x, y);
+    const index = insertIndex(state, target, cardId, hitX, hitY);
     const mergesWith = current && current.id !== target.id ? current.id : null;
     return { target, index, mergesWith };
   }
@@ -1690,11 +1696,17 @@ function resolveDrop(
 }
 
 /** 拖动期间显示将要加入的组或插入位置 —— **不改状态**。 */
-export function previewDrop(state: BoardState, cardId: string, x: number, y: number): DropPreview {
+export function previewDrop(
+  state: BoardState,
+  cardId: string,
+  x: number,
+  y: number,
+  hit?: DropHitPoint,
+): DropPreview {
   const work = normalizeState(state);
   const card = cardById(work, cardId);
   if (!card || card.deleted) return { groupId: null, index: null, mergesWith: null };
-  const resolved = resolveDrop(work, cardId, asFloat(x, 0), asFloat(y, 0));
+  const resolved = resolveDrop(work, cardId, asFloat(x, 0), asFloat(y, 0), hit);
   return {
     groupId: resolved.target ? resolved.target.id : null,
     index: resolved.index,
@@ -1783,7 +1795,13 @@ export function freeDropSpot(
   return { x, y };
 }
 
-export function dropCard(state: BoardState, cardId: string, x: number, y: number): DropResult {
+export function dropCard(
+  state: BoardState,
+  cardId: string,
+  x: number,
+  y: number,
+  hit?: DropHitPoint,
+): DropResult {
   const px = asFloat(x, 0);
   const py = asFloat(y, 0);
   let work = normalizeState(state);
@@ -1794,7 +1812,7 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
 
   // 落点先夹进画布范围：负坐标的卡片顶部永远看不见（见 clampCardRect 的说明）
   const placed = clampCardRect({ x: px, y: py, w: card.w, h: card.h });
-  const resolved = resolveDrop(work, cardId, placed.x, placed.y);
+  const resolved = resolveDrop(work, cardId, placed.x, placed.y, hit);
   /*
     不成组时**不许叠放**：落点被别的卡片占住就自动挪到最近的空位。
     成组时不挪：位置由组框排布接管（合并成组本来就是用户明确要的语义）。
