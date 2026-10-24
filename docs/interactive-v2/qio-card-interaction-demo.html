@@ -137,9 +137,16 @@
   .group .port { pointer-events: none; }
   .group .port.is-connected { pointer-events: auto; }
   .group:hover .port.is-connected { pointer-events: auto; }
-  .group:hover .port::before { opacity: 0; }
-  .group:hover .port::after { opacity: .72; }
-  .group .port:hover::after { opacity: 0; }
+  .group:hover .port.is-connected::before { opacity: 0; }
+  .group:hover .port.is-connected::after { opacity: .72; }
+  .group .port.is-connected:hover::after { opacity: 0; }
+  .card.drop-target-card { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .group.drop-target-group { border-color: var(--accent); background: rgba(197,27,125,.055); }
+  .drop-badge {
+    position: absolute; z-index: 70; display: none; pointer-events: none; transform: translate(12px, -28px);
+    padding: 4px 9px; border-radius: 6px; background: #3d3039; color: #fff; font-size: 10px; white-space: nowrap;
+  }
+  .drop-badge.show { display: block; }
   .toolbar { position: absolute; inset: 0; z-index: 10; pointer-events: none; opacity: 0; transition: opacity 120ms ease; }
   .card.selected .toolbar { opacity: 1; }
   .tool-btn {
@@ -220,11 +227,12 @@
 <div class="app">
   <div class="topbar">
     <div class="brand">QIO <small>INTERACTIVE</small></div>
-    <div class="hint">拖动右下角加粗边框缩放 · 悬停卡片显示连接点 · 点击输入框展开对话</div>
+    <div class="hint">拖到组内卡片 = 连卡 · 拖到组框空白 = 连组 · 拖动右下角缩放 · 点击输入框展开对话</div>
   </div>
   <div class="board" id="board">
     <svg class="links" id="links" aria-hidden="true"></svg>
     <div class="toast" id="toast"></div>
+    <div class="drop-badge" id="dropBadge"></div>
     <div class="bottom-stack" id="bottomStack">
       <section class="chat-panel" id="chatPanel" aria-label="对话消息">
         <header class="chat-head">
@@ -265,6 +273,7 @@
   const chatLog = document.getElementById('chatLog');
   const chatClose = document.getElementById('chatClose');
   const sendBtn = document.getElementById('sendBtn');
+  const dropBadge = document.getElementById('dropBadge');
 
   const ICONS = {
     edit: '<svg viewBox="0 0 16 16"><path d="M3 13l1-4 7-7 3 3-7 7-4 1Z"/><path d="M9 4l3 3"/></svg>',
@@ -304,13 +313,14 @@
     el.className = 'group';
     el.dataset.groupId = data.id;
     el.style.cssText = 'left:' + data.x + 'px;top:' + data.y + 'px;width:' + data.w + 'px;height:' + data.h + 'px;';
+    const makeGroupPort = (side, label) => {
+      const spec = HALF_PORTS[side];
+      return '<span class="port ' + side + '" data-side="' + side + '" role="button" tabindex="0" aria-label="组的' + label + '连接点"><svg class="port-shape" viewBox="' + spec.viewBox + '" aria-hidden="true"><path d="' + spec.d + '"/></svg></span>';
+    };
     el.innerHTML =
       '<div class="group-head">' + data.title + '</div>' +
-      '<div class="group-mini-row">' +
-        '<div class="mini-card"><b>' + data.members[0] + '</b>可归入组的材料</div>' +
-        '<div class="mini-card"><b>' + data.members[1] + '</b>组内成员保持原位置</div>' +
-      '</div>' +
-      '<span class="port bottom" data-side="bottom" role="button" tabindex="0" aria-label="组的下边连接点"><svg class="port-shape" viewBox="0 0 20 14" aria-hidden="true"><path d="M 4 0 Q 0 0 0 4 A 10 10 0 0 0 20 4 Q 20 0 16 0 Z"/></svg></span>';
+      makeGroupPort('top', '上边') + makeGroupPort('right', '右边') +
+      makeGroupPort('bottom', '下边') + makeGroupPort('left', '左边');
     board.insertBefore(el, document.getElementById('bottomStack'));
     const record = { ...data, el, isGroup: true };
     groups[data.id] = record;
@@ -674,10 +684,26 @@
     draft.setAttribute('class', 'draft');
     linksSvg.appendChild(draft);
     connecting.el = draft;
+    const clearTarget = () => {
+      document.querySelectorAll('.drop-target-card, .drop-target-group').forEach((node) => {
+        node.classList.remove('drop-target-card', 'drop-target-group');
+      });
+      dropBadge.classList.remove('show');
+    };
     const move = (moveEvent) => {
       const rect = board.getBoundingClientRect();
       const x = moveEvent.clientX - rect.left, y = moveEvent.clientY - rect.top;
       draft.setAttribute('d', 'M' + p.x + ' ' + p.y + ' C' + (p.x + (x - p.x) * .3) + ' ' + (p.y + p.ny * 40) + ' ' + (x - (x - p.x) * .3) + ' ' + (y + 20) + ' ' + x + ' ' + y);
+      clearTarget();
+      const target = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest('.card, .group');
+      if (!target) return;
+      const targetId = target.dataset.groupId ? 'group:' + target.dataset.groupId : target.dataset.id;
+      if (!targetId || targetId === id) return;
+      target.classList.add(target.dataset.groupId ? 'drop-target-group' : 'drop-target-card');
+      dropBadge.textContent = target.dataset.groupId ? '连接到组' : '连接到卡片';
+      dropBadge.style.left = x + 'px';
+      dropBadge.style.top = y + 'px';
+      dropBadge.classList.add('show');
     };
     const up = (upEvent) => {
       const targetEl = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('.card, .group');
@@ -689,6 +715,7 @@
       }
       draft.remove();
       from.el.classList.remove('connecting');
+      clearTarget();
       connecting = null;
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
@@ -728,13 +755,16 @@
   });
 
   // 初始卡片
-  makeGroup({ id: 'g1', title: '材料组', members: ['材料 A', '材料 B'], x: 980, y: 38, w: 340, h: 190 });
+  makeGroup({ id: 'g1', title: '材料组', members: ['材料 A', '材料 B'], x: 980, y: 34, w: 340, h: 224 });
+  makeCard({ id: 'd', kind: '文字注释', title: '材料A', body: '组内成员。', meta: '组内', x: 1002, y: 78, w: 138, h: 126 });
+  makeCard({ id: 'e', kind: '文字注释', title: '材料B', body: '也可连接到组。', meta: '组内', x: 1158, y: 78, w: 138, h: 126 });
   makeCard({ id: 'a', kind: '文字注释', title: '比较两份方案', body: '成本、交付周期与风险。卡片上只保留参与状态。', meta: '今天 15:04', x: 60, y: 92, w: 440, h: 260 });
   makeCard({ id: 'b', kind: '文字注释', title: '参考资料', body: '交互设计记录。点击卡片看左侧工具栏；拖动右下角边框改变长宽。', meta: '今天 15:08', x: 590, y: 70, w: 270, h: 370 });
   makeCard({ id: 'c', kind: '结果', title: '整理结果', body: '关联依据与最终成果，保留清晰的阅读顺序。', meta: '今天 15:10', x: 940, y: 330, w: 300, h: 180 });
   links.push({ from: 'a', to: 'b', label: '参考依据', bend: { x: 0, y: -24 } });
   links.push({ from: 'b', to: 'c', label: '整理为', bend: { x: 14, y: 0 } });
   links.push({ from: 'c', to: 'group:g1', label: '归入组', bend: { x: 18, y: 0 } });
+  links.push({ from: 'b', to: 'd', label: '引用材料', bend: { x: -6, y: 18 } });
   drawLinks();
   selectCard('a');
 })();
