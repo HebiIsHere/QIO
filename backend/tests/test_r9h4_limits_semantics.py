@@ -165,7 +165,8 @@ def test_resolution_accepts_read_and_program_end_to_end(ledger):
     assert child.structured_limits is not None
     stored = {item["operations"][0]: item for item in child.structured_limits}
     assert stored["read"]["objects"][0] == {"kind": "path", "value": "D:/secret.txt"}
-    assert stored["execute"]["objects"][0]["kind"] == "program"
+    # R9-H6 §4：裸 program=python 明确归一为 program_name（不再当路径静默忽略）。
+    assert stored["execute"]["objects"][0]["kind"] == "program_name"
 
     # 重启：新 ledger 实例从同一 DB 读回一致结构
     reloaded = RequirementLedger(ledger.conn).by_id(child.requirement_id)
@@ -215,7 +216,7 @@ async def test_extract_chain_accepts_read_and_program(ledger):
     )
     assert calls["count"] == 1
     assert limits[0]["operations"] == ["read"]
-    assert limits[1]["objects"][0]["kind"] == "program"
+    assert limits[1]["objects"][0]["kind"] == "program_name"
 
 
 # ---------------------------------------------------------------------------

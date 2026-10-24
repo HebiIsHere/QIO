@@ -1526,7 +1526,7 @@ REQUIREMENT_RESOLUTION_SYSTEM = """
 - 只有确实指向某条候选要求时才用 amend/withdraw，并给出该要求 id 与它当时的 version；不能把无关要求硬套成目标。
 - 无法确定目标要求时输出 new（后端会按新要求记录，不猜测）。
 - 限制（limits）只记录用户明确表达的限制，例如只允许某些操作/对象、不允许某些操作/对象、范围与例外；用户没说过的不要补。
-- limits.objects 只引用后端已经核实的对象标识，kind 只用 path / path_prefix / directory / program / service；不要发明新的 kind（例如 document_section），也不要写用户消息里没有出现、候选里也没有的对象；不确定时省略该条限制。
+- limits.objects 只引用后端已经核实的对象标识，kind 只用 path / path_prefix / directory / program / program_name / service；不要发明新的 kind（例如 document_section），也不要写用户消息里没有出现、候选里也没有的对象；不确定时省略该条限制。
 - 限制的 operations 只用 read / write / create / delete / execute / install / system_change（egress 仅兼容旧条目）；read 与 program 对象同样可以表达（例如"不要读取 D:/x"、"不要运行 python"）。
 - 用户**明确解除**某条已有要求上的限制时（例如"之前说的只改标题不算了，正文也可以改"），把被解除的限制放进 removed_limits（结构与 limits 相同，operations/objects 指向被解除的具体范围）；removed_limits 只用于 amend，没有明确解除时输出空数组。
 - removed_limits 可只写**被解除的具体 operations 和/或 objects**：解除 B 的 write 不要写成解除 B 的全部操作；只解除某个对象时不要扩大到整条限制；无法精确确定解除范围时不要猜（保留原限制），在 reason 说明。
@@ -1581,7 +1581,7 @@ LIMIT_EXTRACTION_SYSTEM = """
 输出要求（硬性）：只输出一个 JSON 对象，不写推理长文；
 {"limits": [{"operations": ["write"], "objects": [{"kind": "path", "value": "D:/..."}], "reason": "用户原话中的依据要点"}]}
 - operations 只用 read / write / create / delete / execute / install / system_change（egress 兼容旧条目）；
-- objects.kind 只用 path / path_prefix / directory / program / service；value 是用户原话可核对的对象标识；
+- objects.kind 只用 path / path_prefix / directory / program / program_name / service；value 是用户原话可核对的对象标识；
 - 每条至少给出 operations 或 objects（只给 objects 表示该对象上的所有操作；只给 operations 表示对所有对象生效的范围限制）；
 - reason 用简短中文引用用户原话要点（不超过 300 字）。
 """.strip()
@@ -1627,7 +1627,7 @@ LIMIT_EXTRACTION_CHAIN_SYSTEM = """
 输出要求（硬性）：只输出一个 JSON 对象，不写推理长文/解释/关键词；
 {"limits": [{"operations": ["write"], "objects": [{"kind": "path", "value": "D:/..."}], "reason": "依据哪几句用户原话"}]}
 - operations 只用 read / write / create / delete / execute / install / system_change（egress 兼容旧条目）；
-- objects.kind 只用 path / path_prefix / directory / program / service；value 是用户原话可核对的对象标识；
+- objects.kind 只用 path / path_prefix / directory / program / program_name / service；value 是用户原话可核对的对象标识；
 - 每条限制必须至少有 operations 或 objects 之一；reason 用简短中文引用用户原话要点（不超过 500 字）；
 - 完整理解后确认没有任何限制时输出空数组 []（这是合法结果，表示“明确无限制”）；结构不确定时不要输出非法结构。
 """.strip()

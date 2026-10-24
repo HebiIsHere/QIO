@@ -118,10 +118,17 @@ async def test_fs_write_and_patch_report_real_impacts(workspace: Path):
     result = await tool.run(path=str(target), content="新内容")
     assert result.ok is True and result.code == "pending_approval"
     effect = gateway.effects[0]
-    assert _impact_map(effect) == {"write": [("path", str(target))]}
+    # H6 §5：覆盖已有文件需要读取原内容 + 写入，影响必须同时声明 read/write。
+    assert _impact_map(effect) == {
+        "read": [("path", str(target))],
+        "write": [("path", str(target))],
+    }
     assert _detail(effect)[fs_tools.LIMIT_IMPACTS_COMPLETE_KEY] is True
     operation = gateway.submitted[0]
-    assert operation.fingerprint["limit_impacts"] == fs_tools.write_limit_impacts(target)
+    assert operation.fingerprint["limit_impacts"] == [
+        *fs_tools.read_limit_impacts(target),
+        *fs_tools.write_limit_impacts(target),
+    ]
     assert operation.fingerprint["limit_impacts_complete"] is True
     assert operation.fingerprint["identity_key"]
 
@@ -144,7 +151,11 @@ async def test_fs_write_and_patch_report_real_impacts(workspace: Path):
         if _detail(effect).get("action") == "patch"
     ]
     assert patch_effects
-    assert _impact_map(patch_effects[-1]) == {"write": [("path", str(target))]}
+    # H6 §3：补丁实际需要读取正文 + 写入；审批记录两者都要表达。
+    assert _impact_map(patch_effects[-1]) == {
+        "read": [("path", str(target))],
+        "write": [("path", str(target))],
+    }
 
 
 async def test_fs_read_and_directory_queries_are_not_expanded(workspace: Path):

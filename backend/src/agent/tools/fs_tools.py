@@ -799,7 +799,20 @@ def _verify_local_preconditions(
     action = str((getattr(effect, "detail", {}) or {}).get("action") or "")
     requires_content = action in ("write", "patch")
     if expected_sha256 is not None:
-        current_sha = security_gate.content_sha256(target_path)
+        # 补丁的前置快照来自“文本读取”：摘要口径必须与生成方案时同一份文本，
+        # 不能再次独立读取文件内容来凑摘要（这正是旧补丁覆盖用户修改的根因）。
+        if str((getattr(effect, "detail", {}) or {}).get("base_content_digest_kind") or "") == "text":
+            try:
+                current_text = _read_file_text(Path(target_path))
+            except (OSError, UnicodeError):
+                current_text = None
+            current_sha = (
+                security_gate.text_sha256(current_text)
+                if current_text is not None
+                else None
+            )
+        else:
+            current_sha = security_gate.content_sha256(target_path)
         if current_sha != expected_sha256:
             return RecheckOutcome(
                 False,
@@ -933,7 +946,11 @@ async def recheck_before_execute(
                     "recheck_identity_changed",
                     "目标文件已不是原来的那一个（身份变化）：本次未执行",
                 )
-        if expected_sha256:
+        if expected_sha256 and str(
+            (getattr(effect, "detail", {}) or {}).get("base_content_digest_kind") or ""
+        ) != "text":
+            # 文本快照型前置摘要已由 _verify_local_preconditions 用同一读取口径
+            # 核对；这里不能再拿原始字节摘要比较，否则 CRLF/编码转换会误报变化。
             current_sha = security_gate.content_sha256(target_path)
             if current_sha != expected_sha256:
                 return RecheckOutcome(
@@ -988,6 +1005,39 @@ class _FsTool(Tool):
         self.origins = origins
 
     # -- 文件来源（契约 §3.4：后端核实后才给授权引擎，不信任模型传入值） ------
+
+    async def _blocked_by_known_read_limit(self, target: Path) -> ToolResult | None:
+        """R9-H6 §5：普通写入在读取原内容计算摘要前，先核对最新读取限制。
+
+        这是对真实授权引擎的“已知限制”探测，不生成读取审批、不改变 write
+        授权；读取被明确禁止时停止覆盖方案，不省略摘要核对。
+        """
+        security = self.security
+        if security is None or not callable(getattr(security, "authorize", None)):
+            return None
+        if not hasattr(security, "_limit_conflict"):
+            # 纯测试网关/旧接线没有限制判定能力，保持旧行为；真实 AppContext
+            # 注入的引擎一定有 _limit_conflict。
+            return None
+        read_effect = security_gate.read_effect(
+            "fs_write", target, purpose="读取原内容以生成覆盖前摘要"
+        )
+        attach_limit_impacts(read_effect, read_limit_impacts(target))
+        attach_requirement_binding(read_effect, self._requirement_binding())
+        try:
+            decision = await security_gate.authorize(security, read_effect)
+        except Exception:  # noqa: BLE001 - 读取限制无法确认按失败关闭
+            return ToolResult(
+                ok=False,
+                error="读取限制无法在执行前确认：为避免未授权读取，本次未覆盖",
+                code="read_limit_unavailable",
+                category="permission",
+            )
+        if security_gate.verdict_of(decision) == "deny":
+            return security_gate.denied_result(
+                decision, "用户限制禁止读取目标文件，不能读取原内容生成覆盖摘要"
+            )
+        return None
 
     def _origin_store(self):
         return self.origins if self.origins is not None else file_origins.default_store()
@@ -1388,6 +1438,10 @@ class FsWriteTool(_FsTool):
         mode_at_request = self._mode_at_request()
         digest = security_gate.text_sha256(content)
         identity_key = security_gate.identity_key(identity)
+        if existed_before:
+            blocked_read = await self._blocked_by_known_read_limit(target)
+            if blocked_read is not None:
+                return blocked_read
         # R9-H §4：前置状态（覆盖前的对象身份 + 内容；新文件用 absent 标记）
         # 由真实工具写入 effect.detail，引擎从同一事实组装审查对象与复用键。
         base_content_sha = (
@@ -1422,8 +1476,12 @@ class FsWriteTool(_FsTool):
             },
             internal=internal_root is not None,
         )
+        # H6 §5：覆盖已有文件时，方案实际包含“读取原内容 + 写入”；操作事实
+        # 必须如实包含 read，不能只声明 write。新文件不存在则没有读取。
+        write_impacts = write_limit_impacts(target, created=not existed_before)
         attach_limit_impacts(
-            effect, write_limit_impacts(target, created=not existed_before)
+            effect,
+            ([*read_limit_impacts(target)] if existed_before else []) + write_impacts,
         )
         attach_requirement_binding(effect, binding)
         pending = (
@@ -1445,7 +1503,10 @@ class FsWriteTool(_FsTool):
                 "content_sha256": digest,
                 "precondition_digest": precondition,
                 "identity_key": identity_key,
-                "limit_impacts": write_limit_impacts(target, created=not existed_before),
+                "limit_impacts": (
+                    ([*read_limit_impacts(target)] if existed_before else [])
+                    + write_limit_impacts(target, created=not existed_before)
+                ),
                 "limit_impacts_complete": True,
                 "operation_binding": self._operation_binding_record(effect),
                 "internal_data_root": str(internal_root) if internal_root else None,
@@ -1526,11 +1587,16 @@ class FsPatchTool(_FsTool):
             return ToolResult(ok=False, error=f"读取失败：{exc}")
         if old not in text:
             return ToolResult(ok=False, error="未找到待替换的内容 old")
-        text = text.replace(old, new, 1)
+        source_text = text
+        text = source_text.replace(old, new, 1)
         digest = security_gate.text_sha256(text)
         identity_key = security_gate.identity_key(identity)
-        # R9-H §4：补丁内容的摘要 + 打补丁前（当前磁盘内容）的前置状态。
-        base_content_sha = security_gate.content_sha256(target)
+        # R9-H6 §1：补丁方案与前置摘要必须来自**同一次正文读取**。
+        # 旧实现先在第一次读取上计算补丁，再调用 content_sha256 第二次读取文件
+        # 填写 base 摘要；两次之间用户修改会被“新摘要 + 旧补丁”掩盖。这里直接
+        # 使用同一次读取得到的文本生成前置摘要，不再二次读取。
+        base_content_sha = security_gate.text_sha256(source_text)
+        base_content_digest_kind = "text"
         precondition = object_state_digest(
             path=target,
             exists=True,
@@ -1556,10 +1622,15 @@ class FsPatchTool(_FsTool):
                 "content_digest": digest,
                 "precondition_digest": precondition,
                 "identity": identity_key,
+                "base_content_digest_kind": "text",
             },
             internal=internal_root is not None,
         )
-        attach_limit_impacts(effect, write_limit_impacts(target))
+        # H6 §1/§3：审批/引擎同时看到补丁真正需要的读取和写入影响；恢复执行时
+        # 才能按最新读取限制拒绝，而不是只保存 write。
+        attach_limit_impacts(
+            effect, [*read_limit_impacts(target), *write_limit_impacts(target)]
+        )
         attach_requirement_binding(effect, binding)
         pending = (
             "fs.patch",
@@ -1577,10 +1648,11 @@ class FsPatchTool(_FsTool):
                 "path": str(target),
                 "identity": identity,
                 "base_content_sha256": base_content_sha,
+                "base_content_digest_kind": "text",
                 "content_sha256": digest,
                 "precondition_digest": precondition,
                 "identity_key": identity_key,
-                "limit_impacts": write_limit_impacts(target),
+                "limit_impacts": [*read_limit_impacts(target), *write_limit_impacts(target)],
                 "limit_impacts_complete": True,
                 "operation_binding": self._operation_binding_record(effect),
                 "internal_data_root": str(internal_root) if internal_root else None,

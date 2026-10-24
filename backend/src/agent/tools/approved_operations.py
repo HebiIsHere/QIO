@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import logging
 from pathlib import Path
@@ -467,6 +468,59 @@ def _check_identity(path: str, expected: dict) -> tuple[bool, str]:
 # --------------------------------------------------------------------------
 
 
+async def _authorize_content_read(
+    ctx: ExecutionContext, path: str, *, purpose: str
+) -> ExecResult | None:
+    """R9-H6 §3/§5：审批恢复中任何必要正文读取前，先核对最新读取限制。
+
+    复用执行前重核对链路（要求 active/版本、模式、最新已知限制），但不生成
+    第二次读取审批；只核对允许/拒绝。读取被拒时调用方不得读取正文。
+    """
+    from agent.security.effects import Effect, EffectKind, Target
+
+    read_effect = Effect(
+        kind=EffectKind.READ,
+        targets=(Target("path", path),),
+        purpose=purpose,
+        tool="fs.read",
+        detail={
+            "action": "read",
+            "limit_impacts": [
+                {"operation": "read", "objects": [{"kind": "path", "value": path}]}
+            ],
+            "limit_impacts_complete": True,
+        },
+    )
+    prior_basis = dict(getattr(ctx, "authorization_basis", {}) or {})
+    starter = getattr(ctx, "authorize_started", None)
+    if not callable(starter):
+        return _failure("无法核对最新读取限制：本次未读取、未修改", "read_check_unavailable")
+    try:
+        try:
+            allowed, reason = await starter(read_effect)
+        except TypeError:  # 旧签名不能按读取 effect 核对：失败关闭
+            return _failure(
+                "执行器无法按最新读取限制核对读取：本次未读取、未修改",
+                "read_check_unavailable",
+            )
+    except Exception as exc:  # noqa: BLE001 - 读取核对异常按失败关闭
+        return _failure(
+            "读取限制核对失败（" + type(exc).__name__ + "）：本次未读取、未修改",
+            "read_check_failed",
+        )
+    finally:
+        if prior_basis:
+            ctx.authorization_basis = prior_basis
+    if not allowed:
+        return _failure(
+            "读取限制未通过：" + str(reason or "最新限制禁止读取") + "；本次未读取、未修改",
+            "read_denied",
+            invalidated=True,
+            path=path,
+        )
+    return None
+
+
 async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
     path = str(payload.get("path") or "").strip()
     if not path:
@@ -499,6 +553,11 @@ async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
         )
     base_digest = fingerprint.get("base_content_sha256")
     if base_digest:
+        read_blocked = await _authorize_content_read(
+            ctx, path, purpose="读取原内容以核对覆盖前摘要"
+        )
+        if read_blocked is not None:
+            return read_blocked
         current_digest = await asyncio.to_thread(security_gate.content_sha256, path)
         if current_digest != base_digest:
             return _failure(
@@ -578,8 +637,30 @@ async def execute_fs_patch(payload: dict, ctx: ExecutionContext) -> ExecResult:
             path=path,
         )
     base_digest = fingerprint.get("base_content_sha256")
+    base_kind = str(fingerprint.get("base_content_digest_kind") or "")
+    # H6 §3：恢复执行中的正文读取也要先核对最新读取限制；读取被拒时在
+    # read_bytes 之前返回，不计算补丁、不修改。
+    read_blocked = await _authorize_content_read(
+        ctx, path, purpose="补丁审批恢复读取正文"
+    )
+    if read_blocked is not None:
+        return read_blocked
+    try:
+        raw = await asyncio.to_thread(Path(path).read_bytes)
+        current = raw.decode("utf-8")
+        current = current.replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, UnicodeError) as exc:
+        return _failure(
+            f"读取目标失败，本次未修改：{exc}",
+            f"{type(exc).__name__}: {exc}",
+            path=path,
+        )
     if base_digest:
-        current_digest = await asyncio.to_thread(security_gate.content_sha256, path)
+        current_digest = (
+            security_gate.text_sha256(current)
+            if base_kind == "text"
+            else hashlib.sha256(raw).hexdigest()
+        )
         if current_digest != base_digest:
             return _failure(
                 "目标内容在审批期间发生了变化：本次未修改（需重新审批）",
@@ -587,16 +668,6 @@ async def execute_fs_patch(payload: dict, ctx: ExecutionContext) -> ExecResult:
                 invalidated=True,
                 path=path,
             )
-    try:
-        current = await asyncio.to_thread(
-            Path(path).read_text, encoding="utf-8"
-        )
-    except (OSError, UnicodeError) as exc:
-        return _failure(
-            f"读取目标失败，本次未修改：{exc}",
-            f"{type(exc).__name__}: {exc}",
-            path=path,
-        )
     if old_text not in current:
         return _failure(
             "目标内容已变化（找不到待替换的 old）：本次未修改，需重新审批",
@@ -815,20 +886,43 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
         # H5 §4：使用该子项 effect 核对，B 的单项限制不能使 A 整批失效。
         from agent.security.effects import Effect, EffectKind, Target
 
+        # R9-H6 §2：目录不是“只有目录路径”的一个对象。逐项重核对必须携带
+        # 审批快照里的完整子对象影响，否则“禁止删除 B 内某个文件”无法命中。
+        directory_impact_data = row.get("directory_impact")
+        item_objects: list[dict] = [{"kind": "path", "value": path}]
+        item_complete = True
+        if row.get("is_directory"):
+            if not isinstance(directory_impact_data, dict) or not directory_impact_data:
+                item_complete = False
+            else:
+                entries = directory_impact_data.get("entries") or []
+                if not entries:
+                    item_complete = False
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    child = str(entry.get("path") or "").strip()
+                    if child and child != path:
+                        item_objects.append({"kind": "path", "value": child})
+                if directory_impact_data.get("complete") is not True:
+                    item_complete = False
         item_effect = Effect(
             kind=EffectKind.DELETE,
             targets=(Target("path", path, identity=row.get("identity")),),
-            purpose=f"删除文件：{path}",
+            purpose=f"删除{'目录' if row.get('is_directory') else '文件'}：{path}",
             tool="fs.delete",
             detail={
                 "action": "delete",
+                "is_directory": bool(row.get("is_directory")),
+                "directory_impact": directory_impact_data,
+                "directory_impact_complete": item_complete,
                 "limit_impacts": [
                     {
                         "operation": "delete",
-                        "objects": [{"kind": "path", "value": path}],
+                        "objects": item_objects,
                     }
                 ],
-                "limit_impacts_complete": True,
+                "limit_impacts_complete": item_complete,
             },
         )
         blocked = await _recheck_requirement_and_mode(

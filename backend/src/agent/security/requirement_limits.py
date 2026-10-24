@@ -59,7 +59,9 @@ LIMIT_OPERATIONS = frozenset(
 )
 
 #: 允许的对象类别；value 只做结构化保存，匹配由引擎按路径关系完成。
-LIMIT_OBJECT_KINDS = frozenset({"path", "path_prefix", "directory", "program", "service"})
+LIMIT_OBJECT_KINDS = frozenset(
+    {"path", "path_prefix", "directory", "program", "program_name", "service"}
+)
 
 #: 防御性上限：模型输出再离谱也不能把台账/内存撑爆。
 MAX_LIMIT_ENTRIES = 200
@@ -107,10 +109,18 @@ def _normalize_objects(value: Any) -> list[dict]:
             raise ValueError("限制对象必须给出 value")
         if len(text) > MAX_VALUE_CHARS:
             raise ValueError("限制对象 value 过长")
+        if kind == "program" and "/" not in text and "\\" not in text:
+            # R9-H6 §4：历史/模型保存的裸程序名不是路径。转成明确的
+            # program_name 结构化类型；不再拿它当 cwd 下的路径静默忽略。
+            kind = "program_name"
+        if kind == "program_name" and ("/" in text or "\\" in text):
+            raise ValueError("program_name 限制只能是程序名称，不能包含路径分隔符")
         key = (kind, text)
         if key in seen:
             continue
         seen.add(key)
+        # 类型已转成明确的 program_name；不额外写回 legacy_kind，避免
+        # 规范化/反序列化产生两个形状（来源由升级转换本身说明）。
         objects.append({"kind": kind, "value": text})
         if len(objects) > MAX_OBJECTS_PER_LIMIT:
             raise ValueError("单个限制条目的对象数过多")

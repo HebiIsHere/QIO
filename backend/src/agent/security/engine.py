@@ -1626,6 +1626,17 @@ class AuthorizationEngine(AuthorizationGateway):
             return False
         import os as _os
 
+        if str(item.get("kind") or "") == "program_name":
+            # R9-H6 §4：program_name 是明确的“程序名称”类型，只比较程序文件
+            # 名称主体（去掉一个扩展名），不在路径不匹配后隐式回退；路径限制
+            # 仍只走下面的真实路径/对象身份匹配。
+            def _name(value: str) -> str:
+                base = _os.path.basename(value.replace("\\", "/"))
+                stem, _suffix = _os.path.splitext(base)
+                return _os.path.normcase(stem if stem else base)
+
+            return bool(_name(left)) and _name(left) == _name(right)
+
         def _canonical(value: str) -> str:
             # 规范化 + 解析链接别名：同一目标的绝对路径/符号链接属于同一程序对象；
             # 不解析名称、不猜后缀。POSIX 保留大小写，Windows 按平台大小写不敏感。
@@ -1720,7 +1731,11 @@ class AuthorizationEngine(AuthorizationGateway):
                     if not value:
                         uncertain = True
                         continue
-                    if kind not in self._LIMIT_PATH_KINDS | {"program", "service"}:
+                    if kind not in self._LIMIT_PATH_KINDS | {
+                        "program",
+                        "program_name",
+                        "service",
+                    }:
                         uncertain = True
                         continue
                     raw_objects.append({"kind": kind, "value": value})
@@ -1756,7 +1771,7 @@ class AuthorizationEngine(AuthorizationGateway):
                         continue
                     if self._limit_path_matches(obj.get("value"), item, effect=effect):
                         return True
-                elif kind == "program":
+                elif kind in ("program", "program_name"):
                     if object_kind != "program":
                         continue
                     if self._limit_program_matches(obj.get("value"), item):

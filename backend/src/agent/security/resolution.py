@@ -425,6 +425,9 @@ def _normalize_object_key(kind: object, value: object) -> tuple[str, str]:
             text = os.path.normcase(os.path.normpath(text))
         except (OSError, ValueError):  # pragma: no cover - 极端输入
             text = text.lower()
+    elif object_kind == "program_name":
+        # 名称只做平台大小写规范化，不做路径拼接/后缀猜测。
+        text = os.path.normcase(text)
     elif object_kind == "service":
         text = text.lower()
     return object_kind, text

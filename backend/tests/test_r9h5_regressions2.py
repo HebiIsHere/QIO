@@ -378,7 +378,9 @@ async def test_program_limit_path_does_not_expand_to_same_name(db_conn, tmp_path
     name_binding = security.requirements.binding_for(name_requirement.requirement_id)
     with requirement_context(name_binding):
         by_name = await security.engine.authorize(effect_for(program_b))
-    assert by_name.verdict == Verdict.ALLOW, "裸名称不能被隐式当成同名程序路径限制"
+    # R9-H6 §4：裸 program=工具名明确归一为 program_name，必须生效而不是静默忽略；
+    # 它只按明确名称类型匹配，不再把同名路径限制混为一谈。
+    assert by_name.verdict == Verdict.DENY, "program_name 限制必须对同名程序生效"
 
     link = tmp_path / "alias-tool"
     try:

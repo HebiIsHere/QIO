@@ -908,7 +908,7 @@ async def test_chain_payload_contains_full_ordered_chain(ctx):
         )
     )
     assert accepted[0]["operations"] == ["read"]
-    assert accepted[1]["objects"][0]["kind"] == "program"
+    assert accepted[1]["objects"][0]["kind"] == "program_name"
     with pytest.raises(RequirementResolutionUnavailable):
         # 非规范操作名仍然拒绝
         parse_extracted_context_limits(
