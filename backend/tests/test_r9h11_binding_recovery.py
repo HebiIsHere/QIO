@@ -3,11 +3,12 @@
 覆盖 _R9H11-COMMON.md §1/§5 的 B 部分：
 * normalize/serialize/deserialize 是纯数据操作：不查找程序、不采集身份、不补建绑定；
   历史 structured-but-unbound 记录读取后保持原样；
-* attach_program_bindings 仍是唯一可信创建入口：记录
+* attach_program_bindings 仍是**新保存**的可信绑定创建入口：记录
   requirement_id/version/status/path/identity/birth_key/source；
   “保存时解析失败”作为对象条目上的显式事实（binding_state/binding_failure/候选）；
 * structured + program_name 无 program_binding 的历史记录进入专用恢复：
-  只用后端候选事实（PATH 查找/已保存绑定）补绑定，不生成普通授权、不调用普通审查；
+  只采纳**保存时记录的候选**（后端重新核验），不生成普通授权、不调用普通审查；
+  R9-H12 修订：无保存候选时不得用当前 PATH 查找结果直接绑定（旧期望已改）。
 * 恢复写回前核对 requirement id/version/status/chain_digest（条件写入）；
   恢复失败/等待期间要求被修改或撤回时丢弃结果，原始 JSON 保持不变；
 * close/reopen 后绑定仍在；未恢复记录不会被普通读取/新建轮/审批隐式绑定。
@@ -113,6 +114,35 @@ def _seed_structured_unbound(conn, ledger, *, limits=(_PROGRAM_LIMIT,), text="�
     stored = ledger.by_id(requirement.requirement_id)
     assert stored is not None
     return stored
+
+
+def _saved_candidate_limit(path: Path) -> dict:
+    """带保存候选的未解决限制（R9-H12：恢复只认保存候选，不认当前 PATH）。"""
+    return {
+        "operations": ["execute"],
+        "objects": [
+            {
+                "kind": "program_name",
+                "value": "runner",
+                "binding_state": requirement_limits.BINDING_STATE_UNRESOLVED,
+                "binding_failure": requirement_limits.BINDING_FAILURE_IDENTITY_UNAVAILABLE,
+                "binding_candidates": [
+                    {
+                        "path": os.path.realpath(str(path)),
+                        "source": "path_lookup",
+                        "state": requirement_limits.BINDING_STATE_UNRESOLVED,
+                    }
+                ],
+            }
+        ],
+        "reason": "禁止运行 runner",
+    }
+
+
+def _seed_saved_candidate_unbound(conn, ledger, candidate_path: Path):
+    return _seed_structured_unbound(
+        conn, ledger, limits=(_saved_candidate_limit(candidate_path),)
+    )
 
 
 @pytest.fixture()
@@ -341,58 +371,99 @@ def test_binding_state_helpers_are_pure_and_explicit():
 async def test_structured_unbound_recovery_binds_from_backend_facts(
     ctx, tmp_path, monkeypatch
 ):
+    """R9-H12 旧期望修订（保留原输入）：无保存候选时不得按当前 PATH 绑定。
+
+    原场景（R9-H11）：structured + runner 无 program_binding、也没有
+    binding_candidates；PATH 里有 runner。旧期望=专用恢复从当前 PATH 查找成功绑定。
+    新契约（_R9H12-COMMON.md §4）：无保存候选时不得用当前 PATH 结果直接绑定，
+    只把当前候选当审计事实，保持未解决、零写入。
+    """
     runner = _runner(tmp_path / "bin")
     _prepend_path(monkeypatch, runner.parent)
     review = _RecordingReviewer()
     ctx.authorization.reviewer = review
     ctx.settings_store.set("computer.permission_mode", "unrestricted")
     requirement = _seed_structured_unbound(ctx.conn, ctx.requirements)
+    row_before = _raw_row(ctx.conn, requirement.requirement_id)
+    seen = _probe_spy(monkeypatch)
+
+    recovered, recovery_ctx = await _recover(ctx, requirement)
+
+    assert recovered is None, "无保存候选：不得用当前 PATH 结果创建历史绑定"
+    assert seen["count"] >= 1, "当前 PATH 只作审计候选事实采集"
+    row_after = _raw_row(ctx.conn, requirement.requirement_id)
+    assert row_after == row_before, "未采纳必须零写入（限制/候选/来源保留）"
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    assert stored is not None
+    assert stored.structured_limits_state == requirement_limits.STATE_STRUCTURED
+    assert stored.structured_limits_source == "r9h8_saved_limit"
+    obj = stored.structured_limits[0]["objects"][0]
+    assert "program_binding" not in obj
+    assert any("历史用户限制" in item for item in recovery_ctx.notices)
+    # 专用恢复不是普通授权：不生成授权记录、不进入普通审查、不弹审批。
+    assert ctx.authorizations.records_for_requirement(requirement.requirement_id) == []
+    assert review.calls == []
+    assert ctx.approvals.pending() == []
+    assert ctx.settings_store.get("computer.permission_mode") == "unrestricted"
+
+
+async def test_saved_candidate_recovery_adopts_saved_not_current_path(
+    ctx, tmp_path, monkeypatch
+):
+    """R9-H12 新增相邻案例：保存候选优先，且不采纳当前 PATH 指向的 B。"""
+    saved = _runner(tmp_path / "bin-saved")
+    current = _runner(tmp_path / "bin-current")
+    _prepend_path(monkeypatch, current.parent)
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    review = _RecordingReviewer()
+    ctx.authorization.reviewer = review
+    requirement = _seed_saved_candidate_unbound(ctx.conn, ctx.requirements, saved)
     raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
 
     recovered, recovery_ctx = await _recover(ctx, requirement)
 
-    assert recovered is not None, "structured-but-unbound 必须进入专用恢复并能绑定"
-    obj = recovered[0]["objects"][0]
-    binding = obj["program_binding"]
+    assert recovered is not None, "保存候选可核验时必须恢复成功"
+    binding = recovered[0]["objects"][0]["program_binding"]
     assert os.path.normcase(os.path.realpath(binding["path"])) == os.path.normcase(
-        os.path.realpath(str(runner))
+        os.path.realpath(str(saved))
+    ), "必须采纳保存候选，而不是当前 PATH 指向的对象"
+    assert os.path.normcase(os.path.realpath(binding["path"])) != os.path.normcase(
+        os.path.realpath(str(current))
     )
-    assert binding["identity"]
-    assert binding["source"] == "path_lookup"
+    assert binding["source"] == requirement_limits.BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED
     assert binding["requirement_id"] == requirement.requirement_id
     assert binding["requirement_version"] == int(requirement.version)
     assert binding["requirement_status"] == "active"
-
     stored = ctx.requirements.by_id(requirement.requirement_id)
-    assert stored is not None
-    assert stored.structured_limits_state == requirement_limits.STATE_STRUCTURED
     source = str(stored.structured_limits_source or "")
     assert source.startswith("binding_recovery:"), source
-    assert "chain=" in source and "version=" in source and "text=" in source
-    assert "origin=r9h8_saved_limit" in source, "恢复来源必须保留原有依据"
-    raw_after = _raw_limits(ctx.conn, requirement.requirement_id)
-    assert raw_after != raw_before and "program_binding" in raw_after
-
-    # 专用恢复不是普通授权：不生成授权记录、不进入普通审查、不弹审批。
+    assert requirement_limits.BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED in source
+    assert "origin=r9h8_saved_limit" in source
+    assert _raw_limits(ctx.conn, requirement.requirement_id) != raw_before
+    assert review.calls == []
     assert ctx.authorizations.records_for_requirement(requirement.requirement_id) == []
-    assert review.calls == [], "专用恢复不得调用普通独立授权审查"
-    assert ctx.approvals.pending() == []
     assert not any("恢复结果已过期" in item for item in recovery_ctx.notices)
-    assert ctx.settings_store.get("computer.permission_mode") == "unrestricted"
 
 
 async def test_recovery_binding_survives_close_reopen(tmp_path, monkeypatch):
+    """R9-H12 输入修订：用带保存候选的行；PATH 指向另一个同名程序，恢复仍采纳候选。"""
     db_path = tmp_path / "binding-recovery.db"
     conn = connect(db_path)
     apply_migrations(conn)
     app = create_app(Settings(data_dir=tmp_path / "data"), conn)
     ctx = app.state.ctx
-    runner = _runner(tmp_path / "bin")
-    _prepend_path(monkeypatch, runner.parent)
-    requirement = _seed_structured_unbound(conn, ctx.requirements)
+    runner = _runner(tmp_path / "bin-saved")
+    current = _runner(tmp_path / "bin-current")
+    _prepend_path(monkeypatch, current.parent)
+    requirement = _seed_saved_candidate_unbound(conn, ctx.requirements, runner)
     recovered, _ = await _recover(ctx, requirement)
     assert recovered is not None
     bound = recovered[0]["objects"][0]["program_binding"]
+    assert os.path.normcase(os.path.realpath(bound["path"])) == os.path.normcase(
+        os.path.realpath(str(runner))
+    ), "重开后仍必须是保存候选对象"
+    assert bound["source"] == requirement_limits.BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED
+    assert bound["path"] != os.path.realpath(str(current))
     raw_after = _raw_limits(conn, requirement.requirement_id)
     conn.close()
 
@@ -450,16 +521,18 @@ async def test_recovery_discards_stale_result_after_withdraw(
 ):
     runner = _runner(tmp_path / "bin")
     _prepend_path(monkeypatch, runner.parent)
-    requirement = _seed_structured_unbound(ctx.conn, ctx.requirements)
+    requirement = _seed_saved_candidate_unbound(ctx.conn, ctx.requirements, runner)
     raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
-    real_probe = requirement_limits._probe_program_binding
+    real_verify = requirement_limits._verify_saved_binding_candidate
 
-    def probe_then_withdraw(name):
+    def verify_then_withdraw(candidate):
         if ctx.requirements.by_id(requirement.requirement_id).status == "active":
             ctx.requirements.withdraw(requirement.requirement_id)
-        return real_probe(name)
+        return real_verify(candidate)
 
-    monkeypatch.setattr(requirement_limits, "_probe_program_binding", probe_then_withdraw)
+    monkeypatch.setattr(
+        requirement_limits, "_verify_saved_binding_candidate", verify_then_withdraw
+    )
 
     recovered, recovery_ctx = await _recover(ctx, requirement)
 
@@ -480,20 +553,20 @@ async def test_recovery_discards_result_when_version_changes(
 ):
     runner = _runner(tmp_path / "bin")
     _prepend_path(monkeypatch, runner.parent)
-    requirement = _seed_structured_unbound(ctx.conn, ctx.requirements)
+    requirement = _seed_saved_candidate_unbound(ctx.conn, ctx.requirements, runner)
     raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
-    real_probe = requirement_limits._probe_program_binding
+    real_verify = requirement_limits._verify_saved_binding_candidate
 
-    def probe_then_bump_version(name):
+    def verify_then_bump_version(candidate):
         ctx.conn.execute(
             "UPDATE user_requirements SET version = version + 1 WHERE id = ?",
             (requirement.requirement_id,),
         )
         ctx.conn.commit()
-        return real_probe(name)
+        return real_verify(candidate)
 
     monkeypatch.setattr(
-        requirement_limits, "_probe_program_binding", probe_then_bump_version
+        requirement_limits, "_verify_saved_binding_candidate", verify_then_bump_version
     )
 
     recovered, recovery_ctx = await _recover(ctx, requirement)
@@ -514,7 +587,7 @@ async def test_recovery_write_back_rejects_requirement_changed_after_snapshot(
     """快照核对之后、写回事务之前要求被 amend：条件写入拒绝，旧行保持原样。"""
     runner = _runner(tmp_path / "bin")
     _prepend_path(monkeypatch, runner.parent)
-    requirement = _seed_structured_unbound(ctx.conn, ctx.requirements)
+    requirement = _seed_saved_candidate_unbound(ctx.conn, ctx.requirements, runner)
     raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
     real_apply = ctx.requirements.apply_binding_recovery
 
@@ -553,7 +626,9 @@ async def test_recovery_discards_result_when_chain_digest_changes(
         " structured_limits_state = 'structured', structured_limits_source = ?"
         " WHERE id = ?",
         (
-            json.dumps([dict(_PROGRAM_LIMIT)], ensure_ascii=False, sort_keys=True),
+            json.dumps(
+                [_saved_candidate_limit(runner)], ensure_ascii=False, sort_keys=True
+            ),
             "r9h8_saved_limit",
             child.requirement_id,
         ),
@@ -562,18 +637,18 @@ async def test_recovery_discards_result_when_chain_digest_changes(
     target = ctx.requirements.by_id(child.requirement_id)
     assert target is not None
     raw_before = _raw_limits(conn, child.requirement_id)
-    real_probe = requirement_limits._probe_program_binding
+    real_verify = requirement_limits._verify_saved_binding_candidate
 
-    def probe_then_change_ancestor(name):
+    def verify_then_change_ancestor(candidate):
         conn.execute(
             "UPDATE user_requirements SET text = ? WHERE id = ?",
             ("整理项目报告，并检查附件。", parent.requirement_id),
         )
         conn.commit()
-        return real_probe(name)
+        return real_verify(candidate)
 
     monkeypatch.setattr(
-        requirement_limits, "_probe_program_binding", probe_then_change_ancestor
+        requirement_limits, "_verify_saved_binding_candidate", verify_then_change_ancestor
     )
 
     recovered, recovery_ctx = await _recover(ctx, target)

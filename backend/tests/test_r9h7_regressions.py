@@ -38,7 +38,7 @@ async def _wait_state(ctx, approval_id: str, states=("completed", "failed", "inv
 
 
 # ---------------------------------------------------------------- 问题一
-async def test_program_name_entry_and_target_version_are_distinct(ctx):
+async def test_program_name_entry_and_target_version_are_distinct(ctx, monkeypatch):
     root = ctx.computer.root()
     marker = root / "entry-marker.txt"
     script = root / "entry.py"
@@ -64,7 +64,23 @@ async def test_program_name_entry_and_target_version_are_distinct(ctx):
     assert result.ok is False, result
     assert not marker.exists(), "调用入口 python 不能静默执行"
 
-    # 不同版本入口不能按去点/名称主体被误拦；同一入口才命中。
+    # R9-H12 §2/§3.2：不同版本入口不能靠“名称不同”证明无关；必须落到对象事实。
+    # 这里用真实可解析的两个不同程序对象（保存时形成绑定），另一版本入口解析到另一个
+    # 真实对象（identity 不同）才按 UNRELATED 继续；同一入口仍命中保存对象。
+    version_dir = root / "version-bin"
+    version_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".exe" if os.name == "nt" else ""
+
+    def version_program(version: str) -> Path:
+        target = version_dir / ("python" + version + suffix)
+        target.write_text("version-" + version, encoding="utf-8")
+        return target
+
+    program_311 = version_program("3.11")
+    program_312 = version_program("3.12")
+    old_path = os.environ.get("PATH", "")
+    monkeypatch.setenv("PATH", str(version_dir) + os.pathsep + old_path)
+
     def effect(entry: str):
         return Effect(
             kind=EffectKind.EXECUTE,
@@ -82,12 +98,18 @@ async def test_program_name_entry_and_target_version_are_distinct(ctx):
         source="test-version",
         state=requirement_limits.STATE_STRUCTURED,
     )
+    stored2 = ctx.requirements.by_id(requirement2.requirement_id)
+    binding_obj = stored2.structured_limits[0]["objects"][0].get("program_binding")
+    assert binding_obj and binding_obj.get("identity"), "保存时必须形成真实对象绑定"
+    assert Path(str(binding_obj["path"])).name == program_311.name
     binding2 = ctx.requirements.binding_for(requirement2.requirement_id)
     with requirement_context(binding2):
         same = await ctx.authorization.authorize(effect("python3.11"))
         other = await ctx.authorization.authorize(effect("python3.12"))
     assert same.verdict == Verdict.DENY
+    # 可靠无关依据：python3.12 入口解析到真实存在的另一个对象，identity 与绑定不同。
     assert other.verdict == Verdict.ALLOW, other.reason
+    assert program_312.exists() and program_311.exists()
 
 
 async def test_program_entry_alias_preserved_and_path_limit_scoped(ctx):
