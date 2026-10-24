@@ -177,8 +177,20 @@ async def test_program_name_object_binding_blocks_alias_entry_and_approval(ctx):
     assert allowed.verdict == Verdict.ALLOW, allowed.reason
 
 
-async def test_program_name_does_not_merge_different_versions(tmp_path, db_conn):
+async def test_program_name_does_not_merge_different_versions(tmp_path, db_conn, monkeypatch):
     security = make_security(tmp_path, db_conn, mode="unrestricted")
+    # R9-H12 §2/§3.2：不同版本不合并必须由对象事实证明（真实存在的两个不同对象），
+    # 不能靠“入口名不同/当前查找失败”推断无关。
+    version_dir = tmp_path / "version-bin"
+    version_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".exe" if os.name == "nt" else ""
+    program_311 = version_dir / ("python3.11" + suffix)
+    program_312 = version_dir / ("python3.12" + suffix)
+    program_311.write_text("version-3.11", encoding="utf-8")
+    program_312.write_text("version-3.12", encoding="utf-8")
+    monkeypatch.setenv(
+        "PATH", str(version_dir) + os.pathsep + os.environ.get("PATH", "")
+    )
     requirement = security.requirements.record_user_message(
         text="只禁止 python3.11", message_id="m-pv", turn_id="t-pv"
     )
@@ -188,6 +200,10 @@ async def test_program_name_does_not_merge_different_versions(tmp_path, db_conn)
         source="test-program-version",
         state=requirement_limits.STATE_STRUCTURED,
     )
+    stored = security.requirements.by_id(requirement.requirement_id)
+    bound = stored.structured_limits[0]["objects"][0].get("program_binding")
+    assert bound and bound.get("identity"), "保存时必须形成真实对象绑定"
+    assert Path(str(bound["path"])).name == program_311.name
     binding = security.requirements.binding_for(requirement.requirement_id)
 
     def effect(entry, target):
@@ -198,6 +214,10 @@ async def test_program_name_does_not_merge_different_versions(tmp_path, db_conn)
             detail={"requested_program": entry, "execution": {"program": entry}},
         )
 
+    assert program_312.exists() and program_311.exists()
+    # 另一版本入口解析到另一个真实对象（identity 不同）→ 可靠无关，继续；
+    # 同一版本入口命中保存绑定 → 拒绝。两个目标路径都不存在，也各自提供
+    # candidate_not_exists 的可靠无关事实。
     with requirement_context(binding):
         other = await security.engine.authorize(effect("python3.12", tmp_path / "python3.12"))
         same = await security.engine.authorize(effect("python3.11", tmp_path / "python3.11"))
