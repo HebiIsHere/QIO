@@ -611,6 +611,12 @@ class RequirementLedger:
             else:
                 raw_limits = limits
             known = requirement_limits.normalize_limits(list(raw_limits or ()))
+            known = requirement_limits.attach_program_bindings(
+                known,
+                requirement_id=str(requirement.requirement_id),
+                version=int(requirement.version),
+                status=str(requirement.status),
+            )
             structured_json = requirement_limits.serialize_limits(known)
         flattened = [
             _flatten_limit(dict(item))
@@ -761,6 +767,13 @@ class RequirementLedger:
             structured_json = None
         else:
             known = requirement_limits.normalize_limits(list(structured_limits or ()))
+            if known:
+                known = requirement_limits.attach_program_bindings(
+                    known,
+                    requirement_id=requirement_id,
+                    version=1,
+                    status=STATUS_ACTIVE,
+                )
             structured_json = requirement_limits.serialize_limits(known)
         limits_text: list[str] = []
         for item in known or ():
@@ -920,6 +933,13 @@ class RequirementLedger:
                 flattened = _flatten_limit(dict(item))
                 if flattened and flattened not in limits:
                     limits.append(flattened[:MAX_PERSISTED_LIMIT_CHARS])
+        if child_structured is not None:
+            child_structured = requirement_limits.attach_program_bindings(
+                child_structured,
+                requirement_id=requirement_id_new,
+                version=child_version,
+                status=STATUS_ACTIVE,
+            )
         structured_json = (
             requirement_limits.serialize_limits(child_structured)
             if child_structured is not None

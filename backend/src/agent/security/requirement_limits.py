@@ -166,8 +166,11 @@ def _normalize_objects(value: Any) -> list[dict]:
                         "birth_key": _clean_text(binding.get("birth_key")) or None,
                         "source": _clean_text(binding.get("source")) or "path_lookup",
                     }
-            if clean_binding is None:
-                clean_binding = _resolve_program_binding(text)
+                    for key in ("requirement_id", "requirement_version", "requirement_status"):
+                        value = binding.get(key)
+                        if value is not None:
+                            clean_binding[key] = value
+            # 规范化/反序列化只保留已保存绑定，绝不查找程序/采集身份。
             if clean_binding is not None:
                 entry["program_binding"] = clean_binding
         objects.append(entry)
@@ -268,6 +271,35 @@ def _entry_with(
         "objects": [{"kind": kind, "value": value} for kind, value in sorted(objects)],
         "reason": reason,
     }
+
+
+def attach_program_bindings(
+    limits: Iterable[dict], *, requirement_id: str, version: int, status: str
+) -> tuple[dict, ...]:
+    """可信绑定创建入口：仅在要求保存/恢复流程显式调用。
+
+    规范化/序列化/反序列化不再调用本函数；读历史数据只能保留已有绑定。
+    """
+    result: list[dict] = []
+    for entry in normalize_limits(list(limits or ())):
+        copied = dict(entry)
+        objects: list[dict] = []
+        for obj in copied.get("objects") or ():
+            item = dict(obj)
+            if (
+                str(item.get("kind") or "").strip().lower() == "program_name"
+                and not item.get("program_binding")
+            ):
+                binding = _resolve_program_binding(str(item.get("value") or ""))
+                if binding is not None:
+                    binding["requirement_id"] = str(requirement_id)
+                    binding["requirement_version"] = int(version)
+                    binding["requirement_status"] = str(status)
+                    item["program_binding"] = binding
+            objects.append(item)
+        copied["objects"] = objects
+        result.append(copied)
+    return tuple(result)
 
 
 def _entry_with_objects(

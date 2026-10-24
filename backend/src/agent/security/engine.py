@@ -1647,7 +1647,25 @@ class AuthorizationEngine(AuthorizationGateway):
         try:
             if kind in {"path_prefix", "directory"}:
                 return candidate == target or candidate.is_relative_to(target)
-            return candidate == target
+            if candidate == target:
+                return True
+            # R9-H10 §3：普通文件路径限制也按真实对象身份核对；硬链接不能靠
+            # 字符串/realpath 差异绕过，同内容复制件身份不同不合并。
+            if kind == "path":
+                left_identity = EngineIdentity.of(candidate)
+                right_identity = EngineIdentity.of(target)
+                if left_identity is None or right_identity is None:
+                    return False
+                if left_identity[0] != right_identity[0]:
+                    return False
+                if (
+                    left_identity[1]
+                    and right_identity[1]
+                    and left_identity[1] != right_identity[1]
+                ):
+                    return False
+                return True
+            return False
         except (OSError, ValueError):
             return False
 
@@ -1675,6 +1693,33 @@ class AuthorizationEngine(AuthorizationGateway):
             return _os.path.normcase(value.strip()) if _os.name == "nt" else value.strip()
 
         return _key(requested) == _key(right)
+
+    @staticmethod
+    def _program_binding_path_replaced(item: dict, effect: Effect) -> bool:
+        """原绑定路径仍是同一路径但文件身份已变：绑定失效，不是无关对象。"""
+        binding = item.get("program_binding")
+        if not isinstance(binding, dict):
+            return False
+        bound_path = str(binding.get("path") or "").strip()
+        bound_identity = str(binding.get("identity") or "").strip()
+        if not bound_path or not bound_identity:
+            return False
+        import os as _os
+
+        def _canonical(value: str) -> str:
+            resolved = _os.path.realpath(value)
+            return _os.path.normcase(resolved) if _os.name == "nt" else resolved
+
+        for target in effect.targets:
+            if target.kind not in {"program", "path"}:
+                continue
+            candidate = str(getattr(target, "value", "") or "")
+            if not candidate or _canonical(candidate) != _canonical(bound_path):
+                continue
+            identity = EngineIdentity.of(candidate)
+            if identity is None or identity[0] != bound_identity:
+                return True
+        return False
 
     def _program_name_unresolved(
         self, effect: Effect, requirement: Any
@@ -1710,6 +1755,12 @@ class AuthorizationEngine(AuthorizationGateway):
                         ):
                             matched = True
                             break
+                if not matched and self._program_binding_path_replaced(item, effect):
+                    return (
+                        "这条用户限制绑定的程序对象已在原路径被替换（身份/生命周期"
+                        "不一致）；原禁止仍有效，本次不执行，需先恢复/澄清绑定，"
+                        "不能把新对象当作无关程序"
+                    )
                 if matched:
                     return (
                         "这条用户限制中的程序名称尚未可靠绑定到明确对象；"
@@ -1891,15 +1942,7 @@ class AuthorizationEngine(AuthorizationGateway):
         if not all_objects:
             # R9-H8 §1：objects 为空表示“限制全部对应操作/对象”，不是“不匹配”。
             return True
-        raw_objects = [
-            item
-            for item in all_objects
-            if str(item.get("kind") or "").strip().lower() != "program_name"
-        ]
-        if not raw_objects:
-            # 只有未解决程序名称来源：交给 _program_name_unresolved，不能当作
-            # 普通路径不匹配，也不能把“明确禁止待绑定”误当成无限制。
-            return False
+        raw_objects = all_objects
         impact_objects = [
             item for item in (impact.get("objects") or ()) if isinstance(item, dict)
         ]
@@ -1922,11 +1965,20 @@ class AuthorizationEngine(AuthorizationGateway):
                             return True
                     elif object_kind in self._LIMIT_PATH_KINDS:
                         # 明确程序路径限制也约束对该程序文件本身的写/删/读等
-                        # 操作（操作集合已在上方按限制范围过滤）；对象身份相同
-                        # 的硬链接同样命中。
-                        if self._limit_path_matches(
+                        # 操作；program_name 必须使用保存的绑定路径/身份，不能把
+                        # 来源名称当相对路径。对象身份相同的硬链接同样命中。
+                        if kind == "program":
+                            reference_path = str(item.get("value") or "")
+                        else:
+                            binding = item.get("program_binding")
+                            reference_path = (
+                                str(binding.get("path") or "")
+                                if isinstance(binding, dict)
+                                else ""
+                            )
+                        if reference_path and self._limit_path_matches(
                             obj.get("value"),
-                            {"kind": "path", "value": item.get("value")},
+                            {"kind": "path", "value": reference_path},
                             effect=effect,
                         ):
                             return True
