@@ -787,6 +787,15 @@ def _verify_local_preconditions(
             "recheck_identity_changed",
             "目标文件已不是原来的那一个（身份变化）：本次未执行",
         )
+    # 编号复用：identity 相同但 birth 生命周期不同，仍是另一个文件。
+    expected_birth = str(expected_identity.get("birth_key") or "")
+    current_birth = str(current.get("birth_key") or "")
+    if expected_birth and current_birth and expected_birth != current_birth:
+        return RecheckOutcome(
+            False,
+            "recheck_identity_changed",
+            "目标文件编号被复用为另一个生命周期对象：本次未执行",
+        )
     action = str((getattr(effect, "detail", {}) or {}).get("action") or "")
     requires_content = action in ("write", "patch")
     if expected_sha256 is not None:
