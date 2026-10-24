@@ -237,7 +237,16 @@ def test_resolve_path_absolute_and_relative(tmp_path):
     assert resolve_path(absolute, tmp_path) == str(absolute.resolve())
     # base 接受 str/Path；相对路径按 base 规范化。
     assert resolve_path("a/b.txt", tmp_path) == str((tmp_path / "a" / "b.txt").resolve())
-    assert resolve_path("a\\b.txt", str(tmp_path)) == str((tmp_path / "a" / "b.txt").resolve())
+    if os.name == "nt":
+        # Windows：反斜杠是分隔符，相对路径按平台语义规范化。
+        assert resolve_path("a\\b.txt", str(tmp_path)) == str(
+            (tmp_path / "a" / "b.txt").resolve()
+        )
+    else:
+        # POSIX：反斜杠是合法文件名字符（不是分隔符），不能被改写成子目录。
+        assert resolve_path("a\\b.txt", str(tmp_path)) == str(
+            (tmp_path / "a\\b.txt").resolve()
+        )
 
 
 def test_resolve_path_requires_base_for_relative():
