@@ -416,6 +416,53 @@ class _CmdTool(Tool):
 
     # -- 受控启动（契约 §3.3）：真实执行统一走 ControlledLauncher -----------
 
+    def _verify_reviewed_launch(self, spec, execution: dict) -> ToolResult | None:
+        """R9-H5 §2：模型审查/人工批准后，执行前用当前真实事实核对获准事实。
+
+        直接模型允许路径过去会在授权后重新读取脚本/程序并执行新内容；这里把
+        审查前采集的 launch facts 作为唯一依据，变化即失效，不自动继承旧批准。
+        """
+        try:
+            current = launch_boundary.build_launch_facts(spec, computer=self.computer)
+        except Exception as exc:  # noqa: BLE001 - 无法确认当前事实按失效
+            return ToolResult(
+                ok=False,
+                error=f"执行前无法核对当前启动事实（{type(exc).__name__}）：本次未执行",
+                code="launch_facts_unavailable",
+                category="conflict",
+                recoverable=True,
+            )
+        expected = self._launch_facts(execution)
+        keys = (
+            "kind",
+            "program_path",
+            "program_sha256",
+            "argv",
+            "cwd",
+            "shell",
+            "shell_cmd",
+            # script_sha256 在工具事实里是 argv 脚本文件集合的合成摘要，而
+            # build_launch_facts 只在 spec.script_source 时提供；两者形状不同，
+            # 不能直接比较。脚本文件替换由 argument_files（内容摘要）和
+            # spec_digest（覆盖脚本内容）共同核对。
+            "argument_files",
+            "spec_digest",
+        )
+        changed = [key for key in keys if current.get(key) != expected.get(key)]
+        if changed:
+            return ToolResult(
+                ok=False,
+                error=(
+                    "程序/脚本/参数/工作目录在审查或批准后发生变化（"
+                    + "、".join(changed)
+                    + "）：旧结论不能继续执行，本次未执行，需要重新判断"
+                ),
+                code="reviewed_launch_changed",
+                category="conflict",
+                recoverable=True,
+            )
+        return None
+
     def _new_launcher(self):
         """受控启动器：消费后端许可（模式/写范围/内部数据），不复制权限判定。"""
         return launch_boundary.ControlledLauncher(
@@ -1246,6 +1293,9 @@ class RunProgramTool(_CmdTool):
         )
         if blocked is not None:
             return blocked
+        reviewed_changed = self._verify_reviewed_launch(spec, execution)
+        if reviewed_changed is not None:
+            return reviewed_changed
         permit = self._launch_permit_for_call(
             kwargs, spec, readonly_proof=bool(mode == "read_only" and fixed_ok)
         )
@@ -1386,6 +1436,9 @@ class RunCmdTool(_CmdTool):
         )
         if blocked is not None:
             return blocked
+        reviewed_changed = self._verify_reviewed_launch(spec, execution)
+        if reviewed_changed is not None:
+            return reviewed_changed
         permit = self._launch_permit_for_call(kwargs, spec, readonly_proof=False)
         return await self._exec(spec, permit, label="命令")
 

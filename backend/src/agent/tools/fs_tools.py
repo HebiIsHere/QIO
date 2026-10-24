@@ -744,6 +744,68 @@ async def authorize_item(gateway: Any, effect: Any) -> dict:
     }
 
 
+def _verify_local_preconditions(
+    effect: Any,
+    *,
+    expected_identity: dict | None,
+    expected_sha256: str | None,
+) -> RecheckOutcome | None:
+    """R9-H5 §1/§3：执行前用当前真实磁盘核对写入/补丁的前置状态。
+
+    不依赖 effect 中旧摘要是否相同；服务重核对返回 ok 也不能跳过本函数。
+    """
+    path_targets = tuple(
+        target
+        for target in (getattr(effect, "targets", ()) or ())
+        if getattr(target, "kind", "") == "path"
+    )
+    if not path_targets or expected_identity is None:
+        return None
+    target_path = str(getattr(path_targets[0], "value", ""))
+    current = security_gate.file_identity(target_path)
+    expected_exists = expected_identity.get("exists")
+    current_exists = bool(current.get("exists"))
+    if expected_exists is False:
+        if current_exists:
+            return RecheckOutcome(
+                False,
+                "recheck_precondition_changed",
+                "目标文件在审查/批准期间被创建：旧方案基于“原本不存在”，本次未执行",
+            )
+        return None
+    if not current_exists:
+        return RecheckOutcome(
+            False,
+            "recheck_precondition_changed",
+            "目标文件在审查/批准期间被删除：旧方案的前置状态已不成立，本次未执行",
+        )
+    expected_key = security_gate.identity_key(expected_identity)
+    current_key = security_gate.identity_key(current)
+    if expected_key is not None and current_key != expected_key:
+        return RecheckOutcome(
+            False,
+            "recheck_identity_changed",
+            "目标文件已不是原来的那一个（身份变化）：本次未执行",
+        )
+    action = str((getattr(effect, "detail", {}) or {}).get("action") or "")
+    requires_content = action in ("write", "patch")
+    if expected_sha256 is not None:
+        current_sha = security_gate.content_sha256(target_path)
+        if current_sha != expected_sha256:
+            return RecheckOutcome(
+                False,
+                "recheck_content_changed",
+                "目标文件内容在执行前发生了变化：本次未执行，需要基于最新内容重新形成方案",
+            )
+    elif requires_content:
+        return RecheckOutcome(
+            False,
+            "recheck_precondition_unavailable",
+            "审批记录缺少目标文件前置内容依据：无法确认期间是否被修改，本次未执行",
+        )
+    return None
+
+
 async def recheck_before_execute(
     *,
     gateway: Any,
@@ -758,6 +820,13 @@ async def recheck_before_execute(
     用**当前**模式重新走一次 gateway.authorize（模式/要求/授权/审批是否仍覆盖）
     + 校验要求绑定仍有效（requirements.validate_binding）+ 对象身份/内容摘要未变。
     """
+    local_failure = _verify_local_preconditions(
+        effect,
+        expected_identity=expected_identity,
+        expected_sha256=expected_sha256,
+    )
+    if local_failure is not None:
+        return local_failure
     binding = (getattr(effect, "detail", {}) or {}).get(REQUIREMENT_BINDING_KEY)
     service = _recheck_service(gateway)
     if service is not None:
@@ -1386,7 +1455,11 @@ class FsWriteTool(_FsTool):
         # 执行前重核对（契约 §7）：模式/要求/授权/审批是否仍覆盖 + 对象身份未变；
         # 授权失效时保留进度并给出明确状态，绝不按旧允许直接写。
         blocked_by_recheck = await self._recheck_then_continue(
-            effect, pending, mode_at_request=mode_at_request, identity=identity
+            effect,
+            pending,
+            mode_at_request=mode_at_request,
+            identity=identity,
+            sha256=base_content_sha,
         )
         if blocked_by_recheck is not None:
             return blocked_by_recheck
@@ -1424,6 +1497,20 @@ class FsPatchTool(_FsTool):
         pre_record = self._origin_record(target)
         binding = self._requirement_binding()
         mode_at_request = self._mode_at_request()
+        # R9-H5 §3：补丁必须先取得“读取正文”的授权；拒绝读时不得读取/计算/修改。
+        read_effect = security_gate.read_effect(
+            "fs_patch", target, purpose="读取文件内容以计算补丁"
+        )
+        attach_limit_impacts(read_effect, read_limit_impacts(target))
+        attach_requirement_binding(read_effect, binding)
+        blocked_read = await self._permitted(
+            self.computer.read_verdict(str(target)),
+            {"action": "read", "path": str(target)},
+            "拒绝读取该文件（读取限制优先于补丁修改）",
+            effect=read_effect,
+        )
+        if blocked_read is not None:
+            return blocked_read
         try:
             text = await self._run_blocking(_read_file_text, target)
         except OSError as exc:

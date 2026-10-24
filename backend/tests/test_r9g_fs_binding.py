@@ -193,7 +193,8 @@ def test_execution_recheck_mode_change_requires_decision(workspace):
 
 
 def test_patch_recheck_failure_keeps_original(workspace):
-    gateway = ScriptedGateway(["allow", "deny"])
+    # H5 §3：patch 先读授权（allow），再写授权（allow），最后执行前重核对（deny）。
+    gateway = ScriptedGateway(["allow", "allow", "deny"])
     target = workspace / "补丁.txt"
     target.write_text("OLD", encoding="utf-8")
     tool = FsPatchTool(computer=_sandbox(workspace), security=gateway)

@@ -692,7 +692,19 @@ class ApprovalService:
             expires_at=str(approved.get("expires_at") or "") or None,
             confirmed_stage=int(approved.get("confirmed_stage") or 0),
         )
-        allowed, reason = await ctx.authorize_started()
+        # R9-H5 §4：批量审批先只核对整批共同条件（要求仍 active/版本、期限、
+        # 模式/确认基础）；单项限制或内容变化由执行器逐项 effect 重核对，不能
+        # 在进入逐项执行前因为 B 的冲突使 A 也失效。
+        raw_items = (operation.payload or {}).get("items")
+        is_batch = isinstance(raw_items, list) and len(raw_items) > 1
+        try:
+            allowed, reason = (
+                await ctx.authorize_started(common_only=True)
+                if is_batch
+                else await ctx.authorize_started()
+            )
+        except TypeError:  # 兼容旧 ExecutionContext 签名（无 common_only）
+            allowed, reason = await ctx.authorize_started()
         if not allowed:
             row = self.store.mark_invalidated(approval_id, reason)
             await self._publish_phase("invalidated", row, extra={"summary": reason})

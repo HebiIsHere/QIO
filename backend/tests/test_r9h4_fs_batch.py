@@ -136,7 +136,15 @@ async def test_fs_write_and_patch_report_real_impacts(workspace: Path):
     tool3 = FsPatchTool(computer=_sandbox(workspace), security=gateway3)
     target.write_text("旧内容", encoding="utf-8")
     await tool3.run(path=str(target), old="旧内容", new="补丁内容")
-    assert _impact_map(gateway3.effects[0]) == {"write": [("path", str(target))]}
+    # H5 §3：patch 先产生独立 read 授权 effect，再产生 write 影响。
+    actions = [_detail(effect).get("action") for effect in gateway3.effects]
+    assert "read" in [str(getattr(e.kind, "value", e.kind)) for e in gateway3.effects]
+    patch_effects = [
+        effect for effect in gateway3.effects
+        if _detail(effect).get("action") == "patch"
+    ]
+    assert patch_effects
+    assert _impact_map(patch_effects[-1]) == {"write": [("path", str(target))]}
 
 
 async def test_fs_read_and_directory_queries_are_not_expanded(workspace: Path):

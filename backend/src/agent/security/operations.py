@@ -238,7 +238,7 @@ class ExecutionContext:
                 version=int(self.operation.requirement_version or 1),
             )
 
-    async def authorize_started(self) -> tuple[bool, str]:
+    async def authorize_started(self, effect=None, *, common_only: bool = False) -> tuple[bool, str]:
         """真实执行前重核对：当前模式 + 绑定要求 + 审批/确认是否仍允许这次操作。
 
         返回 (是否允许, 中文原因)。批准后若模式变化、要求被修正/撤回、授权/审批失效，
@@ -264,6 +264,21 @@ class ExecutionContext:
                 False,
                 "这项操作没有绑定具体用户要求，不能直接执行（需要重新判断，不是继续执行）",
             )
+        # 模式是整批共同条件：审批后模式变化不能被逐项执行绕过。
+        if self.mode_at_approval:
+            try:
+                current_mode = str(self.current_mode() or "")
+            except Exception:  # noqa: BLE001 - 读不到模式按不能执行
+                return False, "执行前无法确认当前权限模式，本次没有执行"
+            if current_mode and current_mode != str(self.mode_at_approval):
+                return (
+                    False,
+                    "权限模式已从审批时的 "
+                    + str(self.mode_at_approval)
+                    + " 变为 "
+                    + current_mode
+                    + "；旧审批不能继续执行",
+                )
         # R9-H4 §5/§10.1：绑定要求在该时刻必须仍 active 且版本一致。若已被撤回/修正/
         # 替换，不能因为引擎「没有可对照要求」而落到更宽松的分支（尤其 unrestricted）。
         try:
@@ -286,13 +301,29 @@ class ExecutionContext:
             from agent.security.gateway import AuthContext
             from agent.tools import security_gate
 
-            effect = security_gate.effect_from_dict(self.operation.effect)
-            if effect is None:
+            effective_effect = effect
+            if effective_effect is None:
+                effective_effect = security_gate.effect_from_dict(self.operation.effect)
+            if effective_effect is None:
                 return False, "审批单缺少可核对的执行效果，本次没有执行"
+            if common_only:
+                # 批量共同条件已在上方核对（期限/绑定要求 active/版本）；逐项限制/
+                # 内容由每个子项 effect 在执行前单独 recheck，不能整批一起失效。
+                self.authorization_basis = {
+                    "approval_id": str(self.approval_id or ""),
+                    "operation_kind": str(self.operation.kind or ""),
+                    "requirement_id": self.operation.requirement_id,
+                    "requirement_version": self.operation.requirement_version,
+                    "mode": self.current_mode(),
+                    "confirmed_stage": int(self.confirmed_stage or 0),
+                    "confirmations_required": int(self.operation.confirmations_required or 1),
+                    "kind": "batch_common_precheck",
+                }
+                return True, ""
             recheck = getattr(self.engine, "recheck_approved", None)
             if callable(recheck):
                 decision = recheck(
-                    effect,
+                    effective_effect,
                     context=AuthContext(requirement=binding, origin="background"),
                     approval_kind=str(self.operation.kind or ""),
                     confirmations_required=int(
@@ -302,7 +333,7 @@ class ExecutionContext:
                 )
             else:  # 兼容旧引擎：只做模式判定
                 decision = await self.engine.authorize(
-                    effect, ctx=AuthContext(requirement=binding, origin="background")
+                    effective_effect, ctx=AuthContext(requirement=binding, origin="background")
                 )
         except Exception as exc:  # noqa: BLE001 - 重核对失败不能默认允许
             return False, "执行前无法重新确认授权（本次没有执行）：" + type(exc).__name__
@@ -310,6 +341,7 @@ class ExecutionContext:
             getattr(decision, "verdict", "")
         )
         reason = str(getattr(decision, "reason", "") or "当前状态不再允许这次操作")
+        decision_code = str(getattr(decision, "decision_code", "") or "")
         basis_common = {
             "approval_id": str(self.approval_id or ""),
             "operation_kind": str(self.operation.kind or ""),
@@ -319,6 +351,7 @@ class ExecutionContext:
             "confirmed_stage": int(self.confirmed_stage or 0),
             "confirmations_required": int(self.operation.confirmations_required or 1),
             "reason": reason,
+            "decision_code": decision_code or None,
         }
         if verdict == "allow":
             self.authorization_basis = {
@@ -332,7 +365,7 @@ class ExecutionContext:
         # APPROVE 仅表示「历史结构化限制未可靠恢复」这一状态本身，审批单已绑定同一条
         # 要求/版本/内容/范围/条件。因此只放行这一次批准，不改写要求、不清除未知限制、
         # 不解除已知禁止、不形成长期授权；下一次操作仍需重新判断。
-        if verdict == "approve" and self._approve_completes_unresolved(reason):
+        if verdict == "approve" and self._approve_completes_unresolved(decision_code):
             self.authorization_basis = {
                 **basis_common,
                 "kind": "specific_approval_completed_unresolved",
@@ -345,16 +378,15 @@ class ExecutionContext:
             return True, ""
         return False, reason
 
-    def _approve_completes_unresolved(self, reason: str) -> bool:
-        """只有「unresolved 限制尚未恢复」这一种 APPROVE 可被具体批准完成。
+    def _approve_completes_unresolved(self, decision_code: str) -> bool:
+        """只有结构化 code 表示「unresolved 限制需确认本次操作」时才允许完成本次批准。
 
-        * 必须绑定具体用户要求且当前仍 active / 版本一致（执行前核对的就是它）；
-        * 该要求必须确实处于 legacy/unresolved（不是 internal 三次确认/永久删除/
-          子智能体范围/普通确认次数不足等其它 APPROVE 原因）；
-        * 已知限制已在 recheck_approved 的 _limit_conflict 里先行 DENY，因此这里
-          不重复放行任何已知禁止。
+        绝不解析中文 reason、语言或关键词；旧审批没有 code 一律不能据此放行。
+        还必须绑定 active/版本一致且当前确实 legacy/unresolved（结构化事实核对）。
         """
-        if "历史结构化限制尚未可靠恢复" not in str(reason or ""):
+        from agent.security.effects import DECISION_UNRESOLVED_LIMITS
+
+        if str(decision_code or "") != DECISION_UNRESOLVED_LIMITS:
             return False
         binding = self.requirement_binding()
         if binding is None:

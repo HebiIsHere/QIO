@@ -281,6 +281,7 @@ async def _recheck_requirement_and_mode(
     payload: dict,
     fingerprint: dict,
     path: str,
+    item_effect: Any = None,
 ) -> ExecResult | None:
     """批准后执行前重核对（契约 §7）：模式快照/要求版本/授权/审批有效期/对象。
 
@@ -289,7 +290,15 @@ async def _recheck_requirement_and_mode(
     authorize_started = getattr(ctx, "authorize_started", None)
     if callable(authorize_started):
         try:
-            allowed, reason = await authorize_started()
+            # R9-H5 §4：批量逐项核对时传子项 effect，让单项限制只影响该项；
+            # 整批共同条件已在 _execute_approved 的 common_only 检查中完成。
+            if item_effect is not None:
+                try:
+                    allowed, reason = await authorize_started(item_effect)
+                except TypeError:  # 兼容旧签名
+                    allowed, reason = await authorize_started()
+            else:
+                allowed, reason = await authorize_started()
         except Exception:  # noqa: BLE001 - 重核对异常按未通过（失败关闭）
             return _failure(
                 "执行前重核对失败：本次未执行",
@@ -349,7 +358,7 @@ async def _recheck_requirement_and_mode(
             )
     # 用当前模式重新走一次引擎判定：明确拒绝 → 不执行；需要重新确认 → 不自动执行。
     engine = _engine_of(ctx)
-    effect = _effect_from_operation(ctx)
+    effect = item_effect if item_effect is not None else _effect_from_operation(ctx)
     if engine is not None and effect is not None and callable(getattr(engine, "authorize", None)):
         try:
             decision = await engine.authorize(effect)
@@ -802,9 +811,32 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             results.append(item)
             failed.append(item)
             continue
-        # R9-G §7：批准后重放前逐项重核对（模式/要求版本/授权/审批/对象）
+        # R9-G §7：批准后重放前逐项重核对（模式/要求版本/授权/审批/对象）。
+        # H5 §4：使用该子项 effect 核对，B 的单项限制不能使 A 整批失效。
+        from agent.security.effects import Effect, EffectKind, Target
+
+        item_effect = Effect(
+            kind=EffectKind.DELETE,
+            targets=(Target("path", path, identity=row.get("identity")),),
+            purpose=f"删除文件：{path}",
+            tool="fs.delete",
+            detail={
+                "action": "delete",
+                "limit_impacts": [
+                    {
+                        "operation": "delete",
+                        "objects": [{"kind": "path", "value": path}],
+                    }
+                ],
+                "limit_impacts_complete": True,
+            },
+        )
         blocked = await _recheck_requirement_and_mode(
-            ctx, payload=payload, fingerprint=fingerprint, path=path
+            ctx,
+            payload=payload,
+            fingerprint=fingerprint,
+            path=path,
+            item_effect=item_effect,
         )
         if blocked is not None:
             item = {
@@ -902,8 +934,13 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
         if not ok:
             item["code"] = code
             failed.append(item)
+    completed_count = sum(1 for item in results if item.get("ok"))
+    failed_count = len(failed)
     detail_data = {
         "results": results,
+        "partial": bool(completed_count and failed_count),
+        "completed_count": completed_count,
+        "failed_count": failed_count,
         "items": [
             {
                 "item_id": item.get("item_id"),

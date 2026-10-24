@@ -1614,27 +1614,27 @@ class AuthorizationEngine(AuthorizationGateway):
 
     @staticmethod
     def _limit_program_matches(program_value: object, item: dict) -> bool:
+        """程序限制只按平台规范化后的程序路径/已核实身份匹配。
+
+        R9-H5 §6：完整路径不匹配时**不得**回退 basename/去后缀/统一小写。用户只
+        禁止某个绝对路径程序时，另一个目录的同名程序不是同一对象；需要按名称
+        表达时必须由解析阶段形成明确的 program_name 结构化类型（不是隐式回退）。
+        """
         left = str(program_value or "").strip()
         right = str(item.get("value") or "").strip()
         if not left or not right:
             return False
-        left_norm = left.replace("\\", "/").rstrip("/").lower()
-        right_norm = right.replace("\\", "/").rstrip("/").lower()
-        if left_norm == right_norm:
-            return True
-        left_name = left_norm.rsplit("/", 1)[-1]
-        right_name = right_norm.rsplit("/", 1)[-1]
-        if not left_name or not right_name:
-            return False
-        if left_name == right_name:
-            return True
-        # resolve 后程序与模型给出的裸名（python vs python.exe）按可执行名主干比较；
-        # 仍只按结构化 program 对象，不做关键词/后缀授权判断。
-        left_stem = left_name.rsplit(".", 1)[0] if "." in left_name else left_name
-        right_stem = (
-            right_name.rsplit(".", 1)[0] if "." in right_name else right_name
-        )
-        return bool(left_stem) and left_stem == right_stem
+        import os as _os
+
+        def _canonical(value: str) -> str:
+            # 规范化 + 解析链接别名：同一目标的绝对路径/符号链接属于同一程序对象；
+            # 不解析名称、不猜后缀。POSIX 保留大小写，Windows 按平台大小写不敏感。
+            resolved = _os.path.realpath(value)
+            if _os.name == "nt":
+                return _os.path.normcase(_os.path.normpath(resolved))
+            return _os.path.normpath(resolved)
+
+        return _canonical(left) == _canonical(right)
 
     @staticmethod
     def _limit_service_matches(service_value: object, item: dict) -> bool:
