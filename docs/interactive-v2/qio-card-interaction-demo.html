@@ -124,6 +124,22 @@
   .port.top:hover .port-shape { opacity: 1; transform: translateX(-50%) scale(1); }
   .port.bottom:hover .port-shape { opacity: 1; transform: translateX(-50%) scale(1); }
 
+
+  .group {
+    position: absolute; z-index: 1; border: 1.5px dashed #d1aec1; border-radius: var(--radius);
+    background: rgba(252,247,250,.78); box-shadow: 0 6px 18px rgba(60,30,50,.04);
+    padding: 30px 14px 14px;
+  }
+  .group-head { position: absolute; left: 16px; top: 9px; font-size: 10px; color: #9b7b8d; letter-spacing: .04em; }
+  .group-mini-row { display: flex; gap: 10px; height: 100%; }
+  .mini-card { flex: 1; min-width: 0; border: 1px solid #e7dbe3; border-radius: var(--radius); background: #fff; padding: 10px 11px; font-size: 10.5px; line-height: 1.55; color: #7c6875; }
+  .mini-card b { display: block; margin-bottom: 3px; color: #493b44; font-size: 11px; }
+  .group .port { pointer-events: none; }
+  .group .port.is-connected { pointer-events: auto; }
+  .group:hover .port.is-connected { pointer-events: auto; }
+  .group:hover .port::before { opacity: 0; }
+  .group:hover .port::after { opacity: .72; }
+  .group .port:hover::after { opacity: 0; }
   .toolbar { position: absolute; inset: 0; z-index: 10; pointer-events: none; opacity: 0; transition: opacity 120ms ease; }
   .card.selected .toolbar { opacity: 1; }
   .tool-btn {
@@ -264,6 +280,7 @@
   ];
 
   const cards = {};
+  const groups = {};
   const links = [];
   let selected = null;
   let resize = null;
@@ -281,6 +298,32 @@
     top: { viewBox: '0 0 20 14', d: 'M 4 14 Q 0 14 0 10 A 10 10 0 0 1 20 10 Q 20 14 16 14 Z' },
     bottom: { viewBox: '0 0 20 14', d: 'M 4 0 Q 0 0 0 4 A 10 10 0 0 0 20 4 Q 20 0 16 0 Z' }
   };
+
+  function makeGroup(data) {
+    const el = document.createElement('section');
+    el.className = 'group';
+    el.dataset.groupId = data.id;
+    el.style.cssText = 'left:' + data.x + 'px;top:' + data.y + 'px;width:' + data.w + 'px;height:' + data.h + 'px;';
+    el.innerHTML =
+      '<div class="group-head">' + data.title + '</div>' +
+      '<div class="group-mini-row">' +
+        '<div class="mini-card"><b>' + data.members[0] + '</b>可归入组的材料</div>' +
+        '<div class="mini-card"><b>' + data.members[1] + '</b>组内成员保持原位置</div>' +
+      '</div>' +
+      '<span class="port bottom" data-side="bottom" role="button" tabindex="0" aria-label="组的下边连接点"><svg class="port-shape" viewBox="0 0 20 14" aria-hidden="true"><path d="M 4 0 Q 0 0 0 4 A 10 10 0 0 0 20 4 Q 20 0 16 0 Z"/></svg></span>';
+    board.insertBefore(el, document.getElementById('bottomStack'));
+    const record = { ...data, el, isGroup: true };
+    groups[data.id] = record;
+    el.querySelectorAll('.port').forEach((port) => {
+      port.addEventListener('pointerdown', (event) => startConnection('group:' + data.id, port.dataset.side, event));
+    });
+    el.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('.port')) return;
+      document.querySelectorAll('.group.selected').forEach((g) => g.classList.remove('selected'));
+      el.classList.add('selected');
+    });
+    return record;
+  }
 
   function makeCard(data) {
     const el = document.createElement('article');
@@ -504,6 +547,9 @@
     return { x: p.x + p.nx * distance, y: p.y + p.ny * distance, nx: p.nx, ny: p.ny };
   }
 
+  function groupKey(id) { return id.startsWith('group:') ? id.slice(6) : id; }
+  function endpointNode(id) { return id.startsWith('group:') ? groups[groupKey(id)] : cards[id]; }
+
   function chooseSides(from, to) {
     const fx = parseFloat(from.el.style.left) + parseFloat(from.el.style.width) / 2;
     const fy = parseFloat(from.el.style.top) + parseFloat(from.el.style.height) / 2;
@@ -517,7 +563,7 @@
   }
 
   function curveFor(link) {
-    const from = cards[link.from], to = cards[link.to];
+    const from = endpointNode(link.from), to = endpointNode(link.to);
     const [s1, s2] = chooseSides(from, to);
     const p1 = anchorPoint(from, s1), p2 = anchorPoint(to, s2);
     const dist = Math.min(150, Math.max(48, Math.hypot(p2.x - p1.x, p2.y - p1.y) * 0.36));
@@ -538,7 +584,7 @@
     document.querySelectorAll('.port.is-connected').forEach((port) => port.classList.remove('is-connected'));
     const defs = linksSvg.querySelector('defs');
     links.forEach((link, index) => {
-      const from = cards[link.from], to = cards[link.to];
+      const from = endpointNode(link.from), to = endpointNode(link.to);
       if (from && to) {
         const [fromSide, toSide] = chooseSides(from, to);
         from.el.querySelector('.port.' + fromSide)?.classList.add('is-connected');
@@ -618,8 +664,9 @@
   function startConnection(id, side, event) {
     event.preventDefault();
     event.stopPropagation();
+    const from = endpointNode(id);
+    if (!from) return;
     selectCard(id);
-    const from = cards[id];
     const p = anchorPoint(from, side);
     connecting = { id, side, from, start: p };
     from.el.classList.add('connecting');
@@ -633,9 +680,10 @@
       draft.setAttribute('d', 'M' + p.x + ' ' + p.y + ' C' + (p.x + (x - p.x) * .3) + ' ' + (p.y + p.ny * 40) + ' ' + (x - (x - p.x) * .3) + ' ' + (y + 20) + ' ' + x + ' ' + y);
     };
     const up = (upEvent) => {
-      const target = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('.card');
-      if (target && target.dataset.id !== id) {
-        links.push({ from: id, to: target.dataset.id, label: '关联', bend: { x: 0, y: 0 } });
+      const targetEl = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('.card, .group');
+      if (targetEl) {
+        const targetId = targetEl.dataset.groupId ? 'group:' + targetEl.dataset.groupId : targetEl.dataset.id;
+        if (targetId && targetId !== id) links.push({ from: id, to: targetId, label: '关联', bend: { x: 0, y: 0 } });
         drawLinks();
         say('已建立关系');
       }
@@ -680,11 +728,13 @@
   });
 
   // 初始卡片
+  makeGroup({ id: 'g1', title: '材料组', members: ['材料 A', '材料 B'], x: 980, y: 38, w: 340, h: 190 });
   makeCard({ id: 'a', kind: '文字注释', title: '比较两份方案', body: '成本、交付周期与风险。卡片上只保留参与状态。', meta: '今天 15:04', x: 60, y: 92, w: 440, h: 260 });
   makeCard({ id: 'b', kind: '文字注释', title: '参考资料', body: '交互设计记录。点击卡片看左侧工具栏；拖动右下角边框改变长宽。', meta: '今天 15:08', x: 590, y: 70, w: 270, h: 370 });
   makeCard({ id: 'c', kind: '结果', title: '整理结果', body: '关联依据与最终成果，保留清晰的阅读顺序。', meta: '今天 15:10', x: 940, y: 330, w: 300, h: 180 });
   links.push({ from: 'a', to: 'b', label: '参考依据', bend: { x: 0, y: -24 } });
   links.push({ from: 'b', to: 'c', label: '整理为', bend: { x: 14, y: 0 } });
+  links.push({ from: 'c', to: 'group:g1', label: '归入组', bend: { x: 18, y: 0 } });
   drawLinks();
   selectCard('a');
 })();
