@@ -91,6 +91,39 @@ def _normalize_operations(value: Any) -> list[str]:
     return operations
 
 
+def _resolve_program_binding(name: str) -> dict | None:
+    """把程序名称稳定绑定到保存时的真实程序对象（路径 + 文件身份）。
+
+    R9-H9 §3：查找环境只提供候选事实；绑定在保存限制时固化，执行时不再用
+    当前 PATH 重解析，避免同名程序随 PATH 顺序自动转移禁止对象。
+    """
+    import os
+    import shutil
+
+    try:
+        found = shutil.which(name)
+    except Exception:  # noqa: BLE001 - 查找失败按未绑定处理
+        found = None
+    if not found:
+        return None
+    try:
+        from agent.services.file_identity import identity_of
+        from pathlib import Path
+
+        resolved = os.path.realpath(found)
+        identity = identity_of(Path(resolved))
+        if identity is None:
+            return None
+        return {
+            "path": resolved,
+            "identity": identity.key,
+            "birth_key": identity.birth_key,
+            "source": "path_lookup",
+        }
+    except Exception:  # noqa: BLE001 - 身份不可读按未绑定（执行时按 A 状态处理）
+        return None
+
+
 def _normalize_objects(value: Any) -> list[dict]:
     if value is None:
         return []
@@ -119,9 +152,25 @@ def _normalize_objects(value: Any) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        # 类型已转成明确的 program_name；不额外写回 legacy_kind，避免
-        # 规范化/反序列化产生两个形状（来源由升级转换本身说明）。
-        objects.append({"kind": kind, "value": text})
+        entry = {"kind": kind, "value": text}
+        if kind == "program_name":
+            binding = raw.get("program_binding")
+            clean_binding = None
+            if isinstance(binding, dict):
+                bound_path = _clean_text(binding.get("path"))
+                bound_identity = _clean_text(binding.get("identity"))
+                if bound_path and bound_identity:
+                    clean_binding = {
+                        "path": bound_path,
+                        "identity": bound_identity,
+                        "birth_key": _clean_text(binding.get("birth_key")) or None,
+                        "source": _clean_text(binding.get("source")) or "path_lookup",
+                    }
+            if clean_binding is None:
+                clean_binding = _resolve_program_binding(text)
+            if clean_binding is not None:
+                entry["program_binding"] = clean_binding
+        objects.append(entry)
         if len(objects) > MAX_OBJECTS_PER_LIMIT:
             raise ValueError("单个限制条目的对象数过多")
     return objects
@@ -221,6 +270,17 @@ def _entry_with(
     }
 
 
+def _entry_with_objects(
+    operations: Iterable[str], objects: Iterable[dict], reason: str
+) -> dict:
+    """保留对象原始字段（含 program_binding），避免精确解除时丢失稳定绑定。"""
+    return {
+        "operations": sorted({str(item) for item in operations}),
+        "objects": [dict(item) for item in objects],
+        "reason": reason,
+    }
+
+
 def remove_limits_precise(
     parent: Iterable[dict], removed: Iterable[dict]
 ) -> tuple[dict, ...]:
@@ -252,11 +312,12 @@ def remove_limits_precise(
         next_result: list[dict] = []
         for entry in result:
             e_ops = {str(item) for item in (entry.get("operations") or ())}
-            e_objs = {
-                (str(item.get("kind")), str(item.get("value")))
+            e_obj_map = {
+                (str(item.get("kind")), str(item.get("value"))): dict(item)
                 for item in (entry.get("objects") or ())
                 if isinstance(item, dict)
             }
+            e_objs = set(e_obj_map)
             e_ops_all = not e_ops
             e_objs_all = not e_objs
             # 交集是否存在（空维度=全部，不能用空集合表示"无交集"）
@@ -288,9 +349,15 @@ def remove_limits_precise(
             left_ops = (e_ops - hit_ops) if not e_ops_all else set()
             left_objs = (e_objs - hit_objs) if not e_objs_all else set()
             if left_ops:
-                next_result.append(_entry_with(left_ops, e_objs, reason))
+                next_result.append(
+                    _entry_with_objects(left_ops, e_obj_map.values(), reason)
+                )
             if left_objs:
-                next_result.append(_entry_with(e_ops, left_objs, reason))
+                next_result.append(
+                    _entry_with_objects(
+                        e_ops, [e_obj_map[key] for key in sorted(left_objs)], reason
+                    )
+                )
         if not touched:
             raise LimitRemovalAmbiguous(
                 "解除限制无法精确匹配已有条目（未指定到具体 operations/objects）"

@@ -919,6 +919,9 @@ def _check_directory_impact(expected: Any, path: str, ctx: ExecutionContext) -> 
 
     if not isinstance(expected, dict) or not expected:
         return "审批记录缺少目录影响依据：无法可靠比较，需重新确认"
+    # R9-H9 §1：完整性是独立执行前提，不能由“两次摘要相同”或三次确认豁免。
+    if expected.get("complete") is not True:
+        return "目录影响不完整（达到枚举上限或枚举失败）：本次未删除，需重新确认"
     protected = []
     engine = getattr(ctx, "engine", None)
     paths_fn = getattr(engine, "internal_data_paths", None)

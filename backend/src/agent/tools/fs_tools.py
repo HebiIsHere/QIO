@@ -2173,6 +2173,32 @@ class FsDeleteTool(_FsTool):
                         "entry_count": 0,
                         "digest": "",
                     }
+            # R9-H9 §1：完整性是独立执行前提。审批时目录影响不完整直接形成
+            # invalidated 子项，不创建可执行审批；A 等其他独立子项仍继续。
+            if is_directory and not bool(
+                (directory_impact_data or {}).get("complete", False)
+            ):
+                item = BatchItem(
+                    item_id=f"item_{index + 1}",
+                    effect=security_gate.make_effect(
+                        security_gate.EffectKind.DELETE,
+                        [security_gate.path_target(target, identity=identity_key, exists=exists)],
+                        purpose=f"删除目录：{target}",
+                        tool=self.name,
+                        detail={"action": "delete", "directory_incomplete": True},
+                    ),
+                    label=str(target),
+                    payload={"path": str(target), "action": "delete"},
+                    fingerprint={"path": str(target), "directory_incomplete": True},
+                    status=BATCH_STATUS_INVALIDATED,
+                    reason=(
+                        "目录影响不完整（达到枚举上限或枚举失败）：本次未删除，"
+                        "需缩小范围或重新确认"
+                    ),
+                    result={"ok": False, "code": "invalidated: directory_impact_incomplete"},
+                )
+                items.append(item)
+                continue
             item_content_sha = (
                 security_gate.content_sha256(target)
                 if exists and not is_directory and not probe_internal

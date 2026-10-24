@@ -54,6 +54,24 @@ from agent.security.modes import (
 
 logger = logging.getLogger(__name__)
 
+
+class EngineIdentity:
+    """程序/对象身份核对：路径字符串之外的真实文件对象身份。"""
+
+    @staticmethod
+    def of(path: object) -> tuple[str, str | None] | None:
+        try:
+            from agent.services.file_identity import identity_of
+
+            found = identity_of(Path(str(path)))
+            if found is None:
+                return None
+            return str(found.key), (
+                str(found.birth_key) if getattr(found, "birth_key", None) else None
+            )
+        except Exception:  # noqa: BLE001 - 身份不可读按不可核对（调用方不猜测）
+            return None
+
 _READ_ONLY_DENY = "只读模式下 QIO 不能修改业务文件"
 _NEEDS_APPROVAL = "受限模式下这类操作需要你确认后才会执行"
 
@@ -1403,12 +1421,13 @@ class AuthorizationEngine(AuthorizationGateway):
 
         # 1.5) 程序名称来源尚未绑定对象：不直接放行/拒绝；非只读模式进入
         # 具体确认/恢复；只读模式继续走原只读规则（程序执行仍拒绝）。
-        if mode != PermissionMode.READ_ONLY:
-            unresolved_program = self._program_name_unresolved(effect, requirement)
-            if unresolved_program:
-                # A 状态：明确存在名称禁止但对象尚未可靠绑定。普通批准不能解除；
-                # 必须先恢复/澄清对象，本次直接拒绝，避免用 approval 覆盖禁止。
-                return Verdict.DENY, unresolved_program, None
+        # R9-H9 §5：已知程序禁止在三种模式共同检查，放在固定查询/只读规则之前；
+        # 只读模式不能因固定查询绕过明确程序限制。
+        unresolved_program = self._program_name_unresolved(effect, requirement)
+        if unresolved_program:
+            # A 状态：明确存在名称禁止但对象尚未可靠绑定。普通批准不能解除；
+            # 必须先恢复/澄清对象，本次直接拒绝，避免用 approval 覆盖禁止。
+            return Verdict.DENY, unresolved_program, None
         protected = self._internal_paths()
         # 2) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
         #    注意：有效禁止已在上一步 DENY，内部数据确认不能绕过它。
@@ -1668,7 +1687,14 @@ class AuthorizationEngine(AuthorizationGateway):
         if effect.kind != EffectKind.EXECUTE or requirement is None:
             return None
         for raw in getattr(requirement, "structured_limits", ()) or ():
-            objects = raw.get("objects") if isinstance(raw, dict) else None
+            if not isinstance(raw, dict):
+                continue
+            operations = self._limit_operation_set(raw.get("operations"))
+            if operations and "execute" not in operations:
+                # 该条限制只约束 write/read/delete 等操作，不能被程序对象专用
+                # 分支扩大为执行限制。
+                continue
+            objects = raw.get("objects")
             for item in objects or ():
                 if not isinstance(item, dict):
                     continue
@@ -1709,26 +1735,24 @@ class AuthorizationEngine(AuthorizationGateway):
         import os as _os
 
         if str(item.get("kind") or "") == "program_name":
-            # R9-H8 §2：程序名称是来源，不是权限字符串。这里只做“真实对象解析”：
-            # 用平台程序解析把保存名称绑定到真实路径，再与本次解析目标按对象身份比较；
-            # 不比较 basename/名称主体，不用版本号/后缀猜测。
-            import shutil as _shutil
-
-            try:
-                bound = _shutil.which(right)
-            except Exception:  # noqa: BLE001 - 解析失败按未绑定处理
-                bound = None
-            if not bound:
+            # R9-H9 §3：程序名称只使用保存限制时固化的对象绑定；执行时不再按
+            # 当前 PATH 重新解析，避免同名程序随查找顺序自动转移禁止。
+            binding = item.get("program_binding")
+            if not isinstance(binding, dict):
                 return False
-            try:
-                left_real = _os.path.realpath(left)
-                bound_real = _os.path.realpath(bound)
-                if _os.name == "nt":
-                    left_real = _os.path.normcase(left_real)
-                    bound_real = _os.path.normcase(bound_real)
-                return left_real == bound_real
-            except (OSError, ValueError):
+            bound_path = str(binding.get("path") or "").strip()
+            bound_identity = str(binding.get("identity") or "").strip()
+            if not bound_path or not bound_identity:
                 return False
+            target = EngineIdentity.of(left)
+            if target is None:
+                return False
+            if target[0] != bound_identity:
+                return False
+            bound_birth = str(binding.get("birth_key") or "").strip()
+            if bound_birth and target[1] and target[1] != bound_birth:
+                return False
+            return True
 
         def _canonical(value: str) -> str:
             # 规范化 + 解析链接别名：同一目标的绝对路径/符号链接属于同一程序对象；
@@ -1738,7 +1762,23 @@ class AuthorizationEngine(AuthorizationGateway):
                 return _os.path.normcase(_os.path.normpath(resolved))
             return _os.path.normpath(resolved)
 
-        return _canonical(left) == _canonical(right)
+        if _canonical(left) == _canonical(right):
+            return True
+        # R9-H9 §2：字符串规范化不能覆盖硬链接。用文件身份核对同一真实对象；
+        # 同内容复制件身份不同，不能被合并。
+        left_identity = EngineIdentity.of(left)
+        right_identity = EngineIdentity.of(right)
+        if left_identity is None or right_identity is None:
+            return False
+        if left_identity[0] != right_identity[0]:
+            return False
+        if (
+            left_identity[1]
+            and right_identity[1]
+            and left_identity[1] != right_identity[1]
+        ):
+            return False
+        return True
 
     @staticmethod
     def _limit_service_matches(service_value: object, item: dict) -> bool:

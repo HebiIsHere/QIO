@@ -247,15 +247,13 @@ async def test_directory_impact_truncation_is_explicit(workspace: Path, monkeypa
         (directory / f"f{index}.txt").write_text(str(index), encoding="utf-8")
     gateway = RecordingGateway(verdicts={"delete": Verdict.APPROVE})
     tool = FsDeleteTool(computer=_sandbox(workspace), security=gateway)
-    await tool.run(paths=[str(directory)])
-    effect = gateway.effects[0]
-    detail = _detail(effect)
-    assert detail[fs_tools.LIMIT_IMPACTS_COMPLETE_KEY] is False
-    assert "上限" in str(detail[fs_tools.LIMIT_IMPACTS_REASON_KEY])
-    objects = _impact_map(effect)["delete"]
-    assert any(kind == "path_prefix" for kind, _ in objects), "不完整时必须有范围兜底对象"
-    operation = gateway.submitted[0]
-    assert operation.fingerprint["paths"][0]["limit_impacts_complete"] is False
+    result = await tool.run(paths=[str(directory)])
+    # R9-H9 §1：影响不完整的目录不能创建可执行审批；必须明确 invalidated。
+    assert result.ok is False
+    assert gateway.submitted == []
+    assert directory.exists()
+    items = {item["path"]: item["status"] for item in result.data.get("items") or []}
+    assert items[str(directory)] == "invalidated"
 
 
 def test_verify_directory_impact_detects_add_remove_replace_and_unchanged(
