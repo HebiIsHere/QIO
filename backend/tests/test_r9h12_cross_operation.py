@@ -161,6 +161,16 @@ def _install_read_spies(monkeypatch) -> list[str]:
     return sink
 
 
+def _sandbox(root: Path):
+    """旧接线用的 ComputerSandbox（真实路径解析/敏感路径判定）。"""
+    from agent.services.computer import ComputerSandbox
+
+    root.mkdir(parents=True, exist_ok=True)
+    return ComputerSandbox(
+        resolve_root=lambda: str(root), permission_mode=lambda: "unrestricted"
+    )
+
+
 def _fail_identity_for(monkeypatch, paths) -> set[str]:
     """【模拟】文件身份提供器边界：指定路径「存在但身份不可读」（返回 None）。
 
@@ -209,12 +219,22 @@ def _save_limits(ctx, *, text: str, operations, objects, tag: str):
     return requirement, ctx.requirements.binding_for(requirement.requirement_id)
 
 
+_STRUCTURED_CODES = (UNBOUND_CODE, INVALID_CODE, UNKNOWN_CODE)
+
+
 def _decision_code(result) -> str | None:
+    """结构化决策码：顶层 data.decision_code，或批量结果里逐项的 code。"""
     data = getattr(result, "data", None) or {}
-    code = data.get("decision_code")
-    if code:
-        return str(code)
-    return None
+    code = str(data.get("decision_code") or "")
+    if code in _STRUCTURED_CODES:
+        return code
+    for item in data.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        candidate = str(item.get("decision_code") or item.get("code") or "")
+        if candidate in _STRUCTURED_CODES:
+            return candidate
+    return code or None
 
 
 def _states(result) -> list[str]:
@@ -255,22 +275,32 @@ async def _approval_request(ctx, tool, **kwargs) -> str:
 
 
 def _spy_limit_conflict_result(monkeypatch) -> list[dict]:
-    """记录适配层每次消费 assessment 的结论（读/写/删/执行共用同一入口）。"""
+    """记录每次消费 assessment 的结论（适配层入口 + 引擎内部同一判定）。
+
+    * 适配层：security_gate.limit_conflict_result（工具读/写/删/执行前）；
+    * 引擎内部：AuthorizationEngine.assess_limit_conflict（批量删除经
+      authorize_item → engine.authorize 的同一判定；结论必须一致）。
+    """
+    from agent.security.engine import AuthorizationEngine
+
     calls: list[dict] = []
     real = security_gate.limit_conflict_result
+    real_assess = AuthorizationEngine.assess_limit_conflict
+
+    def _kind(effect) -> str:
+        return str(
+            getattr(
+                getattr(effect, "kind", None), "value", getattr(effect, "kind", "")
+            )
+        )
 
     def spy(gateway, effect, **kwargs):
         result = real(gateway, effect, **kwargs)
         data = dict(getattr(result, "data", None) or {}) if result is not None else {}
         calls.append(
             {
-                "effect_kind": str(
-                    getattr(
-                        getattr(effect, "kind", None),
-                        "value",
-                        getattr(effect, "kind", ""),
-                    )
-                ),
+                "source": "adapter",
+                "effect_kind": _kind(effect),
                 "denied": result is not None,
                 "code": str(getattr(result, "code", "") or "") if result is not None else "",
                 "decision_code": str(data.get("decision_code") or ""),
@@ -283,8 +313,99 @@ def _spy_limit_conflict_result(monkeypatch) -> list[dict]:
         )
         return result
 
+    def spy_assess(self, effect, requirement=None, *, extra_limits=()):
+        raw = real_assess(self, effect, requirement, extra_limits=extra_limits)
+        calls.append(
+            {
+                "source": "engine",
+                "effect_kind": _kind(effect),
+                "denied": bool(getattr(raw, "conflict", False)),
+                "code": "",
+                "decision_code": str(getattr(raw, "decision_code", "") or ""),
+                "states": [
+                    str(getattr(item.state, "value", item.state))
+                    for item in (getattr(raw, "decisions", ()) or ())
+                ],
+            }
+        )
+        return raw
+
     monkeypatch.setattr(security_gate, "limit_conflict_result", spy)
+    monkeypatch.setattr(
+        AuthorizationEngine, "assess_limit_conflict", spy_assess
+    )
     return calls
+
+
+# --------------------------------------------------------------------------
+# 适配层消费 assessment 的边界（真实工具；冻结接口异常/空返回 → 失败关闭）
+# --------------------------------------------------------------------------
+
+
+class _NoneAssessmentGateway:
+    """冻结接口返回 None（网关缺陷/半接线）：不得被当成「没有限制」。"""
+
+    def mode(self):
+        return "unrestricted"
+
+    async def authorize(self, effect, *, ctx=None):  # pragma: no cover - 不应到达
+        raise AssertionError("assessment 返回 None 时必须失败关闭，不得进入普通授权")
+
+    def assess_limit_conflict(self, effect, requirement=None, *, extra_limits=()):
+        return None
+
+
+async def test_none_assessment_fails_closed_zero_reads(tmp_path, monkeypatch):
+    """assess_limit_conflict 返回 None → 失败关闭（0 读取），不是默认放行。"""
+    root = tmp_path / "workspace"
+    root.mkdir()
+    target = root / "note.txt"
+    target.write_text("正文", encoding="utf-8")
+    reads = _install_read_spies(monkeypatch)
+    tool = FsReadTool(computer=_sandbox(root), security=_NoneAssessmentGateway())
+    result = await tool.run(path=str(target))
+    assert result.ok is False, result
+    assert _decision_code(result) == UNKNOWN_CODE, result
+    assert reads == []
+    # 写/删同样不得在被破坏的 assessment 下继续（同一结论）。
+    write_result = await FsWriteTool(
+        computer=_sandbox(root), security=_NoneAssessmentGateway()
+    ).run(path=str(target), content="改写")
+    assert write_result.ok is False and _decision_code(write_result) == UNKNOWN_CODE
+    delete_result = await FsDeleteTool(
+        computer=_sandbox(root), security=_NoneAssessmentGateway()
+    ).run(paths=[str(target)])
+    assert delete_result.ok is False and _decision_code(delete_result) == UNKNOWN_CODE
+    assert target.read_text(encoding="utf-8") == "正文"
+
+
+async def test_patch_denied_before_reading_body_when_identity_unreadable(
+    ctx, tmp_path, monkeypatch
+):
+    """补丁前置内容：限制路径身份不可读（模拟）→ 补丁在读正文前被拒（0 读取）。"""
+    source = _text_program(tmp_path / "patch-src", "prog", "old-value\n")
+    alias = _hardlink(
+        source,
+        tmp_path / "patch-alias" / ("alias.exe" if os.name == "nt" else "alias"),
+    )
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    requirement, binding = _save_limits(
+        ctx,
+        text="禁止读取这个程序文件",
+        operations=["read"],
+        objects=[{"kind": "path", "value": str(source)}],
+        tag="patch-read",
+    )
+    _fail_identity_for(monkeypatch, [source])
+    reads = _install_read_spies(monkeypatch)
+    with requirement_context(binding):
+        result = await FsPatchTool(
+            computer=ctx.computer, security=ctx.authorization
+        ).run(path=str(alias), old="old-value", new="new-value")
+    assert result.ok is False, result
+    assert _decision_code(result) == UNKNOWN_CODE, result
+    assert reads == [], "补丁不得先读正文再拒绝"
+    assert source.read_text(encoding="utf-8") == "old-value\n"
 
 
 # --------------------------------------------------------------------------
@@ -609,13 +730,14 @@ async def test_p2_service_recovery_does_not_bind_current_path_target(
         "恢复不得用当前 PATH 查找结果把历史限制静默绑定到 B："
         + json.dumps(object_state, ensure_ascii=False, default=str)
     )
-    # 恢复若真正采纳对象，只能是后端核验过的保存候选 A。
+    # 恢复若真正采纳对象，只能是后端核验过的保存候选 A（saved_candidate_verified）。
     if bound_path:
         assert bound_path == str(a), object_state
-        assert str(object_state.get("binding_state")) == "bound", object_state
+        assert "saved_candidate" in str(bound.get("source") or ""), bound
+        assert str(object_state.get("binding_state") or "") != "unresolved", object_state
     # 无论是否采纳：原限制不得被清空（保留 reason/operations），A 仍受保护。
-    assert after.structured_limits and after.structured_limits[0].get("reason") or True
     kept = after.structured_limits[0]
+    assert str(kept.get("reason") or "").strip(), kept
     assert list(kept.get("operations") or []) == ["read"], kept
     reads = _install_read_spies(monkeypatch)
     tool = FsReadTool(computer=ctx.computer, security=ctx.authorization)
@@ -658,7 +780,9 @@ async def test_p2_recovery_keeps_unverified_saved_candidate_unbound(
     with requirement_context(binding):
         result = await tool.run(path=str(a))
     assert result.ok is False, result
-    assert _decision_code(result) == UNKNOWN_CODE, result
+    # 候选路径就是保存候选 A：这是「需恢复的绑定缺失」UNBOUND（不是无关、也不是可放行）。
+    assert _decision_code(result) == UNBOUND_CODE, result
+    assert "unbound" in _states(result), _states(result)
     assert reads == [], "不可读候选的读取必须失败关闭且零读取"
 
 
@@ -973,9 +1097,11 @@ async def test_recheck_consumes_same_assessment_for_execute(
 async def test_all_entry_kinds_reach_the_same_match_conclusion(
     ctx, tmp_path, monkeypatch
 ):
-    """同一对象 MATCH 限制：read/write/delete/execute 消费同一个 assessment 结论。"""
+    """同一对象 MATCH 限制：read/write/delete/execute 四个入口消费同一 assessment 结论。"""
     target = _text_program(tmp_path / "all-entries", "prog", "原始正文\n")
     ctx.settings_store.set("computer.permission_mode", "unrestricted")
+
+    # 1) 读/写/执行同一条限制：读先于写（写入口的读取探测也要 0 读取）。
     requirement = ctx.requirements.record_user_message(
         text="禁止读取、修改或运行这个程序文件",
         message_id="m-all",
@@ -1013,9 +1139,7 @@ async def test_all_entry_kinds_reach_the_same_match_conclusion(
     # （审查/审批/执行前重核对共用）；这里按契约 §5 的「程序 0 次启动」验收，
     # 并额外要求它没有读取/打开任何文件正文（只有程序摘要 sha256 允许）。
     body_reads = [
-        item
-        for item in reads
-        if item.startswith(("open:", "read_bytes:", "read_text:"))
+        item for item in reads if item.startswith(("open:", "read_bytes:", "read_text:"))
     ]
     with requirement_context(binding):
         results["execute"] = await RunProgramTool(
@@ -1026,14 +1150,39 @@ async def test_all_entry_kinds_reach_the_same_match_conclusion(
     assert launches == [], "MATCH 判定命中时不得启动任何程序"
     assert body_reads == [], "被拒入口不得读取任何文件正文"
     assert target.exists()
-    for kind in ("read", "write", "execute"):
-        denied = [
-            item
-            for item in calls
-            if item["effect_kind"] == kind and item["denied"]
-        ]
-        assert denied, (kind, calls)
-    # 删除单独一条 delete 限制（读取探测对该条目属操作范围外的可靠无关）。
+    read_denied = [
+        item for item in calls if item["effect_kind"] == "read" and item["denied"]
+    ]
+    execute_denied = [
+        item for item in calls if item["effect_kind"] == "execute" and item["denied"]
+    ]
+    assert read_denied and execute_denied, calls
+    assert any("match" in item["states"] for item in read_denied), read_denied
+    assert any("match" in item["states"] for item in execute_denied), execute_denied
+
+    # 2) 只写限制：写入口在读取探测（操作范围外）之后仍必须按写判定 MATCH 拒绝。
+    write_requirement, write_binding = _save_limits(
+        ctx,
+        text="禁止修改这个程序文件",
+        operations=["write"],
+        objects=[{"kind": "path", "value": str(target)}],
+        tag="all-write",
+    )
+    write_calls = _spy_limit_conflict_result(monkeypatch)
+    with requirement_context(write_binding):
+        write_result = await FsWriteTool(
+            computer=ctx.computer, security=ctx.authorization
+        ).run(path=str(target), content="被改写\n")
+    assert write_result.ok is False, write_result
+    write_denied = [
+        item
+        for item in write_calls
+        if item["effect_kind"] == "write" and item["denied"]
+    ]
+    assert write_denied and any("match" in item["states"] for item in write_denied)
+    assert target.read_text(encoding="utf-8") == "原始正文\n"
+
+    # 3) 只删限制：删除入口（读取探测属操作范围外的可靠无关）→ 删除判定 MATCH。
     del_requirement, del_binding = _save_limits(
         ctx,
         text="禁止删除这个程序文件",
@@ -1047,6 +1196,7 @@ async def test_all_entry_kinds_reach_the_same_match_conclusion(
             computer=ctx.computer, security=ctx.authorization
         ).run(paths=[str(target)])
     assert delete_result.ok is False, delete_result
+    # 删除走批量逐项 authorize：判定由引擎内部同一 assess_limit_conflict 完成。
     delete_denied = [
         item for item in del_calls if item["effect_kind"] == "delete" and item["denied"]
     ]

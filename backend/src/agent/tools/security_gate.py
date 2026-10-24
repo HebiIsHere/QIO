@@ -268,6 +268,12 @@ def assess_limits(
             return _fail_closed_assessment(
                 "对象判定失败（无法确认限制对象）：为避免越权，本次没有执行"
             )
+        if raw is None:
+            # 冻结接口存在却拿不到 assessment（网关缺陷/半接线）：不能当成
+            # “没有限制”放行；契约要求判定失败一律失败关闭。
+            return _fail_closed_assessment(
+                "对象判定没有返回结论（无法确认限制对象）：为避免越权，本次没有执行"
+            )
         return _view_from_assessment(raw)
     legacy = getattr(gateway, "_limit_conflict", None)
     if callable(legacy):
