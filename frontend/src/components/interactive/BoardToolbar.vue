@@ -29,6 +29,8 @@ const props = withDefaults(
   defineProps<{
     /** 侧边书签栏是否展开（纯查看状态；由页面壳持有）。 */
     bookmarksOpen?: boolean;
+    /** 嵌入悬浮对话卡时取消板面绝对定位，由对话卡布局接管。 */
+    floating?: boolean;
   }>(),
   { bookmarksOpen: false },
 );
@@ -112,6 +114,7 @@ function toggleSearch(): void {
   <div
     ref="root"
     class="board-toolbar"
+    :class="{ 'is-floating': floating }"
     data-im="board-toolbar"
     :data-tb-band="band"
     :data-tb-available="availableWidth ? Math.round(availableWidth) : undefined"

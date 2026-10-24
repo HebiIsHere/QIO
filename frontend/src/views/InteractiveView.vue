@@ -291,11 +291,39 @@ const boardSize = computed(() => {
             </div>
           </div>
 
-          <!-- 旧浮层仍是板面舞台的绝对定位子层；Phase 2/3 再迁入 workspace 的 toolbar/chat 槽。 -->
-          <BoardToolbar
-            :bookmarks-open="bookmarksOpen"
-            @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
-          />
+          <!-- 悬浮对话：板面保持完整高度；工具栏与输入区固定在对话卡底部，消息向上展开。 -->
+          <div class="im-floating-chat" data-im="floating-chat">
+            <div class="im-composer-row">
+              <ConversationModeSwitch class="im-mode-switch" />
+              <div class="im-conversation-slot">
+                <SaveFailureBanner />
+                <InteractiveConversation
+                  v-model:expanded="store.chatOpen"
+                  :binding="store.chatBinding"
+                  :max-height="conversationMaxHeight"
+                  :auto-collapse-on-board-action="true"
+                  :extra-entries="recoveryEntries"
+                >
+                  <template #toolbar>
+                    <BoardToolbar
+                      floating
+                      :bookmarks-open="bookmarksOpen"
+                      @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
+                    />
+                  </template>
+                  <template #extra-panel="{ id }">
+                    <RecoveryPanel
+                      v-if="id === 'recovery'"
+                      :board-id="store.board?.boardId ?? ''"
+                      :active="store.chatOpen"
+                      @updated="recoveryPanelCount = $event"
+                    />
+                  </template>
+                </InteractiveConversation>
+              </div>
+            </div>
+          </div>
+
           <!-- 新链有 IntentView 时由 IntentLayer 接管；旧托盘只服务于旧链兼容记录。 -->
           <IntentStatusPopover v-if="!intentViews.length" />
           <IntentBatchTray v-if="!intentViews.length" />
@@ -319,31 +347,6 @@ const boardSize = computed(() => {
         <InteractiveBookmarks @close="bookmarksOpen = false" />
       </template>
 
-      <!-- 底部互动对话：输入区在下，会话流向上展开；复用对话页的会话与五入口。 -->
-      <template #composer>
-        <div class="im-composer-row">
-          <ConversationModeSwitch class="im-mode-switch" />
-          <div class="im-conversation-slot">
-            <SaveFailureBanner />
-            <InteractiveConversation
-              v-model:expanded="store.chatOpen"
-              :binding="store.chatBinding"
-              :max-height="conversationMaxHeight"
-              :auto-collapse-on-board-action="true"
-              :extra-entries="recoveryEntries"
-            >
-              <template #extra-panel="{ id }">
-                <RecoveryPanel
-                  v-if="id === 'recovery'"
-                  :board-id="store.board?.boardId ?? ''"
-                  :active="store.chatOpen"
-                  @updated="recoveryPanelCount = $event"
-                />
-              </template>
-            </InteractiveConversation>
-          </div>
-        </div>
-      </template>
     </InteractiveWorkspace>
   </div>
 </template>
@@ -358,6 +361,41 @@ const boardSize = computed(() => {
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--sans);
+}
+/* 悬浮在板面上的对话：板面不被压缩；只有对话卡与工具栏接收指针。 */
+.im-floating-chat {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  /* 浮在板面卡片工具栏之上；审批对话框仍由统一层/Teleport 处理。 */
+  z-index: var(--im-z-dialog);
+  width: min(calc(100% - 24px), 980px);
+  min-width: 0;
+  pointer-events: none;
+}
+.im-floating-chat > .im-composer-row {
+  pointer-events: auto;
+}
+.im-floating-chat :deep(.ic) {
+  padding: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--bg-elevated) 94%, transparent);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(10px);
+}
+.im-floating-chat :deep(.ic-stream) {
+  background: var(--bg-base);
+}
+.im-floating-chat :deep(.ic-toolbar) {
+  max-width: none;
+}
+@media (max-width: 700px) {
+  .im-floating-chat {
+    bottom: 8px;
+    width: calc(100% - 12px);
+  }
 }
 /* 板面槽内舞台：现有 BoardCanvas / ChatDock / BoardToolbar 的定位祖先。 */
 .im-composer-row {

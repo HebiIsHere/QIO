@@ -354,6 +354,11 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
         </ComposerEntries>
       </div>
 
+      <!-- 板面工具栏：固定在输入区上方；对话展开时消息在它上方增长，它和输入区不动。 -->
+      <div class="ic-toolbar" data-ic-toolbar>
+        <slot name="toolbar" />
+      </div>
+
       <!-- 输入区：始终挂载；收起只改变可见区域，不清草稿 / 附件 / 排队，也不停止回复 -->
       <div class="ic-composer">
         <Composer :chat-binding="sendBinding">
@@ -483,6 +488,13 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   max-width: 860px;
   margin: 0 auto;
   min-width: 0;
+}
+
+.ic-toolbar {
+  min-width: 0;
+  max-width: 860px;
+  margin: 0 auto var(--sp-2);
+  width: 100%;
 }
 .ic-composer {
   max-width: 860px;
