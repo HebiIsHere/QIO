@@ -7,8 +7,8 @@
  *   取消有序 / 合并组 / 删除所选」常驻在工具栏上，下面第一条用例会直接判它不通过）；
  * - 分组类操作跟着**所选对象**出现（SelectionMenu，由所选里的最后一张卡片渲染），
  *   多选只显示共同可用的操作；
- * - 卡片局部工具栏只放这张卡片自己的操作（编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选），
- *   不再出现「加入组 / 移出组」；
+ * - 卡片局部工具栏只放这张卡片自己的操作（编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除），
+ *   不再出现「加入组 / 移出组」；整卡许可勾选 / 说明已移除；
  * - 视图控制读写 store.boardMode（画布共用这一份状态）；
  * - 板内搜索是浮层：输入框 data-im="search"，点结果 dispatch qio:interactive:locate-card；
  * - 撤销 / 重做跟随 store.canUndo / canRedo。
@@ -210,9 +210,13 @@ describe("选中对象附近的整理菜单（SelectionMenu）", () => {
     const wrapper = mountCard(seed.cards[0].id);
 
     const toolbar = wrapper.get('[data-im="card-toolbar"]');
-    for (const hook of ["check", "card-edit", "card-duplicate", "card-fold", "delete-card"]) {
+    for (const hook of ["card-edit", "card-duplicate", "card-fold", "delete-card"]) {
       expect(toolbar.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
+    // 整卡许可 UI 已移除：工具栏里不再有勾选框与许可「说明」
+    expect(toolbar.find('[data-im="check"]').exists()).toBe(false);
+    expect(toolbar.find(".check").exists()).toBe(false);
+    expect(toolbar.find('[data-im="check-detail-text"]').exists()).toBe(false);
     // 反例（旧实现会挂）：加入组 / 移出组 曾经在卡片工具栏里
     expect(toolbar.text()).not.toContain("移出组");
     expect(toolbar.find("select").exists()).toBe(false);

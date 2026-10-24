@@ -156,8 +156,9 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.get('[data-im="card-body"]').text()).toContain("第一段正文。");
     expect(w.find('[data-im="card-block-code"]').exists()).toBe(true);
     expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
-    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
+    // 整卡许可 UI 已移除：卡片上不再有许可徽章，只保留参与 / 不参与
+    expect(w.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(w.get('[data-im="card-participation"]').text()).toBe("不参与");
 
     // 既不渲染编辑器，也不渲染预览挂载点
     expect(w.find('[data-im="card-editor"]').exists()).toBe(false);
@@ -259,9 +260,9 @@ describe("最小尺寸 180×96：标题 / 主要操作 / 必要状态 / 内容�
 
     // 标题 + 必要状态
     expect(w.find('[data-im="card-title"]').exists()).toBe(true);
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
+    // 整卡许可 UI 已移除：窄矮卡片上也不再有许可徽章，参与控件仍在
+    expect(w.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(w.get('[data-im="card-participation"]').text()).toBe("不参与");
     // 让位的是次级信息：材料类型标签与更新时间
     expect(w.find('[data-im="card-head"] .kind').exists()).toBe(false);
     expect(w.find('[data-im="card-meta"] .time').exists()).toBe(false);
@@ -346,30 +347,27 @@ describe("规则层守卫：高度预算与横向滚动（jsdom 没有真实排�
   });
 });
 
-describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：元信息层不再重复许可文案）", () => {
-  it("未选中也能辨认「未允许查看 / 允许 QIO 查看」", () => {
+describe("整卡许可 UI 已移除：卡片只保留参与 / 不参与", () => {
+  it("无论是否选中都不再出现许可徽章，参与控件仍可辨认", () => {
     const off = mountBoard(textCard(), { selected: false });
     expect(off.find('[data-im="card-toolbar"]').exists()).toBe(false);
-    expect(off.get('[data-im="card-license"]').attributes("data-checked")).toBe("0");
-    expect(off.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    // 2026-10-14：元信息层不再重复许可文案（card-license 已在上面核对）
+    expect(off.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(off.get('[data-im="card-participation"]').text()).toBe("不参与");
     off.unmount();
 
     const on = mountBoard(textCard({ checked: true }), { selected: false });
-    expect(on.get('[data-im="card-license"]').attributes("data-checked")).toBe("1");
-    expect(on.get('[data-im="card-license"]').text()).toBe("允许 QIO 查看");
-    // 2026-10-14：同上，许可状态由 card-license 承载
+    expect(on.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(on.get('[data-im="card-participation"]').text()).toBe("参与");
   });
 
-  it("勾选 / 取消只改 checked：不碰 hidden / deleted，也不改内容", async () => {
+  it("参与切换仍走既有 toggle 事件，不产生 patch", async () => {
     const w = mountBoard(textCard());
-    await w.get('[data-im="check"]').trigger("change");
+    expect(w.find('[data-im="check"]').exists()).toBe(false);
+    await w.get('[data-im="card-participation"]').trigger("click");
 
-    expect(w.emitted("toggle")).toEqual([["c1", "checked"]]);
+    expect(w.emitted("toggle")).toEqual([["c1", "participation"]]);
     expect(w.emitted("patch")).toBeUndefined();
     expect(w.emitted("remove")).toBeUndefined();
-    expect(w.emitted("duplicate")).toBeUndefined();
-    expect(w.emitted("drag-start")).toBeUndefined();
   });
 
   it("查看 / 自动阅读 / 编辑都不改许可：未许可的卡片不会因为「被看过」就变成可提交", async () => {
@@ -384,17 +382,17 @@ describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：�
     expect(isVisibleCard(card), "未许可的内容不该进入提交范围").toBe(false);
   });
 
-  it("勾选框只留短文案；完整规则放在可达的「说明」详情里（默认收起）", () => {
+  it("工具栏里不再有勾选框、许可短文案与「说明」详情", () => {
     const w = mountBoard(textCard());
-    const check = w.get('[data-im="card-toolbar"] .check');
-    expect(check.get(".check-label").text()).toBe("允许 QIO 查看");
-    // 完整说明仍在同一处，点开「说明」就能读到（收起 ≠ 删掉）
-    expect(check.text()).toContain("许可：允许 QIO 查看这张卡");
-    expect(check.text()).toContain("只有你手动取消才失效");
-    expect(check.text()).toContain("覆盖卡里的全部文字、代码与链接");
-    const details = check.get("details.check-detail");
-    expect(details.attributes("open"), "完整说明默认收起").toBeUndefined();
-    expect(details.find("summary").text()).toBe("说明");
+    const toolbar = w.get('[data-im="card-toolbar"]');
+    expect(toolbar.find('[data-im="check"]').exists()).toBe(false);
+    expect(toolbar.find(".check").exists()).toBe(false);
+    expect(toolbar.find(".check-label").exists()).toBe(false);
+    expect(toolbar.find(".check-detail").exists()).toBe(false);
+    expect(toolbar.find('[data-im="check-detail-text"]').exists()).toBe(false);
+    expect(toolbar.text()).not.toContain("允许 QIO 查看");
+    // 参与仍存在，并且是头部唯一与许可相关的控件
+    expect(w.get('[data-im="card-participation"]').text()).toBe("不参与");
   });
 
   it("隐藏与删除都不进提交载荷相关视图（卡片仍然如实说自己被隐藏）", () => {

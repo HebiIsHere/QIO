@@ -230,7 +230,7 @@ describe("BoardCanvas 接线", () => {
     wrapper.unmount();
   });
 
-  it("选中卡片后浮出局部工具栏：勾选框只在文字注释上（材料没有），连接点出现", async () => {
+  it("选中卡片后浮出局部工具栏：许可勾选框已移除，连接点出现", async () => {
     setBoard(
       board.addCard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "一条注释" }), {
         kind: "file",
@@ -250,25 +250,24 @@ describe("BoardCanvas 接线", () => {
     // 选中才出现：工具栏与连接点
     const toolbar = wrapper.get('[data-im="card-toolbar"]');
     expect(toolbar.attributes("data-card-id")).toBe(textId);
-    expect(toolbar.find('[data-im="check"]').exists()).toBe(true);
+    // 整卡许可 UI 已移除：文字注释上不再有勾选框与说明
+    expect(toolbar.find('[data-im="check"]').exists()).toBe(false);
+    expect(toolbar.find('[data-im="check-detail-text"]').exists()).toBe(false);
     expect(wrapper.findAll('[data-im="connect-point"]').length).toBeGreaterThanOrEqual(4);
     expect(wrapper.get('[data-im="connect-point"]').attributes("data-card-id")).toBe(textId);
     // 工具栏里有编辑 / 复制 / 删除 / 折叠
     for (const hook of ["card-edit", "card-duplicate", "delete-card", "card-fold"]) {
       expect(toolbar.find('[data-im="' + hook + '"]').exists()).toBe(true);
     }
-    // 契约 §2.3：文案改成「许可」口径（提交后仍然有效，只有手动取消才失效）；
-    // 2026-10-14：卡片元信息层不再渲染许可文案（用户要求删除），
-    // 许可状态由工具栏勾选框与「说明」承载
-    expect(toolbar.find('[data-im="check"]').exists()).toBe(true);
+    // 参与控件仍在卡片头部：选中与未选中都不依赖工具栏
+    expect(wrapper.find('[data-im="card-participation"]').exists()).toBe(true);
 
-    // 选中材料卡片：工具栏里没有勾选框
+    // 选中材料卡片：工具栏同样没有勾选框
     wrapper.findAll('[data-im="card"]').find((item) => item.attributes("data-card-id") === fileId)!.element.dispatchEvent(pointer("pointerdown", 60, 30));
     await wrapper.vm.$nextTick();
     const fileToolbar = wrapper.get('[data-im="card-toolbar"]');
     expect(fileToolbar.attributes("data-card-id")).toBe(fileId);
     expect(fileToolbar.find('[data-im="check"]').exists()).toBe(false);
-    // 2026-10-14：用户要求删除材料卡的说明文案；工具栏仍然只放操作（上面已断言没有勾选框）
     wrapper.unmount();
   });
 
@@ -289,14 +288,13 @@ describe("BoardCanvas 接线", () => {
     wrapper.unmount();
   });
 
-  it("勾选文字注释走 commit，并且许可后不再是「未许可」", async () => {
+  it("许可勾选入口已移除：卡面不再有勾选框，参与控件仍在", () => {
     setBoard({ ...board.emptyState("board_t"), cards: [mkCard("a", 0, 0, { content: "一条注释" })], selection: ["a"] });
     const wrapper = mountCanvas();
-    await wrapper.get('[data-im="check"]').trigger("change");
-    expect(labels[0]).toContain("勾选");
-    expect(store.board?.cards[0].checked).toBe(true);
-    // 2026-10-14：卡片元信息层不再渲染许可文案；勾选状态由 store 与工具栏勾选框承载
-    expect(wrapper.get('[data-im="check"]').attributes("checked")).toBeDefined();
+    expect(wrapper.find('[data-im="check"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="check-detail-text"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(wrapper.get('[data-im="card-participation"]').text()).toBe("不参与");
     wrapper.unmount();
   });
 

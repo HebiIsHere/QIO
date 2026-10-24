@@ -4,11 +4,10 @@
   契约：docs/interactive-mode-contract.md §1.1 / §1.4 / §9.6。
   这里落地的规则：
   - 信息分层：**材料类型 → 标题 → 正文 → 元信息**（元信息含状态文字、所在组、更新时间）；
-  - 勾选框出现在**需要用户许可才交给 QIO 查看**的卡片上（文字卡与结果卡都用这一条，
-    由 CHECKABLE_KINDS 决定），而且放在「选中后才浮出的局部工具栏」里；
-    材料默认就在 QIO 可查看范围内，没有这个选择框；
+  - 卡片上的许可相关控件只保留「参与 / 不参与」；整卡许可徽章与工具栏勾选 / 说明
+    （「允许 QIO 查看」）已移除，不再在卡片上展示或修改 checked；
   - 局部工具栏（data-im="card-toolbar"）只放**这张卡片自己的操作**
-    （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选）；分组类操作在 SelectionMenu 里；
+    （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除）；分组类操作在 SelectionMenu 里；
   - **连接点不在卡片里**（0.2.5 回归修复）：它由 BoardCanvas 的交互层（BoardResizeLayer）
     统一渲染 —— 画在卡片内部时，四边中点正好被那一层 10px 的尺寸热区盖住，真实鼠标按不下去。
     本组件只保留「正在拖线」的 prop 接线（connecting）；工具栏与整理菜单仍朝卡片外侧展开，
@@ -26,7 +25,7 @@ import {
   restoreCardDraftInput,
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
-import { CARD_KIND_LABELS, CHECKABLE_KINDS, defaultCardSeed, participationOf } from "../../interactive/board";
+import { CARD_KIND_LABELS, defaultCardSeed, participationOf } from "../../interactive/board";
 import { shouldAutoDetail, shouldShowImageDetailFallback } from "../../interactive/cardDetail";
 import {
   cardDocFields,
@@ -43,7 +42,7 @@ import {
   cardAttachmentName,
   cardAttachmentText,
 } from "../../interactive/materials";
-// 卡片内真实预览（契约 §3.5）：预览主体挂在**卡片内部**，不盖住编辑区、勾选框与卡片操作。
+// 卡片内真实预览（契约 §3.5）：预览主体挂在**卡片内部**，不盖住编辑区与卡片操作。
 // 渲染器按需动态加载；组件自己在收起 / 换附件 / 卸载时中止在途工作并释放资源。
 import CardInlinePreview from "./CardInlinePreview.vue";
 import type { PreviewPosition } from "../../services/attachments";
@@ -223,7 +222,6 @@ function boardContentConflict(cardId: string): { local: string; server: string }
   return draftInputApi.boardContentConflictFor(cardId);
 }
 
-const checkable = computed(() => CHECKABLE_KINDS.includes(props.card.kind));
 /** 结果卡（kind="reply"）：正文是 QIO 产出的 Markdown 原文，用户不需要点「解析」。 */
 const isReplyCard = computed(() => props.card.kind === "reply");
 /** 有真实正文才提供「复制原文」：没有原文时不假装能复制出一份内容。 */
@@ -236,15 +234,6 @@ const kindLabel = computed(
   () => materialTypeLabel(props.card.kind, (props.card.meta ?? {}) as Record<string, unknown>) || CARD_KIND_LABELS[props.card.kind],
 );
 
-/**
-  许可的完整说明（任务书 §6.6）：勾选框只留一句短文案，规则原文放进旁边的「说明」详情。
-
-  「提交后仍然有效、只有用户主动取消才失效」是硬约束（§6.7 的许可边界）：
-  提交成功 / 失败 / 超时 / 重复 / 恢复 / 重启 / 模式切换都不自动取消许可；
-  隐藏或删除这张卡才会让它退出查看范围。这段话是**唯一**一份说明，卡片正文不重复铺开。
-*/
-const LICENSE_FULL_TEXT =
-  "许可：允许 QIO 查看这张卡（文字卡与结果卡同一条规则；提交后仍然有效，只有你手动取消才失效）—— 覆盖卡里的全部文字、代码与链接；隐藏或删除这张卡才会退出查看范围。";
 const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
@@ -927,9 +916,9 @@ async function openAttachmentFromToolbar(): Promise<void> {
 /**
  * 元信息层：状态必须能读出来，不能只靠颜色。
  *
- * 2026-10-14（用户要求）：许可说明、材料 / QIO 结果的说明、所在组都不再在这里重复 ——
- * 许可由卡片上的 card-license 徽章与卡片工具栏承载，材料类型由类型标签承载，
- * 组由组框标题承载。这里只留**卡片自身的显示状态**（隐藏 / 折叠 / 书签）与时间。
+ * 2026-10-14（用户要求）：材料 / QIO 结果的说明、所在组都不再在这里重复 ——
+ * 材料类型由类型标签承载，组由组框标题承载；许可徽章与工具栏勾选已移除，
+ * 卡片上只剩「参与 / 不参与」。这里只留**卡片自身的显示状态**（隐藏 / 折叠 / 书签）与时间。
  */
 const statusText = computed(() => {
   const parts: string[] = [];
@@ -961,7 +950,7 @@ const isToolbarOwner = computed(() => {
 });
 
 /**
- * 整理菜单 / 许可说明 / 「更多」面板的展开方向：朝**工具栏外侧**开（不盖卡片标题与正文）。
+ * 整理菜单 / 「更多」面板的展开方向：朝**工具栏外侧**开（不盖卡片标题与正文）。
  *
  * 2026-10-14 第二轮：工具栏固定贴在卡片上方，方向不能再拿 `props.toolbarTop < props.y` 比
  * —— 前者是相对宿主的屏幕像素、后者是板面坐标，两个坐标系混算本来就是错的。
@@ -1482,7 +1471,7 @@ watch(
       />
     </div>
 
-    <!-- 图片详情态下头部不占布局高度但也**不消失**：名称 / 许可 / 收起详情浮在图上（见 CSS） -->
+    <!-- 图片详情态下头部不占布局高度但也**不消失**：名称 / 参与 / 收起详情浮在图上（见 CSS） -->
     <header class="card-head" data-im="card-head">
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
@@ -1502,22 +1491,6 @@ watch(
         @pointerdown.stop
         @click.stop="emit('toggle', card.id, 'participation')"
       >{{ participationIncluded ? "参与" : "不参与" }}</button>
-      <!--
-        整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
-        允不允许 QIO 查看。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，
-        这里不重复解释。
-      -->
-      <span
-        v-if="checkable"
-        class="license"
-        :class="card.checked ? 'is-on' : 'is-off'"
-        data-im="card-license"
-        :data-checked="card.checked ? '1' : '0'"
-        role="status"
-        :title="card.checked
-          ? '已允许 QIO 查看：覆盖这张卡里的全部文字、代码与链接（文字卡与结果卡同一条规则）'
-          : '未允许查看：QIO 看不到这张卡里的任何内容（文字卡与结果卡同一条规则）'"
-      >{{ card.checked ? "允许 QIO 查看" : "未允许查看" }}</span>
       <!--
         两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
         折叠态只有「恢复卡片」（把卡片展开回常态）；
@@ -1853,7 +1826,7 @@ watch(
 
           <!--
             卡片内阅读展开的挂载点（契约 §3.5）：真实附件预览挂在这里，永远在卡片**内部**，
-            不盖编辑区、勾选框与卡片操作。没有真实附件时不挂任何东西（任务书 §6.4：不造假预览）——
+            不盖编辑区与卡片操作。没有真实附件时不挂任何东西（任务书 §6.4：不造假预览）——
             文字卡的阅读主体就是上面那份正文，所以这里是空的（:empty 时不占画面）。
           -->
           <div
@@ -1917,27 +1890,6 @@ watch(
       :aria-label="multi ? '所选卡片的共同操作' : kindLabel + '操作'"
       @pointerdown.stop
     >
-    <!--
-      整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡 / 结果卡只有一个许可，
-      覆盖卡内的文字、链接与代码。
-      勾选框只留一句短文案；「提交后仍然有效、只有你手动取消才失效」这类完整规则放进旁边的
-      「说明」详情（不常驻一整行字）。勾选只改 checked，不碰 hidden / deleted。
-    -->
-    <label v-if="checkable" class="check" :title="LICENSE_FULL_TEXT">
-      <input
-        type="checkbox"
-        :checked="card.checked"
-        data-im="check"
-        :data-card-id="card.id"
-        @change="emit('toggle', card.id, 'checked')"
-      />
-      <span class="check-label">{{ card.checked ? "已允许 QIO 查看" : "允许 QIO 查看" }}</span>
-      <details class="check-detail" :class="{ 'opens-up': menuOpensUp }" @click.stop @pointerdown.stop>
-        <summary class="check-detail-summary" title="许可的完整说明">说明</summary>
-        <p class="check-detail-text" data-im="check-detail-text">{{ LICENSE_FULL_TEXT }}</p>
-      </details>
-    </label>
-
     <!-- 多选：只显示共同适用的操作，不把单卡片编辑应用到整组 -->
     <template v-if="multi">
       <button class="tb" type="button" data-im="card-fold" :data-card-id="card.id" @click="emit('toggle', card.id, 'folded')">
@@ -2106,6 +2058,16 @@ watch(
 </template>
 
 <style scoped>
+/*
+ * 2026-10-24 用户已确认：互动板只保留“参与 / 不参与”。
+ * 旧的折叠和“重新关联附件”不再出现在卡片上。
+ * 数据字段暂时保留兼容，UI 一律隐藏。
+ */
+.card-toolbar [data-im="card-fold"],
+.card-toolbar [data-im="card-attach-file"] {
+  display: none !important;
+}
+
 .card {
   position: absolute;
   display: flex;
@@ -2215,7 +2177,7 @@ watch(
 .card.reply { border-left: 3px solid var(--link); }
 
 /*
-  第一层：材料类型 + 标题 + 许可徽章 + 阅读展开入口。
+  第一层：材料类型 + 标题 + 参与控件 + 阅读展开入口。
   一行到底、不换行也不换三行：标题自己用省略号收尾，操作与状态永远留在原位。
 */
 .card-head {
@@ -2247,22 +2209,6 @@ watch(
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/*
-  整卡许可徽章（任务书 §6.6）：文字 + 颜色双通道，未选中时也看得见。
-  文案与工具栏勾选框同源；规则原文只在工具栏的「说明」详情里出现一次。
-*/
-.license {
-  flex: none;
-  font-size: var(--fs-tech, var(--fs-xs));
-  line-height: var(--lh-tight);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 0 var(--sp-1);
-  white-space: nowrap;
-}
-.license.is-off { color: var(--text-muted); border-style: dashed; }
-.license.is-on { color: var(--text-secondary); border-color: var(--border-strong); }
-
 .chip-btn {
   flex: none;
   margin-left: auto;
@@ -2642,40 +2588,6 @@ watch(
   box-shadow: var(--elev-floating, var(--shadow-2));
   font-size: var(--fs-sm);
 }
-/* 许可勾选：短文案 + 「说明」详情；勾选框本身只改 checked */
-.check { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--text-secondary); white-space: nowrap; }
-.check input { accent-color: var(--accent); }
-.check-label { font-size: var(--fs-sm); }
-.check-detail { position: relative; }
-.check-detail-summary {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.check-detail-summary:hover { color: var(--text-strong); }
-/*
-  详情是一块**浮层**：完整许可说明放在这里，不把工具栏撑高、不挤走别的操作；
-  工具栏在卡片上方时向上开（与「更多」同一个方向规则），不盖卡片标题。
-*/
-.check-detail-text {
-  position: absolute;
-  right: 0;
-  top: calc(100% + var(--sp-1));
-  z-index: 5;
-  width: min(280px, calc(100vw - var(--sp-6)));
-  margin: 0;
-  padding: var(--sp-2);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  box-shadow: var(--elev-floating, var(--shadow-2));
-  font-size: var(--fs-xs);
-  line-height: var(--lh-base);
-  color: var(--text-secondary);
-  white-space: normal;
-}
-.check-detail.opens-up .check-detail-text { top: auto; bottom: calc(100% + var(--sp-1)); }
-
 /*
   「更多」面板：朝卡片外侧展开（工具栏在卡片上方时向上开），不盖标题、连接点与正文。
   面板不做裁切（overflow 可见），否则嵌在里面的「整理」面板会被裁掉。
@@ -2727,7 +2639,7 @@ watch(
 
 /*
   封面之上的两条**窄蒙版**（本轮：不再用封面里上下各 42% 的大蒙版）：
-  头部（标题 / 许可徽章 / 折叠入口）与页脚（必要状态 / 更新时间）各贴一条，
+  头部（标题 / 参与控件 / 折叠入口）与页脚（必要状态 / 更新时间）各贴一条，
   文字压在图片上时始终清晰可读。规则放在样式表末尾：前面 .card-head / .card-meta
   的基线规则不能被挤掉（源码守卫按选择器取第一个 CSS 块）。
 */
@@ -2805,7 +2717,7 @@ watch(
 }
 /*
   详情态的头部：**浮在图上**而不是占一行布局高度（这就是「不保留普通标题栏留白」）——
-  名称、许可徽章、收起详情仍在原位可读可点（参与控件后续也挂在头部），
+  名称、参与控件、收起详情仍在原位可读可点（参与控件后续也挂在头部），
   底部一条窄渐变保证文字压在图片上也清楚；连接点与缩放手柄在卡片外侧，不受影响。
 */
 .card.is-image-detail > .card-head {
@@ -2823,7 +2735,7 @@ watch(
   pointer-events: none;
 }
 .card.is-image-detail > .card-head .chip-btn,
-.card.is-image-detail > .card-head .license {
+.card.is-image-detail > .card-head .participation {
   pointer-events: auto;
 }
 .card-image-detail-host {
