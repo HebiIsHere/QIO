@@ -369,6 +369,7 @@ async def test_structured_unbound_recovery_binds_from_backend_facts(
     source = str(stored.structured_limits_source or "")
     assert source.startswith("binding_recovery:"), source
     assert "chain=" in source and "version=" in source and "text=" in source
+    assert "origin=r9h8_saved_limit" in source, "恢复来源必须保留原有依据"
     raw_after = _raw_limits(ctx.conn, requirement.requirement_id)
     assert raw_after != raw_before and "program_binding" in raw_after
 

@@ -569,8 +569,12 @@ def build_binding_recovery_source(
     chain_digest: object,
     version: object,
     sources: Iterable[object] = ("path_lookup",),
+    origin: object = "",
 ) -> str:
-    """专用恢复写回的来源（有界、可审计）：真实要求原话摘要 + 链 + 版本 + 候选来源。"""
+    """专用恢复写回的来源（有界、可审计）：真实要求原话摘要 + 链 + 版本 + 候选来源。
+
+    origin 保留恢复前已有的来源（例如历史保存依据），便于审计追溯。
+    """
     import hashlib
 
     text = "" if requirement_text is None else str(requirement_text)
@@ -583,6 +587,9 @@ def build_binding_recovery_source(
     if digest_text:
         parts.append("chain=" + digest_text)
     parts.append("version=" + str(int(version)))
+    origin_text = str(origin or "").strip()
+    if origin_text:
+        parts.append("origin=" + origin_text[:120])
     parts.append("text=" + text_digest)
     return ";".join(parts)[:300]
 

@@ -3805,6 +3805,7 @@ class AppContext:
             chain_digest=snapshot["chain_digest"] or None,
             version=version,
             sources=facts.get("sources") or ("path_lookup",),
+            origin=getattr(requirement, "structured_limits_source", "") or "",
         )
         try:
             writer = getattr(self.requirements, "apply_binding_recovery", None)
