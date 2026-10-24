@@ -521,6 +521,58 @@ async def _authorize_content_read(
     return None
 
 
+async def _authorize_content_reads(
+    ctx: ExecutionContext, paths: list[str], *, purpose: str
+) -> ExecResult | None:
+    """R9-H7 §3：审批恢复删除/目录快照读取前核对最新读取限制。"""
+    if not paths:
+        return None
+    from agent.security.effects import Effect, EffectKind, Target
+
+    read_effect = Effect(
+        kind=EffectKind.READ,
+        targets=tuple(Target("path", path) for path in paths),
+        purpose=purpose,
+        tool="fs.read",
+        detail={
+            "action": "read",
+            "limit_impacts": [
+                {
+                    "operation": "read",
+                    "objects": [{"kind": "path", "value": path} for path in paths],
+                }
+            ],
+            "limit_impacts_complete": True,
+        },
+    )
+    prior_basis = dict(getattr(ctx, "authorization_basis", {}) or {})
+    starter = getattr(ctx, "authorize_started", None)
+    if not callable(starter):
+        return _failure("无法核对最新读取限制：本次未读取、未执行", "read_check_unavailable")
+    try:
+        try:
+            allowed, reason = await starter(read_effect)
+        except TypeError:
+            return _failure(
+                "执行器无法按最新读取限制核对读取：本次未读取、未执行",
+                "read_check_unavailable",
+            )
+    except Exception as exc:  # noqa: BLE001
+        return _failure(
+            "读取限制核对失败（" + type(exc).__name__ + "）：本次未读取、未执行",
+            "read_check_failed",
+        )
+    finally:
+        ctx.authorization_basis = prior_basis
+    if not allowed:
+        return _failure(
+            "读取限制未通过：" + str(reason or "最新限制禁止读取") + "；本次未读取、未执行",
+            "read_denied",
+            invalidated=True,
+        )
+    return None
+
+
 async def execute_fs_write(payload: dict, ctx: ExecutionContext) -> ExecResult:
     path = str(payload.get("path") or "").strip()
     if not path:
@@ -977,6 +1029,28 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             failed.append(item)
             continue
         if row.get("is_directory"):
+            snapshot = row.get("directory_impact") or {}
+            snapshot_paths = [
+                str(entry.get("path"))
+                for entry in (snapshot.get("entries") or ())
+                if isinstance(entry, dict) and entry.get("path")
+            ]
+            read_blocked = await _authorize_content_reads(
+                ctx, snapshot_paths or [path], purpose="删除目录前核对子文件内容快照"
+            )
+            if read_blocked is not None:
+                item = {
+                    "item_id": item_id,
+                    "path": path,
+                    "ok": False,
+                    "status": "invalidated",
+                    "invalidated": True,
+                    "reason": read_blocked.summary,
+                    "code": "invalidated: read_denied",
+                }
+                results.append(item)
+                failed.append(item)
+                continue
             directory_error = await asyncio.to_thread(
                 _check_directory_impact,
                 row.get("directory_impact"),
@@ -998,6 +1072,22 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
                 continue
         expected_content = row.get("content_sha256")
         if expected_content and not row.get("is_directory"):
+            read_blocked = await _authorize_content_reads(
+                ctx, [path], purpose="删除文件前核对内容快照"
+            )
+            if read_blocked is not None:
+                item = {
+                    "item_id": item_id,
+                    "path": path,
+                    "ok": False,
+                    "status": "invalidated",
+                    "invalidated": True,
+                    "reason": read_blocked.summary,
+                    "code": "invalidated: read_denied",
+                }
+                results.append(item)
+                failed.append(item)
+                continue
             current_content = await asyncio.to_thread(_w3_content_sha, path)
             if current_content is None or current_content != expected_content:
                 item = {

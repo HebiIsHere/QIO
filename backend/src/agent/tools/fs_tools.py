@@ -186,7 +186,9 @@ def _bounded_content_sha(path: Path) -> str | None:
         return None
 
 
-def _entry_record(path: Path, *, is_protected: Any = None) -> dict:
+def _entry_record(
+    path: Path, *, is_protected: Any = None, include_content: bool = True
+) -> dict:
     try:
         st = path.stat()
     except OSError:
@@ -195,7 +197,11 @@ def _entry_record(path: Path, *, is_protected: Any = None) -> dict:
         is_dir = path.is_dir() and not path.is_symlink()
     except OSError:
         is_dir = False
-    content_sha = None if is_dir else _bounded_content_sha(path)
+    content_sha = (
+        None
+        if is_dir or not include_content
+        else _bounded_content_sha(path)
+    )
     record = {
         "path": str(path),
         "kind": "directory" if is_dir else "file",
@@ -245,6 +251,7 @@ def directory_impact(
     is_protected: Any = None,
     max_entries: int | None = None,
     max_depth: int | None = None,
+    include_content: bool = True,
 ) -> dict:
     """对目录做**有界**影响枚举：目录自身 + 子文件/子目录（含受保护/内部数据子对象）。
 
@@ -264,7 +271,9 @@ def directory_impact(
         max_depth if max_depth is not None else DIRECTORY_IMPACT_MAX_DEPTH
     )
     try:
-        root_entry = _entry_record(base, is_protected=is_protected)
+        root_entry = _entry_record(
+            base, is_protected=is_protected, include_content=include_content
+        )
         root_entry["kind"] = "directory"
         entries.append(root_entry)
     except OSError:  # pragma: no cover - 极端路径
@@ -297,7 +306,13 @@ def directory_impact(
                     f"影响枚举达到上限 {max_entries} 项：剩余对象未枚举，影响不确定"
                 )
                 break
-            entries.append(_entry_record(entry_path, is_protected=is_protected))
+            entries.append(
+                _entry_record(
+                    entry_path,
+                    is_protected=is_protected,
+                    include_content=include_content,
+                )
+            )
             if is_dir:
                 if depth + 1 > max(0, int(max_depth)):
                     complete = False
@@ -828,6 +843,57 @@ def _verify_local_preconditions(
     return None
 
 
+async def _read_limit_before_content_check(
+    gateway: Any, effect: Any
+) -> RecheckOutcome | None:
+    """R9-H7 §4：执行前先核读取权限，再读当前内容做摘要/前置核对。"""
+    if gateway is None or not callable(getattr(gateway, "authorize", None)):
+        return None
+    if not hasattr(gateway, "_limit_conflict"):
+        return None
+    targets = [
+        Path(str(getattr(target, "value", "")))
+        for target in (getattr(effect, "targets", ()) or ())
+        if getattr(target, "kind", "") == "path" and getattr(target, "value", None)
+    ]
+    if not targets:
+        return None
+    read_effect = security_gate.make_effect(
+        security_gate.EffectKind.READ,
+        [security_gate.path_target(path, exists=True) for path in targets],
+        purpose="执行前读取当前内容核对前置状态",
+        tool="fs.read",
+        detail={
+            "action": "read",
+            "limit_impacts": [
+                {"operation": "read", "objects": [{"kind": "path", "value": str(path)} for path in targets]}
+            ],
+            "limit_impacts_complete": True,
+        },
+        reversible=True,
+    )
+    binding = (getattr(effect, "detail", {}) or {}).get(REQUIREMENT_BINDING_KEY)
+    attach_requirement_binding(read_effect, binding)
+    try:
+        context = gateway._context(None)
+        requirement = gateway._requirement_for(context)
+        extra = tuple((getattr(context, "extra", {}) or {}).get("resolution_limits") or ())
+        conflict = gateway._limit_conflict(read_effect, requirement, extra_limits=extra)
+    except Exception:  # noqa: BLE001 - 读取核对失败按失败关闭
+        return RecheckOutcome(
+            False,
+            "recheck_read_check_failed",
+            "执行前无法核对最新读取限制：本次未读取内容、未执行",
+        )
+    if conflict:
+        return RecheckOutcome(
+            False,
+            "recheck_read_denied",
+            "最新用户限制禁止读取目标内容：本次未读取、未执行（" + str(conflict) + "）",
+        )
+    return None
+
+
 async def recheck_before_execute(
     *,
     gateway: Any,
@@ -842,6 +908,9 @@ async def recheck_before_execute(
     用**当前**模式重新走一次 gateway.authorize（模式/要求/授权/审批是否仍覆盖）
     + 校验要求绑定仍有效（requirements.validate_binding）+ 对象身份/内容摘要未变。
     """
+    read_denied = await _read_limit_before_content_check(gateway, effect)
+    if read_denied is not None:
+        return read_denied
     local_failure = _verify_local_preconditions(
         effect,
         expected_identity=expected_identity,
@@ -1006,38 +1075,77 @@ class _FsTool(Tool):
 
     # -- 文件来源（契约 §3.4：后端核实后才给授权引擎，不信任模型传入值） ------
 
-    async def _blocked_by_known_read_limit(self, target: Path) -> ToolResult | None:
-        """R9-H6 §5：普通写入在读取原内容计算摘要前，先核对最新读取限制。
+    async def _blocked_by_known_read_paths(
+        self, paths: list[Path], *, purpose: str
+    ) -> ToolResult | None:
+        """R9-H7 §3/§4：任何正文/摘要读取前，用真实引擎核对最新读取限制。
 
-        这是对真实授权引擎的“已知限制”探测，不生成读取审批、不改变 write
-        授权；读取被明确禁止时停止覆盖方案，不省略摘要核对。
+        只做读取权限探测，不生成读取审批、不产生写入授权；读取被明确禁止时
+        调用方必须停止方案，不能先读后拒绝。
         """
         security = self.security
         if security is None or not callable(getattr(security, "authorize", None)):
             return None
         if not hasattr(security, "_limit_conflict"):
-            # 纯测试网关/旧接线没有限制判定能力，保持旧行为；真实 AppContext
-            # 注入的引擎一定有 _limit_conflict。
             return None
-        read_effect = security_gate.read_effect(
-            "fs_write", target, purpose="读取原内容以生成覆盖前摘要"
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path)
+            if key not in seen:
+                seen.add(key)
+                unique.append(path)
+        if not unique:
+            return None
+        read_effect = security_gate.make_effect(
+            security_gate.EffectKind.READ,
+            [security_gate.path_target(path, exists=True) for path in unique],
+            purpose=purpose,
+            tool="fs.read",
+            detail={
+                "action": "read",
+                "limit_impacts": [
+                    {
+                        "operation": "read",
+                        "objects": [
+                            {"kind": "path", "value": str(path)} for path in unique
+                        ],
+                    }
+                ],
+                "limit_impacts_complete": True,
+            },
+            reversible=True,
         )
-        attach_limit_impacts(read_effect, read_limit_impacts(target))
         attach_requirement_binding(read_effect, self._requirement_binding())
         try:
-            decision = await security_gate.authorize(security, read_effect)
+            context = security._context(None)
+            requirement = security._requirement_for(context)
+            extra = tuple((getattr(context, "extra", {}) or {}).get("resolution_limits") or ())
+            conflict = security._limit_conflict(
+                read_effect, requirement, extra_limits=extra
+            )
         except Exception:  # noqa: BLE001 - 读取限制无法确认按失败关闭
             return ToolResult(
                 ok=False,
-                error="读取限制无法在执行前确认：为避免未授权读取，本次未覆盖",
+                error="读取限制无法在执行前确认：为避免未授权读取，本次未执行",
                 code="read_limit_unavailable",
                 category="permission",
             )
-        if security_gate.verdict_of(decision) == "deny":
-            return security_gate.denied_result(
-                decision, "用户限制禁止读取目标文件，不能读取原内容生成覆盖摘要"
+        if conflict:
+            return ToolResult(
+                ok=False,
+                error="用户限制禁止读取目标内容：本次未读取正文/摘要，未执行（" + str(conflict) + "）",
+                code="read_limit_denied",
+                category="permission",
+                recoverable=False,
             )
         return None
+
+    async def _blocked_by_known_read_limit(self, target: Path) -> ToolResult | None:
+        """单文件读取限制探测（写入摘要采集用）。"""
+        return await self._blocked_by_known_read_paths(
+            [target], purpose="读取原内容以生成覆盖前摘要"
+        )
 
     def _origin_store(self):
         return self.origins if self.origins is not None else file_origins.default_store()
@@ -1438,15 +1546,20 @@ class FsWriteTool(_FsTool):
         mode_at_request = self._mode_at_request()
         digest = security_gate.text_sha256(content)
         identity_key = security_gate.identity_key(identity)
-        if existed_before:
+        # R9-H7 §2：内部数据维护必须先创建三次确认审批，不能在确认前读取正文。
+        # 已有内部文件的覆盖方案只绑定身份/存在性；正文读取/摘要不由工具提前
+        # 执行。普通文件仍读取原内容生成覆盖前摘要（并先核对读取限制）。
+        internal_root = security_gate.match_internal_data(self.security, target)
+        base_content_sha: str | None = None
+        base_content_digest_kind = "absent" if not existed_before else "content"
+        if existed_before and internal_root is None:
             blocked_read = await self._blocked_by_known_read_limit(target)
             if blocked_read is not None:
                 return blocked_read
-        # R9-H §4：前置状态（覆盖前的对象身份 + 内容；新文件用 absent 标记）
-        # 由真实工具写入 effect.detail，引擎从同一事实组装审查对象与复用键。
-        base_content_sha = (
-            security_gate.content_sha256(target) if existed_before else None
-        )
+            base_content_sha = security_gate.content_sha256(target)
+        elif existed_before:
+            # 内部维护：没有正文快照，执行器仅按身份/存在性核对；确认前不读正文。
+            base_content_digest_kind = "internal_metadata"
         precondition = object_state_digest(
             path=target,
             exists=existed_before,
@@ -1454,7 +1567,6 @@ class FsWriteTool(_FsTool):
             content_sha256=base_content_sha,
             is_directory=False,
         )
-        internal_root = security_gate.match_internal_data(self.security, target)
         effect = security_gate.write_effect(
             "fs_write",
             target,
@@ -1473,6 +1585,8 @@ class FsWriteTool(_FsTool):
                 "content_digest": digest,
                 "precondition_digest": precondition,
                 "identity": identity_key,
+                "base_content_digest_kind": base_content_digest_kind,
+                "maintenance_read_required": False,
             },
             internal=internal_root is not None,
         )
@@ -1500,6 +1614,7 @@ class FsWriteTool(_FsTool):
                 # 提交审批时目标文件的内容摘要：执行前核对「审批期间内容有没有被改」。
                 # 文件身份 volume+file_id 在编辑后不变，光靠身份挡不住覆盖别人刚改的内容。
                 "base_content_sha256": base_content_sha,
+                "base_content_digest_kind": base_content_digest_kind,
                 "content_sha256": digest,
                 "precondition_digest": precondition,
                 "identity_key": identity_key,
@@ -1947,6 +2062,34 @@ class FsDeleteTool(_FsTool):
             origin_record = self._origin_record(target)
             origin = origin_record.origin if origin_record is not None else None
             is_directory = target.is_dir() if exists else False
+            # R9-H7 §3：删除前的内容摘要/目录子文件正文读取必须晚于读取限制核对。
+            # 先只枚举元数据（include_content=False，不读正文），核对读取限制后再
+            # 计算真实目录影响；禁读时整个删除方案停止，不先读全部子文件。
+            if exists and is_directory:
+                try:
+                    probe = directory_impact(
+                        target,
+                        operation="delete",
+                        include_content=False,
+                    )
+                    probe_paths = [
+                        Path(str(entry.get("path")))
+                        for entry in (probe.get("entries") or ())
+                        if isinstance(entry, dict) and entry.get("path")
+                    ]
+                except Exception:  # noqa: BLE001 - 枚举失败后续按影响不确定处理
+                    probe_paths = [target]
+                blocked_read = await self._blocked_by_known_read_paths(
+                    probe_paths, purpose="删除目录前读取子文件内容摘要"
+                )
+                if blocked_read is not None:
+                    return blocked_read
+            elif exists:
+                blocked_read = await self._blocked_by_known_read_paths(
+                    [target], purpose="删除文件前读取内容摘要"
+                )
+                if blocked_read is not None:
+                    return blocked_read
             # R9-H4 §7：删除目录不能只查目录本身 —— 有界枚举子对象（含受保护/内部
             # 数据子对象）作为真实影响；达到上限时 complete=False（影响不确定）。
             directory_impact_data: dict | None = None

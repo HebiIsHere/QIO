@@ -647,6 +647,8 @@ class _CmdTool(Tool):
         )
         detail = {
             "program": resolved_program or program,
+            # R9-H7 §1：保留真实调用入口；解析后的 program_path 不能替代它。
+            "requested_program": program,
             "argv": (
                 [str(program), *[str(item) for item in args]]
                 if not shell

@@ -307,11 +307,10 @@ async def test_program_name_limit_blocks_real_run_program(ctx):
         "from pathlib import Path\nPath(r'%s').write_text('ran')\n" % marker,
         encoding="utf-8",
     )
-    # 真实解释器名称（Windows python.exe / POSIX pythonX.Y）作为历史裸名称限制；
-    # 基线把它当相对路径精确比较 → 不匹配并真实执行；修复后明确 program_name 生效。
-    # CI 的 sys.executable 可能是 python3.11，实际入口解析后名称不同；用解析后的
-    # 真实程序名称构造历史裸名称，避免测试假设解释器文件名固定。
-    program_name = Path(os.path.realpath(sys.executable)).stem
+    # 原始复现：保存“禁止 python”，真实调用入口也是 python（不是解析后的目标）。
+    # 基线把 program 当路径/按目标名称猜测，入口丢失后漏拦；修复后按真实入口
+    # 与保存名称做结构化来源绑定核对。
+    program_name = "python"
     requirement = ctx.requirements.record_user_message(
         text="禁止运行该解释器", message_id="m-name", turn_id="t-name"
     )
@@ -328,7 +327,7 @@ async def test_program_name_limit_blocks_real_run_program(ctx):
     tool = RunProgramTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
     with requirement_context(binding):
         result = await tool.run(
-            program=sys.executable, args=[str(script)], cwd=str(root), timeout=30
+            program="python", args=[str(script)], cwd=str(root), timeout=30
         )
     assert result.ok is False, result
     assert not marker.exists(), "program_name 限制必须在真实执行前生效"

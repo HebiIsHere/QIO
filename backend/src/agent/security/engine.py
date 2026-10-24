@@ -1613,7 +1613,9 @@ class AuthorizationEngine(AuthorizationGateway):
             return False
 
     @staticmethod
-    def _limit_program_matches(program_value: object, item: dict) -> bool:
+    def _limit_program_matches(
+        program_value: object, item: dict, *, effect: Effect | None = None
+    ) -> bool:
         """程序限制只按平台规范化后的程序路径/已核实身份匹配。
 
         R9-H5 §6：完整路径不匹配时**不得**回退 basename/去后缀/统一小写。用户只
@@ -1627,15 +1629,24 @@ class AuthorizationEngine(AuthorizationGateway):
         import os as _os
 
         if str(item.get("kind") or "") == "program_name":
-            # R9-H6 §4：program_name 是明确的“程序名称”类型，只比较程序文件
-            # 名称主体（去掉一个扩展名），不在路径不匹配后隐式回退；路径限制
-            # 仍只走下面的真实路径/对象身份匹配。
-            def _name(value: str) -> str:
-                base = _os.path.basename(value.replace("\\", "/"))
-                stem, _suffix = _os.path.splitext(base)
-                return _os.path.normcase(stem if stem else base)
+            # R9-H7 §1：程序名称不是执行层可直接推断的对象。只把用户真实调用
+            # 入口与保存的入口名称精确比较；绝不用解析后目标、basename、去后缀
+            # 或版本号推断范围。入口事实缺失时不命中（不按名称放行/拒绝）。
+            detail = getattr(effect, "detail", {}) or {}
+            execution = dict(detail.get("execution") or {})
+            requested = str(
+                detail.get("requested_program")
+                or execution.get("requested_program")
+                or execution.get("program")
+                or ""
+            ).strip()
+            if not requested:
+                return False
 
-            return bool(_name(left)) and _name(left) == _name(right)
+            def _entry_name(value: str) -> str:
+                return _os.path.normcase(value.strip()) if _os.name == "nt" else value.strip()
+
+            return bool(_entry_name(requested)) and _entry_name(requested) == _entry_name(right)
 
         def _canonical(value: str) -> str:
             # 规范化 + 解析链接别名：同一目标的绝对路径/符号链接属于同一程序对象；
@@ -1774,7 +1785,9 @@ class AuthorizationEngine(AuthorizationGateway):
                 elif kind in ("program", "program_name"):
                     if object_kind != "program":
                         continue
-                    if self._limit_program_matches(obj.get("value"), item):
+                    if self._limit_program_matches(
+                        obj.get("value"), item, effect=effect
+                    ):
                         return True
                 elif kind == "service":
                     if object_kind not in {"service", "url", "url_host"}:
