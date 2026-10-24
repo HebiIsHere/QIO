@@ -58,6 +58,8 @@ class RecheckResult:
     #: 从台账重新加载的结构化限制状态（structured/legacy/unresolved），供调用方
     #: 审计“状态是否在重建上下文时丢失”；legacy/unresolved 不得当作无限制。
     requirement_state: str = ""
+    #: R9-H11 §5：共同对象判定的结构化决策码（DENY 时携带；调用方不解析中文 reason）。
+    decision_code: str = ""
 
     @property
     def verdict(self) -> str:
@@ -126,6 +128,36 @@ class RecheckService:
                 "这条操作依据的用户要求已不存在、已失效、已被修正或版本不一致；本次没有执行，需要重新判断",
             )
         requirement_state = self._requirement_state(requirement)
+        # R9-H11 §5：先消费共同对象判定（与 authorize 同一 assessment）；命中/
+        # 未确定/判定失败都拒绝，且先于下面的内容摘要/正文读取（第 3/4 步才读）。
+        try:
+            assessment = self._limit_assessment(effect, requirement)
+        except Exception:  # noqa: BLE001 - 无法核对限制按失败关闭
+            return self._fail(
+                "recheck_failed",
+                "执行前无法核对用户限制（对象判定失败）：本次没有执行",
+                requirement_state=requirement_state,
+            )
+        if assessment is not None and assessment.conflict:
+            from agent.security.effects import AuthDecision, Verdict
+
+            limit_reason = str(
+                assessment.reason or "用户限制禁止这次操作；本次没有执行"
+            )
+            limit_code = str(assessment.decision_code or "")
+            return RecheckResult(
+                ok=False,
+                code="denied",
+                reason=limit_reason,
+                decision=AuthDecision(
+                    verdict=Verdict.DENY,
+                    reason=limit_reason,
+                    effects=(effect,),
+                    decision_code=limit_code or None,
+                ),
+                requirement_state=requirement_state,
+                decision_code=limit_code,
+            )
         # 1) 当前模式 + 绑定的要求重新走统一引擎（固定规则/审查复用/审批规则）。
         try:
             from agent.security.gateway import AuthContext
@@ -176,6 +208,7 @@ class RecheckService:
                 reason=str(getattr(decision, "reason", "") or "当前规则不允许这次操作"),
                 decision=decision,
                 requirement_state=requirement_state,
+                decision_code=str(getattr(decision, "decision_code", "") or ""),
             )
         binding_mode = str(getattr(binding, "mode", "") or "")
         current_mode = str(
@@ -270,6 +303,20 @@ class RecheckService:
 
     # -- 内部 -------------------------------------------------------------
 
+    def _limit_assessment(self, effect: Any, requirement: Any) -> Any | None:
+        """共同对象判定（R9-H11 §5）；引擎没有冻结接口时返回 None（旧引擎兼容）。"""
+        engine = self.engine
+        if engine is None:
+            return None
+        if not callable(getattr(engine, "assess_limit_conflict", None)):
+            return None
+        from agent.tools import security_gate
+
+        _, extra = security_gate.current_requirement(engine)
+        return security_gate.assess_limits(
+            engine, effect, requirement, extra_limits=extra
+        )
+
     @staticmethod
     def _requirement_state(requirement: Any) -> str:
         """从台账重新加载的结构化限制状态；未知按 unresolved（不得当无限制）。"""
@@ -343,7 +390,17 @@ class RecheckService:
         return str(getattr(item, "state", "") or "") or None
 
     @staticmethod
-    def _fail(code: str, reason: str, *, requirement_state: str = "") -> RecheckResult:
+    def _fail(
+        code: str,
+        reason: str,
+        *,
+        requirement_state: str = "",
+        decision_code: str = "",
+    ) -> RecheckResult:
         return RecheckResult(
-            ok=False, code=code, reason=reason, requirement_state=requirement_state
+            ok=False,
+            code=code,
+            reason=reason,
+            requirement_state=requirement_state,
+            decision_code=str(decision_code or ""),
         )

@@ -308,11 +308,19 @@ async def _recheck_requirement_and_mode(
                 path=path,
             )
         if not allowed:
+            # R9-H11 §5：审批恢复拒绝时把共同判定的结构化结论带出去（审计/界面
+            # 只认 decision_code，不解析中文 reason）。
+            limit_code = str(getattr(ctx, "limit_decision_code", "") or "")
+            limit_decisions = list(getattr(ctx, "limit_object_decisions", ()) or ())
+            detail: dict[str, Any] = {"decision_code": limit_code or None}
+            if limit_decisions:
+                detail["object_decisions"] = limit_decisions[:32]
             return _failure(
                 reason or "当前模式/审批状态已变化，本次未执行",
                 "invalidated: mode_changed",
                 invalidated=True,
                 path=path,
+                detail=detail,
             )
     # 要求绑定：仍 active 且版本一致（补充/修正/撤回后不得沿用旧允许）。
     binding = _binding_from_operation(payload, fingerprint)
@@ -512,11 +520,17 @@ async def _authorize_content_read(
         if prior_basis:
             ctx.authorization_basis = prior_basis
     if not allowed:
+        limit_code = str(getattr(ctx, "limit_decision_code", "") or "")
+        limit_decisions = list(getattr(ctx, "limit_object_decisions", ()) or ())
+        detail: dict[str, Any] = {"decision_code": limit_code or None}
+        if limit_decisions:
+            detail["object_decisions"] = limit_decisions[:32]
         return _failure(
             "读取限制未通过：" + str(reason or "最新限制禁止读取") + "；本次未读取、未修改",
             "read_denied",
             invalidated=True,
             path=path,
+            detail=detail,
         )
     return None
 
@@ -565,10 +579,16 @@ async def _authorize_content_reads(
     finally:
         ctx.authorization_basis = prior_basis
     if not allowed:
+        limit_code = str(getattr(ctx, "limit_decision_code", "") or "")
+        limit_decisions = list(getattr(ctx, "limit_object_decisions", ()) or ())
+        detail: dict[str, Any] = {"decision_code": limit_code or None}
+        if limit_decisions:
+            detail["object_decisions"] = limit_decisions[:32]
         return _failure(
             "读取限制未通过：" + str(reason or "最新限制禁止读取") + "；本次未读取、未执行",
             "read_denied",
             invalidated=True,
+            detail=detail,
         )
     return None
 

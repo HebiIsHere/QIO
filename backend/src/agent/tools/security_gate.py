@@ -29,6 +29,7 @@ import hashlib
 import os
 import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Sequence
 
@@ -108,6 +109,288 @@ def reason_of(decision: Any, default: str = "") -> str:
 def approval_id_of(decision: Any) -> str | None:
     value = getattr(decision, "approval_id", None)
     return str(value) if value else None
+
+
+# --------------------------------------------------------------------------
+# R9-H11 §5：共同对象判定（assessment）的统一消费入口
+# --------------------------------------------------------------------------
+#
+# 冻结契约：AuthorizationEngine.assess_limit_conflict(effect, requirement,
+# *, extra_limits=()) -> LimitAssessment。工具层/审批恢复只能消费它：
+#   * MATCH（有效匹配）→ 拒绝；
+#   * UNBOUND/INVALID（需恢复/澄清）→ 拒绝，普通批准/确认不能解除；
+#   * UNKNOWN（事实不足）→ 拒绝（失败关闭），不得当无关放行；
+#   * 只有全部 UNRELATED（可靠无关）才继续按模式判定。
+# 旧引擎/旧 fake gateway 没有该接口时退回既有 _limit_conflict（保持兼容）。
+
+#: 绑定失效 / 事实不足的结构化决策码（与 security/object_state.py 一致）。
+DECISION_PROGRAM_BINDING_INVALIDATED = "program_binding_invalidated"
+DECISION_OBJECT_STATE_UNCONFIRMED = "object_state_unconfirmed"
+
+_OBJECT_STATE_BLOCKING = frozenset({"unbound", "invalid", "unknown"})
+_OBJECT_STATE_CONFLICT = frozenset({"match", "unbound", "invalid", "unknown"})
+
+
+def _object_state_value(value: Any) -> str:
+    """ObjectState 枚举 / 字符串 / dict → 规范化小写 state。"""
+    state = getattr(value, "state", None)
+    if state is None and isinstance(value, dict):
+        state = value.get("state")
+    return str(getattr(state, "value", state) or "").strip().lower()
+
+
+def _object_kind_value(value: Any) -> str:
+    kind = getattr(value, "object_kind", None)
+    if kind is None and isinstance(value, dict):
+        kind = value.get("object_kind")
+    return str(kind or "").strip().lower()
+
+
+@dataclass(frozen=True)
+class LimitAssessmentView:
+    """共同 assessment 的只读消费视图（工具/审批恢复共用；不返回布尔判定）。"""
+
+    #: 网关是否提供冻结接口 assess_limit_conflict（False=旧 _limit_conflict 回退）。
+    available: bool = False
+    conflict: bool = False
+    reason: str = ""
+    decision_code: str | None = None
+    decisions: tuple[dict, ...] = ()
+    #: 含 UNBOUND/INVALID/UNKNOWN（需要恢复/澄清或事实不足；普通批准不能解除）。
+    blocking: bool = False
+
+    @property
+    def denied(self) -> bool:
+        return bool(self.conflict)
+
+    def as_dict(self) -> dict:
+        return {
+            "available": bool(self.available),
+            "conflict": bool(self.conflict),
+            "reason": str(self.reason or "")[:2000],
+            "decision_code": self.decision_code,
+            "blocking": bool(self.blocking),
+            "decisions": [dict(item) for item in self.decisions],
+        }
+
+
+def _decision_code_from_state(state: str, object_kind: str | None) -> str | None:
+    """状态 → 结构化码（engine 未给 decision_code 时的兜底，码与契约一致）。"""
+    try:
+        from agent.security.object_state import ObjectState, decision_code_for
+
+        return decision_code_for(ObjectState(state), object_kind)
+    except Exception:  # noqa: BLE001 - A 的模块暂未合入：用同一稳定码兜底
+        pass
+    if state == "invalid":
+        return DECISION_PROGRAM_BINDING_INVALIDATED
+    if state == "unknown":
+        return DECISION_OBJECT_STATE_UNCONFIRMED
+    if state == "unbound":
+        return "program_name_requires_object_binding"
+    return None
+
+
+def _serialize_object_decision(decision: Any) -> dict:
+    serializer = getattr(decision, "as_dict", None)
+    if callable(serializer):
+        try:
+            return dict(serializer())
+        except Exception:  # noqa: BLE001 - 序列化失败不影响判定，保留 state
+            pass
+    if isinstance(decision, dict):
+        return dict(decision)
+    return {"state": _object_state_value(decision)}
+
+
+def _view_from_assessment(raw: Any) -> LimitAssessmentView:
+    decisions_raw = tuple(getattr(raw, "decisions", ()) or ())
+    states: list[str] = []
+    decisions: list[dict] = []
+    for decision in decisions_raw:
+        states.append(_object_state_value(decision))
+        decisions.append(_serialize_object_decision(decision))
+    conflict = bool(getattr(raw, "conflict", False))
+    if not conflict:
+        conflict = any(state in _OBJECT_STATE_CONFLICT for state in states)
+    blocking = any(state in _OBJECT_STATE_BLOCKING for state in states)
+    reason = str(getattr(raw, "reason", "") or "")
+    code = str(getattr(raw, "decision_code", "") or "").strip() or None
+    if code is None and blocking:
+        for decision, state in zip(decisions_raw, states):
+            if state in _OBJECT_STATE_BLOCKING:
+                code = _decision_code_from_state(state, _object_kind_value(decision))
+                if code:
+                    break
+    return LimitAssessmentView(
+        available=True,
+        conflict=conflict,
+        reason=reason,
+        decision_code=code,
+        decisions=tuple(decisions),
+        blocking=blocking,
+    )
+
+
+def _fail_closed_assessment(reason: str) -> LimitAssessmentView:
+    return LimitAssessmentView(
+        available=True,
+        conflict=True,
+        reason=reason,
+        decision_code=DECISION_OBJECT_STATE_UNCONFIRMED,
+        blocking=True,
+    )
+
+
+def assess_limits(
+    gateway: Any,
+    effect: Any,
+    requirement: Any = None,
+    *,
+    extra_limits: Sequence[dict] = (),
+) -> LimitAssessmentView:
+    """消费同一 assessment：有冻结接口用它，旧网关退回 _limit_conflict。
+
+    * 网关提供 assess_limit_conflict → 冻结接口（异常 → 失败关闭）；
+    * 只有 _limit_conflict（旧引擎/旧 fake）→ 旧语义（返回值即拒绝原因）；
+    * 两者都没有（更早的 fake gateway）→ 不可用、无冲突（保持兼容）。
+    """
+    if gateway is None:
+        return LimitAssessmentView()
+    limits_extra = tuple(
+        item for item in (extra_limits or ()) if isinstance(item, dict)
+    )
+    assess = getattr(gateway, "assess_limit_conflict", None)
+    if callable(assess):
+        try:
+            raw = assess(effect, requirement, extra_limits=limits_extra)
+        except Exception:  # noqa: BLE001 - 判定失败不能默认放行
+            return _fail_closed_assessment(
+                "对象判定失败（无法确认限制对象）：为避免越权，本次没有执行"
+            )
+        return _view_from_assessment(raw)
+    legacy = getattr(gateway, "_limit_conflict", None)
+    if callable(legacy):
+        try:
+            try:
+                reason = legacy(effect, requirement, extra_limits=limits_extra)
+            except TypeError:  # 旧签名不接受 extra_limits
+                reason = legacy(effect, requirement)
+        except Exception:  # noqa: BLE001 - 旧接口失败同样失败关闭
+            return _fail_closed_assessment(
+                "对象判定失败（无法确认限制对象）：为避免越权，本次没有执行"
+            )
+        text = str(reason or "").strip()
+        if text:
+            return LimitAssessmentView(
+                available=False, conflict=True, reason=text, blocking=True
+            )
+        return LimitAssessmentView(available=False)
+    return LimitAssessmentView()
+
+
+def current_requirement(gateway: Any) -> tuple[Any, tuple[dict, ...]]:
+    """当前判定要求 + extra limits（引擎内部入口；不支持的网关返回 (None, ())）。
+
+    只读：不创建绑定、不改状态。读取异常由调用方按失败关闭处理（本函数不吞）。
+    """
+    if gateway is None:
+        return None, ()
+    context_getter = getattr(gateway, "_context", None)
+    requirement_getter = getattr(gateway, "_requirement_for", None)
+    if not callable(context_getter) or not callable(requirement_getter):
+        return None, ()
+    context = context_getter(None)
+    requirement = requirement_getter(context)
+    extra = tuple((getattr(context, "extra", {}) or {}).get("resolution_limits") or ())
+    return requirement, extra
+
+
+def decision_code_of(decision: Any) -> str | None:
+    """AuthDecision/fake → 结构化决策码（缺失/空白返回 None）。"""
+    code = getattr(decision, "decision_code", None)
+    if code is None and isinstance(decision, dict):
+        code = decision.get("decision_code")
+    text = str(code or "").strip()
+    return text or None
+
+
+def object_decisions_of(decision: Any) -> tuple[dict, ...]:
+    """AuthDecision.object_decisions → 有界 dict 元组（审计/工具结果共用）。"""
+    raw = getattr(decision, "object_decisions", None)
+    if raw is None and isinstance(decision, dict):
+        raw = decision.get("object_decisions")
+    return tuple(_serialize_object_decision(item) for item in raw or ())
+
+
+def assessment_denial_data(view: LimitAssessmentView, *, base_code: str = "") -> dict:
+    data: dict[str, Any] = {}
+    if view.decision_code:
+        data["decision_code"] = view.decision_code
+    if view.decisions:
+        data["object_decisions"] = [dict(item) for item in view.decisions]
+    if base_code:
+        data["denial_code"] = base_code
+    return data
+
+
+def _fail_closed_result(
+    reason: str, *, base_code: str = "permission_denied"
+) -> ToolResult:
+    view = _fail_closed_assessment(reason)
+    return ToolResult(
+        ok=False,
+        error=view.reason,
+        category="permission",
+        recoverable=False,
+        code=view.decision_code or base_code,
+        data=assessment_denial_data(view, base_code=base_code),
+    )
+
+
+def limit_conflict_result(
+    gateway: Any,
+    effect: Any,
+    *,
+    requirement: Any = None,
+    extra_limits: Sequence[dict] = (),
+    base_code: str = "permission_denied",
+    default_reason: str = "",
+    resolve_context: bool = True,
+) -> ToolResult | None:
+    """读取/修改/删除/执行前的共同 assessment 消费。
+
+    conflict（MATCH/UNBOUND/INVALID/UNKNOWN）或判定失败 → 拒绝 ToolResult；
+    可靠无关 → None（调用方继续按模式判定）。网关无判定接口 → None（旧兼容）。
+    """
+    if gateway is None:
+        return None
+    if resolve_context:
+        try:
+            context_requirement, context_extra = current_requirement(gateway)
+        except Exception:  # noqa: BLE001 - 无法核对限制按失败关闭
+            return _fail_closed_result(
+                "执行前无法核对最新用户限制（对象判定失败）：本次没有执行",
+                base_code=base_code,
+            )
+        if requirement is None:
+            requirement = context_requirement
+        if not extra_limits:
+            extra_limits = context_extra
+    view = assess_limits(gateway, effect, requirement, extra_limits=extra_limits)
+    if not view.conflict:
+        return None
+    reason = str(
+        view.reason or default_reason or "用户限制禁止这次操作；本次没有执行"
+    )
+    return ToolResult(
+        ok=False,
+        error=reason,
+        category="permission",
+        recoverable=False,
+        code=view.decision_code or base_code,
+        data=assessment_denial_data(view, base_code=base_code),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -434,12 +717,22 @@ def build_pending_operation(
 
 def denied_result(decision: Any, default_reason: str) -> ToolResult:
     reason = reason_of(decision, default_reason) or default_reason
+    # R9-H11 §5：DENY 必须把结构化决策码与对象判定结论带出去；调用方/审计
+    # 只认 code，不解析中文 reason。
+    code = decision_code_of(decision)
+    data: dict[str, Any] = {}
+    if code:
+        data["decision_code"] = code
+    decisions = object_decisions_of(decision)
+    if decisions:
+        data["object_decisions"] = list(decisions)
     return ToolResult(
         ok=False,
         error=reason,
         category="permission",
         recoverable=False,
-        code="permission_denied",
+        code=code or "permission_denied",
+        data=data or None,
     )
 
 

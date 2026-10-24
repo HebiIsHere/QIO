@@ -1086,6 +1086,16 @@ class _CmdTool(Tool):
                     merged["warning"] = _PERMANENT_DELETE_WARNING
                 return await self._legacy_approve(merged, denied)
             return None
+        # R9-H11 §5：执行前先消费共同对象判定；MATCH/UNBOUND/INVALID/UNKNOWN
+        # 一律拒绝并携带 decision_code，普通批准/确认不能解除（不得启动程序）。
+        blocked_by_limits = security_gate.limit_conflict_result(
+            self.security,
+            effect,
+            base_code="permission_denied",
+            default_reason=denied,
+        )
+        if blocked_by_limits is not None:
+            return blocked_by_limits
         decision = await security_gate.authorize(self.security, effect)
         verdict = security_gate.verdict_of(decision)
         if verdict == "deny":
