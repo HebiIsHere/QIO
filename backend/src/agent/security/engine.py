@@ -28,6 +28,7 @@ from agent.security.context import (
     requirement_resolution_status,
 )
 from agent.security.effects import (
+    DECISION_PROGRAM_NAME_UNRESOLVED,
     DECISION_UNRESOLVED_LIMITS,
     AuthDecision,
     Effect,
@@ -215,6 +216,10 @@ class AuthorizationEngine(AuthorizationGateway):
             and verdict == Verdict.APPROVE
             and self._review_candidate(effect)
             and not self._permanent_delete_pending(effect)
+            and self._program_name_unresolved(
+                effect, self._requirement_for(context)
+            )
+            is None
         ):
             verdict, reason, scope_id, needs_review = await self._apply_review(
                 effect,
@@ -224,15 +229,22 @@ class AuthorizationEngine(AuthorizationGateway):
                 scope_id,
             )
         unresolved_requirement = self._requirement_for(context)
+        program_unresolved = self._program_name_unresolved(
+            effect, unresolved_requirement
+        )
         decision_code = (
-            DECISION_UNRESOLVED_LIMITS
-            if (
-                verdict == Verdict.APPROVE
-                and unresolved_requirement is not None
-                and self._limits_unresolved(unresolved_requirement)
-                and effect.kind in self._LIMIT_OPERATION_NAMES
+            DECISION_PROGRAM_NAME_UNRESOLVED
+            if (verdict == Verdict.APPROVE and program_unresolved)
+            else (
+                DECISION_UNRESOLVED_LIMITS
+                if (
+                    verdict == Verdict.APPROVE
+                    and unresolved_requirement is not None
+                    and self._limits_unresolved(unresolved_requirement)
+                    and effect.kind in self._LIMIT_OPERATION_NAMES
+                )
+                else None
             )
-            else None
         )
         decision = AuthDecision(
             verdict=verdict,
@@ -1389,6 +1401,12 @@ class AuthorizationEngine(AuthorizationGateway):
                 None,
             )
 
+        # 1.5) 程序名称来源尚未绑定对象：不直接放行/拒绝；非只读模式进入
+        # 具体确认/恢复；只读模式继续走原只读规则（程序执行仍拒绝）。
+        if mode != PermissionMode.READ_ONLY:
+            unresolved_program = self._program_name_unresolved(effect, requirement)
+            if unresolved_program:
+                return Verdict.APPROVE, unresolved_program, None
         protected = self._internal_paths()
         # 2) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
         #    注意：有效禁止已在上一步 DENY，内部数据确认不能绕过它。
@@ -1613,6 +1631,51 @@ class AuthorizationEngine(AuthorizationGateway):
             return False
 
     @staticmethod
+    def _program_entry_matches(
+        item: dict, effect: Effect | None
+    ) -> bool:
+        """program_name 只与实际调用入口做精确来源比较，不猜测对象范围。"""
+        if effect is None or str(item.get("kind") or "").strip().lower() != "program_name":
+            return False
+        detail = getattr(effect, "detail", {}) or {}
+        execution = dict(detail.get("execution") or {})
+        requested = str(
+            detail.get("requested_program")
+            or execution.get("requested_program")
+            or execution.get("program")
+            or ""
+        ).strip()
+        right = str(item.get("value") or "").strip()
+        if not requested or not right:
+            return False
+        import os as _os
+
+        def _key(value: str) -> str:
+            return _os.path.normcase(value.strip()) if _os.name == "nt" else value.strip()
+
+        return _key(requested) == _key(right)
+
+    def _program_name_unresolved(
+        self, effect: Effect, requirement: Any
+    ) -> str | None:
+        """R9-H7 §1：名称限制未绑定到明确对象时，不能由执行层按名称放行/拒绝。
+
+        只有当本次真实调用入口与保存的来源名称一致时，才把该条限制视为与本操作
+        相关，并进入具体确认/恢复；路径限制仍由 _limit_conflict 直接核对。
+        """
+        if effect.kind != EffectKind.EXECUTE or requirement is None:
+            return None
+        for raw in getattr(requirement, "structured_limits", ()) or ():
+            objects = raw.get("objects") if isinstance(raw, dict) else None
+            for item in objects or ():
+                if isinstance(item, dict) and self._program_entry_matches(item, effect):
+                    return (
+                        "这条用户限制中的程序名称尚未可靠绑定到明确对象；"
+                        "本次调用入口与保存名称一致，需要具体确认或先完成限制恢复，不能仅按名称直接执行"
+                    )
+        return None
+
+    @staticmethod
     def _limit_program_matches(
         program_value: object, item: dict, *, effect: Effect | None = None
     ) -> bool:
@@ -1764,10 +1827,13 @@ class AuthorizationEngine(AuthorizationGateway):
             # impact_operation 为 None：操作无法确定（如 INTERNAL_DATA 未给
             # internal_operation）→ 按“可能命中”保守处理，不能当无限制。
         raw_objects = [
-            item for item in (raw.get("objects") or ()) if isinstance(item, dict)
+            item
+            for item in (raw.get("objects") or ())
+            if isinstance(item, dict)
+            and str(item.get("kind") or "").strip().lower() != "program_name"
         ]
         if not raw_objects:
-            return True
+            return False
         impact_objects = [
             item for item in (impact.get("objects") or ()) if isinstance(item, dict)
         ]
@@ -2071,6 +2137,14 @@ class AuthorizationEngine(AuthorizationGateway):
                     + "）；执行前核对不通过，本次没有执行"
                 ),
                 effects=(effect,),
+            )
+        program_unresolved = self._program_name_unresolved(effect, requirement)
+        if program_unresolved:
+            return AuthDecision(
+                verdict=Verdict.APPROVE,
+                reason=program_unresolved,
+                effects=(effect,),
+                decision_code=DECISION_PROGRAM_NAME_UNRESOLVED,
             )
         # 未恢复部分：unrestricted 相关操作在执行前核对也只给具体确认，不自动放行。
         if (

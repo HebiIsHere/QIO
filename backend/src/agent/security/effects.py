@@ -72,6 +72,7 @@ class Verdict(str, Enum):
 
 #: 结构化决策码（授权行为只认它，不解析中文 reason）。
 DECISION_UNRESOLVED_LIMITS = "unresolved_limits_requires_confirmation"
+DECISION_PROGRAM_NAME_UNRESOLVED = "program_name_requires_object_binding"
 
 
 @dataclass(frozen=True)

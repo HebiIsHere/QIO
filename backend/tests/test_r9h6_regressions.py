@@ -329,8 +329,8 @@ async def test_program_name_limit_blocks_real_run_program(ctx):
         result = await tool.run(
             program="python", args=[str(script)], cwd=str(root), timeout=30
         )
-    assert result.ok is False, result
-    assert not marker.exists(), "program_name 限制必须在真实执行前生效"
+    assert result.ok is True and result.code == "pending_approval", result
+    assert not marker.exists(), "program_name 不得静默执行，必须进入具体确认"
     row = ctx.requirements.by_id(requirement.requirement_id)
     assert row is not None and row.structured_limits_state == requirement_limits.STATE_STRUCTURED
 

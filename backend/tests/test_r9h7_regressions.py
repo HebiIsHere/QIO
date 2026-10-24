@@ -60,8 +60,9 @@ async def test_program_name_entry_and_target_version_are_distinct(ctx):
     tool = RunProgramTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
     with requirement_context(binding):
         result = await tool.run(program="python", args=[str(script)], cwd=str(root), timeout=30)
-    assert result.ok is False, result
-    assert not marker.exists(), "调用入口 python 必须命中程序名称限制"
+    # program_name 不能由执行层按名称直接拒绝；命中入口后进入具体确认，绝不执行。
+    assert result.ok is True and result.code == "pending_approval", result
+    assert not marker.exists(), "调用入口 python 不能静默执行"
 
     # 不同版本入口不能按去点/名称主体被误拦；同一入口才命中。
     def effect(entry: str):
@@ -85,7 +86,7 @@ async def test_program_name_entry_and_target_version_are_distinct(ctx):
     with requirement_context(binding2):
         same = await ctx.authorization.authorize(effect("python3.11"))
         other = await ctx.authorization.authorize(effect("python3.12"))
-    assert same.verdict == Verdict.DENY
+    assert same.verdict == Verdict.APPROVE
     assert other.verdict == Verdict.ALLOW, other.reason
 
 

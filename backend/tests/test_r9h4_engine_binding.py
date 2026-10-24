@@ -1257,8 +1257,9 @@ def test_limit_program_matches_resolved_program(db_conn, tmp_path):
             ctx=ctx_for(binding),
         )
     )
-    assert denied.verdict == Verdict.DENY
-    assert "不要运行 python" in denied.reason
+    # R9-H7 §1：program_name 未绑定明确对象时不由执行层直接拒绝，进入具体确认。
+    assert denied.verdict == Verdict.APPROVE
+    assert "程序名称" in denied.reason
 
     allowed = asyncio.run(
         security.engine.authorize(
