@@ -420,8 +420,8 @@ const boardSize = computed(() => {
     width: calc(100% - 12px);
   }
 }
-/* 320–420：模式切换不再和对话抢一行，避免输入区被压成一条缝。 */
-@media (max-width: 420px) {
+/* 320–520：模式切换不再和对话抢一行，避免输入区被压窄。 */
+@media (max-width: 520px) {
   .im-floating-chat .im-composer-row {
     flex-direction: column;
     align-items: stretch;
