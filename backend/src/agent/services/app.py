@@ -3009,7 +3009,22 @@ class AppContext:
 
     @staticmethod
     def _applied_limits(applied: Any) -> tuple[dict, ...]:
-        """取 AppliedResolution 的结构化限制（C 新增 structured_limits 时优先）。"""
+        """取 AppliedResolution 的结构化限制（C 新增 structured_limits 时优先）。
+
+        R9-H11 §7：structured 状态下以**台账已保存行**为准——AppliedResolution 里的
+        快照可能形成于 program_binding 固化之前，本轮生效限制不能因此丢绑定
+        （否则执行层会把已绑定对象当成未绑定/未知）。
+        """
+        from agent.security import requirement_limits
+
+        requirement = getattr(applied, "requirement", None)
+        if requirement is not None and (
+            str(getattr(requirement, "structured_limits_state", "") or "")
+            == requirement_limits.STATE_STRUCTURED
+        ):
+            saved = getattr(requirement, "structured_limits", None)
+            if saved is not None:
+                return tuple(dict(item) for item in saved if isinstance(item, dict))
         values = getattr(applied, "structured_limits", None)
         if values is None:
             values = getattr(applied, "limits", ())
@@ -3661,6 +3676,188 @@ class AppContext:
             return None
         return tuple(dict(item) for item in recovered if isinstance(item, dict))
 
+    # -- R9-H11：structured-but-unbound 的专用绑定恢复 ------------------
+
+    @staticmethod
+    def _binding_recovery_snapshot(requirement: Any, context: Any) -> dict:
+        """恢复开始时的要求/链快照（写回前核对 id/version/status/chain_digest）。"""
+        return {
+            "requirement_id": str(getattr(requirement, "requirement_id", "") or ""),
+            "version": int(getattr(requirement, "version", 0) or 0),
+            "status": str(getattr(requirement, "status", "") or ""),
+            "parent_id": (
+                None
+                if getattr(requirement, "parent_id", None) is None
+                else str(getattr(requirement, "parent_id"))
+            ),
+            "text": str(getattr(requirement, "text", "") or ""),
+            "chain_digest": str(getattr(context, "chain_digest", "") or ""),
+        }
+
+    @staticmethod
+    def _binding_recovery_snapshot_matches(
+        expected: dict, requirement: Any, context: Any
+    ) -> bool:
+        """恢复结果返回后重新读：id/版本/状态/父链/原话/链摘要任一变化即丢弃。"""
+        if requirement is None or not isinstance(expected, dict):
+            return False
+        if str(getattr(requirement, "status", "")) != "active":
+            return False
+        if str(getattr(requirement, "requirement_id", "")) != str(
+            expected.get("requirement_id") or ""
+        ):
+            return False
+        if int(getattr(requirement, "version", 0) or 0) != int(
+            expected.get("version") or 0
+        ):
+            return False
+        if str(getattr(requirement, "parent_id", None) or "") != str(
+            expected.get("parent_id") or ""
+        ):
+            return False
+        if str(getattr(requirement, "text", "") or "") != str(
+            expected.get("text") or ""
+        ):
+            return False
+        expected_digest = str(expected.get("chain_digest") or "")
+        fresh_digest = str(getattr(context, "chain_digest", "") or "")
+        if expected_digest and (not fresh_digest or fresh_digest != expected_digest):
+            return False
+        return True
+
+    async def _recover_structured_binding_limits(
+        self, ctx: Any, requirement: Any
+    ) -> tuple[dict, ...] | None:
+        """R9-H11 §2/§3：structured-but-unbound 的**专用绑定恢复**。
+
+        * 只理解和绑定限制：只用已保存限制 + 后端候选事实（当前 PATH 查找 /
+          保存时已有绑定），不生成普通授权、不调用普通独立授权审查、不改权限模式；
+        * 写回前核对 requirement id/version/status/chain_digest（条件写入）；
+        * 恢复失败 / 等待期间要求被修改或撤回：一行都不写，原限制、known 与来源
+          保持原样（不会清空成"无限制"）。
+        """
+        from agent.security import requirement_limits
+
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        version = int(getattr(requirement, "version", 0) or 0)
+        raw_limits = getattr(requirement, "structured_limits", None)
+        if not requirement_id or version < 1 or not isinstance(raw_limits, (list, tuple)):
+            return None
+        known = tuple(dict(item) for item in raw_limits if isinstance(item, dict))
+        if not requirement_limits.needs_binding_recovery(known):
+            return None
+        context = None
+        recovery = getattr(self.requirements, "recovery_context", None)
+        if callable(recovery):
+            try:
+                context = await self._maybe_await(recovery(requirement_id))
+            except Exception:  # noqa: BLE001 - 链快照读不到：仍可用版本/状态条件写入
+                context = None
+        snapshot = self._binding_recovery_snapshot(requirement, context)
+        # 唯一可信绑定创建入口：只用后端只读候选事实，不按名称/后缀猜测。
+        try:
+            rebound = requirement_limits.attach_program_bindings(
+                known,
+                requirement_id=requirement_id,
+                version=version,
+                status=str(getattr(requirement, "status", "") or ""),
+            )
+        except Exception as exc:  # noqa: BLE001 - 恢复失败：保留原始记录
+            logger.warning(
+                "程序绑定专用恢复失败（%s）：%s", requirement_id, type(exc).__name__
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制中的程序对象暂时无法可靠绑定，相关操作需要确认"
+            )
+            return None
+        facts = requirement_limits.binding_facts(rebound)
+        if not requirement_limits.binding_recovery_complete(rebound):
+            logger.warning(
+                "程序绑定专用恢复未能绑定全部对象（%s）：%s", requirement_id, facts
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制中的程序对象无法可靠绑定，相关操作需要确认"
+            )
+            return None
+        # 恢复期间重新读要求/链：被修改、撤回或链变化即丢弃结果，不写回旧结果。
+        fresh_requirement = None
+        fresh_context = None
+        try:
+            fresh_requirement = self.requirements.by_id(requirement_id)
+            if callable(recovery):
+                fresh_context = await self._maybe_await(recovery(requirement_id))
+        except Exception:  # noqa: BLE001 - 读不到就不写
+            fresh_requirement = None
+            fresh_context = None
+        if not self._binding_recovery_snapshot_matches(
+            snapshot, fresh_requirement, fresh_context
+        ):
+            logger.warning(
+                "程序绑定专用恢复结果已过期（要求/版本/链已变化），丢弃不写：%s",
+                requirement_id,
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制恢复结果已过期，相关操作需要确认"
+            )
+            return None
+        source = requirement_limits.build_binding_recovery_source(
+            requirement_text=snapshot["text"],
+            chain_digest=snapshot["chain_digest"] or None,
+            version=version,
+            sources=facts.get("sources") or ("path_lookup",),
+        )
+        try:
+            writer = getattr(self.requirements, "apply_binding_recovery", None)
+            if callable(writer):
+                written = writer(
+                    requirement_id,
+                    rebound,
+                    source=source,
+                    expected_version=version,
+                    expected_status="active",
+                    expected_chain_digest=snapshot["chain_digest"] or None,
+                )
+                written = await self._maybe_await(written)
+            else:  # 兼容旧装配：条件写参数由 _call_structured_setter 探测
+                written = await self._call_structured_setter(
+                    requirement_id,
+                    rebound,
+                    source=source,
+                    state=requirement_limits.STATE_STRUCTURED,
+                    expected={
+                        "expected_version": version,
+                        "expected_status": "active",
+                        "expected_chain_digest": snapshot["chain_digest"] or None,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 - 版本/链变化或写失败：保持原记录
+            logger.warning(
+                "程序绑定专用恢复写回失败（%s）：%s",
+                requirement_id,
+                type(exc).__name__,
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制恢复写回失败，相关操作需要确认"
+            )
+            return None
+        reloaded = None
+        try:
+            reloaded = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001
+            reloaded = None
+        stored = (
+            getattr(reloaded, "structured_limits", None)
+            if reloaded is not None
+            else None
+        )
+        if stored is None or not requirement_limits.binding_recovery_complete(stored):
+            logger.warning("程序绑定专用恢复写入后读回不一致：%s", requirement_id)
+            self._append_history_notice(
+                ctx, "历史用户限制恢复结果无法确认，相关操作需要确认"
+            )
+            return None
+        return tuple(dict(item) for item in stored if isinstance(item, dict))
+
     async def _ensure_legacy_structured_limits(
         self,
         ctx: Any,
@@ -3669,14 +3866,17 @@ class AppContext:
         message_id: str | None,
         turn_id: str,
     ) -> tuple[dict, ...] | None:
-        """R9-H2 §3/§4：历史 legacy/unresolved 要求恢复完整结构化限制。
+        """恢复入口：legacy/unresolved 重新理解；structured-but-unbound 专用绑定。
 
         * A 分支接口存在：RequirementLedger.recovery_context +
           ModelRequirementResolver.extract_limits_from_context，走祖先链；
         * 未合入：退回只喂当前原话的兼容路径（不阻塞、不把失败当无限制）；
-        * 成功返回本轮应使用的结构化限制；失败返回 None（状态已标 unresolved，
-          已有 known limits 保留）。
+        * state=structured 且 program_name 无 program_binding（R9-H11 问题一）：
+          进入**专用绑定恢复**，只用后端候选事实补绑定/澄清，不是"无关"；
+        * 成功返回本轮应使用的结构化限制；失败返回 None（已有 known limits 保留）。
         """
+        from agent.security import requirement_limits
+
         requirement = None
         try:
             requirement = self.requirements.by_id(str(getattr(binding, "requirement_id", "")))
@@ -3686,7 +3886,12 @@ class AppContext:
         if requirement is None:
             return None
         state = str(getattr(requirement, "structured_limits_state", None) or "")
-        if state not in ("legacy", "unresolved"):
+        if state == requirement_limits.STATE_STRUCTURED:
+            return await self._recover_structured_binding_limits(ctx, requirement)
+        if state not in (
+            requirement_limits.STATE_LEGACY,
+            requirement_limits.STATE_UNRESOLVED,
+        ):
             return None
         resolver = getattr(self, "requirement_resolver", None)
         recovery = getattr(self.requirements, "recovery_context", None)
