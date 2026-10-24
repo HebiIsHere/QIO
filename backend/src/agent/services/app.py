@@ -3728,18 +3728,23 @@ class AppContext:
     async def _recover_structured_binding_limits(
         self, ctx: Any, requirement: Any
     ) -> tuple[dict, ...] | None:
-        """R9-H11 §2/§3：structured-but-unbound 的**专用绑定恢复**。
+        """R9-H12 §4：structured-but-unbound 的**专用绑定恢复**（保存候选优先）。
 
-        * 只理解和绑定限制：只用已保存限制 + 后端候选事实（当前 PATH 查找 /
-          保存时已有绑定），不生成普通授权、不调用普通独立授权审查、不改权限模式；
-        * 写回前核对 requirement id/version/status/chain_digest（条件写入）；
-        * 恢复失败 / 等待期间要求被修改或撤回：一行都不写，原限制、known 与来源
+        * 只理解和绑定限制：只用已保存限制 + **保存时记录的候选事实**，不生成普通
+          授权、不调用普通独立授权审查、不改权限模式；
+        * 无保存候选时**绝不**用当前 PATH 查找结果直接绑定（同名程序可能已换对象），
+          当前候选只作为审计事实返回/记录；
+        * 采纳对象必须后端核验（路径存在 + 身份可读 + path/identity 一致）；
+        * 写回前重新核对 requirement id/version/status/chain_digest，并重新核验所采纳
+          的候选事实仍有效；
+        * 恢复失败 / 等待期间要求被修改或撤回：一行都不写，原限制、known、候选与来源
           保持原样（不会清空成"无限制"）。
         """
         from agent.security import requirement_limits
 
         requirement_id = str(getattr(requirement, "requirement_id", "") or "")
         version = int(getattr(requirement, "version", 0) or 0)
+        status = str(getattr(requirement, "status", "") or "")
         raw_limits = getattr(requirement, "structured_limits", None)
         if not requirement_id or version < 1 or not isinstance(raw_limits, (list, tuple)):
             return None
@@ -3754,13 +3759,19 @@ class AppContext:
             except Exception:  # noqa: BLE001 - 链快照读不到：仍可用版本/状态条件写入
                 context = None
         snapshot = self._binding_recovery_snapshot(requirement, context)
-        # 唯一可信绑定创建入口：只用后端只读候选事实，不按名称/后缀猜测。
+        # 当前 PATH 只用于记录审计事实；恢复采纳只认保存候选（后端重新核验）。
+        current_candidates: tuple[dict, ...] = ()
         try:
-            rebound = requirement_limits.attach_program_bindings(
+            current_candidates = requirement_limits.current_binding_candidates(known)
+        except Exception:  # noqa: BLE001 - 审计事实采集失败不阻塞恢复
+            current_candidates = ()
+        try:
+            outcome = requirement_limits.recover_program_bindings(
                 known,
                 requirement_id=requirement_id,
                 version=version,
-                status=str(getattr(requirement, "status", "") or ""),
+                status=status,
+                now_candidates=current_candidates,
             )
         except Exception as exc:  # noqa: BLE001 - 恢复失败：保留原始记录
             logger.warning(
@@ -3770,10 +3781,28 @@ class AppContext:
                 ctx, "历史用户限制中的程序对象暂时无法可靠绑定，相关操作需要确认"
             )
             return None
-        facts = requirement_limits.binding_facts(rebound)
-        if not requirement_limits.binding_recovery_complete(rebound):
+        if not outcome.complete or not outcome.changed:
             logger.warning(
-                "程序绑定专用恢复未能绑定全部对象（%s）：%s", requirement_id, facts
+                "程序绑定专用恢复未完成（%s）：reason=%s 未解决=%s 审计候选=%s",
+                requirement_id,
+                outcome.reason or "no_adoption",
+                [
+                    {
+                        "value": item.get("value"),
+                        "reason": item.get("reason"),
+                        "failure": item.get("failure"),
+                        "saved": item.get("saved_candidates"),
+                    }
+                    for item in outcome.unresolved
+                ],
+                [
+                    {
+                        "name": item.get("name"),
+                        "path": item.get("path"),
+                        "failure": item.get("failure"),
+                    }
+                    for item in outcome.current_candidates
+                ],
             )
             self._append_history_notice(
                 ctx, "历史用户限制中的程序对象无法可靠绑定，相关操作需要确认"
@@ -3800,11 +3829,31 @@ class AppContext:
                 ctx, "历史用户限制恢复结果已过期，相关操作需要确认"
             )
             return None
+        # 写回前重新核验所采纳的保存候选：path 未变、identity/birth 一致。
+        try:
+            invalid = requirement_limits.verify_recovered_bindings(outcome.limits)
+        except Exception as exc:  # noqa: BLE001 - 核验异常=不能确认，失败关闭
+            logger.warning(
+                "程序绑定专用恢复采纳对象复核失败（%s）：%s",
+                requirement_id,
+                type(exc).__name__,
+            )
+            invalid = ({"failure": type(exc).__name__},)
+        if invalid:
+            logger.warning(
+                "程序绑定专用恢复采纳对象已变化（%s）：%s",
+                requirement_id,
+                [str(item.get("failure")) for item in invalid],
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制恢复所采纳的程序对象已变化，相关操作需要确认"
+            )
+            return None
         source = requirement_limits.build_binding_recovery_source(
             requirement_text=snapshot["text"],
             chain_digest=snapshot["chain_digest"] or None,
             version=version,
-            sources=facts.get("sources") or ("path_lookup",),
+            sources=outcome.sources or ("saved_candidate_verified",),
             origin=getattr(requirement, "structured_limits_source", "") or "",
         )
         try:
@@ -3812,7 +3861,7 @@ class AppContext:
             if callable(writer):
                 written = writer(
                     requirement_id,
-                    rebound,
+                    outcome.limits,
                     source=source,
                     expected_version=version,
                     expected_status="active",
@@ -3822,7 +3871,7 @@ class AppContext:
             else:  # 兼容旧装配：条件写参数由 _call_structured_setter 探测
                 written = await self._call_structured_setter(
                     requirement_id,
-                    rebound,
+                    outcome.limits,
                     source=source,
                     state=requirement_limits.STATE_STRUCTURED,
                     expected={
@@ -3873,7 +3922,8 @@ class AppContext:
           ModelRequirementResolver.extract_limits_from_context，走祖先链；
         * 未合入：退回只喂当前原话的兼容路径（不阻塞、不把失败当无限制）；
         * state=structured 且 program_name 无 program_binding（R9-H11 问题一）：
-          进入**专用绑定恢复**，只用后端候选事实补绑定/澄清，不是"无关"；
+          进入**专用绑定恢复**，只采纳保存候选（后端重新核验），无保存候选时保持
+          未解决而不是按当前 PATH 转移禁止对象；不是"无关"；
         * 成功返回本轮应使用的结构化限制；失败返回 None（已有 known limits 保留）。
         """
         from agent.security import requirement_limits

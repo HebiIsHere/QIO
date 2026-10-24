@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Iterable
+from dataclasses import dataclass
+from typing import Any, Iterable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,15 @@ BINDING_FAILURES = frozenset(
 )
 #: 候选事实只为审计保留有界路径（不存模型推理/密钥）。
 MAX_BINDING_CANDIDATES = 4
+
+#: 恢复采纳来源（R9-H12 §4）：只表示"采纳的是保存时的候选，且已被后端重新核验"。
+#: 与保存时路径查找来源（path_lookup）严格区分，审计能看出绑定不是按当前 PATH 转移的。
+BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED = "saved_candidate_verified"
+
+#: 恢复失败/歧义的稳定依据码（有界字符串，写入返回事实与日志，不落库）。
+RECOVERY_REASON_NO_SAVED_CANDIDATES = "no_saved_candidates"
+RECOVERY_REASON_CANDIDATE_UNVERIFIABLE = "saved_candidate_unverifiable"
+RECOVERY_REASON_CANDIDATE_CONFLICT = "saved_candidate_conflict"
 
 
 class LimitRemovalAmbiguous(ValueError):
@@ -234,6 +244,14 @@ def _normalize_binding_candidates(value: Any) -> list[dict]:
         state = _clean_text(raw.get("state")).lower()
         if state in (BINDING_STATE_UNRESOLVED, BINDING_STATE_BOUND):
             item["state"] = state
+        # R9-H12 §4：候选若已携带身份/生命周期事实，必须原样保留（纯数据）；
+        # 恢复时用它们核验"保存候选仍是同一对象"，缺失时按路径当前身份采纳。
+        identity = _clean_text(raw.get("identity"))[:MAX_VALUE_CHARS]
+        if identity:
+            item["identity"] = identity
+        birth_key = _clean_text(raw.get("birth_key"))[:MAX_VALUE_CHARS]
+        if birth_key:
+            item["birth_key"] = birth_key
         candidates.append(item)
         if len(candidates) >= MAX_BINDING_CANDIDATES:
             break
@@ -290,22 +308,22 @@ def _normalize_objects(value: Any) -> list[dict]:
             if clean_binding is not None:
                 entry["program_binding"] = clean_binding
             else:
-                # R9-H11 §1：显式保留"保存时解析失败"的事实（binding_state/
-                # binding_failure/候选路径）。读取/反序列化绝不重新查找或补建绑定。
+                # R9-H11 §1 / R9-H12 §4：显式保留"保存时解析失败"的事实
+                # （binding_state / binding_failure / 候选）。读取/反序列化/
+                # 合并/精确解除都只搬运纯数据，绝不重新查找或补建绑定。
                 state = _clean_text(raw.get("binding_state")).lower()
                 if state == BINDING_STATE_UNRESOLVED:
                     entry["binding_state"] = BINDING_STATE_UNRESOLVED
-                    failure = _clean_text(raw.get("binding_failure")).lower()
+                failure = _clean_text(raw.get("binding_failure")).lower()
+                if failure or state == BINDING_STATE_UNRESOLVED:
                     entry["binding_failure"] = (
-                        failure
-                        if failure in BINDING_FAILURES
-                        else BINDING_FAILURE_UNKNOWN
+                        failure if failure in BINDING_FAILURES else BINDING_FAILURE_UNKNOWN
                     )
-                    candidates = _normalize_binding_candidates(
-                        raw.get("binding_candidates")
-                    )
-                    if candidates:
-                        entry["binding_candidates"] = candidates
+                candidates = _normalize_binding_candidates(
+                    raw.get("binding_candidates")
+                )
+                if candidates:
+                    entry["binding_candidates"] = candidates
         objects.append(entry)
         if len(objects) > MAX_OBJECTS_PER_LIMIT:
             raise ValueError("单个限制条目的对象数过多")
@@ -563,6 +581,504 @@ def binding_facts(limits: Iterable[dict] | None) -> dict:
     return facts
 
 
+
+# ---------------------------------------------------------------------------
+# R9-H12 §4：历史未解决绑定的专用恢复（保存候选优先，绝不随 PATH 转移）
+# ---------------------------------------------------------------------------
+
+
+def _path_token(value: object) -> str:
+    """路径的规范化比较 token（realpath + normcase）；不可解析返回空串。"""
+    import os
+
+    text = _clean_text(value)
+    if not text:
+        return ""
+    try:
+        absolute = os.path.abspath(text)
+        resolved = os.path.realpath(absolute)
+    except (OSError, ValueError):  # pragma: no cover - 极端路径
+        return ""
+    return os.path.normcase(os.path.normpath(resolved))
+
+
+def _verify_saved_binding_candidate(candidate: object) -> dict:
+    """后端核验**保存时的候选事实**是否仍有效（恢复采纳的唯一依据）。
+
+    要求（R9-H12 §4）：候选路径现在存在、是普通文件、路径没有被换成别的位置、
+    文件身份可读；候选若带 identity/birth 事实，必须与当前观测一致。
+    调用方/模型自报不能替代本函数：只接受候选 dict，不执行程序、不读内容。
+    """
+    result: dict = {
+        "verified": False,
+        "path": "",
+        "identity": None,
+        "birth_key": None,
+        "failure": "",
+        "candidate_source": "path_lookup",
+    }
+    if not isinstance(candidate, dict):
+        result["failure"] = "candidate_invalid"
+        return result
+    result["candidate_source"] = _clean_text(candidate.get("source"))[:80] or "path_lookup"
+    path_text = _clean_text(candidate.get("path"))
+    result["path"] = path_text
+    if not path_text:
+        result["failure"] = "candidate_path_missing"
+        return result
+    import os
+    from pathlib import Path
+
+    try:
+        target = Path(os.path.abspath(path_text))
+    except (OSError, ValueError):  # pragma: no cover - 极端路径
+        result["failure"] = "candidate_path_missing"
+        return result
+    try:
+        if not target.exists():
+            result["failure"] = "candidate_path_missing"
+            return result
+        if not target.is_file():
+            result["failure"] = "candidate_not_file"
+            return result
+    except OSError:  # pragma: no cover - 权限/平台异常按不可验证
+        result["failure"] = "candidate_path_unreadable"
+        return result
+    # 保存的路径当时是 realpath；现在 realpath 变了说明路径指向被改（符号链接换目标）。
+    stored_token = os.path.normcase(os.path.normpath(path_text))
+    current_token = _path_token(path_text)
+    if not current_token or stored_token != current_token:
+        result["failure"] = "candidate_path_changed"
+        return result
+    try:
+        from agent.services.file_identity import identity_of
+
+        observed = identity_of(target)
+    except Exception:  # noqa: BLE001 - 身份提供器异常=不可核验（失败关闭）
+        observed = None
+    if observed is None:
+        result["failure"] = "candidate_identity_unavailable"
+        return result
+    recorded_identity = _clean_text(candidate.get("identity"))
+    if recorded_identity and recorded_identity != str(observed.key):
+        result["failure"] = "candidate_identity_mismatch"
+        return result
+    recorded_birth = _clean_text(candidate.get("birth_key"))
+    observed_birth = _clean_text(observed.birth_key)
+    if recorded_birth:
+        if not observed_birth:
+            result["failure"] = "candidate_lifecycle_unverifiable"
+            return result
+        if recorded_birth != observed_birth:
+            result["failure"] = "candidate_lifecycle_mismatch"
+            return result
+    result.update(
+        verified=True,
+        path=os.path.realpath(path_text),
+        identity=str(observed.key),
+        birth_key=observed.birth_key,
+    )
+    return result
+
+
+def _verify_adopted_binding(binding: object) -> str:
+    """写回前重新核验已采纳绑定（path 未变、identity/birth 一致）；失败返回依据码。"""
+    if not isinstance(binding, dict):
+        return "binding_missing"
+    path_text = _clean_text(binding.get("path"))
+    identity_text = _clean_text(binding.get("identity"))
+    if not path_text or not identity_text:
+        return "binding_incomplete"
+    import os
+    from pathlib import Path
+
+    try:
+        target = Path(os.path.abspath(path_text))
+        if not target.exists() or not target.is_file():
+            return "binding_path_missing"
+    except OSError:  # pragma: no cover - 极端路径
+        return "binding_path_missing"
+    if os.path.normcase(os.path.normpath(os.path.realpath(path_text))) != os.path.normcase(
+        os.path.normpath(path_text)
+    ):
+        return "binding_path_changed"
+    try:
+        from agent.services.file_identity import identity_of
+
+        observed = identity_of(target)
+    except Exception:  # noqa: BLE001 - 身份提供器异常=无法确认
+        observed = None
+    if observed is None:
+        return "binding_identity_unavailable"
+    if str(observed.key) != identity_text:
+        return "binding_identity_mismatch"
+    recorded_birth = _clean_text(binding.get("birth_key"))
+    if recorded_birth:
+        observed_birth = _clean_text(observed.birth_key)
+        if not observed_birth:
+            return "binding_lifecycle_unverifiable"
+        if recorded_birth != observed_birth:
+            return "binding_lifecycle_mismatch"
+    return ""
+
+
+def _normalize_current_candidate_facts(value: object) -> tuple[dict, ...]:
+    """把调用方/后端提供的**当前候选事实**规范化为审计用的有界纯数据。
+
+    这些事实只用于审计与返回，**绝不**用于创建绑定（R9-H12 §4：无保存候选时
+    不得用当前 PATH 结果直接绑定）。接受 {名称: 探测结果} 映射或事实序列。
+    """
+
+    def _one(name: str, raw: object) -> list[dict]:
+        facts: list[dict] = []
+        if not isinstance(raw, Mapping):
+            return facts
+        binding = raw.get("binding")
+        if isinstance(binding, Mapping) and _clean_text(binding.get("path")):
+            facts.append(
+                {
+                    "name": name,
+                    "path": _clean_text(binding.get("path"))[:MAX_VALUE_CHARS],
+                    "identity": _clean_text(binding.get("identity"))[:MAX_VALUE_CHARS]
+                    or None,
+                    "birth_key": _clean_text(binding.get("birth_key"))[:MAX_VALUE_CHARS]
+                    or None,
+                    "source": (_clean_text(binding.get("source")) or "path_lookup")[:80],
+                    "failure": "",
+                    "verified": False,
+                    "audit_only": True,
+                }
+            )
+            return facts
+        candidates = raw.get("candidates")
+        if isinstance(candidates, (list, tuple)) and candidates:
+            for item in candidates:
+                if not isinstance(item, Mapping):
+                    continue
+                facts.append(
+                    {
+                        "name": name,
+                        "path": _clean_text(item.get("path"))[:MAX_VALUE_CHARS],
+                        "identity": _clean_text(item.get("identity"))[:MAX_VALUE_CHARS]
+                        or None,
+                        "birth_key": _clean_text(item.get("birth_key"))[
+                            :MAX_VALUE_CHARS
+                        ]
+                        or None,
+                        "source": (_clean_text(item.get("source")) or "path_lookup")[:80],
+                        "failure": _clean_text(raw.get("failure"))[:80],
+                        "verified": False,
+                        "audit_only": True,
+                    }
+                )
+                if len(facts) >= MAX_BINDING_CANDIDATES:
+                    return facts
+            return facts
+        if _clean_text(raw.get("path")) or _clean_text(raw.get("failure")):
+            facts.append(
+                {
+                    "name": name,
+                    "path": _clean_text(raw.get("path"))[:MAX_VALUE_CHARS],
+                    "identity": _clean_text(raw.get("identity"))[:MAX_VALUE_CHARS] or None,
+                    "birth_key": _clean_text(raw.get("birth_key"))[:MAX_VALUE_CHARS]
+                    or None,
+                    "source": (_clean_text(raw.get("source")) or "path_lookup")[:80],
+                    "failure": _clean_text(raw.get("failure"))[:80],
+                    "verified": False,
+                    "audit_only": True,
+                }
+            )
+        return facts
+
+    result: list[dict] = []
+    if value is None:
+        return ()
+    if isinstance(value, Mapping):
+        for raw_name, raw in value.items():
+            result.extend(_one(_clean_text(raw_name), raw))
+    elif isinstance(value, (list, tuple)):
+        for raw in value:
+            if not isinstance(raw, Mapping):
+                continue
+            name = _clean_text(raw.get("name") or raw.get("value"))
+            result.extend(_one(name, raw))
+    return tuple(result)
+
+
+def current_binding_candidates(limits: Iterable[dict] | None) -> tuple[dict, ...]:
+    """当前 PATH 的只读候选事实（**审计专用**，绝不用于创建绑定）。
+
+    只探测没有保存候选的未绑定 program_name：保存候选优先，恢复不得借当前 PATH
+    把禁止对象转移到另一个同名程序（R9-H12 §4）。
+    """
+    facts: list[dict] = []
+    for entry in normalize_limits(list(limits or ())):
+        if not isinstance(entry, dict):
+            continue
+        for item in entry.get("objects") or ():
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("kind") or "").strip().lower() != "program_name":
+                continue
+            if program_binding_state(item) == BINDING_STATE_BOUND:
+                continue
+            if _normalize_binding_candidates(item.get("binding_candidates")):
+                continue
+            name = _clean_text(item.get("value"))
+            try:
+                probe = _probe_program_binding(name)
+            except Exception:  # noqa: BLE001 - 查找异常=无候选事实
+                probe = {
+                    "binding": None,
+                    "failure": BINDING_FAILURE_RESOLVER_ERROR,
+                    "candidates": (),
+                }
+            if not isinstance(probe, dict):
+                probe = {
+                    "binding": None,
+                    "failure": BINDING_FAILURE_RESOLVER_ERROR,
+                    "candidates": (),
+                }
+            normalized = _normalize_current_candidate_facts({name: probe})
+            if normalized:
+                facts.extend(normalized)
+            else:
+                facts.append(
+                    {
+                        "name": name,
+                        "path": "",
+                        "identity": None,
+                        "birth_key": None,
+                        "source": "path_lookup",
+                        "failure": _clean_text(probe.get("failure"))
+                        or BINDING_FAILURE_LOOKUP_FAILED,
+                        "verified": False,
+                        "audit_only": True,
+                    }
+                )
+    return tuple(facts)
+
+
+@dataclass(frozen=True)
+class BindingRecoveryOutcome:
+    """专用绑定恢复的结果（结构化返回事实；limits 未采纳的对象保持原样）。
+
+    * limits：恢复后的限制集合；只有 adopted 非空时才与输入不同；
+    * adopted：真正采纳并核验过的对象事实；
+    * unresolved：仍无法可靠绑定的对象事实（含原因与保存/当前候选事实）；
+    * current_candidates：当前 PATH 候选事实（审计专用，未落库）；
+    * sources：采纳来源集合（saved_candidate_verified + 原候选来源）；
+    * complete：所有 program_name 是否都已绑定；changed：是否有采纳；
+    * reason：未完成时的稳定原因码。
+    """
+
+    limits: tuple[dict, ...] = ()
+    adopted: tuple[dict, ...] = ()
+    unresolved: tuple[dict, ...] = ()
+    current_candidates: tuple[dict, ...] = ()
+    sources: tuple[str, ...] = ()
+    reason: str = ""
+    complete: bool = False
+    changed: bool = False
+
+    def as_dict(self) -> dict:
+        return {
+            "limits": [dict(item) for item in self.limits],
+            "adopted": [dict(item) for item in self.adopted],
+            "unresolved": [dict(item) for item in self.unresolved],
+            "current_candidates": [dict(item) for item in self.current_candidates],
+            "sources": list(self.sources),
+            "reason": self.reason,
+            "complete": bool(self.complete),
+            "changed": bool(self.changed),
+        }
+
+
+def recover_program_bindings(
+    saved_limits: Iterable[dict] | None,
+    *,
+    requirement_id: object,
+    version: object,
+    status: object,
+    now_candidates: object = None,
+) -> BindingRecoveryOutcome:
+    """恢复历史未解决绑定：**保存候选优先**，不得按当前 PATH 转移禁止对象。
+
+    R9-H12 §4：
+    * 只处理无 binding 的 program_name；已有有效绑定原样保留（不随 PATH 转移）；
+    * 保存候选（binding_candidates）中 path 现在存在且身份可读 -> 采纳该路径/
+      identity/birth，source=saved_candidate_verified，记录要求 id/version/status；
+    * 保存候选都不可验证 -> 不写绑定（limits 保持原样），记录 unresolved 事实；
+    * 多个保存候选核验到不同对象 -> 冲突，不写绑定；
+    * 无保存候选 -> 不用当前 PATH 结果绑定；now_candidates 只作为审计事实返回；
+    * 不会修改传入对象；normalize/serialize 保持纯数据。
+    """
+    normalized = normalize_limits(list(saved_limits or ()))
+    current = _normalize_current_candidate_facts(now_candidates)
+    limits_out: list[dict] = []
+    adopted: list[dict] = []
+    unresolved: list[dict] = []
+    for entry_index, entry in enumerate(normalized):
+        copied = dict(entry)
+        objects: list[dict] = []
+        for object_index, obj in enumerate(copied.get("objects") or ()):
+            item = dict(obj) if isinstance(obj, dict) else dict(obj or {})
+            kind = str(item.get("kind") or "").strip().lower()
+            value = _clean_text(item.get("value"))
+            if kind != "program_name" or program_binding_state(item) == BINDING_STATE_BOUND:
+                objects.append(item)
+                continue
+            candidates = _normalize_binding_candidates(item.get("binding_candidates"))
+            matching_current = [
+                dict(fact) for fact in current if _clean_text(fact.get("name")) == value
+            ]
+            if not candidates:
+                unresolved.append(
+                    {
+                        "entry_index": int(entry_index),
+                        "object_index": int(object_index),
+                        "value": value,
+                        "reason": RECOVERY_REASON_NO_SAVED_CANDIDATES,
+                        "failure": _clean_text(item.get("binding_failure"))
+                        or "no_saved_candidate",
+                        "saved_candidates": [],
+                        "current_candidates": matching_current,
+                    }
+                )
+                objects.append(item)
+                continue
+            verified = [
+                _verify_saved_binding_candidate(candidate) for candidate in candidates
+            ]
+            good = [fact for fact in verified if fact["verified"]]
+            identities = {str(fact.get("identity")) for fact in good}
+            if len(identities) > 1:
+                unresolved.append(
+                    {
+                        "entry_index": int(entry_index),
+                        "object_index": int(object_index),
+                        "value": value,
+                        "reason": RECOVERY_REASON_CANDIDATE_CONFLICT,
+                        "failure": "candidate_conflict",
+                        "saved_candidates": [
+                            _clean_text(candidate.get("path")) for candidate in candidates
+                        ],
+                        "current_candidates": matching_current,
+                    }
+                )
+                objects.append(item)
+                continue
+            if not good:
+                failure = next(
+                    (fact["failure"] for fact in verified if fact.get("failure")),
+                    "candidate_unverifiable",
+                )
+                unresolved.append(
+                    {
+                        "entry_index": int(entry_index),
+                        "object_index": int(object_index),
+                        "value": value,
+                        "reason": RECOVERY_REASON_CANDIDATE_UNVERIFIABLE,
+                        "failure": failure,
+                        "saved_candidates": [
+                            _clean_text(candidate.get("path")) for candidate in candidates
+                        ],
+                        "current_candidates": matching_current,
+                    }
+                )
+                objects.append(item)
+                continue
+            chosen = good[0]
+            binding = {
+                "path": _clean_text(chosen.get("path")),
+                "identity": _clean_text(chosen.get("identity")),
+                "birth_key": _clean_text(chosen.get("birth_key")) or None,
+                "source": BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED,
+                "requirement_id": str(requirement_id),
+                "requirement_version": int(version),
+                "requirement_status": str(status),
+            }
+            item["program_binding"] = binding
+            item.pop("binding_state", None)
+            item.pop("binding_failure", None)
+            item.pop("binding_candidates", None)
+            adopted.append(
+                {
+                    "entry_index": int(entry_index),
+                    "object_index": int(object_index),
+                    "value": value,
+                    "path": binding["path"],
+                    "identity": binding["identity"],
+                    "birth_key": binding["birth_key"],
+                    "source": BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED,
+                    "candidate_source": _clean_text(chosen.get("candidate_source"))
+                    or "path_lookup",
+                    "requirement_id": binding["requirement_id"],
+                    "requirement_version": binding["requirement_version"],
+                    "requirement_status": binding["requirement_status"],
+                }
+            )
+            objects.append(item)
+        copied["objects"] = objects
+        limits_out.append(copied)
+    limits = normalize_limits(limits_out)
+    complete = binding_recovery_complete(limits)
+    reason = ""
+    if not complete:
+        reason = unresolved[0]["reason"] if unresolved else "recovery_incomplete"
+    sources: list[str] = []
+    if adopted:
+        sources.append(BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED)
+        for fact in adopted:
+            candidate_source = _clean_text(fact.get("candidate_source"))
+            if candidate_source and candidate_source not in sources:
+                sources.append(candidate_source)
+    return BindingRecoveryOutcome(
+        limits=limits,
+        adopted=tuple(adopted),
+        unresolved=tuple(unresolved),
+        current_candidates=current,
+        sources=tuple(sorted(sources)),
+        reason=reason,
+        complete=bool(complete),
+        changed=bool(adopted),
+    )
+
+
+def verify_recovered_bindings(limits: Iterable[dict] | None) -> tuple[dict, ...]:
+    """写回前重新核验本轮恢复采纳的绑定（path 未变、identity/birth 一致）。
+
+    只核验 source=saved_candidate_verified 的绑定；返回无效事实（空=全部有效）。
+    失败必须不写回（调用方保留原限制/known/候选/来源）。
+    """
+    invalid: list[dict] = []
+    for entry_index, entry in enumerate(normalize_limits(list(limits or ()))):
+        if not isinstance(entry, dict):
+            continue
+        for object_index, item in enumerate(entry.get("objects") or ()):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("kind") or "").strip().lower() != "program_name":
+                continue
+            binding = item.get("program_binding")
+            if not isinstance(binding, dict):
+                continue
+            if _clean_text(binding.get("source")) != BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED:
+                continue
+            failure = _verify_adopted_binding(binding)
+            if failure:
+                invalid.append(
+                    {
+                        "entry_index": int(entry_index),
+                        "object_index": int(object_index),
+                        "value": _clean_text(item.get("value")),
+                        "path": _clean_text(binding.get("path")),
+                        "failure": failure,
+                    }
+                )
+    return tuple(invalid)
+
+
 def build_binding_recovery_source(
     *,
     requirement_text: object,
@@ -772,6 +1288,7 @@ def state_is_known(state: object) -> bool:
 
 __all__ = [
     "BINDING_FAILURES",
+    "BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED",
     "BINDING_FAILURE_IDENTITY_UNAVAILABLE",
     "BINDING_FAILURE_LOOKUP_FAILED",
     "BINDING_FAILURE_RESOLVER_ERROR",
@@ -779,12 +1296,16 @@ __all__ = [
     "BINDING_STATE_BOUND",
     "BINDING_STATE_MISSING",
     "BINDING_STATE_UNRESOLVED",
+    "BindingRecoveryOutcome",
     "LIMIT_OBJECT_KINDS",
     "LIMIT_OPERATIONS",
     "MAX_BINDING_CANDIDATES",
     "MAX_LIMIT_ENTRIES",
     "MAX_OBJECTS_PER_LIMIT",
     "MAX_REASON_CHARS",
+    "RECOVERY_REASON_CANDIDATE_CONFLICT",
+    "RECOVERY_REASON_CANDIDATE_UNVERIFIABLE",
+    "RECOVERY_REASON_NO_SAVED_CANDIDATES",
     "STATE_LEGACY",
     "STATE_STRUCTURED",
     "STATE_UNRESOLVED",
@@ -794,6 +1315,7 @@ __all__ = [
     "binding_facts",
     "binding_recovery_complete",
     "build_binding_recovery_source",
+    "current_binding_candidates",
     "deserialize_limits",
     "known_limits_from_requirement",
     "limits_from_requirement",
@@ -801,8 +1323,10 @@ __all__ = [
     "needs_binding_recovery",
     "normalize_limits",
     "program_binding_state",
+    "recover_program_bindings",
     "remove_limits_precise",
     "serialize_limits",
     "state_is_known",
     "unbound_program_objects",
+    "verify_recovered_bindings",
 ]
