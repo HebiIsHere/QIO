@@ -13,10 +13,7 @@ import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
 import ConversationModeSwitch from "../components/conversation/ConversationModeSwitch.vue";
-import IntentBatchTray from "../components/interactive/IntentBatchTray.vue";
-import IntentStatusPopover from "../components/interactive/IntentStatusPopover.vue";
-import ImpactConfirmDialog from "../components/interactive/ImpactConfirmDialog.vue";
-import IntentWorkbench from "../components/interactive/IntentWorkbench.vue";
+
 import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
 import {
   InteractiveWorkspace,
@@ -37,8 +34,6 @@ import { fetchIntentViews, saveIntentDisplay } from "../services/interactive";
 import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
-/** 意图与结果工作台：保留旧能力入口，Phase 3 再迁到虚拟意图/底部操作。 */
-const workbenchOpen = ref(false);
 /** 执行记录：唯一的新入口，查看确认材料、范围、操作、结果、失败与重试事实。 */
 const recordIntent = ref<IntentView | null>(null);
 /** 书签栏纯查看状态；由工具栏切换，不写板面、不产生意图。 */
@@ -286,13 +281,6 @@ const boardSize = computed(() => {
                 :aria-expanded="store.tasksOpen"
                 @click="store.tasksOpen = !store.tasksOpen"
               >任务{{ store.taskCount ? " " + store.taskCount : "" }}</button>
-              <button
-                class="im-chip"
-                type="button"
-                data-im="workbench-entry"
-                :aria-expanded="workbenchOpen"
-                @click="workbenchOpen = !workbenchOpen"
-              >意图与结果</button>
             </div>
           </div>
 
@@ -338,10 +326,6 @@ const boardSize = computed(() => {
           </div>
 
           <!-- 新链有 IntentView 时由 IntentLayer 接管；旧托盘只服务于旧链兼容记录。 -->
-          <IntentStatusPopover v-if="!intentViews.length" />
-          <IntentBatchTray v-if="!intentViews.length" />
-          <ImpactConfirmDialog />
-          <IntentWorkbench v-if="workbenchOpen" @close="workbenchOpen = false" />
 
           <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
             板面读取失败：{{ store.loadError }}
