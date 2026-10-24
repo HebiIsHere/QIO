@@ -42,11 +42,12 @@ const bookmarksOpen = ref(false);
 const conversationMaxHeight = ref(
   typeof window === "undefined"
     ? 420
-    : Math.max(220, Math.min(720, window.innerHeight - 470)),
+    : Math.max(280, Math.min(720, window.innerHeight - 306)),
 );
 function syncConversationMaxHeight(): void {
   if (typeof window === "undefined") return;
-  conversationMaxHeight.value = Math.max(220, Math.min(720, window.innerHeight - 470));
+  // 对话浮在板面上：最多长到仍露出约 220px 板面（70 全局栏 + 220 板面 + 16 边距）。
+  conversationMaxHeight.value = Math.max(280, Math.min(720, window.innerHeight - 306));
 }
 /** 新链意图视图（服务端事实；不用旧 store.intents 冒充）。 */
 const intentViews = ref<IntentViewWithDisplay[]>([]);

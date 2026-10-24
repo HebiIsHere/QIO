@@ -395,6 +395,14 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   border-radius: var(--r-lg);
   background: var(--bg-base);
 }
+.ic-stream :deep(.empty) {
+  padding: 0 var(--sp-3);
+}
+.ic-stream :deep(.empty .greet) {
+  max-width: 100%;
+  font-size: clamp(20px, 5vw, 34px);
+  overflow-wrap: anywhere;
+}
 .ic-stream :deep(.stream) {
   flex: 1;
   min-height: 0;
