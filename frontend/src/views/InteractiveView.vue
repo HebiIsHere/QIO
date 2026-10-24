@@ -397,12 +397,44 @@ const boardSize = computed(() => {
   max-width: 860px;
   margin-bottom: var(--sp-2);
 }
+/* 工具栏不再是一整条底板：每个功能是独立按钮，悬在输入框上方。 */
 .im-floating-chat :deep(.ic-toolbar .board-toolbar) {
-  padding: var(--sp-1) var(--sp-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.im-floating-chat :deep(.ic-toolbar .tb-sep) {
+  display: none;
+}
+.im-floating-chat :deep(.ic-toolbar .tb-btn) {
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
   background: var(--bg-elevated);
-  box-shadow: var(--shadow-2);
+  box-shadow: var(--shadow-1);
+}
+.im-floating-chat :deep(.ic-toolbar .tb-icon-btn) {
+  min-width: 32px;
+  padding: 0 var(--sp-1);
+}
+.im-floating-chat :deep(.ic-toolbar .tb-main) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.im-floating-chat :deep(.ic-toolbar .tb-edit),
+.im-floating-chat :deep(.ic-toolbar .tb-submit),
+.im-floating-chat :deep(.ic-toolbar .submit-cluster) {
+  display: contents;
+}
+.im-floating-chat :deep(.ic-toolbar .actions) {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
 }
 .im-floating-chat :deep(.ic-dock) {
   padding: 0;
