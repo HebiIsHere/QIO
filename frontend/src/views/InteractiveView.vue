@@ -295,34 +295,34 @@ const boardSize = computed(() => {
 
           <!-- 悬浮对话：板面保持完整高度；工具栏与输入区固定在对话卡底部，消息向上展开。 -->
           <div class="im-floating-chat" data-im="floating-chat">
-            <div class="im-composer-row">
-              <ConversationModeSwitch class="im-mode-switch" />
-              <div class="im-conversation-slot">
-                <SaveFailureBanner />
-                <InteractiveConversation
-                  v-model:expanded="store.chatOpen"
-                  :binding="store.chatBinding"
-                  :max-height="conversationMaxHeight"
-                  :auto-collapse-on-board-action="true"
-                  :extra-entries="recoveryEntries"
-                >
-                  <template #toolbar>
-                    <BoardToolbar
-                      floating
-                      :bookmarks-open="bookmarksOpen"
-                      @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
-                    />
-                  </template>
-                  <template #extra-panel="{ id }">
-                    <RecoveryPanel
-                      v-if="id === 'recovery'"
-                      :board-id="store.board?.boardId ?? ''"
-                      :active="store.chatOpen"
-                      @updated="recoveryPanelCount = $event"
-                    />
-                  </template>
-                </InteractiveConversation>
-              </div>
+            <div class="im-conversation-slot">
+              <SaveFailureBanner />
+              <InteractiveConversation
+                v-model:expanded="store.chatOpen"
+                :binding="store.chatBinding"
+                :max-height="conversationMaxHeight"
+                :auto-collapse-on-board-action="true"
+                :extra-entries="recoveryEntries"
+              >
+                <template #composer-leading>
+                  <ConversationModeSwitch class="im-mode-switch" />
+                </template>
+                <template #toolbar>
+                  <BoardToolbar
+                    floating
+                    :bookmarks-open="bookmarksOpen"
+                    @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
+                  />
+                </template>
+                <template #extra-panel="{ id }">
+                  <RecoveryPanel
+                    v-if="id === 'recovery'"
+                    :board-id="store.board?.boardId ?? ''"
+                    :active="store.chatOpen"
+                    @updated="recoveryPanelCount = $event"
+                  />
+                </template>
+              </InteractiveConversation>
             </div>
           </div>
 
@@ -367,12 +367,12 @@ const boardSize = computed(() => {
   bottom: 12px;
   transform: translateX(-50%);
   /* 浮在板面卡片工具栏之上；审批对话框仍由统一层/Teleport 处理。 */
-  z-index: var(--im-z-dialog);
+  z-index: calc(var(--im-z-dialog) + 20);
   width: min(calc(100% - 24px), 980px);
   min-width: 0;
   pointer-events: none;
 }
-.im-floating-chat > .im-composer-row {
+.im-floating-chat > .im-conversation-slot {
   pointer-events: auto;
 }
 /* 三块彼此独立：消息面板、工具栏、输入胶囊各自有表面，不再套一张大卡片。 */
@@ -420,35 +420,13 @@ const boardSize = computed(() => {
     width: calc(100% - 12px);
   }
 }
-/* 320–520：模式切换不再和对话抢一行，避免输入区被压窄。 */
-@media (max-width: 520px) {
-  .im-floating-chat .im-composer-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-  }
-  .im-floating-chat .im-mode-switch {
-    align-self: flex-start;
-    padding-bottom: 0;
-  }
-  .im-floating-chat .im-conversation-slot {
-    flex: 1 1 auto;
-    width: 100%;
-  }
-}
-/* 板面槽内舞台：现有 BoardCanvas / ChatDock / BoardToolbar 的定位祖先。 */
-.im-composer-row {
-  display: flex;
-  justify-content: center;
-  align-items: flex-end;
-  gap: 12px;
-  min-width: 0;
-}
+/* 板面槽内舞台：现有 BoardCanvas 的定位祖先。 */
 .im-conversation-slot {
-  flex: 0 1 860px;
+  width: 100%;
   min-width: 0;
 }
 .im-mode-switch {
+  flex: none;
   padding-bottom: 8px;
 }
 @media (max-width: 700px) {

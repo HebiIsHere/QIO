@@ -361,11 +361,16 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
 
       <!-- 输入区：始终挂载；收起只改变可见区域，不清草稿 / 附件 / 排队，也不停止回复 -->
       <div class="ic-composer">
-        <Composer :chat-binding="sendBinding">
-          <template #leading>
-            <slot name="leading" />
-          </template>
-        </Composer>
+        <div class="ic-composer-row">
+          <slot name="composer-leading" />
+          <div class="ic-composer-input">
+            <Composer :chat-binding="sendBinding">
+              <template #leading>
+                <slot name="leading" />
+              </template>
+            </Composer>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -503,6 +508,28 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   max-width: 860px;
   margin: 0 auto var(--sp-2);
   width: 100%;
+}
+.ic-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-3);
+  max-width: 860px;
+  margin: 0 auto;
+  min-width: 0;
+}
+.ic-composer-input {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 520px) {
+  .ic-composer-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .ic-composer-row :deep(.im-mode-switch) {
+    align-self: flex-start;
+  }
 }
 .ic-composer {
   max-width: 860px;
