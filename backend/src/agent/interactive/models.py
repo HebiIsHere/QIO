@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -237,10 +238,36 @@ def new_link(src: str, dst: str, *, direction: bool = False, meaning: str = "") 
         "dst": str(dst),
         "direction": bool(direction),
         "meaning": meaning,
+        "curve": {"x": 0.0, "y": 0.0},
         "deleted": False,
         "createdAt": stamp,
         "updatedAt": stamp,
     }
+
+
+
+#: 关系曲线的弯折偏移上限（板面坐标像素）。只影响显示，不改变端点身份。
+MAX_LINK_CURVE = 240.0
+
+
+def normalize_curve(value: object) -> dict:
+    """把曲线偏移归一为 {x, y}，非法值回到默认直线。"""
+    if not isinstance(value, dict):
+        return {"x": 0.0, "y": 0.0}
+    out = {}
+    for key in ("x", "y"):
+        raw = value.get(key, 0)
+        if isinstance(raw, bool):
+            raw = 0
+        try:
+            number = float(raw)
+        except (TypeError, ValueError):
+            number = 0.0
+        if not math.isfinite(number):
+            number = 0.0
+        out[key] = max(-MAX_LINK_CURVE, min(MAX_LINK_CURVE, number))
+    return out
+
 
 
 # --- 可见范围判定（权限边界，唯一实现） -----------------------------------

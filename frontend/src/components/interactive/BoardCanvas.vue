@@ -2641,6 +2641,12 @@ function openLinkEditor(linkId: string) {
   linkDirection.value = link.direction;
 }
 
+function onLinkCurveChange(linkId: string, curve: { x: number; y: number }) {
+  const current = boardState.value;
+  if (!current) return;
+  commit(updateLink(current, linkId, { curve }), "调整关系曲线");
+}
+
 function saveLinkEditor() {
   const current = boardState.value;
   const linkId = editingLinkId.value;
@@ -3006,6 +3012,7 @@ onBeforeUnmount(() => {
             :folded-group-ids="foldedGroupIds"
             :included-card-ids="includedCardIds"
             @select-link="openLinkEditor"
+            @curve-change="onLinkCurveChange"
           />
 
           <BoardPreviewLayer

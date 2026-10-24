@@ -21,6 +21,7 @@ import type {
   BoardLink,
   BoardState,
   CardKind,
+  LinkCurve,
   Participation,
   VisibleRange,
 } from "./types";
@@ -803,6 +804,21 @@ function normalizeGroup(
  * - 自己连自己 / 端点非法 / 端点不存在 → 整条丢弃（不画假线、不保存半条关系）；
  * - version 原样保留（后端权威自增，前端绝不用内容重算成 1）。
  */
+/** 曲线偏移上限，与后端 models.MAX_LINK_CURVE 保持一致。 */
+export const MAX_LINK_CURVE = 240;
+
+/** 把曲线偏移归一为有限数字；非法值回到默认直线。 */
+export function normalizeLinkCurve(value: unknown): LinkCurve {
+  const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const axis = (key: "x" | "y"): number => {
+    const raw = source[key];
+    const number = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isFinite(number)) return 0;
+    return Math.max(-MAX_LINK_CURVE, Math.min(MAX_LINK_CURVE, number));
+  };
+  return { x: axis("x"), y: axis("y") };
+}
+
 function normalizeLink(
   raw: unknown,
   ctx: { cards: BoardCard[]; groups: BoardGroup[] },
@@ -824,6 +840,7 @@ function normalizeLink(
     dst,
     direction: Boolean(source.direction),
     meaning: asText(source.meaning),
+    ...(source.curve !== undefined ? { curve: normalizeLinkCurve(source.curve) } : {}),
     deleted: false,
     createdAt: asText(source.createdAt) || stamp,
     updatedAt: asText(source.updatedAt) || asText(source.createdAt) || stamp,
@@ -1383,6 +1400,14 @@ export function updateLink(state: BoardState, linkId: string, patch: Partial<Boa
   if (patch.meaning !== undefined && asText(patch.meaning) !== link.meaning) {
     link.meaning = asText(patch.meaning);
     changed = true;
+  }
+  if (patch.curve !== undefined) {
+    const nextCurve = normalizeLinkCurve(patch.curve);
+    const currentCurve = normalizeLinkCurve(link.curve);
+    if (nextCurve.x !== currentCurve.x || nextCurve.y !== currentCurve.y) {
+      link.curve = nextCurve;
+      changed = true;
+    }
   }
   if (patch.deleted !== undefined && Boolean(patch.deleted) !== link.deleted) {
     link.deleted = Boolean(patch.deleted);

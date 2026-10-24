@@ -677,6 +677,24 @@ def test_update_and_remove_link():
     assert board.remove_link(updated, link_id)["links"] == []
 
 
+def test_link_curve_is_normalized_clamped_and_survives_normalize_state():
+    state = mk_state(cards=[mk_card("a"), mk_card("b")])
+    linked = board.add_link(state, "a", "b", False, "关联")
+    link = linked["links"][0]
+    assert link["curve"] == {"x": 0.0, "y": 0.0}
+
+    link_id = link["id"]
+    bent = board.update_link(linked, link_id, {"curve": {"x": 36.5, "y": -24}})
+    assert bent["links"][0]["curve"] == {"x": 36.5, "y": -24.0}
+    assert board.normalize_state(bent)["links"][0]["curve"] == {"x": 36.5, "y": -24.0}
+
+    clamped = board.update_link(bent, link_id, {"curve": {"x": 9999, "y": -9999}})
+    assert clamped["links"][0]["curve"] == {"x": 240.0, "y": -240.0}
+
+    invalid = board.update_link(clamped, link_id, {"curve": {"x": "bad", "y": None}})
+    assert invalid["links"][0]["curve"] == {"x": 0.0, "y": 0.0}
+
+
 def test_links_survive_group_merge_because_endpoints_are_cards():
     state = mk_state(
         cards=[mk_card("a", 0, 0), mk_card("b", 200, 0), mk_card("c", 600, 0)],

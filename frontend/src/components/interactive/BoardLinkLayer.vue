@@ -10,8 +10,9 @@
   - 所有坐标都是**板面坐标**：本层放在被平移 / 缩放的内容层里，所以缩放平移后仍然准确。
 -->
 <script setup lang="ts">
-import { computed } from "vue";
-import type { BoardCard, BoardGroup, BoardLink } from "../../interactive/types";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import type { BoardCard, BoardGroup, BoardLink, LinkCurve } from "../../interactive/types";
+import { curveGeometry, curvePath } from "../../interactive/linkCurve";
 import {
   buildDisplayLinks,
   edgeAnchor,
@@ -53,7 +54,131 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   (e: "select-link", linkId: string): void;
+  (e: "curve-change", linkId: string, curve: LinkCurve): void;
 }>();
+
+const rootEl = ref<SVGSVGElement | null>(null);
+const previewCurves = ref<Record<string, LinkCurve>>({});
+const dragging = ref<{
+  linkId: string;
+  startX: number;
+  startY: number;
+  origin: LinkCurve;
+  moved: boolean;
+} | null>(null);
+let suppressClickUntil = 0;
+
+function curveOf(item: { id: string; curve: LinkCurve }): LinkCurve {
+  return previewCurves.value[item.id] ?? item.curve ?? { x: 0, y: 0 };
+}
+
+function pathOf(item: { id: string; x1: number; y1: number; x2: number; y2: number; curve: LinkCurve }): string {
+  return curvePath({
+    x1: item.x1,
+    y1: item.y1,
+    x2: item.x2,
+    y2: item.y2,
+    curve: curveOf(item),
+  });
+}
+
+function labelPoint(item: { id: string; x1: number; y1: number; x2: number; y2: number; curve: LinkCurve }): { x: number; y: number } {
+  const geometry = curveGeometry({
+    x1: item.x1,
+    y1: item.y1,
+    x2: item.x2,
+    y2: item.y2,
+    curve: curveOf(item),
+  });
+  return { x: geometry.labelX, y: geometry.labelY };
+}
+
+function clampCurve(value: number): number {
+  return Math.max(-240, Math.min(240, value));
+}
+
+function startLabelDrag(linkId: string, curve: LinkCurve, event: PointerEvent): void {
+  if (event.button !== 0 && event.pointerType === "mouse") return;
+  event.preventDefault();
+  event.stopPropagation();
+  dragging.value = {
+    linkId,
+    startX: event.clientX,
+    startY: event.clientY,
+    origin: { x: curve.x, y: curve.y },
+    moved: false,
+  };
+  const move = (moveEvent: PointerEvent) => {
+    const active = dragging.value;
+    if (!active) return;
+    const dx = moveEvent.clientX - active.startX;
+    const dy = moveEvent.clientY - active.startY;
+    if (!active.moved && Math.hypot(dx, dy) < 2) return;
+    active.moved = true;
+    previewCurves.value = {
+      ...previewCurves.value,
+      [active.linkId]: {
+        x: clampCurve(active.origin.x + dx),
+        y: clampCurve(active.origin.y + dy),
+      },
+    };
+  };
+  const up = () => {
+    const active = dragging.value;
+    dragging.value = null;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    if (!active) return;
+    if (active.moved) {
+      const finalCurve = previewCurves.value[active.linkId] ?? active.origin;
+      suppressClickUntil = Date.now() + 320;
+      emit("curve-change", active.linkId, finalCurve);
+    }
+    const next = { ...previewCurves.value };
+    delete next[active.linkId];
+    previewCurves.value = next;
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+function onLabelClick(linkId: string): void {
+  if (Date.now() < suppressClickUntil) return;
+  emit("select-link", linkId);
+}
+
+function labelOf(target: EventTarget | null): HTMLElement | null {
+  const element = target instanceof Element ? target : null;
+  return (element?.closest("[data-link-label]") as HTMLElement | null) ?? null;
+}
+
+function handlePointerDown(event: PointerEvent): void {
+  const label = labelOf(event.target);
+  if (!label) return;
+  const linkId = label.dataset.linkLabel ?? "";
+  const item = drawn.value.find((link) => link.id === linkId);
+  if (!item) return;
+  startLabelDrag(item.id, curveOf(item), event);
+}
+
+function handleClick(event: MouseEvent): void {
+  const label = labelOf(event.target);
+  if (!label) return;
+  const linkId = label.dataset.linkLabel ?? "";
+  if (!linkId) return;
+  event.stopPropagation();
+  onLabelClick(linkId);
+}
+
+onMounted(() => {
+  rootEl.value?.addEventListener("pointerdown", handlePointerDown, true);
+  rootEl.value?.addEventListener("click", handleClick, true);
+});
+
+onBeforeUnmount(() => {
+  rootEl.value?.removeEventListener("pointerdown", handlePointerDown, true);
+  rootEl.value?.removeEventListener("click", handleClick, true);
+});
 
 /** 端点解析上下文：显示层用真实板面数据；不在这里改任何状态。 */
 const endpointContext = computed(() => ({ cards: props.cards, groups: props.groups }));
@@ -125,22 +250,24 @@ const draft = computed<DraftDisplay | null>(() => {
 </script>
 
 <template>
-  <svg class="link-layer" :width="width" :height="height" aria-label="关系链接层">
+  <svg ref="rootEl" class="link-layer" :width="width" :height="height" aria-label="关系链接层">
     <defs>
-      <marker
-        id="im-link-arrow"
-        viewBox="0 0 10 10"
-        refX="9"
-        refY="5"
-        markerWidth="7"
-        markerHeight="7"
-        orient="auto-start-reverse"
+      <linearGradient
+        v-for="(item, index) in drawn"
+        :id="'im-link-grad-' + index"
+        :key="'grad-' + item.id"
+        gradientUnits="userSpaceOnUse"
+        :x1="item.x1"
+        :y1="item.y1"
+        :x2="item.x2"
+        :y2="item.y2"
       >
-        <path class="arrow" d="M 0 0 L 10 5 L 0 10 z" />
-      </marker>
+        <stop offset="0" stop-color="var(--link)" />
+        <stop offset="1" stop-color="var(--accent)" />
+      </linearGradient>
     </defs>
     <g
-      v-for="item in drawn"
+      v-for="(item, index) in drawn"
       :key="item.id"
       :data-link-id="item.id"
       :data-src="item.src"
@@ -153,22 +280,16 @@ const draft = computed<DraftDisplay | null>(() => {
     >
       <!-- 只给可访问名称：含义 + 「组名 / 卡片」，绝不列成员名或正文 -->
       <title>{{ item.ariaLabel }}</title>
-      <line
+      <path
         class="hit"
-        :x1="item.x1"
-        :y1="item.y1"
-        :x2="item.x2"
-        :y2="item.y2"
+        :d="pathOf(item)"
         @click="emit('select-link', item.id)"
       />
-      <line
+      <path
         class="line"
         :class="{ active: item.active }"
-        :x1="item.x1"
-        :y1="item.y1"
-        :x2="item.x2"
-        :y2="item.y2"
-        :marker-end="item.direction ? 'url(#im-link-arrow)' : undefined"
+        :d="pathOf(item)"
+        :stroke="'url(#im-link-grad-' + index + ')'"
       />
       <!-- 汇聚点：组收起时真实端点在这里汇到组边缘（身份仍记在 data-src / data-dst） -->
       <circle
@@ -185,25 +306,29 @@ const draft = computed<DraftDisplay | null>(() => {
         :cy="item.y2"
         r="3.5"
       />
-      <rect
-        class="label-bg"
+      <g
+        class="link-label"
         :class="{ active: item.active }"
-        :x="item.labelX - item.labelW / 2"
-        :y="item.labelY - 10"
-        :width="item.labelW"
-        height="20"
-        rx="6"
-        @click="emit('select-link', item.id)"
-      />
-      <text
-        class="label"
-        :x="item.labelX"
-        :y="item.labelY + 4"
-        text-anchor="middle"
-        @click="emit('select-link', item.id)"
+        :data-link-label="item.id"
       >
-        {{ item.meaning }}
-      </text>
+        <rect
+          class="label-bg"
+          :class="{ active: item.active }"
+          :x="labelPoint(item).x - item.labelW / 2"
+          :y="labelPoint(item).y - 10"
+          :width="item.labelW"
+          height="20"
+          rx="10"
+        />
+        <text
+          class="label"
+          :x="labelPoint(item).x"
+          :y="labelPoint(item).y + 4"
+          text-anchor="middle"
+        >
+          {{ item.meaning }}
+        </text>
+      </g>
     </g>
 
     <!-- 待建连线（虚线）：松手前只是预览，不是正式关系 -->
@@ -249,9 +374,8 @@ const draft = computed<DraftDisplay | null>(() => {
   z-index: 3;
   overflow: visible;
 }
-.arrow { fill: var(--link); }
-.hit { stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
-.line { stroke: var(--link); stroke-width: 1.5; stroke-dasharray: none; }
+.hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.line { fill: none; stroke: var(--link); stroke-width: 1.5; stroke-dasharray: none; }
 .line.active { stroke: var(--accent); stroke-width: 2.5; }
 /* 组收起时的汇聚点：与线同色，只是标记「真实端点在组里」 */
 .aggregated-dot { fill: var(--link); pointer-events: none; }
@@ -259,7 +383,7 @@ const draft = computed<DraftDisplay | null>(() => {
   fill: var(--bg-elevated);
   stroke: var(--border-subtle);
   pointer-events: auto;
-  cursor: pointer;
+  cursor: grab;
 }
 .label-bg.active { stroke: var(--accent); }
 .label {

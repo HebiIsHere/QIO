@@ -91,22 +91,22 @@ function mountLayer(props: Record<string, unknown> = {}): VueWrapper {
   return wrapper;
 }
 
-function lineOf(frame: VueWrapper, linkId: string): Record<string, string> {
+function hitPathOf(frame: VueWrapper, linkId: string): { x1: number; y1: number; x2: number; y2: number } {
   const g = frame.get('[data-link-id="' + linkId + '"]');
-  const line = g.get("line.hit");
-  const read = (name: string) => Number(line.attributes(name));
-  return { x1: String(read("x1")), y1: String(read("y1")), x2: String(read("x2")), y2: String(read("y2")), src: String(g.attributes("data-src")), dst: String(g.attributes("data-dst")) };
+  const d = String(g.get("path.hit").attributes("d") ?? "");
+  const numbers = (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+  return { x1: numbers[0], y1: numbers[1], x2: numbers[numbers.length - 2], y2: numbers[numbers.length - 1] };
 }
 
 describe("最终显示边缘锚点", () => {
   it("卡片—卡片：两端落在卡片边缘，而不是中心点", () => {
     const frame = mountLayer();
     const g = frame.get('[data-link-id="l1"]');
-    const line = g.get("line.hit");
-    expect(Number(line.attributes("x1"))).toBe(220); // a 右边
-    expect(Number(line.attributes("y1"))).toBe(140);
-    expect(Number(line.attributes("x2"))).toBe(400); // b 左边
-    expect(Number(line.attributes("y2"))).toBe(140);
+    const line = hitPathOf(frame, "l1");
+    expect(line.x1).toBe(220); // a 右边
+    expect(line.y1).toBe(140);
+    expect(line.x2).toBe(400); // b 左边
+    expect(line.y2).toBe(140);
     expect(g.attributes("data-src")).toBe("a");
     expect(g.attributes("data-dst")).toBe("b");
     expect(g.attributes("data-src-kind")).toBe("card");
@@ -116,12 +116,12 @@ describe("最终显示边缘锚点", () => {
   it("组端点：锚到组框边缘，一条线表示当前成员集合", () => {
     const frame = mountLayer({ links: [mkLink("l2", "group:g1", "c")] });
     const g = frame.get('[data-link-id="l2"]');
-    const line = g.get("line.hit");
+    const line = hitPathOf(frame, "l2");
     expect(g.attributes("data-src-kind")).toBe("group");
     expect(g.attributes("data-display-src")).toBe("group:g1");
-    expect(Number(line.attributes("y1"))).toBe(200); // 组框下边缘
-    expect(Number(line.attributes("x1"))).toBeGreaterThanOrEqual(80);
-    expect(Number(line.attributes("x1"))).toBeLessThanOrEqual(440);
+    expect(line.y1).toBe(200); // 组框下边缘
+    expect(line.x1).toBeGreaterThanOrEqual(80);
+    expect(line.x1).toBeLessThanOrEqual(440);
     // 不按成员复制成多条
     expect(frame.findAll('[data-link-id="l2"]')).toHaveLength(1);
   });
@@ -129,8 +129,8 @@ describe("最终显示边缘锚点", () => {
   it("拖动中的实时坐标由调用方传入，锚点跟着最终显示矩形走", () => {
     const moved = [mkCard("a", 100, 100), mkCard("b", 600, 100)];
     const frame = mountLayer({ cards: moved });
-    const line = frame.get('[data-link-id="l1"]').get("line.hit");
-    expect(Number(line.attributes("x2"))).toBe(600);
+    const line = hitPathOf(frame, "l1");
+    expect(line.x2).toBe(600);
   });
 });
 
@@ -141,11 +141,11 @@ describe("组收起 / 展开", () => {
       foldedGroupIds: ["g1"],
     });
     const g = frame.get('[data-link-id="l3"]');
-    const line = g.get("line.hit");
+    const line = hitPathOf(frame, "l3");
     expect(g.attributes("data-src")).toBe("a"); // 真实端点不变
     expect(g.attributes("data-display-src")).toBe("group:g1");
     expect(g.attributes("data-aggregated")).toBe("true");
-    expect(Number(line.attributes("y1"))).toBe(200); // 组框边缘
+    expect(line.y1).toBe(200); // 组框边缘
   });
 
   it("展开后恢复成员边缘；组内成员之间的线在收起期间不画、展开后恢复", () => {
@@ -162,7 +162,7 @@ describe("组收起 / 展开", () => {
     const g = wrapper.get('[data-link-id="l3"]');
     expect(g.attributes("data-display-src")).toBe("a");
     expect(g.attributes("data-aggregated")).toBeUndefined();
-    expect(Number(g.get("line.hit").attributes("y1"))).toBe(180); // a 下边缘
+    expect(hitPathOf(wrapper!, "l3").y1).toBe(180); // a 下边缘
   });
 });
 
@@ -231,10 +231,23 @@ describe("拖线预览（目标可以是卡片或组）", () => {
 });
 
 describe("文案与无障碍", () => {
-  it("含义标签、方向箭头、选中态照旧", () => {
+  it("含义标签、颜色方向和选中态照旧（不使用箭头）", () => {
     const frame = mountLayer({ links: [mkLink("l1", "a", "b", { direction: true, meaning: "属于" })], activeLinkId: "l1" });
     expect(frame.get('[data-link-id="l1"] .label').text()).toBe("属于");
-    expect(frame.get('[data-link-id="l1"] line.line').classes()).toContain("active");
+    expect(frame.get('[data-link-id="l1"] path.line').classes()).toContain("active");
+    expect(frame.find("marker").exists()).toBe(false);
+    expect(frame.find('[data-link-id="l1"] path.line').attributes("stroke")).toContain("url(#im-link-grad-");
+  });
+
+  it("拖动含义标签会发出曲线变更，松手时保留端点身份", async () => {
+    const frame = mountLayer();
+    const label = frame.get('[data-link-label="l1"] .label-bg');
+    const element = label.element as Element;
+    element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: 100, clientY: 100 }));
+    window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 140, clientY: 70 }));
+    window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, clientX: 140, clientY: 70 }));
+    await frame.vm.$nextTick();
+    expect(frame.emitted("curve-change")?.[0]).toEqual(["l1", { x: 40, y: -30 }]);
   });
 
   it("组端点的标题只用组名与「卡片」，不泄露成员正文", () => {

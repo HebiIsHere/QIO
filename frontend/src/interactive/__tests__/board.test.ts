@@ -500,6 +500,20 @@ describe("关系链接", () => {
     expect(board.removeLink(updated, linkId).links).toEqual([]);
   });
 
+  it("关系曲线可保存、归一化并跨 normalizeState 保留", () => {
+    const linked = board.addLink(mkState([mkCard("a"), mkCard("b")]), "a", "b", false, "关联");
+    const linkId = linked.links[0].id;
+    const bent = board.updateLink(linked, linkId, { curve: { x: 42, y: -18 } });
+    expect(bent.links[0].curve).toEqual({ x: 42, y: -18 });
+    expect(board.normalizeState(bent).links[0].curve).toEqual({ x: 42, y: -18 });
+
+    const clamped = board.updateLink(bent, linkId, { curve: { x: 9999, y: -9999 } });
+    expect(clamped.links[0].curve).toEqual({ x: 240, y: -240 });
+
+    const invalid = board.updateLink(clamped, linkId, { curve: { x: Number.NaN, y: 0 } });
+    expect(invalid.links[0].curve).toEqual({ x: 0, y: 0 });
+  });
+
   it("合并组不影响卡片之间的链接", () => {
     const state = mkState(
       [mkCard("a", 0, 0), mkCard("b", 200, 0), mkCard("c", 600, 0)],

@@ -62,7 +62,7 @@ _CARD_PATCH_KEYS = (
     # Phase 2：参与状态的唯一事实源（显式写入；checked / hidden 只做历史兼容）
     "participation",
 )
-_LINK_PATCH_KEYS = ("src", "dst", "direction", "meaning", "deleted")
+_LINK_PATCH_KEYS = ("src", "dst", "direction", "meaning", "curve", "deleted")
 
 #: 默认名判定同时认两种形态：新的「默认组名」与历史数据里的「组 N」（契约 §9.1）。
 _DEFAULT_NAME_RE = re.compile(
@@ -304,6 +304,7 @@ def _normalize_link(
     link["dst"] = dst
     link["direction"] = bool(link.get("direction", False))
     link["meaning"] = _as_text(link.get("meaning"))
+    link["curve"] = models.normalize_curve(link.get("curve"))
     link["deleted"] = False
     link["createdAt"] = _as_text(link.get("createdAt")) or stamp
     link["updatedAt"] = _as_text(link.get("updatedAt")) or link["createdAt"]
@@ -441,6 +442,7 @@ def _link_signature(link: dict) -> str:
         "dst": models.normalize_link_endpoint(link.get("dst")),
         "direction": bool(link.get("direction", False)),
         "meaning": str(link.get("meaning") or ""),
+        "curve": models.normalize_curve(link.get("curve")),
         "deleted": bool(link.get("deleted", False)),
     }
     return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
@@ -897,6 +899,8 @@ def update_link(state: dict, link_id: str, patch: dict) -> dict:
             value = bool(value)
         elif key == "meaning":
             value = _as_text(value)
+        elif key == "curve":
+            value = models.normalize_curve(value)
         elif key in ("src", "dst"):
             value = models.normalize_link_endpoint(value)
             if not value:

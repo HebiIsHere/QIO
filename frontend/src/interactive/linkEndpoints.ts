@@ -20,7 +20,7 @@
  *    校验。无障碍文案只用组名与「卡片」，绝不列成员名 / 正文 / id。
  */
 
-import type { BoardCard, BoardGroup, BoardLink } from "./types";
+import type { BoardCard, BoardGroup, BoardLink, LinkCurve } from "./types";
 
 export interface BoardRect {
   x: number;
@@ -476,6 +476,8 @@ export interface DisplayLink {
   labelX: number;
   labelY: number;
   labelW: number;
+  /** 用户拖出的曲线偏移；默认 {0,0} 表示标准曲线。 */
+  curve: LinkCurve;
   direction: boolean;
   meaning: string;
   active: boolean;
@@ -615,6 +617,10 @@ export function buildDisplayLinks(input: DisplayLinksInput): DisplayLinksResult 
       labelX: (anchor.start.x + anchor.end.x) / 2,
       labelY: (anchor.start.y + anchor.end.y) / 2,
       labelW: Math.max(64, meaning.length * 13 + 18),
+      curve: {
+        x: Number.isFinite(Number(link.curve?.x)) ? Number(link.curve?.x) : 0,
+        y: Number.isFinite(Number(link.curve?.y)) ? Number(link.curve?.y) : 0,
+      },
       direction: Boolean(link.direction),
       meaning,
       active: input.activeLinkId === link.id,

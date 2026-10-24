@@ -59,6 +59,12 @@ export interface BoardGroup {
   updatedAt: string;
 }
 
+export interface LinkCurve {
+  /** 相对默认曲线中点的板面偏移，单位 px；只影响显示，不改变端点身份。 */
+  x: number;
+  y: number;
+}
+
 export interface BoardLink {
   id: string;
   /**
@@ -70,6 +76,8 @@ export interface BoardLink {
   /** 方向是用户写明的；系统不得自行解释成因果 / 支持 / 执行顺序 */
   direction: boolean;
   meaning: string;
+  /** 曲线弯曲偏移；省略 = 默认曲线。 */
+  curve?: LinkCurve;
   /** 服务端权威对象版本（CAS）：前端归一化必须保留。 */
   version?: number;
   deleted: boolean;

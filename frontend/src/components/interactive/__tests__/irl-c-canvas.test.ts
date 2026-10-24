@@ -387,15 +387,18 @@ describe("组框与关系线继续走同一份显示坐标", () => {
     await nextTick();
     const a = rectOfCard(view, "a");
     const b = rectOfCard(view, "b");
-    const line = view.get("line.hit");
+    const line = view.get("path.hit");
     /*
      * Phase 2-B（契约 §5.3）：连线锚定**最终显示矩形的边缘**，不再是卡片中心点。
      * 两个矩形同高、水平相邻 → 起点 = a 的右边中点，终点 = b 的左边中点。
+     * 曲线只在两端之间弯，path 的 M 起点和最后的终点仍是两个锚点。
      */
-    expect(Number(line.attributes("x1"))).toBe(a.x + a.w);
-    expect(Number(line.attributes("y1"))).toBe(a.y + a.h / 2);
-    expect(Number(line.attributes("x2"))).toBe(b.x);
-    expect(Number(line.attributes("y2"))).toBe(b.y + b.h / 2);
+    const path = String(line.attributes("d") ?? "");
+    const numbers = (path.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+    expect(numbers[0]).toBe(a.x + a.w);
+    expect(numbers[1]).toBe(a.y + a.h / 2);
+    expect(numbers[numbers.length - 2]).toBe(b.x);
+    expect(numbers[numbers.length - 1]).toBe(b.y + b.h / 2);
   });
 });
 
