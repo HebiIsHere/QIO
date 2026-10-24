@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="6" skipped="0" tests="9" time="7.325" timestamp="2026-10-24T17:37:15.692228+08:00" hostname="admin"><testcase classname="tests.test_r9h7_regressions" name="test_program_name_entry_and_target_version_are_distinct" time="0.916"><failure message="AssertionError: 版本&#10;assert &lt;Verdict.DENY: 'deny'&gt; == &lt;Verdict.ALLOW: 'allow'&gt;&#10;  &#10;  - allow&#10;  + deny">ctx = &lt;agent.services.app.AppContext object at 0x000001B398494050&gt;
+
+    async def test_program_name_entry_and_target_version_are_distinct(ctx):
+        root = ctx.computer.root()
+        marker = root / "entry-marker.txt"
+        script = root / "entry.py"
+        script.write_text(
+            "from pathlib import Path\nPath(r'%s').write_text('ran')\n" % marker,
+            encoding="utf-8",
+        )
+        requirement = ctx.requirements.record_user_message(
+            text="禁止执行 python", message_id="m-entry", turn_id="t-entry"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["execute"], "objects": [{"kind": "program", "value": "python"}], "reason": "禁止 python"}],
+            source="test-entry",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        tool = RunProgramTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(program="python", args=[str(script)], cwd=str(root), timeout=30)
+        assert result.ok is False, result
+        assert not marker.exists(), "调用入口 python 必须命中程序名称限制"
+    
+        # 不同版本入口不能按去点/名称主体被误拦；同一入口才命中。
+        def effect(entry: str):
+            return Effect(
+                kind=EffectKind.EXECUTE,
+                targets=(Target("program", str(root / "some-python")),),
+                purpose="运行",
+                detail={"requested_program": entry, "execution": {"program": entry}},
+            )
+    
+        requirement2 = ctx.requirements.record_user_message(
+            text="只禁止 python3.11", message_id="m-ver", turn_id="t-ver"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement2.requirement_id,
+            [{"operations": ["execute"], "objects": [{"kind": "program_name", "value": "python3.11"}], "reason": "版本"}],
+            source="test-version",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding2 = ctx.requirements.binding_for(requirement2.requirement_id)
+        with requirement_context(binding2):
+            same = await ctx.authorization.authorize(effect("python3.11"))
+            other = await ctx.authorization.authorize(effect("python3.12"))
+        assert same.verdict == Verdict.DENY
+&gt;       assert other.verdict == Verdict.ALLOW, other.reason
+E       AssertionError: 版本
+E       assert &lt;Verdict.DENY: 'deny'&gt; == &lt;Verdict.ALLOW: 'allow'&gt;
+E         
+E         - allow
+E         + deny
+
+tests\test_r9h7_regressions.py:89: AssertionError</failure></testcase><testcase classname="tests.test_r9h7_regressions" name="test_program_entry_alias_preserved_and_path_limit_scoped" time="0.472" /><testcase classname="tests.test_r9h7_regressions" name="test_internal_maintenance_creates_three_confirmation_without_preread" time="0.398"><failure message="AssertionError: ToolResult(ok=False, content='', error='QIO 内部运行数据不能通过文件工具直接读取（请使用应用内受控入口）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None)&#10;assert (False is True)&#10; +  where False = ToolResult(ok=False, content='', error='QIO 内部运行数据不能通过文件工具直接读取（请使用应用内受控入口）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000001B3984CFA50&gt;
+
+    async def test_internal_maintenance_creates_three_confirmation_without_preread(ctx):
+        target = await _internal_file(ctx)
+        ctx.settings_store.set("computer.permission_mode", "restricted")
+        security = ctx.authorization
+        requirement = ctx.requirements.record_user_message(
+            text="维护内部日志", message_id="m-maint", turn_id="t-maint"
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        reads: list[str] = []
+        real_sha = security_gate.content_sha256
+        real_bytes = Path.read_bytes
+        real_text = Path.read_text
+    
+        def spy_sha(path):
+            reads.append("sha:" + str(path))
+            return real_sha(path)
+    
+        def spy_bytes(self, *args, **kwargs):
+            reads.append("bytes:" + str(self))
+            return real_bytes(self, *args, **kwargs)
+    
+        def spy_text(self, *args, **kwargs):
+            reads.append("text:" + str(self))
+            return real_text(self, *args, **kwargs)
+    
+        import agent.tools.fs_tools as fs_module
+        import pytest as _pytest
+    
+        # monkeypatch fixture is added as argument by pytest; local aliases for readability.
+        tool = FsWriteTool(computer=ctx.computer, approvals=ctx.approvals, security=security)
+        # Patch module-level helper used by fs_tools.
+        from unittest.mock import patch
+    
+        with patch.object(fs_module.security_gate, "content_sha256", spy_sha), patch.object(
+            Path, "read_bytes", spy_bytes
+        ), patch.object(Path, "read_text", spy_text):
+            with requirement_context(binding):
+                result = await tool.run(path=str(target), content="internal-v2")
+&gt;       assert result.ok is True and result.code == "pending_approval", result
+E       AssertionError: ToolResult(ok=False, content='', error='QIO 内部运行数据不能通过文件工具直接读取（请使用应用内受控入口）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None)
+E       assert (False is True)
+E        +  where False = ToolResult(ok=False, content='', error='QIO 内部运行数据不能通过文件工具直接读取（请使用应用内受控入口）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None).ok
+
+tests\test_r9h7_regressions.py:168: AssertionError</failure></testcase><testcase classname="tests.test_r9h7_regressions" name="test_internal_maintenance_explicit_read_limit_still_denied" time="0.403" /><testcase classname="tests.test_r9h7_regressions" name="test_delete_read_limit_blocks_before_content_digest" time="0.385"><failure message="AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000001B3984D1B50&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001B398495350&gt;
+
+    async def test_delete_read_limit_blocks_before_content_digest(ctx, monkeypatch):
+        target = ctx.computer.root() / "delete-secret.txt"
+        target.write_text("secret", encoding="utf-8")
+        requirement = ctx.requirements.record_user_message(
+            text="禁止读取该文件", message_id="m-del-read", turn_id="t-del-read"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [{"kind": "path", "value": str(target)}], "reason": "禁止读"}],
+            source="test-del-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        reads: list[str] = []
+        real_sha = security_gate.content_sha256
+        real_bytes = Path.read_bytes
+    
+        def spy_sha(path):
+            reads.append(str(path))
+            return real_sha(path)
+    
+        def spy_bytes(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_bytes(self, *args, **kwargs)
+    
+        monkeypatch.setattr(security_gate, "content_sha256", spy_sha)
+        monkeypatch.setattr(Path, "read_bytes", spy_bytes)
+        tool = FsDeleteTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(paths=[str(target)])
+&gt;       assert result.ok is False, result
+E       AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None)
+E       assert True is False
+E        +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None).ok
+
+tests\test_r9h7_regressions.py:236: AssertionError</failure></testcase><testcase classname="tests.test_r9h7_regressions" name="test_delete_directory_child_read_limit_blocks_before_child_reads" time="0.408"><failure message="AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000001B3984AD690&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001B393A9C510&gt;
+
+    async def test_delete_directory_child_read_limit_blocks_before_child_reads(ctx, monkeypatch):
+        directory = ctx.computer.root() / "delete-dir"
+        directory.mkdir()
+        child = directory / "child.txt"
+        child.write_text("secret-child", encoding="utf-8")
+        requirement = ctx.requirements.record_user_message(
+            text="禁止读取子文件", message_id="m-dir-read", turn_id="t-dir-read"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [{"kind": "path", "value": str(child)}], "reason": "禁止读"}],
+            source="test-dir-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        reads: list[str] = []
+        real_sha = security_gate.content_sha256
+    
+        def spy_sha(path):
+            reads.append(str(path))
+            return real_sha(path)
+    
+        monkeypatch.setattr(security_gate, "content_sha256", spy_sha)
+        tool = FsDeleteTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(paths=[str(directory)])
+&gt;       assert result.ok is False, result
+E       AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None)
+E       assert True is False
+E        +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_d...'reason': '删除你的文件需要你确认（批准后进系统回收站执行）（暂时无法确认授权范围：没有可用的主模型配置，无法完成授权审查（请先在设置中配置模型）；本次没有执行，你可以手动审批）'}]}, model_payload=None).ok
+
+tests\test_r9h7_regressions.py:267: AssertionError</failure></testcase><testcase classname="tests.test_r9h7_regressions" name="test_delete_approval_recovery_read_limit_blocks_before_snapshot_reads" time="0.665"><failure message="AssertionError: {'approval_id': 'appr_cabac0888759', 'kind': 'fs.delete', 'label': '把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\p...t_delete_approval_recovery_0\\data\\workspace\\delete-approval-read.txt', 'purpose': '批量把用户文件移入系统回收站（一次审批覆盖列明对象）', ...}&#10;assert ({'approval_id': 'appr_cabac0888759', 'kind': 'fs.delete', 'label': '把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\p...t_delete_approval_recovery_0\\data\\workspace\\delete-approval-read.txt', 'purpose': '批量把用户文件移入系统回收站（一次审批覆盖列明对象）', ...} is not None and 'completed' in ('failed', 'invalidated'))&#10; +  where 'completed' = str('completed')&#10; +    where 'completed' = &lt;built-in method get of dict object at 0x000001B3B8F74440&gt;('state')&#10; +      where &lt;built-in method get of dict object at 0x000001B3B8F74440&gt; = {'approval_id': 'appr_cabac0888759', 'kind': 'fs.delete', 'label': '把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\p...t_delete_approval_recovery_0\\data\\workspace\\delete-approval-read.txt', 'purpose': '批量把用户文件移入系统回收站（一次审批覆盖列明对象）', ...}.get">ctx = &lt;agent.services.app.AppContext object at 0x000001B3B89C4F10&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001B3B8CF1AD0&gt;
+
+    async def test_delete_approval_recovery_read_limit_blocks_before_snapshot_reads(ctx, monkeypatch):
+        target = ctx.computer.root() / "delete-approval-read.txt"
+        target.write_text("secret", encoding="utf-8")
+        ctx.settings_store.set("computer.permission_mode", "restricted")
+        requirement = ctx.requirements.record_user_message(
+            text="删除文件，但之后禁止读", message_id="m-del-appr", turn_id="t-del-appr"
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        tool = FsDeleteTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(paths=[str(target)])
+        assert result.ok is True and result.code == "pending_approval", result
+        approval_id = result.data["approval_id"]
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [{"kind": "path", "value": str(target)}], "reason": "禁止读"}],
+            source="test-del-approval-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        reads: list[str] = []
+        real_sha = security_gate.content_sha256
+        real_bytes = Path.read_bytes
+    
+        def spy_sha(path):
+            reads.append(str(path))
+            return real_sha(path)
+    
+        def spy_bytes(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_bytes(self, *args, **kwargs)
+    
+        monkeypatch.setattr(security_gate, "content_sha256", spy_sha)
+        monkeypatch.setattr(Path, "read_bytes", spy_bytes)
+        await ctx.approvals.decide(approval_id, "approve")
+        row = await _wait_state(ctx, approval_id)
+&gt;       assert row is not None and str(row.get("state")) in ("failed", "invalidated"), row
+E       AssertionError: {'approval_id': 'appr_cabac0888759', 'kind': 'fs.delete', 'label': '把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\p...t_delete_approval_recovery_0\\data\\workspace\\delete-approval-read.txt', 'purpose': '批量把用户文件移入系统回收站（一次审批覆盖列明对象）', ...}
+E       assert ({'approval_id': 'appr_cabac0888759', 'kind': 'fs.delete', 'label': '把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\p...t_delete_approval_recovery_0\\data\\workspace\\delete-approval-read.txt', 'purpose': '批量把用户文件移入系统回收站（一次审批覆盖列明对象）', ...} is not None and 'completed' in ('failed', 'invalidated'))
+E        +  where 'completed' = str('completed')
+E        +    where 'completed' = &lt;built-in method get of dict object at 0x000001B3B8F74440&gt;('state')
+E        +      where &lt;built-in method get of dict object at 0x000001B3B8F74440&gt; = {'approval_id': 'appr_cabac0888759', 'kind': 'fs.delete', 'label': '把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\p...t_delete_approval_recovery_0\\data\\workspace\\delete-approval-read.txt', 'purpose': '批量把用户文件移入系统回收站（一次审批覆盖列明对象）', ...}.get
+
+tests\test_r9h7_regressions.py:307: AssertionError</failure></testcase><testcase classname="tests.test_r9h7_regressions" name="test_delete_allowed_read_forbidden_write_keeps_file" time="0.384" /><testcase classname="tests.test_r9h7_regressions" name="test_recheck_reads_permission_before_content" time="0.382"><failure message="AssertionError: 执行前重核对必须先核读取权限，再读取内容&#10;assert ['C:\\Users\\...ck-order.txt'] == []&#10;  &#10;  Left contains one more item: 'C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_recheck_reads_permission_0\\data\\workspace\\recheck-order.txt'&#10;  Use -v to get more diff">ctx = &lt;agent.services.app.AppContext object at 0x000001B3B962C9D0&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001B3984E0390&gt;
+
+    async def test_recheck_reads_permission_before_content(ctx, monkeypatch):
+        target = ctx.computer.root() / "recheck-order.txt"
+        target.write_text("old-value", encoding="utf-8")
+        ctx.settings_store.set("computer.permission_mode", "restricted")
+        requirement = ctx.requirements.record_user_message(
+            text="允许补丁但之后禁止读", message_id="m-recheck", turn_id="t-recheck"
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        engine = ctx.authorization
+        gate = asyncio.Event()
+        started = asyncio.Event()
+        real_apply = engine._apply_review
+    
+        async def wait_review(effect, context, mode, reason, scope_id):
+            started.set()
+            await gate.wait()
+            return Verdict.ALLOW, "fake allow", None, True
+    
+        monkeypatch.setattr(engine, "_apply_review", wait_review)
+        tool = FsPatchTool(computer=ctx.computer, approvals=ctx.approvals, security=engine)
+        with requirement_context(binding):
+            task = asyncio.create_task(tool.run(path=str(target), old="old-value", new="new-value"))
+            await asyncio.wait_for(started.wait(), 5)
+            # 等待期间新增读禁止
+            ctx.requirements.set_structured_limits(
+                requirement.requirement_id,
+                [{"operations": ["read"], "objects": [{"kind": "path", "value": str(target)}], "reason": "禁止读"}],
+                source="test-recheck-order",
+                state=requirement_limits.STATE_STRUCTURED,
+            )
+            reads: list[str] = []
+            real_bytes = Path.read_bytes
+            real_text = Path.read_text
+            real_helper = fs_tools._read_file_text
+    
+            def spy_bytes(self, *args, **kwargs):
+                reads.append(str(self))
+                return real_bytes(self, *args, **kwargs)
+    
+            def spy_text(self, *args, **kwargs):
+                reads.append(str(self))
+                return real_text(self, *args, **kwargs)
+    
+            def spy_helper(path):
+                reads.append(str(path))
+                return real_helper(path)
+    
+            monkeypatch.setattr(Path, "read_bytes", spy_bytes)
+            monkeypatch.setattr(Path, "read_text", spy_text)
+            monkeypatch.setattr(fs_tools, "_read_file_text", spy_helper)
+            gate.set()
+            result = await task
+        assert result.ok is False, result
+&gt;       assert reads == [], "执行前重核对必须先核读取权限，再读取内容"
+E       AssertionError: 执行前重核对必须先核读取权限，再读取内容
+E       assert ['C:\\Users\\...ck-order.txt'] == []
+E         
+E         Left contains one more item: 'C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4039\\test_recheck_reads_permission_0\\data\\workspace\\recheck-order.txt'
+E         Use -v to get more diff
+
+tests\test_r9h7_regressions.py:386: AssertionError</failure></testcase></testsuite></testsuites>
