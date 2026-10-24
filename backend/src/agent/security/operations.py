@@ -181,6 +181,9 @@ class ExecutionContext:
     #: R9-H4 §10：本次执行前重核对的依据（模式/要求/内容/范围/条件是否一致），
     #: 由 authorize_started 写入，执行器/审批结果/审计共同引用（不是重新生成授权）。
     authorization_basis: dict = field(default_factory=dict)
+    #: R9-H11 §5：最近一次共同对象判定的结构化结论（失败说明/审计用；不参与放行）。
+    limit_decision_code: str = ""
+    limit_object_decisions: tuple[dict, ...] = ()
 
     def replay_basis(self) -> dict:
         """本次重放要完整传递的「原审批快照 + 操作依据」。
@@ -238,12 +241,42 @@ class ExecutionContext:
                 version=int(self.operation.requirement_version or 1),
             )
 
+    def _limit_assessment_denial(self, effect: Any, requirement: Any) -> str | None:
+        """审批恢复执行前的共同对象判定（R9-H11 §5）：返回拒绝原因，None=继续。
+
+        只在当前引擎提供冻结接口 assess_limit_conflict 时消费它（旧引擎/旧 fake
+        保持既有 recheck_approved 语义，不重复判定）。UNBOUND/INVALID/UNKNOWN
+        一律拒绝，普通批准/确认不能解除；判定失败按失败关闭处理。
+        """
+        engine = self.engine
+        if engine is None:
+            return None
+        if not callable(getattr(engine, "assess_limit_conflict", None)):
+            return None
+        try:
+            from agent.tools import security_gate
+
+            _, extra = security_gate.current_requirement(engine)
+            view = security_gate.assess_limits(
+                engine, effect, requirement, extra_limits=extra
+            )
+        except Exception:  # noqa: BLE001 - 无法核对对象限制按失败关闭
+            self.limit_decision_code = "object_state_unconfirmed"
+            return "执行前无法核对最新用户限制（对象判定失败）：本次没有执行"
+        self.limit_decision_code = str(view.decision_code or "")
+        self.limit_object_decisions = tuple(dict(item) for item in view.decisions)
+        if view.conflict:
+            return str(view.reason or "用户限制禁止这次操作；本次没有执行")
+        return None
+
     async def authorize_started(self, effect=None, *, common_only: bool = False) -> tuple[bool, str]:
         """真实执行前重核对：当前模式 + 绑定要求 + 审批/确认是否仍允许这次操作。
 
         返回 (是否允许, 中文原因)。批准后若模式变化、要求被修正/撤回、授权/审批失效，
         不得执行。没有绑定具体用户要求的审批单不能直接执行（需要重新判断）。
         """
+        self.limit_decision_code = ""
+        self.limit_object_decisions = ()
         if self.engine is None:
             return True, ""
         if self.expires_at:
@@ -282,6 +315,7 @@ class ExecutionContext:
                 )
         # R9-H4 §5/§10.1：绑定要求在该时刻必须仍 active 且版本一致。若已被撤回/修正/
         # 替换，不能因为引擎「没有可对照要求」而落到更宽松的分支（尤其 unrestricted）。
+        resolved_requirement: Any = None
         try:
             from agent.security.gateway import AuthContext as _AuthContext
 
@@ -321,6 +355,33 @@ class ExecutionContext:
                     "kind": "batch_common_precheck",
                 }
                 return True, ""
+            # R9-H11 §5：审批恢复先消费共同 assessment（命中/未确定 = 拒绝）：
+            # MATCH/UNBOUND/INVALID/UNKNOWN 一律拒绝，普通批准/确认不能解除；
+            # 这一层先于 recheck_approved 的 allow/approve 放行分支。
+            limit_denial = self._limit_assessment_denial(
+                effective_effect, resolved_requirement
+            )
+            if limit_denial:
+                self.authorization_basis = {
+                    "approval_id": str(self.approval_id or ""),
+                    "operation_kind": str(self.operation.kind or ""),
+                    "requirement_id": self.operation.requirement_id,
+                    "requirement_version": self.operation.requirement_version,
+                    "mode": self.current_mode(),
+                    "confirmed_stage": int(self.confirmed_stage or 0),
+                    "confirmations_required": int(
+                        self.operation.confirmations_required or 1
+                    ),
+                    "kind": "limit_assessment_denied",
+                    "decision_code": self.limit_decision_code or None,
+                    "object_decisions": [
+                        dict(item) for item in self.limit_object_decisions
+                    ][:32]
+                    or None,
+                    "reason": limit_denial,
+                    "does_not_grant_long_term": True,
+                }
+                return False, limit_denial
             recheck = getattr(self.engine, "recheck_approved", None)
             if callable(recheck):
                 decision = recheck(
@@ -353,6 +414,10 @@ class ExecutionContext:
             "confirmations_required": int(self.operation.confirmations_required or 1),
             "reason": reason,
             "decision_code": decision_code or None,
+            "object_decisions": list(
+                getattr(decision, "object_decisions", ()) or ()
+            )[:32]
+            or None,
         }
         if verdict == "allow":
             self.authorization_basis = {

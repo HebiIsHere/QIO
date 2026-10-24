@@ -751,11 +751,32 @@ async def authorize_item(gateway: Any, effect: Any) -> dict:
             "approval_id": None,
             "decision": None,
         }
+    verdict = security_gate.verdict_of(decision)
+    if verdict != "deny":
+        # R9-H11 §5：即使网关返回 allow/approve，也要再消费同一 assessment；
+        # UNBOUND/INVALID/UNKNOWN 一律拒绝，普通批准/确认不能解除。
+        blocked_by_limits = security_gate.limit_conflict_result(
+            gateway,
+            effect,
+            base_code="permission_denied",
+            default_reason="用户限制禁止这次操作；本次没有执行",
+        )
+        if blocked_by_limits is not None:
+            data = dict(blocked_by_limits.data or {})
+            return {
+                "verdict": "deny",
+                "reason": blocked_by_limits.error or "用户限制禁止这次操作；本次没有执行",
+                "approval_id": None,
+                "decision": decision,
+                "decision_code": data.get("decision_code"),
+                "object_decisions": tuple(data.get("object_decisions") or ()),
+            }
     return {
-        "verdict": security_gate.verdict_of(decision),
+        "verdict": verdict,
         "reason": security_gate.reason_of(decision, "统一授权网关没有给出原因"),
         "approval_id": security_gate.approval_id_of(decision),
         "decision": decision,
+        "decision_code": security_gate.decision_code_of(decision),
     }
 
 
@@ -849,7 +870,10 @@ async def _read_limit_before_content_check(
     """R9-H7 §4：执行前先核读取权限，再读当前内容做摘要/前置核对。"""
     if gateway is None or not callable(getattr(gateway, "authorize", None)):
         return None
-    if not hasattr(gateway, "_limit_conflict"):
+    if not (
+        hasattr(gateway, "assess_limit_conflict")
+        or hasattr(gateway, "_limit_conflict")
+    ):
         return None
     targets = [
         Path(str(getattr(target, "value", "")))
@@ -874,22 +898,25 @@ async def _read_limit_before_content_check(
     )
     binding = (getattr(effect, "detail", {}) or {}).get(REQUIREMENT_BINDING_KEY)
     attach_requirement_binding(read_effect, binding)
+    # R9-H11 §5：先消费共同 assessment（命中/未确定/失败都不得读取内容）。
     try:
-        context = gateway._context(None)
-        requirement = gateway._requirement_for(context)
-        extra = tuple((getattr(context, "extra", {}) or {}).get("resolution_limits") or ())
-        conflict = gateway._limit_conflict(read_effect, requirement, extra_limits=extra)
+        requirement, extra = security_gate.current_requirement(gateway)
     except Exception:  # noqa: BLE001 - 读取核对失败按失败关闭
         return RecheckOutcome(
             False,
             "recheck_read_check_failed",
             "执行前无法核对最新读取限制：本次未读取内容、未执行",
         )
-    if conflict:
+    view = security_gate.assess_limits(
+        gateway, read_effect, requirement, extra_limits=extra
+    )
+    if view.conflict:
         return RecheckOutcome(
             False,
             "recheck_read_denied",
-            "最新用户限制禁止读取目标内容：本次未读取、未执行（" + str(conflict) + "）",
+            "最新用户限制禁止读取目标内容：本次未读取、未执行（"
+            + (view.reason or "对象判定未通过")
+            + "）",
         )
     return None
 
@@ -1086,7 +1113,10 @@ class _FsTool(Tool):
         security = self.security
         if security is None or not callable(getattr(security, "authorize", None)):
             return None
-        if not hasattr(security, "_limit_conflict"):
+        if not (
+            hasattr(security, "assess_limit_conflict")
+            or hasattr(security, "_limit_conflict")
+        ):
             return None
         unique: list[Path] = []
         seen: set[str] = set()
@@ -1117,34 +1147,41 @@ class _FsTool(Tool):
             reversible=True,
         )
         attach_requirement_binding(read_effect, self._requirement_binding())
-        try:
-            context = security._context(None)
-            requirement = security._requirement_for(context)
-            extra = tuple((getattr(context, "extra", {}) or {}).get("resolution_limits") or ())
-            conflict = security._limit_conflict(
-                read_effect, requirement, extra_limits=extra
-            )
-        except Exception:  # noqa: BLE001 - 读取限制无法确认按失败关闭
-            return ToolResult(
-                ok=False,
-                error="读取限制无法在执行前确认：为避免未授权读取，本次未执行",
-                code="read_limit_unavailable",
-                category="permission",
-            )
-        if conflict:
-            return ToolResult(
-                ok=False,
-                error="用户限制禁止读取目标内容：本次未读取正文/摘要，未执行（" + str(conflict) + "）",
-                code="read_limit_denied",
-                category="permission",
-                recoverable=False,
-            )
-        return None
+        # R9-H11 §5：读取边界消费同一 assessment（有共同接口用它，旧网关退回
+        # _limit_conflict）；判定失败/命中/未确定都失败关闭，调用方不得先读。
+        return security_gate.limit_conflict_result(
+            security,
+            read_effect,
+            base_code="read_limit_denied",
+            default_reason="用户限制禁止读取目标内容：本次未读取正文/摘要，未执行",
+        )
 
     async def _blocked_by_known_read_limit(self, target: Path) -> ToolResult | None:
         """单文件读取限制探测（写入摘要采集用）。"""
         return await self._blocked_by_known_read_paths(
             [target], purpose="读取原内容以生成覆盖前摘要"
+        )
+
+    async def _blocked_by_limit_assessment(self, effect) -> ToolResult | None:
+        """修改/删除等实际影响前的共同对象判定（R9-H11 §5；失败关闭）。
+
+        引擎提供 assess_limit_conflict 时消费同一 assessment；旧 fake gateway
+        没有该接口时返回 None（保持既有授权路径不变）。命中/未确定/判定失败都
+        拒绝，普通批准不能解除。
+        """
+        security = self.security
+        if security is None:
+            return None
+        if not (
+            callable(getattr(security, "assess_limit_conflict", None))
+            or callable(getattr(security, "_limit_conflict", None))
+        ):
+            return None
+        return security_gate.limit_conflict_result(
+            security,
+            effect,
+            base_code="permission_denied",
+            default_reason="用户限制禁止这次操作；本次没有执行",
         )
 
     def _origin_store(self):
@@ -1267,6 +1304,10 @@ class _FsTool(Tool):
         pending: tuple | None = None,
     ) -> ToolResult | None:
         """统一授权入口：allow 继续；deny 中文拒绝；approve 提交待审批操作（非阻塞）。"""
+        # R9-H11 §5：先消费共同对象判定（命中/未确定 = 拒绝，不能靠批准解除）。
+        blocked_by_limits = await self._blocked_by_limit_assessment(effect)
+        if blocked_by_limits is not None:
+            return blocked_by_limits
         decision = await security_gate.authorize(self.security, effect)
         verdict = security_gate.verdict_of(decision)
         if verdict == "allow":
@@ -1689,6 +1730,12 @@ class FsPatchTool(_FsTool):
         pre_record = self._origin_record(target)
         binding = self._requirement_binding()
         mode_at_request = self._mode_at_request()
+        # R9-H11 §5：正文读取前先消费共同 assessment；拒绝时读取次数必须为 0。
+        blocked_by_limit = await self._blocked_by_known_read_paths(
+            [target], purpose="读取文件内容以计算补丁"
+        )
+        if blocked_by_limit is not None:
+            return blocked_by_limit
         # R9-H5 §3：补丁必须先取得“读取正文”的授权；拒绝读时不得读取/计算/修改。
         read_effect = security_gate.read_effect(
             "fs_patch", target, purpose="读取文件内容以计算补丁"
@@ -2336,6 +2383,10 @@ class FsDeleteTool(_FsTool):
             decision = await authorize_item(self.security, item.effect)
             item.status = verdict_to_status.get(decision["verdict"], BATCH_STATUS_DENIED)
             item.reason = decision["reason"]
+            item_code = str(decision.get("decision_code") or "")
+            if item.status == BATCH_STATUS_DENIED and item_code:
+                # 结构化决策码随子项结果给到调用方/审计（不解析中文 reason）。
+                item.result = {"ok": False, "reason": item.reason, "code": item_code}
 
         # -- 已允许项：逐项执行前重核对（模式/要求/授权/身份）---------------------
         for item in [entry for entry in items if entry.status == BATCH_STATUS_ALLOWED]:
