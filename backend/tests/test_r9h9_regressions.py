@@ -184,13 +184,17 @@ async def test_program_binding_survives_path_change_and_restart(ctx, tmp_path, m
 async def test_program_write_limit_does_not_block_execute(ctx, tmp_path, monkeypatch):
     root = ctx.computer.root()
     script = _script(root, root / "write-limit-marker.txt")
+    runner = Path(sys.executable).resolve()
     ctx.settings_store.set("computer.permission_mode", "unrestricted")
     requirement = ctx.requirements.record_user_message(
         text="禁止修改 python，但允许运行", message_id="m-wl", turn_id="t-wl"
     )
     ctx.requirements.set_structured_limits(
         requirement.requirement_id,
-        [{"operations": ["write"], "objects": [{"kind": "program_name", "value": "python"}], "reason": "禁止修改"}],
+        [
+            {"operations": ["write"], "objects": [{"kind": "program_name", "value": "python"}], "reason": "禁止修改名称"},
+            {"operations": ["write"], "objects": [{"kind": "program", "value": str(runner)}], "reason": "禁止修改路径"},
+        ],
         source="test-write-limit",
         state=requirement_limits.STATE_STRUCTURED,
     )
@@ -200,6 +204,11 @@ async def test_program_write_limit_does_not_block_execute(ctx, tmp_path, monkeyp
         result = await tool.run(program="python", args=[str(script)], cwd=str(root), timeout=30)
     assert result.ok is True, result
     assert (root / "write-limit-marker.txt").exists()
+    # 修改该程序文件仍被 write 限制拒绝（程序路径对象与路径目标按身份匹配）。
+    write_tool = FsWriteTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+    with requirement_context(binding):
+        denied = await write_tool.run(path=str(runner), content="x")
+    assert denied.ok is False, denied
 
 
 # ---------------------------------------------------------------- 问题五

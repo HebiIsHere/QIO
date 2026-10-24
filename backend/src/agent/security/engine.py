@@ -1915,12 +1915,21 @@ class AuthorizationEngine(AuthorizationGateway):
                     if self._limit_path_matches(obj.get("value"), item, effect=effect):
                         return True
                 elif kind in ("program", "program_name"):
-                    if object_kind != "program":
-                        continue
-                    if self._limit_program_matches(
-                        obj.get("value"), item, effect=effect
-                    ):
-                        return True
+                    if object_kind == "program":
+                        if self._limit_program_matches(
+                            obj.get("value"), item, effect=effect
+                        ):
+                            return True
+                    elif object_kind in self._LIMIT_PATH_KINDS:
+                        # 明确程序路径限制也约束对该程序文件本身的写/删/读等
+                        # 操作（操作集合已在上方按限制范围过滤）；对象身份相同
+                        # 的硬链接同样命中。
+                        if self._limit_path_matches(
+                            obj.get("value"),
+                            {"kind": "path", "value": item.get("value")},
+                            effect=effect,
+                        ):
+                            return True
                 elif kind == "service":
                     if object_kind not in {"service", "url", "url_host"}:
                         continue
