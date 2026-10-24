@@ -323,30 +323,39 @@ def _override_identity(
     monkeypatch.setattr(file_identity, "identity_of", fake_identity_of)
 
 
-def _fake_current_candidate_resolver(monkeypatch, program_b: Path) -> list[str]:
-    """模拟恢复期的「当前环境候选解析器」：当前 PATH 把名称解析到 B。
+def _fake_current_candidate_resolver(
+    monkeypatch, name: str, program_b: Path
+) -> list[str]:
+    """模拟恢复期的「当前环境候选解析器」：当前 PATH 把限制名称解析到 B。
 
-    只替换 requirement_limits._probe_program_binding（后端候选事实读取边界），
-    返回 B 的完整绑定事实；文件系统/身份仍真实。用来证明恢复不得把「当前环境
-    候选」当成保存候选采纳。若实现已不再使用该探测入口，raising=False 保证
-    不会因此报错（真实 PATH 仍指向 B）。
+    注入点是服务层唯一使用的当前候选事实入口
+    requirement_limits.current_binding_candidates（合并后的实现）。同时真实
+    PATH 也确实解析到 B（双重事实）。若实现因「保存候选优先」根本不查询当前
+    PATH，本 fake 可能不被调用 —— 这不改变结论：当前环境候选绝不能替代保存
+    候选被采纳。基线没有该函数（raising=False），此时真实 PATH=B 会让基线把
+    限制绑定到 B（红），与用例断言一致。
     """
     identity = file_identity.identity_of(program_b)
     assert identity is not None, "B 的程序身份应可读"
-    candidate = {
-        "path": str(program_b),
-        "identity": str(identity.key),
-        "birth_key": identity.birth_key,
-        "source": "path_lookup",
+    probe = {
+        "name": name,
+        "binding": {
+            "path": str(program_b),
+            "identity": str(identity.key),
+            "birth_key": identity.birth_key,
+            "source": "path_lookup",
+        },
+        "failure": "",
+        "candidates": (),
     }
     calls: list[str] = []
 
-    def fake_probe(name):
-        calls.append(str(name))
-        return {"binding": dict(candidate), "failure": "", "candidates": ()}
+    def fake_current(limits):
+        calls.append("called")
+        return (dict(probe),)
 
     monkeypatch.setattr(
-        requirement_limits, "_probe_program_binding", fake_probe, raising=False
+        requirement_limits, "current_binding_candidates", fake_current, raising=False
     )
     return calls
 
@@ -467,7 +476,7 @@ async def test_p2_saved_candidate_not_rebound_to_current_path(ctx, tmp_path, mon
     真实边界：A/B 都是 cmd.exe 的真实副本；台账/恢复入口/引擎/工具真实；
     「保存时 A 身份不可读」由身份提供器边界注入（本机无法稳定制造文件身份读取
     失败），文件本体真实存在；恢复期「当前候选解析器」fake 指向 B（真实 PATH
-    也确实只解析到 B）。
+    也确实只解析到 B；服务层保存候选优先时可能根本不查询当前 PATH）。
     """
     name = "d12p2runner"
     bin_a = tmp_path / "p2-bin-a"
@@ -548,9 +557,16 @@ async def test_p2_saved_candidate_not_rebound_to_current_path(ctx, tmp_path, mon
     reviewer = _ExplodingReviewer()
     ctx.authorization.reviewer = reviewer
     mode_before = ctx.settings_store.get("computer.permission_mode")
-    calls = _fake_current_candidate_resolver(monkeypatch, program_b)
+    # 环境事实：真实 PATH 现在把限制名称解析到 B（若恢复照搬当前环境就会绑 B）。
+    resolved_now = shutil.which(name)
+    assert resolved_now and _same_path(resolved_now, program_b), (
+        "测试环境应把限制名称解析到 B",
+        resolved_now,
+    )
+    calls = _fake_current_candidate_resolver(monkeypatch, name, program_b)
     recovered, recovery_ctx = await _recover(ctx, requirement.requirement_id)
-    assert calls, "恢复期应读取后端的当前候选事实（fake resolver 被调用）"
+    # fake 当前候选解析器可以因「保存候选优先」不被调用；若被调用也只作审计事实。
+    _ = calls
     assert reviewer.calls == [], "专用绑定恢复不得调用普通授权审查"
     assert ctx.settings_store.get("computer.permission_mode") == mode_before, (
         "专用绑定恢复不得改变权限模式"

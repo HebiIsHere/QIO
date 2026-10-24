@@ -1,0 +1,114 @@
+R9-H12 D 集成后证据【草稿：A+B 已合入，C 适配层未合入】
+===========================================================
+生成时间: 2026-10-25T02:15+08:00（Asia/Shanghai）
+worktree: D:/qio-dev/qio-r9h12-d（分支 r9h12/d）
+被测代码: r9h12/main 8bf66d76（A 的 UNRELATED 注册表 + B 的保存候选恢复）merge 进 r9h12/d = 0562ab6a
+说明: 本轮是 Leader 要求的中间态复跑；C（工具/读取/审批适配）合入后的最终 SHA 复跑结果将覆盖本文件。
+
+git 状态（命令实测）:
+0562ab6a0ef67647416201713411148ae7aa8abe
+0562ab6a Merge branch 'r9h12/main' into r9h12/d
+8bf66d76 test(r9h12): 修订 H5/H7/H8 引擎级旧期望：名称差异/当前查找不再证明无关，改用真实对象事实 [skip ci]
+bf641ccd feat(r9h12): 合并 B 保存候选优先的绑定恢复（当前 PATH 只作候选事实）
+
+真实/模拟分界（与 d-baseline 相同）:
+* 真实: 临时 cmd.exe 副本、真实 PATH 变化、真实硬链接、真实 SQLite/台账/审批/引擎/工具、真实子进程与 marker；
+* 模拟: P2 保存时 A 身份不可读（身份提供器边界，保存后关闭）；P2 恢复期当前候选事实用 fake
+  requirement_limits.current_binding_candidates 直接返回 B 的绑定事实（服务层保存候选优先时可能不查询
+  当前 PATH；同时真实 PATH 也解析到 B）；P3 限制路径身份不可读（身份提供器边界）；文件本体真实存在；
+* 模型: 全程不参与（不联网、无 fake 模型调用）。
+
+==============================================================================
+一、tests/test_r9h12_regressions.py（基线 4 红 -> 全部转绿）
+命令: cd D:/qio-dev/qio-r9h12-d/backend; & ./.venv/Scripts/python.exe -m pytest tests/test_r9h12_regressions.py -o addopts="" -v -p no:cacheprovider --tb=line --show-capture=no
+结果: 7 passed
+==============================================================================
+
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- D:\qio-dev\qio-r9h12-d\backend\.venv\Scripts\python.exe
+rootdir: D:\qio-dev\qio-r9h12-d\backend
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 7 items
+
+tests/test_r9h12_regressions.py::test_p1_unbound_hardlink_alternate_entry_launches PASSED [ 14%]
+tests/test_r9h12_regressions.py::test_p2_saved_candidate_not_rebound_to_current_path PASSED [ 28%]
+tests/test_r9h12_regressions.py::test_p3_limit_path_identity_unreadable_alias_read_denied PASSED [ 42%]
+tests/test_r9h12_regressions.py::test_rule_different_entry_name_and_lookup_elsewhere_not_allow PASSED [ 57%]
+tests/test_r9h12_regressions.py::test_rule_incomplete_binding_not_allow PASSED [ 71%]
+tests/test_r9h12_regressions.py::test_rule_reliable_unrelated_still_continues PASSED [ 85%]
+tests/test_r9h12_regressions.py::test_rule_bound_entry_resolves_to_other_object_allowed PASSED [100%]
+
+============================== 7 passed in 6.36s ==============================
+
+逐用例（集成后）:
+* P1 test_p1_unbound_hardlink_alternate_entry_launches: PASSED —— 原名称查找失败时 absolute 路径仍拒；
+  真实硬链接 alternate 按名称调用在启动前被拒（0 次启动、无 marker），引擎 UNKNOWN/DENY。
+* P2 test_p2_saved_candidate_not_rebound_to_current_path: PASSED —— 未恢复时读/执行保存候选 A 均被拒；
+  恢复采纳保存候选 A（program_binding.path=A、identity=A、source=saved_candidate_verified），
+  未绑当前 PATH 的 B；写回 JSON 无 B；恢复后 A 是绑定对象本身（执行/读取仍拒）；未调用普通审查、未改模式。
+* P3 test_p3_limit_path_identity_unreadable_alias_read_denied: PASSED —— 限制路径身份不可读时读真实硬链接
+  被拒且 0 次正文读取；引擎 UNKNOWN basis=path_limit_identity_unavailable。
+* 规则 test_rule_different_entry_name_and_lookup_elsewhere_not_allow: PASSED —— 不同入口名/当前解析到别处
+  单独都失败关闭（UNKNOWN），名称查找失败保持失败关闭。
+* 规则 test_rule_incomplete_binding_not_allow: PASSED（不完整绑定 UNKNOWN）。
+* 规则 test_rule_reliable_unrelated_still_continues: PASSED —— 操作范围外读取、候选不存在、已绑定不同对象
+  （真实执行）、前缀外仍放行。
+* 规则 test_rule_bound_entry_resolves_to_other_object_allowed: PASSED —— 已绑定 + 不同入口名解析到可核验的另一
+  对象仍可靠无关并真实执行。
+
+==============================================================================
+二、修订后的 tests/test_r9h11_regressions.py（基线 1 红 -> 全部转绿）
+命令: cd D:/qio-dev/qio-r9h12-d/backend; & ./.venv/Scripts/python.exe -m pytest tests/test_r9h11_regressions.py -o addopts="" -v -p no:cacheprovider --tb=line --show-capture=no
+结果: 19 passed
+==============================================================================
+
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- D:\qio-dev\qio-r9h12-d\backend\.venv\Scripts\python.exe
+rootdir: D:\qio-dev\qio-r9h12-d\backend
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 19 items
+
+tests/test_r9h11_regressions.py::test_p1_unbound_name_entry_denied_before_launch PASSED [  5%]
+tests/test_r9h11_regressions.py::test_p1_unbound_absolute_path_denied_before_launch PASSED [ 10%]
+tests/test_r9h11_regressions.py::test_p1_unbound_read_and_summary_denied_before_any_read PASSED [ 15%]
+tests/test_r9h11_regressions.py::test_p1_unbound_json_unchanged_after_env_change_and_reopen PASSED [ 21%]
+tests/test_r9h11_regressions.py::test_p1_unbound_approval_recovery_does_not_launch PASSED [ 26%]
+tests/test_r9h11_regressions.py::test_p1_unbound_does_not_block_other_operations_entries_or_objects PASSED [ 31%]
+tests/test_r9h11_regressions.py::test_p1_reliable_unrelated_cases_still_continue PASSED [ 36%]
+tests/test_r9h11_regressions.py::test_p2_read_limit_hardlink_protected_after_original_path_replaced PASSED [ 42%]
+tests/test_r9h11_regressions.py::test_p2_write_limit_hardlink_protected_after_original_path_replaced PASSED [ 47%]
+tests/test_r9h11_regressions.py::test_p2_delete_limit_hardlink_protected_after_original_path_replaced PASSED [ 52%]
+tests/test_r9h11_regressions.py::test_p2_execute_limit_hardlink_and_invalidated_path_stopped_before_launch PASSED [ 57%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[kept] PASSED [ 63%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[deleted] PASSED [ 68%]
+tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[moved] PASSED [ 73%]
+tests/test_r9h11_regressions.py::test_p3_real_delete_recreate_new_object_denied_before_launch PASSED [ 78%]
+tests/test_r9h11_regressions.py::test_p3_number_reuse_same_identity_different_lifecycle_denied_before_start PASSED [ 84%]
+tests/test_r9h11_regressions.py::test_p3_old_hardlink_still_protected_after_number_reuse PASSED [ 89%]
+tests/test_r9h11_regressions.py::test_p3_lifecycle_unverifiable_denied_before_start PASSED [ 94%]
+tests/test_r9h11_regressions.py::test_p3_identity_unavailable_denied_before_start PASSED [100%]
+
+============================= 19 passed in 13.33s =============================
+
+旧期望 -> 新期望（本轮验证结果）:
+1) test_p1_unbound_does_not_block_other_operations_entries_or_objects: PASSED
+   旧: 不同入口名执行另一程序=放行且执行；同名程序另一目录绝对路径=放行。
+   新: 两者均失败关闭（0 次启动、无 marker、引擎 UNKNOWN）。
+   依据: 契约 §2 禁止名称差异/查找环境差异当 UNRELATED；§3.2 无绑定且无保存候选 -> UNKNOWN。
+   保留: 操作范围外读取同一程序文件仍放行。
+2) 新增 test_p1_reliable_unrelated_cases_still_continue: PASSED
+   候选不存在/操作范围外/已绑定不同对象/前缀外全部继续放行。
+未删除任何原用例；未放宽其它断言。
+
+==============================================================================
+三、结论与中间态限制
+==============================================================================
+* 基线红 5 个（H12 4 + 修订 H11 1）在本次中间态全部转绿：H12 7 passed / H11 19 passed。
+* 可靠无关 3 例（H12 2 例 + H11 新增 1 例）保持绿；没有靠名称/关键词判断权限。
+* 中间态限制: C 的适配层（读取/程序启动前置消费 assessment、审批恢复）尚未合入；
+  D 的 P2 恢复路径已覆盖服务层真实入口；审批恢复等跨入口路径由 C 的验收补充。
+* 最终以 Lead 通知的最终代码 SHA 在同一文件上复跑，并覆盖本文件为 d-after（最终态）。
