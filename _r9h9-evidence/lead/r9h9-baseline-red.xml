@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="5" skipped="0" tests="8" time="38.022" timestamp="2026-10-24T20:50:14.133927+08:00" hostname="admin"><testcase classname="tests.test_r9h9_regressions" name="test_internal_directory_incomplete_no_approval" time="11.754"><failure message="AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4068\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4068\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x0000027CFCF831D0&gt;
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="5" skipped="0" tests="8" time="28.465" timestamp="2026-10-24T22:04:53.711593+08:00" hostname="admin"><testcase classname="tests.test_r9h9_regressions" name="test_internal_directory_incomplete_no_approval" time="11.633"><failure message="AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4076\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4076\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000001DF89679B10&gt;
 
     async def test_internal_directory_incomplete_no_approval(ctx):
         data_dir = Path(getattr(ctx.settings, "data_dir"))
@@ -10,13 +10,13 @@
         tool = FsDeleteTool(computer=ctx.computer, security=ctx.authorization)
         result = await tool.run(paths=[str(directory)])
 &gt;       assert result.ok is False, result
-E       AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4068\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None)
+E       AssertionError: ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4076\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None)
 E       assert True is False
-E        +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4068\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None).ok
+E        +  where True = ToolResult(ok=True, content='已提交审批：把文件移入系统回收站：C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4076\\test_i...s': 'waiting', 'reason': '这是 QIO 内部运行数据，直接改写可能损坏应用，请确认你知道自己在做什么（写入/删除/脚本维护需要你连续三次确认，确认状态由后端校验）'}]}, model_payload=None).ok
 
-tests\test_r9h9_regressions.py:69: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_internal_directory_execution_incomplete_fails" time="5.725" /><testcase classname="tests.test_r9h9_regressions" name="test_hardlink_same_program_object_blocked" time="3.389"><failure message="AssertionError: ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x0000027CFCEE6A50&gt;
-tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4068/test_hardlink_same_program_obj0')
-monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000027CFCF78850&gt;
+tests\test_r9h9_regressions.py:69: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_internal_directory_execution_incomplete_fails" time="1.586" /><testcase classname="tests.test_r9h9_regressions" name="test_hardlink_same_program_object_blocked" time="1.139"><failure message="AssertionError: ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000001DFAE1E6B50&gt;
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4076/test_hardlink_same_program_obj0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001DF8E16C990&gt;
 
     async def test_hardlink_same_program_object_blocked(ctx, tmp_path, monkeypatch):
         root = ctx.computer.root()
@@ -48,9 +48,9 @@ E           AssertionError: ToolResult(ok=True, content='(无输出)', error=Non
 E           assert True is False
 E            +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
 
-tests\test_r9h9_regressions.py:127: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_binding_survives_path_change_and_restart" time="1.004"><failure message="AssertionError: {'kind': 'program_name', 'value': 'runner'}&#10;assert None&#10; +  where None = &lt;built-in method get of dict object at 0x0000027CA21F0AC0&gt;('identity')&#10; +    where &lt;built-in method get of dict object at 0x0000027CA21F0AC0&gt; = {}.get&#10; +      where {} = &lt;built-in method get of dict object at 0x0000027CA21F0C00&gt;('program_binding', {})&#10; +        where &lt;built-in method get of dict object at 0x0000027CA21F0C00&gt; = {'kind': 'program_name', 'value': 'runner'}.get">ctx = &lt;agent.services.app.AppContext object at 0x0000027CA2716E10&gt;
-tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4068/test_program_binding_survives_0')
-monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000027CA1ECE010&gt;
+tests\test_r9h9_regressions.py:127: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_binding_survives_path_change_and_restart" time="0.648"><failure message="AssertionError: {'kind': 'program_name', 'value': 'runner'}&#10;assert None&#10; +  where None = &lt;built-in method get of dict object at 0x000001DFAE500AC0&gt;('identity')&#10; +    where &lt;built-in method get of dict object at 0x000001DFAE500AC0&gt; = {}.get&#10; +      where {} = &lt;built-in method get of dict object at 0x000001DFAE500C00&gt;('program_binding', {})&#10; +        where &lt;built-in method get of dict object at 0x000001DFAE500C00&gt; = {'kind': 'program_name', 'value': 'runner'}.get">ctx = &lt;agent.services.app.AppContext object at 0x000001DFAE94EB50&gt;
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4076/test_program_binding_survives_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001DF8E11D650&gt;
 
     async def test_program_binding_survives_path_change_and_restart(ctx, tmp_path, monkeypatch):
         root = ctx.computer.root()
@@ -75,25 +75,29 @@ monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000027CA1ECE010&g
 &gt;       assert binding_obj.get("program_binding", {}).get("identity"), binding_obj
 E       AssertionError: {'kind': 'program_name', 'value': 'runner'}
 E       assert None
-E        +  where None = &lt;built-in method get of dict object at 0x0000027CA21F0AC0&gt;('identity')
-E        +    where &lt;built-in method get of dict object at 0x0000027CA21F0AC0&gt; = {}.get
-E        +      where {} = &lt;built-in method get of dict object at 0x0000027CA21F0C00&gt;('program_binding', {})
-E        +        where &lt;built-in method get of dict object at 0x0000027CA21F0C00&gt; = {'kind': 'program_name', 'value': 'runner'}.get
+E        +  where None = &lt;built-in method get of dict object at 0x000001DFAE500AC0&gt;('identity')
+E        +    where &lt;built-in method get of dict object at 0x000001DFAE500AC0&gt; = {}.get
+E        +      where {} = &lt;built-in method get of dict object at 0x000001DFAE500C00&gt;('program_binding', {})
+E        +        where &lt;built-in method get of dict object at 0x000001DFAE500C00&gt; = {'kind': 'program_name', 'value': 'runner'}.get
 
-tests\test_r9h9_regressions.py:163: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_write_limit_does_not_block_execute" time="0.919"><failure message="AssertionError: ToolResult(ok=False, content='', error='这条用户限制中的程序名称尚未可靠绑定到明确对象；本次调用入口或解析目标与保存名称指向同一程序来源，需要先完成限制恢复/对象绑定，不能仅按名称直接执行', c...verable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None)&#10;assert False is True&#10; +  where False = ToolResult(ok=False, content='', error='这条用户限制中的程序名称尚未可靠绑定到明确对象；本次调用入口或解析目标与保存名称指向同一程序来源，需要先完成限制恢复/对象绑定，不能仅按名称直接执行', c...verable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x0000027CA213EE10&gt;
-tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4068/test_program_write_limit_does_0')
-monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x0000027C81DD5FD0&gt;
+tests\test_r9h9_regressions.py:163: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_write_limit_does_not_block_execute" time="0.778"><failure message="AssertionError: ToolResult(ok=False, content='', error='这条用户限制中的程序名称尚未可靠绑定到明确对象；本次调用入口或解析目标与保存名称指向同一程序来源，需要先完成限制恢复/对象绑定，不能仅按名称直接执行', c...verable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None)&#10;assert False is True&#10; +  where False = ToolResult(ok=False, content='', error='这条用户限制中的程序名称尚未可靠绑定到明确对象；本次调用入口或解析目标与保存名称指向同一程序来源，需要先完成限制恢复/对象绑定，不能仅按名称直接执行', c...verable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000001DFAE4E6B50&gt;
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4076/test_program_write_limit_does_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001DFADCF6A50&gt;
 
     async def test_program_write_limit_does_not_block_execute(ctx, tmp_path, monkeypatch):
         root = ctx.computer.root()
         script = _script(root, root / "write-limit-marker.txt")
+        runner = Path(sys.executable).resolve()
         ctx.settings_store.set("computer.permission_mode", "unrestricted")
         requirement = ctx.requirements.record_user_message(
             text="禁止修改 python，但允许运行", message_id="m-wl", turn_id="t-wl"
         )
         ctx.requirements.set_structured_limits(
             requirement.requirement_id,
-            [{"operations": ["write"], "objects": [{"kind": "program_name", "value": "python"}], "reason": "禁止修改"}],
+            [
+                {"operations": ["write"], "objects": [{"kind": "program_name", "value": "python"}], "reason": "禁止修改名称"},
+                {"operations": ["write"], "objects": [{"kind": "program", "value": str(runner)}], "reason": "禁止修改路径"},
+            ],
             source="test-write-limit",
             state=requirement_limits.STATE_STRUCTURED,
         )
@@ -106,7 +110,7 @@ E       AssertionError: ToolResult(ok=False, content='', error='这条用户限�
 E       assert False is True
 E        +  where False = ToolResult(ok=False, content='', error='这条用户限制中的程序名称尚未可靠绑定到明确对象；本次调用入口或解析目标与保存名称指向同一程序来源，需要先完成限制恢复/对象绑定，不能仅按名称直接执行', c...verable=False, facts=None, protocol_version=None, status=None, code='permission_denied', data=None, model_payload=None).ok
 
-tests\test_r9h9_regressions.py:201: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_limit_blocks_fixed_query_in_all_modes[read_only]" time="2.346"><failure message="AssertionError: ToolResult(ok=True, content='Python 3.11.15', error=None, category=None, recoverable=None, facts={'launch_boundary': {.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='Python 3.11.15', error=None, category=None, recoverable=None, facts={'launch_boundary': {.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x0000027C81E1E3D0&gt;
+tests\test_r9h9_regressions.py:205: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_limit_blocks_fixed_query_in_all_modes[read_only]" time="1.518"><failure message="AssertionError: ToolResult(ok=True, content='Python 3.11.15', error=None, category=None, recoverable=None, facts={'launch_boundary': {.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='Python 3.11.15', error=None, category=None, recoverable=None, facts={'launch_boundary': {.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000001DFAE656B50&gt;
 mode = 'read_only'
 
     @pytest.mark.parametrize("mode", ["read_only", "restricted", "unrestricted"])
@@ -130,4 +134,4 @@ E       AssertionError: ToolResult(ok=True, content='Python 3.11.15', error=None
 E       assert True is False
 E        +  where True = ToolResult(ok=True, content='Python 3.11.15', error=None, category=None, recoverable=None, facts={'launch_boundary': {.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
 
-tests\test_r9h9_regressions.py:222: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_limit_blocks_fixed_query_in_all_modes[restricted]" time="1.261" /><testcase classname="tests.test_r9h9_regressions" name="test_program_limit_blocks_fixed_query_in_all_modes[unrestricted]" time="1.149" /></testsuite></testsuites>
+tests\test_r9h9_regressions.py:231: AssertionError</failure></testcase><testcase classname="tests.test_r9h9_regressions" name="test_program_limit_blocks_fixed_query_in_all_modes[restricted]" time="0.760" /><testcase classname="tests.test_r9h9_regressions" name="test_program_limit_blocks_fixed_query_in_all_modes[unrestricted]" time="0.742" /></testsuite></testsuites>

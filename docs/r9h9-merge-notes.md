@@ -9,7 +9,7 @@
 | --- | --- |
 | 基线 HEAD | 92c7688b（代码 967401c2） |
 | 修复分支 | r9h9/main |
-| 最终代码 SHA | c9fa7249896f472ef14a4d51b5bfb5af1876752b |
+| 最终代码 SHA | 1f460c67cb8726c4621c478b2f6c6194163c5a61 |
 | 最终 HEAD | 见最终报告（其后仅 docs/evidence） |
 
 ## 2. 修复
@@ -30,7 +30,7 @@
 ## 4. CI
 
 - 完整 CI 未新增（历史 2/2：39930482370、39958699070 仅基线证据）。
-- 最终代码定向 CI：40098332380（backend-py311）success、40098635021（backend-py312）success、40098936151（backend-windows）success。
+- 最终代码定向 CI：40099823964（backend-py311）success、40100043649（backend-py312）success、40100395438（backend-windows）success。
 
 ## 5. 边界
 
