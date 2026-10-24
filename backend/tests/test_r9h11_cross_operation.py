@@ -864,3 +864,128 @@ async def test_engine_native_approval_recovery_refuses_unbound_read(
     assert row is not None and str(row.get("state")) in ("failed", "invalidated"), row
     assert reads == [], "审批恢复必须在读取正文/摘要前拒绝"
     assert runner.read_bytes() == original, "被拒绝的审批不得改写文件"
+    # 审批行至少保留可读拒绝原因（结构化码在 approved_operations 执行器 detail 里）。
+    assert "绑定" in str(row.get("error") or "") or "限制" in str(row.get("error") or ""), row
+
+
+def _unbound_requirement(ctx, db_conn, *, operation: str, name: str = "runner"):
+    """历史数据：limit 明确但 program_name 保存时未形成对象绑定（state=structured）。"""
+    requirement = ctx.requirements.record_user_message(
+        text="禁止 " + operation + " " + name,
+        message_id="m-native-" + operation,
+        turn_id="t-native-" + operation,
+    )
+    _write_raw_limits(
+        db_conn,
+        requirement.requirement_id,
+        [
+            {
+                "operations": [operation],
+                "objects": [{"kind": "program_name", "value": name}],
+                "reason": "禁止 " + operation,
+            }
+        ],
+    )
+    return requirement, ctx.requirements.binding_for(requirement.requirement_id)
+
+
+@engine_only
+async def test_engine_native_unbound_blocks_write_without_touching_file(
+    ctx, db_conn, tmp_path, monkeypatch
+):
+    runner = _runner(tmp_path / "bin")
+    monkeypatch.setenv(
+        "PATH", str(runner.parent) + os.pathsep + os.environ.get("PATH", "")
+    )
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    _requirement, binding = _unbound_requirement(ctx, db_conn, operation="write")
+    tool = FsWriteTool(computer=ctx.computer, security=ctx.authorization)
+    with requirement_context(binding):
+        result = await tool.run(path=str(runner), content="overwritten")
+    assert result.ok is False, result
+    assert result.data and result.data.get("decision_code") == UNBOUND_CODE, result
+    assert runner.read_bytes() != b"overwritten"
+
+
+@engine_only
+async def test_engine_native_unbound_blocks_delete_and_keeps_file(
+    ctx, db_conn, tmp_path, monkeypatch
+):
+    runner = _runner(tmp_path / "bin")
+    monkeypatch.setenv(
+        "PATH", str(runner.parent) + os.pathsep + os.environ.get("PATH", "")
+    )
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    _requirement, binding = _unbound_requirement(ctx, db_conn, operation="delete")
+    tool = FsDeleteTool(computer=ctx.computer, security=ctx.authorization)
+    with requirement_context(binding):
+        result = await tool.run(paths=[str(runner)])
+    assert result.ok is False, result
+    assert runner.exists(), "UNBOUND 判定命中时不得删除"
+    assert UNBOUND_CODE in json.dumps(result.data or {}, ensure_ascii=False), result
+
+
+@engine_only
+async def test_engine_native_unbound_blocks_execute_without_starting_program(
+    ctx, db_conn, tmp_path, monkeypatch
+):
+    runner = _runner(tmp_path / "bin")
+    monkeypatch.setenv(
+        "PATH", str(runner.parent) + os.pathsep + os.environ.get("PATH", "")
+    )
+    root = Path(ctx.computer.root())
+    root.mkdir(parents=True, exist_ok=True)
+    marker = root / "native-exec-marker.txt"
+    script = root / "native-exec.py"
+    script.write_text(
+        "from pathlib import Path\nPath(r'%s').write_text('ran')\n" % marker,
+        encoding="utf-8",
+    )
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    _requirement, binding = _unbound_requirement(ctx, db_conn, operation="execute")
+    tool = RunProgramTool(computer=ctx.computer, security=ctx.authorization)
+    with requirement_context(binding):
+        result = await tool.run(
+            program="runner", args=[str(script)], cwd=str(runner.parent), timeout=30
+        )
+    assert result.ok is False, result
+    assert result.data and result.data.get("decision_code") == UNBOUND_CODE, result
+    assert not marker.exists(), "UNBOUND 判定命中时不得启动程序"
+
+
+@engine_only
+async def test_engine_native_invalid_binding_blocks_read_zero_reads(
+    ctx, db_conn, tmp_path, monkeypatch
+):
+    runner = _runner(tmp_path / "bin")
+    monkeypatch.setenv(
+        "PATH", str(runner.parent) + os.pathsep + os.environ.get("PATH", "")
+    )
+    requirement = ctx.requirements.record_user_message(
+        text="禁止读取 runner", message_id="m-native-invalid", turn_id="t-native-invalid"
+    )
+    ctx.requirements.set_structured_limits(
+        requirement.requirement_id,
+        [
+            {
+                "operations": ["read"],
+                "objects": [{"kind": "program_name", "value": "runner"}],
+                "reason": "禁止读取 runner",
+            }
+        ],
+        source="test-native-invalid",
+        state=requirement_limits.STATE_STRUCTURED,
+    )
+    binding = ctx.requirements.binding_for(requirement.requirement_id)
+    # 原路径对象被替换（同路径、不同身份/生命周期）：绑定失效，不是无关对象。
+    os.remove(runner)
+    replaced = _runner(tmp_path / "bin")
+    assert replaced.exists()
+    reads: list[str] = []
+    _install_read_spies(monkeypatch, reads)
+    tool = FsReadTool(computer=ctx.computer, security=ctx.authorization)
+    with requirement_context(binding):
+        result = await tool.run(path=str(replaced))
+    assert result.ok is False, result
+    assert reads == [], "绑定失效判定必须在正文读取前拒绝"
+    assert result.data and result.data.get("decision_code") == INVALID_CODE, result
