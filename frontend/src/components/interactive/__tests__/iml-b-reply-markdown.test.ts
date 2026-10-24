@@ -303,10 +303,9 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
   });
 
   it("reading 态仍渲染同一份 Markdown，且只有卡片正文一个纵向滚动宿主", async () => {
-    const card = mkCard("r3", { kind: "reply", content: REPLY_MD });
+    const card = mkCard("r3", { kind: "reply", content: REPLY_MD, w: 600, h: 420 });
     seed(card);
     wrapper = mountCard(card);
-    await wrapper.get('[data-im="card-preview-toggle"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     const body = wrapper.get('[data-im="card-reply-markdown"]');
@@ -319,13 +318,13 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
   });
 
   it("正文更新与阅读切换不改变卡片外框、不产生板面变更（B7 / F1）", async () => {
-    const card = mkCard("r4", { kind: "reply", content: "# 第一版" });
+    const card = mkCard("r4", { kind: "reply", content: "# 第一版", w: 600, h: 420 });
     seed(card);
     wrapper = mountCard(card);
     const cardEl = wrapper.get('[data-im="card"]');
     const before = cardEl.attributes("style");
-    expect(before).toContain("width: 320px");
-    expect(before).toContain("height: 240px");
+    expect(before).toContain("width: 600px");
+    expect(before).toContain("height: 420px");
 
     // 异步到达 / 正文更新（模型后续写入、板面刷新）
     await wrapper.setProps({ card: { ...card, content: REPLY_MD } });
@@ -333,9 +332,8 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
     expect(wrapper.get('[data-im="card"]').attributes("style")).toBe(before);
     expect(wrapper.get('[data-im="card-reply-markdown"]').find("table").exists()).toBe(true);
 
-    // 阅读展开只换查看方式，不改外框
-    await wrapper.get('[data-im="card-preview-toggle"]').trigger("click");
-    await flushPromises();
+    // 阅读态只换查看方式，不改外框
+    expect(wrapper.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     expect(wrapper.get('[data-im="card"]').attributes("style")).toBe(before);
     // 渲染本身不发出任何板面变更（不触发整板重排）
     expect(wrapper.emitted("patch")).toBeUndefined();

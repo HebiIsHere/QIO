@@ -238,19 +238,18 @@ describe("图片卡没有展开预览入口（含 store 直调）", () => {
     expect(JSON.stringify(store.board), "查看态不该写板面").toBe(before);
   });
 
-  it("同一块板面里 PDF 文件卡仍可展开（阅读能力没被一起削掉）", async () => {
+  it("同一块板面里 PDF 文件卡放大后仍自动进入阅读态", async () => {
     const pdf = baseCard({
       id: "card_pdf",
+      w: 600,
+      h: 420,
       meta: { name: "报告.pdf", file: { attachmentId: "att_pdf", name: "报告.pdf", size: 1024 } },
     });
     const store = useInteractiveStore();
     store.board = { ...emptyState("board_t"), cards: [pdf], selection: ["card_pdf"] };
     const w = mountCard(pdf);
     await flushPromises();
-    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(true);
-    expect(store.toggleCardPreview("card_pdf")).toBe(true);
-    await nextTick();
-    expect(store.isCardPreviewExpanded("card_pdf")).toBe(true);
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
   });
 });
@@ -291,7 +290,7 @@ describe("取字节与 blob URL 生命周期", () => {
     expect(mocks.fetchAttachmentContent).toHaveBeenCalledTimes(1);
     expect(created).toEqual(["blob:qio-verify-1"]);
 
-    await w.setProps({ card: { ...model, w: 520, h: 380 } });
+    await w.setProps({ card: { ...model, w: 300, h: 200 } });
     await flushPromises();
     await w.setProps({ card: { ...model, w: 180, h: 96 } });
     await flushPromises();

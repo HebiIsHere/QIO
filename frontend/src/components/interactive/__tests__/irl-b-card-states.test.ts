@@ -155,7 +155,7 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.find('[data-im="card-subject"]').exists()).toBe(true);
     expect(w.get('[data-im="card-body"]').text()).toContain("第一段正文。");
     expect(w.find('[data-im="card-block-code"]').exists()).toBe(true);
-    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("展开预览");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
     expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
 
@@ -168,24 +168,19 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(shown.split("第一段正文。").length - 1).toBe(1);
   });
 
-  it("阅读展开：正文成为主体；没有真实附件的文字卡不造假预览", async () => {
-    const w = mountBoard(textCard());
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
+  it("卡片放大到阈值：正文成为主体；没有真实附件的文字卡不造假预览", async () => {
+    const w = mountBoard(textCard({ w: 600, h: 420 }));
 
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     const host = w.get('[data-im="card-preview-host"]');
     expect(host.attributes("data-card-id")).toBe("c1");
     // 挂载点在卡片内部（不是浮层）
     expect(host.element.closest('[data-im="card"]')).not.toBeNull();
-    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("收起预览");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     // 文字卡的阅读主体是它自己的正文；这里不出现「没有附件」的假预览面板
     expect(host.find('[data-testid="cip-root"]').exists()).toBe(false);
     expect(host.text()).toBe("");
     expect(w.get('[data-im="card-subject"]').text()).toContain("第一段正文。");
-
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
-    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
-    expect(w.find('[data-im="card-preview-host"]').exists()).toBe(false);
   });
 
   it("编辑：只有一个连续编辑区；阅读挂载点与常态主体都让位", async () => {
@@ -208,15 +203,12 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.find('[data-im="card-editor"]').exists()).toBe(false);
   });
 
-  it("编辑与阅读互斥但州状态不互改：正在阅读时进编辑，退出后仍回到阅读展开", async () => {
-    const w = mountBoard(textCard());
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
-    expect(store.isCardPreviewExpanded("c1")).toBe(true);
+  it("编辑与自动阅读互斥：正在阅读时进编辑，退出后回到阅读", async () => {
+    const w = mountBoard(textCard({ w: 600, h: 420 }));
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
 
     await w.get('[data-im="card-edit"]').trigger("click");
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("editing");
-    // 阅读展开是查看状态：进编辑器不该把它偷偷清掉（也没有写板面状态、没有产生表达）
-    expect(store.isCardPreviewExpanded("c1")).toBe(true);
     expect(store.dirty).toBe(false);
     expect(store.submissions).toEqual([]);
 
@@ -240,11 +232,9 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.emitted("toggle")).toEqual([["c1", "folded"]]);
   });
 
-  it("卡片上只有一个「展开」按钮：折成标题与展开预览不会各叫一个「展开」", () => {
+  it("卡片上不再有「展开预览」按钮：折成标题与恢复卡片各叫各的名字", () => {
     const w = mountBoard(textCard());
-    const expandButtons = w.findAll("button").filter((item) => item.text().startsWith("展开"));
-    expect(expandButtons.map((item) => item.attributes("data-im"))).toEqual(["card-preview-toggle"]);
-    // 折成标题的动作说明的是「折」，恢复卡片说的是「恢复」
+    expect(w.findAll("button").filter((item) => item.text().startsWith("展开"))).toHaveLength(0);
     expect(w.get('[data-im="card-fold"]').text()).toBe("折成标题");
 
     const folded = mountBoard(textCard({ folded: true }));
@@ -292,8 +282,8 @@ describe("最小尺寸 180×96：标题 / 主要操作 / 必要状态 / 内容�
     await w.get('[data-im="card-more"]').trigger("click");
     expect(w.get('[data-im="card-more"]').attributes("aria-expanded")).toBe("true");
 
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
-    expect(root.attributes("data-card-state")).toBe("reading");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
+    expect(root.attributes("data-card-state")).toBe("normal");
   });
 });
 
@@ -382,10 +372,10 @@ describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：�
     expect(w.emitted("drag-start")).toBeUndefined();
   });
 
-  it("查看 / 展开 / 编辑都不改许可：未许可的卡片不会因为「被看过」就变成可提交", async () => {
-    const card = textCard();
+  it("查看 / 自动阅读 / 编辑都不改许可：未许可的卡片不会因为「被看过」就变成可提交", async () => {
+    const card = textCard({ w: 600, h: 420 });
     const w = mountBoard(card);
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     await w.get('[data-im="card-edit"]').trigger("click");
     await w.get('[data-im="card-edit"]').trigger("click");
 
@@ -545,16 +535,16 @@ describe("阅读展开与可读材料：没有材料就不给假入口", () => {
     expect(w.find('[data-im="card-attachment-preview"]').exists()).toBe(false);
   });
 
-  it("文件卡有真实附件：入口存在；阅读展开把主体让给预览，说明压成紧凑档", async () => {
+  it("文件卡有真实附件：放大后自动阅读，主体让给预览，说明压成紧凑档", async () => {
     const card = mkCard("f2", {
       kind: "file",
+      w: 600,
+      h: 420,
       content: "这是一段应该被压缩的说明文字",
       meta: { name: "预算表.pdf", file: { name: "预算表.pdf", attachmentId: "att_1", size: 4096 } },
     });
     const w = mountBoard(card, { selected: false });
-    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("展开预览");
-
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
 
     // 文件卡（2026-10-14）：附件预览与「查看」都不在卡片里（按钮在工具栏），阅读主体仍是真实预览

@@ -280,14 +280,14 @@ describe("material 上下文：二维浏览只发生在查看区，外层一律�
     localStorage.clear();
     setActivePinia(createPinia());
     const store = useInteractiveStore();
-    const card = fileCard("材料.txt");
+    const card = { ...fileCard("材料.txt"), w: 600, h: 420 };
     store.board = { ...emptyState("board_t"), cards: [card] } as never;
     const view = mount(BoardCard, {
       props: { card, selected: false, highlight: false, dragging: false, x: card.x, y: card.y, groupName: null, groups: [], toolbarLeft: 0, toolbarTop: 0, multi: false, connecting: false },
       attachTo: document.body,
     });
-    await view.get('[data-im="card-preview-toggle"]').trigger("click");
     await flushPromises();
+    expect(view.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     const child = view.findComponent(CardInlinePreview);
     const body = view.get('[data-im="card-body"]').element as HTMLElement;
     const article = view.get('[data-im="card"]').element as HTMLElement;

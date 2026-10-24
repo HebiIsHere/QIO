@@ -256,8 +256,7 @@ describe("卡片：一个主要纵向视口 + 代码块不自己滚动", () => {
     store.board = { ...emptyState("board_t"), cards: [card] } as BoardState;
     const view = mountCard(card);
     wrapper = view;
-    const toggle = view.get('[data-im="card-preview-toggle"]');
-    await toggle.trigger("click");
+    expect(view.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     const host = view.get('[data-im="card-preview-host"]');
     const cip = host.get('[data-testid="cip-root"]');
     expect(cip.attributes("data-qio-context")).toBe("material");
