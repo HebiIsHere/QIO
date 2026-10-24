@@ -35,7 +35,7 @@ import {
   type RecoveryFacts,
   DEFAULT_INTENT_CARD_SIZE,
 } from "./intentDisplay";
-import { canRecover, isConfirmable, statusLabel, statusTone } from "../../../interactive/intentWorkbench";
+import { canRecover, isConfirmable, statusLabel, statusTone, type IntentView } from "../../../interactive/intentWorkbench";
 
 const props = withDefaults(
   defineProps<{
@@ -71,6 +71,7 @@ const emit = defineEmits<{
   /** 确认 / 恢复之后让外层重新读取意图视图（真实状态以服务端为准） */
   (e: "refresh"): void;
   (e: "confirmed", summary: ConfirmSummary): void;
+  (e: "open-record", intent: IntentView): void;
 }>();
 
 const selected = ref<string | null>(props.selectedId ?? null);
@@ -443,6 +444,12 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
           :disabled="Boolean(busy)"
           @click="openRecovery(selectedView.view)"
         >恢复预览</button>
+        <button
+          class="btn quiet"
+          type="button"
+          data-im="intent-execution-record"
+          @click="emit('open-record', selectedView.view)"
+        >执行记录</button>
       </div>
 
       <div v-if="recoveryTargetId === selectedView.view.intent_id && recovery" class="recovery" data-im="intent-recovery">

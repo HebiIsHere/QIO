@@ -29,6 +29,8 @@ import {
 } from "../components/interactive/v2";
 import IntentLayer from "../components/interactive/v2/IntentLayer.vue";
 import InteractiveBookmarks from "../components/interactive/v2/InteractiveBookmarks.vue";
+import ExecutionRecordPanel from "../components/interactive/ExecutionRecordPanel.vue";
+import type { IntentView } from "../interactive/intentWorkbench";
 import type { IntentViewWithDisplay } from "../components/interactive/v2/intentDisplay";
 import { canRecover } from "../interactive/intentWorkbench";
 import { fetchIntentViews, saveIntentDisplay } from "../services/interactive";
@@ -37,6 +39,8 @@ import { understandingSettled, understandingText } from "../interactive/approval
 const store = useInteractiveStore();
 /** 意图与结果工作台：保留旧能力入口，Phase 3 再迁到虚拟意图/底部操作。 */
 const workbenchOpen = ref(false);
+/** 执行记录：唯一的新入口，查看确认材料、范围、操作、结果、失败与重试事实。 */
+const recordIntent = ref<IntentView | null>(null);
 /** 书签栏纯查看状态；由工具栏切换，不写板面、不产生意图。 */
 const bookmarksOpen = ref(false);
 /** 底聊展开时的最大高度：保证板面始终留出约 220px，而不是把板面压到 128px。 */
@@ -223,6 +227,7 @@ const boardSize = computed(() => {
                 :disabled="store.saveStatus === 'saving'"
                 @display-change="onIntentDisplayChange"
                 @refresh="loadIntents"
+                @open-record="recordIntent = $event"
               />
             </template>
           </BoardCanvas>
@@ -290,6 +295,14 @@ const boardSize = computed(() => {
               >意图与结果</button>
             </div>
           </div>
+
+          <ExecutionRecordPanel
+            v-if="recordIntent"
+            :intent="recordIntent"
+            :board-id="store.board?.boardId ?? ''"
+            :open="true"
+            @close="recordIntent = null"
+          />
 
           <!-- 悬浮对话：板面保持完整高度；工具栏与输入区固定在对话卡底部，消息向上展开。 -->
           <div class="im-floating-chat" data-im="floating-chat">
