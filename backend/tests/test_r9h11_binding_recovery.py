@@ -507,6 +507,36 @@ async def test_recovery_discards_result_when_version_changes(
     assert any("历史用户限制" in item for item in recovery_ctx.notices)
 
 
+async def test_recovery_write_back_rejects_requirement_changed_after_snapshot(
+    ctx, tmp_path, monkeypatch
+):
+    """快照核对之后、写回事务之前要求被 amend：条件写入拒绝，旧行保持原样。"""
+    runner = _runner(tmp_path / "bin")
+    _prepend_path(monkeypatch, runner.parent)
+    requirement = _seed_structured_unbound(ctx.conn, ctx.requirements)
+    raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
+    real_apply = ctx.requirements.apply_binding_recovery
+
+    def apply_after_amend(requirement_id, limits, **kwargs):
+        ctx.requirements.add_correction(requirement_id, "在写回前再改一次。")
+        return real_apply(requirement_id, limits, **kwargs)
+
+    monkeypatch.setattr(
+        ctx.requirements, "apply_binding_recovery", apply_after_amend
+    )
+
+    recovered, recovery_ctx = await _recover(ctx, requirement)
+
+    assert recovered is None, "条件写入必须拒绝已变化要求的旧恢复结果"
+    assert _raw_limits(ctx.conn, requirement.requirement_id) == raw_before
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    assert stored is not None
+    assert stored.status == "superseded"
+    assert stored.structured_limits_state == "structured"
+    assert stored.structured_limits_source == "r9h8_saved_limit"
+    assert any("历史用户限制" in item for item in recovery_ctx.notices)
+
+
 async def test_recovery_discards_result_when_chain_digest_changes(
     ctx, tmp_path, monkeypatch
 ):
@@ -704,6 +734,13 @@ def test_ledger_apply_binding_recovery_requires_complete_bindings_and_condition(
     stored = ledger.by_id(requirement.requirement_id)
     raw_before = _raw_limits(db_conn, requirement.requirement_id)
 
+    with pytest.raises(ValueError):
+        ledger.apply_binding_recovery(
+            requirement.requirement_id,
+            None,
+            source="binding_recovery:path_lookup",
+            expected_version=int(stored.version),
+        )
     with pytest.raises(ValueError):
         ledger.apply_binding_recovery(
             requirement.requirement_id,

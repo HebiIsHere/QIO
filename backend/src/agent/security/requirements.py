@@ -708,7 +708,10 @@ class RequirementLedger:
           恢复等待期间要求被修改/撤回时抛 RequirementVersionMismatch；
         * 只写限制，不生成普通授权、不调用普通独立授权审查。
         """
-        known = requirement_limits.normalize_limits(list(limits or ()))
+        if limits is None:
+            # 恢复写回必须显式给出恢复结果；None 不能按"空限制"写入（会清空 known）。
+            raise ValueError("专用恢复写回必须显式给出限制集合")
+        known = requirement_limits.normalize_limits(list(limits))
         if not requirement_limits.binding_recovery_complete(known):
             raise ValueError("程序对象尚未全部绑定，拒绝写回恢复结果")
         return self.set_structured_limits(

@@ -58,7 +58,6 @@ BINDING_FAILURES = frozenset(
 )
 #: 候选事实只为审计保留有界路径（不存模型推理/密钥）。
 MAX_BINDING_CANDIDATES = 4
-MAX_BINDING_FACT_CHARS = 200
 
 
 class LimitRemovalAmbiguous(ValueError):
