@@ -70,6 +70,10 @@ class Verdict(str, Enum):
     DENY = "deny"
 
 
+#: 结构化决策码（授权行为只认它，不解析中文 reason）。
+DECISION_UNRESOLVED_LIMITS = "unresolved_limits_requires_confirmation"
+
+
 @dataclass(frozen=True)
 class AuthDecision:
     verdict: Verdict
@@ -80,3 +84,6 @@ class AuthDecision:
     #: 受限模式下"需要模型授权审查"的候选（R9-F）。审查不可用时仍回退为普通审批，
     #: 但调用方/审计能看出这次判定没有经过自然语言授权理解。
     needs_review: bool = False
+    #: R9-H5 §5：结构化决策码；调用方只能据此判断“本次具体批准可否完成”，
+    #: 不得用 reason 文本、语言或关键词推断权限。
+    decision_code: str | None = None

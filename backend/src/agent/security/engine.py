@@ -28,6 +28,7 @@ from agent.security.context import (
     requirement_resolution_status,
 )
 from agent.security.effects import (
+    DECISION_UNRESOLVED_LIMITS,
     AuthDecision,
     Effect,
     EffectKind,
@@ -222,6 +223,17 @@ class AuthorizationEngine(AuthorizationGateway):
                 reason,
                 scope_id,
             )
+        unresolved_requirement = self._requirement_for(context)
+        decision_code = (
+            DECISION_UNRESOLVED_LIMITS
+            if (
+                verdict == Verdict.APPROVE
+                and unresolved_requirement is not None
+                and self._limits_unresolved(unresolved_requirement)
+                and effect.kind in self._LIMIT_OPERATION_NAMES
+            )
+            else None
+        )
         decision = AuthDecision(
             verdict=verdict,
             reason=reason,
@@ -229,6 +241,7 @@ class AuthorizationEngine(AuthorizationGateway):
             effects=(effect,),
             scope_id=scope_id,
             needs_review=needs_review,
+            decision_code=decision_code,
         )
         instruction = context.instruction or current_instruction.get()
         self.audit.record(
@@ -2042,6 +2055,7 @@ class AuthorizationEngine(AuthorizationGateway):
                 verdict=Verdict.APPROVE,
                 reason="这条用户要求的历史结构化限制尚未可靠恢复；执行前核对不自动放行",
                 effects=(effect,),
+                decision_code=DECISION_UNRESOLVED_LIMITS,
             )
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
