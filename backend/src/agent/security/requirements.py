@@ -678,6 +678,52 @@ class RequirementLedger:
             raise RuntimeError("结构化限制写入后无法读回（数据库异常）")
         return reloaded
 
+    def requirement_needs_binding_recovery(self, requirement_id: str) -> bool:
+        """该要求是否为 structured 且有未绑定的 program_name 对象（只读，不查找）。
+
+        R9-H11 §2：历史 structured-but-unbound 是"需要专用恢复/澄清"，不是无关。
+        """
+        requirement = self.by_id(str(requirement_id or ""))
+        if requirement is None:
+            return False
+        if str(requirement.structured_limits_state or "") != requirement_limits.STATE_STRUCTURED:
+            return False
+        return requirement_limits.needs_binding_recovery(requirement.structured_limits)
+
+    def apply_binding_recovery(
+        self,
+        requirement_id: str,
+        limits: Sequence[dict] | None,
+        *,
+        source: object,
+        expected_version: int | None = None,
+        expected_status: str | None = None,
+        expected_chain_digest: str | None = None,
+    ) -> UserRequirement:
+        """专用恢复写回：只持久化**已完整绑定**的限制集合（R9-H11 §3）。
+
+        * 写前要求每个 program_name 对象都有有效 program_binding（path+identity）；
+          任一缺失 → ValueError，一行都不写（保留原限制/known/来源）；
+        * id/version/status/chain_digest 由 set_structured_limits 在同一事务内条件核对，
+          恢复等待期间要求被修改/撤回时抛 RequirementVersionMismatch；
+        * 只写限制，不生成普通授权、不调用普通独立授权审查。
+        """
+        if limits is None:
+            # 恢复写回必须显式给出恢复结果；None 不能按"空限制"写入（会清空 known）。
+            raise ValueError("专用恢复写回必须显式给出限制集合")
+        known = requirement_limits.normalize_limits(list(limits))
+        if not requirement_limits.binding_recovery_complete(known):
+            raise ValueError("程序对象尚未全部绑定，拒绝写回恢复结果")
+        return self.set_structured_limits(
+            str(requirement_id),
+            known,
+            source=source,
+            state=requirement_limits.STATE_STRUCTURED,
+            expected_version=expected_version,
+            expected_status=expected_status,
+            expected_chain_digest=expected_chain_digest,
+        )
+
     def structured_limits_for(self, requirement_id: str) -> tuple[dict, ...] | None:
         """按 requirement_id 重新加载结构化限制（执行前重核对/恢复用）。"""
         requirement = self.by_id(requirement_id)
