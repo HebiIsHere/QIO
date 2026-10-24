@@ -34,6 +34,32 @@ STATE_STRUCTURED = "structured"
 STATE_UNRESOLVED = "unresolved"
 STRUCTURED_LIMIT_STATES = frozenset({STATE_LEGACY, STATE_STRUCTURED, STATE_UNRESOLVED})
 
+#: 限制对象条目上的程序绑定状态（R9-H11 §1/§4）。
+#: * bound：已保存 program_binding（path + identity），执行时不再重新查找；
+#: * unresolved：**保存时**后端候选事实不足（名称查不到/身份不可读），显式记录，
+#:   不得当成"无绑定=无关"；需要专用恢复/澄清；
+#: * missing：历史数据（R9-H10 之前保存）从未尝试绑定。
+BINDING_STATE_BOUND = "bound"
+BINDING_STATE_UNRESOLVED = "unresolved"
+BINDING_STATE_MISSING = "missing"
+
+#: 保存时解析失败的稳定依据码（有界字符串，写入 JSON 供审计/恢复重试）。
+BINDING_FAILURE_LOOKUP_FAILED = "lookup_failed"
+BINDING_FAILURE_IDENTITY_UNAVAILABLE = "identity_unavailable"
+BINDING_FAILURE_RESOLVER_ERROR = "resolver_error"
+BINDING_FAILURE_UNKNOWN = "unknown"
+BINDING_FAILURES = frozenset(
+    {
+        BINDING_FAILURE_LOOKUP_FAILED,
+        BINDING_FAILURE_IDENTITY_UNAVAILABLE,
+        BINDING_FAILURE_RESOLVER_ERROR,
+        BINDING_FAILURE_UNKNOWN,
+    }
+)
+#: 候选事实只为审计保留有界路径（不存模型推理/密钥）。
+MAX_BINDING_CANDIDATES = 4
+MAX_BINDING_FACT_CHARS = 200
+
 
 class LimitRemovalAmbiguous(ValueError):
     """removed_limits 无法精确落到已有结构化限制上（不能猜测/不能表达剩余集合）。
@@ -124,6 +150,97 @@ def _resolve_program_binding(name: str) -> dict | None:
         return None
 
 
+def _probe_program_binding(name: str) -> dict:
+    """保存/恢复时的**后端只读候选事实**（唯一查找入口，不猜名称）。
+
+    返回 {"binding": dict | None, "failure": 依据码, "candidates": (候选事实, ...)}：
+    * 名称在当前 PATH 解析到对象且文件身份可读 → binding（path/identity/birth_key/source）；
+    * 查不到 → failure=lookup_failed（没有候选事实）；
+    * 查到了但身份不可读 → failure=identity_unavailable + 有界候选路径（审计用）。
+    不写库、不改历史 JSON；是否落库/是否算恢复成功由调用方决定。
+    """
+    text = _clean_text(name)
+    if not text:
+        return {
+            "binding": None,
+            "failure": BINDING_FAILURE_LOOKUP_FAILED,
+            "candidates": (),
+        }
+    try:
+        binding = _resolve_program_binding(text)
+    except Exception:  # noqa: BLE001 - 查找异常按未绑定事实（恢复失败，不猜测）
+        binding = None
+    if isinstance(binding, dict):
+        path = _clean_text(binding.get("path"))
+        identity = _clean_text(binding.get("identity"))
+        if path and identity:
+            return {
+                "binding": {
+                    "path": path,
+                    "identity": identity,
+                    "birth_key": _clean_text(binding.get("birth_key")) or None,
+                    "source": _clean_text(binding.get("source")) or "path_lookup",
+                },
+                "failure": "",
+                "candidates": (),
+            }
+    import os
+    import shutil
+
+    found = None
+    try:
+        found = shutil.which(text)
+    except Exception:  # noqa: BLE001 - 查找失败按未绑定事实
+        found = None
+    if found:
+        try:
+            candidate_path = os.path.realpath(found)
+        except Exception:  # noqa: BLE001
+            candidate_path = str(found)
+        return {
+            "binding": None,
+            "failure": BINDING_FAILURE_IDENTITY_UNAVAILABLE,
+            "candidates": (
+                {
+                    "path": candidate_path[:MAX_VALUE_CHARS],
+                    "source": "path_lookup",
+                    "state": BINDING_STATE_UNRESOLVED,
+                },
+            ),
+        }
+    return {
+        "binding": None,
+        "failure": BINDING_FAILURE_LOOKUP_FAILED,
+        "candidates": (),
+    }
+
+
+def _normalize_binding_candidates(value: Any) -> list[dict]:
+    """规范化对象条目上的**候选事实**（纯数据：不查找、不采集身份）。"""
+    if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
+        return []
+    candidates: list[dict] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        path = _clean_text(raw.get("path"))[:MAX_VALUE_CHARS]
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        item = {
+            "path": path,
+            "source": (_clean_text(raw.get("source")) or "path_lookup")[:80],
+        }
+        state = _clean_text(raw.get("state")).lower()
+        if state in (BINDING_STATE_UNRESOLVED, BINDING_STATE_BOUND):
+            item["state"] = state
+        candidates.append(item)
+        if len(candidates) >= MAX_BINDING_CANDIDATES:
+            break
+    return candidates
+
+
 def _normalize_objects(value: Any) -> list[dict]:
     if value is None:
         return []
@@ -173,6 +290,23 @@ def _normalize_objects(value: Any) -> list[dict]:
             # 规范化/反序列化只保留已保存绑定，绝不查找程序/采集身份。
             if clean_binding is not None:
                 entry["program_binding"] = clean_binding
+            else:
+                # R9-H11 §1：显式保留"保存时解析失败"的事实（binding_state/
+                # binding_failure/候选路径）。读取/反序列化绝不重新查找或补建绑定。
+                state = _clean_text(raw.get("binding_state")).lower()
+                if state == BINDING_STATE_UNRESOLVED:
+                    entry["binding_state"] = BINDING_STATE_UNRESOLVED
+                    failure = _clean_text(raw.get("binding_failure")).lower()
+                    entry["binding_failure"] = (
+                        failure
+                        if failure in BINDING_FAILURES
+                        else BINDING_FAILURE_UNKNOWN
+                    )
+                    candidates = _normalize_binding_candidates(
+                        raw.get("binding_candidates")
+                    )
+                    if candidates:
+                        entry["binding_candidates"] = candidates
         objects.append(entry)
         if len(objects) > MAX_OBJECTS_PER_LIMIT:
             raise ValueError("单个限制条目的对象数过多")
@@ -276,9 +410,17 @@ def _entry_with(
 def attach_program_bindings(
     limits: Iterable[dict], *, requirement_id: str, version: int, status: str
 ) -> tuple[dict, ...]:
-    """可信绑定创建入口：仅在要求保存/恢复流程显式调用。
+    """可信绑定创建入口：仅在要求保存/恢复流程显式调用（R9-H10 §1 / R9-H11 §1）。
 
-    规范化/序列化/反序列化不再调用本函数；读历史数据只能保留已有绑定。
+    规范化/序列化/反序列化不调用本函数；读历史数据只能保留已有绑定。
+
+    * 已有有效绑定：原样保留（含创建时的 requirement_* 事实），**不**按当前环境
+      重新解析——同名程序不能随 PATH 变化自动转移禁止对象；
+    * 缺绑定：用后端只读候选事实（当前 PATH 查找 + 文件身份）创建绑定，记录
+      requirement_id/version/status/path/identity/birth_key/source；
+    * 候选事实不足：在对象条目上**显式**记录 binding_state=unresolved +
+      binding_failure（lookup_failed / identity_unavailable / resolver_error）+
+      有界候选路径，供专用恢复/澄清与审计使用；绝不伪造绑定。
     """
     result: list[dict] = []
     for entry in normalize_limits(list(limits or ())):
@@ -286,20 +428,164 @@ def attach_program_bindings(
         objects: list[dict] = []
         for obj in copied.get("objects") or ():
             item = dict(obj)
-            if (
-                str(item.get("kind") or "").strip().lower() == "program_name"
-                and not item.get("program_binding")
-            ):
-                binding = _resolve_program_binding(str(item.get("value") or ""))
-                if binding is not None:
-                    binding["requirement_id"] = str(requirement_id)
-                    binding["requirement_version"] = int(version)
-                    binding["requirement_status"] = str(status)
-                    item["program_binding"] = binding
+            if str(item.get("kind") or "").strip().lower() == "program_name":
+                if program_binding_state(item) != BINDING_STATE_BOUND:
+                    item.pop("program_binding", None)
+                    try:
+                        probe = _probe_program_binding(str(item.get("value") or ""))
+                    except Exception:  # noqa: BLE001 - 查找异常=未绑定事实，不猜测
+                        probe = {
+                            "binding": None,
+                            "failure": BINDING_FAILURE_RESOLVER_ERROR,
+                            "candidates": (),
+                        }
+                    binding = probe.get("binding") if isinstance(probe, dict) else None
+                    if (
+                        isinstance(binding, dict)
+                        and _clean_text(binding.get("path"))
+                        and _clean_text(binding.get("identity"))
+                    ):
+                        clean_binding = {
+                            "path": _clean_text(binding.get("path")),
+                            "identity": _clean_text(binding.get("identity")),
+                            "birth_key": _clean_text(binding.get("birth_key")) or None,
+                            "source": _clean_text(binding.get("source"))
+                            or "path_lookup",
+                            "requirement_id": str(requirement_id),
+                            "requirement_version": int(version),
+                            "requirement_status": str(status),
+                        }
+                        item["program_binding"] = clean_binding
+                        item.pop("binding_state", None)
+                        item.pop("binding_failure", None)
+                        item.pop("binding_candidates", None)
+                    else:
+                        failure = str(
+                            (probe or {}).get("failure") or BINDING_FAILURE_UNKNOWN
+                        )
+                        item["binding_state"] = BINDING_STATE_UNRESOLVED
+                        item["binding_failure"] = (
+                            failure if failure in BINDING_FAILURES else BINDING_FAILURE_UNKNOWN
+                        )
+                        candidates = _normalize_binding_candidates(
+                            (probe or {}).get("candidates")
+                        )
+                        if candidates:
+                            item["binding_candidates"] = candidates
+                        else:
+                            item.pop("binding_candidates", None)
             objects.append(item)
         copied["objects"] = objects
         result.append(copied)
     return tuple(result)
+
+
+def program_binding_state(item: object) -> str:
+    """对象条目的绑定状态（纯数据判定）：bound / unresolved / missing。"""
+    if not isinstance(item, dict):
+        return BINDING_STATE_MISSING
+    binding = item.get("program_binding")
+    if (
+        isinstance(binding, dict)
+        and _clean_text(binding.get("path"))
+        and _clean_text(binding.get("identity"))
+    ):
+        return BINDING_STATE_BOUND
+    if _clean_text(item.get("binding_state")).lower() == BINDING_STATE_UNRESOLVED:
+        return BINDING_STATE_UNRESOLVED
+    return BINDING_STATE_MISSING
+
+
+def unbound_program_objects(limits: Iterable[dict]) -> tuple[dict, ...]:
+    """列出所有尚未绑定的 program_name 对象（只读，不查找程序）。
+
+    结构化-but-unbound（R9-H11 问题一）由本函数显式识别：它们不是"无关"，而是
+    需要专用恢复/澄清的对象。
+    """
+    result: list[dict] = []
+    for entry_index, entry in enumerate(limits or ()):
+        if not isinstance(entry, dict):
+            continue
+        for object_index, item in enumerate(entry.get("objects") or ()):
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("kind") or "").strip().lower() != "program_name":
+                continue
+            state = program_binding_state(item)
+            if state == BINDING_STATE_BOUND:
+                continue
+            result.append(
+                {
+                    "entry_index": int(entry_index),
+                    "object_index": int(object_index),
+                    "value": str(item.get("value") or ""),
+                    "state": state,
+                    "failure": _clean_text(item.get("binding_failure")),
+                }
+            )
+    return tuple(result)
+
+
+def needs_binding_recovery(limits: Iterable[dict] | None) -> bool:
+    """是否存在需要专用恢复/澄清的程序对象（缺失或保存时解析失败）。"""
+    return bool(unbound_program_objects(limits or ()))
+
+
+def binding_recovery_complete(limits: Iterable[dict] | None) -> bool:
+    """限制集合里的 program_name 是否都已绑定到明确对象。"""
+    return not unbound_program_objects(limits or ())
+
+
+def binding_facts(limits: Iterable[dict] | None) -> dict:
+    """绑定事实摘要（审计/日志用；不查找程序）。"""
+    facts: dict = {
+        "program_name": 0,
+        "bound": 0,
+        "unresolved": 0,
+        "missing": 0,
+        "sources": [],
+    }
+    for entry in limits or ():
+        if not isinstance(entry, dict):
+            continue
+        for item in entry.get("objects") or ():
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("kind") or "").strip().lower() != "program_name":
+                continue
+            facts["program_name"] += 1
+            state = program_binding_state(item)
+            facts[state] = int(facts.get(state, 0)) + 1
+            binding = item.get("program_binding")
+            source = _clean_text(binding.get("source")) if isinstance(binding, dict) else ""
+            if source and source not in facts["sources"]:
+                facts["sources"].append(source)
+    facts["sources"] = sorted(facts["sources"])
+    return facts
+
+
+def build_binding_recovery_source(
+    *,
+    requirement_text: object,
+    chain_digest: object,
+    version: object,
+    sources: Iterable[object] = ("path_lookup",),
+) -> str:
+    """专用恢复写回的来源（有界、可审计）：真实要求原话摘要 + 链 + 版本 + 候选来源。"""
+    import hashlib
+
+    text = "" if requirement_text is None else str(requirement_text)
+    text_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    picked = sorted(
+        {str(item) for item in (sources or ()) if str(item or "").strip()}
+    ) or ["path_lookup"]
+    parts = ["binding_recovery:" + "+".join(picked)]
+    digest_text = str(chain_digest or "").strip()
+    if digest_text:
+        parts.append("chain=" + digest_text)
+    parts.append("version=" + str(int(version)))
+    parts.append("text=" + text_digest)
+    return ";".join(parts)[:300]
 
 
 def _entry_with_objects(
@@ -479,8 +765,17 @@ def state_is_known(state: object) -> bool:
 
 
 __all__ = [
+    "BINDING_FAILURES",
+    "BINDING_FAILURE_IDENTITY_UNAVAILABLE",
+    "BINDING_FAILURE_LOOKUP_FAILED",
+    "BINDING_FAILURE_RESOLVER_ERROR",
+    "BINDING_FAILURE_UNKNOWN",
+    "BINDING_STATE_BOUND",
+    "BINDING_STATE_MISSING",
+    "BINDING_STATE_UNRESOLVED",
     "LIMIT_OBJECT_KINDS",
     "LIMIT_OPERATIONS",
+    "MAX_BINDING_CANDIDATES",
     "MAX_LIMIT_ENTRIES",
     "MAX_OBJECTS_PER_LIMIT",
     "MAX_REASON_CHARS",
@@ -489,12 +784,19 @@ __all__ = [
     "STATE_UNRESOLVED",
     "STRUCTURED_LIMIT_STATES",
     "LimitRemovalAmbiguous",
+    "attach_program_bindings",
+    "binding_facts",
+    "binding_recovery_complete",
+    "build_binding_recovery_source",
     "deserialize_limits",
     "known_limits_from_requirement",
     "limits_from_requirement",
     "merge_limits",
+    "needs_binding_recovery",
     "normalize_limits",
+    "program_binding_state",
     "remove_limits_precise",
     "serialize_limits",
     "state_is_known",
+    "unbound_program_objects",
 ]
