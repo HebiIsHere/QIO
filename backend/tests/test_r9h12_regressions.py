@@ -232,6 +232,23 @@ def _spy_launch(monkeypatch) -> list[tuple[str, ...]]:
     return calls
 
 
+async def _wait_state(
+    ctx,
+    approval_id: str,
+    states=("completed", "failed", "invalidated"),
+    timeout: float = 15.0,
+):
+    """等待审批行进入终态（真实审批服务；只观察，不改变行为）。"""
+    deadline = asyncio.get_running_loop().time() + timeout
+    row = None
+    while asyncio.get_running_loop().time() < deadline:
+        row = ctx.approvals.store.get(approval_id)
+        if row and str(row.get("state")) in states:
+            return row
+        await asyncio.sleep(0.03)
+    return row
+
+
 class _ExplodingReviewer:
     """普通授权审查替身：专用恢复一旦调用它就直接失败。"""
 
@@ -927,3 +944,61 @@ async def test_rule_bound_entry_resolves_to_other_object_allowed(
         ctx, binding, _execute_effect(other_program, requested="d12bound-other")
     )
     assert decision.verdict == Verdict.ALLOW, decision.reason
+
+# ===========================================================================
+# 审批恢复路径快速确认：同一失败关闭结论必须被审批恢复消费
+# ===========================================================================
+
+
+async def test_p1_alternate_entry_approval_resume_does_not_launch(
+    ctx, tmp_path, monkeypatch
+):
+    """审批恢复路径同样失败关闭：先拿到待审批，再保存无绑定限制，批准后不得启动 alternate。
+
+    与 P1 同一复现（真实硬链接入口名、原名称查找失败），但入口是审批恢复：
+    旧实现把「不同入口名」当无关，批准后会真实启动；契约要求审批恢复消费同一
+    共同对象结论（UNKNOWN -> 失败关闭），普通批准不能解除。
+    """
+    program_dir = tmp_path / "p1-appr-bin"
+    alt_dir = tmp_path / "p1-appr-alt"
+    program = _copy_program(program_dir, "d12apprrunner")
+    alt_dir.mkdir(parents=True, exist_ok=True)
+    alias = alt_dir / ("d12appralt.exe" if WINDOWS else "d12appralt")
+    if not _hardlink(program, alias):
+        pytest.skip("平台不支持真实硬链接：审批恢复的入口名绕过无法真实验证（如实标注）")
+    monkeypatch.setenv("PATH", str(alt_dir) + os.pathsep + os.environ.get("PATH", ""))
+    _mode(ctx, "restricted")
+    requirement = _new_requirement(ctx, "p1-appr")
+    binding = _binding(ctx, requirement.requirement_id)
+    root = tmp_path / "p1-appr-root"
+    args, marker = _launch_args(root, "approval-marker.txt")
+    tool = RunProgramTool(
+        computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization
+    )
+    with requirement_context(binding):
+        pending = await tool.run(
+            program="d12appralt", args=args, cwd=str(marker.parent), timeout=30
+        )
+    assert pending.ok is True and pending.code == "pending_approval", pending
+    approval_id = str((pending.data or {}).get("approval_id") or "")
+    assert approval_id
+
+    # 批准之前保存历史无绑定限制（原名称 d12apprrunner 查找失败）。
+    _save_unbound_program_limit(
+        ctx,
+        requirement.requirement_id,
+        ["execute"],
+        "d12apprrunner",
+        monkeypatch=monkeypatch,
+        no_such_path=tmp_path / "p1-appr-empty",
+    )
+    assert "program_binding" not in _first_object(ctx, requirement.requirement_id)
+
+    launches = _spy_launch(monkeypatch)
+    await ctx.approvals.decide(approval_id, "approve")
+    row = await _wait_state(ctx, approval_id)
+    assert row is not None
+    assert str(row.get("state")) in ("failed", "invalidated"), row
+    assert launches == [], "审批恢复路径不得启动被失败关闭的程序对象"
+    assert not marker.exists(), "普通批准不能解除未绑定的禁止对象"
+    assert not ctx.approvals.pending()
