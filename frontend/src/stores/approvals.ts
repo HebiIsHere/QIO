@@ -1,14 +1,13 @@
 import { defineStore } from "pinia";
 import { api } from "../services/api";
+import { useApprovalResultsStore } from "./approvalResults";
 import {
   approvalStateFromPhase,
   approvalStateLabel,
   confirmApprovalStage,
   decideApproval,
-  getApprovalHistory,
   getPendingApprovals,
   toPendingApproval,
-  type ApprovalHistoryEntry,
   type PendingApproval,
 } from "../services/approvalLifecycle";
 
@@ -160,7 +159,13 @@ export interface ApprovalFacts {
   /** 高风险：给批准按钮降调，别让品牌色看起来像「推荐你点」 */
   highRisk: boolean;
   verification: ApprovalVerification | null;
+  /**
+   * 可修改后批准的预算（**仅**旧 tool_create 子智能体路径：走 /respond overrides，
+   * 执行器真的会用用户批准的值）。v2 生命周期记录为 null —— 那里不支持改预算。
+   */
   budget: ApprovalBudget | null;
+  /** 只读预算：v2 生命周期记录带了预算信息时照实展示，但不提供任何可编辑控件。 */
+  budgetReadOnly: ApprovalBudget | null;
   isSubagentCreate: boolean;
   /** 结构化补充行（工具 / 类型 / 凭据 / 授权工具 / 知识内容 / 示例请求 …） */
   rows: { label: string; value: string }[];
@@ -331,12 +336,27 @@ export function approvalFacts(
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
   };
-  const budget: ApprovalBudget = {
+  const budgetCandidate: ApprovalBudget = {
     maxIterations: budgetNumber(budgetRaw.max_iterations, 5),
     maxTokens: budgetNumber(budgetRaw.max_tokens, 100000),
     outputLimitChars: budgetNumber(budgetRaw.output_limit_chars, 2000),
   };
   const isSubagentCreate = kind === "tool_create" && p.tool_type === "subagent";
+  /**
+   * F06：两类子智能体审批必须分开呈现（COMMON §4.1）。
+   *
+   * * 旧 tool_create 子智能体创建审批（老事件没有 state，走 /respond overrides）：
+   *   预算**可修改**，执行器（tools/lifecycle.py）真的采用用户批准的值；
+   * * R9 生命周期记录（有 state，/decide 不支持 overrides）：只有只读值，
+   *   绝不显示可编辑控件或「可修改后批准」文案，避免「看起来改了、实际用旧值」。
+   */
+  const lifecycleStateValue = String(input.state ?? "").trim();
+  const isLifecycleRecord = lifecycleStateValue.length > 0;
+  const hasBudgetPayload = Object.keys(budgetRaw).length > 0 || isSubagentCreate;
+  const budget: ApprovalBudget | null =
+    isSubagentCreate && !isLifecycleRecord ? budgetCandidate : null;
+  const budgetReadOnly: ApprovalBudget | null =
+    isLifecycleRecord && hasBudgetPayload ? budgetCandidate : null;
 
   const rows: { label: string; value: string }[] = [];
   const pushRow = (label: string, value: unknown) => {
@@ -401,7 +421,8 @@ export function approvalFacts(
     risks,
     highRisk: risks.some((r) => r !== "只读" && r !== "会读取文件"),
     verification,
-    budget: isSubagentCreate ? budget : null,
+    budget,
+    budgetReadOnly,
     isSubagentCreate,
     rows,
     advanced: { lines: advLines, raw: prettyJson(p) },
@@ -458,11 +479,13 @@ export const useApprovalsStore = defineStore("approvals", {
      * 统一弹窗（同一时刻只有一套有效提交按钮）。其他页面保持 false，内联审批照旧。
      */
     inlineSuppressed: false,
-    /** R9：执行结果历史（后端 approval_history；只读展示） */
-    history: [] as ApprovalHistoryEntry[],
-    historyLoading: false,
-    historyError: null as string | null,
-    /** R9：最近一次审批结局（事件 / 决定 / 确认后的可见事实） */
+    /**
+     * R9：最近一次审批结局（事件 / 决定 / 确认后的可见事实）。
+     *
+     * 兼容保留：旧 ApprovalModal 仍在读它（由 C 随旧展示层删除）。
+     * 新的结果/历史模型是 stores/approvalResults.ts —— 按 approval_id 建键，
+     * 并发两条审批不会互相覆盖；此处只是旧界面的单槽兼容视图。
+     */
     lastResult: null as {
       approvalId: string;
       phase: string;
@@ -472,6 +495,8 @@ export const useApprovalsStore = defineStore("approvals", {
     } | null,
     /** R9：pending 恢复是否已尝试（失败可重试；不因一次失败永久放弃） */
     recovered: false,
+    /** R9：恢复请求进行中（重试按钮防重复；恢复不改变任何审批状态） */
+    recoveryBusy: false,
     /** R9：pending 恢复失败原因（只影响「恢复」这件事，不改变已有待办） */
     recoveryError: null as string | null,
   }),
@@ -486,6 +511,13 @@ export const useApprovalsStore = defineStore("approvals", {
       !!state.inlineId && state.queue.length > 0 && state.queue[0]?.approval_id === state.inlineId,
     /** 内联审批是否被统一审批层接管（接管时内联卡不显示按钮） */
     inlineAllowed: (state) => !state.inlineSuppressed,
+    /**
+     * 执行结果历史（唯一真源在 stores/approvalResults.ts）。
+     * 兼容旧 ApprovalModal 的读取；新界面直接读结果 store。
+     */
+    history: () => useApprovalResultsStore().history,
+    historyLoading: () => useApprovalResultsStore().historyLoading,
+    historyError: () => useApprovalResultsStore().historyError,
   },
   actions: {
     enqueue(
@@ -598,7 +630,9 @@ export const useApprovalsStore = defineStore("approvals", {
      * * 其它失败：保留已有待办，如实给出可重试原因。
      */
     async recoverPending(): Promise<void> {
+      if (this.recoveryBusy) return;
       if (this.responding) return;
+      this.recoveryBusy = true;
       try {
         const pending = await getPendingApprovals();
         // kind=continue 的「继续/停止」走会话层操作条，不进入审批队列（与事件入口一致）
@@ -615,9 +649,30 @@ export const useApprovalsStore = defineStore("approvals", {
           this.recovered = true;
           return;
         }
-        this.recoveryError = "恢复待审批项失败：" + ((e as Error)?.message || "未知原因") + "（可以重试）";
+        // 失败：已有待办原样保留（没有服务端证据就不清空）；
+        // 「没读到」不等于「没有待审批」—— 界面必须依据这里显示可重试原因。
+        this.recoveryError =
+          "恢复待审批项失败：" + ((e as Error)?.message || "未知原因") + "（已有待办保留；可以重试）";
         this.recovered = true;
+      } finally {
+        this.recoveryBusy = false;
       }
+    },
+
+    /**
+     * 用户点「重试恢复」：与启动恢复同一条只读路径。
+     *
+     * 只重新读服务端快照：不重置任何审批期限、不重复创建、不推进确认阶段。
+     */
+    async retryRecovery(): Promise<boolean> {
+      if (this.recoveryBusy) return false;
+      if (this.responding) {
+        this.recoveryError = "有审批正在提交，等这次提交完成后再重试恢复。";
+        return false;
+      }
+      this.recoveryError = null;
+      await this.recoverPending();
+      return !this.recoveryError;
     },
 
     /**
@@ -699,21 +754,33 @@ export const useApprovalsStore = defineStore("approvals", {
     /** 动作成功后的收口：移除待办 / 记录最近结局；终态才出队。 */
     _settleAfterAction(item: ApprovalItem, phase: string, summary = "") {
       const state = item.state ?? phase;
+      const settled =
+        summary ||
+        (phase === "approved"
+          ? "已批准，等待后端执行"
+          : phase === "rejected"
+            ? "已拒绝，不会执行"
+            : phase === "cancelled"
+              ? "已取消，不会执行"
+              : "");
+      // 旧界面兼容视图（单槽；C 删除旧弹窗后移除）
       this.lastResult = {
         approvalId: item.approval_id,
         phase,
         state,
-        summary:
-          summary ||
-          (phase === "approved"
-            ? "已批准，等待后端执行"
-            : phase === "rejected"
-              ? "已拒绝，不会执行"
-              : phase === "cancelled"
-                ? "已取消，不会执行"
-                : ""),
+        summary: settled,
         ok: phase === "rejected" || phase === "cancelled" ? false : null,
       };
+      // 新结果模型：用户决定是**真的发生过**的事实；执行结果仍以后端事件/历史为准
+      useApprovalResultsStore().recordLocal({
+        approvalId: item.approval_id,
+        phase,
+        state,
+        summary: settled,
+        ok: phase === "rejected" || phase === "cancelled" ? false : null,
+        kind: item.kind,
+        label: item.label ?? "",
+      });
       // 决定 / 三次确认成功 = 不再等待用户输入；执行结果由 APPROVAL_RESULT 事件补上
       this.resolve(item.approval_id);
     },
@@ -731,18 +798,13 @@ export const useApprovalsStore = defineStore("approvals", {
       this.error = "审批请求失败，未做出任何授权：" + message + "（可重试）";
     },
 
-    /** 读执行结果历史（APPROVAL_EXECUTED 落库的历史；只读）。 */
-    async loadHistory(limit = 20) {
-      if (this.historyLoading) return;
-      this.historyLoading = true;
-      this.historyError = null;
-      try {
-        this.history = await getApprovalHistory(limit);
-      } catch (e) {
-        this.historyError = "读取执行结果历史失败：" + ((e as Error)?.message || "未知原因");
-      } finally {
-        this.historyLoading = false;
-      }
+    /**
+     * 读执行结果历史（只读；唯一真源在 stores/approvalResults.ts）。
+     *
+     * 失败保留已有内容并给出可重试原因 —— 不能把「读不到」显示成「没有历史」。
+     */
+    async loadHistory(limit = 50) {
+      await useApprovalResultsStore().loadHistory(limit);
     },
 
     /**
@@ -770,6 +832,15 @@ export const useApprovalsStore = defineStore("approvals", {
         if (typeof d.confirmed_stage === "number") item.confirmedStage = d.confirmed_stage;
         if (typeof d.requires_confirmations === "number") item.requiresConfirmations = d.requires_confirmations;
       }
+      /**
+       * 新结果模型（按 approval_id 建键）：approved / executing 也要接住 ——
+       * 「已批准、等待执行」不是完成；终态照实落。事件里的 detail（含批量
+       * item_id 逐项结果）原样保留，不再丢弃。
+       */
+      const results = useApprovalResultsStore();
+      if (phase !== "confirm_stage" && phase !== "confirmed") {
+        results.recordEvent(d);
+      }
       const terminal = new Set([
         "executed",
         "failed",
@@ -781,15 +852,16 @@ export const useApprovalsStore = defineStore("approvals", {
       ]);
       if (terminal.has(phase)) {
         const ok = typeof d.ok === "boolean" ? d.ok : phase === "executed" ? true : false;
+        // 旧界面兼容视图（单槽；C 删除旧弹窗后移除）
         this.lastResult = {
           approvalId,
           phase,
           state: state ?? phase,
-          summary: String(d.summary ?? d.detail ?? approvalStateLabel(state ?? phase)),
+          summary: String(d.summary ?? "") || approvalStateLabel(state ?? phase),
           ok,
         };
         this.resolve(approvalId);
-        // 有结局后刷新历史（失败也不打断：历史只是补充事实）
+        // 有结局后刷新历史（失败也不打断：历史只是补充事实；错误在结果面板可见可重试）
         void this.loadHistory().catch(() => undefined);
       } else if (phase === "confirm_stage" || phase === "confirmed") {
         this.lastResult = {

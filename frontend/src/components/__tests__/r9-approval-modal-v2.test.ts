@@ -31,6 +31,7 @@ vi.mock("../../services/api", () => ({
 
 import ApprovalModal from "../ApprovalModal.vue";
 import { useApprovalsStore } from "../../stores/approvals";
+import { useApprovalResultsStore } from "../../stores/approvalResults";
 
 function mountWithItem(meta: Record<string, unknown>) {
   const pinia = createPinia();
@@ -121,7 +122,8 @@ describe("状态机：已批准/执行中不再给决定按钮", () => {
 describe("执行结果历史", () => {
   it("弹窗里有只读历史入口；最近结局与历史记录可读", async () => {
     const { w, approvals } = mountWithItem({ state: "waiting", requiresConfirmations: 1 });
-    approvals.history = [
+    // 历史真源已迁到 stores/approvalResults.ts；旧弹窗通过 getter 读取同一份数据
+    useApprovalResultsStore().mergeHistory([
       {
         approval_id: "ap_0",
         kind: "computer",
@@ -130,7 +132,7 @@ describe("执行结果历史", () => {
         detail: {},
         at: "2026-10-21T09:00:00+08:00",
       },
-    ];
+    ]);
     approvals.lastResult = {
       approvalId: "ap_0",
       phase: "executed",
