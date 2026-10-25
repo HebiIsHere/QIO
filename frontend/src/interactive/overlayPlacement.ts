@@ -49,6 +49,8 @@ export interface ToolbarAnchor {
   gap: number;
   /** 宿主处于缩放祖先下时的实测比例；缺省 / 非法都按 1（不缩放）处理 */
   hostScale?: ToolbarScale;
+  /** true = 直接以卡片左上角为按钮坐标系原点（逐按钮换边用）。 */
+  anchorAtCard?: boolean;
 }
 
 function safeScale(value: unknown): number {
@@ -63,6 +65,12 @@ function safeScale(value: unknown): number {
 export function placeToolbarRelativeToCard(input: ToolbarAnchor): ToolbarPlacement {
   const scaleX = safeScale(input.hostScale?.x);
   const scaleY = safeScale(input.hostScale?.y);
+  if (input.anchorAtCard) {
+    return {
+      left: (input.cardRect.left - input.hostRect.left) / scaleX,
+      top: (input.cardRect.top - input.hostRect.top) / scaleY,
+    };
+  }
   const width = input.cardRect.right - input.cardRect.left;
   const height = input.cardRect.bottom - input.cardRect.top;
   const toolbarWidth = Number(input.toolbarWidth);

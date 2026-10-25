@@ -807,6 +807,13 @@ const renderedCardAnchors = computed<CardAnchor[]>(() => {
   ];
 });
 
+const TOOL_COUNT = 5;
+/** 上边容量：最后一个按钮不能越过顶部中点端点。返回应放到左边的按钮数。 */
+function toolbarLeftCount(card: BoardCardModel): number {
+  const capacity = Math.max(0, Math.min(TOOL_COUNT, Math.floor((card.w / 2 - 14) / 36)));
+  return TOOL_COUNT - capacity;
+}
+
 function commit(next: BoardState, label: string) {
   store.commit(next, label);
 }
@@ -2040,6 +2047,7 @@ function applyToolbarPlacement(stamp?: number): void {
   const placed = placeToolbarRelativeToCard({
     cardRect,
     hostRect,
+    anchorAtCard: true,
     toolbarHeight,
     toolbarWidth: toolbarRect && toolbarRect.right > toolbarRect.left ? toolbarRect.right - toolbarRect.left : lastToolbarWidth,
     gap: TOOLBAR_GAP,
@@ -3183,6 +3191,7 @@ onBeforeUnmount(() => {
             :groups="groups.filter((item) => item.id !== groupIdOf(card.id))"
             :toolbar-left="overlay.left"
             :toolbar-top="overlay.top"
+            :toolbar-left-count="toolbarLeftCount(card)"
             :toolbar-host="toolbarHostEl"
             :toolbar-visible="overlay.visible && overlaySettled"
             :multi="selection.length > 1"
