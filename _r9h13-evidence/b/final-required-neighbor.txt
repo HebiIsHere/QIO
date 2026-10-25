@@ -1,0 +1,25 @@
+# 最终：必跑邻近回归
+
+命令：
+
+```
+cd D:\qio-dev\qio-r9h13-b\backend
+& .\.venv\Scripts\python.exe -m pytest tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h12_cross_operation.py -o 'addopts=' -q -p no:cacheprovider -W ignore --tb=no
+```
+
+结果：
+
+```
+5 failed, 157 passed
+```
+
+5 条失败全部是“待 Lead 修订的旧期望”（本分支按契约不改 H11/H12 测试文件）：
+
+1. test_r9h11_object_state.py::test_binding_entry_name_same_object_differs_is_invalid
+2. test_r9h11_object_state.py::test_effect_entry_name_same_source_dominates_path_unrelated
+3. test_r9h11_object_state.py::test_effect_entry_name_from_execution_program
+4. test_r9h12_object_state.py::test_merge_invalid_dominates_path_unrelated
+5. test_r9h12_object_state.py::test_unrelated_registry_matches_frozen_whitelist
+
+旧→新 + 依据：old-expectations-r9h13-b.md；B3 的 4 条原始失败输出：
+neighbor-red-after-b3-expected.txt；B1 白名单的精确补丁也在 old-expectations 末尾。

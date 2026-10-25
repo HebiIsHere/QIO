@@ -82,6 +82,9 @@ class DeleteIntent:
     shell_cmd: str | None
     verified: bool
     reason: str
+    #: 本次删除是**递归**删除（-r/-R/--recursive、Windows /s）：目录操作数的
+    #: 真实影响包含其全部子对象，调用方必须展开而不是只核对目录本身（契约 §3.D3）。
+    recursive: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -93,6 +96,7 @@ class DeleteIntent:
             "shell_cmd": self.shell_cmd,
             "verified": bool(self.verified),
             "reason": self.reason,
+            "recursive": bool(self.recursive),
         }
 
     def identity_set(self) -> tuple[tuple[str, str, bool], ...]:
@@ -328,6 +332,57 @@ def _parse_windows_args(
     return operands, verified, "；".join(notes)
 
 
+def _short_option_chars(argv: tuple[str, ...]) -> set[str]:
+    """收集短选项字符（-rf → {r,f}）；``--`` 之后不再解析。"""
+    chars: set[str] = set()
+    end_of_options = False
+    for token in argv:
+        text = str(token)
+        if end_of_options:
+            continue
+        if text == "--":
+            end_of_options = True
+            continue
+        if not text.startswith("-") or text.startswith("--") or len(text) < 2:
+            continue
+        chars.update(char.lower() for char in text[1:])
+    return chars
+
+
+def _has_any_flag(argv: tuple[str, ...], names: tuple[str, ...]) -> bool:
+    wanted = {str(name).lower() for name in names}
+    return any(str(token).lower() in wanted for token in argv)
+
+
+def _recursive_delete(name: str, argv: tuple[str, ...]) -> bool:
+    """按程序身份 + 参数语义判断本次是否递归删除（会波及其子对象）。
+
+    只依据真实启动语义（程序名 + 选项），不搜索命令文字；无法确定按 False 返回，
+    但目录操作数仍由调用方按目录完整性核对（不因为这里 False 就当完整）。
+    """
+    args = tuple(str(item) for item in argv)
+    if WINDOWS:
+        if name in ("rd", "rmdir"):
+            return _has_any_flag(args, ("/s",)) or any(
+                str(token).lower().startswith("/s:") for token in args
+            )
+        if name in ("del", "erase"):
+            return _has_any_flag(args, ("/s",)) or any(
+                str(token).lower().startswith("/s:") for token in args
+            )
+        return False
+    if name == "rm":
+        return "r" in _short_option_chars(args) or _has_any_flag(
+            args, ("--recursive",)
+        )
+    if name == "git":
+        # git rm 的递归语义由 -r/--recursive 决定（仅磁盘删除非 --cached 时）。
+        return "r" in _short_option_chars(args[1:]) or _has_any_flag(
+            args[1:], ("--recursive",)
+        )
+    return False
+
+
 def _intent_from_program(
     *,
     program_name: str,
@@ -344,6 +399,7 @@ def _intent_from_program(
     verified = bool(extra_verified)
     notes: list[str] = [extra_note] if extra_note else []
     display_program = program_name or program_path
+    recursive = _recursive_delete(name, argv)
     if name == "find":
         if "-delete" not in [str(item) for item in argv]:
             return None
@@ -425,6 +481,8 @@ def _intent_from_program(
             notes.append("对象路径无法在审批前可靠解析：" + operand)
         objects.append(item)
     reason = "程序身份 " + str(display_program) + " 的参数语法结构表示永久删除（不进系统回收站）"
+    if recursive:
+        reason += "；这是递归删除：目录操作数的子对象同样属于真实影响"
     if notes:
         reason += "；" + "；".join(notes[:4])
     return DeleteIntent(
@@ -436,6 +494,7 @@ def _intent_from_program(
         shell_cmd=shell_cmd,
         verified=bool(verified),
         reason=reason,
+        recursive=bool(recursive),
     )
 
 

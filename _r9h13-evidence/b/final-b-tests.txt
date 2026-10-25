@@ -1,0 +1,22 @@
+# 最终：tests/test_r9h13_b_object_state.py
+
+命令：
+
+```
+cd D:\qio-dev\qio-r9h13-b\backend
+& .\.venv\Scripts\python.exe -m pytest tests/test_r9h13_b_object_state.py -o 'addopts=' -q -p no:cacheprovider -W ignore --tb=no
+```
+
+结果：
+
+```
+10 passed
+```
+
+覆盖：B1（普通 report.txt 三模式可读、程序本体当前解析命中仍 UNBOUND、只读范围
+规则不适用于 write、保存候选存在时仍失败关闭）、B2（限制路径删除后无关 B 仍可读、
+旧硬链接别名仍 MATCH、历史无保存身份仍 UNKNOWN）、B3（同名入口解析到独立对象可
+继续并真实启动、同名入口仍命中绑定对象 MATCH 0 启动、绑定路径对象替换仍 INVALID
+0 启动）。
+
+真实/构造边界见 after-fixes.md。
