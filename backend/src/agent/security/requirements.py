@@ -1637,6 +1637,41 @@ class AuthorizationLedger:
         sql += " ORDER BY created_at ASC, rowid ASC"
         return [self._from_row(row) for row in self.conn.execute(sql, params).fetchall()]
 
+    def active_allow_records_for_requirement(
+        self, requirement_id: str, *, limit: int = 32
+    ) -> tuple[AuthorizationRecord, ...]:
+        """R9-H13 引擎 E-4（子 scope 委派）只读查询：该要求**当前有效**的 allow 记录。
+
+        条件（全部满足，缺一不可）：
+        * decision == "allow"；revoked_at IS NULL；未过期（expires_at 缺失=长期有效）；
+        * 记录绑定的 requirement_version == user_requirements.version；
+        * 对应 user_requirements.status == "active"（修正/撤回后旧记录不可用）。
+
+        按 created_at、rowid 升序返回，最多 ``limit``（默认 32）条。
+        本方法**只读**：不做任何授权判断、不创建/撤销记录、不改权限模式。
+        """
+        count = max(1, min(int(limit or 32), 256))
+        rows = self.conn.execute(
+            "SELECT r.* FROM authorization_records AS r"
+            " JOIN user_requirements AS u ON u.id = r.requirement_id"
+            " WHERE r.requirement_id = ? AND r.decision = 'allow'"
+            "   AND r.revoked_at IS NULL AND u.status = ?"
+            "   AND r.requirement_version = u.version"
+            " ORDER BY r.created_at ASC, r.rowid ASC"
+            " LIMIT ?",
+            (str(requirement_id), STATUS_ACTIVE, count),
+        ).fetchall()
+        now = datetime.now(timezone.utc)
+        valid: list[AuthorizationRecord] = []
+        for row in rows:
+            record = self._from_row(row)
+            if record.expires_at and _expired(record.expires_at, now):
+                continue
+            valid.append(record)
+            if len(valid) >= count:
+                break
+        return tuple(valid)
+
 
 def _expired(expires_at: str, now: datetime) -> bool:
     try:

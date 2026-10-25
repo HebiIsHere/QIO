@@ -608,3 +608,108 @@ async def test_a2_missing_historical_identity_not_claimed_verified(
     assert new_clar.ok is True, new_clar
     assert marker_new_clar.exists(), "澄清为具体旧对象后，不同对象应按当前模式正常执行"
     assert len(launches) == 1, launches
+
+
+# ==========================================================================
+# 引擎 E-4 依赖：AuthorizationLedger 当前有效 allow 记录只读查询
+# ==========================================================================
+
+
+def test_authorization_ledger_active_allow_records_are_filtered_and_readonly(
+    db_conn,
+):
+    """只读查询：decision=allow、未撤销、未过期、当前版本且要求 active；有界 32。"""
+    from agent.security.requirements import (
+        STATUS_ACTIVE,
+        AuthorizationLedger,
+        AuthorizationRecord,
+        RequirementLedger,
+    )
+
+    ledger = RequirementLedger(db_conn)
+    requirement = ledger.record_user_message(
+        text="生成报告", message_id="m-e4", turn_id="t-e4"
+    )
+    rid = requirement.requirement_id
+    version = int(requirement.version)
+    records = AuthorizationLedger(db_conn)
+
+    def make(
+        record_id: str,
+        *,
+        decision: str = "allow",
+        created_at: str = "2026-01-01T00:00:00+00:00",
+        expires_at: str | None = None,
+        revoked_at: str | None = None,
+        requirement_version: int | None = None,
+        requirement_id: str | None = None,
+    ) -> AuthorizationRecord:
+        return AuthorizationRecord(
+            record_id=record_id,
+            requirement_id=rid if requirement_id is None else requirement_id,
+            operation_kind="write",
+            fingerprint="fp-" + record_id,
+            decision=decision,
+            reason="test",
+            allowed_operations=("write",),
+            objects=(),
+            limits=(),
+            source="test",
+            mode="restricted",
+            created_at=created_at,
+            expires_at=expires_at,
+            revoked_at=revoked_at,
+            review_id=None,
+            requirement_version=(
+                version if requirement_version is None else requirement_version
+            ),
+        )
+
+    records.record(make("rec-allow-1"))
+    records.record(make("rec-deny", decision="deny"))
+    records.record(make("rec-revoked", revoked_at="2026-01-02T00:00:00+00:00"))
+    records.record(make("rec-expired", expires_at="2020-01-01T00:00:00+00:00"))
+    records.record(make("rec-old-version", requirement_version=version + 1))
+    records.record(
+        make(
+            "rec-allow-2",
+            created_at="2026-02-01T00:00:00+00:00",
+            expires_at="2099-01-01T00:00:00+00:00",
+        )
+    )
+    total_before = int(
+        db_conn.execute("SELECT COUNT(*) FROM authorization_records").fetchone()[0]
+    )
+
+    found = records.active_allow_records_for_requirement(rid)
+
+    assert isinstance(found, tuple)
+    assert [item.record_id for item in found] == ["rec-allow-1", "rec-allow-2"]
+    # 旧接口语义保持不变（不是 allow-only / 不是当前版本-only）。
+    assert len(records.records_for_requirement(rid)) == 5
+    # 只读：不写、不撤销、不删。
+    total_after = int(
+        db_conn.execute("SELECT COUNT(*) FROM authorization_records").fetchone()[0]
+    )
+    assert total_after == total_before
+    assert all(item.revoked_at is None for item in found)
+
+    # 要求被修正（旧版本 superseded）后，旧记录的查询结果为空。
+    child = ledger.add_correction(rid, "把标题改成 X")
+    assert child is not None
+    assert records.active_allow_records_for_requirement(rid) == ()
+
+    # 有界：当前版本的 allow 记录最多返回 32 条。
+    for index in range(40):
+        records.record(
+            make(
+                "rec-bulk-%02d" % index,
+                created_at="2026-03-01T00:00:%02d+00:00" % index,
+                requirement_id=child.requirement_id,
+                requirement_version=int(child.version),
+            )
+        )
+    bounded = records.active_allow_records_for_requirement(child.requirement_id)
+    assert len(bounded) == 32, len(bounded)
+    assert records.active_allow_records_for_requirement(rid) == ()
+    assert STATUS_ACTIVE == "active"
