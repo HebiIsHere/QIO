@@ -1699,8 +1699,12 @@ _TASK_FEED_DDL: list[str] = [
 MIGRATIONS.append((67, list(_TASK_FEED_DDL)))
 
 # 补偿入口（新，68）：迁移 66 的全部语句 + 迁移 67（页面线 task_feed / task_ack）。
-# R9 66 库升级后走 67/68 就能拿到页面对象；页面 57 库跳过 R9 较低号迁移时，58/60/62/64/66
-# 已经把 R9 对象补齐，68 再把 task_feed 补齐。
+# 双向补偿：R9 66 库升级后走 67/68 拿到页面对象；页面线库（cv 55 / i2 57）会整段跳过
+# R9 的较低号迁移 —— i2 57 靠 58/60/62/64/66 把 R9 对象补齐，而 cv 55 的 57（R9-G）
+# 先于 58 执行，必须靠主循环前的兼容修复（migrate.repair_branch_schema）先把 R9 对象
+# 补出来（那条修复只重放补偿里的 CREATE/ALTER，不写版本号、不改数据）。
+# 语句来源与 58/60/62/64/66 一致：纯追加 DDL；其中继承自 main 51 的
+# INSERT OR IGNORE knowledge_maintenance_state 是幂等单行 seed（不覆盖已有行）。
 MIGRATIONS.append(
     (
         68,
@@ -1720,6 +1724,9 @@ from agent.storage.migration_p3_d import MIGRATION as _P3_D_MIGRATION  # noqa: E
 MIGRATIONS.append((69, list(_P3_D_MIGRATION[1])))
 
 # 补偿入口（新，70）：补偿 68 的全部语句 + 迁移 69（P3-D 的 display 列与重试系列）。
+# 这也是统一补偿入口：REQUIRED_OBJECTS 与 COMPENSATION_VERSION 都以它为准。
+# 与 66/68 同口径：纯追加 DDL（CREATE TABLE/INDEX IF NOT EXISTS + ADD COLUMN），
+# 另有 1 条继承自 main 51 的幂等 INSERT OR IGNORE（knowledge_maintenance_state 单行 seed）。
 MIGRATIONS.append(
     (
         70,

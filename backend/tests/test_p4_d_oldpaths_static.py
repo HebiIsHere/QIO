@@ -6,7 +6,7 @@
 * 旧互动理解 / JSON 修复 / 结果卡二次生成 / 旧提案调用不得恢复；
 * 全部模型调用使用 prompts.py 固定指令（业务模块无大段本地指令副本）；
 * [[QIO:ANSWER]] 回答声明保留；
-* 本阶段无新增迁移（版本仍 51，历史迁移不可改）。
+* 三分支整合后，页面线迁移改号到 67/68/69/70；历史迁移仍不可改。
 """
 
 from __future__ import annotations
@@ -169,10 +169,11 @@ def test_no_plaintext_secret_logging_patterns():
 def test_schema_migrations_are_append_only():
     """§14.1 的追加式纪律：历史迁移 49/50/51 必须保留；后续轮次只允许追加。
 
-    本测试原意是"本阶段没有新增迁移"（当时最新是 51）。R9（2026-10-22）按用户要求
-    用户要求新增了迁移 52/53/54（附件源引用、审批 v2、补偿）。所以不变量从
-    "版本必须等于 51"改为"版本必须收敛到最新且不少于 51；历史迁移不得被改写"。
-    这仍然是可失败的守卫：回退版本、丢历史迁移、版本与补偿不一致都会红。
+    本测试原意是"本阶段没有新增迁移"（当时最新是 51）。后续轮次按"只追加"继续登记：
+    R9 线新增 52/53/55/57..66（附件源引用、审批 v2、要求/授权、结构化限制、身份登记），
+    三分支整合再把页面线从 55/56/57 改号到 67/68/69/70（54/56 继续空号）。
+    不变量是"版本必须收敛到最新且不少于 51、历史迁移不得被改写、同号不同义不得再出现"。
+    这仍然是可失败的守卫：回退版本、丢历史迁移、版本与补偿不一致、旧号段被重复占用都会红。
     """
     schema = __import__("agent.storage.schema", fromlist=["SCHEMA_VERSION"])
     numbers = [int(number) for number, _ in getattr(schema, "MIGRATIONS")]
@@ -185,7 +186,14 @@ def test_schema_migrations_are_append_only():
         f"{CLAUSE}：补偿版本必须等于最新迁移（实际 {getattr(schema, 'COMPENSATION_VERSION')} / {latest}）")
     assert 49 in numbers and 50 in numbers and 51 in numbers, (
         f"{CLAUSE}：阶段三迁移 49/50/51 必须保留（只追加）")
-    # 编号连续（追加不跳号）+ 唯一（同号重复会破坏 apply_migrations 的版本推进）
+    # R9 冻结链必须保留；三分支整合后页面线入口必须落在 66 之后（不得回到同一个号）。
+    for number in (52, 53, 55, 57, 58, 60, 62, 64, 66):
+        assert number in numbers, f"{CLAUSE}：R9 迁移 {number} 缺失（只追加）"
+    for number in (67, 68, 69, 70):
+        assert number in numbers, f"{CLAUSE}：页面线迁移 {number} 缺失（改号后登记）"
+    assert 54 not in numbers and 56 not in numbers, (
+        f"{CLAUSE}：54/56 必须是空号（不允许页面线旧号与新语义同号）")
+    # 唯一（同号重复会破坏 apply_migrations 的版本推进）+ 升序登记
     assert len(numbers) == len(set(numbers)), f"{CLAUSE}：迁移编号重复：{numbers}"
     assert numbers == sorted(numbers), f"{CLAUSE}：迁移编号必须升序登记"
 
