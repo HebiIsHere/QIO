@@ -68,6 +68,12 @@ BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED = "saved_candidate_verified"
 RECOVERY_REASON_NO_SAVED_CANDIDATES = "no_saved_candidates"
 RECOVERY_REASON_CANDIDATE_UNVERIFIABLE = "saved_candidate_unverifiable"
 RECOVERY_REASON_CANDIDATE_CONFLICT = "saved_candidate_conflict"
+#: R9-H13 §3.A2：保存候选缺少保存时的 identity 事实——当前路径可读也不能证明仍是
+#: 历史对象，必须保持未解决并由专用语义恢复/用户澄清处理（结构化的失败依据码）。
+RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING = "candidate_historical_identity_missing"
+CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING = (
+    "candidate_historical_identity_missing"
+)
 
 
 class LimitRemovalAmbiguous(ValueError):
@@ -693,8 +699,12 @@ def _path_token(value: object) -> str:
 def _verify_saved_binding_candidate(candidate: object) -> dict:
     """后端核验**保存时的候选事实**是否仍有效（恢复采纳的唯一依据）。
 
-    要求（R9-H12 §4）：候选路径现在存在、是普通文件、路径没有被换成别的位置、
-    文件身份可读；候选若带 identity/birth 事实，必须与当前观测一致。
+    要求（R9-H12 §4 / R9-H13 §3.A2）：
+    * 候选路径现在存在、是普通文件、路径没有被换成别的位置、当前文件身份可读；
+    * **必须**携带保存时的 identity 事实，且与当前观测一致——只有“当前路径存在 +
+      当前身份可读”不能证明仍是保存时的历史对象（路径对象可能已被替换、旧对象可能
+      仍以硬链接存在），缺失保存时 identity 事实一律不采纳；
+    * 候选若带 birth 事实，必须与当前观测一致。
     调用方/模型自报不能替代本函数：只接受候选 dict，不执行程序、不读内容。
     """
     result: dict = {
@@ -748,7 +758,14 @@ def _verify_saved_binding_candidate(candidate: object) -> dict:
         result["failure"] = "candidate_identity_unavailable"
         return result
     recorded_identity = _clean_text(candidate.get("identity"))
-    if recorded_identity and recorded_identity != str(observed.key):
+    if not recorded_identity:
+        # R9-H13 §3.A2：当前路径存在 + 当前身份可读**不足以**证明仍是保存时的历史
+        # 对象（保存时身份不可读，路径上的对象可能已被替换；旧对象可能仍以硬链接
+        # 存在）。缺少保存时 identity 事实一律不采纳，保持未解决，交给专用语义
+        # 恢复/用户澄清 + 后端核验；绝不把“当前可读”写成 saved_candidate_verified。
+        result["failure"] = CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING
+        return result
+    if recorded_identity != str(observed.key):
         result["failure"] = "candidate_identity_mismatch"
         return result
     recorded_birth = _clean_text(candidate.get("birth_key"))
@@ -1061,12 +1078,23 @@ def recover_program_bindings(
                     (fact["failure"] for fact in verified if fact.get("failure")),
                     "candidate_unverifiable",
                 )
+                # R9-H13 §3.A2：结构化区分“保存时身份事实缺失”（当前可读也不能证明
+                # 历史对象）与其它不可核验原因；调用方据此给出澄清/恢复提示。
+                failures = [str(fact.get("failure") or "") for fact in verified]
+                missing_history = bool(failures) and all(
+                    item == CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING
+                    for item in failures
+                )
                 unresolved.append(
                     {
                         "entry_index": int(entry_index),
                         "object_index": int(object_index),
                         "value": value,
-                        "reason": RECOVERY_REASON_CANDIDATE_UNVERIFIABLE,
+                        "reason": (
+                            RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING
+                            if missing_history
+                            else RECOVERY_REASON_CANDIDATE_UNVERIFIABLE
+                        ),
                         "failure": failure,
                         "saved_candidates": [
                             _clean_text(candidate.get("path")) for candidate in candidates
@@ -1385,6 +1413,7 @@ __all__ = [
     "BINDING_STATE_MISSING",
     "BINDING_STATE_UNRESOLVED",
     "BindingRecoveryOutcome",
+    "CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING",
     "LIMIT_OBJECT_KINDS",
     "LIMIT_OPERATIONS",
     "MAX_BINDING_CANDIDATES",
@@ -1393,6 +1422,7 @@ __all__ = [
     "MAX_REASON_CHARS",
     "RECOVERY_REASON_CANDIDATE_CONFLICT",
     "RECOVERY_REASON_CANDIDATE_UNVERIFIABLE",
+    "RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING",
     "RECOVERY_REASON_NO_SAVED_CANDIDATES",
     "STATE_LEGACY",
     "STATE_STRUCTURED",

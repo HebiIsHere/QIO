@@ -3813,9 +3813,22 @@ class AppContext:
                     for item in outcome.current_candidates
                 ],
             )
-            self._append_history_notice(
-                ctx, "历史用户限制中的程序对象无法可靠绑定，相关操作需要确认"
+            missing_history = any(
+                str(item.get("reason") or "")
+                == requirement_limits.RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING
+                for item in outcome.unresolved
             )
+            if missing_history:
+                # R9-H13 §3.A2：历史依据不足不是“自动已验证”，需要用户澄清限制所指对象。
+                self._append_history_notice(
+                    ctx,
+                    "历史用户限制缺少保存时的对象身份依据，无法确认限制所指对象，"
+                    "需要澄清限制对应的对象",
+                )
+            else:
+                self._append_history_notice(
+                    ctx, "历史用户限制中的程序对象无法可靠绑定，相关操作需要确认"
+                )
             return None
         # 恢复期间重新读要求/链：被修改、撤回或链变化即丢弃结果，不写回旧结果。
         fresh_requirement = None
