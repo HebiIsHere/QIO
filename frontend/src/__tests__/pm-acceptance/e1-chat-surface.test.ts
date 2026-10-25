@@ -355,7 +355,30 @@ describe("执行结果与历史：待审批为 0 时仍能进入（基线：历�
 // §4.1 恢复失败必须可见、可重试；不能伪装成空
 // ---------------------------------------------------------------------------
 describe("pending 恢复失败：可见错误 + 重试（基线：只写进 store，界面无任何提示）", () => {
-  it("互动页：恢复失败时显示原因与重试，不显示成「没有待审批」", async () => {
+  /**
+   * 恢复失败的可见性是「入口可发现 + 打开后能读原因并重试」两段：
+   * ⑤ 审批入口的无障碍名必须写明读取失败（用户能发现），打开后必须给出原因与重试
+   * （A 的实现放在「结果与历史」面板里，与「历史读取失败」分开说明）。
+   */
+  async function openApprovalsEntry(wrapper: VueWrapper): Promise<void> {
+    const entry = wrapper.find('[data-entry="approvals"]');
+    expect(entry.exists(), "恢复失败后连审批入口都没有（用户无从发现）").toBe(true);
+    const label = entry.attributes("aria-label") ?? "";
+    expect(label, "审批入口没有说明「待审批列表读取失败」，用户看不出异常").toContain("失败");
+    await entry.trigger("click");
+    await flushPromises();
+    await nextTick();
+    await flushPromises();
+  }
+
+  function assertFailureSurface(wrapper: VueWrapper, where: string): void {
+    const alerts = Array.from(wrapper.element.querySelectorAll('[role="alert"]')).map((el) => el.textContent ?? "").join(" ");
+    expect(alerts, where + "：打开入口后看不到恢复失败原因").toContain("恢复待审批项失败");
+    const retry = Array.from(wrapper.element.querySelectorAll("button")).filter((btn) => /重试/.test(btn.textContent ?? ""));
+    expect(retry.length, where + "：恢复失败没有可点的重试入口").toBeGreaterThan(0);
+  }
+
+  it("互动页：恢复失败在审批入口可见，打开后能读原因并重试，不显示成「没有待审批」", async () => {
     mocks.getPendingApprovals.mockRejectedValue(new Error("HTTP 500：服务端内部错误"));
     const approvals = useApprovalsStore();
     await approvals.recoverPending();
@@ -363,22 +386,18 @@ describe("pending 恢复失败：可见错误 + 重试（基线：只写进 stor
 
     const w = mountInteractive();
     await flushPromises();
-    const alerts = Array.from(w.element.querySelectorAll('[role="alert"]')).map((el) => el.textContent ?? "").join(" ");
-    expect(alerts, "恢复失败在页面上完全不可见（用户会以为没有待审批）").toContain("恢复待审批项失败");
-    const retry = Array.from(w.element.querySelectorAll("button")).filter((btn) => /重试/.test(btn.textContent ?? ""));
-    expect(retry.length, "恢复失败没有可点的重试入口").toBeGreaterThan(0);
+    await openApprovalsEntry(w);
+    assertFailureSurface(w, "互动页");
   });
 
-  it("对话页：恢复失败时显示原因与重试", async () => {
+  it("对话页：恢复失败在审批入口可见，打开后能读原因并重试", async () => {
     mocks.getPendingApprovals.mockRejectedValue(new Error("HTTP 500：服务端内部错误"));
     const approvals = useApprovalsStore();
     await approvals.recoverPending();
 
     const w = mountConversation();
     await flushPromises();
-    const alerts = Array.from(w.element.querySelectorAll('[role="alert"]')).map((el) => el.textContent ?? "").join(" ");
-    expect(alerts, "恢复失败在对话页不可见").toContain("恢复待审批项失败");
-    const retry = Array.from(w.element.querySelectorAll("button")).filter((btn) => /重试/.test(btn.textContent ?? ""));
-    expect(retry.length).toBeGreaterThan(0);
+    await openApprovalsEntry(w);
+    assertFailureSurface(w, "对话页");
   });
 });

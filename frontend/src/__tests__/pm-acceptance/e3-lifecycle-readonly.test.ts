@@ -81,23 +81,27 @@ describe("只读生命周期记录不提供假的可编辑预算（F06）", () =
 
     expect(w.text()).toContain("已批准");
     expect(w.text(), "只读的已批准记录仍然写着「可修改后批准」，但界面上已没有可修改后批准的按钮").not.toContain("可修改后批准");
-    expect(w.find(".budget-box").exists(), "只读记录仍显示可编辑的预算控件").toBe(false);
+    // 只读展示允许（事实要照实说），但可编辑控件必须消失
+    expect(w.find('[data-test="approval-budget-editable"]').exists(), "只读记录仍显示可编辑的预算控件").toBe(false);
+    expect(w.find('[data-test="approval-budget-readonly"]').exists(), "只读记录没有把登记预算照实显示（信息丢失）").toBe(true);
     // 确认没有可编辑的数字输入（预算三件套）
     const numberInputs = w.findAll('input[type="number"]');
     expect(numberInputs.length, "只读记录仍有数字输入框").toBe(0);
+    // 只读值必须真的显示出来（不是空壳）
+    expect(w.text()).toContain("4000");
   });
 
   it("执行中同样只读：不出现预算编辑", async () => {
     const w = openModal(subagentApproval({ state: "executing" }));
     await nextTick();
-    expect(w.find(".budget-box").exists()).toBe(false);
+    expect(w.find('[data-test="approval-budget-editable"]').exists()).toBe(false);
     expect(w.text()).not.toContain("可修改后批准");
   });
 
   it("仍在等待用户决定的审批：预算编辑与「可修改后批准」必须保留（不能一刀切删掉）", async () => {
     const w = openModal(subagentApproval({ state: "waiting" }));
     await nextTick();
-    expect(w.find(".budget-box").exists(), "可修改后批准的真实入口被误删").toBe(true);
+    expect(w.find('[data-test="approval-budget-editable"]').exists(), "可修改后批准的真实入口被误删").toBe(true);
     expect(w.text()).toContain("可修改后批准");
     expect(w.find('[data-test="unified-approval-allow"]').exists()).toBe(true);
   });

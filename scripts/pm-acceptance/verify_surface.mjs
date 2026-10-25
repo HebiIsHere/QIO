@@ -242,21 +242,12 @@ async function main() {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(400);
   const surfacesAfterResult = await historySurfaces();
-  const residualText = await page.evaluate(() =>
-    document.body.textContent.includes("E-ACCEPT-历史结果"),
-  );
   await shot("05-no-pending-history");
   record(
     "0 待审批时，互动页仍有执行结果 / 审批历史的可操作入口",
     "存在历史入口",
     JSON.stringify(surfacesAfterResult),
     surfacesAfterResult.length > 0,
-  );
-  record(
-    "执行结果在页面上留存可回看（不是几秒提示）",
-    "页面正文包含执行结果摘要",
-    "包含=" + residualText,
-    residualText,
   );
 
   // ---- 4) 已批准状态 + 只读预算控件 ---------------------------------------
@@ -320,6 +311,12 @@ async function main() {
     summary: "E-ACCEPT-延迟结果-唯一字符串-5b7c",
   });
   await page.waitForTimeout(1200);
+  // 「结果可回看」= 用户打开 ⑤ 审批入口后能在「结果与历史」里读到；不是要求结果浮在页面上
+  const lateEntry = page.locator('[data-entry="approvals"]');
+  if ((await lateEntry.count()) > 0) {
+    await lateEntry.first().click().catch(() => undefined);
+    await page.waitForTimeout(1200);
+  }
   const at1s = await page.evaluate(() => document.body.textContent.includes("E-ACCEPT-延迟结果-唯一字符串-5b7c"));
   await shot("07-result-1s");
   await page.waitForTimeout(7000);

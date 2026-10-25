@@ -142,12 +142,19 @@ let page = await context.newPage();
 attach(page);
 await goto(page, "#/");
 const conversationHistory = await historySurfaces(page);
+const seedSummary = process.env.QIO_SEED_HISTORY_SUMMARY || "已执行：E-ACCEPT 种子历史（写入 2 个文件）";
+if (conversationHistory.length > 0) {
+  // 打开入口，确认不是「入口存在但内容是空的」
+  await page.locator('[data-entry="approvals"]').first().click().catch(() => undefined);
+  await page.waitForTimeout(1200);
+}
+const openedHistory = await page.evaluate(() => document.body.innerText || "");
 await page.screenshot({ path: OUT + "/12-conversation-no-pending.png" });
 record(
-  "矩阵2｜对话页 0 待审批仍有执行历史入口",
-  "存在可操作的历史入口",
-  JSON.stringify(conversationHistory),
-  conversationHistory.length > 0,
+  "矩阵2｜对话页 0 待审批、有历史时仍能进入历史并读到那条真实记录",
+  "存在历史入口，打开后能看到种子历史记录",
+  JSON.stringify({ entries: conversationHistory, seenSeed: openedHistory.includes(seedSummary) }),
+  conversationHistory.length > 0 && openedHistory.includes(seedSummary),
 );
 
 // ---- 矩阵 1：权限模式切换后在两页一致、刷新后仍一致 ----------------------
@@ -192,6 +199,13 @@ await failurePage.route("**/api/approvals/pending*", (route) =>
 );
 await goto(failurePage, "#/interactive");
 await failurePage.waitForTimeout(2000);
+// 恢复失败的可发现入口：⑤ 审批入口（A 的实现把原因+重试放在打开的「结果与历史」面板里）
+const failureEntry = failurePage.locator('[data-entry="approvals"]');
+const entryLabel = (await failureEntry.count()) > 0 ? await failureEntry.first().getAttribute("aria-label") : null;
+if ((await failureEntry.count()) > 0) {
+  await failureEntry.first().click().catch(() => undefined);
+  await failurePage.waitForTimeout(1200);
+}
 const failureState = await failurePage.evaluate(() => {
   const alerts = Array.from(document.querySelectorAll('[role="alert"]')).map((el) => (el.textContent || "").trim());
   const retry = Array.from(document.querySelectorAll("button")).filter((el) => /重试/.test(el.textContent || ""));
@@ -204,9 +218,11 @@ const failureState = await failurePage.evaluate(() => {
 await failurePage.screenshot({ path: OUT + "/14-pending-read-failure.png" });
 record(
   "矩阵5｜pending 读取失败可见（错误 + 重试，不伪装为空）",
-  "页面上有恢复失败原因与重试入口",
-  JSON.stringify(failureState),
-  failureState.alerts.some((text) => text.includes("恢复待审批项失败")) && failureState.retryCount > 0,
+  "⑤ 入口可发现失败；打开后有恢复失败原因与重试入口",
+  JSON.stringify({ entryLabel, ...failureState }),
+  Boolean(entryLabel && entryLabel.includes("失败")) &&
+    failureState.alerts.some((text) => text.includes("恢复待审批项失败")) &&
+    failureState.retryCount > 0,
 );
 await failurePage.close();
 
