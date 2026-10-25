@@ -15,7 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { mount, type VueWrapper } from "@vue/test-utils";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
 const mocks = vi.hoisted(() => ({
@@ -23,6 +23,10 @@ const mocks = vi.hoisted(() => ({
   fetchAttachmentBytes: vi.fn(),
   openAttachment: vi.fn(),
   downloadAttachment: vi.fn(),
+  /** R9 §6.4：文件卡源引用面板会向服务端核对附件事实（单测里固定成事实，不发请求） */
+  getAttachment: vi.fn(),
+  /** R9 §8：「作为互动材料」开关只调附件接口 */
+  setAttachmentMaterialEnabled: vi.fn(),
 }));
 
 vi.mock("../../../services/attachments", async (importOriginal) => {
@@ -33,6 +37,8 @@ vi.mock("../../../services/attachments", async (importOriginal) => {
     fetchAttachmentBytes: mocks.fetchAttachmentBytes,
     openAttachment: mocks.openAttachment,
     downloadAttachment: mocks.downloadAttachment,
+    getAttachment: mocks.getAttachment,
+    setAttachmentMaterialEnabled: mocks.setAttachmentMaterialEnabled,
   };
 });
 
@@ -46,6 +52,29 @@ import type { BoardCard as BoardCardModel } from "../../../interactive/types";
 
 const STAMP = "2026-10-13T00:00:00.000Z";
 const SRC = resolve(process.cwd(), "src");
+
+/**
+ * R9 §6.4 冻结的源引用事实（与后端 services/attachments.file_ref 的输出字段一一对应）。
+ * 只作为单测替身：面板拿它渲染文件名 / 引用 id / 来源 / 可用性 / 用户说明。
+ */
+const R9_ATTACHMENT = {
+  id: "att_1",
+  name: "预算表.pdf",
+  sizeBytes: 4096,
+  kind: "reference" as const,
+  display: "引用本地文件",
+  state: "ready" as const,
+  error: null,
+  attachmentId: "att_1",
+  filename: "预算表.pdf",
+  mediaKind: "pdf",
+  origin: "user_original" as const,
+  sourceKind: "dropped_path" as const,
+  availability: "available" as const,
+  referenceId: "ref_7",
+  materialEnabled: true,
+  userNote: "二次确认版",
+};
 
 const DOC_TEXT = ["# 采购清单", "", "第一段正文。", "", FENCE + "python", "x = 1", FENCE, ""].join("\n");
 
@@ -136,6 +165,8 @@ beforeEach(() => {
   });
   mocks.openAttachment.mockResolvedValue({ ok: true, note: "单测：已交给系统打开" });
   mocks.downloadAttachment.mockResolvedValue({ ok: true, note: "单测：已下载" });
+  mocks.getAttachment.mockResolvedValue(R9_ATTACHMENT);
+  mocks.setAttachmentMaterialEnabled.mockResolvedValue({ ...R9_ATTACHMENT, materialEnabled: false });
   setActivePinia(createPinia());
   store = useInteractiveStore();
 });
@@ -553,5 +584,102 @@ describe("阅读展开与可读材料：没有材料就不给假入口", () => {
     // 真实预览组件挂在卡片内部
     const host = w.get('[data-im="card-preview-host"]');
     expect(host.find('[data-testid="cip-root"]').exists()).toBe(true);
+  });
+});
+
+/**
+ * R9 §6.4 / §8：文件卡源引用在 v2 卡片里**仍然可见可操作**。
+ *
+ * v2 把「整卡许可」换成了 participation（勾选框 / 徽章按设计删除），但 R9 的
+ * 源文件引用事实属于另一条契约：文件名 / 类型 / 引用 id / 来源 / 可用性 /
+ * 缺失原因 /「作为互动材料」开关必须仍然渲染在文件卡里，不能因为 v2 重写而丢失。
+ * 这里挂真实 BoardCard + 真实 FileCardMaterialPanel，只把附件服务换成固定事实。
+ */
+describe("文件卡源引用（R9 §6.4）：v2 卡片里仍然可见可操作", () => {
+  function linkedFileCard(patch: Partial<BoardCardModel> = {}): BoardCardModel {
+    return mkCard("f_r9", {
+      kind: "file",
+      meta: {
+        name: "预算表.pdf",
+        file: {
+          name: "预算表.pdf",
+          attachmentId: "att_1",
+          size: 4096,
+          referenceId: "ref_7",
+          sourceKind: "dropped_path",
+          origin: "user_original",
+          availability: "available",
+          materialEnabled: true,
+          userNote: "二次确认版",
+        },
+      },
+      ...patch,
+    });
+  }
+
+  it("文件名 / 引用 id / 来源 / 可用性 / 用户说明 / 材料开关都渲染在卡片内", async () => {
+    mocks.getAttachment.mockResolvedValue(R9_ATTACHMENT);
+    const w = mountBoard(linkedFileCard(), { selected: false });
+    await flushPromises();
+
+    // 面板挂在卡片内部，不是浮层
+    expect(w.get('[data-im="file-card-ref"]').element.closest('[data-im="card"]')).not.toBeNull();
+    expect(w.get('[data-im="file-card-name"]').text()).toContain("预算表.pdf");
+    expect(w.get('[data-im="file-card-name"]').text()).toContain("PDF");
+    expect(w.get('[data-im="file-card-reference-id"]').text()).toBe("ref_7");
+    const sourceText = w.get('[data-im="file-card-source"]').text();
+    expect(sourceText).toContain("拖放");
+    expect(sourceText).toContain("你的原文件");
+    expect(w.get('[data-im="file-card-availability"]').text()).toContain("可用");
+    expect(w.get('[data-im="file-card-user-note"]').text()).toContain("二次确认版");
+    // 「作为互动材料」开关仍然可操作（只调附件接口，不改 participation）
+    expect(w.get('[data-im="file-card-material-switch"]').attributes("aria-checked")).toBe("true");
+    expect(w.get('[data-im="file-card-material-label"]').text()).toContain("作为互动材料");
+    expect(mocks.getAttachment).toHaveBeenCalledWith("att_1");
+  });
+
+  it("「作为互动材料」开关在卡片里可操作：只调附件接口 + emit patch，不改 participation", async () => {
+    mocks.getAttachment.mockResolvedValue(R9_ATTACHMENT);
+    const w = mountBoard(linkedFileCard(), { selected: false });
+    await flushPromises();
+
+    await w.get('[data-im="file-card-material-switch"]').trigger("click");
+    await flushPromises();
+
+    // 开关只走附件接口（不是板面许可勾选）
+    expect(mocks.setAttachmentMaterialEnabled).toHaveBeenCalledWith("att_1", false);
+    // 事实写回卡片 meta 由父级 commit：组件只 emit patch
+    const patchEvents = w.emitted("patch");
+    expect(patchEvents, "开关必须把事实交回板面（否则刷新后状态丢失）").toBeTruthy();
+    const lastPatch = patchEvents![patchEvents!.length - 1] as unknown[];
+    expect(lastPatch[0]).toBe("f_r9");
+    // BoardCard 的 patch 载荷是 { meta }（不是 meta 本身）
+    const patchedMeta = (lastPatch[1] as { meta?: { file?: { materialEnabled?: boolean } } }).meta;
+    expect(patchedMeta?.file?.materialEnabled).toBe(false);
+    // 参与 / 不参与没有被这个开关偷偷改动
+    expect(w.emitted("toggle")).toBeUndefined();
+  });
+
+  it("源文件缺失：如实给缺失原因，并提供「重新指定位置」入口", async () => {
+    mocks.getAttachment.mockResolvedValue({
+      ...R9_ATTACHMENT,
+      state: "missing",
+      availability: "missing",
+      missingReason: "原位置找不到这个文件",
+    });
+    const w = mountBoard(linkedFileCard(), { selected: false });
+    await flushPromises();
+
+    const availability = w.get('[data-im="file-card-availability"]').text();
+    expect(availability).toContain("缺失");
+    expect(availability).toContain("原位置找不到这个文件");
+    expect(w.find('[data-im="file-card-relocate"]').exists()).toBe(true);
+  });
+
+  it("没有关联附件：如实说 QIO 读不到正文，不拿文件名冒充", () => {
+    const card = mkCard("f_unlinked", { kind: "file", meta: { name: "预算表.pdf" } });
+    const w = mountBoard(card, { selected: false });
+    expect(w.get('[data-im="file-card-unlinked"]').text()).toContain("还没有关联源文件");
+    expect(w.text()).toContain("读不到它的正文");
   });
 });
