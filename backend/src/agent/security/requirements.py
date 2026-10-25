@@ -581,6 +581,7 @@ class RequirementLedger:
         expected_status: str | None = None,
         expected_chain_digest: str | None = None,
         attach_bindings: bool = True,
+        observe_objects: bool = True,
     ) -> UserRequirement:
         """写入/恢复一条要求的结构化限制（恢复入口 + apply_resolution 共用）。
 
@@ -596,6 +597,9 @@ class RequirementLedger:
         * **绑定范围（R9-H13 §3.A1）**：只对本次首次提交的条目创建绑定；已携带
           绑定/未解决事实的对象原样保留，不重新查找。``attach_bindings=False`` 用于
           “把已有 known limits 原样回写”（如恢复失败标 unresolved），绝不创建绑定。
+        * **保存时对象事实（R9-H13 B2）**：``observe_objects=True`` 时对首次形成的
+          精确路径对象采集一次 identity/birth_key/exists/observed_at/source；恢复写回
+          传 False，不重新采集历史值。
         * 展平文字 limits 同步追加可读文本（保留历史展示/审查材料），不覆盖旧文本；
         * 非法结构抛 ValueError（不写到库里，不静默降级为"无限制"）。
         """
@@ -624,6 +628,7 @@ class RequirementLedger:
                     version=int(requirement.version),
                     status=str(requirement.status),
                     preserve_saved_facts=True,
+                    observe_objects=bool(observe_objects),
                 )
             structured_json = requirement_limits.serialize_limits(known)
         flattened = [
@@ -730,6 +735,8 @@ class RequirementLedger:
             expected_version=expected_version,
             expected_status=expected_status,
             expected_chain_digest=expected_chain_digest,
+            # 恢复写回是历史事实的原样写回：不得重新采集路径对象的保存时事实。
+            observe_objects=False,
         )
 
     def structured_limits_for(self, requirement_id: str) -> tuple[dict, ...] | None:

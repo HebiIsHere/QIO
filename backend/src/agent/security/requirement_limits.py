@@ -110,6 +110,12 @@ MAX_OBJECTS_PER_LIMIT = 100
 MAX_REASON_CHARS = 500
 MAX_VALUE_CHARS = 4096
 
+#: R9-H13 B2：精确路径对象（kind=path/program）保存时一次性采集的对象事实字段。
+#: 纯数据：normalize/serialize/deserialize/merge/remove/继承原样保留；采集只在保存
+#: 流程（attach）发生一次，已存在字段不覆盖，恢复写回不重新采集历史值。
+SAVED_OBJECT_FACT_KEYS = ("identity", "birth_key", "exists", "observed_at", "source")
+SAVED_OBJECT_SOURCE = "requirement_save"
+
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
@@ -321,6 +327,78 @@ def _normalize_binding_candidates(value: Any) -> list[dict]:
     return candidates
 
 
+def _normalize_saved_object_fact(key: str, value: Any) -> Any:
+    """规范化 B2 保存时对象事实（纯数据；类型不合法时丢弃该字段，不猜）。"""
+    if key == "identity":
+        if value is None:
+            return None
+        text = _clean_text(value)[:MAX_VALUE_CHARS]
+        return text or None
+    if key == "birth_key":
+        if value is None:
+            return None
+        text = _clean_text(value)[:MAX_VALUE_CHARS]
+        return text or None
+    if key == "exists":
+        if isinstance(value, bool):
+            return value
+        return None
+    if key == "observed_at":
+        text = _clean_text(value)[:120]
+        return text or None
+    if key == "source":
+        text = _clean_text(value)[:80]
+        return text or None
+    return None
+
+
+def _collect_saved_object_facts(item: Mapping[str, Any]) -> dict:
+    """R9-H13 B2：保存时一次性采集精确路径对象的身份/存在事实（纯只读）。
+
+    只对 kind in {path, program} 且 value 是明确路径的对象执行：不查找程序、不猜
+    名称、不读文件内容，只做一次 stat/身份读取；已存在任一保存事实字段时不覆盖
+    （恢复写回/重写继承限制不会重新采集历史值）。
+    """
+    item = dict(item)
+    if any(key in item for key in SAVED_OBJECT_FACT_KEYS):
+        return item
+    kind = _clean_text(item.get("kind")).lower()
+    text = _clean_text(item.get("value"))
+    if kind not in ("path", "program") or not text:
+        return item
+    import os
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    try:
+        absolute = os.path.abspath(text)
+    except (OSError, ValueError):  # pragma: no cover - 极端路径
+        absolute = text
+    exists = False
+    try:
+        exists = bool(os.path.lexists(absolute))
+    except OSError:  # pragma: no cover - 权限/平台异常按不存在的事实记录
+        exists = False
+    identity = None
+    birth_key = None
+    if exists:
+        try:
+            from agent.services.file_identity import identity_of
+
+            observed = identity_of(Path(absolute))
+        except Exception:  # noqa: BLE001 - 身份提供器异常=读不到（记录 None）
+            observed = None
+        if observed is not None:
+            identity = str(observed.key)
+            birth_key = observed.birth_key
+    item["identity"] = identity
+    item["birth_key"] = birth_key
+    item["exists"] = exists
+    item["observed_at"] = datetime.now(timezone.utc).isoformat()
+    item["source"] = SAVED_OBJECT_SOURCE
+    return item
+
+
 def _normalize_objects(value: Any) -> list[dict]:
     if value is None:
         return []
@@ -346,6 +424,13 @@ def _normalize_objects(value: Any) -> list[dict]:
         if kind == "program_name" and ("/" in text or "\\" in text):
             raise ValueError("program_name 限制只能是程序名称，不能包含路径分隔符")
         entry = {"kind": kind, "value": text}
+        # R9-H13 B2：纯数据保留保存时对象事实（不采集、不覆盖、不猜）。
+        for fact_key in SAVED_OBJECT_FACT_KEYS:
+            if fact_key not in raw:
+                continue
+            normalized_fact = _normalize_saved_object_fact(fact_key, raw[fact_key])
+            if normalized_fact is not None or fact_key in ("identity", "birth_key"):
+                entry[fact_key] = normalized_fact
         if kind == "program_name":
             binding = raw.get("program_binding")
             clean_binding = None
@@ -505,6 +590,7 @@ def attach_program_bindings(
     status: str,
     fresh_limits: Iterable[dict] | None = None,
     preserve_saved_facts: bool = False,
+    observe_objects: bool = True,
 ) -> tuple[dict, ...]:
     """可信绑定创建入口：仅在要求保存/恢复流程显式调用（R9-H10 §1 / R9-H11 §1）。
 
@@ -520,6 +606,10 @@ def attach_program_bindings(
     * 两者都不给（默认）：保持 H11 的显式“创建绑定”语义（对所有未绑定对象探测），
       只供首次保存新要求/测试装配使用。恢复历史未解决绑定必须用
       ``recover_program_bindings``（保存候选优先），不得复用本函数。
+
+    R9-H13 B2：``observe_objects``（默认 True）表示在保存流程为**首次形成**的
+    精确路径对象（kind=path/program）采集一次对象事实（identity/birth_key/exists/
+    observed_at/source），已存在字段不覆盖；恢复写回传 False，绝不重新采集历史值。
 
     绑定事实：
     * 已有有效绑定：原样保留（含创建时的 requirement_* 事实），**不**按当前环境
@@ -595,6 +685,10 @@ def attach_program_bindings(
                             item["binding_candidates"] = candidates
                         else:
                             item.pop("binding_candidates", None)
+            else:
+                # R9-H13 B2：首次形成的精确路径对象采集一次保存时事实（不覆盖）。
+                if observe_objects:
+                    item = _collect_saved_object_facts(item)
             objects.append(item)
         copied["objects"] = objects
         result.append(copied)
