@@ -73,19 +73,10 @@ export function approvalMetaFromPending(pending: PendingApproval): Partial<Appro
   };
 }
 
-/** 内部数据审批的确认进度文案（0/3 → 第 1 次确认；3/3 → 已完成）。 */
-export function confirmationProgressText(item: ApprovalItem | null | undefined): string {
-  if (!item) return "";
-  const required = Math.max(1, Number(item.requiresConfirmations ?? 1));
-  if (required <= 1) return "";
-  const done = Math.max(0, Math.min(required, Number(item.confirmedStage ?? 0)));
-  return done >= required ? "已完成 " + required + "/" + required + " 次确认" : "已确认 " + done + "/" + required + " 次";
-}
-
 /**
  * 「它想做什么」：审批里最该先读的一句人话。
  *
- * 与 ApprovalModal 的 intent 共用这一份取值顺序
+ * 与统一审批弹窗的 intent 共用这一份取值顺序
  * （description → tool_name → name → explanation → reason）——
  * 内联卡与弹窗必须说同一句话，不能各写一套。
  */
@@ -120,7 +111,7 @@ export interface ApprovalVerification {
 /**
  * 审批界面要用到的**全部**事实。
  *
- * 契约 §1.3：这份整理**只有一处**（approvalFacts），ApprovalModal 与过程区内联卡
+ * 契约 §1.3：这份整理**只有一处**（approvalFacts），统一审批弹窗与过程区内联卡
  * 共用同一份 —— 禁止两套显示规则、禁止内联卡只说一句话。
  *
  * 两条底线：
@@ -487,8 +478,8 @@ export const useApprovalsStore = defineStore("approvals", {
     /**
      * 过程区里已经**内联显示按钮**的那条审批 id。
      *
-     * 同一时刻只允许一套按钮：内联卡在显示时，全局 ApprovalEntry / ApprovalModal
-     * 不再对同一个 approval_id 显示按钮（按 id 门控，不是按「有没有审批」）。
+     * 同一时刻只允许一套按钮：内联卡在显示时，统一入口不再对同一个 approval_id
+     * 显示按钮（按 id 门控，不是按「有没有审批」）。
      */
     inlineId: null as string | null,
     /**
@@ -496,20 +487,6 @@ export const useApprovalsStore = defineStore("approvals", {
      * 统一弹窗（同一时刻只有一套有效提交按钮）。其他页面保持 false，内联审批照旧。
      */
     inlineSuppressed: false,
-    /**
-     * R9：最近一次审批结局（事件 / 决定 / 确认后的可见事实）。
-     *
-     * 兼容保留：旧 ApprovalModal 仍在读它（由 C 随旧展示层删除）。
-     * 新的结果/历史模型是 stores/approvalResults.ts —— 按 approval_id 建键，
-     * 并发两条审批不会互相覆盖；此处只是旧界面的单槽兼容视图。
-     */
-    lastResult: null as {
-      approvalId: string;
-      phase: string;
-      state: string;
-      summary: string;
-      ok: boolean | null;
-    } | null,
     /** R9：pending 恢复是否已尝试（失败可重试；不因一次失败永久放弃） */
     recovered: false,
     /** R9：恢复请求进行中（重试按钮防重复；恢复不改变任何审批状态） */
@@ -528,13 +505,6 @@ export const useApprovalsStore = defineStore("approvals", {
       !!state.inlineId && state.queue.length > 0 && state.queue[0]?.approval_id === state.inlineId,
     /** 内联审批是否被统一审批层接管（接管时内联卡不显示按钮） */
     inlineAllowed: (state) => !state.inlineSuppressed,
-    /**
-     * 执行结果历史（唯一真源在 stores/approvalResults.ts）。
-     * 兼容旧 ApprovalModal 的读取；新界面直接读结果 store。
-     */
-    history: () => useApprovalResultsStore().history,
-    historyLoading: () => useApprovalResultsStore().historyLoading,
-    historyError: () => useApprovalResultsStore().historyError,
   },
   actions: {
     enqueue(
@@ -780,15 +750,8 @@ export const useApprovalsStore = defineStore("approvals", {
             : phase === "cancelled"
               ? "已取消，不会执行"
               : "");
-      // 旧界面兼容视图（单槽；C 删除旧弹窗后移除）
-      this.lastResult = {
-        approvalId: item.approval_id,
-        phase,
-        state,
-        summary: settled,
-        ok: phase === "rejected" || phase === "cancelled" ? false : null,
-      };
-      // 新结果模型：用户决定是**真的发生过**的事实；执行结果仍以后端事件/历史为准
+      // 结果事实只有一处：stores/approvalResults.ts（按 approval_id 建键）。
+      // 用户决定是**真的发生过**的事实；执行结果仍以后端事件/历史为准。
       useApprovalResultsStore().recordLocal({
         approvalId: item.approval_id,
         phase,
@@ -813,15 +776,6 @@ export const useApprovalsStore = defineStore("approvals", {
       }
       item.lifecycleError = message;
       this.error = "审批请求失败，未做出任何授权：" + message + "（可重试）";
-    },
-
-    /**
-     * 读执行结果历史（只读；唯一真源在 stores/approvalResults.ts）。
-     *
-     * 失败保留已有内容并给出可重试原因 —— 不能把「读不到」显示成「没有历史」。
-     */
-    async loadHistory(limit = 50) {
-      await useApprovalResultsStore().loadHistory(limit);
     },
 
     /**
@@ -868,27 +822,12 @@ export const useApprovalsStore = defineStore("approvals", {
         "cancelled",
       ]);
       if (terminal.has(phase)) {
-        const ok = typeof d.ok === "boolean" ? d.ok : phase === "executed" ? true : false;
-        // 旧界面兼容视图（单槽；C 删除旧弹窗后移除）
-        this.lastResult = {
-          approvalId,
-          phase,
-          state: state ?? phase,
-          summary: String(d.summary ?? "") || approvalStateLabel(state ?? phase),
-          ok,
-        };
         this.resolve(approvalId);
         // 有结局后刷新历史（失败也不打断：历史只是补充事实；错误在结果面板可见可重试）
-        void this.loadHistory().catch(() => undefined);
-      } else if (phase === "confirm_stage" || phase === "confirmed") {
-        this.lastResult = {
-          approvalId,
-          phase,
-          state: state ?? "waiting",
-          summary: confirmationProgressText(item) || "确认进度已更新",
-          ok: null,
-        };
+        void results.loadHistory().catch(() => undefined);
       }
+      // 进度事件（confirm_stage / confirmed）只更新待办进度，不伪造结果条目：
+      // 「确认到第 N 次」不是执行结局，结果模型不写它。
     },
 
     async respond(decision: "approved" | "rejected", overrides?: Record<string, unknown>) {
