@@ -119,12 +119,23 @@ export function fetchBoardState(boardId: string): Promise<BoardStateResponse> {
  * `confirm`（M4）：影响确认句柄。带它表示用户已经为这次改动做过影响确认；
  * 服务端会校验 checkId 与当前已保存版本，过期就 409 stale_check（不落库）。
  */
+/** 保存回执（与后端 D 的 PUT /state 响应同形）。 */
+export interface SaveBoardStateResult {
+  ok: boolean;
+  seq: number;
+  savedAt: string;
+  /** 服务端归一化后的权威状态：带 participation / collapsed / meta.display 与权威 version */
+  state: BoardState;
+  /** 保存时真实暂停的任务（旧链，可选） */
+  materialImpact?: { paused?: Intent[] };
+}
+
 export function saveBoardState(
   boardId: string,
   state: BoardState,
   reason = "op",
   confirm?: { checkId: string; stateVersion?: number },
-): Promise<{ ok: boolean; seq: number; savedAt: string; state: BoardState }> {
+): Promise<SaveBoardStateResult> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/state`, {
     method: "PUT",
     body: JSON.stringify({ state, reason, ...(confirm ? { confirm } : {}) }),
@@ -491,7 +502,7 @@ export function fetchRecoveryPreview(intentId: string): Promise<RecoveryPreviewR
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/recovery-preview`);
 }
 
-/** 恢复（按版本 CAS）：只把可恢复的意图放回可继续状态，不自动执行操作。 */
+/** 恢复（按版本 CAS）：放回可继续状态，并启动真实续作 Turn；失败不在响应里伪装成功。 */
 export function recoverIntent(
   intentId: string,
   boardId: string,
@@ -500,6 +511,19 @@ export function recoverIntent(
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/recover`, {
     method: "POST",
     body: JSON.stringify({ boardId, expectedVersion }),
+  });
+}
+
+/** 保存虚拟意图显示位置：只写 display，不推进语义版本或授权。 */
+export function saveIntentDisplay(
+  intentId: string,
+  boardId: string,
+  x: number,
+  y: number,
+): Promise<{ ok: boolean; display: { x: number; y: number } }> {
+  return request(`${BASE}/intents/${encodeURIComponent(intentId)}/display`, {
+    method: "POST",
+    body: JSON.stringify({ boardId, x, y }),
   });
 }
 

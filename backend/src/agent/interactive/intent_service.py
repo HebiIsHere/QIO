@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 from typing import Any, Iterable, Mapping
 
@@ -75,6 +76,43 @@ _JSON_COLUMNS = ("preview", "impact", "depends_on", "conflicts_with", "material_
                  "authorization")
 
 AUTHORIZATION_SOURCE = "explicit_user_confirmation"
+
+# -- 自动 / 手动重试（Phase 3 契约 §6.3） -----------------------------------
+
+#: 自动重试上限（首次失败不算自动次数；最多三次自动尝试）。
+RETRY_LIMIT = 3
+#: 重试系列状态：pending（等待自动）/ running（已认领一次尝试）/ exhausted（自动用尽）
+#: / stopped（不可恢复或用户停止）/ completed（意图已完成）。
+RETRY_STATUSES = ("pending", "running", "exhausted", "stopped", "completed")
+
+#: 不可恢复原因：这些不是「反复执行就能解决」的临时故障，不自动重试。
+#: 判定只用于**是否自动重试**，不改变真实错误文本与意图状态。
+NON_RETRYABLE_MARKERS = (
+    "no_credential",
+    "缺少凭据",
+    "credential",
+    "authorization",
+    "授权",
+    "approval",
+    "审批",
+    "等待",
+    "waiting",
+    "用户拒绝",
+    "rejected",
+    "材料撤回",
+    "material",
+    "conflict",
+    "冲突",
+    "budget",
+    "预算",
+    "cancelled",
+    "取消",
+    "user_stopped",
+    "权限",
+    "permission",
+    "invalid_status",
+    "late_completion",
+)
 
 
 # -- 基础工具 ---------------------------------------------------------------
@@ -228,6 +266,13 @@ def _intent_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         )
     version = int(_row_value(row, "version", 1) or 1)
     authorization = _loads(_row_value(row, "authorization", "{}"), {})
+    raw_display = _loads(_row_value(row, "display", "{}"), {})
+    display = None
+    if isinstance(raw_display, dict) and raw_display:
+        try:
+            display = {"x": float(raw_display.get("x")), "y": float(raw_display.get("y"))}
+        except (TypeError, ValueError):
+            display = None
     return {
         "intent_id": intent_id,
         "board_id": str(row["board_id"]),
@@ -252,6 +297,8 @@ def _intent_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         "outcome": str(_row_value(row, "outcome", "") or ""),
         "summary": str(row["summary"] or ""),
         "attempt": int(_row_value(row, "attempt", 0) or 0),
+        "display": display,
+        "retry": retry_state(conn, intent_id),
         "operations_summary": _operation_summary(operations),
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
@@ -275,6 +322,395 @@ def _record_version(
         " VALUES (?, ?, ?, ?, ?)",
         (str(row["id"]), version, _dumps(payload), _dumps(authorization), _now()),
     )
+
+
+
+# -- 重试系列（持久化；服务端调度；Phase 3 §6.3） ----------------------------
+
+
+#: 重试表的 JSON / 数值列（读写都走同一份映射，便于单测核对）。
+
+_RETRY_COLUMNS = (
+    "id", "series_id", "board_id", "submission_id", "intent_id",
+    "authorization_version", "attempts", "manual_attempts", "retry_limit", "status",
+    "last_error", "next_action", "retryable", "turn_id",
+    "final_notified_at", "exhausted_at", "created_at", "updated_at",
+)
+
+
+def retry_reason_is_recoverable(reason: Any) -> bool:
+    """只有临时故障才允许自动重试；授权/审批/等待/冲突/预算/取消不重试。"""
+    text = str(reason or "").strip().lower()
+    if not text:
+        return True
+    return not any(marker.lower() in text for marker in NON_RETRYABLE_MARKERS)
+
+
+def _retry_row(conn: sqlite3.Connection, series_id: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM board_intent_retries WHERE series_id = ?", (str(series_id),)
+    ).fetchone()
+
+
+def _latest_retry_row(conn: sqlite3.Connection, intent_id: str) -> sqlite3.Row | None:
+    try:
+        return conn.execute(
+            "SELECT * FROM board_intent_retries WHERE intent_id = ?"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (str(intent_id),),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+
+
+def _retry_view(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "series_id": str(row["series_id"]),
+        "intent_id": str(row["intent_id"]),
+        "board_id": str(row["board_id"]),
+        "submission_id": str(row["submission_id"] or ""),
+        "authorization_version": int(row["authorization_version"] or 0),
+        "attempts": int(row["attempts"] or 0),
+        "manual_attempts": int(row["manual_attempts"] or 0),
+        "limit": int(row["retry_limit"] or RETRY_LIMIT),
+        "status": str(row["status"]),
+        "last_error": str(row["last_error"] or ""),
+        "next_action": str(row["next_action"] or ""),
+        "retryable": bool(row["retryable"]),
+        "turn_id": str(row["turn_id"] or ""),
+        "final_notified_at": row["final_notified_at"],
+        "exhausted_at": row["exhausted_at"],
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+    }
+
+
+def retry_state(conn: sqlite3.Connection, intent_id: str) -> dict[str, Any] | None:
+    """只读：一条意图最近的重试系列（API / IntentView.retry 共用的稳定形状）。"""
+    try:
+        return _retry_view(_latest_retry_row(conn, intent_id))
+    except sqlite3.Error:
+        return None
+
+
+def _authorization_version_of(row: sqlite3.Row) -> int:
+    authorization = _loads(_row_value(row, "authorization", "{}"), {})
+    try:
+        return int((authorization or {}).get("version") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def record_retry_failure(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    intent_ids: Iterable[str],
+    reason: Any,
+    submission_id: str | None = None,
+    authorization_version: int | None = None,
+    turn_id: str | None = None,
+    retryable: bool | None = None,
+) -> list[dict[str, Any]]:
+    """记录一次真实失败；首次失败不占自动次数，耗尽/不可恢复只记录一次最终说明。
+
+    只写重试台账，不启动 Turn（由服务端调度器决定是否安排下一次自动尝试）。
+
+    """
+    board = str(board_id or "").strip()
+    ids = [str(item) for item in intent_ids or [] if str(item).strip()]
+    if not board or not ids:
+        return []
+    text = str(reason or "").strip()[:1000]
+    recoverable = retry_reason_is_recoverable(text) if retryable is None else bool(retryable)
+    stamp = _now()
+    out: list[dict[str, Any]] = []
+    with transaction(conn):
+        for intent_id in dict.fromkeys(ids):
+            row = _get_row(conn, intent_id)
+            if row is None or str(row["board_id"]) != board:
+                continue
+            auth_version = int(
+                authorization_version
+                if authorization_version is not None
+                else _authorization_version_of(row),
+            )
+            existing = conn.execute(
+                "SELECT * FROM board_intent_retries WHERE intent_id = ?"
+                " AND authorization_version = ?"
+                " ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (intent_id, auth_version),
+            ).fetchone()
+            if existing is None:
+                series_id = models.new_id("rty")
+                status = "pending" if recoverable else "stopped"
+                conn.execute(
+                    "INSERT INTO board_intent_retries"
+                    " (id, series_id, board_id, submission_id, intent_id,"
+                    "  authorization_version, attempts, manual_attempts, retry_limit, status,"
+                    "  last_error, next_action, retryable, turn_id,"
+                    "  final_notified_at, exhausted_at, created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        models.new_id("rt"),
+                        series_id,
+                        board,
+                        str(submission_id or row["submission_id"] or ""),
+                        intent_id,
+                        auth_version,
+                        RETRY_LIMIT,
+                        status,
+                        text,
+                        "auto" if recoverable else "manual",
+                        1 if recoverable else 0,
+                        str(turn_id or ""),
+                        stamp if not recoverable else None,
+                        stamp if not recoverable else None,
+                        stamp,
+                        stamp,
+                    ),
+                )
+            else:
+                attempts = int(existing["attempts"] or 0)
+                exhausted = (not recoverable) or attempts >= int(existing["retry_limit"] or RETRY_LIMIT)
+                status = (
+                    "stopped"
+                    if not recoverable
+                    else ("exhausted" if exhausted else "pending")
+                )
+                conn.execute(
+                    "UPDATE board_intent_retries SET status = ?, last_error = ?,"
+                    " retryable = ?, next_action = ?, turn_id = ?,"
+                    " final_notified_at = COALESCE(final_notified_at, ?),"
+                    " exhausted_at = COALESCE(exhausted_at, ?), updated_at = ?"
+                    " WHERE series_id = ?",
+                    (
+                        status,
+                        text,
+                        1 if recoverable else 0,
+                        "auto" if recoverable and not exhausted else "manual",
+                        str(turn_id or ""),
+                        stamp if exhausted else None,
+                        stamp if exhausted else None,
+                        stamp,
+                        str(existing["series_id"]),
+                    ),
+                )
+            out.append(retry_state(conn, intent_id) or {})
+    return out
+
+
+def list_retry_series(
+    conn: sqlite3.Connection, *, board_id: str = "", intent_id: str = ""
+) -> list[dict[str, Any]]:
+    """只读列出重试系列：板面视图 / 单意图视图共用同一稳定形状。"""
+    try:
+        if intent_id:
+            row = _latest_retry_row(conn, str(intent_id))
+            view = _retry_view(row)
+            return [view] if view else []
+        rows = conn.execute(
+            "SELECT * FROM board_intent_retries WHERE board_id = ?"
+            " ORDER BY updated_at DESC, created_at DESC LIMIT 100",
+            (str(board_id),),
+        ).fetchall()
+        return [view for row in rows if (view := _retry_view(row)) is not None]
+    except sqlite3.Error:
+        return []
+
+
+def set_intent_display(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    intent_id: str,
+    x: float,
+    y: float,
+) -> dict[str, Any]:
+    """保存意图虚拟层的显示位置：按 intent_id 绑定，不改 goal / version / 授权。"""
+    row = _get_row(conn, intent_id)
+    if row is None or str(row["board_id"]) != str(board_id):
+        return _fail("intent_not_found", "意图不存在", status="not_found")
+    if not math.isfinite(x) or not math.isfinite(y):
+        return _fail("invalid_display", "位置必须是有限数")
+    payload = {"x": round(float(x), 3), "y": round(float(y), 3)}
+    try:
+        with transaction(conn):
+            # 显示位置不属于材料语义：不推进 version / updated_at / 授权快照
+            conn.execute(
+                "UPDATE board_intents SET display = ? WHERE id = ?",
+                (_dumps(payload), str(intent_id)),
+            )
+    except sqlite3.Error as exc:
+        return _fail("display_save_failed", f"位置未保存：{exc}")
+    return {"ok": True, "intent_id": str(intent_id), "display": payload}
+
+
+def pending_auto_retries(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    intent_ids: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """等待自动重试、且没有活跃 Turn 的系列（新的在前；有界）。"""
+    board = str(board_id or "").strip()
+    if not board:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM board_intent_retries WHERE board_id = ?"
+        " AND retryable = 1 AND status = 'pending' AND attempts < retry_limit"
+        " AND next_action = 'auto'"
+        " ORDER BY updated_at, created_at LIMIT 50",
+        (board,),
+    ).fetchall()
+    wanted = {str(item) for item in (intent_ids or []) if str(item).strip()}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        intent_id = str(row["intent_id"])
+        if wanted and intent_id not in wanted:
+            continue
+        active = conn.execute(
+            "SELECT turn_id, status FROM board_intent_turns"
+            " WHERE intent_id = ? AND status = 'active' LIMIT 1",
+            (intent_id,),
+        ).fetchone()
+        if active is not None:
+            continue
+        out.append(_retry_view(row) or {})
+    return out
+
+
+def claim_auto_retry(conn: sqlite3.Connection, series_id: str) -> dict[str, Any]:
+    """服务端调度：原子认领一次自动重试；失败时如实返回原因，不伪造次数。"""
+    with transaction(conn):
+        row = _retry_row(conn, series_id)
+        if row is None:
+            return _fail("retry_not_found", "重试系列不存在", status="not_found")
+        status = str(row["status"])
+        attempts = int(row["attempts"] or 0)
+        limit = int(row["retry_limit"] or RETRY_LIMIT)
+        if not bool(row["retryable"]):
+            return _fail("retry_not_recoverable", "该失败原因不可自动重试", status="stopped")
+        if status in ("exhausted", "stopped", "completed"):
+            return _fail("retry_closed", f"重试系列状态为 {status}，不再自动重试", status=status)
+        if attempts >= limit:
+            conn.execute(
+                "UPDATE board_intent_retries SET status = 'exhausted',"
+                " next_action = 'manual', exhausted_at = COALESCE(exhausted_at, ?),"
+                " final_notified_at = COALESCE(final_notified_at, ?), updated_at = ?"
+                " WHERE series_id = ?",
+                (_now(), _now(), _now(), str(series_id)),
+            )
+            return _fail("retry_exhausted", "自动重试次数已用尽", status="exhausted")
+        attempt = attempts + 1
+        conn.execute(
+            "UPDATE board_intent_retries SET attempts = ?, status = 'running',"
+            " next_action = 'manual', updated_at = ? WHERE series_id = ?",
+            (attempt, _now(), str(series_id)),
+        )
+    return {
+        "ok": True,
+        "series_id": str(series_id),
+        "intent_id": str(row["intent_id"]),
+        "board_id": str(row["board_id"]),
+        "submission_id": str(row["submission_id"] or ""),
+        "attempt": attempt,
+        "limit": limit,
+        "authorization_version": int(row["authorization_version"] or 0),
+        "retry": retry_state(conn, str(row["intent_id"])),
+    }
+
+
+def claim_manual_retry(conn: sqlite3.Connection, intent_id: str) -> dict[str, Any]:
+    """用户点击一次恢复 / 重试：只累计一次手动尝试，不重置自动次数。"""
+    with transaction(conn):
+        row = _latest_retry_row(conn, intent_id)
+        stamp = _now()
+        if row is None:
+            intent = _get_row(conn, intent_id)
+            if intent is None:
+                return _fail("intent_not_found", "意图不存在", status="not_found")
+            series_id = models.new_id("rty")
+            conn.execute(
+                "INSERT INTO board_intent_retries"
+                " (id, series_id, board_id, submission_id, intent_id,"
+                "  authorization_version, attempts, manual_attempts, retry_limit, status,"
+                "  last_error, next_action, retryable, turn_id,"
+                "  final_notified_at, exhausted_at, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, 0, 1, ?, 'running', '', 'manual', 1, '', NULL, NULL, ?, ?)",
+                (
+                    models.new_id("rt"), series_id, str(intent["board_id"]),
+                    str(intent["submission_id"] or ""), str(intent_id),
+                    _authorization_version_of(intent), RETRY_LIMIT, stamp, stamp,
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE board_intent_retries SET manual_attempts = manual_attempts + 1,"
+                " status = 'running', next_action = 'manual', updated_at = ?"
+                " WHERE series_id = ?",
+                (stamp, str(row["series_id"])),
+            )
+    return {"ok": True, "intent_id": str(intent_id), "retry": retry_state(conn, intent_id)}
+
+
+def release_retry(conn: sqlite3.Connection, series_id: str, *, status: str, reason: str = "") -> dict[str, Any]:
+    """Turn 结束 / 启动失败时结算重试系列（只写真实事实，不推测成功）。"""
+    if status not in RETRY_STATUSES:
+        status = "stopped"
+    stamp = _now()
+    with transaction(conn):
+        row = _retry_row(conn, series_id)
+        if row is None:
+            return _fail("retry_not_found", "重试系列不存在", status="not_found")
+        exhausted = status == "exhausted"
+        conn.execute(
+            "UPDATE board_intent_retries SET status = ?, last_error = CASE WHEN ? = '' THEN last_error ELSE ? END,"
+            " next_action = ?, exhausted_at = COALESCE(exhausted_at, ?),"
+            " final_notified_at = COALESCE(final_notified_at, ?), updated_at = ?"
+            " WHERE series_id = ?",
+            (
+                status,
+                str(reason or ""),
+                str(reason or "")[:1000],
+                "manual" if status in ("exhausted", "stopped", "completed") else "auto",
+                stamp if exhausted else None,
+                stamp if status in ("exhausted", "stopped") else None,
+                stamp,
+                str(series_id),
+            ),
+        )
+    return {"ok": True, "series_id": str(series_id), "status": status, "retry": _retry_view(_retry_row(conn, series_id))}
+
+
+
+def set_retry_turn(conn: sqlite3.Connection, series_id: str, turn_id: str) -> None:
+    """把自动重试认领到的真实 Turn id 写回系列（供重启后对账 / 调试）。"""
+    if not str(turn_id or "").strip():
+        return
+    with transaction(conn):
+        conn.execute(
+            "UPDATE board_intent_retries SET turn_id = ?, updated_at = ? WHERE series_id = ?",
+            (str(turn_id), _now(), str(series_id)),
+        )
+
+def complete_retries_for_intents(conn: sqlite3.Connection, intent_ids: Iterable[str]) -> list[str]:
+    """意图完成时关闭对应重试系列（只关未完成的；不伪造成功）。"""
+    closed: list[str] = []
+    with transaction(conn):
+        for intent_id in dict.fromkeys(str(item) for item in intent_ids or [] if str(item).strip()):
+            row = _latest_retry_row(conn, intent_id)
+            if row is None or str(row["status"]) in ("completed",):
+                continue
+            conn.execute(
+                "UPDATE board_intent_retries SET status = 'completed', next_action = 'manual',"
+                " updated_at = ? WHERE series_id = ?",
+                (_now(), str(row["series_id"])),
+            )
+            closed.append(str(intent_id))
+    return closed
 
 
 def _update_row(conn: sqlite3.Connection, intent_id: str, **fields: Any) -> None:
@@ -1351,6 +1787,18 @@ def finish_intent(
     except Exception as exc:  # noqa: BLE001
         logger.warning("finish_intent failed", exc_info=True)
         return _fail("finish_failed", f"完成结果未保存：{exc}")
+    if outcome == "completed":
+        complete_retries_for_intents(conn, [intent_id])
+    elif outcome == "failed":
+        record_retry_failure(
+            conn,
+            board_id=board_id,
+            intent_ids=[intent_id],
+            reason=str(summary or ""),
+            submission_id=str(row["submission_id"] or ""),
+            authorization_version=_authorization_version_of(row),
+            retryable=retry_reason_is_recoverable(summary),
+        )
     new_row = _get_row(conn, intent_id)
     return {
         "ok": True,

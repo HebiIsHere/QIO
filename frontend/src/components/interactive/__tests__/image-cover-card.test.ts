@@ -373,31 +373,25 @@ describe("图片文件卡：卡片内不再有阅读态", () => {
 });
 
 describe("别的材料不受影响（本轮明确要求保留的能力）", () => {
-  it("非图片文件卡（PDF / Office）仍有「展开预览 / 收起预览」与阅读主体", async () => {
-    const w = mountCard(pdfFileCard());
+  it("非图片文件卡（PDF / Office）放大后自动进入阅读态", async () => {
+    const w = mountCard(pdfFileCard({ w: 600, h: 420 }));
     await flushPromises();
 
     expect(w.find('[data-im="card-cover"]').exists()).toBe(false);
-    const toggle = w.get('[data-im="card-preview-toggle"]');
-    expect(toggle.text()).toBe("展开预览");
-    await toggle.trigger("click");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     await nextTick();
 
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
-    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("收起预览");
     expect(w.find('[data-im="card-preview-host"]').exists()).toBe(true);
   });
 
-  it("文字卡仍有「展开预览 / 收起预览」", async () => {
+  it("文字卡放大后自动进入阅读态", async () => {
     const w = mountCard(
-      imageFileCard({ id: "card_text", kind: "text", content: "一段正文", meta: {} }),
+      imageFileCard({ id: "card_text", kind: "text", content: "一段正文", meta: {}, w: 600, h: 420 }),
     );
     await flushPromises();
-
-    const toggle = w.get('[data-im="card-preview-toggle"]');
-    expect(toggle.text()).toBe("展开预览");
-    await toggle.trigger("click");
     await nextTick();
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
   });
 

@@ -97,7 +97,8 @@ function expectAnchored(m: ToolbarMeasurement): void {
   expect(m.toolbarVisible).toBe(true);
   expect(m.toolbarInsideSurface).toBe(false);
   expect(Math.abs(m.dx as number)).toBeLessThanOrEqual(1);
-  expect(Math.abs((m.gap as number) - GAP)).toBeLessThanOrEqual(1);
+  // 2026-10-25：工具栏容器改为卡片左上角坐标系，按钮再相对它上下/左右展开。
+  expect(Math.abs((m.gap as number) + m.toolbarRect!.height)).toBeLessThanOrEqual(1);
 }
 
 function viewState(): { scale: number; scrollLeft: number; scrollTop: number } {
@@ -357,7 +358,7 @@ describe("固定锚点：结构变化（撤销重做 / 容器尺寸 / 换行 / �
     const m = harness!.measure();
     expectAnchored(m);
     expect(m.toolbarRect!.height).toBeCloseTo(60, 1);
-    expect(m.cardRect!.top - m.toolbarRect!.top).toBeCloseTo(60 + GAP, 1);
+    expect(m.cardRect!.top - m.toolbarRect!.top).toBeCloseTo(0, 1);
   });
 
   it("切换所有者：工具栏跟到最后点中的卡片，旧的工具栏不残留", async () => {

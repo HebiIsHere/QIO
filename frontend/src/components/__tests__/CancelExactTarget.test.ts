@@ -298,7 +298,7 @@ describe("中止的目标身份（契约 §1.2）", () => {
 
     const stop = w.find('.send-btn[data-mode="stop"]');
     expect(stop.exists()).toBe(true);
-    expect(stop.text()).toContain("停止");
+    expect(stop.attributes("aria-label") ?? stop.attributes("title") ?? "").toContain("停止");
     await stop.trigger("click");
     await flushPromises();
 

@@ -31,6 +31,14 @@ try {
  * 旧的顶部居中悬浮入口只留给互动、设置、调试等页面，避免同一时刻出现两套按钮。
  */
 const isConversation = computed(() => routeRef?.name === "conversation");
+/**
+ * 聊天路由 = 对话 + 互动。两页都由统一审批层接管；旧顶部审批入口/旧弹窗
+ * 只留给设置、调试等非聊天页面，避免同一时刻出现两套按钮。
+ * 与 WindowChrome 的 hasGlobalBar 口径保持一致（Phase 1-A）。
+ */
+const isChatRoute = computed(
+  () => routeRef?.name === "conversation" || routeRef?.name === "interactive",
+);
 
 /**
  * 启动状态：后端没应答之前不渲染主界面。
@@ -109,13 +117,14 @@ onUnmounted(stopTicker);
         （真实情况：一句「上次那项操作没有执行」和「有 N 项操作等待确认」重叠）。
         容器本身不接收点击，只有里面的按钮可点。
       -->
+      <!-- 旧顶部审批入口只在非聊天路由保留；互动的 DevTaskEntry 仍可见（不与审批混在一起）。 -->
       <div v-if="!isConversation" class="top-notes">
-        <ApprovalEntry />
+        <ApprovalEntry v-if="!isChatRoute" />
         <DevTaskEntry />
       </div>
       <!-- 同一时刻只允许一套按钮：对话页由 UnifiedApprovalLayer 统一承载；
            其他页面在过程区已内联显示这条审批时，全局弹窗让位（按 approval_id 门控） -->
-      <ApprovalModal v-if="!isConversation && !approvals.inlineClaimed" />
+      <ApprovalModal v-if="!isChatRoute && !approvals.inlineClaimed" />
       <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
       <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
     </template>

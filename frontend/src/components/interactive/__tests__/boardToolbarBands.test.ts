@@ -32,7 +32,7 @@ describe("功能栏栅格契约（BoardToolbar ↔ SubmitCluster）", () => {
     const root = wrapper.get('[data-im="board-toolbar"]');
     expect(root.attributes("data-tb-band")).toBe("wide");
     // 关键钩子一个都不能少（图标化只换外观，不换钩子）
-    for (const hook of ["add-menu", "search-toggle", "undo", "redo", "submit", "submit-cluster"]) {
+    for (const hook of ["add-menu", "undo", "redo", "submit", "submit-cluster"]) {
       expect(root.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
     wrapper.unmount();

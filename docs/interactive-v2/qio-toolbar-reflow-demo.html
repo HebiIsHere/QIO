@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>局部工具栏被挤到另一边</title>
+<style>
+  * { box-sizing: border-box; }
+  :root {
+    --accent: #c51b7d; --accent-soft: rgba(197,27,125,.12);
+    --ink: #40333b; --muted: #8b7481; --line: #e4d7df;
+    --paper: #fffdfd; --board: #fbf8fa;
+    --btn: 30px; --gap: 6px; --step: 36px; --top-y: -42px; --left-x: -42px;
+  }
+  html, body { margin: 0; height: 100%; background: #f3edf1; color: var(--ink); font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+  body { display: grid; place-items: center; }
+  .frame { width: min(1180px, 96vw); height: min(760px, 92vh); display: flex; flex-direction: column; background: var(--paper); border: 1px solid #eadde5; border-radius: 20px; overflow: hidden; box-shadow: 0 18px 60px rgba(60, 25, 45, .10); }
+  .head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding: 20px 24px 14px; border-bottom: 1px solid #f0e6eb; }
+  h1 { margin: 0; font-size: 19px; letter-spacing: .02em; }
+  .sub { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+  .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  button.ctl { border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 7px 13px; color: var(--ink); font: inherit; font-size: 12px; cursor: pointer; }
+  button.ctl:hover { border-color: var(--accent); color: var(--accent); }
+  button.ctl.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .stage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--board); background-image: radial-gradient(circle, rgba(197,27,125,.18) 0 1px, transparent 1.2px); background-size: 24px 24px; }
+  .stage::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(90deg, rgba(255,255,255,.2), transparent 22%, transparent 78%, rgba(255,255,255,.2)); }
+  .card-wrap { position: absolute; left: 50%; top: 50%; width: 560px; height: 300px; transform: translate(-50%, -50%); transition: width 1500ms cubic-bezier(.2,.8,.2,1), height 1500ms cubic-bezier(.2,.8,.2,1); }
+  .card-wrap.tall { width: 320px; height: 560px; }
+  .card-wrap.manual { transition: none; }
+  .card { position: absolute; inset: 0; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 10px 30px rgba(65,30,50,.08); }
+  .card::after { content: ""; position: absolute; right: 0; bottom: 0; width: 74px; height: 74px; border-radius: 0 0 14px 0; pointer-events: none; background: linear-gradient(135deg, transparent 54%, rgba(197,27,125,.14) 55%, rgba(197,27,125,.22)); clip-path: polygon(100% 0, 100% 100%, 0 100%); }
+  .card-content { position: absolute; left: 20px; top: 18px; right: 22px; bottom: 18px; display: flex; flex-direction: column; gap: 10px; }
+  .kind { width: max-content; font-size: 10px; color: var(--muted); border: 1px solid var(--line); background: #fff; border-radius: 999px; padding: 2px 8px; }
+  .title { font-size: 17px; font-weight: 600; }
+  .copy { max-width: 460px; color: #796670; font-size: 12px; line-height: 1.8; }
+  .foot { margin-top: auto; color: #a08b97; font-size: 10px; }
+  .port { position: absolute; width: 7px; height: 7px; border: 1.5px solid var(--accent); background: #fff; border-radius: 50%; z-index: 4; }
+  .port.top { left: 50%; top: -3.5px; transform: translateX(-50%); }
+  .port.right { right: -3.5px; top: 50%; transform: translateY(-50%); }
+  .port.bottom { left: 50%; bottom: -3.5px; transform: translateX(-50%); }
+  .port.left { left: -3.5px; top: 50%; transform: translateY(-50%); }
+  .bar { position: absolute; width: 6px; height: 14px; border-radius: 8px; background: var(--accent); opacity: .38; }
+  .bar.top { left: 50%; top: -20px; transform: translateX(-50%); }
+  .bar.right { right: -20px; top: 50%; transform: translateY(-50%); }
+  .bar.bottom { left: 50%; bottom: -20px; transform: translateX(-50%); }
+  .bar.left { left: -20px; top: 50%; transform: translateY(-50%); }
+  .tool { position: absolute; width: var(--btn); height: var(--btn); border: 1px solid var(--line); border-radius: 50%; background: #fff; color: #806b77; display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; box-shadow: 0 2px 6px rgba(60,30,50,.07); will-change: left, top; z-index: 8; }
+  .tool svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+  .tool:hover { border-color: var(--accent); color: var(--accent); background: #fff8fc; }
+  .resize { position: absolute; right: -14px; bottom: -14px; width: 44px; height: 44px; cursor: nwse-resize; z-index: 10; touch-action: none; border: 0; background: transparent; }
+  .resize::after { content: ""; position: absolute; right: 13px; bottom: 13px; width: 18px; height: 18px; border-right: 2px solid rgba(197,27,125,.45); border-bottom: 2px solid rgba(197,27,125,.45); border-radius: 0 0 5px 0; }
+  .readout { position: absolute; left: 20px; top: 18px; z-index: 12; display: flex; gap: 8px; flex-wrap: wrap; pointer-events: none; }
+  .pill { background: rgba(255,255,255,.94); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; color: #705b68; font-size: 11px; box-shadow: 0 2px 7px rgba(60,30,50,.05); }
+  .pill.accent { color: var(--accent); border-color: rgba(197,27,125,.35); }
+  .hint { position: absolute; right: 20px; bottom: 18px; z-index: 12; max-width: 440px; color: var(--muted); font-size: 11px; line-height: 1.7; text-align: right; pointer-events: none; }
+  @media (max-width: 760px) { .frame { height: 94vh; } .head { flex-direction: column; } .controls { justify-content: flex-start; } .card-wrap { transform: translate(-50%, -50%) scale(.78); } }
+</style>
+</head>
+<body>
+<div class="frame">
+  <header class="head">
+    <div>
+      <h1>局部工具栏：被边缘挤到另一边</h1>
+      <p class="sub">按钮固定 30px。宽卡时，最左侧的按钮先被上边端点挤下去；下一个下来时压在上面，把前一个挤到下面。长卡变宽时反向。</p>
+    </div>
+    <div class="controls">
+      <button class="ctl primary" id="toggle">切到竖卡</button>
+      <button class="ctl" id="auto">暂停自动演示</button>
+      <span class="pill" id="state">宽卡 · 贴上边</span>
+    </div>
+  </header>
+  <div class="stage" id="stage">
+    <div class="readout">
+      <span class="pill" id="size">560 × 300</span>
+      <span class="pill" id="fit">上边有空间</span>
+    </div>
+    <div class="card-wrap" id="wrap">
+      <div class="card">
+        <span class="port top"></span><span class="port right"></span><span class="port bottom"></span><span class="port left"></span>
+        <span class="bar top"></span><span class="bar right"></span><span class="bar bottom"></span><span class="bar left"></span>
+        <div class="card-content">
+          <span class="kind">文字注释</span>
+          <div class="title">比较两份方案</div>
+          <div class="copy">拖动右下角改变卡片宽高。上边的可用长度变短时，按钮会被顶端连接点推着，绕过左上角滑到左边。</div>
+          <div class="foot">10-25 01:40</div>
+        </div>
+      </div>
+      <button class="tool" style="--i:0" title="编辑" aria-label="编辑"><svg viewBox="0 0 16 16"><path d="M3 13l1-4 7-7 3 3-7 7-4 1Z"/><path d="M9 4l3 3"/></svg></button>
+      <button class="tool" style="--i:1" title="复制" aria-label="复制"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="9" rx="1"/><path d="M6 4V2h8v9h-2"/></svg></button>
+      <button class="tool" style="--i:2" title="隐藏" aria-label="隐藏"><svg viewBox="0 0 16 16"><path d="M2 8s2.2-3.4 6-3.4S14 8 14 8s-2.2 3.4-6 3.4S2 8 2 8Z"/><circle cx="8" cy="8" r="1.5"/></svg></button>
+      <button class="tool" style="--i:3" title="书签" aria-label="书签"><svg viewBox="0 0 16 16"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg></button>
+      <button class="tool" style="--i:4" title="整理" aria-label="整理"><svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="4" height="4" rx="1"/><rect x="9.5" y="2.5" width="4" height="4" rx="1"/><rect x="2.5" y="9.5" width="4" height="4" rx="1"/><rect x="9.5" y="9.5" width="4" height="4" rx="1"/></svg></button>
+      <button class="tool" style="--i:5" title="删除" aria-label="删除"><svg viewBox="0 0 16 16"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></svg></button>
+      <button class="resize" id="resize" title="拖动改变卡片大小" aria-label="拖动改变卡片大小"></button>
+    </div>
+    <div class="hint">观察点：第二个被挤下去的按钮不会排到第一个下面；它会压在上面，把第一个继续往下挤。长到宽时，最上面的左侧按钮先回到上边。</div>
+  </div>
+</div>
+<script>
+  const wrap = document.getElementById('wrap');
+  const state = document.getElementById('state');
+  const size = document.getElementById('size');
+  const fit = document.getElementById('fit');
+  const toggle = document.getElementById('toggle');
+  const auto = document.getElementById('auto');
+  const resize = document.getElementById('resize');
+  const tools = [...document.querySelectorAll('.tool')];
+  const BTN = 30, GAP = 6, COUNT = 6, STEP = BTN + GAP;
+  const START = 8, TOP_Y = -42, LEFT_X = -42;
+  let tall = false;
+  let autoTimer = null;
+  let manual = false;
+
+  // 每个按钮当前在卡片左上角坐标系里的位置。
+  const pos = tools.map((_, i) => ({ x: START + i * STEP, y: TOP_Y }));
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function moveToward(current, target, speed) {
+    if (current < target) return Math.min(target, current + speed);
+    if (current > target) return Math.max(target, current - speed);
+    return current;
+  }
+
+  /** 上边最多还能留几个按钮：从左边开始排，最后一个不能越过顶部中点端点。 */
+  function topCapacity() {
+    const width = wrap.clientWidth;
+    return clamp(Math.floor((width / 2 - 14 + GAP) / STEP), 0, COUNT);
+  }
+
+  /**
+   * 宽卡 -> 长卡：最左侧按钮先离开上边。
+   * k = 左侧按钮数量；上方剩余按钮统一向左补位。
+   */
+  function layout() {
+    const capacity = topCapacity();
+    const leftCount = COUNT - capacity;
+    const width = wrap.clientWidth;
+    const height = wrap.clientHeight;
+
+    for (let i = 0; i < COUNT; i += 1) {
+      const shouldBeLeft = i < leftCount;
+      const leftY = START + (leftCount - 1 - i) * STEP;
+      const topX = (i - leftCount) * STEP + START;
+      const p = pos[i];
+
+      if (shouldBeLeft) {
+        // 先从所在的上边位置沿上边向左滑到左上角外侧，再沿左边向下。
+        if (p.y < -20 && p.x > LEFT_X + 18) {
+          p.x = moveToward(p.x, LEFT_X, 8);
+          p.y = TOP_Y;
+        } else {
+          p.x = moveToward(p.x, LEFT_X, 8);
+          p.y = moveToward(p.y, leftY, 8);
+        }
+      } else {
+        // 长卡 -> 宽卡：先从左边向上回到上边，再向右补位。
+        if (p.x < -20 && p.y > TOP_Y + 18) {
+          p.y = moveToward(p.y, TOP_Y, 8);
+          p.x = LEFT_X;
+        } else {
+          p.y = moveToward(p.y, TOP_Y, 8);
+          p.x = moveToward(p.x, topX, 8);
+        }
+      }
+      tools[i].style.left = p.x + 'px';
+      tools[i].style.top = p.y + 'px';
+      tools[i].style.zIndex = String(10 + i);
+    }
+
+    const topCount = capacity;
+    if (leftCount === 0) {
+      state.textContent = '宽卡 · 全部在上边';
+      fit.textContent = '上边放得下';
+    } else if (topCount === 0) {
+      state.textContent = '全部被挤到左边';
+      fit.textContent = '上边已没有按钮';
+    } else {
+      state.textContent = '上边 ' + topCount + ' 个 / 左边 ' + leftCount + ' 个';
+      fit.textContent = '最左侧按钮被挤下，其他按钮补位';
+    }
+    fit.classList.toggle('accent', leftCount > 0);
+    size.textContent = Math.round(width) + ' × ' + Math.round(height) + ' px';
+    toggle.textContent = tall ? '切到宽卡' : '切到竖卡';
+  }
+
+  function tick() {
+    layout();
+    requestAnimationFrame(tick);
+  }
+
+  function switchTo(nextTall) {
+    tall = nextTall;
+    wrap.classList.toggle('tall', tall);
+  }
+
+  toggle.addEventListener('click', () => { stopAuto(); switchTo(!tall); });
+  auto.addEventListener('click', () => { if (autoTimer) stopAuto(); else startAuto(); });
+  function startAuto() {
+    tall = false;
+    wrap.classList.remove('tall');
+    autoTimer = setInterval(() => switchTo(!tall), 4200);
+    auto.textContent = '暂停自动演示';
+  }
+  function stopAuto() {
+    if (autoTimer) clearInterval(autoTimer);
+    autoTimer = null;
+    auto.textContent = '继续自动演示';
+  }
+
+  let startX = 0, startY = 0, startW = 0, startH = 0;
+  resize.addEventListener('pointerdown', (event) => {
+    event.preventDefault(); event.stopPropagation();
+    stopAuto();
+    manual = true;
+    wrap.classList.add('manual');
+    startW = wrap.clientWidth; startH = wrap.clientHeight;
+    startX = event.clientX; startY = event.clientY;
+    resize.setPointerCapture?.(event.pointerId);
+    resize.addEventListener('pointermove', onResize);
+    resize.addEventListener('pointerup', endResize, { once: true });
+    resize.addEventListener('pointercancel', endResize, { once: true });
+  });
+  function onResize(event) {
+    if (!manual) return;
+    const w = clamp(startW + (event.clientX - startX), 240, 760);
+    const h = clamp(startH + (event.clientY - startY), 220, 620);
+    wrap.style.width = w + 'px';
+    wrap.style.height = h + 'px';
+  }
+  function endResize() {
+    manual = false;
+    resize.removeEventListener('pointermove', onResize);
+    wrap.classList.remove('manual');
+    tall = wrap.clientHeight > wrap.clientWidth;
+  }
+
+  layout();
+  requestAnimationFrame(tick);
+  startAuto();
+</script>
+</body>
+</html>

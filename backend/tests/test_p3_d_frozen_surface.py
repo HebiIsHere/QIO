@@ -45,16 +45,16 @@ def test_interactive_policy_exists_and_contains_hard_rules():
     text = prompts.PROMPTS["INTERACTIVE_POLICY"]
     assert isinstance(text, str) and text.strip()
     for phrase in (
-        "板面身份、提交身份、查看权限、意图状态及授权范围以程序提供的数据为准",
-        "使用 board_wait_for_input 记录等待",
+        "意图身份、对象版本、查看权限和授权范围，以程序提供的可信数据为准",
+        "使用 board_wait_for_input 记录必要问题",
         "系统已将问题作为正常对话展示时，不再重复发送同一问题",
         "用户回答后继续原提交",
-        "通过 resolved_question_ids 明确解除对应等待",
-        "实质扩大目标、对象、数量、成本或影响范围时更新意图并重新确认",
-        "保存或编辑本身不自动构成新的提交",
-        "失败时保留已经完成且有用的成果",
-        "通过 board_finish_intent 明确本次执行结果",
-        "自然语言中的“完成”不能代替程序状态",
+        "通过 resolved_question_ids 解除对应等待",
+        "实质扩大目标、对象、数量、成本或影响时，更新意图并重新确认",
+        "保存和编辑本身也不等于再次提交",
+        "已经完成的步骤和有用成果应保留",
+        "通过 board_finish_intent 声明真实结果",
+        "自然语言中的“完成”不能替代程序状态",
     ):
         assert phrase in text, f"{CLAUSE}：INTERACTIVE_POLICY 缺少硬规则「{phrase}」"
 

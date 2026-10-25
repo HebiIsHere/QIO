@@ -121,6 +121,10 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 缺了它们，任务历史只能存在组件内存或浏览器存储，重启即丢。
         "task_feed",
         "task_ack",
+        # 阶段三（P3-D，迁移 56）：意图有效 Turn / 持久化重试系列。
+        # 全部在补偿迁移 57 里有对应的建表语句；缺了它们会并行执行同一意图、重启丢重试次数。
+        "board_intent_turns",
+        "board_intent_retries",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -148,6 +152,8 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 稳定提交请求身份（迁移 39）：缺了它，同一次提交请求的重试就没有可持久的身份，
         # 服务端只能重复落行 / 重复调用模型，前端也无法按精确身份查证受理事实。
         "board_submissions.client_request_id",
+        # 阶段三（P3-D，迁移 56）：意图显示位置；缺列时视图读不到 display（只影响预览落点）。
+        "board_intents.display",
         # 阶段一（迁移 44）：滚动摘要覆盖位置 / 输入版本。缺了它们，主对话无法只处理
         # 未覆盖的新消息（会重复摘要或跳过原文）；补偿迁移 45 里有对应 ADD COLUMN。
         "fragments.rolling_covered_message_id",

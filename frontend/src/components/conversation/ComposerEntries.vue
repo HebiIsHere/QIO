@@ -25,13 +25,56 @@ import {
   type ComposerEntryId,
 } from "./entries";
 
+/**
+ * 调用方额外挂进**同一条事项行**的入口（Phase 3-C：恢复 / 重试 / 其它事项）。
+ *
+ * 它们与内置五入口共用同一个展开状态 —— 同一时刻最多展开一个普通事项
+ * （审批入口仍然直接打开统一弹窗，不展开面板）。
+ * 默认空数组：对话页行为一字不变。
+ */
+export interface ExtraComposerEntry {
+  id: string;
+  title: string;
+  hint?: string;
+  /** 需要用户处理的事项数量；0 / 未给时不显示数字，只显示状态点。 */
+  count?: number;
+  tone?: "warn" | "info" | "plain";
+  /** false 显式隐藏（例如能力未上线时由调用方决定不占位）。 */
+  visible?: boolean;
+  /** true：像审批入口一样不展开面板（由调用方在 extra-open 里自己处理）。 */
+  opensModal?: boolean;
+}
+
+const props = withDefaults(
+  defineProps<{
+    /** 仅用于读屏文案定位（对话页 / 互动页），不改变任何行为。 */
+    context?: "conversation" | "interactive";
+    /** 额外入口（同上）；不传 = 内置五入口。 */
+    extraEntries?: ExtraComposerEntry[];
+  }>(),
+  { context: "conversation", extraEntries: () => [] },
+);
+
+const emit = defineEmits<{
+  /** 一个额外事项被打开（含 opensModal 的显式打开请求）。 */
+  "extra-open": [id: string];
+  /** 一个额外事项被收起（不删除任何记录）。 */
+  "extra-close": [id: string];
+}>();
+
 const session = useSessionStore();
 const approvals = useApprovalsStore();
 // ⑤ 的数量与打开动作走统一审批队列：工具/权限类 + 知识保存类按身份去重后的有效数量。
 const unified = useUnifiedApprovalsStore();
 
-/** 当前展开的入口（null = 全部收起） */
-const openEntry = ref<ComposerEntryId | null>(null);
+/** 当前展开的入口（null = 全部收起）：内置与额外入口共用这一个状态。 */
+const openEntry = ref<string | null>(null);
+
+const extraVisible = computed(() => props.extraEntries.filter((entry) => entry.visible !== false));
+const extraById = computed(() => new Map(props.extraEntries.map((entry) => [entry.id, entry])));
+const openExtra = computed(() =>
+  openEntry.value ? extraById.value.get(openEntry.value) ?? null : null,
+);
 
 const entries = computed(() =>
   deriveComposerEntries({
@@ -60,15 +103,37 @@ const entries = computed(() =>
 
 const visibleEntries = computed(() => entries.value.filter((entry) => entry.visible));
 
-/** 展开中的入口如果不再有事项（被处理完 / 切了话题），面板自动收起（状态本身不动）。 */
-watch(visibleEntries, (list) => {
-  if (!openEntry.value) return;
-  if (!list.some((entry) => entry.id === openEntry.value)) openEntry.value = null;
-});
+/** 展开中的入口如果不再有事项（被处理完 / 切了话题 / 调用方隐藏），面板自动收起（状态本身不动）。 */
+watch(
+  [visibleEntries, extraVisible],
+  ([list, extras]) => {
+    if (!openEntry.value) return;
+    if (list.some((entry) => entry.id === openEntry.value)) return;
+    if (extras.some((entry) => entry.id === openEntry.value)) return;
+    openEntry.value = null;
+  },
+);
 
-function toggle(id: ComposerEntryId) {
+function toggle(id: string) {
+  const extra = extraById.value.get(id);
+  if (extra) {
+    // 额外入口：opensModal 只发出打开请求（由调用方决定打开什么），不展开面板
+    if (extra.opensModal) {
+      openEntry.value = null;
+      emit("extra-open", id);
+      return;
+    }
+    if (openEntry.value === id) {
+      openEntry.value = null;
+      emit("extra-close", id);
+      return;
+    }
+    openEntry.value = id;
+    emit("extra-open", id);
+    return;
+  }
   if (id === "approvals") {
-    // 审批：直接打开统一弹窗并收起其余四项（不在这里放内联批准/拒绝按钮）。
+    // 审批：直接打开统一弹窗并收起其余事项（不在这里放内联批准/拒绝按钮）。
     // unified.open() 按类型分派：工具/权限仍走既有审批接口，知识走知识原子接口。
     openEntry.value = null;
     unified.open();
@@ -78,8 +143,22 @@ function toggle(id: ComposerEntryId) {
 }
 
 function close() {
+  if (openEntry.value) emit("extra-close", openEntry.value);
   openEntry.value = null;
 }
+
+function extraAriaLabel(entry: ExtraComposerEntry): string {
+  const hint = entry.hint ? "：" + entry.hint : "";
+  const count = entry.count && entry.count > 0 ? "（" + entry.count + " 项）" : "";
+  return entry.title + hint + count;
+}
+
+/** 供外层主动收起（例如切页 / 打开板面弹层）。 */
+function closeAll() {
+  close();
+}
+
+defineExpose({ closeAll, openId: computed(() => openEntry.value) });
 
 /** Esc 收起当前面板（不动任何记录） */
 function onKeydown(event: KeyboardEvent) {
@@ -138,9 +217,13 @@ async function decideSwitch(switchTo: boolean) {
 const continuationDetail = computed(() => continuationText(session.pendingContinuation));
 const anchorTitle = computed(() => session.anchorFragment?.title ?? "");
 
-const panelTitle = computed(() =>
-  openEntry.value ? COMPOSER_ENTRY_TEXT[openEntry.value] : null,
-);
+const panelTitle = computed(() => {
+  if (!openEntry.value) return null;
+  const extra = extraById.value.get(openEntry.value);
+  if (extra) return { title: extra.title, hint: extra.hint ?? "" };
+  if (openEntry.value === "approvals") return null;
+  return COMPOSER_ENTRY_TEXT[openEntry.value as ComposerEntryId] ?? null;
+});
 </script>
 
 <template>
@@ -222,15 +305,28 @@ const panelTitle = computed(() =>
               </button>
             </div>
           </div>
+
+          <!--
+            调用方挂进来的额外事项（恢复 / 重试 / 其它）：与内置入口共用同一个展开状态，
+            因此同一时刻最多展开一个普通事项；审批入口仍然不占面板（直接开统一弹窗）。
+          -->
+          <div
+            v-else-if="openExtra"
+            class="simple extra-panel"
+            :data-section="'extra:' + openExtra.id"
+            :data-extra-entry="openExtra.id"
+          >
+            <slot name="extra-panel" :id="openExtra.id" :entry="openExtra" />
+          </div>
         </div>
       </section>
     </transition>
 
     <div
-      v-if="visibleEntries.length"
+      v-if="visibleEntries.length || extraVisible.length"
       class="entry-row"
       role="toolbar"
-      aria-label="输入区快捷入口"
+      :aria-label="props.context === 'interactive' ? '输入区事项入口' : '输入区快捷入口'"
       data-qio-fit
     >
       <button
@@ -273,6 +369,27 @@ const panelTitle = computed(() =>
         <span v-if="entry.id === 'continuation'" class="entry-label">继续</span>
         <span v-else-if="entry.id === 'queue'" class="entry-label">排队</span>
         <span v-else-if="entry.id === 'approvals'" class="entry-label">审批</span>
+      </button>
+
+      <!-- 额外事项入口（调用方提供；与内置入口共用展开状态） -->
+      <button
+        v-for="entry in extraVisible"
+        :key="'extra-' + entry.id"
+        class="entry-btn"
+        type="button"
+        :data-entry="entry.id"
+        :data-extra="'1'"
+        :data-tone="entry.tone ?? 'plain'"
+        :aria-expanded="openEntry === entry.id ? 'true' : 'false'"
+        :aria-label="extraAriaLabel(entry)"
+        :title="entry.hint ? entry.title + ' — ' + entry.hint : entry.title"
+        @click="toggle(entry.id)"
+      >
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 2.2v11.6M2.2 8h11.6" />
+        </svg>
+        <span v-if="entry.count && entry.count > 0" class="count mono">{{ entry.count }}</span>
+        <span v-else-if="(entry.tone ?? 'plain') === 'warn'" class="dot" aria-hidden="true"></span>
       </button>
     </div>
   </div>

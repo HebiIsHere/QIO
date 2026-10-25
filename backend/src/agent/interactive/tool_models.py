@@ -22,6 +22,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import ConfigDict
 
+from agent.interactive import models
+
 # ---------------------------------------------------------------------------
 # 冻结上限（程序执行，不是提示词建议）
 # ---------------------------------------------------------------------------
@@ -473,6 +475,8 @@ class BoardOrderGroupArgs(BaseModel):
 
 
 class BoardAddLinkArgs(BaseModel):
+    """关系端点：卡片仍为裸 card id；组写 group:<groupId>（card:<id> 兼容归一化）。"""
+
     model_config = ConfigDict(extra="forbid")
     intent_id: str = Field(min_length=1, max_length=MAX_REF_CHARS)
     operation_key: str = Field(min_length=1, max_length=MAX_REF_CHARS)
@@ -481,10 +485,18 @@ class BoardAddLinkArgs(BaseModel):
     direction: bool = False
     meaning: str | None = Field(default=None, max_length=500)
 
+    @field_validator("src", "dst", mode="before")
+    @classmethod
+    def _endpoint(cls, value: Any) -> str:
+        endpoint = models.normalize_link_endpoint(value)
+        if not endpoint:
+            raise ValueError("端点必须是卡片 id 或 group:<groupId>")
+        return endpoint
+
     @model_validator(mode="after")
     def _self_link(self) -> "BoardAddLinkArgs":
         if self.src == self.dst:
-            raise ValueError("不能连接卡片自身")
+            raise ValueError("不能连接同一个对象自身")
         return self
 
 

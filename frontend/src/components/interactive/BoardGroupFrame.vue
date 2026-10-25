@@ -16,24 +16,44 @@
     收起只是不占版面。展开时面板按浮层读（自带底与边），不会把成员卡片的标题压花。
 -->
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
+import {
+  GROUP_HEADER_HEIGHT,
+  GROUP_PAD_BOTTOM,
+  GROUP_PAD_X,
+  groupOverviewSlots,
+  groupResizeHandles,
+  type GroupOverviewSlot,
+  type GroupResizeEdge,
+} from "../../interactive/linkEndpoints";
 // 组内顺序 / 成员条是**横向浏览**区域：滚动能力保留，滚动条外观统一走 QIO 指示条。
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
-const props = defineProps<{
-  group: BoardGroup;
-  cards: BoardCard[];
-  selectedIds: string[];
-  /** 拖动预演：卡片将落入这个组 */
-  dropTarget: boolean;
-  /** 拖动预演：这个组将被并入落点所在的组 */
-  dropMerge: boolean;
-  /** 拖动预演：插入位置（0 起），仅 dropTarget 时有意义 */
-  dropIndex: number | null;
-  /** 拖动预演：被拖动的那张卡片（有序组里要显示它将插到哪两位之间） */
-  dropCardId: string | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    group: BoardGroup;
+    cards: BoardCard[];
+    selectedIds: string[];
+    /** 拖动预演：卡片将落入这个组 */
+    dropTarget: boolean;
+    /** 拖动预演：这个组将被并入落点所在的组 */
+    dropMerge: boolean;
+    /** 拖动预演：插入位置（0 起），仅 dropTarget 时有意义 */
+    dropIndex: number | null;
+    /** 拖动预演：被拖动的那张卡片（有序组里要显示它将插到哪两位之间） */
+    dropCardId: string | null;
+    /** 组收起（Phase 2）：只影响显示，由 BoardCanvas 传入；没有这个字段的旧调用方默认展开。 */
+    collapsed?: boolean;
+    /** 组标题拖整组（只发意图，不改板面状态）。 */
+    draggable?: boolean;
+    /** 组缩放把手（右 / 下 / 右下；只发意图）。 */
+    resizable?: boolean;
+    /** 拖线当前落在这个组上：只高亮组框，不改变任何数据。 */
+    linkTarget?: boolean;
+  }>(),
+  { collapsed: false, draggable: true, resizable: true, linkTarget: false },
+);
 
 const emit = defineEmits<{
   (e: "rename", groupId: string, name: string): void;
@@ -42,7 +62,206 @@ const emit = defineEmits<{
   (e: "move-member", groupId: string, cardId: string, index: number): void;
   (e: "leave", groupId: string, cardId: string): void;
   (e: "select-member", cardId: string): void;
+  /** 收起 / 展开组（纯显示状态，不写成员 / 顺序 / 材料范围）。 */
+  (e: "toggle-collapse", groupId: string, collapsed: boolean): void;
+  /** 标题拖动整组：坐标是屏幕 client 坐标，位移由父组件按画布 scale 换算回板面单位。 */
+  (e: "group-drag-start", groupId: string, point: { x: number; y: number }): void;
+  (e: "group-drag-move", groupId: string, delta: { dx: number; dy: number }): void;
+  (e: "group-drag-end", groupId: string, delta: { dx: number; dy: number }): void;
+  (e: "group-drag-cancel", groupId: string): void;
+  /** 组缩放把手：edge 为右 / 下 / 右下；同样是屏幕 client 位移，父组件负责提交。 */
+  (e: "group-resize-start", groupId: string, edge: GroupResizeEdge, point: { x: number; y: number }): void;
+  (e: "group-resize-move", groupId: string, edge: GroupResizeEdge, delta: { dx: number; dy: number }): void;
+  (e: "group-resize-end", groupId: string, edge: GroupResizeEdge, delta: { dx: number; dy: number }): void;
+  (e: "group-resize-cancel", groupId: string): void;
 }>();
+
+/* ── Phase 2-B：收起概览 / 标题拖整组 / 组缩放把手 ─────────────────────────
+ * 组件层只负责「发出用户意图」：拖动与缩放都只发 start / move / end / cancel，
+ * 由 BoardCanvas 按画布 scale 换算成板面坐标后走 store.commit —— 这里不改任何状态。
+ * 收起是纯显示状态（collapsed prop），不改成员 / 顺序 / 材料范围。
+ * 收起概览使用**固定槽位**：位置只由槽位序号决定，与卡片 id / 组是否有序无关，
+ * 也不显示序号 —— 显示槽位不是执行顺序。
+ */
+/** 收起后的紧凑外框高度：组框只保留标题 + 一行固定槽位，不保留成员区域的整块空白。 */
+const COLLAPSED_GROUP_H = 120;
+const frameH = computed(() =>
+  props.collapsed ? Math.min(COLLAPSED_GROUP_H, Math.max(56, props.group.h)) : props.group.h,
+);
+const overview = computed(() =>
+  groupOverviewSlots({ group: { ...props.group, h: frameH.value }, cards: props.cards }),
+);
+const overviewLabel = computed(
+  () => "组「" + (props.group.name || "未命名组") + "」成员概览（只显示成员，不代表执行顺序）",
+);
+const overviewStyle = computed(() => ({
+  left: GROUP_PAD_X + "px",
+  top: GROUP_HEADER_HEIGHT + "px",
+  width: Math.max(0, props.group.w - GROUP_PAD_X * 2) + "px",
+  height: Math.max(0, frameH.value - GROUP_HEADER_HEIGHT - GROUP_PAD_BOTTOM) + "px",
+}));
+const handles = computed(() =>
+  props.resizable && !props.collapsed
+    ? groupResizeHandles({ x: 0, y: 0, w: props.group.w, h: props.group.h })
+    : [],
+);
+
+function handleStyle(handle: { x: number; y: number }): Record<string, string> {
+  return { left: handle.x + "px", top: handle.y + "px" };
+}
+
+function slotStyle(slot: GroupOverviewSlot): Record<string, string> {
+  return {
+    left: slot.x - overview.value.inner.x + "px",
+    top: slot.y - overview.value.inner.y + "px",
+    width: slot.w + "px",
+    height: slot.h + "px",
+  };
+}
+
+function slotTitle(slot: GroupOverviewSlot): string | undefined {
+  if (!slot.cardId) return undefined;
+  const card = props.cards.find((item) => item.id === slot.cardId);
+  return card ? titleOf(card) : undefined;
+}
+
+function slotText(slot: GroupOverviewSlot): string {
+  if (!slot.cardId) return "";
+  const card = props.cards.find((item) => item.id === slot.cardId);
+  if (!card) return "";
+  return titleOf(card).slice(0, 6);
+}
+
+/* ---- 手势：pointerdown 起手，move / up / cancel / Esc 都挂 document（与项目既有手势一致） ---- */
+interface DragGesture {
+  startX: number;
+  startY: number;
+  moved: boolean;
+}
+
+let dragGesture: DragGesture | null = null;
+let resizeGesture: { edge: GroupResizeEdge; startX: number; startY: number } | null = null;
+
+function clientPoint(event: MouseEvent): { x: number; y: number } {
+  return { x: event.clientX, y: event.clientY };
+}
+
+function clientDelta(event: MouseEvent, startX: number, startY: number): { dx: number; dy: number } {
+  return { dx: event.clientX - startX, dy: event.clientY - startY };
+}
+
+/** 输入框 / 按钮 / 链接上的按下不属于「拖标题」：它们自己的交互优先。 */
+function insideControl(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  return Boolean(element?.closest("input, textarea, select, button, a, [data-no-group-drag]"));
+}
+
+function isPrimaryButton(event: MouseEvent): boolean {
+  return event.button === undefined || event.button === 0;
+}
+
+function stopDragListeners(): void {
+  document.removeEventListener("pointermove", onDragMove, true);
+  document.removeEventListener("pointerup", onDragEnd, true);
+  document.removeEventListener("pointercancel", onDragCancel, true);
+  document.removeEventListener("keydown", onDragKeydown, true);
+  dragGesture = null;
+}
+
+function onDragMove(event: Event): void {
+  if (!dragGesture) return;
+  const pointer = event as MouseEvent;
+  const delta = clientDelta(pointer, dragGesture.startX, dragGesture.startY);
+  if (!dragGesture.moved && Math.abs(delta.dx) + Math.abs(delta.dy) > 3) {
+    dragGesture.moved = true;
+  }
+  if (dragGesture.moved) emit("group-drag-move", props.group.id, delta);
+}
+
+function onDragEnd(event: Event): void {
+  if (!dragGesture) return;
+  const pointer = event as MouseEvent;
+  const delta = clientDelta(pointer, dragGesture.startX, dragGesture.startY);
+  const moved = dragGesture.moved;
+  stopDragListeners();
+  if (moved) emit("group-drag-end", props.group.id, delta);
+  else emit("group-drag-cancel", props.group.id);
+}
+
+function onDragCancel(): void {
+  if (!dragGesture) return;
+  stopDragListeners();
+  emit("group-drag-cancel", props.group.id);
+}
+
+function onDragKeydown(event: Event): void {
+  if ((event as KeyboardEvent).key !== "Escape") return;
+  (event as KeyboardEvent).preventDefault();
+  onDragCancel();
+}
+
+function onHeadPointerDown(event: MouseEvent): void {
+  if (!props.draggable || dragGesture) return;
+  if (!isPrimaryButton(event) || insideControl(event.target)) return;
+  dragGesture = { startX: event.clientX, startY: event.clientY, moved: false };
+  emit("group-drag-start", props.group.id, clientPoint(event));
+  document.addEventListener("pointermove", onDragMove, true);
+  document.addEventListener("pointerup", onDragEnd, true);
+  document.addEventListener("pointercancel", onDragCancel, true);
+  document.addEventListener("keydown", onDragKeydown, true);
+  event.preventDefault();
+}
+
+function stopResizeListeners(): void {
+  document.removeEventListener("pointermove", onResizeMove, true);
+  document.removeEventListener("pointerup", onResizeEnd, true);
+  document.removeEventListener("pointercancel", onResizeCancel, true);
+  document.removeEventListener("keydown", onResizeKeydown, true);
+  resizeGesture = null;
+}
+
+function onResizeMove(event: Event): void {
+  if (!resizeGesture) return;
+  emit("group-resize-move", props.group.id, resizeGesture.edge, clientDelta(event as MouseEvent, resizeGesture.startX, resizeGesture.startY));
+}
+
+function onResizeEnd(event: Event): void {
+  if (!resizeGesture) return;
+  const edge = resizeGesture.edge;
+  const delta = clientDelta(event as MouseEvent, resizeGesture.startX, resizeGesture.startY);
+  stopResizeListeners();
+  emit("group-resize-end", props.group.id, edge, delta);
+}
+
+function onResizeCancel(): void {
+  if (!resizeGesture) return;
+  stopResizeListeners();
+  emit("group-resize-cancel", props.group.id);
+}
+
+function onResizeKeydown(event: Event): void {
+  if ((event as KeyboardEvent).key !== "Escape") return;
+  (event as KeyboardEvent).preventDefault();
+  onResizeCancel();
+}
+
+function onResizePointerDown(edge: GroupResizeEdge, event: MouseEvent): void {
+  if (!props.resizable || props.collapsed || resizeGesture) return;
+  if (!isPrimaryButton(event)) return;
+  resizeGesture = { edge, startX: event.clientX, startY: event.clientY };
+  emit("group-resize-start", props.group.id, edge, clientPoint(event));
+  document.addEventListener("pointermove", onResizeMove, true);
+  document.addEventListener("pointerup", onResizeEnd, true);
+  document.addEventListener("pointercancel", onResizeCancel, true);
+  document.addEventListener("keydown", onResizeKeydown, true);
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+onBeforeUnmount(() => {
+  stopDragListeners();
+  stopResizeListeners();
+});
 
 const nameInput = ref<HTMLInputElement | null>(null);
 /**
@@ -55,7 +274,7 @@ const style = computed(() => ({
   left: props.group.x + "px",
   top: props.group.y + "px",
   width: props.group.w + "px",
-  height: props.group.h + "px",
+  height: frameH.value + "px",
 }));
 
 const memberCards = computed(() =>
@@ -98,6 +317,35 @@ const displayCards = computed(() =>
   props.dropCardId ? memberCards.value.filter((card) => card.id !== props.dropCardId) : memberCards.value,
 );
 
+/** 组内顺序编号：按 members 顺序显示 1..n；拖动隐藏成员时保留原序号。 */
+const orderBadges = computed(() =>
+  displayCards.value.map((card) => ({
+    card,
+    index: props.group.members.indexOf(card.id) + 1,
+  })),
+);
+
+const selected = computed(() => props.group.members.some((id) => props.selectedIds.includes(id)));
+
+/** 拖入组的插入线：画在放下后会落到的两个成员之间。 */
+const dropInsertStyle = computed<Record<string, string>>(() => {
+  if (!props.dropTarget || props.dropIndex === null) {
+    return { display: "none", top: "0px", left: "0px", right: "0px" };
+  }
+  const cards = displayCards.value;
+  let y = props.group.y + 58;
+  if (cards.length) {
+    if (props.dropIndex <= 0) y = cards[0].y - 6;
+    else if (props.dropIndex >= cards.length) {
+      const last = cards[cards.length - 1];
+      y = last.y + last.h + 6;
+    } else {
+      y = cards[props.dropIndex].y - 6;
+    }
+  }
+  return { display: "block", top: y - props.group.y + "px", left: "16px", right: "16px" };
+});
+
 async function focusName() {
   await nextTick();
   nameInput.value?.focus();
@@ -109,17 +357,51 @@ defineExpose({ focusName });
 <template>
   <div
     class="group"
-    :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge }"
+    :class="{ ordered: group.ordered, selected, 'drop-target': dropTarget, 'drop-merge': dropMerge, 'link-target': linkTarget, collapsed }"
     :style="style"
     data-im="group"
     :data-group-id="group.id"
     :data-ordered="group.ordered ? 'true' : 'false'"
+    :data-collapsed="collapsed ? 'true' : 'false'"
+    :data-link-target="linkTarget ? 'group' : undefined"
   >
-    <div class="group-head" :class="{ 'tools-open': membersOpen }" data-im="group-head">
+    <div v-if="!collapsed && orderBadges.length" class="order-layer" aria-hidden="true">
+      <span
+        v-for="badge in orderBadges"
+        :key="'order-' + badge.card.id"
+        class="order-badge"
+        data-im="group-order-badge"
+        :data-card-id="badge.card.id"
+        :style="{ top: badge.card.y - group.y + 8 + 'px' }"
+      >{{ badge.index }}</span>
+    </div>
+
+    <div
+      v-if="dropTarget && dropIndex !== null"
+      class="drop-insert"
+      :style="dropInsertStyle"
+      data-im="group-drop-insert"
+      aria-hidden="true"
+    ><span>插入这里</span></div>
+
+    <div
+      class="group-head"
+      :class="{ 'tools-open': membersOpen, grabbable: draggable }"
+      data-im="group-head"
+      @pointerdown="onHeadPointerDown"
+    >
       <!-- 常态一行：组名（输入即用）、成员数、是否有序、以及按需展开的成员管理入口。
            组语义说明跟操作按钮挤同一行会把整行挤到三行（实测），所以说明文字留在这一行里
            但可压缩省略；真正的操作收进下面的面板。 -->
       <div class="head-row">
+        <!-- 拖整组的把手：只有它是明确的「拖动标题」入口；输入框 / 按钮上的按下仍归它们自己 -->
+        <span
+          v-if="draggable"
+          class="drag-grip"
+          data-im="group-drag-handle"
+          title="拖动组标题移动整组（只改位置，不改变分组关系）"
+          aria-hidden="true"
+        >⠿</span>
         <input
           ref="nameInput"
           class="group-name"
@@ -142,6 +424,7 @@ defineExpose({ focusName });
           {{ insertText || "将加入这一组" }}
         </span>
         <button
+          v-if="!collapsed"
           class="btn"
           type="button"
           data-im="group-members-toggle"
@@ -152,9 +435,27 @@ defineExpose({ focusName });
         >
           {{ membersOpen ? "收起成员与顺序" : "成员与顺序" }}
         </button>
+        <button
+          class="btn"
+          type="button"
+          data-im="group-collapse-toggle"
+          :data-group-id="group.id"
+          :aria-expanded="collapsed ? 'false' : 'true'"
+          :aria-controls="'group-body-' + group.id"
+          :title="collapsed ? '展开组成员（只影响显示）' : '收起组成员（只影响显示，不改成员与顺序）'"
+          @click="emit('toggle-collapse', group.id, !collapsed)"
+        >
+          {{ collapsed ? "展开组" : "收起组" }}
+        </button>
       </div>
 
-      <div v-show="membersOpen" :id="'group-tools-' + group.id" class="group-tools" data-im="group-tools">
+      <div
+        v-if="!collapsed"
+        v-show="membersOpen"
+        :id="'group-tools-' + group.id"
+        class="group-tools"
+        data-im="group-tools"
+      >
         <div class="tools-row">
           <button
             class="btn"
@@ -177,7 +478,13 @@ defineExpose({ focusName });
           <span class="tools-hint">这里只改顺序与归属，不改变成员的材料范围</span>
         </div>
 
-      <ol v-if="group.ordered" class="sequence" aria-label="组内顺序" v-qio-scrollbar="{ policy: 'auto', axis: 'x' }">
+      <ol
+        v-if="!collapsed && group.ordered"
+        class="sequence"
+        :id="'group-body-' + group.id"
+        aria-label="组内顺序"
+        v-qio-scrollbar="{ policy: 'auto', axis: 'x' }"
+      >
         <li
           v-for="(card, index) in displayCards"
           :key="card.id"
@@ -225,7 +532,13 @@ defineExpose({ focusName });
           <span class="chip-text">插入位置：第 {{ (dropIndex ?? displayCards.length) + 1 }} 位</span>
         </li>
       </ol>
-      <ul v-else class="sequence plain" aria-label="组成员" v-qio-scrollbar="{ policy: 'auto', axis: 'x' }">
+      <ul
+        v-else-if="!collapsed"
+        class="sequence plain"
+        :id="'group-body-' + group.id"
+        aria-label="组成员"
+        v-qio-scrollbar="{ policy: 'auto', axis: 'x' }"
+      >
         <li
           v-for="card in displayCards"
           :key="card.id"
@@ -252,6 +565,50 @@ defineExpose({ focusName });
       </ul>
       </div>
     </div>
+
+    <!--
+      收起概览：固定槽位（位置只由槽位序号决定，与卡片 id / 是否有序无关），
+      不显示序号 —— 显示槽位不是执行顺序。只显示成员标题，不渲染成员卡片。
+    -->
+    <div
+      v-if="collapsed"
+      class="overview"
+      data-im="group-overview"
+      :aria-label="overviewLabel"
+      :style="overviewStyle"
+    >
+      <span
+        v-for="(slot, index) in overview.slots"
+        :key="index"
+        class="slot"
+        :class="{ empty: !slot.cardId }"
+        :data-card-id="slot.cardId ?? undefined"
+        :data-empty="slot.cardId ? undefined : 'true'"
+        :style="slotStyle(slot)"
+        :title="slotTitle(slot)"
+      >{{ slotText(slot) }}</span>
+      <span
+        v-if="overview.overflow"
+        class="overview-more mono"
+        data-im="group-overview-more"
+      >还有 {{ overview.overflow }} 个</span>
+    </div>
+
+    <!--
+      组缩放把手（右 / 下 / 右下）：只发意图，真正改成员几何由 BoardCanvas 负责；
+      收起时不出现（收起态不直接量成员边界）。
+    -->
+    <span
+      v-for="handle in handles"
+      :key="handle.edge"
+      class="resize-handle"
+      data-im="group-resize-handle"
+      :data-edge="handle.edge"
+      :style="handleStyle(handle)"
+      :title="handle.label"
+      aria-hidden="true"
+      @pointerdown="onResizePointerDown(handle.edge, $event)"
+    ></span>
   </div>
 </template>
 
@@ -261,16 +618,62 @@ defineExpose({ focusName });
   正式内容用实线；虚线只属于「待审批完成后才会出现的预览」，并且一定配文字说明。
 */
 .group {
+  container-type: inline-size;
   position: absolute;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
-  background: var(--bg-inset);
+  background: color-mix(in srgb, var(--bg-surface) 92%, var(--accent-soft));
+  box-shadow: var(--shadow-1);
   pointer-events: none; /* 卡片要能拖动：只有头部两行接管指针 */
   z-index: 2;
 }
 .group.ordered { border-color: var(--border-strong); }
+.group.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-1);
+}
+.order-layer { position: absolute; inset: 0; z-index: 9; pointer-events: none; }
+.order-badge {
+  position: absolute;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1;
+}
 .group.drop-target { border-color: var(--accent); background: var(--accent-soft); }
+.group > .drop-insert {
+  position: absolute;
+  z-index: 9;
+  height: 0;
+  border-top: 2px dashed var(--accent);
+  pointer-events: none;
+}
+.group > .drop-insert > span {
+  position: absolute;
+  right: 0;
+  top: -18px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  line-height: 1.6;
+}
 .group.drop-merge { border-color: var(--warning); }
+/* 拖线落在组框标题 / 空白：组框本身高亮，说明「这一条关系连到组」。 */
+.group.link-target {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
 .badge {
   flex: none;
   font-size: var(--fs-tech, var(--fs-xs));
@@ -285,9 +688,9 @@ defineExpose({ focusName });
   display: flex;
   flex-direction: column;
   gap: 1px;
-  max-height: 56px; /* 与 board.ts 的 GROUP_PAD_TOP 对齐，不压住成员卡片 */
+  max-height: 48px;
   overflow: hidden;
-  padding: 2px var(--sp-2);
+  padding: 5px var(--sp-3);
   /**
    * 组操作的层级（V1）：组框本身必须比卡片轻（z-index: 2，卡片 4），
    * 否则会反过来盖住卡片标题与拖动区；但**头部**是用户要点的操作，
@@ -306,11 +709,28 @@ defineExpose({ focusName });
    * 头部带一层很淡的底：卡片万一压到同一条带上也不会两层文字叠着读不请。
    * 只到组框自己的底色一档，不加边界、不加阴影，保持「组框比卡片轻」。
    */
-  background: var(--bg-inset);
+  background: transparent;
   border-bottom: 1px solid var(--border-subtle);
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   font-size: var(--fs-xs);
 }
+/* 组头只保留组名、成员数和必要操作；解释性长句不再占据一行。 */
+.group-head .mode,
+.group-head .badge.default-name { display: none; }
+.group-head .count {
+  padding: 0 var(--sp-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+}
+.group-name {
+  background: transparent;
+  border-color: transparent;
+  font-family: var(--serif);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.group-name:hover { background: var(--bg-inset); border-color: var(--border-subtle); }
 /*
  * 单行不折行：成员数 / 系统默认名 / 拖动提示再多也不能把这一行挤成三行
  * （头部高度是固定的 56px，被挤满就没有成员那一行了）。宽度不够时先压缩说明文字。
@@ -330,7 +750,7 @@ defineExpose({ focusName });
   padding: var(--sp-1) var(--sp-2) var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
 }
 .tools-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
@@ -346,13 +766,14 @@ defineExpose({ focusName });
   font: inherit;
   font-family: var(--serif);
   font-size: var(--fs-sm);
+  font-weight: 600;
   color: var(--text-strong);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   min-width: 72px;
-  max-width: 140px;
+  max-width: 180px;
   min-height: 22px;
   box-sizing: border-box;
 }
@@ -411,7 +832,7 @@ defineExpose({ focusName });
   color: var(--text-secondary);
   background: none;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   /* 操作按钮要能稳定点中：给足高度，不被同行的说明文字挤扁 */
   min-height: 22px;
@@ -421,4 +842,83 @@ defineExpose({ focusName });
 .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn.tiny { font-size: var(--fs-tech, var(--fs-xs)); }
+
+/* ---- Phase 2-B：拖整组 / 收起概览 / 组缩放把手 ------------------------- */
+.group-head.grabbable { cursor: grab; }
+.group-head.grabbable:active { cursor: grabbing; }
+.drag-grip {
+  flex: none;
+  pointer-events: auto;
+  cursor: grab;
+  user-select: none;
+  color: var(--text-faint);
+  font-size: var(--fs-xs);
+  line-height: 1;
+  padding: 0 2px;
+}
+.drag-grip:hover { color: var(--text-secondary); }
+
+/* 收起态：头部保持一行；成员概览按固定槽位绝对定位，不把成员卡片画进组框。 */
+.group.collapsed .group-head { max-height: 56px; }
+.overview {
+  position: absolute;
+  pointer-events: none;
+  z-index: 1;
+}
+.overview .slot {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: var(--fs-tech, var(--fs-xs));
+  padding: 0 2px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.overview .slot.empty { border-style: dashed; background: none; }
+.overview-more {
+  position: absolute;
+  right: var(--sp-1);
+  bottom: var(--sp-1);
+  color: var(--text-muted);
+  font-size: var(--fs-tech, var(--fs-xs));
+}
+
+/* 缩放把手：12px 圆点，视觉上明确可拖；只接管自己那一小块指针事件。 */
+.resize-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  pointer-events: auto;
+  z-index: 9;
+}
+.resize-handle[data-edge="e"] { cursor: ew-resize; }
+.resize-handle[data-edge="s"] { cursor: ns-resize; }
+.resize-handle[data-edge="se"] { cursor: nwse-resize; }
+.resize-handle:hover { border-color: var(--accent); }
+
+@media (max-width: 900px) {
+  /* 窄窗：说明性文字让位给组名、成员管理与收起组；有序状态仍由序号表达。 */
+  .mode,
+  .badge.default-name { display: none; }
+}
+
+/* 组框本身很窄时同样让位：组名、成员数与两个必要动作优先，不让按钮被裁掉。 */
+@container (max-width: 560px) {
+  .head-row { gap: 4px; }
+  .head-row .mode,
+  .head-row .badge.default-name { display: none; }
+  .group-name { max-width: 96px; min-width: 56px; }
+  .btn { padding: 0 4px; }
+}
 </style>

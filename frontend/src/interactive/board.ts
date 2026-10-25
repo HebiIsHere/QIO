@@ -15,8 +15,24 @@
  * index = 在该组里的插入位置；mergesWith = 将被合并进来的对象 id
  * （两个已有组合并时是被并入的那一组 id，与未分组卡片重叠成组时是那张卡片 id）。
  */
-import type { BoardCard, BoardGroup, BoardLink, BoardState, CardKind } from "./types";
+import type {
+  BoardCard,
+  BoardGroup,
+  BoardLink,
+  BoardState,
+  CardKind,
+  LinkCurve,
+  Participation,
+  VisibleRange,
+} from "./types";
 import { cardDocFields, emptyDoc, parseDocText, type TextDoc } from "./textCard";
+import {
+  GROUP_ENDPOINT_PREFIX,
+  parseEndpoint,
+  resolveEndpoint,
+  sameEndpoint,
+} from "./linkEndpoints";
+import { readImageDisplay } from "./renderers/imageDisplay";
 
 /** 位置与大小的矩形（板面坐标）。 */
 export interface BoardRect {
@@ -99,11 +115,234 @@ export function defaultCardSeed(kind: CardKind): { kind: CardKind; content: stri
  */
 export const CHECKABLE_KINDS: CardKind[] = ["text", "reply"];
 
+/** 参与讨论的唯一状态；选中/多选/框选不改变它。 */
+export type { Participation };
+
+/**
+ * 遗留的 code / url 卡：迁移后仍**整体不可交付**（契约 §5.1），
+ * 参与状态永远 excluded —— 显式传入 included 也不放行（否则本地预览与后端会分叉）。
+ */
+export const LEGACY_UNSHIPPABLE_KINDS: CardKind[] = ["code", "url"];
+
+/**
+ * 由旧 code / url 迁移而来的文字卡（契约 §5.1：旧 code/url → excluded）。
+ * 判定依据与后端 models._legacy_participation 同一口径：带 language 或 url 块。
+ */
+export function isMigratedLegacyText(card: { kind: CardKind; meta?: Record<string, unknown> | null }): boolean {
+  if (card.kind !== "text") return false;
+  const meta = card.meta ?? {};
+  if (typeof meta.language === "string" && meta.language.length > 0) return true;
+  const url = meta.url;
+  return Boolean(url && typeof url === "object");
+}
+
+/**
+ * 一张卡当前的参与状态（唯一事实源；与后端 models.card_participation 同一口径）。
+ * - hidden = 明确退出范围，**优先级最高**（即使显式写了 included，也绝不放行）；
+ * - 遗留 code / url：永远 excluded（不可交付）；
+ * - 新版显式 participation 优先；
+ * - 旧数据按一次性迁移规则推导：file → included；text / reply 保留旧 checked 意图；
+ *   旧 code / url 迁移来的文字卡 → excluded；其余 → excluded。
+ */
+export function participationOf(card: {
+  participation?: Participation;
+  hidden: boolean;
+  checked: boolean;
+  kind: CardKind;
+  meta?: Record<string, unknown> | null;
+}): Participation {
+  if (card.hidden) return "excluded";
+  if (LEGACY_UNSHIPPABLE_KINDS.includes(card.kind)) return "excluded";
+  if (card.participation === "included" || card.participation === "excluded") return card.participation;
+  if (isMigratedLegacyText(card)) return "excluded";
+  if (card.kind === "file") return "included";
+  if (card.kind === "text" || card.kind === "reply") return card.checked ? "included" : "excluded";
+  return "excluded";
+}
+
+/** 是否允许 QIO 读取这张卡（参与状态；与选中/书签/阅读状态正交）。 */
+export function isParticipating(card: Pick<BoardCard, "participation" | "hidden" | "checked" | "kind">): boolean {
+  return participationOf(card) === "included";
+}
+
+/**
+ * 把旧兼容字段（checked / hidden）同步成与 participation **同一口径**：
+ * - 参与 → hidden=false；文字注释 / 结果卡 checked=true（旧服务端仍读这两个字段）；
+ * - 不参与 → 文字注释 / 结果卡 checked=false；材料（file）hidden=true
+ *   （旧规则里材料默认可见，只有 hidden 能让它退出范围）。
+ * 遗留 code / url 不动：它们无论如何都不可交付。
+ * 返回是否真的改了字段（调用方据此决定 changed）。
+ */
+export function syncLegacyParticipation(card: BoardCard): boolean {
+  if (LEGACY_UNSHIPPABLE_KINDS.includes(card.kind) || isMigratedLegacyText(card)) return false;
+  const included = isParticipating(card);
+  let changed = false;
+  if (included) {
+    if (card.hidden) {
+      card.hidden = false;
+      changed = true;
+    }
+    if ((card.kind === "text" || card.kind === "reply") && !card.checked) {
+      card.checked = true;
+      changed = true;
+    }
+    return changed;
+  }
+  if (card.kind === "text" || card.kind === "reply") {
+    if (card.checked) {
+      card.checked = false;
+      changed = true;
+    }
+  } else if (card.kind === "file" && !card.hidden) {
+    card.hidden = true;
+    changed = true;
+  }
+  return changed;
+}
+
+/**
+ * 一次性迁移标记（契约 §5.1）：participationVersion=1 表示已按 v2 规则迁移。
+ * 归一化本身总会推导出 participation 并同步旧字段；这里只负责补标记。
+ * 不做任何版本自增（迁移是显示/兼容口径，不是材料语义变化）。
+ */
+export function migrateParticipation(state: BoardState): BoardState {
+  const work = normalizeState(state);
+  const version = Number(work.participationVersion);
+  if (Number.isFinite(version) && version >= 1) return work;
+  return { ...work, participationVersion: 1 };
+}
+
+/**
+ * 只应用参与口径（补 participation、同步旧镜像、补迁移标记）：
+ * **不补时间戳、不做其它归一化**。
+ *
+ * 服务器事实在进入合并三路比较之前必须用它对齐 —— normalizeState 会给缺
+ * updatedAt 的卡片补当前时间，等于凭空造出一次「无关改动」，让 F07 的删除/解散
+ * 合并误判成冲突（既有回归用例抓到过）。
+ */
+export function applyParticipation(state: BoardState): BoardState {
+  const source = (state ?? {}) as BoardState;
+  const list = (source.cards as BoardCard[] | undefined) ?? [];
+  let changed = false;
+  const cards = list.map((card) => {
+    const participation = participationOf(card);
+    const explicit = card.participation === "included" || card.participation === "excluded";
+    let next: BoardCard | null = explicit && card.participation === participation ? null : { ...card, participation };
+    /*
+      旧兼容镜像只在没有显式 participation 的卡片上推导（显式字段是权威，checked/hidden 保持原样）。
+    */
+    if (!explicit) {
+      const probe = next ?? card;
+      if (!LEGACY_UNSHIPPABLE_KINDS.includes(probe.kind)) {
+        const mirror = { ...probe, participation };
+        if (syncLegacyParticipation(mirror)) next = mirror;
+      }
+    }
+    if (!next) return card;
+    changed = true;
+    return next;
+  });
+  const marker = Number(source.participationVersion);
+  const missingMarker = !(Number.isFinite(marker) && marker >= 1);
+  if (!changed && !missingMarker) return source;
+  return {
+    ...source,
+    cards,
+    ...(missingMarker ? { participationVersion: 1 } : {}),
+  };
+}
+
+/** 显式设置单卡参与状态；旧 checked/hidden 同步成同一口径（兼容旧服务端）。 */
+export function setParticipation(state: BoardState, cardId: string, included: boolean): BoardState {
+  const work = normalizeState(state);
+  const card = cardById(work, cardId);
+  if (!card || card.deleted) return work;
+  if (LEGACY_UNSHIPPABLE_KINDS.includes(card.kind)) return work;
+  const participation: Participation = included ? "included" : "excluded";
+  if (participationOf(card) === participation && card.participation === participation) return work;
+  card.participation = participation;
+  /*
+    顺序很重要：hidden 在参与判定里优先级最高（与后端一致），
+    所以「重新参与」必须先把 hidden 清掉，否则 syncLegacyParticipation 读到的仍是 excluded，
+    材料卡会停在被隐藏的状态里（participation 与镜像分叉）。
+  */
+  if (participation === "included") card.hidden = false;
+  syncLegacyParticipation(card);
+  card.updatedAt = nowIso();
+  work.updatedAt = nowIso();
+  return normalizeState(work);
+}
+
+/** 组级参与：全部参与 / 全部不参与；组本身没有独立 participation。 */
+export function setGroupParticipation(state: BoardState, groupId: string, included: boolean): BoardState {
+  const work = normalizeState(state);
+  const group = work.groups.find((item) => item.id === groupId && !item.deleted);
+  if (!group) return work;
+  let next = work;
+  for (const cardId of group.members) next = setParticipation(next, cardId, included);
+  return next;
+}
+
+/**
+ * 本地「本次允许 QIO 查看的范围」（Phase 2 §5.1 唯一规则的前端实现）：
+ * - 卡片按 participation（不再看 checked/hidden 的推导值，但归一化已把两者同步）；
+ * - 组：至少一名参与成员才出现，只列出参与成员；
+ * - 连线：两端都在范围内才出现；组端点要求该组有参与成员。
+ *
+ * 权威结果仍以服务端 visible_range 为准；这里只用于提交前预览 / 范围说明。
+ */
+export function participationVisibleRange(state: BoardState | null | undefined): VisibleRange {
+  const cards = state?.cards ?? [];
+  const live = cards.filter((card) => !card.deleted);
+  const visible = live.filter(isParticipating);
+  const visibleIds = new Set(visible.map((card) => card.id));
+  const groups = (state?.groups ?? [])
+    .filter((group) => !group.deleted)
+    .map((group) => ({ ...group, members: group.members.filter((id) => visibleIds.has(id)) }))
+    .filter((group) => group.members.length > 0);
+  const groupsById = new Map(groups.map((group) => [group.id, group]));
+  const endpointInRange = (raw: string): boolean => {
+    const parsed = parseEndpoint(raw);
+    if (!parsed.ok) return false;
+    if (parsed.endpoint.kind === "card") return visibleIds.has(parsed.endpoint.id);
+    const group = groupsById.get(parsed.endpoint.id);
+    return Boolean(group && group.members.length > 0);
+  };
+  const links = (state?.links ?? []).filter(
+    (link) => !link.deleted && endpointInRange(link.src) && endpointInRange(link.dst),
+  );
+  const selection = (state?.selection ?? []).filter((id) => visibleIds.has(id));
+  return {
+    cards: visible,
+    groups,
+    links,
+    selection,
+    empty: visible.length === 0 && groups.length === 0 && links.length === 0,
+    notVisibleCount: Math.max(0, live.length - visible.length),
+  };
+}
+
+/** 组的参与状态派生：全参与 / 全不参与 / 部分参与。 */
+export function groupParticipation(state: BoardState, groupId: string): "none" | "all" | "partial" {
+  const group = state.groups.find((item) => item.id === groupId && !item.deleted);
+  if (!group || !group.members.length) return "none";
+  const values = group.members
+    .map((id) => cardById(state, id))
+    .filter((card): card is BoardCard => Boolean(card) && card!.deleted === false)
+    .map((card) => isParticipating(card));
+  if (!values.length) return "none";
+  if (values.every(Boolean)) return "all";
+  if (values.every((value) => !value)) return "none";
+  return "partial";
+}
+
 //: 组框相对成员的留白（顶部留两行：组名一行 + 序号 / 成员一行，序号条不压住卡片）。
 //: 位置只影响显示，不是意图依据。
 const GROUP_PAD_X = 16;
 const GROUP_PAD_TOP = 58;
 const GROUP_PAD_BOTTOM = 16;
+/** 组内成员固定纵向排列的间距。 */
+const GROUP_MEMBER_GAP = 12;
 
 const DEFAULT_CARD_W = 260;
 const DEFAULT_CARD_H = 170;
@@ -306,6 +545,101 @@ export function cardById(state: BoardState, cardId: string): BoardCard | null {
 
 // --- 归一化：契约 §1.2 的 G1..G8 -------------------------------------------
 
+/** 端点字符串上限（与后端 models.MAX_ENDPOINT_CHARS 同口径）。 */
+const MAX_ENDPOINT_CHARS = 200;
+
+/**
+ * 板面层的端点归一化（Phase 2 §5.3；与后端 models.normalize_link_endpoint 同口径）：
+ * - 卡片：裸 card id，或兼容写法 `card:<id>`（归一化后落成裸 id，旧数据零迁移）；
+ * - 组：`group:<groupId>`；
+ * - 空 / 超长 / 含空白 / 未知前缀 → 空串（调用方拒绝整条关系，不猜）。
+ */
+function normalizeEndpointString(value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (!text || text.length > MAX_ENDPOINT_CHARS) return "";
+  if (/^card:/i.test(text)) {
+    const bare = text.slice("card:".length).trim();
+    const parsed = parseEndpoint(bare);
+    return parsed.ok && parsed.endpoint.kind === "card" ? parsed.endpoint.value : "";
+  }
+  const parsed = parseEndpoint(text);
+  return parsed.ok ? parsed.endpoint.value : "";
+}
+
+/**
+ * meta.display 与 w/h 的统一收敛（Phase 2 §5.2；与后端 models.apply_card_display 同口径）：
+ * - display 只接受「宽高都是有限正数」：非法 / 未知 → 删掉 display（不写 0 / NaN / 猜比例）；
+ * - 合法时保留规范化的 {width,height,aspectRatio}，并以 **width 为准** 算 height，
+ *   height < 1 时改为保底 1 并反推 width（与后端一致）；
+ * - 只改显示几何，**不碰 version / updatedAt**：display 不参与材料语义版本。
+ */
+function applyDisplayRatio(
+  kind: CardKind,
+  meta: Record<string, unknown>,
+  w: number,
+  h: number,
+): { meta: Record<string, unknown>; w: number; h: number } {
+  /*
+    与后端 models.clean_card_display 对齐：
+    - 只有 file 卡（图片是 file 卡的附件）才有 display；其它 kind 上的 display 一律清掉；
+    - 宽高都存在：以宽高算比例（不信任调用方临时算的 aspectRatio）；
+    - 只有 aspectRatio：接受并只保留比例（后端同样这么处理）；
+    - 宽高只给一个 / 非法 / 超上限：整体丢弃（不猜）。
+  */
+  const rawBlock = meta && typeof meta.display === "object" && meta.display !== null
+    ? (meta.display as Record<string, unknown>)
+    : null;
+  const positive = (value: unknown): number | null => {
+    const num = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(num) && num > 0 ? num : null;
+  };
+  const rawWidth = positive(rawBlock?.width);
+  const rawHeight = positive(rawBlock?.height);
+  const rawRatio = positive(rawBlock?.aspectRatio);
+  const ratioValid = (value: number): boolean =>
+    value > 0 && value <= 1000 && 1 / value <= 1000;
+  let display: { width?: number; height?: number; aspectRatio: number } | null = null;
+  if (kind === "file" && rawBlock) {
+    if (rawWidth !== null || rawHeight !== null) {
+      if (rawWidth === null || rawHeight === null) display = null;
+      else if (rawWidth > 100000 || rawHeight > 100000) display = null;
+      else {
+        const pxW = Math.round(rawWidth);
+        const pxH = Math.round(rawHeight);
+        const computed = pxH > 0 ? pxW / pxH : 0;
+        display =
+          pxW >= 1 && pxH >= 1 && ratioValid(computed)
+            ? { width: pxW, height: pxH, aspectRatio: Math.round(computed * 1e6) / 1e6 }
+            : null;
+      }
+    } else if (rawRatio !== null && ratioValid(rawRatio)) {
+      display = { aspectRatio: Math.round(rawRatio * 1e6) / 1e6 };
+    }
+  }
+  if (!display) {
+    if (!Object.prototype.hasOwnProperty.call(meta, "display")) return { meta, w, h };
+    const cleaned = { ...meta };
+    delete cleaned.display;
+    return { meta: cleaned, w, h };
+  }
+  const nextMeta = { ...meta, display: { ...display } };
+  const ratio = display.aspectRatio;
+  let width = Number.isFinite(w) && w >= 1 ? w : 1;
+  let height = width / ratio;
+  if (!(height >= 1)) {
+    height = 1;
+    width = ratio >= 1 ? ratio : 1;
+    if (!(width >= 1)) {
+      width = 1;
+      height = width / ratio;
+    }
+  }
+  const roundedW = Math.round(width * 1000) / 1000;
+  const roundedH = Math.round(height * 1000) / 1000;
+  if (roundedW === w && roundedH === h) return { meta: nextMeta, w, h };
+  return { meta: nextMeta, w: roundedW, h: roundedH };
+}
+
 function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Partial<BoardCard> & Record<string, unknown>;
@@ -335,18 +669,62 @@ function normalizeCard(raw: unknown, stamp: string): BoardCard | null {
     w: Math.max(1, asFloat(source.w, DEFAULT_CARD_W)),
     h: Math.max(1, asFloat(source.h, DEFAULT_CARD_H)),
   });
+  const explicitParticipation =
+    source.participation === "included" || source.participation === "excluded"
+      ? source.participation
+      : undefined;
+  // 与后端 models.card_participation 同一口径：hidden 最高优先，其次遗留不可交付卡，
+  // 再才是显式 participation 与旧 checked 意图。
+  const participation: Participation = participationOf({
+    kind,
+    meta: sourceMeta,
+    hidden,
+    checked,
+    participation: explicitParticipation,
+  });
+  /*
+    旧兼容字段与 participation 同口径（§5.1：迁移后 checked/hidden 不再决定可见性，
+    但仍作为旧服务端的兼容镜像继续同步）：参与 → hidden=false、可勾选卡 checked=true；
+    不参与 → 可勾选卡 checked=false、材料 hidden=true。
+  */
+  const included = participation === "included";
+  /*
+    兼容镜像只在**旧数据**（没有显式 participation）上推导：
+    一旦卡片带显式 participation，checked / hidden 就是历史字段，原样保留，
+    不再被 participation 反写 —— 否则旧界面上「未勾选的注释」会在加载后突然变成已勾选
+    （契约 §5.1：迁移后 checked 不再决定可见性，也不再被它反向改写）。
+  */
+  const legacyMirror = explicitParticipation === undefined;
+  const legacyChecked = legacyMirror
+    ? kind === "text" || kind === "reply"
+      ? included
+      : hidden
+        ? false
+        : checked
+    : checked;
+  const legacyHidden = legacyMirror ? (included ? false : kind === "file" ? true : hidden) : hidden;
+  /*
+    Phase 2 §5.2：meta.display 与卡片 w/h 在同一处收敛（与后端 save/read 的清洗一致）；
+    只改显示几何，不碰 version / updatedAt。
+  */
+  const display = applyDisplayRatio(kind, sourceMeta, bounded.w, bounded.h);
+  const sized = clampCardRect({ x: bounded.x, y: bounded.y, w: display.w, h: display.h });
   return {
     id: String(source.id ?? "") || newId("c"),
     kind,
     content: asText(source.content),
-    meta: sourceMeta,
-    x: bounded.x,
-    y: bounded.y,
-    w: bounded.w,
-    h: bounded.h,
+    meta: display.meta,
+    x: sized.x,
+    y: sized.y,
+    w: sized.w,
+    h: sized.h,
+    participation,
+    ...(typeof source.version === "number" && Number.isFinite(source.version)
+      ? { version: source.version }
+      : {}),
     // G6 明确隐藏与勾选互斥（F4：结果卡同样保留用户明确给出的许可）
-    checked: hidden ? false : checked,
-    hidden,
+    checked: legacyChecked,
+    hidden: legacyHidden,
     folded: Boolean(source.folded),
     bookmarked: Boolean(source.bookmarked),
     deleted: Boolean(source.deleted),
@@ -407,31 +785,70 @@ function normalizeGroup(
     w: Math.max(1, asFloat(source.w, 1)),
     h: Math.max(1, asFloat(source.h, 1)),
     members,
+    // 收起是纯显示状态（Phase 2 §5.4）：旧数据缺省 = 展开（不写字段，避免无意义 diff）；
+    // 不影响成员 / 顺序 / 语义版本。
+    ...(source.collapsed ? { collapsed: true } : {}),
     deleted: false,
     createdAt: asText(source.createdAt) || ctx.stamp,
     updatedAt: asText(source.updatedAt) || asText(source.createdAt) || ctx.stamp,
+    ...(typeof source.version === "number" && Number.isFinite(source.version)
+      ? { version: source.version }
+      : {}),
   };
   reflowGroup(group, ctx.cards);
   return group;
 }
 
-function normalizeLink(raw: unknown, live: Set<string>, stamp: string): BoardLink | null {
+/**
+ * 归一化一条关系（Phase 2 §5.3）：
+ * - 端点身份：卡片 = 裸 card id（旧数据不变），组 = `group:<id>`；
+ * - 组端点必须校验「组存在 / 未删 / 至少一名存活成员」；卡片端点必须存活；
+ * - 自己连自己 / 端点非法 / 端点不存在 → 整条丢弃（不画假线、不保存半条关系）；
+ * - version 原样保留（后端权威自增，前端绝不用内容重算成 1）。
+ */
+/** 曲线偏移上限，与后端 models.MAX_LINK_CURVE 保持一致。 */
+export const MAX_LINK_CURVE = 240;
+
+/** 把曲线偏移归一为有限数字；非法值回到默认直线。 */
+export function normalizeLinkCurve(value: unknown): LinkCurve {
+  const source = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const axis = (key: "x" | "y"): number => {
+    const raw = source[key];
+    const number = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isFinite(number)) return 0;
+    return Math.max(-MAX_LINK_CURVE, Math.min(MAX_LINK_CURVE, number));
+  };
+  return { x: axis("x"), y: axis("y") };
+}
+
+function normalizeLink(
+  raw: unknown,
+  ctx: { cards: BoardCard[]; groups: BoardGroup[] },
+  stamp: string,
+): BoardLink | null {
   if (!raw || typeof raw !== "object") return null;
   const source = raw as Partial<BoardLink> & Record<string, unknown>;
   if (source.deleted) return null;
-  const src = String(source.src ?? "");
-  const dst = String(source.dst ?? "");
-  // G4 端点必须存在且未删除（G5 已删除卡片不进链接）
-  if (!live.has(src) || !live.has(dst)) return null;
+  const src = normalizeEndpointString(source.src);
+  const dst = normalizeEndpointString(source.dst);
+  if (!src || !dst) return null;
+  if (sameEndpoint(src, dst)) return null;
+  const endpointContext = { cards: ctx.cards, groups: ctx.groups };
+  // G4 端点必须存在且未删除（G5 已删除卡片不进链接）；组端点另需至少一名存活成员。
+  if (!resolveEndpoint(src, endpointContext) || !resolveEndpoint(dst, endpointContext)) return null;
   return {
     id: String(source.id ?? "") || newId("l"),
     src,
     dst,
     direction: Boolean(source.direction),
     meaning: asText(source.meaning),
+    ...(source.curve !== undefined ? { curve: normalizeLinkCurve(source.curve) } : {}),
     deleted: false,
     createdAt: asText(source.createdAt) || stamp,
     updatedAt: asText(source.updatedAt) || asText(source.createdAt) || stamp,
+    ...(typeof source.version === "number" && Number.isFinite(source.version)
+      ? { version: source.version }
+      : {}),
   };
 }
 
@@ -464,8 +881,10 @@ export function normalizeState(state: BoardState): BoardState {
 
   const links: BoardLink[] = [];
   const seenPairs = new Set<string>();
+  // 组端点的校验需要「组已归一化」这一事实，所以关系归一化排在组之后。
+  const linkContext = { cards: [...byId.values()], groups };
   for (const raw of (source.links as unknown[]) ?? []) {
-    const link = normalizeLink(raw, live, stamp);
+    const link = normalizeLink(raw, linkContext, stamp);
     if (!link) continue;
     const pair = [link.src, link.dst].sort().join("\u0000");
     if (seenPairs.has(pair)) continue;
@@ -483,6 +902,10 @@ export function normalizeState(state: BoardState): BoardState {
     groups,
     links,
     selection,
+    ...(typeof source.participationVersion === "number" &&
+    Number.isFinite(source.participationVersion)
+      ? { participationVersion: source.participationVersion }
+      : {}),
   };
 }
 
@@ -525,10 +948,15 @@ export function addCard(state: BoardState, card: Partial<BoardCard> & { kind: Ca
     y: size.y,
     w: size.w,
     h: size.h,
-    // 文字卡默认提交给 QIO；结果卡（reply）默认**不**许可（F4），明确传入时尊重它；
-    // 材料卡不需要这个勾选（默认在允许范围内）
-    checked:
-      card.checked === undefined ? card.kind === "text" : Boolean(card.checked),
+    // 参与状态是 v2 的唯一事实源：文件/文字默认参与，结果卡默认不参与；
+    // 旧 checked/hidden 仍写入以兼容旧服务端。
+    participation:
+      card.participation === "included" || card.participation === "excluded"
+        ? card.participation
+        : card.kind === "file" || card.kind === "text"
+          ? "included"
+          : "excluded",
+    checked: card.checked === undefined ? card.kind === "text" : Boolean(card.checked),
     hidden: Boolean(card.hidden),
     folded: Boolean(card.folded),
     bookmarked: Boolean(card.bookmarked),
@@ -622,8 +1050,30 @@ export function updateCard(state: BoardState, cardId: string, patch: Partial<Boa
     assign("w", bounded.w);
     assign("h", bounded.h);
   }
-  if (patch.checked !== undefined) assign("checked", Boolean(patch.checked));
-  if (patch.hidden !== undefined) assign("hidden", Boolean(patch.hidden));
+  /*
+    参与状态与旧兼容字段（checked / hidden）必须同步修改（Phase 2 §5.1）：
+    任何一个入口只改其中一边，都会让本地可见范围与 participation 分叉。
+  */
+  const shippable = !LEGACY_UNSHIPPABLE_KINDS.includes(card.kind);
+  if (
+    shippable &&
+    (patch.participation === "included" || patch.participation === "excluded")
+  ) {
+    assign("participation", patch.participation);
+    // hidden 在参与判定里优先级最高：显式「参与」要同时清掉 hidden（除非本次也显式要求隐藏）
+    if (patch.participation === "included" && patch.hidden !== true) assign("hidden", false);
+  }
+  if (patch.checked !== undefined) {
+    assign("checked", Boolean(patch.checked));
+    if (shippable && CHECKABLE_KINDS.includes(card.kind)) {
+      assign("participation", patch.checked ? "included" : "excluded");
+    }
+  }
+  if (patch.hidden !== undefined) {
+    assign("hidden", Boolean(patch.hidden));
+    if (shippable) assign("participation", patch.hidden ? "excluded" : "included");
+  }
+  if (syncLegacyParticipation(card)) changed = true;
   if (patch.folded !== undefined) assign("folded", Boolean(patch.folded));
   if (patch.bookmarked !== undefined) assign("bookmarked", Boolean(patch.bookmarked));
   if (patch.deleted !== undefined) assign("deleted", Boolean(patch.deleted));
@@ -651,8 +1101,14 @@ export function duplicateCard(state: BoardState, cardId: string): BoardState {
     meta: JSON.parse(JSON.stringify(source.meta ?? {})) as Record<string, unknown>,
     x: source.x + DUPLICATE_OFFSET,
     y: source.y + DUPLICATE_OFFSET,
+    /*
+      副本是**新材料**：文字 / 结果卡需要用户重新确认（旧行为 checked=false），
+      材料（file）沿用「材料默认在范围内」；旧兼容字段由 normalizeState 按 participation 同步。
+      version 不复制（新对象由后端权威分配，前端不自造版本）。
+    */
     checked: false,
     hidden: false,
+    participation: source.kind === "file" ? "included" : "excluded",
     deleted: false,
     createdAt: stamp,
     updatedAt: stamp,
@@ -713,6 +1169,27 @@ export function createGroup(state: BoardState, cardIds: string[], name?: string)
   return normalizeState(work);
 }
 
+/**
+ * 组内固定排列：按 members 顺序从上到下排成一列。
+ * 组框位置沿用当前组框左上角；宽度取最宽成员，高度按成员总高度 + 间距重算。
+ */
+function arrangeGroupMembers(group: BoardGroup, cards: BoardCard[]): void {
+  const members = group.members
+    .map((id) => cards.find((card) => card.id === id && !card.deleted))
+    .filter((card): card is BoardCard => Boolean(card));
+  if (!members.length) return;
+  let y = group.y + GROUP_PAD_TOP;
+  let maxW = 1;
+  for (const card of members) {
+    card.x = group.x + GROUP_PAD_X;
+    card.y = y;
+    maxW = Math.max(maxW, card.w);
+    y += card.h + GROUP_MEMBER_GAP;
+  }
+  group.w = maxW + GROUP_PAD_X * 2;
+  group.h = y - GROUP_MEMBER_GAP - group.y + GROUP_PAD_BOTTOM;
+}
+
 /** 把卡片加入组（会先离开原来的组）。有序组里 index 决定序号；组名不变。 */
 export function joinGroup(state: BoardState, cardId: string, groupId: string, index?: number): BoardState {
   const work = normalizeState(state);
@@ -732,6 +1209,7 @@ export function joinGroup(state: BoardState, cardId: string, groupId: string, in
   if (at >= 0) target.members.splice(at, 1);
   target.members.splice(clampIndex(index, target.members.length), 0, cardId);
   target.updatedAt = stamp;
+  arrangeGroupMembers(target, work.cards);
   work.updatedAt = stamp;
   return normalizeState(work);
 }
@@ -746,6 +1224,7 @@ export function removeFromGroup(state: BoardState, cardId: string): BoardState {
     if (at >= 0) {
       group.members.splice(at, 1);
       group.updatedAt = stamp;
+      if (group.members.length) arrangeGroupMembers(group, work.cards);
       changed = true;
     }
   }
@@ -753,14 +1232,37 @@ export function removeFromGroup(state: BoardState, cardId: string): BoardState {
   return normalizeState(work);
 }
 
-/** 解除组：成员全部恢复自由摆放，卡片本身不动。 */
+/**
+ * 解除组：成员全部恢复自由摆放，卡片本身不动。
+ *
+ * Phase 2 §5.3：以**组本身**为端点的关系随组一起消失（`group:<id>` 两端都不再存在），
+ * 成员卡片之间的线**保留** —— 组只是组织方式，卡片的关联不因组消失而消失。
+ */
 export function dissolveGroup(state: BoardState, groupId: string): BoardState {
   const work = normalizeState(state);
   const group = groupById(work, groupId);
   if (!group) return work;
+  const groupValue = GROUP_ENDPOINT_PREFIX + group.id;
+  work.links = work.links.filter((link) => link.src !== groupValue && link.dst !== groupValue);
   group.members = [];
   group.deleted = true;
   work.updatedAt = nowIso();
+  return normalizeState(work);
+}
+
+/**
+ * 组收起 / 展开（Phase 2 §5.4）：**纯显示状态**，持久化到板面状态以便刷新后保持，
+ * 但绝不参与语义版本 / 材料版本 / 意图依据（version 字段一个字都不动）。
+ */
+export function setGroupCollapsed(state: BoardState, groupId: string, collapsed: boolean): BoardState {
+  const work = normalizeState(state);
+  const group = groupById(work, groupId);
+  if (!group) return work;
+  const value = Boolean(collapsed);
+  if (Boolean(group.collapsed) === value) return work;
+  group.collapsed = value;
+  group.updatedAt = nowIso();
+  work.updatedAt = group.updatedAt;
   return normalizeState(work);
 }
 
@@ -802,6 +1304,7 @@ export function moveWithinGroup(state: BoardState, groupId: string, cardId: stri
   if (at < 0) return work;
   group.members.splice(at, 1);
   group.members.splice(clampIndex(index, group.members.length), 0, cardId);
+  arrangeGroupMembers(group, work.cards);
   group.updatedAt = nowIso();
   work.updatedAt = group.updatedAt;
   return normalizeState(work);
@@ -835,6 +1338,7 @@ export function mergeGroups(
   target.defaultName = true;
   target.updatedAt = nowIso();
   source.deleted = true;
+  arrangeGroupMembers(target, work.cards);
   work.updatedAt = target.updatedAt;
   return normalizeState(work);
 }
@@ -853,11 +1357,17 @@ export function addLink(
   meaning: string,
 ): BoardState {
   const work = normalizeState(state);
-  if (src === dst) return work;
-  const live = new Set(work.cards.filter((card) => !card.deleted).map((card) => card.id));
-  if (!live.has(src) || !live.has(dst)) return work;
+  // Phase 2 §5.3：端点是卡片裸 id（兼容 card:<id>）或 group:<id>；非法 / 不存在 / 自连一律拒绝。
+  const srcValue = normalizeEndpointString(src);
+  const dstValue = normalizeEndpointString(dst);
+  if (!srcValue || !dstValue) return work;
+  if (sameEndpoint(srcValue, dstValue)) return work;
+  const endpointContext = { cards: work.cards, groups: work.groups };
+  if (!resolveEndpoint(srcValue, endpointContext) || !resolveEndpoint(dstValue, endpointContext)) {
+    return work;
+  }
   const stamp = nowIso();
-  const pair = [src, dst].sort().join("\u0000");
+  const pair = [srcValue, dstValue].sort().join("\u0000");
   const existing = work.links.find((link) => [link.src, link.dst].sort().join("\u0000") === pair);
   if (existing) {
     existing.direction = Boolean(direction);
@@ -866,8 +1376,8 @@ export function addLink(
   } else {
     work.links.push({
       id: newId("l"),
-      src,
-      dst,
+      src: srcValue,
+      dst: dstValue,
       direction: Boolean(direction),
       meaning: asText(meaning),
       deleted: false,
@@ -883,13 +1393,31 @@ export function updateLink(state: BoardState, linkId: string, patch: Partial<Boa
   const work = normalizeState(state);
   const link = work.links.find((item) => item.id === linkId);
   if (!link) return work;
+  // 端点改动同样走 Phase 2 §5.3 的解析 / 校验：非法、自连、不存在都整次拒绝（不改任何字段）。
+  const endpointContext = { cards: work.cards, groups: work.groups };
+  let nextSrc = link.src;
+  let nextDst = link.dst;
+  if (patch.src !== undefined) {
+    const value = normalizeEndpointString(patch.src);
+    if (!value) return work;
+    nextSrc = value;
+  }
+  if (patch.dst !== undefined) {
+    const value = normalizeEndpointString(patch.dst);
+    if (!value) return work;
+    nextDst = value;
+  }
+  if (sameEndpoint(nextSrc, nextDst)) return work;
+  if (!resolveEndpoint(nextSrc, endpointContext) || !resolveEndpoint(nextDst, endpointContext)) {
+    return work;
+  }
   let changed = false;
-  if (patch.src !== undefined && String(patch.src) !== link.src) {
-    link.src = String(patch.src);
+  if (nextSrc !== link.src) {
+    link.src = nextSrc;
     changed = true;
   }
-  if (patch.dst !== undefined && String(patch.dst) !== link.dst) {
-    link.dst = String(patch.dst);
+  if (nextDst !== link.dst) {
+    link.dst = nextDst;
     changed = true;
   }
   if (patch.direction !== undefined && Boolean(patch.direction) !== link.direction) {
@@ -899,6 +1427,14 @@ export function updateLink(state: BoardState, linkId: string, patch: Partial<Boa
   if (patch.meaning !== undefined && asText(patch.meaning) !== link.meaning) {
     link.meaning = asText(patch.meaning);
     changed = true;
+  }
+  if (patch.curve !== undefined) {
+    const nextCurve = normalizeLinkCurve(patch.curve);
+    const currentCurve = normalizeLinkCurve(link.curve);
+    if (nextCurve.x !== currentCurve.x || nextCurve.y !== currentCurve.y) {
+      link.curve = nextCurve;
+      changed = true;
+    }
   }
   if (patch.deleted !== undefined && Boolean(patch.deleted) !== link.deleted) {
     link.deleted = Boolean(patch.deleted);
@@ -951,8 +1487,10 @@ export function setChecked(state: BoardState, cardId: string, checked: boolean):
   const card = cardById(work, cardId);
   if (!card || card.deleted || !CHECKABLE_KINDS.includes(card.kind)) return work;
   const value = Boolean(checked);
-  if (card.checked === value && !(value && card.hidden)) return work;
+  const participation = value ? "included" : "excluded";
+  if (card.checked === value && card.participation === participation && !(value && card.hidden)) return work;
   card.checked = value;
+  card.participation = participation;
   if (value) card.hidden = false;
   card.updatedAt = nowIso();
   work.updatedAt = card.updatedAt;
@@ -965,7 +1503,13 @@ export function setHidden(state: BoardState, cardId: string, hidden: boolean): B
   const card = cardById(work, cardId);
   if (!card || card.deleted || card.hidden === Boolean(hidden)) return work;
   card.hidden = Boolean(hidden);
-  if (card.hidden) card.checked = false;
+  card.participation = card.hidden ? "excluded" : "included";
+  /*
+    hidden 与 checked 的兼容镜像（旧服务端 / 旧界面读它们）：
+    - 隐藏 = 退出参与 → 可勾选卡 checked=false；
+    - 取消隐藏 = 重新参与 → 可勾选卡 checked=true（Phase 2 的 participation 才是唯一事实源）。
+  */
+  if (CHECKABLE_KINDS.includes(card.kind)) card.checked = !card.hidden;
   card.updatedAt = nowIso();
   work.updatedAt = card.updatedAt;
   return normalizeState(work);
@@ -1154,16 +1698,22 @@ function overlappingFreeCards(state: BoardState, cardId: string, x: number, y: n
   return mergeCandidates(state, cardId, x, y).map((item) => item.card);
 }
 
+interface DropHitPoint { x: number; y: number }
+
 function resolveDrop(
   state: BoardState,
   cardId: string,
   x: number,
   y: number,
+  hit?: DropHitPoint,
 ): { target: BoardGroup | null; index: number | null; mergesWith: string | null } {
-  const target = groupAtPoint(state, x, y);
+  // 组落点看指针/当前视觉位置，而不是拖动卡片左上角：否则热区会随抓取点偏移。
+  const hitX = hit ? hit.x : x;
+  const hitY = hit ? hit.y : y;
+  const target = groupAtPoint(state, hitX, hitY);
   const current = groupOfCard(state, cardId);
   if (target) {
-    const index = insertIndex(state, target, cardId, x, y);
+    const index = insertIndex(state, target, cardId, hitX, hitY);
     const mergesWith = current && current.id !== target.id ? current.id : null;
     return { target, index, mergesWith };
   }
@@ -1173,11 +1723,17 @@ function resolveDrop(
 }
 
 /** 拖动期间显示将要加入的组或插入位置 —— **不改状态**。 */
-export function previewDrop(state: BoardState, cardId: string, x: number, y: number): DropPreview {
+export function previewDrop(
+  state: BoardState,
+  cardId: string,
+  x: number,
+  y: number,
+  hit?: DropHitPoint,
+): DropPreview {
   const work = normalizeState(state);
   const card = cardById(work, cardId);
   if (!card || card.deleted) return { groupId: null, index: null, mergesWith: null };
-  const resolved = resolveDrop(work, cardId, asFloat(x, 0), asFloat(y, 0));
+  const resolved = resolveDrop(work, cardId, asFloat(x, 0), asFloat(y, 0), hit);
   return {
     groupId: resolved.target ? resolved.target.id : null,
     index: resolved.index,
@@ -1266,7 +1822,13 @@ export function freeDropSpot(
   return { x, y };
 }
 
-export function dropCard(state: BoardState, cardId: string, x: number, y: number): DropResult {
+export function dropCard(
+  state: BoardState,
+  cardId: string,
+  x: number,
+  y: number,
+  hit?: DropHitPoint,
+): DropResult {
   const px = asFloat(x, 0);
   const py = asFloat(y, 0);
   let work = normalizeState(state);
@@ -1277,7 +1839,7 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
 
   // 落点先夹进画布范围：负坐标的卡片顶部永远看不见（见 clampCardRect 的说明）
   const placed = clampCardRect({ x: px, y: py, w: card.w, h: card.h });
-  const resolved = resolveDrop(work, cardId, placed.x, placed.y);
+  const resolved = resolveDrop(work, cardId, placed.x, placed.y, hit);
   /*
     不成组时**不许叠放**：落点被别的卡片占住就自动挪到最近的空位。
     成组时不挪：位置由组框排布接管（合并成组本来就是用户明确要的语义）。
@@ -1316,7 +1878,7 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
     if (best) {
       const partner = cardById(work, best.cardId);
       // 两张未分组卡片明确重叠 → 自动成组，系统默认名「默认组名」（组框由成员推导，位置只影响显示）
-      work.groups.push({
+      const createdGroup: BoardGroup = {
         id: newId("g"),
         name: nextDefaultGroupName(work.groups.map((item) => item.name)),
         defaultName: true,
@@ -1329,7 +1891,9 @@ export function dropCard(state: BoardState, cardId: string, x: number, y: number
         deleted: false,
         createdAt: stamp,
         updatedAt: stamp,
-      });
+      };
+      work.groups.push(createdGroup);
+      arrangeGroupMembers(createdGroup, work.cards);
       work.updatedAt = stamp;
     }
   }

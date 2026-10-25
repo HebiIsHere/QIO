@@ -55,6 +55,13 @@ import BoardChangeList from "./BoardChangeList.vue";
 import { humanizeFailure, scrubInternalTerms } from "./displayText";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
+const props = withDefaults(
+  defineProps<{
+    /** 悬浮对话工具栏：收起统计文字，只留提交按钮和可展开的状态图标。 */
+    compact?: boolean;
+  }>(),
+  { compact: false },
+);
 const store = useInteractiveStore();
 
 /**
@@ -633,7 +640,7 @@ function onSubmit() {
       第一行右：上次提交的**简短**状态 + 查看过程。
       只有真的存在过上次提交（提交结果 / 理解记录 / 过程历史）才渲染 —— 没有就不编。
     -->
-    <div v-if="hasHistory" class="sc-history" data-im="submit-history">
+    <div v-if="!compact && hasHistory" class="sc-history" data-im="submit-history">
       <button
         class="sc-chip"
         type="button"
@@ -659,8 +666,8 @@ function onSubmit() {
       </button>
     </div>
 
-    <!-- 第二行左：本次可见统计 + 未提交改动数量（宽度不足时允许受控换行，不截断） -->
-    <div class="sc-stats" data-im="submit-stats">
+    <!-- 第二行左：本次可见统计 + 未提交改动数量（悬浮模式收进详情面板） -->
+    <div v-if="!compact" class="sc-stats" data-im="submit-stats">
       <span class="sc-stat" data-im="visible-range">{{ rangeShort }}</span>
       <span class="sc-pill" data-im="submit-pending">{{ pendingLabel }}</span>
     </div>
@@ -967,14 +974,24 @@ function onSubmit() {
     <div class="actions" data-im="submit-actions">
       <button
         class="details"
+        :class="{ 'sc-details-icon': compact }"
         type="button"
         data-im="submit-details"
+        :data-state-tone="isFailed ? 'problem' : store.submitStatus === 'idle' ? 'plain' : 'active'"
+        :aria-label="compact ? '提交状态与详情' : undefined"
         :aria-expanded="openPanel === 'details'"
         aria-controls="submit-details-panel"
-        title="本次提交范围与改动（只读，不会再次提交）"
+        :title="compact ? '提交状态与本次提交范围（点击查看详情）' : '本次提交范围与改动（只读，不会再次提交）'"
         @click="togglePanel('details')"
       >
-        {{ openPanel === "details" ? "收起详情" : "详情" }}
+        <template v-if="compact">
+          <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+            <circle cx="8" cy="8" r="5.6" />
+            <path d="M8 7.2v4" />
+            <circle cx="8" cy="4.9" r="0.7" fill="currentColor" stroke="none" />
+          </svg>
+        </template>
+        <template v-else>{{ openPanel === "details" ? "收起详情" : "详情" }}</template>
       </button>
       <button
         class="submit"
@@ -1111,7 +1128,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
   max-width: 100%;
   text-align: left;
@@ -1202,7 +1219,7 @@ function onSubmit() {
   font-size: var(--fs-xs);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
 }
 .u-label.tone-open { color: var(--link); border-color: var(--link); }
@@ -1235,7 +1252,7 @@ function onSubmit() {
   gap: 2px;
   padding: var(--sp-1) var(--sp-2);
   border-left: 2px solid var(--accent);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   background: var(--bg-inset);
 }
 .approvals-head {
@@ -1291,7 +1308,7 @@ function onSubmit() {
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   cursor: pointer;
 }
@@ -1321,7 +1338,7 @@ function onSubmit() {
   padding: var(--sp-1) var(--sp-2);
   overflow-wrap: anywhere;
   border-left: 2px solid var(--danger);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   background: var(--danger-soft);
   font-size: var(--fs-xs);
   line-height: 1.45;
@@ -1337,7 +1354,7 @@ function onSubmit() {
   margin: 0;
   padding: var(--sp-1) var(--sp-2);
   border-left: 2px solid var(--warning);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   background: var(--warning-soft);
   font-size: var(--fs-xs);
   line-height: 1.45;
@@ -1380,7 +1397,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }
@@ -1391,6 +1408,33 @@ function onSubmit() {
   border-color: var(--border-strong);
   background: var(--bg-inset);
 }
+/* 悬浮工具栏只显示图标状态：形状 + 颜色双通道，文字只留在可访问名称/提示里。 */
+.sc-details-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-pill);
+}
+.sc-details-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.sc-details-icon[data-state-tone="active"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.sc-details-icon[data-state-tone="problem"] {
+  color: var(--danger);
+  border-color: var(--danger);
+}
 /* 主提交按钮：整个功能栏唯一的强调色操作 */
 .submit {
   font: inherit;
@@ -1398,7 +1442,7 @@ function onSubmit() {
   color: var(--on-accent);
   background: var(--accent);
   border: none;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   padding: var(--sp-2) var(--sp-5);
   cursor: pointer;
 }
@@ -1429,7 +1473,7 @@ function onSubmit() {
   overscroll-behavior: contain;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-2);
   font-family: var(--sans);
   user-select: text;
@@ -1493,7 +1537,7 @@ function onSubmit() {
   font-family: var(--mono);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
 }
 .sc-process-text { min-width: 0; overflow-wrap: anywhere; }

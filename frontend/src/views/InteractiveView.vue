@@ -1,74 +1,158 @@
 <!--
-  互动模式入口与页面组合（主智能体维护）。
+  互动模式入口与页面组合（v2 页面壳，Lead 集成）。
 
-  契约：docs/interactive-mode-contract.md §8 / §9.6（信息层级）。
-  这一版的结构：
-  - 板面为主体，所有操作浮在板面上，**没有常驻右侧栏**；
-  - 顶部只留板面名、**唯一的准确保存状态**与必要入口；数量等次要信息退到次级层，不与主状态同样显眼；
-  - 「已保存」在顶部说一次；「已提交」由工具栏右端的提交区说一次（两处各只一处主要状态）；
-  - 未接入状态如实可见（QIO 还没有读取板面），不用开发用语；
-  - 底部是横向悬浮工具栏（A 负责），右端是提交区（C 负责）；
-  - 右下角独立聊天入口（C 负责），右上角批量列表入口（D 负责），影响确认是页面中央对话框（D 负责）。
+  结构：
+  - 全局栏由 WindowChrome 提供（品牌 / 搜索与保存 / 设置 / 窗口按钮）；
+  - 中央板面、底部工具栏与输入区、书签栏由 InteractiveWorkspace 分层；
+  - 旧 im-top 板面头不再画第二条标题栏：板面名与真实状态收进板面内的轻量 HUD；
+  - 统一审批层只挂这一处，旧 ApprovalEntry / ApprovalModal 在聊天路由让位（App.vue 门控）。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
-import ChatDock from "../components/interactive/ChatDock.vue";
-import IntentBatchTray from "../components/interactive/IntentBatchTray.vue";
-import IntentStatusPopover from "../components/interactive/IntentStatusPopover.vue";
-import ImpactConfirmDialog from "../components/interactive/ImpactConfirmDialog.vue";
-import DemoIntentEntry from "../components/interactive/DemoIntentEntry.vue";
-import IntentWorkbench from "../components/interactive/IntentWorkbench.vue";
-import { humanizeFailure } from "../components/interactive/displayText";
+import ConversationModeSwitch from "../components/conversation/ConversationModeSwitch.vue";
+
+import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
+import {
+  InteractiveWorkspace,
+  InteractiveChromeTools,
+  InteractiveConversation,
+  RecoveryPanel,
+  SaveFailureBanner,
+  RECOVERY_ENTRY_TEXT,
+  recoveryEntryVisible,
+} from "../components/interactive/v2";
+import IntentLayer from "../components/interactive/v2/IntentLayer.vue";
+import InteractiveBookmarks from "../components/interactive/v2/InteractiveBookmarks.vue";
+import ExecutionRecordPanel from "../components/interactive/ExecutionRecordPanel.vue";
+import type { IntentView } from "../interactive/intentWorkbench";
+import type { IntentViewWithDisplay } from "../components/interactive/v2/intentDisplay";
+import { canRecover } from "../interactive/intentWorkbench";
+import { fetchIntentViews, saveIntentDisplay } from "../services/interactive";
 import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
-const demoOpen = ref(false);
-/** 意图与结果工作台（阶段三 C）：用户显式打开才出现，不抢板面操作 */
-const workbenchOpen = ref(false);
+/** 执行记录：唯一的新入口，查看确认材料、范围、操作、结果、失败与重试事实。 */
+const recordIntent = ref<IntentView | null>(null);
+/** 书签栏纯查看状态；由工具栏切换，不写板面、不产生意图。 */
+const bookmarksOpen = ref(false);
+/** 底聊展开时的最大高度：保证板面始终留出约 220px，而不是把板面压到 128px。 */
+const conversationMaxHeight = ref(
+  typeof window === "undefined"
+    ? 420
+    : Math.max(280, Math.min(720, window.innerHeight - 306)),
+);
+function syncConversationMaxHeight(): void {
+  if (typeof window === "undefined") return;
+  // 对话浮在板面上：最多长到仍露出约 220px 板面（70 全局栏 + 220 板面 + 16 边距）。
+  conversationMaxHeight.value = Math.max(280, Math.min(720, window.innerHeight - 306));
+}
+/** 新链意图视图（服务端事实；不用旧 store.intents 冒充）。 */
+const intentViews = ref<IntentViewWithDisplay[]>([]);
+const intentDisplay = ref<Record<string, { x: number; y: number }>>({});
+const intentDisplayError = ref("");
+/** 事项行徽标：只由真实 store/意图事实构成；面板可回填更完整的服务端计数。 */
+const recoveryPanelCount = ref(0);
+const recoveryEntries = computed(() => {
+  const fallback =
+    (store.saveStatus === "error" ? 1 : 0) +
+    (store.submitRefreshState === "error" ? 1 : 0) +
+    (store.submitResultUnknown ? 1 : 0) +
+    intentViews.value.filter((view) => canRecover(view)).length;
+  const count = Math.max(fallback, recoveryPanelCount.value);
+  return [
+    {
+      ...RECOVERY_ENTRY_TEXT,
+      id: "recovery",
+      count,
+      tone: "warn" as const,
+      visible: recoveryEntryVisible(count),
+    },
+  ];
+});
+
+function displayStorageKey(): string {
+  return "qio-interactive-intent-display:" + (store.board?.boardId ?? "board_default");
+}
+
+function readIntentDisplay(): void {
+  try {
+    const raw = localStorage.getItem(displayStorageKey());
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const next: Record<string, { x: number; y: number }> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") continue;
+      const point = value as { x?: unknown; y?: unknown };
+      if (typeof point.x === "number" && Number.isFinite(point.x) && typeof point.y === "number" && Number.isFinite(point.y)) {
+        next[id] = { x: point.x, y: point.y };
+      }
+    }
+    intentDisplay.value = next;
+  } catch {
+    // 本机显示位置不可用不影响意图真实状态
+  }
+}
+
+function writeIntentDisplay(): void {
+  try {
+    localStorage.setItem(displayStorageKey(), JSON.stringify(intentDisplay.value));
+  } catch {
+    // 同上
+  }
+}
+
+async function loadIntents(): Promise<void> {
+  const boardId = store.board?.boardId;
+  if (!boardId) return;
+  try {
+    const payload = await fetchIntentViews(boardId);
+    intentViews.value = (payload.intents ?? []) as IntentViewWithDisplay[];
+  } catch {
+    // 读取失败不伪造意图；旧工作台仍可单独重试
+    intentViews.value = [];
+  }
+}
+
+async function onIntentDisplayChange(payload: { intentId: string; x: number; y: number }): Promise<void> {
+  const previous = intentDisplay.value;
+  intentDisplay.value = {
+    ...intentDisplay.value,
+    [payload.intentId]: { x: payload.x, y: payload.y },
+  };
+  writeIntentDisplay();
+  const boardId = store.board?.boardId;
+  if (!boardId) {
+    intentDisplayError.value = "板面身份还没准备好，位置只保存在本机。";
+    return;
+  }
+  try {
+    await saveIntentDisplay(payload.intentId, boardId, payload.x, payload.y);
+    intentDisplayError.value = "";
+  } catch (err) {
+    intentDisplay.value = previous;
+    writeIntentDisplay();
+    intentDisplayError.value = "意图位置没有保存到服务端：" + ((err as Error)?.message ?? "原因未知");
+  }
+}
 
 onMounted(() => {
-  void store.load();
+  syncConversationMaxHeight();
+  window.addEventListener("resize", syncConversationMaxHeight);
+  readIntentDisplay();
+  void store.load().then(() => loadIntents());
 });
-
-/**
- * 顶部是**唯一**的保存状态：说准「已保存 ≠ QIO 已收到」。
- * 提交是否成功由提交区单独说明，两处不重复解释同一件事。
- */
-const saveText = computed(() => {
-  if (store.saveStatus === "saving") return "正在保存…";
-  // 顶部是唯一的保存状态：失败原因在这里说**一句**（底层原文外壳含 /api/… 与状态码，属开发术语，
-  // 完整原文放到 title 里供排查），完整诊断仍在提交区详情中
-  if (store.saveStatus === "error") return `保存失败：${humanizeFailure(store.saveError, { maxShort: 48 }).short}`;
-  if (store.dirty) return "有改动尚未保存";
-  // 顶部只说「保存」这一件事；「提交」由工具栏右端的提交区单独表达（§9.6：各自只设一处主状态）
-  if (store.saveStatus === "saved") return "已保存";
-  return "尚未保存过";
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", syncConversationMaxHeight);
 });
-
-/** 悬停能看到完整原文（已剥掉接口路径与内部代码）：主状态保持一句话，辅助信息不挤占版面 */
-const saveDetail = computed(() =>
-  store.saveStatus === "error" ? humanizeFailure(store.saveError).detail : "",
+watch(
+  () => store.lastSubmission?.submission?.id,
+  () => void loadIntents(),
 );
 
-const saveTone = computed(() => {
-  if (store.saveStatus === "error") return "err";
-  if (store.saveStatus === "saving" || store.dirty) return "busy";
-  return "ok";
-});
-
-/*
- * 顶部只留一句真实的理解状态（契约 §14.1 / §14.6）：
- * 受理 / 正在理解 / 理解完成 / 需要补充 / 本次无需任务 / 理解失败各自有明确文字。
- * 失败可以在原地重试（从这次提交保存的快照恢复），未结束时可以查询最新状态。
- */
 const uText = computed(() => {
-  /**
-   * 提交成功、但回执没有给出理解请求身份（或查询还没回来）：顶部绝不能说成
-   * 「还没有提交给 QIO」—— 那与提交事实相反。只说本页已知的：已提交，理解状态以服务端为准。
-   */
   if (!store.understandingStatus && store.submitStatus === "succeeded") {
     return {
       label: "已提交，等待理解状态",
@@ -102,7 +186,6 @@ async function refreshUnderstanding(): Promise<void> {
   }
 }
 
-/** 次要信息：数量退到次级层（空板面时不显示，避免一排同样显眼的标签） */
 const boardSize = computed(() => {
   const state = store.board;
   if (!state) return "";
@@ -110,221 +193,343 @@ const boardSize = computed(() => {
   if (!cards) return "";
   const groups = state.groups.filter((group) => !group.deleted).length;
   const links = state.links.filter((link) => !link.deleted).length;
-  const parts = [`${cards} 张卡片`];
-  if (groups) parts.push(`${groups} 个组`);
-  if (links) parts.push(`${links} 条关系`);
+  const parts = [cards + " 张卡片"];
+  if (groups) parts.push(groups + " 个组");
+  if (links) parts.push(links + " 条关系");
   return parts.join(" · ");
 });
 </script>
 
 <template>
   <div class="interactive">
-    <header class="im-top">
-      <div class="im-identity">
-        <h1 class="im-title">互动板面</h1>
-        <span v-if="boardSize" class="im-count" data-im="board-counts">{{ boardSize }}</span>
-      </div>
+    <!-- 互动页的搜索 + 唯一保存状态：Teleport 到 WindowChrome 的挂载点。 -->
+    <InteractiveChromeTools />
+    <!-- 统一审批：互动页恰好一套；入口由输入区事项行第⑤项提供，不再另挂浮动入口。 -->
+    <UnifiedApprovalLayer :show-memory="false" />
 
-      <div class="im-top-right">
-        <!-- 唯一的保存状态（顶部） -->
-        <p
-          class="im-save"
-          :class="saveTone"
-          data-im="save-status"
-          role="status"
-          :title="saveDetail"
-        >
-          <span class="im-dot" aria-hidden="true"></span>{{ saveText }}
-        </p>
-        <!-- 未接入状态如实可见，且不用开发用语；提交之后显示真实的理解状态 -->
-        <span
-          v-if="store.submissionStage === 'idle'"
-          class="im-note"
-          data-im="not-connected"
-          title="保存只落库、不调用模型；提交之后 QIO 才会读取本次允许查看的内容并开始理解"
-        >
-          还没有提交给 QIO
-        </span>
-        <template v-else>
-          <span
-            class="im-note"
-            :class="'tone-' + uText.tone"
-            data-im="understanding-status"
-            :data-understanding-status="store.understandingStatus ?? 'none'"
-            :title="uText.detail"
-          >
-            {{ uText.label }}
-          </span>
-          <button
-            v-if="store.understandingStatus === 'failed'"
-            class="im-chip"
-            type="button"
-            data-im="understanding-retry"
-            :disabled="retrying"
-            @click="retryUnderstanding"
-          >
-            {{ retrying ? "重试中…" : "重试理解" }}
-          </button>
-          <button
-            v-else-if="uLive"
-            class="im-chip"
-            type="button"
-            data-im="understanding-refresh"
-            :disabled="refreshing"
-            @click="refreshUnderstanding"
-          >
-            {{ refreshing ? "查询中…" : "刷新理解状态" }}
-          </button>
-        </template>
-        <!--
-          展开预览是**查看状态**（契约 §3.5 / §3.6）：一次展开多张时给一个收口入口。
-          它只改前端内存里的展开集合，不写板面状态、不产生表达、不触发理解 / 任务。
-          没有展开的预览时不占位（不是常驻按钮）。
-        -->
-        <button
-          v-if="store.previewExpandedCount"
-          class="im-chip"
-          type="button"
-          data-im="collapse-previews"
-          @click="store.collapseAllPreviews()"
-        >
-          收起预览（{{ store.previewExpandedCount }}）
-        </button>
-        <button
-          class="im-chip"
-          type="button"
-          data-im="tasks-entry"
-          :aria-expanded="store.tasksOpen"
-          @click="store.tasksOpen = !store.tasksOpen"
-        >
-          任务{{ store.taskCount ? " " + store.taskCount : "" }}
-        </button>
-        <!-- 阶段三 C：意图 / 结果 / 等待 / 账本 / 恢复的统一入口（点击才打开，不抢板面操作） -->
-        <button
-          class="im-chip"
-          type="button"
-          data-im="workbench-entry"
-          :aria-expanded="workbenchOpen"
-          @click="workbenchOpen = !workbenchOpen"
-        >
-          意图与结果
-        </button>
-        <button
-          class="im-chip"
-          type="button"
-          data-im="demo-entry"
-          :aria-expanded="demoOpen"
-          @click="demoOpen = !demoOpen"
-        >
-          演示
-        </button>
-        <router-link class="im-link" to="/">回到对话</router-link>
-      </div>
-    </header>
+    <InteractiveWorkspace :bookmarks-open="bookmarksOpen">
+      <template #board>
+        <div class="im-board-stage" data-im="interactive-stage">
+          <BoardCanvas>
+            <template #overlay="{ scale, width, height }">
+              <IntentLayer
+                v-if="intentViews.length"
+                :views="intentViews"
+                :board-id="store.board?.boardId ?? ''"
+                :width="width"
+                :height="height"
+                :scale="scale"
+                :display-overrides="intentDisplay"
+                :disabled="store.saveStatus === 'saving'"
+                @display-change="onIntentDisplayChange"
+                @refresh="loadIntents"
+                @open-record="recordIntent = $event"
+              />
+            </template>
+          </BoardCanvas>
 
-    <!-- 演示入口单独放在明确标注的浮层里，日常界面不混入演示成功提示 -->
-    <div v-if="demoOpen" class="im-demo-pop" data-im="demo-popover">
-      <DemoIntentEntry />
-    </div>
+          <!-- 板面 HUD：板面名 / 数量 / 真实理解状态 / 旧能力入口；不再占一条标题栏。 -->
+          <div class="im-board-hud">
+            <div class="im-hud-left">
+              <h1 class="im-title">互动板面</h1>
+              <span v-if="boardSize" class="im-count" data-im="board-counts">{{ boardSize }}</span>
+            </div>
+            <div class="im-hud-right">
+              <span
+                v-if="store.submissionStage === 'idle'"
+                class="im-note"
+                data-im="not-connected"
+                title="保存只落库、不调用模型；提交之后 QIO 才会读取本次允许查看的内容并开始理解"
+              >
+                还没有提交给 QIO
+              </span>
+              <template v-else>
+                <span
+                  class="im-note"
+                  :class="'tone-' + uText.tone"
+                  data-im="understanding-status"
+                  :data-understanding-status="store.understandingStatus ?? 'none'"
+                  :title="uText.detail"
+                >{{ uText.label }}</span>
+                <button
+                  v-if="store.understandingStatus === 'failed'"
+                  class="im-chip"
+                  type="button"
+                  data-im="understanding-retry"
+                  :disabled="retrying"
+                  @click="retryUnderstanding"
+                >{{ retrying ? "重试中…" : "重试理解" }}</button>
+                <button
+                  v-else-if="uLive"
+                  class="im-chip"
+                  type="button"
+                  data-im="understanding-refresh"
+                  :disabled="refreshing"
+                  @click="refreshUnderstanding"
+                >{{ refreshing ? "查询中…" : "刷新理解状态" }}</button>
+              </template>
+              <button
+                v-if="store.previewExpandedCount"
+                class="im-chip"
+                type="button"
+                data-im="collapse-previews"
+                @click="store.collapseAllPreviews()"
+              >收起预览（{{ store.previewExpandedCount }}）</button>
+              <button
+                class="im-chip"
+                type="button"
+                data-im="tasks-entry"
+                :aria-expanded="store.tasksOpen"
+                @click="store.tasksOpen = !store.tasksOpen"
+              >任务{{ store.taskCount ? " " + store.taskCount : "" }}</button>
+            </div>
+          </div>
 
-    <main class="im-stage">
-      <BoardCanvas />
+          <ExecutionRecordPanel
+            v-if="recordIntent"
+            :intent="recordIntent"
+            :board-id="store.board?.boardId ?? ''"
+            :open="true"
+            @close="recordIntent = null"
+          />
 
-      <!-- 板面上的浮层：底部工具栏 / 右下聊天 / 右上批量列表 / 任务浮层 / 中央影响确认 -->
-      <BoardToolbar />
-      <IntentStatusPopover />
-      <IntentBatchTray />
-      <ChatDock />
-      <ImpactConfirmDialog />
-      <IntentWorkbench v-if="workbenchOpen" @close="workbenchOpen = false" />
+          <!-- 悬浮对话：板面保持完整高度；工具栏与输入区固定在对话卡底部，消息向上展开。 -->
+          <div class="im-floating-chat" data-im="floating-chat">
+            <div class="im-conversation-slot">
+              <SaveFailureBanner />
+              <InteractiveConversation
+                v-model:expanded="store.chatOpen"
+                :binding="store.chatBinding"
+                :max-height="conversationMaxHeight"
+                :auto-collapse-on-board-action="true"
+                :extra-entries="recoveryEntries"
+              >
+                <template #composer-leading>
+                  <ConversationModeSwitch class="im-mode-switch" />
+                </template>
+                <template #toolbar>
+                  <BoardToolbar
+                    floating
+                    :bookmarks-open="bookmarksOpen"
+                    @toggle-bookmarks="bookmarksOpen = !bookmarksOpen"
+                  />
+                </template>
+                <template #extra-panel="{ id }">
+                  <RecoveryPanel
+                    v-if="id === 'recovery'"
+                    :board-id="store.board?.boardId ?? ''"
+                    :active="store.chatOpen"
+                    @updated="recoveryPanelCount = $event"
+                  />
+                </template>
+              </InteractiveConversation>
+            </div>
+          </div>
 
-      <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
-        板面读取失败：{{ store.loadError }}
-        <button class="im-link" type="button" @click="store.load()">重试</button>
-      </p>
-      <p v-if="store.recoverNotice.length" class="im-notice warn" role="status" data-im="recover-notice">
-        上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
-      </p>
-    </main>
+          <!-- 新链有 IntentView 时由 IntentLayer 接管；旧托盘只服务于旧链兼容记录。 -->
+
+          <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
+            板面读取失败：{{ store.loadError }}
+            <button class="im-link" type="button" @click="store.load()">重试</button>
+          </p>
+          <p v-if="intentDisplayError" class="im-notice warn" role="status" data-im="intent-display-error">
+            {{ intentDisplayError }}
+          </p>
+          <p v-if="store.recoverNotice.length" class="im-notice warn" role="status" data-im="recover-notice">
+            上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
+          </p>
+        </div>
+      </template>
+
+      <template #bookmarks>
+        <InteractiveBookmarks @close="bookmarksOpen = false" />
+      </template>
+
+    </InteractiveWorkspace>
   </div>
 </template>
 
 <style scoped>
 .interactive {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--sans);
 }
-/* 顶部：板面名 + 唯一保存状态 + 必要入口；不放编辑按钮，也不长期显示大段说明 */
-.im-top {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--sp-4);
-  padding: var(--sp-2) var(--sp-5);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
-  flex: none;
-}
-.im-identity {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-3);
+/* 悬浮在板面上的对话：板面不被压缩；只有对话卡与工具栏接收指针。 */
+.im-floating-chat {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  /* 浮在板面卡片工具栏之上；审批对话框仍由统一层/Teleport 处理。 */
+  z-index: calc(var(--im-z-dialog) + 20);
+  width: min(calc(100% - 24px), 980px);
   min-width: 0;
+  pointer-events: none;
+}
+.im-floating-chat > .im-conversation-slot {
+  pointer-events: auto;
+}
+/* 三块彼此独立：消息面板、工具栏、输入胶囊各自有表面，不再套一张大卡片。 */
+.im-floating-chat :deep(.ic) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.im-floating-chat :deep(.ic-stream) {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
+}
+.im-floating-chat :deep(.ic-toolbar) {
+  max-width: 860px;
+  margin-bottom: var(--sp-2);
+}
+/* 工具栏不再是一整条底板：每个功能是独立按钮，悬在输入框上方。 */
+.im-floating-chat :deep(.ic-toolbar .board-toolbar) {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.im-floating-chat :deep(.ic-toolbar .tb-sep) {
+  display: none;
+}
+.im-floating-chat :deep(.ic-toolbar .tb-btn) {
+  height: 32px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-1);
+}
+.im-floating-chat :deep(.ic-toolbar .tb-icon-btn) {
+  min-width: 32px;
+  padding: 0 var(--sp-1);
+}
+.im-floating-chat :deep(.ic-toolbar .tb-main) {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.im-floating-chat :deep(.ic-toolbar .tb-edit),
+.im-floating-chat :deep(.ic-toolbar .tb-submit),
+.im-floating-chat :deep(.ic-toolbar .submit-cluster) {
+  display: contents;
+}
+.im-floating-chat :deep(.ic-toolbar .actions) {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.im-floating-chat :deep(.ic-dock) {
+  padding: 0;
+}
+.im-floating-chat :deep(.ic-composer) {
+  max-width: 860px;
+  margin: 0 auto;
+}
+.im-floating-chat :deep(.ic-bar) {
+  width: fit-content;
+  min-height: 26px;
+  margin-bottom: var(--sp-1);
+}
+@media (max-width: 700px) {
+  .im-floating-chat {
+    bottom: 8px;
+    width: calc(100% - 12px);
+  }
+}
+/* 板面槽内舞台：现有 BoardCanvas 的定位祖先。 */
+.im-conversation-slot {
+  width: 100%;
+  min-width: 0;
+}
+.im-mode-switch {
+  flex: none;
+  padding-bottom: 8px;
+}
+@media (max-width: 700px) {
+  .im-mode-switch { padding-bottom: 6px; }
+}
+
+.im-board-stage {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+}
+/* HUD 是轻量浮层，不占布局、不形成第二条标题栏。 */
+.im-board-hud {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  right: 12px;
+  z-index: 30;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--sp-3);
+  pointer-events: none;
+}
+/* 板面名让位给全局栏；HUD 只保留真实状态与旧能力入口，避免压住组标题。 */
+.im-hud-left,
+.im-hud-right {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  pointer-events: auto;
+}
+.im-hud-left { display: none !important; }
+.im-hud-left {
+  padding: 5px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-1);
 }
 .im-title {
   margin: 0;
   font-family: var(--serif);
-  font-size: var(--fs-lg);
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text-strong);
   white-space: nowrap;
 }
-/* 次要信息：比主状态更小，但不低于可读对比度（独立复核量到 --text-faint 只有 3.1/3.28:1） */
 .im-count {
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   font-family: var(--mono);
   white-space: nowrap;
 }
-.im-top-right {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  flex: none;
-}
-.im-save {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-2);
-  margin: 0;
-  font-size: var(--fs-sm);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-/* 状态不只靠颜色：文字已经说明，这里只做辅助色点 */
-.im-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-faint);
-}
-.im-save.ok .im-dot { background: var(--success); }
-.im-save.busy .im-dot { background: var(--warning); }
-.im-save.err { color: var(--danger); }
-.im-save.err .im-dot { background: var(--danger); }
-/* 未接入状态：安静但真实可见 */
 .im-note {
+  max-width: min(340px, 38vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: var(--fs-xs);
-  color: var(--text-faint);
+  color: var(--text-secondary);
   border-bottom: 1px dashed var(--border-subtle);
-  cursor: help;
   white-space: nowrap;
+  cursor: help;
 }
-/* 理解状态的辅助色（文字已经说清状态，颜色不承担含义） */
 .im-note.tone-open { color: var(--link); }
 .im-note.tone-waiting { color: var(--warning); }
 .im-note.tone-active { color: var(--accent); }
@@ -332,67 +537,53 @@ const boardSize = computed(() => {
 .im-note.tone-problem { color: var(--danger); }
 .im-chip {
   font: inherit;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   color: var(--text-secondary);
-  background: none;
-  border: 1px solid transparent;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
-  padding: 2px var(--sp-3);
+  padding: 4px 9px;
   cursor: pointer;
+  white-space: nowrap;
 }
-.im-chip:hover { color: var(--text-strong); border-color: var(--border-subtle); }
+.im-chip:hover { color: var(--text-strong); border-color: var(--accent); }
 .im-chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .im-link {
   font: inherit;
-  font-size: var(--fs-sm);
+  font-size: var(--fs-xs);
   color: var(--link);
   background: none;
   border: none;
   padding: 0;
   cursor: pointer;
-  text-decoration: none;
-}
-.im-link:hover { color: var(--accent-hover); }
-.im-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-/* 演示浮层挂在顶部下方，独立于板面操作 */
-.im-demo-pop {
-  position: absolute;
-  top: 52px;
-  right: var(--sp-5);
-  z-index: 30;
-  max-width: min(420px, 92vw);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-2);
-}
-/* 板面舞台：所有浮层都相对它定位 */
-.im-stage {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .im-notice {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  top: var(--sp-3);
+  top: 58px;
   margin: 0;
   padding: var(--sp-2) var(--sp-4);
   border-radius: var(--r-sm);
   font-size: var(--fs-sm);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  z-index: 40;
+  box-shadow: var(--shadow-1);
+  z-index: 6;
 }
 .im-notice.err { color: var(--danger); }
 .im-notice.warn { color: var(--warning); }
-
 @media (max-width: 900px) {
-  .im-count, .im-note { display: none; }
-  .im-top { padding: var(--sp-2) var(--sp-3); gap: var(--sp-2); }
-  .im-top-right { gap: var(--sp-2); }
+  .im-count { display: none; }
+  .im-board-hud { top: 50px; left: 8px; right: 8px; }
+  .im-hud-right { gap: 4px; }
+  .im-note { display: none; }
+  .im-hud-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: calc(100vw - 32px);
+    gap: 4px;
+  }
+  .im-chip { padding: 3px 7px; font-size: 10px; }
 }
 </style>

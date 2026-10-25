@@ -2,19 +2,25 @@
 /**
  * 顶部全局栏（窗口层）—— 无边框窗口（tauri.conf.json: `decorations: false`）的页眉。
  *
- * 这里承担四件事：
+ * 对话页与互动页**共用同一条全局栏**（互动页 v2 契约 §2.1）：同一张圆角栏、同一份品牌
+ * （轨道标志 + PERSONAL AGENT）、同一个设置入口与同一组窗口控制。互动页因此不再需要
+ * 自己再画一条窗口标题栏。
+ *
+ * 这里承担五件事：
  * 1. 可拖拽面（窗口没有系统标题栏，拖窗口只能靠它）；
  * 2. 最小化 / 最大化还原 / 关闭三个窗口按钮（Tauri 语义保持原样，R9 会替换关闭/托盘实现）；
- * 3. QIO 字标（克制的一行衬线字，不放副标题，也不显示当前话题标题 —— 话题在中央工作区顶部）；
- * 4. 设置入口（只在对话页显示；打开现有完整设置页，返回时各 store 保留草稿/附件/阅读位置）。
+ * 3. 品牌（轨道标志 + PERSONAL AGENT，不放副标题，也不显示当前话题标题 —— 话题在页面里）；
+ * 4. 设置入口（对话 / 互动页显示；打开现有完整设置页，返回时各 store 保留草稿/附件/阅读位置）；
+ * 5. 互动页的 `#qio-interactive-chrome-extra` 挂载点（搜索 / 保存状态由互动页 Teleport 进来，
+ *    位于品牌与设置之间；对话页不渲染它，现有视觉不回退）。
  *
  * 拖拽面与按钮是**兄弟节点**而不是父子：Tauri 的拖拽区按命中元素判定，
- * 按钮若在拖拽面内部，点按钮就会先被拖拽逻辑截走（不同版本判定 `hasAttribute`
+ * 按钮/挂载点若在拖拽面内部，点击就会先被拖拽逻辑截走（不同版本判定 `hasAttribute`
  * 或 `closest` 的行为还不一致），拆开两种判定都安全。字标同理：pointer-events 关掉，
  * 点在字标上也还能拖窗口。
  *
- * 高度：对话页需要一条真正放得下字标与设置入口的全局栏，所以只在对话路由把
- * `--titlebar-height` 调高（documentElement 内联变量），离开时恢复。其他页面的
+ * 高度：对话页与互动页都需要一条真正放得下字标、设置入口与顶栏控件的全局栏，所以在这两个
+ * 路由把 `--titlebar-height` 调高（documentElement 内联变量），离开时恢复。其他页面的
  * 标题条高度、定位与交互完全不变。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -30,8 +36,8 @@ interface ShellWindow {
   onResized(handler: () => void): Promise<() => void>;
 }
 
-/** 对话页的全局栏高度：8px 外边距 + 52px 圆角栏 + 10px 呼吸，给下方卡片留出同一条顶线。 */
-const CONVERSATION_TITLEBAR_HEIGHT = "70px";
+/** 全局栏（对话页与互动页共用）的标题条高度：8px 外边距 + 52px 圆角栏 + 10px 呼吸，给下方卡片留出同一条顶线。 */
+const GLOBAL_BAR_TITLEBAR_HEIGHT = "70px";
 
 function tauriInternals(): unknown {
   return (globalThis as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
@@ -42,8 +48,14 @@ function tauriInternals(): unknown {
 const inShell = ref(false);
 const maximized = ref(false);
 
-/** 当前是否对话页（设置入口只属于对话页；其他页的页眉保持原样）。 */
-const isConversation = computed(() => router.currentRoute.value.name === "conversation");
+/** 是否共用这条全局栏：对话页与互动页（其他页的页眉保持原样）。 */
+const hasGlobalBar = computed(() => {
+  const name = router.currentRoute.value.name;
+  return name === "conversation" || name === "interactive";
+});
+
+/** 互动页专属：搜索 / 保存状态的顶栏挂载点，对话页不渲染（现有视觉不回退）。 */
+const isInteractive = computed(() => router.currentRoute.value.name === "interactive");
 
 let shell: ShellWindow | null = null;
 let unlisten: (() => void) | null = null;
@@ -73,17 +85,18 @@ async function run(action: "minimize" | "toggleMaximize" | "close") {
 }
 
 function openSettings() {
-  if (!isConversation.value) return;
+  if (!hasGlobalBar.value) return;
   void router.push({ name: "settings" });
 }
 
 /**
- * 只在对话路由加高标题条。
+ * 只在共用全局栏的路由（对话 / 互动）加高标题条。
  *
  * 直接改 documentElement 的内联变量：App.vue 的 padding-top 与自家 height 读同一个
- * 令牌，两边自动一致；离开对话页时恢复原值，设置/星球/互动页不受影响。
+ * 令牌，两边自动一致；两个路由之间切换不闪动（高度相同），离开到设置/星球等页面时
+ * 恢复原值。
  */
-function applyConversationChrome(on: boolean) {
+function applyGlobalBarChrome(on: boolean) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
   if (on) {
@@ -91,7 +104,7 @@ function applyConversationChrome(on: boolean) {
       previousTitlebarHeight = root.style.getPropertyValue("--titlebar-height");
       previousTitlebarPriority = root.style.getPropertyPriority("--titlebar-height");
     }
-    root.style.setProperty("--titlebar-height", CONVERSATION_TITLEBAR_HEIGHT);
+    root.style.setProperty("--titlebar-height", GLOBAL_BAR_TITLEBAR_HEIGHT);
     return;
   }
   if (previousTitlebarHeight === null) return;
@@ -104,7 +117,7 @@ function applyConversationChrome(on: boolean) {
   previousTitlebarPriority = "";
 }
 
-watch(isConversation, (value) => applyConversationChrome(value), { immediate: true });
+watch(hasGlobalBar, (value) => applyGlobalBarChrome(value), { immediate: true });
 
 onMounted(async () => {
   if (!tauriInternals()) return;
@@ -133,12 +146,15 @@ onBeforeUnmount(() => {
   unlisten?.();
   unlisten = null;
   shell = null;
-  applyConversationChrome(false);
+  applyGlobalBarChrome(false);
 });
 </script>
 
 <template>
-  <div class="window-chrome" :class="{ 'conversation-bar': isConversation }">
+  <div
+    class="window-chrome"
+    :class="{ 'conversation-bar': hasGlobalBar, 'interactive-bar': isInteractive }"
+  >
     <!-- 拖拽面：双击由 Tauri 内置逻辑转成「最大化/还原」 -->
     <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
     <div v-if="inShell" class="window-controls">
@@ -163,10 +179,10 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- 对话页：左侧用轨道标志 + PERSONAL AGENT；其他页保持原来克制的 QIO 字标。
+    <!-- 对话页 / 互动页：左侧用轨道标志 + PERSONAL AGENT；其他页保持原来克制的 QIO 字标。
          pointer-events 关掉，点在品牌区上仍可拖窗口。 -->
     <div class="brand" aria-hidden="true">
-      <template v-if="isConversation">
+      <template v-if="hasGlobalBar">
         <img class="brand-logo" :src="brandLogo" alt="" />
         <span class="brand-sep"></span>
         <span class="brand-caption">PERSONAL AGENT</span>
@@ -177,8 +193,15 @@ onBeforeUnmount(() => {
       </template>
     </div>
 
-    <!-- 设置入口：只在对话页出现，固定排在窗口按钮左边（最右仍是窗口控制）。 -->
-    <div v-if="isConversation" class="chrome-actions" :class="{ 'with-controls': inShell }">
+    <!--
+      互动页：搜索 / 保存状态挂载点（互动页把控件 Teleport 到这里）。
+      位置在品牌与设置之间；拖动面是它的兄弟，pointer-events 在样式里显式打开，
+      点搜索框/保存状态不会被窗口拖拽吃掉。对话页不渲染它，现有视觉不回退。
+    -->
+    <div v-if="isInteractive" id="qio-interactive-chrome-extra" class="chrome-extra"></div>
+
+    <!-- 设置入口：对话页 / 互动页出现，固定排在窗口按钮左边（最右仍是窗口控制）。 -->
+    <div v-if="hasGlobalBar" class="chrome-actions" :class="{ 'with-controls': inShell }">
       <button
         class="chrome-btn"
         type="button"
@@ -298,7 +321,7 @@ onBeforeUnmount(() => {
   opacity: 0.86;
 }
 
-/* ---- 设置入口（只在对话页出现） ---- */
+/* ---- 设置入口（对话页 / 互动页出现，其他页保持原来的短标题条） ---- */
 .chrome-actions {
   position: absolute;
   top: 0;
@@ -358,10 +381,11 @@ onBeforeUnmount(() => {
   background: var(--border-subtle);
 }
 
-/* ---- 对话页：整条全局栏是一张圆角卡片（与下方工作区卡片同一条视觉基线） ---- */
+/* ---- 对话页 / 互动页：整条全局栏是一张圆角卡片（与下方工作区卡片同一条视觉基线） ---- */
 /*
- * 其他页面保持原来的 32px 透明标题条；只有对话页把窗口层变成 62px 高的可见全局栏。
- * 这样设置入口、窗口控制在 Tauri 里仍然可点，浏览器里只留设置入口。
+ * 其他页面保持原来的 32px 透明标题条；只有共用全局栏的两个路由（对话 / 互动）把窗口层
+ * 变成 52px 高的可见全局栏。这样设置入口、窗口控制在 Tauri 里仍然可点，
+ * 浏览器里只留真实可用的设置入口（不画点了没反应的窗口按钮）。
  */
 .window-chrome.conversation-bar {
   top: 8px;
@@ -438,5 +462,62 @@ onBeforeUnmount(() => {
 }
 .conversation-bar .chrome-sep {
   height: 18px;
+}
+
+/* ---- 互动页顶栏挂载点（搜索 / 保存状态，由互动页 Teleport 注入） ---- */
+/*
+ * 位置：品牌与设置之间 —— 左右都靠 0 + 内容宽 + 自动外边距居中。**不用 transform**：
+ * transform 会让挂载点变成 fixed 子元素的包含块，B 若用 position: fixed 画搜索结果，
+ * 位置与裁切都会跟着错。
+ * 命中：它是拖动面的兄弟、z-index 压过拖动面，并显式 pointer-events: auto ——
+ * 点搜索框 / 保存状态不会被窗口拖拽截走。宽度只取内容（fit-content），空容器与
+ * 两侧留白仍然归拖动面，整条栏照样能拖。
+ * 溢出：容器本身 overflow: visible，整条栏在互动路由也覆盖成 visible（见下），
+ * 否则搜索结果 / 保存说明的浮层会被圆角栏裁掉。
+ * 选择：全局栏整体关掉了文本选择，但挂载点里会放真实输入框，这里恢复可选中。
+ */
+.chrome-extra {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: fit-content;
+  max-width: min(560px, 50vw);
+  height: 100%;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+  overflow: visible;
+}
+
+/* 互动路由：整条栏不裁剪挂载点里的浮层（对话页保持原来的圆角裁剪，视觉不回退）。 */
+.conversation-bar.interactive-bar {
+  overflow: visible;
+}
+
+/* 窄窗：品牌只留标志，副标与分隔线让位给搜索/保存；否则 480px 会互相压住。 */
+@media (max-width: 760px) {
+  .conversation-bar .brand {
+    left: 12px;
+    gap: 6px;
+  }
+  .conversation-bar .brand-logo {
+    height: 24px;
+  }
+  .conversation-bar .brand-caption,
+  .conversation-bar .brand-sep {
+    display: none;
+  }
+  .conversation-bar .chrome-extra {
+    max-width: min(160px, calc(100vw - 160px));
+  }
+  .conversation-bar .chrome-actions {
+    right: 12px;
+  }
 }
 </style>

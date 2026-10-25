@@ -141,13 +141,24 @@ function chipText(w: VueWrapper): string {
 async function removeChip(w: VueWrapper, name: string): Promise<void> {
   const chip = w.findAll(".composer .chip").find((c) => c.find(".name").text() === name);
   expect(chip, "待移除的 chip 必须在列表里：" + name).toBeTruthy();
-  await chip!.find(".act.remove").trigger("click");
+  await chip!.find("summary.more-btn").trigger("click");
+  const btn = chip!.findAll("button").find((b) => (b.text() || "").trim() === "移除附件");
+  expect(btn, "更多菜单里必须有移除附件").toBeTruthy();
+  await btn!.trigger("click");
+  await flushPromises();
+}
+
+async function openPathEntry(w: VueWrapper): Promise<void> {
+  await w.find(".attach-circle").trigger("click");
+  const pathItem = w.findAll(".attach-menu-item").find((b) => (b.text() || "").includes("从路径添加"));
+  expect(pathItem, "附件菜单里必须有从路径添加").toBeTruthy();
+  await pathItem!.trigger("click");
   await flushPromises();
 }
 
 /** 真实路径入口：粘贴路径后回车（走 prepareAttachment）。 */
 async function pastePath(w: VueWrapper, path: string) {
-  await w.findAll(".attach-btn")[1].trigger("click");
+  await openPathEntry(w);
   await w.find(".path-input").setValue(path);
   await w.find(".path-input").trigger("keydown.enter");
   await flushPromises();
@@ -471,7 +482,10 @@ describe("R4 发起话题归属（点击入口捕获）", () => {
     });
 
     const { w, session } = await mountComposer("A");
-    await w.find(".attach-btn").trigger("click"); // 发起附件选择：此刻话题 = A
+    await w.find(".attach-circle").trigger("click"); // 发起附件选择：此刻话题 = A
+    const localFile = w.findAll(".attach-menu-item").find((b) => (b.text() || "").includes("选择本地文件"));
+    expect(localFile, "附件菜单里必须有选择本地文件").toBeTruthy();
+    await localFile!.trigger("click");
     await flushPromises();
 
     session.currentTopicId = "B"; // 对话框还开着，用户切到别的话题

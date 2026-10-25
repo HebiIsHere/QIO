@@ -15,6 +15,8 @@ const submitCluster = read("components/interactive/SubmitCluster.vue");
 const boardCard = read("components/interactive/BoardCard.vue");
 const impact = read("components/interactive/ImpactConfirmDialog.vue");
 const view = read("views/InteractiveView.vue");
+const chromeTools = read("components/interactive/v2/InteractiveChromeTools.vue");
+const saveStatus = read("components/interactive/v2/saveStatus.ts");
 const background = "var(--bg-elevated)";
 
 /** 取出某个选择器的规则块（第一个匹配） */
@@ -109,7 +111,11 @@ describe("入口可达", () => {
   });
 
   it("顶部保存失败只给一句人话（原文放悬停），不把接口路径铺在状态行上", () => {
-    expect(view).toContain("humanizeFailure(store.saveError");
-    expect(view).toContain("saveDetail");
+    // Phase 1 v2：保存状态已从 InteractiveView 顶部迁到全局栏的 InteractiveChromeTools；
+    // 同一个口径断言在新归属文件上继续生效。
+    expect(chromeTools).toContain("saveStatusView");
+    expect(chromeTools).toContain(":title=\"saveView.detail");
+    expect(saveStatus).toContain("humanizeFailure(input.error");
+    expect(saveStatus).toContain("detail: full.detail");
   });
 });

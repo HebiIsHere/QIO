@@ -82,6 +82,25 @@ export interface IntentView {
   /** 旧实现兼容：原始旧状态（不冒充新状态） */
   raw_legacy_status?: string;
   demo?: boolean;
+  /** Phase 3：虚拟意图显示位置（按 intent_id 绑定，不参与授权版本） */
+  display?: { x: number; y: number } | null;
+  /** Phase 3：服务端持久化的重试系列（只读事实） */
+  retry?: RetryStateView | null;
+}
+
+export interface RetryStateView {
+  series_id: string;
+  intent_id: string;
+  authorization_version?: number | null;
+  attempts?: number | null;
+  manual_attempts?: number | null;
+  limit?: number | null;
+  status: string;
+  last_error?: string | null;
+  next_action?: string | null;
+  retryable?: boolean;
+  turn_id?: string | null;
+  updated_at?: string | null;
 }
 
 export interface BatchConfirmGate {
@@ -183,6 +202,8 @@ export interface ConfirmItemResult {
   ok?: boolean;
   status?: string;
   reason?: string;
+  turnId?: string | null;
+  turn_id?: string | null;
 }
 
 export interface ConfirmResponse {
@@ -193,6 +214,12 @@ export interface ConfirmResponse {
   min?: number;
   batch?: boolean;
   gate?: string;
+  /** Phase 3：确认后真实续作 Turn；没有 turnId 不能宣称已经开始执行 */
+  turnId?: string | null;
+  resume?: boolean;
+  started?: boolean;
+  confirmationSaved?: boolean;
+  startError?: string;
 }
 
 export type StatusTone = "open" | "waiting" | "active" | "settled" | "problem";

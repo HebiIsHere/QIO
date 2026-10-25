@@ -22,6 +22,14 @@ import UnifiedApprovalModal from "../approval/UnifiedApprovalModal.vue";
 import MemoryQuestionReminder from "./MemoryQuestionReminder.vue";
 import type { MemoryOpenTarget } from "../../stores/memoryQuestions";
 
+const props = withDefaults(
+  defineProps<{
+    /** 互动页没有记忆星球落点：默认隐藏记忆提醒，避免点击无效。 */
+    showMemory?: boolean;
+  }>(),
+  { showMemory: true },
+);
+
 const emit = defineEmits<{
   /** 外层把它接到「打开星球并定位到待确认问题」 */
   "open-memory": [target: MemoryOpenTarget];
@@ -37,6 +45,23 @@ let refreshTimer = 0;
 let noticeTimer = 0;
 let lastRetryAt = 0;
 const notice = ref("");
+
+/**
+ * 唯一挂载的守卫（Phase 3-C）：
+ * 两个同时挂载的层会让「自动弹出 / 唯一入口 / 内联抑制」三件事互相打架
+ * （真实风险：路由过渡期间新旧页面各挂一次）。这里不改任何人，只如实报出来，
+ * 由测试与集成发现；运行时不打断界面。
+ */
+const LAYER_MOUNT_KEY = "__qioUnifiedApprovalLayers";
+function layerRegistry(): { count: number } {
+  const host = globalThis as Record<string, unknown>;
+  const existing = host[LAYER_MOUNT_KEY] as { count: number } | undefined;
+  if (existing && typeof existing.count === "number") return existing;
+  const created = { count: 0 };
+  host[LAYER_MOUNT_KEY] = created;
+  return created;
+}
+const layerState = layerRegistry();
 
 watch(
   () => unified.lastNotice,
@@ -62,6 +87,8 @@ function ingestCandidates() {
 }
 
 function retryAutoOpen() {
+  // 窗口在后台时不抢焦点：回到前台（visibilitychange）会再试一次
+  if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
   const now = Date.now();
   if (now - lastRetryAt < RETRY_THROTTLE_MS) return;
   lastRetryAt = now;
@@ -83,6 +110,10 @@ function onOpenMemory(target: MemoryOpenTarget) {
 }
 
 onMounted(() => {
+  layerState.count += 1;
+  if (layerState.count > 1) {
+    console.warn("[qio] 统一审批层被重复挂载（同一时刻只允许一个）：自动弹出与唯一入口可能互相干扰");
+  }
   // 对话页由统一弹窗接管按钮：让过程区内联卡让位（Lead 在 TurnProcess 加一行门控）
   approvals.inlineSuppressed = true;
   ingestCandidates();
@@ -102,6 +133,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  layerState.count = Math.max(0, layerState.count - 1);
   approvals.inlineSuppressed = false;
   window.clearInterval(refreshTimer);
   window.clearTimeout(noticeTimer);
@@ -145,14 +177,24 @@ watch(
     if (unified.autoPending) retryAutoOpen();
   },
 );
+
+/**
+ * 手动找回（Phase 3-C）：入口组件与事故恢复都走这一个口。
+ * 不自动弹、不绕过 deferred 规则 —— 用户点一次就打开一次。
+ */
+function openApprovals(key?: string | null): boolean {
+  return unified.open(key ?? null);
+}
+
+defineExpose({ openApprovals, retryAutoOpen });
 </script>
 
 <template>
-  <div class="unified-approval-layer">
+  <div class="unified-approval-layer" data-unified-approval-layer>
     <!-- 入口统一放到输入区上方的五图标入口（⑤）：对话页只有这一处审批入口，
          这里不再额外渲染顶部浮动条，避免同一时刻出现两个入口。 -->
     <UnifiedApprovalModal />
-    <MemoryQuestionReminder @open="onOpenMemory" />
+    <MemoryQuestionReminder v-if="props.showMemory" @open="onOpenMemory" />
     <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>
   </div>
 </template>

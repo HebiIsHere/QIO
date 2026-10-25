@@ -4,11 +4,10 @@
   契约：docs/interactive-mode-contract.md §1.1 / §1.4 / §9.6。
   这里落地的规则：
   - 信息分层：**材料类型 → 标题 → 正文 → 元信息**（元信息含状态文字、所在组、更新时间）；
-  - 勾选框出现在**需要用户许可才交给 QIO 查看**的卡片上（文字卡与结果卡都用这一条，
-    由 CHECKABLE_KINDS 决定），而且放在「选中后才浮出的局部工具栏」里；
-    材料默认就在 QIO 可查看范围内，没有这个选择框；
+  - 卡片上的许可相关控件只保留「参与 / 不参与」；整卡许可徽章与工具栏勾选 / 说明
+    （「允许 QIO 查看」）已移除，不再在卡片上展示或修改 checked；
   - 局部工具栏（data-im="card-toolbar"）只放**这张卡片自己的操作**
-    （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选）；分组类操作在 SelectionMenu 里；
+    （编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除）；分组类操作在 SelectionMenu 里；
   - **连接点不在卡片里**（0.2.5 回归修复）：它由 BoardCanvas 的交互层（BoardResizeLayer）
     统一渲染 —— 画在卡片内部时，四边中点正好被那一层 10px 的尺寸热区盖住，真实鼠标按不下去。
     本组件只保留「正在拖线」的 prop 接线（connecting）；工具栏与整理菜单仍朝卡片外侧展开，
@@ -16,8 +15,237 @@
   - 状态一律「文字 + 颜色」双通道，不能只靠颜色；
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
+<script lang="ts">
+/**
+ * 卡片边框：**一条** evenodd 的 SVG 环形路径（2026-10-24 互动演示最终稿）。
+ *
+ * 为什么不沿用 CSS border + ::after：
+ * - 旧实现是「1px 四边框 + 右下角 3px L 形粗条」两套笔画叠在一起，粗条只盖住一段，
+ *   转角处靠 mask 渐变收口，放大后能看到接缝 / 断角，而且颜色只能跟着 border-color；
+ * - 最终稿沿卡片外轮廓取 outer / inner 两条闭合轮廓，一次 evenodd 填充得到环带：
+ *   离右下角越近越粗（1px → 3px），整圈颜色只有一个来源（fill），悬停 / 选中只换颜色。
+ *
+ * 几何口径（与演示 HTML 的 roundedSamples / ringPath 一致，只把采样改成“只在变粗区间采样”）：
+ * - 外轮廓 = 卡片圆角矩形（半径与 .card 的 var(--r-lg) 相同）；
+ * - 内轮廓 = 外轮廓每点沿内法线缩进 t，t 由该点到右下角的距离平滑决定；
+ * - 两条轮廓都用闭合子路径，fill-rule=evenodd 只留下中间的环带；
+ * - 圆角段在粗细恒定的区域用真正的 A 圆弧，只有右下角变粗区间才采样成短折线 ——
+ *   采样步长 1.5 板面单位，视觉上连续，不会出现双线 / 断角。
+ *
+ * 这里导出的纯函数与组件模板使用同一份几何（测试可以直接钉住厚度与路径）。
+ */
+
+/** 与 .card 的 border-radius: var(--r-lg) 同一个数值（SVG d 不能读 CSS 变量）。 */
+export const CARD_FRAME_RADIUS = 14;
+/** 离右下角足够远时的边框厚度。 */
+export const CARD_FRAME_MIN_THICKNESS = 1;
+/** 右下角最粗处（“约 3px”）。 */
+export const CARD_FRAME_MAX_THICKNESS = 3;
+/** 从右下角往里多远的范围内开始加粗（板面单位）。 */
+const CARD_FRAME_FALLOFF = 52;
+/** 变粗区间的采样步长：越小越圆滑，1.5 已足够让 1–3px 的环带看不出折线。 */
+const CARD_FRAME_SAMPLE_STEP = 1.5;
+/** 求“到右下角距离 = 52”的交点时的二分次数（1e-9 级别，足够精确）。 */
+const CARD_FRAME_BISECT_STEPS = 34;
+/** 每段轮廓上找交点的粗采样数（直线 / 90° 圆弧各一段，32 已经足够）。 */
+const CARD_FRAME_SCAN_STEPS = 32;
+
+type FramePoint = { x: number; y: number };
+
+type FrameLine = {
+  kind: "line";
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  nx: number;
+  ny: number;
+};
+
+type FrameArc = {
+  kind: "arc";
+  cx: number;
+  cy: number;
+  r: number;
+  a0: number;
+  a1: number;
+};
+
+type FrameSegment = FrameLine | FrameArc;
+
+/** 轮廓的一段：u ∈ [u0, u1]；variable=true 时才需要采样（此区间内厚度在变）。 */
+type FramePiece = { u0: number; u1: number; variable: boolean };
+
+function frameRadius(w: number, h: number): number {
+  return Math.max(0, Math.min(CARD_FRAME_RADIUS, w / 2, h / 2));
+}
+
+/** 顺时针一圈：上边 → 右上圆角 → 右边 → 右下圆角 → 下边 → 左下圆角 → 左边 → 左上圆角。 */
+function frameSegments(w: number, h: number, r: number): FrameSegment[] {
+  const halfPi = Math.PI / 2;
+  return [
+    { kind: "line", x0: r, y0: 0, x1: w - r, y1: 0, nx: 0, ny: 1 },
+    { kind: "arc", cx: w - r, cy: r, r, a0: -halfPi, a1: 0 },
+    { kind: "line", x0: w, y0: r, x1: w, y1: h - r, nx: -1, ny: 0 },
+    { kind: "arc", cx: w - r, cy: h - r, r, a0: 0, a1: halfPi },
+    { kind: "line", x0: w - r, y0: h, x1: r, y1: h, nx: 0, ny: -1 },
+    { kind: "arc", cx: r, cy: h - r, r, a0: halfPi, a1: Math.PI },
+    { kind: "line", x0: 0, y0: h - r, x1: 0, y1: r, nx: 1, ny: 0 },
+    { kind: "arc", cx: r, cy: r, r, a0: Math.PI, a1: Math.PI * 1.5 },
+  ];
+}
+
+function framePointAt(segment: FrameSegment, u: number): FramePoint {
+  if (segment.kind === "line") {
+    return {
+      x: segment.x0 + (segment.x1 - segment.x0) * u,
+      y: segment.y0 + (segment.y1 - segment.y0) * u,
+    };
+  }
+  const angle = segment.a0 + (segment.a1 - segment.a0) * u;
+  return { x: segment.cx + Math.cos(angle) * segment.r, y: segment.cy + Math.sin(angle) * segment.r };
+}
+
+/** 指向卡片内部的单位法线（圆弧的圆心在卡片内侧）。 */
+function frameNormalAt(segment: FrameSegment, u: number): FramePoint {
+  if (segment.kind === "line") return { x: segment.nx, y: segment.ny };
+  const angle = segment.a0 + (segment.a1 - segment.a0) * u;
+  return { x: -Math.cos(angle), y: -Math.sin(angle) };
+}
+
+function frameSegmentLength(segment: FrameSegment): number {
+  if (segment.kind === "line") return Math.hypot(segment.x1 - segment.x0, segment.y1 - segment.y0);
+  return Math.abs(segment.a1 - segment.a0) * segment.r;
+}
+
+function frameDistanceToCorner(segment: FrameSegment, u: number, w: number, h: number): number {
+  const point = framePointAt(segment, u);
+  return Math.hypot(w - point.x, h - point.y);
+}
+
+/** 粗细：离右下角越近越粗，52 板面单位外回到 1px；平滑函数保证没有台阶。 */
+export function cardFrameThickness(w: number, h: number, x: number, y: number): number {
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return CARD_FRAME_MIN_THICKNESS;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return CARD_FRAME_MIN_THICKNESS;
+  const distance = Math.hypot(w - x, h - y);
+  const k = Math.max(0, Math.min(1, (CARD_FRAME_FALLOFF - distance) / CARD_FRAME_FALLOFF));
+  const eased = k * k * (3 - 2 * k);
+  return CARD_FRAME_MIN_THICKNESS + (CARD_FRAME_MAX_THICKNESS - CARD_FRAME_MIN_THICKNESS) * eased;
+}
+
+function frameThicknessAt(segment: FrameSegment, u: number, w: number, h: number): number {
+  const point = framePointAt(segment, u);
+  return cardFrameThickness(w, h, point.x, point.y);
+}
+
+function frameInnerPointAt(segment: FrameSegment, u: number, w: number, h: number): FramePoint {
+  const point = framePointAt(segment, u);
+  const normal = frameNormalAt(segment, u);
+  const thickness = cardFrameThickness(w, h, point.x, point.y);
+  return { x: point.x + normal.x * thickness, y: point.y + normal.y * thickness };
+}
+
+function frameBisectCrossing(segment: FrameSegment, low: number, high: number, w: number, h: number): number {
+  let insideLow = frameDistanceToCorner(segment, low, w, h) < CARD_FRAME_FALLOFF;
+  let a = low;
+  let b = high;
+  for (let i = 0; i < CARD_FRAME_BISECT_STEPS; i += 1) {
+    const mid = (a + b) / 2;
+    const inside = frameDistanceToCorner(segment, mid, w, h) < CARD_FRAME_FALLOFF;
+    if (inside === insideLow) a = mid;
+    else b = mid;
+  }
+  return (a + b) / 2;
+}
+
+/** 把一段轮廓切成「粗细恒定 / 正在变粗」的连续区间；交点用二分求，保证两段端点严格相接。 */
+function framePieces(segment: FrameSegment, w: number, h: number): FramePiece[] {
+  const cuts: number[] = [0];
+  let previousInside = frameDistanceToCorner(segment, 0, w, h) < CARD_FRAME_FALLOFF;
+  for (let i = 1; i <= CARD_FRAME_SCAN_STEPS; i += 1) {
+    const u = i / CARD_FRAME_SCAN_STEPS;
+    const inside = frameDistanceToCorner(segment, u, w, h) < CARD_FRAME_FALLOFF;
+    if (inside !== previousInside) cuts.push(frameBisectCrossing(segment, (i - 1) / CARD_FRAME_SCAN_STEPS, u, w, h));
+    previousInside = inside;
+  }
+  cuts.push(1);
+  const pieces: FramePiece[] = [];
+  for (let i = 1; i < cuts.length; i += 1) {
+    const u0 = cuts[i - 1];
+    const u1 = cuts[i];
+    if (u1 - u0 <= 1e-6) continue;
+    pieces.push({ u0, u1, variable: frameDistanceToCorner(segment, (u0 + u1) / 2, w, h) < CARD_FRAME_FALLOFF });
+  }
+  return pieces;
+}
+
+/** 保留两位小数；-0 写成 0，避免 path 里出现 "-0"。 */
+function frameNumber(value: number): string {
+  const rounded = Math.round(value * 100) / 100;
+  return Object.is(rounded, -0) ? "0" : String(rounded);
+}
+
+function framePair(point: FramePoint): string {
+  return frameNumber(point.x) + " " + frameNumber(point.y);
+}
+
+/**
+ * 生成卡片边框路径：外轮廓 + 内轮廓两条闭合子路径，交给 fill-rule=evenodd 填充。
+ * 尺寸随 w/h 变化；右下角渐粗（1 → 3），其余三边 1px。
+ */
+export function cardFramePath(w: number, h: number): string {
+  const width = Number.isFinite(w) && w > 0 ? w : 1;
+  const height = Number.isFinite(h) && h > 0 ? h : 1;
+  const radius = frameRadius(width, height);
+  const segments = frameSegments(width, height, radius);
+
+  const outer: string[] = ["M " + framePair(framePointAt(segments[0], 0))];
+  for (const segment of segments) {
+    if (segment.kind === "line") {
+      outer.push("L " + framePair(framePointAt(segment, 1)));
+    } else {
+      outer.push("A " + frameNumber(radius) + " " + frameNumber(radius) + " 0 0 1 " + framePair(framePointAt(segment, 1)));
+    }
+  }
+  outer.push("Z");
+
+  const inner: string[] = ["M " + framePair(frameInnerPointAt(segments[0], 0, width, height))];
+  for (const segment of segments) {
+    for (const piece of framePieces(segment, width, height)) {
+      if (!piece.variable) {
+        const end = frameInnerPointAt(segment, piece.u1, width, height);
+        if (segment.kind === "line") {
+          inner.push("L " + framePair(end));
+        } else {
+          const thickness = frameThicknessAt(segment, piece.u0, width, height);
+          const innerRadius = Math.max(0.01, segment.r - thickness);
+          inner.push(
+            "A " +
+              frameNumber(innerRadius) +
+              " " +
+              frameNumber(innerRadius) +
+              " 0 0 1 " +
+              framePair(end),
+          );
+        }
+        continue;
+      }
+      const pieceLength = frameSegmentLength(segment) * (piece.u1 - piece.u0);
+      const steps = Math.max(2, Math.ceil(pieceLength / CARD_FRAME_SAMPLE_STEP));
+      for (let i = 1; i <= steps; i += 1) {
+        const u = piece.u0 + (piece.u1 - piece.u0) * (i / steps);
+        inner.push("L " + framePair(frameInnerPointAt(segment, u, width, height)));
+      }
+    }
+  }
+  inner.push("Z");
+
+  return outer.join(" ") + " " + inner.join(" ");
+}
+</script>
+
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
   cardDraftKey,
@@ -26,7 +254,8 @@ import {
   restoreCardDraftInput,
 } from "../../interactive/drafts";
 import type { CardDraftInput, CardDraftMetaInput } from "../../interactive/drafts";
-import { CARD_KIND_LABELS, CHECKABLE_KINDS, defaultCardSeed } from "../../interactive/board";
+import { CARD_KIND_LABELS, defaultCardSeed, participationOf } from "../../interactive/board";
+import { shouldAutoDetail, shouldShowImageDetailFallback } from "../../interactive/cardDetail";
 import {
   cardDocFields,
   docFromCard,
@@ -42,7 +271,7 @@ import {
   cardAttachmentName,
   cardAttachmentText,
 } from "../../interactive/materials";
-// 卡片内真实预览（契约 §3.5）：预览主体挂在**卡片内部**，不盖住编辑区、勾选框与卡片操作。
+// 卡片内真实预览（契约 §3.5）：预览主体挂在**卡片内部**，不盖住编辑区与卡片操作。
 // 渲染器按需动态加载；组件自己在收起 / 换附件 / 卸载时中止在途工作并释放资源。
 import CardInlinePreview from "./CardInlinePreview.vue";
 import type { PreviewPosition } from "../../services/attachments";
@@ -53,6 +282,13 @@ import {
   uploadAttachment,
   waitUntilSettled,
 } from "../../services/attachments";
+// 图片显示比例（Phase 2-C 冻结字段 meta.display）：纯函数在 renderers/imageDisplay.ts
+import {
+  decodeDisplayMeta,
+  imageDetailHint,
+  readImageDisplay,
+  writeImageDisplay,
+} from "../../interactive/renderers/imageDisplay";
 import { useTransientNotice, type NoticeRetry } from "../../composables/useTransientNotice";
 import type { BoardCard, BoardGroup } from "../../interactive/types";
 import SelectionMenu from "./SelectionMenu.vue";
@@ -74,6 +310,8 @@ const props = withDefaults(
     /** 板内搜索定位后的短暂高亮（只是显示） */
     highlight: boolean;
     dragging: boolean;
+    /** 整组拖动中：成员卡片必须同帧跟随，不能再走 left/top 过渡。 */
+    groupDragging?: boolean;
     x: number;
     y: number;
     groupName: string | null;
@@ -84,6 +322,8 @@ const props = withDefaults(
      */
     toolbarLeft: number;
     toolbarTop: number;
+    /** 每个按钮相对卡片左上角的位置（逐按钮换边 / 第二列）。 */
+    toolbarPositions?: Array<{ x: number; y: number }>;
     /** 多选时：只显示共同适用的操作，并且不把单卡片编辑应用到整组 */
     multi: boolean;
     /** 正在从本卡片拖出关系线 */
@@ -100,8 +340,15 @@ const props = withDefaults(
      */
     toolbarVisible?: boolean;
   }>(),
-  { toolbarHost: null, toolbarVisible: true },
+  { toolbarHost: null, toolbarVisible: true, toolbarPositions: () => [] },
 );
+
+/** 生产工具栏逐按钮落位：位置由 BoardCanvas 按卡片实时宽高计算。 */
+function toolbarButtonStyle(index: number): Record<string, string> {
+  const point = props.toolbarPositions?.[index];
+  if (point) return { left: point.x + "px", top: point.y + "px" };
+  return { left: 8 + index * 36 + "px", top: "-42px" };
+}
 
 /**
   事件签名保持不变：BoardCanvas 仍在监听 leave-group / join-group，
@@ -111,7 +358,7 @@ const emit = defineEmits<{
   (e: "select", cardId: string, additive: boolean): void;
   (e: "drag-start", cardId: string, event: PointerEvent): void;
   (e: "patch", cardId: string, patch: Partial<BoardCard>, label: string): void;
-  (e: "toggle", cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked"): void;
+  (e: "toggle", cardId: string, flag: "checked" | "hidden" | "folded" | "bookmarked" | "participation"): void;
   (e: "remove", cardId: string): void;
   (e: "duplicate", cardId: string): void;
   (e: "leave-group", cardId: string): void;
@@ -215,7 +462,6 @@ function boardContentConflict(cardId: string): { local: string; server: string }
   return draftInputApi.boardContentConflictFor(cardId);
 }
 
-const checkable = computed(() => CHECKABLE_KINDS.includes(props.card.kind));
 /** 结果卡（kind="reply"）：正文是 QIO 产出的 Markdown 原文，用户不需要点「解析」。 */
 const isReplyCard = computed(() => props.card.kind === "reply");
 /** 有真实正文才提供「复制原文」：没有原文时不假装能复制出一份内容。 */
@@ -228,15 +474,6 @@ const kindLabel = computed(
   () => materialTypeLabel(props.card.kind, (props.card.meta ?? {}) as Record<string, unknown>) || CARD_KIND_LABELS[props.card.kind],
 );
 
-/**
-  许可的完整说明（任务书 §6.6）：勾选框只留一句短文案，规则原文放进旁边的「说明」详情。
-
-  「提交后仍然有效、只有用户主动取消才失效」是硬约束（§6.7 的许可边界）：
-  提交成功 / 失败 / 超时 / 重复 / 恢复 / 重启 / 模式切换都不自动取消许可；
-  隐藏或删除这张卡才会让它退出查看范围。这段话是**唯一**一份说明，卡片正文不重复铺开。
-*/
-const LICENSE_FULL_TEXT =
-  "许可：允许 QIO 查看这张卡（文字卡与结果卡同一条规则；提交后仍然有效，只有你手动取消才失效）—— 覆盖卡里的全部文字、代码与链接；隐藏或删除这张卡才会退出查看范围。";
 const name = computed(() => String(props.card.meta?.name ?? ""));
 const language = computed(() => String(props.card.meta?.language ?? ""));
 const href = computed(() => String(props.card.meta?.href ?? ""));
@@ -501,6 +738,174 @@ const coverPlan = computed(() =>
 const attachmentIsImage = computed(
   () => Boolean(attachKind.value) && coverPlan.value.imagePreviewable && coverPlan.value.state === "linked",
 );
+
+/* ------------------------------------------------------------------------
+ * 图片显示比例与「详情」状态（Phase 2-C 契约 §5.2）
+ *
+ * 三条边界（与 docs/interactive-page-v2-contract.md §5.2 逐条对应）：
+ * 1. 比例只记录**浏览器解码出的真实显示像素**（meta.display = {width,height,aspectRatio}）；
+ *    0 / NaN / 非整数 / 超范围一律不写 —— 宁可没有，也不写一个猜出来的比例；
+ * 2. 详细状态：图片铺满卡片、圆角裁切、不保留普通标题栏高度，等比完整显示（contain），
+ *    不用 cover 遮主体、不拉伸；名称 / 尺寸事实 / 收起入口浮在图上；
+ * 3. 简洁（常态）状态仍按原比例完整显示（封面层 contain），长图 / 竖图始终有详情入口，
+ *    不会被简洁态永远锁住。
+ *
+ * 比例写入走既有 emit("patch")（由 BoardCanvas commit），不在这里改板面状态；
+ * 只写 meta.display，**不改 card.w/h**（§16.3 / §17.1：图片加载不得自动改几何）。
+ * ---------------------------------------------------------------------- */
+const imageDisplay = computed(() =>
+  readImageDisplay((props.card.meta ?? {}) as Record<string, unknown>),
+);
+/** 详情态是否可用：只有「已关联的图片附件」才有；其它材料沿用既有阅读展开。 */
+const imageDetailAvailable = computed(() => attachmentIsImage.value);
+const imageDetailOpen = ref(false);
+const imageDetailVisible = computed(() => imageDetailOpen.value && imageDetailAvailable.value);
+const imageAspectRatio = computed<number | null>(() => {
+  const display = imageDisplay.value;
+  if (!display || !(display.width > 0) || !(display.height > 0)) return null;
+  return display.width / display.height;
+});
+/**
+ * 自动详细状态：只按卡片真实尺寸（和图片比例）判断，不读板面 scale。
+ * previousDetailed 用上一次结果做迟滞，避免尺寸停在阈值附近时反复切换。
+ */
+const autoDetailed = ref(false);
+watch(
+  () => [props.card.w, props.card.h, imageAspectRatio.value, imageDetailAvailable.value] as const,
+  () => {
+    autoDetailed.value = shouldAutoDetail({
+      width: props.card.w,
+      height: props.card.h,
+      aspectRatio: imageDetailAvailable.value ? imageAspectRatio.value : null,
+      previousDetailed: autoDetailed.value,
+    });
+  },
+  { immediate: true },
+);
+/** 用户点了详细状态里的关闭：在尺寸再次变化前不再自动弹回，避免“关了又开”。 */
+const detailDismissed = ref(false);
+watch(
+  () => [props.card.w, props.card.h] as const,
+  ([width, height], [previousWidth, previousHeight]) => {
+    if (width !== previousWidth || height !== previousHeight) detailDismissed.value = false;
+  },
+);
+const autoDetailVisible = computed(() => autoDetailed.value && !detailDismissed.value);
+function closeAutoDetail(): void {
+  detailDismissed.value = true;
+}
+const imageFallbackVisible = computed(() =>
+  imageDetailAvailable.value &&
+  !autoDetailVisible.value &&
+  shouldShowImageDetailFallback({
+    width: props.card.w,
+    height: props.card.h,
+    aspectRatio: imageAspectRatio.value,
+  }),
+);
+const imageDetailTitle = computed(() =>
+  imageDetailHint(imageDisplay.value) || "查看完整图片（只改查看方式，不改内容与卡片尺寸）",
+);
+const participationIncluded = computed(() => participationOf(props.card) === "included");
+
+function toggleImageDetail(): void {
+  imageDetailOpen.value = !imageDetailOpen.value;
+}
+
+function closeImageDetail(): void {
+  imageDetailOpen.value = false;
+}
+
+/**
+ * 本次会话里已经写过 meta.display 的身份（卡片 + 附件 id + 附件版本）。
+ * 用途：解码结果回来之前卡片可能重渲染多次，同一身份只发一次 patch ——
+ * 不因为重复渲染 / 版本未回执而反复写板面、反复把用户尺寸重置成默认值。
+ */
+const writtenDisplayKeys = new Set<string>();
+
+function imageDisplayKey(): string {
+  const meta = (props.card.meta ?? {}) as Record<string, unknown>;
+  const file = meta.file && typeof meta.file === "object" ? (meta.file as Record<string, unknown>) : {};
+  return [props.card.id, cardAttachmentId(props.card.meta, props.card.kind), String(file.version ?? file.attachmentVersion ?? "")].join("|");
+}
+
+/**
+ * 记录图片的真实显示比例（只写 meta.display）。
+ *
+ * **从哪里取真实像素**：封面层里那张已经带认证 blob URL 的 <img> 解码结果
+ * （naturalWidth / naturalHeight，浏览器已按 EXIF 方向解码）。
+ * 不再单独发一次请求、也不再新建一个 blob URL —— 既有取字节 / 释放路径一字不动
+ * （CardAttachmentPreview 仍然只持有一个 URL，测试里的取字节次数与 URL 计数保持不变）。
+ *
+ * 三条边界：
+ * * 只有真实解码出的正整数像素才写；0 / NaN / 负值 / 超范围 → 什么都不写（不猜、不写 0）；
+ * * 同一身份（卡片 id + 附件 id + 附件版本）只写一次（writtenDisplayKeys）：
+ *   重复渲染 / 回执未到都不会反复写板面，更不会借机重置用户设置的尺寸；
+ * * 只改 meta.display，**不改 card.w/h**（§16.3 / §17.1）。
+ */
+function captureCoverDisplay(): void {
+  if (!attachmentIsImage.value || imageDisplay.value) return;
+  const img = cardEl.value?.querySelector<HTMLImageElement>('img[data-im="card-cover-img"]') ?? null;
+  if (!img) return;
+  const width = img.naturalWidth;
+  const height = img.naturalHeight;
+  const display = decodeDisplayMeta(width, height);
+  if (!display) return; // 还没解码完 / 解码失败：不写任何值
+  const key = imageDisplayKey();
+  if (writtenDisplayKeys.has(key)) return;
+  const nextMeta = writeImageDisplay((props.card.meta ?? {}) as Record<string, unknown>, display);
+  writtenDisplayKeys.add(key);
+  emit("patch", props.card.id, { meta: nextMeta }, "记录图片显示比例");
+}
+
+/**
+ * 封面图解码完成 / 换图：量一次真实像素。
+ *
+ * 用**捕获阶段的事件委托**（load 不冒泡，但捕获阶段会经过祖先）：
+ * 封面图是异步 blob URL 挂上去的，元素可能在绑定之后才出现、也可能整块被替换，
+ * 逐个元素挂监听一定会漏 —— 委托到卡片根节点就与渲染时序无关。
+ */
+function onCoverImgLoad(event: Event): void {
+  const target = event.target as Element | null;
+  if (!target || target.tagName !== "IMG") return;
+  if (!target.hasAttribute("data-im") || target.getAttribute("data-im") !== "card-cover-img") return;
+  captureCoverDisplay();
+}
+
+function measureCoverIfReady(): void {
+  const img = cardEl.value?.querySelector<HTMLImageElement>('img[data-im="card-cover-img"]') ?? null;
+  if (img && img.complete && img.naturalWidth > 0) captureCoverDisplay();
+}
+
+onMounted(() => {
+  cardEl.value?.addEventListener("load", onCoverImgLoad, true);
+  measureCoverIfReady();
+});
+
+onBeforeUnmount(() => {
+  cardEl.value?.removeEventListener("load", onCoverImgLoad, true);
+});
+
+watch(
+  [
+    () => props.card.id,
+    () => cardAttachmentId(props.card.meta, props.card.kind),
+    imageDisplay,
+    attachmentIsImage,
+  ],
+  async () => {
+    if (!imageDetailAvailable.value) imageDetailOpen.value = false;
+    await nextTick();
+    measureCoverIfReady();
+  },
+  { immediate: true },
+);
+watch(
+  () => props.card.folded,
+  (folded) => {
+    if (folded) imageDetailOpen.value = false;
+  },
+);
 const coverMode = computed(
   () =>
     // 图片卡 + 「附件是图片」的文件卡都铺封面（2026-10-14 第六个问题；
@@ -751,9 +1156,9 @@ async function openAttachmentFromToolbar(): Promise<void> {
 /**
  * 元信息层：状态必须能读出来，不能只靠颜色。
  *
- * 2026-10-14（用户要求）：许可说明、材料 / QIO 结果的说明、所在组都不再在这里重复 ——
- * 许可由卡片上的 card-license 徽章与卡片工具栏承载，材料类型由类型标签承载，
- * 组由组框标题承载。这里只留**卡片自身的显示状态**（隐藏 / 折叠 / 书签）与时间。
+ * 2026-10-14（用户要求）：材料 / QIO 结果的说明、所在组都不再在这里重复 ——
+ * 材料类型由类型标签承载，组由组框标题承载；许可徽章与工具栏勾选已移除，
+ * 卡片上只剩「参与 / 不参与」。这里只留**卡片自身的显示状态**（隐藏 / 折叠 / 书签）与时间。
  */
 const statusText = computed(() => {
   const parts: string[] = [];
@@ -785,7 +1190,7 @@ const isToolbarOwner = computed(() => {
 });
 
 /**
- * 整理菜单 / 许可说明 / 「更多」面板的展开方向：朝**工具栏外侧**开（不盖卡片标题与正文）。
+ * 整理菜单 / 「更多」面板的展开方向：朝**工具栏外侧**开（不盖卡片标题与正文）。
  *
  * 2026-10-14 第二轮：工具栏固定贴在卡片上方，方向不能再拿 `props.toolbarTop < props.y` 比
  * —— 前者是相对宿主的屏幕像素、后者是板面坐标，两个坐标系混算本来就是错的。
@@ -829,10 +1234,7 @@ const conflictExpanded = computed(
  * `interactive/cardLayout.ts` 的纯函数算好，再通过 x/y 与 card 传进来。
  * 点击「展开预览」不写板面状态、不产生表达、不触发意图 / 任务。
  */
-const previewExpanded = computed(() => store.isCardPreviewExpanded(props.card.id));
-function togglePreview(): void {
-  store.toggleCardPreview(props.card.id);
-}
+/** 旧 store 的展开状态只作为兼容状态保留，不再有按钮入口；实际显示由卡片尺寸决定。 */
 
 /* ------------------------------------------------------------------------
  * 卡片自己的四种显示状态（任务书 §6）：常态 / 阅读展开 / 编辑 / 折叠
@@ -844,7 +1246,13 @@ function togglePreview(): void {
  * 四种状态都不写板面状态、不产生表达：折叠只改显示，阅读展开只在前端内存，
  * 编辑内容进既有草稿通道。尺寸调整不在这里参与判断。
  * ---------------------------------------------------------------------- */
-type CardDisplayState = "normal" | "reading" | "editing" | "folded";
+/**
+ * 五种显示状态：常态 / 阅读展开 / 编辑 / 折叠 / **图片详情**（Phase 2-C）。
+ *
+ * 图片详情是「详细状态」的落地：它只属于已关联图片附件的文件卡，
+ * 主体是一整张铺满卡片的图（不保留普通标题栏高度），退出即回到常态封面。
+ */
+type CardDisplayState = "normal" | "reading" | "editing" | "folded" | "image-detail";
 
 /** 有没有可读材料：文件 / 图片要有**真实已保存的附件**；其它卡片的正文本身就是材料 */
 const readingAvailable = computed(() => (attachKind.value ? attachmentLinked.value : true));
@@ -864,7 +1272,9 @@ const previewToggleAvailable = computed(() => readingAvailable.value && !attachm
 const displayState = computed<CardDisplayState>(() => {
   if (props.card.folded) return "folded";
   if (editing.value) return "editing";
-  if (previewExpanded.value && previewToggleAvailable.value) return "reading";
+  // 图片详情优先于阅读展开：图片不进入阅读态。
+  if (imageDetailVisible.value || (autoDetailVisible.value && imageDetailAvailable.value)) return "image-detail";
+  if (autoDetailVisible.value && previewToggleAvailable.value) return "reading";
   return "normal";
 });
 
@@ -904,6 +1314,72 @@ const editorMinHeight = computed(() => {
 const toolbarRoot = ref<HTMLElement | null>(null);
 /** <article data-im="card"> 的真实外框：BoardCanvas 只拿它当锚点（只读，不回写板面） */
 const cardEl = ref<HTMLElement | null>(null);
+/**
+ * 卡片外轮廓的实测尺寸：只给「高度 auto」的状态用（折叠 / 冲突未决）。
+ * 普通卡片的 w/h 是板面状态里的权威尺寸，不重新测量；折叠态高度由内容决定，
+ * 必须读一次真实布局，否则边框会在卡片底部多出 / 少掉一截。
+ *
+ * 读 clientWidth / clientHeight（布局单位，不受画布 transform: scale() 影响）；
+ * 能从 getBoundingClientRect 反推出比例时用比例还原小数，避免底边差半像素。
+ */
+const measuredFrame = ref({ w: 0, h: 0 });
+const frameSize = computed(() => {
+  const width = Number.isFinite(props.card.w) && props.card.w > 0 ? props.card.w : 1;
+  const autoHeight = props.card.folded || conflictExpanded.value;
+  const measuredHeight = measuredFrame.value.h;
+  const rawHeight = autoHeight && measuredHeight > 0 ? measuredHeight : props.card.h;
+  const height = Number.isFinite(rawHeight) && rawHeight > 0 ? rawHeight : 1;
+  // 实测高度可能是 52.00000000000001 这类浮点噪声：保留两位小数，viewBox 与 path 用同一份数。
+  return { w: Math.round(width * 100) / 100, h: Math.round(height * 100) / 100 };
+});
+/** 单一路径：外轮廓 + 内轮廓，fill-rule=evenodd 填充环带（见文件顶部的几何说明）。 */
+const framePath = computed(() => cardFramePath(frameSize.value.w, frameSize.value.h));
+let frameResizeObserver: ResizeObserver | null = null;
+
+function measureFrame(): void {
+  const element = cardEl.value;
+  if (!element) return;
+  const layoutWidth = element.offsetWidth || element.clientWidth || 0;
+  const layoutHeight = element.offsetHeight || element.clientHeight || 0;
+  if (!(layoutWidth > 0) || !(layoutHeight > 0)) return;
+  let width = layoutWidth;
+  let height = layoutHeight;
+  const rect =
+    typeof element.getBoundingClientRect === "function" ? element.getBoundingClientRect() : null;
+  if (rect && rect.width > 0) {
+    const scale = rect.width / layoutWidth;
+    if (Number.isFinite(scale) && scale > 0) {
+      width = rect.width / scale;
+      if (rect.height > 0) height = rect.height / scale;
+    }
+  }
+  if (measuredFrame.value.w === width && measuredFrame.value.h === height) return;
+  measuredFrame.value = { w: width, h: height };
+}
+
+function observeFrame(): void {
+  frameResizeObserver?.disconnect();
+  frameResizeObserver = null;
+  measureFrame();
+  const element = cardEl.value;
+  if (!element || typeof ResizeObserver !== "function") return;
+  frameResizeObserver = new ResizeObserver(() => measureFrame());
+  frameResizeObserver.observe(element);
+}
+
+onMounted(observeFrame);
+onBeforeUnmount(() => {
+  frameResizeObserver?.disconnect();
+  frameResizeObserver = null;
+});
+
+// 折叠 / 冲突展开 / 编辑态切换、卡片尺寸变化之后都补一次实测（ResizeObserver 在 jsdom 里没有）
+watch(
+  () => [props.card.w, props.card.h, props.card.folded, conflictExpanded.value, displayState.value],
+  () => {
+    void nextTick(measureFrame);
+  },
+);
 /** 「更多」面板元素：打开后量一次真实高度，供菜单方向判断 */
 const morePanel = ref<HTMLElement | null>(null);
 const moreOpen = ref(false);
@@ -1248,12 +1724,15 @@ watch(
       selected,
       highlight,
       dragging,
+      'group-dragging': groupDragging,
       folded: card.folded,
       hidden: card.hidden,
       reply: card.kind === 'reply',
       'is-compact': compactChrome,
       // 封面式：图片铺满整张卡，头部 / 正文 / 页脚浮在封面之上（见 CardAttachmentPreview 的 cover 变体）
       'is-cover': coverMode,
+      // 图片详情：整张卡就是一张图（无普通标题栏留白，圆角裁切，见 .card.is-image-detail）
+      'is-image-detail': displayState === 'image-detail',
     }"
     :style="style"
     data-im="card"
@@ -1261,6 +1740,8 @@ watch(
     :data-card-state="displayState"
     @pointerdown="onPointerDown"
     :data-cover="coverMode ? '1' : undefined"
+    :data-image-detail="displayState === 'image-detail' ? '1' : '0'"
+    :data-image-ratio="imageDisplay ? String(imageDisplay.aspectRatio) : undefined"
   >
     <!--
       封面层：图片铺满整张卡作为背景（纯呈现，不进板面状态）。
@@ -1276,26 +1757,47 @@ watch(
       :card-id="card.id"
       @relink-attachment="pickAttachment"
     />
+    <!--
+      图片详情态（Phase 2-C 契约 §5.2）：主体是**一整张图**，直接铺满卡片。
+      它不挂在 .card-body 里（正文层有内边距，会在图片四周留出一圈「普通标题栏」似的空白）；
+      这里用 absolute inset:0 的宿主铺满卡片，圆角由卡片本身裁切。
+    -->
+    <div
+      v-if="displayState === 'image-detail'"
+      class="card-image-detail-host"
+      data-im="card-image-detail-host"
+      :data-card-id="card.id"
+    >
+      <CardInlinePreview
+        :card="card"
+        :active="true"
+        :on-close="closeImageDetail"
+        context="material"
+        mode="image-detail"
+        @position="onPreviewPosition"
+      />
+    </div>
+
+    <!-- 图片详情态下头部不占布局高度但也**不消失**：名称 / 参与 / 收起详情浮在图上（见 CSS） -->
     <header class="card-head" data-im="card-head">
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
       <span v-if="titleText" class="title" data-im="card-title" :title="titleText">{{ titleText }}</span>
-      <!--
-        整卡许可徽章（任务书 §6.6）：**未选中时**也要能一眼辨认这张文字卡 / 结果卡
-        允不允许 QIO 查看。文案与工具栏勾选框同源；完整规则只写在工具栏的「说明」里，
-        这里不重复解释。
-      -->
-      <span
-        v-if="checkable"
-        class="license"
-        :class="card.checked ? 'is-on' : 'is-off'"
-        data-im="card-license"
-        :data-checked="card.checked ? '1' : '0'"
-        role="status"
-        :title="card.checked
-          ? '已允许 QIO 查看：覆盖这张卡里的全部文字、代码与链接（文字卡与结果卡同一条规则）'
-          : '未允许查看：QIO 看不到这张卡里的任何内容（文字卡与结果卡同一条规则）'"
-      >{{ card.checked ? "允许 QIO 查看" : "未允许查看" }}</span>
+      <!-- 参与讨论：所有卡片都有的小控件；与选中/书签/阅读状态无关。图片详情态同样浮在图上。 -->
+      <button
+        class="participation"
+        :class="{ 'is-on': participationIncluded }"
+        type="button"
+        data-im="card-participation"
+        :data-card-id="card.id"
+        :data-participation="participationIncluded ? 'included' : 'excluded'"
+        :aria-pressed="participationIncluded"
+        :title="participationIncluded
+          ? '参与讨论：QIO 本次可读取这张卡；点击退出讨论范围'
+          : '不参与：QIO 本次看不到这张卡；点击重新加入讨论'"
+        @pointerdown.stop
+        @click.stop="emit('toggle', card.id, 'participation')"
+      >{{ participationIncluded ? "参与" : "不参与" }}</button>
       <!--
         两个显示入口**互斥**，界面上不并存（任务书 §6.4）：
         折叠态只有「恢复卡片」（把卡片展开回常态）；
@@ -1314,23 +1816,25 @@ watch(
         恢复卡片
       </button>
       <!--
-        卡片内阅读展开的入口（契约 §3.5）：展开的是**这张卡本身**，不是弹窗、不盖别的卡片。
-        没有可读材料的卡片不出现这个入口（任务书 §6.4：不给假预览入口）；
-        编辑态不出现，避免一个点了不会变的入口（四态互斥）。
+        图片兜底入口：正常图片会随卡片尺寸自动进入详细状态，不显示按钮。
+        只有极端长图/竖图当前达不到自动阈值时，才在右上角出现一个小眼睛；
+        点击只改查看方式，不改内容、不改卡片尺寸。
       -->
       <button
-        v-else-if="displayState !== 'editing' && previewToggleAvailable"
-        class="chip-btn"
+        v-if="displayState !== 'editing' && imageFallbackVisible"
+        class="chip-btn card-image-fallback"
         type="button"
-        data-im="card-preview-toggle"
+        data-im="card-image-detail-toggle"
         :data-card-id="card.id"
-        :aria-expanded="previewExpanded"
-        :title="previewExpanded
-          ? '收起预览：回到常态卡片（不改内容）'
-          : '展开阅读：让正文或文件预览成为卡片主体（只改查看，不改内容）'"
-        @click="togglePreview"
+        aria-label="查看完整图片"
+        :aria-expanded="imageDetailVisible"
+        :title="imageDetailTitle"
+        @click="toggleImageDetail"
       >
-        {{ previewExpanded ? "收起预览" : "展开预览" }}
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path d="M1.8 8s2.2-3.4 6.2-3.4S14.2 8 14.2 8 12 11.4 8 11.4 1.8 8 1.8 8Z" />
+          <circle cx="8" cy="8" r="1.6" />
+        </svg>
       </button>
     </header>
 
@@ -1342,7 +1846,7 @@ watch(
         真正的横向不溢出靠子元素的 min-width:0 与换行规则，不靠裁切。
     -->
     <div
-      v-if="displayState !== 'folded'"
+      v-if="displayState !== 'folded' && displayState !== 'image-detail'"
       class="card-body"
       :class="{ 'card-body-editing-text': displayState === 'editing' && isTextCard }"
       data-im="card-body"
@@ -1629,7 +2133,7 @@ watch(
 
           <!--
             卡片内阅读展开的挂载点（契约 §3.5）：真实附件预览挂在这里，永远在卡片**内部**，
-            不盖编辑区、勾选框与卡片操作。没有真实附件时不挂任何东西（任务书 §6.4：不造假预览）——
+            不盖编辑区与卡片操作。没有真实附件时不挂任何东西（任务书 §6.4：不造假预览）——
             文字卡的阅读主体就是上面那份正文，所以这里是空的（:empty 时不占画面）。
           -->
           <div
@@ -1648,7 +2152,7 @@ watch(
               v-if="hasPreviewMaterial"
               :card="card"
               :active="true"
-              :on-close="togglePreview"
+              :on-close="closeAutoDetail"
               context="material"
               @position="onPreviewPosition"
             />
@@ -1661,10 +2165,32 @@ watch(
       元信息：必要状态 + 更新时间。状态在任何尺寸下都必须留着（§3.5）；
       更新时间是次级信息，窄 / 矮卡片里让位给内容区，保证内容区高度仍然 > 0。
     -->
-    <footer class="card-meta" data-im="card-meta">
+    <footer v-if="displayState !== 'image-detail'" class="card-meta" data-im="card-meta">
       <span class="status" role="status">{{ statusText }}</span>
       <span v-if="!compactChrome" class="time mono">{{ updatedText }}</span>
     </footer>
+
+    <!--
+      卡片边框（2026-10-24 演示最终稿）：**一条** evenodd 的 SVG 路径。
+      外轮廓贴住卡片圆角，内轮廓沿内法线缩进；右下角越近越粗（1px → 3px），
+      平时 / 悬停 / 选中只换 fill，不再用 CSS border 与 ::after 粗条叠出第二圈线。
+      纯呈现、不接管指针；尺寸随卡片 w/h（折叠态量真实高度），封面与图片详情也在最上层。
+    -->
+    <svg
+      class="card-frame"
+      data-im="card-frame"
+      aria-hidden="true"
+      focusable="false"
+      :viewBox="'0 0 ' + frameSize.w + ' ' + frameSize.h"
+      preserveAspectRatio="none"
+    >
+      <path
+        class="card-frame-path"
+        data-im="card-frame-path"
+        fill-rule="evenodd"
+        :d="framePath"
+      />
+    </svg>
   </article>
 
   <!--
@@ -1694,25 +2220,27 @@ watch(
       @pointerdown.stop
     >
     <!--
-      整卡许可（契约 §2.3 / 任务书 §6.6）：一张文字卡 / 结果卡只有一个许可，
-      覆盖卡内的文字、链接与代码。
-      勾选框只留一句短文案；「提交后仍然有效、只有你手动取消才失效」这类完整规则放进旁边的
-      「说明」详情（不常驻一整行字）。勾选只改 checked，不碰 hidden / deleted。
+      2026-10-24 用户确认：局部工具栏改为六个独立圆形图标按钮。
+      旧按钮保留在 DOM 只作兼容与菜单承载，视觉上由本行接管。
     -->
-    <label v-if="checkable" class="check" :title="LICENSE_FULL_TEXT">
-      <input
-        type="checkbox"
-        :checked="card.checked"
-        data-im="check"
-        :data-card-id="card.id"
-        @change="emit('toggle', card.id, 'checked')"
-      />
-      <span class="check-label">{{ card.checked ? "已允许 QIO 查看" : "允许 QIO 查看" }}</span>
-      <details class="check-detail" :class="{ 'opens-up': menuOpensUp }" @click.stop @pointerdown.stop>
-        <summary class="check-detail-summary" title="许可的完整说明">说明</summary>
-        <p class="check-detail-text" data-im="check-detail-text">{{ LICENSE_FULL_TEXT }}</p>
-      </details>
-    </label>
+    <div class="icon-tools" data-im="card-icon-tools">
+      <button class="tool-icon" type="button" data-im="card-icon-edit" :style="toolbarButtonStyle(0)" title="编辑 / 完成编辑" aria-label="编辑" @click="toggleEdit">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13l1-4 7-7 3 3-7 7-4 1Z"/><path d="M9 4l3 3"/></svg>
+      </button>
+      <button class="tool-icon" type="button" data-im="card-icon-copy" :style="toolbarButtonStyle(1)" title="复制" aria-label="复制" @click="emit('duplicate', card.id)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="9" rx="1"/><path d="M6 4V2h8v9h-2"/></svg>
+      </button>
+      <button class="tool-icon" type="button" data-im="card-icon-hide" :style="toolbarButtonStyle(2)" :title="card.hidden ? '取消隐藏' : '隐藏'" :aria-label="card.hidden ? '取消隐藏' : '隐藏'" @click="emit('toggle', card.id, 'hidden')">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8s2.2-3.4 6-3.4S14 8 14 8s-2.2 3.4-6 3.4S2 8 2 8Z"/><circle cx="8" cy="8" r="1.5"/></svg>
+      </button>
+      <button class="tool-icon" type="button" data-im="card-icon-bookmark" :style="toolbarButtonStyle(3)" :title="card.bookmarked ? '取消书签' : '加书签'" :aria-label="card.bookmarked ? '取消书签' : '加书签'" @click="emit('toggle', card.id, 'bookmarked')">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg>
+      </button>
+      <SelectionMenu v-if="multi" :open-up="menuOpensUp" />
+      <button class="tool-icon danger" type="button" data-im="card-icon-delete" :style="toolbarButtonStyle(4)" title="删除" aria-label="删除" @click="emit('remove', card.id)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></svg>
+      </button>
+    </div>
 
     <!-- 多选：只显示共同适用的操作，不把单卡片编辑应用到整组 -->
     <template v-if="multi">
@@ -1882,6 +2410,16 @@ watch(
 </template>
 
 <style scoped>
+/*
+ * 2026-10-24 用户已确认：互动板只保留“参与 / 不参与”。
+ * 旧的折叠和“重新关联附件”不再出现在卡片上。
+ * 数据字段暂时保留兼容，UI 一律隐藏。
+ */
+.card-toolbar [data-im="card-fold"],
+.card-toolbar [data-im="card-attach-file"] {
+  display: none !important;
+}
+
 .card {
   position: absolute;
   display: flex;
@@ -1892,8 +2430,9 @@ watch(
   --card-pad: var(--sp-3);
   overflow: hidden;
   background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  /* 边框不在这里：见文件顶部 cardFramePath + .card-frame（避免 border 与 SVG 环带叠成双线）。
+     圆角必须与 CARD_FRAME_RADIUS 一致：改 --r-lg 时同步改那个常量。 */
+  border-radius: var(--r-lg);
   box-shadow: var(--shadow-1);
   color: var(--text-primary);
   font-size: var(--fs-base);
@@ -1905,13 +2444,14 @@ watch(
     :root[data-motion="reduced"] 统一关掉（同一份偏好来自 utils/motion.ts）。
   */
 }
-.card:not(.dragging) {
+.card:not(.dragging):not(.group-dragging) {
   transition:
     left var(--mo-2-move) var(--ease-2),
     top var(--mo-2-move) var(--ease-2),
     width var(--mo-2-move) var(--ease-2),
     height var(--mo-2-move) var(--ease-2);
 }
+.card.group-dragging { transition: none; }
 /*
   窄 / 矮卡片收一档（任务书 §3.5）：内边距与间隙各收一档，把高度让给内容区。
   最小可用尺寸 180×96（C 的 CARD_MIN_SIZE）下：标题仍在、主要操作仍可点、必要状态仍在、
@@ -1929,26 +2469,68 @@ watch(
 .card.is-cover {
   overflow: hidden;
 }
-.card.is-cover > :not(.card-cover) {
+.card.is-cover > :not(.card-cover):not(.card-frame) {
   position: relative;
   z-index: 1;
   background: transparent;
 }
 
-/* 悬停与选中必须能区分：悬停只提边界，选中加品牌色边界 + 一层很轻的外圈 + 底色 */
-.card:hover { border-color: var(--border-strong); }
-.card.selected {
-  border-color: var(--accent);
-  background: var(--bg-accent-subtle);
-  box-shadow: var(--shadow-1), 0 0 0 2px var(--accent-soft);
-}
-.card.highlight { outline: 2px dashed var(--warning); outline-offset: 2px; }
-.card.dragging { cursor: grabbing; opacity: 0.92; border-style: dashed; border-color: var(--accent); }
-.card.hidden { border-style: dashed; }
-.card.reply { border-left: 3px solid var(--link); }
 
 /*
-  第一层：材料类型 + 标题 + 许可徽章 + 阅读展开入口。
+  卡片边框：只有这一条 evenodd 的 SVG 环带（2026-10-24 交互演示最终稿）。
+  - .card 自身不再画 border —— 两套笔画叠在一起就是「双线 / 断角」的来源；
+  - 环带由组件顶部的 cardFramePath 生成：外轮廓贴住卡片圆角，内轮廓往里缩，
+    右下角越近越粗（1px → 3px），整圈没有第二段描边；
+  - 颜色只换 fill：平时 --border-subtle，悬停 --border-strong，选中 --accent；
+  - pointer-events: none：边框是纯呈现，不吃卡片的选择 / 拖动 / 点击。
+*/
+.card-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 3;
+}
+.card-frame-path {
+  fill: var(--border-subtle);
+  transition: fill var(--dur-fast) var(--ease-1);
+}
+/* 结果卡沿用 link 色，隐藏卡弱化到半透明：都是换 fill / 透明度，不是第二圈线 */
+.card.reply .card-frame-path { fill: var(--link); }
+.card.hidden .card-frame-path { opacity: 0.55; }
+.card:hover .card-frame-path { fill: var(--border-strong); }
+.card.selected .card-frame-path { fill: var(--accent); }
+.card.selected:hover .card-frame-path { fill: var(--accent); }
+.card.dragging .card-frame-path { fill: var(--accent); }
+.card.selected {
+  background: var(--bg-accent-subtle);
+}
+.card.highlight { outline: 2px dashed var(--warning); outline-offset: 2px; }
+.card.dragging { cursor: grabbing; opacity: 0.92; }
+.participation {
+  flex: none;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 10px;
+  cursor: pointer;
+}
+.participation.is-on {
+  color: var(--link);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.participation:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+
+/*
+  第一层：材料类型 + 标题 + 参与控件 + 阅读展开入口。
   一行到底、不换行也不换三行：标题自己用省略号收尾，操作与状态永远留在原位。
 */
 .card-head {
@@ -1980,22 +2562,6 @@ watch(
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/*
-  整卡许可徽章（任务书 §6.6）：文字 + 颜色双通道，未选中时也看得见。
-  文案与工具栏勾选框同源；规则原文只在工具栏的「说明」详情里出现一次。
-*/
-.license {
-  flex: none;
-  font-size: var(--fs-tech, var(--fs-xs));
-  line-height: var(--lh-tight);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 0 var(--sp-1);
-  white-space: nowrap;
-}
-.license.is-off { color: var(--text-muted); border-style: dashed; }
-.license.is-on { color: var(--text-secondary); border-color: var(--border-strong); }
-
 .chip-btn {
   flex: none;
   margin-left: auto;
@@ -2004,7 +2570,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
   cursor: pointer;
 }
@@ -2094,7 +2660,7 @@ watch(
   font-family: var(--mono);
   font-size: var(--fs-sm);
   background: var(--bg-inset);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 2px;
 }
 /*
@@ -2109,7 +2675,7 @@ watch(
   min-width: 0;
   max-width: 100%;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   background: var(--bg-inset);
   overflow: clip;
 }
@@ -2129,7 +2695,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
 }
@@ -2177,7 +2743,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
 }
@@ -2193,7 +2759,7 @@ watch(
   margin: 0 0 var(--sp-2);
   padding: 2px var(--sp-2);
   border: 1px dashed var(--warning);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   line-height: var(--lh-tight);
@@ -2209,7 +2775,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: var(--sp-2);
   resize: vertical;
 }
@@ -2222,7 +2788,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-2);
 }
 .draft-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-tight); }
@@ -2233,7 +2799,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 2px var(--sp-3);
   cursor: pointer;
 }
@@ -2268,7 +2834,7 @@ watch(
   color: var(--link);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -2341,7 +2907,7 @@ watch(
   margin: 0;
   padding: var(--sp-3);
   border: 1px dashed var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   color: var(--text-muted);
   font-size: var(--fs-xs);
   line-height: var(--lh-base);
@@ -2355,60 +2921,97 @@ watch(
   局部工具栏：浮在板面上，不随卡片缩放，位置由父组件换算。
   按钮字号用 --fs-sm：编辑 / 删除这些是主要操作，不缩成元信息字号。
 */
+
+/*
+ * 2026-10-24：局部工具栏视觉只保留六个圆形图标。
+ * 旧按钮 / 更多面板 / 分组菜单的 DOM 仍保留（兼容既有测试与命令路径），
+ * 但视觉上隐藏；新的 .icon-tools 接管主操作，旧的“整理”触发按钮改成第六个圆钮。
+ */
+.card-toolbar > .tb,
+.card-toolbar > .divider,
+.card-toolbar > .more-panel,
+.card-toolbar > .tb-note,
+.card-toolbar > .tb-status {
+  display: none !important;
+}
+.icon-tools { display: contents; }
+.tool-icon {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.tool-icon svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.tool-icon:hover { color: var(--accent); border-color: var(--accent); background: var(--bg-elevated); }
+.tool-icon.danger { color: var(--danger); }
+.tool-icon:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* 多选时才出现的整理菜单：面板不能继承 30px 圆钮父级的 max-width。 */
+.icon-tools :deep(.sel .panel[data-qio-fit]) {
+  width: min(272px, calc(100vw - var(--sp-6)));
+  max-width: min(272px, calc(100vw - var(--sp-6)));
+}
+/* 旧 SelectionMenu 的“整理”触发按钮：保留行为，外观变成第四/第六个圆形图标。 */
+.icon-tools :deep(.trigger) {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0;
+}
+.icon-tools :deep(.trigger)::before {
+  content: "▦";
+  font-size: 15px;
+  line-height: 1;
+}
+.icon-tools :deep(.trigger:hover) { color: var(--accent); border-color: var(--accent); }
+
 .card-toolbar {
   position: absolute;
   z-index: 60;
+  /* 2026-10-25：按钮独立浮在卡外，不再有整块白色托板 / 边框 / 内边距。 */
+  background: transparent;
+  border: 0;
+  padding: 0;
+  box-shadow: none;
   /*
     宿主（.card-toolbar-host）整层 pointer-events: none：工具栏这一块自己收回事件，
     只有工具栏与已打开的面板 / 菜单接收指针，其余地方照旧穿透到板面。
   */
-  pointer-events: auto;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-  max-width: min(560px, calc(100vw - var(--sp-4)));
-  padding: var(--sp-1) var(--sp-2);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  box-shadow: var(--elev-floating, var(--shadow-2));
+  pointer-events: none;
+  display: block;
+  width: 180px;
+  height: 30px;
+  max-width: none;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   font-size: var(--fs-sm);
 }
-/* 许可勾选：短文案 + 「说明」详情；勾选框本身只改 checked */
-.check { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--text-secondary); white-space: nowrap; }
-.check input { accent-color: var(--accent); }
-.check-label { font-size: var(--fs-sm); }
-.check-detail { position: relative; }
-.check-detail-summary {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.check-detail-summary:hover { color: var(--text-strong); }
-/*
-  详情是一块**浮层**：完整许可说明放在这里，不把工具栏撑高、不挤走别的操作；
-  工具栏在卡片上方时向上开（与「更多」同一个方向规则），不盖卡片标题。
-*/
-.check-detail-text {
-  position: absolute;
-  right: 0;
-  top: calc(100% + var(--sp-1));
-  z-index: 5;
-  width: min(280px, calc(100vw - var(--sp-6)));
-  margin: 0;
-  padding: var(--sp-2);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
-  box-shadow: var(--elev-floating, var(--shadow-2));
-  font-size: var(--fs-xs);
-  line-height: var(--lh-base);
-  color: var(--text-secondary);
-  white-space: normal;
-}
-.check-detail.opens-up .check-detail-text { top: auto; bottom: calc(100% + var(--sp-1)); }
-
 /*
   「更多」面板：朝卡片外侧展开（工具栏在卡片上方时向上开），不盖标题、连接点与正文。
   面板不做裁切（overflow 可见），否则嵌在里面的「整理」面板会被裁掉。
@@ -2425,7 +3028,7 @@ watch(
   padding: var(--sp-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   box-shadow: var(--elev-floating, var(--shadow-2));
 }
 .more-panel.up { top: auto; bottom: calc(100% + var(--sp-1)); }
@@ -2437,7 +3040,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 1px var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -2460,14 +3063,14 @@ watch(
 
 /*
   封面之上的两条**窄蒙版**（本轮：不再用封面里上下各 42% 的大蒙版）：
-  头部（标题 / 许可徽章 / 折叠入口）与页脚（必要状态 / 更新时间）各贴一条，
+  头部（标题 / 参与控件 / 折叠入口）与页脚（必要状态 / 更新时间）各贴一条，
   文字压在图片上时始终清晰可读。规则放在样式表末尾：前面 .card-head / .card-meta
   的基线规则不能被挤掉（源码守卫按选择器取第一个 CSS 块）。
 */
 .card.is-cover > .card-head,
 .card.is-cover > .card-meta {
   background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: 0 var(--sp-1);
 }
 
@@ -2506,5 +3109,63 @@ watch(
 /* 紧凑档的卡片内边距是 --sp-2，负外边距跟着换一档（只作用在封面页脚，不动那条被守卫锁定的紧凑规则） */
 .card.is-compact.is-cover > .card-meta {
   --card-pad: var(--sp-2);
+}
+
+/*
+  图片详情态（Phase 2-C 契约 §5.2）：整张卡就是一张图。
+  - 去掉卡片内边距：否则图片四周会留出一圈看起来像「普通标题栏」的空白；
+  - 圆角裁切：卡片 overflow: hidden + 宿主 border-radius: inherit；
+  - 宿主 absolute inset:0 铺满卡片，图片在宿主里等比完整显示（contain）；
+  - 卡片尺寸仍由 w/h 决定：这里只改外观，不动几何（§16.3 / §17.1）。
+*/
+.card-image-fallback {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.card-image-fallback svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.card.is-image-detail {
+  padding: 0;
+  overflow: hidden;
+}
+/*
+  详情态的头部：**浮在图上**而不是占一行布局高度（这就是「不保留普通标题栏留白」）——
+  名称、参与控件、收起详情仍在原位可读可点（参与控件后续也挂在头部），
+  底部一条窄渐变保证文字压在图片上也清楚；连接点与缩放手柄在卡片外侧，不受影响。
+*/
+.card.is-image-detail > .card-head {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  padding: var(--sp-2) var(--sp-3);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--bg-surface) 88%, transparent),
+    transparent
+  );
+  pointer-events: none;
+}
+.card.is-image-detail > .card-head .chip-btn,
+.card.is-image-detail > .card-head .participation {
+  pointer-events: auto;
+}
+.card-image-detail-host {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
 }
 </style>

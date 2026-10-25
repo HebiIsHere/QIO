@@ -92,6 +92,20 @@
   z-index: var(--im-z-toolbar);
 }
 
+/* 悬浮对话卡内的工具栏：不再相对板面绝对定位，由对话卡内部排版。 */
+[data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"].is-floating {
+  position: static;
+  left: auto;
+  bottom: auto;
+  width: 100%;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
 /* --- 板内搜索：在工具栏正上方（工具栏自身是定位上下文） ---------------------- */
 [data-im="search-panel"][data-im="search-panel"][data-im="search-panel"] {
   z-index: var(--im-z-search);

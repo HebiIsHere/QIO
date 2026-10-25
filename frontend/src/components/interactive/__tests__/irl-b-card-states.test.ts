@@ -155,9 +155,10 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.find('[data-im="card-subject"]').exists()).toBe(true);
     expect(w.get('[data-im="card-body"]').text()).toContain("第一段正文。");
     expect(w.find('[data-im="card-block-code"]').exists()).toBe(true);
-    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("展开预览");
-    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
+    // 整卡许可 UI 已移除：卡片上不再有许可徽章，只保留参与 / 不参与
+    expect(w.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(w.get('[data-im="card-participation"]').text()).toBe("不参与");
 
     // 既不渲染编辑器，也不渲染预览挂载点
     expect(w.find('[data-im="card-editor"]').exists()).toBe(false);
@@ -168,24 +169,19 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(shown.split("第一段正文。").length - 1).toBe(1);
   });
 
-  it("阅读展开：正文成为主体；没有真实附件的文字卡不造假预览", async () => {
-    const w = mountBoard(textCard());
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
+  it("卡片放大到阈值：正文成为主体；没有真实附件的文字卡不造假预览", async () => {
+    const w = mountBoard(textCard({ w: 600, h: 420 }));
 
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     const host = w.get('[data-im="card-preview-host"]');
     expect(host.attributes("data-card-id")).toBe("c1");
     // 挂载点在卡片内部（不是浮层）
     expect(host.element.closest('[data-im="card"]')).not.toBeNull();
-    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("收起预览");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     // 文字卡的阅读主体是它自己的正文；这里不出现「没有附件」的假预览面板
     expect(host.find('[data-testid="cip-root"]').exists()).toBe(false);
     expect(host.text()).toBe("");
     expect(w.get('[data-im="card-subject"]').text()).toContain("第一段正文。");
-
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
-    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("normal");
-    expect(w.find('[data-im="card-preview-host"]').exists()).toBe(false);
   });
 
   it("编辑：只有一个连续编辑区；阅读挂载点与常态主体都让位", async () => {
@@ -208,15 +204,12 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.find('[data-im="card-editor"]').exists()).toBe(false);
   });
 
-  it("编辑与阅读互斥但州状态不互改：正在阅读时进编辑，退出后仍回到阅读展开", async () => {
-    const w = mountBoard(textCard());
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
-    expect(store.isCardPreviewExpanded("c1")).toBe(true);
+  it("编辑与自动阅读互斥：正在阅读时进编辑，退出后回到阅读", async () => {
+    const w = mountBoard(textCard({ w: 600, h: 420 }));
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
 
     await w.get('[data-im="card-edit"]').trigger("click");
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("editing");
-    // 阅读展开是查看状态：进编辑器不该把它偷偷清掉（也没有写板面状态、没有产生表达）
-    expect(store.isCardPreviewExpanded("c1")).toBe(true);
     expect(store.dirty).toBe(false);
     expect(store.submissions).toEqual([]);
 
@@ -240,11 +233,9 @@ describe("四态互斥：常态 / 阅读展开 / 编辑 / 折叠", () => {
     expect(w.emitted("toggle")).toEqual([["c1", "folded"]]);
   });
 
-  it("卡片上只有一个「展开」按钮：折成标题与展开预览不会各叫一个「展开」", () => {
+  it("卡片上不再有「展开预览」按钮：折成标题与恢复卡片各叫各的名字", () => {
     const w = mountBoard(textCard());
-    const expandButtons = w.findAll("button").filter((item) => item.text().startsWith("展开"));
-    expect(expandButtons.map((item) => item.attributes("data-im"))).toEqual(["card-preview-toggle"]);
-    // 折成标题的动作说明的是「折」，恢复卡片说的是「恢复」
+    expect(w.findAll("button").filter((item) => item.text().startsWith("展开"))).toHaveLength(0);
     expect(w.get('[data-im="card-fold"]').text()).toBe("折成标题");
 
     const folded = mountBoard(textCard({ folded: true }));
@@ -269,9 +260,9 @@ describe("最小尺寸 180×96：标题 / 主要操作 / 必要状态 / 内容�
 
     // 标题 + 必要状态
     expect(w.find('[data-im="card-title"]').exists()).toBe(true);
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    // 2026-10-14：元信息层不再重复许可文案，许可由 card-license 单独承载
-    expect(w.get('[data-im="card-license"]').text()).toBe("未允许查看");
+    // 整卡许可 UI 已移除：窄矮卡片上也不再有许可徽章，参与控件仍在
+    expect(w.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(w.get('[data-im="card-participation"]').text()).toBe("不参与");
     // 让位的是次级信息：材料类型标签与更新时间
     expect(w.find('[data-im="card-head"] .kind').exists()).toBe(false);
     expect(w.find('[data-im="card-meta"] .time').exists()).toBe(false);
@@ -292,8 +283,8 @@ describe("最小尺寸 180×96：标题 / 主要操作 / 必要状态 / 内容�
     await w.get('[data-im="card-more"]').trigger("click");
     expect(w.get('[data-im="card-more"]').attributes("aria-expanded")).toBe("true");
 
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
-    expect(root.attributes("data-card-state")).toBe("reading");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
+    expect(root.attributes("data-card-state")).toBe("normal");
   });
 });
 
@@ -356,36 +347,33 @@ describe("规则层守卫：高度预算与横向滚动（jsdom 没有真实排�
   });
 });
 
-describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：元信息层不再重复许可文案）", () => {
-  it("未选中也能辨认「未允许查看 / 允许 QIO 查看」", () => {
+describe("整卡许可 UI 已移除：卡片只保留参与 / 不参与", () => {
+  it("无论是否选中都不再出现许可徽章，参与控件仍可辨认", () => {
     const off = mountBoard(textCard(), { selected: false });
     expect(off.find('[data-im="card-toolbar"]').exists()).toBe(false);
-    expect(off.get('[data-im="card-license"]').attributes("data-checked")).toBe("0");
-    expect(off.get('[data-im="card-license"]').text()).toBe("未允许查看");
-    // 2026-10-14：元信息层不再重复许可文案（card-license 已在上面核对）
+    expect(off.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(off.get('[data-im="card-participation"]').text()).toBe("不参与");
     off.unmount();
 
     const on = mountBoard(textCard({ checked: true }), { selected: false });
-    expect(on.get('[data-im="card-license"]').attributes("data-checked")).toBe("1");
-    expect(on.get('[data-im="card-license"]').text()).toBe("允许 QIO 查看");
-    // 2026-10-14：同上，许可状态由 card-license 承载
+    expect(on.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(on.get('[data-im="card-participation"]').text()).toBe("参与");
   });
 
-  it("勾选 / 取消只改 checked：不碰 hidden / deleted，也不改内容", async () => {
+  it("参与切换仍走既有 toggle 事件，不产生 patch", async () => {
     const w = mountBoard(textCard());
-    await w.get('[data-im="check"]').trigger("change");
+    expect(w.find('[data-im="check"]').exists()).toBe(false);
+    await w.get('[data-im="card-participation"]').trigger("click");
 
-    expect(w.emitted("toggle")).toEqual([["c1", "checked"]]);
+    expect(w.emitted("toggle")).toEqual([["c1", "participation"]]);
     expect(w.emitted("patch")).toBeUndefined();
     expect(w.emitted("remove")).toBeUndefined();
-    expect(w.emitted("duplicate")).toBeUndefined();
-    expect(w.emitted("drag-start")).toBeUndefined();
   });
 
-  it("查看 / 展开 / 编辑都不改许可：未许可的卡片不会因为「被看过」就变成可提交", async () => {
-    const card = textCard();
+  it("查看 / 自动阅读 / 编辑都不改许可：未许可的卡片不会因为「被看过」就变成可提交", async () => {
+    const card = textCard({ w: 600, h: 420 });
     const w = mountBoard(card);
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
+    expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     await w.get('[data-im="card-edit"]').trigger("click");
     await w.get('[data-im="card-edit"]').trigger("click");
 
@@ -394,17 +382,17 @@ describe("整卡许可：未选中可见、勾选只改 checked（2026-10-14：�
     expect(isVisibleCard(card), "未许可的内容不该进入提交范围").toBe(false);
   });
 
-  it("勾选框只留短文案；完整规则放在可达的「说明」详情里（默认收起）", () => {
+  it("工具栏里不再有勾选框、许可短文案与「说明」详情", () => {
     const w = mountBoard(textCard());
-    const check = w.get('[data-im="card-toolbar"] .check');
-    expect(check.get(".check-label").text()).toBe("允许 QIO 查看");
-    // 完整说明仍在同一处，点开「说明」就能读到（收起 ≠ 删掉）
-    expect(check.text()).toContain("许可：允许 QIO 查看这张卡");
-    expect(check.text()).toContain("只有你手动取消才失效");
-    expect(check.text()).toContain("覆盖卡里的全部文字、代码与链接");
-    const details = check.get("details.check-detail");
-    expect(details.attributes("open"), "完整说明默认收起").toBeUndefined();
-    expect(details.find("summary").text()).toBe("说明");
+    const toolbar = w.get('[data-im="card-toolbar"]');
+    expect(toolbar.find('[data-im="check"]').exists()).toBe(false);
+    expect(toolbar.find(".check").exists()).toBe(false);
+    expect(toolbar.find(".check-label").exists()).toBe(false);
+    expect(toolbar.find(".check-detail").exists()).toBe(false);
+    expect(toolbar.find('[data-im="check-detail-text"]').exists()).toBe(false);
+    expect(toolbar.text()).not.toContain("允许 QIO 查看");
+    // 参与仍存在，并且是头部唯一与许可相关的控件
+    expect(w.get('[data-im="card-participation"]').text()).toBe("不参与");
   });
 
   it("隐藏与删除都不进提交载荷相关视图（卡片仍然如实说自己被隐藏）", () => {
@@ -545,16 +533,16 @@ describe("阅读展开与可读材料：没有材料就不给假入口", () => {
     expect(w.find('[data-im="card-attachment-preview"]').exists()).toBe(false);
   });
 
-  it("文件卡有真实附件：入口存在；阅读展开把主体让给预览，说明压成紧凑档", async () => {
+  it("文件卡有真实附件：放大后自动阅读，主体让给预览，说明压成紧凑档", async () => {
     const card = mkCard("f2", {
       kind: "file",
+      w: 600,
+      h: 420,
       content: "这是一段应该被压缩的说明文字",
       meta: { name: "预算表.pdf", file: { name: "预算表.pdf", attachmentId: "att_1", size: 4096 } },
     });
     const w = mountBoard(card, { selected: false });
-    expect(w.get('[data-im="card-preview-toggle"]').text()).toBe("展开预览");
-
-    await w.get('[data-im="card-preview-toggle"]').trigger("click");
+    expect(w.find('[data-im="card-preview-toggle"]').exists()).toBe(false);
     expect(w.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
 
     // 文件卡（2026-10-14）：附件预览与「查看」都不在卡片里（按钮在工具栏），阅读主体仍是真实预览

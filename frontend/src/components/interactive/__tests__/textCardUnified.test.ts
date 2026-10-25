@@ -380,14 +380,16 @@ describe("BoardCard：文字卡的编辑与显示", () => {
     b.unmount();
   });
 
-  it("许可文案：勾选框说明按契约 §2.3 改为「许可：允许 QIO 查看这张卡」", () => {
+  it("许可 UI 已移除：工具栏里不再有勾选框或「说明」详情", () => {
     const card = mkCard("t7", { content: "注释" });
     store.board = mkState([card]);
     select("t7");
     wrapper = mountCard(card);
-    const check = wrapper.get('[data-im="card-toolbar"] .check');
-    expect(check.text()).toContain("许可：允许 QIO 查看这张卡");
-    expect(check.text()).toContain("只有你手动取消才失效");
+    expect(wrapper.find('[data-im="check"]').exists()).toBe(false);
+    expect(wrapper.find(".check").exists()).toBe(false);
+    expect(wrapper.find('[data-im="check-detail-text"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="card-participation"]').exists()).toBe(true);
   });
 });
 

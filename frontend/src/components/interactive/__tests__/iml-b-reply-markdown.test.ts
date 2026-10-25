@@ -7,8 +7,8 @@
  *    渲染器自身不建滚动容器、不含 overflow-x: auto|scroll；模型原文不被当可信 HTML。
  * 2. BoardCard 的结果卡（kind="reply"）正文走 MarkdownContent，**不**走普通文字 p.content；
  *    未选中的常态与 reading 态都要渲染；正文仍是唯一纵向阅读区（只有一个 QIO 滚动宿主）。
- * 3. 「复制原文」给出完整 Markdown 原文（代码块复制仍是代码原文）；允许 QIO 查看的文案
- *    对文字卡与结果卡都成立；正文更新 / 阅读切换不改变卡片外框、不触发板面变更。
+ * 3. 「复制原文」给出完整 Markdown 原文（代码块复制仍是代码原文）；整卡许可 UI 已移除，
+ *    卡片只保留参与控件；正文更新 / 阅读切换不改变卡片外框、不触发板面变更。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
@@ -303,10 +303,9 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
   });
 
   it("reading 态仍渲染同一份 Markdown，且只有卡片正文一个纵向滚动宿主", async () => {
-    const card = mkCard("r3", { kind: "reply", content: REPLY_MD });
+    const card = mkCard("r3", { kind: "reply", content: REPLY_MD, w: 600, h: 420 });
     seed(card);
     wrapper = mountCard(card);
-    await wrapper.get('[data-im="card-preview-toggle"]').trigger("click");
     await flushPromises();
     expect(wrapper.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     const body = wrapper.get('[data-im="card-reply-markdown"]');
@@ -319,13 +318,13 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
   });
 
   it("正文更新与阅读切换不改变卡片外框、不产生板面变更（B7 / F1）", async () => {
-    const card = mkCard("r4", { kind: "reply", content: "# 第一版" });
+    const card = mkCard("r4", { kind: "reply", content: "# 第一版", w: 600, h: 420 });
     seed(card);
     wrapper = mountCard(card);
     const cardEl = wrapper.get('[data-im="card"]');
     const before = cardEl.attributes("style");
-    expect(before).toContain("width: 320px");
-    expect(before).toContain("height: 240px");
+    expect(before).toContain("width: 600px");
+    expect(before).toContain("height: 420px");
 
     // 异步到达 / 正文更新（模型后续写入、板面刷新）
     await wrapper.setProps({ card: { ...card, content: REPLY_MD } });
@@ -333,9 +332,8 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
     expect(wrapper.get('[data-im="card"]').attributes("style")).toBe(before);
     expect(wrapper.get('[data-im="card-reply-markdown"]').find("table").exists()).toBe(true);
 
-    // 阅读展开只换查看方式，不改外框
-    await wrapper.get('[data-im="card-preview-toggle"]').trigger("click");
-    await flushPromises();
+    // 阅读态只换查看方式，不改外框
+    expect(wrapper.get('[data-im="card"]').attributes("data-card-state")).toBe("reading");
     expect(wrapper.get('[data-im="card"]').attributes("style")).toBe(before);
     // 渲染本身不发出任何板面变更（不触发整板重排）
     expect(wrapper.emitted("patch")).toBeUndefined();
@@ -352,10 +350,10 @@ describe("BoardCard：结果卡正文用 MarkdownContent 渲染（F3 / B1 / B3�
 });
 
 /* =========================================================================
- * 3. 复制原文 / 许可文案（B4 / B6）
+ * 3. 复制原文 / 许可 UI（B4 / B6）
  * ======================================================================= */
 
-describe("结果卡：复制原文与许可文案（B4 / B6）", () => {
+describe("结果卡：复制原文与许可 UI（B4 / B6）", () => {
   let store: ReturnType<typeof useInteractiveStore>;
   let wrapper: VueWrapper | null = null;
 
@@ -417,7 +415,7 @@ describe("结果卡：复制原文与许可文案（B4 / B6）", () => {
     expect(writeText).toHaveBeenCalledWith(PY_CODE);
   });
 
-  it("许可文案对文字卡与结果卡都成立（工具栏说明与整卡徽章）", () => {
+  it("文字卡与结果卡的许可 UI 都已移除，参与控件仍在", () => {
     const card = mkCard("t1", {
       kind: "text",
       content: "注释",
@@ -427,11 +425,9 @@ describe("结果卡：复制原文与许可文案（B4 / B6）", () => {
     store.board = { ...emptyState("board_t"), cards: [card], selection: [card.id] } as never;
     store.setDraft(cardDraftKey("t1"), "");
     wrapper = mountCard(card);
-    const check = wrapper.get('[data-im="card-toolbar"] .check');
-    expect(check.text()).toContain("许可：允许 QIO 查看这张卡");
-    expect(check.text()).toContain("文字卡与结果卡");
-    expect(check.text()).toContain("只有你手动取消才失效");
-    const license = wrapper.get('[data-im="card-license"]');
-    expect(license.attributes("title") ?? "").toContain("文字卡与结果卡");
+    expect(wrapper.find('[data-im="check"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="check-detail-text"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="card-license"]').exists()).toBe(false);
+    expect(wrapper.get('[data-im="card-participation"]').text()).toBe("参与");
   });
 });

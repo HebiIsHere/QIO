@@ -363,6 +363,24 @@ def create_app(
                 logging.getLogger(__name__).info("recovered %s stale derived tasks", recovered)
         except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
             logging.getLogger(__name__).warning("derived task recovery failed", exc_info=True)
+        # 互动执行重启恢复：释放上一进程的 claiming/active，重新受理 pending 自动重试。
+        try:
+            from agent.interactive import startup_recovery
+
+            turns = getattr(ctx, "turns", None)
+            submit = getattr(turns, "submit", None) if turns is not None else None
+            if callable(submit):
+                recovered = startup_recovery.recover_startup(
+                    ctx.conn, lambda message, topic: submit(message, topic)
+                )
+                if recovered.get("released") or recovered.get("started"):
+                    logging.getLogger(__name__).info(
+                        "interactive startup recovery: %s", recovered
+                    )
+        except Exception:  # noqa: BLE001 - 恢复失败不能让应用起不来
+            logging.getLogger(__name__).warning(
+                "interactive startup recovery failed", exc_info=True
+            )
         # 实例心跳（契约 C1）：别的实例靠「心跳新鲜」确认本实例还活着，
         # 所以它必须**持续**刷新，而不是只在启动时写一次。崩溃时它自然停止，
         # TTL 到期 + pid 不存在 → 下一个实例才会恢复本实例的记录。

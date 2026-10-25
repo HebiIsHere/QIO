@@ -20,7 +20,20 @@ const props = defineProps<{
   locatedIntentId: string | null;
   width: number;
   height: number;
+  /**
+   * Phase 3（契约 §6.1）：display {x,y} 按 intent_id 绑定的显示位置。
+   * 给了就把整个意图预览（卡片 / 组 / 线 / 徽标）平移到该位置；
+   * 没给 / 坏数据逐字段保持旧行为（预览仍按预览自带坐标画）。
+   */
+  display?: Record<string, { x: number; y: number }> | null;
 }>();
+
+/** 读取这一条意图的显示位置；坏数据（NaN / 缺字段）当作没有，不用它挪任何东西。 */
+function displayOffset(intentId: string, origin: { x: number; y: number }): { dx: number; dy: number } {
+  const point = props.display?.[intentId];
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return { dx: 0, dy: 0 };
+  return { dx: point.x - origin.x, dy: point.y - origin.y };
+}
 
 const store = useInteractiveStore();
 
@@ -52,11 +65,25 @@ interface PreviewLine {
   labelW: number;
 }
 
+/** 平移一个行内定位样式：只改 left / top，其他字段原样保留。 */
+function shiftStyle(style: Record<string, string>, offset: { dx: number; dy: number }): Record<string, string> {
+  if (!offset.dx && !offset.dy) return style;
+  const left = Number.parseFloat(String(style.left ?? "0"));
+  const top = Number.parseFloat(String(style.top ?? "0"));
+  return {
+    ...style,
+    left: (Number.isFinite(left) ? left : 0) + offset.dx + "px",
+    top: (Number.isFinite(top) ? top : 0) + offset.dy + "px",
+  };
+}
+
 interface RenderedIntent {
   id: string;
   title: string;
   statusLabel: string;
   located: boolean;
+  /** Phase 3：这条意图有服务端绑定的显示位置（供测试 / 样式区分） */
+  persisted: boolean;
   badgeStyle: Record<string, string>;
   cards: PreviewCardBox[];
   groups: PreviewGroupBox[];
@@ -150,15 +177,36 @@ const rendered = computed<RenderedIntent[]>(() =>
     const top = rects.length ? Math.min(...rects.map((rect) => rect.y)) : 0;
     const left = rects.length ? Math.min(...rects.map((rect) => rect.x)) : 0;
 
+    /**
+     * Phase 3 显示位置：display{ x,y } 是这个意图预览的落点（对应预览范围左上角）。
+     * 只平移显示坐标：不写板面、不改预览结构；没有 display 时偏移为 0（旧行为逐字段不变）。
+     */
+    const offset = displayOffset(intent.id, { x: left, y: top });
+    const shiftedCards = cardBoxes.map((box) => ({ ...box, style: shiftStyle(box.style, offset) }));
+    const shiftedGroups = groupBoxes.map((box) => ({ ...box, style: shiftStyle(box.style, offset) }));
+    const shiftedLines = lines.map((line) => ({
+      ...line,
+      x1: line.x1 + offset.dx,
+      y1: line.y1 + offset.dy,
+      x2: line.x2 + offset.dx,
+      y2: line.y2 + offset.dy,
+      labelX: line.labelX + offset.dx,
+      labelY: line.labelY + offset.dy,
+    }));
+
     return {
       id: intent.id,
       title: intent.title || "待审批结果",
       statusLabel: store.statusLabel(intent.status),
       located: props.locatedIntentId === intent.id,
-      badgeStyle: { left: left + "px", top: Math.max(0, top - 24) + "px" },
-      cards: cardBoxes,
-      groups: groupBoxes,
-      lines,
+      persisted: Boolean(props.display?.[intent.id]),
+      badgeStyle: {
+        left: left + offset.dx + "px",
+        top: Math.max(0, top - 24 + offset.dy) + "px",
+      },
+      cards: shiftedCards,
+      groups: shiftedGroups,
+      lines: shiftedLines,
     };
   }),
 );
@@ -174,6 +222,7 @@ const rendered = computed<RenderedIntent[]>(() =>
       :class="{ located: item.located }"
       data-im="preview"
       :data-intent-id="item.id"
+      :data-display-persisted="item.persisted ? 'true' : 'false'"
     >
       <p class="preview-badge" :style="item.badgeStyle">
         预览（未确定）· {{ item.title }} · {{ item.statusLabel }}
@@ -276,7 +325,7 @@ const rendered = computed<RenderedIntent[]>(() =>
   padding: var(--sp-1) var(--sp-2);
   overflow: hidden;
   border: 1px dashed var(--link);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   background: var(--bg-surface);
   opacity: 0.9;
   color: var(--text-primary);

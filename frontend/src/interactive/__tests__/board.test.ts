@@ -239,7 +239,8 @@ describe("dropCard：放下才完成操作", () => {
     expect(group?.defaultName).toBe(true);
     expect(group?.ordered).toBe(false);
     expect([...(group?.members ?? [])].sort()).toEqual(["a", "b"]);
-    expect(board.cardById(result.state, "a")?.x).toBe(250);
+    // 成组后成员进入组内固定纵向排列：x = 组框左边 + 内边距
+    expect(board.cardById(result.state, "a")?.x).toBe(266);
   });
 
   it("默认名不再编号：已有「组 7」也照样用「默认组名」（反例：旧实现给「组 8」）", () => {
@@ -500,6 +501,33 @@ describe("关系链接", () => {
     expect(board.removeLink(updated, linkId).links).toEqual([]);
   });
 
+  it("关系曲线可保存、归一化并跨 normalizeState 保留", () => {
+    const linked = board.addLink(mkState([mkCard("a"), mkCard("b")]), "a", "b", false, "关联");
+    const linkId = linked.links[0].id;
+    const bent = board.updateLink(linked, linkId, { curve: { x: 42, y: -18 } });
+    expect(bent.links[0].curve).toEqual({ x: 42, y: -18 });
+    expect(board.normalizeState(bent).links[0].curve).toEqual({ x: 42, y: -18 });
+
+    const clamped = board.updateLink(bent, linkId, { curve: { x: 9999, y: -9999 } });
+    expect(clamped.links[0].curve).toEqual({ x: 240, y: -240 });
+
+    const invalid = board.updateLink(clamped, linkId, { curve: { x: Number.NaN, y: 0 } });
+    expect(invalid.links[0].curve).toEqual({ x: 0, y: 0 });
+  });
+
+  it("组落点看指针位置，不看拖动卡片左上角", () => {
+    const state = mkState(
+      [mkCard("a", 0, 0), mkCard("b", 200, 0), mkCard("c", 800, 0)],
+      [mkGroup("g1", ["a", "b"])],
+    );
+    // 卡片左上角还在组外，但指针已经进入组框：应该能作为组目标。
+    const preview = board.previewDrop(state, "c", 800, 0, { x: 250, y: 50 });
+    expect(preview.groupId).toBe("g1");
+    expect(board.previewDrop(state, "c", 800, 0).groupId).toBeNull();
+    const dropped = board.dropCard(state, "c", 800, 0, { x: 250, y: 50 });
+    expect(membersOf(dropped.state, "g1")).toContain("c");
+  });
+
   it("合并组不影响卡片之间的链接", () => {
     const state = mkState(
       [mkCard("a", 0, 0), mkCard("b", 200, 0), mkCard("c", 600, 0)],
@@ -586,14 +614,18 @@ describe("选择 / 勾选 / 隐藏 / 折叠 / 书签 / 搜索", () => {
     expect(board.cardById(board.setChecked(checked, "t", false), "t")?.checked).toBe(false);
   });
 
-  it("隐藏会清掉勾选，取消隐藏不会重新勾选", () => {
+  it("隐藏 = 退出参与（清掉勾选镜像）；取消隐藏 = 重新参与（Phase 2 §5.1 唯一事实源）", () => {
     const state = mkState([mkCard("t", 0, 0, { checked: true })]);
     const hidden = board.setHidden(state, "t", true);
     expect(board.cardById(hidden, "t")?.hidden).toBe(true);
     expect(board.cardById(hidden, "t")?.checked).toBe(false);
+    expect(board.cardById(hidden, "t")?.participation).toBe("excluded");
+    // 旧口径「取消隐藏不会重新勾选」被 participation 唯一事实源取代：
+    // 取消隐藏就是重新参与，checked 只是兼容镜像（迁移后不再决定可见性）。
     const shown = board.setHidden(hidden, "t", false);
     expect(board.cardById(shown, "t")?.hidden).toBe(false);
-    expect(board.cardById(shown, "t")?.checked).toBe(false);
+    expect(board.cardById(shown, "t")?.participation).toBe("included");
+    expect(board.cardById(shown, "t")?.checked).toBe(true);
   });
 
   it("折叠与书签只影响显示", () => {

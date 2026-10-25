@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QIO 卡片交互演示</title>
+<style>
+  :root {
+    --bg: #f7f3f6;
+    --paper: #ffffff;
+    --ink: #3d343b;
+    --muted: #8e7c88;
+    --line: #ddcfd7;
+    --line-strong: #a9899b;
+    --accent: #c51b7d;
+    --accent-soft: #f9e7f1;
+    --radius: 24px;
+    --font: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font-family: var(--font); }
+  button { font: inherit; }
+  .app { height: 100vh; min-height: 640px; display: flex; flex-direction: column; }
+  .topbar {
+    height: 64px; flex: none; margin: 8px; padding: 0 20px;
+    display: flex; align-items: center; gap: 16px;
+    background: var(--paper); border: 1px solid #eadfe6; border-radius: 18px;
+    box-shadow: 0 5px 18px rgba(70,35,55,.05);
+  }
+  .brand { font: 600 20px Georgia, serif; letter-spacing: .08em; color: var(--accent); }
+  .brand small { margin-left: 8px; font: 11px var(--font); letter-spacing: .18em; color: var(--muted); }
+  .topbar .hint { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .board {
+    position: relative; flex: 1; min-height: 0; margin: 0 8px 8px;
+    border: 1px solid #e9dfe5; border-radius: 18px; overflow: hidden;
+    background-color: #fff;
+    background-image: radial-gradient(circle, color-mix(in srgb, var(--accent) 18%, transparent) 0 1px, transparent 1.2px);
+    background-size: 24px 24px;
+  }
+  .board::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.65);
+    border-radius: inherit;
+  }
+  .card {
+    position: absolute; z-index: 3; border-radius: var(--radius);
+    background: var(--paper);
+    box-shadow: 0 10px 30px rgba(64,32,52,.09);
+    overflow: visible; user-select: none;
+  }
+  .card-body { position: relative; height: 100%; padding: 22px 24px; display: flex; flex-direction: column; gap: 8px; cursor: default; }
+  .card-kind { align-self: flex-start; padding: 3px 9px; border: 1px solid #ece2e8; border-radius: 999px; color: #a38b98; font-size: 10.5px; }
+  .card-title { margin: 2px 0 0; font-size: 15px; font-weight: 600; line-height: 1.35; padding-right: 48px; }
+  .card-copy { margin: 0; color: #6d5b67; font-size: 12px; line-height: 1.7; }
+  .card-meta { margin-top: auto; font: 10px var(--font); color: #b3a1ac; }
+  .frame { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  .frame-path { fill: var(--line-strong); transition: fill 160ms ease; }
+  .card.selected .frame-path { fill: var(--accent); }
+  .card:hover .frame-path { fill: #a9899b; }
+  .card.selected:hover .frame-path { fill: var(--accent); }
+  .participation {
+    position: absolute; right: 16px; top: 15px; z-index: 6;
+    height: 24px; padding: 0 9px; border-radius: 999px;
+    border: 1px solid var(--accent); background: var(--accent-soft); color: #a31363;
+    font-size: 10.5px; cursor: pointer;
+  }
+  .participation[aria-pressed="false"] { border-color: var(--line); background: var(--paper); color: var(--muted); }
+  .resize-hit {
+    position: absolute; right: -16px; bottom: -16px; width: 48px; height: 48px;
+    z-index: 9; background: transparent; border: 0; padding: 0; cursor: nwse-resize; touch-action: none;
+  }
+  .port {
+    position: absolute; z-index: 8; width: 34px; height: 34px; padding: 0; border: 0;
+    background: transparent; opacity: 1; pointer-events: none; cursor: crosshair; touch-action: none;
+  }
+  .port.right { right: -34px; top: 50%; transform: translateY(-50%); }
+  .port.left { left: -34px; top: 50%; transform: translateY(-50%); }
+  .port.top { top: -34px; left: 50%; transform: translateX(-50%); }
+  .port.bottom { bottom: -34px; left: 50%; transform: translateX(-50%); }
+
+  /* 未选中 / 未悬停：空心小圆点；线连接到这里。 */
+  .port::before {
+    content: ""; position: absolute; width: 7px; height: 7px; border: 1.5px solid var(--accent);
+    border-radius: 50%; background: var(--paper); box-shadow: 0 1px 4px rgba(70,35,55,.12);
+    opacity: 0; transition: opacity 150ms ease;
+  }
+  .port.is-connected { pointer-events: auto; }
+  .port.is-connected::before { opacity: 1; }
+  .card:hover .port, .card.selected .port { pointer-events: auto; }
+  .port.right::before { left: 2px; top: 50%; transform: translateY(-50%); }
+  .port.left::before { right: 2px; top: 50%; transform: translateY(-50%); }
+  .port.top::before { bottom: 2px; left: 50%; transform: translateX(-50%); }
+  .port.bottom::before { top: 2px; left: 50%; transform: translateX(-50%); }
+
+  /* 卡片悬停/选中：空心点变成短条，提示可拖。 */
+  .port::after {
+    content: ""; position: absolute; opacity: 0; background: var(--accent);
+    box-shadow: 0 1px 5px rgba(70,35,55,.18);
+    transition: opacity 150ms ease;
+  }
+  .port.right::after { left: 2px; top: 50%; width: 6px; height: 16px; transform: translateY(-50%); border-radius: 8px; }
+  .port.left::after { right: 2px; top: 50%; width: 6px; height: 16px; transform: translateY(-50%); border-radius: 8px; }
+  .port.top::after { bottom: 2px; left: 50%; width: 16px; height: 6px; transform: translateX(-50%); border-radius: 8px; }
+  .port.bottom::after { top: 2px; left: 50%; width: 16px; height: 6px; transform: translateX(-50%); border-radius: 8px; }
+  .card:hover .port::before, .card.selected .port::before, .port:hover::before { opacity: 0; }
+  .card:hover .port::after, .card.selected .port::after { opacity: .72; }
+  .card .port:hover::after { opacity: 0; }
+
+  /* 端口悬停：以贴边处为固定基座，向卡片外鼓出圆角半圆。 */
+  .port-shape {
+    position: absolute; opacity: 0; pointer-events: none;
+    transition: opacity 170ms ease, transform 170ms cubic-bezier(.2,.8,.2,1);
+    filter: drop-shadow(0 1px 3px rgba(70,35,55,.18));
+  }
+  .port-shape path { fill: var(--accent); }
+  .port.right .port-shape, .port.left .port-shape { width: 14px; height: 20px; }
+  .port.top .port-shape, .port.bottom .port-shape { width: 20px; height: 14px; }
+  .port.right .port-shape { left: 2px; top: 50%; transform: translateY(-50%) scale(.62); transform-origin: left center; }
+  .port.left .port-shape { right: 2px; top: 50%; transform: translateY(-50%) scale(.62); transform-origin: right center; }
+  .port.top .port-shape { bottom: 2px; left: 50%; transform: translateX(-50%) scale(.62); transform-origin: center bottom; }
+  .port.bottom .port-shape { top: 2px; left: 50%; transform: translateX(-50%) scale(.62); transform-origin: center top; }
+  .port.right:hover .port-shape { opacity: 1; transform: translateY(-50%) scale(1); }
+  .port.left:hover .port-shape { opacity: 1; transform: translateY(-50%) scale(1); }
+  .port.top:hover .port-shape { opacity: 1; transform: translateX(-50%) scale(1); }
+  .port.bottom:hover .port-shape { opacity: 1; transform: translateX(-50%) scale(1); }
+
+
+  .group {
+    position: absolute; z-index: 1; border: 1.5px dashed #d1aec1; border-radius: var(--radius);
+    background: rgba(252,247,250,.78); box-shadow: 0 6px 18px rgba(60,30,50,.04);
+    padding: 30px 14px 14px;
+  }
+  .group-head { position: absolute; left: 16px; top: 9px; font-size: 10px; color: #9b7b8d; letter-spacing: .04em; }
+  .group-mini-row { display: flex; gap: 10px; height: 100%; }
+  .mini-card { flex: 1; min-width: 0; border: 1px solid #e7dbe3; border-radius: var(--radius); background: #fff; padding: 10px 11px; font-size: 10.5px; line-height: 1.55; color: #7c6875; }
+  .mini-card b { display: block; margin-bottom: 3px; color: #493b44; font-size: 11px; }
+  .group .port { pointer-events: none; }
+  .group .port.is-connected { pointer-events: auto; }
+  .group:hover .port.is-connected { pointer-events: auto; }
+  .group:hover .port.is-connected::before { opacity: 0; }
+  .group:hover .port.is-connected::after { opacity: .72; }
+  .group .port.is-connected:hover::after { opacity: 0; }
+  .card.drop-target-card { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .group.drop-target-group { border-color: var(--accent); background: rgba(197,27,125,.055); }
+  .drop-badge {
+    position: absolute; z-index: 70; display: none; pointer-events: none; transform: translate(12px, -28px);
+    padding: 4px 9px; border-radius: 6px; background: #3d3039; color: #fff; font-size: 10px; white-space: nowrap;
+  }
+  .drop-badge.show { display: block; }
+  .toolbar { position: absolute; inset: 0; z-index: 10; pointer-events: none; opacity: 0; transition: opacity 120ms ease; }
+  .card.selected .toolbar { opacity: 1; }
+  .tool-btn {
+    position: absolute; width: 30px; height: 30px; border-radius: 50%;
+    border: 1px solid #e2d5dd; background: var(--paper); color: #856b7a;
+    box-shadow: 0 4px 11px rgba(60,30,50,.12); display: flex; align-items: center; justify-content: center;
+    pointer-events: auto; cursor: pointer; transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+  }
+  .tool-btn:hover { border-color: var(--accent); color: var(--accent); background: #fff8fb; }
+  .tool-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .tool-btn::after {
+    content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%) translateY(2px);
+    padding: 4px 7px; border-radius: 6px; background: #3d3039; color: #fff; font-size: 9px; line-height: 1.2;
+    white-space: nowrap; opacity: 0; pointer-events: none; transition: opacity 120ms ease, transform 120ms ease;
+  }
+  .tool-btn:hover::after { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .links { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 2; pointer-events: none; overflow: visible; }
+  .links path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+  .link-label {
+    position: absolute; z-index: 5; transform: translate(-50%,-50%);
+    padding: 4px 10px; border-radius: 8px; border: 1px solid #dac5d1; background: rgba(255,255,255,.98);
+    box-shadow: 0 4px 12px rgba(60,30,50,.09); color: #895a71; font-size: 10.5px; cursor: grab; user-select: none;
+    white-space: nowrap;
+  }
+  .link-label:active { cursor: grabbing; }
+  .link-label[contenteditable="true"] { cursor: text; outline: 2px solid var(--accent); }
+  .draft { stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 5 5; opacity: .8; }
+  .bottom-stack {
+    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+    width: min(780px, calc(100% - 40px)); z-index: 30; pointer-events: none;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .bottom-stack > * { pointer-events: auto; }
+  .chat-panel {
+    display: none; height: 280px; border: 1px solid #ddcbd6; border-radius: 18px;
+    background: rgba(255,255,255,.97); box-shadow: 0 14px 36px rgba(60,30,50,.12); overflow: hidden;
+    position: relative;
+  }
+  .chat-panel.open { display: flex; flex-direction: column; animation: rise 170ms ease both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .chat-head { flex: none; height: 44px; padding: 0 14px 0 18px; display: flex; align-items: center; border-bottom: 1px solid #f0e6ec; font-size: 12px; color: var(--muted); }
+  .chat-close {
+    margin-left: auto; width: 28px; height: 28px; border-radius: 50%; border: 1px solid #e3d6de;
+    background: #fff; color: #8d7280; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 17px;
+  }
+  .chat-close:hover { border-color: var(--accent); color: var(--accent); }
+  .chat-log { padding: 16px 18px; overflow: auto; display: flex; flex-direction: column; gap: 9px; flex: 1; }
+  .bubble { max-width: 86%; padding: 9px 12px; border-radius: 13px; font-size: 12px; line-height: 1.6; }
+  .bubble.agent { align-self: flex-start; background: #f5eef3; color: #5d4a56; border-bottom-left-radius: 4px; }
+  .bubble.user { align-self: flex-end; background: var(--accent-soft); color: #8d315e; border-bottom-right-radius: 4px; }
+  .board-toolbar { align-self: center; display: flex; gap: 7px; align-items: center; padding: 2px; }
+  .board-btn {
+    width: 32px; height: 32px; border-radius: 50%; border: 1px solid #e0d2db; background: #fff;
+    box-shadow: 0 4px 11px rgba(60,30,50,.08); display: flex; align-items: center; justify-content: center;
+    color: #876d7b; cursor: pointer; position: relative;
+  }
+  .board-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .board-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+  .board-btn::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); padding: 4px 7px; border-radius: 6px; background: #3d3039; color: #fff; font-size: 9px; white-space: nowrap; opacity: 0; pointer-events: none; }
+  .board-btn:hover::after { opacity: 1; }
+  .composer-row { display: flex; align-items: flex-end; gap: 8px; }
+  .mode-chip { flex: none; height: 38px; padding: 0 12px; border-radius: 999px; border: 1px solid #e2d5dd; background: #fff; color: #7c6472; font-size: 11px; display: flex; align-items: center; gap: 6px; }
+  .mode-chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .composer {
+    flex: 1; height: 52px; border-radius: 16px; border: 1px solid #dccbd5; background: #fff;
+    box-shadow: 0 8px 24px rgba(60,30,50,.10); display: flex; align-items: center; gap: 10px; padding: 0 14px;
+  }
+  .composer input { flex: 1; border: 0; outline: 0; font: inherit; font-size: 12px; color: var(--ink); background: transparent; }
+  .composer input::placeholder { color: #a6939e; }
+  .send { width: 32px; height: 32px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .send svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .toast { position: absolute; left: 50%; bottom: 620px; transform: translateX(-50%); z-index: 60; padding: 7px 12px; border-radius: 999px; background: #3d3039; color: #fff; font-size: 10.5px; opacity: 0; transition: opacity 160ms ease; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <div class="brand">QIO <small>INTERACTIVE</small></div>
+    <div class="hint">拖到组内卡片 = 连卡 · 拖到组框空白 = 连组 · 拖动右下角缩放 · 点击输入框展开对话</div>
+  </div>
+  <div class="board" id="board">
+    <svg class="links" id="links" aria-hidden="true"></svg>
+    <div class="toast" id="toast"></div>
+    <div class="drop-badge" id="dropBadge"></div>
+    <div class="bottom-stack" id="bottomStack">
+      <section class="chat-panel" id="chatPanel" aria-label="对话消息">
+        <header class="chat-head">
+          <span>对话</span>
+          <button class="chat-close" id="chatClose" type="button" aria-label="收起对话消息">×</button>
+        </header>
+        <div class="chat-log" id="chatLog">
+          <div class="bubble agent">已看到你选中的材料。你可以继续整理，也可以直接问我。</div>
+          <div class="bubble user">先比较两份方案，再帮我整理。</div>
+          <div class="bubble agent">好。我会在右侧卡片上整理，不改变你原来的位置。</div>
+        </div>
+      </section>
+      <div class="board-toolbar" aria-label="板面操作">
+        <button class="board-btn" type="button" data-tip="添加" aria-label="添加"><svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10"/></svg></button>
+        <button class="board-btn" type="button" data-tip="撤销" aria-label="撤销"><svg viewBox="0 0 16 16"><path d="M5 3L2 6l3 3M2 6h7a4 4 0 0 1 0 8H7"/></svg></button>
+        <button class="board-btn" type="button" data-tip="重做" aria-label="重做"><svg viewBox="0 0 16 16"><path d="M11 3l3 3-3 3M14 6H7a4 4 0 0 0 0 8h2"/></svg></button>
+        <button class="board-btn" type="button" data-tip="标注" aria-label="标注"><svg viewBox="0 0 16 16"><path d="M3 13l1-4 7-7 3 3-7 7-4 1Z"/></svg></button>
+        <button class="board-btn" type="button" data-tip="书签" aria-label="书签"><svg viewBox="0 0 16 16"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg></button>
+        <button class="board-btn" type="button" data-tip="提交给 QIO" aria-label="提交给 QIO"><svg viewBox="0 0 16 16"><path d="M2 8l12-5-5 12-2-5-5-2Z"/></svg></button>
+      </div>
+      <div class="composer-row">
+        <button class="mode-chip" type="button"><i></i>互动模式 <span style="color:#a38e9b">⌄</span></button>
+        <div class="composer">
+          <input id="chatInput" type="text" placeholder="继续讨论，或添加文件…" aria-label="对话输入">
+          <button class="send" id="sendBtn" type="button" aria-label="发送"><svg viewBox="0 0 16 16"><path d="M3 13L13 3M6 3h7v7"/></svg></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(() => {
+  const board = document.getElementById('board');
+  const linksSvg = document.getElementById('links');
+  const toast = document.getElementById('toast');
+  const chatPanel = document.getElementById('chatPanel');
+  const chatInput = document.getElementById('chatInput');
+  const chatLog = document.getElementById('chatLog');
+  const chatClose = document.getElementById('chatClose');
+  const sendBtn = document.getElementById('sendBtn');
+  const dropBadge = document.getElementById('dropBadge');
+
+  const ICONS = {
+    edit: '<svg viewBox="0 0 16 16"><path d="M3 13l1-4 7-7 3 3-7 7-4 1Z"/><path d="M9 4l3 3"/></svg>',
+    copy: '<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="9" rx="1"/><path d="M6 4V2h8v9h-2"/></svg>',
+    hide: '<svg viewBox="0 0 16 16"><path d="M2 8s2.2-3.4 6-3.4S14 8 14 8s-2.2 3.4-6 3.4S2 8 2 8Z"/><circle cx="8" cy="8" r="1.5"/><path d="M3 13L13 3"/></svg>',
+    bookmark: '<svg viewBox="0 0 16 16"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg>',
+    organize: '<svg viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="4" height="4" rx="1"/><rect x="9.5" y="2.5" width="4" height="4" rx="1"/><rect x="2.5" y="9.5" width="4" height="4" rx="1"/><rect x="9.5" y="9.5" width="4" height="4" rx="1"/></svg>',
+    trash: '<svg viewBox="0 0 16 16"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></svg>'
+  };
+  const TOOLBAR = [
+    ['edit', '编辑'], ['copy', '复制'], ['hide', '隐藏'],
+    ['bookmark', '书签'], ['organize', '整理'], ['trash', '删除']
+  ];
+
+  const cards = {};
+  const groups = {};
+  const links = [];
+  let selected = null;
+  let resize = null;
+  let connecting = null;
+  let toastTimer = null;
+
+  function say(text) {
+    toast.textContent = text; toast.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+  }
+
+  const HALF_PORTS = {
+    right: { viewBox: '0 0 14 20', d: 'M 0 4 Q 0 0 4 0 A 10 10 0 0 1 4 20 Q 0 20 0 16 Z' },
+    left: { viewBox: '0 0 14 20', d: 'M 14 4 Q 14 0 10 0 A 10 10 0 0 0 10 20 Q 14 20 14 16 Z' },
+    top: { viewBox: '0 0 20 14', d: 'M 4 14 Q 0 14 0 10 A 10 10 0 0 1 20 10 Q 20 14 16 14 Z' },
+    bottom: { viewBox: '0 0 20 14', d: 'M 4 0 Q 0 0 0 4 A 10 10 0 0 0 20 4 Q 20 0 16 0 Z' }
+  };
+
+  function makeGroup(data) {
+    const el = document.createElement('section');
+    el.className = 'group';
+    el.dataset.groupId = data.id;
+    el.style.cssText = 'left:' + data.x + 'px;top:' + data.y + 'px;width:' + data.w + 'px;height:' + data.h + 'px;';
+    const makeGroupPort = (side, label) => {
+      const spec = HALF_PORTS[side];
+      return '<span class="port ' + side + '" data-side="' + side + '" role="button" tabindex="0" aria-label="组的' + label + '连接点"><svg class="port-shape" viewBox="' + spec.viewBox + '" aria-hidden="true"><path d="' + spec.d + '"/></svg></span>';
+    };
+    el.innerHTML =
+      '<div class="group-head">' + data.title + '</div>' +
+      makeGroupPort('top', '上边') + makeGroupPort('right', '右边') +
+      makeGroupPort('bottom', '下边') + makeGroupPort('left', '左边');
+    board.insertBefore(el, document.getElementById('bottomStack'));
+    const record = { ...data, el, isGroup: true };
+    groups[data.id] = record;
+    el.querySelectorAll('.port').forEach((port) => {
+      port.addEventListener('pointerdown', (event) => startConnection('group:' + data.id, port.dataset.side, event));
+    });
+    el.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('.port')) return;
+      document.querySelectorAll('.group.selected').forEach((g) => g.classList.remove('selected'));
+      el.classList.add('selected');
+    });
+    return record;
+  }
+
+  function makeCard(data) {
+    const el = document.createElement('article');
+    el.className = 'card';
+    el.dataset.id = data.id;
+    el.style.cssText = 'left:' + data.x + 'px;top:' + data.y + 'px;width:' + data.w + 'px;height:' + data.h + 'px;';
+    el.innerHTML =
+      '<div class="card-body">' +
+        '<span class="card-kind">' + data.kind + '</span>' +
+        '<h2 class="card-title">' + data.title + '</h2>' +
+        '<p class="card-copy">' + data.body + '</p>' +
+        '<div class="card-meta">' + data.meta + '</div>' +
+      '</div>' +
+      '<button class="participation" type="button" aria-pressed="true">参与</button>' +
+      '<svg class="frame" aria-hidden="true"><path class="frame-path" fill-rule="evenodd"></path></svg>' +
+      '<span class="port top" data-side="top" role="button" tabindex="0" aria-label="上边连接点"><svg class="port-shape" viewBox="0 0 14 20" aria-hidden="true"><path d="M 0 4 Q 0 0 4 0 A 10 10 0 0 1 4 20 Q 0 20 0 16 Z"/></svg></span>' +
+      '<span class="port right" data-side="right" role="button" tabindex="0" aria-label="右边连接点"><svg class="port-shape" viewBox="0 0 14 20" aria-hidden="true"><path d="M 0 4 Q 0 0 4 0 A 10 10 0 0 1 4 20 Q 0 20 0 16 Z"/></svg></span>' +
+      '<span class="port bottom" data-side="bottom" role="button" tabindex="0" aria-label="下边连接点"><svg class="port-shape" viewBox="0 0 14 20" aria-hidden="true"><path d="M 0 4 Q 0 0 4 0 A 10 10 0 0 1 4 20 Q 0 20 0 16 Z"/></svg></span>' +
+      '<span class="port left" data-side="left" role="button" tabindex="0" aria-label="左边连接点"><svg class="port-shape" viewBox="0 0 14 20" aria-hidden="true"><path d="M 0 4 Q 0 0 4 0 A 10 10 0 0 1 4 20 Q 0 20 0 16 Z"/></svg></span>' +
+      '<div class="toolbar"></div>' +
+      '<button class="resize-hit" type="button" aria-label="拖动右下角调整卡片大小"></button>';
+    el.querySelectorAll('.port').forEach((port) => {
+      const spec = HALF_PORTS[port.dataset.side];
+      port.innerHTML = '<svg class="port-shape" viewBox="' + spec.viewBox + '" aria-hidden="true"><path d="' + spec.d + '"/></svg>';
+    });
+    board.insertBefore(el, document.getElementById('bottomStack'));
+    const record = { ...data, el, body: el.querySelector('.card-body'), frame: el.querySelector('.frame-path'), toolbar: el.querySelector('.toolbar') };
+    cards[data.id] = record;
+
+    el.querySelector('.card-body').addEventListener('pointerdown', (event) => {
+      if (event.target.closest('button, a')) return;
+      selectCard(data.id);
+    });
+    el.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('.port, .tool-btn, .participation, .resize-hit')) return;
+      selectCard(data.id);
+    });
+    el.querySelector('.participation').addEventListener('click', (event) => {
+      event.stopPropagation();
+      const button = event.currentTarget;
+      const on = button.getAttribute('aria-pressed') === 'true';
+      button.setAttribute('aria-pressed', on ? 'false' : 'true');
+      button.textContent = on ? '不参与' : '参与';
+    });
+    el.querySelectorAll('.port').forEach((port) => {
+      port.addEventListener('pointerdown', (event) => startConnection(data.id, port.dataset.side, event));
+    });
+    el.querySelector('.resize-hit').addEventListener('pointerdown', (event) => startResize(data.id, event));
+    el.addEventListener('dblclick', (event) => {
+      if (event.target.closest('.card-title')) selectCard(data.id);
+    });
+    refreshCard(record, false);
+    return record;
+  }
+
+  function roundedSamples(w, h, r) {
+    const pts = [];
+    const push = (x, y, nx, ny) => pts.push({ x, y, nx, ny });
+    const line = (x1, y1, x2, y2, nx, ny) => {
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      const steps = Math.max(1, Math.ceil(len / 2));
+      for (let i = 0; i < steps; i++) {
+        const t = i / steps;
+        push(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, nx, ny);
+      }
+    };
+    const arc = (cx, cy, radius, a0, a1) => {
+      const len = Math.abs(a1 - a0) * radius;
+      const steps = Math.max(3, Math.ceil(len / 2));
+      for (let i = 0; i < steps; i++) {
+        const a = a0 + (a1 - a0) * (i / steps);
+        const x = cx + Math.cos(a) * radius, y = cy + Math.sin(a) * radius;
+        push(x, y, (cx - x) / radius, (cy - y) / radius);
+      }
+    };
+    const PI = Math.PI;
+    line(r, 0, w - r, 0, 0, 1);
+    arc(w - r, r, r, -PI / 2, 0);
+    line(w, r, w, h - r, -1, 0);
+    arc(w - r, h - r, r, 0, PI / 2);
+    line(w - r, h, r, h, 0, -1);
+    arc(r, h - r, r, PI / 2, PI);
+    line(0, h - r, 0, r, 1, 0);
+    arc(r, r, r, PI, 1.5 * PI);
+    return pts;
+  }
+
+  function ringPath(w, h) {
+    const r = Math.min(22, w / 2, h / 2);
+    const outer = roundedSamples(w, h, r);
+    const inner = [];
+    for (const p of outer) {
+      const d = Math.hypot(p.x - w, p.y - h);
+      const k = Math.max(0, Math.min(1, (52 - d) / 52));
+      const eased = k * k * (3 - 2 * k);
+      const t = 1 + 3 * eased;
+      inner.push({ x: p.x + p.nx * t, y: p.y + p.ny * t });
+    }
+    const path = [];
+    for (let i = 0; i < outer.length; i++) path.push((i ? 'L' : 'M') + outer[i].x.toFixed(2) + ' ' + outer[i].y.toFixed(2));
+    path.push('Z');
+    path.push('M' + inner[inner.length - 1].x.toFixed(2) + ' ' + inner[inner.length - 1].y.toFixed(2));
+    for (let i = inner.length - 2; i >= 0; i--) path.push('L' + inner[i].x.toFixed(2) + ' ' + inner[i].y.toFixed(2));
+    path.push('Z');
+    return path.join(' ');
+  }
+
+  function renderFrame(card) {
+    const w = parseFloat(card.el.style.width), h = parseFloat(card.el.style.height);
+    card.el.querySelector('.frame').setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+    card.frame.setAttribute('d', ringPath(w, h));
+  }
+
+  function iconButton(key, label) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'tool-btn';
+    button.dataset.tip = label;
+    button.setAttribute('aria-label', label);
+    button.innerHTML = ICONS[key];
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      say(label + '（演示按钮）');
+    });
+    return button;
+  }
+
+  function layoutToolbar(card) {
+    const w = parseFloat(card.el.style.width), h = parseFloat(card.el.style.height);
+    const size = 30, gap = 7, edge = 8, portClear = 24;
+    card.toolbar.innerHTML = '';
+    const buttons = TOOLBAR.map(([key, label]) => iconButton(key, label));
+    let top = [], left = [];
+    const topLimit = w / 2 - portClear;
+    const leftLimit = h / 2 - portClear;
+    const topSlots = Math.max(0, Math.floor((topLimit - edge - size) / (size + gap)) + 1);
+    const leftSlots = Math.max(0, Math.floor((leftLimit - edge - size) / (size + gap)) + 1);
+    if (w >= h) {
+      top = buttons.slice(0, topSlots);
+      left = buttons.slice(topSlots, topSlots + leftSlots);
+    } else {
+      left = buttons.slice(0, leftSlots);
+      top = buttons.slice(leftSlots, leftSlots + topSlots);
+    }
+    top.forEach((button, i) => {
+      button.style.left = (edge + i * (size + gap)) + 'px';
+      button.style.top = (-size - 10) + 'px';
+      card.toolbar.appendChild(button);
+    });
+    left.forEach((button, i) => {
+      button.style.left = (-size - 10) + 'px';
+      button.style.top = (edge + i * (size + gap)) + 'px';
+      card.toolbar.appendChild(button);
+    });
+    // 极端情况下未排下的按钮继续放在左上角第二列，仍然避开上方/左侧端口。
+    const rest = buttons.slice(top.length + left.length);
+    rest.forEach((button, i) => {
+      button.style.left = (edge + i * (size + gap)) + 'px';
+      button.style.top = (-size * 2 - 20) + 'px';
+      card.toolbar.appendChild(button);
+    });
+  }
+
+  function selectCard(id) {
+    if (selected === id) return;
+    const previous = cards[selected];
+    if (previous) { previous.el.classList.remove('selected'); previous.toolbar.innerHTML = ''; }
+    selected = id;
+    const card = cards[id];
+    if (!card) return;
+    card.el.classList.add('selected');
+    layoutToolbar(card);
+    drawLinks();
+  }
+
+  function startResize(id, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const card = cards[id];
+    const startX = event.clientX, startY = event.clientY;
+    const startW = parseFloat(card.el.style.width), startH = parseFloat(card.el.style.height);
+    resize = { card, startX, startY, startW, startH };
+    document.body.style.cursor = 'nwse-resize';
+    window.addEventListener('pointermove', onResizeMove);
+    window.addEventListener('pointerup', stopResize, { once: true });
+  }
+  function onResizeMove(event) {
+    if (!resize) return;
+    const w = Math.max(220, resize.startW + event.clientX - resize.startX);
+    const h = Math.max(150, resize.startH + event.clientY - resize.startY);
+    resize.card.el.style.width = w + 'px';
+    resize.card.el.style.height = h + 'px';
+    refreshCard(resize.card, true);
+  }
+  function stopResize() {
+    if (resize) resize.card = null;
+    resize = null;
+    document.body.style.cursor = '';
+    window.removeEventListener('pointermove', onResizeMove);
+    drawLinks();
+  }
+
+  function refreshCard(card, relayout) {
+    renderFrame(card);
+    if (selected === card.id && (relayout || !card.toolbar.children.length)) layoutToolbar(card);
+    drawLinks();
+  }
+
+  function sidePoint(card, side) {
+    const x = parseFloat(card.el.style.left), y = parseFloat(card.el.style.top);
+    const w = parseFloat(card.el.style.width), h = parseFloat(card.el.style.height);
+    if (side === 'left') return { x, y: y + h / 2, nx: -1, ny: 0 };
+    if (side === 'right') return { x: x + w, y: y + h / 2, nx: 1, ny: 0 };
+    if (side === 'top') return { x: x + w / 2, y, nx: 0, ny: -1 };
+    return { x: x + w / 2, y: y + h, nx: 0, ny: 1 };
+  }
+
+  function anchorPoint(card, side) {
+    const p = sidePoint(card, side);
+    const distance = 5.5;
+    return { x: p.x + p.nx * distance, y: p.y + p.ny * distance, nx: p.nx, ny: p.ny };
+  }
+
+  function groupKey(id) { return id.startsWith('group:') ? id.slice(6) : id; }
+  function endpointNode(id) { return id.startsWith('group:') ? groups[groupKey(id)] : cards[id]; }
+
+  function chooseSides(from, to) {
+    const fx = parseFloat(from.el.style.left) + parseFloat(from.el.style.width) / 2;
+    const fy = parseFloat(from.el.style.top) + parseFloat(from.el.style.height) / 2;
+    const tx = parseFloat(to.el.style.left) + parseFloat(to.el.style.width) / 2;
+    const ty = parseFloat(to.el.style.top) + parseFloat(to.el.style.height) / 2;
+    const dx = tx - fx, dy = ty - fy;
+    if (Math.abs(dx) >= Math.abs(dy)) {
+      return [dx >= 0 ? 'right' : 'left', dx >= 0 ? 'left' : 'right'];
+    }
+    return [dy >= 0 ? 'bottom' : 'top', dy >= 0 ? 'top' : 'bottom'];
+  }
+
+  function curveFor(link) {
+    const from = endpointNode(link.from), to = endpointNode(link.to);
+    const [s1, s2] = chooseSides(from, to);
+    const p1 = anchorPoint(from, s1), p2 = anchorPoint(to, s2);
+    const dist = Math.min(150, Math.max(48, Math.hypot(p2.x - p1.x, p2.y - p1.y) * 0.36));
+    const c1 = { x: p1.x + p1.nx * dist + link.bend.x, y: p1.y + p1.ny * dist + link.bend.y };
+    const c2 = { x: p2.x + p2.nx * dist + link.bend.x, y: p2.y + p2.ny * dist + link.bend.y };
+    const mid = (t) => {
+      const mt = 1 - t;
+      return {
+        x: mt * mt * mt * p1.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t * t * t * p2.x,
+        y: mt * mt * mt * p1.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t * t * t * p2.y
+      };
+    };
+    return { p1, p2, c1, c2, mid };
+  }
+
+  function drawLinks() {
+    linksSvg.innerHTML = '<defs></defs>';
+    document.querySelectorAll('.port.is-connected').forEach((port) => port.classList.remove('is-connected'));
+    const defs = linksSvg.querySelector('defs');
+    links.forEach((link, index) => {
+      const from = endpointNode(link.from), to = endpointNode(link.to);
+      if (from && to) {
+        const [fromSide, toSide] = chooseSides(from, to);
+        from.el.querySelector('.port.' + fromSide)?.classList.add('is-connected');
+        to.el.querySelector('.port.' + toSide)?.classList.add('is-connected');
+      }
+      const curve = curveFor(link);
+      const id = 'grad-' + index;
+      const grad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+      grad.setAttribute('id', id);
+      grad.setAttribute('gradientUnits', 'userSpaceOnUse');
+      grad.setAttribute('x1', curve.p1.x); grad.setAttribute('y1', curve.p1.y);
+      grad.setAttribute('x2', curve.p2.x); grad.setAttribute('y2', curve.p2.y);
+      grad.innerHTML = '<stop offset="0" stop-color="#e5b3ca"/><stop offset="1" stop-color="#a31363"/>';
+      defs.appendChild(grad);
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', 'M' + curve.p1.x + ' ' + curve.p1.y + ' C' + curve.c1.x + ' ' + curve.c1.y + ' ' + curve.c2.x + ' ' + curve.c2.y + ' ' + curve.p2.x + ' ' + curve.p2.y);
+      path.setAttribute('stroke', 'url(#' + id + ')');
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('data-link-index', String(index));
+      linksSvg.appendChild(path);
+      const point = curve.mid(0.58);
+      if (!link.labelEl) {
+        const label = document.createElement('div');
+        label.className = 'link-label';
+        label.textContent = link.label;
+        label.addEventListener('pointerdown', (event) => startLabelDrag(link, event));
+        label.addEventListener('dblclick', () => editLabel(link, label));
+        board.appendChild(label);
+        link.labelEl = label;
+      }
+      link.labelEl.style.left = point.x + 'px';
+      link.labelEl.style.top = (point.y - 10) + 'px';
+    });
+  }
+
+  function startLabelDrag(link, event) {
+    if (link.labelEl.getAttribute('contenteditable') === 'true') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX, startY = event.clientY;
+    const origin = { x: link.bend.x, y: link.bend.y };
+    const move = (moveEvent) => {
+      link.bend.x = origin.x + (moveEvent.clientX - startX);
+      link.bend.y = origin.y + (moveEvent.clientY - startY);
+      drawLinks();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  function editLabel(link, label) {
+    label.setAttribute('contenteditable', 'true');
+    label.focus();
+    const range = document.createRange();
+    range.selectNodeContents(label);
+    const sel = window.getSelection();
+    if (sel) { sel.removeAllRanges(); sel.addRange(range); }
+    const finish = () => {
+      label.removeAttribute('contenteditable');
+      const text = label.textContent.trim() || '关联';
+      label.textContent = text;
+      link.label = text;
+      drawLinks();
+    };
+    label.addEventListener('blur', finish, { once: true });
+  }
+
+  function portPoint(card, side) {
+    const p = sidePoint(card, side);
+    return p;
+  }
+
+  function startConnection(id, side, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    const from = endpointNode(id);
+    if (!from) return;
+    selectCard(id);
+    const p = anchorPoint(from, side);
+    connecting = { id, side, from, start: p };
+    from.el.classList.add('connecting');
+    const draft = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    draft.setAttribute('class', 'draft');
+    linksSvg.appendChild(draft);
+    connecting.el = draft;
+    const clearTarget = () => {
+      document.querySelectorAll('.drop-target-card, .drop-target-group').forEach((node) => {
+        node.classList.remove('drop-target-card', 'drop-target-group');
+      });
+      dropBadge.classList.remove('show');
+    };
+    const move = (moveEvent) => {
+      const rect = board.getBoundingClientRect();
+      const x = moveEvent.clientX - rect.left, y = moveEvent.clientY - rect.top;
+      draft.setAttribute('d', 'M' + p.x + ' ' + p.y + ' C' + (p.x + (x - p.x) * .3) + ' ' + (p.y + p.ny * 40) + ' ' + (x - (x - p.x) * .3) + ' ' + (y + 20) + ' ' + x + ' ' + y);
+      clearTarget();
+      const target = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)?.closest('.card, .group');
+      if (!target) return;
+      const targetId = target.dataset.groupId ? 'group:' + target.dataset.groupId : target.dataset.id;
+      if (!targetId || targetId === id) return;
+      target.classList.add(target.dataset.groupId ? 'drop-target-group' : 'drop-target-card');
+      dropBadge.textContent = target.dataset.groupId ? '连接到组' : '连接到卡片';
+      dropBadge.style.left = x + 'px';
+      dropBadge.style.top = y + 'px';
+      dropBadge.classList.add('show');
+    };
+    const up = (upEvent) => {
+      const targetEl = document.elementFromPoint(upEvent.clientX, upEvent.clientY)?.closest('.card, .group');
+      if (targetEl) {
+        const targetId = targetEl.dataset.groupId ? 'group:' + targetEl.dataset.groupId : targetEl.dataset.id;
+        if (targetId && targetId !== id) links.push({ from: id, to: targetId, label: '关联', bend: { x: 0, y: 0 } });
+        drawLinks();
+        say('已建立关系');
+      }
+      draft.remove();
+      from.el.classList.remove('connecting');
+      clearTarget();
+      connecting = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }
+
+  // 对话：默认收起，点击输入框展开；顶部右侧圆形按钮收起。
+  function openChat() {
+    chatPanel.classList.add('open');
+    chatInput.focus();
+  }
+  chatInput.addEventListener('focus', openChat);
+  chatInput.addEventListener('pointerdown', (event) => { event.stopPropagation(); openChat(); });
+  chatClose.addEventListener('click', (event) => {
+    event.stopPropagation();
+    chatPanel.classList.remove('open');
+    chatInput.blur();
+  });
+  sendBtn.addEventListener('click', () => {
+    const value = chatInput.value.trim();
+    if (!value) return;
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble user';
+    bubble.textContent = value;
+    chatLog.appendChild(bubble);
+    chatInput.value = '';
+    chatLog.scrollTop = chatLog.scrollHeight;
+  });
+  chatInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') sendBtn.click(); });
+  board.addEventListener('pointerdown', (event) => {
+    if (event.target === board) {
+      const previous = cards[selected];
+      if (previous) { previous.el.classList.remove('selected'); previous.toolbar.innerHTML = ''; selected = null; }
+    }
+  });
+
+  // 初始卡片
+  makeGroup({ id: 'g1', title: '材料组', members: ['材料 A', '材料 B'], x: 980, y: 34, w: 340, h: 224 });
+  makeCard({ id: 'd', kind: '文字注释', title: '材料A', body: '组内成员。', meta: '组内', x: 1002, y: 78, w: 138, h: 126 });
+  makeCard({ id: 'e', kind: '文字注释', title: '材料B', body: '也可连接到组。', meta: '组内', x: 1158, y: 78, w: 138, h: 126 });
+  makeCard({ id: 'a', kind: '文字注释', title: '比较两份方案', body: '成本、交付周期与风险。卡片上只保留参与状态。', meta: '今天 15:04', x: 60, y: 92, w: 440, h: 260 });
+  makeCard({ id: 'b', kind: '文字注释', title: '参考资料', body: '交互设计记录。点击卡片看左侧工具栏；拖动右下角边框改变长宽。', meta: '今天 15:08', x: 590, y: 70, w: 270, h: 370 });
+  makeCard({ id: 'c', kind: '结果', title: '整理结果', body: '关联依据与最终成果，保留清晰的阅读顺序。', meta: '今天 15:10', x: 940, y: 330, w: 300, h: 180 });
+  links.push({ from: 'a', to: 'b', label: '参考依据', bend: { x: 0, y: -24 } });
+  links.push({ from: 'b', to: 'c', label: '整理为', bend: { x: 14, y: 0 } });
+  links.push({ from: 'c', to: 'group:g1', label: '归入组', bend: { x: 18, y: 0 } });
+  links.push({ from: 'b', to: 'd', label: '引用材料', bend: { x: -6, y: 18 } });
+  drawLinks();
+  selectCard('a');
+})();
+</script>
+</body>
+</html>

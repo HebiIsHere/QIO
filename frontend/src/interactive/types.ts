@@ -6,6 +6,9 @@
 
 export type CardKind = "text" | "file" | "code" | "url" | "reply";
 
+/** 参与讨论的唯一状态（Phase 2 §5.1）：included = 本次允许 QIO 读取，excluded = 退出范围。 */
+export type Participation = "included" | "excluded";
+
 export interface BoardCard {
   id: string;
   kind: CardKind;
@@ -19,6 +22,10 @@ export interface BoardCard {
   checked: boolean;
   /** 明确隐藏 = 退出讨论范围；与 checked 互斥 */
   hidden: boolean;
+  /** 参与讨论：唯一事实源；included = 本次允许 QIO 读取，excluded = 退出范围 */
+  participation?: Participation;
+  /** 服务端权威对象版本（CAS）；前端归一化必须保留，不能用内容重算成 1 */
+  version?: number;
   /** 折叠只改变显示 */
   folded: boolean;
   /** 书签只提高查找优先级，不产生意图 */
@@ -40,18 +47,39 @@ export interface BoardGroup {
   w: number;
   h: number;
   members: string[];
+  /**
+   * 组收起（Phase 2 §5.4）：**纯显示状态**，持久化到板面状态，但不参与语义版本 /
+   * 材料版本 / 意图依据。缺省（旧数据）= false（展开）。
+   */
+  collapsed?: boolean;
+  /** 服务端权威对象版本（CAS）：前端归一化必须保留；纯显示改动不得自增。 */
+  version?: number;
   deleted: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface LinkCurve {
+  /** 相对默认曲线中点的板面偏移，单位 px；只影响显示，不改变端点身份。 */
+  x: number;
+  y: number;
+}
+
 export interface BoardLink {
   id: string;
+  /**
+   * 端点身份（Phase 2 §5.3）：卡片是**裸 card id**（旧数据不变），组是 `group:<groupId>`。
+   * 组端点必须由 linkEndpoints 校验「组存在 / 未删 / 至少一名获准成员」。
+   */
   src: string;
   dst: string;
   /** 方向是用户写明的；系统不得自行解释成因果 / 支持 / 执行顺序 */
   direction: boolean;
   meaning: string;
+  /** 曲线弯曲偏移；省略 = 默认曲线。 */
+  curve?: LinkCurve;
+  /** 服务端权威对象版本（CAS）：前端归一化必须保留。 */
+  version?: number;
   deleted: boolean;
   createdAt: string;
   updatedAt: string;
@@ -66,6 +94,8 @@ export interface BoardState {
   links: BoardLink[];
   /** 提交时仍然有效的多选 / 区域选择 */
   selection: string[];
+  /** 参与状态一次性迁移标记；1 = 已按 v2 规则迁移 */
+  participationVersion?: number;
 }
 
 /** 提交载荷里的板面状态：只含本次允许查看的范围 */

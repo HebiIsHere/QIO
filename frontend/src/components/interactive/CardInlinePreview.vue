@@ -28,6 +28,7 @@ import {
   PreviewAbortedError,
   downloadAttachment,
   fetchAttachmentBytes,
+  fetchAttachmentContent,
   fetchAttachmentPreview,
   isDesktopShell,
   openAttachment,
@@ -48,6 +49,8 @@ import MarkdownContent from "../MarkdownContent.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 // 横向自检（溢出 + scrollLeft 真能移动，两项缺一不可）：见 ./horizontalFit.ts
 import { checkHorizontalFit, type HorizontalFitReport } from "./horizontalFit";
+// 图片比例（Phase 2-C 冻结字段 meta.display）：只读取，不在渲染路径里猜比例
+import { readImageDisplay } from "../../interactive/renderers/imageDisplay";
 
 /**
  * 渲染上下文（**显式属性**，不靠 DOM 结构或祖先类名猜测）：
@@ -61,12 +64,23 @@ import { checkHorizontalFit, type HorizontalFitReport } from "./horizontalFit";
  *
  * 不给默认值：调用方必须明确写出自己处在哪一种上下文里。
  */
-const props = defineProps<{
-  card: BoardCard;
-  active: boolean;
-  onClose: () => void;
-  context: "material" | "chat";
-}>();
+const props = withDefaults(
+  defineProps<{
+    card: BoardCard;
+    active: boolean;
+    onClose: () => void;
+    context: "material" | "chat";
+    /**
+     * 呈现模式（Phase 2-C）：
+     * - `reading`：既有卡片内阅读（图片仍不在卡片内阅读，保留诚实说明）；
+     * - `image-detail`：图片**详情态** —— 图片铺满卡片、圆角裁切、等比完整显示
+     *   （contain：不裁主体、不拉伸），不保留普通标题栏高度，名称与关闭入口浮在图上。
+     *   它与契约 §5.2 的「详细状态」对应；普通文件卡不传，行为一字不变。
+     */
+    mode?: "reading" | "image-detail";
+  }>(),
+  { mode: "reading" },
+);
 /**
  * 阅读位置必须**带着归属**一起交出去：位置按「附件 + 文件版本」落库，
  * 只给一个页码，父组件无法判断它属于哪一份文件（旧版本的位置绝不能写到新版本上）。
@@ -113,6 +127,105 @@ const slideIndex = ref(0);
 
 const attachmentId = computed(() => cardAttachmentId(props.card));
 const fileName = computed(() => cardFileName(props.card) || "未命名附件");
+/**
+ * 图片详情态（Phase 2-C）：只在调用方显式传 mode="image-detail" 且这张卡确实是图片附件时成立。
+ * 普通文件卡 / 对话内渲染都不受影响。
+ */
+const imageDetailMode = computed(() => props.mode === "image-detail");
+/** 卡片 meta.display 的真实比例（没有就是 null，界面不猜、不写 0）。 */
+const cardDisplay = computed(() => readImageDisplay((props.card.meta ?? {}) as Record<string, unknown>));
+const imageShapeText = computed(() => {
+  const display = cardDisplay.value;
+  return display ? display.width + "×" + display.height + " 像素（原比例）" : "原图比例未知（按完整画面显示，不裁切）";
+});
+
+/*
+ * 图片详情态的字节加载（Phase 2-C）。
+ *
+ * 三条硬约束：
+ * 1. 身份核对：附件 id、卡片 id、附件版本三项都要与这次请求发起时一致，
+ *    任何一项变了都丢弃结果 —— 旧请求不覆盖新图；
+ * 2. 释放：换附件 / 收起 / 卸载时 revoke 当前 blob URL（只持有一个）；
+ * 3. 失败如实说：读不出字节就给原因与重试入口，不假装加载中。
+ */
+const imageDetailUrl = ref("");
+const imageDetailError = ref("");
+const imageDetailLoading = ref(false);
+let imageSeq = 0;
+let imageObjectUrl: string | null = null;
+
+function releaseImageDetail(): void {
+  imageSeq += 1;
+  if (imageObjectUrl) {
+    try {
+      URL.revokeObjectURL(imageObjectUrl);
+    } catch {
+      /* 已经释放过：释放失败不该打断收起 */
+    }
+  }
+  imageObjectUrl = null;
+  imageDetailUrl.value = "";
+  imageDetailLoading.value = false;
+}
+
+function imageVersionKey(): string {
+  const meta = (props.card.meta ?? {}) as Record<string, unknown>;
+  const file = meta.file && typeof meta.file === "object" ? (meta.file as Record<string, unknown>) : {};
+  return String(file.version ?? file.attachmentVersion ?? meta.version ?? "");
+}
+
+async function loadImageDetail(): Promise<void> {
+  const id = attachmentId.value;
+  if (!imageDetailMode.value || !props.active || !id) {
+    releaseImageDetail();
+    return;
+  }
+  releaseImageDetail();
+  const mine = imageSeq;
+  const cardId = props.card.id;
+  const version = imageVersionKey();
+  imageDetailLoading.value = true;
+  imageDetailError.value = "";
+  try {
+    const blob = await fetchAttachmentContent(id);
+    // 身份 / 版本 / 卡片存在三项核对（缺一项就丢弃，绝不写进另一张卡）
+    if (
+      mine !== imageSeq ||
+      !props.active ||
+      cardId !== props.card.id ||
+      id !== attachmentId.value ||
+      version !== imageVersionKey()
+    ) {
+      return;
+    }
+    const create = (URL as unknown as { createObjectURL?: (value: Blob) => string }).createObjectURL;
+    if (typeof create !== "function") {
+      imageDetailError.value = "这个环境不支持显示图片：可以打开或下载原图";
+      return;
+    }
+    const url = create(blob);
+    if (mine !== imageSeq) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        /* 同上 */
+      }
+      return;
+    }
+    imageObjectUrl = url;
+    imageDetailUrl.value = url;
+  } catch (err) {
+    if (mine !== imageSeq) return;
+    if (isAbort(err)) return;
+    imageDetailError.value = "原图没有读出来：" + messageOf(err) + "（可以重试）";
+  } finally {
+    if (mine === imageSeq) imageDetailLoading.value = false;
+  }
+}
+
+function retryImageDetail(): void {
+  void loadImageDetail();
+}
 const sizeBytes = computed(() => cardSizeBytes(props.card));
 const plan = computed(() =>
   previewPlan(props.card, renderState.value, { desktop: isDesktopShell() }),
@@ -221,6 +334,7 @@ async function releasePdf(): Promise<void> {
 
 function resetView(): void {
   void releasePdf();
+  releaseImageDetail();
   data.value = null;
   viewError.value = "";
   actionNote.value = "";
@@ -284,6 +398,11 @@ async function start(): Promise<void> {
     const renderer = plan.value.renderer;
     if (renderer === "none") return;
     if (renderer === "image") {
+      if (imageDetailMode.value) {
+        // 图片详情态（Phase 2-C）：真实字节 → blob URL → 等比完整铺满卡片
+        await loadImageDetail();
+        return;
+      }
       // 图片不再做卡片内阅读：给出可读说明，外部打开 / 下载动作照旧（不静默空白、不假成功）
       inlineBlockedReason.value = IMAGE_INLINE_BLOCKED_REASON;
       return;
@@ -463,7 +582,20 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onWindowResize);
   stop();
+  releaseImageDetail();
 });
+
+/** 详情态下卡片被换附件 / 改名 / 换版本：重新取图（旧请求由身份核对丢弃）。 */
+watch(
+  [() => props.card.id, () => attachmentId.value, () => imageVersionKey(), () => imageDetailMode.value],
+  ([, , , mode]) => {
+    if (!mode || !props.active) {
+      releaseImageDetail();
+      return;
+    }
+    void loadImageDetail();
+  },
+);
 
 defineExpose({
   /** 复核入口：返回完整报告（外层 / 查看区各自的溢出与可移动性）。 */
@@ -473,7 +605,61 @@ defineExpose({
 </script>
 
 <template>
+  <!--
+    图片详情态（Phase 2-C 契约 §5.2）：
+    图片铺满卡片（position:absolute; inset:0，圆角裁切），**不保留普通标题栏高度**；
+    object-fit: contain —— 等比完整显示，不裁主体（不用 cover 伪装）、不拉伸；
+    名称与关闭入口浮在图上（各自带一条窄蒙版），不吃图片本身的指针事件。
+  -->
+  <div
+    v-if="imageDetailMode && plan.renderer === 'image'"
+    class="cip-img-detail"
+    data-testid="cip-img-detail"
+    data-im="card-image-detail"
+    :data-card-id="props.card.id"
+    :data-image-state="imageDetailUrl ? 'ready' : imageDetailError ? 'failed' : 'loading'"
+    :data-image-ratio="cardDisplay ? String(cardDisplay.aspectRatio) : ''"
+  >
+    <img
+      v-if="imageDetailUrl && !imageDetailError"
+      class="cip-img-detail-img"
+      data-testid="cip-img-detail-img"
+      data-im="card-image-detail-img"
+      :src="imageDetailUrl"
+      :alt="'图片：' + fileName"
+      draggable="false"
+    />
+    <div v-else class="cip-img-detail-state" data-im="card-image-detail-state" role="status">
+      <p v-if="imageDetailLoading || loading" data-testid="cip-img-detail-loading">正在读取原图…</p>
+      <template v-else>
+        <p class="cip-img-detail-reason" data-testid="cip-img-detail-error">
+          {{ imageDetailError || plan.reason || viewError || "这张图片暂时显示不出来（原因未说明）" }}
+        </p>
+        <div class="cip-img-detail-actions">
+          <button type="button" data-testid="cip-img-detail-retry" data-im="card-image-detail-retry" @click="retryImageDetail">
+            重试
+          </button>
+          <button
+            v-if="plan.actions.length"
+            type="button"
+            data-testid="cip-img-detail-open"
+            data-im="card-image-detail-open"
+            @click="runAction(plan.actions[0])"
+          >{{ plan.actions[0].label }}</button>
+        </div>
+      </template>
+    </div>
+    <!--
+      底部只留一条真实尺寸事实（等宽、贴左下角）：名称 / 许可 / 收起详情由卡片头部浮在图上，
+      这里不重复一遍，也不占据图片中央的观看区域。
+    -->
+    <div class="cip-img-chrome">
+      <p class="cip-img-shape mono" data-im="card-image-detail-shape">{{ imageShapeText }}</p>
+    </div>
+  </div>
+
   <section
+    v-else
     ref="rootRef"
     class="cip"
     data-testid="cip-root"
@@ -808,7 +994,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-lg);
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -873,7 +1059,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-lg);
   padding: var(--sp-1);
 }
 /*
@@ -889,7 +1075,7 @@ defineExpose({
   min-width: 0;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   padding: var(--sp-2);
 }
 .cip-canvas-box[data-qio-pan="both"] {
@@ -917,7 +1103,7 @@ defineExpose({
   padding: var(--sp-2);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--r-lg);
   font-family: var(--mono);
   font-size: var(--fs-sm);
   line-height: var(--lh-tight);
@@ -1076,6 +1262,116 @@ defineExpose({
   gap: var(--sp-2);
   flex-wrap: wrap;
   margin-top: var(--sp-2);
+}
+/*
+ * ---- 图片详情态（Phase 2-C 契约 §5.2）--------------------------------------
+ * 铺满卡片（absolute inset:0）、圆角裁切（border-radius: inherit + overflow: hidden）、
+ * 等比完整显示（object-fit: contain：不裁主体、不拉伸，也不用 cover 伪装）。
+ * 这一层不铺普通标题栏：名称 / 尺寸事实 / 收起入口都浮在图上，各自带一条窄蒙版。
+ * 图片层与整层都不吃指针事件：拖动、选中、连接点与缩放手柄照旧落在卡片上；
+ * 只有名称条里的按钮自己收事件。
+ */
+.cip-img-detail {
+  position: absolute;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--bg-inset);
+  pointer-events: none;
+}
+.cip-img-detail-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+.cip-img-detail-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+}
+.cip-img-detail-state p {
+  margin: 0;
+  max-width: 100%;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-lg);
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  overflow-wrap: anywhere;
+}
+.cip-img-detail-reason {
+  color: var(--danger);
+}
+.cip-img-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  justify-content: center;
+}
+.cip-img-detail-actions button {
+  pointer-events: auto;
+  font-family: var(--sans);
+  font-size: var(--fs-sm);
+  color: var(--text-primary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  padding: var(--sp-1) var(--sp-2);
+  cursor: pointer;
+}
+.cip-img-detail-actions button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+/*
+ * 浮在图片上的**唯一**一条信息：真实尺寸事实（左下角，等宽、贴一条窄底渐变）。
+ * 名称 / 许可 / 收起详情由卡片头部浮在图上（BoardCard 的 .card.is-image-detail > .card-head），
+ * 两边不重复同一句话；连接点与缩放手柄由 BoardResizeLayer 画在卡片外侧，不会被这条压住。
+ */
+.cip-img-chrome {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cip-img-chrome::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 56px;
+  background: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--bg-surface) 84%, transparent),
+    transparent
+  );
+}
+.cip-img-shape {
+  position: absolute;
+  left: var(--sp-3);
+  bottom: var(--sp-2);
+  z-index: 1;
+  max-width: calc(100% - var(--sp-6));
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-tech);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 @media (prefers-reduced-motion: reduce) {
   .cip *,

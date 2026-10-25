@@ -105,7 +105,9 @@ function chipNames(w: VueWrapper): string[] {
 async function clickRemove(w: VueWrapper, name: string) {
   const chip = w.findAll(".composer .chip").find((c) => c.text().includes(name));
   expect(chip, "找不到要移除的 chip：" + name).toBeTruthy();
-  const btn = chip!.findAll("button").find((b) => (b.text() || "").trim() === "×");
+  await chip!.find("summary.more-btn").trigger("click");
+  const btn = chip!.findAll("button").find((b) => (b.text() || "").trim() === "移除附件");
+  expect(btn, "更多菜单里必须有移除附件").toBeTruthy();
   await btn!.trigger("click");
   await flushPromises();
 }
@@ -141,7 +143,10 @@ describe("R3×R4 组合：切话题 + 移除 + 晚到结果", () => {
     );
 
     const { w, session } = await mountComposer("A");
-    await w.find(".composer .attach-btn").trigger("click");
+    await w.find(".composer .attach-circle").trigger("click");
+    const localFile = w.findAll(".composer .attach-menu-item").find((b) => (b.text() || "").includes("选择本地文件"));
+    expect(localFile, "附件菜单里必须有选择本地文件").toBeTruthy();
+    await localFile!.trigger("click");
     await flushPromises();
 
     // 切到 B：B 的恢复在途（受控 deferred），记录它回显的修订号

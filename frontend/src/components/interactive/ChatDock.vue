@@ -87,6 +87,19 @@ import {
 } from "../../interactive/chatFrame";
 import { publishChatFrame } from "../../interactive/chatFrameState";
 import { RESIZE_DRAG_THRESHOLD, boxEquals, clampNumber } from "../../interactive/resize";
+import {
+  conversationBindingForSend,
+  type ConversationBinding,
+} from "./v2/conversationLayout";
+
+/**
+ * Phase 3 §6.4：互动绑定由**可信 props**传入（Lead 从 interactive store 投影后传进来）；
+ * 不传时保持既有行为（内部读 store.chatBinding），所以旧调用方不受影响。
+ * 绑定只作为 session.send 的发送选项，绝不拼进用户原文。
+ */
+const props = defineProps<{
+  binding?: ConversationBinding;
+}>();
 
 /**
  * 面板里最多渲染多少条消息。
@@ -1103,7 +1116,7 @@ async function submit() {
          * 阶段三契约 §13.3：互动悬浮聊天发出的消息携带可验证的互动绑定。
          * 服务端核对板面存在 / 提交归属后写入 TurnContext；演示或普通聊天不会走到这里。
          */
-        interactive: store.chatBinding,
+        interactive: conversationBindingForSend(props.binding) ?? store.chatBinding,
       },
     );
     if (ok) {

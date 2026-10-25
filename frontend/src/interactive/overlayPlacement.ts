@@ -43,10 +43,14 @@ export interface ToolbarAnchor {
   hostRect: OverlayRect;
   /** 工具栏实测高度（屏幕像素）；量不到时调用方用 TOOLBAR_H 兜底 */
   toolbarHeight: number;
+  /** 工具栏实测宽度（屏幕像素）；提供时用于判断竖卡改贴左边 */
+  toolbarWidth?: number;
   /** 工具栏底边与卡片顶边之间的固定间距（屏幕像素） */
   gap: number;
   /** 宿主处于缩放祖先下时的实测比例；缺省 / 非法都按 1（不缩放）处理 */
   hostScale?: ToolbarScale;
+  /** true = 直接以卡片左上角为按钮坐标系原点（逐按钮换边用）。 */
+  anchorAtCard?: boolean;
 }
 
 function safeScale(value: unknown): number {
@@ -61,6 +65,27 @@ function safeScale(value: unknown): number {
 export function placeToolbarRelativeToCard(input: ToolbarAnchor): ToolbarPlacement {
   const scaleX = safeScale(input.hostScale?.x);
   const scaleY = safeScale(input.hostScale?.y);
+  if (input.anchorAtCard) {
+    return {
+      left: (input.cardRect.left - input.hostRect.left) / scaleX,
+      top: (input.cardRect.top - input.hostRect.top) / scaleY,
+    };
+  }
+  const width = input.cardRect.right - input.cardRect.left;
+  const height = input.cardRect.bottom - input.cardRect.top;
+  const toolbarWidth = Number(input.toolbarWidth);
+  /*
+   * 长边优先：宽卡贴上边，竖卡贴左边。
+   * 工具栏仍是一行图标；贴左边时整体放在卡片左侧、顶部对齐，避开左边中点端口。
+   * 不提供 toolbarWidth 的旧调用保持原来的「贴上边」行为。
+   */
+  const placeLeft = Number.isFinite(toolbarWidth) && toolbarWidth > 0 && height > width * 1.08;
+  if (placeLeft) {
+    return {
+      left: (input.cardRect.left - toolbarWidth - input.gap - input.hostRect.left) / scaleX,
+      top: (input.cardRect.top - input.hostRect.top + 8) / scaleY,
+    };
+  }
   return {
     left: (input.cardRect.left - input.hostRect.left) / scaleX,
     top: (input.cardRect.top - input.hostRect.top - input.toolbarHeight - input.gap) / scaleY,

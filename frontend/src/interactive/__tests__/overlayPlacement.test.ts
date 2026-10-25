@@ -64,6 +64,33 @@ describe("placeToolbarRelativeToCard：固定锚点，不做任何避让", () =>
     expect(placed.left).not.toBe(card.right - HOST.left + GAP);
   });
 
+  it("竖卡：工具栏改贴左边，顶部对齐并避开左边中点", () => {
+    const card = rect(407, 254, 627, 658); // 220 宽、404 高
+    const placed = placeToolbarRelativeToCard({
+      cardRect: card,
+      hostRect: HOST,
+      toolbarHeight: TOOLBAR_H,
+      toolbarWidth: 210,
+      gap: GAP,
+    });
+    expect(placed.left).toBe(407 - 210 - GAP - HOST.left);
+    expect(placed.top).toBe(254 - HOST.top + 8);
+    expect(placed.top).toBeLessThan(card.top + (card.bottom - card.top) / 2 - HOST.top);
+  });
+
+  it("宽卡：仍贴上边", () => {
+    const card = rect(407, 254, 847, 514);
+    const placed = placeToolbarRelativeToCard({
+      cardRect: card,
+      hostRect: HOST,
+      toolbarHeight: TOOLBAR_H,
+      toolbarWidth: 210,
+      gap: GAP,
+    });
+    expect(placed.left).toBe(card.left - HOST.left);
+    expect(placed.top).toBe(card.top - HOST.top - TOOLBAR_H - GAP);
+  });
+
   it("宿主处在缩放祖先下：按实测比例逆变换（hostRect / offsetWidth）", () => {
     const card = rect(240, 300, 440, 500);
     const scaledHost = rect(40, 100, 640, 500); // 1200×800 的宿主被 2 倍祖先放大后只剩 600×400

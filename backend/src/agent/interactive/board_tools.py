@@ -135,6 +135,11 @@ def _visible_ids(state: Mapping[str, Any]) -> set[str]:
     }
 
 
+def _visible_group_ids(state: Mapping[str, Any]) -> set[str]:
+    """组对模型可见的条件：未删除且至少一名 included 成员（不暴露其余成员）。"""
+    return models.visible_group_ids(dict(state))
+
+
 def _card_by_id(state: Mapping[str, Any], card_id: str) -> dict | None:
     for card in state.get("cards") or []:
         if isinstance(card, dict) and str(card.get("id")) == str(card_id):
@@ -157,37 +162,49 @@ def _link_by_id(state: Mapping[str, Any], link_id: str) -> dict | None:
 
 
 def _card_snapshot(card: Mapping[str, Any]) -> dict[str, Any]:
+    meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+    display = meta.get("display") if isinstance(meta.get("display"), dict) else None
     return {
         "id": str(card.get("id") or ""),
         "kind": str(card.get("kind") or ""),
         "version": int(card.get("version", 1) or 1),
         "content": str(card.get("content") or ""),
-        "title": str((card.get("meta") or {}).get("title") or "") if isinstance(card.get("meta"), dict) else "",
+        "title": str(meta.get("title") or ""),
         "x": float(card.get("x") or 0.0),
         "y": float(card.get("y") or 0.0),
         "w": float(card.get("w") or 0.0),
         "h": float(card.get("h") or 0.0),
+        # Phase 2：参与状态是唯一事实源；checked / hidden 只作为历史兼容事实返回。
+        "participation": models.card_participation(dict(card)),
         "checked": bool(card.get("checked", False)),
         "hidden": bool(card.get("hidden", False)),
+        "display": dict(display) if display else None,
     }
 
 
-def _group_snapshot(group: Mapping[str, Any]) -> dict[str, Any]:
+def _group_snapshot(group: Mapping[str, Any], *, visible_ids: set[str] | None = None) -> dict[str, Any]:
+    members = [str(item) for item in group.get("members") or []]
+    if visible_ids is not None:
+        members = [item for item in members if item in visible_ids]
     return {
         "id": str(group.get("id") or ""),
         "version": int(group.get("version", 1) or 1),
         "name": str(group.get("name") or ""),
         "ordered": bool(group.get("ordered", False)),
-        "members": [str(item) for item in group.get("members") or []],
+        "members": members,
     }
 
 
 def _link_snapshot(link: Mapping[str, Any]) -> dict[str, Any]:
+    src = str(link.get("src") or "")
+    dst = str(link.get("dst") or "")
     return {
         "id": str(link.get("id") or ""),
         "version": int(link.get("version", 1) or 1),
-        "src": str(link.get("src") or ""),
-        "dst": str(link.get("dst") or ""),
+        "src": src,
+        "dst": dst,
+        "src_kind": "group" if models.is_group_endpoint(src) else "card",
+        "dst_kind": "group" if models.is_group_endpoint(dst) else "card",
         "direction": bool(link.get("direction", False)),
         "meaning": str(link.get("meaning") or ""),
     }
@@ -284,6 +301,24 @@ def _versions_map(state: Mapping[str, Any], card_ids: list[str], group_ids: list
             out["links"][str(link_id)] = int(link.get("version", 1) or 1)
     return out
 
+
+def _endpoint_versions(state: Mapping[str, Any], endpoints: list[str]) -> dict[str, dict[str, int]]:
+    """端点（卡片裸 id / group:<id>）的版本映射；组端点进 groups，不误当卡片。"""
+    out: dict[str, dict[str, int]] = {"cards": {}, "groups": {}, "links": {}}
+    for endpoint in endpoints:
+        parsed = models.parse_link_endpoint(endpoint)
+        if parsed is None:
+            continue
+        kind, endpoint_id = parsed
+        if kind == "group":
+            group = _group_by_id(state, endpoint_id)
+            if group is not None:
+                out["groups"][endpoint_id] = int(group.get("version", 1) or 1)
+        else:
+            card = _card_by_id(state, endpoint_id)
+            if card is not None:
+                out["cards"][endpoint_id] = int(card.get("version", 1) or 1)
+    return out
 
 # -- 写操作事务封装 ----------------------------------------------------------
 
@@ -442,40 +477,34 @@ class BoardInspectTool(_BoardTool):
         for card in state.get("cards") or []:
             if not isinstance(card, dict) or str(card.get("id")) not in visible:
                 continue
+            meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+            display = meta.get("display") if isinstance(meta.get("display"), dict) else None
             cards.append(
                 {
                     "id": str(card["id"]),
                     "kind": str(card.get("kind") or ""),
                     "version": int(card.get("version", 1) or 1),
+                    "participation": models.card_participation(card),
                     "checked": bool(card.get("checked", False)),
                     "hidden": bool(card.get("hidden", False)),
                     "folded": bool(card.get("folded", False)),
                     "bookmarked": bool(card.get("bookmarked", False)),
-                    "title": str((card.get("meta") or {}).get("title") or ""),
+                    "title": str(meta.get("title") or ""),
+                    "display": dict(display) if display else None,
                     "content_preview": str(card.get("content") or "")[:120],
                 }
             )
         groups = []
         for group in state.get("groups") or []:
-            if not isinstance(group, dict) or group.get("deleted"):
+            if not isinstance(group, dict) or not models.group_is_visible(dict(state), group):
                 continue
-            members = [str(item) for item in group.get("members") or [] if str(item) in visible]
-            if not members:
-                continue
-            groups.append(
-                {
-                    "id": str(group["id"]),
-                    "version": int(group.get("version", 1) or 1),
-                    "name": str(group.get("name") or ""),
-                    "ordered": bool(group.get("ordered", False)),
-                    "members": members,
-                }
-            )
+            snapshot = _group_snapshot(group, visible_ids=visible)
+            # 组参与由成员派生；只列 included 成员，不泄露未参与成员。
+            snapshot["participation"] = models.group_participation(dict(state), group)
+            groups.append(snapshot)
         links = []
         for link in state.get("links") or []:
-            if not isinstance(link, dict) or link.get("deleted"):
-                continue
-            if str(link.get("src")) in visible and str(link.get("dst")) in visible:
+            if models.link_visible(dict(state), link):
                 links.append(_link_snapshot(link))
         intent_view = intent_service.list_intents_view(conn, turn.board_id)
         waiting = intent_service.list_waiting_view(conn, turn.board_id)
@@ -560,15 +589,18 @@ class BoardReadCardsTool(_BoardTool):
         out = []
         for card in page:
             meta = card.get("meta") if isinstance(card.get("meta"), dict) else {}
+            display = meta.get("display") if isinstance(meta.get("display"), dict) else None
             out.append(
                 {
                     "id": str(card.get("id")),
                     "kind": str(card.get("kind") or ""),
                     "version": int(card.get("version", 1) or 1),
+                    "participation": models.card_participation(card),
                     "content": str(card.get("content") or ""),
                     "title": str(meta.get("title") or ""),
                     "checked": bool(card.get("checked", False)),
                     "hidden": bool(card.get("hidden", False)),
+                    "display": dict(display) if display else None,
                 }
             )
         return _ok(
@@ -919,6 +951,15 @@ class BoardGroupCardsTool(_BoardTool):
                     status=ToolStatus.FAILED.value,
                     data={"used": used["groups"], "limit": int(scope.get("max_new_groups") or 0)},
                 )
+        if target_group_id is not None:
+            target_group = _group_by_id(state, target_group_id)
+            if target_group is None or not models.group_is_visible(dict(state), target_group):
+                return _fail(
+                    self.name,
+                    "group_not_visible",
+                    "目标分组不在当前允许查看的范围内（没有参与中的成员或已删除）",
+                    status=ToolStatus.FAILED.value,
+                )
         expected, missing = _required_card_versions(args)
         if missing:
             return _fail(
@@ -927,10 +968,11 @@ class BoardGroupCardsTool(_BoardTool):
                 "组操作必须提供全部受影响卡片的 expected_versions",
                 data={"missing": missing},
             )
+        visible_now = _visible_ids(state)
         before_groups = {
-            str(group.get("id")): _group_snapshot(group)
+            str(group.get("id")): _group_snapshot(group, visible_ids=visible_now)
             for group in state.get("groups") or []
-            if isinstance(group, dict)
+            if isinstance(group, dict) and models.group_is_visible(dict(state), group)
         }
 
         def mutate(state_in: dict) -> tuple[dict, dict]:
@@ -950,7 +992,7 @@ class BoardGroupCardsTool(_BoardTool):
                     raise ValueError("加入分组失败：目标分组不存在")
                 created = False
                 group_id = target_group_id
-            snapshot = _group_snapshot(group)
+            snapshot = _group_snapshot(group, visible_ids=_visible_ids(new_state))
             card_snapshots = [
                 _card_snapshot(card)
                 for card in new_state.get("cards") or []
@@ -997,7 +1039,24 @@ class BoardOrderGroupTool(_BoardTool):
         group = _group_by_id(state, group_id)
         if group is None:
             return _fail(self.name, "group_not_found", "分组不存在或已删除")
-        live_members = [str(item) for item in group.get("members") or []]
+        if not models.group_is_visible(dict(state), group):
+            return _fail(
+                self.name,
+                "group_not_visible",
+                "分组不在当前允许查看的范围内（没有参与中的成员或已删除）",
+                status=ToolStatus.FAILED.value,
+            )
+        visible = _visible_ids(state)
+        all_members = [str(item) for item in group.get("members") or []]
+        live_members = [item for item in all_members if item in visible]
+        if len(live_members) != len(all_members):
+            # 不列出未参与成员 id：模型不能靠排序接口反推它们。
+            return _fail(
+                self.name,
+                "group_has_excluded_members",
+                "这个分组里还有未参与的成员：不能只对部分成员排序（避免泄露或改动它们）",
+                status=ToolStatus.FAILED.value,
+            )
         member_order = [str(item) for item in args.member_order or []]
         if sorted(set(member_order)) != sorted(set(live_members)) or len(member_order) != len(set(member_order)):
             return _fail(
@@ -1014,7 +1073,7 @@ class BoardOrderGroupTool(_BoardTool):
                 "顺序调整必须提供全部受影响卡片的 expected_versions",
                 data={"missing": missing},
             )
-        before = {"group": _group_snapshot(group), "cards": [_card_snapshot(_card_by_id(state, cid)) for cid in live_members if _card_by_id(state, cid) is not None]}
+        before = {"group": _group_snapshot(group, visible_ids=visible), "cards": [_card_snapshot(_card_by_id(state, cid)) for cid in live_members if _card_by_id(state, cid) is not None]}
 
         def mutate(state_in: dict) -> tuple[dict, dict]:
             new_state = state_in
@@ -1045,7 +1104,7 @@ class BoardOrderGroupTool(_BoardTool):
                 if isinstance(card, dict) and str(card.get("id")) in member_order
             ]
             return new_state, {
-                "after": {"group": _group_snapshot(final_group), "cards": card_snapshots},
+                "after": {"group": _group_snapshot(final_group, visible_ids=_visible_ids(new_state)), "cards": card_snapshots},
                 "result": {
                     "group_id": group_id,
                     "member_order": member_order,
@@ -1079,20 +1138,53 @@ class BoardAddLinkTool(_BoardTool):
         scope = _scope_of(view)
         state = _latest_state(self, turn)
         visible = _visible_ids(state)
-        src, dst = str(args.src), str(args.dst)
-        missing = [card_id for card_id in (src, dst) if card_id not in visible]
-        if missing:
+        visible_groups = _visible_group_ids(state)
+        authorized_groups = {str(item) for item in scope.get("group_ids") or []}
+        src = models.normalize_link_endpoint(args.src)
+        dst = models.normalize_link_endpoint(args.dst)
+        if not src or not dst or src == dst:
             return _fail(
                 self.name,
-                "scope_violation",
-                "关系端点不在本轮获准读取范围内：" + ", ".join(missing),
+                "invalid_endpoint",
+                "关系端点不合法（不能连接同一个对象自身）",
                 status=ToolStatus.FAILED.value,
-                data={"not_readable": missing},
+                data={"src": src, "dst": dst},
             )
+        for endpoint in (src, dst):
+            parsed = models.parse_link_endpoint(endpoint)
+            assert parsed is not None
+            kind, endpoint_id = parsed
+            if kind == "card":
+                if endpoint_id not in visible:
+                    return _fail(
+                        self.name,
+                        "scope_violation",
+                        "关系端点不在本轮获准读取范围内：" + endpoint,
+                        status=ToolStatus.FAILED.value,
+                        data={"not_readable": [endpoint_id]},
+                    )
+                continue
+            if endpoint_id not in visible_groups:
+                return _fail(
+                    self.name,
+                    "scope_violation",
+                    "关系端点分组不在当前允许查看的范围内（没有参与中的成员或已删除）",
+                    status=ToolStatus.FAILED.value,
+                )
+            if endpoint_id not in authorized_groups:
+                return _fail(
+                    self.name,
+                    "scope_violation",
+                    "关系端点分组不在已确认的授权范围内",
+                    status=ToolStatus.FAILED.value,
+                )
         pair_exists = any(
             isinstance(link, dict)
             and not link.get("deleted")
-            and {str(link.get("src")), str(link.get("dst"))} == {src, dst}
+            and {
+                models.normalize_link_endpoint(link.get("src")),
+                models.normalize_link_endpoint(link.get("dst")),
+            } == {src, dst}
             for link in state.get("links") or []
         )
         if not pair_exists:
@@ -1123,7 +1215,11 @@ class BoardAddLinkTool(_BoardTool):
             links = [
                 link
                 for link in new_state.get("links") or []
-                if isinstance(link, dict) and {str(link.get("src")), str(link.get("dst"))} == {src, dst}
+                if isinstance(link, dict)
+                and {
+                    models.normalize_link_endpoint(link.get("src")),
+                    models.normalize_link_endpoint(link.get("dst")),
+                } == {src, dst}
             ]
             if not links:
                 raise ValueError("建立关系失败：板面状态没有产生链接")
@@ -1139,15 +1235,29 @@ class BoardAddLinkTool(_BoardTool):
                     "dst": dst,
                     "action": "add_link",
                 },
-                "versions": _versions_map(new_state, [src, dst], (), [snapshot["id"]]),
+                "versions": {**_endpoint_versions(new_state, [src, dst]), "links": {snapshot["id"]: snapshot["version"]}},
             }
 
+        before_cards: list[dict[str, Any]] = []
+        before_groups: list[dict[str, Any]] = []
+        for endpoint in (src, dst):
+            parsed = models.parse_link_endpoint(endpoint)
+            assert parsed is not None
+            kind, endpoint_id = parsed
+            if kind == "card":
+                card = _card_by_id(state, endpoint_id)
+                if card is not None:
+                    before_cards.append(_card_snapshot(card))
+            else:
+                group = _group_by_id(state, endpoint_id)
+                if group is not None:
+                    before_groups.append(_group_snapshot(group, visible_ids=visible))
         return _run_write(
             self,
             turn,
             args,
             action="add_link",
-            before={"cards": [_card_snapshot(_card_by_id(state, src)), _card_snapshot(_card_by_id(state, dst))]},
+            before={"cards": before_cards, "groups": before_groups},
             expected_versions={str(key): int(value) for key, value in expected.items()},
             mutate=mutate,
         )

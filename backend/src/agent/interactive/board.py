@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 from typing import Any, Iterable
 
@@ -58,8 +59,10 @@ _CARD_PATCH_KEYS = (
     "folded",
     "bookmarked",
     "deleted",
+    # Phase 2：参与状态的唯一事实源（显式写入；checked / hidden 只做历史兼容）
+    "participation",
 )
-_LINK_PATCH_KEYS = ("src", "dst", "direction", "meaning", "deleted")
+_LINK_PATCH_KEYS = ("src", "dst", "direction", "meaning", "curve", "deleted")
 
 #: 默认名判定同时认两种形态：新的「默认组名」与历史数据里的「组 N」（契约 §9.1）。
 _DEFAULT_NAME_RE = re.compile(
@@ -202,6 +205,10 @@ def _normalize_card(raw: dict, stamp: str) -> dict:
     card["createdAt"] = _as_text(card.get("createdAt")) or stamp
     card["updatedAt"] = _as_text(card.get("updatedAt")) or card["createdAt"]
     card["version"] = _version_of(card)
+    # Phase 2：participation 是唯一事实源；旧数据缺字段时按旧 checked / hidden 推导一次。
+    card["participation"] = models.card_participation(card)
+    # 图片比例：只收敛合法 display；非法 / 未知 / 非图片文件卡直接丢弃（不写 0/NaN/猜值）。
+    models.apply_card_display(card)
     # G6 明确隐藏与勾选互斥（F4：结果卡的勾选与文字卡同一套语义，
     # 勾选=允许 QIO 查看、许可持续有效；hidden 仍然强制取消许可）。
     if card["hidden"]:
@@ -266,20 +273,38 @@ def _normalize_group(
     return group
 
 
-def _normalize_link(raw: dict, live: set[str], stamp: str) -> dict | None:
+def _normalize_link(
+    raw: dict,
+    live: set[str],
+    live_groups: set[str],
+    visible_groups: set[str],
+    stamp: str,
+) -> dict | None:
+    """G4：端点必须存在且未删除；卡片端点为裸 id，组端点为 group:<id>。
+
+    组端点是 Phase 2 新增：组必须存在、未删除（G3 保证有成员）。
+    非法 / 不存在的端点整条丢弃，不留下"半条链接"。
+    """
     if raw.get("deleted"):
         return None
-    src = str(raw.get("src") or "")
-    dst = str(raw.get("dst") or "")
-    # G4 端点必须存在且未删除（G5 已删除卡片不进链接）
-    if src not in live or dst not in live:
+    src = models.normalize_link_endpoint(raw.get("src"))
+    dst = models.normalize_link_endpoint(raw.get("dst"))
+    if not src or not dst or src == dst:
         return None
+    if not _endpoint_exists(src, live, live_groups) or not _endpoint_exists(dst, live, live_groups):
+        return None
+    # 组端点还要求「至少一名 included 成员」：不可见组不能通过连线泄露存在与名称。
+    for endpoint in (src, dst):
+        parsed = models.parse_link_endpoint(endpoint)
+        if parsed is not None and parsed[0] == "group" and parsed[1] not in visible_groups:
+            return None
     link = dict(raw)
     link["id"] = str(link.get("id") or models.new_id("l"))
     link["src"] = src
     link["dst"] = dst
     link["direction"] = bool(link.get("direction", False))
     link["meaning"] = _as_text(link.get("meaning"))
+    link["curve"] = models.normalize_curve(link.get("curve"))
     link["deleted"] = False
     link["createdAt"] = _as_text(link.get("createdAt")) or stamp
     link["updatedAt"] = _as_text(link.get("updatedAt")) or link["createdAt"]
@@ -287,8 +312,24 @@ def _normalize_link(raw: dict, live: set[str], stamp: str) -> dict | None:
     return link
 
 
+def _endpoint_exists(endpoint: str, live_cards: set[str], live_groups: set[str]) -> bool:
+    parsed = models.parse_link_endpoint(endpoint)
+    if parsed is None:
+        return False
+    kind, endpoint_id = parsed
+    return endpoint_id in (live_groups if kind == "group" else live_cards)
+
+
 def normalize_state(state: dict) -> dict:
-    """落实契约 §1.2 的全部不变式（G1..G8），返回**新**状态（不原地改）。"""
+    """落实契约 §1.2 的全部不变式（G1..G8），返回**新**状态（不原地改）。
+
+    Phase 2 追加：
+
+    - 每张卡都带 participation（唯一事实源；旧数据按 checked / hidden 迁移一次）；
+    - 组端点链接使用 group:<id>，归一化 / 校验与卡片端点同一套；
+    - file 图片卡的 meta.display 只保留合法比例，并约束 w/h；
+    - 版本由服务端权威推进：与上一版语义指纹比较，纯布局不改变版本。
+    """
     source = state if isinstance(state, dict) else {}
     stamp = _now()
 
@@ -318,13 +359,15 @@ def normalize_state(state: dict) -> dict:
         taken_names.add(group["name"])
         groups.append(group)
 
-    # --- 链接：G4 / G5，同一对端点只保留一条 ---
+    # --- 链接：G4 / G5，同一对端点只保留一条（端点已归一化） ---
+    live_groups = {group["id"] for group in groups}
+    visible_groups = models.visible_group_ids({"cards": cards, "groups": groups})
     links: list[dict] = []
     seen_pairs: set[frozenset[str]] = set()
     for raw in source.get("links") or []:
         if not isinstance(raw, dict):
             continue
-        link = _normalize_link(raw, live, stamp)
+        link = _normalize_link(raw, live, live_groups, visible_groups, stamp)
         if link is None:
             continue
         pair = frozenset((link["src"], link["dst"]))
@@ -336,7 +379,10 @@ def normalize_state(state: dict) -> dict:
     # --- G8 选择只含存在且未删除的卡片 ---
     selection = [cid for cid in _dedupe(source.get("selection") or []) if cid in live]
 
-    return {
+    marker = source.get("participationVersion")
+    if isinstance(marker, bool) or not isinstance(marker, int) or marker < 1:
+        marker = models.PARTICIPATION_VERSION
+    result = {
         "boardId": _as_text(source.get("boardId")) or models.DEFAULT_BOARD_ID,
         "seq": int(_as_float(source.get("seq"), 0)),
         "updatedAt": _as_text(source.get("updatedAt")) or stamp,
@@ -344,7 +390,155 @@ def normalize_state(state: dict) -> dict:
         "groups": groups,
         "links": links,
         "selection": selection,
+        "participationVersion": marker,
     }
+    # 服务端权威推进 card / group / link 版本（纯布局不改语义版本）。
+    _apply_authoritative_versions(result)
+    _remember_state(result)
+    return result
+
+
+
+# --- 服务端权威对象版本（Phase 2） -----------------------------------------
+
+#: 记住最近读到的板面语义指纹（按 boardId 有界保存）。值形如：
+#: {"cards": {id: (version, signature)}, "groups": ..., "links": ...}。
+#: 它让「客户端没有带 version / 普通保存」也能由服务端权威推进版本。
+_MAX_REMEMBERED_BOARDS = 32
+_BOARD_VERSIONS: dict[str, dict[str, Any]] = {}
+
+
+def _semantic_meta(meta: Any) -> Any:
+    """材料语义只取 meta，但排除纯展示字段（图片比例不改变材料语义版本）。"""
+    if not isinstance(meta, dict):
+        return {}
+    return {str(key): value for key, value in meta.items() if key != "display"}
+
+
+def _card_signature(card: dict) -> str:
+    payload = {
+        "kind": card.get("kind"),
+        "content": str(card.get("content") or ""),
+        "meta": _semantic_meta(card.get("meta")),
+        "participation": models.card_participation(card),
+        "deleted": bool(card.get("deleted", False)),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def _group_signature(group: dict) -> str:
+    payload = {
+        "name": str(group.get("name") or ""),
+        "ordered": bool(group.get("ordered", False)),
+        "members": [str(item) for item in group.get("members", []) or []],
+        "deleted": bool(group.get("deleted", False)),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _link_signature(link: dict) -> str:
+    payload = {
+        "src": models.normalize_link_endpoint(link.get("src")),
+        "dst": models.normalize_link_endpoint(link.get("dst")),
+        "direction": bool(link.get("direction", False)),
+        "meaning": str(link.get("meaning") or ""),
+        "curve": models.normalize_curve(link.get("curve")),
+        "deleted": bool(link.get("deleted", False)),
+    }
+    return json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _state_version_snapshot(state: dict) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {"cards": {}, "groups": {}, "links": {}}
+    for card in state.get("cards", []) or []:
+        if isinstance(card, dict) and card.get("id"):
+            snapshot["cards"][str(card["id"])] = (_version_of(card), _card_signature(card))
+    for group in state.get("groups", []) or []:
+        if isinstance(group, dict) and group.get("id"):
+            snapshot["groups"][str(group["id"])] = (_version_of(group), _group_signature(group))
+    for link in state.get("links", []) or []:
+        if isinstance(link, dict) and link.get("id"):
+            snapshot["links"][str(link["id"])] = (_version_of(link), _link_signature(link))
+    return snapshot
+
+
+def _remember_state(state: dict) -> None:
+    """记录一份板面状态的语义版本指纹（读取与保存都调用；有界，不无限增长）。
+
+    只接受**不比已知版本更旧**的状态：读取历史快照 / 撤销时不能把版本基线拉回旧版。
+    """
+    if not isinstance(state, dict):
+        return
+    board_id = _as_text(state.get("boardId"))
+    if not board_id:
+        return
+    seq = int(_as_float(state.get("seq"), 0))
+    existing = _BOARD_VERSIONS.get(board_id)
+    if existing is not None and seq < int(existing.get("seq") or 0):
+        return
+    if existing is None and len(_BOARD_VERSIONS) >= _MAX_REMEMBERED_BOARDS:
+        # 有界：丢最早记住的板面（单机常用板面很少，不影响正确性；缺失时退化为源版本）。
+        _BOARD_VERSIONS.pop(next(iter(_BOARD_VERSIONS)))
+    snapshot = _state_version_snapshot(state)
+    snapshot["seq"] = seq
+    _BOARD_VERSIONS[board_id] = snapshot
+
+
+def _apply_authoritative_versions(state: dict) -> None:
+    """进程内基线：没有显式上一版时（纯函数 / 工具读路径）的版本推进。"""
+    board_id = _as_text(state.get("boardId"))
+    previous = _BOARD_VERSIONS.get(board_id) if board_id else None
+    if previous:
+        _apply_versions(state, previous)
+
+
+def apply_versions_from_previous(next_state: dict, previous_state: dict | None) -> None:
+    """服务端权威版本推进（board_store 保存路径调用）。
+
+    previous_state 是数据库里**上一份已保存板面**（已做文字迁移与归一化）；
+    这样即使客户端没带 version、或进程刚刚重启，也不会把版本退回 1。
+    没有上一版（新板面）时按基线规则：沿用入参 version（缺失按 1）。
+    """
+    if not isinstance(next_state, dict):
+        return
+    if isinstance(previous_state, dict) and previous_state:
+        _apply_versions(next_state, _state_version_snapshot(previous_state))
+    else:
+        # 新板面 / 首次保存：没有历史可比，保留客户端给的版本（缺失按 1）。
+        for key in ("cards", "groups", "links"):
+            for item in next_state.get(key, []) or []:
+                if isinstance(item, dict):
+                    item["version"] = _version_of(item)
+    _remember_state(next_state)
+
+def _remember_loaded_state(state: dict) -> None:
+    """models.loads 的观察者：读取到的板面状态成为下一次保存的版本基线。"""
+    _remember_state(state)
+
+
+def _apply_versions(state: dict, known: dict[str, Any]) -> None:
+    """按上一版语义指纹推进对象版本（纯布局不改版本）。"""
+    if not known:
+        return
+    for key, objects, signature in (
+        ("cards", state.get("cards", []) or [], _card_signature),
+        ("groups", state.get("groups", []) or [], _group_signature),
+        ("links", state.get("links", []) or [], _link_signature),
+    ):
+        known_objects = known.get(key, {})
+        for item in objects:
+            if not isinstance(item, dict) or not item.get("id"):
+                continue
+            object_id = str(item["id"])
+            entry = known_objects.get(object_id)
+            if entry is None:
+                item["version"] = _version_of(item)
+                continue
+            base_version, previous_signature = entry
+            if signature(item) == previous_signature:
+                item["version"] = base_version
+            else:
+                item["version"] = max(1, int(base_version) + 1)
 
 
 # --- 卡片：添加 / 编辑 / 删除 / 复制 ---------------------------------------
@@ -395,13 +589,35 @@ def update_card(state: dict, card_id: str, patch: dict) -> dict:
             value = dict(value) if isinstance(value, dict) else {}
         elif key in ("checked", "hidden", "folded", "bookmarked", "deleted"):
             value = bool(value)
+        elif key == "participation":
+            value = str(value)
+            if value not in models.PARTICIPATION_VALUES:
+                continue
         elif key == "content":
             value = _as_text(value)
-        if card.get(key) == value:
+        if card.get(key) == value and not (key == "participation" and card.get("participation") != value):
             continue
         card[key] = value
         changed = True
+        # Phase 2：checked / hidden 只做历史兼容写入口；真正决定范围的是 participation。
+        if key == "checked":
+            card["participation"] = (
+                models.PARTICIPATION_INCLUDED if value else models.PARTICIPATION_EXCLUDED
+            )
+            if value:
+                card["hidden"] = False
+        elif key == "hidden" and value:
+            card["participation"] = models.PARTICIPATION_EXCLUDED
+        elif key == "participation":
+            if value == models.PARTICIPATION_INCLUDED:
+                card["hidden"] = False
+                if card.get("kind") in models.CHECKABLE_KINDS:
+                    card["checked"] = True
+            elif card.get("kind") in models.CHECKABLE_KINDS:
+                card["checked"] = False
     if changed:
+        # 比例约束在 meta / w / h 改变后统一收敛（纯布局，不改语义版本）。
+        models.apply_card_display(card)
         _bump_version(card)
         card["updatedAt"] = _now()
         work["updatedAt"] = _now()
@@ -527,7 +743,10 @@ def remove_from_group(state: dict, card_id: str) -> dict:
 
 
 def dissolve_group(state: dict, group_id: str) -> dict:
-    """解除组：成员全部恢复自由摆放，卡片本身不动。"""
+    """解除组：成员全部恢复自由摆放，卡片本身不动。
+
+    以**组本身**为端点的连线随之删除（组已不存在）；成员卡片之间的连线保留。
+    """
     work = normalize_state(state)
     group = group_by_id(work, group_id)
     if group is None:
@@ -535,6 +754,12 @@ def dissolve_group(state: dict, group_id: str) -> dict:
     group["members"] = []
     group["deleted"] = True
     _bump_version(group)
+    endpoint = models.GROUP_ENDPOINT_PREFIX + str(group_id)
+    work["links"] = [
+        link
+        for link in work.get("links", []) or []
+        if endpoint not in (models.normalize_link_endpoint(link.get("src")), models.normalize_link_endpoint(link.get("dst")))
+    ]
     work["updatedAt"] = _now()
     return normalize_state(work)
 
@@ -630,11 +855,20 @@ def add_link(state: dict, src: str, dst: str, direction: bool = False, meaning: 
     同一对端点只保留一条（G4）：重复建立时更新已有那条的方向与含义。
     """
     work = normalize_state(state)
-    if src == dst:
+    src_norm = models.normalize_link_endpoint(src)
+    dst_norm = models.normalize_link_endpoint(dst)
+    if not src_norm or not dst_norm or src_norm == dst_norm:
         return work
     live = models.live_card_ids(work)
-    if src not in live or dst not in live:
+    groups = models.live_group_ids(work)
+    visible_groups = models.visible_group_ids(work)
+    if not _endpoint_exists(src_norm, live, groups) or not _endpoint_exists(dst_norm, live, groups):
         return work
+    for endpoint in (src_norm, dst_norm):
+        parsed = models.parse_link_endpoint(endpoint)
+        if parsed is not None and parsed[0] == "group" and parsed[1] not in visible_groups:
+            return work
+    src, dst = src_norm, dst_norm
     stamp = _now()
     pair = frozenset((src, dst))
     existing = next((link for link in work["links"] if frozenset((link["src"], link["dst"])) == pair), None)
@@ -665,13 +899,31 @@ def update_link(state: dict, link_id: str, patch: dict) -> dict:
             value = bool(value)
         elif key == "meaning":
             value = _as_text(value)
+        elif key == "curve":
+            value = models.normalize_curve(value)
         elif key in ("src", "dst"):
-            value = str(value)
+            value = models.normalize_link_endpoint(value)
+            if not value:
+                return work
+            live = models.live_card_ids(work)
+            groups = models.live_group_ids(work)
+            visible_groups = models.visible_group_ids(work)
+            if not _endpoint_exists(value, live, groups):
+                return work
+            parsed = models.parse_link_endpoint(value)
+            if parsed is not None and parsed[0] == "group" and parsed[1] not in visible_groups:
+                return work
         if link.get(key) == value:
             continue
         link[key] = value
         changed = True
     if changed:
+        src_norm = models.normalize_link_endpoint(link.get("src"))
+        dst_norm = models.normalize_link_endpoint(link.get("dst"))
+        if not src_norm or not dst_norm or src_norm == dst_norm:
+            return work
+        link["src"] = src_norm
+        link["dst"] = dst_norm
         _bump_version(link)
         link["updatedAt"] = _now()
         work["updatedAt"] = _now()
@@ -717,9 +969,12 @@ def set_checked(state: dict, card_id: str, checked: bool) -> dict:
     if card is None or card["deleted"] or card["kind"] not in models.CHECKABLE_KINDS:
         return work
     value = bool(checked)
-    if card["checked"] == value and not (value and card["hidden"]):
+    wanted = models.PARTICIPATION_INCLUDED if value else models.PARTICIPATION_EXCLUDED
+    if card.get("participation") == wanted and card["checked"] == value and not (value and card["hidden"]):
         return work
     card["checked"] = value
+    # Phase 2：旧写入口同步参与状态，保证迁移后的数据不会出现「勾选与范围相反」。
+    card["participation"] = wanted
     if value:
         card["hidden"] = False
     _bump_version(card)
@@ -729,15 +984,42 @@ def set_checked(state: dict, card_id: str, checked: bool) -> dict:
 
 
 def set_hidden(state: dict, card_id: str, hidden: bool) -> dict:
-    """明确隐藏 = 退出讨论范围（与勾选互斥）；取消隐藏不等于重新勾选。"""
+    """明确隐藏 = 退出讨论范围；取消隐藏不等于重新参与。"""
     work = normalize_state(state)
     card = models.card_by_id(work, card_id)
-    if card is None or card["deleted"] or card["hidden"] == bool(hidden):
+    value = bool(hidden)
+    if card is None or card["deleted"] or (card["hidden"] == value and not (value and models.card_is_included(card))):
         return work
-    card["hidden"] = bool(hidden)
-    if card["hidden"]:
+    card["hidden"] = value
+    if value:
         card["checked"] = False
+        card["participation"] = models.PARTICIPATION_EXCLUDED
     _bump_version(card)
+    card["updatedAt"] = _now()
+    work["updatedAt"] = _now()
+    return normalize_state(work)
+
+
+def set_participation(state: dict, card_id: str, included: bool) -> dict:
+    """显式设置参与状态（Phase 2 唯一事实源）。
+
+    - included：进入讨论范围；文字卡 / 结果卡同时把历史兼容的 checked 置 true；
+    - excluded：退出讨论范围（不是删除，也不隐藏卡片本身）。
+    """
+    work = normalize_state(state)
+    card = models.card_by_id(work, card_id)
+    if card is None or card["deleted"]:
+        return work
+    wanted = models.PARTICIPATION_INCLUDED if included else models.PARTICIPATION_EXCLUDED
+    if card.get("participation") == wanted:
+        return work
+    card["participation"] = wanted
+    if wanted == models.PARTICIPATION_INCLUDED:
+        card["hidden"] = False
+        if card.get("kind") in models.CHECKABLE_KINDS:
+            card["checked"] = True
+    elif card.get("kind") in models.CHECKABLE_KINDS:
+        card["checked"] = False
     card["updatedAt"] = _now()
     work["updatedAt"] = _now()
     return normalize_state(work)
@@ -966,11 +1248,8 @@ def drop_card(state: dict, card_id: str, x: float, y: float) -> dict:
             work["groups"].append(group)
             work["updatedAt"] = stamp
 
+    # 纯布局（移动 / 落点）不改变卡片的语义版本；成组 / 合并改的是组版本。
     final = normalize_state(work)
-    moved_card = models.card_by_id(final, card_id)
-    if moved_card is not None:
-        _bump_version(moved_card)
-    final = normalize_state(final)
     group = models.group_of(final, card_id)
     return {
         "state": final,
@@ -978,3 +1257,7 @@ def drop_card(state: dict, card_id: str, x: float, y: float) -> dict:
         "merged": merged,
         "index": group["members"].index(card_id) if group is not None else None,
     }
+
+
+# 读取层（models.loads）把板面状态交给这里的观察者，作为下一次保存的版本基线。
+models.set_board_state_observer(_remember_loaded_state)

@@ -15,6 +15,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from agent.interactive import execution as execution_module
 from agent.interactive import intents
+from agent.interactive import intent_service
+from agent.interactive import submission as submission_module
 
 router = APIRouter()
 
@@ -431,6 +433,100 @@ def _service_call(service, name: str, *args, **kwargs):
         ) from exc
 
 
+
+# -- 确认 / 恢复后的真实续作 Turn（Phase 3 §6.2） ----------------------------
+
+
+def _turn_submitter(request: Request):
+    """主循环可用时返回真实受理器；不可用返回 None（调用方必须如实失败）。"""
+    ctx = getattr(request.app.state, "ctx", None)
+    turns = getattr(ctx, "turns", None) if ctx is not None else None
+    if turns is None or not hasattr(turns, "submit"):
+        return None
+    return lambda message, topic_id: turns.submit(message, topic_id)
+
+
+def _current_topic(request: Request) -> str | None:
+    ctx = getattr(request.app.state, "ctx", None)
+    getter = getattr(ctx, "current_topic", None) if ctx is not None else None
+    if not callable(getter):
+        return None
+    try:
+        return str(getter() or "") or None
+    except Exception:  # noqa: BLE001 - 没有活动话题时由提交层按新话题处理
+        return None
+
+
+def _start_intent_turn(
+    request: Request,
+    *,
+    board_id: str,
+    intent_ids,
+    source: str,
+    submission_id: str = "",
+    manual_retry: bool = False,
+) -> dict:
+    """启动确认 / 恢复后的真实主循环 Turn；失败时返回可读原因，不伪造 turn_id。"""
+    ids = [str(item) for item in intent_ids or [] if str(item).strip()]
+    if not ids:
+        return {
+            "ok": False,
+            "availability": "invalid",
+            "contextAvailable": _turn_submitter(request) is not None,
+            "code": "intent_ids_required",
+            "reason": "没有可续作的意图 id",
+            "turnId": None,
+            "resume": False,
+        }
+    submitter = _turn_submitter(request)
+    if submitter is None:
+        return {
+            "ok": False,
+            "availability": "unavailable",
+            "contextAvailable": False,
+            "code": "turn_unavailable",
+            "reason": "主循环不可用：没有可提交的 Turn 受理器，本次没有开始执行",
+            "turnId": None,
+            "resume": False,
+        }
+    conn = _conn(request)
+    started = submission_module.start_interactive_turn(
+        conn,
+        turn_submitter=submitter,
+        board_id=board_id,
+        intent_ids=ids,
+        submission_id=submission_id,
+        source=source,
+        resume=True,
+        topic_id=_current_topic(request),
+    )
+    started["contextAvailable"] = True
+    if manual_retry and started.get("ok") and started.get("turnId"):
+        # 手动重试一次点击一次尝试：只在真的提交了 Turn 后累计次数，不重置自动次数。
+        claim = intent_service.claim_manual_retry(conn, ids[0])
+        if claim.get("ok") and claim.get("retry"):
+            started["manualRetry"] = claim["retry"]
+            intent_service.set_retry_turn(
+                conn, str(claim["retry"].get("series_id") or ""), str(started["turnId"])
+            )
+    return started
+
+
+def _attach_turn_start(response: dict, started: dict, *, service_ok: bool) -> dict:
+    """把真实续作结果挂到旧响应上；旧字段保留，新增 turnId / resume / turnStart。"""
+    response["turnId"] = started.get("turnId")
+    response["resume"] = bool(started.get("resume"))
+    response["started"] = bool(started.get("ok"))
+    response["turnStart"] = started
+    if not started.get("ok"):
+        response["startError"] = str(started.get("reason") or "本次没有开始执行")
+        if bool(started.get("contextAvailable")):
+            # 主循环本来可用但受理失败：确认状态已落库，但本次执行没有开始。
+            response["ok"] = False
+            response["confirmationSaved"] = bool(service_ok)
+    return response
+
+
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     try:
         row = conn.execute(
@@ -615,7 +711,14 @@ async def confirm_single_intent(
     response = dict(result) if isinstance(result, dict) else {"results": result}
     response["min"] = BATCH_CONFIRM_MIN
     response["batch"] = False
-    return response
+    confirmed = [str(item) for item in response.get("confirmed") or [] if str(item).strip()]
+    started = _start_intent_turn(
+        request,
+        board_id=board_id,
+        intent_ids=confirmed,
+        source="confirm",
+    )
+    return _attach_turn_start(response, started, service_ok=bool(response.get("ok")))
 
 
 @router.post("/api/interactive/intents/batch-confirm")
@@ -654,7 +757,14 @@ async def confirm_intents_batch(request: Request, body: dict) -> dict:
     response = dict(result) if isinstance(result, dict) else {"results": result}
     response["min"] = BATCH_CONFIRM_MIN
     response["batch"] = True
-    return response
+    confirmed = [str(item) for item in response.get("confirmed") or [] if str(item).strip()]
+    started = _start_intent_turn(
+        request,
+        board_id=board_id,
+        intent_ids=confirmed,
+        source="batch_confirm",
+    )
+    return _attach_turn_start(response, started, service_ok=bool(response.get("ok")))
 
 
 # -- 等待 / 账本 / 结果 / 恢复（只读为主）-------------------------------------
@@ -841,6 +951,98 @@ async def recover_intent(intent_id: str, request: Request, body: dict | None = N
     )
     response = dict(result) if isinstance(result, dict) else {"result": result}
     response["ok"] = bool(response.get("ok"))
+    if response["ok"]:
+        started = _start_intent_turn(
+            request,
+            board_id=board_id,
+            intent_ids=[str(intent_id)],
+            source="recover",
+            submission_id=str(response.get("submission_id") or ""),
+            manual_retry=True,
+        )
+        response = _attach_turn_start(response, started, service_ok=True)
     return response
+
+
+# -- 虚拟意图显示位置（Phase 3 §6.1） ---------------------------------------
+
+
+@router.post("/api/interactive/intents/{intent_id}/display")
+async def set_intent_display(intent_id: str, request: Request, body: dict | None = None) -> dict:
+    """按 intent_id 保存虚拟意图显示位置；位置不属于材料语义，不推进授权版本。"""
+    payload = _body_dict(body)
+    board_id = str(payload.get("boardId") or "").strip()
+    if not board_id:
+        raise HTTPException(status_code=400, detail="需要 boardId（意图属于哪个板面）")
+    try:
+        x = float(payload.get("x"))
+        y = float(payload.get("y"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="display 需要有限的 x / y") from None
+    service = _require_intent_service(request)
+    result = _service_call(
+        service,
+        "set_intent_display",
+        _conn(request),
+        board_id=board_id,
+        intent_id=str(intent_id),
+        x=x,
+        y=y,
+    )
+    response = dict(result) if isinstance(result, dict) else {"ok": False, "result": result}
+    if not response.get("ok"):
+        raise HTTPException(status_code=404, detail=str(response.get("reason") or "意图不存在"))
+    return response
+
+
+# -- 重试系列（Phase 3 §6.3） -----------------------------------------------
+
+
+@router.get("/api/interactive/boards/{board_id}/retry-series")
+async def board_retry_series(request: Request, board_id: str) -> dict:
+    """整块板面的持久化重试系列；只读，不调度、不改次数。"""
+    service = _require_intent_service(request)
+    series = _service_call(service, "list_retry_series", _conn(request), board_id=board_id)
+    return {"available": True, "board_id": board_id, "series": list(series or [])}
+
+
+@router.get("/api/interactive/intents/{intent_id}/retry-series")
+async def intent_retry_series(request: Request, intent_id: str) -> dict:
+    """单条意图最近的重试系列；只读。"""
+    service = _require_intent_service(request)
+    series = _service_call(service, "list_retry_series", _conn(request), intent_id=intent_id)
+    return {"available": True, "intent_id": intent_id, "series": list(series or [])}
+
+
+@router.post("/api/interactive/intents/{intent_id}/retry")
+async def manual_retry_intent(intent_id: str, request: Request, body: dict | None = None) -> dict:
+    """用户明确点击一次手动重试：一次点击对应一次尝试；不重置自动重试次数。"""
+    payload = _body_dict(body)
+    board_id = str(payload.get("boardId") or "").strip()
+    if not board_id:
+        raise HTTPException(status_code=400, detail="需要 boardId（意图属于哪个板面）")
+    service = _require_intent_service(request)
+    view = _service_call(service, "get_intent", _conn(request), board_id, str(intent_id))
+    if not isinstance(view, dict):
+        raise HTTPException(status_code=404, detail="意图不存在")
+    started = _start_intent_turn(
+        request,
+        board_id=board_id,
+        intent_ids=[str(intent_id)],
+        source="manual_retry",
+        submission_id=str(view.get("submission_id") or ""),
+        manual_retry=True,
+    )
+    series = started.get("manualRetry")
+    if not isinstance(series, dict):
+        series = _service_call(service, "retry_state", _conn(request), str(intent_id))
+    return {
+        "ok": bool(started.get("ok")),
+        "reason": str(started.get("reason") or "") if not started.get("ok") else "",
+        "turnId": started.get("turnId"),
+        "series": series if isinstance(series, dict) else None,
+        "turnStart": started,
+    }
+
 
 

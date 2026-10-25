@@ -232,7 +232,10 @@ describe("R5：原生选择器失败后粘贴路径的归属", () => {
     expect(w.find(".path-input").exists(), "取消后路径行收起").toBe(false);
 
     // 之后再打开路径行：这次是「添加」（不是重新定位）
-    await w.findAll(".attach-btn").find((b) => b.text().includes("路径"))!.trigger("click");
+    await w.find(".attach-circle").trigger("click");
+    const pathItem = w.findAll(".attach-menu-item").find((b) => (b.text() || "").includes("从路径添加"));
+    expect(pathItem, "附件菜单里必须有从路径添加").toBeTruthy();
+    await pathItem!.trigger("click");
     await flushPromises();
     await submitPath(w, "C:/tmp/另一个文件.txt");
 

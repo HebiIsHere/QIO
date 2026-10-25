@@ -7,8 +7,8 @@
  *   取消有序 / 合并组 / 删除所选」常驻在工具栏上，下面第一条用例会直接判它不通过）；
  * - 分组类操作跟着**所选对象**出现（SelectionMenu，由所选里的最后一张卡片渲染），
  *   多选只显示共同可用的操作；
- * - 卡片局部工具栏只放这张卡片自己的操作（编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除 / 勾选），
- *   不再出现「加入组 / 移出组」；
+ * - 卡片局部工具栏只放这张卡片自己的操作（编辑 / 复制 / 折叠 / 隐藏 / 书签 / 删除），
+ *   不再出现「加入组 / 移出组」；整卡许可勾选 / 说明已移除；
  * - 视图控制读写 store.boardMode（画布共用这一份状态）；
  * - 板内搜索是浮层：输入框 data-im="search"，点结果 dispatch qio:interactive:locate-card；
  * - 撤销 / 重做跟随 store.canUndo / canRedo。
@@ -50,10 +50,11 @@ describe("BoardToolbar 接线", () => {
     });
   }
 
-  it("常态只留必要入口：添加 / 搜索 / 撤销重做 / 视图 / 提交，没有一组常驻的分组按钮", () => {
+  it("常态只留必要入口：添加 / 撤销重做 / 视图 / 提交，搜索只在全局栏", () => {
     const wrapper = mount(BoardToolbar);
     // 2026-10-14：用户要求删除「操作说明」入口（help-toggle），这里不再要求它存在
-    for (const hook of ["board-toolbar", "add-menu", "search-toggle", "undo", "redo", "submit"]) {
+    expect(wrapper.find('[data-im="search-toggle"]').exists()).toBe(false);
+    for (const hook of ["board-toolbar", "add-menu", "undo", "redo", "submit"]) {
       expect(wrapper.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
     // 反例（旧实现会挂）：分组类操作曾经常驻工具栏，且未选中时是一排禁用按钮
@@ -125,39 +126,11 @@ describe("BoardToolbar 接线", () => {
     wrapper.unmount();
   });
 
-  it("板内搜索浮层：默认不在 DOM，点开后能搜到未勾选的注释，点结果 dispatch locate-card", async () => {
-    // 新建文字卡默认已勾选（第十个问题），这条用例要的是「未勾选」的注释，显式关掉
-    setBoard(board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做", checked: false }));
-    const cardId = store.board?.cards[0].id as string;
-    const seen: string[] = [];
-    const onLocate = (event: Event) => {
-      const detail = (event as CustomEvent<{ cardId?: string }>).detail;
-      if (detail?.cardId) seen.push(detail.cardId);
-    };
-    window.addEventListener("qio:interactive:locate-card", onLocate);
-
+  it("板内搜索浮层已删除，底部工具栏不再提供第二个搜索入口", () => {
     const wrapper = mount(BoardToolbar);
+    expect(wrapper.find('[data-im="search-toggle"]').exists()).toBe(false);
+    expect(wrapper.find('[data-im="search-panel"]').exists()).toBe(false);
     expect(wrapper.find('[data-im="search"]').exists()).toBe(false);
-
-    await wrapper.get('[data-im="search-toggle"]').trigger("click");
-    expect(wrapper.find('[data-im="search-panel"]').exists()).toBe(true);
-    const input = wrapper.get('[data-im="search"]');
-    await input.setValue("预算");
-    await nextTick();
-
-    const result = wrapper.get('[data-im="search-result"]');
-    expect(result.attributes("data-card-id")).toBe(cardId);
-    // 2026-10-14：用户要求删除搜索面板的解释文案；这里只核对「未勾选的注释能被搜到」
-    expect(wrapper.get('[data-im="search-result"]').text()).toContain("未勾选");
-    expect(result.text()).toContain("未勾选");
-
-    await result.trigger("click");
-    expect(seen).toEqual([cardId]);
-    expect(wrapper.text()).toContain("已在板面上定位");
-
-    await wrapper.get('[data-im="search-close"]').trigger("click");
-    expect(wrapper.find('[data-im="search"]').exists()).toBe(false);
-    window.removeEventListener("qio:interactive:locate-card", onLocate);
     wrapper.unmount();
   });
 
@@ -237,9 +210,18 @@ describe("选中对象附近的整理菜单（SelectionMenu）", () => {
     const wrapper = mountCard(seed.cards[0].id);
 
     const toolbar = wrapper.get('[data-im="card-toolbar"]');
-    for (const hook of ["check", "card-edit", "card-duplicate", "card-fold", "delete-card"]) {
+    for (const hook of ["card-edit", "card-duplicate", "card-fold", "delete-card"]) {
       expect(toolbar.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
     }
+    // 2026-10-24：视觉上六个圆形图标；旧按钮保留在 DOM 只作兼容
+    for (const hook of ["card-icon-edit", "card-icon-copy", "card-icon-hide", "card-icon-bookmark", "card-icon-delete"]) {
+      expect(toolbar.find('[data-im="' + hook + '"]').exists(), hook).toBe(true);
+    }
+    expect(toolbar.findAll('button[data-im^="card-icon-"]')).toHaveLength(5);
+    // 整卡许可 UI 已移除：工具栏里不再有勾选框与许可「说明」
+    expect(toolbar.find('[data-im="check"]').exists()).toBe(false);
+    expect(toolbar.find(".check").exists()).toBe(false);
+    expect(toolbar.find('[data-im="check-detail-text"]').exists()).toBe(false);
     // 反例（旧实现会挂）：加入组 / 移出组 曾经在卡片工具栏里
     expect(toolbar.text()).not.toContain("移出组");
     expect(toolbar.find("select").exists()).toBe(false);

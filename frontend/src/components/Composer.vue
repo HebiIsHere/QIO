@@ -45,6 +45,25 @@ import {
 } from "../composables/attachmentOps";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
 
+import {
+  conversationBindingForSend,
+  type ConversationBinding,
+  type SendBinding,
+} from "./interactive/v2/conversationLayout";
+
+/**
+ * 互动绑定（Phase 3 §6.4）：由**可信 props**传入，只作为发送选项交给会话层。
+ * 普通对话页不传 → 请求体不带板面身份（契约 §8.3：文字发送只发文字，不调用板面提交）。
+ * 这里绝不读 interactive store，也不把板面/提交/意图信息拼进用户原文。
+ */
+const props = defineProps<{
+  chatBinding?: ConversationBinding;
+}>();
+
+const sendBinding = computed<SendBinding | undefined>(() =>
+  conversationBindingForSend(props.chatBinding),
+);
+
 const session = useSessionStore();
 /**
  * 草稿属于会话状态，不属于本组件：`text` 读写 store.draft，
@@ -221,11 +240,15 @@ async function submit() {
   const prep = hasAttachments ? beginPrepare() : null;
   let ok = false;
   try {
+    const sendOptions = {
+      ...(prep ? { signal: prep.abort.signal, prepareId: prep.id } : {}),
+      ...(sendBinding.value ? { interactive: sendBinding.value } : {}),
+    };
     ok = await sendWithAttachments(
       value,
       sentAttachments.map((item) => item.id),
       sentAttachments,
-      prep ? { signal: prep.abort.signal, prepareId: prep.id } : undefined,
+      Object.keys(sendOptions).length ? sendOptions : undefined,
     );
   } finally {
     endPrepare(prep);
@@ -1144,13 +1167,16 @@ function attachmentBlockReason(): string {
  * 本 worktree 里 session.ts 还是单参，这里做一次最小收窄适配：多传的参数在 B 的改动落地前
  * 会被 JS 忽略，而**后端受理时会把本话题下尚未绑定的附件绑到这一轮**，所以附件不会静默丢失。
  * 集成（B 的 session.ts 落地）之后可以直接删掉这个适配器。
+ *
+ * Phase 3：options 追加 interactive（互动绑定，由 props 可信传入）——它只是发送选项，
+ * 与用户原文、板面提交载荷完全分离。
  */
 type SendWithAttachments = (
   text: string,
   attachmentIds?: string[],
   attachments?: AttachmentRef[],
   /** prepareId：准备标识（契约 §1.1），中止时用它调取消端点，以后端确认为准 */
-  options?: { signal?: AbortSignal; prepareId?: string },
+  options?: { signal?: AbortSignal; prepareId?: string; interactive?: SendBinding },
 ) => Promise<boolean>;
 const sendWithAttachments = session.send as unknown as SendWithAttachments;
 
