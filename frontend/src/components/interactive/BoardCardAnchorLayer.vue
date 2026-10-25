@@ -106,6 +106,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
       :aria-label="titleOf(anchor)"
       @pointerdown="onAnchorDown(anchor, $event)"
     >
+      <span class="anchor-hit" aria-hidden="true"></span>
       <svg class="card-anchor-shape" :viewBox="shapeOf(anchor.side).viewBox" aria-hidden="true">
         <path :d="shapeOf(anchor.side).d" />
       </svg>
@@ -141,11 +142,22 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
   padding: 0;
   border: 0;
   background: none;
-  pointer-events: auto;
+  pointer-events: none;
   touch-action: none;
   cursor: crosshair;
   color: var(--accent);
 }
+/* 命中区只保留卡片外侧的一半：边框内不再抢卡片自身的点击。 */
+.anchor-hit {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  cursor: crosshair;
+}
+.card-anchor[data-side="right"] .anchor-hit { clip-path: inset(0 0 0 50%); }
+.card-anchor[data-side="left"] .anchor-hit { clip-path: inset(0 50% 0 0); }
+.card-anchor[data-side="top"] .anchor-hit { clip-path: inset(0 0 50% 0); }
+.card-anchor[data-side="bottom"] .anchor-hit { clip-path: inset(50% 0 0 0); }
 .card-anchor::before {
   content: "";
   position: absolute;
@@ -171,18 +183,16 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
   top: 50%;
   width: 6px;
   height: 16px;
-  transform: translate(-50%, -50%);
   border-radius: 8px;
   background: var(--accent);
   box-shadow: var(--shadow-1);
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease-1);
 }
-.card-anchor[data-side="top"]::after,
-.card-anchor[data-side="bottom"]::after {
-  width: 16px;
-  height: 6px;
-}
+.card-anchor[data-side="right"]::after { left: 50%; top: 50%; transform: translateY(-50%); }
+.card-anchor[data-side="left"]::after { left: auto; right: 50%; top: 50%; transform: translateY(-50%); }
+.card-anchor[data-side="top"]::after { left: 50%; top: auto; bottom: 50%; width: 16px; height: 6px; transform: translateX(-50%); }
+.card-anchor[data-side="bottom"]::after { left: 50%; top: 50%; width: 16px; height: 6px; transform: translateX(-50%); }
 .card-anchor.is-active::before { opacity: 0; }
 .card-anchor.is-active::after { opacity: 0.72; }
 
@@ -200,7 +210,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
     transform var(--dur-fast) var(--ease-1);
 }
 .card-anchor[data-side="right"] .card-anchor-shape {
-  left: 11px;
+  left: 50%;
   top: 7px;
   width: 14px;
   height: 20px;
@@ -208,7 +218,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
   transform-origin: left center;
 }
 .card-anchor[data-side="left"] .card-anchor-shape {
-  right: 11px;
+  right: 50%;
   top: 7px;
   width: 14px;
   height: 20px;
@@ -217,7 +227,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
 }
 .card-anchor[data-side="top"] .card-anchor-shape {
   left: 7px;
-  bottom: 11px;
+  bottom: 50%;
   width: 20px;
   height: 14px;
   transform: scale(0.62);
@@ -225,7 +235,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
 }
 .card-anchor[data-side="bottom"] .card-anchor-shape {
   left: 7px;
-  top: 11px;
+  top: 50%;
   width: 20px;
   height: 14px;
   transform: scale(0.62);
