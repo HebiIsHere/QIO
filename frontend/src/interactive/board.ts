@@ -1513,9 +1513,37 @@ export function mergeGroups(
 
 // --- 关系链接 --------------------------------------------------------------
 
+/** 一对端点的规范化 key：忽略方向、忽略书写顺序（与 G4「同一对端点只保留一条」同一口径）。 */
+function linkPairKey(a: string, b: string): string {
+  return [a, b].sort().join("\u0000");
+}
+
 /**
- * 建立关系：方向与含义都由用户写明，系统不解释成因果 / 支持 / 执行顺序。
- * 同一对端点只保留一条（G4）：重复建立时更新已有那条的方向与含义。
+ * 查两个端点之间**已经存在**的关系（忽略方向；卡片裸 id 与 `card:<id>` 兼容写法等价）。
+ *
+ * 这是界面层的「这对端点是否已有关系」查询：找到时用户拖线应当**选中 / 打开原关系**，
+ * 而不是再走一次 {@link addLink} —— 显式 upsert 会把原有含义 / 方向覆盖成这次拖线传入的值
+ * （F04：重复拖线不得覆盖已有关系）。删除后的关系已被 normalizeState 丢弃，这里自然查不到，
+ * 可以按既有契约重建。
+ */
+export function linkBetween(state: BoardState, a: string, b: string): BoardLink | null {
+  const work = normalizeState(state);
+  const left = normalizeEndpointString(a);
+  const right = normalizeEndpointString(b);
+  if (!left || !right || sameEndpoint(left, right)) return null;
+  const key = linkPairKey(left, right);
+  return work.links.find((link) => linkPairKey(link.src, link.dst) === key) ?? null;
+}
+
+/**
+ * 建立关系（**显式创建或更新**）：方向与含义都由用户写明，系统不解释成因果 / 支持 / 执行顺序。
+ * 同一对端点只保留一条（G4）：已存在时更新已有那条的方向与含义，**保留 id / 端点 / 曲线**。
+ *
+ * 语义边界（F04）：
+ * - 这是「用户明确要写这条关系」的显式入口（测试、导入、明确的更新路径可以用它）；
+ * - 界面上的拖线流程**不得**在端点对已存在时调用它来「刷新」关系 —— 那等于用空内容覆盖原关系。
+ *   拖线流程先走 {@link linkBetween}：已存在就选中 / 打开原关系，只有用户明确保存才走
+ *   {@link updateLink} 改对应字段。
  */
 export function addLink(
   state: BoardState,
@@ -1535,8 +1563,8 @@ export function addLink(
     return work;
   }
   const stamp = nowIso();
-  const pair = [srcValue, dstValue].sort().join("\u0000");
-  const existing = work.links.find((link) => [link.src, link.dst].sort().join("\u0000") === pair);
+  const pair = linkPairKey(srcValue, dstValue);
+  const existing = work.links.find((link) => linkPairKey(link.src, link.dst) === pair);
   if (existing) {
     existing.direction = Boolean(direction);
     existing.meaning = asText(meaning);

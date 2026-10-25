@@ -36,6 +36,7 @@ import {
   groupOfCard,
   joinGroup,
   leaveGroupToFreeSpots,
+  linkBetween,
   mergeGroups,
   normalizeState,
   participationOf,
@@ -2843,6 +2844,19 @@ function finishLinkDraft(allowCreate: boolean) {
   if (!draft || !current) return;
   if (!allowCreate || !draft.targetId || draft.targetId === draft.fromId) {
     notice.value = "没有建立关系：拖到无效位置或取消时不建链，也不保存半条链接。";
+    return;
+  }
+  /*
+    F04：端点对已经有关系时**不得**再走 addLink —— 那会用这次拖线传入的空方向 / 空含义
+    覆盖原关系（id 变了、含义被清空、曲线之外的语义丢失），并在用户写任何内容前就保存。
+    正确语义：无论从哪一端拖过来，都选中 / 打开**原关系**；打开编辑器不等于修改，
+    关闭 / 取消原样保留，只有用户明确保存才更新对应字段。
+  */
+  const existing = linkBetween(current, draft.fromId, draft.targetId);
+  if (existing) {
+    openLinkEditor(existing.id);
+    notice.value =
+      "这条关系已经存在：已打开原有关系（id、方向、含义与曲线都保留），没有新建，也没有改动。";
     return;
   }
   const next = addLink(current, draft.fromId, draft.targetId, false, "");
