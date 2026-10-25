@@ -462,7 +462,7 @@ const boardSize = computed(() => {
                 {{ intentReadBusy ? "读取中…" : "重试读取" }}
               </button>
             </p>
-            <p v-if="recoveryReadError && !intentReadFailed" class="im-notice warn" role="status" data-im="recovery-read-error">
+            <p v-if="recoveryReadError" class="im-notice warn" role="status" data-im="recovery-read-error">
               恢复事项读取失败：{{ recoveryReadError }}（这不代表没有事项）
               <button class="im-link" type="button" data-im="recovery-retry" :disabled="recoveryReadBusy" @click="retryRecoveryRead">
                 {{ recoveryReadBusy ? "读取中…" : "重试读取" }}
