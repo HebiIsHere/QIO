@@ -426,8 +426,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const demoMode = ref(false);
   /** 右下悬浮聊天是否展开（收起不清消息、不删草稿、不打断对话） */
   const chatOpen = ref(false);
-  /** 右上批量列表是否展开（默认收起，不因数量变化抢占用户的决定） */
-  const batchOpen = ref(false);
   /** 顶部「任务」浮层是否展开 */
   const tasksOpen = ref(false);
   /**
@@ -4918,7 +4916,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     auxOpen,
     demoMode,
     chatOpen,
-    batchOpen,
     tasksOpen,
     // 卡片内预览的展开状态（只在前端内存；契约 2026-10-12 §3.5 / §3.6）
     expandedCards,

@@ -1,8 +1,8 @@
 /**
  * F03 行为回归：任务 / 批量入口必须接到**新页面有效界面**，不能只改内部开关。
  *
- * 基线缺陷：HUD「任务」按钮只切 store.tasksOpen，而承接它的 IntentStatusPopover 未挂载；
- * 提交区的「打开批量审批」只切 store.batchOpen，IntentBatchTray 同样未挂载。
+ * 基线缺陷：HUD「任务」按钮只切 store.tasksOpen，而承接它的旧任务浮层未挂载；
+ * 提交区的「打开批量审批」只切旧的批量开关（batchOpen，已删除），旧批量托盘同样未挂载。
  * 于是两个入口点了没有任何可见反应。运行中的任务也没有暂停 / 取消 / 继续入口。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -220,7 +220,7 @@ describe("F03 任务控制：暂停 / 继续 / 取消", () => {
 });
 
 describe("F03 批量入口与重复操作", () => {
-  it("旧提交区的「打开批量审批」接到真实待确认界面（基线只改 batchOpen）", async () => {
+  it("提交区的「打开批量审批」接到真实待确认界面（唯一状态是 tasksOpen）", async () => {
     recordIntentBatch("batch-a", ["i1", "i2", "i3", "i4"]);
     // 旧链的「本次理解产出的待审批」按 understandingId 归属；批量列表要求同一批 ≥4 条
     mocks.api.fetchIntents.mockResolvedValue({

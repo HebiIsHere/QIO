@@ -275,7 +275,9 @@ describe("待审批出现时审批入口主动展开（§5.4）", () => {
     const open = w.get('[data-im="submit-open-batch"]');
     expect(open.text()).toContain("批量审批");
     await open.trigger("click");
-    expect(store.batchOpen).toBe(true);
+    // 唯一的批量状态是任务面板：入口真实打开「待确认」分区（旧 batchOpen 通道已删除）
+    expect(store.tasksOpen).toBe(true);
+    expect(store.taskCenterFocus).toBe("pending");
   });
 
   it("审批之后的执行事实只取服务端记录：不把「已批准」说成「已完成」", () => {
