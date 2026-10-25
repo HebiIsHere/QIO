@@ -317,6 +317,16 @@ const displayCards = computed(() =>
   props.dropCardId ? memberCards.value.filter((card) => card.id !== props.dropCardId) : memberCards.value,
 );
 
+/** 组内顺序编号：按 members 顺序显示 1..n；拖动隐藏成员时保留原序号。 */
+const orderBadges = computed(() =>
+  displayCards.value.map((card) => ({
+    card,
+    index: props.group.members.indexOf(card.id) + 1,
+  })),
+);
+
+const selected = computed(() => props.group.members.some((id) => props.selectedIds.includes(id)));
+
 /** 拖入组的插入线：画在放下后会落到的两个成员之间。 */
 const dropInsertStyle = computed<Record<string, string>>(() => {
   if (!props.dropTarget || props.dropIndex === null) {
@@ -347,7 +357,7 @@ defineExpose({ focusName });
 <template>
   <div
     class="group"
-    :class="{ ordered: group.ordered, 'drop-target': dropTarget, 'drop-merge': dropMerge, 'link-target': linkTarget, collapsed }"
+    :class="{ ordered: group.ordered, selected, 'drop-target': dropTarget, 'drop-merge': dropMerge, 'link-target': linkTarget, collapsed }"
     :style="style"
     data-im="group"
     :data-group-id="group.id"
@@ -355,6 +365,17 @@ defineExpose({ focusName });
     :data-collapsed="collapsed ? 'true' : 'false'"
     :data-link-target="linkTarget ? 'group' : undefined"
   >
+    <div v-if="!collapsed && orderBadges.length" class="order-layer" aria-hidden="true">
+      <span
+        v-for="badge in orderBadges"
+        :key="'order-' + badge.card.id"
+        class="order-badge"
+        data-im="group-order-badge"
+        :data-card-id="badge.card.id"
+        :style="{ top: badge.card.y - group.y + 8 + 'px' }"
+      >{{ badge.index }}</span>
+    </div>
+
     <div
       v-if="dropTarget && dropIndex !== null"
       class="drop-insert"
@@ -607,6 +628,26 @@ defineExpose({ focusName });
   z-index: 2;
 }
 .group.ordered { border-color: var(--border-strong); }
+.group.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-1);
+}
+.order-layer { position: absolute; inset: 0; z-index: 9; pointer-events: none; }
+.order-badge {
+  position: absolute;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1;
+}
 .group.drop-target { border-color: var(--accent); background: var(--accent-soft); }
 .group > .drop-insert {
   position: absolute;
