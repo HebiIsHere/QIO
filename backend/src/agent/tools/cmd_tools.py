@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import json
 import platform
@@ -707,6 +708,82 @@ class _CmdTool(Tool):
             detail={"execution": execution},
         )
 
+    def _expand_recursive_delete_impact(self, execution: dict, delete_intent):
+        """D3（契约 §3.D3）：递归删除必须携带真实目录子对象影响。
+
+        复用 fs_tools.directory_impact 的**有界目录完整性**枚举（只做元数据，不读
+        正文）与内部数据对象检查；把目录操作数的子对象加入 DeleteIntent.objects，
+        使 effect targets / limit_impacts / 审批指纹 / 执行前核对看到同一份真实影响。
+
+        返回 ``(intent, complete, reason, internal_entries)``：
+        complete=False 时调用方**不得执行**（影响不完整不能按完整方案执行）。
+        """
+        if delete_intent is None or not bool(
+            getattr(delete_intent, "recursive", False)
+        ):
+            return delete_intent, True, "", []
+        from agent.tools import fs_tools  # 延迟导入：复用目录完整性/对象身份单一实现
+
+        expanded: list[deletion.DeleteObject] = []
+        seen: set[str] = {str(item.path) for item in delete_intent.objects}
+        protected: list[str] = []
+        incomplete = False
+        reasons: list[str] = []
+        for item in delete_intent.objects:
+            # 目录本身仍是影响对象（被删除/被更改），必须先保留。
+            expanded.append(item)
+            if not bool(item.is_directory):
+                continue
+            try:
+                impact = fs_tools.directory_impact(
+                    item.path,
+                    operation="delete",
+                    include_content=False,
+                    is_protected=lambda candidate: (
+                        security_gate.match_internal_data(self.security, candidate)
+                        is not None
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - 枚举失败按影响不确定
+                incomplete = True
+                reasons.append(
+                    "递归删除影响枚举失败（" + type(exc).__name__ + "）"
+                )
+                continue
+            if not bool(impact.get("complete", False)):
+                incomplete = True
+                reasons.append(
+                    str(impact.get("reason") or "目录影响枚举不完整")
+                )
+            protected.extend(
+                str(path) for path in (impact.get("internal_data_entries") or ())
+            )
+            for entry in impact.get("entries") or ():
+                if not isinstance(entry, dict):
+                    incomplete = True
+                    continue
+                path = str(entry.get("path") or "")
+                if not path or path == str(item.path) or path in seen:
+                    continue
+                seen.add(path)
+                identity = entry.get("identity")
+                expanded.append(
+                    deletion.DeleteObject(
+                        path=path,
+                        identity=str(identity) if identity else None,
+                        is_directory=str(entry.get("kind")) == "directory",
+                    )
+                )
+        if incomplete:
+            reason = "；".join(reasons[:4]) or "目录影响枚举不完整"
+            return delete_intent, False, reason, protected
+        return (
+            dataclasses.replace(delete_intent, objects=tuple(expanded)),
+            True,
+            "",
+            protected,
+        )
+
     def _requirement_binding(self) -> dict:
         return current_requirement_binding_record(self.security)
 
@@ -1353,8 +1430,27 @@ class RunProgramTool(_CmdTool):
             return incomplete
         fixed_query = self._fixed_query(execution)
         delete_intent = self._delete_intent(execution)
+        delete_intent, delete_complete, delete_reason, delete_internal = (
+            self._expand_recursive_delete_impact(execution, delete_intent)
+        )
+        if not delete_complete:
+            return ToolResult(
+                ok=False,
+                error=(
+                    "递归删除的实际影响无法完整枚举（"
+                    + delete_reason
+                    + "）：本次未执行，不能把不完整的删除方案当成完整方案；"
+                    "请缩小删除范围或重新确认。"
+                ),
+                code="delete_impact_incomplete",
+                category="permission",
+                recoverable=True,
+            )
         delete_binding = self._delete_binding(delete_intent)
         internal_roots = self._internal_mentions(" ".join([program, *args]))
+        for path in delete_internal:
+            if path not in internal_roots:
+                internal_roots.append(path)
         execution["internal_data_roots"] = internal_roots
         requirement = self._requirement_binding()
         label = (
@@ -1514,8 +1610,27 @@ class RunCmdTool(_CmdTool):
             return incomplete
         # shell=True 永远不是固定查询（无法证明无重定向/串联/嵌套）。
         delete_intent = self._delete_intent(execution)
+        delete_intent, delete_complete, delete_reason, delete_internal = (
+            self._expand_recursive_delete_impact(execution, delete_intent)
+        )
+        if not delete_complete:
+            return ToolResult(
+                ok=False,
+                error=(
+                    "递归删除的实际影响无法完整枚举（"
+                    + delete_reason
+                    + "）：本次未执行，不能把不完整的删除方案当成完整方案；"
+                    "请缩小删除范围或重新确认。"
+                ),
+                code="delete_impact_incomplete",
+                category="permission",
+                recoverable=True,
+            )
         delete_binding = self._delete_binding(delete_intent)
         internal_roots = self._internal_mentions(cmd)
+        for path in delete_internal:
+            if path not in internal_roots:
+                internal_roots.append(path)
         execution["internal_data_roots"] = internal_roots
         requirement = self._requirement_binding()
         label = (
