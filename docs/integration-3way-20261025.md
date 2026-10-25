@@ -167,6 +167,10 @@
 
 ### 6.4 完整 CI 轮次（仅一次）
 
+- 触发方式：把整合分支 push 到 `origin/integrate/three-branches-20261025`（`ci.yml` 对 push 全分支 + PR 生效）。本轮**只创建了这一次**会跑完整矩阵的远端事件：子工作流全程在本地 worktree，未 push 分支、未开 PR。
+- 运行：**run 40196935297**，SHA `97b983682def71cbe5bb1d45bb41f3560f7504ed`（分支 integrate/three-branches-20261025）。
+- 逐 job 结论与失败处置：（回填）
+
 （回填：运行号、SHA、逐 job 结论、失败与定向复验）
 
 ### 6.5 最终候选状态
