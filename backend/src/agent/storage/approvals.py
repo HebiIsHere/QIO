@@ -560,6 +560,20 @@ class ApprovalStore:
                 action=target,
                 actor=actor,
             )
+            # F02：拒绝/取消是**终态**，用户刷新后仍要能回看（approval_history 每次审批
+            # 一条最新结果，PK approval_id；不改变授权/执行语义，只补可读历史）。
+            settled = self.row_to_dict(self.get_raw(approval_id)) or {}
+            label = str(settled.get("label") or "")
+            summary = (
+                ("已拒绝：%s（不会执行）" if target == "rejected" else "已取消：%s（不会执行）")
+                % (label or "这次操作")
+            )
+            self._write_history(
+                approval_id,
+                summary=summary,
+                outcome=target,
+                detail={"decision": target, "label": label},
+            )
             return self.get(approval_id) or {}
         # approve
         if state != "waiting":
@@ -705,6 +719,12 @@ class ApprovalStore:
             row = self.get_raw(approval_id)
             if row is None:
                 return {}
+            # F02/F03：历史 detail 带上 kind/label（前端「结果与历史」用来显示这是
+            # 哪条审批、操作名是什么；只补缺失键，不改执行器给的逐项结果）。
+            item = self.row_to_dict(row) or {}
+            detail.setdefault("kind", str(item.get("kind") or ""))
+            if item.get("label"):
+                detail.setdefault("label", str(item.get("label") or ""))
             if self.state_of(row) != "executing":
                 # 终态只能从 executing 收口一次；迟到的旧结果不得覆盖已完成/已作废的行。
                 self._audit(
@@ -828,6 +848,17 @@ class ApprovalStore:
                 )
                 return self.get(approval_id) or {}
             self._audit(approval_id, "expired", {}, strict=True)
+            # F02：过期也是终态（刷新后仍可回看；不改期限/授权语义）
+            item = self.row_to_dict(self.get_raw(approval_id)) or {}
+            label = str(item.get("label") or "")
+            self._write_history(
+                approval_id,
+                summary=("已过期：%s（本次没有执行）" % label)
+                if label
+                else "已过期，本次没有执行",
+                outcome="expired",
+                detail={"reason": "expired", "label": label},
+            )
         return self.get(approval_id) or {}
 
     def mark_interrupted_unverified(self, approval_id: str, reason: str) -> dict:
@@ -1027,10 +1058,23 @@ class ApprovalStore:
         outcome: str,
         detail: dict | None = None,
     ) -> None:
-        """写一条可读历史（approval_history，PK approval_id：每个审批一条最新结果）。"""
+        """写一条可读历史（approval_history，PK approval_id：每个审批一条最新结果）。
+
+        detail 统一补上 kind / label（只补不覆盖调用方给的值）：前端「结果与历史」
+        需要知道这是哪一条审批、当时的人类可读操作名。不改表结构。
+        """
         try:
             row = self.get_raw(approval_id)
             kind = str(row["kind"] or "") if row is not None else ""
+            label = ""
+            if row is not None:
+                item = self.row_to_dict(row) or {}
+                kind = str(item.get("kind") or kind)
+                label = str(item.get("label") or "")
+            merged = dict(detail or {})
+            merged.setdefault("kind", kind)
+            if label:
+                merged.setdefault("label", label)
             self.conn.execute(
                 "INSERT OR REPLACE INTO approval_history"
                 " (approval_id, kind, summary, outcome, detail, at)"
@@ -1040,7 +1084,7 @@ class ApprovalStore:
                     kind,
                     str(summary or ""),
                     str(outcome),
-                    _json(detail or {}),
+                    _json(merged),
                     _iso(self.now()),
                 ),
             )
