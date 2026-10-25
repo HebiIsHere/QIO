@@ -118,8 +118,11 @@ describe("F03 任务入口：有真实任务面板，控制调用真实执行接
     const services = await mountWithTasks();
     await openTaskCenter();
 
+    expect(
+      harness!.wrapper.find('[data-im="task-resume"][data-intent-id="i_pause"]').exists(),
+      "已暂停任务必须有继续入口",
+    ).toBe(true);
     const resume = harness!.wrapper.get('[data-im="task-resume"][data-intent-id="i_pause"]');
-    expect(resume.exists(), "已暂停任务必须有继续入口").toBe(true);
     await resume.trigger("click");
     await settlePage(harness!.wrapper);
     expect(services.resumeIntent).toHaveBeenCalledWith("i_pause");

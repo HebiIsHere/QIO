@@ -15,7 +15,15 @@ import { createPinia, setActivePinia } from "pinia";
 import BoardCard from "../BoardCard.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import * as board from "../../../interactive/board";
-import type { BoardCard as CardModel, BoardRect, BoardState } from "../../../interactive/types";
+import type { BoardCard as CardModel, BoardState } from "../../../interactive/types";
+
+/** 本测试只做矩形相交判断，用本地结构类型，避免依赖生产模块是否导出该别名。 */
+interface BoardRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 function overlap(a: BoardRect, b: BoardRect): number {
   const w = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
@@ -85,8 +93,8 @@ describe("F07 菜单移出组：被移出卡片不重叠，组框同步", () => 
     const wrapper = mountCard(movedId);
 
     await wrapper.get('[data-im="selection-menu"]').trigger("click");
+    expect(wrapper.find('[data-im="group-leave"]').exists()).toBe(true);
     const leave = wrapper.get('[data-im="group-leave"]');
-    expect(leave.exists()).toBe(true);
     await leave.trigger("click");
 
     const next = store.board as BoardState;

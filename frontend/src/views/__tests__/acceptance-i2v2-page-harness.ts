@@ -148,7 +148,8 @@ export function mountInteractivePage(board?: BoardState, options: MountPageOptio
     attachTo: document.body,
     global: {
       plugins: [pinia],
-      stubs,
+      // 存根映射包含布尔与组件两种值；这里按 mount 的存根形状交给运行时，类型只做透传。
+      stubs: stubs as never,
     },
   });
   return { wrapper, store };
