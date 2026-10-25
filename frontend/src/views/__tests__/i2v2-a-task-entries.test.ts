@@ -220,7 +220,7 @@ describe("F03 任务控制：暂停 / 继续 / 取消", () => {
 });
 
 describe("F03 批量入口与重复操作", () => {
-  it("旧提交区的「打开批量审批」接到真实待确认界面（基线只改 batchOpen）", async () => {
+  it("旧提交区的「打开批量审批」接到真实待确认界面（唯一状态是 tasksOpen）", async () => {
     recordIntentBatch("batch-a", ["i1", "i2", "i3", "i4"]);
     // 旧链的「本次理解产出的待审批」按 understandingId 归属；批量列表要求同一批 ≥4 条
     mocks.api.fetchIntents.mockResolvedValue({
@@ -244,6 +244,10 @@ describe("F03 批量入口与重复操作", () => {
     expect(byIm(wrapper, "task-pending").length).toBe(1);
     expect(byIm(wrapper, "task-pending-row").length).toBe(4);
     expect(byIm(wrapper, "task-batch-approve").length).toBe(1);
+    // C02：可见承接界面由 tasksOpen 决定，批量入口不再写旧的 batchOpen 通道
+    expect(store.tasksOpen).toBe(true);
+    expect(store.taskCenterFocus).toBe("pending");
+    expect(store.batchOpen).toBe(false);
     wrapper.unmount();
   });
 

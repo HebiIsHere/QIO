@@ -332,16 +332,14 @@ function locateOnBoard(intent: Intent): void {
 }
 
 /**
- * 批量入口：直接打开**任务面板的待确认分区**（真实界面）。
+ * 批量入口：直接打开**任务面板的待确认分区**（真实界面，唯一状态是 tasksOpen）。
  *
  * 基线只把 store.batchOpen 置 true，而 IntentBatchTray 已不在新页面上挂载 ——
  * 点了没有任何可见反馈。现在批量对象与操作资格都来自 store.taskRows，
  * 面板里有逐条批准 / 拒绝与同批操作，无内容时给准确空态。
+ * C02：批量界面统一由 tasksOpen 承接，这里不再写旧的 batchOpen 通道。
  */
 function openBatchList(): void {
-  // 旧通道的 batchOpen 仍保留为兼容字段（旧 IntentBatchTray 已不在新页面上挂载），
-  // 真正的可见承接界面是任务面板的「待确认」分区。
-  store.batchOpen = true;
   store.openTaskCenter("pending");
 }
 

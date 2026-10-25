@@ -4,6 +4,7 @@
   基线缺陷：HUD 的「任务」按钮只切 store.tasksOpen，承接它的 IntentStatusPopover 未挂载；
   提交区的「打开批量审批」只切 store.batchOpen，IntentBatchTray 也未挂载 ——
   两个入口点了没有任何可见反应，运行中的任务也没有暂停 / 取消 / 继续入口。
+  现在两条入口都落在这一个面板上（tasksOpen 是唯一开合状态，批量入口带 focus="pending"）。
 
   这一份界面同时承接两条入口（「任务」与「批量待确认」），内容与操作资格都来自
   store.taskRows（唯一一份任务行）：不再有「两份互不更新的列表分别驱动界面和资格」。
