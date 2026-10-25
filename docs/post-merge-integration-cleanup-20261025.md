@@ -253,8 +253,21 @@
 
 ## 10. 未验证与边界
 
-<收口回填>
+- **真实模型/厂商链路**：本轮全部模型调用使用 fake/mock provider；离线评估用离线夹具。
+- **POSIX 平台**：本机验证全部在 Windows；Linux 由 CI（py3.11/py3.12）覆盖，那是 CI 事实不是本地结论。
+- **安装形态与桌面边界**（D 的 F07 报告 §5 如实列出）：NSIS 安装/卸载形态（由 CI install e2e 覆盖，本地未打包）、冻结 sidecar onefile 进程模型（由 CI frozen worker 覆盖，本地 debug 走真实 Python 后端）、系统关机/注销（WM_QUERYENDSESSION/ENDSESSION 无法无人值守触发，只验 WM_CLOSE + RunEvent::Exit）、ask 的 1.8s ACK 超时兜底（前端总能 ACK，未构造故障）、物理鼠标点任务栏托盘图标（用 tray-icon 原生回调消息 + 菜单键选，状态是真实 Win32 状态）、多显示器/DPI/最大化和更新安装。
+- **480x600 收起态徽标**：徽标位于既有悬浮对话状态条内，该行可能与板面一张卡下边缘重叠（1440 与卡片相交 0；始终与工具栏/输入区/消息面板相交 0）。这是既有悬浮布局的覆盖区，不是本轮新增浮层。
+- **矩阵 11（材料冲突→影响确认→剩余撤回）真实链路**：组件级 9 例全绿，B 在真实后端上验证了「paused 继续被拒→failed 重试逐项摘要→关闭不撤回（DB 不变）→再次查看→Escape」；E 的独立隔离库无法自然产生 pendingDecision，标注 LIMITED，不伪造数据。
+- **旧 /respond 兼容路径**：执行结果没有持久化历史，界面不会把它伪造进「结果与历史」；工具创建等旧 request 机制仍可用。
+- **历史入口**：无待审批、无历史、无错误时 ⑤ 不占位（空入口不占屏幕）；有待办、有历史或读取失败时可达。
+- **既有边界不变**：真实回收站/符号链接/跨卷移动等文件系统边界沿用仓库既有结论；执行前核对到系统调用仍有竞态；受限子进程不是安全沙箱。
+- 本轮未改数据库 schema、未改历史迁移、未改版本号/锁文件；无需数据库回退步骤。
 
 ## 11. 合并准备
 
-<收口回填：未来合入 main 如何避免重复触发 CI、PR 材料、数据库兼容性>
+- **分支状态**：修复分支已推送 origin（独立分支，未合入 main、未打包、未发布、未改版本号）。main 保持 1b03541e 不动。
+- **本轮唯一一次完整 CI**：由集成分支 push 触发 ci.yml 完整矩阵（含 install e2e、冻结 worker、三平台后端、前端 typecheck+测试+构建、rust 两平台、docs）。若失败：修复提交带 [skip ci] 推送（不产生第二次完整矩阵），再用 targeted-verify.yml 指定 ref + 完整 40 位 SHA + 平台 + pytest/vitest 筛选定向复验；最终 HEAD 若含仅文档回填提交同样 [skip ci]，并记录「受测 SHA 与最终 HEAD 的差异仅为 docs」。
+- **CI 防重复规则**：ci.yml push 排除 fix/pm-* 与 verify/pm-*（并行子工作分支永不 push，仅防误推）；concurrency 以实际受测提交为键（PR head SHA 回退 github.sha）；新增 workflow_dispatch + expected_sha（checkout 后校验 HEAD==输入 SHA），但它需默认分支已有该触发器，本轮不依赖。main push 与 PR 门禁与 job 图均未改动。
+- **未来合入 main 的重复触发处理**：PR 运行的受测提交是 PR head SHA，main push 运行的受测提交是 merge SHA，两者是不同的提交、各自一次完整矩阵；concurrency 不会把它们当作重复。若仓库保护要求两者都跑，按「不同 SHA 两次完整运行」如实记录，不冒充去重；减负方案（择一）：用 fast-forward/rebase 合并使 main SHA 与已验证 head 相同，或 PR 上只跑 targeted、main push 作为唯一完整门禁。本轮没有创建 PR。
+- **合并材料**：本文档（能力对应表、逐项状态、删除清单、测试迁移、验证台账、未验证边界）+ 各工作流证据目录 + 分支提交历史（全程 merge --no-ff，保留工作流边界）。
+- **数据库**：本轮无 schema/迁移变更；若未来同分支需要回退，按 docs/integration-3way-20261025.md §8 的「保留历史的回退提交/PR + 数据库独立处理」执行，不用强推。
