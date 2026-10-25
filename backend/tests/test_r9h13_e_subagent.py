@@ -657,12 +657,21 @@ async def test_f6_verified_review_authorization_forms_delegable_child_scope(
     assert ("path", _normalized(authorized)) in objects
     assert ("path", _normalized(other)) not in objects
     assert {"write", "read"} <= _grant_operations(verified_grants)
+    records = security.authorizations.records_for_requirement(
+        requirement.requirement.requirement_id
+    )
+    assert len(records) == 1
     for grant in verified_grants:
         assert getattr(grant, "requirement_id", None) == requirement.requirement.requirement_id
         assert int(getattr(grant, "requirement_version", 0) or 0) == int(
             requirement.binding.version
         )
         assert getattr(grant, "purpose", ""), "用途边界不得丢失"
+        # 内容/条件边界：核实记录的指纹与限制必须随 grant 保留（不能只有路径）。
+        assert getattr(grant, "source_record_id", None) == records[0].record_id
+        assert getattr(grant, "fingerprint", None) == records[0].fingerprint
+        assert tuple(getattr(grant, "limits", ())) == tuple(records[0].limits)
+        assert getattr(grant, "is_active", lambda: True)(), "有效核实授权必须可用"
 
     # 逐动作逐对象：已核实对象可读可写；其他对象、其他动作仍拒绝。
     assert captured["write"][0]["verdict"] == "allow", captured["write"][0]["reason"]
@@ -750,14 +759,12 @@ async def test_f6_revoked_or_stale_authorization_not_delegated(
         security.authorizations.revoke(records[0].record_id)
         result_revoked = await tool.run(query="整理项目报告再试一次")
 
-    # 子权限不足时不启动注定失败的子任务，而是返回结构化申请状态（revoked）。
-    assert result_revoked.ok is False
-    assert result_revoked.code == "agent_scope_insufficient", result_revoked.code
+    assert result_revoked.ok is True, result_revoked.error
     delegation = result_revoked.data["agent_scope"]["delegation"]
     assert delegation["state"] == "revoked", delegation
+    assert captured["write"][-1]["verdict"] == "deny", captured["write"][-1]["reason"]
     revoked_requests = result_revoked.data["scope_requests"]
     assert revoked_requests and revoked_requests[0]["state"] == "revoked", revoked_requests
-    assert len(captured["write"]) == 1, "撤销后不得再启动子任务执行真实动作"
 
     # 要求版本/状态变化（修正=旧授权立即失效）后也不得被当成可委派范围。
     with instruction_context(instruction), requirement_context(requirement.binding):
@@ -770,14 +777,133 @@ async def test_f6_revoked_or_stale_authorization_not_delegated(
         )
         with requirement_context(stale_binding):
             result_stale = await tool.run(query="整理项目报告第三次")
-    assert result_stale.ok is False
-    assert result_stale.code == "agent_scope_insufficient", result_stale.code
+    assert result_stale.ok is True, result_stale.error
     stale_delegation = result_stale.data["agent_scope"]["delegation"]
     assert stale_delegation["state"] in {"requested", "superseded"}, stale_delegation
     assert stale_delegation["requirement_id"] == corrected.requirement_id
     assert stale_delegation["grants"] == [], "旧版本的授权不得被当成新版本的可委派范围"
     stale_requests = result_stale.data["scope_requests"]
     assert stale_requests and stale_requests[0]["state"] == "requested", stale_requests
+    assert captured["write"][-1]["verdict"] == "deny", captured["write"][-1]["reason"]
+
+
+async def test_f6_empty_scope_research_subtask_still_runs(db_conn, tmp_path):
+    """相邻正常用例：没有文件权限范围的研究型子任务不得被无故拒绝创建。"""
+    security = make_security(
+        db_conn, tmp_path, mode="restricted", reviewer=FakeReviewer()
+    )
+    requirement = make_requirement(security)
+    instruction = security.instructions.begin(turn_id="turn_f6e", text="查一下项目约定")
+    tool = make_subagent_tool(security, child_adapter=QuietChildAdapter())
+
+    with instruction_context(instruction), requirement_context(requirement.binding):
+        result = await tool.run(query="研究项目约定")
+
+    assert result.ok is True, result.error
+    assert "子任务完成" in (result.content or "")
+    delegation = result.data["agent_scope"]["delegation"]
+    assert delegation["state"] == "requested", delegation
+    assert delegation["requirement_id"] == requirement.requirement.requirement_id
+    assert delegation["escalation"] == "main_agent", delegation
+    assert delegation["grants"] == []
+    requests = result.data["scope_requests"]
+    assert requests and requests[0]["state"] == "requested", requests
+    assert requests[0]["escalation"] == "main_agent", requests[0]
+
+
+async def test_f6_authorization_stays_bound_to_its_requirement(
+    db_conn, tmp_path, monkeypatch
+):
+    """不把一次许可扩大成长期通配授权：别的/后续要求不得继承旧授权。"""
+    project = tmp_path / "project"
+    project.mkdir()
+    authorized = project / "report.txt"
+    authorized.write_text("原文", encoding="utf-8")
+
+    reviewer = FakeReviewer(ReviewDecision.ALLOW)
+    security = make_security(db_conn, tmp_path, mode="restricted", reviewer=reviewer)
+    requirement_a = make_requirement(security)
+    instruction = security.instructions.begin(turn_id="turn_f6f", text="修改项目报告")
+    captured: dict = {}
+    patch_child_body(
+        monkeypatch, security, captured, writes=[path_effect(EffectKind.WRITE, authorized)]
+    )
+    tool = make_subagent_tool(security)
+
+    with instruction_context(instruction), requirement_context(requirement_a.binding):
+        await security.engine.authorize(path_effect(EffectKind.WRITE, authorized))
+        result_a = await tool.run(query="整理项目报告")
+    assert result_a.data["agent_scope"]["delegation"]["state"] == "granted"
+    assert captured["write"][0]["verdict"] == "allow", captured["write"][0]["reason"]
+
+    # 换一条用户要求（不同 requirement_id + 版本）：旧授权不得被继承。
+    requirement_b = security.requirements.record_user_message(
+        text="另一件事：只看一下报告标题。",
+        message_id="msg_other_requirement",
+        turn_id="turn_other_requirement",
+    )
+    binding_b = RequirementBinding(
+        requirement_id=requirement_b.requirement_id,
+        version=int(requirement_b.version),
+    )
+    captured_b: dict = {}
+    patch_child_body(
+        monkeypatch, security, captured_b, writes=[path_effect(EffectKind.WRITE, authorized)]
+    )
+    with instruction_context(instruction), requirement_context(binding_b):
+        result_b = await tool.run(query="整理项目报告")
+
+    delegation_b = result_b.data["agent_scope"]["delegation"]
+    assert delegation_b["requirement_id"] == requirement_b.requirement_id
+    assert delegation_b["grants"] == [], "旧要求的授权不得变成新要求的通配授权"
+    assert delegation_b["state"] == "requested", delegation_b
+    assert captured_b["write"][0]["verdict"] == "deny", captured_b["write"][0]["reason"]
+
+
+async def test_f6_read_only_escalates_to_user_not_silent_grant(db_conn, tmp_path):
+    """主智能体自己也没有权限时，结构化申请升级给用户（read_only → user）。"""
+    project = tmp_path / "project"
+    project.mkdir()
+    allowed = project / "report.txt"
+    allowed.write_text("原文", encoding="utf-8")
+    needed = project / "appendix.txt"
+    needed.write_text("附录", encoding="utf-8")
+
+    security = make_security(db_conn, tmp_path, mode="read_only")
+    requirement = make_requirement(security)
+    instruction = security.instructions.begin(turn_id="turn_f6g", text="只读查看项目")
+    assert security.instructions.add_grant(
+        instruction,
+        operations={"read"},
+        objects=[Scope("path", str(allowed))],
+        purpose="用户批准读取这份报告",
+    )
+    child_adapter = ScriptedChildAdapter(
+        [
+            (
+                "request_agent_scope",
+                {
+                    "operations": ["write"],
+                    "objects": [{"kind": "path", "value": str(needed)}],
+                    "reason": "只读模式下无法写附录",
+                },
+            )
+        ]
+    )
+    tool = make_subagent_tool(security, child_adapter=child_adapter)
+
+    with instruction_context(instruction), requirement_context(requirement.binding):
+        result = await tool.run(query="整理项目报告")
+
+    requests = result.data["scope_requests"]
+    assert requests, "主智能体也没有权限时必须形成结构化申请"
+    assert requests[0]["state"] == "requested", requests[0]
+    assert requests[0]["escalation"] == "user", (
+        "只读模式下主智能体没有写权限，申请必须升级给用户而不是静默放宽"
+    )
+    delegation = result.data["agent_scope"]["delegation"]
+    assert "write" not in delegation["operations"], "结构化申请不得被静默当成已授予"
+    assert "read" in delegation["operations"]
 
 
 # --------------------------------------------------------------------------

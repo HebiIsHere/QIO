@@ -11,6 +11,11 @@
    与 user_approved（用户点「允许」产生的有界授权，对象/操作/目的都来自审批单）。
    模型不能自行声明 grant —— 本模块没有任何面向模型/工具的添加入口，唯一的
    add_grant 由审批服务在用户批准后调用。
+
+R9-H13 §3.H（F6）：子智能体范围里的 `verified_authorization` / `verified_read`
+grant 由引擎 `child_scope` 从**已核实**的模型审查授权记录派生（同样不是模型
+自报权限）；本模块只提供 Grant/Scope 的边界字段、逐操作逐对象覆盖核对与结构化
+范围申请状态机，不产生任何额外授权。
 """
 
 from __future__ import annotations
@@ -570,7 +575,12 @@ class ScopeRequestLedger:
     只按 (requirement_id, purpose) 归并同一次子任务目标的申请；跨要求/跨目标不合并。
     状态变化只由真实事实触发：子范围覆盖申请内容 = granted；要求改版/失效 =
     superseded；已授予但当前范围不再覆盖（授权记录被撤销等）= revoked。
+
+    这是进程内的结构化状态缓存（不落库、不新增迁移）；条目有界，最旧的先淘汰，
+    避免长会话无限增长。
     """
+
+    max_items = 256
 
     def __init__(self) -> None:
         self._items: dict[tuple[str, str], ScopeRequest] = {}
@@ -578,6 +588,15 @@ class ScopeRequestLedger:
     @staticmethod
     def _key(requirement_id: object, purpose: object) -> tuple[str, str]:
         return (str(requirement_id or ""), str(purpose or ""))
+
+    def _evict_if_needed(self) -> None:
+        while len(self._items) >= self.max_items:
+            oldest_key = min(
+                self._items, key=lambda key: self._items[key].updated_at
+            )
+            if oldest_key not in self._items:  # pragma: no cover - 并发防御
+                break
+            self._items.pop(oldest_key, None)
 
     def request(
         self,
@@ -606,7 +625,10 @@ class ScopeRequestLedger:
         normalized_operations = tuple(
             dict.fromkeys(
                 op
-                for op in (normalize_grant_operation(item) or str(item or "").strip() for item in operations or ())
+                for op in (
+                    normalize_grant_operation(item) or str(item or "").strip()
+                    for item in operations or ()
+                )
                 if op
             )
         )
@@ -626,6 +648,7 @@ class ScopeRequestLedger:
             if reason:
                 existing.reason = str(reason)[:500]
             return existing
+        self._evict_if_needed()
         request = ScopeRequest(
             request_id="scope_req_" + uuid.uuid4().hex[:12],
             requirement_id=str(requirement_id or ""),

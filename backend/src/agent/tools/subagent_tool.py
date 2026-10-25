@@ -258,6 +258,16 @@ def _scope_to_payload(scope: Any) -> dict | None:
     }
 
 
+def _optional_int(value: Any) -> int | None:
+    """宽松整数（只用于重建已提交审批载荷里的版本号；非法值按 None，不猜测）。"""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _scope_from_payload(data: Any) -> Any:
     """审批载荷 → AgentScope（与提交审批时是同一批 grant，只能缩小不能扩大）。"""
     if not isinstance(data, dict) or not data:
@@ -290,11 +300,7 @@ def _scope_from_payload(data: Any) -> Any:
                 created_at=str(item.get("created_at") or ""),
                 revoked=bool(item.get("revoked", False)),
                 requirement_id=item.get("requirement_id"),
-                requirement_version=(
-                    int(item["requirement_version"])
-                    if item.get("requirement_version") is not None
-                    else None
-                ),
+                requirement_version=_optional_int(item.get("requirement_version")),
                 source_record_id=item.get("source_record_id"),
                 fingerprint=item.get("fingerprint"),
                 limits=tuple(str(value) for value in (item.get("limits") or ())),
@@ -801,18 +807,19 @@ class SubagentTool(Tool):
         summary["delegation"] = delegation
         return summary, requests
 
-    def _prepare_scope(self, scope: Any) -> tuple[Any, dict[str, Any] | None, bool]:
-        """形成显式子范围；没有任何可委派事实时要求先向主智能体申请。
+    def _prepare_scope(self, scope: Any) -> tuple[Any, dict[str, Any] | None]:
+        """形成显式子范围（当前要求 + 模式 + 已核实授权），并登记结构化状态。
 
-        返回 (scope, 要求上下文, 是否范围不足)。不足时不启动注定失败的子任务，
-        但返回结构化申请状态，主智能体可据此先取得核实授权再重试。
+        没有可委派事实时**不阻止**子任务创建（研究型子任务本来就不需要范围），
+        但会形成结构化申请状态（requested），子智能体运行中权限不足时可用
+        request_agent_scope 向主智能体申请——不直接向用户弹窗。
         """
         context = self._verified_context() if self._ledger_available() else None
         scope = self._enrich_scope(scope, context)
         if context is None:
-            return scope, None, False
+            return scope, None
         if self._usable_grants(scope):
-            return scope, context, False
+            return scope, context
         mode = str(security_gate.mode_of(self.security) or "")
         escalation = "main_agent" if mode == "restricted" else "user"
         try:
@@ -831,9 +838,9 @@ class SubagentTool(Tool):
                     reason="当前要求下没有可委派的已核实授权范围",
                     escalation=escalation,
                 )
-        except Exception:  # noqa: BLE001 - 状态机不可用时仍按不足处理
+        except Exception:  # noqa: BLE001 - 状态机不可用时仍按事实返回
             pass
-        return scope, context, True
+        return scope, context
 
     async def run(self, **kwargs: Any) -> ToolResult:
         if self.adapter_factory is None:
@@ -884,40 +891,14 @@ class SubagentTool(Tool):
                     category="permission",
                     recoverable=False,
                 )
-            # R9-H13 §3.H（F6）：依据当前有效要求、模式与已核实授权形成明确子集；
-            # 没有任何可委派事实时返回结构化范围申请（先找主智能体，不直接找用户）。
-            scope, delegation_context, scope_insufficient = self._prepare_scope(scope)
+            # R9-H13 §3.H（F6）：依据当前有效要求、模式与已核实授权形成明确子集。
+            # 没有可委派事实时不阻止创建（研究型子任务不需要范围），但形成结构化
+            # 申请状态；子智能体运行中权限不足时用 request_agent_scope 向主智能体
+            # 申请，主智能体也没有权限时才请求用户（不直接弹用户窗）。
+            scope, delegation_context = self._prepare_scope(scope)
             delegation_facts, scope_requests = self._scope_delegation_facts(
                 scope, delegation_context
             )
-            if scope_insufficient:
-                return ToolResult(
-                    ok=False,
-                    status="needs_authorization",
-                    code="agent_scope_insufficient",
-                    category="permission",
-                    recoverable=True,
-                    error=(
-                        "子智能体当前没有可用的授权范围：主智能体需要先取得并核实"
-                        "完成子任务所需的授权；主智能体也没有权限时再请求用户。"
-                    ),
-                    content=(
-                        "子智能体范围不足，未创建子任务（不会自己向用户弹窗）。\n"
-                        "结构化申请状态："
-                        + (scope_requests[0]["state"] if scope_requests else "requested")
-                        + "\n主智能体可先按当前要求/模式取得并核实授权后重试；"
-                        "主智能体也没有权限时再请求用户确认。"
-                    ),
-                    data={
-                        "agent_scope": delegation_facts,
-                        "scope_requests": scope_requests,
-                        "next": (
-                            "主智能体先取得完成子任务所需的核实授权（当前要求与模式内），"
-                            "再重试创建子智能体；主智能体也无权限时请求用户确认。"
-                        ),
-                    },
-                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
-                )
             effect = security_gate.subagent_effect(
                 self.name, definition_name=self.definition.name
             )
