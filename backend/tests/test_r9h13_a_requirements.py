@@ -447,3 +447,164 @@ async def test_a1_indirect_rewrites_do_not_rebind_inherited_limits(
     assert result.ok is False, result
     assert _decision_code(result) in (UNBOUND_CODE, UNKNOWN_CODE), result
     assert launches == [] and not marker.exists()
+
+
+# ==========================================================================
+# A2 缺失历史身份事实的候选不得宣称已验证
+# ==========================================================================
+
+
+async def test_a2_missing_historical_identity_not_claimed_verified(
+    ctx, tmp_path, monkeypatch
+):
+    """A2：保存候选只有 A 的路径（保存时身份不可读）；旧对象保留硬链接、A 被替换。
+
+    契约 §3.A2：恢复不得仅凭“A 当前存在且身份可读”声称已验证并绑定 A 的新对象——
+    那会把旧对象硬链接从拒绝变成允许。历史依据不足时必须保持未解决、零写入，保留
+    known limits/候选/来源；随后由真实用户澄清（明确对象路径）确定限制含义，
+    后端按真实对象事实核验（旧对象仍禁止、不同对象按当前模式放行）。
+    基线（e68fb9b7）：_verify_saved_binding_candidate 对无 identity 事实的候选
+    verified=True → 绑定 A 新对象 → 旧硬链接实际启动成功（本用例红）。
+    """
+    a_dir = tmp_path / "a2-bin"
+    a = _launch_program(a_dir, "runner")
+    old_dir = tmp_path / "a2-old"
+    old_object = _hardlink(
+        a, old_dir / ("runner-old.exe" if os.name == "nt" else "runner-old")
+    )
+
+    # 保存阶段：PATH 优先找到 A，但 A 的身份读取失败（模拟身份提供器边界）。
+    wanted = _fail_identity_for(monkeypatch, [a])
+    _set_path(monkeypatch, a_dir)
+    requirement = ctx.requirements.record_user_message(
+        text="禁止运行 runner", message_id="m-a2", turn_id="t-a2"
+    )
+    ctx.requirements.set_structured_limits(
+        requirement.requirement_id, [_PROGRAM_LIMIT], source="test:a2:save"
+    )
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    assert stored is not None
+    saved_obj = stored.structured_limits[0]["objects"][0]
+    assert "program_binding" not in saved_obj, saved_obj
+    assert saved_obj.get("binding_state") == requirement_limits.BINDING_STATE_UNRESOLVED
+    assert (
+        saved_obj.get("binding_failure")
+        == requirement_limits.BINDING_FAILURE_IDENTITY_UNAVAILABLE
+    )
+    saved_candidates = [str(item.get("path")) for item in saved_obj["binding_candidates"]]
+    assert any(
+        os.path.normcase(os.path.realpath(item)) == _real(a) for item in saved_candidates
+    ), saved_candidates
+    assert all(
+        not item.get("identity") for item in saved_obj["binding_candidates"]
+    ), "前提：保存时身份不可读，候选没有保存时 identity 事实"
+    raw_before = _raw_limits(ctx.conn, stored.requirement_id)
+    source_before = str(stored.structured_limits_source or "")
+    state_before = str(stored.structured_limits_state)
+
+    # 旧对象保留在硬链接里；A 路径被另一个真实文件（不同对象）替换。
+    a.unlink()
+    _launch_program(a_dir, "runner")
+    wanted.discard(str(a))  # 时间差：现在身份可读，但历史对象已无法证明
+    assert not os.path.samefile(old_object, a), "前提：A 已被另一个对象替换"
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    binding = ctx.requirements.binding_for(stored.requirement_id)
+    assert binding is not None
+    launches = _install_launch_counter(monkeypatch)
+
+    # 恢复前控制组：旧对象硬链接执行被拒（失败关闭）。
+    marker_before = Path(ctx.computer.root()) / "a2-before-marker.txt"
+    before_result = await _run_program(ctx, old_object, marker_before, binding=binding)
+    assert before_result.ok is False, before_result
+    assert _decision_code(before_result) in (UNBOUND_CODE, UNKNOWN_CODE), before_result
+    assert launches == [] and not marker_before.exists()
+
+    # 真实专用恢复服务入口：不得采纳“当前 A 新对象”。
+    recovery_ctx = SimpleNamespace(notices=[])
+    recovered = await ctx._ensure_legacy_structured_limits(
+        recovery_ctx,
+        binding,
+        message_id="m-a2-recover",
+        turn_id="t-a2-recover",
+    )
+    assert recovered is None, "历史身份事实不足的候选不得被采纳为本轮恢复结果"
+    after = ctx.requirements.by_id(stored.requirement_id)
+    assert after is not None
+    after_obj = after.structured_limits[0]["objects"][0]
+    assert not (after_obj.get("program_binding") or {}), (
+        "缺失保存时 identity 事实的候选不得宣称已验证并绑定 A 的新对象："
+        + json.dumps(after_obj, ensure_ascii=False, default=str)
+    )
+    assert after_obj.get("binding_state") == requirement_limits.BINDING_STATE_UNRESOLVED
+    assert [str(item.get("path")) for item in after_obj["binding_candidates"]] == (
+        saved_candidates
+    )
+    assert str(after.structured_limits_state) == state_before
+    assert str(after.structured_limits_source or "") == source_before
+    assert _raw_limits(ctx.conn, stored.requirement_id) == raw_before, "恢复失败零写入"
+    assert any("历史用户限制" in item for item in recovery_ctx.notices)
+
+    # 旧对象硬链接保护不得丢失；A 新对象同样无法证明同一对象 → 两者都被拒且 0 启动。
+    launches.clear()
+    marker_old_after = Path(ctx.computer.root()) / "a2-old-after-marker.txt"
+    marker_new_after = Path(ctx.computer.root()) / "a2-new-after-marker.txt"
+    old_after = await _run_program(
+        ctx, old_object, marker_old_after, binding=binding
+    )
+    new_after = await _run_program(ctx, a, marker_new_after, binding=binding)
+    for label, result, marker in (
+        ("old-object-hardlink", old_after, marker_old_after),
+        ("replacement-at-candidate-path", new_after, marker_new_after),
+    ):
+        assert result.ok is False, (label, result)
+        assert _decision_code(result) in (UNBOUND_CODE, UNKNOWN_CODE), (label, result)
+        assert not marker.exists(), label + " 实际执行成功（旧对象保护被解除）"
+    assert launches == [], "被拒绝的执行不得尝试启动任何程序"
+
+    # 用户澄清：真实 amend 明确限制所指对象（旧对象路径），并解除无法证明的裸名称。
+    clarified_value = _real(old_object)
+    applied = ctx.requirements.apply_resolution(
+        _amend_outcome(
+            after,
+            message="我指的是旧程序对象，禁止运行它",
+            limits=[
+                {
+                    "operations": ["execute"],
+                    "objects": [{"kind": "program", "value": clarified_value}],
+                    "reason": "禁止运行用户明确指出的旧程序对象",
+                }
+            ],
+            removed_limits=[
+                {
+                    "operations": ["execute"],
+                    "objects": [{"kind": "program_name", "value": "runner"}],
+                    "reason": "澄清对象后解除无法证明的裸名称限制",
+                }
+            ],
+            reason="用户澄清限制所指对象",
+        ),
+        message="我指的是旧程序对象，禁止运行它",
+        message_id="m-a2-clarify",
+        turn_id="t-a2",
+    )
+    child = ctx.requirements.by_id(applied.requirement.requirement_id)
+    assert child is not None
+    child_binding = ctx.requirements.binding_for(child.requirement_id)
+    assert child_binding is not None
+    assert not requirement_limits.needs_binding_recovery(child.structured_limits), (
+        "澄清后限制应表达为明确对象，不再需要程序名称绑定恢复："
+        + json.dumps(child.structured_limits, ensure_ascii=False, default=str)
+    )
+    # 后端按真实对象事实核验：旧对象被拒绝（0 启动），不同对象按当前模式真实运行。
+    launches.clear()
+    marker_old_clar = Path(ctx.computer.root()) / "a2-clar-old-marker.txt"
+    marker_new_clar = Path(ctx.computer.root()) / "a2-clar-new-marker.txt"
+    old_clar = await _run_program(
+        ctx, old_object, marker_old_clar, binding=child_binding
+    )
+    assert old_clar.ok is False, old_clar
+    assert not marker_old_clar.exists()
+    new_clar = await _run_program(ctx, a, marker_new_clar, binding=child_binding)
+    assert new_clar.ok is True, new_clar
+    assert marker_new_clar.exists(), "澄清为具体旧对象后，不同对象应按当前模式正常执行"
+    assert len(launches) == 1, launches
