@@ -40,6 +40,13 @@ const visible = computed(
     Boolean(approvals.recoveryError),
 );
 
+/** 可见失败标记（F04）：恢复/历史读取失败时入口上有一个红色「!」，正常时不渲染。 */
+const errorText = computed(() => {
+  if (approvals.recoveryError) return "恢复待审批项失败";
+  if (results.historyError) return "审批历史读取失败";
+  return "";
+});
+
 const label = computed(() => {
   if (unified.count > 0) return `有 ${unified.count} 项操作等待确认`;
   if (approvals.recoveryError) return "待审批列表读取失败，打开查看原因与重试";
@@ -67,8 +74,15 @@ function open() {
     @mousedown.prevent
     @click="open"
   >
-    <span class="mark" aria-hidden="true">!</span>
+    <span class="mark" :class="{ error: errorText }" aria-hidden="true">!</span>
     <span class="text">{{ label }}</span>
+    <span
+      v-if="errorText"
+      class="entry-error"
+      data-test="approval-entry-error"
+      :title="errorText + '（打开查看原因与重试）'"
+      aria-hidden="true"
+    ></span>
   </button>
 </template>
 
@@ -101,6 +115,26 @@ function open() {
 .nonchat-approval-entry:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+.mark.error {
+  background: var(--danger);
+}
+/* 读取失败的可见警示标（绝对定位，不挤坏窄窗布局） */
+.nonchat-approval-entry {
+  position: relative;
+}
+.nonchat-approval-entry .entry-error {
+  position: absolute;
+  left: -4px;
+  bottom: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-elevated);
+  background: var(--danger);
 }
 .mark {
   display: inline-flex;
