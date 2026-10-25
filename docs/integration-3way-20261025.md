@@ -143,7 +143,7 @@
 | B 审批 | 前端 5 文件 57 例 + 后端 `test_approval_api.py`/`test_knowledge_approval_api.py` 18 例 | 全绿 | `_int3/evidence/B-approval-mapping.md` §阶段二 |
 | C 互动 | 后端 8 文件 208 + 50；前端 14 文件 127 + 8 文件 176 + irl-b 29 | 全绿 | `_int3/evidence/C-interactive-seams-review.md` |
 | D 后端/桌面 | 后端 16 文件 214；前端 WindowChrome/p1a/design-guards 45；`vue-tsc` 0 | 全绿 | `_int3/evidence/D-backend-desktop-plan.md` §9–§12 |
-| E 独立验收 | 后端 28 文件 433 / i2 后端 19 文件 329 / 迁移 8 文件 56 / 前端 27 文件 438 | 全绿 | `_int3/evidence/E-verification-report.md` |
+| E 独立验收 | 在最终候选 97b98368 上：后端 28 文件 433 / i2 后端 19 文件 329 / 迁移 8 文件 56 / 前端 28 文件 448；知识审批 11 文件 75 / `test_r9g_cmd_binding` 17；五类来源库升级 | 全部 0 红 | `_int3/evidence/E-verification-report.md`、`E-06-*.{xml,log}` |
 | Lead 集成 | 迁移冒烟、设置/审批/互动/迁移定向批次、真实界面抽查 | 见 6.2 | `_int3/evidence/` |
 
 ### 6.2 本地全量轮次（仅一次，候选 `c56b7033`）
@@ -195,7 +195,8 @@
 - v2 生命周期审批的子智能体预算只读展示：`/decide` 不支持 `overrides`，本轮不新增后端参数。
 - 页面来源库升级时，52/53/57/68/69 的 ADD COLUMN 预检会按既有「半截迁移自愈」路径打 warning（对象已存在 → 跳过），属日志噪声不是错误。
 - 迁移号 54/56 保持空号（历史语义），后续新迁移从 71 起。
-- 统一审批弹窗在窄窗口下，类型标签较多时第 3 个标签可能被右边缘裁切（观察项，不影响提交）。
+- 统一审批弹窗在窄窗口（480px）下，≥3 条待审批时第 3 个类型标签右缘被裁切（`overflow-x:auto` 可横向滚动但无提示）；不影响提交，属 P2 可及性问题。
+- 审批弹窗里「状态 / 期限」在事实框与 lifecycle 行各显示一次（重复但不矛盾）；同类型 3 条待审批的队列标签文案无法互相区分（可用性建议）。
 
 ### 7.3 基线既有问题与本轮处置（另一批）
 
