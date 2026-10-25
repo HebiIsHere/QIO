@@ -25,9 +25,9 @@ import {
   dissolveGroup,
   groupOfCard,
   joinGroup,
+  leaveGroupToFreeSpots,
   mergeGroups,
   removeCard,
-  removeFromGroup,
   setGroupOrdered,
 } from "../../interactive/board";
 import type { BoardState } from "../../interactive/types";
@@ -257,10 +257,25 @@ function joinSelected(event: Event): void {
 function leaveGroups(): void {
   const current = board.value;
   if (!current || !canLeave.value) return;
-  let next = current;
-  for (const cardId of selectedIds.value) next = removeFromGroup(next, cardId);
-  store.commit(next, "把所选卡片移出组");
-  notice.value = "已把所选卡片移出组：位置不变，空掉的组会自动消失。";
+  // F07：菜单移出没有落点 —— 用既有避让规则给每张卡找组外最近的空位，
+  // 剩余成员同时收拢；成员变化 + 最终位置作为**一次**提交，撤销一次即恢复。
+  const outcome = leaveGroupToFreeSpots(current, selectedIds.value);
+  store.commit(outcome.state, "把所选卡片移出组（自动避开重叠）");
+  const spilled = outcome.placements.filter((item) => !item.free);
+  if (spilled.length) {
+    const names = spilled
+      .map((item) => {
+        const card = cardById(outcome.state, item.cardId);
+        return card ? card.content.slice(0, 12) || card.id : item.cardId;
+      })
+      .join("、");
+    notice.value =
+      "已移出组，但附近没有完全不重叠的空位：" + names + " 停在最接近可行的位置，请手动拖开。";
+    return;
+  }
+  notice.value = outcome.placements.some((item) => item.moved)
+    ? "已把所选卡片移出组：卡片放到组外最近的空位，其余成员已收拢。"
+    : "已把所选卡片移出组：位置不变（本来就在组外空位上），空掉的组会自动消失。";
 }
 
 function dissolveGroups(): void {
@@ -353,7 +368,7 @@ function deleteSelected(): void {
 
       <button v-if="canLeave" class="item" type="button" role="menuitem" data-im="group-leave" @click="leaveGroups">
         移出组
-        <span class="hint">卡片留在原处，空组自动消失</span>
+        <span class="hint">卡片挪到组外最近的空位，空组自动消失</span>
       </button>
       <button v-if="canDissolve" class="item" type="button" role="menuitem" data-im="group-dissolve" @click="dissolveGroups">
         解除组
