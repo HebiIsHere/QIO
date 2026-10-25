@@ -148,7 +148,7 @@
 
 ### 6.2 本地全量轮次（仅一次，候选 `c56b7033`）
 
-- 后端：`cd backend; uv run --frozen pytest -q` →（见 6.4 回填）
+- 后端：`cd backend; uv run --frozen pytest -q` → 在 `c56b7033` 上首跑：**2 failed**，其余通过。两条失败分别是 `test_r9g_cmd_binding.py::test_replay_invalidates_when_unrestricted_switched_back_to_restricted`与 `test_sr_d_fs_threading.py::test_fs_patch_io_off_event_loop_thread`；**两条都在冻结基线 `r9h13/main` 6f56d815 上同样失败**（我在 qio-r9h13-main worktree 实测，非整合引入）。处置见 6.3。
 - 前端：`cd frontend; npx vitest run` → **474 files / 4336 tests 全部通过（exit 0）**
 - `npx vue-tsc --noEmit` → exit 0；`npx vite build` → 成功（构建产物 dist/，未提交）
 - 文档一致性：`python scripts/check_docs.py` → 通过（98 个里程碑）；自检 `--selftest` 见 CI
@@ -156,11 +156,20 @@
 - 离线评估：`uv run --frozen python -m agent.eval.run` 在候选与 `r9h13/main` 基线上各跑一次，指标一致（`verdict: skip`），日志 `_int3/evidence/eval-candidate.json`、`eval-r9h13.json`
 - 真实界面：对话/互动/统一审批/长文本与宽表格在 1440×900 与 480×600 两档截图检查（E 的 `_int3/evidence/shots/`），无页面横向溢出、控制台 0 error
 
-### 6.3 完整 CI 轮次（仅一次）
+### 6.3 全量失败处置（同一轮内的修复与定向复验）
+
+| 用例 | 归属 | 根因 | 处置 | 复验 |
+| --- | --- | --- | --- | --- |
+| `test_r9g_cmd_binding::test_replay_invalidates_when_unrestricted_switched_back_to_restricted` | 基线既有（r9h13 已红） | R9-H13 §12 删除了「仅模式字符串不同即失效」；重放路径按**当前模式**重建许可并重判规则。旧期望过期 | 用例改名 `test_replay_continues_after_unrestricted_switched_back_to_restricted`，断言 `ok=True` + `recheck.mode_now/binding_mode/confirmations_required` + `permit.mode=restricted`；**新增** `test_replay_stops_when_switched_to_read_only` 守住「收紧到不允许则停止」 | `tests/test_r9g_cmd_binding.py` 全文件通过 |
+| `test_sr_d_fs_threading::test_fs_patch_io_off_event_loop_thread` | 真实回退（H5/H7/H13 引入） | `fs_tools.recheck_before_execute` 的 `_verify_local_preconditions` 是同步文件 I/O（identity/stat + 正文读取 + 摘要），H13 C1「读取先于内容」让 fs_patch 必经此处，于是在事件循环线程读正文 | 修实现：整个同步核对交给共享有界执行器（`get_blocking_executor`），与工具其余 I/O 同一线程纪律；**测试一行未改** | `tests/test_sr_d_fs_threading.py` 全文件通过 |
+
+复验记录：`uv run --frozen pytest -q tests/test_r9g_cmd_binding.py tests/test_sr_d_fs_threading.py` → 29 passed（exit 0）；邻近 7 个文件（fs_tools / r9h5 / r9h6 / r9h_recheck_limits / r9f_origin_fs_tools / r9h_content_binding）→ 77 passed。修复提交 `c152e6d1` 合入后，**最终 SHA 与最初全量 SHA 不同**，按「原候选全量 + 新提交定向复验」记录；最终 SHA 的完整矩阵由 §6.3 的完整 CI 覆盖。
+
+### 6.4 完整 CI 轮次（仅一次）
 
 （回填：运行号、SHA、逐 job 结论、失败与定向复验）
 
-### 6.4 最终候选状态
+### 6.5 最终候选状态
 
 - 最终候选 SHA：`c56b703350c224c484dd661be8fe3f993b1f8e42`
 - 三个冻结来源 + 追加交付均为其祖先（`git merge-base --is-ancestor` 实测）
@@ -184,7 +193,7 @@
 - 迁移号 54/56 保持空号（历史语义），后续新迁移从 71 起。
 - 统一审批弹窗在窄窗口下，类型标签较多时第 3 个标签可能被右边缘裁切（观察项，不影响提交）。
 
-### 7.3 基线既有问题与本轮处置
+### 7.3 基线既有问题与本轮处置（另一批）
 
 - `test_r9h3_identity_refresh.py` 6 条、`test_r9h_content_binding.py` 1 条在冻结基线 `r9h13/main` 上就是红的（H13 §8 三次确认、H8 §6 `script_sha256` 语义变更后旧期望未修订）。
   本轮按契约修订期望（**收紧而非放宽**：新增 0/1/2 次确认全部被拒的负向断言、新增 `operation_fingerprint` 不等断言），未以「原来就红」通过。
