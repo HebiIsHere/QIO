@@ -1,4 +1,7 @@
-﻿........................................................................ [ 34%]
+﻿# R9-H13 D 附件邻近回归（合并 r9h13/main 1af72fcf 后）
+# 命令: cd backend; .\.venv\Scripts\python.exe -m pytest <附件/审计/重试套件> -p no:cacheprovider --tb=line
+# 结果: 205 passed, 1 skipped（skip 为套件内既有平台/环境条件，与本轮改动无关）。
+........................................................................ [ 34%]
 ........................................................................ [ 69%]
 .....................................................s........           [100%]
 ============================== warnings summary ===============================
@@ -7,5 +10,6 @@
     _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-205 passed, 1 skipped, 1 warning in 129.36s (0:02:09)
+205 passed, 1 skipped, 1 warning in 124.98s (0:02:04)
+
 
