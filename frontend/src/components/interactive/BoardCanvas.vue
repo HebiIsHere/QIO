@@ -808,10 +808,32 @@ const renderedCardAnchors = computed<CardAnchor[]>(() => {
 });
 
 const TOOL_COUNT = 5;
-/** 上边容量：最后一个按钮不能越过顶部中点端点。返回应放到左边的按钮数。 */
-function toolbarLeftCount(card: BoardCardModel): number {
-  const capacity = Math.max(0, Math.min(TOOL_COUNT, Math.floor((card.w / 2 - 14) / 36)));
-  return TOOL_COUNT - capacity;
+const TOOL_STEP = 36;
+const TOOL_START = 8;
+const TOOL_MARGIN = 14;
+
+/**
+ * 逐按钮实时位置（相对卡片左上角）。
+ * 上边容量用尽后，最左侧按钮移到左边并压住前一个；
+ * 左边容量也用尽后自动进入第二列。
+ */
+function toolbarButtonPositions(card: BoardCardModel): Array<{ x: number; y: number }> {
+  const rect = displayRect(card);
+  const topCapacity = Math.max(0, Math.min(TOOL_COUNT, Math.floor((rect.w / 2 - TOOL_MARGIN) / TOOL_STEP)));
+  const leftCount = TOOL_COUNT - topCapacity;
+  const leftCapacity = Math.max(1, Math.floor((rect.h / 2 - TOOL_MARGIN) / TOOL_STEP));
+  const out: Array<{ x: number; y: number }> = [];
+  for (let i = 0; i < TOOL_COUNT; i += 1) {
+    if (i < leftCount) {
+      const rank = leftCount - 1 - i;
+      const column = Math.floor(rank / leftCapacity);
+      const row = rank % leftCapacity;
+      out.push({ x: -42 - column * TOOL_STEP, y: TOOL_START + row * TOOL_STEP });
+    } else {
+      out.push({ x: TOOL_START + (i - leftCount) * TOOL_STEP, y: -42 });
+    }
+  }
+  return out;
 }
 
 function commit(next: BoardState, label: string) {
@@ -3191,7 +3213,7 @@ onBeforeUnmount(() => {
             :groups="groups.filter((item) => item.id !== groupIdOf(card.id))"
             :toolbar-left="overlay.left"
             :toolbar-top="overlay.top"
-            :toolbar-left-count="toolbarLeftCount(card)"
+            :toolbar-positions="toolbarButtonPositions(card)"
             :toolbar-host="toolbarHostEl"
             :toolbar-visible="overlay.visible && overlaySettled"
             :multi="selection.length > 1"

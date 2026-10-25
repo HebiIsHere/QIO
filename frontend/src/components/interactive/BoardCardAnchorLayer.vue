@@ -208,7 +208,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
   transform-origin: left center;
 }
 .card-anchor[data-side="left"] .card-anchor-shape {
-  right: 23px;
+  right: 11px;
   top: 7px;
   width: 14px;
   height: 20px;
@@ -217,7 +217,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
 }
 .card-anchor[data-side="top"] .card-anchor-shape {
   left: 7px;
-  bottom: 23px;
+  bottom: 11px;
   width: 20px;
   height: 14px;
   transform: scale(0.62);

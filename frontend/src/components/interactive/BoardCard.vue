@@ -322,8 +322,8 @@ const props = withDefaults(
      */
     toolbarLeft: number;
     toolbarTop: number;
-    /** 应放到左边的按钮数量（0 = 全部在上边）。 */
-    toolbarLeftCount?: number;
+    /** 每个按钮相对卡片左上角的位置（逐按钮换边 / 第二列）。 */
+    toolbarPositions?: Array<{ x: number; y: number }>;
     /** 多选时：只显示共同适用的操作，并且不把单卡片编辑应用到整组 */
     multi: boolean;
     /** 正在从本卡片拖出关系线 */
@@ -340,16 +340,14 @@ const props = withDefaults(
      */
     toolbarVisible?: boolean;
   }>(),
-  { toolbarHost: null, toolbarVisible: true, toolbarLeftCount: 0 },
+  { toolbarHost: null, toolbarVisible: true, toolbarPositions: () => [] },
 );
 
-/** 生产工具栏逐按钮落位：上方剩余按钮向左补位；左侧按钮后下来的压在上面。 */
+/** 生产工具栏逐按钮落位：位置由 BoardCanvas 按卡片实时宽高计算。 */
 function toolbarButtonStyle(index: number): Record<string, string> {
-  const leftCount = Math.max(0, Math.min(5, props.toolbarLeftCount ?? 0));
-  if (index < leftCount) {
-    return { left: "-42px", top: 8 + (leftCount - 1 - index) * 36 + "px" };
-  }
-  return { left: 8 + (index - leftCount) * 36 + "px", top: "-42px" };
+  const point = props.toolbarPositions?.[index];
+  if (point) return { left: point.x + "px", top: point.y + "px" };
+  return { left: 8 + index * 36 + "px", top: "-42px" };
 }
 
 /**
