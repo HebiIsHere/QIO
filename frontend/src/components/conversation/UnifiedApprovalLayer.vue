@@ -12,6 +12,7 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useApprovalsStore } from "../../stores/approvals";
+import { useApprovalResultsStore } from "../../stores/approvalResults";
 import { useSessionStore } from "../../stores/session";
 import { useInteractiveStore } from "../../stores/interactive";
 import {
@@ -37,6 +38,7 @@ const emit = defineEmits<{
 }>();
 
 const approvals = useApprovalsStore();
+const results = useApprovalResultsStore();
 const session = useSessionStore();
 const unified = useUnifiedApprovalsStore();
 const interactive = useInteractiveStore();
@@ -132,6 +134,9 @@ onMounted(() => {
   }
   // 对话页由统一弹窗接管按钮：让过程区内联卡让位（Lead 在 TurnProcess 加一行门控）
   approvals.inlineSuppressed = true;
+  // F02：启动即补一次审批历史 —— 刷新/换页后仍能回看结果；也让 ⑤ 入口在
+  // 「0 待办但有历史」时仍然可达（读取失败会在结果面板显示原因与重试）。
+  results.ensureLoaded();
   ingestCandidates();
   // 页面加载时已经存在的待审批项也要遵守自动弹出规则（此前只在「队列变化」时尝试，
   // 启动前就存在的申请会只亮入口、不自动弹）。

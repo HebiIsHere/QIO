@@ -22,6 +22,7 @@ import { defineStore } from "pinia";
 import { request } from "../services/api";
 import type { MemoryPendingListing, PendingItemView } from "../services/api";
 import { approvalFacts, useApprovalsStore, type ApprovalItem } from "./approvals";
+import { useApprovalResultsStore } from "./approvalResults";
 import { useSessionStore } from "./session";
 
 export type UnifiedKind = "tool" | "knowledge";
@@ -392,6 +393,35 @@ function mergeUnifiedItems(
   return [...tools, ...knowledge];
 }
 
+/**
+ * 队列标签的一句话摘要（F05：同类型多条申请必须能互相区分）。
+ *
+ * 取自真实事实：工具/权限类用 approvalFacts.description（系统事实），
+ * 知识类用「类别：内容摘要」；没有事实才回落到标题。不做猜测、不编号冒充。
+ */
+export function unifiedItemSummary(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  const squash = (value: string): string => value.replace(/\s+/g, " ").trim();
+  if (item.kind === "knowledge") {
+    const category =
+      KNOWLEDGE_CATEGORY_LABELS[String(item.knowledge?.category ?? "")] ?? "知识";
+    const content = squash(String(item.knowledge?.content ?? ""));
+    if (!content) return category;
+    return category + "：" + (content.length > 24 ? content.slice(0, 24) + "…" : content);
+  }
+  const facts = item.approval ? approvalFacts(item.approval) : null;
+  const text = squash(String(facts?.description || facts?.operationSummary || ""));
+  if (!text) return item.title || "需要你确认的操作";
+  return text.length > 28 ? text.slice(0, 28) + "…" : text;
+}
+
+/** 标签上的类型分组（短标签，不替代摘要）。 */
+export function unifiedItemGroupLabel(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  if (item.kind === "knowledge") return "知识";
+  return "权限";
+}
+
 const DEFERRED_STORAGE_KEY = "qio.unifiedApprovals.deferred";
 const DEFERRED_MAX = 200;
 
@@ -428,6 +458,13 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     /** 最近一次从服务端读到待确认列表的时间（毫秒）；null = 还没成功读过 */
     knowledgeLoadedAt: null as number | null,
     visible: false,
+    /**
+     * 「结果与历史」视图是否打开（F02）。
+     *
+     * 与 visible 分开：待审批数为 0 时也要能打开结果；两个视图共用一个弹窗，
+     * 同一时刻只显示其中一个（不是第二套常驻入口）。
+     */
+    resultsVisible: false,
     activeKey: null as string | null,
     /** 用户「稍后处理 / 关闭」过的申请：同一项不再自动弹 */
     deferredKeys: loadDeferredKeys(),
@@ -589,7 +626,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
      * - 内联审批正在显示这一条 → 不自动弹（同一时刻只有一套按钮）。
      */
     maybeAutoOpen(): boolean {
-      if (this.visible) return false;
+      if (this.visible || this.resultsVisible) return false;
       const approvals = useApprovalsStore();
       // 恢复路径 / 用户已点「稍后处理」：不抢焦点，入口亮着等用户主动打开
       if (approvals.deferred) return false;
@@ -630,9 +667,50 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       }
       this.activeKey = target.key;
       this.visible = true;
+      this.resultsVisible = false;
       this.submitError = "";
       this.submitErrorCode = "";
       return true;
+    },
+
+    /**
+     * 打开「审批结果与历史」（F02）：**不要求**有待审批项。
+     *
+     * 结果来自后端 /api/approvals/history + 实时 APPROVAL_RESULT；
+     * 打开时刷新一次历史（失败会在面板里显示原因与重试，不当作空历史）。
+     */
+    openResults(): boolean {
+      const results = useApprovalResultsStore();
+      void results.loadHistory();
+      this.visible = false;
+      this.resultsVisible = true;
+      this.submitError = "";
+      this.submitErrorCode = "";
+      return true;
+    },
+
+    /** 从结果视图回到待审批队列（没有待办时返回 false，不显示空队列）。 */
+    showQueue(): boolean {
+      this.resultsVisible = false;
+      const items = this.items as UnifiedApprovalItem[];
+      if (!items.length) {
+        this.visible = false;
+        return false;
+      }
+      this.activeKey = this.activeKey && items.some((item) => item.key === this.activeKey)
+        ? this.activeKey
+        : (items[0]?.key ?? null);
+      this.visible = true;
+      return true;
+    },
+
+    /** 关闭整个面板（队列与结果都收起；不批准也不拒绝）。 */
+    closePanel(): void {
+      if (this.resultsVisible && !this.visible) {
+        this.resultsVisible = false;
+        return;
+      }
+      this.close();
     },
 
     /** 关闭：只隐藏，不批准也不拒绝；当前项记为「稍后」，不因轮询反复自动弹。 */
@@ -640,6 +718,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       const active = this.activeItem as UnifiedApprovalItem | null;
       if (active) this.deferKey(active.key);
       this.visible = false;
+      this.resultsVisible = false;
       this.activeKey = null;
       this.editingKey = null;
       this.autoPending = false;
@@ -699,14 +778,25 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       return true;
     },
 
+    /**
+     * 进入编辑：**保留已有草稿**（切换队列项再切回来不能丢失已改内容）。
+     * 只有明确「取消修改」才丢弃草稿。
+     */
     startEdit(): void {
       const active = this.activeItem as UnifiedApprovalItem | null;
       if (!active || active.kind !== "knowledge") return;
-      this.drafts[active.key] = active.knowledge?.content ?? "";
+      if (this.drafts[active.key] === undefined) {
+        this.drafts[active.key] = active.knowledge?.content ?? "";
+      }
       this.editingKey = active.key;
     },
 
+    /** 取消修改：明确丢弃这份草稿（不是「切换项」的默认行为）。 */
     stopEdit(): void {
+      const key = this.editingKey;
+      if (key && Object.prototype.hasOwnProperty.call(this.drafts, key)) {
+        delete this.drafts[key];
+      }
       this.editingKey = null;
     },
 
@@ -861,6 +951,10 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     },
 
     finishHandled(key: string): void {
+      // 这一项已经有结局：它的编辑草稿不再有意义，删掉（其余项的草稿原样保留）
+      if (key && Object.prototype.hasOwnProperty.call(this.drafts, key)) {
+        delete this.drafts[key];
+      }
       const items = this.items as UnifiedApprovalItem[];
       const remaining = items.filter((item) => item.key !== key);
       if (!remaining.length) {
@@ -880,6 +974,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.knowledgeError = "";
       this.knowledgeLoadedAt = null;
       this.visible = false;
+      this.resultsVisible = false;
       this.activeKey = null;
       this.deferredKeys = [];
       this.autoShownKeys = [];

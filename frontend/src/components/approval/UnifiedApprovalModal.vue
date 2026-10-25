@@ -19,9 +19,12 @@ import { approvalStateLabel } from "../../services/approvalLifecycle";
 import {
   TOOL_ORIGIN_LABELS,
   toolSourceFacts,
+  unifiedItemGroupLabel,
+  unifiedItemSummary,
   useUnifiedApprovalsStore,
 } from "../../stores/unifiedApprovals";
 import ApprovalFacts from "../ApprovalFacts.vue";
+import ApprovalResultsPanel from "./ApprovalResultsPanel.vue";
 import KnowledgeApprovalBody from "./KnowledgeApprovalBody.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
@@ -29,6 +32,8 @@ const unified = useUnifiedApprovalsStore();
 const approvals = useApprovalsStore();
 
 const item = computed(() => (unified.visible ? unified.activeItem : null));
+/** 弹窗打开条件：有待审批（队列视图）或用户明确打开了「结果与历史」（F02：0 待办也可见）。 */
+const panelOpen = computed(() => Boolean(item.value) || unified.resultsVisible);
 const items = computed(() => unified.items);
 const activeIndex = computed(() => unified.activeIndex);
 const busy = computed(() => !!item.value && unified.submittingKey === item.value.key);
@@ -38,6 +43,13 @@ const toolFacts = computed(() =>
   item.value?.approval ? approvalFacts(item.value.approval) : null,
 );
 const budgetForm = ref<ApprovalBudget | null>(null);
+/**
+ * 用户是否真的改过预算（F06）。
+ *
+ * 没改就不发 overrides —— 否则「默认值」会静默覆盖提案里原本更小/更大的预算，
+ * 表现为「没改也生效了修改」。只有 dirty 才把用户批准的值传给后端。
+ */
+const budgetDirty = ref(false);
 const extraConfirm = ref(false);
 
 /** 重点确认（会删除/覆盖）需要额外一次勾选，降低误点。 */
@@ -141,14 +153,15 @@ watch(
     extraConfirm.value = false;
     unified.stopEdit();
     budgetForm.value = toolFacts.value?.budget ?? null;
+    budgetDirty.value = false;
     await nextTick();
   },
 );
 
 watch(
-  () => [item.value?.key ?? null, unified.visible] as const,
-  async ([, visible]) => {
-    if (!visible) return;
+  () => [item.value?.key ?? null, unified.visible, unified.resultsVisible] as const,
+  async ([, visible, resultsVisible]) => {
+    if (!visible && !resultsVisible) return;
     await nextTick();
     dialogRef.value?.focus();
   },
@@ -185,8 +198,8 @@ onBeforeUnmount(() => {
 function onKeydown(event: KeyboardEvent) {
   if (event.key === "Escape") {
     event.preventDefault();
-    // Esc = 关闭/稍后，不做出任何决定
-    unified.close();
+    // Esc = 关闭/稍后，不做出任何决定（结果视图同样只关闭）
+    unified.closePanel();
     return;
   }
   if (event.key !== "Tab") return;
@@ -210,6 +223,16 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
+/** 打开结果与历史视图（待审批为 0 时也能打开；同一弹窗内切换，不是第二套入口）。 */
+function showResults() {
+  unified.openResults();
+}
+
+/** 回到待审批队列（没有待办时保持结果视图）。 */
+function showQueue() {
+  unified.showQueue();
+}
+
 function goStep(delta: number) {
   const list = items.value;
   const next = list[activeIndex.value + delta];
@@ -217,13 +240,24 @@ function goStep(delta: number) {
   unified.switchTo(next.key);
 }
 
+/**
+ * 队列标签的摘要（F05）：同类型多条申请要能互相区分。
+ * 用真实事实（工具用系统 description，知识用类别+内容摘要），不用类型枚举重复。
+ */
 function shortLabel(index: number): string {
+  return unifiedItemSummary(items.value[index] ?? null);
+}
+
+/** 标签上的类型分组（权限 / 知识）。 */
+function groupLabel(index: number): string {
+  return unifiedItemGroupLabel(items.value[index] ?? null);
+}
+
+/** 标签的完整读屏文案（视觉截断不丢信息）。 */
+function chipAria(index: number): string {
   const target = items.value[index];
   if (!target) return "";
-  if (target.kind === "knowledge") {
-    return target.knowledge?.category ? "知识保存" : "知识保存";
-  }
-  return target.title;
+  return groupLabel(index) + "：" + shortLabel(index);
 }
 
 async function submit(decision: "approve" | "approve_modified" | "ignore" | "reject") {
@@ -231,8 +265,12 @@ async function submit(decision: "approve" | "approve_modified" | "ignore" | "rej
   if (!active) return;
   if (active.kind === "tool") {
     const facts = toolFacts.value;
+    /**
+     * F06：只有「旧 tool_create 子智能体路径」+「用户真的改过预算」才发 overrides。
+     * v2 生命周期记录（/decide 不支持 overrides）永远不发，避免假修改。
+     */
     const overrides =
-      decision === "approve" && facts?.isSubagentCreate
+      decision === "approve" && facts?.isSubagentCreate && !lifecycle.value && budgetDirty.value
         ? {
             subagent_budget: {
               max_iterations: budgetForm.value?.maxIterations ?? 5,
@@ -247,6 +285,12 @@ async function submit(decision: "approve" | "approve_modified" | "ignore" | "rej
   await unified.submit(decision);
 }
 
+/** 用户改了预算：只有这次真的改动才允许随批准提交（F06）。 */
+function onBudgetChange(next: ApprovalBudget) {
+  budgetForm.value = next;
+  budgetDirty.value = true;
+}
+
 function retryKnowledgeDetail() {
   void unified.refreshKnowledgePending();
 }
@@ -254,7 +298,7 @@ function retryKnowledgeDetail() {
 
 <template>
   <div
-    v-if="item"
+    v-if="panelOpen"
     class="ua-mask"
     data-unified-approval-modal
     @click.self="unified.close()"
@@ -270,18 +314,51 @@ function retryKnowledgeDetail() {
       @keydown="onKeydown"
     >
       <header class="ua-head">
-        <p class="ua-kicker mono">{{ kicker }}</p>
+        <p class="ua-kicker mono">{{ unified.resultsVisible ? "审批结果与历史 · 只读记录" : kicker }}</p>
         <button
           class="ua-close"
           type="button"
-          aria-label="关闭（稍后处理，不会自动批准或拒绝）"
-          title="稍后处理：只收起窗口，保留申请"
-          @click="unified.close()"
+          aria-label="关闭（不会自动批准或拒绝）"
+          :title="unified.resultsVisible ? '关闭结果与历史（只读记录不会改变）' : '稍后处理：只收起窗口，保留申请'"
+          @click="unified.closePanel()"
         >
           ×
         </button>
-        <h2 id="ua-title" class="ua-title serif">{{ item.title }}</h2>
+        <h2 id="ua-title" class="ua-title serif">
+          {{ unified.resultsVisible ? "审批结果与历史" : item?.title ?? "" }}
+        </h2>
       </header>
+
+      <!-- 两个视图共用一个弹窗：待审批队列 / 结果与历史（F02；0 待办也能打开结果） -->
+      <div class="ua-tabs" role="tablist" aria-label="审批视图">
+        <button
+          class="ua-tab"
+          type="button"
+          role="tab"
+          :aria-selected="!unified.resultsVisible"
+          :class="{ active: !unified.resultsVisible }"
+          :disabled="!items.length"
+          :title="items.length ? '查看等待你处理的申请' : '当前没有待审批的申请'"
+          data-test="unified-approval-tab-queue"
+          @click="showQueue"
+        >
+          待审批 {{ items.length }}
+        </button>
+        <button
+          class="ua-tab"
+          type="button"
+          role="tab"
+          :aria-selected="unified.resultsVisible"
+          :class="{ active: unified.resultsVisible }"
+          title="查看审批最终结果与后端历史（只读）"
+          data-test="unified-approval-tab-results"
+          @click="showResults"
+        >
+          结果与历史
+        </button>
+      </div>
+
+      <template v-if="!unified.resultsVisible && item">
 
       <div v-if="items.length > 1" class="ua-switch" data-test="unified-approval-switch">
         <div class="ua-switch-line">
@@ -316,10 +393,12 @@ function retryKnowledgeDetail() {
             role="tab"
             :aria-selected="queued.key === item.key"
             :class="{ active: queued.key === item.key, deferred: queued.deferred }"
-            :title="shortLabel(index)"
+            :title="chipAria(index)"
+            :aria-label="chipAria(index)"
+            :data-test="'unified-approval-chip'"
             @click="unified.switchTo(queued.key)"
           >
-            <span class="ua-chip-kind mono">{{ queued.kind === "knowledge" ? "知识" : "权限" }}</span>
+            <span class="ua-chip-kind mono">{{ groupLabel(index) }}</span>
             <span class="ua-chip-text">{{ shortLabel(index) }}</span>
             <span v-if="queued.deferred" class="ua-chip-dot mono" aria-label="稍后处理过">·</span>
           </button>
@@ -340,7 +419,8 @@ function retryKnowledgeDetail() {
           <ApprovalFacts
             :item="item.approval"
             :budget="budgetForm"
-            @update:budget="budgetForm = $event"
+            :hide-lifecycle-status="true"
+            @update:budget="onBudgetChange"
           />
         </template>
         <template v-else-if="item.knowledge">
@@ -491,6 +571,33 @@ function retryKnowledgeDetail() {
         </template>
       </footer>
       <p class="ua-note">每次只处理当前申请。关闭窗口不会自动批准或拒绝，也不会丢失申请。</p>
+      </template>
+
+      <!-- 结果与历史：只读；0 待办时也能打开（F02） -->
+      <template v-else>
+        <div class="ua-body ua-results-body" v-qio-scrollbar>
+          <ApprovalResultsPanel />
+        </div>
+        <footer class="ua-actions">
+          <button
+            v-if="items.length"
+            class="ua-btn quiet"
+            type="button"
+            data-test="unified-approval-back-queue"
+            @click="showQueue"
+          >
+            回到待审批（{{ items.length }}）
+          </button>
+          <button
+            class="ua-btn later"
+            type="button"
+            data-test="unified-approval-results-close"
+            @click="unified.closePanel()"
+          >
+            关闭
+          </button>
+        </footer>
+      </template>
     </section>
   </div>
 </template>
@@ -578,6 +685,38 @@ function retryKnowledgeDetail() {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+/* 两个视图共用一个弹窗；标签是视图切换，不是第二套入口 */
+.ua-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ua-tab {
+  appearance: none;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ua-tab.active {
+  color: var(--text-strong);
+  border-bottom-color: var(--accent);
+}
+.ua-tab:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ua-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.ua-results-body {
+  padding-top: 4px;
+}
 .ua-switch {
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
@@ -615,19 +754,22 @@ function retryKnowledgeDetail() {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
+/* F05：480px 窄窗下 ≥3 条待审批标签必须**换行**显示（不是只藏滚动条），
+   每条都带自己的操作摘要，不再是多个相同的「权限」标签。 */
 .ua-queue {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 7px;
-  overflow-x: auto;
   padding-bottom: 2px;
 }
 .ua-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: none;
-  max-width: 200px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   padding: 3px 9px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
