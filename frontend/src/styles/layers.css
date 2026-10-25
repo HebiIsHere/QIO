@@ -1,0 +1,91 @@
+/*
+  互动板浮层层级与板面 chrome 的公共层（唯一来源）。
+
+  由来（2026-10-26 合并后清理 · 工作流 C · C03）：旧的 styles/interactive-shell.css 被拆开。
+  那份文件里的规则服务的是旧浮层：chat-toggle / chat-panel / chat-stream / chat-composer（ChatDock）、
+  search-panel（BoardSearchPanel）、batch-entry / batch-list（IntentBatchTray）、
+  tasks-popover（IntentStatusPopover）、impact-dialog（ImpactConfirmDialog），
+  以及由 IntentBatchTray 写在舞台元素上的跨浮层几何变量 --im-geo-*。
+  v2 交互页把这些浮层换成了参与布局的「悬浮对话区 + 任务中心 + 影响确认层 + 执行记录」，
+  这些钩子在 1b03541e 上**没有任何生产者**（旧组件不挂载），规则全部随旧组件删除。
+
+  这里只保留**新版仍在用**的三类东西：
+
+    1) 浮层层级变量 --im-z-dialog：ExecutionRecordPanel、v2/ImpactConfirmLayer、
+       v2/TaskCenterPanel 与互动页悬浮对话区都以它做基准（+1 / +10 / +20 / +30）；
+    2) 工具栏档位测量变量：interactive/toolbarLayout.ts 与 BoardToolbar 的隐形探测器
+       读 --im-toolbar-max-width / --im-toolbar-chat-reserve 决定宽 / 中 / 窄档，
+       缺少时退回固定 132px 的保留宽度（窄窗口会被压塌，见 boardToolbarNarrow 守卫）；
+    3) 板面 chrome 的原生文字选择约束：旧规则挂在 main.im-stage 上，v2 布局的真实舞台钩子是
+       [data-im="interactive-stage"]（InteractiveView.vue 的 .im-board-stage），
+       旧钩子已无生产者，规则按真实钩子迁移 —— 能力不变：在板面 chrome 上拖动不启动原生选择，
+       因此不会连带自动滚动画布；卡片正文 / 输入框 / 可编辑区仍然可以选中复制。
+
+  约定：本文件只写层级、测量与选择约束，不写任何组件外观；颜色一律 var(--*) 令牌。
+*/
+
+:root {
+  /* 浮层层级：数值越大越靠上。--im-z-dialog 是唯一被新版组件直接引用的层级变量。 */
+  --im-z-dialog: 60;
+
+  /* 工具栏档位测量（toolbarLayout.ts::toolbarAvailableWidth 与 BoardToolbar 的探测器）*/
+  --im-toolbar-max-width: 1180px;
+  /*
+    工具栏的横向保留宽度：宽窗口按对话卡宽度（420px）扣，窄窗口由下面的媒体查询换成
+    固定保留宽度。旧实现写成 min(var(--im-geo-chat-max-w, 420px), 40vw)，但 --im-geo-chat-max-w
+    已无生产者（旧几何控制器不挂载），按实际取值写 420px，行为与之前一致。
+  */
+  --im-toolbar-chat-reserve: min(420px, 40vw);
+}
+
+/* 1024 以下：上限交给容器宽度，保留宽度换成固定档 */
+@media (max-width: 1024px) {
+  :root {
+    --im-toolbar-max-width: 100%;
+    --im-toolbar-chat-reserve: 104px;
+  }
+}
+
+/* 800 以下：进一步压缩保留宽度 */
+@media (max-width: 800px) {
+  :root {
+    --im-toolbar-chat-reserve: 88px;
+  }
+}
+
+/*
+  悬浮对话卡里的工具栏：表面由对话卡提供，工具栏自身不再画卡片。
+  （旧文件靠「绝对定位基线 + .is-floating 重置」实现；基线规则随 v2 布局删除，
+  这里只保留真正起作用的表面重置，压过组件 scoped 的卡片外观。）
+*/
+[data-im="board-toolbar"][data-im="board-toolbar"][data-im="board-toolbar"].is-floating {
+  position: static;
+  width: 100%;
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* --- 板面 chrome 不启动浏览器原生文字选择（2026-10-14 第一个问题，方案 A） --------
+  现象：Ctrl+拖拽时画布向下滚。根因**不是 Ctrl**：在非画布表面的板面 chrome
+  （提交区 / 徽章 / 工具栏文字）上按下并拖动会启动浏览器原生选择，
+  Chromium 顺带**自动滚动最近的滚动容器** —— 实测从提交区拖到窗口底，
+  .board-viewport 的 scrollTop 从 0 跳到 811。没有 Ctrl 时同样会发生，只是不容易碰到。
+  舞台整体关掉选择，需要选文字 / 复制的地方在下面显式开回来（选择不是继承锁）。
+----------------------------------------------------------------------------------- */
+[data-im="interactive-stage"] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 卡片正文 / 输入框 / 可编辑区：文字仍然可以选中、复制 */
+[data-im="interactive-stage"] [data-im="card-body"],
+[data-im="interactive-stage"] textarea,
+[data-im="interactive-stage"] input,
+[data-im="interactive-stage"] [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
