@@ -6,8 +6,8 @@ import { useUiStore } from "./stores/ui";
 import { useOnboardingStore } from "./stores/onboarding";
 import { useApprovalsStore } from "./stores/approvals";
 import { useSecurityStore } from "./stores/security";
-import ApprovalModal from "./components/ApprovalModal.vue";
-import ApprovalEntry from "./components/ApprovalEntry.vue";
+import NonChatApprovalEntry from "./components/approval/NonChatApprovalEntry.vue";
+import UnifiedApprovalLayer from "./components/conversation/UnifiedApprovalLayer.vue";
 import DevTaskEntry from "./components/DevTaskEntry.vue";
 import WindowChrome from "./components/WindowChrome.vue";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
@@ -124,14 +124,17 @@ onUnmounted(stopTicker);
         （真实情况：一句「上次那项操作没有执行」和「有 N 项操作等待确认」重叠）。
         容器本身不接收点击，只有里面的按钮可点。
       -->
-      <!-- 旧顶部审批入口只在非聊天路由保留；互动的 DevTaskEntry 仍可见（不与审批混在一起）。 -->
+      <!--
+        非聊天路由（设置 / 调试 / 星球）的统一审批入口：与聊天页同一个入口语义
+        （有待办时亮出、可打开列表），没有待办时也能打开「结果与历史」。
+        互动的 DevTaskEntry 仍可见（不与审批混在一起）。
+      -->
       <div v-if="!isConversation" class="top-notes">
-        <ApprovalEntry v-if="!isChatRoute" />
+        <NonChatApprovalEntry v-if="!isChatRoute" />
         <DevTaskEntry />
       </div>
-      <!-- 同一时刻只允许一套按钮：对话页由 UnifiedApprovalLayer 统一承载；
-           其他页面在过程区已内联显示这条审批时，全局弹窗让位（按 approval_id 门控） -->
-      <ApprovalModal v-if="!isChatRoute && !approvals.inlineClaimed" />
+      <!-- 非聊天路由的审批弹窗：与聊天页是同一个 UnifiedApprovalModal（不是第二套按钮） -->
+      <UnifiedApprovalLayer v-if="!isChatRoute" :show-memory="false" />
       <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
       <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
     </template>

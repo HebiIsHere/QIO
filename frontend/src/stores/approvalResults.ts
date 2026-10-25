@@ -519,6 +519,16 @@ export const useApprovalResultsStore = defineStore("approvalResults", {
       void this.loadHistory();
     },
 
+    /**
+     * 打开结果面板时补一次历史：超过 maxAgeMs 没读过就刷新
+     * （结果面板会被多处打开：统一弹窗、互动页任务中心；都调用这里）。
+     */
+    ensureFresh(maxAgeMs = 15_000): void {
+      if (this.historyLoading) return;
+      if (this.historyLoadedAt !== null && Date.now() - this.historyLoadedAt < maxAgeMs) return;
+      void this.loadHistory();
+    },
+
     reset(): void {
       this.byId = {};
       this.order = [];

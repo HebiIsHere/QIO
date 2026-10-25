@@ -352,11 +352,28 @@ export function approvalFacts(
    */
   const lifecycleStateValue = String(input.state ?? "").trim();
   const isLifecycleRecord = lifecycleStateValue.length > 0;
+  /**
+   * 只读判据：已批准 / 执行中（含恢复出来的 pending 快照）与所有终态都不允许再改预算
+   * —— 这些状态的执行已按登记值开始或结束，界面不能再承诺「改了会用新值」。
+   * 只有仍在等待用户决定的记录（waiting / 老事件无 state）保留可编辑。
+   */
+  const BUDGET_LOCKED_STATES = new Set([
+    "approved",
+    "executing",
+    "completed",
+    "failed",
+    "rejected",
+    "cancelled",
+    "expired",
+    "invalidated",
+    "interrupted_unverified",
+  ]);
+  const budgetLocked = isLifecycleRecord && BUDGET_LOCKED_STATES.has(lifecycleStateValue);
   const hasBudgetPayload = Object.keys(budgetRaw).length > 0 || isSubagentCreate;
-  const budget: ApprovalBudget | null =
-    isSubagentCreate && !isLifecycleRecord ? budgetCandidate : null;
+  const budget: ApprovalBudget | null = isSubagentCreate && !budgetLocked ? budgetCandidate : null;
+  // 不能编辑但确有预算事实（锁定状态 / 非子智能体创建路径）：照实只读展示
   const budgetReadOnly: ApprovalBudget | null =
-    isLifecycleRecord && hasBudgetPayload ? budgetCandidate : null;
+    !budget && hasBudgetPayload ? budgetCandidate : null;
 
   const rows: { label: string; value: string }[] = [];
   const pushRow = (label: string, value: unknown) => {
@@ -910,6 +927,16 @@ export const useApprovalsStore = defineStore("approvals", {
        * 内部数据的三次确认：点「允许」的第一次动作是第 1 次确认（stage 由后端 CAS）。
        */
       if (isLifecycleApproval(item)) {
+        /**
+         * F06：v2 生命周期路径（/decide）不支持 overrides。若调用方仍带了预算修改，
+         * 必须明确拒绝这次提交 —— 绝不能「看起来改了、实际执行用旧预算」。
+         */
+        if (overrides && Object.keys(overrides).length > 0) {
+          this.error =
+            "这条记录由后端生命周期管理，不支持修改执行预算；这次没有提交任何决定。请按只读预算核对后再批准。";
+          item.lifecycleError = this.error;
+          return;
+        }
         if (decision === "rejected") return this.decide("reject", item.approval_id);
         if ((item.requiresConfirmations ?? 1) > 1) return this.confirmNext(item.approval_id);
         return this.decide("approve", item.approval_id);
