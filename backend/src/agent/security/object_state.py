@@ -179,6 +179,31 @@ UNRELATED_BASES: Mapping[str, UnrelatedBasis] = MappingProxyType(
                 "身份/生命周期变化仍 INVALID）"
             ),
         ),
+        "program_concept_file_read_out_of_scope": UnrelatedBasis(
+            basis="program_concept_file_read_out_of_scope",
+            required_facts=(
+                "limit_kind",
+                "has_saved_candidates",
+                "read_path_scope",
+                "operation",
+                "candidate",
+                "candidate_path",
+                "resolution",
+            ),
+            required_equal=(
+                ("limit_kind", True),
+                ("has_saved_candidates", False),
+                ("read_path_scope", True),
+            ),
+            condition=(
+                "program_name 概念限制未形成任何保存对象/候选（无有效绑定、无 "
+                "binding_candidates），本次 operation=read 且候选是具体文件路径；"
+                "当前环境对限制名称的解析只作候选事实——解析到本次同一对象时仍 "
+                "UNBOUND（需澄清绑定），解析到不同对象/解析失败时本次普通文件读取"
+                "不属于该程序概念限制（R9-H13 §3.B1 范围修订；未识别程序文件本体"
+                "被路径读取时无法保护，需澄清绑定）"
+            ),
+        ),
     }
 )
 
@@ -1779,6 +1804,44 @@ def _bound_path_decision(
     )
 
 
+def _program_concept_read_scope(operation: str | None, candidate_kind: str) -> bool:
+    """H13 §3.B1 范围规则是否适用：普通文件路径的读取（不含执行/写/入口名）。"""
+    return (
+        _normalize_operation(operation) == "read"
+        and _clean(candidate_kind).lower() == "path"
+    )
+
+
+def _program_concept_read_facts(
+    candidate_path: str, resolution_state: str
+) -> list[ObjectFact]:
+    """H13 §3.B1 范围依据的必带事实（保存事实 + 本次对象 + 名称解析事实）。"""
+    return [
+        _fact(
+            "limit_kind",
+            expected="program_name",
+            observed="program_name",
+            source="requirement_limit",
+            equal=True,
+        ),
+        _fact(
+            "has_saved_candidates",
+            observed="false",
+            source="saved_binding",
+            equal=False,
+        ),
+        _fact(
+            "read_path_scope",
+            expected="read+path",
+            observed="read+path",
+            source="effect",
+            equal=True,
+        ),
+        _fact("candidate_path", observed=candidate_path, source="effect"),
+        _fact("resolution", observed=resolution_state, source="path_lookup"),
+    ]
+
+
 def _unbound_path_decision(
     limit_value: str,
     candidate_value: str,
@@ -1874,8 +1937,26 @@ def _unbound_path_decision(
             facts=facts,
             detail="保存时记录了候选但没有形成绑定；本次对象与保存候选都不匹配，不能排除硬链接/别名，需先澄清",
         )
-    # 3) 无保存候选：只有身份事实能建立“相关”或“无关”的可靠结论。
+    # 3) 无保存候选：只有对象事实能建立“相关”或“无关”的可靠结论。
+    #    R9-H13 §3.B1 范围规则：program_name 概念限制 + 无任何保存对象/候选 +
+    #    本次是普通文件路径读取时，当前环境对限制名称的解析只作候选事实：
+    #    解析到本次同一对象 -> 仍是 UNBOUND；解析到不同对象/解析失败 -> 不属于
+    #    该程序概念限制（按当前模式继续）。执行/写/入口名候选不受此规则影响。
+    concept_read = _program_concept_read_scope(operation, candidate_kind)
     if not resolution.resolved or not resolution.path:
+        if concept_read:
+            facts.extend(_program_concept_read_facts(candidate_path, "unresolved"))
+            return _unrelated(
+                "program_concept_file_read_out_of_scope",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail=(
+                    "限制是程序名称概念，且保存时没有形成任何对象绑定/候选；本次是普通"
+                    "文件读取，当前查找也不能把限制名称解析到本次对象：按当前模式继续"
+                ),
+            )
         entry = _effect_entry_name(effect)
         if entry and _entry_equal(entry, limit_value):
             return _decision(
@@ -1915,6 +1996,8 @@ def _unbound_path_decision(
     )
     facts.extend(comparison.facts)
     if comparison.state == IDENTITY_SAME:
+        if concept_read:
+            facts.extend(_program_concept_read_facts(candidate_path, "same_object"))
         return _decision(
             ObjectState.UNBOUND,
             "binding_missing_same_object",
@@ -1923,6 +2006,22 @@ def _unbound_path_decision(
             candidate_value=candidate_value,
             facts=facts,
             detail="限制中的程序名称当前解析到本次对象，但保存时没有形成对象绑定：需要先完成程序名称的专用恢复/澄清，普通批准不能解除",
+        )
+    if concept_read and comparison.state in (
+        IDENTITY_DIFFERENT_OBJECT,
+        IDENTITY_DIFFERENT_LIFECYCLE,
+    ):
+        facts.extend(_program_concept_read_facts(candidate_path, comparison.state))
+        return _unrelated(
+            "program_concept_file_read_out_of_scope",
+            operation=operation,
+            candidate_kind=candidate_kind,
+            candidate_value=candidate_value,
+            facts=facts,
+            detail=(
+                "限制是程序名称概念且保存时没有形成任何对象/候选；当前限制名称解析到"
+                "另一个真实对象，本次普通文件读取不属于该程序概念限制：按当前模式继续"
+            ),
         )
     if comparison.state in (IDENTITY_DIFFERENT_OBJECT, IDENTITY_DIFFERENT_LIFECYCLE):
         return _decision(
