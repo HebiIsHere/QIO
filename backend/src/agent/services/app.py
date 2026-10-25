@@ -3319,8 +3319,13 @@ class AppContext:
         source: str,
         state: str,
         expected: dict | None = None,
+        attach_bindings: bool | None = None,
     ) -> Any:
-        """调用台账 setter；A 分支的 expected_* 条件参数存在才传（兼容旧分支）。"""
+        """调用台账 setter；A 分支的 expected_* 条件参数存在才传（兼容旧分支）。
+
+        R9-H13 §3.A1：``attach_bindings=False`` 表示“原样回写已有 known limits”，
+        不得对历史对象重新查找/补建绑定；仅当 setter 支持该参数时才传。
+        """
         setter = getattr(self.requirements, "set_structured_limits", None)
         if not callable(setter):
             return None
@@ -3329,6 +3334,8 @@ class AppContext:
         for key, value in dict(expected or {}).items():
             if value is not None and key in supported:
                 kwargs[key] = value
+        if attach_bindings is not None and "attach_bindings" in supported:
+            kwargs["attach_bindings"] = bool(attach_bindings)
         try:
             written = setter(requirement_id, tuple(limits), **kwargs)
         except TypeError:
@@ -3480,6 +3487,8 @@ class AppContext:
                     "expected_status": "active",
                     "expected_chain_digest": chain_digest,
                 },
+                # 只是把已有 known limits 标为未解决：不得重新查找/绑定历史对象。
+                attach_bindings=False,
             )
         except Exception:  # noqa: BLE001 - 失败保留原状态，不阻塞本轮
             logging.getLogger(__name__).warning(

@@ -224,19 +224,72 @@ def _probe_program_binding(name: str) -> dict:
     }
 
 
+def _freeze(value: Any) -> Any:
+    """把纯数据递归冻结为可哈希/可比较结构（不改变语义、不做任何查找）。"""
+    if isinstance(value, dict):
+        return tuple(sorted((str(key), _freeze(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _object_identity(obj: Mapping[str, Any]) -> tuple:
+    """对象条目的**完整数据身份**（去重/作用域键；纯数据）。
+
+    R9-H13 §3.A3：只按 (kind, value) 去重会把“同名同动作、分别绑定不同程序对象”
+    的两条限制静默合并成一条（第二个对象从限制中消失、实际可执行）。身份键必须
+    包含绑定对象/身份/生命周期、未解决事实、候选及来源含义。
+    """
+    payload = {
+        str(key): _freeze(item)
+        for key, item in obj.items()
+        if key is not None and str(key) != "observed_at"
+    }
+    return (str(obj.get("kind") or ""), str(obj.get("value") or ""), _freeze(payload))
+
+
+def _entry_data_key(entry: Mapping[str, Any]) -> tuple:
+    """限制条目的完整数据键（含对象绑定/未解决事实；reason 不参与）。
+
+    用途：amend 时区分“本次新增限制/明确修改对象”与“原样继承条目”——
+    只有数据身份确实匹配本次新增内容的条目才允许重新探测绑定。
+    """
+    operations = tuple(sorted(str(item) for item in (entry.get("operations") or ())))
+    objects = tuple(
+        sorted(
+            (_object_identity(item) for item in (entry.get("objects") or ()) if isinstance(item, Mapping)),
+            key=repr,
+        )
+    )
+    return (operations, objects)
+
+
+def _has_saved_binding_facts(item: Mapping[str, Any]) -> bool:
+    """对象条目是否已携带保存时的绑定/未解决事实（纯数据判定，不查找程序）。"""
+    if not isinstance(item, Mapping):
+        return False
+    if program_binding_state(dict(item)) == BINDING_STATE_BOUND:
+        return True
+    for key in ("binding_state", "binding_failure", "binding_candidates"):
+        if item.get(key):
+            return True
+    return False
+
+
 def _normalize_binding_candidates(value: Any) -> list[dict]:
     """规范化对象条目上的**候选事实**（纯数据：不查找、不采集身份）。"""
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
         return []
     candidates: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple] = set()
     for raw in value:
         if not isinstance(raw, dict):
             continue
         path = _clean_text(raw.get("path"))[:MAX_VALUE_CHARS]
-        if not path or path in seen:
+        if not path:
             continue
-        seen.add(path)
         item = {
             "path": path,
             "source": (_clean_text(raw.get("source")) or "path_lookup")[:80],
@@ -252,6 +305,10 @@ def _normalize_binding_candidates(value: Any) -> list[dict]:
         birth_key = _clean_text(raw.get("birth_key"))[:MAX_VALUE_CHARS]
         if birth_key:
             item["birth_key"] = birth_key
+        candidate_key = _freeze(item)
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
         candidates.append(item)
         if len(candidates) >= MAX_BINDING_CANDIDATES:
             break
@@ -425,27 +482,58 @@ def _entry_with(
 
 
 def attach_program_bindings(
-    limits: Iterable[dict], *, requirement_id: str, version: int, status: str
+    limits: Iterable[dict],
+    *,
+    requirement_id: str,
+    version: int,
+    status: str,
+    fresh_limits: Iterable[dict] | None = None,
+    preserve_saved_facts: bool = False,
 ) -> tuple[dict, ...]:
     """可信绑定创建入口：仅在要求保存/恢复流程显式调用（R9-H10 §1 / R9-H11 §1）。
 
     规范化/序列化/反序列化不调用本函数；读历史数据只能保留已有绑定。
 
+    R9-H13 §3.A1（普通补充不得重新绑定旧禁止）：
+    * ``fresh_limits`` 不是 None：**只有**数据身份匹配本次新增/明确修改条目的条目
+      才允许探测创建绑定；其余条目视为**原样继承**——逐字段原样保留（包括
+      program_binding / binding_state / binding_failure / binding_candidates 与
+      候选来源），不重新查找、不重新绑定、不改写；
+    * ``preserve_saved_facts``：对已携带绑定/未解决事实的对象原样保留（用于低层
+      重写入口不重新探测历史事实）；
+    * 两者都不给（默认）：保持 H11 的显式“创建绑定”语义（对所有未绑定对象探测），
+      只供首次保存新要求/测试装配使用。恢复历史未解决绑定必须用
+      ``recover_program_bindings``（保存候选优先），不得复用本函数。
+
+    绑定事实：
     * 已有有效绑定：原样保留（含创建时的 requirement_* 事实），**不**按当前环境
       重新解析——同名程序不能随 PATH 变化自动转移禁止对象；
-    * 缺绑定：用后端只读候选事实（当前 PATH 查找 + 文件身份）创建绑定，记录
+    * 本次首次提交：用后端只读候选事实（当前 PATH 查找 + 文件身份）创建绑定，记录
       requirement_id/version/status/path/identity/birth_key/source；
     * 候选事实不足：在对象条目上**显式**记录 binding_state=unresolved +
       binding_failure（lookup_failed / identity_unavailable / resolver_error）+
       有界候选路径，供专用恢复/澄清与审计使用；绝不伪造绑定。
     """
+    normalized = normalize_limits(list(limits or ()))
+    fresh_keys: set[tuple] | None = None
+    if fresh_limits is not None:
+        fresh_keys = {
+            _entry_data_key(entry) for entry in normalize_limits(list(fresh_limits))
+        }
     result: list[dict] = []
-    for entry in normalize_limits(list(limits or ())):
+    for entry in normalized:
         copied = dict(entry)
+        if fresh_keys is not None and _entry_data_key(copied) not in fresh_keys:
+            # 原样继承：不得重新查找/绑定继承限制（H13 §3.A1）。
+            result.append(copied)
+            continue
         objects: list[dict] = []
         for obj in copied.get("objects") or ():
             item = dict(obj)
             if str(item.get("kind") or "").strip().lower() == "program_name":
+                if preserve_saved_facts and _has_saved_binding_facts(item):
+                    objects.append(item)
+                    continue
                 if program_binding_state(item) != BINDING_STATE_BOUND:
                     item.pop("program_binding", None)
                     try:
