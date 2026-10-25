@@ -2729,6 +2729,30 @@ function hitEndpointAt(point: { x: number; y: number }, fromId: string | null): 
   return hitGroupAt(point, ownGroup);
 }
 
+/**
+ * 悬停卡片：精确命中优先；没有精确命中时，在卡片外保留一圈缓冲区。
+ * 端点中心在卡片外 6px、命中区还有 17px，没有这圈缓冲区，指针从卡片移向端点时会先丢 hover，
+ * 端点会在到达前消失。缓冲区按屏幕像素换算回板面单位，缩小时不会变窄。
+ */
+function hoveredCardAt(point: { x: number; y: number }): string | null {
+  const exact = hitCardAt(point, null);
+  if (exact) return exact;
+  const margin = 32 / scaleSafe.value;
+  let bestId: string | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const card of displayCards.value) {
+    if (card.deleted) continue;
+    const dx = point.x < card.x ? card.x - point.x : point.x > card.x + card.w ? point.x - card.x - card.w : 0;
+    const dy = point.y < card.y ? card.y - point.y : point.y > card.y + card.h ? point.y - card.y - card.h : 0;
+    const distance = Math.hypot(dx, dy);
+    if (distance <= margin && distance < bestDistance) {
+      bestDistance = distance;
+      bestId = card.id;
+    }
+  }
+  return bestId;
+}
+
 /** 指针悬停在组框上（纯显示）：组已有锚点因此可以从圆点变短条。 */
 function onBoardHoverMove(event: PointerEvent): void {
   // 没有任何被关系使用的锚点时，悬停状态没有可见效果，不必逐帧做命中测试。
@@ -2741,8 +2765,8 @@ function onBoardHoverMove(event: PointerEvent): void {
     return;
   }
   const point = boardPointOf(event);
-  // 指针在卡片上时，卡片锚点优先；组框其次。
-  const cardId = hitCardAt(point, null);
+  // 指针在卡片上或卡片外侧缓冲区时，卡片锚点优先；组框其次。
+  const cardId = hoveredCardAt(point);
   hoveredCardId.value = cardId;
   if (cardId) {
     hoveredGroupId.value = null;
