@@ -1,0 +1,449 @@
+"""R9-H13 A：要求继承、绑定恢复与限制去重（A1-A3）真实流程验收（契约 §3.A/§5）。
+
+真实流程（全部真实对象/台账/引擎/工具，模型 fake）：
+* 真实 SQLite 要求台账（RequirementLedger + 真实迁移）、真实用户要求解析落实入口
+  ``apply_resolution``、真实专用绑定恢复服务入口
+  ``AppContext._ensure_legacy_structured_limits``/``_mark_limits_unresolved``；
+* 真实 PATH 查找、真实临时可执行程序（系统 shell 副本）、真实启动事实（marker 文件
+  证明程序真的运行了；被拒绝时 0 次启动）；
+* 真实硬链接（``os.link`` 后断言 ``samefile``）、真实文件身份提供器
+  （volume+file_id+birth_key）；
+* 真实 AuthorizationEngine + 工具适配层（RunProgramTool / FsReadTool / FsWriteTool）。
+
+模拟（显式标注，不伪造判定结论）：
+* 模型：``ResolutionOutcome`` 由测试构造（等价于 fake 模型输出），不联网；
+* 文件身份提供器边界：``file_identity.identity_of`` 对指定路径返回 None，复现
+  “对象存在但保存时身份不可读”的系统边界；判定仍由真实 object_state 完成。
+
+本文件先于实现落盘：A1/A2/A3 用例在基线 e68fb9b7 上红，修复后转绿；红/绿输出见
+``_r9h13-evidence/a/``。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from agent.api.server import create_app
+from agent.config import Settings
+from agent.security import launch as launch_boundary
+from agent.security import requirement_limits
+from agent.security.context import requirement_context
+from agent.security.requirements import RequirementBinding
+from agent.security.resolution import RequirementRelation, ResolutionOutcome
+from agent.services import file_identity
+from agent.tools.cmd_tools import RunProgramTool
+from agent.tools.fs_tools import FsReadTool
+
+#: 冻结契约 §2/§3 的决策码（与 effects.py / object_state.decision_code_for 一致）。
+UNBOUND_CODE = "program_name_requires_object_binding"
+INVALID_CODE = "program_binding_invalidated"
+UNKNOWN_CODE = "object_state_unconfirmed"
+
+#: 真实可执行程序（启动用例的控制组/反证用）。
+_LAUNCH_SOURCE = (
+    os.environ.get("COMSPEC") or r"C:\Windows\System32\cmd.exe"
+    if os.name == "nt"
+    else (shutil.which("sh") or "/bin/sh")
+)
+
+_PROGRAM_LIMIT = {
+    "operations": ["execute"],
+    "objects": [{"kind": "program_name", "value": "runner"}],
+    "reason": "禁止运行 runner",
+}
+
+
+# --------------------------------------------------------------------------
+# 夹具与辅助（真实对象；身份注入处显式标注「模拟」）
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def ctx(db_conn, tmp_path):
+    return create_app(Settings(data_dir=tmp_path / "data"), db_conn).state.ctx
+
+
+def _launch_program(directory: Path, name: str) -> Path:
+    """真实可执行程序副本（复制系统 shell，可真实启动）。"""
+    directory.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" and not name.lower().endswith(".exe"):
+        name += ".exe"
+    target = directory / name
+    shutil.copy2(_LAUNCH_SOURCE, target)
+    if os.name != "nt":
+        target.chmod(0o755)
+    return target
+
+
+def _hardlink(source: Path, link: Path) -> Path:
+    """真实硬链接（同卷）；断言确实是同一个对象。"""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    os.link(source, link)
+    assert os.path.samefile(source, link), "测试前提：硬链接必须指向同一对象"
+    return link
+
+
+def _set_path(monkeypatch, *directories: Path) -> None:
+    base = os.environ.get("PATH", "")
+    parts = [str(item) for item in directories if str(item)]
+    monkeypatch.setenv("PATH", os.pathsep.join(parts + [base]))
+
+
+def _marker_command(marker: Path) -> list[str]:
+    if os.name == "nt":
+        return ["/c", "echo ran>%s" % marker]
+    return ["-c", "printf ran > %s" % marker]
+
+
+def _install_launch_counter(monkeypatch) -> list[dict]:
+    """真实启动计数：包装受控启动器（真的会启动；只记录每次 launch 尝试）。"""
+    calls: list[dict] = []
+    real_launch = launch_boundary.ControlledLauncher.launch
+
+    async def spy(self, *args, **kwargs):
+        spec = args[0] if args else kwargs.get("spec")
+        calls.append({"program": str(getattr(spec, "program", ""))})
+        return await real_launch(self, *args, **kwargs)
+
+    monkeypatch.setattr(launch_boundary.ControlledLauncher, "launch", spy)
+    return calls
+
+
+def _fail_identity_for(monkeypatch, paths) -> set[str]:
+    """【模拟】文件身份提供器边界：指定路径「存在但身份不可读」。
+
+    只注入系统边界失败，不改变任何判定状态；返回可变集合，discard 即恢复可读
+    （模拟“保存时不可读、之后可读”的时间差）。
+    """
+    real = file_identity.identity_of
+    wanted = {str(path) for path in paths}
+
+    def wrapped(path):
+        if str(path) in wanted:
+            return None
+        return real(path)
+
+    monkeypatch.setattr(file_identity, "identity_of", wrapped)
+    return wanted
+
+
+def _real(path: Path) -> str:
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
+def _raw_limits(conn, requirement_id: str):
+    row = conn.execute(
+        "SELECT structured_limits FROM user_requirements WHERE id = ?",
+        (str(requirement_id),),
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def _decision_code(result) -> str | None:
+    data = getattr(result, "data", None) or {}
+    code = str(data.get("decision_code") or "")
+    return code or None
+
+
+def _states(result) -> list[str]:
+    data = getattr(result, "data", None) or {}
+    decisions = data.get("object_decisions") or []
+    return [str(item.get("state")) for item in decisions if isinstance(item, dict)]
+
+
+def _amend_outcome(
+    requirement,
+    *,
+    message: str,
+    limits=(),
+    removed_limits=(),
+    reason: str = "用户补充",
+) -> ResolutionOutcome:
+    """【模拟】模型输出：只给出语义关系/新增/解除，对象事实由后端核验。"""
+    return ResolutionOutcome(
+        relation=RequirementRelation.AMEND,
+        target_requirement_id=requirement.requirement_id,
+        target_version=int(requirement.version),
+        corrections=(message,),
+        limits=tuple(dict(item) for item in limits),
+        removed_limits=tuple(dict(item) for item in removed_limits),
+        reason=reason,
+        model="fake-r9h13-a",
+        prompt_version="fake-r9h13-a-v1",
+    )
+
+
+async def _run_program(ctx, program: Path, marker: Path, *, binding) -> object:
+    tool = RunProgramTool(
+        computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization
+    )
+    with requirement_context(binding):
+        return await tool.run(
+            program=str(program),
+            args=_marker_command(marker),
+            cwd=str(ctx.computer.root()),
+            timeout=30,
+        )
+
+
+# ==========================================================================
+# A1 普通补充不得重新绑定旧禁止
+# ==========================================================================
+
+
+async def test_a1_plain_amend_keeps_inherited_unresolved_limit(
+    ctx, tmp_path, monkeypatch
+):
+    """A1：保存 runner 禁止（身份不可读 → 候选 A）→ PATH 改为 B → 只补充标题。
+
+    契约 §3.A1：amend 必须**原样继承**旧绑定/未解决状态/失败原因/候选及来源，
+    不得重新查找并把继承限制绑定到 B；A 仍必须受保护（拒绝且 0 次启动）。
+    基线（e68fb9b7）：add_correction 对继承集合重跑 attach_program_bindings，
+    A 被换成 UNRELATED 后实际启动成功（本用例红）。
+    """
+    a_dir = tmp_path / "a1-bin"
+    a = _launch_program(a_dir, "runner")
+    b_dir = tmp_path / "a1-other-bin"
+    b = _launch_program(b_dir, "runner")  # 另一个真实同名对象（PATH 后来优先找到）
+
+    # 保存阶段：PATH 优先找到 A，但 A 的身份读取失败（模拟身份提供器边界）。
+    wanted = _fail_identity_for(monkeypatch, [a])
+    _set_path(monkeypatch, a_dir)
+    requirement = ctx.requirements.record_user_message(
+        text="禁止运行 runner", message_id="m-a1", turn_id="t-a1"
+    )
+    ctx.requirements.set_structured_limits(
+        requirement.requirement_id, [_PROGRAM_LIMIT], source="test:a1:save"
+    )
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    assert stored is not None
+    saved_obj = stored.structured_limits[0]["objects"][0]
+    assert "program_binding" not in saved_obj, saved_obj
+    assert saved_obj.get("binding_state") == requirement_limits.BINDING_STATE_UNRESOLVED
+    assert (
+        saved_obj.get("binding_failure")
+        == requirement_limits.BINDING_FAILURE_IDENTITY_UNAVAILABLE
+    )
+    saved_candidates = [str(item.get("path")) for item in saved_obj["binding_candidates"]]
+    assert any(
+        os.path.normcase(os.path.realpath(item)) == _real(a) for item in saved_candidates
+    ), saved_candidates
+    parent_source = str(stored.structured_limits_source or "")
+
+    # 时间差：A 的身份恢复可读；PATH 改为优先找到 B（另一个真实对象）。
+    wanted.discard(str(a))
+    _set_path(monkeypatch, b_dir)
+
+    # 真实 amend 流程：用户只补充“把报告标题改成 X”（没有新增/解除限制）。
+    applied = ctx.requirements.apply_resolution(
+        _amend_outcome(stored, message="把报告标题改成 X"),
+        message="把报告标题改成 X",
+        message_id="m-a1-amend",
+        turn_id="t-a1",
+    )
+    child = ctx.requirements.by_id(applied.requirement.requirement_id)
+    assert child is not None and int(child.version) == int(stored.version) + 1
+    child_obj = child.structured_limits[0]["objects"][0]
+    assert "program_binding" not in child_obj, (
+        "普通补充不得把继承的未解决限制重新绑定到 PATH 当前对象："
+        + json.dumps(child_obj, ensure_ascii=False, default=str)
+    )
+    assert child_obj.get("binding_state") == requirement_limits.BINDING_STATE_UNRESOLVED
+    assert (
+        child_obj.get("binding_failure")
+        == requirement_limits.BINDING_FAILURE_IDENTITY_UNAVAILABLE
+    )
+    assert [str(item.get("path")) for item in child_obj["binding_candidates"]] == (
+        saved_candidates
+    ), "候选事实必须原样继承"
+    assert all(
+        str(item.get("source")) == "path_lookup"
+        for item in child_obj["binding_candidates"]
+    ), "候选来源必须原样继承"
+    assert parent_source and parent_source in str(child.structured_limits_source or ""), (
+        "原 structured_limits_source 必须仍可追溯（来源原样继承）："
+        + str(child.structured_limits_source)
+    )
+
+    # 真实执行 A：必须被拒，且程序 0 次启动 / marker 不存在。
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    binding = ctx.requirements.binding_for(child.requirement_id)
+    assert binding is not None
+    marker = Path(ctx.computer.root()) / "a1-marker.txt"
+    launches = _install_launch_counter(monkeypatch)
+    result = await _run_program(ctx, a, marker, binding=binding)
+    assert result.ok is False, result
+    assert _decision_code(result) in (UNBOUND_CODE, UNKNOWN_CODE), result
+    assert launches == [], "被拒绝的执行不得尝试启动任何程序"
+    assert not marker.exists(), "普通补充后 A 实际执行成功（基线缺陷）"
+
+    # 相邻正常放行：execute 限制不影响普通报告读取（operation_out_of_scope）。
+    report = Path(ctx.computer.root()) / "a1-report.txt"
+    report.write_text("标题：旧", encoding="utf-8")
+    read_tool = FsReadTool(computer=ctx.computer, security=ctx.authorization)
+    with requirement_context(binding):
+        read_result = await read_tool.run(path=str(report))
+    assert read_result.ok is True, read_result
+    assert read_result.content == "标题：旧"
+
+
+async def test_a1_amend_binds_only_newly_added_limit(ctx, tmp_path, monkeypatch):
+    """A1：普通补充里**本次新增**的限制仍要建绑定；继承条目不得重绑。
+
+    父限制（runner，候选 A）继承保持未解决；同一次 amend 新增“禁止运行 blocker”
+    必须按真实后端事实绑定到 D。执行 A 与 D 都必须被拒（0 启动），读取正常放行。
+    """
+    a_dir = tmp_path / "a1b-bin"
+    a = _launch_program(a_dir, "runner")
+    b_dir = tmp_path / "a1b-other-bin"
+    b = _launch_program(b_dir, "runner")
+    d_dir = tmp_path / "a1b-blocker-bin"
+    d = _launch_program(d_dir, "blocker")
+
+    wanted = _fail_identity_for(monkeypatch, [a])
+    _set_path(monkeypatch, a_dir)
+    requirement = ctx.requirements.record_user_message(
+        text="禁止运行 runner", message_id="m-a1b", turn_id="t-a1b"
+    )
+    ctx.requirements.set_structured_limits(
+        requirement.requirement_id, [_PROGRAM_LIMIT], source="test:a1b:save"
+    )
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    assert stored is not None
+    wanted.discard(str(a))
+    _set_path(monkeypatch, b_dir, d_dir)
+
+    applied = ctx.requirements.apply_resolution(
+        _amend_outcome(
+            stored,
+            message="另外禁止运行 blocker",
+            limits=[
+                {
+                    "operations": ["execute"],
+                    "objects": [{"kind": "program_name", "value": "blocker"}],
+                    "reason": "禁止运行 blocker",
+                }
+            ],
+        ),
+        message="另外禁止运行 blocker",
+        message_id="m-a1b-amend",
+        turn_id="t-a1b",
+    )
+    child = ctx.requirements.by_id(applied.requirement.requirement_id)
+    assert child is not None
+    by_value = {
+        str(item["objects"][0].get("value")): item["objects"][0]
+        for item in child.structured_limits
+        if item.get("objects")
+    }
+    runner_obj = by_value["runner"]
+    assert "program_binding" not in runner_obj, runner_obj
+    assert runner_obj.get("binding_state") == requirement_limits.BINDING_STATE_UNRESOLVED
+    blocker_obj = by_value["blocker"]
+    binding_blocker = blocker_obj.get("program_binding") or {}
+    assert _real(Path(binding_blocker.get("path") or "/")) == _real(d), blocker_obj
+    assert binding_blocker.get("requirement_id") == child.requirement_id
+    assert binding_blocker.get("source") == "path_lookup"
+
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    binding = ctx.requirements.binding_for(child.requirement_id)
+    assert binding is not None
+    launches = _install_launch_counter(monkeypatch)
+    marker_a = Path(ctx.computer.root()) / "a1b-marker-a.txt"
+    marker_d = Path(ctx.computer.root()) / "a1b-marker-d.txt"
+    result_a = await _run_program(ctx, a, marker_a, binding=binding)
+    result_d = await _run_program(ctx, d, marker_d, binding=binding)
+    for label, result, marker in (
+        ("inherited-runner", result_a, marker_a),
+        ("new-blocker", result_d, marker_d),
+    ):
+        assert result.ok is False, (label, result)
+        assert not marker.exists(), label + " 实际执行成功"
+    assert launches == [], "被拒绝的执行不得尝试启动任何程序"
+
+    report = Path(ctx.computer.root()) / "a1b-report.txt"
+    report.write_text("正常读取", encoding="utf-8")
+    read_tool = FsReadTool(computer=ctx.computer, security=ctx.authorization)
+    with requirement_context(binding):
+        read_result = await read_tool.run(path=str(report))
+    assert read_result.ok is True, read_result
+
+
+async def test_a1_indirect_rewrites_do_not_rebind_inherited_limits(
+    ctx, tmp_path, monkeypatch
+):
+    """A1：间接入口不得重探测继承限制（set_structured_limits / app 回写）。"""
+    a_dir = tmp_path / "a1c-bin"
+    a = _launch_program(a_dir, "runner")
+    b_dir = tmp_path / "a1c-other-bin"
+    b = _launch_program(b_dir, "runner")
+
+    wanted = _fail_identity_for(monkeypatch, [a])
+    _set_path(monkeypatch, a_dir)
+    requirement = ctx.requirements.record_user_message(
+        text="禁止运行 runner", message_id="m-a1c", turn_id="t-a1c"
+    )
+    ctx.requirements.set_structured_limits(
+        requirement.requirement_id, [_PROGRAM_LIMIT], source="test:a1c:save"
+    )
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    assert stored is not None
+    wanted.discard(str(a))
+    _set_path(monkeypatch, b_dir)
+    applied = ctx.requirements.apply_resolution(
+        _amend_outcome(stored, message="把报告标题改成 X"),
+        message="把报告标题改成 X",
+        message_id="m-a1c-amend",
+        turn_id="t-a1c",
+    )
+    child = ctx.requirements.by_id(applied.requirement.requirement_id)
+    assert child is not None
+    raw_before = _raw_limits(ctx.conn, child.requirement_id)
+
+    # (a) 低层写入入口重写同一继承事实：不得重新查找并绑定 B。
+    ctx.requirements.set_structured_limits(
+        child.requirement_id,
+        child.structured_limits,
+        source="test:a1c:indirect-rewrite",
+    )
+    after_rewrite = ctx.requirements.by_id(child.requirement_id)
+    assert after_rewrite is not None
+    rewrite_obj = after_rewrite.structured_limits[0]["objects"][0]
+    assert "program_binding" not in rewrite_obj, (
+        "set_structured_limits 不得对继承的未解决事实重新查找/绑定："
+        + json.dumps(rewrite_obj, ensure_ascii=False, default=str)
+    )
+    assert rewrite_obj.get("binding_state") == requirement_limits.BINDING_STATE_UNRESOLVED
+    assert rewrite_obj.get("binding_candidates")
+    assert _raw_limits(ctx.conn, child.requirement_id) == raw_before
+
+    # (b) 服务层恢复失败回写入口：只把 known 标 unresolved，不得补绑定。
+    await ctx._mark_limits_unresolved(
+        SimpleNamespace(notices=[]), after_rewrite, code="test_recovery_failed"
+    )
+    after_mark = ctx.requirements.by_id(child.requirement_id)
+    assert after_mark is not None
+    mark_obj = after_mark.structured_limits[0]["objects"][0]
+    assert "program_binding" not in mark_obj, (
+        "app 回写 known limits 不得补建绑定："
+        + json.dumps(mark_obj, ensure_ascii=False, default=str)
+    )
+    assert after_mark.structured_limits_state == requirement_limits.STATE_UNRESOLVED
+    assert _raw_limits(ctx.conn, child.requirement_id) == raw_before
+
+    # (c) A 仍受保护：拒绝且 0 次启动。
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    binding = ctx.requirements.binding_for(child.requirement_id)
+    assert binding is not None
+    marker = Path(ctx.computer.root()) / "a1c-marker.txt"
+    launches = _install_launch_counter(monkeypatch)
+    result = await _run_program(ctx, a, marker, binding=binding)
+    assert result.ok is False, result
+    assert _decision_code(result) in (UNBOUND_CODE, UNKNOWN_CODE), result
+    assert launches == [] and not marker.exists()
