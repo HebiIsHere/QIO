@@ -431,7 +431,19 @@ async def test_replay_invalidates_legacy_approval_without_requirement_binding(tm
 
 
 @pytest.mark.asyncio
-async def test_replay_invalidates_when_unrestricted_switched_back_to_restricted(tmp_path):
+async def test_replay_continues_after_unrestricted_switched_back_to_restricted(tmp_path):
+    """R9-H13 §12：不再「仅模式字符串不同即失效」；收紧后按**当前规则**重新核对。
+
+    依据与代码位置：
+    * approved_operations._recheck_proc_launch（approval 重放路径）读取**当前模式**
+      mode_now：只有 read_only 直接停止；restricted 下由
+      launch_boundary.build_permit(mode=mode_now) 按当前模式重建执行许可；
+    * 真实审批执行器另有 RecheckService.recheck（agent/security/recheck.py:161-217）
+      用当前模式把 effect 重新交给 engine.authorize：deny 即停止，approve 需重新确认。
+    所以收紧到 restricted 时继续执行的前提是当前规则/执行许可仍然允许；旧授权不是
+    无限复用：每次重放都重新核对并只生成这一份 permit。这里同时断言审计事实
+    mode_now/binding_mode 如实带出，方便复核「模式确实变了但规则允许」。
+    """
     gateway = FakeGateway(mode="unrestricted", verdict="approve")
     tool = RunProgramTool(computer=_sandbox(tmp_path), security=gateway)
     operation = await _submit(tool, program=PY, args=["-c", "print(1)"], cwd=str(tmp_path))
@@ -441,9 +453,31 @@ async def test_replay_invalidates_when_unrestricted_switched_back_to_restricted(
         operation.payload, ctx, computer=_sandbox(tmp_path), security=None
     )
 
+    assert result.ok is True, (result.error, result.summary)
+    assert not result.detail.get("invalidated")
+    recheck = result.detail.get("recheck") or {}
+    assert recheck.get("mode_now") == "restricted"
+    assert recheck.get("binding_mode") == "unrestricted"
+    assert recheck.get("confirmations_required") == 1
+    # 执行许可按当前模式重建（不是沿用 unrestricted 的旧许可）。
+    assert (result.detail.get("permit") or {}).get("mode") == "restricted"
+
+
+@pytest.mark.asyncio
+async def test_replay_stops_when_switched_to_read_only(tmp_path):
+    """§12 的另一半：收紧到 read_only（当前规则不允许）时必须停止，不复用旧授权。"""
+    gateway = FakeGateway(mode="unrestricted", verdict="approve")
+    tool = RunProgramTool(computer=_sandbox(tmp_path), security=gateway)
+    operation = await _submit(tool, program=PY, args=["-c", "print(1)"], cwd=str(tmp_path))
+    ctx = _replay_ctx(operation, mode="read_only")
+
+    result = await execute_proc_run_program(
+        operation.payload, ctx, computer=_sandbox(tmp_path), security=None
+    )
+
     assert result.ok is False
     assert result.detail.get("invalidated") is True
-    assert "模式" in (result.summary or "")
+    assert "只读" in (result.summary or "")
 
 
 @pytest.mark.asyncio

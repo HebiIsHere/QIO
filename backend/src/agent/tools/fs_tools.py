@@ -938,10 +938,19 @@ async def recheck_before_execute(
     read_denied = await _read_limit_before_content_check(gateway, effect)
     if read_denied is not None:
         return read_denied
-    local_failure = _verify_local_preconditions(
-        effect,
-        expected_identity=expected_identity,
-        expected_sha256=expected_sha256,
+    # 契约 4（D）：重核对里的本地前置核对也是真实文件 I/O（identity/stat + 正文读取
+    # + 摘要），不能占用事件循环。H5/H7 的 _verify_local_preconditions 是同步函数，
+    # 这里整体交给共享有界执行器：它只读文件世界的事实，不碰数据库/异步状态。
+    import functools
+
+    local_failure = await asyncio.get_running_loop().run_in_executor(
+        get_blocking_executor(),
+        functools.partial(
+            _verify_local_preconditions,
+            effect,
+            expected_identity=expected_identity,
+            expected_sha256=expected_sha256,
+        ),
     )
     if local_failure is not None:
         return local_failure
