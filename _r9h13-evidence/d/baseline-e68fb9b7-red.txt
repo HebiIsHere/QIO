@@ -1,0 +1,80 @@
+﻿# R9-H13 D 基线红证据（pristine e68fb9b7，git archive 到临时目录）
+# 命令: cd <baseline>/backend; <r9h13-d venv python> -m pytest tests/test_r9h13_d_approval.py -q -p no:cacheprovider --tb=line
+# 原始日志已过滤仅由迁移重复告警产生的噪声行；完整 pytest 结果保留。
+# 基线结果: 12 failed, 8 passed（20 项；失败项覆盖 C2/E1/E2/E3/§8/§12 适配层）。
+# 证据边界：真实引擎/SQLite 审批台账/真实 decide/后台执行器/临时文件；模型为 fake；回收站为测试替身（见测试 docstring）。
+
+F..F.F.F.F.FFFFFF.F                                                      [100%]
+================================== FAILURES ===================================
+E   AssertionError: 读取被禁止时，写回流程不得读取源文件正文/摘要
+    assert 1 == 0
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:313: AssertionError: 读取被禁止时，写回流程不得读取源文件正文/摘要
+E   AssertionError: {'approval_id': 'appr_59914484faed', 'kind': 'attachment.write_back', 'label': '写回源文件「文档.txt」', 'purpose': '写回源文件', ...}
+    assert False
+     +  where False = _was_invalidated({'approval_id': 'appr_59914484faed', 'kind': 'attachment.write_back', 'label': '写回源文件「文档.txt」', 'purpose': '写回源文件', ...})
+----------------------------- Captured log setup ------------------------------
+------------------------------ Captured log call ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:410: AssertionError: {'approval_id': 'appr_59914484faed', 'kind': 'attachment.write_back', 'label': '写回源文件「文档.txt」', 'purpose': '写回源文件', ...}
+E   agent.services.attachments.AttachmentError: 对象内容或前置状态在审查/批准后发生变化；本次没有执行，需要重新判断
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\src\agent\services\attachments.py:2858: agent.services.attachments.AttachmentError: 对象内容或前置状态在审查/批准后发生变化；本次没有执行，需要重新判断
+E   AssertionError: {'ok': False, 'pending_approval': False, 'batch': True, 'deleted_permanently': False, ...}
+    assert False is True
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:510: AssertionError: {'ok': False, 'pending_approval': False, 'batch': True, 'deleted_permanently': False, ...}
+E   AssertionError: 独立有效项必须继续执行
+    assert 'A-旧' == 'A-新'
+      
+      - A-新
+      + A-旧
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:569: AssertionError: 独立有效项必须继续执行
+E   AssertionError: 内部运行数据的最低确认次数必须由后端按真实对象推导
+    assert 1 == 3
+     +  where 1 = _require_confirmations({'approval_id': 'appr_52b07532b0d4', 'kind': 'attachment.write_back', 'label': '写回源文件「app.log」', 'purpose': '写回源文件', ...})
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:629: AssertionError: 内部运行数据的最低确认次数必须由后端按真实对象推导
+E   Failed: DID NOT RAISE Exception
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:692: Failed: DID NOT RAISE Exception
+E   AssertionError: 批量里的内部对象（非首项）也必须命中
+    assert 1 == 3
+     +  where 1 = _require_confirmations({'approval_id': 'appr_52691764e7fa', 'kind': 'attachment.batch_write_back', 'label': '批量写回 2 个附件源文件（一次审批）', 'purpose': '批量写回源文件', ...})
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:741: AssertionError: 批量里的内部对象（非首项）也必须命中
+E   agent.services.attachments.AttachmentError: 对象内容或前置状态在审查/批准后发生变化；本次没有执行，需要重新判断
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\src\agent\services\attachments.py:2858: agent.services.attachments.AttachmentError: 对象内容或前置状态在审查/批准后发生变化；本次没有执行，需要重新判断
+E   agent.storage.approvals.ApprovalConflict: 这条审批不需要分阶段确认，请使用「允许/拒绝」
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\src\agent\storage\approvals.py:548: agent.storage.approvals.ApprovalConflict: 这条审批不需要分阶段确认，请使用「允许/拒绝」
+E   AssertionError: {'approval_id': 'appr_27820df10cbf', 'kind': 'attachment.batch_write_back', 'label': '批量写回 2 个附件源文件（一次审批）', 'purpose': '批量写回源文件', ...}
+    assert 'invalidated' == 'completed'
+      
+      - completed
+      + invalidated
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:836: AssertionError: {'approval_id': 'appr_27820df10cbf', 'kind': 'attachment.batch_write_back', 'label': '批量写回 2 个附件源文件（一次审批）', 'purpose': '批量写回源文件', ...}
+E   AssertionError: {'approval_id': 'appr_945d6434e4ee', 'kind': 'proc.run_program', 'label': '运行程序 D:\\qio-dev\\qio-r9h13-d\\backend\\.venv\\Scripts\\python.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...}
+    assert 'failed' == 'completed'
+      
+      - completed
+      + failed
+----------------------------- Captured log setup ------------------------------
+C:\Users\zxy\AppData\Local\Temp\r9d-base\backend\tests\test_r9h13_d_approval.py:904: AssertionError: {'approval_id': 'appr_945d6434e4ee', 'kind': 'proc.run_program', 'label': '运行程序 D:\\qio-dev\\qio-r9h13-d\\backend\\.venv\\Scripts\\python.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...}
+=========================== short test summary info ===========================
+FAILED tests/test_r9h13_d_approval.py::test_write_back_with_read_ban_never_reads_and_never_writes
+FAILED tests/test_r9h13_d_approval.py::test_write_back_rejects_relocated_forbidden_hardlink_target
+FAILED tests/test_r9h13_d_approval.py::test_unrestricted_write_back_of_unchanged_file_completes
+FAILED tests/test_r9h13_d_approval.py::test_unrestricted_recycle_of_unchanged_material_completes
+FAILED tests/test_r9h13_d_approval.py::test_batch_write_back_single_item_ban_only_blocks_that_item
+FAILED tests/test_r9h13_d_approval.py::test_internal_log_write_back_requires_three_actual_confirmations
+FAILED tests/test_r9h13_d_approval.py::test_historical_single_confirmation_row_cannot_act_as_three
+FAILED tests/test_r9h13_d_approval.py::test_batch_write_back_internal_second_item_needs_three_confirmations
+FAILED tests/test_r9h13_d_approval.py::test_model_allow_cannot_complete_internal_but_ordinary_write_back_allowed
+FAILED tests/test_r9h13_d_approval.py::test_three_confirmations_cannot_override_user_prohibition
+FAILED tests/test_r9h13_d_approval.py::test_approved_batch_mode_relaxed_to_unrestricted_still_executes_once
+FAILED tests/test_r9h13_d_approval.py::test_approved_program_mode_change_uses_current_rules
+
+
