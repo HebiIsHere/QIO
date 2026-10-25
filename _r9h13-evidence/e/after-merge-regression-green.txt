@@ -1,0 +1,17 @@
+﻿........................................................................ [ 30%]
+........................................................................ [ 61%]
+........................................................................ [ 92%]
+..................                                                       [100%]
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-r9h13-e\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_r9g_acceptance_e2e.py::test_review_unavailable_is_not_silent_allow
+  D:\qio-dev\qio-r9h13-e\backend\src\agent\security\engine.py:391: RuntimeWarning: coroutine 'test_review_unavailable_is_not_silent_allow.<locals>._boom' was never awaited
+    verdict, reason, scope_id, needs_review = await self._apply_review(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+234 passed, 2 warnings in 97.50s (0:01:37)

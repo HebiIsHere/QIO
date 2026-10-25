@@ -59,3 +59,17 @@ revocable。子智能体权限不足时调用 `request_agent_scope`（真实工�
 - unrestricted 模式下没有父级显式 grant/已核实授权时，子范围仍为空（F3 要求
   不能绕过子范围），结构化申请 escalation=user；不会自动放宽成"全盘通配"。
 - 不新增沙箱/网络/后台监听；子智能体只获得当前要求版本下的明确子集。
+
+## 合并 r9h13/main 后的集成状态（2026-10-25，main 0f97c3ed）
+
+- `git merge r9h13/main --no-edit` 无冲突（E 分支 257a7856）。
+- E 定向用例：13 passed（`after-F1-F6-green.txt` 之后合并仍全绿）。
+- E 负责范围邻近回归（subagent/scope/审批授权/e2e/A 要求）：
+  **234 passed, 2 warnings**（`after-merge-regression-green.txt`）。
+- 发现 `r9h13/main` 自身 4 条跨分支红灯（与 E 无关，未在 E 分支修改）：
+  `test_r9h12_cross_operation.py::{test_patch_denied_before_reading_body_when_identity_unreadable,
+  test_p3_path_limit_identity_unreadable_blocks_hardlink_read,
+  test_approval_unknown_read_limit_reads_nothing_after_approve}` 与
+  `test_r9h13_b_object_state.py::test_b2_historical_path_limit_without_saved_identity_fails_closed`。
+  已在 `r9h13/main` 0f97c3ed 的独立 detached worktree 复现（不依赖 E 代码）；
+  证据 `after-merge-regression.txt`。已报告 Lead（A/B/对象状态集成问题）。
