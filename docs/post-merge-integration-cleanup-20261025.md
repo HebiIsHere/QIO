@@ -29,7 +29,7 @@
 | 仓库 | HebiIsHere/QIO |
 | 开工 fetch 的 origin/main | 1b03541eedd2dcaa9b82d6102108d717c71c6fb4 |
 | 本分支 | fix/post-merge-integration-cleanup-20261025 |
-| 本分支 HEAD | <收口回填> |
+| 本分支 HEAD（受测代码提交） | 0ebb0bf2a36400b62cb419e478db0035164eaf78（完整矩阵受测 SHA；此后仅追加 docs-only 回填提交，最终 HEAD 以「该提交所在分支 tip」为准） |
 | 上一轮整合 | run 40196935297 / SHA 97b98368；定向复验 880880be；文档 docs/integration-3way-20261025.md |
 
 ## 2. 工作流、文件 owner 与分支
@@ -210,8 +210,6 @@
 
 ## 8. 旧行为断言迁移对照
 
-## 8. 旧行为断言迁移对照
-
 完整对应表见 D:\qio-dev\_fixpm\evidence\C\TEST-MIGRATION.md（含每条旧用例的断言要点与新位置）。摘要：
 
 | 旧测试 | 旧断言要点 | 新验收位置 |
@@ -237,19 +235,51 @@
 
 ### 9.1 定向验证（开发期，非全量）
 
-<收口回填>
+开发期只做必要定向验证（各工作流自跑，非全量），命令/日志在各自证据目录：
+
+| 工作流 | 范围 | 结果 |
+| --- | --- | --- |
+| A 审批 | 前端审批定向 vitest；后端 test_approval_api / test_approval_budget_override / test_approval_lifecycle / test_approved_operations | 前端 20 文件 168 例全绿；后端 46 passed；真实界面 8746/5219 隔离实例截图 8 张 |
+| B 互动 | npx vue-tsc --noEmit；审批+互动/视图/几何定向；真实界面 1440/480 几何测量 | 类型检查绿；16 文件 111 例全绿；几何 rect 与真实可见内容逐像素一致、收起/卸载 null |
+| C 清理 | npx vue-tsc --noEmit；stores+interactive+components/interactive+views 定向；真实界面三路由 | 类型检查绿；253 文件 2469 例全绿；旧元素不存在、console/page error 0、480 无横向溢出 |
+| D 工程/桌面 | verify_workflow_contract.py/--selftest/--scenarios、YAML safe_load、真机 F07 七场景 | 113 断言 PASS、15 项 selftest 0 失败、11 场景 0 不符；F07 55/55 |
+| E 独立验收 | 前端 DOM 级验收用例、后端验收用例、真实界面 surface/480/matrix 脚本 | 前端 20/20、后端 6/6、surface 7/7、480 6/6、matrix 9/9（候选 b498ba85，另有限边界见 §10） |
+| Lead 集成 | 每次合并后 vue-tsc + 定向（审批/互动/视图/审批后端），合并后修复 docs 路径引用 | 合并点均绿；approval 79 例、integrated 1853 例、后端审批 60 例等 |
 
 ### 9.2 本地全量轮次（仅一次）
 
-<收口回填：SHA、命令、结果、失败处置>
+候选：最终代码/测试 HEAD 0ebb0bf2（后续仅可能追加 docs-only 回填提交；backend 树 `7df218fe` 在 58fe47ec→0ebb0bf2 未变，所以后端全量结果对最终候选有效；frontend 产品/测试树在最终候选上除 E 的类型修复与 docs 外未变）。
+
+| 项目 | 命令 | 结果 |
+| --- | --- | --- |
+| 后端全量 | `cd backend && uv run --frozen pytest -q`（592 个测试文件、收集 5929 项；在 backend 树 7df218fe 上跑，该树在 58fe47ec→0ebb0bf2 未变） | **exit 0**（无 failed/error；日志尾部为既有 ResourceWarning/PytestUnraisableException 与未 await 协程的警告噪音，不影响退出码；日志 `_fixpm/evidence/lead-full-backend-58fe47ec.log`） |
+| 前端全量 | `cd frontend && npx vitest run` | 446 文件 / 3984 例：首跑 1 failed / 3983 passed。失败项为 `src/views/__tests__/i2v2-a-recovery-entry.test.ts` 第 3 例（`recoveryEntry(wrapper)[0]` 为 undefined）；失败项定向复验：同文件隔离连跑 5 次全过、同 harness 的 `src/views/__tests__` 组 21 文件 198 例全绿。归因：同机并发后端全量 + 桌面构建的全量首跑环境/时序抖动（该用例与改动路径无直接关系），非产品回归；同一提交的 CI frontend job（干净 runner）全套通过，未复现 |
+| 类型检查 | `npx vue-tsc --noEmit` | exit 0（0 error） |
+| 生产构建 | `npx vite build` | exit 0（9.18s，dist/ 未提交） |
+| 文档一致性 | `python scripts/check_docs.py` / `--selftest` | 通过（99 个里程碑；selftest 6/6） |
+| 第三方声明 | `python scripts/licenses/check_third_party.py` / `--selftest` | 通过（锁文件零变化、未改依赖） |
+| 发布闸门自检 | `python scripts/release_gate.py --selftest` | 通过 |
+| 离线评估 | `uv run --frozen python -m agent.eval.run` 在候选与基线 1b03541e 各跑一次 | 两次输出逐字节相同（topic/retrieval/anchor 指标一致） |
+| CI 触发规则自检 | `python scripts/targeted-verify/verify_workflow_contract.py` / `--selftest` / `--scenarios` | 113 断言 PASS / 15 项 selftest 0 失败 / 11 场景 0 不符 |
 
 ### 9.3 完整 CI 轮次（仅一次）与定向复验
 
-<收口回填：运行号、SHA、逐 job、筛选>
+- **触发方式**：把修复分支推送到 `origin/fix/post-merge-integration-cleanup-20261025`（该分支此前不存在于远端，push 是唯一一次会跑完整矩阵的远端事件；未开 PR、未推其它分支、未动 main）。
+- **运行**：**run 40219310525**，SHA `0ebb0bf2a36400b62cb419e478db0035164eaf78`，event=push，2026-10-25T18:02:07Z → 18:46:56Z（约 44m49s）。
+- **逐 job 结论（10/10 全部 success，无 skipped / 无 failed / 无 cancelled）**：ci dedup preflight ✓ / docs consistency ✓ / frontend（typecheck + 测试 + 构建）✓ / rust (ubuntu) ✓ / rust (windows) ✓ / frozen worker (windows) ✓ / install e2e (windows) ✓ / backend (py3.11) ✓ / backend (py3.12) ✓ / backend (windows-latest) ✓。
+- **失败与复验**：本轮完整矩阵无失败，因此**没有**使用 `Re-run failed jobs`、也没有针对 CI 失败做定向复验；未降低任何门禁、未跳过任何 job。
+- **重复触发核对**：push 之后检查 `gh run list`，该 SHA 只有这一个 CI run（无 PR 事件、无第二完整矩阵）；`fix/pm-*`、`verify/pm-*` 分支从未 push。
+- **后续文档回填**：本文件与 status.md 的 CI 运行号回填使用 `[skip ci]` 提交推送，不产生第二次完整矩阵；最终 HEAD 与受测 SHA 的差异仅为 docs（可用 `git diff --name-only 0ebb0bf2..HEAD` 核对）。
+- **与上一轮台账的区分**：上一轮 main 的重复完整矩阵 run 40202066826（cancelled）已由 D01 更正记录；本轮完整 CI 是新的独立一轮，不重跑、不覆盖上一轮记录。
 
 ### 9.4 真实界面与桌面验证
 
-<收口回填：窄窗 480x600、执行结果、批量部分失败、三次确认、桌面壳验证与边界>
+- **真实界面（1440x900 / 480x600，隔离数据目录 + fake/mock provider + Playwright/CDP，截图与 JSON 在各证据目录）**：
+  - A：0 待办从 ⑤ 打开「结果与历史」并读到批量逐项/拒绝/过期记录；480 三条同前缀申请可见文本与 title 互不相同、无横向溢出、切换 2/3；实时 executed/failed/invalidated 进入同一列表；恢复失败/历史失败可见+重试。
+  - B：互动页徽标收起/展开可见且与卡片/工具栏/输入区/消息面板相交（1440）为 0；对话展开发布 rect `{290,459,860,420}` 与可见内容一致、板面可用区域底边 776.36→459、卡片位置不变，收起/卸载 chatObstacleFrame() 为 null；480 发布 `{15,289,450,294}`；任务面板「审批结果」分区（1440 454x139、480 430x139）可读真实结果；影响确认/剩余撤回界面（paused 拒绝原文、failed 重试逐项摘要、关闭不撤回、再次查看）。
+  - C：互动/对话/设置三路由旧元素不存在、console/page error 0；layers.css 规则在真实页面生效（user-select=none、is-floating 透明表面、z-index=80）；480 工具栏窄档无横向溢出。
+  - E：21 张截图覆盖 surface 7/7、480 审批 6/6、matrix 9/9（模式切换刷新、0 待办历史、恢复失败重试、三次确认 1/3、并发乱序不串、刷新不丢历史、批量逐项部分成功）；矩阵 11 由 B 的真实后端链路 8/8 补齐、矩阵 12/13 有限边界见 §10。
+- **真机桌面（D）**：最终代码 HEAD 0ebb0bf2 上完整 `npm run build`（vue-tsc + vite）通过，用最终 frontend 树 `18a47556` 真实编译壳（内嵌 dist + 真实 Python 后端），7 场景 55/55：ask 三选、关闭到托盘、托盘恢复、托盘菜单退出、记住选择并重启后生效、系统 WM_CLOSE（tray/quit）、挂起后端阻塞退出（12s HTTP + 15s 等待 → taskkill /PID /T /F，28s 内 exit 0、pid 全部消失）、重复关闭不叠加不二次退出；exe 42,083,840 bytes，sha256 `5D75CBD9FA70D1DC4FD4275C35EB898BC9AD04B5A299B0805B1AA27D0549568B`。D 阶段（main 前端树）与最终候选树两次构建均 55/55，WindowChrome 组件测试 19/19。边界见 §10。
 
 ## 10. 未验证与边界
 
@@ -257,7 +287,7 @@
 - **POSIX 平台**：本机验证全部在 Windows；Linux 由 CI（py3.11/py3.12）覆盖，那是 CI 事实不是本地结论。
 - **安装形态与桌面边界**（D 的 F07 报告 §5 如实列出）：NSIS 安装/卸载形态（由 CI install e2e 覆盖，本地未打包）、冻结 sidecar onefile 进程模型（由 CI frozen worker 覆盖，本地 debug 走真实 Python 后端）、系统关机/注销（WM_QUERYENDSESSION/ENDSESSION 无法无人值守触发，只验 WM_CLOSE + RunEvent::Exit）、ask 的 1.8s ACK 超时兜底（前端总能 ACK，未构造故障）、物理鼠标点任务栏托盘图标（用 tray-icon 原生回调消息 + 菜单键选，状态是真实 Win32 状态）、多显示器/DPI/最大化和更新安装。
 - **480x600 收起态徽标**：徽标位于既有悬浮对话状态条内，该行可能与板面一张卡下边缘重叠（1440 与卡片相交 0；始终与工具栏/输入区/消息面板相交 0）。这是既有悬浮布局的覆盖区，不是本轮新增浮层。
-- **矩阵 11（材料冲突→影响确认→剩余撤回）真实链路**：组件级 9 例全绿，B 在真实后端上验证了「paused 继续被拒→failed 重试逐项摘要→关闭不撤回（DB 不变）→再次查看→Escape」；E 的独立隔离库无法自然产生 pendingDecision，标注 LIMITED，不伪造数据。
+- **矩阵 11（材料冲突→影响确认→剩余撤回）**：组件级 9 例全绿；B 在候选 689ffa97 上用真实后端（真实 GET /intents 读取的 revert 数据 + 真实 POST /demo/advance decisionIds 路径）跑通 8/8：影响确认命中运行中任务并「等待确认，尚未保存」、取消不落库、剩余撤回读取待决定项、失败重试显示服务端原文、部分完成摘要（processed/reconfirmed/remaining）、关闭不撤回（DB 前后一致）、再次查看、Escape 不撤回。E 的隔离库不能自然产生 pendingDecision，按其记录为 LIMITED，不伪造数据；判定依据是 B 的真实后端链路证据。
 - **旧 /respond 兼容路径**：执行结果没有持久化历史，界面不会把它伪造进「结果与历史」；工具创建等旧 request 机制仍可用。
 - **历史入口**：无待审批、无历史、无错误时 ⑤ 不占位（空入口不占屏幕）；有待办、有历史或读取失败时可达。
 - **既有边界不变**：真实回收站/符号链接/跨卷移动等文件系统边界沿用仓库既有结论；执行前核对到系统调用仍有竞态；受限子进程不是安全沙箱。
