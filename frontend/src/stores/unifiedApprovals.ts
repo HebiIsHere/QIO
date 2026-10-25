@@ -758,12 +758,26 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
             decision === "approve" ? "approved" : "rejected",
             options.overrides,
           );
-          const still = approvals.queue.some((item) => item.approval_id === active.identity);
-          if (still) {
-            this.submitError =
-              approvals.error || "提交没有完成；这次没有做出任何授权，可以重试。";
+          /**
+           * R9：失败与否只看 store 的 error —— **不能**用「还在队列里」当失败判据。
+           * 内部运行数据按次确认（1/3 → 2/3 → 3/3），前两次成功后该项按设计仍留在队列，
+           * 那是「进度前进了」而不是「没提交成功」。
+           */
+          const failure = approvals.error;
+          if (failure) {
+            this.submitError = failure;
             this.submitErrorCode = "tool_failed";
             return false;
+          }
+          const still = approvals.queue.find((item) => item.approval_id === active.identity);
+          if (still) {
+            const required = Math.max(1, Number(still.requiresConfirmations ?? 1));
+            const done = Math.max(0, Number(still.confirmedStage ?? 0));
+            this.lastNotice =
+              required > 1
+                ? "已确认 " + done + "/" + required + " 次（确认阶段以后端为准）。"
+                : "提交已送出，正在等待后端结果。";
+            return true;
           }
           this.lastNotice = decision === "approve" ? "已确认这一次操作。" : "已拒绝这一次操作。";
           this.finishHandled(active.key);

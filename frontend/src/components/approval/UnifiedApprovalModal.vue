@@ -9,7 +9,13 @@
  * - 系统事实与模型说明的分工完全复用 ApprovalFacts（不另写一套显示规则）。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { useApprovalsStore, approvalFacts, type ApprovalBudget } from "../../stores/approvals";
+import {
+  useApprovalsStore,
+  approvalFacts,
+  isLifecycleApproval,
+  type ApprovalBudget,
+} from "../../stores/approvals";
+import { approvalStateLabel } from "../../services/approvalLifecycle";
 import {
   TOOL_ORIGIN_LABELS,
   toolSourceFacts,
@@ -66,6 +72,65 @@ const errorText = computed(() => {
   if (item.value.kind === "tool" && item.value.approval) return approvals.error ?? "";
   return "";
 });
+
+/**
+ * R9 生命周期 v2（契约 §5）：状态机、确认阶段、期限全部来自后端
+ * （store 由 APPROVAL_REQUIRED / APPROVAL_RESULT 事件、pending 恢复快照与接口返回值写入）。
+ * 这里只做**呈现**：绝不自行推进状态、绝不本地把 confirmed_stage 加一。
+ */
+const lifecycle = computed(() => isLifecycleApproval(item.value?.approval ?? null));
+const requiredConfirmations = computed(() =>
+  Math.max(1, Number(item.value?.approval?.requiresConfirmations ?? 1)),
+);
+const doneConfirmations = computed(() =>
+  Math.max(
+    0,
+    Math.min(requiredConfirmations.value, Number(item.value?.approval?.confirmedStage ?? 0)),
+  ),
+);
+/** 内部运行数据：连续 N 次确认，按钮是「第 N/M 次」，不是一次批准。 */
+const needsConfirm = computed(
+  () =>
+    requiredConfirmations.value > 1 && doneConfirmations.value < requiredConfirmations.value,
+);
+const confirmButtonText = computed(
+  () =>
+    "继续确认（第 " + (doneConfirmations.value + 1) + "/" + requiredConfirmations.value + " 次）",
+);
+/** 已批准 / 执行中（含重启恢复出来的状态）：没有更多用户动作，只等执行结果。 */
+const awaitingExecution = computed(() => {
+  const state = item.value?.approval?.state;
+  return state === "approved" || state === "executing";
+});
+/** 状态标签（未知状态如实显示原值，不假装认识）。 */
+const lifecycleStateLabel = computed(() =>
+  lifecycle.value ? approvalStateLabel(String(item.value?.approval?.state ?? "")) : "",
+);
+const expiresText = computed(() => String(item.value?.approval?.expiresAt ?? "").trim());
+/**
+ * 失败原因按「可分辨的三类」加上前缀：已过期 / 已被处理 / 对象已变化。
+ * 原文一律保留（后端中文原因本身就是最有用的信息），不重写成笼统的「失败了」。
+ */
+const failureHint = computed(() => {
+  const raw = errorText.value;
+  if (!raw) return "";
+  if (raw.includes("有效期") || raw.includes("过期")) return "已过期 · " + raw;
+  if (raw.includes("已经有结局") || raw.includes("已过期）") || raw.includes("不等待你的授权")) {
+    return "已被处理 · " + raw;
+  }
+  if (raw.includes("更新过") || raw.includes("确认阶段") || raw.includes("revision")) {
+    return "对象已变化 · " + raw;
+  }
+  return raw;
+});
+
+/** 已批准 / 执行中这一条不再等用户：把它从待办里收口（只收口，不伪造决定）。 */
+function acknowledgeExecution() {
+  const active = item.value;
+  if (!active || active.kind !== "tool") return;
+  approvals.resolve(active.identity);
+  unified.noteQueueChanged();
+}
 
 const editing = computed(() => !!item.value && unified.editingKey === item.value.key);
 const draft = computed(() => (item.value ? unified.draftFor(item.value.key) : ""));
@@ -296,7 +361,16 @@ function retryKnowledgeDetail() {
         </p>
       </div>
 
-      <p v-if="errorText" class="ua-error" role="alert">{{ errorText }}</p>
+      <!-- R9：状态机与期限（后端事实；未带 state 的旧审批不渲染这一行） -->
+      <p v-if="lifecycle && (lifecycleStateLabel || expiresText)" class="ua-lifecycle mono" data-test="unified-approval-lifecycle">
+        <span v-if="lifecycleStateLabel" data-test="unified-approval-state">状态：{{ lifecycleStateLabel }}</span>
+        <span v-if="expiresText" data-test="unified-approval-expires"> · 期限：{{ expiresText }}</span>
+        <span v-if="requiredConfirmations > 1" data-test="unified-approval-progress">
+          · 确认进度：{{ doneConfirmations }}/{{ requiredConfirmations }}
+        </span>
+      </p>
+
+      <p v-if="errorText" class="ua-error" role="alert">{{ failureHint }}</p>
 
       <footer class="ua-actions">
         <template v-if="item.kind === 'tool'">
@@ -309,6 +383,20 @@ function retryKnowledgeDetail() {
           >
             知道了
           </button>
+          <!-- 已批准 / 执行中（含重启恢复出来的状态）：只等后端结果，不再给决定按钮 -->
+          <template v-else-if="awaitingExecution">
+            <p class="ua-awaiting" role="status" data-test="unified-approval-awaiting">
+              已批准，等待执行；后端执行完这里会显示结果，不需要再操作。
+            </p>
+            <button
+              class="ua-btn later"
+              type="button"
+              data-test="unified-approval-awaiting-ack"
+              @click="acknowledgeExecution()"
+            >
+              知道了
+            </button>
+          </template>
           <template v-else>
             <label v-if="needExtraConfirm" class="ua-confirm">
               <input v-model="extraConfirm" type="checkbox" />
@@ -326,7 +414,23 @@ function retryKnowledgeDetail() {
             <button class="ua-btn later" type="button" :disabled="busy" @click="unified.deferActive()">
               稍后处理
             </button>
+            <!--
+              内部运行数据：这是「第 N 次确认」，不是一次批准。
+              stage 由后端 CAS 判定（前端只发 confirmed_stage+1，并用返回值覆盖进度）。
+            -->
             <button
+              v-if="needsConfirm"
+              class="ua-btn primary"
+              type="button"
+              :disabled="busy"
+              data-test="unified-approval-confirm-next"
+              :title="'确认进度以后端为准：已确认 ' + doneConfirmations + '/' + requiredConfirmations + ' 次'"
+              @click="submit('approve')"
+            >
+              {{ busy ? "提交中…" : confirmButtonText }}
+            </button>
+            <button
+              v-else
               class="ua-btn primary"
               type="button"
               :disabled="!canApprove"
@@ -620,6 +724,17 @@ function retryKnowledgeDetail() {
   font-size: 12px;
   line-height: 1.55;
   overflow-wrap: anywhere;
+}
+.ua-lifecycle {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.ua-awaiting {
+  margin: 0 auto 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 .ua-actions {
   display: flex;
