@@ -56,6 +56,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   (e: "select-link", linkId: string, clientX?: number, clientY?: number): void;
   (e: "edit-link", linkId: string, clientX?: number, clientY?: number): void;
+  (e: "delete-link", linkId: string): void;
   (e: "curve-change", linkId: string, curve: LinkCurve): void;
 }>();
 
@@ -144,9 +145,30 @@ function startLabelDrag(linkId: string, curve: LinkCurve, event: PointerEvent): 
   window.addEventListener("pointerup", up);
 }
 
+function isDeleteTarget(target: EventTarget | null): boolean {
+  return Boolean((target as Element | null)?.closest?.("[data-link-delete]"));
+}
+
 function onLabelClick(linkId: string, event?: MouseEvent): void {
   if (Date.now() < suppressClickUntil) return;
   emit("select-link", linkId, event?.clientX, event?.clientY);
+}
+
+const LABEL_DELETE_SPACE = 24;
+const LABEL_DELETE_RADIUS = 8;
+
+/** 胶囊整体 = 原说明宽度 + 右侧删除按钮；文字只占左侧说明区。 */
+function labelBox(item: { id: string; x1: number; y1: number; x2: number; y2: number; curve: LinkCurve; labelW: number }) {
+  const point = labelPoint(item);
+  const width = item.labelW + LABEL_DELETE_SPACE;
+  const left = point.x - width / 2;
+  return {
+    point,
+    width,
+    left,
+    textX: left + item.labelW / 2,
+    buttonX: left + width - LABEL_DELETE_RADIUS - 4,
+  };
 }
 
 function labelOf(target: EventTarget | null): HTMLElement | null {
@@ -155,6 +177,7 @@ function labelOf(target: EventTarget | null): HTMLElement | null {
 }
 
 function handlePointerDown(event: PointerEvent): void {
+  if (isDeleteTarget(event.target)) return;
   const label = labelOf(event.target);
   if (!label) return;
   const linkId = label.dataset.linkLabel ?? "";
@@ -164,6 +187,7 @@ function handlePointerDown(event: PointerEvent): void {
 }
 
 function handleClick(event: MouseEvent): void {
+  if (isDeleteTarget(event.target)) return;
   const label = labelOf(event.target);
   if (!label) return;
   const linkId = label.dataset.linkLabel ?? "";
@@ -173,6 +197,7 @@ function handleClick(event: MouseEvent): void {
 }
 
 function handleDoubleClick(event: MouseEvent): void {
+  if (isDeleteTarget(event.target)) return;
   const label = labelOf(event.target);
   if (!label) return;
   const linkId = label.dataset.linkLabel ?? "";
@@ -346,20 +371,40 @@ const targetBadge = computed(() => {
         <rect
           class="label-bg"
           :class="{ active: item.active }"
-          :x="labelPoint(item).x - item.labelW / 2"
-          :y="labelPoint(item).y - 10"
-          :width="item.labelW"
+          :x="labelBox(item).left"
+          :y="labelBox(item).point.y - 10"
+          :width="labelBox(item).width"
           height="20"
           rx="10"
         />
         <text
           class="label"
-          :x="labelPoint(item).x"
-          :y="labelPoint(item).y + 4"
+          :x="labelBox(item).textX"
+          :y="labelBox(item).point.y + 4"
           text-anchor="middle"
         >
           {{ item.meaning }}
         </text>
+        <g
+          class="label-delete"
+          data-link-delete
+          role="button"
+          :aria-label="'删除关系：' + item.meaning"
+          @pointerdown.stop
+          @click.stop="emit('delete-link', item.id)"
+          @dblclick.stop
+        >
+          <circle
+            class="label-delete-bg"
+            :cx="labelBox(item).buttonX"
+            :cy="labelBox(item).point.y"
+            :r="8"
+          />
+          <path
+            class="label-delete-x"
+            :d="'M ' + (labelBox(item).buttonX - 3) + ' ' + (labelBox(item).point.y - 3) + ' L ' + (labelBox(item).buttonX + 3) + ' ' + (labelBox(item).point.y + 3) + ' M ' + (labelBox(item).buttonX + 3) + ' ' + (labelBox(item).point.y - 3) + ' L ' + (labelBox(item).buttonX - 3) + ' ' + (labelBox(item).point.y + 3)"
+          />
+        </g>
       </g>
     </g>
 
@@ -430,6 +475,21 @@ const targetBadge = computed(() => {
   cursor: grab;
 }
 .label-bg.active { stroke: var(--accent); }
+.label-delete { pointer-events: auto; cursor: pointer; }
+.label-delete-bg {
+  fill: var(--bg-surface);
+  stroke: var(--border-subtle);
+  transition: fill var(--dur-fast) var(--ease-1), stroke var(--dur-fast) var(--ease-1);
+}
+.label-delete-x {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  transition: stroke var(--dur-fast) var(--ease-1);
+}
+.label-delete:hover .label-delete-bg { fill: var(--danger-soft); stroke: var(--danger); }
+.label-delete:hover .label-delete-x { stroke: var(--danger); }
 .label {
   fill: var(--text-secondary);
   font-size: var(--fs-xs);

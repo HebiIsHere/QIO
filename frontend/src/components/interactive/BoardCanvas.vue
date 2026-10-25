@@ -2902,6 +2902,17 @@ function saveLinkEditor() {
   linkEditorPos.value = null;
 }
 
+function onDeleteLink(linkId: string) {
+  const current = boardState.value;
+  if (!current) return;
+  commit(removeLink(current, linkId), "删除关系（撤回这条关联）");
+  if (editingLinkId.value === linkId) {
+    editingLinkId.value = null;
+    linkEditorOpen.value = false;
+    linkEditorPos.value = null;
+  }
+}
+
 function deleteEditingLink() {
   const current = boardState.value;
   const linkId = editingLinkId.value;
@@ -3266,6 +3277,7 @@ onBeforeUnmount(() => {
             :included-card-ids="includedCardIds"
             @select-link="selectLink"
             @edit-link="openLinkEditor"
+            @delete-link="onDeleteLink"
             @curve-change="onLinkCurveChange"
           />
 
