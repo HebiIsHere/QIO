@@ -317,6 +317,25 @@ const displayCards = computed(() =>
   props.dropCardId ? memberCards.value.filter((card) => card.id !== props.dropCardId) : memberCards.value,
 );
 
+/** 拖入组的插入线：画在放下后会落到的两个成员之间。 */
+const dropInsertStyle = computed<Record<string, string>>(() => {
+  if (!props.dropTarget || props.dropIndex === null) {
+    return { display: "none", top: "0px", left: "0px", right: "0px" };
+  }
+  const cards = displayCards.value;
+  let y = props.group.y + 58;
+  if (cards.length) {
+    if (props.dropIndex <= 0) y = cards[0].y - 6;
+    else if (props.dropIndex >= cards.length) {
+      const last = cards[cards.length - 1];
+      y = last.y + last.h + 6;
+    } else {
+      y = cards[props.dropIndex].y - 6;
+    }
+  }
+  return { display: "block", top: y - props.group.y + "px", left: "16px", right: "16px" };
+});
+
 async function focusName() {
   await nextTick();
   nameInput.value?.focus();
@@ -336,6 +355,14 @@ defineExpose({ focusName });
     :data-collapsed="collapsed ? 'true' : 'false'"
     :data-link-target="linkTarget ? 'group' : undefined"
   >
+    <div
+      v-if="dropTarget && dropIndex !== null"
+      class="drop-insert"
+      :style="dropInsertStyle"
+      data-im="group-drop-insert"
+      aria-hidden="true"
+    ><span>插入这里</span></div>
+
     <div
       class="group-head"
       :class="{ 'tools-open': membersOpen, grabbable: draggable }"
@@ -581,6 +608,24 @@ defineExpose({ focusName });
 }
 .group.ordered { border-color: var(--border-strong); }
 .group.drop-target { border-color: var(--accent); background: var(--accent-soft); }
+.group > .drop-insert {
+  position: absolute;
+  z-index: 9;
+  height: 0;
+  border-top: 2px dashed var(--accent);
+  pointer-events: none;
+}
+.group > .drop-insert > span {
+  position: absolute;
+  right: 0;
+  top: -18px;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 10px;
+  line-height: 1.6;
+}
 .group.drop-merge { border-color: var(--warning); }
 /* 拖线落在组框标题 / 空白：组框本身高亮，说明「这一条关系连到组」。 */
 .group.link-target {
