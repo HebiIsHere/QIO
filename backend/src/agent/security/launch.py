@@ -318,25 +318,189 @@ def _shell_tokens(command: str) -> list[str]:
     return tokens
 
 
+#: 已知解释器家族：入口脚本按**真实启动语义**（解释器 argv 位置）识别，
+#: 不能只靠后缀名单或 shebang（契约 §3.D2：python xxx.txt 也必须入绑定）。
+_PYTHON_FAMILY = frozenset({"python", "python2", "python3", "py"})
+_NODE_FAMILY = frozenset({"node", "nodejs", "deno", "bun"})
+_SHELL_FAMILY = frozenset({"sh", "bash", "dash", "zsh", "ksh", "fish"})
+_ARG_SCRIPT_FAMILY = frozenset({"ruby", "perl", "php", "lua", "rscript", "tclsh", "wish"})
+_POWERSHELL_FAMILY = frozenset({"powershell", "pwsh"})
+#: 参数脚本内容绑定的总量预算（超过必须显式标记“不完整”，不能静默截断）。
+_ARGUMENT_TOTAL_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _program_basename(value: Any) -> str:
+    """程序入口的裸名称（去路径/常见可执行后缀、小写）；纯名称用于解释器语义表。"""
+    text = str(value or "").strip().strip('"')
+    if not text:
+        return ""
+    name = text.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".com", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _operand_path(token: str, cwd: str | None) -> Path | None:
+    """参数操作数 → 规范化绝对路径（相对路径按 spec.cwd；没有 cwd 无法定位）。"""
+    raw = str(token or "").strip().strip("\"'")
+    if not raw or len(raw) > 4096:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        if not cwd:
+            return None
+        candidate = Path(cwd) / candidate
+    try:
+        return candidate.resolve()
+    except (OSError, ValueError):
+        return None
+
+
+def _interpreter_entry_script(
+    program: Any, argv: tuple[str, ...], cwd: str | None
+) -> Path | None:
+    """按真实解释器启动语义取入口脚本文件。
+
+    返回 None = 内联代码/模块/stdin/没有入口脚本（不是“采集失败”）。
+    这是「解释器 + 参数位置」的语义判断，不依赖文件后缀，也不读取文件内容。
+    """
+    name = _program_basename(program)
+    args = [str(item) for item in (argv or ())]
+    if not name or not args:
+        return None
+    if name in _PYTHON_FAMILY:
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token == "--":
+                index += 1
+                continue
+            # -c 内联代码 / -m 模块：没有可绑定的入口脚本文件。
+            if token in ("-c", "-m") or token.startswith("-c") or token.startswith("-m"):
+                return None
+            if token == "-":  # stdin
+                return None
+            if token in ("-W", "-X", "-Q", "--check-hash-based-pycs"):
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return _operand_path(token, cwd)
+        return None
+    if name in _NODE_FAMILY:
+        index = 0
+        while index < len(args):
+            token = args[index]
+            lowered = token.lower()
+            if lowered in ("-e", "--eval", "-p", "--print"):
+                return None
+            if lowered in (
+                "-r",
+                "--require",
+                "--loader",
+                "--experimental-loader",
+                "--import",
+                "--input-type",
+            ):
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return _operand_path(token, cwd)
+        return None
+    if name in _SHELL_FAMILY:
+        for token in args:
+            if token == "--":
+                continue
+            if token.startswith("-") or (token.startswith("+") and len(token) > 1):
+                body = token.lstrip("+-")
+                # -c / -ec 等：后面是命令文本，没有入口脚本文件。
+                if not token.startswith("--") and "c" in body:
+                    return None
+                continue
+            return _operand_path(token, cwd)
+        return None
+    if name in _POWERSHELL_FAMILY:
+        index = 0
+        while index < len(args):
+            token = args[index]
+            lowered = token.lower()
+            if lowered in ("-command", "-c", "-encodedcommand", "-ec", "-e"):
+                return None
+            if lowered in ("-file", "-f"):
+                if index + 1 < len(args):
+                    return _operand_path(args[index + 1], cwd)
+                return None
+            if lowered in (
+                "-executionpolicy",
+                "-ep",
+                "-windowstyle",
+                "-ws",
+                "-inputformat",
+                "-outputformat",
+                "-version",
+                "-psconsolefile",
+            ):
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return _operand_path(token, cwd)
+        return None
+    if name in _ARG_SCRIPT_FAMILY:
+        for token in args:
+            if token in ("-e", "-E") or token.startswith("-e"):
+                return None
+            if token.startswith("-"):
+                continue
+            return _operand_path(token, cwd)
+        return None
+    # cmd 等 shell 程序入口：命令文本不是入口脚本文件（shell 命令另走 token 启发式）。
+    return None
+
+
 def _argument_file_facts(
     spec: LaunchSpec, *, include_content: bool = True
-) -> list[dict]:
+) -> tuple[list[dict], bool, str]:
     """argv / shell 命令里作为脚本文件的参数：内容摘要必须进入 spec_digest。
 
-    只核对 argv 字符串不够：python job.py 这种「解释器 + 脚本文件」的启动，脚本
-    内容在批准之后被替换时 argv 完全不变。这里对**存在或明确不存在的脚本文件**
-    记录内容 sha256（相对路径按 spec.cwd 解析；没有 cwd 时相对路径不做核对），
-    让摘要同时覆盖「被执行的脚本内容」。
+    只核对 argv 字符串不够：`python job.txt` 这种「解释器 + 入口脚本」的启动，
+    脚本内容在批准之后被替换时 argv 完全不变；而后缀名单/shebang 都识别不了
+    `.txt`（契约 §3.D2）。所以：
+
+    1. 已知解释器按 argv 位置识别入口脚本（真实启动语义，不看后缀）；
+    2. 其余操作数沿用「脚本后缀 / shebang」启发式；
+    3. 采集是有界但**不静默截断**：达到数量/字节上限时返回 complete=False 与明确
+       原因，调用方必须按“影响不完整”处理（不得宣称完整、不得按完整方案执行）。
 
     `include_content=False`：只做元数据发现，不做 shebang 正文探测、不计算摘要
     （读取权限核对必须先于这些读取，契约 §2.1/§3.C）。
+
+    返回 `(facts, complete, reason)`。
     """
     cwd = _resolved_cwd(spec)
+    notes: list[str] = []
+    candidates: list[tuple[Path | None, str, bool]] = []
+    seen_candidates: set[str] = set()
+
+    def _push(path: Path | None, raw: str, is_entry: bool) -> None:
+        key = str(path) if path is not None else "raw:" + raw
+        if key in seen_candidates:
+            return
+        seen_candidates.add(key)
+        candidates.append((path, raw, is_entry))
+
+    if str(spec.kind) == "program":
+        entry = _interpreter_entry_script(spec.program, spec.argv, cwd)
+        if entry is not None:
+            _push(entry, "", True)
     tokens: list[str] = [str(item) for item in spec.argv]
     if str(spec.kind) == "shell" and spec.shell_cmd:
         tokens.extend(_shell_tokens(str(spec.shell_cmd)))
-    facts: list[dict] = []
-    seen: set[str] = set()
     for text in tokens:
         raw = str(text or "").strip().strip("\"'")
         if not raw or len(raw) > 4096:
@@ -344,63 +508,85 @@ def _argument_file_facts(
         suffix = Path(raw).suffix.lower()
         if not _looks_like_path(raw, suffix):
             continue
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            if not cwd:
-                continue
-            candidate = Path(cwd) / candidate
-        try:
-            candidate = candidate.resolve()
-        except (OSError, ValueError):
+        _push(_operand_path(raw, cwd), raw, False)
+
+    complete = True
+    facts: list[dict] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    for candidate_path, raw, is_entry in candidates:
+        if candidate_path is None:
+            if is_entry:
+                complete = False
+                notes.append("入口脚本使用了无法在工作目录基准下定位的相对路径")
             continue
-        key = str(candidate)
+        key = str(candidate_path)
         if key in seen:
             continue
         seen.add(key)
+        if len(facts) >= _MAX_ARGUMENT_FACTS:
+            complete = False
+            notes.append(
+                "候选脚本文件超过采集上限 %d：剩余对象未覆盖" % _MAX_ARGUMENT_FACTS
+            )
+            break
+        suffix = Path(key).suffix.lower()
         entry: dict[str, Any] = {"path": key}
         try:
-            stat = candidate.stat()
+            stat = candidate_path.stat()
         except OSError:
-            if suffix in _SCRIPT_SUFFIXES:
+            if is_entry or suffix in _SCRIPT_SUFFIXES:
                 entry["exists"] = False
                 facts.append(entry)
             continue
-        if not candidate.is_file():
+        if not candidate_path.is_file():
+            if is_entry:
+                complete = False
+                notes.append("入口脚本不是普通文件：" + key)
             continue
-        if suffix not in _SCRIPT_SUFFIXES:
+        if not is_entry and suffix not in _SCRIPT_SUFFIXES:
             if include_content:
-                if not _has_script_shebang(candidate):
+                if not _has_script_shebang(candidate_path):
                     continue
             # 只做元数据发现时无法用 shebang 判断：保守纳入（不读取正文）。
-        if int(stat.st_size) > _ARGUMENT_IDENTITY_MAX_BYTES:
-            entry.update(
-                {
-                    "exists": True,
-                    "size": int(stat.st_size),
-                    "mtime_ns": int(getattr(stat, "st_mtime_ns", 0)),
-                    "identity": "too_large_to_hash",
-                }
-            )
+        size = int(stat.st_size)
+        base = {
+            "exists": True,
+            "size": size,
+            "mtime_ns": int(getattr(stat, "st_mtime_ns", 0)),
+        }
+        if include_content and size > _ARGUMENT_IDENTITY_MAX_BYTES:
+            entry.update(base)
+            entry["identity"] = "too_large_to_hash"
+            entry["sha256"] = None
+            complete = False
+            notes.append("脚本超过单文件摘要上限（未绑定内容）：" + key)
+            facts.append(entry)
+            continue
+        if total_bytes + size > _ARGUMENT_TOTAL_MAX_BYTES:
+            entry.update(base)
+            entry["identity"] = "budget_exceeded"
+            entry["sha256"] = None
+            complete = False
+            notes.append("参数脚本总量超过内容绑定预算（未覆盖剩余对象）：" + key)
+            facts.append(entry)
+            continue
+        entry.update(base)
+        if include_content:
+            total_bytes += size
+            entry["sha256"] = _program_sha256(key)
         else:
-            entry.update(
-                {
-                    "exists": True,
-                    "size": int(stat.st_size),
-                    "mtime_ns": int(getattr(stat, "st_mtime_ns", 0)),
-                    "sha256": _program_sha256(key) if include_content else None,
-                }
-            )
+            entry["sha256"] = None
         facts.append(entry)
-        if len(facts) >= _MAX_ARGUMENT_FACTS:
-            break
-    return facts
+    reason = "；".join(notes[:4])
+    return facts, complete, reason
 
 
 def content_read_targets(spec: LaunchSpec, *, computer: Any = None) -> list[dict]:
     """本次启动会读取正文/摘要的文件清单（**只做元数据发现**，不读取内容）。
 
     供适配层在真正读取程序/脚本内容之前核对最新读取权限（契约 §2.1/§3.C）：
-    程序本体（内容摘要）与按脚本文件识别的参数（摘要/shebang 探测）。
+    程序本体（内容摘要）与按真实启动语义/脚本启发式识别的参数（摘要/shebang 探测）。
     """
     targets: list[dict] = []
     seen: set[str] = set()
@@ -412,7 +598,10 @@ def content_read_targets(spec: LaunchSpec, *, computer: Any = None) -> list[dict
     if resolved:
         targets.append({"path": resolved, "kind": "program"})
         seen.add(resolved)
-    for item in _argument_file_facts(spec, include_content=False):
+    script_facts, _complete, _reason = _argument_file_facts(
+        spec, include_content=False
+    )
+    for item in script_facts:
         path = str(item.get("path") or "")
         if not path or path in seen:
             continue
@@ -432,6 +621,9 @@ def build_spec_facts(
 ) -> dict:
     """构造 spec 的「当前事实」：程序身份/argv/cwd/脚本内容摘要。"""
     script_source = spec.script_source or ""
+    argument_files, argument_complete, argument_reason = _argument_file_facts(
+        spec, include_content=include_content
+    )
     facts: dict[str, Any] = {
         "kind": str(spec.kind or ""),
         "argv": [str(item) for item in spec.argv],
@@ -444,9 +636,10 @@ def build_spec_facts(
         ),
         "script_name": spec.script_name,
         # argv/命令里作为脚本文件传入的参数也按内容参与摘要（批准后换脚本 → 失效）
-        "argument_files": _argument_file_facts(spec, include_content=include_content),
-        "argument_files_complete": True,
-        "argument_files_incomplete_reason": None,
+        "argument_files": argument_files,
+        # 采集有界但不静默：不完整必须显式标记（契约 §3.D2）。
+        "argument_files_complete": bool(argument_complete),
+        "argument_files_incomplete_reason": argument_reason or None,
     }
     if str(spec.kind) == "shell":
         # shell 的真实身份是解析后的 COMSPEC/sh；只把命令文本算进去不是「程序身份」。

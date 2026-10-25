@@ -641,6 +641,30 @@ class _CmdTool(Tool):
             default_reason="用户限制禁止读取程序/脚本内容：本次未读取正文、未执行",
         )
 
+    @staticmethod
+    def _content_binding_incomplete(execution: dict) -> ToolResult | None:
+        """参数脚本内容采集不完整时不得按完整方案执行（契约 §3.D2）。
+
+        不静默截断、不宣称完整、也不普遍拒绝正常任务：只有真的超过有界采集
+        上限/预算才拒绝，并明确要求缩小参数范围或拆分任务。
+        """
+        if bool(execution.get("argument_files_complete", True)):
+            return None
+        reason = str(
+            execution.get("argument_files_incomplete_reason")
+            or "参数脚本内容无法完整采集"
+        )
+        return ToolResult(
+            ok=False,
+            error=(
+                "参数脚本内容无法完整确认（"
+                + reason
+                + "）：本次未执行。请缩小参数范围或把任务拆成多步。"
+            ),
+            code="content_binding_incomplete",
+            category="conflict",
+            recoverable=True,
+        )
 
     def _limit_impacts(self, execution: dict, delete_intent, *, shell: bool) -> list[dict]:
         """契约 §2/§3：真实影响集合（execute/program + delete/path），供引擎限制匹配。"""
@@ -1324,6 +1348,9 @@ class RunProgramTool(_CmdTool):
         if read_denied is not None:
             return read_denied
         execution = self._execution_facts(spec, shell=False)
+        incomplete = self._content_binding_incomplete(execution)
+        if incomplete is not None:
+            return incomplete
         fixed_query = self._fixed_query(execution)
         delete_intent = self._delete_intent(execution)
         delete_binding = self._delete_binding(delete_intent)
@@ -1482,6 +1509,9 @@ class RunCmdTool(_CmdTool):
             timeout=timeout,
         )
         execution = self._execution_facts(spec, shell=True)
+        incomplete = self._content_binding_incomplete(execution)
+        if incomplete is not None:
+            return incomplete
         # shell=True 永远不是固定查询（无法证明无重定向/串联/嵌套）。
         delete_intent = self._delete_intent(execution)
         delete_binding = self._delete_binding(delete_intent)

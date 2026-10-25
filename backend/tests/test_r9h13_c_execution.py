@@ -440,7 +440,8 @@ async def test_d2_many_script_args_not_silently_omitted(
             "检测到脚本变化后不得执行任何脚本（marker %d 出现）" % index
         )
 
-    # 相邻控制组：18 个脚本都未变化时全部真实执行。
+    # 相邻控制组：18 个脚本都未变化时全部真实执行（先复位审查窗口内的改写）。
+    last.write_bytes(_batch_script_text(count, "OLD").encode("utf-8"))
     control = await tool.run(cmd=cmd, cwd=str(workspace), timeout=120)
     assert control.ok is True, ("未变化的多脚本命令必须能正常执行", control)
     for index in range(1, count + 1):
