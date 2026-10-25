@@ -123,23 +123,6 @@ export interface IntentViewListResponse {
   };
 }
 
-export interface WaitingView {
-  board_id?: string;
-  submission_id?: string;
-  question?: string;
-  missing_fields?: string[];
-  question_ids?: string[];
-  created_at?: string;
-  updated_at?: string;
-  [key: string]: unknown;
-}
-
-export interface WaitingResponse {
-  available: boolean;
-  waiting: WaitingView | WaitingView[] | null;
-  reason?: string;
-}
-
 export interface LedgerOperationView {
   operation_id?: string;
   intent_id?: string;

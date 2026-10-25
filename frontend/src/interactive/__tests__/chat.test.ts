@@ -1,56 +1,43 @@
 /**
- * 聊天输入 / 发送判定的纯函数守卫。
+ * 聊天输入的空白判定 / 规范化纯函数守卫（仍在生产代码里使用：
+ * stores/session.ts 用 isBlankText / normalizeSendText 判定空白与真正发出的文字）。
  *
- * 2026-10-26（合并后清理 · C2）：旧 ChatDock 已删除，本文件的「组件级（真实挂载 ChatDock）」
- * 一节随之删除 —— 输入区、Enter / 输入法语义、失败保留原文这些行为现在由
- * v2/InteractiveConversation + components/Composer.vue 承担，其组件级覆盖在
- * components/__tests__/Composer.test.ts、components/conversation/ 与 v2 的会话用例里。
- * 这里保留仍然被生产代码使用的纯函数判定（session.ts 用 isBlankText / normalizeSendText）。
+ * 2026-10-26（合并后清理 · C2 收尾）：旧 ChatDock 的文案与按键判定函数已删除，
+ * 对应的纯函数用例一并移除 —— 那些能力由 v2/InteractiveConversation + components/Composer
+ * 承担（Enter / Shift+Enter / 输入法选字的组件级用例在 components/__tests__/Composer.test.ts）。
+ * 负向断言（零宽字符不算内容、空白不能发、正文一个字都不改）保留在本文件。
  */
 import { describe, expect, it } from "vitest";
-import {
-  canSend,
-  chatDraftHintText,
-  chatScopeText,
-  chatStatusText,
-  isBlankText,
-  normalizeSendText,
-  olderMessagesText,
-  sendFailureText,
-  shouldSendOnKeydown,
-} from "../chat";
+import { isBlankText, normalizeSendText } from "../chat";
 
-describe("能不能发送（空白不发）", () => {
-  it("空串不发，并给出原因", () => {
-    const verdict = canSend("");
-    expect(verdict.ok).toBe(false);
-    expect(verdict.reason).toBe("还没有输入内容");
-    expect(canSend(null as unknown as string).ok).toBe(false);
-    expect(canSend(undefined as unknown as string).ok).toBe(false);
+describe("空白判定（空白不能发送）", () => {
+  it("空串 / null / undefined 都算空白", () => {
+    expect(isBlankText("")).toBe(true);
+    expect(isBlankText(null)).toBe(true);
+    expect(isBlankText(undefined)).toBe(true);
   });
 
   it("纯空格不发：半角 / 全角 / 制表 / 换行都算空白", () => {
     for (const blank of [" ", "   ", "\t", "\n", "\r\n", "\u3000", "\u3000\u3000", " \u3000 \t\n"]) {
-      expect(canSend(blank).ok, JSON.stringify(blank)).toBe(false);
       expect(isBlankText(blank), JSON.stringify(blank)).toBe(true);
     }
     // 不换行空格也是空白（复制网页文字时很常见）
-    expect(canSend("\u00A0\u00A0").ok).toBe(false);
+    expect(isBlankText("\u00A0\u00A0")).toBe(true);
   });
 
   it("看不见的零宽字符不算内容（否则会发出一条空消息）", () => {
-    expect(canSend("\u200B").ok).toBe(false);
-    expect(canSend("\u200B\u200C\u200D\uFEFF").ok).toBe(false);
-    expect(canSend("\u2060\u200B").ok).toBe(false);
+    expect(isBlankText("\u200B")).toBe(true);
+    expect(isBlankText("\u200B\u200C\u200D\uFEFF")).toBe(true);
+    expect(isBlankText("\u2060\u200B")).toBe(true);
   });
 
-  it("有真实内容就能发（前后空白不影响判断）", () => {
-    expect(canSend("你好").ok).toBe(true);
-    expect(canSend("  你好  ").ok).toBe(true);
-    expect(canSend("嗨 \u3000").ok).toBe(true);
-    expect(canSend("1").ok).toBe(true);
+  it("有真实内容就不是空白（前后空白不影响判断）", () => {
+    expect(isBlankText("你好")).toBe(false);
+    expect(isBlankText("  你好  ")).toBe(false);
+    expect(isBlankText("嗨 \u3000")).toBe(false);
+    expect(isBlankText("1")).toBe(false);
     // 只有 emoji 也算内容（不要用「有没有汉字」这类判断把用户的话挡掉）
-    expect(canSend("🙂").ok).toBe(true);
+    expect(isBlankText("🙂")).toBe(false);
   });
 });
 
@@ -71,86 +58,5 @@ describe("发出去的文字只有输入本身", () => {
     expect(normalizeSendText(text)).toBe(text.trim());
     expect(normalizeSendText(text)).not.toContain("board");
     expect(normalizeSendText(text)).not.toContain("卡片 id");
-  });
-});
-
-describe("输入法状态判定（中文选字时不发送）", () => {
-  it("Enter 发送", () => {
-    expect(shouldSendOnKeydown({ key: "Enter" })).toBe(true);
-  });
-
-  it("Shift+Enter 换行，不发送", () => {
-    expect(shouldSendOnKeydown({ key: "Enter", shiftKey: true })).toBe(false);
-  });
-
-  it("输入法正在选字时不发送：isComposing 为 true", () => {
-    expect(shouldSendOnKeydown({ key: "Enter", isComposing: true })).toBe(false);
-    // 组合中的 Shift+Enter 同样不发送
-    expect(shouldSendOnKeydown({ key: "Enter", isComposing: true, shiftKey: true })).toBe(false);
-  });
-
-  it("只给 keyCode 229 的输入法同样不发送（部分输入法只有这个信号）", () => {
-    expect(shouldSendOnKeydown({ key: "Enter", keyCode: 229 })).toBe(false);
-    expect(shouldSendOnKeydown({ key: "Process", keyCode: 229 })).toBe(false);
-  });
-
-  it("其它按键不发送，交给输入框自己处理（字母、Esc、Tab、方向键、空的 keyCode）", () => {
-    for (const key of ["a", "Escape", "Tab", "ArrowUp", "Enter"].slice(0, 4)) {
-      expect(shouldSendOnKeydown({ key }), key).toBe(false);
-    }
-    expect(shouldSendOnKeydown({ key: "Enter", keyCode: 13 })).toBe(true);
-    expect(shouldSendOnKeydown(null)).toBe(false);
-    expect(shouldSendOnKeydown(undefined)).toBe(false);
-  });
-});
-
-describe("失败文案（保留输入并给真实原因）", () => {
-  it("带原因时原样说出原因，并写明输入已保留", () => {
-    const text = sendFailureText("后端没有响应");
-    expect(text).toContain("发送失败");
-    expect(text).toContain("后端没有响应");
-    expect(text).toContain("输入已保留");
-    expect(text).toContain("可以重试");
-  });
-
-  it("没有原因时也说清楚，不假装成功", () => {
-    const text = sendFailureText(null);
-    expect(text).toContain("原因未知");
-    expect(text).toContain("输入已保留");
-    expect(sendFailureText("")).toBe(text);
-    expect(sendFailureText("   ")).toBe(text);
-  });
-
-  it("原因里的多余空白被规整，但原因本身不被改写", () => {
-    expect(sendFailureText("  网络中断  ")).toContain("网络中断");
-    expect(sendFailureText("401 未授权")).toContain("401 未授权");
-  });
-});
-
-describe("面板文案（如实说明能力边界）", () => {
-  it("范围说明写明只发文字、不带板面、不调用提交接口，并承认尚未接入", () => {
-    const text = chatScopeText();
-    expect(text).toContain("只发送输入的文字");
-    expect(text).toContain("不带板面");
-    expect(text).toContain("不会调用板面提交接口");
-    expect(text).toContain("尚未接入");
-  });
-
-  it("状态说明区分「正在回答」与「排队中」，空闲时给明确文字", () => {
-    expect(chatStatusText({ turnRunning: true })).toContain("正在回答");
-    expect(chatStatusText({ turnRunning: true, queuedCount: 2 })).toContain("2 条排队中");
-    expect(chatStatusText({ turnRunning: false, queuedCount: 1 })).toContain("1 条消息排队中");
-    expect(chatStatusText({ turnRunning: false })).toContain("空闲");
-  });
-
-  it("更早的消息被折叠时说清在哪里，不让人以为丢了", () => {
-    expect(olderMessagesText(0)).toBe("");
-    expect(olderMessagesText(-3)).toBe("");
-    expect(olderMessagesText(12)).toContain("12");
-    expect(olderMessagesText(12)).toContain("不会丢");
-  });
-
-  it("草稿说明写明收起面板不清草稿", () => {
-    expect(chatDraftHintText()).toContain("不会清掉草稿");
   });
 });
