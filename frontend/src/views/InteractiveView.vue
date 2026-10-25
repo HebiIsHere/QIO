@@ -13,7 +13,6 @@ import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
 import ConversationModeSwitch from "../components/conversation/ConversationModeSwitch.vue";
-import PermissionModeBadge from "../components/security/PermissionModeBadge.vue";
 
 import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
 import {
@@ -346,10 +345,6 @@ const boardSize = computed(() => {
               <span v-if="boardSize" class="im-count" data-im="board-counts">{{ boardSize }}</span>
             </div>
             <div class="im-hud-right">
-              <!-- F01：权限模式常驻可见（与对话页徽标同一个 store 与同一个组件）。
-                   放在板面 HUD 的状态组里：收起/展开对话都留在原位，
-                   不压底部工具栏与输入区，也不改模式（点一下进设置由用户切换）。 -->
-              <PermissionModeBadge />
               <span
                 v-if="store.submissionStage === 'idle'"
                 class="im-note"

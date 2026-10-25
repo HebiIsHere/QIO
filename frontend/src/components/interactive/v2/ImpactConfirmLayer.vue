@@ -505,9 +505,13 @@ onBeforeUnmount(() => {
 
       <!-- 部分完成 / 剩余项说明：框还开着时它不会被结果面板遮住 -->
       <p v-if="notice" class="ic-notice" role="status" data-im="impact-revert-notice">{{ notice }}</p>
-      <!-- 影响确认 → 剩余撤回切换时，仍要让用户看到上一件事的真实结果 -->
+      <!--
+        影响确认 → 剩余撤回切换时，仍要让用户看到上一件事的真实结果。
+        撤回自己的「部分完成」结果已由上面的 notice 说明（服务端逐项摘要），
+        这里不再重复一条同义句（F05：同一信息不要重复出现）。
+      -->
       <p
-        v-if="open && outcome && mode === 'revert'"
+        v-if="open && outcome && mode === 'revert' && outcome.kind !== 'revert_partial' && outcome.kind !== 'revert_done'"
         class="ic-notice"
         role="status"
         data-im="impact-confirm-outcome-inline"

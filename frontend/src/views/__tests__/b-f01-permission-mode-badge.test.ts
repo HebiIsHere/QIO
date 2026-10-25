@@ -5,7 +5,8 @@
  * - 互动页 v2 布局里必须能看到**当前权限模式**，对话收起 / 展开都留在原位；
  * - 显示的是服务端恢复的真实模式：读取中不冒充默认值，读取失败如实说未知并可进入设置；
  * - 徽标与对话页共用同一个 security store（唯一状态源），不建立第二份模式状态；
- * - 徽标不压输入区 / 工具栏（结构上位于板面 HUD 的状态组，真实遮挡由 480x600 界面核查证明）。
+ * - 位置：互动页全局栏挂载点 #qio-interactive-chrome-extra（与对话页话题栏同一语义），
+ *   不在板面舞台 / 输入区 / 工具栏里 —— 因此不会覆盖板面卡片（真实界面核查见证据）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -23,12 +24,45 @@ vi.mock("../../services/security", async (importOriginal) => {
   };
 });
 
-import { flushPromises } from "@vue/test-utils";
-import { mountInteractivePage, resetServices, settlePage, stubServices, type PageHarness } from "./acceptance-i2v2-page-harness";
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
+import InteractiveView from "../../views/InteractiveView.vue";
+import { resetServices, settlePage, stubServices } from "./acceptance-i2v2-page-harness";
 import { useSecurityStore } from "../../stores/security";
 import { useUiStore } from "../../stores/ui";
+import { useInteractiveStore } from "../../stores/interactive";
 
-let harness: PageHarness | null = null;
+const STUBS = {
+  BoardCanvas: { template: '<div data-stub="canvas"><slot name="overlay" :scale="1" :width="1200" :height="800" /></div>' },
+  BoardToolbar: { template: '<div data-stub="toolbar" />' },
+  ConversationModeSwitch: { template: '<div data-stub="mode-switch" />' },
+  MessageStream: { template: '<div data-stub="stream" />' },
+  Composer: { template: '<div data-stub="composer" />' },
+} as const;
+
+let wrapper: VueWrapper | null = null;
+
+function mountPage(): VueWrapper {
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  wrapper = mount(InteractiveView, {
+    attachTo: document.body,
+    global: { plugins: [pinia], stubs: STUBS as never },
+  }) as unknown as VueWrapper;
+  return wrapper;
+}
+
+/** 徽标在 Teleport 目标里（页面全局栏），不在组件 wrapper 的根 DOM 里。 */
+function badge(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-im="permission-mode-badge"]');
+}
+
+function badgeVisible(): boolean {
+  const el = badge();
+  if (!el) return false;
+  const style = getComputedStyle(el);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
 
 beforeEach(() => {
   resetServices();
@@ -40,95 +74,91 @@ beforeEach(() => {
     legacyValue: "plan",
     compat: false,
   });
+  document.body.innerHTML = '<div id="qio-interactive-chrome-extra"></div>';
 });
 
 afterEach(() => {
   try {
-    harness?.wrapper.unmount();
+    wrapper?.unmount();
   } catch {
     /* 已经卸载 */
   }
-  harness = null;
+  wrapper = null;
   resetServices();
   document.body.innerHTML = "";
 });
 
-function badgeOf() {
-  const wrapper = harness!.wrapper;
-  return wrapper.get('[data-im="permission-mode-badge"]');
-}
-
 describe("互动页权限模式常驻可见", () => {
-  it("互动页确实挂了权限模式徽标：读取中如实显示，不冒充默认模式", async () => {
+  it("互动页全局栏里挂了权限模式徽标：读取中如实显示，不冒充默认模式", async () => {
     stubServices();
-    harness = mountInteractivePage();
-    await settlePage(harness.wrapper);
-    const badge = badgeOf();
-    expect(badge.attributes("data-loaded")).toBe("0");
-    expect(badge.text()).toContain("读取中");
-    // 不是冒充「受限模式」（默认值）
-    expect(badge.text()).not.toContain("受限模式");
+    mountPage();
+    await settlePage(wrapper!);
+    const el = badge();
+    expect(el, "互动页没有渲染权限模式徽标").not.toBeNull();
+    expect(el!.closest("[data-iw-chrome-tools]"), "徽标不在互动页全局栏挂载点里").not.toBeNull();
+    expect(el!.dataset.loaded).toBe("0");
+    expect(el!.textContent).toContain("读取中");
+    expect(el!.textContent).not.toContain("受限模式");
   });
 
   it("读取到真实模式后显示服务端模式名；对话收起 / 展开都在，且不建立第二份状态", async () => {
     stubServices();
-    harness = mountInteractivePage();
-    await settlePage(harness.wrapper);
+    mountPage();
+    await settlePage(wrapper!);
     const security = useSecurityStore();
     await security.load();
     await flushPromises();
 
-    let badge = badgeOf();
-    expect(badge.attributes("data-loaded")).toBe("1");
-    expect(badge.attributes("data-mode")).toBe("read_only");
-    expect(badge.text()).toBe("只读模式");
+    expect(badge()!.dataset.loaded).toBe("1");
+    expect(badge()!.dataset.mode).toBe("read_only");
+    expect(badge()!.textContent).toBe("只读模式");
+    expect(badgeVisible()).toBe(true);
 
-    // 对话展开（store.chatOpen 是互动对话的真实开合状态）
-    harness.store.chatOpen = true;
-    await settlePage(harness.wrapper);
-    badge = badgeOf();
-    expect(badge.text()).toBe("只读模式");
-    expect(badge.isVisible()).toBe(true);
+    // 展开互动对话（store.chatOpen 是真实开合状态）
+    const store = useInteractiveStore();
+    store.chatOpen = true;
+    await settlePage(wrapper!);
+    expect(badge()!.textContent).toBe("只读模式");
+    expect(badgeVisible()).toBe(true);
 
-    // 收起
-    harness.store.chatOpen = false;
-    await settlePage(harness.wrapper);
-    expect(badgeOf().text()).toBe("只读模式");
+    store.chatOpen = false;
+    await settlePage(wrapper!);
+    expect(badge()!.textContent).toBe("只读模式");
 
     // 唯一状态源：store 变化直接反映到页面徽标（没有第二份模式状态）
     security.applyMode({ mode: "unrestricted", label: "完全无限制模式", legacyValue: "bypass" });
     await flushPromises();
-    expect(badgeOf().text()).toBe("完全无限制模式");
-    expect(badgeOf().attributes("data-mode")).toBe("unrestricted");
+    expect(badge()!.textContent).toBe("完全无限制模式");
+    expect(badge()!.dataset.mode).toBe("unrestricted");
   });
 
   it("读取失败如实显示未知 + 原因入口（点击进入设置），不显示成已读取的默认模式", async () => {
     mocks.getSecurityMode.mockRejectedValue(new Error("后端不可达"));
     stubServices();
-    harness = mountInteractivePage();
-    await settlePage(harness.wrapper);
+    mountPage();
+    await settlePage(wrapper!);
     const security = useSecurityStore();
     await security.load();
     await flushPromises();
 
-    const badge = badgeOf();
-    expect(badge.attributes("data-loaded")).toBe("0");
-    expect(badge.text()).toBe("权限模式未知");
-    expect(badge.attributes("title")).toContain("后端不可达");
+    const el = badge();
+    expect(el!.dataset.loaded).toBe("0");
+    expect(el!.textContent).toBe("权限模式未知");
+    expect(el!.getAttribute("title")).toContain("后端不可达");
 
-    await badge.trigger("click");
+    el!.click();
+    await flushPromises();
     expect(useUiStore().settingsSection).toBe("tools");
   });
 
-  it("权限模式徽标位于板面 HUD 状态组，不在输入区 / 工具栏里面（结构上不压输入区）", async () => {
+  it("徽标位于全局栏，不在板面舞台 / 输入区 / 工具栏里（不会覆盖卡片与输入区）", async () => {
     stubServices();
-    harness = mountInteractivePage();
-    await settlePage(harness.wrapper);
-    const wrapper = harness.wrapper;
-    const hud = wrapper.get('[data-im="interactive-stage"] .im-board-hud .im-hud-right');
-    expect(hud.find('[data-im="permission-mode-badge"]').exists()).toBe(true);
-    // 输入区与工具栏都只是替身/固定结构，里面没有第二枚徽标
-    expect(wrapper.findAll('[data-stub="composer"] [data-im="permission-mode-badge"]')).toHaveLength(0);
-    expect(wrapper.findAll('[data-stub="toolbar"] [data-im="permission-mode-badge"]')).toHaveLength(0);
+    mountPage();
+    await settlePage(wrapper!);
+    const el = badge()!;
+    expect(el.closest('[data-im="interactive-stage"]')).toBeNull();
+    expect(el.closest('[data-stub="composer"]')).toBeNull();
+    expect(el.closest('[data-stub="toolbar"]')).toBeNull();
+    expect(el.closest("[data-iw-chrome-tools]")).not.toBeNull();
   });
 });

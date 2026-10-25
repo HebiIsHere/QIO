@@ -207,6 +207,10 @@ describe("剩余撤回：明确 decisionIds / 关闭不撤回 / 失败重试 / �
     expect(w.find('[data-im="impact-confirm"]').exists()).toBe(true);
     expect(w.get('[data-im="impact-revert-notice"]').text()).toContain("已按你的决定撤回 1 项");
     expect(w.get('[data-im="impact-revert-notice"]').text()).toContain("还有 1 项需要你决定");
+    // F05：同一条部分完成信息不在框里重复出现第二次（标题式 outcome 不再叠进来）
+    const dialogText = w.get('[data-im="impact-confirm"]').text();
+    expect(dialogText).not.toContain("还有剩余撤回项等你决定");
+    expect((dialogText.match(/还有 1 项需要你决定/g) ?? []).length).toBe(1);
 
     await w.get('[data-im="impact-revert-continue"]').trigger("click");
     await flushPromises();
