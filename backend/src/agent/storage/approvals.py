@@ -455,6 +455,68 @@ class ApprovalStore:
             "审批单绑定的操作内容在提交后被改动；确认已重置，请重新确认"
         )
 
+    @staticmethod
+    def _stored_required_confirmations(row: Any) -> int:
+        operation = _loads(row["operation"], {})
+        try:
+            return max(1, int(operation.get("confirmations_required") or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def _correct_required_confirmations(
+        self, approval_id: str, row: Any, derived: int | None
+    ) -> int:
+        """把审批单的确认次数纠正为**后端推导值**（只升不降），并重算操作摘要。
+
+        历史/错误行可能把内部维护写成 1 次；这里不信任存储值，按真实影响对象推导
+        出的最低次数校正，写入 audit（确认阶段进度保持不变，不能伪造已完成）。
+        """
+        stored = self._stored_required_confirmations(row)
+        try:
+            required = max(stored, int(derived or 1), 1)
+        except (TypeError, ValueError):
+            required = stored
+        if required <= stored:
+            return stored
+        raw = _loads(row["operation"], {})
+        if not isinstance(raw, dict) or not raw:
+            return stored
+        raw["confirmations_required"] = required
+        try:
+            candidate = PendingOperation.from_dict(raw)
+            digest = operation_digest(candidate)
+        except Exception:  # noqa: BLE001 - 无法重算摘要则不纠正（保守）
+            return stored
+        fingerprint = dict(_loads(row["fingerprint"], {}) or {})
+        fingerprint["operation_digest"] = digest
+        with _write_transaction(self.conn):
+            current = self.get_raw(approval_id)
+            if current is None:
+                return stored
+            cur = self.conn.execute(
+                "UPDATE pending_approvals SET operation = ?, fingerprint = ?"
+                " WHERE approval_id = ? AND state = 'waiting' AND revisions = ?"
+                " AND confirmed_stage = ?",
+                (
+                    _json(raw),
+                    _json(fingerprint),
+                    str(approval_id),
+                    int(row["revisions"] or 0),
+                    int(row["confirmed_stage"] or 0),
+                ),
+            )
+            if int(cur.rowcount or 0) != 1:
+                raise ApprovalConflict(
+                    "审批确认次数校正时状态已变化，请刷新后再操作"
+                )
+            self._audit(
+                approval_id,
+                "confirmations_corrected",
+                {"from": stored, "to": required, "source": "backend_effect"},
+                strict=True,
+            )
+        return required
+
     def decide(
         self,
         approval_id: str,
@@ -463,6 +525,7 @@ class ApprovalStore:
         expected_revision: int | None = None,
         mode_at_approval: str | None = None,
         actor: str = "user",
+        required_confirmations: int | None = None,
     ) -> dict:
         row = self.get_raw(approval_id)
         if row is None:
@@ -502,8 +565,9 @@ class ApprovalStore:
         if state != "waiting":
             raise ApprovalConflict("这条审批当前状态是「" + state + "」，不能重复批准")
         self._ensure_waiting_binding(row, approval_id)
-        operation = _loads(row["operation"], {})
-        required = int(operation.get("confirmations_required") or 1)
+        required = self._correct_required_confirmations(
+            approval_id, row, required_confirmations
+        )
         confirmed = int(row["confirmed_stage"] or 0)
         if required > 1 and confirmed < required:
             raise ApprovalConfirmRequired(
@@ -533,6 +597,7 @@ class ApprovalStore:
         expected_revision: int | None = None,
         mode_at_approval: str | None = None,
         actor: str = "user",
+        required_confirmations: int | None = None,
     ) -> dict:
         row = self.get_raw(approval_id)
         if row is None:
@@ -542,8 +607,10 @@ class ApprovalStore:
             raise ApprovalConflict("这条审批当前状态是「" + state + "」，不能继续确认")
         self._ensure_waiting_binding(row, approval_id)
         row = self.get_raw(approval_id) or row
-        operation = _loads(row["operation"], {})
-        required = int(operation.get("confirmations_required") or 1)
+        # §8.4：确认次数由后端按真实影响对象校正（历史行可能只写了 1 次）。
+        required = self._correct_required_confirmations(
+            approval_id, row, required_confirmations
+        )
         if required <= 1:
             raise ApprovalConflict("这条审批不需要分阶段确认，请使用「允许/拒绝」")
         if expected_revision is not None and int(row["revisions"] or 0) != int(expected_revision):

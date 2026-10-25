@@ -1,0 +1,6 @@
+﻿# R9-H13 D 修复后证据（r9h13/d；与基线同一测试文件）
+# 命令: cd backend; .\.venv\Scripts\python.exe -m pytest tests/test_r9h13_d_approval.py -p no:cacheprovider --tb=line
+# 结果: 21 passed
+.....................                                                    [100%]
+21 passed in 9.21s
+

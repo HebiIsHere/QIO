@@ -333,6 +333,18 @@ async def test_write_back_without_read_ban_is_approved_then_written_once(
             assert reads_before_approval["service"] >= 1, "获准读取后应读取一次覆盖前内容"
             row = _row(security, approval_id)
             assert _require_confirmations(row) == 1
+            # C2：写回操作事实必须包含必要读取影响（写批准 ≠ 读批准）。
+            effect = dict((row.get("operation_detail") or {}).get("effect") or {})
+            limit_impacts = list((effect.get("detail") or {}).get("limit_impacts") or [])
+            operation_names = {
+                str(item.get("operation"))
+                for item in limit_impacts
+                if isinstance(item, dict)
+            }
+            assert "write" in operation_names and "read" in operation_names, (
+                "写回必须先读取覆盖前内容：操作事实必须携带读取影响，"
+                "读禁止才能阻止写回"
+            )
             await _approve(security, approval_id)
             finished = await _execute(security, approval_id)
     assert finished["state"] == "completed", finished
@@ -677,7 +689,11 @@ async def test_historical_single_confirmation_row_cannot_act_as_three(tmp_path, 
         label="内部日志维护",
         payload={"path": str(log), "content": new_content},
         effect=security_gate.effect_to_dict(effect),
-        fingerprint={"path": str(log), "content_sha256": digests},
+        fingerprint={
+            "path": str(log),
+            "content_sha256": digests,
+            "identity": security_gate.file_identity(str(log)),
+        },
         confirmations_required=1,  # 历史错误行：调用方/旧存储写成了 1
         source="tool",
         mode_at_request="restricted",
@@ -933,3 +949,52 @@ async def test_approved_program_mode_change_uses_current_rules(tmp_path, db_conn
         finished = await _execute(security2, approval_id)
     assert _was_invalidated(finished), finished
     assert not marker2.exists(), "只读模式下不得启动程序"
+
+
+async def test_internal_recovery_does_not_treat_partial_confirmations_as_done(
+    tmp_path, db_conn
+):
+    """§8.3/§8.4：重启恢复不能让"部分确认"的内部维护变成可执行/已完成。"""
+    internal_dir, log = _internal_target(tmp_path)
+    security = _wire_env(tmp_path, db_conn, mode="restricted", protected=[internal_dir])
+    att = _write_source(security.service, log, "旧日志")
+    async with _bound_requirement(security) as (_requirement, _binding):
+        pending = await security.service.write_back_source(
+            att.id, "新日志".encode("utf-8"), gateway=security.engine
+        )
+        approval_id = _approval_id(pending)
+        first = await security.approvals.confirm(approval_id, 1)
+        assert first["state"] == "waiting"
+        # 真实重启恢复入口：只发布/恢复状态，不能把 1/3 当成完成。
+        report = await security.approvals.recover()
+        assert isinstance(report, dict)
+        assert log.read_text(encoding="utf-8") == "旧日志"
+        row = _row(security, approval_id)
+        assert row["state"] == "waiting"
+        assert int(row["confirmed_stage"]) == 1
+        with pytest.raises(Exception):
+            await _approve(security, approval_id)
+        # 补足到 3 次后才能执行（不增加第四次）。
+        await security.approvals.confirm(approval_id, 2)
+        await security.approvals.confirm(approval_id, 3)
+        finished = await _execute(security, approval_id)
+    assert finished["state"] == "completed", finished
+    assert log.read_text(encoding="utf-8") == "新日志"
+
+
+async def test_mode_relaxed_content_change_still_invalidates_old_plan(tmp_path, db_conn):
+    """§12：放宽到 unrestricted 后，内容真实变化仍使旧批准失效（不得沿用旧结论）。"""
+    security = _wire_env(tmp_path, db_conn, mode="restricted")
+    source = tmp_path / "workspace" / "报告.txt"
+    att = _write_source(security.service, source, "旧内容")
+    async with _bound_requirement(security) as (_requirement, _binding):
+        pending = await security.service.write_back_source(
+            att.id, "审批时的新内容".encode("utf-8"), gateway=security.engine
+        )
+        approval_id = _approval_id(pending)
+        await _approve(security, approval_id)
+        security.store.set("computer.permission_mode", "unrestricted")
+        source.write_text("放宽后外部改掉的内容", encoding="utf-8")
+        finished = await _execute(security, approval_id)
+    assert _was_invalidated(finished), finished
+    assert source.read_text(encoding="utf-8") == "放宽后外部改掉的内容"

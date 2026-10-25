@@ -269,11 +269,48 @@ class ExecutionContext:
             return str(view.reason or "用户限制禁止这次操作；本次没有执行")
         return None
 
+    def minimum_confirmations(self, effect: Any = None) -> int:
+        """后端按**真实影响对象**给出的最低确认次数（R9-H13 §8.1）。
+
+        绝不信任 `operation.confirmations_required`（历史行可能被错误写成 1）：
+        能用引擎时必须用引擎按 effect 推导的结果；引擎不可用时保留该存储值作为兼容
+        回退（执行器另有指纹内部事实兜底）。
+        """
+        try:
+            stored = max(1, int(self.operation.confirmations_required or 1))
+        except (TypeError, ValueError):
+            stored = 1
+        engine = self.engine
+        if engine is None or not callable(
+            getattr(engine, "required_confirmations", None)
+        ):
+            return stored
+        target = effect
+        if target is None:
+            try:
+                from agent.tools import security_gate
+
+                target = security_gate.effect_from_dict(
+                    dict(self.operation.effect or {})
+                )
+            except Exception:  # noqa: BLE001 - 无法还原 effect 时用存储值兜底
+                target = None
+        if target is None:
+            return stored
+        try:
+            derived = int(engine.required_confirmations(target))
+        except Exception:  # noqa: BLE001 - 判定失败不能降级成一次
+            return max(stored, 3)
+        return max(stored, derived)
+
     async def authorize_started(self, effect=None, *, common_only: bool = False) -> tuple[bool, str]:
         """真实执行前重核对：当前模式 + 绑定要求 + 审批/确认是否仍允许这次操作。
 
         返回 (是否允许, 中文原因)。批准后若模式变化、要求被修正/撤回、授权/审批失效，
         不得执行。没有绑定具体用户要求的审批单不能直接执行（需要重新判断）。
+
+        §12：模式交给**当前规则**（引擎判定）核对，不再仅因模式字符串变化整体失效。
+        §8：确认次数由后端按真实影响对象推导；批量共同条件包含"确认基础"。
         """
         self.limit_decision_code = ""
         self.limit_object_decisions = ()
@@ -297,22 +334,39 @@ class ExecutionContext:
                 False,
                 "这项操作没有绑定具体用户要求，不能直接执行（需要重新判断，不是继续执行）",
             )
-        # 模式是整批共同条件：批量 common_only 先核对；单次审批仍由引擎
-        # recheck_approved 按模式给出精确拒绝原因（既有契约）。
-        if common_only and self.mode_at_approval:
+        effective_effect = effect
+        if effective_effect is None:
             try:
-                current_mode = str(self.current_mode() or "")
-            except Exception:  # noqa: BLE001 - 读不到模式按不能执行
-                return False, "执行前无法确认当前权限模式，本次没有执行"
-            if current_mode and current_mode != str(self.mode_at_approval):
-                return (
-                    False,
-                    "权限模式已从审批时的 "
-                    + str(self.mode_at_approval)
-                    + " 变为 "
-                    + current_mode
-                    + "；旧审批不能继续执行",
+                from agent.tools import security_gate
+
+                effective_effect = security_gate.effect_from_dict(
+                    dict(self.operation.effect or {})
                 )
+            except Exception:  # noqa: BLE001
+                effective_effect = None
+        required_confirmations = self.minimum_confirmations(effective_effect)
+        # 确认基础是整批共同条件：内部维护在整批开始前就要求真实完成全部确认。
+        if common_only and required_confirmations > 1:
+            actual_stage = int(self.confirmed_stage or 0)
+            if actual_stage < required_confirmations:
+                reason = (
+                    "目标是 QIO 内部运行数据：需要连续 "
+                    + str(required_confirmations)
+                    + " 次确认（当前 "
+                    + str(actual_stage)
+                    + " 次），本次整批没有执行"
+                )
+                self.authorization_basis = {
+                    "approval_id": str(self.approval_id or ""),
+                    "operation_kind": str(self.operation.kind or ""),
+                    "requirement_id": self.operation.requirement_id,
+                    "requirement_version": self.operation.requirement_version,
+                    "mode": self.current_mode(),
+                    "confirmed_stage": actual_stage,
+                    "confirmations_required": required_confirmations,
+                    "kind": "internal_confirmations_missing",
+                }
+                return False, reason
         # R9-H4 §5/§10.1：绑定要求在该时刻必须仍 active 且版本一致。若已被撤回/修正/
         # 替换，不能因为引擎「没有可对照要求」而落到更宽松的分支（尤其 unrestricted）。
         resolved_requirement: Any = None
@@ -351,7 +405,7 @@ class ExecutionContext:
                     "requirement_version": self.operation.requirement_version,
                     "mode": self.current_mode(),
                     "confirmed_stage": int(self.confirmed_stage or 0),
-                    "confirmations_required": int(self.operation.confirmations_required or 1),
+                    "confirmations_required": required_confirmations,
                     "kind": "batch_common_precheck",
                 }
                 return True, ""
@@ -369,9 +423,7 @@ class ExecutionContext:
                     "requirement_version": self.operation.requirement_version,
                     "mode": self.current_mode(),
                     "confirmed_stage": int(self.confirmed_stage or 0),
-                    "confirmations_required": int(
-                        self.operation.confirmations_required or 1
-                    ),
+                    "confirmations_required": required_confirmations,
                     "kind": "limit_assessment_denied",
                     "decision_code": self.limit_decision_code or None,
                     "object_decisions": [
@@ -388,9 +440,7 @@ class ExecutionContext:
                     effective_effect,
                     context=AuthContext(requirement=binding, origin="background"),
                     approval_kind=str(self.operation.kind or ""),
-                    confirmations_required=int(
-                        self.operation.confirmations_required or 1
-                    ),
+                    confirmations_required=required_confirmations,
                     confirmed_stage=int(self.confirmed_stage or 0),
                 )
             else:  # 兼容旧引擎：只做模式判定
@@ -411,7 +461,7 @@ class ExecutionContext:
             "requirement_version": self.operation.requirement_version,
             "mode": self.current_mode(),
             "confirmed_stage": int(self.confirmed_stage or 0),
-            "confirmations_required": int(self.operation.confirmations_required or 1),
+            "confirmations_required": required_confirmations,
             "reason": reason,
             "decision_code": decision_code or None,
             "object_decisions": list(

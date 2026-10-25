@@ -261,6 +261,88 @@ def _recheck_service(gateway: object) -> object | None:
     return None
 
 
+def _normalized_path(value: object) -> str:
+    """平台规范化路径，仅用于比较（不得改写真实执行目标）。"""
+    text = str(value or "")
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(text))
+    except (OSError, ValueError):  # pragma: no cover - 平台异常路径
+        return text
+
+
+def _required_confirmations_for_effect(gateway: object, effect: object) -> int:
+    """后端按**真实影响对象**给出的最低确认次数（不信任调用方填写的次数）。
+
+    网关没有该能力（旧装配/测试替身）时按 1；引擎判定失败时按内部维护保守处理，
+    绝不静默降级成"只需一次"。
+    """
+    if gateway is None:
+        return 1
+    getter = getattr(gateway, "required_confirmations", None)
+    if not callable(getter):
+        return 1
+    try:
+        return max(1, int(getter(effect)))
+    except Exception:  # noqa: BLE001 - 影响判定失败不能降级
+        try:
+            from agent.security import internal_data
+
+            return int(internal_data.CONFIRMATIONS_REQUIRED)
+        except Exception:  # noqa: BLE001
+            return 3
+
+
+def _read_permission_error(
+    gateway: object, *, path: object, identity: str | None = None
+) -> str | None:
+    """读取正文/摘要前的读取权限核对（C2；只消费引擎结构化判定，不读正文）。
+
+    * 有明确读取禁止/无法确认限制 → 返回原因，调用方不得读取；
+    * 网关不支持该判定接口（旧装配/测试替身）→ None（保持既有回退语义）。
+    """
+    if gateway is None:
+        return None
+    try:
+        from agent.tools import security_gate
+
+        effect = attachment_access.read_effect(
+            "attachment.write_back",
+            path=path,
+            identity=identity,
+            purpose="写回前读取覆盖前内容",
+        )
+        blocked = security_gate.limit_conflict_result(
+            gateway,
+            effect,
+            default_reason="用户限制禁止读取这个附件源文件",
+        )
+    except Exception:  # noqa: BLE001 - 核对失败不能读取
+        return "读取权限核对失败（无法确认最新限制）：没有读取源文件"
+    if blocked is None:
+        return None
+    return str(getattr(blocked, "error", "") or "用户限制禁止读取这个附件源文件")
+
+
+def _internal_root_for(gateway: object, path: object) -> str | None:
+    """该路径当前是否属于内部运行数据；是则返回注册根（只读事实，不猜名称）。"""
+    if gateway is None:
+        return None
+    try:
+        from agent.tools import security_gate
+
+        matched = security_gate.match_internal_data(gateway, path)
+    except Exception:  # noqa: BLE001 - 识别失败保持 None，由确认次数/执行前核对兜底
+        return None
+    if matched is None:
+        return None
+    try:
+        return str(matched)
+    except Exception:  # noqa: BLE001
+        return str(path)
+
+
 async def _recheck_item(
     gateway: object,
     effect: object,
@@ -269,7 +351,11 @@ async def _recheck_item(
     expected_identity: str | None = None,
     expected_sha256: str | None = None,
 ) -> dict:
-    """执行前重核对（契约 §7）；优先 Lead 的 RecheckService，未合入时同语义回退。"""
+    """执行前重核对（契约 §7）；优先 Lead 的 RecheckService，未合入时同语义回退。
+
+    服务/回退通过后仍用**本地真实事实**核对对象身份与读取前内容：身份、读取前内容、
+    拟写入内容分别核对（E2），不把"新内容摘要"或"身份字符串"当作内容摘要比较。
+    """
     binding = (getattr(effect, "detail", {}) or {}).get(REQUIREMENT_BINDING_KEY)
     service = _recheck_service(gateway)
     if service is not None:
@@ -294,63 +380,68 @@ async def _recheck_item(
             }
         ok = bool(getattr(result, "ok", False))
         verdict = str(getattr(result, "verdict", "") or "")
-        return {
-            "ok": ok,
-            "code": str(getattr(result, "code", "") or ("ok" if ok else "recheck_failed")),
-            "reason": str(getattr(result, "reason", "") or ""),
-            "needs_user_decision": verdict == "approve",
-        }
-    # 回退：用当前模式重新走一次授权 + 校验要求仍有效 + 对象身份/内容摘要未变
-    if gateway is not None and callable(getattr(gateway, "authorize", None)):
-        decision = await _authorize_item(gateway, effect)
-        if decision.get("verdict") == "deny":
+        if not ok:
             return {
                 "ok": False,
-                "code": "recheck_denied",
-                "reason": decision.get("reason") or "当前授权已失效：未执行",
-                "needs_user_decision": False,
+                "code": str(
+                    getattr(result, "code", "") or "recheck_failed"
+                ),
+                "reason": str(getattr(result, "reason", "") or ""),
+                "needs_user_decision": verdict == "approve",
             }
-        if decision.get("verdict") == "approve":
-            return {
-                "ok": False,
-                "code": "recheck_needs_user_decision",
-                "reason": decision.get("reason") or "当前状态需要用户确认后才能继续",
-                "needs_user_decision": True,
-            }
-    if binding:
-        ledger = getattr(gateway, "requirements", None) if gateway is not None else None
-        validate = getattr(ledger, "validate_binding", None)
-        if callable(validate):
-            try:
-                try:
-                    from agent.security.requirements import RequirementBinding  # type: ignore
-
-                    target_binding: object = RequirementBinding(
-                        requirement_id=str(binding["requirement_id"]),
-                        version=int(binding["version"]),
-                    )
-                except Exception:  # noqa: BLE001
-                    target_binding = binding
-                valid = bool(validate(target_binding))
-            except TypeError:
-                try:
-                    valid = bool(
-                        validate(
-                            requirement_id=binding["requirement_id"],
-                            version=binding["version"],
-                        )
-                    )
-                except Exception:  # noqa: BLE001
-                    valid = False
-            except Exception:  # noqa: BLE001
-                valid = False
-            if not valid:
+    else:
+        # 回退：用当前模式重新走一次授权 + 校验要求仍有效 + 对象身份/内容摘要未变
+        if gateway is not None and callable(getattr(gateway, "authorize", None)):
+            decision = await _authorize_item(gateway, effect)
+            if decision.get("verdict") == "deny":
                 return {
                     "ok": False,
-                    "code": "recheck_requirement_invalid",
-                    "reason": "对应的用户要求已被修正/撤回或版本不符：未执行",
+                    "code": "recheck_denied",
+                    "reason": decision.get("reason") or "当前授权已失效：未执行",
                     "needs_user_decision": False,
                 }
+            if decision.get("verdict") == "approve":
+                return {
+                    "ok": False,
+                    "code": "recheck_needs_user_decision",
+                    "reason": decision.get("reason") or "当前状态需要用户确认后才能继续",
+                    "needs_user_decision": True,
+                }
+        if binding:
+            ledger = getattr(gateway, "requirements", None) if gateway is not None else None
+            validate = getattr(ledger, "validate_binding", None)
+            if callable(validate):
+                try:
+                    try:
+                        from agent.security.requirements import RequirementBinding  # type: ignore
+
+                        target_binding: object = RequirementBinding(
+                            requirement_id=str(binding["requirement_id"]),
+                            version=int(binding["version"]),
+                        )
+                    except Exception:  # noqa: BLE001
+                        target_binding = binding
+                    valid = bool(validate(target_binding))
+                except TypeError:
+                    try:
+                        valid = bool(
+                            validate(
+                                requirement_id=binding["requirement_id"],
+                                version=binding["version"],
+                            )
+                        )
+                    except Exception:  # noqa: BLE001
+                        valid = False
+                except Exception:  # noqa: BLE001
+                    valid = False
+                if not valid:
+                    return {
+                        "ok": False,
+                        "code": "recheck_requirement_invalid",
+                        "reason": "对应的用户要求已被修正/撤回或版本不符：未执行",
+                        "needs_user_decision": False,
+                    }
+    # -- 本地真实事实核对（服务/回退共用同一规则） ---------------------------
     for target in getattr(effect, "targets", ()) or ():
         if getattr(target, "kind", "") != "path":
             continue
@@ -366,6 +457,14 @@ async def _recheck_item(
                     "needs_user_decision": False,
                 }
         if expected_sha256:
+            read_error = _read_permission_error(gateway, path=path)
+            if read_error:
+                return {
+                    "ok": False,
+                    "code": "recheck_read_denied",
+                    "reason": read_error + "：未读取、未执行",
+                    "needs_user_decision": False,
+                }
             current_sha = content_sha256(Path(path))
             if current_sha != expected_sha256:
                 return {
@@ -395,15 +494,20 @@ def _build_operation_binding(*, effect: object, binding: dict | None, gateway: o
         except Exception:  # noqa: BLE001
             requirement = binding
     detail = getattr(effect, "detail", {}) or {}
-    content_digest = detail.get("content_sha256")
+    # E2：content_digests 必须是"**读取前**内容摘要"。effect.detail["content_sha256"]
+    # 表示拟写入/新内容；把它当读取前内容会误判"内容变化"。也不得把 identity 当摘要。
+    pre_state_digest = str(
+        detail.get("base_content_sha256")
+        or detail.get("read_content_sha256")
+        or ""
+    )
     digests: list[tuple[str, str]] = []
-    for target in getattr(effect, "targets", ()) or ():
-        value = str(getattr(target, "value", ""))
-        identity = getattr(target, "identity", None)
-        if content_digest:
-            digests.append((value, str(content_digest)))
-        elif identity:
-            digests.append((value, str(identity)))
+    if pre_state_digest:
+        for target in getattr(effect, "targets", ()) or ():
+            if str(getattr(target, "kind", "")) == "path":
+                digests.append(
+                    (str(getattr(target, "value", "")), pre_state_digest)
+                )
     kind = getattr(getattr(effect, "kind", None), "value", getattr(effect, "kind", ""))
     values = {
         "requirement": requirement,
@@ -2366,11 +2470,30 @@ class AttachmentService:
             except OSError:
                 item_exists = False
                 item_is_directory = False
-            item_content_sha = (
-                content_sha256(Path(path))
-                if item_exists and not item_is_directory
-                else None
-            )
+            item_size = 0
+            item_mtime_ns = 0
+            try:
+                meta = identity_of(Path(path))
+                if meta is not None:
+                    item_size = int(meta.size)
+                    item_mtime_ns = int(meta.mtime_ns)
+            except Exception:  # noqa: BLE001 - 元数据读不到按未知
+                item_size = 0
+                item_mtime_ns = 0
+            # C2：读取正文/摘要前先核对最新读取权限；被拒时只保留元数据事实
+            # （content_deferred=True），绝不为了做前置快照去读被禁止的正文。
+            content_deferred = False
+            item_content_sha = None
+            if item_exists and not item_is_directory:
+                read_error = _read_permission_error(
+                    gateway,
+                    path=path,
+                    identity=identity if isinstance(identity, str) else None,
+                )
+                if read_error:
+                    content_deferred = True
+                else:
+                    item_content_sha = content_sha256(Path(path))
             # R9-H4 §7：材料目录删除按有界子对象影响判断（含受保护/内部数据子对象）。
             directory_impact_data: dict | None = None
             if item_is_directory:
@@ -2435,6 +2558,10 @@ class AttachmentService:
                     "delete_mode": "recycle_bin",
                     "precondition_digest": item_precondition,
                     "identity": identity,
+                    "base_content_sha256": item_content_sha,
+                    "content_deferred": content_deferred,
+                    "base_size": item_size,
+                    "base_mtime_ns": item_mtime_ns,
                     fs_tools.LIMIT_IMPACTS_KEY: limit_impacts,
                     fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: impacts_complete,
                     fs_tools.LIMIT_IMPACTS_REASON_KEY: impacts_reason or None,
@@ -2457,6 +2584,9 @@ class AttachmentService:
                     "exists": item_exists,
                     "is_directory": item_is_directory,
                     "content_sha256": item_content_sha,
+                    "content_deferred": content_deferred,
+                    "base_size": item_size,
+                    "base_mtime_ns": item_mtime_ns,
                     "precondition_digest": item_precondition,
                     "limit_impacts": limit_impacts,
                     "limit_impacts_complete": impacts_complete,
@@ -2581,6 +2711,10 @@ class AttachmentService:
                             "identity": entry["identity"],
                             "attachment_id": entry["row"].get("attachment_id"),
                             "content_sha256": entry.get("content_sha256"),
+                            "base_content_sha256": entry.get("content_sha256"),
+                            "content_deferred": bool(entry.get("content_deferred")),
+                            "base_size": entry.get("base_size"),
+                            "base_mtime_ns": entry.get("base_mtime_ns"),
                             "action": "recycle",
                         }
                         for entry in waiting
@@ -2613,6 +2747,9 @@ class AttachmentService:
                             "path": str(entry["row"]["path"]),
                             "identity": entry["identity"],
                             "content_sha256": entry.get("content_sha256"),
+                            "content_deferred": bool(entry.get("content_deferred")),
+                            "base_size": entry.get("base_size"),
+                            "base_mtime_ns": entry.get("base_mtime_ns"),
                             "is_directory": bool(entry.get("is_directory")),
                             "precondition_digest": entry.get("precondition_digest"),
                             "directory_impact": entry.get("directory_impact"),
@@ -2719,6 +2856,182 @@ class AttachmentService:
 
     # -- 写回：重核对 identity + hash 后原子写（契约 §6.2 / §3.1）-------------
 
+    def _write_back_facts(
+        self,
+        attachment_id: str,
+        payload: bytes,
+        *,
+        gateway: object | None,
+        purpose: str,
+        expected_identity: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> dict:
+        """写回前的操作事实（C2/E2/§8）：先核对读取权限，再读取前内容。
+
+        顺序（契约 §2.1）：
+        1. 只做元数据定位（路径/身份/大小/mtime），不读正文；
+        2. 由后端按真实影响对象确定最低确认次数；内部维护走**元数据模式**，
+           确认前不读受保护正文；
+        3. 普通对象：先核对最新读取权限（读禁止时 0 次读取、直接拒绝），
+           再读取一次覆盖前内容作为"读取前内容摘要"；
+        4. 分别表达：身份（identity）、读取前内容（base_content_sha256）、
+           拟写入内容（content_digest/new_sha256）；读取影响进入操作事实。
+        """
+        from agent.services import attachment_access
+
+        location = self._locate_write_target(
+            attachment_id, expected_identity=expected_identity
+        )
+        target = location["path"]
+        identity = location["identity"]
+        binding = requirement_binding_from_context(gateway, self)
+        mode_at_request = attachment_access.mode_value(gateway)
+        new_sha = hashlib.sha256(bytes(payload or b"")).hexdigest()
+        write_impacts = fs_tools.write_limit_impacts(target)
+        read_impacts = fs_tools.read_limit_impacts(target)
+        internal_root = _internal_root_for(gateway, target)
+        probe_detail = {
+            "attachment_id": str(attachment_id),
+            "size": len(payload or b""),
+            "content_digest": new_sha,
+            "identity": identity,
+            fs_tools.LIMIT_IMPACTS_KEY: fs_tools.aggregate_limit_impacts(
+                [write_impacts, read_impacts]
+            ),
+            fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: True,
+        }
+        probe_effect = attachment_access.write_effect(
+            "attachment.write_back",
+            path=target,
+            identity=identity,
+            purpose=purpose,
+            content_sha256=new_sha,
+            detail=probe_detail,
+        )
+        _attach_binding(probe_effect, binding)
+        required = _required_confirmations_for_effect(gateway, probe_effect)
+        internal = bool(internal_root) or required >= 3
+        facts: dict = {
+            "target": target,
+            "identity": identity,
+            "new_sha": new_sha,
+            "binding": binding,
+            "mode_at_request": mode_at_request,
+            "internal": internal,
+            "internal_root": internal_root if internal else None,
+            "required_confirmations": required,
+        }
+        if internal:
+            # 内部维护：确认前不读受保护正文；只记录元数据前置状态。
+            facts.update(
+                {
+                    "base_content_digest_kind": "internal_metadata",
+                    "base_size": location["size"],
+                    "base_mtime_ns": location["mtime_ns"],
+                    "limit_impacts": write_impacts,
+                }
+            )
+            precondition = object_state_digest(
+                path=target,
+                exists=True,
+                identity=identity,
+                content_sha256=None,
+                is_directory=False,
+            )
+        else:
+            read_error = _read_permission_error(
+                gateway, path=target, identity=identity
+            )
+            if read_error:
+                raise AttachmentPermissionDenied(
+                    read_error + "；本次没有读取源文件，也没有写回"
+                )
+            current_sha = content_sha256(Path(target))
+            if current_sha is None:
+                raise AttachmentContentError("源文件现在读不到，没有写入", 409)
+            if expected_sha256 and str(current_sha) != str(expected_sha256):
+                raise AttachmentError(
+                    "源文件内容已经不是调用方手里的那一份（可能在读取后被修改），没有写入；"
+                    "请重新读取后再确认"
+                )
+            facts.update(
+                {
+                    "base_content_sha256": current_sha,
+                    "base_content_digest_kind": "content",
+                    "limit_impacts": fs_tools.aggregate_limit_impacts(
+                        [write_impacts, read_impacts]
+                    ),
+                }
+            )
+            precondition = object_state_digest(
+                path=target,
+                exists=True,
+                identity=identity,
+                content_sha256=current_sha,
+                is_directory=False,
+            )
+        facts["precondition"] = precondition
+        detail = {
+            "attachment_id": str(attachment_id),
+            "size": len(payload or b""),
+            "content_digest": new_sha,
+            "precondition_digest": precondition,
+            "identity": identity,
+            "internal_data_root": facts["internal_root"],
+            fs_tools.LIMIT_IMPACTS_KEY: facts["limit_impacts"],
+            fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: True,
+        }
+        for key in ("base_content_sha256", "base_content_digest_kind", "base_size", "base_mtime_ns"):
+            if facts.get(key) is not None:
+                detail[key] = facts[key]
+        effect = attachment_access.write_effect(
+            "attachment.write_back",
+            path=target,
+            identity=identity,
+            purpose=purpose,
+            content_sha256=new_sha,
+            detail=detail,
+        )
+        _attach_binding(effect, binding)
+        facts["effect"] = effect
+        return facts
+
+    def _locate_write_target(
+        self, attachment_id: str, *, expected_identity: str | None = None
+    ) -> dict:
+        """写回目标定位：只读元数据（不计算正文摘要）。"""
+        located = self.resolve_source(attachment_id, for_write=False)
+        if located.path is None:
+            raise AttachmentContentError(
+                located.reason or "源文件当前不可用，没有写入", 409
+            )
+        if located.legacy:
+            raise AttachmentError(
+                "历史附件只用于回放；写回需要先迁移或重新指定源文件"
+            )
+        if located.state == REFERENCE_AMBIGUOUS and not expected_identity:
+            raise AttachmentConfirmationRequired(
+                "源文件位置上的文件身份与登记不一致，写回需要用户先确认",
+                located.candidates,
+            )
+        identity_object = located.identity
+        return {
+            "path": str(located.path),
+            "identity": (
+                identity_object.key if identity_object is not None else None
+            ),
+            "size": (
+                int(getattr(identity_object, "size", 0) or 0)
+                if identity_object is not None
+                else 0
+            ),
+            "mtime_ns": (
+                int(getattr(identity_object, "mtime_ns", 0) or 0)
+                if identity_object is not None
+                else 0
+            ),
+        }
+
     async def write_back_source(
         self,
         attachment_id: str,
@@ -2738,67 +3051,66 @@ class AttachmentService:
         """
         from agent.services import attachment_access
 
-        resolved = self.resolve_source(attachment_id, for_write=True)
-        if resolved.path is None:
-            raise AttachmentContentError(resolved.reason or "源文件当前不可用，没有写入", 409)
-        target = str(resolved.path)
-        identity = resolved.identity.key if resolved.identity is not None else None
-        binding = requirement_binding_from_context(gateway, self)
-        mode_at_request = attachment_access.mode_value(gateway)
-        new_sha = hashlib.sha256(bytes(data or b"")).hexdigest()
-        # R9-H §4：content_digest = 拟写回内容摘要；precondition_digest = 写回前的
-        # 对象身份 + 当前内容摘要（审批/执行前重核对要用同一份事实）。
-        precondition = object_state_digest(
-            path=target,
-            exists=True,
-            identity=identity,
-            content_sha256=resolved.current_sha256,
-            is_directory=False,
-        )
-        effect = attachment_access.write_effect(
-            "attachment.write_back",
-            path=target,
-            identity=identity,
+        payload = bytes(data or b"")
+        facts = self._write_back_facts(
+            attachment_id,
+            payload,
+            gateway=gateway,
             purpose=purpose,
-            content_sha256=new_sha,
-            detail={
-                "attachment_id": str(attachment_id),
-                "size": len(bytes(data or b"")),
-                "content_digest": new_sha,
-                "precondition_digest": precondition,
-                "identity": identity,
-                fs_tools.LIMIT_IMPACTS_KEY: fs_tools.write_limit_impacts(target),
-                fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: True,
-            },
+            expected_identity=expected_identity,
+            expected_sha256=expected_sha256,
         )
-        _attach_binding(effect, binding)
+        target = str(facts["target"])
+        identity = facts["identity"]
+        new_sha = str(facts["new_sha"])
+        precondition = str(facts["precondition"])
+        effect = facts["effect"]
+        binding = facts["binding"]
+        mode_at_request = facts["mode_at_request"]
+        base_facts = {
+            key: facts[key]
+            for key in (
+                "base_content_sha256",
+                "base_content_digest_kind",
+                "base_size",
+                "base_mtime_ns",
+            )
+            if facts.get(key) is not None
+        }
 
         def _pending_operation(reason: str) -> dict:
             import base64
 
             operation = attachment_access.build_pending_operation(
                 kind="attachment.write_back",
-                label=f"写回源文件「{resolved.path.name}」",
+                label=f"写回源文件「{Path(target).name}」",
                 effect=effect,
                 payload={
                     "attachment_id": str(attachment_id),
                     "path": target,
                     "identity": identity,
-                    "content_b64": base64.b64encode(bytes(data or b"")).decode("ascii"),
+                    "content_b64": base64.b64encode(payload).decode("ascii"),
                     "sha256": new_sha,
                     "precondition_digest": precondition,
+                    "limit_impacts": facts["limit_impacts"],
+                    "internal_data_root": facts["internal_root"],
                     "requirement_binding": binding,
+                    **base_facts,
                 },
                 fingerprint={
                     "identity": identity,
-                    "content_sha256": resolved.current_sha256,
                     "new_sha256": new_sha,
                     "content_digest": new_sha,
                     "precondition_digest": precondition,
-                    "limit_impacts": fs_tools.write_limit_impacts(target),
+                    "limit_impacts": facts["limit_impacts"],
                     "limit_impacts_complete": True,
+                    "internal_data_root": facts["internal_root"],
+                    "internal_data_roots": (
+                        [facts["internal_root"]] if facts["internal_root"] else []
+                    ),
                     "operation_binding": _operation_binding_record(effect, gateway),
                     "requirement_binding": binding,
+                    **base_facts,
                 },
                 purpose=purpose,
                 instruction=attachment_access.instruction_snapshot(gateway),
@@ -2828,13 +3140,14 @@ class AttachmentService:
             }
 
         # 执行前重核对（契约 §7）：写前重新判定模式/要求/授权是否仍覆盖，
-        # 并核对对象身份与内容摘要；失效则保留文件并给出明确状态。
+        # 并核对对象身份与读取前内容摘要；失效则保留文件并给出明确状态。
+        # 内部维护不读取正文（确认前/确认后都不读受保护正文），只核对元数据。
         recheck = await _recheck_item(
             gateway,
             effect,
             mode_at_request=mode_at_request,
             expected_identity=identity,
-            expected_sha256=resolved.current_sha256,
+            expected_sha256=facts.get("base_content_sha256"),
         )
         if not recheck["ok"]:
             if recheck.get("needs_user_decision"):
@@ -2853,7 +3166,7 @@ class AttachmentService:
                     "approval": attachment_access.ticket_summary(ticket),
                     "attachment_id": str(attachment_id),
                     "path": target,
-                    "bytes": len(bytes(data or b"")),
+                    "bytes": len(payload),
                 }
             raise AttachmentError(
                 recheck.get("reason") or "执行前重核对未通过：没有写回源文件"
@@ -2861,9 +3174,11 @@ class AttachmentService:
 
         outcome = self._write_back_source_now(
             attachment_id,
-            bytes(data or b""),
-            expected_identity=expected_identity,
-            expected_sha256=expected_sha256,
+            payload,
+            expected_identity=identity,
+            expected_sha256=facts.get("base_content_sha256"),
+            expected_path=target,
+            verify_content=not bool(facts.get("internal")),
         )
         # 原子替换会改变 OS 身份：更新持久化来源的身份键，**保留原来源**
         # （写回用户源文件不得变成"QIO 生成物"）。
@@ -2892,72 +3207,74 @@ class AttachmentService:
             attachment_id = str(item.get("attachment_id") or "")
             payload = bytes(item.get("data") or b"")
             item_id = f"item_{index + 1}"
-            resolved = None
-            target = ""
-            identity = None
             try:
-                resolved = self.resolve_source(attachment_id, for_write=True)
-                if resolved.path is not None:
-                    target = str(resolved.path)
-                    identity = resolved.identity.key if resolved.identity is not None else None
-            except Exception:  # noqa: BLE001 - 下面按不可用项如实报告
-                resolved = None
-            if resolved is None or resolved.path is None:
+                facts = self._write_back_facts(
+                    attachment_id,
+                    payload,
+                    gateway=gateway,
+                    purpose=purpose,
+                    expected_identity=item.get("expected_identity"),
+                    expected_sha256=item.get("expected_sha256"),
+                )
+            except AttachmentPermissionDenied as exc:
+                # C2：读取被禁止的项不读取、不写回；不影响其他独立项。
                 entries.append(
                     {
                         "item_id": item_id,
                         "attachment_id": attachment_id,
-                        "path": target,
+                        "path": "",
                         "data": payload,
-                        "resolved": resolved,
-                        "identity": identity,
-                        "status": BATCH_FAILED,
-                        "reason": (resolved.reason if resolved is not None else "附件不可用"),
+                        "identity": None,
+                        "status": BATCH_DENIED,
+                        "reason": str(exc) or "读取被禁止",
                         "effect": None,
+                        "facts": None,
                     }
                 )
                 continue
-            new_sha = hashlib.sha256(payload).hexdigest()
-            precondition = object_state_digest(
-                path=target,
-                exists=True,
-                identity=identity,
-                content_sha256=resolved.current_sha256,
-                is_directory=False,
-            )
-            effect = attachment_access.write_effect(
-                "attachment.write_back",
-                path=target,
-                identity=identity,
-                purpose=purpose,
-                content_sha256=new_sha,
-                detail={
-                    "attachment_id": attachment_id,
-                    "size": len(payload),
-                    "batch_item_id": item_id,
-                    "content_digest": new_sha,
-                    "precondition_digest": precondition,
-                    "identity": identity,
-                    fs_tools.LIMIT_IMPACTS_KEY: fs_tools.write_limit_impacts(target),
-                    fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: True,
-                },
-            )
-            _attach_binding(effect, binding)
+            except Exception as exc:  # noqa: BLE001 - 逐项如实报告，不整批失败
+                entries.append(
+                    {
+                        "item_id": item_id,
+                        "attachment_id": attachment_id,
+                        "path": "",
+                        "data": payload,
+                        "identity": None,
+                        "status": BATCH_FAILED,
+                        "reason": f"{type(exc).__name__}: {exc}",
+                        "effect": None,
+                        "facts": None,
+                    }
+                )
+                continue
+            base_facts = {
+                key: facts[key]
+                for key in (
+                    "base_content_sha256",
+                    "base_content_digest_kind",
+                    "base_size",
+                    "base_mtime_ns",
+                )
+                if facts.get(key) is not None
+            }
             entries.append(
                 {
                     "item_id": item_id,
                     "attachment_id": attachment_id,
-                    "path": target,
+                    "path": facts["target"],
                     "data": payload,
-                    "resolved": resolved,
-                    "identity": identity,
-                    "new_sha256": new_sha,
-                    "precondition_digest": precondition,
-                    "limit_impacts": fs_tools.write_limit_impacts(target),
+                    "identity": facts["identity"],
+                    "new_sha256": facts["new_sha"],
+                    "precondition_digest": facts["precondition"],
+                    "limit_impacts": facts["limit_impacts"],
                     "limit_impacts_complete": True,
+                    "internal": bool(facts["internal"]),
+                    "internal_root": facts["internal_root"],
+                    "base_facts": base_facts,
                     "status": "pending",
                     "reason": "",
-                    "effect": effect,
+                    "effect": facts["effect"],
+                    "facts": facts,
                 }
             )
         for entry in entries:
@@ -2971,14 +3288,14 @@ class AttachmentService:
                 "deny": BATCH_DENIED,
             }.get(verdict, BATCH_DENIED)
             entry["reason"] = str(decision.get("reason") or "")
-        # 已允许项：逐项重核对后执行
+        # 已允许项：逐项重核对后执行（读取前内容 / 身份分别核对）
         for entry in [item for item in entries if item["status"] == BATCH_ALLOWED]:
             recheck = await _recheck_item(
                 gateway,
                 entry["effect"],
                 mode_at_request=mode_at_request,
                 expected_identity=entry["identity"],
-                expected_sha256=entry["resolved"].current_sha256,
+                expected_sha256=entry.get("facts", {}).get("base_content_sha256"),
             )
             if not recheck["ok"]:
                 if recheck.get("needs_user_decision"):
@@ -2993,7 +3310,11 @@ class AttachmentService:
                     entry["attachment_id"],
                     entry["data"],
                     expected_identity=entry.get("identity"),
-                    expected_sha256=entry["resolved"].current_sha256,
+                    expected_sha256=entry.get("facts", {}).get(
+                        "base_content_sha256"
+                    ),
+                    expected_path=entry["path"],
+                    verify_content=not bool(entry.get("internal")),
                 )
             except Exception as exc:  # noqa: BLE001 - 失败保留文件并如实报告
                 entry["status"] = BATCH_FAILED
@@ -3025,18 +3346,34 @@ class AttachmentService:
                         "path": entry["path"],
                         "exists": True,
                         "identity": entry["identity"],
-                        "content_sha256": entry["resolved"].current_sha256,
+                        "content_sha256": (entry.get("facts") or {}).get(
+                            "base_content_sha256"
+                        ),
                         "is_directory": False,
                     }
                     for entry in waiting
                 ]
             )
-            batch_effect = attachment_access.write_effect(
-                "attachment.write_back",
-                path=waiting[0]["path"],
-                identity=waiting[0]["identity"],
+            internal_roots = [
+                str(entry["internal_root"])
+                for entry in waiting
+                if entry.get("internal_root")
+            ]
+            batch_limit_impacts = fs_tools.aggregate_limit_impacts(
+                [entry.get("limit_impacts") or [] for entry in waiting]
+            )
+            from agent.tools import security_gate
+
+            batch_effect = security_gate.make_effect(
+                security_gate.EffectKind.WRITE,
+                [
+                    security_gate.path_target(
+                        entry["path"], identity=entry["identity"], exists=True
+                    )
+                    for entry in waiting
+                ],
                 purpose=purpose,
-                content_sha256=batch_new_digest,
+                tool="attachment.write_back",
                 detail={
                     "items": [
                         {
@@ -3044,24 +3381,34 @@ class AttachmentService:
                             "attachment_id": entry["attachment_id"],
                             "path": entry["path"],
                             "identity": entry["identity"],
-                            "content_sha256": entry["new_sha256"],
+                            "new_sha256": entry["new_sha256"],
                             "precondition_digest": entry["precondition_digest"],
                             "limit_impacts": entry.get("limit_impacts"),
+                            "internal_data_root": entry.get("internal_root"),
+                            **(
+                                {
+                                    "content_sha256": entry["facts"].get(
+                                        "base_content_sha256"
+                                    )
+                                }
+                                if entry["facts"].get("base_content_sha256")
+                                else {}
+                            ),
+                            **(entry.get("base_facts") or {}),
                         }
                         for entry in waiting
                     ],
                     "content_digest": batch_new_digest,
                     "precondition_digest": batch_precondition,
-                    fs_tools.LIMIT_IMPACTS_KEY: fs_tools.aggregate_limit_impacts(
-                        [entry.get("limit_impacts") or [] for entry in waiting]
-                    ),
+                    "internal_data_roots": internal_roots,
+                    fs_tools.LIMIT_IMPACTS_KEY: batch_limit_impacts,
                     fs_tools.LIMIT_IMPACTS_COMPLETE_KEY: all(
                         bool(entry.get("limit_impacts_complete", True))
                         for entry in waiting
                     ),
-                    "requirement_binding": binding,
                 },
             )
+            _attach_binding(batch_effect, binding)
             operation = attachment_access.build_pending_operation(
                 kind="attachment.batch_write_back",
                 label="批量写回 %d 个附件源文件（一次审批）" % len(waiting),
@@ -3075,6 +3422,9 @@ class AttachmentService:
                             "identity": entry["identity"],
                             "content_b64": base64.b64encode(entry["data"]).decode("ascii"),
                             "sha256": hashlib.sha256(entry["data"]).hexdigest(),
+                            "limit_impacts": entry.get("limit_impacts"),
+                            "internal_data_root": entry.get("internal_root"),
+                            **(entry.get("base_facts") or {}),
                         }
                         for entry in waiting
                     ],
@@ -3086,18 +3436,18 @@ class AttachmentService:
                             "attachment_id": entry["attachment_id"],
                             "path": entry["path"],
                             "identity": entry["identity"],
-                            "content_sha256": entry["resolved"].current_sha256,
                             "new_sha256": entry["new_sha256"],
                             "precondition_digest": entry["precondition_digest"],
                             "limit_impacts": entry.get("limit_impacts"),
+                            "internal_data_root": entry.get("internal_root"),
+                            **(entry.get("base_facts") or {}),
                         }
                         for entry in waiting
                     ],
                     "content_digest": batch_new_digest,
                     "precondition_digest": batch_precondition,
-                    "limit_impacts": fs_tools.aggregate_limit_impacts(
-                        [entry.get("limit_impacts") or [] for entry in waiting]
-                    ),
+                    "internal_data_roots": internal_roots,
+                    "limit_impacts": batch_limit_impacts,
                     "limit_impacts_complete": all(
                         bool(entry.get("limit_impacts_complete", True))
                         for entry in waiting
@@ -3166,15 +3516,24 @@ class AttachmentService:
         *,
         expected_identity: str | None = None,
         expected_sha256: str | None = None,
+        expected_path: str | None = None,
+        expected_size: int | None = None,
+        expected_mtime_ns: int | None = None,
+        verify_content: bool = True,
     ) -> dict:
         """把获准修改后的字节写回源文件（**调用方已完成授权**的同步实现）。
 
         写前重新解析 + 重核对：文件身份、登记时内容哈希、调用方手里那份的身份/哈希；
         任一项不符 → **不覆盖**并如实说明。写采用同目录临时文件 + os.replace。
         原子替换会改变文件身份（OS 事实），修复后的新身份如实落库并记入 legacy_paths。
+
+        * `expected_path`（E1）：最后一步必须仍是审批绑定的那个真实目标；引用被改到
+          另一个路径时不得写入（防止"检查旧路径、实际写新路径"）。
+        * `verify_content=False`（§8 内部维护）：确认前/后都不读取受保护正文，只核对
+          元数据（身份/大小/mtime）；写入内容摘要用"实际写入字节"计算，不读回正文。
         """
         payload = bytes(data or b"")
-        resolved = self.resolve_source(attachment_id, for_write=True)
+        resolved = self.resolve_source(attachment_id, for_write=verify_content)
         if resolved.path is None:
             raise AttachmentContentError(
                 resolved.reason or "源文件当前不可用，没有写入", 409
@@ -3189,26 +3548,47 @@ class AttachmentService:
                 resolved.candidates,
             )
         path = resolved.path
+        if expected_path and _normalized_path(path) != _normalized_path(expected_path):
+            raise AttachmentError(
+                "源文件的最终真实目标已不是审批时绑定的那一个路径，没有写入"
+                "（不能在最后一步换目标；请重新读取后再确认）"
+            )
         current = identity_of(path)
-        current_hash = content_sha256(path)
-        if current is None or current_hash is None:
+        if current is None:
             raise AttachmentContentError("源文件现在读不到，没有写入", 409)
         if resolved.identity is not None and current.key != resolved.identity.key:
             raise AttachmentError(
                 "源文件在这一刻变成了另一份（文件身份变化），没有写入；请重新读取后再确认"
             )
-        if resolved.recorded_sha256 and current_hash != resolved.recorded_sha256:
-            raise AttachmentError(
-                "源文件内容与登记时不一致（可能在读取后被修改），没有写入；"
-                "请重新读取后再确认"
-            )
+        current_hash: str | None = None
+        if verify_content:
+            current_hash = content_sha256(path)
+            if current_hash is None:
+                raise AttachmentContentError("源文件现在读不到，没有写入", 409)
+            if resolved.recorded_sha256 and current_hash != resolved.recorded_sha256:
+                raise AttachmentError(
+                    "源文件内容与登记时不一致（可能在读取后被修改），没有写入；"
+                    "请重新读取后再确认"
+                )
+            if expected_sha256 and current_hash != str(expected_sha256):
+                raise AttachmentError(
+                    "源文件内容已经不是刚才读取的内容，没有写入"
+                )
+        else:
+            same_meta = True
+            if expected_size is not None:
+                same_meta = same_meta and int(current.size) == int(expected_size)
+            if expected_mtime_ns is not None:
+                same_meta = same_meta and int(current.mtime_ns) == int(
+                    expected_mtime_ns
+                )
+            if not same_meta:
+                raise AttachmentError(
+                    "内部维护目标在确认期间发生了变化（大小/修改时间不一致），没有写入"
+                )
         if expected_identity and current.key != str(expected_identity):
             raise AttachmentError(
                 "源文件已经不是刚才读取的那一份（身份变化），没有写入"
-            )
-        if expected_sha256 and current_hash != str(expected_sha256):
-            raise AttachmentError(
-                "源文件内容已经不是刚才读取的内容，没有写入"
             )
         temp = temp_path_for(path)
         try:
@@ -3229,7 +3609,11 @@ class AttachmentService:
                 "写入后读不到源文件：" + redact_text(str(exc))
             ) from exc
         after = identity_of(path)
-        new_hash = content_sha256(path)
+        if verify_content:
+            new_hash = content_sha256(path)
+        else:
+            # 内部维护：写入的就是 payload 字节，不需要再读取受保护正文计算摘要。
+            new_hash = hashlib.sha256(payload).hexdigest()
         att = self.get(attachment_id, check=False)
         fields: dict = {
             "size_bytes": int(stat.st_size),

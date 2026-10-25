@@ -59,6 +59,38 @@ TIME_LIMIT_SECONDS = DEFAULT_TIMEOUT_SECONDS
 logger = logging.getLogger(__name__)
 
 
+def _derived_confirmations(engine, operation) -> int:  # noqa: ANN001 - 接口对象
+    """后端按**真实影响对象**推导的最低确认次数（R9-H13 §8.1/§8.4）。
+
+    提交、批准、恢复与执行前核对都必须使用它；`operation.confirmations_required`
+    （调用方/历史存储值）只是下限，不是权威值。
+    """
+    try:
+        stored = max(1, int(getattr(operation, "confirmations_required", 1) or 1))
+    except (TypeError, ValueError):
+        stored = 1
+    if engine is None or not callable(
+        getattr(engine, "required_confirmations", None)
+    ):
+        return stored
+    try:
+        from agent.tools import security_gate
+
+        effect = security_gate.effect_from_dict(
+            dict(getattr(operation, "effect", {}) or {})
+        )
+    except Exception:  # noqa: BLE001 - 无法还原 effect：保持存储值
+        effect = None
+    if effect is None:
+        return stored
+    try:
+        derived = int(engine.required_confirmations(effect))
+    except Exception:  # noqa: BLE001 - 判定失败不能降级成一次
+        return max(stored, 3)
+    return max(stored, derived)
+
+
+
 def refusal_reason(decision: str) -> str:
     """审批没通过的人话原因：超时 / 拒绝 / 取消必须分开说。
 
@@ -496,6 +528,10 @@ class ApprovalService:
             operation.mode_at_request = mode or self.current_mode_value()
         if not operation.source:
             operation.source = str(origin or "tool")
+        # §8.1：提交前由后端按真实影响对象覆盖最低确认次数（不信任调用方填写的 1）。
+        derived = _derived_confirmations(self.engine, operation)
+        if derived > int(getattr(operation, "confirmations_required", 1) or 1):
+            operation.confirmations_required = int(derived)
         # R9-G：提交时对"实际要执行的内容"做独立摘要，存进单独的 fingerprint 列；
         # 批准/领取/执行前重算比对，operation_detail 被改动后不得重放。
         from agent.security.operations import operation_digest
@@ -524,6 +560,27 @@ class ApprovalService:
             revisions=int(row.get("revisions") or 0),
         )
 
+    def _required_confirmations_for(self, approval_id: str) -> int | None:
+        """审批单记录的真实 effect → 后端最低确认次数（§8.4）。
+
+        历史/错误行可能把内部维护写成 1 次；批准/确认时必须按真实对象重新推导。
+        """
+        if self.store is None:
+            return None
+        try:
+            row = self.store.get(str(approval_id))
+        except Exception:  # noqa: BLE001 - 读不到行按不校正（存储值兜底）
+            return None
+        if row is None:
+            return None
+        try:
+            operation = PendingOperation.from_dict(
+                dict(row.get("operation_detail") or {})
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return _derived_confirmations(self.engine, operation)
+
     async def decide(
         self,
         approval_id: str,
@@ -540,6 +597,7 @@ class ApprovalService:
             decision,
             expected_revision=expected_revision,
             mode_at_approval=self.current_mode_value(),
+            required_confirmations=self._required_confirmations_for(approval_id),
         )
         await self._publish_phase(str(row.get("state") or ""), row)
         if str(row.get("state") or "") == "approved":
@@ -562,6 +620,7 @@ class ApprovalService:
             int(stage),
             expected_revision=expected_revision,
             mode_at_approval=self.current_mode_value(),
+            required_confirmations=self._required_confirmations_for(approval_id),
         )
         phase = "confirm_stage" if str(row.get("state") or "") == "waiting" else "approved"
         await self._publish_phase(

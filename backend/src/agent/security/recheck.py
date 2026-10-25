@@ -210,29 +210,11 @@ class RecheckService:
                 requirement_state=requirement_state,
                 decision_code=str(getattr(decision, "decision_code", "") or ""),
             )
-        binding_mode = str(getattr(binding, "mode", "") or "")
-        current_mode = str(
-            getattr(getattr(self.engine, "mode", lambda: "")(), "value", "")
-        )
-        if verdict == "allow" and binding_mode and current_mode and binding_mode != current_mode:
-            from agent.security.effects import AuthDecision, Verdict
-
-            reason = (
-                "权限模式已变化（审批/审查时："
-                + binding_mode
-                + "，当前："
-                + current_mode
-                + "）；旧结论不能继续执行，需要重新确认"
-            )
-            return RecheckResult(
-                ok=False,
-                code="needs_confirmation",
-                reason=reason,
-                decision=AuthDecision(
-                    verdict=Verdict.APPROVE, reason=reason, effects=()
-                ),
-                requirement_state=requirement_state,
-            )
+        # §12：模式变化按**当前规则**核对（上面的判定已用当前模式重新走过引擎），
+        # 不再"仅因模式字符串不同"整体失效：
+        # * 放宽（restricted/unrestricted）且当前规则允许 → 继续；
+        # * 收紧到 read_only → 上面的当前模式判定已给出 deny，停止；
+        # * 收紧后当前规则要求重新确认 → 下面的 approve 分支处理。
         if verdict != "allow":
             # approve：需要用户重新决策/确认；不是"继续执行"。
             return RecheckResult(

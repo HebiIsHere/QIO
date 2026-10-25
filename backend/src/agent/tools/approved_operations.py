@@ -24,8 +24,9 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import os
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from agent.security.operations import ExecutionContext, ExecResult, OperationRegistry
 from agent.tools import security_gate
@@ -268,7 +269,16 @@ def _payload_content_mismatch(ctx: ExecutionContext, payload: dict) -> str | Non
         )
     if not expected:
         return None
-    actual = str(payload.get("content_sha256") or payload.get("sha256") or "")
+    if kind.startswith("attachment."):
+        # 附件写回 payload：sha256 = 拟写入（新）内容；content_sha256 = 读取前内容。
+        actual = str(
+            payload.get("sha256")
+            or payload.get("content_digest")
+            or payload.get("new_sha256")
+            or ""
+        )
+    else:
+        actual = str(payload.get("content_sha256") or payload.get("sha256") or "")
     if not actual:
         return None
     if actual != expected:
@@ -419,40 +429,119 @@ def _tool_result_to_exec(result: Any, *, label: str) -> ExecResult:
     )
 
 
-def _require_internal_data_confirmations(
-    ctx: ExecutionContext, fingerprint: dict, path: str
-) -> ExecResult | None:
-    """内部运行数据必须走完三次确认才执行（契约 §4；确认状态由后端校验）。"""
-    root = fingerprint.get("internal_data_root")
-    entries = fingerprint.get("internal_data_entries") or ()
-    # R9-H4 §8：执行开始前按**当前**对象识别复核最低确认次数，不能只信审批单里
-    # 写入的一次旧判断。目录内枚举到受保护子对象也属于内部数据维护。
-    current_internal = bool(root) or bool(entries)
-    if not current_internal:
-        engine = getattr(ctx, "engine", None)
+def _effect_for_internal_check(path: str) -> Any:
+    """仅用于"真实影响对象 → 最低确认次数"的探测 effect（不执行、不读正文）。"""
+    from agent.security.effects import Effect, EffectKind, Target
+
+    return Effect(
+        kind=EffectKind.WRITE,
+        targets=(Target(kind="path", value=str(path)),),
+        purpose="内部运行数据维护确认次数核对",
+        tool="approved_operations",
+    )
+
+
+def _derived_minimum_confirmations(
+    ctx: ExecutionContext, *, effect: Any = None, paths: Sequence[str] = ()
+) -> int:
+    """由后端按真实影响对象推导最低确认次数（R9-H13 §8.1）。
+
+    绝不使用 `operation.confirmations_required` 作为权威值（历史行可能只写了 1）。
+    """
+    engine = getattr(ctx, "engine", None)
+    required = 1
+    if engine is None or not callable(
+        getattr(engine, "required_confirmations", None)
+    ):
+        return required
+    probes: list[Any] = []
+    if effect is not None:
+        probes.append(effect)
+    for path in paths:
+        if str(path or ""):
+            probes.append(_effect_for_internal_check(str(path)))
+    for probe in probes:
         try:
-            current_internal = (
-                security_gate.match_internal_data(engine, path) is not None
-                if engine is not None
-                else False
-            )
-        except Exception:  # noqa: BLE001 - 识别失败不能静默降级
-            current_internal = True
-    if not current_internal:
-        return None
-    try:
-        required = int(getattr(ctx.operation, "confirmations_required", 1) or 1)
-    except (TypeError, ValueError):
-        required = 1
+            required = max(required, int(engine.required_confirmations(probe)))
+        except Exception:  # noqa: BLE001 - 判定失败按内部维护保守，不降级
+            required = max(required, 3)
+    return required
+
+
+def _internal_minimum_confirmations(
+    ctx: ExecutionContext,
+    fingerprint: dict,
+    *,
+    effect: Any = None,
+    paths: Sequence[str] = (),
+) -> int:
+    """内部维护最低确认次数（真实对象优先，审批指纹内部事实兜底）。"""
+    required = _derived_minimum_confirmations(ctx, effect=effect, paths=paths)
     if required < 3:
-        return _failure(
-            "目标是 QIO 内部运行数据，但没有完成三次确认：本次未执行",
-            "internal_confirmations_missing",
-            invalidated=True,
-            path=path,
-            internal_data_root=str(root or path),
+        roots = [
+            str(item)
+            for item in (fingerprint.get("internal_data_roots") or ())
+            if str(item)
+        ]
+        if (
+            fingerprint.get("internal_data_root")
+            or roots
+            or fingerprint.get("internal_data_entries")
+        ):
+            required = 3
+        if str(fingerprint.get("base_content_digest_kind") or "") == "internal_metadata":
+            required = 3
+        if effect is not None and str(
+            (getattr(effect, "detail", {}) or {}).get("internal_data_root") or ""
+        ):
+            required = 3
+    return required
+
+
+def _require_internal_data_confirmations(
+    ctx: ExecutionContext,
+    fingerprint: dict,
+    path: str,
+    *,
+    effect: Any = None,
+) -> ExecResult | None:
+    """内部运行数据必须真实走完后端要求的最低确认次数才执行（契约 §8）。
+
+    * 最低次数由引擎按真实影响对象推导；存储行/调用方写的 1 不是权威值；
+    * 记录的是**实际完成阶段**（confirmed_stage），历史/错误的一次确认不能当三次；
+    * 判断为普通对象时直接通过（不增加第四次确认，也不影响正常受控写入）。
+    """
+    required = _internal_minimum_confirmations(
+        ctx, fingerprint, effect=effect, paths=(path,)
+    )
+    if required <= 1:
+        return None
+    actual = int(getattr(ctx, "confirmed_stage", 0) or 0)
+    if actual >= required:
+        return None
+    if required == 3:
+        summary = (
+            "目标是 QIO 内部运行数据，但没有完成连续三次确认（当前实际 "
+            + str(actual)
+            + "/3 次）：本次未执行"
         )
-    return None
+    else:
+        summary = (
+            "目标是 QIO 内部运行数据：需要连续 "
+            + str(required)
+            + " 次确认（当前实际 "
+            + str(actual)
+            + " 次）：本次未执行"
+        )
+    return _failure(
+        summary,
+        "internal_confirmations_missing",
+        invalidated=True,
+        path=path,
+        internal_data_root=str(fingerprint.get("internal_data_root") or path),
+        confirmations_required=required,
+        confirmed_stage=actual,
+    )
 
 
 def _check_identity(path: str, expected: dict) -> tuple[bool, str]:
@@ -1711,35 +1800,39 @@ async def _recheck_proc_launch(
             ),
             recheck_detail,
         )
-    if binding_mode and binding_mode != mode_now and binding_mode == "unrestricted":
-        return (
-            None,
-            _failure(
-                "审批时是完全无限制模式，现在已切回受限模式："
-                "需要按当前模式重新判定（固定规则/授权/审批），本次未执行，需重新提出",
-                "invalidated: mode_binding_changed",
-                invalidated=True,
-            ),
-            recheck_detail,
-        )
-
+    # §12：模式变化不因"模式字符串不同"整体失效；read_only 已在上面停止，其余交给
+    # 当前规则（restricted 下仍有有效人工批准即可继续），不沿用旧模式结论。
     internal_roots = [str(item) for item in (fingerprint.get("internal_data_roots") or ())]
-    try:
-        confirmations = int(getattr(ctx.operation, "confirmations_required", 1) or 1)
-    except (TypeError, ValueError):
-        confirmations = 1
+    confirmations = ctx.minimum_confirmations()
+    if internal_roots:
+        confirmations = max(confirmations, 3)
     recheck_detail["confirmations_required"] = confirmations
-    if internal_roots and confirmations < 3:
-        return (
-            None,
-            _failure(
-                "目标是 QIO 内部运行数据，但没有完成连续三次确认："
-                "普通一次确认不能替代三次，本次未执行",
-                "internal_confirmations_missing",
-                invalidated=True,
-            ),
-            recheck_detail,
-        )
+    if confirmations > 1:
+        actual_stage = int(getattr(ctx, "confirmed_stage", 0) or 0)
+        if actual_stage < confirmations:
+            if confirmations == 3:
+                summary = (
+                    "目标是 QIO 内部运行数据，但没有完成连续三次确认（当前实际 "
+                    + str(actual_stage)
+                    + "/3 次；普通一次确认不能替代），本次未执行"
+                )
+            else:
+                summary = (
+                    "目标是 QIO 内部运行数据：需要连续 "
+                    + str(confirmations)
+                    + " 次确认（当前实际 "
+                    + str(actual_stage)
+                    + " 次），普通一次确认不能替代，本次未执行"
+                )
+            return (
+                None,
+                _failure(
+                    summary,
+                    "internal_confirmations_missing",
+                    invalidated=True,
+                ),
+                recheck_detail,
+            )
 
     delete_error = _delete_recheck_error(fingerprint, payload, intent)
     if delete_error:
@@ -1960,13 +2053,138 @@ def _w3_content_sha(path: str) -> str | None:
         return None
 
 
+def _normalized_target_path(value: Any) -> str:
+    """平台规范化路径，仅用于比较（不改写真实执行目标）。"""
+    text = str(value or "")
+    if not text:
+        return ""
+    try:
+        return os.path.normcase(os.path.abspath(text))
+    except (OSError, ValueError):  # pragma: no cover
+        return text
+
+
+def _attachment_write_check_effect(
+    *,
+    path: str,
+    identity: str | None,
+    base_sha256: str | None,
+    new_sha256: str | None,
+    limit_impacts: Any,
+    internal_root: str | None = None,
+) -> Any:
+    """执行前重核对用的"真实目标"写 effect（不读正文）。"""
+    from agent.security.effects import Effect, EffectKind, Target
+
+    detail: dict = {
+        "action": "write",
+        "content_digest": new_sha256,
+        "limit_impacts": [
+            dict(item)
+            for item in (limit_impacts or ())
+            if isinstance(item, dict)
+        ],
+        "limit_impacts_complete": True,
+    }
+    if base_sha256:
+        detail["base_content_sha256"] = str(base_sha256)
+        detail["content_sha256"] = str(base_sha256)
+    if internal_root:
+        detail["internal_data_root"] = str(internal_root)
+    return Effect(
+        kind=EffectKind.WRITE,
+        targets=(Target("path", str(path), identity=identity, exists=True),),
+        purpose="写回附件源文件",
+        tool="attachment.write_back",
+        detail=detail,
+    )
+
+
+def _attachment_real_target(
+    service: Any,
+    attachment_id: str,
+    approved_path: str,
+    expected_identity: str | None = None,
+) -> tuple[Any, str | None]:
+    """E1：解析附件的**最终真实目标**（只读元数据），并与审批绑定逐项比对。
+
+    身份一致不代表路径/用途/范围仍一致：审批等待期间引用被改到另一个路径
+    （即使是同一对象的硬链接）也必须失效，不能"检查旧路径、实际写新路径"。
+    """
+    try:
+        located = service.resolve_source(attachment_id, for_write=False)
+    except Exception as exc:  # noqa: BLE001 - 解析失败不能猜目标
+        return None, (
+            "最终真实目标无法解析（"
+            + type(exc).__name__
+            + "）：无法核对路径/用途/范围，本次未写入"
+        )
+    if located is None or getattr(located, "path", None) is None:
+        return None, "附件源文件当前不可用：无法核对最终真实目标，本次未写入"
+    real_path = str(located.path)
+    if _normalized_target_path(real_path) != _normalized_target_path(approved_path):
+        return None, (
+            "附件引用的最终真实目标路径已改变（审批时："
+            + str(approved_path)
+            + "，当前："
+            + real_path
+            + "）；身份一致不代表路径/用途/范围仍一致，本次未写入"
+        )
+    identity_object = getattr(located, "identity", None)
+    current_key = str(getattr(identity_object, "key", "") or "")
+    if expected_identity and current_key and current_key != str(expected_identity):
+        return None, "最终真实目标已不是审批时绑定的那一份文件（身份变化）：本次未写入"
+    return located, None
+
+
+def _metadata_mismatch_reason(
+    located: Any, fingerprint: dict, payload: dict
+) -> str | None:
+    """内部维护的元数据核对（不读正文）：身份 + 大小 + mtime。"""
+    identity_object = getattr(located, "identity", None)
+    if identity_object is None:
+        return "内部维护目标的元数据读不到：无法确认它仍是审批时的对象，本次未写入"
+    expected_size = fingerprint.get("base_size")
+    if expected_size is None:
+        expected_size = payload.get("base_size")
+    expected_mtime = fingerprint.get("base_mtime_ns")
+    if expected_mtime is None:
+        expected_mtime = payload.get("base_mtime_ns")
+    try:
+        same_size = expected_size is None or int(identity_object.size) == int(
+            expected_size
+        )
+        same_mtime = expected_mtime is None or int(
+            identity_object.mtime_ns
+        ) == int(expected_mtime)
+    except (TypeError, ValueError):
+        return "内部维护目标的元数据无法比较：本次未写入"
+    if not same_size or not same_mtime:
+        return "内部维护目标在确认期间发生了变化（大小/修改时间不一致）：本次未写入"
+    return None
+
+
+def _default_attachment_write_impacts(path: str) -> list[dict]:
+    from agent.tools import fs_tools
+
+    return fs_tools.aggregate_limit_impacts(
+        [fs_tools.write_limit_impacts(path), fs_tools.read_limit_impacts(path)]
+    )
+
+
 async def execute_attachment_write_back(
     payload: dict,
     ctx: ExecutionContext,
     *,
     attachments_getter: Callable[[], Any] | None,
 ) -> ExecResult:
-    """attachment.write_back：批准后真正写回源文件（W3 的已授权实现）。"""
+    """attachment.write_back：批准后真正写回源文件（W3 的已授权实现）。
+
+    C2：任何正文/摘要读取前先核对最新读取权限（写批准不解除读取禁止）。
+    E1：所有检查与实际写入使用**同一个最终真实目标**（路径 + 身份 + 范围）。
+    E2：身份 / 读取前内容 / 拟写入内容分别核对；文件未变化时正常完成。
+    §8：内部维护按真实对象核对实际确认阶段（不信任存储行里的次数）。
+    """
     service = attachments_getter() if callable(attachments_getter) else None
     if service is None:
         return _failure(
@@ -2016,47 +2234,140 @@ async def execute_attachment_write_back(
                 attachment_id=attachment_id,
             )
     expected_identity = str(fingerprint.get("identity") or payload.get("identity") or "")
-    expected_old_sha = str(fingerprint.get("content_sha256") or "")
-    if expected_identity:
-        current_key = _w3_identity_key(path)
-        if current_key is None or current_key != expected_identity:
+    expected_old_sha = str(
+        fingerprint.get("content_sha256")
+        or payload.get("content_sha256")
+        or fingerprint.get("base_content_sha256")
+        or payload.get("base_content_sha256")
+        or ""
+    )
+    internal_root = str(
+        fingerprint.get("internal_data_root")
+        or payload.get("internal_data_root")
+        or ""
+    )
+    base_kind = str(
+        fingerprint.get("base_content_digest_kind")
+        or payload.get("base_content_digest_kind")
+        or ""
+    )
+    internal = bool(internal_root) or base_kind == "internal_metadata"
+    # §8：内部维护的最低确认次数按真实对象重算；执行前核对实际完成阶段。
+    blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
+    if blocked is not None:
+        return blocked
+    # E1：最终真实目标（元数据；不读正文）必须仍是审批绑定的那一个。
+    located, target_error = _attachment_real_target(
+        service, attachment_id, path, expected_identity or None
+    )
+    if target_error:
+        return _failure(
+            target_error,
+            "invalidated: real_target_changed",
+            invalidated=True,
+            path=path,
+            attachment_id=attachment_id,
+            approved_path=path,
+        )
+    real_path = str(located.path)
+    limit_impacts = fingerprint.get("limit_impacts") or _default_attachment_write_impacts(
+        real_path
+    )
+    item_effect = _attachment_write_check_effect(
+        path=real_path,
+        identity=expected_identity or None,
+        base_sha256=expected_old_sha or None,
+        new_sha256=expected_new_sha or None,
+        limit_impacts=limit_impacts,
+        internal_root=internal_root or None,
+    )
+    # 最新限制/模式/要求/审批有效期：使用最终真实目标核对。
+    blocked = await _recheck_requirement_and_mode(
+        ctx,
+        payload=payload,
+        fingerprint=fingerprint,
+        path=real_path,
+        item_effect=item_effect,
+    )
+    if blocked is not None:
+        return blocked
+    if internal:
+        metadata_error = _metadata_mismatch_reason(located, fingerprint, payload)
+        if metadata_error:
+            return _failure(
+                metadata_error,
+                "invalidated: internal_metadata_changed",
+                invalidated=True,
+                path=real_path,
+                attachment_id=attachment_id,
+            )
+        try:
+            outcome = await asyncio.to_thread(
+                service._write_back_source_now,
+                attachment_id,
+                data,
+                expected_identity=expected_identity or None,
+                expected_path=real_path,
+                expected_size=fingerprint.get("base_size")
+                if fingerprint.get("base_size") is not None
+                else payload.get("base_size"),
+                expected_mtime_ns=fingerprint.get("base_mtime_ns")
+                if fingerprint.get("base_mtime_ns") is not None
+                else payload.get("base_mtime_ns"),
+                verify_content=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - 写回失败都如实落库（原件保留）
+            return _failure(
+                f"写回源文件失败（原文件保留）：{_redacted(exc)}",
+                f"{type(exc).__name__}: {_redacted(exc)}",
+                path=real_path,
+                attachment_id=attachment_id,
+            )
+    else:
+        # C2：读取正文/摘要前核对最新读取权限；被拒时读取次数为 0、不写。
+        read_blocked = await _authorize_content_read(
+            ctx, real_path, purpose="写回前核对源文件读取前内容"
+        )
+        if read_blocked is not None:
+            return read_blocked
+        current_key = await asyncio.to_thread(_w3_identity_key, real_path)
+        if expected_identity and (
+            current_key is None or current_key != expected_identity
+        ):
             return _failure(
                 "源文件已不是审批时的那一份（身份变化）：本次未写回（请重新读取后再确认）",
                 "invalidated: source_identity_changed",
                 invalidated=True,
-                path=path,
+                path=real_path,
                 attachment_id=attachment_id,
             )
-    if expected_old_sha:
-        current_sha = _w3_content_sha(path)
-        if current_sha is None or current_sha != expected_old_sha:
+        if expected_old_sha:
+            current_sha = await asyncio.to_thread(_w3_content_sha, real_path)
+            if current_sha is None or current_sha != expected_old_sha:
+                return _failure(
+                    "源文件内容在审批期间发生了变化：本次未写回（请重新读取后再确认）",
+                    "invalidated: source_content_changed",
+                    invalidated=True,
+                    path=real_path,
+                    attachment_id=attachment_id,
+                )
+        try:
+            outcome = await asyncio.to_thread(
+                service._write_back_source_now,
+                attachment_id,
+                data,
+                expected_identity=expected_identity or None,
+                expected_sha256=expected_old_sha or None,
+                expected_path=real_path,
+                verify_content=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - 写回失败/重核对失败都如实落库
             return _failure(
-                "源文件内容在审批期间发生了变化：本次未写回（请重新读取后再确认）",
-                "invalidated: source_content_changed",
-                invalidated=True,
-                path=path,
+                f"写回源文件失败（原文件保留）：{_redacted(exc)}",
+                f"{type(exc).__name__}: {_redacted(exc)}",
+                path=real_path,
                 attachment_id=attachment_id,
             )
-    blocked = await _recheck_requirement_and_mode(
-        ctx, payload=payload, fingerprint=fingerprint, path=path
-    )
-    if blocked is not None:
-        return blocked
-    try:
-        outcome = await asyncio.to_thread(
-            service._write_back_source_now,
-            attachment_id,
-            data,
-            expected_identity=expected_identity or None,
-            expected_sha256=expected_old_sha or None,
-        )
-    except Exception as exc:  # noqa: BLE001 - 写回失败/重核对失败都如实落库
-        return _failure(
-            f"写回源文件失败（原文件保留）：{_redacted(exc)}",
-            f"{type(exc).__name__}: {_redacted(exc)}",
-            path=path,
-            attachment_id=attachment_id,
-        )
     outcome = dict(outcome or {})
     # R9-F：写回/原子替换成功后更新来源与文件身份（W3），失败不改变写回结果。
     note = getattr(service, "note_origin_after_write_back", None)
@@ -2066,8 +2377,8 @@ async def execute_attachment_write_back(
         except Exception:  # noqa: BLE001 - 来源记账失败不改变写回事实
             pass
     return _success(
-        f"已写回源文件：{path}",
-        path=str(outcome.get("path") or path),
+        f"已写回源文件：{real_path}",
+        path=str(outcome.get("path") or real_path),
         attachment_id=attachment_id,
         bytes=int(outcome.get("bytes") or len(data)),
         sha256=outcome.get("sha256"),
@@ -2083,7 +2394,14 @@ async def execute_attachment_batch_write_back(
     *,
     attachments_getter: Callable[[], Any] | None,
 ) -> ExecResult:
-    """attachment.batch_write_back：批准后批量写回，逐项重核对 + 逐项状态（契约 §6）。"""
+    """attachment.batch_write_back：批准后批量写回，逐项重核对 + 逐项状态（§3.E/E3）。
+
+    * 整批共同条件（要求 active/版本、期限、模式、确认基础）由审批执行器在进入本
+      执行器前核对；这里**逐项**使用该项自己的真实目标/内容/限制/确认要求；
+    * 单项失效只使对应项失效，独立有效项继续执行并保留真实结果（不得整批作废）；
+    * 每项都核对最终真实目标（E1）、读取权限（C2，读取前核对）、身份与读取前
+      内容（E2）、内部维护实际确认阶段（§8，内部对象不是首项也命中）。
+    """
     service = attachments_getter() if callable(attachments_getter) else None
     if service is None:
         return _failure(
@@ -2094,11 +2412,14 @@ async def execute_attachment_batch_write_back(
     if not items:
         return _failure("审批单缺少批量写回清单：未写回", "missing_batch_items")
     fingerprint = _fingerprint(ctx)
-    fingerprint_items = {
-        str(entry.get("attachment_id") or ""): entry
-        for entry in (fingerprint.get("items") or [])
-        if isinstance(entry, dict)
-    }
+    fingerprint_items: dict[str, dict] = {}
+    for entry in fingerprint.get("items") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("attachment_id"):
+            fingerprint_items[str(entry.get("attachment_id"))] = entry
+        if entry.get("path"):
+            fingerprint_items[str(entry.get("path"))] = entry
     binding_error = _review_binding_mismatch(ctx)
     if binding_error:
         return _failure(binding_error, "invalidated: operation_binding", invalidated=True)
@@ -2106,65 +2427,159 @@ async def execute_attachment_batch_write_back(
     import hashlib as _hashlib
 
     results: list[dict] = []
-    all_ok = True
     for item in items:
         item_id = str(item.get("item_id") or "")
         attachment_id = str(item.get("attachment_id") or "")
         path = str(item.get("path") or "")
+        item_fp = dict(
+            fingerprint_items.get(attachment_id)
+            or fingerprint_items.get(path)
+            or {}
+        )
         reason = ""
         status = "failed"
         outcome: dict = {}
-        blocked = None
+        real_path = path
+        data = None
         try:
-            data = _base64.b64decode(str(item.get("content_b64") or ""), validate=True)
+            data = _base64.b64decode(
+                str(item.get("content_b64") or ""), validate=True
+            )
         except Exception as exc:  # noqa: BLE001 - 非法内容不写
-            data = None
             reason = f"写回内容不是合法 base64：{type(exc).__name__}"
-        if data is not None:
-            expected_new_sha = str(item.get("sha256") or "")
-            if expected_new_sha and _hashlib.sha256(data).hexdigest() != expected_new_sha:
+        expected_new_sha = str(item.get("sha256") or item_fp.get("new_sha256") or "")
+        if data is not None and expected_new_sha:
+            if _hashlib.sha256(data).hexdigest() != expected_new_sha:
                 reason = "待写回内容与提交审批时不一致（需重新审批）"
-                blocked = True
-        if data is not None and blocked is None:
-            blocked_result = await _recheck_requirement_and_mode(
-                ctx, payload=payload, fingerprint=fingerprint, path=path
+                data = None
+        if data is not None:
+            expected_identity = str(
+                item.get("identity") or item_fp.get("identity") or ""
             )
-            if blocked_result is not None:
-                reason = blocked_result.summary
-                blocked = True
-        if data is not None and blocked is None:
-            expected_identity = str(item.get("identity") or "")
             expected_old_sha = str(
-                (fingerprint_items.get(attachment_id) or {}).get("content_sha256") or ""
+                item_fp.get("content_sha256")
+                or item.get("content_sha256")
+                or item_fp.get("base_content_sha256")
+                or item.get("base_content_sha256")
+                or ""
             )
-            if expected_identity:
-                current_key = _w3_identity_key(path)
-                if current_key is None or current_key != expected_identity:
-                    reason = "源文件已不是审批时的那一份（身份变化）"
-                    blocked = True
-            if blocked is None and expected_old_sha:
-                current_sha = _w3_content_sha(path)
-                if current_sha is None or current_sha != expected_old_sha:
-                    reason = "源文件内容在审批期间发生了变化"
-                    blocked = True
-        if data is not None and blocked is None:
-            try:
-                outcome = await asyncio.to_thread(
-                    service._write_back_source_now,
-                    attachment_id,
-                    data,
-                    expected_identity=str(item.get("identity") or "") or None,
-                    expected_sha256=str(
-                        (fingerprint_items.get(attachment_id) or {}).get("content_sha256")
-                        or ""
-                    )
-                    or None,
+            internal_root = str(
+                item_fp.get("internal_data_root")
+                or item.get("internal_data_root")
+                or ""
+            )
+            base_kind = str(
+                item_fp.get("base_content_digest_kind")
+                or item.get("base_content_digest_kind")
+                or ""
+            )
+            internal = bool(internal_root) or base_kind == "internal_metadata"
+            located, target_error = _attachment_real_target(
+                service, attachment_id, path, expected_identity or None
+            )
+            if target_error:
+                status = "invalidated"
+                reason = target_error
+            else:
+                real_path = str(located.path)
+                limit_impacts = item_fp.get("limit_impacts") or item.get(
+                    "limit_impacts"
+                ) or _default_attachment_write_impacts(real_path)
+                item_effect = _attachment_write_check_effect(
+                    path=real_path,
+                    identity=expected_identity or None,
+                    base_sha256=expected_old_sha or None,
+                    new_sha256=expected_new_sha or None,
+                    limit_impacts=limit_impacts,
+                    internal_root=internal_root or None,
                 )
-                status = "completed"
-            except Exception as exc:  # noqa: BLE001 - 失败保留文件
-                reason = f"{type(exc).__name__}: {_redacted(exc)}"
+                # §8：内部维护按真实对象核对实际确认阶段（内部对象不是首项也命中）
+                blocked = _require_internal_data_confirmations(
+                    ctx, item_fp, real_path, effect=item_effect
+                )
+                if blocked is not None:
+                    status = "invalidated"
+                    reason = blocked.summary
+                if status != "invalidated":
+                    blocked_result = await _recheck_requirement_and_mode(
+                        ctx,
+                        payload=payload,
+                        fingerprint=fingerprint,
+                        path=real_path,
+                        item_effect=item_effect,
+                    )
+                    if blocked_result is not None:
+                        status = "invalidated"
+                        reason = blocked_result.summary
+                if status != "invalidated" and internal:
+                    metadata_error = _metadata_mismatch_reason(
+                        located, item_fp, item
+                    )
+                    if metadata_error:
+                        status = "invalidated"
+                        reason = metadata_error
+                    else:
+                        try:
+                            outcome = await asyncio.to_thread(
+                                service._write_back_source_now,
+                                attachment_id,
+                                data,
+                                expected_identity=expected_identity or None,
+                                expected_path=real_path,
+                                expected_size=item_fp.get("base_size")
+                                if item_fp.get("base_size") is not None
+                                else item.get("base_size"),
+                                expected_mtime_ns=item_fp.get("base_mtime_ns")
+                                if item_fp.get("base_mtime_ns") is not None
+                                else item.get("base_mtime_ns"),
+                                verify_content=False,
+                            )
+                            status = "completed"
+                        except Exception as exc:  # noqa: BLE001 - 失败保留文件
+                            status = "failed"
+                            reason = f"{type(exc).__name__}: {_redacted(exc)}"
+                elif status != "invalidated":
+                    read_blocked = await _authorize_content_read(
+                        ctx,
+                        real_path,
+                        purpose="批量写回前核对源文件读取前内容",
+                    )
+                    if read_blocked is not None:
+                        status = "invalidated"
+                        reason = read_blocked.summary
+                    else:
+                        current_key = await asyncio.to_thread(
+                            _w3_identity_key, real_path
+                        )
+                        if expected_identity and (
+                            current_key is None
+                            or current_key != expected_identity
+                        ):
+                            status = "invalidated"
+                            reason = "源文件已不是审批时的那一份（身份变化）"
+                        elif expected_old_sha:
+                            current_sha = await asyncio.to_thread(
+                                _w3_content_sha, real_path
+                            )
+                            if current_sha is None or current_sha != expected_old_sha:
+                                status = "invalidated"
+                                reason = "源文件内容在审批期间发生了变化"
+                        if status != "invalidated":
+                            try:
+                                outcome = await asyncio.to_thread(
+                                    service._write_back_source_now,
+                                    attachment_id,
+                                    data,
+                                    expected_identity=expected_identity or None,
+                                    expected_sha256=expected_old_sha or None,
+                                    expected_path=real_path,
+                                    verify_content=True,
+                                )
+                                status = "completed"
+                            except Exception as exc:  # noqa: BLE001 - 失败保留文件
+                                status = "failed"
+                                reason = f"{type(exc).__name__}: {_redacted(exc)}"
         ok = status == "completed"
-        all_ok = all_ok and ok
         if ok:
             note = getattr(service, "note_origin_after_write_back", None)
             if callable(note):
@@ -2176,9 +2591,9 @@ async def execute_attachment_batch_write_back(
             {
                 "item_id": item_id,
                 "attachment_id": attachment_id,
-                "path": path,
+                "path": real_path,
                 "ok": ok,
-                "status": status if not blocked else "invalidated",
+                "status": status,
                 "reason": reason,
                 "sha256": outcome.get("sha256"),
             }
@@ -2189,13 +2604,63 @@ async def execute_attachment_batch_write_back(
         "results": results,
         "deleted_permanently": False,
     }
-    if not all_ok:
+    completed = [item for item in results if item.get("ok")]
+    if not completed:
         return _failure(
-            "批量写回未全部完成：失效/失败的项已保留文件",
-            "batch_partial_failure",
-            detail=detail,
+            "批量写回没有完成任何一项：失效/失败的项已保留文件",
+            "batch_write_back_failed",
+            detail={**detail, "completed_count": 0, "failed_count": len(results)},
+        )
+    if len(completed) < len(results):
+        return _success(
+            "批量写回部分完成：%d/%d 项已写回，其余项已保留文件"
+            % (len(completed), len(results)),
+            detail={
+                **detail,
+                "partial": True,
+                "completed_count": len(completed),
+                "failed_count": len(results) - len(completed),
+            },
         )
     return _success("已批量写回 %d 个附件源文件" % len(results), detail=detail)
+
+
+def _attachment_recycle_check_effect(
+    *,
+    path: str,
+    identity: str | None,
+    limit_impacts: Any,
+    content_sha256: str | None = None,
+    content_deferred: bool = False,
+    base_size: Any = None,
+    base_mtime_ns: Any = None,
+) -> Any:
+    """回收执行前重核对用的删除 effect（真实对象 + 删除前状态事实）。"""
+    from agent.security.effects import Effect, EffectKind, Target
+
+    detail: dict = {
+        "action": "delete",
+        "delete_mode": "recycle_bin",
+        "limit_impacts": [
+            dict(item) for item in (limit_impacts or ()) if isinstance(item, dict)
+        ],
+        "limit_impacts_complete": True,
+    }
+    if content_sha256:
+        detail["base_content_sha256"] = str(content_sha256)
+    if content_deferred:
+        detail["content_deferred"] = True
+        if base_size is not None:
+            detail["base_size"] = base_size
+        if base_mtime_ns is not None:
+            detail["base_mtime_ns"] = base_mtime_ns
+    return Effect(
+        kind=EffectKind.DELETE,
+        targets=(Target("path", str(path), identity=identity, exists=True),),
+        purpose="把用户材料移入系统回收站",
+        tool="attachment.delete_material",
+        detail=detail,
+    )
 
 
 async def execute_attachment_recycle(
@@ -2204,7 +2669,13 @@ async def execute_attachment_recycle(
     *,
     recycle_mover: Callable[..., Any] | None = None,
 ) -> ExecResult:
-    """attachment.recycle：批准后把用户材料逐个移入系统回收站（失败保留文件）。"""
+    """attachment.recycle：批准后把用户材料逐个移入系统回收站（失败保留文件）。
+
+    E2：身份与**读取前内容**分别核对（不得把身份字段当内容摘要比较）；
+    C2：读取内容摘要前核对最新读取权限（被拒时不读，只按元数据/失效处理）；
+    E3：逐项独立核对与结果，单项失效不影响其他项；
+    §8：内部维护按真实影响对象核对实际确认阶段。
+    """
     targets = [dict(item) for item in (payload.get("targets") or []) if isinstance(item, dict)]
     if not targets:
         return _failure("审批单缺少待删除的用户材料清单：未删除", "missing_targets")
@@ -2239,8 +2710,36 @@ async def execute_attachment_recycle(
             results.append({"path": path, "ok": False, "reason": "缺少路径"})
             all_ok = False
             continue
-        blocked = await _recheck_requirement_and_mode(
-            ctx, payload=payload, fingerprint=fingerprint, path=path
+        meta = dict(
+            fingerprint_items.get(str(item.get("attachment_id") or ""))
+            or fingerprint_items.get(path)
+            or {}
+        )
+        expected_identity = str(item.get("identity") or meta.get("identity") or "")
+        limit_impacts = meta.get("limit_impacts") or item.get("limit_impacts") or []
+        is_directory = bool(meta.get("is_directory") or item.get("is_directory"))
+        content_deferred = bool(
+            meta.get("content_deferred") or item.get("content_deferred")
+        )
+        expected_content = str(
+            meta.get("content_sha256") or item.get("content_sha256") or ""
+        )
+        item_effect = _attachment_recycle_check_effect(
+            path=path,
+            identity=expected_identity or None,
+            limit_impacts=limit_impacts,
+            content_sha256=expected_content or None,
+            content_deferred=content_deferred,
+            base_size=meta.get("base_size")
+            if meta.get("base_size") is not None
+            else item.get("base_size"),
+            base_mtime_ns=meta.get("base_mtime_ns")
+            if meta.get("base_mtime_ns") is not None
+            else item.get("base_mtime_ns"),
+        )
+        # §8：内部维护按真实对象核对实际确认阶段。
+        blocked = _require_internal_data_confirmations(
+            ctx, meta, path, effect=item_effect
         )
         if blocked is not None:
             results.append(
@@ -2256,7 +2755,27 @@ async def execute_attachment_recycle(
             )
             all_ok = False
             continue
-        expected_identity = str(item.get("identity") or "")
+        blocked_result = await _recheck_requirement_and_mode(
+            ctx,
+            payload=payload,
+            fingerprint=fingerprint,
+            path=path,
+            item_effect=item_effect,
+        )
+        if blocked_result is not None:
+            results.append(
+                {
+                    "attachment_id": item.get("attachment_id"),
+                    "item_id": item.get("item_id"),
+                    "path": path,
+                    "ok": False,
+                    "status": "invalidated",
+                    "invalidated": True,
+                    "reason": blocked_result.summary,
+                }
+            )
+            all_ok = False
+            continue
         if expected_identity:
             current_key = _w3_identity_key(path)
             if current_key is None or current_key != expected_identity:
@@ -2270,9 +2789,25 @@ async def execute_attachment_recycle(
                 )
                 all_ok = False
                 continue
-        meta = fingerprint_items.get(str(item.get("attachment_id") or "")) or fingerprint_items.get(path) or {}
-        expected_content = str(meta.get("content_sha256") or "")
-        if expected_content and not bool(meta.get("is_directory")):
+        if not is_directory and expected_content and not content_deferred:
+            # C2：读取内容快照前核对最新读取权限；被拒时 0 次读取。
+            read_blocked = await _authorize_content_read(
+                ctx, path, purpose="回收前核对文件内容快照"
+            )
+            if read_blocked is not None:
+                results.append(
+                    {
+                        "attachment_id": item.get("attachment_id"),
+                        "item_id": item.get("item_id"),
+                        "path": path,
+                        "ok": False,
+                        "status": "invalidated",
+                        "invalidated": True,
+                        "reason": read_blocked.summary,
+                    }
+                )
+                all_ok = False
+                continue
             current_content = await asyncio.to_thread(_w3_content_sha, path)
             if current_content is None or current_content != expected_content:
                 results.append(
@@ -2284,6 +2819,44 @@ async def execute_attachment_recycle(
                         "status": "invalidated",
                         "invalidated": True,
                         "reason": "文件内容在审批期间发生了变化：未删除（保留文件，需重新确认）",
+                    }
+                )
+                all_ok = False
+                continue
+        elif not is_directory and content_deferred:
+            current = await asyncio.to_thread(security_gate.file_identity, path)
+            if not current.get("exists"):
+                results.append(
+                    {
+                        "path": path,
+                        "ok": False,
+                        "status": "invalidated",
+                        "invalidated": True,
+                        "reason": "材料在审批期间被删除/替换：未执行（需重新确认）",
+                    }
+                )
+                all_ok = False
+                continue
+            same_meta = True
+            try:
+                if meta.get("base_size") is not None:
+                    same_meta = same_meta and int(current.get("size") or 0) == int(
+                        meta.get("base_size")
+                    )
+                if meta.get("base_mtime_ns") is not None:
+                    same_meta = same_meta and int(
+                        current.get("mtime_ns") or 0
+                    ) == int(meta.get("base_mtime_ns"))
+            except (TypeError, ValueError):
+                same_meta = False
+            if not same_meta:
+                results.append(
+                    {
+                        "path": path,
+                        "ok": False,
+                        "status": "invalidated",
+                        "invalidated": True,
+                        "reason": "材料在审批期间发生变化（元数据不一致）：未删除（保留文件）",
                     }
                 )
                 all_ok = False
