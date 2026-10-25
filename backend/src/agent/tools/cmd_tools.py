@@ -486,9 +486,17 @@ class _CmdTool(Tool):
 
     # -- R9-G：结构化执行事实 / 固定查询 / 永久删除事实 ---------------------
 
-    def _execution_facts(self, spec, *, shell: bool) -> dict:
-        """从真实 LaunchSpec 生成执行事实（固定查询/永久删除/绑定都基于它）。"""
-        facts = launch_boundary.build_spec_facts(spec, computer=self.computer)
+    def _execution_facts(
+        self, spec, *, shell: bool, include_content: bool = True
+    ) -> dict:
+        """从真实 LaunchSpec 生成执行事实（固定查询/永久删除/绑定都基于它）。
+
+        `include_content=False`：只做元数据发现（程序/脚本的解析、身份、大小、mtime），
+        **不读取任何正文/摘要**；用于读取权限核对之前的预判定（契约 §2.1/§3.C）。
+        """
+        facts = launch_boundary.build_spec_facts(
+            spec, computer=self.computer, include_content=include_content
+        )
         program_facts = dict(facts.get("program_facts") or {})
         program_path = str(program_facts.get("resolved") or "") or None
         program_name = ""
@@ -530,12 +538,109 @@ class _CmdTool(Tool):
             "cwd": cwd_resolved,
             "shell": bool(shell),
             "shell_cmd": getattr(spec, "shell_cmd", None) if shell else None,
-            "spec_digest": launch_boundary.compute_spec_digest(spec, computer=self.computer),
+            "spec_digest": (
+                launch_boundary.compute_spec_digest(spec, computer=self.computer, facts=facts)
+                if include_content
+                else None
+            ),
             "program_sha256": program_facts.get("sha256"),
             "argument_files": argument_files,
+            "argument_files_complete": bool(
+                facts.get("argument_files_complete", True)
+            ),
+            "argument_files_incomplete_reason": facts.get(
+                "argument_files_incomplete_reason"
+            ),
             "script_sha256": script_sha or None,
             "content_digests": content_digests,
+            "content_collected": bool(include_content),
         }
+
+    # -- C1（契约 §2.1/§3.C）：读取权限核对必须先于任何正文读取 ---------------
+
+    def _pre_authorization_limit_gate(
+        self,
+        spec,
+        *,
+        tool: str,
+        program: str,
+        args: list[str],
+        cwd: str | None,
+        shell: bool,
+        purpose: str,
+    ) -> ToolResult | None:
+        """授权前用**元数据事实**消费共同对象判定：命中即拒绝，正文读取次数 0。
+
+        这里只用 resolved 程序身份 / argv / cwd / 删除对象语法构造 effect；不读取
+        任何程序或脚本正文。命中用户限制（含 execute 禁止）时直接返回拒绝，
+        不再采集内容摘要，也不进入启动。
+        """
+        if self.security is None:
+            return None
+        try:
+            metadata = self._execution_facts(spec, shell=shell, include_content=False)
+            effect = self._execute_effect(
+                tool=tool,
+                program=program,
+                args=args,
+                cwd=cwd,
+                shell=shell,
+                execution=metadata,
+                delete_intent=None,
+                purpose=purpose,
+            )
+        except Exception:  # noqa: BLE001 - 预判定构造失败不改变后续正式判定
+            return None
+        return security_gate.limit_conflict_result(
+            self.security,
+            effect,
+            base_code="permission_denied",
+            default_reason="用户限制禁止这次操作；本次没有执行",
+        )
+
+    async def _content_read_permission_gate(self, spec) -> ToolResult | None:
+        """正文/摘要/shebang 探测之前核对最新读取权限（契约 §2.1/§3.C）。
+
+        只向引擎消费同一 assessment，不生成读取审批、不产生写入授权；命中/失败
+        关闭时调用方必须返回拒绝，且此后不得读取任何正文。
+        """
+        if self.security is None:
+            return None
+        if not (
+            callable(getattr(self.security, "assess_limit_conflict", None))
+            or callable(getattr(self.security, "_limit_conflict", None))
+        ):
+            return None
+        targets = launch_boundary.content_read_targets(spec, computer=self.computer)
+        paths = [str(item.get("path") or "") for item in targets if item.get("path")]
+        if not paths:
+            return None
+        read_effect = security_gate.make_effect(
+            security_gate.EffectKind.READ,
+            [security_gate.path_target(path, exists=True) for path in paths],
+            purpose="读取程序/脚本内容以生成启动事实（读取权限先核对）",
+            tool="cmd.read",
+            detail={
+                "action": "read",
+                "limit_impacts": [
+                    {
+                        "operation": "read",
+                        "objects": [
+                            {"kind": "path", "value": path} for path in paths
+                        ],
+                    }
+                ],
+                "limit_impacts_complete": True,
+            },
+            reversible=True,
+        )
+        return security_gate.limit_conflict_result(
+            self.security,
+            read_effect,
+            base_code="read_limit_denied",
+            default_reason="用户限制禁止读取程序/脚本内容：本次未读取正文、未执行",
+        )
+
 
     def _limit_impacts(self, execution: dict, delete_intent, *, shell: bool) -> list[dict]:
         """契约 §2/§3：真实影响集合（execute/program + delete/path），供引擎限制匹配。"""
@@ -1202,6 +1307,22 @@ class RunProgramTool(_CmdTool):
             cwd=cwd_arg,
             timeout=timeout,
         )
+        # C1（契约 §2.1/§3.C）：元数据发现与正文读取分开。先用元数据事实核对
+        # 最新限制与读取权限；拒绝时正文读取次数 0、程序启动 0 次。
+        metadata_denied = self._pre_authorization_limit_gate(
+            spec,
+            tool="run_program",
+            program=program,
+            args=args,
+            cwd=cwd_arg,
+            shell=False,
+            purpose="运行程序（元数据级影响预核对；不读取正文）",
+        )
+        if metadata_denied is not None:
+            return metadata_denied
+        read_denied = await self._content_read_permission_gate(spec)
+        if read_denied is not None:
+            return read_denied
         execution = self._execution_facts(spec, shell=False)
         fixed_query = self._fixed_query(execution)
         delete_intent = self._delete_intent(execution)
@@ -1305,6 +1426,10 @@ class RunProgramTool(_CmdTool):
         )
         if blocked is not None:
             return blocked
+        # 重新核验（会再读一次程序/脚本内容）之前，再核对最新读取权限。
+        read_denied = await self._content_read_permission_gate(spec)
+        if read_denied is not None:
+            return read_denied
         reviewed_changed = self._verify_reviewed_launch(spec, execution)
         if reviewed_changed is not None:
             return reviewed_changed

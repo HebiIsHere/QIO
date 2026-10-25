@@ -272,8 +272,18 @@ def _program_sha256(path: str) -> str | None:
     return digest
 
 
-def _program_facts(program: str | None, cwd: str | None, computer: Any = None) -> dict:
-    """程序身份事实：解析后的真实路径 + 文件身份 + 大小/修改时间 + 内容摘要。"""
+def _program_facts(
+    program: str | None,
+    cwd: str | None,
+    computer: Any = None,
+    *,
+    include_content: bool = True,
+) -> dict:
+    """程序身份事实：解析后的真实路径 + 文件身份 + 大小/修改时间 + 内容摘要。
+
+    `include_content=False` 只做元数据发现（解析/身份/大小/mtime），**不读取任何
+    正文/摘要**：读取权限核对必须先于正文读取（契约 §2.1/§3.C）。
+    """
     resolved = _resolve_program(program, cwd, computer)
     identity = security_gate.file_identity(resolved) if resolved else {}
     return {
@@ -282,7 +292,9 @@ def _program_facts(program: str | None, cwd: str | None, computer: Any = None) -
         "identity": security_gate.identity_key(identity) if identity else None,
         "size": identity.get("size") if identity else None,
         "mtime_ns": identity.get("mtime_ns") if identity else None,
-        "sha256": _program_sha256(resolved) if resolved else None,
+        "sha256": (
+            _program_sha256(resolved) if (resolved and include_content) else None
+        ),
     }
 
 
@@ -318,13 +330,18 @@ def _shell_tokens(command: str) -> list[str]:
     return tokens
 
 
-def _argument_file_facts(spec: LaunchSpec) -> list[dict]:
+def _argument_file_facts(
+    spec: LaunchSpec, *, include_content: bool = True
+) -> list[dict]:
     """argv / shell 命令里作为脚本文件的参数：内容摘要必须进入 spec_digest。
 
     只核对 argv 字符串不够：python job.py 这种「解释器 + 脚本文件」的启动，脚本
     内容在批准之后被替换时 argv 完全不变。这里对**存在或明确不存在的脚本文件**
     记录内容 sha256（相对路径按 spec.cwd 解析；没有 cwd 时相对路径不做核对），
     让摘要同时覆盖「被执行的脚本内容」。
+
+    `include_content=False`：只做元数据发现，不做 shebang 正文探测、不计算摘要
+    （读取权限核对必须先于这些读取，契约 §2.1/§3.C）。
     """
     cwd = _resolved_cwd(spec)
     tokens: list[str] = [str(item) for item in spec.argv]
@@ -362,8 +379,11 @@ def _argument_file_facts(spec: LaunchSpec) -> list[dict]:
             continue
         if not candidate.is_file():
             continue
-        if suffix not in _SCRIPT_SUFFIXES and not _has_script_shebang(candidate):
-            continue
+        if suffix not in _SCRIPT_SUFFIXES:
+            if include_content:
+                if not _has_script_shebang(candidate):
+                    continue
+            # 只做元数据发现时无法用 shebang 判断：保守纳入（不读取正文）。
         if int(stat.st_size) > _ARGUMENT_IDENTITY_MAX_BYTES:
             entry.update(
                 {
@@ -379,7 +399,7 @@ def _argument_file_facts(spec: LaunchSpec) -> list[dict]:
                     "exists": True,
                     "size": int(stat.st_size),
                     "mtime_ns": int(getattr(stat, "st_mtime_ns", 0)),
-                    "sha256": _program_sha256(key),
+                    "sha256": _program_sha256(key) if include_content else None,
                 }
             )
         facts.append(entry)
@@ -388,7 +408,40 @@ def _argument_file_facts(spec: LaunchSpec) -> list[dict]:
     return facts
 
 
-def build_spec_facts(spec: LaunchSpec, *, computer: Any = None) -> dict:
+def content_read_targets(spec: LaunchSpec, *, computer: Any = None) -> list[dict]:
+    """本次启动会读取正文/摘要的文件清单（**只做元数据发现**，不读取内容）。
+
+    供适配层在真正读取程序/脚本内容之前核对最新读取权限（契约 §2.1/§3.C）：
+    程序本体（内容摘要）与按脚本文件识别的参数（摘要/shebang 探测）。
+    """
+    targets: list[dict] = []
+    seen: set[str] = set()
+    program = _shell_program() if str(spec.kind) == "shell" else spec.program
+    program_facts = _program_facts(
+        program, spec.cwd, computer, include_content=False
+    )
+    resolved = str(program_facts.get("resolved") or "")
+    if resolved:
+        targets.append({"path": resolved, "kind": "program"})
+        seen.add(resolved)
+    for item in _argument_file_facts(spec, include_content=False):
+        path = str(item.get("path") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        targets.append(
+            {
+                "path": path,
+                "kind": "script",
+                "exists": bool(item.get("exists", True)),
+            }
+        )
+    return targets
+
+
+def build_spec_facts(
+    spec: LaunchSpec, *, computer: Any = None, include_content: bool = True
+) -> dict:
     """构造 spec 的「当前事实」：程序身份/argv/cwd/脚本内容摘要。"""
     script_source = spec.script_source or ""
     facts: dict[str, Any] = {
@@ -403,13 +456,19 @@ def build_spec_facts(spec: LaunchSpec, *, computer: Any = None) -> dict:
         ),
         "script_name": spec.script_name,
         # argv/命令里作为脚本文件传入的参数也按内容参与摘要（批准后换脚本 → 失效）
-        "argument_files": _argument_file_facts(spec),
+        "argument_files": _argument_file_facts(spec, include_content=include_content),
+        "argument_files_complete": True,
+        "argument_files_incomplete_reason": None,
     }
     if str(spec.kind) == "shell":
         # shell 的真实身份是解析后的 COMSPEC/sh；只把命令文本算进去不是「程序身份」。
-        facts["program_facts"] = _program_facts(_shell_program(), spec.cwd, computer)
+        facts["program_facts"] = _program_facts(
+            _shell_program(), spec.cwd, computer, include_content=include_content
+        )
     else:
-        facts["program_facts"] = _program_facts(spec.program, spec.cwd, computer)
+        facts["program_facts"] = _program_facts(
+            spec.program, spec.cwd, computer, include_content=include_content
+        )
     return facts
 
 
@@ -470,14 +529,19 @@ def build_limit_impacts(
     return impacts
 
 
-def build_launch_facts(spec: LaunchSpec, *, computer: Any = None) -> dict:
+def build_launch_facts(
+    spec: LaunchSpec, *, computer: Any = None, include_content: bool = True
+) -> dict:
     """审查/审批/执行三方共用的可比较启动事实（含 spec_digest）。
 
     与 build_spec_facts 的差别：只保留与"这次到底要启动什么"有关、可比较的字段，
     供 effect.detail.launch_facts / 审批指纹 / 执行前重核对使用同一份形状。
     spec_digest 覆盖程序身份（含内容摘要）、argv、cwd、shell 文本、脚本内容摘要。
+
+    `include_content=False`：只收集元数据事实（不读正文），供读取权限核对之前的
+    预判定使用；README 的同一函数在授权后必须用完整内容事实重算。
     """
-    facts = build_spec_facts(spec, computer=computer)
+    facts = build_spec_facts(spec, computer=computer, include_content=include_content)
     program_facts = dict(facts.get("program_facts") or {})
     return {
         "kind": facts.get("kind"),
