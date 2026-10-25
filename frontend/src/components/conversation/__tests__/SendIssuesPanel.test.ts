@@ -4,8 +4,11 @@
  * 迁移自旧的 components/InterruptedTurnEntry.vue 测试（2026-10-26 合并后清理 · C1）：
  * 旧的常驻入口已删除，继续 / 忽略 / 全部忽略 / 真实失败可重试 / 结果说明留在屏幕上
  * 这些有效能力由入口①承接。负向断言一条不少：不自动重放、失败不静默、成功后列表消失。
+ *
+ * 另外迁移旧的「悬浮聊天」组件级草稿保存失败断言（原 stores/__tests__/draftPersistence.test.ts，
+ * 2026-10-26 · C2）：旧 ChatDock 删除后，草稿保存失败的真实原因 + 重试入口在入口①这里。
  */
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import SendIssuesPanel from "../SendIssuesPanel.vue";
@@ -142,5 +145,56 @@ describe("发送异常面板 · 上次没有执行的消息", () => {
     const one = setup([turn("turn_a", "第一条")]);
     expect(one.w.find('[data-section="interrupted"] button.bulk').exists()).toBe(false);
     one.w.unmount();
+  });
+});
+describe("发送异常面板 · 草稿保存失败", () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+
+  function breakLocalStorage(message: string): void {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: () => {
+          throw new Error(message);
+        },
+        setItem: () => {
+          throw new Error(message);
+        },
+        removeItem: () => {
+          throw new Error(message);
+        },
+      },
+    });
+  }
+
+  afterEach(() => {
+    if (originalDescriptor) Object.defineProperty(globalThis, "localStorage", originalDescriptor);
+  });
+
+  it("显示真实原因与重试入口，不说「已保存」", async () => {
+    breakLocalStorage("本地存储被禁用");
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    session.currentTopicId = "t1";
+    session.draft = "写不进本机的字";
+    session.flushDraft();
+    expect(session.draftSaveStatus).toBe("error");
+
+    const w = mount(SendIssuesPanel, { global: { plugins: [pinia] } });
+    const section = w.find('[data-section="draft-save"]');
+    expect(section.exists()).toBe(true);
+    expect(section.text()).toContain("草稿没有保存进本机");
+    expect(section.text()).toContain("本地存储被禁用");
+    expect(w.text()).not.toContain("已保存");
+    expect(w.find('[data-im="composer-draft-retry"]').exists()).toBe(true);
+
+    // 存储恢复后点重试：只重写草稿，状态改成已保存
+    if (originalDescriptor) Object.defineProperty(globalThis, "localStorage", originalDescriptor);
+    await w.find('[data-im="composer-draft-retry"]').trigger("click");
+    await flushPromises();
+    expect(session.draftSaveStatus).toBe("saved");
+    expect(w.find('[data-section="draft-save"]').exists()).toBe(false);
+    w.unmount();
   });
 });

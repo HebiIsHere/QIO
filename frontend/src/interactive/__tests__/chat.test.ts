@@ -1,3 +1,12 @@
+/**
+ * 聊天输入 / 发送判定的纯函数守卫。
+ *
+ * 2026-10-26（合并后清理 · C2）：旧 ChatDock 已删除，本文件的「组件级（真实挂载 ChatDock）」
+ * 一节随之删除 —— 输入区、Enter / 输入法语义、失败保留原文这些行为现在由
+ * v2/InteractiveConversation + components/Composer.vue 承担，其组件级覆盖在
+ * components/__tests__/Composer.test.ts、components/conversation/ 与 v2 的会话用例里。
+ * 这里保留仍然被生产代码使用的纯函数判定（session.ts 用 isBlankText / normalizeSendText）。
+ */
 import { describe, expect, it } from "vitest";
 import {
   canSend,
@@ -143,160 +152,5 @@ describe("面板文案（如实说明能力边界）", () => {
 
   it("草稿说明写明收起面板不清草稿", () => {
     expect(chatDraftHintText()).toContain("不会清掉草稿");
-  });
-});
-/**
- * 组件级验证（真实挂载 ChatDock）。
- *
- * 纯函数能证明「判定对不对」，但不能证明「界面真的用了这些判定」。
- * 这里用真 pinia + 真会话 store 挂载组件，覆盖三条最容易退化的行为：
- * 收起面板不清消息 / 不删草稿 / 不打断进行中的对话；Enter 与输入法选字的区别；失败保留输入。
- */
-import { flushPromises, mount } from "@vue/test-utils";
-import { createPinia, setActivePinia } from "pinia";
-import { afterEach, beforeEach, vi } from "vitest";
-import ChatDock from "../../components/interactive/ChatDock.vue";
-import { useInteractiveStore } from "../../stores/interactive";
-import { useSessionStore, type StreamMessage } from "../../stores/session";
-
-function message(id: string, role: StreamMessage["role"], content: string): StreamMessage {
-  return { id, role, content, contentType: "text/plain", createdAt: "2026-10-07T04:00:00.000Z" };
-}
-
-function enterKey(textarea: HTMLTextAreaElement, isComposing = false) {
-  const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
-  if (isComposing) Object.defineProperty(event, "isComposing", { value: true });
-  textarea.dispatchEvent(event);
-  return event;
-}
-
-describe("悬浮聊天面板（组件级）", () => {
-  let pinia: ReturnType<typeof createPinia>;
-
-  beforeEach(() => {
-    pinia = createPinia();
-    setActivePinia(pinia);
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  function open(chatOpen = true) {
-    const session = useSessionStore();
-    const interactive = useInteractiveStore();
-    interactive.chatOpen = chatOpen;
-    const wrapper = mount(ChatDock, { global: { plugins: [pinia] } });
-    return { wrapper, session, interactive };
-  }
-
-  it("收起面板不清消息、不删草稿、不打断进行中的对话", async () => {
-    const { wrapper, session, interactive } = open();
-    session.messages = [message("m1", "user", "给我看看板面上的材料"), message("m2", "assistant", "好的。")];
-    session.draft = "还没发出去的草稿";
-    session.turnRunning = true;
-    await flushPromises();
-
-    expect(wrapper.find('[data-im="chat-panel"]').exists()).toBe(true);
-    expect((wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement).value).toBe(
-      "还没发出去的草稿",
-    );
-    expect(wrapper.findAll(".stream-item")).toHaveLength(2);
-
-    // 收起：只是面板不渲染
-    await wrapper.find('[data-im="chat-toggle"]').trigger("click");
-    expect(wrapper.find('[data-im="chat-panel"]').exists()).toBe(false);
-    expect(session.messages).toHaveLength(2);
-    expect(session.draft).toBe("还没发出去的草稿");
-    expect(session.turnRunning).toBe(true);
-
-    // 再展开：消息与草稿都在，进行中的对话没有被重开
-    await wrapper.find('[data-im="chat-toggle"]').trigger("click");
-    await flushPromises();
-    expect(wrapper.findAll(".stream-item")).toHaveLength(2);
-    expect((wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement).value).toBe(
-      "还没发出去的草稿",
-    );
-    expect(interactive.chatOpen).toBe(true);
-    expect(session.turnRunning).toBe(true);
-  });
-
-  it("Enter 只发送输入的文字（去首尾空白），并清空草稿", async () => {
-    const { wrapper, session } = open();
-    const send = vi.spyOn(session, "send").mockResolvedValue(true);
-    session.draft = "  把这两张卡片连起来  ";
-    await flushPromises();
-
-    const textarea = wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement;
-    const event = enterKey(textarea);
-    expect(event.defaultPrevented).toBe(true);
-    await flushPromises();
-
-    expect(send).toHaveBeenCalledTimes(1);
-    // 载荷形状与对话页同一条入口（P3 契约 §4.1）：文字 + 本次明确选定的附件（这里为空）
-    const [payload, attachmentIds, attachments] = send.mock.calls[0] as [string, string[], unknown[]];
-    expect(payload).toBe("把这两张卡片连起来");
-    expect(attachmentIds ?? []).toEqual([]);
-    expect(attachments ?? []).toEqual([]);
-    expect(session.draft).toBe("");
-  });
-
-  it("输入法选字中的 Enter 不发送，草稿原样保留", async () => {
-    const { wrapper, session } = open();
-    const send = vi.spyOn(session, "send").mockResolvedValue(true);
-    session.draft = "zhong";
-    await flushPromises();
-
-    const textarea = wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement;
-    const event = enterKey(textarea, true);
-    expect(event.defaultPrevented).toBe(false);
-    await flushPromises();
-
-    expect(send).not.toHaveBeenCalled();
-    expect(session.draft).toBe("zhong");
-  });
-
-  it("纯空格 + Enter 不发送，并说明原因", async () => {
-    const { wrapper, session } = open();
-    const send = vi.spyOn(session, "send").mockResolvedValue(true);
-    session.draft = "   ";
-    await flushPromises();
-
-    enterKey(wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement);
-    await flushPromises();
-
-    expect(send).not.toHaveBeenCalled();
-    expect(session.draft).toBe("   ");
-    expect(wrapper.find('[data-im="chat-blank"]').text()).toContain("还没有输入内容");
-  });
-
-  it("发送失败保留输入并显示真实原因（不伪装成功）", async () => {
-    const { wrapper, session } = open();
-    vi.spyOn(session, "send").mockImplementation(async () => {
-      session.lastError = "网络中断";
-      /**
-       * 真实的 `send()` 在失败时会把「失败原文 + 原话题」记进会话层（契约 §10.1），
-       * 界面据此显示原因并提供取回入口。这里 mock 掉 send 时要一并给出这份事实，
-       * 否则测的是「没有失败事实」的另一种情况，不是用户真实遇到的路径。
-       */
-      session.failedSend = {
-        topicId: session.currentTopicId,
-        text: session.draft || "这条发不出去的话",
-        draftSeq: 0,
-        at: Date.now(),
-      };
-      session.failedSendError = "网络中断";
-      return false;
-    });
-    session.draft = "这条发不出去的话";
-    await flushPromises();
-
-    enterKey(wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement);
-    await flushPromises();
-
-    expect(session.draft).toBe("这条发不出去的话");
-    const failure = wrapper.find('[data-im="chat-failure"]').text();
-    expect(failure).toContain("网络中断");
-    expect(failure).toContain("输入已保留");
   });
 });

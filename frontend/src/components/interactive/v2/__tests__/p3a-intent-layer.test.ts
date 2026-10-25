@@ -47,7 +47,6 @@ vi.mock("../../../../stores/interactive", () => ({ useInteractiveStore: () => mo
 
 import IntentLayer from "../IntentLayer.vue";
 import BoardPreviewLayer from "../../BoardPreviewLayer.vue";
-import IntentWorkbench from "../../IntentWorkbench.vue";
 import {
   batchConfirmState,
   capabilityRows,
@@ -484,35 +483,3 @@ describe("BoardPreviewLayer：display 位置按 intent_id 平移预览", () => {
   });
 });
 
-describe("IntentWorkbench：确认结果逐项 + needs_update 说明（能力保留）", () => {
-  function mountWorkbench() {
-    mocks.api.fetchIntentViews.mockResolvedValue({
-      available: true,
-      source: "service",
-      intents: [view({ intent_id: "in_1" }), view({ intent_id: "in_2", status: "needs_update", title: "过期" })],
-      batch_confirm: { min: 2, eligible_ids: ["in_1"], available: true },
-    });
-    mocks.api.fetchWaiting.mockResolvedValue({ available: true, waiting: null });
-    mocks.api.fetchLedger.mockResolvedValue({ available: true, counts: {} });
-    mocks.api.fetchIntentResults.mockResolvedValue({ available: true, results: [] });
-    return mount(IntentWorkbench, { attachTo: document.body });
-  }
-
-  it("确认后逐项显示显式 id 与真实 turn_id；needs_update 有说明且不能确认", async () => {
-    mocks.api.confirmSingleIntent.mockResolvedValue({
-      results: [{ intent_id: "in_1", ok: true, status: "approved", turn_id: "turn_42" }],
-    });
-    const wrapper = mountWorkbench();
-    await flushPromises();
-    await flushPromises();
-    expect(wrapper.find('[data-im="iw-needs-update"]').text()).toContain("需要更新");
-    await wrapper.find('[data-intent-id="in_1"] [data-im="iw-confirm"]').trigger("click");
-    await flushPromises();
-    await flushPromises();
-    const row = wrapper.find('[data-im="iw-confirm-row"]');
-    expect(row.attributes("data-intent-id")).toBe("in_1");
-    expect(row.attributes("data-turn-id")).toBe("turn_42");
-    expect(wrapper.find('[data-im="iw-notice"]').text()).toContain("已确认（等待执行）");
-    wrapper.unmount();
-  });
-});
