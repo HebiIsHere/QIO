@@ -107,7 +107,6 @@ export function stubServices() {
     batchDecide: vi.spyOn(api, "batchDecide").mockResolvedValue({ ok: true } as never),
     batchConfirmIntents: vi.spyOn(api, "batchConfirmIntents").mockResolvedValue({ results: [] } as never),
     confirmSingleIntent: vi.spyOn(api, "confirmSingleIntent").mockResolvedValue({ results: [] } as never),
-    fetchWaiting: vi.spyOn(api, "fetchWaiting").mockResolvedValue({ available: true, waiting: null } as never),
     fetchLedger: vi.spyOn(api, "fetchLedger").mockResolvedValue({ available: true, counts: {} } as never),
     fetchIntentResults: vi.spyOn(api, "fetchIntentResults").mockResolvedValue({ available: true, results: [] } as never),
   };

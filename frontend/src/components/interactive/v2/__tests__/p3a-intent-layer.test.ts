@@ -20,7 +20,6 @@ const mocks = vi.hoisted(() => ({
     fetchRecoveryPreview: vi.fn(),
     recoverIntent: vi.fn(),
     fetchIntentViews: vi.fn(),
-    fetchWaiting: vi.fn(),
     fetchLedger: vi.fn(),
     fetchIntentResults: vi.fn(),
   },
