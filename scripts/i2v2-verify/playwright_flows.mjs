@@ -319,7 +319,8 @@ flow(4, "任务与批量入口真实可用：暂停/继续/取消与结果一致
   record("任务入口存在", "可见", await entry.count(), (await entry.count()) > 0);
   await entry.first().click();
   await page.waitForTimeout(800);
-  const popover = await waitPanel("tasks-popover", 4000);
+  // 校准（集成后真实实现）：任务面板是 v2/TaskCenterPanel，钩子 task-center。
+  const popover = await waitPanel("task-center", 6000);
   const panelText = popover ? await popover.textContent() : "";
   await shot("tasks-panel");
   record("任务入口打开真实任务面板", "面板出现且列出任务标题", popover ? String(panelText).slice(0, 160) : "没有面板", Boolean(popover));
@@ -356,20 +357,64 @@ flow(4, "任务与批量入口真实可用：暂停/继续/取消与结果一致
   record("批量入口接到真实界面", "意图层批量栏或任务面板里的批量入口可见", batchCount, batchCount > 0);
 });
 
-flow(5, "一条卡片草稿冲突 → 恢复入口可见可打开可处理（对话收起）", async () => {
+flow(5, "真实可恢复事项 → 恢复入口可见可打开可处理（对话收起）", async () => {
+  /*
+   * 真实触发一条恢复事项：让板面保存失败一次（服务端 PUT /state 被网络中断），
+   * 这等价于用户真实遇到的「有改动没有保存」；恢复入口必须出现、对话收起也能打开、
+   * 处理（重试保存）成功后数量减少。草稿冲突变体由页面级验收测试覆盖（受控数据），
+   * 本流程不伪造「草稿冲突」字样。
+   */
   await gotoInteractive();
-  // 对话保持收起，确认恢复入口与面板可用
+  const info = await targets();
+  const cardId = (info.cards[info.cards.length - 1] || {}).id;
+  if (!cardId) {
+    recordLimited("真实恢复事项", "可拖动一张卡片制造保存失败", "板面没有卡片");
+    return;
+  }
+  let blockedOnce = false;
+  await page.route("**/api/interactive/boards/*/state", async (route) => {
+    if (!blockedOnce && route.request().method() === "PUT") {
+      blockedOnce = true;
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+  const card = cardLocator(cardId);
+  await card.scrollIntoViewIfNeeded().catch(() => {});
+  const box = await card.boundingBox();
+  if (box) {
+    // 从卡片正文下部起拖：避开卡片局部工具栏与右上角按钮，也不落在浮动对话上
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.78);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 70, box.y + box.height * 0.78 - 40, { steps: 8 });
+    await page.mouse.up();
+  }
+  await page.waitForTimeout(2500);
+  await shot("recovery-entry");
   const recovery = page.locator('[data-entry="recovery"]');
   const visible = await recovery.count();
-  await shot("recovery-entry");
-  record("恢复入口存在（对话收起）", "入口可见（有真实事项）", visible, visible > 0);
+  record("保存失败后恢复入口出现（对话收起）", "入口可见（有真实事项）", visible, visible > 0);
   if (visible) {
     await recovery.first().click();
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(900);
     const panelText = await page.locator('[data-extra-entry="recovery"]').first().textContent().catch(() => "");
     await shot("recovery-panel");
-    record("恢复面板可打开且不是伪空态", "面板有内容/失败说明，不是「没有需要恢复」", String(panelText).slice(0, 200), String(panelText).trim().length > 0);
+    record(
+      "恢复面板可打开且不是伪空态",
+      "面板有真实失败说明（含「保存」相关文案）",
+      String(panelText).slice(0, 220),
+      /保存|失败|恢复/.test(String(panelText)),
+    );
   }
+  await page.unroute("**/api/interactive/boards/*/state");
+  const retry = page.locator('[data-im="p3c-recovery-save-retry"]');
+  if (await retry.count()) {
+    await retry.first().click();
+    await page.waitForTimeout(2200);
+  }
+  const after = await page.locator('[data-entry="recovery"]').count();
+  record("处理（重试保存）后恢复入口数量减少并消失", "0", after, after === 0);
 });
 
 flow(6, "重新连接已有关系：含义/方向/曲线不变，取消编辑不产生修改", async () => {
@@ -379,17 +424,21 @@ flow(6, "重新连接已有关系：含义/方向/曲线不变，取消编辑不
   const sourceCardId = info.relationCardEndpoint;
   record("前置：已有关系带用户含义", "meaning 非空", JSON.stringify(relation && { id: relation.id, meaning: relation.meaning, direction: relation.direction }), Boolean(relation && String(relation.meaning || "").trim()));
   if (!relation || !sourceCardId) return;
-  // 选中源卡片，从连接点拖到另一端（重复连接同一对端点）
+  // 选中源卡片，从真实端点锚点拖到另一端（重复连接同一对端点）。
+  // 校准：2026-10-25 起连接点由 BoardCardAnchorLayer 渲染，旧的 connect-point 只留 DOM 兼容。
   await clickCard(sourceCardId);
-  const point = page.locator('[data-im="connect-point"]').first();
+  const point = page.locator('[data-im="card-anchor"]').first();
+  await point.waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
   if (!(await point.count())) {
-    record("已连接卡片有连接点", "≥1 个连接点", "没有", false);
+    record("已连接卡片有端点锚点", "≥1 个可拖端点", "没有", false);
     return;
   }
   const pointBox = await point.boundingBox();
   const target = info.groupEndpoint
     ? page.locator('[data-im="group"][data-group-id="' + info.groupEndpoint.slice("group:".length) + '"]')
     : cardLocator(String([relation.src, relation.dst].find((endpoint) => endpoint !== sourceCardId)));
+  await target.scrollIntoViewIfNeeded().catch(() => {});
+  await page.waitForTimeout(300);
   const targetBox = await target.boundingBox();
   if (!pointBox || !targetBox) {
     record("拖线几何可用", "可见", "不可见", false);
@@ -427,13 +476,28 @@ flow(7, "菜单移出组：不重叠、组框正确、撤销/重做完整", asyn
   const memberBefore = (info.cards || []).find((card) => card.id === memberId);
   record("前置：组内成员存在", (groupBefore && groupBefore.id) + " 含 " + memberId, Boolean(groupBefore && memberBefore), Boolean(groupBefore && memberBefore));
   if (!groupBefore || !memberId) return;
-  await clickCard(memberId);
-  const menu = page.locator('[data-im="selection-menu"]');
-  if (!(await menu.count())) {
-    record("选中后出现整理菜单", "selection-menu 可见", "没有", false);
+  /*
+   * 校准（集成后真实实现）：单卡图标工具栏里没有「整理」入口（它只出现在多选工具栏），
+   * 所以按真实用户可达路径做多选：选一组内成员 + 另一组内成员，两个都能移出各自的组。
+   */
+  const secondGroup = (info.groups || []).find((group) => group.id !== groupBefore.id && (group.members || []).length > 0);
+  const secondMemberId = secondGroup ? secondGroup.members[0] : null;
+  if (!secondGroup || !secondMemberId) {
+    record("前置：两个组各有一名可移出成员", "存在", "没有", false);
     return;
   }
-  await menu.first().click();
+  await clickCard(memberId);
+  await page.keyboard.down("Control");
+  await clickCard(secondMemberId);
+  await page.keyboard.up("Control");
+  await page.waitForTimeout(900);
+  const menu = page.locator('[data-im="selection-menu"]');
+  await menu.first().waitFor({ state: "visible", timeout: 6000 }).catch(() => {});
+  if (!(await menu.count())) {
+    record("多选后出现整理菜单", "selection-menu 可见", "没有", false);
+    return;
+  }
+  await menu.first().click({ timeout: 8000 });
   await page.waitForTimeout(400);
   const leave = page.locator('[data-im="group-leave"]');
   if (!(await leave.count())) {
@@ -444,23 +508,30 @@ flow(7, "菜单移出组：不重叠、组框正确、撤销/重做完整", asyn
   await page.waitForTimeout(1200);
   await shot("after-leave-group");
   const after = await boardState();
-  const groupAfter = (after.groups || []).find((group) => group.id === groupBefore.id);
-  const moved = (after.cards || []).find((card) => card.id === memberId);
-  const member = (groupAfter?.members || []).includes(memberId);
-  record("成员已移出", memberId + " 不在 " + groupBefore.id, String(member), member === false);
   const overlap = (a, b) => Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 0 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 0;
-  record("被移出卡片不压组框", "无重叠", JSON.stringify({ card: moved && { x: moved.x, y: moved.y }, group: groupAfter && { x: groupAfter.x, y: groupAfter.y, w: groupAfter.w, h: groupAfter.h } }), Boolean(moved && groupAfter) && !overlap(moved, groupAfter));
+  const groupAfterA = (after.groups || []).find((group) => group.id === groupBefore.id);
+  const groupAfterB = (after.groups || []).find((group) => group.id === secondGroup.id);
+  const movedA = (after.cards || []).find((card) => card.id === memberId);
+  const movedB = (after.cards || []).find((card) => card.id === secondMemberId);
+  record("两名成员都已移出各自的组", "两个组都不再包含对应成员", JSON.stringify({ a: groupAfterA && groupAfterA.members, b: groupAfterB && groupAfterB.members }), Boolean(groupAfterA && groupAfterB) && !(groupAfterA.members || []).includes(memberId) && !(groupAfterB.members || []).includes(secondMemberId));
+  const blockingGroups = (after.groups || []).filter((group) => !group.deleted && (group.members || []).length);
+  const cardOverlapsGroup = (card) => blockingGroups.some((group) => overlap(card, group));
+  const otherCards = (after.cards || []).filter((card) => !card.deleted && card.id !== memberId && card.id !== secondMemberId);
+  record("被移出卡片不压任何组框", "无重叠", JSON.stringify({ a: movedA && { x: movedA.x, y: movedA.y }, b: movedB && { x: movedB.x, y: movedB.y } }), Boolean(movedA && movedB) && !cardOverlapsGroup(movedA) && !cardOverlapsGroup(movedB));
+  record("被移出卡片不与其它卡片重叠", "无重叠", "检查 " + otherCards.length + " 张卡片", Boolean(movedA && movedB) && !otherCards.some((card) => overlap(movedA, card) || overlap(movedB, card)));
   // 撤销 / 重做
   await page.keyboard.press("Control+z");
   await page.waitForTimeout(1200);
   const undone = await boardState();
-  const restored = (undone.groups || []).find((group) => group.id === groupBefore.id);
-  record("撤销一次恢复成员关系", memberId + " 回到 " + groupBefore.id, restored?.members, Boolean(restored && (restored.members || []).includes(memberId)));
+  const restoredA = (undone.groups || []).find((group) => group.id === groupBefore.id);
+  const restoredB = (undone.groups || []).find((group) => group.id === secondGroup.id);
+  record("撤销一次同时恢复两个组的成员关系", "两名成员都回到原组", JSON.stringify({ a: restoredA && restoredA.members, b: restoredB && restoredB.members }), Boolean(restoredA && restoredB) && (restoredA.members || []).includes(memberId) && (restoredB.members || []).includes(secondMemberId));
   await page.keyboard.press("Control+y");
   await page.waitForTimeout(1200);
   const redone = await boardState();
-  const redoneGroup = (redone.groups || []).find((group) => group.id === groupBefore.id);
-  record("重做一次恢复移出结果", memberId + " 再次不在组里", redoneGroup?.members, Boolean(redoneGroup && !(redoneGroup.members || []).includes(memberId)));
+  const redoneA = (redone.groups || []).find((group) => group.id === groupBefore.id);
+  const redoneB = (redone.groups || []).find((group) => group.id === secondGroup.id);
+  record("重做一次恢复移出结果", "两名成员再次不在原组", JSON.stringify({ a: redoneA && redoneA.members, b: redoneB && redoneB.members }), Boolean(redoneA && redoneB) && !(redoneA.members || []).includes(memberId) && !(redoneB.members || []).includes(secondMemberId));
 });
 
 flow(8, "搜索/书签定位已收起组内成员：目标实际显示并高亮", async () => {
@@ -531,16 +602,21 @@ flow(9, "关系胶囊 50% / 100% / 200% 缩放与平移后拖动；Esc / 中断 
     return;
   }
   const viewport = page.viewportSize();
+  async function currentScale() {
+    return page.evaluate(() => {
+      const surface = document.querySelector(".board-surface");
+      const match = /scale\(([\d.]+)\)/.exec((surface && surface.style.transform) || "");
+      return match ? Number(match[1]) : 1;
+    });
+  }
   async function zoomTo(targetPercent) {
     const anchor = { x: viewport.width / 2, y: viewport.height / 2 };
     for (let i = 0; i < 30; i += 1) {
-      const text = await page.locator('[data-im="board-view-hint"]').textContent().catch(() => "");
-      const percent = Number((/(\d+)%/.exec(String(text)) || [])[1]);
-      const current = Number.isFinite(percent) ? percent : 100;
+      const current = Math.round((await currentScale()) * 100);
       if (Math.abs(current - targetPercent) <= 5) return current;
       await page.mouse.move(anchor.x, anchor.y);
       await page.mouse.wheel(0, current < targetPercent ? -300 : 300);
-      await page.waitForTimeout(120);
+      await page.waitForTimeout(160);
     }
     return NaN;
   }
