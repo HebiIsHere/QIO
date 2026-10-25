@@ -1,7 +1,7 @@
 {
   "tool_ok": false,
   "tool_failed": true,
-  "tool_error": "程序执行超时（进程已终止）",
+  "tool_error": "程序执行超时：已终止进程树（进程已终止）",
   "child_pid_started": true,
   "child_alive_immediately": false,
   "child_gone_within_1s": true,
@@ -9,5 +9,5 @@
   "probe_wait_seconds_wide": 5.0,
   "grandchild_gone": true,
   "decoy_alive": true,
-  "probe_wait_seconds": 0.716
+  "probe_wait_seconds": 0.84
 }

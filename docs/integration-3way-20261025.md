@@ -135,20 +135,58 @@
 
 ## 6. 验证台账
 
-（见 §6.1 定向 / §6.2 一次本地全量轮次 / §6.3 一次完整 CI 轮次 —— 由收口时回填真实运行号与结论。）
+### 6.1 定向验证（按工作流，均为定向筛选，不是全量）
 
-### 6.1 定向验证（按工作流）
+| 工作流 | 范围 | 结果 | 证据 |
+| --- | --- | --- | --- |
+| A 数据库 | 迁移/升级 10 文件（含新增 `test_integ_a_migration_upgrade.py`） | 84 passed | `_int3/evidence/A-integ-targeted.log` |
+| B 审批 | 前端 5 文件 57 例 + 后端 `test_approval_api.py`/`test_knowledge_approval_api.py` 18 例 | 全绿 | `_int3/evidence/B-approval-mapping.md` §阶段二 |
+| C 互动 | 后端 8 文件 208 + 50；前端 14 文件 127 + 8 文件 176 + irl-b 29 | 全绿 | `_int3/evidence/C-interactive-seams-review.md` |
+| D 后端/桌面 | 后端 16 文件 214；前端 WindowChrome/p1a/design-guards 45；`vue-tsc` 0 | 全绿 | `_int3/evidence/D-backend-desktop-plan.md` §9–§12 |
+| E 独立验收 | 后端 28 文件 433 / i2 后端 19 文件 329 / 迁移 8 文件 56 / 前端 27 文件 438 | 全绿 | `_int3/evidence/E-verification-report.md` |
+| Lead 集成 | 迁移冒烟、设置/审批/互动/迁移定向批次、真实界面抽查 | 见 6.2 | `_int3/evidence/` |
 
-（回填）
+### 6.2 本地全量轮次（仅一次，候选 `c56b7033`）
 
-### 6.2 本地全量轮次（仅一次）
-
-（回填：后端 `uv run --frozen pytest`、前端 `npx vitest run`、`vue-tsc --noEmit`、生产构建、文档/许可检查、离线评估）
+- 后端：`cd backend; uv run --frozen pytest -q` →（见 6.4 回填）
+- 前端：`cd frontend; npx vitest run` → **474 files / 4336 tests 全部通过（exit 0）**
+- `npx vue-tsc --noEmit` → exit 0；`npx vite build` → 成功（构建产物 dist/，未提交）
+- 文档一致性：`python scripts/check_docs.py` → 通过（98 个里程碑）；自检 `--selftest` 见 CI
+- 第三方声明：`python scripts/licenses/check_third_party.py` → 通过（锁文件组件 914 / 声明 918 条 / 许可证 42 种）；锁文件相对 `origin/main` **零变化**，未改依赖、未改版本号
+- 离线评估：`uv run --frozen python -m agent.eval.run` 在候选与 `r9h13/main` 基线上各跑一次，指标一致（`verdict: skip`），日志 `_int3/evidence/eval-candidate.json`、`eval-r9h13.json`
+- 真实界面：对话/互动/统一审批/长文本与宽表格在 1440×900 与 480×600 两档截图检查（E 的 `_int3/evidence/shots/`），无页面横向溢出、控制台 0 error
 
 ### 6.3 完整 CI 轮次（仅一次）
 
 （回填：运行号、SHA、逐 job 结论、失败与定向复验）
 
+### 6.4 最终候选状态
+
+- 最终候选 SHA：`c56b703350c224c484dd661be8fe3f993b1f8e42`
+- 三个冻结来源 + 追加交付均为其祖先（`git merge-base --is-ancestor` 实测）
+- 工作树干净、全树无冲突标记；`backend` 子树在 854d9c39→c56b7033 之间未变（`git rev-parse <sha>:backend` 相同）
 ## 7. 已知限制与未验证事项
 
-（回填）
+### 7.1 未验证（如实记录，不用浏览器预览冒充）
+
+- **真机桌面壳**：Tauri `CloseRequested → tray/quit/ask`、托盘菜单与恢复、`request_close` / `qio_set_close_behavior` / `qio_close_ack` 三个 IPC、`POST /api/lifecycle/shutdown` 的有界收尾与 `taskkill /PID /T` 核验、ask 的 1.8s ACK 兜底、安装形态 `install_e2e`。
+  本轮**没有**编译候选壳（时间预算与无人值守交互限制），只在组件级（mock Tauri）与源码级协议不变量上验证。
+- **真实模型/真实厂商链路**：全部模型调用使用 fake/mock provider；离线评估用的也是离线夹具。
+- **系统回收站 / 符号链接 / 硬链接 / 跨卷移动**的真实文件系统行为：只有仓库既有 Windows 用例覆盖，本轮未新增真机证据。
+- **POSIX 平台**：本轮本机验证全部在 Windows；CI 会覆盖 Linux 两个 Python 版本，但那是 CI 的事实，不是本地结论。
+
+### 7.2 已知限制（非阻塞）
+
+- 批量审批：v2 生命周期路径只有「整批一次决定」，逐项成败在结果文本/事件里，前端没有逐项列表（两端原本都没有批量 UI，本轮不扩大范围）。
+- 聊天页没有「执行结果历史」入口：R9 的执行结果历史仍在非聊天路由的 `ApprovalModal` 里（按路由门控，聊天页由统一弹窗承载）。
+- v2 生命周期审批的子智能体预算只读展示：`/decide` 不支持 `overrides`，本轮不新增后端参数。
+- 页面来源库升级时，52/53/57/68/69 的 ADD COLUMN 预检会按既有「半截迁移自愈」路径打 warning（对象已存在 → 跳过），属日志噪声不是错误。
+- 迁移号 54/56 保持空号（历史语义），后续新迁移从 71 起。
+- 统一审批弹窗在窄窗口下，类型标签较多时第 3 个标签可能被右边缘裁切（观察项，不影响提交）。
+
+### 7.3 基线既有问题与本轮处置
+
+- `test_r9h3_identity_refresh.py` 6 条、`test_r9h_content_binding.py` 1 条在冻结基线 `r9h13/main` 上就是红的（H13 §8 三次确认、H8 §6 `script_sha256` 语义变更后旧期望未修订）。
+  本轮按契约修订期望（**收紧而非放宽**：新增 0/1/2 次确认全部被拒的负向断言、新增 `operation_fingerprint` 不等断言），未以「原来就红」通过。
+- `test_p3_d_intent_resume_retry` 的迁移号断言随页面线迁移 56 → 69 更新，并断言 56 空号。
+- H13 报告把 `test_r9h_content_binding` 归因为「Windows 共享 venv junction 环境」，实测不成立（`script_sha256` 恒为 None 与 venv 无关），按 H8 §6 语义修正；该归因错误记录在此，不回写历史报告。
