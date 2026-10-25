@@ -155,7 +155,7 @@ const pendingApprovals = computed(() =>
   ),
 );
 
-/** 这一轮是否真有一个可展示的批量列表（资格判据与 IntentBatchTray 同一口径）。 */
+/** 这一轮是否真有一个可展示的批量列表（资格判据与任务面板「待确认」同一口径）。 */
 const batchListAvailable = computed(() =>
   store.batches.some(
     (batch) => batch.intentIds.length >= BATCH_LIST_MIN && batch.pendingIds.length > 0,
@@ -334,10 +334,8 @@ function locateOnBoard(intent: Intent): void {
 /**
  * 批量入口：直接打开**任务面板的待确认分区**（真实界面，唯一状态是 tasksOpen）。
  *
- * 基线只把 store.batchOpen 置 true，而 IntentBatchTray 已不在新页面上挂载 ——
- * 点了没有任何可见反馈。现在批量对象与操作资格都来自 store.taskRows，
- * 面板里有逐条批准 / 拒绝与同批操作，无内容时给准确空态。
- * C02：批量界面统一由 tasksOpen 承接，这里不再写旧的 batchOpen 通道。
+ * 批量对象与操作资格都来自 store.taskRows：面板里有逐条批准 / 拒绝与同批操作，
+ * 无内容时给准确空态。批量与「任务」是同一个面板的两条入口，不再维护第二份开合状态。
  */
 function openBatchList(): void {
   store.openTaskCenter("pending");

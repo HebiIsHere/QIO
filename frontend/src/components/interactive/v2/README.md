@@ -141,10 +141,10 @@ import { saveStatusView } from "./v2/saveStatus";
 
 - `Composer.vue` 新增可选 prop `chatBinding`：只作为 `session.send` 的 `options.interactive` 传下去；
   不传 → 对话页行为完全不变（请求体不带板面身份）。Composer **不读 interactive store**。
-- 互动页由 `v2/InteractiveConversation` 传入 `store.chatBinding`（旧 ChatDock 的 `binding` prop 已随组件删除）。
+- 互动页由 `v2/InteractiveConversation` 传入 `store.chatBinding`（互动对话窗是这条绑定唯一的生产者）。
 
 ## 6. 验证
 
 - `npx vue-tsc --noEmit`
 - `npx vitest run src/components/interactive/__tests__/p1b-v2-layout.test.ts src/components/interactive/__tests__/p1b-v2-workspace.test.ts src/components/interactive/__tests__/p1b-v2-chrome-tools.test.ts`
-- Phase 3-B：`npx vitest run src/components/interactive/v2/__tests__/conversationLayout.test.ts src/components/interactive/v2/__tests__/InteractiveConversation.test.ts src/components/__tests__/p3b-composer-binding.test.ts src/components/interactive/__tests__/p3b-chatdock-binding.test.ts`
+- 互动对话窗与几何桥：`npx vitest run src/components/interactive/v2/__tests__/conversationLayout.test.ts src/components/interactive/v2/__tests__/InteractiveConversation.test.ts src/components/interactive/v2/__tests__/conversationGeometryBridge.test.ts src/components/__tests__/p3b-composer-binding.test.ts`
