@@ -449,29 +449,33 @@ const boardSize = computed(() => {
 
           <!-- 新链有 IntentView 时由 IntentLayer 接管；旧托盘只服务于旧链兼容记录。 -->
 
-          <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
-            板面读取失败：{{ store.loadError }}
-            <button class="im-link" type="button" data-im="board-retry" @click="store.load()">重试</button>
-          </p>
-          <!-- F06：意图读取失败保留旧内容 + 明确区分「更新失败」与「从来没读到过」 -->
-          <p v-if="intentReadFailed" class="im-notice warn" role="alert" data-im="intent-read-error">
-            {{ intentReadErrorText }}
-            <button class="im-link" type="button" data-im="intent-read-retry" :disabled="intentReadBusy" @click="retryIntentRead">
-              {{ intentReadBusy ? "读取中…" : "重试读取" }}
-            </button>
-          </p>
-          <p v-if="recoveryReadError" class="im-notice warn" role="status" data-im="recovery-read-error">
-            恢复事项读取失败：{{ recoveryReadError }}（这不代表没有事项）
-            <button class="im-link" type="button" data-im="recovery-retry" :disabled="recoveryReadBusy" @click="retryRecoveryRead">
-              {{ recoveryReadBusy ? "读取中…" : "重试读取" }}
-            </button>
-          </p>
-          <p v-if="intentDisplayError" class="im-notice warn" role="status" data-im="intent-display-error">
-            {{ intentDisplayError }}
-          </p>
-          <p v-if="store.recoverNotice.length" class="im-notice warn" role="status" data-im="recover-notice">
-            上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
-          </p>
+          <!-- 页面级说明：多个失败可能同时成立，这里纵向堆叠，不能互相遮挡 / 抢点击。 -->
+          <div class="im-notices" data-im="board-notices">
+            <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
+              板面读取失败：{{ store.loadError }}
+              <button class="im-link" type="button" data-im="board-retry" @click="store.load()">重试</button>
+            </p>
+            <!-- F06：意图读取失败保留旧内容 + 明确区分「更新失败」与「从来没读到过」 -->
+            <p v-if="intentReadFailed" class="im-notice warn" role="alert" data-im="intent-read-error">
+              {{ intentReadErrorText }}
+              <button class="im-link" type="button" data-im="intent-read-retry" :disabled="intentReadBusy" @click="retryIntentRead">
+                {{ intentReadBusy ? "读取中…" : "重试读取" }}
+              </button>
+            </p>
+            <p v-if="recoveryReadError && !intentReadFailed" class="im-notice warn" role="status" data-im="recovery-read-error">
+              恢复事项读取失败：{{ recoveryReadError }}（这不代表没有事项）
+              <button class="im-link" type="button" data-im="recovery-retry" :disabled="recoveryReadBusy" @click="retryRecoveryRead">
+                {{ recoveryReadBusy ? "读取中…" : "重试读取" }}
+              </button>
+            </p>
+            <p v-if="intentDisplayError" class="im-notice warn" role="status" data-im="intent-display-error">
+              {{ intentDisplayError }}
+            </p>
+            <p v-if="store.recoverNotice.length" class="im-notice warn" role="status" data-im="recover-notice">
+              上次没有结束的任务已经暂停（{{ store.recoverNotice.length }} 项）：重新打开不会自动继续，需要你确认后才会开始。
+            </p>
+
+          </div>
         </div>
       </template>
 
@@ -691,11 +695,22 @@ const boardSize = computed(() => {
   padding: 0;
   cursor: pointer;
 }
-.im-notice {
+/* 页面级说明容器：多个失败可能同时成立，纵向堆叠，互不遮挡点击。 */
+.im-notices {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
   top: 58px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: min(720px, calc(100vw - 32px));
+  pointer-events: none;
+}
+.im-notice {
   margin: 0;
   padding: var(--sp-2) var(--sp-4);
   border-radius: var(--r-sm);
@@ -703,7 +718,9 @@ const boardSize = computed(() => {
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-1);
-  z-index: 6;
+  pointer-events: auto;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .im-notice.err { color: var(--danger); }
 .im-notice.warn { color: var(--warning); }

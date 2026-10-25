@@ -310,8 +310,21 @@ let scrollSyncLock = false;
 /** 仍在等待的意图：它们的虚线预览要一直画在真实板面上（未确定 ≠ 已确定结论）。 */
 const OPEN_INTENT_STATUSES = ["pending", "needs_update", "waiting_dependency", "waiting_confirm", "running"];
 
+/**
+ * F02（Lead 集成修复）：新链意图视图已经由 IntentLayer 画在板面坐标系里时，
+ * 旧链 BoardPreviewLayer 不得再把同一条意图画一份虚线预览 ——
+ * 否则同一意图同时出现两套卡 / 两套操作面，用户会看到重复对象并可能在两边各点一次。
+ * 新链没有对应视图时（纯旧链兼容记录）仍按原行为画预览。
+ */
+const newChainIntentIds = computed(() => new Set(store.intentViews.map((view) => String(view.intent_id))));
+
 const previewIntents = computed<Intent[]>(() =>
-  store.intents.filter((item) => OPEN_INTENT_STATUSES.includes(item.status) && item.preview),
+  store.intents.filter(
+    (item) =>
+      OPEN_INTENT_STATUSES.includes(item.status) &&
+      item.preview &&
+      !newChainIntentIds.value.has(String(item.id)),
+  ),
 );
 
 const liveCards = computed(() => (boardState.value?.cards ?? []).filter((card) => !card.deleted));
