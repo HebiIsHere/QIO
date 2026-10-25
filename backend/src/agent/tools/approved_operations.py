@@ -957,6 +957,8 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                 identity = None
             content_sha256 = None
             is_directory = False
+            is_link_entry = False
+            requested_path = ""
             directory_impact_data = None
             content_deferred = False
             base_size = None
@@ -968,6 +970,10 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                         identity = candidate.get("identity")
                     content_sha256 = candidate.get("content_sha256")
                     is_directory = bool(candidate.get("is_directory"))
+                    is_link_entry = bool(candidate.get("is_link_entry"))
+                    requested_path = str(
+                        candidate.get("requested_path") or ""
+                    )
                     directory_impact_data = candidate.get("directory_impact")
                     content_deferred = bool(candidate.get("content_deferred"))
                     base_size = candidate.get("base_size")
@@ -977,6 +983,12 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                 directory_impact_data = item.get("directory_impact") or directory_impact_data
                 if item.get("is_directory") is not None:
                     is_directory = bool(item.get("is_directory"))
+                # §10：用户请求的是目录项（符号链接/目录链接）本身时，payload 事实
+                # 明确标记；执行器据此处理"链接条目"而不是被解析后的目标。
+                if item.get("is_link_entry") is not None:
+                    is_link_entry = bool(item.get("is_link_entry"))
+                if item.get("requested_path"):
+                    requested_path = str(item.get("requested_path"))
             if path:
                 rows.append(
                     {
@@ -987,14 +999,22 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
                         "base_size": base_size,
                         "base_mtime_ns": base_mtime_ns,
                         "is_directory": is_directory,
+                        "is_link_entry": is_link_entry,
+                        "requested_path": requested_path or path,
                         "directory_impact": directory_impact_data,
                     }
                 )
     elif str(payload.get("path") or "").strip():
+        legacy_path = str(payload.get("path")).strip()
         rows.append(
             {
-                "path": str(payload.get("path")).strip(),
+                "path": legacy_path,
                 "identity": fingerprint.get("identity"),
+                "is_directory": False,
+                "is_link_entry": bool(payload.get("is_link_entry")),
+                "requested_path": str(
+                    payload.get("requested_path") or legacy_path
+                ),
             }
         )
     # 批量审批单的 items 列表携带逐项 item_id（批次状态/恢复只继续未执行项）。
@@ -1006,6 +1026,37 @@ def _delete_rows(payload: dict, fingerprint: dict) -> list[dict]:
         for row in rows:
             row["item_id"] = item_ids.get(str(row.get("path")), "")
     return rows
+
+
+def _is_link_entry_now(path: str) -> bool:
+    """该路径当前是否仍是"目录项链接"（符号链接/Windows reparse point/junction）。"""
+    try:
+        if os.path.islink(path):
+            return True
+        stat = os.lstat(path)
+    except OSError:
+        return False
+    attributes = int(getattr(stat, "st_file_attributes", 0) or 0)
+    file_attribute_reparse_point = 0x400
+    return bool(attributes & file_attribute_reparse_point)
+
+
+def _link_entry_unchanged(
+    path: str, expected_identity: Any = None
+) -> tuple[bool, str]:
+    """§10：核对用户指定的**目录项**仍是审批时的链接条目（不解析到目标）。
+
+    只做 lstat 级事实核对：条目存在、仍是链接/reparse point；目标对象是否变化
+    不属于"回收这个目录项"的影响范围（也不得因解析目标而改写操作语义）。
+    """
+    if not os.path.lexists(path):
+        return False, "审批时指定的目录项已不存在（链接条目消失）：未回收"
+    if not _is_link_entry_now(path):
+        return False, (
+            "该路径已不是审批时的链接目录项（被替换成普通文件/目录或已解除链接）："
+            "未回收（需重新确认要回收的目录项）"
+        )
+    return True, ""
 
 
 def _identity_matches(path: str, expected: Any) -> tuple[bool, str]:
@@ -1089,7 +1140,29 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
     for row in rows:
         path = row["path"]
         item_id = str(row.get("item_id") or "")
-        blocked = _require_internal_data_confirmations(ctx, fingerprint, path)
+        # §10：用户指定的是目录项（符号链接/目录链接）本身时，执行器操作的是这个
+        # **目录项**，不得先解析成它指向的目标；requested_path 是用户指定的条目路径。
+        is_link_entry = bool(row.get("is_link_entry"))
+        entry_path = str(row.get("requested_path") or path)
+        if not is_link_entry and _normalized_target_path(entry_path) != _normalized_target_path(path):
+            item = {
+                "item_id": item_id,
+                "path": path,
+                "ok": False,
+                "status": "invalidated",
+                "invalidated": True,
+                "reason": (
+                    "审批单要求回收的目录项（"
+                    + entry_path
+                    + "）与将要操作的目标（"
+                    + path
+                    + "）不是同一个路径：不得检查一个路径、执行另一个路径"
+                ),
+            }
+            results.append(item)
+            failed.append(item)
+            continue
+        blocked = _require_internal_data_confirmations(ctx, fingerprint, entry_path)
         if blocked is not None:
             item = {
                 "item_id": item_id,
@@ -1108,10 +1181,11 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
 
         # R9-H6 §2：目录不是“只有目录路径”的一个对象。逐项重核对必须携带
         # 审批快照里的完整子对象影响，否则“禁止删除 B 内某个文件”无法命中。
+        # §10：链接目录项按"目录项本身"处理（不枚举/不解析它指向的目标目录）。
         directory_impact_data = row.get("directory_impact")
-        item_objects: list[dict] = [{"kind": "path", "value": path}]
+        item_objects: list[dict] = [{"kind": "path", "value": entry_path}]
         item_complete = True
-        if row.get("is_directory"):
+        if row.get("is_directory") and not is_link_entry:
             if not isinstance(directory_impact_data, dict) or not directory_impact_data:
                 item_complete = False
             else:
@@ -1122,18 +1196,25 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
                     if not isinstance(entry, dict):
                         continue
                     child = str(entry.get("path") or "").strip()
-                    if child and child != path:
+                    if child and child != entry_path:
                         item_objects.append({"kind": "path", "value": child})
                 if directory_impact_data.get("complete") is not True:
                     item_complete = False
         item_effect = Effect(
             kind=EffectKind.DELETE,
-            targets=(Target("path", path, identity=row.get("identity")),),
-            purpose=f"删除{'目录' if row.get('is_directory') else '文件'}：{path}",
+            targets=(Target("path", entry_path, identity=row.get("identity")),),
+            purpose=(
+                "回收用户指定的链接目录项："
+                if is_link_entry
+                else f"删除{'目录' if row.get('is_directory') else '文件'}："
+            )
+            + entry_path,
             tool="fs.delete",
             detail={
                 "action": "delete",
                 "is_directory": bool(row.get("is_directory")),
+                "is_link_entry": is_link_entry,
+                "requested_path": entry_path,
                 "directory_impact": directory_impact_data,
                 "directory_impact_complete": item_complete,
                 "limit_impacts": [
@@ -1149,7 +1230,7 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             ctx,
             payload=payload,
             fingerprint=fingerprint,
-            path=path,
+            path=entry_path,
             item_effect=item_effect,
         )
         if blocked is not None:
@@ -1164,11 +1245,16 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             results.append(item)
             failed.append(item)
             continue
-        same, reason = _identity_matches(path, row.get("identity"))
+        if is_link_entry:
+            same, reason = await asyncio.to_thread(
+                _link_entry_unchanged, entry_path, row.get("identity")
+            )
+        else:
+            same, reason = _identity_matches(path, row.get("identity"))
         if not same:
             item = {
                 "item_id": item_id,
-                "path": path,
+                "path": entry_path,
                 "ok": False,
                 "status": "invalidated",
                 "invalidated": True,
@@ -1177,7 +1263,11 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             results.append(item)
             failed.append(item)
             continue
-        if row.get("content_deferred") and not row.get("is_directory"):
+        if (
+            row.get("content_deferred")
+            and not row.get("is_directory")
+            and not is_link_entry
+        ):
             current_meta = await asyncio.to_thread(security_gate.file_identity, path)
             try:
                 same_meta = (
@@ -1191,7 +1281,7 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             if not same_meta:
                 item = {
                     "item_id": item_id,
-                    "path": path,
+                    "path": entry_path,
                     "ok": False,
                     "status": "invalidated",
                     "invalidated": True,
@@ -1203,14 +1293,18 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
                 continue
         # 旧形状/手写单 path 的目录删除没有目录影响依据：必须 fail-closed 重新确认，
         # 不能因为缺少 is_directory 字段就跳过新增/移除/替换子对象核对。
-        try:
-            path_is_dir = await asyncio.to_thread(lambda: Path(path).is_dir())
-        except OSError:
+        # §10：链接目录项不是目录本身，不按目录做子对象核对（也不得解析目标）。
+        if is_link_entry:
             path_is_dir = False
+        else:
+            try:
+                path_is_dir = await asyncio.to_thread(lambda: Path(path).is_dir())
+            except OSError:
+                path_is_dir = False
         if path_is_dir and not row.get("is_directory"):
             item = {
                 "item_id": item_id,
-                "path": path,
+                "path": entry_path,
                 "ok": False,
                 "status": "invalidated",
                 "invalidated": True,
@@ -1220,7 +1314,7 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             results.append(item)
             failed.append(item)
             continue
-        if row.get("is_directory"):
+        if row.get("is_directory") and not is_link_entry:
             snapshot = row.get("directory_impact") or {}
             snapshot_paths = [
                 str(entry.get("path"))
@@ -1235,7 +1329,7 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             if read_blocked is not None:
                 item = {
                     "item_id": item_id,
-                    "path": path,
+                    "path": entry_path,
                     "ok": False,
                     "status": "invalidated",
                     "invalidated": True,
@@ -1254,7 +1348,7 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             if directory_error:
                 item = {
                     "item_id": item_id,
-                    "path": path,
+                    "path": entry_path,
                     "ok": False,
                     "status": "invalidated",
                     "invalidated": True,
@@ -1265,14 +1359,18 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
                 failed.append(item)
                 continue
         expected_content = row.get("content_sha256")
-        if expected_content and not row.get("is_directory"):
+        if (
+            expected_content
+            and not row.get("is_directory")
+            and not is_link_entry
+        ):
             read_blocked = await _authorize_content_reads(
                 ctx, [path], purpose="删除文件前核对内容快照"
             )
             if read_blocked is not None:
                 item = {
                     "item_id": item_id,
-                    "path": path,
+                    "path": entry_path,
                     "ok": False,
                     "status": "invalidated",
                     "invalidated": True,
@@ -1286,7 +1384,7 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
             if current_content is None or current_content != expected_content:
                 item = {
                     "item_id": item_id,
-                    "path": path,
+                    "path": entry_path,
                     "ok": False,
                     "status": "invalidated",
                     "invalidated": True,
@@ -1296,12 +1394,13 @@ async def execute_fs_delete(payload: dict, ctx: ExecutionContext) -> ExecResult:
                 results.append(item)
                 failed.append(item)
                 continue
-        ok, code, detail = await _move_to_recycle_bin(path)
+        # §10：回收/删除的是用户指定的目录项（链接本身），不是解析后的目标。
+        ok, code, detail = await _move_to_recycle_bin(entry_path)
         if ok:
-            await asyncio.to_thread(_note_recycled_origin, path)
+            await asyncio.to_thread(_note_recycled_origin, entry_path)
         item = {
             "item_id": item_id,
-            "path": path,
+            "path": entry_path,
             "ok": bool(ok),
             "status": "completed" if ok else "failed",
             "mechanism": code if ok else None,

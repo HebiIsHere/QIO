@@ -998,3 +998,154 @@ async def test_mode_relaxed_content_change_still_invalidates_old_plan(tmp_path, 
         finished = await _execute(security, approval_id)
     assert _was_invalidated(finished), finished
     assert source.read_text(encoding="utf-8") == "放宽后外部改掉的内容"
+
+
+# ---------------------------------------------------------------------------
+# §10：目录链接的审批恢复必须回收"用户指定的目录项"（链接本身），不解析目标
+# ---------------------------------------------------------------------------
+
+
+def _is_directory_entry_link(path: Path) -> bool:
+    try:
+        if os.path.islink(path):
+            return True
+        stat = os.lstat(path)
+    except OSError:
+        return False
+    return bool(int(getattr(stat, "st_file_attributes", 0) or 0) & 0x400)
+
+
+def _make_dir_link(link: Path, target: Path) -> bool:
+    """尽力创建目录链接（真实平台能力）。
+
+    * POSIX / 有权限的 Windows：真实符号链接；
+    * Windows 普通账户（无 SeCreateSymbolicLinkPrivilege）：退回 junction
+      （Windows reparse point，目录链接替身，已在报告中标注不是符号链接）。
+    """
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt":
+        import subprocess
+
+        proc = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+        )
+        return proc.returncode == 0 and link.exists()
+    return False
+
+
+def _remove_directory_entry_link(path: str) -> None:
+    """回收站替身：只移除目录项本身（符号链接 unlink / junction rmdir）。"""
+    if _is_directory_entry_link(Path(path)):
+        try:
+            os.unlink(path)
+        except OSError:
+            os.rmdir(path)
+        return
+    os.unlink(path)
+
+
+async def test_recycle_directory_entry_link_removes_link_not_target(
+    tmp_path, db_conn, monkeypatch
+):
+    """§10：回收用户指定的目录链接项 → 只回收链接条目，目标目录与内容保持不动。"""
+    security = _wire_env(tmp_path, db_conn, mode="restricted")
+    workspace = security.workspace
+    target_dir = workspace / "目标目录"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "keep.txt").write_text("keep", encoding="utf-8")
+    link = workspace / "目录链接"
+    if not _make_dir_link(link, target_dir):
+        pytest.skip(
+            "当前平台/账户无法创建目录链接（真实平台能力边界；未用 mock 冒充链接语义）"
+        )
+    calls: list[str] = []
+
+    def mover(path: str) -> dict:
+        calls.append(str(path))
+        _remove_directory_entry_link(str(path))
+        return {
+            "ok": True,
+            "mechanism": "test_trash",
+            "reason": "已移入测试回收站替身",
+            "deleted_permanently": False,
+            "trashed_path": str(path) + ".trash",
+        }
+
+    import agent.services.recycle_bin as recycle_module
+
+    monkeypatch.setattr(recycle_module, "send_to_recycle_bin", mover)
+    effect = security_gate.make_effect(
+        security_gate.EffectKind.DELETE,
+        [
+            security_gate.path_target(
+                str(link), identity=None, exists=True
+            )
+        ],
+        purpose="回收用户指定的目录链接项",
+        tool="fs.delete",
+        detail={
+            "action": "delete",
+            "delete_mode": "recycle_bin",
+            "is_link_entry": True,
+            "requested_path": str(link),
+            "limit_impacts": [
+                {
+                    "operation": "delete",
+                    "objects": [{"kind": "path", "value": str(link)}],
+                }
+            ],
+            "limit_impacts_complete": True,
+        },
+    )
+    operation = PendingOperation(
+        kind="fs.delete",
+        label="回收目录链接项",
+        payload={
+            "paths": [
+                {
+                    "path": str(link),
+                    "is_link_entry": True,
+                    "requested_path": str(link),
+                    "is_directory": False,
+                }
+            ],
+            "items": [{"item_id": "item_1", "path": str(link)}],
+        },
+        effect=security_gate.effect_to_dict(effect),
+        fingerprint={
+            "kind": "fs.delete",
+            "paths": [
+                {
+                    "path": str(link),
+                    "is_link_entry": True,
+                    "requested_path": str(link),
+                    "is_directory": False,
+                    "content_deferred": False,
+                }
+            ],
+            "items": [{"item_id": "item_1", "path": str(link)}],
+            "delete_mode": "recycle_bin",
+        },
+        source="tool",
+        mode_at_request="restricted",
+    )
+    async with _bound_requirement(security) as (requirement, _binding):
+        operation.requirement_id = requirement.requirement_id
+        operation.requirement_version = int(requirement.version)
+        operation.fingerprint["operation_digest"] = operation_digest(operation)
+        row = security.approvals.store.create(operation)
+        approval_id = row["approval_id"]
+        await _approve(security, approval_id)
+        finished = await _execute(security, approval_id)
+    assert finished["state"] == "completed", finished
+    assert calls == [str(link)], "只能把用户指定的目录链接条目交给回收站"
+    assert not os.path.lexists(link), "被回收的是链接条目本身"
+    assert target_dir.exists() and (target_dir / "keep.txt").read_text(
+        encoding="utf-8"
+    ) == "keep", "不得把链接指向的目标目录/内容移动或删除"
