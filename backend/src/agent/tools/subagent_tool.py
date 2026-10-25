@@ -237,6 +237,11 @@ def _scope_to_payload(scope: Any) -> dict | None:
                 "source": getattr(grant, "source", "user_explicit"),
                 "created_at": getattr(grant, "created_at", ""),
                 "revoked": bool(getattr(grant, "revoked", False)),
+                "requirement_id": getattr(grant, "requirement_id", None),
+                "requirement_version": getattr(grant, "requirement_version", None),
+                "source_record_id": getattr(grant, "source_record_id", None),
+                "fingerprint": getattr(grant, "fingerprint", None),
+                "limits": list(getattr(grant, "limits", ()) or ()),
             }
         )
     return {
@@ -284,6 +289,15 @@ def _scope_from_payload(data: Any) -> Any:
                 source=str(item.get("source") or "user_explicit"),
                 created_at=str(item.get("created_at") or ""),
                 revoked=bool(item.get("revoked", False)),
+                requirement_id=item.get("requirement_id"),
+                requirement_version=(
+                    int(item["requirement_version"])
+                    if item.get("requirement_version") is not None
+                    else None
+                ),
+                source_record_id=item.get("source_record_id"),
+                fingerprint=item.get("fingerprint"),
+                limits=tuple(str(value) for value in (item.get("limits") or ())),
             )
         )
     return security_gate.make_agent_scope(
@@ -293,6 +307,218 @@ def _scope_from_payload(data: Any) -> Any:
         purpose=str(data.get("purpose") or ""),
         label=str(data.get("label") or ""),
     )
+
+
+# ---------------------------------------------------------------------------
+# R9-H13 §3.H（F6）：可委派范围（当前有效要求 + 模式 + 已核实授权）与结构化申请
+# ---------------------------------------------------------------------------
+
+
+def _current_requirement_binding() -> Any:
+    """当前操作依据的具体用户要求绑定（子智能体继承父绑定，不回退"最近一条"）。"""
+    try:
+        from agent.security.context import current_requirement
+
+        return current_requirement.get()
+    except Exception:  # noqa: BLE001 - 上下文未初始化按没有绑定
+        return None
+
+
+def _binding_ids(binding: Any) -> tuple[str | None, int | None]:
+    """要求绑定 → (requirement_id, version)；字段缺失时如实返回 None。"""
+    if binding is None:
+        return None, None
+    if isinstance(binding, dict):
+        requirement_id = binding.get("requirement_id")
+        version = binding.get("version")
+    else:
+        requirement_id = getattr(binding, "requirement_id", None)
+        version = getattr(binding, "version", None)
+    if not requirement_id and isinstance(binding, str):
+        requirement_id = binding
+    try:
+        normalized_version = int(version) if version is not None else None
+    except (TypeError, ValueError):
+        normalized_version = None
+    text = str(requirement_id or "").strip()
+    return (text or None), normalized_version
+
+
+def _grant_description(scope: Any) -> list[dict]:
+    """结构化 grant 事实（操作/对象/来源/版本/用途边界）；无权威类型时不伪造。"""
+    try:
+        from agent.security.instructions import describe_scope
+
+        return list(describe_scope(scope).get("grants") or ())
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _flatten_scope_objects(grants: Any) -> list[dict]:
+    """grant 事实里出现过的对象去重（只用于展示/核对，不产生授权）。"""
+    objects: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for grant in grants or ():
+        for item in (grant.get("objects") or ()) if isinstance(grant, dict) else ():
+            kind = str(item.get("kind") or "")
+            value = str(item.get("value") or "")
+            key = (kind, value)
+            if value and key not in seen:
+                seen.add(key)
+                objects.append({"kind": kind, "value": value})
+    return objects
+
+
+class RequestAgentScopeTool(Tool):
+    """子智能体权限不足时向主智能体提交结构化范围申请（不直接请求用户）。
+
+    契约 §3.H（F6）：子权限不足先向主智能体申请；主智能体也没有权限时才由主
+    智能体请求用户。请求/授予/重试/撤销用结构化状态（ScopeRequestLedger），
+    不把"一句错误文字"当申请。
+    """
+
+    name = "request_agent_scope"
+    description = (
+        "当本次子任务需要超出当前分配范围的操作/对象权限时，向主智能体提交结构化"
+        "范围申请（说明操作、对象、原因）；不会直接向用户弹窗。主智能体会核对当前"
+        "要求/模式与已核实授权后决定是否扩大你的范围，并可能让用户确认。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "operations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "需要的操作名（read/write/create/delete/execute/install_deps/network_egress）",
+            },
+            "objects": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "enum": ["path", "path_prefix", "program", "url_host"]},
+                        "value": {"type": "string"},
+                    },
+                    "required": ["kind", "value"],
+                },
+                "description": "需要的具体对象（路径/前缀/程序/接收服务）",
+            },
+            "reason": {"type": "string", "description": "为什么完成本次子任务需要这些权限"},
+        },
+        "required": ["operations", "objects", "reason"],
+    }
+    max_operations = 20
+    max_objects = 20
+    max_text_chars = 400
+
+    def __init__(self, *, security: Any, purpose: str) -> None:
+        self.security = security
+        self.purpose = str(purpose or "")
+
+    def _invalid(self, message: str) -> ToolResult:
+        return ToolResult(
+            ok=False,
+            status="failed",
+            code="invalid_scope_request",
+            category="permission",
+            recoverable=True,
+            error=message,
+            data={"state": "denied", "reason": message},
+        )
+
+    async def run(self, **kwargs: Any) -> ToolResult:
+        try:
+            from agent.security.instructions import (
+                Scope,
+                scope_request_ledger,
+            )
+            from agent.security.review import record_is_active as _record_is_active
+        except Exception:  # noqa: BLE001 - 没有权威类型时不伪造申请
+            return self._invalid("当前环境没有可用的授权台账，无法形成范围申请")
+
+        operations = [
+            str(item).strip()
+            for item in (kwargs.get("operations") or ())
+            if str(item).strip()
+        ]
+        objects: list[Scope] = []
+        for item in kwargs.get("objects") or ():
+            if isinstance(item, dict):
+                kind = str(item.get("kind") or "path").strip().lower()
+                value = str(item.get("value") or "").strip()
+            else:
+                kind, value = "path", str(item or "").strip()
+            if kind not in {"path", "path_prefix", "program", "url_host", "service"}:
+                return self._invalid("范围申请的对象类别不合法：" + kind)
+            if value:
+                objects.append(Scope(kind, value))
+        reason = str(kwargs.get("reason") or "").strip()
+        if not operations or not objects:
+            return self._invalid("范围申请必须说明需要的操作与对象")
+        if (
+            len(operations) > self.max_operations
+            or len(objects) > self.max_objects
+            or len(reason) > self.max_text_chars
+            or any(len(item.value) > self.max_text_chars for item in objects)
+        ):
+            return self._invalid("范围申请超出允许的规模（操作/对象/文字过长）")
+
+        requirement_id, bound_version = _binding_ids(_current_requirement_binding())
+        requirement = None
+        requirements = getattr(self.security, "requirements", None)
+        if requirement_id and requirements is not None:
+            try:
+                requirement = requirements.by_id(str(requirement_id))
+            except Exception:  # noqa: BLE001
+                requirement = None
+        if requirement is None:
+            return self._invalid("当前没有可绑定的用户要求，主智能体无法据此核实授权")
+        version = int(getattr(requirement, "version", bound_version or 1) or 1)
+        mode = str(security_gate.mode_of(self.security) or "")
+        escalation = "main_agent" if mode == "restricted" else "user"
+        ledger = scope_request_ledger()
+        request = ledger.request(
+            requirement_id=str(requirement_id),
+            requirement_version=version,
+            mode=mode,
+            purpose=self.purpose,
+            operations=operations,
+            objects=objects,
+            reason=reason,
+            escalation=escalation,
+        )
+        scope = security_gate.current_agent_scope()
+        grants = tuple(getattr(scope, "grants", ()) or ()) if scope is not None else ()
+        synced = ledger.sync(
+            requirement_id=str(requirement_id),
+            requirement_version=version,
+            purpose=self.purpose,
+            grants=grants,
+            requirement_active=str(getattr(requirement, "status", "")) == "active",
+            requirement_current_version=version,
+            grants_detail=_grant_description(scope),
+        )
+        if synced:
+            request = synced[0]
+        content = (
+            "已向主智能体提交结构化权限申请（不会直接请求用户）。\n"
+            f"申请编号: {request.request_id}\n"
+            f"状态: {request.state}\n"
+            f"需要操作: {'、'.join(operations)}\n"
+            "需要对象: "
+            + "、".join(item.value for item in objects[:8])
+            + ("等" if len(objects) > 8 else "")
+            + "\n主智能体会先核对当前要求、模式与已核实的授权；主智能体也没有权限时"
+            "才会请求用户确认。"
+        )
+        return ToolResult(
+            ok=True,
+            status="completed",
+            code="scope_requested",
+            content=content,
+            data=request.as_dict(),
+            protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
+        )
 
 
 def _merged_budget(
@@ -376,6 +602,239 @@ class SubagentTool(Tool):
             return {}
         return dict(value or {}) if isinstance(value, dict) else {}
 
+    # -- F6：可委派范围（当前要求 + 模式 + 已核实授权）与结构化范围申请 -------
+
+    def _ledger_available(self) -> bool:
+        security = self.security
+        return bool(
+            security is not None
+            and getattr(security, "authorizations", None) is not None
+            and getattr(security, "requirements", None) is not None
+        )
+
+    def _verified_context(self) -> dict[str, Any] | None:
+        """当前要求绑定的可委派事实（只读台账；没有绑定返回 None，不回退历史）。"""
+        if not self._ledger_available():
+            return None
+        requirement_id, bound_version = _binding_ids(_current_requirement_binding())
+        if not requirement_id:
+            return None
+        requirements = self.security.requirements
+        try:
+            requirement = requirements.by_id(str(requirement_id))
+        except Exception:  # noqa: BLE001 - 台账不可用按没有绑定事实
+            requirement = None
+        version = int(getattr(requirement, "version", bound_version or 1) or 1)
+        records: tuple = ()
+        finder = getattr(self.security.authorizations, "records_for_requirement", None)
+        if callable(finder):
+            try:
+                records = tuple(finder(str(requirement_id)) or ())
+            except Exception:  # noqa: BLE001 - 查询失败按没有记录（不伪造）
+                records = ()
+        return {
+            "requirement_id": requirement_id,
+            "version": version,
+            "requirement": requirement,
+            "records": records,
+            "active": bool(
+                requirement is not None
+                and str(getattr(requirement, "status", "")) == "active"
+            ),
+        }
+
+    def _active_check_factory(self, requirement_id: str):
+        """核实授权的实时有效性核对：记录撤销/过期/要求改版后立即失效。"""
+
+        def factory(record_id: str):
+            def check() -> bool:
+                try:
+                    from agent.security.review import record_is_active
+
+                    finder = getattr(
+                        self.security.authorizations, "records_for_requirement", None
+                    )
+                    rows = (
+                        tuple(finder(str(requirement_id)) or ())
+                        if callable(finder)
+                        else ()
+                    )
+                except Exception:  # noqa: BLE001 - 核对失败按失效（失败关闭）
+                    return False
+                for row in rows:
+                    if str(getattr(row, "record_id", "") or "") == str(record_id):
+                        return bool(record_is_active(row))
+                return False
+
+            return check
+
+        return factory
+
+    def _enrich_scope(self, scope: Any, context: dict[str, Any] | None) -> Any:
+        """给 verified grant 补上要求版本/记录 id/内容指纹/实时撤销核对。"""
+        if scope is None or context is None:
+            return scope
+        try:
+            from agent.security.instructions import bind_verified_grants
+        except Exception:  # noqa: BLE001 - 没有权威类型时保持原 scope（不伪造）
+            return scope
+        grants = bind_verified_grants(
+            getattr(scope, "grants", ()) or (),
+            context["records"],
+            requirement_id=str(context["requirement_id"]),
+            requirement_version=int(context["version"]),
+            active_check_factory=self._active_check_factory(
+                str(context["requirement_id"])
+            ),
+        )
+        try:
+            import dataclasses as _dc
+
+            if "grants" in {item.name for item in _dc.fields(scope)}:
+                return _dc.replace(scope, grants=tuple(grants))
+        except Exception:  # noqa: BLE001 - 非 dataclass 时退回适配器重建
+            pass
+        try:
+            return security_gate.make_agent_scope(
+                grants=tuple(grants),
+                parent_instruction_id=getattr(scope, "parent_instruction_id", None),
+                depth=int(getattr(scope, "depth", 1) or 1),
+                purpose=str(getattr(scope, "purpose", "") or ""),
+                label=str(getattr(scope, "label", "") or ""),
+            )
+        except Exception:  # noqa: BLE001 - 无法重建时保留原 scope（不伪造）
+            return scope
+
+    def _usable_grants(self, scope: Any) -> list:
+        """子范围里真正可用于委派核对的 grant（未撤销 + 有操作 + 有对象）。"""
+        try:
+            from agent.security.instructions import grant_is_active
+        except Exception:  # noqa: BLE001
+            grant_is_active = lambda grant: not bool(  # noqa: E731
+                getattr(grant, "revoked", False)
+            )
+        usable: list = []
+        for grant in getattr(scope, "grants", ()) or ():
+            if not grant_is_active(grant):
+                continue
+            if not getattr(grant, "operations", None) or not getattr(
+                grant, "objects", None
+            ):
+                continue
+            usable.append(grant)
+        return usable
+
+    def _scope_delegation_facts(
+        self, scope: Any, context: dict[str, Any] | None
+    ) -> tuple[dict, list[dict]]:
+        """子范围摘要 + 结构化委派状态 + 申请状态（结果/审批载荷/审计共用）。"""
+        summary = security_gate.scope_summary(scope) if scope is not None else {}
+        if scope is None:
+            return summary, []
+        grants = _grant_description(scope)
+        operations = sorted(
+            {str(op) for item in grants for op in (item.get("operations") or ())}
+        )
+        objects = _flatten_scope_objects(grants)
+        summary.update(
+            {
+                "grant_count": len(grants),
+                "grants": grants,
+                "operations": operations,
+                "objects": objects,
+                "revocable": True,
+            }
+        )
+        mode = str(security_gate.mode_of(self.security) or "")
+        escalation = "main_agent" if mode == "restricted" else "user"
+        usable = self._usable_grants(scope)
+        delegation: dict[str, Any] = {
+            "state": "granted" if usable else "requested",
+            "requirement_id": context["requirement_id"] if context else None,
+            "requirement_version": context["version"] if context else None,
+            "mode": mode,
+            "purpose": str(self.definition.description or ""),
+            "escalation": escalation,
+            "revocable": True,
+            "grants": grants,
+            "operations": operations,
+            "objects": objects,
+        }
+        requests: list[dict] = []
+        if context is not None:
+            try:
+                from agent.security.instructions import scope_request_ledger
+
+                ledger = scope_request_ledger()
+                purpose = str(self.definition.description or "")
+                if usable and not ledger.for_requirement(
+                    str(context["requirement_id"]), purpose
+                ):
+                    # 已形成的委派也进入同一状态机：granted → revoked 可追踪，
+                    # 不把一次许可当成长期通配授权。
+                    ledger.request(
+                        requirement_id=str(context["requirement_id"]),
+                        requirement_version=int(context["version"]),
+                        mode=mode,
+                        purpose=purpose,
+                        operations=operations,
+                        objects=objects,
+                        reason="当前要求下已核实的可委派范围",
+                        escalation=escalation,
+                    )
+                synced = ledger.sync(
+                    requirement_id=str(context["requirement_id"]),
+                    requirement_version=int(context["version"]),
+                    purpose=purpose,
+                    grants=getattr(scope, "grants", ()) or (),
+                    requirement_active=bool(context["active"]),
+                    requirement_current_version=int(context["version"]),
+                    grants_detail=grants,
+                )
+                requests = [item.as_dict() for item in synced]
+                if any(item["state"] == "revoked" for item in requests):
+                    delegation["state"] = "revoked"
+                elif not context["active"]:
+                    delegation["state"] = "superseded"
+            except Exception:  # noqa: BLE001 - 状态机不可用时不伪造状态
+                requests = []
+        summary["delegation"] = delegation
+        return summary, requests
+
+    def _prepare_scope(self, scope: Any) -> tuple[Any, dict[str, Any] | None, bool]:
+        """形成显式子范围；没有任何可委派事实时要求先向主智能体申请。
+
+        返回 (scope, 要求上下文, 是否范围不足)。不足时不启动注定失败的子任务，
+        但返回结构化申请状态，主智能体可据此先取得核实授权再重试。
+        """
+        context = self._verified_context() if self._ledger_available() else None
+        scope = self._enrich_scope(scope, context)
+        if context is None:
+            return scope, None, False
+        if self._usable_grants(scope):
+            return scope, context, False
+        mode = str(security_gate.mode_of(self.security) or "")
+        escalation = "main_agent" if mode == "restricted" else "user"
+        try:
+            from agent.security.instructions import scope_request_ledger
+
+            ledger = scope_request_ledger()
+            purpose = str(self.definition.description or "")
+            if not ledger.for_requirement(str(context["requirement_id"]), purpose):
+                ledger.request(
+                    requirement_id=str(context["requirement_id"]),
+                    requirement_version=int(context["version"]),
+                    mode=mode,
+                    purpose=purpose,
+                    operations=(),
+                    objects=(),
+                    reason="当前要求下没有可委派的已核实授权范围",
+                    escalation=escalation,
+                )
+        except Exception:  # noqa: BLE001 - 状态机不可用时仍按不足处理
+            pass
+        return scope, context, True
+
     async def run(self, **kwargs: Any) -> ToolResult:
         if self.adapter_factory is None:
             return ToolResult(ok=False, error="子任务没有可用的适配器工厂")
@@ -409,6 +868,8 @@ class SubagentTool(Tool):
         # 创建本身走统一授权入口；超出父级范围由主智能体统一向用户申请（单层），
         # 子智能体自己绝不弹窗。scope 先算出来：批准后的执行器要按同一个子集重建。
         scope = None
+        delegation_facts: dict[str, Any] | None = None
+        scope_requests: list[dict] = []
         if self.security is not None:
             scope = await security_gate.create_child_scope(
                 self.security, purpose=self.definition.description
@@ -422,6 +883,40 @@ class SubagentTool(Tool):
                     ),
                     category="permission",
                     recoverable=False,
+                )
+            # R9-H13 §3.H（F6）：依据当前有效要求、模式与已核实授权形成明确子集；
+            # 没有任何可委派事实时返回结构化范围申请（先找主智能体，不直接找用户）。
+            scope, delegation_context, scope_insufficient = self._prepare_scope(scope)
+            delegation_facts, scope_requests = self._scope_delegation_facts(
+                scope, delegation_context
+            )
+            if scope_insufficient:
+                return ToolResult(
+                    ok=False,
+                    status="needs_authorization",
+                    code="agent_scope_insufficient",
+                    category="permission",
+                    recoverable=True,
+                    error=(
+                        "子智能体当前没有可用的授权范围：主智能体需要先取得并核实"
+                        "完成子任务所需的授权；主智能体也没有权限时再请求用户。"
+                    ),
+                    content=(
+                        "子智能体范围不足，未创建子任务（不会自己向用户弹窗）。\n"
+                        "结构化申请状态："
+                        + (scope_requests[0]["state"] if scope_requests else "requested")
+                        + "\n主智能体可先按当前要求/模式取得并核实授权后重试；"
+                        "主智能体也没有权限时再请求用户确认。"
+                    ),
+                    data={
+                        "agent_scope": delegation_facts,
+                        "scope_requests": scope_requests,
+                        "next": (
+                            "主智能体先取得完成子任务所需的核实授权（当前要求与模式内），"
+                            "再重试创建子智能体；主智能体也无权限时请求用户确认。"
+                        ),
+                    },
+                    protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
                 )
             effect = security_gate.subagent_effect(
                 self.name, definition_name=self.definition.name
@@ -486,8 +981,6 @@ class SubagentTool(Tool):
         )
         if self.definition.sync:
             _, res = await self.task_manager.await_result(task_id, timeout=None)
-            if res is not None and scope is not None:
-                res.data = {**(res.data or {}), "agent_scope": security_gate.scope_summary(scope)}
             return res if res is not None else ToolResult(ok=False, error="子任务执行失败")
         return ToolResult(
             ok=True,
@@ -498,7 +991,12 @@ class SubagentTool(Tool):
                 "credential_ref": choice["credential_ref"],
                 "model": model,
                 "origin": origin,
-                "agent_scope": security_gate.scope_summary(scope),
+                "agent_scope": (
+                    delegation_facts
+                    if delegation_facts is not None
+                    else security_gate.scope_summary(scope)
+                ),
+                "scope_requests": scope_requests,
                 "next": (
                     "需要结果时调用 await_task(task_id=..., notify=true) 取回；"
                     "结果较长时用 read_task_result 分段读取全文。"
@@ -553,11 +1051,6 @@ class SubagentTool(Tool):
             {"credential_ref": ref, "model": model},
             scope,
         )
-        if result.ok and scope is not None:
-            result.data = {
-                **(result.data or {}),
-                "agent_scope": security_gate.scope_summary(scope),
-            }
         return result
 
     async def _execute(
@@ -589,6 +1082,17 @@ class SubagentTool(Tool):
             raise
         if self.trace_store is not None:
             self.trace_store.finish(tid, "done", final_preview=result.content or "")
+        if scope is not None:
+            # R9-H13 §3.H（F6）：子任务结果必须带结构化委派事实与申请状态
+            # （哪个动作/对象被允许、要求版本、撤销/重试状态），不是一句文字。
+            context = self._verified_context() if self._ledger_available() else None
+            scope = self._enrich_scope(scope, context)
+            facts, requests = self._scope_delegation_facts(scope, context)
+            result.data = {
+                **(result.data or {}),
+                "agent_scope": facts,
+                "scope_requests": requests,
+            }
         return result
 
     async def _run_subagent(
@@ -608,6 +1112,14 @@ class SubagentTool(Tool):
         sub_registry = ToolRegistry()
         if self.retriever is not None and "memory_search" in self.toolset:
             sub_registry.register(MemorySearchTool(self.retriever))
+        # 契约 §3.H（F6）：子智能体权限不足时先向主智能体提交结构化范围申请
+        # （不直接请求用户）；由主智能体统一核对当前要求/模式/已核实授权。
+        if security_gate.current_agent_scope() is not None:
+            sub_registry.register(
+                RequestAgentScopeTool(
+                    security=self.security, purpose=self.definition.description
+                )
+            )
         system_text = _prompt_text(
             "SUBAGENT_SYSTEM", "你是 QIO 的子任务执行者，负责完成本次分配的明确任务。"
         )

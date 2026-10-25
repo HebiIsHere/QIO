@@ -750,10 +750,14 @@ async def test_f6_revoked_or_stale_authorization_not_delegated(
         security.authorizations.revoke(records[0].record_id)
         result_revoked = await tool.run(query="整理项目报告再试一次")
 
-    assert result_revoked.ok is True, result_revoked.error
+    # 子权限不足时不启动注定失败的子任务，而是返回结构化申请状态（revoked）。
+    assert result_revoked.ok is False
+    assert result_revoked.code == "agent_scope_insufficient", result_revoked.code
     delegation = result_revoked.data["agent_scope"]["delegation"]
     assert delegation["state"] == "revoked", delegation
-    assert captured["write"][-1]["verdict"] == "deny", captured["write"][-1]["reason"]
+    revoked_requests = result_revoked.data["scope_requests"]
+    assert revoked_requests and revoked_requests[0]["state"] == "revoked", revoked_requests
+    assert len(captured["write"]) == 1, "撤销后不得再启动子任务执行真实动作"
 
     # 要求版本/状态变化（修正=旧授权立即失效）后也不得被当成可委派范围。
     with instruction_context(instruction), requirement_context(requirement.binding):
@@ -766,10 +770,14 @@ async def test_f6_revoked_or_stale_authorization_not_delegated(
         )
         with requirement_context(stale_binding):
             result_stale = await tool.run(query="整理项目报告第三次")
-    assert result_stale.ok is True, result_stale.error
+    assert result_stale.ok is False
+    assert result_stale.code == "agent_scope_insufficient", result_stale.code
     stale_delegation = result_stale.data["agent_scope"]["delegation"]
-    assert stale_delegation["state"] in {"superseded", "revoked"}, stale_delegation
+    assert stale_delegation["state"] in {"requested", "superseded"}, stale_delegation
     assert stale_delegation["requirement_id"] == corrected.requirement_id
+    assert stale_delegation["grants"] == [], "旧版本的授权不得被当成新版本的可委派范围"
+    stale_requests = result_stale.data["scope_requests"]
+    assert stale_requests and stale_requests[0]["state"] == "requested", stale_requests
 
 
 # --------------------------------------------------------------------------
