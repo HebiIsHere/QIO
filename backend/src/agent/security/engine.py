@@ -244,6 +244,8 @@ class AuthorizationEngine(AuthorizationGateway):
             and verdict == Verdict.APPROVE
             and self._review_candidate(effect)
             and not self._permanent_delete_pending(effect)
+            # R9-H13 §8.2：内部维护不能由普通模型 ALLOW 完成；必须转人工三次确认。
+            and not self._effect_is_internal(effect, self._internal_paths())
         ):
             verdict, reason, scope_id, needs_review = await self._apply_review(
                 effect,
@@ -318,6 +320,8 @@ class AuthorizationEngine(AuthorizationGateway):
                 mode == PermissionMode.RESTRICTED
                 and verdict == Verdict.APPROVE
                 and self._review_candidate(effect)
+                # R9-H13 §8.2：批量里的内部维护同样不能由普通模型 ALLOW 完成。
+                and not self._effect_is_internal(effect, self._internal_paths())
             ):
                 verdict, reason, hit_scope, _ = await self._apply_review(
                     effect,
@@ -427,6 +431,11 @@ class AuthorizationEngine(AuthorizationGateway):
             operation.instruction_text = operation.instruction_text or instruction.text
         if not operation.purpose and instruction is not None:
             operation.purpose = str(instruction.text or "")[:200]
+        # R9-H13 §8.1：最低确认次数必须由**后端按本次真实影响对象**推导，不能信任
+        # 调用方或历史行写入的 confirmations_required（错误值可能只有 1）。
+        required = self._required_confirmations_for_operation(operation)
+        if required > int(getattr(operation, "confirmations_required", 1) or 1):
+            operation.confirmations_required = int(required)
         # R9-G：审批单绑定操作实际依据的具体用户要求及版本（执行前核对；
         # 没有绑定就是没有绑定，不能用"最近一条 active"补）。
         binding = getattr(context, "requirement", None) or current_requirement.get()
@@ -442,6 +451,74 @@ class AuthorizationEngine(AuthorizationGateway):
                     pass
         return await self.approvals.submit(
             operation, mode=operation.mode_at_request, origin=context.origin
+        )
+
+    # -- R9-H13 §8：内部维护最低确认次数（后端唯一来源） ---------------------
+
+    def required_confirmations(self, effect: Effect) -> int:
+        """按本次**真实影响对象**确定最低确认次数。
+
+        提交、批准、恢复与执行前核对都必须使用本方法的结果，不得读取调用方
+        填写/历史存储的 `confirmations_required` 作为权威值。内部身份登记读取
+        失败时按内部维护保守处理（不能降到 1）。
+        """
+        protected = self._internal_paths()
+        kwargs = self._internal_identity_kwargs()
+        try:
+            count = internal_data.confirmations_for(effect, protected, **kwargs)
+        except TypeError:
+            legacy_kwargs = {
+                key: value for key, value in kwargs.items() if key != "identity_lookup"
+            }
+            try:
+                count = internal_data.confirmations_for(
+                    effect, protected, **legacy_kwargs
+                )
+            except TypeError:
+                count = internal_data.confirmations_for(effect, protected)
+        except Exception:  # noqa: BLE001 - 影响判定失败不能静默降级为 1 次
+            logger.warning(
+                "confirmations_for failed; using internal minimum", exc_info=True
+            )
+            count = internal_data.CONFIRMATIONS_REQUIRED
+        return max(1, int(count))
+
+    def _required_confirmations_for_operation(self, operation: Any) -> int:
+        effect = self._effect_from_serialized(getattr(operation, "effect", None))
+        if effect is None:
+            return 1
+        return self.required_confirmations(effect)
+
+    @staticmethod
+    def _effect_from_serialized(data: Any) -> Effect | None:
+        """把审批/执行载荷里的 effect 快照还原为 Effect（只用于影响核对）。"""
+        if not isinstance(data, dict):
+            return None
+        kind_raw = str(data.get("kind") or "")
+        for kind in EffectKind:
+            if kind.value == kind_raw:
+                break
+        else:
+            return None
+        targets = []
+        for item in data.get("targets") or ():
+            if not isinstance(item, dict):
+                continue
+            targets.append(
+                Target(
+                    kind=str(item.get("kind") or ""),
+                    value=str(item.get("value") or ""),
+                    identity=item.get("identity"),
+                    exists=item.get("exists"),
+                )
+            )
+        return Effect(
+            kind=kind,
+            targets=tuple(targets),
+            purpose=str(data.get("purpose") or ""),
+            tool=data.get("tool"),
+            detail=dict(data.get("detail") or {}),
+            reversible=bool(data.get("reversible", False)),
         )
 
     # -- R9-F：受限模式模型授权审查 + 后端文件来源 -------------------------
@@ -2183,8 +2260,12 @@ class AuthorizationEngine(AuthorizationGateway):
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
             return AuthDecision(verdict=Verdict.DENY, reason=limit_reason, effects=(effect,))
-        complete = int(confirmations_required or 1) <= 1 or int(confirmed_stage or 0) >= int(
-            confirmations_required or 1
+        complete = int(confirmed_stage or 0) >= max(
+            1,
+            int(confirmations_required or 1),
+            # R9-H13 §8.4：执行前按后端最低次数核对；历史/错误的一次确认记录
+            # 不能因为存储值写了 1 就当成已完成。
+            self.required_confirmations(effect),
         )
         internal = effect.kind == EffectKind.INTERNAL_DATA or self._effect_is_internal(
             effect, self._internal_paths()
