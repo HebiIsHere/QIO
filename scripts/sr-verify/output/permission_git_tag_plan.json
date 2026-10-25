@@ -5,7 +5,7 @@
   "verdict": "deny",
   "risk": "high",
   "tool_ok": false,
-  "tool_error": "只读模式只允许固定查询（程序版本/当前目录/系统基础信息/目录列表/文件属性）：这条命令的程序身份/argv 结构不属固定查询。本次已拒绝（没有任何程序被执行）。",
+  "tool_error": "程序在当前模式下被拒绝（high）",
   "tag_created": false,
   "approval_requests": 0
 }
