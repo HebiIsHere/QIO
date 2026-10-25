@@ -34,7 +34,6 @@ vi.mock("../../services/api", () => ({
     approveIntent: vi.fn(),
     rejectIntent: vi.fn(),
     batchDecide: vi.fn(),
-    createDemoIntents: vi.fn(),
     advanceIntent: vi.fn(),
     updateIntentPreview: vi.fn(),
   },
@@ -51,7 +50,6 @@ vi.mock("../../services/interactive", () => ({
   approveIntent: vi.fn(),
   rejectIntent: vi.fn(),
   batchDecide: vi.fn(),
-  createDemoIntents: vi.fn(),
   advanceIntent: vi.fn(),
   updateIntentPreview: vi.fn(),
 }));
@@ -281,7 +279,7 @@ describe("卡片草稿保存状态（契约 §9.5）", () => {
     expect(vi.mocked(imApi.saveDrafts).mock.calls[1][1]).toEqual({ "card:c1": "没保存上的内容" });
     // 重试只写草稿：不建卡、不提交、不调用 QIO
     expect(imApi.submitBoard).not.toHaveBeenCalled();
-    expect(imApi.createDemoIntents).not.toHaveBeenCalled();
+    expect(imApi.advanceIntent).not.toHaveBeenCalled();
     expect(api.sendTurn).not.toHaveBeenCalled();
   });
 

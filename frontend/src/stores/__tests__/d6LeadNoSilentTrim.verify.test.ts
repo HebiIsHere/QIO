@@ -8,7 +8,7 @@ vi.mock("../../services/api", () => ({
     sendTurn: vi.fn(), getSessionContext: vi.fn(), stopTurn: vi.fn(), cancelContinuation: vi.fn(),
     saveDrafts: vi.fn(), saveBoardState: vi.fn(), fetchBoardState: vi.fn(), fetchVisibleRange: vi.fn(),
     previewMaterialImpact: vi.fn(), submitBoard: vi.fn(), fetchIntents: vi.fn(), approveIntent: vi.fn(),
-    rejectIntent: vi.fn(), batchDecide: vi.fn(), createDemoIntents: vi.fn(), advanceIntent: vi.fn(),
+    rejectIntent: vi.fn(), batchDecide: vi.fn(), advanceIntent: vi.fn(),
     updateIntentPreview: vi.fn(), fetchHistoryPage: vi.fn(), fetchMessages: vi.fn(),
   },
 }));

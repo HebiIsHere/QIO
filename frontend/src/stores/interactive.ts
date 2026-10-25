@@ -436,7 +436,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 新代码不要再用它。
    */
   const auxOpen = ref(true);
-  const demoMode = ref(false);
   /** 右下悬浮聊天是否展开（收起不清消息、不删草稿、不打断对话） */
   const chatOpen = ref(false);
   /** 顶部「任务」浮层是否展开（批量入口也落到这同一个面板） */
@@ -3730,15 +3729,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return result;
   }
 
-  async function advanceDemo(
-    intentId: string,
-    outcome: "done" | "failed" | "paused" | "cancelled" | "revert_rest",
-  ) {
-    const result = await api.advanceIntent(intentId, outcome);
-    await settleAfterIntentChange();
-    return result;
-  }
-
   /* ------------------------------------------------------------------
    * N3/N4：剩余撤回决定（intent.revert.pendingDecision）的真正执行与关闭
    * ------------------------------------------------------------------ */
@@ -4046,26 +4036,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     saveError.value = null;
     if (!pendingImpact.value) scheduleSave();
   }
-  async function createDemoIntents() {
-    const before = intentIdSet();
-    const result = await api.createDemoIntents(boardId.value);
-    await loadIntents();
-    /*
-     * 演示入口一次产生的（可能不止四项）：记成同一批。
-     *
-     * 注意不能只看「新出现的 id」：后端对**尚未结束的同名演示项会复用**（不重复创建），
-     * 复用时新 id 是 0 个，只按新 id 记就会漏掉整批 —— 实测表现为「点了生成 4 项，批量入口却不出现」。
-     * 这里以**接口返回的这一批**为准（这正是「一次产生过程」的可证明来源，契约 §9.2）：
-     * 有返回值就用返回值，没有才退回「新出现的 id」。
-     */
-    const produced = (result?.created ?? [])
-      .map((item) => item?.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
-    if (produced.length) recordIntentBatch("session:demo:" + Date.now(), produced);
-    else recordNewIntents(before, "session:demo:" + Date.now());
-    return result;
-  }
-
 /**
    * 读取当前的影响确认。
    *
@@ -4938,7 +4908,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     cancelExecution,
 
     auxOpen,
-    demoMode,
     chatOpen,
     tasksOpen,
     // 卡片内预览的展开状态（只在前端内存；契约 2026-10-12 §3.5 / §3.6）
@@ -5017,8 +4986,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     reject,
     decideBatch,
     updatePreview,
-    advanceDemo,
-    createDemoIntents,
     confirmImpact,
     cancelImpact,
     cancelRecovery,

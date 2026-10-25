@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => {
     fetchAcceptance: vi.fn(),
     createIntents: vi.fn(),
     saveDrafts: vi.fn(),
-    createDemoIntents: vi.fn(),
     approveIntent: vi.fn(),
     rejectIntent: vi.fn(),
     batchDecide: vi.fn(),
