@@ -264,7 +264,7 @@ describe("待审批出现时审批入口主动展开（§5.4）", () => {
     }
   });
 
-  it("同一批够四项时给出既有批量列表的入口（不另造第二套批量操作）", async () => {
+  it("同一批够四项时批量入口接到真实任务面板（tasksOpen 唯一开合状态）", async () => {
     const store = freshStore();
     store.submitStatus = "succeeded";
     store.understanding = understandingFixture({ status: "understood", kind: "intent" });

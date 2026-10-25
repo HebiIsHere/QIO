@@ -17,6 +17,8 @@ import Composer from "../../Composer.vue";
 import ComposerEntries from "../../conversation/ComposerEntries.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import { useSessionStore } from "../../../stores/session";
+import { publishChatFrame } from "../../../interactive/chatFrameState";
+import type { ChatFrame } from "../../../interactive/chatFrame";
 import type { ExtraComposerEntry } from "../../conversation/ComposerEntries.vue";
 import {
   CONVERSATION_DEFAULT_HEIGHT,
@@ -288,7 +290,137 @@ function focusInput(): void {
 
 onBeforeUnmount(removeResizeListeners);
 
-defineExpose({ expand, collapse, toggle, focusInput, expanded: expandedState, height: panelHeight });
+/* ------------------------------------------------------------------
+ * C01：把**真实可见几何**发布给跨浮层避让桥（chatFrameState）
+ *
+ * 消费方 BoardCanvas 一直读 chatObstacleFrame()；本组件是这条桥在互动页的唯一生产者
+ * （展开时发布，收起 / 卸载发布 null）。
+ *
+ * 发布口径（COMMON §4.3 / 简报 §1 C01）：
+ * - 只量**实际可见内容**：展开时的消息面板 + 输入区（入口条 / 工具栏 / 输入框各自
+ *   最大 860px、居中），不量外层全宽容器 —— 否则会把整块板面误判成不可用；
+ * - 屏幕坐标（视口左上角为原点），与 BoardCanvas 的消费口径一致；
+ * - 展开才发布矩形；收起 / 卸载发布 null（收起时输入区常驻但按既有契约不让浮层避让，
+ *   也不留幽灵矩形）;
+ * - 触发：挂载、展开 / 收起、高度变化、窗口 resize、根元素尺寸变化（ResizeObserver）。
+ *   板面平移缩放不会移动这块浮层（它与画布同级、固定在舞台底部）；它带来的
+ *   滚动条 / 舞台尺寸变化会经 ResizeObserver 触发重新测量，每次测量都读实时 DOM，
+ *   不缓存、不从 localStorage 恢复任何假显示框。
+ * - 用 requestAnimationFrame 合并同一帧内的多次触发；卸载时取消待执行的测量。
+ * ------------------------------------------------------------------ */
+const rootEl = ref<HTMLElement | null>(null);
+/** 实际可见的组成块：消息面板（展开时）+ 输入区四块（各自居中、最大 860px）。 */
+const VISIBLE_PART_SELECTORS = ["[data-ic-bar]", ".ic-entries", "[data-ic-toolbar]", ".ic-composer"] as const;
+
+function rectOf(element: Element | null | undefined): DOMRect | null {
+  if (!element || typeof (element as HTMLElement).getBoundingClientRect !== "function") return null;
+  const rect = (element as HTMLElement).getBoundingClientRect();
+  if (!(rect.width > 0 && rect.height > 0)) return null;
+  return rect;
+}
+
+/** 当前实际可见内容的外接矩形（屏幕坐标）；量不到真实几何时返回 null（不编造）。 */
+function measureVisibleFrame(): ChatFrame | null {
+  const root = rootEl.value;
+  if (!root) return null;
+  const parts: DOMRect[] = [];
+  // 消息面板：只有展开且真的渲染出来了才算（v-show 隐藏时不计入）
+  if (expandedState.value && openedOnce.value) {
+    const stream = rectOf(root.querySelector<HTMLElement>("[data-ic-stream]"));
+    if (stream) parts.push(stream);
+  }
+  for (const selector of VISIBLE_PART_SELECTORS) {
+    const part = rectOf(root.querySelector<HTMLElement>(selector));
+    if (part) parts.push(part);
+  }
+  if (!parts.length) return null;
+  let left = Number.POSITIVE_INFINITY;
+  let top = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const rect of parts) {
+    left = Math.min(left, rect.left);
+    top = Math.min(top, rect.top);
+    right = Math.max(right, rect.right);
+    bottom = Math.max(bottom, rect.bottom);
+  }
+  const width = Math.round(right - left);
+  const height = Math.round(bottom - top);
+  if (!(width > 0 && height > 0)) return null;
+  return { x: Math.round(left), y: Math.round(top), w: width, h: height };
+}
+
+let publishRaf: number | null = null;
+
+/** 立即按当前 DOM 发布一次：展开 → 真实可见矩形；收起 → null（不让浮层避让不存在的空间）。 */
+function publishGeometryNow(): void {
+  if (!expandedState.value) {
+    publishChatFrame(null, true);
+    return;
+  }
+  publishChatFrame(measureVisibleFrame(), false);
+}
+
+function schedulePublishGeometry(): void {
+  if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+    publishGeometryNow();
+    return;
+  }
+  if (publishRaf !== null) return;
+  publishRaf = window.requestAnimationFrame(() => {
+    publishRaf = null;
+    publishGeometryNow();
+  });
+}
+
+let observer: ResizeObserver | null = null;
+let resizeBound = false;
+
+function onWindowResize(): void {
+  schedulePublishGeometry();
+}
+
+onMounted(() => {
+  if (typeof window !== "undefined") {
+    window.addEventListener("resize", onWindowResize);
+    resizeBound = true;
+  }
+  // 根元素尺寸 = 消息面板 + 输入区整体外框：展开 / 收起 / 拖高 / 窗口变化 / 滚动条出现
+  // 都会让它变化。元素尺寸变化不改变可见内容宽度时，下一次测量结果相同，发布幂等。
+  const root = rootEl.value;
+  if (root && typeof ResizeObserver !== "undefined") {
+    observer = new ResizeObserver(() => schedulePublishGeometry());
+    observer.observe(root);
+  }
+  schedulePublishGeometry();
+});
+
+// 展开 / 收起 / 高度变化后 DOM 已更新，下一帧按新几何重新发布
+watch([expandedState, panelHeight, openedOnce], () => schedulePublishGeometry(), { flush: "post" });
+
+onBeforeUnmount(() => {
+  if (typeof window !== "undefined" && resizeBound) window.removeEventListener("resize", onWindowResize);
+  resizeBound = false;
+  observer?.disconnect();
+  observer = null;
+  if (publishRaf !== null && typeof window !== "undefined") {
+    window.cancelAnimationFrame(publishRaf);
+    publishRaf = null;
+  }
+  // 卸载 = 这块空间不存在了：必须清空，不留幽灵障碍
+  publishChatFrame(null, false);
+});
+
+defineExpose({
+  expand,
+  collapse,
+  toggle,
+  focusInput,
+  expanded: expandedState,
+  height: panelHeight,
+  /** 只读给定向测试：当前可见内容的外接矩形（与发布值同一份算法） */
+  measureVisibleFrame,
+});
 
 /** 发送绑定投影：只保留会话层认识的字段；没有绑定就是普通聊天（不带板面身份）。 */
 const sendBinding = computed(() => conversationBindingForSend(props.binding));
@@ -296,6 +428,7 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
 
 <template>
   <section
+    ref="rootEl"
     class="ic"
     data-ic="conversation"
     :data-ic-expanded="expandedState ? 'true' : 'false'"

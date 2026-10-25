@@ -155,7 +155,7 @@ const pendingApprovals = computed(() =>
   ),
 );
 
-/** 这一轮是否真有一个可展示的批量列表（资格判据与 IntentBatchTray 同一口径）。 */
+/** 这一轮是否真有一个可展示的批量列表（资格判据与任务面板「待确认」同一口径）。 */
 const batchListAvailable = computed(() =>
   store.batches.some(
     (batch) => batch.intentIds.length >= BATCH_LIST_MIN && batch.pendingIds.length > 0,
@@ -332,7 +332,7 @@ function locateOnBoard(intent: Intent): void {
 }
 
 /**
- * 批量入口：直接打开**任务面板的待确认分区**（真实界面）。
+ * 批量入口：直接打开**任务面板的待确认分区**（真实界面，唯一状态是 tasksOpen）。
  *
  * 唯一的批量状态是 store.tasksOpen（旧通道的 batchOpen 已在合并后清理中删除）：
  * 批量对象与操作资格都来自 store.taskRows，面板里有逐条批准 / 拒绝与同批操作，

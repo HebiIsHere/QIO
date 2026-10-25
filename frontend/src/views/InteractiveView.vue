@@ -13,6 +13,7 @@ import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
 import BoardToolbar from "../components/interactive/BoardToolbar.vue";
 import ConversationModeSwitch from "../components/conversation/ConversationModeSwitch.vue";
+import PermissionModeBadge from "../components/security/PermissionModeBadge.vue";
 
 import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
 import {
@@ -425,6 +426,14 @@ const boardSize = computed(() => {
               >
                 <template #composer-leading>
                   <ConversationModeSwitch class="im-mode-switch" />
+                </template>
+                <!--
+                  F01：权限模式常驻徽标，挂在互动对话窗常驻状态条上（收起 / 展开都显示）。
+                  它在页面组件树里（与对话页话题栏徽标同一语义），不在消息面板 / 输入区 /
+                  工具栏内部，也不新增覆盖板面的浮动入口；点击进入设置由用户切换模式。
+                -->
+                <template #header-extra>
+                  <PermissionModeBadge />
                 </template>
                 <template #toolbar>
                   <BoardToolbar

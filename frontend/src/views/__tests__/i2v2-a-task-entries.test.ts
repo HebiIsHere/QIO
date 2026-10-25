@@ -244,6 +244,9 @@ describe("F03 批量入口与重复操作", () => {
     expect(byIm(wrapper, "task-pending").length).toBe(1);
     expect(byIm(wrapper, "task-pending-row").length).toBe(4);
     expect(byIm(wrapper, "task-batch-approve").length).toBe(1);
+    // C02：可见承接界面由 tasksOpen 决定（批量入口不再写第二份开合状态）
+    expect(store.tasksOpen).toBe(true);
+    expect(store.taskCenterFocus).toBe("pending");
     wrapper.unmount();
   });
 
