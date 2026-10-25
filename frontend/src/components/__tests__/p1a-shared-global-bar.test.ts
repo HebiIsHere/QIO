@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defineComponent, nextTick } from "vue";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { createPinia } from "pinia";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -77,7 +78,13 @@ const TITLEBAR_PROPERTY = "--titlebar-height";
 let activeWrappers: VueWrapper[] = [];
 
 async function mountChrome(attachTo?: Element) {
-  const w = mount(WindowChrome, attachTo ? { attachTo } : {});
+  // 合并 R9 后 WindowChrome 依赖 pinia（关闭行为存在 ui store 里，ask 确认框要读它）。
+  // 这里按真实启动方式装一个 pinia；不为测试在组件里加无 store 分支。
+  const pinia = createPinia();
+  const w = mount(WindowChrome, {
+    global: { plugins: [pinia] },
+    ...(attachTo ? { attachTo } : {}),
+  });
   activeWrappers.push(w);
   await flushPromises();
   await flushPromises();
