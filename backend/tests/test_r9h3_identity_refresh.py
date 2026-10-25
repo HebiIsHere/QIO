@@ -66,7 +66,16 @@ def _key(path) -> str:  # noqa: ANN001
     return found.key
 
 
-def _exec_ctx(ctx, *, kind: str, payload: dict, fingerprint: dict) -> ExecutionContext:
+def _exec_ctx(
+    ctx, *, kind: str, payload: dict, fingerprint: dict, confirmed_stage: int = 3
+) -> ExecutionContext:
+    """审批通过后的执行上下文（R9-H13 §8.3：执行前核对**实际**确认阶段）。
+
+    内部运行数据的最低确认次数由后端按真实影响对象推导（内部对象=3），不信任调用方
+    填写的次数；真实审批记录在连续三次确认后 confirmed_stage 才是 3，执行器据此放行。
+    这里默认 3 = 模拟「审批已走完 0→1→2→3 的 CAS 推进」，默认值不是为了绕过核对：
+    test_internal_write_requires_three_confirmation_stages 用 0/1/2 断言仍被拒。
+    """
     operation = PendingOperation(
         kind=kind,
         label="测试内部文件维护",
@@ -80,6 +89,7 @@ def _exec_ctx(ctx, *, kind: str, payload: dict, fingerprint: dict) -> ExecutionC
         operation=operation,
         mode_at_request="restricted",
         mode_at_approval="restricted",
+        confirmed_stage=int(confirmed_stage),
     )
 
 
@@ -106,6 +116,57 @@ async def _approved_write(ctx, path: Path, content: str) -> tuple[object, str]:
 # ---------------------------------------------------------------------------
 # 1) 真实审批执行器写入：原子替换后不刷新/不重启，新对象身份立即生效
 # ---------------------------------------------------------------------------
+
+
+async def test_internal_write_requires_three_confirmation_stages(ctx, app_env):
+    """R9-H13 §8.3：执行前核对实际确认阶段；未满三次的内部维护一律不执行。
+
+    真实 CAS 推进（confirm 1→2→3、阶段重置、内容变化重置）由
+    tests/test_r9h13_lead.py::test_internal_approval_needs_three_confirmation_stages
+    与 tests/test_r9h13_d_approval.py 覆盖；这里守执行器侧最后一道核对：
+    历史或错误的低阶段记录（0/1/2）不能被当成已完成三次。
+    """
+    original = app_env.log.read_text(encoding="utf-8")
+    payload = {
+        "path": str(app_env.log),
+        "content": "version-x",
+        "content_sha256": security_gate.text_sha256("version-x"),
+    }
+    fingerprint = {
+        "internal_data_root": str(ctx.settings.data_dir / "logs"),
+        "identity": security_gate.file_identity(app_env.log),
+    }
+    for stage in (0, 1, 2):
+        blocked = await ctx.operations.execute(
+            "fs.write",
+            payload,
+            _exec_ctx(
+                ctx,
+                kind="fs.write",
+                payload=payload,
+                fingerprint=fingerprint,
+                confirmed_stage=stage,
+            ),
+        )
+        assert blocked.ok is False, f"confirmed_stage={stage} 不得执行内部维护"
+        assert blocked.error == "internal_confirmations_missing", blocked
+    assert app_env.log.read_text(encoding="utf-8") == original, (
+        "未完成三次确认不得改动内部文件内容"
+    )
+
+    executed = await ctx.operations.execute(
+        "fs.write",
+        payload,
+        _exec_ctx(
+            ctx,
+            kind="fs.write",
+            payload=payload,
+            fingerprint=fingerprint,
+            confirmed_stage=3,
+        ),
+    )
+    assert executed.ok is True, executed
+    assert app_env.log.read_text(encoding="utf-8") == "version-x"
 
 
 async def test_approved_replace_updates_identity_without_manual_refresh(ctx, app_env):

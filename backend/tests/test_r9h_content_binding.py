@@ -384,7 +384,11 @@ async def test_script_content_change_prevents_reuse(bound, tmp_path):
     assert first.ok is True, (first.error, first.content)
     assert len(bound.reviewer.calls) == 1
     first_operation = bound.reviewer.calls[0].operation
-    assert first_operation.script_sha256, "脚本文件内容摘要必须进入审查对象"
+    # R9-H8 §6：script_sha256 只表示「内联单一脚本来源」的摘要；以文件传入的脚本
+    # 由 argv + spec_digest（含参数文件内容摘要）表达。H8 修正前的误判根因正是把
+    # 参数脚本摘要塞进 script_sha256；这里断言文件脚本进入 spec_digest，而不是回头
+    # 要求 script_sha256 有值（那会让 H8 的误判重新出现）。
+    assert first_operation.script_sha256 is None, "文件脚本不得占用 script_sha256"
     assert first_operation.spec_digest, "程序/argv/cwd/脚本摘要必须进入审查对象"
 
     script.write_text("print('B')", encoding="utf-8")
@@ -392,8 +396,14 @@ async def test_script_content_change_prevents_reuse(bound, tmp_path):
     assert second.ok is True, (second.error, second.content)
     assert len(bound.reviewer.calls) == 2, "同路径脚本内容变化不得复用旧授权"
     second_operation = bound.reviewer.calls[1].operation
-    assert second_operation.script_sha256 != first_operation.script_sha256
-    assert second_operation.spec_digest != first_operation.spec_digest
+    assert second_operation.script_sha256 is None
+    assert second_operation.spec_digest != first_operation.spec_digest, (
+        "同路径脚本内容变化必须改变 spec_digest"
+    )
+    # 复用键就是 operation_fingerprint：内容变化必须得到不同指纹，旧授权不得复用。
+    assert operation_fingerprint(
+        second_operation, mode="restricted"
+    ) != operation_fingerprint(first_operation, mode="restricted")
 
 
 @pytest.mark.asyncio
