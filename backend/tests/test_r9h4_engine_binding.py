@@ -814,6 +814,9 @@ def test_recheck_preserves_caller_context_scope_and_object(db_conn, tmp_path):
 
 
 def test_recheck_mode_change_needs_confirmation(db_conn, tmp_path):
+    """R9-H13 §3.I 修订（原输入/步骤保留）：审批/审查时 restricted、当前已放宽为
+    unrestricted 且当前规则允许时，不得仅因模式字符串不同要求重新确认；按当前模式
+    重核对通过并继续执行。相邻收紧用例：切到 read_only 后同一操作必须停止。"""
     import asyncio
 
     security = make_security(db_conn, tmp_path, mode="unrestricted")
@@ -832,10 +835,15 @@ def test_recheck_mode_change_needs_confirmation(db_conn, tmp_path):
     result = asyncio.run(
         service.recheck(binding, write_effect(tmp_path / "proj" / "A.py"))
     )
-    assert result.ok is False
-    assert result.code == "needs_confirmation", result.code
-    assert result.verdict == "approve"
-    assert "模式" in result.reason
+    assert result.ok is True, result.reason
+
+    # 收紧后当前规则不允许：仍必须停止（不能沿用放宽后的旧结论）。
+    security.engine.set_mode("read_only", user_initiated=True)
+    tightened = asyncio.run(
+        service.recheck(binding, write_effect(tmp_path / "proj" / "A.py"))
+    )
+    assert tightened.ok is False, tightened.reason
+    assert tightened.code in ("denied", "needs_confirmation"), tightened.code
 
 
 def test_recheck_content_and_operation_change_are_not_ordinary_failure(db_conn, tmp_path):
