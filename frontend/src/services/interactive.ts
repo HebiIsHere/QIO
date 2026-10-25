@@ -294,13 +294,6 @@ export function checkMaterialImpact(
   });
 }
 
-export function createDemoIntents(boardId: string): Promise<{ created: Intent[]; demo: boolean }> {
-  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/intents`, {
-    method: "POST",
-    body: JSON.stringify({ demo: true }),
-  });
-}
-
 export function approveIntent(intentId: string, confirmDependency = false): Promise<DecideResult> {
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/approve`, {
     method: "POST",
@@ -366,7 +359,7 @@ export function batchDecide(
 /**
  * 创建意图（真实入口）：服务端只接受「已可靠受理的理解请求」产出的意图。
  *
- * 演示入口仍然走 createDemoIntents；正式路径不显示演示内容。
+ * 旧的前端「演示意图生成」入口（createDemoIntents）已随合并后清理删除；正式路径不显示演示内容。
  */
 export function createIntents(
   boardId: string,

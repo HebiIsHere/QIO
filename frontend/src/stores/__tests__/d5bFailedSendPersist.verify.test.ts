@@ -32,7 +32,6 @@ vi.mock("../../services/api", () => ({
     approveIntent: vi.fn(),
     rejectIntent: vi.fn(),
     batchDecide: vi.fn(),
-    createDemoIntents: vi.fn(),
     advanceIntent: vi.fn(),
     updateIntentPreview: vi.fn(),
     fetchHistoryPage: vi.fn(),
