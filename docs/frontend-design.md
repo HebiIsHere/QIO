@@ -220,7 +220,7 @@ WebGL 画布本身是透明的（`alpha: true`、不设 `scene.background`），
    也不为滚动条预留轨道空白；全局不设 `overflow: hidden`，不禁用滚轮。
 2. **三种滚动策略**由区域自己声明：`auto`（按需显示 QIO 指示条）、`hidden`（保留滚动能力但不画条）、
    `content`（不建滚动视口）。实现只有一份：`frontend/src/composables/useQioScrollbars.ts`；
-   新造滚动视口用 `frontend/src/components/ui/QioScrollArea.vue`。
+   新造滚动视口用 `v-qio-scrollbar` / `useQioScrollbars`（`frontend/src/composables/useQioScrollbars.ts`）；原 `QioScrollArea.vue` 已于 2026-10-26 合并后清理删除（空置组件，无生产入口）。
 3. **同一连续阅读区只保留一层主要纵向滚动**：普通对话的消息区、互动对话面板的聊天区各自是那一层；
    通知、过程、附件摘要等属于同一阅读流的区域改为自然展开 + 折叠入口。
 4. **对话内任何层级都不得横向滚动**（取代此前「代码块可以横向滚动」的写法）：

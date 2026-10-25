@@ -205,7 +205,7 @@ APPROVAL_REQUIRED 到达 → 队列弹出 → 展示 payload（解释/测试摘�
 | --- | --- | --- |
 | 已经存在的滚动容器要 QIO 指示条 | `v-qio-scrollbar`（`frontend/src/composables/useQioScrollbars.ts`） | 默认 `auto`；`v-qio-scrollbar="'hidden'"` 保留滚动但不画条 |
 | 组件里自己持有 ref | `useQioScrollbars(el, () => ({ policy }))` | 策略可随状态变化（getter） |
-| 新造一层滚动视口 | `QioScrollArea`（`frontend/src/components/ui/QioScrollArea.vue`） | 布局仍由调用方给（`flex: 1` / `min-height: 0`） |
+| 新造一层滚动视口 | `v-qio-scrollbar` / `useQioScrollbars`（`frontend/src/composables/useQioScrollbars.ts`） | 布局仍由调用方给（`flex: 1` / `min-height: 0`）；原 `QioScrollArea.vue` 已于 2026-10-26 清理删除 |
 | 任何不得横向滚动的容器 | `data-qio-fit` | `min-width: 0` + `max-width: 100%` + `overflow-x: clip` |
 | 对话根（普通 / 互动） | `data-qio-scope="chat"` | 启用整套对话适配（换行、软换行代码、媒体适配、按钮重排） |
 | 对话表格 | `MarkdownContent` + `useQioTables` | 表格 / 记录两态，按真实测量切换，共用一份判定 |
