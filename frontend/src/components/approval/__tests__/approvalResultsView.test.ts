@@ -238,6 +238,48 @@ describe("窄窗队列（F05）：标签换行可区分、状态与期限不重�
     w.unmount();
   });
 
+  it("三条共享前缀的申请：可见文本与 title 都带各自对象身份（截断后仍可区分）", () => {
+    const { pinia, approvals, unified } = setup();
+    for (const version of [1, 2, 3]) {
+      const name = "发布材料-第" + version + "版.md";
+      approvals.enqueue(
+        "ap_prefix_" + version,
+        "tool_execution",
+        {
+          description: "修改发布材料：第 1 章 摘要（D:\\work\\发布材料\\" + name + "）",
+          version,
+          arguments: { path: "D:\\work\\发布材料\\" + name },
+        },
+        { autoOpen: false, meta: { state: "waiting" } },
+      );
+    }
+    unified.open("tool:ap_prefix_1");
+    const w = mount(UnifiedApprovalModal, { global: { plugins: [pinia] } });
+
+    const chips = w.findAll('[data-test="unified-approval-chip"]');
+    expect(chips).toHaveLength(3);
+    const visible = chips.map((chip) => chip.text());
+    const titles = chips.map((chip) => String(chip.attributes("title")));
+    const arias = chips.map((chip) => String(chip.attributes("aria-label")));
+
+    // 可见文本：对象身份在前，三条互不相同
+    expect(new Set(visible).size).toBe(3);
+    [1, 2, 3].forEach((version, index) => {
+      expect(visible[index], "可见文本必须带各自对象身份").toContain("第" + version + "版");
+    });
+    // title / aria：完整未截断的对象身份 + 操作摘要，三者互不相同
+    expect(new Set(titles).size).toBe(3);
+    expect(new Set(arias).size).toBe(3);
+    [1, 2, 3].forEach((version, index) => {
+      const name = "发布材料-第" + version + "版.md";
+      expect(titles[index]).toContain(name);
+      expect(titles[index]).toContain("修改发布材料：第 1 章 摘要");
+      expect(arias[index]).toContain(name);
+      expect(arias[index]).toContain("修改发布材料：第 1 章 摘要");
+    });
+    w.unmount();
+  });
+
   it("状态/期限只在一处（弹窗状态行），事实框不再重复", () => {
     const { pinia } = seedThree();
     const w = mount(UnifiedApprovalModal, { global: { plugins: [pinia] } });

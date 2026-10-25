@@ -19,6 +19,7 @@ import { approvalStateLabel } from "../../services/approvalLifecycle";
 import {
   TOOL_ORIGIN_LABELS,
   toolSourceFacts,
+  unifiedItemFullLabel,
   unifiedItemGroupLabel,
   unifiedItemSummary,
   useUnifiedApprovalsStore,
@@ -241,8 +242,8 @@ function goStep(delta: number) {
 }
 
 /**
- * 队列标签的摘要（F05）：同类型多条申请要能互相区分。
- * 用真实事实（工具用系统 description，知识用类别+内容摘要），不用类型枚举重复。
+ * 队列标签的可见摘要（F05）：**对象身份在前**（文件名末段/版本号/项数），
+ * 操作摘要在后；同类型多条即使后半段被省略号截断，可见部分也能区分。
  */
 function shortLabel(index: number): string {
   return unifiedItemSummary(items.value[index] ?? null);
@@ -253,11 +254,14 @@ function groupLabel(index: number): string {
   return unifiedItemGroupLabel(items.value[index] ?? null);
 }
 
-/** 标签的完整读屏文案（视觉截断不丢信息）。 */
+/**
+ * 标签的完整读屏/悬停文案（F05）：**不截断**的对象身份 + 操作摘要，
+ * 绝不复用被截断的可见文本 —— 悬停/读屏能拿到完整且可区分的信息。
+ */
 function chipAria(index: number): string {
   const target = items.value[index];
-  if (!target) return "";
-  return groupLabel(index) + "：" + shortLabel(index);
+  if (target) return unifiedItemFullLabel(target);
+  return "";
 }
 
 async function submit(decision: "approve" | "approve_modified" | "ignore" | "reject") {

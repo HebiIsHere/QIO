@@ -393,26 +393,126 @@ function mergeUnifiedItems(
   return [...tools, ...knowledge];
 }
 
+/* ------------------------------------------------------------------ */
+/* F05：队列标签的「对象身份 + 操作摘要」                                */
+/* ------------------------------------------------------------------ */
+
+function squashText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+/** 路径末段（文件名）：/a/b/报告.md 与 D:\work\报告.md 都取「报告.md」。 */
+function pathTail(path: string): string {
+  const parts = String(path ?? "").split(/[\\/]+/).filter((part) => part.trim().length > 0);
+  return parts.length ? parts[parts.length - 1] : String(path ?? "").trim();
+}
+
 /**
- * 队列标签的一句话摘要（F05：同类型多条申请必须能互相区分）。
- *
- * 取自真实事实：工具/权限类用 approvalFacts.description（系统事实），
- * 知识类用「类别：内容摘要」；没有事实才回落到标题。不做猜测、不编号冒充。
+ * 中间省略：保留头尾（对象身份的区别常在尾部，例如「…第 2 版.md」）。
+ * 只影响可见文本；title/aria 用完整文本，不用它。
  */
-export function unifiedItemSummary(item: UnifiedApprovalItem | null | undefined): string {
+export function middleEllipsis(text: string, limit = 18): string {
+  const value = squashText(text);
+  if (value.length <= limit) return value;
+  if (limit <= 3) return value.slice(0, limit) + "…";
+  const head = Math.ceil((limit - 1) / 2);
+  const tail = limit - 1 - head;
+  return value.slice(0, head) + "…" + (tail > 0 ? value.slice(value.length - tail) : "");
+}
+
+/** 从审批载荷里收集真实对象路径（payload / arguments 里的 path/paths/files，最多两层）。 */
+function collectObjectPaths(payload: unknown): string[] {
+  const out: string[] = [];
+  const push = (value: unknown): void => {
+    if (typeof value === "string" && value.trim()) out.push(value.trim());
+    else if (Array.isArray(value)) for (const item of value) push(item);
+  };
+  const visit = (node: unknown, depth: number): void => {
+    if (!node || typeof node !== "object" || depth > 2) return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (["path", "paths", "file", "files", "filename"].includes(key)) push(value);
+      else if (depth < 2 && value && typeof value === "object") visit(value, depth + 1);
+    }
+  };
+  visit(payload, 0);
+  return [...new Set(out)];
+}
+
+/**
+ * 这条申请针对的**对象身份**（F05 的关键：先给能区分的东西，再给操作摘要）。
+ *
+ * * 工具类：对象路径末段（多对象注明数量）+ 版本号（有就带）；没有路径就用工具名；
+ *   再没有就用审批 id 尾段兜底（保证同类型多条永远能区分，不靠猜）。
+ * * 知识类：内容摘要（没有内容才退回 id）。
+ *
+ * `short=true` 时做中间省略（给可见 chip 用）；title/aria 用完整文本。
+ */
+export function unifiedItemIdentity(
+  item: UnifiedApprovalItem | null | undefined,
+  opts: { short?: boolean } = {},
+): string {
   if (!item) return "";
-  const squash = (value: string): string => value.replace(/\s+/g, " ").trim();
+  const shorten = (value: string, limit = 18): string =>
+    opts.short ? middleEllipsis(value, limit) : value;
+  if (item.kind === "knowledge") {
+    const content = squashText(item.knowledge?.content);
+    const id = String(item.knowledge?.id ?? "");
+    const identity = content || id;
+    return shorten(identity, 18);
+  }
+  const payload = (item.approval?.payload ?? {}) as Record<string, unknown>;
+  const versionRaw = payload.version ?? payload.revision ?? payload.expected_version;
+  const version =
+    versionRaw === null || versionRaw === undefined || typeof versionRaw === "object"
+      ? ""
+      : String(versionRaw).trim();
+  const paths = collectObjectPaths(payload);
+  if (paths.length) {
+    const first = pathTail(paths[0]);
+    const many = paths.length > 1 ? ` 等 ${paths.length} 个对象` : "";
+    const versionText = version ? ` v${version}` : "";
+    return shorten(first + versionText + many, 22);
+  }
+  const batchItems = Array.isArray(payload.items) ? payload.items : [];
+  if (batchItems.length) {
+    const firstPath = collectObjectPaths({ items: batchItems })[0] ?? "";
+    const first = firstPath ? pathTail(firstPath) : "";
+    const label = `${batchItems.length} 项` + (first ? ` · ${first}` : "");
+    return shorten(label, 22);
+  }
+  const toolName = squashText(payload.name) || squashText(payload.tool_name);
+  if (toolName) return shorten(toolName + (version ? ` v${version}` : ""), 22);
+  if (version) return "v" + version;
+  const identity = String(item.identity ?? "");
+  return identity ? "#" + identity.slice(-8) : "";
+}
+
+/** 操作摘要全文（不截断；title/aria 用）。 */
+export function unifiedItemSummaryFull(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
   if (item.kind === "knowledge") {
     const category =
       KNOWLEDGE_CATEGORY_LABELS[String(item.knowledge?.category ?? "")] ?? "知识";
-    const content = squash(String(item.knowledge?.content ?? ""));
-    if (!content) return category;
-    return category + "：" + (content.length > 24 ? content.slice(0, 24) + "…" : content);
+    const content = squashText(item.knowledge?.content);
+    return content ? category + "：" + content : category;
   }
   const facts = item.approval ? approvalFacts(item.approval) : null;
-  const text = squash(String(facts?.description || facts?.operationSummary || ""));
-  if (!text) return item.title || "需要你确认的操作";
-  return text.length > 28 ? text.slice(0, 28) + "…" : text;
+  const text = squashText(facts?.description || facts?.operationSummary);
+  return text || item.title || "需要你确认的操作";
+}
+
+/**
+ * 可见 chip 的一句话（F05）：**对象身份在前**，操作摘要在后。
+ * 这样即使后半段被 CSS 省略号截掉，同类型多条也能在可见部分区分。
+ */
+export function unifiedItemSummary(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  const identity = unifiedItemIdentity(item, { short: true });
+  const summary = unifiedItemSummaryFull(item);
+  const summaryShort = middleEllipsis(summary, 20);
+  if (!identity) return summaryShort;
+  if (!summaryShort || identity === summaryShort) return identity;
+  return identity + " · " + summaryShort;
 }
 
 /** 标签上的类型分组（短标签，不替代摘要）。 */
@@ -420,6 +520,17 @@ export function unifiedItemGroupLabel(item: UnifiedApprovalItem | null | undefin
   if (!item) return "";
   if (item.kind === "knowledge") return "知识";
   return "权限";
+}
+
+/** chip 的完整可区分文案（title/aria 用，绝不复用被截断的可见文本）。 */
+export function unifiedItemFullLabel(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  const identity = unifiedItemIdentity(item);
+  const summary = unifiedItemSummaryFull(item);
+  const parts = [unifiedItemGroupLabel(item)];
+  if (identity) parts.push(identity);
+  if (summary && summary !== identity) parts.push(summary);
+  return parts.join("：");
 }
 
 const DEFERRED_STORAGE_KEY = "qio.unifiedApprovals.deferred";
