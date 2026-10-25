@@ -334,8 +334,9 @@ function locateOnBoard(intent: Intent): void {
 /**
  * 批量入口：直接打开**任务面板的待确认分区**（真实界面，唯一状态是 tasksOpen）。
  *
- * 批量对象与操作资格都来自 store.taskRows：面板里有逐条批准 / 拒绝与同批操作，
- * 无内容时给准确空态。批量与「任务」是同一个面板的两条入口，不再维护第二份开合状态。
+ * 唯一的批量状态是 store.tasksOpen（旧通道的 batchOpen 已在合并后清理中删除）：
+ * 批量对象与操作资格都来自 store.taskRows，面板里有逐条批准 / 拒绝与同批操作，
+ * 无内容时给准确空态。
  */
 function openBatchList(): void {
   store.openTaskCenter("pending");

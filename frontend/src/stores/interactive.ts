@@ -439,7 +439,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const demoMode = ref(false);
   /** 右下悬浮聊天是否展开（收起不清消息、不删草稿、不打断对话） */
   const chatOpen = ref(false);
-  /** 顶部「任务」浮层是否展开（批量入口也落到这同一个面板；唯一的批量/任务开合状态） */
+  /** 顶部「任务」浮层是否展开（批量入口也落到这同一个面板） */
   const tasksOpen = ref(false);
   /**
    * 展开预览的卡片 id（契约 2026-10-12 §3.5 / §3.6）：**只在前端内存**的查看状态。

@@ -65,6 +65,8 @@ describe("⑤ 审批入口（结果与历史可达）", () => {
     results.put(historyEntry());
     await nextTick();
     const entry = w.get('[data-entry="approvals"]');
+    // 正常状态不渲染失败标记
+    expect(entry.find('[data-test="approval-entry-error"]').exists()).toBe(false);
     expect(String(entry.attributes("aria-label"))).toContain("审批结果与历史");
     expect(String(entry.attributes("title"))).toContain("审批结果与历史");
     // 0 待办不显示数量徽标
@@ -95,8 +97,11 @@ describe("⑤ 审批入口（结果与历史可达）", () => {
     approvals.recoveryError = "恢复待审批项失败：连接超时（已有待办保留；可以重试）";
     await nextTick();
     const entry = w.get('[data-entry="approvals"]');
-    expect(entry.find(".dot").exists()).toBe(true);
     expect(String(entry.attributes("aria-label"))).toContain("失败");
+    // 失败必须有**看得见**的标记（不只在 aria-label 里）
+    const errorMark = entry.get('[data-test="approval-entry-error"]');
+    expect(errorMark.text()).toBe("!");
+    expect(String(errorMark.attributes("title"))).toContain("重试");
     w.unmount();
   });
 

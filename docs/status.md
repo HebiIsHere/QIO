@@ -677,7 +677,7 @@
   审批 explanation 与事实不变 / 并行不串味 / `_qio` 不进参数 / 批次结算 / runtime 与历史恢复 /
   容量排除 / 完整一轮端到端）、`frontend/src/stores/__tests__/executionNarrative.test.ts`、
   `frontend/src/components/__tests__/ExecutionNarrativeDrawer.test.ts`、
-  `frontend/src/components/__tests__/ApprovalModal.test.ts`。
+  frontend/src/components/__tests__/ApprovalModal.test.ts（2026-10-26 已随旧审批展示层删除）。
 - **Known limitations：**
   - 工具卡本身**不写入 `messages` 表**（沿用既有边界）：历史里抽屉打开看到的是
     系统生成的调用摘要。2026-09-24 起，工具调用另存于 `tool_records` 表，
@@ -1688,8 +1688,8 @@ P16–P24，直接并列会产生两套同号里程碑）。它们的验收结�
     本地删除的组/关联按 base 三路判定，服务器无关改动不再复活它们；已确认的最高服务器版本独立于候选正文单调推进；
     提交结果与后续读取结果分开记录；任务清单读取失败与「成功空集合」区分。
   * 发送与恢复（F02/F03/F04/F12）：`frontend/src/stores/session.ts`、
-    `frontend/src/components/Composer.vue`、`frontend/src/components/interactive/ChatDock.vue`、
-    `frontend/src/components/interactive/FailedSendNotice.vue`、`backend/src/agent/core/turn.py`、
+    `frontend/src/components/Composer.vue`、frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除）、
+    frontend/src/components/interactive/FailedSendNotice.vue（2026-10-26 已随旧互动展示层删除）、`backend/src/agent/core/turn.py`、
     `backend/src/agent/api/server.py`。每次发送冻结不可变提交快照（原文 / 话题 / 显式附件列表 / 请求身份 /
     重试来源 / 起点信息）；未决发送有独立持久台账，不做数量裁剪；受理事实由
     `acceptance_facts()` 如实给出四种状态（`preparing` / `not_accepted` /
@@ -2006,7 +2006,7 @@ npm test
 | 窗口无边框 | `frontend/src-tauri/tauri.conf.json`：窗口 `decorations: false`；`shadow: true` 保留（Windows 上它给无边框窗口 1px 边线与 Win11 圆角） | 「无边框窗口契约」逐条点名配置与权限 |
 | 自绘标题条 = 拖拽面 + 三个按钮 | 新增 `frontend/src/components/WindowChrome.vue`：满宽拖拽面（`data-tauri-drag-region`，双击由 Tauri 内置逻辑转成最大化/还原）+ 右侧最小化/最大化/关闭；按钮只在壳里渲染（浏览器预览里画了也点不动），最大化状态跟着系统的 resize 事件走 | `frontend/src/components/__tests__/WindowChrome.test.ts` |
 | 按钮真的调得动壳 | `frontend/src-tauri/capabilities/default.json` 补 `core:window:allow-start-dragging` / `allow-minimize` / `allow-toggle-maximize` / `allow-close` / `allow-is-maximized`：少一个按钮就静默失灵（调用被权限挡掉），所以契约测试逐个点名 | `frontend/src/design-guards.test.ts` |
-| 顶部让出条高：贴顶控件不许被压住 | 高度只在 `frontend/src/styles/tokens.css` 定义一次（`--titlebar-height`），JS 侧经 `frontend/src/utils/titlebar.ts` 读同一个值；`App.vue` 用 `padding-top` 让出这一段；原本贴顶的控件（设置齿轮、待确认入口、设置页 toast、星球页「收起星球」与两条顶部状态条）各下移一个条高 | `frontend/src/utils/__tests__/titlebar.test.ts`、`frontend/src/components/__tests__/SettingsFloat.test.ts` |
+| 顶部让出条高：贴顶控件不许被压住 | 高度只在 `frontend/src/styles/tokens.css` 定义一次（`--titlebar-height`），JS 侧经 `frontend/src/utils/titlebar.ts` 读同一个值；`App.vue` 用 `padding-top` 让出这一段；原本贴顶的控件（设置齿轮、待确认入口、设置页 toast、星球页「收起星球」与两条顶部状态条）各下移一个条高 | `frontend/src/utils/__tests__/titlebar.test.ts`、frontend/src/components/__tests__/SettingsFloat.test.ts（2026-10-26 已删除，设置入口由 WindowChrome 全局栏承接） |
 
 **实拍与命中证据**（`frontend/scripts/window_chrome_shots.mjs`，图与结果在 `frontend/e2e-shots/window-chrome/`）：
 脚本自己判红绿，不靠人读图 —— 标题条 32px、整条除按钮外都是拖拽面、页面内容从 y=32 起、
@@ -2286,7 +2286,7 @@ npm test
   「上次有一项操作没有执行：…」（多项时写「上次有 N 项操作没有执行（例如 …）」）。
   它**不是待办、也点不动** —— 那次调用随进程没了，恢复一个「等你回答」的授权是假的。
 - 实现：`frontend/src/stores/session.ts`（`interruptedOperations` + RESYNC 时填充）、
-  `frontend/src/components/ApprovalEntry.vue`（只读的一行）、`frontend/src/services/api.ts`（类型）。
+  frontend/src/components/ApprovalEntry.vue（2026-10-26 已删除，非聊天路由入口由 NonChatApprovalEntry 承接）（只读的一行）、`frontend/src/services/api.ts`（类型）。
 - 已验证：前端 `npx vitest run` 全绿、`npx vue-tsc --noEmit` 通过。
 - 下一步：**「未完成任务」入口**（把开发任务列表带进界面）——已由紧接着的这一节做完。
 - 仍未做：`ApprovalEntry` 那一行只有 store 级测试，没有组件级渲染测试；真机界面验收仍未做。
@@ -2319,7 +2319,7 @@ npm test
 - 实现：`frontend/src/components/DevTaskEntry.vue`、`frontend/src/stores/session.ts`
   （`devTasks` / `unfinishedDevTasks` / `refreshDevTasks`）、`frontend/src/stores/events.ts`
   （三处刷新时机）、`frontend/src/services/api.ts`（`getDevTasks` 与 `DevTaskRow`）、
-  `frontend/src/components/ApprovalEntry.vue` 与 `frontend/src/App.vue`（顶部容器）。
+  frontend/src/components/ApprovalEntry.vue（2026-10-26 已删除，非聊天路由入口由 NonChatApprovalEntry 承接） 与 `frontend/src/App.vue`（顶部容器）。
 - 测试：`frontend/src/components/__tests__/DevTaskEntry.test.ts`（没有任务不显示 / 有任务只亮
   一行 / 已提交不算未完成 / 点开才展开且说清证据过期 / 「继续开发」把 id 与状态交给模型 /
   交不出去时如实说明且不收起）、`frontend/src/stores/__tests__/devTasks.test.ts`（取数、
@@ -2491,7 +2491,7 @@ npm test
 | 装依赖是一次网络 + 磁盘动作 | 必须先拿到用户确认（新增审批 kind `dependency_install`，列出要装的包）；拒绝或超时 → **不建环境、不跑测试**，并说明「没有同意」 | `tools/tool_envs.py`、`tools/dev_tools.py` | `test_tool_envs.py`、`test_tool_env_integration.py` |
 | 测试与运行可能偷偷用错解释器 | 声明了依赖的工具：测试用专用环境的 Python；注册后的调用也用它，环境没准备好就**明确失败**（不静默回落随包环境） | `tools/tester.py`、`tools/runtime_tools.py`、`tools/executor_env.py`、`tools/sandbox.py` | `test_tool_env_integration.py`（测试跑在专用环境里 / 拒绝安装则不执行 / 无依赖工具不受影响 / 注册工具缺环境时拒绝执行） |
 | 容器执行时依赖环境会被忽略 | 容器隔离执行 + 需要专用环境 → 直接说明「容器里不会装这套依赖」，请改用受限子进程或去掉依赖声明 | `tools/sandbox.py` | `test_tool_project_execution.py` |
-| 界面看到安装请求会显示英文枚举名 | 审批标题加「安装依赖」；payload 里的包列表与说明沿用既有渲染 | `frontend/src/components/ApprovalModal.vue` | `frontend .../ApprovalModal.test.ts` |
+| 界面看到安装请求会显示英文枚举名 | 审批标题加「安装依赖」；payload 里的包列表与说明沿用既有渲染 | frontend/src/components/ApprovalModal.vue（2026-10-26 已删除，统一审批由 UnifiedApprovalModal 承接） | `frontend .../ApprovalModal.test.ts` |
 
 **真实链路验证（不是替身）**：本机用默认安装器实跑过一遍 —— 真建 venv、真从 PyPI 装
 `six`、拿到专用解释器；第二次调用直接复用同一个环境（`reused=true`），没有重复安装。
@@ -4345,10 +4345,10 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   尺寸调整只改布局与查看 —— 不产生表达 / 意图 / 审批 / 模型调用，不取消持续许可，不动草稿与阅读状态。
   - 公共原语：`frontend/src/interactive/resize.ts`（八向算术、最小/最大夹紧、恢复收敛、新卡落点）、
     `frontend/src/composables/useResizeGesture.ts`（指针手势；取消即恢复：指针取消 / Esc / 失焦 / 卸载）、
-    `frontend/src/components/interactive/ResizeHandles.vue`（四边四角热区 + 右下角克制标记 + 键盘可达的 −/＋）、
+    frontend/src/components/interactive/ResizeHandles.vue（2026-10-26 已删除，卡片缩放热区由 BoardResizeLayer 承接）（四边四角热区 + 右下角克制标记 + 键盘可达的 −/＋）、
     `frontend/src/interactive/chatFrame.ts`（对话窗口位置/尺寸按**板面身份**绑定的本机偏好）、
     `frontend/src/interactive/chatFrameState.ts`（显示框共享桥）、
-    `frontend/src/interactive/overlayAvoid.ts`（浮层互相让开的带宽几何）。
+    frontend/src/interactive/overlayAvoid.ts（2026-10-26 已删除，无生产消费者）（浮层互相让开的带宽几何）。
   - **卡片常态尺寸就是板面状态的 `card.w/h`**：常态提交 `{x, y, w, h}`；展开中或被让位时只提交 `{w, h}`，
     临时槽位坐标**绝不**写回板面。后端 `submission.py` 的 `_card_meaning` 不含位置/大小，
     纯几何变化归入 `DISPLAY_ONLY_EXPRESSIONS`（`layout_only`），因此不产生意图。
@@ -4390,7 +4390,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - **共享原语（唯一实现）**：`frontend/src/styles/scroll.css`（全局消除原生滚动条外观，不设全局
     `overflow:hidden`、不禁用滚轮）、`frontend/src/composables/useQioScrollbars.ts`（auto/hidden 两策略的
     浮动指示条引擎）、`frontend/src/composables/useQioTables.ts` + `frontend/src/utils/qioTable.ts`（表格两态）、
-    `frontend/src/utils/scrollIndicator.ts`（指示条偏好）、`frontend/src/components/ui/QioScrollArea.vue`；
+    `frontend/src/utils/scrollIndicator.ts`（指示条偏好）、frontend/src/components/ui/QioScrollArea.vue（2026-10-26 已删除，滚动指示条由 v-qio-scrollbar 承接）；
     令牌集中在 `frontend/src/styles/tokens.css` 的 `--scroll-*`。
   - **对话内不得横向滚动**（取代此前「代码块可以横向滚动」的写法）：消息流、消息项、气泡、正文、过程详情、
     附件、输入区、错误恢复与对话内预览都不是水平滚动容器；代码块软换行（`white-space: pre-wrap`，
@@ -4463,18 +4463,18 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **Status：** completed
 - **Implementation：**
   - `frontend/src/components/interactive/BoardCanvas.vue` 里的 `.view-hint` 原来是**无条件渲染**的常驻提示，
-    与互动空间既有规则冲突（`frontend/src/components/interactive/ChatDock.vue` 里写着「快捷键说明只留一处
+    与互动空间既有规则冲突（frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 里写着「快捷键说明只留一处
     （帮助里），面板里不再常驻小字」）。现在改成：只在本机**还没用过查看手势**时显示一条，
     平移 / 滚轮缩放 / 空格框选任一手势**结束**后永久收起 —— 在手势结束后才收，避免拖动中途改变容器高度；
     状态记进 `localStorage` 的 `qio-board-hint-seen`，读写沿用项目既有的防御式范式
     （隐私模式 / 企业策略下连读属性都可能抛异常，抛了就退回本次会话内存）。
   - 该提示去掉 `role="status"`：它不是实时状态，而文案里嵌着实时缩放百分比，
     作为 aria-live 区域会让读屏在每一次滚轮缩放时重复播报整条提示。
-  - 完整说明并入帮助：`frontend/src/components/interactive/ChatDock.vue` 的帮助里新增「板面手势」一段
+  - 完整说明并入帮助：frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 的帮助里新增「板面手势」一段
     （`data-im="chat-help-board"`），摘要行同步改为「帮助：可见范围 · 板面手势 · 媒体读取 · 附件限制 · 快捷键」。
 - **Tests：** `frontend/src/interactive/__tests__/boardCanvas.test.ts` 新增一组用例（首次进入显示且不是 aria-live、
   平移后收起并把「已看过」写进本机、缩放后收起、框选后收起、已看过时不再显示）；
-  `frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts` 的帮助用例补上板面手势断言。
+  frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts（2026-10-26 已删除） 的帮助用例补上板面手势断言。
   既有「拖动空白处 = 平移查看位置」用例原先靠 `toContain("平移")` 间接依赖这条常驻提示，
   改为断言「平移不留下任何提示条」。真实浏览器（Chrome，1200×800）核对：
   首次进入有提示 → 空白处滚轮缩放后消失且本机标记写入 → 刷新后不再出现。
@@ -4858,7 +4858,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
     会启动浏览器**原生文本选择拖拽**，指针越过滚动容器边缘时 Chromium 触发选择自动滚动，
     把最近的滚动容器 `.board-viewport` 滚走 —— 实测从提交区拖到窗口底，
     `scrollTop` 从 0 跳到 **811**（卡片正文不会：卡片自己有 `preventDefault`）。
-  - 修法（方案 A）：`frontend/src/styles/interactive-shell.css` 里给互动舞台
+  - 修法（方案 A）：frontend/src/styles/interactive-shell.css（2026-10-26 已删除，新版公共层变量迁到 frontend/src/styles/layers.css） 里给互动舞台
     `main.im-stage` 加 `user-select: none`；需要选文字 / 复制的地方**显式开回来**：
     卡片正文（`[data-im="card-body"]`）、对话面板（`[data-im="chat-panel"]`）、
     `textarea` / `input` / `[contenteditable="true"]`（选择不是继承锁，子元素可以重新打开）。
@@ -4878,14 +4878,14 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **Implementation：**
   - 现象：窗口变矮（实测 1200×560）时，对话窗口的默认框被收敛到 238px，输入行被推到面板底边之外，
     再由 `.panel` 的 `overflow: clip` 裁掉 —— 发送键完全看不见，也没有任何入口能滚到它。
-  - 根因两层：① `frontend/src/components/interactive/ChatDock.vue` 的 `.composer` 是 `min-height: 0`，
+  - 根因两层：① frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 的 `.composer` 是 `min-height: 0`，
     面板一矮先压输入区；② `frontend/src/interactive/chatFrame.ts` 的 `CHAT_FRAME_MIN.h = 220` 是按
     「标题栏 44 + 输入区 92 + 阅读区 72」估的，实测这三段分别是 52 / 147 / 72，最小值本身就偏小。
   - 修法：`.composer` 给出必需的最小高度 96px（附件行 31 + gap 4 + 输入行 57 ≈ 92，留一点余量），
     面板变矮时**先让阅读区、再让帮助摘要**（帮助另有顶部入口，不会失去访问路径）；
     `CHAT_FRAME_MIN` 按实测分解抬到 260（内边距 24 + 标题栏 52 + gap 16 + 阅读区 72 + 输入区必需 92 ≈ 256）。
-- **Tests：** `frontend/src/interactive/__tests__/chatFrame.test.ts` 的最小值用例改成按实测分解断言；
-  `frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts` 增加源码守卫
+- **Tests：** frontend/src/interactive/__tests__/chatFrame.test.ts（2026-10-26 已删除，chatFrameState 发布语义测试保留） 的最小值用例改成按实测分解断言；
+  frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts（2026-10-26 已删除） 增加源码守卫
   （`.composer` 必须声明不小于 92px 的最小高度）；`frontend/src/interactive/__tests__/irl-verify-chatframe.test.ts`
   里那条写死 580 的断言改为按 `CHAT_FRAME_MIN.h` 推导，避免数字过期。
   真实浏览器核对（Chrome）：1200×800 / 1024×768 / 1440×900 与修复前一致；
@@ -4998,7 +4998,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
     「卡在上方」，右下角一直留白。用户明确希望：**工具栏尽可能向左缩小**，把右下角让出来。
   - 根因一：窗口缩小时把「收敛后的框」直接写回**当前生效框**，窗口放大回来时已经没有
     「用户原本想要的框」可恢复 —— 实测 520 → 244，窗口恢复后仍停在 260。
-    修法：`frontend/src/components/interactive/ChatDock.vue` 把**用户框**（`preferredFrame`，
+    修法：frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 把**用户框**（`preferredFrame`，
     唯一落盘的那份）与**生效框**（`frame`）分开；窗口变化只重新推导生效框
     （`convergeChatFrame(preferredFrame, area)`），只有用户拖动 / 调整尺寸才更新用户框。
   - 根因二：工具栏在「扣掉 132px 聊天保留宽度后的剩余空间里居中」并固定上限 1180px
