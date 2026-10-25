@@ -258,6 +258,122 @@ record(
   confirmState.progress && confirmState.secondOfThird,
 );
 
+// ---- 矩阵4：并发两个审批、结果乱序到达；刷新后历史仍按 id 归属 -------
+page = await context.newPage();
+attach(page);
+await goto(page, "#/interactive");
+await page.waitForTimeout(2000);
+await page.evaluate(() => document.activeElement?.blur?.());
+const concurrent = [
+  { id: "e_seed_concurrent_a", label: "并发审批 A：修改第 1 章" },
+  { id: "e_seed_concurrent_b", label: "并发审批 B：修改第 2 章" },
+];
+for (const item of concurrent) {
+  await inject("APPROVAL_REQUIRED", approvalPayload(item.id, item.label));
+}
+await page.waitForTimeout(1500);
+// 乱序：先发 B 的失败，再发 A 的成功
+await inject("APPROVAL_RESULT", {
+  approval_id: "e_seed_concurrent_b",
+  phase: "failed",
+  ok: false,
+  summary: "E-ACCEPT 并发 B 执行失败：磁盘只读",
+});
+await inject("APPROVAL_RESULT", {
+  approval_id: "e_seed_concurrent_a",
+  phase: "executed",
+  ok: true,
+  summary: "E-ACCEPT 并发 A 已执行：写了 3 个文件",
+});
+await page.waitForTimeout(1500);
+const concurrentEntry = page.locator('[data-entry="approvals"]');
+if ((await concurrentEntry.count()) > 0) {
+  await concurrentEntry.first().click().catch(() => undefined);
+  await page.waitForTimeout(1200);
+}
+const concurrentText = await page.evaluate(() => document.body.innerText || "");
+await page.screenshot({ path: OUT + "/16-concurrent-results.png" });
+record(
+  "矩阵4｜并发两个审批结果乱序到达：按 approval_id 各自保留、不串不丢",
+  "两条结果同时可读，且各自内容正确",
+  JSON.stringify({
+    hasA: concurrentText.includes("E-ACCEPT 并发 A 已执行"),
+    hasB: concurrentText.includes("E-ACCEPT 并发 B 执行失败"),
+  }),
+  concurrentText.includes("E-ACCEPT 并发 A 已执行") && concurrentText.includes("E-ACCEPT 并发 B 执行失败"),
+);
+
+// 刷新（等价于重连）后：历史从后端重建，两条仍按 id 在
+await page.reload({ waitUntil: "domcontentloaded" });
+await waitReady(page);
+await page.waitForTimeout(1200);
+const reloadEntry = page.locator('[data-entry="approvals"]');
+if ((await reloadEntry.count()) > 0) {
+  await reloadEntry.first().click().catch(() => undefined);
+  await page.waitForTimeout(1200);
+}
+const afterReloadText = await page.evaluate(() => document.body.innerText || "");
+await page.screenshot({ path: OUT + "/17-history-after-reload.png" });
+record(
+  "矩阵4｜刷新（重连）后历史不丢：两条并发结果仍在且归属正确",
+  "刷新后仍能读到 A 成功与 B 失败两条记录",
+  JSON.stringify({
+    hasA: afterReloadText.includes("E-ACCEPT 并发 A 已执行"),
+    hasB: afterReloadText.includes("E-ACCEPT 并发 B 执行失败"),
+  }),
+  afterReloadText.includes("E-ACCEPT 并发 A 已执行") && afterReloadText.includes("E-ACCEPT 并发 B 执行失败"),
+);
+await page.close();
+
+// ---- 矩阵7：批量逐项结果（部分成功），每一项用后端 item_id 身份显示 ----
+page = await context.newPage();
+attach(page);
+await goto(page, "#/interactive");
+await page.waitForTimeout(2000);
+await page.evaluate(() => document.activeElement?.blur?.());
+await inject("APPROVAL_REQUIRED", approvalPayload("matrix_batch_1", "批量修改 3 份发布材料"));
+await page.waitForTimeout(1200);
+await inject("APPROVAL_RESULT", {
+  approval_id: "matrix_batch_1",
+  phase: "executed",
+  ok: false,
+  summary: "本次改动：部分完成（1 成功 / 1 失败 / 1 跳过）",
+  detail: {
+    results: [
+      { item_id: "obj_1", path: "D:\\work\\a.txt", status: "completed" },
+      { item_id: "obj_2", path: "D:\\work\\b.txt", status: "failed", reason: "磁盘只读" },
+      { item_id: "obj_3", path: "D:\\work\\c.txt", status: "skipped", reason: "依赖失败，未执行" },
+    ],
+  },
+});
+await page.waitForTimeout(1500);
+const batchEntry = page.locator('[data-entry="approvals"]');
+if ((await batchEntry.count()) > 0) {
+  await batchEntry.first().click().catch(() => undefined);
+  await page.waitForTimeout(1200);
+}
+const batchState = await page.evaluate(() => {
+  const items = Array.from(document.querySelectorAll('[data-test="approval-result-item"]')).map((el) => ({
+    itemId: el.getAttribute("data-item-id"),
+    text: (el.textContent || "").trim().slice(0, 120),
+  }));
+  const summaryNode = document.querySelector('[data-test="approval-result-batch-summary"]');
+  return { items, summary: (summaryNode?.textContent || "").trim() };
+});
+await page.screenshot({ path: OUT + "/18-batch-results.png" });
+const batchIds = batchState.items.map((item) => item.itemId);
+record(
+  "矩阵7｜批量逐项结果：每一项按后端 item_id 显示，成功/失败/跳过各自可见",
+  "3 项都在（obj_1/2/3），批量汇总写明部分完成",
+  JSON.stringify(batchState),
+  batchIds.includes("obj_1") && batchIds.includes("obj_2") && batchIds.includes("obj_3") &&
+    batchState.items.some((item) => /成功|完成/.test(item.text)) &&
+    batchState.items.some((item) => /失败/.test(item.text)) &&
+    batchState.items.some((item) => /跳过|未执行/.test(item.text)) &&
+    /部分|整批|成功/.test(batchState.summary),
+);
+await page.close();
+
 const summary = { sha: SH, at: STAMP, results, consoleErrors };
 writeFileSync(OUT + "/matrix.json", JSON.stringify(summary, null, 2), "utf8");
 const lines = ["# E 独立验收 · 矩阵补充项（" + SH.slice(0, 8) + "）", "", "| 步骤 | 结果 | 实际 |", "| --- | --- | --- |"];

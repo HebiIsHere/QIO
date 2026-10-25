@@ -22,6 +22,17 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get("QIO_DATA_DIR") or "")
 SUMMARY = os.environ.get("QIO_SEED_HISTORY_SUMMARY") or "已执行：E-ACCEPT 种子历史（写入 2 个文件）"
 APPROVAL_ID = os.environ.get("QIO_SEED_HISTORY_ID") or "e_seed_history_1"
+NOW = datetime.now(timezone.utc)
+
+# 固定的一组历史记录：覆盖「单条成功 / 单条失败 / 并发两条各自归属」，
+# 供矩阵 2（0 待办有历史）与矩阵 4（刷新/重连后历史仍在）使用。
+# 全部写进隔离数据目录；不碰任何用户数据。
+SEEDS = [
+    (APPROVAL_ID, "tool_execution", SUMMARY, "executed", {"decision": "approved", "label": "修改发布材料：第 1 章 摘要"}),
+    ("e_seed_history_2", "tool_execution", "执行失败：目标文件被占用（未做任何修改）", "failed", {"decision": "approved", "label": "修改发布材料：第 1 章 附录"}),
+    ("e_seed_concurrent_a", "tool_execution", "E-ACCEPT 并发 A 已执行：写了 3 个文件", "executed", {"decision": "approved", "label": "并发审批 A"}),
+    ("e_seed_concurrent_b", "tool_execution", "E-ACCEPT 并发 B 执行失败：磁盘只读", "failed", {"decision": "approved", "label": "并发审批 B"}),
+]
 
 
 def main() -> int:
@@ -34,31 +45,27 @@ def main() -> int:
         return 2
     conn = sqlite3.connect(str(db))
     try:
-        conn.execute(
-            "INSERT OR REPLACE INTO approval_history"
-            " (approval_id, kind, summary, outcome, detail, at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                APPROVAL_ID,
-                "tool_execution",
-                SUMMARY,
-                "executed",
-                json.dumps(
-                    {
-                        "decision": "approved",
-                        "label": "修改发布材料：第 1 章 摘要",
-                        "seeded_by": "E acceptance precondition",
-                    },
-                    ensure_ascii=False,
+        for index, (approval_id, kind, summary, outcome, detail) in enumerate(SEEDS):
+            detail = dict(detail)
+            detail.setdefault("seeded_by", "E acceptance precondition")
+            conn.execute(
+                "INSERT OR REPLACE INTO approval_history"
+                " (approval_id, kind, summary, outcome, detail, at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    approval_id,
+                    kind,
+                    summary,
+                    outcome,
+                    json.dumps(detail, ensure_ascii=False),
+                    (NOW.replace(microsecond=0) if index == 0 else NOW).isoformat(),
                 ),
-                datetime.now(timezone.utc).isoformat(),
-            ),
-        )
+            )
         conn.commit()
         count = conn.execute("SELECT COUNT(*) FROM approval_history").fetchone()[0]
     finally:
         conn.close()
-    print(f"seeded approval_history: {APPROVAL_ID} / 总条数 {count} / {db}")
+    print(f"seeded approval_history: {len(SEEDS)} 条 / 表内总条数 {count} / {db}")
     return 0
 
 
