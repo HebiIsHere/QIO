@@ -1,0 +1,46 @@
+﻿FFFFFFFF                                                                 [100%]
+================================== FAILURES ===================================
+______________ test_c1_denied_program_not_read_and_not_launched _______________
+
+ctx = <agent.services.app.AppContext object at 0x000002BE8874C5D0>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4327/test_c1_denied_program_not_rea0')
+workspace = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4327/test_c1_denied_program_not_rea0/workspace')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002BE8875D6D0>
+
+    async def test_c1_denied_program_not_read_and_not_launched(
+        ctx, tmp_path, workspace, monkeypatch
+    ):
+
+______________ test_c1_denied_program_not_read_and_not_launched _______________
+E       AssertionError: ('用户禁止读取该程序时必须拒绝执行', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_...外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E       assert True is False
+_____________ test_d1_same_size_mtime_change_not_hidden_by_cache ______________
+E       AssertionError: ('审查期间脚本内容变化（大小/mtime 相同）必须使旧结论失效', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, ...外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E       assert True is False
+___________________ test_d2_python_txt_script_content_bound ___________________
+E       AssertionError: ('python 的 .txt 入口脚本内容变化必须进入绑定并拒绝', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, ...外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E       assert True is False
+________________ test_d2_many_script_args_not_silently_omitted ________________
+E       AssertionError: ('第 18 个参数脚本变化（旧实现超过采集上限被静默遗漏）必须被发现并拒绝', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=N...外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E       assert True is False
+_______________ test_d3_recursive_delete_hits_prohibited_child ________________
+E       AssertionError: ('递归删除目录不能漏掉被禁止的子文件', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch...外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E       assert True is False
+________ test_d3_incomplete_recursive_impact_not_executed_as_complete _________
+E       AssertionError: ('影响不完整时不得按完整方案执行', ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_b...外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E       assert True is False
+___________________ test_path_delete_link_entry_not_target ____________________
+E       AssertionError: ('交给回收入口的必须是用户指定的目录项（链接），不是解析后的目标', ['C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4327\\test_path_delete_link_entry_no0\\workspace\\protected'])
+E       assert ['C:\\Users\\...e\\protected'] == ['C:\\Users\\...\target-link']
+____________ test_path_delete_link_does_not_read_restricted_target ____________
+E       AssertionError: ('删除链接本身不应被目标内容的读取限制阻止', ToolResult(ok=False, content='C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-432...et 里的内容', 'code': 'read_limit_denied'}], 'pending_approval': False, 'deleted_permanently': False}, model_payload=None))
+E       assert False is True
+=========================== short test summary info ===========================
+FAILED tests/test_r9h13_c_execution.py::test_c1_denied_program_not_read_and_not_launched
+FAILED tests/test_r9h13_c_execution.py::test_d1_same_size_mtime_change_not_hidden_by_cache
+FAILED tests/test_r9h13_c_execution.py::test_d2_python_txt_script_content_bound
+FAILED tests/test_r9h13_c_execution.py::test_d2_many_script_args_not_silently_omitted
+FAILED tests/test_r9h13_c_execution.py::test_d3_recursive_delete_hits_prohibited_child
+FAILED tests/test_r9h13_c_execution.py::test_d3_incomplete_recursive_impact_not_executed_as_complete
+FAILED tests/test_r9h13_c_execution.py::test_path_delete_link_entry_not_target
+FAILED tests/test_r9h13_c_execution.py::test_path_delete_link_does_not_read_restricted_target
