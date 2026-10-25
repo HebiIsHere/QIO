@@ -395,9 +395,9 @@ describe("组框与关系线继续走同一份显示坐标", () => {
      */
     const path = String(line.attributes("d") ?? "");
     const numbers = (path.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
-    expect(numbers[0]).toBe(a.x + a.w);
+    expect(numbers[0]).toBe(a.x + a.w + 6);
     expect(numbers[1]).toBe(a.y + a.h / 2);
-    expect(numbers[numbers.length - 2]).toBe(b.x);
+    expect(numbers[numbers.length - 2]).toBe(b.x - 6);
     expect(numbers[numbers.length - 1]).toBe(b.y + b.h / 2);
   });
 });

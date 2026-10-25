@@ -244,8 +244,8 @@ describe("显示层：真实端点身份不变，显示锚点可汇聚", () => {
       aggregatedSrc: false,
       aggregatedDst: false,
     });
-    expect({ x1: line.x1, y1: line.y1 }).toEqual({ x1: 220, y1: 140 }); // a 的右边中点
-    expect({ x2: line.x2, y2: line.y2 }).toEqual({ x2: 400, y2: 140 }); // b 的左边中点
+    expect({ x1: line.x1, y1: line.y1 }).toEqual({ x1: 226, y1: 140 }); // a 的右边 + 固定外距
+    expect({ x2: line.x2, y2: line.y2 }).toEqual({ x2: 394, y2: 140 }); // b 的左边 - 固定外距
     expect(line.labelX).toBe(310);
     expect(line.labelY).toBe(140);
     expect(line.direction).toBe(false);
@@ -285,7 +285,7 @@ describe("显示层：真实端点身份不变，显示锚点可汇聚", () => {
     expect(back.displaySrcId).toBe("a");
     expect(back.aggregatedSrc).toBe(false);
     // a 与 c 在同一条竖线上：展开后锚回 a 的下边缘中点
-    expect({ x1: back.x1, y1: back.y1 }).toEqual({ x1: 160, y1: 180 });
+    expect({ x1: back.x1, y1: back.y1 }).toEqual({ x1: 160, y1: 186 });
   });
 
   it("组收起时组内成员之间的线不画（不是对外关系），展开后恢复", () => {
@@ -408,7 +408,7 @@ describe("组端点锚点：只画被关系实际使用的边缘位置", () => {
       linkIds: ["l2"],
     });
     // 组框 80..440 x 40..200；c 中心 (160,440) → 下边缘 x=235,y=200
-    expect(anchors[0].x).toBeCloseTo(235, 6);
+    expect(anchors[0].x).toBeCloseTo(260, 6);
     expect(anchors[0].y).toBe(200);
   });
 

@@ -37,6 +37,18 @@ export interface Point {
 /** 组端点前缀（端点字符串的唯一来源；组件不要再拼一份）。 */
 export const GROUP_ENDPOINT_PREFIX = "group:";
 
+/** 卡片连接点/连线端点离卡片边框的固定外距（视觉圆点中心 = 边框 + 此值）。 */
+export const CARD_ANCHOR_GAP = 6;
+
+/** 把卡片边上的点沿外法线推出固定距离；组端点不参与。 */
+export function offsetCardAnchor(endpoint: ResolvedEndpoint, point: Point, other: Point): Point {
+  if (endpoint.kind !== "card") return point;
+  const side = groupAnchorSideOf(endpoint.rect, point, other);
+  const dx = side === "left" ? -1 : side === "right" ? 1 : 0;
+  const dy = side === "top" ? -1 : side === "bottom" ? 1 : 0;
+  return { x: point.x + dx * CARD_ANCHOR_GAP, y: point.y + dy * CARD_ANCHOR_GAP };
+}
+
 /** 与 board.ts 的 GROUP_PAD_TOP / GROUP_PAD_X / GROUP_PAD_BOTTOM 同口径（那边是私有常量）。 */
 export const GROUP_HEADER_HEIGHT = 58;
 export const GROUP_PAD_X = 16;
@@ -369,7 +381,18 @@ export function edgeAnchor(rect: BoardRect, toward: Point): Point {
 
 /** 两个最终显示矩形之间的连线：两端各自锚在自己的边缘上。 */
 export function linkAnchor(a: BoardRect, b: BoardRect): { start: Point; end: Point } {
-  return { start: edgeAnchor(a, rectCenter(b)), end: edgeAnchor(b, rectCenter(a)) };
+  const ca = rectCenter(a);
+  const cb = rectCenter(b);
+  const dx = cb.x - ca.x;
+  const dy = cb.y - ca.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0
+      ? { start: { x: a.x + a.w, y: ca.y }, end: { x: b.x, y: cb.y } }
+      : { start: { x: a.x, y: ca.y }, end: { x: b.x + b.w, y: cb.y } };
+  }
+  return dy >= 0
+    ? { start: { x: ca.x, y: a.y + a.h }, end: { x: cb.x, y: b.y } }
+    : { start: { x: ca.x, y: a.y }, end: { x: cb.x, y: b.y + b.h } };
 }
 
 // --- 组端点锚点：只用关系实际用到的那些边缘位置 -----------------------------
@@ -751,6 +774,8 @@ export function buildDisplayLinks(input: DisplayLinksInput): DisplayLinksResult 
     }
 
     const anchor = linkAnchor(displaySrc.rect, displayDst.rect);
+    const start = offsetCardAnchor(displaySrc, anchor.start, anchor.end);
+    const end = offsetCardAnchor(displayDst, anchor.end, anchor.start);
     const meaning =
       link.meaning.trim() || (link.direction ? "有方向（含义待填写）" : "关联（含义待填写）");
     links.push({
@@ -763,12 +788,12 @@ export function buildDisplayLinks(input: DisplayLinksInput): DisplayLinksResult 
       displayDstId: displayDst.value,
       aggregatedSrc,
       aggregatedDst,
-      x1: anchor.start.x,
-      y1: anchor.start.y,
-      x2: anchor.end.x,
-      y2: anchor.end.y,
-      labelX: (anchor.start.x + anchor.end.x) / 2,
-      labelY: (anchor.start.y + anchor.end.y) / 2,
+      x1: start.x,
+      y1: start.y,
+      x2: end.x,
+      y2: end.y,
+      labelX: (start.x + end.x) / 2,
+      labelY: (start.y + end.y) / 2,
       labelW: Math.max(64, meaning.length * 13 + 18),
       curve: {
         x: Number.isFinite(Number(link.curve?.x)) ? Number(link.curve?.x) : 0,

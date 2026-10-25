@@ -101,6 +101,7 @@ import {
   GROUP_HEADER_HEIGHT,
   GROUP_PAD_BOTTOM,
   GROUP_PAD_X,
+  CARD_ANCHOR_GAP,
   cardEdgeAnchors,
   groupEdgeAnchors,
   parseEndpoint,
@@ -762,35 +763,40 @@ const cardAnchors = computed<CardAnchor[]>(() =>
     foldedGroupIds: foldedGroupIds.value,
     includedCardIds: includedCardIds.value,
     onlyInRange: false,
-  }).filter((anchor) => !selection.value.includes(anchor.cardId)),
+  }),
 );
 
-/** 未选中卡片悬停时补四个可拖端口；已连接侧仍复用真实锚点，避免重复。 */
+/** 选中或悬停的卡片补四个可拖端口；已连接侧仍复用真实锚点，避免重复。 */
 const hoverCardAnchors = computed<CardAnchor[]>(() => {
-  if (!hoveredCardId.value || selection.value.includes(hoveredCardId.value)) return [];
-  const card = displayCards.value.find((item) => item.id === hoveredCardId.value && !item.deleted);
-  if (!card) return [];
-  const left = card.x;
-  const top = card.y;
-  const right = card.x + card.w;
-  const bottom = card.y + card.h;
-  const midX = left + card.w / 2;
-  const midY = top + card.h / 2;
-  const endpoint = card.id;
-  const make = (side: CardAnchor["side"], x: number, y: number): CardAnchor => ({
-    cardId: card.id,
-    endpoint,
-    side,
-    x,
-    y,
-    linkIds: [],
-  });
-  return [
-    make("top", midX, top),
-    make("right", right, midY),
-    make("bottom", midX, bottom),
-    make("left", left, midY),
-  ];
+  const ids = new Set<string>(selection.value);
+  if (hoveredCardId.value) ids.add(hoveredCardId.value);
+  if (!ids.size) return [];
+  const out: CardAnchor[] = [];
+  for (const card of displayCards.value) {
+    if (!ids.has(card.id) || card.deleted) continue;
+    const left = card.x;
+    const top = card.y;
+    const right = card.x + card.w;
+    const bottom = card.y + card.h;
+    const midX = left + card.w / 2;
+    const midY = top + card.h / 2;
+    const endpoint = card.id;
+    const make = (side: CardAnchor["side"], x: number, y: number): CardAnchor => ({
+      cardId: card.id,
+      endpoint,
+      side,
+      x,
+      y,
+      linkIds: [],
+    });
+    out.push(
+      make("top", midX, top - CARD_ANCHOR_GAP),
+      make("right", right + CARD_ANCHOR_GAP, midY),
+      make("bottom", midX, bottom + CARD_ANCHOR_GAP),
+      make("left", left - CARD_ANCHOR_GAP, midY),
+    );
+  }
+  return out;
 });
 
 const renderedCardAnchors = computed<CardAnchor[]>(() => {
@@ -3240,6 +3246,7 @@ onBeforeUnmount(() => {
           <BoardCardAnchorLayer
             :anchors="renderedCardAnchors"
             :scale="scaleSafe"
+            :selected-card-ids="selection"
             :hovered-card-id="hoveredCardId"
             @anchor-down="onCardAnchorDown"
           />

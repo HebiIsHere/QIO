@@ -200,7 +200,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
     transform var(--dur-fast) var(--ease-1);
 }
 .card-anchor[data-side="right"] .card-anchor-shape {
-  left: 17px;
+  left: 11px;
   top: 7px;
   width: 14px;
   height: 20px;
@@ -208,7 +208,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
   transform-origin: left center;
 }
 .card-anchor[data-side="left"] .card-anchor-shape {
-  right: 17px;
+  right: 23px;
   top: 7px;
   width: 14px;
   height: 20px;
@@ -217,7 +217,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
 }
 .card-anchor[data-side="top"] .card-anchor-shape {
   left: 7px;
-  bottom: 17px;
+  bottom: 23px;
   width: 20px;
   height: 14px;
   transform: scale(0.62);
@@ -225,7 +225,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
 }
 .card-anchor[data-side="bottom"] .card-anchor-shape {
   left: 7px;
-  top: 17px;
+  top: 11px;
   width: 20px;
   height: 14px;
   transform: scale(0.62);

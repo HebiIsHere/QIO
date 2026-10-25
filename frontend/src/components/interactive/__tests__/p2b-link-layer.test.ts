@@ -103,9 +103,9 @@ describe("最终显示边缘锚点", () => {
     const frame = mountLayer();
     const g = frame.get('[data-link-id="l1"]');
     const line = hitPathOf(frame, "l1");
-    expect(line.x1).toBe(220); // a 右边
+    expect(line.x1).toBe(226); // a 右边 + 固定外距
     expect(line.y1).toBe(140);
-    expect(line.x2).toBe(400); // b 左边
+    expect(line.x2).toBe(394); // b 左边 - 固定外距
     expect(line.y2).toBe(140);
     expect(g.attributes("data-src")).toBe("a");
     expect(g.attributes("data-dst")).toBe("b");
@@ -130,7 +130,7 @@ describe("最终显示边缘锚点", () => {
     const moved = [mkCard("a", 100, 100), mkCard("b", 600, 100)];
     const frame = mountLayer({ cards: moved });
     const line = hitPathOf(frame, "l1");
-    expect(line.x2).toBe(600);
+    expect(line.x2).toBe(594);
   });
 });
 
@@ -162,7 +162,7 @@ describe("组收起 / 展开", () => {
     const g = wrapper.get('[data-link-id="l3"]');
     expect(g.attributes("data-display-src")).toBe("a");
     expect(g.attributes("data-aggregated")).toBeUndefined();
-    expect(hitPathOf(wrapper!, "l3").y1).toBe(180); // a 下边缘
+    expect(hitPathOf(wrapper!, "l3").y1).toBe(186); // a 下边缘 + 固定外距
   });
 });
 
@@ -198,7 +198,7 @@ describe("拖线预览（目标可以是卡片或组）", () => {
     const draft = frame.get('[data-im="link-draft"]');
     expect(draft.attributes("data-from")).toBe("a");
     expect(draft.attributes("data-target")).toBe("");
-    expect(Number(draft.get(".draft-dot").attributes("cx"))).toBe(220);
+    expect(Number(draft.get(".draft-dot").attributes("cx"))).toBe(226);
     expect(Number(draft.get(".draft-dot").attributes("cy"))).toBe(140);
     expect(draft.get(".draft-line").classes()).not.toContain("valid");
     expect(draft.text()).toContain("卡片或一个组");

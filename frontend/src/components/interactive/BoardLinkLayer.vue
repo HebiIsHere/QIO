@@ -16,6 +16,7 @@ import { curveGeometry, curvePath } from "../../interactive/linkCurve";
 import {
   buildDisplayLinks,
   edgeAnchor,
+  offsetCardAnchor,
   rectCenter,
   resolveEndpoint,
   type BoardRect,
@@ -241,10 +242,12 @@ const draft = computed<DraftDisplay | null>(() => {
   const startAim = target
     ? rectCenter(target.rect)
     : (props.draftPoint ?? rectCenter(from.rect));
-  const start = edgeAnchor(from.rect, startAim);
-  const end = target
+  const startEdge = edgeAnchor(from.rect, startAim);
+  const start = offsetCardAnchor(from, startEdge, startAim);
+  const endEdge = target
     ? edgeAnchor(target.rect, rectCenter(from.rect))
     : props.draftPoint;
+  const end = target && endEdge ? offsetCardAnchor(target, endEdge, rectCenter(from.rect)) : endEdge;
   if (!end) return null;
   const valid = Boolean(target) && target!.value !== from.value;
   return {

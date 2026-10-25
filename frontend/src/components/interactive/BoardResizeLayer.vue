@@ -307,6 +307,8 @@ function cornerHitPath(w: number, h: number): string {
   pointer-events: auto;
   touch-action: none;
   cursor: crosshair;
+  /* 2026-10-25：卡片端点统一由 BoardCardAnchorLayer 渲染，旧层只保留 DOM 兼容。 */
+  display: none;
 }
 .connect-point::after {
   content: "";
