@@ -1087,6 +1087,42 @@ def _stat_info(path: Path) -> os.stat_result:
     return path.stat()
 
 
+#: Windows reparse point 标记（junction/符号链接等真实“链接目录项”）。
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+
+
+def _is_link_entry(path: Path) -> bool:
+    """用户指定路径本身是否是一个“链接目录项”（符号链接 / Windows junction 等）。
+
+    契约 §3.G：删除/回收链接时操作目标是用户指定的目录项，解析后的目标只用于
+    比较与审计。Python 3.11 的 Path.is_symlink() 对 Windows junction 返回 False，
+    所以这里补 lstat 的 reparse point 判定（含 mount point tag）。
+    """
+    try:
+        if path.is_symlink():
+            return True
+    except OSError:
+        return False
+    if os.name != "nt":
+        return False
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    attributes = int(getattr(st, "st_file_attributes", 0) or 0)
+    # 任何 reparse point（junction/mount point/云占位符等）都按“目录项”处理：
+    # 不跟随、不解析最后一项（删除/回收只移除这个目录项）。
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _lexical_absolute(path: Path) -> Path:
+    """词法绝对化（不解析链接、不跟随最后一项）。"""
+    try:
+        return Path(os.path.abspath(str(path)))
+    except (OSError, ValueError):
+        return path
+
+
 class _FsTool(Tool):
     # security = 统一授权网关（契约 §2 的 AuthorizationGateway，W1 实现）。
     # origins = W3 的 FileOriginStore（可选注入；未注入时用进程默认 store，见
@@ -2006,8 +2042,43 @@ class FsDeleteTool(_FsTool):
         except Exception:  # noqa: BLE001 - 记账失败不改变删除结果
             return
 
-    async def _recycle_each(self, targets: list[Path]) -> ToolResult:
-        """逐条移入系统回收站；失败保留文件并如实报告（绝不永久删除）。"""
+    def _resolve_delete_entry(self, raw: str) -> tuple[Path, Path | None, bool]:
+        """删除/回收的实际操作目标 = **用户指定的目录项**（契约 §3.G/§10）。
+
+        返回 ``(操作目标路径, 解析后的真实目标或 None, 是否链接目录项)``：
+
+        * 链接目录项（符号链接/junction）：操作目标是链接本身；``resolve``/``realpath``
+          只用于审计与内部数据识别，**不得改写系统操作目标**（否则会移动/删除原文件，
+          链接留在原处）；
+        * 普通文件/目录：保持既有真实路径解析（``..``、中间目录链接仍解析到真实位置）。
+        """
+        try:
+            candidate = Path(str(raw or "").strip())
+        except (OSError, ValueError):
+            raise ValueError("路径无法解析")
+        if not candidate.is_absolute():
+            candidate = self.computer.root() / candidate
+        entry = _lexical_absolute(candidate)
+        try:
+            is_link = _is_link_entry(entry)
+        except OSError:
+            is_link = False
+        if is_link:
+            resolved: Path | None = None
+            try:
+                resolved = Path(os.path.realpath(str(entry)))
+            except (OSError, ValueError):
+                resolved = None
+            return entry, resolved, True
+        real = self.computer.resolve_in_root(str(candidate))
+        return real, real, False
+
+    async def _recycle_each(self, entries: list[dict]) -> ToolResult:
+        """逐条移入系统回收站；失败保留文件并如实报告（绝不永久删除）。
+
+        `entries` 的每一项是 ``{"entry": Path, "resolved": Path|None, "is_link": bool}``：
+        链接目录项必须把**链接路径**交给回收入口；回收入口不能跟随链接去移动目标。
+        """
         mover = None
         try:
             from agent.services import recycle_bin
@@ -2019,7 +2090,16 @@ class FsDeleteTool(_FsTool):
             mover = None
         results: list[dict] = []
         failed: list[dict] = []
-        for target in targets:
+        for spec in entries:
+            target = Path(spec["entry"])
+            is_link = bool(spec.get("is_link"))
+            resolved = spec.get("resolved")
+            target_existed_before = None
+            if is_link and resolved is not None:
+                try:
+                    target_existed_before = os.path.exists(str(resolved))
+                except OSError:
+                    target_existed_before = None
             if mover is None:
                 item = {
                     "path": str(target),
@@ -2029,6 +2109,7 @@ class FsDeleteTool(_FsTool):
                 }
             else:
                 try:
+                    # 交给回收入口的是用户指定的目录项；解析后的目标只用于核验。
                     outcome = await asyncio.to_thread(mover, str(target))
                 except Exception as exc:  # noqa: BLE001 - 失败保留文件
                     outcome = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
@@ -2041,10 +2122,30 @@ class FsDeleteTool(_FsTool):
                     "trashed_path": outcome.get("trashed_path"),
                     "deleted_permanently": bool(outcome.get("deleted_permanently", False)),
                 }
+                if is_link:
+                    item["link_entry"] = True
+                    item["resolved_target"] = str(resolved) if resolved else None
+                    if item["ok"]:
+                        # 可恢复语义的自检：链接目录项必须消失，目标对象必须还在。
+                        if os.path.lexists(str(target)):
+                            item["ok"] = False
+                            item["reason"] = (
+                                "回收后链接目录项仍在原位置：不能确认已移入回收站（未做永久删除）"
+                            )
+                        elif (
+                            target_existed_before
+                            and resolved is not None
+                            and not os.path.exists(str(resolved))
+                        ):
+                            item["ok"] = False
+                            item["reason"] = (
+                                "回收链接时目标对象消失：系统可能跟随了链接（如实上报，"
+                                "未做永久删除的回退）"
+                            )
             results.append(item)
             if item["ok"]:
                 # 已移入回收站：保留来源事实，只标记 missing（重启后仍可查历史归属）。
-                self._note_recycled(Path(item["path"]))
+                self._note_recycled(target)
             else:
                 failed.append(item)
         lines = [
@@ -2080,6 +2181,7 @@ class FsDeleteTool(_FsTool):
         if not isinstance(raw_paths, (list, tuple)) or not raw_paths:
             return ToolResult(ok=False, error="paths 必填（至少一个路径）")
         targets: list[Path] = []
+        entry_info: dict[str, dict] = {}
         skipped: list[str] = []
         seen: set[str] = set()
         for raw in raw_paths:
@@ -2088,7 +2190,9 @@ class FsDeleteTool(_FsTool):
                 skipped.append("空路径")
                 continue
             try:
-                target = self._resolve(text)
+                # 契约 §3.G：删除/回收的实际操作目标是用户指定的目录项；
+                # 解析后的目标只用于身份/审计（链接不得被改写为原文件）。
+                target, resolved_target, is_link = self._resolve_delete_entry(text)
             except Exception as exc:  # noqa: BLE001 - 无法定位的路径不能猜着删
                 skipped.append(f"{text}（路径无法解析：{exc}）")
                 continue
@@ -2098,6 +2202,10 @@ class FsDeleteTool(_FsTool):
                 continue
             seen.add(key)
             targets.append(target)
+            entry_info[str(target)] = {
+                "resolved": resolved_target,
+                "is_link": bool(is_link),
+            }
         if not targets:
             return ToolResult(
                 ok=False,
@@ -2110,12 +2218,19 @@ class FsDeleteTool(_FsTool):
         # -- 逐项展开（契约 §6）：每个 path 独立 effect，逐项核对，不得互相覆盖 ------
         items: list[BatchItem] = []
         for index, target in enumerate(targets):
+            semantics = entry_info.get(str(target)) or {}
+            is_link = bool(semantics.get("is_link"))
+            resolved_target = semantics.get("resolved")
             identity = security_gate.file_identity(target)
-            exists = bool(identity.get("exists"))
+            # 链接目录项即使目标不存在（失效链接），目录项本身仍然存在。
+            exists = bool(os.path.lexists(str(target)))
             identity_key = security_gate.identity_key(identity)
             origin_record = self._origin_record(target)
             origin = origin_record.origin if origin_record is not None else None
-            is_directory = target.is_dir() if exists else False
+            # 删除链接的操作对象是目录项本身，不是解析后的目标目录。
+            is_directory = (
+                False if is_link else (target.is_dir() if exists else False)
+            )
             # R9-H7 §3：删除前的内容摘要/目录子文件正文读取必须晚于读取限制核对。
             # 先只枚举元数据（include_content=False，不读正文），核对读取限制后再
             # 计算真实目录影响；禁读时整个删除方案停止，不先读全部子文件。
@@ -2169,7 +2284,7 @@ class FsDeleteTool(_FsTool):
                     )
                     items.append(item)
                     continue
-            elif exists:
+            elif exists and not is_link:
                 blocked_read = await self._blocked_by_known_read_paths(
                     [target], purpose="删除文件前读取内容摘要"
                 )
@@ -2248,10 +2363,10 @@ class FsDeleteTool(_FsTool):
                 continue
             item_content_sha = (
                 security_gate.content_sha256(target)
-                if exists and not is_directory and not probe_internal
+                if exists and not is_directory and not probe_internal and not is_link
                 else None
             )
-            content_deferred = bool(probe_internal)
+            content_deferred = bool(probe_internal) and not is_link
             directory_digest = (
                 str(directory_impact_data.get("digest") or "")
                 if directory_impact_data is not None
@@ -2306,6 +2421,13 @@ class FsDeleteTool(_FsTool):
                     "batch_item_id": item_id,
                     "deleted_to_recycle_bin": True,
                     "delete_mode": "recycle_bin",
+                    # 契约 §2/§3.G：用户指定操作路径与最终执行路径分开记录；
+                    # 链接的操作目标是目录项本身，解析后的目标只用于审计/保护核对。
+                    "requested_path": str(target),
+                    "requested_entry_is_link": is_link,
+                    "resolved_target": (
+                        str(resolved_target) if resolved_target is not None else None
+                    ),
                     "file_origin": origin,
                     "file_origins": [{"path": str(target), "file_origin": origin}],
                     "internal_data_root": str(found_root) if found_root else None,
@@ -2340,6 +2462,10 @@ class FsDeleteTool(_FsTool):
                         "file_origin": origin,
                         "directory_impact_digest": directory_digest,
                         "limit_impacts_complete": impacts_complete,
+                        "is_link_entry": is_link,
+                        "resolved_target": (
+                            str(resolved_target) if resolved_target is not None else None
+                        ),
                     },
                     fingerprint={
                         "path": str(target),
@@ -2351,6 +2477,10 @@ class FsDeleteTool(_FsTool):
                         "base_size": int(identity.get("size") or 0) if exists else None,
                         "base_mtime_ns": int(identity.get("mtime_ns") or 0) if exists else None,
                         "is_directory": is_directory,
+                        "is_link_entry": is_link,
+                        "resolved_target": (
+                            str(resolved_target) if resolved_target is not None else None
+                        ),
                         "precondition_digest": item_precondition,
                         "delete_mode": "recycle_bin",
                         "identity_key": identity_key,
@@ -2406,7 +2536,12 @@ class FsDeleteTool(_FsTool):
                     item.reason = recheck.reason or "执行前重核对未通过"
                     item.result = {"ok": False, "reason": item.reason, "code": recheck.code}
                 continue
-            result = await self._recycle_each([target])
+            recycle_entry = {
+                "entry": target,
+                "resolved": item.payload.get("resolved_target"),
+                "is_link": bool(item.payload.get("is_link_entry")),
+            }
+            result = await self._recycle_each([recycle_entry])
             item.status = BATCH_STATUS_COMPLETED if result.ok else BATCH_STATUS_FAILED
             item.reason = "" if result.ok else (result.error or "移入回收站失败")
             item.result = dict(result.data or {})

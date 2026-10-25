@@ -388,10 +388,28 @@ async def test_none_assessment_fails_closed_zero_reads(tmp_path, monkeypatch):
     assert target.read_text(encoding="utf-8") == "正文"
 
 
+def _strip_saved_object_facts(limits):
+    """R9-H13 B2 修订：把限制对象还原成“历史数据”（无保存时对象事实字段）。"""
+    stripped = []
+    for entry in limits or ():
+        entry = json.loads(json.dumps(entry))
+        for obj in entry.get("objects") or ():
+            if isinstance(obj, dict):
+                for key in requirement_limits.SAVED_OBJECT_FACT_KEYS:
+                    obj.pop(key, None)
+        stripped.append(entry)
+    return stripped
+
+
 async def test_patch_denied_before_reading_body_when_identity_unreadable(
     ctx, tmp_path, monkeypatch
 ):
-    """补丁前置内容：限制路径身份不可读（模拟）→ 补丁在读正文前被拒（0 读取）。"""
+    """补丁前置内容：限制路径身份不可读（模拟）→ 补丁在读正文前被拒（0 读取）。
+
+    R9-H13 B2 修订（原输入/步骤保留）：保存流程现在记录保存时对象身份；即使限制
+    路径当前身份不可读，硬链接仍按**保存身份**命中（MATCH）并在读正文前拒绝。
+    另补历史数据形态（无保存身份）→ UNKNOWN，仍 0 读取、文件不变。
+    """
     source = _text_program(tmp_path / "patch-src", "prog", "old-value\n")
     alias = _hardlink(
         source,
@@ -412,8 +430,25 @@ async def test_patch_denied_before_reading_body_when_identity_unreadable(
             computer=ctx.computer, security=ctx.authorization
         ).run(path=str(alias), old="old-value", new="new-value")
     assert result.ok is False, result
-    assert _decision_code(result) == UNKNOWN_CODE, result
+    assert "match" in _states(result), _states(result)
     assert reads == [], "补丁不得先读正文再拒绝"
+    assert source.read_text(encoding="utf-8") == "old-value\n"
+
+    # 历史数据形态：去掉保存时对象事实后再判定 → 事实不足 UNKNOWN，仍读取 0、不变。
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    _write_raw_limits(
+        ctx.conn,
+        requirement.requirement_id,
+        _strip_saved_object_facts(stored.structured_limits),
+    )
+    historical_reads = _install_read_spies(monkeypatch)
+    with requirement_context(binding):
+        historical = await FsPatchTool(
+            computer=ctx.computer, security=ctx.authorization
+        ).run(path=str(alias), old="old-value", new="new-value")
+    assert historical.ok is False, historical
+    assert _decision_code(historical) == UNKNOWN_CODE, historical
+    assert historical_reads == [], "历史限制的事实不足也必须在读正文前拒绝"
     assert source.read_text(encoding="utf-8") == "old-value\n"
 
 
@@ -834,14 +869,28 @@ async def test_p3_path_limit_identity_unreadable_blocks_hardlink_read(
     assert "match" in _states(normal), _states(normal)
     assert reads == [], "MATCH 判定必须在读取正文前拒绝"
     # 【模拟】限制路径身份不可读（对象存在，系统边界读取失败）。
+    # R9-H13 B2：保存流程记录了对象身份，硬链接仍按保存身份命中（MATCH）→ 拒绝、0 读取。
     _fail_identity_for(monkeypatch, [prog])
     reads.clear()
     with requirement_context(binding):
         broken = await tool.run(path=str(link))
     assert broken.ok is False, broken
-    assert _decision_code(broken) == UNKNOWN_CODE, broken
-    assert "unknown" in _states(broken), _states(broken)
+    assert "match" in _states(broken), _states(broken)
+    assert _decision_code(broken) != UNKNOWN_CODE, broken
     assert reads == [], "限制路径身份不可读时不得读取硬链接正文"
+    # 历史数据形态（无保存时对象事实）：事实不足 → UNKNOWN，仍拒绝且 0 读取。
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    _write_raw_limits(
+        ctx.conn,
+        requirement.requirement_id,
+        _strip_saved_object_facts(stored.structured_limits),
+    )
+    historical_reads = _install_read_spies(monkeypatch)
+    with requirement_context(binding):
+        historical = await tool.run(path=str(link))
+    assert historical.ok is False, historical
+    assert _decision_code(historical) == UNKNOWN_CODE, historical
+    assert historical_reads == [], "历史限制的事实不足也必须在读正文前拒绝"
 
 
 async def test_p3_different_object_and_copy_continue(ctx, tmp_path, monkeypatch):
@@ -1016,12 +1065,16 @@ async def test_approval_unknown_read_limit_reads_nothing_after_approve(
     await ctx.approvals.decide(approval_id, "approve")
     row = await _wait_state(ctx, approval_id)
     assert row is not None and str(row.get("state")) in ("failed", "invalidated"), row
-    assert reads == [], "UNKNOWN 读取限制必须在读取正文/摘要前拒绝"
+    assert reads == [], "读取限制必须在读取正文/摘要前拒绝"
     assert target.read_text(encoding="utf-8") == "original-content\n"
+    # R9-H13 B2 修订（原输入/步骤保留）：限制在审批等待期由真实保存流程写入，
+    # 现在带保存时对象身份；硬链接按保存身份命中（MATCH）→ 拒绝，0 读取。
+    denied = [
+        item for item in captured if item["allowed"] is False
+    ]
+    assert denied, captured
     assert any(
-        item["limit_decision_code"] == UNKNOWN_CODE
-        and item["basis_kind"] == "limit_assessment_denied"
-        for item in captured
+        item["basis_kind"] == "limit_assessment_denied" for item in denied
     ), captured
 
 

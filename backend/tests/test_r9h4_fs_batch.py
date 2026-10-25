@@ -409,10 +409,20 @@ async def test_attachment_read_and_write_back_report_impacts(
     )
     assert pending["pending_approval"] is True
     effect = write_gateway.effects[0]
-    assert _impact_map(effect) == {"write": [("path", str(source))]}
+    # R9-H13 §3.C2 修订（原输入/步骤保留）：写回必须先读取覆盖前内容才能绑定前置状态，
+    # 因此操作事实包含必要的读取影响（write+read）；写批准不代表读取禁止被解除。
+    assert _impact_map(effect) == {
+        "write": [("path", str(source))],
+        "read": [("path", str(source))],
+    }
     assert _detail(effect)[fs_tools.LIMIT_IMPACTS_COMPLETE_KEY] is True
     operation = write_gateway.submitted[0]
-    assert operation.fingerprint["limit_impacts"] == fs_tools.write_limit_impacts(source)
+    assert operation.fingerprint["limit_impacts"] == fs_tools.aggregate_limit_impacts(
+        [
+            fs_tools.write_limit_impacts(source),
+            fs_tools.read_limit_impacts(source),
+        ]
+    )
 
 
 async def test_attachment_recycle_directory_impacts(

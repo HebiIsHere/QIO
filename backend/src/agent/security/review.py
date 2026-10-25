@@ -1132,9 +1132,118 @@ def _elapsed_ms(started: float) -> int:
     return max(0, int((time.monotonic() - started) * 1000))
 
 
+# ---------------------------------------------------------------------------
+# R9-H13 §3.H（F6）：已核实审查授权记录 → 可委派范围事实（边界唯一来源）
+# ---------------------------------------------------------------------------
+
+#: 审查操作名 → 子范围 grant 操作名（只映射真实 effect 动作，未知操作不映射）。
+DELEGABLE_OPERATION_MAP = {
+    "read": "read",
+    "write": "write",
+    "create": "create",
+    "delete": "delete",
+    "execute": "execute",
+    "shell": "execute",
+    "install": "install_deps",
+    "install_deps": "install_deps",
+    "egress": "network_egress",
+    "network_egress": "network_egress",
+    "system_change": "system_change",
+}
+
+#: 审查对象 kind → 子范围 Scope kind；material 是展示材料，不能变成权限对象。
+DELEGABLE_OBJECT_KIND_MAP = {
+    "path": "path",
+    "directory": "path",
+    "path_prefix": "path_prefix",
+    "program": "program",
+    "program_name": "program",
+    "service": "url_host",
+    "url_host": "url_host",
+    "material": None,
+}
+
+
+def _record_field(record: object, name: str, default: object = None) -> object:
+    if isinstance(record, dict):
+        return record.get(name, default)
+    return getattr(record, name, default)
+
+
+def _expired_at(value: object, *, now: datetime | None = None) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    try:
+        from datetime import timezone as _timezone
+
+        expires = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=_timezone.utc)
+        return expires <= (now or datetime.now(_timezone.utc))
+    except ValueError:
+        # 期限不可解析：失败关闭（不把未知当仍有效）。
+        return True
+
+
+def record_is_active(record: object, *, now: datetime | None = None) -> bool:
+    """授权记录是否仍可作为可委派依据（ALLOW + 未撤销 + 未过期）。"""
+    if str(_record_field(record, "decision", "") or "") != "allow":
+        return False
+    if _record_field(record, "revoked_at"):
+        return False
+    return not _expired_at(_record_field(record, "expires_at"), now=now)
+
+
+def delegable_record_facts(record: object, *, now: datetime | None = None) -> dict | None:
+    """把一条**已核实**的授权记录映射成有界可委派事实；无法安全映射返回 None。
+
+    只做字段映射（不判断语义、不扩大范围）：allowed_operations 里未知操作丢弃；
+    material 等不可执行对象丢弃；记录无效（撤销/过期/非 allow）直接不可委派。
+    """
+    if not record_is_active(record, now=now):
+        return None
+    operations: list[str] = []
+    for raw in _record_field(record, "allowed_operations", ()) or ():
+        mapped = DELEGABLE_OPERATION_MAP.get(str(raw or "").strip().lower())
+        if mapped and mapped not in operations:
+            operations.append(mapped)
+    if not operations:
+        return None
+    objects: list[dict[str, str]] = []
+    read_objects: list[dict[str, str]] = []
+    for obj in _record_field(record, "objects", ()) or ():
+        kind = str(_record_field(obj, "kind", "") or "").strip().lower()
+        value = str(_record_field(obj, "value", "") or "").strip()
+        mapped_kind = DELEGABLE_OBJECT_KIND_MAP.get(kind)
+        if not value or not mapped_kind:
+            continue
+        objects.append({"kind": mapped_kind, "value": value})
+        if mapped_kind in {"path", "path_prefix"}:
+            read_objects.append({"kind": mapped_kind, "value": value})
+    if not objects:
+        return None
+    return {
+        "record_id": str(_record_field(record, "record_id", "") or ""),
+        "requirement_id": str(_record_field(record, "requirement_id", "") or ""),
+        "requirement_version": _record_field(record, "requirement_version"),
+        "operations": tuple(operations),
+        "objects": tuple(objects),
+        # 只读子集：完成已核实修改前需要读取同一对象；不是把 write 扩大成通配。
+        "read_objects": tuple(read_objects),
+        "purpose": str(_record_field(record, "reason", "") or ""),
+        "fingerprint": str(_record_field(record, "fingerprint", "") or ""),
+        "limits": tuple(str(item) for item in (_record_field(record, "limits", ()) or ())),
+        "created_at": str(_record_field(record, "created_at", "") or ""),
+        "mode": str(_record_field(record, "mode", "") or ""),
+    }
+
+
 __all__ = [
     "AuthorizationReviewer",
     "DEFAULT_TIMEOUT_SECONDS",
+    "DELEGABLE_OBJECT_KIND_MAP",
+    "DELEGABLE_OPERATION_MAP",
     "ModelAuthorizationReviewer",
     "OBJECT_KINDS",
     "REVIEWABLE_OPERATION_KINDS",
@@ -1151,10 +1260,12 @@ __all__ = [
     "ReviewUnavailable",
     "VALID_RESOLUTION_STATUSES",
     "build_review_payload",
+    "delegable_record_facts",
     "object_state_digest",
     "operation_fingerprint",
     "parse_review_outcome",
     "precondition_digest",
+    "record_is_active",
     "render_review_messages",
     "review_payload_json",
     "review_request_digest",

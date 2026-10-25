@@ -34,6 +34,7 @@ from agent.security.object_state import (
     ObjectState,
     ProgramResolution,
     decide_object,
+    validate_unrelated_decision,
 )
 from agent.services import file_identity
 
@@ -78,6 +79,24 @@ UNRELATED_BASIS_SPECS = {
     "entry_resolves_to_other_object": (
         ("entry_name", "identity_key"),
         (("identity_key", False),),
+    ),
+    # R9-H13 §3.B1：软件概念限制（program_name）未形成任何保存对象/候选时，
+    # 对普通文件路径的读取按范围规则可靠无关（必须带下列对象事实）。
+    "program_concept_file_read_out_of_scope": (
+        (
+            "limit_kind",
+            "has_saved_candidates",
+            "read_path_scope",
+            "operation",
+            "candidate",
+            "candidate_path",
+            "resolution",
+        ),
+        (
+            ("limit_kind", True),
+            ("has_saved_candidates", False),
+            ("read_path_scope", True),
+        ),
     ),
 }
 
@@ -768,7 +787,9 @@ def test_merge_unknown_beats_unrelated_in_decide_object(tmp_path, monkeypatch):
 
 
 def test_merge_invalid_dominates_path_unrelated(tmp_path, monkeypatch):
-    """绑定存在 + 同一入口名解析到新对象：路径候选无关也要按 INVALID 停住。"""
+    """R9-H13 §3.B3 修订（原输入/步骤保留）：同名入口解析到独立真实对象 B
+    （identity 可读且不同、入口路径≠绑定路径）不再是 INVALID；路径候选与入口
+    两条依据都可靠无关，merge 后 primary 路径依据（different_object_identity）胜出。"""
     bound = _make_program(tmp_path / "bound", "runner")
     current = _make_program(tmp_path / "current", "runner")
     unrelated = _make_program(tmp_path / "elsewhere", "unrelated")
@@ -778,8 +799,9 @@ def test_merge_invalid_dominates_path_unrelated(tmp_path, monkeypatch):
         _candidate("program", unrelated),
         effect=_execute_effect(unrelated, requested="runner"),
     )
-    assert decision.state is ObjectState.INVALID
-    assert decision.basis == "entry_name_same_object_differs"
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "different_object_identity"
+    assert validate_unrelated_decision(decision) == ()
 
 
 # ===========================================================================

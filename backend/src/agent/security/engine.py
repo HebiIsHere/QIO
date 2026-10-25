@@ -225,7 +225,10 @@ class AuthorizationEngine(AuthorizationGateway):
             requirement_id = requirement.get("requirement_id")
         if not requirement_id:
             return ()
-        finder = getattr(ledger, "records_for_requirement", None)
+        # 只认当前有效版本的 allow 记录（吊销/过期/旧版本不生成委派范围）。
+        finder = getattr(ledger, "active_allow_records_for_requirement", None)
+        if not callable(finder):
+            finder = getattr(ledger, "records_for_requirement", None)
         if not callable(finder):
             return ()
         try:
@@ -233,6 +236,9 @@ class AuthorizationEngine(AuthorizationGateway):
         except Exception:  # noqa: BLE001 - 台账不可用时不生成委派范围
             logger.warning("delegable authorization lookup failed", exc_info=True)
             return ()
+        current_version = getattr(requirement, "version", None)
+        if isinstance(requirement, dict):
+            current_version = requirement.get("version")
         operation_map = {
             "write": "write",
             "create": "create",
@@ -251,6 +257,15 @@ class AuthorizationEngine(AuthorizationGateway):
             if str(getattr(record, "decision", "") or "") != "allow":
                 continue
             if getattr(record, "revoked_at", None):
+                continue
+            record_version = getattr(record, "requirement_version", None)
+            if (
+                current_version is not None
+                and record_version is not None
+                and int(record_version) != int(current_version)
+            ):
+                continue
+            if self._authorization_record_expired(getattr(record, "expires_at", None)):
                 continue
             operations = frozenset(
                 operation_map[str(item).strip().lower()]
@@ -314,6 +329,22 @@ class AuthorizationEngine(AuthorizationGateway):
                     )
                 )
         return tuple(grants)
+
+    @staticmethod
+    def _authorization_record_expired(expires_at: Any) -> bool:
+        """授权记录是否已过期；截止时间读不到按已过期（不能当长期有效）。"""
+        text = str(expires_at or "").strip()
+        if not text:
+            return False
+        try:
+            from datetime import datetime, timezone
+
+            moment = datetime.fromisoformat(text)
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            return moment <= datetime.now(timezone.utc)
+        except (TypeError, ValueError):
+            return True
 
     # -- 判定 ---------------------------------------------------------------
 

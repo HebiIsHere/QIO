@@ -68,6 +68,12 @@ BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED = "saved_candidate_verified"
 RECOVERY_REASON_NO_SAVED_CANDIDATES = "no_saved_candidates"
 RECOVERY_REASON_CANDIDATE_UNVERIFIABLE = "saved_candidate_unverifiable"
 RECOVERY_REASON_CANDIDATE_CONFLICT = "saved_candidate_conflict"
+#: R9-H13 §3.A2：保存候选缺少保存时的 identity 事实——当前路径可读也不能证明仍是
+#: 历史对象，必须保持未解决并由专用语义恢复/用户澄清处理（结构化的失败依据码）。
+RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING = "candidate_historical_identity_missing"
+CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING = (
+    "candidate_historical_identity_missing"
+)
 
 
 class LimitRemovalAmbiguous(ValueError):
@@ -103,6 +109,12 @@ MAX_LIMIT_ENTRIES = 200
 MAX_OBJECTS_PER_LIMIT = 100
 MAX_REASON_CHARS = 500
 MAX_VALUE_CHARS = 4096
+
+#: R9-H13 B2：精确路径对象（kind=path/program）保存时一次性采集的对象事实字段。
+#: 纯数据：normalize/serialize/deserialize/merge/remove/继承原样保留；采集只在保存
+#: 流程（attach）发生一次，已存在字段不覆盖，恢复写回不重新采集历史值。
+SAVED_OBJECT_FACT_KEYS = ("identity", "birth_key", "exists", "observed_at", "source")
+SAVED_OBJECT_SOURCE = "requirement_save"
 
 
 def _clean_text(value: Any) -> str:
@@ -224,19 +236,72 @@ def _probe_program_binding(name: str) -> dict:
     }
 
 
+def _freeze(value: Any) -> Any:
+    """把纯数据递归冻结为可哈希/可比较结构（不改变语义、不做任何查找）。"""
+    if isinstance(value, dict):
+        return tuple(sorted((str(key), _freeze(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _object_identity(obj: Mapping[str, Any]) -> tuple:
+    """对象条目的**完整数据身份**（去重/作用域键；纯数据）。
+
+    R9-H13 §3.A3：只按 (kind, value) 去重会把“同名同动作、分别绑定不同程序对象”
+    的两条限制静默合并成一条（第二个对象从限制中消失、实际可执行）。身份键必须
+    包含绑定对象/身份/生命周期、未解决事实、候选及来源含义。
+    """
+    payload = {
+        str(key): _freeze(item)
+        for key, item in obj.items()
+        if key is not None and str(key) != "observed_at"
+    }
+    return (str(obj.get("kind") or ""), str(obj.get("value") or ""), _freeze(payload))
+
+
+def _entry_data_key(entry: Mapping[str, Any]) -> tuple:
+    """限制条目的完整数据键（含对象绑定/未解决事实；reason 不参与）。
+
+    用途：amend 时区分“本次新增限制/明确修改对象”与“原样继承条目”——
+    只有数据身份确实匹配本次新增内容的条目才允许重新探测绑定。
+    """
+    operations = tuple(sorted(str(item) for item in (entry.get("operations") or ())))
+    objects = tuple(
+        sorted(
+            (_object_identity(item) for item in (entry.get("objects") or ()) if isinstance(item, Mapping)),
+            key=repr,
+        )
+    )
+    return (operations, objects)
+
+
+def _has_saved_binding_facts(item: Mapping[str, Any]) -> bool:
+    """对象条目是否已携带保存时的绑定/未解决事实（纯数据判定，不查找程序）。"""
+    if not isinstance(item, Mapping):
+        return False
+    if program_binding_state(dict(item)) == BINDING_STATE_BOUND:
+        return True
+    for key in ("binding_state", "binding_failure", "binding_candidates"):
+        if item.get(key):
+            return True
+    return False
+
+
 def _normalize_binding_candidates(value: Any) -> list[dict]:
     """规范化对象条目上的**候选事实**（纯数据：不查找、不采集身份）。"""
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
         return []
     candidates: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple] = set()
     for raw in value:
         if not isinstance(raw, dict):
             continue
         path = _clean_text(raw.get("path"))[:MAX_VALUE_CHARS]
-        if not path or path in seen:
+        if not path:
             continue
-        seen.add(path)
         item = {
             "path": path,
             "source": (_clean_text(raw.get("source")) or "path_lookup")[:80],
@@ -252,10 +317,86 @@ def _normalize_binding_candidates(value: Any) -> list[dict]:
         birth_key = _clean_text(raw.get("birth_key"))[:MAX_VALUE_CHARS]
         if birth_key:
             item["birth_key"] = birth_key
+        candidate_key = _freeze(item)
+        if candidate_key in seen:
+            continue
+        seen.add(candidate_key)
         candidates.append(item)
         if len(candidates) >= MAX_BINDING_CANDIDATES:
             break
     return candidates
+
+
+def _normalize_saved_object_fact(key: str, value: Any) -> Any:
+    """规范化 B2 保存时对象事实（纯数据；类型不合法时丢弃该字段，不猜）。"""
+    if key == "identity":
+        if value is None:
+            return None
+        text = _clean_text(value)[:MAX_VALUE_CHARS]
+        return text or None
+    if key == "birth_key":
+        if value is None:
+            return None
+        text = _clean_text(value)[:MAX_VALUE_CHARS]
+        return text or None
+    if key == "exists":
+        if isinstance(value, bool):
+            return value
+        return None
+    if key == "observed_at":
+        text = _clean_text(value)[:120]
+        return text or None
+    if key == "source":
+        text = _clean_text(value)[:80]
+        return text or None
+    return None
+
+
+def _collect_saved_object_facts(item: Mapping[str, Any]) -> dict:
+    """R9-H13 B2：保存时一次性采集精确路径对象的身份/存在事实（纯只读）。
+
+    只对 kind in {path, program} 且 value 是明确路径的对象执行：不查找程序、不猜
+    名称、不读文件内容，只做一次 stat/身份读取；已存在任一保存事实字段时不覆盖
+    （恢复写回/重写继承限制不会重新采集历史值）。
+    """
+    item = dict(item)
+    if any(key in item for key in SAVED_OBJECT_FACT_KEYS):
+        return item
+    kind = _clean_text(item.get("kind")).lower()
+    text = _clean_text(item.get("value"))
+    if kind not in ("path", "program") or not text:
+        return item
+    import os
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    try:
+        absolute = os.path.abspath(text)
+    except (OSError, ValueError):  # pragma: no cover - 极端路径
+        absolute = text
+    exists = False
+    try:
+        exists = bool(os.path.lexists(absolute))
+    except OSError:  # pragma: no cover - 权限/平台异常按不存在的事实记录
+        exists = False
+    identity = None
+    birth_key = None
+    if exists:
+        try:
+            from agent.services.file_identity import identity_of
+
+            observed = identity_of(Path(absolute))
+        except Exception:  # noqa: BLE001 - 身份提供器异常=读不到（记录 None）
+            observed = None
+        if observed is not None:
+            identity = str(observed.key)
+            birth_key = observed.birth_key
+    item["identity"] = identity
+    item["birth_key"] = birth_key
+    item["exists"] = exists
+    item["observed_at"] = datetime.now(timezone.utc).isoformat()
+    item["source"] = SAVED_OBJECT_SOURCE
+    return item
 
 
 def _normalize_objects(value: Any) -> list[dict]:
@@ -264,7 +405,7 @@ def _normalize_objects(value: Any) -> list[dict]:
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
         raise ValueError("限制条目的 objects 必须是数组")
     objects: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple] = set()
     for raw in value:
         if not isinstance(raw, dict):
             raise ValueError("限制条目的 objects 元素必须是对象")
@@ -282,11 +423,14 @@ def _normalize_objects(value: Any) -> list[dict]:
             kind = "program_name"
         if kind == "program_name" and ("/" in text or "\\" in text):
             raise ValueError("program_name 限制只能是程序名称，不能包含路径分隔符")
-        key = (kind, text)
-        if key in seen:
-            continue
-        seen.add(key)
         entry = {"kind": kind, "value": text}
+        # R9-H13 B2：纯数据保留保存时对象事实（不采集、不覆盖、不猜）。
+        for fact_key in SAVED_OBJECT_FACT_KEYS:
+            if fact_key not in raw:
+                continue
+            normalized_fact = _normalize_saved_object_fact(fact_key, raw[fact_key])
+            if normalized_fact is not None or fact_key in ("identity", "birth_key"):
+                entry[fact_key] = normalized_fact
         if kind == "program_name":
             binding = raw.get("program_binding")
             clean_binding = None
@@ -324,6 +468,12 @@ def _normalize_objects(value: Any) -> list[dict]:
                 )
                 if candidates:
                     entry["binding_candidates"] = candidates
+        # R9-H13 §3.A3：对象身份键包含 kind/value + 绑定对象/身份/生命周期 +
+        # 未解决状态/失败原因/候选事实；同名但绑定不同对象的两条不得被静默合并。
+        object_key = _object_identity(entry)
+        if object_key in seen:
+            continue
+        seen.add(object_key)
         objects.append(entry)
         if len(objects) > MAX_OBJECTS_PER_LIMIT:
             raise ValueError("单个限制条目的对象数过多")
@@ -331,12 +481,20 @@ def _normalize_objects(value: Any) -> list[dict]:
 
 
 def _canonical_entry(entry: dict, *, include_reason: bool = True) -> tuple:
+    """条目去重键：operations + 对象**完整数据身份**（含绑定/未解决事实）+ reason。
+
+    R9-H13 §3.A3：只按 (kind, value) 去重会静默丢失“同名同动作但绑定不同对象”的
+    限制；键里必须包含绑定对象/身份/生命周期/候选及来源含义。
+    """
     operations = tuple(sorted(str(item) for item in (entry.get("operations") or ())))
     objects = tuple(
         sorted(
-            (str(item.get("kind")), str(item.get("value")))
-            for item in (entry.get("objects") or ())
-            if isinstance(item, dict)
+            (
+                _object_identity(item)
+                for item in (entry.get("objects") or ())
+                if isinstance(item, dict)
+            ),
+            key=repr,
         )
     )
     if include_reason:
@@ -425,27 +583,63 @@ def _entry_with(
 
 
 def attach_program_bindings(
-    limits: Iterable[dict], *, requirement_id: str, version: int, status: str
+    limits: Iterable[dict],
+    *,
+    requirement_id: str,
+    version: int,
+    status: str,
+    fresh_limits: Iterable[dict] | None = None,
+    preserve_saved_facts: bool = False,
+    observe_objects: bool = True,
 ) -> tuple[dict, ...]:
     """可信绑定创建入口：仅在要求保存/恢复流程显式调用（R9-H10 §1 / R9-H11 §1）。
 
     规范化/序列化/反序列化不调用本函数；读历史数据只能保留已有绑定。
 
+    R9-H13 §3.A1（普通补充不得重新绑定旧禁止）：
+    * ``fresh_limits`` 不是 None：**只有**数据身份匹配本次新增/明确修改条目的条目
+      才允许探测创建绑定；其余条目视为**原样继承**——逐字段原样保留（包括
+      program_binding / binding_state / binding_failure / binding_candidates 与
+      候选来源），不重新查找、不重新绑定、不改写；
+    * ``preserve_saved_facts``：对已携带绑定/未解决事实的对象原样保留（用于低层
+      重写入口不重新探测历史事实）；
+    * 两者都不给（默认）：保持 H11 的显式“创建绑定”语义（对所有未绑定对象探测），
+      只供首次保存新要求/测试装配使用。恢复历史未解决绑定必须用
+      ``recover_program_bindings``（保存候选优先），不得复用本函数。
+
+    R9-H13 B2：``observe_objects``（默认 True）表示在保存流程为**首次形成**的
+    精确路径对象（kind=path/program）采集一次对象事实（identity/birth_key/exists/
+    observed_at/source），已存在字段不覆盖；恢复写回传 False，绝不重新采集历史值。
+
+    绑定事实：
     * 已有有效绑定：原样保留（含创建时的 requirement_* 事实），**不**按当前环境
       重新解析——同名程序不能随 PATH 变化自动转移禁止对象；
-    * 缺绑定：用后端只读候选事实（当前 PATH 查找 + 文件身份）创建绑定，记录
+    * 本次首次提交：用后端只读候选事实（当前 PATH 查找 + 文件身份）创建绑定，记录
       requirement_id/version/status/path/identity/birth_key/source；
     * 候选事实不足：在对象条目上**显式**记录 binding_state=unresolved +
       binding_failure（lookup_failed / identity_unavailable / resolver_error）+
       有界候选路径，供专用恢复/澄清与审计使用；绝不伪造绑定。
     """
+    normalized = normalize_limits(list(limits or ()))
+    fresh_keys: set[tuple] | None = None
+    if fresh_limits is not None:
+        fresh_keys = {
+            _entry_data_key(entry) for entry in normalize_limits(list(fresh_limits))
+        }
     result: list[dict] = []
-    for entry in normalize_limits(list(limits or ())):
+    for entry in normalized:
         copied = dict(entry)
+        if fresh_keys is not None and _entry_data_key(copied) not in fresh_keys:
+            # 原样继承：不得重新查找/绑定继承限制（H13 §3.A1）。
+            result.append(copied)
+            continue
         objects: list[dict] = []
         for obj in copied.get("objects") or ():
             item = dict(obj)
             if str(item.get("kind") or "").strip().lower() == "program_name":
+                if preserve_saved_facts and _has_saved_binding_facts(item):
+                    objects.append(item)
+                    continue
                 if program_binding_state(item) != BINDING_STATE_BOUND:
                     item.pop("program_binding", None)
                     try:
@@ -491,6 +685,10 @@ def attach_program_bindings(
                             item["binding_candidates"] = candidates
                         else:
                             item.pop("binding_candidates", None)
+            else:
+                # R9-H13 B2：首次形成的精确路径对象采集一次保存时事实（不覆盖）。
+                if observe_objects:
+                    item = _collect_saved_object_facts(item)
             objects.append(item)
         copied["objects"] = objects
         result.append(copied)
@@ -605,8 +803,12 @@ def _path_token(value: object) -> str:
 def _verify_saved_binding_candidate(candidate: object) -> dict:
     """后端核验**保存时的候选事实**是否仍有效（恢复采纳的唯一依据）。
 
-    要求（R9-H12 §4）：候选路径现在存在、是普通文件、路径没有被换成别的位置、
-    文件身份可读；候选若带 identity/birth 事实，必须与当前观测一致。
+    要求（R9-H12 §4 / R9-H13 §3.A2）：
+    * 候选路径现在存在、是普通文件、路径没有被换成别的位置、当前文件身份可读；
+    * **必须**携带保存时的 identity 事实，且与当前观测一致——只有“当前路径存在 +
+      当前身份可读”不能证明仍是保存时的历史对象（路径对象可能已被替换、旧对象可能
+      仍以硬链接存在），缺失保存时 identity 事实一律不采纳；
+    * 候选若带 birth 事实，必须与当前观测一致。
     调用方/模型自报不能替代本函数：只接受候选 dict，不执行程序、不读内容。
     """
     result: dict = {
@@ -660,7 +862,14 @@ def _verify_saved_binding_candidate(candidate: object) -> dict:
         result["failure"] = "candidate_identity_unavailable"
         return result
     recorded_identity = _clean_text(candidate.get("identity"))
-    if recorded_identity and recorded_identity != str(observed.key):
+    if not recorded_identity:
+        # R9-H13 §3.A2：当前路径存在 + 当前身份可读**不足以**证明仍是保存时的历史
+        # 对象（保存时身份不可读，路径上的对象可能已被替换；旧对象可能仍以硬链接
+        # 存在）。缺少保存时 identity 事实一律不采纳，保持未解决，交给专用语义
+        # 恢复/用户澄清 + 后端核验；绝不把“当前可读”写成 saved_candidate_verified。
+        result["failure"] = CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING
+        return result
+    if recorded_identity != str(observed.key):
         result["failure"] = "candidate_identity_mismatch"
         return result
     recorded_birth = _clean_text(candidate.get("birth_key"))
@@ -973,12 +1182,23 @@ def recover_program_bindings(
                     (fact["failure"] for fact in verified if fact.get("failure")),
                     "candidate_unverifiable",
                 )
+                # R9-H13 §3.A2：结构化区分“保存时身份事实缺失”（当前可读也不能证明
+                # 历史对象）与其它不可核验原因；调用方据此给出澄清/恢复提示。
+                failures = [str(fact.get("failure") or "") for fact in verified]
+                missing_history = bool(failures) and all(
+                    item == CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING
+                    for item in failures
+                )
                 unresolved.append(
                     {
                         "entry_index": int(entry_index),
                         "object_index": int(object_index),
                         "value": value,
-                        "reason": RECOVERY_REASON_CANDIDATE_UNVERIFIABLE,
+                        "reason": (
+                            RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING
+                            if missing_history
+                            else RECOVERY_REASON_CANDIDATE_UNVERIFIABLE
+                        ),
                         "failure": failure,
                         "saved_candidates": [
                             _clean_text(candidate.get("path")) for candidate in candidates
@@ -1121,48 +1341,130 @@ def _entry_with_objects(
     }
 
 
+def _same_path_text(left: object, right: object) -> bool:
+    """两个路径文本是否指向同一路径（规范化比较；纯数据、不要求存在）。"""
+    left_token = _path_token(left)
+    right_token = _path_token(right)
+    return bool(left_token) and left_token == right_token
+
+
+def _object_matches_removal(saved: Mapping[str, Any], removal: Mapping[str, Any]) -> bool:
+    """一个 saved 限制对象是否被一条 removed 对象精确命中（纯数据比较）。
+
+    支持三种精确表达（R9-H13 §3.A3“精确解除其中一个对象时保留其他对象”）：
+    * (kind, value) 完全相同（历史语义）；
+    * removed 给出明确路径（kind=path/program）：命中已绑定 program_name 且绑定路径
+      就是该路径的对象；也命中 path/program 限制里指向同一路径的对象；
+    * removed 携带 program_binding（内部精确操作）：按绑定 path/identity 命中。
+    不做任何查找/身份采集。
+    """
+    if not isinstance(saved, Mapping) or not isinstance(removal, Mapping):
+        return False
+    s_kind = _clean_text(saved.get("kind")).lower()
+    s_value = _clean_text(saved.get("value"))
+    r_kind = _clean_text(removal.get("kind")).lower()
+    r_value = _clean_text(removal.get("value"))
+    if s_kind and s_kind == r_kind and s_value and s_value == r_value:
+        return True
+    saved_binding = saved.get("program_binding")
+    if isinstance(saved_binding, Mapping) and r_value:
+        bound_path = _clean_text(saved_binding.get("path"))
+        if r_kind in ("path", "program") and bound_path and _same_path_text(
+            bound_path, r_value
+        ):
+            return True
+        removal_binding = removal.get("program_binding")
+        if isinstance(removal_binding, Mapping):
+            removal_path = _clean_text(removal_binding.get("path"))
+            removal_identity = _clean_text(removal_binding.get("identity"))
+            if removal_identity and _clean_text(saved_binding.get("identity")) == (
+                removal_identity
+            ):
+                return True
+            if removal_path and bound_path and _same_path_text(bound_path, removal_path):
+                return True
+    if (
+        s_kind in ("path", "program")
+        and r_kind in ("path", "program")
+        and s_value
+        and r_value
+    ):
+        return _same_path_text(s_value, r_value)
+    return False
+
+
 def remove_limits_precise(
     parent: Iterable[dict], removed: Iterable[dict]
 ) -> tuple[dict, ...]:
     """从已知限制中**精确**移除 removed_limits 覆盖的 (操作, 对象) 组合。
 
-    语义（契约 §4）：
+    语义（契约 §4 / R9-H13 §3.A3）：
     * removed 有 operations 无 objects = 解除这些操作在**所有对象**上的限制；
     * removed 有 objects 无 operations = 解除这些对象上**所有操作**的限制；
     * 两者都有 = 只解除交集（解除 B 的 write 不清除 A，也不误删 B 的 delete）；
+    * 精确对象：除 (kind, value) 完全相同外，removed 给出明确路径时只命中该路径对应
+      的已绑定对象（合法精确解除其中一个对象，其他对象原样保留）；
+    * 一条 removed 对象同时命中多个**不同**保存对象（例如裸名称同时命中分别绑定
+      不同程序的两条限制）→ 含义不足，抛 LimitRemovalAmbiguous，调用方保留原限制
+      并标 unresolved（不静默删除、不扩大限制）；
     * 条目 operations/objects 为空表示"全部"；无法表达的剩余集合（例如从
       "所有操作"中只移除 write）抛 LimitRemovalAmbiguous，调用方保留原限制并标
       unresolved，不得猜测。
-    * 只做结构化集合运算，不解析文字/名称/关键词。
+    * 只做结构化集合运算与路径文本比较，不解析文字/名称/关键词、不查找程序。
     """
     result = [dict(item) for item in normalize_limits(list(parent or ()))]
     removals = normalize_limits(list(removed or ()))
     for removal in removals:
         rem_ops = {str(item) for item in (removal.get("operations") or ())}
-        rem_objs = {
-            (str(item.get("kind")), str(item.get("value")))
+        rem_objs = [
+            dict(item)
             for item in (removal.get("objects") or ())
             if isinstance(item, dict)
-        }
+        ]
         if not rem_ops and not rem_objs:
             raise LimitRemovalAmbiguous("解除限制条目既没有 operations 也没有 objects")
         rem_ops_all = not rem_ops
         rem_objs_all = not rem_objs
+
+        def _entry_ops_match(entry: Mapping[str, Any]) -> bool:
+            e_ops = {str(item) for item in (entry.get("operations") or ())}
+            return rem_ops_all or not e_ops or bool(e_ops & rem_ops)
+
+        # 每个 removed 对象必须精确命中至多一个保存对象；命中多个不同对象=含义不足。
+        matched_by_removal: list[set[tuple]] = []
+        for rem_obj in rem_objs:
+            hits: set[tuple] = set()
+            for entry in result:
+                if not _entry_ops_match(entry):
+                    continue
+                for raw_obj in entry.get("objects") or ():
+                    if not isinstance(raw_obj, Mapping):
+                        continue
+                    if _object_matches_removal(raw_obj, rem_obj):
+                        hits.add(_object_identity(raw_obj))
+            if len(hits) > 1:
+                raise LimitRemovalAmbiguous(
+                    "解除限制的一个对象同时命中了多个不同绑定对象，无法确定要解除哪一个，需澄清"
+                )
+            matched_by_removal.append(hits)
+        matched_identities: set[tuple] = set().union(*matched_by_removal)
+
         touched = False
         next_result: list[dict] = []
         for entry in result:
             e_ops = {str(item) for item in (entry.get("operations") or ())}
             e_obj_map = {
-                (str(item.get("kind")), str(item.get("value"))): dict(item)
+                _object_identity(item): dict(item)
                 for item in (entry.get("objects") or ())
-                if isinstance(item, dict)
+                if isinstance(item, Mapping)
             }
             e_objs = set(e_obj_map)
             e_ops_all = not e_ops
             e_objs_all = not e_objs
             # 交集是否存在（空维度=全部，不能用空集合表示"无交集"）
             ops_match = rem_ops_all or e_ops_all or bool(e_ops & rem_ops)
-            objs_match = rem_objs_all or e_objs_all or bool(e_objs & rem_objs)
+            matched_here = e_objs & matched_identities
+            objs_match = rem_objs_all or e_objs_all or bool(matched_here)
             if not (ops_match and objs_match):
                 next_result.append(entry)
                 continue
@@ -1183,9 +1485,9 @@ def remove_limits_precise(
             if rem_objs_all:
                 hit_objs = set(e_objs)
             elif e_objs_all:  # pragma: no cover - 上面的 ambiguous 分支已覆盖
-                hit_objs = set(rem_objs)
+                hit_objs = set(matched_identities)
             else:
-                hit_objs = e_objs & rem_objs
+                hit_objs = matched_here
             left_ops = (e_ops - hit_ops) if not e_ops_all else set()
             left_objs = (e_objs - hit_objs) if not e_objs_all else set()
             if left_ops:
@@ -1195,7 +1497,9 @@ def remove_limits_precise(
             if left_objs:
                 next_result.append(
                     _entry_with_objects(
-                        e_ops, [e_obj_map[key] for key in sorted(left_objs)], reason
+                        e_ops,
+                        [e_obj_map[key] for key in sorted(left_objs, key=repr)],
+                        reason,
                     )
                 )
         if not touched:
@@ -1297,6 +1601,7 @@ __all__ = [
     "BINDING_STATE_MISSING",
     "BINDING_STATE_UNRESOLVED",
     "BindingRecoveryOutcome",
+    "CANDIDATE_FAILURE_HISTORICAL_IDENTITY_MISSING",
     "LIMIT_OBJECT_KINDS",
     "LIMIT_OPERATIONS",
     "MAX_BINDING_CANDIDATES",
@@ -1305,6 +1610,7 @@ __all__ = [
     "MAX_REASON_CHARS",
     "RECOVERY_REASON_CANDIDATE_CONFLICT",
     "RECOVERY_REASON_CANDIDATE_UNVERIFIABLE",
+    "RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING",
     "RECOVERY_REASON_NO_SAVED_CANDIDATES",
     "STATE_LEGACY",
     "STATE_STRUCTURED",

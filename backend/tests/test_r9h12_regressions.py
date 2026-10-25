@@ -570,59 +570,40 @@ async def test_p2_saved_candidate_not_rebound_to_current_path(ctx, tmp_path, mon
     exec_a_decision = await _authorize(ctx, binding, _execute_effect(program_a))
     _assert_denied(exec_a_decision, code=DECISION_UNBOUND)
 
-    # 3) 真实专用恢复入口 + fake 当前候选解析器（指向 B）：只允许采纳保存候选 A。
+    # 3) 真实专用恢复入口 + fake 当前候选解析器（指向 B）：保存候选只有路径、
+    #    没有保存时 identity 事实（A2 场景/模拟身份不可读），因此**不得**被采纳。
+    #    R9-H13 §3.A2 修订（原输入/步骤保留）：当前路径存在 + 身份可读不足以证明
+    #    仍是历史对象；保持未解决/零写入，等用户澄清或专用语义恢复。
     reviewer = _ExplodingReviewer()
     ctx.authorization.reviewer = reviewer
     mode_before = ctx.settings_store.get("computer.permission_mode")
-    # 环境事实：真实 PATH 现在把限制名称解析到 B（若恢复照搬当前环境就会绑 B）。
     resolved_now = shutil.which(name)
     assert resolved_now and _same_path(resolved_now, program_b), (
         "测试环境应把限制名称解析到 B",
         resolved_now,
     )
     calls = _fake_current_candidate_resolver(monkeypatch, name, program_b)
+    raw_before_recovery = _raw_limits(ctx, requirement.requirement_id)
     recovered, recovery_ctx = await _recover(ctx, requirement.requirement_id)
-    # fake 当前候选解析器可以因「保存候选优先」不被调用；若被调用也只作审计事实。
     _ = calls
     assert reviewer.calls == [], "专用绑定恢复不得调用普通授权审查"
     assert ctx.settings_store.get("computer.permission_mode") == mode_before, (
         "专用绑定恢复不得改变权限模式"
     )
-
-    assert recovered is not None, (
-        "保存候选 A 现在可验证（路径存在 + 身份可读），专用恢复必须采纳它",
+    assert recovered is None, (
+        "候选缺少保存时 identity 事实：不得凭当前路径可读宣称已验证",
         recovery_ctx.notices,
     )
-    recovered_obj = [
-        item
-        for entry in recovered
-        for item in (entry.get("objects") or ())
-        if isinstance(item, dict) and str(item.get("kind")) == "program_name"
-    ][0]
-    bound = recovered_obj.get("program_binding")
-    assert isinstance(bound, dict), ("恢复后必须写回 program_binding", recovered_obj)
-    assert not _same_path(bound.get("path"), program_b), (
-        "恢复不得把限制绑定到当前 PATH 的 B（保存时从未采纳 B）",
-        bound,
+    assert _raw_limits(ctx, requirement.requirement_id) == raw_before_recovery, (
+        "恢复失败必须零写入（保留原限制/候选/来源）"
     )
-    assert _same_path(bound.get("path"), program_a), (
-        "恢复必须采纳保存候选 A 的路径",
-        bound,
-    )
-    assert str(bound.get("identity")) == str(identity_a.key), bound
-    assert str(bound.get("source") or "").startswith("saved_candidate"), (
-        "恢复来源必须标记为保存候选核验，不能是当前 PATH 查找",
-        bound.get("source"),
-    )
-    raw_paths = _raw_binding_paths(ctx, requirement.requirement_id)
-    assert raw_paths, "写回的原始 JSON 必须包含恢复后的 program_binding"
-    assert not any(_same_path(path, program_b) for path in raw_paths), (
-        "写回的原始 JSON 不得把限制对象指向 B",
-        raw_paths,
-    )
-    assert any(_same_path(path, program_a) for path in raw_paths), raw_paths
+    assert _raw_binding_paths(ctx, requirement.requirement_id) == []
+    obj_now = _first_object(ctx, requirement.requirement_id)
+    assert "program_binding" not in obj_now
+    assert obj_now.get("binding_state") == requirement_limits.BINDING_STATE_UNRESOLVED
+    assert any("澄清" in item for item in recovery_ctx.notices), recovery_ctx.notices
 
-    # 4) 恢复后：A 是绑定对象本身，执行/读取都必须停止（旧实现 A 变「无关」可执行，红）。
+    # 4) 未恢复：A 仍是相关对象（UNBOUND），读取/执行都必须停止（零启动、零正文读取）。
     binding_after = _binding(ctx, requirement.requirement_id)
     args2, marker2 = _launch_args(root, "after-recovery-marker.txt")
     launches_after = _spy_launch(monkeypatch)
@@ -631,7 +612,7 @@ async def test_p2_saved_candidate_not_rebound_to_current_path(ctx, tmp_path, mon
             program=str(program_a), args=args2, cwd=str(marker2.parent), timeout=30
         )
     assert exec_a_after.ok is False, exec_a_after
-    assert launches_after == [], "恢复后候选 A 是限制对象本身，不得执行"
+    assert launches_after == [], "未恢复的候选 A 是限制对象本身，不得执行"
     assert not marker2.exists()
     stub_read = _ReadSpy()
     stub_read.install(monkeypatch)
@@ -725,11 +706,43 @@ async def test_p3_limit_path_identity_unreadable_alias_read_denied(
     assert assessment.conflict is True, [
         (decision.state, decision.basis) for decision in assessment.decisions
     ]
+    # R9-H13 B2 修订（原输入/步骤保留）：保存流程记录了限制对象身份；即使限制路径
+    # 当前身份不可读，硬链接仍按保存身份命中（MATCH）→ 拒绝、0 正文读取。
     assert [(decision.state.value, decision.basis) for decision in assessment.decisions] == [
-        ("unknown", "path_limit_identity_unavailable")
+        ("match", "path_hardlink_same_object")
     ], [(decision.state, decision.basis) for decision in assessment.decisions]
     decision = await _authorize(ctx, binding, _read_effect(alias))
-    _assert_denied(decision, code=DECISION_UNKNOWN)
+    _assert_denied(decision)
+
+    # 历史数据形态（无保存时对象事实）：事实不足 → UNKNOWN，仍拒绝且 0 正文读取。
+    import json as _json
+
+    stored = ctx.requirements.by_id(requirement.requirement_id)
+    historical = _json.loads(_json.dumps(list(stored.structured_limits)))
+    for entry in historical:
+        for obj in entry.get("objects") or ():
+            if isinstance(obj, dict):
+                for key in requirement_limits.SAVED_OBJECT_FACT_KEYS:
+                    obj.pop(key, None)
+    ctx.conn.execute(
+        "UPDATE user_requirements SET structured_limits = ? WHERE id = ?",
+        (_json.dumps(historical, ensure_ascii=False), requirement.requirement_id),
+    )
+    ctx.conn.commit()
+    requirement_hist = ctx.requirements.by_id(requirement.requirement_id)
+    assessment_hist = ctx.authorization.assess_limit_conflict(
+        _read_effect(alias), requirement_hist
+    )
+    assert [(item.state.value, item.basis) for item in assessment_hist.decisions] == [
+        ("unknown", "path_limit_identity_unavailable")
+    ], [(item.state, item.basis) for item in assessment_hist.decisions]
+    spy_hist = _ReadSpy()
+    spy_hist.install(monkeypatch)
+    with requirement_context(binding):
+        hist_result = await tool.run(path=str(alias))
+    assert hist_result.ok is False, hist_result
+    assert spy_hist.calls == [], "历史限制事实不足也必须在读取正文前拒绝"
+    assert alias.read_text(encoding="utf-8") == body
 
 
 # ===========================================================================

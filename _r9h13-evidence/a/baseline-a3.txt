@@ -1,0 +1,533 @@
+﻿FF                                                                       [100%]
+================================== FAILURES ===================================
+_________ test_a3_same_name_limits_on_different_objects_both_enforced _________
+
+ctx = <agent.services.app.AppContext object at 0x0000027588415A90>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4369/test_a3_same_name_limits_on_di0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000275883E2490>
+
+    async def test_a3_same_name_limits_on_different_objects_both_enforced(
+        ctx, tmp_path, monkeypatch
+    ):
+        """A3：同名同动作、分别绑定不同程序的两条限制保存后必须都保留。
+    
+        真实流程：先保存“禁止运行 runner”（绑定真实对象 A）→ PATH 改为 B → 真实 amend
+        再次明确提出同一限制（明确修改对象）→ 子要求必须同时保留绑定 A 与绑定 B 的两条
+        限制，A/B 都拒绝（0 启动），无关程序 C 正常放行；精确解除 A 后只保留 B。
+        基线（e68fb9b7）：_canonical_entry 只按 (operations, kind, value) 去重 → 新增的
+        同名限制被静默丢弃，B 实际执行成功（本用例红）。
+        """
+        a_dir = tmp_path / "a3-bin-a"
+        a = _launch_program(a_dir, "runner")
+        b_dir = tmp_path / "a3-bin-b"
+        b = _launch_program(b_dir, "runner")
+        c_dir = tmp_path / "a3-bin-c"
+        c = _launch_program(c_dir, "other")
+    
+        _set_path(monkeypatch, a_dir, b_dir, c_dir)
+        requirement = ctx.requirements.record_user_message(
+            text="禁止运行 runner", message_id="m-a3", turn_id="t-a3"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id, [_PROGRAM_LIMIT], source="test:a3:first"
+        )
+        first = ctx.requirements.by_id(requirement.requirement_id)
+        assert first is not None
+        first_obj = first.structured_limits[0]["objects"][0]
+        assert _real(Path(first_obj["program_binding"]["path"])) == _real(a)
+    
+        # PATH 现在优先找到 B：用户再次明确“禁止运行 runner”（同动作/同名，不同对象）。
+        _set_path(monkeypatch, b_dir, a_dir, c_dir)
+        applied = ctx.requirements.apply_resolution(
+            _amend_outcome(
+                first,
+                message="PATH 里新的 runner 也不允许运行",
+                limits=[dict(_PROGRAM_LIMIT, reason="同一名称的新对象也不允许运行")],
+                reason="用户再次明确同一名称限制",
+            ),
+            message="PATH 里新的 runner 也不允许运行",
+            message_id="m-a3-amend",
+            turn_id="t-a3",
+        )
+        child = ctx.requirements.by_id(applied.requirement.requirement_id)
+        assert child is not None
+        entries = [
+            item
+            for item in child.structured_limits
+            if (item.get("objects") or [{}])[0].get("value") == "runner"
+        ]
+>       assert len(entries) == 2, (
+            "同名同动作但绑定不同程序的两条限制不得被去重丢失："
+            + json.dumps(child.structured_limits, ensure_ascii=False, default=str)
+        )
+E       AssertionError: 同名同动作但绑定不同程序的两条限制不得被去重丢失：[{"operations": ["execute"], "objects": [{"kind": "program_name", "value": "runner", "program_binding": {"path": "C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4369\\test_a3_same_name_limits_on_di0\\a3-bin-a\\runner.exe", "identity": "2923643066:f3940600000076000000000000000000", "birth_key": "win:creation:134373864214389300", "source": "path_lookup", "requirement_id": "req_10868009d68a4388", "requirement_version": 1, "requirement_status": "active"}}], "reason": "禁止运行 runner"}]
+E       assert 1 == 2
+E        +  where 1 = len([{'operations': ['execute'], 'objects': [{'kind': 'program_name', 'value': 'runner', 'program_binding': {'path': 'C:\\...0000000000', 'birth_key': 'win:creation:134373864214389300', 'source': 'path_lookup', ...}}], 'reason': '禁止运行 runner'}])
+
+tests\test_r9h13_a_requirements.py:773: AssertionError
+----------------------------- Captured log setup ------------------------------
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 30：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 34：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 36：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 38：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 40：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 43：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column rolling_covered_message_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column rolling_covered_count already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column rolling_input_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 45：语句已应用过，跳过（column rolling_updated_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column rolling_covered_message_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column rolling_covered_count already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column rolling_input_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 48：语句已应用过，跳过（column rolling_updated_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column rolling_covered_message_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column rolling_covered_count already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column rolling_input_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column rolling_updated_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column turn_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column resume_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column client_ref already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column scope already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column authorization already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column outcome already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 51：语句已应用过，跳过（column finished_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column rolling_covered_message_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column rolling_covered_count already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column rolling_input_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column rolling_updated_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column turn_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column resume_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column client_ref already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column scope already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column authorization already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column outcome already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column finished_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column source_kind already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column origin already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column file_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column content_sha256 already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column reference_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column material_enabled already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column user_note already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column last_verified_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column legacy_paths already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column operation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column instruction_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column instruction_text already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column purpose already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column fingerprint already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column mode_at_request already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column mode_at_approval already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column confirmed_stage already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column revisions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column claimed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column result already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column error already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column resumed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column requirement_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 58：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column rolling_covered_message_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column rolling_covered_count already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column rolling_input_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column rolling_updated_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column turn_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column resume_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column client_ref already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column scope already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column authorization already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column outcome already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column finished_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column source_kind already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column origin already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column file_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column content_sha256 already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column reference_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column material_enabled already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column user_note already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column last_verified_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column legacy_paths already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column operation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column instruction_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column instruction_text already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column purpose already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column fingerprint already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column mode_at_request already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column mode_at_approval already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column confirmed_stage already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column revisions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column claimed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column result already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column error already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column resumed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column requirement_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column structured_limits already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column structured_limits_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 60：语句已应用过，跳过（column structured_limits_source already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column rolling_covered_message_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column rolling_covered_count already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column rolling_input_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column rolling_updated_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column turn_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column resume_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column client_ref already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column scope already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column authorization already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column outcome already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column finished_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column source_kind already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column origin already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column file_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column content_sha256 already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column reference_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column material_enabled already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column user_note already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column last_verified_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column legacy_paths already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column operation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column instruction_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column instruction_text already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column purpose already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column fingerprint already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column mode_at_request already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column mode_at_approval already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column confirmed_stage already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column revisions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column claimed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column result already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column error already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column resumed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column requirement_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column structured_limits already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column structured_limits_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 62：语句已应用过，跳过（column structured_limits_source already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column claim_generation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column owner_instance_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column chain_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column revision already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column field_meta already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column source_attachment_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column reason_code already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column stopped_by already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column actions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column goal already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column expected already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column operations already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column basis already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column intent_key already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column understanding_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column client_request_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column rolling_covered_message_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column rolling_covered_count already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column rolling_input_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column rolling_updated_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column turn_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column resume_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column client_ref already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column scope already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column authorization already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column outcome already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column finished_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column source_kind already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column origin already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column file_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column content_sha256 already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column reference_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column material_enabled already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column user_note already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column last_verified_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column legacy_paths already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column operation already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column instruction_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column instruction_text already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column purpose already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column fingerprint already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column mode_at_request already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column mode_at_approval already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column confirmed_stage already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column revisions already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column attempt already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column claimed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column result already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column error already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column resumed_at already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column requirement_id already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column requirement_version already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column structured_limits already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column structured_limits_state already exists）
+WARNING  agent.storage.migrate:migrate.py:375 迁移 64：语句已应用过，跳过（column structured_limits_source already exists）
+_____________ test_a3_pure_data_keeps_same_name_different_objects _____________
+
+    def test_a3_pure_data_keeps_same_name_different_objects():
+        """纯数据：normalize/serialize/deserialize/merge 保留同名不同对象的两条限制。"""
+        bound_a = {
+            "operations": ["execute"],
+            "objects": [
+                {
+                    "kind": "program_name",
+                    "value": "runner",
+                    "program_binding": {
+                        "path": os.path.realpath("/opt/a/runner"),
+                        "identity": "vol:a",
+                        "birth_key": "birth:a",
+                        "source": "path_lookup",
+                    },
+                }
+            ],
+            "reason": "禁止 A 版 runner",
+        }
+        bound_b = {
+            "operations": ["execute"],
+            "objects": [
+                {
+                    "kind": "program_name",
+                    "value": "runner",
+                    "program_binding": {
+                        "path": os.path.realpath("/opt/b/runner"),
+                        "identity": "vol:b",
+                        "birth_key": "birth:b",
+                        "source": "saved_candidate_verified",
+                    },
+                }
+            ],
+            "reason": "禁止 B 版 runner",
+        }
+        normalized = requirement_limits.normalize_limits([bound_a, bound_b])
+>       assert len(normalized) == 2, normalized
+E       AssertionError: ({'operations': ['execute'], 'objects': [{'kind': 'program_name', 'value': 'runner', 'program_binding': {'path': 'D:\\opt\\a\\runner', 'identity': 'vol:a', 'birth_key': 'birth:a', 'source': 'path_lookup'}}], 'reason': '禁止 A 版 runner'},)
+E       assert 1 == 2
+E        +  where 1 = len(({'operations': ['execute'], 'objects': [{'kind': 'program_name', 'value': 'runner', 'program_binding': {'path': 'D:\\opt\\a\\runner', 'identity': 'vol:a', 'birth_key': 'birth:a', 'source': 'path_lookup'}}], 'reason': '禁止 A 版 runner'},))
+
+tests\test_r9h13_a_requirements.py:924: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_r9h13_a_requirements.py::test_a3_same_name_limits_on_different_objects_both_enforced
+FAILED tests/test_r9h13_a_requirements.py::test_a3_pure_data_keeps_same_name_different_objects

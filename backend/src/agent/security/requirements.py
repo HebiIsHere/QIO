@@ -580,6 +580,8 @@ class RequirementLedger:
         expected_version: int | None = None,
         expected_status: str | None = None,
         expected_chain_digest: str | None = None,
+        attach_bindings: bool = True,
+        observe_objects: bool = True,
     ) -> UserRequirement:
         """写入/恢复一条要求的结构化限制（恢复入口 + apply_resolution 共用）。
 
@@ -592,6 +594,12 @@ class RequirementLedger:
           expected_chain_digest 在**同一事务**内重新读取并核对（chain_digest 用
           recovery_context 现场重算），任一不匹配抛 RequirementVersionMismatch；
           UPDATE 同时带 id/version/status 条件并核对 rowcount，绝不覆盖新版本/已撤回要求。
+        * **绑定范围（R9-H13 §3.A1）**：只对本次首次提交的条目创建绑定；已携带
+          绑定/未解决事实的对象原样保留，不重新查找。``attach_bindings=False`` 用于
+          “把已有 known limits 原样回写”（如恢复失败标 unresolved），绝不创建绑定。
+        * **保存时对象事实（R9-H13 B2）**：``observe_objects=True`` 时对首次形成的
+          精确路径对象采集一次 identity/birth_key/exists/observed_at/source；恢复写回
+          传 False，不重新采集历史值。
         * 展平文字 limits 同步追加可读文本（保留历史展示/审查材料），不覆盖旧文本；
         * 非法结构抛 ValueError（不写到库里，不静默降级为"无限制"）。
         """
@@ -611,12 +619,17 @@ class RequirementLedger:
             else:
                 raw_limits = limits
             known = requirement_limits.normalize_limits(list(raw_limits or ()))
-            known = requirement_limits.attach_program_bindings(
-                known,
-                requirement_id=str(requirement.requirement_id),
-                version=int(requirement.version),
-                status=str(requirement.status),
-            )
+            # limits=None 是“保留已有 known limits”的纯回写：不得重新探测历史对象。
+            should_attach = bool(attach_bindings) and limits is not None
+            if should_attach:
+                known = requirement_limits.attach_program_bindings(
+                    known,
+                    requirement_id=str(requirement.requirement_id),
+                    version=int(requirement.version),
+                    status=str(requirement.status),
+                    preserve_saved_facts=True,
+                    observe_objects=bool(observe_objects),
+                )
             structured_json = requirement_limits.serialize_limits(known)
         flattened = [
             _flatten_limit(dict(item))
@@ -722,6 +735,8 @@ class RequirementLedger:
             expected_version=expected_version,
             expected_status=expected_status,
             expected_chain_digest=expected_chain_digest,
+            # 恢复写回是历史事实的原样写回：不得重新采集路径对象的保存时事实。
+            observe_objects=False,
         )
 
     def structured_limits_for(self, requirement_id: str) -> tuple[dict, ...] | None:
@@ -917,6 +932,7 @@ class RequirementLedger:
         removed_limits: Sequence[dict] = (),
         structured_state: str | None = None,
         structured_source: str | None = None,
+        fresh_limits: Sequence[dict] | None = None,
     ) -> UserRequirement:
         """追加一条用户修正：新建子要求（version=parent+1），父要求 superseded。
 
@@ -928,6 +944,10 @@ class RequirementLedger:
         * **结构化限制**：父 state=structured 时默认继承并与新增/解除合并（只补充一句话
           不得清空父限制；明确 removed 才移除）；父 legacy/unresolved 时保留未解决状态，
           可保存已知新增但不得声称完整；apply_resolution 传入已算好的最终状态时不重复合并。
+        * **绑定范围（R9-H13 §3.A1）**：只有本次新增/明确修改的限制条目允许创建绑定
+          （``fresh_limits``；未给出时使用 ``structured_limits``/合并前的 added 条目）；
+          原样继承条目必须保留旧绑定/未解决状态/失败原因/候选及来源，不得重新查找。
+          原父要求的 structured_limits_source 会作为 origin 保留在子来源里，便于审计。
         """
         parent = self.by_id(requirement_id)
         if parent is None:
@@ -960,6 +980,9 @@ class RequirementLedger:
             else:
                 child_structured = None
             child_source = structured_source
+            # apply_resolution 已经把最终集合算好；此路径没有“新增集合”信息时
+            # 保守按“没有可新建绑定的条目”处理（继承事实原样保留）。
+            fresh_for_binding = list(fresh_limits or ())
             # apply_resolution 已经把最终集合算好；展平文字仍用于历史可读性。
             for item in child_structured or ():
                 flattened = _flatten_limit(dict(item))
@@ -975,16 +998,25 @@ class RequirementLedger:
                     (child_source or "unresolved_parent")
                     + ("" if ambiguity is None else ";" + ambiguity)
                 )[:300]
+            # 直接追加路径：只有本次 added 是“新增/明确修改”的条目。
+            fresh_for_binding = list(added_structured)
             for item in added_structured:
                 flattened = _flatten_limit(dict(item))
                 if flattened and flattened not in limits:
                     limits.append(flattened[:MAX_PERSISTED_LIMIT_CHARS])
+        # 来源可追溯：保留父 structured_limits_source 作为 origin（原样继承的来源）。
+        parent_origin = str(parent.structured_limits_source or "").strip()
+        child_source = str(child_source or "").strip()
+        if parent_origin and parent_origin not in child_source:
+            child_source = (child_source + ";origin=" + parent_origin)[:300]
         if child_structured is not None:
             child_structured = requirement_limits.attach_program_bindings(
                 child_structured,
                 requirement_id=requirement_id_new,
                 version=child_version,
                 status=STATUS_ACTIVE,
+                fresh_limits=tuple(fresh_for_binding),
+                preserve_saved_facts=True,
             )
         structured_json = (
             requirement_limits.serialize_limits(child_structured)
@@ -1205,6 +1237,8 @@ class RequirementLedger:
                     structured_limits=tuple(child_limits or ()),
                     structured_state=child_state,
                     structured_source=child_source[:300],
+                    # 只有本次解析新增/明确修改的条目允许创建绑定；继承条目原样保留。
+                    fresh_limits=tuple(structured_limits),
                 )
                 applied = AppliedResolution(
                     resolution_id=resolution_id,
@@ -1609,6 +1643,41 @@ class AuthorizationLedger:
             sql += " AND revoked_at IS NULL"
         sql += " ORDER BY created_at ASC, rowid ASC"
         return [self._from_row(row) for row in self.conn.execute(sql, params).fetchall()]
+
+    def active_allow_records_for_requirement(
+        self, requirement_id: str, *, limit: int = 32
+    ) -> tuple[AuthorizationRecord, ...]:
+        """R9-H13 引擎 E-4（子 scope 委派）只读查询：该要求**当前有效**的 allow 记录。
+
+        条件（全部满足，缺一不可）：
+        * decision == "allow"；revoked_at IS NULL；未过期（expires_at 缺失=长期有效）；
+        * 记录绑定的 requirement_version == user_requirements.version；
+        * 对应 user_requirements.status == "active"（修正/撤回后旧记录不可用）。
+
+        按 created_at、rowid 升序返回，最多 ``limit``（默认 32）条。
+        本方法**只读**：不做任何授权判断、不创建/撤销记录、不改权限模式。
+        """
+        count = max(1, min(int(limit or 32), 256))
+        rows = self.conn.execute(
+            "SELECT r.* FROM authorization_records AS r"
+            " JOIN user_requirements AS u ON u.id = r.requirement_id"
+            " WHERE r.requirement_id = ? AND r.decision = 'allow'"
+            "   AND r.revoked_at IS NULL AND u.status = ?"
+            "   AND r.requirement_version = u.version"
+            " ORDER BY r.created_at ASC, r.rowid ASC"
+            " LIMIT ?",
+            (str(requirement_id), STATUS_ACTIVE, count),
+        ).fetchall()
+        now = datetime.now(timezone.utc)
+        valid: list[AuthorizationRecord] = []
+        for row in rows:
+            record = self._from_row(row)
+            if record.expires_at and _expired(record.expires_at, now):
+                continue
+            valid.append(record)
+            if len(valid) >= count:
+                break
+        return tuple(valid)
 
 
 def _expired(expires_at: str, now: datetime) -> bool:

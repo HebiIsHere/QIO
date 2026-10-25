@@ -41,6 +41,7 @@ from agent.security.requirements import (
     RequirementVersionMismatch,
 )
 from agent.security.resolution import RequirementRelation, ResolutionOutcome
+from agent.services import file_identity
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
@@ -117,7 +118,13 @@ def _seed_structured_unbound(conn, ledger, *, limits=(_PROGRAM_LIMIT,), text="�
 
 
 def _saved_candidate_limit(path: Path) -> dict:
-    """带保存候选的未解决限制（R9-H12：恢复只认保存候选，不认当前 PATH）。"""
+    """带保存候选的未解决限制（R9-H12：恢复只认保存候选，不认当前 PATH）。
+
+    R9-H13 §3.A2 修订：候选必须带**保存时** identity/birth 事实；当前路径存在且
+    身份可读不足以宣称“已验证历史对象”。
+    """
+    observed = file_identity.identity_of(path)
+    assert observed is not None, "测试前提：候选对象身份可读"
     return {
         "operations": ["execute"],
         "objects": [
@@ -131,6 +138,8 @@ def _saved_candidate_limit(path: Path) -> dict:
                         "path": os.path.realpath(str(path)),
                         "source": "path_lookup",
                         "state": requirement_limits.BINDING_STATE_UNRESOLVED,
+                        "identity": observed.key,
+                        "birth_key": observed.birth_key,
                     }
                 ],
             }
@@ -285,7 +294,9 @@ def test_save_time_lookup_failure_is_explicit_and_reads_stay_pure(
         db_conn, requirement.requirement_id
     )
 
-    # 环境恢复后重新保存（保留事实的纯数据）才允许绑定。
+    # R9-H13 §3.A1 修订（原输入/步骤保留）：环境恢复后把**继承的未解决事实**
+    # 原样重写，不得重新查找并绑定当前 PATH 对象；要绑定必须走恢复入口或新的
+    # 用户要求（见本文件 test_real_turn_amend... 的修订）。
     runner = _runner(tmp_path / "bin")
     _prepend_path(monkeypatch, runner.parent)
     ledger.set_structured_limits(
@@ -296,8 +307,11 @@ def test_save_time_lookup_failure_is_explicit_and_reads_stay_pure(
     rebound = ledger.by_id(requirement.requirement_id)
     assert rebound is not None
     obj = rebound.structured_limits[0]["objects"][0]
-    assert obj["program_binding"]["identity"]
-    assert "binding_state" not in obj and "binding_failure" not in obj
+    assert "program_binding" not in obj, "继承的未解决限制不得被普通重写重新绑定"
+    assert obj["binding_state"] == requirement_limits.BINDING_STATE_UNRESOLVED
+    assert obj["binding_failure"] == requirement_limits.BINDING_FAILURE_LOOKUP_FAILED
+    original_obj = stored.structured_limits[0]["objects"][0]
+    assert obj.get("binding_candidates") == original_obj.get("binding_candidates")
 
 
 def test_binding_state_helpers_are_pure_and_explicit():
@@ -688,7 +702,9 @@ async def test_fully_bound_structured_requirement_is_not_rewritten(
 async def test_real_turn_amend_of_unbound_history_binds_child_limit(
     ctx, tmp_path, monkeypatch
 ):
-    """真实主流程：历史 structured-but-unbound 被 amend 时进入专用绑定，不是无关。"""
+    """真实主流程（R9-H13 §3.A1 修订，原输入/步骤保留）：历史 structured-but-unbound
+    被普通 amend 时，子要求原样继承未解决事实，不得替历史补绑定；要绑定必须走专用
+    恢复入口或新的用户要求。"""
     runner = _runner(tmp_path / "bin")
     _prepend_path(monkeypatch, runner.parent)
     ctx.settings_store.set("computer.permission_mode", "unrestricted")
@@ -732,15 +748,22 @@ async def test_real_turn_amend_of_unbound_history_binds_child_limit(
     child = ctx.requirements.by_id(binding.requirement_id)
     assert child is not None
     assert int(child.version) == int(parent.version) + 1
+    parent_obj = parent.structured_limits[0]["objects"][0]
     child_obj = child.structured_limits[0]["objects"][0]
-    assert child_obj["program_binding"]["requirement_id"] == child.requirement_id
-    assert child_obj["program_binding"]["identity"]
+    # R9-H13 §3.A1 修订（原输入/步骤保留）：普通 amend 只原样继承历史未解决事实，
+    # 不得替历史 unbound 补绑定（要绑定走专用恢复入口或新的用户要求）。
+    assert "program_binding" not in child_obj
+    assert child_obj.get("binding_state") == parent_obj.get("binding_state")
+    assert child_obj.get("binding_failure") == parent_obj.get("binding_failure")
+    assert child_obj.get("binding_candidates") == parent_obj.get("binding_candidates")
     # 历史行原始 JSON 不变：保存/恢复路径不得在读取时隐式补建绑定。
     assert _raw_limits(ctx.conn, parent.requirement_id) == parent_raw
-    # 本轮生效限制携带已固化绑定（执行完整保留绑定字段）。
+    # 本轮生效限制同样保持未解决事实，不伪造绑定。
     ctx_limits = observed["limits"]
     assert ctx_limits, observed["limits"]
-    assert ctx_limits[0]["objects"][0].get("program_binding")
+    ctx_obj = ctx_limits[0]["objects"][0]
+    assert not ctx_obj.get("program_binding")
+    assert ctx_obj.get("binding_state") == parent_obj.get("binding_state")
     # unrestricted 模式也不因专用恢复进入普通审查。
     assert review.calls == []
 

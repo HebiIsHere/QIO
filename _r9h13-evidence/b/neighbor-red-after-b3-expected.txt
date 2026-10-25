@@ -1,0 +1,99 @@
+...............................................................F.....FF. [ 49%]
+........................................................................ [ 98%]
+F.                                                                       [100%]
+================================== FAILURES ===================================
+___________ test_binding_entry_name_same_object_differs_is_invalid ____________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4336/test_binding_entry_name_same_o1')
+
+    def test_binding_entry_name_same_object_differs_is_invalid(tmp_path):
+        program = _make_program(tmp_path / "progs-a", "runner")
+        other = _make_program(tmp_path / "progs-b", "runner")
+        other_identity = _identity(other)
+        decision = decide_object(
+            _binding_item("runner", _binding(program)),
+            _candidate("program_name", "runner"),
+            resolver=_resolver(
+                path=str(other.resolve()),
+                identity_key=other_identity.key,
+                birth_key=other_identity.birth_key,
+            ),
+        )
+>       assert decision.state is ObjectState.INVALID
+E       AssertionError: assert <ObjectState.UNRELATED: 'unrelated'> is <ObjectState.INVALID: 'invalid'>
+E        +  where <ObjectState.UNRELATED: 'unrelated'> = ObjectDecision(state=<ObjectState.UNRELATED: 'unrelated'>, basis='entry_resolves_to_other_object', operation=None, obj...00000000000000000', source='path_compare', equal=False)), detail='同名入口当前解析到与保存绑定不同的真实对象（身份可读且不同、入口路径不是绑定路径）：按可靠不同对象继续').state
+E        +  and   <ObjectState.INVALID: 'invalid'> = ObjectState.INVALID
+
+tests\test_r9h11_object_state.py:1100: AssertionError
+_________ test_effect_entry_name_same_source_dominates_path_unrelated _________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4336/test_effect_entry_name_same_so0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001765C094FD0>
+
+    def test_effect_entry_name_same_source_dominates_path_unrelated(tmp_path, monkeypatch):
+        """真实入口名相同但 PATH 已指向新对象：路径候选无关也要按 INVALID 停住。"""
+        bound = _make_program(tmp_path / "bound", "runner")
+        current = _make_program(tmp_path / "current", "runner")
+        item = _binding_item("runner", _binding(bound))
+        monkeypatch.setenv("PATH", str(current.parent))
+        effect = Effect(
+            kind=EffectKind.EXECUTE,
+            targets=(Target("program", str(current)),),
+            detail={"requested_program": "runner"},
+        )
+        decision = decide_object(item, _candidate("program", current), effect=effect, operation="execute")
+>       assert decision.state is ObjectState.INVALID
+E       AssertionError: assert <ObjectState.UNRELATED: 'unrelated'> is <ObjectState.INVALID: 'invalid'>
+E        +  where <ObjectState.UNRELATED: 'unrelated'> = ObjectDecision(state=<ObjectState.UNRELATED: 'unrelated'>, basis='different_object_identity', operation='execute', obj...xy\\pytest-4336\\test_effect_entry_name_same_so0\\current\\runner.exe', source='path_lookup', equal=False)), detail='').state
+E        +  and   <ObjectState.INVALID: 'invalid'> = ObjectState.INVALID
+
+tests\test_r9h11_object_state.py:1204: AssertionError
+________________ test_effect_entry_name_from_execution_program ________________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4336/test_effect_entry_name_from_ex0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001765B658E90>
+
+    def test_effect_entry_name_from_execution_program(tmp_path, monkeypatch):
+        bound = _make_program(tmp_path / "bound", "runner")
+        current = _make_program(tmp_path / "current", "runner")
+        item = _binding_item("runner", _binding(bound))
+        monkeypatch.setenv("PATH", str(current.parent))
+        effect = Effect(
+            kind=EffectKind.EXECUTE,
+            targets=(Target("program", str(current)),),
+            detail={"execution": {"program": "runner"}},
+        )
+        decision = decide_object(item, _candidate("program", current), effect=effect)
+>       assert decision.state is ObjectState.INVALID
+E       AssertionError: assert <ObjectState.UNRELATED: 'unrelated'> is <ObjectState.INVALID: 'invalid'>
+E        +  where <ObjectState.UNRELATED: 'unrelated'> = ObjectDecision(state=<ObjectState.UNRELATED: 'unrelated'>, basis='different_object_identity', operation=None, object_k...xy\\pytest-4336\\test_effect_entry_name_from_ex0\\current\\runner.exe', source='path_lookup', equal=False)), detail='').state
+E        +  and   <ObjectState.INVALID: 'invalid'> = ObjectState.INVALID
+
+tests\test_r9h11_object_state.py:1220: AssertionError
+_________________ test_merge_invalid_dominates_path_unrelated _________________
+
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4336/test_merge_invalid_dominates_p0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001765B6E8750>
+
+    def test_merge_invalid_dominates_path_unrelated(tmp_path, monkeypatch):
+        """绑定存在 + 同一入口名解析到新对象：路径候选无关也要按 INVALID 停住。"""
+        bound = _make_program(tmp_path / "bound", "runner")
+        current = _make_program(tmp_path / "current", "runner")
+        unrelated = _make_program(tmp_path / "elsewhere", "unrelated")
+        monkeypatch.setenv("PATH", str(current.parent))
+        decision = decide_object(
+            _program_item("runner", _binding(bound)),
+            _candidate("program", unrelated),
+            effect=_execute_effect(unrelated, requested="runner"),
+        )
+>       assert decision.state is ObjectState.INVALID
+E       AssertionError: assert <ObjectState.UNRELATED: 'unrelated'> is <ObjectState.INVALID: 'invalid'>
+E        +  where <ObjectState.UNRELATED: 'unrelated'> = ObjectDecision(state=<ObjectState.UNRELATED: 'unrelated'>, basis='different_object_identity', operation=None, object_k...000000000000', observed='2923643066:cf9b080000002e000000000000000000', source='path_compare', equal=False)), detail='').state
+E        +  and   <ObjectState.INVALID: 'invalid'> = ObjectState.INVALID
+
+tests\test_r9h12_object_state.py:781: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_r9h11_object_state.py::test_binding_entry_name_same_object_differs_is_invalid
+FAILED tests/test_r9h11_object_state.py::test_effect_entry_name_same_source_dominates_path_unrelated
+FAILED tests/test_r9h11_object_state.py::test_effect_entry_name_from_execution_program
+FAILED tests/test_r9h12_object_state.py::test_merge_invalid_dominates_path_unrelated
