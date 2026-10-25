@@ -57,6 +57,7 @@ describe("非聊天路由的统一审批入口（迁移旧 ApprovalEntry 能力�
     const w = mount(NonChatApprovalEntry, { global: { plugins: [pinia] } });
     const entry = w.get('[data-test="nonchat-approval-entry"]');
     expect(entry.text()).toContain("审批结果与历史");
+    expect(entry.find('[data-test="approval-entry-error"]').exists()).toBe(false);
     expect(String(entry.attributes("aria-label"))).toContain("审批结果与历史");
     await entry.trigger("click");
     expect(useUnifiedApprovalsStore().resultsVisible).toBe(true);
@@ -70,6 +71,8 @@ describe("非聊天路由的统一审批入口（迁移旧 ApprovalEntry 能力�
     const entry = w.get('[data-test="nonchat-approval-entry"]');
     expect(entry.text()).toContain("失败");
     expect(entry.text()).toContain("重试");
+    // 可见失败标记（不只在 aria-label 里）
+    expect(entry.find('[data-test="approval-entry-error"]').exists()).toBe(true);
     w.unmount();
   });
 

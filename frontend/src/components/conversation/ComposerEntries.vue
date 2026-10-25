@@ -183,6 +183,13 @@ function close() {
  * 宽口径验收会用「执行结果 / 审批历史 / 结果与历史」匹配入口，所以这里必须
  * 明确写出能打开什么；失败状态也要说清（不是「0 项申请」）。
  */
+/** 入口上的可见失败标记（F04）：只有真的读取失败时才出现；没有错误时不渲染。 */
+const approvalEntryError = computed(() => {
+  if (approvals.recoveryError) return "恢复待审批项失败";
+  if (results.historyError) return "审批历史读取失败";
+  return "";
+});
+
 function approvalEntryLabel(entry: ComposerEntryBadge): string {
   if (entry.count > 0) {
     return `待审批申请（${entry.count} 项）：打开统一审批窗口，可切换查看审批结果与历史`;
@@ -410,7 +417,19 @@ const panelTitle = computed(() => {
           </template>
         </svg>
         <span v-if="entry.count > 0" class="count mono">{{ entry.count }}</span>
-        <span v-else-if="entry.tone === 'warn'" class="dot" aria-hidden="true"></span>
+        <span
+          v-else-if="entry.tone === 'warn' && !(entry.id === 'approvals' && approvalEntryError)"
+          class="dot"
+          aria-hidden="true"
+        ></span>
+        <!-- F04：读取失败要**看得见**（不只在 aria-label 里）：入口角上的警示标 -->
+        <span
+          v-if="entry.id === 'approvals' && approvalEntryError"
+          class="entry-error"
+          data-test="approval-entry-error"
+          :title="approvalEntryError + '（打开查看原因与重试）'"
+          aria-hidden="true"
+        >!</span>
         <span v-if="entry.id === 'continuation'" class="entry-label">继续</span>
         <span v-else-if="entry.id === 'queue'" class="entry-label">排队</span>
         <span v-else-if="entry.id === 'approvals'" class="entry-label">审批</span>
@@ -612,6 +631,25 @@ const panelTitle = computed(() => {
   height: 6px;
   border-radius: 50%;
   background: var(--warning);
+}
+/* 读取失败的警示标：绝对定位，不参与布局（480px 也不会把图标行挤坏） */
+.entry-btn .entry-error {
+  position: absolute;
+  left: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--bg-elevated);
+  background: var(--danger);
+  color: var(--bg-base);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
 }
 .entry-label {
   letter-spacing: 0.02em;
