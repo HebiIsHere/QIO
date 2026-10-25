@@ -34,6 +34,7 @@ from agent.security.object_state import (
     resolve_path,
     resolve_program_name,
     same_path_text,
+    validate_unrelated_decision,
 )
 from agent.services import file_identity
 
@@ -1085,6 +1086,9 @@ def test_binding_entry_name_same_object_same_matches(tmp_path):
 
 
 def test_binding_entry_name_same_object_differs_is_invalid(tmp_path):
+    """R9-H13 §3.B3 修订（原输入/步骤保留）：同名入口解析到**另一个独立真实对象**
+    （identity 可读且不同、解析路径≠绑定路径）→ 按对象事实判 UNRELATED；
+    只有同名入口仍解析到绑定路径但身份/生命周期变化才是 INVALID。"""
     program = _make_program(tmp_path / "progs-a", "runner")
     other = _make_program(tmp_path / "progs-b", "runner")
     other_identity = _identity(other)
@@ -1097,9 +1101,13 @@ def test_binding_entry_name_same_object_differs_is_invalid(tmp_path):
             birth_key=other_identity.birth_key,
         ),
     )
-    assert decision.state is ObjectState.INVALID
-    assert decision.basis == "entry_name_same_object_differs"
-    assert "绑定" in decision.detail
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis == "entry_resolves_to_other_object"
+    assert validate_unrelated_decision(decision) == ()
+    facts = {item.field: item for item in decision.facts}
+    assert facts["entry_name"].observed == "runner"
+    assert facts["identity_key"].equal is False
+    assert facts["entry_path"].equal is False
 
 
 def test_binding_entry_name_same_unresolvable_is_invalid(tmp_path):
@@ -1190,7 +1198,9 @@ def test_binding_program_kind_bare_name_uses_entry_branch(tmp_path):
 
 
 def test_effect_entry_name_same_source_dominates_path_unrelated(tmp_path, monkeypatch):
-    """真实入口名相同但 PATH 已指向新对象：路径候选无关也要按 INVALID 停住。"""
+    """R9-H13 §3.B3 修订（原输入/步骤保留）：真实入口名相同但 PATH 已指向另一个
+    独立真实对象（identity 可读且不同、入口路径≠绑定路径）→ 按对象事实继续，
+    不再仅凭“来源名相同”判 INVALID。"""
     bound = _make_program(tmp_path / "bound", "runner")
     current = _make_program(tmp_path / "current", "runner")
     item = _binding_item("runner", _binding(bound))
@@ -1201,12 +1211,15 @@ def test_effect_entry_name_same_source_dominates_path_unrelated(tmp_path, monkey
         detail={"requested_program": "runner"},
     )
     decision = decide_object(item, _candidate("program", current), effect=effect, operation="execute")
-    assert decision.state is ObjectState.INVALID
-    assert decision.basis == "entry_name_same_object_differs"
-    assert "绑定" in decision.detail
+    assert decision.state is ObjectState.UNRELATED
+    # primary 是显式程序对象身份比较（候选路径对象与绑定不同），入口名依据同向。
+    assert decision.basis in ("different_object_identity", "entry_resolves_to_other_object")
+    assert validate_unrelated_decision(decision) == ()
 
 
 def test_effect_entry_name_from_execution_program(tmp_path, monkeypatch):
+    """R9-H13 §3.B3 修订（原输入/步骤保留）：入口名来自 execution.program 时与上一条
+    同一对象事实语义。"""
     bound = _make_program(tmp_path / "bound", "runner")
     current = _make_program(tmp_path / "current", "runner")
     item = _binding_item("runner", _binding(bound))
@@ -1217,8 +1230,9 @@ def test_effect_entry_name_from_execution_program(tmp_path, monkeypatch):
         detail={"execution": {"program": "runner"}},
     )
     decision = decide_object(item, _candidate("program", current), effect=effect)
-    assert decision.state is ObjectState.INVALID
-    assert decision.basis == "entry_name_same_object_differs"
+    assert decision.state is ObjectState.UNRELATED
+    assert decision.basis in ("different_object_identity", "entry_resolves_to_other_object")
+    assert validate_unrelated_decision(decision) == ()
 
 
 def test_effect_requested_program_path_is_not_entry_name(tmp_path):

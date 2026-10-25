@@ -283,7 +283,13 @@ def _candidate_to_dict(path: str) -> dict:
 def test_recover_adopts_saved_candidate_not_current_path(tmp_path):
     a = _plain_file(tmp_path / "bin-a", "runner")
     b = _plain_file(tmp_path / "bin-b", "runner")
-    limits = (_unbound_limit(candidates=[_candidate(a)]),)
+    limits = (
+        _unbound_limit(
+            candidates=[
+                _candidate(a, identity=file_identity.identity_of(a).key)
+            ]
+        ),
+    )
     now = [
         {
             "name": "runner",
@@ -395,7 +401,12 @@ def test_recover_conflicting_saved_candidates_does_not_choose(tmp_path):
     a = _plain_file(tmp_path / "bin-a", "runner")
     b = _plain_file(tmp_path / "bin-b", "runner")
     limits = (
-        _unbound_limit(candidates=[_candidate(a), _candidate(b)]),
+        _unbound_limit(
+            candidates=[
+                _candidate(a, identity=file_identity.identity_of(a).key),
+                _candidate(b, identity=file_identity.identity_of(b).key),
+            ]
+        ),
     )
 
     outcome = requirement_limits.recover_program_bindings(
@@ -516,7 +527,11 @@ def test_recover_already_bound_object_untouched_by_any_candidate(tmp_path, monke
 
 def test_verify_recovered_bindings_detects_path_replacement(tmp_path):
     a = _plain_file(tmp_path / "bin-a", "runner")
-    limits = (_unbound_limit(candidates=[_candidate(a)]),)
+    observed = file_identity.identity_of(a)
+    assert observed is not None
+    limits = (
+        _unbound_limit(candidates=[_candidate(a, identity=observed.key)]),
+    )
     outcome = requirement_limits.recover_program_bindings(
         limits, requirement_id="req_reverify", version=1, status="active"
     )
@@ -580,7 +595,7 @@ async def test_p2_saved_candidate_a_not_path_b(ctx, tmp_path, monkeypatch):
     assert os.path.normcase(saved_candidate) == os.path.normcase(os.path.realpath(str(a)))
     raw_after_save = _raw_limits(ctx.conn, stored.requirement_id)
 
-    # PATH 改到 B；身份提供器恢复真实（A 现在可核验）。恢复必须采纳保存候选 A。
+    # PATH 改到 B；身份提供器恢复真实（A 现在可核验）。
     _set_path_only(monkeypatch, b.parent)
     seen = _probe_spy(monkeypatch)
     review = _RecordingReviewer()
@@ -589,25 +604,19 @@ async def test_p2_saved_candidate_a_not_path_b(ctx, tmp_path, monkeypatch):
 
     recovered, recovery_ctx = await _recover(ctx, stored)
 
-    assert recovered is not None, "保存候选 A 可核验时必须恢复成功"
-    binding = recovered[0]["objects"][0]["program_binding"]
-    assert os.path.normcase(os.path.realpath(binding["path"])) == os.path.normcase(
-        os.path.realpath(str(a))
-    ), "恢复不得绑定 PATH 当前指向的 B"
-    assert os.path.normcase(os.path.realpath(binding["path"])) != os.path.normcase(
-        os.path.realpath(str(b))
-    )
-    assert binding["source"] == requirement_limits.BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED
-    assert binding["identity"] == identity_of_real(a).key
-    assert seen["count"] == 0, "保存候选可核验时恢复不得查找当前 PATH"
+    # R9-H13 §3.A2 修订（原输入/步骤保留）：保存时候选**没有**保存时 identity 事实，
+    # 因此即使 A 当前存在且身份可读，也不能宣称“已验证历史对象”；恢复必须零写入并
+    # 保持未解决，等用户澄清/专用语义恢复（不得把当前可读写成 saved_candidate_verified）。
+    assert recovered is None, "缺少保存时 identity 事实的候选不得被采纳为已验证"
     stored_after = ctx.requirements.by_id(stored.requirement_id)
-    source = str(stored_after.structured_limits_source or "")
-    assert source.startswith("binding_recovery:"), source
-    assert requirement_limits.BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED in source
-    assert "path_lookup" in source, "source 必须记录候选来源"
-    assert "origin=r9h8_saved_limit" in source, "source 必须保留原 structured_limits_source"
-    assert "version=" in source and "text=" in source and "chain=" in source
-    assert _raw_limits(ctx.conn, stored.requirement_id) != raw_after_save
+    assert _raw_limits(ctx.conn, stored.requirement_id) == raw_after_save, "失败必须零写入"
+    obj_after = stored_after.structured_limits[0]["objects"][0]
+    assert "program_binding" not in obj_after
+    assert obj_after["binding_candidates"] == obj["binding_candidates"]
+    assert stored_after.structured_limits_state == requirement_limits.STATE_STRUCTURED
+    assert stored_after.structured_limits_source == "r9h8_saved_limit"
+    assert any("澄清" in item for item in recovery_ctx.notices), recovery_ctx.notices
+    assert seen["count"] == 0, "候选不可验证时恢复不得查找当前 PATH"
     # 专用恢复不是普通授权：不生成授权记录、不进入普通审查、不弹审批、不改模式。
     assert ctx.authorizations.records_for_requirement(stored.requirement_id) == []
     assert review.calls == []
@@ -661,19 +670,41 @@ async def test_p2_unverifiable_candidate_zero_write_and_lifecycle(tmp_path, monk
         assert _raw_row(reopened, stored.requirement_id) == row_before
         assert stored_reopened.structured_limits[0]["objects"][0]["binding_candidates"]
 
-        # 身份提供器恢复真实（A 可核验）；PATH 仍指向 B。现在才允许绑定 A。
+        # R9-H13 §3.A2 修订（原输入/步骤保留）：身份提供器恢复真实也不能凭“当前路径
+        # 存在 + 身份可读”采纳缺少保存时 identity 事实的候选；仍零写入、保持未解决。
         monkeypatch.setattr(file_identity, "identity_of", identity_of_real)
         app2 = create_app(Settings(data_dir=tmp_path / "data"), reopened)
         ctx2 = app2.state.ctx
         recovered2, _ = await _recover(ctx2, stored_reopened)
-        assert recovered2 is not None
-        binding = recovered2[0]["objects"][0]["program_binding"]
+        assert recovered2 is None, "候选仍缺保存时 identity 事实：不得采纳"
+        assert _raw_row(reopened, stored.requirement_id) == row_before
+
+        # 相邻正向（证明恢复能力未被整体取消）：历史数据补上“保存时 identity 事实”
+        # （模拟数据迁移/专门澄清后的写回）后，同一候选可恢复并绑定 A。
+        observed = identity_of_real(a)
+        enriched = [dict(item) for item in stored_reopened.structured_limits]
+        enriched[0] = dict(enriched[0])
+        enriched[0]["objects"] = [dict(item) for item in enriched[0]["objects"]]
+        candidate = dict(enriched[0]["objects"][0]["binding_candidates"][0])
+        candidate["identity"] = observed.key
+        candidate["birth_key"] = observed.birth_key
+        enriched[0]["objects"][0]["binding_candidates"] = [candidate]
+        reopened.execute(
+            "UPDATE user_requirements SET structured_limits = ? WHERE id = ?",
+            (
+                json.dumps(enriched, ensure_ascii=False, sort_keys=True),
+                stored.requirement_id,
+            ),
+        )
+        reopened.commit()
+        enriched_stored = RequirementLedger(reopened).by_id(stored.requirement_id)
+        recovered3, _ = await _recover(ctx2, enriched_stored)
+        assert recovered3 is not None, "补上保存时 identity 事实后应能恢复"
+        binding = recovered3[0]["objects"][0]["program_binding"]
         assert os.path.normcase(os.path.realpath(binding["path"])) == os.path.normcase(
             os.path.realpath(str(a))
         )
         assert binding["source"] == requirement_limits.BINDING_SOURCE_SAVED_CANDIDATE_VERIFIED
-        stored_bound = ctx2.requirements.by_id(stored.requirement_id)
-        assert _raw_limits(reopened, stored.requirement_id) != row_before
     finally:
         reopened.close()
 
@@ -713,10 +744,14 @@ async def test_recovery_reverifies_adopted_candidate_before_write(
     """写回前重新核验：采纳后候选路径对象被替换 -> 不写回、失败关闭。"""
     a = _executable(tmp_path / "bin-a")
     _set_path_only(monkeypatch, a.parent)
+    observed = file_identity.identity_of(a)
+    assert observed is not None
     requirement = _seed_unbound(
         ctx.conn,
         ctx.requirements,
-        limits=(_unbound_limit(candidates=[_candidate(a)]),),
+        limits=(
+            _unbound_limit(candidates=[_candidate(a, identity=observed.key)]),
+        ),
     )
     raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
     real_recover = requirement_limits.recover_program_bindings
@@ -747,10 +782,16 @@ async def test_service_recovery_uses_new_entry_not_current_path_binding(
     saved = _executable(tmp_path / "bin-saved")
     current = _executable(tmp_path / "bin-current")
     _set_path_only(monkeypatch, current.parent)
+    saved_identity = file_identity.identity_of(saved)
+    assert saved_identity is not None
     requirement = _seed_unbound(
         ctx.conn,
         ctx.requirements,
-        limits=(_unbound_limit(candidates=[_candidate(saved)]),),
+        limits=(
+            _unbound_limit(
+                candidates=[_candidate(saved, identity=saved_identity.key)]
+            ),
+        ),
     )
     real_recover = requirement_limits.recover_program_bindings
     calls: list[dict] = []
@@ -777,10 +818,14 @@ async def test_service_recovery_uses_new_entry_not_current_path_binding(
 async def test_recovery_write_failure_is_not_used_this_round(ctx, tmp_path, monkeypatch):
     a = _executable(tmp_path / "bin-a")
     _set_path_only(monkeypatch, a.parent)
+    observed = file_identity.identity_of(a)
+    assert observed is not None
     requirement = _seed_unbound(
         ctx.conn,
         ctx.requirements,
-        limits=(_unbound_limit(candidates=[_candidate(a)]),),
+        limits=(
+            _unbound_limit(candidates=[_candidate(a, identity=observed.key)]),
+        ),
     )
     raw_before = _raw_limits(ctx.conn, requirement.requirement_id)
 

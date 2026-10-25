@@ -516,18 +516,35 @@ async def test_b2_deleted_target_old_hardlink_alias_still_blocked(
 async def test_b2_historical_path_limit_without_saved_identity_fails_closed(
     ctx, tmp_path, monkeypatch
 ):
-    """B2 反例（历史数据）：没有保存身份时，A 删除后仍失败关闭（不得猜无关）。"""
+    """B2 反例（历史数据）：没有保存身份时，A 删除后仍失败关闭（不得猜无关）。
+
+    R9-H13 B2 修订：新保存流程现在会记录保存时对象事实；H13 之前的历史行没有这些
+    字段。这里保留真实保存流程，再用测试侧注入把对象条目还原成历史形态（不改
+    判定逻辑；原始保存事实仍在 DB 中），断言同一失败关闭语义。
+    """
     workspace = _workspace(ctx)
     a = _text_file(workspace, "secret-a3.txt", "A3 正文\n")
     b = _text_file(workspace, "report-b3.txt", "B3 正文\n")
-    _requirement, binding, saved = _save_limits(
+    requirement, binding, saved = _save_limits(
         ctx,
         text="禁止读取 A3",
         operations=["read"],
         objects=[{"kind": "path", "value": str(a)}],
         tag="b2-historical",
     )
-    assert "identity" not in saved[0]["objects"][0], saved
+    # 新保存确实记录了保存时对象事实（B2 生产行为）。
+    assert "identity" in saved[0]["objects"][0], saved
+
+    def _strip_saved_facts(obj):  # noqa: ANN001
+        return {
+            key: value
+            for key, value in obj.items()
+            if key not in requirement_limits.SAVED_OBJECT_FACT_KEYS
+        }
+
+    _augment_saved_requirement(
+        monkeypatch, requirement.requirement_id, _strip_saved_facts
+    )
     ctx.settings_store.set("computer.permission_mode", "unrestricted")
     a.unlink()
     with requirement_context(binding):

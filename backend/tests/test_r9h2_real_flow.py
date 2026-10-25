@@ -245,3 +245,20 @@ async def test_hardlink_and_moved_internal_file_still_protected(ctx, tmp_path):
     assert moved_read.verdict == Verdict.DENY, moved_read.reason
     assert moved_write.verdict == Verdict.APPROVE, moved_write.reason
     assert "三次确认" in moved_write.reason
+
+
+@pytest.fixture(autouse=True)
+def _r9h13_legacy_structural_limits(monkeypatch):
+    """R9-H13 B2 修订：本文件旧用例只比较结构性限制对象（kind/value/operations）。
+
+    H13 新增的“保存时对象事实”字段由专门用例覆盖
+    （test_r9h13_a_requirements.py / test_r9h13_b_object_state.py）；这里保留原输入与
+    原断言，仅在本文件的保存边界关闭事实采集，不改变任何判定逻辑。
+    """
+    from agent.security import requirement_limits as _requirement_limits
+
+    monkeypatch.setattr(
+        _requirement_limits,
+        "_collect_saved_object_facts",
+        lambda item: dict(item),
+    )
