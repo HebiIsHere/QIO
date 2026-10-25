@@ -772,8 +772,9 @@ describe("平移（滚动量 ≠ 0）之后的统一换算：框选 / 工具栏 
     expect(px(style.left)).toBeCloseTo(card.left - VIEW_LEFT, 0);
     expect(VIEW_LEFT + px(style.left)).toBeCloseTo(card.left, 0);
     // 底边在卡片顶边上方：工具栏高度 + 10；jsdom 量不到高度 → 组件用 TOOLBAR_H 兜底
-    expect(px(style.top)).toBeCloseTo(card.top - VIEW_TOP - 34 - 10, 0);
-    expect(VIEW_TOP + px(style.top) + 34 + 10).toBeCloseTo(card.top, 0);
+    // 2026-10-25：工具栏容器改为卡片左上角坐标，按钮再相对容器排布。
+    expect(px(style.top)).toBeCloseTo(card.top - VIEW_TOP, 0);
+    expect(VIEW_TOP + px(style.top)).toBeCloseTo(card.top, 0);
     // 固定锚点：与滚动量无关，平移前后只跟着卡片走
     expect(view.get('[data-im="card-toolbar-host"]').attributes("data-toolbar-visible")).toBe("1");
   });

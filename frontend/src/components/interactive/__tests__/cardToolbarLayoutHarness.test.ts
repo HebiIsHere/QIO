@@ -96,7 +96,7 @@ describe("布局桩 · 正向：真实组件上量得到可解释的几何", () 
     expect(harness.warnings).toEqual([]);
     expect(m.cardRect).toMatchObject({ left: VIEW.left + 300, top: VIEW.top + 200, width: 260, height: 170 });
     expect(m.dx).toBeCloseTo(0, 3);
-    expect(m.gap).toBeCloseTo(10, 3);
+    expect(m.gap).toBeCloseTo(-TOOLBAR.h, 3);
     expect(m.toolbarInsideSurface).toBe(false);
     expect(m.toolbarParent).toContain("card-toolbar-host");
   });
@@ -117,7 +117,7 @@ describe("布局桩 · 正向：真实组件上量得到可解释的几何", () 
     expect(m.scroll).toEqual({ x: 500, y: 300 });
     expect(m.cardRect!.left).toBeCloseTo(VIEW.left + 300 - 500, 3);
     expect(m.dx).toBeCloseTo(0, 3);
-    expect(m.gap).toBeCloseTo(10, 3);
+    expect(m.gap).toBeCloseTo(-TOOLBAR.h, 3);
   });
 });
 
