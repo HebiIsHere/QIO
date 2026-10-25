@@ -1,4 +1,4 @@
-"""R9-H13 A：要求继承、绑定恢复与限制去重（A1-A3）真实流程验收（契约 §3.A/§5）。
+﻿"""R9-H13 A：要求继承、绑定恢复与限制去重（A1-A3）真实流程验收（契约 §3.A/§5）。
 
 真实流程（全部真实对象/台账/引擎/工具，模型 fake）：
 * 真实 SQLite 要求台账（RequirementLedger + 真实迁移）、真实用户要求解析落实入口
@@ -713,3 +713,246 @@ def test_authorization_ledger_active_allow_records_are_filtered_and_readonly(
     assert len(bounded) == 32, len(bounded)
     assert records.active_allow_records_for_requirement(rid) == ()
     assert STATUS_ACTIVE == "active"
+
+
+# ==========================================================================
+# A3 不同对象的同名限制不得被去重丢失
+# ==========================================================================
+
+
+async def test_a3_same_name_limits_on_different_objects_both_enforced(
+    ctx, tmp_path, monkeypatch
+):
+    """A3：同名同动作、分别绑定不同程序的两条限制保存后必须都保留。
+
+    真实流程：先保存“禁止运行 runner”（绑定真实对象 A）→ PATH 改为 B → 真实 amend
+    再次明确提出同一限制（明确修改对象）→ 子要求必须同时保留绑定 A 与绑定 B 的两条
+    限制，A/B 都拒绝（0 启动），无关程序 C 正常放行；精确解除 A 后只保留 B。
+    基线（e68fb9b7）：_canonical_entry 只按 (operations, kind, value) 去重 → 新增的
+    同名限制被静默丢弃，B 实际执行成功（本用例红）。
+    """
+    a_dir = tmp_path / "a3-bin-a"
+    a = _launch_program(a_dir, "runner")
+    b_dir = tmp_path / "a3-bin-b"
+    b = _launch_program(b_dir, "runner")
+    c_dir = tmp_path / "a3-bin-c"
+    c = _launch_program(c_dir, "other")
+
+    _set_path(monkeypatch, a_dir, b_dir, c_dir)
+    requirement = ctx.requirements.record_user_message(
+        text="禁止运行 runner", message_id="m-a3", turn_id="t-a3"
+    )
+    ctx.requirements.set_structured_limits(
+        requirement.requirement_id, [_PROGRAM_LIMIT], source="test:a3:first"
+    )
+    first = ctx.requirements.by_id(requirement.requirement_id)
+    assert first is not None
+    first_obj = first.structured_limits[0]["objects"][0]
+    assert _real(Path(first_obj["program_binding"]["path"])) == _real(a)
+
+    # PATH 现在优先找到 B：用户再次明确“禁止运行 runner”（同动作/同名，不同对象）。
+    _set_path(monkeypatch, b_dir, a_dir, c_dir)
+    applied = ctx.requirements.apply_resolution(
+        _amend_outcome(
+            first,
+            message="PATH 里新的 runner 也不允许运行",
+            limits=[dict(_PROGRAM_LIMIT, reason="同一名称的新对象也不允许运行")],
+            reason="用户再次明确同一名称限制",
+        ),
+        message="PATH 里新的 runner 也不允许运行",
+        message_id="m-a3-amend",
+        turn_id="t-a3",
+    )
+    child = ctx.requirements.by_id(applied.requirement.requirement_id)
+    assert child is not None
+    entries = [
+        item
+        for item in child.structured_limits
+        if (item.get("objects") or [{}])[0].get("value") == "runner"
+    ]
+    assert len(entries) == 2, (
+        "同名同动作但绑定不同程序的两条限制不得被去重丢失："
+        + json.dumps(child.structured_limits, ensure_ascii=False, default=str)
+    )
+    bound_paths = {
+        _real(Path(item["objects"][0]["program_binding"]["path"])) for item in entries
+    }
+    assert bound_paths == {_real(a), _real(b)}, bound_paths
+    identities = {item["objects"][0]["program_binding"]["identity"] for item in entries}
+    assert len(identities) == 2
+    assert all(
+        item["objects"][0]["program_binding"]["requirement_id"] == child.requirement_id
+        for item in entries
+        if item["objects"][0]["program_binding"]["source"] == "path_lookup"
+    ), "本次新增条目应绑定到当前真实对象"
+
+    ctx.settings_store.set("computer.permission_mode", "unrestricted")
+    binding = ctx.requirements.binding_for(child.requirement_id)
+    assert binding is not None
+    launches = _install_launch_counter(monkeypatch)
+    marker_a = Path(ctx.computer.root()) / "a3-marker-a.txt"
+    marker_b = Path(ctx.computer.root()) / "a3-marker-b.txt"
+    marker_c = Path(ctx.computer.root()) / "a3-marker-c.txt"
+    result_a = await _run_program(ctx, a, marker_a, binding=binding)
+    result_b = await _run_program(ctx, b, marker_b, binding=binding)
+    for label, result, marker in (
+        ("bound-first-object-A", result_a, marker_a),
+        ("bound-second-object-B", result_b, marker_b),
+    ):
+        assert result.ok is False, (label, result)
+        assert not marker.exists(), label + " 实际执行成功（同名限制被去重丢失）"
+    result_c = await _run_program(ctx, c, marker_c, binding=binding)
+    assert result_c.ok is True, result_c
+    assert marker_c.exists(), "无关程序必须按当前模式正常执行"
+    assert len(launches) == 1, launches
+
+    # 精确解除其中一个对象（明确路径 A）：只解除 A，保留 B。
+    precise = ctx.requirements.apply_resolution(
+        _amend_outcome(
+            child,
+            message="只允许运行 A 这个对象",
+            limits=(),
+            removed_limits=[
+                {
+                    "operations": ["execute"],
+                    "objects": [
+                        {"kind": "program", "value": _real(a)},
+                    ],
+                    "reason": "只解除 A 这个具体对象",
+                }
+            ],
+            reason="用户精确解除一个对象",
+        ),
+        message="只允许运行 A 这个对象",
+        message_id="m-a3-remove-one",
+        turn_id="t-a3",
+    )
+    precise_child = ctx.requirements.by_id(precise.requirement.requirement_id)
+    assert precise_child is not None
+    remaining = [
+        item
+        for item in precise_child.structured_limits
+        if (item.get("objects") or [{}])[0].get("value") == "runner"
+    ]
+    assert len(remaining) == 1, precise_child.structured_limits
+    assert _real(Path(remaining[0]["objects"][0]["program_binding"]["path"])) == _real(b)
+    precise_binding = ctx.requirements.binding_for(precise_child.requirement_id)
+    assert precise_binding is not None
+    launches.clear()
+    marker_a2 = Path(ctx.computer.root()) / "a3-marker-a2.txt"
+    marker_b2 = Path(ctx.computer.root()) / "a3-marker-b2.txt"
+    allowed_a = await _run_program(ctx, a, marker_a2, binding=precise_binding)
+    assert allowed_a.ok is True, allowed_a
+    assert marker_a2.exists(), "精确解除 A 后 A 应按当前模式正常执行"
+    denied_b = await _run_program(ctx, b, marker_b2, binding=precise_binding)
+    assert denied_b.ok is False, denied_b
+    assert not marker_b2.exists(), "精确解除 A 不得同时解除 B 的限制"
+
+    # 含义不足的裸名称解除：同时命中两个不同绑定对象 → 不能静默删除/扩大，保持未解决。
+    ambiguous = ctx.requirements.apply_resolution(
+        _amend_outcome(
+            precise_child,
+            message="取消对 runner 的限制",
+            limits=(),
+            removed_limits=[
+                {
+                    "operations": ["execute"],
+                    "objects": [{"kind": "program_name", "value": "runner"}],
+                    "reason": "用户说取消 runner 限制",
+                }
+            ],
+            reason="裸名称解除含义不足",
+        ),
+        message="取消对 runner 的限制",
+        message_id="m-a3-remove-ambiguous",
+        turn_id="t-a3",
+    )
+    ambiguous_child = ctx.requirements.by_id(ambiguous.requirement.requirement_id)
+    assert ambiguous_child is not None
+    assert ambiguous_child.structured_limits_state == requirement_limits.STATE_UNRESOLVED
+    assert "removed_ambiguous" in str(ambiguous_child.structured_limits_source or "")
+    kept = [
+        item
+        for item in ambiguous_child.structured_limits
+        if (item.get("objects") or [{}])[0].get("value") == "runner"
+    ]
+    assert kept, "含义不足时不得静默清空限制"
+    kept_binding = ctx.requirements.binding_for(ambiguous_child.requirement_id)
+    assert kept_binding is not None
+    launches.clear()
+    marker_b3 = Path(ctx.computer.root()) / "a3-marker-b3.txt"
+    still_denied = await _run_program(ctx, b, marker_b3, binding=kept_binding)
+    assert still_denied.ok is False, still_denied
+    assert not marker_b3.exists(), "含义不足的解除不得放宽对 B 的限制"
+
+
+def test_a3_pure_data_keeps_same_name_different_objects():
+    """纯数据：normalize/serialize/deserialize/merge 保留同名不同对象的两条限制。"""
+    bound_a = {
+        "operations": ["execute"],
+        "objects": [
+            {
+                "kind": "program_name",
+                "value": "runner",
+                "program_binding": {
+                    "path": os.path.realpath("/opt/a/runner"),
+                    "identity": "vol:a",
+                    "birth_key": "birth:a",
+                    "source": "path_lookup",
+                },
+            }
+        ],
+        "reason": "禁止 A 版 runner",
+    }
+    bound_b = {
+        "operations": ["execute"],
+        "objects": [
+            {
+                "kind": "program_name",
+                "value": "runner",
+                "program_binding": {
+                    "path": os.path.realpath("/opt/b/runner"),
+                    "identity": "vol:b",
+                    "birth_key": "birth:b",
+                    "source": "saved_candidate_verified",
+                },
+            }
+        ],
+        "reason": "禁止 B 版 runner",
+    }
+    normalized = requirement_limits.normalize_limits([bound_a, bound_b])
+    assert len(normalized) == 2, normalized
+    roundtrip = requirement_limits.deserialize_limits(
+        requirement_limits.serialize_limits(normalized)
+    )
+    assert roundtrip == normalized, "序列化往返不得丢失同名不同对象"
+    merged = requirement_limits.merge_limits(normalized, added=[dict(bound_b)])
+    assert len(merged) == 2, merged
+
+    # 精确解除其中一个：按明确对象路径只解除 A，保留 B。
+    removed = requirement_limits.remove_limits_precise(
+        merged,
+        [
+            {
+                "operations": ["execute"],
+                "objects": [{"kind": "program", "value": os.path.realpath("/opt/a/runner")}],
+                "reason": "允许 A",
+            }
+        ],
+    )
+    assert len(removed) == 1, removed
+    assert removed[0]["objects"][0]["program_binding"]["identity"] == "vol:b"
+
+    # 裸名称解除同时命中两个不同绑定对象 → 不能猜测（调用方保留限制并标未解决）。
+    with pytest.raises(requirement_limits.LimitRemovalAmbiguous):
+        requirement_limits.remove_limits_precise(
+            merged,
+            [
+                {
+                    "operations": ["execute"],
+                    "objects": [{"kind": "program_name", "value": "runner"}],
+                    "reason": "取消 runner",
+                }
+            ],
+        )
+
