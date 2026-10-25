@@ -69,10 +69,13 @@ def board_env(db_conn):
 # --- §6.1 迁移与视图 --------------------------------------------------------
 
 
-def test_migration_56_adds_display_retry_and_intent_turn_tables(db_conn):
-    assert SCHEMA_VERSION == COMPENSATION_VERSION == 56 or (
-        SCHEMA_VERSION == COMPENSATION_VERSION
-    )
+def test_migration_69_adds_display_retry_and_intent_turn_tables(db_conn):
+    """P3-D 的登记号：原页面线 56 → 三分支整合后 69（与 R9 的 55/57 不再同号/相邻冲突）。
+
+    断言"最新版本 = 补偿版本"仍保留（整合后是 70）；P3-D 本身必须登记为 69。
+    """
+    assert SCHEMA_VERSION == COMPENSATION_VERSION
+    assert SCHEMA_VERSION >= 69
     assert current_version(db_conn) == SCHEMA_VERSION
     assert missing_objects(db_conn) == {"tables": [], "columns": [], "indexes": []}
     tables = {
@@ -82,7 +85,11 @@ def test_migration_56_adds_display_retry_and_intent_turn_tables(db_conn):
     assert {"board_intent_turns", "board_intent_retries"} <= tables
     columns = {str(row["name"]) for row in db_conn.execute("PRAGMA table_info(board_intents)")}
     assert "display" in columns
-    assert any(int(number) == 56 for number, _ in MIGRATIONS)
+    # 原页面线 56 已于三分支整合改号到 69（56 保持空号，避免与 R9 冻结号段相邻冲突）。
+    assert any(int(number) == 69 for number, _ in MIGRATIONS), (
+        "P3-D 迁移必须登记为 69（原页面线 56 → 整合后 69）")
+    assert not any(int(number) == 56 for number, _ in MIGRATIONS), (
+        "56 必须保持空号：P3-D 已改号到 69")
 
 
 def test_intent_view_includes_display_and_retry(board_env):

@@ -10,7 +10,8 @@
   自动最多 3 次；手动一次点击一次尝试（manual_attempts 单独累计，不重置自动次数）；
   重启 / 重连不重置；耗尽或不可恢复时只记录一次最终说明时间。
 
-所有语句幂等（表 / 索引 IF NOT EXISTS；ADD COLUMN 由 apply() 先查列），可被补偿 57 重放。
+所有语句幂等（表 / 索引 IF NOT EXISTS；ADD COLUMN 由 apply() 先查列），可被统一补偿
+70 重放（整合后本模块的登记号从 56 改为 69；旧页面线补偿 57 由 68 + 70 取代）。
 """
 
 from __future__ import annotations
@@ -103,7 +104,7 @@ def tables() -> tuple[str, ...]:
 
 
 def apply(conn: sqlite3.Connection) -> list[str]:
-    """幂等应用迁移 56；返回本次真正执行的语句（已存在的列跳过）。"""
+    """幂等应用 P3-D 迁移（整合后登记号 69，原页面线 56）；返回本次真正执行的语句。"""
     present = {
         str(row["name"])
         for row in conn.execute("PRAGMA table_info(board_intents)").fetchall()

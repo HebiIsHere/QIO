@@ -14,7 +14,7 @@
   qio_generated），与文件身份（volume+file_id）关联，供 fs/附件写回/原子替换查询；
   不信任模型传入的 origin 字段。
 
-幂等：全部 IF NOT EXISTS，可被补偿迁移 56 整体重放。
+幂等：全部 IF NOT EXISTS，可被 R9 补偿 58（以及三分支整合后的统一补偿 70）整体重放。
 """
 
 from __future__ import annotations

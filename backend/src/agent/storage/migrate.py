@@ -26,6 +26,15 @@ exists）才当作「这条已经应用过」，其它任何错误照旧抛 —�
 * `apply_migrations()` 结束前调用 `verify_required_objects()`：缺了就重放补偿迁移，
   仍缺就抛可读的 `SchemaIncompleteError` —— **不再静默放过**。
 
+**分支线来源库的兼容修复**（三分支整合，2026-10-25）：`apply_migrations` 只按版本号
+前进，而对话页 v2 / 互动页 v2 的来源库记录到 55 / 57、R9 来源库记录到 66，两条线的
+版本号互相「越过」对方：页面库会整段跳过 R9 的 52/53/55，而 R9 的 57（要求绑定）会
+**先于** 58（补偿）执行，在 cv 55 库上直接抛 `no such table: user_requirements`。
+所以主循环之前有一次 `repair_branch_schema()`：版本 > 50 且按对象校验确有缺失时，
+**只**重放统一补偿的 CREATE / ALTER 语句（不写 `schema_version`、不推进版本号、
+不改任何数据），让后续迁移的前置对象就位。它不是迁移，日志按「兼容修复」记 warning；
+非「对象已存在」的错误照旧抛，不吞。
+
 集成后的同一条缺口（2026-10-11 收尾复核）：补偿迁移 34 已经会建 `attachments`
 与轮次结束事实对象，但 `REQUIRED_OBJECTS` 没列它们 —— 版本号已到 34 的库把
 `attachments` 整张删掉，迁移照样报「结构完整」、也不补建。清单现在覆盖两批对象
@@ -62,18 +71,23 @@ _ADD_COLUMN_RE = re.compile(
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # **必需**的 schema 对象。校验按对象做，不看版本号：版本号已到 39 但对象缺失
-# 正是这条检查要治的场景。清单覆盖四批对象：
+# 正是这条检查要治的场景。清单覆盖六批对象：
 #
 # * A05/B01 补充修复轮（实例归属 / 知识版本链 / 人工纠正保护）；
 # * 流式回复线并入 main 时新增的附件对象与轮次结束事实（来源线迁移 31/32/33）；
 # * 互动模式并入 main 时新增的板面对象（来源线原编号 26，集成时改号 **35**）；
-# * 稳定提交请求身份（迁移 39）：board_submissions.client_request_id 与其部分唯一索引。
+# * 稳定提交请求身份（迁移 39）：board_submissions.client_request_id 与其部分唯一索引；
+# * 对话页 v2（整合后迁移 67）：task_feed / task_ack 与两个索引；
+# * 互动页 v2 P3-D（整合后迁移 69）：board_intents.display / board_intent_turns /
+#   board_intent_retries 与四个索引；
+# * R9 线（迁移 52..65）：附件迁移审计 / 清理清单 / 审批 v2 审计 / 要求与授权 /
+#   解析审计 / 结构化限制 / 内部数据身份登记 —— 表、追加列、索引逐项列入。
 #
 # 诚实边界（两条）：
 #
 # * 这是**按名字**的校验 —— 同名的对象存在但形状不同（例如某个兄弟分支用同一个
 #   列名存了别的东西）它判不出来；
-# * 清单里的每一项都必须在补偿迁移 `COMPENSATION_VERSION`（40）里有一条对应的
+# * 清单里的每一项都必须在补偿迁移（当前 `COMPENSATION_VERSION`，整合后 70）里有一条对应的
 #   建对象语句（`test_fu_w3_b01_schema.py::test_compensation_migration_is_additive_and_ordered`
 #   逐项核对）。所以这里**不列**建表基础列（`attachments` / 互动各表）：它们只出现在
 #   `CREATE TABLE IF NOT EXISTS` 里，表整体缺失时建表语句会把整张现代形状（含那些列）
@@ -166,7 +180,7 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 稳定提交请求身份（迁移 39）：缺了它，同一次提交请求的重试就没有可持久的身份，
         # 服务端只能重复落行 / 重复调用模型，前端也无法按精确身份查证受理事实。
         "board_submissions.client_request_id",
-        # 阶段三（P3-D，迁移 56）：意图显示位置；缺列时视图读不到 display（只影响预览落点）。
+        # 阶段三（P3-D，整合后迁移 69；原页面线 56）：意图显示位置；缺列时视图读不到 display。
         "board_intents.display",
         # 阶段一（迁移 44）：滚动摘要覆盖位置 / 输入版本。缺了它们，主对话无法只处理
         # 未覆盖的新消息（会重复摘要或跳过原文）；补偿迁移 45 里有对应 ADD COLUMN。
@@ -403,7 +417,7 @@ def _apply_statements(conn: sqlite3.Connection, version: int, statements: list[s
 
 
 def _run_compensation(conn: sqlite3.Connection) -> None:
-    """重放补偿迁移（迁移 30）：只建对象、不动数据。
+    """重放统一补偿迁移（`COMPENSATION_VERSION`）：只建对象、不动数据。
 
     这里是**尽力而为**：单条语句失败只记日志，最后由按对象的复核决定是否抛
     `SchemaIncompleteError`。所以不能因为它抛异常就放弃复核。
@@ -446,16 +460,78 @@ def _describe(missing: dict[str, list[str]]) -> str:
     ) or "（无）"
 
 
+# ---------------------------------------------------------------------------
+# 分支线来源库的兼容修复（三分支整合）
+# ---------------------------------------------------------------------------
+
+# 只对「上一代」存量库做前置修复：main 最后版本是 51，页面线记录到 55/57，R9 到 66。
+# 下界取 50 而不是 51：main_51 库也可能缺 main 时代的必需对象（例如 attachments 整表
+# 被删），而迁移 52 会先 ALTER 它 —— 只按版本号判断会直接失败。
+_BRANCH_REPAIR_MIN_VERSION = 50
+
+
+def _compensation_ddl_statements() -> list[str]:
+    """统一补偿里的建对象语句（CREATE / ALTER）——兼容修复不碰任何数据。"""
+    return [
+        stmt
+        for stmt in _compensation_statements()
+        if " ".join(str(stmt).split())[:6].upper().startswith(("CREATE", "ALTER"))
+    ]
+
+
+def repair_branch_schema(conn: sqlite3.Connection, version: int | None = None) -> bool:
+    """主循环前的兼容修复：分支线来源库 / 对象缺失库先补齐统一补偿的 DDL。
+
+    触发条件（两条同时满足）：
+
+    * 50 < current_version < COMPENSATION_VERSION（main 51、页面线 55/57、
+      R9 66 等上一代存量库）；
+    * missing_objects(conn) 非空（页面库缺 R9 对象 / R9 库缺页面对象 /
+      版本号已登记但对象被删）。
+
+    行为：**只**重放统一补偿里的 CREATE / ALTER 语句，不写 schema_version、
+    不推进版本号、不改任何业务数据；整段在一个事务里，非「对象已存在」的错误
+    照旧抛（事务回滚）。返回是否真的重放过（供测试与日志核对）。
+    """
+    current = current_version(conn) if version is None else int(version)
+    if not (_BRANCH_REPAIR_MIN_VERSION < current < COMPENSATION_VERSION):
+        return False
+    missing = missing_objects(conn)
+    if not any(missing.values()):
+        return False
+    statements = _compensation_ddl_statements()
+    logger.warning(
+        "兼容修复：版本 %s 的存量库缺少必需对象（%s），先重放补偿 %s 的 DDL"
+        "（不写版本号、不改数据）",
+        current,
+        _describe(missing),
+        COMPENSATION_VERSION,
+    )
+    with transaction(conn):
+        for stmt in statements:
+            _apply_statements(conn, COMPENSATION_VERSION, [stmt])
+    logger.warning(
+        "兼容修复：已重放 %s 条建对象语句；版本号保持 %s，继续正常迁移",
+        len(statements),
+        current,
+    )
+    return True
+
+
 def apply_migrations(conn: sqlite3.Connection) -> int:
     """Apply pending migrations; returns the new schema version.
 
     每条迁移一个事务：语句 + 版本行原子落盘（见模块 docstring 里为什么不能只写 `with conn:`）。
     遇到「对象已存在」的语句时跳过并记一条 warning（存量库的半截迁移自愈），其它错误直接抛。
 
+    主循环之前先做一次 :func:`repair_branch_schema`（分支线来源库的兼容修复：
+    只补对象、不写版本号、不改数据），再按版本号顺序执行挂起迁移。
+
     最后**按对象**复核本轮必需对象（不只看版本号）：缺了就重放补偿迁移，
     仍缺就抛 :class:`SchemaIncompleteError`（带上缺什么）—— 不再静默放过。
     """
     version = current_version(conn)
+    repair_branch_schema(conn, version)
     for target, statements in MIGRATIONS:
         if target <= version:
             continue
