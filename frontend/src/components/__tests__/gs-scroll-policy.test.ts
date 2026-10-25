@@ -79,14 +79,15 @@ describe("恢复/审批正文的 scroll 层数（task-7 连带范围）", () => 
     expect(src).toContain("data-qio-fit");
   });
 
-  it("ApprovalModal：正文是唯一滚动层，按钮区在正文之外（固定操作不被滚走）", () => {
-    const src = read("components/ApprovalModal.vue");
-    const body = ruleBody(src, ".body");
-    expect(body).toContain("max-height");
+  it("统一审批弹窗：正文是唯一滚动层，按钮区在正文之外（固定操作不被滚走）", () => {
+    // 旧 components/ApprovalModal.vue 在 A-CP1 后由 C 删除；同一约束改由统一弹窗承接。
+    const src = read("components/approval/UnifiedApprovalModal.vue");
+    const body = ruleBody(src, ".ua-body");
     expect(body).toContain("overflow-y: auto");
-    expect(src).toContain('class="body" v-qio-scrollbar data-qio-fit');
-    // 模板顺序：.body 先出现、.actions 在后 —— 按钮在滚动区外
-    expect(src.indexOf('class="body"')).toBeLessThan(src.indexOf('class="actions"'));
+    expect(body).toContain("min-height: 0");
+    expect(src).toContain('class="ua-body" v-qio-scrollbar');
+    // 模板顺序：.ua-body 先出现、.ua-actions 在后 —— 按钮在滚动区外
+    expect(src.indexOf('class="ua-body"')).toBeLessThan(src.indexOf('class="ua-actions"'));
   });
 
   it("ImpactConfirmDialog：滚动收敛到 .body 一层，操作区固定在框内", () => {

@@ -12,7 +12,6 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import ApprovalFacts from "../ApprovalFacts.vue";
-import ApprovalModal from "../ApprovalModal.vue";
 import TurnProcess from "../TurnProcess.vue";
 import { approvalFacts, useApprovalsStore, type ApprovalItem } from "../../stores/approvals";
 import { useSessionStore } from "../../stores/session";
@@ -186,13 +185,19 @@ describe("问题 1：内联卡与弹窗共用同一份审批事实（说同样�
     const approvals = useApprovalsStore();
     // autoOpen 保持默认：弹窗立即显示（内联门控在同一个 store 下另行验证）
     approvals.enqueue("ap_modal", "tool_execution", SHELL_PAYLOAD, { turnId: "turn_1" });
-    const modal = mount(ApprovalModal, { global: { plugins: [pinia] }, attachTo: document.body });
+    // 弹窗侧事实：统一弹窗与内联卡共用同一个 ApprovalFacts（这里直接挂事实组件，
+    // 避免依赖旧 ApprovalModal —— 它会在 A-CP1 后由 C 删除）。
+    const modalFacts = mount(ApprovalFacts, {
+      props: { item: approvals.current! },
+      global: { plugins: [pinia] },
+      attachTo: document.body,
+    });
     await flushPromises();
-    const modalText = modal.find(".modal").text();
+    const modalText = modalFacts.text();
     expect(modalText).toContain("想运行一条 shell 命令");
     expect(modalText).toContain("为了确认测试目录是否已清空，需要执行一次删除。");
     expect(modalText).toContain("rm -rf /tmp/qio-scratch");
-    modal.unmount();
+    modalFacts.unmount();
 
     const session = useSessionStore();
     session.activeTurnId = "turn_1";

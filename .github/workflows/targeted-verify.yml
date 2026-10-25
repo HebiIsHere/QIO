@@ -1,7 +1,9 @@
 name: Targeted verify (dispatch only)
 
-# 本轮整合的**唯一**按需验证入口。它不参与 push / pull_request 触发：只有手动
-# workflow_dispatch 才会跑，所以永远不会和 ci.yml 的门禁重复。
+# 本轮整合的**定向**按需验证入口（只跑指定单项与筛选）。它不参与 push / pull_request 触发：
+# 只有手动 workflow_dispatch 才会跑，所以不会和自动门禁重复。
+# 注意：ci.yml 也有一个 workflow_dispatch，但那是「按完整 SHA 锁定的一次完整矩阵」；
+# 两者分工见 ci.yml 顶部注释 —— 本入口用于失败修复后的定向复验、以及补齐单项构建/检查。
 #
 # 为什么需要它：
 #   * 旧 CI 失败后点 "Re-run failed jobs" 重跑的是**旧提交**（run 绑定在原来的 SHA 上），
@@ -11,7 +13,8 @@ name: Targeted verify (dispatch only)
 #   * 原 CI 因失败而**没执行**的必要构建与检查（typecheck / build / cargo check / cargo test /
 #     sidecar 冻结冒烟）在这里可以单独补齐。skipped 一律在 summary 里如实打印，不许当 passed。
 #
-# 用法（额度红线：一次只派发需要的单项；all 与 ci.yml 等价，只在必要时用）：
+# 用法（额度红线：一次只派发需要的单项；all 只覆盖本入口列出的单项，**不含** ci.yml 的
+# install e2e 完整安装包 E2E，不能拿它冒充一次完整矩阵）：
 #
 #   gh workflow run targeted-verify.yml \
 #     -f ref=<branch 或 tag> \

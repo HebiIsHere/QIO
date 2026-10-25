@@ -19,7 +19,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { defineComponent, h, nextTick } from "vue";
-import ApprovalModal from "../ApprovalModal.vue";
 import TurnProcess from "../TurnProcess.vue";
 import { useApprovalsStore } from "../../stores/approvals";
 import { useSessionStore } from "../../stores/session";
@@ -63,7 +62,6 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
 
 interface HostOptions {
   turnId: string;
-  withModal?: boolean;
 }
 
 function makeProps(turnId: string) {
@@ -94,12 +92,8 @@ async function mountInline(options: HostOptions): Promise<{ wrapper: VueWrapper;
 
   const Host = defineComponent({
     setup() {
-      const store = useApprovalsStore();
-      return () =>
-        h("div", [
-          h(TurnProcess, props as never),
-          options.withModal && !store.inlineClaimed ? h(ApprovalModal) : null,
-        ]);
+      useApprovalsStore();
+      return () => h("div", [h(TurnProcess, props as never)]);
     },
   });
   const wrapper = mount(Host, { global: { plugins: [pinia] } });

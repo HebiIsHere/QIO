@@ -165,35 +165,67 @@
 
 复验记录：`uv run --frozen pytest -q tests/test_r9g_cmd_binding.py tests/test_sr_d_fs_threading.py` → 29 passed（exit 0）；邻近 7 个文件（fs_tools / r9h5 / r9h6 / r9h_recheck_limits / r9f_origin_fs_tools / r9h_content_binding）→ 77 passed。修复提交 `c152e6d1` 合入后，**最终 SHA 与最初全量 SHA 不同**，按「原候选全量 + 新提交定向复验」记录；最终 SHA 的完整矩阵由 §6.3 的完整 CI 覆盖。
 
-### 6.4 完整 CI 轮次（仅一次）
+### 6.4 完整 CI 轮次（台账更正，2026-10-26）
 
-- 触发方式：把整合分支 push 到 `origin/integrate/three-branches-20261025`（`ci.yml` 对 push 全分支 + PR 生效）。本轮**只创建了这一次**会跑完整矩阵的远端事件：子工作流全程在本地 worktree，未 push 分支、未开 PR。
-- 运行：**run 40196935297**，SHA `97b983682def71cbe5bb1d45bb41f3560f7504ed`（分支 integrate/three-branches-20261025）。
-- 逐 job 结论（全部真实执行，无 skipped）：ci dedup preflight ✓ / docs consistency ✓ / frontend（typecheck + 测试 + 构建）✓ / rust (ubuntu) ✓ / rust (windows) ✓ / frozen worker (windows) ✓ / install e2e (windows) ✓ / backend (py3.11) ✓ / backend (py3.12) ✗ / backend (windows-latest) ✓。
+> 本节按真实 run 元数据、run 日志与 `verify-sha` 证据重写。上一版「只创建一次会跑完整矩阵的远端事件」「本轮完整 CI 轮次只有这一次」的表述不准确，已更正；**已启动的运行（含被取消的）保留在台账里，不删除**。
+
+#### 6.4.1 两次创建、一次跑完的完整矩阵
+
+| # | run | 事件 / ref | 受测 SHA | 结果 |
+| --- | --- | --- | --- | --- |
+| 1 | **40196935297** | push `integrate/three-branches-20261025` | `97b983682def71cbe5bb1d45bb41f3560f7504ed` | 10 个 job 全部真实执行（无 skipped）：9 绿 + `backend (py3.12)` 1 红（单条基线用例，见 6.4.2） |
+| 2 | **40202066826** | push `main` | `1b03541eedd2dcaa9b82d6102108d717c71c6fb4` | **重复的完整矩阵**：10 个 job 全部启动；`ci dedup preflight`、`docs consistency` 两个 job 完成（success），其余 8 个在 14:24:44Z–14:25:49Z 被取消，整 run 于 14:25:50Z 取消（cancelled） |
+
+- 子工作流全程在本地 worktree，**没有** push 分支、**没有**开 PR；两次完整矩阵都来自 Lead 的 push：先推整合分支（run 1），修复与回填后 main 前进到 `1b03541e`（run 2）。
+- run 2 不是「同 SHA 重复」，而是一次新的完整运行：`97b98368 → 880880be` 改了后端测试与本文档、`880880be → 1b03541e` 只改本文档，`1b03541e` 与 `97b98368` 的树不同（测试+文档）、SHA 也不同，按 SHA 的去重不可能也不应该抑制它；main push 门禁本身必须运行。
+- run 2 的取消来源：workflow 内没有自取消步骤，且它与 run 1 的 SHA 不同组；取消来自外部手动操作。**取消不等于通过**：main 指向的 `1b03541e` 没有完整矩阵通过记录，其证据只有 6.4.2 的 `880880be` 定向复验 + 「`880880be..1b03541e` 仅改本文档」这一事实。
+- 因此正确口径是：**一次完整矩阵运行完成（9/10 job 绿 + 单条基线失败），失败后定向复验；另一次重复完整矩阵已启动并执行部分检查，随后取消**。本轮创建过**两次**会跑完整矩阵的 push 事件，不是一次。
+
+#### 6.4.2 单条失败、根因与定向复验
+
 - **唯一失败**：`backend (py3.12)` 的 `tests/test_r9h9_regressions.py::test_program_binding_survives_path_change_and_restart`（第 172 行 `assert named.ok is False`，实际 `named.ok=True`）。
-  定位证据：同一 SHA 的 `backend (py3.11)` 整套通过；`targeted-verify` 单跑该用例 py3.11 success（run 40200984283）、py3.12 failure（run 40200822357）；把同一命令打到**冻结基线 r9h13/main 6f56d815** 的 py3.12 也是 failure（run 40201030638）→ **基线既有失败，非本整合引入**。
-  根因（经代码与环境核对）：hostedtoolcache 的 py3.12 解释器被复制到临时目录后仍能运行，于是真实行为暴露——名称限制绑定的是保存时对象 A 的身份，PATH 改到另一目录后同名 `runner` 解析到**另一个对象 B**（身份不同），当前实现放行 B；py3.11 与 Windows 上复制出来的解释器跑不起来（`ok=False`），旧断言被“假绿”满足。
-- 处置与复验：（回填 D 的修复 + py3.11/py3.12 双定向复验）
-- 补充（第三条失败的处置）：上条 py3.12 用例经核对是**旧期望过期**：`object_state._name_branch` 的最终契约（R9-H13 §3.B3，代码注释与 H13 报告 B1-B3「对象判定过严纠正」一致）明确「同名入口解析到**不同的真实对象**时按当前模式继续」，而旧用例断言「同名即拒绝」，且在 py3.11/Windows 上因为**副本跑不起来**（Python 解释器被复制到别的目录）而假绿。
-  处置（只改测试，不改产品实现）：被测程序改为一定可运行的系统 shell 副本（Windows `cmd.exe` / POSIX `/bin/sh`）并用 marker 证明真的执行；断言改为身份语义——`binding.identity/path` 必须等于 A 的真实身份、按绝对路径跑 A 一律被拒（重启后仍被拒）、按名字落到 B 时允许且必须证明执行的是 B、绑定不得被改写成 B。
-  复验：候选 `880880be` 上 `targeted-verify` 双版本单跑 `tests/test_r9h9_regressions.py` —— **py3.12 success（run 40201799979）+ py3.11 success（run 40201811835）**；本地该文件 8 项通过。不再有「假绿」，也不再与契约冲突。
-- 说明：本轮完整 CI 轮次只有这一次（9/10 job 绿 + 上述单条基线失败）；未使用 `Re-run failed jobs` 冒充新提交通过，也未降低任何门禁。
+- 根因（经代码与环境核对）：hostedtoolcache 的 py3.12 解释器被复制到临时目录后仍能运行，于是真实行为暴露 —— 名称限制绑定的是保存时对象 A 的身份，PATH 改到另一目录后同名 `runner` 解析到**另一个对象 B**（身份不同），当时的实现放行 B；py3.11 与 Windows 上复制出来的解释器跑不起来（`ok=False`），旧断言被「假绿」满足。该 py3.12 用例经核对是**旧期望过期**：`object_state._name_branch` 的最终契约（R9-H13 §3.B3）明确「同名入口解析到**不同的真实对象**时按当前模式继续」，而旧用例断言「同名即拒绝」。
+- 处置（只改测试，不改产品实现）：被测程序改为一定可运行的系统 shell 副本（Windows `cmd.exe` / POSIX `/bin/sh`）并用 marker 证明真的执行；断言改为身份语义 —— `binding.identity/path` 必须等于 A 的真实身份、按绝对路径跑 A 一律被拒（重启后仍被拒）、按名字落到 B 时允许且必须证明执行的是 B、绑定不得被改写成 B。修复提交 `880880be`。
+- 定向复验（受测 SHA 的证据口径见 6.4.3）：候选 `880880be` 上 `targeted-verify` 双版本单跑 `tests/test_r9h9_regressions.py` —— **py3.12 success（run 40201799979）+ py3.11 success（run 40201811835）**；本地该文件 8 项通过。同一命令打到**冻结基线 r9h13/main `6f56d815`** 的 py3.12 也是 failure（run 40201030638）→ 基线既有问题，非本整合引入。
+- 未使用 `Re-run failed jobs` 冒充新提交通过，也未降低任何门禁；`880880be` 之后没有再跑第二次完整矩阵（原因见 6.4.1 与 6.4.4）。
 
-（回填：运行号、SHA、逐 job 结论、失败与定向复验）
+#### 6.4.3 workflow_dispatch 的 head_sha 不等于受测 SHA（证据口径）
+
+`workflow_dispatch` 运行的元数据 `head_sha` 是「承载 workflow 的分支提交」（本轮为 `main` 当时的 `249a6344`），**不是**实际 checkout 的提交。以下 5 个定向 run 的 API `head_sha` 全部是 `249a6344`，实际受测 SHA 以 `verify-sha` 步骤日志与 `verify-sha-preflight` artifact（JSON）为准：
+
+| run | requested ref | requested sha（实际受测） | 用途 / 结果 |
+| --- | --- | --- | --- |
+| 40200822357 | `integrate/three-branches-20261025` | `97b98368` | py3.12 单跑失败（复现 run 1 的唯一失败） |
+| 40200984283 | `integrate/three-branches-20261025` | `97b98368` | py3.11 单跑 success |
+| 40201030638 | `r9h13/main` | `6f56d815` | py3.12 单跑失败（冻结基线同样失败） |
+| 40201799979 | tag `integ3-candidate-2` | `880880be` | py3.12 单跑 success（修复后） |
+| 40201811835 | tag `integ3-candidate-2` | `880880be` | py3.11 单跑 success（修复后） |
+
+结论：**`97b98368` / `880880be` 的受测 SHA 以日志证据为准，不以 run 元数据 `head_sha` 为准**；`targeted-verify.yml` 的 verify-sha 断言正为此存在（checkout 后核对 HEAD == 输入 SHA，不一致即红）。
+
+#### 6.4.4 产品代码 / 测试 / 文档的区别（更正「backend 树完全一致」）
+
+- `97b98368 → 880880be`：改动仅 `backend/tests/test_r9h9_regressions.py` 与本文档；`backend/src`、`frontend` 产品树逐字相同（子树哈希相同）。
+- 但**整个 `backend` 子树不同**（`backend/tests` 变了），不能笼统称「backend 树完全一致」。
+- `880880be → 1b03541e`：只改本文档（`git diff --name-only` 仅此一项）；代码与测试树与 `880880be` 一致。
+- `854d9c39 → c56b7033` 之间 `backend` 子树未变（`git rev-parse <sha>:backend` 相同），这一条仍然成立。
 
 ### 6.5 最终候选状态
 
 - 完整 CI 验证的代码候选：`97b983682def71cbe5bb1d45bb41f3560f7504ed`（run 40196935297，9/10 job 绿）。
 - 失败修复后的定向验证候选：`880880be81da439ce9e7f3573ecaa91e19dc1b1e`（py3.12 + py3.11 双定向 success，run 40201799979 / 40201811835）。
-- **最终提交（本轮 main 指向）**：见文末「交付状态」一节；它与 `880880be` 的差异仅为本说明文档的补充。
-- 三个冻结来源 + 追加交付均为其祖先（`git merge-base --is-ancestor` 实测）
-- 工作树干净、全树无冲突标记；`backend` 子树在 854d9c39→c56b7033 之间未变（`git rev-parse <sha>:backend` 相同）
+- **最终提交（本轮 main 指向）**：`1b03541eedd2dcaa9b82d6102108d717c71c6fb4`，与 `880880be` 的差异仅为本文档的补充（`git diff --name-only` 仅此文件）。
+- 三个冻结来源 + 追加交付均为其祖先（`git merge-base --is-ancestor` 实测）。
+- 工作树干净、全树无冲突标记；`backend` 子树在 `854d9c39→c56b7033` 之间未变（`git rev-parse <sha>:backend` 相同）。
+- **CI 证据口径（更正）**：`1b03541e` **没有**完成的完整矩阵通过记录（run 40202066826 已取消，见 6.4.1）。它的证据是「`880880be` 的定向复验 + 仅文档差异」，**不把 cancelled 当通过**；若需要 main 上的一次完整矩阵，应在新提交上按本轮的 CI 规则另行安排并单独记账。
+
 ## 7. 已知限制与未验证事项
 
 ### 7.1 未验证（如实记录，不用浏览器预览冒充）
 
 - **真机桌面壳**：Tauri `CloseRequested → tray/quit/ask`、托盘菜单与恢复、`request_close` / `qio_set_close_behavior` / `qio_close_ack` 三个 IPC、`POST /api/lifecycle/shutdown` 的有界收尾与 `taskkill /PID /T` 核验、ask 的 1.8s ACK 兜底、安装形态 `install_e2e`。
   本轮**没有**编译候选壳（时间预算与无人值守交互限制），只在组件级（mock Tauri）与源码级协议不变量上验证。
+  （2026-10-26 更正：下一轮「合并后修复」已补做真机桌面验证，证据在 `D:\qio-dev\_fixpm\evidence\D\f07`；本节保留上一轮的未验证记录，不回写成「已在本轮验证」。）
 - **真实模型/真实厂商链路**：全部模型调用使用 fake/mock provider；离线评估用的也是离线夹具。
 - **系统回收站 / 符号链接 / 硬链接 / 跨卷移动**的真实文件系统行为：只有仓库既有 Windows 用例覆盖，本轮未新增真机证据。
 - **POSIX 平台**：本轮本机验证全部在 Windows；CI 会覆盖 Linux 两个 Python 版本，但那是 CI 的事实，不是本地结论。
@@ -215,15 +247,40 @@
 - `test_p3_d_intent_resume_retry` 的迁移号断言随页面线迁移 56 → 69 更新，并断言 56 空号。
 - H13 报告把 `test_r9h_content_binding` 归因为「Windows 共享 venv junction 环境」，实测不成立（`script_sha256` 恒为 None 与 venv 无关），按 H8 §6 语义修正；该归因错误记录在此，不回写历史报告。
 
-## 8. 交付状态与回退路径
+## 8. 交付状态与回退路径（2026-10-26 更正）
 
-- **本轮最终提交（main 指向）**：本文件所在提交（`git -C <worktree> rev-parse HEAD`）。
-- **完整 CI 验证候选**：`97b983682def71cbe5bb1d45bb41f3560f7504ed`（run 40196935297：9/10 job 绿，唯一失败为 py3.12 单条基线用例）。
-- **失败修复后定向验证候选**：`880880be81da439ce9e7f3573ecaa91e19dc1b1e`（py3.12 / py3.11 双定向 success）。
-- **最终提交与上述候选的关系**：`880880be` 之后只增加了本说明文档的补充（纯文档），代码与测试树与 `880880be` 一致；文档改动用 `python scripts/check_docs.py` 复验。
-- **操作前 main**：`249a63443c72b3dad011b5446ee9920f4dadf0fd`。
-- **代码回退路径**：把 main 指回操作前提交即可（`git push --force-with-lease origin 249a6344…:main`）。
-  但**数据库升级不可随代码一起回退**：本轮迁移把 `SCHEMA_VERSION` 从 51 推进到 70（新增 52…70 的对象与页面线对象），
-  旧版本的二进制读到 70 版库不会自动降级。回退到旧代码前必须先用**升级前的数据目录备份**恢复数据，
-  不能只切代码。回退前请先 `apply_migrations` 之前的备份存在。
-- **远端记录**：整合分支 `origin/integrate/three-branches-20261025`；用于定向验证的临时 tag `integ3-candidate-2`（指向 `880880be`，可删除）。
+> 2026-10-26 更正（工作流 D）：删除上一版「`git push --force-with-lease origin 249a6344…:main` 把 main 指回旧提交」的回退路径。共享 main **不允许改写已发布历史**，回退必须用**新的回退提交或回退 PR** 保留历史。本文档只更正记录；本轮**没有执行任何回退、没有强推、没有改 main**。
+
+### 8.1 交付状态与阶段标注（不写「已合入 main」）
+
+| 项 | 值 |
+| --- | --- |
+| 操作前 main | `249a63443c72b3dad011b5446ee9920f4dadf0fd` |
+| 上一轮整合完成后的 main | `1b03541eedd2dcaa9b82d6102108d717c71c6fb4`（本文档所在提交；完整矩阵 run 40202066826 已取消，见 §6.4） |
+| 上一轮完整矩阵候选 | `97b983682def71cbe5bb1d45bb41f3560f7504ed`（run 40196935297，9/10 job 绿） |
+| 上一轮失败修复候选 | `880880be81da439ce9e7f3573ecaa91e19dc1b1e`（定向复验 40201799979 / 40201811835） |
+| 上一轮整合分支远端记录 | `origin/integrate/three-branches-20261025` = `97b98368`；临时 tag `integ3-candidate-2` = `880880be`（可删） |
+
+**当前轮（2026-10-26「合并后修复与旧代码清理」）的阶段**：工作分支 `fix/post-merge-integration-cleanup-20261025`（Lead 整合）、`fix/pm-a/b/c/d-*`（A/B/C/D 修复）、`verify/pm-e-acceptance`（E 独立验收）。它们**尚未合入 main**；本文件所在提交仍是上一轮的 `1b03541e`。本轮结论以本轮交付文档（`docs/post-merge-integration-cleanup-20261025.md`，Lead 维护）为准，不在本文档追加「已合入 main」的表述。
+
+### 8.2 代码回退（保留历史，不改写已发布分支）
+
+适用场景：已合入 main 的整合结果需要撤销。步骤（人工核对后执行；**不提供一行命令让用户盲执行**）：
+
+1. **确定回退范围与目标树**：本整合含多个合并提交（`b85d5986` 合对话页线、`2497b372` 合互动页线、`505c8d28` 合 R9 线、`5f92239b` 合互动线追加交付，以及后续工作流合并提交）。只回退整合合并提交、还是其中某几条来源线，结论不同；不得只看提交标题就回退。
+2. **目标树核对**：明确希望 main 回到哪棵树（例如操作前 `249a6344` 的树），列出预期差异（`git diff --stat <目标树> <回退后树>` 应为空或只剩写清楚的差异），把清单放进回退 PR。
+3. **实施方式（二选一，都必须保留历史）**：
+   - 回退提交：`git revert -m 1 <整合合并提交>`（单个合并提交）；多个合并提交需按相反顺序逐个 revert，并在每一步跑定向验证；
+   - 回退 PR：在分支上做上述 revert，开 PR 走正常评审与 CI，再合入 main。**禁止** `git push --force` / `--force-with-lease` 把 main 指回旧提交 —— 那会改写已发布历史，让所有克隆与 PR 失效。
+4. **回退后验证**：按受影响面跑定向验证（后端定向 / 前端定向 / 构建），把回退提交与新的 CI 结果写进台账；旧 run 的「Re-run failed jobs」绑的是旧提交，不能当回退结果。
+
+### 8.3 数据库（与代码回退分开处理）
+
+- 本轮迁移把 `SCHEMA_VERSION` 从 51 推进到 70（新增 52…70 的对象与页面线对象）；迁移是**只进不退**的：旧版本二进制读到 70 版库不会自动降级。**代码 revert 不会降库**，不能声称 revert 后数据自动兼容。
+- 升级前备份是回退前提：停止应用后复制 sqlite 主文件 + `-wal` + `-shm`（或整份数据目录），记录文件时间与 schema 版本；备份本身不跑迁移。
+- 回退数据时，若旧备份与升级后新增数据并存，**不得静默用旧备份覆盖**：先把升级后的数据目录整体另存，再恢复备份；恢复后核对 `schema_version` 与关键对象，必要时按迁移文档处理版本差；用户可见的数据丢失要如实告知，不能靠「代码回退」掩盖。
+- 只回退代码而保留 70 版库时，需要确认旧代码对 70 版库的行为（可能启动自检失败或写坏数据）；未经核对不得上线。
+
+### 8.4 本轮不执行回退
+
+本轮（2026-10-26）**没有**执行 main 回退、**没有** force push、**没有**改 main。上面只是更正后的回退说明，供将来需要时按步骤人工执行。
