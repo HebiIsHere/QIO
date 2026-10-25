@@ -341,6 +341,8 @@ export function groupParticipation(state: BoardState, groupId: string): "none" |
 const GROUP_PAD_X = 16;
 const GROUP_PAD_TOP = 58;
 const GROUP_PAD_BOTTOM = 16;
+/** 组内成员固定纵向排列的间距。 */
+const GROUP_MEMBER_GAP = 12;
 
 const DEFAULT_CARD_W = 260;
 const DEFAULT_CARD_H = 170;
@@ -1167,6 +1169,27 @@ export function createGroup(state: BoardState, cardIds: string[], name?: string)
   return normalizeState(work);
 }
 
+/**
+ * 组内固定排列：按 members 顺序从上到下排成一列。
+ * 组框位置沿用当前组框左上角；宽度取最宽成员，高度按成员总高度 + 间距重算。
+ */
+function arrangeGroupMembers(group: BoardGroup, cards: BoardCard[]): void {
+  const members = group.members
+    .map((id) => cards.find((card) => card.id === id && !card.deleted))
+    .filter((card): card is BoardCard => Boolean(card));
+  if (!members.length) return;
+  let y = group.y + GROUP_PAD_TOP;
+  let maxW = 1;
+  for (const card of members) {
+    card.x = group.x + GROUP_PAD_X;
+    card.y = y;
+    maxW = Math.max(maxW, card.w);
+    y += card.h + GROUP_MEMBER_GAP;
+  }
+  group.w = maxW + GROUP_PAD_X * 2;
+  group.h = y - GROUP_MEMBER_GAP - group.y + GROUP_PAD_BOTTOM;
+}
+
 /** 把卡片加入组（会先离开原来的组）。有序组里 index 决定序号；组名不变。 */
 export function joinGroup(state: BoardState, cardId: string, groupId: string, index?: number): BoardState {
   const work = normalizeState(state);
@@ -1186,6 +1209,7 @@ export function joinGroup(state: BoardState, cardId: string, groupId: string, in
   if (at >= 0) target.members.splice(at, 1);
   target.members.splice(clampIndex(index, target.members.length), 0, cardId);
   target.updatedAt = stamp;
+  arrangeGroupMembers(target, work.cards);
   work.updatedAt = stamp;
   return normalizeState(work);
 }
@@ -1200,6 +1224,7 @@ export function removeFromGroup(state: BoardState, cardId: string): BoardState {
     if (at >= 0) {
       group.members.splice(at, 1);
       group.updatedAt = stamp;
+      if (group.members.length) arrangeGroupMembers(group, work.cards);
       changed = true;
     }
   }
@@ -1279,6 +1304,7 @@ export function moveWithinGroup(state: BoardState, groupId: string, cardId: stri
   if (at < 0) return work;
   group.members.splice(at, 1);
   group.members.splice(clampIndex(index, group.members.length), 0, cardId);
+  arrangeGroupMembers(group, work.cards);
   group.updatedAt = nowIso();
   work.updatedAt = group.updatedAt;
   return normalizeState(work);
@@ -1312,6 +1338,7 @@ export function mergeGroups(
   target.defaultName = true;
   target.updatedAt = nowIso();
   source.deleted = true;
+  arrangeGroupMembers(target, work.cards);
   work.updatedAt = target.updatedAt;
   return normalizeState(work);
 }
@@ -1851,7 +1878,7 @@ export function dropCard(
     if (best) {
       const partner = cardById(work, best.cardId);
       // 两张未分组卡片明确重叠 → 自动成组，系统默认名「默认组名」（组框由成员推导，位置只影响显示）
-      work.groups.push({
+      const createdGroup: BoardGroup = {
         id: newId("g"),
         name: nextDefaultGroupName(work.groups.map((item) => item.name)),
         defaultName: true,
@@ -1864,7 +1891,9 @@ export function dropCard(
         deleted: false,
         createdAt: stamp,
         updatedAt: stamp,
-      });
+      };
+      work.groups.push(createdGroup);
+      arrangeGroupMembers(createdGroup, work.cards);
       work.updatedAt = stamp;
     }
   }

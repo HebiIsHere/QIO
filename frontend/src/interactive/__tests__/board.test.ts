@@ -239,7 +239,8 @@ describe("dropCard：放下才完成操作", () => {
     expect(group?.defaultName).toBe(true);
     expect(group?.ordered).toBe(false);
     expect([...(group?.members ?? [])].sort()).toEqual(["a", "b"]);
-    expect(board.cardById(result.state, "a")?.x).toBe(250);
+    // 成组后成员进入组内固定纵向排列：x = 组框左边 + 内边距
+    expect(board.cardById(result.state, "a")?.x).toBe(266);
   });
 
   it("默认名不再编号：已有「组 7」也照样用「默认组名」（反例：旧实现给「组 8」）", () => {

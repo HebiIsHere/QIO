@@ -324,7 +324,8 @@ describe("BoardCanvas 接线", () => {
 
     window.dispatchEvent(pointer("pointerup", 290, 140));
     await wrapper.vm.$nextTick();
-    expect(store.board?.cards.find((card) => card.id === "a")?.x).toBe(200);
+    // 成组后成员进入组内固定排列：x = 组框左边 + 内边距
+    expect(store.board?.cards.find((card) => card.id === "a")?.x).toBe(216);
     expect(store.board?.groups).toHaveLength(1);
     expect(store.board?.groups[0].members.sort()).toEqual(["a", "b"]);
     // 单次松手只产生一次成组改动（这里走的是「加入新组」这条路径，不是两个已有组合并）
