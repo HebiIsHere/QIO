@@ -1,0 +1,1224 @@
+resolve + assert SHA	Set up job	﻿2026-10-25T08:45:46.6601926Z Current runner version: '2.338.0'
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6631212Z ##[group]Runner Image Provisioner
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6632101Z Hosted Compute Agent
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6632778Z Version: 20261021.618
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6633417Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6634179Z Build Date: 2026-10-21T00:45:21Z
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6635007Z Worker ID: {985ba81c-7ada-4ee4-9c33-68d5e6915af4}
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6635735Z Region: eastus
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6636303Z Cloud: Azure
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6636900Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6638460Z ##[group]Operating System
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6639709Z Ubuntu
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6640270Z 24.04.5
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6640837Z LTS
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6641361Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6641968Z ##[group]Runner Image
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6642656Z Image: ubuntu-24.04
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6643270Z Version: 20261012.334.1
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6644854Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6646769Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6647831Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6649080Z ##[group]GITHUB_TOKEN Permissions
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6651429Z Contents: read
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6652096Z Metadata: read
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6652734Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6654981Z Secret source: Actions
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6656038Z Cache mode: write
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.6657137Z Prepare workflow directory
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.7188382Z Prepare all required actions
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.7238347Z Getting action download info
+resolve + assert SHA	Set up job	2026-10-25T08:45:46.9226164Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+resolve + assert SHA	Set up job	2026-10-25T08:45:47.0619211Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+resolve + assert SHA	Set up job	2026-10-25T08:45:47.2717726Z Complete job name: resolve + assert SHA
+resolve + assert SHA	Resolve requested ref/SHA	﻿2026-10-25T08:45:47.3535220Z ##[group]Run set -euo pipefail
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3535993Z ^[[36;1mset -euo pipefail^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3536761Z ^[[36;1m# SHAs must be complete: a short prefix cannot prove which commit ran.^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3537724Z ^[[36;1mif ! printf '%s' "${REQUESTED_SHA}" | grep -Eq '^[0-9a-fA-F]{40}$'; then^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3539182Z ^[[36;1m  echo "::error title=targeted verify input::sha 必须是完整的 40 位十六进制提交 SHA（收到 '${REQUESTED_SHA}'）"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3540106Z ^[[36;1m  exit 1^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3540563Z ^[[36;1mfi^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3541086Z ^[[36;1mecho "sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3541808Z ^[[36;1mecho "ref=${REQUESTED_REF}" >> "$GITHUB_OUTPUT"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3542562Z ^[[36;1mecho "event_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3543267Z ^[[36;1mecho "requested ref : ${REQUESTED_REF}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3543920Z ^[[36;1mecho "requested sha : ${REQUESTED_SHA}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3544563Z ^[[36;1mecho "event sha     : ${GITHUB_SHA}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3545267Z ^[[36;1mecho "dispatch ref  : ${GITHUB_REF}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3825523Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3826927Z env:
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3827564Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3828296Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3829304Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3829990Z   REQUESTED_REF: r9h13/main
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3830768Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.3831631Z ##[endgroup]
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.4029608Z requested ref : r9h13/main
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.4030851Z requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.4031745Z event sha     : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:45:47.4032420Z dispatch ref  : refs/heads/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	﻿2026-10-25T08:45:47.4268317Z ##[group]Run actions/checkout@v5
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4269415Z with:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4269852Z   ref: r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4270582Z   fetch-depth: 0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4271051Z   persist-credentials: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4271574Z   repository: HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4275734Z   token: ***
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4276160Z   ssh-strict: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4276593Z   ssh-user: git
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4277011Z   clean: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4277457Z   sparse-checkout-cone-mode: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4277984Z   fetch-tags: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4278421Z   show-progress: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4279057Z   lfs: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4279480Z   submodules: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4279919Z   set-safe-directory: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4280430Z   allow-unsafe-pr-checkout: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4280931Z env:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4281338Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4281826Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4282387Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.4282906Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5292575Z Syncing repository: HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5294708Z ##[group]Getting Git version info
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5295411Z Working directory is '/home/runner/work/QIO/QIO'
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5296365Z [command]/usr/bin/git version
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5432895Z git version 2.55.0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5457251Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5474771Z Temporarily overriding HOME='/home/runner/work/_temp/54c54cd6-a7a1-4e5b-ad2a-31208715caa4' before making global git config changes
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5481837Z Adding repository directory to the temporary git global config as a safe directory
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5483588Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5548982Z Deleting the contents of '/home/runner/work/QIO/QIO'
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5553458Z ##[group]Initializing the repository
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5557790Z [command]/usr/bin/git init /home/runner/work/QIO/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5675875Z hint: Using 'master' as the name for the initial branch. This default branch name
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5677793Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5679573Z hint: to use in all of your new repositories, which will suppress this warning,
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5681063Z hint: call:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5681672Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5682447Z hint: 	git config --global init.defaultBranch <name>
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5683397Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5684287Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5685741Z hint: 'development'. The just-created branch can be renamed via this command:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5686892Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5687511Z hint: 	git branch -m <name>
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5688232Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5689602Z hint: Disable this message with "git config set advice.defaultBranchName false"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5696032Z Initialized empty Git repository in /home/runner/work/QIO/QIO/.git/
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5709367Z [command]/usr/bin/git remote add origin https://github.com/HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5771177Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5772184Z ##[group]Disabling automatic garbage collection
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5775999Z [command]/usr/bin/git config --local gc.auto 0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5814575Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5815447Z ##[group]Setting up auth
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5826176Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.5871200Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.6296230Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.6339679Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.6615882Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.6670533Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.6946899Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.7002592Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.7004125Z ##[group]Fetching the repository
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:47.7015685Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4439648Z From https://github.com/HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4442031Z  * [new branch]        ci/targeted-verify-entry -> origin/ci/targeted-verify-entry
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4444583Z  * [new branch]        feat/conversation-page-v2 -> origin/feat/conversation-page-v2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4447149Z  * [new branch]        feat/frameless-window-023 -> origin/feat/frameless-window-023
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4449721Z  * [new branch]        feat/interactive-foundation -> origin/feat/interactive-foundation
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4451947Z  * [new branch]        feat/interactive-frontend-layout -> origin/feat/interactive-frontend-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4454441Z  * [new branch]        feat/interactive-image-card-simplification -> origin/feat/interactive-image-card-simplification
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4456090Z  * [new branch]        feat/interactive-intent-preview -> origin/feat/interactive-intent-preview
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4457397Z  * [new branch]        feat/interactive-page-v2 -> origin/feat/interactive-page-v2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4459002Z  * [new branch]        feat/interactive-real-model -> origin/feat/interactive-real-model
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4460954Z  * [new branch]        feat/interactive-resizable-layout -> origin/feat/interactive-resizable-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4462373Z  * [new branch]        feat/qio-refactor-p4 -> origin/feat/qio-refactor-p4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4463702Z  * [new branch]        feat/unified-cards-media-preview-021 -> origin/feat/unified-cards-media-preview-021
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4465230Z  * [new branch]        feat/unified-process-attachments-streaming -> origin/feat/unified-process-attachments-streaming
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4466903Z  * [new branch]        fix/attachment-readiness-stream-boundaries -> origin/fix/attachment-readiness-stream-boundaries
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4468547Z  * [new branch]        fix/attachment-send-cancel-integrity -> origin/fix/attachment-send-cancel-integrity
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4470301Z  * [new branch]        fix/chat-image-delivery-023 -> origin/fix/chat-image-delivery-023
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4471541Z  * [new branch]        fix/global-scroll-dialog-layout -> origin/fix/global-scroll-dialog-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4473091Z  * [new branch]        fix/interactive-attachment-notice-connect-resize -> origin/fix/interactive-attachment-notice-connect-resize
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4474743Z  * [new branch]        fix/interactive-bottom-toolbar-layout -> origin/fix/interactive-bottom-toolbar-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4476178Z  * [new branch]        fix/interactive-card-toolbar-anchor -> origin/fix/interactive-card-toolbar-anchor
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4477526Z  * [new branch]        fix/interactive-closure-followup -> origin/fix/interactive-closure-followup
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4479234Z  * [new branch]        fix/interactive-content-protection-polish -> origin/fix/interactive-content-protection-polish
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4481009Z  * [new branch]        fix/interactive-draft-races-ui-polish -> origin/fix/interactive-draft-races-ui-polish
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4482564Z  * [new branch]        fix/interactive-draft-recovery-completion -> origin/fix/interactive-draft-recovery-completion
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4483970Z  * [new branch]        fix/interactive-final-closure -> origin/fix/interactive-final-closure
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4485755Z  * [new branch]        fix/interactive-markdown-layout-continuity -> origin/fix/interactive-markdown-layout-continuity
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4487650Z  * [new branch]        fix/interactive-materials-drafts-preview -> origin/fix/interactive-materials-drafts-preview
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4489540Z  * [new branch]        fix/interactive-state-recovery-completion -> origin/fix/interactive-state-recovery-completion
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4491066Z  * [new branch]        fix/interactive-ui-refinement -> origin/fix/interactive-ui-refinement
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4492435Z  * [new branch]        fix/main-audit-reliability-8fa8452 -> origin/fix/main-audit-reliability-8fa8452
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4493816Z  * [new branch]        fix/main-reliability-memory-20261009-r2 -> origin/fix/main-reliability-memory-20261009-r2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4495350Z  * [new branch]        fix/main-safety-state-responsiveness-20261009 -> origin/fix/main-safety-state-responsiveness-20261009
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4496943Z  * [new branch]        fix/preparation-cancel-and-spill-recovery -> origin/fix/preparation-cancel-and-spill-recovery
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4498539Z  * [new branch]        fix/process-attachment-audit-consolidation -> origin/fix/process-attachment-audit-consolidation
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4500503Z  * [new branch]        fix/process-attachment-audit-final-boundaries -> origin/fix/process-attachment-audit-final-boundaries
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4502029Z  * [new branch]        fix/process-attachment-audit-round2 -> origin/fix/process-attachment-audit-round2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4503336Z  * [new branch]        fix/process-stream-retry-upload -> origin/fix/process-stream-retry-upload
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4504651Z  * [new branch]        fix/process-upload-final-convergence -> origin/fix/process-upload-final-convergence
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4506223Z  * [new branch]        fix/reliability-followup-closeout-20261010-f01f10 -> origin/fix/reliability-followup-closeout-20261010-f01f10
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4509274Z  * [new branch]        fix/reliability-memory-followup-20261010-a7f3 -> origin/fix/reliability-memory-followup-20261010-a7f3
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4512168Z  * [new branch]        fix/streaming-main-closeout-20261011 -> origin/fix/streaming-main-closeout-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4514484Z  * [new branch]        fix/unified-process-audit -> origin/fix/unified-process-audit
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4515857Z  * [new branch]        integrate/interactive-main-20261011 -> origin/integrate/interactive-main-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4517558Z  * [new branch]        integrate/reliability-interactive-real-model-20261011 -> origin/integrate/reliability-interactive-real-model-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4519954Z  * [new branch]        integrate/streaming-main-20261011 -> origin/integrate/streaming-main-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4521804Z  * [new branch]        main                 -> origin/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4522685Z  * [new branch]        r9/main              -> origin/r9/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4523497Z  * [new branch]        r9f/main             -> origin/r9f/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4524292Z  * [new branch]        r9g/main             -> origin/r9g/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4525077Z  * [new branch]        r9h/main             -> origin/r9h/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4525875Z  * [new branch]        r9h10/main           -> origin/r9h10/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4526674Z  * [new branch]        r9h11/main           -> origin/r9h11/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4527469Z  * [new branch]        r9h12/main           -> origin/r9h12/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4528339Z  * [new branch]        r9h13/main           -> origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4529547Z  * [new branch]        r9h2/main            -> origin/r9h2/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4530366Z  * [new branch]        r9h3/main            -> origin/r9h3/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4531165Z  * [new branch]        r9h4/main            -> origin/r9h4/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4531955Z  * [new branch]        r9h5/main            -> origin/r9h5/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4532739Z  * [new branch]        r9h6/main            -> origin/r9h6/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4533929Z  * [new branch]        r9h7/main            -> origin/r9h7/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4534851Z  * [new branch]        r9h8/main            -> origin/r9h8/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4535627Z  * [new branch]        r9h9/main            -> origin/r9h9/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4536429Z  * [new branch]        release/0.2.4        -> origin/release/0.2.4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4537450Z  * [new branch]        research/memory-retrieval-eval -> origin/research/memory-retrieval-eval
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4538468Z  * [new branch]        wt/acc-b             -> origin/wt/acc-b
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4539447Z  * [new branch]        wt/acc-b2            -> origin/wt/acc-b2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4540257Z  * [new branch]        wt/acc-c             -> origin/wt/acc-c
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4541033Z  * [new branch]        wt/acc-c2            -> origin/wt/acc-c2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4541820Z  * [new branch]        wt/acc-d             -> origin/wt/acc-d
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4542609Z  * [new branch]        wt/acc-doc           -> origin/wt/acc-doc
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4543390Z  * [new branch]        wt/acc-e             -> origin/wt/acc-e
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4544183Z  * [new branch]        wt/acc-e2            -> origin/wt/acc-e2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4544966Z  * [new branch]        wt/acc-f             -> origin/wt/acc-f
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4545738Z  * [new branch]        wt/acc-f2            -> origin/wt/acc-f2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4546627Z  * [new branch]        wt/agent-a-runtime   -> origin/wt/agent-a-runtime
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4547545Z  * [new branch]        wt/agent-e-toolenv   -> origin/wt/agent-e-toolenv
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4548384Z  * [new branch]        wt/fb-a              -> origin/wt/fb-a
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4549306Z  * [new branch]        wt/fb-b              -> origin/wt/fb-b
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4550090Z  * [new branch]        wt/fb-c              -> origin/wt/fb-c
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4550853Z  * [new branch]        wt/fb-d              -> origin/wt/fb-d
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4551888Z  * [new branch]        wt/fb-e              -> origin/wt/fb-e
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4552711Z  * [new branch]        wt/int-a-board       -> origin/wt/int-a-board
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4553585Z  * [new branch]        wt/int-b-persist     -> origin/wt/int-b-persist
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4554627Z  * [new branch]        wt/int-c-approval    -> origin/wt/int-c-approval
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4555613Z  * [new branch]        wt/int-verify        -> origin/wt/int-verify
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4556476Z  * [new branch]        wt/p2-debt           -> origin/wt/p2-debt
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4557446Z  * [new branch]        wt/p2-isolation      -> origin/wt/p2-isolation
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4558343Z  * [new branch]        wt/p2-trace-ui       -> origin/wt/p2-trace-ui
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4559337Z  * [new branch]        wt/p3-a              -> origin/wt/p3-a
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4560505Z  * [new branch]        wt/p3-b              -> origin/wt/p3-b
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4561355Z  * [new branch]        wt/p3-c              -> origin/wt/p3-c
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4562160Z  * [new branch]        wt/p3-d              -> origin/wt/p3-d
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4562944Z  * [new branch]        wt/p3-e              -> origin/wt/p3-e
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4563726Z  * [new branch]        wt/p3-f              -> origin/wt/p3-f
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4564861Z  * [new branch]        wt/ui-a-visual       -> origin/wt/ui-a-visual
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4565948Z  * [new branch]        wt/ui-b-rules        -> origin/wt/ui-b-rules
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4566974Z  * [new branch]        wt/ui-c-drafts       -> origin/wt/ui-c-drafts
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4567852Z  * [new branch]        wt/ui-d-overlay      -> origin/wt/ui-d-overlay
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4568670Z  * [new tag]           r9-final             -> r9-final
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4569799Z  * [new tag]           r9f-final            -> r9f-final
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4570550Z  * [new tag]           v0.1.0               -> v0.1.0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4571277Z  * [new tag]           v0.1.1               -> v0.1.1
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4572849Z  * [new tag]           v0.1.10              -> v0.1.10
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4573691Z  * [new tag]           v0.1.11              -> v0.1.11
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4574622Z  * [new tag]           v0.1.12              -> v0.1.12
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4575358Z  * [new tag]           v0.1.13              -> v0.1.13
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4576094Z  * [new tag]           v0.1.14              -> v0.1.14
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4653131Z  * [new tag]           v0.1.3               -> v0.1.3
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4654762Z  * [new tag]           v0.1.4               -> v0.1.4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4656024Z  * [new tag]           v0.1.5               -> v0.1.5
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4657199Z  * [new tag]           v0.1.6               -> v0.1.6
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4657936Z  * [new tag]           v0.1.7               -> v0.1.7
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4658633Z  * [new tag]           v0.1.8               -> v0.1.8
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4659674Z  * [new tag]           v0.1.9               -> v0.1.9
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4660485Z  * [new tag]           v0.2.0               -> v0.2.0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4661196Z  * [new tag]           v0.2.1               -> v0.2.1
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4661903Z  * [new tag]           v0.2.10              -> v0.2.10
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4662606Z  * [new tag]           v0.2.2               -> v0.2.2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4663316Z  * [new tag]           v0.2.3               -> v0.2.3
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4664006Z  * [new tag]           v0.2.4               -> v0.2.4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4664708Z  * [new tag]           v0.2.5               -> v0.2.5
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4665565Z  * [new tag]           v0.2.6               -> v0.2.6
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4666298Z  * [new tag]           v0.2.7               -> v0.2.7
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4666987Z  * [new tag]           v0.2.8               -> v0.2.8
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4667679Z  * [new tag]           v0.2.9               -> v0.2.9
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4670199Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4671067Z ##[group]Determining the checkout info
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4672043Z [command]/usr/bin/git branch --list --remote origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4672897Z   origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4674298Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4674816Z [command]/usr/bin/git sparse-checkout disable
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4676243Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4677963Z ##[group]Checking out the ref
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:50.4679020Z [command]/usr/bin/git checkout --progress --force -B r9h13/main refs/remotes/origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0485748Z Switched to a new branch 'r9h13/main'
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0490976Z branch 'r9h13/main' set up to track 'origin/r9h13/main'.
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0528277Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0578505Z [command]/usr/bin/git log -1 --format=%H
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0609106Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0621228Z ##[group]Removing auth
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0626201Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0663978Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0923885Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0954726Z http.https://github.com/.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.0964595Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.1004366Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.1248516Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.1293430Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:45:51.1530082Z ##[endgroup]
+resolve + assert SHA	Assert checked-out commit equals requested SHA	﻿2026-10-25T08:45:51.1720212Z ##[group]Run set -euo pipefail
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1721719Z ^[[36;1mset -euo pipefail^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1723050Z ^[[36;1m# ref 是 40 位十六进制时它与 sha 同义，不用再解析；否则把 ref 解析成提交一起核对。^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1724764Z ^[[36;1margs=(--requested "${REQUESTED_SHA}" --label preflight)^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1726686Z ^[[36;1mif printf '%s' "${EXPECTED_REF}" | grep -Eq '^[0-9a-fA-F]{40}$'; then^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1728423Z ^[[36;1m  echo "ref 本身就是完整 SHA，跳过 ref 解析"^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1729879Z ^[[36;1melse^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1731008Z ^[[36;1m  args+=(--expected-ref "${EXPECTED_REF}")^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1732365Z ^[[36;1mfi^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1734153Z ^[[36;1mpython scripts/targeted-verify/verify_sha.py "${args[@]}" --json-out verify-sha-preflight.json^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1803727Z shell: /usr/bin/bash -e {0}
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1804936Z env:
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1805884Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1806995Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1808298Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1810034Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1811569Z   EXPECTED_REF: r9h13/main
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.1812678Z ##[endgroup]
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2330166Z [preflight] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2332728Z [preflight] actual  from : git rev-parse HEAD
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2334889Z [preflight] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2336489Z [preflight] requested ref : r9h13/main
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2338013Z [preflight] ref     resolved: 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2340540Z [preflight] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2342355Z [preflight] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2344160Z [preflight] github event  : workflow_dispatch refs/heads/r9h13/main
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2346421Z [preflight] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:45:51.2348526Z [preflight] 证据已写入 verify-sha-preflight.json
+resolve + assert SHA	Print SHA evidence	﻿2026-10-25T08:45:51.2472872Z ##[group]Run cat verify-sha-preflight.json
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2474252Z ^[[36;1mcat verify-sha-preflight.json^[[0m
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2545833Z shell: /usr/bin/bash -e {0}
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2547191Z env:
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2548089Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2549410Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2550625Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2551658Z ##[endgroup]
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2666010Z {
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2667501Z   "label": "preflight",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2669918Z   "requestedSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2671599Z   "actualSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2673023Z   "actualSource": "git rev-parse HEAD",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2674244Z   "actualFrom": "git-head",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2675335Z   "expectedRef": "r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2676590Z   "refSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2678111Z   "gitHead": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2679986Z   "githubSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2681453Z   "githubRef": "refs/heads/r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2682670Z   "githubEventName": "workflow_dispatch",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2683873Z   "assertGithubSha": false,
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2684915Z   "allowShort": false,
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2685887Z   "passed": true,
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2686808Z   "evidence": [
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2688105Z     "[preflight] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2690590Z     "[preflight] actual  from : git rev-parse HEAD",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2692243Z     "[preflight] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2693811Z     "[preflight] requested ref : r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2695361Z     "[preflight] ref     resolved: 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2697765Z     "[preflight] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2699985Z     "[preflight] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2701844Z     "[preflight] github event  : workflow_dispatch refs/heads/r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2704097Z     "[preflight] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）"
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2705838Z   ]
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:45:51.2706662Z }
+resolve + assert SHA	Upload SHA evidence	﻿2026-10-25T08:45:51.2840920Z ##[group]Run actions/upload-artifact@v4
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2842121Z with:
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2843009Z   name: verify-sha-preflight
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2844102Z   path: verify-sha-preflight.json
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2845218Z   if-no-files-found: error
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2846228Z   retention-days: 14
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2847168Z   compression-level: 6
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2848109Z   overwrite: false
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2849349Z   include-hidden-files: false
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2850365Z env:
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2851228Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2852214Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2853353Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.2854347Z ##[endgroup]
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.4629972Z (node:2381) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.4633039Z (Use `node --trace-deprecation ...` to show where the warning was created)
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.4710086Z With the provided path, there will be 1 file uploaded
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.4750634Z Artifact name is valid!
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.4759964Z Root directory input is valid!
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.6985568Z Beginning upload of artifact content to blob storage
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.7185949Z (node:2381) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.7452589Z Uploaded bytes 592
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.7653293Z Finished uploading artifact content to blob storage!
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.7660468Z SHA256 digest of uploaded artifact zip is 8bbba424af0e6983b7a7d54e7993910aaae12e6eb51820c55160216dc8ce9c3e
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:51.7661380Z Finalizing artifact upload
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:52.1680286Z Artifact verify-sha-preflight.zip successfully finalized. Artifact ID 12593182720
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:52.1681877Z Artifact verify-sha-preflight has been successfully uploaded! Final size is 592 bytes. Artifact ID is 12593182720
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:45:52.1708099Z Artifact download URL: https://github.com/HebiIsHere/QIO/actions/runs/40177774774/artifacts/12593182720
+resolve + assert SHA	Post Run actions/checkout@v5	﻿2026-10-25T08:45:52.1929346Z Post job cleanup.
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.2843481Z [command]/usr/bin/git version
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.2890756Z git version 2.55.0
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.2938303Z Temporarily overriding HOME='/home/runner/work/_temp/e7177de7-7d8d-42e8-b7a0-85b1a5758971' before making global git config changes
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.2940030Z Adding repository directory to the temporary git global config as a safe directory
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.2945019Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.2995342Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.3036739Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.3343085Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.3390584Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.3668353Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:45:52.3711243Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+resolve + assert SHA	Complete job	﻿2026-10-25T08:45:52.4139988Z Evaluate and set job outputs
+resolve + assert SHA	Complete job	2026-10-25T08:45:52.4146782Z Set output 'sha'
+resolve + assert SHA	Complete job	2026-10-25T08:45:52.4148669Z Set output 'ref'
+resolve + assert SHA	Complete job	2026-10-25T08:45:52.4149673Z Set output 'event_sha'
+resolve + assert SHA	Complete job	2026-10-25T08:45:52.4150430Z Cleaning up orphan processes
+resolve + assert SHA	Complete job	2026-10-25T08:45:52.4575578Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+backend (windows-latest)	Set up job	﻿2026-10-25T08:45:57.3811532Z Current runner version: '2.338.0'
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3898470Z ##[group]Runner Image Provisioner
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3899158Z Hosted Compute Agent
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3899592Z Version: 20261021.618
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3900068Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3900614Z Build Date: 2026-10-21T00:45:21Z
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3901126Z Worker ID: {8e917a23-28a8-4b4d-bdc0-bf7d05fe2a11}
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3901677Z Region: eastus
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3902073Z Cloud: Azure
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3902516Z ##[endgroup]
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3903567Z ##[group]Operating System
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3904027Z Microsoft Windows Server 2025
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3904528Z 10.0.26100
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3904916Z Datacenter
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3905301Z ##[endgroup]
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3905709Z ##[group]Runner Image
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3906153Z Image: windows-2025-vs2026
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3906604Z Version: 20261021.278.1
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3907525Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261021.278/images/windows/Windows2025-VS2026-Readme.md
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3909229Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261021.278
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3909989Z ##[endgroup]
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3910841Z ##[group]GITHUB_TOKEN Permissions
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3912878Z Contents: read
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3913385Z Metadata: read
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3913842Z ##[endgroup]
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3915571Z Secret source: Actions
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3916297Z Cache mode: write
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.3916833Z Prepare workflow directory
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.4383849Z Prepare all required actions
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.4424758Z Getting action download info
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.5738282Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+backend (windows-latest)	Set up job	2026-10-25T08:45:57.6977980Z Download action repository 'astral-sh/setup-uv@v7' (SHA:37802adc94f370d6bfd71619e3f0bf239e1f3b78)
+backend (windows-latest)	Set up job	2026-10-25T08:45:58.0495665Z Complete job name: backend (windows-latest)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	﻿2026-10-25T08:45:58.2559380Z ##[group]Run actions/checkout@v5
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2560275Z with:
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2560622Z   ref: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2561056Z   fetch-depth: 0
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2561404Z   persist-credentials: false
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2561776Z   repository: HebiIsHere/QIO
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2564927Z   token: ***
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2565234Z   ssh-strict: true
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2565543Z   ssh-user: git
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2565836Z   clean: true
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2566158Z   sparse-checkout-cone-mode: true
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2566530Z   fetch-tags: false
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2566840Z   show-progress: true
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2567154Z   lfs: false
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2567434Z   submodules: false
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2567745Z   set-safe-directory: true
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2568095Z   allow-unsafe-pr-checkout: false
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2568619Z env:
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2568907Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2569697Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2570180Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2573451Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2576732Z   PYTEST_K: 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.2577017Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.3751784Z Syncing repository: HebiIsHere/QIO
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.3755331Z ##[group]Getting Git version info
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.3755791Z Working directory is 'D:\a\QIO\QIO'
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.4705581Z [command]"C:\Program Files\Git\bin\git.exe" version
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.9542458Z git version 2.56.0.windows.2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.9590095Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.9609913Z Temporarily overriding HOME='D:\a\_temp\64ff019d-7f70-4209-9f32-d161662f5349' before making global git config changes
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.9611723Z Adding repository directory to the temporary git global config as a safe directory
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:58.9620623Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.0302024Z Deleting the contents of 'D:\a\QIO\QIO'
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.0306974Z ##[group]Initializing the repository
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.0314774Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\QIO\QIO
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.1494542Z Initialized empty Git repository in D:/a/QIO/QIO/.git/
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.1537424Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/HebiIsHere/QIO
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.2146101Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.2147124Z ##[group]Disabling automatic garbage collection
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.2153957Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.2459466Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.2460447Z ##[group]Setting up auth
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.2461567Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:45:59.2752142Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:00.7688697Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:00.7987527Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:01.2619346Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:01.2917301Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:01.7239174Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:01.7566560Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:01.7567283Z ##[group]Fetching the repository
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:01.7578265Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1489898Z From https://github.com/HebiIsHere/QIO
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1491422Z  * [new branch]        ci/targeted-verify-entry -> origin/ci/targeted-verify-entry
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1492209Z  * [new branch]        feat/conversation-page-v2 -> origin/feat/conversation-page-v2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1492928Z  * [new branch]        feat/frameless-window-023 -> origin/feat/frameless-window-023
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1493586Z  * [new branch]        feat/interactive-foundation -> origin/feat/interactive-foundation
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1494395Z  * [new branch]        feat/interactive-frontend-layout -> origin/feat/interactive-frontend-layout
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1495963Z  * [new branch]        feat/interactive-image-card-simplification -> origin/feat/interactive-image-card-simplification
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1496680Z  * [new branch]        feat/interactive-intent-preview -> origin/feat/interactive-intent-preview
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1497122Z  * [new branch]        feat/interactive-page-v2 -> origin/feat/interactive-page-v2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1498594Z  * [new branch]        feat/interactive-real-model -> origin/feat/interactive-real-model
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1499069Z  * [new branch]        feat/interactive-resizable-layout -> origin/feat/interactive-resizable-layout
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1499484Z  * [new branch]        feat/qio-refactor-p4 -> origin/feat/qio-refactor-p4
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1499961Z  * [new branch]        feat/unified-cards-media-preview-021 -> origin/feat/unified-cards-media-preview-021
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1500526Z  * [new branch]        feat/unified-process-attachments-streaming -> origin/feat/unified-process-attachments-streaming
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1501162Z  * [new branch]        fix/attachment-readiness-stream-boundaries -> origin/fix/attachment-readiness-stream-boundaries
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1501722Z  * [new branch]        fix/attachment-send-cancel-integrity -> origin/fix/attachment-send-cancel-integrity
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1502174Z  * [new branch]        fix/chat-image-delivery-023 -> origin/fix/chat-image-delivery-023
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1502695Z  * [new branch]        fix/global-scroll-dialog-layout -> origin/fix/global-scroll-dialog-layout
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1503495Z  * [new branch]        fix/interactive-attachment-notice-connect-resize -> origin/fix/interactive-attachment-notice-connect-resize
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1505107Z  * [new branch]        fix/interactive-bottom-toolbar-layout -> origin/fix/interactive-bottom-toolbar-layout
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1506070Z  * [new branch]        fix/interactive-card-toolbar-anchor -> origin/fix/interactive-card-toolbar-anchor
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1506859Z  * [new branch]        fix/interactive-closure-followup -> origin/fix/interactive-closure-followup
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1507702Z  * [new branch]        fix/interactive-content-protection-polish -> origin/fix/interactive-content-protection-polish
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1508683Z  * [new branch]        fix/interactive-draft-races-ui-polish -> origin/fix/interactive-draft-races-ui-polish
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1509678Z  * [new branch]        fix/interactive-draft-recovery-completion -> origin/fix/interactive-draft-recovery-completion
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1511292Z  * [new branch]        fix/interactive-final-closure -> origin/fix/interactive-final-closure
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1512162Z  * [new branch]        fix/interactive-markdown-layout-continuity -> origin/fix/interactive-markdown-layout-continuity
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1513146Z  * [new branch]        fix/interactive-materials-drafts-preview -> origin/fix/interactive-materials-drafts-preview
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1514127Z  * [new branch]        fix/interactive-state-recovery-completion -> origin/fix/interactive-state-recovery-completion
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1514948Z  * [new branch]        fix/interactive-ui-refinement -> origin/fix/interactive-ui-refinement
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1515664Z  * [new branch]        fix/main-audit-reliability-8fa8452 -> origin/fix/main-audit-reliability-8fa8452
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1516796Z  * [new branch]        fix/main-reliability-memory-20261009-r2 -> origin/fix/main-reliability-memory-20261009-r2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1517796Z  * [new branch]        fix/main-safety-state-responsiveness-20261009 -> origin/fix/main-safety-state-responsiveness-20261009
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1518822Z  * [new branch]        fix/preparation-cancel-and-spill-recovery -> origin/fix/preparation-cancel-and-spill-recovery
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1519792Z  * [new branch]        fix/process-attachment-audit-consolidation -> origin/fix/process-attachment-audit-consolidation
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1521066Z  * [new branch]        fix/process-attachment-audit-final-boundaries -> origin/fix/process-attachment-audit-final-boundaries
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1521733Z  * [new branch]        fix/process-attachment-audit-round2 -> origin/fix/process-attachment-audit-round2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1522223Z  * [new branch]        fix/process-stream-retry-upload -> origin/fix/process-stream-retry-upload
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1522720Z  * [new branch]        fix/process-upload-final-convergence -> origin/fix/process-upload-final-convergence
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1523542Z  * [new branch]        fix/reliability-followup-closeout-20261010-f01f10 -> origin/fix/reliability-followup-closeout-20261010-f01f10
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1524210Z  * [new branch]        fix/reliability-memory-followup-20261010-a7f3 -> origin/fix/reliability-memory-followup-20261010-a7f3
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1524778Z  * [new branch]        fix/streaming-main-closeout-20261011 -> origin/fix/streaming-main-closeout-20261011
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1525226Z  * [new branch]        fix/unified-process-audit -> origin/fix/unified-process-audit
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1525668Z  * [new branch]        integrate/interactive-main-20261011 -> origin/integrate/interactive-main-20261011
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1526268Z  * [new branch]        integrate/reliability-interactive-real-model-20261011 -> origin/integrate/reliability-interactive-real-model-20261011
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1526856Z  * [new branch]        integrate/streaming-main-20261011 -> origin/integrate/streaming-main-20261011
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1527217Z  * [new branch]        main                 -> origin/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1527483Z  * [new branch]        r9/main              -> origin/r9/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1527749Z  * [new branch]        r9f/main             -> origin/r9f/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1528011Z  * [new branch]        r9g/main             -> origin/r9g/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1528256Z  * [new branch]        r9h/main             -> origin/r9h/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1528515Z  * [new branch]        r9h10/main           -> origin/r9h10/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1528779Z  * [new branch]        r9h11/main           -> origin/r9h11/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1529035Z  * [new branch]        r9h12/main           -> origin/r9h12/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1529293Z  * [new branch]        r9h13/main           -> origin/r9h13/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1529551Z  * [new branch]        r9h2/main            -> origin/r9h2/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1529807Z  * [new branch]        r9h3/main            -> origin/r9h3/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1530062Z  * [new branch]        r9h4/main            -> origin/r9h4/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1530533Z  * [new branch]        r9h5/main            -> origin/r9h5/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1530880Z  * [new branch]        r9h6/main            -> origin/r9h6/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1531128Z  * [new branch]        r9h7/main            -> origin/r9h7/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1531377Z  * [new branch]        r9h8/main            -> origin/r9h8/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1531633Z  * [new branch]        r9h9/main            -> origin/r9h9/main
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1531903Z  * [new branch]        release/0.2.4        -> origin/release/0.2.4
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1532260Z  * [new branch]        research/memory-retrieval-eval -> origin/research/memory-retrieval-eval
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1532615Z  * [new branch]        wt/acc-b             -> origin/wt/acc-b
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1532867Z  * [new branch]        wt/acc-b2            -> origin/wt/acc-b2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1533299Z  * [new branch]        wt/acc-c             -> origin/wt/acc-c
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1533757Z  * [new branch]        wt/acc-c2            -> origin/wt/acc-c2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1534139Z  * [new branch]        wt/acc-d             -> origin/wt/acc-d
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1534412Z  * [new branch]        wt/acc-doc           -> origin/wt/acc-doc
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1534672Z  * [new branch]        wt/acc-e             -> origin/wt/acc-e
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1534923Z  * [new branch]        wt/acc-e2            -> origin/wt/acc-e2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1535174Z  * [new branch]        wt/acc-f             -> origin/wt/acc-f
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1535426Z  * [new branch]        wt/acc-f2            -> origin/wt/acc-f2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1535712Z  * [new branch]        wt/agent-a-runtime   -> origin/wt/agent-a-runtime
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1536291Z  * [new branch]        wt/agent-e-toolenv   -> origin/wt/agent-e-toolenv
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1536578Z  * [new branch]        wt/fb-a              -> origin/wt/fb-a
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1537082Z  * [new branch]        wt/fb-b              -> origin/wt/fb-b
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1537360Z  * [new branch]        wt/fb-c              -> origin/wt/fb-c
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1537615Z  * [new branch]        wt/fb-d              -> origin/wt/fb-d
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1537858Z  * [new branch]        wt/fb-e              -> origin/wt/fb-e
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1538127Z  * [new branch]        wt/int-a-board       -> origin/wt/int-a-board
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1538431Z  * [new branch]        wt/int-b-persist     -> origin/wt/int-b-persist
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1538738Z  * [new branch]        wt/int-c-approval    -> origin/wt/int-c-approval
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1539194Z  * [new branch]        wt/int-verify        -> origin/wt/int-verify
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1539555Z  * [new branch]        wt/p2-debt           -> origin/wt/p2-debt
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1539963Z  * [new branch]        wt/p2-isolation      -> origin/wt/p2-isolation
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1540254Z  * [new branch]        wt/p2-trace-ui       -> origin/wt/p2-trace-ui
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1540537Z  * [new branch]        wt/p3-a              -> origin/wt/p3-a
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1540791Z  * [new branch]        wt/p3-b              -> origin/wt/p3-b
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1541032Z  * [new branch]        wt/p3-c              -> origin/wt/p3-c
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1541275Z  * [new branch]        wt/p3-d              -> origin/wt/p3-d
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1541517Z  * [new branch]        wt/p3-e              -> origin/wt/p3-e
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1541764Z  * [new branch]        wt/p3-f              -> origin/wt/p3-f
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1542031Z  * [new branch]        wt/ui-a-visual       -> origin/wt/ui-a-visual
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1542312Z  * [new branch]        wt/ui-b-rules        -> origin/wt/ui-b-rules
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1542606Z  * [new branch]        wt/ui-c-drafts       -> origin/wt/ui-c-drafts
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1542901Z  * [new branch]        wt/ui-d-overlay      -> origin/wt/ui-d-overlay
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1543181Z  * [new tag]           r9-final             -> r9-final
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1543421Z  * [new tag]           r9f-final            -> r9f-final
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1543767Z  * [new tag]           v0.1.0               -> v0.1.0
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1543988Z  * [new tag]           v0.1.1               -> v0.1.1
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1544205Z  * [new tag]           v0.1.10              -> v0.1.10
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1544422Z  * [new tag]           v0.1.11              -> v0.1.11
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1544632Z  * [new tag]           v0.1.12              -> v0.1.12
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1544841Z  * [new tag]           v0.1.13              -> v0.1.13
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1545057Z  * [new tag]           v0.1.14              -> v0.1.14
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1545269Z  * [new tag]           v0.1.3               -> v0.1.3
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1545477Z  * [new tag]           v0.1.4               -> v0.1.4
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1545692Z  * [new tag]           v0.1.5               -> v0.1.5
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1545898Z  * [new tag]           v0.1.6               -> v0.1.6
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1546113Z  * [new tag]           v0.1.7               -> v0.1.7
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1546326Z  * [new tag]           v0.1.8               -> v0.1.8
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1546536Z  * [new tag]           v0.1.9               -> v0.1.9
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1546747Z  * [new tag]           v0.2.0               -> v0.2.0
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1546952Z  * [new tag]           v0.2.1               -> v0.2.1
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1547159Z  * [new tag]           v0.2.10              -> v0.2.10
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1547372Z  * [new tag]           v0.2.2               -> v0.2.2
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1547586Z  * [new tag]           v0.2.3               -> v0.2.3
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1547793Z  * [new tag]           v0.2.4               -> v0.2.4
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1548001Z  * [new tag]           v0.2.5               -> v0.2.5
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1548223Z  * [new tag]           v0.2.6               -> v0.2.6
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1548448Z  * [new tag]           v0.2.7               -> v0.2.7
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1549126Z  * [new tag]           v0.2.8               -> v0.2.8
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1549344Z  * [new tag]           v0.2.9               -> v0.2.9
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1550445Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse --verify --quiet 17b9775cd0c538dbadf9dc201380f01af5439e88^{object}
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1886136Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1922275Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1922638Z ##[group]Determining the checkout info
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1922965Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.1931108Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.2366218Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.2670675Z ##[group]Checking out the ref
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:05.2680936Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3174638Z Updating files:  64% (2090/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3254751Z Updating files:  65% (2109/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3339451Z Updating files:  66% (2142/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3421385Z Updating files:  67% (2174/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3492519Z Updating files:  68% (2206/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3567951Z Updating files:  69% (2239/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3644642Z Updating files:  70% (2271/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3723443Z Updating files:  71% (2304/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3789452Z Updating files:  72% (2336/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3865119Z Updating files:  73% (2369/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.3936702Z Updating files:  74% (2401/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4012835Z Updating files:  75% (2433/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4099230Z Updating files:  76% (2466/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4188469Z Updating files:  77% (2498/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4269420Z Updating files:  78% (2531/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4343428Z Updating files:  79% (2563/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4427231Z Updating files:  80% (2596/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4536562Z Updating files:  81% (2628/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4772033Z Updating files:  82% (2661/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.4995482Z Updating files:  83% (2693/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5135731Z Updating files:  84% (2725/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5218499Z Updating files:  85% (2758/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5285040Z Updating files:  86% (2790/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5354700Z Updating files:  87% (2823/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5455108Z Updating files:  88% (2855/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5509547Z Updating files:  89% (2888/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5566132Z Updating files:  90% (2920/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5619390Z Updating files:  91% (2953/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5696083Z Updating files:  92% (2985/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5762887Z Updating files:  93% (3017/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.5824072Z Updating files:  94% (3050/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6059700Z Updating files:  95% (3082/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6274472Z Updating files:  96% (3115/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6427386Z Updating files:  97% (3147/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6500900Z Updating files:  98% (3180/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6584866Z Updating files:  99% (3212/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6585295Z Updating files: 100% (3244/3244)
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6585811Z Updating files: 100% (3244/3244), done.
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6692813Z Note: switching to '17b9775cd0c538dbadf9dc201380f01af5439e88'.
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6693179Z 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6693422Z You are in 'detached HEAD' state. You can look around, make experimental
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6694004Z changes and commit them, and you can discard any commits you make in this
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6767776Z state without impacting any branches by switching back to a branch.
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6768225Z 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6768469Z If you want to create a new branch to retain commits you create, you may
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6769025Z do so (now or later) by using -c with the switch command. Example:
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6769355Z 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6769916Z   git switch -c <new-branch-name>
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6770141Z 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6770266Z Or undo this operation with:
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6770455Z 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6770555Z   git switch -
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6770691Z 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6770957Z Turn off this advice by setting config variable advice.detachedHead to false
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6771355Z 
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6771924Z HEAD is now at 17b9775c docs(r9h13): P88 状态、最终报告、根因定稿与 H13 证据
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.6852929Z ##[endgroup]
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.7377376Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.7655139Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.7695680Z ##[group]Removing auth
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.7703151Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:06.8010810Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:07.2580184Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:07.2854347Z http.https://github.com/.extraheader
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:07.2895545Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:07.3235539Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:07.7956035Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:07.8260770Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+backend (windows-latest)	Bootstrap checkout (letting the local action load)	2026-10-25T08:46:08.2840207Z ##[endgroup]
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	﻿2026-10-25T08:46:08.3197312Z ##[group]Run set -euo pipefail
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3197679Z ^[[36;1mset -euo pipefail^[[0m
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3197934Z ^[[36;1mpython scripts/targeted-verify/verify_sha.py \^[[0m
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3198210Z ^[[36;1m  --requested "${REQUESTED_SHA}" \^[[0m
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3198453Z ^[[36;1m  --actual "$(git rev-parse HEAD)" \^[[0m
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3198681Z ^[[36;1m  --actual-from arg \^[[0m
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3198872Z ^[[36;1m  --label "windows-bootstrap"^[[0m
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3216877Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3217210Z env:
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3217357Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3217533Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3217735Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3219507Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3221359Z   PYTEST_K: 
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3221551Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3221800Z   PYTHONIOENCODING: utf-8
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:08.3221962Z ##[endgroup]
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:09.5906217Z [windows-bootstrap] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:09.5906875Z [windows-bootstrap] actual  from : --actual (arg)
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:09.5907676Z [windows-bootstrap] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:09.5909151Z [windows-bootstrap] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:09.5909769Z [windows-bootstrap] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:09.5910306Z [windows-bootstrap] github event  : workflow_dispatch refs/heads/r9h13/main
+backend (windows-latest)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:46:09.5911129Z [windows-bootstrap] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）
+backend (windows-latest)	Run ./.github/actions/verify-checkout	﻿2026-10-25T08:46:09.6216039Z Prepare all required actions
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6216559Z Getting action download info
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6978143Z ##[group]Run ./.github/actions/verify-checkout
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6978378Z with:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6978519Z   ref: r9h13/main
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6978687Z   sha: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6978894Z   label: windows
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6979037Z   allow-short: false
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6979215Z env:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6979361Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6979535Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6979736Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6981519Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6983331Z   PYTEST_K: 
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.6983467Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7030177Z ##[start-action display=Show requested ref/SHA;id=__self.__run]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7148406Z ##[group]Run echo "requested ref : r9h13/main"
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7148680Z ^[[36;1mecho "requested ref : r9h13/main"^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7149232Z ^[[36;1mecho "requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88"^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7159394Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7159691Z env:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7159840Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7160011Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7160221Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7162003Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7163811Z   PYTEST_K: 
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7163948Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7432802Z requested ref : r9h13/main
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7433199Z requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7470702Z ##[end-action id=__self.__run;outcome=success;conclusion=success;duration_ms=43]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7472931Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__self.__actions_checkout]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7615428Z ##[group]Run actions/checkout@v5
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7615612Z with:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7615747Z   ref: r9h13/main
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7615890Z   fetch-depth: 0
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7616205Z   persist-credentials: false
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7616387Z   repository: HebiIsHere/QIO
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7618360Z   token: ***
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7618515Z   ssh-strict: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7618668Z   ssh-user: git
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7618810Z   clean: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7618962Z   sparse-checkout-cone-mode: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7619159Z   fetch-tags: false
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7619306Z   show-progress: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7619457Z   lfs: false
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7619595Z   submodules: false
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7621567Z   set-safe-directory: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7621761Z   allow-unsafe-pr-checkout: false
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7621942Z env:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7622081Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7622253Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7622478Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7624273Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7626408Z   PYTEST_K: 
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.7626556Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.8509528Z Syncing repository: HebiIsHere/QIO
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.8511056Z ##[group]Getting Git version info
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.8511436Z Working directory is 'D:\a\QIO\QIO'
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.8985339Z [command]"C:\Program Files\Git\bin\git.exe" version
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9274803Z git version 2.56.0.windows.2
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9320261Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9339943Z Temporarily overriding HOME='D:\a\_temp\a511c874-24dd-4df6-b0ce-d5ab6bfde7fc' before making global git config changes
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9340810Z Adding repository directory to the temporary git global config as a safe directory
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9350659Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9695343Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get remote.origin.url
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9943757Z https://github.com/HebiIsHere/QIO
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9984883Z ##[group]Removing previously created refs, to avoid conflicts
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:09.9991851Z [command]"C:\Program Files\Git\bin\git.exe" rev-parse --symbolic-full-name --verify --quiet HEAD
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:10.0251083Z HEAD
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:10.1049386Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:10.1057718Z [command]"C:\Program Files\Git\bin\git.exe" submodule status
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:10.6544399Z ##[group]Cleaning the repository
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:10.6553530Z [command]"C:\Program Files\Git\bin\git.exe" clean -ffdx
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:10.7079282Z [command]"C:\Program Files\Git\bin\git.exe" reset --hard HEAD
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.2675441Z HEAD is now at 17b9775c docs(r9h13): P88 状态、最终报告、根因定稿与 H13 证据
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.2722979Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.2726705Z ##[group]Disabling automatic garbage collection
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.2735165Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.3038899Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.3039243Z ##[group]Setting up auth
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.3050166Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.3355295Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.8162439Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:11.8472544Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:12.3074519Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:12.3387814Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:12.8306065Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:12.8622350Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:12.8623002Z ##[group]Fetching the repository
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:12.8633684Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.0970979Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.0981816Z ##[group]Determining the checkout info
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.0982298Z [command]"C:\Program Files\Git\bin\git.exe" branch --list --remote origin/r9h13/main
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.1365545Z   origin/r9h13/main
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.1398008Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.1406215Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.1778067Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.2077539Z ##[group]Checking out the ref
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.2085351Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B r9h13/main refs/remotes/origin/r9h13/main
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.2564098Z Switched to a new branch 'r9h13/main'
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.2577072Z branch 'r9h13/main' set up to track 'origin/r9h13/main'.
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.2621511Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.2969344Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.3243287Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.3280989Z ##[group]Removing auth
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.3288430Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.3597551Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.8110168Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.8400049Z http.https://github.com/.extraheader
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.8443366Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:13.8754950Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.3285720Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.3612160Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8186867Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8309472Z ##[end-action id=__self.__actions_checkout;outcome=success;conclusion=success;duration_ms=5083]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8315261Z ##[start-action display=Assert the checked-out commit equals the requested SHA;id=__self.__run_2]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8423322Z ##[group]Run set -euo pipefail
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8423568Z ^[[36;1mset -euo pipefail^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8424020Z ^[[36;1m# --actual 故意不传：实际提交只认 git rev-parse HEAD。GITHUB_SHA 是事件提交^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8424364Z ^[[36;1m# （PR 上是 merge commit），拿它当「实际 checkout 的 SHA」会假绿。^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8424685Z ^[[36;1m# 实际提交只认 git rev-parse HEAD（GITHUB_SHA 是事件提交，PR 上是 merge commit，^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8424974Z ^[[36;1m# 拿它当「实际 checkout 的 SHA」会假绿）。显式传值，连来源也写进证据。^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8425197Z ^[[36;1mactual="$(git rev-parse HEAD)"^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8425555Z ^[[36;1margs=(--requested "${REQUESTED_SHA}" --actual "${actual}" --actual-from arg --label "${SHA_LABEL}")^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8426072Z ^[[36;1mif [ -n "${EXPECTED_REF}" ]; then^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8426303Z ^[[36;1m  args+=(--expected-ref "${EXPECTED_REF}")^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8426510Z ^[[36;1mfi^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8426670Z ^[[36;1mif [ "${ALLOW_SHORT}" = "true" ]; then^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8426879Z ^[[36;1m  args+=(--allow-short)^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8427049Z ^[[36;1mfi^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8427254Z ^[[36;1mpython scripts/targeted-verify/verify_sha.py "${args[@]}"^[[0m
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8436803Z shell: C:\Program Files\Git\bin\bash.EXE --noprofile --norc -e -o pipefail {0}
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8437120Z env:
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8437265Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8437558Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8437840Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8439619Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8441436Z   PYTEST_K: 
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8441625Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8441854Z   EXPECTED_REF: 
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8441998Z   ALLOW_SHORT: false
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8442150Z   SHA_LABEL: windows
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8442468Z   PYTHONIOENCODING: utf-8
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.8442640Z ##[endgroup]
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9818712Z [windows] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9819147Z [windows] actual  from : --actual (arg)
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9819421Z [windows] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9820057Z [windows] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9820380Z [windows] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9820690Z [windows] github event  : workflow_dispatch refs/heads/r9h13/main
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9821207Z [windows] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）
+backend (windows-latest)	Run ./.github/actions/verify-checkout	2026-10-25T08:46:14.9932350Z ##[end-action id=__self.__run_2;outcome=success;conclusion=success;duration_ms=161]
+backend (windows-latest)	Install uv	﻿2026-10-25T08:46:15.0119164Z ##[group]Run astral-sh/setup-uv@v7
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0119437Z with:
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0119588Z   python-version: 3.12
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0119753Z   enable-cache: true
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0119927Z   cache-dependency-glob: backend/uv.lock
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0120141Z   activate-environment: false
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0120328Z   working-directory: D:\a\QIO\QIO
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0122926Z   github-token: ***
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0123088Z   restore-cache: true
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0123241Z   save-cache: true
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0123386Z   prune-cache: true
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0123531Z   cache-python: false
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0123690Z   ignore-nothing-to-cache: false
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0123882Z   ignore-empty-workdir: false
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0124262Z   add-problem-matchers: true
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0124436Z   resolution-strategy: highest
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0124611Z env:
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0124745Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0124910Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0125146Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0126934Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0128719Z   PYTEST_K: 
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.0128855Z ##[endgroup]
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.1618310Z Trying to find version for uv in: D:\a\QIO\QIO\uv.toml
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.1618865Z Could not find file: D:\a\QIO\QIO\uv.toml
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.1619305Z Trying to find version for uv in: D:\a\QIO\QIO\pyproject.toml
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.1619782Z Could not find file: D:\a\QIO\QIO\pyproject.toml
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.1620328Z Could not determine uv version from uv.toml or pyproject.toml. Falling back to latest.
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.1622503Z Fetching version data from https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson ...
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.2194256Z Downloading uv from "https://releases.astral.sh/github/uv/releases/download/0.13.5/uv-x86_64-pc-windows-msvc.zip" ...
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.5752919Z [command]C:\Windows\system32\tar.exe x -C D:\a\_temp\a91e1bbe-73f7-4a48-8be7-81f0fb725614 -f D:\a\_temp\44c4c605-7814-44ef-927d-768be498c29f
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7047926Z Set UV_TOOL_BIN_DIR to D:\a\_temp\uv-tool-bin-dir
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7051364Z Added D:\a\_temp\uv-tool-bin-dir to the path
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7059406Z Added C:\hostedtoolcache\windows\uv\0.13.5\x86_64 to the path
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7061541Z Set UV_TOOL_DIR to D:\a\_temp\uv-tool-dir
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7063707Z Set UV_PYTHON_INSTALL_DIR to D:\a\_temp\uv-python-dir
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7065915Z Added D:\a\_temp\uv-python-dir to the path
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7068438Z Set UV_PYTHON to 3.12
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7087922Z Set UV_CACHE_DIR to D:\a\_temp\setup-uv-cache
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7088200Z Successfully installed uv version 0.13.5
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7088496Z Searching files using cache dependency glob: D:\a\QIO\QIO\backend\uv.lock
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7112958Z D:\a\QIO\QIO\backend\uv.lock
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7133370Z Found 1 files to hash.
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.7140112Z Trying to restore cache from GitHub Actions cache with key: setup-uv-2-x86_64-pc-windows-msvc-windows-2025-3.12-pruned-d01dbfa6fc0ff173d773ff16078cfaabb3b022eba58880a3a84e082ba4c6bfe2
+backend (windows-latest)	Install uv	2026-10-25T08:46:15.9911426Z Cache hit for: setup-uv-2-x86_64-pc-windows-msvc-windows-2025-3.12-pruned-d01dbfa6fc0ff173d773ff16078cfaabb3b022eba58880a3a84e082ba4c6bfe2
+backend (windows-latest)	Install uv	2026-10-25T08:46:16.0580705Z Received 172445 of 172445 (100.0%), 4.7 MBs/sec
+backend (windows-latest)	Install uv	2026-10-25T08:46:16.0581912Z Cache Size: ~0 MB (172445 B)
+backend (windows-latest)	Install uv	2026-10-25T08:46:16.0600693Z [command]"C:\Program Files\Git\usr\bin\tar.exe" -xf D:/a/_temp/943736c7-d83b-44e3-8371-040d38c2fe40/cache.tzst -P -C D:/a/QIO/QIO --force-local --use-compress-program "zstd -d"
+backend (windows-latest)	Install uv	2026-10-25T08:46:16.2123764Z Cache restored successfully
+backend (windows-latest)	Install uv	2026-10-25T08:46:16.2131590Z cache restored from GitHub Actions cache with key: setup-uv-2-x86_64-pc-windows-msvc-windows-2025-3.12-pruned-d01dbfa6fc0ff173d773ff16078cfaabb3b022eba58880a3a84e082ba4c6bfe2
+backend (windows-latest)	Sync dependencies from lock	﻿2026-10-25T08:46:16.3063562Z ##[group]Run uv sync --frozen --extra dev
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3064042Z ^[[36;1muv sync --frozen --extra dev^[[0m
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3484506Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3484988Z env:
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3485153Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3485335Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3485541Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3487343Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3489236Z   PYTEST_K: 
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3489408Z   UV_TOOL_BIN_DIR: D:\a\_temp\uv-tool-bin-dir
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3489637Z   UV_TOOL_DIR: D:\a\_temp\uv-tool-dir
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3489861Z   UV_PYTHON_INSTALL_DIR: D:\a\_temp\uv-python-dir
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3490075Z   UV_PYTHON: 3.12
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3490233Z   UV_CACHE_DIR: D:\a\_temp\setup-uv-cache
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.3490425Z ##[endgroup]
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.8138133Z Using CPython 3.12.10 interpreter at: C:\hostedtoolcache\windows\Python\3.12.10\x64\python3.exe
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.8138868Z Creating virtual environment at: .venv
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.8509940Z    Building qio @ file:///D:/a/QIO/QIO/backend
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.9549045Z Downloading pygments (1.2MiB)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.9569444Z Downloading openai (1.9MiB)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.9577132Z Downloading onnxruntime (13.6MiB)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.9588603Z Downloading hf-xet (3.8MiB)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.9593985Z Downloading tokenizers (2.7MiB)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.9644579Z Downloading numpy (12.0MiB)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:16.9661402Z Downloading pydantic-core (1.9MiB)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:17.4488658Z  Downloaded tokenizers
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:17.4551068Z  Downloaded hf-xet
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:17.4565514Z  Downloaded pygments
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:17.4624811Z  Downloaded pydantic-core
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:17.6339467Z  Downloaded onnxruntime
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:17.6817179Z  Downloaded numpy
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:17.7499855Z  Downloaded openai
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:19.6910091Z       Built qio @ file:///D:/a/QIO/QIO/backend
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:19.6935933Z Prepared 59 packages in 2.85s
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0285415Z Installed 59 packages in 334ms
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0287248Z  + annotated-doc==0.0.5
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0287820Z  + annotated-types==0.8.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0289150Z  + anyio==4.15.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0290071Z  + beautifulsoup4==4.15.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0291180Z  + certifi==2026.7.22
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0292288Z  + charset-normalizer==3.5.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0293273Z  + click==8.5.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0294380Z  + colorama==0.4.6
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0295452Z  + fastapi==0.141.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0296429Z  + filelock==3.32.6
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0297756Z  + flatbuffers==25.12.19
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0298925Z  + fsspec==2026.7.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0313081Z  + h11==0.16.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0313724Z  + hf-xet==1.6.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0314101Z  + httpcore==1.0.9
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0314483Z  + httpcore2==2.12.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0314818Z  + httptools==0.8.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0315148Z  + httpx==0.28.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0315490Z  + httpx2==2.12.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0315831Z  + huggingface-hub==1.31.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0316203Z  + idna==3.19
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0316511Z  + iniconfig==2.3.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0317038Z  + jaraco-classes==3.4.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0317422Z  + jaraco-context==6.1.2
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0317792Z  + jaraco-functools==4.6.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0320313Z  + jiter==0.16.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0320550Z  + keyring==25.7.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0320791Z  + more-itertools==11.1.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0321302Z  + numpy==2.5.3
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0321545Z  + onnxruntime==1.30.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0321809Z  + openai==3.13.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0322054Z  + packaging==26.3
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0322296Z  + pluggy==1.6.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0322547Z  + protobuf==7.36.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0322792Z  + pydantic==2.13.5
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0323048Z  + pydantic-core==2.46.5
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0323318Z  + pygments==2.21.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0323567Z  + pypdf==6.20.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0323799Z  + pytest==9.1.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0324047Z  + pytest-asyncio==1.4.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0324327Z  + python-dotenv==1.2.3
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0324600Z  + pywin32-ctypes==0.2.3
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0324885Z  + pyyaml==6.0.3
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0325173Z  + qio==0.2.10 (from file:///D:/a/QIO/QIO/backend)
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0325543Z  + regex==2026.9.10
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0325786Z  + requests==2.34.2
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0326043Z  + sniffio==1.3.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0326638Z  + soupsieve==2.9.2
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0327896Z  + starlette==1.6.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0328474Z  + tiktoken==0.14.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0329897Z  + tokenizers==0.23.2
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0330138Z  + tqdm==4.70.1
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0330498Z  + truststore==0.10.4
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0331878Z  + typing-extensions==4.16.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0332869Z  + typing-inspection==0.4.4
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0333940Z  + urllib3==2.7.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0334882Z  + uvicorn==0.52.4
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0335974Z  + watchfiles==1.2.0
+backend (windows-latest)	Sync dependencies from lock	2026-10-25T08:46:20.0336855Z  + websockets==17.1
+backend (windows-latest)	Real worker smoke (source)	﻿2026-10-25T08:46:20.2036706Z ##[group]Run uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2037348Z ^[[36;1muv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py^[[0m
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2093493Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2093790Z env:
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2093965Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2094145Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2094367Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2096175Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2098052Z   PYTEST_K: 
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2098229Z   UV_TOOL_BIN_DIR: D:\a\_temp\uv-tool-bin-dir
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2098481Z   UV_TOOL_DIR: D:\a\_temp\uv-tool-dir
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2098705Z   UV_PYTHON_INSTALL_DIR: D:\a\_temp\uv-python-dir
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2098926Z   UV_PYTHON: 3.12
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2099095Z   UV_CACHE_DIR: D:\a\_temp\setup-uv-cache
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.2099295Z ##[endgroup]
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.7143772Z [RUN ] 源码 worker：D:\a\QIO\QIO\backend\.venv\Scripts\python.exe D:\a\QIO\QIO\backend\src\agent\tool_worker.py
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.7144327Z [PASS] 单文件代码 — 单文件代码：一行 JSON，值正确
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.7144604Z [PASS] 多文件项目 — 多文件项目 + 包内相对 import：值正确
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.7144883Z [PASS] 坏 worker 被拒 — 异常退出（exit 17）没有结果输出
+backend (windows-latest)	Real worker smoke (source)	2026-10-25T08:46:20.7145192Z [DONE] 源码 worker：3/3 通过
+backend (windows-latest)	Targeted tests (not requires_docker)	﻿2026-10-25T08:46:20.8174710Z ##[group]Run $parts = $env:PYTEST_BASE_ARGS
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8175074Z ^[[36;1m$parts = $env:PYTEST_BASE_ARGS^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8175389Z ^[[36;1mif ($env:PYTEST_NODE_IDS) { $parts = "$parts $env:PYTEST_NODE_IDS" }^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8175748Z ^[[36;1mif ($env:PYTEST_K) { $parts = "$parts -k '$env:PYTEST_K'" }^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8176279Z ^[[36;1mif (-not $env:PYTEST_NODE_IDS -and -not $env:PYTEST_K) {^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8176737Z ^[[36;1m  Write-Output "::error title=targeted verify windows::没有给 pytest_node_ids 或 pytest_k，拒绝跑整套后端测试（额度红线：只跑失败项）。"^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8177140Z ^[[36;1m  exit 1^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8177306Z ^[[36;1m}^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8177476Z ^[[36;1mWrite-Output "pytest $parts"^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8177797Z ^[[36;1mInvoke-Expression "uv run --frozen pytest $parts -m 'not requires_docker'"^[[0m
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8234827Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8235110Z env:
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8235282Z   PYTHONHASHSEED: 0
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8235507Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8235713Z   VERIFY_SHA_SELF_TEST: true
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8237537Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8239380Z   PYTEST_K: 
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8239558Z   UV_TOOL_BIN_DIR: D:\a\_temp\uv-tool-bin-dir
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8239787Z   UV_TOOL_DIR: D:\a\_temp\uv-tool-dir
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8240017Z   UV_PYTHON_INSTALL_DIR: D:\a\_temp\uv-python-dir
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8240232Z   UV_PYTHON: 3.12
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8240401Z   UV_CACHE_DIR: D:\a\_temp\setup-uv-cache
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8240626Z   PYTEST_ADDOPTS: --junitxml=pytest-results.xml
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8240850Z   PYTHONIOENCODING: utf-8
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:20.8241017Z ##[endgroup]
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:46:21.0902764Z pytest -q --durations=15 tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:47:12.5498632Z ........................................................................ [ 17%]
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:47:12.8357453Z ........................................................................ [ 34%]
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:47:13.0464765Z ........................................................................ [ 52%]
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:47:41.9042089Z ........................................................................ [ 69%]
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:11.4863926Z ........................................................................ [ 86%]
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3417534Z .......................................................                  [100%]
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3418081Z ============================ slowest 15 durations =============================
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3418645Z 2.27s setup    tests/test_r9h13_a_requirements.py::test_a3_same_name_limits_on_different_objects_both_enforced
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3422659Z 1.56s setup    tests/test_r9h13_a_requirements.py::test_a1_plain_amend_keeps_inherited_unresolved_limit
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3423556Z 1.31s setup    tests/test_r9h13_a_requirements.py::test_a2_missing_historical_identity_not_claimed_verified
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3424747Z 1.17s call     tests/test_r9h13_c_execution.py::test_d3_incomplete_recursive_impact_not_executed_as_complete
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3425634Z 1.07s call     tests/test_r9h12_binding_recovery.py::test_p2_unverifiable_candidate_zero_write_and_lifecycle
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3426421Z 1.04s setup    tests/test_r9h2_chain_recovery.py::test_non_active_current_is_incomplete
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3427236Z 0.99s setup    tests/test_r9h13_a_requirements.py::test_a1_indirect_rewrites_do_not_rebind_inherited_limits
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3428009Z 0.96s setup    tests/test_r9h12_regressions.py::test_rule_incomplete_binding_not_allow
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3428748Z 0.94s setup    tests/test_r9h2_parse_state.py::test_restart_and_recheck_preserve_unresolved_state
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3429560Z 0.91s setup    tests/test_r9h11_cross_operation.py::test_engine_native_unbound_blocks_delete_and_keeps_file
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3430525Z 0.91s setup    tests/test_r9h2_real_flow.py::test_parse_failure_unresolved_uses_specific_confirmation_not_independent_review
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3431463Z 0.90s setup    tests/test_r9h12_cross_operation.py::test_p2_recovery_keeps_unverified_saved_candidate_unbound
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3432384Z 0.80s call     tests/test_r9h11_binding_recovery.py::test_recovery_failure_keeps_original_json_state_and_source
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3433230Z 0.75s setup    tests/test_r9h13_c_execution.py::test_d3_recursive_delete_hits_prohibited_child
+backend (windows-latest)	Targeted tests (not requires_docker)	2026-10-25T08:48:41.3433967Z 0.74s setup    tests/test_r9h2_chain_recovery.py::test_unrelated_requirement_not_in_chain
+backend (windows-latest)	Post Install uv	﻿2026-10-25T08:48:43.0483607Z Post job cleanup.
+backend (windows-latest)	Post Install uv	2026-10-25T08:48:43.1644778Z UV_CACHE_DIR is already set to D:\a\_temp\setup-uv-cache
+backend (windows-latest)	Post Install uv	2026-10-25T08:48:43.1647473Z UV_PYTHON_INSTALL_DIR is already set to D:\a\_temp\uv-python-dir
+backend (windows-latest)	Post Install uv	2026-10-25T08:48:43.1649879Z Cache hit occurred on key setup-uv-2-x86_64-pc-windows-msvc-windows-2025-3.12-pruned-d01dbfa6fc0ff173d773ff16078cfaabb3b022eba58880a3a84e082ba4c6bfe2, not saving cache.
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	﻿2026-10-25T08:48:43.2472208Z Post job cleanup.
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.2580266Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__78f72bc2-69c8-432f-b229-a48507854d6c.__actions_checkout]
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.2732650Z Post job cleanup.
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.4352651Z [command]"C:\Program Files\Git\bin\git.exe" version
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.4684071Z git version 2.56.0.windows.2
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.4751581Z Temporarily overriding HOME='D:\a\_temp\3d19a74b-1be6-4e3b-ba7c-8ac9f05acc52' before making global git config changes
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.4752872Z Adding repository directory to the temporary git global config as a safe directory
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.4761858Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.5173398Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:43.5615229Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:44.0374417Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:44.0688539Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:44.5383396Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:44.5726691Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+backend (windows-latest)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:48:45.0834948Z ##[end-action id=__78f72bc2-69c8-432f-b229-a48507854d6c.__actions_checkout;outcome=success;conclusion=success;duration_ms=1825]
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	﻿2026-10-25T08:48:45.0988230Z Post job cleanup.
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.2519154Z [command]"C:\Program Files\Git\bin\git.exe" version
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.2812132Z git version 2.56.0.windows.2
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.2870205Z Temporarily overriding HOME='D:\a\_temp\d6366b3d-dbad-4eb9-9e28-58a42c958408' before making global git config changes
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.2871172Z Adding repository directory to the temporary git global config as a safe directory
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.2879392Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\QIO\QIO
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.3241682Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.3558558Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.8247107Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:45.8544850Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:46.3352946Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (windows-latest)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:48:46.3646665Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+backend (windows-latest)	Complete job	﻿2026-10-25T08:48:46.8223087Z Cleaning up orphan processes
+summary (ran vs skipped)	Set up job	﻿2026-10-25T08:48:51.3690658Z Current runner version: '2.338.0'
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3709853Z ##[group]Runner Image Provisioner
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3710670Z Hosted Compute Agent
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3711049Z Version: 20261021.618
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3711476Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3711983Z Build Date: 2026-10-21T00:45:21Z
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3712408Z Worker ID: {972ac1c3-40c5-4870-91cd-d7871b4c71e2}
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3712886Z Region: centralus
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3713243Z Cloud: Azure
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3713629Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3714461Z ##[group]Operating System
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3714847Z Ubuntu
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3715219Z 24.04.5
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3715544Z LTS
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3715863Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3716297Z ##[group]Runner Image
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3716683Z Image: ubuntu-24.04
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3717066Z Version: 20261012.334.1
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3717775Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3718896Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3719485Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3720227Z ##[group]GITHUB_TOKEN Permissions
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3721529Z Contents: read
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3722010Z Metadata: read
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3722358Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3723689Z Secret source: Actions
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3724622Z Cache mode: write
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.3725084Z Prepare workflow directory
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.4057890Z Prepare all required actions
+summary (ran vs skipped)	Set up job	2026-10-25T08:48:51.4098609Z Complete job name: summary (ran vs skipped)
+summary (ran vs skipped)	Report what ran and what was skipped	﻿2026-10-25T08:48:51.4713974Z ##[group]Run python - <<'PY'
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4714579Z ^[[36;1mpython - <<'PY'^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4715015Z ^[[36;1mimport json^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4715448Z ^[[36;1mimport os^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4715871Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4716241Z ^[[36;1mneeds = json.loads(os.environ["NEEDS"])^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4716813Z ^[[36;1mchecks = {k: v for k, v in needs.items() if k != "verify-sha"}^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4717638Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4717979Z ^[[36;1mdef state(entry):^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4718464Z ^[[36;1m    result = entry.get("result")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4719142Z ^[[36;1m    # 条件不成立而没跑的 job，result 就是 skipped —— 必须如实打印成 SKIPPED。^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4719823Z ^[[36;1m    return "SKIPPED" if result == "skipped" else str(result or "unknown").upper()^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4720539Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4720978Z ^[[36;1mlines = [state(checks[name]) + "  " + name for name in sorted(checks)]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4721795Z ^[[36;1mran = [n for n, e in checks.items() if e.get("result") not in ("skipped", None)]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4722509Z ^[[36;1mfailed = [n for n, e in checks.items() if e.get("result") == "failure"]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4723182Z ^[[36;1mcancelled = [n for n, e in checks.items() if e.get("result") == "cancelled"]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4723731Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4724409Z ^[[36;1mprint("targeted verify summary: ref=" + str(os.environ.get("REQUESTED_REF")) + " sha=" + str(os.environ.get("REQUESTED_SHA")))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4725181Z ^[[36;1mprint("targets=" + str(os.environ.get("TARGETS")))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4725890Z ^[[36;1mprint("filters: pytest_node_ids=" + repr(os.environ.get("PYTEST_NODE_IDS")) +^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4726526Z ^[[36;1m      " pytest_k=" + repr(os.environ.get("PYTEST_K")) +^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4727064Z ^[[36;1m      " vitest_files=" + repr(os.environ.get("VITEST_FILES")) +^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4727688Z ^[[36;1m      " vitest_name=" + repr(os.environ.get("VITEST_NAME")))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4728203Z ^[[36;1mprint("=== ran vs skipped ===")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4728642Z ^[[36;1mfor line in lines:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4729048Z ^[[36;1m    print("  " + line)^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4729595Z ^[[36;1mprint("ran=" + str(len(ran)) + " failed=" + str(len(failed)) + " cancelled=" + str(len(cancelled)))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4730753Z ^[[36;1mprint("NOTE: SKIPPED checks are NOT passed checks - they were not executed at all.")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4731321Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4731665Z ^[[36;1mif not ran:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4732202Z ^[[36;1m    raise SystemExit("::error title=targeted verify::no runnable checks: 这次派发没有跑任何检查项，不得当作通过")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4732831Z ^[[36;1mif failed:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4733420Z ^[[36;1m    raise SystemExit("::error title=targeted verify::failed checks: " + ", ".join(sorted(failed)))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4734040Z ^[[36;1mif cancelled:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4734644Z ^[[36;1m    raise SystemExit("::error title=targeted verify::cancelled checks: " + ", ".join(sorted(cancelled)))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.4735262Z ^[[36;1mPY^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5502875Z shell: /usr/bin/bash -e {0}
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5503972Z env:
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5504489Z   PYTHONHASHSEED: 0
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5505121Z   PYTEST_BASE_ARGS: -q --durations=15
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5505727Z   VERIFY_SHA_SELF_TEST: true
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5508731Z   NEEDS: {
+summary (ran vs skipped)	Report what ran and what was skipped	  "verify-sha": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "success",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {
+summary (ran vs skipped)	Report what ran and what was skipped	      "event_sha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+summary (ran vs skipped)	Report what ran and what was skipped	      "sha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+summary (ran vs skipped)	Report what ran and what was skipped	      "ref": "r9h13/main"
+summary (ran vs skipped)	Report what ran and what was skipped	    }
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "docs": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "backend": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "windows": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "success",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "frontend": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "rust": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "rust-windows": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "frozen-worker": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  }
+summary (ran vs skipped)	Report what ran and what was skipped	}
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5512601Z   TARGETS: windows
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5516603Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5520987Z   PYTEST_K: 
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5521521Z   VITEST_FILES: 
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5522057Z   VITEST_NAME: 
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5522632Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5523349Z   REQUESTED_REF: r9h13/main
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5523955Z ##[endgroup]
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5912212Z targeted verify summary: ref=r9h13/main sha=17b9775cd0c538dbadf9dc201380f01af5439e88
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5913086Z targets=windows
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5917283Z filters: pytest_node_ids='tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py' pytest_k='' vitest_files='' vitest_name=''
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5921877Z === ran vs skipped ===
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5922335Z   SKIPPED  backend
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5923417Z   SKIPPED  docs
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5923813Z   SKIPPED  frontend
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5924234Z   SKIPPED  frozen-worker
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5924658Z   SKIPPED  rust
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5925314Z   SKIPPED  rust-windows
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5925726Z   SUCCESS  windows
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5926132Z ran=1 failed=0 cancelled=0
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:48:51.5926771Z NOTE: SKIPPED checks are NOT passed checks - they were not executed at all.
+summary (ran vs skipped)	Complete job	﻿2026-10-25T08:48:51.6073302Z Cleaning up orphan processes
