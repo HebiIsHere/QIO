@@ -174,13 +174,18 @@
   定位证据：同一 SHA 的 `backend (py3.11)` 整套通过；`targeted-verify` 单跑该用例 py3.11 success（run 40200984283）、py3.12 failure（run 40200822357）；把同一命令打到**冻结基线 r9h13/main 6f56d815** 的 py3.12 也是 failure（run 40201030638）→ **基线既有失败，非本整合引入**。
   根因（经代码与环境核对）：hostedtoolcache 的 py3.12 解释器被复制到临时目录后仍能运行，于是真实行为暴露——名称限制绑定的是保存时对象 A 的身份，PATH 改到另一目录后同名 `runner` 解析到**另一个对象 B**（身份不同），当前实现放行 B；py3.11 与 Windows 上复制出来的解释器跑不起来（`ok=False`），旧断言被“假绿”满足。
 - 处置与复验：（回填 D 的修复 + py3.11/py3.12 双定向复验）
-- 说明：本轮完整 CI 轮次只有这一次；未使用 `Re-run failed jobs` 冒充新提交通过，也未降低任何门禁。
+- 补充（第三条失败的处置）：上条 py3.12 用例经核对是**旧期望过期**：`object_state._name_branch` 的最终契约（R9-H13 §3.B3，代码注释与 H13 报告 B1-B3「对象判定过严纠正」一致）明确「同名入口解析到**不同的真实对象**时按当前模式继续」，而旧用例断言「同名即拒绝」，且在 py3.11/Windows 上因为**副本跑不起来**（Python 解释器被复制到别的目录）而假绿。
+  处置（只改测试，不改产品实现）：被测程序改为一定可运行的系统 shell 副本（Windows `cmd.exe` / POSIX `/bin/sh`）并用 marker 证明真的执行；断言改为身份语义——`binding.identity/path` 必须等于 A 的真实身份、按绝对路径跑 A 一律被拒（重启后仍被拒）、按名字落到 B 时允许且必须证明执行的是 B、绑定不得被改写成 B。
+  复验：候选 `880880be` 上 `targeted-verify` 双版本单跑 `tests/test_r9h9_regressions.py` —— **py3.12 success（run 40201799979）+ py3.11 success（run 40201811835）**；本地该文件 8 项通过。不再有「假绿」，也不再与契约冲突。
+- 说明：本轮完整 CI 轮次只有这一次（9/10 job 绿 + 上述单条基线失败）；未使用 `Re-run failed jobs` 冒充新提交通过，也未降低任何门禁。
 
 （回填：运行号、SHA、逐 job 结论、失败与定向复验）
 
 ### 6.5 最终候选状态
 
-- 最终候选 SHA：`c56b703350c224c484dd661be8fe3f993b1f8e42`
+- 完整 CI 验证的代码候选：`97b983682def71cbe5bb1d45bb41f3560f7504ed`（run 40196935297，9/10 job 绿）。
+- 失败修复后的定向验证候选：`880880be81da439ce9e7f3573ecaa91e19dc1b1e`（py3.12 + py3.11 双定向 success，run 40201799979 / 40201811835）。
+- **最终提交（本轮 main 指向）**：见文末「交付状态」一节；它与 `880880be` 的差异仅为本说明文档的补充。
 - 三个冻结来源 + 追加交付均为其祖先（`git merge-base --is-ancestor` 实测）
 - 工作树干净、全树无冲突标记；`backend` 子树在 854d9c39→c56b7033 之间未变（`git rev-parse <sha>:backend` 相同）
 ## 7. 已知限制与未验证事项
@@ -209,3 +214,16 @@
   本轮按契约修订期望（**收紧而非放宽**：新增 0/1/2 次确认全部被拒的负向断言、新增 `operation_fingerprint` 不等断言），未以「原来就红」通过。
 - `test_p3_d_intent_resume_retry` 的迁移号断言随页面线迁移 56 → 69 更新，并断言 56 空号。
 - H13 报告把 `test_r9h_content_binding` 归因为「Windows 共享 venv junction 环境」，实测不成立（`script_sha256` 恒为 None 与 venv 无关），按 H8 §6 语义修正；该归因错误记录在此，不回写历史报告。
+
+## 8. 交付状态与回退路径
+
+- **本轮最终提交（main 指向）**：本文件所在提交（`git -C <worktree> rev-parse HEAD`）。
+- **完整 CI 验证候选**：`97b983682def71cbe5bb1d45bb41f3560f7504ed`（run 40196935297：9/10 job 绿，唯一失败为 py3.12 单条基线用例）。
+- **失败修复后定向验证候选**：`880880be81da439ce9e7f3573ecaa91e19dc1b1e`（py3.12 / py3.11 双定向 success）。
+- **最终提交与上述候选的关系**：`880880be` 之后只增加了本说明文档的补充（纯文档），代码与测试树与 `880880be` 一致；文档改动用 `python scripts/check_docs.py` 复验。
+- **操作前 main**：`249a63443c72b3dad011b5446ee9920f4dadf0fd`。
+- **代码回退路径**：把 main 指回操作前提交即可（`git push --force-with-lease origin 249a6344…:main`）。
+  但**数据库升级不可随代码一起回退**：本轮迁移把 `SCHEMA_VERSION` 从 51 推进到 70（新增 52…70 的对象与页面线对象），
+  旧版本的二进制读到 70 版库不会自动降级。回退到旧代码前必须先用**升级前的数据目录备份**恢复数据，
+  不能只切代码。回退前请先 `apply_migrations` 之前的备份存在。
+- **远端记录**：整合分支 `origin/integrate/three-branches-20261025`；用于定向验证的临时 tag `integ3-candidate-2`（指向 `880880be`，可删除）。
