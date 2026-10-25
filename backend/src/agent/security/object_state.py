@@ -173,8 +173,10 @@ UNRELATED_BASES: Mapping[str, UnrelatedBasis] = MappingProxyType(
             required_facts=("entry_name", "identity_key"),
             required_equal=(("identity_key", False),),
             condition=(
-                "已绑定 program_name：本次入口名≠限制名，且入口解析对象 identity "
-                "可读、与绑定 identity 不同"
+                "已绑定 program_name：入口解析对象 identity 可读、与绑定 identity "
+                "不同；入口名不同，或同名但入口解析路径≠绑定路径（R9-H13 §3.B3："
+                "同名入口解析到独立真实对象按对象事实继续；解析路径==绑定路径而"
+                "身份/生命周期变化仍 INVALID）"
             ),
         ),
     }
@@ -1350,18 +1352,28 @@ def _name_branch(
     facts.append(_fact("entry_name", observed=name, source="effect"))
     entry_same = _entry_equal(name, limit_value)
     resolution = resolver(name)
+    resolution_path = None
     if resolution.path:
-        facts.append(
-            _fact(
-                "entry_path",
-                expected=_clean(binding.get("path")) if binding is not None else None,
-                observed=resolution.path,
-                source="path_lookup",
-            )
-        )
+        resolution_path = resolve_path(resolution.path, None) or _clean(resolution.path)
     if binding is not None:
         bound_identity = _clean(binding.get("identity"))
         bound_birth = _clean(binding.get("birth_key")) or None
+        bound_path = _clean(binding.get("path"))
+        bound_path_matched = bool(
+            bound_path
+            and resolution_path
+            and _same_resolved_path(resolution_path, bound_path)
+        )
+        if resolution_path:
+            facts.append(
+                _fact(
+                    "entry_path",
+                    expected=bound_path or None,
+                    observed=resolution_path,
+                    source="path_lookup",
+                    equal=(bound_path_matched if bound_path else None),
+                )
+            )
         if entry_same:
             if not resolution.resolved:
                 # 绑定 + 同一来源名：当前目标身份不可读也按 INVALID（不是 UNKNOWN）。
@@ -1389,6 +1401,39 @@ def _name_branch(
                     candidate_kind=candidate_kind,
                     candidate_value=candidate_value,
                     facts=facts,
+                )
+            if comparison.state == IDENTITY_DIFFERENT_OBJECT and not bound_path_matched:
+                # R9-H13 §3.B3：同名入口当前解析到与绑定 A **不同的真实对象**
+                # （identity 可读且不同、入口路径≠绑定路径）→ 对象事实证明是
+                # 另一个对象，按当前模式继续；不再仅因入口名相同判 INVALID。
+                return _unrelated(
+                    "entry_resolves_to_other_object",
+                    operation=operation,
+                    candidate_kind=candidate_kind,
+                    candidate_value=candidate_value,
+                    facts=facts,
+                    detail="同名入口当前解析到与保存绑定不同的真实对象（身份可读且不同、入口路径不是绑定路径）：按可靠不同对象继续",
+                )
+            if comparison.state == IDENTITY_DIFFERENT_OBJECT:
+                # 入口仍解析到绑定路径，但该路径上的对象已被替换：绑定失效。
+                return _decision(
+                    ObjectState.INVALID,
+                    "bound_path_object_replaced",
+                    operation=operation,
+                    candidate_kind=candidate_kind,
+                    candidate_value=candidate_value,
+                    facts=facts,
+                    detail="同名入口仍解析到原绑定路径，但该路径上的对象已被替换：绑定已失效，需先恢复/澄清绑定",
+                )
+            if comparison.state == IDENTITY_DIFFERENT_LIFECYCLE:
+                return _decision(
+                    ObjectState.INVALID,
+                    "lifecycle_changed_same_identity",
+                    operation=operation,
+                    candidate_kind=candidate_kind,
+                    candidate_value=candidate_value,
+                    facts=facts,
+                    detail="同名入口解析对象与保存绑定身份相同但生命周期不同（编号复用）：绑定已失效，需先恢复/澄清绑定",
                 )
             return _decision(
                 ObjectState.INVALID,
