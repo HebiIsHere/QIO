@@ -47,6 +47,32 @@ def _python_copy(directory: Path, name: str) -> Path:
     return target
 
 
+def _runnable_copy(directory: Path, name: str) -> Path:
+    """复制一个在任何部署布局下都**能真正运行**的外部程序。
+
+    为什么不用 Python 解释器副本：解释器被复制到别的目录后能否启动取决于部署布局
+    （Windows 缺同名 DLL、Linux 某些版本找不到 prefix），于是断言会变成“假绿/假红”：
+    ok=False 可能只是“拷贝跑不起来”，而不是“授权被拒绝”。这里复制系统自带 shell，
+    两个副本在任何环境都一定可执行。
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / name
+    if os.name == "nt":
+        source = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
+    else:
+        source = Path("/bin/sh")
+    shutil.copy2(source, target)
+    if os.name != "nt":
+        target.chmod(0o755)
+    return target
+
+
+def _write_marker_args(marker: Path) -> list[str]:
+    """参数：让被执行的程序把 marker 写出来（证明“真的运行了”而不只是 ok=True）。"""
+    if os.name == "nt":
+        return ["/c", "echo ran> " + str(marker)]
+    return ["-c", "echo ran > " + str(marker)]
+
 def _script(root: Path, marker: Path, text="ran") -> Path:
     script = root / ("r9h9-" + marker.name + ".py")
     script.write_text(
@@ -141,12 +167,27 @@ async def test_hardlink_same_program_object_blocked(ctx, tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- 问题三
 async def test_program_binding_survives_path_change_and_restart(ctx, tmp_path, monkeypatch):
+    """R9-H9 §2 + R9-H13 §3.B3：程序名称限制固化到保存时的**对象身份**。
+
+    R9-H13 §3.B3（object_state._name_branch，代码注释与 H13 报告的 B1-B3「对象判定过严
+    纠正」一致）明确规定：同一个入口名当前解析到与绑定**不同的真实对象**（identity 可读
+    且不同、入口路径也不同）时，对象事实证明那是另一个对象，按当前模式继续；只有
+    「解析不到 / 绑定结构不完整」才 INVALID → 拒绝。
+
+    所以这条用例守的是身份语义，不是「名字相同就拒绝」：
+      1) 保存的 binding.identity/path 就是 A 的真实事实（不是名称字符串）；
+      2) 按绝对路径运行 A 永远被拒（禁止不跟着对象走），重启后仍然如此；
+      3) PATH 换成 dir2 后按名字运行落到的是 B（另一个真实对象）→ 按 §3.B3 继续，
+         并且必须证明真的执行了 B、绑定没有被悄悄改写成 B；
+      4) 重启（重读持久化 JSON）后同一绑定不变，A 仍被拒。
+    """
     root = ctx.computer.root()
-    script = _script(root, root / "path-marker.txt")
     dir1 = tmp_path / "path1"
     dir2 = tmp_path / "path2"
-    a = _python_copy(dir1, "runner.exe" if os.name == "nt" else "runner")
-    b = _python_copy(dir2, "runner.exe" if os.name == "nt" else "runner")
+    name = "runner.exe" if os.name == "nt" else "runner"
+    a = _runnable_copy(dir1, name)
+    b = _runnable_copy(dir2, name)
+    marker = dir2 / "ran-by-b.txt"
     old_path = os.environ.get("PATH", "")
     monkeypatch.setenv("PATH", str(dir1) + os.pathsep + old_path)
     requirement = ctx.requirements.record_user_message(
@@ -160,25 +201,44 @@ async def test_program_binding_survives_path_change_and_restart(ctx, tmp_path, m
     )
     row = ctx.requirements.by_id(requirement.requirement_id)
     binding_obj = row.structured_limits[0]["objects"][0]
-    assert binding_obj.get("program_binding", {}).get("identity"), binding_obj
+    saved = binding_obj.get("program_binding") or {}
+    from agent.services.file_identity import identity_of
+
+    identity_a = identity_of(a)
+    identity_b = identity_of(b)
+    assert identity_a is not None and identity_b is not None
+    assert identity_a.key != identity_b.key, (identity_a.key, identity_b.key)
+    assert saved.get("identity") == identity_a.key, (saved, identity_a.key)
+    assert Path(str(saved.get("path"))).name == name
+    assert "path1" in str(saved.get("path")), saved
     binding = ctx.requirements.binding_for(requirement.requirement_id)
     ctx.settings_store.set("computer.permission_mode", "unrestricted")
     tool = RunProgramTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
-    # 改变查找顺序：名称入口不能自动从 A 转移到 B
+    # 改变查找顺序：同名的**另一个真实对象** B 现在排在前面（§3.B3 允许按当前规则继续）
     monkeypatch.setenv("PATH", str(dir2) + os.pathsep + old_path)
     with requirement_context(binding):
-        named = await tool.run(program="runner", args=[str(script)], cwd=str(root), timeout=30)
-        absolute_a = await tool.run(program=str(a), args=[str(script)], cwd=str(root), timeout=30)
-    assert named.ok is False and absolute_a.ok is False
-    # 重启后从持久化 JSON 恢复同一绑定
+        named = await tool.run(program="runner", args=_write_marker_args(marker), cwd=str(root), timeout=30)
+        absolute_a = await tool.run(program=str(a), args=_write_marker_args(marker), cwd=str(root), timeout=30)
+    # 名字现在落到 B：真的执行了（marker 出现），且不是把 A 的禁止转移过来；
+    # 绑定对象 A 一点也没被放宽。
+    assert named.ok is True, named
+    assert marker.exists(), named
+    assert absolute_a.ok is False, absolute_a
+    after = ctx.requirements.by_id(requirement.requirement_id)
+    assert (after.structured_limits[0]["objects"][0].get("program_binding") or {}).get("identity") == identity_a.key
+    # 重启后从持久化 JSON 恢复同一绑定：A 仍被拒，名字仍落到 B
     from agent.security.requirements import RequirementLedger
 
     reloaded = RequirementLedger(ctx.requirements.conn).by_id(requirement.requirement_id)
     binding2 = ctx.requirements.binding_for(requirement.requirement_id)
+    reloaded_obj = reloaded.structured_limits[0]["objects"][0]["program_binding"]
+    reloaded_marker = dir2 / "ran-by-b-after-restart.txt"
     with requirement_context(binding2):
-        again = await tool.run(program=str(a), args=[str(script)], cwd=str(root), timeout=30)
-    assert reloaded is not None and again.ok is False
-
+        again = await tool.run(program=str(a), args=_write_marker_args(marker), cwd=str(root), timeout=30)
+        named2 = await tool.run(program="runner", args=_write_marker_args(reloaded_marker), cwd=str(root), timeout=30)
+    assert reloaded is not None and again.ok is False, again
+    assert reloaded_obj.get("identity") == identity_a.key, reloaded_obj
+    assert named2.ok is True and reloaded_marker.exists(), named2
 
 # ---------------------------------------------------------------- 问题四
 async def test_program_write_limit_does_not_block_execute(ctx, tmp_path, monkeypatch):

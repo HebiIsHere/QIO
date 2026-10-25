@@ -169,7 +169,12 @@
 
 - 触发方式：把整合分支 push 到 `origin/integrate/three-branches-20261025`（`ci.yml` 对 push 全分支 + PR 生效）。本轮**只创建了这一次**会跑完整矩阵的远端事件：子工作流全程在本地 worktree，未 push 分支、未开 PR。
 - 运行：**run 40196935297**，SHA `97b983682def71cbe5bb1d45bb41f3560f7504ed`（分支 integrate/three-branches-20261025）。
-- 逐 job 结论与失败处置：（回填）
+- 逐 job 结论（全部真实执行，无 skipped）：ci dedup preflight ✓ / docs consistency ✓ / frontend（typecheck + 测试 + 构建）✓ / rust (ubuntu) ✓ / rust (windows) ✓ / frozen worker (windows) ✓ / install e2e (windows) ✓ / backend (py3.11) ✓ / backend (py3.12) ✗ / backend (windows-latest) ✓。
+- **唯一失败**：`backend (py3.12)` 的 `tests/test_r9h9_regressions.py::test_program_binding_survives_path_change_and_restart`（第 172 行 `assert named.ok is False`，实际 `named.ok=True`）。
+  定位证据：同一 SHA 的 `backend (py3.11)` 整套通过；`targeted-verify` 单跑该用例 py3.11 success（run 40200984283）、py3.12 failure（run 40200822357）；把同一命令打到**冻结基线 r9h13/main 6f56d815** 的 py3.12 也是 failure（run 40201030638）→ **基线既有失败，非本整合引入**。
+  根因（经代码与环境核对）：hostedtoolcache 的 py3.12 解释器被复制到临时目录后仍能运行，于是真实行为暴露——名称限制绑定的是保存时对象 A 的身份，PATH 改到另一目录后同名 `runner` 解析到**另一个对象 B**（身份不同），当前实现放行 B；py3.11 与 Windows 上复制出来的解释器跑不起来（`ok=False`），旧断言被“假绿”满足。
+- 处置与复验：（回填 D 的修复 + py3.11/py3.12 双定向复验）
+- 说明：本轮完整 CI 轮次只有这一次；未使用 `Re-run failed jobs` 冒充新提交通过，也未降低任何门禁。
 
 （回填：运行号、SHA、逐 job 结论、失败与定向复验）
 
