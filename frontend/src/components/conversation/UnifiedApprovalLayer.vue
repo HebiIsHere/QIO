@@ -13,6 +13,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useApprovalsStore } from "../../stores/approvals";
 import { useSessionStore } from "../../stores/session";
+import { useInteractiveStore } from "../../stores/interactive";
 import {
   isBlockingModalOpen,
   isUserEditing,
@@ -38,6 +39,7 @@ const emit = defineEmits<{
 const approvals = useApprovalsStore();
 const session = useSessionStore();
 const unified = useUnifiedApprovalsStore();
+const interactive = useInteractiveStore();
 
 const REFRESH_MS = 30_000;
 const RETRY_THROTTLE_MS = 250;
@@ -86,9 +88,23 @@ function ingestCandidates() {
   }
 }
 
+/**
+ * F01：保存前影响确认正在等用户决定时，**不自动弹出**工具/权限审批。
+ *
+ * 两者可以共用呈现机制，但不能同时叠出多个阻塞弹窗：影响确认先占着这个位置，
+ * 等它结束（确认 / 取消）后再按既有规则尝试自动打开审批（申请不会丢）。
+ */
+function impactConfirmPending(): boolean {
+  return Boolean(interactive.pendingImpact);
+}
+
 function retryAutoOpen() {
   // 窗口在后台时不抢焦点：回到前台（visibilitychange）会再试一次
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+  if (impactConfirmPending()) {
+    unified.autoPending = true;
+    return;
+  }
   const now = Date.now();
   if (now - lastRetryAt < RETRY_THROTTLE_MS) return;
   lastRetryAt = now;
@@ -175,6 +191,14 @@ watch(
   () => [unified.autoPending, unified.visible, unified.count] as const,
   () => {
     if (unified.autoPending) retryAutoOpen();
+  },
+);
+
+/** 影响确认结束后：把被它让位挡住的那次自动弹出补上（条件恢复再试，不抢焦点）。 */
+watch(
+  () => Boolean(interactive.pendingImpact),
+  (pending) => {
+    if (!pending && unified.autoPending) retryAutoOpen();
   },
 );
 

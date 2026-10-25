@@ -22,7 +22,20 @@ export function saveStatusView(input: {
   status: SaveStatusValue;
   dirty: boolean;
   error?: string | null;
+  /**
+   * F01：正在等用户决定「这次改动的影响」。
+   * 这时板面**还没有保存**：既不能说已保存，也不能只说「有改动尚未保存」——
+   * 必须让用户看见等待的真实原因与唯一处理入口（页面中央的影响确认）。
+   */
+  pendingImpact?: boolean;
 }): SaveStatusView {
+  if (input.pendingImpact) {
+    return {
+      text: "等待确认，尚未保存",
+      tone: "busy",
+      detail: "这次改动会影响正在执行的任务：在影响确认里选择「确认改动」或「取消本次改动」之后才会保存。",
+    };
+  }
   if (input.status === "saving") {
     return { text: "正在保存…", tone: "busy", detail: "" };
   }

@@ -11,6 +11,8 @@ export { default as InteractiveConversation } from "./InteractiveConversation.vu
 export { default as RetryPanel } from "./RetryPanel.vue";
 export { default as RecoveryPanel } from "./RecoveryPanel.vue";
 export { default as SaveFailureBanner } from "./SaveFailureBanner.vue";
+export { default as ImpactConfirmLayer } from "./ImpactConfirmLayer.vue";
+export { default as TaskCenterPanel } from "./TaskCenterPanel.vue";
 export { useChromeExtraTarget } from "./chromeTarget";
 export * from "./layout";
 export * from "./chromePlacement";
@@ -18,3 +20,5 @@ export * from "./saveStatus";
 export * from "./conversationLayout";
 export * from "./recoverySummary";
 export * from "./retryApi";
+export * from "./intentDisplayState";
+export { buildTaskRows, taskCounts, taskControlActions, taskEmptyText, type TaskRow } from "./taskCenter";

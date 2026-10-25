@@ -22,6 +22,7 @@ const saveView = computed(() =>
     status: store.saveStatus as "idle" | "saving" | "saved" | "error",
     dirty: store.dirty,
     error: store.saveError,
+    pendingImpact: Boolean(store.pendingImpact),
   }),
 );
 const saveFailed = computed(() => store.saveStatus === "error");
@@ -80,7 +81,7 @@ async function retryRefresh(): Promise<void> {
   >
     <span class="kind mono" aria-hidden="true">{{ saveFailed ? "保存" : draftFailed ? "草稿" : "刷新" }}</span>
     <p v-if="saveFailed" class="text" data-im="p3c-save-failure-text">
-      {{ saveView.text }}<template v-if="impactBlocked">（被影响确认挡住：先在提交区处理）</template>
+      {{ saveView.text }}<template v-if="impactBlocked">（被影响确认挡住：在页面中央的影响确认里处理）</template>
     </p>
     <p v-else-if="draftFailed" class="text" data-im="p3c-save-failure-text">
       草稿没有保存：{{ store.draftSaveError || "原因未知" }}（文字还在编辑器里）
