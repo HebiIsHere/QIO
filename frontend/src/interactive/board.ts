@@ -33,6 +33,8 @@ import {
   sameEndpoint,
 } from "./linkEndpoints";
 import { readImageDisplay } from "./renderers/imageDisplay";
+import { DEFAULT_PLACEMENT_GAP } from "./geometry";
+import { avoidOverlaps, type AvoidObject } from "./v2/geometry";
 
 /** 位置与大小的矩形（板面坐标）。 */
 export interface BoardRect {
@@ -1214,7 +1216,12 @@ export function joinGroup(state: BoardState, cardId: string, groupId: string, in
   return normalizeState(work);
 }
 
-/** 把卡片移出组（自由摆放，位置不变）。组空了会自动消失（G3）。 */
+/**
+ * 把卡片移出组（**拖动路径**：自由摆放，位置不变）。组空了会自动消失（G3）。
+ *
+ * 菜单「移出组」不走这里：拖出时落点已经由 dropCard 的避让规则算好，位置就是落点；
+ * 而菜单移出没有落点，必须给卡片找组外空位，见 {@link leaveGroupToFreeSpots}（F07）。
+ */
 export function removeFromGroup(state: BoardState, cardId: string): BoardState {
   const work = normalizeState(state);
   const stamp = nowIso();
@@ -1230,6 +1237,167 @@ export function removeFromGroup(state: BoardState, cardId: string): BoardState {
   }
   if (changed) work.updatedAt = stamp;
   return normalizeState(work);
+}
+
+/** 菜单「移出组」里每张卡片实际去了哪里（F07：成员变化 + 最终位置一次提交）。 */
+export interface LeaveGroupPlacement {
+  cardId: string;
+  /** 原来所在的组 id（组空了会消失，界面据此如实说明） */
+  groupId: string;
+  /** 移出前的位置（板面坐标） */
+  from: { x: number; y: number };
+  /** 实际落点（板面坐标） */
+  x: number;
+  y: number;
+  /** 位置是否真的变了（本来就在组外空位上时不变） */
+  moved: boolean;
+  /** true = 与所有未删除卡片 / 组框都不重叠（并留出避让间距） */
+  free: boolean;
+  /** free=false 时仍然重叠的对象（卡片 id 或 `group:<id>`） */
+  conflicts: string[];
+}
+
+/** {@link leaveGroupToFreeSpots} 的结果：一次操作的状态 + 每张卡的实际落点。 */
+export interface LeaveGroupOutcome {
+  state: BoardState;
+  placements: LeaveGroupPlacement[];
+  /** 至少一张没有找到完全空的位置：调用方必须如实说明实际结果，不能静默叠放 */
+  limited: boolean;
+}
+
+/** 找空位的最大让开轮数 / 总位移（与 v2/geometry 的避让上限同一量级，但留足余量）。 */
+const LEAVE_GROUP_MAX_ROUNDS = 24;
+const LEAVE_GROUP_MAX_SHIFT = 4000;
+
+/**
+ * 组外避让的障碍：所有未删除卡片 + 所有组框（含卡片自己的原组）。
+ *
+ * 组框必须算障碍：光避开卡片的话，卡片会被「挪出成员、仍压在组框里」，
+ * 而「组外最近合理空位」的要求是它与所有卡片 / 组框都不重叠（F07）。
+ */
+function leaveGroupObstacles(state: BoardState, cardId: string): AvoidObject[] {
+  const out: AvoidObject[] = [];
+  for (const card of state.cards) {
+    if (card.deleted || card.id === cardId) continue;
+    out.push({
+      id: card.id,
+      kind: "card",
+      frame: cardRect(card),
+      groupId: groupOfCard(state, card.id)?.id ?? null,
+    });
+  }
+  for (const group of state.groups) {
+    if (group.deleted || !group.members.length) continue;
+    out.push({
+      id: GROUP_ENDPOINT_PREFIX + group.id,
+      kind: "group",
+      frame: groupFrame(group),
+      groupId: null,
+    });
+  }
+  return out;
+}
+
+/** 实际落点与剩余对象是否真有面积重叠（只碰到边不算；与避让所需的 gap 分开报告）。 */
+function leaveGroupConflicts(state: BoardState, cardId: string, rect: BoardRect): string[] {
+  const hits: string[] = [];
+  for (const card of state.cards) {
+    if (card.deleted || card.id === cardId) continue;
+    if (rectsOverlap(rect, cardRect(card))) hits.push(card.id);
+  }
+  for (const group of state.groups) {
+    if (group.deleted || !group.members.length) continue;
+    if (rectsOverlap(rect, groupFrame(group))) hits.push(GROUP_ENDPOINT_PREFIX + group.id);
+  }
+  return hits;
+}
+
+/**
+ * 菜单「移出组」：成员变化与最终位置作为**一次完整操作**返回（撤销一次即恢复，重做一致）。
+ *
+ * 语义（F07）：
+ * 1. 只作用于「本来就在组里」的卡片；不在组里的卡片不参与（也不移动）；
+ * 2. 先移除成员，再把**受影响组**的剩余成员按既定纵向排列和间距收拢（组框由成员推导）；
+ * 3. 每张移出的卡片以当前矩形为起点，用 v2/geometry.avoidOverlaps 找
+ *    「组外、与所有未删除卡片 / 组框都不重叠、位移尽量小」的位置（复用既有避让工具，不另造一套）；
+ * 4. 密集布局找不到完全空位时**不静默叠放**：返回 limited=true 与实际冲突对象，
+ *    由调用方给出明确回执（卡片停在最接近可行的位置）；
+ * 5. 不移动无关卡片、不改内容 / 书签 / 参与状态 / 已有关系。
+ *
+ * 与拖动路径的区别：拖出组的位置就是用户落点（dropCard 已有避让），仍走 removeFromGroup。
+ */
+export function leaveGroupToFreeSpots(
+  state: BoardState,
+  cardIds: readonly string[],
+): LeaveGroupOutcome {
+  let work = normalizeState(state);
+  const stamp = nowIso();
+  const targets: string[] = [];
+  const originGroup = new Map<string, string>();
+  for (const cardId of dedupe(cardIds ?? [])) {
+    const card = cardById(work, cardId);
+    if (!card || card.deleted) continue;
+    const group = groupOfCard(work, cardId);
+    if (!group) continue;
+    targets.push(cardId);
+    originGroup.set(cardId, group.id);
+  }
+  if (!targets.length) return { state: work, placements: [], limited: false };
+
+  // 1) 只改成员列表：目标卡片离开各自的组（其余字段一个都不动）。
+  const targetSet = new Set(targets);
+  const touchedGroups = new Set<string>();
+  for (const group of work.groups) {
+    if (!group.members.some((id) => targetSet.has(id))) continue;
+    touchedGroups.add(group.id);
+    group.members = group.members.filter((id) => !targetSet.has(id));
+    group.updatedAt = stamp;
+  }
+
+  // 2) 剩余成员按既定纵向排列 / 间距收拢；空组按 G3 消失，组框随成员重新推导。
+  work = normalizeState(work);
+  for (const group of work.groups) {
+    if (!touchedGroups.has(group.id) || !group.members.length) continue;
+    arrangeGroupMembers(group, work.cards);
+    group.updatedAt = stamp;
+  }
+  work = normalizeState(work);
+
+  // 3) 每张移出的卡片找组外最近合理空位（一张一张放：先放的会成为后放的障碍）。
+  const placements: LeaveGroupPlacement[] = [];
+  let limited = false;
+  for (const cardId of targets) {
+    const card = cardById(work, cardId);
+    if (!card) continue;
+    const from = { x: card.x, y: card.y };
+    const avoided = avoidOverlaps({
+      moved: { id: cardId, kind: "card", frame: cardRect(card), groupId: null },
+      others: leaveGroupObstacles(work, cardId),
+      gap: DEFAULT_PLACEMENT_GAP,
+      maxRounds: LEAVE_GROUP_MAX_ROUNDS,
+      maxShift: LEAVE_GROUP_MAX_SHIFT,
+    });
+    const spot = clampCardRect({ x: avoided.frame.x, y: avoided.frame.y, w: card.w, h: card.h });
+    card.x = spot.x;
+    card.y = spot.y;
+    card.updatedAt = stamp;
+    const rect: BoardRect = { x: spot.x, y: spot.y, w: card.w, h: card.h };
+    const conflicts = leaveGroupConflicts(work, cardId, rect);
+    const free = conflicts.length === 0;
+    if (!free) limited = true;
+    placements.push({
+      cardId,
+      groupId: originGroup.get(cardId) ?? "",
+      from,
+      x: spot.x,
+      y: spot.y,
+      moved: spot.x !== from.x || spot.y !== from.y,
+      free,
+      conflicts,
+    });
+  }
+  work.updatedAt = stamp;
+  return { state: normalizeState(work), placements, limited };
 }
 
 /**

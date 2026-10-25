@@ -35,6 +35,7 @@ import {
   groupById,
   groupOfCard,
   joinGroup,
+  leaveGroupToFreeSpots,
   mergeGroups,
   normalizeState,
   participationOf,
@@ -42,7 +43,6 @@ import {
   pointInRect,
   previewDrop,
   removeCard,
-  removeFromGroup,
   removeLink,
   renameGroup,
   selectInRect,
@@ -2273,10 +2273,42 @@ function onCardDuplicate(cardId: string) {
   commit(duplicateCard(current, cardId), "复制卡片");
 }
 
+/**
+ * 菜单「移出组」（F07）：卡片**没有落点**，必须给它找组外最近的合理空位；
+ * 剩余成员按既定纵向排列收拢、组框同步，成员变化与最终位置作为**一次提交**
+ * （撤销一次就回到移出前，重做结果一致）。拖动出组不走这里（落点已有避让规则）。
+ */
+function commitLeaveGroup(current: BoardState, cardIds: string[]) {
+  const outcome = leaveGroupToFreeSpots(current, cardIds);
+  if (!outcome.placements.length) {
+    notice.value = "所选卡片不在任何组里：没有需要移出的对象。";
+    return;
+  }
+  commit(outcome.state, cardIds.length > 1 ? "把所选卡片移出组（自动避开重叠）" : "把卡片移出组（自动避开重叠）");
+  const spilled = outcome.placements.filter((item) => !item.free);
+  if (spilled.length) {
+    const names = spilled
+      .map((item) => {
+        const card = cardById(outcome.state, item.cardId);
+        return card ? cardSummary(card) : "卡片";
+      })
+      .join("、");
+    notice.value =
+      "已移出组，但没有找到完全不重叠的空位：" +
+      names +
+      " 停在最接近可行的位置，仍与其他对象有重叠，请手动拖开。";
+    return;
+  }
+  const moved = outcome.placements.some((item) => item.moved);
+  notice.value = moved
+    ? "已移出组：卡片放到组外最近的空位，其余成员已按顺序收拢。"
+    : "已移出组：位置不变（本来就在组外空位上），空掉的组会自动消失。";
+}
+
 function onCardLeaveGroup(cardId: string) {
   const current = boardState.value;
   if (!current) return;
-  commit(removeFromGroup(current, cardId), "移出组");
+  commitLeaveGroup(current, [cardId]);
 }
 
 function onCardJoinGroup(cardId: string, groupId: string) {
@@ -2313,9 +2345,7 @@ function onGroupOp(op: GroupOp, groupId?: string) {
     return;
   }
   if (op === "leave") {
-    let next = current;
-    for (const cardId of selected) next = removeFromGroup(next, cardId);
-    commit(next, "把所选卡片移出组");
+    commitLeaveGroup(current, selected);
     return;
   }
   const targets = selectedGroupIds.value;
@@ -2376,7 +2406,9 @@ function onDissolveGroup(groupId: string) {
 function onLeaveMember(groupId: string, cardId: string) {
   const current = boardState.value;
   if (!current) return;
-  commit(removeFromGroup(current, cardId), "把卡片移出组");
+  // 组内成员条上的「移出」与卡片菜单同一条语义（F07）：组外找空位 + 一次提交。
+  void groupId;
+  commitLeaveGroup(current, [cardId]);
 }
 
 // --- Phase 2-B 接线：组标题拖整组 / 组框缩放（组件只发意图，这里落板面） ---
