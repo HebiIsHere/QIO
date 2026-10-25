@@ -11,12 +11,22 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { createRouter, createMemoryHistory } from "vue-router";
 import App from "../App.vue";
-import ApprovalModal from "../components/ApprovalModal.vue";
-import ApprovalEntry from "../components/ApprovalEntry.vue";
 import NonChatApprovalEntry from "../components/approval/NonChatApprovalEntry.vue";
-import UnifiedApprovalModal from "../components/approval/UnifiedApprovalModal.vue";
 import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
 import { useApprovalsStore } from "../stores/approvals";
+
+/**
+ * 旧展示层的 DOM 痕迹（不 import 旧组件 —— 那些文件会在 A-CP1 后由 C 删除）：
+ * 旧 ApprovalModal 的遮罩 class 是 .modal-mask（弹窗主体 .modal），
+ * 旧 ApprovalEntry 的入口 class 是 .approval-entry。
+ * 新统一弹窗的遮罩是 .ua-mask / data-unified-approval-modal。
+ */
+function legacyApprovalMarkers(wrapper: any) {
+  return {
+    oldModal: wrapper.find(".modal-mask").exists() || wrapper.find(".modal").exists(),
+    oldEntry: wrapper.find(".approval-entry").exists(),
+  };
+}
 
 const boot = vi.hoisted(() => ({ waitForBackend: vi.fn() }));
 vi.mock("../services/boot", () => ({ waitForBackend: boot.waitForBackend }));
@@ -82,8 +92,9 @@ beforeEach(() => {
 describe("App 层：旧审批展示层已让位给统一体系", () => {
   it("非聊天路由：不再渲染旧 ApprovalModal/ApprovalEntry，改为统一入口 + 统一弹窗", async () => {
     const { w } = await mountApp("/settings");
-    expect(w.findComponent(ApprovalModal).exists()).toBe(false);
-    expect(w.findComponent(ApprovalEntry).exists()).toBe(false);
+    const markers = legacyApprovalMarkers(w);
+    expect(markers.oldModal).toBe(false);
+    expect(markers.oldEntry).toBe(false);
     expect(w.findComponent(NonChatApprovalEntry).exists()).toBe(true);
     expect(w.findComponent(UnifiedApprovalLayer).exists()).toBe(true);
     w.unmount();
@@ -98,15 +109,19 @@ describe("App 层：旧审批展示层已让位给统一体系", () => {
 
     await w.find('[data-test="nonchat-approval-entry"]').trigger("click");
     await flushPromises();
-    expect(w.findAllComponents(UnifiedApprovalModal)).toHaveLength(1);
+    // 只有一个对话框（不是两套按钮）；旧展示层的遮罩不存在
+    expect(w.findAll('[role="dialog"][aria-modal="true"]')).toHaveLength(1);
     expect(w.find('[data-unified-approval-layer]').exists()).toBe(true);
+    expect(legacyApprovalMarkers(w).oldModal).toBe(false);
     w.unmount();
   });
 
   it("聊天路由：App 不挂非聊天入口（入口由该页自己的统一体系提供）", async () => {
     const { w } = await mountApp("/");
     expect(w.findComponent(NonChatApprovalEntry).exists()).toBe(false);
-    expect(w.findComponent(ApprovalModal).exists()).toBe(false);
+    const markers = legacyApprovalMarkers(w);
+    expect(markers.oldModal).toBe(false);
+    expect(markers.oldEntry).toBe(false);
     w.unmount();
   });
 });

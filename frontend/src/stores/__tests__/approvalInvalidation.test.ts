@@ -1,28 +1,25 @@
 /**
- * 放弃开发时被作废的确认，必须在**收到 `APPROVAL_RESULT` 的那一刻**从界面消失：
+ * 放弃开发时被作废的确认，必须在**收到 `APPROVAL_RESULT` 的那一刻**从待审批界面消失：
  * 不刷新页面、不等任何超时、也不需要用户再点一次「知道了」。
  *
- * 这一轮修的后端缺口：lifecycle 创建 `credential_grant` 审批时载荷没有任务标识，
- * `ApprovalService.invalidate_for_task()` 找不到它 —— 后端已经放弃任务了，界面上
- * 那张凭据确认卡却还挂着等人点「允许」。后端补齐载荷（`workspace`）之后，
- * 事件会真的发到前端；这里先把**前端这一侧**的行为锁住：
+ * 迁移说明（A-CP1）：旧 ApprovalModal/ApprovalEntry 已让位给统一体系 ——
+ * 本文件改为挂载统一弹窗 + ComposerEntries 的 ⑤ 入口断言同一件事；作废的结局
+ * 仍按 F02 保留在「结果与历史」里（不是从界面彻底抹掉）。
  *
- * 1. 事件按 `approval_id` 收敛（`stores/events.ts` → `approvals.resolve(id)`）；
+ * 1. 事件按 `approval_id` 收敛（`stores/events.ts` → `approvals.recordResult`）；
  * 2. 队列只剩一项时少一项而不是清空；队列空了 `deferred` 复位；
- * 3. 弹窗与入口条随之消失，且不依赖刷新。
- *
- * 全部走真实 store + 真实事件路由（`useEventStore().route()` 就是生产里 SSE 的
- * 落地路径），只有 API 层是替身：用例同时断言**前端没有替用户做任何决定**
- * （没有发出 approve/reject 请求）。
+ * 3. 待审批卡片随之消失，且不依赖刷新；前端不替用户做任何决定。
  */
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { nextTick } from "vue";
-import ApprovalModal from "../../components/ApprovalModal.vue";
-import ApprovalEntry from "../../components/ApprovalEntry.vue";
+import ComposerEntries from "../../components/conversation/ComposerEntries.vue";
+import UnifiedApprovalModal from "../../components/approval/UnifiedApprovalModal.vue";
 import { useApprovalsStore } from "../approvals";
+import { useApprovalResultsStore } from "../approvalResults";
 import { useEventStore } from "../events";
+import { useUnifiedApprovalsStore } from "../unifiedApprovals";
 import type { AgentEvent } from "../../services/events";
 import { useSessionStore } from "../session";
 import { api } from "../../services/api";
@@ -36,16 +33,28 @@ const respond = api.respondApproval as unknown as ReturnType<typeof vi.fn>;
 function setup(): {
   pinia: Pinia;
   approvals: ReturnType<typeof useApprovalsStore>;
+  results: ReturnType<typeof useApprovalResultsStore>;
+  unified: ReturnType<typeof useUnifiedApprovalsStore>;
   events: ReturnType<typeof useEventStore>;
 } {
   const pinia = createPinia();
   setActivePinia(pinia);
   useSessionStore(); // 事件路由要用到会话（审批归属/继续条）
-  return { pinia, approvals: useApprovalsStore(), events: useEventStore() };
+  return {
+    pinia,
+    approvals: useApprovalsStore(),
+    results: useApprovalResultsStore(),
+    unified: useUnifiedApprovalsStore(),
+    events: useEventStore(),
+  };
 }
 
 /** 后端放弃任务后发出的那一条事件（`approval.py::_publish_result` 的形状）。 */
-function routeCancelled(events: ReturnType<typeof useEventStore>, approvalId: string) {
+function routeCancelled(
+  events: ReturnType<typeof useEventStore>,
+  approvalId: string,
+  phase?: string,
+) {
   events.route({
     type: "APPROVAL_RESULT",
     id: "ev_1",
@@ -53,6 +62,7 @@ function routeCancelled(events: ReturnType<typeof useEventStore>, approvalId: st
     data: {
       approval_id: approvalId,
       decision: "cancelled",
+      ...(phase ? { phase } : {}),
       reason: "task_abandoned",
       turn_id: "turn_main",
     },
@@ -63,13 +73,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   respond.mockResolvedValue({ ok: true });
   document.body.innerHTML = "";
+  localStorage.clear();
 });
 
-afterEach(() => {
-  delete document.documentElement.dataset.motion;
-});
-
-describe("作废事件（APPROVAL_RESULT{cancelled}）让界面立即收敛", () => {
+describe("作废事件（APPROVAL_RESULT{cancelled}）让待审批界面立即收敛", () => {
   it("只移除被作废的那一项：其余待办不受影响，队列空了 deferred 复位", () => {
     const { approvals, events } = setup();
     approvals.enqueue(
@@ -109,70 +116,51 @@ describe("作废事件（APPROVAL_RESULT{cancelled}）让界面立即收敛", ()
     expect(approvals.current?.approval_id).toBe("appr_cred");
   });
 
-  it("弹窗与入口条随之消失：不等超时、不刷新（减少动画时当场卸载 DOM）", async () => {
-    // 减少动画：退出动画被跳过，卸载时机完全由状态决定 —— 这样断言的就是
-    // 「状态收敛」本身，而不是那个 150ms 的淡出。
-    document.documentElement.dataset.motion = "reduced";
-    const { pinia, approvals, events } = setup();
-    const entry = mount(ApprovalEntry, { attachTo: document.body, global: { plugins: [pinia] } });
-    const modal = mount(ApprovalModal, { attachTo: document.body, global: { plugins: [pinia] } });
+  it("作废的结局进入结果模型（可回看），但待审批卡片立刻消失", async () => {
+    const { pinia, approvals, unified, results, events } = setup();
+    const entry = mount(ComposerEntries, { attachTo: document.body, global: { plugins: [pinia] } });
+    const modal = mount(UnifiedApprovalModal, { attachTo: document.body, global: { plugins: [pinia] } });
 
     approvals.enqueue(
       "appr_cred",
       "credential_grant",
       { key_id: "weather-key", tool_name: "weather_fetch", workspace: "ws_1" },
-      { autoOpen: true },
+      { autoOpen: false },
     );
+    unified.open("tool:appr_cred");
     await flushPromises();
-    expect(modal.find(".modal-mask").exists()).toBe(true);
-    expect(entry.find(".approval-entry").exists()).toBe(false);
+    expect(modal.find('[role="dialog"]').exists()).toBe(true);
 
-    routeCancelled(events, "appr_cred");
+    // v2 生命周期路径放弃开发会带 phase=cancelled；旧内存路径没有 phase（只收敛队列）
+    routeCancelled(events, "appr_cred", "cancelled");
     await nextTick();
+    await flushPromises();
 
+    // 待审批卡片消失；结局保留在结果模型里（F02：可回看，不是静默抹掉）
     expect(approvals.pendingCount).toBe(0);
-    expect(modal.find(".modal-mask").exists()).toBe(false);
-    expect(entry.find(".approval-entry").exists()).toBe(false);
+    expect(modal.find('[role="dialog"]').exists()).toBe(false);
+    expect(results.byId["appr_cred"]?.state).toBe("cancelled");
+    // ⑤ 入口仍然可达，但文案变成「结果与历史」而不是「有 N 项待审批」
+    const approvalEntry = entry.get('[data-entry="approvals"]');
+    expect(String(approvalEntry.attributes("aria-label"))).toContain("审批结果与历史");
+    expect(String(approvalEntry.attributes("aria-label"))).not.toContain("待审批申请");
     expect(respond).not.toHaveBeenCalled();
   });
 
-  it("「稍后处理」收起的弹窗：作废后入口条立即消失，不留下看不见的待办", async () => {
-    document.documentElement.dataset.motion = "reduced";
+  it("「稍后处理」收起后的待办：作废后不再显示为待办（⑤ 不再报数量）", async () => {
     const { pinia, approvals, events } = setup();
-    const entry = mount(ApprovalEntry, { attachTo: document.body, global: { plugins: [pinia] } });
-    const modal = mount(ApprovalModal, { attachTo: document.body, global: { plugins: [pinia] } });
-
-    approvals.enqueue(
-      "appr_cred",
-      "credential_grant",
-      { workspace: "ws_1" },
-      { autoOpen: false },
-    );
+    const entry = mount(ComposerEntries, { attachTo: document.body, global: { plugins: [pinia] } });
+    approvals.enqueue("appr_cred", "credential_grant", { workspace: "ws_1" }, { autoOpen: false });
     await flushPromises();
-    expect(entry.find(".approval-entry").exists()).toBe(true);
-    expect(modal.find(".modal-mask").exists()).toBe(false);
+    expect(entry.get('[data-entry="approvals"]').find(".count").text()).toBe("1");
 
-    routeCancelled(events, "appr_cred");
+    routeCancelled(events, "appr_cred", "cancelled");
     await nextTick();
+    await flushPromises();
 
-    expect(entry.find(".approval-entry").exists()).toBe(false);
     expect(approvals.pendingCount).toBe(0);
-  });
-
-  it("默认动画下也只需一个 150ms 淡出：动画结束就从 DOM 移除，无需刷新", async () => {
-    const { pinia, approvals, events } = setup();
-    const modal = mount(ApprovalModal, { attachTo: document.body, global: { plugins: [pinia] } });
-    approvals.enqueue("appr_cred", "credential_grant", { workspace: "ws_1" });
-    await flushPromises();
-    expect(modal.find(".modal-mask").exists()).toBe(true);
-
-    routeCancelled(events, "appr_cred");
-    await nextTick();
-
-    // 状态已经收敛（遮罩进入退出动画，只是为了好看，不是「还没消失」）
-    expect(approvals.visible).toBe(false);
-    await new Promise((r) => setTimeout(r, 220));
-    await nextTick();
-    expect(modal.find(".modal-mask").exists()).toBe(false);
+    const approvalEntry = entry.get('[data-entry="approvals"]');
+    expect(approvalEntry.find(".count").exists()).toBe(false);
+    expect(String(approvalEntry.attributes("aria-label"))).not.toContain("等待确认");
   });
 });
