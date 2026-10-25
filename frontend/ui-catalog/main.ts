@@ -1,5 +1,5 @@
 /**
- * QIO 原子控件画廊：把五个 ui/ 组件（QInput / QSelect / QNumber / QSlider / QConfirm）
+ * QIO 原子控件画廊：把四个 ui/ 组件（QInput / QSelect / QNumber / QConfirm）
  * 的**全部状态**并排渲染出来，供 `scripts/ui-catalog/atoms.mjs` 逐个截图。
  *
  * 为什么需要这一页：这些控件的边界态（禁用、错误、空选项、上限夹取、危险档确认层）
@@ -20,7 +20,6 @@ import "../src/styles/base.css";
 import QInput from "../src/components/ui/QInput.vue";
 import QSelect from "../src/components/ui/QSelect.vue";
 import QNumber from "../src/components/ui/QNumber.vue";
-import QSlider from "../src/components/ui/QSlider.vue";
 import QConfirm from "../src/components/ui/QConfirm.vue";
 import { applyTheme, getThemePreference, resolveTheme } from "../src/utils/theme";
 import { applyMotion, getMotionPreference, resolveMotion } from "../src/utils/motion";
@@ -261,49 +260,6 @@ const BLOCKS: BlockSpec[] = [
     note: "输入框与两个步进按钮一起禁用。",
     state: "disabled",
     setup: () => () => h(QNumber, { modelValue: 8, min: 0, max: 99, disabled: true }),
-  },
-
-  // ---------------------------------------------------------------- QSlider
-  {
-    id: "atoms-qslider-zero",
-    group: "QSlider",
-    title: "0（最小）",
-    note: "已填充段为空，滑块在最左。",
-    state: "zero",
-    setup: () => {
-      const v = ref(0);
-      return () => h(QSlider, { modelValue: v.value, label: "动画速度", "onUpdate:modelValue": (x: number) => (v.value = x) });
-    },
-  },
-  {
-    id: "atoms-qslider-mid",
-    group: "QSlider",
-    title: "中值",
-    note: "轨道左半段是强调色（已填充），右半段是弱边框色。",
-    state: "mid",
-    setup: () => {
-      const v = ref(0.5);
-      return () => h(QSlider, { modelValue: v.value, label: "动画速度", "onUpdate:modelValue": (x: number) => (v.value = x) });
-    },
-  },
-  {
-    id: "atoms-qslider-full",
-    group: "QSlider",
-    title: "1（最大）",
-    note: "滑块在最右，整条轨道都是已填充色。",
-    state: "full",
-    setup: () => {
-      const v = ref(1);
-      return () => h(QSlider, { modelValue: v.value, label: "动画速度", "onUpdate:modelValue": (x: number) => (v.value = x) });
-    },
-  },
-  {
-    id: "atoms-qslider-disabled",
-    group: "QSlider",
-    title: "禁用",
-    note: "整体降透明度、指针不再提示可拖动。",
-    state: "disabled",
-    setup: () => () => h(QSlider, { modelValue: 0.4, label: "动画速度", disabled: true }),
   },
 
   // ---------------------------------------------------------------- QConfirm

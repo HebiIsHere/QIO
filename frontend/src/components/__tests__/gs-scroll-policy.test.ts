@@ -36,28 +36,6 @@ function ruleBody(source: string, selector: string): string {
   return m ? m[1] : "";
 }
 
-const FAILED_SEND = "components/interactive/FailedSendNotice.vue";
-
-describe("task-7：失败恢复浮层的滚动层收敛（FailedSendNotice）", () => {
-  it("四个选择器都不再自开滚动层（max-height + overflow-y 的组合已移除）", () => {
-    const src = read(FAILED_SEND);
-    for (const sel of [".failed-send", ".recovery", ".pending", ".quote"]) {
-      const body = ruleBody(src, sel);
-      expect(body, sel + " 规则必须存在").not.toBe("");
-      expect(body, sel + " 不应再有 max-height（会在同一阅读流里再切一层小滚动窗口）").not.toContain("max-height");
-      expect(body, sel + " 不应再有 overflow-y").not.toContain("overflow-y");
-      expect(body, sel + " 不应再有 overscroll-behavior").not.toContain("overscroll-behavior");
-    }
-  });
-
-  it("恢复入口仍然带边界保护；规模由「默认 3 条 + 查看其余 N 条」控制", () => {
-    const src = read(FAILED_SEND);
-    expect(src).toContain("data-qio-fit");
-    expect(src).toContain("DEFAULT_SHOWN");
-    expect(src).toContain("查看其余");
-  });
-});
-
 describe("恢复/审批正文的 scroll 层数（task-7 连带范围）", () => {
   it("RecoveryInbox 没有自开滚动层，长原文默认简述 + 就地展开", () => {
     const src = read("components/RecoveryInbox.vue");
@@ -89,16 +67,6 @@ describe("恢复/审批正文的 scroll 层数（task-7 连带范围）", () => 
     // 模板顺序：.ua-body 先出现、.ua-actions 在后 —— 按钮在滚动区外
     expect(src.indexOf('class="ua-body"')).toBeLessThan(src.indexOf('class="ua-actions"'));
   });
-
-  it("ImpactConfirmDialog：滚动收敛到 .body 一层，操作区固定在框内", () => {
-    const src = read("components/interactive/ImpactConfirmDialog.vue");
-    expect(ruleBody(src, ".dialog")).toContain("overflow: clip");
-    const body = ruleBody(src, ".body");
-    expect(body).toContain("overflow-y: auto");
-    expect(body).toContain("flex: 1 1 auto");
-    expect(src).toContain('class="body" v-qio-scrollbar data-qio-fit');
-    expect(ruleBody(src, ".actions")).toContain("flex: none");
-  });
 });
 
 describe("统一滚动策略：不再有原生/自绘滚动条", () => {
@@ -106,9 +74,6 @@ describe("统一滚动策略：不再有原生/自绘滚动条", () => {
     "components/DevTaskEntry.vue",
     "components/ui/QCombo.vue",
     "components/ui/QSelect.vue",
-    "components/interactive/IntentBatchTray.vue",
-    "components/interactive/IntentPreviewCard.vue",
-    "components/interactive/IntentStatusPopover.vue",
     "components/interactive/SubmitCluster.vue",
     "components/planet/EntityPanel.vue",
     "components/planet/KnowledgePanel.vue",
@@ -130,8 +95,8 @@ describe("统一滚动策略：不再有原生/自绘滚动条", () => {
   it("声明了纵向滚动的区域都接入了共享策略（指令 / 组合式 / 容器组件）", () => {
     const missing = converted.filter((rel) => {
       const src = read(rel);
-      if (!/overflow-y:\s*auto/.test(src) && !/class="qio-scroll-area"/.test(src)) return false;
-      return !/v-qio-scrollbar|useQioScrollbars|QioScrollArea|qio-scroll-area/.test(src);
+      if (!/overflow-y:\s*auto/.test(src)) return false;
+      return !/v-qio-scrollbar|useQioScrollbars/.test(src);
     });
     expect(missing).toEqual([]);
   });

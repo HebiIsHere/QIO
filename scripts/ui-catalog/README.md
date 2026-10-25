@@ -182,7 +182,6 @@ Markdown 渲染全覆盖（往 ASSISTANT 事件里灌一段含全元素的正文
 - [ ] QInput：默认 / 占位 / 聚焦 / error / mono / disabled / password
 - [ ] QSelect：关闭 / 打开 / 高亮项 / 已选中 / 禁用 / 空选项
 - [ ] QNumber：常规 / 带单位 / 空值 / 禁用 / 上限夹取 / 聚焦
-- [ ] QSlider：0 / 中值 / 满值 / 禁用
 - [ ] QConfirm：inline（normal / danger）、popover（normal / danger）、layer（normal / danger）
 
 ## 每张图的验收标准

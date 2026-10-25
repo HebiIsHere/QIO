@@ -2190,7 +2190,7 @@ watch(
               渲染上下文是**显式**的（契约：不用 DOM 猜测区分「对话内渲染」与「独立材料阅读」）：
               卡片内展开阅读 = 独立互动材料阅读 → material：
               图片 / PDF 放大、电子表格网格、代码预览可按材料类型保留必要的二维浏览，
-              并且用统一 QIO 指示条；对话内（ChatDock 等）必须传 chat，执行无横向规则。
+              并且用统一 QIO 指示条；对话内（v2/InteractiveConversation）必须传 chat，执行无横向规则。
             -->
             <CardInlinePreview
               v-if="hasPreviewMaterial"

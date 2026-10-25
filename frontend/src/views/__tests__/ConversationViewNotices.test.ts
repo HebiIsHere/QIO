@@ -29,7 +29,7 @@ function mountView() {
   return mount(ConversationView, {
     global: {
       plugins: [pinia],
-      stubs: { MessageStream: true, Composer: true, SettingsFloat: true },
+      stubs: { MessageStream: true, Composer: true },
     },
   });
 }

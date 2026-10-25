@@ -16,7 +16,6 @@ import type {
   Intent,
   IntentListResponse,
   IntentPreview,
-  SubmissionRecord,
   SubmissionResult,
   UnderstandingResponse,
   VisibleRange,
@@ -28,7 +27,6 @@ import type {
   LedgerSummaryView,
   RecoveryPreviewResponse,
   RecoveryResultView,
-  WaitingResponse,
 } from "../interactive/intentWorkbench";
 
 /** 服务端错误体（M4 定稿）：error/reason 是给用户看的真实原因，其余是可核对的结构。 */
@@ -101,14 +99,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const BASE = "/api/interactive";
 
-export function listBoards(): Promise<{ boards: { id: string; title: string }[] }> {
-  return request(`${BASE}/boards`);
-}
-
-export function createBoard(title?: string): Promise<{ board: { id: string; title: string } }> {
-  return request(`${BASE}/boards`, { method: "POST", body: JSON.stringify({ title }) });
-}
-
 export function fetchBoardState(boardId: string): Promise<BoardStateResponse> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/state`);
 }
@@ -140,14 +130,6 @@ export function saveBoardState(
     method: "PUT",
     body: JSON.stringify({ state, reason, ...(confirm ? { confirm } : {}) }),
   });
-}
-
-export function fetchHistory(boardId: string): Promise<{ snapshots: unknown[] }> {
-  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/history`);
-}
-
-export function fetchSubmissions(boardId: string): Promise<{ submissions: SubmissionRecord[] }> {
-  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/submissions`);
 }
 
 export function fetchVisibleRange(boardId: string): Promise<{ visibleRange: VisibleRange }> {
@@ -241,10 +223,6 @@ export interface DraftSaveResult extends DraftState {
   mode?: "patch" | "replace";
 }
 
-export function fetchDrafts(boardId: string): Promise<DraftState> {
-  return request(`${BASE}/drafts/${encodeURIComponent(boardId)}`);
-}
-
 /**
  * 保存草稿（契约 C1）。
  *
@@ -271,10 +249,6 @@ export function saveDrafts(
 
 export function fetchIntents(boardId: string): Promise<IntentListResponse> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/intents`);
-}
-
-export function listIntentBoard(boardId: string): Promise<IntentListResponse> {
-  return fetchIntents(boardId);
 }
 
 /**
@@ -450,16 +424,6 @@ export function fetchIntentViews(boardId: string): Promise<IntentViewListRespons
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/intent-views`);
 }
 
-/** 单条意图详情（含授权快照与账本摘要）。 */
-export function fetchIntentView(
-  boardId: string,
-  intentId: string,
-): Promise<{ available: boolean; intent: import("../interactive/intentWorkbench").IntentView }> {
-  return request(
-    `${BASE}/boards/${encodeURIComponent(boardId)}/intent-views/${encodeURIComponent(intentId)}`,
-  );
-}
-
 /** 单条确认：门槛由后端/前端强制（单条不走批量）。 */
 export function confirmSingleIntent(intentId: string, boardId: string): Promise<ConfirmResponse> {
   return request(`${BASE}/intents/${encodeURIComponent(intentId)}/confirm`, {
@@ -480,11 +444,6 @@ export function batchConfirmIntents(
     method: "POST",
     body: JSON.stringify({ boardId, intentIds }),
   });
-}
-
-/** 当前等待事项（A 的提交—等待—续作持久化；不可用时 available=false 并给原因）。 */
-export function fetchWaiting(boardId: string): Promise<WaitingResponse> {
-  return request(`${BASE}/boards/${encodeURIComponent(boardId)}/waiting`);
 }
 
 /** 权威操作账本摘要（只有 applied 算完成）。 */

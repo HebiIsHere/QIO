@@ -45,7 +45,6 @@ function mountView() {
       stubs: {
         MessageStream: true,
         Composer: composerStub,
-        SettingsFloat: true,
         PlanetDock: dockStub,
         PlanetView: planetStub,
       },
