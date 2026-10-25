@@ -59,7 +59,7 @@ async function mountApp() {
   const wrapper = mount(App, {
     global: {
       plugins: [pinia],
-      stubs: { RouterView: true, ApprovalEntry: true, ApprovalModal: true, DevTaskEntry: true },
+      stubs: { RouterView: true, NonChatApprovalEntry: true, DevTaskEntry: true },
     },
   });
   await flushPromises();

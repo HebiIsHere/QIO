@@ -226,9 +226,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /*
-  外观与边框在这里；位置（left / bottom / max-width / z-index）由
-  styles/interactive-shell.css 统一持有 —— 那里要用重复属性选择器压过 scoped 规则，
-  两处不许各写一份宽度上限（旧实现就是两处各一份，窄窗口塌成 0 宽）。
+  外观与边框在这里；宽度测量变量（--im-toolbar-max-width / --im-toolbar-chat-reserve）
+  与悬浮态表面重置由 styles/layers.css 统一持有 —— 档位纯函数（interactive/toolbarLayout.ts）
+  与这里的隐形探测器读同一份变量，两处不许各写一份宽度上限
+  （旧实现就是两处各一份，窄窗口塌成 0 宽）。
 */
 .board-toolbar {
   display: flex;

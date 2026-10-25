@@ -28,7 +28,7 @@ export type DefaultPosFn = (el: HTMLElement, viewport: { width: number; height: 
 
 export interface UseFloatingWindowOptions {
   id: DockId;
-  /** edge：贴边（Composer / PlanetDock）；corner：贴角（SettingsFloat） */
+  /** edge：贴边（Composer / PlanetDock）；corner：贴角（旧浮动设置入口已删除，保留该模式供后续浮动组件） */
   dockMode: "edge" | "corner";
   /** 初始位置（顶部-左角像素）；或按元素尺寸/视口计算的函数 */
   defaultPos: DefaultPos | DefaultPosFn;

@@ -2848,7 +2848,7 @@ const sessionStoreDefinition = defineStore("session", {
      *
      * 结束事实由 recordTurnFacts **先**落地，这里只负责清理排队标记：
      * * 清掉这条用户消息的「等待中」；
-     * * 把它登记为「已取消」（QueueChip 可查看）；
+     * * 把它登记为「已取消」（对话页入口④「排队」可查看）；
      * * 绝不触碰 active / turnRunning —— 正在跑的可能是另一轮。
      */
     concludeQueuedTurn(turnId: string) {
@@ -3192,13 +3192,13 @@ const sessionStoreDefinition = defineStore("session", {
       // 服务端说「还有没返回的」时，总数不能被本地合并改小 —— 截断提示必须真实
       this.recoveryTotal = Math.max(this.recoveryTotal, merged.length);
       this.recoveryRecords = merged;
-      // 收件箱清单变了：旧入口（InterruptedTurnEntry）渲染的那份派生清单也要跟着收敛
+      // 收件箱清单变了：入口①「发送异常」与恢复收件箱共用的那份派生清单也要跟着收敛
       this._syncInterruptedTurns();
     },
     /**
-     * 从 `_rawInterruptedTurns` 派生出旧入口渲染的 `interruptedTurns`。
+     * 从 `_rawInterruptedTurns` 派生出界面渲染的 `interruptedTurns`。
      *
-     * 两个入口（旧的 InterruptedTurnEntry 与新的 RecoveryInbox）覆盖的是**同一批**事项，
+     * 两个入口（SendIssuesPanel 入口①「发送异常」与 RecoveryInbox）覆盖的是**同一批**事项，
      * 同一条记录绝不能同时出现在两边（那会让用户对同一条重复操作，且状态各说各话）。
      * 收件箱已经覆盖的 id 由新入口独家提供操作；收件箱拉不到时旧入口仍然兜底显示
      * （覆盖不会因此丢失）。已确认处理的 id 两边都过滤：稍旧的快照不许复活它们。

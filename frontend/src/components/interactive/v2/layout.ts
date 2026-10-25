@@ -22,7 +22,7 @@ export type LayoutIssue =
   | "bookmarks_capped"
   | "chat_capped";
 
-/** 档位阈值（工作区实测宽度，px）。与 interactive-shell.css 的 1024 / 800 断点同一量级，但量的是容器不是视口。 */
+/** 档位阈值（工作区实测宽度，px）。与 styles/layers.css 的 1024 / 800 工具栏档位断点同一量级，但量的是容器不是视口。 */
 export const BAND_WIDE_MIN = 1024;
 export const BAND_COMPACT_MIN = 760;
 

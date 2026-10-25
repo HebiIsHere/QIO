@@ -7,7 +7,7 @@
   - 全局栏自身 overflow: hidden，所以搜索结果浮层 Teleport 到 body 并用 fixed 定位，
     再由 chromePlacement 纯函数把矩形钳进视口 —— 不被顶栏裁切、不被推出屏幕。
   - 搜索用真实 store 的板面 + 现有 searchCards 纯函数，点结果 dispatch
-    qio:interactive:locate-card（与 BoardSearchPanel 同一套定位事件），不造假数据。
+    qio:interactive:locate-card（沿用互动页既有的定位事件名，旧的独立搜索面板已删除），不造假数据。
   - 保存状态是互动页**唯一**的一处：说准「保存只落库 ≠ QIO 已收到」，
     失败原因一句话，完整原文放 title。
 -->

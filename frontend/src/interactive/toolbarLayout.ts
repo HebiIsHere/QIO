@@ -65,9 +65,9 @@ function lengthOf(style: CSSStyleDeclaration, name: string, fallback: number): n
 /**
  * 量「功能栏实际可用宽度」。
  *
- * 它等于功能栏 max-width 的实际取值：
+ * 它等于功能栏 max-width 的实际取值（变量定义在 styles/layers.css）：
  *   min(--im-toolbar-max-width, 100% - --im-toolbar-chat-reserve - --sp-8 - --sp-4)
- * 其中 100% 是舞台（.im-stage）的内容宽度。--im-toolbar-chat-reserve 是 min()/vw 组合，
+ * 其中 100% 是舞台（[data-im="interactive-stage"]）的内容宽度。--im-toolbar-chat-reserve 是 min()/vw 组合，
  * `getPropertyValue` 拿到的是原始 token 串而不是像素，所以用一个宽度就等于该令牌的
  * 隐形探测器（reserveProbe）来量 —— 它不含相对自身容器的百分比，不会自引用。
  *
