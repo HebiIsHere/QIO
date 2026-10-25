@@ -83,3 +83,153 @@ export const RECOVERY_ENTRY_TEXT = {
 export function recoveryEmptyText(): string {
   return "现在没有需要恢复或收尾的事项。";
 }
+/** 恢复事项的种类（身份前缀就是它，保证同一事项在刷新后仍是同一个 id）。 */
+export type RecoveryItemKind =
+  | "impact-wait"
+  | "save-failed"
+  | "draft-save-failed"
+  | "submit-refresh-failed"
+  | "submit-unknown"
+  | "content-conflict"
+  | "removal-conflict"
+  | "draft-conflict"
+  | "recoverable"
+  | "retry-exhausted";
+
+export interface RecoveryItem {
+  /** 稳定身份：`<kind>:<对象 id>`（同一事项刷新 / 重新进入页面后仍是同一个 id） */
+  id: string;
+  kind: RecoveryItemKind;
+  title: string;
+  text: string;
+  intentId?: string;
+  cardId?: string;
+  key?: string;
+}
+
+export interface RecoveryItemInput {
+  /** 正在等用户确认的保存前影响说明（也是「尚未保存」的真实事项） */
+  impactPending?: boolean;
+  saveFailed: boolean;
+  saveError?: string | null;
+  draftSaveFailed: boolean;
+  draftError?: string | null;
+  submitRefreshFailed: boolean;
+  submitRefreshError?: string | null;
+  submitUnknown: boolean;
+  submitNote?: string | null;
+  contentConflictCardIds: readonly string[];
+  removalConflictIds: readonly string[];
+  draftConflictKeys: readonly string[];
+  /** 服务端意图视图里可以恢复的意图（id + 标题） */
+  recoverableIntents: readonly { intentId: string; title: string }[];
+  /** 服务端重试记录里已经耗尽（status === "exhausted"）的意图 */
+  exhaustedRetryIntentIds: readonly string[];
+}
+
+/**
+ * 把真实事实摊成**逐条事项**（F05）：同一身份只出现一次，
+ * 数量 = 条目数（处理后立刻减少，绝不用「历史最大数量」）。
+ *
+ * 这里不判断「要不要显示入口」：读取失败 / 尚未读取由调用方单独表达，
+ * 绝不能用空数组冒充「没有事项」。
+ */
+export function buildRecoveryItems(input: RecoveryItemInput | null | undefined): RecoveryItem[] {
+  if (!input) return [];
+  const items: RecoveryItem[] = [];
+  const seen = new Set<string>();
+  const push = (item: RecoveryItem): void => {
+    if (!item.id || seen.has(item.id)) return;
+    seen.add(item.id);
+    items.push(item);
+  };
+
+  if (input.impactPending) {
+    push({
+      id: "impact-wait:board",
+      kind: "impact-wait",
+      title: "保存前的影响确认还没有决定",
+      text: "这次改动会影响正在执行的任务：确认或取消之后才会保存（现在尚未保存）。",
+    });
+  }
+  if (input.saveFailed) {
+    push({
+      id: "save-failed:board",
+      kind: "save-failed",
+      title: "板面没有保存",
+      text: input.saveError || "保存失败（原因未说明）",
+    });
+  }
+  if (input.draftSaveFailed) {
+    push({
+      id: "draft-save-failed:board",
+      kind: "draft-save-failed",
+      title: "卡片草稿没有保存",
+      text: input.draftError || "草稿保存失败（原因未说明）",
+    });
+  }
+  if (input.submitRefreshFailed) {
+    push({
+      id: "submit-refresh-failed:board",
+      kind: "submit-refresh-failed",
+      title: "提交成功但页面没刷新过来",
+      text: input.submitRefreshError || "刷新失败（原因未说明）",
+    });
+  }
+  if (input.submitUnknown) {
+    push({
+      id: "submit-unknown:board",
+      kind: "submit-unknown",
+      title: "这次提交的结果还没有确认",
+      text: input.submitNote || "没有拿到回执：可以按请求身份查证，不会重复提交。",
+    });
+  }
+  for (const cardId of dedupe(input.contentConflictCardIds)) {
+    push({
+      id: "content-conflict:" + cardId,
+      kind: "content-conflict",
+      title: "卡片正文冲突",
+      text: "这张卡在本页与服务器上都被改过：保留哪一份由你决定。",
+      cardId,
+    });
+  }
+  for (const id of dedupe(input.removalConflictIds)) {
+    push({
+      id: "removal-conflict:" + id,
+      kind: "removal-conflict",
+      title: "删除与服务器修改相撞",
+      text: "本地删除了这个对象，但服务器上它被改过：请选择保持删除还是恢复服务器版。",
+      key: id,
+    });
+  }
+  for (const key of dedupe(input.draftConflictKeys)) {
+    push({
+      id: "draft-conflict:" + key,
+      kind: "draft-conflict",
+      title: "草稿冲突",
+      text: "同一份草稿在本页与服务器上各有一份：两份都保留，等你明确选择。",
+      key,
+    });
+  }
+  for (const intent of input.recoverableIntents ?? []) {
+    const intentId = String(intent?.intentId ?? "");
+    if (!intentId) continue;
+    push({
+      id: "recoverable:" + intentId,
+      kind: "recoverable",
+      title: "可以恢复的意图",
+      text: "「" + (String(intent.title ?? "") || intentId) + "」已暂停 / 失败 / 部分完成：可以恢复（不自动执行操作）。",
+      intentId,
+    });
+  }
+  for (const intentId of dedupe(input.exhaustedRetryIntentIds)) {
+    push({
+      id: "retry-exhausted:" + intentId,
+      kind: "retry-exhausted",
+      title: "自动重试用尽",
+      text: "这条意图的自动重试已经用尽，需要你决定下一步（重试记录以服务端为准）。",
+      intentId,
+    });
+  }
+  return items;
+}

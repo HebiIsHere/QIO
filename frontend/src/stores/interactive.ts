@@ -94,6 +94,15 @@ import {
   type SubmissionIdentity,
 } from "../interactive/submission";
 import { readBoardArea } from "../interactive/viewport";
+import { canRecover, type IntentView } from "../interactive/intentWorkbench";
+// 纯逻辑放在 v2/（A 组自有）：任务行合并 / 恢复事项摊平都不读全局、不发请求，
+// 由 store 传入真实服务端事实，界面也复用同一份，避免第二套判定。
+import {
+  buildTaskRows,
+  taskCounts,
+  type TaskRow,
+} from "../components/interactive/v2/taskCenter";
+import { buildRecoveryItems, type RecoveryItem } from "../components/interactive/v2/recoverySummary";
 
 const DEFAULT_BOARD_ID = "board_default";
 const UNDO_LIMIT = 100;
@@ -265,6 +274,39 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const intentsLoadState = ref<"idle" | "loading" | "ok" | "error">("idle");
   const intentsLoadError = ref<string | null>(null);
   const intentsLoadedOnce = ref(false);
+
+  /* ------------------------------------------------------------------
+   * F02：新链意图视图（服务端事实）在本 store 里**唯一维护**
+   *
+   * 基线里这份数据由页面本地 ref 持有，只在 lastSubmission.submission.id 变化时刷新：
+   * 理解延迟返回时新意图永远不会出现（必须重进页面）；刷新失败直接清空列表；
+   * 两次读取乱序时旧结果会盖掉新结果。现在：
+   * - 页面 / 虚拟意图层 / 任务面板 / 恢复事项都只读这一份（没有第二份列表驱动资格）；
+   * - 读取带板面身份与代次：迟到的旧响应不落地；失败保留最后一次成功内容（F06）；
+   * - 刷新复用既有 understanding / execution 定时器与事件，不新增第四套轮询。
+   * ------------------------------------------------------------------ */
+  /** 新链意图视图（display / turn 是 Phase 3 追加字段；缺省即没有，不猜）。 */
+  type IntentViewFact = IntentView & {
+    display?: { x?: unknown; y?: unknown } | null;
+    turn_id?: string | null;
+    turnId?: string | null;
+  };
+  const intentViews = ref<IntentViewFact[]>([]);
+  const intentViewsLoadState = ref<"idle" | "loading" | "ok" | "error">("idle");
+  const intentViewsLoadError = ref<string | null>(null);
+  /** 是否**成功**读到过：用来区分「成功返回空集合」与「从来没读到过」 */
+  const intentViewsLoadedOnce = ref(false);
+  /** 服务端来源（service / legacy）：界面据此如实标注，不冒充新链能力 */
+  const intentViewsSource = ref("");
+  let intentViewsSeq = 0;
+  let intentViewsAppliedSeq = 0;
+  let intentViewsInFlight: Promise<boolean> | null = null;
+  /** 在飞读取属于哪个板面：板面切走后旧读取不能挡住新板面的读取 */
+  let intentViewsInFlightBoardId = "";
+  /** 最近一次真正发起读取的时间（节流用：轮询路径不会把请求打成风暴） */
+  let intentViewsLastStartedAt = 0;
+  /** 任务面板入口（真实界面承接；不再只有内部开关） */
+  const taskCenterFocus = ref<"tasks" | "pending">("tasks");
 
   /* ------------------------------------------------------------------
    * 真实理解与真实执行（契约 §14.1 / §14.6）
@@ -685,6 +727,111 @@ export const useInteractiveStore = defineStore("interactive", () => {
   const listBatches = computed(() => batchesWithList(intents.value));
   /** 顶部「任务」入口的数量：等待审批之外的、用户还需要关注的任务 */
   const taskCount = computed(() => activeIntents.value.length + settledIntents.value.length);
+
+  /* ------------------------------------------------------------------
+   * F03：任务行 / 批量对象 = 唯一一份（由新链视图 + 旧链清单 + 执行记录合成）
+   *
+   * 界面显示、数量、暂停 / 继续 / 取消 / 批准 / 拒绝的资格都读这一份，
+   * 不会出现「两份互不更新的列表分别驱动界面和操作资格」。
+   * ------------------------------------------------------------------ */
+  const taskRows = computed<TaskRow[]>(() =>
+    buildTaskRows({
+      views: intentViews.value.map((view) => ({
+        intentId: String(view.intent_id ?? ""),
+        title: String(view.title ?? ""),
+        status: String(view.status ?? ""),
+        version: Number(view.version ?? 0),
+        legacyStatus:
+          typeof view.raw_legacy_status === "string" && view.raw_legacy_status
+            ? view.raw_legacy_status
+            : null,
+        authorizationValid:
+          typeof view.authorization_valid === "boolean" ? view.authorization_valid : null,
+      })),
+      legacy: intents.value.map((intent) => ({
+        intentId: String(intent.id ?? ""),
+        title: String(intent.title ?? ""),
+        status: String(intent.status ?? ""),
+        version: Number((intent as { version?: number }).version ?? 0),
+      })),
+      executionStatus: executionStatus.value,
+    }),
+  );
+  const taskCountsValue = computed(() => taskCounts(taskRows.value));
+  const runningTaskCount = computed(() => taskCountsValue.value.live);
+  const pendingTaskCount = computed(() => taskCountsValue.value.waiting);
+  const recoverableIntentCount = computed(
+    () => taskRows.value.filter((row) => row.recoverable).length,
+  );
+  /** 还有需要跟踪的任务（执行中 / 已暂停）：页面据此提示「任务仍在推进」。 */
+  const hasActiveTasks = computed(() =>
+    taskRows.value.some((row) => row.bucket === "live" || row.bucket === "paused"),
+  );
+  const exhaustedRetryIntentCount = computed(
+    () =>
+      intentViews.value.filter((view) => {
+        const retry = (view as { retry?: { status?: string } | null }).retry;
+        return retry?.status === "exhausted";
+      }).length,
+  );
+
+  /**
+   * F05：恢复事项的**唯一摘要**（页面入口与面板内容同源）。
+   *
+   * 覆盖：影响确认等待、板面保存失败、草稿保存失败、提交后刷新失败、提交结果未知、
+   * 正文 / 删除冲突、草稿冲突、可恢复意图、自动重试用尽。
+   * 同一事项按稳定身份去重；读取失败 / 尚未读取由 recoveryEntry 单独表达，
+   * 绝不用空数组冒充「没有事项」（那是「没读到」）。
+   */
+  const recoveryItems = computed<RecoveryItem[]>(() =>
+    buildRecoveryItems({
+      impactPending: Boolean(pendingImpact.value),
+      saveFailed: saveStatus.value === "error",
+      saveError: saveError.value,
+      draftSaveFailed: draftSaveStatus.value === "error",
+      draftError: draftSaveError.value,
+      submitRefreshFailed: submitRefreshState.value === "error",
+      submitRefreshError: submitRefreshError.value,
+      submitUnknown: Boolean(submitResultUnknown.value),
+      submitNote: submitNote.value,
+      contentConflictCardIds: Object.keys(boardContentConflicts.value),
+      removalConflictIds: Object.keys(boardRemovalConflicts.value),
+      draftConflictKeys: Object.keys(draftConflicts.value),
+      recoverableIntents: intentViews.value
+        .filter((view) => canRecover(view as IntentView))
+        .map((view) => ({ intentId: String(view.intent_id ?? ""), title: String(view.title ?? "") })),
+      exhaustedRetryIntentIds: intentViews.value
+        .filter((view) => (view as { retry?: { status?: string } | null }).retry?.status === "exhausted")
+        .map((view) => String(view.intent_id ?? "")),
+    }),
+  );
+  /**
+   * 恢复入口状态：数量 + 读取状态。
+   *
+   * - error：意图读取失败 —— 入口仍要出现并说明「可能还有未列出的事项」，不能显示成「没有事项」；
+   * - pending：还没成功读到过 —— 同样不能说没有；
+   * - count：真实事项数（处理后立刻减少，不保留历史最大数量）。
+   */
+  const recoveryEntry = computed(() => {
+    const readFailed = intentViewsLoadState.value === "error";
+    return {
+      count: recoveryItems.value.length,
+      readFailed,
+      readError: readFailed ? intentViewsLoadError.value ?? "原因未知" : null,
+      pending: !intentViewsLoadedOnce.value && intentViewsLoadState.value !== "error",
+      visible:
+        recoveryItems.value.length > 0 ||
+        readFailed ||
+        (!intentViewsLoadedOnce.value && intentViewsLoadState.value === "loading"),
+    };
+  });
+  /** 可恢复意图数量（入口 / 面板共用；读取失败时如实为「未知」而不是 0） */
+  const recoveryReadState = computed<"ok" | "loading" | "error" | "idle">(() => {
+    if (intentViewsLoadState.value === "error") return "error";
+    if (intentViewsLoadState.value === "loading") return "loading";
+    if (intentViewsLoadState.value === "ok") return "ok";
+    return "idle";
+  });
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1916,6 +2063,185 @@ export const useInteractiveStore = defineStore("interactive", () => {
     }
   }
 
+  /** 意图视图读取失败时给用户看的原因（不暴露传输层外壳之外的内部代码）。 */
+  function intentViewsErrorMessage(err: unknown): string {
+    const message = (err as Error)?.message ?? String(err ?? "");
+    return message || "原因未知";
+  }
+
+  /**
+   * F02：读取新链意图视图（**唯一入口**）。
+   *
+   * 关键性质：
+   * - 同一时刻只允许一份在中国（in-flight 复用）：连点 / 多条路径同时刷新不会打出重复请求；
+   * - 按**板面身份 + 读取代次**落地：切走板面或已经有更新的读取落地时，旧响应直接丢弃（F02.8）；
+   * - 失败**保留**最后一次成功内容，只记错误（F06）；只有成功返回的空集合才是真的空；
+   * - 可传 throttleMs：轮询路径用节流，避免把 1s 轮询变成请求风暴（F02.7）。
+   *
+   * 返回 true = 这次真的拿到了服务端事实（含空集合）；false = 没拿到（复用/失败/被取代）。
+   */
+  async function loadIntentViews(options: { throttleMs?: number } = {}): Promise<boolean> {
+    if (!apiSupports("fetchIntentViews")) return false;
+    // 同一时刻只允许一份在飞读取（连点 / 多路径刷新不重复请求）；
+    // 但板面已经切换时，旧板面的在飞读取不许挡住新板面的读取。
+    if (intentViewsInFlight && intentViewsInFlightBoardId === boardId.value) {
+      return intentViewsInFlight;
+    }
+    const throttle = Number(options.throttleMs ?? 0);
+    if (throttle > 0 && Date.now() - intentViewsLastStartedAt < throttle) return false;
+    const requestedBoardId = boardId.value;
+    const seq = ++intentViewsSeq;
+    intentViewsLastStartedAt = Date.now();
+    intentViewsLoadState.value = "loading";
+    let run: Promise<boolean> | null = null;
+    run = (async () => {
+      try {
+        const payload = await api.fetchIntentViews(requestedBoardId);
+        if (boardId.value !== requestedBoardId) {
+          settleDiscardedIntentRead(seq);
+          return false;
+        }
+        if (seq < intentViewsAppliedSeq) {
+          settleDiscardedIntentRead(seq);
+          return false;
+        }
+        intentViewsAppliedSeq = seq;
+        if (payload?.available === false) {
+          // 服务端明确说「这份能力现在不可用」：不是空集合，也不是读取成功
+          intentViewsLoadState.value = "error";
+          intentViewsLoadError.value =
+            (payload as { reason?: string }).reason || "服务端的意图视图能力当前不可用（不代表没有意图）";
+          return false;
+        }
+        const list = Array.isArray(payload?.intents) ? payload.intents : [];
+        intentViews.value = list as IntentViewFact[];
+        intentViewsSource.value = String((payload as { source?: string }).source ?? "");
+        intentViewsLoadedOnce.value = true;
+        intentViewsLoadState.value = "ok";
+        intentViewsLoadError.value = null;
+        return true;
+      } catch (err) {
+        if (boardId.value !== requestedBoardId || seq < intentViewsAppliedSeq) {
+          settleDiscardedIntentRead(seq);
+          return false;
+        }
+        // 读取失败不是「意图消失」：旧清单原样保留，只标明更新失败与真实原因
+        intentViewsLoadState.value = "error";
+        intentViewsLoadError.value = intentViewsErrorMessage(err);
+        return false;
+      } finally {
+        if (run !== null && intentViewsInFlight === run) {
+          intentViewsInFlight = null;
+          intentViewsInFlightBoardId = "";
+        }
+      }
+    })();
+    intentViewsInFlight = run;
+    intentViewsInFlightBoardId = requestedBoardId;
+    return run;
+  }
+
+  /**
+   * 被丢弃的读取（板面切走 / 已经有更新的读取落地）：
+   * 只有它确实是最后一次发起、且状态还停在本次读取时，才把「正在读取」收回去，
+   * 免得界面永远停在加载中；更新的读取正在飞时什么都不做。
+   */
+  function settleDiscardedIntentRead(seq: number): void {
+    if (seq !== intentViewsSeq) return;
+    if (intentViewsLoadState.value !== "loading") return;
+    intentViewsLoadState.value = intentViewsLoadedOnce.value ? "ok" : "idle";
+  }
+
+  /**
+   * F11 + F06：依赖最新意图事实的动作（确认 / 恢复 / 任务控制之外的读取）先核实。
+   *
+   * 上一次读取失败意味着本页看到的是旧快照 —— 不能拿它当「当前权威」直接放行。
+   * 先按服务端事实重新读一次；仍然读不到就返回可读原因，由调用方**暂停**这个动作。
+   */
+  async function ensureFreshIntentViews(): Promise<string | null> {
+    if (intentViewsLoadState.value !== "error") return null;
+    const ok = await loadIntentViews();
+    if (ok) return null;
+    return (
+      "意图清单读取失败，无法确认这次操作依据的是最新事实，已暂停这次操作（" +
+      (intentViewsLoadError.value ?? "原因未知") +
+      "）。请先重试读取意图清单"
+    );
+  }
+
+  /** 意图事实的完整刷新（清单 + 视图 + 执行记录）：同一处实现，所有入口都走它。 */
+  async function refreshIntentFacts(): Promise<{ ok: boolean; intentError?: string }> {
+    const [, viewsOk] = await Promise.all([loadIntents(), loadIntentViews()]);
+    return viewsOk
+      ? { ok: true }
+      : { ok: false, intentError: intentViewsLoadError.value ?? "原因未知" };
+  }
+
+  /**
+   * 确认 / 恢复 / 任务控制之后：意图状态、正式板面、可见范围、执行记录一起刷新。
+   *
+   * 只读：不重复创建意图、不重复执行任务；板面刷新走既有合并规则
+   * （有未保存候选时保留用户候选，只接收服务器事实）。
+   */
+  async function refreshAfterIntentAction(): Promise<void> {
+    await refreshIntentFacts();
+    try {
+      await refreshBoardFromServer();
+      await refreshVisibleRange();
+    } catch {
+      // 板面刷新失败只影响「页面事实是否最新」，执行与意图读取照常进行
+    }
+    await loadExecutions();
+  }
+
+  /** 打开任务面板（f焦点区分「任务」与「批量待确认」两条入口，界面是同一个）。 */
+  function openTaskCenter(focus: "tasks" | "pending" = "tasks"): void {
+    taskCenterFocus.value = focus;
+    tasksOpen.value = true;
+  }
+
+  function closeTaskCenter(): void {
+    tasksOpen.value = false;
+    taskCenterFocus.value = "tasks";
+  }
+
+  /**
+   * F02.6：回到前台 / 断线恢复时**重新核实**一次事实。
+   *
+   * 只读：绝不重复创建意图、不重复提交、不自动执行任务；
+   * 失败只记在对应的读取状态里（界面照旧显示上次事实并说明更新失败）。
+   */
+  let lastReverifyAt = 0;
+  async function reverifyAfterResume(): Promise<void> {
+    const now = Date.now();
+    // 1s 内的重复触发（可见性 + online 双事件）合并成一次
+    if (now - lastReverifyAt < 1000) return;
+    lastReverifyAt = now;
+    if (submitStatus.value === "submitting") return;
+    await refreshIntentFacts();
+    await loadExecutions();
+    if (understandingStatus.value && !understandingSettled(understandingStatus.value)) {
+      void refreshUnderstanding();
+    }
+  }
+
+  /**
+   * 页面卸载 / 离开互动页：停掉本页的轮询与可见性监听。
+   *
+   * 只清计时器与监听，不清任何服务端事实 —— 重新进入时 load() 会重新核实。
+   */
+  function disposePageRuntime(): void {
+    stopUnderstandingPolling();
+    stopExecutionPolling();
+    if (understandingVisibilityHooked) {
+      understandingVisibilityHooked = false;
+    }
+    if (executionVisibilityHooked) {
+      executionVisibilityHooked = false;
+    }
+    intentViewsInFlight = null;
+  }
+
   /**
    * F11：依赖最新事实的动作（审批 / 拒绝 / 批量决定）在事实可疑时先做一次服务端核验。
    *
@@ -1937,6 +2263,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
       await refreshBoardFromServer();
       await refreshVisibleRange();
       await loadIntents();
+      // F02/F06：意图视图与任务清单同一处维护；读取失败保留上次内容并标「更新失败」
+      await loadIntentViews();
       // 刷新后如实恢复真实的理解与执行状态（页面刷新不重复创建、不重复执行）
       await refreshUnderstanding();
       await loadExecutions();
@@ -3233,7 +3561,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     try {
       await refreshBoardFromServer();
       await refreshVisibleRange();
-      await loadIntents();
+      await refreshIntentFacts();
       // 这次提交之后新出现的意图属于同一批（QIO 对同一次提交给出的多个工作项）
       recordNewIntents(intentsBefore, batchKey);
       submitRefreshState.value = "idle";
@@ -3255,7 +3583,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     try {
       await refreshBoardFromServer();
       await refreshVisibleRange();
-      await loadIntents();
+      await refreshIntentFacts();
       submitRefreshState.value = "idle";
       return { ok: true };
     } catch (err) {
@@ -3316,7 +3644,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (dirty.value) await saveNow();
     await refreshBoardFromServer();
     await refreshVisibleRange();
-    await loadIntents();
+    await refreshIntentFacts();
     await loadExecutions();
   }
 
@@ -3387,7 +3715,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   async function updatePreview(intentId: string, preview: IntentPreview) {
     const result = await api.updateIntentPreview(intentId, preview);
-    await loadIntents();
+    await refreshIntentFacts();
     return result;
   }
 
@@ -3949,6 +4277,16 @@ export const useInteractiveStore = defineStore("interactive", () => {
     acceptanceLookupNote.value = null;
     lastAcceptance.value = null;
     lastSubmission.value = null;
+    /**
+     * 板面身份切换：上一个板面的意图视图不属于这里（F02.8）。
+     * 代次前进让还在飞的旧读取落地不了；新板面由随后的读取重新建立事实。
+     */
+    intentViewsSeq += 1;
+    intentViews.value = [];
+    intentViewsLoadedOnce.value = false;
+    intentViewsLoadState.value = "idle";
+    intentViewsLoadError.value = null;
+    intentViewsSource.value = "";
   }
 
   /** 把一次查询结果落成界面事实：最近一次 + 历史，不做任何推断。 */
@@ -4012,12 +4350,19 @@ export const useInteractiveStore = defineStore("interactive", () => {
    */
   async function refreshUnderstanding(): Promise<Understanding | null> {
     const submissionId = understandingSubmissionId();
+    let found: Understanding | null = null;
     try {
-      return await loadUnderstanding(submissionId);
+      found = await loadUnderstanding(submissionId);
     } catch (err) {
       understandingError.value = (err as Error).message;
       return null;
     }
+    /**
+     * F02.5：刷新理解只更新**理解事实**本身（不重复创建意图，也不在这里额外读取意图清单）。
+     * 意图清单的刷新由调用方决定：页面「刷新理解状态」会随后调用 refreshAfterIntentAction()，
+     * 重试理解路径在 retryUnderstanding 里显式刷新 —— 同一处维护，不重复请求。
+     */
+    return found;
   }
 
   /**
@@ -4230,6 +4575,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
       await api.createIntents(boardId.value, submissionId ?? undefined);
       syncedUnderstandings.add(id);
       await loadIntents();
+      // F02.2：理解迟到返回时，新意图必须立刻出现在界面上（不要求重新进入页面）
+      await loadIntentViews();
       recordNewIntents(before, "session:submission:" + (submissionId ?? id));
       return understandingIntents.value.length;
     } catch (err) {
@@ -4268,6 +4615,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     if (understandingStatus.value && !understandingSettled(understandingStatus.value)) {
       void startUnderstandingPolling();
     }
+    // 重试之后意图事实也可能变化：同一处刷新（读取失败保留旧内容）
+    await refreshIntentFacts();
     return { ok: result?.ok !== false, reason: result?.reason ?? result?.detail };
   }
 
@@ -4276,6 +4625,11 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * ------------------------------------------------------------------ */
 
   const EXECUTION_POLL_MS = 1200;
+  /**
+   * F02.4：执行轮询顺带刷新意图视图（每 N 次一次）。
+   * 复用同一个计时器，不新增第四套轮询；任务全部结束后会停下。
+   */
+  const INTENT_VIEWS_POLL_EVERY = 3;
   const EXECUTION_POLL_MAX = 150;
   let executionTimer: ReturnType<typeof setTimeout> | null = null;
   let executionPollToken = 0;
@@ -4337,10 +4691,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
       executionError.value = (err as Error).message;
     }
     if (token !== executionPollToken) return;
+    // F02.4：执行中/结束后及时更新意图状态与任务记录（与执行记录同一个轮询节奏）
+    void loadIntentViews({ throttleMs: 800 });
     // 成功 / 失败 / 取消都算结束：没有还在推进的记录就停下，不出现「已批准一直运行中」
     if (!liveExecutions.value.length) {
       stopExecutionPolling();
-      await loadIntents();
+      await refreshIntentFacts();
       return;
     }
     scheduleExecutionPoll();
@@ -4500,6 +4856,34 @@ export const useInteractiveStore = defineStore("interactive", () => {
     intentsLoadError,
     intentsLoadedOnce,
     ensureFreshIntents,
+    /** F02：新链意图视图（页面 / 意图层 / 任务面板 / 恢复入口的唯一数据源） */
+    intentViews,
+    intentViewsLoadState,
+    intentViewsLoadError,
+    intentViewsLoadedOnce,
+    intentViewsSource,
+    loadIntentViews,
+    refreshIntentFacts,
+    refreshAfterIntentAction,
+    ensureFreshIntentViews,
+    /** F03：任务行（显示 + 操作资格同源）与任务面板入口 */
+    taskRows,
+    taskCounts: taskCountsValue,
+    runningTaskCount,
+    pendingTaskCount,
+    hasActiveTasks,
+    recoverableIntentCount,
+    exhaustedRetryIntentCount,
+    taskCenterFocus,
+    openTaskCenter,
+    closeTaskCenter,
+    /** F05：恢复事项摘要（不依赖面板挂载） */
+    recoveryItems,
+    recoveryEntry,
+    recoveryReadState,
+    /** F02.6：回前台 / 断线恢复时重新核实；F02.7：离开页面时清理计时器与监听 */
+    reverifyAfterResume,
+    disposePageRuntime,
 
     // 真实理解（契约 §14.1 / §14.6）
     understanding,

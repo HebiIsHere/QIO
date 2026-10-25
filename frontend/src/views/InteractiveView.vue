@@ -21,16 +21,18 @@ import {
   InteractiveConversation,
   RecoveryPanel,
   SaveFailureBanner,
+  ImpactConfirmLayer,
+  TaskCenterPanel,
   RECOVERY_ENTRY_TEXT,
   recoveryEntryVisible,
+  IntentDisplayAuthority,
+  type IntentDisplayPoint,
 } from "../components/interactive/v2";
 import IntentLayer from "../components/interactive/v2/IntentLayer.vue";
 import InteractiveBookmarks from "../components/interactive/v2/InteractiveBookmarks.vue";
 import ExecutionRecordPanel from "../components/interactive/ExecutionRecordPanel.vue";
 import type { IntentView } from "../interactive/intentWorkbench";
-import type { IntentViewWithDisplay } from "../components/interactive/v2/intentDisplay";
-import { canRecover } from "../interactive/intentWorkbench";
-import { fetchIntentViews, saveIntentDisplay } from "../services/interactive";
+import { saveIntentDisplay } from "../services/interactive";
 import { understandingSettled, understandingText } from "../interactive/approval";
 
 const store = useInteractiveStore();
@@ -49,108 +51,209 @@ function syncConversationMaxHeight(): void {
   // 对话浮在板面上：最多长到仍露出约 220px 板面（70 全局栏 + 220 板面 + 16 边距）。
   conversationMaxHeight.value = Math.max(280, Math.min(720, window.innerHeight - 306));
 }
-/** 新链意图视图（服务端事实；不用旧 store.intents 冒充）。 */
-const intentViews = ref<IntentViewWithDisplay[]>([]);
-const intentDisplay = ref<Record<string, { x: number; y: number }>>({});
-const intentDisplayError = ref("");
-/** 事项行徽标：只由真实 store/意图事实构成；面板可回填更完整的服务端计数。 */
-const recoveryPanelCount = ref(0);
-const recoveryEntries = computed(() => {
-  const fallback =
-    (store.saveStatus === "error" ? 1 : 0) +
-    (store.submitRefreshState === "error" ? 1 : 0) +
-    (store.submitResultUnknown ? 1 : 0) +
-    intentViews.value.filter((view) => canRecover(view)).length;
-  const count = Math.max(fallback, recoveryPanelCount.value);
-  return [
-    {
-      ...RECOVERY_ENTRY_TEXT,
-      id: "recovery",
-      count,
-      tone: "warn" as const,
-      visible: recoveryEntryVisible(count),
-    },
-  ];
+
+/* ------------------------------------------------------------------
+ * F02：意图视图只读 store（唯一维护位置）
+ *
+ * 页面不再自己持有第二份 intentViews：加载 / 失败 / 乱序 / 刷新全部由 store 统一负责，
+ * 页面只做呈现与「重试读取」入口。
+ * ------------------------------------------------------------------ */
+const intentViews = computed(() => store.intentViews);
+const intentReadFailed = computed(() => store.intentViewsLoadState === "error");
+const intentReadErrorText = computed(() => {
+  const reason = store.intentViewsLoadError || "原因未知";
+  return store.intentViewsLoadedOnce
+    ? "更新失败，当前显示上次读取的内容（" + reason + "）"
+    : "意图读取失败（还没成功读到过，" + reason + "）：当前不能判定为空，请重试。";
 });
-
-function displayStorageKey(): string {
-  return "qio-interactive-intent-display:" + (store.board?.boardId ?? "board_default");
-}
-
-function readIntentDisplay(): void {
+const intentReadBusy = ref(false);
+async function retryIntentRead(): Promise<void> {
+  if (intentReadBusy.value) return;
+  intentReadBusy.value = true;
   try {
-    const raw = localStorage.getItem(displayStorageKey());
-    if (!raw) return;
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const next: Record<string, { x: number; y: number }> = {};
-    for (const [id, value] of Object.entries(parsed)) {
-      if (!value || typeof value !== "object") continue;
-      const point = value as { x?: unknown; y?: unknown };
-      if (typeof point.x === "number" && Number.isFinite(point.x) && typeof point.y === "number" && Number.isFinite(point.y)) {
-        next[id] = { x: point.x, y: point.y };
-      }
-    }
-    intentDisplay.value = next;
-  } catch {
-    // 本机显示位置不可用不影响意图真实状态
+    await store.refreshIntentFacts();
+  } finally {
+    intentReadBusy.value = false;
   }
 }
 
-function writeIntentDisplay(): void {
+/** 意图层确认 / 恢复 / 拒绝之后的统一刷新入口（意图状态 + 执行记录一起更新）。 */
+const intentRefreshBusy = ref(false);
+async function refreshAfterIntentAction(): Promise<void> {
+  if (intentRefreshBusy.value) return;
+  intentRefreshBusy.value = true;
   try {
-    localStorage.setItem(displayStorageKey(), JSON.stringify(intentDisplay.value));
+    await store.refreshAfterIntentAction();
+  } finally {
+    intentRefreshBusy.value = false;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * F10：意图显示位置的权威状态（服务器位置 / 等待保存 / 保存失败分开）
+ *
+ * 页面不再整块回滚 intentDisplay，也不再用「本机缓存优先」覆盖服务器事实：
+ * 每次保存按对象 + 操作版本归属，失败只回退这一张卡到这次操作前的位置。
+ * ------------------------------------------------------------------ */
+function displayStorageKey(): string {
+  return "qio-interactive-intent-display:" + (store.board?.boardId ?? "board_default");
+}
+function readDisplayCache(): Record<string, IntentDisplayPoint> {
+  try {
+    const raw = localStorage.getItem(displayStorageKey());
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const next: Record<string, IntentDisplayPoint> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (!value || typeof value !== "object") continue;
+      const point = value as { x?: unknown; y?: unknown };
+      if (
+        typeof point.x === "number" && Number.isFinite(point.x) &&
+        typeof point.y === "number" && Number.isFinite(point.y)
+      ) {
+        next[id] = { x: point.x, y: point.y };
+      }
+    }
+    return next;
+  } catch {
+    // 本机显示位置不可用不影响意图真实状态
+    return {};
+  }
+}
+function writeDisplayCache(cache: Record<string, IntentDisplayPoint>): void {
+  try {
+    localStorage.setItem(displayStorageKey(), JSON.stringify(cache));
   } catch {
     // 同上
   }
 }
 
-async function loadIntents(): Promise<void> {
-  const boardId = store.board?.boardId;
-  if (!boardId) return;
-  try {
-    const payload = await fetchIntentViews(boardId);
-    intentViews.value = (payload.intents ?? []) as IntentViewWithDisplay[];
-  } catch {
-    // 读取失败不伪造意图；旧工作台仍可单独重试
-    intentViews.value = [];
+const displayAuthority = new IntentDisplayAuthority(readDisplayCache());
+const displayOverrides = ref<Record<string, IntentDisplayPoint>>({});
+const displayStates = ref<Record<string, { phase: string; error?: string | null }>>({});
+const displayFailures = ref<{ intentId: string; error: string }[]>([]);
+
+function publishDisplay(): void {
+  const snapshot = displayAuthority.snapshot();
+  displayOverrides.value = snapshot.overrides;
+  const states: Record<string, { phase: string; error?: string | null }> = {};
+  for (const [intentId, state] of Object.entries(snapshot.states)) {
+    states[intentId] = { phase: state.phase, error: state.error };
   }
+  displayStates.value = states;
+  displayFailures.value = snapshot.failures;
+  writeDisplayCache(displayAuthority.cacheSnapshot());
 }
 
+const intentDisplayError = computed(() => {
+  if (!displayFailures.value.length) return "";
+  const detail = displayFailures.value
+    .map((item) => item.intentId + "：" + item.error)
+    .join("；");
+  return (
+    "意图位置保存失败：" + detail +
+    "（已回到这次操作前的位置，可以重新拖动；本机缓存不会覆盖服务器上更新的位置）"
+  );
+});
+
 async function onIntentDisplayChange(payload: { intentId: string; x: number; y: number }): Promise<void> {
-  const previous = intentDisplay.value;
-  intentDisplay.value = {
-    ...intentDisplay.value,
-    [payload.intentId]: { x: payload.x, y: payload.y },
-  };
-  writeIntentDisplay();
+  const intentId = String(payload?.intentId ?? "");
+  if (!intentId) return;
+  const op = displayAuthority.begin(intentId, { x: payload.x, y: payload.y });
+  publishDisplay();
   const boardId = store.board?.boardId;
   if (!boardId) {
-    intentDisplayError.value = "板面身份还没准备好，位置只保存在本机。";
+    displayAuthority.fail(intentId, op, "板面身份还没准备好，位置只保存在本机");
+    publishDisplay();
     return;
   }
   try {
-    await saveIntentDisplay(payload.intentId, boardId, payload.x, payload.y);
-    intentDisplayError.value = "";
+    const result = await saveIntentDisplay(intentId, boardId, payload.x, payload.y);
+    const accepted = (result as { display?: IntentDisplayPoint } | null)?.display ?? {
+      x: payload.x,
+      y: payload.y,
+    };
+    displayAuthority.settle(intentId, op, accepted);
   } catch (err) {
-    intentDisplay.value = previous;
-    writeIntentDisplay();
-    intentDisplayError.value = "意图位置没有保存到服务端：" + ((err as Error)?.message ?? "原因未知");
+    displayAuthority.fail(intentId, op, (err as Error)?.message ?? "原因未知");
   }
+  publishDisplay();
+}
+
+/**
+ * 服务器读取到的意图视图是位置事实的来源：
+ * 每次成功读取都用它更新权威位置（给了 display 就以服务器为准，已结束操作的临时位置随之下线）。
+ */
+watch(
+  () => store.intentViews,
+  (views) => {
+    displayAuthority.applyServerViews(views);
+    publishDisplay();
+  },
+);
+
+/* ------------------------------------------------------------------
+ * F05：恢复事项摘要来自 store（不再依赖 RecoveryPanel 是否挂载）
+ * ------------------------------------------------------------------ */
+const recoveryEntries = computed(() => {
+  const entry = store.recoveryEntry;
+  return [
+    {
+      ...RECOVERY_ENTRY_TEXT,
+      id: "recovery",
+      count: entry.count,
+      tone: "warn" as const,
+      visible: recoveryEntryVisible(entry.count) || entry.readFailed || entry.pending,
+    },
+  ];
+});
+const recoveryReadError = computed(() => (store.recoveryEntry.readFailed ? store.recoveryEntry.readError : ""));
+const recoveryReadBusy = ref(false);
+async function retryRecoveryRead(): Promise<void> {
+  if (recoveryReadBusy.value) return;
+  recoveryReadBusy.value = true;
+  try {
+    await store.refreshIntentFacts();
+  } finally {
+    recoveryReadBusy.value = false;
+  }
+}
+
+/* ------------------------------------------------------------------
+ * F02.6：切页返回 / 窗口回前台 / 断线恢复时重新核实（只读，不重复创建/执行）
+ * ------------------------------------------------------------------ */
+function onPageVisibility(): void {
+  if (typeof document === "undefined") return;
+  if (document.visibilityState !== "visible") return;
+  void store.reverifyAfterResume();
+}
+function onOnline(): void {
+  void store.reverifyAfterResume();
+}
+
+function openRecordById(intentId: string): void {
+  const view = store.intentViews.find((item) => item.intent_id === intentId);
+  if (view) recordIntent.value = view as IntentView;
 }
 
 onMounted(() => {
   syncConversationMaxHeight();
   window.addEventListener("resize", syncConversationMaxHeight);
-  readIntentDisplay();
-  void store.load().then(() => loadIntents());
+  document.addEventListener("visibilitychange", onPageVisibility);
+  window.addEventListener("online", onOnline);
+  publishDisplay();
+  void store.load().then(() => {
+    displayAuthority.applyServerViews(store.intentViews);
+    publishDisplay();
+  });
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", syncConversationMaxHeight);
+  document.removeEventListener("visibilitychange", onPageVisibility);
+  window.removeEventListener("online", onOnline);
+  // F02.7：离开互动页时停掉轮询与监听（重新进入时 load() 会重新核实）
+  store.disposePageRuntime();
 });
-watch(
-  () => store.lastSubmission?.submission?.id,
-  () => void loadIntents(),
-);
 
 const uText = computed(() => {
   if (!store.understandingStatus && store.submitStatus === "succeeded") {
@@ -181,6 +284,8 @@ async function refreshUnderstanding(): Promise<void> {
   refreshing.value = true;
   try {
     await store.refreshUnderstanding();
+    // F02.5：手动刷新理解也接回同一套状态更新（意图事实 + 执行记录，只读、不重复创建）
+    await store.refreshAfterIntentAction();
   } finally {
     refreshing.value = false;
   }
@@ -206,6 +311,8 @@ const boardSize = computed(() => {
     <InteractiveChromeTools />
     <!-- 统一审批：互动页恰好一套；入口由输入区事项行第⑤项提供，不再另挂浮动入口。 -->
     <UnifiedApprovalLayer :show-memory="false" />
+    <!-- F01：保存前影响确认的唯一承接界面（与统一审批共用「同时只有一个阻塞面」规则） -->
+    <ImpactConfirmLayer />
 
     <InteractiveWorkspace :bookmarks-open="bookmarksOpen">
       <template #board>
@@ -219,10 +326,13 @@ const boardSize = computed(() => {
                 :width="width"
                 :height="height"
                 :scale="scale"
-                :display-overrides="intentDisplay"
+                :display-overrides="displayOverrides"
+                :display-states="displayStates"
+                :facts-stale="intentReadFailed"
+                :facts-error="store.intentViewsLoadError"
                 :disabled="store.saveStatus === 'saving'"
                 @display-change="onIntentDisplayChange"
-                @refresh="loadIntents"
+                @refresh="refreshAfterIntentAction"
                 @open-record="recordIntent = $event"
               />
             </template>
@@ -280,8 +390,9 @@ const boardSize = computed(() => {
                 type="button"
                 data-im="tasks-entry"
                 :aria-expanded="store.tasksOpen"
-                @click="store.tasksOpen = !store.tasksOpen"
-              >任务{{ store.taskCount ? " " + store.taskCount : "" }}</button>
+                title="互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）"
+                @click="store.tasksOpen ? store.closeTaskCenter() : store.openTaskCenter('tasks')"
+              >任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}</button>
             </div>
           </div>
 
@@ -291,6 +402,14 @@ const boardSize = computed(() => {
             :board-id="store.board?.boardId ?? ''"
             :open="true"
             @close="recordIntent = null"
+          />
+
+          <!-- F03：任务 / 批量入口的真实承接界面（内容与操作资格都来自 store.taskRows） -->
+          <TaskCenterPanel
+            v-if="store.tasksOpen"
+            :focus="store.taskCenterFocus"
+            @close="store.closeTaskCenter()"
+            @open-record="openRecordById"
           />
 
           <!-- 悬浮对话：板面保持完整高度；工具栏与输入区固定在对话卡底部，消息向上展开。 -->
@@ -315,11 +434,13 @@ const boardSize = computed(() => {
                   />
                 </template>
                 <template #extra-panel="{ id }">
+                  <!-- F05：面板只在被点开时挂载，因此它一挂载就是「正在查看」：
+                       加载不再依赖消息区是否展开（对话收起时同样能读到真实事项）。 -->
                   <RecoveryPanel
                     v-if="id === 'recovery'"
                     :board-id="store.board?.boardId ?? ''"
-                    :active="store.chatOpen"
-                    @updated="recoveryPanelCount = $event"
+                    :active="true"
+                    @recovered="refreshAfterIntentAction"
                   />
                 </template>
               </InteractiveConversation>
@@ -330,7 +451,20 @@ const boardSize = computed(() => {
 
           <p v-if="store.loadError" class="im-notice err" role="alert" data-im="load-error">
             板面读取失败：{{ store.loadError }}
-            <button class="im-link" type="button" @click="store.load()">重试</button>
+            <button class="im-link" type="button" data-im="board-retry" @click="store.load()">重试</button>
+          </p>
+          <!-- F06：意图读取失败保留旧内容 + 明确区分「更新失败」与「从来没读到过」 -->
+          <p v-if="intentReadFailed" class="im-notice warn" role="alert" data-im="intent-read-error">
+            {{ intentReadErrorText }}
+            <button class="im-link" type="button" data-im="intent-read-retry" :disabled="intentReadBusy" @click="retryIntentRead">
+              {{ intentReadBusy ? "读取中…" : "重试读取" }}
+            </button>
+          </p>
+          <p v-if="recoveryReadError" class="im-notice warn" role="status" data-im="recovery-read-error">
+            恢复事项读取失败：{{ recoveryReadError }}（这不代表没有事项）
+            <button class="im-link" type="button" data-im="recovery-retry" :disabled="recoveryReadBusy" @click="retryRecoveryRead">
+              {{ recoveryReadBusy ? "读取中…" : "重试读取" }}
+            </button>
           </p>
           <p v-if="intentDisplayError" class="im-notice warn" role="status" data-im="intent-display-error">
             {{ intentDisplayError }}
