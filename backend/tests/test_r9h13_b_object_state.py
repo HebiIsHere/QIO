@@ -40,6 +40,9 @@ from agent.security import launch as launch_boundary
 from agent.security import requirement_limits
 from agent.security.context import requirement_context
 from agent.security.engine import AuthorizationEngine
+from agent.security import requirement_limits
+from agent.security.context import requirement_context
+from agent.security.engine import AuthorizationEngine
 from agent.security.object_state import ObjectState
 from agent.services import file_identity
 from agent.tools import security_gate
@@ -102,11 +105,14 @@ def _augment_saved_requirement(monkeypatch, requirement_id: str, mutator):
 
     生产上这些字段应由 requirement_limits/requirements 保存流程写入（A 的改动）；
     本函数不改任何判定逻辑，只补保存数据，判定仍由真实 object_state 完成。
+    同时包住引擎的两条取要求入口（工具预核对 current_requirement 走
+    _requirement_for；authorize 走 _requirement_binding_state），保证真实链路
+    看到同一份保存事实。
     """
-    real = AuthorizationEngine._requirement_for
+    real_for = AuthorizationEngine._requirement_for
+    real_state = AuthorizationEngine._requirement_binding_state
 
-    def patched(self, context):  # noqa: ANN001
-        requirement = real(self, context)
+    def augment(requirement):  # noqa: ANN001
         if requirement is None or str(
             getattr(requirement, "requirement_id", "")
         ) != str(requirement_id):
@@ -120,8 +126,18 @@ def _augment_saved_requirement(monkeypatch, requirement_id: str, mutator):
             limits.append(entry)
         return dataclasses.replace(requirement, structured_limits=tuple(limits))
 
-    monkeypatch.setattr(AuthorizationEngine, "_requirement_for", patched)
-    return patched
+    def patched_for(self, context):  # noqa: ANN001
+        return augment(real_for(self, context))
+
+    def patched_state(self, context, effect=None):  # noqa: ANN001
+        requirement, state, problem = real_state(self, context, effect)
+        return augment(requirement), state, problem
+
+    monkeypatch.setattr(AuthorizationEngine, "_requirement_for", patched_for)
+    monkeypatch.setattr(
+        AuthorizationEngine, "_requirement_binding_state", patched_state
+    )
+    return patched_for
 
 
 def _identity(path: Path):
@@ -448,11 +464,25 @@ async def test_b2_deleted_limit_target_does_not_block_unrelated_file(
     assert _read_allowed(before) and before.content == "B 正文\n", before
     a.unlink()
     assert not a.exists()
+    effect = security_gate.read_effect("fs_read", b, purpose="读取文件内容")
+    with requirement_context(binding):
+        requirement_obj = ctx.authorization._requirement_for(
+            ctx.authorization._context(None)
+        )
+        assessment = ctx.authorization.assess_limit_conflict(effect, requirement_obj)
+    assert assessment.conflict is False, assessment.as_dict()
+    unrelated = [
+        decision
+        for decision in assessment.decisions
+        if decision.state is ObjectState.UNRELATED
+    ]
+    assert unrelated and all(
+        decision.basis == "path_different_object" for decision in unrelated
+    ), [decision.as_dict() for decision in assessment.decisions]
     with requirement_context(binding):
         after = await _read(ctx, b)
     assert _read_allowed(after), after
     assert after.content == "B 正文\n", after
-    assert "path_different_object" in _bases(after), _bases(after)
 
 
 async def test_b2_deleted_target_old_hardlink_alias_still_blocked(

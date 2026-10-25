@@ -916,11 +916,18 @@ def _path_core(
     candidate_value: str,
     base_facts: Sequence[ObjectFact],
     cache: dict | None,
+    saved_object_facts: Mapping[str, Any] | None = None,
 ) -> ObjectDecision:
     """§3.1 path/path_prefix/directory 的结构化核对（真实文件身份，不是文本猜测）。
 
     R9-H12 §3.1：限制路径身份不可读（不存在 / 存在但读不到）一律 UNKNOWN，
     不再返回 UNRELATED（旧对象可能仍在别名路径存在）。显式 program 路径共用本分支。
+
+    R9-H13 §3.B2：限制条目若带**保存时对象身份**（requirement 保存流程写入的
+    identity/birth_key，纯数据），优先用保存身份核对候选——身份不同=可靠无关
+    （限制路径消失/被替换后不再扩大为对无关对象的持续全局拒绝）；身份相同=
+    MATCH（旧对象硬链接/别名仍保护）；同身份不同生命周期=另一个对象。
+    历史数据缺这些字段时保持原失败关闭语义（UNKNOWN），不按当前路径/查找推断。
     """
     facts = list(base_facts)
     facts.append(
@@ -976,6 +983,82 @@ def _path_core(
             candidate_kind=candidate_kind,
             candidate_value=candidate_value,
             facts=facts,
+        )
+    saved = saved_object_facts or {}
+    saved_identity = _clean(saved.get("identity")) or None
+    if saved_identity:
+        candidate_observed = (
+            observed if observed is not None else _observe_path(candidate_path, cache)
+        )
+        if candidate_observed is None:
+            facts.append(
+                _fact(
+                    "identity_key",
+                    expected=saved_identity,
+                    observed=None,
+                    source="file_identity",
+                )
+            )
+            return _decision(
+                ObjectState.UNKNOWN,
+                "path_identity_unverifiable",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="候选对象存在但文件身份无法读取：无法与保存时限制对象身份核对",
+            )
+        facts.append(
+            _fact(
+                "identity_source",
+                observed=_clean(saved.get("source")) or "requirement_save",
+                source="saved_object_fact",
+            )
+        )
+        comparison = compare_bound_identity(
+            saved_identity,
+            _clean(saved.get("birth_key")) or None,
+            observed_identity=candidate_observed[0],
+            observed_birth=candidate_observed[1],
+        )
+        facts.extend(comparison.facts)
+        if comparison.state == IDENTITY_SAME:
+            # 保存时旧对象（或其硬链接/别名）仍是指向同一对象：继续保护。
+            return _decision(
+                ObjectState.MATCH,
+                "path_hardlink_same_object",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="候选与保存时限制对象身份一致（旧对象硬链接/别名），仍属用户限制对象",
+            )
+        if comparison.state == IDENTITY_DIFFERENT_OBJECT:
+            return _unrelated(
+                "path_different_object",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="候选对象身份与保存时限制对象不同：限制路径消失/被替换不扩大为对无关对象的拒绝",
+            )
+        if comparison.state == IDENTITY_DIFFERENT_LIFECYCLE:
+            return _unrelated(
+                "path_different_lifecycle",
+                operation=operation,
+                candidate_kind=candidate_kind,
+                candidate_value=candidate_value,
+                facts=facts,
+                detail="同一身份下生命周期与保存时不同：是另一个生命周期对象",
+            )
+        return _decision(
+            ObjectState.UNKNOWN,
+            "path_identity_unverifiable",
+            operation=operation,
+            candidate_kind=candidate_kind,
+            candidate_value=candidate_value,
+            facts=facts,
+            detail="保存时记录了生命周期依据，但候选生命周期不可读：不能默认一致",
         )
     target_observed = _observe_path(target, cache)
     if target_observed is None:
@@ -1080,6 +1163,7 @@ def _path_limit_decision(
     cache: dict | None,
     candidate_kind: str,
     base_facts: Sequence[ObjectFact],
+    saved_object_facts: Mapping[str, Any] | None = None,
 ) -> ObjectDecision:
     target = resolve_path(limit_value, _limit_base(workspace, effect_base))
     candidate_path = resolve_path(candidate_value, _candidate_base(workspace, effect_base))
@@ -1112,6 +1196,7 @@ def _path_limit_decision(
         candidate_value=candidate_value,
         base_facts=base_facts,
         cache=cache,
+        saved_object_facts=saved_object_facts,
     )
 
 
@@ -1128,6 +1213,7 @@ def _path_limit_name_decision(
     candidate_kind: str,
     candidate_value: str,
     base_facts: Sequence[ObjectFact],
+    saved_object_facts: Mapping[str, Any] | None = None,
 ) -> ObjectDecision:
     target = resolve_path(limit_value, _limit_base(workspace, effect_base))
     if target is None:
@@ -1165,6 +1251,7 @@ def _path_limit_name_decision(
         candidate_value=candidate_value,
         base_facts=facts,
         cache=cache,
+        saved_object_facts=saved_object_facts,
     )
 
 
@@ -1180,6 +1267,7 @@ def _program_limit_name_decision(
     candidate_kind: str,
     candidate_value: str,
     base_facts: Sequence[ObjectFact],
+    saved_object_facts: Mapping[str, Any] | None = None,
 ) -> ObjectDecision:
     """§3.1/§3.3：显式程序路径限制 + 入口名候选（与 path 限制共用 _path_core）。
 
@@ -1230,6 +1318,7 @@ def _program_limit_name_decision(
         candidate_value=candidate_value,
         base_facts=base_facts,
         cache=cache,
+        saved_object_facts=saved_object_facts,
     )
 
 
@@ -1297,6 +1386,28 @@ def _saved_candidate_facts(item: Mapping[str, Any]) -> list[ObjectFact]:
             )
         )
     return facts
+
+
+def _saved_object_facts(item: Mapping[str, Any]) -> dict[str, Any]:
+    """限制条目上的**保存时对象身份事实**（R9-H13 §3.B2；纯数据，不重新采集）。
+
+    生产写入方：要求保存流程（requirement_limits）在首次形成精确路径对象条目时
+    采集 identity/birth_key/exists/observed_at/source；读取/反序列化只搬运，不查
+    当前路径、不查询程序。字段缺失（历史数据）返回空事实 -> 判定保持失败关闭。
+    """
+    identity = _clean(item.get("identity")) or None
+    birth_key = _clean(item.get("birth_key")) or None
+    exists_raw = item.get("exists")
+    exists = exists_raw if isinstance(exists_raw, bool) else None
+    if not (identity or birth_key or exists is not None):
+        return {}
+    return {
+        "identity": identity,
+        "birth_key": birth_key,
+        "exists": exists,
+        "observed_at": _clean(item.get("observed_at")) or None,
+        "source": _clean(item.get("source")) or None,
+    }
 
 
 def _saved_path_match(
@@ -2046,6 +2157,7 @@ def _decide_object_impl(
                 candidate_kind=candidate_kind,
                 candidate_value=candidate_value,
                 base_facts=base_facts,
+                saved_object_facts=_saved_object_facts(item),
             )
         return _path_limit_decision(
             limit_kind,
@@ -2057,6 +2169,7 @@ def _decide_object_impl(
             cache=cache,
             candidate_kind=candidate_kind,
             base_facts=base_facts,
+            saved_object_facts=_saved_object_facts(item),
         )
 
     if limit_kind == "program":
@@ -2073,6 +2186,7 @@ def _decide_object_impl(
                 candidate_kind=candidate_kind,
                 candidate_value=candidate_value,
                 base_facts=base_facts,
+                saved_object_facts=_saved_object_facts(item),
             )
         # 显式程序路径就是文件对象：按 §3.2 path 规则核对。
         return _path_limit_decision(
@@ -2085,6 +2199,7 @@ def _decide_object_impl(
             cache=cache,
             candidate_kind=candidate_kind,
             base_facts=base_facts,
+            saved_object_facts=_saved_object_facts(item),
         )
 
     if limit_kind == "program_name":
