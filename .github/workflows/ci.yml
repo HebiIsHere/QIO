@@ -2,27 +2,31 @@ name: CI
 
 on:
   push:
-    # 默认：所有分支 push 都跑完整矩阵（main 门禁与普通分支门禁都不动）。
-    # 例外：本轮修复分支（并行子智能体的工作分支 + Lead 整合分支）不自动跑完整矩阵 ——
-    # 它们的验证入口是 workflow_dispatch 的 targeted-verify.yml（指定 ref + 完整 SHA + 单项筛选），
-    # 需要完整矩阵时用本文件下方的 workflow_dispatch（在最终候选上跑一次，带完整 SHA 校验）。
-    # 这三条 ! 排除只针对本轮分支名；本轮结束后删除即可恢复全分支完整矩阵。
+    # 默认：所有分支 push 都跑完整矩阵（main 门禁、普通分支门禁、本轮集成分支门禁都不动）。
+    # 例外：本轮并行子智能体的工作分支（fix/pm-*、verify/pm-*）**不自动跑完整矩阵**。
+    #   它们本来就只在本地 merge、永不 push（本轮约定），排除只是防止误推时烧掉一次完整矩阵；
+    #   这些分支上的验证入口是 workflow_dispatch 的 targeted-verify.yml（指定 ref + 完整 SHA
+    #   + 单项筛选）。
+    # 本轮集成分支 fix/post-merge-* **保留 push 触发**：它的一次 push 就是本轮**唯一一次**
+    #   完整矩阵（含 install e2e）。之后合入 main 时按交付文档的 [skip ci] 策略推送，
+    #   不再产生第二次完整矩阵。
+    # 这两条 ! 排除只针对本轮子工作分支名；本轮结束后删除即可恢复全分支完整矩阵。
     # 改动这里必须同步 scripts/targeted-verify/verify_workflow_contract.py 的契约断言
-    # （它会因此变红，提醒改动者确认 main 与普通分支的门禁没有被误伤）。
+    # （它会因此变红，提醒改动者确认 main、普通分支与集成分支的门禁没有被误伤）。
     branches:
       - "**"
       - "!fix/pm-*"
       - "!verify/pm-*"
-      - "!fix/post-merge-*"
   pull_request:
-  # 本轮新增：**按完整 SHA 锁定**的手动完整矩阵，给最终候选使用。所有 job 与 push/PR 完全
+  # **按完整 SHA 锁定**的手动完整矩阵（供未来使用；本轮不依赖它）。所有 job 与 push/PR 完全
   # 相同（没有任何 job 按事件条件跳过），只在 ci-dedup-preflight 里多做一次身份校验：
   # checkout 输入 ref 之后断言实际 HEAD == expected_sha，不一致立即 fail（复用
   # scripts/targeted-verify/verify_sha.py，与 targeted-verify.yml 是同一份实现）。
   #
-  # 注意 GitHub 的限制：workflow_dispatch 只有在**默认分支上存在该 workflow（含触发器）**时
-  # 才能被派发。本文件加入 dispatch 后，必须先有一次 main 推送把这个能力带上默认分支，
-  # 之后才能用 dispatch 在候选 ref 上跑完整矩阵。（台账里如实记这一步，不假装可以跳过。）
+  # 真实限制（GitHub 文档）：workflow_dispatch 只有在**默认分支上存在该 workflow（含触发器）**
+  # 时才能被派发。所以本触发器随本分支合入 main 之前**不可用**；本轮不依赖它，本轮唯一一次
+  # 完整矩阵由**集成分支 push 一次**承担。将来它可用后，可以用它在候选 ref 上跑完整矩阵，
+  # 避免为了跑 CI 去推集成分支或 main。
   workflow_dispatch:
     inputs:
       ref:
@@ -43,7 +47,8 @@ on:
 #   * workflow_dispatch：github.sha 是 dispatch 所选 ref 的尖端提交；上面的校验要求
 #     ref 尖端 == expected_sha，所以键仍然等于**实际受测提交**。
 #   * 用提交而不是分支/PR 号作键：新提交（修复推送）是不同键，照常跑门禁；旧运行不会被
-#     新提交误杀（不同代码本来就要各自验证）。
+#     新提交误杀（不同代码本来就要各自验证）。完整矩阵失败后的修复推送策略见交付文档
+#     （不写进 workflow：那是提交信息层面的做法，不是 workflow 配置）。
 #   * 这里**不声称**「PR 头提交的运行与 main 合并提交的运行被去重」：它们是两个不同提交
 #     （PR 上是 head SHA，main push 上是 merge SHA），各自一次完整矩阵是两条独立门禁。
 #     若仓库保护同时要求两者，台账如实记两次不同 SHA 的完整运行，不拿 concurrency 冒充去重。

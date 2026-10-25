@@ -115,23 +115,23 @@ CI_PUSH_PATTERNS = (
     "**",
     "!fix/pm-*",
     "!verify/pm-*",
-    "!fix/post-merge-*",
 )
-# 这些分支必须仍然触发完整矩阵（main 门禁与普通分支门禁不得被上面的排除误伤）。
+# 这些分支必须仍然触发完整矩阵（main 门禁、普通分支门禁、本轮集成分支都不得被排除误伤）。
+# 本轮集成分支的这一次 push 就是本轮**唯一一次**完整矩阵（Lead 2026-10-26 裁决）。
 CI_PUSH_MUST_MATCH = (
     "main",
     "fix/other-defect",
     "feat/conversation-page-v2",
     "releases/2026-10",
+    "fix/post-merge-integration-cleanup-20261025",
 )
-# 本轮工作分支：不自动跑完整矩阵（改用 targeted-verify / ci.yml dispatch）。
+# 本轮并行子智能体的工作分支：永不 push（本地 merge），排除只防误推时烧掉完整矩阵。
 CI_PUSH_MUST_NOT_MATCH = (
     "fix/pm-a-approval-results",
     "fix/pm-b-interactive-mode",
     "fix/pm-c-legacy-cleanup",
     "fix/pm-d-desktop-ci-docs",
     "verify/pm-e-acceptance",
-    "fix/post-merge-integration-cleanup-20261025",
 )
 CI_TESTED_COMMIT_EXPR = "github.event.pull_request.head.sha || github.sha"
 CI_DISPATCH_INPUTS = ("ref", "expected_sha")
@@ -150,8 +150,8 @@ CI_SCENARIOS = (
     {"event": "push", "ref": "refs/heads/verify/pm-e-acceptance", "sha": "2" * 40, "head": None, "expected_sha": None,
      "expect": False, "expect_sha_ok": None, "note": "本轮验收分支：不自动跑"},
     {"event": "push", "ref": "refs/heads/fix/post-merge-integration-cleanup-20261025", "sha": "3" * 40, "head": None,
-     "expected_sha": None, "expect": False, "expect_sha_ok": None,
-     "note": "本轮整合分支：不自动跑；完整矩阵用 ci.yml dispatch 落在候选上"},
+     "expected_sha": None, "expect": True, "expect_sha_ok": None,
+     "note": "本轮集成分支 push：本轮唯一一次完整矩阵"},
     {"event": "push", "ref": "refs/tags/integ-candidate", "sha": "4" * 40, "head": None, "expected_sha": None,
      "expect": False, "expect_sha_ok": None, "note": "tag push 不匹配 branches 过滤（可给 dispatch 当 ref）"},
     {"event": "pull_request", "ref": "refs/pull/42/merge", "sha": "c" * 40, "head": "a" * 40, "expected_sha": None,
@@ -162,10 +162,10 @@ CI_SCENARIOS = (
      "expect": True, "expect_sha_ok": None, "note": "本轮工作分支开 PR 仍跑完整矩阵（PR 门禁不被 push 排除影响）"},
     {"event": "workflow_dispatch", "ref": "refs/heads/fix/post-merge-integration-cleanup-20261025",
      "sha": "a" * 40, "head": None, "expected_sha": "a" * 40, "expect": True, "expect_sha_ok": True,
-     "note": "dispatch：按 expected_sha 锁定候选（ref 尖端 == expected_sha）"},
+     "note": "dispatch：锁 expected_sha；但需默认分支已有触发器，本轮不依赖"},
     {"event": "workflow_dispatch", "ref": "refs/tags/integ-candidate", "sha": "b" * 40, "head": None,
      "expected_sha": "5" * 40, "expect": True, "expect_sha_ok": False,
-     "note": "dispatch：expected_sha 与 ref 尖端不一致 → preflight 失败、run 红（矩阵不因可疑 SHA 变绿）"},
+     "note": "dispatch：expected_sha 与 ref 尖端不一致 → preflight 失败、run 红（同上，本轮不依赖）"},
 )
 
 
@@ -489,7 +489,10 @@ def check_ci(workflow, text, rep):
                   push_key != evaluated_dedup_key(group, sha="b" * 40), group)
         rep.check("ci.yml: dispatch 场景键等于实际受测提交（ref 尖端 == expected_sha）",
                   evaluated_dedup_key(group, sha="a" * 40) == push_key, push_key)
-    rep.check("ci.yml: no skip-ci style check disabling", "skip ci" not in text and "skip-checks" not in text)
+    # 只看 YAML 语义（注释里提到跳过标记不算禁用 CI；注释本身不会改变任何行为）。
+    workflow_body = workflow_text(workflow)
+    rep.check("ci.yml: no skip-ci style check disabling",
+              "skip ci" not in workflow_body and "skip-checks" not in workflow_body)
 
     jobs = workflow.get("jobs") or {}
     missing = [name for name in CI_REQUIRED_JOBS if name not in jobs]
@@ -499,6 +502,7 @@ def check_ci(workflow, text, rep):
         if isinstance(job, dict) and "if" in job:
             rep.check("ci.yml/" + name + ": 不按事件条件跳过（dispatch 也必须是完整矩阵）", False, "if=" + repr(job["if"]))
     rep.check_in("ci.yml: docs job runs the workflow-contract assertions", "verify_workflow_contract.py", text)
+    rep.check_in("ci.yml: 写明 dispatch 需默认分支已有触发器（真实限制，本轮不依赖）", "默认分支", text)
     check_dispatch_preflight(jobs.get("ci-dedup-preflight") or {}, text, rep)
 
 
@@ -654,7 +658,7 @@ def selftest(verbose=False):
             },
         ]
     }
-    text_ci = "python scripts/targeted-verify/verify_workflow_contract.py tested commit dedup key"
+    text_ci = "python scripts/targeted-verify/verify_workflow_contract.py tested commit dedup key 默认分支"
 
     def run_ci(data, name):
         scoped = Report(name, verbose=verbose)
@@ -695,6 +699,14 @@ def selftest(verbose=False):
 
     scoped = broken_ci(drop_round_exclusions, "selftest-ci-no-round-exclusion")
     rep.check("dropping the round-branch exclusions must fail", any("本轮工作分支不自动跑矩阵" in row[0] for row in scoped.failed()))
+
+    def exclude_integration_branch(data):
+        data["on"]["push"]["branches"] = ["**", "!fix/post-merge-*"]
+
+    scoped = broken_ci(exclude_integration_branch, "selftest-ci-integration-excluded")
+    rep.check("excluding the round integration branch must fail", any(
+        "push 仍触发完整矩阵 fix/post-merge-integration-cleanup-20261025" in row[0] for row in scoped.failed()
+    ))
 
     def drop_expected_sha(data):
         data["on"]["workflow_dispatch"]["inputs"].pop("expected_sha", None)
