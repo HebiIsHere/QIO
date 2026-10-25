@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import App from "../../App.vue";
@@ -69,6 +69,11 @@ async function mountApp() {
 async function mountConversation() {
   const pinia = createPinia();
   setActivePinia(pinia);
+  // 先把首屏状态读好再挂载：这条用例断言的是「已读到未完成状态后提示怎么显示/怎么关」，
+  // 与挂载时序无关。并行跑多个测试文件时，先挂载后 load 会让提示的首次渲染依赖
+  // 调度顺序（组件已经挂载、状态稍后才到），断言会间歇性看不到提示。
+  const onboarding = useOnboardingStore();
+  await onboarding.load();
   const wrapper = mount(ConversationView, {
     global: {
       plugins: [pinia],
@@ -137,3 +142,4 @@ describe("欢迎页 gating", () => {
     expect(store.showWizard).toBe(true);
   });
 });
+

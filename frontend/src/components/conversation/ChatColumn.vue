@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 /**
  * 中央对话工作区（B 负责完整实现）。
  *
@@ -790,3 +790,4 @@ onBeforeUnmount(() => {
   color: var(--text-strong);
 }
 </style>
+
