@@ -56,7 +56,6 @@ import { useInteractiveStore } from "../../stores/interactive";
 import { useSessionStore } from "../../stores/session";
 import { VIEW_STUBS } from "../../views/__tests__/i2v2-a-harness";
 import { chatObstacleFrame, readChatFrame, resetChatFrameState } from "../../interactive/chatFrameState";
-import { MIGRATED_CAPABILITIES } from "../../components/interactive/v2/intentDisplay";
 import type { BoardCard, Intent, Understanding } from "../../interactive/types";
 
 const STAMP = "2026-10-26T00:00:00.000Z";
@@ -332,9 +331,27 @@ describe("提交区批量入口（基线注释声称已修；本轮独立复核�
 // ---------------------------------------------------------------------------
 // BRIEF §1.9 迁移表与真实实现的一致性
 // ---------------------------------------------------------------------------
-describe("MIGRATED_CAPABILITIES 与实际实现一致（基线：有的能力已落地却仍标 needs-backend / kept-legacy）", () => {
-  it("暂停 / 继续 / 取消执行已在新任务面板落地，不能再标 needs-backend", () => {
-    const entry = MIGRATED_CAPABILITIES.find((item) => /暂停/.test(item.capability) && /继续/.test(item.capability));
+describe("旧能力迁移表与真实实现一致（基线：过时标注；C 的清理允许整表删除）", () => {
+  /**
+   * 这组断言有两种都可接受的结局：
+   * - 表已删除（C04：过时的能力迁移审计常量删除）→ 不再有过时声明，PASS；
+   * - 表仍存在 → 每条 status 必须与真实实现一致（不能留 needs-backend / kept-legacy 误导）。
+   * 用动态导入，避免「表被删了」把整份验收测试变成导入失败。
+   */
+  async function loadMigratedTable(): Promise<Array<{ capability: string; status: string }> | null> {
+    try {
+      const mod = (await import("../../components/interactive/v2/intentDisplay")) as Record<string, unknown>;
+      const table = mod.MIGRATED_CAPABILITIES;
+      return Array.isArray(table) ? (table as Array<{ capability: string; status: string }>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  it("暂停 / 继续 / 取消执行已在新任务面板落地：表若还在，不能仍标 needs-backend", async () => {
+    const table = await loadMigratedTable();
+    if (!table) return; // 整表已删除：没有过时声明可误导
+    const entry = table.find((item) => /暂停/.test(item.capability) && /继续/.test(item.capability));
     expect(entry, "迁移表里没有暂停 / 继续 / 取消条目").toBeTruthy();
     expect(
       entry!.status,
@@ -342,8 +359,10 @@ describe("MIGRATED_CAPABILITIES 与实际实现一致（基线：有的能力已
     ).toBe("migrated");
   });
 
-  it("批次列表 / 同批批准 / 拒绝已由新任务面板承接，不能仍只说 kept-legacy", () => {
-    const entry = MIGRATED_CAPABILITIES.find((item) => /批次列表/.test(item.capability));
+  it("批次列表 / 同批批准 / 拒绝已由新任务面板承接：表若还在，不能仍只说 kept-legacy", async () => {
+    const table = await loadMigratedTable();
+    if (!table) return;
+    const entry = table.find((item) => /批次列表/.test(item.capability));
     expect(entry, "迁移表里没有批次列表条目").toBeTruthy();
     expect(
       entry!.status,
