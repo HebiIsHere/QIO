@@ -85,11 +85,11 @@ _SCRIPT_SUFFIXES = frozenset(
         ".ps1", ".psm1", ".bat", ".cmd", ".rb", ".pl", ".php", ".lua", ".r",
     }
 )
+#: 单个参数脚本参与内容绑定的最大字节数（超过按“无法确认内容”处理并标记不完整）。
 _ARGUMENT_IDENTITY_MAX_BYTES = 8 * 1024 * 1024
-_MAX_ARGUMENT_FACTS = 16
+#: 安全上限：一次启动的候选脚本文件数（超过必须显式标记影响不完整，不能静默截断）。
+_MAX_ARGUMENT_FACTS = 128
 
-# 程序内容 sha256 缓存：key = f"{realpath}|{size}|{mtime_ns}"。
-# 程序文件被替换（大小/修改时间变化）→ 换 key 重算；缓存只省重复哈希，不影响身份核对。
 _SCRIPT_BOOTSTRAP = (
     "import os, sys, time\n"
     "signal_path = sys.argv[1]\n"
@@ -106,9 +106,6 @@ _SCRIPT_BOOTSTRAP = (
     "sys.argv = [source_path, *user_argv]\n"
     "exec(compile(code, source_path, 'exec'), {'__name__': '__main__', '__file__': source_path, '__builtins__': __builtins__})\n"
 )
-
-_PROGRAM_HASH_CACHE: dict[str, str] = {}
-_PROGRAM_HASH_LOCK = __import__("threading").Lock()
 
 
 # --------------------------------------------------------------------------
@@ -253,23 +250,14 @@ def _shell_program() -> str:
 
 
 def _program_sha256(path: str) -> str | None:
-    """程序文件内容摘要（带 size+mtime 键缓存；变化即重算，不影响身份核对）。"""
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    key = f"{os.path.realpath(path)}|{int(st.st_size)}|{int(getattr(st, 'st_mtime_ns', 0))}"
-    with _PROGRAM_HASH_LOCK:
-        cached = _PROGRAM_HASH_CACHE.get(key)
-    if cached is not None:
-        return cached
-    digest = security_gate.content_sha256(path)
-    if digest is not None:
-        with _PROGRAM_HASH_LOCK:
-            if len(_PROGRAM_HASH_CACHE) > 256:
-                _PROGRAM_HASH_CACHE.clear()
-            _PROGRAM_HASH_CACHE[key] = digest
-    return digest
+    """程序/脚本文件内容摘要：每次真正读取内容计算，**不做路径/大小/mtime 缓存**。
+
+    契约 §3.D1：缓存不能仅以路径/大小/mtime 证明内容未变 —— 同大小、同 mtime 的
+    内容替换会骗过这类缓存，使审查、审批恢复与执行前核对沿用旧摘要并真的执行新
+    内容。这里每次读取真实内容重新计算，工具/审查/直接执行/审批恢复/执行前核对
+    共用同一语义（都是本函数 → build_spec_facts/build_launch_facts）。
+    """
+    return security_gate.content_sha256(path)
 
 
 def _program_facts(
