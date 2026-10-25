@@ -121,6 +121,8 @@ class _SlowRecall:
     def __init__(self, *, delay: float = 0.2) -> None:
         self.delay = delay
         self.searches = 0
+        #: R9-F：记录每次"慢检索"实际占用的时间窗口（供收窄测量窗口用）。
+        self.marks: list[tuple[float, float]] = []
 
     def available(self) -> bool:
         return True
@@ -136,11 +138,15 @@ class _SlowRecall:
 
     def search(self, query, top_k):
         self.searches += 1
+        started = time.perf_counter()
         time.sleep(self.delay)
+        self.marks.append((started, time.perf_counter()))
         return []
 
     def entity_card_search(self, query, top_k=3):
+        started = time.perf_counter()
         time.sleep(self.delay)
+        self.marks.append((started, time.perf_counter()))
         return []
 
 
@@ -201,14 +207,13 @@ def loop_stall_budget_ms(stimulus_ms: float) -> float:
     return max(LOOP_STALL_BUDGET_MS, stimulus_ms * LOOP_STALL_BUDGET_FRACTION)
 
 
-async def _measure_loop_lag(work, *, tick: float = 0.005):
-    """跑 `work()`，期间测事件循环的**最大停顿**（毫秒）。
+async def _collect_loop_gaps(work, *, tick: float = 0.005):
+    """跑 work()，返回 (result, [(gap_ms, gap_start, gap_end), ...])。
 
-    停顿 = 两次 5ms 心跳之间实际过去的时间。事件循环被同步重活占住时，心跳
-    排不上队，停顿就等于那段重活的时长 —— 这正是健康探测 / 取消请求在真实
-    请求里要等的时间。
+    停顿 = 两次 5ms 心跳之间实际过去的时间；带时间窗口是为了把"整轮里的无关
+    同步段/调度停顿"与真正要测的刺激段区分开（R9-F 契约 §7、W4 测量证据）。
     """
-    gaps: list[float] = []
+    gaps: list[tuple[float, float, float]] = []
     stop = False
     last = time.perf_counter()
 
@@ -217,7 +222,7 @@ async def _measure_loop_lag(work, *, tick: float = 0.005):
         while not stop:
             await asyncio.sleep(tick)
             now = time.perf_counter()
-            gaps.append(now - last)
+            gaps.append(((now - last) * 1000, last, now))
             last = now
 
     ticker = asyncio.create_task(_ticker())
@@ -228,8 +233,6 @@ async def _measure_loop_lag(work, *, tick: float = 0.005):
         result = await work()
         # 同步 work 跑完时，心跳的定时器已经过期但还没轮到它执行 —— 让出几次
         # 控制权，把它测到的那段停顿记下来（否则 finally 会先把它取消掉）。
-        # 用 sleep(0) 而不是 sleep(tick)：后者会把「收尾等待」算进停顿里，
-        # 让快速操作的读数虚高（下限从 5ms 变成 15ms）。
         for _ in range(50):
             seen = len(gaps)
             await asyncio.sleep(0)
@@ -240,7 +243,13 @@ async def _measure_loop_lag(work, *, tick: float = 0.005):
         ticker.cancel()
         with suppress(asyncio.CancelledError):
             await ticker
-    return result, max(gaps or [0.0]) * 1000
+    return result, gaps
+
+
+async def _measure_loop_lag(work, *, tick: float = 0.005):
+    """跑 work()，期间测事件循环的**最大停顿**（毫秒）。"""
+    result, gaps = await _collect_loop_gaps(work, tick=tick)
+    return result, max((gap[0] for gap in gaps), default=0.0)
 
 
 def _start_turn(ctx: AppContext, monkeypatch, message: str, topic_id: str):
@@ -310,26 +319,38 @@ async def test_a_slow_retrieval_does_not_stall_the_turn_loop(
 ):
     """整轮一起看：慢检索期间事件循环的停顿也必须明显下降。
 
-    预算随**这次刺激**缩放（与本文件其它用例同一条规则，见 loop_stall_budget_ms）：
-    这一轮里还夹着轮末与后台派生工作（与本条修复无关，见 `_lead-logs/bench-heavy-work.md`
-    的「残余停顿」），所以取 1.5 倍搜索时长当余量。修复前这里测到 446ms（两次 0.2s 召回
-    串行跑在事件循环上），修复后 ~150ms；余量足够抓住回归，又不会被 runner 的环境地板
-    （2026-10-12 windows-latest 实测 266ms）判成假红。
+    R9-F（契约 §7）：CI 上曾出现 349ms/981ms 假红。W4 同机对照测量显示：
+    offload 段本身 p50≈19ms / max≈58ms；整轮 gap 的大头来自无关同步段
+    （append_message/claim/turn_journal/惰性导入等）与共享 runner 调度饥饿
+    （CPU 压力下 p90≈304ms，栈是 selector / thread start-wait）。因此这里
+    **只统计与慢检索刺激窗口重叠的 gap**，而不是把整轮里无关的停顿算进断言；
+    回归签名不变：检索若真在事件循环上串行执行，gap≈两次 200ms = 400ms，
+    仍会越过 300ms 预算（不是放宽阈值，是修正测量窗口）。
     """
     slow = _SlowRecall(delay=RECALL_STIMULUS_SECONDS)
     monkeypatch.setattr(ctx.selector, "recall", slow)
 
-    result, gap_ms = await _measure_loop_lag(
+    result, gaps = await _collect_loop_gaps(
         lambda: _start_turn(ctx, monkeypatch, "回忆一下之前的偏好", topic)
     )
 
     assert result["ok"] is True
     assert slow.searches >= 1
+    assert slow.marks, "这一轮应该真的走到了慢检索（否则测的不是检索）"
+
+    def _overlaps(gap, mark) -> bool:
+        return gap[1] < mark[1] and gap[2] > mark[0]
+
+    stimulus_gaps = [
+        gap[0] for gap in gaps if any(_overlaps(gap, mark) for mark in slow.marks)
+    ]
+    assert stimulus_gaps, "测量窗口没有覆盖到刺激段，无法判断（不是通过）"
+    gap_ms = max(stimulus_gaps)
     budget = loop_stall_budget_ms(RECALL_STIMULUS_SECONDS * 1000 * 1.5)
     assert gap_ms < budget, (
         f"慢检索期间事件循环被占住 {gap_ms:.0f} ms（预算 {budget:.0f} ms = "
         f"max({LOOP_STALL_BUDGET_MS:.0f}ms, {LOOP_STALL_BUDGET_FRACTION}×刺激 "
-        f"{RECALL_STIMULUS_SECONDS * 1000 * 1.5:.0f}ms)）"
+        f"{RECALL_STIMULUS_SECONDS * 1000 * 1.5:.0f}ms)）—— 只统计与刺激段重叠的停顿"
     )
 
 

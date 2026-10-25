@@ -1,4 +1,4 @@
-"""迁移 56（P3-D）：意图显示位置 / 单意图有效 Turn / 持久化重试系列。
+"""迁移 69（P3-D）：意图显示位置 / 单意图有效 Turn / 持久化重试系列。
 
 只追加、不改历史迁移。契约：docs/interactive-page-v2-contract.md §6.1–§6.3。
 
@@ -76,7 +76,7 @@ _TABLE_DDL: tuple[str, ...] = (
 )
 
 MIGRATION: tuple[int, list[str]] = (
-    56,
+    69,
     [statement for _name, statement in _ADDED_COLUMNS] + list(_TABLE_DDL),
 )
 

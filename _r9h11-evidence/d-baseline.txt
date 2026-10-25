@@ -1,0 +1,176 @@
+R9-H11 D 基线红证据（独立跨路径验收，未经修复）
+====================================================
+
+- 日期：2026-10-25
+- worktree：D:\qio-dev\qio-r9h11-d
+- 分支：r9h11/d
+- 基线 HEAD：80b0630874b6749df5ddf90bafc12e2d31f5eced（r9h10/main，未修复）
+- 测试文件：backend/tests/test_r9h11_regressions.py
+  SHA256（本次运行）：8B3B6AF532622CA70158861E064FE8DC6A23E6317F1473DB95E6B81A4B78E327
+- 平台/身份能力：{"platform": "win32", "python": "3.11.15", "caps": {"platform": "win32", "file_id": "1346644849:53363a00000003000000000000000000", "birth_key": "win:creation:134373333499721070", "birth_source": "win:creation", "birth_strong": true, "link_count": 1}, "hardlink": true}
+- 真实硬链接：可用（问题二/三的别名用例真实执行；平台不支持时会 skip 并注明）
+- 真实编号复用探测：删除 40 个文件后重建 40 个，新 file_id 与旧集合交集为 0；
+  单文件「删除后原路径重建」实测 identity 变化（未复用编号）。因此「同编号不同生命周期」
+  无法稳定真实复现，按任务要求改为身份提供器边界注入（agent.services.file_identity.identity_of），
+  相关用例 docstring 以「模拟」开头，与真实文件/硬链接验证分开标注。
+
+定向命令（离线；模型 fake；不跑全量）
+------------------------------------
+cd D:\qio-dev\qio-r9h11-d\backend
+& .\.venv\Scripts\python.exe -m pytest tests/test_r9h11_regressions.py -q -p no:cacheprovider -p no:logging --show-capture=no --tb=short
+（下方基线红清单即上述命令的完整 pytest 报告；末尾 PYTEST_EXIT=1）
+
+基线结果
+--------
+- 收集 18 个用例；3 passed / 15 failed（基线未修复，符合预期红；无 collection error / 无环境异常）
+- 保留语义 guard（基线即通过，修复后必须保持通过）：
+  * test_p1_unbound_json_unchanged_after_env_change_and_reopen
+    （历史无绑定原始 JSON 在 PATH 变化 + 关库重开后逐字节不变，不补建绑定）
+  * test_p1_unbound_does_not_block_other_operations_entries_or_objects
+    （操作范围外读取、不同入口名、另一目录同名对象都放行并真实执行）
+  * test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[kept]
+    （原路径保持时旧别名读取受保护）
+
+失败用例与关键断言（pytest --tb=short --show-capture=no 原样输出）
+------------------------------------------------------------------
+FFF.F.FFFF.FFFFFFF                                                       [100%]
+================================== FAILURES ===================================
+_______________ test_p1_unbound_name_entry_denied_before_launch _______________
+tests\test_r9h11_regressions.py:449: in test_p1_unbound_name_entry_denied_before_launch
+    _assert_denied(decision, code=DECISION_UNBOUND)
+tests\test_r9h11_regressions.py:311: in _assert_denied
+    assert getattr(decision, "decision_code", None) == code, (
+E   AssertionError: ('decision_code 不符（冻结契约 §2/§4）', None, '这条用户限制中的程序名称尚未可靠绑定到明确对象；本次调用入口或解析目标与保存名称指向同一程序来源，需要先完成限制恢复/对象绑定，不能仅按名称直接执行')
+E   assert None == 'program_name_requires_object_binding'
+E    +  where None = getattr(AuthDecision(verdict=<Verdict.DENY: 'deny'>, reason='这条用户限制中的程序名称尚未可靠绑定到明确对象；本次调用入口或解析目标与保存名称指向同一程序来源，需要先完成限制恢复/对象绑定，不...ne, detail={'requested_program': 'runner'}, reversible=False),), scope_id=None, needs_review=False, decision_code=None), 'decision_code', None)
+_____________ test_p1_unbound_absolute_path_denied_before_launch ______________
+tests\test_r9h11_regressions.py:480: in test_p1_unbound_absolute_path_denied_before_launch
+    assert result.ok is False, result
+E   AssertionError: ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+___________ test_p1_unbound_read_and_summary_denied_before_any_read ___________
+tests\test_r9h11_regressions.py:518: in test_p1_unbound_read_and_summary_denied_before_any_read
+    assert read_result.ok is False, read_result
+E   AssertionError: ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+______________ test_p1_unbound_approval_recovery_does_not_launch ______________
+tests\test_r9h11_regressions.py:638: in test_p1_unbound_approval_recovery_does_not_launch
+    assert str(row.get("state")) in ("failed", "invalidated"), row
+E   AssertionError: {'approval_id': 'appr_a12acc879b15', 'kind': 'proc.run_program', 'label': '运行程序 C:\\Users\\zxy\\AppData\\Local\\Temp\\...t-4150\\test_p1_unbound_approval_recov0\\p1-appr-bin\\runner.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...}
+E   assert 'completed' in ('failed', 'invalidated')
+E    +  where 'completed' = str('completed')
+E    +    where 'completed' = <built-in method get of dict object at 0x00000273D502D000>('state')
+E    +      where <built-in method get of dict object at 0x00000273D502D000> = {'approval_id': 'appr_a12acc879b15', 'kind': 'proc.run_program', 'label': '运行程序 C:\\Users\\zxy\\AppData\\Local\\Temp\\...t-4150\\test_p1_unbound_approval_recov0\\p1-appr-bin\\runner.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...}.get
+_____ test_p2_read_limit_hardlink_protected_after_original_path_replaced ______
+tests\test_r9h11_regressions.py:770: in test_p2_read_limit_hardlink_protected_after_original_path_replaced
+    assert alias_result.ok is False, alias_result
+E   AssertionError: ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+_____ test_p2_write_limit_hardlink_protected_after_original_path_replaced _____
+tests\test_r9h11_regressions.py:808: in test_p2_write_limit_hardlink_protected_after_original_path_replaced
+    assert alias_result.ok is False, alias_result
+E   AssertionError: ToolResult(ok=True, content='已写入 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4150\\test_p2_write_limit...egory=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='已写入 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4150\\test_p2_write_limit...egory=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+____ test_p2_delete_limit_hardlink_protected_after_original_path_replaced _____
+tests\test_r9h11_regressions.py:848: in test_p2_delete_limit_hardlink_protected_after_original_path_replaced
+    assert alias_result.ok is False, alias_result
+E   AssertionError: ToolResult(ok=True, content='已把 1 个文件移入系统回收站：
+E     C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4150\\test_... False}], 'deleted_permanently': False}], 'pending_approval': False, 'deleted_permanently': False}, model_payload=None)
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='已把 1 个文件移入系统回收站：\nC:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4150\\test_... False}], 'deleted_permanently': False}], 'pending_approval': False, 'deleted_permanently': False}, model_payload=None).ok
+__ test_p2_execute_limit_hardlink_and_invalidated_path_stopped_before_launch __
+tests\test_r9h11_regressions.py:908: in test_p2_execute_limit_hardlink_and_invalidated_path_stopped_before_launch
+    _assert_denied(replaced_decision, code=DECISION_INVALID)
+tests\test_r9h11_regressions.py:311: in _assert_denied
+    assert getattr(decision, "decision_code", None) == code, (
+E   AssertionError: ('decision_code 不符（冻结契约 §2/§4）', None, '这条用户限制绑定的程序对象已在原路径被替换（身份/生命周期不一致）；原禁止仍有效，本次不执行，需先恢复/澄清绑定，不能把新对象当作无关程序')
+E   assert None == 'program_binding_invalidated'
+E    +  where None = getattr(AuthDecision(verdict=<Verdict.DENY: 'deny'>, reason='这条用户限制绑定的程序对象已在原路径被替换（身份/生命周期不一致）；原禁止仍有效，本次不执行，需先恢复/澄清绑定，不能把新对象当作...hardlink0\\bound-p2-exec-bin\\runner.exe'}, reversible=False),), scope_id=None, needs_review=False, decision_code=None), 'decision_code', None)
+_ test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[deleted] _
+tests\test_r9h11_regressions.py:940: in test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved
+    assert result.ok is False, (scenario, result)
+E   AssertionError: ('deleted', ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+_ test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[moved] _
+tests\test_r9h11_regressions.py:940: in test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved
+    assert result.ok is False, (scenario, result)
+E   AssertionError: ('moved', ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None))
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+________ test_p3_real_delete_recreate_new_object_denied_before_launch _________
+tests\test_r9h11_regressions.py:996: in test_p3_real_delete_recreate_new_object_denied_before_launch
+    _assert_denied(decision, code=DECISION_INVALID)
+tests\test_r9h11_regressions.py:311: in _assert_denied
+    assert getattr(decision, "decision_code", None) == code, (
+E   AssertionError: ('decision_code 不符（冻结契约 §2/§4）', None, '这条用户限制绑定的程序对象已在原路径被替换（身份/生命周期不一致）；原禁止仍有效，本次不执行，需先恢复/澄清绑定，不能把新对象当作无关程序')
+E   assert None == 'program_binding_invalidated'
+E    +  where None = getattr(AuthDecision(verdict=<Verdict.DENY: 'deny'>, reason='这条用户限制绑定的程序对象已在原路径被替换（身份/生命周期不一致）；原禁止仍有效，本次不执行，需先恢复/澄清绑定，不能把新对象当作...create_n0\\bound-p3-real-bin\\runner.exe'}, reversible=False),), scope_id=None, needs_review=False, decision_code=None), 'decision_code', None)
+_ test_p3_number_reuse_same_identity_different_lifecycle_denied_before_start __
+tests\test_r9h11_regressions.py:1036: in test_p3_number_reuse_same_identity_different_lifecycle_denied_before_start
+    assert result.ok is False, result
+E   AssertionError: ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+___________ test_p3_old_hardlink_still_protected_after_number_reuse ___________
+tests\test_r9h11_regressions.py:1071: in test_p3_old_hardlink_still_protected_after_number_reuse
+    assert alias_read.ok is False, alias_read
+E   AssertionError: ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E   assert True is False
+E    +  where True = ToolResult(ok=True, content='[read-by-r9h11-test-spy]', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+_____________ test_p3_lifecycle_unverifiable_denied_before_start ______________
+tests\test_r9h11_regressions.py:1123: in test_p3_lifecycle_unverifiable_denied_before_start
+    _assert_denied(decision, code=DECISION_UNKNOWN)
+tests\test_r9h11_regressions.py:311: in _assert_denied
+    assert getattr(decision, "decision_code", None) == code, (
+E   AssertionError: ('decision_code 不符（冻结契约 §2/§4）', None, '禁止该程序')
+E   assert None == 'object_state_unconfirmed'
+E    +  where None = getattr(AuthDecision(verdict=<Verdict.DENY: 'deny'>, reason='禁止该程序', approval_id=None, effects=(Effect(kind=<EffectKind.EXECUT...iable0\\bound-p3-unknown-bin\\runner.exe'}, reversible=False),), scope_id=None, needs_review=False, decision_code=None), 'decision_code', None)
+______________ test_p3_identity_unavailable_denied_before_start _______________
+tests\test_r9h11_regressions.py:1150: in test_p3_identity_unavailable_denied_before_start
+    _assert_denied(decision, code=DECISION_UNKNOWN)
+tests\test_r9h11_regressions.py:311: in _assert_denied
+    assert getattr(decision, "decision_code", None) == code, (
+E   AssertionError: ('decision_code 不符（冻结契约 §2/§4）', None, '这条用户限制绑定的程序对象已在原路径被替换（身份/生命周期不一致）；原禁止仍有效，本次不执行，需先恢复/澄清绑定，不能把新对象当作无关程序')
+E   assert None == 'object_state_unconfirmed'
+E    +  where None = getattr(AuthDecision(verdict=<Verdict.DENY: 'deny'>, reason='这条用户限制绑定的程序对象已在原路径被替换（身份/生命周期不一致）；原禁止仍有效，本次不执行，需先恢复/澄清绑定，不能把新对象当作...le_d0\\bound-p3-identity-bin\\runner.exe'}, reversible=False),), scope_id=None, needs_review=False, decision_code=None), 'decision_code', None)
+=========================== short test summary info ===========================
+FAILED tests/test_r9h11_regressions.py::test_p1_unbound_name_entry_denied_before_launch
+FAILED tests/test_r9h11_regressions.py::test_p1_unbound_absolute_path_denied_before_launch
+FAILED tests/test_r9h11_regressions.py::test_p1_unbound_read_and_summary_denied_before_any_read
+FAILED tests/test_r9h11_regressions.py::test_p1_unbound_approval_recovery_does_not_launch
+FAILED tests/test_r9h11_regressions.py::test_p2_read_limit_hardlink_protected_after_original_path_replaced
+FAILED tests/test_r9h11_regressions.py::test_p2_write_limit_hardlink_protected_after_original_path_replaced
+FAILED tests/test_r9h11_regressions.py::test_p2_delete_limit_hardlink_protected_after_original_path_replaced
+FAILED tests/test_r9h11_regressions.py::test_p2_execute_limit_hardlink_and_invalidated_path_stopped_before_launch
+FAILED tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[deleted]
+FAILED tests/test_r9h11_regressions.py::test_p2_read_alias_protected_when_original_path_kept_deleted_or_moved[moved]
+FAILED tests/test_r9h11_regressions.py::test_p3_real_delete_recreate_new_object_denied_before_launch
+FAILED tests/test_r9h11_regressions.py::test_p3_number_reuse_same_identity_different_lifecycle_denied_before_start
+FAILED tests/test_r9h11_regressions.py::test_p3_old_hardlink_still_protected_after_number_reuse
+FAILED tests/test_r9h11_regressions.py::test_p3_lifecycle_unverifiable_denied_before_start
+FAILED tests/test_r9h11_regressions.py::test_p3_identity_unavailable_denied_before_start
+PYTEST_EXIT=1
+
+基线红点归纳（与冻结契约 §3.5/§3.4/§4 对应）
+--------------------------------------------
+1) 问题一（历史无绑定 program_name）：
+   - 名称入口/绝对路径执行虽然可能被旧的名称分支拒绝，但 DENY 决策不带
+     decision_code=program_name_requires_object_binding（基线只在 APPROVE 时计算 code）；
+   - 绝对路径执行真正被放行（test_p1_unbound_absolute_path... 基线 marker 被写出）；
+   - read+program_name 无绑定时正文/摘要读取被放行（读取次数非 0）；
+   - 审批恢复路径 approve 后真实执行（approval state=completed）。
+2) 问题二（原路径替换后的旧硬链接文件操作）：
+   - read/write/delete 对旧硬链接全部放行（读取到正文、写入成功、文件被移入回收站）；
+   - 原路径新对象虽因「路径文本相同」被拒绝，但 decision_code 不是
+     program_binding_invalidated（基线没有失效态）；
+   - 原路径被删除/移动后旧别名读取被放行。
+3) 问题三（编号复用/生命周期变化）：
+   - 真实删除重建的新对象在启动前被旧「路径替换」布尔分支拦下，但没有
+     program_binding_invalidated 决策码；
+   - 同 identity/不同 birth（模拟）与不可确认身份（模拟）时执行被放行；
+   - 旧硬链接在编号复用模拟下读取被放行（基线文件操作重新取 binding.path 当前对象身份）。

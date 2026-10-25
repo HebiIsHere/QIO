@@ -1290,9 +1290,36 @@ class AgentLoop:
         唯一一条 system 消息 + 承载用户原文与真实媒体内容块的 user 消息。
         旧调用（只给 user_message）行为不变。
         """
+        # R9（契约 §2.4）：每轮用户指令建立独立的 InstructionContext，指令结束即
+        # 关闭全部 grant。真实 turn 由 AppContext 先建立（带 topic），这里只是
+        # 独立使用 AgentLoop 时的兜底；后台通知轮（approval_origin=background）
+        # 不是用户指令，不产生授权。
+        instruction = None
+        instruction_token = None
         try:
+            from agent.security.context import approval_origin, current_instruction
+            from agent.security.instructions import InstructionRegistry
+
+            if (
+                current_instruction.get() is None
+                and str(user_message or "").strip()
+                and str(approval_origin.get() or "user") == "user"
+            ):
+                registry = getattr(self, "_instruction_registry", None)
+                if registry is None:
+                    registry = InstructionRegistry()
+                    self._instruction_registry = registry
+                instruction = registry.begin(
+                    turn_id=str(self.turn_id or ""), text=str(user_message)
+                )
+                instruction_token = current_instruction.set(instruction)
             return await self._run(user_message, initial_messages=initial_messages)
         finally:
+            if instruction is not None and instruction_token is not None:
+                try:
+                    current_instruction.reset(instruction_token)
+                finally:
+                    self._instruction_registry.end(instruction)
             # 媒体材料只属于**这一轮**：设备复用同一个 loop 跑下一轮时，上一轮的
             # 附件依据不许继续跟着（否则下一轮会带着用户已经换掉的材料回答）。
             self.media_parts = []

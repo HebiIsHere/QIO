@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import uuid
@@ -22,11 +23,72 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from agent.api.events import EventType, make_event
+from agent.security.effects import EffectKind
+from agent.security.instructions import (
+    OPERATION_CREATE,
+    OPERATION_DELETE,
+    OPERATION_EXECUTE,
+    OPERATION_INSTALL_DEPS,
+    OPERATION_NETWORK_EGRESS,
+    OPERATION_WRITE,
+    Scope,
+)
+from agent.security.modes import PermissionMode, normalize_mode
+from agent.security.operations import (
+    ApprovalTicket,
+    ExecResult,
+    ExecutionContext,
+    OperationRegistry,
+    PendingOperation,
+)
+from agent.storage.approvals import (
+    DEFAULT_TIMEOUT_SECONDS,
+    ApprovalConfirmRequired,
+    ApprovalConflict,
+    ApprovalError,
+    ApprovalNotFound,
+    ApprovalStore,
+)
 from agent.storage.db import transaction
 from agent.storage.instance_registry import RECORD_APPROVAL
 
-DEFAULT_TIMEOUT_SECONDS = 300.0
+#: 审批默认有效期 600 秒，从创建时算起；刷新/暂缓/重启都不续期（契约 §5.1）。
+DEFAULT_TIMEOUT_SECONDS = DEFAULT_TIMEOUT_SECONDS
+#: 兼容常量名（旧代码/测试可能引用）。
+TIME_LIMIT_SECONDS = DEFAULT_TIMEOUT_SECONDS
 logger = logging.getLogger(__name__)
+
+
+def _derived_confirmations(engine, operation) -> int:  # noqa: ANN001 - 接口对象
+    """后端按**真实影响对象**推导的最低确认次数（R9-H13 §8.1/§8.4）。
+
+    提交、批准、恢复与执行前核对都必须使用它；`operation.confirmations_required`
+    （调用方/历史存储值）只是下限，不是权威值。
+    """
+    try:
+        stored = max(1, int(getattr(operation, "confirmations_required", 1) or 1))
+    except (TypeError, ValueError):
+        stored = 1
+    if engine is None or not callable(
+        getattr(engine, "required_confirmations", None)
+    ):
+        return stored
+    try:
+        from agent.tools import security_gate
+
+        effect = security_gate.effect_from_dict(
+            dict(getattr(operation, "effect", {}) or {})
+        )
+    except Exception:  # noqa: BLE001 - 无法还原 effect：保持存储值
+        effect = None
+    if effect is None:
+        return stored
+    try:
+        derived = int(engine.required_confirmations(effect))
+    except Exception:  # noqa: BLE001 - 判定失败不能降级成一次
+        return max(stored, 3)
+    return max(stored, derived)
+
 
 
 def refusal_reason(decision: str) -> str:
@@ -36,7 +98,7 @@ def refusal_reason(decision: str) -> str:
     实际是 5 分钟自动过期（一轮里 6 次）。
     """
     if decision == "timeout":
-        return "审批等待超时（等你确认超过 5 分钟，已自动取消）"
+        return "审批等待超时（等你确认超过 10 分钟，已自动取消）"
     if decision == "rejected":
         return "你点了拒绝"
     if decision == "cancelled":
@@ -98,9 +160,14 @@ class ApprovalService:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         conn=None,
         registry=None,
+        *,
+        store: ApprovalStore | None = None,
+        operations: OperationRegistry | None = None,
+        engine=None,
     ) -> None:
         self.bus = bus
-        self.timeout_seconds = timeout_seconds
+        # 旧接口兼容：不传 timeout 时按新契约的 600 秒（以前是 300 秒）。
+        self.timeout_seconds = float(timeout_seconds)
         self._waiters: dict[str, asyncio.Future[ApprovalResult]] = {}
         self._requests: dict[str, ApprovalRequest] = {}
         self._turn_id: str | None = None
@@ -113,6 +180,15 @@ class ApprovalService:
         # 没有它时保持旧行为（库只有一个写入者的路径不变）。
         self.registry = registry
         self._instance_id = getattr(registry, "instance_id", None)
+        # 审批 v2：持久化状态机 + 可恢复操作 + 执行器注册表（见迁移 53）。
+        self.store = store if store is not None else (
+            ApprovalStore(conn, instance_id=self._instance_id) if conn is not None else None
+        )
+        self.operations = operations if operations is not None else OperationRegistry()
+        self.engine = engine
+        self.instruction_registry = None
+        self._notifier = None
+        self._exec_tasks: set[asyncio.Task] = set()
         self._mark_interrupted()
         # 由本方法排进事件循环的发布任务：持有引用，避免被 GC 提前回收。
         self._pending_publishes: set[asyncio.Task] = set()
@@ -162,6 +238,11 @@ class ApprovalService:
                 }
             )
             invalidated += 1
+        if self.store is not None:
+            try:
+                invalidated += self._invalidate_persisted_for_task(task_id, reason)
+            except Exception:  # noqa: BLE001 - 作废 v2 失败不能挡住旧路径
+                logger.warning("failed to invalidate persisted approvals", exc_info=True)
         return invalidated
 
     @staticmethod
@@ -226,7 +307,7 @@ class ApprovalService:
         try:
             rows = self.conn.execute(
                 "SELECT approval_id, owner_instance_id FROM pending_approvals "
-                "WHERE status = 'pending'"
+                "WHERE status = 'pending' AND state IS NULL"
             ).fetchall()
         except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
             logger.warning("failed to read pending approvals", exc_info=True)
@@ -247,8 +328,9 @@ class ApprovalService:
             with transaction(self.conn):
                 for approval_id in victims:
                     self.conn.execute(
-                        "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
-                        "WHERE approval_id = ? AND status = 'pending'",
+                        "UPDATE pending_approvals SET status = 'interrupted',"
+                        " state = 'interrupted_unverified', resolved_at = ?"
+                        " WHERE approval_id = ? AND status = 'pending'",
                         (_now().isoformat(), approval_id),
                     )
         except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
@@ -279,8 +361,9 @@ class ApprovalService:
         try:
             with transaction(self.conn):
                 self.conn.execute(
-                    "UPDATE pending_approvals SET status = 'interrupted', resolved_at = ? "
-                    "WHERE status = 'pending'",
+                    "UPDATE pending_approvals SET status = 'interrupted',"
+                    " state = 'interrupted_unverified', resolved_at = ?"
+                    " WHERE status = 'pending' AND state IS NULL",
                     (_now().isoformat(),),
                 )
         except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
@@ -361,6 +444,14 @@ class ApprovalService:
                     "outcome": "not_executed",
                 }
             )
+        if self.store is not None:
+            try:
+                seen = {str(item.get("approval_id") or "") for item in out}
+                for item in self.store.interrupted():
+                    if str(item.get("approval_id") or "") not in seen:
+                        out.append(item)
+            except Exception:  # noqa: BLE001 - 读不到 v2 中断记录不影响旧路径
+                logger.warning("failed to read interrupted persisted approvals", exc_info=True)
         return out
 
     # -- introspection ----------------------------------------------------
@@ -383,8 +474,494 @@ class ApprovalService:
                 self._requests.pop(approval_id, None)
                 continue
             out.append(request.as_payload())
+        # v2：持久化状态机里的等待项（旧 request() 的内存等待与它并存，按 id 去重）。
+        if self.store is not None:
+            try:
+                seen = {str(item.get("approval_id") or "") for item in out}
+                for item in self.store.list_pending():
+                    if str(item.get("approval_id") or "") not in seen:
+                        out.append(item)
+            except Exception:  # noqa: BLE001 - 读取失败不能挡住界面恢复旧项
+                logger.warning("failed to list persisted approvals", exc_info=True)
         out.sort(key=lambda item: str(item.get("created_at") or ""))
         return out
+
+    # -- 审批 v2：持久化状态机 + 非阻塞提交（契约 §5） ---------------------
+
+    def set_engine(self, engine) -> None:
+        self.engine = engine
+
+    def set_operations(self, operations: OperationRegistry | None) -> None:
+        if operations is not None:
+            self.operations = operations
+
+    def set_instruction_registry(self, registry) -> None:
+        self.instruction_registry = registry
+
+    def set_notifier(self, notifier) -> None:
+        """执行结果通知回调（原 turn 仍存在时追加系统通知；不伪装成模型的话）。"""
+        self._notifier = notifier
+
+    def current_mode_value(self) -> str:
+        if self.engine is None:
+            return PermissionMode.RESTRICTED.value
+        try:
+            return self.engine.mode().value
+        except Exception:  # noqa: BLE001 - 模式读取失败按默认（不提高）
+            return PermissionMode.RESTRICTED.value
+
+    async def submit(
+        self,
+        operation: PendingOperation,
+        *,
+        mode: str | None = None,
+        origin: str = "user",
+    ) -> ApprovalTicket:
+        """提交一个需要审批的可恢复操作，立即返回 waiting 票据（不阻塞本轮）。
+
+        工具/执行器在 authorize() 返回 APPROVE 后调用它：操作与上下文落库，
+        工具返回 pending 结果，本轮正常结束；用户批准后由后台执行器真正执行。
+        """
+        if self.store is None:
+            raise RuntimeError("没有数据库连接，不能提交可恢复的审批")
+        if not operation.mode_at_request:
+            operation.mode_at_request = mode or self.current_mode_value()
+        if not operation.source:
+            operation.source = str(origin or "tool")
+        # §8.1：提交前由后端按真实影响对象覆盖最低确认次数（不信任调用方填写的 1）。
+        derived = _derived_confirmations(self.engine, operation)
+        if derived > int(getattr(operation, "confirmations_required", 1) or 1):
+            operation.confirmations_required = int(derived)
+        # R9-G：提交时对"实际要执行的内容"做独立摘要，存进单独的 fingerprint 列；
+        # 批准/领取/执行前重算比对，operation_detail 被改动后不得重放。
+        from agent.security.operations import operation_digest
+
+        operation.fingerprint = dict(operation.fingerprint or {})
+        operation.fingerprint.setdefault("operation_digest", operation_digest(operation))
+        row = self.store.create(
+            operation,
+            timeout_seconds=self.timeout_seconds,
+            turn_id=operation.turn_id if operation.turn_id is not None else self._turn_id,
+            session_id=operation.session_id
+            if operation.session_id is not None
+            else self._session_id,
+        )
+        if self.registry is not None and self._instance_id:
+            try:
+                self.registry.claim(RECORD_APPROVAL, row["approval_id"], self._instance_id)
+            except Exception:  # noqa: BLE001 - 归属写失败不影响审批本身
+                logger.warning("failed to claim approval owner", exc_info=True)
+        await self._publish_required(row)
+        return ApprovalTicket(
+            approval_id=row["approval_id"],
+            state=str(row.get("state") or "waiting"),
+            expires_at=str(row.get("expires_at") or ""),
+            confirmations_required=int(row.get("requires_confirmations") or 1),
+            revisions=int(row.get("revisions") or 0),
+        )
+
+    def _required_confirmations_for(self, approval_id: str) -> int | None:
+        """审批单记录的真实 effect → 后端最低确认次数（§8.4）。
+
+        历史/错误行可能把内部维护写成 1 次；批准/确认时必须按真实对象重新推导。
+        """
+        if self.store is None:
+            return None
+        try:
+            row = self.store.get(str(approval_id))
+        except Exception:  # noqa: BLE001 - 读不到行按不校正（存储值兜底）
+            return None
+        if row is None:
+            return None
+        try:
+            operation = PendingOperation.from_dict(
+                dict(row.get("operation_detail") or {})
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return _derived_confirmations(self.engine, operation)
+
+    async def decide(
+        self,
+        approval_id: str,
+        decision: str,
+        *,
+        expected_revision: int | None = None,
+        scope: dict | str | None = None,
+    ) -> dict:
+        """用户决定：approve / reject / cancel（新接口；旧 respond 也映射到这里）。"""
+        if self.store is None:
+            raise ApprovalNotFound("没有找到这条审批（这个装配没有持久化审批）")
+        row = self.store.decide(
+            approval_id,
+            decision,
+            expected_revision=expected_revision,
+            mode_at_approval=self.current_mode_value(),
+            required_confirmations=self._required_confirmations_for(approval_id),
+        )
+        await self._publish_phase(str(row.get("state") or ""), row)
+        if str(row.get("state") or "") == "approved":
+            self._apply_bounded_grant(row, scope)
+            self._schedule_execute(approval_id)
+        return row
+
+    async def confirm(
+        self,
+        approval_id: str,
+        stage: int,
+        *,
+        expected_revision: int | None = None,
+    ) -> dict:
+        """内部运行数据三次确认（CAS：只能按 1 -> 2 -> 3 连续推进）。"""
+        if self.store is None:
+            raise ApprovalNotFound("没有找到这条审批（这个装配没有持久化审批）")
+        row = self.store.confirm(
+            approval_id,
+            int(stage),
+            expected_revision=expected_revision,
+            mode_at_approval=self.current_mode_value(),
+            required_confirmations=self._required_confirmations_for(approval_id),
+        )
+        phase = "confirm_stage" if str(row.get("state") or "") == "waiting" else "approved"
+        await self._publish_phase(
+            phase,
+            row,
+            extra={
+                "confirmed_stage": int(row.get("confirmed_stage") or 0),
+                "requires_confirmations": int(row.get("requires_confirmations") or 1),
+            },
+        )
+        if str(row.get("state") or "") == "approved":
+            self._schedule_execute(approval_id)
+        return row
+
+    def history(self, *, limit: int = 50) -> list[dict]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.history(limit=limit)
+        except Exception:  # noqa: BLE001 - 读历史失败返回空，不猜
+            logger.warning("failed to read approval history", exc_info=True)
+            return []
+
+    def audit_trail(self, approval_id: str) -> list[dict]:
+        if self.store is None:
+            return []
+        try:
+            return self.store.audit_trail(approval_id)
+        except Exception:  # noqa: BLE001
+            return []
+
+    async def recover(self) -> dict:
+        """启动恢复（lifespan 在有事件循环后调用）：恢复 waiting、过期、执行中核对。"""
+        if self.store is None:
+            return {}
+        owner_alive = None
+        if self.registry is not None:
+            owner_alive = self.registry.owner_alive
+        report = self.store.recover(owner_alive=owner_alive)
+        for approval_id in report.get("expired", []):
+            row = self.store.get(approval_id)
+            if row is not None:
+                await self._publish_phase("expired", row)
+        for approval_id in report.get("interrupted", []):
+            row = self.store.get(approval_id)
+            if row is not None:
+                await self._publish_phase("interrupted_unverified", row)
+        for approval_id in report.get("waiting", []) + report.get("taken_over", []):
+            row = self.store.get(approval_id)
+            if row is not None:
+                await self._publish_required(row)
+        for approval_id in report.get("approved", []):
+            self._schedule_execute(approval_id)
+        return report
+
+    async def aclose(self) -> None:
+        """收尾：取消后台执行任务；waiting 审批保留（供重启恢复，绝不永久取消）。"""
+        tasks = list(self._exec_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._exec_tasks.clear()
+
+    def _schedule_execute(self, approval_id: str) -> bool:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - 纯同步调用（测试/工具函数）
+            return False
+        task = loop.create_task(self._execute_approved(approval_id))
+        self._exec_tasks.add(task)
+        task.add_done_callback(self._exec_tasks.discard)
+        return True
+
+    async def _execute_approved(self, approval_id: str) -> None:
+        """批准后的后台执行器：重核对 -> 原子领取 -> 执行 -> 发布结果。
+
+        重核对在领取**之前**：当前模式更严格、且该操作在新模式下不再允许时，
+        标 invalidated 并如实说明（新的执行需重新审批），不把 approved 行卡在
+        executing。领取用 CAS，重复领取/并发执行拿不到行。
+        """
+        if self.store is None:  # pragma: no cover - 防御
+            return
+        approved = self.store.get(approval_id)
+        if approved is None or str(approved.get("state") or "") != "approved":
+            return
+        operation = PendingOperation.from_dict(approved.get("operation_detail") or {})
+        # R9-G：审批记录里的操作内容必须与提交时一致（独立摘要）；截止时间不得续期。
+        from agent.security.operations import operation_digest
+
+        expected_digest = str(
+            (approved.get("fingerprint") or {}).get("operation_digest") or ""
+        )
+        if expected_digest and operation_digest(operation) != expected_digest:
+            reason = "审批单绑定的操作内容在提交后被改动；本次没有执行（需要重新提出）"
+            row = self.store.mark_invalidated(approval_id, reason)
+            await self._publish_phase("invalidated", row, extra={"summary": reason})
+            await self._notify(row, ok=False, summary=reason)
+            return
+        expires_at = str(approved.get("expires_at") or "")
+        if expires_at:
+            try:
+                from datetime import datetime, timezone
+
+                deadline = datetime.fromisoformat(expires_at)
+                if deadline.tzinfo is None:
+                    deadline = deadline.replace(tzinfo=timezone.utc)
+                if datetime.now(timezone.utc) > deadline:
+                    reason = "这条审批已超过原始有效期（不会重新获得 10 分钟）；本次没有执行"
+                    row = self.store.mark_expired(approval_id)
+                    await self._publish_phase("invalidated", row, extra={"summary": reason})
+                    await self._notify(row, ok=False, summary=reason)
+                    return
+            except (TypeError, ValueError):
+                reason = "审批截止时间无法核对；本次没有执行"
+                row = self.store.mark_invalidated(approval_id, reason)
+                await self._publish_phase("invalidated", row, extra={"summary": reason})
+                await self._notify(row, ok=False, summary=reason)
+                return
+        ctx = ExecutionContext(
+            approval_id=approval_id,
+            operation=operation,
+            mode_at_request=str(approved.get("mode_at_request") or ""),
+            mode_at_approval=str(approved.get("mode_at_approval") or ""),
+            attempt=int(approved.get("attempt") or 0) + 1,
+            engine=self.engine,
+            mode_getter=self.current_mode_value,
+            expires_at=str(approved.get("expires_at") or "") or None,
+            confirmed_stage=int(approved.get("confirmed_stage") or 0),
+        )
+        # R9-H5 §4：批量审批先只核对整批共同条件（要求仍 active/版本、期限、
+        # 模式/确认基础）；单项限制或内容变化由执行器逐项 effect 重核对，不能
+        # 在进入逐项执行前因为 B 的冲突使 A 也失效。
+        raw_items = (operation.payload or {}).get("items")
+        is_batch = isinstance(raw_items, list) and len(raw_items) > 1
+        try:
+            allowed, reason = (
+                await ctx.authorize_started(common_only=True)
+                if is_batch
+                else await ctx.authorize_started()
+            )
+        except TypeError:  # 兼容旧 ExecutionContext 签名（无 common_only）
+            allowed, reason = await ctx.authorize_started()
+        if not allowed:
+            row = self.store.mark_invalidated(approval_id, reason)
+            await self._publish_phase("invalidated", row, extra={"summary": reason})
+            await self._notify(row, ok=False, summary=reason)
+            return
+        claimed = self.store.claim(approval_id)
+        if claimed is None:
+            # 已被别的执行器领取 / 状态已变：不重复执行。
+            return
+        await self._publish_phase("executing", claimed)
+        # R9-G：执行器内部工具/引擎判定必须使用这条审批单绑定的具体要求；
+        # 没有绑定就保持无绑定（引擎/执行前重核对会要求重新判断，不回退"最近一条"）。
+        binding = None
+        if getattr(operation, "requirement_id", None):
+            try:
+                from agent.security.requirements import RequirementBinding
+
+                binding = RequirementBinding(
+                    requirement_id=str(operation.requirement_id),
+                    version=int(operation.requirement_version or 1),
+                )
+            except Exception:  # noqa: BLE001 - W1 分支未提供 dataclass 时用最小对象
+                from types import SimpleNamespace
+
+                binding = SimpleNamespace(
+                    requirement_id=str(operation.requirement_id),
+                    version=int(operation.requirement_version or 1),
+                )
+        from agent.security.context import requirement_context
+
+        with requirement_context(binding):
+            result = await self.operations.execute(operation.kind, operation.payload, ctx)
+        # R9-H4 §10.1/§10.4：把这次执行前重核对的依据写进结果与审计，证明
+        # 「unresolved 下具体批准只完成这一次」不是靠猜，也没有变成长期授权。
+        basis = dict(getattr(ctx, "authorization_basis", {}) or {})
+        if basis:
+            result.detail = dict(result.detail or {})
+            result.detail["authorization_basis"] = basis
+        finished = self.store.finish(approval_id, result)
+        phase = "executed" if result.ok else "failed"
+        extra = {
+            "ok": bool(result.ok),
+            "summary": result.summary,
+            "detail": dict(result.detail or {}),
+        }
+        if basis:
+            extra["authorization_basis"] = basis
+        await self._publish_phase(
+            phase,
+            finished,
+            extra=extra,
+        )
+        await self._notify(finished, ok=bool(result.ok), summary=result.summary)
+
+    async def _notify(self, row: dict | None, *, ok: bool, summary: str) -> None:
+        if self._notifier is None or row is None:
+            return
+        try:
+            result = self._notifier(
+                {
+                    "approval_id": row.get("approval_id"),
+                    "ok": bool(ok),
+                    "summary": str(summary or ""),
+                    "label": row.get("label"),
+                    "kind": row.get("kind"),
+                    "state": row.get("state"),
+                }
+            )
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 - 通知失败不影响审批结果
+            logger.warning("approval notifier failed", exc_info=True)
+
+    def _approval_payload(self, row: dict) -> dict:
+        """事件/API 共用的审批形状（旧字段保留，新增字段供新前端使用）。"""
+        operation = row.get("operation_detail") or {}
+        return {
+            "approval_id": row.get("approval_id"),
+            "kind": row.get("kind"),
+            "label": row.get("label"),
+            "purpose": row.get("purpose"),
+            "payload": row.get("payload") or {},
+            "turn_id": row.get("turn_id"),
+            "session_id": row.get("session_id"),
+            "created_at": row.get("created_at"),
+            "expires_at": row.get("expires_at"),
+            "state": row.get("state"),
+            "confirmed_stage": int(row.get("confirmed_stage") or 0),
+            "requires_confirmations": int(row.get("requires_confirmations") or 1),
+            "source": row.get("source") or "tool",
+            "instruction_id": row.get("instruction_id"),
+            "instruction_text": row.get("instruction_text"),
+            "mode_at_request": row.get("mode_at_request"),
+            "revisions": int(row.get("revisions") or 0),
+            "operation": row.get("operation") or {},
+            "request_digest": request_digest(
+                str(row.get("kind") or ""), dict(operation.get("payload") or {})
+            ),
+        }
+
+    async def _publish_required(self, row: dict, phase: str = "waiting") -> None:
+        data = {"approval": self._approval_payload(row), "phase": phase}
+        await self.bus.publish(make_event(EventType.APPROVAL_REQUIRED, data))
+
+    async def _publish_phase(self, phase: str, row: dict | None, *, extra: dict | None = None) -> None:
+        if row is None:
+            return
+        decision_map = {
+            "approved": "approved",
+            "rejected": "rejected",
+            "cancelled": "cancelled",
+            "expired": "timeout",
+        }
+        data = {
+            "approval_id": row.get("approval_id"),
+            "decision": decision_map.get(phase, phase),
+            "phase": phase,
+            "turn_id": row.get("turn_id"),
+            "approval": self._approval_payload(row),
+        }
+        data.update(extra or {})
+        await self.bus.publish(make_event(EventType.APPROVAL_RESULT, data))
+
+    def _apply_bounded_grant(self, row: dict, scope: dict | str | None) -> None:
+        """批准「本指令内对该范围」时，把有界授权写入当前指令（指令结束即失效）。"""
+        registry = self.instruction_registry
+        if registry is None:
+            return
+        target_scope = "once"
+        if isinstance(scope, dict):
+            target_scope = str(scope.get("kind") or scope.get("mode") or "once")
+        elif isinstance(scope, str):
+            target_scope = scope
+        if target_scope not in ("instruction", "instruction_scope", "range"):
+            return
+        instruction = registry.current()
+        if instruction is None or row.get("instruction_id") != instruction.instruction_id:
+            return
+        effect = (row.get("operation_detail") or {}).get("effect") or {}
+        targets = effect.get("targets") or []
+        objects = [
+            Scope("path", str(t.get("value") or ""))
+            for t in targets
+            if isinstance(t, dict) and t.get("kind") == "path" and t.get("value")
+        ]
+        if not objects and str(effect.get("kind") or "") == "network_egress":
+            objects = [
+                Scope("url_host", str(t.get("value") or ""))
+                for t in targets
+                if isinstance(t, dict) and t.get("value")
+            ]
+        if not objects:
+            return
+        operation_map = {
+            "write": (OPERATION_WRITE, OPERATION_CREATE),
+            "create": (OPERATION_CREATE, OPERATION_WRITE),
+            "delete": (OPERATION_DELETE,),
+            "execute": (OPERATION_EXECUTE,),
+            "install_deps": (OPERATION_INSTALL_DEPS,),
+            "network_egress": (OPERATION_NETWORK_EGRESS,),
+        }
+        operations = operation_map.get(str(effect.get("kind") or ""), ())
+        if not operations:
+            return
+        registry.add_grant(
+            instruction,
+            operations=operations,
+            objects=objects,
+            purpose=str(row.get("purpose") or "用户批准的范围"),
+        )
+
+    def _invalidate_persisted_for_task(self, task_id: str, reason: str) -> int:
+        """按开发任务作废 v2 审批（放弃开发时用；已终态的不会复活）。"""
+        if self.store is None:
+            return 0
+        invalidated = 0
+        for row in self.store.list_pending():
+            operation = row.get("operation_detail") or {}
+            payload = operation.get("payload") or {}
+            if not (self._refers_to(payload, task_id) or self._refers_to(row.get("payload"), task_id)):
+                continue
+            try:
+                updated = self.store.decide(
+                    str(row.get("approval_id")), "cancel", actor="system"
+                )
+            except ApprovalError:
+                continue
+            invalidated += 1
+            self._publish_result(
+                {
+                    "approval_id": updated.get("approval_id"),
+                    "decision": "cancelled",
+                    "phase": "cancelled",
+                    "reason": reason,
+                    "turn_id": updated.get("turn_id"),
+                }
+            )
+        return invalidated
 
     def set_context(self, *, turn_id: str | None = None, session_id: str | None = None) -> None:
         """当前上下文（本轮 turn / 本会话）：新审批自动绑定到它。
@@ -488,8 +1065,29 @@ class ApprovalService:
         """Called by the API layer when the frontend answers.
 
         单次使用：等待表/请求表里已经不存在（应答过、超时过、id 是伪造的）→ False。
+        旧接口兼容：如果 id 是 v2 持久化审批（没有内存等待者），把 approved/rejected
+        映射到 decide/confirm —— 新前端用新接口，旧客户端仍能操作同一对象。
         """
         future = self._waiters.get(approval_id)
+        if future is None and self.store is not None:
+            raw = self.store.get_raw(approval_id)
+            if raw is not None and self.store.is_v2(raw):
+                row = self.store.get(approval_id) or {}
+                if turn_id is not None and row.get("turn_id") and turn_id != row.get("turn_id"):
+                    raise ValueError("approval does not belong to this turn")
+                if (
+                    session_id is not None
+                    and row.get("session_id")
+                    and session_id != row.get("session_id")
+                ):
+                    raise ValueError("approval does not belong to this session")
+                target = {"approved": "approve", "rejected": "reject"}.get(
+                    str(decision or "").strip().lower()
+                )
+                if target is None:
+                    raise ValueError(f"invalid decision: {decision}")
+                await self.decide(approval_id, target)
+                return True
         if future is None or future.done():
             return False
         request = self._requests.get(approval_id)

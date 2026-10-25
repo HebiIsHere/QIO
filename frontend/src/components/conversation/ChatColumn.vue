@@ -24,6 +24,7 @@ import { api, type TopicDetail } from "../../services/api";
 import MessageStream from "../MessageStream.vue";
 import KnowledgeCandidateCard from "../KnowledgeCandidateCard.vue";
 import ComposerDock from "./ComposerDock.vue";
+import PermissionModeBadge from "../security/PermissionModeBadge.vue";
 import { useComposerClearance } from "../../composables/useComposerClearance";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
@@ -330,6 +331,9 @@ onBeforeUnmount(() => {
           </svg>
         </span>
       </button>
+      <!-- 权限模式常驻可见（R9 契约 §1）：对话页 v2 删掉了输入区旧话题栏，
+           徽标随常驻话题栏一起挪到这里；点击进入设置由用户切换，徽标本身不改模式。 -->
+      <PermissionModeBadge />
     </header>
 
     <!-- 话题完整说明（打开才读；读不到就说读不到） -->

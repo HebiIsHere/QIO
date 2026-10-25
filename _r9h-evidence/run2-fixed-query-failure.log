@@ -1,0 +1,6 @@
+﻿backend (py3.12)	UNKNOWN STEP	2026-10-23T05:15:42.3139295Z _________________________ test_node_npm_version_forms __________________________
+backend (py3.12)	UNKNOWN STEP	2026-10-23T05:15:42.3139887Z     def test_node_npm_version_forms():
+backend (py3.12)	UNKNOWN STEP	2026-10-23T05:15:42.3144645Z E                +  where None = _kind(FixedQueryFacts(kind='program', program_path='/usr/local/bin/npm', program_name='npm', argv=('--version',), cwd=None, shell=False))
+backend (py3.12)	UNKNOWN STEP	2026-10-23T05:15:42.3147118Z E                +    where FixedQueryFacts(kind='program', program_path='/usr/local/bin/npm', program_name='npm', argv=('--version',), cwd=None, shell=False) = _facts('npm', ['--version'], path='/usr/local/bin/npm')
+backend (py3.12)	UNKNOWN STEP	2026-10-23T05:15:44.0612314Z FAILED tests/test_r9g_fixed_queries.py::test_node_npm_version_forms - AssertionError: assert None == 'version'
+backend (py3.12)	UNKNOWN STEP	2026-10-23T05:15:44.0614404Z  +  where None = _kind(FixedQueryFacts(kind='program', program_path='/usr/local/bin/npm', program_name='npm', argv=('--version',), cwd=None, shell=False))

@@ -117,14 +117,28 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_waiting",
         "board_intent_versions",
         "board_operations",
-        # 对话页 v2（迁移 55）：左侧任务栏的持久化展示记录 / 用户「知道了」状态。
-        # 缺了它们，任务历史只能存在组件内存或浏览器存储，重启即丢。
+        # 对话页 v2（整合后新编号 67；原页面线 55）：左侧任务栏的持久化展示记录 /
+        # 用户「知道了」状态。缺了它们，任务历史只能存在组件内存或浏览器存储，重启即丢。
         "task_feed",
         "task_ack",
-        # 阶段三（P3-D，迁移 56）：意图有效 Turn / 持久化重试系列。
-        # 全部在补偿迁移 57 里有对应的建表语句；缺了它们会并行执行同一意图、重启丢重试次数。
+        # 阶段三（P3-D，整合后新编号 69；原页面线 56）：意图有效 Turn / 持久化重试系列。
+        # 缺了它们会并行执行同一意图、重启丢重试次数（补偿 70 里有对应建表语句）。
         "board_intent_turns",
         "board_intent_retries",
+        # R9（迁移 52/53）：附件迁移审计 / 冗余材料清理清单 / 审批审计与结果历史。
+        "attachment_migration_audit",
+        "material_cleanup_candidates",
+        "approval_audit",
+        "approval_history",
+        # R9-F（迁移 55）：用户要求 / 有界授权记录 / 审查审计 / 文件来源。
+        "user_requirements",
+        "authorization_records",
+        "authorization_review_audit",
+        "file_origins",
+        # R9-G（迁移 57）：模型要求解析审计（补充/修正/撤回/新要求）。
+        "requirement_resolutions",
+        # R9-H2（迁移 61）：内部数据真实对象身份登记（硬链接/移动/改名保护）。
+        "internal_data_identities",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -170,6 +184,47 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_intents.outcome",
         "board_intents.attempt",
         "board_intents.finished_at",
+        # R9（迁移 52）：附件源文件引用。缺了它们，附件又退回复制副本模型，
+        # 无法区分"同一文件被编辑"与"同内容的另一份文件"，也无法记录归属。
+        "attachments.source_kind",
+        "attachments.origin",
+        "attachments.file_id",
+        "attachments.content_sha256",
+        "attachments.reference_state",
+        "attachments.material_enabled",
+        "attachments.user_note",
+        "attachments.last_verified_at",
+        "attachments.legacy_paths",
+        # R9（迁移 53）：审批生命周期 v2。缺了它们，批准后无法在重启后续接，
+        # 也无法原子领取/重核对，只能退回"弹窗内容 + 内存 Future"的旧模型。
+        "pending_approvals.state",
+        "pending_approvals.operation",
+        "pending_approvals.instruction_id",
+        "pending_approvals.instruction_text",
+        "pending_approvals.purpose",
+        "pending_approvals.fingerprint",
+        "pending_approvals.mode_at_request",
+        "pending_approvals.mode_at_approval",
+        "pending_approvals.confirmed_stage",
+        "pending_approvals.revisions",
+        "pending_approvals.attempt",
+        "pending_approvals.claimed_at",
+        "pending_approvals.result",
+        "pending_approvals.error",
+        "pending_approvals.resumed_at",
+        # R9-G（迁移 57）：操作绑定具体用户要求及版本，不能取"最近一条 active"。
+        "user_requirements.version",
+        "pending_approvals.requirement_id",
+        "pending_approvals.requirement_version",
+        "authorization_records.requirement_version",
+        "authorization_review_audit.requirement_version",
+        # R9-H（迁移 59）：结构化限制持久化。缺了它们，历史/重启/审批恢复只能看到
+        # 展平文字，引擎无法可靠地拒绝"用户明确限制过"的操作（NULL/legacy 不等于无限制）。
+        "user_requirements.structured_limits",
+        "user_requirements.structured_limits_state",
+        "user_requirements.structured_limits_source",
+        # R9-H4（迁移 65）：内部数据身份生命周期依据（编号复用区分）。
+        "internal_data_identities.birth_key",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -192,6 +247,29 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # 稳定提交请求身份（迁移 39）：
         # (board_id, client_request_id) 的部分唯一索引（空串不参与）。
         "idx_board_submissions_client_request",
+        # R9（迁移 52/53）：迁移审计 / 清理清单 / 审批状态与过期查询。
+        "idx_attachment_migration_audit_step",
+        "idx_material_cleanup_state",
+        "idx_pending_approvals_state",
+        "idx_pending_approvals_expiry",
+        # R9-F（迁移 55）：要求状态 / 授权记录复用查询 / 审查审计 / 文件来源路径检索。
+        "idx_user_requirements_status",
+        "idx_authorization_records_req",
+        "idx_authorization_review_audit_req",
+        "idx_file_origins_path",
+        # R9-G（迁移 57）：要求解析审计按目标要求检索。
+        "idx_requirement_resolutions_target",
+        # R9-H2（迁移 61）：内部数据身份登记按路径/active 检索。
+        "idx_internal_data_identities_path",
+        # 对话页 v2（新编号 67）：任务展示记录的排序 / 来源检索。
+        "idx_task_feed_updated",
+        "idx_task_feed_source",
+        # 阶段三（P3-D，新编号 69）：有效 Turn 与重试系列的检索索引。
+        "idx_board_intent_turns_turn",
+        "idx_board_intent_turns_board",
+        "idx_board_intent_retries_board",
+        "idx_board_intent_retries_intent",
+        "idx_internal_data_identities_active",
     ),
 }
 

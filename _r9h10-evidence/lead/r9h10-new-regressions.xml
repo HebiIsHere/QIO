@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="7" time="10.668" timestamp="2026-10-24T23:12:19.767614+08:00" hostname="admin"><testcase classname="tests.test_r9h10_regressions" name="test_deserialize_is_pure_under_different_paths" time="0.004" /><testcase classname="tests.test_r9h10_regressions" name="test_binding_survives_close_reopen_without_environment_rebind" time="0.436" /><testcase classname="tests.test_r9h10_regressions" name="test_historical_unbound_is_not_automatically_bound" time="0.002" /><testcase classname="tests.test_r9h10_regressions" name="test_program_name_write_limit_blocks_real_file_write" time="1.556" /><testcase classname="tests.test_r9h10_regressions" name="test_program_name_read_limit_blocks_hardlink_read" time="0.586"><failure message="UnicodeDecodeError: 'utf-8' codec can't decode byte 0x90 in position 2: invalid start byte">ctx = &lt;agent.services.app.AppContext object at 0x000001EB7D92CD50&gt;
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4085/test_program_name_read_limit_b0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000001EB7C8AD410&gt;
+
+    async def test_program_name_read_limit_blocks_hardlink_read(ctx, tmp_path, monkeypatch):
+        runner = _runner(tmp_path / "name-read")
+        hard = tmp_path / "name-read-hardlink"
+        try:
+            os.link(runner, hard)
+        except (OSError, NotImplementedError):
+            pytest.skip("平台不支持硬链接")
+        old_path = os.environ.get("PATH", "")
+        monkeypatch.setenv("PATH", str(runner.parent) + os.pathsep + old_path)
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        requirement = ctx.requirements.record_user_message(
+            text="禁止读取 runner", message_id="m-nr", turn_id="t-nr"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [{"kind": "program_name", "value": "runner"}], "reason": "禁止读"}],
+            source="test-name-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        reads: list[str] = []
+        real_bytes = Path.read_bytes
+        real_text = Path.read_text
+    
+        def spy_bytes(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_bytes(self, *args, **kwargs)
+    
+        def spy_text(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_text(self, *args, **kwargs)
+    
+        import pytest as _pytest
+        monkeypatch.setattr(Path, "read_bytes", spy_bytes)
+        monkeypatch.setattr(Path, "read_text", spy_text)
+        tool = FsReadTool(computer=ctx.computer, security=ctx.authorization)
+        with requirement_context(binding):
+            original = await tool.run(path=str(runner))
+            linked = await tool.run(path=str(hard))
+        assert original.ok is False and linked.ok is False
+        assert reads == []
+        # 同内容复制件不是同一对象，允许读取（独立于名称绑定路径）
+        copy = tmp_path / "name-read-copy"
+        copy.write_bytes(runner.read_bytes())
+        with requirement_context(binding):
+&gt;           copied = await tool.run(path=str(copy))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_r9h10_regressions.py:219: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\agent\tools\fs_tools.py:1521: in run
+    text = await self._run_blocking(_read_file_text, target)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\agent\tools\fs_tools.py:1472: in _run_blocking
+    return await loop.run_in_executor(get_blocking_executor(), fn, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\concurrent\futures\thread.py:58: in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\agent\tools\fs_tools.py:1039: in _read_file_text
+    return f.read()
+           ^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = &lt;encodings.utf_8.IncrementalDecoder object at 0x000001EB1C9D9710&gt;
+input = b'MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff\x00\x00\xb8\x00\x00\x00\x00\x00\x00\x00@\x00\x00\x00\x00\x00\x00\...00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+final = True
+
+&gt;   ???
+E   UnicodeDecodeError: 'utf-8' codec can't decode byte 0x90 in position 2: invalid start byte
+
+&lt;frozen codecs&gt;:322: UnicodeDecodeError</failure></testcase><testcase classname="tests.test_r9h10_regressions" name="test_program_name_delete_limit_blocks_target" time="0.556" /><testcase classname="tests.test_r9h10_regressions" name="test_binding_replacement_blocks_absolute_and_keeps_hardlink_protected" time="0.699" /></testsuite></testsuites>

@@ -1,0 +1,69 @@
+﻿# R9-H13 D 邻近回归（合并 r9h13/main 1af72fcf 后；真实审批/执行/附件套件）
+# 命令: cd backend; .\.venv\Scripts\python.exe -m pytest <下列套件> -p no:cacheprovider --tb=line
+# 套件: r9h5_regressions/r9h5_regressions2/r9h7_regressions/r9h8_regressions/r9h12_cross_operation/r9h13_lead/
+#       r9h4_approval/approval_lifecycle/approval_restart/approval_api/approval_binding/r9g_batch/
+#       approved_operations/r9h4_fs_batch/r9f_approved_replay/fs_delete_recycle/internal_data_guard/
+#       r9h_internal_data/r9f_exec_boundary/final_c_approval/r9h_content_binding
+# 结果: 244 passed, 1 failed。
+# 唯一失败 test_r9h_content_binding.py::test_script_content_change_prevents_reuse 为**非本轮引入**：
+#   用 git stash 移除本分支全部 src 改动后在 HEAD 上同样失败（RunProgramTool 审查对象 script_sha256=None，
+#   共享 venv junction 的 python 路径相关，属既有环境/其他 owner 范围，未改）。
+........................................................................ [ 29%]
+........................................................................ [ 58%]
+........................................................................ [ 88%]
+..................F..........                                            [100%]
+================================== FAILURES ===================================
+E   AssertionError: 脚本文件内容摘要必须进入审查对象
+    assert None
+     +  where None = ReviewOperation(kind='execute', objects=(ReviewObject(kind='program', value='D:\\qio-dev\\qio-r9h10-main\\backend\\.ve...5dddae14d416a20147ee460f0abf6e0a18aa3', content_digest=None, precondition_digest=None, delete_mode=None, conditions=()).script_sha256
+----------------------------- Captured log setup ------------------------------
+D:\qio-dev\qio-r9h13-d\backend\tests\test_r9h_content_binding.py:387: AssertionError: 脚本文件内容摘要必须进入审查对象
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-r9h13-d\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+tests/test_final_c_approval.py::test_material_change_blocks_pending_approval
+  D:\qio-dev\qio-r9h13-d\backend\.venv\Lib\site-packages\_pytest\unraisableexception.py:67: PytestUnraisableExceptionWarning: Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x000001A02A674A40>
+  
+  Traceback (most recent call last):
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\proactor_events.py", line 116, in __del__
+      _warn(f"unclosed transport {self!r}", ResourceWarning, source=self)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\proactor_events.py", line 80, in __repr__
+      info.append(f'fd={self._sock.fileno()}')
+                        ^^^^^^^^^^^^^^^^^^^
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\windows_utils.py", line 102, in fileno
+      raise ValueError("I/O operation on closed pipe")
+  ValueError: I/O operation on closed pipe
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+tests/test_final_c_approval.py::test_material_change_blocks_pending_approval
+  D:\qio-dev\qio-r9h13-d\backend\.venv\Lib\site-packages\_pytest\unraisableexception.py:67: PytestUnraisableExceptionWarning: Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x000001A02A41F1A0>
+  
+  Traceback (most recent call last):
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\base_subprocess.py", line 126, in __del__
+      self.close()
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\base_subprocess.py", line 104, in close
+      proto.pipe.close()
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\proactor_events.py", line 109, in close
+      self._loop.call_soon(self._call_connection_lost, None)
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\base_events.py", line 762, in call_soon
+      self._check_closed()
+    File "C:\Users\zxy\AppData\Roaming\uv\python\cpython-3.11-windows-x86_64-none\Lib\asyncio\base_events.py", line 520, in _check_closed
+      raise RuntimeError('Event loop is closed')
+  RuntimeError: Event loop is closed
+  
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+    warnings.warn(pytest.PytestUnraisableExceptionWarning(msg))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_r9h_content_binding.py::test_script_content_change_prevents_reuse
+1 failed, 244 passed, 3 warnings in 81.94s (0:01:21)
+
+

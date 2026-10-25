@@ -217,7 +217,7 @@ describe("三类数据不许串用", () => {
     await w.get('[data-im="submit-details"]').trigger("click");
     const details = w.get('[data-im="submit-details-box"]').text();
     expect(details).toContain("本次提交范围与改动");
-    expect(details).toContain("本次允许 QIO 查看");
+    expect(details).toContain("本次作为互动材料");
     expect(details).toContain("新增注释：本次要提交的那条");
     expect(details, "本次范围与改动里不许出现上次提交的结论").not.toContain("上次提交的完整结论说明");
   });

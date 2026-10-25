@@ -276,7 +276,7 @@ def _assert_preserved(label: str, row: dict, expected_keywords: tuple[str, ...])
 @pytest.mark.parametrize("kind", sorted(REASON_KEYWORDS))
 async def test_failure_reason_survives_every_read_path(app, kind: str):
     async with _client(app) as client:
-        with _inject(Path(app.state.ctx.attachments.root), kind) as injected:
+        with _inject(Path(app.state.ctx.attachments.materials_root), kind) as injected:
             response = await _upload(client)
         assert injected["fired"], ("受控错误没有触发（装置失效）", kind)
 
@@ -316,7 +316,7 @@ async def test_different_failures_keep_different_reasons(app):
     reasons: dict[str, str] = {}
     async with _client(app) as client:
         for kind in ("write_nospace", "open_permission"):
-            with _inject(Path(app.state.ctx.attachments.root), kind) as injected:
+            with _inject(Path(app.state.ctx.attachments.materials_root), kind) as injected:
                 await _upload(client, name="r6-reason-%s.bin" % kind)
             assert injected["fired"], kind
             body = (await client.get("/api/attachments?unbound=true")).json()
@@ -339,9 +339,10 @@ async def test_ready_then_deleted_becomes_missing(app):
         ok = (await client.get("/api/attachments/%s" % attachment_id)).json()["attachment"]
         assert str(ok["state"]) == "ready", ok
 
-        stored = str(ok.get("stored_path") or "")
-        assert stored and os.path.exists(stored), ("ready 记录必须指向真实副本", ok)
-        os.unlink(stored)  # 副本后来丢失
+        stored = str(ok.get("source_path") or "")
+        assert stored and os.path.exists(stored), ("ready 记录必须指向真实落盘文件", ok)
+        assert ok.get("stored_path") in (None, ""), ok
+        os.unlink(stored)  # 落盘的用户材料后来丢失（源文件已不存在）
 
         after = (await client.get("/api/attachments/%s" % attachment_id)).json()["attachment"]
         assert str(after.get("state")) == "missing", (
@@ -352,64 +353,64 @@ async def test_ready_then_deleted_becomes_missing(app):
 
 # ---- 3. 重试：成功 → ready；再次失败 → 保留新原因 ------------------------------------
 
-
 async def test_retry_after_failure_sets_ready_or_keeps_new_reason(app, tmp_path: Path):
-    """有来源路径的 copy 附件：重试成功 → ready；再次失败 → 保留**这一次**的原因。"""
-    source = tmp_path / "r6-retry-source.bin"
-    source.write_bytes(PAYLOAD)
+    """新契约下的重试语义：
+
+    * 浏览器上传失败：服务端没有字节可重放 → /retry 明确 409（应重新上传），原因保留；
+    * 两种不同失败原因必须各自保留（不被通用文案覆盖）；
+    * 源文件引用缺失：不是「重试副本」，而是 missing + relocate 重新指定（身份确认后 ready）；
+    * 历史行（旧副本）的显式重试成功仍保留覆盖。
+    """
     async with _client(app) as client:
-        # ① 首次复制写入失败 → 注入必须**保持到后台复制跑完**（登记是后台复制，先返回后落库）
-        with _inject(Path(app.state.ctx.attachments.root), "write_nospace") as injected:
-            response = await client.post("/api/attachments", json={"source_path": str(source)})
-            assert response.status_code == 200, (response.status_code, response.text[:200])
-            attachment_id = str(response.json()["attachment"]["id"])
-            await _wait_terminal(client, attachment_id)  # 后台复制先跑完
-        assert injected["fired"], "受控写入错误没有被触发（装置失效：没走到复制）"
-        row = await _first_row(client, "r6-retry-source.bin")
-        assert str(row["id"]) == attachment_id
-        first_reason = _reason_of((await client.get("/api/attachments/%s" % attachment_id)).json()["attachment"])
+        # ① 两次不同类型的上传失败 → 两条记录各自保留真实原因
+        with _inject(Path(app.state.ctx.attachments.materials_root), "write_nospace") as injection:
+            first = await _upload(client, name="r6-fail-space.bin")
+        assert first.status_code >= 400, (first.status_code, first.text[:200])
+        assert injection["fired"], "受控写入错误没有被触发（装置失效）"
+        rows = (await client.get("/api/attachments?unbound=true")).json().get("attachments", [])
+        space_row = [a for a in rows if a.get("name") == "r6-fail-space.bin"][0]
+        space_reason = _reason_of(space_row)
+        assert space_reason and not any(m in space_reason for m in GENERIC_MARKERS), space_reason
 
-        # ② 仍然坏着、但换一种错误 → 重试失败必须保留**新的**原因（不是旧原因、也不是通用文案）
-        with _inject(Path(app.state.ctx.attachments.root), "open_permission") as injected2:
-            third = await client.post("/api/attachments/%s/retry" % attachment_id)
-            after_retry = await _wait_change(
-                client, attachment_id, prev_state="failed", prev_reason=first_reason
-            )
-        assert injected2["fired"], "第二次注入没有触发（装置失效）"
-        assert str(after_retry.get("state")) == "failed", (
-            "重试仍然失败时状态必须如实保持 failed", after_retry, third.status_code
-        )
+        with _inject(Path(app.state.ctx.attachments.materials_root), "open_permission") as injection2:
+            second = await _upload(client, name="r6-fail-perm.bin")
+        assert second.status_code >= 400
+        assert injection2["fired"]
+        rows = (await client.get("/api/attachments?unbound=true")).json().get("attachments", [])
+        perm_row = [a for a in rows if a.get("name") == "r6-fail-perm.bin"][0]
+        perm_reason = _reason_of(perm_row)
+        assert perm_reason and not any(m in perm_reason for m in GENERIC_MARKERS), perm_reason
+        assert perm_reason != space_reason, (space_reason, perm_reason)
 
-        # ③ 解除注入 → 显式重试 → 必须准确变 ready 且原因清空
-        retry_ok = await client.post("/api/attachments/%s/retry" % attachment_id)
+        # ② 浏览器上传没有 source_path：retry 不能假装能恢复 → 409，状态与原因保持不变
+        refused = await client.post("/api/attachments/%s/retry" % space_row["id"])
+        assert refused.status_code == 409, (refused.status_code, refused.text[:200])
+        stable = (await client.get("/api/attachments/%s" % space_row["id"])).json()["attachment"]
+        assert str(stable.get("state")) == "failed" and _reason_of(stable) == space_reason, stable
+
+        # ③ 源文件引用缺失 → missing；用真实原件（同文件身份）移动位置后 relocate 恢复 ready
+        source = tmp_path / "r6-source-ref.bin"
+        source.write_bytes(PAYLOAD)
+        created = await client.post("/api/attachments", json={"source_path": str(source)})
+        ref_id = created.json()["attachment"]["id"]
+        moved = tmp_path / "r6-source-moved.bin"
+        source.rename(moved)
+        missing = (await client.get("/api/attachments/%s" % ref_id)).json()["attachment"]
+        assert str(missing.get("state")) == "ready", "同卷移动应被使用时解析自动修复"
+        assert str(missing.get("source_path")) == str(moved), missing
+        source.unlink(missing_ok=True)
+
+        # ④ 历史行（旧副本）的显式重试：同一行重做副本 → ready（旧流水线仍可维护历史数据）
+        legacy_src = tmp_path / "r6-legacy-copy.bin"
+        legacy_src.write_bytes(PAYLOAD)
+        svc = app.state.ctx.attachments
+        legacy = svc.run_prepare(svc.prepare(str(legacy_src)).id)
+        Path(legacy.stored_path).unlink()
+        svc._update(legacy.id, state="failed", error="保存失败：受控原因")
+        retry_ok = await client.post("/api/attachments/%s/retry" % legacy.id)
         assert retry_ok.status_code < 400, (retry_ok.status_code, retry_ok.text[:200])
         fixed = await _wait_change(
-            client, attachment_id, prev_state="failed", prev_reason=_reason_of(after_retry)
+            client, legacy.id, prev_state="failed", prev_reason="保存失败：受控原因"
         )
-        assert str(fixed.get("state")) == "ready", ("修好后显式重试必须准确变 ready", fixed)
-        assert not _reason_of(fixed).strip(), ("ready 记录不该还挂着失败原因", fixed)
-        second_reason = _reason_of(after_retry)
-        assert second_reason and not any(m in second_reason for m in GENERIC_MARKERS), second_reason
-        assert second_reason != first_reason, (
-            "重试失败后保留的应该是**新的**原因（不是上一次的）",
-            {"first": first_reason, "second": second_reason},
-        )
-
-        # 字节上传（没有 source_path）不能自行从原地址恢复：重试不得静默成功，原因必须如实
-        with _inject(Path(app.state.ctx.attachments.root), "write_nospace") as injected_bytes:
-            bytes_response = await _upload(client, name="r6-no-source.bin")
-            assert bytes_response.status_code >= 400
-        assert injected_bytes["fired"]
-        bytes_rows = (await client.get("/api/attachments?unbound=true")).json().get("attachments", [])
-        bytes_row = [a for a in bytes_rows if a.get("name") == "r6-no-source.bin"][0]
-        await client.post("/api/attachments/%s/retry" % bytes_row["id"])
-        bytes_after = await _wait_terminal(client, str(bytes_row["id"]))
-        assert str(bytes_after.get("state")) == "failed", (
-            "没有来源路径的字节上传，重试不得静默变成成功", bytes_after
-        )
-        assert _reason_of(bytes_after).strip(), ("字节上传重试失败后原因必须如实可见", bytes_after)
-        assert not any(m in _reason_of(bytes_after) for m in GENERIC_MARKERS), bytes_after
-        print(
-            "[诊断] 重试：原因#1=%s；原因#2=%s；修好后 state=ready；无来源路径重试后=%s"
-            % (first_reason[:50], second_reason[:50], bytes_after.get("state"))
-        )
+        assert str(fixed.get("state")) == "ready", fixed
+        assert fixed.get("stored_path"), fixed

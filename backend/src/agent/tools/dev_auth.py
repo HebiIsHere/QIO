@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+from agent.tools import security_gate
 from agent.tools.approval_present import describe_tool_call
 from agent.tools.base import ToolResult
 from agent.tools.dev_workspace import (
@@ -198,6 +199,7 @@ async def ensure_test_authorization(
     sandbox,
     task_id: str,
     definition: Any,
+    security=None,
 ) -> ToolResult | None:
     """拿到「可以执行这个任务的生成代码」的授权。
 
@@ -210,6 +212,35 @@ async def ensure_test_authorization(
             "这个开发任务已经被放弃：不会执行生成代码，也不会注册工具。"
             "要重做请新建开发任务。"
         )
+    # 统一授权入口（契约 §2.3 EXECUTE）：执行 AI 生成的代码 = 任意脚本，
+    # read_only 一律拒绝；restricted 下由引擎给出 approve，再由本函数按任务
+    # 走同一个 ApprovalService 征求一次执行边界确认（不另立审批通道）。
+    if security is not None:
+        mode = security_gate.mode_of(security)
+        if mode == "read_only":
+            return _blocked(
+                "只读模式下 QIO 不能执行 AI 生成的代码：无法证明它不会修改业务文件，"
+                "本次没有执行。"
+            )
+        try:
+            decision = await security_gate.authorize(
+                security,
+                security_gate.script_effect(
+                    "dev_run_tests",
+                    purpose="执行 AI 生成的代码（测试/提交复测）",
+                    detail={
+                        "task_id": task_id,
+                        "definition": getattr(definition, "name", None),
+                    },
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - 判定失败时不执行（fail-closed）
+            return _blocked(f"执行边界判定失败，本次没有执行：{type(exc).__name__}: {exc}")
+        verdict = security_gate.verdict_of(decision)
+        if verdict == "deny":
+            return security_gate.denied_result(
+                decision, "当前模式不允许执行 AI 生成的代码"
+            )
     executor, timeout = await _resolved_executor(sandbox)
     policy = default_policy_for(definition, executor=executor)
     identity = execution_identity(

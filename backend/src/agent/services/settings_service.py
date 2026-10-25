@@ -215,10 +215,39 @@ class SettingsService:
             changed = ()
 
         applied = self._apply_runtime(plan)
+        if plan.writes:
+            # R9-H3 §4：设置保存是真实可信写入入口；提交成功后立刻把持久化文件
+            # （SQLite 数据库文件）的当前身份登记更新到跟踪 store。DB 正常原地写时
+            # 身份不变（幂等）；若文件在外部被替换/还原，这里立即纠正，不依赖手动刷新。
+            self._note_internal_identity_commit()
 
         # 只回本次补丁涉及到的 section，形状与各 GET 端点一致
         sections = {name: self._read_section(name) for name in sorted(plan.dirty_sections)}
         return SettingsApplyResult(sections=sections, changed=changed, applied=applied)
+
+    def _note_internal_identity_commit(self) -> None:
+        """把"设置已提交"这一真实写入口通知给 AppContext 的身份登记（尽力但不静默）。
+
+        通知失败只记录明确警告；设置写入本身已经成功，不能因为身份更新失败把
+        用户看到的保存结果改成失败（身份更新失败由 AppContext 记录，路径判定兜底）。
+        """
+        notifier = getattr(self.ctx, "note_trusted_internal_commit", None)
+        if not callable(notifier):
+            return
+        try:
+            from agent.storage.db_identity import connection_db_path
+
+            db_path = connection_db_path(self.conn)
+            if not db_path:
+                return
+            notifier([db_path], source="settings_service.apply")
+        except Exception:  # noqa: BLE001 - 已提交成功；身份更新失败要留明确日志
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "设置已保存，但内部数据身份更新通知失败（路径判定仍兜底）",
+                exc_info=True,
+            )
 
     # -- 阶段 1：全量校验（不写任何东西） --------------------------------
 

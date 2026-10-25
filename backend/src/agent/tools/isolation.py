@@ -82,6 +82,15 @@ class IsolationOutcome:
     detail: str = ""
     limits: dict[str, Any] = field(default_factory=dict)
     problems: tuple[str, ...] = ()
+    # 当前权限模式是否**要求**低完整性边界（契约 §3.1：read_only 强制；
+    # restricted 下未获授权写范围的脚本同样强制）。要求了但没核实生效 = 不得执行。
+    low_integrity_required: bool = False
+
+    def boundary_ok(self) -> bool:
+        """要求的边界是否真的成立（未要求时恒为 True，不改变旧行为）。"""
+        if not self.low_integrity_required:
+            return True
+        return _MECHANISM_LOW_IL in self.mechanisms
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +99,8 @@ class IsolationOutcome:
             "detail": self.detail,
             "limits": dict(self.limits),
             "problems": list(self.problems),
+            "low_integrity_required": self.low_integrity_required,
+            "boundary_ok": self.boundary_ok(),
         }
 
 
@@ -221,6 +232,9 @@ if WINDOWS:  # pragma: no cover - 平台分支
 
     _jobs_lock = threading.Lock()
     _jobs: dict[int, int] = {}          # pid -> job handle
+    # 本实例真正管理的 pid（Job 归属）：proc_kill 只允许结束这些 pid，
+    # 其它 pid 必须经过授权（契约 §3.1）。
+    _managed: dict[int, int] = {}       # pid -> job handle
 
 
 def supported() -> bool:
@@ -232,6 +246,32 @@ def low_integrity_enabled() -> bool:
     """低完整性降级是否被显式打开（默认关；见 LOW_INTEGRITY_ENV）。"""
     value = (os.environ.get(LOW_INTEGRITY_ENV) or "").strip().lower()
     return value in _TRUTHY
+
+
+def low_integrity_required_for_mode(mode: Any, *, authorized_write_scope: bool = False) -> bool:
+    """按权限模式/执行范围决定低完整性是否**必须**（契约 §3.1）。
+
+    * read_only：强制 Low IL（OS 层写拒绝 Medium 对象）；
+    * restricted：脚本没有获得写范围授权时同样强制；
+    * unrestricted：不降级（与旧行为一致）。
+
+    模式值经契约 §1 的 normalize_mode 映射（default/plan/accept-edits/bypass 等
+    旧值不会在这里被误读）。拿不到模式（None）时返回 False —— 旧调用路径完全
+    不变，由调用方决定是否传模式。
+    """
+    if mode is None:
+        return False
+    try:
+        from agent.tools.security_types import normalize_mode
+
+        current = normalize_mode(str(getattr(mode, "value", mode) or "")).value
+    except Exception:  # noqa: BLE001 - 映射失败按保守：当作需要边界
+        current = str(mode)
+    if current == "read_only":
+        return True
+    if current == "restricted" and not authorized_write_scope:
+        return True
+    return False
 
 
 def _job_limits() -> dict[str, Any]:
@@ -428,13 +468,17 @@ def _low_process_can_write(path: str) -> tuple:
     # 「标签读回 Low」不等于「Low 进程写得进去」：CI（High 完整性的 runner）实测
     # 标签读回 S:AI(ML;OICI;NW;;;LW)，Low 子进程写同一个目录依然 PermissionError。
     # 探针不过就不降级（fail-safe），并把原因写进 problems。
-    probe_path = os.path.join(str(path), '.qio-low-write-probe')
-    quote = chr(34)
-    command = 'pause >nul & echo x> ' + quote + probe_path + quote
+    # 注意：cmd 的 /c 参数**不能**由 subprocess 的 list2cmdline 塞进内部引号
+    # （Windows 命令行把 \" 当字面反斜杠+引号，cmd 会报「文件名语法不正确」，
+    # 2026-10-22 实测）。所以这里用相对文件名 + cwd=目录，避开引号：
+    probe_name = '.qio-low-write-probe'
+    probe_path = os.path.join(str(path), probe_name)
+    command = 'pause >nul & echo x> ' + probe_name
     process = None
     try:
         process = subprocess.Popen(
             ['cmd', '/c', command],
+            cwd=str(path),
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         _set_low_integrity(int(process.pid))
@@ -488,6 +532,8 @@ def _harden_tree(root_pid: int, job: int, problems: list[str]) -> tuple:
                 _set_low_integrity(pid)
                 if job:
                     _assign_job(job, pid)
+                    with _jobs_lock:
+                        _managed[int(pid)] = job
                 handled.append(pid)
             except Exception as exc:  # noqa: BLE001 - 单个后代失败不放弃整棵树
                 problems.append(f"后代进程 {pid} 未能纳入隔离：{exc}")
@@ -540,12 +586,17 @@ def harden(
     scratch_dir: str | None = None,
     policy: Any = None,
     extra_writable_dirs: "list[str] | tuple[str, ...] | None" = None,
+    mode: Any = None,
+    authorized_write_scope: bool = False,
+    low_integrity_required: bool | None = None,
 ) -> IsolationOutcome:
     """给刚创建的工具子进程加真实强制隔离。**永远不抛异常**。
 
     * Job Object：内存 / 活动进程数上限 + 关句柄即收整棵树（**默认生效**）；
-    * 低完整性降级（**默认关闭**，`QIO_TOOL_LOW_INTEGRITY=1` 打开）：工具写不进用户文件
-      与 QIO 数据目录（读不受影响）。打开时：
+    * 低完整性降级：`QIO_TOOL_LOW_INTEGRITY=1` 全局打开；**或**按权限模式强制
+      （`mode`：read_only 强制；restricted 且脚本没有获得写范围授权时强制；
+      unrestricted 不降级）。强制但核实不了 → `boundary_ok() == False`，调用方
+      必须拒绝执行（不静默降级）。打开时：
       - 先把 `scratch_dir` 与 `extra_writable_dirs`（调用方声明的「工具合法需要写」的目录，
         例如 mock 夹具目录）都打上低标签**并读回核实**；
       - 任何一个核实不了 → **跳过降级**（fail-safe）：宁可少一层写边界，
@@ -573,6 +624,8 @@ def harden(
             _jobs[int(pid)] = job
         if previous:
             _k32.CloseHandle(previous)
+        with _jobs_lock:
+            _managed[int(pid)] = job
         mechanisms.append(_MECHANISM_JOB)
         limits = _job_limits()
     except Exception as exc:  # noqa: BLE001 - 隔离失败不能让工具调用失败
@@ -585,14 +638,29 @@ def harden(
     writable = [str(item) for item in (extra_writable_dirs or []) if item]
     if scratch_dir:
         writable.insert(0, str(scratch_dir))
-    if not low_integrity_enabled():
+    if low_integrity_required is None:
+        required = low_integrity_required_for_mode(
+            mode, authorized_write_scope=authorized_write_scope
+        )
+    else:
+        required = bool(low_integrity_required)
+    enabled = low_integrity_enabled() or required
+    low_il_failed = False
+    if not enabled:
         # 默认关闭：CI 上降级一旦生效，工具连自己的 scratch 与 mock 夹具都写不进去。
         problems.append(
             f"低完整性降级默认关闭（置 {LOW_INTEGRITY_ENV}=1 打开；打开前会先核实标签）"
         )
-    elif declared_filesystem:
+    elif declared_filesystem and not required:
         # 工具被批准在工作区外写文件：降级只会让它以权限错误失败，不做。
         problems.append("工具声明了文件系统能力，未做低完整性降级（job limits 仍然生效）")
+    elif declared_filesystem and required:
+        # 当前模式要求低完整性，但脚本又声明了工作区外写能力：两者不能同时成立。
+        low_il_failed = True
+        problems.append(
+            "当前模式要求低完整性边界，但脚本声明了工作区外写能力："
+            "无法同时满足写授权与低完整性，按执行边界暂不可用处理"
+        )
     else:
         # 只有「所有需要可写的目录都**核实**为低标签」才降级：
         # 核实不了就不降级（fail-safe）—— 宁可少一层写边界，也不能让工具连 scratch 都写不了。
@@ -608,19 +676,30 @@ def harden(
             if not ok:
                 unwritable.append(path + "（" + why + "）")
         if unlabelled:
+            low_il_failed = True
             problems.append(
-                "低完整性降级已跳过：以下目录没能核实为低标签，降级会让工具写不进去 "
+                (
+                    "当前模式要求低完整性，但以下目录没能核实为低标签："
+                    if required
+                    else "低完整性降级已跳过：以下目录没能核实为低标签,降级会让工具写不进去 "
+                )
                 + "，".join(unlabelled)
             )
         elif unwritable:
+            low_il_failed = True
             problems.append(
-                "低完整性降级已跳过：Low 进程实测写不了以下目录（降级会让工具连 scratch 都用不了）"
+                (
+                    "当前模式要求低完整性，但 Low 进程实测写不了以下目录："
+                    if required
+                    else "低完整性降级已跳过：Low 进程实测写不了以下目录（降级会让工具连 scratch 都用不了）"
+                )
                 + "，".join(unwritable)
             )
         else:
             try:
                 _set_low_integrity(int(pid))
             except Exception as exc:  # noqa: BLE001 - 同上
+                low_il_failed = True
                 problems.append(f"low_integrity: {exc}")
                 logger.debug("low integrity downgrade failed for pid=%s: %s", pid, exc)
             else:
@@ -630,20 +709,32 @@ def harden(
                 # C5：只有当 worker 与**所有**已发现的后代都核实为 Low 时，才允许声称低完整性。
                 actual = integrity_of_process(int(pid))
                 if actual != LOW_INTEGRITY_SID:
+                    low_il_failed = True
                     problems.append(
                         f"low_integrity: 降级后读回令牌仍是 {actual or '读不到'}，"
                         "按未降级处理（不声称低完整性）"
                     )
                 elif failed:
+                    low_il_failed = True
                     problems.append(
                         "low_integrity: 有后代进程未能核实为低完整性（见上面的原因），"
                         "按未降级处理（不声称低完整性）"
                     )
                 else:
                     mechanisms.append(_MECHANISM_LOW_IL)
+    if required and low_il_failed:
+        problems.append(
+            "执行边界暂不可用：当前模式要求低完整性，但本机无法核实它已生效"
+            "（不静默降级；这次不应执行脚本）"
+        )
 
     if not mechanisms:
-        return IsolationOutcome(applied=False, detail="没有可用的强制隔离机制", problems=tuple(problems))
+        return IsolationOutcome(
+            applied=False,
+            detail="没有可用的强制隔离机制",
+            problems=tuple(problems),
+            low_integrity_required=required,
+        )
     # C5：detail 只描述**真的核实过**的机制（哪一层没成，就说哪一层没成）。
     parts: list[str] = []
     if _MECHANISM_JOB in mechanisms:
@@ -656,6 +747,7 @@ def harden(
         detail="；".join(parts),
         limits=limits,
         problems=tuple(problems),
+        low_integrity_required=required,
     )
 
 
@@ -668,6 +760,10 @@ def release(process) -> None:
         return
     with _jobs_lock:
         job = _jobs.pop(int(pid), None)
+        if job:
+            for managed_pid, managed_job in list(_managed.items()):
+                if managed_job == job:
+                    _managed.pop(managed_pid, None)
     if job:
         try:
             _k32.CloseHandle(job)
@@ -679,3 +775,23 @@ def active_jobs() -> int:
     """还没有被释放的 job 数量（诊断 / 泄漏检查用）。"""
     with _jobs_lock:
         return len(_jobs)
+
+
+def managed_pids() -> set[int]:
+    """本实例 Job 归属下、仍受管理的 pid 集合（诊断/进程工具判定用）。"""
+    if not WINDOWS:
+        return set()
+    with _jobs_lock:
+        return set(_managed)
+
+
+def is_managed_pid(pid: int) -> bool:
+    """这个 pid 是不是本实例启动并纳入 Job Object 的进程（契约 §3.1 proc_kill）。"""
+    if not WINDOWS:
+        return False
+    try:
+        target = int(pid)
+    except (TypeError, ValueError):
+        return False
+    with _jobs_lock:
+        return target in _managed

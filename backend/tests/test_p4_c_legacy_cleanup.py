@@ -93,6 +93,10 @@ MODEL_CALL_SITES = {
     "maintenance/questions.py": "维护独立回答结构化任务",
     "maintenance/runner.py": "维护结构化任务 + 一次有依据修复",
     "memory/summary.py": "记忆摘要结构化任务",
+    # R9-G：受限模式模型授权审查 + 每轮用户要求解析。两者都使用 prompts.py
+    # 单一来源的提示词、结构化 JSON 输出，并由后端校验；不执行工具/文件/设置。
+    "security/review.py": "受限模式模型授权审查（R9-G，prompts.py 单一来源）",
+    "security/resolution.py": "用户要求解析（R9-G，prompts.py 单一来源，结构化 JSON）",
     "services/app.py": "独立回答 / 通知续作的主循环入口",
     "services/automation.py": "自动化建议结构化任务（公共入口）",
     "services/followups.py": "首次引导追问结构化任务",

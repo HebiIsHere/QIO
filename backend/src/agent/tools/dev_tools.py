@@ -80,6 +80,8 @@ def _evidence_data(
 
 
 class _DevToolBase(Tool):
+    # security = 统一授权网关（执行 AI 生成代码前由 dev_auth 走同一入口）。
+    inject = ["security"]
     """开发工具基类：有 data 的结果走 Phase-1 结构化协议，data 才真正进模型消息。"""
 
     def __init_subclass__(cls, **kwargs):  # noqa: ANN001, ANN003
@@ -561,6 +563,7 @@ class DevRunTestsTool(_DevToolBase):
                 sandbox=self.sandbox,
                 task_id=workspace,
                 definition=definition,
+                security=getattr(self, "security", None),
             )
             if blocked is not None:
                 await self.status.emit(
@@ -599,6 +602,7 @@ class DevRunTestsTool(_DevToolBase):
                 approvals=self.approvals,
                 tool_name=definition.name,
                 task_id=workspace,
+                security=getattr(self, "security", None),
             )
             if not plan.ok:
                 await self.status.emit(
@@ -819,6 +823,7 @@ class DevSubmitTool(_DevToolBase):
                     sandbox=self.sandbox,
                     task_id=workspace,
                     definition=definition,
+                    security=getattr(self, "security", None),
                 )
                 if blocked is not None:
                     await self.status.emit(
@@ -858,6 +863,9 @@ class DevSubmitTool(_DevToolBase):
 
             try:
                 lifecycle = await self.lifecycle_builder()
+                # 统一授权网关注入到生命周期（与 abandon_guard/stage_sink 同样的
+                # 属性注入方式，不改 submit_definition 的公开签名）。
+                lifecycle.security = getattr(self, "security", None)
                 # 守卫**注入**到生命周期对象上（ToolLifecycle.__init__ 声明了
                 # `abandon_guard`）：这样不动 submit_definition 的签名，已有调用方
                 # 与测试替身不会因为多一个参数而报错。

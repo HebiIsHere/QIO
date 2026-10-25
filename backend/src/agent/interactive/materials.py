@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from agent.interactive import models, text_card
-from agent.services import media
+from agent.services import attachment_access, media
 from agent.services.attachments import (
     Attachment,
     AttachmentContentError,
@@ -182,6 +182,9 @@ def collected_media_candidates(
             identifier = str(getattr(att, "id", "") or "")
             if not identifier or identifier in seen:
                 continue
+            # 「作为互动材料」开关：关掉就不**主动**纳入上下文（不是 OS 访问权限）
+            if not bool(getattr(att, "material_enabled", 1)):
+                continue
             state = str(getattr(att, "state", "") or "")
             name = str(getattr(att, "original_name", "") or "")
             # include_images=True：图片也要进候选清单 —— 图片交付靠的就是这里产出的候选
@@ -200,12 +203,16 @@ def collected_media_candidates(
                     f"这个附件当前不可用（{state or '未知状态'}）：没有可交付的字节，"
                     "本次不声称看过它"
                 )
-            try:
-                path, _origin = attachments.content_target(att.id)
-            except Exception as exc:  # noqa: BLE001 - 读不到字节是要交付的事实，不是异常
+            if not attachment_access.read_allowed(att.id):
                 path = None
-                if not unreadable:
-                    unreadable = str(exc).strip() or f"读取附件字节失败：{type(exc).__name__}"
+                unreadable = "这条附件没有通过本轮读取授权，本次没有读取任何内容"
+            else:
+                try:
+                    path, _origin = _resolve_source_path(attachments, att)
+                except Exception as exc:  # noqa: BLE001 - 读不到字节是要交付的事实，不是异常
+                    path = None
+                    if not unreadable:
+                        unreadable = str(exc).strip() or f"读取附件字节失败：{type(exc).__name__}"
             if path is None and not unreadable:
                 unreadable = "读不到这份附件的字节：没有可用的副本路径"
             seen.add(identifier)
@@ -1264,20 +1271,37 @@ def _image_media_type(name: str) -> str:
     return DELIVERABLE_IMAGE_TYPES.get(suffix, "")
 
 
-def service_for_content(service: Any, att: Any) -> tuple[Path | None, str]:
-    """这条附件真正可读的路径（有副本读副本，没有副本读原文件）。
+def _resolve_source_path(service: Any, att: Any) -> tuple[Path | None, str]:
+    """读取路径的唯一解析：新语义走 resolve_source，历史记录回退旧口径。
 
-    与 `_content_path` 同一口径（`services/attachments.py` 的 content_target 是唯一实现），
-    这里只做「拿不到就返回 (None, reason)」的收口，不复制判断。
+    `services/attachments.py` 的 resolve_source 是读取/预览/媒体解析的唯一入口；
+    本函数据此返回 (path, origin)，读不到返回 (None, "")，不复制判断。
     """
+    resolver = getattr(service, "resolve_source", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(att.id)
+        except Exception:  # noqa: BLE001 - 解析失败按读不到处理
+            resolved = None
+        if resolved is not None and not getattr(resolved, "legacy", False):
+            if resolved.path is None:
+                return None, ""
+            return Path(resolved.path), "source"
     try:
         target = service.content_target(att.id)
-    except Exception:  # noqa: BLE001 - 读不到就是读不到，调用方会如实标注
+    except Exception:  # noqa: BLE001 - 历史记录没有副本/源文件
         return None, ""
     if not target:
         return None, ""
     path, origin = target
     return Path(path), str(origin)
+
+
+def service_for_content(service: Any, att: Any) -> tuple[Path | None, str]:
+    """这条附件真正可读的路径（源文件引用 / 历史副本回放），并服从读取授权。"""
+    if not attachment_access.read_allowed(getattr(att, "id", "")):
+        return None, ""
+    return _resolve_source_path(service, att)
 
 
 def _char_limit(value: Any) -> int:
@@ -1425,6 +1449,7 @@ def _file_entry(
 ) -> dict:
     raw_id = _attachment_id(meta, "file")
     shown_name = label or str(meta.get("name") or "").strip() or "（未命名文件）"
+    # 互动上下文必须暴露 §6.4 的引用事实 + 用户说明（见 _attach_file_ref）。
     if not raw_id:
         return _entry(
             card,
@@ -1464,10 +1489,31 @@ def _file_entry(
             attachment_id=raw_id,
             reason=f"找不到这个附件 id：{raw_id}（可能已被删除或不属于这台设备）",
         )
-    return _attachment_entry(
+    entry = _attachment_entry(
         card, att, label=label or att.original_name, tool=tool, max_chars=max_chars,
         vision=vision,
     )
+    entry = _attach_file_ref(entry, service, att)
+    return entry
+
+
+def _attach_file_ref(entry: dict, service: Any, att: Any) -> dict:
+    """把 §6.4 源引用事实附加到互动材料条目（不改变正文与 read 语义）。"""
+    try:
+        if hasattr(service, "file_ref"):
+            ref = service.file_ref(att, check=False)
+        else:
+            ref = {}
+    except Exception:  # noqa: BLE001 - 引用事实是旁路，读不到不影响材料正文
+        ref = {}
+    entry = dict(entry or {})
+    entry["attachment_id"] = str(getattr(att, "id", "") or "")
+    entry["file_ref"] = ref
+    entry["user_note"] = str(getattr(att, "user_note", "") or "")
+    entry["material_enabled"] = bool(getattr(att, "material_enabled", 1))
+    entry["origin"] = getattr(att, "origin", None)
+    entry["source_kind"] = getattr(att, "source_kind", None)
+    return entry
 
 
 def _attachment_entry(
@@ -1738,7 +1784,17 @@ def _content_path(
     先走契约要求的 `AttachmentService.content_target`（只认 QIO 自己管理的副本）；
     引用型附件与副本丢失的情况退回既有 `ReadAttachmentTool._readable_path` 的口径。
     """
+    if not attachment_access.read_allowed(getattr(att, "id", "")):
+        return None, "none"
     if service is not None:
+        resolved = getattr(service, "resolve_source", None)
+        if callable(resolved):
+            try:
+                found = resolved(att.id)
+                if found.path is not None and not getattr(found, "legacy", False):
+                    return Path(found.path), "source"
+            except Exception:  # noqa: BLE001 - 解析失败按读不到处理
+                pass
         try:
             path, _name = service.content_target(att.id)
             if path is not None and Path(path).is_file():

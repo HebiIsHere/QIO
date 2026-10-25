@@ -1,0 +1,209 @@
+{
+  "generated_at": "2026-10-23T11:32:23",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "machine": "admin",
+  "total": 20,
+  "failed": 0,
+  "results": [
+    {
+      "check": "environment/接线状态已如实记录（缺失项在报告中列明）",
+      "ok": true,
+      "detail": {
+        "platform": "Windows-10-10.0.26200-SP0",
+        "python": "3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]",
+        "windows": true,
+        "context_module": true,
+        "require_binding_names": [],
+        "recheck_module_present": false,
+        "requirements_validate_binding": false
+      }
+    },
+    {
+      "check": "fixed_query/python --version 被识别为 version",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "fixed_query/python -c 不是固定查询",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "fixed_query/git --version 被识别为 version",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "fixed_query/同名替身（临时目录）不被放行",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "fixed_query/受限模式真实执行 python --version（ALLOW 网关、无审批）",
+      "ok": true,
+      "detail": {
+        "stdout_head": "Python 3.11.15"
+      }
+    },
+    {
+      "check": "fixed_query/引擎仅凭 effect.detail 可重新算出 version",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "fixed_query/effect.detail 不携带工具自报 fixed_query 许可",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "read_only/固定查询可执行、非固定查询被拒绝且不进入引擎",
+      "ok": true,
+      "detail": {
+        "denied_error": "只读模式只允许固定查询（程序版本/当前目录/系统基础信息/目录列表/文件属性）：这条命令的程序身份/argv 结构不属固定查询。本次已拒绝（没有任何程序被执行）。",
+        "readonly_denied_content": ""
+      }
+    },
+    {
+      "check": "permanent_delete/restricted+模型 ALLOW 只提交明确确认、不删除",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "permanent_delete/明确人工确认后真实执行删除（不进回收站）",
+      "ok": true,
+      "detail": {
+        "permit": "approval"
+      }
+    },
+    {
+      "check": "permanent_delete/执行前重核对记录 local_fallback 检查项",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "permanent_delete/read_only 拒绝且文件保留、不提交审批",
+      "ok": true,
+      "detail": {
+        "error": "只读模式下 QIO 不能运行 shell 命令：管道/重定向/命令替换无法证明只读，本次已拒绝（没有任何命令被执行）。"
+      }
+    },
+    {
+      "check": "permanent_delete/unrestricted 允许直接永久删除",
+      "ok": true,
+      "detail": {
+        "error": ""
+      }
+    },
+    {
+      "check": "permanent_delete/对象身份变化后旧审批失效、不执行",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "replay/要求版本变化后旧审批失效、文件保留",
+      "ok": true,
+      "detail": {
+        "summary": "审批失效：用户要求版本已变化：需要按最新要求重新判断（本次未执行）"
+      }
+    },
+    {
+      "check": "replay/注入 RecheckService 否决后不执行",
+      "ok": true,
+      "detail": {
+        "service_calls": 1
+      }
+    },
+    {
+      "check": "permanent_delete/讨论文字（echo rm -rf）不产生永久删除绑定",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "replay/无限制模式批准的操作在切回受限后失效",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "check": "replay/历史审批缺 requirement 绑定 → 不沿用旧许可",
+      "ok": true,
+      "detail": {}
+    }
+  ],
+  "environment": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]",
+    "windows": true,
+    "context_module": true,
+    "require_binding_names": [],
+    "recheck_module_present": false,
+    "requirements_validate_binding": false
+  },
+  "fixed_queries": {
+    "python_version": "version",
+    "git_version": "version",
+    "real_execution_ok": true,
+    "execution_program_path": "D:\\qio-dev\\qio-r9g-w2\\backend\\.venv\\Scripts\\python.exe",
+    "execution_spec_digest_len": 64,
+    "engine_reclassify_kind": "version"
+  },
+  "permanent_delete": {
+    "restricted_pending": {
+      "payload_explicit": true,
+      "label": "永久删除（不可恢复，不进回收站）：C:\\Users\\zxy\\AppData\\Local\\Temp\\r9g-w2-verify-8mlksub5\\workspace\\restricted-victim.txt",
+      "identity_set": [
+        [
+          "C:\\Users\\zxy\\AppData\\Local\\Temp\\r9g-w2-verify-8mlksub5\\workspace\\restricted-victim.txt",
+          "2923643066:23c1060000005e000000000000000000",
+          false
+        ]
+      ],
+      "victim_still_exists": true
+    },
+    "approved_replay": {
+      "ok": true,
+      "summary": "(无输出)",
+      "recheck": {
+        "mode": "local_fallback",
+        "checks": [
+          "payload",
+          "effect_snapshot",
+          "spec_digest",
+          "program_identity",
+          "content_digests",
+          "requirement_binding",
+          "mode",
+          "internal_data_confirmations",
+          "delete_confirmation_binding",
+          "delete_object_identity"
+        ],
+        "approval_expiry": "checked_by_approval_executor",
+        "spec_digest": "96a0a2e5ea29a45f20810907e2b27ceb33096a27ed9cd266aff02fe4cd1507f4",
+        "mode_now": "restricted",
+        "binding_mode": "restricted",
+        "confirmations_required": 1,
+        "delete_binding": "verified"
+      },
+      "victim_deleted": true
+    },
+    "identity_change": {
+      "ok": false,
+      "summary": "永久删除的对象集合/身份与审批时不一致（对象被替换或命令被改动）：本次未执行，需要重新确认",
+      "path_still_directory": true
+    }
+  },
+  "mode_and_legacy": {
+    "unrestricted_to_restricted": {
+      "ok": false,
+      "summary": "审批时是完全无限制模式，现在已切回受限模式：需要按当前模式重新判定（固定规则/授权/审批），本次未执行，需重新提出"
+    },
+    "legacy_without_requirement": {
+      "ok": false,
+      "summary": "审批失效：审批单没有绑定用户要求（缺少 requirement_id），无法可靠恢复：需要重新判断（新审批）（本次未执行）"
+    }
+  },
+  "boundaries": [
+    "解释器内联代码（python -c os.remove）、xargs、sudo、嵌套 shell 内的删除不属于可解析的永久删除：走普通审批流程（无法结构性证明其副作用）。",
+    "固定查询只覆盖精确程序身份+精确 argv；任何未知参数/重定向/串联/同名替身都退出固定查询。",
+    "本脚本的网关/台账是 fake，仅用于验证 W2 组件行为；引擎接线（contextvar、RecheckService、RequirementLedger.validate_binding）由 Lead 集成树提供。"
+  ]
+}

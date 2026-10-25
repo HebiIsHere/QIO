@@ -108,18 +108,13 @@ async def _settle_forbidden_window(ctx, adapter, *, seconds: float = 3.0) -> Non
 
 
 async def _ready_copy(ac, ctx, tmp_path: Path, topic_id: str, name: str = "原轮副本.txt") -> tuple[Path, dict]:
-    """登记一份 ready 的 copy 附件（真实 HTTP + 真实 prepare）。"""
+    """**历史行夹具**：登记并准备一份 ready 的旧副本（克隆/取消/准备期取消仍覆盖）。"""
     source = tmp_path / name
     source.write_text(MARKER, encoding="utf-8")
-    created = (
-        await ac.post("/api/attachments", json={"source_path": str(source), "topic_id": topic_id})
-    ).json()["attachment"]
-    meta = created
-    for _ in range(400):
-        meta = (await ac.get(f"/api/attachments/{created['id']}")).json()["attachment"]
-        if meta["state"] != "prepared":
-            break
-        await asyncio.sleep(0.02)
+    att = ctx.attachments.run_prepare(
+        ctx.attachments.prepare(str(source), topic_id=topic_id).id
+    )
+    meta = ctx.attachments.payload(att)
     assert meta["state"] == "ready", meta
     return source, meta
 

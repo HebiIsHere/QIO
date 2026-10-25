@@ -29,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from agent.interactive import board_store
+from agent.services import attachment_access
 from agent.services import preview as preview_service
 from agent.storage.db import transaction
 
@@ -219,8 +220,50 @@ async def attachment_preview(
     * ?refresh=1 绕过缓存重算（仍然走工作线程）。
     """
     store = _ctx(request).attachments
-    if store.get(attachment_id) is None:
+    att = store.get(attachment_id)
+    if att is None:
         raise HTTPException(status_code=404, detail="没有这个附件")
+    # 预览同样是读取：先按统一授权网关产生 READ effect（契约 §3.1），再进工作线程解析。
+    auth_path = None
+    auth_identity = getattr(att, "file_id", None)
+    try:
+        if getattr(store, "is_source_ref", lambda _a: False)(att):
+            resolved = store.resolve_source(attachment_id)
+            if resolved.path is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=resolved.reason or "源文件当前不可用；可以重新指定位置",
+                )
+            auth_path = resolved.path
+        else:
+            auth_path, _name = store.content_target(attachment_id)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 - 历史记录取不到路径时交给 render_for 如实报错
+        auth_path = None
+    if auth_path is not None:
+        decision = await attachment_access.authorize_read(
+            attachment_access.gateway_from_request(request),
+            path=auth_path,
+            identity=auth_identity,
+            purpose=f"预览附件「{att.original_name}」",
+            tool="attachment.preview",
+            detail={"attachment_id": attachment_id},
+        )
+        if decision["verdict"] == "deny":
+            raise HTTPException(
+                status_code=403,
+                detail=decision["reason"] or "预览附件被授权拒绝",
+            )
+        if decision["verdict"] == "approve":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "pending_approval",
+                    "message": "预览附件需要用户批准；批准后会自动执行",
+                    "approval_id": decision.get("approval_id"),
+                },
+            )
     try:
         return await preview_service.render_for_async(
             store, attachment_id, refresh=bool(refresh)

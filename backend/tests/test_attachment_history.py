@@ -71,12 +71,12 @@ def _wait_terminal(client: TestClient, attachment_id: str, timeout: float = 20.0
 def _create_ready(
     client: TestClient, tmp_path, name: str, topic_id: str, data: bytes = b"history\n"
 ) -> dict:
+    """**历史行夹具**：旧副本（source_kind=NULL）—— 历史回放/副本缺失语义继续覆盖。"""
+    svc = client.app.state.ctx.attachments
     source = tmp_path / name
     source.write_bytes(data)
-    created = client.post(
-        "/api/attachments", json={"source_path": str(source), "topic_id": topic_id}
-    ).json()["attachment"]
-    ready = _wait_terminal(client, created["id"])
+    att = svc.run_prepare(svc.prepare(str(source), topic_id=topic_id).id)
+    ready = svc.payload(svc.get(att.id, check=False))
     assert ready["state"] == "ready", ready
     return ready
 

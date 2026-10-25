@@ -29,7 +29,10 @@ P4 轮新增（语义按 docs/p4-plan.md 第 1 节，先失败后通过）：
 
 * `shelllease` 阶段：启动**真外壳** `qio.exe`，核对它写的 `sidecar.lease.json`
   （schema / install_dir / shell / backend 四件套，以及 backend.pid 就是安装目录里按路径枚举到的
-  那个 qio-backend.exe），再用 WM_CLOSE 关掉壳，断言壳与 sidecar 都退出、lease 消失。
+  那个 qio-backend.exe）。R9 §11 起关闭行为默认 ask，无人值守的 WM_CLOSE 会停在确认框上，
+  所以先用 API 把掉 `ui.close_behavior` 切成 tray / quit 再分别验证：
+  tray = 隐藏但壳/sidecar 继续运行、lease 保留、窗口可恢复；quit = 真正退出（后端有界收尾），
+  最后断言壳与 sidecar 都退出、lease 消失。
   lease 由**外壳**写：本脚本直接起 qio-backend.exe 的那条路径观测不到它（那里只记 NOT VERIFIED）。
 * `--uninstall-with-running-backend` 的语义**变了**：安装目录里的替身（ping.exe 改名的
   `qio-backend.exe`）没有 lease、也没有主程序 → 卸载器**必须不杀它**，并如实报告"无法确认归属"。
@@ -482,6 +485,63 @@ def close_main_window(pid: int) -> tuple[bool, str]:
     return ("CLOSE_MAIN_WINDOW=True" in out or "ALREADY_GONE" in out), out
 
 
+def main_window_handle(pid: int) -> int:
+    """外壳主窗口的 HWND（隐藏前后都用它定位同一个窗口）。拿不到返回 0。"""
+    code, out = run([
+        "powershell", "-NoProfile", "-Command",
+        "$p = Get-Process -Id %d -ErrorAction SilentlyContinue;"
+        "if ($p) { Write-Output ('HWND=' + $p.MainWindowHandle) } else { Write-Output 'HWND=0' }"
+        % int(pid),
+    ], tag="shell-main-window-handle")
+    match = re.search(r"HWND=(\d+)", out)
+    return int(match.group(1)) if match else 0
+
+
+def window_visible(hwnd: int) -> bool:
+    """窗口当前是否可见（IsWindowVisible）。hwnd=0 → False。"""
+    if not hwnd:
+        return False
+    try:
+        return bool(ctypes.windll.user32.IsWindowVisible(ctypes.c_void_p(hwnd)))
+    except Exception:  # noqa: BLE001 - 本机 Win32 不可用时按不可见处理
+        return False
+
+
+def show_window(hwnd: int) -> bool:
+    """把窗口从**隐藏**状态显示出来。
+
+    R9 §11：关闭到托盘 = `window.hide()`；恢复 = show + unminimize + focus。
+    脚本点不到托盘菜单，所以这里用 Win32 SW_SHOW + SW_RESTORE 做同一件事的
+    OS 层等价动作，证明「隐藏后窗口还能回来」，再继续做真正退出的断言。
+    """
+    if not hwnd:
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        # 隐藏动作可能还在 Tauri 事件循环里收尾：每轮都重发一次 ShowWindow，
+        # 否则会撞上「刚显示又被隐藏态覆盖」的竞态（安装版实测 A-117b 偶发）。
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            user32.ShowWindow(ctypes.c_void_p(hwnd), 5)  # SW_SHOW
+            user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
+            user32.SetForegroundWindow(ctypes.c_void_p(hwnd))
+            time.sleep(0.2)
+            if window_visible(hwnd):
+                return True
+        return window_visible(hwnd)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def wait_until(predicate, timeout: float, interval: float = 0.2) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
 def kill_by_pid(pid: int, tag: str, *, force: bool = True) -> tuple[int, str]:
     """按 **PID** 收进程（绝不用 /IM 按映像名收）。"""
     cmd = ["taskkill", "/T", "/PID", str(int(pid))]
@@ -577,12 +637,27 @@ def step_shell_lease(args) -> bool:
             token = token_file.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             time.sleep(0.5)
-    port = listen_port_of([item["pid"] for item in procs]) or listen_port_of([lease_backend_pid])
+    # 端口探测必须**有界重试**：PyInstaller onefile 的 lease 在 launcher 起步时就写了，
+    # 真正的服务进程（same exe 的 child）要晚 1-3 秒才出现并监听 —— 只查一次会得到
+    # 「lease 有、端口没有」的假失败（2026-10-22 W5 安装版复跑实测）。
+    port = None
+    probe_pids: list[int] = []
+    deadline = time.time() + 60
+    while time.time() < deadline and proc.poll() is None:
+        fresh_procs = processes_in_dir(install_dir)
+        probe_pids = [item["pid"] for item in fresh_procs] + [proc.pid]
+        port = listen_port_of(probe_pids)
+        if port is not None:
+            procs = fresh_procs or procs  # 后续断言用最新的进程快照（含 child）
+            break
+        time.sleep(0.5)
+    api = None
     if port is None:
         record("A-115", "外壳启动的 sidecar 健康检查可用", "FAIL",
-               "按 pid 反查不到监听端口（pids=%s）" % [item["pid"] for item in procs])
+               "60s 内按 pid 反查不到监听端口（探测 pids=%s）" % probe_pids)
     else:
-        ok, detail = wait_health(Client("http://127.0.0.1:%d" % port, token or args.token), timeout=60)
+        api = Client("http://127.0.0.1:%d" % port, token or args.token)
+        ok, detail = wait_health(api, timeout=60)
         code, out = powershell(
             "$owner = (Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue | "
             "Select-Object -First 1 -ExpandProperty OwningProcess);"
@@ -595,8 +670,73 @@ def step_shell_lease(args) -> bool:
                "port=%s token文件=%s(%s) health=%s 回答者=%r（期望 %s）"
                % (port, token_file.name, "有令牌" if token else "**没读到令牌**", detail, out.strip(), expected))
 
+    # ---- R9 §11（W5）：关闭行为必须能被**无人值守地**走完 ----
+    # 默认关闭行为是 ask（会弹确认框）。脚本没有手点，直接 WM_CLOSE 会把 30 秒超时耗在
+    # 弹窗上 —— 既测不到退出路径，还会让真机验证看起来像产品坏了。所以先用 API 把
+    # ui.close_behavior 切成 tray / quit，分两段断言：
+    #   1) tray：壳隐藏但**不触发退出收尾**（壳/sidecar 都活着、lease 保留），窗口可恢复；
+    #   2) quit：真正退出统一流程（后端有界收尾 → 壳按 pid 等/兜底 → lease 删除、进程消失）。
+    backend_pids = [item["pid"] for item in procs]
+    hwnd = main_window_handle(proc.pid)
+
+    tray_set = False
+    if api is not None:
+        try:
+            code, body = api.request("PUT", "/api/settings/ui", {"close_behavior": "tray"})
+            tray_set = code == 200 and str(body.get("close_behavior")) == "tray"
+            detail = "PUT /api/settings/ui close_behavior=tray → %s %s" % (
+                code, json.dumps(body, ensure_ascii=False))
+        except Exception as exc:  # noqa: BLE001 - 记 FAIL，不让脚本因为一次 HTTP 异常整体崩
+            detail = "PUT 关闭行为失败：%s" % exc
+    else:
+        detail = "没有可用端口/API（A-115 已 FAIL），无法设置关闭行为"
+    record("A-116a", "关闭行为可设为 tray（无人值守 WM_CLOSE 不能停在确认框）",
+           "PASS" if tray_set else "FAIL", detail)
+
+    if tray_set:
+        accepted, close_out = close_main_window(proc.pid)
+        record("A-116b", "WM_CLOSE（tray 模式）已发给外壳", "PASS" if accepted else "FAIL",
+               close_out.strip()[:200])
+        hidden_ok = wait_until(lambda: proc.poll() is None and not window_visible(hwnd), timeout=10.0)
+        lease_kept = lease_file.exists()
+        sidecar_gone = [pid for pid in backend_pids if process_identity(pid) is None]
+        sidecar_ok = not sidecar_gone
+        record("A-117a", "关闭到托盘：壳与 sidecar 继续运行、lease 保留（不触发退出收尾）",
+               "PASS" if hidden_ok and proc.poll() is None and lease_kept and sidecar_ok else "FAIL",
+               "窗口已隐藏=%s 壳存活=%s lease 存在=%s sidecar 存活=%s%s"
+               % (hidden_ok, proc.poll() is None, lease_kept, sidecar_ok,
+                  "" if sidecar_ok else "（消失的 pid=%s）" % sidecar_gone))
+        # 恢复窗口：托盘菜单「显示主窗口」的 OS 层等价动作（show + 还原 + 置前）。
+        # 先让隐藏动作在 Tauri 事件循环里落定，再恢复（否则会被随后的 hide 覆盖）。
+        if hidden_ok:
+            time.sleep(0.8)
+        restored = show_window(hwnd) if hidden_ok else False
+        record("A-117b", "隐藏到托盘后窗口可恢复（show + 还原，等价于托盘菜单「显示主窗口」）",
+               "PASS" if restored else "FAIL",
+               "hwnd=%s 可见=%s 壳存活=%s" % (hwnd, window_visible(hwnd), proc.poll() is None))
+    else:
+        record("A-116b", "WM_CLOSE（tray 模式）已发给外壳", "SKIP", "tray 设置失败，未执行")
+        record("A-117a", "关闭到托盘：壳与 sidecar 继续运行、lease 保留（不触发退出收尾）",
+               "SKIP", "tray 设置失败，未执行")
+        record("A-117b", "隐藏到托盘后窗口可恢复（show + 还原，等价于托盘菜单「显示主窗口」）",
+               "SKIP", "tray 设置失败，未执行")
+
+    quit_set = False
+    if api is not None:
+        try:
+            code, body = api.request("PUT", "/api/settings/ui", {"close_behavior": "quit"})
+            quit_set = code == 200 and str(body.get("close_behavior")) == "quit"
+            detail = "PUT /api/settings/ui close_behavior=quit → %s %s" % (
+                code, json.dumps(body, ensure_ascii=False))
+        except Exception as exc:  # noqa: BLE001
+            detail = "PUT 关闭行为失败：%s" % exc
+    else:
+        detail = "没有可用端口/API，无法设置关闭行为"
+    record("A-116c", "关闭行为已设为 quit（真正退出，不再弹确认框）",
+           "PASS" if quit_set else "FAIL", detail)
+
     accepted, close_out = close_main_window(proc.pid)
-    record("A-116", "WM_CLOSE 已发给外壳", "PASS" if accepted else "FAIL", close_out.strip()[:200])
+    record("A-116", "WM_CLOSE（quit 模式）已发给外壳", "PASS" if accepted else "FAIL", close_out.strip()[:200])
     try:
         proc.wait(timeout=30)
     except subprocess.TimeoutExpired:
@@ -607,9 +747,8 @@ def step_shell_lease(args) -> bool:
             proc.wait(timeout=15)
         except subprocess.TimeoutExpired:
             pass
-    record("A-117", "WM_CLOSE 后外壳退出", "PASS" if proc.poll() is not None else "FAIL",
+    record("A-117", "WM_CLOSE（quit）后外壳退出", "PASS" if proc.poll() is not None else "FAIL",
            "exit=%s" % proc.poll())
-    backend_pids = [item["pid"] for item in procs]
     left = wait_processes_gone(backend_pids, timeout=30)
     record("A-118", "外壳退出后 sidecar 也退出（job 生效，不留孤儿）",
            "FAIL" if left else "PASS",
@@ -652,6 +791,9 @@ class Client:
 
     def post(self, path: str, payload=None, **kw):
         return self.request("POST", path, payload if payload is not None else {}, **kw)
+
+    def put(self, path: str, payload=None, **kw):
+        return self.request("PUT", path, payload if payload is not None else {}, **kw)
 
 
 class SseReader:
@@ -1475,19 +1617,31 @@ def step_invoke_tool(args, client: Client, sse: SseReader, fp: Client):
 
 
 def _backend_pids_by_path(install_dir) -> list[int]:
-    """**只**找安装目录里那个 qio-backend.exe 的进程 id。
+    """**只**找安装目录里那个 qio-backend.exe 的进程 id（按路径，绝不按镜像名）。
 
-    按路径找，不按镜像名找：这台机器上同时有多个 agent 在跑真实后端，
-    按名字杀（taskkill /IM qio-backend.exe）会误伤别人的进程
-    —— 2026-10-02 Lead 明确要求"按 PID / 进程树杀"。
+    真机 E2E 踩过（2026-10-22）：CIM 查询在这台机器的受限令牌下可能返回空/被拒，
+    于是 ensure_backend_stopped 以为「已经没有后端」，上一阶段启动的 standalone
+    backend 一直活到 shelllease，导致 A-118 把别人的进程算成我们的 sidecar 残留。
+    因此 CIM 查不到时用 Get-Process 再按 Path 核对一遍（仍是按路径，不是按名字杀）。
     """
+    expected = str((Path(install_dir) / "qio-backend.exe").resolve()).lower()
     script = (
         "Get-CimInstance Win32_Process -Filter \"Name='qio-backend.exe'\" | "
         "Where-Object { $_.ExecutablePath -and $_.ExecutablePath.ToLower() -eq '%s' } | "
         "Select-Object -ExpandProperty ProcessId"
-        % str((Path(install_dir) / "qio-backend.exe").resolve()).lower()
+        % expected
     )
     code, out = powershell(script, tag="backend-pids-by-path")
+    pids = [int(x) for x in out.split() if x.strip().isdigit()]
+    if pids:
+        return pids
+    # CIM 不可用/返回空：用 Get-Process（Path 在本用户进程上可读）再核对一次。
+    fallback = (
+        "Get-Process -Name qio-backend -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Path -and $_.Path.ToLower() -eq '%s' } | "
+        "Select-Object -ExpandProperty Id" % expected
+    )
+    code, out = powershell(fallback, tag="backend-pids-by-path-getprocess")
     return [int(x) for x in out.split() if x.strip().isdigit()]
 
 

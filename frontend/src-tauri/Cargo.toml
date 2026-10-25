@@ -30,11 +30,18 @@ path = "src/bin/qio-uninstall-helper.rs"
 name = "uninstall_helper_cli"
 path = "src/tests_uninstall_helper_cli.rs"
 
+[features]
+# Tauri 标准特性：启用后调试构建也使用**内嵌前端产物**（custom protocol），不再依赖
+# dev server。发布构建（tauri build）本来就需要它；给 cargo build 调试时也用它，
+# 才能在没有 Vite dev server 的环境里复现真实窗口行为（例如关闭/托盘真机验证）。
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# tray-icon：R9 §11 要求主窗口可隐藏到系统托盘（TrayIconBuilder）+ 托盘菜单。
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 # 应用内更新：updater 负责「检查 / 下载 / 签名校验 / 安装」，process 负责装完重启。
 # 网络请求在 Rust 侧发出，所以不需要放宽前端 CSP。

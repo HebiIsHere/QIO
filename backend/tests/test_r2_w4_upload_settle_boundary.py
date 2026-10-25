@@ -157,25 +157,28 @@ async def test_r2_w4_stale_upload_settle_keeps_newer_ready_row(async_app, tmp_pa
         # 更新的准备：重新定位到一个真实来源，并等它真的 ready（代际 +1、票号更新）
         newer = tmp_path / "更新的来源.bin"
         newer.write_bytes(b"NEWER-CONTENT" * 512)
+        # 用户显式确认「这是同一份材料」后把上传材料改指到本地文件（身份不同不再自动采纳）
         planned = await ac.post(
-            f"/api/attachments/{row.id}/relocate", json={"source_path": str(newer)}
+            f"/api/attachments/{row.id}/relocate",
+            json={"source_path": str(newer), "confirmed_identity": True},
         )
         assert planned.status_code == 200, planned.text[:300]
         ready = await _wait_meta(ac, row.id, "ready")
-        ready_path = str(ready["stored_path"])
+        ready_path = str(ready["source_path"] or "")
         assert ready_path, ready
+        assert ready["stored_path"] in (None, ""), ready
 
         # 旧上传此刻才收到取消：它的收尾属于更早的代际
         await _cancel_and_join(task)
         after = (await ac.get(f"/api/attachments/{row.id}")).json()["attachment"]
-        leftovers = _leftovers(ctx.attachments.root, Path(ready_path))
+        leftovers = _leftovers(ctx.attachments.materials_root, Path(ready_path))
 
     assert after["state"] == "ready", (
         "过期的上传收尾把更新的 ready 行改写成了 %s（代际准入没有生效）" % after["state"],
         after,
     )
-    assert after["stored_path"] == ready_path, after
-    assert Path(ready_path).is_file(), "更新操作提交的正式副本被过期收尾删掉了"
+    assert after["source_path"] == ready_path, after
+    assert Path(ready_path).is_file(), "更新操作提交的源文件/材料被过期收尾删掉了"
     assert leftovers == [], "取消后留下了本操作自己的临时文件：%s" % [p.name for p in leftovers]
 
 
@@ -208,7 +211,7 @@ async def test_r2_w4_cancel_settle_waits_for_worker_cleanup(async_app, monkeypat
     **不得**已经返回（提前返回 = 工作线程被丢在后台，临时文件无人清理）。
     """
     ctx = async_app.state.ctx
-    root = ctx.attachments.root
+    root = ctx.attachments.materials_root
     gate = asyncio.Event()
     cleanup_gate = threading.Event()
     cleanup_entered = threading.Event()
@@ -225,7 +228,7 @@ async def test_r2_w4_cancel_settle_waits_for_worker_cleanup(async_app, monkeypat
     async with _live(async_app) as ac:
         task = asyncio.create_task(_upload(ac, gate, "取消不留临时文件.bin"))
         row = await _wait_row(ctx)
-        target = ctx.attachments.copy_path(ctx.attachments.get(row.id, check=False))
+        target = ctx.attachments.material_path(ctx.attachments.get(row.id, check=False))
         our_temp = await _wait_temp_file(target)
 
         task.cancel()
@@ -251,13 +254,13 @@ async def test_r2_w4_cancel_settle_waits_for_worker_cleanup(async_app, monkeypat
 async def test_r2_w4_settle_never_deletes_another_operations_temp(async_app):
     """另一个在飞操作（同目标的别的 token）的 <目标>.<token>.part 必须原样保留。"""
     ctx = async_app.state.ctx
-    root = ctx.attachments.root
+    root = ctx.attachments.materials_root
     gate = asyncio.Event()
 
     async with _live(async_app) as ac:
         task = asyncio.create_task(_upload(ac, gate, "并发目标.bin"))
         row = await _wait_row(ctx)
-        target = ctx.attachments.copy_path(ctx.attachments.get(row.id, check=False))
+        target = ctx.attachments.material_path(ctx.attachments.get(row.id, check=False))
         our_temp = await _wait_temp_file(target)
         jobs = list(active_jobs())
         # 模拟「同一条目标上另一个在飞操作」的临时文件：只差 token

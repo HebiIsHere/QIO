@@ -88,7 +88,7 @@ function sample(key: string, el: Element | null): HorizontalFitSample | null {
  * 对一个预览根节点做一次横向自检。
  *
  * @param root    预览根（CardInlinePreview 的 .cip）
- * @param context 渲染上下文：chat 要求查看区也不溢出；material 允许查看区二维浏览
+ * @param context 渲染上下文：chat 要求查看区也不溢出；material 材料阅读区二维浏览
  */
 export function checkHorizontalFit(
   root: HTMLElement | null | undefined,

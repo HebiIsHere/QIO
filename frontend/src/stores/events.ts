@@ -7,7 +7,8 @@ import {
   type EventType,
 } from "../services/events";
 import { useSessionStore, type ToolExecutionSnapshot, type ToolPresentation, type ToolStatus } from "./session";
-import { useApprovalsStore } from "./approvals";
+import { approvalMetaFromPending, useApprovalsStore } from "./approvals";
+import { toPendingApproval } from "../services/approvalLifecycle";
 import { api, type TurnFactsRow } from "../services/api";
 import { resetBackend } from "../services/backend";
 import { invalidateRestore, restoreRuntimeState } from "./restore";
@@ -606,8 +607,26 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const approvalId = String(d.approval_id ?? "");
           if (!approvalId) break;
-          useApprovalsStore().resolve(approvalId);
-          if (session.pendingContinue?.id === approvalId) session.pendingContinue = null;
+          /**
+           * R9：事件不新增类型，用 payload.phase 表达状态（W1 冻结）。
+           * 前端只呈现：中间态（confirmed / approved / executing）保留待办；
+           * 终态（executed / failed / invalidated / interrupted_unverified / …）才收口。
+           * 旧后端没有 phase → recordResult 内部按旧的「有结局即收敛」处理。
+           */
+          useApprovalsStore().recordResult(d);
+          const phase = String(d.phase ?? "");
+          const terminal = new Set([
+            "executed",
+            "failed",
+            "invalidated",
+            "interrupted_unverified",
+            "expired",
+            "rejected",
+            "cancelled",
+          ]);
+          if ((!phase || terminal.has(phase)) && session.pendingContinue?.id === approvalId) {
+            session.pendingContinue = null;
+          }
           break;
         }
         case "ANCHOR": {
@@ -775,6 +794,14 @@ export const useEventStore = defineStore("events", {
         };
         return;
       }
+      /**
+       * R9：新事件带 v2 字段（state / confirmed_stage / requires_confirmations / purpose …）。
+       * 原样转成待办字段，弹窗才能展示状态机进度与三次确认；老事件没有这些字段 → 不写。
+       */
+      const meta =
+        typeof approval.state === "string"
+          ? approvalMetaFromPending(toPendingApproval(approval))
+          : undefined;
       useApprovalsStore().enqueue(id, kind || "unknown", (approval.payload ?? {}) as Record<string, unknown>, {
         // 用户正在输入（含凭据表单）时不抢焦点；恢复时不抢焦点
         autoOpen: opts.autoOpen ?? !isUserEditing(),
@@ -782,6 +809,7 @@ export const useEventStore = defineStore("events", {
         turnId: (approval.turn_id as string | null) ?? null,
         sessionId: (approval.session_id as string | null) ?? null,
         requestDigest: (approval.request_digest as string | null) ?? null,
+        ...(meta ? { meta } : {}),
       });
       session.activity = "approval";
     },

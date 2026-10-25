@@ -1121,7 +1121,12 @@ def stage_lease(ctx: Ctx):
     install_dir = ctx.install1
     if not clear_stale_lease(ctx, install_dir, "S1-019"):
         return False
-    proc, logfile = ctx.launch_shell(shell_exe, ctx.data1, "install1")
+    # R9 §11（W5）：默认关闭行为是 ask，而本脚本用 EarlyCloseWatch 在窗口一出现就
+    # 无人值守地发 WM_CLOSE —— 不覆盖就会停在确认框上。QIO_CLOSE_BEHAVIOR=quit 是
+    # 只本次进程生效的验证覆盖（不写设置、不改用户配置），让这条既有真机路径仍然可跑。
+    proc, logfile = ctx.launch_shell(
+        shell_exe, ctx.data1, "install1", extra_env={"QIO_CLOSE_BEHAVIOR": "quit"}
+    )
     early = EarlyCloseWatch(proc.pid, install_dir)
     early.start()
     ctx.early_close = early

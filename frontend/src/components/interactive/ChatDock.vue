@@ -28,6 +28,7 @@ import { useInteractiveStore } from "../../stores/interactive";
 import { useSessionStore } from "../../stores/session";
 import MessageItem from "../MessageItem.vue";
 import AttachmentChip from "../AttachmentChip.vue";
+import PermissionModeBadge from "../security/PermissionModeBadge.vue";
 import FailedSendNotice from "./FailedSendNotice.vue";
 import ResizeHandles from "./ResizeHandles.vue";
 import { useResizeGesture } from "../../composables/useResizeGesture";
@@ -42,6 +43,7 @@ import {
 import type { AttachmentOpCapture } from "../../composables/attachmentOps";
 import {
   humanSize,
+  isDesktopShell,
   isSendable,
   markAttachmentRemoved,
   openAttachment,
@@ -935,7 +937,7 @@ async function addFiles(files: File[]): Promise<void> {
   try {
     for (const file of files) {
       try {
-        const created = await uploadAttachment(file, { topicId: capture.topicId });
+        const created = await uploadAttachment(file, { topicId: capture.topicId, sourceKind: "browser_upload" });
         registerAttachmentIdentity(capture.topicId, created.id, capture.opToken);
         attachRetry.value = null;
         void trackAttachment(created, capture);
@@ -959,7 +961,7 @@ async function addPath(path: string): Promise<void> {
   attachNotice.value = "";
   attachBusy.value = true;
   try {
-    const created = await prepareAttachment(value, { topicId: capture.topicId });
+    const created = await prepareAttachment(value, { topicId: capture.topicId, sourceKind: "desktop_path" });
     registerAttachmentIdentity(capture.topicId, created.id, capture.opToken);
     attachRetry.value = null;
     attachPath.value = "";
@@ -982,9 +984,25 @@ async function retryAttach(): Promise<void> {
   else await addPath(target.path);
 }
 
-/** 打开文件选择器（对话框取消时什么都不发生，也不报假失败）。 */
+/**
+ * 打开文件选择器（对话框取消时什么都不发生，也不报假失败）。
+ *
+ * 桌面壳优先用原生选择器拿**真实路径**（登记源引用、不复制）；只有拿不到路径
+ * （浏览器 / 原生选择器不可用）才退回字节上传，并在来源标注里说清是工作区材料。
+ */
 async function pickFile(): Promise<void> {
   attachError.value = "";
+  if (isDesktopShell()) {
+    try {
+      const path = await pickLocalPath();
+      if (path) {
+        await addPath(path);
+        return;
+      }
+    } catch (err) {
+      attachError.value = "原生文件选择器不可用（" + messageOfError(err) + "）：已退回文件上传";
+    }
+  }
   const file = await pickBrowserFile();
   if (!file) return;
   await addFiles([file]);
@@ -1553,6 +1571,8 @@ function onKeydown(event: KeyboardEvent) {
         </p>
 
         <div class="input-row" data-qio-fit>
+          <!-- 权限模式常驻可见（R9 契约 §1）：互动模式与对话页同一枚徽标 -->
+          <PermissionModeBadge />
           <textarea
             ref="inputRef"
             v-model="draft"

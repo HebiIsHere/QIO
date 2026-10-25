@@ -82,12 +82,12 @@ def test_migrations_49_50_51_registered_and_versions_converged():
     table = _by_number()
     for number in (49, 50, 51):
         assert table[number], f"{CLAUSE}：迁移 {number} 没有 SQL 语句"
-    # 只追加纪律：51 必须保留；之后每一轮可以有新的登记迁移（例如对话页 v2 的 55），
-    # 因此这里核对「最新版本 = 补偿版本 = 已登记最大值」，而不是把 51 钉成永恒。
+    # R9（2026-10-22）追加迁移 52/53 与补偿 54 后，阶段三的 49/50/51 仍是历史事实；
+    # 收敛断言改为"最新迁移 = SCHEMA_VERSION = COMPENSATION_VERSION 且不小于 51"，
+    # 既保持阶段三契约（51 已登记）又允许后续追加（只追加，不推翻历史编号）。
     latest = max(int(n) for n, _ in MIGRATIONS)
     assert latest >= 51
-    assert SCHEMA_VERSION == latest, (
-        f"{CLAUSE}：SCHEMA_VERSION 必须等于已登记的最新迁移（实际 {SCHEMA_VERSION} / {latest}）")
+    assert SCHEMA_VERSION == latest, f"{CLAUSE}：SCHEMA_VERSION 必须等于最新迁移（实际 {SCHEMA_VERSION} / {latest}）"
     assert COMPENSATION_VERSION == latest, (
         f"{CLAUSE}：COMPENSATION_VERSION 必须等于最新迁移（实际 {COMPENSATION_VERSION} / {latest}）")
 
@@ -184,26 +184,21 @@ def test_fresh_database_reaches_51_and_is_idempotent(tmp_path):
 
     conn: sqlite3.Connection = connect(tmp_path / "p3.db")
     try:
-        assert apply_migrations(conn) == SCHEMA_VERSION
-        assert current_version(conn) == SCHEMA_VERSION
+        assert apply_migrations(conn) == COMPENSATION_VERSION
+        assert current_version(conn) == COMPENSATION_VERSION
         assert migrate_module.missing_objects(conn) == {
             "tables": [], "columns": [], "indexes": []}
-        assert apply_migrations(conn) == SCHEMA_VERSION
+        # 幂等：第二次 apply 仍返回当前补偿版本（不再改动库）。
+        assert apply_migrations(conn) == COMPENSATION_VERSION
     finally:
         conn.close()
 
 
 def test_required_objects_have_compensation_statements():
-    """§13.6：REQUIRED_OBJECTS 的每一项都必须在**当前补偿迁移**里有对应建对象语句。
-
-    后续轮次合法追加迁移（对话页 v2 = 55）时，补偿入口会随最新版本一起往后挪；
-    这里核对的是「最新补偿 = 所有必需对象的来源」，不是把 51 钉成永恒。
-    """
+    """§13.6：REQUIRED_OBJECTS 的每一项都必须在当前补偿迁移里有对应建对象语句。"""
     if _missing():
-        pytest.fail(f"{CLAUSE}：迁移 49/50/51 未登记，无法核对 REQUIRED_OBJECTS。", pytrace=False)
-    blob = "\n".join(
-        " ".join(str(s).split()) for s in _by_number()[COMPENSATION_VERSION]
-    )
+        pytest.fail(f"{CLAUSE}：迁移 51 未登记，无法核对 REQUIRED_OBJECTS。", pytrace=False)
+    blob = "\n".join(" ".join(str(s).split()) for s in _by_number()[COMPENSATION_VERSION])
     for spec in REQUIRED_OBJECTS["columns"]:
         table, _, column = str(spec).partition(".")
         assert f"ADD COLUMN {column}" in blob and table in blob, (

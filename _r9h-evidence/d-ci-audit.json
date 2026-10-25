@@ -1,0 +1,160 @@
+{
+ "generated_at": "2026-10-23T08:30:41.842076+00:00",
+ "platform": "win32",
+ "python": "3.11.15 (main, Jun 23 2026, 15:20:37) [MSC v.1944 64 bit (AMD64)]",
+ "ci_runs": [
+  {
+   "run_id": 39899916527,
+   "sha": "4ad0d9e6e831c2fc1afef0f8c0dd7f2749790726",
+   "workflow": "CI",
+   "conclusion": "failure",
+   "failing_jobs": [
+    "backend (windows-latest)",
+    "backend (py3.12)",
+    "backend (py3.11)",
+    "install e2e (windows-latest)"
+   ],
+   "root_causes": [
+    "补偿迁移 58 只抄了 56+57，存量库补偿链不完整（52/53/55 对象缺失）",
+    "模型调用入口清单未登记 security/review.py、security/resolution.py",
+    "取消准备轮测试把模型调用次数写死，未计入每轮要求解析调用",
+    "install e2e 假厂商 FIFO 脚本被要求解析调用消耗"
+   ],
+   "fix_commit": "c085b745"
+  },
+  {
+   "run_id": 39903261628,
+   "sha": "c085b745d8adffe89aa7ae3fc555bc93f68f995d",
+   "workflow": "CI",
+   "conclusion": "failure",
+   "failing_jobs": [
+    "backend (windows-latest)",
+    "backend (py3.12)",
+    "backend (py3.11)"
+   ],
+   "failing_tests": [
+    "tests/test_interactive_during_heavy_work.py::test_health_probe_stays_responsive_while_slow_prediction_runs（355ms > 300ms，runner 调度地板，R9-F W4 已有诊断）",
+    "tests/test_r9_acceptance_e2e.py::test_restricted_write_pends_then_approval_executes（审批执行 8s 未完成）",
+    "tests/test_r9g_fixed_queries.py::test_node_npm_version_forms（Linux /usr/local/bin/npm 符号链接入口被判 None）",
+    "tests/test_tool_restore.py::test_restore_agent_tool_after_restart（自建工具审批绑定）"
+   ],
+   "fix_commit": "b0eb34b3（/usr/local/bin 精确白名单 + 旧验收/工具恢复要求绑定）",
+   "remaining_after_fix": [
+    "/opt/<...>/bin 的系统安装布局仍不在精确白名单（本轮 R9-H §7 修复）",
+    "真实工具流程 program_path 为 resolve 后的脚本目标（npm-cli.js），入口名丢失（本轮按系统根 + 同族脚本识别）",
+    "健康探测 355ms 为 runner 调度地板问题（R9-F W4 诊断，非固定查询；不归本轮）"
+   ]
+  }
+ ],
+ "scenarios": {
+  "ci_run2_usr_local_bin_npm_entry": {
+   "identity_rule_problem": null,
+   "entry_dir": "/usr/local/bin",
+   "entry_is_system_bin_dir": true,
+   "target": "/usr/local/lib/node_modules/npm/bin/npm-cli.js",
+   "target_under_system_roots": true,
+   "script_entry_allowed": true,
+   "family_of_entry": "npm",
+   "resolved_script_family": "npm"
+  },
+  "opt_hostedtoolcache_npm_entry": {
+   "identity_rule_problem": null,
+   "entry_dir": "/opt/hostedtoolcache/node/20.19.0/x64/bin",
+   "entry_is_system_bin_dir": true,
+   "target": "/opt/hostedtoolcache/node/20.19.0/x64/lib/node_modules/npm/bin/npm-cli.js",
+   "target_under_system_roots": true,
+   "script_entry_allowed": true,
+   "family_of_entry": "npm",
+   "resolved_script_family": "npm"
+  },
+  "opt_node_pnpm_entry": {
+   "identity_rule_problem": null,
+   "entry_dir": "/opt/node/bin",
+   "entry_is_system_bin_dir": true,
+   "target": "/opt/node/lib/node_modules/pnpm/bin/pnpm.cjs",
+   "target_under_system_roots": true,
+   "script_entry_allowed": true,
+   "family_of_entry": "pnpm",
+   "resolved_script_family": "pnpm"
+  },
+  "tool_flow_resolved_npm_cli_js": {
+   "identity_rule_problem": null,
+   "resolved_script_family": "npm"
+  },
+  "negatives": {
+   "temp_entry": {
+    "identity_rule_problem": "真实程序文件名与请求的程序身份不一致（可能同名替身）",
+    "entry_dir": "/tmp/bin",
+    "entry_is_system_bin_dir": false,
+    "target": "/tmp/evil/npm-cli.js",
+    "target_under_system_roots": false,
+    "script_entry_allowed": false,
+    "family_of_entry": "npm",
+    "resolved_script_family": null
+   },
+   "workspace_target": {
+    "identity_rule_problem": "真实程序文件名与请求的程序身份不一致（可能同名替身）",
+    "entry_dir": "/usr/local/bin",
+    "entry_is_system_bin_dir": true,
+    "target": "/home/user/project/npm-cli.js",
+    "target_under_system_roots": false,
+    "script_entry_allowed": false,
+    "family_of_entry": "npm",
+    "resolved_script_family": null
+   },
+   "arbitrary_opt_program": {
+    "family": null,
+    "script_entry_allowed": false
+   }
+  }
+ },
+ "host_real_programs": {
+  "python": {
+   "found": "D:\\qio-dev\\qio-r9h-d\\backend\\.venv\\Scripts\\python.EXE",
+   "kind": "version"
+  },
+  "node": {
+   "found": "C:\\Program Files\\nodejs\\node.EXE",
+   "kind": "version"
+  },
+  "npm": {
+   "found": "C:\\Program Files\\nodejs\\npm.CMD",
+   "kind": "version"
+  },
+  "git": {
+   "found": "C:\\Program Files\\Git\\cmd\\git.EXE",
+   "kind": "version"
+  }
+ },
+ "checks": [
+  {
+   "label": "ci /usr/local/bin/npm 身份规则放行",
+   "ok": true
+  },
+  {
+   "label": "/opt hostedtoolcache npm 身份规则放行",
+   "ok": true
+  },
+  {
+   "label": "/opt node pnpm 脚本入口放行",
+   "ok": true
+  },
+  {
+   "label": "工具真实流程 resolve 目标按同族识别",
+   "ok": true
+  },
+  {
+   "label": "临时目录入口拒绝",
+   "ok": true
+  },
+  {
+   "label": "工作区目标拒绝",
+   "ok": true
+  },
+  {
+   "label": "/opt 任意程序不放行",
+   "ok": true
+  }
+ ],
+ "all_ok": true
+}

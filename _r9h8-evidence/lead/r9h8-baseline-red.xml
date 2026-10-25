@@ -1,0 +1,338 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="11" skipped="0" tests="12" time="15.237" timestamp="2026-10-24T19:26:54.421062+08:00" hostname="admin"><testcase classname="tests.test_r9h8_regressions" name="test_empty_objects_read_limit_blocks_real_read[read_only]" time="0.414"><failure message="AssertionError: ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4056/test_empty_objects_read_limit_0')
+db_conn = &lt;sqlite3.Connection object at 0x00000260531B6980&gt;, mode = 'read_only'
+
+    @pytest.mark.parametrize("mode", ["read_only", "restricted", "unrestricted"])
+    async def test_empty_objects_read_limit_blocks_real_read(tmp_path, db_conn, mode):
+        target = tmp_path / "global-read.txt"
+        target.write_text("secret", encoding="utf-8")
+        security = make_security(tmp_path, db_conn, mode=mode)
+        requirement = security.requirements.record_user_message(
+            text="不要读取任何文件", message_id="m-gr", turn_id="t-gr"
+        )
+        security.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [], "reason": "整体禁止读取"}],
+            source="test-global-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = security.requirements.binding_for(requirement.requirement_id)
+        tool = FsReadTool(computer=_sandbox(tmp_path, mode), security=security.engine)
+        with requirement_context(binding):
+            result = await tool.run(path=str(target))
+&gt;       assert result.ok is False, result
+E       AssertionError: ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E       assert True is False
+E        +  where True = ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+
+tests\test_r9h8_regressions.py:65: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_empty_objects_read_limit_blocks_real_read[restricted]" time="0.368"><failure message="AssertionError: ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4056/test_empty_objects_read_limit_1')
+db_conn = &lt;sqlite3.Connection object at 0x00000260531B6200&gt;, mode = 'restricted'
+
+    @pytest.mark.parametrize("mode", ["read_only", "restricted", "unrestricted"])
+    async def test_empty_objects_read_limit_blocks_real_read(tmp_path, db_conn, mode):
+        target = tmp_path / "global-read.txt"
+        target.write_text("secret", encoding="utf-8")
+        security = make_security(tmp_path, db_conn, mode=mode)
+        requirement = security.requirements.record_user_message(
+            text="不要读取任何文件", message_id="m-gr", turn_id="t-gr"
+        )
+        security.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [], "reason": "整体禁止读取"}],
+            source="test-global-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = security.requirements.binding_for(requirement.requirement_id)
+        tool = FsReadTool(computer=_sandbox(tmp_path, mode), security=security.engine)
+        with requirement_context(binding):
+            result = await tool.run(path=str(target))
+&gt;       assert result.ok is False, result
+E       AssertionError: ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E       assert True is False
+E        +  where True = ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+
+tests\test_r9h8_regressions.py:65: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_empty_objects_read_limit_blocks_real_read[unrestricted]" time="0.368"><failure message="AssertionError: ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4056/test_empty_objects_read_limit_2')
+db_conn = &lt;sqlite3.Connection object at 0x00000260535A5300&gt;
+mode = 'unrestricted'
+
+    @pytest.mark.parametrize("mode", ["read_only", "restricted", "unrestricted"])
+    async def test_empty_objects_read_limit_blocks_real_read(tmp_path, db_conn, mode):
+        target = tmp_path / "global-read.txt"
+        target.write_text("secret", encoding="utf-8")
+        security = make_security(tmp_path, db_conn, mode=mode)
+        requirement = security.requirements.record_user_message(
+            text="不要读取任何文件", message_id="m-gr", turn_id="t-gr"
+        )
+        security.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [], "reason": "整体禁止读取"}],
+            source="test-global-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = security.requirements.binding_for(requirement.requirement_id)
+        tool = FsReadTool(computer=_sandbox(tmp_path, mode), security=security.engine)
+        with requirement_context(binding):
+            result = await tool.run(path=str(target))
+&gt;       assert result.ok is False, result
+E       AssertionError: ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E       assert True is False
+E        +  where True = ToolResult(ok=True, content='secret', error=None, category=None, recoverable=None, facts=None, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+
+tests\test_r9h8_regressions.py:65: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_empty_objects_write_and_delete_limits_block_real_tools" time="0.375"><failure message="AssertionError: ToolResult(ok=True, content='已提交审批：写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_empty_o...49d04bf0', 'version': 1}, 'requirement_binding_source': 'security.context'}, 'reversible': False}}, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='已提交审批：写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_empty_o...49d04bf0', 'version': 1}, 'requirement_binding_source': 'security.context'}, 'reversible': False}}, model_payload=None).ok">tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4056/test_empty_objects_write_and_d0')
+db_conn = &lt;sqlite3.Connection object at 0x00000260535A5030&gt;
+
+    async def test_empty_objects_write_and_delete_limits_block_real_tools(tmp_path, db_conn):
+        security = make_security(tmp_path, db_conn, mode="restricted")
+        target = tmp_path / "global-write.txt"
+        target.write_text("original", encoding="utf-8")
+        requirement = security.requirements.record_user_message(
+            text="不要覆盖任何文件", message_id="m-gw", turn_id="t-gw"
+        )
+        security.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["write"], "objects": [], "reason": "整体禁止写入"}],
+            source="test-global-write",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = security.requirements.binding_for(requirement.requirement_id)
+        tool = FsWriteTool(computer=_sandbox(tmp_path, "restricted"), security=security.engine)
+        with requirement_context(binding):
+            result = await tool.run(path=str(target), content="not-written")
+&gt;       assert result.ok is False, result
+E       AssertionError: ToolResult(ok=True, content='已提交审批：写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_empty_o...49d04bf0', 'version': 1}, 'requirement_binding_source': 'security.context'}, 'reversible': False}}, model_payload=None)
+E       assert True is False
+E        +  where True = ToolResult(ok=True, content='已提交审批：写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_empty_o...49d04bf0', 'version': 1}, 'requirement_binding_source': 'security.context'}, 'reversible': False}}, model_payload=None).ok
+
+tests\test_r9h8_regressions.py:86: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_global_execute_limit_blocks_real_program" time="2.360"><failure message="AssertionError: ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)&#10;assert True is False&#10; +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x000002605324BE50&gt;
+
+    async def test_global_execute_limit_blocks_real_program(ctx):
+        root = ctx.computer.root()
+        marker = root / "global-exec-marker.txt"
+        script = root / "global-exec.py"
+        script.write_text(
+            "from pathlib import Path\nPath(r'%s').write_text('ran')\n" % marker,
+            encoding="utf-8",
+        )
+        requirement = ctx.requirements.record_user_message(
+            text="不要运行任何程序", message_id="m-ge", turn_id="t-ge"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["execute"], "objects": [], "reason": "整体禁止执行"}],
+            source="test-global-exec",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        tool = RunProgramTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(program=sys.executable, args=[str(script)], cwd=str(root), timeout=30)
+&gt;       assert result.ok is False, result
+E       AssertionError: ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None)
+E       assert True is False
+E        +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_boundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+
+tests\test_r9h8_regressions.py:128: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_program_name_object_binding_blocks_alias_entry_and_approval" time="0.666"><failure message="AssertionError: 完全无限制模式下不再加常规审批（仍受操作系统账户权限约束）&#10;assert &lt;Verdict.ALLOW: 'allow'&gt; == &lt;Verdict.DENY: 'deny'&gt;&#10;  &#10;  - deny&#10;  + allow">ctx = &lt;agent.services.app.AppContext object at 0x00000260532D87D0&gt;
+
+    async def test_program_name_object_binding_blocks_alias_entry_and_approval(ctx):
+        root = ctx.computer.root()
+        marker = root / "program-bind-marker.txt"
+        script = root / "program-bind.py"
+        script.write_text(
+            "from pathlib import Path\nPath(r'%s').write_text('ran')\n" % marker,
+            encoding="utf-8",
+        )
+        requirement = ctx.requirements.record_user_message(
+            text="禁止运行 python", message_id="m-pb", turn_id="t-pb"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["execute"], "objects": [{"kind": "program", "value": "python"}], "reason": "禁止 python"}],
+            source="test-program-bind",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        tool = RunProgramTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        python_abs = shutil.which("python")
+        assert python_abs, "测试需要 PATH 中的 python"
+        with requirement_context(binding):
+            named = await tool.run(program="python", args=[str(script)], cwd=str(root), timeout=30)
+            absolute = await tool.run(program=python_abs, args=[str(script)], cwd=str(root), timeout=30)
+        direct = Effect(
+            kind=EffectKind.EXECUTE,
+            targets=(Target("program", str(python_abs)),),
+            purpose="运行",
+            detail={"requested_program": str(python_abs), "execution": {"program": str(python_abs)}},
+        )
+        with requirement_context(binding):
+            direct_decision = await ctx.authorization.authorize(direct)
+&gt;       assert direct_decision.verdict == Verdict.DENY, direct_decision.reason
+E       AssertionError: 完全无限制模式下不再加常规审批（仍受操作系统账户权限约束）
+E       assert &lt;Verdict.ALLOW: 'allow'&gt; == &lt;Verdict.DENY: 'deny'&gt;
+E         
+E         - deny
+E         + allow
+
+tests\test_r9h8_regressions.py:166: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_program_name_does_not_merge_different_versions" time="0.361"><failure message="AssertionError: assert &lt;Verdict.APPROVE: 'approve'&gt; == &lt;Verdict.DENY: 'deny'&gt;&#10;  &#10;  - deny&#10;  + approve">tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4056/test_program_name_does_not_mer0')
+db_conn = &lt;sqlite3.Connection object at 0x00000260732A98A0&gt;
+
+    async def test_program_name_does_not_merge_different_versions(tmp_path, db_conn):
+        security = make_security(tmp_path, db_conn, mode="unrestricted")
+        requirement = security.requirements.record_user_message(
+            text="只禁止 python3.11", message_id="m-pv", turn_id="t-pv"
+        )
+        security.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["execute"], "objects": [{"kind": "program_name", "value": "python3.11"}], "reason": "版本"}],
+            source="test-program-version",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = security.requirements.binding_for(requirement.requirement_id)
+    
+        def effect(entry, target):
+            return Effect(
+                kind=EffectKind.EXECUTE,
+                targets=(Target("program", str(target)),),
+                purpose="运行",
+                detail={"requested_program": entry, "execution": {"program": entry}},
+            )
+    
+        with requirement_context(binding):
+            other = await security.engine.authorize(effect("python3.12", tmp_path / "python3.12"))
+            same = await security.engine.authorize(effect("python3.11", tmp_path / "python3.11"))
+        assert other.verdict == Verdict.ALLOW, other.reason
+&gt;       assert same.verdict == Verdict.DENY
+E       AssertionError: assert &lt;Verdict.APPROVE: 'approve'&gt; == &lt;Verdict.DENY: 'deny'&gt;
+E         
+E         - deny
+E         + approve
+
+tests\test_r9h8_regressions.py:205: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_internal_maintenance_change_during_confirmations_preserves_edit" time="0.631"><failure message="AssertionError: {'approval_id': 'appr_11e4313e024c', 'kind': 'fs.write', 'label': '写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_maintenance_chan0\\data\\r9h8-internal.log', 'purpose': '写入文件内容', ...}&#10;assert ({'approval_id': 'appr_11e4313e024c', 'kind': 'fs.write', 'label': '写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_maintenance_chan0\\data\\r9h8-internal.log', 'purpose': '写入文件内容', ...} is not None and 'completed' in ('failed', 'invalidated'))&#10; +  where 'completed' = str('completed')&#10; +    where 'completed' = &lt;built-in method get of dict object at 0x00000260730044C0&gt;('state')&#10; +      where &lt;built-in method get of dict object at 0x00000260730044C0&gt; = {'approval_id': 'appr_11e4313e024c', 'kind': 'fs.write', 'label': '写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_maintenance_chan0\\data\\r9h8-internal.log', 'purpose': '写入文件内容', ...}.get">ctx = &lt;agent.services.app.AppContext object at 0x0000026072FEB6D0&gt;
+
+    async def test_internal_maintenance_change_during_confirmations_preserves_edit(ctx):
+        target = await _internal_file(ctx)
+        ctx.settings_store.set("computer.permission_mode", "restricted")
+        requirement = ctx.requirements.record_user_message(
+            text="维护内部日志", message_id="m-im", turn_id="t-im"
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        tool = FsWriteTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(path=str(target), content="approved-v2")
+        assert result.ok is True and result.code == "pending_approval", result
+        approval_id = result.data["approval_id"]
+        target.write_text("user-edit-during-confirmation", encoding="utf-8")
+        await ctx.approvals.confirm(approval_id, 1)
+        await ctx.approvals.confirm(approval_id, 2)
+        await ctx.approvals.confirm(approval_id, 3)
+        row = ctx.approvals.store.get(approval_id) or {}
+        if str(row.get("state")) == "waiting":
+            await ctx.approvals.decide(approval_id, "approve")
+        row = await _wait_state(ctx, approval_id)
+&gt;       assert row is not None and str(row.get("state")) in ("failed", "invalidated"), row
+E       AssertionError: {'approval_id': 'appr_11e4313e024c', 'kind': 'fs.write', 'label': '写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_maintenance_chan0\\data\\r9h8-internal.log', 'purpose': '写入文件内容', ...}
+E       assert ({'approval_id': 'appr_11e4313e024c', 'kind': 'fs.write', 'label': '写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_maintenance_chan0\\data\\r9h8-internal.log', 'purpose': '写入文件内容', ...} is not None and 'completed' in ('failed', 'invalidated'))
+E        +  where 'completed' = str('completed')
+E        +    where 'completed' = &lt;built-in method get of dict object at 0x00000260730044C0&gt;('state')
+E        +      where &lt;built-in method get of dict object at 0x00000260730044C0&gt; = {'approval_id': 'appr_11e4313e024c', 'kind': 'fs.write', 'label': '写入文件 C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_maintenance_chan0\\data\\r9h8-internal.log', 'purpose': '写入文件内容', ...}.get
+
+tests\test_r9h8_regressions.py:238: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_batch_delete_one_read_denied_other_still_pending" time="0.496"><failure message="AssertionError: ToolResult(ok=False, content='', error='用户限制禁止读取目标内容：本次未读取正文/摘要，未执行（禁止读 B）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='read_limit_denied', data=None, model_payload=None)&#10;assert (False is True)&#10; +  where False = ToolResult(ok=False, content='', error='用户限制禁止读取目标内容：本次未读取正文/摘要，未执行（禁止读 B）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='read_limit_denied', data=None, model_payload=None).ok">ctx = &lt;agent.services.app.AppContext object at 0x0000026073381F50&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002607197CE90&gt;
+
+    async def test_batch_delete_one_read_denied_other_still_pending(ctx, monkeypatch):
+        root = ctx.computer.root()
+        a = root / "batch-h8-a.txt"
+        b = root / "batch-h8-b.txt"
+        a.write_text("A", encoding="utf-8")
+        b.write_text("B", encoding="utf-8")
+        requirement = ctx.requirements.record_user_message(
+            text="删除 A 和 B，但不要读取 B", message_id="m-bd", turn_id="t-bd"
+        )
+        ctx.requirements.set_structured_limits(
+            requirement.requirement_id,
+            [{"operations": ["read"], "objects": [{"kind": "path", "value": str(b)}], "reason": "禁止读 B"}],
+            source="test-batch-read",
+            state=requirement_limits.STATE_STRUCTURED,
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        ctx.settings_store.set("computer.permission_mode", "restricted")
+        tool = FsDeleteTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(paths=[str(a), str(b)])
+&gt;       assert result.ok is True and result.code == "pending_approval", result
+E       AssertionError: ToolResult(ok=False, content='', error='用户限制禁止读取目标内容：本次未读取正文/摘要，未执行（禁止读 B）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='read_limit_denied', data=None, model_payload=None)
+E       assert (False is True)
+E        +  where False = ToolResult(ok=False, content='', error='用户限制禁止读取目标内容：本次未读取正文/摘要，未执行（禁止读 B）', category='permission', recoverable=False, facts=None, protocol_version=None, status=None, code='read_limit_denied', data=None, model_payload=None).ok
+
+tests\test_r9h8_regressions.py:263: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_internal_directory_delete_no_preread_and_confirm" time="0.514"><failure message="AssertionError: 内部目录三次确认前不得读取正文/摘要&#10;assert ['C:\\Users\\...dir\\log.txt'] == []&#10;  &#10;  Left contains one more item: 'C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_directory_delete0\\data\\logs\\r9h8-internal-dir\\log.txt'&#10;  Use -v to get more diff">ctx = &lt;agent.services.app.AppContext object at 0x0000026073809290&gt;
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x00000260530ABF50&gt;
+
+    async def test_internal_directory_delete_no_preread_and_confirm(ctx, monkeypatch):
+        data_dir = Path(getattr(ctx.settings, "data_dir"))
+        logs = data_dir / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        directory = logs / "r9h8-internal-dir"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "log.txt").write_text("internal-dir-content", encoding="utf-8")
+        assert security_gate.match_internal_data(ctx.authorization, directory) is not None
+        reads: list[str] = []
+        real_sha = security_gate.content_sha256
+        real_bytes = Path.read_bytes
+    
+        def spy_sha(path):
+            reads.append(str(path))
+            return real_sha(path)
+    
+        def spy_bytes(self, *args, **kwargs):
+            reads.append(str(self))
+            return real_bytes(self, *args, **kwargs)
+    
+        monkeypatch.setattr(security_gate, "content_sha256", spy_sha)
+        monkeypatch.setattr(Path, "read_bytes", spy_bytes)
+        ctx.settings_store.set("computer.permission_mode", "restricted")
+        requirement = ctx.requirements.record_user_message(
+            text="删除内部日志目录", message_id="m-id", turn_id="t-id"
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        tool = FsDeleteTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(paths=[str(directory)])
+        assert result.ok is True and result.code == "pending_approval", result
+        assert int(result.data.get("confirmations_required") or 1) == 3
+&gt;       assert reads == [], "内部目录三次确认前不得读取正文/摘要"
+E       AssertionError: 内部目录三次确认前不得读取正文/摘要
+E       assert ['C:\\Users\\...dir\\log.txt'] == []
+E         
+E         Left contains one more item: 'C:\\Users\\zxy\\AppData\\Local\\Temp\\pytest-of-zxy\\pytest-4056\\test_internal_directory_delete0\\data\\logs\\r9h8-internal-dir\\log.txt'
+E         Use -v to get more diff
+
+tests\test_r9h8_regressions.py:308: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_unchanged_script_approval_executes" time="0.529"><failure message="AssertionError: {'approval_id': 'appr_8004b35056cd', 'kind': 'proc.run_program', 'label': '运行程序 D:\\qio-dev\\qio-r9h8-baseline\\backend\\.venv\\Scripts\\python.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...}&#10;assert ({'approval_id': 'appr_8004b35056cd', 'kind': 'proc.run_program', 'label': '运行程序 D:\\qio-dev\\qio-r9h8-baseline\\backend\\.venv\\Scripts\\python.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...} is not None and 'failed' == 'completed'&#10;  &#10;  - completed&#10;  + failed)">ctx = &lt;agent.services.app.AppContext object at 0x0000026053271850&gt;
+
+    async def test_unchanged_script_approval_executes(ctx):
+        root = ctx.computer.root()
+        script = root / "unchanged-script.py"
+        marker = root / "unchanged-marker.txt"
+        script.write_text(
+            "from pathlib import Path\nPath(r'%s').write_text('ok')\n" % marker,
+            encoding="utf-8",
+        )
+        ctx.settings_store.set("computer.permission_mode", "restricted")
+        requirement = ctx.requirements.record_user_message(
+            text="运行这个脚本", message_id="m-unchanged", turn_id="t-unchanged"
+        )
+        binding = ctx.requirements.binding_for(requirement.requirement_id)
+        tool = RunProgramTool(computer=ctx.computer, approvals=ctx.approvals, security=ctx.authorization)
+        with requirement_context(binding):
+            result = await tool.run(program=sys.executable, args=[str(script)], cwd=str(root), timeout=30)
+        assert result.ok is True and result.code == "pending_approval", result
+        approval_id = result.data["approval_id"]
+        await ctx.approvals.decide(approval_id, "approve")
+        row = await _wait_state(ctx, approval_id)
+&gt;       assert row is not None and str(row.get("state")) == "completed", row
+E       AssertionError: {'approval_id': 'appr_8004b35056cd', 'kind': 'proc.run_program', 'label': '运行程序 D:\\qio-dev\\qio-r9h8-baseline\\backend\\.venv\\Scripts\\python.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...}
+E       assert ({'approval_id': 'appr_8004b35056cd', 'kind': 'proc.run_program', 'label': '运行程序 D:\\qio-dev\\qio-r9h8-baseline\\backend\\.venv\\Scripts\\python.exe', 'purpose': '运行程序（程序身份/argv 结构化判定；shell=False）', ...} is not None and 'failed' == 'completed'
+E         
+E         - completed
+E         + failed)
+
+tests\test_r9h8_regressions.py:352: AssertionError</failure></testcase><testcase classname="tests.test_r9h8_regressions" name="test_changed_script_approval_does_not_execute" time="0.534" /></testsuite></testsuites>

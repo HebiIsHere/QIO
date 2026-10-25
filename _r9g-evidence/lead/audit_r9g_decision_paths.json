@@ -1,0 +1,31 @@
+{
+  "static": {
+    "keyword_extractor_removed": true,
+    "fixed_queries_module": true,
+    "deletion_module": true,
+    "recheck_module": true,
+    "batch_module": true,
+    "resolution_module": true,
+    "engine_no_keyword_prohibition": true,
+    "review_no_deterministic_guard": true,
+    "engine_has_fixed_query_hook": true,
+    "engine_has_permanent_delete_policy": true,
+    "engine_has_execute_batch": true,
+    "engine_has_recheck_approved": true
+  },
+  "dynamic": {
+    "fixed_query_read_only_ok": true,
+    "fixed_query_no_pending": true,
+    "batch_decisions": 2,
+    "batch_each_has_verdict": true,
+    "recheck_ok": true,
+    "unbound_approval_state": "invalidated",
+    "unbound_approval_not_executed": true,
+    "decision_audit_rows": 4,
+    "decision_audit_kinds": [
+      "execute",
+      "read"
+    ],
+    "every_decision_has_verdict": true
+  }
+}

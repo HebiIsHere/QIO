@@ -40,6 +40,7 @@ from agent.graph.topics import TopicService
 from agent.memory.fragment import FragmentManager
 from agent.memory.index import IndexBuilder
 from agent.memory.ingest import MemoryWriter
+from agent.security import internal_data
 from agent.selector.selector import Selector
 from agent.services.heavy import HeavyWork
 from agent.services.lifecycle import (
@@ -278,6 +279,7 @@ class AppContext:
             FsListTool,
             FsFindTool,
             FsInfoTool,
+            FsDeleteTool,
         )
         from agent.tools.cmd_tools import (
             ProcKillTool,
@@ -299,6 +301,164 @@ class AppContext:
         # 启动即就位：工作区根目录不存在时，所有相对路径的文件工具都会直接失败
         self.computer.ensure_root()
         self.services.register("computer", self.computer)
+
+        # ── R9 统一授权边界（契约 §1/§2/§5）──────────────────────────────
+        # 权限判定、指令授权、可恢复审批、内部数据保护共用同一套实现：
+        # 工具只能走 AuthorizationEngine；审批 v2 由 ApprovalService 持久化。
+        from agent.security.engine import AuthorizationEngine
+        from agent.security.instructions import InstructionRegistry
+        from agent.security.operations import OperationRegistry
+        from agent.security.tempfiles import TempFileManager
+
+        self.instructions = InstructionRegistry()
+        self.operations = OperationRegistry()
+        self.tempfiles = TempFileManager(Path(self.settings.data_dir) / "tmp")
+        # R9-F：受限模式模型授权审查 / 需求台账 / 有界授权记录 / 后端文件来源。
+        # 这些模块由并行分支提供；未合入或初始化失败时明确降级为"没有模型审查"，
+        # 受限模式退回普通审批（不默认放行，也不会自动切模式）。
+        self.requirements = None
+        self.authorizations = None
+        self.review_audit = None
+        self.reviewer = None
+        self.requirement_resolver = None
+        try:
+            from agent.security.requirements import (
+                AuthorizationLedger,
+                RequirementLedger,
+            )
+            from agent.security.review import (
+                ModelAuthorizationReviewer,
+                ReviewAuditLedger,
+            )
+
+            self.requirements = RequirementLedger(conn)
+            self.authorizations = AuthorizationLedger(conn)
+            self.review_audit = ReviewAuditLedger(conn)
+            self.reviewer = ModelAuthorizationReviewer(
+                adapter_factory=self.build_adapter,
+                audit=self.review_audit,
+            )
+            # R9-G：模型理解"这条用户消息是新要求/补充/修正/撤回"；不是授权审查，
+            # 不产生许可；失败时后端按新要求继续并标注 unavailable（不关键词兜底）。
+            try:
+                from agent.security.resolution import ModelRequirementResolver
+                import inspect as _inspect
+
+                params = _inspect.signature(ModelRequirementResolver).parameters
+                resolver_kwargs = {"adapter_factory": self.build_adapter}
+                if "requirements" in params:
+                    resolver_kwargs["requirements"] = self.requirements
+                if "audit" in params and "audit" in _inspect.signature(
+                    ModelRequirementResolver
+                ).parameters:
+                    resolver_kwargs["audit"] = self.requirements
+                self.requirement_resolver = ModelRequirementResolver(**resolver_kwargs)
+            except Exception as exc:  # noqa: BLE001 - 解析器不可用：按新要求继续
+                logging.getLogger(__name__).warning(
+                    "R9-G 要求解析器未启用（本次按新要求继续）：%s: %s",
+                    type(exc).__name__,
+                    exc,
+                )
+        except Exception as exc:  # noqa: BLE001 - 降级必须可见，不静默假装已启用
+            logging.getLogger(__name__).warning(
+                "R9-F 授权审查组件未启用（受限模式退回普通审批）：%s: %s",
+                type(exc).__name__,
+                exc,
+            )
+        # R9-H2 §5：内部运行数据真实对象身份登记（C 分支）。失败只告警，路径判定
+        # 仍兜底（不能因为登记不可用就静默把已注册对象当普通文件）。
+        self.internal_data_identity = None
+        self.internal_data_identity_error: str | None = None
+        try:
+            from agent.security.internal_data_identity import InternalDataIdentityStore
+
+            self.internal_data_identity = InternalDataIdentityStore(conn)
+            counts = self.internal_data_identity.sync(
+                self._internal_data_paths(), source="app_startup"
+            )
+            logging.getLogger(__name__).info(
+                "内部数据身份登记完成：added=%s retired=%s active=%s",
+                (counts or {}).get("added"),
+                (counts or {}).get("retired"),
+                (counts or {}).get("active"),
+            )
+            health = getattr(self.internal_data_identity, "health", None)
+            if callable(health):
+                last_error = (health() or {}).get("last_error")
+                if last_error:
+                    self.internal_data_identity_error = str(last_error)
+            # R9-H4 升级兼容：旧行 birth NULL 且登记路径仍存在时，有界回填一次；
+            # 只读已登记路径，不扫描全盘。已移动且原路径不存在的旧对象无法回填，
+            # 保持历史路径/保守边界（不凭裸编号声称同一文件）。
+            self._backfill_identity_births()
+        except Exception as exc:  # noqa: BLE001 - 身份登记失败不静默降级；路径判定仍兜底
+            self.internal_data_identity_error = type(exc).__name__ + ": " + str(exc)
+            logging.getLogger(__name__).warning(
+                "R9-H2 内部数据身份登记未启用（路径判定仍兜底）：%s: %s",
+                type(exc).__name__,
+                exc,
+            )
+        self.authorization = AuthorizationEngine(
+            conn=conn,
+            approvals=self.approvals,
+            settings=self.settings_store,
+            instance_id=self.instance_id,
+            workspace_root=lambda: self.computer.root(),
+            internal_data_paths=self._internal_data_paths,
+            requirements=self.requirements,
+            authorizations=self.authorizations,
+            reviewer=self.reviewer,
+            origin_provider=self._file_origin_for,
+            # 引擎按真实对象身份判定内部数据；登记不可用时返回空集合，路径判定兜底。
+            internal_data_identity_keys=lambda: self._internal_identity_keys(),
+            internal_data_known_paths=lambda: self._internal_identity_known_paths(),
+            # R9-H4 §8：identity + birth 生命周期查询（编号复用不误认）。
+            internal_data_identity_lookup=lambda *args, **kwargs: (
+                self._internal_identity_lookup(*args, **kwargs)
+            ),
+            internal_data_identity_tokens=lambda: self._internal_identity_tokens(),
+        )
+        # R9-G：统一执行前重核对服务（模式/要求/授权/审批/对象/内容/条件）；
+        # 挂在 AppContext 与引擎上，执行器/审批恢复可按统一接口调用。
+        self.recheck = None
+        try:
+            from agent.security.recheck import RecheckService
+
+            self.recheck = RecheckService(
+                engine=self.authorization,
+                requirements=self.requirements,
+                approvals=self.approvals,
+                authorizations=self.authorizations,
+            )
+            self.authorization.recheck = self.recheck
+        except Exception as exc:  # noqa: BLE001 - 重核对不可用不能静默放行
+            logging.getLogger(__name__).warning(
+                "R9-G 执行前重核对服务未启用：%s: %s", type(exc).__name__, exc
+            )
+        self.approvals.set_engine(self.authorization)
+        self.approvals.set_operations(self.operations)
+        self.approvals.set_instruction_registry(self.instructions)
+        self.approvals.set_notifier(self._on_approval_executed)
+        self.services.register("security", self.authorization)
+        self.services.register("operations", self.operations)
+        self.services.register("tempfiles", self.tempfiles)
+        # 工具审批走 deferred：批准后由后台执行器按 kind 取出执行函数真正执行。
+        self.operations.register("tool.invoke", self._execute_approved_tool)
+        # 审批通过后的真实执行器（契约 §5.3）：fs.write/fs.patch/fs.delete、proc.*、
+        # subagent.create；没有实现的动作显式注册「不可用」，不允许批准后静默丢单。
+        from agent.tools.approved_operations import register_approved_operations
+
+        self.approved_operation_kinds = register_approved_operations(
+            self.operations,
+            computer=self.computer,
+            security=self.authorization,
+            tool_lookup=self.registry.get,
+            # AttachmentService 由 create_app 稍后注册到 services；用 getter 延迟取。
+            attachments_getter=lambda: self._attachment_service(),
+        )
+        # R9-H3 §4：可信写入（审批通过后的真实执行器）提交成功后立即更新内部对象
+        # 身份；失败记录明确错误，不静默降级，也不影响已成功的真实文件操作。
+        self._install_trusted_write_identity_hook()
         for _tool in (
             FsReadTool(),
             FsWriteTool(),
@@ -306,6 +466,7 @@ class AppContext:
             FsListTool(),
             FsFindTool(),
             FsInfoTool(),
+            FsDeleteTool(),
             RunProgramTool(),
             RunCmdTool(),
             SysInfoTool(),
@@ -367,7 +528,9 @@ class AppContext:
         self.dev_workspaces = DevWorkspace(settings.data_dir / "dev-workspaces")
         # 工具执行器只建一份：开发测试、提交复测与注册后的真实执行走同一套
         # 超时 / 环境 / 输出上限（见 tools/sandbox.py）。
-        self.tool_sandbox = SandboxExecutor()
+        # R9 执行层约束（契约 §3.1）：执行器同时知道当前模式、统一授权网关与
+        # 受保护范围 —— read_only/restricted 的脚本约束在应用内真正生效。
+        self.tool_sandbox = self._make_tool_sandbox()
         # 项目级专用依赖环境（QIO 管理）：声明了第三方依赖的工具用它跑，
         # 没准备好就明确失败 —— 不静默回落到随包解释器。
         self.tool_envs = ToolEnvManager(Path(settings.data_dir) / "tool-envs")
@@ -626,6 +789,449 @@ class AppContext:
             counts["pending_approvals"] = 0
         return counts
 
+    # -- R9 授权 / 审批 v2 接线 --------------------------------------------
+
+    def _internal_data_paths(self) -> list[Path]:
+        """QIO 内部运行数据路径清单（契约 §4）：DB、内部配置、日志、凭据等。
+
+        工作区 / 归档 / 临时目录不在此列（它们是用户工作与可清理数据）。
+        """
+        paths: list[Path] = []
+        try:
+            paths.append(Path(self.settings.db_path))
+            paths.append(Path(self.settings.config_path))
+        except Exception:  # noqa: BLE001 - 路径字段缺失不阻塞
+            pass
+        try:
+            for row in self.conn.execute("PRAGMA database_list").fetchall():
+                file = str(row["file"] or "")
+                if file:
+                    paths.append(Path(file))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            data_dir = Path(self.settings.data_dir)
+            for name in ("logs", "credentials", "instances", "cache", "tmp"):
+                candidate = data_dir / name
+                if candidate.exists():
+                    paths.append(candidate)
+            for child in data_dir.iterdir():
+                if child.name in {"workspace", "archive"} or child.name.startswith("workspace"):
+                    continue
+                if child.is_file():
+                    paths.append(child)
+        except OSError:  # pragma: no cover - 数据目录不可读时按已收集路径
+            pass
+        return paths
+
+    def _internal_identity_keys(self) -> frozenset[str]:
+        """引擎读取的身份匹配键（R9-H4 §8：identity+birth，含仍可能存在的被替换旧对象）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return frozenset()
+        try:
+            tokens = getattr(store, "protected_tokens", None)
+            if callable(tokens):
+                return frozenset(tokens())
+            return frozenset(store.active_keys())
+        except Exception as exc:  # noqa: BLE001 - 读失败不能静默降级
+            self._record_identity_update_error("identity_keys", exc)
+            return frozenset()
+
+    def _backfill_identity_births(self) -> None:
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return
+        snapshot = getattr(store, "snapshot", None)
+        refresh = getattr(store, "refresh_path", None)
+        if not callable(snapshot) or not callable(refresh):
+            return
+        try:
+            rows = list(snapshot() or ())
+        except Exception as exc:  # noqa: BLE001 - 回填失败不阻塞启动，但记录事实
+            self._record_identity_update_error("birth_backfill_snapshot", exc)
+            return
+        for row in rows[:100]:
+            if not isinstance(row, dict) or not row.get("active"):
+                continue
+            if row.get("birth_key"):
+                continue
+            path = str(row.get("path") or "")
+            if not path:
+                continue
+            try:
+                if not Path(path).exists():
+                    continue
+                refresh(path, source="startup_birth_backfill")
+            except Exception as exc:  # noqa: BLE001 - 单个失败不降级其它登记
+                self._record_identity_update_error("birth_backfill", exc)
+
+    def _internal_identity_lookup(self, identity: object, birth_key: object = None) -> dict:
+        """身份+birth 三态查询（E 接口；失败按未知，不声称同一文件）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return {"state": "unknown", "reason": "身份登记不可用"}
+        lookup = getattr(store, "match_identity", None)
+        if not callable(lookup):
+            return {"state": "unknown", "reason": "身份登记不支持生命周期查询"}
+        try:
+            return dict(lookup(identity, birth_key) or {})
+        except Exception as exc:  # noqa: BLE001 - 查询失败按未知（路径/历史仍兜底）
+            self._record_identity_update_error("identity_lookup", exc)
+            return {"state": "unknown", "reason": type(exc).__name__ + ": " + str(exc)}
+
+    def _internal_identity_tokens(self) -> frozenset[str]:
+        """identity+birth token 集合（含 retired_replaced 中仍可能存在的旧对象）。"""
+        return self._internal_identity_keys()
+
+    def _internal_identity_known_paths(self) -> frozenset[str]:
+        """历史登记路径（身份读取失败时不静默降级为普通文件）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return frozenset()
+        try:
+            return frozenset(store.known_paths())
+        except Exception as exc:  # noqa: BLE001 - 读失败不能静默降级
+            self._record_identity_update_error("identity_known_paths", exc)
+            return frozenset()
+
+    # -- R9-H3 §4：可信写入提交后的身份自动更新 ----------------------------
+
+    def _install_trusted_write_identity_hook(self) -> None:
+        """把身份更新挂到真实可信写入入口（审批通过后的执行器）里。
+
+        不是模型/普通工具可调用的接口：这里包装的是 AppContext 自己的 operations
+        执行器；只有在真实执行**成功提交**后才按实际目标路径更新登记。普通工具直接
+        读取/声称自己的写入不经过这里，不能自报身份。
+        """
+        original = self.operations.execute
+
+        async def execute_with_identity_update(kind, payload, ctx):  # noqa: ANN001
+            result = await original(kind, payload, ctx)
+            try:
+                self._note_identity_after_trusted_commit(kind, payload, result)
+            except Exception as exc:  # noqa: BLE001 - 身份更新失败不能伪装成功
+                self._record_identity_update_error(
+                    "trusted_commit", exc, extra={"kind": str(kind)}
+                )
+            return result
+
+        self.operations.execute = execute_with_identity_update  # type: ignore[method-assign]
+
+    @staticmethod
+    def _trusted_commit_paths(kind: object, payload: dict) -> list[str]:
+        """从真实执行器 payload 取**实际变更对象**路径（有界，不扫描）。"""
+        kind_text = str(kind or "")
+        data = payload if isinstance(payload, dict) else {}
+        paths: list[str] = []
+        if kind_text in ("fs.write", "fs.patch"):
+            raw = str(data.get("path") or "").strip()
+            if raw:
+                paths.append(raw)
+        elif kind_text == "fs.delete":
+            raw_rows = data.get("paths")
+            if isinstance(raw_rows, list):
+                for item in raw_rows:
+                    if isinstance(item, dict):
+                        candidate = str(item.get("path") or "").strip()
+                    else:
+                        candidate = str(item or "").strip()
+                    if candidate:
+                        paths.append(candidate)
+            single = str(data.get("path") or "").strip()
+            if single:
+                paths.append(single)
+            for item in data.get("items") or []:
+                if isinstance(item, dict):
+                    candidate = str(item.get("path") or "").strip()
+                    if candidate:
+                        paths.append(candidate)
+        # 去重 + 有界（一次审批最多 50 个明确对象）。
+        seen: set[str] = set()
+        bounded: list[str] = []
+        for raw in paths:
+            if raw in seen:
+                continue
+            seen.add(raw)
+            bounded.append(raw)
+            if len(bounded) >= 50:
+                break
+        return bounded
+
+    def _note_identity_after_trusted_commit(
+        self, kind: object, payload: dict, result: object
+    ) -> None:
+        """真实执行成功提交后立即登记新对象身份（旧对象 retired / 新对象 active）。"""
+        if not getattr(result, "ok", False):
+            return
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return
+        committed = self._trusted_commit_paths(kind, payload)
+        if not committed:
+            return
+        # R9-H4 §8：可信删除与写入分开处理。删除只能退休已被证明不存在的对象；
+        # 不能复用“读新身份”的写入逻辑把删除误报成登记失败。
+        if str(kind or "") == "fs.delete":
+            completed = self._completed_delete_paths(payload, result)
+            if not completed:
+                return
+            try:
+                outcomes = store.note_committed_delete(
+                    completed, source="approved:fs.delete"
+                )
+            except Exception as exc:  # noqa: BLE001 - 身份更新失败不能伪装成功
+                self._record_identity_update_error("trusted_delete", exc)
+                return
+            failures = [item for item in outcomes if not item.get("ok")]
+            # 目录删除：只按已登记路径做前缀有界退休，不做全盘扫描。
+            try:
+                known = set(store.known_paths())
+            except Exception:  # noqa: BLE001
+                known = set()
+            descendants: list[str] = []
+            for root_path in completed:
+                prefix = str(root_path).rstrip("\\/") + os.sep
+                for known_path in known:
+                    if str(known_path).startswith(prefix) and str(known_path) != root_path:
+                        descendants.append(str(known_path))
+                        if len(descendants) >= 50:
+                            break
+                if len(descendants) >= 50:
+                    break
+            if descendants:
+                try:
+                    child_outcomes = store.note_committed_delete(
+                        descendants, source="approved:fs.delete_tree"
+                    )
+                    failures.extend(
+                        item for item in child_outcomes if not item.get("ok")
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self._record_identity_update_error("trusted_delete_tree", exc)
+            if failures:
+                messages = [
+                    str(item.get("reason") or item.get("code") or "identity_update_failed")
+                    for item in failures
+                ]
+                detail = getattr(result, "detail", None)
+                if isinstance(detail, dict):
+                    detail["internal_identity_error"] = messages
+                self._record_identity_update_error(
+                    "trusted_delete",
+                    RuntimeError("; ".join(messages)),
+                    extra={"kind": str(kind), "paths": len(failures)},
+                )
+            return
+        try:
+            protected = self._internal_data_paths()
+        except Exception:  # noqa: BLE001 - 读路径失败按空处理；store 历史路径仍可命中
+            protected = []
+        known: set[str] = set()
+        try:
+            known = set(store.known_paths())
+        except Exception:  # noqa: BLE001
+            known = set()
+        updates: list[dict] = []
+        failures: list[dict] = []
+        for raw in committed:
+            target = internal_data.normalize_path(raw)
+            if target is None:
+                continue
+            in_scope = internal_data.is_internal_data_path(target, protected)
+            if not in_scope and str(target) not in known:
+                # 普通用户文件：不登记、不扫描（与内部数据无关）。
+                continue
+            outcome = store.note_committed_path(target, source="approved:" + str(kind))
+            updates.append(outcome)
+            if not outcome.get("ok"):
+                failures.append(outcome)
+        if not updates:
+            return
+        detail = getattr(result, "detail", None)
+        if failures:
+            messages = [
+                str((item or {}).get("reason") or (item or {}).get("code") or "identity_update_failed")
+                for item in failures
+            ]
+            if isinstance(detail, dict):
+                detail["internal_identity_error"] = messages
+            self._record_identity_update_error(
+                "trusted_commit",
+                RuntimeError("; ".join(messages)),
+                extra={"kind": str(kind), "paths": len(failures)},
+            )
+
+    def _completed_delete_paths(self, payload: dict, result: object) -> list[str]:
+        """只取真实执行结果里已完成的删除项；部分失败不得误退休未完成对象。"""
+        detail = getattr(result, "detail", None)
+        completed: list[str] = []
+        if isinstance(detail, dict):
+            for item in detail.get("results") or ():
+                if isinstance(item, dict) and item.get("ok"):
+                    path = str(item.get("path") or "").strip()
+                    if path:
+                        completed.append(path)
+            if completed:
+                return completed[:50]
+        if getattr(result, "ok", False):
+            return self._trusted_commit_paths("fs.delete", payload)
+        return []
+
+    def _record_identity_update_error(
+        self, phase: str, exc: BaseException, *, extra: dict | None = None
+    ) -> None:
+        """身份更新失败：保留事实、明确记录；不静默降级、不把失败报成成功。"""
+        message = type(exc).__name__ + ": " + str(exc)
+        self.internal_data_identity_error = message
+        logging.getLogger(__name__).warning(
+            "内部数据身份自动更新失败（保留已有登记；路径判定仍兜底）"
+            " phase=%s extra=%s: %s",
+            phase,
+            extra or {},
+            message,
+        )
+
+    def note_trusted_internal_commit(
+        self, paths: object, *, source: str = "trusted_write"
+    ) -> dict:
+        """其它可信写入入口（如设置保存）提交成功后调用：只刷新明确变更对象。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return {
+                "ok": False,
+                "reason": self.internal_data_identity_error or "身份登记不可用",
+                "updates": [],
+            }
+        try:
+            raw_paths = paths if isinstance(paths, (list, tuple, set, frozenset)) else [paths]
+            # 只允许真实注册范围/历史登记中的路径：普通工具/普通用户文件不能借
+            # 这个入口自报为内部数据对象（不扩大保护范围、不登记无关文件）。
+            try:
+                protected = self._internal_data_paths()
+            except Exception:  # noqa: BLE001 - 路径读取失败按空；历史登记仍可命中
+                protected = []
+            try:
+                known = set(store.known_paths())
+            except Exception:  # noqa: BLE001
+                known = set()
+            scoped: list[str] = []
+            for raw in raw_paths:
+                target = internal_data.normalize_path(raw)
+                if target is None:
+                    continue
+                if internal_data.is_internal_data_path(target, protected) or (
+                    str(target) in known
+                ):
+                    scoped.append(str(target))
+            if not scoped:
+                return {"ok": True, "updates": [], "skipped": len(list(raw_paths))}
+            updates = store.note_committed_paths(scoped, source=source, limit=50)
+            failures = [item for item in updates if not item.get("ok")]
+            if failures:
+                self._record_identity_update_error(
+                    "trusted_commit",
+                    RuntimeError(
+                        "; ".join(
+                            str((item or {}).get("reason") or (item or {}).get("code") or "")
+                            for item in failures
+                        )
+                    ),
+                    extra={"source": source, "paths": len(failures)},
+                )
+            return {"ok": not failures, "updates": updates}
+        except Exception as exc:  # noqa: BLE001 - 记录明确错误，不影响已成功的业务提交
+            self._record_identity_update_error("trusted_commit", exc, extra={"source": source})
+            return {"ok": False, "reason": type(exc).__name__ + ": " + str(exc), "updates": []}
+
+    def refresh_internal_data_identities(self, path: object | None = None) -> dict:
+        """刷新内部数据身份登记（启动后新增/替换对象时调用；失败如实返回）。"""
+        store = getattr(self, "internal_data_identity", None)
+        if store is None:
+            return {
+                "ok": False,
+                "reason": self.internal_data_identity_error or "身份登记不可用",
+            }
+        try:
+            if path is not None:
+                key = store.refresh_path(path, source="manual_refresh")
+                return {"ok": True, "path": str(path), "identity_key": key}
+            counts = store.sync(self._internal_data_paths(), source="manual_refresh")
+            return {"ok": True, "counts": dict(counts or {})}
+        except Exception as exc:  # noqa: BLE001 - 刷新失败保留已有登记
+            logging.getLogger(__name__).warning(
+                "内部数据身份刷新失败（保留已有登记）", exc_info=True
+            )
+            return {"ok": False, "reason": type(exc).__name__ + ": " + str(exc)}
+
+    def _file_origin_for(self, path: Path) -> str | None:
+        """后端持久化文件来源查询（供授权引擎核实 qio_generated / 用户材料）。
+
+        模型/工具传入的 origin 字段不可信；只有这里查到的来源才参与判定。
+        存储由 AttachmentService 构造时建立并设为进程级默认（W3，迁移 55）。
+        """
+        try:
+            from agent.services.file_origins import origin_for_path
+
+            return origin_for_path(path)
+        except Exception:  # noqa: BLE001 - 模块未就绪/查不到按未记录（保守：需要确认）
+            return None
+
+    def _make_tool_sandbox(self):
+        """工具子进程执行器：注入模式/网关/受保护范围（契约 §3.1，R9 W2b 接线）。"""
+        from agent.tools.sandbox import SandboxExecutor
+
+        return SandboxExecutor(
+            mode_provider=lambda: self.authorization.mode().value,
+            security=self.authorization,
+            protected_scope_provider=lambda: [
+                self.computer.root(),
+                *self._internal_data_paths(),
+            ],
+        )
+
+    async def _execute_approved_tool(self, payload: dict, ctx) -> object:
+        """tool.invoke 执行器：用户批准后重新走工具管线真正执行（不重复弹审批）。"""
+        from agent.adapters.base import ToolCall
+        from agent.security.operations import ExecResult
+
+        name = str(payload.get("tool") or "")
+        arguments = dict(payload.get("arguments") or {})
+        call_id = str(payload.get("call_id") or ("approved_" + str(ctx.approval_id)))
+        if self.registry.get(name) is None:
+            return ExecResult(
+                ok=False,
+                state="failed",
+                summary="工具已不存在，本次未执行",
+                error="tool_not_found: " + name,
+            )
+        call = ToolCall(id=call_id, name=name, arguments=arguments)
+        result = await self.registry.execute(call, approval_id=ctx.approval_id)
+        ok = bool(getattr(result, "ok", False))
+        return ExecResult(
+            ok=ok,
+            state="completed" if ok else "failed",
+            summary=(getattr(result, "content", "") or getattr(result, "error", "") or "")[:300],
+            detail={
+                "tool": name,
+                "ok": ok,
+                "content": (getattr(result, "content", "") or "")[:2000],
+                "error": getattr(result, "error", None),
+            },
+        )
+
+    def _on_approval_executed(self, data: dict) -> None:
+        """审批执行结果通知：原 turn 若仍在，注入一条系统通知（不伪装成模型的话）。"""
+        active = self.turns.active
+        loop = getattr(active, "loop", None) if active is not None else None
+        push = getattr(loop, "push_notice", None)
+        if not callable(push):
+            return
+        label = str(data.get("label") or data.get("kind") or "操作")
+        summary = str(data.get("summary") or "").strip()
+        state_text = "已执行" if data.get("ok") else "未完成"
+        push("审批「" + label + "」" + state_text + ("：" + summary if summary else ""))
+
     # -- anchor 事件广播 --------------------------------------------------
 
     async def _on_tool_anchor_result(self, data: dict) -> None:
@@ -740,7 +1346,8 @@ class AppContext:
         from agent.tools.sandbox import SandboxExecutor
         from agent.tools.subagent_tool import SubagentTool
 
-        sandbox = SandboxExecutor()
+        # 恢复出来的自建工具同样受执行层约束（与 self.tool_sandbox 同一套注入）。
+        sandbox = self._make_tool_sandbox()
         for definition in self.tool_store.load_all():
             try:
                 # 能力指纹变化 → 不得沿用旧授权，需重新批准
@@ -932,6 +1539,11 @@ class AppContext:
         数据库连接的关闭由调用方决定（`create_app(..., close_db_on_shutdown=True)`
         时在 lifespan 的最后一步），保证不会出现「后台任务还在写，DB 已经关了」。
         """
+        # R9：先停审批后台执行器（取消在途执行任务；waiting 审批不取消，供重启恢复）。
+        try:
+            await self.approvals.aclose()
+        except Exception:  # noqa: BLE001 - 取消失败不能阻止其它收尾
+            logging.getLogger(__name__).warning("approvals aclose failed", exc_info=True)
         # A05：派生工作在 turn 收尾时调度。必须先关它，否则 turns.shutdown() 之后
         # 仍可能有提炼协程在写库。`close_background` 会等/取消并如实回报
         # 「句柄取消了」与「底层执行单元确认结束」的区别。
@@ -1329,6 +1941,98 @@ class AppContext:
         result["entries"] = list(resolved.get("entries") or [])
         result["work_dir"] = resolved.get("work_dir")
         return result
+
+    # -- 附件读取授权 / 互动材料事实（R9 §3.1 / §6.4 / §8）--------------------
+
+    async def authorize_attachment_reads_for_turn(
+        self,
+        turn_id: str | None,
+        *,
+        gateway: Any = None,
+        purpose: str = "本轮互动材料读取",
+    ) -> dict:
+        """本轮附件的 READ effect 统一授权（异步边界）；同步材料构造只查结果表。
+
+        * 只对 material_enabled 的附件产生读取授权（关掉 = 不主动纳入，不是 OS 权限）；
+        * 权限判定全部来自 W1 的网关（经 services/attachment_access 适配层）；
+        * 返回 {"allowed","denied","degraded"}；调用方把 allowed 放进
+          attachment_access.current_read_grants，同步材料层据此查表，不复制判定。
+        """
+        from agent.services import attachment_access
+
+        result: dict = {"allowed": [], "denied": [], "degraded": False}
+        service = self._attachment_service()
+        if service is None or not turn_id:
+            return result
+        gw = gateway if gateway is not None else getattr(self, "authorization", None)
+        try:
+            items = service.list(turn_id=str(turn_id), limit=100, check=False)
+        except Exception:  # noqa: BLE001 - 列附件失败 = 本轮没有可授权材料
+            return result
+        for att in items:
+            if not bool(getattr(att, "material_enabled", 1)):
+                continue
+            try:
+                resolved = service.resolve_source(att.id)
+            except Exception:  # noqa: BLE001 - 解析失败按不可读处理
+                result["denied"].append(
+                    {"attachment_id": att.id, "reason": "源文件解析失败", "verdict": "unavailable"}
+                )
+                continue
+            if resolved.path is None:
+                result["denied"].append(
+                    {
+                        "attachment_id": att.id,
+                        "reason": resolved.reason,
+                        "verdict": "unavailable",
+                    }
+                )
+                continue
+            identity = (
+                resolved.identity.key
+                if resolved.identity is not None
+                else getattr(att, "file_id", None)
+            )
+            decision = await attachment_access.authorize_read(
+                gw,
+                path=resolved.path,
+                identity=identity,
+                purpose=purpose,
+                tool="interactive.materials",
+                detail={"attachment_id": att.id, "turn_id": str(turn_id)},
+            )
+            if decision.get("verdict") == "allow":
+                result["allowed"].append(att.id)
+            else:
+                result["denied"].append(
+                    {
+                        "attachment_id": att.id,
+                        "reason": decision.get("reason"),
+                        "verdict": decision.get("verdict"),
+                    }
+                )
+                result["degraded"] = result["degraded"] or bool(decision.get("degraded"))
+        return result
+
+    def attachment_materials_facts(self, turn_id: str | None) -> list[dict]:
+        """本轮附件的 §6.4 引用事实 + 用户说明（互动上下文结构化块用）。"""
+        service = self._attachment_service()
+        if service is None or not turn_id:
+            return []
+        try:
+            items = service.list(turn_id=str(turn_id), limit=100, check=False)
+        except Exception:  # noqa: BLE001 - 附件事实是旁路
+            return []
+        facts: list[dict] = []
+        for att in items:
+            try:
+                ref = service.file_ref(att, check=False)
+            except Exception:  # noqa: BLE001 - 单条引用事实失败不影响其它材料
+                continue
+            ref["material_enabled"] = bool(getattr(att, "material_enabled", 1))
+            ref["user_note"] = str(getattr(att, "user_note", "") or "")
+            facts.append(ref)
+        return facts
 
     # -- execution narrative（模型怎么表达，见 core/narrative.py） -------------
 
@@ -1925,7 +2629,10 @@ class AppContext:
     async def _execute_notify_turn(self, ctx) -> None:
         """System-driven turn: main agent reacts to a finished subagent task."""
         from agent.core.loop import AgentLoop
+        from agent.security.context import approval_origin
 
+        # 系统通知轮不是用户指令：不产生 grant，审批来源如实标为 background。
+        origin_token = approval_origin.set("background")
         self._notify_turn = True
         try:
             self.approvals.set_context(turn_id=ctx.turn_id, session_id=self.session_id)
@@ -2082,6 +2789,7 @@ class AppContext:
             ctx.error = f"{type(exc).__name__}: {str(exc)[:180]}"
         finally:
             self._notify_turn = False
+            approval_origin.reset(origin_token)
             self.approvals.set_context(turn_id=None, session_id=self.session_id)
             self._schedule_subtask_notification_pump()
 
@@ -2237,12 +2945,1057 @@ class AppContext:
         return result or {"ok": False, "reason": "no_result"}
 
     async def _execute_turn(self, ctx) -> None:
-        """委派给 TurnOrchestrator（见 agent/services/turn_orchestrator.py）。"""
+        """委派给 TurnOrchestrator（见 agent/services/turn_orchestrator.py）。
+
+        R9：每轮用户指令建立独立的 InstructionContext（授权依据），轮末即关闭
+        全部 grant —— 绝不因为同话题/同目录/历史许可而延续到后续指令。
+        """
+        from agent.security.context import (
+            approval_origin_context,
+            instruction_context,
+            requirement_context,
+            requirement_limits_context,
+            requirement_resolution_context,
+        )
+
+        instruction = None
         try:
-            await self.turn_orchestrator.execute(ctx)
+            instruction = self.instructions.begin(
+                turn_id=str(getattr(ctx, "turn_id", "") or ""),
+                text=str(getattr(ctx, "message", "") or ""),
+                topic_id=getattr(ctx, "initial_topic", None),
+            )
+        except Exception:  # noqa: BLE001 - 指令提取失败不能挡住一轮（保守=没有 grant）
+            logging.getLogger(__name__).warning("instruction begin failed", exc_info=True)
+        # R9-H（契约 §3）：先由模型理解这条用户消息是新要求/补充/修正/撤回，再由
+        # 后端应用并形成**具体要求的版本绑定**；操作只使用这个绑定，不再取
+        # "最近一条 active 要求"。解析器不可用/失败时按新要求继续并标注 unavailable
+        # （不关键词兜底，也不静默扩大旧要求）。
+        requirement_binding = None
+        resolution_status = "unavailable"
+        resolution_limits: tuple[dict, ...] = ()
+        requirement_error: str | None = None
+        turn_id = str(getattr(ctx, "turn_id", "") or "")
+        if instruction is not None and self.requirements is not None:
+            (
+                requirement_binding,
+                resolution_status,
+                resolution_limits,
+                requirement_error,
+            ) = await self._prepare_requirement_binding(ctx, instruction)
+        # 要求解析是本轮开始前的一次模型调用；如果用户在这期间点了停止，本轮
+        # 可能还没进入编排器就结束。此时仍要留下「已取消」的轮绑定（不能因为
+        # 提前取消就没有任何终态记录）。
+        if getattr(ctx, "cancelled", False) and str(turn_id):
+            try:
+                if self.bindings.binding_for(turn_id) is None:
+                    topic = getattr(ctx, "initial_topic", None) or ""
+                    self.bindings.record_binding(turn_id, topic)
+                    self.bindings.mark_status(turn_id, "cancelled")
+            except Exception:  # noqa: BLE001 - 终态记录失败不挡住取消返回
+                logging.getLogger(__name__).warning(
+                    "取消轮绑定记录失败", exc_info=True
+                )
+        try:
+            if instruction is None:
+                await self.turn_orchestrator.execute(ctx)
+            else:
+                with instruction_context(instruction), approval_origin_context("user"), \
+                        requirement_context(requirement_binding), \
+                        requirement_resolution_context(resolution_status), \
+                        requirement_limits_context(resolution_limits):
+                    await self.turn_orchestrator.execute(ctx)
         finally:
+            if instruction is not None:
+                self.instructions.end(instruction)
             # 轮末尝试取一条子任务通知（不打断刚结束的交流；有排队用户轮时延后）。
             self._schedule_subtask_notification_pump()
+
+    # -- R9-H：要求解析 → 有效版本绑定 → 历史限制重新理解 -------------------
+
+    @staticmethod
+    def _turn_message_id(ctx: Any) -> str | None:
+        """本轮真实用户消息 id；拿不到时为 None，**不**用 turn_id/topic_id 冒充。
+
+        解析发生在编排器写用户消息之前：新轮通常还没有 message_id；恢复/续作轮
+        ctx.user_message_id 可能已由台账恢复，此时原样使用。两者互不串用。
+        """
+        value = getattr(ctx, "user_message_id", None)
+        if value is None:
+            value = getattr(ctx, "message_id", None)
+        return None if value is None or str(value) == "" else str(value)
+
+    @staticmethod
+    def _applied_limits(applied: Any) -> tuple[dict, ...]:
+        """取 AppliedResolution 的结构化限制（C 新增 structured_limits 时优先）。
+
+        R9-H11 §7：structured 状态下以**台账已保存行**为准——AppliedResolution 里的
+        快照可能形成于 program_binding 固化之前，本轮生效限制不能因此丢绑定
+        （否则执行层会把已绑定对象当成未绑定/未知）。
+        """
+        from agent.security import requirement_limits
+
+        requirement = getattr(applied, "requirement", None)
+        if requirement is not None and (
+            str(getattr(requirement, "structured_limits_state", "") or "")
+            == requirement_limits.STATE_STRUCTURED
+        ):
+            saved = getattr(requirement, "structured_limits", None)
+            if saved is not None:
+                return tuple(dict(item) for item in saved if isinstance(item, dict))
+        values = getattr(applied, "structured_limits", None)
+        if values is None:
+            values = getattr(applied, "limits", ())
+        return tuple(dict(item) for item in (values or ()) if isinstance(item, dict))
+
+    @staticmethod
+    def _applied_relation(applied: Any) -> str:
+        relation = getattr(applied, "relation", None)
+        return str(getattr(relation, "value", relation) or "").strip().lower()
+
+    def _binding_for_requirement(self, requirement: Any) -> Any:
+        if requirement is None or self.requirements is None:
+            return None
+        binder = getattr(self.requirements, "binding_for", None)
+        if not callable(binder):
+            return None
+        try:
+            return binder(str(getattr(requirement, "requirement_id", "")))
+        except Exception:  # noqa: BLE001 - 台账异常按"没有有效绑定"处理（需确认）
+            logging.getLogger(__name__).warning("读取要求绑定失败", exc_info=True)
+            return None
+
+    def _note_requirement_issue(
+        self,
+        ctx: Any,
+        *,
+        code: str,
+        error: Any,
+        message_id: str | None,
+        turn_id: str,
+        relation: str | None = None,
+        target_requirement_id: str | None = None,
+        model: str | None = None,
+        prompt_version: str | None = None,
+        audit: bool = True,
+    ) -> str:
+        """记录"解析成功但绑定失败"等明确错误（日志 + 轮上下文 + 台账审计）。"""
+        detail = str(code) + ": " + type(error).__name__ + ": " + str(error)[:300]
+        logging.getLogger(__name__).warning("要求解析/绑定异常（%s）：%s", code, detail)
+        notices = getattr(ctx, "notices", None)
+        if isinstance(notices, list):
+            notices.append("要求解析/绑定异常（" + str(code) + "），本轮相关操作需要确认")
+        if audit and self.requirements is not None:
+            recorder = getattr(self.requirements, "record_resolution_failure", None)
+            if callable(recorder):
+                try:
+                    recorder(
+                        error=detail,
+                        message_id=message_id or None,
+                        turn_id=turn_id or None,
+                        relation=relation,
+                        target_requirement_id=target_requirement_id,
+                        model=model,
+                        prompt_version=prompt_version,
+                    )
+                except Exception:  # noqa: BLE001 - 审计失败不挡住用户轮
+                    logging.getLogger(__name__).warning(
+                        "要求绑定失败审计写入失败", exc_info=True
+                    )
+        return detail
+
+    async def _prepare_requirement_binding(
+        self, ctx: Any, instruction: Any
+    ) -> tuple[Any, str, tuple[dict, ...], str | None]:
+        """把"这条用户消息"落实成真实要求 + 有效版本绑定（R9-H 契约 §3）。
+
+        返回 (binding, resolution_status, resolution_limits, error)。
+        * new/amend 必须用 AppliedResolution.requirement + binding_for 建立绑定；
+          建立失败 → 记录明确错误、status=unavailable，**不**回退登记另一条要求；
+        * withdraw 不绑定已撤回要求（binding=None，status=ok）；
+        * 解析失败 → 按新要求登记并标 unavailable（不扩大旧授权）；
+        * 取得绑定后按需重新理解历史结构化限制（legacy/unresolved）。
+        """
+        requirements = self.requirements
+        message_id = self._turn_message_id(ctx)
+        turn_id = str(getattr(ctx, "turn_id", "") or "")
+        topic_id = getattr(ctx, "initial_topic", None)
+        resolver = getattr(self, "requirement_resolver", None)
+        resolution = None
+        failure_class = "resolver_missing"
+        if resolver is None:
+            self._note_requirement_issue(
+                ctx,
+                code="resolution_unavailable",
+                error=RuntimeError("要求解析器未启用"),
+                message_id=message_id,
+                turn_id=turn_id,
+                model=None,
+                prompt_version=None,
+            )
+        else:
+            try:
+                candidates = requirements.candidates(limit=12)
+                resolution = await resolver.resolve(
+                    message=instruction.text,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    candidates=candidates,
+                )
+                if resolution is None:
+                    # 解析器返回 None / 输出未通过结构校验：同样属于“未成功解析”。
+                    failure_class = "invalid_output"
+                    self._note_requirement_issue(
+                        ctx,
+                        code="resolution_unavailable",
+                        error=RuntimeError("解析器输出非法或为空"),
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        model=getattr(resolver, "model", None),
+                        prompt_version=getattr(resolver, "prompt_version", None),
+                    )
+            except Exception as exc:  # noqa: BLE001 - 解析失败按新要求继续
+                failure_class = type(exc).__name__
+                self._note_requirement_issue(
+                    ctx,
+                    code="resolution_unavailable",
+                    error=exc,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    model=getattr(resolver, "model", None),
+                    prompt_version=getattr(resolver, "prompt_version", None),
+                )
+                resolution = None
+
+        if resolution is not None:
+            resolved_relation = str(
+                getattr(getattr(resolution, "relation", None), "value", getattr(resolution, "relation", ""))
+                or ""
+            ).lower()
+            try:
+                applied = requirements.apply_resolution(
+                    resolution,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    topic_id=topic_id,
+                    message=instruction.text,
+                )
+            except Exception as exc:  # noqa: BLE001 - apply 失败不得回退登记/静默成功
+                error = self._note_requirement_issue(
+                    ctx,
+                    code="apply_resolution_failed",
+                    error=exc,
+                    message_id=message_id,
+                    turn_id=turn_id,
+                    relation=resolved_relation or None,
+                    target_requirement_id=getattr(resolution, "target_requirement_id", None),
+                    model=getattr(resolver, "model", None),
+                    prompt_version=getattr(resolution, "prompt_version", None),
+                    audit=False,  # apply_resolution 已写 rejected 审计，不重复
+                )
+                return None, "unavailable", (), error
+
+            relation = self._applied_relation(applied)
+            requirement = getattr(applied, "requirement", None)
+            limits = self._applied_limits(applied)
+            if relation in ("new", "amend"):
+                problem: Exception | None = None
+                if requirement is None:
+                    problem = RuntimeError(
+                        "AppliedResolution.requirement 为空：无法按真实要求建立绑定"
+                    )
+                else:
+                    binding = self._binding_for_requirement(requirement)
+                    if binding is None:
+                        problem = RuntimeError(
+                            "new/amend 后无法取得有效版本绑定（要求 id="
+                            + str(getattr(requirement, "requirement_id", ""))
+                            + "）"
+                        )
+                    else:
+                        requirement_version = int(getattr(requirement, "version", -1) or -1)
+                        binding_version = int(getattr(binding, "version", -1) or -1)
+                        if requirement_version != binding_version:
+                            problem = RuntimeError(
+                                "要求版本与绑定版本不一致（要求=%r，绑定=%r）"
+                                % (requirement_version, binding_version)
+                            )
+                if problem is not None:
+                    error = self._note_requirement_issue(
+                        ctx,
+                        code="binding_unavailable",
+                        error=problem,
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        relation=relation,
+                        target_requirement_id=(
+                            None
+                            if requirement is None
+                            else str(getattr(requirement, "requirement_id", "")) or None
+                        ),
+                        prompt_version=getattr(resolution, "prompt_version", None),
+                    )
+                    return None, "unavailable", limits, error
+                recovered_limits = await self._ensure_legacy_structured_limits(
+                    ctx, binding, message_id=message_id, turn_id=turn_id
+                )
+                if recovered_limits is not None:
+                    limits = recovered_limits
+                return binding, "ok", limits, None
+
+            if relation == "withdraw":
+                if requirement is not None and str(getattr(requirement, "status", "")) == "active":
+                    problem = RuntimeError("withdraw 后要求仍为 active，台账状态异常")
+                    error = self._note_requirement_issue(
+                        ctx,
+                        code="withdraw_state_invalid",
+                        error=problem,
+                        message_id=message_id,
+                        turn_id=turn_id,
+                        relation=relation,
+                        target_requirement_id=str(
+                            getattr(requirement, "requirement_id", "") or ""
+                        )
+                        or None,
+                        prompt_version=getattr(resolution, "prompt_version", None),
+                    )
+                    return None, "unavailable", limits, error
+                # 撤回成功：不得绑定已撤回要求；本轮后续需要确认，不沿用旧授权。
+                return None, "ok", limits, None
+
+            problem = RuntimeError("未知的要求关系：" + str(relation))
+            error = self._note_requirement_issue(
+                ctx,
+                code="unknown_relation",
+                error=problem,
+                message_id=message_id,
+                turn_id=turn_id,
+                relation=relation or None,
+                prompt_version=getattr(resolution, "prompt_version", None),
+            )
+            return None, "unavailable", limits, error
+
+        # 解析失败/解析器缺失：按新要求登记并**显式**标 unresolved（R9-H2 §4）：
+        # 不能把"未解析成功"落成 structured/[]（那会被当成"已确认无限制"）。
+        try:
+            recorded = await self._record_unresolved_requirement(
+                text=instruction.text,
+                message_id=message_id,
+                turn_id=turn_id,
+                topic_id=topic_id,
+                failure_class=failure_class,
+            )
+        except Exception as exc:  # noqa: BLE001 - 台账失败不阻塞用户轮，但审查会退回审批
+            error = self._note_requirement_issue(
+                ctx,
+                code="fallback_record_failed",
+                error=exc,
+                message_id=message_id,
+                turn_id=turn_id,
+            )
+            return None, "unavailable", (), error
+        binding = self._binding_for_requirement(recorded)
+        if binding is None:
+            problem = RuntimeError(
+                "解析失败后登记的新要求无法取得有效绑定（要求 id="
+                + str(getattr(recorded, "requirement_id", ""))
+                + "）"
+            )
+            error = self._note_requirement_issue(
+                ctx,
+                code="fallback_binding_unavailable",
+                error=problem,
+                message_id=message_id,
+                turn_id=turn_id,
+                relation="new",
+                target_requirement_id=str(getattr(recorded, "requirement_id", "")) or None,
+            )
+            return None, "unavailable", (), error
+        # 解析失败的新消息本身不立即再送模型"重新理解成 structured"（R9-H2 §4.2）；
+        # 历史恢复只针对已有 legacy/unresolved 且用户继续操作的要求，由下一次
+        # 解析成功的 new/amend 路径触发 _ensure_legacy_structured_limits。
+        return binding, "unavailable", (), None
+
+    @staticmethod
+    async def _maybe_await(value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    @staticmethod
+    def _setter_parameter_names(setter: Any) -> set[str]:
+        try:
+            return set(inspect.signature(setter).parameters)
+        except (TypeError, ValueError):  # pragma: no cover - 内置/动态签名
+            return set()
+
+    async def _call_structured_setter(
+        self,
+        requirement_id: str,
+        limits: Sequence[dict],
+        *,
+        source: str,
+        state: str,
+        expected: dict | None = None,
+        attach_bindings: bool | None = None,
+    ) -> Any:
+        """调用台账 setter；A 分支的 expected_* 条件参数存在才传（兼容旧分支）。
+
+        R9-H13 §3.A1：``attach_bindings=False`` 表示“原样回写已有 known limits”，
+        不得对历史对象重新查找/补建绑定；仅当 setter 支持该参数时才传。
+        """
+        setter = getattr(self.requirements, "set_structured_limits", None)
+        if not callable(setter):
+            return None
+        kwargs: dict[str, Any] = {"source": str(source)[:300], "state": str(state)}
+        supported = self._setter_parameter_names(setter)
+        for key, value in dict(expected or {}).items():
+            if value is not None and key in supported:
+                kwargs[key] = value
+        if attach_bindings is not None and "attach_bindings" in supported:
+            kwargs["attach_bindings"] = bool(attach_bindings)
+        try:
+            written = setter(requirement_id, tuple(limits), **kwargs)
+        except TypeError:
+            # 旧分支没有条件写参数：退回最小参数（调用方仍会重读核对）。
+            written = setter(requirement_id, tuple(limits), source=str(source)[:300], state=str(state))
+        return await self._maybe_await(written)
+
+    async def _record_unresolved_requirement(
+        self,
+        *,
+        text: str,
+        message_id: str | None,
+        turn_id: str,
+        topic_id: str | None,
+        failure_class: str,
+    ) -> Any:
+        """解析失败时登记新要求：显式 unresolved，绝不当成 structured/[]。
+
+        A 分支的 record_user_message 支持 structured_state/structured_source；
+        未合入时退回真实台账已有的 set_structured_limits（仍保证持久化状态一致）。
+        """
+        from agent.security import requirement_limits
+
+        source = "resolution_unavailable:" + str(failure_class or "unknown")
+        base = dict(
+            text=text,
+            message_id=message_id,
+            turn_id=turn_id,
+            topic_id=topic_id,
+        )
+        recorded = None
+        try:
+            recorded = self.requirements.record_user_message(
+                **base,
+                structured_state=requirement_limits.STATE_UNRESOLVED,
+                structured_source=source,
+            )
+            recorded = await self._maybe_await(recorded)
+        except TypeError:
+            recorded = self.requirements.record_user_message(**base)
+            recorded = await self._maybe_await(recorded)
+        requirement_id = str(getattr(recorded, "requirement_id", "") or "")
+        if not requirement_id:
+            return recorded
+        current = None
+        try:
+            current = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001 - 读不到时直接用返回值判断
+            current = recorded
+        state = str(getattr(current, "structured_limits_state", "") or "")
+        if state == requirement_limits.STATE_UNRESOLVED:
+            return current or recorded
+        try:
+            written = await self._call_structured_setter(
+                requirement_id,
+                (),
+                source=source,
+                state=requirement_limits.STATE_UNRESOLVED,
+            )
+            if written is not None:
+                return written
+        except Exception:  # noqa: BLE001 - setter 不可用/失败：继续尝试兼容写
+            logging.getLogger(__name__).warning(
+                "解析失败后的 unresolved 状态写入失败", exc_info=True
+            )
+        # 最后的兼容兜底：直接更新台账状态（绝不留成 structured/[]）。
+        conn = getattr(self.requirements, "conn", None)
+        if conn is not None:
+            try:
+                from agent.storage.db import transaction
+
+                with transaction(conn):
+                    conn.execute(
+                        "UPDATE user_requirements SET structured_limits_state = ?,"
+                        " structured_limits_source = ? WHERE id = ?",
+                        (
+                            requirement_limits.STATE_UNRESOLVED,
+                            source[:300],
+                            requirement_id,
+                        ),
+                    )
+            except Exception:  # noqa: BLE001 - 持久化失败本轮仍需继续（但状态未确认）
+                logging.getLogger(__name__).warning(
+                    "解析失败后的 unresolved 状态兼容写入失败", exc_info=True
+                )
+        return current or recorded
+
+    @staticmethod
+    def _limit_prompt_version(resolver: Any, *, chain: bool) -> str:
+        names = (
+            ("limit_extraction_chain_prompt_version", "chain_limit_extraction_prompt_version")
+            if chain
+            else ("limit_extraction_prompt_version",)
+        )
+        for name in names + ("prompt_version",):
+            value = getattr(resolver, name, None)
+            if value:
+                return str(value)
+        return "r9h2-limit-extraction-chain-v1" if chain else "r9h-limit-extraction-v1"
+
+    @staticmethod
+    def _requirement_key_state(requirement: Any) -> dict:
+        return {
+            "requirement_id": str(getattr(requirement, "requirement_id", "") or ""),
+            "version": int(getattr(requirement, "version", 0) or 0),
+            "status": str(getattr(requirement, "status", "") or ""),
+            "parent_id": (
+                None
+                if getattr(requirement, "parent_id", None) is None
+                else str(getattr(requirement, "parent_id"))
+            ),
+        }
+
+    def _append_history_notice(self, ctx: Any, message: str) -> None:
+        notices = getattr(ctx, "notices", None)
+        if isinstance(notices, list):
+            notices.append(str(message))
+
+    async def _mark_limits_unresolved(
+        self,
+        ctx: Any,
+        requirement: Any,
+        *,
+        code: str,
+        version: int | None = None,
+        chain_digest: str | None = None,
+    ) -> None:
+        """恢复失败：保留已有 known limits，写 unresolved，不覆盖为“无限制”。"""
+        from agent.security import requirement_limits
+
+        known_raw = getattr(requirement, "structured_limits", None)
+        known = tuple(
+            dict(item) for item in (known_raw or ()) if isinstance(item, dict)
+        )
+        source = str(code)
+        if chain_digest:
+            source += ";chain=" + str(chain_digest)
+        if version is not None:
+            source += ";version=" + str(version)
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        try:
+            await self._call_structured_setter(
+                requirement_id,
+                known,
+                source=source,
+                state=requirement_limits.STATE_UNRESOLVED,
+                expected={
+                    "expected_version": version,
+                    "expected_status": "active",
+                    "expected_chain_digest": chain_digest,
+                },
+                # 只是把已有 known limits 标为未解决：不得重新查找/绑定历史对象。
+                attach_bindings=False,
+            )
+        except Exception:  # noqa: BLE001 - 失败保留原状态，不阻塞本轮
+            logging.getLogger(__name__).warning(
+                "历史要求限制 unresolved 状态写入失败", exc_info=True
+            )
+        self._append_history_notice(ctx, "历史用户限制暂时无法恢复，相关操作需要确认")
+
+    @staticmethod
+    def _recovery_context_matches(
+        expected: Any, fresh: Any, requirement: Any, *, requirement_id: str, version: int
+    ) -> bool:
+        """恢复返回后重新读：id/version/status/parent/chain_digest 任一变化即丢弃。"""
+        if fresh is None or requirement is None:
+            return False
+        if str(getattr(requirement, "status", "")) != "active":
+            return False
+        if str(getattr(requirement, "requirement_id", "")) != requirement_id:
+            return False
+        if int(getattr(requirement, "version", 0) or 0) != int(version):
+            return False
+        expected_parent = getattr(expected, "parent_id", None)
+        fresh_parent = getattr(fresh, "parent_id", None)
+        if str(expected_parent or "") != str(fresh_parent or ""):
+            return False
+        expected_digest = str(getattr(expected, "chain_digest", "") or "")
+        fresh_digest = str(getattr(fresh, "chain_digest", "") or "")
+        if expected_digest and fresh_digest and expected_digest != fresh_digest:
+            return False
+        if not bool(getattr(fresh, "complete", False)):
+            return False
+        return True
+
+    async def _recover_limits_from_chain(
+        self,
+        ctx: Any,
+        requirement: Any,
+        *,
+        recovery: Any,
+        extractor: Any,
+    ) -> tuple[dict, ...] | None:
+        """A 分支：完整祖先链 + extract_limits_from_context → 条件写回。"""
+        from agent.security import requirement_limits
+
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        version = int(getattr(requirement, "version", 1) or 1)
+        try:
+            context = await self._maybe_await(recovery(requirement_id))
+        except Exception as exc:  # noqa: BLE001 - 上下文读取失败按恢复失败
+            await self._mark_limits_unresolved(
+                ctx, requirement, code="recovery_context_failed:" + type(exc).__name__, version=version
+            )
+            return None
+        if context is None or not bool(getattr(context, "complete", False)):
+            reason = str(getattr(context, "reason", "") or "上下文不完整") if context else "上下文不存在"
+            logging.getLogger(__name__).warning(
+                "历史要求限制恢复上下文不完整：%s（%s）", requirement_id, reason[:200]
+            )
+            self._append_history_notice(ctx, "历史用户限制上下文不完整，相关操作需要确认")
+            return None
+        chain_digest = str(getattr(context, "chain_digest", "") or "")
+        prompt_version = self._limit_prompt_version(self.requirement_resolver, chain=True)
+        try:
+            limits = await self._maybe_await(
+                extractor(context, requirement_id=requirement_id, version=version)
+            )
+        except Exception as exc:  # noqa: BLE001 - 失败标 unresolved，保留 known
+            await self._mark_limits_unresolved(
+                ctx,
+                requirement,
+                code="extract_limits_failed:" + type(exc).__name__,
+                version=version,
+                chain_digest=chain_digest,
+            )
+            return None
+        # 恢复结果返回后重新读 requirement/context，发生变化就丢弃。
+        fresh_requirement = None
+        fresh_context = None
+        try:
+            fresh_requirement = self.requirements.by_id(requirement_id)
+            fresh_context = await self._maybe_await(recovery(requirement_id))
+        except Exception:  # noqa: BLE001 - 读不到就不写
+            fresh_requirement = None
+            fresh_context = None
+        if not self._recovery_context_matches(
+            context, fresh_context, fresh_requirement,
+            requirement_id=requirement_id, version=version,
+        ):
+            logging.getLogger(__name__).warning(
+                "历史要求限制恢复结果已过期（要求/版本/链已变化），丢弃不写：%s",
+                requirement_id,
+            )
+            self._append_history_notice(ctx, "历史用户限制恢复结果已过期，相关操作需要确认")
+            return None
+        source = prompt_version + ";chain=" + chain_digest + ";version=" + str(version)
+        try:
+            written = await self._call_structured_setter(
+                requirement_id,
+                tuple(dict(item) for item in (limits or ()) if isinstance(item, dict)),
+                source=source,
+                state=requirement_limits.STATE_STRUCTURED,
+                expected={
+                    "expected_version": version,
+                    "expected_status": "active",
+                    "expected_chain_digest": chain_digest,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 版本变化/写失败：保留 known，不覆盖
+            await self._mark_limits_unresolved(
+                ctx,
+                fresh_requirement or requirement,
+                code="set_structured_limits_failed:" + type(exc).__name__,
+                version=version,
+                chain_digest=chain_digest,
+            )
+            return None
+        reloaded = None
+        try:
+            reloaded = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001
+            reloaded = None
+        recovered = getattr(reloaded, "structured_limits", None) if reloaded is not None else None
+        if recovered is None:
+            # 写后读不到明确限制：不能声称成功恢复；保持 unresolved。
+            await self._mark_limits_unresolved(
+                ctx,
+                fresh_requirement or requirement,
+                code="structured_limits_reload_missing",
+                version=version,
+                chain_digest=chain_digest,
+            )
+            return None
+        return tuple(dict(item) for item in recovered if isinstance(item, dict))
+
+    async def _recover_limits_legacy(
+        self, ctx: Any, requirement: Any, *, resolver: Any
+    ) -> tuple[dict, ...] | None:
+        """兼容路径（A 未合入）：只喂当前要求原话，行为与 R9-H 相同。"""
+        from agent.security import requirement_limits
+
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        version = int(getattr(requirement, "version", 1) or 1)
+        extractor = getattr(resolver, "extract_limits", None) if resolver is not None else None
+        if not callable(extractor):
+            await self._mark_limits_unresolved(
+                ctx, requirement, code="extract_limits_unavailable:missing", version=version
+            )
+            return None
+        prompt_version = self._limit_prompt_version(resolver, chain=False)
+        try:
+            limits = await self._maybe_await(
+                extractor(
+                    str(getattr(requirement, "text", "") or ""),
+                    requirement_id=requirement_id,
+                    version=version,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - 失败标 unresolved，不当无限制
+            await self._mark_limits_unresolved(
+                ctx,
+                requirement,
+                code="extract_limits_failed:" + type(exc).__name__,
+                version=version,
+            )
+            return None
+        try:
+            written = await self._call_structured_setter(
+                requirement_id,
+                tuple(dict(item) for item in (limits or ()) if isinstance(item, dict)),
+                source=prompt_version,
+                state=requirement_limits.STATE_STRUCTURED,
+                expected={"expected_version": version, "expected_status": "active"},
+            )
+        except Exception as exc:  # noqa: BLE001 - 持久化失败保持原状态（不得当无限制）
+            logging.getLogger(__name__).warning(
+                "历史要求结构化限制持久化失败", exc_info=True
+            )
+            await self._mark_limits_unresolved(
+                ctx,
+                requirement,
+                code="set_structured_limits_failed:" + type(exc).__name__,
+                version=version,
+            )
+            return None
+        reloaded = None
+        try:
+            reloaded = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001
+            reloaded = None
+        recovered = getattr(reloaded, "structured_limits", None) if reloaded is not None else None
+        if recovered is None:
+            await self._mark_limits_unresolved(
+                ctx, requirement, code="structured_limits_reload_missing", version=version
+            )
+            return None
+        return tuple(dict(item) for item in recovered if isinstance(item, dict))
+
+    # -- R9-H11：structured-but-unbound 的专用绑定恢复 ------------------
+
+    @staticmethod
+    def _binding_recovery_snapshot(requirement: Any, context: Any) -> dict:
+        """恢复开始时的要求/链快照（写回前核对 id/version/status/chain_digest）。"""
+        return {
+            "requirement_id": str(getattr(requirement, "requirement_id", "") or ""),
+            "version": int(getattr(requirement, "version", 0) or 0),
+            "status": str(getattr(requirement, "status", "") or ""),
+            "parent_id": (
+                None
+                if getattr(requirement, "parent_id", None) is None
+                else str(getattr(requirement, "parent_id"))
+            ),
+            "text": str(getattr(requirement, "text", "") or ""),
+            "chain_digest": str(getattr(context, "chain_digest", "") or ""),
+        }
+
+    @staticmethod
+    def _binding_recovery_snapshot_matches(
+        expected: dict, requirement: Any, context: Any
+    ) -> bool:
+        """恢复结果返回后重新读：id/版本/状态/父链/原话/链摘要任一变化即丢弃。"""
+        if requirement is None or not isinstance(expected, dict):
+            return False
+        if str(getattr(requirement, "status", "")) != "active":
+            return False
+        if str(getattr(requirement, "requirement_id", "")) != str(
+            expected.get("requirement_id") or ""
+        ):
+            return False
+        if int(getattr(requirement, "version", 0) or 0) != int(
+            expected.get("version") or 0
+        ):
+            return False
+        if str(getattr(requirement, "parent_id", None) or "") != str(
+            expected.get("parent_id") or ""
+        ):
+            return False
+        if str(getattr(requirement, "text", "") or "") != str(
+            expected.get("text") or ""
+        ):
+            return False
+        expected_digest = str(expected.get("chain_digest") or "")
+        fresh_digest = str(getattr(context, "chain_digest", "") or "")
+        if expected_digest and (not fresh_digest or fresh_digest != expected_digest):
+            return False
+        return True
+
+    async def _recover_structured_binding_limits(
+        self, ctx: Any, requirement: Any
+    ) -> tuple[dict, ...] | None:
+        """R9-H12 §4：structured-but-unbound 的**专用绑定恢复**（保存候选优先）。
+
+        * 只理解和绑定限制：只用已保存限制 + **保存时记录的候选事实**，不生成普通
+          授权、不调用普通独立授权审查、不改权限模式；
+        * 无保存候选时**绝不**用当前 PATH 查找结果直接绑定（同名程序可能已换对象），
+          当前候选只作为审计事实返回/记录；
+        * 采纳对象必须后端核验（路径存在 + 身份可读 + path/identity 一致）；
+        * 写回前重新核对 requirement id/version/status/chain_digest，并重新核验所采纳
+          的候选事实仍有效；
+        * 恢复失败 / 等待期间要求被修改或撤回：一行都不写，原限制、known、候选与来源
+          保持原样（不会清空成"无限制"）。
+        """
+        from agent.security import requirement_limits
+
+        requirement_id = str(getattr(requirement, "requirement_id", "") or "")
+        version = int(getattr(requirement, "version", 0) or 0)
+        status = str(getattr(requirement, "status", "") or "")
+        raw_limits = getattr(requirement, "structured_limits", None)
+        if not requirement_id or version < 1 or not isinstance(raw_limits, (list, tuple)):
+            return None
+        known = tuple(dict(item) for item in raw_limits if isinstance(item, dict))
+        if not requirement_limits.needs_binding_recovery(known):
+            return None
+        context = None
+        recovery = getattr(self.requirements, "recovery_context", None)
+        if callable(recovery):
+            try:
+                context = await self._maybe_await(recovery(requirement_id))
+            except Exception:  # noqa: BLE001 - 链快照读不到：仍可用版本/状态条件写入
+                context = None
+        snapshot = self._binding_recovery_snapshot(requirement, context)
+        # 当前 PATH 只用于记录审计事实；恢复采纳只认保存候选（后端重新核验）。
+        current_candidates: tuple[dict, ...] = ()
+        try:
+            current_candidates = requirement_limits.current_binding_candidates(known)
+        except Exception:  # noqa: BLE001 - 审计事实采集失败不阻塞恢复
+            current_candidates = ()
+        try:
+            outcome = requirement_limits.recover_program_bindings(
+                known,
+                requirement_id=requirement_id,
+                version=version,
+                status=status,
+                now_candidates=current_candidates,
+            )
+        except Exception as exc:  # noqa: BLE001 - 恢复失败：保留原始记录
+            logger.warning(
+                "程序绑定专用恢复失败（%s）：%s", requirement_id, type(exc).__name__
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制中的程序对象暂时无法可靠绑定，相关操作需要确认"
+            )
+            return None
+        if not outcome.complete or not outcome.changed:
+            logger.warning(
+                "程序绑定专用恢复未完成（%s）：reason=%s 未解决=%s 审计候选=%s",
+                requirement_id,
+                outcome.reason or "no_adoption",
+                [
+                    {
+                        "value": item.get("value"),
+                        "reason": item.get("reason"),
+                        "failure": item.get("failure"),
+                        "saved": item.get("saved_candidates"),
+                    }
+                    for item in outcome.unresolved
+                ],
+                [
+                    {
+                        "name": item.get("name"),
+                        "path": item.get("path"),
+                        "failure": item.get("failure"),
+                    }
+                    for item in outcome.current_candidates
+                ],
+            )
+            missing_history = any(
+                str(item.get("reason") or "")
+                == requirement_limits.RECOVERY_REASON_HISTORICAL_IDENTITY_MISSING
+                for item in outcome.unresolved
+            )
+            if missing_history:
+                # R9-H13 §3.A2：历史依据不足不是“自动已验证”，需要用户澄清限制所指对象。
+                self._append_history_notice(
+                    ctx,
+                    "历史用户限制缺少保存时的对象身份依据，无法确认限制所指对象，"
+                    "需要澄清限制对应的对象",
+                )
+            else:
+                self._append_history_notice(
+                    ctx, "历史用户限制中的程序对象无法可靠绑定，相关操作需要确认"
+                )
+            return None
+        # 恢复期间重新读要求/链：被修改、撤回或链变化即丢弃结果，不写回旧结果。
+        fresh_requirement = None
+        fresh_context = None
+        try:
+            fresh_requirement = self.requirements.by_id(requirement_id)
+            if callable(recovery):
+                fresh_context = await self._maybe_await(recovery(requirement_id))
+        except Exception:  # noqa: BLE001 - 读不到就不写
+            fresh_requirement = None
+            fresh_context = None
+        if not self._binding_recovery_snapshot_matches(
+            snapshot, fresh_requirement, fresh_context
+        ):
+            logger.warning(
+                "程序绑定专用恢复结果已过期（要求/版本/链已变化），丢弃不写：%s",
+                requirement_id,
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制恢复结果已过期，相关操作需要确认"
+            )
+            return None
+        # 写回前重新核验所采纳的保存候选：path 未变、identity/birth 一致。
+        try:
+            invalid = requirement_limits.verify_recovered_bindings(outcome.limits)
+        except Exception as exc:  # noqa: BLE001 - 核验异常=不能确认，失败关闭
+            logger.warning(
+                "程序绑定专用恢复采纳对象复核失败（%s）：%s",
+                requirement_id,
+                type(exc).__name__,
+            )
+            invalid = ({"failure": type(exc).__name__},)
+        if invalid:
+            logger.warning(
+                "程序绑定专用恢复采纳对象已变化（%s）：%s",
+                requirement_id,
+                [str(item.get("failure")) for item in invalid],
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制恢复所采纳的程序对象已变化，相关操作需要确认"
+            )
+            return None
+        source = requirement_limits.build_binding_recovery_source(
+            requirement_text=snapshot["text"],
+            chain_digest=snapshot["chain_digest"] or None,
+            version=version,
+            sources=outcome.sources or ("saved_candidate_verified",),
+            origin=getattr(requirement, "structured_limits_source", "") or "",
+        )
+        try:
+            writer = getattr(self.requirements, "apply_binding_recovery", None)
+            if callable(writer):
+                written = writer(
+                    requirement_id,
+                    outcome.limits,
+                    source=source,
+                    expected_version=version,
+                    expected_status="active",
+                    expected_chain_digest=snapshot["chain_digest"] or None,
+                )
+                written = await self._maybe_await(written)
+            else:  # 兼容旧装配：条件写参数由 _call_structured_setter 探测
+                written = await self._call_structured_setter(
+                    requirement_id,
+                    outcome.limits,
+                    source=source,
+                    state=requirement_limits.STATE_STRUCTURED,
+                    expected={
+                        "expected_version": version,
+                        "expected_status": "active",
+                        "expected_chain_digest": snapshot["chain_digest"] or None,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 - 版本/链变化或写失败：保持原记录
+            logger.warning(
+                "程序绑定专用恢复写回失败（%s）：%s",
+                requirement_id,
+                type(exc).__name__,
+            )
+            self._append_history_notice(
+                ctx, "历史用户限制恢复写回失败，相关操作需要确认"
+            )
+            return None
+        reloaded = None
+        try:
+            reloaded = self.requirements.by_id(requirement_id)
+        except Exception:  # noqa: BLE001
+            reloaded = None
+        stored = (
+            getattr(reloaded, "structured_limits", None)
+            if reloaded is not None
+            else None
+        )
+        if stored is None or not requirement_limits.binding_recovery_complete(stored):
+            logger.warning("程序绑定专用恢复写入后读回不一致：%s", requirement_id)
+            self._append_history_notice(
+                ctx, "历史用户限制恢复结果无法确认，相关操作需要确认"
+            )
+            return None
+        return tuple(dict(item) for item in stored if isinstance(item, dict))
+
+    async def _ensure_legacy_structured_limits(
+        self,
+        ctx: Any,
+        binding: Any,
+        *,
+        message_id: str | None,
+        turn_id: str,
+    ) -> tuple[dict, ...] | None:
+        """恢复入口：legacy/unresolved 重新理解；structured-but-unbound 专用绑定。
+
+        * A 分支接口存在：RequirementLedger.recovery_context +
+          ModelRequirementResolver.extract_limits_from_context，走祖先链；
+        * 未合入：退回只喂当前原话的兼容路径（不阻塞、不把失败当无限制）；
+        * state=structured 且 program_name 无 program_binding（R9-H11 问题一）：
+          进入**专用绑定恢复**，只采纳保存候选（后端重新核验），无保存候选时保持
+          未解决而不是按当前 PATH 转移禁止对象；不是"无关"；
+        * 成功返回本轮应使用的结构化限制；失败返回 None（已有 known limits 保留）。
+        """
+        from agent.security import requirement_limits
+
+        requirement = None
+        try:
+            requirement = self.requirements.by_id(str(getattr(binding, "requirement_id", "")))
+        except Exception:  # noqa: BLE001 - 读不到就按无历史限制处理（引擎仍按 unresolved 把关）
+            logging.getLogger(__name__).warning("历史要求读取失败", exc_info=True)
+            return None
+        if requirement is None:
+            return None
+        state = str(getattr(requirement, "structured_limits_state", None) or "")
+        if state == requirement_limits.STATE_STRUCTURED:
+            return await self._recover_structured_binding_limits(ctx, requirement)
+        if state not in (
+            requirement_limits.STATE_LEGACY,
+            requirement_limits.STATE_UNRESOLVED,
+        ):
+            return None
+        resolver = getattr(self, "requirement_resolver", None)
+        recovery = getattr(self.requirements, "recovery_context", None)
+        chain_extractor = (
+            getattr(resolver, "extract_limits_from_context", None)
+            if resolver is not None
+            else None
+        )
+        if callable(recovery) and callable(chain_extractor):
+            return await self._recover_limits_from_chain(
+                ctx, requirement, recovery=recovery, extractor=chain_extractor
+            )
+        return await self._recover_limits_legacy(ctx, requirement, resolver=resolver)
 
     # -- fragment close: summary + entities + knowledge extraction --------
 

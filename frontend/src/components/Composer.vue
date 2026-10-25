@@ -571,8 +571,15 @@ async function track(item: AttachmentRef, capture: AttachmentOpCapture): Promise
 
 let stopDropWatch: (() => void) | null = null;
 
-/** 真实路径（拖放 / 原生选择器 / 粘贴）：登记后由后台复制或记引用。 */
-async function addPaths(paths: string[], entryCapture?: AttachmentOpCapture) {
+/**
+ * 真实路径（拖放 / 原生选择器 / 粘贴）：登记**源引用**（契约 §6.3：不复制、不移动、不改名）。
+ * sourceKind 标出来源（桌面选择 / 拖放），界面据此说清「引用本地源文件」。
+ */
+async function addPaths(
+  paths: string[],
+  entryCapture?: AttachmentOpCapture,
+  sourceKind: "desktop_path" | "dropped_path" = "desktop_path",
+) {
   if (!paths.length) return;
   // 归属：发起时刻冻结（调用方在点击/拖放入口捕获；缺省才用当前话题兜底）
   const capture = entryCapture ?? beginAttachmentOp({ kind: "prepare", topicId: currentTopicId() });
@@ -585,7 +592,7 @@ async function addPaths(paths: string[], entryCapture?: AttachmentOpCapture) {
       const path = paths[i];
       const replace = target && i === 0 ? target : null;
       try {
-        const created = await prepareAttachment(path, { topicId });
+        const created = await prepareAttachment(path, { topicId, sourceKind });
         // 新附件的身份 = 本次操作（显式重新添加：同时清理移除痕迹与 sent 标记）
         registerAttachmentIdentity(topicId, created.id, capture.opToken);
         if (replace) await trackAndReplace(created, replace, capture);
@@ -604,8 +611,15 @@ async function addPaths(paths: string[], entryCapture?: AttachmentOpCapture) {
   }
 }
 
-/** 浏览器回退：只有字节（没有真实路径）时走上传；绝不用 input[type=file] 的 fakepath。 */
-async function addFiles(files: FileList | File[], entryCapture?: AttachmentOpCapture) {
+/**
+ * 浏览器回退：只有字节（没有真实路径）时首次落盘为工作区材料源文件；
+ * 绝不用 input[type=file] 的 fakepath（sourceKind 用 browser_upload / clipboard_image 标注）。
+ */
+async function addFiles(
+  files: FileList | File[],
+  entryCapture?: AttachmentOpCapture,
+  sourceKind: "browser_upload" | "clipboard_image" = "browser_upload",
+) {
   const list = Array.from(files);
   if (!list.length) return;
   // 归属：优先用「打开文件对话框那一刻」捕获的发起身份（R4），否则用当前话题兜底
@@ -619,7 +633,7 @@ async function addFiles(files: FileList | File[], entryCapture?: AttachmentOpCap
       const file = list[i];
       const replace = target && i === 0 ? target : null;
       try {
-        const created = await uploadAttachment(file, { topicId });
+        const created = await uploadAttachment(file, { topicId, sourceKind });
         registerAttachmentIdentity(topicId, created.id, capture.opToken);
         if (replace) await trackAndReplace(created, replace, capture);
         else void track(created, capture);
@@ -1100,7 +1114,7 @@ onMounted(async () => {
   const stop = await onPathDrop(
     (paths) => {
       dragging.value = false;
-      void addPaths(paths);
+      void addPaths(paths, undefined, "dropped_path");
     },
     (state) => {
       dragging.value = state === "over";
@@ -1395,6 +1409,12 @@ async function stopTurn() {
       * data-qio-fit：气泡 / 输入行不得横向滚动（真正的修复在各层的 min-width:0 与换行）；
       * textarea 用共享滚动引擎的 hidden 策略：保留滚动与定位能力，但**不画**指示条、
         也不预留任何轨道空白 —— 空 / 短内容时连滚动范围都没有（见 autosize）。
+    -->
+    <!--
+      对话页 v2：旧的话题栏整行（话题名 / 续接提示 / 快捷键说明）已删除 —— 话题名移到
+      ChatColumn 的常驻话题栏，输入区只保留输入胶囊本身。
+      R9 的「权限模式常驻可见」也随之从这条行挪到 ChatColumn 的话题栏（见该组件的
+      <PermissionModeBadge />），不在这里恢复旧行。
     -->
     <div
       v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection || preparingVisible || preparingNotice"

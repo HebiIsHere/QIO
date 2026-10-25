@@ -1,0 +1,41 @@
+﻿
+STORED [{'path': 'D:\\qio-dev\\h12-p08l7taz\\p1-bin\\runner.exe', 'source': 'path_lookup', 'state': 'unresolved'}]
+P1 direct False 这条用户限制中的程序名称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止）
+P1 alt True None
+FSTORED [{'path': 'D:\\qio-dev\\h12-9akrb_ps\\p2-a\\runner.exe', 'source': 'path_lookup', 'state': 'unresolved'}]
+P2 stored {'kind': 'program_name', 'value': 'runner', 'binding_state': 'unresolved', 'binding_failure': 'identity_unava
+ilable', 'binding_candidates': [{'path': 'D:\\qio-dev\\h12-9akrb_ps\\p2-a\\runner.exe', 'source': 'path_lookup', 'state
+': 'unresolved'}]}
+P2 before_read_A True SECRET-A
+ 1
+FP3 hard True 1 SECRET-BODY
+
+F
+================================== FAILURES ===================================
+E   AssertionError: P1 未复现：硬链接 alternate 作为另一入口绕过了未绑定限制
+    assert True is False
+     +  where True = ToolResult(ok=True, content='(无输出)', error=None, category=None, recoverable=None, facts={'launch_b
+oundary': {'spec_dig.../外发）；受控入口只能保证「执行的是许可时的那个程序/内容」+ 事后审计']}}, protocol_version=None, status=None, code=None, data=No
+ne, model_payload=None).ok
+----------------------------- Captured log setup ------------------------------
+D:\qio-dev\qio-r9h12-main\backend\tests\test_zz_lead_h12_probe.py:99: AssertionError: P1 未复现：硬链接 alternate 作为另一入口绕过了未绑定
+限制
+E   AssertionError: P2 未复现：PATH 改到 B 后读取原候选 A 被允许（进入正文读取）
+    assert (True is False)
+     +  where True = ToolResult(ok=True, content='SECRET-A\n', error=None, category=None, recoverable=None, facts=None,
+ protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+----------------------------- Captured log setup ------------------------------
+D:\qio-dev\qio-r9h12-main\backend\tests\test_zz_lead_h12_probe.py:126: AssertionError: P2 未复现：PATH 改到 B 后读取原候选 A 被允许（进入
+正文读取）
+E   AssertionError: P3 未复现：限制路径身份不可读时硬链接读取未被阻止
+    assert (True is False)
+     +  where True = ToolResult(ok=True, content='SECRET-BODY\n', error=None, category=None, recoverable=None, facts=No
+ne, protocol_version=None, status=None, code=None, data=None, model_payload=None).ok
+----------------------------- Captured log setup ------------------------------
+D:\qio-dev\qio-r9h12-main\backend\tests\test_zz_lead_h12_probe.py:160: AssertionError: P3 未复现：限制路径身份不可读时硬链接读取未被阻止
+=========================== short test summary info ===========================
+FAILED tests/test_zz_lead_h12_probe.py::test_p1_unbound_hardlink_alternate_starts
+FAILED tests/test_zz_lead_h12_probe.py::test_p2_recovery_transfers_to_current_lookup
+FAILED tests/test_zz_lead_h12_probe.py::test_p3_path_identity_unreadable_reads_hardlink
+
+

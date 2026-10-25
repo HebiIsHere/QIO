@@ -1,0 +1,77 @@
+F.F.......                                                               [100%]
+================================== FAILURES ===================================
+_____ test_b1_unbound_local_program_limit_allows_plain_file_in_all_modes ______
+
+ctx = <agent.services.app.AppContext object at 0x000001FB756C4350>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4389/test_b1_unbound_local_program_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FB756B1690>
+
+    async def test_b1_unbound_local_program_limit_allows_plain_file_in_all_modes(
+        ctx, tmp_path, monkeypatch
+    ):
+        """B1 核心（红）：未绑定局部程序读取限制下，普通 report.txt 三种模式可读。
+    
+        H13 范围规则：限制对象 kind=program_name + 无有效绑定 + 无任何保存候选 +
+        本次 operation=read + 候选是具体文件路径 → 该限制是“程序”概念，本次是普通
+        文件读取，按当前模式继续。依据来自保存事实（未绑定/无候选）与对象事实
+        （文件路径）；当前环境对限制名称的解析只作候选事实写入 facts，不单独用来
+        证明无关（解析到同一对象时仍是 UNBOUND）。
+        """
+        local_program, report = _b1_setup(ctx, tmp_path, monkeypatch)
+        requirement, binding, saved = _save_limits(
+            ctx,
+            text="禁止读取局部程序 localtool",
+            operations=["read"],
+            objects=[{"kind": "program_name", "value": "localtool"}],
+            tag="b1-plain",
+        )
+        saved_item = [obj for obj in saved[0]["objects"] if obj.get("kind") == "program_name"][0]
+        assert saved_item.get("binding_state") == "unresolved", saved
+        assert not saved_item.get("program_binding"), saved
+        assert not saved_item.get("binding_candidates"), saved
+    
+        assessment = _b1_assessment(ctx, binding, requirement, report)
+>       assert assessment.conflict is False, assessment.as_dict()
+E       AssertionError: {'conflict': True, 'reason': '这条用户限制中的程序名称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取局部程序 localtool）',...e': 'unknown', 'basis': 'binding_missing_lookup_unresolved', 'operation': 'read', 'object_kind': 'program_name', ...}]}
+E       assert True is False
+E        +  where True = LimitAssessment(decisions=(ObjectDecision(state=<ObjectState.UNKNOWN: 'unknown'>, basis='binding_missing_lookup_unreso...称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取局部程序 localtool）', decision_code='object_state_unconfirmed').conflict
+
+tests\test_r9h13_b_object_state.py:295: AssertionError
+----------------------------- Captured log setup ------------------------------
+_____ test_b1_unbound_program_limit_keeps_non_read_operations_fail_closed _____
+
+ctx = <agent.services.app.AppContext object at 0x000001FB7F51C610>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4389/test_b1_unbound_program_limit_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001FB756EC710>
+
+    async def test_b1_unbound_program_limit_keeps_non_read_operations_fail_closed(
+        ctx, tmp_path, monkeypatch
+    ):
+        """B1 残留边界：范围规则只适用于 read；写/执行等仍失败关闭。
+    
+        同一条限制同时声明 read+write，路径候选的普通读取按新范围规则继续，
+        但对同一路径的写操作仍是无对象事实可证明无关的 UNKNOWN（失败关闭）。
+        """
+        local_program, report = _b1_setup(ctx, tmp_path, monkeypatch)
+        _requirement, binding, _saved = _save_limits(
+            ctx,
+            text="禁止读取和改写局部程序 localtool",
+            operations=["read", "write"],
+            objects=[{"kind": "program_name", "value": "localtool"}],
+            tag="b1-nonread",
+        )
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        write_tool = FsWriteTool(computer=ctx.computer, security=ctx.authorization)
+        with requirement_context(binding):
+            read_result = await _read(ctx, report)
+            write_result = await write_tool.run(path=str(report), content="改写正文")
+>       assert _read_allowed(read_result), read_result
+E       AssertionError: ToolResult(ok=False, content='', error='这条用户限制中的程序名称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取和改写局部程序...l': None}], 'detail': '保存时没有形成对象绑定，当前也无法澄清程序名称对应的对象：不能静默放行'}], 'denial_code': 'permission_denied'}, model_payload=None)
+E       assert False
+E        +  where False = _read_allowed(ToolResult(ok=False, content='', error='这条用户限制中的程序名称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取和改写局部程序...l': None}], 'detail': '保存时没有形成对象绑定，当前也无法澄清程序名称对应的对象：不能静默放行'}], 'denial_code': 'permission_denied'}, model_payload=None))
+
+tests\test_r9h13_b_object_state.py:385: AssertionError
+----------------------------- Captured log setup ------------------------------
+=========================== short test summary info ===========================
+FAILED tests/test_r9h13_b_object_state.py::test_b1_unbound_local_program_limit_allows_plain_file_in_all_modes
+FAILED tests/test_r9h13_b_object_state.py::test_b1_unbound_program_limit_keeps_non_read_operations_fail_closed

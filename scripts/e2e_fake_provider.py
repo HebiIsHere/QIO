@@ -69,6 +69,41 @@ def key_fingerprint(value: str | None) -> dict[str, Any]:
     }
 
 
+#: 用户要求解析（R9-G）在每轮用户消息开始时会有一次“非工具”模型调用；假厂商
+#: 必须识别它并自动返回合法 JSON，否则会消耗脚本 FIFO、打乱后续工具编排。
+REQUIREMENT_RESOLUTION_MARKERS = ("用户要求解析器", "r9g-req-resolution")
+
+
+def is_requirement_resolution_request(body: dict[str, Any]) -> bool:
+    for message in body.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and any(
+            marker in content for marker in REQUIREMENT_RESOLUTION_MARKERS
+        ):
+            return True
+        if isinstance(content, list):
+            blob = json.dumps(content, ensure_ascii=False, default=str)
+            if any(marker in blob for marker in REQUIREMENT_RESOLUTION_MARKERS):
+                return True
+    return False
+
+
+def requirement_resolution_response() -> str:
+    """假厂商对要求解析调用的固定合法输出（新要求，无修正/限制）。"""
+    return json.dumps(
+        {
+            "relation": "new",
+            "target_requirement_id": None,
+            "corrections": [],
+            "limits": [],
+            "reason": "假厂商：把这条消息当作新要求",
+        },
+        ensure_ascii=False,
+    )
+
+
 class Script:
     """FIFO 回复脚本；repeat 让同一步可以重复若干次。"""
 
@@ -194,6 +229,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/v1/chat/completions":
             entry = self._record("POST", body)
+            if is_requirement_resolution_request(body):
+                # 自动回答要求解析，不占用编排脚本；install e2e 的工具流程保持不变。
+                entry["step"] = {"kind": "requirement_resolution_auto"}
+                model = str(body.get("model") or "fake-model")
+                self._json(
+                    completion_body({"text": requirement_resolution_response()}, model)
+                )
+                return
             step = self.server.script.next()
             entry["step"] = {k: v for k, v in step.items() if k != "text"}
             if step.get("delay_ms"):

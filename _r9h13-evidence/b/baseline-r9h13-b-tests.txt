@@ -1,0 +1,197 @@
+F.F.FF.F..                                                               [100%]
+================================== FAILURES ===================================
+_____ test_b1_unbound_local_program_limit_allows_plain_file_in_all_modes ______
+
+ctx = <agent.services.app.AppContext object at 0x00000162A6AE1910>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4323/test_b1_unbound_local_program_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000162A5A5D790>
+
+    async def test_b1_unbound_local_program_limit_allows_plain_file_in_all_modes(
+        ctx, tmp_path, monkeypatch
+    ):
+        """B1 核心（红）：未绑定局部程序读取限制下，普通 report.txt 三种模式可读。
+    
+        H13 范围规则：限制对象 kind=program_name + 无有效绑定 + 无任何保存候选 +
+        本次 operation=read + 候选是具体文件路径 → 该限制是“程序”概念，本次是普通
+        文件读取，按当前模式继续。依据来自保存事实（未绑定/无候选）与对象事实
+        （文件路径）；当前环境对限制名称的解析只作候选事实写入 facts，不单独用来
+        证明无关（解析到同一对象时仍是 UNBOUND）。
+        """
+        local_program, report = _b1_setup(ctx, tmp_path, monkeypatch)
+        requirement, binding, saved = _save_limits(
+            ctx,
+            text="禁止读取局部程序 localtool",
+            operations=["read"],
+            objects=[{"kind": "program_name", "value": "localtool"}],
+            tag="b1-plain",
+        )
+        saved_item = [obj for obj in saved[0]["objects"] if obj.get("kind") == "program_name"][0]
+        assert saved_item.get("binding_state") == "unresolved", saved
+        assert not saved_item.get("program_binding"), saved
+        assert not saved_item.get("binding_candidates"), saved
+    
+        assessment = _b1_assessment(ctx, binding, requirement, report)
+>       assert assessment.conflict is False, assessment.as_dict()
+E       AssertionError: {'conflict': True, 'reason': '这条用户限制中的程序名称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取局部程序 localtool）',...e': 'unknown', 'basis': 'binding_missing_lookup_unresolved', 'operation': 'read', 'object_kind': 'program_name', ...}]}
+E       assert True is False
+E        +  where True = LimitAssessment(decisions=(ObjectDecision(state=<ObjectState.UNKNOWN: 'unknown'>, basis='binding_missing_lookup_unreso...称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取局部程序 localtool）', decision_code='object_state_unconfirmed').conflict
+
+tests\test_r9h13_b_object_state.py:279: AssertionError
+----------------------------- Captured log setup ------------------------------
+_____ test_b1_unbound_program_limit_keeps_non_read_operations_fail_closed _____
+
+ctx = <agent.services.app.AppContext object at 0x00000162C5A3D590>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4323/test_b1_unbound_program_limit_0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000162A5A94AD0>
+
+    async def test_b1_unbound_program_limit_keeps_non_read_operations_fail_closed(
+        ctx, tmp_path, monkeypatch
+    ):
+        """B1 残留边界：范围规则只适用于 read；写/执行等仍失败关闭。
+    
+        同一条限制同时声明 read+write，路径候选的普通读取按新范围规则继续，
+        但对同一路径的写操作仍是无对象事实可证明无关的 UNKNOWN（失败关闭）。
+        """
+        local_program, report = _b1_setup(ctx, tmp_path, monkeypatch)
+        _requirement, binding, _saved = _save_limits(
+            ctx,
+            text="禁止读取和改写局部程序 localtool",
+            operations=["read", "write"],
+            objects=[{"kind": "program_name", "value": "localtool"}],
+            tag="b1-nonread",
+        )
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        write_tool = FsWriteTool(computer=ctx.computer, security=ctx.authorization)
+        with requirement_context(binding):
+            read_result = await _read(ctx, report)
+            write_result = await write_tool.run(path=str(report), content="改写正文")
+>       assert _read_allowed(read_result), read_result
+E       AssertionError: ToolResult(ok=False, content='', error='这条用户限制中的程序名称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取和改写局部程序...l': None}], 'detail': '保存时没有形成对象绑定，当前也无法澄清程序名称对应的对象：不能静默放行'}], 'denial_code': 'permission_denied'}, model_payload=None)
+E       assert False
+E        +  where False = _read_allowed(ToolResult(ok=False, content='', error='这条用户限制中的程序名称无法可靠对应到本次操作对象（事实不足，不能确认无关）；本次没有执行，请先恢复/澄清对象或缩小范围。（用户限制：禁止读取和改写局部程序...l': None}], 'detail': '保存时没有形成对象绑定，当前也无法澄清程序名称对应的对象：不能静默放行'}], 'denial_code': 'permission_denied'}, model_payload=None))
+
+tests\test_r9h13_b_object_state.py:369: AssertionError
+----------------------------- Captured log setup ------------------------------
+_________ test_b2_deleted_limit_target_does_not_block_unrelated_file __________
+
+ctx = <agent.services.app.AppContext object at 0x00000162C5D2CC10>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4323/test_b2_deleted_limit_target_d0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000162A6AE06D0>
+
+    async def test_b2_deleted_limit_target_does_not_block_unrelated_file(
+        ctx, tmp_path, monkeypatch
+    ):
+        """B2 核心（红）：禁止读取 A；B 原本可读；A 删除后 B 仍可读（按模式正常处理）。"""
+        workspace = _workspace(ctx)
+        a = _text_file(workspace, "secret-a.txt", "A 正文\n")
+        b = _text_file(workspace, "report-b.txt", "B 正文\n")
+        facts = _b2_saved_path_facts(a)
+        requirement, binding, _saved = _save_limits(
+            ctx,
+            text="禁止读取 A",
+            operations=["read"],
+            objects=[{"kind": "path", "value": str(a)}],
+            tag="b2-deleted",
+        )
+        _b2_augment(monkeypatch, requirement.requirement_id, str(a), facts)
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        with requirement_context(binding):
+            before = await _read(ctx, b)
+        assert _read_allowed(before) and before.content == "B 正文\n", before
+        a.unlink()
+        assert not a.exists()
+        with requirement_context(binding):
+            after = await _read(ctx, b)
+>       assert _read_allowed(after), after
+E       AssertionError: ToolResult(ok=False, content='', error='无法可靠判断这次操作对象是否属于用户明确限制的范围（事实不足）；本次没有执行，请先澄清对象或缩小范围。（用户限制：禁止读取 A）', category='p...], 'detail': '限制路径当前不存在：删除/替换后的旧对象可能仍以别名路径存在，不能仅凭路径文本不同判无关'}], 'denial_code': 'permission_denied'}, model_payload=None)
+E       assert False
+E        +  where False = _read_allowed(ToolResult(ok=False, content='', error='无法可靠判断这次操作对象是否属于用户明确限制的范围（事实不足）；本次没有执行，请先澄清对象或缩小范围。（用户限制：禁止读取 A）', category='p...], 'detail': '限制路径当前不存在：删除/替换后的旧对象可能仍以别名路径存在，不能仅凭路径文本不同判无关'}], 'denial_code': 'permission_denied'}, model_payload=None))
+
+tests\test_r9h13_b_object_state.py:453: AssertionError
+----------------------------- Captured log setup ------------------------------
+___________ test_b2_deleted_target_old_hardlink_alias_still_blocked ___________
+
+ctx = <agent.services.app.AppContext object at 0x00000162A5A712D0>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4323/test_b2_deleted_target_old_har0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000162C58BB350>
+
+    async def test_b2_deleted_target_old_hardlink_alias_still_blocked(
+        ctx, tmp_path, monkeypatch
+    ):
+        """B2 相邻保护（红）：A 路径删除后，旧对象的真实硬链接别名仍按保存身份命中。"""
+        workspace = _workspace(ctx)
+        a = _text_file(workspace, "secret-a2.txt", "A2 正文\n")
+        alias = workspace / "alias-a2.txt"
+        os.link(a, alias)
+        assert os.path.samefile(a, alias), "测试前提：必须是真实硬链接（同一对象）"
+        facts = _b2_saved_path_facts(a)
+        requirement, binding, _saved = _save_limits(
+            ctx,
+            text="禁止读取 A2",
+            operations=["read"],
+            objects=[{"kind": "path", "value": str(a)}],
+            tag="b2-alias",
+        )
+        _b2_augment(monkeypatch, requirement.requirement_id, str(a), facts)
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        a.unlink()
+        with requirement_context(binding):
+            result = await _read(ctx, alias)
+        _assert_denied(result)
+>       assert "path_hardlink_same_object" in _bases(result), _bases(result)
+E       AssertionError: ['path_limit_target_unreadable', 'path_limit_target_unreadable']
+E       assert 'path_hardlink_same_object' in ['path_limit_target_unreadable', 'path_limit_target_unreadable']
+E        +  where ['path_limit_target_unreadable', 'path_limit_target_unreadable'] = _bases(ToolResult(ok=False, content='', error='无法可靠判断这次操作对象是否属于用户明确限制的范围（事实不足）；本次没有执行，请先澄清对象或缩小范围。（用户限制：禁止读取 A2）', category='...], 'detail': '限制路径当前不存在：删除/替换后的旧对象可能仍以别名路径存在，不能仅凭路径文本不同判无关'}], 'denial_code': 'permission_denied'}, model_payload=None))
+
+tests\test_r9h13_b_object_state.py:481: AssertionError
+----------------------------- Captured log setup ------------------------------
+_____ test_b3_same_name_entry_resolving_to_independent_program_continues ______
+
+ctx = <agent.services.app.AppContext object at 0x00000162C6209A10>
+tmp_path = WindowsPath('C:/Users/zxy/AppData/Local/Temp/pytest-of-zxy/pytest-4323/test_b3_same_name_entry_resolv0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000162A0DFD310>
+
+    async def test_b3_same_name_entry_resolving_to_independent_program_continues(
+        ctx, tmp_path, monkeypatch
+    ):
+        """B3 核心（红）：禁止绑定到 A，PATH 指向独立程序 B；同名入口 runner 应继续。
+    
+        B 绝对路径执行一直允许（相邻正常放行）；同名入口解析到 B（identity 可读且
+        与绑定不同、入口路径≠绑定路径）→ 可靠不同对象，按当前模式继续并真实启动。
+        """
+        runner_a, runner_b = _b3_programs(tmp_path)
+        _b3_path(monkeypatch, runner_a.parent)
+        requirement, binding, saved = _save_limits(
+            ctx,
+            text="禁止运行 runner",
+            operations=["execute"],
+            objects=[{"kind": "program_name", "value": "runner"}],
+            tag="b3-entry",
+        )
+        bound = saved[0]["objects"][0].get("program_binding")
+        assert bound and str(bound.get("path")) == str(runner_a.resolve()), saved
+        # PATH 改为只含 B 的目录：同名入口 runner 现在解析到独立程序 B。
+        _b3_path(monkeypatch, runner_b.parent)
+        ctx.settings_store.set("computer.permission_mode", "unrestricted")
+        marker = _workspace(ctx) / "b3-entry-marker.txt"
+        launches = _install_launch_counter(monkeypatch)
+        with requirement_context(binding):
+            by_path = await _run(ctx, str(runner_b), cwd=_workspace(ctx), marker=marker)
+        assert by_path.ok is True, by_path
+        assert marker.exists(), "B 绝对路径必须真实启动（相邻正常放行）"
+        marker.unlink()
+        with requirement_context(binding):
+            by_name = await _run(ctx, "runner", cwd=_workspace(ctx), marker=marker)
+>       assert by_name.ok is True, by_name
+E       AssertionError: ToolResult(ok=False, content='', error='这条用户限制绑定的程序对象已失效（原路径对象已被替换/删除，或编号被复用为另一个生命周期对象）；原禁止仍有效，本次没有执行，需先恢复/澄清绑定。（用户限制：...ail': '限制中的程序名称与本次调用入口相同，但当前解析到的对象与保存绑定不一致：绑定已失效，需先恢复/澄清绑定'}], 'denial_code': 'permission_denied'}, model_payload=None)
+E       assert False is True
+E        +  where False = ToolResult(ok=False, content='', error='这条用户限制绑定的程序对象已失效（原路径对象已被替换/删除，或编号被复用为另一个生命周期对象）；原禁止仍有效，本次没有执行，需先恢复/澄清绑定。（用户限制：...ail': '限制中的程序名称与本次调用入口相同，但当前解析到的对象与保存绑定不一致：绑定已失效，需先恢复/澄清绑定'}], 'denial_code': 'permission_denied'}, model_payload=None).ok
+
+tests\test_r9h13_b_object_state.py:559: AssertionError
+----------------------------- Captured log setup ------------------------------
+=========================== short test summary info ===========================
+FAILED tests/test_r9h13_b_object_state.py::test_b1_unbound_local_program_limit_allows_plain_file_in_all_modes
+FAILED tests/test_r9h13_b_object_state.py::test_b1_unbound_program_limit_keeps_non_read_operations_fail_closed
+FAILED tests/test_r9h13_b_object_state.py::test_b2_deleted_limit_target_does_not_block_unrelated_file
+FAILED tests/test_r9h13_b_object_state.py::test_b2_deleted_target_old_hardlink_alias_still_blocked
+FAILED tests/test_r9h13_b_object_state.py::test_b3_same_name_entry_resolving_to_independent_program_continues

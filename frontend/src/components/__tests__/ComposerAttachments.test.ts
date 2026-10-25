@@ -158,7 +158,11 @@ describe("Composer 附件入口", () => {
     const { w } = await mountComposer();
     await pastePath(w, "D:\\tmp\\报告.docx");
 
-    expect(mocks.prepareAttachment).toHaveBeenCalledWith("D:\\tmp\\报告.docx", { topicId: null });
+    // R9 源引用：真实路径登记必须声明来源（桌面选择），后端据此不复制内容、只记引用。
+    expect(mocks.prepareAttachment).toHaveBeenCalledWith("D:\\tmp\\报告.docx", {
+      topicId: null,
+      sourceKind: "desktop_path",
+    });
     expect(mocks.uploadAttachment).not.toHaveBeenCalled();
     expect(w.find(".chip").text()).toContain("报告.docx");
     w.unmount();

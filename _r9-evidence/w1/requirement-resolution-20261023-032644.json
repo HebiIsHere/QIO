@@ -1,0 +1,414 @@
+{
+  "kind": "r9g-requirement-resolution-eval",
+  "generated_at": "2026-10-23T03:26:44.624007+00:00",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "adapter": "NativeAdapter",
+  "prompt_version": "r9g-req-resolution-v1",
+  "timeout_seconds": 45.0,
+  "db_source": "配置的主模型数据库（复制到临时目录运行，原库未修改）",
+  "summary": {
+    "model": "deepseek/deepseek-v4.1-flash",
+    "prompt_version": "r9g-req-resolution-v1",
+    "total": 12,
+    "exact_match": 9,
+    "exact_match_rate": 0.75,
+    "relation_match": 10,
+    "target_match": 9,
+    "misresolutions": 0,
+    "misresolution_ids": [],
+    "wrong_target_ids": [
+      "withdraw_one_of_two"
+    ],
+    "unavailable": 2,
+    "unavailable_ids": [
+      "amend_after_correction_chain",
+      "amend_restrict_scope"
+    ],
+    "apply_failures": 0,
+    "apply_failure_ids": [],
+    "expectation_source": "人工标注（resolution_cases.py），不是模型自评"
+  },
+  "cases": [
+    {
+      "case_id": "new_task_simple",
+      "split": "tune",
+      "expected_relation": "new",
+      "expected_target_label": null,
+      "expected_target_requirement_id": null,
+      "message": "帮我把 D:/work/季度报告.md 整理成一份纪要。",
+      "existing": [],
+      "risk": "",
+      "note": "没有任何已有要求：明确是新任务。",
+      "latency_ms": 14655,
+      "actual_relation": "new",
+      "actual_target_requirement_id": null,
+      "actual_target_version": null,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [],
+      "limits": [],
+      "reason": "候选要求为空，消息提出的是新的独立任务（将 D:/work/季度报告.md 整理成纪要），无可指向的已有要求，也未表达限制性约束。",
+      "applied_requirement_version": 1
+    },
+    {
+      "case_id": "amend_same_goal",
+      "split": "tune",
+      "expected_relation": "amend",
+      "expected_target_label": "report",
+      "expected_target_requirement_id": "req_aab6f86e2ab24266",
+      "message": "补充一下：纪要只保留三段结论，别加新内容。",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/季度报告.md 整理成一份纪要。"
+        }
+      ],
+      "risk": "",
+      "note": "同一目标的补充/范围调整。",
+      "latency_ms": 2905,
+      "actual_relation": "amend",
+      "actual_target_requirement_id": "req_aab6f86e2ab24266",
+      "actual_target_version": 1,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [
+        "纪要只保留三段结论",
+        "别加新内容"
+      ],
+      "limits": [],
+      "reason": "新消息用“补充一下”延续同一目标，即把 D:/work/季度报告.md 整理成纪要，补充纪要内容范围限定；目标明确指向唯一候选要求。",
+      "applied_requirement_version": 2
+    },
+    {
+      "case_id": "withdraw_same_goal",
+      "split": "tune",
+      "expected_relation": "withdraw",
+      "expected_target_label": "report",
+      "expected_target_requirement_id": "req_282416e3065047d3",
+      "message": "算了，刚才整理报告的任务取消吧。",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/季度报告.md 整理成一份纪要。"
+        }
+      ],
+      "risk": "",
+      "note": "明确撤回刚才的任务。",
+      "latency_ms": 2217,
+      "actual_relation": "withdraw",
+      "actual_target_requirement_id": "req_282416e3065047d3",
+      "actual_target_version": 1,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [
+        "算了，刚才整理报告的任务取消吧。"
+      ],
+      "limits": [],
+      "reason": "用户明确表示取消“整理报告”的任务，与候选中将季度报告整理成纪要的要求指向同一目标，属于撤回该要求。",
+      "applied_requirement_version": 1
+    },
+    {
+      "case_id": "new_different_topic",
+      "split": "tune",
+      "expected_relation": "new",
+      "expected_target_label": null,
+      "expected_target_requirement_id": null,
+      "message": "接下来做另一件事：整理一下我的下载目录。",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/季度报告.md 整理成一份纪要。"
+        }
+      ],
+      "risk": "",
+      "note": "换了目标/对象，是新任务而不是补充。",
+      "latency_ms": 2438,
+      "actual_relation": "new",
+      "actual_target_requirement_id": null,
+      "actual_target_version": null,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [],
+      "limits": [],
+      "reason": "用户明确说“接下来做另一件事”，对象是“我的下载目录”，与候选要求（把 D:/work/季度报告.md 整理成纪要）不是同一目标，只是都用了“整理”字样，属于新任务。",
+      "applied_requirement_version": 1
+    },
+    {
+      "case_id": "amend_after_correction_chain",
+      "split": "tune",
+      "expected_relation": "amend",
+      "expected_target_label": "report",
+      "expected_target_requirement_id": "req_a5f0235e49f143c4",
+      "message": "标题就改成「本周进展」吧，其他保持刚才说的。",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/周报.md 整理一下。",
+          "corrections": [
+            "只改标题，正文不要动。"
+          ]
+        }
+      ],
+      "risk": "",
+      "note": "已有修正链（version=2）：这次是继续修正同一目标。",
+      "latency_ms": 5155,
+      "actual_relation": "unavailable",
+      "actual_target_requirement_id": null,
+      "relation_match": false,
+      "target_match": false,
+      "applied": false,
+      "apply_error": null,
+      "error": "要求解析的 limits.objects.kind 非法：document_section",
+      "corrections": [],
+      "limits": [],
+      "reason": ""
+    },
+    {
+      "case_id": "new_capability_question",
+      "split": "tune",
+      "expected_relation": "new",
+      "expected_target_label": null,
+      "expected_target_requirement_id": null,
+      "message": "QIO 能整理 PDF 文件吗？",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/季度报告.md 整理成一份纪要。"
+        }
+      ],
+      "risk": "能力询问只是在问能做什么，不应被视为对已有任务的 amend/withdraw。",
+      "note": "能力询问不是对已有要求的补充。",
+      "latency_ms": 2188,
+      "actual_relation": "new",
+      "actual_target_requirement_id": null,
+      "actual_target_version": null,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [],
+      "limits": [],
+      "reason": "用户在询问 QIO 是否具备整理 PDF 文件的能力，属于新的询问性目标，不指向已有候选要求（把 D:/work/季度报告.md 整理成纪要），因此判为 new，无明确限制。",
+      "applied_requirement_version": 1
+    },
+    {
+      "case_id": "amend_restrict_scope",
+      "split": "holdout",
+      "expected_relation": "amend",
+      "expected_target_label": "project",
+      "expected_target_requirement_id": "req_0de06788ddc34e1d",
+      "message": "只跑项目里的单元测试，别改代码。",
+      "existing": [
+        {
+          "label": "project",
+          "text": "修复 D:/proj 项目里的问题。"
+        }
+      ],
+      "risk": "",
+      "note": "同一修复任务的范围收紧（只测试、不改代码）。",
+      "latency_ms": 3546,
+      "actual_relation": "unavailable",
+      "actual_target_requirement_id": null,
+      "relation_match": false,
+      "target_match": false,
+      "applied": false,
+      "apply_error": null,
+      "error": "要求解析的 limits 引用了候选/后端可解析对象之外的标识：D:/proj",
+      "corrections": [],
+      "limits": [],
+      "reason": ""
+    },
+    {
+      "case_id": "amend_add_second_object",
+      "split": "holdout",
+      "expected_relation": "amend",
+      "expected_target_label": "report_a",
+      "expected_target_requirement_id": "req_8ee3c665338a4043",
+      "message": "把 D:/work/报告B.md 也一起改一下。",
+      "existing": [
+        {
+          "label": "report_a",
+          "text": "把 D:/work/报告A.md 改一下。"
+        }
+      ],
+      "risk": "",
+      "note": "同一要求的对象扩展（also/一起），不是全新任务。",
+      "latency_ms": 3765,
+      "actual_relation": "amend",
+      "actual_target_requirement_id": "req_8ee3c665338a4043",
+      "actual_target_version": 1,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [
+        "用户补充：要求把 D:/work/报告B.md 也一起修改。这条补充是在原要求“修改 D:/work/报告A.md”的基础上增加一个修改对象，把报告B.md 也纳入同一修改任务。"
+      ],
+      "limits": [],
+      "reason": "消息中的“也一起改一下”明确指向已有的“把 D:/work/报告A.md 改一下”这一要求，因此是在原有修改任务上补充第二个修改对象，relation 判定为 amend。",
+      "applied_requirement_version": 2
+    },
+    {
+      "case_id": "withdraw_one_of_two",
+      "split": "holdout",
+      "expected_relation": "withdraw",
+      "expected_target_label": "downloads",
+      "expected_target_requirement_id": "req_3b045de14e7b482c",
+      "message": "第二个任务不用做了，取消掉。",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/季度报告.md 整理成一份纪要。"
+        },
+        {
+          "label": "downloads",
+          "text": "整理一下 D:/Downloads 目录。"
+        }
+      ],
+      "risk": "候选有多条时不能撤错目标；后端校验 target id + version。",
+      "note": "明确撤回第二个任务。",
+      "latency_ms": 3358,
+      "actual_relation": "withdraw",
+      "actual_target_requirement_id": "req_d78276fbc5014d8f",
+      "actual_target_version": 1,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": false,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [
+        "第二个任务不用做了，取消掉"
+      ],
+      "limits": [],
+      "reason": "用户明确说“第二个任务不用做了，取消掉”，按候选列表顺序第二条即 req_d78276fbc5014d8f（把 D:/work/季度报告.md 整理成纪要），指向该 active 要求 v1，属于撤回，不是新目标。",
+      "applied_requirement_version": 1
+    },
+    {
+      "case_id": "withdraw_without_target",
+      "split": "holdout",
+      "expected_relation": "new",
+      "expected_target_label": null,
+      "expected_target_requirement_id": null,
+      "message": "刚才那个先取消吧。",
+      "existing": [],
+      "risk": "没有候选时必须按新要求记录，不能凭空编造 target。",
+      "note": "无候选可撤回 → 预期 new（后端不会关键词兜底猜测）。",
+      "latency_ms": 2014,
+      "actual_relation": "new",
+      "actual_target_requirement_id": null,
+      "actual_target_version": null,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [],
+      "limits": [],
+      "reason": "用户说“刚才那个先取消吧”，但候选要求列表为空，无法确定要撤回哪条已有要求，因此按新要求记录，不猜测目标。",
+      "applied_requirement_version": 1
+    },
+    {
+      "case_id": "new_after_unrelated_chat",
+      "split": "holdout",
+      "expected_relation": "new",
+      "expected_target_label": null,
+      "expected_target_requirement_id": null,
+      "message": "顺便问下，明天的天气怎么样？",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/季度报告.md 整理成一份纪要。"
+        }
+      ],
+      "risk": "",
+      "note": "无关新话题，不是对已有任务的 amend。",
+      "latency_ms": 1936,
+      "actual_relation": "new",
+      "actual_target_requirement_id": null,
+      "actual_target_version": null,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [],
+      "limits": [],
+      "reason": "新消息询问明天天气，与候选要求“把 D:/work/季度报告.md 整理成一份纪要”不是同一目标，也非补充或撤回，属于新要求。",
+      "applied_requirement_version": 1
+    },
+    {
+      "case_id": "amend_explicit_same_goal_paraphrase",
+      "split": "holdout",
+      "expected_relation": "amend",
+      "expected_target_label": "report",
+      "expected_target_requirement_id": "req_967ed73d64da4d22",
+      "message": "还是那份报告：把结论放到最前面，其余照旧。",
+      "existing": [
+        {
+          "label": "report",
+          "text": "把 D:/work/季度报告.md 整理成一份纪要。",
+          "corrections": [
+            "只改标题，正文不要动。"
+          ]
+        }
+      ],
+      "risk": "",
+      "note": "换了措辞但语义指向同一要求（明确延续）。",
+      "latency_ms": 8500,
+      "actual_relation": "amend",
+      "actual_target_requirement_id": "req_967ed73d64da4d22",
+      "actual_target_version": 2,
+      "model": "deepseek/deepseek-v4.1-flash",
+      "prompt_version": "r9g-req-resolution-v1",
+      "relation_match": true,
+      "target_match": true,
+      "applied": true,
+      "apply_error": null,
+      "error": null,
+      "corrections": [
+        "还是那份报告：把结论放到最前面，其余照旧。"
+      ],
+      "limits": [],
+      "reason": "用户明确指向同一份报告，要求调整修改方式：将结论前置、其余保持原样，属于对已有要求的补充修正。",
+      "applied_requirement_version": 3
+    }
+  ],
+  "limitations": [
+    "案例是合成数据，覆盖典型 new/amend/withdraw 语义，但不等于全部真实表达。",
+    "预期结果来自人工标注，不是模型自评。",
+    "解析失败按新要求继续（后端不关键词兜底）；证据中的 unavailable 即失败事实。",
+    "一次运行只代表当前模型与当前提示词版本；模型或提示词变化需重跑。"
+  ]
+}

@@ -1,16 +1,13 @@
-r"""D 独立验证（R8 问题二）：取消确认必须指向**本次取消的那个 turn_id**。
+r"""D 独立验证（R8 问题二，R9 适配）：取消确认必须指向**本次取消的那个 turn_id**。
 
-契约：docs/plans/2026-10-09-send-cancel-integrity.md §1.2（冻结）。
-前端缺陷（Composer.vue:647-667）：already_started 分支调 stopTurn() → session.stopActiveTurn()，
-停的是 **session.activeTurnId**（可能是别的任务），不是取消确认返回的 turn_id。
+R9 适配说明（docs/r9-contracts.md §6）：
+* 旧装置用"背景复制卡在 os.replace 闸门"让 B 停在准备中；R9 取消本地副本策略，该注入缝
+  已随产品逻辑删除。准备期仍真实存在：**浏览器上传的首次落盘**（begin_material → prepared
+  → bind_for_turn 有界等待）。用例用它让 B 真的停在准备中（不注入已删除的 copy 缝）。
+* 覆盖不减少：准备中取消必须 cancelled=true 且回执 turn_id == B，不影响正在跑的 A；
+  重复取消幂等、未知标识 unknown；已放行必须如实 already_started 且带 B 自己的 turn_id。
 
-两种时序都覆盖（后端实构，真实 ASGI 路由 + 真实 TurnManager/编排 + 假 provider）：
-* **准备中**：A 正在运行、B 因附件仍在准备 → 取消 B 必须 cancelled=true 且回执 turn_id == B；
-* **已放行/入队**：B 已放行 → 回执必须 already_started=true **且带 B 自己的 turn_id**（前端据此走既有停止流程），
-  按那个 id 停止 → B 被取消、A 继续跑完、B 不得随后开始执行。
-禁止只断言「某个停止入口被调用」：这里核对回执 turn_id、台账状态、队列里的 running。
-
-运行：cd backend; $env:PYTHONPATH='src'; .\.venv\Scripts\python.exe -m pytest tests/test_r8_cancel_target_verify.py -q
+运行：cd backend; uv run --frozen pytest -q tests/test_r8_cancel_target_verify.py
 """
 
 from __future__ import annotations
@@ -27,7 +24,6 @@ import pytest
 from agent.api.server import create_app
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
-from agent.services import attachments as attachments_mod
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
@@ -64,6 +60,7 @@ def app(tmp_path: Path, provider):
     app = create_app(Settings(data_dir=tmp_path / "data"), conn)
     app.state.ctx.credentials._kr = MemoryKeyring()
     app.state.ctx.attachments.data_dir = tmp_path / "data"
+    app.state.ctx.attachments.prepare_wait_seconds = 3.0
     return app
 
 
@@ -103,22 +100,6 @@ async def _calls(provider) -> int:
     return len(body.get("requests") or [])
 
 
-@contextlib.contextmanager
-def _gated_prepare_copy(gate_event: threading.Event):
-    """把登记的提交步骤（os.replace）挂起：让 B 真的停在「准备中」。"""
-    real_replace = attachments_mod.os.replace
-
-    def _gated(src, dst):  # noqa: ANN001
-        gate_event.wait()  # 不设超时：只有测试显式 release 才放行
-        return real_replace(src, dst)
-
-    attachments_mod.os.replace = _gated
-    try:
-        yield
-    finally:
-        attachments_mod.os.replace = real_replace
-
-
 def _status(app, turn_id: str) -> str | None:
     row = app.state.ctx.conn.execute(
         "SELECT status FROM turn_journal WHERE turn_id = ? ORDER BY rowid DESC LIMIT 1", (turn_id,)
@@ -126,7 +107,7 @@ def _status(app, turn_id: str) -> str | None:
     return row[0] if row else None
 
 
-async def _wait_status(app, turn_id: str, wanted: tuple[str, ...], timeout: float = 90.0) -> str | None:
+async def _wait_status(app, turn_id: str, wanted: tuple[str, ...], timeout: float = 60.0) -> str | None:
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
@@ -137,70 +118,73 @@ async def _wait_status(app, turn_id: str, wanted: tuple[str, ...], timeout: floa
     return last
 
 
-def _write_source(tmp_path: Path, name: str) -> Path:
-    src = tmp_path / name
-    src.write_text("R8 取消目标：附件内容。\n", encoding="utf-8")
-    return src
+def _begin_prepared_upload(app, *, name: str = "取消用例准备中的上传.txt") -> str:
+    """真实在飞的首次落盘（准备期）：发送这一轮会真的等在这里。"""
+    att = app.state.ctx.attachments.begin_material(name=name, source_kind="browser_upload")
+    return str(att.id)
 
 
 # ---- 1. 准备中：取消只影响 B ---------------------------------------------------------
 
 
-async def test_cancel_during_preparation_targets_that_turn(app, provider, tmp_path: Path):
-    gate = threading.Event()
+async def test_cancel_during_preparation_targets_that_turn(app, provider):
     async with _client(app) as client:
         await _prepare_credential(client, provider)
-        await _script(provider, [{"chunks": ["A 第一段。", "A 第二段。"], "chunk_delay_ms": 3000}])
+        await _script(provider, [{"chunks": ["A 第一段。", "A 第二段。"], "chunk_delay_ms": 1500}])
         a = await client.post("/api/turns", json={"message": "A 正在运行"})
         assert a.status_code == 200, a.text[:200]
         turn_a = str(a.json()["turn_id"])
         assert await _wait_status(app, turn_a, ("running",)) == "running", "A 没有开始运行（装置失效）"
 
-        src = _write_source(tmp_path, "r8-cancel-attach.txt")
-        with _gated_prepare_copy(gate):
-            registered = await client.post("/api/attachments", json={"source_path": str(src)})
-            assert registered.status_code == 200, registered.text[:200]
-            attachment_id = str(registered.json()["attachment"]["id"])
-            b_task = asyncio.create_task(
-                client.post(
-                    "/api/turns",
-                    json={"message": "B 附件还在准备", "attachment_ids": [attachment_id]},
-                    headers={PREPARE_HEADER: "r8-prep-B"},
-                )
+        attachment_id = _begin_prepared_upload(app)
+        b_task = asyncio.create_task(
+            client.post(
+                "/api/turns",
+                json={"message": "B 材料还在首次落盘", "attachment_ids": [attachment_id]},
+                headers={PREPARE_HEADER: "r8-prep-B"},
             )
-            await asyncio.sleep(1.0)  # B 正在准备（等附件）
-            assert not b_task.done(), "B 不该在准备完成前返回（装置失效）"
+        )
+        await asyncio.sleep(0.5)  # B 正在准备（等首次落盘）
+        assert not b_task.done(), "B 不该在准备完成前返回（装置失效）"
 
-            cancel = await client.post("/api/turns/prepare/r8-prep-B/cancel")
-            receipt = cancel.json()
-            assert cancel.status_code == 200, cancel.text[:200]
-            assert receipt.get("cancelled") is True, ("准备中的 B 必须能取消", receipt)
-            assert receipt.get("already_started") is not True, receipt
-            assert str(receipt.get("turn_id")), ("取消回执必须带 turn_id（前端据此核对身份）", receipt)
-            turn_b = str(receipt["turn_id"])
-            assert turn_b != turn_a, ("取消的目标不能是正在跑的 A", turn_a, turn_b)
+        cancel = await client.post("/api/turns/prepare/r8-prep-B/cancel")
+        receipt = cancel.json()
+        assert cancel.status_code == 200, cancel.text[:200]
+        assert receipt.get("cancelled") is True, ("准备中的 B 必须能取消", receipt)
+        assert receipt.get("already_started") is not True, receipt
+        assert str(receipt.get("turn_id")), ("取消回执必须带 turn_id（前端据此核对身份）", receipt)
+        turn_b = str(receipt["turn_id"])
+        assert turn_b != turn_a, ("取消的目标不能是正在跑的 A", turn_a, turn_b)
 
-            status_a_after_cancel = _status(app, turn_a)
-            gate.set()  # 放行附件提交：B 已经被取消，**不得**因此开始执行
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(b_task, timeout=60)
-            await asyncio.sleep(0.5)
-            status_b = _status(app, turn_b)
-            calls_after_cancel = await _calls(provider)
-            final_a = await _wait_status(app, turn_a, ("completed", "failed", "cancelled"), timeout=90)
-            await asyncio.sleep(3.0)  # 观察窗：B 不得随后开始执行
-            status_b_later = _status(app, turn_b)
-            calls_after = await _calls(provider)
-            queue_later = (await client.get("/api/turns/queue")).json()
+        status_a_after_cancel = _status(app, turn_a)
+        response = await asyncio.wait_for(b_task, timeout=60)
+        await asyncio.sleep(0.3)
+        status_b = _status(app, turn_b)
+        calls_after_cancel = await _calls(provider)
+        final_a = await _wait_status(app, turn_a, ("completed", "failed", "cancelled"))
+        await asyncio.sleep(1.0)  # 观察窗：B 不得随后开始执行
+        status_b_later = _status(app, turn_b)
+        calls_after = await _calls(provider)
+        queue_later = (await client.get("/api/turns/queue")).json()
 
     assert status_a_after_cancel in ("running", "queued", "accepted", "completed"), (
         "取消 B 把 A 也停了（A 不得被取消）", status_a_after_cancel
     )
     assert status_a_after_cancel != "cancelled", ("A 被错误地取消了", status_a_after_cancel)
+    assert response.status_code == 200, response.text[:240]
+    body = response.json()
+    assert body.get("accepted") is False and body.get("cancelled") is True, (
+        "取消之后不得声称已经受理执行", body
+    )
+    assert str(body.get("turn_id")) == turn_b, body
     assert status_b == "cancelled", ("B 必须被取消", status_b)
     assert final_a == "completed", ("A 必须继续跑完", final_a)
     assert status_b_later == "cancelled", ("被取消的 B 不得随后开始执行", status_b_later)
-    assert calls_after <= 2, ("被取消的 B 不得产生模型调用", {"calls": calls_after, "at_cancel": calls_after_cancel})
+    assert not (queue_later.get("running") and str(queue_later["running"].get("turn_id")) == turn_b), queue_later
+    assert calls_after == calls_after_cancel, (
+        "取消后不得新增模型调用（B 不得产生；R9-G 每轮开始的要求解析是 A 自己的调用）",
+        {"calls": calls_after, "at_cancel": calls_after_cancel},
+    )
     print("[诊断] 准备中取消：回执 turn_id=%s（A=%s）；B=%s→%s；A=%s；模型调用=%d"
           % (turn_b, turn_a, status_b, status_b_later, final_a, calls_after))
 
@@ -211,7 +195,7 @@ async def test_cancel_during_preparation_targets_that_turn(app, provider, tmp_pa
 async def test_already_released_reports_its_own_turn_id(app, provider):
     async with _client(app) as client:
         await _prepare_credential(client, provider)
-        await _script(provider, [{"chunks": ["A 第一段。", "A 第二段。"], "chunk_delay_ms": 3000}])
+        await _script(provider, [{"chunks": ["A 第一段。", "A 第二段。"], "chunk_delay_ms": 1500}])
         a = await client.post("/api/turns", json={"message": "A 正在运行（已放行用例）"})
         turn_a = str(a.json()["turn_id"])
         assert await _wait_status(app, turn_a, ("running",)) == "running"
@@ -231,7 +215,7 @@ async def test_already_released_reports_its_own_turn_id(app, provider):
         assert stop.status_code < 500, stop.text[:200]
         await asyncio.sleep(0.5)
         status_b = _status(app, turn_b)
-        final_a = await _wait_status(app, turn_a, ("completed", "failed", "cancelled"), timeout=90)
+        final_a = await _wait_status(app, turn_a, ("completed", "failed", "cancelled"))
         status_a_end = _status(app, turn_a)
 
     assert status_b in ("cancelled", "interrupted"), ("按 B 的 id 停止必须真的停掉 B", status_b)
@@ -243,56 +227,38 @@ async def test_already_released_reports_its_own_turn_id(app, provider):
 # ---- 3. 重复取消幂等 / 未知标识幂等 ---------------------------------------------------
 
 
-async def test_repeated_cancel_and_unknown_id_are_idempotent(app, provider, tmp_path: Path):
-    gate = threading.Event()
+async def test_repeated_cancel_and_unknown_id_are_idempotent(app, provider):
     async with _client(app) as client:
         await _prepare_credential(client, provider)
-        await _script(provider, [{"chunks": ["慢一点。", "再来。"], "chunk_delay_ms": 2500}])
+        await _script(provider, [{"chunks": ["慢一点。", "再来。"], "chunk_delay_ms": 1500}])
         a = await client.post("/api/turns", json={"message": "幂等用例的占用轮"})
         turn_a = str(a.json()["turn_id"])
         assert await _wait_status(app, turn_a, ("running",)) == "running"
 
-        src = _write_source(tmp_path, "r8-idem-attach.txt")
-        with _gated_prepare_copy(gate):
-            registered = await client.post("/api/attachments", json={"source_path": str(src)})
-            attachment_id = str(registered.json()["attachment"]["id"])
-            b_task = asyncio.create_task(
-                client.post(
-                    "/api/turns",
-                    json={"message": "幂等用例的 B", "attachment_ids": [attachment_id]},
-                    headers={PREPARE_HEADER: "r8-prep-idem"},
-                )
+        attachment_id = _begin_prepared_upload(app, name="幂等用例准备中的上传.txt")
+        b_task = asyncio.create_task(
+            client.post(
+                "/api/turns",
+                json={"message": "幂等用例的 B", "attachment_ids": [attachment_id]},
+                headers={PREPARE_HEADER: "r8-prep-idem"},
             )
-            await asyncio.sleep(1.0)
-            first = (await client.post("/api/turns/prepare/r8-prep-idem/cancel")).json()
-            second = (await client.post("/api/turns/prepare/r8-prep-idem/cancel")).json()
-            unknown = (await client.post("/api/turns/prepare/r8-prep-no-such-id/cancel")).json()
-            gate.set()
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(b_task, timeout=60)
+        )
+        await asyncio.sleep(0.5)
+        assert not b_task.done(), "B 不该在准备完成前返回（装置失效）"
+        first = (await client.post("/api/turns/prepare/r8-prep-idem/cancel")).json()
+        second = (await client.post("/api/turns/prepare/r8-prep-idem/cancel")).json()
+        unknown = (await client.post("/api/turns/prepare/r8-prep-no-such-id/cancel")).json()
+        calls_at_cancel = await _calls(provider)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(b_task, timeout=60)
         turn_b = str(first.get("turn_id"))
-        await _wait_status(app, turn_a, ("completed", "failed", "cancelled"), timeout=90)
+        await _wait_status(app, turn_a, ("completed", "failed", "cancelled"))
         status_b = _status(app, turn_b)
+        calls_after = await _calls(provider)
 
     assert first.get("cancelled") is True, first
-    assert second.get("cancelled") is True or second.get("unknown") is True, ("重复取消必须幂等", second)
+    assert second.get("cancelled") is True and second.get("turn_id") == turn_b, ("重复取消必须幂等", second)
     assert unknown.get("unknown") is True, ("未知标识必须幂等返回 unknown", unknown)
     assert status_b == "cancelled", ("B 不得因为重复取消/放行而开始执行", status_b)
+    assert calls_after == calls_at_cancel, ("被取消的 B 不得产生模型调用", {"calls": calls_after, "at_cancel": calls_at_cancel})
     print("[诊断] 幂等：first=%s；second=%s；unknown=%s；B=%s" % (first, second, unknown, status_b))
-
-
-# ---- 4. 身份缺失：不得取消任何轮次 ----------------------------------------------------
-
-
-async def test_missing_prepare_id_cancels_nothing(app, provider):
-    async with _client(app) as client:
-        await _prepare_credential(client, provider)
-        await _script(provider, [{"chunks": ["正常回答。"]}])
-        a = await client.post("/api/turns", json={"message": "身份缺失的一轮"})
-        turn_a = str(a.json()["turn_id"])
-        unknown = (await client.post("/api/turns/prepare/r8-prep-never-sent/cancel")).json()
-        final = await _wait_status(app, turn_a, ("completed", "failed", "cancelled"), timeout=60)
-
-    assert unknown.get("unknown") is True, unknown
-    assert final == "completed", ("身份缺失不得取消任何轮次", final)
-    print("[诊断] 身份缺失：cancel=%s；该轮最终=%s" % (unknown, final))

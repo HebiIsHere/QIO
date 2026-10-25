@@ -1536,14 +1536,127 @@ MIGRATIONS.append(
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 COMPENSATION_VERSION = 51
 
-# ── 对话页 v2：左侧任务栏持久化展示记录（2026-10-22）──────────────────────
-# 为什么需要这张表：TaskManager 的记录是**进程内**的（TTL 30 分钟、重启即失）。
-# 左侧任务栏要展示的「历史」不能只存在组件内存或 localStorage，也不能在后端重启后
-# 把上次的运行重新点亮成 running。这里只持久化**展示所需的事实**：
-# 身份 / 来源 / 原始与展示状态 / 时间 / 是否需处理 / 用户是否已知晓 / 预览与详情入口。
-# 真正的执行结果仍由 TaskManager（活）/ 各自持久层（派生任务、维护批次、工具记录）持有。
-#
-# 命名空间：R9 冻结了 52–54，本任务从 55 起，避免与并行分支撞号。
+# ── R9：统一授权 / 源文件引用（2026-10-22）──────────────────────────────────
+# 契约：docs/r9-contracts.md §6、§9、§10。只追加，不改历史迁移语义。
+# 迁移 52：附件源文件引用（来源/归属/文件身份/内容摘要/作为互动材料/迁移审计）。
+# 迁移 53：审批生命周期 v2（可恢复操作/状态机/原子领取/三次确认/审计）。
+from agent.storage.migration_r9_approvals import MIGRATION as _R9_APPROVAL  # noqa: E402
+from agent.storage.migration_r9_attachments import MIGRATION as _R9_ATTACH  # noqa: E402
+
+from agent.storage.migration_r9f_review_origins import MIGRATION as _R9F_REVIEW  # noqa: E402
+from agent.storage.migration_r9g_requirement_binding import MIGRATION as _R9G_BINDING  # noqa: E402
+
+from agent.storage.migration_r9h_limits import MIGRATION as _R9H_LIMITS  # noqa: E402
+from agent.storage.migration_r9h2_identity import (  # noqa: E402
+    COMPENSATION_STATEMENTS as _R9H2_IDENTITY_ADDITIVE,
+)
+from agent.storage.migration_r9h2_identity import MIGRATION as _R9H2_IDENTITY  # noqa: E402
+from agent.storage.migration_r9h3_review_records import MIGRATION as _R9H3_REVIEW_RECORDS  # noqa: E402
+from agent.storage.migration_r9h4_identity_birth import MIGRATION as _R9H4_IDENTITY_BIRTH  # noqa: E402
+
+MIGRATIONS.append(_R9_ATTACH)
+MIGRATIONS.append(_R9_APPROVAL)
+MIGRATIONS.append(_R9F_REVIEW)
+MIGRATIONS.append(_R9G_BINDING)
+
+# 补偿入口（新，58）：补偿 51 的全部语句 + 52 附件 + 53 审批 v2 + 55 审查/来源
+# + 57 要求绑定。按对象复核时任一必需对象缺失都会重放这里；必须完整覆盖，
+# 不能只抄最近一条迁移（否则存量库丢表/丢列时补不回来）。
+def _dedupe_statements(statements):
+    seen = set()
+    result = []
+    for statement in statements:
+        key = str(statement)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(statement)
+    return result
+
+
+MIGRATIONS.append(
+    (
+        58,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 51 for stmt in stmts]
+            + list(_R9_ATTACH[1])
+            + list(_R9_APPROVAL[1])
+            + list(_R9F_REVIEW[1])
+            + list(_R9G_BINDING[1])
+        ),
+    )
+)
+
+MIGRATIONS.append(_R9H_LIMITS)
+
+# 补偿入口（新，60）：补偿 58 的全部语句 + 迁移 59（结构化限制三列），去重。
+# R9-H 契约 §6：SCHEMA_VERSION = COMPENSATION_VERSION = 60。
+MIGRATIONS.append(
+    (
+        60,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 58 for stmt in stmts]
+            + list(_R9H_LIMITS[1])
+        ),
+    )
+)
+
+MIGRATIONS.append(_R9H2_IDENTITY)
+
+# 补偿入口（新，62）：补偿 60 的全部语句 + 迁移 61（内部数据身份登记 + 解析失败纠正），去重。
+# R9-H2 契约 §4/§5：SCHEMA_VERSION = COMPENSATION_VERSION = 62。
+MIGRATIONS.append(
+    (
+        62,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 60 for stmt in stmts]
+            + list(_R9H2_IDENTITY_ADDITIVE)
+        ),
+    )
+)
+
+MIGRATIONS.append(_R9H3_REVIEW_RECORDS)
+
+# 补偿入口（新，64）：补偿 62 的全部语句（追加 DDL），不重放迁移 63 的数据 UPDATE。
+# R9-H3 契约 §3.3：SCHEMA_VERSION = COMPENSATION_VERSION = 64。
+MIGRATIONS.append(
+    (
+        64,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 62 for stmt in stmts]
+        ),
+    )
+)
+
+MIGRATIONS.append(_R9H4_IDENTITY_BIRTH)
+
+# 补偿入口（新，66）：补偿 64 的全部语句 + 迁移 65（birth_key），去重。
+# R9-H4 契约 §8：SCHEMA_VERSION = COMPENSATION_VERSION = 66。
+MIGRATIONS.append(
+    (
+        66,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 64 for stmt in stmts]
+            + list(_R9H4_IDENTITY_BIRTH[1])
+        ),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 66
+
+
+# ── 三分支整合（2026-10-25）：对话页 v2 / 互动页 v2 的迁移改号接入 ─────────────
+# 为什么改号：页面线原先把 task_feed 放在 55、把 P3-D 放在 56 + 补偿 57；R9 线已经
+# 占用了 52/53/55/57 与 58..66，而 apply_migrations **只按版本号前进**：同号不同义
+# 会让存量库静默跳过另一侧的对象（页面 55 库永远不会跑 R9 的 55；R9 66 库也不会有
+# task_feed）。这里保留页面线原来的 SQL 定义作为 DDL 来源，只把**统一执行列表里的
+# 编号**挪到 R9 链之后：
+#   旧 55（task_feed / task_ack）                        → 新 67
+#   旧 56（migration_p3_d：意图 Turn / 持久化重试）      → 新 69（模块内版本号同步改为 69）
+# 每次新增迁移后仍追加一个补偿入口聚合此前全部语句（与 36/38/40/43/45/48/51/58/60/62/
+# 64/66 的做法一致），使「版本号已登记但对象缺失」与「同源库跳过较低号迁移」两种情况
+# 都能补齐 —— 双向补偿的落点就是 68（R9 66 + 页面 task_feed）与 70（再加 P3-D）。
 _TASK_FEED_DDL: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS task_feed (
@@ -1583,34 +1696,40 @@ _TASK_FEED_DDL: list[str] = [
     """,
 ]
 
-# 补偿入口（55）：迁移 51 的全部语句 + 55 新增对象。
-# 只追加、不改历史迁移；与 36/38/40/43/45/48/51 的追加方式一致（不手抄历史语句）。
+MIGRATIONS.append((67, list(_TASK_FEED_DDL)))
+
+# 补偿入口（新，68）：迁移 66 的全部语句 + 迁移 67（页面线 task_feed / task_ack）。
+# R9 66 库升级后走 67/68 就能拿到页面对象；页面 57 库跳过 R9 较低号迁移时，58/60/62/64/66
+# 已经把 R9 对象补齐，68 再把 task_feed 补齐。
 MIGRATIONS.append(
     (
-        55,
-        [stmt for target, stmts in MIGRATIONS if target == 51 for stmt in stmts]
-        + list(_TASK_FEED_DDL),
+        68,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 66 for stmt in stmts]
+            + list(_TASK_FEED_DDL)
+        ),
     )
 )
-
-SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 55
 
 # ── 阶段三（P3-D）：意图显示位置 / 单意图有效 Turn / 持久化重试系列（2026-10-24）──────
 # 契约：docs/interactive-page-v2-contract.md §6.1–§6.3。只追加，不改历史迁移。
+# 模块 migration_p3_d.py 原编号 56 与 R9 的冻结号段相邻；为保持「统一执行列表按版本号
+# 升序且同号不同义不存在」，这里把模块内容登记为 69（模块内 MIGRATION 版本号同步为 69）。
 from agent.storage.migration_p3_d import MIGRATION as _P3_D_MIGRATION  # noqa: E402
 
-MIGRATIONS.append(_P3_D_MIGRATION)
+MIGRATIONS.append((69, list(_P3_D_MIGRATION[1])))
 
-# 补偿入口（新，57）：迁移 55 的全部语句 + 56 新增对象。
-# 与 36/38/40/43/45/48/51/55 的追加方式一致（不手抄历史语句）。
+# 补偿入口（新，70）：补偿 68 的全部语句 + 迁移 69（P3-D 的 display 列与重试系列）。
 MIGRATIONS.append(
     (
-        57,
-        [stmt for target, stmts in MIGRATIONS if target == 55 for stmt in stmts]
-        + list(_P3_D_MIGRATION[1]),
+        70,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 68 for stmt in stmts]
+            + list(_P3_D_MIGRATION[1])
+        ),
     )
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 57
+COMPENSATION_VERSION = 70
+

@@ -9,6 +9,8 @@ import { api, type CredentialMeta, type VerifyReport } from "../services/api";
 import QNumber from "../components/ui/QNumber.vue";
 import QSelect from "../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
+import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
+import PermissionModeSettings from "../components/security/PermissionModeSettings.vue";
 import { useOnboardingStore } from "../stores/onboarding";
 import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
@@ -429,6 +431,30 @@ function resetWindowLayout() {
   setNotice("window", "ok", "已还原默认布局（贴靠隐藏关闭、位置回到默认）");
 }
 
+/* ---------------- 关闭主窗口行为（R9 契约 §11） ---------------- */
+const CLOSE_OPTIONS = CLOSE_BEHAVIOR_OPTIONS;
+function closeBehaviorLabel(value: CloseBehavior): string {
+  return CLOSE_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+/**
+ * 保存关闭行为：写后端设置键 ui.close_behavior，立即生效（前端 store 同步更新）。
+ * 失败必须让用户看见 —— 「设置看起来改了但实际没保存」会让下一次关窗行为不可预期。
+ */
+async function chooseCloseBehavior(value: CloseBehavior) {
+  if (ui.closeBehavior === value) return;
+  beginSave("appearance", `正在保存关闭行为：${closeBehaviorLabel(value)}…`);
+  try {
+    await ui.setCloseBehavior(value);
+    setNotice(
+      "appearance",
+      "ok",
+      `关闭主窗口时：${closeBehaviorLabel(ui.closeBehavior)}（已保存，立即生效）`,
+    );
+  } catch (e) {
+    setNotice("appearance", "err", errText("保存关闭行为", e));
+  }
+}
+
 /* ---------------- 对话与记忆 ---------------- */
 const fragmentTier = ref("10");
 const customCount = ref(10);
@@ -711,19 +737,16 @@ function onSearchMaxCharsInput(v: number | null) {
 
 /* ---------------- 工具与权限 ---------------- */
 const computerRootDir = ref("");
-const computerPermissionMode = ref("default");
-const permissionModeOptions = [
-  { value: "default", label: "默认（低危自动，高危审批）" },
-  { value: "plan", label: "只读规划（不写不执行）" },
-  { value: "accept-edits", label: "接受编辑（文件编辑自动，命令仍审批）" },
-  { value: "bypass", label: "全放行（危险，仅信任环境）" },
-];
+/*
+ * 权限模式（R9 契约 §1）由独立的 PermissionModeSettings 组件负责：
+ * 三种新模式、旧值映射展示、只有用户操作才走 PUT /api/security/mode（user_confirmed=true）。
+ * 这里不再保留旧的四值下拉（旧值只作为映射事实展示，不再作为可写入口）。
+ */
 
 async function loadComputerSettings() {
   try {
     const s = await api.getComputerSettings();
     computerRootDir.value = s.root_dir || "";
-    computerPermissionMode.value = s.permission_mode || "default";
   } catch (e) {
     setNotice("tools", "err", errText("加载电脑操控设置", e));
   }
@@ -735,19 +758,12 @@ async function saveComputerSettings() {
   try {
     const r = await api.updateComputerSettings({
       root_dir: computerRootDir.value.trim(),
-      permission_mode: computerPermissionMode.value,
     });
     computerRootDir.value = r.root_dir || "";
-    computerPermissionMode.value = r.permission_mode || "default";
     setNotice("tools", "ok", "电脑操控配置已保存");
   } catch (e) {
     setNotice("tools", "err", errText("保存电脑操控配置", e));
   }
-}
-
-function onPermissionModeSelect(v: string) {
-  computerPermissionMode.value = v;
-  void saveComputerSettings();
 }
 
 /* ---------------- 工具调用历史 ---------------- */
@@ -879,7 +895,6 @@ const draftFields = {
   searchSearxngUrl,
   searchKeyless,
   computerRootDir,
-  computerPermissionMode,
   toolRecordOutputs,
   toolOutputRetentionDays,
   maintenanceEnabled,
@@ -1122,6 +1137,33 @@ watch(activeTab, async () => {
             </div>
             <p v-if="notices.window" class="msg" :class="notices.window.kind" role="status">
               {{ notices.window.text }}
+            </p>
+          </section>
+
+          <section class="sec">
+            <h2>关闭主窗口时</h2>
+            <p class="desc">
+              标题条关闭按钮、系统关闭（Alt+F4 / 任务栏关闭）都按这里的选择处理。
+              「最小化到托盘」只是隐藏窗口：QIO 与后端继续运行，可从系统托盘恢复，不会触发退出收尾。
+              「直接退出」会先停止受理新工作、保存状态并有界收尾，再结束本实例的后端进程；
+              等待中的有效审批会保留下来，下次启动可恢复。
+            </p>
+            <div class="seg" role="group" aria-label="关闭主窗口行为">
+              <button
+                v-for="o in CLOSE_OPTIONS"
+                :key="o.value"
+                type="button"
+                class="motion-opt"
+                :class="{ on: ui.closeBehavior === o.value }"
+                :aria-pressed="ui.closeBehavior === o.value"
+                :title="o.desc"
+                @click="chooseCloseBehavior(o.value)"
+              >
+                {{ o.label }}
+              </button>
+            </div>
+            <p class="mode-hint mono">
+              当前：{{ closeBehaviorLabel(ui.closeBehavior) }}（{{ CLOSE_OPTIONS.find((o) => o.value === ui.closeBehavior)?.desc }}）
             </p>
           </section>
         </div>
@@ -1375,19 +1417,8 @@ watch(activeTab, async () => {
                 />
               </div>
             </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">权限模式</div>
-                <div class="d">决定动作是否需要人工确认</div>
-              </div>
-              <div class="ctl">
-                <QSelect
-                  :options="permissionModeOptions"
-                  :model-value="computerPermissionMode"
-                  @update:model-value="onPermissionModeSelect"
-                />
-              </div>
-            </div>
+            <!-- 权限模式（R9 契约 §1）：三模式选择 / 常驻显示 / 旧值映射 / 只有用户能改 -->
+            <PermissionModeSettings />
             <p v-if="notices.tools" class="msg" :class="notices.tools.kind" role="status">
               {{ notices.tools.text }}
             </p>

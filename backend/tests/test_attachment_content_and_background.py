@@ -127,10 +127,19 @@ async def _async_wait_terminal(ac: httpx.AsyncClient, attachment_id: str, timeou
 
 
 def _create_copy(client: TestClient, tmp_path: Path, name: str, data: bytes = b"open me\n") -> dict:
+    """**历史行夹具**（source_kind=NULL）：继续覆盖旧副本/回放代码路径。"""
+    svc = client.app.state.ctx.attachments
     source = tmp_path / name
     source.write_bytes(data)
-    created = client.post("/api/attachments", json={"source_path": str(source)}).json()["attachment"]
-    return _wait_terminal(client, created["id"])
+    att = svc.run_prepare(svc.prepare(str(source)).id)
+    return svc.payload(svc.get(att.id, check=False))
+
+
+def _create_legacy_copy(svc, tmp_path: Path, name: str, data: bytes = b"open me\n") -> dict:
+    source = tmp_path / name
+    source.write_bytes(data)
+    att = svc.run_prepare(svc.prepare(str(source)).id)
+    return {"id": att.id, "stored_path": att.stored_path, "source_path": str(source)}
 
 
 # -- 问题 5：GET /content（只读 QIO 管理的副本） ------------------------------
@@ -153,24 +162,29 @@ def test_content_serves_the_managed_copy(client: TestClient, tmp_path: Path):
     assert Path(ready["stored_path"]).read_bytes() == data
 
 
-def test_content_refuses_reference_unready_and_unknown(client: TestClient, tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(attachments_mod, "COPY_MAX_BYTES", 16)
-    big = tmp_path / "大文件.bin"
-    big.write_bytes(b"v" * 32)
-    reference = client.post("/api/attachments", json={"source_path": str(big)}).json()["attachment"]
-    reference = _wait_terminal(client, reference["id"])
+def test_content_reads_source_ref_and_refuses_missing(client: TestClient, tmp_path: Path):
+    # 新语义：源文件引用直接读源文件（不再有 409「引用型不可打开」）
+    source = tmp_path / "源引用.bin"
+    source.write_bytes(b"v" * 32)
+    reference = _wait_terminal(
+        client, client.post("/api/attachments", json={"source_path": str(source)}).json()["attachment"]["id"]
+    )
+    opened = client.get(f"/api/attachments/{reference['id']}/content")
+    assert opened.status_code == 200
+    assert opened.content == b"v" * 32
 
-    # 引用型没有副本：明确拒绝（不是 200 空文件，也不是 500）
-    refused = client.get(f"/api/attachments/{reference['id']}/content")
-    assert refused.status_code == 409
-    assert "引用本地文件" in refused.json()["detail"]
+    # 源文件丢失：如实拒绝并给原因
+    source.unlink()
+    missing = client.get(f"/api/attachments/{reference['id']}/content")
+    assert missing.status_code == 409
+    assert "不在" in missing.json()["detail"] or "不可用" in missing.json()["detail"]
 
-    # 副本丢了（missing）：如实拒绝
+    # 历史行副本丢了（missing）：同样如实拒绝
     lost = _create_copy(client, tmp_path, "副本丢了.txt", b"gone")
     Path(lost["stored_path"]).unlink()
-    missing = client.get(f"/api/attachments/{lost['id']}/content")
-    assert missing.status_code == 409
-    assert "副本" in missing.json()["detail"]
+    missing_legacy = client.get(f"/api/attachments/{lost['id']}/content")
+    assert missing_legacy.status_code == 409
+    assert "副本" in missing_legacy.json()["detail"]
 
     # 不存在的 id：404
     assert client.get("/api/attachments/att_nope/content").status_code == 404
@@ -238,7 +252,8 @@ def test_upload_without_content_length_is_bounded(client: TestClient, tmp_path: 
     assert "content-length" not in resp.request.headers  # 真的没有 Content-Length
     assert resp.status_code == 413, resp.text
     assert svc.list(limit=50) == []  # 被拒绝的上传不留行
-    leftovers = [p for p in svc.root.rglob("*") if p.is_file()] if svc.root.is_dir() else []
+    materials = svc.materials_root
+    leftovers = [p for p in materials.rglob("*") if p.is_file()] if materials.is_dir() else []
     assert leftovers == [], f"被拒绝的上传留下了文件：{leftovers}"
 
 
@@ -257,8 +272,9 @@ def test_upload_chunked_within_cap_succeeds_with_hash(client: TestClient, tmp_pa
     assert resp.status_code == 200, resp.text
     att = resp.json()["attachment"]
     assert att["state"] == "ready"
+    assert att["stored_path"] is None
     assert att["size_bytes"] == len(b"hello world\n")
-    assert Path(att["stored_path"]).read_bytes() == b"hello world\n"
+    assert Path(att["source_path"]).read_bytes() == b"hello world\n"
     assert att["sha256"] == hashlib.sha256(b"hello world\n").hexdigest()
 
 
@@ -268,20 +284,20 @@ def test_upload_writes_and_hashes_on_a_worker_thread(client: TestClient, tmp_pat
     loop_threads: list[int] = []
     worker_threads: list[int] = []
 
-    real_begin = svc.begin_upload
+    real_begin = svc.begin_material
 
     def spy_begin(*args, **kwargs):
         loop_threads.append(threading.get_ident())
         return real_begin(*args, **kwargs)
 
-    real_write = svc.write_upload_stream
+    real_write = svc.write_material_stream
 
     def spy_write(*args, **kwargs):
         worker_threads.append(threading.get_ident())
         return real_write(*args, **kwargs)
 
-    monkeypatch.setattr(svc, "begin_upload", spy_begin)
-    monkeypatch.setattr(svc, "write_upload_stream", spy_write)
+    monkeypatch.setattr(svc, "begin_material", spy_begin)
+    monkeypatch.setattr(svc, "write_material_stream", spy_write)
 
     resp = client.post(
         "/api/attachments/upload",
@@ -362,13 +378,10 @@ async def test_relocate_keeps_the_event_loop_free(async_app, tmp_path: Path, mon
     """受控慢 I/O：重定位复制被闸门卡住时，其它请求（GET）必须仍然能推进。"""
     svc = async_app.state.ctx.attachments
     async with _live(async_app) as ac:
+        # 用**历史行夹具**覆盖旧的重定位/后台复制代码路径（新入口没有复制）
         source = tmp_path / "慢复制.txt"
         source.write_bytes(b"m" * 32)
-        created = (
-            await ac.post("/api/attachments", json={"source_path": str(source), "topic_id": "t_slow"})
-        ).json()["attachment"]
-        assert (await _async_wait_terminal(ac, created["id"]))["state"] == "ready"
-
+        created = _create_legacy_copy(svc, tmp_path, "慢复制.txt", b"m" * 32)
         moved = tmp_path / "慢复制-移动后.txt"
         source.rename(moved)
 
@@ -417,14 +430,14 @@ async def test_delete_during_upload_never_commits_ready(async_app, tmp_path: Pat
     async with _live(async_app) as ac:
         gate_ready = threading.Event()
         release = threading.Event()
-        real_write = svc.write_upload_stream
+        real_write = svc.write_material_stream
 
         def gated_write(att, chunks, **kwargs):
             gate_ready.set()
             assert release.wait(8), "测试没有放行上传（闸门超时）"
             return real_write(att, chunks, **kwargs)
 
-        monkeypatch.setattr(svc, "write_upload_stream", gated_write)
+        monkeypatch.setattr(svc, "write_material_stream", gated_write)
 
         async def body():
             yield b"a" * 16
@@ -452,8 +465,9 @@ async def test_delete_during_upload_never_commits_ready(async_app, tmp_path: Pat
         assert resp.status_code in (404, 409), resp.text
         assert svc.get(target.id, check=False) is None
         assert svc.list(limit=50) == []
-        leftovers = [p for p in svc.root.rglob("*") if p.is_file()] if svc.root.is_dir() else []
-        assert leftovers == [], f"取消之后留下了副本文件：{leftovers}"
+        materials = svc.materials_root
+        leftovers = [p for p in materials.rglob("*") if p.is_file()] if materials.is_dir() else []
+        assert leftovers == [], f"取消之后留下了材料文件：{leftovers}"
 
 
 

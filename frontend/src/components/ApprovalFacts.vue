@@ -62,6 +62,29 @@ function syncBudget() {
     <!-- 1) 它想做什么：系统事实 -->
     <p class="intent">{{ facts.description }}</p>
 
+    <!--
+      R9 生命周期 v2：状态机 / 内部数据三次确认 / 用途 / 操作摘要 / 过期时间。
+      老审批（老后端事件没有 state）不渲染这一块 —— 不在旧数据上伪造新状态。
+    -->
+    <div v-if="facts.lifecycleState || facts.isInternalData" class="lifecycle" data-test="approval-lifecycle">
+      <p v-if="facts.stateLabel" class="lifecycle-state" data-test="approval-lifecycle-state">
+        状态：<span class="lifecycle-value" :data-state="facts.lifecycleState">{{ facts.stateLabel }}</span>
+      </p>
+      <p v-if="facts.isInternalData" class="internal-warning" data-test="approval-internal-warning">
+        这是 QIO 的内部运行数据，直接改写可能损坏应用。需要你<b>连续 {{ facts.requiresConfirmations }} 次</b>确认；
+        每次确认都由后端校验，任一步取消即停止，对象或内容变化会重置确认进度。
+      </p>
+      <p v-if="facts.confirmationProgress" class="lifecycle-progress mono" data-test="approval-confirmation-progress">
+        {{ facts.confirmationProgress }}
+      </p>
+      <p v-if="facts.purpose" class="lifecycle-line" data-test="approval-purpose">用途：{{ facts.purpose }}</p>
+      <p v-if="facts.operationSummary" class="lifecycle-line" data-test="approval-operation-summary">
+        操作：{{ facts.operationSummary }}
+      </p>
+      <p v-if="facts.sourceLabel" class="lifecycle-line">来源：{{ facts.sourceLabel }}</p>
+      <p v-if="facts.expiresAt" class="lifecycle-line">过期时间：{{ facts.expiresAt }}</p>
+    </div>
+
     <!-- 2) 它会访问什么：具体行为标签（不是 Low/Medium/High） -->
     <div v-if="facts.risks.length" class="risk-row" data-test="approval-risks">
       <span v-for="r in facts.risks" :key="r" class="risk qio-state warn">{{ r }}</span>
@@ -172,6 +195,26 @@ function syncBudget() {
   color: var(--text-primary);
   margin: 0 0 8px;
 }
+.lifecycle {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.lifecycle p { margin: 0 0 4px; }
+.lifecycle p:last-child { margin-bottom: 0; }
+.lifecycle-state { color: var(--text-secondary); }
+.lifecycle-value { color: var(--text-strong); font-family: var(--mono); }
+.lifecycle-line { color: var(--text-secondary); overflow-wrap: anywhere; }
+.internal-warning {
+  color: var(--danger);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 6px;
+}
+.lifecycle-progress { color: var(--warning); }
 .risk-row {
   display: flex;
   flex-wrap: wrap;

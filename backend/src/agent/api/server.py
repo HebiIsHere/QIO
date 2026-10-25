@@ -58,9 +58,13 @@ from agent.memory.fragment import (
 from agent.services.app import SESSION_PAGE_DEFAULT_LIMIT, AppContext
 # 附件路由的错误类型与可绑状态：模块级导入（无循环依赖）
 from agent.services.attachments import (
-    TEMP_SUFFIX,
+    MATERIAL_SOURCE_KINDS,
+    USER_PATH_SOURCE_KINDS,
+    REFERENCE_AMBIGUOUS,
+    REFERENCE_MISSING,
     STATE_CANCELLED as DISK_CANCELLED,
     STATE_FAILED as DISK_FAILED,
+    AttachmentConfirmationRequired,
     AttachmentContentError,
     AttachmentError,
     DiskOutcome,
@@ -77,7 +81,7 @@ from agent.services.attachment_upload import (
     UploadJobEnded,
     abort_jobs_for,
     active_jobs as upload_active_jobs,
-    run_upload_worker,
+    run_material_worker,
 )
 from agent.services.planet import VISIBLE_CAPACITY, PlanetBrowseService
 from agent.trace.redact import redact_text
@@ -332,6 +336,12 @@ def create_app(
 ) -> FastAPI:
     bus = EventBus()
     ctx = AppContext(settings, conn, bus)
+    # R9 契约 §11（W5）：退出闸门 + 一次性关闭。必须在 lifespan 之前建立：
+    # 退出路由与 lifespan 共用**同一个** aclose 任务（退出收尾只执行一次），
+    # middleware 也从收到请求那一刻起拒绝新工作（503）。
+    from agent.api.lifecycle_routes import ShutdownCoordinator, build_lifecycle_router
+
+    shutdown = ShutdownCoordinator()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -363,7 +373,26 @@ def create_app(
                 logging.getLogger(__name__).info("recovered %s stale derived tasks", recovered)
         except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
             logging.getLogger(__name__).warning("derived task recovery failed", exc_info=True)
-        # 互动执行重启恢复：释放上一进程的 claiming/active，重新受理 pending 自动重试。
+        # 两条恢复链都要跑，顺序有依赖：
+        # 1) R9 审批 v2 恢复（契约 §5.1）—— waiting 恢复待审批、过期收口、
+        #    executing -> interrupted_unverified（不自动重放）、approved 重核对后执行。
+        #    必须先跑：互动恢复可能立刻提交 Turn，而提交/执行会读审批与授权状态。
+        try:
+            approval_report = await ctx.approvals.recover()
+            changed = [
+                key
+                for key in ("waiting", "taken_over", "expired", "approved", "interrupted", "legacy_interrupted")
+                if approval_report.get(key)
+            ]
+            if changed:
+                logging.getLogger(__name__).info(
+                    "approvals recovered: %s",
+                    {key: len(approval_report.get(key) or []) for key in changed},
+                )
+        except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
+            logging.getLogger(__name__).warning("approval recovery failed", exc_info=True)
+        # 2) 互动执行重启恢复：释放上一进程的 claiming/active，重新受理 pending 自动重试。
+        #    与审批恢复互不阻塞：任一条失败只记日志，不影响另一条与应用启动。
         try:
             from agent.interactive import startup_recovery
 
@@ -381,9 +410,37 @@ def create_app(
             logging.getLogger(__name__).warning(
                 "interactive startup recovery failed", exc_info=True
             )
+        # 3) R9：清理上次进程留下的解析临时文件（有生命周期，不是永久副本）。
+        try:
+            removed = ctx.tempfiles.sweep()
+            if removed:
+                logging.getLogger(__name__).info("removed %s stale temp files", removed)
+        except Exception:  # noqa: BLE001 - 清理失败不影响启动
+            logging.getLogger(__name__).warning("temp file sweep failed", exc_info=True)
         # 实例心跳（契约 C1）：别的实例靠「心跳新鲜」确认本实例还活着，
         # 所以它必须**持续**刷新，而不是只在启动时写一次。崩溃时它自然停止，
         # TTL 到期 + pid 不存在 → 下一个实例才会恢复本实例的记录。
+        # R9 §9：旧附件数据迁移 —— 启动后台执行一次（有未迁移旧记录才跑；幂等、断点续跑）。
+        # 与附件服务共用同一个 sqlite 连接，所以迁移在本事件循环线程里执行（不在工作线程碰 DB）。
+        async def _run_attachment_migration_once() -> None:
+            try:
+                from agent.storage import attachment_migration
+
+                result = attachment_migration.run_if_pending(
+                    ctx.conn, ctx.settings.data_dir
+                )
+                if result.get("ran"):
+                    logging.getLogger(__name__).info(
+                        "attachment migration: %s", result.get("report")
+                    )
+            except Exception:  # noqa: BLE001 - 迁移失败不能让应用起不来
+                logging.getLogger(__name__).warning(
+                    "attachment migration failed", exc_info=True
+                )
+
+        # 在 yield（应用可服务）之前完成：迁移与请求并发会改变「历史行/新行」的归类，
+        # 造成同一行在请求处理中途被迁移改写。迁移本身幂等、行数有限，启动期执行一次。
+        await _run_attachment_migration_once()
         hb_log = logging.getLogger(__name__)
         heartbeat_stop = asyncio.Event()
 
@@ -414,7 +471,8 @@ def create_app(
             except Exception:  # noqa: BLE001
                 hb_log.warning("instance heartbeat task ended with an error", exc_info=True)
             try:
-                report = await ctx.aclose()
+                # 退出路由可能已经触发过收尾：这里等的是同一个任务（幂等、不重复收尾）。
+                report = await shutdown.aclose_for_lifespan(ctx)
             except Exception:  # noqa: BLE001 - 关闭失败不能阻止退出
                 logging.getLogger(__name__).warning("app context close failed", exc_info=True)
             from agent.services.lifecycle import (
@@ -451,6 +509,10 @@ def create_app(
                 log_close_report(report)
 
     app = FastAPI(title="QIO", version="0.2.10", lifespan=lifespan)
+    # R9 §11：桌面壳真正退出前的唯一收尾入口（POST /api/lifecycle/shutdown）。
+    # 入口（agent/main.py）通过 app.state.shutdown_coordinator 注入「如何让 uvicorn 退出」。
+    app.include_router(build_lifecycle_router(ctx, shutdown))
+    app.state.shutdown_coordinator = shutdown
     from agent.knowledge.lifecycle import VersionConflict
 
     @app.exception_handler(VersionConflict)
@@ -484,6 +546,11 @@ def create_app(
     attachments = AttachmentService(conn, settings.data_dir)
     ctx.attachments = attachments
     ctx.services.register("attachments", attachments)
+    # R9-F：文件来源 store 同时按名字注册给工具注入（fs_tools 的 inject=["origins"]）；
+    # 未注册时工具会退回进程默认 store，但显式注册让接线可测、可诊断。
+    origins_store = getattr(attachments, "file_origins", None)
+    if origins_store is not None:
+        ctx.services.register("origins", origins_store)
     from agent.tools.attachment_tools import ReadAttachmentTool
 
     ctx.registry.register(
@@ -516,6 +583,12 @@ def create_app(
             "X-QIO-Prepare-Id",
             "X-QIO-Name",
             "X-QIO-Topic-Id",
+            # R9：浏览器/剪贴板上传要标明材料来源（browser_upload / clipboard_image）
+            # 与用户说明。漏了它们，浏览器上传会先发预检并被 400 拒掉 —— 界面表现为
+            # 「一直失败」，后端看不到任何请求。守护测试会把前端源码里出现的每个
+            # X-QIO-* 头都预检一遍。
+            "X-QIO-Source-Kind",
+            "X-QIO-User-Note",
         ],
     )
     from agent.tools.approval import ApprovalService
@@ -537,6 +610,20 @@ def create_app(
         if not allowed:
             status = 403 if reason in ("origin_rejected", "host_not_loopback") else 401
             return JSONResponse({"detail": "unauthorized", "reason": reason}, status_code=status)
+        # R9 契约 §11：退出开始后**不再受理新工作**（503）。只读请求仍短暂放行：
+        # 前端要能读到最后的事实；唯一允许的写是退出接口本身（重复调用必须幂等）。
+        if (
+            shutdown.is_shutting_down()
+            and request.method not in ("GET", "HEAD", "OPTIONS")
+            and path != "/api/lifecycle/shutdown"
+        ):
+            return JSONResponse(
+                {
+                    "detail": "QIO 正在退出，不再受理新的工作",
+                    "code": "shutting_down",
+                },
+                status_code=503,
+            )
         return await call_next(request)
 
     @app.get("/api/health")
@@ -1039,10 +1126,19 @@ def create_app(
     async def update_memory_settings(body: dict) -> dict:
         return _apply_settings_patch(ctx, "memory", body)
 
-    # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒） ----------------
+    # -- UI 偏好：打字机输出速度（三档：25 / 50 / 75 字符每秒）
+    #    + 关闭主窗口时的行为（R9 契约 §11：每次询问 / 最小化到托盘 / 直接退出） ----
 
     TYPEWRITER_SPEEDS = (25, 50, 75)
     DEFAULT_TYPEWRITER_CPS = 50
+    # 关闭行为：ask = 原生/前端确认框；tray = 隐藏窗口继续运行；quit = 真正退出。
+    # 默认 ask 是契约规定：第一次遇到关闭按钮的人必须先被问一次，而不是被静默杀掉或藏起来。
+    CLOSE_BEHAVIORS = ("ask", "tray", "quit")
+    DEFAULT_CLOSE_BEHAVIOR = "ask"
+
+    def _close_behavior() -> str:
+        raw = ctx.settings_store.get("ui.close_behavior", DEFAULT_CLOSE_BEHAVIOR) or ""
+        return raw if raw in CLOSE_BEHAVIORS else DEFAULT_CLOSE_BEHAVIOR
 
     #: 对话页布局偏好（窗口/栏宽/收起/标签位置）的上限：只存轻量偏好，
     #: 正文、原始输出、密钥一律不进这里；超过上限直接拒绝而不是静默截断。
@@ -1068,6 +1164,8 @@ def create_app(
             ),
             # 对话页布局偏好：只读回轻量偏好；读坏了返回 null，由前端回落默认值。
             "conversation_layout": _read_conversation_layout(),
+            # 旧客户端没有这个字段时按默认，不报错（契约 §11）。
+            "close_behavior": _close_behavior(),
         }
 
     @app.put("/api/settings/ui")
@@ -1129,11 +1227,37 @@ def create_app(
                 )
             ctx.settings_store.set("ui.conversation_layout", text)
             result["conversation_layout"] = layout
+        if "close_behavior" in body:
+            behavior = body.get("close_behavior")
+            if behavior not in CLOSE_BEHAVIORS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"close_behavior must be one of {list(CLOSE_BEHAVIORS)}",
+                )
+            ctx.settings_store.set("ui.close_behavior", str(behavior))
+            result["close_behavior"] = behavior
         if len(result) == 1:
+            # 不接受「什么都不改」的 PUT：它会让调用方误以为某一项已经被保存。
             raise HTTPException(
-                status_code=400, detail="没有可更新的设置项（typewriter_cps / conversation_layout）"
+                status_code=400,
+                detail=(
+                    "没有可更新的设置项"
+                    "（typewriter_cps / conversation_layout / close_behavior）"
+                ),
             )
-        return result
+        # 返回完整状态而不是「只回传改动的项」：调用方（设置页 / 壳）读同一份形状，
+        # 旧字段仍按当前真实值返回，避免把"没改"误读成"被清空"。
+        return {
+            "ok": True,
+            "typewriter_cps": result.get(
+                "typewriter_cps",
+                ctx.settings_store.get_int("ui.typewriter_cps", DEFAULT_TYPEWRITER_CPS),
+            ),
+            "conversation_layout": result.get(
+                "conversation_layout", _read_conversation_layout()
+            ),
+            "close_behavior": _close_behavior(),
+        }
 
     # -- 对话深度：迭代上限 / 输出 token 预算 -------------------------------
 
@@ -1173,17 +1297,66 @@ def create_app(
         # 保存即生效由 SettingsService 在**提交成功之后**套用到运行中的 SearchService
         return _apply_settings_patch(ctx, "search", body)
 
-    # -- computer control settings -----------------------------------------
+    # -- 权限模式：唯一用户入口 + 旧设置接口兼容（契约 §1） ----------------
 
-    PERMISSION_MODES = ("default", "plan", "accept-edits", "bypass")
+    from agent.security.modes import (
+        DEFAULT_MODE as _DEFAULT_PERMISSION_MODE,
+        is_new_mode_value as _is_new_mode_value,
+        is_valid_mode_value as _is_valid_mode_value,
+        label_for as _mode_label,
+        legacy_value_for as _legacy_mode_value,
+        normalize_mode as _normalize_mode,
+    )
+
+    def _security_mode_payload() -> dict:
+        mode = ctx.authorization.mode()
+        return {
+            "mode": mode.value,
+            "label": _mode_label(mode),
+            "legacy_value": _legacy_mode_value(mode),
+        }
+
+    @app.get("/api/security/mode")
+    async def get_security_mode() -> dict:
+        """当前权限模式（顶部/输入区常驻显示用）。"""
+        return _security_mode_payload()
+
+    @app.put("/api/security/mode")
+    async def update_security_mode(body: dict) -> dict:
+        """**只有用户**能切换模式：必须 user_confirmed=true，且只接受新值。
+
+        模型 / 工具 / 子智能体没有任何到达这里的路径；旧值只做读入兼容。
+        """
+        if body.get("user_confirmed") is not True:
+            raise HTTPException(
+                status_code=400,
+                detail="提高或切换权限模式必须由用户确认（user_confirmed=true）",
+            )
+        mode_value = str(body.get("mode") or "").strip()
+        if not _is_new_mode_value(mode_value):
+            raise HTTPException(
+                status_code=400,
+                detail="invalid mode（只接受 read_only / restricted / unrestricted）",
+            )
+        try:
+            ctx.authorization.set_mode(mode_value, user_initiated=True)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _security_mode_payload()
 
     @app.get("/api/settings/computer")
     async def get_computer_settings() -> dict:
+        """旧接口保留兼容：permission_mode 返回 **normalize 后的新值**（契约 §1）。"""
         store = ctx.settings_store
-        mode = store.get("computer.permission_mode", "default") or "default"
+        raw = store.get("computer.permission_mode", _DEFAULT_PERMISSION_MODE.value) or (
+            _DEFAULT_PERMISSION_MODE.value
+        )
         return {
             "root_dir": store.get("computer.root_dir", "") or "",
-            "permission_mode": mode if mode in PERMISSION_MODES else "default",
+            "permission_mode": _normalize_mode(raw).value,
+            "mode_label": _mode_label(raw),
         }
 
     @app.put("/api/settings/computer")
@@ -1198,9 +1371,10 @@ def create_app(
             writes.append(("computer.root_dir", str(body.get("root_dir") or "")))
         if "permission_mode" in body:
             mode = str(body["permission_mode"])
-            if mode not in PERMISSION_MODES:
+            # 旧客户端可能还在写旧值：接受，但**映射后落库**（新值）。
+            if not _is_valid_mode_value(mode):
                 raise HTTPException(status_code=400, detail="invalid permission_mode")
-            writes.append(("computer.permission_mode", mode))
+            writes.append(("computer.permission_mode", _normalize_mode(mode).value))
         if writes:
             try:
                 with transaction(ctx.conn):
@@ -1358,36 +1532,51 @@ def create_app(
 
     @app.post("/api/attachments")
     async def create_attachment(body: dict) -> dict:
-        """登记一个本地文件：**按服务端 stat 出来的真实大小**决定存副本还是记引用。
+        """登记一个附件（R9 契约 §6.3）。
 
-        ≤ 100_000_000 字节 → 存独立副本（后台复制，先写 .part 再改名提交）；
-        >  100_000_000 字节 → 只记路径 + 元数据（历史保留的是位置，不保证内容仍在）。
-        复制在后台线程里做，这里立刻返回登记事实（state=prepared），
-        前端按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        新语义（请求带 source_kind=desktop_path / dropped_path）：桌面端给出**真实路径**，
+        这里只登记**源文件引用** —— 不复制、不移动、不改名，stored_path 恒为 NULL；
+        读取/预览/获准写回都作用于这个源文件。
+        不带 source_kind 的分支只保留给历史数据回放与迁移测试（新入口不再产生副本）。
         """
-        source_path = str(body.get("source_path") or "")
+        source_path = str(body.get("source_path") or "").strip()
         raw_name = body.get("name")
         topic_id = body.get("topic_id")
+        if not source_path:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "登记附件需要真实 source_path（桌面选择/拖放）；"
+                    "只有字节的内容请走 POST /api/attachments/upload"
+                ),
+            )
+        requested_kind = str(body.get("source_kind") or "").strip()
+        # 新入口只产生源文件引用：没有显式来源时按桌面路径登记（不再有复制分支）。
+        source_kind = (
+            requested_kind if requested_kind in USER_PATH_SOURCE_KINDS else "desktop_path"
+        )
         try:
-            att = attachments.prepare(
-                source_path,
-                name=str(raw_name) if raw_name else None,
-                size=body.get("size"),
+            att = attachments.register_source(
+                path=source_path,
+                source_kind=source_kind,
+                origin=str(body.get("origin") or "user_original"),
                 topic_id=str(topic_id) if topic_id else None,
+                name=str(raw_name) if raw_name else None,
+                user_note=str(body.get("user_note") or ""),
             )
         except AttachmentError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        _schedule_prepare(att.id)
         return {"ok": True, "attachment": attachments.payload(att, check=False)}
 
+
     def _upload_limit_detail() -> str:
+        """上传大小限制是**传输资源限制**（不是旧的「≤100MB 才复制」副本规则）。"""
         from agent.services.attachments import human_size
 
         limit = attachments.max_upload_bytes
         return (
-            f"浏览器上传只用于 <= {human_size(limit)} 的文件；这个文件更大，"
-            "请用桌面端拖入或选择本地路径"
-            f"（大于 {human_size(limit)} 的文件只记位置，不复制内容）"
+            f"浏览器上传单次最多 {human_size(limit)}（传输限制，避免把超大内容读进内存）；"
+            "更大的文件请用桌面端拖入或选择本地路径登记源文件引用（不复制内容）"
         )
 
     def _converge_upload(
@@ -1408,7 +1597,7 @@ def create_app(
         更新的 ready 行改写成 failed/cancelled。**没有更新的准备时仍然照写**（当前的
         失败/取消照旧如实收敛），所以它不是「一律不写」。
         """
-        attachments.apply_outcome(
+        attachments.apply_material_outcome(
             attachment_id, DiskOutcome(state=state, error=reason), generation=generation
         )
 
@@ -1420,47 +1609,39 @@ def create_app(
             return None
         return (int(stat.st_dev), int(stat.st_ino))
 
-    def _purge_uncommitted_copy(att, *, generation: int | None = None) -> None:
-        """取消竞态清理：工作线程可能已经把正式副本提交到位（os.replace 之后才被丢弃），
+    def _purge_uncommitted_material(att, *, generation: int | None = None) -> None:
+        """取消竞态清理：工作线程可能已经把材料提交到位（os.replace 之后才被丢弃），
 
-        而它的结果已经落不到库里 —— 按**可预测的副本路径**（QIO 自己的管理目录）清掉它，
-        避免留下无人认领的副本。用户原文件永远不在此列。
-
-        generation：本操作自己的代际。目标已经被更新的准备（重新定位 / 重试）接管时
-        （当前代际已经不是它），磁盘上那份是**更新的成果**，绝不删（R1 的纪律）。
-        临时文件 <目标>.<token>.part 由工作线程自己清（每个操作一个 token，谁也删不到别人的）；
-        这里绝不按通配符清理，免得误删另一个在飞操作正在写的临时文件。
+        按**可预测的材料路径**（workspace/materials/...）清掉它，避免留下无人认领的文件。
+        这不是用户原文件：它是本次上传刚写出的材料。目标已经被更新的操作接管时绝不删。
         """
         with contextlib.suppress(Exception):
             if generation is not None and attachments.prepare_generation(att.id) != generation:
                 logger.debug(
-                    "取消收尾跳过：附件 %s 已经被更新的准备接管（不删更新的成果）",
+                    "取消收尾跳过：附件 %s 已经被更新的操作接管（不删更新的成果）",
                     redact_text(str(att.id)),
                 )
                 return
-            path = attachments.copy_path(att)
-            if attachments.is_managed_path(path):
+            path = attachments.material_path(att)
+            if attachments.is_material_path(path):
                 Path(path).unlink(missing_ok=True)
-                Path(str(path) + TEMP_SUFFIX).unlink(missing_ok=True)
 
     async def _settle_upload_worker(
         worker: asyncio.Task, job: UploadJob, *, attachment_id: str
     ) -> DiskOutcome | None:
         """请求被取消（服务关闭 / 客户端离开）：解除工作线程阻塞读、有界等它收尾，返回磁盘结果。
 
-        收尾纪律：**不留临时文件、不留孤儿副本**。
+        收尾纪律：**不留临时文件、不留孤儿材料**。
         * 先置服务侧取消标志（工作线程提交前的最后一道闸会看到它，不再 os.replace）；
         * 再置作业终态（解除它在 queue.get 上的阻塞）；
-        * 工作线程如果已经提交了正式副本（竞态），这里把它当作孤儿清掉 —— 行不会落成 ready。
+        * 工作线程如果已经提交了材料（竞态），这里把它当作孤儿清掉 —— 行不会落成 ready。
         """
         attachments.cancel(attachment_id)
-        job.abort("上传被取消（服务关闭或请求中断）；没有保存任何副本")
+        job.abort("上传被取消（服务关闭或请求中断）；没有保存任何数据")
         outcome: DiskOutcome | None = None
         # 收尾等待必须在**屏蔽外层取消**的作用域里跑（anyio 是流式中间件的取消原语）：
         # 请求被取消后，BaseHTTPMiddleware 的取消作用域会在每个 await 点重复投递
-        # CancelledError。实测：不屏蔽时这个等待 0.02s 就被打断，工作线程被丢在后台继续跑，
-        # 它刚建的 <目标>.<token>.part 就留在磁盘上（_purge_uncommitted_copy 只认旧的
-        # <目标>.part，删不到）。屏蔽只去掉「被打断」，有界期限仍然是 UPLOAD_SETTLE_SECONDS。
+        # CancelledError。屏蔽只去掉「被打断」，有界期限仍然是 UPLOAD_SETTLE_SECONDS。
         with anyio.CancelScope(shield=True):
             with contextlib.suppress(BaseException):
                 outcome = await asyncio.wait_for(
@@ -1468,49 +1649,67 @@ def create_app(
                 )
         if outcome is not None and outcome.stored_path:
             stored = Path(str(outcome.stored_path))
-            # R1：只删**本操作自己提交的那一份** —— 路径 + 文件身份都对得上才动手。
-            # 目标已经被更新的操作换掉时，那是别人的成果，绝不删。
-            if attachments.is_managed_path(stored) and (
+            # 只删**本操作自己提交的那一份** —— 路径 + 文件身份都对得上才动手。
+            if attachments.is_material_path(stored) and (
                 outcome.identity is None or _file_identity(stored) == outcome.identity
             ):
                 try:
                     stored.unlink(missing_ok=True)
                 except OSError as exc:  # noqa: BLE001 - 清理失败不能掩盖取消
                     logging.getLogger(__name__).warning(
-                        "清理被取消上传的副本失败：%s", redact_text(str(exc))
+                        "清理被取消上传的材料失败：%s", redact_text(str(exc))
                     )
         return outcome
 
     @app.post("/api/attachments/upload")
     async def upload_attachment(request: Request) -> dict:
-        """浏览器回退：请求体就是**原始字节**（不引入 multipart 依赖）。
+        """只有字节、没有原位置的入口：**首次落盘**为 workspace/materials/ 的用户材料。
 
-        头：X-QIO-Name（URL 编码的 UTF-8 文件名）、X-QIO-Topic-Id（可选）。
-        没有真实路径：只存副本；超过阈值的字节明确拒绝，不偷偷存一个大副本。
+        头：X-QIO-Name（URL 编码的 UTF-8 文件名）、X-QIO-Topic-Id（可选）、
+        X-QIO-Source-Kind（browser_upload / clipboard_image，缺省 browser_upload）、
+        X-QIO-User-Note（可选，URL 编码）。
+        没有真实路径可登记，也不伪造路径：内容只是本机新落盘的材料，
+        记 source_kind 与 origin=user_saved_material；max_upload_bytes 是**传输限制**，
+        不是旧的副本策略（桌面路径登记任意大小都不复制）。
 
         有界接收（审计问题 6）：**不把整包读进内存**，没有 Content-Length 时照样强制上限
         （每收一块累加校验，超限立刻中止并清理）。写临时文件 + 算 sha256 在工作线程
-        （纯文件 I/O），登记与落状态在事件循环线程 —— 同一个 sqlite 连接永不被两个线程碰，
-        见 services/attachments.py 顶部的线程纪律。
+        （纯文件 I/O），登记与落状态在事件循环线程 —— 同一个 sqlite 连接永不被两个线程碰。
         """
+        from urllib.parse import unquote
+
+        source_kind = (
+            request.headers.get("x-qio-source-kind") or ""
+        ).strip() or "browser_upload"
+        if source_kind not in MATERIAL_SOURCE_KINDS:
+            raise HTTPException(
+                status_code=400,
+                detail="X-QIO-Source-Kind 只接受 browser_upload / clipboard_image",
+            )
+        raw_note = request.headers.get("x-qio-user-note") or ""
+        try:
+            user_note = unquote(raw_note)
+        except Exception:  # noqa: BLE001 - 解不出来就按原文记录
+            user_note = raw_note
         limit = attachments.max_upload_bytes
         declared = request.headers.get("content-length")
         if declared and declared.isdigit() and int(declared) > limit:
             raise HTTPException(status_code=413, detail=_upload_limit_detail())
         raw_name = request.headers.get("x-qio-name") or "attachment"
         try:
-            from urllib.parse import unquote
-
             name = unquote(raw_name)
         except Exception:  # noqa: BLE001 - 头里的名字解不出来就退回原名
             name = raw_name
         topic_id = request.headers.get("x-qio-topic-id") or None
-        # 先登记一行（prepared）：字节由工作线程落盘，状态由事件循环线程落库
-        att = attachments.begin_upload(
-            name=name, topic_id=str(topic_id) if topic_id else None
+        # 先登记一行（prepared）：字节由工作线程首次落盘，状态由事件循环线程落库
+        att = attachments.begin_material(
+            name=name,
+            source_kind=source_kind,
+            topic_id=str(topic_id) if topic_id else None,
+            user_note=user_note,
         )
-        # 本操作自己的代际（begin_upload 已经登记过一次准备）：之后任何更新的准备
-        # （重新定位 / 重试）都会把它顶掉 —— 这次上传的收尾与结果因此可以被判为过期。
+        # 本操作自己的代际（begin_material 已经登记过一次准备）：之后任何更新的操作
+        # 都会把它顶掉 —— 这次上传的收尾与结果因此可以被判为过期。
         upload_generation = attachments.prepare_generation(att.id)
         # 一次上传 = 一个作业：队列 + 终态 + 工作线程句柄，接收端/工作线程/取消清理共享它。
         # 这样「工作线程死了」不再表现为「队列永远等不到空位」，取消也能解除工作线程的阻塞读。
@@ -1524,7 +1723,7 @@ def create_app(
             generation=upload_generation,
         )
         worker = asyncio.create_task(
-            asyncio.to_thread(run_upload_worker, attachments, att, job, max_bytes=limit)
+            asyncio.to_thread(run_material_worker, attachments, att, job, max_bytes=limit)
         )
         received = 0
         too_large = False
@@ -1577,10 +1776,10 @@ def create_app(
             await _settle_upload_worker(worker, job, attachment_id=att.id)
             _converge_upload(
                 att.id,
-                "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                "上传被取消（服务关闭或请求中断）；没有保存任何数据",
                 generation=upload_generation,
             )
-            _purge_uncommitted_copy(att, generation=upload_generation)
+            _purge_uncommitted_material(att, generation=upload_generation)
             job.close()
             raise
         except Exception as exc:  # noqa: BLE001 - 客户端断开/协议错误：按中止处理
@@ -1597,7 +1796,7 @@ def create_app(
             with contextlib.suppress(BaseException):
                 await stream.aclose()
             if read_error is not None:
-                job.abort(f"上传被中断：{redact_text(str(read_error))}；没有保存任何副本")
+                job.abort(f"上传被中断：{redact_text(str(read_error))}；没有保存任何数据")
             with contextlib.suppress(UploadJobEnded):
                 await job.close_input(abort=bool(too_large or read_error))
         try:
@@ -1612,20 +1811,20 @@ def create_app(
                 attachments.cancel(att.id)  # 迟到结果的最后一道闸：不得提交 ready
                 _converge_upload(
                     att.id,
-                    "上传收尾超时（磁盘调用没有返回）；没有提交副本",
+                    "上传收尾超时（磁盘调用没有返回）；没有提交任何材料",
                     generation=upload_generation,
                 )
-                _purge_uncommitted_copy(att, generation=upload_generation)
+                _purge_uncommitted_material(att, generation=upload_generation)
                 # 安排可靠清理：工作线程真正退出时再清一次 —— 它可能刚好在 os.replace
                 # 里（提交发生在我们的清理之后），那一份副本同样不能留成孤儿。
                 worker.add_done_callback(
-                    lambda _task: _purge_uncommitted_copy(
+                    lambda _task: _purge_uncommitted_material(
                         att, generation=upload_generation
                     )
                 )
                 raise HTTPException(
                     status_code=500,
-                    detail="上传收尾超时：工作线程的磁盘调用没有返回；没有保存副本",
+                    detail="上传收尾超时：工作线程的磁盘调用没有返回；没有保存任何数据",
                 ) from None
             except (UploadTooLarge, UploadAborted) as exc:
                 # 超限/中止都不留行、不留文件：这不是「失败的附件」，是被拒绝的上传
@@ -1653,29 +1852,29 @@ def create_app(
                 await _settle_upload_worker(worker, job, attachment_id=att.id)
                 _converge_upload(
                     att.id,
-                    "上传被取消（服务关闭或请求中断）；没有保存任何副本",
+                    "上传被取消（服务关闭或请求中断）；没有保存任何数据",
                     generation=upload_generation,
                 )
-                _purge_uncommitted_copy(att, generation=upload_generation)
+                _purge_uncommitted_material(att, generation=upload_generation)
                 raise
             # 原因归属互不覆盖（契约 §1.2）：写盘失败 > 超限 > 客户端断开 > 用户取消 > 服务关闭。
             # 作业终态是「第一个到达的原因」（UploadJob._mark 幂等），这里按同一优先级映射 HTTP。
             if outcome.state == DISK_FAILED:
                 # 真实写盘失败（建目录 / 打开 / 写入途中 / 权限）：不装作成功 ——
                 # 行如实转 failed（带人话原因，可重试），HTTP 报服务端失败。
-                applied = attachments.apply_outcome(
+                applied = attachments.apply_material_outcome(
                     att.id, outcome, generation=upload_generation
                 )
                 if applied is None:
                     raise HTTPException(status_code=404, detail="上传期间附件已被移除")
                 raise HTTPException(
                     status_code=500,
-                    detail=outcome.error or "上传失败：没有保存副本",
+                    detail=outcome.error or "上传失败：没有保存任何数据",
                 )
             if too_large:
                 attachments.delete(att.id)
                 raise HTTPException(status_code=413, detail=_upload_limit_detail())
-            applied = attachments.apply_outcome(
+            applied = attachments.apply_material_outcome(
                 att.id, outcome, generation=upload_generation
             )
             if applied is None:
@@ -1699,43 +1898,118 @@ def create_app(
 
     @app.get("/api/attachments/{attachment_id}")
     async def get_attachment(attachment_id: str) -> dict:
-        """元数据 + 可用性/变化检查：missing（不在原位）/ changed（内容与登记时不同）。"""
-        att = attachments.get(attachment_id)
+        """元数据 + 可用性/变化检查：missing（不在原位）/ changed（内容与登记时不同）。
+
+        新记录在这里触发一次**使用时的有限范围解析**（契约 §7）：源文件被同卷移动/改名时
+        按 volume+file_id 自动修复位置并把事实写回；找不到就如实报 missing，不伪造恢复。
+        """
+        att = attachments.get(attachment_id, check=False)
         if att is None:
             raise HTTPException(status_code=404, detail="没有这个附件")
+        if attachments.is_source_ref(att):
+            attachments.resolve_source(attachment_id)
+            att = attachments.get(attachment_id, check=False) or att
         return {"ok": True, "attachment": attachments.payload(att)}
 
     @app.get("/api/attachments/{attachment_id}/content")
     async def attachment_content(attachment_id: str) -> FileResponse:
-        """打开/下载一个附件：**只读 QIO 自己管理的副本**。
+        """打开/下载一个附件：读取入口统一走 resolve_source（契约 §6.2）。
 
-        * 只认 kind=copy 且 state=ready 的副本，路径由 id 从数据库取，
-          **绝不接受调用方给的任意路径** —— 这是「打开历史附件」与「任意文件读取」的分界线；
-        * 沿用 /api/* 的会话令牌认证（session_guard 中间件），没有裸链接；
-        * 文件名只用 QIO 清洗过的 original_name（safe_name 落盘名，不含路径），
+        * 新记录（source_kind 非 NULL）：读**登记的源文件**，不读任何副本；
+          源文件缺失/待确认时如实 409，并给出可重新定位的原因；
+        * 历史记录：沿用只读回放口径（旧副本优先，其次原文件），只服务历史数据；
+        * 路径永远由 attachment id 从数据库/解析器取，**绝不接受调用方给的任意路径**；
+        * 沿用 /api/* 的会话令牌认证，没有裸链接；文件名只用清洗过的 original_name，
           并带 X-Content-Type-Options: nosniff；HTML/SVG 这类会执行脚本的类型不内联。
         """
-        try:
-            path, name = attachments.content_target(attachment_id)
-        except AttachmentContentError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        att = attachments.get(attachment_id, check=False)
+        if att is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
+        from agent.services import attachment_access
+
+        auth_path: Path | None = None
+        auth_identity = getattr(att, "file_id", None)
+        if attachments.is_source_ref(att):
+            resolved = attachments.resolve_source(attachment_id)
+            if resolved.path is None or resolved.state == REFERENCE_MISSING:
+                raise HTTPException(
+                    status_code=409,
+                    detail=resolved.reason or "源文件当前不可用；可以重新指定位置",
+                )
+            path, name = resolved.path, att.original_name
+            headers["X-QIO-Reference-State"] = str(resolved.state or "")
+            if resolved.state == REFERENCE_AMBIGUOUS:
+                headers["X-QIO-Identity-Warning"] = "1"
+            auth_path = path
+        else:
+            try:
+                path, name = attachments.content_target(attachment_id)
+            except AttachmentContentError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+            auth_path = path
+        # 读取是一次 READ effect：必须经统一授权网关（契约 §3.1）。
+        decision = await attachment_access.authorize_read(
+            attachment_access.gateway_of(ctx),
+            path=auth_path,
+            identity=auth_identity,
+            purpose=f"打开附件「{att.original_name}」",
+            tool="attachment.content",
+            detail={"attachment_id": attachment_id},
+        )
+        if decision["verdict"] == "deny":
+            raise HTTPException(
+                status_code=403,
+                detail=decision["reason"] or "读取附件被授权拒绝",
+            )
+        if decision["verdict"] == "approve":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "pending_approval",
+                    "message": "打开附件需要用户批准；批准后会自动执行",
+                    "approval_id": decision.get("approval_id"),
+                    "reason": decision["reason"],
+                },
+            )
         media_type = INLINE_SAFE_SUFFIXES.get(Path(name).suffix.lower(), "application/octet-stream")
         return FileResponse(
             path,
             media_type=media_type,
             filename=name,
-            headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+            headers=headers,
         )
 
     @app.post("/api/attachments/{attachment_id}/relocate")
     async def relocate_attachment(attachment_id: str, body: dict) -> dict:
-        """文件被移动/改名之后重新指定位置；副本按新来源重做。
+        """文件被移动/改名之后重新指定源文件位置（契约 §6.2 / §7）。
 
-        重新校验（真实大小 → copy / reference、状态、位置）后把准备交给后台：
-        工作线程只做文件 I/O，状态回事件循环线程落库（审计问题 6）。
-        响应是**受理事实**（prepared / missing / failed）：不要当成功，
-        按 GET /api/attachments/{id} 跟到 ready / failed / changed。
+        新记录：只有 volume+file_id 相同才自动修复；身份不同必须
+        confirmed_identity=true（用户确认「这是同一文件吗」），否则 409 + 候选事实。
+        历史记录：保留旧的重定位/重建副本路径，只服务历史数据。
         """
+        current = attachments.get(attachment_id, check=False)
+        if current is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        if attachments.is_source_ref(current):
+            try:
+                att = attachments.relocate_reference(
+                    attachment_id,
+                    str(body.get("source_path") or ""),
+                    confirmed_identity=bool(body.get("confirmed_identity")),
+                )
+            except AttachmentConfirmationRequired as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "identity_confirmation_required",
+                        "message": str(exc),
+                        "candidates": exc.candidates,
+                    },
+                ) from exc
+            except AttachmentError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return {"ok": True, "attachment": attachments.payload(att, check=False)}
         try:
             att = attachments.plan_relocate(attachment_id, str(body.get("source_path") or ""))
         except AttachmentError as exc:
@@ -1750,6 +2024,14 @@ def create_app(
         att = attachments.get(attachment_id, check=False)
         if att is None:
             raise HTTPException(status_code=404, detail="没有这个附件")
+        if attachments.is_source_ref(att) and not att.source_path:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "这条附件来自浏览器上传：内容只在客户端，服务端没有可重放的字节；"
+                    "请重新上传（retry 不适用）"
+                ),
+            )
         # F24：先登记「已受理且正在准备」，再调度 —— 否则响应里只有上次的 missing/failed，
         # 界面会把它当最终失败而停止等待（副本其实正在重新复制）。
         attachments.mark_preparing_for_retry(att.id)
@@ -1758,20 +2040,52 @@ def create_app(
 
     @app.delete("/api/attachments/{attachment_id}")
     async def delete_attachment(attachment_id: str) -> dict:
-        """移除附件：**只删 QIO 自己管理的副本，绝不动用户原文件**。
+        """删除引用：**只删卡片/引用行，绝不删除源文件**（契约 §6.2 / §8）。
 
-        正在复制时调用它 = 取消：复制线程在分块之间看到标志就停下并清掉临时文件。
+        新记录：删引用行；源文件、用户材料文件都保留（将来的清理走回收站审批清单）。
+        历史记录：保留旧行为（清理 QIO 自己管理目录下的旧副本，用户原文件仍不动）。
         """
         # 先中止正在进行的上传作业：删除附件 = 取消这次上传。
-        # 不能只靠服务侧的取消事件 —— services/attachments.py 的 delete() 置位后会把事件从
-        # _cancel 里清掉，事后轮询的取块循环就看不到取消了（CI py3.12 的取消用例红在这里）。
         abort_jobs_for(
-            attachment_id, "附件已被移除，上传取消；没有保存任何副本"
+            attachment_id, "附件已被移除，上传取消；没有保存任何数据"
         )
-        result = attachments.delete(attachment_id)
+        current = attachments.get(attachment_id, check=False)
+        if current is not None and not attachments.is_source_ref(current):
+            # 历史记录：旧行为（只清理 QIO 管理目录下的旧副本，用户原文件不动）
+            legacy = attachments.delete(attachment_id)
+            if not legacy["removed"]:
+                raise HTTPException(status_code=404, detail="没有这个附件")
+            return {"ok": True, **legacy}
+        result = attachments.remove_reference(attachment_id)
         if not result["removed"]:
             raise HTTPException(status_code=404, detail="没有这个附件")
-        return {"ok": True, **result}
+        body = {"ok": True, **result}
+        # 兼容字段：新语义永远不删文件，deleted_copy 恒为 None
+        body.setdefault("deleted_copy", result.get("deleted_legacy_copy"))
+        return body
+
+    @app.patch("/api/attachments/{attachment_id}/material")
+    async def set_attachment_material(attachment_id: str, body: dict) -> dict:
+        """「作为互动材料」开关（契约 §8）：只控制是否主动纳入互动上下文。
+
+        这不是操作系统文件访问权限；关掉不等于 QIO 不能读（用户明确要求读取时仍走
+        resolve_source 与统一授权）。
+        """
+        current = attachments.get(attachment_id, check=False)
+        if current is None:
+            raise HTTPException(status_code=404, detail="没有这个附件")
+        try:
+            att = attachments.set_material_enabled(
+                attachment_id, bool(body.get("enabled"))
+            )
+        except AttachmentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "attachment": attachments.payload(att, check=False)}
+
+    @app.post("/api/attachments/{attachment_id}/material-enabled")
+    async def set_attachment_material_enabled(attachment_id: str, body: dict) -> dict:
+        """兼容入口：与 PATCH /material 等价（前端可任选其一）。"""
+        return await set_attachment_material(attachment_id, body)
 
     # -- 轮次绑定：B 的冻结回执 + 受理前预检（round4 §1.2） -------------------
 
@@ -2431,6 +2745,8 @@ def create_app(
             # 结束事实（R4 S6）：RESYNC 时把「当前相关轮次」（运行 / 排队 / 刚取消 /
             # 上一个进程留下的未完成轮）的事实一并给前端，按 turn_id 合并。
             "turn_facts": _turn_facts_for(_current_turn_ids()),
+            # R9-H4 §8：内部数据身份登记失败必须可见（不静默降级）。
+            "internal_data_identity": _internal_data_identity_state(ctx),
         }
 
     @app.post("/api/turns/prepare/{prepare_id}/cancel")
@@ -2666,6 +2982,24 @@ def create_app(
         ids.extend(str(item.get("turn_id") or "") for item in snapshot.get("cancelled") or [])
         ids.extend(str(row.get("turn_id") or "") for row in ctx.turn_journal.unfinished())
         return ids
+
+    def _internal_data_identity_state(ctx) -> dict:
+        """内部数据身份登记诊断：失败可见，不把读取失败当“没有登记”。"""
+        store = getattr(ctx, "internal_data_identity", None)
+        health: dict = {}
+        get_health = getattr(store, "health", None)
+        if callable(get_health):
+            try:
+                health = dict(get_health() or {})
+            except Exception as exc:  # noqa: BLE001 - 诊断失败也只如实返回
+                health = {
+                    "ready": False,
+                    "last_error": type(exc).__name__ + ": " + str(exc),
+                }
+        return {
+            "error": getattr(ctx, "internal_data_identity_error", None),
+            "health": health,
+        }
 
     def _turn_facts_for(turn_ids) -> list[dict]:
         """这一页 / 当前相关轮次的结束事实（R4 S6）：**一次批量查询**，绝不 N+1。
@@ -3393,6 +3727,112 @@ def create_app(
             "current_version": outcome.current_version,
         }
 
+    # -- 附件旧数据迁移（R9 §9）--------------------------------------------
+
+    @app.get("/api/maintenance/attachments/migration")
+    async def attachment_migration_status() -> dict:
+        """盘点 + 审计 + 清理清单（只读）。维护接口可反复查看，不触发迁移。"""
+        from agent.storage import attachment_migration
+
+        data_dir = ctx.settings.data_dir
+        return {
+            "ok": True,
+            "inventory": attachment_migration.inventory(ctx.conn, data_dir),
+            "pending": attachment_migration.pending_count(ctx.conn),
+            "audit": attachment_migration.audit_rows(ctx.conn)[-500:],
+            "cleanup_candidates": attachment_migration.cleanup_candidates(ctx.conn),
+        }
+
+    @app.post("/api/maintenance/attachments/migration")
+    async def run_attachment_migration(body: dict | None = None) -> dict:
+        """重新运行旧附件迁移（幂等、断点续跑）。
+
+        body.apply=false 只做盘点/计划，不写任何附件行；默认 apply=true。
+        """
+        from agent.storage import attachment_migration
+
+        apply = True
+        if isinstance(body, dict) and "apply" in body:
+            apply = bool(body.get("apply"))
+        data_dir = ctx.settings.data_dir
+        report = attachment_migration.migrate(ctx.conn, data_dir, apply=apply)
+        return {
+            "ok": True,
+            "report": report,
+            "inventory": (
+                attachment_migration.inventory(ctx.conn, data_dir)
+                if apply
+                else None
+            ),
+            "cleanup_candidates": attachment_migration.cleanup_candidates(ctx.conn),
+        }
+
+    @app.post("/api/maintenance/attachments/cleanup")
+    async def cleanup_attachment_materials(body: dict | None = None) -> dict:
+        """清理迁移产生的冗余材料：DELETE effect → 授权 → **系统回收站**。
+
+        body: {"attachment_ids": [id...]}（缺省 = 全部 cleanup candidate，但只处理
+        明确指定的候选，绝不按通配清理）；approve 时提交待审批清单，allow 时才回收。
+        回收失败保留文件并如实返回；绝不永久删除。
+        """
+        from agent.services import attachment_access
+        from agent.storage import attachment_migration
+
+        payload = body if isinstance(body, dict) else {}
+        wanted = {str(item) for item in (payload.get("attachment_ids") or []) if str(item)}
+        candidates = attachment_migration.cleanup_candidates(ctx.conn)
+        if wanted:
+            candidates = [row for row in candidates if str(row["attachment_id"]) in wanted]
+        candidates = [row for row in candidates if str(row.get("state") or "") == "candidate"]
+        targets = []
+        for row in candidates:
+            path = str(row.get("path") or "")
+            if not path:
+                continue
+            identity = None
+            try:
+                from agent.services.file_identity import identity_of
+
+                found = identity_of(Path(path))
+                identity = found.key if found is not None else None
+            except Exception:  # noqa: BLE001 - 身份拿不到不影响审批（写回前会重核对）
+                identity = None
+            targets.append(
+                {
+                    "attachment_id": str(row.get("attachment_id") or ""),
+                    "path": path,
+                    "identity": identity,
+                    "reason": str(row.get("reason") or ""),
+                }
+            )
+        if not targets:
+            return {"ok": True, "results": [], "pending_approval": False}
+        try:
+            outcome = await ctx.attachments.recycle_material_files(
+                targets,
+                gateway=attachment_access.gateway_of(ctx),
+                purpose="清理迁移后已被源文件引用取代的历史副本",
+            )
+        except Exception as exc:  # noqa: BLE001 - 统一授权拒绝要如实反馈
+            from agent.services.attachments import AttachmentPermissionDenied
+
+            if isinstance(exc, AttachmentPermissionDenied):
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            raise
+        if outcome.get("pending_approval"):
+            return outcome
+        # 回收成功/失败的候选状态如实落库（失败保持 candidate，可重试）
+        by_id = {
+            str(item.get("attachment_id") or ""): item
+            for item in outcome.get("results") or []
+        }
+        for attachment_id, item in by_id.items():
+            state = "recycled" if item.get("ok") else "failed"
+            attachment_migration.mark_cleanup_candidate_state(
+                ctx.conn, attachment_id, state
+            )
+        return outcome
+
     # -- maintenance -------------------------------------------------------
 
     @app.post("/api/maintenance/run")
@@ -3426,8 +3866,60 @@ def create_app(
 
     # -- approvals ---------------------------------------------------------
 
+    from agent.storage.approvals import ApprovalError as _ApprovalError
+
+    def _approval_http_error(exc: _ApprovalError) -> HTTPException:
+        return HTTPException(
+            status_code=getattr(exc, "status_code", 400),
+            detail={"code": getattr(exc, "code", "approval_error"), "message": str(exc)},
+        )
+
+    @app.get("/api/approvals/pending")
+    async def list_pending_approvals() -> dict:
+        """等待用户决定的审批（含操作摘要、过期时间、确认阶段、来源）。"""
+        return {"approvals": approvals.pending(), "instance_id": instance_id}
+
+    @app.get("/api/approvals/history")
+    async def list_approval_history(limit: int = 50) -> dict:
+        return {"history": approvals.history(limit=max(1, min(int(limit), 200)))}
+
+    @app.post("/api/approvals/{approval_id}/decide")
+    async def decide_approval(approval_id: str, body: dict) -> dict:
+        decision = str(body.get("decision") or "")
+        expected_revision = body.get("expected_revision")
+        scope = body.get("scope")
+        try:
+            row = await approvals.decide(
+                approval_id,
+                decision,
+                expected_revision=expected_revision,
+                scope=scope,
+            )
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"ok": True, "approval": row, "decision": decision}
+
+    @app.post("/api/approvals/{approval_id}/confirm")
+    async def confirm_approval(approval_id: str, body: dict) -> dict:
+        """内部运行数据连续三次确认（后端 CAS；前端只呈现）。"""
+        if "stage" not in body:
+            raise HTTPException(status_code=400, detail="缺少 stage（1/2/3）")
+        try:
+            stage = int(body.get("stage"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="stage 必须是 1/2/3") from exc
+        expected_revision = body.get("expected_revision")
+        try:
+            row = await approvals.confirm(
+                approval_id, stage, expected_revision=expected_revision
+            )
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"ok": True, "approval": row, "confirmed_stage": row.get("confirmed_stage")}
+
     @app.post("/api/approvals/{approval_id}/respond")
     async def respond_approval(approval_id: str, body: dict) -> dict:
+        """旧接口保留兼容：映射到 decide；新前端用 decide/confirm。"""
         decision = body.get("decision", "")
         scope = body.get("scope")
         overrides = body.get("overrides")
@@ -3446,6 +3938,8 @@ def create_app(
                 session_id=session_id,
                 digest=digest,
             )
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not handled:
@@ -3472,6 +3966,7 @@ def create_app(
     app.state.auth = auth
     app.state.instance_id = instance_id
     app.state.approvals = approvals
+    app.state.authorization = ctx.authorization
     app.state.ctx = ctx
     # A01/A03：可恢复记录收件箱（历史无归属消息 / 孤立重发 / 归属判不出来的记录）
     # 与它们的处理动作。路由工厂在本文件之外，避免把恢复规则塞进这个长文件。

@@ -1,0 +1,1227 @@
+resolve + assert SHA	Set up job	﻿2026-10-25T08:43:47.0174902Z Current runner version: '2.338.0'
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0199847Z ##[group]Runner Image Provisioner
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0200824Z Hosted Compute Agent
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0201451Z Version: 20261021.618
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0202405Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0203210Z Build Date: 2026-10-21T00:45:21Z
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0203894Z Worker ID: {8c5464ed-4717-4931-9865-b5f4ccf7c548}
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0204590Z Region: northcentralus
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0205224Z Cloud: Azure
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0205794Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0207355Z ##[group]Operating System
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0208132Z Ubuntu
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0208634Z 24.04.5
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0209333Z LTS
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0209887Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0210465Z ##[group]Runner Image
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0211091Z Image: ubuntu-24.04
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0211647Z Version: 20261012.334.1
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0213050Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0215348Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0216416Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0217560Z ##[group]GITHUB_TOKEN Permissions
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0219504Z Contents: read
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0220135Z Metadata: read
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0220780Z ##[endgroup]
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0223027Z Secret source: Actions
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0224120Z Cache mode: write
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0225842Z Prepare workflow directory
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0749857Z Prepare all required actions
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.0797930Z Getting action download info
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.3293609Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.4634584Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+resolve + assert SHA	Set up job	2026-10-25T08:43:47.6678056Z Complete job name: resolve + assert SHA
+resolve + assert SHA	Resolve requested ref/SHA	﻿2026-10-25T08:43:47.7380411Z ##[group]Run set -euo pipefail
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7381114Z ^[[36;1mset -euo pipefail^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7382080Z ^[[36;1m# SHAs must be complete: a short prefix cannot prove which commit ran.^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7383055Z ^[[36;1mif ! printf '%s' "${REQUESTED_SHA}" | grep -Eq '^[0-9a-fA-F]{40}$'; then^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7384134Z ^[[36;1m  echo "::error title=targeted verify input::sha 必须是完整的 40 位十六进制提交 SHA（收到 '${REQUESTED_SHA}'）"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7385007Z ^[[36;1m  exit 1^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7385447Z ^[[36;1mfi^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7385958Z ^[[36;1mecho "sha=${REQUESTED_SHA}" >> "$GITHUB_OUTPUT"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7386695Z ^[[36;1mecho "ref=${REQUESTED_REF}" >> "$GITHUB_OUTPUT"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7387445Z ^[[36;1mecho "event_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7388146Z ^[[36;1mecho "requested ref : ${REQUESTED_REF}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7388786Z ^[[36;1mecho "requested sha : ${REQUESTED_SHA}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7389410Z ^[[36;1mecho "event sha     : ${GITHUB_SHA}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7390073Z ^[[36;1mecho "dispatch ref  : ${GITHUB_REF}"^[[0m
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7675502Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7676523Z env:
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7676988Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7677497Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7678070Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7678592Z   REQUESTED_REF: r9h13/main
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7679185Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7679829Z ##[endgroup]
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7874192Z requested ref : r9h13/main
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7875348Z requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7876209Z event sha     : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Resolve requested ref/SHA	2026-10-25T08:43:47.7876871Z dispatch ref  : refs/heads/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	﻿2026-10-25T08:43:47.8139637Z ##[group]Run actions/checkout@v5
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8140555Z with:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8141230Z   ref: r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8142481Z   fetch-depth: 0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8143247Z   persist-credentials: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8144106Z   repository: HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8151200Z   token: ***
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8152169Z   ssh-strict: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8152920Z   ssh-user: git
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8153626Z   clean: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8154364Z   sparse-checkout-cone-mode: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8155285Z   fetch-tags: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8156099Z   show-progress: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8156851Z   lfs: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8157540Z   submodules: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8158291Z   set-safe-directory: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8159129Z   allow-unsafe-pr-checkout: false
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8159979Z env:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8160648Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8161433Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8162881Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.8163637Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9122553Z Syncing repository: HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9124589Z ##[group]Getting Git version info
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9125272Z Working directory is '/home/runner/work/QIO/QIO'
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9126224Z [command]/usr/bin/git version
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9231433Z git version 2.55.0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9256313Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9273000Z Temporarily overriding HOME='/home/runner/work/_temp/61fb50c6-950b-43a1-80ef-b0ea1fbc06a7' before making global git config changes
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9275341Z Adding repository directory to the temporary git global config as a safe directory
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9277954Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9338067Z Deleting the contents of '/home/runner/work/QIO/QIO'
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9345956Z ##[group]Initializing the repository
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9348063Z [command]/usr/bin/git init /home/runner/work/QIO/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9479576Z hint: Using 'master' as the name for the initial branch. This default branch name
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9481482Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9483263Z hint: to use in all of your new repositories, which will suppress this warning,
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9484473Z hint: call:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9485121Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9485951Z hint: 	git config --global init.defaultBranch <name>
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9486961Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9487929Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9489577Z hint: 'development'. The just-created branch can be renamed via this command:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9490819Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9491500Z hint: 	git branch -m <name>
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9492519Z hint:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9493556Z hint: Disable this message with "git config set advice.defaultBranchName false"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9495158Z Initialized empty Git repository in /home/runner/work/QIO/QIO/.git/
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9506501Z [command]/usr/bin/git remote add origin https://github.com/HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9566043Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9567292Z ##[group]Disabling automatic garbage collection
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9570004Z [command]/usr/bin/git config --local gc.auto 0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9604409Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9606045Z ##[group]Setting up auth
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9611616Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:47.9667533Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0081159Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0120365Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0362376Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0407891Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0664943Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0710874Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0712988Z ##[group]Fetching the repository
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:48.0722726Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2493708Z From https://github.com/HebiIsHere/QIO
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2496901Z  * [new branch]        ci/targeted-verify-entry -> origin/ci/targeted-verify-entry
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2500183Z  * [new branch]        feat/conversation-page-v2 -> origin/feat/conversation-page-v2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2503677Z  * [new branch]        feat/frameless-window-023 -> origin/feat/frameless-window-023
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2507031Z  * [new branch]        feat/interactive-foundation -> origin/feat/interactive-foundation
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2510592Z  * [new branch]        feat/interactive-frontend-layout -> origin/feat/interactive-frontend-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2515133Z  * [new branch]        feat/interactive-image-card-simplification -> origin/feat/interactive-image-card-simplification
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2518607Z  * [new branch]        feat/interactive-intent-preview -> origin/feat/interactive-intent-preview
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2521980Z  * [new branch]        feat/interactive-page-v2 -> origin/feat/interactive-page-v2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2524875Z  * [new branch]        feat/interactive-real-model -> origin/feat/interactive-real-model
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2528035Z  * [new branch]        feat/interactive-resizable-layout -> origin/feat/interactive-resizable-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2531201Z  * [new branch]        feat/qio-refactor-p4 -> origin/feat/qio-refactor-p4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2534579Z  * [new branch]        feat/unified-cards-media-preview-021 -> origin/feat/unified-cards-media-preview-021
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2538684Z  * [new branch]        feat/unified-process-attachments-streaming -> origin/feat/unified-process-attachments-streaming
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2543642Z  * [new branch]        fix/attachment-readiness-stream-boundaries -> origin/fix/attachment-readiness-stream-boundaries
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2548121Z  * [new branch]        fix/attachment-send-cancel-integrity -> origin/fix/attachment-send-cancel-integrity
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2551933Z  * [new branch]        fix/chat-image-delivery-023 -> origin/fix/chat-image-delivery-023
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2555458Z  * [new branch]        fix/global-scroll-dialog-layout -> origin/fix/global-scroll-dialog-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2561129Z  * [new branch]        fix/interactive-attachment-notice-connect-resize -> origin/fix/interactive-attachment-notice-connect-resize
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2568332Z  * [new branch]        fix/interactive-bottom-toolbar-layout -> origin/fix/interactive-bottom-toolbar-layout
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2574576Z  * [new branch]        fix/interactive-card-toolbar-anchor -> origin/fix/interactive-card-toolbar-anchor
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2579556Z  * [new branch]        fix/interactive-closure-followup -> origin/fix/interactive-closure-followup
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2585576Z  * [new branch]        fix/interactive-content-protection-polish -> origin/fix/interactive-content-protection-polish
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2591502Z  * [new branch]        fix/interactive-draft-races-ui-polish -> origin/fix/interactive-draft-races-ui-polish
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2598388Z  * [new branch]        fix/interactive-draft-recovery-completion -> origin/fix/interactive-draft-recovery-completion
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2604529Z  * [new branch]        fix/interactive-final-closure -> origin/fix/interactive-final-closure
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2610727Z  * [new branch]        fix/interactive-markdown-layout-continuity -> origin/fix/interactive-markdown-layout-continuity
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2616165Z  * [new branch]        fix/interactive-materials-drafts-preview -> origin/fix/interactive-materials-drafts-preview
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2620281Z  * [new branch]        fix/interactive-state-recovery-completion -> origin/fix/interactive-state-recovery-completion
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2624548Z  * [new branch]        fix/interactive-ui-refinement -> origin/fix/interactive-ui-refinement
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2627703Z  * [new branch]        fix/main-audit-reliability-8fa8452 -> origin/fix/main-audit-reliability-8fa8452
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2631138Z  * [new branch]        fix/main-reliability-memory-20261009-r2 -> origin/fix/main-reliability-memory-20261009-r2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2635281Z  * [new branch]        fix/main-safety-state-responsiveness-20261009 -> origin/fix/main-safety-state-responsiveness-20261009
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2639299Z  * [new branch]        fix/preparation-cancel-and-spill-recovery -> origin/fix/preparation-cancel-and-spill-recovery
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2643394Z  * [new branch]        fix/process-attachment-audit-consolidation -> origin/fix/process-attachment-audit-consolidation
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2647360Z  * [new branch]        fix/process-attachment-audit-final-boundaries -> origin/fix/process-attachment-audit-final-boundaries
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2651045Z  * [new branch]        fix/process-attachment-audit-round2 -> origin/fix/process-attachment-audit-round2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2654540Z  * [new branch]        fix/process-stream-retry-upload -> origin/fix/process-stream-retry-upload
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2657795Z  * [new branch]        fix/process-upload-final-convergence -> origin/fix/process-upload-final-convergence
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2661712Z  * [new branch]        fix/reliability-followup-closeout-20261010-f01f10 -> origin/fix/reliability-followup-closeout-20261010-f01f10
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2666236Z  * [new branch]        fix/reliability-memory-followup-20261010-a7f3 -> origin/fix/reliability-memory-followup-20261010-a7f3
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2670013Z  * [new branch]        fix/streaming-main-closeout-20261011 -> origin/fix/streaming-main-closeout-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2673362Z  * [new branch]        fix/unified-process-audit -> origin/fix/unified-process-audit
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2676235Z  * [new branch]        integrate/interactive-main-20261011 -> origin/integrate/interactive-main-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2680002Z  * [new branch]        integrate/reliability-interactive-real-model-20261011 -> origin/integrate/reliability-interactive-real-model-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2684015Z  * [new branch]        integrate/streaming-main-20261011 -> origin/integrate/streaming-main-20261011
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2686366Z  * [new branch]        main                 -> origin/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2688069Z  * [new branch]        r9/main              -> origin/r9/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2689819Z  * [new branch]        r9f/main             -> origin/r9f/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2691598Z  * [new branch]        r9g/main             -> origin/r9g/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2693689Z  * [new branch]        r9h/main             -> origin/r9h/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2695482Z  * [new branch]        r9h10/main           -> origin/r9h10/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2697267Z  * [new branch]        r9h11/main           -> origin/r9h11/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2699067Z  * [new branch]        r9h12/main           -> origin/r9h12/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2700887Z  * [new branch]        r9h13/main           -> origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2702910Z  * [new branch]        r9h2/main            -> origin/r9h2/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2704692Z  * [new branch]        r9h3/main            -> origin/r9h3/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2706444Z  * [new branch]        r9h4/main            -> origin/r9h4/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2708198Z  * [new branch]        r9h5/main            -> origin/r9h5/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2709955Z  * [new branch]        r9h6/main            -> origin/r9h6/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2712206Z  * [new branch]        r9h7/main            -> origin/r9h7/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2714213Z  * [new branch]        r9h8/main            -> origin/r9h8/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2715999Z  * [new branch]        r9h9/main            -> origin/r9h9/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2717837Z  * [new branch]        release/0.2.4        -> origin/release/0.2.4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2720156Z  * [new branch]        research/memory-retrieval-eval -> origin/research/memory-retrieval-eval
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2722737Z  * [new branch]        wt/acc-b             -> origin/wt/acc-b
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2724536Z  * [new branch]        wt/acc-b2            -> origin/wt/acc-b2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2726287Z  * [new branch]        wt/acc-c             -> origin/wt/acc-c
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2728055Z  * [new branch]        wt/acc-c2            -> origin/wt/acc-c2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2729824Z  * [new branch]        wt/acc-d             -> origin/wt/acc-d
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2731606Z  * [new branch]        wt/acc-doc           -> origin/wt/acc-doc
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2733710Z  * [new branch]        wt/acc-e             -> origin/wt/acc-e
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2735491Z  * [new branch]        wt/acc-e2            -> origin/wt/acc-e2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2737239Z  * [new branch]        wt/acc-f             -> origin/wt/acc-f
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2738977Z  * [new branch]        wt/acc-f2            -> origin/wt/acc-f2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2740852Z  * [new branch]        wt/agent-a-runtime   -> origin/wt/agent-a-runtime
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2743070Z  * [new branch]        wt/agent-e-toolenv   -> origin/wt/agent-e-toolenv
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2744959Z  * [new branch]        wt/fb-a              -> origin/wt/fb-a
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2746653Z  * [new branch]        wt/fb-b              -> origin/wt/fb-b
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2748334Z  * [new branch]        wt/fb-c              -> origin/wt/fb-c
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2750029Z  * [new branch]        wt/fb-d              -> origin/wt/fb-d
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2751738Z  * [new branch]        wt/fb-e              -> origin/wt/fb-e
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2753689Z  * [new branch]        wt/int-a-board       -> origin/wt/int-a-board
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2755654Z  * [new branch]        wt/int-b-persist     -> origin/wt/int-b-persist
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2757642Z  * [new branch]        wt/int-c-approval    -> origin/wt/int-c-approval
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2759535Z  * [new branch]        wt/int-verify        -> origin/wt/int-verify
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2761333Z  * [new branch]        wt/p2-debt           -> origin/wt/p2-debt
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2763230Z  * [new branch]        wt/p2-isolation      -> origin/wt/p2-isolation
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2765104Z  * [new branch]        wt/p2-trace-ui       -> origin/wt/p2-trace-ui
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2766842Z  * [new branch]        wt/p3-a              -> origin/wt/p3-a
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2768491Z  * [new branch]        wt/p3-b              -> origin/wt/p3-b
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2770149Z  * [new branch]        wt/p3-c              -> origin/wt/p3-c
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2772026Z  * [new branch]        wt/p3-d              -> origin/wt/p3-d
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2773821Z  * [new branch]        wt/p3-e              -> origin/wt/p3-e
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2775525Z  * [new branch]        wt/p3-f              -> origin/wt/p3-f
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2777285Z  * [new branch]        wt/ui-a-visual       -> origin/wt/ui-a-visual
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2779126Z  * [new branch]        wt/ui-b-rules        -> origin/wt/ui-b-rules
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2780936Z  * [new branch]        wt/ui-c-drafts       -> origin/wt/ui-c-drafts
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2782929Z  * [new branch]        wt/ui-d-overlay      -> origin/wt/ui-d-overlay
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2784598Z  * [new tag]           r9-final             -> r9-final
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2786089Z  * [new tag]           r9f-final            -> r9f-final
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2787534Z  * [new tag]           v0.1.0               -> v0.1.0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2788932Z  * [new tag]           v0.1.1               -> v0.1.1
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2790571Z  * [new tag]           v0.1.10              -> v0.1.10
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2792141Z  * [new tag]           v0.1.11              -> v0.1.11
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2793710Z  * [new tag]           v0.1.12              -> v0.1.12
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2795164Z  * [new tag]           v0.1.13              -> v0.1.13
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2796589Z  * [new tag]           v0.1.14              -> v0.1.14
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2797998Z  * [new tag]           v0.1.3               -> v0.1.3
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2799415Z  * [new tag]           v0.1.4               -> v0.1.4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2800829Z  * [new tag]           v0.1.5               -> v0.1.5
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2866319Z  * [new tag]           v0.1.6               -> v0.1.6
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2868305Z  * [new tag]           v0.1.7               -> v0.1.7
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2869779Z  * [new tag]           v0.1.8               -> v0.1.8
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2871229Z  * [new tag]           v0.1.9               -> v0.1.9
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2872924Z  * [new tag]           v0.2.0               -> v0.2.0
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2874356Z  * [new tag]           v0.2.1               -> v0.2.1
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2875838Z  * [new tag]           v0.2.10              -> v0.2.10
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2877262Z  * [new tag]           v0.2.2               -> v0.2.2
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2878697Z  * [new tag]           v0.2.3               -> v0.2.3
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2880129Z  * [new tag]           v0.2.4               -> v0.2.4
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2881545Z  * [new tag]           v0.2.5               -> v0.2.5
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2883111Z  * [new tag]           v0.2.6               -> v0.2.6
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2884516Z  * [new tag]           v0.2.7               -> v0.2.7
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2885928Z  * [new tag]           v0.2.8               -> v0.2.8
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2887336Z  * [new tag]           v0.2.9               -> v0.2.9
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2890641Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2892593Z ##[group]Determining the checkout info
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2894203Z [command]/usr/bin/git branch --list --remote origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2895726Z   origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2898451Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.2899471Z [command]/usr/bin/git sparse-checkout disable
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.8460926Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.9042745Z ##[group]Checking out the ref
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:51.9046296Z [command]/usr/bin/git checkout --progress --force -B r9h13/main refs/remotes/origin/r9h13/main
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.6473401Z Switched to a new branch 'r9h13/main'
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7456701Z branch 'r9h13/main' set up to track 'origin/r9h13/main'.
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7493425Z ##[endgroup]
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7552923Z [command]/usr/bin/git log -1 --format=%H
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7570714Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7588298Z ##[group]Removing auth
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7589065Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7617709Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7854075Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7884058Z http.https://github.com/.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7891576Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.7926422Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.8151446Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.8185239Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+resolve + assert SHA	Run actions/checkout@v5	2026-10-25T08:43:52.8405087Z ##[endgroup]
+resolve + assert SHA	Assert checked-out commit equals requested SHA	﻿2026-10-25T08:43:52.8539327Z ##[group]Run set -euo pipefail
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8539848Z ^[[36;1mset -euo pipefail^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8540168Z ^[[36;1m# ref 是 40 位十六进制时它与 sha 同义，不用再解析；否则把 ref 解析成提交一起核对。^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8540573Z ^[[36;1margs=(--requested "${REQUESTED_SHA}" --label preflight)^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8541022Z ^[[36;1mif printf '%s' "${EXPECTED_REF}" | grep -Eq '^[0-9a-fA-F]{40}$'; then^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8541455Z ^[[36;1m  echo "ref 本身就是完整 SHA，跳过 ref 解析"^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8541729Z ^[[36;1melse^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8542371Z ^[[36;1m  args+=(--expected-ref "${EXPECTED_REF}")^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8542685Z ^[[36;1mfi^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8543099Z ^[[36;1mpython scripts/targeted-verify/verify_sha.py "${args[@]}" --json-out verify-sha-preflight.json^[[0m
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8608555Z shell: /usr/bin/bash -e {0}
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8608838Z env:
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8609068Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8609308Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8609586Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8609939Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8610285Z   EXPECTED_REF: r9h13/main
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.8610507Z ##[endgroup]
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9068433Z [preflight] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9069271Z [preflight] actual  from : git rev-parse HEAD
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9069968Z [preflight] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9070648Z [preflight] requested ref : r9h13/main
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9071309Z [preflight] ref     resolved: 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9072744Z [preflight] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9073557Z [preflight] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9074355Z [preflight] github event  : workflow_dispatch refs/heads/r9h13/main
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9075524Z [preflight] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）
+resolve + assert SHA	Assert checked-out commit equals requested SHA	2026-10-25T08:43:52.9076628Z [preflight] 证据已写入 verify-sha-preflight.json
+resolve + assert SHA	Print SHA evidence	﻿2026-10-25T08:43:52.9151164Z ##[group]Run cat verify-sha-preflight.json
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9151552Z ^[[36;1mcat verify-sha-preflight.json^[[0m
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9213743Z shell: /usr/bin/bash -e {0}
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9214005Z env:
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9214198Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9214444Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9214727Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9214969Z ##[endgroup]
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9300762Z {
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9301206Z   "label": "preflight",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9301769Z   "requestedSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9302834Z   "actualSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9303220Z   "actualSource": "git rev-parse HEAD",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9303557Z   "actualFrom": "git-head",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9303934Z   "expectedRef": "r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9304654Z   "refSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9305335Z   "gitHead": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9305878Z   "githubSha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9306241Z   "githubRef": "refs/heads/r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9306548Z   "githubEventName": "workflow_dispatch",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9306847Z   "assertGithubSha": false,
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9307099Z   "allowShort": false,
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9307329Z   "passed": true,
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9307554Z   "evidence": [
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9307885Z     "[preflight] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9308328Z     "[preflight] actual  from : git rev-parse HEAD",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9308746Z     "[preflight] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9309146Z     "[preflight] requested ref : r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9309556Z     "[preflight] ref     resolved: 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9310442Z     "[preflight] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9310965Z     "[preflight] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9311449Z     "[preflight] github event  : workflow_dispatch refs/heads/r9h13/main",
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9312461Z     "[preflight] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）"
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9312956Z   ]
+resolve + assert SHA	Print SHA evidence	2026-10-25T08:43:52.9313146Z }
+resolve + assert SHA	Upload SHA evidence	﻿2026-10-25T08:43:52.9374852Z ##[group]Run actions/upload-artifact@v4
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9375194Z with:
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9375449Z   name: verify-sha-preflight
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9375763Z   path: verify-sha-preflight.json
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9376061Z   if-no-files-found: error
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9376300Z   retention-days: 14
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9376518Z   compression-level: 6
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9376742Z   overwrite: false
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9376967Z   include-hidden-files: false
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9377201Z env:
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9377419Z   PYTHONHASHSEED: 0
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9377660Z   PYTEST_BASE_ARGS: -q --durations=15
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9377945Z   VERIFY_SHA_SELF_TEST: true
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:52.9378171Z ##[endgroup]
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.1055988Z (node:2344) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.1057134Z (Use `node --trace-deprecation ...` to show where the warning was created)
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.1124622Z With the provided path, there will be 1 file uploaded
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.1131385Z Artifact name is valid!
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.1134712Z Root directory input is valid!
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.3667480Z Beginning upload of artifact content to blob storage
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.3870215Z (node:2344) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.5020226Z Uploaded bytes 592
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.5405854Z Finished uploading artifact content to blob storage!
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.5406981Z SHA256 digest of uploaded artifact zip is be0e67c1a97ca4c78b370456c0cbf163a352a1d94b39cd8867fa2ebafe304d84
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:53.5409497Z Finalizing artifact upload
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:54.0087909Z Artifact verify-sha-preflight.zip successfully finalized. Artifact ID 12593067695
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:54.0089644Z Artifact verify-sha-preflight has been successfully uploaded! Final size is 592 bytes. Artifact ID is 12593067695
+resolve + assert SHA	Upload SHA evidence	2026-10-25T08:43:54.0097521Z Artifact download URL: https://github.com/HebiIsHere/QIO/actions/runs/40177769502/artifacts/12593067695
+resolve + assert SHA	Post Run actions/checkout@v5	﻿2026-10-25T08:43:54.0491107Z Post job cleanup.
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1433119Z [command]/usr/bin/git version
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1478121Z git version 2.55.0
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1525106Z Temporarily overriding HOME='/home/runner/work/_temp/c4ca10ae-e2db-46ad-9573-c1058b23d09b' before making global git config changes
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1526906Z Adding repository directory to the temporary git global config as a safe directory
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1531517Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1570405Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1607514Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1884998Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.1922861Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.2191460Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+resolve + assert SHA	Post Run actions/checkout@v5	2026-10-25T08:43:54.2231594Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+resolve + assert SHA	Complete job	﻿2026-10-25T08:43:54.2611422Z Evaluate and set job outputs
+resolve + assert SHA	Complete job	2026-10-25T08:43:54.2618223Z Set output 'sha'
+resolve + assert SHA	Complete job	2026-10-25T08:43:54.2619817Z Set output 'ref'
+resolve + assert SHA	Complete job	2026-10-25T08:43:54.2620446Z Set output 'event_sha'
+resolve + assert SHA	Complete job	2026-10-25T08:43:54.2621109Z Cleaning up orphan processes
+resolve + assert SHA	Complete job	2026-10-25T08:43:54.3196135Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+backend (py3.11)	Set up job	﻿2026-10-25T08:43:59.7707259Z Current runner version: '2.338.0'
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7731881Z ##[group]Runner Image Provisioner
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7732746Z Hosted Compute Agent
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7733625Z Version: 20261021.618
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7734308Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7735047Z Build Date: 2026-10-21T00:45:21Z
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7735834Z Worker ID: {6b6fb4aa-cbd9-4756-9181-9f2c5d3397b0}
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7736562Z Region: westus3
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7737141Z Cloud: Azure
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7737686Z ##[endgroup]
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7739250Z ##[group]Operating System
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7739984Z Ubuntu
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7740496Z 24.04.5
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7741371Z LTS
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7741973Z ##[endgroup]
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7742519Z ##[group]Runner Image
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7743232Z Image: ubuntu-24.04
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7743992Z Version: 20261012.334.1
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7745043Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7746921Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7747961Z ##[endgroup]
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7749002Z ##[group]GITHUB_TOKEN Permissions
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7751178Z Contents: read
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7751793Z Metadata: read
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7752329Z ##[endgroup]
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7754661Z Secret source: Actions
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7755611Z Cache mode: write
+backend (py3.11)	Set up job	2026-10-25T08:43:59.7756383Z Prepare workflow directory
+backend (py3.11)	Set up job	2026-10-25T08:43:59.8302550Z Prepare all required actions
+backend (py3.11)	Set up job	2026-10-25T08:43:59.8351983Z Getting action download info
+backend (py3.11)	Set up job	2026-10-25T08:44:00.1486966Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+backend (py3.11)	Set up job	2026-10-25T08:44:00.2629231Z Download action repository 'astral-sh/setup-uv@v7' (SHA:37802adc94f370d6bfd71619e3f0bf239e1f3b78)
+backend (py3.11)	Set up job	2026-10-25T08:44:01.1519241Z Complete job name: backend (py3.11)
+backend (py3.11)	Bootstrap checkout (letting the local action load)	﻿2026-10-25T08:44:01.2373219Z ##[group]Run actions/checkout@v5
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2374598Z with:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2375152Z   ref: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2375851Z   fetch-depth: 0
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2376631Z   persist-credentials: false
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2377437Z   repository: HebiIsHere/QIO
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2381654Z   token: ***
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2382210Z   ssh-strict: true
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2382694Z   ssh-user: git
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2383146Z   clean: true
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2383788Z   sparse-checkout-cone-mode: true
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2384371Z   fetch-tags: false
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2384852Z   show-progress: true
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2385343Z   lfs: false
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2385805Z   submodules: false
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2386319Z   set-safe-directory: true
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2386862Z   allow-unsafe-pr-checkout: false
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2387774Z env:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2388241Z   PYTHONHASHSEED: 0
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2388835Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2389492Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2394410Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2399029Z   PYTEST_K: 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.2399472Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3425323Z Syncing repository: HebiIsHere/QIO
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3427444Z ##[group]Getting Git version info
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3428742Z Working directory is '/home/runner/work/QIO/QIO'
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3430279Z [command]/usr/bin/git version
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3505672Z git version 2.55.0
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3544773Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3553292Z Temporarily overriding HOME='/home/runner/work/_temp/8ea4fb0a-2cb4-494c-bf10-acb8ce14caaa' before making global git config changes
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3556746Z Adding repository directory to the temporary git global config as a safe directory
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3561720Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3622116Z Deleting the contents of '/home/runner/work/QIO/QIO'
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3627405Z ##[group]Initializing the repository
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3632577Z [command]/usr/bin/git init /home/runner/work/QIO/QIO
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3745593Z hint: Using 'master' as the name for the initial branch. This default branch name
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3747795Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3754207Z hint: to use in all of your new repositories, which will suppress this warning,
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3760423Z hint: call:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3761345Z hint:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3762398Z hint: 	git config --global init.defaultBranch <name>
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3764029Z hint:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3765337Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3767450Z hint: 'development'. The just-created branch can be renamed via this command:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3769121Z hint:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3770048Z hint: 	git branch -m <name>
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3771078Z hint:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3772328Z hint: Disable this message with "git config set advice.defaultBranchName false"
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3774478Z Initialized empty Git repository in /home/runner/work/QIO/QIO/.git/
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3778105Z [command]/usr/bin/git remote add origin https://github.com/HebiIsHere/QIO
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3822893Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3824524Z ##[group]Disabling automatic garbage collection
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3828229Z [command]/usr/bin/git config --local gc.auto 0
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3863063Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3865407Z ##[group]Setting up auth
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3872215Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.3916060Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4313218Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4351424Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4587966Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4628928Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4859533Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4903245Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4904695Z ##[group]Fetching the repository
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:01.4913870Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9517074Z From https://github.com/HebiIsHere/QIO
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9520314Z  * [new branch]        ci/targeted-verify-entry -> origin/ci/targeted-verify-entry
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9522985Z  * [new branch]        feat/conversation-page-v2 -> origin/feat/conversation-page-v2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9526172Z  * [new branch]        feat/frameless-window-023 -> origin/feat/frameless-window-023
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9529369Z  * [new branch]        feat/interactive-foundation -> origin/feat/interactive-foundation
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9533320Z  * [new branch]        feat/interactive-frontend-layout -> origin/feat/interactive-frontend-layout
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9537941Z  * [new branch]        feat/interactive-image-card-simplification -> origin/feat/interactive-image-card-simplification
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9542279Z  * [new branch]        feat/interactive-intent-preview -> origin/feat/interactive-intent-preview
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9545794Z  * [new branch]        feat/interactive-page-v2 -> origin/feat/interactive-page-v2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9548505Z  * [new branch]        feat/interactive-real-model -> origin/feat/interactive-real-model
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9550876Z  * [new branch]        feat/interactive-resizable-layout -> origin/feat/interactive-resizable-layout
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9553066Z  * [new branch]        feat/qio-refactor-p4 -> origin/feat/qio-refactor-p4
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9556112Z  * [new branch]        feat/unified-cards-media-preview-021 -> origin/feat/unified-cards-media-preview-021
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9560201Z  * [new branch]        feat/unified-process-attachments-streaming -> origin/feat/unified-process-attachments-streaming
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9564445Z  * [new branch]        fix/attachment-readiness-stream-boundaries -> origin/fix/attachment-readiness-stream-boundaries
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9568943Z  * [new branch]        fix/attachment-send-cancel-integrity -> origin/fix/attachment-send-cancel-integrity
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9573970Z  * [new branch]        fix/chat-image-delivery-023 -> origin/fix/chat-image-delivery-023
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9578454Z  * [new branch]        fix/global-scroll-dialog-layout -> origin/fix/global-scroll-dialog-layout
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9584737Z  * [new branch]        fix/interactive-attachment-notice-connect-resize -> origin/fix/interactive-attachment-notice-connect-resize
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9590788Z  * [new branch]        fix/interactive-bottom-toolbar-layout -> origin/fix/interactive-bottom-toolbar-layout
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9595671Z  * [new branch]        fix/interactive-card-toolbar-anchor -> origin/fix/interactive-card-toolbar-anchor
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9598753Z  * [new branch]        fix/interactive-closure-followup -> origin/fix/interactive-closure-followup
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9602859Z  * [new branch]        fix/interactive-content-protection-polish -> origin/fix/interactive-content-protection-polish
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9607269Z  * [new branch]        fix/interactive-draft-races-ui-polish -> origin/fix/interactive-draft-races-ui-polish
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9610861Z  * [new branch]        fix/interactive-draft-recovery-completion -> origin/fix/interactive-draft-recovery-completion
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9614623Z  * [new branch]        fix/interactive-final-closure -> origin/fix/interactive-final-closure
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9618104Z  * [new branch]        fix/interactive-markdown-layout-continuity -> origin/fix/interactive-markdown-layout-continuity
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9622068Z  * [new branch]        fix/interactive-materials-drafts-preview -> origin/fix/interactive-materials-drafts-preview
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9626129Z  * [new branch]        fix/interactive-state-recovery-completion -> origin/fix/interactive-state-recovery-completion
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9629641Z  * [new branch]        fix/interactive-ui-refinement -> origin/fix/interactive-ui-refinement
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9634836Z  * [new branch]        fix/main-audit-reliability-8fa8452 -> origin/fix/main-audit-reliability-8fa8452
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9640630Z  * [new branch]        fix/main-reliability-memory-20261009-r2 -> origin/fix/main-reliability-memory-20261009-r2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9646763Z  * [new branch]        fix/main-safety-state-responsiveness-20261009 -> origin/fix/main-safety-state-responsiveness-20261009
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9652787Z  * [new branch]        fix/preparation-cancel-and-spill-recovery -> origin/fix/preparation-cancel-and-spill-recovery
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9658977Z  * [new branch]        fix/process-attachment-audit-consolidation -> origin/fix/process-attachment-audit-consolidation
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9663981Z  * [new branch]        fix/process-attachment-audit-final-boundaries -> origin/fix/process-attachment-audit-final-boundaries
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9667892Z  * [new branch]        fix/process-attachment-audit-round2 -> origin/fix/process-attachment-audit-round2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9672030Z  * [new branch]        fix/process-stream-retry-upload -> origin/fix/process-stream-retry-upload
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9675554Z  * [new branch]        fix/process-upload-final-convergence -> origin/fix/process-upload-final-convergence
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9679803Z  * [new branch]        fix/reliability-followup-closeout-20261010-f01f10 -> origin/fix/reliability-followup-closeout-20261010-f01f10
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9686675Z  * [new branch]        fix/reliability-memory-followup-20261010-a7f3 -> origin/fix/reliability-memory-followup-20261010-a7f3
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9692714Z  * [new branch]        fix/streaming-main-closeout-20261011 -> origin/fix/streaming-main-closeout-20261011
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9697698Z  * [new branch]        fix/unified-process-audit -> origin/fix/unified-process-audit
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9701446Z  * [new branch]        integrate/interactive-main-20261011 -> origin/integrate/interactive-main-20261011
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9705541Z  * [new branch]        integrate/reliability-interactive-real-model-20261011 -> origin/integrate/reliability-interactive-real-model-20261011
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9710508Z  * [new branch]        integrate/streaming-main-20261011 -> origin/integrate/streaming-main-20261011
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9712928Z  * [new branch]        main                 -> origin/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9714949Z  * [new branch]        r9/main              -> origin/r9/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9716727Z  * [new branch]        r9f/main             -> origin/r9f/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9718497Z  * [new branch]        r9g/main             -> origin/r9g/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9720250Z  * [new branch]        r9h/main             -> origin/r9h/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9722366Z  * [new branch]        r9h10/main           -> origin/r9h10/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9724583Z  * [new branch]        r9h11/main           -> origin/r9h11/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9726408Z  * [new branch]        r9h12/main           -> origin/r9h12/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9728356Z  * [new branch]        r9h13/main           -> origin/r9h13/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9730145Z  * [new branch]        r9h2/main            -> origin/r9h2/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9731914Z  * [new branch]        r9h3/main            -> origin/r9h3/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9733895Z  * [new branch]        r9h4/main            -> origin/r9h4/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9735687Z  * [new branch]        r9h5/main            -> origin/r9h5/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9737451Z  * [new branch]        r9h6/main            -> origin/r9h6/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9739215Z  * [new branch]        r9h7/main            -> origin/r9h7/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9740963Z  * [new branch]        r9h8/main            -> origin/r9h8/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9742867Z  * [new branch]        r9h9/main            -> origin/r9h9/main
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9744948Z  * [new branch]        release/0.2.4        -> origin/release/0.2.4
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9747295Z  * [new branch]        research/memory-retrieval-eval -> origin/research/memory-retrieval-eval
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9749592Z  * [new branch]        wt/acc-b             -> origin/wt/acc-b
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9751419Z  * [new branch]        wt/acc-b2            -> origin/wt/acc-b2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9753177Z  * [new branch]        wt/acc-c             -> origin/wt/acc-c
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9755174Z  * [new branch]        wt/acc-c2            -> origin/wt/acc-c2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9757068Z  * [new branch]        wt/acc-d             -> origin/wt/acc-d
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9758866Z  * [new branch]        wt/acc-doc           -> origin/wt/acc-doc
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9760639Z  * [new branch]        wt/acc-e             -> origin/wt/acc-e
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9762362Z  * [new branch]        wt/acc-e2            -> origin/wt/acc-e2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9764565Z  * [new branch]        wt/acc-f             -> origin/wt/acc-f
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9766321Z  * [new branch]        wt/acc-f2            -> origin/wt/acc-f2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9768198Z  * [new branch]        wt/agent-a-runtime   -> origin/wt/agent-a-runtime
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9770203Z  * [new branch]        wt/agent-e-toolenv   -> origin/wt/agent-e-toolenv
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9772090Z  * [new branch]        wt/fb-a              -> origin/wt/fb-a
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9774016Z  * [new branch]        wt/fb-b              -> origin/wt/fb-b
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9775738Z  * [new branch]        wt/fb-c              -> origin/wt/fb-c
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9777448Z  * [new branch]        wt/fb-d              -> origin/wt/fb-d
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9779154Z  * [new branch]        wt/fb-e              -> origin/wt/fb-e
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9780977Z  * [new branch]        wt/int-a-board       -> origin/wt/int-a-board
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9782929Z  * [new branch]        wt/int-b-persist     -> origin/wt/int-b-persist
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9785195Z  * [new branch]        wt/int-c-approval    -> origin/wt/int-c-approval
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9787111Z  * [new branch]        wt/int-verify        -> origin/wt/int-verify
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9788889Z  * [new branch]        wt/p2-debt           -> origin/wt/p2-debt
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9790701Z  * [new branch]        wt/p2-isolation      -> origin/wt/p2-isolation
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9792591Z  * [new branch]        wt/p2-trace-ui       -> origin/wt/p2-trace-ui
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9794574Z  * [new branch]        wt/p3-a              -> origin/wt/p3-a
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9796225Z  * [new branch]        wt/p3-b              -> origin/wt/p3-b
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9797891Z  * [new branch]        wt/p3-c              -> origin/wt/p3-c
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9799568Z  * [new branch]        wt/p3-d              -> origin/wt/p3-d
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9801204Z  * [new branch]        wt/p3-e              -> origin/wt/p3-e
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9803030Z  * [new branch]        wt/p3-f              -> origin/wt/p3-f
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9805051Z  * [new branch]        wt/ui-a-visual       -> origin/wt/ui-a-visual
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9806894Z  * [new branch]        wt/ui-b-rules        -> origin/wt/ui-b-rules
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9808730Z  * [new branch]        wt/ui-c-drafts       -> origin/wt/ui-c-drafts
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9810584Z  * [new branch]        wt/ui-d-overlay      -> origin/wt/ui-d-overlay
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9812253Z  * [new tag]           r9-final             -> r9-final
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9813985Z  * [new tag]           r9f-final            -> r9f-final
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9815474Z  * [new tag]           v0.1.0               -> v0.1.0
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9816880Z  * [new tag]           v0.1.1               -> v0.1.1
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9818299Z  * [new tag]           v0.1.10              -> v0.1.10
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9819708Z  * [new tag]           v0.1.11              -> v0.1.11
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9821130Z  * [new tag]           v0.1.12              -> v0.1.12
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9822557Z  * [new tag]           v0.1.13              -> v0.1.13
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9824206Z  * [new tag]           v0.1.14              -> v0.1.14
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9825626Z  * [new tag]           v0.1.3               -> v0.1.3
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9827032Z  * [new tag]           v0.1.4               -> v0.1.4
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9828434Z  * [new tag]           v0.1.5               -> v0.1.5
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9829831Z  * [new tag]           v0.1.6               -> v0.1.6
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9831227Z  * [new tag]           v0.1.7               -> v0.1.7
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9832629Z  * [new tag]           v0.1.8               -> v0.1.8
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9834252Z  * [new tag]           v0.1.9               -> v0.1.9
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9835688Z  * [new tag]           v0.2.0               -> v0.2.0
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9837088Z  * [new tag]           v0.2.1               -> v0.2.1
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9838473Z  * [new tag]           v0.2.10              -> v0.2.10
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9840065Z  * [new tag]           v0.2.2               -> v0.2.2
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9841473Z  * [new tag]           v0.2.3               -> v0.2.3
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9842881Z  * [new tag]           v0.2.4               -> v0.2.4
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9844553Z  * [new tag]           v0.2.5               -> v0.2.5
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9845970Z  * [new tag]           v0.2.6               -> v0.2.6
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9847373Z  * [new tag]           v0.2.7               -> v0.2.7
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9848764Z  * [new tag]           v0.2.8               -> v0.2.8
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9850154Z  * [new tag]           v0.2.9               -> v0.2.9
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9854183Z [command]/usr/bin/git rev-parse --verify --quiet 17b9775cd0c538dbadf9dc201380f01af5439e88^{object}
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9856369Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9859371Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9860917Z ##[group]Determining the checkout info
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9927251Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9928588Z [command]/usr/bin/git sparse-checkout disable
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9931800Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9935782Z ##[group]Checking out the ref
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:04.9937597Z [command]/usr/bin/git checkout --progress --force 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5419014Z Note: switching to '17b9775cd0c538dbadf9dc201380f01af5439e88'.
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5419417Z 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5419767Z You are in 'detached HEAD' state. You can look around, make experimental
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5420366Z changes and commit them, and you can discard any commits you make in this
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5420945Z state without impacting any branches by switching back to a branch.
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5421285Z 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5421510Z If you want to create a new branch to retain commits you create, you may
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5422070Z do so (now or later) by using -c with the switch command. Example:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5422710Z 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5422845Z   git switch -c <new-branch-name>
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5423058Z 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5423183Z Or undo this operation with:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5423682Z 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5423867Z   git switch -
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5424089Z 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5424499Z Turn off this advice by setting config variable advice.detachedHead to false
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5425011Z 
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5425494Z HEAD is now at 17b9775c docs(r9h13): P88 状态、最终报告、根因定稿与 H13 证据
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5462279Z ##[endgroup]
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5507854Z [command]/usr/bin/git log -1 --format=%H
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5534979Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5544746Z ##[group]Removing auth
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5549048Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5582344Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5810656Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5840054Z http.https://github.com/.extraheader
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5848177Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.5882729Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.6106064Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.6140188Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+backend (py3.11)	Bootstrap checkout (letting the local action load)	2026-10-25T08:44:05.6360838Z ##[endgroup]
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	﻿2026-10-25T08:44:05.6590444Z ##[group]Run set -euo pipefail
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6590797Z ^[[36;1mset -euo pipefail^[[0m
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6591345Z ^[[36;1mpython scripts/targeted-verify/verify_sha.py \^[[0m
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6591710Z ^[[36;1m  --requested "${REQUESTED_SHA}" \^[[0m
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6592028Z ^[[36;1m  --actual "$(git rev-parse HEAD)" \^[[0m
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6592329Z ^[[36;1m  --actual-from arg \^[[0m
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6592609Z ^[[36;1m  --label "backend-bootstrap"^[[0m
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6848990Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6849399Z env:
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6849617Z   PYTHONHASHSEED: 0
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6849883Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6850209Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6853162Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6856402Z   PYTEST_K: 
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6856698Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6857087Z   PYTHONIOENCODING: utf-8
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.6857345Z ##[endgroup]
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.7330863Z [backend-bootstrap] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.7331630Z [backend-bootstrap] actual  from : --actual (arg)
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.7332121Z [backend-bootstrap] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.7333070Z [backend-bootstrap] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.7333822Z [backend-bootstrap] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.7334369Z [backend-bootstrap] github event  : workflow_dispatch refs/heads/r9h13/main
+backend (py3.11)	Assert the bootstrapped SHA (checkout implies assertion)	2026-10-25T08:44:05.7335109Z [backend-bootstrap] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）
+backend (py3.11)	Run ./.github/actions/verify-checkout	﻿2026-10-25T08:44:05.7532226Z Prepare all required actions
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.7532803Z Getting action download info
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8953584Z ##[group]Run ./.github/actions/verify-checkout
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8953920Z with:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8954108Z   ref: r9h13/main
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8954345Z   sha: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8954641Z   label: backend-py3.11
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8954871Z   allow-short: false
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8955071Z env:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8955256Z   PYTHONHASHSEED: 0
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8955498Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8955792Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8958258Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8960804Z   PYTEST_K: 
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.8960996Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9016025Z ##[start-action display=Show requested ref/SHA;id=__self.__run]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9043847Z ##[group]Run echo "requested ref : r9h13/main"
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9044207Z ^[[36;1mecho "requested ref : r9h13/main"^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9044610Z ^[[36;1mecho "requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88"^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9110666Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9111014Z env:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9111210Z   PYTHONHASHSEED: 0
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9111454Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9111762Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9114387Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9116926Z   PYTEST_K: 
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9117117Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9202910Z requested ref : r9h13/main
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9203974Z requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9216987Z ##[end-action id=__self.__run;outcome=success;conclusion=success;duration_ms=19]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9219428Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__self.__actions_checkout]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9298520Z ##[group]Run actions/checkout@v5
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9298769Z with:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9298953Z   ref: r9h13/main
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9299155Z   fetch-depth: 0
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9299370Z   persist-credentials: false
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9299615Z   repository: HebiIsHere/QIO
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9301866Z   token: ***
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9302072Z   ssh-strict: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9302281Z   ssh-user: git
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9302482Z   clean: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9302708Z   sparse-checkout-cone-mode: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9302970Z   fetch-tags: false
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9303184Z   show-progress: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9303640Z   lfs: false
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9303879Z   submodules: false
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9304100Z   set-safe-directory: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9304591Z   allow-unsafe-pr-checkout: false
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9304853Z env:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9305047Z   PYTHONHASHSEED: 0
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9305284Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9305560Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9308041Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9310559Z   PYTEST_K: 
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:05.9310757Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0147272Z Syncing repository: HebiIsHere/QIO
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0150383Z ##[group]Getting Git version info
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0151662Z Working directory is '/home/runner/work/QIO/QIO'
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0187543Z [command]/usr/bin/git version
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0240658Z git version 2.55.0
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0263706Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0279807Z Temporarily overriding HOME='/home/runner/work/_temp/a5462ae2-f174-47f0-ba71-9625c73b0af7' before making global git config changes
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0281161Z Adding repository directory to the temporary git global config as a safe directory
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0287340Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0327468Z [command]/usr/bin/git config --local --get remote.origin.url
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0353563Z https://github.com/HebiIsHere/QIO
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0369289Z ##[group]Removing previously created refs, to avoid conflicts
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0373685Z [command]/usr/bin/git rev-parse --symbolic-full-name --verify --quiet HEAD
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0397068Z HEAD
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0501904Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0505823Z [command]/usr/bin/git submodule status
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0772460Z ##[group]Cleaning the repository
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0779714Z [command]/usr/bin/git clean -ffdx
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:06.0875584Z [command]/usr/bin/git reset --hard HEAD
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0023652Z HEAD is now at 17b9775c docs(r9h13): P88 状态、最终报告、根因定稿与 H13 证据
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0050110Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0051887Z ##[group]Disabling automatic garbage collection
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0059956Z [command]/usr/bin/git config --local gc.auto 0
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0096670Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0097255Z ##[group]Setting up auth
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0105176Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0142580Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0376899Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0411975Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0636888Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0673105Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0905618Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0949221Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0949876Z ##[group]Fetching the repository
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.0958949Z [command]/usr/bin/git -c protocol.version=2 fetch --prune --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4594175Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4594937Z ##[group]Determining the checkout info
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4603204Z [command]/usr/bin/git branch --list --remote origin/r9h13/main
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4649710Z   origin/r9h13/main
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4655214Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4660064Z [command]/usr/bin/git sparse-checkout disable
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4737192Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4796920Z ##[group]Checking out the ref
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4797524Z [command]/usr/bin/git checkout --progress --force -B r9h13/main refs/remotes/origin/r9h13/main
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4889152Z Switched to a new branch 'r9h13/main'
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4891425Z branch 'r9h13/main' set up to track 'origin/r9h13/main'.
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4897295Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4936253Z [command]/usr/bin/git log -1 --format=%H
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4962615Z 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4972455Z ##[group]Removing auth
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.4977154Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5013200Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5244386Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5271959Z http.https://github.com/.extraheader
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5281307Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5318853Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5548741Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5583822Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5807598Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5905325Z ##[end-action id=__self.__actions_checkout;outcome=success;conclusion=success;duration_ms=1668]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5910268Z ##[start-action display=Assert the checked-out commit equals the requested SHA;id=__self.__run_2]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5929892Z ##[group]Run set -euo pipefail
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5930207Z ^[[36;1mset -euo pipefail^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5930593Z ^[[36;1m# --actual 故意不传：实际提交只认 git rev-parse HEAD。GITHUB_SHA 是事件提交^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5931050Z ^[[36;1m# （PR 上是 merge commit），拿它当「实际 checkout 的 SHA」会假绿。^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5931502Z ^[[36;1m# 实际提交只认 git rev-parse HEAD（GITHUB_SHA 是事件提交，PR 上是 merge commit，^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5931917Z ^[[36;1m# 拿它当「实际 checkout 的 SHA」会假绿）。显式传值，连来源也写进证据。^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5932222Z ^[[36;1mactual="$(git rev-parse HEAD)"^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5932708Z ^[[36;1margs=(--requested "${REQUESTED_SHA}" --actual "${actual}" --actual-from arg --label "${SHA_LABEL}")^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5933225Z ^[[36;1mif [ -n "${EXPECTED_REF}" ]; then^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5933832Z ^[[36;1m  args+=(--expected-ref "${EXPECTED_REF}")^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5934126Z ^[[36;1mfi^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5934340Z ^[[36;1mif [ "${ALLOW_SHORT}" = "true" ]; then^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5934639Z ^[[36;1m  args+=(--allow-short)^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5934877Z ^[[36;1mfi^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5935179Z ^[[36;1mpython scripts/targeted-verify/verify_sha.py "${args[@]}"^[[0m
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5996295Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5996637Z env:
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5996827Z   PYTHONHASHSEED: 0
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5997065Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5997509Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.5999937Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6002444Z   PYTEST_K: 
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6002704Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6003021Z   EXPECTED_REF: 
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6003223Z   ALLOW_SHORT: false
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6003742Z   SHA_LABEL: backend-py3.11
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6004022Z   PYTHONIOENCODING: utf-8
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6004249Z ##[endgroup]
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6446748Z [backend-py3.11] requested sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6447597Z [backend-py3.11] actual  from : --actual (arg)
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6448318Z [backend-py3.11] actual    sha : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6449514Z [backend-py3.11] PASS SHA 核验通过：17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6450366Z [backend-py3.11] git HEAD      : 17b9775cd0c538dbadf9dc201380f01af5439e88
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6451231Z [backend-py3.11] github event  : workflow_dispatch refs/heads/r9h13/main
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6452725Z [backend-py3.11] GITHUB_SHA    : 17b9775cd0c538dbadf9dc201380f01af5439e88（事件提交，PR 上是 merge commit）
+backend (py3.11)	Run ./.github/actions/verify-checkout	2026-10-25T08:44:07.6501181Z ##[end-action id=__self.__run_2;outcome=success;conclusion=success;duration_ms=59]
+backend (py3.11)	Install uv	﻿2026-10-25T08:44:07.6606969Z ##[group]Run astral-sh/setup-uv@v7
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6607261Z with:
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6607462Z   python-version: 3.11
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6607692Z   enable-cache: true
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6607930Z   cache-dependency-glob: backend/uv.lock
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6608226Z   activate-environment: false
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6608508Z   working-directory: /home/runner/work/QIO/QIO
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6610776Z   github-token: ***
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6611002Z   restore-cache: true
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6611214Z   save-cache: true
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6611417Z   prune-cache: true
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6611620Z   cache-python: false
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6611846Z   ignore-nothing-to-cache: false
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6612111Z   ignore-empty-workdir: false
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6612378Z   add-problem-matchers: true
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6612624Z   resolution-strategy: highest
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6612858Z env:
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6613046Z   PYTHONHASHSEED: 0
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6613273Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6613873Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6616282Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6618706Z   PYTEST_K: 
+backend (py3.11)	Install uv	2026-10-25T08:44:07.6618897Z ##[endgroup]
+backend (py3.11)	Install uv	2026-10-25T08:44:07.8346737Z Trying to find version for uv in: /home/runner/work/QIO/QIO/uv.toml
+backend (py3.11)	Install uv	2026-10-25T08:44:07.8347717Z Could not find file: /home/runner/work/QIO/QIO/uv.toml
+backend (py3.11)	Install uv	2026-10-25T08:44:07.8348708Z Trying to find version for uv in: /home/runner/work/QIO/QIO/pyproject.toml
+backend (py3.11)	Install uv	2026-10-25T08:44:07.8349749Z Could not find file: /home/runner/work/QIO/QIO/pyproject.toml
+backend (py3.11)	Install uv	2026-10-25T08:44:07.8350876Z Could not determine uv version from uv.toml or pyproject.toml. Falling back to latest.
+backend (py3.11)	Install uv	2026-10-25T08:44:07.8352649Z Fetching version data from https://raw.githubusercontent.com/astral-sh/versions/main/v1/uv.ndjson ...
+backend (py3.11)	Install uv	2026-10-25T08:44:07.9350813Z Downloading uv from "https://releases.astral.sh/github/uv/releases/download/0.13.5/uv-x86_64-unknown-linux-gnu.tar.gz" ...
+backend (py3.11)	Install uv	2026-10-25T08:44:08.1599158Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/_temp/5a3356b0-93d7-4f0b-b603-55d2805a1ddf -f /home/runner/work/_temp/774461fa-283b-4284-a08b-c172cfef947c
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4738060Z Added /home/runner/.local/bin to the path
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4742048Z Added /opt/hostedtoolcache/uv/0.13.5/x86_64 to the path
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4743857Z Set UV_PYTHON_INSTALL_DIR to /home/runner/work/_temp/uv-python-dir
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4744858Z Added /home/runner/work/_temp/uv-python-dir to the path
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4745524Z Set UV_PYTHON to 3.11
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4770101Z Set UV_CACHE_DIR to /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4770957Z Successfully installed uv version 0.13.5
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4771952Z Searching files using cache dependency glob: /home/runner/work/QIO/QIO/backend/uv.lock
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4798448Z /home/runner/work/QIO/QIO/backend/uv.lock
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4821895Z Found 1 files to hash.
+backend (py3.11)	Install uv	2026-10-25T08:44:08.4888691Z Trying to restore cache from GitHub Actions cache with key: setup-uv-2-x86_64-unknown-linux-gnu-ubuntu-24.04-3.11-pruned-50607788e8305b787d43f52b1b704c1ba51bf4c6733681960857b4259c438655
+backend (py3.11)	Install uv	2026-10-25T08:44:08.6808172Z No GitHub Actions cache found for key: setup-uv-2-x86_64-unknown-linux-gnu-ubuntu-24.04-3.11-pruned-50607788e8305b787d43f52b1b704c1ba51bf4c6733681960857b4259c438655
+backend (py3.11)	Sync dependencies from lock	﻿2026-10-25T08:44:08.7435337Z ##[group]Run uv sync --frozen --extra dev
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7435732Z ^[[36;1muv sync --frozen --extra dev^[[0m
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7499335Z shell: /usr/bin/bash -e {0}
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7499591Z env:
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7499776Z   PYTHONHASHSEED: 0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7500014Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7500296Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7502715Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7505523Z   PYTEST_K: 
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7505819Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7506169Z   UV_PYTHON: 3.11
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7506415Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.7506713Z ##[endgroup]
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:08.9505813Z Downloading cpython-3.11.17-linux-x86_64-gnu (download) (29.1MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.5614130Z  Downloaded cpython-3.11.17-linux-x86_64-gnu (download)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.6842059Z Using CPython 3.11.17
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.6842601Z Creating virtual environment at: .venv
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7033108Z    Building qio @ file:///home/runner/work/QIO/QIO/backend
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7175615Z Downloading tiktoken (1.2MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7280532Z Downloading onnxruntime (22.5MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7284197Z Downloading numpy (16.1MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7288965Z Downloading pygments (1.2MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7290056Z Downloading uvloop (3.6MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7291265Z Downloading hf-xet (4.3MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7292667Z Downloading tokenizers (3.2MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7301600Z Downloading cryptography (4.5MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7306427Z Downloading pydantic-core (2.0MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.7316155Z Downloading openai (1.9MiB)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.8843931Z  Downloaded tiktoken
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.8867463Z  Downloaded pygments
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.9050734Z  Downloaded pydantic-core
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.9476355Z  Downloaded tokenizers
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.9524347Z  Downloaded uvloop
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.9619326Z  Downloaded hf-xet
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.9686435Z  Downloaded cryptography
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:09.9939821Z  Downloaded openai
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.1139513Z  Downloaded numpy
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.1784685Z  Downloaded onnxruntime
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9246784Z       Built qio @ file:///home/runner/work/QIO/QIO/backend
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9258026Z Prepared 66 packages in 1.23s
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9819052Z Installed 66 packages in 55ms
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9820169Z  + annotated-doc==0.0.5
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9820645Z  + annotated-types==0.8.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9821077Z  + anyio==4.15.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9821309Z  + backports-tarfile==1.2.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9821763Z  + beautifulsoup4==4.15.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9822271Z  + certifi==2026.7.22
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9822728Z  + cffi==2.1.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9823191Z  + charset-normalizer==3.5.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9824245Z  + click==8.5.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9824632Z  + cryptography==50.0.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9825028Z  + fastapi==0.141.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9825383Z  + filelock==3.32.6
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9825734Z  + flatbuffers==25.12.19
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9826403Z  + fsspec==2026.7.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9826741Z  + h11==0.16.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9827068Z  + hf-xet==1.6.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9827405Z  + httpcore==1.0.9
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9827753Z  + httpcore2==2.12.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9828113Z  + httptools==0.8.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9828468Z  + httpx==0.28.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9829144Z  + httpx2==2.12.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9829505Z  + huggingface-hub==1.31.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9829897Z  + idna==3.19
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9830255Z  + importlib-metadata==9.0.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9830671Z  + iniconfig==2.3.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9831042Z  + jaraco-classes==3.4.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9831438Z  + jaraco-context==6.1.2
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9831835Z  + jaraco-functools==4.6.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9832231Z  + jeepney==0.9.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9832958Z  + jiter==0.16.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9833666Z  + keyring==25.7.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9834216Z  + more-itertools==11.1.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9834722Z  + numpy==2.4.6
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9835234Z  + onnxruntime==1.30.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9835724Z  + openai==3.13.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9836122Z  + packaging==26.3
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9836717Z  + pluggy==1.6.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9837249Z  + protobuf==7.36.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9837636Z  + pycparser==3.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9838262Z  + pydantic==2.13.5
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9838784Z  + pydantic-core==2.46.5
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9839261Z  + pygments==2.21.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9839764Z  + pypdf==6.20.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9840183Z  + pytest==9.1.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9840631Z  + pytest-asyncio==1.4.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9841081Z  + python-dotenv==1.2.3
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9841523Z  + pyyaml==6.0.3
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9842114Z  + qio==0.2.10 (from file:///home/runner/work/QIO/QIO/backend)
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9842692Z  + regex==2026.9.10
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9843032Z  + requests==2.34.2
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9843540Z  + secretstorage==3.5.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9844256Z  + sniffio==1.3.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9844616Z  + soupsieve==2.9.2
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9845185Z  + starlette==1.6.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9845665Z  + tiktoken==0.14.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9846157Z  + tokenizers==0.23.2
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9846769Z  + tqdm==4.70.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9847283Z  + truststore==0.10.4
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9847813Z  + typing-extensions==4.16.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9848439Z  + typing-inspection==0.4.4
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9849005Z  + urllib3==2.7.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9849525Z  + uvicorn==0.52.4
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9850120Z  + uvloop==0.22.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9850621Z  + watchfiles==1.2.0
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9851045Z  + websockets==17.1
+backend (py3.11)	Sync dependencies from lock	2026-10-25T08:44:10.9851624Z  + zipp==4.1.0
+backend (py3.11)	Real worker smoke (source)	﻿2026-10-25T08:44:11.0044719Z ##[group]Run uv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0046031Z ^[[36;1muv run --frozen python ../scripts/frozen_worker_smoke.py --script src/agent/tool_worker.py^[[0m
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0136864Z shell: /usr/bin/bash -e {0}
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0137282Z env:
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0137611Z   PYTHONHASHSEED: 0
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0138041Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0138538Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0143139Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0148113Z   PYTEST_K: 
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0148649Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0149269Z   UV_PYTHON: 3.11
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0150017Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.0150580Z ##[endgroup]
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.1724989Z [RUN ] 源码 worker：/home/runner/work/QIO/QIO/backend/.venv/bin/python /home/runner/work/QIO/QIO/backend/src/agent/tool_worker.py
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.1725730Z [PASS] 单文件代码 — 单文件代码：一行 JSON，值正确
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.1726068Z [PASS] 多文件项目 — 多文件项目 + 包内相对 import：值正确
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.1726422Z [PASS] 坏 worker 被拒 — 异常退出（exit 17）没有结果输出
+backend (py3.11)	Real worker smoke (source)	2026-10-25T08:44:11.1726912Z [DONE] 源码 worker：3/3 通过
+backend (py3.11)	Fake worker protocol tests (Linux)	﻿2026-10-25T08:44:11.1838152Z ##[group]Run uv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1838852Z ^[[36;1muv run --frozen pytest -q tests/test_sandbox_worker.py tests/test_tool_worker.py^[[0m
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1900211Z shell: /usr/bin/bash -e {0}
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1900476Z env:
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1900668Z   PYTHONHASHSEED: 0
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1900903Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1901186Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1903805Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1906309Z   PYTEST_K: 
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1906598Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1906940Z   UV_PYTHON: 3.11
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1907194Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:11.1907503Z ##[endgroup]
+backend (py3.11)	Fake worker protocol tests (Linux)	2026-10-25T08:44:27.9212938Z ......s................................                                  [100%]
+backend (py3.11)	Targeted tests	﻿2026-10-25T08:44:28.0137072Z ##[group]Run set -euo pipefail
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0137438Z ^[[36;1mset -euo pipefail^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0137698Z ^[[36;1margs=(${PYTEST_BASE_ARGS})^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0137990Z ^[[36;1mif [ -n "${PYTEST_NODE_IDS}" ]; then^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0138313Z ^[[36;1m  # shellcheck disable=SC2206^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0138598Z ^[[36;1m  args+=(${PYTEST_NODE_IDS})^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0138861Z ^[[36;1mfi^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0139066Z ^[[36;1mif [ -n "${PYTEST_K}" ]; then^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0139344Z ^[[36;1m  args+=(-k "${PYTEST_K}")^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0139591Z ^[[36;1mfi^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0139856Z ^[[36;1mif [ -z "${PYTEST_NODE_IDS}" ] && [ -z "${PYTEST_K}" ]; then^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0140430Z ^[[36;1m  echo "::error title=targeted verify backend::没有给 pytest_node_ids 或 pytest_k，拒绝跑整套后端测试（额度红线：只跑失败项）。"^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0140941Z ^[[36;1m  exit 1^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0141135Z ^[[36;1mfi^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0141340Z ^[[36;1mecho "pytest ${args[*]}"^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0141623Z ^[[36;1muv run --frozen pytest "${args[@]}"^[[0m
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0205797Z shell: /usr/bin/bash -e {0}
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0206055Z env:
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0206252Z   PYTHONHASHSEED: 0
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0206504Z   PYTEST_BASE_ARGS: -q --durations=15
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0206780Z   VERIFY_SHA_SELF_TEST: true
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0209212Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0211843Z   PYTEST_K: 
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0212119Z   UV_PYTHON_INSTALL_DIR: /home/runner/work/_temp/uv-python-dir
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0212454Z   UV_PYTHON: 3.11
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0212703Z   UV_CACHE_DIR: /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0213043Z   PYTEST_ADDOPTS: --junitxml=pytest-results.xml
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0213336Z ##[endgroup]
+backend (py3.11)	Targeted tests	2026-10-25T08:44:28.0296719Z pytest -q --durations=15 tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+backend (py3.11)	Targeted tests	2026-10-25T08:44:52.8322377Z ........................................................................ [ 17%]
+backend (py3.11)	Targeted tests	2026-10-25T08:44:53.0811145Z ........................................................................ [ 34%]
+backend (py3.11)	Targeted tests	2026-10-25T08:44:53.2378574Z ........................................................................ [ 52%]
+backend (py3.11)	Targeted tests	2026-10-25T08:45:06.7717928Z ........................................................................ [ 69%]
+backend (py3.11)	Targeted tests	2026-10-25T08:45:17.5981362Z ........................................................................ [ 86%]
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9081454Z .......................................................                  [100%]
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9082313Z ============================= slowest 15 durations =============================
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9083357Z 2.16s call     tests/test_r9h13_c_execution.py::test_d3_incomplete_recursive_impact_not_executed_as_complete
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9085320Z 1.17s setup    tests/test_r9h3_limits_priority.py::test_unresolved_known_limit_denies_before_internal_and_review
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9086466Z 1.11s setup    tests/test_r9h13_a_requirements.py::test_a1_plain_amend_keeps_inherited_unresolved_limit
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9087483Z 0.68s setup    tests/test_r9h2_parse_state.py::test_app_initializes_internal_data_identity_store
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9088561Z 0.67s setup    tests/test_r9h2_parse_state.py::test_parse_failure_persists_unresolved_and_blocks_unrestricted[error]
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9089688Z 0.63s setup    tests/test_r9h12_regressions.py::test_p3_limit_path_identity_unreadable_alias_read_denied
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9090732Z 0.62s setup    tests/test_r9h2_chain_recovery.py::test_missing_parent_marks_incomplete_and_skips_model
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9091706Z 0.62s setup    tests/test_r9h12_cross_operation.py::test_p1_reliable_unrelated_cases_continue
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9092695Z 0.59s setup    tests/test_r9h11_cross_operation.py::test_run_program_assessment_denial_blocks_execution
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9094089Z 0.52s setup    tests/test_r9h11_binding_recovery.py::test_recovery_write_back_rejects_requirement_changed_after_snapshot
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9095264Z 0.45s setup    tests/test_r9h13_c_execution.py::test_path_delete_link_does_not_read_restricted_target
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9096244Z 0.43s setup    tests/test_r9h13_c_execution.py::test_d2_many_script_args_not_silently_omitted
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9097211Z 0.42s call     tests/test_r9h13_d_approval.py::test_approved_program_mode_change_uses_current_rules
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9098288Z 0.40s setup    tests/test_r9h13_b_object_state.py::test_b3_same_name_entry_resolving_to_independent_program_continues
+backend (py3.11)	Targeted tests	2026-10-25T08:45:31.9099425Z 0.38s setup    tests/test_r9h13_b_object_state.py::test_b1_unbound_local_program_currently_resolved_stays_unbound
+backend (py3.11)	Post Install uv	﻿2026-10-25T08:45:33.3100834Z Post job cleanup.
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.4206316Z UV_CACHE_DIR is already set to /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.4209221Z UV_PYTHON_INSTALL_DIR is already set to /home/runner/work/_temp/uv-python-dir
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.4219073Z Pruning cache...
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.4235965Z [command]/opt/hostedtoolcache/uv/0.13.5/x86_64/uv cache prune --ci --force
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.4329451Z Pruning cache at: /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.5850201Z Removed 6033 files (4.6MiB)
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.5874288Z Including uv cache path: /home/runner/work/_temp/setup-uv-cache
+backend (py3.11)	Post Install uv	2026-10-25T08:45:33.6014544Z [command]/usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P -C /home/runner/work/QIO/QIO --files-from manifest.txt --use-compress-program zstdmt
+backend (py3.11)	Post Install uv	2026-10-25T08:45:34.2257458Z Sent 172991 of 172991 (100.0%), 0.5 MBs/sec
+backend (py3.11)	Post Install uv	2026-10-25T08:45:34.4728414Z uv cache saved with key: setup-uv-2-x86_64-unknown-linux-gnu-ubuntu-24.04-3.11-pruned-50607788e8305b787d43f52b1b704c1ba51bf4c6733681960857b4259c438655
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	﻿2026-10-25T08:45:34.5371648Z Post job cleanup.
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.5375519Z ##[start-action display=Checkout the requested ref/SHA explicitly;id=__c25f9cab-da12-4545-9594-a2184208fa1f.__actions_checkout]
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.5428019Z Post job cleanup.
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6287136Z [command]/usr/bin/git version
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6333901Z git version 2.55.0
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6378610Z Temporarily overriding HOME='/home/runner/work/_temp/743da1ed-398f-401c-8779-9e297d3f2de5' before making global git config changes
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6380092Z Adding repository directory to the temporary git global config as a safe directory
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6384341Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6424120Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6460537Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6707695Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.6751142Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.7009233Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.7046353Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+backend (py3.11)	Post Run ./.github/actions/verify-checkout	2026-10-25T08:45:34.7402790Z ##[end-action id=__c25f9cab-da12-4545-9594-a2184208fa1f.__actions_checkout;outcome=success;conclusion=success;duration_ms=202]
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	﻿2026-10-25T08:45:34.7518321Z Post job cleanup.
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8385214Z [command]/usr/bin/git version
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8416632Z git version 2.55.0
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8459158Z Temporarily overriding HOME='/home/runner/work/_temp/f2651fa7-3dc4-47af-bc41-ac900e447360' before making global git config changes
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8460679Z Adding repository directory to the temporary git global config as a safe directory
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8464629Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/QIO/QIO
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8502064Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8537067Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8801278Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.8840447Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.9128179Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+backend (py3.11)	Post Bootstrap checkout (letting the local action load)	2026-10-25T08:45:34.9168063Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+backend (py3.11)	Complete job	﻿2026-10-25T08:45:34.9566289Z Cleaning up orphan processes
+summary (ran vs skipped)	Set up job	﻿2026-10-25T08:45:41.1281475Z Current runner version: '2.338.0'
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1307992Z ##[group]Runner Image Provisioner
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1308927Z Hosted Compute Agent
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1309593Z Version: 20261021.618
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1310346Z Commit: 21505ad2541d5be6135ed84fc33697146cf75b8e
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1311306Z Build Date: 2026-10-21T00:45:21Z
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1312073Z Worker ID: {058aa855-fb9b-4aa3-9be2-97666f8fff75}
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1312826Z Region: northcentralus
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1313568Z Cloud: Azure
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1314203Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1315719Z ##[group]Operating System
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1316429Z Ubuntu
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1317039Z 24.04.5
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1317522Z LTS
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1318099Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1318653Z ##[group]Runner Image
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1319276Z Image: ubuntu-24.04
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1319896Z Version: 20261012.334.1
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1320960Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1322757Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1323974Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1325140Z ##[group]GITHUB_TOKEN Permissions
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1327312Z Contents: read
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1328000Z Metadata: read
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1328571Z ##[endgroup]
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1331305Z Secret source: Actions
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1332294Z Cache mode: write
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1333731Z Prepare workflow directory
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1863744Z Prepare all required actions
+summary (ran vs skipped)	Set up job	2026-10-25T08:45:41.1927453Z Complete job name: summary (ran vs skipped)
+summary (ran vs skipped)	Report what ran and what was skipped	﻿2026-10-25T08:45:41.2953739Z ##[group]Run python - <<'PY'
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2954692Z ^[[36;1mpython - <<'PY'^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2955411Z ^[[36;1mimport json^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2956130Z ^[[36;1mimport os^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2956697Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2957361Z ^[[36;1mneeds = json.loads(os.environ["NEEDS"])^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2958254Z ^[[36;1mchecks = {k: v for k, v in needs.items() if k != "verify-sha"}^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2959109Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2959662Z ^[[36;1mdef state(entry):^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2960287Z ^[[36;1m    result = entry.get("result")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2961175Z ^[[36;1m    # 条件不成立而没跑的 job，result 就是 skipped —— 必须如实打印成 SKIPPED。^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2962251Z ^[[36;1m    return "SKIPPED" if result == "skipped" else str(result or "unknown").upper()^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2963514Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2964285Z ^[[36;1mlines = [state(checks[name]) + "  " + name for name in sorted(checks)]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2965344Z ^[[36;1mran = [n for n, e in checks.items() if e.get("result") not in ("skipped", None)]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2966656Z ^[[36;1mfailed = [n for n, e in checks.items() if e.get("result") == "failure"]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2967745Z ^[[36;1mcancelled = [n for n, e in checks.items() if e.get("result") == "cancelled"]^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2968616Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2969605Z ^[[36;1mprint("targeted verify summary: ref=" + str(os.environ.get("REQUESTED_REF")) + " sha=" + str(os.environ.get("REQUESTED_SHA")))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2970882Z ^[[36;1mprint("targets=" + str(os.environ.get("TARGETS")))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2971905Z ^[[36;1mprint("filters: pytest_node_ids=" + repr(os.environ.get("PYTEST_NODE_IDS")) +^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2972987Z ^[[36;1m      " pytest_k=" + repr(os.environ.get("PYTEST_K")) +^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2974027Z ^[[36;1m      " vitest_files=" + repr(os.environ.get("VITEST_FILES")) +^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2975550Z ^[[36;1m      " vitest_name=" + repr(os.environ.get("VITEST_NAME")))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2976461Z ^[[36;1mprint("=== ran vs skipped ===")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2977159Z ^[[36;1mfor line in lines:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2977885Z ^[[36;1m    print("  " + line)^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2978821Z ^[[36;1mprint("ran=" + str(len(ran)) + " failed=" + str(len(failed)) + " cancelled=" + str(len(cancelled)))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2980310Z ^[[36;1mprint("NOTE: SKIPPED checks are NOT passed checks - they were not executed at all.")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2981247Z ^[[36;1m^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2981740Z ^[[36;1mif not ran:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2982704Z ^[[36;1m    raise SystemExit("::error title=targeted verify::no runnable checks: 这次派发没有跑任何检查项，不得当作通过")^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2983877Z ^[[36;1mif failed:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2984805Z ^[[36;1m    raise SystemExit("::error title=targeted verify::failed checks: " + ", ".join(sorted(failed)))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2985840Z ^[[36;1mif cancelled:^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2986803Z ^[[36;1m    raise SystemExit("::error title=targeted verify::cancelled checks: " + ", ".join(sorted(cancelled)))^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.2987861Z ^[[36;1mPY^[[0m
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4131255Z shell: /usr/bin/bash -e {0}
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4132305Z env:
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4132976Z   PYTHONHASHSEED: 0
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4134238Z   PYTEST_BASE_ARGS: -q --durations=15
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4134977Z   VERIFY_SHA_SELF_TEST: true
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4138340Z   NEEDS: {
+summary (ran vs skipped)	Report what ran and what was skipped	  "verify-sha": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "success",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {
+summary (ran vs skipped)	Report what ran and what was skipped	      "sha": "17b9775cd0c538dbadf9dc201380f01af5439e88",
+summary (ran vs skipped)	Report what ran and what was skipped	      "ref": "r9h13/main",
+summary (ran vs skipped)	Report what ran and what was skipped	      "event_sha": "17b9775cd0c538dbadf9dc201380f01af5439e88"
+summary (ran vs skipped)	Report what ran and what was skipped	    }
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "docs": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "backend": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "success",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "windows": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "frontend": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "rust": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "rust-windows": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  },
+summary (ran vs skipped)	Report what ran and what was skipped	  "frozen-worker": {
+summary (ran vs skipped)	Report what ran and what was skipped	    "result": "skipped",
+summary (ran vs skipped)	Report what ran and what was skipped	    "outputs": {}
+summary (ran vs skipped)	Report what ran and what was skipped	  }
+summary (ran vs skipped)	Report what ran and what was skipped	}
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4141898Z   TARGETS: backend-py311
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4217545Z   PYTEST_NODE_IDS: tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4221910Z   PYTEST_K: 
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4222343Z   VITEST_FILES: 
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4222772Z   VITEST_NAME: 
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4223487Z   REQUESTED_SHA: 17b9775cd0c538dbadf9dc201380f01af5439e88
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4224139Z   REQUESTED_REF: r9h13/main
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4224623Z ##[endgroup]
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4620671Z targeted verify summary: ref=r9h13/main sha=17b9775cd0c538dbadf9dc201380f01af5439e88
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4621570Z targets=backend-py311
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4626194Z filters: pytest_node_ids='tests/test_r9h13_a_requirements.py tests/test_r9h13_b_object_state.py tests/test_r9h13_c_execution.py tests/test_r9h13_d_approval.py tests/test_r9h13_e_subagent.py tests/test_r9h13_lead.py tests/test_r9h11_object_state.py tests/test_r9h12_object_state.py tests/test_r9h11_binding_recovery.py tests/test_r9h12_binding_recovery.py tests/test_r9h11_cross_operation.py tests/test_r9h12_cross_operation.py tests/test_r9h12_regressions.py tests/test_r9h4_limits_semantics.py tests/test_r9h4_engine_binding.py tests/test_r9h4_fs_batch.py tests/test_r9h_limits.py tests/test_r9h2_chain_recovery.py tests/test_r9h2_real_flow.py tests/test_r9h2_parse_state.py tests/test_r9h3_limits_priority.py' pytest_k='' vitest_files='' vitest_name=''
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4630569Z === ran vs skipped ===
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4631050Z   SUCCESS  backend
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4631486Z   SKIPPED  docs
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4631916Z   SKIPPED  frontend
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4632368Z   SKIPPED  frozen-worker
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4632844Z   SKIPPED  rust
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4633812Z   SKIPPED  rust-windows
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4634279Z   SKIPPED  windows
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4634729Z ran=1 failed=0 cancelled=0
+summary (ran vs skipped)	Report what ran and what was skipped	2026-10-25T08:45:41.4635514Z NOTE: SKIPPED checks are NOT passed checks - they were not executed at all.
+summary (ran vs skipped)	Complete job	﻿2026-10-25T08:45:41.4791778Z Cleaning up orphan processes

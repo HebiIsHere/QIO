@@ -2223,10 +2223,11 @@ function onCardToggle(cardId: string, flag: "checked" | "hidden" | "folded" | "b
   }
   if (flag === "checked") {
     const checked = !card.checked;
-    // 参与状态是 v2 的唯一事实源（§5.1）：勾选 / 取消必须同时写 participation，避免旧 checked 与它打架
+    // 参与状态是 v2 的唯一事实源（§5.1）：勾选 / 取消必须同时写 participation，避免旧 checked 与它打架。
+    // 文案用 R9 的口径「作为互动材料」——这只控制是否主动纳入互动上下文，不是操作系统文件访问权限。
     commit(
       updateCard(current, cardId, { checked, participation: checked ? "included" : "excluded" }),
-      checked ? "勾选注释（本次允许 QIO 查看）" : "取消勾选",
+      checked ? "勾选注释（本次作为互动材料）" : "取消勾选",
     );
     return;
   }

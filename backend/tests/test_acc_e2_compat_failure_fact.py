@@ -204,6 +204,22 @@ def _rejected_ids(response) -> list[str]:
     return [str(item.get("id")) for item in (body.get("rejected") or [])]
 
 
+async def _upload_failed(client, name: str, *, mode: str = "landed-first"):
+    """用**上传入口**制造一条真实的 failed 草稿（首次落盘提交失败），返回 (id, injected)。"""
+    with _fail_prepare_copy(mode) as injected:
+        resp = await client.post(
+            "/api/attachments/upload",
+            content=b"acc-e2-failure-bytes",
+            headers={"Content-Type": "application/octet-stream", "X-QIO-Name": name},
+        )
+    assert resp.status_code >= 400, (resp.status_code, resp.text[:200])
+    assert injected["fired"], "落盘失败注入没有触发（装置失效）"
+    rows = (await client.get("/api/attachments?unbound=true")).json().get("attachments", [])
+    matches = [row for row in rows if row.get("name") == name]
+    assert matches, ("失败的上传没有留下可诊断的记录", rows)
+    return str(matches[0]["id"]), injected
+
+
 # ---- 1. 失败事实先落地，再发 turn → 整轮拒绝 ----------------------------------------
 
 
@@ -225,19 +241,16 @@ async def test_failure_fact_landed_before_send_rejects_whole_turn(app, provider,
         ok_row = await _wait_state(client, ok_id, ("ready",) + TERMINAL)
         assert str(ok_row.get("state")) == "ready", ok_row
 
-        with _fail_prepare_copy("landed-first") as injected:
-            bad_src = _write_source(tmp_path, "e2-bad.txt")
-            bad_registered = await client.post("/api/attachments", json={"source_path": str(bad_src)})
-            bad_id = str(bad_registered.json()["attachment"]["id"])
-            # 钉死触发条件：等 bad 的失败事实**先落地**（旧实现从这里丢掉事实）
-            bad_row = await _wait_state(client, bad_id, ("failed",) + TERMINAL)
-            assert str(bad_row.get("state")) == "failed", bad_row
+        # 失败草稿来自**上传入口的首次落盘失败**（新契约下真实可复现的 failed 草稿）
+        bad_id, injected = await _upload_failed(client, "e2-bad.txt", mode="landed-first")
+        bad_row = await _attachment(client, bad_id)
+        assert str(bad_row.get("state")) == "failed", bad_row
 
-            response = await client.post("/api/turns", json={"message": message})
-            calls_during = (await _calls(provider)) - calls_before
-            turns = _turns_for(app, message)
-            ok_after = await _attachment(client, ok_id)
-            bad_after = await _attachment(client, bad_id)
+        response = await client.post("/api/turns", json={"message": message})
+        calls_during = (await _calls(provider)) - calls_before
+        turns = _turns_for(app, message)
+        ok_after = await _attachment(client, ok_id)
+        bad_after = await _attachment(client, bad_id)
 
     assert injected["fired"], "复制失败注入没有触发（装置失效）"
     assert response.status_code >= 400, (
@@ -274,13 +287,32 @@ async def test_failure_landing_during_prepare_wait_rejects_whole_turn(app, provi
         assert str(ok_row.get("state")) == "ready", ok_row
 
         with _gated_fail_prepare_copy(gate) as injected:
-            bad_src = _write_source(tmp_path, "e2-wait-bad.txt")
-            bad_registered = await client.post("/api/attachments", json={"source_path": str(bad_src)})
-            bad_id = str(bad_registered.json()["attachment"]["id"])
+            upload = asyncio.create_task(
+                client.post(
+                    "/api/attachments/upload",
+                    content=b"acc-e2-wait-bytes",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-QIO-Name": "e2-wait-bad.txt",
+                    },
+                )
+            )
+            # 等上传登记出 prepared 行（首次落盘还没提交），再做兼容路径发送
+            for _ in range(400):
+                rows = (
+                    await client.get("/api/attachments?unbound=true")
+                ).json().get("attachments", [])
+                found = [row for row in rows if row.get("name") == "e2-wait-bad.txt"]
+                if found:
+                    break
+                await asyncio.sleep(0.01)
+            bad_id = str(found[0]["id"])
             send = asyncio.create_task(client.post("/api/turns", json={"message": message}))
             await asyncio.sleep(0.5)   # 兼容路径进入有界等待（bad 仍是 prepared）
             assert not send.done(), "首次准备未结束，兼容路径不得先受理"
             gate.set()                 # 放行提交 → 以真实 failed 收尾
+            upload_resp = await asyncio.wait_for(upload, timeout=120)
+            assert upload_resp.status_code >= 400, upload_resp.text[:200]
             response = await asyncio.wait_for(send, timeout=120)
             calls_during = (await _calls(provider)) - calls_before
             turns = _turns_for(app, message)
@@ -313,7 +345,8 @@ async def test_missing_draft_sibling_rejects_whole_turn(app, provider, tmp_path:
         gone_id = str((await client.post("/api/attachments", json={"source_path": str(gone_src)})).json()["attachment"]["id"])
         gone_row = await _wait_state(client, gone_id, ("ready",) + TERMINAL)
         assert str(gone_row.get("state")) == "ready", gone_row
-        Path(str(gone_row["stored_path"])).unlink()   # 副本被删 → 当下事实 missing
+        # 源文件被删 → 当下事实 missing（新契约没有副本可回退）
+        Path(str(gone_row["source_path"])).unlink()
 
         response = await client.post("/api/turns", json={"message": message})
         calls_during = (await _calls(provider)) - calls_before
@@ -335,10 +368,7 @@ async def test_historical_failure_does_not_block_pure_text_send(app, provider, t
         await _prepare_credential(client, provider)
         await _script(provider, [{"chunks": ["纯文字回答。"]}])
         calls_before = await _calls(provider)
-        with _fail_prepare_copy("history-only") as injected:
-            bad_src = _write_source(tmp_path, "e2-history-bad.txt")
-            bad_id = str((await client.post("/api/attachments", json={"source_path": str(bad_src)})).json()["attachment"]["id"])
-            assert str((await _wait_state(client, bad_id, ("failed",) + TERMINAL)).get("state")) == "failed"
+        bad_id, injected = await _upload_failed(client, "e2-history-bad.txt", mode="history-only")
 
         response = await client.post("/api/turns", json={"message": message})
         calls_after = await _wait_calls(provider, at_least=calls_before + 1)
@@ -365,12 +395,9 @@ async def test_after_removing_failed_draft_retry_binds_healthy_attachment(app, p
         ok_id = str((await client.post("/api/attachments", json={"source_path": str(ok_src)})).json()["attachment"]["id"])
         assert str((await _wait_state(client, ok_id, ("ready",) + TERMINAL)).get("state")) == "ready"
 
-        with _fail_prepare_copy("retry-after-delete") as injected:
-            bad_src = _write_source(tmp_path, "e2-retry-bad.txt")
-            bad_id = str((await client.post("/api/attachments", json={"source_path": str(bad_src)})).json()["attachment"]["id"])
-            assert str((await _wait_state(client, bad_id, ("failed",) + TERMINAL)).get("state")) == "failed"
-            first = await client.post("/api/turns", json={"message": "E2 先被拒一次"})
-            assert first.status_code >= 400, (first.status_code, first.text[:200])
+        bad_id, injected = await _upload_failed(client, "e2-retry-bad.txt", mode="retry-after-delete")
+        first = await client.post("/api/turns", json={"message": "E2 先被拒一次"})
+        assert first.status_code >= 400, (first.status_code, first.text[:200])
 
         deleted = await client.delete("/api/attachments/%s" % bad_id)
         assert deleted.status_code in (200, 204), deleted.text[:200]
@@ -410,7 +437,7 @@ async def test_historical_failure_bound_to_old_turn_does_not_block_current_draft
         svc = app.state.ctx.attachments
         # 先归属旧轮次（进入历史），再把副本清掉并落成终态失败
         await svc.bind_for_turn(turn_id="turn_old", attachment_ids=[hist_id])
-        Path(str(hist_row["stored_path"])).unlink()
+        Path(str(hist_row["source_path"])).unlink()
         svc._update(hist_id, state="failed", error="历史失败（旧轮次，不在本次待发送集合）")
 
         ok_src = _write_source(tmp_path, "e2-hist-ok.txt")
@@ -437,10 +464,7 @@ async def test_explicit_empty_list_unaffected_by_failed_draft(app, provider, tmp
         await _prepare_credential(client, provider)
         await _script(provider, [{"chunks": ["显式空列表照常回答。"]}])
         calls_before = await _calls(provider)
-        with _fail_prepare_copy("explicit-empty") as injected:
-            bad_src = _write_source(tmp_path, "e2-empty-bad.txt")
-            bad_id = str((await client.post("/api/attachments", json={"source_path": str(bad_src)})).json()["attachment"]["id"])
-            assert str((await _wait_state(client, bad_id, ("failed",) + TERMINAL)).get("state")) == "failed"
+        bad_id, injected = await _upload_failed(client, "e2-empty-bad.txt", mode="explicit-empty")
 
         response = await client.post("/api/turns", json={"message": message, "attachment_ids": []})
         calls_after = await _wait_calls(provider, at_least=calls_before + 1)

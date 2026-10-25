@@ -40,7 +40,7 @@ from xml.etree import ElementTree
 
 from agent import prompts
 from agent.trace.redact import redact_text
-from agent.services import media
+from agent.services import attachment_access, media
 from agent.services.attachments import (
     COPY_LABEL,
     REFERENCE_CAVEAT,
@@ -50,7 +50,9 @@ from agent.services.attachments import (
     human_size,
     classify_media_kind,
     classify_readability,
+    requirement_binding_from_context,
 )
+from agent.tools import fs_tools
 from agent.tools.base import Tool, ToolResult
 
 DEFAULT_LIMIT = 200
@@ -460,15 +462,20 @@ class ReadAttachmentTool(Tool):
     }
     timeout_ms = 60_000
     is_concurrency_safe = True
+    #: W1 的 AuthorizationGateway 由 ServiceRegistry.attach 注入（名字 security）
+    inject = ["security"]
 
     def __init__(
         self,
         attachments: AttachmentService,
         *,
         active_turn_id: Callable[[], str | None] | None = None,
+        security: Any = None,
     ) -> None:
         self.attachments = attachments
         self._active_turn_id = active_turn_id
+        #: 统一授权网关（None = W1 未接线；读取降级为只读放行，写/删一律拒绝）
+        self.security = security
 
     # -- 入口 --------------------------------------------------------------
 
@@ -568,7 +575,7 @@ class ReadAttachmentTool(Tool):
                 category="unavailable",
                 recoverable=True,
             )
-        path, origin = self._readable_path(att)
+        path, origin = self._resolve_read_path(att)
         if path is None:
             return ToolResult(
                 ok=False,
@@ -580,9 +587,125 @@ class ReadAttachmentTool(Tool):
                 category="unavailable",
                 recoverable=True,
             )
+        # 统一授权：读取是一次 READ effect，必须经 agent.security 的网关（契约 §3.1）。
+        # 权限判定不在本工具；网关未接入时 READ 降级放行（只读读取本身不改变事实），
+        # 但会在结果里如实标注。写/删不走这里。
+        if not attachment_access.read_allowed(att.id):
+            return ToolResult(
+                ok=False,
+                error="这条附件没有通过本轮读取授权，本次没有读取任何内容。",
+                category="permission",
+                recoverable=False,
+                code="read_not_authorized",
+            )
+        binding = requirement_binding_from_context(getattr(self, "security", None))
+        read_detail = {
+            "attachment_id": att.id,
+            "offset": offset,
+            "limit": limit,
+            "requirement_binding": binding,
+        }
+        # R9-H4 §3：附件读取的真实影响对象（读的是登记过的这个路径）。
+        read_detail[fs_tools.LIMIT_IMPACTS_KEY] = fs_tools.read_limit_impacts(path)
+        read_detail[fs_tools.LIMIT_IMPACTS_COMPLETE_KEY] = True
+        try:
+            decision = await attachment_access.authorize_read(
+                getattr(self, "security", None),
+                path=path,
+                identity=getattr(att, "file_id", None),
+                purpose=f"读取附件「{att.original_name}」",
+                tool="read_attachment",
+                detail=read_detail,
+            )
+        except Exception as exc:  # noqa: BLE001 - 授权适配层故障按拒绝（失败关闭）
+            return ToolResult(
+                ok=False,
+                error="读取附件的授权检查失败：" + type(exc).__name__,
+                category="permission",
+                recoverable=True,
+                code="authorization_unavailable",
+            )
+        if decision.get("verdict") == "deny":
+            return ToolResult(
+                ok=False,
+                error=str(decision.get("reason") or "读取附件被授权拒绝"),
+                category="permission",
+                recoverable=False,
+                code="permission_denied",
+            )
+        if decision.get("verdict") == "approve":
+            operation = attachment_access.build_pending_operation(
+                kind="attachment.read",
+                label=f"读取附件「{att.original_name}」",
+                effect=attachment_access.read_effect(
+                    "read_attachment",
+                    path=path,
+                    identity=getattr(att, "file_id", None),
+                    purpose=f"读取附件「{att.original_name}」",
+                    detail=read_detail,
+                ),
+                payload={
+                    "attachment_id": att.id,
+                    "offset": offset,
+                    "limit": limit,
+                    "requirement_binding": binding,
+                },
+                purpose=f"读取附件「{att.original_name}」",
+                instruction=attachment_access.instruction_snapshot(
+                    getattr(self, "security", None)
+                ),
+                mode_at_request=attachment_access.mode_value(
+                    getattr(self, "security", None)
+                ),
+            )
+            ticket = await attachment_access.submit(
+                getattr(self, "security", None), operation
+            )
+            summary = attachment_access.ticket_summary(ticket) if ticket else {}
+            return ToolResult(
+                ok=True,
+                content=(
+                    "读取附件已提交审批；批准后会自动执行。"
+                    "本次调用没有读取任何文件内容。"
+                ),
+                status="awaiting_approval",
+                code="pending_approval",
+                data={
+                    "pending_approval": True,
+                    "operation": "attachment.read",
+                    "attachment_id": att.id,
+                    **{key: str(value) for key, value in summary.items()},
+                },
+                recoverable=False,
+            )
+        # 执行前重核对（契约 §7）：等待期间模式/要求/授权若变化，按最新状态处理。
+        if not decision.get("degraded") and getattr(self, "security", None) is not None:
+            recheck = await attachment_access.authorize_read(
+                getattr(self, "security", None),
+                path=path,
+                identity=getattr(att, "file_id", None),
+                purpose=f"读取附件「{att.original_name}」（执行前重核对）",
+                tool="read_attachment",
+                detail=read_detail,
+            )
+            if recheck.get("verdict") != "allow":
+                return ToolResult(
+                    ok=False,
+                    error="读取前重核对未通过："
+                    + str(recheck.get("reason") or "当前授权状态已变化"),
+                    category="permission",
+                    recoverable=recheck.get("verdict") == "approve",
+                    code=(
+                        "recheck_needs_user_decision"
+                        if recheck.get("verdict") == "approve"
+                        else "recheck_denied"
+                    ),
+                )
+        if decision.get("degraded"):
+            notes.append("授权网关未接入：本次读取按只读放行（W1 合入后自动改为真引擎判定）")
         if att.kind == "reference" and att.source_path:
             notes.append(
-                "读的是用户本地原文件（引用方式保存）：内容可能已经被用户改动，"
+                "读的是用户本地原文件（引用方式存储）：内容可能已经被用户改动，"
                 + REFERENCE_CAVEAT
             )
         elif origin == "source":
@@ -704,6 +827,20 @@ class ReadAttachmentTool(Tool):
             except BaseException:  # noqa: BLE001 - 已进入取消路径，等不到就放弃等待
                 pass
             raise
+
+    def _resolve_read_path(self, att: Attachment) -> tuple[Path | None, str]:
+        """读取路径：新语义走 resolve_source（源文件唯一入口），历史记录回退旧口径。"""
+        resolver = getattr(self.attachments, "resolve_source", None)
+        if callable(resolver):
+            try:
+                resolved = resolver(att.id)
+            except Exception:  # noqa: BLE001 - 解析失败按读不到处理，下面统一报原因
+                resolved = None
+            if resolved is not None and not getattr(resolved, "legacy", False):
+                if resolved.path is None:
+                    return None, "none"
+                return Path(resolved.path), "source"
+        return self._readable_path(att)
 
     def _readable_path(self, att: Attachment) -> tuple[Path | None, str]:
         """真正要读的那个文件 + 来源（副本 / 用户原文件）。

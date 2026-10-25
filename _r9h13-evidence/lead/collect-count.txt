@@ -1,0 +1,55 @@
+tests/test_approval_api.py: 7
+tests/test_approval_binding.py: 7
+tests/test_approval_lifecycle.py: 10
+tests/test_approval_persistence.py: 4
+tests/test_approval_restart.py: 4
+tests/test_approved_operations.py: 23
+tests/test_attachment_identity.py: 8
+tests/test_attachment_source_refs.py: 16
+tests/test_attachments_api.py: 14
+tests/test_authorization_engine.py: 20
+tests/test_fs_delete_recycle.py: 15
+tests/test_r9g_acceptance_e2e.py: 39
+tests/test_r9h10_regressions.py: 7
+tests/test_r9h11_binding_recovery.py: 16
+tests/test_r9h11_cross_operation.py: 22
+tests/test_r9h11_object_state.py: 91
+tests/test_r9h11_regressions.py: 19
+tests/test_r9h12_binding_recovery.py: 18
+tests/test_r9h12_cross_operation.py: 16
+tests/test_r9h12_object_state.py: 57
+tests/test_r9h12_regressions.py: 8
+tests/test_r9h13_a_requirements.py: 9
+tests/test_r9h13_b_object_state.py: 10
+tests/test_r9h13_c_execution.py: 8
+tests/test_r9h13_d_approval.py: 22
+tests/test_r9h13_e_subagent.py: 13
+tests/test_r9h13_lead.py: 6
+tests/test_r9h2_chain_recovery.py: 17
+tests/test_r9h2_parse_state.py: 16
+tests/test_r9h2_real_flow.py: 3
+tests/test_r9h2_state_migration.py: 1
+tests/test_r9h3_limits_priority.py: 11
+tests/test_r9h3_state_migration.py: 2
+tests/test_r9h3_unrestricted_no_review.py: 14
+tests/test_r9h4_approval.py: 19
+tests/test_r9h4_engine_binding.py: 27
+tests/test_r9h4_fs_batch.py: 10
+tests/test_r9h4_limits_semantics.py: 22
+tests/test_r9h5_regressions.py: 12
+tests/test_r9h5_regressions2.py: 11
+tests/test_r9h6_regressions.py: 16
+tests/test_r9h7_regressions.py: 9
+tests/test_r9h8_regressions.py: 12
+tests/test_r9h9_regressions.py: 8
+tests/test_r9h_engine_wiring.py: 4
+tests/test_r9h_internal_data.py: 5
+tests/test_r9h_limits.py: 13
+tests/test_subagent_scope.py: 7
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\starlette\testclient.py:53
+  D:\qio-dev\qio-r9h13-main\backend\.venv\Lib\site-packages\starlette\testclient.py:53: DeprecationWarning: The anyio.abc.BlockingPortal alias is deprecated, use anyio.from_thread.BlockingPortal instead.
+    _PortalFactoryType = Callable[[], AbstractContextManager[anyio.abc.BlockingPortal]]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

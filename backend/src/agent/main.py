@@ -102,8 +102,37 @@ def main(argv: list[str] | None = None) -> None:
     from agent.config import Settings
 
     settings = Settings()
-    logging.basicConfig(level=settings.log_level)
-    uvicorn.run(create_app(), host=settings.host, port=settings.port, log_level="info")
+    # 环境变量（QIO_LOG）可能写成小写：basicConfig 只认大写级别名，非法值会在启动时直接
+    # 抛 ValueError（后端根本起不来）。大小写归一，未知值退回 INFO 并在日志里说明。
+    _level_raw = str(settings.log_level or "INFO").upper()
+    _level = getattr(logging, _level_raw, None)
+    if not isinstance(_level, int):
+        logging.basicConfig(level=logging.INFO)
+        logging.getLogger("agent.main").warning(
+            "未知的 QIO_LOG=%r：按 INFO 处理", settings.log_level
+        )
+    else:
+        logging.basicConfig(level=_level)
+    app = create_app()
+    # R9 契约 §11（W5）：退出收尾（POST /api/lifecycle/shutdown）完成后，由这里让
+    # uvicorn **优雅**停下 —— lifespan 的 finally 会再走一次同一个 aclose（幂等），
+    # 数据库随后按 close_decision 关闭，进程自己退出。壳按 pid 等它消失，超时才兜底。
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=settings.host,
+            port=settings.port,
+            log_level="info",
+            # 退出收尾的有界保证：前端可能仍有长连接（SSE /api/events）没关，
+            # uvicorn 默认会无限等它们 —— 安装版实测会让后端「aclose 已完成但进程不退」，
+            # 壳只能 15s 后强杀。给优雅关闭一个上界，超过就由 uvicorn 取消残留连接。
+            timeout_graceful_shutdown=3,
+        )
+    )
+    coordinator = getattr(app.state, "shutdown_coordinator", None)
+    if coordinator is not None:
+        coordinator.set_exit_hook(lambda: setattr(server, "should_exit", True))
+    server.run()
 
 
 if __name__ == "__main__":

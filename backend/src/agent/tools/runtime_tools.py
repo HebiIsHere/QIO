@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from agent.credentials.store import CredentialStore
+from agent.tools import security_gate
 from agent.tools.base import Tool, ToolResult
 from agent.trace.redact import redact_text
 from agent.tools.sandbox import SandboxExecutor
@@ -15,12 +16,17 @@ from agent.tools.spec import ToolDefinition
 class CodeTool(Tool):
     """Function-type tool: executes the approved code in the sandbox."""
 
+    # security = 统一授权网关（契约 §2.3 TOOL_REGISTER/EXECUTE）：注册**不产生**
+    # 任何长期权限，每次调用都重新判定。
+    inject = ["security"]
+
     def __init__(
         self,
         definition: ToolDefinition,
         sandbox: SandboxExecutor,
         credentials: CredentialStore | None = None,
         envs=None,
+        security=None,
     ) -> None:
         self.definition = definition
         self.name = definition.name
@@ -30,8 +36,89 @@ class CodeTool(Tool):
         self.credentials = credentials
         # 项目级专用环境：声明了第三方依赖的工具必须用它跑（没有就明确失败）。
         self.envs = envs
+        self.security = security
+
+    async def _authorize_call(self, arguments: dict[str, Any]) -> ToolResult | None:
+        """自建工具每次调用重新经统一入口判定（注册不产生长期授权）。
+
+        返回 None = 可以执行；否则返回应直接交给模型的失败/待审批结果。
+        """
+        if self.security is None:
+            return None
+        mode = security_gate.mode_of(self.security)
+        if mode == "read_only":
+            return ToolResult(
+                ok=False,
+                error=(
+                    "只读模式下 QIO 不能执行自建工具：无法证明它不会修改业务文件，"
+                    "本次已拒绝（没有任何代码被执行）。"
+                ),
+                category="permission",
+                recoverable=False,
+                code="readonly_execution_denied",
+            )
+        # 审批执行器批准后重跑本工具（registry 的 approved 重跑标记）：审批已完成，
+        # 不再重复提交；只读检查已在上方生效（批准后切只读 → 这里仍不执行）。
+        from agent.tools.registry import current_approved_execution
+
+        if current_approved_execution() is not None:
+            return None
+        effect = security_gate.script_effect(
+            self.name,
+            purpose=f"执行自建工具 {self.name}",
+            code_digest=security_gate.text_sha256(self.definition.code),
+            detail={"definition": self.name, "tool_type": self.definition.tool_type},
+        )
+        decision = await security_gate.authorize(self.security, effect)
+        verdict = security_gate.verdict_of(decision)
+        if verdict == "allow":
+            return None
+        if verdict == "deny":
+            return security_gate.denied_result(decision, "当前模式不允许执行这个自建工具")
+        operation = security_gate.build_pending_operation(
+            kind="tool.invoke",
+            label=f"执行自建工具 {self.name}",
+            payload={"tool": self.name, "arguments": dict(arguments or {})},
+            effect=effect,
+            fingerprint={"tool": self.name, "code_sha256": security_gate.text_sha256(self.definition.code)},
+            purpose=effect.purpose,
+            mode_at_request=mode,
+            instruction=security_gate.instruction_snapshot(self.security),
+        )
+        try:
+            ticket = await security_gate.submit_pending(self.security, operation)
+        except Exception as exc:  # noqa: BLE001 - 提交失败如实报，不假装已提交
+            return ToolResult(
+                ok=False,
+                error=f"提交审批失败：{type(exc).__name__}: {exc}（本次没有执行）",
+                category="permission",
+                recoverable=False,
+            )
+        if ticket is not None:
+            return security_gate.pending_result(
+                ticket, operation_label=f"执行自建工具 {self.name}"
+            )
+        return ToolResult(
+            ok=False,
+            error=(
+                "执行自建工具需要你的批准，但当前没有可用的审批执行器："
+                "本次没有执行（执行边界暂不可用）。"
+            ),
+            category="permission",
+            recoverable=False,
+        )
+
+    async def execute_after_approval(self, arguments: dict[str, Any]) -> ToolResult:
+        """审批执行器入口：批准后真正运行（执行前由审批执行器重核对授权）。"""
+        return await self._run(dict(arguments or {}))
 
     async def run(self, **kwargs: Any) -> ToolResult:
+        blocked = await self._authorize_call(kwargs)
+        if blocked is not None:
+            return blocked
+        return await self._run(kwargs)
+
+    async def _run(self, kwargs: dict[str, Any]) -> ToolResult:
         from agent.tools.policy import resolve_policy
 
         interpreter: str | None = None
@@ -47,6 +134,7 @@ class CodeTool(Tool):
                 self.envs,
                 executor=await self.sandbox.effective_executor(),
                 prepare=False,
+                security=self.security,
             )
             if not plan.ok:
                 return ToolResult(

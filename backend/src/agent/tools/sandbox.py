@@ -200,6 +200,9 @@ class SandboxResult:
     # 这次执行**实际**拿到的强制隔离（Job Object / 低完整性；见 tools/isolation.py）。
     # None = 没走隔离钩子（例如容器执行器，隔离由容器提供）。
     isolation: dict | None = None
+    # 自动放行执行的事后核验结果（见 tools/execution_guard.py）：
+    # {"ok", "violations": [...], "detail"}；None = 本次没有核验（未配置保护范围）。
+    guard: dict | None = None
 
     def diagnostic(self, limit: int = 2000) -> str:
         """脱敏、限长后的诊断详情（stderr 优先，附 stdout 末尾）。
@@ -509,6 +512,11 @@ class SandboxExecutor:
         executor: str = "auto",
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         tool_executor: "ToolExecutorSpec | None" = None,
+        *,
+        mode_provider=None,
+        security=None,
+        protected_scope_provider=None,
+        execution_guard=None,
     ) -> None:
         """`tool_executor` 是**已经解析好的** worker 运行方式（正常依赖注入）。
 
@@ -525,6 +533,42 @@ class SandboxExecutor:
         self.executor = executor
         self.timeout_seconds = timeout_seconds
         self.tool_executor = tool_executor
+        # 执行层约束（契约 §3.1）：同时知道「当前模式」与「统一授权网关」时，
+        # read_only 一律拒绝任意脚本、restricted 无写范围时强制 Low IL。
+        # provider 为 None = 旧调用路径，行为与改动前完全一致。
+        self.mode_provider = mode_provider
+        self.security = security
+        self.protected_scope_provider = protected_scope_provider
+        self.execution_guard = execution_guard
+
+    # -- 执行边界（契约 §3.1） ------------------------------------------------
+
+    def current_mode(self) -> str | None:
+        """当前权限模式；没有 provider 时返回 None（旧路径，不做模式约束）。"""
+        provider = self.mode_provider
+        if provider is None:
+            return None
+        try:
+            value = provider() if callable(provider) else provider
+        except Exception:  # noqa: BLE001 - 读不到模式时按无模式（保守：不假装有边界）
+            return None
+        if hasattr(value, "__await__"):
+            return None
+        from agent.tools.security_gate import mode_value
+
+        return mode_value(value)
+
+    def _execution_guard(self):
+        """按配置返回事后核验器（没有配置 → None，不伪造核验）。"""
+        if self.execution_guard is not None:
+            return self.execution_guard
+        provider = self.protected_scope_provider
+        if provider is None:
+            return None
+        from agent.tools.execution_guard import ExecutionGuard
+
+        self.execution_guard = ExecutionGuard(provider)
+        return self.execution_guard
 
     async def effective_executor(self) -> str:
         """实际会用的执行器。
@@ -551,6 +595,8 @@ class SandboxExecutor:
         interpreter: str | None = None,
         container_image: str | None = None,
         extra_writable_dirs: "list[str] | tuple[str, ...] | None" = None,
+        authorized_write_dirs: "list[str] | tuple[str, ...] | None" = None,
+        internal_data_confirmed: bool = False,
     ) -> SandboxResult:
         """执行一次工具。
 
@@ -574,6 +620,40 @@ class SandboxExecutor:
         * `executor="subprocess"` + 依赖镜像 → 互相矛盾，直接报错，不静默忽略镜像。
         """
         policy = policy or ToolExecutionPolicy()
+        # 契约 §3.1/§2.3：只读模式不能执行任意脚本/自建工具 —— 无法证明它不会写
+        # 业务文件。这是执行层兜底，不依赖引擎是否已经先拒绝（两层都要成立）。
+        mode = self.current_mode()
+        if mode == "read_only":
+            return SandboxResult(
+                ok=False,
+                value=None,
+                stdout="",
+                stderr="",
+                error=(
+                    "只读模式下 QIO 不能运行脚本或自建工具：无法证明它不会修改业务文件，"
+                    "本次已拒绝（没有任何代码被执行）。"
+                ),
+                category="permission",
+            )
+        # 内部运行数据（契约 §4）：脚本内容**明确提到**内部数据路径时，必须先在
+        # 审批单完成三次确认才能执行；执行前能可靠识别的只有这一种，其余由事后
+        # 核验如实上报（见 tools/execution_guard.py）。
+        if not internal_data_confirmed:
+            from agent.tools import security_gate
+
+            hits = security_gate.internal_data_mentions(self.security, code)
+            if hits:
+                return SandboxResult(
+                    ok=False,
+                    value=None,
+                    stdout="",
+                    stderr="",
+                    error=(
+                        "脚本内容涉及 QIO 内部运行数据（" + "、".join(hits) + "）："
+                        "直接改写可能损坏应用，必须先完成连续三次确认；本次未执行。"
+                    ),
+                    category="permission",
+                )
         try:
             project_files = dict(files or {})
             check_project_size(project_files)
@@ -678,7 +758,69 @@ class SandboxExecutor:
         return await self._execute_subprocess(
             code, arguments, extra_env or {}, policy, project_files, entry, interpreter,
             extra_writable_dirs=extra_writable_dirs,
+            authorized_write_dirs=authorized_write_dirs,
+            internal_data_confirmed=bool(internal_data_confirmed),
         )
+
+    # -- 受控启动组件复用（契约 §3.3） -------------------------------------
+
+    def _launch_boundary(self):
+        """与 cmd_tools 同一个 ControlledLauncher：只复用受控启动组件，不重判权限。"""
+        from agent.security import launch as launch_boundary
+
+        return launch_boundary.ControlledLauncher(
+            computer=None,
+            security=self.security,
+            mode_provider=self.mode_provider,
+            protected_scope_provider=self.protected_scope_provider,
+        )
+
+    def _worker_launch_plan(
+        self,
+        tmp: str,
+        spec,
+        code: str,
+        files: dict[str, str] | None,
+        entry: str | None,
+        guarded_mode: str | None,
+        *,
+        authorized_write_dirs: "list[str] | tuple[str, ...] | None",
+        internal_data_confirmed: bool,
+    ):
+        """自建工具 worker 的 LaunchSpec/LaunchPermit（与普通程序启动同一套契约）。"""
+        from agent.security import launch as launch_boundary
+
+        argv = [str(item) for item in (getattr(spec, "argv", None) or [])]
+        program = argv[0] if argv else None
+        worker_argv = tuple(argv[1:])
+        payload_shape = {
+            "code": code,
+            "files": dict(files or {}),
+            "entry": str(entry or ""),
+        }
+        worker_spec = launch_boundary.LaunchSpec(
+            kind="script",
+            program=program,
+            argv=worker_argv,
+            cwd=tmp,
+            script_source=json.dumps(payload_shape, ensure_ascii=False, sort_keys=True),
+            script_name=(
+                Path(worker_argv[-1]).name if worker_argv else "qio-tool-worker.py"
+            ),
+            timeout=float(self.timeout_seconds),
+        )
+        worker_permit = launch_boundary.build_permit(
+            worker_spec,
+            mode=(guarded_mode or "unrestricted"),
+            allowed_roots=tuple(
+                str(item) for item in (authorized_write_dirs or ()) if str(item)
+            ),
+            allowed_operations=("execute",),
+            internal_data_confirmed=bool(internal_data_confirmed),
+            source="instruction",
+            reason="自建工具 worker 启动：复用统一受控启动组件（spec 摘要/隔离/事后核验）",
+        )
+        return worker_spec, worker_permit, self._launch_boundary()
 
     # -- subprocess executor ----------------------------------------------
 
@@ -692,6 +834,8 @@ class SandboxExecutor:
         entry: str | None = None,
         interpreter: str | None = None,
         extra_writable_dirs: "list[str] | tuple[str, ...] | None" = None,
+        authorized_write_dirs: "list[str] | tuple[str, ...] | None" = None,
+        internal_data_confirmed: bool = False,
     ) -> SandboxResult:
         from agent.tools.executor_env import ToolRuntimeUnavailable, resolve_tool_executor
 
@@ -725,6 +869,40 @@ class SandboxExecutor:
             env = _system_env(tmp)
             if extra_env:
                 env.update(extra_env)
+            # 自动放行执行的事后核验（契约 §3.1）：执行前记录受保护范围快照，
+            # 执行后比对；发现越界修改如实上报（不能回滚就说明不能回滚）。
+            guard_before = None
+            guard = self._execution_guard()
+            guarded_mode = self.current_mode()
+            # 契约 §3.3：worker 启动也走同一套受控启动事前约束（spec_digest/内部数据/
+            # 只读/许可操作核对）；拒绝时在创建任何进程之前返回。
+            worker_spec, worker_permit, launcher = self._worker_launch_plan(
+                tmp,
+                spec,
+                code,
+                files,
+                entry,
+                guarded_mode,
+                authorized_write_dirs=authorized_write_dirs,
+                internal_data_confirmed=internal_data_confirmed,
+            )
+            pre_error, pre_category = launcher.prepare(worker_spec, worker_permit)
+            if pre_error:
+                return SandboxResult(
+                    ok=False,
+                    value=None,
+                    stdout="",
+                    stderr="",
+                    error=pre_error,
+                    category=pre_category or "permission",
+                )
+            if guard is not None and guarded_mode != "unrestricted":
+                from agent.tools import security_gate
+
+                try:
+                    guard_before = await security_gate.to_thread(guard.capture)
+                except Exception:  # noqa: BLE001 - 快照失败不阻断执行，但要如实标注
+                    guard_before = None
             try:
                 process = await asyncio.create_subprocess_exec(
                     *spec.argv,
@@ -747,12 +925,34 @@ class SandboxExecutor:
             # Job Object（内存/活动进程数上限 + 关句柄即收整棵树）与低完整性降级。
             # 钩子永不抛异常；平台不支持 / 调用失败时行为与改动前完全一致，
             # 并把实际结果与原因附在 SandboxResult.isolation 上（可诊断，不静默）。
-            hardening = isolation.harden(
+            hardening = launcher.apply_isolation(
                 process,
+                worker_spec,
+                worker_permit,
                 scratch_dir=tmp,
                 policy=policy,
                 extra_writable_dirs=extra_writable_dirs,
+                mode=guarded_mode,
+                authorized_write_scope=bool(authorized_write_dirs),
             )
+            # 当前模式要求低完整性、但本机核实不了它生效 → 在执行任何工具代码
+            # （请求还没写进 stdin）之前结束进程并如实拒绝：不静默降级。
+            if getattr(hardening, "low_integrity_required", False) and not hardening.boundary_ok():
+                await _kill_process_tree(process)
+                isolation.release(process)
+                from agent.tools import security_gate
+
+                return _with_isolation(
+                    SandboxResult(
+                        ok=False,
+                        value=None,
+                        stdout="",
+                        stderr="",
+                        error=security_gate.SCRIPT_BOUNDARY_UNAVAILABLE,
+                        category="permission",
+                    ),
+                    hardening,
+                )
             try:
                 stdout, stderr, over_limit = await asyncio.wait_for(
                     _exchange(process, request), timeout=self.timeout_seconds
@@ -761,32 +961,122 @@ class SandboxExecutor:
                 # wait_for 只取消了读取；必须真的结束这棵进程树，否则工具自己起的
                 # 子进程会留下（资源泄漏 + 临时目录清理失败）。
                 await _kill_process_tree(process)
-                return _with_isolation(
-                    SandboxResult(
-                        ok=False, value=None, stdout="", stderr="",
-                        error=f"timeout after {self.timeout_seconds}s",
-                        category="timeout",
+                return self._guard_after(
+                    _with_isolation(
+                        SandboxResult(
+                            ok=False, value=None, stdout="", stderr="",
+                            error=f"timeout after {self.timeout_seconds}s",
+                            category="timeout",
+                        ),
+                        hardening,
                     ),
-                    hardening,
+                    guard_before,
                 )
             except asyncio.CancelledError:
                 # 用户取消：同样只清理这一棵进程树，然后如实向上传递取消语义。
                 await _kill_process_tree(process)
+                # 取消路径没有可返回的结果：越界修改只能记日志（不能改写取消语义）。
+                self._report_guard_on_cancel(guard_before)
                 raise
             finally:
                 # 关掉 job 句柄：KILL_ON_JOB_CLOSE 保证这棵树里不会留下任何进程。
                 isolation.release(process)
+            # 执行后再算一次 spec_digest：worker 程序/脚本内容执行期间被替换 →
+            # 结果不可作为已授权操作的事实（与 cmd_tools 同一核对语义）。
+            post = launcher.postflight(worker_spec, worker_permit)
+            if post.get("changed"):
+                return self._guard_after(
+                    _with_isolation(
+                        SandboxResult(
+                            ok=False,
+                            value=None,
+                            stdout=stdout.decode("utf-8", errors="replace"),
+                            stderr=stderr.decode("utf-8", errors="replace"),
+                            error=(
+                                "工具 worker/脚本在执行期间发生了变化（spec_digest 不一致）："
+                                "本次执行结果不可作为已授权操作的事实"
+                            ),
+                            category="boundary_violation",
+                        ),
+                        hardening,
+                    ),
+                    guard_before,
+                )
             # 协议判定只有一份实现（见 _parse_worker_result）：
             # 输出超限 → 退出码 → 空输出 → 恰好一行 → 合法 JSON → 布尔 ok → value 类型。
-            return _with_isolation(
-                _parse_worker_result(
-                    returncode=process.returncode,
-                    stdout_text=stdout.decode("utf-8", errors="replace").strip(),
-                    stderr_text=stderr.decode("utf-8", errors="replace").strip(),
-                    over_limit=over_limit,
-                    runtime="subprocess",
+            return self._guard_after(
+                _with_isolation(
+                    _parse_worker_result(
+                        returncode=process.returncode,
+                        stdout_text=stdout.decode("utf-8", errors="replace").strip(),
+                        stderr_text=stderr.decode("utf-8", errors="replace").strip(),
+                        over_limit=over_limit,
+                        runtime="subprocess",
+                    ),
+                    hardening,
                 ),
-                hardening,
+                guard_before,
+            )
+
+    # -- 事后核验（契约 §3.1） ---------------------------------------------
+
+    def _guard_after(self, result: SandboxResult, guard_before) -> SandboxResult:
+        """执行后比对受保护范围；发现越界修改 → 如实上报并标记本次执行违规。"""
+        guard = self.execution_guard
+        if guard is None or guard_before is None:
+            return result
+        try:
+            report = guard.compare(guard_before, guard.capture())
+        except Exception as exc:  # noqa: BLE001 - 核验失败要写明，而不是当作没发生
+            report = {
+                "ok": False,
+                "violations": [],
+                "detail": f"事后核验失败（无法确认有没有越界修改）：{type(exc).__name__}: {exc}",
+                "error": "guard_failed",
+            }
+            if result.ok:
+                return replace(
+                    result,
+                    ok=False,
+                    error="执行完成，但事后核验失败：无法确认有没有越界修改（这是事实，不是失败原因猜测）",
+                    category="boundary_unverified",
+                    guard=report,
+                )
+            return replace(result, guard=report)
+        if report.get("violations"):
+            shown = "；".join(
+                f"{item.get('path')}（{item.get('change')}）"
+                for item in report["violations"][:5]
+            )
+            message = (
+                "执行越界：检测到受保护范围被修改（无法回滚，只能如实上报）：" + shown
+            )
+            if len(report["violations"]) > 5:
+                message += f"；另有 {len(report['violations']) - 5} 处"
+            report = dict(report)
+            report["violated"] = True
+            return replace(
+                result,
+                ok=False,
+                error=message,
+                category="boundary_violation",
+                guard=report,
+            )
+        return replace(result, guard=dict(report, violated=False))
+
+    def _report_guard_on_cancel(self, guard_before) -> None:
+        """取消/中断时没有可返回的结果：越界事实只能记日志（不改写取消语义）。"""
+        guard = self.execution_guard
+        if guard is None or guard_before is None:
+            return
+        try:
+            report = guard.compare(guard_before, guard.capture())
+        except Exception:  # noqa: BLE001
+            return
+        if report.get("violations"):
+            logger.warning(
+                "tool execution cancelled after modifying protected paths: %s",
+                [item.get("path") for item in report["violations"][:5]],
             )
 
     # -- docker executor (optional) --------------------------------------

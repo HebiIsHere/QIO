@@ -72,13 +72,10 @@ def _wait_terminal(client: TestClient, attachment_id: str, timeout: float = 20.0
 
 
 def _register(client: TestClient, path: Path, *, topic_id: str | None = None) -> dict:
-    body: dict = {"source_path": str(path)}
-    if topic_id:
-        body["topic_id"] = topic_id
-    resp = client.post("/api/attachments", json=body)
-    assert resp.status_code == 200, resp.text
-    att = resp.json()["attachment"]
-    return _wait_terminal(client, att["id"])
+    """**历史行夹具**（source_kind=NULL）：重试克隆/复用副本是历史数据的维护能力。"""
+    svc = client.app.state.ctx.attachments
+    att = svc.run_prepare(svc.prepare(str(path), topic_id=topic_id).id)
+    return svc.payload(att)
 
 
 def _submit(
