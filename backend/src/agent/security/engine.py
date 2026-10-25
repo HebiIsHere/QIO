@@ -47,8 +47,10 @@ from agent.security.object_state import (
     decide_object,
 )
 from agent.security.instructions import (
+    Grant,
     InstructionContext,
     OPERATION_EXECUTE,
+    Scope,
     instruction_allows_path,
     operations_for,
 )
@@ -188,6 +190,14 @@ class AuthorizationEngine(AuthorizationGateway):
             base = tuple(parent_instruction.active_grants())
         else:
             base = ()
+        requirement = (
+            parent_scope.requirement
+            if parent_scope is not None
+            else current_requirement.get()
+        )
+        # R9-H13 §11 F6：主智能体经模型审查取得的有效授权必须形成可委派范围；
+        # 只追加当前要求版本下未撤销/未过期的 allow 记录，并且只缩小不扩大。
+        base = tuple(base) + self._delegable_grants(requirement)
         depth = (parent_scope.depth + 1) if parent_scope is not None else 1
         return AgentScope(
             parent_instruction_id=(
@@ -198,12 +208,112 @@ class AuthorizationEngine(AuthorizationGateway):
             grants=base,
             depth=depth,
             purpose=str(purpose or ""),
-            requirement=(
-                parent_scope.requirement
-                if parent_scope is not None
-                else current_requirement.get()
-            ),
+            requirement=requirement,
         )
+
+    def _delegable_grants(self, requirement: Any) -> tuple[Any, ...]:
+        """把当前要求下**已核实**的模型审查授权记录转换成子智能体 grant。
+
+        只读台账，不生成新授权、不改数据；撤销/过期/版本不符的记录不追加；同一对象
+        的 read 子集只覆盖该对象（用于完成已核实修改前的读取），不扩大 write/delete。
+        """
+        ledger = self.authorizations
+        if ledger is None or requirement is None:
+            return ()
+        requirement_id = getattr(requirement, "requirement_id", None)
+        if isinstance(requirement, dict):
+            requirement_id = requirement.get("requirement_id")
+        if not requirement_id:
+            return ()
+        finder = getattr(ledger, "records_for_requirement", None)
+        if not callable(finder):
+            return ()
+        try:
+            records = tuple(finder(str(requirement_id)) or ())
+        except Exception:  # noqa: BLE001 - 台账不可用时不生成委派范围
+            logger.warning("delegable authorization lookup failed", exc_info=True)
+            return ()
+        operation_map = {
+            "write": "write",
+            "create": "create",
+            "delete": "delete",
+            "execute": "execute",
+            "install": "install_deps",
+            "install_deps": "install_deps",
+            "egress": "network_egress",
+            "network_egress": "network_egress",
+            "system_change": "system_change",
+            "read": "read",
+        }
+        grants: list[Grant] = []
+        seen: set[tuple] = set()
+        for record in records[:32]:
+            if str(getattr(record, "decision", "") or "") != "allow":
+                continue
+            if getattr(record, "revoked_at", None):
+                continue
+            operations = frozenset(
+                operation_map[str(item).strip().lower()]
+                for item in (getattr(record, "allowed_operations", ()) or ())
+                if str(item).strip().lower() in operation_map
+            )
+            if not operations:
+                continue
+            objects: list[Scope] = []
+            read_objects: list[Scope] = []
+            for obj in getattr(record, "objects", ()) or ():
+                if not isinstance(obj, dict):
+                    continue
+                kind = str(obj.get("kind") or "").strip().lower()
+                value = str(obj.get("value") or "").strip()
+                if not value:
+                    continue
+                if kind in {"path", "directory"}:
+                    objects.append(Scope("path", value))
+                    read_objects.append(Scope("path", value))
+                elif kind == "path_prefix":
+                    objects.append(Scope("path_prefix", value))
+                    read_objects.append(Scope("path_prefix", value))
+                elif kind in {"program", "program_name"}:
+                    objects.append(Scope("program", value))
+                elif kind in {"service", "url_host"}:
+                    objects.append(Scope("url_host", value))
+            if not objects:
+                continue
+            key = (
+                tuple(sorted(operations)),
+                tuple((scope.kind, scope.value) for scope in objects),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            record_id = str(getattr(record, "record_id", "") or "")
+            created_at = str(getattr(record, "created_at", "") or "")
+            purpose = "已验证授权：" + str(getattr(record, "reason", "") or "")[:100]
+            grants.append(
+                Grant(
+                    grant_id="grant_verified_" + record_id[:24],
+                    instruction_id="verified_authorization",
+                    operations=operations,
+                    objects=objects,
+                    purpose=purpose,
+                    source="verified_authorization",
+                    created_at=created_at,
+                )
+            )
+            if read_objects:
+                grants.append(
+                    Grant(
+                        grant_id="grant_verified_read_" + record_id[:24],
+                        instruction_id="verified_authorization",
+                        operations=frozenset({"read"}),
+                        objects=read_objects,
+                        purpose=purpose,
+                        source="verified_authorization",
+                        created_at=created_at,
+                    )
+                )
+        return tuple(grants)
 
     # -- 判定 ---------------------------------------------------------------
 
@@ -1270,10 +1380,32 @@ class AuthorizationEngine(AuthorizationGateway):
     def _grant_scope_id(
         self, effect: Effect, context: AuthContext
     ) -> tuple[bool, str | None]:
-        """effect 是否被当前指令的 grant 完整覆盖；返回 (覆盖, 命中的 scope/grant id)。"""
+        """effect 是否被**已核实授权**完整覆盖。
+
+        R9-H13 §11 F6：除了当前指令 grants，子智能体从父级得到的 verified 委派
+        grants 也是已核实授权来源（范围先由 `_scope_limited` 逐动作逐对象限制）；
+        这里用同一逐影响语义判断，不再用 effect 级 operation 覆盖复合影响。
+        """
         instruction = context.instruction or current_instruction.get()
-        if instruction is None:
-            return False, None
+        if instruction is not None:
+            covered, hit = self._instruction_grant_scope_id(effect, instruction)
+            if covered:
+                return True, hit
+        scope = context.agent_scope or agent_scope_var.get()
+        if scope is not None:
+            grants = tuple(
+                grant
+                for grant in (scope.grants or ())
+                if not getattr(grant, "revoked", False)
+            )
+            covered, _missing, hits = self._scope_coverage(effect, grants)
+            if covered and hits:
+                return True, hits[0]
+        return False, None
+
+    def _instruction_grant_scope_id(
+        self, effect: Effect, instruction: InstructionContext
+    ) -> tuple[bool, str | None]:
         path_targets = effect.path_targets()
         program_targets = [t.value for t in effect.targets if t.kind == "program"]
         url_targets = [t.value for t in effect.targets if t.kind == "url"]
@@ -1388,6 +1520,155 @@ class AuthorizationEngine(AuthorizationGateway):
                 add_paths((raw_impact,))
         return paths, programs, services
 
+    # -- R9-H13 §11：子智能体范围逐影响核对 ---------------------------------
+
+    _SCOPE_GRANT_OPERATIONS = {
+        "read": ("read",),
+        "write": ("write", "create"),
+        "create": ("create", "write"),
+        "delete": ("delete",),
+        "execute": ("execute",),
+        "install": ("install_deps",),
+        "install_deps": ("install_deps",),
+        "system_change": ("system_change",),
+        "network_egress": ("network_egress",),
+        "egress": ("network_egress",),
+    }
+
+    def _scope_impacts(
+        self, effect: Effect
+    ) -> tuple[list[tuple[str | None, str, str]], list[str]]:
+        """子范围核对用的逐影响事实：[(operation, kind, value)] + 不完整问题。
+
+        有 `detail.limit_impacts` 时以它为权威（动作与对象一一对应，不再把目录/
+        删除/程序影响按 effect 级动作拍平）；否则按 effect kind 与 targets 配对。
+        """
+        detail = effect.detail or {}
+        impacts: list[tuple[str | None, str, str]] = []
+        problems: list[str] = []
+        raw = detail.get("limit_impacts")
+        if raw is not None:
+            if detail.get("limit_impacts_complete") is False:
+                problems.append("impacts_incomplete")
+            try:
+                items = tuple(raw)
+            except TypeError:
+                items = ()
+                problems.append("impacts_unreadable")
+            for raw_impact in items:
+                if not isinstance(raw_impact, dict):
+                    problems.append("impact_invalid")
+                    continue
+                operation = self._normalize_limit_operation(raw_impact.get("operation"))
+                if operation is None:
+                    problems.append("operation_missing")
+                    continue
+                objects = raw_impact.get("objects")
+                if not isinstance(objects, (list, tuple)):
+                    problems.append("impact_objects_missing")
+                    continue
+                for item in objects:
+                    if not isinstance(item, dict):
+                        problems.append("impact_object_invalid")
+                        continue
+                    kind = str(item.get("kind") or "path").strip().lower()
+                    value = str(item.get("value") or "").strip()
+                    if not value:
+                        problems.append("impact_object_value_missing")
+                        continue
+                    if kind in self._LIMIT_PATH_KINDS:
+                        impacts.append((operation, "path", value))
+                    elif kind in {"program", "program_name"}:
+                        impacts.append((operation, "program", value))
+                    elif kind in {"service", "url_host"}:
+                        impacts.append((operation, "service", value))
+                    else:
+                        problems.append("impact_object_kind_unknown")
+            if not impacts and not problems:
+                problems.append("no_object_facts")
+            return impacts, problems
+        base_operation = self._base_limit_operation(effect)
+        if base_operation is None:
+            problems.append("operation_missing")
+        for target in effect.targets:
+            if target.kind == "path":
+                if effect.kind == EffectKind.EXECUTE:
+                    # cwd 不是被授权对象；删除对象由 limit_impacts 提供。
+                    continue
+                if base_operation is None:
+                    continue
+                impacts.append((base_operation, "path", str(target.value)))
+            elif target.kind == "program":
+                impacts.append((base_operation or "execute", "program", str(target.value)))
+            elif target.kind == "url":
+                impacts.append(
+                    (base_operation or "network_egress", "service", str(target.value))
+                )
+        for host in detail.get("network_hosts") or ():
+            text_host = str(host or "").strip()
+            if text_host:
+                impacts.append(("network_egress", "service", text_host))
+        if not impacts and not problems and effect.kind in MUTATING_EFFECTS:
+            problems.append("no_object_facts")
+        return impacts, problems
+
+    def _grant_covers_impact(
+        self, grant: Any, operation: str | None, kind: str, value: str
+    ) -> bool:
+        allowed_operations = self._SCOPE_GRANT_OPERATIONS.get(
+            str(operation or "").strip().lower(), ()
+        )
+        if not allowed_operations:
+            return False
+        if kind == "path":
+            return any(grant.allows(op, path=value) for op in allowed_operations)
+        if kind == "program":
+            if "execute" in allowed_operations:
+                return bool(grant.allows("execute", program=value))
+            return any(grant.allows(op, path=value) for op in allowed_operations)
+        if kind == "service":
+            host = str(value or "").strip().split("/")[0]
+            return bool(grant.allows("network_egress", url_host=host))
+        return False
+
+    def _scope_coverage(
+        self, effect: Effect, grants: Sequence[Any]
+    ) -> tuple[bool, list[dict], tuple[str, ...]]:
+        """逐动作逐对象核对 grants 是否覆盖本次全部真实影响。"""
+        impacts, problems = self._scope_impacts(effect)
+        missing: list[dict] = [{"reason": problem} for problem in problems]
+        hit_ids: list[str] = []
+        for operation, kind, value in impacts:
+            hits = [
+                grant
+                for grant in grants
+                if self._grant_covers_impact(grant, operation, kind, value)
+            ]
+            if not hits:
+                missing.append({"operation": operation, "kind": kind, "value": value})
+            else:
+                hit_ids.extend(str(getattr(grant, "grant_id", "") or "") for grant in hits)
+        if not impacts and not missing:
+            missing.append({"reason": "no_object_facts"})
+        return (
+            not missing,
+            missing,
+            tuple(item for item in dict.fromkeys(hit_ids) if item),
+        )
+
+    @staticmethod
+    def _scope_missing_reason(missing: Sequence[dict]) -> str:
+        detail = ""
+        for item in missing:
+            if item.get("value"):
+                detail = "（动作 {} / 对象 {}）".format(
+                    item.get("operation") or "未知", item.get("value")
+                )
+                break
+        return (
+            "这个操作超出子智能体获得的授权范围，需要主智能体统一申请" + detail
+        )
+
     def _scope_limited(self, effect: Effect, context: AuthContext, mode: PermissionMode) -> tuple[bool, str]:
         """子智能体能力子集：三种模式都必须保留委托边界，范围不足明确拒绝。
 
@@ -1399,73 +1680,25 @@ class AuthorizationEngine(AuthorizationGateway):
             return False, ""
         if self._is_app_managed(effect):
             return False, ""
+        grants = tuple(
+            grant
+            for grant in (scope.grants or ())
+            if not getattr(grant, "revoked", False)
+        )
         if effect.kind == EffectKind.READ:
-            paths, _programs, _services = self._scope_facts(effect)
-            if not paths:
+            impacts, _problems = self._scope_impacts(effect)
+            if not impacts:
                 return False, ""
-            for path in paths:
-                covered = any(
-                    scope_item.matches_path(path)
-                    for grant in scope.grants
-                    for scope_item in (grant.objects or ())
-                    if scope_item.kind in {"path", "path_prefix"}
-                )
-                if not covered:
-                    return (
-                        True,
-                        "这个读取超出子智能体获得的授权范围，需要主智能体统一向你申请",
-                    )
-            return False, ""
+            covered, missing, _hits = self._scope_coverage(effect, grants)
+            if covered:
+                return False, ""
+            return True, self._scope_missing_reason(missing)
         if effect.kind not in MUTATING_EFFECTS and effect.kind != EffectKind.NETWORK_EGRESS:
             return False, ""
-        paths, programs, services = self._scope_facts(effect)
-        if not paths and not programs and not services:
-            # 没有可核对的对象事实：不能凭空判定“范围足够”，也不能伪造范围
-            # （固定查询/应用受控路径已在 _verdict 的固定查询分支单独处理）。
-            return (
-                True,
-                "这个操作缺少可核对的子智能体范围依据，需要主智能体统一向你申请",
-            )
-        operation_names = self._scope_operation_names(effect) or (
-            "write",
-            "create",
-            "delete",
-            "execute",
-        )
-        for path in paths:
-            covered = False
-            for grant in scope.grants:
-                for operation in operation_names:
-                    if grant.allows(operation, path=path):
-                        covered = True
-                        break
-                if covered:
-                    break
-            if not covered:
-                return (
-                    True,
-                    "这个操作超出子智能体获得的授权范围，需要主智能体统一申请",
-                )
-        for program in programs:
-            covered = any(
-                grant.allows(OPERATION_EXECUTE, program=program)
-                for grant in scope.grants
-            )
-            if not covered:
-                return (
-                    True,
-                    "这个程序不在子智能体获得的授权范围内，需要主智能体统一申请",
-                )
-        for host in services:
-            covered = any(
-                grant.allows("network_egress", url_host=host) for grant in scope.grants
-            )
-            if not covered:
-                return (
-                    True,
-                    "这个接收服务不在子智能体获得的授权范围内，需要主智能体统一申请",
-                )
-        return False, ""
+        covered, missing, _hits = self._scope_coverage(effect, grants)
+        if covered:
+            return False, ""
+        return True, self._scope_missing_reason(missing)
 
     def _verdict(
         self, effect: Effect, context: AuthContext, mode: PermissionMode
@@ -1505,7 +1738,13 @@ class AuthorizationEngine(AuthorizationGateway):
             )
 
         protected = self._internal_paths()
-        # 2) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
+        # 3) 子智能体范围（只能缩小，不能扩大）。必须先于内部数据/模式：内部数据
+        #    读取与写入也不能绕过子范围（R9-H13 §11 F3/F5）。
+        limited, limit_reason = self._scope_limited(effect, context, mode)
+        if limited:
+            # H4 §9：范围不足必须 DENY，不能被普通审查/always-ALLOW 覆盖。
+            return Verdict.DENY, limit_reason, None, assessment
+        # 4) 内部运行数据：所有模式都要求三次确认（写入/删除/脚本维护）。
         #    注意：有效禁止已在上一步 DENY，内部数据确认不能绕过它。
         if self._effect_is_internal(effect, protected):
             if effect.kind == EffectKind.READ:
@@ -1529,13 +1768,6 @@ class AuthorizationEngine(AuthorizationGateway):
                 None,
                 assessment,
             )
-        # 3) 名称/后缀/目录名不再直接决定权限（R9-H §5）：只按 AppContext 真实注册
-        #    的内部运行数据路径与对象身份/路径规范化判断。
-        # 4) 子智能体范围（只能缩小，不能扩大）。
-        limited, limit_reason = self._scope_limited(effect, context, mode)
-        if limited:
-            # H4 §9：范围不足必须 DENY，不能被普通审查/always-ALLOW 覆盖。
-            return Verdict.DENY, limit_reason, None, assessment
         # 5) 永久删除政策（结构化删除意图，按契约 §5；模型 ALLOW/一般授权不能替代
         #    受限模式下的明确人工确认；已知限制已在上一步优先 DENY）。
         permanent = self._permanent_delete_decision(effect, mode, requirement)
@@ -2260,12 +2492,15 @@ class AuthorizationEngine(AuthorizationGateway):
         limited, limit_reason = self._scope_limited(effect, context, mode)
         if limited:
             return AuthDecision(verdict=Verdict.DENY, reason=limit_reason, effects=(effect,))
-        complete = int(confirmed_stage or 0) >= max(
+        required_confirmations = max(
             1,
             int(confirmations_required or 1),
             # R9-H13 §8.4：执行前按后端最低次数核对；历史/错误的一次确认记录
             # 不能因为存储值写了 1 就当成已完成。
             self.required_confirmations(effect),
+        )
+        complete = required_confirmations <= 1 or int(confirmed_stage or 0) >= int(
+            required_confirmations
         )
         internal = effect.kind == EffectKind.INTERNAL_DATA or self._effect_is_internal(
             effect, self._internal_paths()

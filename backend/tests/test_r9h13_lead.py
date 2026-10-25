@@ -191,3 +191,9 @@ def test_recheck_keeps_single_confirmation_for_ordinary_object(tmp_path, db_conn
         _write_effect(ordinary), confirmations_required=1, confirmed_stage=1
     )
     assert decision.verdict == Verdict.ALLOW
+    # 普通单次审批：批准本身就是唯一确认，confirmed_stage 仍为 0 也必须放行
+    # （R9-H13 回归：不能把“需要 1 次”误读成“必须已有 1 次阶段确认”）。
+    single = security.engine.recheck_approved(
+        _write_effect(ordinary), confirmations_required=1, confirmed_stage=0
+    )
+    assert single.verdict == Verdict.ALLOW
