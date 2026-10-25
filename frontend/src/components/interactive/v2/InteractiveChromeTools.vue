@@ -44,6 +44,8 @@ const saveView = computed(() =>
     status: store.saveStatus,
     dirty: store.dirty,
     error: store.saveError,
+    // F01：影响确认等待期间显示「等待确认，尚未保存」，绝不显示已保存
+    pendingImpact: Boolean(store.pendingImpact),
   }),
 );
 

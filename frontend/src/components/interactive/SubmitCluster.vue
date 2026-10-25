@@ -140,6 +140,15 @@ const understoodIntents = computed(() => store.understandingIntents.length);
  * ---------------------------------------------------------------------- */
 
 /** 这次理解产出的、还在等待审批的条目（批准前不改动板面）。 */
+/**
+ * F03：新链意图视图是否已经把「待确认对象」接到板面虚拟意图层。
+ *
+ * 有意图视图时，同一批对象由页面上的虚拟意图卡承担确认 / 拒绝 / 同批确认，
+ * 这里就不再渲染旧的批准 / 拒绝按钮 —— 同一个对象不允许两套操作面。
+ * （没有新链视图时，旧链的批准 / 拒绝能力原样保留。）
+ */
+const newChainLayerActive = computed(() => store.intentViews.length > 0);
+
 const pendingApprovals = computed(() =>
   store.understandingIntents.filter((item) =>
     ["pending", "needs_update", "waiting_dependency", "waiting_confirm"].includes(item.status),
@@ -322,9 +331,18 @@ function locateOnBoard(intent: Intent): void {
   locatePreview(intent.id, previewBounds(intent.preview));
 }
 
-/** 打开既有批量列表：不新建第二套批量入口；空间不足时由几何层二选一。 */
+/**
+ * 批量入口：直接打开**任务面板的待确认分区**（真实界面）。
+ *
+ * 基线只把 store.batchOpen 置 true，而 IntentBatchTray 已不在新页面上挂载 ——
+ * 点了没有任何可见反馈。现在批量对象与操作资格都来自 store.taskRows，
+ * 面板里有逐条批准 / 拒绝与同批操作，无内容时给准确空态。
+ */
 function openBatchList(): void {
+  // 旧通道的 batchOpen 仍保留为兼容字段（旧 IntentBatchTray 已不在新页面上挂载），
+  // 真正的可见承接界面是任务面板的「待确认」分区。
   store.batchOpen = true;
+  store.openTaskCenter("pending");
 }
 
 /**
@@ -754,7 +772,7 @@ function onSubmit() {
           批准前不会有任何改动；同一个意图只提交一次，不重复执行。
         -->
         <div
-          v-if="pendingApprovals.length"
+          v-if="pendingApprovals.length && !newChainLayerActive"
           class="approvals"
           data-im="submit-approvals"
           :data-approval-count="pendingApprovals.length"

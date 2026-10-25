@@ -16,6 +16,7 @@ import {
   confirmSingleIntent,
   fetchRecoveryPreview,
   recoverIntent,
+  rejectIntent,
 } from "../../../services/interactive";
 import {
   capabilityRows,
@@ -25,6 +26,7 @@ import {
   confirmBlockText,
   displayEquals,
   dragIntentDisplay,
+  isNeedsUpdate,
   intentDisplayMap,
   recoveryFacts,
   recoveryResultText,
@@ -54,6 +56,14 @@ const props = withDefaults(
     displayOverrides?: Record<string, IntentDisplayPoint> | null;
     /** 只读（例如提交 / 审批进行中） */
     disabled?: boolean;
+    /** F10：每张卡的显示位置保存状态（等待保存 / 保存失败），由页面权威状态传入 */
+    displayStates?: Record<string, { phase: string; error?: string | null }> | null;
+    /**
+     * F06：意图清单读取失败时，依赖最新事实的确认 / 恢复必须先核实。
+     * true = 本层展示的是上次读到的事实（可疑），确认与恢复暂停并说明原因。
+     */
+    factsStale?: boolean;
+    factsError?: string | null;
   }>(),
   {
     boardId: "",
@@ -61,6 +71,9 @@ const props = withDefaults(
     selectedId: null,
     displayOverrides: null,
     disabled: false,
+    displayStates: null,
+    factsStale: false,
+    factsError: null,
   },
 );
 
@@ -82,8 +95,14 @@ watch(
   },
 );
 
-/** 本层自己的显示位置（拖动后的乐观值；持久化由 display-change 交给外层） */
-const localDisplay = ref<Record<string, IntentDisplayPoint>>({});
+/**
+ * 当前手势的**临时位置**（F10）。
+ *
+ * 只活在一次拖动里：松手把最终位置交给 display-change（父级权威状态立刻接管），
+ * 取消 / 指针取消 / 卸载都直接丢弃 —— 所以既不会把未保存的位置永久压住父级更新，
+ * 取消拖动也能回到本次手势开始的位置（而不是更早的默认位置）。
+ */
+const dragPoint = ref<Record<string, IntentDisplayPoint>>({});
 const checkedIds = ref<string[]>([]);
 const busy = ref("");
 const notice = ref("");
@@ -94,8 +113,13 @@ const recoveryTargetId = ref("");
 const recovery = ref<RecoveryFacts | null>(null);
 
 const displays = computed<Record<string, IntentDisplayPoint>>(() =>
-  intentDisplayMap(props.views, { ...(props.displayOverrides ?? {}), ...localDisplay.value }),
+  intentDisplayMap(props.views, { ...(props.displayOverrides ?? {}), ...dragPoint.value }),
 );
+
+/** 这张卡的位置保存状态（没有 = 已确认；pending / failed 由页面权威状态给出）。 */
+function displayStateOf(intentId: string): { phase: string; error?: string | null } | null {
+  return props.displayStates?.[intentId] ?? null;
+}
 
 interface RenderedIntent {
   view: IntentViewWithDisplay;
@@ -117,7 +141,7 @@ const rendered = computed<RenderedIntent[]>(() =>
       const persisted = Boolean(
         (stored && typeof stored === "object" && Number.isFinite(stored.x as number) && Number.isFinite(stored.y as number)) ||
           (props.displayOverrides && props.displayOverrides[view.intent_id]) ||
-          localDisplay.value[view.intent_id],
+          dragPoint.value[view.intent_id],
       );
       const blockReason = confirmBlockReason(view);
       return {
@@ -132,6 +156,25 @@ const rendered = computed<RenderedIntent[]>(() =>
       };
     }),
 );
+
+/** F06：事实可疑时给用户看的一致说明（确认 / 恢复 / 拒绝都先停一下）。 */
+const staleBanner = computed(
+  () =>
+    (props.factsError
+      ? "意图清单更新失败（" + props.factsError + "）。"
+      : "意图清单更新失败。") +
+    "界面上是上次读到的事实：确认 / 恢复 / 拒绝会先暂停，请先重试读取最新事实。",
+);
+
+function staleText(): string {
+  return staleBanner.value + "（已暂停这次动作，不做猜测，也不会自动重试成确认。）";
+}
+
+/** 拒绝能力保留：只对旧链存储里的意图可用（raw_legacy_status 存在即证明该 id 属于旧链）。 */
+function canReject(view: IntentViewWithDisplay | null | undefined): boolean {
+  if (!view) return false;
+  return Boolean(view.raw_legacy_status) || isNeedsUpdate(view);
+}
 
 const batch = computed(() => batchConfirmState(props.views, checkedIds.value));
 const selectedView = computed(() => rendered.value.find((item) => item.view.intent_id === selected.value) ?? null);
@@ -191,8 +234,8 @@ function onPointerMove(event: PointerEvent): void {
   const dy = event.clientY - state.startClient.y;
   if (!state.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
   state.moved = true;
-  localDisplay.value = {
-    ...localDisplay.value,
+  dragPoint.value = {
+    ...dragPoint.value,
     [state.intentId]: dragIntentDisplay(state.startDisplay, { dx, dy }, {
       bounds: { w: props.width, h: props.height },
       scale: props.scale,
@@ -201,15 +244,25 @@ function onPointerMove(event: PointerEvent): void {
   };
 }
 
+/** 结束本次手势的临时位置：之后由父级权威状态（overrides）决定画在哪。 */
+function clearDragPoint(intentId: string): void {
+  if (!Object.prototype.hasOwnProperty.call(dragPoint.value, intentId)) return;
+  const next = { ...dragPoint.value };
+  delete next[intentId];
+  dragPoint.value = next;
+}
+
 function onPointerUp(): void {
   const state = drag.value;
   detachDrag();
   if (!state) return;
   if (!state.moved) {
+    clearDragPoint(state.intentId);
     select(state.intentId);
     return;
   }
-  const point = localDisplay.value[state.intentId];
+  const point = dragPoint.value[state.intentId];
+  clearDragPoint(state.intentId);
   if (!point) return;
   emit("display-change", { intentId: state.intentId, x: point.x, y: point.y });
 }
@@ -217,12 +270,8 @@ function onPointerUp(): void {
 function onPointerCancel(): void {
   const state = drag.value;
   detachDrag();
-  if (state && localDisplay.value[state.intentId]) {
-    // 取消拖动：回到拖动前的位置（只影响显示）
-    const next = { ...localDisplay.value };
-    delete next[state.intentId];
-    localDisplay.value = next;
-  }
+  // 取消拖动 = 回到本次手势开始的位置（父级 overrides 仍是手势开始那一刻的值）
+  if (state) clearDragPoint(state.intentId);
 }
 
 function detachDrag(): void {
@@ -238,6 +287,10 @@ onBeforeUnmount(detachDrag);
 async function confirmOne(view: IntentViewWithDisplay): Promise<void> {
   error.value = "";
   notice.value = "";
+  if (props.factsStale) {
+    error.value = staleText();
+    return;
+  }
   const block = confirmBlockReason(view);
   if (block) {
     error.value = confirmBlockText(view);
@@ -266,6 +319,10 @@ async function confirmOne(view: IntentViewWithDisplay): Promise<void> {
 async function confirmBatch(): Promise<void> {
   error.value = "";
   notice.value = "";
+  if (props.factsStale) {
+    error.value = staleText();
+    return;
+  }
   const state = batch.value;
   if (!state.enabled) {
     error.value = state.hint;
@@ -296,6 +353,10 @@ async function confirmBatch(): Promise<void> {
 /* ---- 恢复入口（旧工作台能力迁移；只回到可继续状态，不自动执行） ---- */
 async function openRecovery(view: IntentViewWithDisplay): Promise<void> {
   if (!canRecover(view)) return;
+  if (props.factsStale) {
+    error.value = staleText();
+    return;
+  }
   recoveryTargetId.value = view.intent_id;
   recovery.value = null;
   try {
@@ -316,6 +377,10 @@ async function openRecovery(view: IntentViewWithDisplay): Promise<void> {
 async function confirmRecovery(view: IntentViewWithDisplay): Promise<void> {
   const facts = recovery.value;
   if (!facts || !facts.canResume || busy.value) return;
+  if (props.factsStale) {
+    error.value = staleText();
+    return;
+  }
   if (!props.boardId) {
     error.value = "没有板面身份：不能恢复（不会伪造结果）。";
     return;
@@ -335,6 +400,40 @@ async function confirmRecovery(view: IntentViewWithDisplay): Promise<void> {
   }
 }
 
+/**
+ * 拒绝（能力保留，不在迁移中丢失）：调用既有 /intents/{id}/reject。
+ *
+ * 只对旧链存储里的待处理意图出现；拒绝后板面原内容保留、不会执行，
+ * 结果以服务端返回的真实状态为准，然后交回外层刷新意图事实。
+ */
+async function rejectOne(view: IntentViewWithDisplay): Promise<void> {
+  error.value = "";
+  notice.value = "";
+  if (props.factsStale) {
+    error.value = staleText();
+    return;
+  }
+  if (!canReject(view)) {
+    error.value = "这条意图不在旧链存储里：走对应的确认 / 取消流程，不用拒绝接口。";
+    return;
+  }
+  if (!canAct.value) {
+    error.value = "没有板面身份或正在处理：不能拒绝（不会伪造结果）。";
+    return;
+  }
+  if (busy.value) return;
+  busy.value = "reject:" + view.intent_id;
+  try {
+    await rejectIntent(view.intent_id);
+    notice.value = "已拒绝：" + (view.title || view.intent_id) + "（板面原内容保留，不会执行）。";
+    emit("refresh");
+  } catch (cause) {
+    error.value = "拒绝没有完成：" + errorMessage(cause);
+  } finally {
+    busy.value = "";
+  }
+}
+
 /** 供测试 / 外层读当前显示位置（不改任何状态） */
 function displayOf(intentId: string): IntentDisplayPoint | null {
   return displays.value[intentId] ?? null;
@@ -349,13 +448,18 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
       虚拟意图（虚线）：确认前不执行真实板面改动；拖动只改预览位置，成果落点以服务端为准。
     </p>
 
+    <p v-if="props.factsStale" class="stale" role="alert" data-im="intent-stale">
+      {{ staleBanner }}
+      <button class="btn" type="button" data-im="intent-stale-retry" @click="emit('refresh')">重试读取意图清单</button>
+    </p>
+
     <div class="batch-bar" data-im="intent-batch-bar">
       <span class="batch-hint" data-im="intent-batch-hint">{{ batch.hint }}</span>
       <button
         class="btn primary"
         type="button"
         data-im="intent-batch-confirm"
-        :disabled="!batch.enabled || !canAct || Boolean(busy)"
+        :disabled="!batch.enabled || !canAct || Boolean(busy) || props.factsStale"
         :title="batch.hint"
         @click="confirmBatch"
       >{{ busy === "batch" ? "提交中…" : "同批确认 " + batch.count + " 条" }}</button>
@@ -377,6 +481,7 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
         :data-status="item.view.status"
         :data-selected="selected === item.view.intent_id ? 'true' : 'false'"
         :data-display-persisted="item.persisted ? 'true' : 'false'"
+        :data-display-state="displayStateOf(item.view.intent_id)?.phase ?? 'confirmed'"
         @pointerdown="onCardPointerDown(item.view, $event)"
       >
         <header class="vi-head">
@@ -395,6 +500,16 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
         </header>
         <p v-if="item.blockReason" class="vi-block" data-im="intent-block">{{ item.blockText }}</p>
         <p v-else class="vi-note" data-im="intent-virtual-note">确认前不执行；确认后由服务端续作（本轮不代表已完成）。</p>
+        <p
+          v-if="displayStateOf(item.view.intent_id)?.phase === 'pending'"
+          class="vi-meta mono"
+          data-im="intent-display-pending"
+        >位置等待保存…</p>
+        <p
+          v-else-if="displayStateOf(item.view.intent_id)?.phase === 'failed'"
+          class="vi-meta warn"
+          data-im="intent-display-failed"
+        >位置保存失败：{{ displayStateOf(item.view.intent_id)?.error }}</p>
         <p v-if="item.view.operations_summary" class="vi-meta mono" data-im="intent-operations-summary">
           操作：已完成 {{ item.view.operations_summary.applied ?? 0 }} · 执行中 {{ item.view.operations_summary.running ?? 0 }} ·
           未开始 {{ item.view.operations_summary.pending ?? 0 }} · 失败 {{ item.view.operations_summary.failed ?? 0 }}
@@ -433,9 +548,18 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
           class="btn primary"
           type="button"
           data-im="intent-confirm"
-          :disabled="!selectedView.selectable || !canAct || Boolean(busy)"
+          :disabled="!selectedView.selectable || !canAct || Boolean(busy) || props.factsStale"
           @click="confirmOne(selectedView.view)"
         >{{ busy === selectedView.view.intent_id ? "提交中…" : "确认这一条" }}</button>
+        <button
+          v-if="canReject(selectedView.view)"
+          class="btn"
+          type="button"
+          data-im="intent-reject"
+          :disabled="!canAct || Boolean(busy) || props.factsStale"
+          title="拒绝这条待处理意图（板面原内容保留，不会执行）"
+          @click="rejectOne(selectedView.view)"
+        >{{ busy === "reject:" + selectedView.view.intent_id ? "拒绝中…" : "拒绝" }}</button>
         <button
           v-if="selectedView.recoverable"
           class="btn"
@@ -531,6 +655,22 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
   background: var(--bg-elevated);
 }
 .batch-hint { font-size: var(--fs-xs); color: var(--text-secondary); }
+.stale {
+  position: absolute;
+  left: var(--sp-2);
+  top: calc(var(--sp-2) + 66px);
+  max-width: min(620px, 90%);
+  margin: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--warning);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  color: var(--warning);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  pointer-events: auto;
+}
+.stale .btn { margin-left: var(--sp-2); }
 .objects { position: absolute; inset: 0; pointer-events: none; }
 .virtual-intent {
   position: absolute;
