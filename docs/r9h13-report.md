@@ -303,14 +303,23 @@
 
 ## 8. 最终 SHA、CI 运行号、HEAD 差异
 
-- 最终提交：`FINAL_SHA_PLACEHOLDER`（r9h13/main，包含实现、旧期望修订、契约/报告/证据）。
-- 三平台定向 CI（`targeted-verify.yml`，同一最终 SHA）：`CI_RUNS_PLACEHOLDER`。
-- 基线 HEAD 差异：`FINAL_SHA_PLACEHOLDER` 相对 `e68fb9b7` 包含 H13 全部实现、旧期望修订、
-  契约/根因/报告与 `_r9h13-evidence/**`；生产代码改动集中在
+- 最终受 CI 验证的提交：`17b9775cd0c538dbadf9dc201380f01af5439e88`（r9h13/main；包含实现、旧期望修订、
+  契约/报告/证据）。其后回填 CI 运行号的 docs/证据提交不改变任何代码。
+- 三平台定向 CI（`targeted-verify.yml`，同一 SHA `17b9775c`，同一 pytest 筛选：
+  H13 六个专用文件 + H11/H12/H4/H2/H3 受影响旧套件）：
+  - Linux Python 3.11：run `40177769502` success；
+  - Linux Python 3.12：run `40178148732` success（首次派发 `40177772125` 在队列层被并发组
+    取消、未执行任何检查，同 SHA/同筛选重派）；
+  - Windows：run `40177774774` success。
+  - 三个运行都通过 `verify-sha`（checkout 后断言实际 HEAD == 请求 SHA）后才执行 backend；
+    summary 打印 ran=1 failed=0 cancelled=0，SKIPPED 项不计为通过。
+- 基线 HEAD 差异：`17b9775c` 相对 `e68fb9b7` 包含 H13 全部实现、旧期望修订、契约/根因/报告与
+  `_r9h13-evidence/**`；生产代码改动集中在
   `backend/src/agent/security/{engine,object_state,requirement_limits,requirements,launch,recheck,
-  operations,deletion}.py`、`backend/src/agent/tools/{cmd_tools,fs_tools,approved_operations,security_gate,
-  approval,subagent_tool}.py`、`backend/src/agent/services/{app,attachments}.py`、
-  `backend/src/agent/storage/approvals.py`、`backend/src/agent/security/{instructions,review}.py`、`docs/**`、`backend/tests/**`。
+  operations,deletion,instructions,review}.py`、
+  `backend/src/agent/tools/{cmd_tools,fs_tools,approved_operations,security_gate,approval,subagent_tool}.py`、
+  `backend/src/agent/services/{app,attachments}.py`、`backend/src/agent/storage/approvals.py`、
+  `docs/**`、`backend/tests/**`。
 - 未合并 main、未发布安装包；未修改历史迁移（本轮无 schema 变化）。
 
 ## 9. 未完成事项与准确边界
