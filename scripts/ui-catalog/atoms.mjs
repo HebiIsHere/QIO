@@ -1,5 +1,5 @@
 /**
- * 分组 `atoms`：五个原子控件（QInput / QSelect / QNumber / QSlider / QConfirm）的全状态截图。
+ * 分组 `atoms`：四个原子控件（QInput / QSelect / QNumber / QConfirm）的全状态截图。
  *
  * 与其它分组的区别：这些控件的边界态在真实页面里大多到不了，所以先把状态摆在一张
  * 只读画廊页上（`frontend/ui-catalog.html` + `frontend/ui-catalog/main.ts`，在产品构建之外），
@@ -168,19 +168,6 @@ async function main() {
       await shotBlock("qnumber-clamp", "QNumber 上限夹取（max=10）", {
         note: `点 ＋ 前=${before}，点 ＋ 后=${after}（不越过上限）`,
       });
-    });
-
-    // ------------------------------------------------------------ QSlider
-    await safe("QSlider", async () => {
-      for (const [state, title] of [
-        ["qslider-zero", "QSlider 最小值（0）"],
-        ["qslider-mid", "QSlider 中值"],
-        ["qslider-full", "QSlider 最大值（1）"],
-        ["qslider-disabled", "QSlider 禁用"],
-      ]) {
-        await topAlign(page, `#${bid(state)}`);
-        await shotBlock(state, title);
-      }
     });
 
     // ------------------------------------------------------------ QConfirm

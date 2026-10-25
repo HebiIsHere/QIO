@@ -130,8 +130,8 @@ describe("统一滚动策略：不再有原生/自绘滚动条", () => {
   it("声明了纵向滚动的区域都接入了共享策略（指令 / 组合式 / 容器组件）", () => {
     const missing = converted.filter((rel) => {
       const src = read(rel);
-      if (!/overflow-y:\s*auto/.test(src) && !/class="qio-scroll-area"/.test(src)) return false;
-      return !/v-qio-scrollbar|useQioScrollbars|QioScrollArea|qio-scroll-area/.test(src);
+      if (!/overflow-y:\s*auto/.test(src)) return false;
+      return !/v-qio-scrollbar|useQioScrollbars/.test(src);
     });
     expect(missing).toEqual([]);
   });
