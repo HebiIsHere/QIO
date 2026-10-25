@@ -160,6 +160,19 @@ export type SubmissionStage =
   | "empty"
   | "duplicate";
 
+/**
+ * 服务端对一次「剩余撤回」决定的逐项结果（N4）：界面按它说明处理了几项、
+ * 哪些因为之后又有变化需要重新决定、还剩几项 —— 不按 decisionIds 的条数猜结果。
+ */
+export interface RevertDecisionSummary {
+  requested: string[];
+  processed: string[];
+  reconfirmed: string[];
+  skipped: string[];
+  remaining: string[];
+  gone: string[];
+}
+
 export const useInteractiveStore = defineStore("interactive", () => {
   const boardId = ref(DEFAULT_BOARD_ID);
   const board = ref<BoardState | null>(null);
@@ -3770,13 +3783,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
    *
    * - 只传这次界面上**明确展示**的 decisionIds（N4 的服务端保护会按当前内容重核）；
    * - 只有服务端真的执行了（ok===true）才算成功；失败原样返回真实原因，界面给重试入口；
-   * - 仍有剩余待决定项时保留提示；处理完则收起这次提示。
+   * - 仍有剩余待决定项时保留提示；处理完则收起这次提示；
+   * - 成功时带回服务端的逐项结果（processed / reconfirmed / remaining），
+   *   界面据此说「处理了几项、还剩几项」，不拿展示条数冒充处理条数。
    * - 不重复执行：上一次请求还在飞时直接返回，不叠加请求。
    */
   async function continueRevertDecision(
     intentId: string,
     decisionIds?: string[],
-  ): Promise<{ ok: boolean; reason?: string; detail?: string; intent?: Intent }> {
+  ): Promise<{
+    ok: boolean;
+    reason?: string;
+    detail?: string;
+    intent?: Intent;
+    decision?: RevertDecisionSummary;
+  }> {
     if (!intentId) return { ok: false, reason: "没有指定要处理的任务" };
     if (revertDecisionStateFor(intentId).status === "pending") {
       return { ok: false, reason: "这次撤回决定正在执行，请等它返回" };
@@ -3784,6 +3805,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     setRevertDecisionState(intentId, "pending");
     try {
       const result = await api.advanceIntent(intentId, "revert_rest", decisionIds);
+      // 后端 advance_intent（revert_rest）额外返回 decision 逐项摘要；服务层类型没列全，
+      // 这里按真实协议读取，缺失时如实当作「没有逐项摘要」处理（界面不猜条数）。
+      const decision = (result as { decision?: RevertDecisionSummary }).decision;
       await loadIntents();
       await refreshBoardFromServer();
       await refreshVisibleRange();
@@ -3792,12 +3816,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (result.ok === false) {
         const reason = result.detail || result.reason || "这次撤回没有执行";
         setRevertDecisionState(intentId, "error", reason);
-        return { ok: false, reason, detail: result.detail, intent };
+        return { ok: false, reason, detail: result.detail, intent, decision };
       }
       setRevertDecisionState(intentId, "idle");
       if (remaining > 0) reopenRevertDecision(intentId);
       else dismissRevertDecision(intentId);
-      return { ok: true, intent };
+      return { ok: true, intent, decision };
     } catch (err) {
       const failure = (err as { payload?: { error?: string; reason?: string; detail?: string } }).payload;
       const reason =
