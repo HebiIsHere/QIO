@@ -49,7 +49,6 @@ import IntentLayer from "../IntentLayer.vue";
 import BoardPreviewLayer from "../../BoardPreviewLayer.vue";
 import IntentWorkbench from "../../IntentWorkbench.vue";
 import {
-  MIGRATED_CAPABILITIES,
   batchConfirmState,
   capabilityRows,
   clampIntentDisplay,
@@ -254,14 +253,7 @@ describe("确认结果：显式 ids / 部分失败 / 真实 turn_id / 不说成�
   });
 });
 
-describe("能力迁移表与详情能力行", () => {
-  it("三个旧组件的有效能力都有明确去处，且没有把未实现的能力说成已完成", () => {
-    const sources = new Set(MIGRATED_CAPABILITIES.map((item) => item.from));
-    expect(sources).toEqual(new Set(["IntentWorkbench", "IntentBatchTray", "IntentStatusPopover"]));
-    expect(MIGRATED_CAPABILITIES.some((item) => item.status === "needs-backend")).toBe(true);
-    for (const item of MIGRATED_CAPABILITIES) expect(item.movedTo.length).toBeGreaterThan(0);
-  });
-
+describe("详情能力行", () => {
   it("详情能力行包含依赖 / 冲突 / 账本 / 授权失效 / 恢复", () => {
     const rows = capabilityRows(
       view({

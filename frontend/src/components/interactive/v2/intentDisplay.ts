@@ -417,36 +417,6 @@ export function summarizeConfirm(
   };
 }
 
-// --- 能力迁移（Phase 1-D 审计：旧工作台 / BatchTray / StatusPopover 的有效能力） ----
-
-export interface MigratedCapability {
-  from: "IntentWorkbench" | "IntentBatchTray" | "IntentStatusPopover";
-  capability: string;
-  /** 迁移到本 Phase 3-A 的哪里（组件 / 纯函数 / 依赖服务端字段） */
-  movedTo: string;
-  /** 已迁移 / 依赖后端字段 / 不在本轮（如实标注） */
-  status: "migrated" | "needs-backend" | "kept-legacy";
-}
-
-/**
- * 旧能力的去向表（测试守住「不能直接删、有效能力要有去处」）。
- * 注意：IntentBatchTray / IntentStatusPopover 的暂停 / 继续 / 取消与旧账本是**旧链接口**，
- * 新链需要后端同步提供；本轮如实标注为 needs-backend，不用前端 setTimeout 或假状态顶上。
- */
-export const MIGRATED_CAPABILITIES: readonly MigratedCapability[] = [
-  { from: "IntentWorkbench", capability: "目标 / 预期 / 依据 / 范围 / 版本", movedTo: "v2/IntentLayer 详情面板", status: "migrated" },
-  { from: "IntentWorkbench", capability: "依赖 / 冲突", movedTo: "v2/IntentLayer 详情面板（dependencyText）", status: "migrated" },
-  { from: "IntentWorkbench", capability: "操作账本摘要", movedTo: "v2/IntentLayer 详情面板（operationsSummaryText）", status: "migrated" },
-  { from: "IntentWorkbench", capability: "单条确认", movedTo: "v2/IntentLayer 显式单 id 确认", status: "migrated" },
-  { from: "IntentWorkbench", capability: "同批确认（≥2，显式 ids）", movedTo: "v2/IntentLayer 批量栏 + batchConfirmIntents", status: "migrated" },
-  { from: "IntentWorkbench", capability: "等待事项 / 结果卡 / 恢复预览", movedTo: "IntentWorkbench 保留（新链服务不变）+ v2/IntentLayer 恢复入口", status: "kept-legacy" },
-  { from: "IntentBatchTray", capability: "批次列表 / 同批批准 / 拒绝 / 执行摘要", movedTo: "批量确认走 v2/IntentLayer；拒绝与旧批次台账留在旧链（不冒充新链）", status: "kept-legacy" },
-  { from: "IntentBatchTray", capability: "依赖 / 冲突提示", movedTo: "v2/IntentLayer 详情（dependencyText + conflicts）", status: "migrated" },
-  { from: "IntentStatusPopover", capability: "真实执行状态 / 定位预览", movedTo: "v2/IntentLayer 状态标签 + 定位（Lead 接线 move 事件）；旧浮层保留", status: "migrated" },
-  { from: "IntentStatusPopover", capability: "暂停 / 继续 / 取消执行", movedTo: "新链需后端执行控制接口（本轮不伪造）", status: "needs-backend" },
-  { from: "IntentStatusPopover", capability: "失败重试读取", movedTo: "v2/IntentLayer 恢复预览 + 诚实失败原因（自动重试由后端调度）", status: "migrated" },
-];
-
 /** 详情面板里的能力行：依赖 / 冲突 / 账本 / 范围 / 授权 / 恢复。 */
 export interface CapabilityRow {
   key: "scope" | "basis" | "dependencies" | "operations" | "authorization" | "recovery" | "outcome";
