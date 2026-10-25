@@ -10,9 +10,15 @@
   - 所有坐标都是**板面坐标**：本层放在被平移 / 缩放的内容层里，所以缩放平移后仍然准确。
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { BoardCard, BoardGroup, BoardLink, LinkCurve } from "../../interactive/types";
-import { curveGeometry, curvePath } from "../../interactive/linkCurve";
+import {
+  clampCurveOffset,
+  curveFromPointerDrag,
+  curveGeometry,
+  curvePath,
+  normalizeCurveScale,
+} from "../../interactive/linkCurve";
 import {
   buildDisplayLinks,
   edgeAnchor,
@@ -30,6 +36,14 @@ const props = withDefaults(
     activeLinkId: string | null;
     width: number;
     height: number;
+    /**
+     * 板面 → 屏幕的缩放倍数（= BoardCanvas 的 scaleSafe；默认 1 = 不缩放）。
+     *
+     * 本层画在 `.board-surface` 的 transform: scale() 里，屏幕位移 = 板面位移 × scale，
+     * 所以拖动换算固定为「板面位移 = 屏幕位移 / scale」（非正 / 非有限按 1）。
+     * 不按缩放倍数错误放大 / 缩小曲线调整：50% / 100% / 200% 下同样跟手。
+     */
+    scale?: number;
     /** 正在从哪个端点拖线（卡片裸 id 或 group:<id>；null = 没有在拖） */
     draftFromId: string | null;
     /** 指针当前所在的板面坐标 */
@@ -50,6 +64,7 @@ const props = withDefaults(
     foldedGroupIds: () => [],
     includedCardIds: null,
     onlyInRange: false,
+    scale: 1,
   },
 );
 
@@ -62,14 +77,33 @@ const emit = defineEmits<{
 
 const rootEl = ref<SVGSVGElement | null>(null);
 const previewCurves = ref<Record<string, LinkCurve>>({});
-const dragging = ref<{
+
+/** 拖动结束后抑制 click / dblclick 的窗口（ms）：浏览器在 pointerup 后仍会派发 click。 */
+const CLICK_SUPPRESS_MS = 320;
+
+/**
+ * 当前手势：只认**这一个** pointerId。
+ *
+ * - 其他指针的 move / up / cancel 一律不参与（不能改曲线，也不能结束本次拖动）；
+ * - 拖动期间只写 previewCurves（临时预览），不 emit、不碰传入的 links；
+ * - 正常松手才 emit 一次 curve-change；取消（Esc / pointercancel / 失焦 / 卸载）只恢复。
+ */
+interface ActiveDrag {
+  pointerId: number | null;
   linkId: string;
-  startX: number;
-  startY: number;
+  startClientX: number;
+  startClientY: number;
   origin: LinkCurve;
   moved: boolean;
-} | null>(null);
+  lastCurve: LinkCurve | null;
+}
+
+const dragging = ref<ActiveDrag | null>(null);
 let suppressClickUntil = 0;
+let globalListenersAttached = false;
+
+/** scale 的安全值：非正 / 非有限按 1（与 BoardCanvas 的 scaleSafe 同一口径）。 */
+const dragScale = computed(() => normalizeCurveScale(props.scale));
 
 function curveOf(item: { id: string; curve: LinkCurve }): LinkCurve {
   return previewCurves.value[item.id] ?? item.curve ?? { x: 0, y: 0 };
@@ -96,53 +130,161 @@ function labelPoint(item: { id: string; x1: number; y1: number; x2: number; y2: 
   return { x: geometry.labelX, y: geometry.labelY };
 }
 
-function clampCurve(value: number): number {
-  return Math.max(-240, Math.min(240, value));
+/** 清掉某条关系的临时预览：显示回到调用方数据（起始曲线 / 外部回写值）。 */
+function clearPreview(linkId: string): void {
+  if (!(linkId in previewCurves.value)) return;
+  const next = { ...previewCurves.value };
+  delete next[linkId];
+  previewCurves.value = next;
 }
+
+/** 指针身份：鼠标 / 触摸事件给 pointerId；合成事件没有就退化为 null（同样是稳定身份）。 */
+function pointerIdentityOf(event: PointerEvent): number | null {
+  const value = Number((event as PointerEvent).pointerId);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** 事件是否属于当前这次手势的指针身份：其他指针一律不参与。 */
+function samePointer(event: PointerEvent, active: ActiveDrag): boolean {
+  return pointerIdentityOf(event) === active.pointerId;
+}
+
+/** 指针 → 临时预览（唯一换算入口：板面位移 = 屏幕位移 / scale）。 */
+function applyPointer(active: ActiveDrag, event: PointerEvent): void {
+  const result = curveFromPointerDrag({
+    origin: active.origin,
+    startClientX: active.startClientX,
+    startClientY: active.startClientY,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    scale: dragScale.value,
+  });
+  // 还没超过抖动阈值：仍按单击处理，不产生预览
+  if (!result.moved && !active.moved) return;
+  active.moved = true;
+  active.lastCurve = result.curve;
+  previewCurves.value = { ...previewCurves.value, [active.linkId]: result.curve };
+}
+
+/** 取消本次拖动：恢复起始曲线、不 emit，并移除全局监听。取消后迟到的 pointerup 没有提交通道。 */
+function cancelDrag(): void {
+  const active = dragging.value;
+  dragging.value = null;
+  detachGlobalListeners();
+  if (active) clearPreview(active.linkId);
+}
+
+function attachGlobalListeners(): void {
+  if (globalListenersAttached) return;
+  globalListenersAttached = true;
+  // capture：其他元素的 stopPropagation 不会让我们漏掉 move / up / cancel
+  window.addEventListener("pointermove", onWindowPointerMove, true);
+  window.addEventListener("pointerup", onWindowPointerUp, true);
+  window.addEventListener("pointercancel", onWindowPointerCancel, true);
+  window.addEventListener("keydown", onWindowKeyDown, true);
+  window.addEventListener("blur", onWindowBlur, true);
+}
+
+function detachGlobalListeners(): void {
+  if (!globalListenersAttached) return;
+  globalListenersAttached = false;
+  window.removeEventListener("pointermove", onWindowPointerMove, true);
+  window.removeEventListener("pointerup", onWindowPointerUp, true);
+  window.removeEventListener("pointercancel", onWindowPointerCancel, true);
+  window.removeEventListener("keydown", onWindowKeyDown, true);
+  window.removeEventListener("blur", onWindowBlur, true);
+}
+
+function onWindowPointerMove(event: PointerEvent): void {
+  const active = dragging.value;
+  if (!active || !samePointer(event, active)) return;
+  applyPointer(active, event);
+}
+
+function onWindowPointerUp(event: PointerEvent): void {
+  const active = dragging.value;
+  if (!active || !samePointer(event, active)) return;
+  // 松手坐标也折算一次：有些输入设备只在 up 里给出最终位置
+  const result = curveFromPointerDrag({
+    origin: active.origin,
+    startClientX: active.startClientX,
+    startClientY: active.startClientY,
+    clientX: event.clientX,
+    clientY: event.clientY,
+    scale: dragScale.value,
+  });
+  const moved = active.moved || result.moved;
+  const finalCurve = moved ? result.curve : active.lastCurve;
+  const linkId = active.linkId;
+  dragging.value = null;
+  detachGlobalListeners();
+  clearPreview(linkId);
+  // 没超过阈值 = 单击：交给 click 处理选中，不提交曲线
+  if (!moved) return;
+  // 拖动结束：抑制紧随其后的 click / dblclick，避免误触选中 / 编辑 / 删除
+  suppressClickUntil = Date.now() + CLICK_SUPPRESS_MS;
+  emit("curve-change", linkId, finalCurve ?? active.origin);
+}
+
+function onWindowPointerCancel(event: PointerEvent): void {
+  const active = dragging.value;
+  if (!active || !samePointer(event, active)) return;
+  cancelDrag();
+}
+
+function onWindowBlur(): void {
+  if (dragging.value) cancelDrag();
+}
+
+function onWindowKeyDown(event: KeyboardEvent): void {
+  if (!dragging.value) return;
+  if (event.key !== "Escape" && event.key !== "Esc") return;
+  event.preventDefault();
+  event.stopPropagation();
+  cancelDrag();
+}
+
+/**
+ * 当前手势对应关系的「外部真相」指纹（端点 + 已提交曲线）。
+ *
+ * 拖动期间父层回写（撤销 / 重做 / 保存恢复 / 删除关系 / 改端点）时外部真相优先：
+ * 取消本次拖动，避免迟到的松手用旧起点覆盖新数据。
+ */
+const activeDragLinkKey = computed<string | null>(() => {
+  const active = dragging.value;
+  if (!active) return null;
+  const link = props.links.find((item) => item.id === active.linkId && !item.deleted);
+  if (!link) return "missing";
+  const x = Number.isFinite(Number(link.curve?.x)) ? Number(link.curve?.x) : 0;
+  const y = Number.isFinite(Number(link.curve?.y)) ? Number(link.curve?.y) : 0;
+  return [link.src, link.dst, x, y].join("\u0000");
+});
+
+watch(activeDragLinkKey, (current, previous) => {
+  if (previous === null || current === null) return;
+  if (current === previous) return;
+  cancelDrag();
+});
 
 function startLabelDrag(linkId: string, curve: LinkCurve, event: PointerEvent): void {
   if (event.button !== 0 && event.pointerType === "mouse") return;
+  // 一次只允许一个手势：拖动中的其他指针按下不能抢走手势 / 重置起点
+  if (dragging.value) return;
   event.preventDefault();
   event.stopPropagation();
   dragging.value = {
+    pointerId: pointerIdentityOf(event),
     linkId,
-    startX: event.clientX,
-    startY: event.clientY,
-    origin: { x: curve.x, y: curve.y },
+    startClientX: Number.isFinite(event.clientX) ? event.clientX : 0,
+    startClientY: Number.isFinite(event.clientY) ? event.clientY : 0,
+    origin: {
+      x: Number.isFinite(Number(curve.x)) ? Number(curve.x) : 0,
+      y: Number.isFinite(Number(curve.y)) ? Number(curve.y) : 0,
+    },
     moved: false,
+    lastCurve: null,
   };
-  const move = (moveEvent: PointerEvent) => {
-    const active = dragging.value;
-    if (!active) return;
-    const dx = moveEvent.clientX - active.startX;
-    const dy = moveEvent.clientY - active.startY;
-    if (!active.moved && Math.hypot(dx, dy) < 2) return;
-    active.moved = true;
-    previewCurves.value = {
-      ...previewCurves.value,
-      [active.linkId]: {
-        x: clampCurve(active.origin.x + dx),
-        y: clampCurve(active.origin.y + dy),
-      },
-    };
-  };
-  const up = () => {
-    const active = dragging.value;
-    dragging.value = null;
-    window.removeEventListener("pointermove", move);
-    window.removeEventListener("pointerup", up);
-    if (!active) return;
-    if (active.moved) {
-      const finalCurve = previewCurves.value[active.linkId] ?? active.origin;
-      suppressClickUntil = Date.now() + 320;
-      emit("curve-change", active.linkId, finalCurve);
-    }
-    const next = { ...previewCurves.value };
-    delete next[active.linkId];
-    previewCurves.value = next;
-  };
-  window.addEventListener("pointermove", move);
-  window.addEventListener("pointerup", up);
+  attachGlobalListeners();
 }
 
 function isDeleteTarget(target: EventTarget | null): boolean {
@@ -197,6 +339,8 @@ function handleClick(event: MouseEvent): void {
 }
 
 function handleDoubleClick(event: MouseEvent): void {
+  // 拖动结束后的 click / dblclick 不是编辑意图（浏览器仍会派发）
+  if (Date.now() < suppressClickUntil) return;
   if (isDeleteTarget(event.target)) return;
   const label = labelOf(event.target);
   if (!label) return;
@@ -214,6 +358,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  // 组件卸载即取消本次拖动：不提交、清预览、移除全部全局监听
+  cancelDrag();
   rootEl.value?.removeEventListener("pointerdown", handlePointerDown, true);
   rootEl.value?.removeEventListener("click", handleClick, true);
   rootEl.value?.removeEventListener("dblclick", handleDoubleClick, true);
@@ -365,7 +511,7 @@ const targetBadge = computed(() => {
       />
       <g
         class="link-label"
-        :class="{ active: item.active }"
+        :class="{ active: item.active, dragging: dragging?.linkId === item.id }"
         :data-link-label="item.id"
       >
         <rect
@@ -475,6 +621,7 @@ const targetBadge = computed(() => {
   cursor: grab;
 }
 .label-bg.active { stroke: var(--accent); }
+.link-label.dragging .label-bg { cursor: grabbing; }
 .label-delete { pointer-events: auto; cursor: pointer; }
 .label-delete-bg {
   fill: var(--bg-surface);

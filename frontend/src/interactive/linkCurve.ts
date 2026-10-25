@@ -81,3 +81,83 @@ export function curvePath(input: CurveInput): string {
     " " + input.x2 + " " + input.y2
   );
 }
+
+// --- 用户拖动曲线：缩放换算（纯函数） ---------------------------------------
+
+/** 用户拖出的曲线偏移上限（板面像素）。 */
+export const CURVE_OFFSET_LIMIT = 240;
+
+/** 判定「开始拖动」的指针抖动阈值（屏幕像素，与缩放无关：缩放只影响板面位移）。 */
+export const DRAG_THRESHOLD_PX = 2;
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  const result = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(result) ? result : fallback;
+}
+
+/**
+ * 缩放安全值：板面 → 屏幕的缩放倍数。
+ *
+ * 非正 / 非有限一律按 1（与 viewport / BoardCanvas 的 clampScale 同一条口径），
+ * 否则拖动换算会得到 0、NaN 或反向位移。
+ */
+export function normalizeCurveScale(scale: unknown): number {
+  const value = finiteNumber(scale, 1);
+  return value > 0 ? value : 1;
+}
+
+/** 把曲线偏移限制在 ±limit（默认 ±240 板面像素）。 */
+export function clampCurveOffset(value: unknown, limit: unknown = CURVE_OFFSET_LIMIT): number {
+  const max = Math.abs(finiteNumber(limit, CURVE_OFFSET_LIMIT));
+  const bound = max > 0 ? max : CURVE_OFFSET_LIMIT;
+  const number = finiteNumber(value, 0);
+  return Math.max(-bound, Math.min(bound, number));
+}
+
+export interface CurveDragInput {
+  /** 按下时这条关系的曲线偏移（板面坐标）。 */
+  origin: LinkCurve;
+  startClientX: number;
+  startClientY: number;
+  clientX: number;
+  clientY: number;
+  /** 板面 → 屏幕的缩放倍数；缺省 / 非法按 1。 */
+  scale?: number;
+  /** 偏移上限（板面像素），缺省 ±240。 */
+  limit?: number;
+}
+
+export interface CurveDragResult {
+  /** 换算后的板面偏移（已按缩放折算并截断）。 */
+  curve: LinkCurve;
+  /** 屏幕位移是否超过抖动阈值；false = 本次仍算单击，不算拖动。 */
+  moved: boolean;
+  /** 原始屏幕位移（用于诊断 / 测试，不参与几何）。 */
+  screenDx: number;
+  screenDy: number;
+}
+
+/**
+ * 指针拖动 → 曲线偏移（纯函数，唯一换算口径）。
+ *
+ * 本组件画在 `.board-surface` 的 `transform: scale()` 里：屏幕位移 = 板面位移 × scale，
+ * 所以 **板面位移 = 屏幕位移 / scale**。50% 缩放下 100px 屏幕位移对应 200px 板面位移
+ * （放大 2 倍才跟上视觉），200% 缩放下只对应 50px —— 不按缩放倍数错误放大 / 缩小。
+ *
+ * 阈值按**屏幕**像素判定（指针抖动与缩放无关）；非法坐标 / 缩放都有有限值兜底。
+ */
+export function curveFromPointerDrag(input: CurveDragInput): CurveDragResult {
+  const scale = normalizeCurveScale(input.scale);
+  const screenDx = finiteNumber(input.clientX) - finiteNumber(input.startClientX);
+  const screenDy = finiteNumber(input.clientY) - finiteNumber(input.startClientY);
+  const moved = Math.hypot(screenDx, screenDy) >= DRAG_THRESHOLD_PX;
+  return {
+    curve: {
+      x: clampCurveOffset(finiteNumber(input.origin?.x, 0) + screenDx / scale, input.limit),
+      y: clampCurveOffset(finiteNumber(input.origin?.y, 0) + screenDy / scale, input.limit),
+    },
+    moved,
+    screenDx,
+    screenDy,
+  };
+}
