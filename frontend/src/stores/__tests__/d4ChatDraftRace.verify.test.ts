@@ -23,7 +23,7 @@ import {
   UNBOUND_DRAFT_ID,
 } from "../../interactive/drafts";
 import ChatDock from "../../components/interactive/ChatDock.vue";
-import Composer from "../../components/Composer.vue";
+import ComposerDock from "../../components/conversation/ComposerDock.vue";
 import { useInteractiveStore } from "../interactive";
 
 /** 悬浮聊天面板默认收起：挂载前先打开，才能操作输入框 */
@@ -31,12 +31,23 @@ function openChat(): void {
   useInteractiveStore().chatOpen = true;
 }
 
+/** v2：对话页输入区（模式切换与本组用例无关：避免测试环境缺少 router） */
+function mountDock() {
+  return mount(ComposerDock, { attachTo: document.body });
+}
+
+// 模式切换与这些用例无关：用桩替换，避免测试环境缺少 router 造成噪声。
+vi.mock("../../components/conversation/ConversationModeSwitch.vue", () => ({
+  default: { name: "ConversationModeSwitch", template: '<div class="mode-switch-stub" />' },
+}));
+
 vi.mock("../../services/api", () => ({
   api: {
     sendTurn: vi.fn(),
     getSessionContext: vi.fn(),
     stopTurn: vi.fn(),
     cancelContinuation: vi.fn(),
+    lookupTurnByRequest: vi.fn(),
     saveDrafts: vi.fn(),
     saveBoardState: vi.fn(),
     fetchBoardState: vi.fn(),
@@ -486,7 +497,7 @@ describe("时序 11：刷新前未保存的输入要能恢复（§10.5）", () =
     expect(imApi.saveBoardState).not.toHaveBeenCalled();
   });
 
-  it("【组件】Composer：恢复的草稿只在输入框里，不自动发出", async () => {
+  it("【组件】对话页输入区：恢复的草稿只在输入框里，不自动发出", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
     session.currentTopicId = "A";
@@ -494,7 +505,7 @@ describe("时序 11：刷新前未保存的输入要能恢复（§10.5）", () =
     session.flushDraft();
 
     setActivePinia(createPinia());
-    const wrapper = mount(Composer, { attachTo: document.body });
+    const wrapper = mountDock();
     const reloaded = useSessionStore();
     reloaded.currentTopicId = "A";
     await flushPromises();
@@ -511,7 +522,7 @@ describe("时序 11：刷新前未保存的输入要能恢复（§10.5）", () =
  * ======================================================================== */
 describe("对话页发送恢复（§10.1「会话层统一管理」）", () => {
   /**
-   * 断言改写说明（子 agent B，2026-10-11；契约确实变化，不是放宽断言）。
+   * 断言改写说明（子 agent B，2026-10-11；v2 位置更新 2026-10-22；契约不是放宽）。
    *
    * 原断言是「原文回到输入框」。它写于互动线把**所有**发送失败都登记为可恢复原文的时期；
    * 并入 main 后契约 5（Lead 裁决）明确规定：needs-confirm（受理情况未知）时 Composer
@@ -520,18 +531,27 @@ describe("对话页发送恢复（§10.1「会话层统一管理」）", () => {
    * 两份契约同时成立时二者互斥（此前本条「看似通过」只是因为当时根本没有失败记录可恢复）。
    *
    * 按 F03「网络超时或断开不得一律当明确未受理，不得自动生成新身份重发」+ 契约 5，
-   * 这里改成断言**新契约下更强的结果**：
-   * 原文完整保存在会话层的未决台账里、界面给出查看原文 / 同身份重试 / 明确放弃三个入口、
-   * 且没有发生任何自动重发。原文没有丢，用户仍能拿到它 —— 只是不再被诱导换身份重发。
+   * 这里断言**新契约下更强的结果**：
+   * 原文完整保存在会话层的未决台账里、入口①（v2：ComposerDock → SendIssuesPanel）
+   * 给出原文 / 同身份重试 / 明确放弃三个入口，且没有发生任何自动重发。
+   * 原文没有丢，用户仍能拿到它 —— 只是不再被诱导换身份重发。
+   *
+   * v2 的两处位置变化：面板默认收起，必须先点开入口①；原文直接列在面板里（不再藏一层
+   * 「查看原文」）。「明确放弃」只在查证确认「后端没有该请求记录」（404）时出现 ——
+   * 避免把可能已受理的消息撤掉；本用例用 404 覆盖这个入口。
    */
-  it("【组件】Composer：A 发送未决时原文不自动放回输入框，完整留在原话题的未决入口里", async () => {
+  it("【组件】对话页：A 发送未决时原文不自动放回输入框，完整留在原话题的未决入口里", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
     session.currentTopicId = "A";
     session.draft = "对话页要发的话";
-    const wrapper = mount(Composer, { attachTo: document.body });
+    const wrapper = mountDock();
     await flushPromises();
     vi.mocked(api.sendTurn).mockRejectedValueOnce(new Error("网络中断"));
+    // 自动查证得到「后端没有这条请求记录」：未决状态如实显示，并给出「明确放弃」
+    vi.mocked(api.lookupTurnByRequest).mockRejectedValue(
+      Object.assign(new Error("not found"), { status: 404 }),
+    );
     const textarea = wrapper.find("#composer-input");
     expect((textarea.element as HTMLTextAreaElement).value).toBe("对话页要发的话");
     await wrapper.find("button.send-btn").trigger("click").catch(() => undefined);
@@ -553,11 +573,13 @@ describe("对话页发送恢复（§10.1「会话层统一管理」）", () => {
     // 没有自动重发：发送请求只发过一次
     expect(vi.mocked(api.sendTurn).mock.calls.length).toBe(1);
 
-    // 界面必须给出三个明确入口，且「查看原文」真的能看到原文
-    const view = wrapper.find('[data-im="composer-pending-view"]');
-    expect(view.exists(), "对话页没有「查看原文」入口").toBe(true);
-    await view.trigger("click");
+    // v2：入口①默认收起；点开后原文与三个明确动作都在
+    const entry = wrapper.find('.entry-btn[data-entry="sendIssues"]');
+    expect(entry.exists(), "对话页没有出现「发送异常与草稿恢复」入口").toBe(true);
+    await entry.trigger("click");
     await flushPromises();
+    expect(wrapper.find('[data-im="composer-pending"]').exists()).toBe(true);
+    // 原文直接可见（v2 面板把原文列出来，不再需要先点「查看原文」）
     expect(wrapper.find('[data-im="composer-pending-quote"]').text()).toBe("对话页要发的话");
     expect(
       wrapper.find('[data-im="composer-pending-retry"]').exists(),
@@ -570,12 +592,12 @@ describe("对话页发送恢复（§10.1「会话层统一管理」）", () => {
     wrapper.unmount();
   });
 
-  it("【组件】Composer：切到 B 之后 A 的失败不许写进 B 的输入框", async () => {
+  it("【组件】对话页输入区：切到 B 之后 A 的失败不许写进 B 的输入框", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
     session.currentTopicId = "A";
     session.draft = "A 的话";
-    const wrapper = mount(Composer, { attachTo: document.body });
+    const wrapper = mountDock();
     await flushPromises();
     pendingSend();
     const textarea = wrapper.find("#composer-input");

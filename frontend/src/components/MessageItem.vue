@@ -9,6 +9,18 @@ import { useEventStore } from "../stores/events";
 import { useUiStore } from "../stores/ui";
 import type { MessageAttachment, StreamMessage } from "../stores/session";
 import {
+  hasExecutionTaskLocator,
+  locateExecutionTask,
+} from "./conversation/taskLocator";
+import {
+  canPreviewAttachment,
+  hasConversationPreviewOpener,
+  hasConversationReplyCodeOpener,
+  openConversationPreview,
+  openConversationReplyCode,
+  previewTargetForAttachment,
+} from "./conversation/previewBridge";
+import {
   addPendingAttachment,
   pickBrowserFile,
   pickLocalPath,
@@ -233,6 +245,96 @@ const systemNote = computed(() => answerParts.value.annotation);
  */
 const attachmentChips = computed(() => props.message.attachments ?? []);
 
+/**
+ * 「在右侧查看」：只读预览（C 的 store 通过 previewBridge 注册）。
+ * 身份按契约 §4.3 用 attachment id（同名不同文件是两个标签），没有 version 时
+ * 身份退化为 attachment:<id>；**不用文件名当身份**。未接线时不渲染按钮。
+ */
+const previewAvailable = hasConversationPreviewOpener();
+/** 回复里的代码块 → 右侧只读预览（身份 replycode:<messageId>:<blockIndex>）。 */
+const replyCodePreviewAvailable = hasConversationReplyCodeOpener();
+interface CodeBlockRef {
+  index: number;
+  language: string;
+  text: string;
+}
+const codeBlocks = computed<CodeBlockRef[]>(() => {
+  if (props.message.role !== "assistant" || props.message.interim) return [];
+  const source = String(props.message.content || "");
+  const blocks: CodeBlockRef[] = [];
+  const fence = /(?:^|\n)(`{3,}|~{3,})([^\n]*)\n([\s\S]*?)\n\1/g;
+  let match: RegExpExecArray | null;
+  let index = 0;
+  while ((match = fence.exec(source)) !== null && blocks.length < 4) {
+    blocks.push({ index, language: String(match[2] || "").trim(), text: match[3] });
+    index += 1;
+  }
+  return blocks;
+});
+const replyCodeNotice = ref("");
+function previewCodeBlock(block: CodeBlockRef): void {
+  const ok = openConversationReplyCode({
+    messageId: String(props.message.id || ""),
+    blockIndex: block.index,
+    text: block.text,
+    language: block.language || undefined,
+    // 标签本身会带上类别（「代码」）；这里只给语言，避免出现「ts 代码代码」。
+    title: block.language || "回复中的代码",
+  });
+  // 成功不弹说明：右侧预览打开本身就是反馈；只在真的没接上时保留失败原因。
+  replyCodeNotice.value = ok ? "" : "右侧预览还没有接上（不会打开空白面板）";
+}
+function canPreview(attachment: MessageAttachment): boolean {
+  return previewAvailable && canPreviewAttachment({ name: attachment.name });
+}
+function previewOne(attachment: MessageAttachment): void {
+  const ok = openConversationPreview(
+    previewTargetForAttachment({
+      id: attachment.id,
+      name: attachment.name,
+      topicId: attachment.topicId ?? null,
+      storedPath: attachment.storedPath ?? null,
+      sourcePath: attachment.sourcePath ?? null,
+    }),
+  );
+  attachNotice.value = ok
+    ? `已在右侧打开「${attachment.name}」的只读预览`
+    : "这个版本还没有接上右侧预览（不会打开空白面板）";
+}
+
+/**
+ * 简短执行记录 → 左侧任务栏定位（A 的 store 通过 taskLocator 注册）。
+ * 没有注册时不渲染按钮；定位失败会如实说明，不假装已经定位。
+ */
+const locateAvailable = hasExecutionTaskLocator();
+const locateNotice = ref("");
+const locateRef = computed(() => {
+  if (props.message.role === "tool") {
+    // 任务栏的工具执行身份是 tool_records.id（不是 callId）；优先用真实记录 id，
+    // 没有记录 id 时才退回 callId（定位会如实显示「没有找到」，不假装成功）。
+    const sourceId = props.message.toolRecordId || props.message.callId || props.message.id;
+    return sourceId
+      ? { source: "tool" as const, sourceId, turnId: props.message.turnId ?? null, title: toolTitle.value }
+      : null;
+  }
+  if (props.message.role === "subagent") {
+    const sourceId = props.message.taskId || props.message.id;
+    return sourceId
+      ? { source: "subagent" as const, sourceId, turnId: props.message.turnId ?? null, title: props.message.toolName ?? undefined }
+      : null;
+  }
+  return null;
+});
+const canLocate = computed(() => locateAvailable && Boolean(locateRef.value));
+function locateTask(): void {
+  const ref = locateRef.value;
+  if (!ref) return;
+  const ok = locateExecutionTask(ref);
+  locateNotice.value = ok
+    ? "已在左侧任务栏定位这条执行记录"
+    : "左侧任务栏里没有找到这条执行记录（它可能已经被清理）";
+}
+
 
 // -- 多媒体附件的读取事实（契约 §4.4）：只显示已经发生的事 ------------------
 
@@ -428,11 +530,13 @@ function removeOne(id: string) {
           <AttachmentChip
             :attachment="a"
             :busy="attachBusyId === a.id"
+            :previewable="canPreview(a)"
             @open="openOne"
             @relocate="relocateOne"
             @retry="retryOne"
             @reupload="reuploadOne"
             @remove="removeOne"
+            @preview="previewOne(a)"
           />
         </span>
       </div>
@@ -529,6 +633,17 @@ function removeOne(id: string) {
           <span class="tool-time mono">{{ formatTime(message.createdAt) }}</span>
           <span class="tool-chev">{{ open ? "▾" : "▸" }}</span>
         </button>
+        <!-- 执行记录 → 左侧任务栏定位（A/Lead 注册后才出现） -->
+        <button
+          v-if="canLocate"
+          class="task-locate"
+          type="button"
+          title="在左侧任务栏定位这条执行记录（已归档的会定位到历史）"
+          @click="locateTask"
+        >
+          在任务栏查看
+        </button>
+        <p v-if="locateNotice" class="task-locate-note" role="status">{{ locateNotice }}</p>
         <!-- 结论写在卡面上：失败不能只藏在折叠详情里 -->
         <p v-if="toolFailureLine" class="tool-fail-line" role="status" data-qio-fit>
           {{ toolFailureLine }}
@@ -585,6 +700,16 @@ function removeOne(id: string) {
             :class="subagentRunning ? 'running info' : message.taskStatus === 'failed' ? 'err' : 'ok'"
           >{{ subagentLabel }}</span>
         </div>
+        <button
+          v-if="canLocate"
+          class="task-locate"
+          type="button"
+          title="在左侧任务栏定位这项独立任务"
+          @click="locateTask"
+        >
+          在任务栏查看
+        </button>
+        <p v-if="locateNotice" class="task-locate-note" role="status">{{ locateNotice }}</p>
         <p class="sub-line">
           QIO 正在单独处理这项任务{{ subagentRunning ? "" : "（已完成）" }}
         </p>
@@ -634,6 +759,38 @@ function removeOne(id: string) {
         />
         <p v-if="verifiedText" class="verified-note mono" role="note" data-qio-fit>
           {{ verifiedText }}
+        </p>
+        <div
+          v-if="codeBlocks.length && replyCodePreviewAvailable"
+          class="code-preview-row"
+          data-qio-fit
+          data-test="reply-code-preview"
+        >
+          <button
+            v-for="block in codeBlocks"
+            :key="block.index"
+            class="code-preview-btn"
+            type="button"
+            :aria-label="'在右侧查看这段' + (block.language || '') + '代码（只读）'"
+            :title="'在右侧只读预览这段' + (block.language || '') + '代码'"
+            @click="previewCodeBlock(block)"
+          >
+            <span class="code-preview-glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
+              </svg>
+            </span>
+            <span class="code-preview-lang mono">{{ block.language || "代码" }}</span>
+            <span class="code-preview-eye" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </span>
+          </button>
+        </div>
+        <p v-if="replyCodeNotice" class="code-preview-notice" role="status" data-qio-fit>
+          {{ replyCodeNotice }}
         </p>
       </div>
       <!--
@@ -1137,5 +1294,126 @@ function removeOne(id: string) {
 }
 .sub-fail {
   color: var(--danger);
+}
+
+/* ---- 执行记录定位 / 右侧只读预览：安静的次要动作，不抢卡片主体 ---- */
+.task-locate,
+.preview-open {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 2px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 11px;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1);
+}
+.task-locate:hover,
+.preview-open:hover {
+  color: var(--link);
+  border-color: var(--link);
+}
+.task-locate:focus-visible,
+.preview-open:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.task-locate-note {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.preview-open {
+  flex: none;
+}
+.code-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+/* 代码块预览：单胶囊 + 代码符号 + 语言 + 眼睛；不再用「在右侧查看…」文字药丸 */
+.code-preview-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 3px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.code-preview-btn:hover {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+.code-preview-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.code-preview-glyph {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--link);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.code-preview-glyph svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.code-preview-lang {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.code-preview-eye {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex: none;
+  transition: color var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
+}
+.code-preview-btn:hover .code-preview-eye {
+  color: var(--accent);
+  background: var(--layer-hover);
+}
+.code-preview-eye svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.code-preview-notice {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 </style>

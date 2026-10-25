@@ -99,10 +99,30 @@
 }
 .qio-scroll-rail.is-visible {
   opacity: 1;
+  /* 轨道本身也接指针：用户抓不到 4px 滑块时可以直接按轨道跳转/拖动 */
+  pointer-events: auto;
+  cursor: pointer;
 }
 .qio-scroll-rail.is-visible .qio-scroll-thumb {
   pointer-events: auto;
-  cursor: pointer;
+  cursor: grab;
+}
+/* 滑块的可视宽度保持纤细，但命中热区向两侧各扩 5px（拖动更容易抓住） */
+.qio-scroll-rail[data-axis="y"] .qio-scroll-thumb::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  right: -5px;
+}
+.qio-scroll-rail[data-axis="x"] .qio-scroll-thumb::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -5px;
+  bottom: -5px;
 }
 .qio-scroll-rail.is-persistent .qio-scroll-thumb {
   background: var(--scroll-indicator-bg-idle);

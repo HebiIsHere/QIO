@@ -5,14 +5,22 @@
  * 按用户行为断言：在对话页输入并发送、失败后，页面上必须能看到本次真实原因，
  * 并且始终有一条能取回失败原文的入口（输入框里已有新文字时也不覆盖，两份都保留）。
  *
- * 标注：【组件/DOM】挂载真实 Composer.vue；【模拟失败】api.sendTurn 拒绝。
+ * v2（2026-10-22）：这些界面不再内联渲染在 Composer 里，而是移到输入区上方入口①
+ * （ComposerDock → ComposerEntries → SendIssuesPanel）。入口默认收起：先点开再断言。
+ *
+ * 标注：【组件/DOM】挂载真实 ComposerDock；【模拟失败】api.sendTurn 拒绝。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { flushPromises, mount } from "@vue/test-utils";
 import { useSessionStore } from "../../stores/session";
 import { api } from "../../services/api";
-import Composer from "../Composer.vue";
+import ComposerDock from "../conversation/ComposerDock.vue";
+
+// 模式切换与这些用例无关：用桩替换，避免测试环境缺少 router 造成噪声。
+vi.mock("../conversation/ConversationModeSwitch.vue", () => ({
+  default: { name: "ConversationModeSwitch", template: '<div class="mode-switch-stub" />' },
+}));
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -40,6 +48,11 @@ vi.mock("../../services/api", () => ({
 
 const REASON = "网络中断：请求没有到达服务端";
 
+/** 挂载输入区（模式切换与本组用例无关：避免测试环境缺少 router） */
+function mountDock() {
+  return mount(ComposerDock, { attachTo: document.body });
+}
+
 /** 找到「能取回失败原文」的可见按钮：放回 / 找回 / 取回 / 恢复 / 互换 */
 function recoveryButtons(wrapper: ReturnType<typeof mount>) {
   return wrapper.findAll("button").filter((node) => {
@@ -53,6 +66,14 @@ function recoveryButtons(wrapper: ReturnType<typeof mount>) {
      */
     return !el.disabled;
   });
+}
+
+/** v2：入口①默认收起；有失败事项时图标才出现，点开才渲染面板 */
+async function openSendIssues(wrapper: ReturnType<typeof mount>): Promise<void> {
+  const entry = wrapper.find('.entry-btn[data-entry="sendIssues"]');
+  expect(entry.exists(), "输入区上方没有「发送异常与草稿恢复」入口").toBe(true);
+  await entry.trigger("click");
+  await flushPromises();
 }
 
 beforeEach(() => {
@@ -76,21 +97,24 @@ function rejectedSend(message: string) {
 describe("场景 4：普通对话页发送失败（§11.4）", () => {
   it("【组件/DOM】失败后页面上直接看得见本次真实原因", async () => {
     vi.mocked(api.sendTurn).mockRejectedValueOnce(rejectedSend(REASON));
-    const wrapper = mount(Composer, { attachTo: document.body });
+    const wrapper = mountDock();
     await wrapper.find("#composer-input").setValue("这段字发不出去");
     await wrapper.find(".send-btn").trigger("click");
     await flushPromises();
 
+    // v2：原因在入口①面板里（入口默认收起，有失败事项才出现）
+    await openSendIssues(wrapper);
     expect(wrapper.text(), "对话页没有显示这次发送失败的真实原因").toContain("网络中断");
   });
 
   it("【组件/DOM】输入框已有新文字时，仍要有取回失败原文的入口且两份都保留", async () => {
     vi.mocked(api.sendTurn).mockRejectedValueOnce(rejectedSend(REASON));
     const session = useSessionStore();
-    const wrapper = mount(Composer, { attachTo: document.body });
+    const wrapper = mountDock();
     await wrapper.find("#composer-input").setValue("失败的那份原文");
     await wrapper.find(".send-btn").trigger("click");
     await flushPromises();
+    await openSendIssues(wrapper);
 
     // 用户没有理会失败提示，继续输入了新的内容
     await wrapper.find("#composer-input").setValue("后来写的新内容");

@@ -315,8 +315,39 @@ function revealRamp(from: number, to: number, ms: number): Promise<void> {
  * `seq` 是父级给的「这次打开」的序号：关闭回调把它带回去，
  * 父级只认当前序号 —— 关闭动画期间用户又打开一次时，迟到的旧回调不会关掉新层。
  */
-const props = withDefaults(defineProps<{ seq?: number; open?: boolean }>(), { open: true });
+type PlanetTab = "topic" | "knowledge" | "entity" | "memory";
+
+const props = withDefaults(
+  defineProps<{
+    seq?: number;
+    open?: boolean;
+    /** 外层（对话页记忆提醒 / 深链）要求打开时定位到哪个页签。 */
+    initialTab?: PlanetTab;
+    /** 待确认页里要定位的那一条事项 id（真实 id，不猜）。 */
+    focusPendingId?: string | null;
+  }>(),
+  { open: true, initialTab: "topic", focusPendingId: null },
+);
 const emit = defineEmits<{ close: [seq?: number] }>();
+/** 实际传给待确认面板的定位目标：每次打开都重新赋值，保证同一个 id 再次打开也能触发定位。 */
+const pendingFocus = ref<string | null>(null);
+
+/**
+ * 外部定位请求：打开星球 → 切到「待确认」页签 → 打开右侧面板 → 交给面板滚动/高亮。
+ * 不改星球入口与本体样式；页签切换复用既有 switchTab 路径。
+ */
+watch(
+  () => [props.open, props.initialTab, props.focusPendingId] as const,
+  ([open, tab, focusId]) => {
+    if (!open) return;
+    if (focusId) pendingFocus.value = focusId;
+    if (tab && tab !== "topic") {
+      panelOpen.value = true;
+      switchTab(tab);
+    }
+  },
+  { flush: "post" },
+);
 const session = useSessionStore();
 const ui = useUiStore();
 
@@ -2088,7 +2119,10 @@ async function close() {
           </div>
         </template>
         <KnowledgePanel v-else-if="activeTab === 'knowledge'" @focus-topic="focusTopicFromPanel" />
-        <MemoryPendingPanel v-else-if="activeTab === 'memory'" />
+        <MemoryPendingPanel
+          v-else-if="activeTab === 'memory'"
+          :focus-pending-id="pendingFocus"
+        />
         <EntityPanel v-else :open-by-node-id="entityOpenId" />
       </div>
     </aside>

@@ -11,7 +11,6 @@ import { useApprovalsStore } from "../stores/approvals";
 import MessageItem from "./MessageItem.vue";
 import TurnProcess from "./TurnProcess.vue";
 import ContinueBar from "./ContinueBar.vue";
-import QueueChip from "./QueueChip.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
 import { groupTurns, type StreamTurn } from "../stores/session";
@@ -263,10 +262,18 @@ function backToLatest() {
 let unsubscribeComposer: (() => void) | null = null;
 /** 内容高度观察器：assistant 流式正文变高（不换条）时也要跟随底部 */
 let streamObserver: ResizeObserver | null = null;
+function composerIsFloating(): boolean {
+  // v2 起输入区是对话列里的正常流布局（position: relative）；只有旧式悬浮输入区
+  // 才需要消息流补一块底部滚动缓冲。读不到样式时按悬浮处理（保持旧行为）。
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return true;
+  const panel = document.querySelector<HTMLElement>(".composer");
+  if (!panel) return true;
+  return getComputedStyle(panel).position === "fixed";
+}
 function applyComposerPad(height: number) {
   const el = containerRef.value;
   if (!el) return;
-  el.style.paddingBottom = `${Math.round(height) + 16}px`;
+  el.style.paddingBottom = composerIsFloating() ? `${Math.round(height) + 16}px` : "";
 }
 onMounted(() => {
   lastContainer = containerRef.value;
@@ -533,7 +540,7 @@ const phaseLabel = computed(() => {
     data-qio-scope="chat"
     tabindex="0"
     aria-label="对话消息"
-    v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+    v-qio-scrollbar="{ policy: 'auto', axis: 'y', edgeZone: 24, lingerMs: 1800 }"
     @scroll.passive="onScroll"
   >
     <!-- 可聚焦滚动区域：键盘用户也能滚动消息，并且键盘滚动同样会停止自动跟随。 -->
@@ -633,17 +640,39 @@ const phaseLabel = computed(() => {
         ...(latestCenterX === null ? {} : { left: `${latestCenterX}px` }),
       }"
     >
-      <button class="back-latest" type="button" @click="backToLatest">
-        <span class="arrow">↓</span>
-        回到最新消息<span v-if="unseen > 0" class="count mono qio-state info">{{ unseen }}</span>
+      <button
+        class="back-latest"
+        type="button"
+        :aria-label="unseen > 0 ? `回到最新消息（${unseen} 条新消息）` : '回到最新消息'"
+        title="回到最新消息"
+        @click="backToLatest"
+      >
+        <svg class="latest-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v14M5 12l7 7 7-7" />
+        </svg>
+        <span v-if="unseen > 0" class="count mono" aria-hidden="true">{{ unseen }}</span>
       </button>
     </div>
     <ContinueBar />
-    <QueueChip />
-    <div v-if="!messages.length" class="empty">
-      <div class="greet serif">今天想聊点什么？</div>
-      <div class="sub mono">你的星球在右下角等待 · 点击悬浮球查看话题大陆</div>
-      <div class="chip"><span class="pd"></span>打开话题星球</div>
+    <!--
+      空状态必须如实（契约 §8）：
+      * 正在读历史 → 说「正在读取」，不显示成「没有消息」；
+      * 历史读取失败 → 说「没有读出来」，也不显示成「没有消息」；
+      * 只有真的没有消息时才显示空对话引导。
+    -->
+    <div v-if="!messages.length" class="empty" data-test="stream-empty">
+      <template v-if="session.history.status === 'loading'">
+        <div class="greet serif">正在读取历史…</div>
+        <div class="sub mono">之前在对话里的消息还在加载</div>
+      </template>
+      <template v-else-if="session.history.status === 'error'">
+        <div class="greet serif">历史没有读取出来</div>
+        <div class="sub mono">这不代表没有消息；可在上方状态条里重试</div>
+      </template>
+      <template v-else>
+        <div class="greet serif">今天想聊点什么？</div>
+        <div class="sub mono">从下方输入框开始 · 话题星球在右下角</div>
+      </template>
     </div>
   </div>
 </template>
@@ -788,16 +817,18 @@ const phaseLabel = computed(() => {
   pointer-events: auto;
 }
 .back-latest {
+  /* 38px 圆形图标按钮：和入口/附件动作共用同一套圆形语言；文字只留 aria-label/tooltip */
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 14px;
-  border-radius: var(--r-pill);
-  border: 1px solid var(--border-strong);
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   color: var(--text-secondary);
-  font-family: var(--sans);
-  font-size: 12px;
   cursor: pointer;
   box-shadow: var(--shadow-1);
   transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
@@ -810,11 +841,30 @@ const phaseLabel = computed(() => {
 .back-latest:active {
   transform: translateY(var(--press-shift));
 }
+.latest-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 .back-latest .count {
-  /* 计数走统一状态徽章原语（info 语义 = 「有新内容」）；这里只保留布局相关属性 */
-  min-width: 18px;
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  border: 2px solid var(--bg-elevated);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9.5px;
+  line-height: 13px;
   text-align: center;
-  font-size: 10.5px;
+  box-sizing: border-box;
 }
 @keyframes typing-bounce {
   0%, 60%, 100% {

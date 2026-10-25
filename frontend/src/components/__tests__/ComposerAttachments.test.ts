@@ -96,9 +96,19 @@ async function chooseFiles(w: VueWrapper, ...names: string[]) {
   await flushPromises();
 }
 
-/** 真实路径入口：粘贴路径后回车。 */
+/** 打开胶囊内的回形针菜单（v3：附件与路径都收进这一个圆形图标按钮）。 */
+async function openAttachMenu(w: VueWrapper) {
+  await w.find(".attach-circle").trigger("click");
+  await flushPromises();
+}
+
+/** 真实路径入口：回形针菜单 → 从路径添加 → 粘贴路径后回车。 */
 async function pastePath(w: VueWrapper, path: string) {
-  await w.findAll(".attach-btn")[1].trigger("click");
+  await openAttachMenu(w);
+  const item = w.findAll(".attach-menu-item").find((b) => b.text().includes("从路径添加"));
+  expect(item, "回形针菜单里没有「从路径添加」").toBeTruthy();
+  await item!.trigger("click");
+  await flushPromises();
   await w.find(".path-input").setValue(path);
   await w.find(".path-input").trigger("keydown.enter");
   await flushPromises();
@@ -127,7 +137,7 @@ describe("Composer 附件入口", () => {
   it("默认没有附件时不显示附件区，但入口按钮在", async () => {
     const { w } = await mountComposer();
     expect(w.find(".attach-area").exists()).toBe(false);
-    expect(w.find(".attach-btn").exists()).toBe(true);
+    expect(w.find(".attach-circle").exists(), "胶囊内没有附件圆形按钮").toBe(true);
     w.unmount();
   });
 

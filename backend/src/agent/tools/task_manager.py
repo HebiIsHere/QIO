@@ -112,6 +112,9 @@ class TaskManager:
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
         max_records: int = DEFAULT_MAX_RECORDS,
         record_ttl_seconds: float | None = DEFAULT_RECORD_TTL_SECONDS,
+        # 展示层（对话页任务栏）的持久化钩子：只把事实写进 task_feed，
+        # 不改变任务本身的生命周期，也不允许它反写记录。
+        on_change: Callable[["TaskRecord"], None] | None = None,
     ) -> None:
         self.bus = bus
         self._semaphore = asyncio.Semaphore(max_concurrent)
@@ -125,6 +128,7 @@ class TaskManager:
         self._closed = False
         # 已投递过完成通知的 task_id（按 task 去重，重启后从空开始）
         self._notified: set[str] = set()
+        self._on_change = on_change
 
     # -- submit -----------------------------------------------------------
 
@@ -148,6 +152,7 @@ class TaskManager:
         )
         self._records[task_id] = record
         self.prune()
+        self._record_change(record)
         task = asyncio.create_task(self._run(task_id, coro_factory))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -230,6 +235,7 @@ class TaskManager:
                 fut.set_result((record.status, record.result))
         # 取消的任务不进入完成通知队列（不复活）
         self._notify.pop(task_id, None)
+        self._record_change(record)
         return True
 
     def task_facts(self, task_id: str) -> dict | None:
@@ -307,6 +313,18 @@ class TaskManager:
     def was_notified(self, task_id: str) -> bool:
         return task_id in self._notified
 
+    def _record_change(self, record: TaskRecord) -> None:
+        """把任务事实同步给展示层钩子；钩子出错不影响任务本身。"""
+        callback = self._on_change
+        if callback is None:
+            return
+        try:
+            callback(record)
+        except Exception:  # noqa: BLE001 - 展示记录失败不能影响执行
+            logger.warning(
+                "task change callback failed: %s", getattr(record, "task_id", ""), exc_info=True
+            )
+
     # -- lifecycle --------------------------------------------------------
 
     async def _run(
@@ -320,6 +338,7 @@ class TaskManager:
         try:
             async with self._semaphore:
                 record.status = "running"
+                self._record_change(record)
                 await self._emit(task_id)
                 try:
                     result = await coro_factory()
@@ -336,9 +355,11 @@ class TaskManager:
                 record.status = "failed"
                 record.result = ToolResult(ok=False, error="task cancelled: shutting down")
             record.finished_at = _now()
+            self._record_change(record)
             await self._emit(task_id)
             raise
         record.finished_at = _now()
+        self._record_change(record)
         await self._emit(task_id)
         # 兑现 waiter 时传**结局快照**（status + result），而不是记录对象本身：
         # 紧接着的 prune() 可能把这条记录回收并 release()（清空 result/full_content），

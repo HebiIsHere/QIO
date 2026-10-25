@@ -112,8 +112,8 @@ function ref(over: Partial<AttachmentRef> & { actions?: AttachmentAction[] } = {
   };
 }
 
-function mountChip(attachment: AttachmentRef) {
-  return mount(AttachmentChip, { props: { attachment } });
+function mountChip(attachment: AttachmentRef, previewable = false) {
+  return mount(AttachmentChip, { props: { attachment, previewable } });
 }
 
 function buttonTexts(w: ReturnType<typeof mountChip>): string[] {
@@ -165,7 +165,7 @@ describe("chip 的按钮由 payload.actions 决定", () => {
     expect(buttonTexts(w)).not.toContain("重试");
     expect(buttonTexts(w)).not.toContain("重新定位");
     expect(buttonTexts(w)).not.toContain("重新上传");
-    expect(buttonTexts(w)).toContain("×"); // 移除始终可用
+    expect(buttonTexts(w)).toContain("移除附件"); // 移除始终可用（v4 以文字菜单项保留破坏性语义）
     w.unmount();
   });
 
@@ -189,6 +189,14 @@ describe("chip 的按钮由 payload.actions 决定", () => {
     const w = mountChip(ref({ actions: ["reupload"] }));
     await w.find("button.reupload").trigger("click");
     expect(w.emitted("reupload")).toEqual([["att_1"]]);
+    w.unmount();
+  });
+
+  it("有预览能力时显示眼睛图标并 emit preview（不再另起一个文字药丸）", async () => {
+    const w = mountChip(ref({ state: "ready", error: null, actions: [] }), true);
+    expect(w.findAll(".preview-open")).toHaveLength(1);
+    await w.find(".preview-open").trigger("click");
+    expect(w.emitted("preview")).toEqual([["att_1"]]);
     w.unmount();
   });
 });
@@ -269,9 +277,14 @@ describe("输入区（Composer）的 chip 同样按 actions 渲染", () => {
     await flushPromises();
   }
 
-  /** 真实路径入口：粘贴路径后回车。 */
+  /** 真实路径入口：回形针菜单 → 从路径添加 → 粘贴路径后回车（v3 胶囊）。 */
   async function pastePath(w: ReturnType<typeof mount>, path: string) {
-    await w.findAll(".attach-btn")[1].trigger("click");
+    await w.find(".attach-circle").trigger("click");
+    await flushPromises();
+    const item = w.findAll(".attach-menu-item").find((b) => b.text().includes("从路径添加"));
+    expect(item, "回形针菜单里没有「从路径添加」").toBeTruthy();
+    await item!.trigger("click");
+    await flushPromises();
     await w.find(".path-input").setValue(path);
     await w.find(".path-input").trigger("keydown.enter");
     await flushPromises();

@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { MEDIA_CAPABILITY_HINT } from "./mediaFacts";
-import { api } from "../services/api";
 import AttachmentChip from "./AttachmentChip.vue";
 import {
   attachmentRemovalBarrier,
@@ -44,8 +43,6 @@ import {
   type AttachmentOpCapture,
   type PendingRestorePatch,
 } from "../composables/attachmentOps";
-import FailedSendNotice from "./interactive/FailedSendNotice.vue";
-import { pendingSendText, sendFailureText } from "../interactive/chat";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 const session = useSessionStore();
@@ -86,146 +83,59 @@ const stopTitle = computed(() => {
   return "停止当前任务";
 });
 
-const topicText = computed(() => session.topicName || (session.currentTopicId ? "当前话题" : "默认话题"));
-
-const anchorText = computed(() => {
-  // 只有「历史位置」才提示：成功一轮后位置推进到当前片段，提示自动消失
-  if (!session.anchorHistoric) return "";
-  const f = session.anchorFragment;
-  if (f?.title) return `从「${f.title}」继续`;
-  // 不暴露内部片段 ID，也不写 anchor 这类内部术语
-  if (session.anchorFragmentId) return "从选中的历史位置继续";
+/**
+ * 输入区的「内容」与「是否满足发送条件」必须分开判断（契约 §6）：
+ * - 有文本或附件 = 存在内容 → 共用按钮处于「发送」态（回复期间提交会进入队列）；
+ * - 有内容但附件还在准备 / 只带附件没有文字 → 仍是发送态，但校验会如实说明卡在哪一步，
+ *   而不是把按钮变成停止、也不是假装可以发。
+ * - 回复中且没有任何内容 → 共用按钮才是「停止」；空闲且无内容 → 禁用发送。
+ */
+const hasText = computed(() => text.value.trim().length > 0);
+const hasContent = computed(() => hasText.value || pending.value.length > 0);
+type PrimaryMode = "send" | "stop" | "disabled";
+const primaryMode = computed<PrimaryMode>(() => {
+  if (hasContent.value) return "send";
+  if (session.turnRunning) return "stop";
+  return "disabled";
+});
+/** 发送校验的真实原因（空串 = 可以立即发送）。只用于解释，不替用户做决定。 */
+const sendGateReason = computed(() => {
+  if (!hasText.value && pending.value.length) {
+    return "只带附件还不能发送：请写一句话一起发（附件会随这条消息发出）";
+  }
+  if (!hasText.value) return "先写点什么或添加附件再发送";
+  const blocked = attachmentBlockReason();
+  if (blocked) return blocked;
+  if (prepareInFlight()) {
+    return "上一次带附件的发送还没有被后端受理：等它受理，或先按它的「中止」结束它";
+  }
   return "";
 });
-
-/**
- * 「已登记、还没落实」的接续选择。
- *
- * 与 anchorText 的区别：anchorText 说的是「位置就在一段历史上」，
- * 这一条说的是「你选了从这段历史继续，下一条消息才会落实」——
- * 界面必须说清是哪种，否则用户会以为已经建了新片段（其实什么都没建）。
- */
-const continuationText = computed(() => {
-  const pending = session.pendingContinuation;
-  if (!pending) return "";
-  return pending.sourceTitle
-    ? `下一条消息将从「${pending.sourceTitle}」继续`
-    : "下一条消息将从所选历史继续";
+/** 「已经满足发送条件」：与「存在内容」分开，按钮据此表达真实状态。 */
+const sendReady = computed(() => primaryMode.value === "send" && !sendGateReason.value);
+const primaryLabel = computed(() => {
+  if (primaryMode.value === "stop") return stopLabel.value;
+  if (!hasText.value && pending.value.length) return "发送";
+  return session.turnRunning ? "排队发送" : "发送";
 });
-
-/**
- * 共享聊天草稿（store.draft）保存失败的真实原因与重试入口（收尾轮 15）。
- *
- * 只读会话层的状态：聊天草稿保存在本机，失败时文字仍在输入框里，
- * 提示说的是「还没保存在本机」，不假装已保存，也不谎称发送失败。
- */
-const chatDraftError = computed(() =>
-  session.draftSaveStatus === "error"
-    ? `这段文字还没保存在本机：${session.draftSaveError ?? "原因未知"}（文字还在输入框里，可以重试）`
-    : "",
-);
-
-/**
- * 被让位的旧草稿（11a）：第一次把未绑定输入迁移到某个话题时，话题原本已有一份草稿，
- * 两份都保留 —— 当前编辑的是新输入，旧那份在这里可查、可取回（互换）、可放弃。
- */
-const displacedDraft = computed(() => session.displacedDraftsForTopic(session.currentTopicId)[0] ?? null);
-const displacedCount = computed(() => session.displacedDraftsForTopic(session.currentTopicId).length);
-const displacedSnippet = computed(() => {
-  const text = displacedDraft.value?.text ?? "";
-  const oneLine = text.replace(/\s+/g, " ").trim();
-  return oneLine.length > 40 ? oneLine.slice(0, 40) + "…" : oneLine || "（空草稿）";
+const primaryTitle = computed(() => {
+  if (primaryMode.value === "stop") return stopTitle.value;
+  if (primaryMode.value === "disabled") return "输入内容或添加附件后可以发送";
+  if (sendGateReason.value) return `暂时不能发送：${sendGateReason.value}`;
+  return session.turnRunning ? "排队发送（Enter）：QIO 正在回复，这条会进入队列" : "发送（Enter）";
 });
-const displacedNotice = ref("");
-
-function restoreDisplaced(): void {
-  const target = displacedDraft.value;
-  if (!target) return;
-  const result = session.restoreDisplacedDraft(target.id);
-  displacedNotice.value = result.ok
-    ? "已取回那份草稿：输入框是它，刚才的文字留在入口里（两份都还在）"
-    : result.reason ?? "现在不能取回这份草稿";
-}
-
-function discardDisplaced(): void {
-  const target = displacedDraft.value;
-  if (!target) return;
-  session.discardDisplacedDraft(target.id);
-  displacedNotice.value = "已放弃这份被让位的草稿（当前输入不受影响）";
-}
-
-const cancelling = ref(false);
-/**
- * 本次发送失败的真实原因（只显示这一次尝试，不读上一次的结果）。
- * 没有它的话，对话页失败后用户只看得到「文字又回到了输入框」，不知道为什么。
- */
-const failureNotice = ref("");
-/** 本组件这个实例刚发生的失败原因：用来避免与恢复入口里同一条原因重复显示 */
-const failureReason = computed(() => (failureNotice.value ? session.lastError ?? "" : ""));
-
-/**
- * 发送回执丢失后的「正在确认」状态（契约 5）。
- *
- * 文案按后端已知程度区分两态，原样显示 store 里的文案：
- * * 正在确认是否已发送（查询中 / 查询失败可再查）；
- * * 发送未确认：后端没有该请求记录（可能未送达）→ 提供【重试 / 放弃】。
- * 查证曾命中已受理时只提供【取消】（放弃被 store 拒绝）。
- */
-const confirmState = computed(() => session.pendingSendConfirm);
-const interacting = ref(false);
-
-async function retryConfirmedSend() {
-  const c = confirmState.value;
-  if (!c || c.busy || interacting.value) return;
-  interacting.value = true;
-  try {
-    await session.retrySendAttempt(c.messageId);
-  } finally {
-    interacting.value = false;
+const primaryDisabled = computed(() => {
+  if (primaryMode.value === "stop") return !session.canStopTurn || stopping.value;
+  if (primaryMode.value === "disabled") return true;
+  return false;
+});
+function primaryAction() {
+  if (primaryMode.value === "stop") {
+    void stopTurn();
+    return;
   }
-}
-
-async function recheckConfirmedSend() {
-  const c = confirmState.value;
-  if (!c || c.busy || interacting.value) return;
-  interacting.value = true;
-  try {
-    await session.recheckSendAttempt(c.messageId);
-  } finally {
-    interacting.value = false;
-  }
-}
-
-function abandonConfirmedSend() {
-  const c = confirmState.value;
-  if (!c || interacting.value) return;
-  // 放弃：后端没有该请求的记录 → 撤回消息并把原话放回草稿（store 负责）
-  session.abandonSendAttempt(c.messageId);
-}
-
-async function cancelConfirmedSend() {
-  const c = confirmState.value;
-  if (!c || interacting.value) return;
-  interacting.value = true;
-  try {
-    await session.cancelConfirmedSend(c.messageId);
-  } finally {
-    interacting.value = false;
-  }
-}
-
-async function cancelContinuation() {
-  if (cancelling.value) return;
-  cancelling.value = true;
-  try {
-    await api.cancelContinuation();
-    // 服务端会广播新的 ANCHOR（pending 字段为空）→ 提示自动消失；
-    // 这里不自行清空，避免「本地以为取消了、服务端还留着」。
-  } catch {
-    /* 取消失败：提示保留，状态以服务端为准 */
-  } finally {
-    cancelling.value = false;
-  }
+  if (primaryMode.value === "disabled") return;
+  void submit();
 }
 
 /**
@@ -266,7 +176,14 @@ async function removeRejectedAndSend() {
 
 async function submit() {
   const value = text.value.trim();
-  if (!value) return;
+  // 「存在内容」≠「满足发送条件」：只带附件（没有文字）时后端不会受理，
+  // 这里如实说清卡在哪一步，文字与附件都留在输入区（不丢能力、不假装已发出）。
+  if (!value) {
+    if (pending.value.length) {
+      attachError.value = "只带附件还不能发送：请写一句话一起发（附件会随这条消息发出）";
+    }
+    return;
+  }
   // 附件闸门：没准备好就不能当作「发送成功」——文本与附件都留在原地，并说清卡在哪一个
   const blocked = attachmentBlockReason();
   if (blocked) {
@@ -335,12 +252,12 @@ async function submit() {
      * 文案也随之分开：未决时说「发送未确认 + 原文保存在哪里」（输入框为空时
      * 绝不声称「输入已保留」）；明确失败时才说「输入已保留，可以重试」。
      */
-    if (session.pendingSendConfirm) {
-      failureNotice.value = pendingSendText(
-        session.unresolvedSendReason(session.pendingSendConfirm.messageId) ?? session.lastError,
-      );
-    } else {
-      failureNotice.value = sendFailureText(session.lastError);
+    /**
+     * 未决发送（受理情况未知）不自动把原文放回输入框：那会让用户顺手再发一次、
+     * 用新身份绕开幂等保护。原文保存在未决记录里，处理入口在输入区上方的「发送异常」。
+     * 明确失败时才按归属找回原文（store 只在「还在原话题 + 输入框为空」时动手）。
+     */
+    if (!session.pendingSendConfirm) {
       session.retryFailedSend(attribution.draftId);
     }
     // 用户自己中止的：如实说「这一轮没有发送」，不要伪装成失败原因
@@ -358,8 +275,6 @@ async function submit() {
   bumpTopicEpoch(sendTopicId);
   commitToTopic(sendTopicId, (list) => list.filter((item) => !sentIds.has(item.id)));
   attachError.value = "";
-  // 受理成功：失败提示收掉
-  failureNotice.value = "";
   if (prep?.cancelled) {
     /**
      * 竞态：用户按了中止，但请求在那一刻**已经受理**（轮次已入队）。
@@ -485,7 +400,33 @@ const attachError = ref("");
 const dragging = ref(false);
 const pathOpen = ref(false);
 const pathDraft = ref("");
+const pathInputRef = ref<HTMLInputElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+/** 回形针菜单：把「选择文件」与「从路径添加」收进同一个圆形图标按钮，减少文字按钮。 */
+const attachMenuOpen = ref(false);
+const attachMenuRef = ref<HTMLElement | null>(null);
+
+function toggleAttachMenu() {
+  attachMenuOpen.value = !attachMenuOpen.value;
+}
+function chooseLocalFile() {
+  attachMenuOpen.value = false;
+  void pickFile();
+}
+async function choosePathEntry() {
+  attachMenuOpen.value = false;
+  pathOpen.value = true;
+  await nextTick();
+  pathInputRef.value?.focus();
+}
+/** 点空白处收起回形针菜单（不改变任何附件/路径状态）。 */
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!attachMenuOpen.value) return;
+  const root = attachMenuRef.value;
+  const target = event.target as Node | null;
+  if (root && target && root.contains(target)) return;
+  attachMenuOpen.value = false;
+}
 /** 打开/重新定位之后的事实说明（例如「已在文件夹中显示：可执行文件不自动运行」） */
 const attachNote = ref("");
 /** 浏览器里没有原生选择器时，「粘贴路径 → 重新定位」的目标附件 id */
@@ -1288,6 +1229,7 @@ function onWindowResize() {
 
 onMounted(() => {
   window.addEventListener("resize", onWindowResize);
+  document.addEventListener("pointerdown", onDocumentPointerDown, true);
   if (typeof ResizeObserver === "function") {
     inputWidthObserver = new ResizeObserver((entries) => {
       const width = entries[entries.length - 1]?.contentRect.width ?? -1;
@@ -1303,6 +1245,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onWindowResize);
+  document.removeEventListener("pointerdown", onDocumentPointerDown, true);
   if (inputResizeRaf && typeof cancelAnimationFrame === "function") {
     cancelAnimationFrame(inputResizeRaf);
   }
@@ -1419,6 +1362,7 @@ async function stopTurn() {
     @dragover.prevent="onDragOver"
     @dragleave="onDragLeave"
     @drop.prevent="onDrop"
+    @keydown.esc="attachMenuOpen = false"
   >
     <!--
       输入区：与对话消息区同一套宽度规则。
@@ -1426,27 +1370,6 @@ async function stopTurn() {
       * textarea 用共享滚动引擎的 hidden 策略：保留滚动与定位能力，但**不画**指示条、
         也不预留任何轨道空白 —— 空 / 短内容时连滚动范围都没有（见 autosize）。
     -->
-    <div class="topicbar" data-qio-fit>
-      <span class="tname serif" :title="session.currentTopicId ?? undefined">{{ topicText }}</span>
-      <!-- 有「待落实」的接续选择时不再并排显示「位置就在历史上」那一条：
-           两句话说的是同一件事的两个阶段，并排会挤成一团、也读不清哪一句生效 -->
-      <span v-if="anchorText && !continuationText" class="anchor mono">{{ anchorText }}</span>
-      <!-- 已登记、还没落实的接续选择：说清「下一条消息才生效」，并允许取消 -->
-      <template v-if="continuationText">
-        <span class="anchor mono pending">{{ continuationText }}</span>
-        <button
-          class="anchor-cancel"
-          type="button"
-          :disabled="cancelling"
-          @click="cancelContinuation"
-        >
-          {{ cancelling ? "取消中…" : "取消" }}
-        </button>
-      </template>
-      <span class="spacer"></span>
-      <span class="kbd-hint mono">Enter 发送 · Shift+Enter 换行</span>
-    </div>
-
     <div
       v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection || preparingVisible || preparingNotice"
       class="attach-area"
@@ -1503,6 +1426,7 @@ async function stopTurn() {
       </p>
       <div v-if="pathOpen" class="path-row" data-qio-fit>
         <input
+          ref="pathInputRef"
           v-model="pathDraft"
           class="path-input mono"
           type="text"
@@ -1573,180 +1497,73 @@ async function stopTurn() {
       <p v-if="attachNote" class="attach-note" role="status" data-qio-fit>{{ attachNote }}</p>
     </div>
 
-    <!-- 失败原因 + 待恢复原文：辅助层，放在输入行上方，长文限高滚动，不挤走输入框 -->
-    <FailedSendNotice
-      scope="conversation"
-      :notice="failureNotice"
-      :reason="failureReason"
-    />
-
-    <!--
-      第一次话题迁移时被让位的旧草稿（收尾轮 11a）：两份都保留，这里给出明确入口。
-      取回是「与当前文字互换」——两份都还在，不拼接、不覆盖、不自动发送。
-    -->
-    <p
-      v-if="displacedDraft"
-      class="displaced-draft"
-      role="status"
-      data-qio-fit
-      data-im="composer-displaced-draft"
-    >
-      <span>
-        这个话题原来还有一份草稿：{{ displacedSnippet }}
-        <template v-if="displacedCount > 1">（另有 {{ displacedCount - 1 }} 份）</template>
-      </span>
-      <button
-        class="draft-retry"
-        type="button"
-        data-im="composer-displaced-restore"
-        @click="restoreDisplaced"
-      >
-        取回（与当前文字互换）
-      </button>
-      <button
-        class="draft-retry ghost"
-        type="button"
-        data-im="composer-displaced-discard"
-        @click="discardDisplaced"
-      >
-        放弃这份
-      </button>
-    </p>
-    <p
-      v-if="displacedNotice"
-      class="displaced-notice"
-      role="status"
-      data-qio-fit
-      data-im="composer-displaced-status"
-    >
-      {{ displacedNotice }}
-    </p>
-
-    <!--
-      共享聊天草稿的保存失败（收尾轮 15）：普通对话页也必须看得见、能重试。
-      与互动 ChatDock 读同一份会话状态（session.draftSaveStatus/draftSaveError），
-      不新建状态源、不重复发送；重试只重写本机草稿，不发送、不动板面。
-    -->
-    <p
-      v-if="chatDraftError"
-      class="draft-error"
-      role="alert"
-      data-qio-fit
-      data-im="composer-draft-status"
-    >
-      <span>{{ chatDraftError }}</span>
-      <button
-        class="draft-retry"
-        type="button"
-        data-im="composer-draft-retry"
-        @click="session.retryDraftSave()"
-      >
-        重试保存
-      </button>
-    </p>
-
-    <div ref="inputRowRef" class="input-row" data-qio-fit>
-      <button
-        class="attach-btn"
-        type="button"
-        :disabled="attaching"
-        title="添加附件（桌面端选择本地文件；也可以拖入或粘贴路径）"
-        aria-label="添加附件"
-        @click="pickFile"
-      >
-        附件
-      </button>
-      <button
-        class="attach-btn ghost"
-        type="button"
-        title="粘贴本地文件路径（拖入不方便时用；不会把浏览器给的假路径当路径）"
-        aria-label="粘贴本地文件路径"
-        @click="pathOpen = !pathOpen"
-      >
-        路径
-      </button>
+    <div ref="inputRowRef" class="input-pill" data-qio-fit>
+      <slot name="leading" />
+      <div ref="attachMenuRef" class="attach-anchor">
+        <button
+          class="attach-circle"
+          type="button"
+          :disabled="attaching"
+          :aria-expanded="attachMenuOpen ? 'true' : 'false'"
+          aria-haspopup="menu"
+          title="添加附件：选择本地文件，或粘贴路径"
+          aria-label="添加附件"
+          @click="toggleAttachMenu"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L16 7" />
+          </svg>
+        </button>
+        <div v-if="attachMenuOpen" class="attach-menu" role="menu" aria-label="添加附件">
+          <button class="attach-menu-item" type="button" role="menuitem" @click="chooseLocalFile">
+            <span class="ami-title">选择本地文件</span>
+            <span class="ami-note mono">拖入也可以</span>
+          </button>
+          <button class="attach-menu-item" type="button" role="menuitem" @click="choosePathEntry">
+            <span class="ami-title">从路径添加</span>
+            <span class="ami-note mono">粘贴路径后回车</span>
+          </button>
+        </div>
+      </div>
       <textarea
         ref="inputRef"
         id="composer-input"
         v-model="text"
+        rows="1"
         class="qio-input"
         data-qio-fit
         v-qio-scrollbar="'hidden'"
         wrap="soft"
-        aria-label="输入消息"
-        placeholder="和 QIO 说点什么…"
+        aria-label="输入消息（Enter 发送，Shift+Enter 换行）"
+        aria-keyshortcuts="Enter Shift+Enter"
+        title="Enter 发送 · Shift+Enter 换行"
+        placeholder="继续讨论，或添加文件…"
         @keydown="onKeydown"
         @input="autosize"
       ></textarea>
-      <button
-        v-if="session.turnRunning"
-        class="stop-btn"
-        type="button"
-        :disabled="stopping || !session.canStopTurn"
-        :aria-label="stopLabel"
-        :title="stopTitle"
-        @click="stopTurn"
-      >
-        <span class="sq"></span>
-        <span class="stop-label">{{ stopLabel }}</span>
-      </button>
+      <!--
+        发送 / 停止共用同一个按钮（契约 §6）：有内容 → 发送（回复期间进入队列）；
+        回复中且没有内容 → 停止；空闲且没有内容 → 禁用发送。
+        「有内容但还没满足发送条件」时保持发送态，点击给出真实校验原因（不假装可发）。
+      -->
       <button
         class="send-btn"
+        :class="{ 'stop-mode': primaryMode === 'stop', 'stop-btn': primaryMode === 'stop' }"
         type="button"
-        :disabled="!text.trim()"
-        :aria-label="session.turnRunning ? '排队发送' : '发送'"
-        :title="session.turnRunning ? '排队发送（Enter）' : '发送（Enter）'"
-        @click="submit"
+        :disabled="primaryDisabled"
+        :data-mode="primaryMode"
+        :data-ready="sendReady ? 'true' : 'false'"
+        :aria-label="primaryLabel"
+        :title="primaryTitle"
+        @click="primaryAction"
       >
-        <span>↑</span>
+        <span v-if="primaryMode === 'stop'" class="sq" aria-hidden="true"></span>
+        <svg v-else class="send-arrow" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 20V4m-6 6 6-6 6 6" />
+        </svg>
       </button>
     </div>
     <p v-if="cancelError" class="cancel-error" role="alert" data-qio-fit>{{ cancelError }}</p>
-    <!-- 发送回执丢失后的确认条（契约 5）：文案区分「正在确认」与「发送未确认」，
-         操作按已知程度给：未知 → 重试/放弃；查询中 → 只识字；已受理 → 只有取消 -->
-    <div v-if="confirmState" class="send-confirm" role="status" data-qio-fit>
-      <span class="confirm-notice mono" :class="{ unknown: confirmState.unknown }">
-        {{ confirmState.unknown ? "⚠️ " : "" }}{{ confirmState.notice }}
-      </span>
-      <span class="confirm-actions">
-        <button
-          v-if="!confirmState.busy && !confirmState.unknown && !confirmState.accepted"
-          type="button"
-          class="confirm-btn"
-          :disabled="interacting"
-          @click="recheckConfirmedSend"
-        >
-          再查一次
-        </button>
-        <button
-          v-if="!confirmState.busy && !confirmState.accepted"
-          type="button"
-          class="confirm-btn"
-          :disabled="interacting"
-          @click="retryConfirmedSend"
-        >
-          重试
-        </button>
-        <button
-          v-if="confirmState.unknown"
-          type="button"
-          class="confirm-btn abandon"
-          :disabled="interacting"
-          @click="abandonConfirmedSend"
-        >
-          放弃
-        </button>
-        <button
-          v-if="confirmState.accepted"
-          type="button"
-          class="confirm-btn"
-          :disabled="interacting"
-          @click="cancelConfirmedSend"
-        >
-          取消
-        </button>
-      </span>
-    </div>
     <!-- 浏览器回退：只拿字节上传；fakepath 绝不当路径 -->
     <input
       ref="fileInputRef"
@@ -1787,35 +1604,64 @@ async function stopTurn() {
      左右贴边取「正文列」令牌，不再手算 `calc(50% - Npx)`：手算的偏移与列宽、
      与右侧给入口球留的通道都脱钩 —— 900–1400px 区间里它整体右移了 418px、
      右边缘溢出视口 194px（发送按钮跑到屏幕外），还盖住了停在右下角的入口球。 */
-  position: fixed;
-  left: var(--column-inset-left);
-  right: var(--column-inset-right);
-  width: auto;
+  /* v2：输入区回到对话列的**正常布局**（flew 布局最底部），不再固定悬浮在视口上。
+     这样右侧预览打开时输入区只占中央列，不会盖住预览栏；消息流自然也止于它上方。
+     （旧实现固定在视口上并贴视口边，右侧栏一开就会压到预览上。） */
+  position: relative;
+  width: 100%;
   max-width: 860px;
   margin: 0 auto;
-  bottom: 16px;
   z-index: 12;
-  /* 默认中性边框 + 较轻阴影：不靠重描边和重阴影抢注意力 */
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  padding: 10px 18px 14px;
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-2);
-  transition: border-color var(--dur-fast) var(--ease-1), box-shadow var(--dur-fast) var(--ease-1);
+  /* 外层只是一个透明列：真正的卡片是内部的胶囊（.input-pill）。
+     这样附件行 / 路径行 / 菜单可以浮在胶囊外，而胶囊始终保持胶囊形。 */
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
-/* 聚焦时只加强一层：外框变强调色；内层输入框不再同时叠一层边框 + 光晕 */
-.composer:focus-within { border-color: var(--accent); }
+/* 输入胶囊：附件圆形按钮 + 输入 + 圆形发送，全部在胶囊内部 */
+.input-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px 7px 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-pill);
+  background: var(--bg-surface);
+  /* 用户确认不要阴影：只保留 1px 边框；也避免被 .composer 的 overflow-x: clip 截断 */
+  box-shadow: none;
+  transition: border-color var(--dur-fast) var(--ease-1);
+}
+.input-pill:focus-within {
+  border-color: var(--accent);
+}
+.composer textarea.qio-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  min-height: 26px;
+  max-height: min(40vh, 260px);
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 22px;
+  resize: none;
+}
 .composer textarea.qio-input:focus {
   border-color: transparent;
   box-shadow: none;
   background: transparent;
+  outline: none;
 }
 /* 窄窗口：整宽贴底，不缩成小气泡、不遮挡文字 */
 @media (max-width: 899px) {
   .composer {
-    left: var(--sp-3);
-    right: var(--sp-3);
+    width: 100%;
     max-width: none;
+    /* 宽度由 ComposerDock 的 grid 列决定；这里再加左右 margin 会让胶囊比入口行窄 */
+    margin: 0;
   }
 }
 .topicbar {
@@ -2026,20 +1872,59 @@ async function stopTurn() {
   overflow-wrap: anywhere;
 }
 .draft-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* 发送 / 停止共用按钮：胶囊内部的圆形图标按钮，两种模式共用同一层动效令牌 */
 .send-btn {
-  width: 38px;
-  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
   flex-shrink: 0;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 50%;
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 18px;
+  font-family: var(--sans);
+  font-size: 12.5px;
   line-height: 1;
   cursor: pointer;
   /* 状态切换连续：默认 → hover → pressed → disabled 都走同一层令牌 */
   transition: background var(--dur-fast) var(--ease-1), transform var(--dur-press) var(--ease-1-out),
-    opacity var(--dur-fast) var(--ease-1);
+    opacity var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1),
+    color var(--dur-fast) var(--ease-1);
+}
+.send-btn .send-arrow {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* 有内容但还没满足发送条件（附件准备中 / 只带附件没有文字）：仍然可点 ——
+   点击给出真实校验原因，比一个点不动的灰按钮更有用 */
+.send-btn[data-ready="false"] {
+  opacity: 0.72;
+}
+/* 停止模式：安静的描边按钮，不与品牌色发送按钮抢注意力 */
+.send-btn.stop-mode {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
+}
+.send-btn.stop-mode:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+  transform: none;
+}
+.send-btn.stop-mode .sq {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: currentColor;
 }
 .send-btn:hover:not(:disabled) {
   background: var(--accent-hover);
@@ -2073,6 +1958,87 @@ async function stopTurn() {
 .attach-btn:disabled {
   opacity: 0.55;
   cursor: default;
+}
+.attach-anchor {
+  position: relative;
+  flex: none;
+}
+.attach-circle {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1),
+    background var(--dur-fast) var(--ease-1);
+}
+.attach-circle svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.attach-circle:hover:not(:disabled),
+.attach-circle[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--layer-hover);
+}
+.attach-circle:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.attach-circle:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.attach-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  min-width: 188px;
+  padding: 4px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-2);
+}
+.attach-menu-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.attach-menu-item:hover,
+.attach-menu-item:focus-visible {
+  background: var(--layer-hover);
+  color: var(--text-strong);
+  outline: none;
+}
+.ami-note {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 10px;
 }
 .attach-area {
   margin-bottom: 8px;

@@ -79,8 +79,10 @@ def test_upgrade_path_from_pre_fact_schema_keeps_existing_rows(db_conn, journal)
     from agent.storage.schema import MIGRATIONS, SCHEMA_VERSION
 
     # 结束事实三列现在由哪一条迁移负责，由迁移定义自己决定（集成后编号不再是 28）——
-    # 用例按「哪条迁移 ADD COLUMN reason_code」自适应，避免把号段写死在测试里。
-    facts_version = max(
+    # 用例按「哪条迁移**首次** ADD COLUMN reason_code」自适应，避免把号段写死在测试里。
+    # 注意：补偿迁移会把历史补列语句再复述一遍（这是迁移纪律要求的），所以这里取 min：
+    # 回退到「这一列还没有」的状态应回退到它**首次出现之前**，而不是补偿入口之前。
+    facts_version = min(
         target
         for target, statements in MIGRATIONS
         if any("ADD COLUMN reason_code" in str(statement) for statement in statements)

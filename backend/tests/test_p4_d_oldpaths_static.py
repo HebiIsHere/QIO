@@ -166,17 +166,25 @@ def test_no_plaintext_secret_logging_patterns():
         f"{CLAUSE}：疑似把密钥写进日志/输出：{offenders}（必须走 trace/redact.py）")
 
 
-def test_no_new_migration_or_version_bump():
-    """§14.1：本阶段无新增迁移；版本仍 51，不得改历史迁移。"""
+def test_no_unregistered_sibling_migration():
+    """§14.1：只追加纪律 —— 49/50/51 必须保留；新迁移只能**登记后**追加。
+
+    这条守卫最初钉在「版本仍为 51」；后续轮次（对话页 v2 = 迁移 55）合法地追加了
+    新迁移，所以改成核对真正不变的性质：版本收敛、51 仍在、没有未登记的孤立号。
+    未登记的 52/53/54 仍不允许悄悄出现（它们属于另一条并行任务 R9 的冻结号段）。
+    """
     schema = __import__("agent.storage.schema", fromlist=["SCHEMA_VERSION"])
-    assert int(getattr(schema, "SCHEMA_VERSION")) == 51, (
-        f"{CLAUSE}：本阶段不应新增迁移/提升版本（实际 {getattr(schema, 'SCHEMA_VERSION', None)}）")
-    assert int(getattr(schema, "COMPENSATION_VERSION")) == 51, (
-        f"{CLAUSE}：补偿版本应保持 51")
+    latest = int(getattr(schema, "SCHEMA_VERSION"))
+    assert latest >= 51
+    assert int(getattr(schema, "COMPENSATION_VERSION")) == latest, (
+        f"{CLAUSE}：补偿版本必须等于最新迁移（{getattr(schema, 'COMPENSATION_VERSION', None)} / {latest}）")
     numbers = [int(number) for number, _ in getattr(schema, "MIGRATIONS")]
-    assert max(numbers) == 51, f"{CLAUSE}：出现了未登记的 52/53/54 迁移：{max(numbers)}"
+    assert max(numbers) == latest, (
+        f"{CLAUSE}：MIGRATIONS 的最新号与 SCHEMA_VERSION 不一致：{max(numbers)} / {latest}")
     assert 49 in numbers and 50 in numbers and 51 in numbers, (
         f"{CLAUSE}：阶段三迁移 49/50/51 必须保留（只追加）")
+    assert not any(number in (52, 53, 54) for number in numbers), (
+        f"{CLAUSE}：52/53/54 是 R9 的冻结号段，本分支不得占用")
 
 
 def test_redaction_module_still_used_for_new_output_paths():

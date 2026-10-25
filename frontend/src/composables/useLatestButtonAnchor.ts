@@ -86,6 +86,9 @@ export function useLatestButtonAnchor(anchorRef?: Ref<HTMLElement | null>): {
    * （两者是同一条列，见 tokens.css 的说明）。
    */
   const columnCenterX = (): number | null => {
+    // v4：按钮跟随输入胶囊居中，而不是消息内容列中心（两者会差几像素）；
+    // composerMetrics 的 centerX 已按 .composer-stack 计算。
+    if (composerCenterX !== null) return composerCenterX;
     const stream = document.querySelector<HTMLElement>(".stream");
     if (stream) {
       const rect = stream.getBoundingClientRect();
@@ -94,7 +97,7 @@ export function useLatestButtonAnchor(anchorRef?: Ref<HTMLElement | null>): {
       const right = rect.right - (parseFloat(style.paddingRight) || 0);
       if (right > left) return (left + right) / 2;
     }
-    return composerCenterX;
+    return null;
   };
 
   const measure = (): void => {

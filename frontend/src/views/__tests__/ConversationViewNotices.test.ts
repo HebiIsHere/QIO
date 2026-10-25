@@ -10,7 +10,6 @@ import ConversationView from "../ConversationView.vue";
 import { useSessionStore } from "../../stores/session";
 import { useEventStore } from "../../stores/events";
 import { api } from "../../services/api";
-import { titlebarHeight } from "../../utils/titlebar";
 
 vi.mock("../../services/api", () => ({
   api: {
@@ -36,25 +35,26 @@ function mountView() {
 }
 
 describe("历史读取失败的状态表达", () => {
-  it("「还没设置完」横幅在时，把顶部提示条让到它下面（两者不重叠）", async () => {
+  it("「还没设置完」横幅仍在对话列内，可关闭；v2 不再用顶部悬浮让位", async () => {
     const w = mountView();
     const { useOnboardingStore } = await import("../../stores/onboarding");
     const store = useOnboardingStore();
     store.status = { done: false, hint_dismissed: false } as never;
     await flushPromises();
 
-    expect(w.find(".setup-hint").exists()).toBe(true);
-    // 让位值是「从视口顶端算起」的：必须含自定义标题条那一条（横幅本身在它下面），
-    // 否则浮层会按 y=52 放，反过来压在 y=32..84 的横幅上。
-    expect(document.documentElement.style.getPropertyValue("--qio-top-notes-offset")).toBe(
-      `${titlebarHeight() + 52}px`,
-    );
+    const hint = w.find(".setup-hint");
+    expect(hint.exists()).toBe(true);
+    expect(hint.text()).toContain("还没设置完");
+    // v2：审批/任务入口移入左栏与输入区上方入口，顶部不再有需要让位的悬浮条，
+    // 因此对话页不再写 --qio-top-notes-offset（其他页面仍由 App.vue 使用该变量）。
+    expect(
+      document.documentElement.style.getPropertyValue("--qio-top-notes-offset"),
+    ).toBe("");
 
     store.status = { done: false, hint_dismissed: true } as never;
     await flushPromises();
 
     expect(w.find(".setup-hint").exists()).toBe(false);
-    expect(document.documentElement.style.getPropertyValue("--qio-top-notes-offset")).toBe("");
     w.unmount();
   });
 

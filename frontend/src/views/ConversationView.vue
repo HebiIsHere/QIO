@@ -1,55 +1,213 @@
 <script setup lang="ts">
-import { defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+/**
+ * 对话页 v2 外壳（A 负责外层布局与顶部全局栏入口；中央/右侧内容由 B/C 各自组件承担）。
+ *
+ * 布局：
+ *   顶部全局栏（WindowChrome，A）—— QIO 字标 / 设置 / 窗口按钮
+ *   ├─ 左侧任务栏（A）        ← 可拖宽、可收起；窄窗口临时收起（不写偏好）
+ *   ├─ 中央对话工作区（B）
+ *   └─ 右侧只读预览（C）      ← 可拖宽、可收起、可全窗口
+ *
+ * 页面切换（对话/互动/设置）不初始化业务状态：shell.load() 与 loadHistory() 只在
+ * 第一次进入时执行，返回时最多做一次幂等刷新；草稿/附件/阅读位置各自在 store 里保留。
+ * 右下角记忆星球入口保持现有 PlanetDock（用户明确：样式与功能不改）。
+ */
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import { useSessionStore } from "../stores/session";
-import { useEventStore } from "../stores/events";
-import { useOnboardingStore } from "../stores/onboarding";
-import { useComposerClearance } from "../composables/useComposerClearance";
-import MessageStream from "../components/MessageStream.vue";
-import Composer from "../components/Composer.vue";
+import { useConversationShellStore } from "../stores/conversationShell";
+import { useConversationTasksStore } from "../stores/conversationTasks";
+import {
+  LEFT_AUTO_COLLAPSE_BELOW,
+  LEFT_DEFAULT,
+  LEFT_MAX,
+  LEFT_MIN,
+  RIGHT_DEFAULT,
+  RIGHT_MAX,
+  RIGHT_MIN,
+  clampLeftWidth,
+  clampRightWidth,
+} from "../conversation/layoutPrefs";
+import { listenFocusTask } from "../services/conversationTasks";
+import TaskRail from "../components/conversation/TaskRail.vue";
+import ChatColumn from "../components/conversation/ChatColumn.vue";
+import PreviewPanel from "../components/conversation/PreviewPanel.vue";
+import UnifiedApprovalLayer from "../components/conversation/UnifiedApprovalLayer.vue";
 import PlanetDock from "../components/PlanetDock.vue";
-import SettingsFloat from "../components/SettingsFloat.vue";
 import PlanetBoot from "../components/PlanetBoot.vue";
-import TopicSwitchPrompt from "../components/TopicSwitchPrompt.vue";
-import KnowledgeCandidateCard from "../components/KnowledgeCandidateCard.vue";
-import InterruptedTurnEntry from "../components/InterruptedTurnEntry.vue";
 import RecoveryInbox from "../components/RecoveryInbox.vue";
-import { titlebarHeight } from "../utils/titlebar";
-import { vQioScrollbar } from "../composables/useQioScrollbars";
+import { useConversationPreviewStore } from "../stores/conversationPreview";
+import {
+  registerConversationPreviewOpener,
+  registerConversationReplyCodeOpener,
+} from "../components/conversation/previewBridge";
+import { registerExecutionTaskLocator } from "../components/conversation/taskLocator";
+import type { MemoryOpenTarget } from "../stores/memoryQuestions";
 
-// 星球页懒加载：three.js 不进首屏 chunk；加载期间立即显示「正在打开星球…」
 const PlanetView = defineAsyncComponent({
   loader: () => import("./PlanetView.vue"),
   loadingComponent: PlanetBoot,
   delay: 0,
 });
-const planetOpen = ref(false);
-const events = useEventStore();
-/** 底部三块的容器：让位高度由输入区实际高度决定（见 useComposerClearance） */
-const bottomCluster = ref<HTMLElement | null>(null);
-/**
- * 首次打开后才挂载，之后一直保留（关闭只是隐藏）。
- * 这样第二次打开不再重建整个 WebGL 场景（实测每次重建要 1.5–3.4s 冷启动）。
- */
-const planetMounted = ref(false);
-/**
- * 每次打开分配一个序号，关闭时星球页把序号带回来。
- * 只认当前序号：关闭动画进行中用户又打开了星球时，迟到的旧回调不会关掉新层
- * （否则会出现「刚打开就被上一次的关闭回调关掉」）。
- */
-const planetSeq = ref(0);
-const session = useSessionStore();
-const onboarding = useOnboardingStore();
-useComposerClearance(bottomCluster);
 
-/**
- * 空闲时就把星球场景挂上：入口小球从此由**真实星球渲染**承担（同一个场景缩到入口尺度），
- * 而不是另画一张 2D 图。three.js 仍然是懒加载的 —— 它只是不在首屏 chunk 里，
- * 页面空闲后再取；在它就绪之前，入口由 `PlanetOrb` 顶着首屏。
- *
- * 两个克制的点：
- * - 正在跑一轮对话时不抢主线程（场景初始化实测 1.5–3.4s）；
- * - 用 requestIdleCallback，让浏览器自己挑空闲窗口。
- */
+const session = useSessionStore();
+const shell = useConversationShellStore();
+const tasks = useConversationTasksStore();
+const preview = useConversationPreviewStore();
+
+const planetOpen = ref(false);
+const planetMounted = ref(false);
+const planetSeq = ref(0);
+/** 打开星球时定位到哪个页签 / 哪条待确认问题（记忆问题提醒 → 星球待确认）。 */
+const planetTab = ref<"topic" | "knowledge" | "entity" | "memory">("topic");
+const planetFocusPendingId = ref<string | null>(null);
+/** 「未完成事项」恢复区：左栏任务的「去处理」会打开它（原有恢复动作都在这里）。 */
+const recoveryOpen = ref(false);
+let stopViewport: (() => void) | null = null;
+let stopFocusListener: (() => void) | null = null;
+
+// 接线桥必须在**本组件 setup 期间**注册：消息流/任务栏子组件在 setup 时读取
+// 「有没有接线」决定是否渲染按钮（放到 onMounted 会晚于子组件 setup，按钮永远不出现）。
+registerExecutionTaskLocator((ref) => {
+  void tasks.focusTask(`${ref.source}:${ref.sourceId}`);
+  return true;
+});
+registerConversationPreviewOpener((target) => {
+  void preview.openPreview(target);
+});
+registerConversationReplyCodeOpener((input) => {
+  void preview.openReplyCode(input);
+});
+
+// ── 三栏拖动 ───────────────────────────────────────────────────────────────
+
+type DragKind = "left" | "right" | null;
+const dragKind = ref<DragKind>(null);
+let dragStartX = 0;
+let dragStartWidth = 0;
+
+function setDraggingChrome(on: boolean) {
+  if (typeof document === "undefined") return;
+  document.body.style.cursor = on ? "col-resize" : "";
+  document.body.style.userSelect = on ? "none" : "";
+}
+
+function beginDrag(kind: Exclude<DragKind, null>, event: PointerEvent) {
+  dragKind.value = kind;
+  dragStartX = event.clientX;
+  dragStartWidth = kind === "left" ? shell.prefs.leftWidth : shell.prefs.rightWidth;
+  (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+  setDraggingChrome(true);
+  event.preventDefault();
+}
+
+function moveDrag(event: PointerEvent) {
+  if (!dragKind.value) return;
+  const delta = event.clientX - dragStartX;
+  if (dragKind.value === "left") {
+    // 拖动过程中只改内存：松手才落盘，避免每移动一像素写一次服务端。
+    shell.prefs.leftWidth = clampLeftWidth(dragStartWidth + delta);
+    shell.prefs.leftCollapsed = false;
+  } else {
+    shell.prefs.rightWidth = clampRightWidth(
+      dragStartWidth - delta,
+      shell.viewportWidth,
+      shell.leftWidth,
+    );
+  }
+}
+
+function endDrag() {
+  if (!dragKind.value) return;
+  const kind = dragKind.value;
+  dragKind.value = null;
+  setDraggingChrome(false);
+  // 松手才持久化；用户手动调整的值优先于默认值。
+  if (kind === "left") shell.setLeftWidth(shell.prefs.leftWidth);
+  else shell.setRightWidth(shell.prefs.rightWidth);
+}
+
+/** 双击分隔条恢复该栏默认宽度（并持久化）。 */
+function resetWidth(kind: "left" | "right") {
+  if (kind === "left") shell.setLeftWidth(LEFT_DEFAULT);
+  else shell.setRightWidth(RIGHT_DEFAULT);
+}
+
+function nudgeSplitter(kind: "left" | "right", event: KeyboardEvent) {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const step = event.shiftKey ? 32 : 12;
+  event.preventDefault();
+  const direction = event.key === "ArrowRight" ? 1 : -1;
+  if (kind === "left") shell.setLeftWidth(shell.prefs.leftWidth + direction * step);
+  else shell.setRightWidth(shell.prefs.rightWidth - direction * step);
+}
+
+// ── 收起后的任务入口 / 窄窗口抽屉 ─────────────────────────────────────────
+
+const railDrawer = ref(false);
+const railDrawerEl = ref<HTMLElement | null>(null);
+const railEntryEl = ref<HTMLButtonElement | null>(null);
+
+const railBadge = computed(() => {
+  const count = tasks.badgeCount;
+  return count > 0 ? String(count) : "";
+});
+const railBadgeTone = computed(() => (tasks.attentionCount > 0 ? "attention" : "active"));
+const railEntryLabel = computed(() => {
+  const base = shell.autoCollapsedLeft ? "打开任务列表（窗口较窄，任务栏暂时收起）" : "展开任务栏";
+  const parts = [base];
+  if (tasks.attentionCount > 0) parts.push(tasks.attentionCount + " 项需要处理");
+  else if (tasks.activeCount > 0) parts.push(tasks.activeCount + " 项运行或排队");
+  return parts.join("，");
+});
+
+function onRailEntry() {
+  // 窄窗口：抽屉式临时展开（不改写用户偏好）；否则按用户手动收起状态展开。
+  if (shell.viewportWidth < LEFT_AUTO_COLLAPSE_BELOW) railDrawer.value = true;
+  else shell.toggleLeft();
+}
+
+async function closeRailDrawer() {
+  if (!railDrawer.value) return;
+  railDrawer.value = false;
+  await nextTick();
+  railEntryEl.value?.focus();
+}
+
+// 手动收起/变宽后任务栏恢复可见：抽屉不再需要。
+watch(
+  () => shell.leftVisible,
+  (visible) => {
+    if (visible && railDrawer.value) railDrawer.value = false;
+  },
+);
+
+// 中央执行记录要求定位任务时，如果左栏正被（手动或临时）收起，就临时展开抽屉。
+watch(
+  () => tasks.focusTarget,
+  (focus) => {
+    if (focus && !shell.leftVisible) railDrawer.value = true;
+  },
+);
+
+watch(railDrawer, async (open) => {
+  if (!open) return;
+  await nextTick();
+  const root = railDrawerEl.value;
+  if (!root) return;
+  const first = root.querySelector<HTMLElement>("button:not(:disabled)");
+  first?.focus();
+});
+
+// ── 星球入口（保持现有行为） ───────────────────────────────────────────────
+
 function mountPlanetWhenIdle() {
   const start = () => {
     if (planetMounted.value) return;
@@ -71,379 +229,612 @@ function openPlanet() {
   planetOpen.value = true;
 }
 
-/**
- * 顶部提示条（待确认的审批 / 上次没执行的操作 / 没做完的开发任务）是固定的
- * top-center 浮层，而「还没设置完」与「上次没执行的消息」都是正常流里的横幅 ——
- * 同时出现会叠在一起（真机验收看到的实际情况）。横幅在的时候，把浮层让到它们下面。
- *
- * 「上次没执行的消息」展开后高度会变，所以按**实测高度**让位，而不是写死一个常数：
- * ResizeObserver 盯着它，展开 / 收起 / 列表条数变化都会重新算。
- */
-const interruptedRef = ref<HTMLElement | null>(null);
-let interruptedObserver: ResizeObserver | null = null;
-
-function syncTopNotesOffset() {
-  const style = document.documentElement.style;
-  const hint = onboarding.hintVisible ? 52 : 0;
-  const entry = interruptedRef.value?.getBoundingClientRect().height ?? 0;
-  const total = Math.round(hint + (entry ? entry + 8 : 0));
-  // 这个值是「从视口顶端算起」的，横幅本身落在自定义标题条下面 —— 不加这一条，
-  // 浮层会反过来压到横幅上（横幅在 y=32 起，浮层却按 y=52 放）。
-  if (total > 0) style.setProperty("--qio-top-notes-offset", `${titlebarHeight() + total}px`);
-  else style.removeProperty("--qio-top-notes-offset");
-}
-
-watch(
-  [
-    () => onboarding.hintVisible,
-    () => session.interruptedTurns.length,
-    // 收件箱（未完成事项）与它同处一个槽：条数或详情展开都会改高度，
-    // 所以按实测高度重新让位，而不是写死一个常数。
-    () => session.recoveryRecords.length,
-    () => session.recoveryLoading,
-  ],
-  () => void nextTick(syncTopNotesOffset),
-  { immediate: true },
-);
-watch(
-  interruptedRef,
-  (el, _prev, onCleanup) => {
-    interruptedObserver?.disconnect();
-    interruptedObserver = null;
-    if (el && typeof ResizeObserver !== "undefined") {
-      interruptedObserver = new ResizeObserver(() => syncTopNotesOffset());
-      interruptedObserver.observe(el);
-    }
-    syncTopNotesOffset();
-    onCleanup(() => {
-      interruptedObserver?.disconnect();
-      interruptedObserver = null;
-    });
-  },
-  { flush: "post" },
-);
-onUnmounted(() =>
-  document.documentElement.style.removeProperty("--qio-top-notes-offset"),
-);
-
 function closePlanet(seq?: number) {
   if (seq !== undefined && seq !== planetSeq.value) return;
   planetOpen.value = false;
 }
 
-/**
- * 「跳到输入框」：聊天页里每条消息都带复制按钮，键盘用户按 Tab 会被整条消息流
- * 挡住（实测长对话里前 8 个停靠点全是复制按钮）。第一个焦点位放一个跳过入口，
- * 键盘用户一步就能到输入框，鼠标用户看不到它。
- */
-function focusComposer(e: MouseEvent) {
-  const el = document.getElementById("composer-input");
-  if (!el) return;
-  e.preventDefault();
-  (el as HTMLTextAreaElement).focus();
+function hasOpenModal(): boolean {
+  if (typeof document === "undefined") return false;
+  return Boolean(document.querySelector('[role="dialog"][aria-modal="true"]'));
 }
 
-function retryHistory() {
-  void session.retryHistory();
+// 全窗口预览时按 Esc 返回对话；任务抽屉先关。弹窗打开时不抢它的 Esc。
+function onKeydown(event: KeyboardEvent) {
+  if (recoveryOpen.value) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      recoveryOpen.value = false;
+    }
+    return;
+  }
+  if (railDrawer.value) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void closeRailDrawer();
+      return;
+    }
+    if (event.key === "Tab") trapDrawerFocus(event);
+    return;
+  }
+  if (event.key !== "Escape") return;
+  if (!shell.effectivePreviewFull || planetOpen.value) return;
+  if (event.defaultPrevented || hasOpenModal()) return;
+  shell.setPreviewFull(false);
 }
+
+/** 抽屉是模态层：Tab 在抽屉内循环，不跑到背后的页面。 */
+function trapDrawerFocus(event: KeyboardEvent) {
+  const root = railDrawerEl.value;
+  if (!root) return;
+  const focusables = Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button:not(:disabled), [href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  const inside = Boolean(active && root.contains(active));
+  if (event.shiftKey) {
+    if (!inside || active === first) {
+      event.preventDefault();
+      last.focus();
+    }
+    return;
+  }
+  if (!inside || active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+// 窗口重新可见（休眠唤醒 / 切回桌面）时补一次幂等刷新。
+function onVisibilityChange() {
+  if (typeof document === "undefined" || document.visibilityState !== "visible") return;
+  if (tasks.current.loaded) void tasks.refresh("current", { silent: true });
+  if (shell.prefs.taskTab === "history" && tasks.history.loaded) {
+    void tasks.refresh("history", { silent: true });
+  }
+}
+
+// ── 恢复事项（原有恢复动作集中在这里，不复制一套） ─────────────────────────
+
+function openRecoveryFromTask(): void {
+  recoveryOpen.value = true;
+}
+
+function closeRecovery(): void {
+  recoveryOpen.value = false;
+}
+
+// ── 记忆问题提醒 → 星球待确认定位（不改星球入口样式/功能） ────────────────
+
+function onOpenMemory(target: MemoryOpenTarget): void {
+  planetTab.value = target.tab === "memory" ? "memory" : "topic";
+  planetFocusPendingId.value = target.itemId ?? null;
+  openPlanet();
+}
+
+/**
+ * 右侧预览开/关会改变「右下角是否被固定面板占据」：让星球入口重新计算一次位置
+ * （useFloatingWindow 在 resize 时会避开 [data-preview-panel] 等固定控件）。
+ * 只触发布局重算，不改星球入口样式或拖动行为。
+ */
+watch(
+  () => shell.rightVisible,
+  () => {
+    if (typeof window === "undefined") return;
+    nextTick(() => window.dispatchEvent(new Event("resize")));
+  },
+);
+
+// ── 生命周期（页面切换不重复初始化） ──────────────────────────────────────
 
 onMounted(() => {
-  session.loadHistory();
+  // 只有第一次进入才读布局偏好与历史；从设置/互动页返回时不重置现有状态。
+  if (!shell.loaded) void shell.load();
+  stopViewport = shell.installViewportTracking();
+  if (session.history.status === "idle") void session.loadHistory();
+
+  tasks.bindEvents();
+  tasks.startPolling();
+  if (tasks.current.loaded) {
+    // 幂等刷新：离开期间可能出现新任务/新状态，但不清空、不重置展开与滚动。
+    void tasks.refresh("current", { silent: true });
+    if (shell.prefs.taskTab === "history" && tasks.history.loaded) {
+      void tasks.refresh("history", { silent: true });
+    }
+  } else {
+    void tasks.ensureLoaded();
+  }
+  stopFocusListener = listenFocusTask((taskId) => {
+    void tasks.focusTask(taskId);
+  });
+  window.addEventListener("qio:open-recovery", openRecoveryFromTask);
+
   mountPlanetWhenIdle();
+  window.addEventListener("keydown", onKeydown);
+  document.addEventListener("visibilitychange", onVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+  stopViewport?.();
+  stopViewport = null;
+  stopFocusListener?.();
+  stopFocusListener = null;
+  window.removeEventListener("keydown", onKeydown);
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+  window.removeEventListener("qio:open-recovery", openRecoveryFromTask);
+  registerExecutionTaskLocator(null);
+  registerConversationPreviewOpener(null);
+  registerConversationReplyCodeOpener(null);
+  setDraggingChrome(false);
+  tasks.dispose();
+  preview.dispose();
+  // 最后一次布局改动要落盘（防抖窗口内切走页面时不能丢）。
+  void shell.flush();
 });
 </script>
 
 <template>
-  <div class="conversation" data-qio-scope="chat">
-    <!--
-      普通对话根：data-qio-scope="chat" 的另一处落点。
-      消息区的根（.stream）已经带这个属性（契约 §2.1）；这里再挂一份，
-      让「对话页 = 一个对话根」在 DOM 上自证，也让固定悬浮的输入区同样拿到
-      整套对话适配（长串换行 / 按钮重排）。两处作用域等价，不改变任何语义。
-      注意：注释必须放在根元素**里面** —— 模板里根元素之前的注释会让组件根变成
-      片段（Fragment），挂载方拿到的不再是那一个根元素。
-    -->
-    <a class="skip-link" href="#composer-input" @click="focusComposer">跳到输入框</a>
-    <!-- 未完成首次引导时的轻提示：可关闭，关闭状态落库（spec §1） -->
-    <div v-if="onboarding.hintVisible" class="setup-hint" role="status" data-qio-fit>
-      <span class="text">还没设置完 QIO —— 补上模型、称呼与目标，它才会真正记得你</span>
-      <button class="link resume" type="button" @click="onboarding.reopen()">继续设置</button>
-      <button
-        class="close"
-        type="button"
-        aria-label="关闭提示"
-        @click="onboarding.setHintDismissed(true)"
-      >
-        ×
-      </button>
-    </div>
-    <!--
-      上次退出时「已经收下、但没有执行」的消息：不自动重发，只如实说出这件事，
-      继续 / 忽略都由用户点。默认收起，出现时不抢焦点。
-    -->
-    <div ref="interruptedRef" class="interrupted-slot">
-      <InterruptedTurnEntry />
-      <!--
-        「未完成事项」收件箱（A01 / A03）：与上面同一个槽、同一处入口，不另起页面。
-        它覆盖上面那个入口管不到的部分 —— 孤儿重发、升级前无归属的历史行、
-        归属判不出来 / 已死的派生任务。列表安静常驻，详情默认收起。
-      -->
-      <RecoveryInbox />
-    </div>
-    <!-- 历史读取失败 ≠ 没有历史：低干扰提示 + 重试，且不清空已加载的内容 -->
-    <!-- 状态行出现/消失必须有连续性（不再瞬切）；四类状态共用一套安静的行样式 -->
-    <Transition name="qio-fade">
+  <div
+    class="conversation-workspace"
+    :class="{
+      'left-collapsed': !shell.leftVisible,
+      'preview-full': shell.effectivePreviewFull,
+    }"
+    :data-dragging="dragKind ?? undefined"
+    :data-left-auto="shell.autoCollapsedLeft ? 'true' : 'false'"
+  >
+    <div class="workspace-row">
+      <TaskRail
+        v-if="shell.leftVisible"
+        class="left-pane"
+        :style="{ width: shell.leftWidth + 'px' }"
+      />
+
       <div
-        v-if="session.history.status === 'error'"
-        class="notice quiet"
-        role="status"
-        data-qio-fit
-      >
-        <span class="text">历史记录暂时无法读取</span>
-        <button class="link" type="button" @click="retryHistory">重试</button>
+        v-if="shell.leftVisible"
+        class="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整左侧任务栏宽度"
+        :aria-valuemin="LEFT_MIN"
+        :aria-valuemax="LEFT_MAX"
+        :aria-valuenow="shell.leftWidth"
+        :aria-valuetext="shell.leftWidth + ' 像素'"
+        tabindex="0"
+        @pointerdown="beginDrag('left', $event)"
+        @pointermove="moveDrag"
+        @pointerup="endDrag"
+        @pointercancel="endDrag"
+        @keydown="nudgeSplitter('left', $event)"
+        @dblclick="resetWidth('left')"
+      ></div>
+
+      <div v-else class="collapsed-rail" aria-label="任务栏已收起">
+        <button
+          ref="railEntryEl"
+          class="rail-btn"
+          type="button"
+          data-rail-entry
+          :title="railEntryLabel"
+          :aria-label="railEntryLabel"
+          :aria-expanded="railDrawer ? 'true' : 'false'"
+          @click="onRailEntry"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <rect x="2.5" y="3" width="11" height="10" rx="1.5" />
+            <path d="M6.5 3v10M9 6h2M9 10h2" />
+          </svg>
+          <span class="rail-label">任务</span>
+          <span
+            v-if="railBadge"
+            class="rail-badge mono"
+            :data-tone="railBadgeTone"
+            aria-hidden="true"
+          >{{ railBadge }}</span>
+        </button>
       </div>
-    </Transition>
-    <!-- 错误 / 警告分开表达：错误要查，警告只需知道 -->
-    <Transition name="qio-fade">
-      <div v-if="session.lastError" class="notice err" role="alert" data-qio-fit>
-        <span class="kind mono qio-state err">错误</span>
-        <span class="text">{{ session.lastError }}</span>
-        <router-link to="/debug" class="link">查看详情</router-link>
-        <router-link to="/settings" class="link">前往设置</router-link>
-      </div>
-      <div v-else-if="session.warning" class="notice warn" role="status" data-qio-fit>
-        <span class="kind mono qio-state warn">提示</span>
-        <span class="text">{{ session.warning }}</span>
-      </div>
-      <!-- 凭据状态：暂停 / 撤销之后依赖它的能力会不可用，必须说出来（去哪里恢复）。
-           这段文案来自后端事件，只在真的影响当前使用时出现；恢复后自己消失。 -->
-      <div v-else-if="events.credentialNotice" class="notice warn" role="status" data-qio-fit>
-        <span class="kind mono qio-state warn">提示</span>
-        <span class="text">{{ events.credentialNotice }}</span>
-        <router-link to="/settings" class="link">前往设置</router-link>
-      </div>
-      <!-- 取消是正常结局：安静地说一声，不当错误 -->
+
+      <ChatColumn class="center-pane">
+        <template #planet>
+          <PlanetDock anchored @open="openPlanet" />
+        </template>
+      </ChatColumn>
+
       <div
-        v-else-if="session.lastTurnOutcome?.status === 'cancelled'"
-        class="notice quiet"
-        role="status"
-        data-qio-fit
-      >
-        <span class="kind mono qio-state quiet">已停止</span>
-        <span class="text">这一轮已按你的要求停止，可以继续输入</span>
-      </div>
-      <!--
-        不完整结束（契约 §七 C2：流在结束标记之前 EOF）：已确认正文保留，但这**不是完成**。
-        安静地说清「未完成」并指出重试入口 —— 既不能收成「已完成」的样子，
-        也不能悄悄吞掉（它不是错误，所以不进错误横幅；具体原因在过程区里）。
-      -->
-      <div
-        v-else-if="session.lastTurnOutcome?.status === 'incomplete'"
-        class="notice quiet"
-        role="status"
-        data-qio-fit
-        data-test="turn-incomplete-notice"
-      >
-        <span class="kind mono qio-state quiet">未完成</span>
-        <span class="text">这一轮没有正常结束：回答可能不完整，可以在过程区里「重试」</span>
-      </div>
-    </Transition>
-    <MessageStream />
-    <!-- 底部三块（候选卡 / 兼容模式 / 话题切换）：用同一个「输入区让位」的量测
-         整体抬到输入气泡上方。不这么做的话它们会被固定悬浮的输入区压住，
-         按钮看得见、点不到（实测：按钮中点命中的是输入框）。 -->
-    <div ref="bottomCluster" class="bottom-cluster">
-    <!--
-      高影响知识候选：只在回答完成之后出现，低干扰、不遮罩、不抢焦点。
-      候选多时**自己滚动**（不把输入区挤出屏幕）——它是一块独立并列的列表，
-      用统一策略：只声明纵向指示条，原生滚动条外观已全局消除（不预留轨道空白），
-      横向一律不滚动（data-qio-fit）。
-    -->
-    <div
-      v-if="session.knowledgeCandidates.length"
-      class="candidates"
-      data-qio-fit
-      v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
-    >
-      <KnowledgeCandidateCard
-        v-for="c in session.knowledgeCandidates"
-        :key="c.knowledgeId"
-        :candidate="c"
+        v-if="shell.rightVisible && !shell.effectivePreviewFull"
+        class="splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整文件预览宽度"
+        :aria-valuemin="RIGHT_MIN"
+        :aria-valuemax="RIGHT_MAX"
+        :aria-valuenow="shell.rightWidth"
+        :aria-valuetext="shell.rightWidth + ' 像素'"
+        tabindex="0"
+        @pointerdown="beginDrag('right', $event)"
+        @pointermove="moveDrag"
+        @pointerup="endDrag"
+        @pointercancel="endDrag"
+        @keydown="nudgeSplitter('right', $event)"
+        @dblclick="resetWidth('right')"
+      ></div>
+
+      <PreviewPanel
+        v-if="shell.rightVisible && !shell.effectivePreviewFull"
+        class="right-pane"
+        :style="{ width: shell.rightWidth + 'px' }"
+        @close="shell.setRightOpen(false)"
+        @toggle-full="shell.setPreviewFull(true)"
       />
     </div>
-    <!-- 能力降级：一次性、可忽略，不阻塞对话 -->
-    <Transition name="qio-fade">
-      <div v-if="events.fallbackNotice" class="notice quiet fallback" role="status" data-qio-fit>
-        <span class="kind mono qio-state quiet">兼容模式</span>
-        <span class="text">{{ events.fallbackNotice }}</span>
-        <button class="link" type="button" @click="events.fallbackNotice = null">知道了</button>
+
+    <!-- 全窗口预览：外层负责卡片网格的内缩/圆角，内层只填满它 -->
+    <div v-if="shell.rightVisible && shell.effectivePreviewFull" class="preview-overlay">
+      <PreviewPanel
+        full
+        @close="shell.setRightOpen(false)"
+        @toggle-full="shell.setPreviewFull(false)"
+      />
+    </div>
+
+    <!-- 任务栏被窗口宽度临时收起时的抽屉（不改写偏好；Esc / 点外部关闭） -->
+    <div v-if="railDrawer" class="rail-drawer-layer">
+      <div class="rail-drawer-backdrop" aria-hidden="true" @click="closeRailDrawer"></div>
+      <div
+        ref="railDrawerEl"
+        class="rail-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label="任务列表"
+        :style="{ width: shell.prefs.leftWidth + 'px' }"
+      >
+        <TaskRail drawer @close="closeRailDrawer" />
       </div>
-    </Transition>
-    <!-- 推测切换：低干扰地问一句，不遮罩、不抢焦点；Anchor 在用户表态前一动不动 -->
-    <TopicSwitchPrompt
-      v-if="session.pendingSwitch"
-      :topic-name="session.pendingSwitch.topicName"
-      :busy="session.pendingSwitchBusy"
-      @confirm="session.confirmPendingSwitch()"
-      @keep="session.rejectPendingSwitch()"
-    />
-    <!-- 互动模式入口：与对话模式并列，安静的一行；不改变对话本身的行为 -->
-    <div class="mode-entry-row">
-      <router-link to="/interactive" class="link mode-entry">互动模式：一起整理材料与关系</router-link>
     </div>
+
+    <!-- 预览栏收起但仍有标签：贴边小入口恢复（与右下角星球入口错开：在中线偏上） -->
+    <button
+      v-if="!shell.rightVisible && shell.prefs.previewTabs.length"
+      class="preview-reopen"
+      type="button"
+      :title="'打开文件预览（' + shell.prefs.previewTabs.length + ' 个标签）'"
+      :aria-label="'打开文件预览，' + shell.prefs.previewTabs.length + ' 个标签'"
+      @click="shell.setRightOpen(true)"
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 4.5 5.5 8 10 11.5" /></svg>
+      <span class="preview-reopen-count mono">{{ shell.prefs.previewTabs.length }}</span>
+    </button>
+
+    <!-- 未完成事项（恢复区）：原有继续 / 重发 / 忽略 / 重试动作都在这里，
+         左栏任务的「去处理」把它打开；不另做一套恢复逻辑。 -->
+    <div v-if="recoveryOpen" class="recovery-layer">
+      <div class="recovery-backdrop" aria-hidden="true" @click="closeRecovery"></div>
+      <section
+        class="recovery-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="未完成事项"
+        @keydown.esc.stop="closeRecovery"
+      >
+        <header class="recovery-head">
+          <h2>未完成事项</h2>
+          <button class="qio-btn quiet mini" type="button" @click="closeRecovery">关闭</button>
+        </header>
+        <p class="recovery-hint">
+          这些是上次没有执行完、或归属无法确认的事项。继续、重发或忽略都由你决定；
+          关掉这个窗口不会处理它们。
+        </p>
+        <RecoveryInbox />
+      </section>
     </div>
-    <Composer />
-    <SettingsFloat />
-    <PlanetDock @open="openPlanet" />
-    <!-- 常驻复用同一实例：**不再用 v-show 隐藏** —— 关着的时候它是对话页入口上的那颗小球
-         （同一个 WebGL 场景缩到入口尺度渲染），藏起来就没有小球了。
-         可见性与层级由星球页自己按 open / ball 状态决定；
-         旧层的收尾回调带的是它开始关闭时的序号，父级只认当前序号，不会关掉后来打开的新层 -->
+
+    <UnifiedApprovalLayer @open-memory="onOpenMemory" />
     <PlanetView
       v-if="planetMounted"
       :seq="planetSeq"
       :open="planetOpen"
+      :initial-tab="planetTab"
+      :focus-pending-id="planetFocusPendingId"
       @close="closePlanet"
     />
   </div>
 </template>
 
 <style scoped>
-/* 分层：消息流/Composer 依次铺在 --bg-base 上，输入区用 --bg-surface；顶部无状态条 */
-.conversation {
+.conversation-workspace {
+  /* 卡片之间唯一间距来源：顶栏→卡片、左栏→话题、话题→消息、左右预览都用它 */
+  --conversation-card-gap: 12px;
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-base);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  /* 背景改由整窗 ::before 承担：从窗口 y=0 开始，而不是从 workspace 的 y=80 开始 */
+  background: transparent;
   color: var(--text-primary);
   font-family: var(--sans);
-  /* 从设置返回：短淡入（内容同帧可见，不做整页位移与串联等待） */
-  animation: conversation-in var(--dur-page-out) var(--ease-out) both;
+  animation: workspace-in var(--dur-page-out) var(--ease-out) both;
 }
-@keyframes conversation-in {
+@keyframes workspace-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
-.notice {
+/* 整窗背景层：fixed 到视口，覆盖全局栏四周；全局栏/卡片仍是表面色，不被染色 */
+.conversation-workspace::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 0% 0%, var(--accent-soft) 0, transparent 46%),
+    var(--bg-base);
+}
+.workspace-row {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  /* 右侧留白避开右上角浮动 ⚙（44px 按钮 + 26px 边距） */
-  padding: 8px 84px 8px 20px;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  /* 顶栏下沿 y=70 → 卡片顶 y=82（12px 间距）；左右/底边保持 8px 外沿 */
+  padding: 2px 8px 8px;
+  gap: 0;
+  overflow: hidden;
+}
+.left-pane {
+  flex: none;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
   background: var(--bg-surface);
-  font-size: 12px;
-  flex-shrink: 0;
-  min-width: 0;
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
 }
-/* 「继续设置」轻提示：安静的一行，不抢消息流，可关闭 */
-.setup-hint {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 84px 8px 20px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--accent-soft);
-  color: var(--text-secondary);
-  font-size: 12px;
-  flex-shrink: 0;
-  min-width: 0;
-}
-.setup-hint .text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.setup-hint .close {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-}
-.setup-hint .close:hover { color: var(--text-strong); }
-.notice.err {
-  border-bottom: 1px solid var(--border-danger);
-  color: var(--danger);
-}
-.notice.err .kind { color: var(--danger); }
-.notice.warn {
-  border-bottom: 1px solid var(--warning);
-  color: var(--warning);
-}
-/* 安静的状态行：不抢注意力，也不显得像故障 */
-.notice.quiet {
-  border-bottom: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-}
-.notice.quiet .kind {
-  color: var(--text-secondary);
-}
-.notice button.link {
-  background: none;
-  border: 0;
-  padding: 0;
-  font: inherit;
-  cursor: pointer;
-}
-.notice .kind {
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  padding: 1px 8px;
-  border-radius: var(--r-pill);
-  border: 1px solid currentColor;
-  flex-shrink: 0;
-  /* 与首行文字对齐（错误原文会换成多行） */
-  margin-top: 1px;
-}
-.notice .text {
+.center-pane {
   flex: 1;
   min-width: 0;
-  /* 错误 / 提示原文完整换行显示：单行截断会把真实原因藏起来（换个行也不会横向滚动） */
-  overflow-wrap: anywhere;
+  min-height: 0;
+  overflow: hidden;
 }
-.notice .link {
-  color: var(--link);
-  text-decoration: none;
-  flex-shrink: 0;
-  letter-spacing: 0.04em;
+.right-pane {
+  flex: none;
+  min-width: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
 }
-.notice .link:hover {
-  text-decoration: underline;
+.splitter {
+  flex: none;
+  width: var(--conversation-card-gap, 12px);
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
 }
-/* 知识候选与降级提示都贴在对话流底部、输入区上方：位置贴近发生的地方 */
-.bottom-cluster {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  /* 下内边距由 useComposerClearance 按输入区的实际高度写入：
-     输入区是固定悬浮层，不给它留位置的话这几块会被压住。
-     **空块不写内边距**：以前即使没有任何内容也留出「输入区高度 + 16px」，
-     消息区底边因此被抬高，靠 sticky 贴底的那类元素也跟着飘高。 */
+.splitter::after {
+  position: absolute;
+  content: "";
+  width: 2px;
+  top: 42%;
+  height: 40px;
+  left: calc(50% - 1px);
+  border-radius: 5px;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease-1);
 }
-.candidates {
+.splitter:hover::after,
+.splitter:focus-visible::after {
+  background: var(--border-strong);
+}
+.splitter:active::after {
+  background: var(--accent);
+}
+.splitter:focus-visible { outline: none; }
+[data-dragging="left"] .center-pane,
+[data-dragging="right"] .center-pane { user-select: none; }
+[data-dragging] .splitter { cursor: col-resize; }
+
+/* ---- 收起后的任务入口 ---- */
+.collapsed-rail {
+  flex: none;
+  width: 48px;
+  /* 收起后仍保留和其他卡片一样的 12px 槽位，避免左→中变成 0 */
+  margin-right: var(--conversation-card-gap, 12px);
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 0 24px;
-  flex-shrink: 0;
-  min-width: 0;
-  /* 候选多时自己滚，不把输入区挤出屏幕；横向不建立滚动范围 */
-  max-height: 42vh;
-  overflow-y: auto;
-  overflow-x: clip;
+  padding-top: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
 }
-.notice.fallback {
-  padding-right: 84px;
-}
-/* 互动模式入口：安静的一行，居中在输入区上方，不抢消息流与输入焦点 */
-.mode-entry-row {
-  display: flex;
-  justify-content: center;
-  padding: 0 24px 4px;
-  flex-shrink: 0;
-}
-.mode-entry {
+.rail-btn {
+  position: relative;
+  width: 36px;
+  padding: 8px 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
-  color: var(--text-muted);
-  text-decoration: none;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
 }
-.mode-entry:hover { color: var(--link); }
-.mode-entry:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rail-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.rail-btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
+.rail-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.rail-label { writing-mode: vertical-rl; letter-spacing: 0.14em; }
+.rail-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  line-height: 14px;
+  text-align: center;
+}
+.rail-badge[data-tone="attention"] {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: var(--warning-soft);
+}
+.rail-badge[data-tone="active"] {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---- 全窗口预览 ---- */
+.preview-overlay {
+  position: absolute;
+  /* 与话题/左栏同一条卡片顶线：y=82；左右/底边与全局栏同一 8px 外沿 */
+  inset: 2px 8px 8px;
+  z-index: 30;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-3);
+}
+
+/* ---- 任务抽屉（窄窗口临时展开，不写偏好） ---- */
+.rail-drawer-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+}
+.rail-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-overlay);
+}
+.rail-drawer {
+  position: absolute;
+  top: 6px;
+  bottom: 0;
+  left: 8px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+  animation: drawer-in var(--dur-panel) var(--ease-1) both;
+}
+@keyframes drawer-in {
+  from { transform: translateX(calc(-1 * var(--shift-panel))); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+/* ---- 预览栏收起的贴边入口（中线偏上，避让右下角星球入口） ---- */
+.preview-reopen {
+  position: absolute;
+  right: 0;
+  top: 22%;
+  z-index: 8;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 26px;
+  padding: 10px 0;
+  border: 1px solid var(--border-subtle);
+  border-right: 0;
+  border-radius: var(--r-sm) 0 0 var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.preview-reopen svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.preview-reopen-count { font-size: 9.5px; }
+.preview-reopen:hover {
+  color: var(--text-strong);
+  border-color: var(--border-strong);
+}
+.preview-reopen:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.preview-reopen .badge { font-size: 10px; color: var(--text-muted); }
+
+/* ---- 未完成事项（恢复区） ---- */
+.recovery-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.recovery-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-overlay);
+  backdrop-filter: blur(2px);
+}
+.recovery-panel {
+  position: relative;
+  width: min(680px, 100%);
+  max-height: min(80vh, 720px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xl);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-3);
+  overflow-y: auto;
+}
+.recovery-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.recovery-head h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  color: var(--text-strong);
+}
+.recovery-hint {
+  margin: 0 0 var(--sp-2);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-base);
+  color: var(--text-secondary);
+}
 </style>

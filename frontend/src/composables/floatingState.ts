@@ -36,7 +36,12 @@ export const FLOAT_HIDE_KEY = "qio-float-hide";
  * 一份清单、一处定义：少一个就会重现「星球没办法进行移动」（见 useFloatingWindow 的
  * avoidSelectors 与 PlanetDock 的声明）。
  */
-export const FLOAT_AVOID_SELECTORS = [".composer", ".settings-float"];
+export const FLOAT_AVOID_SELECTORS = [
+  ".composer",
+  ".settings-float",
+  // 对话页 v2：右侧只读预览也是固定面板；星球入口在右下角，预览打开时不能压在它上面。
+  "[data-preview-panel]",
+];
 
 function makeEntry(): FloatingEntry {
   return { x: 0, y: 0, width: 0, height: 0, docked: false, dockedTo: null, hideEnabled: false, hidden: false };

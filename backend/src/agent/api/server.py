@@ -1026,28 +1026,96 @@ def create_app(
     TYPEWRITER_SPEEDS = (25, 50, 75)
     DEFAULT_TYPEWRITER_CPS = 50
 
+    #: 对话页布局偏好（窗口/栏宽/收起/标签位置）的上限：只存轻量偏好，
+    #: 正文、原始输出、密钥一律不进这里；超过上限直接拒绝而不是静默截断。
+    CONVERSATION_LAYOUT_MAX_CHARS = 65536
+
+    def _read_conversation_layout() -> dict | None:
+        raw = ctx.settings_store.get("ui.conversation_layout", "") or ""
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            # 损坏的偏好不应该让整页打不开：如实返回 None（使用默认布局）。
+            logger.warning("conversation_layout 无法解析，已忽略并使用默认布局")
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
     @app.get("/api/settings/ui")
     async def get_ui_settings() -> dict:
         return {
             "typewriter_cps": ctx.settings_store.get_int(
                 "ui.typewriter_cps", DEFAULT_TYPEWRITER_CPS
-            )
+            ),
+            # 对话页布局偏好：只读回轻量偏好；读坏了返回 null，由前端回落默认值。
+            "conversation_layout": _read_conversation_layout(),
         }
 
     @app.put("/api/settings/ui")
     async def update_ui_settings(body: dict) -> dict:
-        raw = body.get("typewriter_cps")
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="typewriter_cps must be an integer")
-        if value not in TYPEWRITER_SPEEDS:
+        result: dict = {"ok": True}
+        if "typewriter_cps" in body:
+            raw = body.get("typewriter_cps")
+            try:
+                value = int(raw)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="typewriter_cps must be an integer")
+            if value not in TYPEWRITER_SPEEDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"typewriter_cps must be one of {list(TYPEWRITER_SPEEDS)}",
+                )
+            ctx.settings_store.set("ui.typewriter_cps", str(value))
+            result["typewriter_cps"] = value
+        if "conversation_layout" in body:
+            raw_layout = body.get("conversation_layout")
+            if isinstance(raw_layout, str):
+                try:
+                    layout = json.loads(raw_layout)
+                except (TypeError, ValueError):
+                    raise HTTPException(
+                        status_code=400, detail="conversation_layout must be JSON"
+                    )
+            elif isinstance(raw_layout, dict):
+                layout = raw_layout
+            elif raw_layout is None:
+                layout = {}
+            else:
+                raise HTTPException(
+                    status_code=400, detail="conversation_layout must be an object"
+                )
+            if not isinstance(layout, dict):
+                raise HTTPException(
+                    status_code=400, detail="conversation_layout must be an object"
+                )
+            for key in ("leftWidth", "rightWidth"):
+                numeric = layout.get(key)
+                if numeric is not None and (
+                    isinstance(numeric, bool)
+                    or not isinstance(numeric, (int, float))
+                    or numeric < 0
+                    or numeric > 10000
+                ):
+                    raise HTTPException(
+                        status_code=400, detail=f"conversation_layout.{key} must be a width"
+                    )
+            text = json.dumps(layout, ensure_ascii=False)
+            if len(text) > CONVERSATION_LAYOUT_MAX_CHARS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "conversation_layout 太大了：布局偏好只应保存轻量位置，"
+                        "不要放正文或原始输出"
+                    ),
+                )
+            ctx.settings_store.set("ui.conversation_layout", text)
+            result["conversation_layout"] = layout
+        if len(result) == 1:
             raise HTTPException(
-                status_code=400,
-                detail=f"typewriter_cps must be one of {list(TYPEWRITER_SPEEDS)}",
+                status_code=400, detail="没有可更新的设置项（typewriter_cps / conversation_layout）"
             )
-        ctx.settings_store.set("ui.typewriter_cps", str(value))
-        return {"ok": True, "typewriter_cps": value}
+        return result
 
     # -- 对话深度：迭代上限 / 输出 token 预算 -------------------------------
 
@@ -3405,4 +3473,15 @@ def create_app(
     from agent.api.preview_routes import register_preview_routes
 
     register_preview_routes(app)
+
+    # 对话页 v2：左侧任务栏的权威快照（当前 / 历史 / 详情 / 知道了 / 取消）。
+    # 路由工厂在本文件之外，这里只挂一行；不改任何既有接口。
+    from agent.api.task_feed_routes import register_task_feed_routes
+
+    register_task_feed_routes(app, ctx)
+
+    # 对话页 v2：知识保存申请的原子审批入口（修改后保存必须让用户确认的内容生效）。
+    from agent.api.knowledge_approval_routes import register_knowledge_approval_routes
+
+    register_knowledge_approval_routes(app, ctx)
     return app

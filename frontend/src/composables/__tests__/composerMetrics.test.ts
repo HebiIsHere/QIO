@@ -63,6 +63,30 @@ describe("composerMetrics", () => {
     off();
   });
 
+  it("优先量整个输入区外壳：入口行在胶囊外时，按钮不会压到入口行上", () => {
+    // 真实 v3 结构：.composer-dock（入口行 + 胶囊 + 星球）包着 .composer（只是胶囊列）。
+    // 「回到最新消息」必须锚到外壳上缘，而不是胶囊上缘。
+    const dock = document.createElement("div");
+    dock.className = "composer-dock";
+    dock.getBoundingClientRect = () =>
+      ({ height: 180, top: 700, bottom: 880, left: 0, right: 1120, width: 1120, x: 0, y: 700, toJSON: () => ({}) }) as DOMRect;
+    const input = document.createElement("textarea");
+    input.getBoundingClientRect = () =>
+      ({ height: 26, top: 836, bottom: 862, left: 0, right: 860, width: 860, x: 0, y: 836, toJSON: () => ({}) }) as DOMRect;
+    dock.appendChild(input);
+    const pill = document.createElement("div");
+    pill.className = "composer";
+    pill.getBoundingClientRect = () =>
+      ({ height: 77, top: 797, bottom: 874, left: 0, right: 860, width: 860, x: 0, y: 797, toJSON: () => ({}) }) as DOMRect;
+    document.body.append(dock, pill);
+
+    const m = measureComposer();
+    expect(m.found).toBe(true);
+    expect(m.top).toBe(700);
+    expect(m.height).toBe(180);
+    expect(m.inputTop).toBe(836);
+  });
+
   it("多个订阅者共用同一次测量（同一帧只读一次布局）", async () => {
     const composer = fakeComposer(120, 700);
     const reads = composer.getBoundingClientRect as unknown as ReturnType<typeof vi.fn>;

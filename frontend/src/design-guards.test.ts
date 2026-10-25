@@ -74,11 +74,20 @@ describe("输入区与消息列同一条列", () => {
   // tokens.css 不是 .vue/.ts，FILES 扫不到它 —— 直接读
   const tokens = readFileSync(resolve(SRC, "styles", "tokens.css"), "utf8");
 
-  it("输入区两侧贴边取正文列令牌，不再手算 calc(50% ...)", () => {
+  it("输入区在对话列内正常布局：不固定悬浮、不手算视口偏移（v2）", () => {
     expect(composer).toBeTruthy();
-    expect(composer!.text).toMatch(/left:\s*var\(--column-inset-left\)/);
-    expect(composer!.text).toMatch(/right:\s*var\(--column-inset-right\)/);
-    // 手算偏移会与列宽脱钩：它正是本次错位的来源
+    // v2：右侧预览栏与中央列并排，输入区必须留在对话列内部（position:relative + 容器宽度），
+    // 固定悬浮会让它盖住右侧预览栏；手算 50% 偏移仍被禁止（历史错位的来源）。
+    const rootBlock = composer!.text.match(/\.composer\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(rootBlock).toMatch(/position:\s*relative/);
+    // v3：外层是透明列（width:100% + max-width:860px），真正的卡片是内部胶囊 .input-pill
+    expect(rootBlock).toMatch(/width:\s*100%/);
+    expect(rootBlock).toMatch(/max-width:\s*860px/);
+    const pillBlock = composer!.text.match(/\.input-pill\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(pillBlock).toMatch(/border-radius:\s*var\(--r-pill\)/);
+    // 用户确认不要阴影：胶囊只用 1px 边框，不再有会被 overflow-x: clip 截断的投影
+    expect(pillBlock).toMatch(/box-shadow:\s*none/);
+    expect(rootBlock).not.toMatch(/position:\s*fixed/);
     expect(composer!.text).not.toMatch(/left:\s*calc\(50%/);
     expect(composer!.text).not.toMatch(/left:\s*max\(12px/);
   });

@@ -52,8 +52,12 @@ describe("Composer：附件能力提示", () => {
     const w = mount(Composer, { global: { plugins: [pinia] } });
     await flushPromises();
 
-    // 打开「粘贴路径」入口，让附件的说明区显示出来（输入行右侧那两个按钮）
-    await w.find('[aria-label="粘贴本地文件路径"]').trigger("click");
+    // v3：回形针菜单 → 从路径添加，让附件的说明区显示出来
+    await w.find(".attach-circle").trigger("click");
+    await flushPromises();
+    const pathItem = w.findAll(".attach-menu-item").find((b) => b.text().includes("从路径添加"));
+    expect(pathItem, "回形针菜单里没有「从路径添加」").toBeTruthy();
+    await pathItem!.trigger("click");
     await flushPromises();
     expect(w.find(".path-row").exists(), "路径入口没有打开，说明区也没出现").toBe(true);
 

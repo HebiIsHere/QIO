@@ -285,11 +285,20 @@ describe("中止的目标身份（契约 §1.2）", () => {
     w.unmount();
   });
 
-  it("普通「停止当前任务」按钮语义不变：仍然停止当前 active 轮", async () => {
-    const { w, session } = await mountAndStartSend({ activeTurnId: "turn_other_running" });
-    // 先把这次准备中的发送放掉（受理），让普通停止按钮可用
-    const stop = w.find(".stop-btn");
+  it("普通「停止当前任务」语义不变：输入区无文本/附件时共用按钮是停止态，且只停当前 active 轮", async () => {
+    // v2：发送与停止共用一个按钮。输入区没有任何内容时它才是「停止」，
+    // 点击仍然精确停止当前 active 轮（有 turn_id 时不用 cancelActiveTurn）。
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    session.turnRunning = true;
+    session.activeTurnId = "turn_other_running";
+    const w = mount(Composer, { global: { plugins: [pinia] } });
+    await flushPromises();
+
+    const stop = w.find('.send-btn[data-mode="stop"]');
     expect(stop.exists()).toBe(true);
+    expect(stop.text()).toContain("停止");
     await stop.trigger("click");
     await flushPromises();
 

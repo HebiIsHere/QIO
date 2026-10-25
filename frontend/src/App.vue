@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { useRoute } from "vue-router";
 import { useEventStore } from "./stores/events";
 import { useUiStore } from "./stores/ui";
 import { useOnboardingStore } from "./stores/onboarding";
@@ -15,6 +16,21 @@ const events = useEventStore();
 const ui = useUiStore();
 const onboarding = useOnboardingStore();
 const approvals = useApprovalsStore();
+/**
+ * 路由可能不存在（组件单测会直接挂载 App，不经过 router）。
+ * 读不到路由时按「非对话页」处理：旧的全局入口保持原样，不因为缺路由而渲染崩溃。
+ */
+let routeRef: ReturnType<typeof useRoute> | undefined;
+try {
+  routeRef = useRoute();
+} catch {
+  routeRef = undefined;
+}
+/**
+ * 对话页 v2 自己承载审批与任务入口（统一弹窗 / 左侧任务栏 / 输入区五入口）。
+ * 旧的顶部居中悬浮入口只留给互动、设置、调试等页面，避免同一时刻出现两套按钮。
+ */
+const isConversation = computed(() => routeRef?.name === "conversation");
 
 /**
  * 启动状态：后端没应答之前不渲染主界面。
@@ -93,12 +109,13 @@ onUnmounted(stopTicker);
         （真实情况：一句「上次那项操作没有执行」和「有 N 项操作等待确认」重叠）。
         容器本身不接收点击，只有里面的按钮可点。
       -->
-      <div class="top-notes">
+      <div v-if="!isConversation" class="top-notes">
         <ApprovalEntry />
         <DevTaskEntry />
       </div>
-      <!-- 同一时刻只允许一套按钮：过程区已内联显示这条审批时，全局弹窗让位（按 approval_id 门控） -->
-      <ApprovalModal v-if="!approvals.inlineClaimed" />
+      <!-- 同一时刻只允许一套按钮：对话页由 UnifiedApprovalLayer 统一承载；
+           其他页面在过程区已内联显示这条审批时，全局弹窗让位（按 approval_id 门控） -->
+      <ApprovalModal v-if="!isConversation && !approvals.inlineClaimed" />
       <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
       <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
     </template>
