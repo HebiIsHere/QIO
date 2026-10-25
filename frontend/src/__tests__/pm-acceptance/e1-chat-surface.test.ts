@@ -131,7 +131,9 @@ function mountConversation(): VueWrapper {
 const HISTORY_LABEL = /(执行结果历史|审批结果与历史|结果与历史|审批历史|执行历史|审批结果|执行结果)/;
 
 function findOpenableHistoryEntry(wrapper: VueWrapper): HTMLElement | null {
-  const nodes = Array.from(wrapper.element.querySelectorAll<HTMLElement>("*"));
+  // 组件实例的根元素在类型上是 any：先收窄成 HTMLElement，再带泛型查询（否则 vue-tsc 报 TS2347/TS18046）。
+  const root = wrapper.element as HTMLElement;
+  const nodes = Array.from(root.querySelectorAll<HTMLElement>("*"));
   for (const el of nodes) {
     const attrs = ["aria-label", "title", "data-test", "data-im"]
       .map((name) => el.getAttribute(name) ?? "")
@@ -372,9 +374,14 @@ describe("pending 恢复失败：可见错误 + 重试（基线：只写进 stor
   }
 
   function assertFailureSurface(wrapper: VueWrapper, where: string): void {
-    const alerts = Array.from(wrapper.element.querySelectorAll('[role="alert"]')).map((el) => el.textContent ?? "").join(" ");
+    const root = wrapper.element as HTMLElement;
+    const alerts = Array.from(root.querySelectorAll('[role="alert"]'))
+      .map((el: Element) => el.textContent ?? "")
+      .join(" ");
     expect(alerts, where + "：打开入口后看不到恢复失败原因").toContain("恢复待审批项失败");
-    const retry = Array.from(wrapper.element.querySelectorAll("button")).filter((btn) => /重试/.test(btn.textContent ?? ""));
+    const retry = Array.from(root.querySelectorAll("button")).filter((btn: Element) =>
+      /重试/.test(btn.textContent ?? ""),
+    );
     expect(retry.length, where + "：恢复失败没有可点的重试入口").toBeGreaterThan(0);
   }
 
