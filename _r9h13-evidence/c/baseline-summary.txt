@@ -1,0 +1,35 @@
+﻿R9-H13 C baseline (red) evidence
+baseline commit: e68fb9b75e6dd7b6e4eaf6dc879aafec364fa635
+branch: r9h13/c
+command: cd backend; .\.venv\Scripts\python.exe -m pytest tests/test_r9h13_c_execution.py -q -p no:cacheprovider
+result: 8 failed (all 8 are the intended baseline reds; controls are inside the same tests and are reached only after the red assertion)
+
+Per-test baseline red reason (observed from real flow, see baseline-test_r9h13_c_execution.txt):
+1. test_c1_denied_program_not_read_and_not_launched
+   - observed: ok=True; program actually launched and marker written although user limit forbids reading the program file.
+   - defect C1: RunProgramTool reads program body/sha before the unified authorization/limit assessment; denial is not before content read.
+2. test_d1_same_size_mtime_change_not_hidden_by_cache
+   - observed: ok=True after script body was rewritten during authorize window with identical size and mtime_ns; new content would execute (cached digest reused).
+   - defect D1: _PROGRAM_HASH_CACHE keyed realpath|size|mtime_ns.
+3. test_d2_python_txt_script_content_bound
+   - observed: ok=True after python job.txt body rewritten same size/mtime; .txt entry script content not in binding (no shebang, not in suffix list).
+   - defect D2: argument files identified by suffix/shebang only, not interpreter argv semantics.
+4. test_d2_many_script_args_not_silently_omitted
+   - observed: ok=True after the 18th of 18 real shell scripts was rewritten same size/mtime; old collection cap (16) silently omitted it.
+   - defect D2: _MAX_ARGUMENT_FACTS=16 -> silent break, facts claim complete.
+5. test_d3_recursive_delete_hits_prohibited_child
+   - observed: ok=True; rd /s /q (rm -rf) really removed the directory although user limit forbids deleting secret.txt inside it.
+   - defect D3: command delete intent carries only the directory object; no child objects in effect/limit impacts.
+6. test_d3_incomplete_recursive_impact_not_executed_as_complete
+   - observed: ok=True; recursive delete executed although bounded enumeration (500) could not cover the prohibited late child.
+   - defect D3: incomplete impact not treated as incomplete before execution.
+7. test_path_delete_link_entry_not_target
+   - observed: recycle stand-in received the resolved target dir (...\workspace\protected) instead of the requested link entry (...\links\target-link); target dir was moved, link left behind.
+   - defect §10: fs_delete resolves the final link before choosing the system operation target.
+8. test_path_delete_link_does_not_read_restricted_target
+   - observed: delete of a link to a target whose child content read is prohibited was denied (code=read_limit_denied) - tool resolved the link, enumerated target content and applied the target read limit to the link removal.
+   - defect §10: read/write/delete link-vs-target impact conflated; operation target rewritten by resolution.
+
+Real/simulated boundary:
+- real: engine + requirement ledger (SQLite), real tools, real temp files, real python/cmd/sh launches (marker files), real file identity/stat, real os.utime, real directory junctions (this Windows host has no SeCreateSymbolicLinkPrivilege for file symlinks).
+- simulated: (a) content rewrite injected between authorize return and execution (review/approval window) with size+mtime preserved; (b) recycle-bin stand-in that records the received path and moves that directory entry to a quarantine dir - NOT an OS recycle-bin reproduction.
