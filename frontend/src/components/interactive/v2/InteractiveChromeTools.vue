@@ -26,7 +26,6 @@ import {
 } from "./chromePlacement";
 import { useChromeExtraTarget } from "./chromeTarget";
 import { saveStatusView } from "./saveStatus";
-import PermissionModeBadge from "../../security/PermissionModeBadge.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -208,14 +207,6 @@ onBeforeUnmount(() => {
         <span class="iw-dot" aria-hidden="true"></span>
         <span class="iw-save-text">{{ saveView.text }}</span>
       </p>
-
-      <!--
-        F01：互动页的权限模式常驻徽标放在全局栏（对话页徽标在话题栏，位置语义一致）。
-        收起 / 展开互动对话都不影响它；它也不在板面舞台 / 工具栏 / 输入区里，
-        因此不会覆盖卡片（真实界面核查：1440 与 480 下与卡片/工具栏/输入区相交面积均为 0）。
-        与对话页共用 stores/security 这唯一状态源；点击进入设置由用户切换。
-      -->
-      <PermissionModeBadge />
 
       <button
         ref="triggerEl"

@@ -5,8 +5,9 @@
  * - 互动页 v2 布局里必须能看到**当前权限模式**，对话收起 / 展开都留在原位；
  * - 显示的是服务端恢复的真实模式：读取中不冒充默认值，读取失败如实说未知并可进入设置；
  * - 徽标与对话页共用同一个 security store（唯一状态源），不建立第二份模式状态；
- * - 位置：互动页全局栏挂载点 #qio-interactive-chrome-extra（与对话页话题栏同一语义），
- *   不在板面舞台 / 输入区 / 工具栏里 —— 因此不会覆盖板面卡片（真实界面核查见证据）。
+ * - 位置：互动对话窗的常驻状态条（收起 / 展开都在，且位于 InteractiveView 的组件树里，
+ *   不经过 Teleport —— E 的页面级验收按 wrapper.findAll 取证）；在输入区与工具栏上方，
+ *   不在消息面板 / 输入区 / 工具栏内部，也不新增覆盖板面的浮动入口。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -89,13 +90,13 @@ afterEach(() => {
 });
 
 describe("互动页权限模式常驻可见", () => {
-  it("互动页全局栏里挂了权限模式徽标：读取中如实显示，不冒充默认模式", async () => {
+  it("互动页常驻状态条里挂了权限模式徽标：读取中如实显示，不冒充默认模式", async () => {
     stubServices();
     mountPage();
     await settlePage(wrapper!);
     const el = badge();
     expect(el, "互动页没有渲染权限模式徽标").not.toBeNull();
-    expect(el!.closest("[data-iw-chrome-tools]"), "徽标不在互动页全局栏挂载点里").not.toBeNull();
+    expect(el!.closest('[data-ic-bar]'), "徽标不在常驻对话状态条里（收起态会看不到）").not.toBeNull();
     expect(el!.dataset.loaded).toBe("0");
     expect(el!.textContent).toContain("读取中");
     expect(el!.textContent).not.toContain("受限模式");
@@ -151,14 +152,26 @@ describe("互动页权限模式常驻可见", () => {
     expect(useUiStore().settingsSection).toBe("tools");
   });
 
-  it("徽标位于全局栏，不在板面舞台 / 输入区 / 工具栏里（不会覆盖卡片与输入区）", async () => {
+  it("徽标在页面组件树里（E 的页面级 findAll 口径），且不在消息面板 / 输入区 / 工具栏内部", async () => {
     stubServices();
     mountPage();
     await settlePage(wrapper!);
+    const store = useInteractiveStore();
+    // 收起与展开都在同一份页面组件树上（不是 Teleport 到别处的元素）
+    await settlePage(wrapper!);
+    expect(wrapper!.findAll('[data-im="permission-mode-badge"]')).toHaveLength(1);
+    store.chatOpen = true;
+    await settlePage(wrapper!);
+    expect(wrapper!.findAll('[data-im="permission-mode-badge"]')).toHaveLength(1);
+    store.chatOpen = false;
+    await settlePage(wrapper!);
+    expect(wrapper!.findAll('[data-im="permission-mode-badge"]')).toHaveLength(1);
+
     const el = badge()!;
-    expect(el.closest('[data-im="interactive-stage"]')).toBeNull();
-    expect(el.closest('[data-stub="composer"]')).toBeNull();
-    expect(el.closest('[data-stub="toolbar"]')).toBeNull();
-    expect(el.closest("[data-iw-chrome-tools]")).not.toBeNull();
+    expect(el.closest('[data-ic-bar]')).not.toBeNull();
+    expect(el.closest('[data-ic-stream]')).toBeNull();
+    expect(el.closest(".ic-composer")).toBeNull();
+    expect(el.closest('[data-ic-toolbar]')).toBeNull();
+    expect(el.closest('[data-im="board-toolbar"]')).toBeNull();
   });
 });

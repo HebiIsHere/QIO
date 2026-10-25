@@ -683,14 +683,8 @@ onBeforeUnmount(() => {
   .conversation-bar .brand-sep {
     display: none;
   }
-  /*
-   * 互动页全局栏在窄窗里的宽度预算（B / F01，Lead 授权只改这一处）：
-   * 挂载点里现在有「保存状态(≈52) + 权限模式徽标(76) + 搜索(61) + 间距(16)」≈ 205px，
-   * 原来的 160px 会把「已保存」压成 0 宽（内容还在、视觉消失）。220px 能完整容纳三者，
-   * 同时给品牌（窄窗只留标志）与右侧设置/窗口按钮留出空间，480px 下不互相重叠。
-   */
   .conversation-bar .chrome-extra {
-    max-width: min(220px, calc(100vw - 160px));
+    max-width: min(160px, calc(100vw - 160px));
   }
   .conversation-bar .chrome-actions {
     right: 12px;

@@ -16,6 +16,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../../stores/interactive";
+import ApprovalResultsPanel from "../../approval/ApprovalResultsPanel.vue";
 import {
   batchDecideIds,
   taskControlHint,
@@ -43,6 +44,12 @@ const store = useInteractiveStore();
 const busy = ref("");
 const notice = ref("");
 const selected = ref<string[]>([]);
+/**
+ * 面板分区（F05 / 审批结果可达性）：任务操作与只读的审批结果/历史分开，不混在一列。
+ * 默认是任务分区；HUD「任务」常驻，所以对话收起时也能通过「任务 → 审批结果与历史」走到结果。
+ * 面板每次关闭即卸载，再打开回到默认分区（不做跨会话记忆）。
+ */
+const tab = ref<"tasks" | "approval-results">("tasks");
 
 const rows = computed<TaskRow[]>(() => store.taskRows);
 const liveRows = computed(() => rows.value.filter((row) => row.bucket === "live"));
@@ -178,6 +185,43 @@ onMounted(() => {
       <button class="tc-btn" type="button" data-im="task-close" aria-label="关闭任务面板" @click="emit('close')">×</button>
     </header>
 
+    <!-- 分区：任务（可操作） / 审批结果与历史（只读）。两者不混在同一列操作里。 -->
+    <div class="tc-tabs" role="tablist" aria-label="任务面板分区">
+      <button
+        class="tc-tab"
+        type="button"
+        role="tab"
+        data-im="task-tab-tasks"
+        :aria-selected="tab === 'tasks' ? 'true' : 'false'"
+        :data-active="tab === 'tasks' ? '1' : '0'"
+        @click="tab = 'tasks'"
+      >任务</button>
+      <button
+        class="tc-tab"
+        type="button"
+        role="tab"
+        data-im="task-tab-approval-results"
+        aria-controls="tc-approval-results"
+        :aria-selected="tab === 'approval-results' ? 'true' : 'false'"
+        :data-active="tab === 'approval-results' ? '1' : '0'"
+        @click="tab = 'approval-results'"
+      >审批结果与历史</button>
+    </div>
+
+    <!-- 审批结果与历史：A 的只读面板（零 props；自己读结果/历史，含恢复失败与读取失败重试）。
+         这里只给容器与滚动，不复制任何面板逻辑，也不新增第二个浮动入口。 -->
+    <div
+      v-if="tab === 'approval-results'"
+      id="tc-approval-results"
+      class="tc-results"
+      role="tabpanel"
+      aria-label="审批结果与历史"
+      data-im="task-approval-results"
+    >
+      <ApprovalResultsPanel />
+    </div>
+
+    <template v-if="tab === 'tasks'">
     <p v-if="store.intentViewsLoadState === 'error'" class="tc-warn" role="alert" data-im="task-read-error">
       任务清单更新失败：{{ store.intentViewsLoadError || "原因未知" }}（当前显示上次读到的任务，不代表没有任务）
       <button class="tc-link" type="button" data-im="task-read-retry" @click="refresh">重试读取</button>
@@ -343,6 +387,7 @@ onMounted(() => {
         </ul>
       </section>
     </template>
+    </template>
   </section>
 </template>
 
@@ -367,6 +412,24 @@ onMounted(() => {
   font-family: var(--sans);
 }
 .tc-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+/* 分区标签：两个按钮就是全部导航，不做抽屉/浮层；窄窗换行也不横向溢出。 */
+.tc-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border-subtle); padding-bottom: 2px; }
+.tc-tab {
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  padding: 2px var(--sp-2);
+  cursor: pointer;
+  min-width: 0;
+}
+.tc-tab:hover { color: var(--text-strong); border-color: var(--border-subtle); }
+.tc-tab[data-active="1"] { color: var(--text-strong); border-color: var(--border-strong); background: var(--bg-inset); }
+.tc-tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* 审批结果分区：只给滚动与宽度约束，面板自己负责内部滚动（窄窗 480 不横向溢出）。 */
+.tc-results { min-width: 0; min-height: 0; overflow-x: hidden; }
 .tc-title { margin: 0; flex: 1; min-width: 0; font-family: var(--serif); font-size: var(--fs-base); color: var(--text-strong); }
 .tc-counts { flex: none; font-size: 10.5px; color: var(--text-muted); }
 .tc-block { display: flex; flex-direction: column; gap: var(--sp-1); }
