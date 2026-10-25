@@ -106,9 +106,10 @@ describe("F05 恢复入口：独立于面板与对话，读取失败不伪装空
     await settlePage(harness.wrapper);
     expect(recoveryEntry(), "先有一次成功的读取").toBeTruthy();
 
-    // 触发页面重新读取（与提交后刷新同一条路径），这次服务端读取失败
-    services.fetchIntentViews.mockRejectedValueOnce(new Error("网络断了"));
-    harness.store.lastSubmission = { submission: { id: "sub_2" } } as never;
+    // 触发页面重新读取（回到前台会重新核实，与轮询 / 提交后刷新同一条 store 路径），这次读取失败
+    // 网络持续不可用：中央读取和面板自己的读取都会失败（不能伪造成功空集合）
+    services.fetchIntentViews.mockRejectedValue(new Error("网络断了"));
+    document.dispatchEvent(new Event("visibilitychange"));
     await settlePage(harness.wrapper);
     await settlePage(harness.wrapper);
     const entry = recoveryEntry();
@@ -140,9 +141,10 @@ describe("F05 恢复入口：独立于面板与对话，读取失败不伪装空
     await settlePage(harness.wrapper);
     expect(recoveryEntry()).toBeTruthy();
 
-    // 用户处理完：服务端不再返回需要恢复的事项
+    // 用户处理完：服务端不再返回需要恢复的事项；回到前台重新核实
     services.fetchIntentViews.mockResolvedValue(viewsPayload([]));
-    harness.store.lastSubmission = { submission: { id: "sub_3" } } as never;
+    document.dispatchEvent(new Event("visibilitychange"));
+    await settlePage(harness.wrapper);
     await settlePage(harness.wrapper);
     expect(recoveryEntry(), "处理完的事项不能继续挂在入口上").toBeFalsy();
   });

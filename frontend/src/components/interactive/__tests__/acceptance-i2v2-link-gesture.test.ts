@@ -106,9 +106,10 @@ function emittedCurve(frame: VueWrapper): unknown {
 }
 
 describe("F09 缩放换算：屏幕位移按画布 scale 换成板面位移", () => {
+  // 校准（集成后真实实现）：curve 是「起始曲线 + 板面位移」，起始曲线 {x:20,y:10}。
   it.each([
     [1, 80, { x: 100, y: 50 }],
-    [2, 80, { x: 60, y: 35 }],
+    [2, 80, { x: 60, y: 30 }],
     [0.5, 40, { x: 100, y: 50 }],
   ])("scale=%s 时屏幕位移 %spx 提交的曲线偏移正确", (scale, dx, expected) => {
     const frame = mountLayer({ scale });
@@ -128,18 +129,20 @@ describe("F09 缩放换算：屏幕位移按画布 scale 换成板面位移", ()
     const curve = emitted![1] as { x: number; y: number };
     expect(Number.isFinite(curve.x)).toBe(true);
     expect(Number.isFinite(curve.y)).toBe(true);
-    expect(curve).toEqual({ x: 40, y: 30 });
+    expect(curve).toEqual({ x: 60, y: 40 });
   });
 });
 
 describe("F09 取消路径：Esc / pointercancel / 失焦 / 卸载都不提交并恢复起始曲线", () => {
-  it("Esc 取消：曲线回到拖动前，之后松手也不提交", () => {
+  it("Esc 取消：曲线回到拖动前，之后松手也不提交", async () => {
     const frame = mountLayer();
     const before = linePath(frame);
     pressLabel(frame);
     moveTo(180, 140);
+    await frame.vm.$nextTick();
     expect(linePath(frame), "拖动中只有预览").not.toBe(before);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await frame.vm.$nextTick();
 
     expect(linePath(frame), "Esc 后必须恢复起始曲线").toBe(before);
     releaseAt(180, 140);

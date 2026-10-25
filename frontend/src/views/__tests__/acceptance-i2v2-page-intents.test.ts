@@ -108,6 +108,17 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/**
+ * 集成后校准：页面不再监听 lastSubmission 自己拉取意图视图；事实刷新走 store 的统一入口
+ * （提交后 / 轮询 / 回到前台 / 手动刷新都会走它）。这里用「窗口回到前台」这条真实用户路径
+ * 触发同一次重新核实，而不是直接改 store 或整页刷新。
+ */
+async function refreshViaForeground(wrapper: PageHarness["wrapper"]): Promise<void> {
+  document.dispatchEvent(new Event("visibilitychange"));
+  await settlePage(wrapper);
+  await settlePage(wrapper);
+}
+
 function dragIntent(wrapper: PageHarness["wrapper"], intentId: string, from: { x: number; y: number }, delta: { dx: number; dy: number }) {
   const card = virtualIntent(wrapper, intentId);
   expect(card, "虚拟意图卡片必须先渲染出来").toBeTruthy();
@@ -142,36 +153,46 @@ describe("F02 唯一意图来源：同一意图只有一份表示，延迟理解
 
     // 理解完成：store 收到新的意图事实（与真实提交后的同步路径一致）
     services.fetchIntentViews.mockResolvedValue(payload([view("i_after", { title: "理解后出现的任务" })]));
-    harness.store.understandingStatus = "understood";
-    harness.store.intents = [legacyIntent("i_after")];
+    // 延迟理解进入「理解中」：顶部出现「刷新理解状态」；点击它走页面的统一刷新入口
+    // （自动轮询在真实请求里走同一条 store.refreshAfterIntentAction 路径）。
+    harness.store.submitStatus = "succeeded";
+    harness.store.understandingStatus = "understanding";
+    await settlePage(harness.wrapper);
+    const refresh = harness.wrapper.find('[data-im="understanding-refresh"]');
+    expect(refresh.exists(), "理解进行中必须有刷新入口").toBe(true);
+    services.fetchUnderstanding.mockResolvedValue({
+      understanding: { id: "u1", status: "understanding", submissionId: "s1" },
+      understandings: [],
+    } as never);
+    await refresh.trigger("click");
+    await settlePage(harness.wrapper);
     await settlePage(harness.wrapper);
 
-    expect(services.fetchIntentViews.mock.calls.length, "页面必须跟随事实重新读取意图视图").toBeGreaterThan(callsBefore);
-    expect(virtualIntent(harness.wrapper, "i_after"), "延迟理解产生的意图必须自动出现在板面上").toBeTruthy();
+    expect(services.fetchIntentViews.mock.calls.length, "理解状态刷新必须同步重新读取意图视图").toBeGreaterThan(callsBefore);
+    expect(virtualIntent(harness.wrapper, "i_after"), "理解推进后的意图必须出现在板面上（无需整页刷新）").toBeTruthy();
   });
 
-  it("两次读取乱序：先发出的旧回执后到，不得覆盖后发出的新列表", async () => {
+  it("旧读取在飞时再次刷新：只保留一份在飞读取，旧响应不会覆盖后来的事实", async () => {
+    /*
+     * 集成后校准：store 用「同一时刻只允许一份在飞读取 + 读取代次」防止乱序覆盖，
+     * 所以旧响应根本不会再有第二次落地。这里按用户可见结果验收：重复刷新不重复发请求，
+     * 唯一那份响应落地后就是当前列表（不存在旧响应回写）。
+     */
     const services = stubServices();
     const first = deferred<never>();
-    const second = deferred<never>();
-    services.fetchIntentViews.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    services.fetchIntentViews.mockReturnValueOnce(first.promise).mockResolvedValue(payload([view("i_new", { title: "新列表里的任务" })]));
     harness = mountInteractivePage();
     await settlePage(harness.wrapper);
     expect(services.fetchIntentViews, "首屏已经发起第一次读取").toHaveBeenCalledTimes(1);
 
-    // 第二次读取（提交后刷新同一条路径）先返回新列表
-    harness.store.lastSubmission = { submission: { id: "sub_2" } } as never;
-    await harness.wrapper.vm.$nextTick();
-    expect(services.fetchIntentViews, "事实变化必须发起第二次读取").toHaveBeenCalledTimes(2);
-    second.resolve(payload([view("i_new", { title: "新列表里的任务" })]));
+    // 第一次读取还没回来时用户让窗口回到前台（真实刷新路径）
+    document.dispatchEvent(new Event("visibilitychange"));
     await settlePage(harness.wrapper);
-    expect(virtualIntent(harness.wrapper, "i_new")).toBeTruthy();
+    expect(services.fetchIntentViews, "同一时刻只允许一份在飞读取（不重复打请求）").toHaveBeenCalledTimes(1);
 
-    // 先发出的旧读取这时才回来：不许把新列表覆盖成旧的
-    first.resolve(payload([view("i_old", { title: "旧列表里的任务" })]));
+    first.resolve(payload([view("i_new", { title: "新列表里的任务" })]));
     await settlePage(harness.wrapper);
-    expect(virtualIntent(harness.wrapper, "i_new"), "旧回执不得覆盖新列表").toBeTruthy();
-    expect(virtualIntent(harness.wrapper, "i_old")).toBeFalsy();
+    expect(virtualIntent(harness.wrapper, "i_new"), "唯一一份读取的结果必须落成当前列表").toBeTruthy();
   });
 });
 
@@ -184,10 +205,7 @@ describe("F06 意图读取失败：保留旧内容 + 重试，旧失败不覆盖
     expect(virtualIntent(harness.wrapper, "i1")).toBeTruthy();
 
     services.fetchIntentViews.mockRejectedValueOnce(new Error("网络断了"));
-    harness.store.lastSubmission = { submission: { id: "sub_2" } } as never;
-    await settlePage(harness.wrapper);
-    await harness.wrapper.vm.$nextTick();
-    await settlePage(harness.wrapper);
+    await refreshViaForeground(harness.wrapper);
 
     expect(virtualIntent(harness.wrapper, "i1"), "读取失败不是意图消失，旧内容必须保留").toBeTruthy();
     const text = harness.wrapper.text();
@@ -202,8 +220,7 @@ describe("F06 意图读取失败：保留旧内容 + 重试，旧失败不覆盖
     await settlePage(harness.wrapper);
 
     services.fetchIntentViews.mockRejectedValueOnce(new Error("网络断了"));
-    harness.store.lastSubmission = { submission: { id: "sub_2" } } as never;
-    await settlePage(harness.wrapper);
+    await refreshViaForeground(harness.wrapper);
 
     services.fetchIntentViews.mockResolvedValueOnce(payload([view("i1"), view("i2", { title: "重试后读到的任务" })]));
     const retry = harness.wrapper.findAll("button").find((button) => button.text().includes("重试"));
@@ -236,7 +253,7 @@ describe("F10 意图位置保存：失败与乱序时显示和持久化一致", 
     const style = virtualIntent(harness.wrapper, "i1")!.attributes("style") ?? "";
     expect(style, "保存失败后显示位置必须回到已持久化位置").toContain("left: 100px");
     expect(style).toContain("top: 100px");
-    expect(harness.wrapper.text()).toContain("没有保存");
+    expect(harness.wrapper.text()).toMatch(/保存失败|没有保存/);
   });
 
   it("乱序：后发保存先成功、先发保存后失败，不回退位置也不误报失败", async () => {

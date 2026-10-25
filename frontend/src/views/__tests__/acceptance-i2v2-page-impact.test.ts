@@ -96,10 +96,12 @@ describe("F01 影响确认界面：等待决定时页面中央有可操作的确
     await openImpactViaSave(services);
 
     expect(harness!.store.pendingImpact, "预判命中后必须进入等待确认").not.toBeNull();
-    const dialog = harness!.wrapper.find('[data-im="impact-dialog"]');
+    // 校准（集成后真实实现）：A 组的影响确认面是 v2/ImpactConfirmLayer，钩子为 impact-confirm。
+    const dialog = harness!.wrapper.find('[data-im="impact-confirm"]');
     expect(dialog.exists(), "页面上必须有真实的影响确认界面（基线没有挂载）").toBe(true);
     expect(dialog.attributes("role")).toBe("alertdialog");
     const text = dialog.text();
+    expect(text).toContain("等待确认");
     expect(text).toContain("整理发布材料");
     expect(text).toContain("a.pdf");
     // 等待决定期间不许偷偷落库
@@ -111,13 +113,13 @@ describe("F01 影响确认界面：等待决定时页面中央有可操作的确
   it("取消：改动不生效、任务继续，确认框关闭且没有发生保存", async () => {
     const services = stubServices();
     await openImpactViaSave(services);
-    const cancel = harness!.wrapper.get('[data-im="impact-cancel"]');
+    const cancel = harness!.wrapper.get('[data-im="impact-confirm-cancel"]');
     expect(cancel.text()).toContain("取消");
     await cancel.trigger("click");
     await settlePage(harness!.wrapper);
 
     expect(harness!.store.pendingImpact).toBeNull();
-    expect(harness!.wrapper.find('[data-im="impact-dialog"]').exists()).toBe(false);
+    expect(harness!.wrapper.find('[data-im="impact-confirm"]').exists()).toBe(false);
     expect(services.saveBoardState).not.toHaveBeenCalled();
     expect(harness!.store.intents.find((item) => item.id === "i_run")?.status).toBe("running");
   });
@@ -127,14 +129,14 @@ describe("F01 影响确认界面：等待决定时页面中央有可操作的确
     services.saveBoardState.mockRejectedValue(new Error("网络断了"));
     await openImpactViaSave(services);
 
-    const continueButton = harness!.wrapper.get('[data-im="impact-continue"]');
-    expect(continueButton.text()).toContain("继续");
+    const continueButton = harness!.wrapper.get('[data-im="impact-confirm-submit"]');
+    expect(continueButton.text()).toMatch(/确认改动|继续/);
     await continueButton.trigger("click");
     await settlePage(harness!.wrapper);
 
     expect(services.saveBoardState, "确认后必须真的尝试保存（而不是只关框）").toHaveBeenCalled();
     expect(harness!.store.pendingImpact).toBeNull();
-    const outcome = document.querySelector('[data-im="impact-outcome"]');
+    const outcome = document.querySelector('[data-im="impact-confirm-outcome"]');
     expect(outcome, "保存失败必须显示真实结果，让用户知道改动没有落库").not.toBeNull();
     expect(outcome?.textContent ?? "").toContain("没有保存");
     expect(harness!.wrapper.text()).not.toContain("已保存生效");

@@ -63,15 +63,17 @@ def card(card_id: str, kind: str, content: str, x: int, y: int, **extra) -> dict
 
 
 def build_state() -> dict:
+    # 布局要给虚拟意图层留出上方网格（默认落位 80,80 + 300/200 步长，占上方约 430px），
+    # 否则真实板面卡片会被虚拟意图卡盖住、鼠标点击被拦截 —— 这是种子数据的可控布局，不是产品行为。
     cards = [
-        card("c_demand", "file", "需求材料", 120, 140, meta={"name": "需求材料.pdf"}),
-        card("c_constraint", "file", "约束说明", 420, 140, meta={"name": "约束说明.pdf"}),
-        card("c_note", "text", "整理发布材料，先列出两份材料的关键约束。", 120, 380, checked=True),
-        card("c_note2", "text", "这份注释是草稿冲突流程的载体。", 420, 380),
-        card("c_f1", "text", "填充卡 1", 760, 140),
-        card("c_f2", "text", "填充卡 2", 760, 340),
-        card("c_f3", "text", "填充卡 3", 760, 540),
-        card("c_f4", "text", "填充卡 4", 120, 620),
+        card("c_demand", "file", "需求材料", 120, 520, meta={"name": "需求材料.pdf"}),
+        card("c_constraint", "file", "约束说明", 420, 520, meta={"name": "约束说明.pdf"}),
+        card("c_note", "text", "整理发布材料，先列出两份材料的关键约束。", 120, 740, checked=True),
+        card("c_note2", "text", "这份注释是草稿冲突流程的载体。", 420, 740),
+        card("c_f1", "text", "填充卡 1", 760, 520),
+        card("c_f2", "text", "填充卡 2", 760, 740),
+        card("c_f3", "text", "填充卡 3", 1020, 520),
+        card("c_f4", "text", "填充卡 4", 1020, 740),
     ]
     groups = [
         {
@@ -80,7 +82,7 @@ def build_state() -> dict:
             "defaultName": False,
             "ordered": True,
             "x": 80,
-            "y": 330,
+            "y": 690,
             "w": 640,
             "h": 260,
             "members": ["c_note", "c_note2"],
@@ -94,7 +96,7 @@ def build_state() -> dict:
             "defaultName": False,
             "ordered": False,
             "x": 720,
-            "y": 90,
+            "y": 470,
             "w": 340,
             "h": 660,
             "members": ["c_f1", "c_f2", "c_f3"],
@@ -145,7 +147,26 @@ def main() -> int:
     args = parser.parse_args()
     BOARD = args.board
 
-    saved = call(f"/api/interactive/boards/{BOARD}/state", "PUT", {"state": build_state(), "reason": "D 验收种子"})
+    # 关掉首启引导（隔离数据域里默认是未看过的；不关会挡住整个页面）
+    for path, body in (
+        ("/api/onboarding/seen", {}),
+        ("/api/onboarding/complete", {}),
+        ("/api/onboarding/hint", {"dismissed": True}),
+    ):
+        try:
+            call(path, "POST", body)
+        except SystemExit as error:
+            print(f"[seed] onboarding {path} 跳过：{error}")
+
+    # 用服务器当前版本做覆盖（幂等重跑：旧版本写入会被服务端按 stale_state 拒绝）
+    try:
+        current = call(f"/api/interactive/boards/{BOARD}/state")
+        seq_now = int(current.get("seq") or 0)
+    except SystemExit:
+        seq_now = 0
+    seeded = build_state()
+    seeded["seq"] = seq_now
+    saved = call(f"/api/interactive/boards/{BOARD}/state", "PUT", {"state": seeded, "reason": "D 验收种子"})
     seq = saved.get("seq")
     print(f"[seed] board={BOARD} seq={seq}")
 

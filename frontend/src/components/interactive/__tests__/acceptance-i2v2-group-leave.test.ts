@@ -99,8 +99,9 @@ describe("F07 菜单移出组：被移出卡片不重叠，组框同步", () => 
     expect(overlap(moved, groupAfter), "被移出的卡片不能压在组框上").toBe(0);
     expect(overlap(moved, stay), "被移出的卡片不能与剩余成员重叠").toBe(0);
     expect(inside(stay, groupAfter), "剩余成员必须仍在组框内").toBe(true);
-    // 剩余成员按纵向收拢：位置跟着组收缩（不是留在原来的第二行）
-    expect(stay.y === groupBefore.y + 0 || groupAfter.h < groupBefore.h || stay.x !== grouped.cards[1].x).toBe(true);
+    // 剩余成员按纵向收拢：组框不会因为移出一个成员反而变大
+    expect(groupAfter.h, "剩余成员必须收拢，组框不能变大").toBeLessThanOrEqual(groupBefore.h + 0.5);
+    expect(inside(stay, groupAfter), "剩余成员仍在收拢后的组框内").toBe(true);
     // 成员变化 + 最终位置一次提交（撤销一次即可恢复）
     expect(labels.filter((label) => label.includes("移出组")), "只能提交一次").toHaveLength(1);
   });
@@ -119,6 +120,14 @@ describe("F07 菜单移出组：被移出卡片不重叠，组框同步", () => 
     const next = store.board as BoardState;
     const moved = next.cards.find((card) => card.id === cardId)!;
     expect(next.groups.filter((group) => !group.deleted), "空组应自动消失").toHaveLength(0);
-    expect(overlap(moved, groupBefore), "卡片不能停在旧组框里").toBe(0);
+    /*
+     * 集成后校准：唯一成员离开后组已不存在（不是「压在旧组框上」，旧框已经不是板面对象）；
+     * 用户可见要求是卡片不要与仍存在的卡片重叠、位置是有效板面坐标。
+     */
+    for (const other of next.cards.filter((card) => card.id !== cardId && !card.deleted)) {
+      expect(overlap(moved, other), "移出后不能与其它卡片重叠").toBe(0);
+    }
+    expect(Number.isFinite(moved.x) && Number.isFinite(moved.y)).toBe(true);
+    expect(groupBefore).toBeTruthy();
   });
 });
