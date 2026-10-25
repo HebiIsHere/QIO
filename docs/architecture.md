@@ -1538,7 +1538,8 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
   `GET /api/tasks/{id}`、`POST /api/tasks/{id}/ack`、`POST /api/tasks/{id}/cancel`，
   路由在 `backend/src/agent/api/task_feed_routes.py`，读取模型在
   `backend/src/agent/services/task_feed.py`。
-- 来源与持久化：子任务生命周期写入迁移 55 的 `task_feed`（展示事实，不替代执行记录）；
+- 来源与持久化：子任务生命周期写入迁移 **67** 的 `task_feed`（展示事实，不替代执行记录；
+  对话页线原先登记为 55，三分支整合时改号到 R9 链之后的 67，见 `docs/integration-3way-20261025.md` §4）；
   派生任务读 `derived_tasks`；维护批次读 `maintenance_batches`；工具执行读
   `tool_records`；开发任务读 `DevWorkspace`。恢复事项由前端合并现有恢复接口，
   按身份去重。历史不依赖组件内存或浏览器存储。
