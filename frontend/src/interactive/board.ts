@@ -286,7 +286,7 @@ export function setGroupParticipation(state: BoardState, groupId: string, includ
 }
 
 /**
- * 本地「本次允许 QIO 查看的范围」（Phase 2 §5.1 唯一规则的前端实现）：
+ * 本地「本次作为互动材料的范围」（Phase 2 §5.1 唯一规则的前端实现）：
  * - 卡片按 participation（不再看 checked/hidden 的推导值，但归一化已把两者同步）；
  * - 组：至少一名参与成员才出现，只列出参与成员；
  * - 连线：两端都在范围内才出现；组端点要求该组有参与成员。

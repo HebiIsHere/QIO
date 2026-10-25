@@ -257,7 +257,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
 
   const visibleRange = ref<VisibleRange | null>(null);
   /**
-   * 本地「本次允许 QIO 查看的范围」（Phase 2 §5.1 唯一规则）：与 participation 同源，
+   * 本地「本次作为互动材料的范围」（Phase 2 §5.1 唯一规则）：与 participation 同源，
    * 供提交前预览 / 范围说明使用；权威结果仍以服务端 visible_range 为准。
    */
   const participationRange = computed<VisibleRange>(() => participationVisibleRange(board.value));
