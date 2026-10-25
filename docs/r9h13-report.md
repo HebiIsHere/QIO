@@ -301,6 +301,27 @@
 - 本轮未跑全量 pytest、未跑完整 CI（历史完整 CI 额度 2/2 已用尽）；只跑受影响测试与必要邻近回归，
   失败后只重跑失败项与直接受影响项。
 
+### 7.1 验收覆盖对照（提示词第十三条）
+
+- new/amend/withdraw、完整要求链及来源：`test_r9h13_a_requirements.py`、`test_r9h2_chain_recovery.py`。
+- 标题补充与限制继承：A1 用例（普通补充不重绑、新增限制仍绑定、继承事实原样）。
+- 绑定缺失、候选替换和硬链接：B2/B3 用例、H11/H12 object_state/binding_recovery/cross_operation。
+- 不同绑定的同名对象：A3 去重/精确解除用例。
+- 正常读取与局部未知：B1 用例（report.txt 三模式可读 + 错误对象/执行仍拒绝）。
+- 限制路径消失后的无关操作：B2 用例（B 可读、A 硬链接仍保护、历史数据失败关闭）。
+- 绝对路径、名称入口及链接入口：B3/H12 cross-operation/对象判定用例。
+- 普通和递归删除：D3 用例（`rd /s /q`、rm -rf、fs_delete 一致、不完整拒绝）、`test_fs_delete_recycle.py`。
+- 常规内容变化及保持元数据的变化：D1 用例（同大小同 mtime 改写被拒）、E2 正常写回/回收控制组。
+- 参数采集边界及非标准后缀脚本：D2 用例（python job.txt、18 脚本/200 候选边界）。
+- 普通文件和附件的直接允许、模型允许、人工恢复：D 审批执行用例、`test_approved_operations.py`、
+  `test_r9g_acceptance_e2e.py`。
+- 内部单项、混合批量及三次确认：Lead §8 用例 + D 用例（历史 1 次、批量非首项、三次后正常执行）。
+- 批量全部有效、单项失效、全部失效和共同条件失效：D E3 用例 + `test_r9h5_regressions2.py`。
+- 模式放宽与收紧：D §12 用例 + `test_r9h4_engine_binding.py::test_recheck_mode_change_needs_confirmation`。
+- 子权限动作、对象、撤销、继承和申请：`test_r9h13_e_subagent.py`（F1-F6、请求→授予→重试→撤销、
+  read_only 升级 user）。
+- 每条拒绝用例相邻正常放行用例、每条允许用例配内容/对象/越界反例：见各文件用例结构（基线红/控制组）。
+
 ## 8. 最终 SHA、CI 运行号、HEAD 差异
 
 - 最终受 CI 验证的提交：`17b9775cd0c538dbadf9dc201380f01af5439e88`（r9h13/main；包含实现、旧期望修订、
