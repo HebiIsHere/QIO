@@ -522,21 +522,15 @@ function layoutScroll(): { x: number; y: number } {
 }
 
 /**
- * 板面**可用区域**（板面坐标）：平移 / 滚动后的可视起点 + 缩放之后，
- * 再扣掉自绘标题栏、底部工具栏、对话窗口（chatObstacleFrame）与审批浮层。
+ * **实际可用屏幕区域**：容器可视矩形扣掉自绘标题栏、底部工具栏、审批浮层与对话窗口。
  *
- * 为什么必须扣：只按「容器宽高 + 画布原点」算，展开卡会盖住底部工具栏 / 对话窗口，
- * 用户既读不到展开的内容，也点不到被压住的按钮（任务书 §7.4）。
- * X 轴与 Y 轴都要扣：工具栏吃的是高度、对话窗口两轴都吃。
+ * 与 boardRegion（板面坐标版本）共用这一份扣减顺序：展开阅读、定位、添加菜单看到的
+ * 是同一块「用户真的能看到 / 点到」的区域，不会各自算一套。量不到容器几何时返回 null
+ * （jsdom / 未挂载），调用方回落到既有口径。
  */
-const boardRegion = computed<{ origin: { x: number; y: number }; size: { w: number; h: number } }>(() => {
-  void stageTick.value;
-  const scale = scaleSafe.value;
+function usableScreenBox(): ScreenBox | null {
   const box = viewportScreenBox();
-  if (!box) {
-    // 量不到屏幕几何（jsdom / 还没挂载）：保持既有口径 —— 只用容器宽高，原点在板面原点
-    return { origin: { x: 0, y: 0 }, size: stageSize.value };
-  }
+  if (!box) return null;
   let work: ScreenBox = { ...box };
   // 0.2.3 自绘标题栏：它压在视口顶部时扣掉它那一行（视口本来就在标题栏之下时是空操作）
   const titlebar = Math.max(0, titlebarHeight());
@@ -553,6 +547,27 @@ const boardRegion = computed<{ origin: { x: number; y: number }; size: { w: numb
   if (chat && chat.w > 0 && chat.h > 0) {
     work = cutOutScreenBox(work, { left: chat.x, top: chat.y, right: chat.x + chat.w, bottom: chat.y + chat.h });
   }
+  return work;
+}
+
+/**
+ * 板面**可用区域**（板面坐标）：平移 / 滚动后的可视起点 + 缩放之后，
+ * 再扣掉自绘标题栏、底部工具栏、对话窗口（chatObstacleFrame）与审批浮层。
+ *
+ * 为什么必须扣：只按「容器宽高 + 画布原点」算，展开卡会盖住底部工具栏 / 对话窗口，
+ * 用户既读不到展开的内容，也点不到被压住的按钮（任务书 §7.4）。
+ * X 轴与 Y 轴都要扣：工具栏吃的是高度、对话窗口两轴都吃。
+ */
+const boardRegion = computed<{ origin: { x: number; y: number }; size: { w: number; h: number } }>(() => {
+  void stageTick.value;
+  const scale = scaleSafe.value;
+  const box = viewportScreenBox();
+  const usable = usableScreenBox();
+  if (!box || !usable) {
+    // 量不到屏幕几何（jsdom / 还没挂载）：保持既有口径 —— 只用容器宽高，原点在板面原点
+    return { origin: { x: 0, y: 0 }, size: stageSize.value };
+  }
+  const work: ScreenBox = usable;
   const scrollNow = layoutScroll();
   const insetLeft = Math.max(0, work.left - box.left);
   const insetTop = Math.max(0, work.top - box.top);
@@ -2993,25 +3008,33 @@ const editingLinkSummary = computed(() => {
 type ScreenRectLike = DOMRectLike & { right?: number; bottom?: number; width?: number; height?: number };
 
 /**
- * 一次性把某个板面矩形移进可视区需要的位移。
+ * 一次性把某个板面矩形移进**屏幕可用区**需要的位移。
  *
  * **只在用户明确点击「定位 / 完整查看」时调用**（F1/A6）：不给任何自动追踪、
  * 不因为缩放 / 平移 / 浮层开合而调整，也绝不改卡片本身。
  *
+ * originRect 只用来把板面坐标换算成屏幕坐标（容器原始矩形 + 当前滚动量）；
+ * area 是**实际可用区域**（已扣浮动遮挡）。两者分开，滚动量不会被算两次，
+ * 也不会把「被对话窗口盖住的那块屏幕」当成可见区域。
+ *
  * 明确视图策略：
  * - 整个矩形放得下 → 上下左右各夹一次，让它完整可见；
- * - 矩形比可视区还大（大卡 / 大预览）→ **只对齐左上角**，不再试图把右下边也拉进来 ——
+ * - 矩形比可用区还大（大卡 / 大预览）→ **只对齐左上角**，不再试图把右下边也拉进来 ——
  *   否则同一张卡会在两次定位之间左右 / 上下轮流对齐，看着像"两边轮流跳"。
  */
-function revealDelta(bounds: LayoutRect, viewRect: ScreenRectLike, margin: number): { dx: number; dy: number } {
+function revealDeltaInArea(
+  bounds: LayoutRect,
+  originRect: ScreenRectLike,
+  area: ScreenBox,
+  margin: number,
+): { dx: number; dy: number } {
   const scale = Number.isFinite(view.value.scale) && view.value.scale > 0 ? view.value.scale : 1;
-  const screen = screenPointOfBoard(bounds.x, bounds.y, viewRect);
+  const screen = screenPointOfBoard(bounds.x, bounds.y, originRect);
   if (!Number.isFinite(screen.x) || !Number.isFinite(screen.y)) return { dx: 0, dy: 0 };
-  // DOMRectLike 只保证 left / top：右 / 下边缺失时用宽高兜底（jsdom 的桩几何两种都有）
-  const left = finiteNumber(viewRect.left);
-  const top = finiteNumber(viewRect.top);
-  const right = Number.isFinite(viewRect.right) ? Number(viewRect.right) : left + finiteNumber(viewRect.width);
-  const bottom = Number.isFinite(viewRect.bottom) ? Number(viewRect.bottom) : top + finiteNumber(viewRect.height);
+  const left = finiteNumber(area.left);
+  const top = finiteNumber(area.top);
+  const right = Math.max(left, finiteNumber(area.right));
+  const bottom = Math.max(top, finiteNumber(area.bottom));
   const width = Math.max(0, finiteNumber(bounds.w)) * scale;
   const height = Math.max(0, finiteNumber(bounds.h)) * scale;
   const availW = Math.max(0, right - left - margin * 2);
@@ -3027,6 +3050,19 @@ function revealDelta(bounds: LayoutRect, viewRect: ScreenRectLike, margin: numbe
   return { dx, dy };
 }
 
+/**
+ * 旧口径包装：可用区 = 传入的可视矩形（待审批预览定位沿用；卡片定位走
+ * {@link revealDeltaInArea}，还要扣掉浮动对话等遮挡）。
+ */
+function revealDelta(bounds: LayoutRect, viewRect: ScreenRectLike, margin: number): { dx: number; dy: number } {
+  // DOMRectLike 只保证 left / top：右 / 下边缺失时用宽高兜底（jsdom 的桩几何两种都有）
+  const left = finiteNumber(viewRect.left);
+  const top = finiteNumber(viewRect.top);
+  const right = Number.isFinite(viewRect.right) ? Number(viewRect.right) : left + finiteNumber(viewRect.width);
+  const bottom = Number.isFinite(viewRect.bottom) ? Number(viewRect.bottom) : top + finiteNumber(viewRect.height);
+  return revealDeltaInArea(bounds, viewRect, { left, top, right, bottom }, margin);
+}
+
 /** 只动查看位置（滚动），板面状态一个字段都不改。 */
 function applyReveal(dx: number, dy: number): void {
   if (!dx && !dy) return;
@@ -3034,19 +3070,58 @@ function applyReveal(dx: number, dy: number): void {
   view.value = { ...view.value, x: -scroll.value.x, y: -scroll.value.y };
 }
 
-function locate(cardId: string) {
+/** 定位请求序号：只执行用户最后一次明确请求，不排队、不持续追踪（F08）。 */
+let locateSeq = 0;
+
+/** 等一帧：让「展开收起组」这类布局变化真正落地；没有 rAF 的环境退回宏任务。 */
+function nextLayoutFrame(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+    else setTimeout(resolve, 16);
+  });
+}
+
+/**
+ * 定位一张卡片（F08）。搜索 / 书签等入口都发同一个事件，因此走同一个流程：
+ * 1. 目标属于**已收起的组**：先展开该组（纯显示状态，不改成员 / 参与 / 正文），
+ *    等一次渲染 + 一帧，让目标真的出现在板面上、布局可用；
+ * 2. 按**实际可用视野**（扣掉标题栏 / 工具栏 / 审批浮层 / 浮动对话窗口）把卡片移进来：
+ *    放得下就完整可见，比可用区还大就只对齐左上角（稳定可预期）；
+ * 3. 高亮目标；只执行用户明确请求的这一次 —— 不持续追踪、不自动抢下一次视野。
+ */
+async function locate(cardId: string) {
   const current = boardState.value;
   if (!current) return;
   const card = cardById(current, cardId);
   if (!card) return;
-  // 用户明确点击「定位 / 完整查看」：只调这一次视野（查看位置不是板面改动，卡片不动）
+  const seq = (locateSeq += 1);
+
+  const group = groupOfCard(current, cardId);
+  const needsExpand = Boolean(group && collapsedGroupSet.value.has(group.id));
+  if (needsExpand && group) {
+    // 收起只是显示态（collapsedGroupIds），展开不写板面状态、不产生保存。
+    collapsedGroupIds.value = collapsedGroupIds.value.filter((id) => id !== group.id);
+    notice.value = "已展开「" + group.name + "」，再把这张卡片定位到视野里。";
+  }
+  if (needsExpand) {
+    await nextTick();
+    await nextLayoutFrame();
+    // 等待期间用户又点了另一个定位：只执行最后一次（每次定位都是一次明确请求）。
+    if (seq !== locateSeq) return;
+  }
+
+  const latest = boardState.value;
+  const target = latest ? cardById(latest, cardId) : null;
+  if (!latest || !target) return;
   const element = viewportEl.value;
   if (element) {
-    const delta = revealDelta(
-      { x: card.x, y: card.y, w: card.w, h: card.h },
-      element.getBoundingClientRect(),
-      80,
-    );
+    const container = element.getBoundingClientRect();
+    const usable = usableScreenBox();
+    // 显示矩形与卡片渲染同源（正式几何；展开收起只切显示，不改位置）。
+    const bounds = displayRect(target);
+    const delta = usable
+      ? revealDeltaInArea(bounds, container, usable, 80)
+      : revealDelta(bounds, container as ScreenRectLike, 80);
     applyReveal(delta.dx, delta.dy);
   }
   highlightId.value = cardId;
@@ -3059,7 +3134,7 @@ function locate(cardId: string) {
 function onLocateCard(event: Event) {
   const detail = (event as CustomEvent<{ cardId?: string }>).detail;
   if (!detail || !detail.cardId) return;
-  locate(detail.cardId);
+  void locate(detail.cardId);
 }
 
 // --- 待审批预览：定位事件 --------------------------------------------------
@@ -3313,6 +3388,7 @@ onBeforeUnmount(() => {
             :links="links"
             :cards="displayCards"
             :active-link-id="editingLinkId"
+            :scale="scaleSafe"
             :width="surfaceSize.w"
             :height="surfaceSize.h"
             :draft-from-id="linkDraft ? linkDraft.fromId : null"
