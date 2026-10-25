@@ -327,7 +327,7 @@ def _normalize_objects(value: Any) -> list[dict]:
     if isinstance(value, (str, bytes)) or not isinstance(value, (list, tuple)):
         raise ValueError("限制条目的 objects 必须是数组")
     objects: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple] = set()
     for raw in value:
         if not isinstance(raw, dict):
             raise ValueError("限制条目的 objects 元素必须是对象")
@@ -345,10 +345,6 @@ def _normalize_objects(value: Any) -> list[dict]:
             kind = "program_name"
         if kind == "program_name" and ("/" in text or "\\" in text):
             raise ValueError("program_name 限制只能是程序名称，不能包含路径分隔符")
-        key = (kind, text)
-        if key in seen:
-            continue
-        seen.add(key)
         entry = {"kind": kind, "value": text}
         if kind == "program_name":
             binding = raw.get("program_binding")
@@ -387,6 +383,12 @@ def _normalize_objects(value: Any) -> list[dict]:
                 )
                 if candidates:
                     entry["binding_candidates"] = candidates
+        # R9-H13 §3.A3：对象身份键包含 kind/value + 绑定对象/身份/生命周期 +
+        # 未解决状态/失败原因/候选事实；同名但绑定不同对象的两条不得被静默合并。
+        object_key = _object_identity(entry)
+        if object_key in seen:
+            continue
+        seen.add(object_key)
         objects.append(entry)
         if len(objects) > MAX_OBJECTS_PER_LIMIT:
             raise ValueError("单个限制条目的对象数过多")
@@ -394,12 +396,20 @@ def _normalize_objects(value: Any) -> list[dict]:
 
 
 def _canonical_entry(entry: dict, *, include_reason: bool = True) -> tuple:
+    """条目去重键：operations + 对象**完整数据身份**（含绑定/未解决事实）+ reason。
+
+    R9-H13 §3.A3：只按 (kind, value) 去重会静默丢失“同名同动作但绑定不同对象”的
+    限制；键里必须包含绑定对象/身份/生命周期/候选及来源含义。
+    """
     operations = tuple(sorted(str(item) for item in (entry.get("operations") or ())))
     objects = tuple(
         sorted(
-            (str(item.get("kind")), str(item.get("value")))
-            for item in (entry.get("objects") or ())
-            if isinstance(item, dict)
+            (
+                _object_identity(item)
+                for item in (entry.get("objects") or ())
+                if isinstance(item, dict)
+            ),
+            key=repr,
         )
     )
     if include_reason:
@@ -1237,48 +1247,130 @@ def _entry_with_objects(
     }
 
 
+def _same_path_text(left: object, right: object) -> bool:
+    """两个路径文本是否指向同一路径（规范化比较；纯数据、不要求存在）。"""
+    left_token = _path_token(left)
+    right_token = _path_token(right)
+    return bool(left_token) and left_token == right_token
+
+
+def _object_matches_removal(saved: Mapping[str, Any], removal: Mapping[str, Any]) -> bool:
+    """一个 saved 限制对象是否被一条 removed 对象精确命中（纯数据比较）。
+
+    支持三种精确表达（R9-H13 §3.A3“精确解除其中一个对象时保留其他对象”）：
+    * (kind, value) 完全相同（历史语义）；
+    * removed 给出明确路径（kind=path/program）：命中已绑定 program_name 且绑定路径
+      就是该路径的对象；也命中 path/program 限制里指向同一路径的对象；
+    * removed 携带 program_binding（内部精确操作）：按绑定 path/identity 命中。
+    不做任何查找/身份采集。
+    """
+    if not isinstance(saved, Mapping) or not isinstance(removal, Mapping):
+        return False
+    s_kind = _clean_text(saved.get("kind")).lower()
+    s_value = _clean_text(saved.get("value"))
+    r_kind = _clean_text(removal.get("kind")).lower()
+    r_value = _clean_text(removal.get("value"))
+    if s_kind and s_kind == r_kind and s_value and s_value == r_value:
+        return True
+    saved_binding = saved.get("program_binding")
+    if isinstance(saved_binding, Mapping) and r_value:
+        bound_path = _clean_text(saved_binding.get("path"))
+        if r_kind in ("path", "program") and bound_path and _same_path_text(
+            bound_path, r_value
+        ):
+            return True
+        removal_binding = removal.get("program_binding")
+        if isinstance(removal_binding, Mapping):
+            removal_path = _clean_text(removal_binding.get("path"))
+            removal_identity = _clean_text(removal_binding.get("identity"))
+            if removal_identity and _clean_text(saved_binding.get("identity")) == (
+                removal_identity
+            ):
+                return True
+            if removal_path and bound_path and _same_path_text(bound_path, removal_path):
+                return True
+    if (
+        s_kind in ("path", "program")
+        and r_kind in ("path", "program")
+        and s_value
+        and r_value
+    ):
+        return _same_path_text(s_value, r_value)
+    return False
+
+
 def remove_limits_precise(
     parent: Iterable[dict], removed: Iterable[dict]
 ) -> tuple[dict, ...]:
     """从已知限制中**精确**移除 removed_limits 覆盖的 (操作, 对象) 组合。
 
-    语义（契约 §4）：
+    语义（契约 §4 / R9-H13 §3.A3）：
     * removed 有 operations 无 objects = 解除这些操作在**所有对象**上的限制；
     * removed 有 objects 无 operations = 解除这些对象上**所有操作**的限制；
     * 两者都有 = 只解除交集（解除 B 的 write 不清除 A，也不误删 B 的 delete）；
+    * 精确对象：除 (kind, value) 完全相同外，removed 给出明确路径时只命中该路径对应
+      的已绑定对象（合法精确解除其中一个对象，其他对象原样保留）；
+    * 一条 removed 对象同时命中多个**不同**保存对象（例如裸名称同时命中分别绑定
+      不同程序的两条限制）→ 含义不足，抛 LimitRemovalAmbiguous，调用方保留原限制
+      并标 unresolved（不静默删除、不扩大限制）；
     * 条目 operations/objects 为空表示"全部"；无法表达的剩余集合（例如从
       "所有操作"中只移除 write）抛 LimitRemovalAmbiguous，调用方保留原限制并标
       unresolved，不得猜测。
-    * 只做结构化集合运算，不解析文字/名称/关键词。
+    * 只做结构化集合运算与路径文本比较，不解析文字/名称/关键词、不查找程序。
     """
     result = [dict(item) for item in normalize_limits(list(parent or ()))]
     removals = normalize_limits(list(removed or ()))
     for removal in removals:
         rem_ops = {str(item) for item in (removal.get("operations") or ())}
-        rem_objs = {
-            (str(item.get("kind")), str(item.get("value")))
+        rem_objs = [
+            dict(item)
             for item in (removal.get("objects") or ())
             if isinstance(item, dict)
-        }
+        ]
         if not rem_ops and not rem_objs:
             raise LimitRemovalAmbiguous("解除限制条目既没有 operations 也没有 objects")
         rem_ops_all = not rem_ops
         rem_objs_all = not rem_objs
+
+        def _entry_ops_match(entry: Mapping[str, Any]) -> bool:
+            e_ops = {str(item) for item in (entry.get("operations") or ())}
+            return rem_ops_all or not e_ops or bool(e_ops & rem_ops)
+
+        # 每个 removed 对象必须精确命中至多一个保存对象；命中多个不同对象=含义不足。
+        matched_by_removal: list[set[tuple]] = []
+        for rem_obj in rem_objs:
+            hits: set[tuple] = set()
+            for entry in result:
+                if not _entry_ops_match(entry):
+                    continue
+                for raw_obj in entry.get("objects") or ():
+                    if not isinstance(raw_obj, Mapping):
+                        continue
+                    if _object_matches_removal(raw_obj, rem_obj):
+                        hits.add(_object_identity(raw_obj))
+            if len(hits) > 1:
+                raise LimitRemovalAmbiguous(
+                    "解除限制的一个对象同时命中了多个不同绑定对象，无法确定要解除哪一个，需澄清"
+                )
+            matched_by_removal.append(hits)
+        matched_identities: set[tuple] = set().union(*matched_by_removal)
+
         touched = False
         next_result: list[dict] = []
         for entry in result:
             e_ops = {str(item) for item in (entry.get("operations") or ())}
             e_obj_map = {
-                (str(item.get("kind")), str(item.get("value"))): dict(item)
+                _object_identity(item): dict(item)
                 for item in (entry.get("objects") or ())
-                if isinstance(item, dict)
+                if isinstance(item, Mapping)
             }
             e_objs = set(e_obj_map)
             e_ops_all = not e_ops
             e_objs_all = not e_objs
             # 交集是否存在（空维度=全部，不能用空集合表示"无交集"）
             ops_match = rem_ops_all or e_ops_all or bool(e_ops & rem_ops)
-            objs_match = rem_objs_all or e_objs_all or bool(e_objs & rem_objs)
+            matched_here = e_objs & matched_identities
+            objs_match = rem_objs_all or e_objs_all or bool(matched_here)
             if not (ops_match and objs_match):
                 next_result.append(entry)
                 continue
@@ -1299,9 +1391,9 @@ def remove_limits_precise(
             if rem_objs_all:
                 hit_objs = set(e_objs)
             elif e_objs_all:  # pragma: no cover - 上面的 ambiguous 分支已覆盖
-                hit_objs = set(rem_objs)
+                hit_objs = set(matched_identities)
             else:
-                hit_objs = e_objs & rem_objs
+                hit_objs = matched_here
             left_ops = (e_ops - hit_ops) if not e_ops_all else set()
             left_objs = (e_objs - hit_objs) if not e_objs_all else set()
             if left_ops:
@@ -1311,7 +1403,9 @@ def remove_limits_precise(
             if left_objs:
                 next_result.append(
                     _entry_with_objects(
-                        e_ops, [e_obj_map[key] for key in sorted(left_objs)], reason
+                        e_ops,
+                        [e_obj_map[key] for key in sorted(left_objs, key=repr)],
+                        reason,
                     )
                 )
         if not touched:
