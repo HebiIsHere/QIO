@@ -288,4 +288,21 @@ describe("发送异常入口与草稿恢复", () => {
     expect(confirm).toHaveBeenCalledTimes(1);
     w.unmount();
   });
+
+  // 迁移自已删除的 components/TopicSwitchPrompt.vue 用例（2026-10-26 合并后清理 · C1）：
+  // 「保留当前」必须真的走拒绝接口，而不是只改本机状态。
+  it("话题切换建议的「保留当前」走到拒绝接口", async () => {
+    const pinia = freshPinia();
+    const w = mount(ComposerEntries, { global: { plugins: [pinia] } });
+    const session = useSessionStore();
+    session.pendingSwitch = { topicId: "t2", topicName: "另一个话题", reason: "" };
+    const reject = vi.spyOn(session, "rejectPendingSwitch").mockResolvedValue(undefined as never);
+    await nextTick();
+
+    await w.find('.entry-btn[data-entry="topicSwitch"]').trigger("click");
+    await w.find(".panel .qio-btn.quiet").trigger("click");
+    await flushPromises();
+    expect(reject).toHaveBeenCalledTimes(1);
+    w.unmount();
+  });
 });

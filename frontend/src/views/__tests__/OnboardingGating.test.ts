@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import App from "../../App.vue";
@@ -80,7 +80,6 @@ async function mountConversation() {
       stubs: {
         MessageStream: true,
         Composer: true,
-        SettingsFloat: true,
         PlanetDock: true,
         PlanetView: true,
         PlanetBoot: true,

@@ -422,7 +422,7 @@ describe("对话页：独立并列列表接入统一滚动策略", () => {
     const w = mount(ConversationView, {
       global: {
         plugins: [pinia],
-        stubs: { MessageStream: true, Composer: true, SettingsFloat: true, PlanetDock: true },
+        stubs: { MessageStream: true, Composer: true, PlanetDock: true },
       },
     });
     session.knowledgeCandidates = [{ knowledgeId: "k1", category: "fact", content: "候选内容" }];
