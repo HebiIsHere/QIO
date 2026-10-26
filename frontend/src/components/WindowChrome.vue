@@ -41,6 +41,7 @@ import { useUpdaterStore } from "../stores/updater";
 import { useModalArbiterStore } from "../stores/modalArbiter";
 import { useNotificationsStore } from "../stores/notifications";
 import QIcon from "./ui/QIcon.vue";
+import GlobalIssueEntry from "./feedback/GlobalIssueEntry.vue";
 import { vQioTip } from "../composables/useQioTip";
 import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
 import {
@@ -485,7 +486,7 @@ onBeforeUnmount(() => {
         v-qio-tip="'把窗口最小化到任务栏（QIO 继续在后台运行）'"
         @click="run('minimize')"
       >
-        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6h7" /></svg>
+        <QIcon name="window-minimize" :size="12" />
       </button>
       <button
         class="wc-btn"
@@ -494,11 +495,7 @@ onBeforeUnmount(() => {
         v-qio-tip="maximized ? '把窗口还原到原来的大小' : '把窗口最大化（也可以双击标题条）'"
         @click="run('toggleMaximize')"
       >
-        <svg v-if="!maximized" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1" /></svg>
-        <svg v-else viewBox="0 0 12 12" aria-hidden="true">
-          <rect x="2.5" y="4.5" width="5" height="5" rx="1" />
-          <path d="M4.5 4.5V3.6A1.1 1.1 0 0 1 5.6 2.5h2.8A1.1 1.1 0 0 1 9.5 3.6v2.8A1.1 1.1 0 0 1 8.4 7.5h-.9" />
-        </svg>
+        <QIcon :name="maximized ? 'window-restore' : 'window-maximize'" :size="12" />
       </button>
       <!-- R9 §11：发窗口关闭请求，由壳按 ui.close_behavior 执行（ask 才回来弹框） -->
       <button
@@ -508,7 +505,7 @@ onBeforeUnmount(() => {
         v-qio-tip="'关闭主窗口（按设置里的关闭行为处理；可能只是收进托盘）'"
         @click="requestWindowClose"
       >
-        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+        <QIcon name="window-close" :size="12" />
       </button>
     </div>
 
@@ -535,6 +532,8 @@ onBeforeUnmount(() => {
 
     <!-- 设置入口：对话页 / 互动页出现，固定排在窗口按钮左边（最右仍是窗口控制）。 -->
     <div v-if="hasGlobalBar" class="chrome-actions" :class="{ 'with-controls': inShell }">
+      <!-- 全局异常入口（B）：同一根因去重后的独立问题数量；无问题时不渲染、不占位 -->
+      <GlobalIssueEntry />
       <!-- 权限模式：纯文字，常驻全局栏（对话页 / 互动页同一处）；不再用页面内胶囊徽标。 -->
       <PermissionModeText class="chrome-mode" />
       <button

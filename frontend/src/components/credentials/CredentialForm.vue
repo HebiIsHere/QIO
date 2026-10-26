@@ -432,6 +432,22 @@ onBeforeUnmount(() => form.dispose());
 .status-area .qio-feedback { flex-direction: column; gap: 2px; align-items: flex-start; }
 .status-area .qio-feedback strong { font-weight: 600; }
 .tech { font-size: var(--fs-xs); color: var(--text-muted); max-width: 100%; }
+/* 技术详情：不用系统默认折叠标记；用文字「展开/收起」表达（不拿字符冒充图标）。 */
+.tech summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tech summary::-webkit-details-marker { display: none; }
+.tech summary::after {
+  content: "展开";
+  margin-left: 6px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.tech[open] > summary::after { content: "收起"; }
 .tech p { margin: 4px 0 0; word-break: break-all; }
 .progress { margin: 0; min-height: 14px; font-size: var(--fs-xs); color: var(--text-muted); }
 .actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-1); }

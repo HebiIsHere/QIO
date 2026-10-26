@@ -16,6 +16,7 @@ import CredentialCard from "./settings/CredentialCard.vue";
 import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
 import { readableError, usageLabel, type CredentialMode } from "../services/credentials";
 import QConfirm from "../components/ui/QConfirm.vue";
+import QIcon from "../components/ui/QIcon.vue";
 import UpdateCard from "../components/UpdateCard.vue";
 import { usePresence } from "../composables/usePresence";
 import {
@@ -1003,7 +1004,9 @@ watch(activeTab, async () => {
       <h1>设置</h1>
       <span class="sub mono">设置 · QIO</span>
       <span class="spacer"></span>
-      <router-link to="/" class="back">← 返回对话</router-link>
+      <router-link to="/" class="back">
+        <QIcon name="chevron-left" :size="13" /> 返回对话
+      </router-link>
     </header>
 
     <div class="layout">
@@ -1741,7 +1744,7 @@ header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 22px; }
 header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color: var(--text-strong); }
 .sub { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; }
 .spacer { flex: 1; }
-.back { color: var(--link); text-decoration: none; font-size: 13px; }
+.back { display: inline-flex; align-items: center; gap: 3px; color: var(--link); text-decoration: none; font-size: 13px; }
 .back:hover { text-decoration: underline; }
 
 /* 布局：左侧分区导航 + 右侧内容（窄窗口自动堆叠） */

@@ -185,7 +185,7 @@ onBeforeUnmount(() => {
         <!-- 摘要：先给影响面，再给条目 -->
         <section class="restore-dialog__section" aria-label="影响摘要">
           <p class="restore-dialog__lead">
-            这会把这次维护改动的知识恢复成维护前的内容。恢复会用**新的版本记录**，不删除历史；
+            这会把这次维护改动的知识恢复成维护前的内容。恢复会用新的版本记录，不删除历史；
             你后来做过的修改不会被覆盖 —— 受影响的那几项会被拒绝并列出原因。
           </p>
           <p v-if="summary" class="restore-dialog__summary mono" data-testid="restore-summary">{{ summary }}</p>

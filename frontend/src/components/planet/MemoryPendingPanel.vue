@@ -438,6 +438,21 @@ function switchView(next: PanelView) {
 const loadedOnce = ref(false);
 
 /**
+ * 统一审批入口那边刚读过/处理过知识待确认（同一份权威数据、同一身份）：
+ * 星球面板如果在待确认页，就重新读一次列表 —— 一处处理完，另一处立刻同步。
+ * 未加载过统一审批 store 时不产生任何额外请求（打开时自然读权威数据）。
+ */
+const unifiedApprovals = useUnifiedApprovalsStore();
+watch(
+  () => unifiedApprovals.knowledgeLoadedAt,
+  (stamp) => {
+    if (!stamp) return;
+    if (view.value !== "pending" || !loadedOnce.value || loading.value) return;
+    void loadPending();
+  },
+);
+
+/**
  * 窗口重新获得焦点时刷新待确认列表：与统一审批入口共享同一份权威数据，
  * 另一处处理完后切回来能看到真实状态（不靠本地猜）。
  */

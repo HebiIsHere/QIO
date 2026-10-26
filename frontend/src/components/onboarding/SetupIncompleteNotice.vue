@@ -69,11 +69,13 @@ function maybeEnqueue(): void {
     focus: false,
     // 排队期间用户也可能已经完成设置：显示前最后一道校验，过期就不显示。
     stillRelevant: () => shouldOfferNotice(),
+    // 点击/Enter 接续引导（B 的通知 host 在激活时调用并关闭本次通知）。
+    onActivate: () => continueSetup(),
   });
 }
 
 /**
- * 接续设置：点击这条通知时（B 的 host 提供激活回调后）重新打开向导。
+ * 接续设置：点击这条通知（B 的 host 通过 onActivate 回调）时重新打开向导。
  * 通知本身由 host 关闭；这里只做业务动作，不伪造「已显示」状态。
  */
 function continueSetup(): void {

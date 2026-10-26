@@ -7,6 +7,7 @@ import {
   type TraceSummary,
 } from "../services/api";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
+import QIcon from "../components/ui/QIcon.vue";
 
 const traces = ref<TraceSummary[]>([]);
 const total = ref(0);
@@ -126,7 +127,9 @@ onMounted(() => {
       <button class="qio-btn" type="button" @click="toggleEnabled">
         记录{{ enabled ? "已开启" : "已关闭" }}
       </button>
-      <router-link to="/" class="qio-btn">← 返回对话</router-link>
+      <router-link to="/" class="qio-btn debug-back">
+        <QIcon name="chevron-left" :size="13" /> 返回对话
+      </router-link>
     </header>
 
     <!-- 记录开关读写失败：留在开关旁边，不冒充已切换 -->
@@ -328,11 +331,25 @@ details {
   border-top: 1px solid var(--border-subtle);
   padding: 8px 0;
 }
+/* 技术详情折叠：不用系统默认三角/标记；展开/收起由文字说明（不拿字符冒充图标）。 */
 summary {
   cursor: pointer;
   font-size: 12.5px;
   color: var(--text-strong);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
+summary::-webkit-details-marker { display: none; }
+summary::after {
+  content: "展开";
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+details[open] > summary::after { content: "收起"; }
+.debug-back { display: inline-flex; align-items: center; gap: 3px; }
 .json {
   margin: 8px 0 0;
   padding: 10px 12px;
