@@ -552,6 +552,17 @@ onBeforeUnmount(() => {
       <span class="chrome-sep" aria-hidden="true"></span>
     </div>
 
+    <!-- 非对话/互动页（设置/调试等）：全局异常入口仍然只能有一个；
+         这里不渲染设置按钮（设置页本身就是设置），但连接/模型/更新等整体异常
+         必须在任何页面都看得见，而不是只在对话页顶部栏。 -->
+    <div
+      v-if="!hasGlobalBar"
+      class="chrome-actions chrome-actions--minimal"
+      :class="{ 'with-controls': inShell }"
+    >
+      <GlobalIssueEntry />
+    </div>
+
     <!-- 关闭确认框（关闭行为 = ask）：三个选择明文保留（最小化到托盘 / 退出 QIO / 取消）。
          只说明「退出会结束当前运行」，不展示任务概况/名称/数量。 -->
     <Transition name="qio-fade">
@@ -751,6 +762,10 @@ onBeforeUnmount(() => {
 /* 窗口按钮占 3 × 46px：设置固定在它们左边，最右仍是窗口控制。 */
 .chrome-actions.with-controls {
   right: 146px;
+}
+/* 非全局栏页面（设置/调试）：只放全局异常入口，位置与对话页同一套右对齐规则。 */
+.chrome-actions--minimal {
+  right: 8px;
 }
 .chrome-btn {
   position: relative;

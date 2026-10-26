@@ -328,7 +328,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  text-align: left;
+  text-align: center;
 }
 .restore-dialog__lead {
   margin: 0;
@@ -375,14 +375,17 @@ onBeforeUnmount(() => {
 .restore-dialog__item-head {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
+  text-align: center;
 }
 .restore-dialog__item-title {
   font-size: 11px;
   color: var(--text-secondary);
   overflow-wrap: anywhere;
   min-width: 0;
+  text-align: center;
 }
 .restore-dialog__reason {
   margin: 0;
@@ -390,9 +393,10 @@ onBeforeUnmount(() => {
   line-height: 1.6;
   color: var(--text-muted);
   overflow-wrap: anywhere;
+  text-align: center;
 }
 .restore-dialog__toggle {
-  align-self: flex-start;
+  align-self: center;
 }
 .restore-dialog__diff {
   display: flex;
@@ -401,6 +405,8 @@ onBeforeUnmount(() => {
   padding: 8px;
   border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
+  /* 修改前后内容是业务快照，保持左对齐以便逐行比较；只让外层行居中。 */
+  text-align: left;
 }
 .restore-dialog__diff-part {
   display: flex;
@@ -424,18 +430,19 @@ onBeforeUnmount(() => {
   line-height: 1.6;
   color: var(--warning);
   overflow-wrap: anywhere;
+  text-align: center;
 }
 .restore-dialog__error {
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
   color: var(--danger);
-  text-align: left;
+  text-align: center;
   overflow-wrap: anywhere;
 }
 .restore-dialog__actions { flex: none; margin-top: 6px; }
 .restore-dialog__retry-preview {
-  align-self: flex-start;
+  align-self: center;
 }
 @media (max-width: 520px) {
   .restore-scrim { padding: 16px; }

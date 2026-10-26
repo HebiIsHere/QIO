@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QIO 反馈场景展示页</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: var(--bg-base); color: var(--text-primary); font-family: var(--sans); }
+      #scene { min-height: 100%; }
+      .page { padding: 32px; display: flex; flex-direction: column; gap: 18px; align-items: center; }
+      .page h1 { margin: 0; font-family: var(--serif); font-size: 22px; }
+      .page p { margin: 0; color: var(--text-secondary); font-size: 13px; text-align: center; max-width: 46em; }
+      .note { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
+    </style>
+  </head>
+  <body>
+    <div id="scene"></div>
+    <script type="module" src="/visual/feedback-showcase.ts"></script>
+  </body>
+</html>
