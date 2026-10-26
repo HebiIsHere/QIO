@@ -67,19 +67,21 @@ h1,h2,h3,.serif{font-family:var(--serif);}
 
 /* ---- 输入 ---- */
 .qio-input{display:block;width:100%;height:38px;background:var(--bg-inset);border:1px solid var(--border-subtle);
-  border-radius:var(--r-md);padding:10px 14px;font-size:14px;line-height:1.5;color:var(--text-strong);outline:none;
+  border-radius:var(--qio-ui-radius);padding:10px 14px;font-size:14px;line-height:1.5;color:var(--text-strong);outline:none;
   font-family:var(--sans);transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease);}
 .qio-input::placeholder{color:var(--text-muted);}
 .qio-input:hover{border-color:var(--border-strong);}
 .qio-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);background:var(--bg-surface);}
 .qio-input:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px;}
 .qio-input:disabled{opacity:.5;cursor:not-allowed;}
+/* 处理中：保留内容、挡住编辑，只用中性“正在进行”视觉（不伪造进度） */
+.qio-input.busy,.qio-input[aria-busy="true"]{border-color:var(--accent-soft);background:var(--bg-surface);cursor:progress;}
 .qio-input.err{border-color:var(--danger);}
 .qio-input.mono{font-family:var(--mono);font-size:13px;letter-spacing:.02em;}
 textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 
 /* ---- 按钮 ---- */
-.qio-btn{height:34px;padding:0 16px;border-radius:var(--r-md);border:1px solid var(--border-subtle);
+.qio-btn{height:34px;padding:0 16px;border-radius:var(--qio-ui-radius);border:1px solid var(--border-subtle);
   background:var(--bg-inset);color:var(--text-secondary);font-size:13px;cursor:pointer;font-family:var(--sans);
   transition:background var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),
     color var(--dur-fast) var(--ease),transform var(--dur-press) var(--ease-out);}
@@ -96,13 +98,13 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-btn.danger{color:var(--danger);border-color:var(--danger);}
 /* 紧凑按钮：多个模块此前各自复制了一份 `height:auto;padding:4px 10px;font-size:11px`，
    收到这里成为原语。组件里的同名局部规则仍然生效（scoped 优先级更高），不会打架。 */
-.qio-btn.mini{height:auto;padding:4px 10px;font-size:11.5px;border-radius:var(--r-sm);}
+.qio-btn.mini{height:auto;padding:4px 10px;font-size:11.5px;border-radius:var(--qio-ui-radius);}
 
 /* ---- 卡片 ---- */
-.qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:16px 18px;}
+.qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);padding:16px 18px;}
 
 /* ---- 徽标 ---- */
-.qio-badge{font-family:var(--mono);font-size:10px;padding:2px 9px;border-radius:var(--r-pill);border:1px solid var(--border-strong);color:var(--text-secondary);}
+.qio-badge{font-family:var(--mono);font-size:10px;padding:2px 9px;border-radius:var(--qio-ui-radius);border:1px solid var(--border-strong);color:var(--text-secondary);}
 .qio-badge.link{color:var(--link);border-color:var(--link);}
 
 /* ---- 开关 ---- */
@@ -118,7 +120,7 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 
 /* ---- 下拉 ---- */
 .qio-select{position:relative;display:flex;align-items:center;justify-content:space-between;gap:8px;height:38px;
-  background:var(--bg-inset);border:1px solid var(--border-subtle);border-radius:var(--r-md);padding:0 14px;font-size:14px;
+  background:var(--bg-inset);border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);padding:0 14px;font-size:14px;
   color:var(--text-strong);cursor:pointer;outline:none;user-select:none;
   transition:border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease),transform var(--dur-press) var(--ease-out);}
@@ -127,12 +129,14 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-select:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);background:var(--bg-surface);}
 .qio-select:focus-visible{outline:2px solid var(--focus-ring);outline-offset:1px;}
 .qio-select .chev{color:var(--text-muted);transition:transform var(--dur-toggle) var(--ease-out);flex-shrink:0;}
+/* 值太长时在触发框内截断（长 URL/文件名不横向撑破表单） */
+.qio-select-val{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .qio-select.open .chev{transform:rotate(180deg);color:var(--accent);}
 .qio-select-menu{position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:30;background:var(--bg-elevated);
   /* 浮层宽度不再用 min-width:max-content 撑开：短触发框 + 长标签会把菜单撑到视口外
      （2026-10-14 统一滚动规则：任何 QIO 自有界面都不允许横向溢出）。
      菜单最多长到 420px 或视口宽度，标签由 nowrap 改成可换行。 */
-  border:1px solid var(--border-subtle);border-radius:var(--r-md);box-shadow:var(--shadow-2);padding:5px;
+  border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);box-shadow:var(--shadow-2);padding:5px;
   min-width:0;max-width:min(420px, calc(100vw - 2 * var(--sp-3)));
   /* 出现：立即有可见变化随后减速；退出：170ms 内收起，期间不拦截点击、不参与 Tab */
   opacity:0;visibility:hidden;transform:translateY(-4px) scale(.995);pointer-events:none;
@@ -142,14 +146,15 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
   opacity:1;visibility:visible;transform:none;pointer-events:auto;
   transition:opacity var(--dur-menu) var(--ease-out),transform var(--dur-menu) var(--ease-out),visibility 0s;
 }
-.qio-select-menu .opt{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-radius:var(--r-sm);
+.qio-select-menu .opt{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border-radius:var(--qio-ui-radius);
   font-size:13px;color:var(--text-primary);cursor:pointer;white-space:normal;overflow-wrap:anywhere;min-width:0;
   transition:background var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-press) var(--ease-out);}
 .qio-select-menu .opt:active{transform:translateY(var(--press-shift));}
 .qio-select-menu .opt:hover{background:var(--accent-soft);color:var(--text-strong);}
 .qio-select-menu .opt:focus-visible{outline:2px solid var(--focus-ring);outline-offset:-2px;}
 .qio-select-menu .opt.sel{color:var(--link);font-weight:600;}
-.qio-select-menu .opt.sel::after{content:'✓';font-family:var(--mono);color:var(--accent);}
+/* 选中标记用 QIcon（check），不用 Unicode ✓ 冒充图标 */
+.qio-select-menu .opt .qio-icon{color:var(--accent);flex:none;}
 
 .qio-select.disabled{opacity:.5;cursor:not-allowed;}
 .qio-select-menu .opt.hl{background:var(--accent-soft);color:var(--text-strong);}
@@ -185,7 +190,7 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-glass{
   background:var(--glass-bg);
   border:1px solid var(--glass-border);
-  border-radius:var(--r-lg);
+  border-radius:var(--qio-ui-radius);
   /* 内高光 = 边缘厚度感；极轻冷暖边分离 = 折射暗示（不用彩虹渐变） */
   box-shadow:var(--glass-shadow),inset 0 1px 0 var(--glass-edge-top),inset 0 0 0 1px var(--glass-inner);
   backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-sat));
@@ -194,14 +199,14 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
   border-right-color:var(--glass-tint-cool);
   color:var(--text-primary);
 }
-.qio-glass--chip{border-radius:var(--r-pill);padding:4px 12px;font-size:var(--fs-sm);}
-.qio-glass--panel{border-radius:var(--r-xl);background:var(--glass-bg-strong);}
+.qio-glass--chip{border-radius:var(--qio-ui-radius);padding:4px 12px;font-size:var(--fs-sm);}
+.qio-glass--panel{border-radius:var(--qio-ui-radius);background:var(--glass-bg-strong);}
 
 /* ---- 浮层（非玻璃）：对话框、下拉、抽屉统一这一档阴影与圆角 ---- */
-.qio-floating{background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--r-lg);box-shadow:var(--elev-floating);}
+.qio-floating{background:var(--bg-panel);border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);box-shadow:var(--elev-floating);}
 
 /* ---- 卡片：统一骨架 = 标题 → 状态 → 一行说明 → 可展开详情 ---- */
-.qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--r-lg);padding:var(--sp-4);}
+.qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);padding:var(--sp-4);}
 .qio-card--quiet{background:var(--bg-inset);}
 .qio-card--focus{border-color:var(--border-strong);box-shadow:var(--elev-floating);}
 /* 状态推进必须原位发生：用属性表达状态，而不是换一张新卡片 */
@@ -216,7 +221,7 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 /* ---- 列表行：hover / active / selected 三档必须可区分 ---- */
 .qio-row{
   display:flex;align-items:center;gap:var(--sp-2);width:100%;
-  padding:8px 10px;border-radius:var(--r-md);border:1px solid transparent;
+  padding:8px 10px;border-radius:var(--qio-ui-radius);border:1px solid transparent;
   background:none;color:var(--text-primary);font:inherit;text-align:left;cursor:pointer;
   transition:background var(--dur-fast) var(--ease-1),border-color var(--dur-fast) var(--ease-1),color var(--dur-fast) var(--ease-1);
 }
@@ -232,11 +237,11 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 
 /* ---- 标签：中性关键词，视觉低于状态徽章 ---- */
 .qio-tag{display:inline-flex;align-items:center;font-size:var(--fs-xs);color:var(--text-secondary);
-  border:1px solid var(--border-subtle);border-radius:var(--r-pill);padding:0 8px;background:none;line-height:1.7;}
+  border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);padding:0 8px;background:none;line-height:1.7;}
 
 /* ---- 状态徽章：全站唯一的状态底色来源（不再各写 k-state / phase / badge 变体）---- */
 .qio-state{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-xs);line-height:1.6;
-  padding:1px 8px;border-radius:var(--r-pill);border:1px solid var(--border-strong);
+  padding:1px 8px;border-radius:var(--qio-ui-radius);border:1px solid var(--border-strong);
   color:var(--text-secondary);background:none;font-variant-numeric:tabular-nums;}
 .qio-state.ok{color:var(--success);border-color:var(--success-soft);background:var(--success-soft);}
 .qio-state.warn{color:var(--warning);border-color:var(--warning-soft);background:var(--warning-soft);}
@@ -246,7 +251,7 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 
 /* ---- 就地编辑：阅读态默认不可见，进入编辑才出现 ---- */
 .qio-inline-edit{width:100%;background:var(--bg-inset);border:1px solid var(--border-strong);
-  border-radius:var(--r-md);padding:6px 10px;font:inherit;color:var(--text-strong);
+  border-radius:var(--qio-ui-radius);padding:6px 10px;font:inherit;color:var(--text-strong);
   transition:border-color var(--dur-fast) var(--ease-1),box-shadow var(--dur-fast) var(--ease-1);}
 .qio-inline-edit:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);outline:none;}
 
@@ -284,12 +289,55 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-swap-enter-from{opacity:0;transform:translateY(var(--shift-2));}
 .qio-swap-leave-to{opacity:0;}
 
+/* ======================================================================
+   中央弹窗共享骨架（2026-10-26「提示/通知/弹窗统一改造」）
+   QModal（新）与 QConfirm（三档）共用这一套；B 的既有弹窗可以逐步换用这些类，
+   它们只负责对称与尺寸，不改变组件内部业务逻辑：
+   - 标题栏三列等宽：左右两列天然相等，中间标题因此严格落在组件中轴；
+     左槽只留空（不放可聚焦控件），右槽放图标按钮；
+   - 正文居中、长文本可断行（overflow-wrap:anywhere 不撑破弹窗）；
+   - 动作按钮组整体居中、同高、等宽（2 个或 3 个都等分），窄窗改纵排。
+   ====================================================================== */
+.qio-modal-head{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2.4fr) minmax(0,1fr);
+  align-items:center;column-gap:var(--sp-2);}
+.qio-modal-head__slot{display:flex;align-items:center;min-width:0;}
+.qio-modal-head__slot--end{justify-content:flex-end;column-gap:var(--sp-1);}
+.qio-modal-title{margin:0;min-width:0;text-align:center;font-size:var(--fs-base);line-height:var(--lh-tight);
+  color:var(--text-strong);overflow-wrap:anywhere;}
+.qio-modal-kicker{margin:2px 0 0;min-width:0;text-align:center;font-size:var(--fs-xs);
+  color:var(--text-muted);overflow-wrap:anywhere;}
+.qio-modal-body{margin:var(--sp-2) 0 0;min-width:0;text-align:center;color:var(--text-secondary);
+  line-height:1.65;overflow-wrap:anywhere;}
+.qio-modal-actions{display:flex;align-items:stretch;justify-content:center;gap:var(--sp-2);
+  margin:var(--sp-4) auto 0;max-width:420px;}
+/* 配对同宽 + 同高：所有动作按钮等分（2 个或 3 个都不会一个宽一个窄） */
+.qio-modal-actions > *{flex:1 1 0;min-width:0;max-width:200px;height:36px;}
+.qio-modal-scrim{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;
+  padding:var(--sp-6);
+  /* 轻遮罩 + 轻模糊：仍能辨认原页面，不做成“另一个应用的黑屏” */
+  background:color-mix(in srgb, var(--bg-base) 52%, transparent);
+  backdrop-filter:blur(calc(var(--glass-blur) * 0.4));
+  -webkit-backdrop-filter:blur(calc(var(--glass-blur) * 0.4));}
+@media (max-width:480px){
+  .qio-modal-actions{flex-direction:column;max-width:100%;}
+  .qio-modal-actions > *{max-width:none;width:100%;}
+}
+
+/* 中央弹窗/浮层进入：淡入 + 轻位移；退出交给外层 fade（更快，不拖尾）。
+   只用跨组件令牌；reduced-motion 下由全局规则压到 90ms。 */
+.qio-pop-in{animation:qio-pop-in var(--mo-2-in) var(--ease-2) both;}
+@keyframes qio-pop-in{from{opacity:0;transform:translateY(var(--shift-4));}to{opacity:1;transform:none;}}
+
 /* ---- 确认层：三档共用一套视觉语言（inline / popover / layer）---- */
-.qio-confirm{display:flex;flex-direction:column;gap:var(--sp-2);font-size:var(--fs-sm);color:var(--text-primary);}
+.qio-confirm{display:flex;flex-direction:column;gap:var(--sp-2);font-size:var(--fs-sm);
+  color:var(--text-primary);text-align:center;}
 .qio-confirm__title{font-size:var(--fs-base);color:var(--text-strong);}
-.qio-confirm__detail{color:var(--text-secondary);line-height:1.6;}
-.qio-confirm__actions{display:flex;justify-content:flex-end;gap:var(--sp-2);}
-.qio-confirm--inline{border:1px solid var(--border-strong);border-radius:var(--r-md);padding:var(--sp-3);background:var(--bg-inset);}
-.qio-confirm--popover,.qio-confirm--layer{padding:var(--sp-4);border-radius:var(--r-lg);}
+.qio-confirm__detail{color:var(--text-secondary);line-height:1.6;overflow-wrap:anywhere;}
+.qio-confirm__actions{margin-top:var(--sp-3);}
+.qio-confirm--inline{border:1px solid var(--border-strong);border-radius:var(--qio-ui-radius);padding:var(--sp-3);background:var(--bg-inset);}
+.qio-confirm--popover,.qio-confirm--layer{padding:var(--sp-4);border-radius:var(--qio-ui-radius);}
 .qio-confirm-scrim{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
-  background:var(--bg-overlay);padding:var(--sp-6);}
+  padding:var(--sp-6);
+  background:color-mix(in srgb, var(--bg-base) 52%, transparent);
+  backdrop-filter:blur(calc(var(--glass-blur) * 0.4));
+  -webkit-backdrop-filter:blur(calc(var(--glass-blur) * 0.4));}

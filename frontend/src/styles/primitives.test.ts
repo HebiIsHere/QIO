@@ -48,6 +48,39 @@ describe("base.css 组件原语", () => {
     expect(blur).not.toBeNull();
   });
 
+  /**
+   * 本轮统一改造（2026-10-26）：这些原语是“表面”，圆角必须来自唯一 token。
+   * 每条规则按选择器取块，避免整文件 contains 把别的规则当成通过。
+   */
+  it("本轮涉及的基础原语圆角统一为 --qio-ui-radius", () => {
+    const selectors = [
+      ".qio-btn", ".qio-btn.mini", ".qio-input", ".qio-select", ".qio-select-menu",
+      ".qio-badge", ".qio-tag", ".qio-state", ".qio-row", ".qio-card",
+      ".qio-inline-edit", ".qio-floating", ".qio-confirm--inline",
+      ".qio-confirm--popover,.qio-confirm--layer",
+    ];
+    for (const sel of selectors) {
+      const escaped = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const blocks = css.match(new RegExp(escaped + "\\{[^}]*\\}", "g")) ?? [];
+      expect(blocks.length, sel).toBeGreaterThan(0);
+      // 主规则必须用 token；同选择器的补充规则（例如 textarea.qio-input 只调高度）
+      // 如果声明了 border-radius 也必须用 token，没声明就不要求。
+      expect(blocks.some((block) => block.includes("var(--qio-ui-radius)")), sel).toBe(true);
+      for (const block of blocks) {
+        if (block.includes("border-radius:")) expect(block, sel).toContain("var(--qio-ui-radius)");
+      }
+    }
+  });
+
+  it("中央弹窗共享骨架与动效工具类存在（QModal/QConfirm 共用）", () => {
+    for (const cls of [".qio-modal-head", ".qio-modal-title", ".qio-modal-kicker", ".qio-modal-body", ".qio-modal-actions", ".qio-modal-scrim", ".qio-pop-in"]) {
+      expect(css).toContain(cls);
+    }
+    // 窄窗纵排 + 等宽同高
+    expect(css).toMatch(/\.qio-modal-actions > \*\{[^}]*flex:1 1 0/);
+    expect(css).toMatch(/@media \(max-width:480px\)[\s\S]{0,200}?\.qio-modal-actions\{flex-direction:column/);
+  });
+
   it("确认层三档与过渡工具类齐全", () => {
     for (const cls of [
       ".qio-confirm--inline", ".qio-confirm--popover", ".qio-confirm--layer", ".qio-confirm-scrim",
