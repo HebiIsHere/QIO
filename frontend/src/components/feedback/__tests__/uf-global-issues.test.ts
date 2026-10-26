@@ -121,3 +121,19 @@ describe("全局异常来源：一个入口、根因去重、部分恢复", () =
     handle.stop();
   });
 });
+
+describe("不进全局入口的事实：单条回复失败 / 用户停止", () => {
+  it("会话最后一轮失败或用户停止（resyncState 正常）不产生全局问题", async () => {
+    const { session, issues, handle } = setup();
+    session.resyncState = "normal";
+    session.lastError = "本轮执行失败：模型调用被拒绝（401）";
+    session.lastTurnOutcome = { turnId: "turn_1", status: "failed" };
+    await tick();
+    expect(issues.count).toBe(0);
+
+    session.lastTurnOutcome = { turnId: "turn_2", status: "cancelled" };
+    await tick();
+    expect(issues.count).toBe(0);
+    handle.stop();
+  });
+});

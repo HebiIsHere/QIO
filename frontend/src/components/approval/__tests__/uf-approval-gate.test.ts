@@ -222,3 +222,27 @@ describe("真实缺陷回归：输入中到达 + 失焦后自动弹（不再被 
   });
 });
 
+describe("关闭询问等最高层触发器：业务弹窗让位但不丢状态", () => {
+  it("suspendAll 隐藏审批弹窗（DOM 保留）；resumeAll 恢复同一上下文", async () => {
+    const { unified, approvals, arbiter } = setup();
+    approvals.enqueue("appr_1", "tool_execution", { description: "执行命令" }, { autoOpen: true });
+    unified.open("tool:appr_1");
+    const w = mount(UnifiedApprovalModal);
+    await flushPromises();
+    expect(w.find(".ua-modal").exists()).toBe(true);
+
+    arbiter.suspendAll("close-ask");
+    await flushPromises();
+    // DOM 保留、仅隐藏：草稿/队列位置/当前项都不丢
+    const root = w.find("[data-unified-approval-modal]");
+    expect(root.exists()).toBe(true);
+    expect((root.element as HTMLElement).style.display).toBe("none");
+    expect(unified.activeKey).toBe("tool:appr_1");
+
+    arbiter.resumeAll();
+    await flushPromises();
+    expect((w.find("[data-unified-approval-modal]").element as HTMLElement).style.display).toBe("");
+    expect(w.find(".ua-modal").exists()).toBe(true);
+    w.unmount();
+  });
+});

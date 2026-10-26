@@ -243,6 +243,11 @@ onBeforeUnmount(() => {
  * 不得强行显示；关闭时注销。绝不用 z-index 抢层。
  */
 const APPROVAL_MODAL_ID = "unified-approval";
+/**
+ * 更上层触发器（关闭询问等）让业务弹窗「让位」：DOM 与状态保留、只隐藏（v-show），
+ * 取消/结束后自动恢复原来的上下文与焦点归还逻辑。
+ */
+const hiddenByHigherLayer = computed(() => arbiter.hiddenBy(APPROVAL_MODAL_ID));
 watch(
   panelOpen,
   (open) => {
@@ -376,8 +381,10 @@ function retryKnowledgeDetail() {
 <template>
   <div
     v-if="panelOpen"
+    v-show="!hiddenByHigherLayer"
     class="ua-mask"
     data-unified-approval-modal
+    data-hidden-by="hiddenByHigherLayer ?? undefined"
     @click.self="unified.close()"
   >
     <section
