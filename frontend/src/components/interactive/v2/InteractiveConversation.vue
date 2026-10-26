@@ -700,6 +700,8 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   justify-self: end;
   align-self: end;
   min-width: 0;
+  /* FU5：再往左让 20px —— 模式切换文字不要贴到输入胶囊的圆角/描边。 */
+  margin-right: 20px;
 }
 @media (max-width: 700px) {
   .ic-composer-row {
@@ -712,6 +714,7 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
     grid-row: 1;
     justify-self: start;
     align-self: start;
+    margin-right: 0;
   }
   .ic-composer-input {
     grid-column: 1;
