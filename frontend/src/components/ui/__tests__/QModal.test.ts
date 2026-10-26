@@ -12,7 +12,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { readFileSync } from "node:fs";
+import { createPinia, setActivePinia } from "pinia";
 import QModal from "../QModal.vue";
+import { useModalArbiterStore } from "../../../stores/modalArbiter";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -200,5 +202,65 @@ describe("QModal 焦点", () => {
     w.unmount();
     pressEscape();
     expect(w.emitted("close")).toBeUndefined();
+  });
+});
+
+/**
+ * 接入 B 的弹窗仲裁（2026-10-27）：
+ * 同一时刻只允许一个中央弹窗；被挡住时不显示、等挡路者关闭后自动显示；
+ * 关闭询问等 suspendAll 期间用 v-show 隐藏（DOM/草稿保留），键盘让给更高层。
+ */
+describe("QModal 与弹窗仲裁", () => {
+  it("更高优先级弹窗挡着时不显示；挡路者关闭后自动显示并注册", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    expect(arbiter.open({ id: "impact-1", kind: "impact" })).toBe(true);
+
+    const w = mount(QModal, {
+      props: { open: true, title: "影响确认", modalId: "modal-impact" },
+      attachTo: document.body,
+    });
+    await flush();
+    // 不得强行显示
+    expect(dialogEl()).toBeNull();
+    expect(arbiter.isOpen("modal-impact")).toBe(false);
+
+    arbiter.close("impact-1");
+    await flush();
+    expect(dialogEl()).not.toBeNull();
+    expect(arbiter.isOpen("modal-impact")).toBe(true);
+
+    await w.setProps({ open: false });
+    await flush();
+    expect(arbiter.isOpen("modal-impact")).toBe(false);
+    w.unmount();
+  });
+
+  it("suspendAll 期间 v-show 隐藏但保留 DOM；resumeAll 恢复，挂起时 Esc 不关闭", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    const w = mount(QModal, {
+      props: { open: true, title: "标题", modalId: "modal-suspended" },
+      attachTo: document.body,
+    });
+    await flush();
+    const scrim = document.querySelector(".qio-modal-scrim") as HTMLElement;
+    expect(scrim).not.toBeNull();
+    expect(scrim.style.display).not.toBe("none");
+
+    arbiter.suspendAll("close-ask");
+    await flush();
+    expect(scrim.style.display).toBe("none");
+    expect(dialogEl()).not.toBeNull();
+
+    pressEscape();
+    await flush();
+    expect(w.emitted("close")).toBeUndefined();
+
+    arbiter.resumeAll();
+    await flush();
+    expect(scrim.style.display).not.toBe("none");
+    w.unmount();
+    expect(arbiter.stack.length).toBe(0);
   });
 });

@@ -124,6 +124,13 @@ export const ICON_PATHS = {
   ],
   code: ["M8.5 8 4.5 12l4 4", "M15.5 8l4 4-4 4"],
   "arrow-right": ["M4 12h15", "M14 7l5 5-5 5"],
+  /* 窗口控制（WindowChrome 用）：横线 / 方框 / 叠框 / 细叉。
+     与内容图标同一套 24 viewBox 与描边，视觉重量由 QIcon 统一控制；
+     窗口按钮的命中区与拖拽面互斥关系不变（那不是图标职责）。 */
+  "window-minimize": ["M5.5 12h13"],
+  "window-maximize": ["M5.5 5.5h13v13h-13z"],
+  "window-restore": ["M8.5 8.5h10v10h-10z", "M5.5 15.5v-10h10"],
+  "window-close": ["M6.5 6.5l11 11", "M17.5 6.5l-11 11"],
 } as const;
 
 export type IconName = keyof typeof ICON_PATHS;

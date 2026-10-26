@@ -26,12 +26,15 @@
  * - `tone="danger"` 时确认按钮用中性实心（`.qio-btn.danger-solid`），**不用品牌主操作色**
  *   —— 品牌色会让「危险动作」看起来像是被推荐的默认选择。
  *
- * 仲裁（待接）：layer 打开时应向 B 的 useModalArbiterStore 注册
- * open({ id, kind: "confirm", dismissible: true })、关闭 unregister；
- * A 分支不重复实现该 store，Lead 合并 B 后在此接入（同一组件只做一层中央弹窗）。
+ * 仲裁（已接入 B 的 stores/modalArbiter.ts）：只有 layer 档是中央弹窗——
+ * 打开时 open({ id, kind: "confirm", dismissible: true })；返回 false 时不得显示，
+ * 等挡路弹窗关闭后重试；被 suspendAll(by) 挂起时 v-show 隐藏（状态保留）；
+ * 关闭/卸载时 close(id)。inline/popover 是就地控件，不参与中央弹窗仲裁。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
+import { getActivePinia } from "pinia";
 import QIconButton from "./QIconButton.vue";
+import { useModalArbiterStore } from "../../stores/modalArbiter";
 
 const props = withDefaults(
   defineProps<{
@@ -60,6 +63,59 @@ const emit = defineEmits<{ confirm: []; cancel: [] }>();
 const cancelRef = ref<HTMLButtonElement | null>(null);
 const rootRef = ref<HTMLElement | null>(null);
 const detailId = computed(() => `${props.titleId}-detail`);
+
+/** 仲裁：layer 档是中央弹窗；没有 pinia 的画廊/单测环境跳过（只做纯视觉）。 */
+const instanceId = useId();
+const confirmModalId = computed(() => `qio-confirm-${instanceId}`);
+const arbiter = getActivePinia() ? useModalArbiterStore() : null;
+const layerRegistered = ref(false);
+const layerBlocked = ref(false);
+const layerSuspended = computed(() =>
+  arbiter && props.variant === "layer" ? arbiter.hiddenBy(confirmModalId.value) !== null : false,
+);
+const layerShown = computed(() => props.open && props.variant === "layer" && !layerBlocked.value);
+/** 键盘/Esc 只在这一层真正可见时生效；被挡住或挂起时把按键让给更高层 */
+const layerActive = computed(() => (props.variant !== "layer" ? true : layerShown.value && !layerSuspended.value));
+
+function registerLayer(): void {
+  if (!props.open || props.variant !== "layer" || layerRegistered.value) return;
+  if (!arbiter) {
+    layerRegistered.value = true;
+    return;
+  }
+  const allowed = arbiter.open({ id: confirmModalId.value, kind: "confirm", dismissible: true });
+  layerRegistered.value = allowed;
+  layerBlocked.value = !allowed;
+}
+
+function unregisterLayer(): void {
+  const wasRegistered = layerRegistered.value;
+  layerRegistered.value = false;
+  layerBlocked.value = false;
+  if (wasRegistered) arbiter?.close(confirmModalId.value);
+}
+
+watch(
+  () => [props.open, props.variant] as const,
+  () => {
+    if (props.open && props.variant === "layer") registerLayer();
+    else unregisterLayer();
+  },
+  { immediate: true },
+);
+watch(
+  () => (arbiter ? arbiter.active?.id ?? null : null),
+  () => {
+    if (props.open && props.variant === "layer" && !layerRegistered.value) registerLayer();
+  },
+);
+// 被挡住后终于放行：焦点仍然先给“取消”（与正常打开一致）
+watch(layerShown, async (allowed) => {
+  if (!allowed || !props.open) return;
+  await nextTick();
+  cancelRef.value?.focus();
+});
+
 /** 打开前的焦点元素：关闭后必须还回去，否则键盘用户会掉到页面开头 */
 let restoreFocusTo: HTMLElement | null = null;
 
@@ -103,7 +159,7 @@ function confirm() {
  * 只处理 Tab —— Esc 由 keydown 统一取消。
  */
 function onKeydown(e: KeyboardEvent) {
-  if (!props.open) return;
+  if (!props.open || !layerActive.value) return;
   if (e.key === "Escape") {
     e.preventDefault();
     e.stopPropagation();
@@ -152,6 +208,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  unregisterLayer();
   window.removeEventListener("keydown", onKeydown, true);
   if (props.open) restoreFocus();
 });
@@ -160,7 +217,8 @@ onBeforeUnmount(() => {
 <template>
   <Transition name="qio-fade">
     <div
-      v-if="open && variant === 'layer'"
+      v-if="open && variant === 'layer' && !layerBlocked"
+      v-show="!layerSuspended"
       class="qio-confirm-scrim"
     >
       <div

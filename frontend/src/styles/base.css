@@ -309,7 +309,7 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-modal-body{margin:var(--sp-2) 0 0;min-width:0;text-align:center;color:var(--text-secondary);
   line-height:1.65;overflow-wrap:anywhere;}
 .qio-modal-actions{display:flex;align-items:stretch;justify-content:center;gap:var(--sp-2);
-  margin:var(--sp-4) auto 0;max-width:420px;}
+  width:100%;max-width:420px;margin:var(--sp-4) auto 0;}
 /* 配对同宽 + 同高：所有动作按钮等分（2 个或 3 个都不会一个宽一个窄） */
 .qio-modal-actions > *{flex:1 1 0;min-width:0;max-width:200px;height:36px;}
 .qio-modal-scrim{position:fixed;inset:0;z-index:90;display:flex;align-items:center;justify-content:center;
@@ -320,7 +320,8 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
   -webkit-backdrop-filter:blur(calc(var(--glass-blur) * 0.4));}
 @media (max-width:480px){
   .qio-modal-actions{flex-direction:column;max-width:100%;}
-  .qio-modal-actions > *{max-width:none;width:100%;}
+  /* 列方向主轴是高度：flex-basis:0 会把按钮压成内容高度，这里必须改回按内容+36px */
+  .qio-modal-actions > *{flex:0 0 auto;max-width:none;width:100%;height:36px;}
 }
 
 /* 中央弹窗/浮层进入：淡入 + 轻位移；退出交给外层 fade（更快，不拖尾）。

@@ -10,7 +10,9 @@ import { describe, expect, it, afterEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { readFileSync } from "node:fs";
+import { createPinia, setActivePinia } from "pinia";
 import QConfirm from "../QConfirm.vue";
+import { useModalArbiterStore } from "../../../stores/modalArbiter";
 
 /**
  * 对称布局（2026-10-26 统一改造）。
@@ -195,5 +197,47 @@ describe("QConfirm 键盘与焦点", () => {
     await nextTick();
     expect(document.activeElement).toBe(trigger);
     w.unmount();
+  });
+});
+
+/**
+ * layer 档接入 B 的弹窗仲裁（2026-10-27）：
+ * 审批等更高优先级弹窗在时不得显示；让位后恢复显示并注册 kind=confirm；
+ * inline / popover 是就地控件，不占中央弹窗层。
+ */
+describe("QConfirm 仲裁（仅 layer 档是中央弹窗）", () => {
+  it("更高优先级弹窗挡着时 layer 不渲染；让位后渲染并注册 confirm", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    arbiter.open({ id: "approval-x", kind: "approval" });
+
+    const w = mount(QConfirm, {
+      props: { open: true, title: "删除这项凭据？", variant: "layer" },
+      attachTo: document.body,
+    });
+    await nextTick();
+    await nextTick();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    arbiter.close("approval-x");
+    await nextTick();
+    await nextTick();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(arbiter.stack.some((d) => d.kind === "confirm")).toBe(true);
+
+    w.unmount();
+    await nextTick();
+    expect(arbiter.stack.length).toBe(0);
+  });
+
+  it("inline / popover 不注册中央弹窗", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    for (const variant of ["inline", "popover"] as const) {
+      const w = mount(QConfirm, { props: { open: true, title: "归档？", variant } });
+      await nextTick();
+      expect(arbiter.stack.length, variant).toBe(0);
+      w.unmount();
+    }
   });
 });
