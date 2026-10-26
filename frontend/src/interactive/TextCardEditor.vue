@@ -65,8 +65,196 @@ function initialText(): string {
 }
 const text = ref(initialText());
 
-/** 用户可读的当前状态（诚实反馈：插入链接取消了输入、格式动作的结果等）。 */
+/** 用户可读的当前状态（诚实反馈：链接动作与格式动作的结果等）。 */
 const note = ref("");
+
+/* ------------------------------------------------------------------ */
+/* 链接行：在卡片里就地输入网址（不再用浏览器原生 prompt）              */
+/* ------------------------------------------------------------------ */
+/**
+ * 为什么不再用 prompt：原生对话框会抢焦点、挡住卡片、无法说明「哪段文字变成链接」，
+ * 也不能在取消后把选区还给用户；更不符合「不用原生 alert/confirm/prompt」的硬约束。
+ *
+ * 行内两种模式：
+ * - insert：把当前选区（没有选区就插入「链接」两个字）变成 [标题](地址)；
+ * - edit：光标/选区落在已有链接里时，直接改这条链接的地址或把它移除（文字保留）。
+ * 确认 / 取消都留在卡片里；地址不合法就在行内说原因，不写坏正文。
+ */
+interface LinkRowState {
+  open: boolean;
+  mode: "insert" | "edit";
+  label: string;
+  href: string;
+  range: { start: number; end: number } | null;
+  error: string;
+  composing: boolean;
+}
+const linkRow = ref<LinkRowState>({
+  open: false,
+  mode: "insert",
+  label: "",
+  href: "",
+  range: null,
+  error: "",
+  composing: false,
+});
+const linkInput = ref<HTMLInputElement | null>(null);
+
+interface LinkSpan {
+  start: number;
+  end: number;
+  label: string;
+  href: string;
+}
+
+/** 找到包含 [start,end] 的那条 markdown 链接（行内链接，不跨行）。 */
+function findLinkSpan(value: string, start: number, end: number): LinkSpan | null {
+  const pattern = /\[([^\]\n]*)\]\(([^)\n]*)\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value)) !== null) {
+    const from = match.index;
+    const to = from + match[0].length;
+    if (start >= from && end <= to) {
+      return { start: from, end: to, label: match[1], href: match[2] };
+    }
+  }
+  return null;
+}
+
+/** 地址校验：只接受 http / https / mailto（与卡片打开链接的白名单一致）。 */
+function normalizeLinkHref(raw: string): { href: string; error: string } {
+  const href = raw.trim();
+  if (!href) {
+    return { href: "", error: "网址不能为空：卡片里的链接现在会打不开。" };
+  }
+  if (/^https?:\/\//i.test(href) || /^mailto:/i.test(href)) {
+    return { href, error: "" };
+  }
+  return {
+    href,
+    error: "只支持 http / https / mailto 链接：其他写法不会被当成可打开的地址。",
+  };
+}
+
+function returnFocusToEditor(selection?: { start: number; end: number }): void {
+  const el = area.value;
+  if (!el) return;
+  el.focus();
+  if (selection) el.setSelectionRange(selection.start, selection.end);
+}
+
+/** 打开链接行：落在已有链接里就是「改这条」，否则是「插入新链接」。 */
+function openLinkRow(): void {
+  if (props.readonly) return;
+  if (linkRow.value.open) return;
+  const el = area.value;
+  const { start, end } = currentSelection();
+  const existing = el ? findLinkSpan(text.value, start, end) : null;
+  if (existing) {
+    linkRow.value = {
+      open: true,
+      mode: "edit",
+      label: existing.label || "链接",
+      href: existing.href,
+      range: { start: existing.start, end: existing.end },
+      error: "",
+      composing: false,
+    };
+  } else {
+    const labelEnd = trimEndIndex(text.value, start, end);
+    linkRow.value = {
+      open: true,
+      mode: "insert",
+      label: text.value.slice(start, labelEnd) || "链接",
+      href: "",
+      range: { start, end: labelEnd },
+      error: "",
+      composing: false,
+    };
+  }
+  note.value = "";
+  void nextTick(() => {
+    const input = linkInput.value;
+    if (!input) return;
+    input.focus();
+    const at = input.value.length;
+    input.setSelectionRange(at, at);
+  });
+}
+
+/** 就地取消：正文一个字都不改，焦点与选区回到编辑区。 */
+function cancelLink(): void {
+  if (!linkRow.value.open) return;
+  const range = linkRow.value.range;
+  linkRow.value = { open: false, mode: "insert", label: "", href: "", range: null, error: "", composing: false };
+  note.value = "已取消这次链接修改：正文没有变化。";
+  returnFocusToEditor(range ?? undefined);
+}
+
+function onLinkEnter(event: KeyboardEvent): void {
+  // 输入法组合输入期间的回车只是确认候选字，不能当成「确认链接」。
+  if (event.isComposing || linkRow.value.composing) return;
+  confirmLink();
+}
+
+/** 确认：插入 / 更新都在正文原位完成；地址不合法就停在行内说原因。 */
+function confirmLink(): void {
+  const row = linkRow.value;
+  if (!row.open) return;
+  const checked = normalizeLinkHref(row.href);
+  if (checked.error) {
+    row.error = checked.error;
+    linkInput.value?.focus();
+    return;
+  }
+  const source = text.value;
+  const label = row.label || "链接";
+  const inserted = "[" + label + "](" + checked.href + ")";
+  if (row.mode === "edit" && row.range) {
+    // 行打开期间用户可能继续改过正文：按当前内容重新定位这条链接，找不到就用原位置（钳进范围）。
+    const fresh = findLinkSpan(source, row.range.start, row.range.start) ?? null;
+    const start = fresh ? fresh.start : Math.max(0, Math.min(source.length, row.range.start));
+    const end = fresh ? fresh.end : Math.max(start, Math.min(source.length, row.range.end));
+    if (fresh && fresh.href === checked.href && fresh.label === label) {
+      note.value = "这条链接没有变化（地址与标题都还是原来的）。";
+      closeLinkRow();
+      returnFocusToEditor({ start: start + 1, end: start + 1 + label.length });
+      return;
+    }
+    const next = source.slice(0, start) + inserted + source.slice(end);
+    apply(next, { start: start + 1, end: start + 1 + label.length });
+    note.value = "已更新链接地址：" + label + " → " + checked.href + "（点「完成编辑」后生效）";
+    closeLinkRow();
+    return;
+  }
+  const range = row.range ?? { start: source.length, end: source.length };
+  const start = Math.max(0, Math.min(source.length, range.start));
+  const end = Math.max(start, Math.min(source.length, range.end));
+  const next = source.slice(0, start) + inserted + source.slice(end);
+  apply(next, { start: start + 1, end: start + 1 + label.length });
+  note.value =
+    "已插入链接：" + label + " → " + checked.href + "（点「完成编辑」后生效）";
+  closeLinkRow();
+}
+
+function closeLinkRow(): void {
+  linkRow.value = { open: false, mode: "insert", label: "", href: "", range: null, error: "", composing: false };
+}
+
+/** 移除链接：只去掉 [..](..) 的包装，文字留在正文里。 */
+function removeLink(): void {
+  const row = linkRow.value;
+  if (!row.open || row.mode !== "edit" || !row.range) return;
+  const source = text.value;
+  const fresh = findLinkSpan(source, row.range.start, row.range.start) ?? null;
+  const start = fresh ? fresh.start : Math.max(0, Math.min(source.length, row.range.start));
+  const end = fresh ? fresh.end : Math.max(start, Math.min(source.length, row.range.end));
+  const label = fresh ? fresh.label : row.label || "链接";
+  const next = source.slice(0, start) + label + source.slice(end);
+  apply(next, { start, end: start + label.length });
+  note.value = "已移除链接：" + (label || "这段文字") + " 现在是普通文字（文字本身保留）。";
+  closeLinkRow();
+}
 
 const textareaStyle = computed(() =>
   props.fill ? { minHeight: "0px" } : { minHeight: props.minHeight + "px" },
@@ -155,17 +343,8 @@ function runFormat(format: InlineFormat): void {
   const el = area.value;
   const { start, end } = currentSelection();
   if (format === "link") {
-    const raw = typeof globalThis.prompt === "function" ? globalThis.prompt("链接地址（http/https）：", "https://") : null;
-    const href = typeof raw === "string" ? raw.trim() : "";
-    // 链接必须单独成行：选中区域末尾的空白（尤其是块后空行）不能包进 [标题] 里，
-    // 否则方括号里会夹一个换行，解析时就不再是链接块（而是一段普通文字）。
-    const labelEnd = trimEndIndex(text.value, start, end);
-    const label = text.value.slice(start, labelEnd) || "链接";
-    const result = wrapSelection(text.value, start, labelEnd, "link", href);
-    apply(result.text, result.selection);
-    note.value = href
-      ? "已插入链接：" + label + " → " + href + "（点「完成编辑」后生效）"
-      : "地址为空：链接地址还是空的，这张卡里的链接现在打不开；可以选中它再点「插入链接」补地址。";
+    // 链接不再走原生 prompt：在卡片里打开网址输入行，确认 / 取消 / 移除都在原位。
+    openLinkRow();
     return;
   }
   const result = wrapSelection(text.value, start, end, format);
@@ -284,7 +463,8 @@ function offsetOfLine(value: string, line: number): number {
         class="fmt"
         type="button"
         :data-im="'card-fmt-' + item.action"
-        :title="item.title"
+        :aria-label="item.title"
+        :aria-expanded="item.format === 'link' ? (linkRow.open ? 'true' : 'false') : undefined"
         :disabled="readonly"
         @click="runFormat(item.format)"
       >
@@ -294,12 +474,65 @@ function offsetOfLine(value: string, line: number): number {
         class="fmt"
         type="button"
         data-im="card-fmt-codeblock"
-        title="插入一对代码围栏（语言写在第一行围栏后面）"
+        aria-label="插入一对代码围栏（语言写在第一行围栏后面）"
         :disabled="readonly"
         @click="insertCodeBlock"
       >
         插入代码块
       </button>
+    </div>
+
+    <!--
+      链接行：网址就地输入（替代原生 prompt）。
+      只改这一条链接：确认 / 取消 / 移除都在卡片里；错误停在行内，不写坏正文。
+      键盘：Enter 确认（输入法组合输入期间不算）、Esc 取消；事件不再冒泡到板面手势。
+    -->
+    <div
+      v-if="linkRow.open"
+      class="link-row"
+      data-im="card-link-row"
+      role="group"
+      :aria-label="linkRow.mode === 'edit' ? '修改链接地址' : '插入链接地址'"
+      @keydown.esc.stop.prevent="cancelLink"
+    >
+      <span class="link-row-label" data-im="card-link-label">
+        {{ linkRow.mode === "edit" ? "修改链接" : "插入链接" }}：{{ linkRow.label }}
+      </span>
+      <div class="link-row-line">
+        <input
+          ref="linkInput"
+          v-model="linkRow.href"
+          class="link-row-input"
+          data-im="card-link-input"
+          type="text"
+          inputmode="url"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="https://"
+          :aria-label="'链接地址（' + linkRow.label + '）'"
+          @keydown.enter.prevent="onLinkEnter"
+          @compositionstart="linkRow.composing = true"
+          @compositionend="linkRow.composing = false"
+        />
+        <button class="qio-btn mini primary" type="button" data-im="card-link-confirm" @click="confirmLink">
+          确认
+        </button>
+        <button class="qio-btn mini quiet" type="button" data-im="card-link-cancel" @click="cancelLink">
+          取消
+        </button>
+        <button
+          v-if="linkRow.mode === 'edit'"
+          class="qio-btn mini quiet"
+          type="button"
+          data-im="card-link-remove"
+          @click="removeLink"
+        >
+          移除链接
+        </button>
+      </div>
+      <p v-if="linkRow.error" class="link-row-error" role="alert" data-im="card-link-error">
+        {{ linkRow.error }}
+      </p>
     </div>
 
     <textarea
@@ -371,4 +604,50 @@ function offsetOfLine(value: string, line: number): number {
 .editor:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 
 .fmt-note { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: var(--lh-tight); }
+
+/* 链接行：就地输入网址；窄容器里按钮换行，不把卡片撑宽 */
+.link-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  background: var(--bg-elevated);
+}
+.link-row-label {
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.link-row-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+.link-row-input {
+  flex: 1 1 160px;
+  min-width: 0;
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+.link-row-input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.link-row-error {
+  margin: 0;
+  font-size: var(--fs-xs);
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
 </style>
