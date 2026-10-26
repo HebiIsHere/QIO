@@ -106,7 +106,7 @@ function toggle(): void {
   min-width: 17px;
   height: 17px;
   padding: 0 4px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--warning-soft, var(--bg-inset));
   color: var(--text-strong);
   font-size: 10.5px;

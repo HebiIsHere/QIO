@@ -375,7 +375,7 @@ async function resume(task: DevTaskRow) {
   overflow-wrap: anywhere; word-break: break-word;
 }
 .dev-task-revoke {
-  padding: 3px 9px; border-radius: var(--r-pill);
+  padding: 3px 12px; border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent; color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   font-family: var(--sans); font-size: 12px; cursor: pointer;
@@ -399,7 +399,7 @@ async function resume(task: DevTaskRow) {
   .dev-task-resume, .dev-task-abandon { width: 100%; }
 }
 .dev-task-resume {
-  padding: 4px 10px; border-radius: var(--r-pill);
+  padding: 4px 14px; border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent; color: var(--accent);
   border: 1px solid var(--border-subtle);
   font-family: var(--sans); font-size: 12.5px; cursor: pointer;
@@ -408,7 +408,7 @@ async function resume(task: DevTaskRow) {
 .dev-task-resume:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* 与「撤销授权」同档的安静按钮：危险的是确认层里的那一下，不是入口本身 */
 .dev-task-abandon {
-  padding: 4px 10px; border-radius: var(--r-pill);
+  padding: 4px 14px; border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent; color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   font-family: var(--sans); font-size: 12.5px; cursor: pointer;

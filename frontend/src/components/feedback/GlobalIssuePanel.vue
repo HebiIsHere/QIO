@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 3px;
   padding: 8px 10px;
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-inset);
 }
 .uf-issue__diag-line {

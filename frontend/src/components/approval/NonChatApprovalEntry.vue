@@ -91,7 +91,7 @@ function open() {
   gap: 8px;
   max-width: min(560px, calc(100vw - 32px));
   padding: 6px 14px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-elevated);
   color: var(--text-strong);
   border: 1px solid var(--warning);
@@ -156,7 +156,7 @@ function open() {
   margin: 0;
   max-width: min(560px, calc(100vw - 32px));
   padding: 6px 14px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-elevated);
   color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
