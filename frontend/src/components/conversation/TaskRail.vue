@@ -19,6 +19,8 @@ const shell = useConversationShellStore();
 const tasks = useConversationTasksStore();
 
 const listRef = ref<HTMLElement | null>(null);
+const currentTab = ref<HTMLButtonElement | null>(null);
+const historyTab = ref<HTMLButtonElement | null>(null);
 const highlightId = ref("");
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -67,12 +69,41 @@ function restoreScroll() {
   root.scrollTop = tasks.scrollTop[view.value] || 0;
 }
 
+const TAB_ORDER: Array<"current" | "history"> = ["current", "history"];
+
 async function switchTab(tab: "current" | "history") {
   if (tab === view.value) return;
   if (listRef.value) tasks.setScroll(view.value, listRef.value.scrollTop);
   await tasks.switchView(tab);
   await nextTick();
   restoreScroll();
+}
+
+function tabElement(tab: "current" | "history"): HTMLButtonElement | null {
+  return tab === "current" ? currentTab.value : historyTab.value;
+}
+
+/**
+ * tablist 键盘：←/→ 在两个视图间循环，Home/End 跳到首/末。
+ *
+ * 为什么必须做：两个 tab 是同一组选项，键盘用户不该被迫 Tab 两次再到列表；
+ * 同时只让当前 tab 进 Tab 序列（roving tabindex），与 ARIA tabs 模式一致 ——
+ * 这样「切换视图」和「进入任务列表」是两条清晰路径，不会把焦点困在 tab 上。
+ */
+async function onTabsKeydown(event: KeyboardEvent): Promise<void> {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const index = TAB_ORDER.indexOf(view.value);
+  let nextIndex = index;
+  if (event.key === "ArrowLeft") nextIndex = (index - 1 + TAB_ORDER.length) % TAB_ORDER.length;
+  else if (event.key === "ArrowRight") nextIndex = (index + 1) % TAB_ORDER.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else nextIndex = TAB_ORDER.length - 1;
+  const next = TAB_ORDER[nextIndex];
+  await switchTab(next);
+  await nextTick();
+  tabElement(next)?.focus();
 }
 
 function onListScroll() {
@@ -159,7 +190,6 @@ onBeforeUnmount(() => {
         <button
           class="icon-btn"
           type="button"
-          title="刷新任务列表"
           aria-label="刷新任务列表"
           :disabled="state.loading"
           :aria-busy="state.loading ? 'true' : 'false'"
@@ -176,7 +206,6 @@ onBeforeUnmount(() => {
           v-if="props.drawer"
           class="icon-btn"
           type="button"
-          title="关闭任务列表"
           aria-label="关闭任务列表"
           @click="emit('close')"
         >
@@ -186,7 +215,6 @@ onBeforeUnmount(() => {
           v-else
           class="icon-btn"
           type="button"
-          title="收起任务栏"
           aria-label="收起任务栏"
           @click="shell.toggleLeft()"
         >
@@ -198,10 +226,13 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <div class="rail-tabs" role="tablist" aria-label="任务视图">
+    <div class="rail-tabs" role="tablist" aria-label="任务视图" @keydown="onTabsKeydown">
       <button
+        ref="currentTab"
         type="button"
         role="tab"
+        data-task-tab="current"
+        :tabindex="view === 'current' ? 0 : -1"
         :aria-selected="view === 'current' ? 'true' : 'false'"
         :class="{ selected: view === 'current' }"
         @click="switchTab('current')"
@@ -211,8 +242,11 @@ onBeforeUnmount(() => {
         <span v-else-if="activeCount > 0" class="tab-count mono">{{ activeCount }}</span>
       </button>
       <button
+        ref="historyTab"
         type="button"
         role="tab"
+        data-task-tab="history"
+        :tabindex="view === 'history' ? 0 : -1"
         :aria-selected="view === 'history' ? 'true' : 'false'"
         :class="{ selected: view === 'history' }"
         @click="switchTab('history')"
@@ -227,7 +261,7 @@ onBeforeUnmount(() => {
     <p v-if="tasks.focusError" class="rail-warn" role="alert">{{ tasks.focusError }}</p>
     <div v-if="tasks.feedback" class="rail-feedback" role="status">
       <span>{{ tasks.feedback }}</span>
-      <button type="button" aria-label="关闭提示" title="关闭提示" @click="dismissFeedback">×</button>
+      <button type="button" aria-label="关闭提示" @click="dismissFeedback">×</button>
     </div>
 
     <div

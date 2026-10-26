@@ -22,11 +22,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useInteractiveStore } from "../../../stores/interactive";
-import { useUnifiedApprovalsStore } from "../../../stores/unifiedApprovals";
+import { useModalArbiterStore } from "../../../stores/modalArbiter";
 import type { ImpactConfirmOutcome, Intent } from "../../../interactive/types";
 
 const store = useInteractiveStore();
-const unified = useUnifiedApprovalsStore();
+/** 中央弹窗仲裁（B 的公共接口）：影响确认是阻塞决定的中央窗口，必须登记，不能靠 z-index 抢层。 */
+const arbiter = useModalArbiterStore();
+const ARBITER_ID = "impact-confirm";
 
 /* ── 影响确认（保存前）────────────────────────────────────── */
 const impactOpen = computed(() => Boolean(store.pendingImpact));
@@ -54,14 +56,62 @@ const mode = computed<"impact" | "revert" | null>(() => {
   return pendingReverts.value.length ? "revert" : null;
 });
 const open = computed(() => mode.value !== null);
-/** 统一审批弹窗开着时让位：同一时刻只允许一个阻塞确认面 */
-const deferred = computed(() => open.value && unified.visible);
-const visible = computed(() => open.value && !deferred.value);
-const deferredText = computed(() =>
-  mode.value === "revert"
-    ? "还有改动没有撤回、等你决定。先处理完工具 / 权限审批，随后会自动回到这里。"
-    : "影响确认还在等你决定（这次改动尚未保存）。先处理完工具 / 权限审批，随后会自动回到影响确认。",
+
+/**
+ * 仲裁状态：
+ * - arbiterBlocked：我们想打开，但已有同/更高优先级的中央弹窗（关闭询问 / 引导等），本次不显示；
+ * - suspendedBy：整窗级触发器（关闭询问）把业务弹窗整体挂起 —— 只隐藏，DOM/状态不丢；
+ * - coveredByOther：我们打开后又有更高优先级的弹窗叠上来 —— 让位，但保留状态。
+ * 三者任一成立都只是「暂不显示」，不是取消这次决定；恢复到能显示时自动回到这里。
+ */
+const arbiterBlocked = ref(false);
+const suspendedBy = computed(() => arbiter.hiddenBy(ARBITER_ID));
+const coveredByOther = computed(() => {
+  if (!open.value) return "";
+  const active = arbiter.active;
+  if (!active || active.id === ARBITER_ID) return "";
+  return active.id;
+});
+const deferred = computed(
+  () => open.value && (arbiterBlocked.value || Boolean(suspendedBy.value) || Boolean(coveredByOther.value)),
 );
+const visible = computed(() => open.value && !deferred.value);
+const deferredText = computed(() => {
+  const waiting = mode.value === "revert" ? "撤回决定" : "影响确认";
+  if (suspendedBy.value || arbiterBlocked.value || coveredByOther.value) {
+    return (
+      waiting + "还在等你决定，但此刻有更高优先级的窗口（如关闭确认 / 引导 / 审批）正开着：" +
+      "同一时刻只显示一个中央窗口，这里不会叠上去；处理完那个窗口后会回到" + waiting + "。"
+    );
+  }
+  return "";
+});
+
+/** 按当前模式把窗口登记进仲裁（幂等）：被挡住时如实记录，条件恢复后自动再试。 */
+function syncArbiter(): void {
+  if (!open.value) {
+    if (arbiter.isOpen(ARBITER_ID)) arbiter.close(ARBITER_ID);
+    arbiterBlocked.value = false;
+    return;
+  }
+  const kind = mode.value === "revert" ? "recovery" : "impact";
+  if (arbiter.isOpen(ARBITER_ID)) {
+    // 模式可能从影响确认切到剩余撤回：只更新描述，不重复入栈
+    arbiter.open({ id: ARBITER_ID, kind, dismissible: false });
+    arbiterBlocked.value = false;
+    return;
+  }
+  arbiterBlocked.value = !arbiter.open({ id: ARBITER_ID, kind, dismissible: false });
+}
+
+watch(
+  [open, mode, () => arbiter.count, () => arbiter.active?.id ?? "", () => arbiter.suspendedBy],
+  syncArbiter,
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  if (arbiter.isOpen(ARBITER_ID)) arbiter.close(ARBITER_ID);
+});
 const title = computed(() =>
   mode.value === "revert"
     ? "还有改动没有撤回：需要你决定剩下的部分"
@@ -403,13 +453,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <!-- 让位说明：审批弹窗打开时不叠第二个阻塞面，但明确告诉用户这边还在等着 -->
+  <!-- 让位说明：更高优先级窗口开着时不叠第二个阻塞面，但明确告诉用户这边还在等着 -->
   <p v-if="deferred" class="ic-deferred" role="status" data-im="impact-confirm-deferred">
     {{ deferredText }}
   </p>
 
-  <!-- 外部点击不关闭：影响确认只能由两个明确按钮作答（scrim 只负责遮罩，没有 click 处理） -->
-  <div v-if="visible" class="ic-scrim" data-im="impact-confirm-scrim">
+  <!-- 外部点击不关闭：影响确认只能由两个明确按钮作答（scrim 只负责遮罩，没有 click 处理）。
+       v-show：让位 / 挂起时只隐藏，DOM、滚动位置与未提交的选择都不丢。 -->
+  <div v-show="visible" class="ic-scrim" data-im="impact-confirm-scrim">
     <section
       ref="dialogEl"
       class="ic-dialog"

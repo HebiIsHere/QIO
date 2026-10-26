@@ -322,3 +322,52 @@ describe("加载、失败与重试", () => {
     wrapper.unmount();
   });
 });
+
+describe("任务视图 tablist 键盘与可访问性", () => {
+  it("两个 tab 用 roving tabindex；←/→ 循环、Home/End 到首末，焦点跟着走", async () => {
+    feed(page([item()]), page([]));
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const wrapper = mount(TaskRail, { global: { plugins: [pinia] }, attachTo: document.body });
+    await flushPromises();
+    await wrapper.vm.$nextTick();
+
+    const current = wrapper.get('[data-task-tab="current"]');
+    expect(current.attributes("tabindex")).toBe("0");
+    expect(wrapper.get('[data-task-tab="history"]').attributes("tabindex")).toBe("-1");
+    expect(current.attributes("aria-selected")).toBe("true");
+
+    await current.trigger("keydown", { key: "ArrowRight" });
+    await flushPromises();
+    const history = wrapper.get('[data-task-tab="history"]');
+    expect(history.attributes("aria-selected")).toBe("true");
+    expect(history.attributes("tabindex")).toBe("0");
+    expect(current.attributes("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(history.element);
+
+    await history.trigger("keydown", { key: "ArrowRight" });
+    await flushPromises();
+    expect(wrapper.get('[data-task-tab="current"]').attributes("aria-selected")).toBe("true");
+
+    await wrapper.get('[data-task-tab="current"]').trigger("keydown", { key: "End" });
+    await flushPromises();
+    expect(wrapper.get('[data-task-tab="history"]').attributes("aria-selected")).toBe("true");
+
+    await wrapper.get('[data-task-tab="history"]').trigger("keydown", { key: "Home" });
+    await flushPromises();
+    expect(wrapper.get('[data-task-tab="current"]').attributes("aria-selected")).toBe("true");
+    wrapper.unmount();
+  });
+
+  it("图标按钮只有可访问名称、不再挂原生 title（用途说明由 QTip 统一提供）", async () => {
+    feed(page([]));
+    const wrapper = await mountRail();
+    const buttons = wrapper.findAll(".rail-head-actions .icon-btn");
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const button of buttons) {
+      expect(button.attributes("aria-label")).toBeTruthy();
+      expect(button.attributes("title")).toBeUndefined();
+    }
+    wrapper.unmount();
+  });
+});

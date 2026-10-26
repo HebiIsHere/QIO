@@ -8,7 +8,7 @@
  * - 关闭不撤回：取消只结束提示，不执行任何撤回；
  * - 失败重试：服务端真实原因可见、按钮恢复可点；
  * - 部分完成反馈：处理完展示项但仍有剩余时说清楚还剩多少；
- * - 与统一审批共用一个阻塞面：审批弹窗打开时让位。
+ * - 与统一审批共用一个阻塞面：登记进 modalArbiter，被更高优先级窗口挡住时让位但不丢状态。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
@@ -16,7 +16,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import ImpactConfirmLayer from "../ImpactConfirmLayer.vue";
 import { useInteractiveStore } from "../../../../stores/interactive";
-import { useUnifiedApprovalsStore } from "../../../../stores/unifiedApprovals";
+import { useModalArbiterStore } from "../../../../stores/modalArbiter";
 import type { Intent } from "../../../../interactive/types";
 
 function pending(id: string, reason: string, impact = "会影响其他工作") {
@@ -61,7 +61,7 @@ function mountLayer() {
   const pinia = createPinia();
   setActivePinia(pinia);
   wrapper = mount(ImpactConfirmLayer, { global: { plugins: [pinia] }, attachTo: document.body });
-  return { wrapper, store: useInteractiveStore(), unified: useUnifiedApprovalsStore() };
+  return { wrapper, store: useInteractiveStore(), arbiter: useModalArbiterStore() };
 }
 
 beforeEach(() => {
@@ -101,7 +101,8 @@ describe("剩余撤回：真实展示 pendingDecision（每项决定状态）", 
     await w.get('[data-im="impact-confirm-cancel"]').trigger("click");
     await flushPromises();
 
-    expect(w.find('[data-im="impact-confirm"]').exists()).toBe(false);
+    // v-show：窗口 DOM 保留、状态不丢，只是不再显示
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(false);
     const dismissed = w.get('[data-im="impact-revert-dismissed"]');
     expect(dismissed.text()).toContain("还有撤回没有决定");
     expect(dismissed.text()).toContain("任务 i1");
@@ -214,8 +215,8 @@ describe("剩余撤回：明确 decisionIds / 关闭不撤回 / 失败重试 / �
 
     await w.get('[data-im="impact-revert-continue"]').trigger("click");
     await flushPromises();
-    // 全部处理完：框关闭，真实结果留在页面上
-    expect(w.find('[data-im="impact-confirm"]').exists()).toBe(false);
+    // 全部处理完：框不再显示（DOM 保留），真实结果留在页面上
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(false);
     const outcome = w.get('[data-im="impact-confirm-outcome"]');
     expect(outcome.attributes("data-outcome")).toBe("revert_done");
     expect(outcome.text()).toContain("已按你的决定撤回 1 项");
@@ -235,7 +236,7 @@ describe("键盘与阻塞面规则", () => {
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
-    expect(w.find('[data-im="impact-confirm"]').exists()).toBe(false);
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(false);
     expect(store.revertDecisionDismissed["i1"]).toBe(true);
   });
 
@@ -275,16 +276,63 @@ describe("键盘与阻塞面规则", () => {
     expect(w.find('[data-im="impact-confirm"]').exists()).toBe(true);
   });
 
-  it("统一审批弹窗打开时让位：撤回确认也不叠第二个阻塞面，关闭后自动回来", async () => {
-    const { wrapper: w, store, unified } = mountLayer();
+  it("关闭询问挂起（suspendAll）时只隐藏不卸载，恢复后自动回来", async () => {
+    const { wrapper: w, store, arbiter } = mountLayer();
     store.intents = [intentWithRevert("i1", [pending("d1", "会改写材料")])];
-    unified.visible = true;
     await nextTick();
-    expect(w.find('[data-im="impact-confirm"]').exists()).toBe(false);
+    await flushPromises();
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(true);
+
+    arbiter.suspendAll("close-ask");
+    await nextTick();
+    // v-show：DOM 保留（状态/滚动位置不丢），但不再显示、也不再接收键盘
+    expect(w.find('[data-im="impact-confirm-scrim"]').exists()).toBe(true);
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(false);
     expect(w.get('[data-im="impact-confirm-deferred"]').text()).toContain("撤回");
 
-    unified.visible = false;
+    arbiter.resumeAll();
     await nextTick();
-    expect(w.find('[data-im="impact-confirm"]').exists()).toBe(true);
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(true);
+    expect(w.find('[data-im="impact-confirm-deferred"]').exists()).toBe(false);
+  });
+
+  it("已有更高优先级中央弹窗（引导 / 关闭询问）时不强行显示；它关闭后自动显示", async () => {
+    const { wrapper: w, store, arbiter } = mountLayer();
+    const opened = arbiter.open({ id: "onboarding", kind: "onboarding", dismissible: false });
+    expect(opened).toBe(true);
+
+    store.pendingImpact = {
+      affected: [{ intentId: "i1", title: "整理材料", materials: ["a.pdf"], consequence: "会暂停" }],
+      previewRev: 1,
+      stateVersion: 0,
+      checkId: "chk",
+    } as never;
+    await nextTick();
+    await flushPromises();
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(false);
+    expect(w.get('[data-im="impact-confirm-deferred"]').text()).toContain("影响确认");
+
+    arbiter.close("onboarding");
+    await nextTick();
+    await flushPromises();
+    expect(w.get('[data-im="impact-confirm-scrim"]').isVisible()).toBe(true);
+  });
+
+  it("影响确认登记为中央弹窗（kind=impact），关闭后从仲裁里移除", async () => {
+    const { store, arbiter } = mountLayer();
+    store.pendingImpact = {
+      affected: [],
+      previewRev: 1,
+      stateVersion: 0,
+      checkId: "chk",
+    } as never;
+    await nextTick();
+    await flushPromises();
+    expect(arbiter.isOpen("impact-confirm")).toBe(true);
+    expect(arbiter.active?.kind).toBe("impact");
+
+    store.pendingImpact = null;
+    await nextTick();
+    expect(arbiter.isOpen("impact-confirm")).toBe(false);
   });
 });

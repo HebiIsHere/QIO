@@ -119,7 +119,8 @@ describe("F01 影响确认界面：等待决定时页面中央有可操作的确
     await settlePage(harness!.wrapper);
 
     expect(harness!.store.pendingImpact).toBeNull();
-    expect(harness!.wrapper.find('[data-im="impact-confirm"]').exists()).toBe(false);
+    // v-show：窗口 DOM 保留（状态可恢复），取消后不再显示
+    expect(harness!.wrapper.find('[data-im="impact-confirm-scrim"]').attributes("style") ?? "").toContain("display: none");
     expect(services.saveBoardState).not.toHaveBeenCalled();
     expect(harness!.store.intents.find((item) => item.id === "i_run")?.status).toBe("running");
   });
