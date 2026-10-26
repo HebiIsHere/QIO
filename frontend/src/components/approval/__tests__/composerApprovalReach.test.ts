@@ -21,6 +21,7 @@ import ComposerEntries from "../../conversation/ComposerEntries.vue";
 import { useApprovalsStore } from "../../../stores/approvals";
 import { useApprovalResultsStore } from "../../../stores/approvalResults";
 import { useUnifiedApprovalsStore } from "../../../stores/unifiedApprovals";
+import { hasTipRecord } from "../../../composables/useQioTip";
 
 function mountEntries() {
   const pinia = createPinia();
@@ -68,7 +69,8 @@ describe("⑤ 审批入口（结果与历史可达）", () => {
     // 正常状态不渲染失败标记
     expect(entry.find('[data-test="approval-entry-error"]').exists()).toBe(false);
     expect(String(entry.attributes("aria-label"))).toContain("审批结果与历史");
-    expect(String(entry.attributes("title"))).toContain("审批结果与历史");
+    expect(entry.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(entry.element as HTMLElement), "入口说明要走统一用途说明").toBe(true);
     // 0 待办不显示数量徽标
     expect(entry.find(".count").exists()).toBe(false);
 
@@ -101,7 +103,8 @@ describe("⑤ 审批入口（结果与历史可达）", () => {
     // 失败必须有**看得见**的标记（不只在 aria-label 里）
     const errorMark = entry.get('[data-test="approval-entry-error"]');
     expect(errorMark.text()).toBe("!");
-    expect(String(errorMark.attributes("title"))).toContain("重试");
+    expect(errorMark.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(errorMark.element as HTMLElement), "重试说明要走统一用途说明").toBe(true);
     w.unmount();
   });
 

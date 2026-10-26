@@ -51,6 +51,7 @@ import { emptyState, updateCard } from "../../../interactive/board";
 import { publishBoardArea } from "../../../interactive/viewport";
 import type { AttachmentRef } from "../../../services/attachments";
 import type { BoardState } from "../../../interactive/types";
+import { hasTipRecord } from "../../../composables/useQioTip";
 
 const SFC_SOURCE: string = sfcSource;
 
@@ -482,7 +483,8 @@ describe("长文件名与布局", () => {
 
     const el = statusEl();
     expect(el.exists()).toBe(true);
-    expect(el.attributes("title") ?? "", "提示上没有可查看完整名称的 title").toContain(longName);
+    expect(el.attributes("title") ?? "").toBe("");
+    expect(hasTipRecord(el.element as HTMLElement), "提示上缺少可查看完整名称的用途说明").toBe(true);
     expect(statusText(), "提示里没有完整文件名").toContain(longName);
     // 样式护栏（jsdom 不做布局）：提示必须允许换行 / 断词，而不是把长名字裁掉
     expect(cssRule(".add-status"), "提示缺少长文件名换行样式").toContain("overflow-wrap: anywhere");

@@ -8,6 +8,7 @@
   - 统一审批层只挂这一处，旧 ApprovalEntry / ApprovalModal 在聊天路由让位（App.vue 门控）。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
@@ -349,7 +350,7 @@ const boardSize = computed(() => {
                 v-if="store.submissionStage === 'idle'"
                 class="im-note"
                 data-im="not-connected"
-                title="保存只落库、不调用模型；提交之后 QIO 才会读取本次互动材料的内容并开始理解"
+                v-qio-tip="'保存只落库、不调用模型；提交之后 QIO 才会读取本次互动材料的内容并开始理解'"
               >
                 还没有提交给 QIO
               </span>
@@ -359,7 +360,7 @@ const boardSize = computed(() => {
                   :class="'tone-' + uText.tone"
                   data-im="understanding-status"
                   :data-understanding-status="store.understandingStatus ?? 'none'"
-                  :title="uText.detail"
+                  v-qio-tip="uText.detail"
                 >{{ uText.label }}</span>
                 <button
                   v-if="store.understandingStatus === 'failed'"
@@ -395,7 +396,7 @@ const boardSize = computed(() => {
               type="button"
               data-im="tasks-entry"
               :aria-expanded="store.tasksOpen"
-              title="互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）"
+              v-qio-tip="'互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）'"
               @click="store.tasksOpen ? store.closeTaskCenter() : store.openTaskCenter('tasks')"
             >任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}</button>
           </div>
@@ -532,7 +533,7 @@ const boardSize = computed(() => {
   margin: 0 auto;
   /* FU7：栏本体透明，模糊由组件内的 ::before 承担（板面从栏后透出）。 */
   border: 1px solid color-mix(in srgb, var(--border-strong) 65%, transparent);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   box-shadow: var(--shadow-2);
 }
@@ -554,7 +555,7 @@ const boardSize = computed(() => {
 .im-floating-chat :deep(.ic-toolbar .tb-btn) {
   height: 32px;
   padding: 0 var(--sp-3);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-1);
 }
@@ -660,7 +661,7 @@ const boardSize = computed(() => {
 .im-hud-left {
   padding: 5px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-1);
 }
@@ -699,7 +700,7 @@ const boardSize = computed(() => {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 4px 9px;
   cursor: pointer;
   white-space: nowrap;
@@ -733,7 +734,7 @@ const boardSize = computed(() => {
 .im-notice {
   margin: 0;
   padding: var(--sp-2) var(--sp-4);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   font-size: var(--fs-sm);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);

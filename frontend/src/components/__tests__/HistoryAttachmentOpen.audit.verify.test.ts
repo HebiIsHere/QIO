@@ -29,6 +29,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import MessageItem from "../MessageItem.vue";
 import type { MessageAttachment, StreamMessage } from "../../stores/session";
+import { hasTipRecord } from "../../composables/useQioTip";
 
 /**
  * 可控的原生选择器替身：默认「选到了新位置」，让「重新定位」这条链路可以被真正断言
@@ -311,10 +312,13 @@ describe("契约 §1.6：历史附件必须有真实入口", () => {
     expect(item.attributes("data-state")).toBe("ready");
 
     expect(item.text(), "健康的引用型必须写清保存方式是「引用本地文件」").toContain("引用本地文件");
+    // caveat 不再用原生 title 硬编码在 HTML 里，改由附件 chip 的统一用途说明携带
+    const chip = item.find(".chip");
+    expect(chip.exists()).toBe(true);
     expect(
-      item.html(),
-      "必须给出「历史保留的是位置，不保证内容仍然存在」的说明（契约 §1.6）",
-    ).toContain("不保证内容仍然存在");
+      hasTipRecord(chip.element as HTMLElement),
+      "必须给出「历史保留的是位置，不保证内容仍然存在」的说明（契约 §1.6，走统一用途说明）",
+    ).toBe(true);
     expect(
       findEntry(wrapper, item, /重新定位|指定位置|重新指定|重新选择/),
       "内容仍在原位的引用型没有重新定位需求：不得显示一个假的入口",

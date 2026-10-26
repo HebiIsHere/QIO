@@ -27,6 +27,7 @@ vi.mock("vue-router", async () => {
 
 import * as routerModule from "vue-router";
 import ConversationModeSwitch from "../conversation/ConversationModeSwitch.vue";
+import { hasTipRecord } from "../../composables/useQioTip";
 
 function setRouteName(name: string) {
   (routerModule as unknown as { setRouteName: (n: string) => void }).setRouteName(name);
@@ -69,7 +70,8 @@ describe("当前模式与直接切换", () => {
     const btn = w.find(".mode-btn");
     expect(w.find(".mode-text").text()).toBe("对话模式");
     expect(btn.attributes("aria-label")).toBe("切换到互动模式");
-    expect(btn.attributes("title")).toBe("切换到互动模式");
+    expect(btn.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(btn.element as HTMLElement), "切换说明要走统一用途说明").toBe(true);
     expect(btn.attributes("aria-haspopup")).toBeUndefined();
     expect(btn.attributes("aria-expanded")).toBeUndefined();
     expect(w.find('[role="menu"]').exists()).toBe(false);

@@ -273,7 +273,7 @@ function blockTag(type: "heading" | "paragraph" | "list"): string {
 .pv-slide.is-hit {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 .pv-table-pan {
   max-width: 100%;
@@ -303,7 +303,7 @@ function blockTag(type: "heading" | "paragraph" | "list"): string {
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   cursor: pointer;
   max-width: 100%;
@@ -323,7 +323,7 @@ function blockTag(type: "heading" | "paragraph" | "list"): string {
   max-width: 100%;
   overflow: auto;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .pv-grid {

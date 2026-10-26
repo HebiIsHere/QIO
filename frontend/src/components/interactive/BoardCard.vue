@@ -16,6 +16,7 @@
   - 卡片本身不做状态计算：所有变化 emit 给 BoardCanvas，由它调 board.ts 纯函数 + store.commit。
 -->
 <script lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 卡片边框：**一条** evenodd 的 SVG 环形路径（2026-10-24 互动演示最终稿）。
  *
@@ -35,7 +36,7 @@
  * 这里导出的纯函数与组件模板使用同一份几何（测试可以直接钉住厚度与路径）。
  */
 
-/** 与 .card 的 border-radius: var(--r-lg) 同一个数值（SVG d 不能读 CSS 变量）。 */
+/** 与 .card 的 border-radius: var(--qio-ui-radius) 同一个数值（SVG d 不能读 CSS 变量）。 */
 export const CARD_FRAME_RADIUS = 14;
 /** 离右下角足够远时的边框厚度。 */
 export const CARD_FRAME_MIN_THICKNESS = 1;
@@ -1812,7 +1813,7 @@ watch(
     <header class="card-head" data-im="card-head">
       <!-- 材料类型标签在窄 / 矮卡片里让位：标题、主要操作与必要状态优先（§3.5） -->
       <span v-if="!compactChrome" class="kind mono">{{ kindLabel }}</span>
-      <span v-if="titleText" class="title" data-im="card-title" :title="titleText">{{ titleText }}</span>
+      <span v-if="titleText" class="title" data-im="card-title" v-qio-tip="titleText">{{ titleText }}</span>
       <!-- 参与讨论：所有卡片都有的小控件；与选中/书签/阅读状态无关。图片详情态同样浮在图上。 -->
       <button
         class="participation"
@@ -1822,7 +1823,7 @@ watch(
         :data-card-id="card.id"
         :data-participation="participationIncluded ? 'included' : 'excluded'"
         :aria-pressed="participationIncluded"
-        :title="participationIncluded
+        v-qio-tip="participationIncluded
           ? '参与讨论：QIO 本次可读取这张卡；点击退出讨论范围'
           : '不参与：QIO 本次看不到这张卡；点击重新加入讨论'"
         @pointerdown.stop
@@ -1840,7 +1841,7 @@ watch(
         type="button"
         data-im="card-unfold"
         :data-card-id="card.id"
-        title="取消折叠：恢复标题、正文与状态（不改内容）"
+        v-qio-tip="'取消折叠：恢复标题、正文与状态（不改内容）'"
         @click="emit('toggle', card.id, 'folded')"
       >
         恢复卡片
@@ -1858,7 +1859,7 @@ watch(
         :data-card-id="card.id"
         aria-label="查看完整图片"
         :aria-expanded="imageDetailVisible"
-        :title="imageDetailTitle"
+        v-qio-tip="imageDetailTitle"
         @click="toggleImageDetail"
       >
         <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -1933,7 +1934,7 @@ watch(
             class="attach-status"
             :class="'is-' + attachStatus.tone"
             data-im="card-attach-status"
-            :title="attachStatus.text"
+            v-qio-tip="attachStatus.text"
           >
             <span
               class="attach-status-text"
@@ -2046,7 +2047,7 @@ watch(
                         type="button"
                         data-im="card-code-copy"
                         :data-copy-ok="copyState && copyState.id === item.block.id ? String(copyState.ok) : ''"
-                        :title="copyTitle(item.block)"
+                        v-qio-tip="copyTitle(item.block)"
                         @click.stop="copyCode(item.block)"
                       >
                         {{ copyState && copyState.id === item.block.id ? (copyState.ok ? '已复制' : '复制失败') : '复制' }}
@@ -2070,7 +2071,7 @@ watch(
                     data-im="card-link-open"
                     :data-href="linkHref(item.block)"
                     :data-openable="linkOpenable(item.block) ? '1' : '0'"
-                    :title="linkOpenable(item.block) ? '在系统里打开这个地址' : '这个地址不可打开'"
+                    v-qio-tip="linkOpenable(item.block) ? '在系统里打开这个地址' : '这个地址不可打开'"
                     @click.stop="openLink(item.block)"
                   >
                     {{ linkBlockTitle(item.block) }}
@@ -2083,7 +2084,7 @@ watch(
                     class="link-edit"
                     type="button"
                     data-im="card-link-edit"
-                    title="在编辑区里改这一行（光标会落到链接所在行）"
+                    v-qio-tip="'在编辑区里改这一行（光标会落到链接所在行）'"
                     @click.stop="editBlockAt(item.line)"
                   >
                     编辑
@@ -2268,20 +2269,20 @@ watch(
       旧按钮保留在 DOM 只作兼容与菜单承载，视觉上由本行接管。
     -->
     <div class="icon-tools" data-im="card-icon-tools">
-      <button class="tool-icon" type="button" data-im="card-icon-edit" :style="toolbarButtonStyle(0)" title="编辑 / 完成编辑" aria-label="编辑" @click="toggleEdit">
+      <button class="tool-icon" type="button" data-im="card-icon-edit" :style="toolbarButtonStyle(0)" v-qio-tip="'编辑 / 完成编辑'" aria-label="编辑" @click="toggleEdit">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 13l1-4 7-7 3 3-7 7-4 1Z"/><path d="M9 4l3 3"/></svg>
       </button>
-      <button class="tool-icon" type="button" data-im="card-icon-copy" :style="toolbarButtonStyle(1)" title="复制" aria-label="复制" @click="emit('duplicate', card.id)">
+      <button class="tool-icon" type="button" data-im="card-icon-copy" :style="toolbarButtonStyle(1)" v-qio-tip="'复制'" aria-label="复制" @click="emit('duplicate', card.id)">
         <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="9" rx="1"/><path d="M6 4V2h8v9h-2"/></svg>
       </button>
-      <button class="tool-icon" type="button" data-im="card-icon-hide" :style="toolbarButtonStyle(2)" :title="card.hidden ? '取消隐藏' : '隐藏'" :aria-label="card.hidden ? '取消隐藏' : '隐藏'" @click="emit('toggle', card.id, 'hidden')">
+      <button class="tool-icon" type="button" data-im="card-icon-hide" :style="toolbarButtonStyle(2)" v-qio-tip="card.hidden ? '取消隐藏' : '隐藏'" :aria-label="card.hidden ? '取消隐藏' : '隐藏'" @click="emit('toggle', card.id, 'hidden')">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 8s2.2-3.4 6-3.4S14 8 14 8s-2.2 3.4-6 3.4S2 8 2 8Z"/><circle cx="8" cy="8" r="1.5"/></svg>
       </button>
-      <button class="tool-icon" type="button" data-im="card-icon-bookmark" :style="toolbarButtonStyle(3)" :title="card.bookmarked ? '取消书签' : '加书签'" :aria-label="card.bookmarked ? '取消书签' : '加书签'" @click="emit('toggle', card.id, 'bookmarked')">
+      <button class="tool-icon" type="button" data-im="card-icon-bookmark" :style="toolbarButtonStyle(3)" v-qio-tip="card.bookmarked ? '取消书签' : '加书签'" :aria-label="card.bookmarked ? '取消书签' : '加书签'" @click="emit('toggle', card.id, 'bookmarked')">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v12l-4-3-4 3V2Z"/></svg>
       </button>
       <SelectionMenu v-if="multi" :open-up="menuOpensUp" />
-      <button class="tool-icon danger" type="button" data-im="card-icon-delete" :style="toolbarButtonStyle(4)" title="删除" aria-label="删除" @click="emit('remove', card.id)">
+      <button class="tool-icon danger" type="button" data-im="card-icon-delete" :style="toolbarButtonStyle(4)" v-qio-tip="'删除'" aria-label="删除" @click="emit('remove', card.id)">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10M6 5V3h4v2M5 5l1 9h4l1-9"/></svg>
       </button>
     </div>
@@ -2322,7 +2323,7 @@ watch(
         :data-card-id="card.id"
         :data-copy-ok="sourceCopyState ? String(sourceCopyState.ok) : ''"
         :disabled="!hasReplyBody"
-        :title="copySourceTitle()"
+        v-qio-tip="copySourceTitle()"
         @click="copySource()"
       >{{ sourceCopyText() }}</button>
       <!--
@@ -2350,7 +2351,7 @@ watch(
         data-im="card-attachment-open"
         :data-card-id="card.id"
         :data-open-action="filePlan.action ?? 'none'"
-        :title="filePlan.openNote"
+        v-qio-tip="filePlan.openNote"
         :disabled="fileActionBusy"
         @click="openAttachmentFromToolbar"
       >
@@ -2363,7 +2364,7 @@ watch(
         data-im="card-file-action-status"
         role="status"
         aria-live="polite"
-        :title="fileToolbarStatus.text"
+        v-qio-tip="fileToolbarStatus.text"
       >{{ fileToolbarStatus.text }}</span>
       <button
         v-if="isFileCard && attachStatus && attachStatus.retry"
@@ -2398,7 +2399,7 @@ watch(
         :data-card-id="card.id"
         aria-haspopup="menu"
         :aria-expanded="moreOpen"
-        title="更多：复制、隐藏、书签、整理与删除"
+        v-qio-tip="'更多：复制、隐藏、书签、整理与删除'"
         @click="toggleMore"
       >
         更多
@@ -2476,7 +2477,7 @@ watch(
   background: var(--bg-surface);
   /* 边框不在这里：见文件顶部 cardFramePath + .card-frame（避免 border 与 SVG 环带叠成双线）。
      圆角必须与 CARD_FRAME_RADIUS 一致：改 --r-lg 时同步改那个常量。 */
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--shadow-1);
   color: var(--text-primary);
   font-size: var(--fs-base);
@@ -2558,7 +2559,7 @@ watch(
   height: 22px;
   padding: 0 7px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   color: var(--text-muted);
   font-family: var(--sans);
@@ -2592,7 +2593,7 @@ watch(
   letter-spacing: 0.02em;
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
 }
 .title {
@@ -2614,7 +2615,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
   cursor: pointer;
 }
@@ -2704,7 +2705,7 @@ watch(
   font-family: var(--mono);
   font-size: var(--fs-sm);
   background: var(--bg-inset);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 2px;
 }
 /*
@@ -2719,7 +2720,7 @@ watch(
   min-width: 0;
   max-width: 100%;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   overflow: clip;
 }
@@ -2739,7 +2740,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   cursor: pointer;
 }
@@ -2787,7 +2788,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   cursor: pointer;
 }
@@ -2803,7 +2804,7 @@ watch(
   margin: 0 0 var(--sp-2);
   padding: 2px var(--sp-2);
   border: 1px dashed var(--warning);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   font-size: var(--fs-xs);
   color: var(--text-secondary);
   line-height: var(--lh-tight);
@@ -2819,7 +2820,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-2);
   resize: vertical;
 }
@@ -2832,7 +2833,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
 }
 .draft-note { margin: var(--sp-2) 0 0; font-size: var(--fs-xs); color: var(--text-muted); line-height: var(--lh-tight); }
@@ -2843,7 +2844,7 @@ watch(
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-3);
   cursor: pointer;
 }
@@ -2878,7 +2879,7 @@ watch(
   color: var(--link);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -2951,7 +2952,7 @@ watch(
   margin: 0;
   padding: var(--sp-3);
   border: 1px dashed var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   color: var(--text-muted);
   font-size: var(--fs-xs);
   line-height: var(--lh-base);
@@ -3072,7 +3073,7 @@ watch(
   padding: var(--sp-1);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--elev-floating, var(--shadow-2));
 }
 .more-panel.up { top: auto; bottom: calc(100% + var(--sp-1)); }
@@ -3084,7 +3085,7 @@ watch(
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 1px var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -3114,7 +3115,7 @@ watch(
 .card.is-cover > .card-head,
 .card.is-cover > .card-meta {
   background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
 }
 

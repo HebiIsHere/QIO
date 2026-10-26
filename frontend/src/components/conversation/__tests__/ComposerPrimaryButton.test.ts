@@ -70,6 +70,7 @@ vi.mock("../../../services/attachments", async (importOriginal) => {
 import Composer from "../../Composer.vue";
 import { useSessionStore } from "../../../stores/session";
 import type { AttachmentRef } from "../../../services/attachments";
+import { hasTipRecord } from "../../../composables/useQioTip";
 
 function attachment(state: AttachmentRef["state"], id = "att_1"): AttachmentRef {
   return {
@@ -184,7 +185,8 @@ describe("发送 / 停止共用按钮四态", () => {
     await w.find("textarea").setValue("排队的一句");
     const btn = primary(w);
     expect(btn.attributes("data-mode")).toBe("send");
-    expect(btn.attributes("title")).toContain("排队");
+    expect(btn.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(btn.element as HTMLElement)).toBe(true);
     await btn.trigger("click");
     await flushPromises();
     expect(mocks.sendTurn).toHaveBeenCalledWith("排队的一句", null, []);

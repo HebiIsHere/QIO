@@ -55,6 +55,7 @@ import RecoveryInbox from "../RecoveryInbox.vue";
 import { useSessionStore } from "../../stores/session";
 import type { RecoveryRecordView } from "../../services/recoveryApi";
 import source from "../RecoveryInbox.vue?raw";
+import { hasTipRecord } from "../../composables/useQioTip";
 
 function readyRecord(overrides: Partial<RecoveryRecordView> = {}): RecoveryRecordView {
   return {
@@ -146,7 +147,8 @@ describe("清单本身", () => {
 
     const button = w.find("button.btn-continue");
     expect(button.attributes("disabled")).toBeDefined();
-    expect(button.attributes("title")).toContain("无法确认上次的写入者是否已停止");
+    expect(button.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(button.element as HTMLElement), "禁用原因要走统一用途说明").toBe(true);
     expect(w.find(".blocked").text()).toContain("无法确认上次的写入者是否已停止");
 
     await button.trigger("click");

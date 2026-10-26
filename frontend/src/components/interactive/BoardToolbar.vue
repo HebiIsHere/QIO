@@ -18,6 +18,7 @@
   自包含：不接收任何 props。右端提交区与顶部保存状态是两条独立路径（保存不调用 QIO）。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { toolbarAvailableWidth, toolbarBand, type ToolbarBand } from "../../interactive/toolbarLayout";
@@ -140,7 +141,7 @@ onBeforeUnmount(() => {
           type="button"
           data-im="undo"
           aria-label="撤销"
-          title="撤销上一步板面操作"
+          v-qio-tip="'撤销上一步板面操作'"
           :disabled="!store.canUndo"
           @click="store.undo()"
         >
@@ -156,7 +157,7 @@ onBeforeUnmount(() => {
           type="button"
           data-im="redo"
           aria-label="重做"
-          title="重做被撤销的操作"
+          v-qio-tip="'重做被撤销的操作'"
           :disabled="!store.canRedo"
           @click="store.redo()"
         >
@@ -176,7 +177,7 @@ onBeforeUnmount(() => {
           type="button"
           data-im="annotate-toggle"
           aria-label="标注"
-          title="标注（画笔 / 橡皮）"
+          v-qio-tip="'标注（画笔 / 橡皮）'"
           :aria-expanded="annotateOpen"
           @click="annotateOpen = !annotateOpen"
         >
@@ -200,7 +201,7 @@ onBeforeUnmount(() => {
           :class="{ on: props.bookmarksOpen }"
           :aria-label="props.bookmarksOpen ? '收起书签栏' : '打开书签栏'"
           :aria-pressed="props.bookmarksOpen"
-          :title="props.bookmarksOpen ? '收起书签栏' : '打开书签栏'"
+          v-qio-tip="props.bookmarksOpen ? '收起书签栏' : '打开书签栏'"
           @click="emit('toggle-bookmarks')"
         >
           <svg class="tb-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
@@ -237,7 +238,7 @@ onBeforeUnmount(() => {
   padding: var(--sp-2) var(--sp-3);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--shadow-2);
   font-family: var(--sans);
 }
@@ -267,7 +268,7 @@ onBeforeUnmount(() => {
   padding: var(--sp-1) var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--shadow-1);
   font-size: var(--fs-xs);
   line-height: var(--lh-tight);
@@ -391,7 +392,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -416,7 +417,7 @@ onBeforeUnmount(() => {
   width: min(420px, 80vw);
   padding: var(--sp-3) var(--sp-4);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
 }
@@ -433,7 +434,7 @@ onBeforeUnmount(() => {
   min-width: 150px;
   padding: var(--sp-1);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
 }
@@ -442,7 +443,7 @@ onBeforeUnmount(() => {
   width: 100%;
   padding: var(--sp-1) var(--sp-2);
   border: 0;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: none;
   color: var(--text-secondary);
   font: inherit;

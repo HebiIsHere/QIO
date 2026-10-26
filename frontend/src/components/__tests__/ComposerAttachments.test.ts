@@ -51,6 +51,7 @@ vi.mock("../../services/attachments", async (importOriginal) => {
 import Composer from "../Composer.vue";
 import { useSessionStore } from "../../stores/session";
 import type { AttachmentRef } from "../../services/attachments";
+import { hasTipRecord } from "../../composables/useQioTip";
 
 function ref(over: Partial<AttachmentRef> = {}): AttachmentRef {
   return {
@@ -197,7 +198,9 @@ describe("Composer 附件入口", () => {
     );
     await pastePath(w, "D:\\tmp\\坏的.bin");
     expect(w.find(".chip").text()).toContain("准备失败");
-    expect(w.find(".chip").attributes("title")).toContain("磁盘空间不足");
+    // 完整原因走统一用途说明（QTip），不再挂原生 title
+    expect(w.find(".chip").attributes("title")).toBeUndefined();
+    expect(hasTipRecord(w.find(".chip").element as HTMLElement)).toBe(true);
 
     await w.find("textarea").setValue("别把我的字弄丢");
     await w.find(".send-btn").trigger("click");
@@ -281,7 +284,8 @@ describe("Composer 附件入口", () => {
     const chip = w.find(".chip");
     expect(chip.text()).toContain("引用本地文件");
     expect(chip.text()).toContain("500.0 MB");
-    expect(chip.attributes("title")).toContain("不保证内容仍然存在");
+    expect(chip.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(chip.element as HTMLElement)).toBe(true);
     w.unmount();
   });
 

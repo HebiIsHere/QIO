@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 文件卡的源引用信息（R9 契约 §6 / §8）。
  *
@@ -190,7 +191,7 @@ const sizeText = computed(() => {
 <template>
   <div class="file-ref" data-im="file-card-ref" :data-card-id="cardId" :data-stale="stale ? '1' : '0'">
     <template v-if="hasAttachment && view">
-      <p class="ref-name" data-im="file-card-name" :title="view.name">
+      <p class="ref-name" data-im="file-card-name" v-qio-tip="view.name">
         <span class="kind-tag mono">{{ view.typeLabel }}</span>
         <span class="name">{{ view.name }}</span>
         <span v-if="sizeText" class="size mono">{{ sizeText }}</span>
@@ -223,7 +224,7 @@ const sizeText = computed(() => {
           :class="{ on: materialEnabled }"
           :aria-checked="materialEnabled"
           :aria-label="materialEnabled ? '作为互动材料（已开启）' : '作为互动材料（已关闭）'"
-          :title="MATERIAL_SWITCH_HINT"
+          v-qio-tip="MATERIAL_SWITCH_HINT"
           :disabled="savingMaterial"
           data-im="file-card-material-switch"
           @click="toggleMaterial"
@@ -288,7 +289,7 @@ const sizeText = computed(() => {
   font-size: 10px;
   color: var(--link);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 0 4px;
 }
 .name {
@@ -325,7 +326,7 @@ const sizeText = computed(() => {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   height: 22px;
   cursor: pointer;

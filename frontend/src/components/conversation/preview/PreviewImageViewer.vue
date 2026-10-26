@@ -205,7 +205,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .pv-image-el {
@@ -246,7 +246,7 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 1px var(--sp-3);
   cursor: pointer;
 }

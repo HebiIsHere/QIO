@@ -10,6 +10,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useConversationShellStore } from "../../stores/conversationShell";
 import { useConversationTasksStore } from "../../stores/conversationTasks";
+import QIconButton from "../ui/QIconButton.vue";
 import TaskRailItem from "./TaskRailItem.vue";
 
 const props = withDefaults(defineProps<{ drawer?: boolean }>(), { drawer: false });
@@ -187,42 +188,33 @@ onBeforeUnmount(() => {
     <header class="rail-head">
       <h2 class="rail-title">任务</h2>
       <div class="rail-head-actions">
-        <button
-          class="icon-btn"
-          type="button"
-          aria-label="刷新任务列表"
-          :disabled="state.loading"
-          :aria-busy="state.loading ? 'true' : 'false'"
+        <QIconButton
+          icon="refresh"
+          label="刷新任务列表"
+          description="重新读取任务清单（不会执行或取消任何任务）"
+          size="sm"
+          tone="quiet"
+          :busy="state.loading"
           @click="refresh"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M3 6.5a5 5 0 0 1 8.6-2.4L13 5.5" />
-            <path d="M13 2.8v2.9H10" />
-            <path d="M13 9.5a5 5 0 0 1-8.6 2.4L3 10.5" />
-            <path d="M3 13.2v-2.9H6" />
-          </svg>
-        </button>
-        <button
+        />
+        <QIconButton
           v-if="props.drawer"
-          class="icon-btn"
-          type="button"
-          aria-label="关闭任务列表"
+          icon="close"
+          label="关闭任务列表"
+          description="关闭任务列表，任务本身不受影响"
+          size="sm"
+          tone="quiet"
           @click="emit('close')"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-        </button>
-        <button
+        />
+        <QIconButton
           v-else
-          class="icon-btn"
-          type="button"
-          aria-label="收起任务栏"
+          icon="collapse"
+          label="收起任务栏"
+          description="收起左侧任务栏，展开入口仍在左栏边缘"
+          size="sm"
+          tone="quiet"
           @click="shell.toggleLeft()"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="2" y="3" width="12" height="10" rx="1.5" />
-            <path d="M6 3v10" />
-          </svg>
-        </button>
+        />
       </div>
     </header>
 
@@ -261,7 +253,14 @@ onBeforeUnmount(() => {
     <p v-if="tasks.focusError" class="rail-warn" role="alert">{{ tasks.focusError }}</p>
     <div v-if="tasks.feedback" class="rail-feedback" role="status">
       <span>{{ tasks.feedback }}</span>
-      <button type="button" aria-label="关闭提示" @click="dismissFeedback">×</button>
+      <QIconButton
+        icon="close"
+        label="关闭提示"
+        description="只关闭这条提示，不影响任务与数据"
+        size="sm"
+        tone="quiet"
+        @click="dismissFeedback"
+      />
     </div>
 
     <div
@@ -353,48 +352,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 2px;
 }
-.icon-btn {
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-.icon-btn svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.icon-btn:hover {
-  color: var(--text-strong);
-  background: var(--layer-hover);
-}
-.icon-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.icon-btn:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
 .rail-tabs {
   flex: none;
   display: flex;
   gap: 3px;
   margin: 0 10px 6px;
   padding: 3px;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .rail-tabs button {
@@ -405,7 +369,7 @@ onBeforeUnmount(() => {
   gap: 5px;
   padding: 5px 4px;
   border: 0;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
@@ -450,27 +414,13 @@ onBeforeUnmount(() => {
   margin: 0 12px 6px;
   padding: 6px 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-base);
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   line-height: 1.6;
 }
 .rail-feedback span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.rail-feedback button {
-  flex: none;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-  padding: 2px;
-}
-.rail-feedback button:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
 .rail-list {
   flex: 1;
   min-height: 0;

@@ -15,6 +15,7 @@
   - 每个操作有进行中状态与失败反馈，成功后由 store 刷新任务清单与执行记录。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../../../composables/useQioTip";
 import { computed, onMounted, ref } from "vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import ApprovalResultsPanel from "../../approval/ApprovalResultsPanel.vue";
@@ -255,7 +256,7 @@ onMounted(() => {
                 type="button"
                 :data-im="'task-' + action"
                 :data-intent-id="row.intentId"
-                :title="taskControlHint(action)"
+                v-qio-tip="taskControlHint(action)"
                 :disabled="Boolean(busy)"
                 @click="runControl(row, action)"
               >{{ taskControlLabel(action, busy === row.intentId + ':' + action) }}</button>
@@ -287,7 +288,7 @@ onMounted(() => {
                 type="button"
                 :data-im="'task-' + action"
                 :data-intent-id="row.intentId"
-                :title="taskControlHint(action)"
+                v-qio-tip="taskControlHint(action)"
                 :disabled="Boolean(busy)"
                 @click="runControl(row, action)"
               >{{ taskControlLabel(action, busy === row.intentId + ':' + action) }}</button>
@@ -406,7 +407,7 @@ onMounted(() => {
   overflow-y: auto;
   padding: var(--sp-3);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
   color: var(--text-primary);
@@ -421,7 +422,7 @@ onMounted(() => {
   color: var(--text-secondary);
   background: none;
   border: 1px solid transparent;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   cursor: pointer;
   min-width: 0;
@@ -443,11 +444,11 @@ onMounted(() => {
   flex-wrap: wrap;
   padding: 4px var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .tc-name { flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--text-primary); overflow-wrap: anywhere; }
-.tc-status { flex: none; font-size: 10.5px; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-radius: var(--r-pill); padding: 0 6px; }
+.tc-status { flex: none; font-size: 10.5px; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); padding: 0 6px; }
 .tc-status[data-tone="active"] { color: var(--accent); border-color: var(--accent); }
 .tc-status[data-tone="waiting"] { color: var(--warning); border-color: var(--warning); }
 .tc-status[data-tone="problem"] { color: var(--danger); border-color: var(--danger); }
@@ -459,7 +460,7 @@ onMounted(() => {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 1px 8px;
   cursor: pointer;
 }

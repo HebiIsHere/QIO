@@ -102,7 +102,7 @@ withDefaults(
 .pv-code {
   min-width: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   overflow: hidden;
 }

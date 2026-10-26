@@ -52,6 +52,7 @@ import { useInteractiveStore } from "../../../stores/interactive";
 import { emptyState, setSelection } from "../../../interactive/board";
 import type { AttachmentRef } from "../../../services/attachments";
 import type { BoardCard as BoardCardModel } from "../../../interactive/types";
+import { hasTipRecord } from "../../../composables/useQioTip";
 
 const SFC_SOURCE: string = sfcSource;
 const STAMP = "2026-10-13T00:00:00.000Z";
@@ -512,7 +513,9 @@ describe("卡片内长文件名", () => {
     await clickAttach(w);
 
     const el = statusEl(w);
-    expect(el.attributes("title") ?? "", "提示上没有可查看完整名称的 title").toContain(longName);
+    // 完整名称走统一用途说明（QTip），不再用原生 title
+    expect(el.attributes("title") ?? "").toBe("");
+    expect(hasTipRecord(el.element as HTMLElement), "提示上缺少可查看完整名称的用途说明").toBe(true);
     expect(statusText(w), "提示里没有完整文件名").toContain(longName);
     // 样式护栏（jsdom 不做布局）：状态区允许换行，文本区允许断词
     expect(cssRule(".attach-status"), "状态区不能换行").toContain("flex-wrap: wrap");

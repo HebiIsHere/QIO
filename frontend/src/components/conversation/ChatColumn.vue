@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 中央对话工作区（B 负责完整实现）。
  *
@@ -21,6 +22,8 @@ import { useConversationShellStore } from "../../stores/conversationShell";
 import { restoreRuntimeState } from "../../stores/restore";
 import { api, type TopicDetail } from "../../services/api";
 import MessageStream from "../MessageStream.vue";
+import QIcon from "../ui/QIcon.vue";
+import QIconButton from "../ui/QIconButton.vue";
 import ComposerDock from "./ComposerDock.vue";
 import { useComposerClearance } from "../../composables/useComposerClearance";
 
@@ -304,7 +307,7 @@ onBeforeUnmount(() => {
         type="button"
         :aria-expanded="detailsOpen ? 'true' : 'false'"
         aria-controls="topic-details"
-        :title="`${topicTitle}：点击查看话题说明与历史续接状态`"
+        v-qio-tip="`${topicTitle}：点击查看话题说明与历史续接状态`"
         @click="toggleDetails"
       >
         <span class="topic-mark mono" aria-hidden="true">TOPIC</span>
@@ -316,9 +319,7 @@ onBeforeUnmount(() => {
           {{ anchorTitle ? `从「${anchorTitle}」继续` : "从选中的历史位置继续" }}
         </span>
         <span class="chev" :class="{ open: detailsOpen }" aria-hidden="true">
-          <svg viewBox="0 0 24 24">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
+          <QIcon name="chevron-down" :size="18" />
         </span>
       </button>
     </header>
@@ -334,14 +335,15 @@ onBeforeUnmount(() => {
     >
       <div class="td-head">
         <span class="td-name serif">{{ detail?.name || topicTitle }}</span>
-        <button
+        <QIconButton
           class="td-close"
-          type="button"
-          aria-label="收起话题说明"
+          icon="close"
+          label="收起话题说明"
+          description="收起话题说明，话题与消息都不受影响"
+          size="sm"
+          tone="quiet"
           @click="detailsOpen = false"
-        >
-          ×
-        </button>
+        />
       </div>
       <p v-if="detailLoading" class="td-note" role="status">正在读取话题说明…</p>
       <template v-else-if="detailError">
@@ -450,7 +452,7 @@ onBeforeUnmount(() => {
   min-height: 50px;
   padding: 10px 16px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   color: inherit;
@@ -488,7 +490,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   padding: 1px 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   font-size: 10.5px;
   color: var(--text-muted);
   letter-spacing: 0.02em;
@@ -509,18 +511,11 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
   transition: color var(--dur-fast) var(--ease-1), background-color var(--dur-fast) var(--ease-1);
 }
-.topic-main .chev svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.topic-main .chev :deep(svg) {
   transform-origin: 50% 50%;
   transition: transform var(--dur-fast) var(--ease-1);
 }
-.topic-main .chev.open svg {
+.topic-main .chev.open :deep(svg) {
   transform: rotate(180deg);
 }
 .topic-main:hover .chev {
@@ -533,7 +528,7 @@ onBeforeUnmount(() => {
   margin: 6px 0 0;
   padding: 10px 14px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   font-size: var(--fs-sm);
@@ -550,20 +545,6 @@ onBeforeUnmount(() => {
 }
 .td-close {
   margin-left: auto;
-  border: none;
-  background: none;
-  padding: 0 2px;
-  color: var(--text-muted);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-.td-close:hover {
-  color: var(--text-strong);
-}
-.td-close:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
 }
 .td-note {
   margin: 6px 0 4px;
@@ -641,7 +622,7 @@ onBeforeUnmount(() => {
   gap: 8px 12px;
   padding: 6px 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   font-size: var(--fs-sm);
   min-width: 0;
@@ -661,7 +642,7 @@ onBeforeUnmount(() => {
   font-size: 10.5px;
   letter-spacing: 0.08em;
   padding: 1px 8px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   border: 1px solid currentColor;
   opacity: 0.85;
 }
@@ -696,7 +677,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-base);
 }
 .bottom-cluster {
@@ -719,7 +700,7 @@ onBeforeUnmount(() => {
   padding: 6px 10px;
   background: var(--bg-elevated);
   border: 1px solid var(--accent);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   color: var(--text-strong);
 }
 </style>

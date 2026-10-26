@@ -314,7 +314,7 @@ defineExpose({
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   display: flex;
   justify-content: center;
@@ -330,7 +330,7 @@ canvas {
   bottom: var(--sp-2);
   margin: 0;
   padding: 2px var(--sp-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   color: var(--text-muted);
   font-size: var(--fs-tech);
@@ -365,7 +365,7 @@ canvas {
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 1px var(--sp-3);
   cursor: pointer;
 }

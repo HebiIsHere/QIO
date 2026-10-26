@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 一轮的**唯一**过程区域（契约 §1.5）。
  *
@@ -569,7 +570,7 @@ onBeforeUnmount(() => {
         type="button"
         data-test="turn-process-toggle"
         :aria-expanded="historyOpen ? 'true' : 'false'"
-        :title="historyOpen ? '收起过程历史' : '展开过程历史'"
+        v-qio-tip="historyOpen ? '收起过程历史' : '展开过程历史'"
         @click="toggleHistory"
       >
         <span class="tp-dot" aria-hidden="true"></span>
@@ -644,7 +645,7 @@ onBeforeUnmount(() => {
           type="button"
           data-test="turn-process-stage-toggle"
           :aria-expanded="stageDetailOpen ? 'true' : 'false'"
-          :title="stageDetailOpen ? '收起本阶段明细' : '展开本阶段明细'"
+          v-qio-tip="stageDetailOpen ? '收起本阶段明细' : '展开本阶段明细'"
           @click="toggleStageDetail"
         >
           <span class="tp-chev" aria-hidden="true">{{ stageDetailOpen ? "▾" : "▸" }}</span>
@@ -820,7 +821,7 @@ onBeforeUnmount(() => {
   color: inherit;
   text-align: left;
   cursor: pointer;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 .tp-toggle:focus-visible {
   outline: 2px solid var(--focus-ring);
@@ -970,7 +971,7 @@ onBeforeUnmount(() => {
   max-width: 100%;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-secondary);
@@ -1012,7 +1013,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 .tp-cur-detail-toggle:hover {
   color: var(--text-secondary);
@@ -1034,7 +1035,7 @@ onBeforeUnmount(() => {
   max-width: min(560px, 100%);
   background: var(--bg-elevated);
   border: 1px solid var(--warning);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--shadow-1);
 }
 .tp-ap-head {

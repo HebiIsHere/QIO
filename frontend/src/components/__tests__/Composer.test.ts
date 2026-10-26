@@ -5,6 +5,7 @@ import { nextTick } from "vue";
 import Composer from "../Composer.vue";
 import ComposerDock from "../conversation/ComposerDock.vue";
 import { useSessionStore } from "../../stores/session";
+import { hasTipRecord } from "../../composables/useQioTip";
 
 const mocks = vi.hoisted(() => ({
   sendTurn: vi.fn(async () => ({ ok: true, topic_id: null })),
@@ -95,7 +96,8 @@ describe("Composer 运行中仍可书写（任务02 §1/§3/§4/§11）", () => 
     await nextTick();
     await w.find("textarea").setValue("排队的消息");
     const btn = w.find(".send-btn");
-    expect(btn.attributes("title")).toContain("排队");
+    expect(btn.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(btn.element as HTMLElement)).toBe(true);
     await btn.trigger("click");
     await flushPromises();
     expect(mocks.sendTurn).toHaveBeenCalledWith("排队的消息", null, []);
@@ -233,7 +235,8 @@ describe("话题位置与输入提示（v2：入口② + 输入区）", () => {
     const placeholder = textarea.attributes("placeholder") ?? "";
     expect(w.find(".composer-caption").exists()).toBe(false);
     expect(textarea.attributes("aria-label")).toContain("Enter 发送");
-    expect(textarea.attributes("title")).toContain("Shift+Enter 换行");
+    expect(textarea.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(textarea.element as HTMLElement)).toBe(true);
     expect(placeholder).toContain("继续讨论");
     expect(placeholder).not.toContain("/tool");
     expect(placeholder).not.toContain("/topic");
@@ -339,7 +342,8 @@ describe("Composer 草稿连续性（P0：草稿不能因为切页或失败而�
     // 所以没有 turn_id 也可以安全地停止。
     expect(w.find(".stop-btn").attributes("aria-label") ?? "").toContain("停止");
     expect(w.find(".stop-btn").attributes("disabled")).toBeUndefined();
-    expect(w.find(".stop-btn").attributes("title")).toContain("取消后端");
+    expect(w.find(".stop-btn").attributes("title")).toBeUndefined();
+    expect(hasTipRecord(w.find(".stop-btn").element as HTMLElement)).toBe(true);
 
     // 收到 TURN_START（有 turn_id）后才是真正可用的「停止」
     session.activeTurnId = "turn_1";
