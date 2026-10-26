@@ -5,6 +5,7 @@
  * emit：update:modelValue(number|null)、change（Enter/失焦提交，透传给父级保存）。
  */
 import { ref, watch } from "vue";
+import QIcon from "./QIcon.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -130,8 +131,12 @@ function onInput(e: Event) {
     />
     <span v-if="unit" class="q-number-unit">{{ unit }}</span>
     <div class="q-number-steps">
-      <button type="button" class="step up" :disabled="disabled" aria-label="增加" @click="stepBy(1)">＋</button>
-      <button type="button" class="step down" :disabled="disabled" aria-label="减少" @click="stepBy(-1)">−</button>
+      <button type="button" class="step up" :disabled="disabled" aria-label="增加" @click="stepBy(1)">
+        <QIcon name="plus" :size="12" />
+      </button>
+      <button type="button" class="step down" :disabled="disabled" aria-label="减少" @click="stepBy(-1)">
+        <QIcon name="minus" :size="12" />
+      </button>
     </div>
   </div>
 </template>
@@ -142,10 +147,11 @@ function onInput(e: Event) {
   align-items: stretch;
   height: 38px;
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   overflow: hidden;
-  transition: border-color 0.18s, box-shadow 0.18s, background 0.18s;
+  transition: border-color var(--mo-1-state) var(--ease-1), box-shadow var(--mo-1-state) var(--ease-1),
+    background var(--mo-1-state) var(--ease-1);
 }
 .q-number:focus-within {
   border-color: var(--accent);
@@ -201,7 +207,7 @@ function onInput(e: Event) {
   line-height: 1;
   cursor: pointer;
   touch-action: manipulation;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--mo-1-state) var(--ease-1), color var(--mo-1-state) var(--ease-1);
 }
 .step:hover:not(:disabled) {
   background: var(--accent-soft);
