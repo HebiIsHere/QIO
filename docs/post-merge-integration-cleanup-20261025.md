@@ -323,5 +323,6 @@
   - 本地全量：后端 601 文件 / 6013 项 **exit 0**；前端 452 文件 / 4025 项 **全通过（exit 0）**；`vue-tsc --noEmit` 0 error；`vite build` 成功；docs/license/release gate/workflow 契约检查通过；离线评估与基线逐字节相同。
   - 独立验收（F）：五项反例全绿、保真项 6/6、回归 101+81 passed、真实界面 480x600 4/4；LIMITED：通知 AppContext 端到端未构造、真实网络故障注入未做、跨崩溃 at-least-once 窗口保留。
   - 最终结论：未合入 main / 未打包发布 / 未改版本号；合并材料见 `docs/post-merge-followups-20261026.md`。
+  - 收口后追加修复（定向验证、未触发全量/CI）：普通互动聊天续作 `resolve_chat_binding` 同规则修复（原提交 topicId 优先；原提交存在但话题无法核对时明确 400 拒绝，不回退当前话题、不静默改绑）；定向测试 5 例（基线 2 红→绿），改动以 `[skip ci]` 推送。
 - **未验证边界（本轮默认口径）**：真实模型/厂商链路（一律 fake/mock）、POSIX 平台（本地仅 Windows）、安装包形态与系统关机/注销、真机桌面壳（除非收口时另有新证据）——最终以收口证据为准。
 

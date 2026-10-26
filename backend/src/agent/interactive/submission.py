@@ -2078,12 +2078,26 @@ def resolve_chat_binding(
         resolved = tuple(
             item["id"] for item in waiting["items"] if item["submissionId"] == sid
         )
+    # 续作话题归属（与 start_interactive_turn 同一规则）：只认原提交保存的
+    # binding.resumeState.topicId。界面当前话题不得覆盖它；原提交存在但话题
+    # 无法核对时**明确拒绝这次发送**，不静默改绑到当前话题。
+    # 没有 submission（板面上的新消息，不是续作）才使用调用方当前话题。
     topic = ""
     if sid:
         binding = submission_binding(conn, sid)
         if binding is not None:
             topic = str(binding["resumeState"].get("topicId") or "")
-    if not topic:
+        if not topic:
+            reason = (
+                f"提交 {sid} 没有保存话题"
+                if binding is not None
+                else f"提交 {sid} 没有保存绑定"
+            )
+            raise ValueError(
+                "原提交话题无法确认（" + reason + "）：这次续作没有发送，"
+                "不会写进当前话题；请回到原提交所在话题，或重新发起一次提交。"
+            )
+    else:
         topic = str(current_topic or "")
     attempt = 1
     intents: tuple[str, ...] = ()

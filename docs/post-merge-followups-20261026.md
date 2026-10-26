@@ -51,7 +51,7 @@
 **修复**：`submission.resolve_resume_topic` 只认 `binding.resumeState.topicId`，缺失/为空/读取失败返回 `code=topic_unresolved`；`start_interactive_turn` 在 claim/提交/写绑定之前强制解析，失败不启动/不写绑定/不回退当前话题；API 不再传当前话题并补可读 code/reason；前端 `intentDisplay.summarizeConfirm` 消费 `started=false/startError/turnStart.reason` 显示真实原因。
 **调用点核对**：startup_recovery 与 turn_orchestrator 两处都能从意图拿到带 topicId 的 submission；无 binding 时只 release_retry/skipped（最多 3 次 exhausted，无死循环）、不崩溃、不起 Turn、不重复执行（已补 4 条测试，2 条基线红）。
 **验证（绿）**：新用例 17 passed；相邻 11 文件 147 passed；相关端点 123 passed/6 skipped；既有 `test_p3_d_intent_resume_retry.py` 仅改 1 条过期断言（调用方话题 → 原提交话题），未放宽。
-**未解决**：`resolve_chat_binding` 的普通聊天续作仍回退 current_topic（超范围，后续事项）；历史「succeeded 但绑定缺失」数据自动重试会显式失败（不写错话题、不重复执行）。
+**未解决（已在本轮收口后追加修复）**：`resolve_chat_binding` 的普通互动聊天续作原先仍回退 current_topic；收口后按用户要求追加修复并只做定向验证（见 §4.6）。历史「succeeded 但绑定缺失」数据自动重试仍会显式失败（不写错话题、不重复执行）。
 ### 3.2 旧审批恢复与预算
 
 **问题**：旧 `request()` 审批落库行 state 为空，读取时 `state_of` 把空 state 按 status 映射（pending→waiting），恢复又把旧行标成 `interrupted_unverified`；旧审批因此被当成 v2 生命周期、前端误调 `/decide`。旧 `/respond` 只把决定交给等待中的工具，工具真实执行后没有任何地方写结果——已批准升不到已执行成功/失败。不支持 overrides 的路径收到 overrides 被静默忽略。
@@ -128,6 +128,12 @@
 - **真机桌面/安装形态**：本轮未重新构建桌面壳、未打包、未做安装/卸载验证；真机桌面证据仍为 P90 的 `_fixpm/evidence/D/f07`（本轮未改壳侧代码），按未验证列出。真实模型链路未验证（全部 fake/mock）。
 - **LIMITED（F 记录）**：通知的 AppContext pump/启动补投/request_id 查重只做代码核对 + 队列级真实状态机验证，未构造完整 AppContext 端到端；界面“断线重连”用 reload/新 connect 模拟、“决定失败”用 404 注入，未做真实网络故障注入；跨崩溃 at-least-once 窗口按 D 说明保留。
 
+### 4.6 收口后追加修复（定向验证，未触发全量/CI）
+
+- 追加修复：普通互动聊天续作 `submission.resolve_chat_binding` 与确认/恢复/重试同规则——原提交保存的 `binding.resumeState.topicId` 优先；原提交存在但话题无法核对时明确拒绝这次发送（API 400，带可读原因），不回退当前话题、不静默改绑；没有 submission 的新消息仍使用当前话题（正常发消息不变）。
+- 红→绿：新增 `backend/tests/test_fu3_chat_topic_binding.py` 5 例；把 `submission.py` 临时回退到基线后同文件 2 例红（缺失话题被当前话题顶替），修复后 5 例绿；与相邻 `tests/test_p3_a_waiting.py` 合并 18 passed。证据 `_fixpm2/evidence/fu3-chat-topic.md`。
+- 约束：按用户要求**未跑全量测试、未触发 CI**；本次改动以 `[skip ci]` 推送，不产生 CI 运行。
+
 ## 5. 保留机制与保护清单
 
 - 三次确认（required/confirmed_stage 由后端推导与 CAS）、期限（expires_at 不续期）、CAS（revision/expected_revision 不变）、单次执行（claim CAS 只有一个执行者）、执行前重核（operation_digest/预检查）：本轮未改语义，B 的旧路径收尾只写结果不重跑工具；既有 approval/lifecycle/restart 测试全绿。
@@ -138,7 +144,7 @@
 
 ## 6. 未解决与未验证
 
-- **话题归属**：`submission.resolve_chat_binding` 里普通聊天续作仍会回退 current_topic（本轮只修确认/恢复/重试/启动恢复/编排自动重试的续作 Turn）；历史「succeeded 但绑定写入缺失」的数据其自动重试会显式失败（不写错话题、不重复执行）。
+- **话题归属**：普通互动聊天续作已按同一规则修复（原提交 topicId 优先；缺失明确拒绝、不回退当前话题，见 §4.6）；历史「succeeded 但绑定写入缺失」的数据其自动重试仍会显式失败（不写错话题、不重复执行）。
 - **审批**：v2 store 生命周期结果仍走原 `store.finish` 路径（本轮未改）；旧审批 approved 但工具未执行完时历史停在 approved（界面明说等待执行，不伪造成功）；旧 `request()` 内存在进程重启后无法再应答（恢复为 interrupted_legacy 只读），这是既有语义。
 - **通知**：跨崩溃仍是 at-least-once（submit 与写 delivered_at 无共享事务，可能在极小窗口重投一次；同进程内 request_id 查重已压掉，正常失败重试不重复）；延迟重试为单次 10s，无指数退避/最大次数；未构造完整 AppContext 的端到端 pump 重试验收（F 按代码核对 + 单测覆盖，列 LIMITED）。
 - **真实桌面 / 安装形态 / 真实模型 / POSIX**：本轮未新增证据。真机桌面与安装 e2e 沿用 P90 证据（见 docs/post-merge-integration-cleanup-20261025.md 与 `_fixpm/evidence/D/f07`），本轮代码未改壳侧；真实模型链路全程 fake/mock；POSIX 仅由 CI 覆盖。
