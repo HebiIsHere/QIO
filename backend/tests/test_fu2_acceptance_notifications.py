@@ -218,3 +218,24 @@ def test_fifo_and_terminal_filter_are_preserved(db_conn):
     )
     assert queue.enqueue("task_cancelled", cancelled) is False, "已取消的任务不应入队"
     assert queue.pending_count() == 3
+
+# --- 7) 交付只发生一次：重复 pump 不重投；已交付后 take 为空 ------------------------
+
+
+def test_delivered_notification_is_never_redelivered(db_conn):
+    queue = _queue(db_conn)
+    assert queue.enqueue("task_once", _record("task_once"))
+    item = queue.take()
+    assert item is not None and queue.mark_delivered(item) is True
+    delivered_at = _row(db_conn, "task_once").get("delivered_at")
+    assert delivered_at
+
+    # 同一进程里再次 pump：不再取出、不重复投递
+    assert queue.take() is None, "已交付通知被再次取出（会重复投递）"
+    # 重启后的新队列同样不会重投
+    restarted = _queue(db_conn)
+    assert restarted.take() is None, "重启后已交付通知被重投"
+    assert restarted.pending_count() == 0
+    row = _row(db_conn, "task_once")
+    assert row.get("delivered_at") == delivered_at, "重复 pump 改写了交付时间"
+
