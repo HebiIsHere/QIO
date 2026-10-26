@@ -16,6 +16,7 @@ import { useUiStore } from "../../stores/ui";
 import { useUpdaterStore } from "../../stores/updater";
 import { useModalArbiterStore } from "../../stores/modalArbiter";
 import { useGlobalIssuesStore } from "../../stores/globalIssues";
+import { useNotificationsStore } from "../../stores/notifications";
 import { resetQuitGuard } from "../../services/quitGuard";
 
 const mocks = vi.hoisted(() => {
@@ -131,6 +132,25 @@ describe("关闭询问与弹窗仲裁", () => {
     expect(w.find('[role="dialog"]').exists()).toBe(false);
     expect(arbiter.isOpen("qio-close-ask")).toBe(false);
     expect(arbiter.suspendedBy).toBe(null);
+    w.unmount();
+  });
+
+  it("关闭询问期间通知排队不显示；取消后恢复显示（弹窗期间失败/提醒不叠加）", async () => {
+    const w = await mountChrome();
+    const notifications = useNotificationsStore();
+    await emitCloseRequested();
+    notifications.enqueue({
+      key: "setup-incomplete:test",
+      kind: "setup_incomplete",
+      text: "初始设置尚未完成",
+    });
+    await flushPromises();
+    expect(notifications.activeKey).toBe(null);
+
+    await w.find('[role="dialog"]').findAll("button").find((b) => b.text() === "取消")!.trigger("click");
+    await flushPromises();
+    expect(notifications.activeKey).toBe("setup-incomplete:test");
+    notifications.reset();
     w.unmount();
   });
 
