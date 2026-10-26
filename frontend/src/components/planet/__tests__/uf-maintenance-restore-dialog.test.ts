@@ -193,6 +193,18 @@ describe("整批撤回中央弹窗", () => {
     w.unmount();
   });
 
+  it("更高优先级中央弹窗占用时不强行叠层，给出真实说明", async () => {
+    const w = mountPanel();
+    await flushPromises();
+    const arbiter = useModalArbiterStore();
+    arbiter.open({ id: "qio-close-ask", kind: "close-ask", dismissible: true });
+    await openDialog(w);
+    expect(w.find(".restore-dialog").exists()).toBe(false);
+    expect(w.text()).toContain("另一个中央弹窗正在处理");
+    arbiter.reset();
+    w.unmount();
+  });
+
   it("撤回失败留在弹窗里显示真实原因并可重试", async () => {
     mocks.apiMock.restoreMaintenance.mockRejectedValueOnce(new Error("409 已被用户修改"));
     const w = mountPanel();

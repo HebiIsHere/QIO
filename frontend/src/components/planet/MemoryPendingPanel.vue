@@ -34,6 +34,7 @@ import MaintenanceRestoreDialog, {
 } from "./MaintenanceRestoreDialog.vue";
 import { useActionFeedback } from "../../composables/useActionFeedback";
 import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
+import { useModalArbiterStore } from "../../stores/modalArbiter";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const KIND_LABELS: Record<string, string> = {
@@ -405,11 +406,24 @@ const confirmItemId = ref("");
  */
 const restoreDialogOpen = ref(false);
 const restoreTargetLabel = ref("");
+/** 中央弹窗被更高优先级弹窗占着时的说明（不强行叠层，也不静默无反应）。 */
+const restoreBlocked = ref("");
+const restoreArbiter = useModalArbiterStore();
 
 function openBatchRestore(batchId: string): void {
   if (!batchId || restoreLoading.value) return;
-  restoreTargetLabel.value = "批次 " + batchId;
   restoreError.value = "";
+  restoreBlocked.value = "";
+  const allowed = restoreArbiter.open({
+    id: "memory-batch-restore:" + batchId,
+    kind: "recovery",
+    dismissible: true,
+  });
+  if (!allowed) {
+    restoreBlocked.value = "另一个中央弹窗正在处理，先完成或关闭它，再整批撤回。";
+    return;
+  }
+  restoreTargetLabel.value = "批次 " + batchId;
   restoreDialogOpen.value = true;
   void previewRestore({ batch_id: batchId });
 }
@@ -418,6 +432,7 @@ function closeRestoreDialog(): void {
   if (restoreLoading.value) return;
   restoreDialogOpen.value = false;
   restoreError.value = "";
+  restoreBlocked.value = "";
 }
 
 async function confirmBatchRestore(): Promise<void> {
@@ -1002,6 +1017,9 @@ onBeforeUnmount(() => {
         >{{ batchesLoading ? '刷新中…' : '刷新' }}</button>
         <span class="hint">维护批次是后台整理的真实运行记录；恢复前先预览影响。</span>
       </div>
+
+      <!-- 整批撤回被其它中央弹窗挡住：如实说明，不强行叠层也不假装点了没反应 -->
+      <p v-if="restoreBlocked" class="mp-warn" role="status">{{ restoreBlocked }}</p>
 
       <div v-if="batchesLoading && !batchesLoaded" class="hint">正在加载维护记录…</div>
       <div v-else-if="batchesError" class="mp-error" role="alert">
