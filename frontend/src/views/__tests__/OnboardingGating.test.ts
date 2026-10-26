@@ -121,23 +121,25 @@ describe("欢迎页 gating", () => {
     expect(w.find(".onboarding").exists()).toBe(true);
   });
 
-  it("未完成且未关闭 → 对话页「继续设置」；点 × 记录关闭；点「继续设置」重新展开", async () => {
+  it("未完成时对话页不再渲染设置提示（顶部一次性轻提醒由 D 承接）；关闭与重开能力保留", async () => {
     stubStatus({ done: false, hint_dismissed: false });
     const w = await mountConversation();
     const store = useOnboardingStore();
     await store.load();
     await flushPromises();
 
-    const hint = w.find(".setup-hint");
-    expect(hint.exists()).toBe(true);
-    expect(hint.text()).toContain("继续设置");
+    // 生产挂载已移除：主对话不再有 .setup-hint（引导门槛/必填/迁移/后端 hint 字段都没改）
+    expect(w.find(".setup-hint").exists()).toBe(false);
+    expect(store.hintVisible, "数据仍如实反映「未完成且未关闭」").toBe(true);
 
-    await hint.find(".close").trigger("click");
+    // 关闭能力保留：仍然调用既有的后端字段写入
+    await store.setHintDismissed(true);
     await flushPromises();
     expect(api.setOnboardingHint).toHaveBeenCalledWith(true);
+    expect(store.hintVisible).toBe(false);
 
-    // 重新展开：点击「继续设置」后向导应当出现
-    await hint.find(".resume").trigger("click");
+    // 重新展开能力保留（设置页「重新运行设置助手」与旧入口共用）
+    store.reopen();
     expect(store.showWizard).toBe(true);
   });
 });

@@ -7,7 +7,7 @@
  * 结果列表是锚定在输入框下方的小浮层（Teleport 到 body + fixed，避免被全局栏裁切），
  * 点结果仍 dispatch locate-card 定位到卡片。这里只用真实 store 板面与真实搜索纯函数。
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
@@ -152,6 +152,25 @@ describe("InteractiveChromeTools：挂载与保存状态", () => {
     await settle();
     expect(saveText()).toContain("保存失败：");
     expect(saveText()).not.toContain("/api/");
+  });
+
+  it("保存失败：同一处提供唯一的重试入口（不再另起一条常驻横幅）", async () => {
+    store.saveStatus = "error";
+    store.saveError = "本机磁盘写满";
+    const saveNow = vi.spyOn(store, "saveNow").mockResolvedValue(undefined as never);
+    await mountTools();
+
+    const retry = pickOrFail<HTMLButtonElement>("[data-iw-chrome-save-retry]");
+    expect(retry.getAttribute("aria-label")).toContain("重试保存");
+    retry.click();
+    await settle();
+    expect(saveNow).toHaveBeenCalledTimes(1);
+
+    // 保存成功/没有失败时不出现重试按钮（避免一个没有对象的常驻动作）
+    store.saveStatus = "saved";
+    store.saveError = null;
+    await settle();
+    expect(pick("[data-iw-chrome-save-retry]")).toBeNull();
   });
 });
 

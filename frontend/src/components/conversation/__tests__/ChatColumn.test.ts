@@ -167,21 +167,25 @@ describe("全局状态区：影响整个对话的异常在话题栏下方", () =
     w.unmount();
   });
 
-  it("全局错误与凭据提示分别显示（有错误时不重复显示警告）", async () => {
+  it("全局错误留在原位；凭据 / warning 这类整体异常不再页内重复（统一走顶部全局入口）", async () => {
     const pinia = freshPinia();
     const session = useSessionStore();
     const events = useEventStore();
     session.lastError = "模型凭据已失效";
     events.credentialNotice = "必须显示在设置里";
+    session.warning = "模型回退到兼容模式";
     const w = mountColumn(pinia);
     expect(w.find('[data-notice="lastError"]').text()).toContain("模型凭据已失效");
+    // 同一条整体事实只在一个地方说：页内不再复制 credential / warning 常驻条
     expect(w.find('[data-notice="credential"]').exists()).toBe(false);
+    expect(w.find('[data-notice="warning"]').exists()).toBe(false);
     w.unmount();
 
     const w2 = mountColumn(freshPinia());
     useEventStore().credentialNotice = "当前没有可用的模型凭据";
     await nextTick();
-    expect(w2.find('[data-notice="credential"]').text()).toContain("当前没有可用的模型凭据");
+    expect(w2.find('[data-notice="credential"]').exists()).toBe(false);
+    expect(useEventStore().credentialNotice, "数据保留给全局异常入口").toBe("当前没有可用的模型凭据");
     w2.unmount();
   });
 

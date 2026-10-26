@@ -415,8 +415,8 @@ describe("输入区：软换行 + 高度重算 + 到上限只纵向滚动", () =
   });
 });
 
-describe("对话页：独立并列列表接入统一滚动策略", () => {
-  it("知识候选列表用 QIO 指示条（auto + 仅纵向），不出现原生滚动条区域", async () => {
+describe("对话页：知识候选卡的生产挂载已移除", () => {
+  it("主对话不再渲染候选列表（数据仍在 store，审批层 / 星球各自处理）", async () => {
     const pinia = freshPinia();
     const session = useSessionStore();
     const w = mount(ConversationView, {
@@ -429,11 +429,8 @@ describe("对话页：独立并列列表接入统一滚动策略", () => {
     await nextTick();
     await nextTick();
 
-    const candidates = w.find(".candidates").element as HTMLElement;
-    expect(candidates.getAttribute("data-qio-fit")).not.toBeNull();
-    expect(candidates.classList.contains("qio-scroll-host")).toBe(true);
-    expect(candidates.dataset.qioScroll).toBe("auto");
-    expect(candidates.querySelector('.qio-scroll-rail[data-axis="x"]')).toBeNull();
+    expect(w.find(".candidates").exists()).toBe(false);
+    expect(session.knowledgeCandidates).toHaveLength(1);
     w.unmount();
   });
 });
