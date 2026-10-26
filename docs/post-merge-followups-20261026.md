@@ -27,8 +27,8 @@
 | 开工 fetch 的上游分支 | fix/post-merge-integration-cleanup-20261025 = 373fda40 |
 | origin/main | 1b03541e（未前进；本轮不碰 main） |
 | 修复分支 | fix/post-merge-followups-20261026 |
-| 受测代码 SHA | 8cb18828（集成分支 tip；本地全量/完整 CI 的受测 SHA） |
-| 最终 HEAD | 本文件所在提交（docs-only 回填；可用 git rev-parse HEAD 核对，与受测 SHA 的差异仅为 docs） |
+| 受测代码 SHA | 本地全量与独立验收：`8cb18828`（产品代码）；完整 CI：`48b01f0c`（同一产品代码 + docs）；失败修复仅测试提交：`0c47e11b` |
+| 最终 HEAD | 本文件所在提交（docs-only 回填）；与受测 SHA 的差异仅 docs，可用 `git rev-parse HEAD` 与 `git diff --name-only` 核对 |
 
 ## 2. 工作流与文件 owner
 
@@ -114,7 +114,13 @@
 - **离线评估**：`uv run --frozen python -m agent.eval.run` 在候选与基线 373fda40 各跑一次，输出逐字节相同（`_fixpm2/evidence/eval-*.json`）。
 - **F 验收测试在最终树**：backend 5 文件（话题/旧审批/预算/保真/通知）20 passed；frontend `fu2-acceptance` 4 passed。
 ### 4.4 完整 CI（仅一次）与定向复验
-<收口回填：运行号、SHA、逐 job>
+
+- **触发**：把修复分支推送到 origin（此前不存在远端分支；push 是唯一一次会跑完整矩阵的远端事件；未开 PR、未推子分支、未动 main）。运行 **run 40257319813**，SHA `48b01f0c`（产品代码与本地全量候选 8cb18828 相同，仅多 docs），event=push。
+- **逐 job**：ci dedup preflight ✓ / docs consistency ✓ / frontend（typecheck+测试+构建）✓ / rust (ubuntu) ✓ / rust (windows) ✓ / frozen worker (windows) ✓ / install e2e (windows) ✓ / backend (py3.11) ✓ / backend (windows-latest) ✓ / **backend (py3.12) ✗**；无 skipped、无 cancelled。
+- **唯一失败**：`backend (py3.12)` 的 `tests/test_pm_acceptance_approval_surface.py::test_two_concurrent_approvals_keep_separate_results`（`AssertionError: 并发审批有结果丢失`）。日志根因：测试 helper `_row` 在测试主线程直连读取同一 sqlite 连接，而后台执行器在事件循环线程 `store.finish()` 写同一连接，py3.12 抛 `sqlite3.InterfaceError: bad parameter or other API misuse`（`get_raw`），导致该审批未落历史。**与产品代码无关**：同一提交的 py3.11 与 Windows 后端全绿；本地 py3.11 同文件重复通过；测试本身在 P90 即存在主线程直连读的写法，本次被并发时序触发。
+- **处置（未重跑第二次完整矩阵）**：把测试 helper 改为经应用事件循环线程读取（`client.portal.call`，断言一条未改、未删/未放宽），提交 `0c47e11b` 并以 `[skip ci]` 推送（不产生第二次完整矩阵）；随后用 targeted-verify 对**新提交完整 SHA** 做定向复验：py3.12 run **40263546217** success、py3.11 run **40263563419** success（均指定 ref + 完整 SHA + 两个测试文件；workflow 内 `assert checked-out commit equals requested SHA` 通过，实际受测 SHA 以该断言/日志为准，不以 dispatch 元数据 head_sha 为准）。
+- **未使用** `Re-run failed jobs` 冒充修复通过、未降低门禁、未把 skipped/cancelled 算通过；两次 targeted-verify 是失败后的定向复验，不是第二次完整 CI。
+- **最终 HEAD 与受测 SHA**：`0c47e11b..HEAD` 仅 docs 回填（`git diff --name-only` 可复核）；完整矩阵受测代码 SHA 为 `48b01f0c`，产品代码与本地全量 `8cb18828` 相同。
 ### 4.5 真实界面/桌面证据
 
 - **F 独立真实界面（480x600，隔离后端 8842 + vite 5292 + 独立数据目录 + fake/mock 模型）**：4/4 PASS、consoleErrors=0、无横向溢出：0 待办+历史可从 ⑤ 读到真实持久历史；reload/新 SSE connect 后仍可回看（重连补读）；「已批准」显示等待执行（无预算编辑、无“可修改后批准”、无允许按钮、不说已完成）；对已不存在的审批点击决定时显示真实 404 原因、不假装成功。证据 `_fixpm2/evidence/F/ui/`（4 张截图 + JSON）。

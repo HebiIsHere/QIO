@@ -305,7 +305,7 @@
 
 ## 12. 后续修复阶段（P91，2026-10-26 后续轮）
 
-> **阶段区分**：§1–§11 是 **P90「合并后修复与旧代码清理」的已完成事实**（该阶段未合入 main、未打包、未发布）；本节记录随后另开的 **P91「后续修复轮」**，它**进行中**，最终 SHA、完整 CI、独立验收与收口结论由 Lead 回填。本文件不提前声称 P91 的能力已完成或已合入 main。
+> **阶段区分**：§1–§11 是 **P90「合并后修复与旧代码清理」的已完成事实**（该阶段未合入 main、未打包、未发布）；本节记录随后另开的 **P91「后续修复轮」**，它**已完成**（实现/定向/真实界面/本地全量/完整 CI/失败项定向复验/独立验收均已记录；未合入 main、未打包、未发布、未改版本号）。收口事实见下。
 
 - **基线**：`origin/fix/post-merge-integration-cleanup-20261025` = `373fda40`（P90 分支 tip）；`origin/main` 仍为 `1b03541e`（未前进）。
 - **分支**：Lead 集成分支 `fix/post-merge-followups-20261026`；各工作流独立 worktree 分支：A 话题归属 `fix/fu2-topic-attribution`、B 审批后端 `fix/fu2-approval-backend`、C 审批前端 `fix/fu2-approval-frontend`、D 通知投递 `fix/fu2-notification-delivery`、E 文档许可 `docs/fu2-docs-license`、F 独立验收 `verify/fu2-acceptance`。
@@ -315,12 +315,13 @@
   - **C 审批前端**：按 `approval_id` 合并 `pending` / `history` / 事件；legacy 或无 state 项只走 `/respond`，绝不调 `/decide`、不补 state；重连（SSE onopen）、RESYNC、回前台主动补读；读取失败可见可重试；已批准等待执行与执行成功/失败严格区分；预算只有端到端支持 `overrides` 的旧路径可编辑。
   - **D 子任务通知可靠投递**：新增**只追加**迁移 71（不改 1..70；`task_id` 主键、`payload`、`created_at`、`delivered_at`、`attempts`、`last_error`、`origin`）；enqueue 只做持久化去重、不算交付成功；只有通知轮被 turn manager 接受后才写 `delivered_at`；失败保留待重试、重启继续投递；同一 `task_id` 至多一次、FIFO。
   - **E 文档与许可**：本文件区分 P90 已完成与 P91 进行中；`docs/status.md` 增加 P91 与最后核对；`THIRD-PARTY-NOTICES.md` / `docs/compliance.md` 按实际组件核对概括（本轮未改依赖，不重新生成声明）。
-- **状态（截至 2026-10-26 本文撰写）**：**进行中（partial）**。各工作流的实现与定向验证在各自分支与 `_fixpm2/evidence/` 下；本文不预先声称未验证的能力。
-- **待 Lead 收口回填（占位）**：
-  - 最终代码 SHA：`TBD`
-  - 完整 CI 运行号与逐 job 结果：`TBD`
-  - 本地全量（后端 / 前端 / 类型检查 / 构建）结果：`TBD`
-  - 独立验收（F）结论与有限边界：`TBD`
-  - 最终结论（是否合入 main / 是否打包发布 / 版本号）：`TBD`（不提前声称已合并、已发布）
+- **状态**：**已完成（completed）**。五项修复与清理均实现并验证；未合入 main、未打包、未发布、未改版本号。
+- **收口事实（Lead 回填）**：
+  - 受测代码 SHA：本地全量与独立验收 `8cb18828`（产品代码）；完整 CI `48b01f0c`（同一产品代码 + docs）；失败修复仅测试提交 `0c47e11b`（[skip ci] 推送）。最终 HEAD 为本文件所在提交（docs-only 回填），可用 `git diff --name-only 0c47e11b..HEAD` 核对。
+  - 完整 CI：run **40257319813**，SHA `48b01f0c`，event=push；10 job：9 success + `backend (py3.12)` 1 failure（其余 install e2e / frozen worker / rust×2 / frontend / docs / backend py3.11 / backend windows 全部 success，无 skipped/cancelled）。失败原因是测试 helper 在主线程直连读取执行器正在写的同一 sqlite 连接（py3.12 抛 `sqlite3.InterfaceError`），与产品代码无关（py3.11 与 Windows 同代码全绿；本地 py3.11 重复通过）。
+  - 定向复验：`targeted-verify` py3.12 run **40263546217** success、py3.11 run **40263563419** success（均指定 ref + 完整 SHA `0c47e11b` + 两个测试文件，workflow 内 `assert checked-out commit equals requested SHA` 通过；未重跑第二次完整矩阵）。
+  - 本地全量：后端 601 文件 / 6013 项 **exit 0**；前端 452 文件 / 4025 项 **全通过（exit 0）**；`vue-tsc --noEmit` 0 error；`vite build` 成功；docs/license/release gate/workflow 契约检查通过；离线评估与基线逐字节相同。
+  - 独立验收（F）：五项反例全绿、保真项 6/6、回归 101+81 passed、真实界面 480x600 4/4；LIMITED：通知 AppContext 端到端未构造、真实网络故障注入未做、跨崩溃 at-least-once 窗口保留。
+  - 最终结论：未合入 main / 未打包发布 / 未改版本号；合并材料见 `docs/post-merge-followups-20261026.md`。
 - **未验证边界（本轮默认口径）**：真实模型/厂商链路（一律 fake/mock）、POSIX 平台（本地仅 Windows）、安装包形态与系统关机/注销、真机桌面壳（除非收口时另有新证据）——最终以收口证据为准。
 
