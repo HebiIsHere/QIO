@@ -1,12 +1,12 @@
 {
   "fs_read_denied": true,
-  "fs_read_error": "拒绝访问该路径（敏感路径）",
-  "run_verdict": "deny",
-  "run_risk": "high",
+  "fs_read_error": "read 未获批准：你点了拒绝",
+  "run_verdict": "approve",
+  "run_risk": "low",
   "run_verdict_not_auto": true,
   "run_executed": false,
   "run_marker_leaked": false,
   "cat_available": false,
   "inside_file_auto_kept": true,
-  "approval_requests": 0
+  "approval_requests": 2
 }

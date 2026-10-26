@@ -12,6 +12,7 @@
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from "vue";
+import { vQioTip } from "../../../composables/useQioTip";
 import MessageStream from "../../MessageStream.vue";
 import Composer from "../../Composer.vue";
 import ComposerEntries from "../../conversation/ComposerEntries.vue";
@@ -443,7 +444,7 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
         type="button"
         data-ic-close
         aria-label="收起对话"
-        title="收起对话"
+        v-qio-tip="'收起对话（不会停止正在进行的回复）'"
         @click="collapse"
       >×</button>
       <MessageStream />
@@ -476,7 +477,8 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
           data-ic-toggle
           :aria-expanded="expandedState ? 'true' : 'false'"
           :aria-controls="panelId"
-          :title="expandedState ? '收起对话（不影响正在进行的回复）' : '展开对话（从输入区向上展开）'"
+          :aria-label="expandedState ? '收起对话（不影响正在进行的回复）' : '展开对话（从输入区向上展开）'"
+          v-qio-tip="expandedState ? '收起对话（不影响正在进行的回复）' : '展开对话（从输入区向上展开）'"
           @click="toggle"
         >
           <span class="ic-toggle-mark" aria-hidden="true">{{ expandedState ? "▾" : "▴" }}</span>
