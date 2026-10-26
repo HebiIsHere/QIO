@@ -68,6 +68,13 @@ export interface ApprovalItem {
   interruptedLegacy?: boolean;
   /** 后端原始状态词（B-CP1：legacy 的 state 恒 null，中断看 status=interrupted_legacy）。 */
   status?: string;
+
+  /**
+   * 本地到达/更新序号（F03 竞态保护）：每次新入队或收到新的 pending 事实时递增。
+   * 补读快照只在「请求开始前已存在」的项上生效 —— 请求期间新到达/更新的项必须保留，
+   * 否则较旧的空快照会把刚弹出的审批删掉。
+   */
+  arrivedSeq?: number;
 }
 
 /**
@@ -574,6 +581,11 @@ function approvalSourceLabel(source: string): string {
 export const useApprovalsStore = defineStore("approvals", {
   state: () => ({
     queue: [] as ApprovalItem[],
+    /**
+     * 本地到达序号计数器（只增不减）：给每个待办项记「何时到达/更新」。
+     * 用于补读竞态保护 —— 快照只收敛请求开始前就存在的项。
+     */
+    arrivalSeq: 0,
     responding: null as string | null,
     /** 最近一次 respond 失败原因（成功后清空）；用于「失败 ≠ 已授权」的可见反馈 */
     error: null as string | null,
@@ -654,6 +666,8 @@ export const useApprovalsStore = defineStore("approvals", {
         sessionId: opts.sessionId ?? null,
         requestDigest: opts.requestDigest ?? null,
         ...(opts.meta ?? {}),
+        // 到达序号必须最后写：meta 里即使带了同名字段也不能绕过竞态保护
+        arrivedSeq: ++this.arrivalSeq,
       });
       // 编辑中到达的确认不抢焦点：保留待办并亮出可发现的入口，由用户主动打开。
       if (first) this.deferred = opts.autoOpen === false;
@@ -715,6 +729,23 @@ export const useApprovalsStore = defineStore("approvals", {
       if (this.queue.length !== before) this.error = null;
       if (!this.queue.length) this.deferred = false;
     },
+    /**
+     * 用**补读快照**收敛待办（F03 竞态保护）。
+     *
+     * 规则：只移除「请求开始前就已存在（arrivedSeq ≤ sinceSeq）且快照里没有」的项；
+     * 请求期间新到达 / 被更新的项（arrivedSeq > sinceSeq）保留 —— 较旧的空快照
+     * 不能删掉刚到达的审批。与 reconcile() 的区别仅在这里，其它调用方语义不变。
+     */
+    reconcileSince(keepIds: string[], sinceSeq: number) {
+      const keep = new Set(keepIds);
+      const before = this.queue.length;
+      this.queue = this.queue.filter(
+        (item) => keep.has(item.approval_id) || (item.arrivedSeq ?? 0) > sinceSeq,
+      );
+      if (this.queue.length !== before) this.error = null;
+      if (!this.queue.length) this.deferred = false;
+    },
+
     // -- R9：pending 恢复 / 决定 / 三次确认 / 执行历史 ---------------------
 
     /** 把一条服务端 pending 事实写进队列（已存在则只更新状态，不重复入队）。 */
@@ -723,6 +754,8 @@ export const useApprovalsStore = defineStore("approvals", {
       const existing = this.queue.find((a) => a.approval_id === pending.approval_id);
       if (existing) {
         Object.assign(existing, meta, { payload: pending.payload });
+        // 更新也算一次「新的到达」：补读请求期间收到的更新不能被较旧快照删掉
+        existing.arrivedSeq = ++this.arrivalSeq;
         // 后端说已经不在等待（还会列在 pending 里但状态前进）→ 保留展示真实状态
         return existing;
       }
@@ -744,11 +777,17 @@ export const useApprovalsStore = defineStore("approvals", {
       if (this.recoveryBusy) return;
       if (this.responding) return;
       this.recoveryBusy = true;
+      /**
+       * 发请求**之前**捕获到达序号：快照只代表这一刻的服务端状态。
+       * 请求期间新到达 / 被更新的审批（arrivedSeq 更大）不能被这份较旧的快照删掉 ——
+       * 真实反例：补读在飞 → 新的审批事件到达并弹窗 → 空快照返回 → 弹窗消失。
+       */
+      const sinceSeq = this.arrivalSeq;
       try {
         const pending = await getPendingApprovals();
         // kind=continue 的「继续/停止」走会话层操作条，不进入审批队列（与事件入口一致）
         const rows = pending.filter((item) => item.kind !== "continue");
-        this.reconcile(rows.map((item) => item.approval_id));
+        this.reconcileSince(rows.map((item) => item.approval_id), sinceSeq);
         for (const item of rows) this.applyPending(item, { autoOpen: false });
         this.recoveryError = null;
         this.recovered = true;
