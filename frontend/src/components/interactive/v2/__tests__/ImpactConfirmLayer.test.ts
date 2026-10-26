@@ -239,7 +239,7 @@ describe("键盘与阻塞面规则", () => {
     expect(store.revertDecisionDismissed["i1"]).toBe(true);
   });
 
-  it("Escape 在影响确认模式 = 取消本次改动（沿用原有语义）", async () => {
+  it("Escape 在影响确认模式不取消改动：只有「确认改动 / 取消本次改动」两个按钮能作答", async () => {
     const { wrapper: w, store } = mountLayer();
     store.pendingImpact = {
       affected: [{ intentId: "i1", title: "整理材料", materials: ["a.pdf"], consequence: "会暂停" }],
@@ -253,7 +253,26 @@ describe("键盘与阻塞面规则", () => {
     const spy = vi.spyOn(store, "cancelImpact").mockResolvedValue(undefined as never);
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
-    expect(spy).toHaveBeenCalledTimes(1);
+    // Esc 不能顺手撤销：框还在，保存决定没有被做出，也没有任何「已取消」的假象
+    expect(spy).not.toHaveBeenCalled();
+    expect(w.find('[data-im="impact-confirm"]').exists()).toBe(true);
+    expect(w.find('[data-im="impact-confirm-cancel"]').exists()).toBe(true);
+    expect(w.find('[data-im="impact-confirm-submit"]').exists()).toBe(true);
+  });
+
+  it("外部点击遮罩不关闭影响确认（点击不算作答）", async () => {
+    const { wrapper: w, store } = mountLayer();
+    store.pendingImpact = {
+      affected: [{ intentId: "i1", title: "整理材料", materials: ["a.pdf"], consequence: "会暂停" }],
+      previewRev: 1,
+      stateVersion: 0,
+      checkId: "chk",
+    } as never;
+    await nextTick();
+    await flushPromises();
+    await w.get('[data-im="impact-confirm-scrim"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-im="impact-confirm"]').exists()).toBe(true);
   });
 
   it("统一审批弹窗打开时让位：撤回确认也不叠第二个阻塞面，关闭后自动回来", async () => {

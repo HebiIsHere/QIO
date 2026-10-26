@@ -328,9 +328,17 @@ function focusablesInDialog(): HTMLElement[] {
 function onKeydown(event: KeyboardEvent): void {
   if (!visible.value) return;
   if (event.key === "Escape") {
+    // 影响确认是**不可被外部 Esc 取消**的：Esc 若顺手撤销本次改动，等于用户按了一个键
+    // 就把刚做的改动丢掉，且没有任何明确选择。只有「确认改动 / 取消本次改动」两个按钮
+    // 能决定这次保存；Esc 在这里什么都不做（焦点仍留在框内，语义由两个按钮承担）。
+    if (mode.value === "impact") {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    // 剩余撤回不是保存决定：Esc = 结束这次提示（不执行任何撤回），与「取消」按钮同义。
     event.preventDefault();
-    if (mode.value === "impact") void cancel();
-    else dismissReverts();
+    dismissReverts();
     return;
   }
   if (event.key !== "Tab") return;
@@ -400,6 +408,7 @@ onBeforeUnmount(() => {
     {{ deferredText }}
   </p>
 
+  <!-- 外部点击不关闭：影响确认只能由两个明确按钮作答（scrim 只负责遮罩，没有 click 处理） -->
   <div v-if="visible" class="ic-scrim" data-im="impact-confirm-scrim">
     <section
       ref="dialogEl"

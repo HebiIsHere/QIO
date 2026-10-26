@@ -22,10 +22,8 @@ import { useConversationShellStore } from "../../stores/conversationShell";
 import { restoreRuntimeState } from "../../stores/restore";
 import { api, type TopicDetail } from "../../services/api";
 import MessageStream from "../MessageStream.vue";
-import KnowledgeCandidateCard from "../KnowledgeCandidateCard.vue";
 import ComposerDock from "./ComposerDock.vue";
 import { useComposerClearance } from "../../composables/useComposerClearance";
-import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const session = useSessionStore();
 const events = useEventStore();
@@ -423,21 +421,13 @@ onBeforeUnmount(() => {
 
     <MessageStream class="message-stage" />
 
-    <!-- 底部候选：需要用户决定的高影响知识；输入区是固定气泡，这里按它的高度让位 -->
-    <div ref="bottomCluster" class="bottom-cluster" data-qio-fit>
-      <div
-        v-if="session.knowledgeCandidates.length"
-        class="candidates"
-        data-qio-fit
-        v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
-      >
-        <KnowledgeCandidateCard
-          v-for="candidate in session.knowledgeCandidates"
-          :key="candidate.knowledgeId"
-          :candidate="candidate"
-        />
-      </div>
-    </div>
+    <!--
+      底部让位区：输入区是固定贴底的气泡，这里按它的真实高度让位。
+      知识候选卡**不再在主对话挂载**（2026-10-26 统一整改）：
+      候选数据仍在 session.knowledgeCandidates，由统一审批层 / 记忆星球在各自入口处理，
+      主对话不再多出一块需要用户决定、却与审批入口重复的卡片区。
+    -->
+    <div ref="bottomCluster" class="bottom-cluster" data-qio-fit></div>
 
     <ComposerDock>
       <template #planet><slot name="planet" /></template>
@@ -759,16 +749,6 @@ onBeforeUnmount(() => {
   gap: 6px;
   min-width: 0;
   margin-top: var(--conversation-card-gap, 12px);
-}
-.candidates {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0 12px;
-  min-width: 0;
-  max-height: 42vh;
-  overflow-y: auto;
-  overflow-x: clip;
 }
 .skip-link {
   position: absolute;

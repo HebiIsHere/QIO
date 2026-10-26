@@ -157,18 +157,17 @@ describe("ConversationView 顶部状态行与底部候选列表（统一滚动/�
     w.unmount();
   });
 
-  it("知识候选列表接共享滚动策略（auto + 仅纵向），不与消息区抢滚动", async () => {
+  it("知识候选卡不再在主对话挂载（数据保留，由统一审批层 / 记忆星球各自处理）", async () => {
     const w = mountView();
     const session = useSessionStore();
     session.knowledgeCandidates = [{ knowledgeId: "k1", category: "fact", content: "候选内容" }];
     await w.vm.$nextTick();
     await w.vm.$nextTick();
 
-    const candidates = w.find(".candidates").element as HTMLElement;
-    expect(candidates.classList.contains("qio-scroll-host")).toBe(true);
-    expect(candidates.dataset.qioScroll).toBe("auto");
-    expect(candidates.getAttribute("data-qio-fit")).not.toBeNull();
-    expect(candidates.querySelector('.qio-scroll-rail[data-axis="x"]')).toBeNull();
+    // 生产挂载已移除：主对话里没有候选卡区（也不是「假装没有数据」——store 里的候选仍在）
+    expect(w.find(".candidates").exists()).toBe(false);
+    expect(w.find(".candidate.qio-card").exists()).toBe(false);
+    expect(session.knowledgeCandidates).toHaveLength(1);
     w.unmount();
   });
 });
