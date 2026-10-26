@@ -31,12 +31,13 @@
  * 真机 install_e2e 的教训：关闭行为不能依赖前端是否还能正常 invoke / 读设置 ——
  * 前端启动握手异常时点 X 必须仍有反应（壳侧独立执行）。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import router from "../router";
 import brandLogo from "../assets/qio-orbit-logo.png";
 import PermissionModeText from "./security/PermissionModeText.vue";
 import { useUiStore } from "../stores/ui";
 import { useEventStore } from "../stores/events";
+import { useUpdaterStore } from "../stores/updater";
 import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
 import {
   ackCloseRequest,
@@ -71,7 +72,31 @@ const ui = useUiStore();
 const askOpen = ref(false);
 const rememberChoice = ref(false);
 const busy = ref(false);
-const notice = ref("");
+/**
+ * 标题条操作的真实失败（可见、可重试、可取消）。
+ *
+ * 以前这些提示写在 ask 弹窗里：弹窗一关就再也看不到（失败被藏进一个已经不可见的 DOM），
+ * 退出失败时 busy 还会一直是 true。现在统一放在标题条下方的浮动状态条里：
+ * 失败原因 + 真实的重新动作 + 取消（只关闭这条提示，不假装已经成功）。
+ */
+type ChromeFailureKind = "close" | "tray" | "quit";
+interface ChromeFailure {
+  kind: ChromeFailureKind;
+  text: string;
+  /** 重试文案（动作真实可重放：同一个壳请求，不是假按钮） */
+  retryLabel: string;
+}
+const chromeFailure = ref<ChromeFailure | null>(null);
+/** 退出请求 10 秒仍未结束：应用还在运行，就必须结束「正在退出」的等待态并给可重试入口。 */
+const QUIT_PENDING_TIMEOUT_MS = 10_000;
+let quitTimer: ReturnType<typeof setTimeout> | null = null;
+
+const updater = useUpdaterStore();
+/** 后台发现更新：只在设置入口留一个小标记（不弹通知、不自动打开更新内容）。 */
+const updateAvailable = computed(() => updater.hasUpdate);
+const settingsLabel = computed(() =>
+  updateAvailable.value ? "设置（有可用更新）" : "设置",
+);
 
 /** 是否共用这条全局栏：对话页与互动页（其他页的页眉保持原样）。 */
 const hasGlobalBar = computed(() => {
@@ -147,50 +172,111 @@ function applyGlobalBarChrome(on: boolean) {
 watch(hasGlobalBar, (value) => applyGlobalBarChrome(value), { immediate: true });
 
 // ── R9 §11：关闭请求 / ask 确认框（壳负责真正的关闭行为，这里只做 UI）─────────────
+
+function clearQuitTimer() {
+  if (quitTimer) {
+    clearTimeout(quitTimer);
+    quitTimer = null;
+  }
+}
+
+/** 退出请求发出后应用仍在运行：结束等待态，显示可重试/可取消的真实状态。 */
+function noteQuitStillRunning() {
+  clearQuitTimer();
+  busy.value = false;
+  chromeFailure.value = {
+    kind: "quit",
+    text: "退出还没有完成：QIO 仍在运行。可以重试，或先取消继续使用。",
+    retryLabel: "重试退出",
+  };
+}
+
 /** 标题条 X / 系统关闭的统一动作：把关闭请求交给壳，由壳按设置执行。 */
 async function requestWindowClose() {
   if (!shell || busy.value) return;
+  chromeFailure.value = null;
   try {
     await shell.close();
   } catch (err) {
     // 窗口接口失败（极少见）：保留可查原因，不假装已关闭。
     console.error("[qio] 发送窗口关闭请求失败", err);
-    notice.value = "无法关闭窗口（详见日志）";
+    chromeFailure.value = {
+      kind: "close",
+      text: "无法关闭窗口（详见日志）。可以重试；如果持续失败，可用系统托盘或任务管理器退出。",
+      retryLabel: "重试关闭",
+    };
   }
 }
 
 /** 壳发来 ask 问询：先 ACK（壳 1.8s 没收到会兜底隐藏到托盘），再弹确认框。 */
 async function onShellCloseRequested() {
   if (busy.value || askOpen.value) return;
+  chromeFailure.value = null;
   void ackCloseRequest();
   askOpen.value = true;
 }
 
-/** ask 里选「最小化到托盘」：由壳执行 hide（前端只发动作，不判断设置）。 */
+/** 最小化到托盘：由壳执行 hide（前端只发动作，不判断设置）。失败必须仍可见并可重试。 */
 async function chooseTray() {
   if (busy.value) return;
   askOpen.value = false;
-  notice.value = "";
+  chromeFailure.value = null;
   try {
     await requestClose("tray");
   } catch (err) {
     console.error("[qio] 隐藏到托盘失败", err);
-    notice.value = "无法隐藏到系统托盘（详见日志）";
+    chromeFailure.value = {
+      kind: "tray",
+      text: "无法隐藏到系统托盘（详见日志）。可以重试，或直接用窗口按钮。",
+      retryLabel: "重试隐藏到托盘",
+    };
   }
 }
 
-/** ask 里选「退出 QIO」：壳自己完成后端收尾/进程树核验/退出；前端只置守卫。 */
+/** 退出 QIO：壳自己完成后端收尾/进程树核验/退出；前端只置守卫。 */
 async function chooseQuit() {
   if (busy.value) return;
   askOpen.value = false;
+  chromeFailure.value = null;
   busy.value = true;
-  notice.value = "";
+  // 有界等待：壳正常会在预算内退出（页面不再返回）；如果 10 秒后页面还在，
+  // 说明退出没有完成 —— 必须结束「正在退出」并给出重试，而不是永远锁死 busy。
+  clearQuitTimer();
+  quitTimer = setTimeout(noteQuitStillRunning, QUIT_PENDING_TIMEOUT_MS);
   try {
     await requestClose("quit");
-    // 壳会 app.exit(0)：正常路径下这里不会返回；返回说明退出没完成，保留提示。
+    // 壳会 app.exit(0)：正常路径下这里不会返回；返回说明退出没完成。
+    noteQuitStillRunning();
   } catch (err) {
     console.error("[qio] 请求退出失败（壳可能已经退出）", err);
+    clearQuitTimer();
+    busy.value = false;
+    chromeFailure.value = {
+      kind: "quit",
+      text: "退出请求没有完成：QIO 仍在运行。可以重试，或先取消继续使用。",
+      retryLabel: "重试退出",
+    };
   }
+}
+
+/** 失败状态条上的「重试」：重放同一个真实动作（不是假按钮）。 */
+async function retryChromeAction() {
+  const failure = chromeFailure.value;
+  if (!failure || busy.value) return;
+  chromeFailure.value = null;
+  if (failure.kind === "close") {
+    await requestWindowClose();
+    return;
+  }
+  if (failure.kind === "tray") {
+    await chooseTray();
+    return;
+  }
+  await chooseQuit();
+}
+
+function dismissChromeFailure() {
+  chromeFailure.value = null;
 }
 
 async function chooseClose(action: "tray" | "quit") {
@@ -210,19 +296,98 @@ async function chooseClose(action: "tray" | "quit") {
 }
 
 function cancelAsk() {
+  if (busy.value) return;
   askOpen.value = false;
   rememberChoice.value = false;
-  notice.value = "";
+  chromeFailure.value = null;
+  void resumeBusinessModals();
+}
+
+/**
+ * 关闭询问是最高层触发器：打开时让业务弹窗暂时让位（DOM 保留、状态/草稿不丢），
+ * 取消或完成后恢复。
+ *
+ * TODO(B 的 stores/modalArbiter.ts 合并后)：这里改成
+ *   useModalArbiterStore().suspendAll("close-ask") / resumeAll()
+ * 并把 close-ask 本身登记为 kind="close-ask"（见 open/close 处）。
+ * 现在接口尚未合并，先用本层最高 z-index 保证视觉与可操作性不回归。
+ */
+function suspendBusinessModals() {
+  /* 等 modalArbiter 合并后接入 suspendAll("close-ask") */
+}
+function resumeBusinessModals() {
+  /* 等 modalArbiter 合并后接入 resumeAll() */
 }
 
 function behaviorLabel(value: CloseBehavior): string {
   return CLOSE_BEHAVIOR_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
 
+/** 关闭询问的焦点管理：打开前记住焦点、打开后聚焦「取消」、关闭后归还。 */
+const askDialogRef = ref<HTMLElement | null>(null);
+const askCancelRef = ref<HTMLButtonElement | null>(null);
+let askRestoreFocusTo: HTMLElement | null = null;
+
+function focusablesWithin(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  );
+}
+
+function rememberAskFocus() {
+  const active = document.activeElement;
+  askRestoreFocusTo = active instanceof HTMLElement ? active : null;
+}
+
+function restoreAskFocus() {
+  const el = askRestoreFocusTo;
+  askRestoreFocusTo = null;
+  if (el && el.isConnected) {
+    el.focus();
+    return;
+  }
+  // 触发元素可能已经不存在（例如窗口控制被重渲染）：退回到设置入口或整条栏。
+  const fallback =
+    document.querySelector<HTMLElement>('button[aria-label^="设置"]') ?? null;
+  if (fallback && fallback.isConnected) fallback.focus();
+}
+
+watch(askOpen, async (open) => {
+  if (open) {
+    rememberAskFocus();
+    suspendBusinessModals();
+    await nextTick();
+    askCancelRef.value?.focus();
+    return;
+  }
+  resumeBusinessModals();
+  restoreAskFocus();
+});
+
 function onKeydown(e: KeyboardEvent) {
-  if (askOpen.value && e.key === "Escape") {
+  if (!askOpen.value) return;
+  if (e.key === "Escape") {
     e.preventDefault();
-    cancelAsk();
+    if (!busy.value) cancelAsk();
+    return;
+  }
+  // 模态焦点限制：Tab 只在关闭询问内循环，不跑到后面的页面/业务弹窗上。
+  if (e.key !== "Tab") return;
+  const root = askDialogRef.value;
+  const items = focusablesWithin(root);
+  if (!root || !items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey && (active === first || !root.contains(active))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
   }
 }
 
@@ -267,6 +432,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   disposed = true;
+  clearQuitTimer();
   unlisten?.();
   unlisten = null;
   unlistenClose?.();
@@ -274,6 +440,7 @@ onBeforeUnmount(() => {
   unlistenTrayQuit?.();
   unlistenTrayQuit = null;
   window.removeEventListener("keydown", onKeydown, true);
+  if (askOpen.value) resumeBusinessModals();
   shell = null;
   applyGlobalBarChrome(false);
 });
@@ -287,14 +454,13 @@ onBeforeUnmount(() => {
     <!-- 拖拽面：双击由 Tauri 内置逻辑转成「最大化/还原」 -->
     <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
     <div v-if="inShell" class="window-controls">
-      <button class="wc-btn" type="button" aria-label="最小化" title="最小化" @click="run('minimize')">
+      <button class="wc-btn" type="button" aria-label="最小化" @click="run('minimize')">
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6h7" /></svg>
       </button>
       <button
         class="wc-btn"
         type="button"
         :aria-label="maximized ? '向下还原' : '最大化'"
-        :title="maximized ? '向下还原' : '最大化'"
         @click="run('toggleMaximize')"
       >
         <svg v-if="!maximized" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1" /></svg>
@@ -304,7 +470,7 @@ onBeforeUnmount(() => {
         </svg>
       </button>
       <!-- R9 §11：发窗口关闭请求，由壳按 ui.close_behavior 执行（ask 才回来弹框） -->
-      <button class="wc-btn wc-close" type="button" aria-label="关闭" title="关闭窗口" @click="requestWindowClose">
+      <button class="wc-btn wc-close" type="button" aria-label="关闭" @click="requestWindowClose">
         <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
       </button>
     </div>
@@ -337,8 +503,8 @@ onBeforeUnmount(() => {
       <button
         class="chrome-btn"
         type="button"
-        aria-label="设置"
-        title="打开设置"
+        :aria-label="settingsLabel"
+        :data-has-update="updateAvailable ? '1' : '0'"
         @click="openSettings"
       >
         <!-- 设置：居中齿轮（不是太阳/亮度图标）；24 视框保证齿与内圆严格同心 -->
@@ -348,16 +514,19 @@ onBeforeUnmount(() => {
           />
           <circle cx="12" cy="12" r="3" />
         </svg>
+        <!-- 后台发现更新：只在这个入口留一个小标记；不弹通知、不自动打开更新内容 -->
+        <span v-if="updateAvailable" class="chrome-update-dot" aria-hidden="true"></span>
+        <span class="sr-only" v-if="updateAvailable">有可用更新</span>
       </button>
       <span class="chrome-sep" aria-hidden="true"></span>
     </div>
 
-    <!-- R9 §11：关闭确认框（关闭行为 = ask）。三个选择与契约一字不差：最小化到托盘 / 退出 QIO / 取消 -->
-
-    <!-- 关闭确认框（关闭行为 = ask）。三个选择与契约一字不差：最小化到托盘 / 退出 QIO / 取消 -->
+    <!-- 关闭确认框（关闭行为 = ask）：三个选择明文保留（最小化到托盘 / 退出 QIO / 取消）。
+         只说明「退出会结束当前运行」，不展示任务概况/名称/数量。 -->
     <Transition name="qio-fade">
       <div v-if="askOpen" class="close-ask-scrim">
         <div
+          ref="askDialogRef"
           class="close-ask qio-floating"
           role="dialog"
           aria-modal="true"
@@ -366,26 +535,66 @@ onBeforeUnmount(() => {
         >
           <p id="qio-close-ask-title" class="close-ask__title">关闭 QIO 主窗口？</p>
           <p id="qio-close-ask-desc" class="close-ask__desc">
-            可以只把窗口收进系统托盘继续运行，也可以直接退出。
-            「退出 QIO」会先保存状态、有界收尾，再结束本实例的后端进程。
+            最小化到托盘：窗口收起，QIO 继续在后台运行。<br />
+            退出 QIO：结束当前运行。
           </p>
           <div class="close-ask__actions">
-            <button class="qio-btn primary" type="button" autofocus @click="chooseClose('tray')">
+            <button
+              class="qio-btn primary close-ask__btn"
+              type="button"
+              :disabled="busy"
+              @click="chooseClose('tray')"
+            >
               最小化到托盘
             </button>
-            <button class="qio-btn danger" type="button" @click="chooseClose('quit')">
+            <button
+              class="qio-btn danger close-ask__btn"
+              type="button"
+              :disabled="busy"
+              @click="chooseClose('quit')"
+            >
               退出 QIO
             </button>
-            <button class="qio-btn quiet" type="button" @click="cancelAsk">取消</button>
+            <button
+              ref="askCancelRef"
+              class="qio-btn quiet close-ask__btn"
+              type="button"
+              :disabled="busy"
+              @click="cancelAsk"
+            >
+              取消
+            </button>
           </div>
           <label class="close-ask__remember">
-            <input v-model="rememberChoice" type="checkbox" />
-            记住我的选择（以后按「{{ behaviorLabel(ui.closeBehavior) }}」处理）
+            <input v-model="rememberChoice" class="close-ask__check" type="checkbox" :disabled="busy" />
+            <span>记住我的选择（以后按「{{ behaviorLabel(ui.closeBehavior) }}」处理）</span>
           </label>
-          <p v-if="notice" class="close-ask__notice" role="status">{{ notice }}</p>
         </div>
       </div>
     </Transition>
+
+    <!-- 标题条操作失败：留在仍可见的界面里，给真实重试与取消；不写进已关闭的弹窗、不永远 busy。 -->
+    <div v-if="chromeFailure" class="chrome-failure" role="alert">
+      <span class="chrome-failure__text">{{ chromeFailure.text }}</span>
+      <span class="chrome-failure__actions">
+        <button
+          class="qio-btn mini chrome-failure__retry"
+          type="button"
+          :disabled="busy"
+          @click="retryChromeAction"
+        >
+          {{ chromeFailure.retryLabel }}
+        </button>
+        <button
+          class="qio-btn mini quiet chrome-failure__cancel"
+          type="button"
+          :disabled="busy"
+          @click="dismissChromeFailure"
+        >
+          取消
+        </button>
+      </span>
+    </div>
 
     <!-- 退出进行中：给用户一个明确的「正在退出」反馈；此期间按钮不可再触发 -->
     <div v-if="busy" class="close-busy" role="status">
@@ -511,6 +720,7 @@ onBeforeUnmount(() => {
   right: 146px;
 }
 .chrome-btn {
+  position: relative;
   pointer-events: auto;
   width: 28px;
   height: 28px;
@@ -552,6 +762,30 @@ onBeforeUnmount(() => {
   height: 16px;
   margin: 0 2px;
   background: var(--border-subtle);
+}
+/* 后台发现更新：设置入口上的一个小标记（安静、不抢焦点、不弹通知）。 */
+.chrome-update-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-surface);
+  pointer-events: none;
+}
+/* 只给读屏软件的文本（小标记本身 aria-hidden，语义由这里补全）。 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ---- 对话页 / 互动页：整条全局栏是一张圆角卡片（与下方工作区卡片同一条视觉基线） ---- */
@@ -702,7 +936,7 @@ onBeforeUnmount(() => {
 
 /* ---- R9 §11：关闭确认框与退出反馈 ---- */
 
-/* 关闭确认框：盖住整个窗口（fixed 相对视口），比标题条自身再高一层。 */
+/* 关闭确认框：盖住整个窗口（fixed 相对视口），轻遮罩 + 轻模糊；比标题条自身再高一层。 */
 .close-ask-scrim {
   position: fixed;
   inset: 0;
@@ -712,49 +946,151 @@ onBeforeUnmount(() => {
   justify-content: center;
   padding: 24px;
   background: var(--bg-overlay);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
+/* 居中对称：标题 / 说明 / 按钮组都以同一条中轴对齐；三选项同高、等宽。 */
 .close-ask {
-  width: min(420px, 100%);
-  padding: 20px 22px 18px;
+  width: min(440px, 100%);
+  padding: 22px 24px 18px;
   border-radius: var(--r-lg);
   border: 1px solid var(--border-strong);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-float);
   color: var(--text-secondary);
+  text-align: center;
 }
 .close-ask__title {
   margin: 0 0 8px;
   font-family: var(--serif);
-  font-size: 16px;
+  font-size: 17px;
   color: var(--text-strong);
+  text-align: center;
 }
 .close-ask__desc {
-  margin: 0 0 16px;
+  margin: 0 0 18px;
   font-size: 12.5px;
   line-height: 1.7;
   color: var(--text-secondary);
+  text-align: center;
 }
 .close-ask__actions {
   display: flex;
+  align-items: stretch;
+  justify-content: center;
   flex-wrap: wrap;
   gap: 8px;
 }
+/* 三选项等宽同高：不出现「退出」比「取消」大一圈的暗示。 */
+.close-ask__btn {
+  flex: 1 1 0;
+  min-width: 112px;
+  max-width: 150px;
+  height: 36px;
+  white-space: nowrap;
+}
+/* 窄窗纵排：最小宽度下文字优先，不挤压成两行。 */
+@media (max-width: 520px) {
+  .close-ask__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .close-ask__btn {
+    flex: 0 0 auto;
+    max-width: none;
+    width: 100%;
+  }
+}
 .close-ask__remember {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
   margin-top: 14px;
   font-size: 12px;
+  line-height: 1.6;
   color: var(--text-muted);
   cursor: pointer;
+  text-align: left;
 }
-.close-ask__remember input {
-  accent-color: var(--accent);
+/* 自定义外观复选：不用系统默认方框；保留真实 input 的键盘/读屏语义。 */
+.close-ask__check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: inline-grid;
+  place-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition: background var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1);
 }
-.close-ask__notice {
-  margin: 10px 0 0;
+.close-ask__check::after {
+  content: "";
+  width: 8px;
+  height: 5px;
+  margin-top: -2px;
+  border-left: 1.6px solid var(--on-accent);
+  border-bottom: 1.6px solid var(--on-accent);
+  transform: rotate(-45deg) scale(0);
+  transition: transform var(--mo-1-fast) var(--ease-1);
+}
+.close-ask__check:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.close-ask__check:checked::after {
+  transform: rotate(-45deg) scale(1);
+}
+.close-ask__check:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.close-ask__check:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- 标题条操作的可见失败：原因 + 真实重试 + 取消 ---- */
+.chrome-failure {
+  position: fixed;
+  top: calc(var(--titlebar-height) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(600px, calc(100vw - 32px));
+  padding: 8px 12px;
+  border: 1px solid var(--border-danger);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-float);
   font-size: 12px;
-  color: var(--danger);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.chrome-failure__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chrome-failure__actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+@media (max-width: 520px) {
+  .chrome-failure {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .chrome-failure__actions {
+    justify-content: flex-end;
+  }
 }
 
 /* 退出进行中的轻量反馈：不拦截输入（壳马上就要退出），只说明正在发生什么。 */
