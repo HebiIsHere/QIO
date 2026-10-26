@@ -535,8 +535,9 @@ describe("SettingsView 状态保留与保存归属（P0）", () => {
 
     const w = await mountSettings();
     await openTab(w, "数据与维护");
-    // 第一次修改：开关（请求挂起）
-    await visiblePanel(w).find(".qio-switch").trigger("click");
+    // 第一次修改：开关（请求挂起）。按可访问名称定位：同一面板里还有更新设置的自动检查开关
+    // （本轮把原生 checkbox 换成自定义开关后，不能再用 .qio-switch 的第一个命中）。
+    await visiblePanel(w).find('button[aria-label="离线维护开关"]').trigger("click");
     await nextTick();
     // 第二次修改：间隔改成 30（后发先至）
     const input = w.find('input[aria-label="维护间隔（小时）"]');
@@ -554,7 +555,7 @@ describe("SettingsView 状态保留与保存归属（P0）", () => {
     await nextTick();
 
     expect((w.find('input[aria-label="维护间隔（小时）"]').element as HTMLInputElement).value).toBe("30");
-    expect(visiblePanel(w).find(".qio-switch").classes()).toContain("on");
+    expect(visiblePanel(w).find('button[aria-label="离线维护开关"]').classes()).toContain("on");
     expect(visiblePanel(w).text()).toContain("30");
     w.unmount();
   });
