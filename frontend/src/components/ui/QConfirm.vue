@@ -235,17 +235,9 @@ onBeforeUnmount(() => {
           <div class="qio-modal-heading">
             <p :id="titleId" class="qio-confirm__title qio-modal-title">{{ title }}</p>
           </div>
-          <span class="qio-modal-head__slot qio-modal-head__slot--end">
-            <QIconButton
-              icon="close"
-              label="取消并关闭"
-              description="取消并关闭，不执行这个动作"
-              size="sm"
-              tone="quiet"
-              data-qio-confirm-close
-              @click="cancel"
-            />
-          </span>
+          <!-- 右槽保持等宽占位；关闭按钮在 DOM 里放在动作按钮之后（视觉绝对定位在右上），
+               既满足“左右槽等宽、标题中轴”，也不改变既有调用方对动作按钮顺序的假设。 -->
+          <span class="qio-modal-head__slot qio-modal-head__slot--end" aria-hidden="true" />
         </div>
         <p v-if="detail" :id="detailId" class="qio-confirm__detail qio-modal-body">{{ detail }}</p>
         <div class="qio-confirm__actions qio-modal-actions">
@@ -262,6 +254,16 @@ onBeforeUnmount(() => {
             {{ confirmText }}
           </button>
         </div>
+        <QIconButton
+          class="qio-confirm__close"
+          icon="close"
+          label="取消并关闭"
+          description="取消并关闭，不执行这个动作"
+          size="sm"
+          tone="quiet"
+          data-qio-confirm-close
+          @click="cancel"
+        />
       </div>
     </div>
   </Transition>
@@ -305,7 +307,14 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .qio-confirm--layer {
+  position: relative;
   max-width: min(420px, 100%);
+}
+/* 关闭按钮视觉在右上（右槽已留出等宽空间，标题不会被挤偏） */
+.qio-confirm__close {
+  position: absolute;
+  top: var(--sp-3);
+  right: var(--sp-3);
 }
 .qio-confirm__title {
   margin: 0;

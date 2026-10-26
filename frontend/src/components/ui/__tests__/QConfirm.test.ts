@@ -36,7 +36,13 @@ describe("QConfirm 对称布局与共享弹窗骨架", () => {
     expect(left.querySelectorAll("button, a, input, [tabindex]").length).toBe(0);
     expect(middle.contains(w.find(".qio-modal-title").element)).toBe(true);
     expect(w.find("#qio-confirm-title").text()).toBe("删除这项凭据？");
-    expect(right.querySelector("button")?.getAttribute("aria-label")).toBeTruthy();
+    // 关闭按钮视觉在右上，但 DOM 顺序在动作按钮之后（保证既有调用方的按钮顺序不变）；
+    // 右槽因此只承担等宽占位，不承载可聚焦控件。
+    expect(right.querySelector("button")).toBeNull();
+    expect(right.getAttribute("aria-hidden")).toBe("true");
+    const close = w.find("[data-qio-confirm-close]");
+    expect(close.exists()).toBe(true);
+    expect(close.attributes("aria-label")).toBeTruthy();
     w.unmount();
   });
 

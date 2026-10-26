@@ -194,7 +194,10 @@ try {
         dialogCenterDiff: Math.abs(rect(dialog).cx - innerWidth / 2),
         slotWidthDiff: Math.abs(rect(slots[0]).width - rect(slots[2]).width),
         slotFocusable: slots[0].querySelectorAll("button, [href], input, [tabindex]").length,
-        closeLabel: slots[2]?.querySelector("button")?.getAttribute("aria-label") ?? null,
+        closeLabel:
+          dialog.querySelector("[data-qio-confirm-close]")?.getAttribute("aria-label") ??
+          slots[2]?.querySelector("button")?.getAttribute("aria-label") ??
+          null,
         actions: actions
           ? {
               direction: getComputedStyle(actions).flexDirection,
