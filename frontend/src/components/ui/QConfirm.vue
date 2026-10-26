@@ -73,7 +73,12 @@ const layerBlocked = ref(false);
 const layerSuspended = computed(() =>
   arbiter && props.variant === "layer" ? arbiter.hiddenBy(confirmModalId.value) !== null : false,
 );
-const layerShown = computed(() => props.open && props.variant === "layer" && !layerBlocked.value);
+const layerHiddenByHigher = computed(() =>
+  arbiter && layerRegistered.value ? arbiter.active?.id !== confirmModalId.value : false,
+);
+const layerShown = computed(
+  () => props.open && props.variant === "layer" && !layerBlocked.value && !layerHiddenByHigher.value,
+);
 /** 键盘/Esc 只在这一层真正可见时生效；被挡住或挂起时把按键让给更高层 */
 const layerActive = computed(() => (props.variant !== "layer" ? true : layerShown.value && !layerSuspended.value));
 
@@ -218,7 +223,7 @@ onBeforeUnmount(() => {
   <Transition name="qio-fade">
     <div
       v-if="open && variant === 'layer' && !layerBlocked"
-      v-show="!layerSuspended"
+      v-show="!layerSuspended && !layerHiddenByHigher"
       class="qio-confirm-scrim"
     >
       <div

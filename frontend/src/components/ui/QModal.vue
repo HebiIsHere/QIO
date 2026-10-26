@@ -64,8 +64,14 @@ const arbiter = getActivePinia() ? useModalArbiterStore() : null;
 const arbiterRegistered = ref(false);
 const arbiterBlocked = ref(false);
 const arbiterSuspended = computed(() => (arbiter ? arbiter.hiddenBy(props.modalId) !== null : false));
-/** 真正可以显示：父级要求打开 + 仲裁放行 + 没有被更高层挂起 */
-const shown = computed(() => props.open && !arbiterBlocked.value && !arbiterSuspended.value);
+/** 已经被一个更高优先级弹窗盖住：只隐藏、不卸载（草稿与内部状态保留） */
+const hiddenByHigher = computed(() =>
+  arbiter && arbiterRegistered.value ? arbiter.active?.id !== props.modalId : false,
+);
+/** 真正可以显示：父级要求打开 + 仲裁放行 + 没有被更高层挂起/盖住 */
+const shown = computed(
+  () => props.open && !arbiterBlocked.value && !arbiterSuspended.value && !hiddenByHigher.value,
+);
 
 function descriptor() {
   return { id: props.modalId, kind: props.modalKind, dismissible: props.dismissible, priority: props.priority };
@@ -242,7 +248,12 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <Transition name="qio-fade">
-      <div v-if="open && !arbiterBlocked" v-show="!arbiterSuspended" class="qio-modal-scrim" @click.self="onScrimClick">
+      <div
+        v-if="open && !arbiterBlocked"
+        v-show="!arbiterSuspended && !hiddenByHigher"
+        class="qio-modal-scrim"
+        @click.self="onScrimClick"
+      >
         <div
           ref="panelRef"
           class="qio-modal qio-floating qio-pop-in"

@@ -236,6 +236,31 @@ describe("QConfirm 仲裁（仅 layer 档是中央弹窗）", () => {
     expect(arbiter.stack.length).toBe(0);
   });
 
+  it("layer 已显示时更高优先级弹窗打开：v-show 隐藏，让位后恢复", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    const w = mount(QConfirm, {
+      props: { open: true, title: "删除？", variant: "layer" },
+      attachTo: document.body,
+    });
+    await nextTick();
+    await nextTick();
+    const scrim = document.querySelector(".qio-confirm-scrim") as HTMLElement;
+    expect(scrim.style.display).not.toBe("none");
+
+    expect(arbiter.open({ id: "approval-later", kind: "approval" })).toBe(true);
+    await nextTick();
+    expect(scrim.style.display).toBe("none");
+    // 弹层 DOM 还在（取消/确认按钮与文案不会丢）
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    arbiter.close("approval-later");
+    await nextTick();
+    await nextTick();
+    expect(scrim.style.display).not.toBe("none");
+    w.unmount();
+  });
+
   it("inline / popover 不注册中央弹窗", async () => {
     setActivePinia(createPinia());
     const arbiter = useModalArbiterStore();
