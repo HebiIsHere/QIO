@@ -681,6 +681,11 @@ const phaseLabel = computed(() => {
 .stream {
   flex: 1;
   min-width: 0;
+  /* 纵向滚动视口是**普通块容器**：不参与 flex 行分配（历史 bug：被当成 flex 行时，
+     spacer 的 width:100% 会把空状态推到右边）。空状态另行绝对定位。 */
+  display: block;
+  /* 空状态是绝对定位覆盖层（见 .empty）：必须相对消息可视区定位。 */
+  position: relative;
   overflow-y: auto;
   /* 横向一律不建立滚动范围：内容在各自的布局链上换行 / 收缩（见 scroll.css 的 data-qio-fit） */
   overflow-x: clip;
@@ -730,14 +735,22 @@ const phaseLabel = computed(() => {
   background: var(--border-subtle);
 }
 /* ---- 空状态 ---- */
+/*
+  空状态（FU5）：相对 .stream 绝对铺满消息可视区并水平/垂直居中。
+  它脱离滚动内容流 —— 不参与 spacer / 虚拟列表 / typing / ContinueBar 的宽度分配，
+  因此既不会被推到右边，也不会影响有消息时的虚拟列表与滚动。
+  pointer-events: none：只是文字引导，不拦截滚动 / 其他控件。
+*/
 .empty {
-  height: 100%;
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
   gap: 14px;
   text-align: center;
+  pointer-events: none;
 }
 .empty .greet {
   font-size: 34px;

@@ -674,31 +674,55 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   margin: 0 auto var(--sp-2);
   width: 100%;
 }
+/*
+  输入行（FU5）：三列 grid —— 左侧 1fr | 中间输入列（≤860）| 右侧 1fr。
+  * 输入列因此在面板内**真正居中**：不再被模式切换占掉的宽度推右；
+  * 模式切换（composer-leading 槽位）放第一列、靠右紧贴输入列左侧，不占输入列宽度；
+  * 窄窗（≤700）改单列：模式切换在输入上方、左对齐。
+  * 两侧 1fr 允许收缩（minmax(0, …)），窄面板不会溢出。
+*/
 .ic-composer-row {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--sp-3);
-  max-width: 860px;
-  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 860px) minmax(0, 1fr);
+  align-items: end;
+  column-gap: var(--sp-3);
+  max-width: none;
+  margin: 0;
   min-width: 0;
 }
 .ic-composer-input {
-  flex: 1;
+  grid-column: 2;
   min-width: 0;
 }
-@media (max-width: 520px) {
+/* 槽位内容由父级渲染（slot）：用 :slotted 才能给它定列。 */
+.ic-composer-row :slotted(.im-mode-switch) {
+  grid-column: 1;
+  justify-self: end;
+  align-self: end;
+  min-width: 0;
+}
+@media (max-width: 700px) {
   .ic-composer-row {
-    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 6px;
     align-items: stretch;
-    gap: 6px;
   }
-  .ic-composer-row :deep(.im-mode-switch) {
-    align-self: flex-start;
+  .ic-composer-row :slotted(.im-mode-switch) {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    align-self: start;
+  }
+  .ic-composer-input {
+    grid-column: 1;
+    grid-row: 2;
   }
 }
 .ic-composer {
-  max-width: 860px;
-  margin: 0 auto;
+  /* 外层必须铺满面板，grid 的三列才有「两侧 1fr」可用（max-width 交给中间列）。 */
+  width: 100%;
+  max-width: none;
+  margin: 0;
   min-width: 0;
 }
 </style>

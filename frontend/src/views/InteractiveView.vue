@@ -578,8 +578,11 @@ const boardSize = computed(() => {
   padding: 0;
 }
 .im-floating-chat :deep(.ic-composer) {
-  max-width: 860px;
-  margin: 0 auto;
+  /* FU5：输入行内部用三列 grid 居中输入列 —— 外层不能再限制成 860，
+     否则 grid 两侧的 1fr 没有可用空间，输入列又会整体右偏。 */
+  width: 100%;
+  max-width: none;
+  margin: 0;
 }
 .im-floating-chat :deep(.ic-bar) {
   width: fit-content;
