@@ -530,9 +530,10 @@ const boardSize = computed(() => {
   width: 100%;
   max-width: 860px;
   margin: 0 auto;
-  border: 1px solid var(--border-strong);
+  /* FU7：栏本体透明，模糊由组件内的 ::before 承担（板面从栏后透出）。 */
+  border: 1px solid color-mix(in srgb, var(--border-strong) 65%, transparent);
   border-radius: var(--r-lg);
-  background: var(--bg-elevated);
+  background: transparent;
   box-shadow: var(--shadow-2);
 }
 .im-floating-chat :deep(.ic-toolbar) {

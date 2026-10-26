@@ -539,9 +539,82 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   display: flex;
   margin: 0 var(--sp-3);
   overflow: hidden;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 72%, transparent);
   border-radius: var(--r-lg);
-  background: var(--bg-base);
+  /* FU7：对话栏透明 + 背景高斯模糊（板面从栏后透出）。 */
+  background: transparent;
+}
+/*
+  FU7 底层：整栏一层弱模糊 + 很淡的半透明底（只负责“透出板面”，不负责文字区域）。
+  不把 backdrop-filter 直接放在 .ic-stream 上：那样会给子元素建立 backdrop root，
+  文字块自己的更强模糊就不再采样板面了。放在 ::before 这一层，文字块仍在它之上。
+*/
+.ic-stream::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg-base) 30%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(1.06);
+  backdrop-filter: blur(12px) saturate(1.06);
+}
+.ic-stream > * {
+  position: relative;
+  z-index: 1;
+}
+/* 消息流自己原来是整块不透明底：在互动面板里必须让位给模糊层。 */
+.ic-stream :deep(.stream) {
+  background: transparent;
+}
+/*
+  FU7 文字层：无框文字（用户消息 / 过程行 / 系统事实）下方再叠一层更强的高斯模糊。
+  羽化 mask 让边界是“渐变过渡”，既和周围模糊有区别、又不会出现硬边；
+  模糊层挂在文字块上，随消息滚动一起移动（不需要 JS 同步）。
+*/
+.ic-stream :deep(.user-bubble),
+.ic-stream :deep(.process-line),
+.ic-stream :deep(.system-fact) {
+  position: relative;
+  isolation: isolate;
+}
+.ic-stream :deep(.user-bubble)::before,
+.ic-stream :deep(.process-line)::before,
+.ic-stream :deep(.system-fact)::before {
+  content: "";
+  position: absolute;
+  inset: -10px -14px;
+  z-index: -1;
+  border-radius: 18px;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(26px) saturate(1.08);
+  backdrop-filter: blur(26px) saturate(1.08);
+  background: color-mix(in srgb, var(--bg-base) 10%, transparent);
+  -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      #000 14%,
+      #000 86%,
+      transparent 100%
+    ),
+    linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      #000 14%,
+      #000 86%,
+      transparent 100%
+    ),
+    linear-gradient(to right, transparent 0%, #000 12%, #000 88%, transparent 100%);
+  mask-composite: intersect;
+}
+/* 浏览器不支持 backdrop-filter：退回半透明底（不假装有模糊）。 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .ic-stream::before {
+    background: color-mix(in srgb, var(--bg-base) 88%, transparent);
+  }
 }
 /* 消息面板右上角圆形收起按钮：只收显示，不打断正在进行的回复。 */
 .ic-close {
