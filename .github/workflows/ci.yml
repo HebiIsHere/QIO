@@ -27,6 +27,13 @@ on:
   # 时才能被派发。所以本触发器随本分支合入 main 之前**不可用**；本轮不依赖它，本轮唯一一次
   # 完整矩阵由**集成分支 push 一次**承担。将来它可用后，可以用它在候选 ref 上跑完整矩阵，
   # 避免为了跑 CI 去推集成分支或 main。
+  #
+  # **测试 job 必须检出被校验的提交**：只让 preflight 校验 SHA 不够 —— 其它 job 若用默认
+  # actions/checkout，workflow_dispatch 下默认检出的是 github.sha（派发 ref 尖端），可能不是
+  # expected_sha。因此 docs / backend / backend-windows / frontend / rust / rust-windows /
+  # frozen-worker / install-e2e 的 checkout 都显式写 ref: ${{ inputs.expected_sha || github.sha }}；
+  # dispatch 时 = preflight 校验过的提交，push/PR 时该输入为空 → github.sha（与默认 checkout
+  # 同一提交，行为不变）。契约脚本逐 job 断言。
   workflow_dispatch:
     inputs:
       ref:
@@ -139,7 +146,10 @@ jobs:
     name: docs consistency
     runs-on: ubuntu-24.04
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -189,7 +199,10 @@ jobs:
       run:
         working-directory: backend
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -263,7 +276,10 @@ jobs:
       run:
         working-directory: backend
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -319,7 +335,10 @@ jobs:
       run:
         working-directory: frontend
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - uses: actions/setup-node@v5
         with:
           node-version: "20"
@@ -345,7 +364,10 @@ jobs:
       run:
         working-directory: frontend/src-tauri
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -416,7 +438,10 @@ jobs:
       run:
         working-directory: frontend/src-tauri
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -441,7 +466,10 @@ jobs:
     name: frozen worker (windows)
     runs-on: windows-latest
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -502,7 +530,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
+      # dispatch: 检出被 preflight 校验的 expected_sha；push/PR 回退 github.sha（与默认 checkout 同一提交）。
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.expected_sha || github.sha }}
       - uses: actions/setup-node@v5
         with:
           node-version: "20"

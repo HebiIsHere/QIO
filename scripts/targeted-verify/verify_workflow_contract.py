@@ -136,6 +136,14 @@ CI_PUSH_MUST_NOT_MATCH = (
 CI_TESTED_COMMIT_EXPR = "github.event.pull_request.head.sha || github.sha"
 CI_DISPATCH_INPUTS = ("ref", "expected_sha")
 
+# P1（fu3）：dispatch 的完整矩阵里，**每个测试 job** 的 checkout 都必须检出被 preflight 校验的
+# 提交。只校验 preflight 自己的 checkout 不够 —— 其余 job 的默认 actions/checkout 在
+# workflow_dispatch 下检出的是 github.sha（派发 ref 尖端），可能不等于 expected_sha，于是
+# 「校验的是 A、测试的是 B」。push/PR 时该输入为空，回退 github.sha（与默认 checkout 同一提交）。
+CI_DISPATCH_CHECKOUT_REF_EXPR = "inputs.expected_sha || github.sha"
+# 与 CI_REQUIRED_JOBS 一致：这些 job 都是测试矩阵，必须显式检出受测提交。
+CI_TEST_CHECKOUT_JOBS = CI_REQUIRED_JOBS
+
 # 触发场景表：用 ci.yml 的真实规则计算「什么事件会不会跑完整矩阵、去重键是什么」。
 # 每条都带期望值 —— 与 YAML 实际规则不一致就 fail，这张表是断言不是说明文档。
 # 字段：event / ref / sha（事件提交）/ head（PR 头提交）/ expected_sha（dispatch 输入）/
@@ -439,6 +447,57 @@ def check_dispatch_preflight(job, text, rep):
               f"same={same_ok} mismatch={mismatch_ok} short_ok={short_ok}")
 
 
+def job_checkout_steps(job):
+    """一个 job 里的 actions/checkout 步骤（只看结构，不看注释）。"""
+    if not isinstance(job, dict):
+        return []
+    steps = job.get("steps") or []
+    return [
+        step
+        for step in steps
+        if isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+
+
+def check_dispatch_checkouts(jobs, text, rep):
+    """dispatch 的完整矩阵里，每个测试 job 都必须检出被 preflight 校验过的提交。"""
+    rep.check_in(
+        "ci.yml: 说明 dispatch 时所有测试 job 按 expected_sha 检出",
+        CI_DISPATCH_CHECKOUT_REF_EXPR,
+        text,
+    )
+    for name in CI_TEST_CHECKOUT_JOBS:
+        job = jobs.get(name)
+        if not isinstance(job, dict):
+            rep.check("ci.yml/" + name + ": 测试 job 存在（以便检查 checkout）", False, "missing job")
+            continue
+        checkouts = job_checkout_steps(job)
+        rep.check(
+            "ci.yml/" + name + ": 有且只有一个测试 checkout",
+            len(checkouts) == 1,
+            "checkouts=" + repr(len(checkouts)),
+        )
+        if not checkouts:
+            continue
+        checkout = checkouts[0]
+        checkout_text = workflow_text(checkout)
+        rep.check(
+            "ci.yml/" + name + ": dispatch 时 checkout 按 expected_sha（校验过的提交）",
+            CI_DISPATCH_CHECKOUT_REF_EXPR in checkout_text,
+            "checkout=" + repr(checkout),
+        )
+        rep.check(
+            "ci.yml/" + name + ": 不用 ref 尖端（inputs.ref）替代 expected_sha",
+            "inputs.ref" not in checkout_text,
+            "checkout=" + repr(checkout),
+        )
+        rep.check(
+            "ci.yml/" + name + ": push/PR 回退 github.sha 且 checkout 不被事件条件跳过",
+            "github.sha" in checkout_text and "if" not in checkout,
+            "checkout=" + repr(checkout),
+        )
+
+
 def check_ci(workflow, text, rep):
     on = parse_on(workflow)
     rep.check("ci.yml: still triggered by push (main/ordinary branches keep their gate)", "push" in on, "on=" + repr(sorted(on)))
@@ -504,6 +563,7 @@ def check_ci(workflow, text, rep):
     rep.check_in("ci.yml: docs job runs the workflow-contract assertions", "verify_workflow_contract.py", text)
     rep.check_in("ci.yml: 写明 dispatch 需默认分支已有触发器（真实限制，本轮不依赖）", "默认分支", text)
     check_dispatch_preflight(jobs.get("ci-dedup-preflight") or {}, text, rep)
+    check_dispatch_checkouts(jobs, text, rep)
 
 
 def check_targeted(workflow, text, rep, action_text=None):
@@ -641,7 +701,17 @@ def selftest(verbose=False):
             "group": "ci-" + DOLLAR + "{{ github.workflow }}-" + DOLLAR + "{{ github.event.pull_request.head.sha || github.sha }}",
             "cancel-in-progress": True,
         },
-        "jobs": {name: {"steps": []} for name in CI_REQUIRED_JOBS},
+        "jobs": {
+            name: {
+                "steps": [
+                    {
+                        "uses": "actions/checkout@v5",
+                        "with": {"ref": DOLLAR + "{{ " + CI_DISPATCH_CHECKOUT_REF_EXPR + " }}"},
+                    }
+                ]
+            }
+            for name in CI_REQUIRED_JOBS
+        },
     }
     good_ci["jobs"]["ci-dedup-preflight"] = {
         "steps": [
@@ -658,7 +728,10 @@ def selftest(verbose=False):
             },
         ]
     }
-    text_ci = "python scripts/targeted-verify/verify_workflow_contract.py tested commit dedup key 默认分支"
+    text_ci = (
+        "python scripts/targeted-verify/verify_workflow_contract.py tested commit dedup key 默认分支 "
+        + CI_DISPATCH_CHECKOUT_REF_EXPR
+    )
 
     def run_ci(data, name):
         scoped = Report(name, verbose=verbose)
@@ -734,6 +807,50 @@ def selftest(verbose=False):
 
     scoped = broken_ci(add_job_if, "selftest-ci-conditional-job")
     rep.check("conditionally skipping a matrix job must fail", any("不按事件条件跳过" in row[0] for row in scoped.failed()))
+
+    def job_default_checkout(data):
+        data["jobs"]["backend"]["steps"] = [{"uses": "actions/checkout@v5"}]
+
+    scoped = broken_ci(job_default_checkout, "selftest-ci-job-default-checkout")
+    rep.check(
+        "a test job with default checkout must fail",
+        any("dispatch 时 checkout 按 expected_sha" in row[0] for row in scoped.failed()),
+    )
+
+    def job_tip_ref_checkout(data):
+        data["jobs"]["frontend"]["steps"] = [
+            {"uses": "actions/checkout@v5", "with": {"ref": DOLLAR + "{{ inputs.ref }}"}}
+        ]
+
+    scoped = broken_ci(job_tip_ref_checkout, "selftest-ci-job-tip-ref")
+    rep.check(
+        "a test job checking out inputs.ref must fail",
+        any("dispatch 时 checkout 按 expected_sha" in row[0] for row in scoped.failed()),
+    )
+
+    def job_conditional_checkout(data):
+        data["jobs"]["rust"]["steps"] = [
+            {
+                "uses": "actions/checkout@v5",
+                "if": "github.event_name == 'workflow_dispatch'",
+                "with": {"ref": DOLLAR + "{{ " + CI_DISPATCH_CHECKOUT_REF_EXPR + " }}"},
+            }
+        ]
+
+    scoped = broken_ci(job_conditional_checkout, "selftest-ci-job-conditional-checkout")
+    rep.check(
+        "conditionally skipping checkout on push/PR must fail",
+        any("push/PR 回退 github.sha" in row[0] for row in scoped.failed()),
+    )
+
+    def job_missing_checkout(data):
+        data["jobs"]["docs"]["steps"] = []
+
+    scoped = broken_ci(job_missing_checkout, "selftest-ci-job-no-checkout")
+    rep.check(
+        "a test job without checkout must fail",
+        any("有且只有一个测试 checkout" in row[0] for row in scoped.failed()),
+    )
 
     scoped = Report("selftest-scenarios-good", verbose=verbose)
     check_scenarios(good_ci, scoped)
