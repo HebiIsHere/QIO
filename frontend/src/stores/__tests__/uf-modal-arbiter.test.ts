@@ -106,9 +106,9 @@ describe("globalIssues：一个入口、根因去重、部分恢复", () => {
 
   it("同一根因重复上报只计一次，部分恢复只移除该项", () => {
     const issues = useGlobalIssuesStore();
-    issues.upsert({ id: "sse_disconnected", kind: "sse_disconnected", title: "连接断开", reason: "第一次", actions: [], diagnostics: [], severity: "error" });
-    issues.upsert({ id: "sse_disconnected", kind: "sse_disconnected", title: "连接断开", reason: "第二次", actions: [], diagnostics: [], severity: "error" });
-    issues.upsert({ id: "no_credentials", kind: "no_credentials", title: "没有可用凭据", reason: "", actions: [], diagnostics: [], severity: "warning" });
+    issues.upsert({ id: "sse_disconnected", kind: "sse_disconnected", title: "连接断开", reason: "第一次", actions: [], diagnostics: [], severity: "error", at: Date.now() });
+    issues.upsert({ id: "sse_disconnected", kind: "sse_disconnected", title: "连接断开", reason: "第二次", actions: [], diagnostics: [], severity: "error", at: Date.now() });
+    issues.upsert({ id: "no_credentials", kind: "no_credentials", title: "没有可用凭据", reason: "", actions: [], diagnostics: [], severity: "warning", at: Date.now() });
     expect(issues.count).toBe(2);
     expect(issues.issues.find((issue) => issue.id === "sse_disconnected")?.reason).toBe("第二次");
     issues.resolve("sse_disconnected");
