@@ -786,8 +786,14 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     maybeAutoOpen(): boolean {
       if (this.visible || this.resultsVisible) return false;
       const approvals = useApprovalsStore();
-      // 恢复路径 / 用户已点「稍后处理」：不抢焦点，入口亮着等用户主动打开
-      if (approvals.deferred) return false;
+      /**
+       * 注意：这里**不能**用 approvals.deferred 早退。
+       *
+       * 那个字段同时被「用户稍后处理」与「恢复路径/编辑中到达」复用；一旦早退，
+       * 输入中到达的审批在失焦后会永远不弹，autoPending 也不会被置位（真实故障）。
+       * 用户主动收起由 unified.deferredKeys + autoBlockedSeq 表达；恢复路径由
+       * ApprovalItem.restored 表达，两者都不影响「真正新到达的申请」。
+       */
       const items = this.items as UnifiedApprovalItem[];
       const candidate = items.find(
         (item) =>
@@ -796,6 +802,8 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
           !this.autoShownKeys.includes(item.key) &&
           !item.stale &&
           !isExpiredApproval(item.approval) &&
+          // 恢复路径补读出来的旧审批不抢焦点：亮入口，等用户主动打开
+          item.approval?.restored !== true &&
           // 收起弹窗之前就已经存在的申请：不因一次收起/重渲染又弹回来；
           // 真正新到达（arrivalSeq 更大）的申请仍按规则自动弹。
           (item.approval?.arrivedSeq ?? 0) > this.autoBlockedSeq,

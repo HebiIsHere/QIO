@@ -426,8 +426,3 @@ export const useNotificationsStore = defineStore("notifications", {
     },
   },
 });
-
-// Pinia 选项式 store 里不便声明的计时器句柄：放在模块级，随 store 实例生命周期使用。
-declare module "pinia" {
-  // 仅为类型提示（实际字段在 state 之外由 actions 读写）。
-}

@@ -51,6 +51,14 @@ export interface ApprovalItem {
   /** 最近一次确认 / 决定失败的原因（不覆盖 approvals.error 的全局语义时用） */
   lifecycleError?: string;
 
+  /**
+   * 这条是**恢复路径**（断线/刷新/后端重启后补读）得到的，不是实时新到达。
+   *
+   * 恢复出来的审批不抢焦点、不自动弹：保留待办 + 亮入口，由用户主动打开。
+   * 与 deferred（用户稍后处理 / 编辑中到达的旧语义）分开，避免两者互相污染。
+   */
+  restored?: boolean;
+
   // ---- 旧 request() 落库行（B-CP1：legacy）----
   /**
    * 旧审批：没有 v2 状态机（B-CP1 的 legacy=true，或恢复出的旧行没有 state）。
@@ -662,6 +670,8 @@ export const useApprovalsStore = defineStore("approvals", {
         approval_id: approvalId,
         kind,
         payload,
+        // 只有显式 autoOpen:false 的路径是「恢复」：实时到达现在统一交自动弹出门控判断
+        ...(opts.autoOpen === false ? { restored: true } : {}),
         turnId: opts.turnId ?? null,
         sessionId: opts.sessionId ?? null,
         requestDigest: opts.requestDigest ?? null,
