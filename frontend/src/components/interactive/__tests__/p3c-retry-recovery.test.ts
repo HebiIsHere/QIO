@@ -307,23 +307,54 @@ describe("RecoveryPanel：保存失败持续可见 + 服务端恢复", () => {
   });
 });
 
-describe("SaveFailureBanner：保存失败持续可见 + 可重试", () => {
-  it("失败时出现、没有关闭按钮（不解决就不消失），重试调用 saveNow", async () => {
+describe("SaveFailureBanner：只承接草稿 / 刷新失败（保存失败不重复常驻）", () => {
+  it("只有板面保存失败时不渲染横幅（顶栏唯一保存状态就地重试，不再说第二遍）", async () => {
     setActivePinia(createPinia());
     const store = useInteractiveStore();
     store.saveStatus = "error";
     store.saveError = "本机磁盘写满";
-    const saveNow = vi.spyOn(store, "saveNow").mockResolvedValue(undefined);
+    const SaveFailureBanner = (await import("../v2/SaveFailureBanner.vue")).default;
+    const w = wrap(mount(SaveFailureBanner));
+    await nextTick();
+    expect(w.find('[data-im="p3c-save-failure"]').exists()).toBe(false);
+    void store;
+  });
+
+  it("卡片草稿没保存：持续可见、没有关闭按钮，重试调用 retryDraftSave", async () => {
+    setActivePinia(createPinia());
+    const store = useInteractiveStore();
+    // 草稿保存状态是 draftStates 的汇总（不可直接写 computed）：按真实来源造一条失败
+    store.draftStates = { "card:c1": { status: "error", error: "本机存储不可用" } };
+    const retryDraft = vi.spyOn(store, "retryDraftSave").mockResolvedValue(undefined as never);
     const SaveFailureBanner = (await import("../v2/SaveFailureBanner.vue")).default;
     const w = wrap(mount(SaveFailureBanner));
     await nextTick();
     const banner = w.get('[data-im="p3c-save-failure"]');
-    expect(banner.text()).toContain("保存失败");
-    // 没有关闭/忽略入口：失败没解决就不能从界面上消失
+    expect(banner.attributes("data-kind")).toBe("draft");
+    expect(banner.text()).toContain("草稿没有保存");
     expect(banner.findAll("button")).toHaveLength(1);
     await banner.get('[data-im="p3c-save-failure-retry"]').trigger("click");
     await flushPromises();
-    expect(saveNow).toHaveBeenCalledTimes(1);
+    expect(retryDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("提交成功但刷新失败：持续可见，重试只重新读取（不重复提交）", async () => {
+    setActivePinia(createPinia());
+    const store = useInteractiveStore();
+    store.submitRefreshState = "error";
+    store.submitRefreshError = "读取超时";
+    const retryRefresh = vi
+      .spyOn(store, "retrySubmitRefresh")
+      .mockResolvedValue({ ok: true } as never);
+    const SaveFailureBanner = (await import("../v2/SaveFailureBanner.vue")).default;
+    const w = wrap(mount(SaveFailureBanner));
+    await nextTick();
+    const banner = w.get('[data-im="p3c-save-failure"]');
+    expect(banner.attributes("data-kind")).toBe("refresh");
+    expect(banner.text()).toContain("提交成功但页面没刷新过来");
+    await banner.get('[data-im="p3c-save-failure-retry"]').trigger("click");
+    await flushPromises();
+    expect(retryRefresh).toHaveBeenCalledTimes(1);
   });
 });
 

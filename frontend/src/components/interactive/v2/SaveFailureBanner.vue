@@ -1,50 +1,26 @@
 <script setup lang="ts">
 /**
- * 保存失败常驻提示（Phase 3-C）：**持续可见 + 可重试**。
+ * 草稿 / 刷新失败的就近行动入口（Phase 3-C，2026-10-26 统一整改）。
  *
- * 与顶栏那一句保存状态（InteractiveChromeTools）分工：
- * - 顶栏说的是「当前保存状态」；
- * - 这里是**失败时的行动入口**：不自动消失、不带关闭按钮（失败没解决就不能装作看不见），
- *   重试只调用既有 store 动作，不重复提交、不改板面。
+ * 与顶栏保存状态（InteractiveChromeTools）的分工（**同一问题只留一处常驻**）：
+ * - 板面保存失败 = 保存状态问题：只在顶栏的「唯一保存状态」里说，并在那里就地重试；
+ *   这里不再重复一条同样的常驻横幅（两条说同一件事会让人以为有两件事要处理）。
+ * - 这里只承接另外两件**不是保存状态**的事：
+ *   1) 卡片草稿在本机没保存成功（文字还在编辑器里，属本机存储失败）；
+ *   2) 提交已经成功、但页面刷新（重新读取）失败（不是提交失败，也不能重复提交）。
  *
- * 只显示真实失败：saveStatus==="error" / draftSaveStatus==="error" / 提交后刷新失败。
+ * 两条都不自动消失、不带关闭按钮（没解决就不能装作看不见），重试只调用既有 store 动作。
  */
 import { computed, ref } from "vue";
 import { useInteractiveStore } from "../../../stores/interactive";
-import { saveStatusView } from "./saveStatus";
 
 const store = useInteractiveStore();
 const busy = ref("");
 const notice = ref("");
 
-const saveView = computed(() =>
-  saveStatusView({
-    status: store.saveStatus as "idle" | "saving" | "saved" | "error",
-    dirty: store.dirty,
-    error: store.saveError,
-    pendingImpact: Boolean(store.pendingImpact),
-  }),
-);
-const saveFailed = computed(() => store.saveStatus === "error");
 const draftFailed = computed(() => store.draftSaveStatus === "error");
 const refreshFailed = computed(() => store.submitRefreshState === "error");
-const visible = computed(() => saveFailed.value || draftFailed.value || refreshFailed.value);
-const impactBlocked = computed(() => Boolean(store.pendingImpact));
-
-async function retrySave(): Promise<void> {
-  if (busy.value) return;
-  busy.value = "save";
-  notice.value = "";
-  try {
-    await store.saveNow();
-    notice.value =
-      store.saveStatus === "error"
-        ? "保存仍然失败：" + (store.saveError || "原因未知")
-        : "已重新保存，结果以服务端回执为准";
-  } finally {
-    busy.value = "";
-  }
-}
+const visible = computed(() => draftFailed.value || refreshFailed.value);
 
 async function retryDraft(): Promise<void> {
   if (busy.value) return;
@@ -77,22 +53,16 @@ async function retryRefresh(): Promise<void> {
     class="save-failure"
     role="alert"
     data-im="p3c-save-failure"
-    :data-kind="saveFailed ? 'save' : draftFailed ? 'draft' : 'refresh'"
+    :data-kind="draftFailed ? 'draft' : 'refresh'"
   >
-    <span class="kind mono" aria-hidden="true">{{ saveFailed ? "保存" : draftFailed ? "草稿" : "刷新" }}</span>
-    <p v-if="saveFailed" class="text" data-im="p3c-save-failure-text">
-      {{ saveView.text }}<template v-if="impactBlocked">（被影响确认挡住：在页面中央的影响确认里处理）</template>
-    </p>
-    <p v-else-if="draftFailed" class="text" data-im="p3c-save-failure-text">
+    <span class="kind mono" aria-hidden="true">{{ draftFailed ? "草稿" : "刷新" }}</span>
+    <p v-if="draftFailed" class="text" data-im="p3c-save-failure-text">
       草稿没有保存：{{ store.draftSaveError || "原因未知" }}（文字还在编辑器里）
     </p>
     <p v-else class="text" data-im="p3c-save-failure-text">
       提交成功但页面没刷新过来：{{ store.submitRefreshError || "原因未知" }}
     </p>
-    <button v-if="saveFailed" type="button" class="act" data-im="p3c-save-failure-retry" :disabled="Boolean(busy)" @click="retrySave">
-      {{ busy === "save" ? "重试中…" : "重试保存" }}
-    </button>
-    <button v-else-if="draftFailed" type="button" class="act" data-im="p3c-save-failure-retry" :disabled="Boolean(busy)" @click="retryDraft">
+    <button v-if="draftFailed" type="button" class="act" data-im="p3c-save-failure-retry" :disabled="Boolean(busy)" @click="retryDraft">
       {{ busy === "draft" ? "重试中…" : "重试保存草稿" }}
     </button>
     <button v-else type="button" class="act" data-im="p3c-save-failure-retry" :disabled="Boolean(busy)" @click="retryRefresh">

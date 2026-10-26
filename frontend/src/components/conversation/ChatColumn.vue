@@ -17,7 +17,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useSessionStore } from "../../stores/session";
 import { useEventStore } from "../../stores/events";
-import { useOnboardingStore } from "../../stores/onboarding";
 import { useConversationShellStore } from "../../stores/conversationShell";
 import { restoreRuntimeState } from "../../stores/restore";
 import { api, type TopicDetail } from "../../services/api";
@@ -27,7 +26,6 @@ import { useComposerClearance } from "../../composables/useComposerClearance";
 
 const session = useSessionStore();
 const events = useEventStore();
-const onboarding = useOnboardingStore();
 const shell = useConversationShellStore();
 
 /* ------------------------------------------------------------------ */
@@ -166,9 +164,14 @@ function reconnectEvents(): void {
 }
 
 /**
- * 只收「影响整个对话」的真实状态：
- * 历史读取失败（不是没有历史）、连接/同步异常、全局错误与警告、凭据不可用、
+ * 只收「影响整个对话」且需要就地处理的真实状态：
+ * 历史读取失败（不是没有历史）、连接/同步异常、全局错误、
  * 能力降级（兼容模式）、布局偏好保存失败。
+ *
+ * **整体性异常统一走顶部全局异常入口**（B 的 GlobalIssueEntry）：
+ * 凭据不可用 / 模型不可用 / 连接中断这类跨页问题不再在这里重复一条常驻警告
+ * —— 同一条事实在页面里说两遍会让人以为有两件事要处理。store 字段
+ * （events.credentialNotice / session.warning）保留，由全局入口使用。
  * 单轮失败 / 中断 / 取消不在这里 —— 它们由对应轮次自己说明（TurnProcess）。
  */
 const statusNotices = computed<StatusNotice[]>(() => {
@@ -218,16 +221,6 @@ const statusNotices = computed<StatusNotice[]>(() => {
         { label: "查看详情", to: "/debug" },
         { label: "前往设置", to: "/settings" },
       ],
-    });
-  } else if (session.warning) {
-    out.push({ id: "warning", tone: "warn", tag: "提示", text: session.warning, actions: [] });
-  } else if (events.credentialNotice) {
-    out.push({
-      id: "credential",
-      tone: "warn",
-      tag: "提示",
-      text: events.credentialNotice,
-      actions: [{ label: "前往设置", to: "/settings" }],
     });
   } else if (session.lastTurnOutcome?.status === "cancelled") {
     // 取消是正常结局：安静地说一声（具体轮次状态仍由那一轮自己的过程区说明）
@@ -382,13 +375,6 @@ onBeforeUnmount(() => {
         <p v-else class="td-line">当前位置在话题最新处：下一条消息会接在最新内容后面。</p>
       </div>
     </section>
-
-    <!-- 首次引导的轻提示（可关闭；不是错误） -->
-    <div v-if="onboarding.hintVisible" class="setup-hint" role="status" data-qio-fit>
-      <span class="text">还没设置完 QIO —— 补上模型、称呼与目标，它才会真正记得你</span>
-      <button class="link resume" type="button" @click="onboarding.reopen()">继续设置</button>
-      <button class="close" type="button" aria-label="关闭提示" @click="onboarding.setHintDismissed(true)">×</button>
-    </div>
 
     <!-- 全局状态区：只放影响整个对话的事项（轮次内部状态留在轮次里） -->
     <div v-if="statusNotices.length" class="status-zone" data-qio-fit>
@@ -638,35 +624,6 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
   line-height: 1.65;
   overflow-wrap: anywhere;
-}
-/* ---- 首次引导 ---- */
-.setup-hint {
-  flex: none;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 7px 14px;
-  margin: 6px 12px 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--accent-soft);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  min-width: 0;
-}
-.setup-hint .text {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.setup-hint .close {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
 }
 /* ---- 全局状态区 ---- */
 .status-zone {

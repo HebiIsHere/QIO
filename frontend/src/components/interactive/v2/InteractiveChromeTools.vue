@@ -52,6 +52,25 @@ const saveView = computed(() =>
   }),
 );
 
+/**
+ * 保存失败时的**唯一**就地重试入口。
+ *
+ * 为什么放在顶栏保存状态这里：同一时刻只允许一处常驻的「保存失败」——
+ * 之前的 SaveFailureBanner 和这里的保存状态说的是同一个问题，两条常驻横幅会让
+ * 用户以为有两件事要处理。现在失败原因与状态都在这一处，动作也在这一处；
+ * 草稿本机保存失败、提交后刷新失败不属于「保存状态」，仍就近留在输入区上方。
+ */
+const retryBusy = ref(false);
+async function retrySave(): Promise<void> {
+  if (retryBusy.value) return;
+  retryBusy.value = true;
+  try {
+    await store.saveNow();
+  } finally {
+    retryBusy.value = false;
+  }
+}
+
 /* ── 板内搜索（内联输入 + 下方结果浮层列表） ───────────────────────────── */
 interface Hit {
   id: string;
@@ -238,17 +257,27 @@ onBeforeUnmount(removeGlobalListeners);
   <!-- 顶栏里的控件：内联搜索 + 唯一保存状态（不接管拖动面，pointer-events 只作用于自己） -->
   <Teleport v-if="mountTarget" :to="mountTarget">
     <div class="iw-chrome" data-iw-chrome-tools>
-      <p
-        class="iw-save"
-        :data-tone="saveView.tone"
-        data-iw-chrome-save
-        role="status"
-        :title="saveView.detail || undefined"
-        :aria-label="'保存状态：' + saveView.text"
-      >
-        <span class="iw-dot" aria-hidden="true"></span>
-        <span class="iw-save-text">{{ saveView.text }}</span>
-      </p>
+      <div class="iw-save-group">
+        <p
+          class="iw-save"
+          :data-tone="saveView.tone"
+          data-iw-chrome-save
+          role="status"
+          :aria-label="'保存状态：' + saveView.text + (saveView.detail ? '（' + saveView.detail + '）' : '')"
+        >
+          <span class="iw-dot" aria-hidden="true"></span>
+          <span class="iw-save-text">{{ saveView.text }}</span>
+        </p>
+        <button
+          v-if="saveView.tone === 'err'"
+          class="iw-save-retry"
+          type="button"
+          data-iw-chrome-save-retry
+          :disabled="retryBusy"
+          aria-label="重试保存（只重新保存，不会重复提交）"
+          @click="retrySave"
+        >{{ retryBusy ? "重试中…" : "重试" }}</button>
+      </div>
 
       <!--
         内联搜索框：这里就是唯一的搜索入口（没有按钮、没有弹窗）。
@@ -333,13 +362,19 @@ onBeforeUnmount(removeGlobalListeners);
   font-family: var(--sans);
 }
 
+.iw-save-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: min(300px, 30vw);
+}
 .iw-save {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   margin: 0;
   min-width: 0;
-  max-width: min(240px, 24vw);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   white-space: nowrap;
@@ -369,6 +404,21 @@ onBeforeUnmount(removeGlobalListeners);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 失败时唯一就地的重试入口：只在保存失败（tone=err）时出现 */
+.iw-save-retry {
+  flex: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-strong);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  padding: 0 var(--sp-2);
+  min-height: 22px;
+  cursor: pointer;
+}
+.iw-save-retry:disabled { color: var(--text-muted); cursor: default; }
+.iw-save-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
 /*
   内联搜索框（FU4）：初始较窄，点击 / 聚焦后加宽（宽度过渡）。
@@ -502,6 +552,9 @@ onBeforeUnmount(removeGlobalListeners);
 
 /* 窄窗：保存状态与搜索框都不许把全局栏挤溢出（480 仍可用） */
 @media (max-width: 760px) {
+  .iw-save-group {
+    max-width: 120px;
+  }
   .iw-save {
     max-width: 72px;
   }
