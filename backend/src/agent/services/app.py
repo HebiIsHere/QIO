@@ -2773,6 +2773,14 @@ class AppContext:
         # 系统通知轮不是用户指令：不产生 grant，审批来源如实标为 background。
         origin_token = approval_origin.set("background")
         self._notify_turn = True
+        # FU3-D：通知轮的话题**只解析一次**，并在本轮所有落点复用同一结果。
+        # 优先「原任务话题」（turns.submit 已按 origin 把它写进 ctx.initial_topic），
+        # 只有它缺失时才回退界面当前话题。通知轮是原任务的续作，不是用户此刻
+        # 正在看的那个话题 —— 用 current_topic() 会把结果写进另一个话题。
+        initial_topic = getattr(ctx, "initial_topic", None)
+        initial_text = str(initial_topic).strip() if initial_topic is not None else ""
+        # 两者都缺失时保持 None（与基线一致：不把「没有话题」伪造成空串话题）。
+        resolved_topic = initial_text or self.current_topic()
         try:
             self.approvals.set_context(turn_id=ctx.turn_id, session_id=self.session_id)
             tracer = getattr(ctx, "trace", None)
@@ -2781,7 +2789,7 @@ class AppContext:
 
                 tracer = TurnTracer(self.trace_store, ctx.turn_id)
                 ctx.trace = tracer
-            self.trace_store.ensure_started(ctx.turn_id, initial_topic=ctx.initial_topic)
+            self.trace_store.ensure_started(ctx.turn_id, initial_topic=resolved_topic)
             with tracer.phase("adapter_setup"):
                 adapter = await self.build_adapter()
             if adapter is None:
@@ -2790,7 +2798,8 @@ class AppContext:
                 ctx.error = "no_credential"
                 self.trace_store.finish(ctx.turn_id, "unavailable", error="no_credential")
                 return
-            topic = self.current_topic()
+            # 同一解析结果贯穿：上下文 / 绑定 / trace / 后续保存都用它。
+            topic = resolved_topic
             ctx.current_topic = topic
             # 系统驱动的轮也要有自己的绑定（归属明确），并且标记成 system：
             # 它不占用户轮次容量，也不该被当成「用户开了新的一轮」。
