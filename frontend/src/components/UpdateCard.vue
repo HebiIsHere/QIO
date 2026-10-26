@@ -13,10 +13,14 @@
  * - 自动检查不再用原生外观 checkbox（自定义开关），更新发现后也**不会**自己弹提示：
  *   只在设置入口留一个小标记（见 WindowChrome）。
  */
-import { computed, onMounted } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useUpdaterStore } from "../stores/updater";
+import { useGlobalIssuesStore } from "../stores/globalIssues";
 
 const updater = useUpdaterStore();
+const issues = useGlobalIssuesStore();
+/** 更新失败且后端未恢复 = 整体异常：进顶部全局栏入口（仍保留更新设置与真实重试）。 */
+const UPDATE_ISSUE_ID = "updater_install_failed";
 
 onMounted(() => {
   updater.loadAutoCheckPreference();
@@ -67,6 +71,33 @@ const backendBroken = computed(() =>
 function toggleAutoCheck() {
   updater.setAutoCheck(!updater.autoCheck);
 }
+
+/**
+ * 失败分处（按应用是否已恢复）：
+ * - 已恢复：留在这张更新卡片里 —— 更新设置仍在，可重试；不进全局异常；
+ * - 未恢复：说明后端需要完全退出再启动 → 进顶部全局栏「独立问题」入口，
+ *   带真实处理动作（打开数据与维护重新检查更新），入口数量与状态可在任何页面看到。
+ * 成功/恢复后自动移除这一项（部分恢复只移除对应项）。
+ */
+function syncUpdateIssue(): void {
+  if (updater.phase === "failed" && backendBroken.value) {
+    issues.upsert({
+      id: UPDATE_ISSUE_ID,
+      kind: "restore_failed",
+      title: "更新没有安装成功，后端仍未恢复",
+      reason: updater.message,
+      actions: [
+        { label: "打开「数据与维护」重新检查更新", kind: "settings", section: "data" },
+      ],
+      diagnostics: [updater.message],
+      severity: "error",
+    });
+    return;
+  }
+  issues.resolve(UPDATE_ISSUE_ID);
+}
+
+watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), { immediate: true });
 </script>
 
 <template>

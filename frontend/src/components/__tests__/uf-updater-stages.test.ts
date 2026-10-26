@@ -8,6 +8,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { useUpdaterStore } from "../../stores/updater";
 import UpdateCard from "../UpdateCard.vue";
 import type { UpdateProgress, UpdateStage, UpdaterApi } from "../../services/updater";
+import { useGlobalIssuesStore } from "../../stores/globalIssues";
 
 function api(behaviour: "stages" | "fail-after-download" = "stages"): UpdaterApi {
   return {
@@ -110,6 +111,44 @@ describe("UpdateCard 如实展示阶段", () => {
     await w.vm.$nextTick();
     expect(w.find('[role="progressbar"]').exists()).toBe(false);
     expect(w.text()).toContain("正在下载更新（大小未知）");
+    w.unmount();
+  });
+
+  it("更新失败且后端未恢复：进顶部全局异常入口并带真实处理动作", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useUpdaterStore();
+    store.configure(api());
+    const issues = useGlobalIssuesStore();
+    const w = mount(UpdateCard, { global: { plugins: [pinia] } });
+    store.phase = "failed";
+    store.errorKind = "installer";
+    store.message = "后端未能自动恢复：连接失败；请完全退出 QIO 后重新启动。原因：installer exited";
+    await w.vm.$nextTick();
+    const issue = issues.issueById("updater_install_failed");
+    expect(issue).toBeTruthy();
+    expect(issue?.severity).toBe("error");
+    expect(issue?.actions[0]?.kind).toBe("settings");
+    expect(issue?.actions[0]?.section).toBe("data");
+
+    // 之后更新成功/进入新的检查：这一项自动移除（部分恢复只移除对应项）
+    store.phase = "available";
+    await w.vm.$nextTick();
+    expect(issues.issueById("updater_install_failed")).toBe(null);
+    w.unmount();
+  });
+
+  it("更新失败但应用已恢复：只留在设置里，不进全局异常入口", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const store = useUpdaterStore();
+    store.configure(api());
+    const issues = useGlobalIssuesStore();
+    const w = mount(UpdateCard, { global: { plugins: [pinia] } });
+    store.phase = "failed";
+    store.message = "后端已恢复（已重新启动），聊天可以继续使用。原因：installer exited";
+    await w.vm.$nextTick();
+    expect(issues.issueById("updater_install_failed")).toBe(null);
     w.unmount();
   });
 
