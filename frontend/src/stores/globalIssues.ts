@@ -43,8 +43,8 @@ export interface GlobalIssue {
   /** 按需展开的诊断（技术细节；默认折叠，不显示密钥原文）。 */
   diagnostics: string[];
   severity: "error" | "warning";
-  /** 最近一次上报时间（毫秒）。 */
-  at: number;
+  /** 最近一次上报时间（毫秒）。调用方可以不传：upsert 内部补 Date.now()（契约 §3.4 未列该字段）。 */
+  at?: number;
 }
 
 function normalizeIssue(issue: GlobalIssue): GlobalIssue {

@@ -83,10 +83,27 @@ function anyVisible(selectors: readonly string[]): boolean {
   return false;
 }
 
-/** 记忆星球覆盖层是否开着（优先看真实覆盖层 + 连续体阶段，不只凭路由名）。 */
+/** 星球入口小球态的两个类：此时 `.planet-view` 只是那颗常驻小球，不是覆盖层。 */
+const PLANET_ENTRY_CLASSES = ["ball", "tail"];
+
+/**
+ * 记忆星球**覆盖层**是否开着（不是「星球组件是否挂载」）。
+ *
+ * 真实基线（2026-10-27 核对）：对话页空闲时 PlanetView 也常驻在 DOM 里，
+ * `open=false` 时根元素是 `.planet-view.ball` / `.tail`（入口小球，opacity 1），
+ * 它**不是**覆盖层 —— 只按选择器判断会让审批/通知永远不自动弹。
+ *
+ * 判定顺序（真实状态优先，不只凭路由名）：
+ * 1. 连续体阶段非 idle：正在展开/已就绪/正在收起 → 覆盖层在屏幕上；
+ * 2. 没有阶段（直接挂载 / 单测）：元素可见且不带 ball/tail 入口态类 → 展开态覆盖层；
+ * 3. 其余（小球态）→ 不是覆盖层。
+ */
 export function isPlanetOverlayOpen(): boolean {
   if (planetContinuum.phase !== "idle") return true;
-  return anyVisible([PLANET_OVERLAY_SELECTOR]);
+  if (typeof document === "undefined") return false;
+  const el = document.querySelector(PLANET_OVERLAY_SELECTOR) as HTMLElement | null;
+  if (!el || !isElementVisible(el)) return false;
+  return !PLANET_ENTRY_CLASSES.some((name) => el.classList.contains(name));
 }
 
 /**
@@ -107,9 +124,31 @@ export function visibleSurface(): VisibleSurface {
   return "unknown";
 }
 
-/** 用户此刻是否在输入（编辑 + 输入法组合）。 */
+/**
+ * 用户此刻是否在输入（编辑 + 输入法组合）。
+ *
+ * 除了监听器维护的状态，再实时看一次 activeElement：测试 / 极早期没有安装监听器时，
+ * 「焦点就在输入框里」这个事实也必须挡住自动弹出（不能只凭一次 blur 判断）。
+ */
 export function isInputBusy(): boolean {
-  return feedbackGate.editing || feedbackGate.composing;
+  if (feedbackGate.composing) return true;
+  if (feedbackGate.editing) return true;
+  if (typeof document === "undefined") return false;
+  return isEditableElement(document.activeElement);
+}
+
+/**
+ * 是否有**别的**中央弹窗在 DOM 里（兼容尚未接入 arbiter 的旧弹窗）。
+ *
+ * 统一审批弹窗自己带 data-unified-approval-modal，不算「别的」。
+ * 新组件应当用 modalArbiter 注册；这里是最后一道保护，不当主路径。
+ */
+function hasBlockingDialogDom(): boolean {
+  if (typeof document === "undefined") return false;
+  const nodes = Array.from(
+    document.querySelectorAll('[role="dialog"][aria-modal="true"], dialog[open]'),
+  );
+  return nodes.some((node) => !node.hasAttribute("data-unified-approval-modal"));
 }
 
 /**
@@ -122,7 +161,7 @@ export function canAutoOpenApproval(now: number = Date.now()): AutoOpenDecision 
     return { ok: false, reason: "document-hidden", retry: true };
   }
   if (feedbackGate.composing) return { ok: false, reason: "composing", retry: true };
-  if (feedbackGate.editing) return { ok: false, reason: "editing", retry: true };
+  if (isInputBusy()) return { ok: false, reason: "editing", retry: true };
   if (
     feedbackGate.lastInputLeftAt &&
     now - feedbackGate.lastInputLeftAt < INPUT_LEAVE_RETRY_DELAY_MS
@@ -137,7 +176,7 @@ export function canAutoOpenApproval(now: number = Date.now()): AutoOpenDecision 
     // store 尚未初始化（极早期 / 单测）：不因这个判断把功能挡死
     blocks = false;
   }
-  if (blocks) return { ok: false, reason: "modal", retry: true };
+  if (blocks || hasBlockingDialogDom()) return { ok: false, reason: "modal", retry: true };
   const surface = visibleSurface();
   if (surface === "planet") return { ok: false, reason: "planet-overlay", retry: true };
   if (surface === "settings" || surface === "debug") {

@@ -70,7 +70,6 @@ function open() {
     type="button"
     data-test="nonchat-approval-entry"
     :aria-label="label + '，打开审批窗口'"
-    :title="label"
     @mousedown.prevent
     @click="open"
   >
@@ -80,7 +79,6 @@ function open() {
       v-if="errorText"
       class="entry-error"
       data-test="approval-entry-error"
-      :title="errorText + '（打开查看原因与重试）'"
       aria-hidden="true"
     ></span>
   </button>
