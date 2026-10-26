@@ -153,6 +153,9 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "requirement_resolutions",
         # R9-H2（迁移 61）：内部数据真实对象身份登记（硬链接/移动/改名保护）。
         "internal_data_identities",
+        # FU2-D（迁移 71）：子任务完成通知的持久化队列。缺了它，通知退回纯内存：
+        # 超过 200 条静默丢最早、入队即被当成已交付、重启即清空（本轮修的就是这三条）。
+        "subtask_notifications",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -239,6 +242,15 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "user_requirements.structured_limits_source",
         # R9-H4（迁移 65）：内部数据身份生命周期依据（编号复用区分）。
         "internal_data_identities.birth_key",
+        # FU2-D（迁移 71）：通知的投递状态列。它们都是**可修复**的追加列
+        # （补偿 72 里有对应 ADD COLUMN）：表在但状态列丢了，delivered_at 永远读不到，
+        # 交付就只能退回「内存里标记已通知」的假事实 —— 正是本轮要消灭的。
+        # 注：task_id / payload / created_at 是建表基础列，按既有判据（只列可补偿项）
+        # 不列入清单：整表缺失由 CREATE TABLE 建出完整形状，基础列丢失属形状损坏。
+        "subtask_notifications.delivered_at",
+        "subtask_notifications.attempts",
+        "subtask_notifications.last_error",
+        "subtask_notifications.last_attempt_at",
     ),
     "indexes": (
         "idx_instances_heartbeat",
@@ -284,6 +296,8 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_board_intent_retries_board",
         "idx_board_intent_retries_intent",
         "idx_internal_data_identities_active",
+        # FU2-D（迁移 71）：按 (delivered_at, created_at) 取最早未送达通知（FIFO 投递）。
+        "idx_subtask_notifications_pending",
     ),
 }
 

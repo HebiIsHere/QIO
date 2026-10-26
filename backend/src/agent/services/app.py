@@ -130,6 +130,10 @@ def _record_understanding_phase(
     return report.with_phase(PHASE_UNDERSTANDING_STOPPED)
 
 
+#: 子任务通知轮的确定性 request_id 前缀（TurnManager 幂等索引按它查重）。
+SUBTASK_NOTIFICATION_REQUEST_ID_PREFIX = "subtask-notify:"
+
+
 class AppContext:
     def __init__(self, settings: Settings, conn: sqlite3.Connection, bus: EventBus) -> None:
         self.settings = settings
@@ -495,9 +499,13 @@ class AppContext:
         # 对话页任务栏：子任务生命周期同步写进 task_feed（展示事实，不替代执行）。
         self.task_manager = TaskManager(bus, on_change=self._on_subagent_task_change)
         self.services.register("task_manager", self.task_manager)
-        # 阶段四 A：子任务完成通知先入队（按 task 去重），空闲时各自成为一条通知轮；
-        # 不打断当前交流、不因处理另一条通知而丢弃。
-        self.subtask_notifications = SubtaskNotificationQueue(self.task_manager)
+        # 阶段四 A / FU2-D：子任务完成通知先**持久化**入队（task_id 主键去重），空闲时
+        # 各自成为一条通知轮。投递状态在库里（delivered_at 才是交付判据）：重启可恢复、
+        # 失败保留待重试、超过告警阈值只告警不丢弃。入队 ≠ 交付。
+        self.subtask_notifications = SubtaskNotificationQueue(self.task_manager, conn=conn)
+        # 投递失败后的延迟重试（秒）；只在没有 active / queued 用户轮时才会真正提交。
+        self.subtask_notification_retry_delay = 10.0
+        self._notify_retry_task: asyncio.Task | None = None
         # 阶段四 A：程序绑定子任务 origin（当前真实用户轮 + 原话题），模型不能伪造。
         set_origin_provider(self._subtask_origin)
         from agent.tools.credential_catalog import ListAvailableCredentialsTool
@@ -681,6 +689,8 @@ class AppContext:
             self.recover_instance_owned_records()
         except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
             logger.warning("instance owned recovery failed", exc_info=True)
+        # FU2-D：上一次进程没送达的通知还在库里 —— 启动后继续投递（不靠用户先说话）。
+        self._prime_subtask_notification_delivery()
 
     # -- 实例归属的启动恢复（契约 C1）--------------------------------------
 
@@ -1539,6 +1549,14 @@ class AppContext:
         数据库连接的关闭由调用方决定（`create_app(..., close_db_on_shutdown=True)`
         时在 lifespan 的最后一步），保证不会出现「后台任务还在写，DB 已经关了」。
         """
+        # FU2-D：先取消待执行的「通知投递延迟重试」句柄（库里的待投递记录保留，
+        # 下次启动由 _prime_subtask_notification_delivery 继续投递）。
+        try:
+            self.cancel_notification_retry()
+        except Exception:  # noqa: BLE001 - 取消失败不阻止其它收尾
+            logging.getLogger(__name__).warning(
+                "cancel notification retry failed", exc_info=True
+            )
         # R9：先停审批后台执行器（取消在途执行任务；waiting 审批不取消，供重启恢复）。
         try:
             await self.approvals.aclose()
@@ -2555,6 +2573,17 @@ class AppContext:
             "goal_version": getattr(active, "bound_intent_version", None),
         }
 
+    @staticmethod
+    def _notification_request_id(item) -> str:
+        """通知投递的确定性请求身份（同一 task_id 只有一条通知轮）。
+
+        用途：TurnManager 的 request_id 幂等索引在本进程内可查重。若上一次 submit
+        已受理但 delivered_at 落库失败（或两步之间被打断），再次投递时先查这个 id，
+        已存在就不再重复提交，直接补记交付 —— 把「崩溃窗口内重复投递」压到仅剩
+        跨进程重启这一条（诚实边界见 subtask_notifications 模块 docstring）。
+        """
+        return SUBTASK_NOTIFICATION_REQUEST_ID_PREFIX + str((item or {}).get("task_id") or "")
+
     def _format_notice(self, task_id: str, record) -> str:
         """兼容名：通知正文统一由 subtask_notifications 渲染（固定文案来自 prompts）。"""
         from agent.tools.subtask_notifications import build_notification, format_completion_notice
@@ -2599,7 +2628,11 @@ class AppContext:
             return
 
     async def _pump_subtask_notifications(self) -> None:
-        """空闲时取一条通知作为自己的通知轮；不在 active 用户轮里打断当前交流。"""
+        """空闲时取一条未送达通知作为自己的通知轮；不在 active 用户轮里打断当前交流。
+
+        FU2-D 的交付判据：只有 turns.submit **成功受理**后才写 delivered_at（唯一事实）；
+        失败写 attempts / last_error 并保留待重试，安排一次延迟重试，绝不当成已交付。
+        """
         if self._notify_turn or self.turns.active is not None:
             return
         # 用户消息还在排队：先让用户轮执行，通知轮排在其后（不抢占）。
@@ -2612,19 +2645,125 @@ class AppContext:
 
         origin = item.get("origin") or {}
         topic = str(origin.get("topic_id") or "") or None
+        # 确定性 request_id：本进程内已受理过同一条通知就不再重复提交（只补记交付）。
+        request_id: str | None = None
         try:
-            turn = self.turns.submit(format_completion_notice(item), topic, notify=True)
-        except Exception:  # noqa: BLE001 - 提交失败放回队列，下一轮再试
+            parameters = inspect.signature(self.turns.submit).parameters
+        except (TypeError, ValueError):  # pragma: no cover - 内置/替身签名不可省
+            parameters = {}
+        if "request_id" in parameters:
+            request_id = self._notification_request_id(item)
+            lookup = getattr(self.turns, "lookup_request", None)
+            if callable(lookup):
+                try:
+                    existing = lookup(request_id)
+                except Exception:  # noqa: BLE001 - 查重失败按未受理处理（宁可重试一次）
+                    existing = None
+                if existing is not None:
+                    logging.getLogger(__name__).info(
+                        "subtask notification already accepted in this process: %s",
+                        request_id,
+                    )
+                    try:
+                        self.subtask_notifications.mark_delivered(item)
+                    except Exception:  # noqa: BLE001 - 补记失败仍要可观测
+                        logging.getLogger(__name__).warning(
+                            "subtask notification backfill delivered failed", exc_info=True
+                        )
+                    return
+        try:
+            if request_id is None:
+                turn = self.turns.submit(format_completion_notice(item), topic, notify=True)
+            else:
+                turn = self.turns.submit(
+                    format_completion_notice(item), topic, notify=True, request_id=request_id
+                )
+        except Exception as exc:  # noqa: BLE001 - 提交失败 ≠ 交付：保留待重试
             logging.getLogger(__name__).warning(
                 "subtask notification turn submit failed", exc_info=True
             )
-            self.subtask_notifications.requeue(item)
+            self.subtask_notifications.mark_failed(
+                item, f"{type(exc).__name__}: {str(exc)[:200]}"
+            )
+            self._schedule_subtask_notification_retry()
             return
+        # 被 TurnManager 接受 = 交付事实：立刻写 delivered_at（同一条永不重投）。
+        try:
+            self.subtask_notifications.mark_delivered(item)
+        except Exception:  # noqa: BLE001 - 已交给 TurnManager，落库失败必须可观测
+            logging.getLogger(__name__).warning(
+                "subtask notification mark delivered failed", exc_info=True
+            )
         # 通知轮携带结构化事实（身份 / 状态 / 结果引用 / origin），供轮末原话题续作。
         try:
             turn.subtask_notification = item
         except Exception:  # noqa: BLE001 - TurnContext 允许动态属性，失败不影响执行
             pass
+
+    def _schedule_subtask_notification_retry(self) -> None:
+        """投递失败后安排一次延迟重试（只重试，不伪造交付）。"""
+        if self._notify_retry_task is not None and not self._notify_retry_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._notify_retry_task = loop.create_task(self._subtask_notification_retry_later())
+
+    async def _subtask_notification_retry_later(self) -> None:
+        try:
+            await asyncio.sleep(max(0.0, float(self.subtask_notification_retry_delay)))
+            await self._pump_subtask_notifications()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 重试失败只记日志，记录仍在库里
+            logging.getLogger(__name__).warning(
+                "subtask notification retry failed", exc_info=True
+            )
+        finally:
+            self._notify_retry_task = None
+
+    def cancel_notification_retry(self) -> None:
+        """取消待执行的延迟重试（测试 / 关闭收尾用；不删库里的待投递记录）。"""
+        task = self._notify_retry_task
+        self._notify_retry_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def resume_subtask_notifications(self) -> int:
+        """重启恢复：把库里未送达的通知继续投递；返回恢复前的未送达条数。"""
+        try:
+            pending = self.subtask_notifications.pending_count()
+        except Exception:  # noqa: BLE001 - 读不到如实记日志，不假装没有待投递
+            logging.getLogger(__name__).warning(
+                "subtask notification pending count failed", exc_info=True
+            )
+            return 0
+        if pending:
+            logging.getLogger(__name__).info(
+                "subtask notifications: 恢复 %s 条未送达通知，继续投递", pending
+            )
+            await self._pump_subtask_notifications()
+        return pending
+
+    def _prime_subtask_notification_delivery(self) -> None:
+        """启动时加载未送达通知并继续投递（不依赖用户先说话）。"""
+        try:
+            pending = self.subtask_notifications.pending_count()
+        except Exception:  # noqa: BLE001 - 队列不可用要可见，但不阻止启动
+            logging.getLogger(__name__).warning(
+                "subtask notification prime failed", exc_info=True
+            )
+            return
+        if pending <= 0:
+            return
+        try:
+            asyncio.get_running_loop().create_task(self.resume_subtask_notifications())
+        except RuntimeError:
+            # 没有事件循环（同步构造 / 单测）：记录仍在库里，等第一次轮末/空闲再投递。
+            logging.getLogger(__name__).info(
+                "subtask notifications: %s 条未送达（当前无事件循环，稍后投递）", pending
+            )
 
     async def _execute_notify_turn(self, ctx) -> None:
         """System-driven turn: main agent reacts to a finished subagent task."""

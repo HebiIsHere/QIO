@@ -1189,6 +1189,11 @@ class AgentLoop:
                             self._warn(
                                 f"guard: {call.name} 累计失败 {failures} 次，用户选择停止本轮"
                             )
+                        await self._record_continue_choice(
+                            decision,
+                            approved=decision.decision == "approved",
+                            what="工具连续失败",
+                        )
                 elif verdict == GuardVerdict.WARN:
                     policy = "warn"
                     self._warn(
@@ -1209,6 +1214,29 @@ class AgentLoop:
         finally:
             if task is not None:
                 self._active_tool_tasks.discard(task)
+
+    async def _record_continue_choice(
+        self, decision, *, approved: bool, what: str
+    ) -> None:
+        """旧「继续/停止」审批是**决定**而不是可执行操作：只把用户选择写清。
+
+        Lead 裁决：不得为它写 executed/failed（那会把「用户点了继续」伪造成
+        「操作执行成功」）。历史 outcome 保持 approved/rejected，summary 说明
+        「用户选择继续/开始下一轮」或「用户选择停止本轮」。
+        """
+        recorder = getattr(self.approvals, "record_legacy_choice", None)
+        approval_id = getattr(decision, "approval_id", None)
+        if not callable(recorder) or not approval_id:
+            return
+        summary = (
+            "用户选择继续（" + what + "）：开始下一轮"
+            if approved
+            else "用户选择停止本轮（" + what + "）"
+        )
+        try:
+            recorder(str(approval_id), approved=bool(approved), summary=summary)
+        except Exception:  # noqa: BLE001 - 收尾失败不影响本轮继续/停止
+            logger.warning("failed to record continue approval choice", exc_info=True)
 
     def cancel(self) -> None:
         """取消本轮：在途工具调用 + 正在等待的模型请求。
@@ -1416,6 +1444,11 @@ class AgentLoop:
                             "token_budget": self.budget.token_budget,
                         },
                     )
+                await self._record_continue_choice(
+                    decision,
+                    approved=decision.decision == "approved",
+                    what="无进展暂停",
+                )
                 if decision.decision == "approved":
                     # 用户让继续：重新开始计数，否则下一次同样的重复立刻又触发。
                     self.progress.reset()
@@ -1473,6 +1506,11 @@ class AgentLoop:
                             "token_budget": self.budget.token_budget,
                         },
                     )
+                await self._record_continue_choice(
+                    decision,
+                    approved=decision.decision == "approved",
+                    what="预算耗尽",
+                )
                 if decision.decision == "approved":
                     self.budget.raise_limits(
                         self.continue_batch_iterations, self.continue_batch_tokens

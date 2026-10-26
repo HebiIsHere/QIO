@@ -71,6 +71,39 @@ class ApprovalConfirmRequired(ApprovalError):
     status_code = 409
 
 
+class LegacyApprovalUseRespond(ApprovalError):
+    """旧 request() 审批没有可恢复执行计划：只能用旧 /respond 处理。
+
+    不能把它当成 v2 waiting 项让 /decide 处理 —— 那会把「没有执行计划」的
+    历史记录伪装成一条可批准的授权（前端也会误判成生命周期审批）。
+    """
+
+    code = "legacy_approval_use_respond"
+    status_code = 409
+
+
+class LegacyApprovalNotExecutable(ApprovalError):
+    """已恢复/已中断的旧审批：那次操作没有执行，也不会再执行。
+
+    以前这里落到服务层的「没人等待 → False」再变成模糊 404，读起来像「找不到这条审批」；
+    实际事实是明确的：进程重启时那次工具调用已经没了，授权不可能再生效。
+    """
+
+    code = "legacy_approval_not_executable"
+    status_code = 409
+
+
+class OverridesUnsupported(ApprovalError):
+    """这条审批路径不支持 overrides（预算 / 授权时长等覆盖）。
+
+    契约 §4.2：不得静默丢弃用户的修改 —— 明确拒绝，让界面显示真实原因，
+    而不是表现成「已接受修改」。
+    """
+
+    code = "overrides_unsupported"
+    status_code = 400
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -152,13 +185,25 @@ class ApprovalStore:
 
     @staticmethod
     def state_of(row: sqlite3.Row | dict | None) -> str:
+        """权威状态：**只读 state 列**。
+
+        旧 request() 行（state 为空、operation 为空）没有 v2 状态。以前这里用
+        LEGACY_STATUS_TO_STATE 兜底成 "waiting"，于是恢复后的旧审批被读成一条
+        可 /decide 的 waiting 项 —— 前端据此误调新接口。现在如实返回空串，
+        旧行身份由 is_legacy / legacy 字段表达。
+        """
         if row is None:
             return ""
         data = dict(row)
-        state = str(data.get("state") or "").strip()
-        if state:
-            return state
-        return LEGACY_STATUS_TO_STATE.get(str(data.get("status") or ""), "waiting")
+        return str(data.get("state") or "").strip()
+
+    @staticmethod
+    def _has_operation(row: sqlite3.Row | dict | None) -> bool:
+        if row is None:
+            return False
+        data = dict(row)
+        operation = _loads(data.get("operation"), {})
+        return bool(isinstance(operation, dict) and operation.get("kind"))
 
     @classmethod
     def is_v2(cls, row: sqlite3.Row | dict | None) -> bool:
@@ -168,8 +213,14 @@ class ApprovalStore:
         data = dict(row)
         if not str(data.get("state") or "").strip():
             return False
-        operation = _loads(data.get("operation"), {})
-        return bool(isinstance(operation, dict) and operation.get("kind"))
+        return cls._has_operation(data)
+
+    @classmethod
+    def is_legacy(cls, row: sqlite3.Row | dict | None) -> bool:
+        """旧 request() 行：没有可恢复的 operation（迁移 53 之前写下的行）。"""
+        if row is None:
+            return False
+        return not cls._has_operation(row)
 
     def row_to_dict(self, row: sqlite3.Row | None) -> dict | None:
         if row is None:
@@ -182,7 +233,8 @@ class ApprovalStore:
         payload = _loads(data.get("payload"), {})
         fingerprint = _loads(data.get("fingerprint"), {})
         result = _loads(data.get("result"), {})
-        state = self.state_of(data)
+        legacy = not (isinstance(operation_raw, dict) and operation_raw.get("kind"))
+        stored_state = self.state_of(data)
         return {
             "approval_id": str(data.get("approval_id") or ""),
             "kind": str(data.get("kind") or operation.kind),
@@ -190,7 +242,13 @@ class ApprovalStore:
             "purpose": str(data.get("purpose") or operation.purpose or ""),
             "instruction_id": data.get("instruction_id"),
             "instruction_text": data.get("instruction_text"),
-            "state": state,
+            # 旧 request() 行没有 v2 状态：state 明确为 null，绝不由旧 status 伪造 waiting。
+            "state": None if legacy else stored_state,
+            "legacy": legacy,
+            # 历史/诊断事实（旧行可能被早期版本写过 v2 状态）：只读，不参与状态机。
+            "stored_state": stored_state or None,
+            # v2 生命周期接口不接受 overrides（只有部分旧路径端到端支持）。
+            "overrides_supported": False,
             "status": data.get("status"),
             "turn_id": data.get("turn_id"),
             "session_id": data.get("session_id"),
@@ -344,7 +402,8 @@ class ApprovalStore:
         """重启后仍未核对/未执行完的审批事实（不是待办）。"""
         rows = self.conn.execute(
             "SELECT * FROM pending_approvals"
-            " WHERE status = 'interrupted' OR state = 'interrupted_unverified'"
+            " WHERE status IN ('interrupted','interrupted_legacy')"
+            " OR state = 'interrupted_unverified'"
             " ORDER BY created_at DESC LIMIT ?",
             (max(1, int(limit)),),
         ).fetchall()
@@ -357,6 +416,23 @@ class ApprovalStore:
             item["outcome"] = "not_executed"
             out.append(item)
         return out
+
+    def write_history(
+        self,
+        approval_id: str,
+        *,
+        summary: str,
+        outcome: str,
+        detail: dict | None = None,
+    ) -> None:
+        """公开的「只写可读历史」入口（旧审批结果闭环用；不触碰状态机）。
+
+        旧 request() 路径没有 v2 state 可迁移，用户决定与真实执行结果是两条事实，
+        都要能刷新后回看（approval_history PK approval_id，后写的真实终态覆盖中间态）。
+        """
+        self._write_history(
+            approval_id, summary=summary, outcome=outcome, detail=detail
+        )
 
     def audit_trail(self, approval_id: str, *, limit: int = 100) -> list[dict]:
         rows = self.conn.execute(
@@ -517,6 +593,18 @@ class ApprovalStore:
             )
         return required
 
+    def _ensure_v2(self, row: Any, approval_id: str) -> None:
+        """v2 生命周期接口（决定/确认）不接受旧 request() 行：明确指向 /respond。
+
+        旧行没有可恢复的执行计划；把它当 waiting 处理只会得到一个 CAS 冲突，
+        读起来像「并发/已处理」，而不是「这条属于旧路径，请用 respond」。
+        """
+        if not self.is_v2(row):
+            raise LegacyApprovalUseRespond(
+                "这条审批来自旧版路径（没有可恢复的执行计划），不能用新接口处理；"
+                "请用 /api/approvals/" + str(approval_id) + "/respond 回答。"
+            )
+
     def decide(
         self,
         approval_id: str,
@@ -530,6 +618,7 @@ class ApprovalStore:
         row = self.get_raw(approval_id)
         if row is None:
             raise ApprovalNotFound("没有找到这条审批（可能已被处理或已过期）")
+        self._ensure_v2(row, approval_id)
         state = self.state_of(row)
         normalized = str(decision or "").strip().lower()
         if normalized in ("approve", "approved"):
@@ -616,6 +705,7 @@ class ApprovalStore:
         row = self.get_raw(approval_id)
         if row is None:
             raise ApprovalNotFound("没有找到这条审批（可能已被处理或已过期）")
+        self._ensure_v2(row, approval_id)
         state = self.state_of(row)
         if state != "waiting":
             raise ApprovalConflict("这条审批当前状态是「" + state + "」，不能继续确认")
@@ -936,19 +1026,26 @@ class ApprovalStore:
         }
         rows = self.conn.execute(
             "SELECT * FROM pending_approvals WHERE"
-            " status IN ('pending','interrupted') OR state IN ('waiting','approved','executing')"
+            " status IN ('pending','interrupted','interrupted_legacy')"
+            " OR state IN ('waiting','approved','executing')"
         ).fetchall()
         now_dt = self.now()
         for row in rows:
             approval_id = str(row["approval_id"])
             if not self.is_v2(row):
-                # 旧 request() 的内存等待随进程消失：如实记录「那次没有执行」。
-                self.conn.execute(
-                    "UPDATE pending_approvals SET status = 'interrupted', state = ?,"
-                    " resolved_at = ? WHERE approval_id = ? AND status = 'pending'",
-                    ("interrupted_unverified", _iso(now_dt), approval_id),
-                )
-                self._audit(approval_id, "legacy_interrupted", {"reason": "process_restarted"})
+                # 旧 request() 的内存等待随进程消失：用**独立事实**记录「那次没有执行」。
+                # 不写 state 列 —— 旧行没有 v2 状态，写成 interrupted_unverified 会把
+                # 「旧路径」伪装成生命周期记录（前端因此误判）。
+                if str(row["status"] or "") == "pending":
+                    self.conn.execute(
+                        "UPDATE pending_approvals SET status = 'interrupted_legacy',"
+                        " state = NULL, resolved_at = ?"
+                        " WHERE approval_id = ? AND status = 'pending'",
+                        (_iso(now_dt), approval_id),
+                    )
+                    self._audit(
+                        approval_id, "legacy_interrupted", {"reason": "process_restarted"}
+                    )
                 report["legacy_interrupted"].append(approval_id)
                 continue
             state = self.state_of(row)
