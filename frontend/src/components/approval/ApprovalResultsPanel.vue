@@ -257,7 +257,7 @@ onMounted(() => {
   gap: 8px;
   padding: 8px 10px;
   border: 1px solid var(--danger);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--danger-soft);
 }
 .ar-alert-text {
@@ -278,7 +278,7 @@ onMounted(() => {
   min-height: 28px;
   padding: 3px 10px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent;
   color: var(--text-primary);
   font-family: var(--sans);
@@ -300,7 +300,7 @@ onMounted(() => {
 .ar-legacy {
   padding: 9px 11px;
   border: 1px dashed var(--border-strong);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-inset);
 }
 .ar-legacy-title {
@@ -349,13 +349,14 @@ onMounted(() => {
   min-width: 0;
   padding: 9px 11px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-inset);
 }
 .ar-head {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
+  justify-content: center;
   gap: 6px 10px;
 }
 .ar-state {
@@ -363,7 +364,7 @@ onMounted(() => {
   font-size: 11.5px;
   letter-spacing: 0.02em;
   padding: 1px 7px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
 }
@@ -397,6 +398,7 @@ onMounted(() => {
   font-size: 13px;
   line-height: 1.55;
   color: var(--text-strong);
+  text-align: center;
   overflow-wrap: anywhere;
 }
 .ar-summary {
@@ -404,6 +406,7 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);
+  text-align: center;
   overflow-wrap: anywhere;
 }
 .ar-waiting {
@@ -411,6 +414,7 @@ onMounted(() => {
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--text-secondary);
+  text-align: center;
 }
 .ar-items {
   margin-top: 8px;

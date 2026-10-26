@@ -236,7 +236,7 @@ function syncBudget() {
   margin: 0 0 10px;
   padding: 10px 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-inset);
   font-size: 12.5px;
   line-height: 1.6;
@@ -268,7 +268,7 @@ function syncBudget() {
   padding: 10px 12px;
   border: 1px solid var(--accent-soft);
   background: var(--accent-softer);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .qio-explanation .tag {
   display: flex;
@@ -334,7 +334,7 @@ function syncBudget() {
   padding: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-inset);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .af-ops-title {
   font-size: 12.5px;
@@ -401,7 +401,7 @@ function syncBudget() {
      不在审批正文（父层唯一滚动区）里再切出第二个小滚动窗口。 */
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-secondary);
@@ -451,7 +451,7 @@ function syncBudget() {
   /* content 策略：同上 —— raw params 默认折叠，展开后靠软换行 + 父层滚动 */
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-secondary);
@@ -463,7 +463,7 @@ function syncBudget() {
   padding: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-inset);
-  border-radius: 8px;
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .cap-title {
   font-size: 12.5px;
@@ -484,7 +484,7 @@ function syncBudget() {
   margin-top: 10px;
   padding: 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .budget-title {
   font-size: 12px;

@@ -209,7 +209,7 @@ function onKeydown(event: KeyboardEvent): void {
 }
 button.uf-notice__body {
   cursor: pointer;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 button.uf-notice__body:hover .uf-notice__line {
   text-decoration: underline;

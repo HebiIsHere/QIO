@@ -907,7 +907,8 @@ function retryKnowledgeDetail() {
 .ua-switch-line {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .ua-count {
@@ -954,6 +955,7 @@ function retryKnowledgeDetail() {
 .ua-queue {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
   margin-top: 7px;
   padding-bottom: 2px;
@@ -967,7 +969,7 @@ function retryKnowledgeDetail() {
   max-width: 100%;
   padding: 3px 9px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -1047,7 +1049,7 @@ function retryKnowledgeDetail() {
 .ua-refresh-btn {
   margin-left: 8px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent;
   color: var(--text-secondary);
   font-size: 11px;
@@ -1115,7 +1117,7 @@ function retryKnowledgeDetail() {
   place-content: center;
   flex: none;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-inset);
   cursor: pointer;
   transition:

@@ -265,7 +265,7 @@ defineExpose({ openApprovals, retryAutoOpen });
   max-width: min(560px, calc(100vw - 32px));
   margin: 0;
   padding: 6px 14px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   color: var(--text-secondary);
