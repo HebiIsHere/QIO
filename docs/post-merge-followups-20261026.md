@@ -221,3 +221,39 @@
 - 现象：用户打开 `#/conversation` 时页面空、顶部只剩 QIO 字标。根因不是这次的权限模式改动，而是路由：对话页真实 path 是 `/`，`/conversation` 没有匹配路由 → App 没有视图、WindowChrome 的 `hasGlobalBar` 为 false，走「其他页面」分支（点 + QIO 字标），图标与全局栏自然都不在。
 - 修复：`router.ts` 增加 `/conversation` → `/` 别名，并增加未知路径 catch-all 回 `/`（单窗口桌面应用里没有可停留的 404 空白页）；新增 `src/__tests__/router-aliases.test.ts` 3 例（旧深链、未知深链、interactive/settings 不被吃掉）。
 - 实测：`#/conversation` 与 `/this-route-does-not-exist` 都重定向到 `#/`，全局栏恢复（图标 / PERSONAL AGENT / 受限模式 / 设置 / 话题栏）；`#/interactive`、`#/settings` 正常；Playwright 截图 `_fixpm2/evidence/FU4/ui/05-conversation-redirected.png`。
+
+## 10. FU5：空态居中、模式切换直连、任务栏圆角、互动输入列居中（2026-10-26）
+
+用户要求：直接修、不做全量测试、不触发 CI；第 5 条（透明高斯模糊对话栏）先回答可行性。
+
+### 10.1 空对话引导居中（对话页 + 互动对话栏）
+- 根因：`MessageStream` 的 `.stream` 被当成 flex 行容器，子节点虚拟列表 `spacer{width:100%}` 与内容宽度的 `.empty` 并排，`.empty` 被推到右边（1440 实测 greet 中心比消息区中心偏 +560px 左右）。
+- 修复：`.stream` 明确 `display:block; position:relative`；`.empty` 绝对铺满消息可视区、flex 居中、`pointer-events:none`。空态不参与滚动内容流，不影响有消息时的虚拟列表与滚动；互动页复用同一组件一起修好。
+- 实测：`.empty` 覆盖 `.stream` 全区域，greet 中心相对消息区中心偏移 **0.0px**；截图 `01-conversation-empty-1440.png`。
+
+### 10.2 模式切换：点击直接切换（去掉菜单）
+- `ConversationModeSwitch` 重写：按钮显示当前模式，点击直接跳另一模式（`/` ⇄ `/interactive`），不再渲染 `role=menu`/menuitem，不保留 Esc/外部点击收菜单；`aria-label/title` 为「切换到互动模式 / 切换到对话模式」；依旧只导航，不碰任何业务状态。
+- 实测：点击后 URL 直接变为 `#/interactive`、`[role=menu]` 数量 0；p1a 测试按直连语义重写。
+
+### 10.3 收起任务栏：按钮与栏圆角完全对齐
+- 收起栏 `.collapsed-rail` 去掉 `padding-top` 与内层 36px 小按钮：`.rail-btn` 铺满整栏（`width:100%; flex:1`）、`border-radius: inherit`、无内层边框；hover 用整栏底色；未读徽标改为栏内侧右上角。
+- 实测 480：栏 48×520 圆角 14px，按钮 46×518 圆角 14px（1px 为外框），截图 `03-rail-480.png`。
+
+### 10.4 互动页：输入框居中、模式切换靠左
+- `.ic-composer-row` 改为三列 grid：左/右 1fr、中间 860px；输入列固定中间列 → 面板内真正居中；模式切换放左列右对齐（不占输入宽度）；`.ic-composer` 去 860 上限铺满；≤700 窄窗切到输入上方左对齐；消息列仍 860。
+- 实测 1440：row grid `48px 860px 48px`，输入列中心相对面板中心偏移 **0.0px**，switch 在输入左侧 gap 12px；截图 `02-interactive-composer-1440.png`。
+
+### 10.5 第 5 条（透明 + 高斯模糊的互动对话栏）：结论与做法（本轮未实现）
+- **能做到**，且不需要改动消息数据/滚动逻辑；推荐纯 CSS（Chromium/WebView2 支持完整）：
+  1. 对话面板背景改为半透明 + `backdrop-filter: blur(10px) saturate(1.05)`，让板面在栏后模糊透出；
+  2. 有框消息保留自己的不透明背景（`backdrop-filter:none`），视觉上"实"；
+  3. 无框文字块用 `position:relative` 包裹，`::before` 绝对定位铺在文字下方（略外扩 10–14px），`backdrop-filter: blur(24px)`，再用 `mask-image: radial-gradient/linear-gradient` 做羽化边缘 → 文字下模糊更强，边界是渐变过渡、不会出现硬线；
+  4. "随文字滚动"由布局天然保证：模糊层挂在文字块上、位于滚动内容内，滚动时一起移动，无需 JS 同步；
+  5. 性能：模糊层只挂在可见消息块上（虚拟列表已限制数量）；若滚动掉帧，退化为"面板一层 blur + 文字块只加半透明底"，或把强模糊层改为 `will-change` 独立合成层并减少羽化范围。
+- **风险/边界**：`backdrop-filter` 在嵌套（父级也有 blur）时合成结果依浏览器而异；Safari/Firefox 对 mask+backdrop-filter 组合支持较弱（QIO 桌面是 WebView2，浏览器预览 Edge/Chrome 正常）；大面积实时模糊可能增加 GPU 负担。
+- 需要你确认视觉强度（面板 blur 半径、文字块 blur 半径、羽化范围）后我再实现，并用截图做对比。
+
+### 10.6 验证与边界
+- 定向：FU5 布局守卫 8 例（红→绿）、模式切换直连用例、相关 9 文件 77 例 + pm-acceptance/design-guards 33 例通过；`vue-tsc` 0；`vite build` 成功。
+- 实机（Playwright + Edge，5199/8734）：见 §10.1–10.4 的几何数值与截图；`consoleErrors=0`。
+- 边界：jsdom 无布局引擎，像素结论以实机截图/几何测量为准；第 5 条未实现；本轮按要求未跑全量、未触发 CI。

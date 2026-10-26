@@ -5947,3 +5947,14 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **边界**：本轮不做全量/CI；未做真机桌面壳复验；搜索结果未在真实有匹配卡片的板面上做视觉复核（无卡片数据时按设计不渲染说明）；脚本 `scripts/i2v2-verify/playwright_flows.mjs` 已同步改为操作内联输入框。
 
 - **补充修复（用户反馈：全局栏消失，只剩 QIO）**：用户打开的是旧深链/手输深链 `#/conversation`，而对话页真实 path 是 `/` —— 无匹配路由导致页面不渲染、WindowChrome 走「非聊天页」分支只剩 QIO 字标（图标 / PERSONAL AGENT / 权限模式 / 设置入口全部没有）。已加 `/conversation` → `/` 别名与未知路径 catch-all 回对话页；Playwright 实测 `#/conversation`、任意未知哈希都回到完整全局栏（图标 + PERSONAL AGENT + 权限模式文字 + 设置），`#/interactive`、`#/settings` 不受影响（截图 `05-conversation-redirected.png`）。
+
+### P94 — FU5：空态居中、模式切换直连、收起任务栏圆角对齐、互动输入列居中（2026-10-26）
+
+- **Status：** completed（定向测试 + 真实浏览器截图/几何复核；按用户要求**不做全量测试、不触发 CI**；未合入 main、未打包、未发布、未改版本号）
+- **空状态居中**：`MessageStream` 的 `.stream` 明确 `display:block; position:relative`，空状态 `.empty` 改为绝对铺满消息可视区并水平/垂直居中（`pointer-events:none`），不再被虚拟列表 spacer 的 `width:100%` 推到右侧；对话页与互动页复用同一组件一起修正；三种空态文案（读取中/读取失败/真空）不变。
+- **模式切换直连**：`ConversationModeSwitch` 去掉弹出菜单，点击按钮直接 `router.push` 到另一模式；按钮显示当前模式、`aria-label/title` 说明「切换到…」；保留只导航语义（不碰草稿/审批/附件/任务），无菜单/Esc/外部点击旧逻辑。
+- **收起任务栏圆角对齐**：`ConversationView` 的 `.collapsed-rail` 去掉内边距与内层小按钮，`.rail-btn` 铺满整栏、`border-radius: inherit`、无内层边框；悬停用整栏底色；未读徽标移到栏内侧右上角（`overflow:hidden` 下不再被裁）。
+- **互动输入列居中**：`.ic-composer-row` 改三列 grid（`minmax(0,1fr) minmax(0,860px) minmax(0,1fr)`），输入列固定 860 并真正居中；模式切换在第一列 `justify-self:end`、紧贴输入列左侧（不占输入宽度）；`.ic-composer` 去 860 上限铺满面板；≤700 窄窗切到输入上方左对齐；消息列 `.ic-stream` 仍 860。
+- **第 5 条（透明高斯模糊对话栏）本轮不实现**：可行性已确认（见交付文档 §10.5 的方案与风险），按用户要求先只给结论与做法。
+- **验证**：新增 FU5 布局守卫测试 8 例（红 6 failed → 绿 8 passed）；模式切换测试改为直连语义；相关定向 9 文件 77 例 + pm-acceptance/design-guards/harness 33 例全部通过；`vue-tsc --noEmit` 0；`vite build` 成功；Playwright(Edge) 实机：空态相对消息区水平偏移 0px、点按钮直接 `#/interactive` 且无 menu、互动输入列相对面板中心偏移 0px、switch 在输入左侧 gap 12px、480 收起栏按钮与栏同圆角(14px)且无横向溢出、consoleErrors=0（截图/JSON：`_fixpm2/evidence/FU5/ui/`）。
+- **边界**：jsdom 无布局引擎，布局用源码守卫 + 组件结构断言，像素效果以实机截图为准；第 5 条未实现；本轮无全量/CI。
