@@ -31,6 +31,24 @@ describe("tokens.css", () => {
  * 这些断言防的是「又慢慢退回硬编码」：三层时长、曲线集、位移令牌、晶体玻璃
  * 必须成体系地存在，并且旧名（--dur-*）只能是别名，不能重新变成独立数值。
  */
+/**
+ * 本轮「提示/通知/弹窗统一改造」：唯一圆角 token。
+ *
+ * 不写一堆快照，只守两条底线：
+ * 1) 14px 这个值在 tokens.css 里只定义一次（暗/亮主题共用同一个圆角，不各写一份）；
+ * 2) 本次涉及的表面用 var(--qio-ui-radius)，不再散落自己的近似值。
+ */
+describe("tokens.css 本轮统一圆角", () => {
+  it("--qio-ui-radius 唯一定义且为 14px", () => {
+    expect(css).toMatch(/--qio-ui-radius:\s*14px/);
+    expect(css.match(/--qio-ui-radius:/g)).toHaveLength(1);
+  });
+
+  it("用途说明浮层层级高于窗口层（否则说明会被窗口层盖住）", () => {
+    expect(css).toMatch(/--qio-z-tip:\s*320/);
+  });
+});
+
 describe("tokens.css v3 动效与材质", () => {
   const tiers = [
     "--mo-1-press", "--mo-1-state", "--mo-1-fast", "--mo-1-exit", "--mo-1-menu", "--mo-1-wide",
