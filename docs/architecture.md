@@ -298,7 +298,7 @@ Planet 与 List/Search 职责并列：Planet 负责浏览、发现、重新遇�
 | Tools | `agent/tools/registry.py`、`agent/tools/builtin.py`、各类内置工具 |
 | Subagents | `agent/tools/subagent_tool.py`、`agent/tools/task_manager.py` |
 | Credentials | `agent/credentials/` |
-| Approval | `agent/tools/approval.py` |
+| Approval | `agent/tools/approval.py`（旧 request 审批输出 legacy 标识；`/decide` 拒绝 legacy，`/respond` 服务旧路径；执行结果经 `agent/tools/approval_results.py` 统一收口） |
 | Sandbox | `agent/tools/sandbox.py` |
 | ExecutionPolicy | `agent/tools/policy.py` |
 
@@ -341,7 +341,7 @@ Planet 与 List/Search 职责并列：Planet 负责浏览、发现、重新遇�
 | 取消 | 按 `turn_id` 定位；`/api/turns/cancel` 取消当前活跃或排队的 turn，`/api/turns/{turn_id}/cancel` 指定目标 |
 | 工具事件归属 | 每次执行带 turn / 调用标识，监听方按标识过滤，不跨 turn 串线 |
 | 子 agent 并发 | 并行运行，受 `TaskManager` 信号量限制（上限见 `agent/tools/task_manager.py`） |
-| 子 agent 完成后的通知 | 作为独立 notify turn 投递，使用 `subagent:<task_id>` 作为 turn 标识；不写用户消息、不递归触发 |
+| 子 agent 完成后的通知 | 作为独立 notify turn 投递，使用 `subagent:<task_id>` 作为 turn 标识；不写用户消息、不递归触发。通知先持久化（只追加迁移 71/72 的 `subtask_notifications`：task_id 主键、delivered_at/attempts/last_error/origin），入队只做去重、不算交付；只有 notify turn 被 TurnManager 接受后才写 delivered_at，失败保留可重试、重启继续投递、同一 task 至多一次（跨崩溃窗口为 at-least-once） |
 | 取消与通知 | 取消作用于确定目标；不会因为一个 turn 结束就切断另一个 turn 的状态 |
 
 **不要把「POST 后后台执行」理解成支持完全安全的多 turn 并发。** 当前是「可靠的单飞主 Agent + 明确排队」，而不是多用户 Agent Server；多用户并发属明确不做的范围（见 `status.md`）。
@@ -521,7 +521,7 @@ npm test
 | `TOOL_CREATE_STATUS` | `tools/dev_tools.py`、`tools/lifecycle.py` | 工具创建卡（按 `group_id`） | 是 | 同一张卡的创建阶段推进 |
 | `KNOWLEDGE_CANDIDATE` | `services/memory_lifecycle.py` + turn 收尾 | 对话内确认卡 | 是（回答完成后） | 高影响知识的保存 / 修改 / 忽略 |
 | `APPROVAL_REQUIRED` | `tools/approval.py` | `stores/approvals.ts` | 是 | 需要用户决定的操作 |
-| `APPROVAL_RESULT` | `tools/approval.py` | `stores/approvals.ts` | 是（卡片状态） | 授权的结局（单次使用） |
+| `APPROVAL_RESULT` | `tools/approval.py`、`tools/approval_results.py` | `stores/approvals.ts` | 是（卡片状态） | 授权的结局（单次使用）；旧 request 路径用户决定 phase=approved/rejected，工具真实执行结束后补 phase=executed/failed 并写 `approval_history`（PK approval_id），「已批准」不等于「已执行成功」 |
 | `CAPABILITY` | `services/app.py`（模式变化时） | `stores/events.ts` | 否（正常不显示） | 适配档位（native / text / unsupported） |
 | `FALLBACK` | `services/app.py`（进入兼容文本模式那一次） | 一次性轻提示 | 是（仅降级时） | 能力降级说明，不重复、不阻塞 |
 | `CREDENTIAL_STATUS` | `api/server.py`（凭据增删改）+ `turn_orchestrator` | `stores/events.ts` | 仅当阻止功能 | 凭据可用性（不含内部标识） |
