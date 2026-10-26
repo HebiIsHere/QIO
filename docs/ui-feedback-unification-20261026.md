@@ -3,7 +3,7 @@
 - 任务分支：`fix/ui-feedback-unification-20261026`
 - 基线：`fix/post-merge-followups-20261026` @ `e5c802533b4587fce5eb14a5e1d665cbf27f5023`（开工时核对远端，未变化）
 - 集成 worktree：`D:\\qio-dev\\quf-lead`；并行开发分支：`wt/uf-20261026-a-foundation` / `-b-feedback` / `-c-chat` / `-d-pages`（各自独立 worktree，已合入本分支）
-- 功能代码 SHA：`c941e2b0`（本文档提交之后还会有 docs-only 提交；回归/CI 以该功能 SHA 及最终 HEAD 记录为准）
+- 功能代码 SHA：`12700957`（在 `c941e2b0` 之后只做了互动锚点/对话展开按钮的原生 title → 统一用途说明替换；完整 CI 在最终 HEAD 上运行）
 - 状态：**未合并 main、未发布、未打包正式版本**
 
 ## 1. 范围与边界
@@ -83,13 +83,13 @@
 | 基线类型检查 | `npx vue-tsc --noEmit` @ e5c80253 | 通过（0 error） |
 | 基线定向抽样 | approval/ui 测试 | 10 文件 79 用例通过 |
 | 集成类型检查 | `npx vue-tsc --noEmit` @ 最终功能 SHA | 通过（0 error） |
-| 全量前端轮（功能 SHA `bb3b7896`） | `npx vitest run` | 477 文件：470 通过 / 7 失败；失败项中 6 个为旧断言/测试隔离问题，已修并定向通过；1 个 `i2v2-a-intent-flow`「页面卸载后不再继续轮询」在当前基线同样可复现（并行批跑时 7≠2，单跑通过），属基线既有 flaky，未改产品逻辑 |
+| 全量前端轮（功能 SHA `bb3b7896`；后续仅测试/UI 小改，最终 CI 覆盖最终 HEAD） | `npx vitest run` | 477 文件：470 通过 / 7 失败；失败项中 6 个为旧断言/测试隔离问题，已修并定向通过；1 个 `i2v2-a-intent-flow`「页面卸载后不再继续轮询」在当前基线同样可复现（并行批跑时 7≠2，单跑通过），属基线既有 flaky，未改产品逻辑 |
 | 修复后定向复跑 | appBoot/approvalUiSingleEntry/router-aliases/PlanetDock/OnboardingGating/eventBufferOverflow | 6 文件 22 用例全部通过 |
 | 全量后端轮 | `cd backend; uv run --frozen pytest` | 结果见最终报告（后端未改） |
 | 真实应用场景脚本 | `scenes-live / scenes-feedback / scenes-extra / look` | 全部检查 PASS（通知中心/圆角/暂停/撤下恢复、审批门控、设置页/星球延后、一次性提醒、全局多异常、更新失败、长名窄窗） |
 | ui-catalog 几何 | `node ui-catalog/uf-shots.mjs` | 71 项检查、0 失败；23 张截图 |
 | 场景展示页几何 | `node visual/shots-feedback.mjs` | 整批恢复标题中心 -0.01px、14px、320/480/1024 无横向溢出；启动状态检查全部通过 |
-| 全量 CI | 本分支 push 触发 GitHub Actions（唯一一次） | 结果与 run ID 见最终交付消息；CI 基础设施/排队失败与代码失败分开记录 |
+| 全量 CI | 本分支 push 触发 GitHub Actions；首个 push 的运行在最终视觉审计修复（互动锚点/展开按钮原生 title）后由新提交取代，未作为完成结果；**唯一一次完成的完整 CI 在最终 HEAD 上运行** | 结果与 run ID 见最终交付消息；CI 基础设施/排队失败与代码失败分开记录 |
 
 ## 6. 未验证 / 环境限制
 
