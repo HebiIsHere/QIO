@@ -14,15 +14,11 @@ import { resetBackend } from "../services/backend";
 import { invalidateRestore, restoreRuntimeState } from "./restore";
 
 /**
- * 用户此刻是否正在输入（输入框 / 文本域 / 可编辑区域）。
- * 后台任务请求确认时用它决定「立即弹出」还是「亮出入口、等用户主动打开」。
+ * 审批自动弹出的门控**不在这里判断**：统一的自动弹出规则已收敛到
+ * stores/unifiedApprovals 的 maybeAutoOpen() + stores/feedbackGate（输入法组合输入、
+ * 失焦延迟、中央弹窗、记忆星球覆盖层、设置/调试页）。
+ * 事件层只负责把申请放进队列，避免两处门控各说一套。
  */
-function isUserEditing(): boolean {
-  if (typeof document === "undefined") return false;
-  const ae = document.activeElement as HTMLElement | null;
-  if (!ae) return false;
-  return ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable === true;
-}
 
 /** 事件里的可选数值字段（缺失 / 非数字 → null，表示「没有版本信息」）。 */
 function numberOrNull(value: unknown): number | null {
@@ -741,7 +737,8 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const approval = (d.approval ?? d) as Record<string, unknown>;
           // 与 RESYNC 恢复走同一个入口：同一个审批，实时收到和断线恢复必须一致
-          this.handleApprovalRequired(approval, { autoOpen: !isUserEditing() });
+          // 实时到达的申请按统一门控自动弹出（输入中/覆盖层/弹窗由 unifiedApprovals 判定）
+          this.handleApprovalRequired(approval, { autoOpen: true });
           break;
         }
       }
@@ -815,8 +812,8 @@ export const useEventStore = defineStore("events", {
           ? approvalMetaFromPending(toPendingApproval(approval))
           : undefined;
       useApprovalsStore().enqueue(id, kind || "unknown", (approval.payload ?? {}) as Record<string, unknown>, {
-        // 用户正在输入（含凭据表单）时不抢焦点；恢复时不抢焦点
-        autoOpen: opts.autoOpen ?? !isUserEditing(),
+        // 恢复路径显式传 autoOpen:false（不抢焦点）；实时到达交统一门控决定
+        autoOpen: opts.autoOpen ?? true,
         // 绑定信息随待办一起保存：应答时原样回传（服务端另有自己的校验）
         turnId: (approval.turn_id as string | null) ?? null,
         sessionId: (approval.session_id as string | null) ?? null,
