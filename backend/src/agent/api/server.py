@@ -3886,6 +3886,16 @@ def create_app(
     @app.post("/api/approvals/{approval_id}/decide")
     async def decide_approval(approval_id: str, body: dict) -> dict:
         decision = str(body.get("decision") or "")
+        # 契约 §4.2：/decide 端到端不接受 overrides（预算/授权覆盖只属于部分旧路径）。
+        # 带着 overrides 调它必须显式拒绝，不能静默忽略让界面表现成「已接受修改」。
+        if body.get("overrides"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "overrides_unsupported",
+                    "message": "这条审批不支持 overrides（预算/授权覆盖）：修改没有生效。",
+                },
+            )
         expected_revision = body.get("expected_revision")
         scope = body.get("scope")
         try:
