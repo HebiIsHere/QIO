@@ -23,6 +23,7 @@ describe("图标名集合", () => {
       "edit", "trash", "archive", "pin", "locate", "external", "more",
       "search", "refresh", "download", "eye", "link", "unlink",
       "collapse", "expand", "settings", "plus", "minus",
+      "window-minimize", "window-maximize", "window-restore", "window-close",
     ];
     for (const name of required) expect(ICON_NAMES, name).toContain(name);
   });

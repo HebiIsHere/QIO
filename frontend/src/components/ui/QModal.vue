@@ -15,13 +15,16 @@
  * - 重复的关闭请求只发一次 close，避免父级重复提交；
  * - 14px 圆角与 .qio-modal-actions 按钮组（等宽/同高/窄窗纵排）来自 base.css。
  *
- * 仲裁：中央弹窗同一时刻只能有一个。B 的 stores/modalArbiter.ts 就绪后，
- * 在本组件 open 时调用 open({ id: modalId, kind: "other", dismissible }) 并把
- * 返回值作为是否渲染的第二条件；close/unmount 时 close(modalId)。
- * 目前先留 TODO（A 分支上不重复实现仲裁 store），Lead 合并 B 后接上。
+ * 仲裁（已接入 B 的 stores/modalArbiter.ts）：
+ * - open 时先 open({ id: modalId, kind: modalKind, dismissible, priority })；
+ *   返回 false（被更高/同优先级弹窗挡住）时**不渲染**，等挡路的弹窗关闭后再重试；
+ * - 被 suspendAll(by) 挂起时用 v-show 隐藏而不是卸载（草稿与内部状态保留）；
+ * - 关闭 / 卸载时 close(modalId)；没有 pinia 的环境（画廊/单测）跳过仲裁，只做纯视觉。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { getActivePinia } from "pinia";
 import QIconButton from "./QIconButton.vue";
+import { useModalArbiterStore, type ModalKind } from "../../stores/modalArbiter";
 
 const props = withDefaults(
   defineProps<{
@@ -38,6 +41,10 @@ const props = withDefaults(
     width?: string;
     /** 提交中：挡住关闭动作，防止重复提交/关闭中的状态错乱 */
     busy?: boolean;
+    /** 仲裁类型（默认 other）：决定与审批/影响确认等中央弹窗的优先级关系 */
+    modalKind?: ModalKind;
+    /** 显式仲裁优先级（不传按 modalKind 的默认值） */
+    priority?: number;
   }>(),
   {
     kicker: "",
@@ -45,10 +52,63 @@ const props = withDefaults(
     tone: "normal",
     width: "480px",
     busy: false,
+    modalKind: "other",
+    priority: undefined,
   },
 );
 
 const emit = defineEmits<{ close: [] }>();
+
+/** 仲裁器只在装了 pinia 的运行环境存在；画廊/单测没有 pinia 时退化为纯视觉。 */
+const arbiter = getActivePinia() ? useModalArbiterStore() : null;
+const arbiterRegistered = ref(false);
+const arbiterBlocked = ref(false);
+const arbiterSuspended = computed(() => (arbiter ? arbiter.hiddenBy(props.modalId) !== null : false));
+/** 已经被一个更高优先级弹窗盖住：只隐藏、不卸载（草稿与内部状态保留） */
+const hiddenByHigher = computed(() =>
+  arbiter && arbiterRegistered.value ? arbiter.active?.id !== props.modalId : false,
+);
+/** 真正可以显示：父级要求打开 + 仲裁放行 + 没有被更高层挂起/盖住 */
+const shown = computed(
+  () => props.open && !arbiterBlocked.value && !arbiterSuspended.value && !hiddenByHigher.value,
+);
+
+function descriptor() {
+  return { id: props.modalId, kind: props.modalKind, dismissible: props.dismissible, priority: props.priority };
+}
+
+function tryRegister(): void {
+  if (!props.open || arbiterRegistered.value) return;
+  if (!arbiter) {
+    arbiterRegistered.value = true;
+    return;
+  }
+  // 被挡住时不得显示；不强行抢层，等挡路者关闭后再重试
+  const allowed = arbiter.open(descriptor());
+  arbiterRegistered.value = allowed;
+  arbiterBlocked.value = !allowed;
+}
+
+function unregister(): void {
+  const wasRegistered = arbiterRegistered.value;
+  arbiterRegistered.value = false;
+  arbiterBlocked.value = false;
+  if (wasRegistered) arbiter?.close(props.modalId);
+}
+
+watch(
+  () => [props.modalId, props.modalKind, props.priority, props.dismissible] as const,
+  () => {
+    if (props.open && arbiterRegistered.value && arbiter) arbiter.open(descriptor());
+  },
+);
+
+watch(
+  () => (arbiter ? arbiter.active?.id ?? null : null),
+  () => {
+    if (props.open && !arbiterRegistered.value) tryRegister();
+  },
+);
 
 const panelRef = ref<HTMLElement | null>(null);
 const titleId = computed(() => `${props.modalId}-title`);
@@ -61,7 +121,7 @@ let closeEmitted = false;
 const panelStyle = computed<Record<string, string>>(() => ({ "--qio-modal-width": props.width }));
 
 function requestClose(): void {
-  if (!props.open || !canDismiss.value || closeEmitted) return;
+  if (!shown.value || !canDismiss.value || closeEmitted) return;
   // 同一次打开只发一次：Esc + 遮罩点击 + 关闭按钮不会让父级收三次
   closeEmitted = true;
   emit("close");
@@ -112,7 +172,7 @@ function restoreFocus(): void {
 }
 
 function onKeydown(event: KeyboardEvent): void {
-  if (!props.open) return;
+  if (!shown.value) return;
   if (event.key === "Escape") {
     if (canDismiss.value) {
       event.preventDefault();
@@ -148,14 +208,13 @@ function onKeydown(event: KeyboardEvent): void {
 
 watch(
   () => props.open,
-  async (open) => {
+  (open) => {
     if (open) {
       closeEmitted = false;
       restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-      window.addEventListener("keydown", onKeydown, true);
-      await nextTick();
-      focusInitial();
+      tryRegister();
     } else {
+      unregister();
       window.removeEventListener("keydown", onKeydown, true);
       restoreFocus();
     }
@@ -163,7 +222,24 @@ watch(
   { immediate: true },
 );
 
+// 仲裁放行 / 从挂起恢复 / 被挂起隐藏：焦点陷阱跟随“真正可见”的状态，
+// 被挂起时把键盘让给关闭询问等更高层，不抢 Esc 与 Tab。
+watch(
+  shown,
+  async (active) => {
+    if (active) {
+      window.addEventListener("keydown", onKeydown, true);
+      await nextTick();
+      focusInitial();
+    } else {
+      window.removeEventListener("keydown", onKeydown, true);
+    }
+  },
+  { immediate: true },
+);
+
 onBeforeUnmount(() => {
+  unregister();
   window.removeEventListener("keydown", onKeydown, true);
   if (props.open) restoreFocus();
 });
@@ -172,7 +248,12 @@ onBeforeUnmount(() => {
 <template>
   <Teleport to="body">
     <Transition name="qio-fade">
-      <div v-if="open" class="qio-modal-scrim" @click.self="onScrimClick">
+      <div
+        v-if="open && !arbiterBlocked"
+        v-show="!arbiterSuspended && !hiddenByHigher"
+        class="qio-modal-scrim"
+        @click.self="onScrimClick"
+      >
         <div
           ref="panelRef"
           class="qio-modal qio-floating qio-pop-in"

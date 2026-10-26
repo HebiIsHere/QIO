@@ -10,7 +10,9 @@ import { describe, expect, it, afterEach } from "vitest";
 import { mount } from "@vue/test-utils";
 import { nextTick } from "vue";
 import { readFileSync } from "node:fs";
+import { createPinia, setActivePinia } from "pinia";
 import QConfirm from "../QConfirm.vue";
+import { useModalArbiterStore } from "../../../stores/modalArbiter";
 
 /**
  * 对称布局（2026-10-26 统一改造）。
@@ -34,7 +36,13 @@ describe("QConfirm 对称布局与共享弹窗骨架", () => {
     expect(left.querySelectorAll("button, a, input, [tabindex]").length).toBe(0);
     expect(middle.contains(w.find(".qio-modal-title").element)).toBe(true);
     expect(w.find("#qio-confirm-title").text()).toBe("删除这项凭据？");
-    expect(right.querySelector("button")?.getAttribute("aria-label")).toBeTruthy();
+    // 关闭按钮视觉在右上，但 DOM 顺序在动作按钮之后（保证既有调用方的按钮顺序不变）；
+    // 右槽因此只承担等宽占位，不承载可聚焦控件。
+    expect(right.querySelector("button")).toBeNull();
+    expect(right.getAttribute("aria-hidden")).toBe("true");
+    const close = w.find("[data-qio-confirm-close]");
+    expect(close.exists()).toBe(true);
+    expect(close.attributes("aria-label")).toBeTruthy();
     w.unmount();
   });
 
@@ -195,5 +203,72 @@ describe("QConfirm 键盘与焦点", () => {
     await nextTick();
     expect(document.activeElement).toBe(trigger);
     w.unmount();
+  });
+});
+
+/**
+ * layer 档接入 B 的弹窗仲裁（2026-10-27）：
+ * 审批等更高优先级弹窗在时不得显示；让位后恢复显示并注册 kind=confirm；
+ * inline / popover 是就地控件，不占中央弹窗层。
+ */
+describe("QConfirm 仲裁（仅 layer 档是中央弹窗）", () => {
+  it("更高优先级弹窗挡着时 layer 不渲染；让位后渲染并注册 confirm", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    arbiter.open({ id: "approval-x", kind: "approval" });
+
+    const w = mount(QConfirm, {
+      props: { open: true, title: "删除这项凭据？", variant: "layer" },
+      attachTo: document.body,
+    });
+    await nextTick();
+    await nextTick();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+
+    arbiter.close("approval-x");
+    await nextTick();
+    await nextTick();
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(arbiter.stack.some((d) => d.kind === "confirm")).toBe(true);
+
+    w.unmount();
+    await nextTick();
+    expect(arbiter.stack.length).toBe(0);
+  });
+
+  it("layer 已显示时更高优先级弹窗打开：v-show 隐藏，让位后恢复", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    const w = mount(QConfirm, {
+      props: { open: true, title: "删除？", variant: "layer" },
+      attachTo: document.body,
+    });
+    await nextTick();
+    await nextTick();
+    const scrim = document.querySelector(".qio-confirm-scrim") as HTMLElement;
+    expect(scrim.style.display).not.toBe("none");
+
+    expect(arbiter.open({ id: "approval-later", kind: "approval" })).toBe(true);
+    await nextTick();
+    expect(scrim.style.display).toBe("none");
+    // 弹层 DOM 还在（取消/确认按钮与文案不会丢）
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+    arbiter.close("approval-later");
+    await nextTick();
+    await nextTick();
+    expect(scrim.style.display).not.toBe("none");
+    w.unmount();
+  });
+
+  it("inline / popover 不注册中央弹窗", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    for (const variant of ["inline", "popover"] as const) {
+      const w = mount(QConfirm, { props: { open: true, title: "归档？", variant } });
+      await nextTick();
+      expect(arbiter.stack.length, variant).toBe(0);
+      w.unmount();
+    }
   });
 });
