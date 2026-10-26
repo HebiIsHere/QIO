@@ -21,6 +21,8 @@ import {
 import QCombo from "../ui/QCombo.vue";
 import QInput from "../ui/QInput.vue";
 import QNumber from "../ui/QNumber.vue";
+import QSelect from "../ui/QSelect.vue";
+import QIcon from "../ui/QIcon.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -52,6 +54,11 @@ const form = useCredentialForm({
   onSaved: (payload) => emit("saved", payload),
 });
 
+/** 连接协议：短选项用 QSelect（QIO 自己外观的下拉，不用原生 select）。 */
+const protocolOptions = [
+  { value: "openai", label: "OpenAI 兼容接口" },
+  { value: "anthropic", label: "Anthropic 接口" },
+];
 const useModelCombo = computed(() => form.models.value.length > 0);
 const modelOptions = computed(() =>
   form.models.value.map((m) => ({ value: m, label: m })),
@@ -168,7 +175,7 @@ onBeforeUnmount(() => form.dispose());
       @click="form.advanced.value = !form.advanced.value"
     >
       <span>{{ form.advanced.value ? "收起高级设置" : "高级设置" }}</span>
-      <span class="chev" :class="{ open: form.advanced.value }" aria-hidden="true">⌄</span>
+      <QIcon class="chev" :class="{ open: form.advanced.value }" name="chevron-down" :size="14" />
     </button>
 
     <div class="collapse" :class="{ open: form.advanced.value }" :inert="form.advanced.value ? undefined : true">
@@ -242,10 +249,13 @@ onBeforeUnmount(() => form.dispose());
             连接协议
             <span class="label-note">（只有自定义服务通常需要改）</span>
           </label>
-          <select id="cred-kind" v-model="form.form.kind" class="qio-input proto">
-            <option value="openai">OpenAI 兼容接口</option>
-            <option value="anthropic">Anthropic 接口</option>
-          </select>
+          <QSelect
+            id="cred-kind"
+            class="proto-select"
+            :model-value="form.form.kind"
+            :options="protocolOptions"
+            @update:model-value="(v: string) => (form.form.kind = v)"
+          />
         </div>
 
         <div class="field">
@@ -267,9 +277,11 @@ onBeforeUnmount(() => form.dispose());
               :key="tag"
               type="button"
               class="tag-chip on sel"
+              :aria-label="`移除用途：${usageLabel(tag)}`"
               @click="form.toggleTag(tag)"
             >
-              {{ usageLabel(tag) }} ×
+              {{ usageLabel(tag) }}
+              <QIcon class="tag-x" name="close" :size="10" />
             </button>
           </div>
         </div>
@@ -284,7 +296,7 @@ onBeforeUnmount(() => form.dispose());
             你改了服务地址或连接协议：这把 Key 会被发送到新的地址。确认无误再保存。
           </p>
           <label class="check">
-            <input v-model="form.form.confirmTarget" type="checkbox" />
+            <input v-model="form.form.confirmTarget" class="qio-check" type="checkbox" />
             <span>我确认要把这把 Key 发送到新的地址</span>
           </label>
           <p v-if="form.fieldError.value?.field === 'target'" class="hint err">
@@ -356,7 +368,7 @@ onBeforeUnmount(() => form.dispose());
 .collapse-clip { transition: opacity var(--mo-2-in) var(--ease-2); }
 .tag-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .tag-chip {
-  font-family: var(--sans); font-size: var(--fs-xs); padding: 4px 12px; border-radius: var(--r-pill);
+  font-family: var(--sans); font-size: var(--fs-xs); padding: 4px 12px; border-radius: var(--qio-ui-radius);
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-secondary); cursor: pointer;
   transition: color var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1),
     background var(--mo-1-state) var(--ease-1), transform var(--mo-1-press) var(--ease-1);
@@ -371,15 +383,47 @@ onBeforeUnmount(() => form.dispose());
   color: var(--text-secondary); font-size: var(--fs-sm); cursor: pointer; text-align: left;
 }
 .advanced-toggle:hover { color: var(--text-strong); }
-.advanced-toggle .chev { transition: transform var(--mo-1-state) var(--ease-1); }
+.advanced-toggle .chev {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform var(--mo-1-state) var(--ease-1);
+}
 .advanced-toggle .chev.open { transform: rotate(180deg); }
 .advanced { display: flex; flex-direction: column; gap: var(--sp-3); padding-top: var(--sp-3); }
-.proto {
-  height: 36px; width: 100%; background: var(--bg-inset); border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md); color: var(--text-primary); padding: 0 var(--sp-3); font-size: var(--fs-base);
+.proto-select { width: 100%; }
+.tag-chip.sel { display: inline-flex; align-items: center; gap: 2px; }
+.tag-x { flex: none; }
+/* 自定义外观复选：保留真实 input 的键盘/读屏语义，不用系统默认方框。 */
+.qio-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  display: inline-grid;
+  place-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--qio-ui-radius);
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition: background var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1);
 }
+.qio-check::after {
+  content: "";
+  width: 8px;
+  height: 5px;
+  margin-top: -2px;
+  border-left: 1.6px solid var(--on-accent);
+  border-bottom: 1.6px solid var(--on-accent);
+  transform: rotate(-45deg) scale(0);
+  transition: transform var(--mo-1-fast) var(--ease-1);
+}
+.qio-check:checked { background: var(--accent); border-color: var(--accent); }
+.qio-check:checked::after { transform: rotate(-45deg) scale(1); }
+.qio-check:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .readonly { margin: 0; font-size: var(--fs-sm); color: var(--text-secondary); }
-.target-warning { padding: var(--sp-3); border: 1px solid var(--warning-soft); background: var(--warning-soft); border-radius: var(--r-md); }
+.target-warning { padding: var(--sp-3); border: 1px solid var(--warning-soft); background: var(--warning-soft); border-radius: var(--qio-ui-radius); }
 .check { display: flex; gap: var(--sp-2); align-items: flex-start; font-size: var(--fs-sm); color: var(--text-primary); }
 .tag-add { display: flex; gap: var(--sp-2); }
 .tag-add > :first-child { flex: 1; }
@@ -388,6 +432,22 @@ onBeforeUnmount(() => form.dispose());
 .status-area .qio-feedback { flex-direction: column; gap: 2px; align-items: flex-start; }
 .status-area .qio-feedback strong { font-weight: 600; }
 .tech { font-size: var(--fs-xs); color: var(--text-muted); max-width: 100%; }
+/* 技术详情：不用系统默认折叠标记；用文字「展开/收起」表达（不拿字符冒充图标）。 */
+.tech summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tech summary::-webkit-details-marker { display: none; }
+.tech summary::after {
+  content: "展开";
+  margin-left: 6px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+.tech[open] > summary::after { content: "收起"; }
 .tech p { margin: 4px 0 0; word-break: break-all; }
 .progress { margin: 0; min-height: 14px; font-size: var(--fs-xs); color: var(--text-muted); }
 .actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-1); }

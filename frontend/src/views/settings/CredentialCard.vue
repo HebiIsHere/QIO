@@ -164,11 +164,12 @@ async function toggleExpand() {
           </button>
           <!-- 撤销 ≠ 删除：撤销让这把密钥在 QIO 里作废但保留记录（可审计）；
                两者都不会去厂商那边吊销 Key。 -->
+          <!-- 撤销 ≠ 删除：撤销让这把密钥在 QIO 里作废但保留记录（可审计）；两者都不会去厂商那边吊销 Key。 -->
           <button
             v-if="credential.status !== 'revoked'"
             type="button"
             class="qio-btn mini quiet btn-revoke"
-            title="只在 QIO 里作废这把密钥，保留记录与审计历史"
+            aria-label="撤销密钥（只在 QIO 里作废，保留记录与审计历史）"
             @click="emit('revoke')"
           >
             撤销密钥

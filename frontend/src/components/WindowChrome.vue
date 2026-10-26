@@ -38,6 +38,11 @@ import PermissionModeText from "./security/PermissionModeText.vue";
 import { useUiStore } from "../stores/ui";
 import { useEventStore } from "../stores/events";
 import { useUpdaterStore } from "../stores/updater";
+import { useModalArbiterStore } from "../stores/modalArbiter";
+import { useNotificationsStore } from "../stores/notifications";
+import QIcon from "./ui/QIcon.vue";
+import GlobalIssueEntry from "./feedback/GlobalIssueEntry.vue";
+import { vQioTip } from "../composables/useQioTip";
 import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
 import {
   ackCloseRequest,
@@ -92,6 +97,9 @@ const QUIT_PENDING_TIMEOUT_MS = 10_000;
 let quitTimer: ReturnType<typeof setTimeout> | null = null;
 
 const updater = useUpdaterStore();
+const arbiter = useModalArbiterStore();
+/** 关闭询问在仲裁器里的稳定身份（最高优先级 close-ask）。 */
+const CLOSE_ASK_ID = "qio-close-ask";
 /** 后台发现更新：只在设置入口留一个小标记（不弹通知、不自动打开更新内容）。 */
 const updateAvailable = computed(() => updater.hasUpdate);
 const settingsLabel = computed(() =>
@@ -213,13 +221,13 @@ async function onShellCloseRequested() {
   if (busy.value || askOpen.value) return;
   chromeFailure.value = null;
   void ackCloseRequest();
-  askOpen.value = true;
+  enterCloseAsk();
 }
 
 /** 最小化到托盘：由壳执行 hide（前端只发动作，不判断设置）。失败必须仍可见并可重试。 */
 async function chooseTray() {
   if (busy.value) return;
-  askOpen.value = false;
+  if (askOpen.value) leaveCloseAsk();
   chromeFailure.value = null;
   try {
     await requestClose("tray");
@@ -236,7 +244,7 @@ async function chooseTray() {
 /** 退出 QIO：壳自己完成后端收尾/进程树核验/退出；前端只置守卫。 */
 async function chooseQuit() {
   if (busy.value) return;
-  askOpen.value = false;
+  if (askOpen.value) leaveCloseAsk();
   chromeFailure.value = null;
   busy.value = true;
   // 有界等待：壳正常会在预算内退出（页面不再返回）；如果 10 秒后页面还在，
@@ -297,26 +305,45 @@ async function chooseClose(action: "tray" | "quit") {
 
 function cancelAsk() {
   if (busy.value) return;
-  askOpen.value = false;
   rememberChoice.value = false;
   chromeFailure.value = null;
-  void resumeBusinessModals();
+  leaveCloseAsk();
 }
 
 /**
- * 关闭询问是最高层触发器：打开时让业务弹窗暂时让位（DOM 保留、状态/草稿不丢），
- * 取消或完成后恢复。
- *
- * TODO(B 的 stores/modalArbiter.ts 合并后)：这里改成
- *   useModalArbiterStore().suspendAll("close-ask") / resumeAll()
- * 并把 close-ask 本身登记为 kind="close-ask"（见 open/close 处）。
- * 现在接口尚未合并，先用本层最高 z-index 保证视觉与可操作性不回归。
+ * 关闭询问是最高层触发器（kind=close-ask，优先级 100）：
+ * - 先向仲裁器注册；被 false 挡住时**不强行显示**（壳 1.8s 后会兜底隐藏到托盘）；
+ * - 注册成功后 suspendAll("close-ask")：业务弹窗只隐藏（v-show），DOM/状态/草稿都不丢；
+ * - 取消 / 完成（成功或失败）后 resumeAll()，并让排队的通知重新有机会显示。
  */
-function suspendBusinessModals() {
-  /* 等 modalArbiter 合并后接入 suspendAll("close-ask") */
+function enterCloseAsk(): boolean {
+  if (askOpen.value) return true;
+  const opened = arbiter.open({
+    id: CLOSE_ASK_ID,
+    kind: "close-ask",
+    dismissible: true,
+  });
+  if (!opened) {
+    // 被更高/同优先级弹窗挡住：不显示（也不叠层抢焦点）。壳会自己走兜底。
+    console.warn("[qio] 关闭询问被其它中央弹窗挡住，未显示");
+    return false;
+  }
+  arbiter.suspendAll("close-ask");
+  askOpen.value = true;
+  return true;
 }
-function resumeBusinessModals() {
-  /* 等 modalArbiter 合并后接入 resumeAll() */
+
+function leaveCloseAsk() {
+  askOpen.value = false;
+  arbiter.close(CLOSE_ASK_ID);
+  arbiter.resumeAll();
+  // 弹窗结束后通知可以继续排队显示（B 的通知 host 也会在合适的时机 flush；
+  // 这里补一次，保证「关闭询问期间入队」的通知不会一直等下去）。
+  try {
+    useNotificationsStore().flushQueue();
+  } catch {
+    /* 通知 store 不可用不影响关闭流程 */
+  }
 }
 
 function behaviorLabel(value: CloseBehavior): string {
@@ -358,12 +385,10 @@ function restoreAskFocus() {
 watch(askOpen, async (open) => {
   if (open) {
     rememberAskFocus();
-    suspendBusinessModals();
     await nextTick();
     askCancelRef.value?.focus();
     return;
   }
-  resumeBusinessModals();
   restoreAskFocus();
 });
 
@@ -440,7 +465,7 @@ onBeforeUnmount(() => {
   unlistenTrayQuit?.();
   unlistenTrayQuit = null;
   window.removeEventListener("keydown", onKeydown, true);
-  if (askOpen.value) resumeBusinessModals();
+  if (askOpen.value) leaveCloseAsk();
   shell = null;
   applyGlobalBarChrome(false);
 });
@@ -454,24 +479,33 @@ onBeforeUnmount(() => {
     <!-- 拖拽面：双击由 Tauri 内置逻辑转成「最大化/还原」 -->
     <div class="drag-surface" data-tauri-drag-region aria-hidden="true"></div>
     <div v-if="inShell" class="window-controls">
-      <button class="wc-btn" type="button" aria-label="最小化" @click="run('minimize')">
-        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6h7" /></svg>
+      <button
+        class="wc-btn"
+        type="button"
+        aria-label="最小化"
+        v-qio-tip="'把窗口最小化到任务栏（QIO 继续在后台运行）'"
+        @click="run('minimize')"
+      >
+        <QIcon name="window-minimize" :size="12" />
       </button>
       <button
         class="wc-btn"
         type="button"
         :aria-label="maximized ? '向下还原' : '最大化'"
+        v-qio-tip="maximized ? '把窗口还原到原来的大小' : '把窗口最大化（也可以双击标题条）'"
         @click="run('toggleMaximize')"
       >
-        <svg v-if="!maximized" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.5" y="2.5" width="7" height="7" rx="1" /></svg>
-        <svg v-else viewBox="0 0 12 12" aria-hidden="true">
-          <rect x="2.5" y="4.5" width="5" height="5" rx="1" />
-          <path d="M4.5 4.5V3.6A1.1 1.1 0 0 1 5.6 2.5h2.8A1.1 1.1 0 0 1 9.5 3.6v2.8A1.1 1.1 0 0 1 8.4 7.5h-.9" />
-        </svg>
+        <QIcon :name="maximized ? 'window-restore' : 'window-maximize'" :size="12" />
       </button>
       <!-- R9 §11：发窗口关闭请求，由壳按 ui.close_behavior 执行（ask 才回来弹框） -->
-      <button class="wc-btn wc-close" type="button" aria-label="关闭" @click="requestWindowClose">
-        <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+      <button
+        class="wc-btn wc-close"
+        type="button"
+        aria-label="关闭"
+        v-qio-tip="'关闭主窗口（按设置里的关闭行为处理；可能只是收进托盘）'"
+        @click="requestWindowClose"
+      >
+        <QIcon name="window-close" :size="12" />
       </button>
     </div>
 
@@ -498,6 +532,8 @@ onBeforeUnmount(() => {
 
     <!-- 设置入口：对话页 / 互动页出现，固定排在窗口按钮左边（最右仍是窗口控制）。 -->
     <div v-if="hasGlobalBar" class="chrome-actions" :class="{ 'with-controls': inShell }">
+      <!-- 全局异常入口（B）：同一根因去重后的独立问题数量；无问题时不渲染、不占位 -->
+      <GlobalIssueEntry />
       <!-- 权限模式：纯文字，常驻全局栏（对话页 / 互动页同一处）；不再用页面内胶囊徽标。 -->
       <PermissionModeText class="chrome-mode" />
       <button
@@ -505,15 +541,10 @@ onBeforeUnmount(() => {
         type="button"
         :aria-label="settingsLabel"
         :data-has-update="updateAvailable ? '1' : '0'"
+        v-qio-tip="updateAvailable ? '打开设置（有可用更新，在「数据与维护」里查看）' : '打开设置'"
         @click="openSettings"
       >
-        <!-- 设置：居中齿轮（不是太阳/亮度图标）；24 视框保证齿与内圆严格同心 -->
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path
-            d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
-          />
-          <circle cx="12" cy="12" r="3" />
-        </svg>
+        <QIcon name="settings" :size="16" />
         <!-- 后台发现更新：只在这个入口留一个小标记；不弹通知、不自动打开更新内容 -->
         <span v-if="updateAvailable" class="chrome-update-dot" aria-hidden="true"></span>
         <span class="sr-only" v-if="updateAvailable">有可用更新</span>
@@ -642,6 +673,8 @@ onBeforeUnmount(() => {
   height: 100%;
   padding: 0;
   border: none;
+  /* 图标按钮外轮廓统一 14px（窗口按钮虽是条状命中区，仍按同一套圆角语言） */
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-muted);
   cursor: default;
@@ -726,7 +759,7 @@ onBeforeUnmount(() => {
   height: 28px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   display: inline-flex;
@@ -850,7 +883,7 @@ onBeforeUnmount(() => {
 .conversation-bar .wc-btn {
   width: 44px;
   height: 38px;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
 }
 .conversation-bar .chrome-actions {
   right: 20px;
@@ -861,7 +894,7 @@ onBeforeUnmount(() => {
 .conversation-bar .chrome-btn {
   width: 30px;
   height: 30px;
-  border-radius: 50%;
+  border-radius: var(--qio-ui-radius);
 }
 .conversation-bar .chrome-btn svg {
   width: 16px;
@@ -953,7 +986,7 @@ onBeforeUnmount(() => {
 .close-ask {
   width: min(440px, 100%);
   padding: 22px 24px 18px;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   border: 1px solid var(--border-strong);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-float);
@@ -1023,7 +1056,7 @@ onBeforeUnmount(() => {
   display: inline-grid;
   place-content: center;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   cursor: pointer;
   transition: background var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1);
@@ -1067,7 +1100,7 @@ onBeforeUnmount(() => {
   max-width: min(600px, calc(100vw - 32px));
   padding: 8px 12px;
   border: 1px solid var(--border-danger);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-float);
   font-size: 12px;
@@ -1104,7 +1137,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   color: var(--text-secondary);

@@ -16,6 +16,8 @@ import { LEVEL_HW } from "../planet/topicData";
 import { useSessionStore } from "../stores/session";
 import { useActionFeedback } from "../composables/useActionFeedback";
 import QInput from "../components/ui/QInput.vue";
+import QIcon from "../components/ui/QIcon.vue";
+import { vQioTip } from "../composables/useQioTip";
 import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
 import EntityPanel from "../components/planet/EntityPanel.vue";
 import MemoryPendingPanel from "../components/planet/MemoryPendingPanel.vue";
@@ -1805,7 +1807,8 @@ async function close() {
       aria-label="收起星球，回到对话"
       @click="close"
     >
-      {{ closing || settling ? "收起中…" : "✕ 收起星球" }}
+      <template v-if="closing || settling">收起中…</template>
+      <template v-else><QIcon name="close" :size="13" /> 收起星球</template>
     </button>
     <!-- 图形诊断只在开发者模式出现：正常模式保持「像产品，不像 debugger」 -->
     <div v-if="ui.developerMode" class="hud mono qio-glass qio-glass--chip">
@@ -1841,14 +1844,12 @@ async function close() {
     <aside class="panel" :class="{ open: panelOpen, manage: manageMode }">
       <button
         class="panel-toggle"
-        :title="panelOpen ? '收起话题列表' : '展开话题列表'"
         :aria-label="panelOpen ? '收起话题列表' : '展开话题列表'"
         :aria-expanded="panelOpen"
+        v-qio-tip="panelOpen ? '收起话题列表' : '展开话题列表'"
         @click="togglePanel"
       >
-        <svg class="chev" :class="{ flip: !panelOpen }" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        <QIcon class="chev" :class="{ flip: !panelOpen }" name="chevron-right" :size="18" />
       </button>
       <div class="panel-inner">
         <div class="tabs">
@@ -1857,7 +1858,15 @@ async function close() {
           <button class="tab tab-entity" :class="{ active: activeTab === 'entity' }" @click="switchTab('entity')">实体</button>
           <button class="tab tab-memory" :class="{ active: activeTab === 'memory' }" @click="switchTab('memory')">待确认</button>
           <span class="spacer"></span>
-          <button class="mode-btn" @click="toggleManageMode">{{ manageMode ? "✕ 管理模式" : "管理模式" }}</button>
+          <button
+            class="mode-btn"
+            type="button"
+            :aria-pressed="manageMode"
+            @click="toggleManageMode"
+          >
+            <QIcon v-if="manageMode" name="close" :size="11" />
+            {{ manageMode ? "退出管理" : "管理模式" }}
+          </button>
         </div>
 
         <template v-if="activeTab === 'topic'">
@@ -2280,7 +2289,7 @@ async function close() {
    之前它只是一段裸文字，直接叠在对话内容上，看起来像界面坏了。 */
 .webgl-fallback .wf-card {
   display: flex; flex-direction: column; gap: 10px; text-align: center;
-  max-width: 440px; padding: 22px 24px; border-radius: 14px;
+  max-width: 440px; padding: 22px 24px; border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated); border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-2);
 }
@@ -2289,7 +2298,7 @@ async function close() {
 .load-error {
   position: absolute; top: calc(var(--titlebar-height) + 14px); left: 50%; transform: translateX(-50%);
   z-index: 61; display: flex; align-items: center; gap: 10px; max-width: min(560px, calc(100vw - 200px));
-  padding: 8px 12px; border-radius: 10px;
+  padding: 8px 12px; border-radius: var(--qio-ui-radius);
   /* 危险色调通过玻璃自己的令牌表达：直接写 border-color 会覆盖掉左右冷暖边，
      把「透明介质」压成一块普通描边色块（实测：两边颜色变成完全相同的红）。 */
   --glass-border: var(--border-danger);
@@ -2314,13 +2323,13 @@ async function close() {
 }
 .planet-loading {
   position: absolute; top: calc(var(--titlebar-height) + 14px); left: 50%; transform: translateX(-50%); z-index: 61;
-  padding: 8px 14px; border-radius: 10px; font-size: 12.5px;
+  padding: 8px 14px; border-radius: var(--qio-ui-radius); font-size: 12.5px;
   color: var(--text-secondary);
 }
 /* 悬停标签：跟随指针，避开指针本身；不可交互，不抢焦点 */
 .topic-hint {
   position: absolute; z-index: 58; transform: translate(14px, -50%);
-  max-width: 240px; padding: 3px 9px; border-radius: 20px;
+  max-width: 240px; padding: 3px 9px; border-radius: var(--qio-ui-radius);
   font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   color: var(--text-strong);
   pointer-events: none;
@@ -2438,7 +2447,7 @@ async function close() {
   margin: 8px 0 4px;
   padding: 8px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: 10px;
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .detail-identity .id-row { display: flex; gap: 8px; font-size: 12px; line-height: 1.7; }
@@ -2474,7 +2483,7 @@ async function close() {
 .tab:hover { color: var(--text-strong); }
 .tab.active { color: var(--text-strong); border-bottom-color: var(--accent); font-weight: 600; }
 .tabs .spacer { flex: 1; }
-.mode-btn { font-size: 11px; padding: 4px 10px; border-radius: 20px; border: 1px solid var(--border-strong); background: none; color: var(--text-secondary); cursor: pointer; }
+.mode-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 10px; border-radius: var(--qio-ui-radius); border: 1px solid var(--border-strong); background: none; color: var(--text-secondary); cursor: pointer; transition: color var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1); }
 .mode-btn:hover { color: var(--accent); border-color: var(--accent); }
 .panel-toggle {
   position: absolute;
@@ -2487,14 +2496,14 @@ async function close() {
   padding: 0;
   border: 1px solid var(--border-strong);
   border-right: none;
-  border-radius: 12px 0 0 12px;
+  border-radius: var(--qio-ui-radius) 0 0 var(--qio-ui-radius);
   background: var(--bg-panel);
   color: var(--text-secondary);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  transition: background var(--mo-1-state) var(--ease-1), color var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1);
 }
 .panel-toggle:hover {
   background: var(--accent-soft);
@@ -2502,7 +2511,7 @@ async function close() {
   border-color: var(--accent);
 }
 .panel-toggle .chev {
-  transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.24, 1);
+  transition: transform var(--mo-2-in) var(--ease-2);
 }
 .panel-toggle .chev.flip {
   transform: rotate(180deg);
@@ -2512,7 +2521,7 @@ async function close() {
 .topic-list { list-style: none; padding: 0 14px; margin: 6px 0; min-width: 0; }
 .topic-list li {
   display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px;
-  border-radius: 10px; cursor: pointer; font-size: 13px;
+  border-radius: var(--qio-ui-radius); cursor: pointer; font-size: 13px;
   /* 长话题名换行（不是把列表撑宽、也不是把右侧「已选中」标签挤没） */
   min-width: 0; flex-wrap: wrap;
 }
@@ -2551,7 +2560,7 @@ async function close() {
 .detail-section { margin: 10px 0; }
 .section-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; letter-spacing: 0.02em; }
 .fragment-item {
-  border: 1px solid var(--border-subtle); border-radius: 10px; padding: 8px 10px; margin-bottom: 6px;
+  border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); padding: 8px 10px; margin-bottom: 6px;
   cursor: pointer; background: var(--bg-inset);
 }
 .fragment-item:hover { border-color: var(--border-strong); }
@@ -2579,7 +2588,7 @@ async function close() {
   padding: 8px 10px;
   border-left: 2px solid var(--border-strong);
   background: var(--bg-inset);
-  border-radius: 0 8px 8px 0;
+  border-radius: 0 var(--qio-ui-radius) var(--qio-ui-radius) 0;
 }
 .raw-note {
   margin: 0 0 6px;
@@ -2614,7 +2623,7 @@ async function close() {
 .k-feedback.ok { color: var(--success); }
 .k-feedback.err { flex-basis: 100%; margin: 2px 0 0; color: var(--danger); }
 .entity-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.entity-tag { background: var(--bg-accent-subtle); border-radius: 20px; padding: 3px 10px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.entity-tag { background: var(--bg-accent-subtle); border-radius: var(--qio-ui-radius); padding: 3px 10px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
 .knowledge-item {
   display: flex;
   gap: 8px;
@@ -2641,13 +2650,13 @@ async function close() {
   .knowledge-item .k-actions { opacity: 1; }
 }
 .knowledge-edit { flex: 1 1 100%; min-width: 160px; height: auto; font-size: 12.5px; resize: vertical; }
-.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
+.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; }
 .qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
 .k-content { color: var(--text-primary); }
 .start-btn { width: 100%; height: 40px; margin-top: 12px; font-size: 14px; }
 .start-btn:disabled { opacity: 0.6; cursor: default; }
 .anchor-error {
-  margin-top: 12px; padding: 8px 12px; border-radius: 8px;
+  margin-top: 12px; padding: 8px 12px; border-radius: var(--qio-ui-radius);
   border: 1px solid var(--danger); background: var(--danger-soft);
   color: var(--danger); font-size: 12px; line-height: 1.5;
 }
@@ -2663,7 +2672,7 @@ async function close() {
   padding: 0 14px 20px; border-top: 1px solid var(--border-subtle);
 }
 .detail-error .err-text {
-  margin-top: 12px; padding: 8px 12px; border-radius: 8px; width: 100%;
+  margin-top: 12px; padding: 8px 12px; border-radius: var(--qio-ui-radius); width: 100%;
   border: 1px solid var(--danger); background: var(--danger-soft);
   color: var(--danger); font-size: 12px; line-height: 1.5;
 }

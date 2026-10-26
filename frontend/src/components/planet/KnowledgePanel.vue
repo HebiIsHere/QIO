@@ -4,6 +4,7 @@ import { api, type KnowledgeItem, type TopicFingerprint } from "../../services/a
 import QInput from "../ui/QInput.vue";
 import QSelect from "../ui/QSelect.vue";
 import QConfirm from "../ui/QConfirm.vue";
+import QIcon from "../ui/QIcon.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useActionFeedback } from "../../composables/useActionFeedback";
 
@@ -267,7 +268,9 @@ onMounted(() => {
   <div class="kpanel" v-qio-scrollbar data-qio-fit>
     <div class="row">
       <QInput v-model="q" placeholder="搜索知识…" class="grow" />
-      <button class="qio-btn mini k-create-open" @click="openCreate">+ 新建</button>
+      <button class="qio-btn mini k-create-open" type="button" @click="openCreate">
+        <QIcon name="plus" :size="12" /> 新建
+      </button>
     </div>
     <div class="row filters">
       <QSelect v-model="category" :options="categoryOptions" class="grow" />
@@ -399,14 +402,15 @@ onMounted(() => {
   overflow-y: auto; overflow-x: clip; overscroll-behavior: contain;
 }
 .row { display: flex; align-items: center; gap: 8px; }
-.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
+.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; }
+.k-create-open { display: inline-flex; align-items: center; gap: 4px; }
 .qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
 .grow { flex: 1; }
 .filters { margin-bottom: 4px; }
-.create-form { border: 1px dashed var(--accent); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.create-form { border: 1px dashed var(--accent); border-radius: var(--qio-ui-radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .k-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 /* 卡片家族：骨架与内边距对齐 `.qio-card`，只在需要时覆盖（scoped 优先级更高） */
-.k-item { padding: var(--sp-3); border-radius: var(--r-lg); }
+.k-item { padding: var(--sp-3); border-radius: var(--qio-ui-radius); }
 .k-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 /* 阅读态：内容是主体（字号/行高比元数据高一级） */
 .k-content { margin: 6px 0 0; font-size: 13.5px; line-height: 1.7; color: var(--text-primary); white-space: pre-wrap; }
@@ -432,7 +436,7 @@ onMounted(() => {
 .k-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .k-load-error {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  padding: 8px 10px; border-radius: var(--qio-ui-radius); font-size: 12px;
   border: 1px solid var(--danger); background: var(--danger-soft); color: var(--danger);
 }
 /* 操作反馈留在条目里：成功短暂、失败保留（失败比成功持久） */

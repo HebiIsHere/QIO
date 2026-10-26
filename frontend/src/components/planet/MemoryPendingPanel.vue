@@ -29,7 +29,11 @@ import {
 import { submitKnowledgeApprovalRequest } from "../../stores/unifiedApprovals";
 import QConfirm from "../ui/QConfirm.vue";
 import QSelect from "../ui/QSelect.vue";
+import MaintenanceRestoreDialog, {
+  type RestoreDialogItem,
+} from "./MaintenanceRestoreDialog.vue";
 import { useActionFeedback } from "../../composables/useActionFeedback";
+import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const KIND_LABELS: Record<string, string> = {
@@ -238,6 +242,19 @@ function setAnswer(itemId: string, value: string) {
 function feedbackKey(item: PendingItemView): string {
   return "item:" + item.id;
 }
+/**
+ * 与统一审批入口共享同一份数据与身份（都按知识 id 读 /api/memory/pending）：
+ * 这里处理完一条后，如果统一审批 store 已经被读过，就让它在后台刷新一次，
+ * 保证「一处处理完，另一处同步」。尚未加载时不主动发起额外请求（打开时自然读权威数据）。
+ */
+function syncUnifiedKnowledgePending(): void {
+  try {
+    const unified = useUnifiedApprovalsStore();
+    if (unified.knowledgeLoadedAt !== null) void unified.refreshKnowledgePending();
+  } catch {
+    /* 统一审批 store 不可用不影响星球本地处理 */
+  }
+}
 
 async function loadPending(): Promise<void> {
   loading.value = true;
@@ -249,6 +266,7 @@ async function loadPending(): Promise<void> {
     truncated.value = result.truncated;
     warnings.value = result.warnings || [];
     maintenanceAvailable.value = result.maintenance_available !== false;
+    loadedOnce.value = true;
   } catch (error) {
     console.error("[memory-pending] load failed:", error);
     loadError.value = "加载待确认事项失败：" + ((error as Error).message || "未知原因");
@@ -266,7 +284,10 @@ async function approveProposal(item: PendingItemView): Promise<void> {
     },
     { okText: "已批准并生效", failText: "批准没有成功" },
   );
-  if (ok) showNotice("已批准并生效：" + (firstKnowledge(item)?.content || item.title));
+  if (ok) {
+    showNotice("已批准并生效：" + (firstKnowledge(item)?.content || item.title));
+    syncUnifiedKnowledgePending();
+  }
 }
 
 async function rejectProposal(item: PendingItemView): Promise<void> {
@@ -278,7 +299,10 @@ async function rejectProposal(item: PendingItemView): Promise<void> {
     },
     { okText: "已拒绝这条提议", failText: "拒绝没有成功" },
   );
-  if (ok) showNotice("已拒绝这条知识提议（原文已打回草稿，没有生效）。");
+  if (ok) {
+    showNotice("已拒绝这条知识提议（原文已打回草稿，没有生效）。");
+    syncUnifiedKnowledgePending();
+  }
 }
 
 function startModify(item: PendingItemView) {
@@ -318,7 +342,10 @@ async function approveModified(item: PendingItemView): Promise<void> {
     },
     { okText: "已按修改后的内容生效", failText: "修改后批准没有完成" },
   );
-  if (ok) showNotice("已按修改后的内容批准并生效。");
+  if (ok) {
+    showNotice("已按修改后的内容批准并生效。");
+    syncUnifiedKnowledgePending();
+  }
 }
 
 async function answerQuestion(item: PendingItemView): Promise<void> {
@@ -371,14 +398,66 @@ const previewTarget = ref("");
 const restoreResult = ref<MaintenanceRestoreResult | null>(null);
 const restoreLoading = ref(false);
 const restoreError = ref("");
-const confirmBatchId = ref("");
 const confirmItemId = ref("");
+/**
+ * 整批撤回：中央弹窗（不是条目内一行确认）。
+ * 打开时自动做一次真实预览；摘要/受影响条目/前后内容都来自服务端与批次操作记录。
+ */
+const restoreDialogOpen = ref(false);
+const restoreTargetLabel = ref("");
+
+function openBatchRestore(batchId: string): void {
+  if (!batchId || restoreLoading.value) return;
+  restoreTargetLabel.value = "批次 " + batchId;
+  restoreError.value = "";
+  restoreDialogOpen.value = true;
+  void previewRestore({ batch_id: batchId });
+}
+
+function closeRestoreDialog(): void {
+  if (restoreLoading.value) return;
+  restoreDialogOpen.value = false;
+  restoreError.value = "";
+}
+
+async function confirmBatchRestore(): Promise<void> {
+  if (!selectedBatchId.value) return;
+  await doRestore({ batch_id: selectedBatchId.value });
+}
 
 function switchView(next: PanelView) {
   view.value = next;
   if (next === "records" && !batchesLoaded.value && !batchesLoading.value) {
     void loadBatches();
   }
+  // 从维护记录回到待确认：重新读一次权威列表，另一处（统一审批）处理过的事项不会残留。
+  if (next === "pending" && loadedOnce.value) void loadPending();
+}
+
+/** 是否成功读过一次（回到待确认/窗口聚焦时才刷新，避免挂载前的重复请求）。 */
+const loadedOnce = ref(false);
+
+/**
+ * 统一审批入口那边刚读过/处理过知识待确认（同一份权威数据、同一身份）：
+ * 星球面板如果在待确认页，就重新读一次列表 —— 一处处理完，另一处立刻同步。
+ * 未加载过统一审批 store 时不产生任何额外请求（打开时自然读权威数据）。
+ */
+const unifiedApprovals = useUnifiedApprovalsStore();
+watch(
+  () => unifiedApprovals.knowledgeLoadedAt,
+  (stamp) => {
+    if (!stamp) return;
+    if (view.value !== "pending" || !loadedOnce.value || loading.value) return;
+    void loadPending();
+  },
+);
+
+/**
+ * 窗口重新获得焦点时刷新待确认列表：与统一审批入口共享同一份权威数据，
+ * 另一处处理完后切回来能看到真实状态（不靠本地猜）。
+ */
+function onWindowFocus(): void {
+  if (view.value === "pending" && loadedOnce.value && !loading.value) void loadPending();
 }
 
 async function loadBatches(): Promise<void> {
@@ -446,14 +525,16 @@ async function previewRestore(target: { batch_id?: string; item_id?: string }): 
 }
 
 async function doRestore(target: { batch_id?: string; item_id?: string }): Promise<void> {
-  confirmBatchId.value = "";
   confirmItemId.value = "";
   restoreLoading.value = true;
   restoreError.value = "";
   try {
     restoreResult.value = await api.restoreMaintenance({ ...target, confirm: true });
     await loadBatches();
+    // 成功才关中央弹窗：结果留在批次详情里（已恢复/无法恢复逐项可见）。
+    restoreDialogOpen.value = false;
   } catch (error) {
+    // 失败留在弹窗里：真实原因 + 可重试，不静默、也不假装撤回完成。
     restoreError.value = "恢复没有完成：" + ((error as Error).message || "未知原因");
   } finally {
     restoreLoading.value = false;
@@ -568,6 +649,36 @@ const previewSummary = computed(() => {
   return parts.join(" · ");
 });
 const previewWarnings = computed(() => stringList(previewData.value?.warnings));
+/**
+ * 中央弹窗里的受影响条目：预览给「可恢复性/原因」，批次操作记录给「修改前后内容」。
+ * 只展示服务端真实返回的快照；没有快照就明说没有，不臆造内容。
+ */
+const restoreDialogItems = computed<RestoreDialogItem[]>(() => {
+  const operations = entriesOf(previewData.value?.operations);
+  const records = detail.value?.operations ?? [];
+  return previewItems.value.map((entry, index) => {
+    const operation = operations[index] ?? {};
+    const operationId = shortText(operation.operation_id) || "第 " + (index + 1) + " 项";
+    const record = records.find((item) => String(item.id || "") === operationId);
+    const beforeText = entriesOf(record?.before)
+      .map((item) => contentOf(item))
+      .filter(Boolean)
+      .join("\n");
+    const afterText = entriesOf(record?.after)
+      .map((item) => contentOf(item))
+      .filter(Boolean)
+      .join("\n");
+    return {
+      key: operationId,
+      label: entry.label,
+      tone: entry.tone,
+      title: entry.title,
+      reason: entry.reason,
+      before: beforeText,
+      after: afterText,
+    };
+  });
+});
 const restoreOperationViews = computed<{ restored: RestoreItemView[]; blocked: RestoreItemView[] }>(
   () => {
     const data = restoreResult.value?.result;
@@ -672,11 +783,13 @@ watch(
 
 onMounted(() => {
   void loadPending();
+  window.addEventListener("focus", onWindowFocus);
 });
 
 onBeforeUnmount(() => {
   if (noticeTimer) clearTimeout(noticeTimer);
   if (highlightTimer) clearTimeout(highlightTimer);
+  window.removeEventListener("focus", onWindowFocus);
 });
 </script>
 
@@ -925,6 +1038,23 @@ onBeforeUnmount(() => {
           </li>
         </ul>
 
+        <!-- 整批撤回：中央弹窗（摘要 + 受影响条目 + 可展开的前后内容 + 恢复约束） -->
+        <MaintenanceRestoreDialog
+          :open="restoreDialogOpen"
+          :modal-id="'memory-batch-restore:' + selectedBatchId"
+          :target-label="restoreTargetLabel"
+          :summary="previewSummary"
+          :items="restoreDialogItems"
+          :warnings="previewWarnings"
+          :preview-loading="previewLoading"
+          :preview-error="previewError"
+          :restoring="restoreLoading"
+          :restore-error="restoreError"
+          @confirm="confirmBatchRestore"
+          @cancel="closeRestoreDialog"
+          @retry-preview="selectedBatchId && previewRestore({ batch_id: selectedBatchId })"
+        />
+
         <div v-if="selectedBatchId" class="mp-detail">
           <div class="row mp-detail-head">
             <span class="mp-label">批次详情</span>
@@ -948,21 +1078,10 @@ onBeforeUnmount(() => {
                 class="qio-btn mini mp-restore"
                 type="button"
                 :disabled="restoreLoading"
-                @click="confirmBatchId = selectedBatchId"
+                @click="openBatchRestore(selectedBatchId)"
               >整批撤回</button>
               <span class="hint">撤回不删除历史；已被你后续修改的部分会拒绝恢复并说明原因。</span>
             </div>
-            <QConfirm
-              v-if="confirmBatchId === selectedBatchId"
-              :open="true"
-              variant="inline"
-              tone="danger"
-              title="整批撤回这次维护的修改？"
-              detail="会用新的版本记录恢复维护前的内容；不会删除历史，也不会覆盖你后来做的修改（这些项会被拒绝并列出原因）。"
-              confirm-text="整批撤回"
-              @confirm="doRestore({ batch_id: selectedBatchId })"
-              @cancel="confirmBatchId = ''"
-            />
 
             <div v-if="previewError" class="mp-error" role="alert">
               <span>{{ previewError }}</span>
@@ -1096,11 +1215,11 @@ onBeforeUnmount(() => {
   overflow-y: auto; overflow-x: clip; overscroll-behavior: contain;
 }
 .row { display: flex; align-items: center; gap: 8px; }
-.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
+.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; }
 .grow { flex: 1; }
 .mp-tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-bottom: 2px; }
 .mp-tab {
-  font-size: 12.5px; padding: 4px 10px; border-radius: 8px; cursor: pointer;
+  font-size: 12.5px; padding: 4px 10px; border-radius: var(--qio-ui-radius); cursor: pointer;
   background: none; border: 1px solid transparent; color: var(--text-secondary);
 }
 .mp-tab:hover { color: var(--text-strong); border-color: var(--border-subtle); }
@@ -1110,7 +1229,7 @@ onBeforeUnmount(() => {
 .mp-list, .mp-batches, .mp-preview-items, .mp-restore-list, .mp-detail-items, .mp-knowledge {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px;
 }
-.mp-item { padding: var(--sp-3); border-radius: var(--r-lg); display: flex; flex-direction: column; gap: 6px; }
+.mp-item { padding: var(--sp-3); border-radius: var(--qio-ui-radius); display: flex; flex-direction: column; gap: 6px; }
 /* 从对话页定位过来：短暂高亮这一条（状态不因此改变，只帮助用户找到它） */
 .mp-item.focus-flash {
   outline: 2px solid var(--focus-ring);
@@ -1144,21 +1263,21 @@ onBeforeUnmount(() => {
 .mp-item-error { margin: 0; font-size: 11.5px; color: var(--danger); }
 .mp-error {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  padding: 8px 10px; border-radius: var(--qio-ui-radius); font-size: 12px;
   border: 1px solid var(--danger); background: var(--danger-soft); color: var(--danger);
 }
 .mp-warn {
-  margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  margin: 0; padding: 8px 10px; border-radius: var(--qio-ui-radius); font-size: 12px;
   border: 1px solid var(--warning-soft); background: var(--warning-soft); color: var(--warning);
 }
 .mp-notice {
-  margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  margin: 0; padding: 8px 10px; border-radius: var(--qio-ui-radius); font-size: 12px;
   border: 1px solid var(--success-soft); background: var(--success-soft); color: var(--success);
 }
 .mp-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .link { background: none; border: none; color: var(--link); cursor: pointer; font-size: 12px; padding: 0; }
 .link:hover { text-decoration: underline; }
-.mp-batch { padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); }
+.mp-batch { padding: var(--sp-2) var(--sp-3); border-radius: var(--qio-ui-radius); }
 .mp-batch-open {
   width: 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   background: none; border: none; cursor: pointer; text-align: left; padding: 0;
@@ -1169,12 +1288,12 @@ onBeforeUnmount(() => {
 .mp-batch-time { font-size: 11px; color: var(--text-muted); }
 .mp-batch-stats { font-size: 11.5px; color: var(--text-secondary); }
 .mp-batch-id { font-size: 10.5px; color: var(--text-faint); margin-left: auto; }
-.mp-detail { border: 1px dashed var(--border-subtle); border-radius: var(--r-lg); padding: var(--sp-3); display: flex; flex-direction: column; gap: 8px; }
+.mp-detail { border: 1px dashed var(--border-subtle); border-radius: var(--qio-ui-radius); padding: var(--sp-3); display: flex; flex-direction: column; gap: 8px; }
 .mp-detail-head { flex-wrap: wrap; }
 .mp-detail-section { display: flex; flex-direction: column; gap: 6px; }
 .mp-detail-item { padding: var(--sp-2) 0; border-bottom: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 4px; }
 .mp-preview-result, .mp-restore-result {
-  border: 1px solid var(--border-subtle); border-radius: var(--r-md);
+  border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius);
   padding: var(--sp-2) var(--sp-3); display: flex; flex-direction: column; gap: 6px;
 }
 .mp-preview-item, .mp-restored-item, .mp-blocked-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }

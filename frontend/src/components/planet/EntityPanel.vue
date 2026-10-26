@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { api, type EntityAttribute, type EntityCard } from "../../services/api";
 import QInput from "../ui/QInput.vue";
 import QConfirm from "../ui/QConfirm.vue";
+import QIcon from "../ui/QIcon.vue";
 import EntityCandidates from "./EntityCandidates.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useActionFeedback } from "../../composables/useActionFeedback";
@@ -37,6 +38,27 @@ const draft = ref({
   relType: "",
   relTarget: "",
 });
+
+/** 关系目标实体的就地建议（不用原生 datalist：外观/键盘都由 QIO 自己控制）。 */
+const relSuggestOpen = ref(false);
+const relSuggestions = computed(() => {
+  const query = draft.value.relTarget.trim().toLowerCase();
+  if (!query) return [];
+  return cards.value
+    .map((c) => c.name)
+    .filter((name) => name.toLowerCase().includes(query))
+    .slice(0, 6);
+});
+function pickRelTarget(name: string) {
+  draft.value.relTarget = name;
+  relSuggestOpen.value = false;
+}
+function onRelTargetBlur() {
+  // 延迟收起：允许 mousedown 先完成点选
+  setTimeout(() => {
+    relSuggestOpen.value = false;
+  }, 120);
+}
 
 const filtered = computed(() => {
   const query = q.value.trim().toLowerCase();
@@ -276,7 +298,9 @@ onMounted(async () => {
     <template v-else>
       <div class="e-detail qio-card">
         <div class="e-detail-head">
-          <button class="qio-btn mini quiet" type="button" @click="opened = null">← 返回</button>
+          <button class="qio-btn mini quiet e-back" type="button" @click="opened = null">
+            <QIcon name="chevron-left" :size="12" /> 返回
+          </button>
           <span class="e-title serif">{{ opened.name }}</span>
           <span v-if="opened.state" class="qio-state" :class="opened.state === 'active' ? 'ok' : 'quiet'">
             {{ opened.state === "active" ? "生效中" : "已归档" }}
@@ -342,7 +366,17 @@ onMounted(async () => {
 
           <div class="field"><span class="label">别名</span>
             <div class="chips">
-              <span v-for="a in draft.aliases" :key="a" class="qio-tag">{{ a }} <button type="button" class="chip-x" @click="removeAlias(a)">✕</button></span>
+              <span v-for="a in draft.aliases" :key="a" class="qio-tag e-alias">
+                {{ a }}
+                <button
+                  type="button"
+                  class="chip-x"
+                  :aria-label="`移除别名：${a}`"
+                  @click="removeAlias(a)"
+                >
+                  <QIcon name="close" :size="10" />
+                </button>
+              </span>
             </div>
             <div class="row">
               <input v-model="draft.aliasInput" class="qio-inline-edit grow" placeholder="添加别名" @keyup.enter="addAlias" />
@@ -355,7 +389,14 @@ onMounted(async () => {
               <div v-for="a in draft.attributes" :key="a.key" class="attr-row">
                 <span class="grow">{{ a.key }} = {{ a.value }}</span>
                 <span class="mono conf">{{ a.confidence.toFixed(2) }}</span>
-                <button class="qio-btn mini quiet" type="button" @click="removeAttr(a.key)">✕</button>
+                <button
+                  class="qio-btn mini quiet e-attr-del"
+                  type="button"
+                  :aria-label="`删除属性：${a.key}`"
+                  @click="removeAttr(a.key)"
+                >
+                  <QIcon name="close" :size="11" />
+                </button>
               </div>
               <div class="attr-row add">
                 <input v-model="draft.attrKey" class="qio-inline-edit e-attr-key" placeholder="键" />
@@ -375,20 +416,39 @@ onMounted(async () => {
                   type="button"
                   :disabled="feedback.stateOf('rel') === 'busy'"
                   @click="removeRel(r.type, r.target)"
-                >✕</button>
+                >
+                  <QIcon name="close" :size="11" />
+                </button>
               </div>
               <div class="rel-row add">
                 <input v-model="draft.relType" class="qio-inline-edit e-rel-type" placeholder="类型" />
-                <input v-model="draft.relTarget" class="qio-inline-edit e-rel-target" placeholder="目标实体" list="entity-names" />
-                <datalist id="entity-names">
-                  <option v-for="c in cards" :key="c.id" :value="c.name"></option>
-                </datalist>
+                <input
+                  v-model="draft.relTarget"
+                  class="qio-inline-edit e-rel-target"
+                  placeholder="目标实体"
+                  :aria-expanded="relSuggestions.length > 0"
+                  @focus="relSuggestOpen = true"
+                  @blur="onRelTargetBlur"
+                />
+                <!-- 目标实体建议：QIO 自绘（不用原生 datalist 的默认外观），点选就地填入 -->
+                <ul v-if="relSuggestOpen && relSuggestions.length" class="e-rel-suggest" role="listbox" aria-label="目标实体建议">
+                  <li v-for="name in relSuggestions" :key="name">
+                    <button
+                      type="button"
+                      class="e-rel-suggest-item"
+                      role="option"
+                      @mousedown.prevent="pickRelTarget(name)"
+                    >{{ name }}</button>
+                  </li>
+                </ul>
                 <button
                   class="qio-btn mini e-rel-add"
                   type="button"
                   :disabled="feedback.stateOf('rel') === 'busy'"
                   @click="addRel"
-                >+</button>
+                >
+                  <QIcon name="plus" :size="11" />
+                </button>
               </div>
             </div>
             <p v-if="feedback.stateOf('rel') === 'failed'" class="e-feedback err" role="alert">
@@ -459,7 +519,7 @@ onMounted(async () => {
 }
 .e-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 /* 列表项用一个可聚焦的行：hover / 焦点 / 点击反馈来自 `.qio-row` 与 `.qio-card` */
-.e-item { padding: var(--sp-3); border-radius: var(--r-lg); }
+.e-item { padding: var(--sp-3); border-radius: var(--qio-ui-radius); }
 .e-item-text { flex: 1; min-width: 0; }
 .e-name { font-size: 14.5px; color: var(--text-strong); }
 .e-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; display: flex; gap: 6px; align-items: center; }
@@ -472,22 +532,22 @@ onMounted(async () => {
 .field { display: flex; flex-direction: column; gap: 4px; }
 .label { font-size: 11px; color: var(--text-secondary); letter-spacing: 0.03em; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-.chip { display: inline-flex; align-items: center; gap: 4px; background: var(--bg-accent-subtle); border-radius: 20px; padding: 3px 10px; font-size: 12px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; background: var(--bg-accent-subtle); border-radius: var(--qio-ui-radius); padding: 3px 10px; font-size: 12px; }
 .chip-x { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 0; }
 .attr-table, .rel-list { display: flex; flex-direction: column; gap: 5px; }
-.attr-row, .rel-row { display: flex; align-items: center; gap: 6px; }
+.attr-row, .rel-row { display: flex; align-items: center; gap: 6px; position: relative; }
 .attr-row.add, .rel-row.add { margin-top: 2px; }
 .grow { flex: 1; }
 .conf { color: var(--text-muted); width: 44px; text-align: right; }
 .row { display: flex; align-items: center; gap: 8px; }
 .e-actions { justify-content: flex-end; }
-.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; border-radius: 8px; }
+.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
 .qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
 .hint { font-size: 12px; color: var(--text-muted); }
 .e-empty { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .e-load-error {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 10px; border-radius: 8px; font-size: 12px;
+  padding: 8px 10px; border-radius: var(--qio-ui-radius); font-size: 12px;
   border: 1px solid var(--danger); background: var(--danger-soft); color: var(--danger);
 }
 .link { background: none; border: none; color: var(--link); cursor: pointer; font-size: 12px; padding: 0; }
@@ -496,4 +556,26 @@ onMounted(async () => {
 .e-feedback { font-size: 11.5px; }
 .e-feedback.ok { color: var(--success); }
 .e-feedback.err { margin: 4px 0 0; color: var(--danger); }
+/* 别名/属性/关系里的移除按钮：图标走 QIcon，按钮保留自己的小命中区与可访问名称 */
+.e-alias { gap: 4px; }
+.chip-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; padding: 0; border: none; border-radius: var(--qio-ui-radius);
+  background: none; color: var(--text-muted); cursor: pointer;
+}
+.chip-x:hover { color: var(--text-strong); background: var(--layer-hover); }
+.e-attr-del, .e-rel-del { padding: 2px 4px; }
+/* 目标实体建议：就地浮层（替代原生 datalist） */
+.e-rel-suggest {
+  position: absolute; left: 0; right: 88px; top: calc(100% + 4px); z-index: 5;
+  list-style: none; margin: 0; padding: 4px;
+  border: 1px solid var(--border-strong); border-radius: var(--qio-ui-radius);
+  background: var(--bg-elevated); box-shadow: var(--elev-floating);
+  max-height: 220px; overflow-y: auto;
+}
+.e-rel-suggest-item {
+  width: 100%; text-align: left; padding: 5px 8px; border: none; border-radius: var(--qio-ui-radius);
+  background: none; color: var(--text-primary); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.e-rel-suggest-item:hover { background: var(--accent-soft); color: var(--text-strong); }
 </style>

@@ -7,18 +7,39 @@
  * - **中途关闭 = 当没填过**：关掉再打开是空白，草稿不落任何地方；
  * - **新用户不能在密钥这一步跳过**（老用户主页已有内容，可以整场关闭）。
  */
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import { useModalArbiterStore } from "../../stores/modalArbiter";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { api, type CredentialMeta, type OnboardingSubmitPayload, type VerifyReport } from "../../services/api";
 import { getTheme, setTheme, type Theme } from "../../utils/theme";
 import CredentialForm from "../credentials/CredentialForm.vue";
 import QInput from "../ui/QInput.vue";
+import QIconButton from "../ui/QIconButton.vue";
 import { usageSummary } from "../../services/credentials";
 import { GOAL_EXAMPLES, ONBOARDING_STEPS, PREFERENCE_DIMENSIONS, type StepKey } from "./steps";
 
 const emit = defineEmits<{ done: [] }>();
 const store = useOnboardingStore();
+
+/**
+ * 引导是整窗级中央弹窗（优先级 onboarding）。注册到仲裁器：
+ * - 关闭询问（close-ask）等更高层触发器出现时只 v-show 隐藏，步骤/草稿/已填内容都保留，
+ *   取消后回到同一步；
+ * - 注册被挡住时不强行叠层；更高层关闭后再补注册。
+ */
+const ONBOARDING_MODAL_ID = "qio-onboarding";
+const arbiter = useModalArbiterStore();
+const hiddenBy = computed(() => arbiter.hiddenBy(ONBOARDING_MODAL_ID));
+
+function registerModal() {
+  if (arbiter.isOpen(ONBOARDING_MODAL_ID)) return;
+  arbiter.open({ id: ONBOARDING_MODAL_ID, kind: "onboarding", dismissible: closable.value });
+}
+watch(
+  () => [arbiter.count, arbiter.suspendedBy] as const,
+  () => registerModal(),
+);
 
 const index = ref(0);
 const step = computed<StepKey>(() => ONBOARDING_STEPS[index.value].key);
@@ -158,7 +179,12 @@ const reviewItems = computed<ReviewItem[]>(() => {
 });
 
 onMounted(() => {
+  registerModal();
   void store.markSeen();
+});
+
+onBeforeUnmount(() => {
+  arbiter.close(ONBOARDING_MODAL_ID);
 });
 
 function goNext() {
@@ -339,17 +365,27 @@ async function finish() {
 </script>
 
 <template>
-  <div class="onboarding" role="dialog" aria-modal="true" aria-label="首次引导">
+  <div
+    v-show="!hiddenBy"
+    class="onboarding"
+    role="dialog"
+    aria-modal="true"
+    aria-label="首次引导"
+    :aria-hidden="hiddenBy ? 'true' : undefined"
+    :inert="hiddenBy ? true : undefined"
+  >
     <div class="onboarding-card">
-      <button
+      <!-- 纯图标按钮走 QIconButton：可访问名称必填、500ms 用途说明、14px 圆角容器 -->
+      <QIconButton
         v-if="closable"
         class="onboarding-close"
-        type="button"
-        aria-label="关闭引导"
+        icon="close"
+        label="关闭引导"
+        description="关闭引导；本次填写不会写入（下次打开是空白）"
+        size="sm"
+        tone="quiet"
         @click="emit('done')"
-      >
-        ×
-      </button>
+      />
       <nav class="onboarding-steps" aria-label="设置步骤">
         <span
           v-for="(item, i) in ONBOARDING_STEPS"
@@ -364,7 +400,7 @@ async function finish() {
 
       <div class="onboarding-body" v-qio-scrollbar data-qio-fit>
         <section v-if="step === 'welcome'" class="panel welcome">
-          <div class="brand" aria-hidden="true">◍</div>
+          <div class="brand" aria-hidden="true"><span class="brand-orb"></span></div>
           <h1>QIO</h1>
           <p class="lede">你的私人记忆星球</p>
           <p class="hint">
@@ -399,7 +435,7 @@ async function finish() {
             <QInput v-model="draft.currentFocus" placeholder="例如：开发 QIO。可以留空" />
           </label>
           <label class="check">
-            <input v-model="draft.currentFocusEnded" type="checkbox" />
+            <input v-model="draft.currentFocusEnded" class="qio-check" type="checkbox" />
             <span>这件事已经结束了（结束不等于删掉，只是不再当作当前状态）</span>
           </label>
           <label class="field">
@@ -578,21 +614,16 @@ async function finish() {
   width: min(780px, 100%);
   max-height: 100%;
   border: 1px solid var(--border-subtle);
-  border-radius: 20px;
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-panel);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
 }
+/* 关闭：QIconButton 绝对定位在标题区右槽；尺寸/圆角/命中区由组件统一。 */
 .onboarding-close {
   position: absolute;
-  top: 12px;
-  right: 14px;
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 16px;
-  cursor: pointer;
+  top: 10px;
+  right: 12px;
 }
-.onboarding-close:hover { color: var(--text-strong); }
 .onboarding-steps {
   display: flex;
   gap: 12px;
@@ -610,9 +641,47 @@ async function finish() {
 .panel h1, .panel h2 { margin: 0; color: var(--text-strong); font-size: 20px; font-weight: 600; }
 .panel .lede { margin: 0; color: var(--text-primary); font-size: 15px; }
 .panel .hint { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.7; }
-.welcome .brand { font-size: 30px; color: var(--accent); }
+.welcome .brand { display: flex; align-items: center; }
+/* 欢迎页的星体标识：纯装饰的环（不是字符图标） */
+.welcome .brand-orb {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid var(--accent);
+  box-shadow: inset 0 0 0 4px var(--accent-soft);
+}
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-secondary); }
-.check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+.check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.6; color: var(--text-muted); text-align: left; }
+/* 自定义外观复选：保留真实 input 语义（键盘/读屏），不用系统默认方框。 */
+.check .qio-check,
+.qio-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  display: inline-grid;
+  place-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--qio-ui-radius);
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition: background var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1);
+}
+.qio-check::after {
+  content: "";
+  width: 8px;
+  height: 5px;
+  margin-top: -2px;
+  border-left: 1.6px solid var(--on-accent);
+  border-bottom: 1.6px solid var(--on-accent);
+  transform: rotate(-45deg) scale(0);
+  transition: transform var(--mo-1-fast) var(--ease-1);
+}
+.qio-check:checked { background: var(--accent); border-color: var(--accent); }
+.qio-check:checked::after { transform: rotate(-45deg) scale(1); }
+.qio-check:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .pref-row { display: grid; grid-template-columns: 88px 1fr; gap: 8px; align-items: center; }
 .pref-label { font-size: 12px; color: var(--text-secondary); }
 /* 「其他」自己写的内容是句子长度：独占一整行 */

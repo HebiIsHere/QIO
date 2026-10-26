@@ -4,6 +4,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 import CredentialModal from "../CredentialModal.vue";
 
 vi.mock("../../../services/api", () => {
@@ -31,9 +32,13 @@ vi.mock("../../../services/api", () => {
 });
 
 async function setup() {
+  // 中央弹窗要注册弹窗仲裁（stores/modalArbiter），因此需要 pinia。
+  const pinia = createPinia();
+  setActivePinia(pinia);
   const w = mount(CredentialModal, {
     props: { mode: "create" as const },
     attachTo: document.body,
+    global: { plugins: [pinia] },
   });
   await flushPromises();
   const dialog = w.find(".modal");

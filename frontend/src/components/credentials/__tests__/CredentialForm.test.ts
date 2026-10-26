@@ -160,7 +160,8 @@ describe("凭据表单 · 基础流程", () => {
     );
     expect((w.find("#cred-model").element as HTMLInputElement).value).toBe("deepseek-v4-flash");
     expect((w.find("#cred-note").element as HTMLInputElement).value).toBe("DeepSeek");
-    expect((w.find("#cred-kind").element as HTMLSelectElement).value).toBe("openai");
+    // 连接协议用 QIO 自己的 QSelect（不是原生 select）：显示当前选中项的标签
+    expect(w.find("#cred-kind").text()).toContain("OpenAI 兼容接口");
     // 发送目标要说明白
     expect(w.text()).toContain("官方服务");
   });
@@ -418,7 +419,7 @@ describe("凭据表单 · 提示与编辑", () => {
       initial: meta({ kind: null, endpoint: "https://api.anthropic.com/v1" }),
     });
     await w.find(".advanced-toggle").trigger("click");
-    expect((w.find("#cred-kind").element as HTMLSelectElement).value).toBe("anthropic");
+    expect(w.find("#cred-kind").text()).toContain("Anthropic 接口");
     (api.updateCredentialMeta as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       credential: meta(),
