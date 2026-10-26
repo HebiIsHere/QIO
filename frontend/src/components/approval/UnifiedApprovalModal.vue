@@ -12,6 +12,8 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   useApprovalsStore,
   approvalFacts,
+  isInterruptedLegacyApproval,
+  isLegacyApproval,
   isLifecycleApproval,
   type ApprovalBudget,
 } from "../../stores/approvals";
@@ -92,6 +94,23 @@ const errorText = computed(() => {
  * 这里只做**呈现**：绝不自行推进状态、绝不本地把 confirmed_stage 加一。
  */
 const lifecycle = computed(() => isLifecycleApproval(item.value?.approval ?? null));
+/**
+ * B-CP1：旧审批恢复出的中断事实（legacy + status=interrupted_legacy）。
+ * 只读显示「未执行 / 中断待核对」，绝不给批准/拒绝按钮 —— 那次操作没有执行。
+ */
+const interruptedLegacy = computed(() =>
+  isInterruptedLegacyApproval(item.value?.approval ?? null),
+);
+/**
+ * 后端明确表示这条**旧路径**不支持 overrides：预算只读，并说明真实原因。
+ *
+ * 只在旧审批上显示：v2 生命周期记录本来就走 /decide（不接受 overrides），
+ * 用「旧路径」的说法去解释它反而会误导。
+ */
+const budgetUnsupported = computed(() => {
+  const approval = item.value?.approval ?? null;
+  return Boolean(approval && isLegacyApproval(approval) && approval.overridesSupported === false);
+});
 const requiredConfirmations = computed(() =>
   Math.max(1, Number(item.value?.approval?.requiresConfirmations ?? 1)),
 );
@@ -139,6 +158,14 @@ const failureHint = computed(() => {
 
 /** 已批准 / 执行中这一条不再等用户：把它从待办里收口（只收口，不伪造决定）。 */
 function acknowledgeExecution() {
+  const active = item.value;
+  if (!active || active.kind !== "tool") return;
+  approvals.resolve(active.identity);
+  unified.noteQueueChanged();
+}
+
+/** 旧审批中断事实：只收起这条只读提示，不批准也不拒绝（那次操作本来就没执行）。 */
+function acknowledgeLegacyInterrupted() {
   const active = item.value;
   if (!active || active.kind !== "tool") return;
   approvals.resolve(active.identity);
@@ -274,7 +301,11 @@ async function submit(decision: "approve" | "approve_modified" | "ignore" | "rej
      * v2 生命周期记录（/decide 不支持 overrides）永远不发，避免假修改。
      */
     const overrides =
-      decision === "approve" && facts?.isSubagentCreate && !lifecycle.value && budgetDirty.value
+      decision === "approve" &&
+      facts?.isSubagentCreate &&
+      !lifecycle.value &&
+      !budgetUnsupported.value &&
+      budgetDirty.value
         ? {
             subagent_budget: {
               max_iterations: budgetForm.value?.maxIterations ?? 5,
@@ -420,6 +451,25 @@ function retryKnowledgeDetail() {
           <p v-if="item.stale" class="ua-stale" role="status">
             这条审批已经有结局（可能已在别处处理或已过期），不会再等待你的授权。未做出任何授权。
           </p>
+          <!-- B-CP1：旧审批恢复出的中断事实 —— 只读，明确说「那次操作没有执行」 -->
+          <p
+            v-if="interruptedLegacy"
+            class="ua-stale"
+            role="status"
+            data-test="unified-approval-legacy-interrupted"
+          >
+            未执行：这是旧审批路径留下的一条中断待核对记录，上次操作没有执行，也不会再执行。
+            这里只显示事实，不提供批准或拒绝。
+          </p>
+          <!-- overrides_supported=false：后端明确说这条旧路径不能改预算，界面也不假装能改 -->
+          <p
+            v-if="budgetUnsupported"
+            class="ua-refresh-note"
+            role="status"
+            data-test="unified-approval-budget-unsupported"
+          >
+            后端明确指出：这条旧审批路径不支持修改执行预算，预算只能按审批记录里的值只读核对。
+          </p>
           <ApprovalFacts
             :item="item.approval"
             :budget="budgetForm"
@@ -467,6 +517,20 @@ function retryKnowledgeDetail() {
           >
             知道了
           </button>
+          <!-- 旧审批中断事实：只读，只给「知道了」——不提供任何授权动作 -->
+          <template v-else-if="interruptedLegacy">
+            <p class="ua-awaiting" role="status" data-test="unified-approval-legacy-interrupted-readonly">
+              这项已经不会执行，不需要你做任何决定。
+            </p>
+            <button
+              class="ua-btn later"
+              type="button"
+              data-test="unified-approval-legacy-ack"
+              @click="acknowledgeLegacyInterrupted()"
+            >
+              知道了
+            </button>
+          </template>
           <!-- 已批准 / 执行中（含重启恢复出来的状态）：只等后端结果，不再给决定按钮 -->
           <template v-else-if="awaitingExecution">
             <p class="ua-awaiting" role="status" data-test="unified-approval-awaiting">
