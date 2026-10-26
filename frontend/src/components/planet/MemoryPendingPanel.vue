@@ -444,8 +444,8 @@ const loadedOnce = ref(false);
  */
 const unifiedApprovals = useUnifiedApprovalsStore();
 watch(
-  () => unifiedApprovals.knowledgeLoadedAt,
-  (stamp) => {
+  () => [unifiedApprovals.knowledgeLoadedAt, unifiedApprovals.knowledge.length] as const,
+  ([stamp]) => {
     if (!stamp) return;
     if (view.value !== "pending" || !loadedOnce.value || loading.value) return;
     void loadPending();
