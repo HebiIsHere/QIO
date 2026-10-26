@@ -673,6 +673,8 @@ onBeforeUnmount(() => {
   height: 100%;
   padding: 0;
   border: none;
+  /* 图标按钮外轮廓统一 14px（窗口按钮虽是条状命中区，仍按同一套圆角语言） */
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-muted);
   cursor: default;

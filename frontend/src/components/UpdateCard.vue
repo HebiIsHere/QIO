@@ -204,7 +204,7 @@ function toggleAutoCheck() {
   height: 22px;
   padding: 0;
   border: none;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--border-strong);
   position: relative;
   cursor: pointer;
