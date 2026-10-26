@@ -194,3 +194,25 @@
 - 静态检查：docs 一致性（101 里程碑）/ 第三方声明（914/918/42 种）/ 发布闸门自检 / workflow 契约 146 断言 + selftest 19 项 / 离线评估与基线逐字节相同。
 - 推送：本次以 [skip ci] 推送，**不触发 CI**（用户要求）；推送后核对该分支无新 run。
 - 未解决/边界：`/api/runtime/state` 的 approvals 快照在同故障下返回 500（不再伪装空，但不是 503+code；非审批端点未改）；`interrupted()/audit_trail()` 仍保留读失败返回空旧行为；本轮无 CI、无真实桌面/安装/真实模型验证。
+
+## 9. FU4：权限模式全局栏化、互动搜索内联、切换 422 修复（2026-10-26）
+
+用户要求：直接修改修复、不走全量测试、不触发 CI、只做针对性测试保证相关代码能跑。
+
+### 9.1 权限模式：胶囊 → 全局栏纯文字
+- 删除 `PermissionModeBadge`（页面内胶囊徽标）及其在 ChatColumn / InteractiveView 的挂载；新增 `components/security/PermissionModeText.vue`，由 WindowChrome 在对话页/互动页共用全局栏渲染（纯文字，无边框/底色/圆角；读取中与读取失败如实显示；点击进入设置 →「工具与权限」，本身不改模式）。
+- 测试：新组件单测（加载/读取中/失败/点击）、b-f01 改为全局栏页面级测试（两个路由）、e1 验收改为「全局栏有文字 + 页面内不再有徽标」；WindowChrome / p1a 共享全局栏回归通过。
+
+### 9.2 互动搜索：弹窗 → 全局栏内联输入
+- `InteractiveChromeTools.vue` 去掉搜索按钮与 body 弹出面板（标题/label/说明/scope/关闭按钮文字全部删除），直接渲染内联 input：初始较窄、点击/聚焦加宽（一次点击即可输入），放大镜图标在框内，除 placeholder 外没有可见提示文字。
+- 结果改为锚定输入框下方的小浮层列表（Teleport body + fixed + 视口钳制；`role=list` 非 dialog；无标题/说明；无命中不渲染说明），点结果仍 dispatch locate；Esc/点击外部收起；ArrowDown 进入结果；480 窄窗结果不出界。
+- 测试：重写 p1b-v2-chrome-tools（保留保存状态 + 真实 store 搜索/locate 断言，新增内联/加宽/无额外文字/无命中/Esc/外部/键盘/窄窗），定向交互组件 73 文件/689 例通过；`scripts/i2v2-verify/playwright_flows.mjs` 同步改为操作内联输入框。
+
+### 9.3 切换权限模式 422
+- 根因：`frontend/src/services/security.ts::setSecurityMode` 发 `PUT /api/security/mode` 时 body 是 JSON 文本但没有 `Content-Type`；FastAPI `body: dict` 收到裸字节按字符串校验 → 422「Input should be a valid dictionary」。
+- 修复：请求显式带 `Content-Type: application/json`。实测同一 body：带头 200，不带头 422；新增 service 单元测试（断言头/请求体/422 如实抛出）。
+
+### 9.4 验证与边界
+- 定向：权限模式相关 47 例、交互组件 73 文件/689 例、security 请求契约 2 例、窗口栏/共享全局栏/design-guards 通过；`vue-tsc --noEmit` 0；`vite build` 成功。
+- 真实浏览器（Playwright + Edge，测试服务器 5199/8734）：1440 与 480 两路由截图与 JSON 在 `_fixpm2/evidence/FU4/ui/`；全局栏文字纯文字（0 border、透明底、0 圆角、11px）、旧徽标 0、搜索容器无额外交字、点击 94→226px 并聚焦、无 dialog、窄窗 scrollWidth=480、consoleErrors=0。
+- 边界：按用户要求未跑全量、未触发 CI；未做真机壳复验；有匹配卡片的搜索结果仅由组件测试覆盖（实机板面无匹配数据）。

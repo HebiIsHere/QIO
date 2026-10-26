@@ -5936,3 +5936,12 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **P1 通知轮话题**：`_execute_notify_turn` 优先 `ctx.initial_topic`（origin 原话题），缺失才回退 current_topic；绑定/上下文/trace/结果保存同一话题，不再改绑界面当前话题。
 - **验证**：各修复均有红→绿定向证据（`_fixpm2/evidence/`）；集成后定向回归通过；`vue-tsc --noEmit` 0 error、`vite build` 成功、docs/license/workflow 契约自检通过、离线评估与基线逐字节相同。按用户最新指令**不做全量测试、不触发 CI**（前端全量在指令前已完成，仅作参考；后端全量已中止）。
 - **边界**：`/api/runtime/state` 的 approvals 快照同故障返回 500（不再伪装空，但非 503+code）；`interrupted()/audit_trail()` 仍保留读失败返回空旧行为；本轮无真实桌面/安装/真实模型验证。
+
+### P93 — FU4：权限模式移到全局栏、互动搜索内联、权限模式切换 422 修复（2026-10-26）
+
+- **Status：** completed（定向测试 + 真实浏览器截图复核；按用户要求**不做全量测试、不触发 CI**；未合入 main、未打包、未发布、未改版本号）
+- **权限模式移到全局栏**：删除页面内胶囊徽标（ChatColumn 话题栏 / InteractiveView 对话窗状态条），改为 WindowChrome 全局栏里的纯文字 `PermissionModeText`（对话页 / 互动页同一处、同一个 store；读取中/失败如实显示；点击进设置 →「工具与权限」，不切模式）。
+- **互动搜索内联**：去掉「按钮 + body 弹窗面板」，在全局栏挂载点直接渲染内联 input：点击/聚焦即展开加宽（一次点击即可输入）；除 input 自身 placeholder 外无任何标题/label/说明/scope/关闭按钮文字；结果是锚定输入框下方的小浮层列表（非 dialog，无标题/说明，可点选定位）；Esc/点击外部收起，支持键盘与 480 窄窗。
+- **修复切换权限模式 422**：`setSecurityMode` 的 PUT 请求补 `Content-Type: application/json`。此前无 Content-Type，FastAPI 的 `body: dict` 把 JSON 文本当字符串校验，返回 422「Input should be a valid dictionary」；实测同一 body 带 JSON 头 200、不带 422，已在真实后端验证。
+- **验证**：定向测试（权限模式 47、交互组件 73 文件/689 例、security 请求契约 2、相关 design-guards/窗口栏等）；`vue-tsc --noEmit` 0 error；`vite build` 成功；Playwright(Edge) 实机 1440/480 两个路由：全局栏文字可见且纯文字（无边框/透明底/0 圆角）、旧徽标 0、搜索只保留输入框（容器无额外交字）、点击后 94→226px 且聚焦、无 dialog、窄窗 scrollWidth=480 无横向溢出、consoleErrors=0（截图与 JSON：`_fixpm2/evidence/FU4/ui/`）。
+- **边界**：本轮不做全量/CI；未做真机桌面壳复验；搜索结果未在真实有匹配卡片的板面上做视觉复核（无卡片数据时按设计不渲染说明）；脚本 `scripts/i2v2-verify/playwright_flows.mjs` 已同步改为操作内联输入框。
