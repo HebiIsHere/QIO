@@ -236,6 +236,29 @@ describe("QModal 与弹窗仲裁", () => {
     w.unmount();
   });
 
+  it("已显示时更高优先级弹窗打开：v-show 隐藏保留 DOM，对方关闭后恢复", async () => {
+    setActivePinia(createPinia());
+    const arbiter = useModalArbiterStore();
+    const w = mount(QModal, {
+      props: { open: true, title: "确认", modalId: "modal-low" },
+      attachTo: document.body,
+    });
+    await flush();
+    const scrim = document.querySelector(".qio-modal-scrim") as HTMLElement;
+    expect(scrim.style.display).not.toBe("none");
+
+    // 影响确认（优先级 40）晚于确认层（other=0）打开：低优先级只隐藏不卸载
+    expect(arbiter.open({ id: "impact-later", kind: "impact" })).toBe(true);
+    await flush();
+    expect(scrim.style.display).toBe("none");
+    expect(dialogEl()).not.toBeNull();
+
+    arbiter.close("impact-later");
+    await flush();
+    expect(scrim.style.display).not.toBe("none");
+    w.unmount();
+  });
+
   it("suspendAll 期间 v-show 隐藏但保留 DOM；resumeAll 恢复，挂起时 Esc 不关闭", async () => {
     setActivePinia(createPinia());
     const arbiter = useModalArbiterStore();
