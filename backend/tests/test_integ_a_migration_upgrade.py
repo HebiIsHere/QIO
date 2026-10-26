@@ -334,7 +334,7 @@ def test_main_51_upgrade_uses_compat_repair_and_preserves_rows(make_db, caplog):
     snapshot = _seed(conn)
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="agent.storage.migrate"):
-        assert apply_migrations(conn) == 70
+        assert apply_migrations(conn) == SCHEMA_VERSION
     assert "兼容修复" in caplog.text, "main 51 缺 R9/页面对象，应触发一次兼容修复"
     _assert_required_objects_present(conn)
     _assert_rows_preserved(conn, snapshot)
@@ -347,7 +347,7 @@ def test_cv_55_upgrade_requires_compat_repair_and_preserves_rows(make_db, caplog
     snapshot = _seed(conn)
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="agent.storage.migrate"):
-        assert apply_migrations(conn) == 70
+        assert apply_migrations(conn) == SCHEMA_VERSION
     assert "兼容修复" in caplog.text, "cv 55 缺 R9 对象，必须先做兼容修复"
     _assert_required_objects_present(conn)
     _assert_rows_preserved(conn, snapshot)
@@ -357,7 +357,7 @@ def test_i2_57_upgrade_preserves_rows_and_task_state(make_db):
     conn = make_db("i2")
     assert current_version(conn) == 57
     snapshot = _seed(conn)
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     _assert_required_objects_present(conn)
     _assert_rows_preserved(conn, snapshot)
     row = conn.execute(
@@ -392,7 +392,7 @@ def test_r9_66_upgrade_preserves_rows_and_key_fields(make_db):
     authorization_before = dict(conn.execute(
         "SELECT revoked_at, decision, requirement_version"
         " FROM authorization_records WHERE id='auth-seed-1'").fetchone())
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     _assert_required_objects_present(conn)
     _assert_rows_preserved(conn, snapshot)
     assert dict(conn.execute(
@@ -418,10 +418,10 @@ def test_r9_66_upgrade_preserves_rows_and_key_fields(make_db):
 def test_second_start_is_idempotent(make_db, kind):
     conn = make_db(kind)
     snapshot = _seed(conn)
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     versions_after_first = [row[0] for row in conn.execute(
         "SELECT version FROM schema_version ORDER BY version")]
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     assert [row[0] for row in conn.execute(
         "SELECT version FROM schema_version ORDER BY version")] == versions_after_first
     _assert_required_objects_present(conn)
@@ -448,19 +448,20 @@ def test_repair_branch_schema_backfills_objects_without_writing_version_or_data(
     ] == version_rows_before, "兼容修复不得写 schema_version"
     _assert_required_objects_present(conn)
     _assert_rows_preserved(conn, snapshot)
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
 
 
 def test_complete_objects_do_not_replay_compat_repair(make_db, caplog):
-    """对象已齐的 66 库（模拟 67..70 版本行丢失的崩溃中间态）不应再跑兼容修复。"""
+    """对象已齐的 66 库（模拟 67..当前版本 的版本行丢失的崩溃中间态）不应再跑兼容修复。"""
     conn = make_db("empty")
-    assert apply_migrations(conn) == 70
-    conn.execute("DELETE FROM schema_version WHERE version IN (67, 68, 69, 70)")
+    assert apply_migrations(conn) == SCHEMA_VERSION
+    # 版本行 >= 67 全删（含追加的 71/72）：对象已经建好，只是版本号没来得及写。
+    conn.execute("DELETE FROM schema_version WHERE version >= 67")
     conn.commit()
     assert current_version(conn) == 66
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="agent.storage.migrate"):
-        assert apply_migrations(conn) == 70
+        assert apply_migrations(conn) == SCHEMA_VERSION
     assert "兼容修复" not in caplog.text, "对象齐全时不应触发兼容修复"
     _assert_required_objects_present(conn)
 
@@ -473,7 +474,7 @@ def test_main_51_degraded_attachments_is_repaired_by_lower_bound(make_db):
     conn.execute("DROP TABLE attachments")
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     _assert_required_objects_present(conn)
     assert _columns(conn, "attachments"), "attachments 应被补偿重建"
     _assert_rows_preserved(conn, snapshot, exclude={"attachments"})
@@ -486,7 +487,7 @@ def test_main_51_degraded_attachments_is_repaired_by_lower_bound(make_db):
 
 def test_version_70_missing_required_tables_are_replayed(make_db):
     conn = make_db("empty")
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     snapshot = _seed(conn)
     dropped: set[str] = set()
     for table in ("task_ack", "user_requirements", "internal_data_identities"):
@@ -495,7 +496,7 @@ def test_version_70_missing_required_tables_are_replayed(make_db):
         conn.commit()
         conn.execute("PRAGMA foreign_keys = ON")
         dropped.add(table)
-        assert apply_migrations(conn) == 70
+        assert apply_migrations(conn) == SCHEMA_VERSION
         _assert_required_objects_present(conn)
         assert _columns(conn, table), f"{table} 应被补偿重放重建"
         # 被删表的行丢失是本用例自己造成的（不是迁移改数据）；其它表必须逐行保留。
@@ -510,7 +511,7 @@ def test_branch_db_missing_page_tables_is_repaired_before_upgrade(make_db):
     conn.execute("DROP TABLE board_intent_turns")
     conn.commit()
     conn.execute("PRAGMA foreign_keys = ON")
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     _assert_required_objects_present(conn)
     assert _columns(conn, "task_feed") and _columns(conn, "board_intent_turns")
     _assert_rows_preserved(conn, snapshot, exclude={"task_feed", "board_intent_turns"})
@@ -523,7 +524,7 @@ def test_branch_db_missing_page_tables_is_repaired_before_upgrade(make_db):
 
 def test_constraints_are_usable_after_upgrade(make_db):
     conn = make_db("empty")
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     _seed(conn)
 
     with pytest.raises(sqlite3.IntegrityError):
@@ -550,7 +551,7 @@ def test_constraints_are_usable_after_upgrade(make_db):
 
 
 def test_unified_compensation_is_additive_ddl_only():
-    """补偿 70 不启动工具 / 不重授权 / 不消费审批 / 不重置重试：只有建对象 + 1 条幂等 seed。"""
+    """补偿迁移（当前 COMPENSATION_VERSION）不启动工具 / 不重授权 / 不消费审批 / 不重置重试：只有建对象 + 1 条幂等 seed。"""
     comp = [str(stmt) for target, statements in MIGRATIONS
             if int(target) == COMPENSATION_VERSION for stmt in statements]
     heads = [" ".join(stmt.split()).upper() for stmt in comp]
@@ -588,7 +589,7 @@ def test_intent_and_retry_counts_are_not_reset_by_upgrade(make_db):
             "SELECT attempts, manual_attempts, retry_limit FROM board_intent_retries"
             " WHERE id='retry-seed-1'").fetchone()),
     }
-    assert apply_migrations(conn) == 70
+    assert apply_migrations(conn) == SCHEMA_VERSION
     after = {
         "intent": dict(conn.execute(
             "SELECT attempt, version FROM board_intents WHERE id='intent-seed-1'").fetchone()),

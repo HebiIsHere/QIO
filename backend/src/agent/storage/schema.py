@@ -1737,6 +1737,64 @@ MIGRATIONS.append(
     )
 )
 
+# ── FU2-D（2026-10-26 后续修复轮）：子任务完成通知的持久化队列 ────────────────────
+# 契约：_fixpm2/COMMON.md §4.4 / BRIEF-d.md。基线（373fda40）三个真实缺陷：
+#   1) 纯内存 deque + MAX_PENDING_NOTIFICATIONS=200，超过时 popleft **静默丢弃**最早通知；
+#   2) enqueue 就调用 TaskManager.mark_notified —— 把「入队」当成「已通知/已交付」；
+#   3) 没有持久化：进程重启队列清空；take 之后崩溃丢该通知（已标 notified，无法补投）。
+#
+# 表设计（同 task_id 只一行 = INSERT OR IGNORE 幂等去重）：
+#   task_id         主键（同一任务最多一条通知）
+#   payload         JSON：通知事实（tool/status/outcome/status_label/preview/origin…）
+#   origin          JSON：程序绑定的原任务上下文（turn_id / topic_id / goal_version）
+#   created_at      入队时间（FIFO 依据；与 rowid 一起保证稳定顺序）
+#   delivered_at    **唯一的「已交付」判据**：只有通知轮被 TurnManager 接受后才写
+#   attempts        投递尝试次数（取出即 +1，失败保留待重试）
+#   last_error      最近一次投递失败的真实原因（不静默）
+#   last_attempt_at 最近一次尝试时间
+_SUBTASK_NOTIFICATIONS_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS subtask_notifications (
+        task_id         TEXT PRIMARY KEY,
+        payload         TEXT NOT NULL,
+        origin          TEXT NOT NULL DEFAULT '{}',
+        created_at      TEXT NOT NULL,
+        delivered_at    TEXT,
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        last_error      TEXT,
+        last_attempt_at TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_subtask_notifications_pending"
+    " ON subtask_notifications(delivered_at, created_at)",
+]
+
+MIGRATIONS.append((71, list(_SUBTASK_NOTIFICATIONS_DDL)))
+
+# 可修复列：REQUIRED_OBJECTS 只列「补偿能补回来」的对象（与既往约定一致）——
+# 整表缺失时 CREATE TABLE 建出完整形状；表在但状态列丢了时 ADD COLUMN 补得回来；
+# 主键/基础列被改这类形状损坏不伪装成可补偿项，留给按对象的告警与人判断。
+_SUBTASK_NOTIFICATIONS_REPAIR_COLUMNS: list[str] = [
+    "ALTER TABLE subtask_notifications ADD COLUMN delivered_at TEXT",
+    "ALTER TABLE subtask_notifications ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE subtask_notifications ADD COLUMN last_error TEXT",
+    "ALTER TABLE subtask_notifications ADD COLUMN last_attempt_at TEXT",
+]
+
+# 补偿入口（新，72）：补偿 70 的全部语句 + 迁移 71（通知表 / 索引）+ 可修复列。
+# 与 66/68/70 同口径：纯追加 DDL（CREATE TABLE/INDEX IF NOT EXISTS + ADD COLUMN），
+# 不改写任何历史迁移与数据；SCHEMA_VERSION = COMPENSATION_VERSION = 72。
+MIGRATIONS.append(
+    (
+        72,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 70 for stmt in stmts]
+            + list(_SUBTASK_NOTIFICATIONS_DDL)
+            + list(_SUBTASK_NOTIFICATIONS_REPAIR_COLUMNS)
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 70
+COMPENSATION_VERSION = 72
 
