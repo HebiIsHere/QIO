@@ -152,6 +152,13 @@ export const useNotificationsStore = defineStore("notifications", {
     remainingMs: {} as Record<string, number>,
     /** 合并窗口截止时间；0 = 没有合并在进行。 */
     mergeUntil: 0,
+    /**
+     * 中央弹窗期间挂起：正在显示的通知先撤下（DOM 不显示），保留在队列里，
+     * 记录剩余展示时间；弹窗结束后恢复同一条并继续剩余时长。
+     */
+    suspendedForModal: false,
+    /** 被挂起时正在显示的那条（key + 剩余毫秒）；null = 没有需要恢复的。 */
+    suspendedActive: null as { key: string; remaining: number } | null,
     /** 自动隐藏计时器（真正显示 5s / 恢复剩余时长）。 */
     _hideTimer: 0 as TimerHandle,
     /** 合并窗口结束后触发显示的计时器。 */
@@ -310,6 +317,8 @@ export const useNotificationsStore = defineStore("notifications", {
      */
     flushQueue(): boolean {
       if (this.activeKey) return false;
+      // 中央弹窗期间：已显示的先撤下、未显示的继续排队，等弹窗结束再统一放行
+      if (this.suspendedForModal) return false;
       if (this.mergeUntil && Date.now() < this.mergeUntil) return false;
       const arbiter = useModalArbiterStore();
       if (arbiter.blocksNotices) return false;
@@ -351,6 +360,61 @@ export const useNotificationsStore = defineStore("notifications", {
       this.notices = kept;
     },
 
+    /**
+     * 中央弹窗打开：撤下正在显示的通知（但保留在队列、记录剩余时长）。
+     *
+     * 任务书要求「弹窗打开前已显示的通知暂停并撤下，保留待处理事件；弹窗结束后再显示」。
+     * 这里不删通知、不重置计时，也不改变任何业务状态。
+     */
+    suspendForModal(): void {
+      if (this.suspendedForModal) return;
+      this.suspendedForModal = true;
+      const key = this.activeKey;
+      if (!key) {
+        clearTimer(this._hideTimer);
+        this._hideTimer = 0;
+        return;
+      }
+      const remaining =
+        typeof this.remainingMs[key] === "number"
+          ? this.remainingMs[key]
+          : Math.max(0, NOTICE_VISIBLE_MS - (Date.now() - (this.displayStartedAt[key] ?? Date.now())));
+      this.suspendedActive = { key, remaining };
+      clearTimer(this._hideTimer);
+      this._hideTimer = 0;
+      delete this.remainingMs[key];
+      // 撤下显示：activeKey 置空 → 组件不再渲染；通知仍留在 notices 队列里
+      this.activeKey = null;
+    },
+
+    /**
+     * 中央弹窗关闭：恢复被挂起的那条（按剩余时长继续），或显示弹窗期间新入队的。
+     *
+     * 「弹窗期间新入队的」在真正开始显示时起算 5s（由 flushQueue 内的显示逻辑保证）。
+     */
+    resumeFromModal(): void {
+      if (!this.suspendedForModal && !this.suspendedActive) {
+        this.flushQueue();
+        return;
+      }
+      this.suspendedForModal = false;
+      const suspended = this.suspendedActive;
+      this.suspendedActive = null;
+      if (suspended && this.notices.some((notice) => notice.key === suspended.key)) {
+        const remaining = Math.max(0, Math.min(NOTICE_VISIBLE_MS, suspended.remaining));
+        this.activeKey = suspended.key;
+        this.pausedKeys = this.pausedKeys.filter((entry) => entry !== suspended.key);
+        this.displayStartedAt[suspended.key] = Date.now() - (NOTICE_VISIBLE_MS - remaining);
+        delete this.remainingMs[suspended.key];
+        clearTimer(this._hideTimer);
+        this._hideTimer = 0;
+        this._armHideTimer(suspended.key, remaining);
+        return;
+      }
+      // 被挂起的那条已经不在队列里：显示下一条
+      this.flushQueue();
+    },
+
     /** 关闭一条通知（只关这次显示，不影响业务；成员校验一并清理）。 */
     dismiss(key: string): void {
       const target = String(key ?? "").trim();
@@ -370,6 +434,7 @@ export const useNotificationsStore = defineStore("notifications", {
       this.pausedKeys = this.pausedKeys.filter((entry) => entry !== notice.key);
       delete this.displayStartedAt[notice.key];
       delete this.remainingMs[notice.key];
+      if (this.suspendedActive?.key === notice.key) this.suspendedActive = null;
       if (wasActive) {
         this.activeKey = null;
         clearTimer(this._hideTimer);
@@ -421,6 +486,8 @@ export const useNotificationsStore = defineStore("notifications", {
       this.displayStartedAt = {};
       this.remainingMs = {};
       this.mergeUntil = 0;
+      this.suspendedForModal = false;
+      this.suspendedActive = null;
       relevanceChecks.clear();
       activationHandlers.clear();
     },

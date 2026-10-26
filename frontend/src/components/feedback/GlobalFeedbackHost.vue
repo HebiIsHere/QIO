@@ -54,16 +54,25 @@ onMounted(() => {
   stopInputLeft = subscribeInputLeft(scheduleAfterInputLeft);
   taskNotices = useTaskFailureNotices();
   issueSources = useGlobalIssueSources();
-  // 中央弹窗关闭：把通知队列放出来（flushQueue 内部会先过滤已恢复/已处理的成员）
+  /**
+   * 中央弹窗开/关：统一由通知调度处理「撤下 / 恢复」。
+   *
+   * - 打开：正在显示的通知撤下（保留在队列并记录剩余时长），新通知继续排队；
+   * - 关闭：恢复被挂起的那条并按剩余时间继续；弹窗期间新入队的从显示时起算 5s。
+   * 不在任何组件里用 z-index / 遮罩「盖住」通知来假装撤下。
+   */
   stopModalWatch = watch(
     () => arbiter.hasModal,
     (hasModal) => {
-      if (hasModal) return;
-      notifications.flushQueue();
+      if (hasModal) {
+        notifications.suspendForModal();
+        return;
+      }
+      notifications.resumeFromModal();
       if (unified.autoPending) unified.maybeAutoOpen();
     },
+    { immediate: true },
   );
-  notifications.flushQueue();
 });
 
 onBeforeUnmount(() => {
