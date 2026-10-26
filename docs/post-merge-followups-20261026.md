@@ -158,3 +158,39 @@
 - **未来合入 main**：PR 运行按 head SHA、main push 按 merge SHA，是两个不同提交、各自一次完整矩阵（concurrency 不会把它们当重复）；若仓库保护要求两者都跑，按「不同 SHA 两次完整运行」如实记录，不冒充去重。减负方案：fast-forward/rebase 合并让 main SHA 等于已验证 head，或 PR 只跑 targeted、main push 作为唯一完整门禁。本轮未创建 PR。
 - **数据库兼容**：本轮只追加迁移 71/72（SCHEMA_VERSION=COMPENSATION_VERSION=72），空库、版本 70 旧库升级、对象缺失补偿均有测试；迁移只进不退，代码回退不会自动降库，恢复旧备份前须确认不会覆盖升级后新增数据。未改写任何历史迁移。
 - **合并材料**：本文档（五项逐项、反例/修复/验证、保留机制、未解决边界）+ 各工作流证据（`_fixpm2/evidence/{A..F}`）+ 分支提交历史（merge --no-ff 保留工作流边界）。
+
+## 8. 第二轮定向修复（FU3，2026-10-26 后续）
+
+本轮按用户要求：**只做定向验证 + 一次全量测试；只推送，不触发 CI**（推送使用 [skip ci]，推送后核对无新 CI 运行）。
+
+### 8.1 审批读取失败不再伪装成空集合（P1）
+- 问题：`ApprovalService.pending()` 吞掉 `store.list_pending()` 异常只记 warning（且内存 legacy 会掩盖持久层失败），`history()` 吞异常返回 `[]`；审批 pending/history 端点因此返回 200+空/部分集合，前端把失败补读当成功并可能清掉待办。
+- 修复（B）：新增 `ApprovalsUnreadable`（code=approvals_unreadable）；`pending()`/`history()` 读取失败显式抛出（不再返回空/部分）；两个审批端点捕获 → **503** + `detail={"code":"approvals_unreadable","message":"读取审批数据失败（…）：这不代表没有审批/历史，可以重试"}`；失败不改状态、可立即重试。前端无需改动（非 2xx 会保留已有待办并显示可重试错误）。
+- 验证：新回归 6 例（服务层/API 503+code、内存 legacy 不掩盖、重试恢复）；红证据基线 200+空集合，修复后 6 passed；审批相关定向 151+151 passed。
+
+### 8.2 手动完整 CI 的所有测试 job 必须测试指定提交（P1）
+- 问题：`ci.yml` 只有 `ci-dedup-preflight` 用 `inputs.ref` checkout 并断言 `expected_sha`；其余测试 job 是默认 checkout（workflow_dispatch 下是派发 ref 尖端，可能≠指定 SHA）。
+- 修复（E）：docs/backend/backend-windows/frontend/rust/rust-windows/frozen-worker/install-e2e 全部显式 `ref: ${{ inputs.expected_sha || github.sha }}`（dispatch 检出被 preflight 校验过的提交；push/PR 回退 github.sha，行为不变）；preflight 断言保留。
+- 契约：`verify_workflow_contract.py` 新增逐 job 断言（dispatch 必须 expected_sha、不得用 inputs.ref、push/PR 回退 github.sha、checkout 不得按事件跳过），selftest 增加 4 个反例；本地 146 断言 PASS / selftest 19 项 0 失败 / 11 场景 0 不符 / YAML 可解析。本轮未触发 CI。
+
+### 8.3 审批到期事件相位不再显示成「失效」（P2）
+- 问题：`_execute_approved` 到期路径已 `mark_expired`（history=expired），事件却发 phase=invalidated，前端显示「执行前核对不通过」，补读历史也无法纠正。
+- 修复（B）：到期分支发布 phase=**expired**（summary 原文保留）；digest 被改/期限无法核对仍是 invalidated。前端已能映射 expired（approvalStateFromPhase、resultStateFromOutcome、终态集合、文案）。
+- 验证：新用例断言到期事件 phases=[expired]、history outcome=expired；红证据基线 phases=[invalidated]。
+
+### 8.4 补读快照竞态：新到达审批不被旧快照删除（P1）
+- 问题：前端 `recoverPending` 在 await getPendingApprovals() 之后无条件 `reconcile(snapshotIds)`；请求期间通过事件到达的新审批会被较旧的空快照删掉。
+- 修复（C）：待办项记录 `arrivedSeq`（enqueue 分配、applyPending 推进、store 单调计数）；`recoverPending` 请求前捕获序号，返回后只移除「请求开始前已存在且快照没有」的项；请求期间新到达/更新的保留；失败/404 仍保留全部。`refreshApprovalsAndHistory` 复用同一路径。
+- 验证：新用例 5 例（deferred 请求 + 期间新审批/更新旧项 + refresh 路径；失败保留）；红证据基线 3 failed；定向回归 36 文件 / 290 tests passed；`vue-tsc` 0。
+
+### 8.5 子任务通知轮不再跑错话题（P1）
+- 问题：`_pump_subtask_notifications` 已按 origin 原话题 A 提交（ctx.initial_topic=A），但 `_execute_notify_turn` 无条件 `topic=self.current_topic()`（界面当前话题 B），绑定/上下文/trace/结果保存全变成 B。
+- 修复（D）：通知轮只解析一次话题——`ctx.initial_topic` 优先，缺失/空白才回退 `current_topic()`；`ensure_started/set_initial_topic/ctx.current_topic/ctx.bound_topic/record_binding/append_message/fragments/finish` 全部使用同一结果；通知轮其他语义不变。
+- 验证：新用例 2 例（A/B 场景全链路均为 A；缺失时回退 B）；红证据基线 1 failed；定向 13 文件 96 passed。
+
+### 8.6 本轮验证与推送
+- 定向：上述各工作流新用例与相邻回归全部通过（证据 `_fixpm2/evidence/{B,C,D,E}/`）。
+- 验证门槛（按用户最新指令）：**不做全量测试、不触发 CI**；本轮以各工作流红→绿定向用例与集成后定向回归为验收依据。说明：在收到该指令前，前端全量曾执行完成（454 文件 / 4034 例全过）——仅作参考事实，不作为本轮验收门槛；后端全量已中止（约 2003 项后停止），不作为验收依据。
+- 静态检查：docs 一致性（101 里程碑）/ 第三方声明（914/918/42 种）/ 发布闸门自检 / workflow 契约 146 断言 + selftest 19 项 / 离线评估与基线逐字节相同。
+- 推送：本次以 [skip ci] 推送，**不触发 CI**（用户要求）；推送后核对该分支无新 run。
+- 未解决/边界：`/api/runtime/state` 的 approvals 快照在同故障下返回 500（不再伪装空，但不是 503+code；非审批端点未改）；`interrupted()/audit_trail()` 仍保留读失败返回空旧行为；本轮无 CI、无真实桌面/安装/真实模型验证。

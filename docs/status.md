@@ -5924,3 +5924,15 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **验证**：本地全量一次——后端 601 文件/6013 项 exit 0；前端 452 文件/4025 项全通过；`vue-tsc --noEmit` 0 error；`vite build` 成功；docs/license/release gate/workflow 契约检查通过；离线评估与基线逐字节相同。完整 CI run **40257319813**（SHA 48b01f0c，event=push，10 job：9 success + backend py3.12 1 failure；install e2e/frozen worker/rust×2/frontend/docs/backend py3.11/backend windows 均 success，无 skipped/cancelled）。失败定位为**测试**跨线程使用同一 sqlite 连接（py3.12 抛 sqlite3.InterfaceError；产品代码未改、py3.11 与 Windows 同代码全绿），修测试 helper 后以 `[skip ci]` 推送 0c47e11b，targeted-verify py3.12 run **40263546217** success、py3.11 run **40263563419** success（均指定完整 SHA 并在 workflow 内断言实际 checkout SHA）。独立验收 F：五项反例全绿、保真 6/6、回归 101+81、真实界面 480 4/4；LIMITED：通知 AppContext 端到端未构造、网络故障注入未做、跨崩溃 at-least-once 窗口保留。
 - **收口后追加修复（定向验证，未触发全量/CI）**：普通互动聊天续作 `resolve_chat_binding` 与确认/恢复/重试同规则——原提交保存的 topicId 优先；原提交存在但话题无法核对时明确 400 拒绝，不回退当前话题、不静默改绑；无 submission 的新消息仍用当前话题。新增 `backend/tests/test_fu3_chat_topic_binding.py`（基线 2 红 → 修复后 5 绿；相邻 waiting 13 绿）。按用户要求未跑全量、未触发 CI，改动以 `[skip ci]` 推送。
 - **边界**：真实模型/厂商链路一律 fake/mock；POSIX 平台无本地证据（本机仅 Windows）；安装包形态与系统关机/注销未验证；真机桌面壳默认未在本轮重新验证（除非收口时另有证据）；历史里程碑中「未合并 main/未发布」等表述是各历史阶段事实，不因本轮开始而改写。
+
+### P92 — 第二轮定向修复：审批读取失败、CI 派发提交、过期相位、补读竞态、通知话题（2026-10-26 后续轮）
+
+- **Status：** completed（定向验证；按用户要求**不做全量测试、不触发 CI**；未合入 main、未打包、未发布、未改版本号）
+- **基线**：上一轮修复分支 tip `dae32828`（P91 收口后）；本轮继续同一修复分支，B/C/D/E 子工作流各自独立分支（fix/fu3-*），Lead 统一集成。
+- **P1 审批读取失败显式化**：`ApprovalService.pending()/history()` 读取失败不再返回空/部分集合；`/api/approvals/pending`、`/api/approvals/history` 返回 503 + `approvals_unreadable`，前端保留已有待办并显示可重试错误。
+- **P1 手动完整 CI 测试提交修正**：`ci.yml` 全部测试 job 显式 checkout `inputs.expected_sha || github.sha`（dispatch 检被 preflight 校验的提交；push/PR 不变）；契约检查器新增逐 job 断言与 4 个 selftest 反例。
+- **P2 到期事件相位修正**：`_execute_approved` 到期路径事件 phase 由 invalidated 改为 expired（history 同步 expired），前端显示「已过期」而非「执行前核对不通过」。
+- **P1 补读快照竞态**：前端按 arrivedSeq 区分「请求开始前已存在」与「补读期间新到达」，旧快照不再删除新审批；失败/404 保留全部待办。
+- **P1 通知轮话题**：`_execute_notify_turn` 优先 `ctx.initial_topic`（origin 原话题），缺失才回退 current_topic；绑定/上下文/trace/结果保存同一话题，不再改绑界面当前话题。
+- **验证**：各修复均有红→绿定向证据（`_fixpm2/evidence/`）；集成后定向回归通过；`vue-tsc --noEmit` 0 error、`vite build` 成功、docs/license/workflow 契约自检通过、离线评估与基线逐字节相同。按用户最新指令**不做全量测试、不触发 CI**（前端全量在指令前已完成，仅作参考；后端全量已中止）。
+- **边界**：`/api/runtime/state` 的 approvals 快照同故障返回 500（不再伪装空，但非 503+code）；`interrupted()/audit_trail()` 仍保留读失败返回空旧行为；本轮无真实桌面/安装/真实模型验证。
