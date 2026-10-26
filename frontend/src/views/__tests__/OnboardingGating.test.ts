@@ -23,7 +23,7 @@ vi.mock("../../services/api", () => ({
 
 // 启动握手是外壳/后端的事，这里把它当作已就绪 —— 这几条用例只关心欢迎页的展开规则
 const boot = vi.hoisted(() => ({ waitForBackend: vi.fn() }));
-vi.mock("../../services/boot", () => ({ waitForBackend: boot.waitForBackend }));
+vi.mock("../../services/boot", () => ({ waitForBackend: boot.waitForBackend, BOOT_SLOW_MS: 10_000 }));
 
 vi.mock("../../stores/events", () => ({
   useEventStore: () => ({ connect: vi.fn() }),

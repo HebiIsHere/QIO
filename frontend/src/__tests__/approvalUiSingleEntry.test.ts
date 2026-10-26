@@ -29,7 +29,7 @@ function legacyApprovalMarkers(wrapper: any) {
 }
 
 const boot = vi.hoisted(() => ({ waitForBackend: vi.fn() }));
-vi.mock("../services/boot", () => ({ waitForBackend: boot.waitForBackend }));
+vi.mock("../services/boot", () => ({ waitForBackend: boot.waitForBackend, BOOT_SLOW_MS: 10_000 }));
 
 vi.mock("../stores/events", () => ({ useEventStore: () => ({ connect: vi.fn() }) }));
 vi.mock("../stores/ui", () => ({ useUiStore: () => ({ load: vi.fn() }) }));
