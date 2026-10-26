@@ -651,17 +651,21 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 10px;
+  /* FU5：任务按钮就是收起栏本身 —— 不再在栏里再套一个小圆角按钮。
+     栏与按钮用同一圈圆角、同一条边：按钮铺满整栏，圆角完全对齐。 */
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-lg);
   background: var(--bg-surface);
 }
 .rail-btn {
   position: relative;
-  width: 36px;
-  padding: 8px 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  width: 100%;
+  flex: 1;
+  padding: 14px 0;
+  border: 0;
+  border-radius: inherit;
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
@@ -680,13 +684,14 @@ onBeforeUnmount(() => {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.rail-btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
-.rail-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.rail-btn:hover { color: var(--text-strong); background: var(--layer-hover); }
+.rail-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .rail-label { writing-mode: vertical-rl; letter-spacing: 0.14em; }
 .rail-badge {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  /* 收起栏 overflow:hidden（保证按钮与栏圆角完全对齐），徽标改为贴内侧右上角 */
+  top: 4px;
+  right: 4px;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
