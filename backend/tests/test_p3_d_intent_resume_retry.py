@@ -58,11 +58,24 @@ class ExplodingTurns:
         raise RuntimeError("main loop unavailable")
 
 
+def _seed_submission_topic(conn, topic: str = "topic-p3d") -> None:
+    """真实流程里原互动轮会把提交绑定写到 resumeState.topicId。
+
+    FU2-A 起续作 Turn 的话题只认这条原提交事实；测试夹具必须提供它，
+    否则主题归属无法确认（那属于另一条负向用例）。
+    """
+    conn.execute(
+        "UPDATE board_submissions SET resume_state = ? WHERE id = ?",
+        (models_dumps({"kind": "submission", "topicId": topic}), SUBMISSION),
+    )
+
+
 @pytest.fixture()
 def board_env(db_conn):
     prepare(db_conn)
     make_board(db_conn, board_id=BOARD)
     add_submission(db_conn, board_id=BOARD, submission_id=SUBMISSION)
+    _seed_submission_topic(db_conn)
     return db_conn
 
 
@@ -161,7 +174,9 @@ def test_start_turn_claims_intent_and_duplicate_confirm_does_not_parallel(board_
     turn = turns.calls[0]["turn"]
     assert turn.board_intent_ids == (intent_id,)
     assert turn.board_submission_id == SUBMISSION
-    assert turn.board_topic_id == "topic-1"
+    # FU2-A：调用方传的 topic-1 只是「界面当前话题」；续作必须写回原提交话题。
+    assert turns.calls[0]["topicId"] == "topic-p3d"
+    assert turn.board_topic_id == "topic-p3d"
     assert turn.mode == "interactive"
     assert turn.board_resume is True
     assert turn.board_attempt >= 1
