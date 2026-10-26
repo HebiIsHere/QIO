@@ -49,7 +49,6 @@ from agent.storage.approvals import (
     ApprovalNotFound,
     ApprovalStore,
     LegacyApprovalNotExecutable,
-    LegacyApprovalUseRespond,
     OverridesUnsupported,
 )
 from agent.storage.db import transaction
@@ -1091,6 +1090,42 @@ class ApprovalService:
         except Exception:  # noqa: BLE001 - 历史失败不能挡住审批本身
             logger.warning("failed to write legacy approval history", exc_info=True)
 
+    def record_legacy_choice(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        summary: str,
+        choice: str = "continue",
+    ) -> None:
+        """「继续/停止」这类**决定型**旧审批的可读事实（不是可执行操作）。
+
+        不能写 executed/failed：那会把「用户点了继续」伪造成「操作执行成功」
+        （Lead 裁决 2026-10-26）。outcome 保持 approved/rejected，只把 summary
+        说清用户到底选了什么；真实可判定的执行结果由对应执行器另行收口。
+        """
+        if self.store is None:
+            return
+        raw = self.store.get_raw(approval_id)
+        if raw is None or self.store.is_v2(raw):
+            return
+        row = self.store.row_to_dict(raw) or {}
+        kind = str(row.get("kind") or "")
+        label = str(row.get("label") or "")
+        outcome = "approved" if approved else "rejected"
+        detail = {
+            "decision": outcome,
+            "kind": kind,
+            "label": label,
+            "choice": str(choice or "continue"),
+        }
+        try:
+            self.store.write_history(
+                approval_id, summary=str(summary), outcome=outcome, detail=detail
+            )
+        except Exception:  # noqa: BLE001 - 历史失败不能挡住本轮继续/停止
+            logger.warning("failed to record legacy choice history", exc_info=True)
+
     @staticmethod
     def _check_overrides(kind: str, payload: dict | None, overrides: dict | None) -> None:
         """不支持 overrides 的路径必须显式拒绝；不得静默丢弃用户的修改。"""
@@ -1338,6 +1373,7 @@ class ApprovalService:
         *,
         ok: bool,
         error: str | None = None,
+        summary: str | None = None,
     ) -> dict | None:
         """旧审批保护的**真实执行结果**：写 approval_history 并发布 APPROVAL_RESULT。
 
@@ -1361,12 +1397,14 @@ class ApprovalService:
         err = str(error).strip() if error is not None else ""
         name = label or kind or "这次操作"
         outcome = "executed" if ok else "failed"
-        if ok:
-            summary = "已执行：" + name
+        if summary:
+            readable = str(summary)
+        elif ok:
+            readable = "已执行：" + name
         elif err:
-            summary = "执行失败：" + name + "（" + err[:200] + "）"
+            readable = "执行失败：" + name + "（" + err[:200] + "）"
         else:
-            summary = "执行失败：" + name
+            readable = "执行失败：" + name
         detail = {
             "ok": bool(ok),
             "kind": kind,
@@ -1376,7 +1414,7 @@ class ApprovalService:
         }
         try:
             self.store.write_history(
-                approval_id, summary=summary, outcome=outcome, detail=detail
+                approval_id, summary=readable, outcome=outcome, detail=detail
             )
         except Exception:  # noqa: BLE001 - 历史失败不能挡住执行结果事件
             logger.warning("failed to write legacy execution history", exc_info=True)
@@ -1386,7 +1424,7 @@ class ApprovalService:
             "phase": outcome,
             "legacy": True,
             "ok": bool(ok),
-            "summary": summary,
+            "summary": readable,
             "detail": detail,
             "turn_id": turn_id,
             "kind": kind,

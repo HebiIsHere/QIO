@@ -633,3 +633,118 @@ def test_api_respond_rejects_overrides_on_v2_and_forwards_on_legacy(client, monk
     assert seen["overrides"] == {"subagent_budget": {"max_iterations": 7}}, (
         "HTTP 层必须把 overrides 原样交给服务层，不能在路由里吞掉"
     )
+
+# ---------------------------------------------------------------------------
+# 5) 非工具的旧审批：维护审批真实应用后收口；loop「继续/停止」不伪装执行
+# ---------------------------------------------------------------------------
+
+
+async def test_maintenance_approval_result_upgrades_to_executed_after_real_apply(db_conn):
+    """后台维护审批不经过工具边界：真实 _apply_approval 完成后历史必须升级为 executed。"""
+    from types import SimpleNamespace
+
+    from agent.services import maintenance
+
+    bus = EventBus()
+    approvals = ApprovalService(bus, conn=db_conn)
+    applied: list = []
+
+    class _Workspaces:
+        def create(self, request):
+            applied.append(request)
+            return SimpleNamespace(id="dev_task_maintenance")
+
+    ctx = SimpleNamespace(approvals=approvals, dev_workspaces=_Workspaces())
+    maintenance._request_approval(
+        ctx,
+        "tool_candidate",
+        {"name": "auto_tool", "description": "自动工具候选", "reason": "测试"},
+    )
+    approval_id = await _wait_request(approvals)
+    assert await approvals.respond(approval_id, "approved") is True
+    for _ in range(200):
+        if applied:
+            break
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.05)
+    history = _history(approvals, approval_id)
+    assert history, "维护审批必须有可读历史"
+    assert history[0]["outcome"] == "executed", (
+        "维护审批真实应用完成后必须从 approved 升级为 executed"
+    )
+    assert "已执行" in history[0]["summary"]
+    assert history[0]["detail"]["ok"] is True
+
+
+async def test_maintenance_approval_failure_is_recorded_as_failed(db_conn):
+    from types import SimpleNamespace
+
+    from agent.services import maintenance
+
+    bus = EventBus()
+    approvals = ApprovalService(bus, conn=db_conn)
+
+    class _BrokenWorkspaces:
+        def create(self, request):
+            raise RuntimeError("工作区创建失败")
+
+    ctx = SimpleNamespace(approvals=approvals, dev_workspaces=_BrokenWorkspaces())
+    maintenance._request_approval(
+        ctx, "tool_candidate", {"name": "auto_tool2", "description": "候选"}
+    )
+    approval_id = await _wait_request(approvals)
+    await approvals.respond(approval_id, "approved")
+    history: list = []
+    for _ in range(200):
+        history = _history(approvals, approval_id)
+        if history and history[0]["outcome"] == "failed":
+            break
+        await asyncio.sleep(0.01)
+    assert history and history[0]["outcome"] == "failed", "维护应用失败必须如实记为 failed"
+    assert "失败" in history[0]["summary"]
+    assert "工作区创建失败" in (history[0]["detail"]["error"] or "")
+
+
+async def test_loop_continue_choice_is_not_faked_as_executed():
+    """「用户点了继续」是决定，不是可执行操作：只能写决定事实，不得写 executed。"""
+    from types import SimpleNamespace
+
+    from agent.core.loop import AgentLoop
+
+    calls: list = []
+
+    class _Approvals:
+        def record_legacy_choice(self, approval_id, *, approved, summary):
+            calls.append({"approval_id": approval_id, "approved": approved, "summary": summary})
+
+    loop = AgentLoop.__new__(AgentLoop)
+    loop.approvals = _Approvals()
+    await loop._record_continue_choice(
+        SimpleNamespace(approval_id="appr_continue"), approved=True, what="预算耗尽"
+    )
+    await loop._record_continue_choice(
+        SimpleNamespace(approval_id="appr_stop"), approved=False, what="无进展暂停"
+    )
+    assert calls[0]["approved"] is True
+    assert "继续" in calls[0]["summary"] and "下一轮" in calls[0]["summary"]
+    assert "执行" not in calls[0]["summary"]
+    assert calls[1]["approved"] is False
+    assert "停止" in calls[1]["summary"]
+
+
+async def test_record_legacy_choice_keeps_history_decision_only(db_conn):
+    """直接调用旧 request() 的「继续」审批（真实 loop 路径）：历史停在 approved，summary 说清选择。"""
+    approvals = ApprovalService(EventBus(), conn=db_conn)
+    task = asyncio.create_task(approvals.request("continue", {"reason": "budget"}))
+    approval_id = await _wait_request(approvals)
+    assert await approvals.respond(approval_id, "approved") is True
+    approvals.record_legacy_choice(
+        approval_id, approved=True, summary="用户选择继续（预算耗尽）：开始下一轮"
+    )
+    history = _history(approvals, approval_id)
+    assert history and history[0]["outcome"] == "approved", (
+        "决定型审批不得被写成 executed（用户点继续 ≠ 操作执行成功）"
+    )
+    assert "开始下一轮" in history[0]["summary"]
+    result = await asyncio.wait_for(task, timeout=3)
+    assert result.decision == "approved"
