@@ -1097,6 +1097,44 @@ function retryKnowledgeDetail() {
 .ua-confirm input {
   accent-color: var(--accent);
 }
+/* 复选框不用系统默认外观：真实 input 保留（键盘/读屏/输入法安全），视觉自绘 */
+.ua-confirm input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xs);
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-1),
+    border-color var(--dur-fast) var(--ease-1);
+}
+.ua-confirm input[type="checkbox"]::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 1.6px solid var(--on-accent);
+  border-bottom: 1.6px solid var(--on-accent);
+  transform: rotate(-45deg);
+  opacity: 0;
+}
+.ua-confirm input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.ua-confirm input[type="checkbox"]:checked::after {
+  opacity: 1;
+}
+.ua-confirm input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .ua-btn {
   flex: 0 1 auto;
   min-width: 116px;

@@ -114,14 +114,16 @@ function stepState(step: string): "done" | "current" | "todo" {
 <style scoped>
 .create-card {
   margin: 4px 0;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   padding: var(--sp-3) var(--sp-4);
   font-size: 12.5px;
 }
 .create-card.failed { border-color: var(--border-danger); }
 .create-card.ready { border-color: var(--success-soft); }
+/* 三槽位：左右等宽，工具名在中线（同类卡片并用时标题始终对齐） */
 .head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
 }
@@ -131,9 +133,12 @@ function stepState(step: string): "done" | "current" | "todo" {
 }
 .name {
   color: var(--text-strong);
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 .phase {
-  margin-left: auto;
+  justify-self: end;
+  text-align: right;
   font-size: 11px;
 }
 .line,
@@ -143,6 +148,8 @@ function stepState(step: string): "done" | "current" | "todo" {
   margin: 6px 0 0;
   color: var(--text-secondary);
   line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 .failure {
   color: var(--danger);
@@ -152,6 +159,7 @@ function stepState(step: string): "done" | "current" | "todo" {
 }
 .steps {
   display: flex;
+  justify-content: center;
   gap: 10px;
   margin-top: 8px;
   font-size: 10.5px;
@@ -164,7 +172,8 @@ function stepState(step: string): "done" | "current" | "todo" {
   color: var(--text-strong);
 }
 .detail-toggle {
-  margin-top: 8px;
+  display: block;
+  margin: 8px auto 0;
 }
 .detail-wrap {
   display: grid;
@@ -185,6 +194,7 @@ function stepState(step: string): "done" | "current" | "todo" {
 .detail {
   margin-top: 6px;
   padding-top: 6px;
+  text-align: center;
   border-top: 1px solid var(--border-subtle);
   font-size: 11px;
   color: var(--text-muted);
