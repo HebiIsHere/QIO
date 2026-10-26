@@ -48,6 +48,7 @@ from agent.storage.approvals import (
     ApprovalError,
     ApprovalNotFound,
     ApprovalStore,
+    ApprovalsUnreadable,
     LegacyApprovalNotExecutable,
     OverridesUnsupported,
 )
@@ -513,6 +514,14 @@ class ApprovalService:
 
     # -- introspection ----------------------------------------------------
 
+    @staticmethod
+    def _unreadable(exc: BaseException) -> ApprovalsUnreadable:
+        """读取持久化审批失败 → 显式错误（不是空集合）；消息必须说清「不代表没有」。"""
+        detail = (type(exc).__name__ + ": " + str(exc)).strip()
+        return ApprovalsUnreadable(
+            "读取审批数据失败（" + detail + "）：这不代表没有审批/历史，可以重试"
+        )
+
     def pending(self) -> list[dict]:
         """仍然有效、仍在等待用户决定的审批（重连 / RESYNC 时用它恢复界面）。
 
@@ -532,14 +541,18 @@ class ApprovalService:
                 continue
             out.append(request.as_payload())
         # v2：持久化状态机里的等待项（旧 request() 的内存等待与它并存，按 id 去重）。
+        # 读取失败必须**显式失败**：返回内存里的那部分会让前端把残缺集合当成功、
+        # 清掉没有读回来的待办；内存里的 legacy 也不能掩盖持久层失败。
         if self.store is not None:
             try:
-                seen = {str(item.get("approval_id") or "") for item in out}
-                for item in self.store.list_pending():
-                    if str(item.get("approval_id") or "") not in seen:
-                        out.append(item)
-            except Exception:  # noqa: BLE001 - 读取失败不能挡住界面恢复旧项
+                persisted = self.store.list_pending()
+            except Exception as exc:  # noqa: BLE001 - 转成可重试的显式错误
                 logger.warning("failed to list persisted approvals", exc_info=True)
+                raise self._unreadable(exc) from exc
+            seen = {str(item.get("approval_id") or "") for item in out}
+            for item in persisted:
+                if str(item.get("approval_id") or "") not in seen:
+                    out.append(item)
         out.sort(key=lambda item: str(item.get("created_at") or ""))
         return out
 
@@ -697,9 +710,9 @@ class ApprovalService:
             return []
         try:
             return self.store.history(limit=limit)
-        except Exception:  # noqa: BLE001 - 读历史失败返回空，不猜
+        except Exception as exc:  # noqa: BLE001 - 读历史失败 ≠ 没有历史：显式错误
             logger.warning("failed to read approval history", exc_info=True)
-            return []
+            raise self._unreadable(exc) from exc
 
     def audit_trail(self, approval_id: str) -> list[dict]:
         if self.store is None:
@@ -788,7 +801,9 @@ class ApprovalService:
                 if datetime.now(timezone.utc) > deadline:
                     reason = "这条审批已超过原始有效期（不会重新获得 10 分钟）；本次没有执行"
                     row = self.store.mark_expired(approval_id)
-                    await self._publish_phase("invalidated", row, extra={"summary": reason})
+                    # 到期就是到期：状态/历史都已是 expired，事件相位也必须一致，
+                    # 否则前端把「已过期」显示成「执行前核对不通过」（相位错配）。
+                    await self._publish_phase("expired", row, extra={"summary": reason})
                     await self._notify(row, ok=False, summary=reason)
                     return
             except (TypeError, ValueError):

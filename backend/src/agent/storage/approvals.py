@@ -93,6 +93,17 @@ class LegacyApprovalNotExecutable(ApprovalError):
     status_code = 409
 
 
+class ApprovalsUnreadable(ApprovalError):
+    """审批数据读取失败：**这不代表没有审批/历史**，可以重试。
+
+    以前服务层把读取异常吞成空集合/部分集合、API 返回 200 —— 前端把失败的补读当成功，
+    会清掉本地待办。现在读取失败必须显式失败（503），让界面保留已有数据并提示重试。
+    """
+
+    code = "approvals_unreadable"
+    status_code = 503
+
+
 class OverridesUnsupported(ApprovalError):
     """这条审批路径不支持 overrides（预算 / 授权时长等覆盖）。
 
