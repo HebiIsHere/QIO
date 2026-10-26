@@ -385,15 +385,19 @@ const boardSize = computed(() => {
                 data-im="collapse-previews"
                 @click="store.collapseAllPreviews()"
               >收起预览（{{ store.previewExpandedCount }}）</button>
-              <button
-                class="im-chip"
-                type="button"
-                data-im="tasks-entry"
-                :aria-expanded="store.tasksOpen"
-                title="互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）"
-                @click="store.tasksOpen ? store.closeTaskCenter() : store.openTaskCenter('tasks')"
-              >任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}</button>
             </div>
+          </div>
+
+          <!-- FU6：任务入口钉在板面右上角（不再和状态行挤在一行）。 -->
+          <div class="im-board-corner">
+            <button
+              class="im-chip"
+              type="button"
+              data-im="tasks-entry"
+              :aria-expanded="store.tasksOpen"
+              title="互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）"
+              @click="store.tasksOpen ? store.closeTaskCenter() : store.openTaskCenter('tasks')"
+            >任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}</button>
           </div>
 
           <ExecutionRecordPanel
@@ -629,6 +633,18 @@ const boardSize = computed(() => {
   justify-content: flex-end;
   gap: var(--sp-3);
   pointer-events: none;
+}
+/* FU6：任务入口钉在板面右上角（HUD 只留状态；拖动/滚动不带走它）。 */
+.im-board-corner {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  /* 高于板面自身的标题/提示层，否则上半个按钮会被那条白带盖住 */
+  z-index: 60;
+  pointer-events: auto;
+}
+@media (max-width: 900px) {
+  .im-board-corner { top: 8px; right: 8px; }
 }
 /* 板面名让位给全局栏；HUD 只保留真实状态与旧能力入口，避免压住组标题。 */
 .im-hud-left,

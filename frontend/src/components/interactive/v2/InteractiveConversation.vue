@@ -703,6 +703,28 @@ const sendBinding = computed(() => conversationBindingForSend(props.binding));
   /* FU5：再往左让 20px —— 模式切换文字不要贴到输入胶囊的圆角/描边。 */
   margin-right: 20px;
 }
+@media (max-width: 1120px) {
+  /* 窄窗：输入列铺满；模式切换放到「输入框上方的工具栏」同一行，不再单独占一行，
+     也不允许被挤出窗口（此前的消失问题）。 */
+  .ic-composer-row {
+    grid-template-columns: minmax(0, 1fr);
+    position: relative;
+  }
+  .ic-composer-input {
+    grid-column: 1;
+  }
+  .ic-composer-row :slotted(.im-mode-switch) {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 2px);
+    margin-right: 0;
+    z-index: 2;
+  }
+  .ic-toolbar {
+    /* 让开左侧的模式切换，工具按钮仍在剩余区域居中 */
+    padding-left: 92px;
+  }
+}
 @media (max-width: 700px) {
   .ic-composer-row {
     grid-template-columns: minmax(0, 1fr);

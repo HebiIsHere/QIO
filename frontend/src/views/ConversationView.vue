@@ -673,6 +673,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center; /* 图标 + 「任务」整组在收起栏里垂直居中 */
   gap: 5px;
 }
 .rail-btn svg {
@@ -686,7 +687,16 @@ onBeforeUnmount(() => {
 }
 .rail-btn:hover { color: var(--text-strong); background: var(--layer-hover); }
 .rail-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
-.rail-label { writing-mode: vertical-rl; letter-spacing: 0.14em; }
+/* 竖排「任务」：竖排行盒给一个偶数宽度（line-height:16px）——在 46px 宽的按钮里
+   从整数像素开始、左右对称留白，避免半像素盒宽在高 DPI 下看起来偏左/右；
+   再对字体墨迹的轻微右侧偏重做 0.5px 光学补偿。 */
+.rail-label {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.14em;
+  line-height: 16px;
+  text-align: center;
+  transform: translateX(-0.5px);
+}
 .rail-badge {
   position: absolute;
   /* 收起栏 overflow:hidden（保证按钮与栏圆角完全对齐），徽标改为贴内侧右上角 */
