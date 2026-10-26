@@ -13,6 +13,8 @@ import WindowChrome from "./components/WindowChrome.vue";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
 import QTipLayer from "./components/ui/QTipLayer.vue";
 import GlobalFeedbackHost from "./components/feedback/GlobalFeedbackHost.vue";
+import BootStatus from "./components/BootStatus.vue";
+import SetupIncompleteNotice from "./components/onboarding/SetupIncompleteNotice.vue";
 import { waitForBackend } from "./services/boot";
 
 const events = useEventStore();
@@ -101,24 +103,14 @@ onUnmounted(stopTicker);
          它是 fixed 的窗口层，所以这里用 padding-top 把页面内容整体让下去一个条高，
          而不是靠浮在上面 —— 否则顶部那一条里的控件会「看得见、点不到」。 -->
     <WindowChrome />
-    <!-- 后端还没应答：说清在等什么（以前这里是一片空白，看起来像卡死） -->
-    <div v-if="bootState === 'starting'" class="boot-note" role="status">
-      <p class="boot-title">正在启动 QIO 后端…</p>
-      <p class="boot-meta mono">已等 {{ waitedSeconds }} 秒</p>
-      <p v-if="waitedSeconds >= 10" class="boot-hint">
-        比平时慢。本机若有程序拦住系统命令（例如 reg.exe 报 0xC0000142），启动会被拖住；
-        日志在 %LOCALAPPDATA%\com.qio.app\logs\QIO.log。
-      </p>
-    </div>
-    <div v-else-if="bootState === 'failed'" class="boot-note err" role="alert">
-      <p class="boot-title">QIO 后端没有应答（已经等了 {{ waitedSeconds }} 秒）</p>
-      <p class="boot-meta">{{ bootDetail }}</p>
-      <p class="boot-hint">
-        也可能只是启动很慢：点「重试」会接着等。日志：
-        <span class="mono">%LOCALAPPDATA%\com.qio.app\logs\QIO.log</span>
-      </p>
-      <button class="qio-btn primary" type="button" @click="boot">重试</button>
-    </div>
+    <!-- 启动状态：简洁标识 + 真实状态；超过 10 秒才显示等待秒数，技术细节折叠，失败可重试 -->
+    <BootStatus
+      v-if="bootState !== 'ready'"
+      :state="bootState === 'failed' ? 'failed' : 'starting'"
+      :waited-seconds="waitedSeconds"
+      :detail="bootDetail"
+      @retry="boot"
+    />
     <template v-else>
       <router-view />
       <!--
@@ -144,6 +136,8 @@ onUnmounted(stopTicker);
     <QTipLayer />
     <!-- 顶部短通知 + 全局异常入口/面板 + 任务失败监听 + 输入门控（只挂一次） -->
     <GlobalFeedbackHost />
+    <!-- 初始设置未完成的一次性中性提醒：只有真正显示过才记为已提醒（Lead 挂一次） -->
+    <SetupIncompleteNotice />
   </div>
 </template>
 
@@ -156,35 +150,6 @@ onUnmounted(stopTicker);
 * { box-sizing: border-box; }
 body { margin: 0; }
 .app-shell { width: 100vw; height: 100vh; overflow: hidden; padding-top: var(--titlebar-height); }
-/* 启动状态：安静的一行说明 + 原因，不做成大卡片（它只是等几秒的事） */
-.boot-note {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 24px;
-  text-align: center;
-  color: var(--text-muted);
-}
-.boot-title {
-  margin: 0;
-  font-size: 15px;
-  color: var(--text-strong);
-}
-.boot-meta {
-  margin: 0;
-  font-size: 12.5px;
-}
-.boot-hint {
-  margin: 0;
-  max-width: 46em;
-  font-size: 12px;
-  line-height: 1.7;
-}
-.boot-note.err .boot-title { color: var(--danger); }
-.boot-note.err button { margin-top: 6px; }
 /*
  * 顶部居中的提示条（待确认的审批 / 上次没执行的操作 / 没做完的开发任务）。
  * 容器 shrink-to-fit，空白区域不挡下面页面的点击。
