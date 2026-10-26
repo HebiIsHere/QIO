@@ -12,6 +12,7 @@ import DevTaskEntry from "./components/DevTaskEntry.vue";
 import WindowChrome from "./components/WindowChrome.vue";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
 import QTipLayer from "./components/ui/QTipLayer.vue";
+import GlobalFeedbackHost from "./components/feedback/GlobalFeedbackHost.vue";
 import { waitForBackend } from "./services/boot";
 
 const events = useEventStore();
@@ -141,6 +142,8 @@ onUnmounted(stopTicker);
     </template>
     <!-- 全局唯一的用途说明浮层（500ms 悬停 / 聚焦 / 触控长按；由 v-qio-tip 驱动） -->
     <QTipLayer />
+    <!-- 顶部短通知 + 全局异常入口/面板 + 任务失败监听 + 输入门控（只挂一次） -->
+    <GlobalFeedbackHost />
   </div>
 </template>
 
