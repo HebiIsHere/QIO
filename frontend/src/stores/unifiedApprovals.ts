@@ -23,6 +23,7 @@ import { request } from "../services/api";
 import type { MemoryPendingListing, PendingItemView } from "../services/api";
 import { approvalFacts, useApprovalsStore, type ApprovalItem } from "./approvals";
 import { useApprovalResultsStore } from "./approvalResults";
+import { canAutoOpenApproval } from "./feedbackGate";
 import { useSessionStore } from "./session";
 
 export type UnifiedKind = "tool" | "knowledge";
@@ -215,6 +216,25 @@ export function isBlockingModalOpen(): boolean {
     document.querySelectorAll('[role="dialog"][aria-modal="true"], dialog[open]'),
   );
   return nodes.some((node) => !node.hasAttribute("data-unified-approval-modal"));
+}
+
+/**
+ * 审批是否已经到期（真实期限来自后端；期限只读，不在前端放宽）。
+ *
+ * 到期后不再提供「批准」：本地钟只是最后一道保护，服务端自己也会拒绝；
+ * 这里绝不改写 expiresAt，也不把过期说成已处理。
+ */
+export function isExpiredApproval(
+  approval: ApprovalItem | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!approval) return false;
+  const state = String(approval.state ?? "").trim();
+  if (state === "expired") return true;
+  const raw = String(approval.expiresAt ?? "").trim();
+  if (!raw) return false;
+  const at = Date.parse(raw);
+  return Number.isFinite(at) && at <= now;
 }
 
 export interface KnowledgeSubmitError {
@@ -590,6 +610,18 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     lastNotice: "",
     editingKey: null as string | null,
     drafts: {} as Record<string, string>,
+    /**
+     * 处理完一项后的「队列列表」态：回到列表，由用户选下一条；
+     * 不自动进入下一条详情（用户任务书：处理完一项回列表保位置）。
+     */
+    queueListOnly: false,
+    /**
+     * 用户收起弹窗时的到达序号基线。
+     *
+     * 收起只表示「稍后处理」：已经存在的申请不再自动弹；只有真正新到达
+     * （arrivalSeq 更大）的申请才按规则自动弹出。
+     */
+    autoBlockedSeq: 0,
   }),
   getters: {
     /** 统一队列：工具/权限类在前（更紧急），知识保存按到达顺序在后。 */
@@ -616,11 +648,18 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     activeItem(state): UnifiedApprovalItem | null {
       const items = mergeUnifiedItems(state, useApprovalsStore().queue);
       if (!items.length) return null;
-      return items.find((item) => item.key === state.activeKey) ?? items[0];
+      if (state.activeKey) return items.find((item) => item.key === state.activeKey) ?? null;
+      // 列表态没有「当前项」：弹窗显示队列列表，不自动进入某一条详情
+      return state.queueListOnly ? null : (items[0] ?? null);
     },
     activeIndex(state): number {
       const items = mergeUnifiedItems(state, useApprovalsStore().queue);
-      const active = items.find((item) => item.key === state.activeKey) ?? items[0];
+      if (!items.length) return -1;
+      const active = state.activeKey
+        ? items.find((item) => item.key === state.activeKey)
+        : state.queueListOnly
+          ? null
+          : items[0];
       if (!active) return -1;
       return items.findIndex((item) => item.key === active.key);
     },
@@ -720,7 +759,15 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         this.visible = false;
         this.activeKey = null;
         this.editingKey = null;
+        this.queueListOnly = false;
         // 注意：不清 submitError —— 队列被权威刷新清空时，失败原因仍要能说清楚
+        return;
+      }
+      if (this.queueListOnly) {
+        // 列表态：队列怎么变都保持列表，不自动选中一条详情
+        if (this.activeKey && !items.some((item) => item.key === this.activeKey)) {
+          this.activeKey = null;
+        }
         return;
       }
       if (!this.activeKey || !items.some((item) => item.key === this.activeKey)) {
@@ -747,11 +794,25 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
           item.kind === "tool" &&
           !item.deferred &&
           !this.autoShownKeys.includes(item.key) &&
-          !item.stale,
+          !item.stale &&
+          !isExpiredApproval(item.approval) &&
+          // 收起弹窗之前就已经存在的申请：不因一次收起/重渲染又弹回来；
+          // 真正新到达（arrivalSeq 更大）的申请仍按规则自动弹。
+          (item.approval?.arrivedSeq ?? 0) > this.autoBlockedSeq,
       );
       if (!candidate) return false;
-      if (approvals.inlineClaimed || isUserEditing() || isBlockingModalOpen()) {
+      if (approvals.inlineClaimed) {
         this.autoPending = true;
+        return false;
+      }
+      /**
+       * 自动弹出门控（集中判断，不散落）：
+       * 输入中 / 输入法组合输入 / 刚离开输入框（延迟） / 有中央弹窗 / 记忆星球覆盖层 /
+       * 设置与调试页 / 窗口后台 —— 任一成立都不弹，条件恢复后再试。
+       */
+      const gate = canAutoOpenApproval();
+      if (!gate.ok) {
+        this.autoPending = gate.retry;
         return false;
       }
       this.autoShownKeys = [...this.autoShownKeys.slice(-99), candidate.key];
@@ -777,6 +838,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         approvals.openNow();
       }
       this.activeKey = target.key;
+      this.queueListOnly = false;
       this.visible = true;
       this.resultsVisible = false;
       this.submitError = "";
@@ -800,17 +862,21 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       return true;
     },
 
-    /** 从结果视图回到待审批队列（没有待办时返回 false，不显示空队列）。 */
+    /**
+     * 回到待审批队列（没有待办时返回 false，不显示空队列）。
+     * 有正在看的项就保持它；否则显示队列列表，由用户选下一条。
+     */
     showQueue(): boolean {
       this.resultsVisible = false;
       const items = this.items as UnifiedApprovalItem[];
       if (!items.length) {
         this.visible = false;
+        this.queueListOnly = false;
         return false;
       }
-      this.activeKey = this.activeKey && items.some((item) => item.key === this.activeKey)
-        ? this.activeKey
-        : (items[0]?.key ?? null);
+      const keep = this.activeKey && items.some((item) => item.key === this.activeKey);
+      this.activeKey = keep ? this.activeKey : null;
+      this.queueListOnly = !keep;
       this.visible = true;
       return true;
     },
@@ -824,13 +890,20 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.close();
     },
 
-    /** 关闭：只隐藏，不批准也不拒绝；当前项记为「稍后」，不因轮询反复自动弹。 */
+    /**
+     * 关闭：只隐藏，不批准也不拒绝；当前项记为「稍后」，不因轮询反复自动弹。
+     *
+     * 同时记下到达序号基线：收起之后**已存在的**申请不再自动弹（不得立刻连弹下一条）；
+     * 真正新到达的申请仍按规则处理。
+     */
     close(): void {
       const active = this.activeItem as UnifiedApprovalItem | null;
       if (active) this.deferKey(active.key);
+      this.autoBlockedSeq = useApprovalsStore().arrivalSeq;
       this.visible = false;
       this.resultsVisible = false;
       this.activeKey = null;
+      this.queueListOnly = false;
       this.editingKey = null;
       this.autoPending = false;
       this.submitError = "";
@@ -860,6 +933,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.editingKey = null;
       this.submitError = "";
       this.submitErrorCode = "";
+      this.queueListOnly = false;
     },
 
     deferKey(key: string): void {
@@ -882,6 +956,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         approvals.showFull(target.identity);
       }
       this.activeKey = key;
+      this.queueListOnly = false;
       this.visible = true;
       this.submitError = "";
       this.submitErrorCode = "";
@@ -949,6 +1024,16 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       if (active.kind === "tool") {
         if (decision !== "approve" && decision !== "reject") return false;
         if (active.stale) return false;
+        /**
+         * 到期禁止批准：真实期限来自后端，到期后服务端也会拒绝；这里先给出可理解原因，
+         * 不发请求、不放宽期限、不假装已处理。
+         */
+        if (decision === "approve" && isExpiredApproval(active.approval)) {
+          this.submitError =
+            "这项申请已经到期，不能再批准（期限不会放宽）。需要的话请让后端重新发起这次申请。";
+          this.submitErrorCode = "expired";
+          return false;
+        }
         this.submittingKey = active.key;
         this.submitError = "";
         this.submitErrorCode = "";
@@ -1061,6 +1146,12 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       }
     },
 
+    /**
+     * 一项已经处理完（提交成功 / 已失效 / 已有结局）。
+     *
+     * 规则（用户任务书）：回到**队列列表**并保留位置与展开状态，由用户自己选下一条；
+     * 不得自动进入下一条详情，也不立刻弹出剩余项的详情。
+     */
     finishHandled(key: string): void {
       // 这一项已经有结局：它的编辑草稿不再有意义，删掉（其余项的草稿原样保留）
       if (key && Object.prototype.hasOwnProperty.call(this.drafts, key)) {
@@ -1071,12 +1162,17 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       if (!remaining.length) {
         this.visible = false;
         this.activeKey = null;
+        this.queueListOnly = false;
         this.editingKey = null;
         return;
       }
-      this.activeKey = remaining[0]?.key ?? null;
+      // 回到列表：activeKey 置空、列表态打开；队列顺序与展开状态都还在
+      this.activeKey = null;
+      this.queueListOnly = true;
       this.visible = true;
       this.editingKey = null;
+      // 刚处理完的这一轮不再因轮询/队列变化自动弹回详情
+      this.autoBlockedSeq = useApprovalsStore().arrivalSeq;
     },
 
     reset(): void {
@@ -1096,6 +1192,8 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.lastNotice = "";
       this.editingKey = null;
       this.drafts = {};
+      this.queueListOnly = false;
+      this.autoBlockedSeq = 0;
       persistDeferredKeys([]);
     },
   },
