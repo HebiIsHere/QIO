@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 底部输入区旁的模式切换入口：对话模式 ⇄ 互动模式（互动页 v2 契约 §2.2）。
  *
@@ -49,7 +50,7 @@ function switchMode() {
       class="mode-btn"
       type="button"
       :aria-label="actionLabel"
-      :title="actionLabel"
+      v-qio-tip="actionLabel"
       :data-current-mode="current.id"
       :data-target-mode="target.id"
       @click="switchMode"
@@ -73,7 +74,7 @@ function switchMode() {
   height: 38px;
   padding: 0 9px;
   border: 1px solid transparent;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);

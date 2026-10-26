@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { MEDIA_CAPABILITY_HINT } from "./mediaFacts";
@@ -1552,7 +1553,7 @@ async function stopTurn() {
           :disabled="attaching"
           :aria-expanded="attachMenuOpen ? 'true' : 'false'"
           aria-haspopup="menu"
-          title="添加附件：选择本地文件，或粘贴路径"
+          v-qio-tip="'添加附件：选择本地文件，或粘贴路径'"
           aria-label="添加附件"
           @click="toggleAttachMenu"
         >
@@ -1582,7 +1583,7 @@ async function stopTurn() {
         wrap="soft"
         aria-label="输入消息（Enter 发送，Shift+Enter 换行）"
         aria-keyshortcuts="Enter Shift+Enter"
-        title="Enter 发送 · Shift+Enter 换行"
+        v-qio-tip="'Enter 发送 · Shift+Enter 换行'"
         placeholder="继续讨论，或添加文件…"
         @keydown="onKeydown"
         @input="autosize"
@@ -1600,7 +1601,7 @@ async function stopTurn() {
         :data-mode="primaryMode"
         :data-ready="sendReady ? 'true' : 'false'"
         :aria-label="primaryLabel"
-        :title="primaryTitle"
+        v-qio-tip="primaryTitle"
         @click="primaryAction"
       >
         <span v-if="primaryMode === 'stop'" class="sq" aria-hidden="true"></span>
@@ -1673,7 +1674,7 @@ async function stopTurn() {
   min-width: 0;
   padding: 6px 7px 6px 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   /* 用户确认不要阴影：只保留 1px 边框；也避免被 .composer 的 overflow-x: clip 截断 */
   box-shadow: none;
@@ -1794,7 +1795,7 @@ async function stopTurn() {
   height: 38px;
   padding: 0 14px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -1858,7 +1859,7 @@ async function stopTurn() {
 .confirm-btn {
   background: none;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 3px 10px;
   font: inherit;
   font-size: 11px;
@@ -1891,7 +1892,7 @@ async function stopTurn() {
 .draft-retry {
   flex-shrink: 0;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -1989,7 +1990,7 @@ async function stopTurn() {
   height: 38px;
   padding: 0 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -2055,7 +2056,7 @@ async function stopTurn() {
   min-width: 188px;
   padding: 4px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
 }
@@ -2067,7 +2068,7 @@ async function stopTurn() {
   width: 100%;
   padding: 8px 9px;
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -2137,7 +2138,7 @@ async function stopTurn() {
   height: 28px;
   padding: 0 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-primary);
   font-size: 11.5px;
@@ -2151,7 +2152,7 @@ async function stopTurn() {
   height: 28px;
   padding: 0 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -2168,7 +2169,7 @@ async function stopTurn() {
   margin-top: var(--sp-2);
   padding: var(--sp-3);
   border: 1px solid var(--warning);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
 }
 .attach-reject-msg {
@@ -2219,7 +2220,7 @@ async function stopTurn() {
   align-items: center;
   justify-content: center;
   border: 1px dashed var(--accent);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--accent-soft);
   color: var(--text-strong);
   font-family: var(--sans);

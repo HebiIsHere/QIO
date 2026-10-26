@@ -20,6 +20,7 @@
     三者互斥、同一时间只开一个、再点同一入口收起，数据绝不相互串用。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 import { computed, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { fetchBoardState } from "../../services/interactive";
@@ -662,7 +663,7 @@ function onSubmit() {
         data-im="submit-history-toggle"
         :aria-expanded="openPanel === 'result'"
         aria-controls="submit-result-panel"
-        title="展开上次提交的完整结果说明（只读，不会再次提交）"
+        v-qio-tip="'展开上次提交的完整结果说明（只读，不会再次提交）'"
         @click="togglePanel('result')"
       >
         上次提交 · {{ historyLabel }}
@@ -674,7 +675,7 @@ function onSubmit() {
         data-im="understanding-history-toggle"
         :aria-expanded="openPanel === 'process'"
         aria-controls="submit-process-panel"
-        title="查看上次提交的过程记录（只读，不会启动新任务）"
+        v-qio-tip="'查看上次提交的过程记录（只读，不会启动新任务）'"
         @click="togglePanel('process')"
       >
         {{ openPanel === "process" ? "收起过程" : "查看过程" }}
@@ -737,7 +738,7 @@ function onSubmit() {
             v-if="noteDetail"
             class="u-detail"
             data-im="understanding-detail"
-            :title="uText.detail"
+            v-qio-tip="uText.detail"
           >{{ noteDetail }}</span>
         </p>
         <span class="u-actions">
@@ -793,7 +794,7 @@ function onSubmit() {
                 data-im="submit-approve"
                 :data-intent-id="intent.id"
                 :disabled="decisionBusy === intent.id || !approveAvailability(intent).allowed"
-                :title="approveAvailability(intent).text"
+                v-qio-tip="approveAvailability(intent).text"
                 @click="decide(intent, 'approve')"
               >
                 {{ decisionBusy === intent.id ? "处理中…" : "批准" }}
@@ -804,7 +805,7 @@ function onSubmit() {
                 data-im="submit-reject"
                 :data-intent-id="intent.id"
                 :disabled="decisionBusy === intent.id || !rejectAvailability(intent).allowed"
-                :title="rejectAvailability(intent).text"
+                v-qio-tip="rejectAvailability(intent).text"
                 @click="decide(intent, 'reject')"
               >
                 拒绝
@@ -996,7 +997,7 @@ function onSubmit() {
         :aria-label="compact ? '提交状态与详情' : undefined"
         :aria-expanded="openPanel === 'details'"
         aria-controls="submit-details-panel"
-        :title="compact ? '提交状态与本次提交范围（点击查看详情）' : '本次提交范围与改动（只读，不会再次提交）'"
+        v-qio-tip="compact ? '提交状态与本次提交范围（点击查看详情）' : '本次提交范围与改动（只读，不会再次提交）'"
         @click="togglePanel('details')"
       >
         <template v-if="compact">
@@ -1012,7 +1013,7 @@ function onSubmit() {
         class="submit"
         type="button"
         data-im="submit"
-        :title="failure?.nextStep"
+        v-qio-tip="failure?.nextStep ?? ''"
         :disabled="busy || !store.board"
         @click="onSubmit"
       >
@@ -1143,7 +1144,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   max-width: 100%;
   text-align: left;
@@ -1184,7 +1185,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   white-space: normal;
   overflow-wrap: anywhere;
@@ -1234,7 +1235,7 @@ function onSubmit() {
   font-size: var(--fs-xs);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
 }
 .u-label.tone-open { color: var(--link); border-color: var(--link); }
@@ -1267,7 +1268,7 @@ function onSubmit() {
   gap: 2px;
   padding: var(--sp-1) var(--sp-2);
   border-left: 2px solid var(--accent);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .approvals-head {
@@ -1312,7 +1313,7 @@ function onSubmit() {
   font-size: var(--fs-xs);
   color: var(--warning);
   border: 1px solid var(--warning);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
 }
 /* 审批行内的小按钮：只保留可点面积与可读性，不做装饰色（颜色一律走令牌） */
@@ -1323,7 +1324,7 @@ function onSubmit() {
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
   cursor: pointer;
 }
@@ -1353,7 +1354,7 @@ function onSubmit() {
   padding: var(--sp-1) var(--sp-2);
   overflow-wrap: anywhere;
   border-left: 2px solid var(--danger);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--danger-soft);
   font-size: var(--fs-xs);
   line-height: 1.45;
@@ -1369,7 +1370,7 @@ function onSubmit() {
   margin: 0;
   padding: var(--sp-1) var(--sp-2);
   border-left: 2px solid var(--warning);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--warning-soft);
   font-size: var(--fs-xs);
   line-height: 1.45;
@@ -1412,7 +1413,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }
@@ -1431,7 +1432,7 @@ function onSubmit() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
 }
 .sc-details-icon svg {
   width: 16px;
@@ -1457,7 +1458,7 @@ function onSubmit() {
   color: var(--on-accent);
   background: var(--accent);
   border: none;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-2) var(--sp-5);
   cursor: pointer;
 }
@@ -1488,7 +1489,7 @@ function onSubmit() {
   overscroll-behavior: contain;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--shadow-2);
   font-family: var(--sans);
   user-select: text;
@@ -1552,7 +1553,7 @@ function onSubmit() {
   font-family: var(--mono);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
 }
 .sc-process-text { min-width: 0; overflow-wrap: anywhere; }

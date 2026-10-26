@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 输入框正上方紧邻的五个图标入口（B）。
  *
@@ -390,7 +391,7 @@ const panelTitle = computed(() => {
         :data-tone="entry.tone"
         :aria-expanded="openEntry === entry.id ? 'true' : 'false'"
         :aria-label="entry.id === 'approvals' ? approvalEntryLabel(entry) : `${COMPOSER_ENTRY_TEXT[entry.id].title}：${COMPOSER_ENTRY_TEXT[entry.id].hint}${entry.count > 0 ? `（${entry.count} 项）` : ''}`"
-        :title="entry.id === 'approvals' ? approvalEntryLabel(entry) : `${COMPOSER_ENTRY_TEXT[entry.id].title} — ${COMPOSER_ENTRY_TEXT[entry.id].hint}`"
+        v-qio-tip="entry.id === 'approvals' ? approvalEntryLabel(entry) : `${COMPOSER_ENTRY_TEXT[entry.id].title} — ${COMPOSER_ENTRY_TEXT[entry.id].hint}`"
         @click="toggle(entry.id)"
       >
         <svg class="ico" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
@@ -427,7 +428,7 @@ const panelTitle = computed(() => {
           v-if="entry.id === 'approvals' && approvalEntryError"
           class="entry-error"
           data-test="approval-entry-error"
-          :title="approvalEntryError + '（打开查看原因与重试）'"
+          v-qio-tip="approvalEntryError + '（打开查看原因与重试）'"
           aria-hidden="true"
         >!</span>
         <span v-if="entry.id === 'continuation'" class="entry-label">继续</span>
@@ -446,7 +447,7 @@ const panelTitle = computed(() => {
         :data-tone="entry.tone ?? 'plain'"
         :aria-expanded="openEntry === entry.id ? 'true' : 'false'"
         :aria-label="extraAriaLabel(entry)"
-        :title="entry.hint ? entry.title + ' — ' + entry.hint : entry.title"
+        v-qio-tip="entry.hint ? entry.title + ' — ' + entry.hint : entry.title"
         @click="toggle(entry.id)"
       >
         <svg class="ico" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
@@ -467,7 +468,7 @@ const panelTitle = computed(() => {
   margin-bottom: 8px;
   min-width: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   overflow: hidden;
 }
@@ -545,7 +546,7 @@ const panelTitle = computed(() => {
   height: auto;
   padding: 3px 10px;
   font-size: 11.5px;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
 }
 .feedback {
   margin: 0;
@@ -616,7 +617,7 @@ const panelTitle = computed(() => {
   height: 15px;
   padding: 0 4px;
   border: 1px solid var(--bg-elevated);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--accent);
   color: var(--on-accent);
   font-size: 9px;

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 消息流：@tanstack/vue-virtual 虚拟滚动 + 底部跟随。
  * 按「用户消息开新轮次」把消息分组为 turn，虚拟化单位是轮次块；
@@ -644,7 +645,7 @@ const phaseLabel = computed(() => {
         class="back-latest"
         type="button"
         :aria-label="unseen > 0 ? `回到最新消息（${unseen} 条新消息）` : '回到最新消息'"
-        title="回到最新消息"
+        v-qio-tip="'回到最新消息'"
         @click="backToLatest"
       >
         <svg class="latest-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -769,7 +770,7 @@ const phaseLabel = computed(() => {
   margin-top: 6px;
   padding: 7px 14px;
   border: 1px solid var(--border-subtle);
-  border-radius: 20px;
+  border-radius: var(--qio-ui-radius);
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -870,7 +871,7 @@ const phaseLabel = computed(() => {
   min-width: 17px;
   height: 17px;
   padding: 0 4px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   border: 2px solid var(--bg-elevated);
   background: var(--accent);
   color: var(--on-accent);

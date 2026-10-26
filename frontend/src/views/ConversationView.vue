@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 对话页 v2 外壳（A 负责外层布局与顶部全局栏入口；中央/右侧内容由 B/C 各自组件承担）。
  *
@@ -420,7 +421,7 @@ onBeforeUnmount(() => {
           class="rail-btn"
           type="button"
           data-rail-entry
-          :title="railEntryLabel"
+          v-qio-tip="railEntryLabel"
           :aria-label="railEntryLabel"
           :aria-expanded="railDrawer ? 'true' : 'false'"
           @click="onRailEntry"
@@ -502,7 +503,7 @@ onBeforeUnmount(() => {
       v-if="!shell.rightVisible && shell.prefs.previewTabs.length"
       class="preview-reopen"
       type="button"
-      :title="'打开文件预览（' + shell.prefs.previewTabs.length + ' 个标签）'"
+      v-qio-tip="'打开文件预览（' + shell.prefs.previewTabs.length + ' 个标签）'"
       :aria-label="'打开文件预览，' + shell.prefs.previewTabs.length + ' 个标签'"
       @click="shell.setRightOpen(true)"
     >
@@ -592,7 +593,7 @@ onBeforeUnmount(() => {
   flex: none;
   min-width: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -607,7 +608,7 @@ onBeforeUnmount(() => {
   flex: none;
   min-width: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -626,7 +627,7 @@ onBeforeUnmount(() => {
   top: 42%;
   height: 40px;
   left: calc(50% - 1px);
-  border-radius: 5px;
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   transition: background var(--dur-fast) var(--ease-1);
 }
@@ -656,7 +657,7 @@ onBeforeUnmount(() => {
   padding: 0;
   overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
 }
 .rail-btn {
@@ -705,7 +706,7 @@ onBeforeUnmount(() => {
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   color: var(--text-secondary);
@@ -730,7 +731,7 @@ onBeforeUnmount(() => {
   /* 与话题/左栏同一条卡片顶线：y=82；左右/底边与全局栏同一 8px 外沿 */
   inset: 2px 8px 8px;
   z-index: 30;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   overflow: hidden;
   box-shadow: var(--shadow-3);
 }
@@ -755,7 +756,7 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 24px);
   display: flex;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-3);
   overflow: hidden;
@@ -780,7 +781,7 @@ onBeforeUnmount(() => {
   padding: 10px 0;
   border: 1px solid var(--border-subtle);
   border-right: 0;
-  border-radius: var(--r-sm) 0 0 var(--r-sm);
+  border-radius: var(--qio-ui-radius) 0 0 var(--r-sm);
   background: var(--bg-elevated);
   color: var(--text-muted);
   cursor: pointer;
@@ -828,7 +829,7 @@ onBeforeUnmount(() => {
   gap: var(--sp-2);
   padding: var(--sp-4) var(--sp-5);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xl);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-3);
   overflow-y: auto;

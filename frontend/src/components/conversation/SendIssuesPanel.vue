@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 入口①：发送异常与草稿恢复（B）。
  *
@@ -308,7 +309,7 @@ const counts = computed(() => ({
           data-item="pending"
           data-im="composer-pending-item"
         >
-          <p class="text" data-im="composer-pending-quote" :title="record.snapshot.text">
+          <p class="text" data-im="composer-pending-quote" v-qio-tip="record.snapshot.text">
             {{ snippetOf(record.snapshot.text, 64) }}
           </p>
           <p class="meta">
@@ -419,7 +420,7 @@ const counts = computed(() => ({
           data-item="failed"
           data-im="composer-recovery-item"
         >
-          <p class="text" data-im="composer-recovery-quote" :title="record.text">
+          <p class="text" data-im="composer-recovery-quote" v-qio-tip="record.text">
             {{ snippetOf(record.text, 64) }}
           </p>
           <p class="meta">
@@ -479,7 +480,7 @@ const counts = computed(() => ({
           data-item="displaced"
           data-im="composer-displaced-item"
         >
-          <p class="text" data-im="composer-displaced-quote" :title="record.text">
+          <p class="text" data-im="composer-displaced-quote" v-qio-tip="record.text">
             {{ snippetOf(record.text, 64) }}
           </p>
           <div class="actions">
@@ -566,7 +567,7 @@ const counts = computed(() => ({
   margin: 0;
   padding: 6px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-secondary);
   font-size: var(--fs-xs);
@@ -595,7 +596,7 @@ const counts = computed(() => ({
 .head .count {
   min-width: 18px;
   padding: 0 6px;
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 10.5px;
@@ -622,7 +623,7 @@ const counts = computed(() => ({
   min-width: 0;
   padding: 8px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .text {
@@ -662,7 +663,7 @@ const counts = computed(() => ({
   height: auto;
   padding: 3px 10px;
   font-size: 11.5px;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
 }
 .bulk {
   align-self: flex-end;

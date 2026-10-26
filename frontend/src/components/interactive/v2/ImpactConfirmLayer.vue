@@ -459,23 +459,30 @@ onBeforeUnmount(() => {
   </p>
 
   <!-- 外部点击不关闭：影响确认只能由两个明确按钮作答（scrim 只负责遮罩，没有 click 处理）。
-       v-show：让位 / 挂起时只隐藏，DOM、滚动位置与未提交的选择都不丢。 -->
-  <div v-show="visible" class="ic-scrim" data-im="impact-confirm-scrim">
-    <section
-      ref="dialogEl"
-      class="ic-dialog"
-      data-im="impact-confirm"
-      :data-impact-mode="mode"
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="im-impact-confirm-title"
-      aria-describedby="im-impact-confirm-body"
-      tabindex="-1"
-      @keydown.stop
-      @keyup.stop
-      @wheel.stop
-    >
-      <h2 id="im-impact-confirm-title" class="ic-title">{{ title }}</h2>
+       v-show：让位 / 挂起时只隐藏，DOM、滚动位置与未提交的选择都不丢。
+       视觉：中央悬浮 + 轻遮罩 + 轻模糊；标题左右等宽槽位、按钮组居中同高。 -->
+  <Transition name="qio-fade">
+    <div v-show="visible" class="ic-scrim" data-im="impact-confirm-scrim">
+      <section
+        ref="dialogEl"
+        class="ic-dialog qio-floating qio-pop-in"
+        data-im="impact-confirm"
+        :data-impact-mode="mode"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="im-impact-confirm-title"
+        aria-describedby="im-impact-confirm-body"
+        tabindex="-1"
+        @keydown.stop
+        @keyup.stop
+        @wheel.stop
+      >
+        <!-- 三列等宽：左槽只占位（不放可聚焦控件），标题严格落在中轴；右槽留空以保持对称 -->
+        <div class="qio-modal-head">
+          <span class="qio-modal-head__slot" aria-hidden="true" />
+          <h2 id="im-impact-confirm-title" class="ic-title qio-modal-title">{{ title }}</h2>
+          <span class="qio-modal-head__slot qio-modal-head__slot--end" aria-hidden="true" />
+        </div>
 
       <div id="im-impact-confirm-body" class="ic-body" data-im="impact-confirm-body">
         <template v-if="mode === 'impact'">
@@ -540,7 +547,7 @@ onBeforeUnmount(() => {
               </ul>
               <div class="ic-item-actions">
                 <button
-                  class="ic-btn primary"
+                  class="qio-btn primary"
                   type="button"
                   data-im="impact-revert-continue"
                   :data-intent-id="intent.id"
@@ -583,41 +590,43 @@ onBeforeUnmount(() => {
         这次处理没有完成：{{ revertError }}
       </p>
 
-      <div class="ic-actions">
-        <button
-          ref="firstAction"
-          class="ic-btn"
-          type="button"
-          data-im="impact-confirm-cancel"
-          :disabled="busy"
-          @click="mode === 'impact' ? cancel() : dismissReverts()"
-        >
-          {{
-            mode === "impact"
-              ? busy
-                ? "处理中…"
-                : "取消本次改动（不保存，任务继续）"
-              : "取消：保持现状，不做改动"
-          }}
-        </button>
-        <button
-          v-if="mode === 'impact'"
-          class="ic-btn primary"
-          type="button"
-          data-im="impact-confirm-submit"
-          :disabled="busy"
-          @click="confirm"
-        >
-          {{ busy ? "处理中…" : "确认改动（保存并暂停相关任务）" }}
-        </button>
-      </div>
-    </section>
-  </div>
+        <!-- 按钮组整体居中、同高、配对同宽；窄窗（<=480）自动纵排 -->
+        <div class="ic-actions qio-modal-actions">
+          <button
+            ref="firstAction"
+            class="qio-btn"
+            type="button"
+            data-im="impact-confirm-cancel"
+            :disabled="busy"
+            @click="mode === 'impact' ? cancel() : dismissReverts()"
+          >
+            {{
+              mode === "impact"
+                ? busy
+                  ? "处理中…"
+                  : "取消本次改动（不保存，任务继续）"
+                : "取消：保持现状，不做改动"
+            }}
+          </button>
+          <button
+            v-if="mode === 'impact'"
+            class="qio-btn primary"
+            type="button"
+            data-im="impact-confirm-submit"
+            :disabled="busy"
+            @click="confirm"
+          >
+            {{ busy ? "处理中…" : "确认改动（保存并暂停相关任务）" }}
+          </button>
+        </div>
+      </section>
+    </div>
+  </Transition>
 
   <!-- 真实结果：活过对话框关闭，按 store 的真实结果说话 -->
   <section
     v-if="!open && !deferred && outcome"
-    class="ic-outcome"
+    class="ic-outcome qio-floating"
     role="status"
     aria-live="polite"
     data-im="impact-confirm-outcome"
@@ -631,10 +640,10 @@ onBeforeUnmount(() => {
         <li v-for="intent in outcome.paused" :key="intent.id">{{ intent.title }}</li>
       </ul>
     </div>
-    <div class="ic-actions">
+    <div class="ic-actions qio-modal-actions">
       <button
         v-if="outcome.kind === 'check_failed' || outcome.kind === 'save_failed' || outcome.kind === 'superseded'"
-        class="ic-btn primary"
+        class="qio-btn primary"
         type="button"
         data-im="impact-confirm-retry"
         :disabled="retryBusy"
@@ -642,13 +651,13 @@ onBeforeUnmount(() => {
       >{{ retryBusy ? "核实中…" : "重新核实并保存" }}</button>
       <button
         v-if="outcome.kind === 'cancelled_unconfirmed'"
-        class="ic-btn primary"
+        class="qio-btn primary"
         type="button"
         data-im="impact-confirm-recovery-retry"
         :disabled="retryBusy"
         @click="retryCancelRecovery"
       >{{ retryBusy ? "核对中…" : "重新核对服务器事实" }}</button>
-      <button class="ic-btn" type="button" data-im="impact-confirm-outcome-close" @click="dismissOutcome">
+      <button class="qio-btn" type="button" data-im="impact-confirm-outcome-close" @click="dismissOutcome">
         知道了
       </button>
     </div>
@@ -657,7 +666,7 @@ onBeforeUnmount(() => {
   <!-- 被结束提示、但服务端确实还有待决定项：不自动打断，只给一个可控的「再次查看」入口 -->
   <section
     v-if="!deferred && dismissedReverts.length"
-    class="ic-dismissed"
+    class="ic-dismissed qio-floating"
     role="status"
     aria-label="还有撤回没有决定"
     data-im="impact-revert-dismissed"
@@ -668,7 +677,7 @@ onBeforeUnmount(() => {
       <li v-for="intent in dismissedReverts" :key="intent.id">
         <span>{{ intent.title || intent.id }}</span>
         <button
-          class="ic-btn"
+          class="qio-btn quiet"
           type="button"
           data-im="impact-revert-reopen"
           :data-intent-id="intent.id"
@@ -690,11 +699,13 @@ onBeforeUnmount(() => {
   margin: 0;
   padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--warning);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   color: var(--warning);
   font-size: var(--fs-xs);
   line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 .ic-scrim {
   position: fixed;
@@ -703,8 +714,11 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--sp-4);
-  background: color-mix(in srgb, var(--bg-base) 62%, transparent);
+  padding: var(--sp-6);
+  /* 轻遮罩 + 轻模糊：仍能辨认原页面，不做成「另一个应用的黑屏」 */
+  background: color-mix(in srgb, var(--bg-base) 52%, transparent);
+  backdrop-filter: blur(calc(var(--glass-blur) * 0.4));
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 0.4));
 }
 .ic-dialog {
   display: flex;
@@ -716,15 +730,11 @@ onBeforeUnmount(() => {
   max-height: min(84vh, 760px);
   overflow: clip;
   padding: var(--sp-4);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-3);
   color: var(--text-primary);
   font-family: var(--sans);
 }
 .ic-dialog:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.ic-title { margin: 0; font-family: var(--serif); font-size: var(--fs-lg); color: var(--text-strong); }
+.ic-title { font-family: var(--serif); font-size: var(--fs-lg); color: var(--text-strong); }
 /* 正文是这一框里唯一的主要滚动层（长清单在这里滚，操作区不动） */
 .ic-body {
   display: flex;
@@ -736,11 +746,13 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overflow-x: clip;
   overscroll-behavior: contain;
+  /* 标题 / 说明 / 状态居中是本轮的视觉要求；明细清单（任务、材料）保持左对齐便于扫读 */
+  text-align: center;
 }
 .ic-lead, .ic-note, .ic-task, .ic-materials, .ic-consequence { margin: 0; font-size: var(--fs-sm); line-height: 1.65; overflow-wrap: anywhere; }
-.ic-lead { color: var(--text-primary); }
+.ic-lead { color: var(--text-primary); text-align: center; }
 .ic-lead-sub { color: var(--text-muted); }
-.ic-note { color: var(--warning); font-size: var(--fs-xs); }
+.ic-note { color: var(--warning); font-size: var(--fs-xs); text-align: center; }
 .ic-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
 .ic-item {
   display: flex;
@@ -748,8 +760,9 @@ onBeforeUnmount(() => {
   gap: 2px;
   padding: var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
+  text-align: left;
 }
 .ic-item-revert { border-left: 2px solid var(--warning); }
 .ic-task { color: var(--text-strong); }
@@ -772,21 +785,8 @@ onBeforeUnmount(() => {
 .ic-item-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-1); }
 .ic-notice { margin: 0; color: var(--text-secondary); font-size: var(--fs-xs); line-height: 1.6; overflow-wrap: anywhere; }
 .ic-error { margin: 0; color: var(--danger); font-size: var(--fs-xs); overflow-wrap: anywhere; }
-.ic-actions { flex: none; display: flex; flex-wrap: wrap; gap: var(--sp-2); justify-content: flex-end; }
-.ic-btn {
-  font: inherit;
-  font-size: var(--fs-xs);
-  color: var(--text-secondary);
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-pill);
-  padding: 4px var(--sp-3);
-  cursor: pointer;
-  min-height: 28px;
-}
-.ic-btn.primary { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
-.ic-btn:disabled { opacity: 0.6; cursor: default; }
-.ic-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* 动作区统一由 .qio-modal-actions 提供：居中、等宽、同高、窄窗纵排 */
+.ic-actions { flex: none; }
 .ic-outcome {
   position: absolute;
   left: 50%;
@@ -798,15 +798,12 @@ onBeforeUnmount(() => {
   gap: var(--sp-1);
   width: min(560px, calc(100vw - 32px));
   padding: var(--sp-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-2);
   color: var(--text-primary);
   font-family: var(--sans);
+  text-align: center;
 }
-.ic-outcome-title { margin: 0; font-family: var(--serif); font-size: var(--fs-sm); color: var(--text-strong); }
-.ic-outcome-text, .ic-paused p { margin: 0; font-size: var(--fs-xs); line-height: 1.65; color: var(--text-secondary); overflow-wrap: anywhere; }
+.ic-outcome-title { margin: 0; font-family: var(--serif); font-size: var(--fs-sm); color: var(--text-strong); text-align: center; }
+.ic-outcome-text, .ic-paused p { margin: 0; font-size: var(--fs-xs); line-height: 1.65; color: var(--text-secondary); overflow-wrap: anywhere; text-align: center; }
 .ic-paused ul, .ic-outcome-list { margin: 0; padding-left: 1.2em; font-size: var(--fs-xs); color: var(--text-secondary); }
 /* 被结束提示但仍有待决定项：右下角一条可操作的提醒，不抢中央阻塞面 */
 .ic-dismissed {
@@ -819,12 +816,9 @@ onBeforeUnmount(() => {
   gap: var(--sp-1);
   width: min(360px, calc(100vw - 32px));
   padding: var(--sp-2) var(--sp-3);
-  border: 1px solid var(--warning);
-  border-radius: var(--r-lg);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-1);
   color: var(--text-primary);
   font-family: var(--sans);
+  text-align: center;
 }
 .ic-outcome-list { padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: var(--sp-1); }
 .ic-outcome-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); flex-wrap: wrap; }

@@ -570,7 +570,7 @@ function offsetOfLine(value: string, line: number): number {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 1px var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -596,7 +596,7 @@ function offsetOfLine(value: string, line: number): number {
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-2);
   overflow: hidden;
   resize: vertical;
@@ -613,7 +613,7 @@ function offsetOfLine(value: string, line: number): number {
   min-width: 0;
   padding: var(--sp-2);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
 }
 .link-row-label {
@@ -634,7 +634,7 @@ function offsetOfLine(value: string, line: number): number {
   height: 28px;
   padding: 0 var(--sp-2);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-primary);
   font-family: var(--mono);

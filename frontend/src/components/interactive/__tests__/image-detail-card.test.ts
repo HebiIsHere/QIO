@@ -49,6 +49,7 @@ import BoardCard from "../BoardCard.vue";
 import { useInteractiveStore } from "../../../stores/interactive";
 import { emptyState, setSelection } from "../../../interactive/board";
 import type { BoardCard as BoardCardModel } from "../../../interactive/types";
+import { hasTipRecord } from "../../../composables/useQioTip";
 
 const STAMP = "2026-10-15T00:00:00.000Z";
 const SRC = resolve(process.cwd(), "src");
@@ -183,7 +184,8 @@ describe("图片详细状态：尺寸自动优先，极端比例才兜底", () =
     );
     await flushPromises();
     const toggle = long.get('[data-im="card-image-detail-toggle"]');
-    expect(toggle.attributes("title")).toContain("长");
+    expect(toggle.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(toggle.element as HTMLElement), "兜底说明要走统一用途说明").toBe(true);
     expect(toggle.attributes("aria-label")).toBe("查看完整图片");
     long.unmount();
 
@@ -194,7 +196,9 @@ describe("图片详细状态：尺寸自动优先，极端比例才兜底", () =
       }),
     );
     await flushPromises();
-    expect(tall.get('[data-im="card-image-detail-toggle"]').attributes("title")).toContain("长");
+    const tallToggle = tall.get('[data-im="card-image-detail-toggle"]');
+    expect(tallToggle.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(tallToggle.element as HTMLElement)).toBe(true);
   });
 
   it("比例未知的普通小图不显示兜底入口", async () => {

@@ -42,6 +42,7 @@ import PreviewTextPane from "./PreviewTextPane.vue";
 import PreviewStructuredPane from "./PreviewStructuredPane.vue";
 import PreviewImageViewer from "./PreviewImageViewer.vue";
 import PreviewPdfViewer from "./PreviewPdfViewer.vue";
+import { vQioTip } from "../../../composables/useQioTip";
 
 const props = withDefaults(defineProps<{ tab: PreviewTabState; full?: boolean }>(), { full: false });
 
@@ -642,7 +643,7 @@ function onSlidePage(page: number): void {
         <span
           v-if="kind === 'pdf' && pdfSearchInfo?.truncated && searchQuery.trim()"
           class="pv-count mono"
-          :title="'只在前 ' + pdfSearchInfo.scannedPages + ' 页里搜索'"
+          v-qio-tip="'只在前 ' + pdfSearchInfo.scannedPages + ' 页里搜索'"
         >仅前 {{ pdfSearchInfo.scannedPages }} 页</span>
         <button
           v-if="totalHits"
@@ -835,7 +836,7 @@ function onSlidePage(page: number): void {
   height: 24px;
   padding: 0 var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-primary);
   font: inherit;
@@ -858,7 +859,7 @@ function onSlidePage(page: number): void {
   color: var(--text-secondary);
   background: transparent;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 1px var(--sp-2);
   cursor: pointer;
   max-width: 100%;
@@ -891,7 +892,7 @@ function onSlidePage(page: number): void {
   width: 56px;
   height: 22px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-primary);
   font-size: var(--fs-tech);

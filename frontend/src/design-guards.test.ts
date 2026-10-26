@@ -84,7 +84,8 @@ describe("输入区与消息列同一条列", () => {
     expect(rootBlock).toMatch(/width:\s*100%/);
     expect(rootBlock).toMatch(/max-width:\s*860px/);
     const pillBlock = composer!.text.match(/\.input-pill\s*\{[\s\S]*?\n\}/)?.[0] ?? "";
-    expect(pillBlock).toMatch(/border-radius:\s*var\(--r-pill\)/);
+    // 2026-10-26 统一改造：输入框属于本次涉及控件，圆角用唯一 token，而不是胶囊 999px
+    expect(pillBlock).toMatch(/border-radius:\s*var\(--qio-ui-radius\)/);
     // 用户确认不要阴影：胶囊只用 1px 边框，不再有会被 overflow-x: clip 截断的投影
     expect(pillBlock).toMatch(/box-shadow:\s*none/);
     expect(rootBlock).not.toMatch(/position:\s*fixed/);

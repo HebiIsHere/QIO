@@ -27,6 +27,7 @@
   * 入口文案与真实动作一致：action === "view" 且是可预览图片 →「查看原图」。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { fetchAttachmentContent, isDesktopShell, openAttachment } from "../../services/attachments";
 import type { AttachmentOpenResult, AttachmentRef } from "../../services/attachments";
@@ -352,7 +353,7 @@ onBeforeUnmount(() => {
         role="status"
       >{{ actionStatus.text }}</p>
       <div class="cover-foot-row">
-        <p v-if="desc && !compact" class="cover-desc" :data-im="'card-cover-desc'" :title="desc">{{ desc }}</p>
+        <p v-if="desc && !compact" class="cover-desc" :data-im="'card-cover-desc'" v-qio-tip="desc">{{ desc }}</p>
         <button
           v-if="linked && !coverFailed"
           type="button"
@@ -446,7 +447,7 @@ onBeforeUnmount(() => {
   height: auto;
   object-fit: contain;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .thumb-note, .preview-note, .usage, .note {
@@ -468,7 +469,7 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 1px var(--sp-3);
   cursor: pointer;
 }
@@ -526,7 +527,7 @@ onBeforeUnmount(() => {
   margin: 0;
   max-width: 100%;
   padding: 2px var(--sp-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
   font-size: var(--fs-xs);
   line-height: var(--lh-tight);
@@ -543,7 +544,7 @@ onBeforeUnmount(() => {
   transform: translateY(-50%);
   margin: 0;
   padding: 2px var(--sp-2);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
   font-size: var(--fs-xs);
   color: var(--text-muted);

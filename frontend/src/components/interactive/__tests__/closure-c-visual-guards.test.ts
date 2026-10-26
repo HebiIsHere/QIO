@@ -86,7 +86,9 @@ describe("入口可达", () => {
     // Phase 1 v2：保存状态已从 InteractiveView 顶部迁到全局栏的 InteractiveChromeTools；
     // 同一个口径断言在新归属文件上继续生效。
     expect(chromeTools).toContain("saveStatusView");
-    expect(chromeTools).toContain(':title="saveView.detail');
+    // 失败原文改由 aria-label 携带（不再使用原生 title），状态行仍只显示一句人话
+    expect(chromeTools).toContain("saveView.detail");
+    expect(chromeTools).not.toContain(':title="saveView.detail');
     expect(saveStatus).toContain("humanizeFailure(input.error");
     expect(saveStatus).toContain("detail: full.detail");
   });

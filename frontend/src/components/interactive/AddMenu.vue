@@ -24,6 +24,7 @@
     （落盘 / 提交由既有机制负责，失败也由既有机制反馈，这里不另造一套）。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { addCard, ADDABLE_CARD_KINDS, CARD_KIND_LABELS, defaultCardSeed, updateCard } from "../../interactive/board";
@@ -405,7 +406,7 @@ onBeforeUnmount(() => {
       data-im="add-menu"
       aria-haspopup="menu"
       :aria-expanded="open"
-      title="添加文字卡或材料：文字卡（文字 / 链接 / 代码） / 文件（图片是文件附件）"
+      v-qio-tip="'添加文字卡或材料：文字卡（文字 / 链接 / 代码） / 文件（图片是文件附件）'"
       @click="toggle"
     >
       <span class="plus" aria-hidden="true">＋</span>添加
@@ -424,7 +425,7 @@ onBeforeUnmount(() => {
         class="add-status"
         :class="'is-' + notice.tone"
         data-im="add-material-status"
-        :title="notice.text"
+        v-qio-tip="notice.text"
       >
         <span class="status-text" data-im="add-material-status-text" role="status" aria-live="polite">{{ notice.text }}</span>
         <button
@@ -461,7 +462,7 @@ onBeforeUnmount(() => {
           type="button"
           role="menuitem"
           :data-im="'add-' + item.kind"
-          :title="item.hint"
+          v-qio-tip="item.hint"
           @click="add(item.kind)"
         >
           <span class="item-label">{{ item.label }}</span>
@@ -482,7 +483,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;
@@ -523,7 +524,7 @@ onBeforeUnmount(() => {
   padding: var(--sp-2);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--elev-floating, var(--shadow-2));
 }
 .pop-title { margin: 0 var(--sp-1) 0 0; font-size: var(--fs-xs); color: var(--text-faint); }
@@ -533,7 +534,7 @@ onBeforeUnmount(() => {
   font: inherit;
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }
@@ -573,7 +574,7 @@ onBeforeUnmount(() => {
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   border-left: 3px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--elev-floating, var(--shadow-2));
   font-size: var(--fs-xs);
   line-height: var(--lh-normal, 1.5);
@@ -594,7 +595,7 @@ onBeforeUnmount(() => {
   color: var(--link);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   cursor: pointer;
   white-space: nowrap;

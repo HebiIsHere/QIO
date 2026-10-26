@@ -20,6 +20,7 @@ import { useConversationTasksStore } from "../../../stores/conversationTasks";
 import { useConversationShellStore } from "../../../stores/conversationShell";
 import { useApprovalsStore } from "../../../stores/approvals";
 import { useSessionStore } from "../../../stores/session";
+import { hasTipRecord } from "../../../composables/useQioTip";
 import type { TaskCounts, TaskFeedItem, TaskFeedPage, TaskView } from "../../../conversation/contracts";
 
 const ZERO_COUNTS: TaskCounts = {
@@ -362,11 +363,14 @@ describe("任务视图 tablist 键盘与可访问性", () => {
   it("图标按钮只有可访问名称、不再挂原生 title（用途说明由 QTip 统一提供）", async () => {
     feed(page([]));
     const wrapper = await mountRail();
-    const buttons = wrapper.findAll(".rail-head-actions .icon-btn");
+    const buttons = wrapper.findAll(".rail-head-actions button");
     expect(buttons.length).toBeGreaterThan(0);
     for (const button of buttons) {
+      expect(button.classes()).toContain("qio-icon-btn");
       expect(button.attributes("aria-label")).toBeTruthy();
       expect(button.attributes("title")).toBeUndefined();
+      // 用途说明走统一浮层（v-qio-tip 注册了记录，不依赖原生 title）
+      expect(hasTipRecord(button.element as HTMLElement)).toBe(true);
     }
     wrapper.unmount();
   });

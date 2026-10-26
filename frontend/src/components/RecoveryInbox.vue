@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 「未完成事项」收件箱（A01 + A03 的前端出口）。
  *
@@ -223,7 +224,7 @@ function formatWhen(record: RecoveryRecordView): string {
         <p
           class="message"
           :class="{ clamped: !isTextOpen(record.record_id) && isLongText(messageOf(record)) }"
-          :title="messageOf(record)"
+          v-qio-tip="messageOf(record)"
         >
           {{ messageOf(record) }}
         </p>
@@ -242,7 +243,7 @@ function formatWhen(record: RecoveryRecordView): string {
             type="button"
             :disabled="!action.enabled || Boolean(busyId)"
             :aria-label="`${actionLabel(action)}：${messageOf(record)}`"
-            :title="action.enabled ? '' : action.reason"
+            v-qio-tip="action.enabled ? '' : action.reason"
             @click="run(record, action)"
           >
             {{ busyId === record.record_id ? "提交中…" : actionLabel(action) }}
@@ -342,7 +343,7 @@ function formatWhen(record: RecoveryRecordView): string {
  */
 .recovery-inbox {
   width: 100%; box-sizing: border-box; padding: var(--sp-3) var(--sp-4);
-  border: 1px solid var(--border-subtle); border-radius: var(--r-lg);
+  border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated); box-shadow: var(--shadow-1);
   font-family: var(--sans);
   display: flex; flex-direction: column; gap: var(--sp-2);

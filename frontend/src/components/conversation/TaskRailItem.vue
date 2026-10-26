@@ -25,6 +25,7 @@ import {
   visibleTaskActions,
 } from "../../services/conversationTasks";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import QIcon from "../ui/QIcon.vue";
 
 const props = defineProps<{
   item: TaskFeedItem;
@@ -162,9 +163,7 @@ function fallbackActionLabel(kind: string): string {
         @click="emit('toggle')"
       >
         <span class="task-title">{{ item.title || item.summary || "（这项任务没有标题）" }}</span>
-        <svg class="chevron" :class="{ rotated: expanded }" viewBox="0 0 16 16" aria-hidden="true">
-          <path d="M5.5 6.5 8 9l2.5-2.5" />
-        </svg>
+        <QIcon class="chevron" :class="{ rotated: expanded }" name="chevron-down" :size="14" />
       </button>
     </div>
 
@@ -279,7 +278,7 @@ function fallbackActionLabel(kind: string): string {
   gap: 6px;
   padding: 9px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-base);
   color: var(--text-primary);
   min-width: 0;
@@ -349,7 +348,7 @@ function fallbackActionLabel(kind: string): string {
 .task-trigger:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 .task-title {
   flex: 1;
@@ -365,14 +364,8 @@ function fallbackActionLabel(kind: string): string {
 }
 .chevron {
   flex: none;
-  width: 14px;
-  height: 14px;
   margin-top: 2px;
-  fill: none;
-  stroke: var(--text-muted);
-  stroke-width: 1.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  color: var(--text-muted);
   transition: transform var(--dur-fast) var(--ease-1);
 }
 .chevron.rotated { transform: rotate(180deg); }
@@ -403,7 +396,7 @@ function fallbackActionLabel(kind: string): string {
   color: var(--warning);
   border: 1px solid var(--warning-soft);
   background: var(--warning-soft);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   padding: 0 6px;
   line-height: 1.6;
 }
@@ -425,7 +418,7 @@ function fallbackActionLabel(kind: string): string {
   margin-left: 13px;
   padding: 3px 9px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--warning);
   font-size: var(--fs-xs);
@@ -509,7 +502,7 @@ function fallbackActionLabel(kind: string): string {
   overflow: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-secondary);
   font-family: var(--mono);
@@ -549,7 +542,7 @@ function fallbackActionLabel(kind: string): string {
   overflow: auto;
   overscroll-behavior: contain;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-secondary);
   font-family: var(--mono);
@@ -568,7 +561,7 @@ function fallbackActionLabel(kind: string): string {
 .task-action {
   padding: 4px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
@@ -612,7 +605,7 @@ function fallbackActionLabel(kind: string): string {
   gap: 6px;
   padding: 8px 9px;
   border: 1px solid var(--border-danger);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--danger-soft);
 }
 .task-confirm-text {

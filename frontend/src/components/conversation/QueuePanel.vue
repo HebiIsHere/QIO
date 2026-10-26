@@ -151,7 +151,7 @@ void props;
   min-width: 0;
   padding: 8px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .row[data-state="running"] {
@@ -202,7 +202,7 @@ void props;
   height: auto;
   padding: 3px 10px;
   font-size: 11.5px;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
 }
 .hint {
   color: var(--text-muted);
