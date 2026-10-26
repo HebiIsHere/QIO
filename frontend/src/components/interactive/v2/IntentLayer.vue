@@ -306,7 +306,16 @@ async function confirmOne(view: IntentViewWithDisplay): Promise<void> {
     const response = await confirmSingleIntent(view.intent_id, props.boardId);
     const result = summarizeConfirm(response, [view.intent_id], { batch: false });
     summary.value = result;
-    notice.value = result.notice;
+    /**
+     * A 的修复：确认已保存但**没有开始执行**（例如原提交话题无法确认）必须按错误呈现，
+     * 让真实原因（startError / turnStart.reason）落在用户可见的错误行，而不是绿色"已确认"。
+     */
+    if (result.startFailed) {
+      notice.value = "";
+      error.value = result.notice;
+    } else {
+      notice.value = result.notice;
+    }
     emit("confirmed", result);
     emit("refresh");
   } catch (cause) {
@@ -339,7 +348,12 @@ async function confirmBatch(): Promise<void> {
     const response = await batchConfirmIntents(props.boardId, state.ids);
     const result = summarizeConfirm(response, state.ids, { batch: true });
     summary.value = result;
-    notice.value = result.notice;
+    if (result.startFailed) {
+      notice.value = "";
+      error.value = result.notice;
+    } else {
+      notice.value = result.notice;
+    }
     checkedIds.value = [];
     emit("confirmed", result);
     emit("refresh");
@@ -604,6 +618,10 @@ defineExpose({ displayOf, select, confirmOne, confirmBatch });
           :data-completed="row.completed ? 'true' : 'false'"
         >{{ row.intentId }} · {{ row.statusText }}<span v-if="row.turnId"> · 执行轮次 {{ row.turnId }}</span><span v-if="row.reason"> · {{ row.reason }}</span></li>
       </ul>
+      <p v-if="summary.startFailed" class="warn" data-im="intent-confirm-start-failed">
+        本次没有开始执行：{{ summary.startError || "服务端没有返回具体原因" }}
+        <span v-if="summary.startCode">（{{ summary.startCode }}）</span>
+      </p>
       <p v-if="summary.failedIds.length" class="warn" data-im="intent-confirm-partial">
         部分失败：{{ summary.failedIds.join("、") }}
       </p>
