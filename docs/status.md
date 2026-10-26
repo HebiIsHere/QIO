@@ -5945,3 +5945,5 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **修复切换权限模式 422**：`setSecurityMode` 的 PUT 请求补 `Content-Type: application/json`。此前无 Content-Type，FastAPI 的 `body: dict` 把 JSON 文本当字符串校验，返回 422「Input should be a valid dictionary」；实测同一 body 带 JSON 头 200、不带 422，已在真实后端验证。
 - **验证**：定向测试（权限模式 47、交互组件 73 文件/689 例、security 请求契约 2、相关 design-guards/窗口栏等）；`vue-tsc --noEmit` 0 error；`vite build` 成功；Playwright(Edge) 实机 1440/480 两个路由：全局栏文字可见且纯文字（无边框/透明底/0 圆角）、旧徽标 0、搜索只保留输入框（容器无额外交字）、点击后 94→226px 且聚焦、无 dialog、窄窗 scrollWidth=480 无横向溢出、consoleErrors=0（截图与 JSON：`_fixpm2/evidence/FU4/ui/`）。
 - **边界**：本轮不做全量/CI；未做真机桌面壳复验；搜索结果未在真实有匹配卡片的板面上做视觉复核（无卡片数据时按设计不渲染说明）；脚本 `scripts/i2v2-verify/playwright_flows.mjs` 已同步改为操作内联输入框。
+
+- **补充修复（用户反馈：全局栏消失，只剩 QIO）**：用户打开的是旧深链/手输深链 `#/conversation`，而对话页真实 path 是 `/` —— 无匹配路由导致页面不渲染、WindowChrome 走「非聊天页」分支只剩 QIO 字标（图标 / PERSONAL AGENT / 权限模式 / 设置入口全部没有）。已加 `/conversation` → `/` 别名与未知路径 catch-all 回对话页；Playwright 实测 `#/conversation`、任意未知哈希都回到完整全局栏（图标 + PERSONAL AGENT + 权限模式文字 + 设置），`#/interactive`、`#/settings` 不受影响（截图 `05-conversation-redirected.png`）。

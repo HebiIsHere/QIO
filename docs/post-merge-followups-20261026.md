@@ -216,3 +216,8 @@
 - 定向：权限模式相关 47 例、交互组件 73 文件/689 例、security 请求契约 2 例、窗口栏/共享全局栏/design-guards 通过；`vue-tsc --noEmit` 0；`vite build` 成功。
 - 真实浏览器（Playwright + Edge，测试服务器 5199/8734）：1440 与 480 两路由截图与 JSON 在 `_fixpm2/evidence/FU4/ui/`；全局栏文字纯文字（0 border、透明底、0 圆角、11px）、旧徽标 0、搜索容器无额外交字、点击 94→226px 并聚焦、无 dialog、窄窗 scrollWidth=480、consoleErrors=0。
 - 边界：按用户要求未跑全量、未触发 CI；未做真机壳复验；有匹配卡片的搜索结果仅由组件测试覆盖（实机板面无匹配数据）。
+
+### 9.5 补充：全局栏消失、只剩 QIO（旧深链）
+- 现象：用户打开 `#/conversation` 时页面空、顶部只剩 QIO 字标。根因不是这次的权限模式改动，而是路由：对话页真实 path 是 `/`，`/conversation` 没有匹配路由 → App 没有视图、WindowChrome 的 `hasGlobalBar` 为 false，走「其他页面」分支（点 + QIO 字标），图标与全局栏自然都不在。
+- 修复：`router.ts` 增加 `/conversation` → `/` 别名，并增加未知路径 catch-all 回 `/`（单窗口桌面应用里没有可停留的 404 空白页）；新增 `src/__tests__/router-aliases.test.ts` 3 例（旧深链、未知深链、interactive/settings 不被吃掉）。
+- 实测：`#/conversation` 与 `/this-route-does-not-exist` 都重定向到 `#/`，全局栏恢复（图标 / PERSONAL AGENT / 受限模式 / 设置 / 话题栏）；`#/interactive`、`#/settings` 正常；Playwright 截图 `_fixpm2/evidence/FU4/ui/05-conversation-redirected.png`。
