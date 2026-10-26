@@ -23,6 +23,7 @@ vi.mock("../../../services/approvalLifecycle", async (importOriginal) => {
 });
 
 import ApprovalResultsPanel from "../ApprovalResultsPanel.vue";
+import { useApprovalsStore } from "../../../stores/approvals";
 import { useApprovalResultsStore } from "../../../stores/approvalResults";
 
 function setup() {
@@ -110,6 +111,46 @@ describe("legacy 已批准 ≠ 执行成功（结果面板）", () => {
     expect(entry.find('[data-test="approval-result-legacy-note"]').text()).toContain("没有执行");
     expect(results.byId["ap_int"].ok).toBe(false);
     w.unmount();
+  });
+});
+
+describe("快照里的旧审批中断：只读展示，没有可点击的允许/拒绝", () => {
+  it("显示「未执行 · 中断待核对」，且不计入待审批数量", async () => {
+    const { pinia } = setup();
+    const approvals = useApprovalsStore();
+    approvals.legacyInterrupted = [
+      {
+        approvalId: "ia_1",
+        kind: "computer",
+        what: "运行一段命令",
+        createdAt: "2026-10-26T09:00:00+08:00",
+        status: "interrupted_legacy",
+      },
+    ];
+    const w = mount(ApprovalResultsPanel, { global: { plugins: [pinia] } });
+    await flushPromises();
+
+    const section = w.get('[data-test="approval-legacy-interrupted"]');
+    const text = section.text();
+    expect(text).toContain("未执行");
+    expect(text).toContain("中断待核对");
+    expect(text).toContain("运行一段命令");
+    // 只读事实：没有批准/拒绝/重试执行按钮
+    expect(section.findAll("button")).toHaveLength(0);
+    expect(approvals.queue).toHaveLength(0);
+    expect(approvals.pendingCount).toBe(0);
+    w.unmount();
+  });
+
+  it("旧后端没有中断字段（undefined）不会把已有清单擦空", async () => {
+    const { results } = setup();
+    const approvals = useApprovalsStore();
+    approvals.legacyInterrupted = [
+      { approvalId: "ia_1", kind: "computer", what: "运行一段命令", createdAt: "", status: "interrupted_legacy" },
+    ];
+    expect(results).toBeTruthy();
+    approvals.ingestInterruptedLegacy(undefined);
+    expect(approvals.legacyInterrupted).toHaveLength(1);
   });
 });
 

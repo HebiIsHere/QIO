@@ -601,6 +601,22 @@ export const useApprovalsStore = defineStore("approvals", {
     recoveryBusy: false,
     /** R9：pending 恢复失败原因（只影响「恢复」这件事，不改变已有待办） */
     recoveryError: null as string | null,
+    /**
+     * 后端权威快照（/api/runtime/state 的 interrupted_approvals）里的旧审批中断事实。
+     *
+     * 这些**不是待办**：那次操作没有执行、也不会再执行，只读展示「未执行 / 中断待核对」。
+     * 单独存放而不是塞进审批队列 —— 否则入口会把它数成「等待确认」，会出现假待办。
+     */
+    legacyInterrupted: [] as {
+      approvalId: string;
+      kind: string;
+      what: string;
+      createdAt: string;
+      status: string;
+      turnId?: string | null;
+      sessionId?: string | null;
+      requestDigest?: string | null;
+    }[],
   }),
   getters: {
     current: (state) => state.queue[0] ?? null,
@@ -768,6 +784,41 @@ export const useApprovalsStore = defineStore("approvals", {
       this.recoveryError = null;
       await this.recoverPending();
       return !this.recoveryError;
+    },
+
+    /**
+     * 接收权威快照里的旧审批中断事实（只读）。
+     *
+     * 快照是权威：清单整体替换；但**只接收有中断证据的行**（legacy 且
+     * status=interrupted/interrupted_legacy），不把正常旧审批误标成未执行。
+     * 传 undefined（旧后端没有这个字段）时保持现状，不擦成「没有」。
+     */
+    ingestInterruptedLegacy(rows: unknown): void {
+      if (!Array.isArray(rows)) return;
+      const next = rows
+        .map((raw) => (raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null))
+        .filter((raw): raw is Record<string, unknown> => raw !== null)
+        .map((raw) => {
+          const status = String(raw.status ?? "");
+          const legacy = raw.legacy === true;
+          const interruptedStatus =
+            status === "interrupted_legacy" || status === "interrupted";
+          return {
+            approvalId: String(raw.approval_id ?? ""),
+            kind: String(raw.kind ?? ""),
+            what: String(raw.what ?? raw.label ?? ""),
+            createdAt: String(raw.created_at ?? ""),
+            status: interruptedStatus ? status : "",
+            turnId: (raw.turn_id as string | null) ?? null,
+            sessionId: (raw.session_id as string | null) ?? null,
+            requestDigest: (raw.request_digest as string | null) ?? null,
+            _legacy: legacy,
+          };
+        })
+        .filter((row) => Boolean(row.approvalId))
+        .filter((row) => row._legacy && row.status !== "")
+        .map(({ _legacy, ...row }) => row);
+      this.legacyInterrupted = next;
     },
 
     /**

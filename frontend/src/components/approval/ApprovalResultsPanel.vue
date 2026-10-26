@@ -131,6 +131,35 @@ onMounted(() => {
       <button class="ar-btn" type="button" @click="retryKnowledge">重试读取待确认知识</button>
     </div>
 
+    <!--
+      旧审批恢复出的中断事实（B-CP1 /api/runtime/state 的 interrupted_approvals）：
+      只读事实，不是待办 —— 不给任何允许/拒绝按钮，也不计入待审批数量。
+    -->
+    <section
+      v-if="approvals.legacyInterrupted.length"
+      class="ar-legacy"
+      data-test="approval-legacy-interrupted"
+      aria-label="旧审批中断（只读）"
+    >
+      <p class="ar-legacy-title">
+        旧审批中断（只读）：下面这些操作上次没有执行，结果待核对；不会自动重放。
+      </p>
+      <ul class="ar-legacy-list">
+        <li
+          v-for="row in approvals.legacyInterrupted"
+          :key="row.approvalId"
+          class="ar-legacy-row"
+          :data-approval-id="row.approvalId"
+        >
+          <span class="ar-legacy-what">{{ row.what || kindTitle(row.kind) }}</span>
+          <span class="ar-legacy-state mono" data-test="approval-legacy-interrupted-state">
+            未执行 · 中断待核对（旧审批路径）
+          </span>
+          <span v-if="row.createdAt" class="ar-when mono">{{ whenText(row.createdAt) }}</span>
+        </li>
+      </ul>
+    </section>
+
     <ul v-if="entries.length" class="ar-list" data-test="approval-results-list">
       <li
         v-for="entry in entries"
@@ -267,6 +296,47 @@ onMounted(() => {
 .ar-btn:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
+}
+/* 旧审批中断：只读事实区（与待办、结果列表明确分开） */
+.ar-legacy {
+  padding: 9px 11px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+.ar-legacy-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.ar-legacy-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ar-legacy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.ar-legacy-what {
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.ar-legacy-state {
+  flex: none;
+  color: var(--warning);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
 }
 .ar-list {
   list-style: none;

@@ -124,6 +124,41 @@ describe("补读时机：onopen / RESYNC", () => {
   });
 });
 
+describe("runtime 快照的旧审批中断事实（只读，不是待办）", () => {
+  it("收进 approvals.legacyInterrupted；不进待办队列；旧后端缺字段时不擦成空", async () => {
+    const { events, approvals } = setup();
+    mocks.getRuntimeState.mockResolvedValue(
+      runtimeState({
+        interrupted_approvals: [
+          {
+            approval_id: "ia_legacy",
+            kind: "computer",
+            what: "运行一段命令",
+            legacy: true,
+            state: null,
+            status: "interrupted_legacy",
+            outcome: "not_executed",
+            created_at: "2026-10-26T09:00:00+08:00",
+          },
+        ],
+      }) as never,
+    );
+
+    events.connect();
+    captured.handle?.onopen?.();
+    await flushPromises();
+
+    expect(approvals.legacyInterrupted.map((row) => row.approvalId)).toEqual(["ia_legacy"]);
+    expect(approvals.legacyInterrupted[0]?.what).toBe("运行一段命令");
+    // 只读事实不是待办：不能进审批队列、不能算作等待确认
+    expect(approvals.queue.some((item) => item.approval_id === "ia_legacy")).toBe(false);
+
+    // 旧后端快照没有 interrupted_approvals 字段：保持现状（不伪装成「没有中断」）
+    events.applyRuntimeState({ approvals: [], tasks: [] } as never);
+    expect(approvals.legacyInterrupted).toHaveLength(1);
+  });
+});
+
 describe("按 approval_id 合并：终态历史收口，不重复、不串项、不提交", () => {
   it("本机停在 executing，history 说 executed → 结果收口为完成，队列不再等待", async () => {
     const { approvals, results } = setup();

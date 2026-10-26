@@ -870,6 +870,22 @@ export const useEventStore = defineStore("events", {
      */
     applyRuntimeState(state: {
       approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
+      /**
+       * 旧审批中断事实（B-CP1 /api/runtime/state）：只读展示，不是待办。
+       * 旧后端没有这个字段 → 不传，store 保持现状。
+       */
+      interrupted_approvals?: {
+        approval_id: string;
+        kind?: string;
+        what?: string;
+        created_at?: string;
+        status?: string;
+        legacy?: boolean;
+        outcome?: string;
+        turn_id?: string | null;
+        session_id?: string | null;
+        request_digest?: string | null;
+      }[];
       tasks: { task_id: string; tool: string; status: "queued" | "running" | "done" | "failed"; ok?: boolean | null; content_preview?: string; error?: string | null }[];
       tools?: ToolExecutionSnapshot[];
       /**
@@ -898,6 +914,11 @@ export const useEventStore = defineStore("events", {
       // 每轮结束事实：重连后失败的那一轮仍然说得出为什么（旧记录没有就不写）
       session.applyTurnFactsSnapshot(state.turn_facts);
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
+      /**
+       * 旧审批中断事实（B-CP1）：单独存放、只读展示（结果面板「旧审批中断」区）。
+       * 绝不放进入审批队列 —— 它们不是等待用户确认的待办，数进去就是假待办。
+       */
+      useApprovalsStore().ingestInterruptedLegacy(state.interrupted_approvals);
       /**
        * 「继续 / 停止」操作条也属于待办：快照里已经没有它（事务结束了 / 别处应答了）
        * 就必须本地收口 —— 否则用户会看到一个点不动的假待办。
