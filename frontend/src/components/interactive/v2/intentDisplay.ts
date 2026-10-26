@@ -267,6 +267,16 @@ export type ConfirmResponseWithTurn = Omit<ConfirmResponse, "results"> & {
   turn_id?: string | null;
   turnId?: string | null;
   resume?: boolean;
+  /**
+   * A 的修复：确认已保存但续作 Turn 没起来时的真实原因。
+   * 后端可能放在 turnStart（{code, reason}）/ startError / 顶层 reason。
+   */
+  turnStart?: {
+    code?: string | null;
+    reason?: string | null;
+  } | null;
+  startCode?: string | null;
+  reason?: string | null;
 };
 
 /** 读取真实执行轮次：逐项优先，其次响应级；没有就 null（绝不编造）。 */
@@ -309,6 +319,12 @@ export interface ConfirmSummary {
   /** 服务端响应级 turn_id（有些实现放在顶层） */
   responseTurnId: string | null;
   resume: boolean;
+  /** 确认已保存，但后端明确说本次**没有开始执行**（started===false）。 */
+  startFailed: boolean;
+  /** 没开始执行的原因码（如 topic_unresolved；没有就空串） */
+  startCode: string;
+  /** 没开始执行的真实原因（给人看；没有就空串） */
+  startError: string;
   /** 可直接展示的一句人话（绝不说成已完成） */
   notice: string;
 }
@@ -331,6 +347,19 @@ export function summarizeConfirm(
   }
   const responseTurnId = readTurnId(response);
   const batch = options.batch ?? Boolean(response?.batch);
+  /**
+   * A 的修复：确认"已保存但没开始执行"时后端给的真实原因。
+   * 读取顺序（后端契约）：turnStart.reason → startError → 顶层 reason；
+   * 原因码：turnStart.code → startCode。**只有 started===false 才当失败**，
+   * started 缺省 / true 都不伪造失败。
+   */
+  const turnStart =
+    response?.turnStart && typeof response.turnStart === "object" ? response.turnStart : null;
+  const startFailed = response?.started === false;
+  const startCode = String(turnStart?.code ?? response?.startCode ?? "").trim();
+  const startError = startFailed
+    ? String(turnStart?.reason ?? response?.startError ?? response?.reason ?? "").trim()
+    : "";
 
   const rows: ConfirmRowView[] = requested.map((intentId) => {
     const item = byId.get(intentId);
@@ -369,7 +398,10 @@ export function summarizeConfirm(
   const succeededIds = rows.filter((row) => row.returned && row.ok).map((row) => row.intentId);
   const failedIds = rows.filter((row) => !row.returned || !row.ok).map((row) => row.intentId);
   const completedIds = rows.filter((row) => row.completed).map((row) => row.intentId);
-  const startedUnknownIds = rows.filter((row) => row.startedUnknown).map((row) => row.intentId);
+  // 已知没开始（started=false）时由下面的明确原因收口，不再叠一句"没有返回执行轮次"
+  const startedUnknownIds = startFailed
+    ? []
+    : rows.filter((row) => row.startedUnknown).map((row) => row.intentId);
   const turnIds: Record<string, string> = {};
   for (const row of rows) if (row.turnId) turnIds[row.intentId] = row.turnId;
 
@@ -397,6 +429,16 @@ export function summarizeConfirm(
         " —— 不能认为已经开始执行（服务端没有返回 turn_id）。",
     );
   }
+  /**
+   * 「已确认但没有开始执行」必须说清原因（A 的 topic_unresolved 就是这一类）。
+   * 不能只留一句"没有返回执行轮次"——用户会以为已经排队，实际那次续作根本没起来。
+   */
+  if (startFailed) {
+    const reason = startError || "服务端没有返回具体原因";
+    const prefix = startCode === "topic_unresolved" ? "原提交话题无法确认" : "";
+    const detail = prefix ? prefix + "（" + reason + "）" : reason;
+    parts.push("已确认，但本次没有开始执行：" + detail + "。事务已保存，可查看原因后重试。");
+  }
   if (completedIds.length) {
     parts.push("服务端已完成：" + completedIds.join("、") + "。");
   } else if (succeededIds.length) {
@@ -413,6 +455,9 @@ export function summarizeConfirm(
     turnIds,
     responseTurnId,
     resume: response?.resume === true,
+    startFailed,
+    startCode,
+    startError,
     notice: parts.join(""),
   };
 }

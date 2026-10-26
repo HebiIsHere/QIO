@@ -62,6 +62,8 @@ export interface ApprovalResultEntry {
   /** 整批汇总（没有逐项结果时为空） */
   batchSummary: string;
   source: ApprovalResultSource;
+  /** 旧审批路径（B-CP1）：legacy 的「已批准」与真实执行结果必须分开显示。 */
+  legacy?: boolean;
   /** 这条结果的时间（事件取本机时间，历史取后端 at） */
   at: string;
   /** 排序用的毫秒时间戳（越大越新） */
@@ -76,6 +78,7 @@ const TERMINAL_STATES = new Set([
   "expired",
   "invalidated",
   "interrupted_unverified",
+  "interrupted_legacy",
 ]);
 
 /** 状态推进等级：用来防止乱序事件把终态「降级」回中间态。 */
@@ -110,6 +113,9 @@ export function resultStateFromOutcome(outcome: string): string {
       return "invalidated";
     case "interrupted_unverified":
       return "interrupted_unverified";
+    case "interrupted_legacy":
+    case "not_executed":
+      return "interrupted_legacy";
     case "rejected":
       return "rejected";
     case "cancelled":
@@ -146,6 +152,7 @@ const PHASE_SUMMARY: Record<string, string> = {
   failed: "执行失败",
   invalidated: "执行前核对未通过，本次没有执行",
   interrupted_unverified: "上次进程在执行中退出，结果待核对；没有自动重放",
+  interrupted_legacy: "旧审批路径：上次操作没有执行，结果待核对；不会自动重放",
   rejected: "已拒绝，不会执行",
   cancelled: "已取消，不会执行",
   expired: "已过期，本次没有执行",
@@ -280,6 +287,7 @@ export function resultFromEvent(data: Record<string, unknown>): ApprovalResultEn
     items,
     batchSummary: batchSummaryText(items),
     source: "event",
+    legacy: data.legacy === true || detail.legacy === true,
     at: new Date(now).toISOString(),
     updatedAt: now,
   };
@@ -294,6 +302,11 @@ export function resultFromHistory(row: ApprovalHistoryEntry, index = 0): Approva
   const items = uniqueItems(batchItemsFromDetail(detail));
   const parsed = Date.parse(text(row.at));
   const updatedAt = Number.isFinite(parsed) ? parsed : Date.now() - index;
+  /**
+   * B-CP1：执行终态的真实 ok 在 detail.ok 里；中间态（outcome=approved）**没有** ok，
+   * 不得按 ok 判成功 —— 已批准不是已执行。
+   */
+  const detailOk = typeof detail.ok === "boolean" ? detail.ok : null;
   return {
     approvalId: row.approval_id,
     kind: text(row.kind) || text(detail.kind),
@@ -302,11 +315,14 @@ export function resultFromHistory(row: ApprovalHistoryEntry, index = 0): Approva
     state,
     stateLabel: approvalStateLabel(state),
     summary: text(row.summary) || PHASE_SUMMARY[state] || "",
-    ok: state === "completed" ? true : isTerminalApprovalState(state) ? false : null,
+    ok:
+      detailOk ??
+      (state === "completed" ? true : isTerminalApprovalState(state) ? false : null),
     detail,
     items,
     batchSummary: batchSummaryText(items),
     source: "history",
+    legacy: row.legacy === true || detail.legacy === true,
     at: text(row.at) || new Date(updatedAt).toISOString(),
     updatedAt,
   };
@@ -341,6 +357,7 @@ export function mergeResultEntry(
         kind: existing.kind || incoming.kind,
         label: existing.label || incoming.label,
         detail: Object.keys(existing.detail).length ? existing.detail : incoming.detail,
+        legacy: existing.legacy || incoming.legacy,
       };
     }
   }
@@ -352,6 +369,7 @@ export function mergeResultEntry(
   if (!merged.label) merged.label = existing.label;
   if (!merged.kind) merged.kind = existing.kind;
   if (!merged.summary) merged.summary = existing.summary;
+  if (existing.legacy) merged.legacy = true;
   return merged;
 }
 
@@ -447,6 +465,8 @@ export const useApprovalResultsStore = defineStore("approvalResults", {
       ok?: boolean | null;
       kind?: string;
       label?: string;
+      /** 旧审批路径的用户决定（B-CP1）：与执行结果分开显示。 */
+      legacy?: boolean;
     }): void {
       const approvalId = text(input.approvalId);
       if (!approvalId) return;
@@ -470,6 +490,7 @@ export const useApprovalResultsStore = defineStore("approvalResults", {
         items: [],
         batchSummary: "",
         source: "event",
+        legacy: input.legacy === true,
         at: new Date(now).toISOString(),
         updatedAt: now,
       });

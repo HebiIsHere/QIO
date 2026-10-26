@@ -2,7 +2,8 @@
 
 > 本轮修复分支：fix/post-merge-integration-cleanup-20261025（未合入 main）。
 > 基线：origin/main 1b03541eedd2dcaa9b82d6102108d717c71c6fb4。
-> 状态：进行中（本文在收口时回填完整状态）。
+> 状态：**已完成**（P90 阶段：实现、定向验证、真实界面、真机桌面、本地全量与完整 CI 均已记录，见 §9；本阶段未合入 main、未打包、未发布）。
+> 随后另开的「后续修复阶段（P91）」为**进行中**：其最终 SHA / 完整 CI / 收口结论由 Lead 回填，见 §12。
 
 ## 0. 给用户的说明（非技术）
 
@@ -301,3 +302,25 @@
 - **未来合入 main 的重复触发处理**：PR 运行的受测提交是 PR head SHA，main push 运行的受测提交是 merge SHA，两者是不同的提交、各自一次完整矩阵；concurrency 不会把它们当作重复。若仓库保护要求两者都跑，按「不同 SHA 两次完整运行」如实记录，不冒充去重；减负方案（择一）：用 fast-forward/rebase 合并使 main SHA 与已验证 head 相同，或 PR 上只跑 targeted、main push 作为唯一完整门禁。本轮没有创建 PR。
 - **合并材料**：本文档（能力对应表、逐项状态、删除清单、测试迁移、验证台账、未验证边界）+ 各工作流证据目录 + 分支提交历史（全程 merge --no-ff，保留工作流边界）。
 - **数据库**：本轮无 schema/迁移变更；若未来同分支需要回退，按 docs/integration-3way-20261025.md §8 的「保留历史的回退提交/PR + 数据库独立处理」执行，不用强推。
+
+## 12. 后续修复阶段（P91，2026-10-26 后续轮）
+
+> **阶段区分**：§1–§11 是 **P90「合并后修复与旧代码清理」的已完成事实**（该阶段未合入 main、未打包、未发布）；本节记录随后另开的 **P91「后续修复轮」**，它**进行中**，最终 SHA、完整 CI、独立验收与收口结论由 Lead 回填。本文件不提前声称 P91 的能力已完成或已合入 main。
+
+- **基线**：`origin/fix/post-merge-integration-cleanup-20261025` = `373fda40`（P90 分支 tip）；`origin/main` 仍为 `1b03541e`（未前进）。
+- **分支**：Lead 集成分支 `fix/post-merge-followups-20261026`；各工作流独立 worktree 分支：A 话题归属 `fix/fu2-topic-attribution`、B 审批后端 `fix/fu2-approval-backend`、C 审批前端 `fix/fu2-approval-frontend`、D 通知投递 `fix/fu2-notification-delivery`、E 文档许可 `docs/fu2-docs-license`、F 独立验收 `verify/fu2-acceptance`。
+- **范围（按共享契约，完成情况以收口验证为准）**：
+  - **A 互动续作话题归属**：确认 / 恢复 / 重试启动续作 Turn 时，话题优先取原提交保存的 `binding.resumeState.topicId`；当前选中话题不得覆盖它；binding 缺失或话题无法核对时明确失败（不静默回退、不启动 Turn、不写绑定、不重复执行）。
+  - **B 审批后端**：旧 `request()` 落库行（state/operation 为空）在输出中明确 `legacy=true`，不得由 `row_to_dict` / `state_of` 伪造 `state=waiting`；恢复保留原 `turn_id/session_id/request_digest/created_at/expires_at` 绑定事实，旧审批状态用独立事实（如 `interrupted_legacy`）；`/api/approvals/{id}/decide` 对 legacy 明确拒绝，`/respond` 继续服务 legacy（单次消费与绑定校验不变）；旧路径执行结束写 `approval_history`（PK `approval_id`，后写真实终态，detail 含 ok/kind/label/error）并发 `APPROVAL_RESULT`（`phase=executed/failed`、`ok`、`summary`、`detail`），「已批准 / 执行中」不得显示成「执行成功」；支持 `overrides` 的旧 `tool_create` 路径必须让执行器采用用户批准值，不支持 `overrides` 的路径收到时显式 400 拒绝（`overrides_unsupported`），不静默丢弃。
+  - **C 审批前端**：按 `approval_id` 合并 `pending` / `history` / 事件；legacy 或无 state 项只走 `/respond`，绝不调 `/decide`、不补 state；重连（SSE onopen）、RESYNC、回前台主动补读；读取失败可见可重试；已批准等待执行与执行成功/失败严格区分；预算只有端到端支持 `overrides` 的旧路径可编辑。
+  - **D 子任务通知可靠投递**：新增**只追加**迁移 71（不改 1..70；`task_id` 主键、`payload`、`created_at`、`delivered_at`、`attempts`、`last_error`、`origin`）；enqueue 只做持久化去重、不算交付成功；只有通知轮被 turn manager 接受后才写 `delivered_at`；失败保留待重试、重启继续投递；同一 `task_id` 至多一次、FIFO。
+  - **E 文档与许可**：本文件区分 P90 已完成与 P91 进行中；`docs/status.md` 增加 P91 与最后核对；`THIRD-PARTY-NOTICES.md` / `docs/compliance.md` 按实际组件核对概括（本轮未改依赖，不重新生成声明）。
+- **状态（截至 2026-10-26 本文撰写）**：**进行中（partial）**。各工作流的实现与定向验证在各自分支与 `_fixpm2/evidence/` 下；本文不预先声称未验证的能力。
+- **待 Lead 收口回填（占位）**：
+  - 最终代码 SHA：`TBD`
+  - 完整 CI 运行号与逐 job 结果：`TBD`
+  - 本地全量（后端 / 前端 / 类型检查 / 构建）结果：`TBD`
+  - 独立验收（F）结论与有限边界：`TBD`
+  - 最终结论（是否合入 main / 是否打包发布 / 版本号）：`TBD`（不提前声称已合并、已发布）
+- **未验证边界（本轮默认口径）**：真实模型/厂商链路（一律 fake/mock）、POSIX 平台（本地仅 Windows）、安装包形态与系统关机/注销、真机桌面壳（除非收口时另有新证据）——最终以收口证据为准。
+

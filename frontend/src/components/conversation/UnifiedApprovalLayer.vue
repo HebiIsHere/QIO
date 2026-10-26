@@ -120,6 +120,12 @@ function onUserInteraction() {
 function onVisibilityChange() {
   if (document.visibilityState !== "visible") return;
   void unified.refreshKnowledgePending();
+  /**
+   * 窗口回到前台 = 界面可能已经落后于后端：主动补读审批生命周期
+   * （pending + 执行终态历史），与 SSE 重连 / RESYNC 共用同一个只读入口。
+   * 失败分别落在 recoveryError / historyError 上，由结果面板给出可重试入口。
+   */
+  void approvals.refreshApprovalsAndHistory("foreground");
   retryAutoOpen();
 }
 

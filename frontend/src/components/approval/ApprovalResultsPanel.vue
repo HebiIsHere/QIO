@@ -39,6 +39,20 @@ function entryTone(entry: ApprovalResultEntry): "ok" | "warn" | "info" | "fail" 
   return "info";
 }
 
+/** 旧审批路径（B-CP1）：已批准 ≠ 已执行，分开说清楚。 */
+function legacyText(entry: ApprovalResultEntry): string {
+  if (!entry.legacy) return "";
+  if (entry.state === "approved") {
+    return "旧审批路径：你已经批准，但后端执行结果还没回来 —— 这不是执行成功。";
+  }
+  if (entry.state === "interrupted_legacy") {
+    return "旧审批路径中断：上次操作没有执行，结果待核对；不会自动重放。";
+  }
+  if (entry.state === "completed") return "旧审批路径：后端已确认执行完成。";
+  if (entry.state === "failed") return "旧审批路径：后端执行失败，没有重试。";
+  return "";
+}
+
 /** 已批准 / 执行中：明确说「等待执行」，不能显示成完成。 */
 function waitingText(entry: ApprovalResultEntry): string {
   if (entry.state === "approved") {
@@ -117,6 +131,35 @@ onMounted(() => {
       <button class="ar-btn" type="button" @click="retryKnowledge">重试读取待确认知识</button>
     </div>
 
+    <!--
+      旧审批恢复出的中断事实（B-CP1 /api/runtime/state 的 interrupted_approvals）：
+      只读事实，不是待办 —— 不给任何允许/拒绝按钮，也不计入待审批数量。
+    -->
+    <section
+      v-if="approvals.legacyInterrupted.length"
+      class="ar-legacy"
+      data-test="approval-legacy-interrupted"
+      aria-label="旧审批中断（只读）"
+    >
+      <p class="ar-legacy-title">
+        旧审批中断（只读）：下面这些操作上次没有执行，结果待核对；不会自动重放。
+      </p>
+      <ul class="ar-legacy-list">
+        <li
+          v-for="row in approvals.legacyInterrupted"
+          :key="row.approvalId"
+          class="ar-legacy-row"
+          :data-approval-id="row.approvalId"
+        >
+          <span class="ar-legacy-what">{{ row.what || kindTitle(row.kind) }}</span>
+          <span class="ar-legacy-state mono" data-test="approval-legacy-interrupted-state">
+            未执行 · 中断待核对（旧审批路径）
+          </span>
+          <span v-if="row.createdAt" class="ar-when mono">{{ whenText(row.createdAt) }}</span>
+        </li>
+      </ul>
+    </section>
+
     <ul v-if="entries.length" class="ar-list" data-test="approval-results-list">
       <li
         v-for="entry in entries"
@@ -134,6 +177,12 @@ onMounted(() => {
             持久记录
           </span>
           <span v-else class="ar-src mono" title="本次会话实时收到的事件">实时</span>
+          <span
+            v-if="entry.legacy"
+            class="ar-src mono"
+            data-test="approval-result-legacy"
+            title="旧审批路径（request 落库行）：已批准与执行结果是两件事实"
+          >旧审批路径</span>
         </header>
 
         <p class="ar-label" data-test="approval-result-label">
@@ -142,6 +191,14 @@ onMounted(() => {
         <p v-if="entry.summary" class="ar-summary" data-test="approval-result-summary">{{ entry.summary }}</p>
         <p v-if="waitingText(entry)" class="ar-waiting" role="status" data-test="approval-results-waiting">
           {{ waitingText(entry) }}
+        </p>
+        <p
+          v-if="legacyText(entry)"
+          class="ar-waiting"
+          role="status"
+          data-test="approval-result-legacy-note"
+        >
+          {{ legacyText(entry) }}
         </p>
 
         <!-- 批量逐项结果（只用后端给的 item_id / 对象字段；未执行不标成功） -->
@@ -239,6 +296,47 @@ onMounted(() => {
 .ar-btn:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
+}
+/* 旧审批中断：只读事实区（与待办、结果列表明确分开） */
+.ar-legacy {
+  padding: 9px 11px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+}
+.ar-legacy-title {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.ar-legacy-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ar-legacy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+.ar-legacy-what {
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.ar-legacy-state {
+  flex: none;
+  color: var(--warning);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
 }
 .ar-list {
   list-style: none;

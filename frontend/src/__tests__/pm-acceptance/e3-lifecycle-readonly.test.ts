@@ -9,6 +9,11 @@
  *
  * 基线：ApprovalFacts 只要 payload 带 subagent_budget 就渲染预算表单，
  * 与审批状态无关；已批准的记录仍显示「子 agent 执行预算（可修改后批准）」。
+ *
+ * FU2-C 契约更新（COMMON §4.3 / B-CP1）：预算可编辑 ⇔ 后端端到端支持 overrides 的
+ * **旧路径**（legacy，无 state）。v2 生命周期记录（有 state）即使仍是 waiting 也只读
+ * —— /decide 不接受 overrides，显示可编辑按钮就是「改了也不生效」的假入口。
+ * 因此「等待中仍可修改」一条改为钉在旧路径上，并新增 v2 waiting 只读的反向断言。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
@@ -98,12 +103,21 @@ describe("只读生命周期记录不提供假的可编辑预算（F06）", () =
     expect(w.text()).not.toContain("可修改后批准");
   });
 
-  it("仍在等待用户决定的审批：预算编辑与「可修改后批准」必须保留（不能一刀切删掉）", async () => {
-    const w = openModal(subagentApproval({ state: "waiting" }));
+  it("仍在等待用户决定的**旧路径**审批：预算编辑与「可修改后批准」必须保留（真实 overrides 入口不能误删）", async () => {
+    // legacy：没有 v2 state，后端端到端支持 overrides（B-CP1）
+    const w = openModal(subagentApproval({ state: undefined, legacy: true }));
     await nextTick();
     expect(w.find('[data-test="approval-budget-editable"]').exists(), "可修改后批准的真实入口被误删").toBe(true);
     expect(w.text()).toContain("可修改后批准");
     expect(w.find('[data-test="unified-approval-allow"]').exists()).toBe(true);
+  });
+
+  it("v2 生命周期记录即使还在 waiting 也只读（/decide 不接受 overrides，不能给假入口）", async () => {
+    const w = openModal(subagentApproval({ state: "waiting" }));
+    await nextTick();
+    expect(w.find('[data-test="approval-budget-editable"]').exists(), "v2 waiting 仍可编辑预算").toBe(false);
+    expect(w.find('[data-test="approval-budget-readonly"]').exists()).toBe(true);
+    expect(w.text()).not.toContain("可修改后批准");
   });
 });
 

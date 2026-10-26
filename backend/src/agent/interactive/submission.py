@@ -1526,6 +1526,60 @@ def submission_binding(conn: sqlite3.Connection, submission_id: str) -> dict | N
 
 TURN_SOURCES = ("confirm", "batch_confirm", "recover", "retry")
 
+#: 续作 Turn 无法确认原提交话题时的明确失败码（不回退当前话题）。
+TOPIC_UNRESOLVED = "topic_unresolved"
+
+
+def resolve_resume_topic(conn: sqlite3.Connection, submission_id: str) -> dict[str, Any]:
+    """解析续作 Turn 的**原话题**：只认原提交保存的 binding.resumeState.topicId。
+
+    确认 / 恢复 / 重试启动续作 Turn 时，话题必须写回原提交所在的话题；界面当前
+    选中话题不得覆盖它（否则用户切换话题后，续作会被写进新话题）。
+
+    无法确认归属（没有 submission 绑定 / binding 缺失 / topicId 为空 / 读取失败）
+    时返回 ok=False + code=topic_unresolved；调用方必须如实失败，不回退当前话题、
+    不启动 Turn、不写绑定、不重复执行。
+    """
+    sid = str(submission_id or "").strip()
+    if not sid:
+        return {
+            "ok": False,
+            "code": TOPIC_UNRESOLVED,
+            "topicId": "",
+            "reason": "没有原提交绑定（submission 缺失）：原提交话题无法确认，未开始执行",
+        }
+    try:
+        binding = submission_binding(conn, sid)
+    except sqlite3.Error as exc:
+        return {
+            "ok": False,
+            "code": TOPIC_UNRESOLVED,
+            "topicId": "",
+            "reason": (
+                f"读取原提交绑定失败（{type(exc).__name__}）："
+                "原提交话题无法确认，未开始执行"
+            ),
+        }
+    if binding is None:
+        return {
+            "ok": False,
+            "code": TOPIC_UNRESOLVED,
+            "topicId": "",
+            "reason": f"原提交绑定不存在（{sid}）：原提交话题无法确认，未开始执行",
+        }
+    saved = str((binding.get("resumeState") or {}).get("topicId") or "").strip()
+    if not saved:
+        return {
+            "ok": False,
+            "code": TOPIC_UNRESOLVED,
+            "topicId": "",
+            "reason": (
+                f"原提交没有保存话题（{sid} 的 topicId 为空）："
+                "原提交话题无法确认，未开始执行"
+            ),
+        }
+    return {"ok": True, "code": "", "topicId": saved, "reason": "", "binding": binding}
+
 
 def active_intent_turn(conn: sqlite3.Connection, intent_id: str) -> dict | None:
     """这条意图当前是否有活跃 Turn（同一意图同一时刻只有一个有效执行）。"""
@@ -1728,9 +1782,14 @@ def start_interactive_turn(
 ) -> dict:
     """确认 / 恢复 / 重试成功后，为这些意图**真实**创建一次互动主循环 Turn。
 
+    - 话题归属只认原提交保存的 binding.resumeState.topicId（见 resolve_resume_topic）：
+      无法确认时明确失败（code=topic_unresolved），不按调用方当前话题兜底；
     - 主循环不可用、绑定校验失败、提交失败或没有 turn_id → 明确失败（不伪造开始）；
     - 同一意图已有活跃 Turn → 不并行，返回已有 turnId（reused=True）；
     - 成功才写 board_intent_turns 的活跃 turn_id 与 submission 绑定。
+
+    topic_id 参数仅为旧调用方签名兼容保留：它**不再参与话题归属**，传入的当前
+    话题不会覆盖原提交话题，也不会在无法确认时被用作兜底。
     """
     bid = str(board_id or "").strip()
     ids = [str(item) for item in intent_ids or [] if str(item).strip()]
@@ -1820,10 +1879,22 @@ def start_interactive_turn(
             versions[str(row["id"])] = int((authorization or {}).get("version") or 0)
         except (TypeError, ValueError):
             versions[str(row["id"])] = 0
-    if not topic_id and sid:
-        binding = submission_binding(conn, sid)
-        if binding is not None:
-            topic_id = str(binding["resumeState"].get("topicId") or "") or None
+    # 话题归属：续作 Turn 只写回原提交保存的 binding.resumeState.topicId。
+    # 调用方传入的 topic_id（历史上是界面当前选中话题）不得覆盖原提交话题；
+    # 无法确认归属时必须在 claim / 提交 / 写绑定之前明确失败，不回退当前话题。
+    resolved_topic = resolve_resume_topic(conn, sid)
+    if not resolved_topic["ok"]:
+        return {
+            "ok": False,
+            "availability": "invalid",
+            "code": resolved_topic["code"],
+            "reason": resolved_topic["reason"],
+            "turnId": None,
+            "resume": False,
+            "submissionId": sid,
+            "topicId": "",
+        }
+    topic_id = str(resolved_topic["topicId"])
     # 部分意图已经在执行：只对尚未开始的意图发起一次 Turn；全部在跑则复用已有 turnId。
     # 绝不因为一次批量确认把已在执行的意图并行开第二次。
     active = [item for item in (active_intent_turn(conn, intent_id) for intent_id in ids) if item]

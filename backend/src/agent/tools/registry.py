@@ -19,6 +19,11 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
 from agent.adapters.base import ToolCall, ToolSpec
+from agent.tools.approval_results import (
+    begin_collection,
+    reset_collection,
+    settle as settle_legacy_approvals,
+)
 from agent.tools.base import (
     TOOL_RESULT_PROTOCOL_VERSION,
     Tool,
@@ -225,9 +230,15 @@ class ToolRegistry:
 
         token = _current_narrative.set(parse_narrative(getattr(call, "narrative", None)))
         approved_token = _approved_execution.set(approval_id)
+        # 旧 request() 审批的执行结果闭环：本次调用内被批准的 legacy 审批在这里收口
+        # （统一写 history + 发 APPROVAL_RESULT，见 tools/approval_results.py）。
+        collect_token = begin_collection()
         try:
-            return await self._execute_call(call)
+            result = await self._execute_call(call)
+            await settle_legacy_approvals(self._approvals, result)
+            return result
         finally:
+            reset_collection(collect_token)
             _approved_execution.reset(approved_token)
             _current_narrative.reset(token)
 

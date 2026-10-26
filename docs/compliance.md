@@ -1,13 +1,13 @@
 # 第三方组件与分发合规
 
-QIO 的安装包与前端产物里**分发**三类开源代码与三份随包资产：
+QIO 的安装包与前端产物里**分发**三类开源代码与随包分发的资产：
 
 | 类别 | 来源 | 数量口径 |
 | --- | --- | --- |
 | 后端 Python 依赖 | `backend/uv.lock` | 锁文件全部条目 |
 | 前端 npm 包 | `frontend/package-lock.json` | 锁文件全部条目 |
 | Rust crate | `frontend/src-tauri/Cargo.lock` | 锁文件全部条目 |
-| 随包资产 | —— | 内置 CPython 运行时、内置嵌入模型 `bge-small-zh-v1.5`、Noto Serif SC 字体、`python-build-standalone` |
+| 随包资产 | —— | 内置 CPython 运行时及其发行来源 `python-build-standalone`、内置嵌入模型 `bge-small-zh-v1.5`、内置 Noto Serif SC 字体；逐条列在 `THIRD-PARTY-NOTICES.md` 的 bundled 条目里 |
 
 MIT / BSD / ISC / OFL / PSF / MPL 这类许可证要求「随二进制复制版权声明与（部分要求）许可证全文」。
 所以「仓库里没有一份完整声明」不是文档欠债，而是**分发时的合规缺口**。这份文档说明声明在哪、
@@ -51,6 +51,9 @@ MIT / BSD / ISC / OFL / PSF / MPL 这类许可证要求「随二进制复制版�
 
     python scripts/licenses/build_third_party.py
 
+没有改依赖/锁文件时不需要重新生成：生成物（`THIRD-PARTY-NOTICES.md`、`licenses/third-party.json`）与锁文件保持同步即可。
+只改声明里的**文字概括**时，改文档（本文件等），不要为了「让文字对上」去动生成物。
+
 只在**维护者机器**上跑、需要联网（补本机装不出来的平台依赖的元数据；结果进 `overrides.json`）：
 
     python scripts/licenses/build_third_party.py --refresh
@@ -77,13 +80,20 @@ MIT / BSD / ISC / OFL / PSF / MPL 这类许可证要求「随二进制复制版�
   **不逐字节比对上游**（那需要把每个上游包的许可证都存下来，收益与成本不成比例）。
 - **更新通道经过第三方加速镜像**（`gh.llkk.cc` / `ghproxy.net` / `ghfast.top`）：
   产物内容由 minisign 验签，但代理能看到请求元数据。这是隐私面的事实，不影响许可合规；写在这里是为了不假装它不存在。
+- **生成输入的 sha256 与换行符**：生成器按锁文件**原始字节**计算输入 sha256 并写在声明开头。仓库统一 LF 存储（`.gitattributes`），但 Windows 检出可能是 CRLF；此时在本机重跑生成器会出现「只有『生成输入』三行 sha256 不同、组件与许可证完全没变」的差异 —— 那是换行符差异，**不要提交**。确实要重新生成时，先按 LF 规范化（或 `git config core.autocrlf false` 后重新检出），确认 `git diff` 只有真实语义变化再提交。
 - **许可合规 ≠ 安全边界**：工具子进程不是安全沙箱，这条在 `docs/security/tool-execution-isolation.md` 里另说。
 
 ## 五、QIO 自身的授权
 
 以仓库根目录 `LICENSE` 为准：**MIT**（Copyright (c) 2026 左修源、尚雅淇）。
-MIT 只要求保留版权声明与许可声明，不要求下游开源 —— 这与 QIO 分发的第三方许可证也不冲突：
-本仓库的依赖全是 MIT / Apache-2.0 / BSD / ISC / OFL 这类宽松许可，没有 copyleft 传染项。
+MIT 只要求保留版权声明与许可声明，不要求下游开源 —— 这与 QIO 分发的第三方许可证并不冲突，但**不能概括成「依赖全是宽松许可、没有 copyleft」**。按实际清单（逐条以 `licenses/third-party.json` 与 `THIRD-PARTY-NOTICES.md` 为准；许可证组数与逐条归属用 `python scripts/licenses/check_third_party.py` 查，不写死在文档里）：
+
+- 绝大多数是 MIT / Apache-2.0 / BSD-2/3-Clause / ISC / Zlib / Unlicense / CC0-1.0 / MIT-0 / 0BSD / OFL-1.1 / PSF-2.0 / Unicode-3.0 / BlueOak-1.0.0 / CDLA-Permissive-2.0 / Apache-2.0 WITH LLVM-exception 这类宽松许可（含 `AND` / `OR` 组合）；
+- **存在弱 copyleft：MPL-2.0**（含 `MPL-2.0 AND MIT` 组合）。MPL 是**文件级** copyleft：对 MPL 覆盖的文件要求保留声明、并可按 MPL 获取对应源码；它不要求把整个 QIO 产物开源，也不构成链接传染；
+- 少数条目把 **LGPL-2.1-or-later 与 MIT/Apache-2.0 并列为可选项**（`MIT OR Apache-2.0 OR LGPL-2.1-or-later`）；本项目按 MIT/Apache-2.0 使用，没有「只给 LGPL」的组件；
+- 没有发现 GPL / AGPL 这类强 copyleft 的单项许可。
+
+上面的划分是「清单里出现了哪些许可证表达式」的事实概括；具体分发义务（版权行、许可证全文、出处）以 `THIRD-PARTY-NOTICES.md` 的逐条条目与文末全文为准。
 
 要换成别的许可（Apache-2.0 / 专有 等）：替换 `LICENSE` 正文，并同步 `README.md`、
 `frontend/src/views/SettingsView.vue` 的「关于 → 授权」文案与本文件；

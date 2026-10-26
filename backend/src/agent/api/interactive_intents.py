@@ -446,17 +446,6 @@ def _turn_submitter(request: Request):
     return lambda message, topic_id: turns.submit(message, topic_id)
 
 
-def _current_topic(request: Request) -> str | None:
-    ctx = getattr(request.app.state, "ctx", None)
-    getter = getattr(ctx, "current_topic", None) if ctx is not None else None
-    if not callable(getter):
-        return None
-    try:
-        return str(getter() or "") or None
-    except Exception:  # noqa: BLE001 - 没有活动话题时由提交层按新话题处理
-        return None
-
-
 def _start_intent_turn(
     request: Request,
     *,
@@ -466,7 +455,11 @@ def _start_intent_turn(
     submission_id: str = "",
     manual_retry: bool = False,
 ) -> dict:
-    """启动确认 / 恢复后的真实主循环 Turn；失败时返回可读原因，不伪造 turn_id。"""
+    """启动确认 / 恢复 / 重试后的真实主循环 Turn；失败时返回可读原因，不伪造 turn_id。
+
+    话题归属由原提交保存的 binding.resumeState.topicId 决定（submission 层强制）；
+    这里不传界面当前选中话题：用户切换话题后确认，续作仍写回原提交话题。
+    """
     ids = [str(item) for item in intent_ids or [] if str(item).strip()]
     if not ids:
         return {
@@ -498,7 +491,8 @@ def _start_intent_turn(
         submission_id=submission_id,
         source=source,
         resume=True,
-        topic_id=_current_topic(request),
+        # 话题归属由原提交 binding.resumeState.topicId 决定（submission 层强制）：
+        # 这里不再传界面当前选中话题，避免确认 / 恢复 / 重试把续作写进新话题。
     )
     started["contextAvailable"] = True
     if manual_retry and started.get("ok") and started.get("turnId"):
@@ -519,7 +513,14 @@ def _attach_turn_start(response: dict, started: dict, *, service_ok: bool) -> di
     response["started"] = bool(started.get("ok"))
     response["turnStart"] = started
     if not started.get("ok"):
-        response["startError"] = str(started.get("reason") or "本次没有开始执行")
+        reason = str(started.get("reason") or "本次没有开始执行")
+        response["startError"] = reason
+        # 新增可读字段（不改既有字段名）：前端 / 调用方无需解析 turnStart 也能看到
+        # 「为什么没有开始执行」（如 topic_unresolved：原提交话题无法确认）。
+        if not response.get("reason"):
+            response["reason"] = reason
+        if not response.get("code"):
+            response["code"] = str(started.get("code") or "")
         if bool(started.get("contextAvailable")):
             # 主循环本来可用但受理失败：确认状态已落库，但本次执行没有开始。
             response["ok"] = False

@@ -148,7 +148,14 @@ export const useEventStore = defineStore("events", {
          * 有没有待审批 / 有没有没执行完的消息」由这一次快照说清。
          * 首次连接、页面刷新后重连、普通重连都是这一条路径。
          */
-        void restoreRuntimeState("connect");
+        void restoreRuntimeState("connect").then(() =>
+          /**
+           * 补读与运行状态快照**分开**：pending 是审批生命周期的权威集合，history 是
+           * 执行终态。断线期间错过的「结局」只能从这里补回来（快照只表达还活着的项）。
+           * 失败不阻塞事件分发，原因分别落在 recoveryError / historyError 上。
+           */
+          useApprovalsStore().refreshApprovalsAndHistory("connect"),
+        );
       };
       source.onerror = () => {
         this.connected = false;
@@ -173,7 +180,10 @@ export const useEventStore = defineStore("events", {
        * 会先被应用，随后旧 snapshot 返回又把它覆盖掉。
        */
       if (event.type === "RESYNC") {
-        void restoreRuntimeState("resync");
+        void restoreRuntimeState("resync").then(() =>
+          // RESYNC 完成后补读审批生命周期（pending + 终态历史），与 onopen 同一入口
+          useApprovalsStore().refreshApprovalsAndHistory("resync"),
+        );
         return;
       }
       if (this.resyncing) {
@@ -398,7 +408,9 @@ export const useEventStore = defineStore("events", {
         }
         case "RESYNC": {
           // RESYNC 在 `route()` 里就已经拦下并触发同步，这里只是兜底
-          void restoreRuntimeState("resync");
+          void restoreRuntimeState("resync").then(() =>
+            useApprovalsStore().refreshApprovalsAndHistory("resync"),
+          );
           break;
         }
         case "CAPABILITY": {
@@ -827,6 +839,8 @@ export const useEventStore = defineStore("events", {
      */
     async startResync(): Promise<void> {
       await restoreRuntimeState("resync");
+      // 手动 / 页面触发的同步同样补读审批生命周期（与 onopen、RESYNC 同一入口）
+      await useApprovalsStore().refreshApprovalsAndHistory("resync");
     },
 
     /** 同步期间缓存的事件按到达顺序补放（嵌套的 RESYNC 只做标记）。 */
@@ -856,6 +870,22 @@ export const useEventStore = defineStore("events", {
      */
     applyRuntimeState(state: {
       approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
+      /**
+       * 旧审批中断事实（B-CP1 /api/runtime/state）：只读展示，不是待办。
+       * 旧后端没有这个字段 → 不传，store 保持现状。
+       */
+      interrupted_approvals?: {
+        approval_id: string;
+        kind?: string;
+        what?: string;
+        created_at?: string;
+        status?: string;
+        legacy?: boolean;
+        outcome?: string;
+        turn_id?: string | null;
+        session_id?: string | null;
+        request_digest?: string | null;
+      }[];
       tasks: { task_id: string; tool: string; status: "queued" | "running" | "done" | "failed"; ok?: boolean | null; content_preview?: string; error?: string | null }[];
       tools?: ToolExecutionSnapshot[];
       /**
@@ -884,6 +914,11 @@ export const useEventStore = defineStore("events", {
       // 每轮结束事实：重连后失败的那一轮仍然说得出为什么（旧记录没有就不写）
       session.applyTurnFactsSnapshot(state.turn_facts);
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
+      /**
+       * 旧审批中断事实（B-CP1）：单独存放、只读展示（结果面板「旧审批中断」区）。
+       * 绝不放进入审批队列 —— 它们不是等待用户确认的待办，数进去就是假待办。
+       */
+      useApprovalsStore().ingestInterruptedLegacy(state.interrupted_approvals);
       /**
        * 「继续 / 停止」操作条也属于待办：快照里已经没有它（事务结束了 / 别处应答了）
        * 就必须本地收口 —— 否则用户会看到一个点不动的假待办。

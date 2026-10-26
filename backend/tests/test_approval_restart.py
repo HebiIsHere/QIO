@@ -104,7 +104,11 @@ async def test_executing_becomes_interrupted_unverified_without_replay(db_conn, 
 
 
 async def test_legacy_request_rows_are_still_reported_interrupted(db_conn):
-    """旧 request() 的内存等待随进程消失：按旧行为如实记为「那次没有执行」。"""
+    """旧 request() 的内存等待随进程消失：按旧行为如实记为「那次没有执行」。
+
+    FU2-B：旧行没有 v2 状态，用**独立事实** status=interrupted_legacy 记录结局，
+    state 保持 NULL（不伪装成 v2 的 interrupted_unverified），原请求绑定事实保留。
+    """
     first = ApprovalService(EventBus(), conn=db_conn)
     task = asyncio.create_task(first.request("tool_execution", {"description": "旧等待"}))
     await asyncio.sleep(0.05)
@@ -113,11 +117,15 @@ async def test_legacy_request_rows_are_still_reported_interrupted(db_conn):
     records = restarted.interrupted()
     assert any(item["what"] == "旧等待" for item in records)
     row = db_conn.execute(
-        "SELECT status, state FROM pending_approvals WHERE status = 'interrupted'"
+        "SELECT status, state FROM pending_approvals WHERE status = 'interrupted_legacy'"
     ).fetchone()
     assert row is not None
-    assert row["status"] == "interrupted"
-    assert row["state"] == "interrupted_unverified", "旧行按新状态映射"
+    assert row["status"] == "interrupted_legacy"
+    assert row["state"] is None, "旧行不得写 v2 状态（不伪装成生命周期审批）"
+    item = next(item for item in records if item["what"] == "旧等待")
+    assert item["legacy"] is True
+    assert item["state"] is None
+    assert item["request_digest"], "恢复必须保留原请求摘要"
 
     task.cancel()
     try:
