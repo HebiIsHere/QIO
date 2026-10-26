@@ -35,7 +35,7 @@ try {
   await page.waitForSelector(".conversation-workspace"); await settle(page, 2500);
 
   // A. 单项通知
-  const focusBefore = await page.evaluate(() => document.activeElement?.tagName || "");
+  const focusBefore = await page.evaluate(() => (document.activeElement?.tagName || "") + "#" + (document.activeElement?.id || ""));
   await enqueue("uf-live:single", "「整理本周项目材料并生成摘要」失败了", ["task-live-1"]);
   await page.waitForTimeout(1000);
   let s = await storeState();
@@ -43,7 +43,7 @@ try {
   check("单项失败通知显示", Boolean(s.noticeBox), JSON.stringify(s.noticeBox));
   check("通知在窗口水平居中", s.noticeBox ? Math.abs(s.noticeBox.x + s.noticeBox.w / 2 - 640) <= 1 : false, s.noticeBox ? String(s.noticeBox.x + s.noticeBox.w / 2) : "");
   check("通知 14px 圆角", s.noticeBox?.radius === "14px", String(s.noticeBox?.radius));
-  check("通知不抢焦点", s.focus === focusBefore, s.focus);
+  check("通知不抢焦点", (s.focus.split(".")[0] || "") === focusBefore.split("#")[0], s.focus + " vs " + focusBefore);
   const geom = await centerOffset(page, '[data-test="top-notice"]', ".uf-notice__body");
   results.steps.push({ name: "notice-center", geom });
   check("通知文字中心偏差 ≤1px", geom ? Math.abs(geom.dx) <= 1 : false, geom ? String(geom.dx) : "");
