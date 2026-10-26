@@ -96,6 +96,8 @@ function cancel() {
 
 function onKeydown(event: KeyboardEvent) {
   if (!props.open) return;
+  // 被更高层触发器（关闭询问等）隐藏时：键盘事件不落在这层，Esc 只关最上层那个弹窗。
+  if (hiddenBy.value) return;
   if (event.key === "Escape") {
     event.preventDefault();
     cancel();
@@ -149,6 +151,12 @@ watch(
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown, true);
   arbiter.close(props.modalId);
+  // 卸载时弹窗还开着（例如父级被替换）：把焦点还给打开它的元素，不让键盘用户掉到页面开头。
+  if (props.open) {
+    const el = restoreFocusTo;
+    restoreFocusTo = null;
+    if (el && el.isConnected) el.focus();
+  }
 });
 </script>
 
