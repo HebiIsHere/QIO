@@ -11,6 +11,7 @@ import UnifiedApprovalLayer from "./components/conversation/UnifiedApprovalLayer
 import DevTaskEntry from "./components/DevTaskEntry.vue";
 import WindowChrome from "./components/WindowChrome.vue";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
+import QTipLayer from "./components/ui/QTipLayer.vue";
 import { waitForBackend } from "./services/boot";
 
 const events = useEventStore();
@@ -138,6 +139,8 @@ onUnmounted(stopTicker);
       <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
       <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
     </template>
+    <!-- 全局唯一的用途说明浮层（500ms 悬停 / 聚焦 / 触控长按；由 v-qio-tip 驱动） -->
+    <QTipLayer />
   </div>
 </template>
 
