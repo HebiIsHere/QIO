@@ -178,8 +178,11 @@ describe("无边框窗口契约", () => {
     expect(app).toBeTruthy();
     expect(app!.text).toContain("<WindowChrome />");
     expect(app!.text).toMatch(/padding-top:\s*var\(--titlebar-height\)/);
-    // 顶部锚定的组件读同一个令牌下移，不许自己写死像素
-    for (const path of ["views/SettingsView.vue", "views/PlanetView.vue"]) {
+    // 顶部锚定的组件读同一个令牌下移，不许自己写死像素。
+    // 设置页在统一改造中删掉了旧的固定定位 toast（反馈改成分区内联），因此不再有
+    // 需要让开标题条的固定元素；顶部锚定的只剩星球页（及其他页面内的 fixed 提示，
+    // 它们统一挂在 App 的 .top-notes 上、由下面的断言守住）。
+    for (const path of ["views/PlanetView.vue"]) {
       const file = FILES.find((f) => f.path === path);
       expect(file, path).toBeTruthy();
       expect(file!.text, path).toContain("var(--titlebar-height)");

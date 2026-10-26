@@ -11,8 +11,17 @@ import { vQioScrollbar } from "../composables/useQioScrollbars";
 const traces = ref<TraceSummary[]>([]);
 const total = ref(0);
 const selected = ref<TraceDetail | null>(null);
+const selectedTurnId = ref("");
 const loading = ref(false);
-const error = ref("");
+const detailLoading = ref(false);
+/**
+ * 错误按区域分开（读取失败必须留在它发生的区域里）：
+ * 列表读失败 ≠ 详情读失败 ≠ 开关读/写失败。共用一条 error 会互相覆盖，
+ * 还会让「没有记录」和「读不到」看起来一样。
+ */
+const listError = ref("");
+const detailError = ref("");
+const settingsError = ref("");
 const enabled = ref(true);
 
 const PAGE = 20;
@@ -20,40 +29,54 @@ const offset = ref(0);
 
 async function loadList() {
   loading.value = true;
-  error.value = "";
+  listError.value = "";
   try {
     const r = await api.listTraces(PAGE, offset.value);
     traces.value = r.traces;
     total.value = r.total;
   } catch (e) {
-    error.value = (e as Error).message;
+    listError.value = `读取 Trace 列表失败：${(e as Error).message || "未知原因"}`;
   } finally {
     loading.value = false;
   }
 }
 
 async function select(turnId: string) {
-  error.value = "";
+  selectedTurnId.value = turnId;
+  detailError.value = "";
+  detailLoading.value = true;
   try {
     selected.value = await api.getTrace(turnId);
   } catch (e) {
-    error.value = (e as Error).message;
+    // 详情读失败：清空旧的详情内容（不能把上一条的数据当成本条），错误留在详情区并可重试。
+    selected.value = null;
+    detailError.value = `读取这条 Turn 的详情失败：${(e as Error).message || "未知原因"}`;
+  } finally {
+    detailLoading.value = false;
   }
 }
 
+function retryDetail() {
+  if (selectedTurnId.value) void select(selectedTurnId.value);
+}
+
 async function loadEnabled() {
+  settingsError.value = "";
   try {
     enabled.value = (await api.getTraceSettings()).enabled;
-  } catch {
-    /* ignore */
+  } catch (e) {
+    // 读不到就如实说「不知道」，不冒充默认值。
+    settingsError.value = `读取记录开关失败：${(e as Error).message || "未知原因"}`;
   }
 }
 
 async function toggleEnabled() {
+  settingsError.value = "";
   try {
     enabled.value = (await api.updateTraceSettings(!enabled.value)).enabled;
   } catch (e) {
-    error.value = (e as Error).message;
+    // 失败保留原状态（按钮文字仍是真实的那个），错误显示在开关旁边。
+    settingsError.value = `切换记录开关失败：${(e as Error).message || "未知原因"}`;
   }
 }
 
@@ -85,6 +108,8 @@ function pretty(obj: unknown): string {
 }
 
 const hasRows = computed(() => traces.value.length > 0);
+/** 空态只在「确实读到了、而且真的没有记录」时出现 —— 读取失败有它自己的错误块。 */
+const showEmptyList = computed(() => !loading.value && !listError.value && !hasRows.value);
 
 onMounted(() => {
   void loadEnabled();
@@ -104,7 +129,11 @@ onMounted(() => {
       <router-link to="/" class="qio-btn">← 返回对话</router-link>
     </header>
 
-    <p v-if="error" class="msg err mono">{{ error }}</p>
+    <!-- 记录开关读写失败：留在开关旁边，不冒充已切换 -->
+    <p v-if="settingsError" class="msg err debug-settings-error" role="alert">
+      {{ settingsError }}
+      <button class="qio-btn mini" type="button" @click="loadEnabled">重试读取</button>
+    </p>
 
     <div class="cols">
       <section class="list-sec">
@@ -112,13 +141,19 @@ onMounted(() => {
           <h2>最近 Turn</h2>
           <span class="mono count">{{ total }} 条</span>
         </div>
-        <p v-if="!hasRows && !loading" class="empty mono">还没有 trace。</p>
+        <p v-if="loading && !hasRows" class="empty mono">正在读取…</p>
+        <!-- 列表读取失败：错误就在列表区域，可重试；不显示成「还没有 trace」 -->
+        <div v-else-if="listError" class="debug-error" role="alert">
+          <span class="debug-error__text">{{ listError }}</span>
+          <button class="qio-btn mini debug-retry" type="button" @click="loadList">重试</button>
+        </div>
+        <p v-else-if="showEmptyList" class="empty mono">还没有 trace。</p>
         <button
           v-for="t in traces"
           :key="t.turn_id"
           type="button"
           class="row"
-          :class="{ active: selected?.turn_id === t.turn_id, bad: t.status === 'failed' }"
+          :class="{ active: selectedTurnId === t.turn_id, bad: t.status === 'failed' }"
           @click="select(t.turn_id)"
         >
           <span class="row-top">
@@ -137,7 +172,13 @@ onMounted(() => {
       </section>
 
       <section class="detail-sec">
-        <p v-if="!selected" class="empty mono">← 选一条 turn 查看它的决策链路。</p>
+        <div v-if="detailLoading" class="empty mono" role="status">正在读取这条 Turn 的详情…</div>
+        <!-- 详情读取失败：错误在详情区域，可重试；不和列表失败互相覆盖 -->
+        <div v-else-if="detailError" class="debug-error" role="alert">
+          <span class="debug-error__text">{{ detailError }}</span>
+          <button class="qio-btn mini debug-retry" type="button" @click="retryDetail">重试</button>
+        </div>
+        <p v-else-if="!selected" class="empty mono">← 选一条 turn 查看它的决策链路。</p>
         <template v-else>
           <div class="sec-head">
             <h2>{{ selected.turn_id }}</h2>
@@ -223,7 +264,7 @@ onMounted(() => {
 }
 .list-sec, .detail-sec {
   border: 1px solid var(--border-subtle);
-  border-radius: 12px;
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   padding: 14px 16px;
 }
@@ -255,7 +296,7 @@ onMounted(() => {
   padding: 8px 10px;
   margin-bottom: 6px;
   border: 1px solid var(--border-subtle);
-  border-radius: 9px;
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-primary);
   cursor: pointer;
@@ -274,7 +315,7 @@ onMounted(() => {
 .badge {
   font-size: 10px;
   padding: 1px 7px;
-  border-radius: 20px;
+  border-radius: var(--qio-ui-radius);
   border: 1px solid currentColor;
   flex: none;
   color: var(--text-muted);
@@ -297,7 +338,7 @@ summary {
   padding: 10px 12px;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--qio-ui-radius);
   font-size: 11px;
   color: var(--text-secondary);
   /* content 策略：JSON / 日志软换行适配宽度，既不留横向滚动（原来的 overflow-x:auto
@@ -307,5 +348,21 @@ summary {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.msg.err { color: var(--danger); font-size: 12px; }
+.msg.err { color: var(--danger); font-size: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.debug-settings-error { margin: -8px 0 14px; }
+/* 分区读取失败：边框 + 原因 + 重试，位置就在该区域里 */
+.debug-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--border-danger);
+  border-radius: var(--r-md);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.debug-error__text { min-width: 0; overflow-wrap: anywhere; }
 </style>

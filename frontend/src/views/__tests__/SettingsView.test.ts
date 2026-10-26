@@ -294,14 +294,20 @@ describe("SettingsView 凭据分区", () => {
     // 文案必须说清「删除 ≠ 厂商吊销」
     expect(dialog.text()).toContain("厂商");
     expect(api.deleteCredential).not.toHaveBeenCalled();
-    // 取消：什么都不发生
-    await dialog.findAll("button")[0].trigger("click");
+    // 取消：什么都不发生（按语义找按钮，不依赖按钮顺序 —— 标题栏还有关闭图标按钮）
+    await w
+      .find('[role="dialog"]')
+      .find('[data-qio-confirm-action="cancel"]')
+      .trigger("click");
     await flushPromises();
     expect(api.deleteCredential).not.toHaveBeenCalled();
     // 确认：才真的删除
     await w.find(".btn-danger").trigger("click");
     await flushPromises();
-    await w.find('[role="dialog"]').findAll("button")[1].trigger("click");
+    await w
+      .find('[role="dialog"]')
+      .find('[data-qio-confirm-action="confirm"]')
+      .trigger("click");
     await flushPromises();
     expect(api.deleteCredential).toHaveBeenCalledWith("k1");
     expect(w.findAll(".cred-card").length).toBe(0);
@@ -400,7 +406,7 @@ describe("SettingsView 联网搜索凭据语义（问题7）", () => {
     expect(dialog.exists()).toBe(true);
     expect(dialog.text()).toContain("清除已保存的博查 API Key？");
     expect(api.updateSearchSettings).not.toHaveBeenCalled();
-    await dialog.findAll("button")[1].trigger("click");
+    await dialog.find('[data-qio-confirm-action="confirm"]').trigger("click");
     await flushPromises();
     const body = (api.updateSearchSettings as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(body).toEqual({ bocha_api_key: "" });

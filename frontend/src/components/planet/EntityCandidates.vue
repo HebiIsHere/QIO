@@ -16,6 +16,8 @@
  *    「该实体已归档；恢复实体是另一个动作」；丢弃仍然可用（它不改实体值）。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import QIcon from "../ui/QIcon.vue";
+import { vQioTip } from "../../composables/useQioTip";
 import {
   adoptCandidate,
   dismissCandidate,
@@ -315,9 +317,9 @@ onUnmounted(() => {
       :aria-label="`${headTitle}，展开可以逐条采纳或丢弃`"
       @click="toggle"
     >
-      <span class="ec-mark" aria-hidden="true">✎</span>
+      <QIcon class="ec-mark" name="edit" :size="13" />
       <span class="ec-title">{{ headTitle }}</span>
-      <span class="ec-chev" :class="{ open }" aria-hidden="true">⌄</span>
+      <QIcon class="ec-chev" :class="{ open }" name="chevron-down" :size="14" />
     </button>
 
     <div v-if="open" class="ec-panel" role="region" aria-label="待处理候选">
@@ -344,11 +346,17 @@ onUnmounted(() => {
             <div class="ec-values">
               <div class="ec-value">
                 <span class="ec-value-label">当前值</span>
-                <span class="ec-value-text" :title="formatValue(c.current_value)">{{ formatValue(c.current_value) }}</span>
+                <span
+                  class="ec-value-text"
+                  v-qio-tip="formatValue(c.current_value)"
+                >{{ formatValue(c.current_value) }}</span>
               </div>
               <div class="ec-value">
                 <span class="ec-value-label">候选值</span>
-                <span class="ec-value-text candidate" :title="formatValue(c.candidate_value)">{{ formatValue(c.candidate_value) }}</span>
+                <span
+                  class="ec-value-text candidate"
+                  v-qio-tip="formatValue(c.candidate_value)"
+                >{{ formatValue(c.candidate_value) }}</span>
               </div>
             </div>
 
@@ -427,7 +435,7 @@ onUnmounted(() => {
   width: 100%;
   padding: 6px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-secondary);
   font-size: var(--fs-sm);
@@ -439,9 +447,8 @@ onUnmounted(() => {
 .ec-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .ec-mark {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px; border-radius: 50%;
+  width: 18px; height: 18px; border-radius: var(--qio-ui-radius);
   background: var(--accent-soft); color: var(--accent);
-  font-size: var(--fs-xs);
 }
 .ec-title { flex: 1; }
 .ec-chev { color: var(--text-muted); transition: transform var(--dur-fast) var(--ease); }
@@ -453,12 +460,12 @@ onUnmounted(() => {
   gap: var(--sp-2);
   padding: var(--sp-3);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
 }
 .ec-lead { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.6; }
 .ec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
-.ec-row { display: flex; flex-direction: column; gap: 6px; padding: var(--sp-3); border-radius: var(--r-md); }
+.ec-row { display: flex; flex-direction: column; gap: 6px; padding: var(--sp-3); border-radius: var(--qio-ui-radius); }
 .ec-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ec-field { font-size: var(--fs-sm); color: var(--text-strong); }
 .ec-entity { font-size: var(--fs-xs); color: var(--text-muted); }
@@ -489,9 +496,9 @@ onUnmounted(() => {
 .ec-more { color: var(--text-secondary); }
 .ec-error {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 10px; border-radius: var(--r-sm); font-size: var(--fs-xs);
+  padding: 8px 10px; border-radius: var(--qio-ui-radius); font-size: var(--fs-xs);
   border: 1px solid var(--border-danger); background: var(--danger-soft); color: var(--danger);
 }
 .ec-notice { margin: 0; font-size: var(--fs-xs); color: var(--text-secondary); line-height: 1.6; }
-.qio-btn.mini { height: auto; padding: 4px 10px; font-size: var(--fs-xs); border-radius: var(--r-sm); }
+.qio-btn.mini { height: auto; padding: 4px 10px; font-size: var(--fs-xs); }
 </style>

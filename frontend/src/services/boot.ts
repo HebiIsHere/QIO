@@ -28,6 +28,11 @@ export interface BootOptions {
 }
 
 export const BOOT_DEFAULT_TIMEOUT_MS = 60_000;
+/**
+ * 启动多久算「比平时慢」：只有超过这个时长才在界面上显示「已等待 N 秒」。
+ * 更短的时间不打扰用户（大多数启动在几秒内完成）；集中在这里，App 与 BootStatus 读同一份。
+ */
+export const BOOT_SLOW_MS = 10_000;
 const DEFAULT_INTERVAL_MS = 400;
 const DEFAULT_PROBE_TIMEOUT_MS = 1500;
 

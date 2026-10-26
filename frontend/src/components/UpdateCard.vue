@@ -153,7 +153,7 @@ function toggleAutoCheck() {
 
       <button
         type="button"
-        class="qio-switch auto-switch"
+        class="update-toggle auto-switch"
         role="switch"
         :aria-checked="updater.autoCheck"
         aria-label="启动后自动检查更新"
@@ -196,7 +196,35 @@ function toggleAutoCheck() {
 .bar { height: 100%; background: var(--accent); transition: width var(--mo-2-move) var(--ease-2); }
 .stage-line { margin: 0; overflow-wrap: anywhere; }
 .actions { display: flex; align-items: center; gap: 10px; margin-top: 2px; flex-wrap: wrap; }
-.auto-switch { flex: none; }
+/* 自定义开关（不使用系统默认 checkbox；沿用 QIO 开关的视觉语言，
+   但用独立 class 以免与设置页其它开关的选择器混淆）。 */
+.auto-switch {
+  flex: none;
+  width: 38px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-pill);
+  background: var(--border-strong);
+  position: relative;
+  cursor: pointer;
+  transition: background var(--dur-base) var(--ease);
+}
+.auto-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left var(--dur-base) var(--ease);
+}
+.auto-switch[aria-checked="true"] { background: var(--accent); }
+.auto-switch[aria-checked="true"]::after { left: 19px; }
+.auto-switch:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.auto-switch:disabled { opacity: 0.45; cursor: not-allowed; }
 .auto-text { font-size: 12.5px; color: var(--text-secondary); }
 .note-ending { margin: 2px 0 0; line-height: 1.6; }
 .foot { margin: 2px 0 0; overflow-wrap: anywhere; }

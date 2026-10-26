@@ -92,10 +92,32 @@ const notices = reactive<Record<NoticeKey, Notice | null>>({
 /** 「关于」分区：版本取自前端 package.json（发版时与 tauri.conf / Cargo / pyproject 同步 bump）。 */
 const appVersion = String(appPackage.version ?? "");
 
+/**
+ * 成功提示的存活时长：成功只需要「看见它发生了」，不该长期占位；
+ * 失败/警告/进行中必须留到用户处理或下一次操作（失败比成功更持久）。
+ */
+const NOTICE_OK_MS = 4000;
+const noticeTimers = new Map<NoticeKey, ReturnType<typeof setTimeout>>();
+
+function clearNoticeTimer(key: NoticeKey) {
+  const timer = noticeTimers.get(key);
+  if (timer) clearTimeout(timer);
+  noticeTimers.delete(key);
+}
+
 function setNotice(key: NoticeKey, kind: NoticeKind, text: string) {
+  clearNoticeTimer(key);
   notices[key] = { kind, text };
+  if (kind !== "ok") return;
+  // 只收回「这一次」的成功提示：期间新的保存会重置计时器，旧计时器自然失效。
+  const timer = setTimeout(() => {
+    noticeTimers.delete(key);
+    if (notices[key]?.kind === "ok") notices[key] = null;
+  }, NOTICE_OK_MS);
+  noticeTimers.set(key, timer);
 }
 function clearNotice(key: NoticeKey) {
+  clearNoticeTimer(key);
   notices[key] = null;
 }
 function errText(action: string, e: unknown): string {
@@ -943,6 +965,8 @@ onUnmounted(() => {
   // 记住分类列表的滚动位置：分类多、窗口小时，回来不该又滚到顶部
   if (navRef.value) ui.settingsNavScroll = navRef.value.scrollTop;
   ui.settingsSection = activeTab.value;
+  // 成功提示的计时器必须随组件卸载清掉，避免卸载后仍写状态。
+  for (const key of [...noticeTimers.keys()]) clearNoticeTimer(key);
 });
 
 /**
@@ -1027,11 +1051,17 @@ watch(activeTab, async () => {
             </p>
             <div class="pref">
               <div class="txt">
-                <div class="t">设置助手</div>
-                <div class="d">随时可以重跑，完成后回到对话页</div>
+                <div class="t">{{ onboarding.needsSetup ? "继续设置" : "设置助手" }}</div>
+                <div class="d">
+                  {{ onboarding.needsSetup
+                    ? "初始设置还没完成：从这里继续（顶部的一次性提醒只出现一次，这里是随时可用的入口）"
+                    : "随时可以重跑，完成后回到对话页" }}
+                </div>
               </div>
               <div class="ctl">
-                <button class="qio-btn" type="button" @click="rerunOnboarding">重新运行设置助手</button>
+                <button class="qio-btn" type="button" @click="rerunOnboarding">
+                  {{ onboarding.needsSetup ? "继续设置" : "重新运行设置助手" }}
+                </button>
               </div>
             </div>
           </section>
@@ -1156,7 +1186,6 @@ watch(activeTab, async () => {
                 class="motion-opt"
                 :class="{ on: ui.closeBehavior === o.value }"
                 :aria-pressed="ui.closeBehavior === o.value"
-                :title="o.desc"
                 @click="chooseCloseBehavior(o.value)"
               >
                 {{ o.label }}
@@ -1724,7 +1753,7 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .tab {
   font-size: 13.5px; padding: 8px 12px; color: var(--text-secondary); cursor: pointer;
   background: none; border: none; border-left: 2px solid transparent; text-align: left;
-  font-family: var(--sans); border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  font-family: var(--sans); border-radius: 0 var(--qio-ui-radius) var(--qio-ui-radius) 0;
   transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .tab:hover { color: var(--text-strong); background: var(--bg-surface); }
@@ -1739,7 +1768,7 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 @media (max-width: 860px) {
   .layout { flex-direction: column; gap: 12px; }
   .nav { flex-direction: row; flex-wrap: wrap; min-width: 0; position: static; gap: 6px; }
-  .tab { border-left: none; border-bottom: 2px solid transparent; border-radius: var(--r-sm); }
+  .tab { border-left: none; border-bottom: 2px solid transparent; border-radius: var(--qio-ui-radius); }
   .tab.active { border-bottom-color: var(--accent); }
 }
 
@@ -1754,7 +1783,7 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .avail {
   font-size: 12px; line-height: 1.6; color: var(--text-secondary);
   margin: -4px 0 12px; padding: 7px 10px;
-  border: 1px solid var(--border-subtle); border-radius: var(--r-sm); background: var(--bg-inset);
+  border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset);
 }
 .avail.off { color: var(--warning); border-color: var(--warning); background: var(--warning-soft); }
 
@@ -1767,11 +1796,11 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .empty { font-size: 12px; color: var(--text-muted); }
 
 /* 主题分段控件 */
-.seg { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--bg-inset); }
+.seg { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset); }
 .theme-opt,
 .motion-opt,
 .scroll-opt {
-  font-family: var(--sans); font-size: 12.5px; padding: 6px 16px; border-radius: var(--r-sm);
+  font-family: var(--sans); font-size: 12.5px; padding: 6px 16px; border-radius: var(--qio-ui-radius);
   border: none; background: transparent; color: var(--text-secondary); cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
     transform var(--dur-press) var(--ease-out);
@@ -1823,7 +1852,7 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .filter.active { color: var(--text-strong); border-color: var(--accent); background: var(--accent-soft); }
 
 /* 高级：原始参数折叠区 */
-.adv-fold { border: 1px solid var(--border-subtle); border-radius: var(--r-md); background: var(--bg-inset); padding: 4px 12px; }
+.adv-fold { border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset); padding: 4px 12px; }
 .adv-fold summary { font-size: 12.5px; color: var(--text-secondary); cursor: pointer; padding: 8px 0; }
 .adv-fold summary:hover { color: var(--text-strong); }
 .adv-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 12px; align-items: flex-start; }
@@ -1831,31 +1860,6 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
 .raw { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 11.5px; color: var(--text-secondary); }
 .raw dt { color: var(--text-muted); }
 .raw dd { color: var(--text-secondary); word-break: break-all; }
-
-.toast {
-  position: fixed;
-  /* 让开自定义标题条（窗口层，层级比这里的 60 高）：压在它底下会「看得见、点不到」 */
-  top: calc(var(--titlebar-height) + 20px);
-  right: 20px;
-  z-index: 60;
-  max-width: 340px;
-  padding: 10px 16px;
-  border-radius: var(--r-md);
-  font-size: 12.5px;
-  line-height: 1.5;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-2);
-  color: var(--text-primary);
-}
-.toast.ok { border-color: var(--success); color: var(--success); }
-.toast.err { border-color: var(--danger); color: var(--danger); }
-.toast-enter-active,
-.toast-leave-active {
-  transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
-}
-.toast-enter-from,
-.toast-leave-to { opacity: 0; transform: translateY(10px); }
 
 /* 「关于」里的长文本（许可证 / 第三方声明）：等宽、可滚动，颜色全部来自令牌 */
 .license-text {
@@ -1865,7 +1869,7 @@ header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color:
   overflow: auto;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   color: var(--text-secondary);
   font-family: var(--mono);
   font-size: 12px;

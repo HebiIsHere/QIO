@@ -9,6 +9,7 @@
 import { computed } from "vue";
 import { useSecurityStore } from "../../stores/security";
 import { useUiStore } from "../../stores/ui";
+import { vQioTip } from "../../composables/useQioTip";
 
 const security = useSecurityStore();
 const ui = useUiStore();
@@ -45,8 +46,8 @@ function openSettings() {
     data-im="permission-mode-text"
     :data-mode="security.loaded ? security.mode : 'pending'"
     :data-loaded="security.loaded ? '1' : '0'"
-    :title="title"
     :aria-label="title"
+    v-qio-tip="title"
     @click="openSettings"
   >
     {{ text }}

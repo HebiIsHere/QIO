@@ -11,6 +11,7 @@
  */
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
+import { vQioTip } from "../composables/useQioTip";
 import { useFloatingWindow } from "../composables/useFloatingWindow";
 import { FLOAT_AVOID_SELECTORS } from "../composables/floatingState";
 import { planetContinuum } from "../composables/planetContinuum";
@@ -97,8 +98,8 @@ function onClick() {
     :class="{ activating, handed: handedOff, receiving, anchored }"
     data-planet-entry
     :aria-expanded="handedOff"
-    title="话题星球"
-    aria-label="打开话题星球"
+    aria-label="打开话题星球（星球入口；可拖动贴边）"
+    v-qio-tip="'打开话题星球：查看话题、知识与记忆待确认（可拖动贴边）'"
     @click="onClick"
   >
     <!-- 真实渲染未就位时才显示 2D 压缩态（首屏兜底 / WebGL 不可用） -->
