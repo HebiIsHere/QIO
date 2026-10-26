@@ -50,8 +50,10 @@ def _submit(client, *, kind="test.op", label="测试操作", confirmations=1, pa
     return client.portal.call(_do)
 
 
+# 同 test_pm_acceptance_approval_surface：审批行读取回到事件循环线程，
+# 避免测试主线程与执行器并发使用同一 sqlite 连接（py3.12 会抛 InterfaceError）。
 def _row(client, approval_id):
-    return client.app.state.ctx.approvals.store.get(approval_id)
+    return client.portal.call(lambda: client.app.state.ctx.approvals.store.get(approval_id))
 
 
 def _wait_state(client, approval_id, state, *, timeout=5.0):

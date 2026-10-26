@@ -60,8 +60,12 @@ def _submit(client, *, kind="test.op", label="验收操作", confirmations=1, pa
     return client.portal.call(_do)
 
 
+# 审批行的读取必须回到**应用的事件循环线程**：这是同一个 sqlite 连接，
+# 执行器在循环线程里 finish，若测试主线程同时直连读会并发使用连接；
+# Python 3.12 的 sqlite3 会直接抛 InterfaceError: bad parameter or other API misuse
+# （py3.11/Windows 只是碰巧没撞上）。断言内容不变，只把读取放回同一线程。
 def _row(client, approval_id):
-    return client.app.state.ctx.approvals.store.get(approval_id)
+    return client.portal.call(lambda: client.app.state.ctx.approvals.store.get(approval_id))
 
 
 def _wait_state(client, approval_id, state, *, timeout=8.0):
