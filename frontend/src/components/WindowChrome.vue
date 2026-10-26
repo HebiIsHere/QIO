@@ -34,6 +34,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import router from "../router";
 import brandLogo from "../assets/qio-orbit-logo.png";
+import PermissionModeText from "./security/PermissionModeText.vue";
 import { useUiStore } from "../stores/ui";
 import { useEventStore } from "../stores/events";
 import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
@@ -331,6 +332,8 @@ onBeforeUnmount(() => {
 
     <!-- 设置入口：对话页 / 互动页出现，固定排在窗口按钮左边（最右仍是窗口控制）。 -->
     <div v-if="hasGlobalBar" class="chrome-actions" :class="{ 'with-controls': inShell }">
+      <!-- 权限模式：纯文字，常驻全局栏（对话页 / 互动页同一处）；不再用页面内胶囊徽标。 -->
+      <PermissionModeText class="chrome-mode" />
       <button
         class="chrome-btn"
         type="button"
@@ -663,6 +666,12 @@ onBeforeUnmount(() => {
   user-select: text;
   -webkit-user-select: text;
   overflow: visible;
+}
+
+/* 全局栏里的权限模式文字：与设置按钮同一组，右对齐；纯文字，不加胶囊。 */
+.chrome-mode {
+  margin-right: 10px;
+  align-self: center;
 }
 
 /* 互动路由：整条栏不裁剪挂载点里的浮层（对话页保持原来的圆角裁剪，视觉不回退）。 */

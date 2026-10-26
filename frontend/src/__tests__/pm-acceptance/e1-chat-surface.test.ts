@@ -73,6 +73,7 @@ vi.mock("../../services/approvalLifecycle", async (importOriginal) => {
 import InteractiveView from "../../views/InteractiveView.vue";
 import ConversationView from "../../views/ConversationView.vue";
 import UnifiedApprovalModal from "../../components/approval/UnifiedApprovalModal.vue";
+import PermissionModeText from "../../components/security/PermissionModeText.vue";
 import { useApprovalsStore, type ApprovalItem } from "../../stores/approvals";
 import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
 import { useSecurityStore } from "../../stores/security";
@@ -232,50 +233,27 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 // F01 / §4.2 权限模式：两个聊天页都要常驻可见
 // ---------------------------------------------------------------------------
-describe("权限模式：两个聊天路由都常驻可见（基线：互动页 v2 布局没有徽标）", () => {
-  it("互动页有权限模式徽标，且收起 / 展开对话都在", async () => {
+describe("权限模式：移到全局栏（对话 / 互动共用同一处）", () => {
+  it("全局栏文字显示真实模式；读取中 / 失败如实显示（不再用胶囊）", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mount(PermissionModeText, { global: { plugins: [pinia] } });
     const security = useSecurityStore();
     security.mode = "read_only";
     security.label = "只读模式";
     security.loaded = true;
-    const store = useInteractiveStore();
-
-    const w = mountInteractive();
     await flushPromises();
-    const badges = () => w.findAll('[data-im="permission-mode-badge"]');
-    expect(badges().length, "互动页缺少权限模式徽标（真实页面上用户看不到当前模式）").toBeGreaterThan(0);
-    expect(badges()[0].text()).toContain("只读");
-
-    store.chatOpen = true;
-    await nextTick();
-    expect(badges().length, "对话展开后徽标被遮掉 / 卸载了").toBeGreaterThan(0);
-    store.chatOpen = false;
-    await nextTick();
-    expect(badges().length, "对话收起后徽标消失了（应当常驻）").toBeGreaterThan(0);
+    expect(w.text()).toContain("只读");
+    expect(w.find('[data-im="permission-mode-badge"]').exists()).toBe(false);
   });
 
-  it("互动页读取中 / 读取失败时如实显示，不冒充默认模式", async () => {
-    const security = useSecurityStore();
-    security.loaded = false;
-    security.error = null;
+  it("互动页 / 对话页页面内都不再渲染胶囊徽标（展示点已移到全局栏）", async () => {
     const w = mountInteractive();
     await flushPromises();
-    const text = w.text();
-    expect(text, "读取中时互动页没有任何权限模式提示").toContain("权限模式读取中");
-
-    security.error = "读取权限模式失败：HTTP 500";
-    await nextTick();
-    expect(w.text(), "读取失败时互动页没有说明").toContain("权限模式未知");
-  });
-
-  it("对照：对话页本来就有权限模式徽标", async () => {
-    const security = useSecurityStore();
-    security.mode = "restricted";
-    security.label = "受限模式";
-    security.loaded = true;
-    const w = mountConversation();
+    expect(w.find('[data-im="permission-mode-badge"]').exists()).toBe(false);
+    const c = mountConversation();
     await flushPromises();
-    expect(w.findAll('[data-im="permission-mode-badge"]').length).toBeGreaterThan(0);
+    expect(c.find('[data-im="permission-mode-badge"]').exists()).toBe(false);
   });
 });
 

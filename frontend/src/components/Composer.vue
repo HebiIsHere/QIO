@@ -1413,8 +1413,8 @@ async function stopTurn() {
     <!--
       对话页 v2：旧的话题栏整行（话题名 / 续接提示 / 快捷键说明）已删除 —— 话题名移到
       ChatColumn 的常驻话题栏，输入区只保留输入胶囊本身。
-      R9 的「权限模式常驻可见」也随之从这条行挪到 ChatColumn 的话题栏（见该组件的
-      <PermissionModeBadge />），不在这里恢复旧行。
+      R9 的「权限模式常驻可见」已统一挪到窗口全局栏（见 WindowChrome 里的
+      <PermissionModeText />，对话页 / 互动页同一处），不在这里恢复旧行。
     -->
     <div
       v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection || preparingVisible || preparingNotice"
