@@ -3876,12 +3876,24 @@ def create_app(
 
     @app.get("/api/approvals/pending")
     async def list_pending_approvals() -> dict:
-        """等待用户决定的审批（含操作摘要、过期时间、确认阶段、来源）。"""
-        return {"approvals": approvals.pending(), "instance_id": instance_id}
+        """等待用户决定的审批（含操作摘要、过期时间、确认阶段、来源）。
+
+        读取持久化审批失败时显式 503（code=approvals_unreadable）：绝不能返回
+        200+空/部分集合 —— 前端会因此把待办清掉（把失败的补读当成「没有待办」）。
+        """
+        try:
+            items = approvals.pending()
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"approvals": items, "instance_id": instance_id}
 
     @app.get("/api/approvals/history")
     async def list_approval_history(limit: int = 50) -> dict:
-        return {"history": approvals.history(limit=max(1, min(int(limit), 200)))}
+        try:
+            history = approvals.history(limit=max(1, min(int(limit), 200)))
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"history": history}
 
     @app.post("/api/approvals/{approval_id}/decide")
     async def decide_approval(approval_id: str, body: dict) -> dict:
