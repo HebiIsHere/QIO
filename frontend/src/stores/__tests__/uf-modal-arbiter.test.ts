@@ -117,3 +117,53 @@ describe("globalIssues：一个入口、根因去重、部分恢复", () => {
     expect(issues.hasIssues).toBe(false);
   });
 });
+
+describe("弹窗期间通知：撤下已显示的、保留待处理、结束后按剩余时长恢复", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.useFakeTimers();
+  });
+
+  it("显示中 → 弹窗打开撤下（DOM/store 仍保留）→ 弹窗关闭恢复同一条并继续剩余时长", () => {
+    const notifications = useNotificationsStore();
+    notifications.enqueue({ key: "task-failed:x", kind: "task_failed", text: "「任务」失败了", taskIds: ["t1"], mergeable: false });
+    expect(notifications.active?.key).toBe("task-failed:x");
+
+    // 已经展示了 1 秒
+    vi.advanceTimersByTime(1000);
+    notifications.suspendForModal();
+    expect(notifications.hasActive).toBe(false);
+    // 通知仍在队列里（待处理事件不丢）
+    expect(notifications.notices).toHaveLength(1);
+    expect(notifications.notices[0].key).toBe("task-failed:x");
+
+    // 弹窗期间不显示、也不因计时消失
+    vi.advanceTimersByTime(10000);
+    expect(notifications.hasActive).toBe(false);
+    expect(notifications.notices).toHaveLength(1);
+
+    notifications.resumeFromModal();
+    expect(notifications.hasActive).toBe(true);
+    expect(notifications.active?.key).toBe("task-failed:x");
+    // 剩余约 4 秒：3.9s 仍在，再 0.2s 收起（不是重新给 5s）
+    vi.advanceTimersByTime(3900);
+    expect(notifications.hasActive).toBe(true);
+    vi.advanceTimersByTime(200);
+    expect(notifications.hasActive).toBe(false);
+  });
+
+  it("弹窗期间新入队的通知：弹窗结束后从真正显示时起算 5 秒", () => {
+    const notifications = useNotificationsStore();
+    notifications.suspendForModal();
+    notifications.enqueue({ key: "setup:2", kind: "setup_incomplete", text: "初始设置尚未完成" });
+    vi.advanceTimersByTime(8000);
+    expect(notifications.hasActive).toBe(false);
+
+    notifications.resumeFromModal();
+    expect(notifications.hasActive).toBe(true);
+    vi.advanceTimersByTime(NOTICE_VISIBLE_MS - 100);
+    expect(notifications.hasActive).toBe(true);
+    vi.advanceTimersByTime(200);
+    expect(notifications.hasActive).toBe(false);
+  });
+});

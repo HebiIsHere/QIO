@@ -10,7 +10,7 @@
  * - 不抢焦点：出现时不 focus 任何元素，只有用户 Tab 才进入；
  * - 点击（只有可定位任务的通知）→ 展开左栏并定位任务集合。
  */
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from "vue";
 import {
   noticeActivation,
   noticeDisplayText,
@@ -21,6 +21,7 @@ import {
 } from "../../stores/notifications";
 import { useConversationShellStore } from "../../stores/conversationShell";
 import { useConversationTasksStore } from "../../stores/conversationTasks";
+import { feedbackTopPx } from "./feedbackOffsets";
 
 const notifications = useNotificationsStore();
 const notice = computed(() => notifications.active);
@@ -36,6 +37,36 @@ const canLocate = computed(
   () => Boolean(notice.value?.focus) && taskIds.value.length > 0,
 );
 const kindClass = computed(() => "is-" + (notice.value?.kind ?? "task_failed"));
+/** 真实落点：全局栏下方；非聊天页再让出一行 .top-notes 的高度（不写死坐标）。 */
+const topPx = ref<number>(0);
+
+function syncTop(): void {
+  const next = feedbackTopPx();
+  if (next > 0) topPx.value = next;
+}
+
+function onResize(): void {
+  syncTop();
+}
+
+onMounted(() => {
+  syncTop();
+  window.addEventListener("resize", onResize, { passive: true });
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", onResize);
+});
+
+watch(
+  () => notice.value?.key ?? null,
+  async (key) => {
+    if (!key) return;
+    await nextTick();
+    syncTop();
+  },
+  { immediate: true },
+);
 
 function pause(): void {
   if (notice.value) notifications.pause(notice.value.key);
@@ -108,6 +139,7 @@ function onKeydown(event: KeyboardEvent): void {
       v-if="notice"
       class="uf-notice"
       :class="kindClass"
+      :style="topPx ? { top: topPx + 'px' } : undefined"
       data-test="top-notice"
       @mouseenter="pause"
       @mouseleave="resume"

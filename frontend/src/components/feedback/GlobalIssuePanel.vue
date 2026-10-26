@@ -12,12 +12,20 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import type { GlobalIssue } from "../../stores/globalIssues";
 import { useGlobalIssuesStore } from "../../stores/globalIssues";
 import { useModalArbiterStore } from "../../stores/modalArbiter";
+import { feedbackTopPx } from "./feedbackOffsets";
 import { runGlobalIssueAction } from "./issueActions";
 
 const issues = useGlobalIssuesStore();
 const arbiter = useModalArbiterStore();
 const panelRef = ref<HTMLElement | null>(null);
 const expandedIds = ref<string[]>([]);
+/** 真实落点：全局栏下方并给顶部提示条让位（不写死坐标）。 */
+const topPx = ref<number>(0);
+
+function syncTop(): void {
+  const next = feedbackTopPx(-4);
+  if (next > 0) topPx.value = next;
+}
 
 const open = computed(() => issues.panelOpen && issues.hasIssues);
 
@@ -78,6 +86,7 @@ watch(
   open,
   async (value) => {
     if (value) {
+      syncTop();
       startListening();
       await nextTick();
       // 用户主动打开：把焦点放进面板（这是用户动作，不是「抢焦点」）；入口仍可点关闭
@@ -114,6 +123,7 @@ onBeforeUnmount(() => {
       aria-modal="false"
       aria-labelledby="uf-issue-title"
       tabindex="-1"
+      :style="topPx ? { top: topPx + 'px' } : undefined"
     >
       <header class="uf-issue-panel__head">
         <span class="uf-issue-panel__slot" aria-hidden="true"></span>
