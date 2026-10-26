@@ -15,13 +15,11 @@ import { useApprovalsStore } from "../../stores/approvals";
 import { useApprovalResultsStore } from "../../stores/approvalResults";
 import { useSessionStore } from "../../stores/session";
 import { useInteractiveStore } from "../../stores/interactive";
-import {
-  isBlockingModalOpen,
-  isUserEditing,
-  useUnifiedApprovalsStore,
-} from "../../stores/unifiedApprovals";
+import { useModalArbiterStore } from "../../stores/modalArbiter";
+import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
+import { isInputBusy } from "../../stores/feedbackGate";
+import { planetContinuum } from "../../composables/planetContinuum";
 import UnifiedApprovalModal from "../approval/UnifiedApprovalModal.vue";
-import MemoryQuestionReminder from "./MemoryQuestionReminder.vue";
 import type { MemoryOpenTarget } from "../../stores/memoryQuestions";
 
 const props = withDefaults(
@@ -42,6 +40,7 @@ const results = useApprovalResultsStore();
 const session = useSessionStore();
 const unified = useUnifiedApprovalsStore();
 const interactive = useInteractiveStore();
+const arbiter = useModalArbiterStore();
 
 const REFRESH_MS = 30_000;
 const RETRY_THROTTLE_MS = 250;
@@ -133,6 +132,19 @@ function onOpenMemory(target: MemoryOpenTarget) {
   emit("open-memory", target);
 }
 
+/**
+ * 记忆星球覆盖层关闭后补一次自动弹出重试。
+ *
+ * 星球是覆盖层（路由仍然是对话页）：覆盖层开着时门控返回 planet-overlay，autoPending 会留着；
+ * 关闭动画结束后再试一次，不能让申请一直等到用户点别处才出现。
+ */
+watch(
+  () => planetContinuum.phase,
+  (phase) => {
+    if (phase === "idle" && unified.autoPending) retryAutoOpen();
+  },
+);
+
 onMounted(() => {
   layerState.count += 1;
   if (layerState.count > 1) {
@@ -193,7 +205,8 @@ watch(
     if (!visible || unified.visible) return;
     const current = approvals.current;
     if (!current) return;
-    if (approvals.inlineClaimed || isUserEditing() || isBlockingModalOpen()) return;
+    // 显式「查看完整信息」也不能叠在别的中央弹窗或输入法组合输入上
+    if (approvals.inlineClaimed || isInputBusy() || arbiter.hasModal) return;
     unified.open("tool:" + current.approval_id);
   },
 );
@@ -229,7 +242,11 @@ defineExpose({ openApprovals, retryAutoOpen });
     <!-- 入口统一放到输入区上方的五图标入口（⑤）：对话页只有这一处审批入口，
          这里不再额外渲染顶部浮动条，避免同一时刻出现两个入口。 -->
     <UnifiedApprovalModal />
-    <MemoryQuestionReminder v-if="props.showMemory" @open="onOpenMemory" />
+    <!--
+      记忆问题提醒（MemoryQuestionReminder）的生产挂载已按用户任务书移除：
+      主对话不再显示「记忆整理问题」提醒，三类事项改由星球「待确认」本地处理；
+      组件文件与共享数据保留（星球侧能力不受影响）。
+    -->
     <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>
   </div>
 </template>

@@ -30,8 +30,13 @@ export interface AppNoticeInput {
   taskIds?: string[];
   /** 任务失败默认 true；其他类型默认 false。 */
   mergeable?: boolean;
-  /** 点击通知是否定位任务。 */
+  /** 点击通知是否定位任务（任务失败类）。 */
   focus?: boolean;
+  /**
+   * 点击 / 键盘激活通知时执行的动作（例如「初始设置尚未完成」点击接续引导）。
+   * 与 focus 分开：有可定位任务时 focus 优先；没有任务时用这个激活动作。
+   */
+  onActivate?: () => void;
   /**
    * 弹窗结束、真正要显示之前的最后一道校验：返回 false 的成员视为已经恢复/已处理/过期。
    * 不满足时整条通知被丢弃（不显示过期事实）。
@@ -61,6 +66,27 @@ export interface AppNotice {
 
 /** 事件身份 → 最后一道校验（不入 state：函数不是可序列化状态）。 */
 const relevanceChecks = new Map<string, () => boolean>();
+
+/** 事件身份 → 点击激活动作（同样不入 state）。 */
+const activationHandlers = new Map<string, () => void>();
+
+/** 这条通知的激活动作（没有可定位任务时使用；合并通知取第一个成员的动作）。 */
+export function noticeActivation(notice: AppNotice | null | undefined): (() => void) | null {
+  if (!notice) return null;
+  const direct = activationHandlers.get(notice.key);
+  if (direct) return direct;
+  for (const member of notice.members) {
+    const handler = activationHandlers.get(member.key);
+    if (handler) return handler;
+  }
+  return null;
+}
+
+/** 这条通知是否可以点击（定位任务或执行激活动作）。 */
+export function noticeIsActivatable(notice: AppNotice | null | undefined): boolean {
+  if (!notice) return false;
+  return Boolean(notice.focus && noticeTaskIds(notice).length) || Boolean(noticeActivation(notice));
+}
 
 /** 合并后的任务数量（按任务身份去重；没有任务身份时按事件身份数量）。 */
 export function noticeTaskCount(notice: AppNotice | null | undefined): number {
@@ -94,7 +120,7 @@ export function noticeFullText(notice: AppNotice | null | undefined): string {
   if (!notice) return "";
   const count = noticeTaskCount(notice);
   if (notice.kind === "task_failed" && notice.mergeable && count > 1) {
-    return count + " 项任务失败了：" + notice.text;
+    return count + " 项任务失败了";
   }
   return notice.text;
 }
@@ -183,6 +209,8 @@ export const useNotificationsStore = defineStore("notifications", {
         ? taskIds.map((taskId) => ({ key, taskId }))
         : [{ key, taskId: "" }];
       this.registerRelevance(key, input.stillRelevant);
+      if (input.onActivate) activationHandlers.set(key, input.onActivate);
+      else activationHandlers.delete(key);
 
       // 1) 同一事件身份：只更新同一条（幂等；会员按任务身份去重）
       const sameKey = this.notices.find((notice) =>
@@ -311,7 +339,8 @@ export const useNotificationsStore = defineStore("notifications", {
           }
         });
         if (!notice.members.length) {
-          for (const member of [notice.key]) relevanceChecks.delete(member);
+          relevanceChecks.delete(notice.key);
+          activationHandlers.delete(notice.key);
           if (this.activeKey === notice.key) this.activeKey = null;
           delete this.displayStartedAt[notice.key];
           delete this.remainingMs[notice.key];
@@ -332,8 +361,12 @@ export const useNotificationsStore = defineStore("notifications", {
       if (!notice) return;
       const wasActive = this.activeKey === notice.key;
       this.notices = this.notices.filter((item) => item.key !== notice.key);
-      for (const member of notice.members) relevanceChecks.delete(member.key);
+      for (const member of notice.members) {
+        relevanceChecks.delete(member.key);
+        activationHandlers.delete(member.key);
+      }
       relevanceChecks.delete(notice.key);
+      activationHandlers.delete(notice.key);
       this.pausedKeys = this.pausedKeys.filter((entry) => entry !== notice.key);
       delete this.displayStartedAt[notice.key];
       delete this.remainingMs[notice.key];
@@ -389,6 +422,7 @@ export const useNotificationsStore = defineStore("notifications", {
       this.remainingMs = {};
       this.mergeUntil = 0;
       relevanceChecks.clear();
+      activationHandlers.clear();
     },
   },
 });

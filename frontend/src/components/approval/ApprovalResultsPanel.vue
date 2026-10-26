@@ -173,15 +173,14 @@ onMounted(() => {
             {{ entry.stateLabel }}
           </span>
           <span class="ar-when mono">{{ whenText(entry.at) }}</span>
-          <span v-if="entry.source === 'history'" class="ar-src mono" title="来自后端持久化历史（刷新后仍可查看）">
+          <span v-if="entry.source === 'history'" class="ar-src mono">
             持久记录
           </span>
-          <span v-else class="ar-src mono" title="本次会话实时收到的事件">实时</span>
+          <span v-else class="ar-src mono">实时</span>
           <span
             v-if="entry.legacy"
             class="ar-src mono"
             data-test="approval-result-legacy"
-            title="旧审批路径（request 落库行）：已批准与执行结果是两件事实"
           >旧审批路径</span>
         </header>
 
