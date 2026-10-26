@@ -1,9 +1,11 @@
 /**
  * Phase 1-B 顶栏搜索 / 保存状态控件（子智能体 p1-layout 负责）。
  *
- * 契约：互动页的搜索与唯一保存状态挂到 #qio-interactive-chrome-extra（A 提供），
- * 搜索结果浮层用 Teleport 到 body + fixed 定位，**不被全局栏裁切**。
- * 这里只用真实 store 的真实板面数据与真实搜索纯函数，不 mock 业务数据。
+ * FU4 交互更新：搜索不再是「按钮 + 弹窗」，而是直接渲染在
+ * #qio-interactive-chrome-extra 里的**内联输入框**；聚焦即进入输入并加宽，
+ * 除 input 自身 placeholder 外没有任何标题 / label / 说明 / 关闭按钮文字。
+ * 结果列表是锚定在输入框下方的小浮层（Teleport 到 body + fixed，避免被全局栏裁切），
+ * 点结果仍 dispatch locate-card 定位到卡片。这里只用真实 store 板面与真实搜索纯函数。
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mount, type VueWrapper } from "@vue/test-utils";
@@ -69,6 +71,15 @@ async function typeQuery(text: string): Promise<void> {
   await nextTick();
 }
 
+/** 聚焦内联搜索框（点击与聚焦是同一条入口：聚焦即进入输入状态并加宽）。 */
+async function focusSearch(): Promise<HTMLInputElement> {
+  const input = pickOrFail<HTMLInputElement>("[data-iw-chrome-search-input]");
+  input.focus();
+  input.dispatchEvent(new Event("focus"));
+  await settle();
+  return input;
+}
+
 describe("保存状态文案（纯函数）", () => {
   it("按真实状态说话：未保存 / 保存中 / 已保存 / 有改动", () => {
     expect(saveStatusView({ status: "idle", dirty: false, error: null })).toEqual({
@@ -107,7 +118,7 @@ describe("InteractiveChromeTools：挂载与保存状态", () => {
     await mountTools();
     const tools = pickOrFail("[data-iw-chrome-tools]");
     expect(target?.contains(tools)).toBe(true);
-    expect(pickOrFail('[data-iw-chrome-search]').getAttribute("aria-label")).toBe("搜索板面");
+    expect(pickOrFail("[data-iw-chrome-search-input]").getAttribute("aria-label")).toBe("搜索板面");
     expect(pickOrFail("[data-iw-chrome-save]").getAttribute("role")).toBe("status");
   });
 
@@ -144,24 +155,43 @@ describe("InteractiveChromeTools：挂载与保存状态", () => {
   });
 });
 
-describe("InteractiveChromeTools：板内搜索", () => {
-  it("搜索结果浮层 Teleport 到 body（固定定位），不被全局栏裁切", async () => {
+describe("InteractiveChromeTools：板内搜索（内联输入）", () => {
+  it("内联输入框直接渲染在挂载点里：无按钮、无弹窗，除 placeholder 外没有额外文字", async () => {
     await mountTools();
-    expect(pick("[data-iw-chrome-search-panel]")).toBeNull();
-
-    const trigger = pickOrFail<HTMLElement>("[data-iw-chrome-search]");
-    trigger.click();
-    await settle();
-
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    const panel = pickOrFail<HTMLElement>("[data-iw-chrome-search-panel]");
-    expect(panel.parentElement).toBe(document.body);
-    expect(target?.contains(panel)).toBe(false);
-    expect(panel.style.position).toBe("fixed");
-    expect(panel.getAttribute("role")).toBe("dialog");
+    const input = pickOrFail<HTMLInputElement>("[data-iw-chrome-search-input]");
+    // 直接挂在全局栏挂载点里，不是按钮触发的弹窗
+    expect(target?.contains(input)).toBe(true);
+    expect(pick("[data-iw-chrome-search]"), "旧搜索按钮应已移除").toBeNull();
+    expect(pick("[data-iw-chrome-search-panel]"), "旧弹窗应已移除").toBeNull();
+    expect(pick('[role="dialog"]')).toBeNull();
+    // input 自身之外没有标题 / label / 说明 / 关闭按钮文字
+    const field = pickOrFail<HTMLElement>("[data-iw-chrome-search-field]");
+    expect(field.textContent?.trim()).toBe("");
+    expect(pickOrFail("[data-iw-chrome-tools]").textContent).not.toContain("板内搜索");
+    expect(pickOrFail("[data-iw-chrome-tools]").textContent).not.toContain("搜你自己的板面");
+    expect(pickOrFail("[data-iw-chrome-tools]").textContent).not.toContain("收起");
+    expect(input.getAttribute("placeholder")).toBeTruthy();
+    // aria-label 只落在控件本身
+    expect(input.getAttribute("aria-label")).toBe("搜索板面");
   });
 
-  it("用真实板面数据搜索：能搜到未勾选的注释，点结果 dispatch locate-card", async () => {
+  it("点击 / 聚焦即进入输入状态并加宽（不需要点第二次）", async () => {
+    await mountTools();
+    const field = pickOrFail<HTMLElement>("[data-iw-chrome-search-field]");
+    expect(field.getAttribute("data-expanded")).toBe("false");
+    const input = await focusSearch();
+    expect(field.getAttribute("data-expanded")).toBe("true");
+    expect(document.activeElement).toBe(input);
+
+    // 点搜索框任何位置（含放大镜图标区）都直接进入输入
+    input.blur();
+    await settle();
+    field.click();
+    await settle();
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("用真实板面数据搜索：结果列表在输入框下方，点结果 dispatch locate-card", async () => {
     store.board = board.addCard(board.emptyState("board_t"), {
       kind: "text",
       content: "预算表要重做",
@@ -177,85 +207,125 @@ describe("InteractiveChromeTools：板内搜索", () => {
 
     try {
       await mountTools();
-      pickOrFail<HTMLElement>("[data-iw-chrome-search]").click();
-      await settle();
+      await focusSearch();
       await typeQuery("预算");
+
+      const results = pickOrFail<HTMLElement>("[data-iw-chrome-search-results]");
+      // 浮层列表（不是弹窗）：无标题、无 role=dialog，Teleport 到 body 用 fixed 定位
+      expect(results.parentElement).toBe(document.body);
+      expect(results.style.position).toBe("fixed");
+      expect(results.getAttribute("role")).not.toBe("dialog");
+      expect(results.querySelector("header")).toBeNull();
+      expect(results.textContent).not.toContain("板内搜索");
+      expect(results.textContent).not.toContain("搜索只查");
 
       const result = pickOrFail<HTMLElement>("[data-iw-chrome-search-result]");
       expect(result.getAttribute("data-card-id")).toBe(cardId);
-      expect(result.textContent).toContain("未勾选");
+      expect(result.textContent).toContain("预算表要重做");
 
       result.click();
       await nextTick();
       expect(seen).toEqual([cardId]);
-      expect(pickOrFail("[data-iw-chrome-search-panel]").textContent).toContain("已在板面上定位");
     } finally {
       window.removeEventListener("qio:interactive:locate-card", onLocate);
     }
   });
 
-  it("没有匹配时如实说「没有匹配」，并说明搜索不等于交给 QIO", async () => {
+  it("没有匹配时不渲染结果列表，也不加「没有匹配」之类说明文字", async () => {
     store.board = board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做" });
     await mountTools();
-    pickOrFail<HTMLElement>("[data-iw-chrome-search]").click();
-    await settle();
+    await focusSearch();
     await typeQuery("完全不存在的关键词");
-    const panel = pickOrFail("[data-iw-chrome-search-panel]");
-    expect(panel.textContent).toContain("没有匹配");
-    expect(panel.textContent).toContain("不会因此交给 QIO");
+    expect(pick("[data-iw-chrome-search-results]")).toBeNull();
+    expect(pickOrFail("[data-iw-chrome-search-field]").textContent?.trim()).toBe("");
+    expect(pickOrFail("[data-iw-chrome-tools]").textContent).not.toContain("没有匹配");
   });
 
-  it("Esc 收起浮层并把焦点还给搜索按钮", async () => {
+  it("Esc 收起结果、保留输入，且不把 Esc 交给板面", async () => {
+    store.board = board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做" });
     await mountTools();
-    const trigger = pickOrFail<HTMLElement>("[data-iw-chrome-search]");
-    trigger.click();
+    await focusSearch();
+    await typeQuery("预算");
+    expect(pick("[data-iw-chrome-search-results]")).not.toBeNull();
+
+    let leaked = false;
+    const onDocKey = () => {
+      leaked = true;
+    };
+    document.addEventListener("keydown", onDocKey);
+    try {
+      const input = pickOrFail<HTMLInputElement>("[data-iw-chrome-search-input]");
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await settle();
+      expect(pick("[data-iw-chrome-search-results]")).toBeNull();
+      expect(pickOrFail("[data-iw-chrome-search-field]").getAttribute("data-expanded")).toBe("false");
+      expect(input.value).toBe("预算"); // 收起结果不清空输入
+      expect(document.activeElement).toBe(input);
+      expect(leaked, "Esc 不应冒泡到板面（避免被当成取消选择）").toBe(false);
+    } finally {
+      document.removeEventListener("keydown", onDocKey);
+    }
+  });
+
+  it("键盘可达：ArrowDown 从输入框进入结果列表，Esc 再收起并回到输入框", async () => {
+    store.board = board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做" });
+    await mountTools();
+    const input = await focusSearch();
+    await typeQuery("预算");
+
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     await settle();
-    const input = pickOrFail<HTMLInputElement>("[data-iw-chrome-search-input]");
+    const first = pickOrFail<HTMLElement>("[data-iw-chrome-search-result]");
+    expect(document.activeElement).toBe(first);
+
+    first.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await settle();
+    expect(pick("[data-iw-chrome-search-results]")).toBeNull();
     expect(document.activeElement).toBe(input);
-
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await settle();
-    expect(pick("[data-iw-chrome-search-panel]")).toBeNull();
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(document.activeElement).toBe(trigger);
   });
 
-  it("点击浮层外部收起（不抢板面焦点）", async () => {
+  it("点击外部收起结果，输入保留", async () => {
+    store.board = board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做" });
     await mountTools();
-    pickOrFail<HTMLElement>("[data-iw-chrome-search]").click();
-    await settle();
-    expect(pick("[data-iw-chrome-search-panel]")).not.toBeNull();
+    await focusSearch();
+    await typeQuery("预算");
+    expect(pick("[data-iw-chrome-search-results]")).not.toBeNull();
 
     document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
     await settle();
-    expect(pick("[data-iw-chrome-search-panel]")).toBeNull();
+    expect(pick("[data-iw-chrome-search-results]")).toBeNull();
+    expect(pickOrFail("[data-iw-chrome-search-field]").getAttribute("data-expanded")).toBe("false");
+    expect(pickOrFail<HTMLInputElement>("[data-iw-chrome-search-input]").value).toBe("预算");
   });
 
-  it("浮层位置被视口钳制：贴右的触发按钮不会把浮层推出屏幕", async () => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
-    Object.defineProperty(window, "innerHeight", { configurable: true, value: 768 });
+  it("窄窗 480：结果列表被视口钳制，不横向溢出", async () => {
+    store.board = board.addCard(board.emptyState("board_t"), { kind: "text", content: "预算表要重做" });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 480 });
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
     await mountTools();
-    const trigger = pickOrFail<HTMLElement>("[data-iw-chrome-search]");
-    trigger.getBoundingClientRect = () =>
+    const field = pickOrFail<HTMLElement>("[data-iw-chrome-search-field]");
+    field.getBoundingClientRect = () =>
       ({
-        x: 700,
-        y: 40,
-        left: 700,
-        top: 40,
-        right: 760,
-        bottom: 64,
-        width: 60,
-        height: 24,
+        x: 300,
+        y: 8,
+        left: 300,
+        top: 8,
+        right: 470,
+        bottom: 36,
+        width: 170,
+        height: 28,
         toJSON: () => ({}),
       }) as DOMRect;
 
-    trigger.click();
-    await settle();
-
-    const panel = pickOrFail<HTMLElement>("[data-iw-chrome-search-panel]");
-    expect(panel.style.left).toBe("400px"); // 760 - 360
-    expect(panel.style.top).toBe("70px"); // 64 + 6
-    expect(panel.style.width).toBe("360px");
-    expect(panel.style.maxHeight).toBe(768 - 8 - 70 + "px");
+    await focusSearch();
+    await typeQuery("预算");
+    const results = pickOrFail<HTMLElement>("[data-iw-chrome-search-results]");
+    const left = Number.parseFloat(results.style.left);
+    const width = Number.parseFloat(results.style.width);
+    expect(Number.isFinite(left)).toBe(true);
+    expect(Number.isFinite(width)).toBe(true);
+    expect(left).toBeGreaterThanOrEqual(8);
+    expect(left + width).toBeLessThanOrEqual(480 - 8);
+    expect(width).toBeLessThanOrEqual(480 - 16);
   });
 });

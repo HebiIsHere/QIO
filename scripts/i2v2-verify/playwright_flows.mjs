@@ -558,13 +558,14 @@ flow(8, "搜索/书签定位已收起组内成员：目标实际显示并高亮"
   record("组已收起、成员隐藏", "data-collapsed=true 且成员卡不渲染", (await group.getAttribute("data-collapsed")) + " / card=" + (await cardLocator(memberId).count()), (await group.getAttribute("data-collapsed")) === "true" && (await cardLocator(memberId).count()) === 0);
 
   // 走真实搜索入口（书签与任务面板走同一 locate 事件）
-  const searchBtn = page.locator("[data-iw-chrome-search]");
-  if (!(await searchBtn.count())) {
-    record("搜索入口存在", "顶栏搜索按钮", "没有", false);
+  // FU4：搜索框直接内联在顶栏，点击即进入输入（不再有搜索按钮 / 弹窗）
+  const searchInput = page.locator("[data-iw-chrome-search-input]");
+  if (!(await searchInput.count())) {
+    record("搜索入口存在", "顶栏内联搜索框", "没有", false);
     return;
   }
-  await searchBtn.first().click();
-  await page.locator("[data-iw-chrome-search-input]").fill(locateQuery);
+  await searchInput.first().click();
+  await searchInput.fill(locateQuery);
   await page.waitForTimeout(500);
   const result = page.locator("[data-iw-chrome-search-result]").first();
   if (!(await result.count())) {
@@ -638,10 +639,11 @@ flow(9, "关系胶囊 50% / 100% / 200% 缩放与平移后拖动；Esc / 中断 
     await shot("zoom-" + percent);
     // 200% 时胶囊可能移出视野：先通过搜索定位源卡把它带回可视区
     if (percent === 200 || !(await label.isVisible().catch(() => false))) {
-      const searchBtn = page.locator("[data-iw-chrome-search]");
-      if (await searchBtn.count()) {
-        await searchBtn.first().click();
-        await page.locator("[data-iw-chrome-search-input]").fill(info.locateQuery || "材料");
+      // FU4：内联搜索框（无按钮）——直接点击输入框并输入
+      const searchInput = page.locator("[data-iw-chrome-search-input]");
+      if (await searchInput.count()) {
+        await searchInput.first().click();
+        await searchInput.fill(info.locateQuery || "材料");
         await page.waitForTimeout(400);
         const hit = page.locator("[data-iw-chrome-search-result]").first();
         if (await hit.count()) await hit.click();
