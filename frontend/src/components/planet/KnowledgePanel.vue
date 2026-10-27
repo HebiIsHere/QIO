@@ -31,6 +31,7 @@ import QSelect from "../ui/QSelect.vue";
 import QConfirm from "../ui/QConfirm.vue";
 import QIcon from "../ui/QIcon.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
+import { vQioTip } from "../../composables/useQioTip";
 import { useActionFeedback } from "../../composables/useActionFeedback";
 import { usePlanetPendingStore } from "../../stores/planetPending";
 
@@ -69,6 +70,18 @@ const EPISTEMIC_LABELS: Record<string, string> = {
 };
 function epistemicLabel(status?: string | null): string {
   return status ? EPISTEMIC_LABELS[status] || status : "";
+}
+
+/**
+ * 适用范围标签：有可点的「关联话题」链接时，不要再把「话题：X」打印一遍
+ * （同一张卡里同一个名字出现两次，还会把正文挤到第二眼）。
+ * 全局范围 / 实体范围 / 未指定归属仍然照实显示 —— 只有话题重复时省略。
+ */
+function scopeLabelOf(k: KnowledgeItem): string {
+  const scope = String(k.scope || "").trim();
+  if (!scope) return "";
+  if (k.topic_name && scope.startsWith("话题")) return "";
+  return scope;
 }
 
 /** 反馈键：同一面板里不同条目的动作结果互相隔离。 */
@@ -533,7 +546,7 @@ onBeforeUnmount(() => {
         <li
           v-for="k in filtered"
           :key="k.id"
-          class="k-item qio-card qio-card--quiet qio-row"
+          class="k-item qio-card qio-card--quiet"
           :data-k-id="k.id"
           role="button"
           tabindex="0"
@@ -549,12 +562,15 @@ onBeforeUnmount(() => {
             <span v-if="k.ended" class="qio-state k-ended quiet">已结束</span>
             <span v-if="k.epistemic_status" class="qio-tag k-epistemic">{{ epistemicLabel(k.epistemic_status) }}</span>
             <span class="k-source">{{ k.source }}</span>
-            <span class="k-scope">{{ k.scope }}</span>
-            <!-- 关联话题：列表里也能直接跳到话题（基线能力；点它不打开详情） -->
+            <span v-if="scopeLabelOf(k)" class="k-scope">{{ scopeLabelOf(k) }}</span>
+            <!-- 关联话题：列表里也能直接跳到话题（基线能力；点它不打开详情）。
+                 话题名只出现这一处（不再与 .k-scope 的「话题：X」重复），单行省略 + 悬停看全名。 -->
             <button
               v-if="k.topic_name"
               class="link k-topic-link"
               type="button"
+              :title="k.topic_name"
+              v-qio-tip="k.topic_name"
               @click.stop="emit('focus-topic', k.topic_id!)"
             >{{ k.topic_name }}</button>
           </div>
@@ -699,6 +715,8 @@ onBeforeUnmount(() => {
                 v-if="activeItem.topic_name"
                 class="link k-topic-link"
                 type="button"
+                :title="activeItem.topic_name"
+                v-qio-tip="activeItem.topic_name"
                 @click="emit('focus-topic', activeItem.topic_id!)"
               >{{ activeItem.topic_name }}</button>
               <span v-else class="hint">未关联</span>
@@ -806,11 +824,26 @@ onBeforeUnmount(() => {
 .filters { margin-bottom: 4px; }
 .create-form { border: 1px dashed var(--accent); border-radius: var(--qio-ui-radius); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 .k-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.k-item { padding: var(--sp-3); border-radius: var(--qio-ui-radius); display: flex; flex-direction: column; gap: 4px; cursor: pointer; }
+/* 列表卡是**列方向**的：显式 stretch，避免被全局行式类（qio-row）的
+   align-items:center 变成「内容水平居中 + 缩窄」。 */
+.k-item {
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+  gap: 4px; width: 100%; padding: var(--sp-3); border-radius: var(--qio-ui-radius);
+  cursor: pointer; text-align: left;
+  transition: background var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1);
+}
+/* hover / 焦点表面自己写（不再依赖全局 .qio-row，但它提供的那三档视觉保留） */
+.k-item:hover { background: var(--layer-hover); }
+.k-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .k-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .k-content { margin: 2px 0 0; font-size: 13.5px; line-height: 1.7; color: var(--text-primary); white-space: pre-wrap; }
 .k-source, .k-scope { font-size: 11px; color: var(--text-muted); }
-.k-topic-name { font-size: 11px; color: var(--link); }
+/* 长话题名只占一行：省略号 + title / v-qio-tip 看全名，把主视觉留给正文 */
+.k-topic-link {
+  display: inline-block; max-width: 100%; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: bottom;
+}
 .link { background: none; border: none; color: var(--link); cursor: pointer; font-size: 12px; padding: 0; }
 .link:hover { text-decoration: underline; }
 .hint { font-size: 12px; color: var(--text-muted); }

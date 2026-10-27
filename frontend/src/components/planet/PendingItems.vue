@@ -618,7 +618,7 @@ onBeforeUnmount(() => {
           <li
             v-for="row in filtered"
             :key="row.key"
-            class="p-item qio-card qio-card--quiet qio-row"
+            class="p-item qio-card qio-card--quiet"
             :data-pending-id="row.id"
             :data-pending-kind="row.kind"
             role="button"
@@ -886,10 +886,22 @@ onBeforeUnmount(() => {
 .qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; }
 .grow { flex: 1; }
 .p-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.p-item { padding: var(--sp-3); border-radius: var(--qio-ui-radius); display: flex; flex-direction: column; gap: 4px; cursor: pointer; }
+/* 列表卡是列方向：显式 stretch，避免全局行式类把内容水平居中/缩窄。 */
+.p-item {
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+  gap: 4px; width: 100%; padding: var(--sp-3); border-radius: var(--qio-ui-radius);
+  cursor: pointer; text-align: left;
+  transition: background var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1);
+}
+.p-item:hover { background: var(--layer-hover); }
+.p-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+/* 层级：标签行 → 标题行（加粗、唯一主视觉）→ 正文/取值行，全部左对齐成一条竖线。 */
 .p-item-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .p-ineffective, .p-source { font-size: 11px; color: var(--text-muted); }
-.p-item-title { margin: 2px 0 0; font-size: 13.5px; line-height: 1.65; color: var(--text-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
+.p-item-title {
+  margin: 2px 0 0; font-size: 13.5px; font-weight: 600; line-height: 1.65;
+  color: var(--text-strong); white-space: pre-wrap; overflow-wrap: anywhere;
+}
 .p-item-values { margin: 2px 0 0; display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
 .p-value-label { color: var(--text-muted); font-size: 11px; }
 .p-value { color: var(--text-primary); overflow-wrap: anywhere; }

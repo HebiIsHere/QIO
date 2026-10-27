@@ -535,7 +535,7 @@ onBeforeUnmount(() => {
         <li
           v-for="c in filtered"
           :key="c.id"
-          class="e-item qio-card qio-card--quiet qio-row"
+          class="e-item qio-card qio-card--quiet"
           :data-e-id="c.id"
           role="button"
           tabindex="0"
@@ -543,11 +543,13 @@ onBeforeUnmount(() => {
           @keydown.enter.prevent="openCard(c)"
           @keydown.space.prevent="openCard(c)"
         >
-          <div class="e-item-text">
-            <div class="e-name">{{ c.name }}</div>
-            <div class="e-meta mono">{{ c.attributes.length }} 属性 · {{ c.relations.length }} 关系</div>
+          <!-- 名称一行（长名省略 + 悬停全名），类别标签贴右；元数据另起一行左对齐 -->
+          <div class="e-item-head">
+            <span class="e-name">{{ c.name }}</span>
+            <span class="e-item-spacer"></span>
+            <span v-if="c.kind" class="qio-tag e-kind">{{ c.kind }}</span>
           </div>
-          <span v-if="c.kind" class="qio-tag e-kind">{{ c.kind }}</span>
+          <div class="e-item-meta mono">{{ c.attributes.length }} 属性 · {{ c.relations.length }} 关系</div>
         </li>
         <li v-if="!filtered.length" class="hint e-empty">
           <template v-if="cards.length">没有匹配「{{ q.trim() }}」的实体卡。</template>
@@ -670,7 +672,7 @@ onBeforeUnmount(() => {
               <p v-if="!activeCard.relations.length" class="hint">暂无关系。</p>
             </div>
           </div>
-          <dl class="e-meta">
+          <dl class="e-detail-meta">
             <div class="e-meta-row">
               <dt>修订</dt>
               <dd class="mono">v{{ activeCard.revision ?? 0 }}</dd>
@@ -856,10 +858,24 @@ onBeforeUnmount(() => {
 }
 .e-list-view { display: flex; flex-direction: column; gap: 8px; }
 .e-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.e-item { padding: var(--sp-3); border-radius: var(--qio-ui-radius); cursor: pointer; }
-.e-item-text { flex: 1; min-width: 0; }
-.e-name { font-size: 14.5px; color: var(--text-strong); }
-.e-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; display: flex; gap: 6px; align-items: center; }
+/* 列表卡是列方向：显式 stretch，避免全局行式类把内容水平居中/缩窄。 */
+.e-item {
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+  gap: 3px; width: 100%; padding: var(--sp-3); border-radius: var(--qio-ui-radius);
+  cursor: pointer; text-align: left;
+  transition: background var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1);
+}
+.e-item:hover { background: var(--layer-hover); }
+.e-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.e-item-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.e-item-spacer { flex: 1; min-width: 0; }
+.e-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14.5px; color: var(--text-strong);
+}
+/* 列表卡的元数据行（与详情里的 .e-detail-meta 分开命名：曾经同名导致详情列的
+   flex-direction:column + align-items:center 把列表文字水平居中） */
+.e-item-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 6px; align-items: center; text-align: left; }
 .e-detail-view { display: flex; flex-direction: column; gap: 10px; }
 .e-detail-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .e-detail-head .spacer { flex: 1; }
@@ -905,11 +921,11 @@ onBeforeUnmount(() => {
   padding: 8px 10px; border: 1px dashed var(--accent); border-radius: var(--qio-ui-radius);
   background: var(--bg-inset); color: var(--text-secondary); font-size: 12px; line-height: 1.6;
 }
-.e-meta { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 10px 0 0; border-top: 1px solid var(--border-subtle); }
-.e-meta-row { display: flex; gap: 10px; align-items: flex-start; }
-.e-meta-row dt { flex: none; width: 48px; font-size: 11px; color: var(--text-secondary); }
-.e-meta-row dd { margin: 0; min-width: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
-.e-meta-row dd.mono { font-family: var(--mono); font-size: 11.5px; }
+.e-detail-meta { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 0; padding: 10px 0 0; border-top: 1px solid var(--border-subtle); }
+.e-detail-meta-row { display: flex; gap: 10px; align-items: flex-start; }
+.e-detail-meta-row dt { flex: none; width: 48px; font-size: 11px; color: var(--text-secondary); }
+.e-detail-meta-row dd { margin: 0; min-width: 0; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.e-detail-meta-row dd.mono { font-family: var(--mono); font-size: 11.5px; }
 .e-conflict {
   display: flex; flex-direction: column; gap: 6px; padding: 10px;
   border: 1px solid var(--warning); border-radius: var(--qio-ui-radius);
