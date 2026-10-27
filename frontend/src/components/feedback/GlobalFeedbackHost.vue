@@ -18,6 +18,7 @@ import { useTaskFailureNotices, type TaskFailureNoticesHandle } from "./useTaskF
 import { useGlobalIssueSources, type GlobalIssueSourcesHandle } from "./useGlobalIssueSources";
 import { useModalArbiterStore } from "../../stores/modalArbiter";
 import { useNotificationsStore } from "../../stores/notifications";
+import { useConversationTasksStore } from "../../stores/conversationTasks";
 import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
 import {
   INPUT_LEAVE_RETRY_DELAY_MS,
@@ -28,6 +29,12 @@ import {
 const notifications = useNotificationsStore();
 const arbiter = useModalArbiterStore();
 const unified = useUnifiedApprovalsStore();
+/**
+ * 任务数据是**应用级**服务，不是对话页的私有状态（F02）。
+ * 这里用引用计数拿一份全局所有权：首个 acquire 才建立事件订阅/轮询/首份快照，
+ * 重复 acquire 只加计数，最后一个 release 才真正 dispose。页面只管理自己的展示状态。
+ */
+const tasks = useConversationTasksStore();
 
 let stopGate: (() => void) | null = null;
 let stopInputLeft: (() => void) | null = null;
@@ -53,6 +60,9 @@ onMounted(() => {
   stopGate = installFeedbackGate();
   stopInputLeft = subscribeInputLeft(scheduleAfterInputLeft);
   taskNotices = useTaskFailureNotices();
+  // 应用级任务数据：先建立失败监听（基线），再取全局所有权触发首份快照。
+  // 直接进入设置/互动/调试页也会有真实任务基线；切换页面不会停掉订阅与轮询。
+  tasks.acquireGlobal();
   issueSources = useGlobalIssueSources();
   /**
    * 中央弹窗开/关：统一由通知调度处理「撤下 / 恢复」。
@@ -88,6 +98,8 @@ onBeforeUnmount(() => {
   stopInputLeft = null;
   stopGate?.();
   stopGate = null;
+  // 应用卸载才释放全局任务数据（页面切换不释放）。重复 release 是安全的。
+  tasks.releaseGlobal();
   // 卸载时收掉通知计时器（避免宿主消失后仍改状态）
   notifications.reset();
 });
