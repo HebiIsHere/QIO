@@ -36,7 +36,8 @@ const [vpW, vpH] = viewportArg.split("x").map(Number);
 const fps = Number(flag("fps", 30));
 const openSelectors = String(flag("manage-open", DEFAULT_MANAGE_SELECTORS.open.join("|"))).split("|");
 const closeSelectors = String(flag("manage-close", DEFAULT_MANAGE_SELECTORS.close.join("|"))).split("|");
-const outDir = join(outRoot, label + "-" + viewportArg + "-" + action);
+const outDir = join(outRoot, label + "-" + viewportArg + "-" + action + (flag("max-width", null) ? "-s" + flag("max-width", "") : ""));
+let outDirNote = "";
 mkdirSync(outDir, { recursive: true });
 
 function ffmpegPath() {
@@ -63,7 +64,21 @@ try {
     await new Promise((r) => setTimeout(r, 1400));
   }
 
-  await browser.startScreencast({ format: "jpeg", quality: 82, maxWidth: vpW, maxHeight: vpH });
+  /**
+   * 录屏帧率受「每帧编码开销」限制：软件光栅 + 全尺寸画面时 CDP 只有 7–13fps。
+   * --max-width 把画面缩到较小尺寸可以显著提高取样帧率（动作连续性看得更清），
+   * 报告里会写明缩放后的尺寸，避免把「视频分辨率」误当「真实渲染分辨率」。
+   */
+  const maxWidth = Number(flag("max-width", vpW));
+  const scale = maxWidth / vpW;
+  await browser.startScreencast({
+    format: "jpeg",
+    quality: 82,
+    maxWidth,
+    maxHeight: Math.round(vpH * scale),
+  });
+  outDirNote = "screencast 缩放为 " + maxWidth + "×" + Math.round(vpH * scale) + "（真实渲染 " + vpW + "×" + vpH + "）";
+  report.notes.push(outDirNote);
   const t0 = Date.now();
   if (action === "reverse") {
     await toggleManagement(browser, "open", { open: openSelectors, close: closeSelectors });

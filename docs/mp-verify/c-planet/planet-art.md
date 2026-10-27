@@ -104,3 +104,27 @@
 说明：900×700 展开后半径变小是**上下排布的自然结果**（星球区域被管理区挤矮，画布高度变小 →
 球体按「半径 ∝ 画布高度」等比变小），不是 CSS 缩放；宽屏（1440×970）下半径保持不变（452.67）。
 判定口径：任何层级 `scrollWidth <= clientWidth + 1` 全部成立（`report.json` 的 `docScroll` / `overflowScrollers` 均为空）。
+## 7. 录屏（CDP 真实录屏，不是逐帧拼接）
+
+脚本：`scripts/mp-verify/record.mjs`（CDP `Page.startScreencast` 抓浏览器真实合成帧 → JPEG 序列 → ffmpeg 编 mp4）。
+产物：
+
+| 动作 | 输出 | 真实帧数 | 真实取样帧率 |
+| --- | --- | --- | --- |
+| 展开 | `record/rev-1440x970-expand/capture.mp4` | 9 | 7.5 fps |
+| 收起 | `record/rev-1440x970-collapse/capture.mp4` | 8 | 7.3 fps |
+| 中途反向 | `record/rev-1440x970-reverse/capture.mp4` | 21 | 13.1 fps |
+| 展开（缩到 720 宽再录） | `record/rev-1440x970-expand-s720/capture.mp4` | 14 | 7.6 fps |
+
+**必须说明的口径**：这是**真录屏**（浏览器合成帧），但本机无 GPU、WebGL 走 SwiftShader，
+CDP 的 screencast 取样率只有 7–13fps，缩到 720 宽也没有明显提升（瓶颈是每帧编码 + 渲染，不是像素数）。
+所以：视频用来**目视确认动作连续、方向正确、没有闪断**；**帧级定量结论一律以 `frames/*.json` 为准**
+（那里是页面内 rAF 逐帧采样，含 dt / Δmp / 归一化步进）。mp4 按 30fps 编码只是为了播放流畅，
+不要拿视频帧数反推动画帧数。
+
+## 8. 待复测（A 修完「先过渡再挂载内容 + 面板固定宽度 translateX」之后）
+
+- expand / collapse / reverse 的 `teleports` 应当归零（当前 tap 数据里仍存在，根因已由 Lead 定位为
+  管理区首次挂载阻塞主线程 + 面板逐帧改 width 造成布局抖动，属于页面侧问题，与本 composable 的曲线无关）；
+- 复测时同时重录三段 mp4（同一台机器、同一口径）；
+- 减少动态效果的逐帧证据补齐（当前只有 193ms 到位的探针数据）。
