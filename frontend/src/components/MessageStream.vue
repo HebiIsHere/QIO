@@ -871,7 +871,7 @@ const phaseLabel = computed(() => {
   min-width: 17px;
   height: 17px;
   padding: 0 4px;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   border: 2px solid var(--bg-elevated);
   background: var(--accent);
   color: var(--on-accent);

@@ -1052,7 +1052,7 @@ function removeOne(id: string) {
 .queued-tag {
   color: var(--text-secondary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 0 8px;
   letter-spacing: 0.06em;
 }
@@ -1264,7 +1264,7 @@ function removeOne(id: string) {
   letter-spacing: 0.06em;
   color: var(--text-muted);
   border: 1px solid var(--border-strong);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 0 8px;
 }
 .sub-name {
@@ -1304,7 +1304,7 @@ function removeOne(id: string) {
   margin-top: 6px;
   padding: 2px 9px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-muted);
   font-family: var(--sans);
@@ -1346,7 +1346,7 @@ function removeOne(id: string) {
   height: 32px;
   padding: 3px 5px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-surface);
   color: var(--text-secondary);
   font-family: var(--sans);

@@ -368,7 +368,7 @@ onBeforeUnmount(() => form.dispose());
 .collapse-clip { transition: opacity var(--mo-2-in) var(--ease-2); }
 .tag-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .tag-chip {
-  font-family: var(--sans); font-size: var(--fs-xs); padding: 4px 12px; border-radius: var(--qio-ui-radius);
+  font-family: var(--sans); font-size: var(--fs-xs); padding: 4px 12px; border-radius: var(--r-pill);
   border: 1px solid var(--border-strong); background: transparent; color: var(--text-secondary); cursor: pointer;
   transition: color var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1),
     background var(--mo-1-state) var(--ease-1), transform var(--mo-1-press) var(--ease-1);

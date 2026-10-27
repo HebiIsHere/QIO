@@ -364,7 +364,7 @@ onMounted(() => {
   font-size: 11.5px;
   letter-spacing: 0.02em;
   padding: 1px 7px;
-  border-radius: var(--qio-ui-radius, var(--r-lg));
+  border-radius: var(--r-pill);
   border: 1px solid var(--border-subtle);
   color: var(--text-secondary);
 }

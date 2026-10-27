@@ -184,7 +184,7 @@ const title = computed(() => {
   max-width: 100%;
   padding: 4px 5px 4px 5px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-surface);
   font-family: var(--sans);
   font-size: var(--fs-xs);

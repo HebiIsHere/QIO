@@ -447,7 +447,7 @@ onUnmounted(() => {
 .ec-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .ec-mark {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border-radius: var(--qio-ui-radius);
+  width: 18px; height: 18px; border-radius: 50%;
   background: var(--accent-soft); color: var(--accent);
 }
 .ec-title { flex: 1; }

@@ -751,7 +751,7 @@ onBeforeUnmount(() => {
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
   color: var(--text-secondary);

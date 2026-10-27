@@ -2559,7 +2559,7 @@ watch(
   height: 22px;
   padding: 0 7px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-elevated);
   color: var(--text-muted);
   font-family: var(--sans);
@@ -2593,7 +2593,7 @@ watch(
   letter-spacing: 0.02em;
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 0 var(--sp-2);
 }
 .title {

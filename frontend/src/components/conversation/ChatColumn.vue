@@ -490,7 +490,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   padding: 1px 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   font-size: 10.5px;
   color: var(--text-muted);
   letter-spacing: 0.02em;
@@ -642,7 +642,7 @@ onBeforeUnmount(() => {
   font-size: 10.5px;
   letter-spacing: 0.08em;
   padding: 1px 8px;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   border: 1px solid currentColor;
   opacity: 0.85;
 }

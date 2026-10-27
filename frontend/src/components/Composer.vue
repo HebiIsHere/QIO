@@ -1798,7 +1798,7 @@ async function stopTurn() {
   height: 38px;
   padding: 0 14px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -1862,7 +1862,7 @@ async function stopTurn() {
 .confirm-btn {
   background: none;
   border: 1px solid var(--border-strong);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 3px 10px;
   font: inherit;
   font-size: 11px;
@@ -1895,7 +1895,7 @@ async function stopTurn() {
 .draft-retry {
   flex-shrink: 0;
   border: 1px solid var(--border-strong);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -1993,7 +1993,7 @@ async function stopTurn() {
   height: 38px;
   padding: 0 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);

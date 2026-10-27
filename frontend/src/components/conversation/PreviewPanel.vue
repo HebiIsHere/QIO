@@ -203,7 +203,7 @@ onBeforeUnmount(() => {
   font-size: 10px;
   color: var(--text-muted);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 0 6px;
 }
 .pv-head-actions {

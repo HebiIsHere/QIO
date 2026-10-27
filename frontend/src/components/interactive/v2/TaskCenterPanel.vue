@@ -422,7 +422,7 @@ onMounted(() => {
   color: var(--text-secondary);
   background: none;
   border: 1px solid transparent;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 2px var(--sp-2);
   cursor: pointer;
   min-width: 0;
@@ -448,7 +448,7 @@ onMounted(() => {
   background: var(--bg-inset);
 }
 .tc-name { flex: 1; min-width: 0; font-size: var(--fs-xs); color: var(--text-primary); overflow-wrap: anywhere; }
-.tc-status { flex: none; font-size: 10.5px; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); padding: 0 6px; }
+.tc-status { flex: none; font-size: 10.5px; color: var(--text-secondary); border: 1px solid var(--border-subtle); border-radius: var(--r-pill); padding: 0 6px; }
 .tc-status[data-tone="active"] { color: var(--accent); border-color: var(--accent); }
 .tc-status[data-tone="waiting"] { color: var(--warning); border-color: var(--warning); }
 .tc-status[data-tone="problem"] { color: var(--danger); border-color: var(--danger); }
@@ -460,7 +460,7 @@ onMounted(() => {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 1px 8px;
   cursor: pointer;
 }

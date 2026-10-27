@@ -11,6 +11,21 @@ const css = readFileSync(new URL(baseCssPath, import.meta.url), "utf8");
  * 这些断言是「统一组件语言」的底线：原语类必须存在，且状态表达必须成套
  * （hover / active / selected / focus 缺一不可），否则各模块又会自己发明一套。
  */
+/** 按选择器取出 CSS 规则块（不依赖正则转义：选择器里有 . [ ] 等字符） */
+function ruleBlocks(css: string, selector: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  for (;;) {
+    const at = css.indexOf(selector + "{", from);
+    if (at < 0) break;
+    const close = css.indexOf("}", at);
+    if (close < 0) break;
+    out.push(css.slice(at, close + 1));
+    from = close + 1;
+  }
+  return out;
+}
+
 describe("base.css 组件原语", () => {
   it("卡片 / 行 / 工具条 / 标签 / 状态徽章 / 就地编辑 原语齐全", () => {
     for (const cls of [".qio-card", ".qio-row", ".qio-toolbar", ".qio-tag", ".qio-state", ".qio-inline-edit", ".qio-lift"]) {
@@ -49,25 +64,38 @@ describe("base.css 组件原语", () => {
   });
 
   /**
-   * 本轮统一改造（2026-10-26）：这些原语是“表面”，圆角必须来自唯一 token。
+   * 表面类原语（面板 / 输入 / 按钮 / 卡片 / 确认层）：圆角必须来自唯一 token --qio-ui-radius。
    * 每条规则按选择器取块，避免整文件 contains 把别的规则当成通过。
    */
-  it("本轮涉及的基础原语圆角统一为 --qio-ui-radius", () => {
+  it("面板与表单类基础原语圆角统一为 --qio-ui-radius", () => {
     const selectors = [
       ".qio-btn", ".qio-btn.mini", ".qio-input", ".qio-select", ".qio-select-menu",
-      ".qio-badge", ".qio-tag", ".qio-state", ".qio-row", ".qio-card",
-      ".qio-inline-edit", ".qio-floating", ".qio-confirm--inline",
-      ".qio-confirm--popover,.qio-confirm--layer",
+      ".qio-row", ".qio-card", ".qio-inline-edit", ".qio-floating",
+      ".qio-confirm--inline", ".qio-confirm--popover,.qio-confirm--layer",
     ];
     for (const sel of selectors) {
-      const escaped = sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const blocks = css.match(new RegExp(escaped + "\\{[^}]*\\}", "g")) ?? [];
+      const blocks = ruleBlocks(css, sel);
       expect(blocks.length, sel).toBeGreaterThan(0);
       // 主规则必须用 token；同选择器的补充规则（例如 textarea.qio-input 只调高度）
       // 如果声明了 border-radius 也必须用 token，没声明就不要求。
       expect(blocks.some((block) => block.includes("var(--qio-ui-radius)")), sel).toBe(true);
       for (const block of blocks) {
         if (block.includes("border-radius:")) expect(block, sel).toContain("var(--qio-ui-radius)");
+      }
+    }
+  });
+
+  /**
+   * 2026-10-27（用户要求）：徽标 / 标签 / 状态 / 玻璃小药丸**恢复胶囊形**（--r-pill）。
+   * 它们是「贴一小段文字」的胶囊，不是面板；统一改造曾把它们压成 14px 圆角矩形。
+   * 这是一条明确的例外，不要再改回 14px（记忆星球页内另有按页覆盖，见 PlanetView）。
+   */
+  it("徽标/标签/状态/玻璃药丸保持胶囊形（--r-pill）", () => {
+    for (const sel of [".qio-badge", ".qio-tag", ".qio-state", ".qio-glass--chip"]) {
+      const blocks = ruleBlocks(css, sel);
+      expect(blocks.length, sel).toBeGreaterThan(0);
+      for (const block of blocks) {
+        if (block.includes("border-radius:")) expect(block, sel).toContain("var(--r-pill)");
       }
     }
   });

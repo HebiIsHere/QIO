@@ -396,7 +396,7 @@ function fallbackActionLabel(kind: string): string {
   color: var(--warning);
   border: 1px solid var(--warning-soft);
   background: var(--warning-soft);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 0 6px;
   line-height: 1.6;
 }
@@ -418,7 +418,7 @@ function fallbackActionLabel(kind: string): string {
   margin-left: 13px;
   padding: 3px 9px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--warning);
   font-size: var(--fs-xs);
@@ -561,7 +561,7 @@ function fallbackActionLabel(kind: string): string {
 .task-action {
   padding: 4px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;

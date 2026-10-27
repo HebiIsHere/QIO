@@ -434,7 +434,7 @@ onBeforeUnmount(removeGlobalListeners);
   height: 26px;
   padding: 0 var(--sp-2) 0 24px;
   border: 1px solid transparent;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-inset);
   color: var(--text-secondary);
   transition:

@@ -1067,7 +1067,7 @@ function retryKnowledgeDetail() {
   height: 28px;
   padding: 0;
   border: 1px solid transparent;
-  border-radius: var(--qio-ui-radius, var(--r-lg));
+  border-radius: 50%;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
@@ -1190,7 +1190,7 @@ function retryKnowledgeDetail() {
   max-width: 100%;
   padding: 3px 9px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius, var(--r-lg));
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);

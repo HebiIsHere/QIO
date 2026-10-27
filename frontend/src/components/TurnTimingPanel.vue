@@ -282,14 +282,14 @@ const queueNote = computed(() => {
 .tt-track {
   display: block;
   height: 4px;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-inset);
   overflow: hidden;
 }
 .tt-fill {
   display: block;
   height: 100%;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--accent);
   opacity: 0.75;
 }

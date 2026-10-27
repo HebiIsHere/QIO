@@ -1185,7 +1185,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 0 var(--sp-2);
   white-space: normal;
   overflow-wrap: anywhere;
@@ -1313,7 +1313,7 @@ function onSubmit() {
   font-size: var(--fs-xs);
   color: var(--warning);
   border: 1px solid var(--warning);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 0 var(--sp-1);
 }
 /* 审批行内的小按钮：只保留可点面积与可读性，不做装饰色（颜色一律走令牌） */
@@ -1432,7 +1432,7 @@ function onSubmit() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
 }
 .sc-details-icon svg {
   width: 16px;

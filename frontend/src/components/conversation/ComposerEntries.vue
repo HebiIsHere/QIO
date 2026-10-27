@@ -617,7 +617,7 @@ const panelTitle = computed(() => {
   height: 15px;
   padding: 0 4px;
   border: 1px solid var(--bg-elevated);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--accent);
   color: var(--on-accent);
   font-size: 9px;

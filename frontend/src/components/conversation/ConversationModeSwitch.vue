@@ -74,7 +74,7 @@ function switchMode() {
   height: 38px;
   padding: 0 9px;
   border: 1px solid transparent;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);

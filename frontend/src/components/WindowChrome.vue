@@ -914,7 +914,7 @@ onBeforeUnmount(() => {
 .conversation-bar .chrome-btn {
   width: 30px;
   height: 30px;
-  border-radius: var(--qio-ui-radius);
+  border-radius: 50%;
 }
 .conversation-bar .chrome-btn svg {
   width: 16px;

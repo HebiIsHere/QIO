@@ -104,7 +104,7 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 .qio-card{background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);padding:16px 18px;}
 
 /* ---- 徽标 ---- */
-.qio-badge{font-family:var(--mono);font-size:10px;padding:2px 9px;border-radius:var(--qio-ui-radius);border:1px solid var(--border-strong);color:var(--text-secondary);}
+.qio-badge{font-family:var(--mono);font-size:10px;padding:2px 9px;border-radius:var(--r-pill);border:1px solid var(--border-strong);color:var(--text-secondary);}
 .qio-badge.link{color:var(--link);border-color:var(--link);}
 
 /* ---- 开关 ---- */
@@ -199,7 +199,7 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
   border-right-color:var(--glass-tint-cool);
   color:var(--text-primary);
 }
-.qio-glass--chip{border-radius:var(--qio-ui-radius);padding:4px 12px;font-size:var(--fs-sm);}
+.qio-glass--chip{border-radius:var(--r-pill);padding:4px 12px;font-size:var(--fs-sm);}
 .qio-glass--panel{border-radius:var(--qio-ui-radius);background:var(--glass-bg-strong);}
 
 /* ---- 浮层（非玻璃）：对话框、下拉、抽屉统一这一档阴影与圆角 ---- */
@@ -237,11 +237,11 @@ textarea.qio-input{height:auto;min-height:88px;resize:vertical;}
 
 /* ---- 标签：中性关键词，视觉低于状态徽章 ---- */
 .qio-tag{display:inline-flex;align-items:center;font-size:var(--fs-xs);color:var(--text-secondary);
-  border:1px solid var(--border-subtle);border-radius:var(--qio-ui-radius);padding:0 8px;background:none;line-height:1.7;}
+  border:1px solid var(--border-subtle);border-radius:var(--r-pill);padding:0 8px;background:none;line-height:1.7;}
 
 /* ---- 状态徽章：全站唯一的状态底色来源（不再各写 k-state / phase / badge 变体）---- */
 .qio-state{display:inline-flex;align-items:center;gap:4px;font-size:var(--fs-xs);line-height:1.6;
-  padding:1px 8px;border-radius:var(--qio-ui-radius);border:1px solid var(--border-strong);
+  padding:1px 8px;border-radius:var(--r-pill);border:1px solid var(--border-strong);
   color:var(--text-secondary);background:none;font-variant-numeric:tabular-nums;}
 .qio-state.ok{color:var(--success);border-color:var(--success-soft);background:var(--success-soft);}
 .qio-state.warn{color:var(--warning);border-color:var(--warning-soft);background:var(--warning-soft);}

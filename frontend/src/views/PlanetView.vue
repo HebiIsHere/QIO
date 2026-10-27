@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 /**
  * 星球页（全屏覆盖层）—— 记忆星球页改版（契约 _MP-COMMON §3）。
  *
@@ -1918,6 +1918,15 @@ async function close() {
 .hud {
   position: absolute; bottom: 14px; left: 14px; font-size: 12px; color: var(--text-muted);
   padding: 6px 12px;
+}
+/* 本页圆角统一 14px（本轮需求）：这几个浮层复用共享的 .qio-glass--chip
+   （全局已按用户要求恢复胶囊形），在本页按页覆盖回 14px —— 只影响记忆星球页，
+   不改其它页面/组件。别再删掉这段，否则本页的提示浮层会变回胶囊。 */
+.topic-hint,
+.close-btn,
+.hud,
+.planet-loading {
+  border-radius: var(--qio-ui-radius);
 }
 .webgl-fallback {
   position: absolute; inset: 0;

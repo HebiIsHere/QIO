@@ -555,7 +555,7 @@ const boardSize = computed(() => {
 .im-floating-chat :deep(.ic-toolbar .tb-btn) {
   height: 32px;
   padding: 0 var(--sp-3);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-1);
 }
@@ -661,7 +661,7 @@ const boardSize = computed(() => {
 .im-hud-left {
   padding: 5px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-1);
 }
@@ -700,7 +700,7 @@ const boardSize = computed(() => {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   padding: 4px 9px;
   cursor: pointer;
   white-space: nowrap;

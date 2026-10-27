@@ -217,3 +217,11 @@
 另有 **3 处圆形（50%）** 也被改成 14px（不属于胶囊，但同样是「圆形变方形」）：全局栏 `.conversation-bar .chrome-btn`、审批 `.ua-close`、星球页 `.ec-mark`。
 
 HEAD 上仍然保留的 15 个胶囊（改造从未动过 + 已恢复的输入胶囊）：`.input-pill`、`.progress`（更新卡）、`.badge` / `.chip` / `.group-head .count`（互动分组）、`.preview-badge`、`.btn` / `.layer-hint` / `.vi-badge`（意图层）、`.ic-toggle` / `.ic-resize::after`、`.qio-switch`、`.qio-scroll-thumb`、`.chip`（引导页 999px）。
+
+## 八、2026-10-27：54 处已按用户要求全部恢复
+
+- 恢复了 §一 的 **51 处胶囊**（→ `--r-pill`）与 §二 的 **3 处圆形**（→ `50%`），逐条按选择器回填，共 28 个文件、53 处实际改动（`.input-pill` 在此之前已单独恢复）。
+- 断言同步：`styles/primitives.test.ts`（徽标/标签/状态/玻璃药丸必须是胶囊形）、`design-guards.test.ts`（输入胶囊必须是胶囊形）。
+- **唯一的页级例外**：记忆星球页里的提示浮层/关闭按钮沿用共享的 `.qio-glass--chip`（全局是胶囊），但本页要求 14px，`views/PlanetView.vue` 里用 `.topic-hint / .close-btn / .hud / .planet-loading` 覆盖回 `var(--qio-ui-radius)`；只影响该页。
+- §三 的 219 处「其它半径 → 14px」按约定保持现状（面板/菜单/卡片类，视觉差异小）。
+

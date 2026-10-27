@@ -596,7 +596,7 @@ const counts = computed(() => ({
 .head .count {
   min-width: 18px;
   padding: 0 6px;
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 10.5px;

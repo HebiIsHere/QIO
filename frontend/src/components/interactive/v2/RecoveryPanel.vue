@@ -508,7 +508,7 @@ defineExpose({ load, count: totalCount, storeCount: storeOnlyCount });
 .rp-item:first-child { border-top: 0; padding-top: 0; }
 .rp-line { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--sp-2); color: var(--text-primary); }
 .rp-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.rp-tag { flex: none; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); padding: 0 var(--sp-1); }
+.rp-tag { flex: none; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--border-subtle); border-radius: var(--r-pill); padding: 0 var(--sp-1); }
 .rp-tag[data-tone="problem"] { color: var(--danger); border-color: var(--danger); }
 .rp-tag[data-tone="waiting"] { color: var(--warning); border-color: var(--warning); }
 .rp-tag[data-tone="active"] { color: var(--accent); border-color: var(--accent); }
