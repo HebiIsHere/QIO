@@ -57,9 +57,11 @@ node scripts/mp-verify/serve.mjs down --label c
   `maintenance_items(kind=ask, status=awaiting_answer)`。
 - 整理记录：`maintenance_batches` / `maintenance_items` / `maintenance_operations`。
 - 实体更新候选：写进 `entity_cards.field_meta.pending`（A04 候选的真实形状）。
-- 迁移 47（维护表）在基线上还没接进 `schema.py`：验收库里由 `seed.py` 用模块自带 DDL 补建，
-  **只是验收数据目录里的补丁**，不改产品迁移顺序；补不上时脚本在 `unavailable` 里如实写明，
-  对应场景标记为「未验证」而不是假装通过。
+- 维护表（`maintenance_batches` / `maintenance_items` / `maintenance_operations`）由产品迁移路径自己建：
+  迁移 47 在 `backend/src/agent/storage/schema.py:1468`（`MIGRATIONS.append(_P2_B_MIGRATION)`）登记，
+  补偿迁移 48（`schema.py:1503-1511`，`COMPENSATION_VERSION = 48` 见 `schema.py:1514`）会重放同一份 DDL，
+  `migrate.py:125-127` 把它们列为必需对象。`seed.py` 里的补建只是**幂等兜底**（表已在时不做任何事）；
+  真补不上时脚本在 `unavailable` 里如实写明，对应场景标记为「未验证」而不是假装通过。
 
 ## 3. 截图 + 页面度量
 
