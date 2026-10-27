@@ -98,8 +98,14 @@ export async function up(options = {}) {
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(STATE_DIR, { recursive: true });
 
+  /**
+   * 共用后端：基线 vs 改版必须读**同一份数据**（话题 id / 浏览种子 / 当前话题都来自后端），
+   * 否则两次截图的球面布局本来就不同，逐像素比对毫无意义。传了 attachBackend 就只起前端。
+   */
+  const attachBackend = options.attachBackend ? String(options.attachBackend) : null;
+  if (attachBackend) info.backend = attachBackend;
   for (const [name, port] of [
-    ["backend", backendPort],
+    ...(attachBackend ? [] : [["backend", backendPort]]),
     ["vite", appPort],
   ]) {
     if (await portOpen(port)) {
@@ -129,12 +135,12 @@ export async function up(options = {}) {
       break;
     }
   }
-  if (!pyCmd) {
+  if (!pyCmd && !attachBackend) {
     throw new Error(
       "找不到可用的后端解释器。传入 --python <path>（例如 D:\\qio-dev\\qio-mp-int\\backend\\.venv\\Scripts\\python.exe）或设置 QIO_MP_PYTHON。",
     );
   }
-  info.python = pyCmd.join(" ");
+  info.python = pyCmd ? pyCmd.join(" ") : null;
   info.pythonCmd = pyCmd;
 
   const backendEnv = {
@@ -150,7 +156,7 @@ export async function up(options = {}) {
   const backendLog = openSync(info.logs.backend, "w");
   const viteLog = openSync(info.logs.vite, "w");
 
-  const backend = spawn(
+  const backend = attachBackend ? null : spawn(
     pyCmd[0],
     [
       ...pyCmd.slice(1),
@@ -188,15 +194,17 @@ export async function up(options = {}) {
       windowsHide: true,
     },
   );
-  backend.unref();
+  backend?.unref();
   vite.unref();
-  info.pids = { backend: backend.pid, vite: vite.pid };
+  info.pids = {};
+  if (backend) info.pids.backend = backend.pid;
+  info.pids.vite = vite.pid;
 
   const backendReady = await waitHttp(info.backend + "/api/health", 45000);
   const appReady = await waitHttp(info.app + "/", 45000);
   info.backendReady = backendReady;
   info.appReady = appReady;
-  info.alive = backend.exitCode === null && vite.exitCode === null;
+  info.alive = (backend ? backend.exitCode === null : true) && vite.exitCode === null;
   writeFileSync(stateFile(label), JSON.stringify(info, null, 2), "utf8");
   if (!backendReady || !appReady) {
     const tail = (file) => {

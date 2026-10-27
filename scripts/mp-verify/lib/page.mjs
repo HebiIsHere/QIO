@@ -29,7 +29,7 @@ export async function openPlanetFromDock(browser, { timeout = 20000 } = {}) {
  * 等星球场景真正就绪：视图在、画布有尺寸、Dev 钩子报告 WebGL 可用、
  * 并且**连续两次采样的球体几何一致**（转场结束）。
  */
-export async function waitPlanetReady(browser, { timeout = 30000 } = {}) {
+export async function waitPlanetReady(browser, { timeout = 45000 } = {}) {
   const deadline = Date.now() + timeout;
   let stable = 0;
   let last = null;
@@ -184,16 +184,24 @@ export async function waitSceneStatic(browser, { timeout = 8000, interval = 260,
     const probe = await browser.evalJs(`(() => {
       const scene = (typeof window.__qioPlanetScene === 'function') ? window.__qioPlanetScene() : null;
       const view = document.querySelector('.planet-view');
+      const stage = document.querySelector('.planet-stage');
+      const canvas = document.querySelector('.planet-canvas');
       const style = view ? getComputedStyle(view) : null;
+      const rectOf = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)].join(','); };
       return {
         quaternion: scene && scene.quaternion ? scene.quaternion : null,
         renders: scene && typeof scene.renders === 'number' ? scene.renders : null,
-        mp: style ? style.getPropertyValue('--mp').trim() : null,
+        mp: style ? style.getPropertyValue('--mp') ? style.getPropertyValue('--mp').trim() : null : null,
+        // 布局/变换也要静下来：入场与展开的 CSS 过渡没跑完时，舞台矩形每帧都在变。
+        // 基线没有 DEV 钩子，只能靠这三个几何值判断「静」。
+        stage: rectOf(stage),
+        canvas: rectOf(canvas),
+        canvasTransform: canvas ? getComputedStyle(canvas).transform : null,
         now: Math.round(performance.now()),
       };
     })()`);
     samples.push(probe);
-    const key = JSON.stringify([probe.quaternion, probe.renders, probe.mp]);
+    const key = JSON.stringify([probe.quaternion, probe.renders, probe.mp, probe.stage, probe.canvas, probe.canvasTransform]);
     if (last !== null && key === last) stable += 1;
     else stable = 0;
     last = key;

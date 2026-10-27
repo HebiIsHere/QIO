@@ -87,12 +87,12 @@ describe("进度 → DOM 契约", () => {
     expect(el.getAttribute("data-mp")).toBe("0.400");
     expect(el.classList.contains("managing")).toBe(true);
     // 姿态角同步跟上：0.4 × MANAGE_YAW
-    expect(yaws.at(-1)).toBeCloseTo(MANAGE_YAW * 0.4, 6);
+    expect(yaws[yaws.length - 1]).toBeCloseTo(MANAGE_YAW * 0.4, 6);
 
     api.applyProgress(0);
     expect(mp(el)).toBe("0.000");
     expect(el.classList.contains("managing")).toBe(false);
-    expect(yaws.at(-1)).toBe(0);
+    expect(yaws[yaws.length - 1]).toBe(0);
     scope.stop();
   });
 
@@ -205,7 +205,7 @@ describe("中途反向：连续衔接", () => {
     // 头两帧仍在向 1 走（惯性），之后转到下降
     expect(samples[0]).toBeGreaterThan(mid - 1e-6);
     expect(Math.max(...samples)).toBeGreaterThanOrEqual(mid);
-    expect(samples.at(-1)).toBe(0);
+    expect(samples[samples.length - 1]).toBe(0);
     // 全程没有「一帧跳掉一大截」
     let prev = mid;
     for (const value of samples) {
