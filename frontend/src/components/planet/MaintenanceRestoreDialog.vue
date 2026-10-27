@@ -34,6 +34,10 @@ const props = withDefaults(
     modalId: string;
     /** 目标批次的一句话 */
     targetLabel?: string;
+    /** 标题（默认是整批撤回；单条恢复传「恢复这一项的维护修改？」） */
+    title?: string;
+    /** 确认按钮文案（默认「整批撤回」；单条恢复传「恢复这一项」） */
+    confirmText?: string;
     /** 摘要：可恢复 / 部分 / 不可恢复 / 已恢复过 */
     summary?: string;
     items?: RestoreDialogItem[];
@@ -45,6 +49,8 @@ const props = withDefaults(
   }>(),
   {
     targetLabel: "",
+    title: "整批撤回这次记忆整理？",
+    confirmText: "整批撤回",
     summary: "",
     items: () => [],
     warnings: () => [],
@@ -192,7 +198,7 @@ onBeforeUnmount(() => {
         <div class="qio-modal-head restore-dialog__head">
           <span class="qio-modal-head__slot" aria-hidden="true" />
           <h2 id="qio-restore-dialog-title" class="qio-modal-title restore-dialog__title">
-            整批撤回这次记忆整理？
+            {{ title }}
           </h2>
           <span class="qio-modal-head__slot qio-modal-head__slot--end">
             <QIconButton
@@ -291,7 +297,7 @@ onBeforeUnmount(() => {
             :aria-busy="restoring ? 'true' : undefined"
             @click="emit('confirm')"
           >
-            {{ restoring ? "正在撤回…" : restoreError ? "重试撤回" : "整批撤回" }}
+            {{ restoring ? "正在撤回…" : restoreError ? "重试撤回" : confirmText }}
           </button>
         </div>
       </div>

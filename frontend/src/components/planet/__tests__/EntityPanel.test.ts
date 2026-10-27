@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
   apiMock: {
     listEntities: vi.fn<() => Promise<{ entities: EntityCard[] }>>(async () => ({ entities: [] })),
     revokeEntity: vi.fn(async (_id: string) => ({ ok: true })),
-    reviseEntity: vi.fn(async () => ({ ok: true, entity: null })),
+    reviseEntity: vi.fn(
+      async (_id: string, _payload: Record<string, unknown>) => ({ ok: true, entity: null }),
+    ),
   },
   candidatesMock: {
     listEntityCandidates: vi.fn(async () => ({

@@ -459,16 +459,14 @@ async function revokeCard() {
   }, { okText: "已归档", failText: "归档没有完成" });
 }
 
-/** 候选被采纳 / 丢弃之后：重新取一次权威数据，让详情与列表显示真实持久状态。 */
-async function onCandidatesChanged(entityId: string) {
-  const keepId = activeId.value ?? entityId;
+/**
+ * 候选被采纳 / 丢弃之后：重新取一次权威数据（不靠本地猜），详情里的 activeCard 是
+ * 从 cards 计算出来的，所以阅读态会立刻显示真实的持久值；列表页不因此跳进详情。
+ */
+async function onCandidatesChanged(_entityId: string) {
   await load();
   emit("changed");
   refreshPendingCount();
-  if (!activeId.value) {
-    const fresh = cards.value.find((c) => c.id === keepId);
-    if (fresh) openCard(fresh);
-  }
 }
 
 // -- 外部定位（A 的搜索结果 / 记忆页跳转） ------------------------------------
@@ -557,10 +555,16 @@ onBeforeUnmount(() => {
           <button v-if="cards.length" class="link e-clear-search" type="button" @click="q = ''">清除搜索</button>
         </li>
       </ul>
+      <!--
+        跨卡片的待处理候选（A04，基线能力保留）：默认收起，安静地挂在列表这一层，
+        让「有东西等我决定」在打开某张卡之前就看得见。「待处理」入口里也有同一份清单
+        （PendingItems），两处读的是同一个真实接口，不各自造数据。
+      -->
+      <EntityCandidates @changed="onCandidatesChanged" />
     </div>
 
     <!-- 详情 -->
-    <div v-show="view === 'detail'" class="e-detail-view" data-e-detail>
+    <div v-show="view === 'detail'" class="e-detail-view e-detail" data-e-detail>
       <div class="e-detail-head">
         <button class="qio-btn mini quiet e-back" type="button" data-e-back @click="requestBack">
           <QIcon name="chevron-left" :size="12" /> 返回

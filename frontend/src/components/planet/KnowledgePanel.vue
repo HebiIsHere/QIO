@@ -550,7 +550,13 @@ onBeforeUnmount(() => {
             <span v-if="k.epistemic_status" class="qio-tag k-epistemic">{{ epistemicLabel(k.epistemic_status) }}</span>
             <span class="k-source">{{ k.source }}</span>
             <span class="k-scope">{{ k.scope }}</span>
-            <span v-if="k.topic_name" class="k-topic-name">{{ k.topic_name }}</span>
+            <!-- 关联话题：列表里也能直接跳到话题（基线能力；点它不打开详情） -->
+            <button
+              v-if="k.topic_name"
+              class="link k-topic-link"
+              type="button"
+              @click.stop="emit('focus-topic', k.topic_id!)"
+            >{{ k.topic_name }}</button>
           </div>
           <p class="k-content">{{ k.content }}</p>
         </li>
