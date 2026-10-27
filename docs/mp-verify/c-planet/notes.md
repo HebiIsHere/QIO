@@ -26,3 +26,24 @@
 ## 2. 与本次改动无关的发现
 
 （暂无；发现问题只记录、不顺手改。）
+## 3. 本机 headless WebGL 的帧间隔是双模态（影响所有动画结论的判读）
+
+本机（C 环境）与 A 环境的 headless Edge + SwiftShader 都呈现**双模态帧间隔**：约 7ms 的正常帧
+与 100–180ms 的长帧交替出现（探针里可见 216ms、380ms 的长帧；见 `frames/*.json` 的 `longFrames`）。
+后果：逐帧采样里单个 `|Δmp|` 可能很大，但那是**长帧**造成的，不是动画跳变。
+
+因此本组的动画质量结论一律按下面三条给，不用原始 `|Δmp|` 下结论：
+1. **几何不变式**：球心 x（画布中心）与选中标签 x 的起止值、终点是否精确落位（`--mp`=0/1）、过冲量；
+2. **归一化步进**：`normStep = Δmp / (dt / 动画时长)`，基准取令牌的 `--mo-3-expand|collapse`（520/420ms），
+   不是采样窗口长度；`normStep > 1.6` 才标记；被标记的帧再取**邻域三帧聚合速率**复核；
+3. **长帧单列**：`dt > 60ms` 的帧单独列出，凡是标记帧紧邻长帧且长帧内 mp 几乎没动（采样器滞后一帧），
+   就判为采样相位差而非真实瞬移。
+
+## 4. 环境用到的 Python 说明
+
+C 的验收后端用的是 `D:\qio-dev\qio-mp-int\backend\.venv\Scripts\python.exe`（通过
+`serve.mjs --python` 显式传入），**PYTHONPATH 指向被执行 worktree 自己的 `backend/src`**
+（`serve.mjs` 里写死 `PYTHONPATH: <worktree>/backend/src`，并设 `QIO_DATA_DIR`/`QIO_ALLOWED_ORIGINS`）。
+Lead 在 12:55 修正了那个 venv 的 editable `.pth`（原本指向基线 `quf2-lead/backend/src`）并给后端补了
+`PYTHONPATH=<int>/backend/src`。C 的**后端接口相关**核查只有 `seed.py` 灌数据一处（迁移/表结构读取），
+12:55 之后重跑过（`maintenance_tables: {present: true, applied: false}`），**星球/前端视觉结论不依赖该 venv**。

@@ -3,17 +3,17 @@
   "label": "rev",
   "action": "reverse",
   "viewport": "1440x970",
-  "startedAt": "2026-10-27T04:48:31.793Z",
+  "startedAt": "2026-10-27T05:10:24.461Z",
   "notes": [
     "screencast 缩放为 1440×970（真实渲染 1440×970）",
     "mp4 按 30fps 编码；CDP 帧时间戳不等间隔，视频用于目视动作连续性，帧级数据以 frames.mjs 为准。"
   ],
   "screencast": {
-    "frames": 23,
-    "elapsedMs": 2948,
-    "realFrameRate": 10.65,
+    "frames": 20,
+    "elapsedMs": 2934,
+    "realFrameRate": 10.85,
     "kind": "CDP Page.startScreencast（真实录屏）"
   },
   "video": "D:\\qio-dev\\qio-mp-c\\docs\\mp-verify\\c-planet\\record\\rev-1440x970-reverse\\capture.mp4",
-  "finishedAt": "2026-10-27T04:49:22.482Z"
+  "finishedAt": "2026-10-27T05:11:16.477Z"
 }
