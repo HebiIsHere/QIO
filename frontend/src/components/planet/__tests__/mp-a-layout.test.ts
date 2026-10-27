@@ -208,6 +208,25 @@ describe("本页圆角统一 var(--qio-ui-radius)（契约 §2）", () => {
   });
 });
 
+describe("话题行内动作：图标按钮 + 默认退场", () => {
+  it("结束/恢复是图标按钮（带 aria-label 与用途说明），不是 25 行文字按钮", () => {
+    const mem = read("components/planet/MemoryTab.vue");
+    expect(mem).toContain('label="结束这个话题"');
+    expect(mem).toContain('label="恢复这个话题"');
+    expect(mem).not.toMatch(/>\s*结束\s*</);
+    expect(mem).not.toMatch(/>\s*恢复\s*</);
+    // 默认退场，hover / 键盘聚焦 / 触屏常显
+    const actions = ruleBody(mem, ".topic-item .row-actions");
+    expect(actions).toContain("opacity: 0");
+    expect(mem).toContain(".topic-item:hover .row-actions");
+    expect(mem).toContain(".topic-item:focus-within .row-actions");
+    expect(mem).toContain("@media (hover: none)");
+    // 片段数是等宽「数据」，不再用状态徽章
+    expect(mem).toContain('class="meta mono"');
+    expect(mem).not.toContain('class="meta qio-badge"');
+  });
+});
+
 describe("不使用原生控件外观 / 原生确认框", () => {
   const files = [
     "views/PlanetView.vue",

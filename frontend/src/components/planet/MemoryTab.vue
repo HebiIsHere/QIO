@@ -57,8 +57,12 @@ const props = withDefaults(
 const emit = defineEmits<{
   /** 列表里选了一个话题：星球同步聚焦（只是浏览） */
   "topic-select": [topicId: string];
-  /** 继续讨论 / 从这里继续：走既有的锚点切换机制（父级执行） */
-  continue: [payload: { topicId: string; fragmentId: string | null }];
+  /**
+   * 继续讨论 / 从这里继续：走既有的锚点切换机制（父级执行）。
+   * `historic` 必须一起给：选的是**当前开放片段**时仍属于「落到当前位置」，
+   * 父级要先原子取消旧的接续选择（M01 口径），历史片段则不需要。
+   */
+  continue: [payload: { topicId: string; fragmentId: string | null; historic: boolean }];
   "focus-knowledge": [knowledgeId: string];
   "focus-entity": [entityId: string];
   "topics-changed": [];
@@ -267,11 +271,12 @@ async function loadPage(offset: number) {
 
 const hasMore = computed(() => hasMoreMessages(page.value));
 
-/** 继续讨论 / 从这里继续：只上报真实 id 与位置，锚点切换由父级统一执行 */
+/** 继续讨论 / 从这里继续：只上报真实 id、位置与「是不是历史位置」，锚点切换由父级统一执行 */
 function continueDiscussion(fragmentId: string | null) {
   const topicId = openedTopicId.value;
   if (!topicId) return;
-  emit("continue", { topicId, fragmentId: fragmentId ?? null });
+  const historic = fragmentId ? Boolean(selectedFragment.value?.closed_at) : false;
+  emit("continue", { topicId, fragmentId: fragmentId ?? null, historic });
 }
 
 watch(
@@ -323,15 +328,19 @@ onMounted(() => void loadTopics());
               @keydown.space.prevent="pickTopic(t.topic_id)"
             >
               <span class="name serif">{{ t.title }}</span>
-              <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
-              <button
-                class="qio-btn mini quiet topic-toggle-ended"
-                type="button"
-                :disabled="busyTopicId === t.topic_id"
-                @click.stop="toggleEnded(t)"
-              >
-                结束
-              </button>
+              <span class="meta mono">{{ t.fragment_count }} 片段</span>
+              <span class="row-actions">
+                <QIconButton
+                  class="topic-toggle-ended"
+                  icon="pause"
+                  label="结束这个话题"
+                  description="结束这个话题：它不再出现在进行中的列表里，随时可以恢复"
+                  size="sm"
+                  tone="quiet"
+                  :busy="busyTopicId === t.topic_id"
+                  @click.stop="toggleEnded(t)"
+                />
+              </span>
             </li>
           </ul>
           <p v-if="!groups.active.length && !groups.ended.length" class="mt-status">
@@ -353,15 +362,19 @@ onMounted(() => void loadTopics());
               @keydown.enter.prevent="pickTopic(t.topic_id)"
             >
               <span class="name serif">{{ t.title }}</span>
-              <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
-              <button
-                class="qio-btn mini quiet topic-resume"
-                type="button"
-                :disabled="busyTopicId === t.topic_id"
-                @click.stop="toggleEnded(t)"
-              >
-                恢复
-              </button>
+              <span class="meta mono">{{ t.fragment_count }} 片段</span>
+              <span class="row-actions">
+                <QIconButton
+                  class="topic-resume"
+                  icon="play"
+                  label="恢复这个话题"
+                  description="恢复这个话题：它回到进行中的列表"
+                  size="sm"
+                  tone="quiet"
+                  :busy="busyTopicId === t.topic_id"
+                  @click.stop="toggleEnded(t)"
+                />
+              </span>
             </li>
           </ul>
         </template>
@@ -731,8 +744,27 @@ onMounted(() => void loadTopics());
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* 片段数是「数据」不是「状态」：等宽小字，不占徽章的视觉层级 */
 .topic-list .meta {
   flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+/* 行内管理动作默认退场：25 行各挂一个文字按钮太吵；hover / 键盘聚焦 / 触屏才显示 */
+.topic-item .row-actions {
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-1);
+}
+.topic-item:hover .row-actions,
+.topic-item:focus-within .row-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .topic-item .row-actions {
+    opacity: 1;
+  }
 }
 .ended-list {
   margin-top: var(--sp-3);

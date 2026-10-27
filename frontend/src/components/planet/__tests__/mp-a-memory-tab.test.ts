@@ -192,7 +192,7 @@ describe("记忆标签页：话题概览", () => {
     await w.find('[data-topic-id="t1"]').trigger("click");
     await flushPromises();
     await w.find("[data-memory-overview] [data-memory-continue]").trigger("click");
-    expect(w.emitted("continue")?.[0]).toEqual([{ topicId: "t1", fragmentId: null }]);
+    expect(w.emitted("continue")?.[0]).toEqual([{ topicId: "t1", fragmentId: null, historic: false }]);
     expect(mocks.apiMock.endTopic).not.toHaveBeenCalled();
   });
 
@@ -289,7 +289,24 @@ describe("记忆标签页：完整讨论记录", () => {
     expect(continueBtn.text()).toContain("从这里继续（历史位置）");
     await continueBtn.trigger("click");
     const emitted = w.emitted("continue")!;
-    expect(emitted[emitted.length - 1]).toEqual([{ topicId: "t1", fragmentId: "f10" }]);
+    // 历史片段：historic=true（父级据此**不**先取消旧接续）
+    expect(emitted[emitted.length - 1]).toEqual([{ topicId: "t1", fragmentId: "f10", historic: true }]);
+  });
+
+  it("当前开放片段：historic=false（父级据此先取消旧接续）", async () => {
+    mocks.apiMock.getTopicDetail.mockResolvedValue({
+      ...DETAIL,
+      fragments: [FRAG_OLD, { ...FRAG_NEW, closed_at: null }],
+    });
+    const w = mountTab();
+    await flushPromises();
+    await w.find('[data-topic-id="t1"]').trigger("click");
+    await flushPromises();
+    await w.find(".mt-open-record").trigger("click");
+    await flushPromises();
+    await w.find("[data-memory-record] [data-memory-continue]").trigger("click");
+    const emitted = w.emitted("continue")!;
+    expect(emitted[emitted.length - 1]).toEqual([{ topicId: "t1", fragmentId: "f13", historic: false }]);
   });
 
   it("记录读取失败：原因可见并可重试", async () => {

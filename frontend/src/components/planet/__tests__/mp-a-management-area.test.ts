@@ -141,7 +141,7 @@ describe("管理区：待处理 / 整理记录", () => {
     expect(w.attributes("data-view")).toBe("records");
     expect(w.find('[data-view-panel="records"]').exists()).toBe(true);
 
-    await w.find(".ma-back").trigger("click");
+    await w.find("[data-mp-context-back]").trigger("click");
     await flushPromises();
     expect(w.attributes("data-view")).toBe("tabs");
     expect(w.attributes("data-tab")).toBe("knowledge");

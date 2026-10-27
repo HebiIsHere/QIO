@@ -56,6 +56,8 @@ function mountView() {
 /** 话题列表在管理区的记忆标签页里：先点开管理区（改版后的信息架构） */
 async function openManagement(w: ReturnType<typeof mount>) {
   await w.find("[data-mp-manage-toggle]").trigger("click");
+  // 内容是在下一帧预挂载/补挂的（展开首帧不能花在首次挂载上）：等一帧再断言
+  await new Promise((resolve) => setTimeout(resolve, 40));
   await flushPromises();
 }
 

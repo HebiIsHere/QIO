@@ -1329,7 +1329,7 @@ watch(() => planet.selectedTopicId.value, (id) => {
  * 浏览、搜索、切标签页都不经过这里。失败时不关闭星球、不改本地锚点：
  * 原因留在管理区里可见、可重试（绝不假装起点已经切好）。
  */
-async function continueFrom(payload: { topicId: string; fragmentId: string | null }) {
+async function continueFrom(payload: { topicId: string; fragmentId: string | null; historic: boolean }) {
   if (isClosing.value || anchorBusy.value) return;
   const topicId = payload.topicId;
   const fragmentId = payload.fragmentId;
@@ -1337,11 +1337,12 @@ async function continueFrom(payload: { topicId: string; fragmentId: string | nul
   anchorError.value = "";
   try {
     /**
-     * 落到「某话题的最新位置 / 当前开放片段」时，旧的未落实接续选择必须先原子取消
+     * 落到「某话题的最新位置 / **当前开放片段**」时，旧的未落实接续选择必须先原子取消
      * （复用 cancelContinuation），否则下一条消息仍会被旧登记的历史带偏。
+     * 只有选的是**历史片段**时才不用先取消（后端登记时会替换旧意图）。
      * 只浏览不经过这里，所以浏览不会取消用户已经做出的接续选择。
      */
-    const opensCurrentPosition = !fragmentId;
+    const opensCurrentPosition = !fragmentId || !payload.historic;
     if (opensCurrentPosition && session.pendingContinuation) {
       const cancelled = await session.cancelPendingContinuation();
       if (!cancelled) {

@@ -67,8 +67,8 @@ const emit = defineEmits<{
   close: [];
   /** 记忆页选中话题 → 星球同步聚焦（浏览，不改起点） */
   "topic-select": [topicId: string];
-  /** 继续讨论 / 从这里继续 → 由 PlanetView 走既有锚点切换机制 */
-  continue: [payload: { topicId: string; fragmentId: string | null }];
+  /** 继续讨论 / 从这里继续 → 由 PlanetView 走既有锚点切换机制（historic 决定是否先取消旧接续） */
+  continue: [payload: { topicId: string; fragmentId: string | null; historic: boolean }];
   /** 话题结束/恢复后：星球侧的数据也要跟着刷新 */
   "topics-changed": [];
   /** 管理区当前状态（供页面根元素上的只读验收属性 data-tab / data-view 使用） */
@@ -326,7 +326,7 @@ defineExpose({ selectTab, escapeLayer });
         </button>
       </div>
       <div v-else class="ma-context">
-        <button class="qio-btn quiet mini ma-back" type="button" @click="backFromView">← 返回</button>
+        <button class="qio-btn quiet mini ma-back" type="button" data-mp-context-back @click="backFromView">← 返回</button>
         <span class="ma-context-title serif">{{ view === "pending" ? "待处理" : view === "records" ? "整理记录" : "全局搜索" }}</span>
       </div>
       <span class="spacer"></span>
