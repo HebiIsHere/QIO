@@ -395,8 +395,16 @@ const anchorBusy = ref(false);
 const anchorError = ref("");
 
 /* ---- 左右排布 / 上下排布：判定口径见契约 §3.4 与 Lead 的实测说明 ---- */
-/** 内容区宽度：< 1024 一律上下排布 */
-const STACK_MIN_WIDTH = 1024;
+/**
+ * 上下排布的绝对下限（内容区宽度）。
+ *
+ * 为什么是 **880** 而不是原来保守的 1024：上下排布会把星球区压到
+ * clamp(240px, 40vh, 360px)，球体半径随之变小 —— 也就是「展开后直径不变」不成立。
+ * 按真实几何算，900×700 时：内容宽 900 − 管理区 46vw≈414 = 486 ≥ 半径 316.87×1.15=364，
+ * 其实放得下左右排布；1024 更是绰绰有余。所以断点下调到 880：
+ * 再窄时管理区最小宽度 380 会吃掉过多可用宽度、右半球开始被压，才退上下排布。
+ */
+const STACK_MIN_WIDTH = 880;
 /** 左右排布的安全余量：管理区左侧要留出「球体半径 × 1.15」，右半球才不会被管理区压住 */
 const STACK_SPHERE_RATIO = 1.15;
 const contentRef = ref<HTMLElement | null>(null);
@@ -801,12 +809,45 @@ function onManageState(state: {
   manageView.value = state.view;
 }
 
-/** 展开管理区（可带落点）。不带落点时只是展开：管理区自己保活，现场不重置 */
+/**
+ * 预挂载管理区内容（**不能**等展开的那一刻才第一次挂载）。
+ *
+ * Lead 逐帧实测：管理区首次挂载（含 25 条话题列表）要在主线程上花 200–330ms，
+ * 如果它压在展开动画的第一帧之前，`startedAt` 到第一个 rAF 之间被拉长，
+ * 首帧 `--mp` 直接从 0 跳到 0.73 —— 读起来就是「点了立刻弹出来」。
+ * 所以在进场结束（layersIn）之后、用户点开之前就把内容挂上，展开只剩过渡本身。
+ */
+function preMountManagement() {
+  if (managementMounted.value) return;
+  const mount = () => {
+    managementMounted.value = true;
+  };
+  // 减少动态效果 / 没有 rAF：没有动画要保护，直接挂（同步，降级环境与测试里都确定）
+  if (prefersReducedMotion() || typeof requestAnimationFrame !== "function") {
+    mount();
+    return;
+  }
+  requestAnimationFrame(mount);
+}
+
+// 进场完成后预挂载（immediate 时 layersIn 还是 false，不会提前挂）
+watch(layersIn, (on) => {
+  if (on) preMountManagement();
+});
+
+/**
+ * 展开管理区（可带落点）。不带落点时只是展开：管理区自己保活，现场不重置。
+ * 顺序：**先把过渡跑起来**，再确保内容在场（正常路径内容已经预挂载，这一步是空操作）；
+ * 只有极少数路径（深链在进场结束前就要求打开）才会在这里同步挂载。
+ */
 function requestManagement(view: PlanetTab | null, focusId: string | null = null) {
-  managementMounted.value = true;
-  manage.setExpanded(true);
   requestView.value = view;
   requestFocusId.value = focusId;
+  if (!managementMounted.value) {
+    // 带落点时必须先有内容（落点要落到已挂载的组件上），这条路径不是逐帧采样对象
+    managementMounted.value = true;
+  }
+  manage.setExpanded(true);
   requestSeq.value += 1;
 }
 
@@ -816,14 +857,15 @@ function toggleManagement() {
     manage.setExpanded(false);
     return;
   }
-  managementMounted.value = true;
+  // 过渡先起跑（首帧从 0 开始），内容正常已预挂载；没挂上就在下一帧补挂，不抢首帧
   manage.setExpanded(true);
+  if (!managementMounted.value) preMountManagement();
 }
 
 /** 页面工具行的「搜索」：展开管理区并打开搜索视图（搜索独立于当前标签页） */
 function openSearch() {
-  managementMounted.value = true;
   manage.setExpanded(true);
+  if (!managementMounted.value) preMountManagement();
   searchTicket.value += 1;
 }
 
@@ -1755,13 +1797,18 @@ async function close() {
   right: 0;
   bottom: 0;
   z-index: 3;
-  width: calc(var(--mp, 0) * var(--mp-w));
+  /* 宽度固定、只做 transform 滑入：逐帧改宽度会每帧触发布局（640px 里 25 行列表反复重排），
+     收起曲线因此在 t≈161–249ms 出现 0.988 → 0.725 的跳变（Lead 逐帧实测）。
+     现在转场只剩合成（transform），--mp 仍是唯一进度来源。 */
+  width: var(--mp-w);
+  transform: translateX(calc((1 - var(--mp, 0)) * 100%));
   min-width: 0;
   background: var(--bg-panel);
   border-left: 1px solid transparent;
   /* 布局容器不承担滚动：内容被裁掉，且不建立可被程序性滚动的容器 */
   overflow: clip;
-  /* 收起（宽度 0）时用 visibility 保证它不再接收焦点；展开第一帧就可见 */
+  /* 收起时用 visibility 保证它不再接收焦点；管理态（进度 > 0）可见，
+     所以收起过程中面板是**滑出去**的，不是第一帧消失 */
   visibility: hidden;
   transition: border-color var(--dur-panel) var(--ease-out);
 }
@@ -1815,6 +1862,7 @@ async function close() {
   inset: auto;
   flex: 0 0 auto;
   width: 100%;
+  transform: none;
   height: auto;
   /* 窄窗下面板接管整块下半区：给一个最小高度，管理内容短时也不留一块「没铺满」的空白底 */
   min-height: clamp(260px, 52vh, 560px);
@@ -1836,14 +1884,18 @@ async function close() {
 .page-tools-layer {
   position: absolute;
   top: 10px;
-  right: calc(var(--mp, 0) * var(--mp-w) + 14px);
+  right: 14px;
   z-index: 4;
   opacity: 0;
-  transform: translateY(calc(var(--shift-2) * -1));
-  /* C 阶段才进入：它属于「场景接管」之后的信息层 */
-  transition: opacity var(--mo-3-settle) var(--ease-3-out), transform var(--mo-3-settle) var(--ease-3-out);
+  /* 让开管理区的位移同样只用 transform（right 每帧变化也是布局） */
+  transform: translateX(calc(var(--mp, 0) * -1 * var(--mp-w)));
+  /* C 阶段才进入：它属于「场景接管」之后的信息层。
+     只过渡透明度：transform 由 --mp 逐帧驱动，不能再叠一层过渡（会拖尾） */
+  transition: opacity var(--mo-3-settle) var(--ease-3-out);
 }
-.planet-view.layers .page-tools-layer { opacity: 1; transform: none; }
+.planet-view.layers .page-tools-layer { opacity: 1; }
+/* 上下排布时管理区在下半区，工具行不左移 */
+.planet-view.stacked .page-tools-layer { transform: none; }
 
 .close-btn {
   /* 让开自定义标题条（窗口层，比这里的 60 高）：否则条会盖住按钮上半截，
