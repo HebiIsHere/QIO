@@ -1,0 +1,56 @@
+{
+  "url": "http://127.0.0.1:5103",
+  "label": "c",
+  "method": "用基线四元数摆成同姿态后逐像素比（crop 与基线完全相同）",
+  "baseQuaternion": [
+    0,
+    0.925,
+    0,
+    0.381
+  ],
+  "crop": {
+    "x": 269.5,
+    "y": 0,
+    "width": 900,
+    "height": 900
+  },
+  "startedAt": "2026-10-27T04:09:11.604Z",
+  "poseApplied": true,
+  "appliedQuaternion": [
+    0,
+    0.925,
+    0,
+    0.381
+  ],
+  "diff": {
+    "width": 900,
+    "height": 900,
+    "totalPixels": 810000,
+    "changedPixels": 27126,
+    "changedRatio": 0.033489,
+    "diffRatio": 0.033489,
+    "maxDelta": 219,
+    "meanDelta": 1.6716,
+    "overLimitPixels": 0,
+    "percentile": {
+      "p50": 0,
+      "p90": 0,
+      "p99": 40,
+      "p999": 150
+    },
+    "changedBox": {
+      "x": 0,
+      "y": 0,
+      "width": 900,
+      "height": 900
+    }
+  },
+  "heatmap": "D:\\qio-dev\\qio-mp-c\\docs\\mp-verify\\c-planet\\same-pose\\c-same-pose-diff.png",
+  "centers": {
+    "base": {
+      "x": 450,
+      "y": 450
+    }
+  },
+  "finishedAt": "2026-10-27T04:09:50.704Z"
+}
