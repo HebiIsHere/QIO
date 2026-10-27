@@ -51,6 +51,28 @@ const activeIndex = computed(() => unified.activeIndex);
 const busy = computed(() => !!item.value && unified.submittingKey === item.value.key);
 const dialogRef = ref<HTMLElement | null>(null);
 
+/* ── 仲裁身份与统一活动判断（F01；定义在此处供下面带 immediate 的焦点 watch 使用）── */
+const APPROVAL_MODAL_ID = "unified-approval";
+/** 被挡住时的一句话说明（注册成功后清掉，不留下过期提示）。 */
+const ARBITER_BLOCKED_NOTICE = "另一个窗口正在等待你的确认，先处理它；这项申请不会丢。";
+/** 想显示但仲裁还没放行（被同/更高优先级挡住）：不渲染，但当前申请与队列都保留。 */
+const arbiterBlocked = ref(false);
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ *
+ * 被影响确认等更高优先级窗口盖住、或被关闭询问整体挂起时 → false。
+ * 此时只 v-show 隐藏：DOM、当前申请、草稿与阅读位置都保留，
+ * 但不可交互/不可聚焦、也不再抢 Esc 与 Tab。
+ */
+const layerActive = computed(() => panelOpen.value && arbiter.isActive(APPROVAL_MODAL_ID));
+/** 让位原因（挂起方 / 盖住本层的活动窗口）：用于自检属性与无障碍说明。 */
+const hiddenByLayer = computed(() => {
+  if (!panelOpen.value) return "";
+  if (arbiter.suspended) return arbiter.suspended.by;
+  const top: string | null = arbiter.activeId;
+  return top && top !== APPROVAL_MODAL_ID ? top : "";
+});
+
 const toolFacts = computed(() =>
   item.value?.approval ? approvalFacts(item.value.approval) : null,
 );
@@ -201,13 +223,39 @@ watch(
 );
 
 watch(
-  () => [item.value?.key ?? null, unified.visible, unified.resultsVisible] as const,
-  async ([, visible, resultsVisible]) => {
+  () => [item.value?.key ?? null, unified.visible, unified.resultsVisible, layerActive.value] as const,
+  async ([, visible, resultsVisible, active]) => {
     if (!visible && !resultsVisible) return;
+    // 让位/挂起期间不要抢焦点：焦点由当前活动的那一层接管
+    if (!active) return;
     await nextTick();
-    dialogRef.value?.focus();
+    if (!layerActive.value) return;
+    const root = dialogRef.value;
+    if (root && !root.contains(document.activeElement)) root.focus({ preventScroll: true });
   },
   { immediate: true },
+);
+
+/**
+ * F01 让位与恢复：
+ * - 被更高优先级盖住 / 整体挂起时，焦点不能留在已经隐藏的层里（否则它会继续抢 Esc/Tab）；
+ * - 高优先级窗口关闭后重新成为活动层：焦点回到本层焦点范围（不甩到页面外）。
+ */
+watch(
+  () => layerActive.value,
+  async (active, wasActive) => {
+    if (active && !wasActive) {
+      await nextTick();
+      if (!layerActive.value) return;
+      const root = dialogRef.value;
+      if (root && !root.contains(document.activeElement)) root.focus({ preventScroll: true });
+      return;
+    }
+    if (!active) {
+      const current = document.activeElement as HTMLElement | null;
+      if (current && dialogRef.value?.contains(current)) current.blur();
+    }
+  },
 );
 
 /** 关闭时把焦点还给被打断的元素（后台审批可能叠在别的输入上）。 */
@@ -239,38 +287,49 @@ onBeforeUnmount(() => {
 });
 
 /**
- * 中央弹窗仲裁（契约 §3.2）：打开必须先注册，被更高层弹窗（影响确认 / 关闭询问）挡住时
+ * 中央弹窗仲裁（契约 §3.1/§3.2）：打开必须先注册，被更高层弹窗（影响确认 / 关闭询问）挡住时
  * 不得强行显示；关闭时注销。绝不用 z-index 抢层。
  */
-const APPROVAL_MODAL_ID = "unified-approval";
-/**
- * 更上层触发器（关闭询问等）让业务弹窗「让位」：DOM 与状态保留、只隐藏（v-show），
- * 取消/结束后自动恢复原来的上下文与焦点归还逻辑。
- */
-const hiddenByHigherLayer = computed(() => arbiter.hiddenBy(APPROVAL_MODAL_ID));
-watch(
-  panelOpen,
-  (open) => {
-    if (open) {
-      if (arbiter.isOpen(APPROVAL_MODAL_ID)) return;
-      const accepted = arbiter.open({
-        id: APPROVAL_MODAL_ID,
-        kind: "approval",
-        dismissible: true,
-      });
-      if (!accepted) {
-        // 有更高层的中央弹窗：这次不显示（申请保留），先处理那个窗口
-        unified.lastNotice = "另一个窗口正在等待你的确认，先处理它；这项申请不会丢。";
-        unified.closePanel();
-      }
-      return;
-    }
+function syncArbiterRegistration(): void {
+  if (!panelOpen.value) {
     if (arbiter.isOpen(APPROVAL_MODAL_ID)) arbiter.close(APPROVAL_MODAL_ID);
+    arbiterBlocked.value = false;
+    return;
+  }
+  if (arbiter.isOpen(APPROVAL_MODAL_ID)) {
+    // 幂等：已经在栈里（可能正被更高层盖住），保持注册即可
+    arbiterBlocked.value = false;
+    return;
+  }
+  const accepted = arbiter.open({
+    id: APPROVAL_MODAL_ID,
+    kind: "approval",
+    dismissible: true,
+  });
+  arbiterBlocked.value = !accepted;
+  if (!accepted) {
+    unified.lastNotice = ARBITER_BLOCKED_NOTICE;
+    return;
+  }
+  // 挡路窗口结束后真正进来了：撤掉刚才那句「先处理它」
+  if (unified.lastNotice === ARBITER_BLOCKED_NOTICE) unified.lastNotice = "";
+}
+
+watch(panelOpen, syncArbiterRegistration, { immediate: true });
+/**
+ * 挡路窗口关闭 / 挂起解除后自动补注册：用户已经表达了「要处理这项申请」，
+ * 条件恢复就自动进入，不必再点一次。已在栈里时是幂等 no-op。
+ */
+watch(
+  () => [arbiter.activeId, arbiter.suspendedBy] as const,
+  () => {
+    if (panelOpen.value) syncArbiterRegistration();
   },
-  { immediate: true },
 );
 
 function onKeydown(event: KeyboardEvent) {
+  // 让位/挂起期间本层不可交互：不处理 Esc/Tab，也不阻止默认（按键留给当前活动层）
+  if (!layerActive.value) return;
   if (event.key === "Escape") {
     event.preventDefault();
     // Esc = 关闭/稍后，不做出任何决定（结果视图同样只关闭）
@@ -380,11 +439,13 @@ function retryKnowledgeDetail() {
 
 <template>
   <div
-    v-if="panelOpen"
-    v-show="!hiddenByHigherLayer"
+    v-if="panelOpen && !arbiterBlocked"
+    v-show="layerActive"
     class="ua-mask"
     data-unified-approval-modal
-    data-hidden-by="hiddenByHigherLayer ?? undefined"
+    :data-hidden-by="hiddenByLayer || undefined"
+    :aria-hidden="layerActive ? undefined : 'true'"
+    :inert="layerActive ? undefined : true"
     @click.self="unified.close()"
   >
     <section

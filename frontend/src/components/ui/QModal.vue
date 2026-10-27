@@ -63,15 +63,16 @@ const emit = defineEmits<{ close: [] }>();
 const arbiter = getActivePinia() ? useModalArbiterStore() : null;
 const arbiterRegistered = ref(false);
 const arbiterBlocked = ref(false);
-const arbiterSuspended = computed(() => (arbiter ? arbiter.hiddenBy(props.modalId) !== null : false));
-/** 已经被一个更高优先级弹窗盖住：只隐藏、不卸载（草稿与内部状态保留） */
-const hiddenByHigher = computed(() =>
-  arbiter && arbiterRegistered.value ? arbiter.active?.id !== props.modalId : false,
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ * 覆盖两种让位：被更高优先级弹窗盖住（如影响确认/审批）、被 suspendAll 整体挂起（关闭询问）。
+ * 没有 pinia 的画廊/单测环境退化为纯视觉（只由 props.open 决定）。
+ */
+const layerActive = computed(() =>
+  arbiter ? arbiter.isVisible(props.modalId) : props.open && !arbiterBlocked.value,
 );
-/** 真正可以显示：父级要求打开 + 仲裁放行 + 没有被更高层挂起/盖住 */
-const shown = computed(
-  () => props.open && !arbiterBlocked.value && !arbiterSuspended.value && !hiddenByHigher.value,
-);
+/** 真正可以显示：父级要求打开 + 仲裁放行 + 是当前活动项 */
+const shown = computed(() => props.open && !arbiterBlocked.value && layerActive.value);
 
 function descriptor() {
   return { id: props.modalId, kind: props.modalKind, dismissible: props.dismissible, priority: props.priority };
@@ -104,7 +105,7 @@ watch(
 );
 
 watch(
-  () => (arbiter ? arbiter.active?.id ?? null : null),
+  () => (arbiter ? arbiter.activeId : null),
   () => {
     if (props.open && !arbiterRegistered.value) tryRegister();
   },
@@ -250,7 +251,9 @@ onBeforeUnmount(() => {
     <Transition name="qio-fade">
       <div
         v-if="open && !arbiterBlocked"
-        v-show="!arbiterSuspended && !hiddenByHigher"
+        v-show="layerActive"
+        :aria-hidden="layerActive ? undefined : 'true'"
+        :inert="layerActive ? undefined : true"
         class="qio-modal-scrim"
         @click.self="onScrimClick"
       >

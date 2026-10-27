@@ -62,7 +62,11 @@ const emit = defineEmits<{
 }>();
 
 const arbiter = useModalArbiterStore();
-const hiddenBy = computed(() => arbiter.hiddenBy(props.modalId));
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ * 被更高优先级窗口盖住时同样让位（只说「暂不显示」）；DOM、展开状态与滚动位置都保留。
+ */
+const layerVisible = computed(() => props.open && arbiter.isVisible(props.modalId));
 const rootRef = ref<HTMLElement | null>(null);
 const cancelRef = ref<HTMLButtonElement | null>(null);
 /** 展开「修改前后内容」的条目（按条目身份，不按索引） */
@@ -96,8 +100,8 @@ function cancel() {
 
 function onKeydown(event: KeyboardEvent) {
   if (!props.open) return;
-  // 被更高层触发器（关闭询问等）隐藏时：键盘事件不落在这层，Esc 只关最上层那个弹窗。
-  if (hiddenBy.value) return;
+  // 让位期间（更高优先级窗口 / 关闭询问挂起）：键盘事件不落在这层，Esc 只关最上层那个弹窗。
+  if (!layerVisible.value) return;
   if (event.key === "Escape") {
     event.preventDefault();
     cancel();
@@ -148,6 +152,14 @@ watch(
   { immediate: true },
 );
 
+/** 重新成为活动层（更高优先级关闭 / 挂起解除）：焦点回到本窗口内。 */
+watch(layerVisible, async (visible) => {
+  if (!visible) return;
+  await nextTick();
+  if (rootRef.value?.contains(document.activeElement)) return;
+  cancelRef.value?.focus();
+});
+
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown, true);
   arbiter.close(props.modalId);
@@ -162,7 +174,13 @@ onBeforeUnmount(() => {
 
 <template>
   <Transition name="qio-fade">
-    <div v-if="open" v-show="!hiddenBy" class="restore-scrim">
+    <div
+      v-if="open"
+      v-show="layerVisible"
+      class="restore-scrim"
+      :aria-hidden="layerVisible ? undefined : 'true'"
+      :inert="layerVisible ? undefined : true"
+    >
       <div
         ref="rootRef"
         class="qio-confirm restore-dialog qio-floating"

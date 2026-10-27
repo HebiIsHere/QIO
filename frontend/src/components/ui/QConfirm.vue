@@ -70,17 +70,19 @@ const confirmModalId = computed(() => `qio-confirm-${instanceId}`);
 const arbiter = getActivePinia() ? useModalArbiterStore() : null;
 const layerRegistered = ref(false);
 const layerBlocked = ref(false);
-const layerSuspended = computed(() =>
-  arbiter && props.variant === "layer" ? arbiter.hiddenBy(confirmModalId.value) !== null : false,
-);
-const layerHiddenByHigher = computed(() =>
-  arbiter && layerRegistered.value ? arbiter.active?.id !== confirmModalId.value : false,
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ * 覆盖「被更高优先级窗口盖住」与「关闭询问整体挂起」两种让位；没有 pinia 的
+ * 画廊/单测环境退化为纯视觉（注册成功即可见）。
+ */
+const layerActiveArbiter = computed(() =>
+  arbiter ? arbiter.isVisible(confirmModalId.value) : layerRegistered.value,
 );
 const layerShown = computed(
-  () => props.open && props.variant === "layer" && !layerBlocked.value && !layerHiddenByHigher.value,
+  () => props.open && props.variant === "layer" && !layerBlocked.value && layerActiveArbiter.value,
 );
 /** 键盘/Esc 只在这一层真正可见时生效；被挡住或挂起时把按键让给更高层 */
-const layerActive = computed(() => (props.variant !== "layer" ? true : layerShown.value && !layerSuspended.value));
+const layerActive = computed(() => (props.variant !== "layer" ? true : layerShown.value));
 
 function registerLayer(): void {
   if (!props.open || props.variant !== "layer" || layerRegistered.value) return;
@@ -109,7 +111,7 @@ watch(
   { immediate: true },
 );
 watch(
-  () => (arbiter ? arbiter.active?.id ?? null : null),
+  () => (arbiter ? arbiter.activeId : null),
   () => {
     if (props.open && props.variant === "layer" && !layerRegistered.value) registerLayer();
   },
@@ -223,7 +225,9 @@ onBeforeUnmount(() => {
   <Transition name="qio-fade">
     <div
       v-if="open && variant === 'layer' && !layerBlocked"
-      v-show="!layerSuspended && !layerHiddenByHigher"
+      v-show="layerShown"
+      :aria-hidden="layerShown ? undefined : 'true'"
+      :inert="layerShown ? undefined : true"
       class="qio-confirm-scrim"
     >
       <div

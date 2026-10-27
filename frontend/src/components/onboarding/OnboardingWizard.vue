@@ -30,14 +30,29 @@ const store = useOnboardingStore();
  */
 const ONBOARDING_MODAL_ID = "qio-onboarding";
 const arbiter = useModalArbiterStore();
-const hiddenBy = computed(() => arbiter.hiddenBy(ONBOARDING_MODAL_ID));
+/** 仲裁是否已放行（open() 返回 false 时不得强行显示，改为条件恢复后补注册）。 */
+const modalRegistered = ref(false);
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ * 关闭询问等更高层触发器出现时只 v-show 隐藏：步骤、已填内容与焦点顺序都保留。
+ */
+const layerActive = computed(() => modalRegistered.value && arbiter.isActive(ONBOARDING_MODAL_ID));
 
 function registerModal() {
-  if (arbiter.isOpen(ONBOARDING_MODAL_ID)) return;
+  if (!arbiter.isOpen(ONBOARDING_MODAL_ID)) {
+    modalRegistered.value = arbiter.open({
+      id: ONBOARDING_MODAL_ID,
+      kind: "onboarding",
+      dismissible: closable.value,
+    });
+    return;
+  }
+  modalRegistered.value = true;
+  // 已登记：只更新描述（可关闭性可能随状态变化），不改变层级次序
   arbiter.open({ id: ONBOARDING_MODAL_ID, kind: "onboarding", dismissible: closable.value });
 }
 watch(
-  () => [arbiter.count, arbiter.suspendedBy] as const,
+  () => [arbiter.count, arbiter.activeId, arbiter.suspendedBy] as const,
   () => registerModal(),
 );
 
@@ -366,13 +381,13 @@ async function finish() {
 
 <template>
   <div
-    v-show="!hiddenBy"
+    v-show="layerActive"
     class="onboarding"
     role="dialog"
     aria-modal="true"
     aria-label="首次引导"
-    :aria-hidden="hiddenBy ? 'true' : undefined"
-    :inert="hiddenBy ? true : undefined"
+    :aria-hidden="layerActive ? undefined : 'true'"
+    :inert="layerActive ? undefined : true"
   >
     <div class="onboarding-card">
       <!-- 纯图标按钮走 QIconButton：可访问名称必填、500ms 用途说明、14px 圆角容器 -->

@@ -4,8 +4,11 @@
  * 规则（硬约束，不靠 z-index 解决遮挡）：
  * - 同一时刻只允许**一个**中央弹窗处于活动状态：业务组件打开前先 `open()`，
  *   `open()` 返回 false 时调用方**不得强行显示**（自己收起或等待）；
- * - 优先级高的弹窗可以叠在低的之上（低优先级被 `hiddenBy` 判为隐藏，用 v-show 保留 DOM/草稿）；
+ * - 优先级高的弹窗可以叠在低的之上（低优先级用 v-show 保留 DOM/草稿）；
  *   同优先级或更低优先级一律拒绝；
+ * - **统一活动判断**：`isActive(id)` / `isVisible(id)` = 已打开 && 无整体挂起 && 是栈顶活动项。
+ *   所有生产中央弹窗必须用它决定 v-show/渲染、键盘（Esc/Tab）监听、焦点陷阱与遮罩交互，
+ *   不能各自猜（只看 `hiddenBy` 只覆盖 suspendAll，漏掉「被更高优先级取代」）；
  * - 关闭询问这类最高层触发器调用 `suspendAll(by)`：业务弹窗只隐藏、状态与草稿不丢，
  *   取消/结束后 `resumeAll()` 恢复；
  * - 审批自动弹出、通知显示在 `blocksAutoApproval` / `hasModal` 时排队等待。
@@ -70,17 +73,55 @@ export interface ModalSuspended {
   by: string;
 }
 
+interface ModalArbiterState {
+  /** 打开中的中央弹窗（按优先级升序；最后一个 = 活动项）。 */
+  stack: ModalDescriptor[];
+  /** 被最高层触发器整体挂起（关闭询问等）。null = 没有挂起。 */
+  suspended: ModalSuspended | null;
+}
+
+/**
+ * 统一活动判断（唯一实现，getter 只做薄包装）：
+ * 已打开 && 没有整体挂起 && 它就是栈顶活动项。
+ *
+ * 被更高优先级弹窗盖住时 → false（DOM 保留、v-show 隐藏，但不可交互/不可聚焦/不抢 Esc/Tab）；
+ * 被 suspendAll 整体挂起时 → false；还没注册成功（open() 被拒）时 → false。
+ */
+function computeIsActive(state: ModalArbiterState, id: string): boolean {
+  const target = String(id ?? "").trim();
+  if (!target) return false;
+  if (state.suspended) return false;
+  if (!state.stack.some((descriptor) => descriptor.id === target)) return false;
+  const top = state.stack[state.stack.length - 1] ?? null;
+  return Boolean(top && top.id === target);
+}
+
 export const useModalArbiterStore = defineStore("modalArbiter", {
-  state: () => ({
+  state: (): ModalArbiterState => ({
     /** 打开中的中央弹窗（按优先级升序；最后一个 = 活动项）。 */
-    stack: [] as ModalDescriptor[],
+    stack: [],
     /** 被最高层触发器整体挂起（关闭询问等）。null = 没有挂起。 */
-    suspended: null as ModalSuspended | null,
+    suspended: null,
   }),
   getters: {
     /** 当前活动的中央弹窗（最高优先级、最后打开的那一个）。 */
     active(state): ModalDescriptor | null {
       return state.stack.length ? state.stack[state.stack.length - 1] ?? null : null;
+    },
+    /** 当前活动项的稳定身份；没有打开任何中央弹窗时为 null。 */
+    activeId(state): string | null {
+      return state.stack.length ? state.stack[state.stack.length - 1]?.id ?? null : null;
+    },
+    /**
+     * 当前是否允许该窗口「可见并接受交互」：已打开 && 无整体挂起 && 是栈顶活动项。
+     * 生产中央弹窗用它决定渲染/v-show、键盘监听与焦点陷阱，不得各自猜。
+     */
+    isActive(state) {
+      return (id: string): boolean => computeIsActive(state, id);
+    },
+    /** 同义别名（供模板 `v-show="arbiter.isVisible(id)"` 使用，语义与 isActive 完全一致）。 */
+    isVisible(state) {
+      return (id: string): boolean => computeIsActive(state, id);
     },
     /** 是否存在任何打开的中央弹窗（被挂起时仍然算打开：状态与草稿还在）。 */
     hasModal(state): boolean {
@@ -94,8 +135,11 @@ export const useModalArbiterStore = defineStore("modalArbiter", {
         Boolean(id) && state.stack.some((descriptor) => descriptor.id === id);
     },
     /**
-     * 这个弹窗是否被更高层触发器隐藏（DOM 保留、用 v-show 收起）。
+     * 这个弹窗是否被更高层触发器**整体挂起**（DOM 保留、用 v-show 收起）。
      * 返回触发挂起的一方；没有挂起 / 这个弹窗没打开 → null。
+     *
+     * 只识别 suspendAll（关闭询问等）；「被更高优先级弹窗盖住」要用 isActive/isVisible，
+     * 本 getter 保留仅为兼容既有调用方与测试。
      */
     hiddenBy(state) {
       return (id: string): string | null => {
