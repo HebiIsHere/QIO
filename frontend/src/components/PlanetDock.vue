@@ -105,7 +105,7 @@ function onClick() {
     <!-- 真实渲染未就位时才显示 2D 压缩态（首屏兜底 / WebGL 不可用） -->
     <PlanetOrb
       v-if="!ballLive"
-      :size="84"
+      :size="anchored ? 54 : 84"
       :detail="activating ? 1 : 0.72"
       :activity="session.turnRunning"
     />

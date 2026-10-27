@@ -690,13 +690,13 @@ const phaseLabel = computed(() => {
   overflow-y: auto;
   /* 横向一律不建立滚动范围：内容在各自的布局链上换行 / 收缩（见 scroll.css 的 data-qio-fit） */
   overflow-x: clip;
-  /* 左右留白取「正文列」令牌：与输入气泡同一条列。
-     ≤1400px 时右侧令牌会变成 132px —— 那是给常驻星球入口球留的通道，
-     两个组件读同一个值，谁也不能单独挪（见 tokens.css 的 --column-inset-*）。 */
-  padding: 34px var(--column-inset-right) 20px var(--column-inset-left);
+  /* 左右留白 = 消息框的统一内边距（输入区读同一个 --chat-pad-inline）。
+     星球入口已经移进输入行内部，不再需要 ≤1400px 时给浮动球预留的 132px 右让位。 */
+  padding: 20px var(--chat-pad-inline, 12px) 12px var(--chat-pad-inline, 12px);
   /* 原生滚动条外观由 styles/scroll.css 全局消除（不预留轨道空白）；
      本区域的指示条由 v-qio-scrollbar 提供，不再写 scrollbar-width: thin。 */
-  background: var(--bg-base);
+  /* 表面（边框/圆角/底色）由外层 .chat-box 承担，消息流自己不再画一层底 */
+  background: transparent;
 }
 /* 键盘聚焦时才显示焦点环：滚动区域平时不抢视觉焦点 */
 .stream:focus-visible {

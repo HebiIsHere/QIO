@@ -7,7 +7,8 @@
  *
  * 所以对齐之前必须先确认画布已经是球尺寸；没到位就等下一帧，**不能拿过渡帧的几何写死尺度**。
  */
-export const BALL_SIZE_FALLBACK = 108;
+/** 入口画布兜底尺寸（与 PlanetView 的 --ball-size 同值；61 ≈ 54px 球体 / 0.887） */
+export const BALL_SIZE_FALLBACK = 61;
 
 /** 画布宽度是否已经算"球布局就位"（留 1.5 倍容差，避免取整误差） */
 export function ballLayoutReady(canvasWidth: number, ballSize = BALL_SIZE_FALLBACK): boolean {

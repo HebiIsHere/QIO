@@ -3,8 +3,8 @@ import { BALL_SIZE_FALLBACK, ballLayoutReady } from "../entryLayout";
 
 describe("球态入口对齐的布局判据", () => {
   it("画布已经落到球尺寸：允许对齐", () => {
-    expect(ballLayoutReady(108)).toBe(true);
-    expect(ballLayoutReady(108, 108)).toBe(true);
+    expect(ballLayoutReady(61)).toBe(true);
+    expect(ballLayoutReady(61, 61)).toBe(true);
   });
 
   it("画布还是整窗尺寸：绝不能用它算入口尺度", () => {
@@ -18,7 +18,7 @@ describe("球态入口对齐的布局判据", () => {
     expect(ballLayoutReady(Number.NaN)).toBe(true);
   });
 
-  it("默认球尺寸与 CSS 令牌一致（108px）", () => {
-    expect(BALL_SIZE_FALLBACK).toBe(108);
+  it("默认球尺寸与 CSS 令牌一致（61px：54px 球 / 0.887）", () => {
+    expect(BALL_SIZE_FALLBACK).toBe(61);
   });
 });

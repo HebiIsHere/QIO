@@ -25,7 +25,6 @@ import MessageStream from "../MessageStream.vue";
 import QIcon from "../ui/QIcon.vue";
 import QIconButton from "../ui/QIconButton.vue";
 import ComposerDock from "./ComposerDock.vue";
-import { useComposerClearance } from "../../composables/useComposerClearance";
 
 const session = useSessionStore();
 const events = useEventStore();
@@ -270,8 +269,6 @@ const statusNotices = computed<StatusNotice[]>(() => {
 /* ------------------------------------------------------------------ */
 
 /** 底部候选块：按输入区真实高度让位（输入区是固定贴底的气泡） */
-const bottomCluster = ref<HTMLElement | null>(null);
-useComposerClearance(bottomCluster);
 
 function focusComposer(e: MouseEvent): void {
   const el = document.getElementById("composer-input");
@@ -407,19 +404,17 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <MessageStream class="message-stage" />
-
     <!--
-      底部让位区：输入区是固定贴底的气泡，这里按它的真实高度让位。
-      知识候选卡**不再在主对话挂载**（2026-10-26 统一整改）：
-      候选数据仍在 session.knowledgeCandidates，由统一审批层 / 记忆星球在各自入口处理，
-      主对话不再多出一块需要用户决定、却与审批入口重复的卡片区。
+      消息框（2026-10-27 改版）：消息流与底部输入块（入口按钮行 / 模式切换 / 输入胶囊 /
+      记忆星球入口）在**同一个圆角框**里。输入框上方的入口按钮出现、换行时只在框内
+      向上生长 —— 输入胶囊不被推动，模式切换与星球入口始终和输入胶囊同一条中心线。
     -->
-    <div ref="bottomCluster" class="bottom-cluster" data-qio-fit></div>
-
-    <ComposerDock>
-      <template #planet><slot name="planet" /></template>
-    </ComposerDock>
+    <div class="chat-box" data-qio-fit>
+      <MessageStream class="message-stage" />
+      <ComposerDock>
+        <template #planet><slot name="planet" /></template>
+      </ComposerDock>
+    </div>
   </section>
 </template>
 
@@ -672,21 +667,29 @@ onBeforeUnmount(() => {
   cursor: default;
 }
 /* ---- 消息流 / 底部候选 ---- */
-.message-stage {
-  flex: 1;
+/* 消息框：消息流 + 底部输入块（输入胶囊 / 模式切换 / 星球入口 / 入口按钮行）同一个框。
+   边框、圆角、底色都在这一层；消息流自己不再画表面。
+   左右留白由 --chat-pad-inline 同时供给消息流与输入区（统一）。 */
+.chat-box {
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  flex-direction: column;
+  margin-top: var(--conversation-card-gap, 12px);
   border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
   background: var(--bg-base);
+  overflow: clip;
+  --chat-pad-inline: 12px;
+  --chat-pad-bottom: 12px;
 }
-.bottom-cluster {
-  flex: none;
+.message-stage {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  margin-top: var(--conversation-card-gap, 12px);
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 .skip-link {
   position: absolute;

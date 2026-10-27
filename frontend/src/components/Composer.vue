@@ -1645,6 +1645,9 @@ async function stopTurn() {
 .composer {
   /* 宽度链：气泡本身不得横向滚动（真正的修复在各层的 min-width:0 与换行重排） */
   min-width: 0;
+  /* 输入胶囊「单行高度」的唯一来源：星球入口直径与行星过渡的入口尺度都读它，
+     保证「球直径 = 输入框高度」（改这里会同时改变球的大小，别只改一边）。 */
+  --composer-pill-h: 54px;
   /* 独立悬浮于消息流之上，与对话内容同一列（居中 860px），不参与消息流布局；
      消息流底部通过滚动缓冲让出本气泡高度，滚到底时最新消息停在气泡上方。
 
@@ -1675,6 +1678,9 @@ async function stopTurn() {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  /* 单行高度由这里锁定（= --composer-pill-h）；多行输入时自然增高，
+     星球入口仍按单行高度对齐（球直径 = 输入框高度，见 ComposerDock 的 --planet-size）。 */
+  min-height: var(--composer-pill-h, 54px);
   padding: 6px 7px 6px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);

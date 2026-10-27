@@ -95,20 +95,25 @@ describe("输入区与消息列同一条列", () => {
     expect(composer!.text).not.toMatch(/left:\s*max\(12px/);
   });
 
-  it("消息流的内容盒用同一对令牌留白", () => {
-    expect(stream).toBeTruthy();
-    expect(stream!.text).toMatch(
-      /padding:\s*34px\s+var\(--column-inset-right\)\s+20px\s+var\(--column-inset-left\)/,
-    );
-  });
+    it("消息流与输入区共用同一个左右留白令牌（--chat-pad-inline）", () => {
+      expect(stream).toBeTruthy();
+      // 2026-10-27 消息框改版：消息流与输入区在同一个框里，左右留白必须同源；
+      // 星球入口已移进输入行内部，不再需要给浮动球预留的 132px 右通道。
+      expect(stream!.text).toMatch(/padding:\s*20px\s+var\(--chat-pad-inline/);
+      const dock = FILES.find((f) => f.path.endsWith("components/conversation/ComposerDock.vue"));
+      expect(dock, "ComposerDock.vue").toBeTruthy();
+      expect(dock!.text).toMatch(/padding:\s*0\s+var\(--chat-pad-inline/);
+      const chat = FILES.find((f) => f.path.endsWith("components/conversation/ChatColumn.vue"));
+      expect(chat!.text).toMatch(/--chat-pad-inline:\s*12px/);
+    });
 
-  it("列留白只在 tokens.css 定义一次：宽屏 24px、≤1400px 右侧让出 132px 球通道", () => {
-    expect(tokens).toMatch(/--column-inset-left:\s*24px/);
-    expect(tokens).toMatch(/--column-inset-right:\s*24px/);
-    expect(tokens).toMatch(
-      /@media\s*\(max-width:\s*1400px\)\s*\{[\s\S]{0,240}?--column-inset-right:\s*132px/,
-    );
-  });
+    it("列留白令牌仍在 tokens.css 单一定义，但消息流不再套用它（改用 --chat-pad-inline）", () => {
+      expect(tokens).toMatch(/--column-inset-left:\s*24px/);
+      expect(tokens).toMatch(/--column-inset-right:\s*24px/);
+      // 星球入口移到输入行之后，消息流不再给常驻球让出右通道
+      const streamSrc = FILES.find((f) => f.path.endsWith("components/MessageStream.vue"))!.text;
+      expect(streamSrc).not.toMatch(/var\(--column-inset-right\)/);
+    });
 });
 
 /**
