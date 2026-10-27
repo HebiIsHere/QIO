@@ -105,6 +105,12 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let dirtyFrames = 0;
   /** 是否因为「静下来」停掉了循环（与 paused 区分：paused 是页面不可见） */
   let loopIdleStopped = false;
+  /**
+   * 姿态锁定（**仅 DEV 验收用**）：验收脚本要拿「基线记下的四元数」把改版摆成同一姿态，
+   * 才能做「同姿态逐像素」比对。锁定后不再跑空闲自转，姿态只能由 __qioPlanetSetPose 写。
+   * 生产构建里这个开关与设置钩子都不存在。
+   */
+  let poseLocked = false;
   let planetGroup: THREE.Group | null = null;
   let ringMat: THREE.ShaderMaterial | null = null;
   let ringUniforms: ReturnType<typeof makeRingUniforms> | null = null;
@@ -921,7 +927,7 @@ function motionDuration(ms: number): number {
       }
     } else if (focusedDot && targetQuat && tween) {
       planetGroup.quaternion.slerp(targetQuat, Math.min(1, dt * 7));
-    } else if (!focusedDot || idleSpin) {
+    } else if (!poseLocked && (!focusedDot || idleSpin)) {
       // 入口小球状态（idleSpin）即使没有焦点也保持极慢自转 —— 这就是「微微旋转」
       planetGroup.rotation.y += dt * 0.1;
     }
@@ -1076,7 +1082,7 @@ function motionDuration(ms: number): number {
       targetQuat !== null ||
       // 与 animate 里那条自转分支同源：没有焦点（或显式 idleSpin）时球一直在缓慢自转，
       // 这时当然要继续画 —— 「停帧」只针对**真的没人动**的状态。
-      !focusedDot ||
+      (!poseLocked && !focusedDot) ||
       idleSpin ||
       lowPower ||
       now - waveStart < 1200 ||
@@ -1202,7 +1208,33 @@ function motionDuration(ms: number): number {
       }))
     : null;
   if (devHook && typeof window !== "undefined") {
-    (window as unknown as Record<string, unknown>).__qioPlanetScene = devHook;
+    const w = window as unknown as Record<string, unknown>;
+    w.__qioPlanetScene = devHook;
+    /**
+     * DEV-only：把星球摆到指定姿态并冻结，用于「基线 vs 改版 同姿态逐像素」比对。
+     *
+     * 为什么需要：基线的最终朝向不可复现（空闲自转累积量随加载时长变化），
+     * 只有把两边摆成**同一个四元数**，逐像素差才等于「美术是否改变」。
+     * 只接受 { quaternion: [x,y,z,w] }；参数非法时返回 false，不做任何猜测。
+     */
+    w.__qioPlanetSetPose = (payload: { quaternion?: number[] } | null) => {
+      const q = payload?.quaternion;
+      if (!planetGroup || !Array.isArray(q) || q.length !== 4 || !q.every((v) => Number.isFinite(v))) {
+        return false;
+      }
+      const length = Math.hypot(q[0], q[1], q[2], q[3]);
+      if (length < 1e-6) return false;
+      poseLocked = true;
+      planetGroup.quaternion.set(q[0] / length, q[1] / length, q[2] / length, q[3] / length);
+      poseGroup?.rotation.set(0, manageYaw, 0);
+      requestFrame(3);
+      return true;
+    };
+    w.__qioPlanetUnlockPose = () => {
+      poseLocked = false;
+      requestFrame();
+      return true;
+    };
   }
 
   onScopeDispose(() => {
