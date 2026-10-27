@@ -1400,7 +1400,7 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
       ├─ merge / normalize → 领域操作 + 新版本记录（provenance.merged_from / 操作批次）
       ├─ ask → 持久待回答事项 maintenance_items
       └─ 批次 / 事项 / 操作记录（迁移 47）
-  → MemoryPendingPanel / API（C：待确认 + 维护记录 + 恢复预览/结果）
+  → PendingItems / MaintenanceRecords / API（待确认 / 整理记录 + 恢复预览/结果）
   → 独立回答（B：MAINTENANCE_ANSWER_SYSTEM → revise/revoke/needs_clarification/deferred/no_change）
   → 安全恢复（B：逐条 / 整批；新版本记录；保护用户后续修改）
 ```

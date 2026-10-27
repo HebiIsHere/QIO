@@ -52,50 +52,65 @@ export const usePlanetPendingStore = defineStore("planetPending", () => {
     if (inflight) return inflight;
     status.value = "loading";
     inflight = (async () => {
-      // 两类真实来源并行读：一份失败不影响另一份的事实落地。
-      // 用 async 包装包住调用本身：残缺的替身/旧客户端让某个方法不存在时，也算「这一侧失败」，
-      // 而不是把 refresh() 变成未捕获的异常（数量读不到不该把面板一起弄崩）。
-      const [memory, candidates] = await Promise.allSettled([
-        (async () => api.listMemoryPending({ limit: 500 }))(),
-        (async () => listAllCandidates(true, 500))(),
-      ]);
       const problems: string[] = [];
       let memoryOk = false;
       let candidatesOk = false;
+      /**
+       * 合并只用最近一次真实读到的数量：失败的一侧保留旧值，不清零。
+       *
+       * 每次**单侧成功**都立刻回填一次 —— 角标不该等慢的那一侧（例如实体候选接口）
+       * 才更新：真实数量先到就先显示，另一侧到达后再补上。也让「读取顺序/响应快慢」
+       * 不再影响界面事实（集成时 A 的角标测试就吃过这个亏）。
+       */
+      function syncCount(): void {
+        count.value = memoryCount.value + candidateCount.value;
+      }
 
-      if (memory.status === "fulfilled") {
-        memoryOk = true;
-        const listing = memory.value;
-        memoryCount.value = realNumber(listing?.total, Array.isArray(listing?.items) ? listing.items.length : 0);
-        if (listing?.maintenance_available === false) {
-          // 服务端明确说维护事项存储不可用：知识待审批仍然真实，但总数不完整。
-          problems.push(
-            (listing.warnings && listing.warnings[0]) ||
-              "维护事项存储不可用：后台维护提问读不到，待处理数量可能少算。",
+      // 两类真实来源并行读：一份失败不影响另一份的事实落地。
+      // 用 async 包装包住调用本身：残缺的替身/旧客户端让某个方法不存在时，也算「这一侧失败」，
+      // 而不是把 refresh() 变成未捕获的异常（数量读不到不该把面板一起弄崩）。
+      const memoryTask = (async () => {
+        try {
+          const listing = await api.listMemoryPending({ limit: 500 });
+          memoryOk = true;
+          memoryCount.value = realNumber(
+            listing?.total,
+            Array.isArray(listing?.items) ? listing.items.length : 0,
           );
-        } else if (listing?.truncated) {
-          problems.push("待处理事项超过服务端一次返回的上限，列表只显示一部分。");
+          if (listing?.maintenance_available === false) {
+            // 服务端明确说维护事项存储不可用：知识待审批仍然真实，但总数不完整。
+            problems.push(
+              (listing.warnings && listing.warnings[0]) ||
+                "维护事项存储不可用：后台维护提问读不到，待处理数量可能少算。",
+            );
+          } else if (listing?.truncated) {
+            problems.push("待处理事项超过服务端一次返回的上限，列表只显示一部分。");
+          }
+          syncCount();
+        } catch (error) {
+          problems.push("读取记忆待确认失败：" + errorText(error));
         }
-      } else {
-        problems.push("读取记忆待确认失败：" + errorText(memory.reason));
-      }
+      })();
 
-      if (candidates.status === "fulfilled") {
-        candidatesOk = true;
-        const listing = candidates.value;
-        candidateCount.value = realNumber(
-          listing?.total,
-          Array.isArray(listing?.candidates) ? listing.candidates.length : 0,
-        );
-        if (listing?.truncated) {
-          problems.push("实体更新候选超过服务端一次返回的上限，列表只显示一部分。");
+      const candidatesTask = (async () => {
+        try {
+          const listing = await listAllCandidates(true, 500);
+          candidatesOk = true;
+          candidateCount.value = realNumber(
+            listing?.total,
+            Array.isArray(listing?.candidates) ? listing.candidates.length : 0,
+          );
+          if (listing?.truncated) {
+            problems.push("实体更新候选超过服务端一次返回的上限，列表只显示一部分。");
+          }
+          syncCount();
+        } catch (error) {
+          problems.push("读取实体更新候选失败：" + errorText(error));
         }
-      } else {
-        problems.push("读取实体更新候选失败：" + errorText(candidates.reason));
-      }
+      })();
 
-      // 合并只用最近一次真实读到的数量：失败的一侧保留旧值，不清零。
-      count.value = memoryCount.value + candidateCount.value;
+      await Promise.all([memoryTask, candidatesTask]);
+      syncCount();
       error.value = problems.join(" ");
       if (memoryOk && candidatesOk) status.value = problems.length ? "partial" : "ready";
       else if (memoryOk || candidatesOk) status.value = "partial";
