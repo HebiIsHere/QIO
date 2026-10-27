@@ -37,6 +37,32 @@
 | `b-records-summary.png` | 单次整理详情：摘要、受影响条目（默认折叠）、整理事项；整批撤回走中央弹窗 |
 | `b-records-detail.png` | 点受影响条目才展开修改前后对比（默认不铺开全部差异），另可见「恢复这一项…」入口 |
 | `b-records-narrow.png` | 窄窗口（980×800）：内容仍可读可操作，无横向滚动 |
+| `b-list-knowledge.png` | 排版核查（集成轮）：知识列表卡左对齐、正文占满卡片宽度；长话题名单行省略且只出现一次 |
+| `b-list-entity.png` | 排版核查：实体列表卡「名称 + 类别」一行、元数据在下一行，全部左对齐 |
+| `b-list-pending.png` | 排版核查：待处理卡层级为「标签行 → 加粗标题 → 正文」，一条竖线左对齐 |
+| `b-list-records.png` | 排版核查：整理记录批次卡「状态 + 触发原因（左）/ 时间（右）」+ 统计行，左对齐 |
+| `b-list-records-detail.png` | 排版核查：单次整理详情里的受影响条目同样左对齐（折叠差异区不歪） |
+
+## 排版核查（2026-10-27 集成轮：列表卡被全局行式类居中）
+
+四个列表卡的根类（`.k-item` / `.e-item` / `.p-item` / `.mr-batch` / `.mr-item`）此前同时挂了
+全局行式类 `qio-row`（`align-items:center`），列方向下变成「内容水平居中 + 缩窄」。
+现在四个根类都不再挂行式类，改为显式 `align-items: stretch; justify-content: flex-start`，
+hover / 焦点 / 选中表面改成组件内自写（视觉不变）。合并树上真实浏览器实测：
+
+| 元素 | alignItems | 卡片 left / width | 内容 left / width |
+| --- | --- | --- | --- |
+| `.k-item` | stretch | 799 / 612 | 812 / 586（= 卡片 − 两侧 13px padding） |
+| `.e-item` | stretch | 799 / 612 | 名称 812、元数据 812 |
+| `.p-item` | stretch | 799 / 612 | 标题 812 / 586（font-weight 600） |
+| `.mr-batch` / `.mr-item` | stretch | 799 / 612 | 左对齐 |
+
+- 知识列表关联话题：卡片内话题名**只出现 1 次**（scope 里的「话题：X」在有链接时不再打印），
+  长名单行省略（`text-overflow: ellipsis` + `white-space: nowrap`），`title` / `v-qio-tip` 给全名。
+- 窄窗口 980px：列表滚动区与整页横向溢出均为 0。
+- 回归兜底：`__tests__/mp-b-list-alignment.test.ts` 用源码静态断言守住
+  「四个列表根类必须 stretch、不得再挂 qio-row、hover/焦点表面仍在」以及
+  「实体列表元数据与详情元数据不得共用类名」（此前同名导致列表文字被详情列样式居中）。
 
 ## 客观测量（探针输出）
 
