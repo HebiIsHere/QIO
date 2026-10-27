@@ -13,7 +13,7 @@
 | 子分支 | `feat/mp-20261027-a-page`（页面与导航）、`feat/mp-20261027-b-manage`（管理流程）、`feat/mp-20261027-c-planet`（星球过渡与视觉核查） |
 | 受测功能 SHA | `21cc8aaf9fe98384d4fb4a6964e8e7a1447fe84d`（推送触发完整 CI 的那个提交） |
 | 最终 HEAD | `3992c0cb034527d170643eadd1e36737a8fac408`（其后只有本文档的文档回填提交，`[skip ci]`） |
-| 完整 CI 运行号 | `40454438978`（`https://github.com/HebiIsHere/QIO/actions/runs/40454438978`）：docs consistency / rust(ubuntu) / rust(windows) / frontend / frozen worker / install e2e / backend(py3.11) / backend(py3.12) 全部成功；`backend (windows-latest)` 在本文件写作时仍在运行，结果见该 run 页面 |
+| 完整 CI 运行号 | `40454438978`（`https://github.com/HebiIsHere/QIO/actions/runs/40454438978`）**全部 10 个 job 成功**：ci dedup preflight / docs consistency / backend(py3.11) / backend(py3.12) / backend(windows) / frontend / rust(ubuntu) / rust(windows) / frozen worker / install e2e |
 
 开发方式：三个子智能体各自独立分支 + 独立 worktree 并行开发，Lead 在集成分支统一合并、解决交叉接口、做全量验证；
 共享件归属唯一（`PlanetView.vue` 属 A、星球场景与过渡 composable 属 C、管理面板属 B），跨组依赖用固定契约先落薄占位、
