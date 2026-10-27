@@ -616,7 +616,7 @@ onBeforeUnmount(() => {
           <li
             v-for="batch in batches"
             :key="batch.id"
-            class="mr-batch qio-card qio-card--quiet qio-row"
+            class="mr-batch qio-card qio-card--quiet"
             :data-record-id="batch.id"
             role="button"
             tabindex="0"
@@ -625,11 +625,15 @@ onBeforeUnmount(() => {
             @keydown.enter.prevent="openBatch(batch.id)"
             @keydown.space.prevent="openBatch(batch.id)"
           >
-            <span class="qio-state mr-batch-status" :class="[batch.status, batchTone(batch.status)]">
-              {{ statusLabel(batch.status) }}
-            </span>
-            <span class="mr-batch-trigger">{{ triggerLabel(batch.trigger) }}</span>
-            <span class="mr-batch-time mono">{{ batchTimes(batch) }}</span>
+            <!-- 层级：状态 + 触发原因（左）/ 时间（右）→ 统计一行 → 错误（有才显示），全部左对齐 -->
+            <div class="mr-batch-head">
+              <span class="qio-state mr-batch-status" :class="[batch.status, batchTone(batch.status)]">
+                {{ statusLabel(batch.status) }}
+              </span>
+              <span class="mr-batch-trigger">{{ triggerLabel(batch.trigger) }}</span>
+              <span class="mr-batch-spacer"></span>
+              <span class="mr-batch-time mono">{{ batchTimes(batch) }}</span>
+            </div>
             <span class="mr-batch-stats">{{ statsText(batch) }}</span>
             <p v-if="batch.error" class="mr-item-error" role="alert">批次错误：{{ batch.error }}</p>
           </li>
@@ -823,8 +827,18 @@ onBeforeUnmount(() => {
 .qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; }
 .hint { font-size: 12px; color: var(--text-muted); }
 .mr-batches, .mr-items, .mr-result-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.mr-batch { padding: var(--sp-3); border-radius: var(--qio-ui-radius); display: flex; flex-direction: column; gap: 4px; cursor: pointer; }
-.mr-batch-trigger { font-size: 12.5px; color: var(--text-primary); }
+/* 列表卡是列方向：显式 stretch，避免全局行式类把内容水平居中/缩窄。 */
+.mr-batch {
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+  gap: 4px; width: 100%; padding: var(--sp-3); border-radius: var(--qio-ui-radius);
+  cursor: pointer; text-align: left;
+  transition: background var(--dur-fast) var(--ease-1), border-color var(--dur-fast) var(--ease-1);
+}
+.mr-batch:hover { background: var(--layer-hover); }
+.mr-batch:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.mr-batch-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.mr-batch-spacer { flex: 1; min-width: 0; }
+.mr-batch-trigger { font-size: 12.5px; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
 .mr-batch-time, .mr-batch-stats { font-size: 11.5px; color: var(--text-muted); }
 .mr-error {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -844,12 +858,17 @@ onBeforeUnmount(() => {
 .mr-result-list li { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-primary); }
 .mr-label { font-size: 11px; color: var(--text-secondary); letter-spacing: 0.03em; }
 .mr-affected, .mr-maintenance { display: flex; flex-direction: column; gap: 6px; }
-.mr-item { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-surface); }
+.mr-item {
+  display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start;
+  gap: 4px; padding: 8px 10px; border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius); background: var(--bg-surface); text-align: left;
+}
 .mr-item-head {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   background: none; border: none; padding: 0; color: inherit; font: inherit; cursor: pointer; text-align: left;
 }
 .mr-item-head.static { cursor: default; }
+.mr-item-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .mr-item-head .spacer { flex: 1; }
 .mr-item-targets, .mr-item-time { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
 .mr-reason { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-secondary); }
