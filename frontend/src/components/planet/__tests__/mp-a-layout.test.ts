@@ -62,9 +62,34 @@ describe("星球页：管理展开只靠布局位移（契约 §3.3 / §4.1）",
   it("画布位移与控制变量都来自 --mp，不自己另造进度", () => {
     const canvas = ruleBody(PLANET, ".planet-canvas");
     expect(canvas).toContain("translate3d(calc(var(--mp, 0) * -50%), 0, 0)");
-    const panel = ruleBody(PLANET, ".panel");
-    expect(panel).toContain("width: calc(var(--mp, 0) * var(--mp-w))");
     expect(ruleBody(PLANET, ".planet-view")).toContain("--mp-w: clamp(380px, 46vw, 640px)");
+  });
+
+  it("管理区宽度固定、只靠 transform 滑入（转场不逐帧触发布局）", () => {
+    const panel = ruleBody(PLANET, ".panel");
+    expect(panel).toContain("width: var(--mp-w)");
+    expect(panel).toContain("transform: translateX(calc((1 - var(--mp, 0)) * 100%))");
+    // 回归守卫：不允许再回到「宽度跟随进度」
+    expect(panel).not.toContain("width: calc(var(--mp");
+  });
+
+  it("页面工具行的让位也是 transform（不逐帧改 right/left）", () => {
+    const tools = ruleBody(PLANET, ".page-tools-layer");
+    expect(tools).toContain("right: 14px");
+    expect(tools).toContain("transform: translateX(calc(var(--mp, 0) * -1 * var(--mp-w)))");
+    expect(tools).not.toContain("right: calc(");
+  });
+
+  it("管理区内容在进场后预挂载：展开时不再临时挂载（首帧不被首次挂载阻塞）", () => {
+    // 结构断言：预挂载入口 + 展开时「先起跑过渡、再补挂」
+    expect(PLANET).toContain("function preMountManagement");
+    expect(PLANET).toContain("watch(layersIn");
+    const toggle = PLANET.slice(PLANET.indexOf("function toggleManagement"));
+    const setExpandedAt = toggle.indexOf("manage.setExpanded(true)");
+    const mountAt = toggle.indexOf("managementMounted.value = true");
+    expect(setExpandedAt).toBeGreaterThan(-1);
+    // 展开分支里不允许在过渡启动之前同步挂载：先 setExpanded，未挂载才在下一帧补挂
+    expect(mountAt === -1 || setExpandedAt < mountAt).toBe(true);
   });
 
   it("裁切只在管理展开时生效（默认态美术与基线一致）", () => {
@@ -81,6 +106,14 @@ describe("星球页：管理展开只靠布局位移（契约 §3.3 / §4.1）",
     expect(body).toContain("overflow-x: clip");
     // 上下排布时不产生左右位移
     expect(PLANET).toContain(".planet-view.managing.stacked .planet-canvas { transform: none; }");
+  });
+
+  it("上下排布断点是 880 而不是保守的 1024（900/1024 宽实测放得下左右排布）", () => {
+    expect(PLANET).toContain("const STACK_MIN_WIDTH = 880;");
+    expect(PLANET).not.toContain("const STACK_MIN_WIDTH = 1024;");
+    // 判定要基于**真实球体半径**，不是固定像素
+    expect(PLANET).toContain("planet.sphereScreenRect()");
+    expect(PLANET).toContain("STACK_SPHERE_RATIO");
   });
 
   it("星球页不复制、不覆盖全局栏", () => {
@@ -108,6 +141,10 @@ describe("验收钩子：只读 data-* 属性", () => {
   it("页面工具行：搜索与管理入口", () => {
     expect(read("components/planet/PageTools.vue")).toContain("data-mp-search-open");
     expect(read("components/planet/PageTools.vue")).toContain("data-mp-manage-toggle");
+  });
+
+  it("管理区上下文返回按钮（辅助视图/搜索返回靠它）", () => {
+    expect(read("components/planet/ManagementArea.vue")).toContain("data-mp-context-back");
   });
 
   it("管理区：标签 / 辅助入口 / 待处理数量", () => {
@@ -168,6 +205,25 @@ describe("本页圆角统一 var(--qio-ui-radius)（契约 §2）", () => {
       }
     }
     expect(bad).toEqual([]);
+  });
+});
+
+describe("话题行内动作：图标按钮 + 默认退场", () => {
+  it("结束/恢复是图标按钮（带 aria-label 与用途说明），不是 25 行文字按钮", () => {
+    const mem = read("components/planet/MemoryTab.vue");
+    expect(mem).toContain('label="结束这个话题"');
+    expect(mem).toContain('label="恢复这个话题"');
+    expect(mem).not.toMatch(/>\s*结束\s*</);
+    expect(mem).not.toMatch(/>\s*恢复\s*</);
+    // 默认退场，hover / 键盘聚焦 / 触屏常显
+    const actions = ruleBody(mem, ".topic-item .row-actions");
+    expect(actions).toContain("opacity: 0");
+    expect(mem).toContain(".topic-item:hover .row-actions");
+    expect(mem).toContain(".topic-item:focus-within .row-actions");
+    expect(mem).toContain("@media (hover: none)");
+    // 片段数是等宽「数据」，不再用状态徽章
+    expect(mem).toContain('class="meta mono"');
+    expect(mem).not.toContain('class="meta qio-badge"');
   });
 });
 

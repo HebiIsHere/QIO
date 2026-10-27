@@ -97,27 +97,48 @@ export interface SearchSource {
 /** 每组最多展示多少条：搜索是「找到并打开」，不是把整库平铺出来 */
 export const SEARCH_GROUP_LIMIT = 8;
 
+const KNOWLEDGE_CATEGORY_LABELS: Record<string, string> = {
+  user_profile: "用户画像",
+  agent_self: "自我",
+  goal: "目标",
+  general_fact: "常识",
+  tool_experience: "工具经验",
+};
+const KNOWLEDGE_STATE_LABELS: Record<string, string> = {
+  draft: "草稿",
+  pending_review: "待审核",
+  verified: "已验证",
+  active: "生效",
+  expired: "过期",
+  revoked: "已归档",
+};
+
+/**
+ * 结果行的第二行：**不再重复分组标题里的类型名**（分组已经是「话题（8）」）。
+ * 这一行留给真正有用的信息：
+ * - 话题 → 「N 片段 · 最近活动」；
+ * - 知识 → 分类 / 状态 + 关联话题（单行，界面上省略超长）；
+ * - 实体 → 「N 属性 · M 关系」。
+ */
 function hitTopic(topic: TopicFingerprint): SearchHit {
-  return {
-    kind: "topic",
-    id: topic.topic_id,
-    title: topic.title,
-    note: topic.ended ? "已结束 · 话题" : "话题",
-  };
+  const fragments = `${topic.fragment_count} 片段`;
+  const recent = topic.last_activity ? ` · 最近活动 ${formatWhen(topic.last_activity)}` : "";
+  return { kind: "topic", id: topic.topic_id, title: topic.title, note: `${fragments}${recent}` };
 }
 
 function hitKnowledge(item: KnowledgeItem): SearchHit {
-  return {
-    kind: "knowledge",
-    id: item.id,
-    title: item.content,
-    note: item.topic_name ? `知识 · ${item.topic_name}` : "知识",
-  };
+  const parts = [
+    KNOWLEDGE_CATEGORY_LABELS[item.category] ?? item.category,
+    KNOWLEDGE_STATE_LABELS[item.state] ?? item.state,
+    item.topic_name ?? "",
+  ].filter(Boolean);
+  return { kind: "knowledge", id: item.id, title: item.content, note: parts.join(" · ") };
 }
 
 function hitEntity(card: EntityCard): SearchHit {
-  const aliases = card.aliases?.length ? ` · ${card.aliases.slice(0, 2).join(" / ")}` : "";
-  return { kind: "entity", id: card.id, title: card.name, note: `实体${aliases}` };
+  const attributes = card.attributes?.length ?? 0;
+  const relations = card.relations?.length ?? 0;
+  return { kind: "entity", id: card.id, title: card.name, note: `${attributes} 属性 · ${relations} 关系` };
 }
 
 /**

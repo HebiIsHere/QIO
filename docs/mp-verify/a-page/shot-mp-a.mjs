@@ -129,27 +129,8 @@ await wait(300);
 const normal = await measure(page, "default-1440x970");
 await page.screenshot({ path: resolve(HERE, "01-default-1440x970.png") });
 
-// 展开管理区：采样 --mp 证明「有过程」（不是瞬跳），并记录中间值
-/** 展开/收起过程中采样 data-mp（每 40ms 一次，最多 durationMs） */
-async function sampleMp(durationMs) {
-  const samples = [];
-  const started = Date.now();
-  while (Date.now() - started < durationMs) {
-    const v = await page.evaluate(() => document.querySelector(".planet-view")?.getAttribute("data-mp") ?? null);
-    samples.push(v === null ? null : Number(v));
-    await wait(40);
-  }
-  return samples;
-}
-
-const expandSamples = await (async () => {
-  const sampling = sampleMp(900);
-  await page.click("[data-mp-manage-toggle]");
-  return sampling;
-})();
-const intermediate = expandSamples.filter((v) => typeof v === "number" && v > 0 && v < 1);
-report.mpExpandSamples = expandSamples;
-report.mpExpandIntermediateCount = intermediate.length;
+// 展开管理区（帧级验收见 frames-mp-a.mjs：那边从点击时刻起算，才能量准曲线）
+await page.click("[data-mp-manage-toggle]");
 await wait(1200);
 const managing = await measure(page, "managing-1440x970");
 await page.screenshot({ path: resolve(HERE, "02-managing-1440x970.png") });
@@ -165,6 +146,10 @@ await page.click('[data-mp-tab="memory"]');
 await wait(500);
 const firstTopic = await page.$("[data-topic-id]");
 if (firstTopic) {
+  // 行内动作（结束/恢复）默认退场，hover 才出现：截一张对照图
+  await firstTopic.hover();
+  await wait(300);
+  await page.screenshot({ path: resolve(HERE, "03b-memory-list-hover.png") });
   await firstTopic.click();
   await wait(700);
   await measure(page, "memory-overview");
@@ -191,26 +176,31 @@ await wait(900);
 await measure(page, "global-search-empty");
 await page.screenshot({ path: resolve(HERE, "05c-global-search-empty.png") });
 
-// 收起管理区（回到默认浏览态）：同样采样收起过程
-const collapseSamples = await (async () => {
-  const sampling = sampleMp(900);
-  await page.click("[data-mp-manage-toggle]");
-  return sampling;
-})();
-report.mpCollapseIntermediateCount = collapseSamples.filter((v) => typeof v === "number" && v > 0 && v < 1).length;
+// 收起管理区（回到默认浏览态）
+await page.click("[data-mp-manage-toggle]");
 await wait(1200);
 const collapsed = await measure(page, "collapsed-1440x970");
 await page.screenshot({ path: resolve(HERE, "06-collapsed-1440x970.png") });
 
-// 窄窗口：上下排布（管理内容排到星球下方，内容区整体一层纵向滚动）
-await page.setViewportSize({ width: 900, height: 820 });
-await wait(600);
-await page.click("[data-mp-manage-toggle]");
+// ---- 900×700：宽窗断点下调后应保持**左右排布**，展开前后球体直径不变 ----
+await page.setViewportSize({ width: 900, height: 700 });
+await wait(900);
+await page.evaluate(() => document.querySelector("[data-mp-manage-toggle]").click());
 await wait(1400);
-const narrow = await measure(page, "narrow-900x820-stacked");
-await page.screenshot({ path: resolve(HERE, "07-narrow-900x820.png"), fullPage: false });
+const midDefault = await measure(page, "900x700-default");
+await page.evaluate(() => document.querySelector("[data-mp-manage-toggle]").click());
+await wait(1400);
+const midManaging = await measure(page, "900x700-managing");
+await page.screenshot({ path: resolve(HERE, "07-900x700-managing.png"), fullPage: false });
 
-// 窄窗滚动：内容区能纵向滚、横向仍不滚
+// ---- 760×820：真正放不下时才上下排布（内容区整体一层纵向滚动） ----
+await page.setViewportSize({ width: 760, height: 820 });
+await wait(900);
+await page.evaluate(() => document.querySelector("[data-mp-manage-toggle]").click());
+await wait(1400);
+const narrow = await measure(page, "stacked-760x820");
+await page.screenshot({ path: resolve(HERE, "08-stacked-760x820.png"), fullPage: false });
+
 report.narrowScroll = await page.evaluate(() => {
   const content = document.querySelector(".planet-content");
   if (!content) return null;
@@ -223,7 +213,7 @@ report.narrowScroll = await page.evaluate(() => {
     clientWidth: content.clientWidth,
   };
 });
-await page.screenshot({ path: resolve(HERE, "08-narrow-scrolled.png"), fullPage: false });
+await page.screenshot({ path: resolve(HERE, "09-stacked-scrolled.png"), fullPage: false });
 
 writeFileSync(resolve(HERE, "report.json"), JSON.stringify(report, null, 2), "utf8");
 
@@ -238,13 +228,14 @@ line("管理 canvas 中心 x", managing.canvasRect?.cx?.toFixed(1));
 line("管理 球体半径/默认半径", [Math.round(managing.sphere?.radius ?? 0), Math.round(normal.sphere?.radius ?? 0)]);
 line("管理 管理区宽度/左边界", [Math.round(managing.panelRect?.width ?? 0), managing.panelRect?.left]);
 line("管理 横向溢出(doc)", managing.docScrollWidth - managing.docClientWidth);
-line("窄窗 stacked", narrow.stacked);
+line("900x700 stacked(应 false)", midManaging.stacked);
+line("900x700 半径 默认/管理", [Math.round(midDefault.sphere?.radius ?? 0), Math.round(midManaging.sphere?.radius ?? 0)]);
+line("900x700 管理区宽度", Math.round(midManaging.panelRect?.width ?? 0));
+line("760x820 stacked(应 true)", narrow.stacked);
 line("窄窗 横向溢出(content)", (narrow.contentScrollWidth ?? 0) - (narrow.contentClientWidth ?? 0));
 line("窄窗 overflowY", narrow.contentOverflowY);
 line("收起后 球心", collapsed.sphere && { cx: collapsed.sphere.cx, cy: collapsed.sphere.cy });
 line("搜索视图 data-view", search.dataView);
-line("展开过程中间值个数", report.mpExpandIntermediateCount);
-line("收起过程中间值个数", report.mpCollapseIntermediateCount);
 line("窄窗滚动(纵向可滚/横向溢出)", report.narrowScroll && [report.narrowScroll.scrollTop, report.narrowScroll.scrollWidth - report.narrowScroll.clientWidth]);
 
 await browser.close();

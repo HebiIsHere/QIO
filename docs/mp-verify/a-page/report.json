@@ -21,9 +21,9 @@
         "cy": 520
       },
       "panelRect": {
-        "left": 1439,
-        "width": 1,
-        "right": 1440
+        "left": 1440,
+        "width": 640,
+        "right": 2080
       },
       "sphere": {
         "cx": 720,
@@ -32,8 +32,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 721.3514590566253,
-        "y": 517.5052497402363,
+        "x": 716.6785500547345,
+        "y": 516.1338738396005,
         "title": "默认话题"
       },
       "mp": "0.000",
@@ -43,10 +43,10 @@
       "dataTab": "memory",
       "docScrollWidth": 1440,
       "docClientWidth": 1440,
-      "contentScrollWidth": 1440,
+      "contentScrollWidth": 2080,
       "contentClientWidth": 1440,
       "contentOverflowY": "visible",
-      "pendingCount": null
+      "pendingCount": "0"
     },
     {
       "label": "managing-1440x970",
@@ -79,8 +79,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 356.7126693722446,
-        "y": 517.7354394680383,
+        "x": 354.00213373085194,
+        "y": 517.2792380876973,
         "title": "默认话题"
       },
       "mp": "1.000",
@@ -126,8 +126,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 356.7126693722446,
-        "y": 517.7354394680383,
+        "x": 354.00213373085194,
+        "y": 517.2792380876973,
         "title": "默认话题"
       },
       "mp": "1.000",
@@ -173,8 +173,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 356.7126693722446,
-        "y": 517.7354394680383,
+        "x": 354.00213373085194,
+        "y": 517.2792380876973,
         "title": "默认话题"
       },
       "mp": "1.000",
@@ -220,8 +220,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 356.7126693722446,
-        "y": 517.7354394680383,
+        "x": 354.00213373085194,
+        "y": 517.2792380876973,
         "title": "默认话题"
       },
       "mp": "1.000",
@@ -267,8 +267,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 356.7126693722446,
-        "y": 517.7354394680383,
+        "x": 354.00213373085194,
+        "y": 517.2792380876973,
         "title": "默认话题"
       },
       "mp": "1.000",
@@ -314,8 +314,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 356.7126693722446,
-        "y": 517.7354394680383,
+        "x": 354.00213373085194,
+        "y": 517.2792380876973,
         "title": "默认话题"
       },
       "mp": "1.000",
@@ -350,9 +350,9 @@
         "cy": 520
       },
       "panelRect": {
-        "left": 1439,
-        "width": 1,
-        "right": 1440
+        "left": 1440,
+        "width": 640,
+        "right": 2080
       },
       "sphere": {
         "cx": 720,
@@ -361,8 +361,8 @@
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 719.9967689872308,
-        "y": 519.5274822787941,
+        "x": 718.5620349376425,
+        "y": 519.43842862121,
         "title": "默认话题"
       },
       "mp": "0.000",
@@ -372,44 +372,138 @@
       "dataTab": "memory",
       "docScrollWidth": 1440,
       "docClientWidth": 1440,
-      "contentScrollWidth": 1440,
+      "contentScrollWidth": 2080,
       "contentClientWidth": 1440,
       "contentOverflowY": "visible",
       "pendingCount": "0"
     },
     {
-      "label": "narrow-900x820-stacked",
+      "label": "900x700-default",
       "titlebar": "70px",
       "innerWidth": 900,
-      "innerHeight": 820,
+      "innerHeight": 700,
       "contentRect": {
         "left": 0,
         "top": 70,
         "width": 900,
-        "height": 750
+        "height": 630
+      },
+      "canvasRect": {
+        "left": -450,
+        "top": 70,
+        "width": 900,
+        "height": 630,
+        "cx": 0,
+        "cy": 385
+      },
+      "panelRect": {
+        "left": 486,
+        "width": 414,
+        "right": 900
+      },
+      "sphere": {
+        "cx": 450,
+        "cy": 385,
+        "radius": 316.86553006146875
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 249.17867218996707,
+        "y": 384.64805672918595,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": false,
+      "dataView": "search",
+      "dataTab": "memory",
+      "docScrollWidth": 900,
+      "docClientWidth": 900,
+      "contentScrollWidth": 900,
+      "contentClientWidth": 900,
+      "contentOverflowY": "clip",
+      "pendingCount": "0"
+    },
+    {
+      "label": "900x700-managing",
+      "titlebar": "70px",
+      "innerWidth": 900,
+      "innerHeight": 700,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 900,
+        "height": 630
       },
       "canvasRect": {
         "left": 0,
         "top": 70,
         "width": 900,
-        "height": 328,
+        "height": 630,
         "cx": 450,
+        "cy": 385
+      },
+      "panelRect": {
+        "left": 900,
+        "width": 414,
+        "right": 1314
+      },
+      "sphere": {
+        "cx": 450,
+        "cy": 385,
+        "radius": 316.86553006146875
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 449.78016354274183,
+        "y": 384.6068990473397,
+        "title": "默认话题"
+      },
+      "mp": "0.000",
+      "managing": false,
+      "stacked": false,
+      "dataView": "search",
+      "dataTab": "memory",
+      "docScrollWidth": 900,
+      "docClientWidth": 900,
+      "contentScrollWidth": 1314,
+      "contentClientWidth": 900,
+      "contentOverflowY": "visible",
+      "pendingCount": "0"
+    },
+    {
+      "label": "stacked-760x820",
+      "titlebar": "70px",
+      "innerWidth": 760,
+      "innerHeight": 820,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 760,
+        "height": 750
+      },
+      "canvasRect": {
+        "left": 0,
+        "top": 70,
+        "width": 760,
+        "height": 328,
+        "cx": 380,
         "cy": 234
       },
       "panelRect": {
         "left": 0,
-        "width": 900,
-        "right": 900
+        "width": 760,
+        "right": 760
       },
       "sphere": {
-        "cx": 450,
+        "cx": 380,
         "cy": 234,
         "radius": 164.9712600954948
       },
       "selected": "topic_c77464f2601c",
       "selectedLabel": {
-        "x": 578.3647641020782,
-        "y": 233.84541804811428,
+        "x": 508.1496640238887,
+        "y": 233.81619359585153,
         "title": "默认话题"
       },
       "mp": "1.000",
@@ -417,33 +511,20 @@
       "stacked": true,
       "dataView": "search",
       "dataTab": "memory",
-      "docScrollWidth": 900,
-      "docClientWidth": 900,
-      "contentScrollWidth": 900,
-      "contentClientWidth": 900,
+      "docScrollWidth": 760,
+      "docClientWidth": 760,
+      "contentScrollWidth": 760,
+      "contentClientWidth": 760,
       "contentOverflowY": "auto",
       "pendingCount": "0"
     }
   ],
-  "stableRadius": 452.66504294495525,
-  "mpExpandSamples": [
-    0,
-    0,
-    0,
-    0,
-    0,
-    0.77,
-    0.965,
-    0.976,
-    0.999
-  ],
-  "mpExpandIntermediateCount": 4,
-  "mpCollapseIntermediateCount": 4,
+  "stableRadius": 452.65546558088465,
   "narrowScroll": {
     "scrollTop": 4,
     "scrollHeight": 754,
     "clientHeight": 750,
-    "scrollWidth": 900,
-    "clientWidth": 900
+    "scrollWidth": 760,
+    "clientWidth": 760
   }
 }

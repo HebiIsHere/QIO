@@ -266,6 +266,7 @@ onBeforeUnmount(() => window.clearTimeout(timer));
   gap: 2px;
   width: 100%;
   min-width: 0;
+  /* 结果行要「安静、高效」：上下 8px、两行间隔 2px，一屏能看更多条 */
   padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: var(--qio-ui-radius);
@@ -290,11 +291,14 @@ onBeforeUnmount(() => window.clearTimeout(timer));
   font-size: var(--fs-base);
   color: var(--text-strong);
 }
+/* 第二行是补充信息：单行省略，不换行（否则行高又涨回去） */
 .gs-hit-note {
   min-width: 0;
-  overflow-wrap: anywhere;
   font-size: var(--fs-xs);
   color: var(--text-muted);
   letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>
