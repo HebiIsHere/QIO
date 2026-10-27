@@ -190,3 +190,30 @@
 | `31b7ab8c` / `4e4cac8f` / `2af0628d` | 0 / 2~3 或 2 / 0 | 新增卡片/面板的表面圆角 |
 
 > 除 2026-10-27 已恢复的 `.input-pill`（输入胶囊）外，其余 272 处目前仍是 14px。
+
+## 七、胶囊专项：改造前 68 → 改造后 15
+
+全仓统计 `border-radius` 为胶囊（999px / `--r-pill`）的选择器：
+
+| 版本 | 胶囊选择器数 |
+| --- | --- |
+| `e5c80253`（统一改造前） | 68 |
+| `6dc57885`（统一改造后） | 15 |
+| `d8cdcc41`（基线） | 15 |
+| `HEAD`（本轮 + 已恢复输入胶囊） | 15 |
+
+净减少 **53** = **51 处**被改成 14px + **2 处**随组件重构删除（`MemoryQuestionReminder .memory-question-reminder`、`ImpactConfirmLayer .ic-btn`）；改造期间**没有新增**胶囊。
+
+51 处「胶囊 → 14px」按元素类型：
+
+| 类型 | 处数 | 代表 |
+| --- | --- | --- |
+| 徽标/标签 | 23 | `.qio-badge` / `.qio-tag` / `.qio-state` / `.qio-glass--chip`、各类 `count` / `kind` / `tag` / `chip` |
+| 按钮/动作 | 15 | 附件 `.attach-btn`、代码预览 `.code-preview-btn`、模式切换 `.mode-btn`、任务栏 `.task-action`、互动 `.tc-tab` / `.tc-btn` |
+| 其它容器 | 10 | `.iw-search-field`（互动内联搜索）、`.interrupted-note`、`.im-hud-left`、`.participation` 等 |
+| 进度条 | 2 | `.tt-track` / `.tt-fill`（计时条） |
+| 输入框本体 | 1 | `.input-pill`（2026-10-27 已恢复胶囊形） |
+
+另有 **3 处圆形（50%）** 也被改成 14px（不属于胶囊，但同样是「圆形变方形」）：全局栏 `.conversation-bar .chrome-btn`、审批 `.ua-close`、星球页 `.ec-mark`。
+
+HEAD 上仍然保留的 15 个胶囊（改造从未动过 + 已恢复的输入胶囊）：`.input-pill`、`.progress`（更新卡）、`.badge` / `.chip` / `.group-head .count`（互动分组）、`.preview-badge`、`.btn` / `.layer-hint` / `.vi-badge`（意图层）、`.ic-toggle` / `.ic-resize::after`、`.qio-switch`、`.qio-scroll-thumb`、`.chip`（引导页 999px）。
