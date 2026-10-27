@@ -37,6 +37,11 @@ import {
   clampRightWidth,
 } from "../conversation/layoutPrefs";
 import { listenFocusTask } from "../services/conversationTasks";
+import {
+  registerNoticeNavigationHost,
+  unregisterNoticeNavigationHost,
+  type NoticeNavigationHost,
+} from "../services/noticeNavigation";
 import TaskRail from "../components/conversation/TaskRail.vue";
 import ChatColumn from "../components/conversation/ChatColumn.vue";
 import PreviewPanel from "../components/conversation/PreviewPanel.vue";
@@ -153,6 +158,8 @@ function nudgeSplitter(kind: "left" | "right", event: KeyboardEvent) {
 // ── 收起后的任务入口 / 窄窗口抽屉 ─────────────────────────────────────────
 
 const railDrawer = ref(false);
+/** 这次打开抽屉是否要自动把焦点放进第一个按钮（用户点击时是；通知导航不抢焦点）。 */
+const railDrawerAutofocus = ref(true);
 const railDrawerEl = ref<HTMLElement | null>(null);
 const railEntryEl = ref<HTMLButtonElement | null>(null);
 
@@ -171,8 +178,10 @@ const railEntryLabel = computed(() => {
 
 function onRailEntry() {
   // 窄窗口：抽屉式临时展开（不改写用户偏好）；否则按用户手动收起状态展开。
-  if (shell.viewportWidth < LEFT_AUTO_COLLAPSE_BELOW) railDrawer.value = true;
-  else shell.toggleLeft();
+  if (shell.viewportWidth < LEFT_AUTO_COLLAPSE_BELOW) {
+    railDrawerAutofocus.value = true;
+    railDrawer.value = true;
+  } else shell.toggleLeft();
 }
 
 async function closeRailDrawer() {
@@ -200,12 +209,47 @@ watch(
 
 watch(railDrawer, async (open) => {
   if (!open) return;
+  // 通知导航打开的抽屉保持当前焦点：顶部短通知「不抢焦点」的既有规则不能在这里破例。
+  if (!railDrawerAutofocus.value) {
+    railDrawerAutofocus.value = true;
+    return;
+  }
   await nextTick();
   const root = railDrawerEl.value;
   if (!root) return;
   const first = root.querySelector<HTMLElement>("button:not(:disabled)");
   first?.focus();
 });
+
+// ── 通知点击 → 任务列表可见落点（供 services/noticeNavigation 调用） ────────
+
+/**
+ * 让任务列表真实可见：关闭盖住它的页内覆盖层，必要时展开左栏 / 窄窗抽屉。
+ * 只调整可见性与层级，不处理任何任务，也不清空任何草稿或阅读位置。
+ */
+async function ensureTaskListVisibleForNotice(): Promise<boolean> {
+  // 1) 页内覆盖层：记忆星球 / 恢复收件箱；全窗口预览也会整块盖住三栏。
+  if (recoveryOpen.value) recoveryOpen.value = false;
+  if (planetOpen.value) planetOpen.value = false;
+  if (shell.prefs.previewFull) shell.setPreviewFull(false);
+  // 2) 左栏：宽窗按现有开关展开（用户手动收起时）；窄窗走现有任务抽屉。
+  if (!shell.leftVisible) {
+    if (shell.prefs.leftCollapsed) shell.toggleLeft();
+    await nextTick();
+    if (!shell.leftVisible) {
+      railDrawerAutofocus.value = false;
+      railDrawer.value = true;
+    }
+  }
+  await nextTick();
+  return shell.leftVisible || railDrawer.value;
+}
+
+const noticeNavigationHost: NoticeNavigationHost = {
+  ensureTaskListVisible: ensureTaskListVisibleForNotice,
+};
+// 本页拥有星球 / 恢复区 / 抽屉这些页面级可见性状态，所以由本页注册可见性宿主。
+registerNoticeNavigationHost(noticeNavigationHost);
 
 // ── 星球入口（保持现有行为） ───────────────────────────────────────────────
 
@@ -339,8 +383,8 @@ onMounted(() => {
   stopViewport = shell.installViewportTracking();
   if (session.history.status === "idle") void session.loadHistory();
 
-  tasks.bindEvents();
-  tasks.startPolling();
+  // 事件订阅 / 轮询由应用级生命周期（GlobalFeedbackHost → acquireGlobal）负责：
+  // 对话页只保留自己的幂等刷新，卸载页面不再停掉全局任务数据。
   if (tasks.current.loaded) {
     // 幂等刷新：离开期间可能出现新任务/新状态，但不清空、不重置展开与滚动。
     void tasks.refresh("current", { silent: true });
@@ -372,7 +416,8 @@ onBeforeUnmount(() => {
   registerConversationPreviewOpener(null);
   registerConversationReplyCodeOpener(null);
   setDraggingChrome(false);
-  tasks.dispose();
+  unregisterNoticeNavigationHost(noticeNavigationHost);
+  // 页面卸载不停全局任务数据（引用计数归零由应用级宿主负责）；只收本页自己的预览状态。
   preview.dispose();
   // 最后一次布局改动要落盘（防抖窗口内切走页面时不能丢）。
   void shell.flush();

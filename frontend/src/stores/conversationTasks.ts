@@ -361,6 +361,7 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
       this.detailLoading = [];
       this.notices = {};
       this.focusTarget = null;
+      this.focusTargets = [];
       this.expanded.current = [];
       this.expanded.history = [];
       if (reason) this.setFeedback(reason + "：已按最新后端状态重新对齐。");
