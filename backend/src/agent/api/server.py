@@ -255,6 +255,26 @@ def _knowledge_payload(ctx, item) -> dict:
     }
 
 
+def _relation_change_list(raw: object) -> list[dict]:
+    """关系增删入参清洗：只接受 `[{"type": str, "target": str}]`，空项丢弃。
+
+    不猜类型、不按名称自动创建实体：目标按名称匹配**真实节点**（与既有
+    add/remove relation 的语义一致），找不到目标时后端不会凭空造一个同名实体。
+    非法形状整条丢弃而不是 500：界面已经按真实值提交，坏输入只可能来自老客户端。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        rel_type = str(entry.get("type") or "").strip()
+        target = str(entry.get("target") or "").strip()
+        if rel_type and target:
+            out.append({"type": rel_type, "target": target})
+    return out
+
+
 _KNOWLEDGE_SOURCE_LABELS = {
     "onboarding": "引导",
     "dream_correct": "后台整理",
@@ -3650,24 +3670,54 @@ def create_app(
         return {"entity": svc.to_dict(card)}
 
     @app.post("/api/entities/{entity_id}/revise")
-    async def revise_entity(entity_id: str, body: dict) -> dict:
-        from agent.entities.cards import EntityCardService
+    async def revise_entity(entity_id: str, body: dict):
+        """整体修订一张实体卡（用户明确动作）。
+
+        一次提交可以同时带字段与关系增删（`relations.add` / `relations.remove`）：
+        **同一个事务**里要么全部生效、要么全部不生效（不会留下「字段改了、关系没改」）。
+
+        `expected_revision` 是界面上看到的版本（CAS）：不符返回 409，且一个字段都没写。
+        用户编辑期间卡被自动提炼或另一个入口改过时，界面必须提示冲突、保留草稿，
+        绝不静默覆盖 —— 这正是这个参数存在的理由。
+        """
+        from agent.entities.cards import EntityCardConflict, EntityCardService
+        from agent.storage.db import transaction
+
+        expected = body.get("expected_revision")
+        if expected is not None:
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="expected_revision must be an integer"
+                ) from None
+
+        relations = body.get("relations")
+        relations = relations if isinstance(relations, dict) else {}
+        add_relations = _relation_change_list(relations.get("add"))
+        remove_relations = _relation_change_list(relations.get("remove"))
 
         svc = EntityCardService(ctx.conn)
-        card = svc.get(entity_id)
-        if card is None:
-            raise HTTPException(status_code=404, detail="entity not found")
-        attributes = body.get("attributes")
-        aliases = body.get("aliases")
-        summary = body.get("summary")
-        kind = body.get("kind")
-        updated = svc.revise(
-            entity_id,
-            attributes=attributes,
-            aliases=aliases,
-            summary=summary,
-            kind=kind,
-        )
+        try:
+            # 读与写放在同一个事务里：CAS 校验基于事务内的当前版本，
+            # 关系增删跟着字段修订一起提交/回滚。
+            with transaction(ctx.conn):
+                card = svc.get(entity_id)
+                if card is None:
+                    raise HTTPException(status_code=404, detail="entity not found")
+                updated = svc.revise(
+                    entity_id,
+                    attributes=body.get("attributes"),
+                    aliases=body.get("aliases"),
+                    summary=body.get("summary"),
+                    kind=body.get("kind"),
+                    relations_add=add_relations,
+                    relations_remove=remove_relations,
+                    expected_revision=expected,
+                )
+        except EntityCardConflict as exc:
+            # 409：条件校验失败，什么都没改（形状与 A04 的候选冲突一致）。
+            return JSONResponse(status_code=409, content=exc.to_dict())
         return {"ok": True, "entity": svc.to_dict(updated) if updated else None}
 
     @app.post("/api/entities/{entity_id}/revoke")

@@ -61,6 +61,7 @@ describe("知识看得懂：来源、范围与结束", () => {
   it("可以在知识页把适用范围改成只在某个话题里生效", async () => {
     const w = mountPanel();
     await flushPromises();
+    await w.find('[data-k-id="kn_1"]').trigger("click");
     const select = w.find(".k-scope-select");
     expect(select.exists()).toBe(true);
     const vm = w.vm as unknown as { changeScope: (k: KnowledgeItem, v: string) => Promise<void> };
@@ -75,12 +76,14 @@ describe("知识看得懂：来源、范围与结束", () => {
   it("可以把一条标成已结束，再恢复", async () => {
     const w = mountPanel();
     await flushPromises();
+    await w.find('[data-k-id="kn_1"]').trigger("click");
     await w.find(".k-toggle-ended").trigger("click");
     await flushPromises();
     expect(api.endKnowledge).toHaveBeenCalledWith("kn_1");
 
     const w2 = mountPanel([{ ...item, ended: true }]);
     await flushPromises();
+    await w2.find('[data-k-id="kn_1"]').trigger("click");
     expect(w2.text()).toContain("已结束");
     await w2.find(".k-toggle-ended").trigger("click");
     await flushPromises();

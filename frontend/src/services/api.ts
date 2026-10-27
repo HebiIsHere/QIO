@@ -38,6 +38,30 @@ export class ApiTimeoutError extends Error {
 }
 
 /**
+ * 是不是「版本冲突」（409）：用户看到的那一版已经不是当前版本。
+ *
+ * 编辑类界面必须把它与普通失败区分开：普通失败可以原地重试；版本冲突要先展示
+ * 服务端的当前版本、保留用户输入，由用户决定「刷新后重试」还是「明确覆盖」。
+ */
+export function isVersionConflict(error: unknown): boolean {
+  return (error as { status?: unknown } | null)?.status === 409;
+}
+
+/** 冲突响应里的服务端当前版本（后端没给就是 null，不猜）。 */
+export function conflictCurrentVersion(error: unknown): number | null {
+  const body = (error as { body?: unknown } | null)?.body;
+  const value = (body as { current_version?: unknown } | null)?.current_version;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** 冲突响应里服务端当前内容的 id（knowledge 会换新版本行；entity 不换行）。 */
+export function conflictCurrentId(error: unknown): string | null {
+  const body = (error as { body?: unknown } | null)?.body;
+  const value = (body as { current_id?: unknown } | null)?.current_id;
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+/**
  * 用途匹配的超时（毫秒）。
  *
  * 不套同一个短超时：会调外部模型/凭据服务的长操作几十秒是正常的，
@@ -313,6 +337,17 @@ export interface KnowledgeItem {
   /** 主对话提议所在的轮次 id（后台提炼没有）。 */
   turn_id?: string | null;
   provenance_source?: string | null;
+  /** R02：当前版本号（修订用 CAS 的基准；旧响应可能没有，界面按「无版本」处理）。 */
+  version?: number | null;
+  /** 版本链身份：同一链条上的历史版本共享 chain_id。 */
+  chain_id?: string;
+  /** 这一版替换掉的上一版 id（第一版为 null）。 */
+  supersedes_id?: string | null;
+  /** 真实节点归属（"全局（你）/ 话题：X"由 scope 标签表达，这里给机器可读的 id）。 */
+  scope_nodes?: string[];
+  scope_global?: boolean;
+  /** 归属未解析（旧的无归属条目）：管理界面要能单独筛出来。 */
+  scope_unresolved?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -1209,11 +1244,33 @@ export const api = {
       `/api/fragments/${encodeURIComponent(fragmentId)}/messages?offset=${offset}&limit=${limit}`,
       { timeoutMs: API_TIMEOUT_MS.bulk },
     ),
-  reviseKnowledge: (knowledgeId: string, content: string) =>
-    request<{ ok: boolean; knowledge_id: string }>(
-      `/api/knowledge/${encodeURIComponent(knowledgeId)}/revise`,
-      { method: "POST", body: JSON.stringify({ content }) },
-    ),
+  /**
+   * 纠正知识：**原子替换**当前版本。
+   *
+   * `expectedVersion` 是用户在界面上看到的那一版（CAS）：不符时后端返回 409
+   * （带 current_id / current_version），一个字段都不写。编辑期间被别处修订过时，
+   * 界面必须提示冲突、保留草稿，不得静默覆盖。
+   */
+  reviseKnowledge: (
+    knowledgeId: string,
+    content: string,
+    opts: { expectedVersion?: number | null } = {},
+  ) => {
+    const body: Record<string, unknown> = { content };
+    if (opts.expectedVersion !== null && opts.expectedVersion !== undefined) {
+      body.expected_version = opts.expectedVersion;
+    }
+    return request<{
+      ok: boolean;
+      knowledge_id: string;
+      supersedes?: string;
+      chain_id?: string;
+      version?: number;
+    }>(`/api/knowledge/${encodeURIComponent(knowledgeId)}/revise`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  },
   revokeKnowledge: (knowledgeId: string) =>
     request<{ ok: boolean }>(`/api/knowledge/${encodeURIComponent(knowledgeId)}/revoke`, {
       method: "POST",
@@ -1328,6 +1385,12 @@ export const api = {
   listEntities: () => request<{ entities: EntityCard[] }>("/api/entities"),
   getEntity: (id: string) =>
     request<{ entity: EntityCard }>(`/api/entities/${encodeURIComponent(id)}`),
+  /**
+   * 整体修订实体卡：字段与关系增删**一次提交、同一事务**（要么全生效、要么全不生效）。
+   *
+   * `expected_revision` 是界面上看到的那一版（CAS）：不符时后端返回 409 并且什么都没写。
+   * 关系增删只按名称匹配真实节点；找不到目标时不会凭空造实体（界面也不该假装成功）。
+   */
   reviseEntity: (
     id: string,
     payload: {
@@ -1335,6 +1398,13 @@ export const api = {
       aliases?: string[];
       summary?: string;
       kind?: string;
+      /** 关系增删（与字段修订同一次提交） */
+      relations?: {
+        add?: { type: string; target: string }[];
+        remove?: { type: string; target: string }[];
+      };
+      /** 界面上看到的卡版本（CAS） */
+      expected_revision?: number | null;
     },
   ) =>
     request<{ ok: boolean; entity: EntityCard | null }>(
