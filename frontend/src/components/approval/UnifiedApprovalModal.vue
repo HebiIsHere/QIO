@@ -52,6 +52,94 @@ const activeIndex = computed(() => unified.activeIndex);
 const busy = computed(() => !!item.value && unified.submittingKey === item.value.key);
 const dialogRef = ref<HTMLElement | null>(null);
 
+/* ── F09：审批列表的阅读位置（真实 DOM 滚动位置；详情替换列表时 DOM 会被销毁）──── */
+interface ListReadingPosition {
+  /** 离开列表时的真实 scrollTop。 */
+  scrollTop: number;
+  /** 可视锚点：哪一条申请（稳定身份，不用索引）。 */
+  anchorKey: string;
+  /** 锚点相对列表内容顶部的布局位置（offsetTop 差，不含滚动）。 */
+  anchorTop: number;
+  /** 离开时的队列顺序：锚点已被处理移除时用它找合理相邻项。 */
+  order: string[];
+}
+const listRef = ref<HTMLElement | null>(null);
+let listReading: ListReadingPosition | null = null;
+
+function listItems(): HTMLElement[] {
+  const list = listRef.value;
+  if (!list) return [];
+  return Array.from(list.querySelectorAll<HTMLElement>("[data-approval-key]"));
+}
+
+function itemTopInList(list: HTMLElement, element: HTMLElement): number {
+  return element.offsetTop - list.offsetTop;
+}
+
+/** 从列表点进详情前：记下真实可视位置（稳定身份 + 布局偏移 + 队列顺序）。 */
+function openFromList(key: string): void {
+  const list = listRef.value;
+  if (list) {
+    const anchor = listItems().find((element) => element.dataset.approvalKey === key) ?? null;
+    listReading = {
+      scrollTop: list.scrollTop,
+      anchorKey: key,
+      anchorTop: anchor ? itemTopInList(list, anchor) : 0,
+      order: listItems().map((element) => element.dataset.approvalKey ?? ""),
+    };
+  }
+  unified.switchTo(key);
+}
+
+/**
+ * 回到列表：恢复真实 DOM 滚动位置与焦点。
+ *
+ * - 锚点还在：按同一布局偏移换算（期间插入了新申请也不会把用户送回顶部）；
+ * - 锚点已被处理移除：恢复并把焦点放到相邻项（同位置接班项优先，其次上一项）；
+ * - 只恢复列表，不自动进入任何详情（不连弹）。
+ */
+function restoreListReading(): void {
+  const saved = listReading;
+  listReading = null;
+  const list = listRef.value;
+  if (!saved || !list) return;
+  const elements = listItems();
+  if (!elements.length) return;
+  const byKey = new Map(elements.map((element) => [element.dataset.approvalKey ?? "", element]));
+  let target: HTMLElement | null = byKey.get(saved.anchorKey) ?? null;
+  if (!target) {
+    const index = saved.order.indexOf(saved.anchorKey);
+    for (let i = Math.max(0, index); i < saved.order.length && !target; i += 1) {
+      target = byKey.get(saved.order[i] ?? "") ?? null;
+    }
+    for (let i = Math.min(index - 1, saved.order.length - 1); i >= 0 && !target; i -= 1) {
+      target = byKey.get(saved.order[i] ?? "") ?? null;
+    }
+  }
+  if (!target) return;
+  // 真实 DOM 滚动位置：让目标条目保持离开时的布局偏移
+  const desired = Math.max(0, Math.round(saved.scrollTop + (itemTopInList(list, target) - saved.anchorTop)));
+  target.focus({ preventScroll: true });
+  list.scrollTop = desired;
+  // 焦点/布局抖动后以我们算出值为准（不用 scrollIntoView，避免跳回顶部）
+  list.scrollTop = desired;
+}
+
+watch(
+  () => queueListOnly.value,
+  async (isList) => {
+    if (!isList) return;
+    await nextTick();
+    if (!queueListOnly.value) return;
+    restoreListReading();
+  },
+  { immediate: true },
+);
+/** 面板关掉后不把上一次的阅读位置带到下一次打开。 */
+watch(panelOpen, (open) => {
+  if (!open) listReading = null;
+});
+
 /* ── 仲裁身份与统一活动判断（F01；定义在此处供下面带 immediate 的焦点 watch 使用）── */
 const APPROVAL_MODAL_ID = "unified-approval";
 /** 被挡住时的一句话说明（注册成功后清掉，不留下过期提示）。 */
@@ -290,6 +378,8 @@ watch(
     if (!visible && !resultsVisible) return;
     // 让位/挂起期间不要抢焦点：焦点由当前活动的那一层接管
     if (!active) return;
+    // 回到队列列表：焦点由 restoreListReading 放到对应行，不抢给详情容器
+    if (queueListOnly.value) return;
     await nextTick();
     if (!layerActive.value) return;
     const root = dialogRef.value;
@@ -856,7 +946,7 @@ function retryKnowledgeDetail() {
           <template v-if="unified.lastNotice">{{ unified.lastNotice }}</template>
           <template v-else>下面是其余等待你处理的申请；选中一条继续处理。</template>
         </p>
-        <div class="ua-list" role="list" aria-label="等待你处理的申请">
+        <div ref="listRef" class="ua-list" role="list" aria-label="等待你处理的申请">
           <button
             v-for="(queued, index) in items"
             :key="queued.key"
@@ -864,8 +954,9 @@ function retryKnowledgeDetail() {
             type="button"
             role="listitem"
             data-test="unified-approval-list-item"
+            :data-approval-key="queued.key"
             :aria-label="chipAria(index)"
-            @click="unified.switchTo(queued.key)"
+            @click="openFromList(queued.key)"
           >
             <span class="ua-list-kind mono">{{ groupLabel(index) }}</span>
             <span class="ua-list-text">{{ shortLabel(index) }}</span>
