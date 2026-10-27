@@ -7,7 +7,7 @@ export type CredentialModalMode = "create" | "edit" | "rotate";
  * 凭据弹窗：只负责「弹窗」这件事（遮罩、标题、进出场、焦点），
  * 表单本身与首次引导共用 `components/credentials/CredentialForm.vue`。
  */
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import CredentialForm from "../../components/credentials/CredentialForm.vue";
 import QIconButton from "../../components/ui/QIconButton.vue";
@@ -22,7 +22,12 @@ import { useModalArbiterStore } from "../../stores/modalArbiter";
  */
 const CREDENTIAL_MODAL_ID = "qio-credential-modal";
 const arbiter = useModalArbiterStore();
-const hiddenBy = computed(() => arbiter.hiddenBy(CREDENTIAL_MODAL_ID));
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ * 被更高优先级窗口盖住或关闭询问挂起时只 v-show 隐藏：已填写的密钥草稿与焦点顺序保留，
+ * 但不可交互/不可聚焦，也不抢 Esc/Tab。
+ */
+const layerVisible = computed(() => arbiter.isVisible(CREDENTIAL_MODAL_ID));
 
 const props = defineProps<{
   mode: CredentialModalMode;
@@ -80,8 +85,8 @@ function focusables(): HTMLElement[] {
 }
 
 function onKeydown(event: KeyboardEvent) {
-  // 被更高层弹窗（关闭询问等）暂时隐藏时：键盘事件不落在这个已经看不见的弹窗里。
-  if (hiddenBy.value) return;
+  // 让位期间（更高优先级窗口 / 关闭询问挂起）：键盘事件不落在这个已经看不见的弹窗里。
+  if (!layerVisible.value) return;
   if (event.key === "Escape") {
     event.stopPropagation();
     emit("cancel");
@@ -117,6 +122,14 @@ onMounted(() => {
   lastFocused = document.activeElement as HTMLElement | null;
   firstFocusable()?.focus();
 });
+/** 重新成为活动层（更高优先级关闭 / 挂起解除）：焦点回到表单里，不留在页面外。 */
+watch(layerVisible, async (visible) => {
+  if (!visible) return;
+  await nextTick();
+  if (dialog.value?.contains(document.activeElement)) return;
+  firstFocusable()?.focus();
+});
+
 onUnmounted(() => {
   arbiter.close(CREDENTIAL_MODAL_ID);
   // 关闭后把焦点还给打开弹窗的那个按钮，键盘用户不会掉到页面开头
@@ -126,11 +139,11 @@ onUnmounted(() => {
 
 <template>
   <div
-    v-show="!hiddenBy"
+    v-show="layerVisible"
     class="modal-mask"
     :class="{ leaving: props.leaving }"
-    :aria-hidden="hiddenBy ? 'true' : undefined"
-    :inert="hiddenBy ? true : undefined"
+    :aria-hidden="layerVisible ? undefined : 'true'"
+    :inert="layerVisible ? undefined : true"
     @click.self="emit('cancel')"
     @keydown="onKeydown"
   >

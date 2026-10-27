@@ -65,17 +65,22 @@ const open = computed(() => mode.value !== null);
  * 三者任一成立都只是「暂不显示」，不是取消这次决定；恢复到能显示时自动回到这里。
  */
 const arbiterBlocked = ref(false);
-const suspendedBy = computed(() => arbiter.hiddenBy(ARBITER_ID));
+/** 整体挂起（关闭询问等）的挂起方：只用于说明「为什么现在不显示」。 */
+const suspendedBy = computed(() => (open.value ? arbiter.hiddenBy(ARBITER_ID) : null));
+/** 被更高优先级窗口盖住的那一方（本窗口已登记但不是栈顶活动项）。 */
 const coveredByOther = computed(() => {
-  if (!open.value) return "";
-  const active = arbiter.active;
-  if (!active || active.id === ARBITER_ID) return "";
-  return active.id;
+  if (!open.value || !arbiter.isOpen(ARBITER_ID)) return "";
+  const activeId = arbiter.activeId;
+  return activeId && activeId !== ARBITER_ID ? activeId : "";
 });
-const deferred = computed(
-  () => open.value && (arbiterBlocked.value || Boolean(suspendedBy.value) || Boolean(coveredByOther.value)),
-);
-const visible = computed(() => open.value && !deferred.value);
+/**
+ * 统一活动判断（F01，契约 §3.1）：已打开 && 无整体挂起 && 是栈顶活动项。
+ * 覆盖三种让位：注册被拒、被更高优先级盖住、被 suspendAll 整体挂起。
+ * 只 v-show 隐藏：DOM、未提交的选择与状态都保留。
+ */
+const visible = computed(() => open.value && arbiter.isActive(ARBITER_ID));
+/** 暂时让位（不取消这次决定）：给用户一句原因，条件恢复后自动回来。 */
+const deferred = computed(() => open.value && !visible.value);
 const deferredText = computed(() => {
   const waiting = mode.value === "revert" ? "撤回决定" : "影响确认";
   if (suspendedBy.value || arbiterBlocked.value || coveredByOther.value) {
@@ -105,7 +110,7 @@ function syncArbiter(): void {
 }
 
 watch(
-  [open, mode, () => arbiter.count, () => arbiter.active?.id ?? "", () => arbiter.suspendedBy],
+  [open, mode, () => arbiter.count, () => arbiter.activeId, () => arbiter.suspendedBy],
   syncArbiter,
   { immediate: true },
 );
@@ -414,6 +419,10 @@ function bindKeyboard(on: boolean): void {
 }
 
 let keyboardBound = false;
+/**
+ * 键盘与焦点跟随「真正活动」：被更高优先级盖住 / 整体挂起时解绑监听（不抢 Esc/Tab），
+ * 恢复活动时重新绑定并把焦点放回框内（不能让焦点留在页面外）。
+ */
 watch(
   visible,
   async (isVisible, wasVisible) => {
@@ -421,10 +430,13 @@ watch(
     if (isVisible === wasVisible) return;
     if (isVisible) {
       const active = document.activeElement as HTMLElement | null;
-      lastFocused = active && active !== document.body ? active : null;
+      if (!active || active === document.body || !dialogEl.value?.contains(active)) {
+        lastFocused = active && active !== document.body ? active : lastFocused;
+      }
       bindKeyboard(true);
       keyboardBound = true;
       await nextTick();
+      if (!visible.value) return;
       firstAction.value?.focus();
       return;
     }
@@ -432,12 +444,23 @@ watch(
       bindKeyboard(false);
       keyboardBound = false;
     }
-    const target = lastFocused;
-    lastFocused = null;
-    if (target && document.contains(target) && typeof target.focus === "function") target.focus();
+    // 让位/挂起：焦点交给当前活动的那一层，不在这里还给页面（恢复可见时再回到框内）
   },
   { immediate: true },
 );
+
+/** 窗口真正结束（确认 / 取消 / 撤回处理后）：焦点还给打开前的元素。 */
+watch(open, (isOpen, wasOpen) => {
+  if (isOpen || !wasOpen) return;
+  if (typeof document === "undefined") return;
+  if (keyboardBound) {
+    bindKeyboard(false);
+    keyboardBound = false;
+  }
+  const target = lastFocused;
+  lastFocused = null;
+  if (target && document.contains(target) && typeof target.focus === "function") target.focus();
+});
 
 // 模式切换（影响确认 → 剩余撤回，或反过来）时清掉上一模式的局部说明；真实结果保留
 watch(mode, () => {

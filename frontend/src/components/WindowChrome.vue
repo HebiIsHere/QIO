@@ -315,6 +315,11 @@ function cancelAsk() {
  * - 先向仲裁器注册；被 false 挡住时**不强行显示**（壳 1.8s 后会兜底隐藏到托盘）；
  * - 注册成功后 suspendAll("close-ask")：业务弹窗只隐藏（v-show），DOM/状态/草稿都不丢；
  * - 取消 / 完成（成功或失败）后 resumeAll()，并让排队的通知重新有机会显示。
+ *
+ * F01 说明：close-ask 自己是「整体挂起」的发起方，因此它的显示条件**不能**用
+ * arbiter.isActive/isVisible 判断（suspendAll 之后栈内任何项都不是活动项，包括发起者）。
+ * 它的可见条件就是「open() 成功 + askOpen」：同一时刻它是唯一最高优先级层，
+ * 注册被拒时不会显示。
  */
 function enterCloseAsk(): boolean {
   if (askOpen.value) return true;

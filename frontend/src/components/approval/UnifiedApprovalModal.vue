@@ -8,7 +8,7 @@
  * - 关闭/稍后只隐藏，不批准也不拒绝；stale（后端已无此审批）只给「知道了」；
  * - 系统事实与模型说明的分工完全复用 ApprovalFacts（不另写一套显示规则）。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   useApprovalsStore,
   approvalFacts,
@@ -19,6 +19,7 @@ import {
 } from "../../stores/approvals";
 import { approvalStateLabel } from "../../services/approvalLifecycle";
 import {
+  approvalExpiryRemaining,
   isExpiredApproval,
   TOOL_ORIGIN_LABELS,
   toolSourceFacts,
@@ -51,6 +52,116 @@ const activeIndex = computed(() => unified.activeIndex);
 const busy = computed(() => !!item.value && unified.submittingKey === item.value.key);
 const dialogRef = ref<HTMLElement | null>(null);
 
+/* ── F09：审批列表的阅读位置（真实 DOM 滚动位置；详情替换列表时 DOM 会被销毁）──── */
+interface ListReadingPosition {
+  /** 离开列表时的真实 scrollTop。 */
+  scrollTop: number;
+  /** 可视锚点：哪一条申请（稳定身份，不用索引）。 */
+  anchorKey: string;
+  /** 锚点相对列表内容顶部的布局位置（offsetTop 差，不含滚动）。 */
+  anchorTop: number;
+  /** 离开时的队列顺序：锚点已被处理移除时用它找合理相邻项。 */
+  order: string[];
+}
+const listRef = ref<HTMLElement | null>(null);
+let listReading: ListReadingPosition | null = null;
+
+function listItems(): HTMLElement[] {
+  const list = listRef.value;
+  if (!list) return [];
+  return Array.from(list.querySelectorAll<HTMLElement>("[data-approval-key]"));
+}
+
+function itemTopInList(list: HTMLElement, element: HTMLElement): number {
+  return element.offsetTop - list.offsetTop;
+}
+
+/** 从列表点进详情前：记下真实可视位置（稳定身份 + 布局偏移 + 队列顺序）。 */
+function openFromList(key: string): void {
+  const list = listRef.value;
+  if (list) {
+    const anchor = listItems().find((element) => element.dataset.approvalKey === key) ?? null;
+    listReading = {
+      scrollTop: list.scrollTop,
+      anchorKey: key,
+      anchorTop: anchor ? itemTopInList(list, anchor) : 0,
+      order: listItems().map((element) => element.dataset.approvalKey ?? ""),
+    };
+  }
+  unified.switchTo(key);
+}
+
+/**
+ * 回到列表：恢复真实 DOM 滚动位置与焦点。
+ *
+ * - 锚点还在：按同一布局偏移换算（期间插入了新申请也不会把用户送回顶部）；
+ * - 锚点已被处理移除：恢复并把焦点放到相邻项（同位置接班项优先，其次上一项）；
+ * - 只恢复列表，不自动进入任何详情（不连弹）。
+ */
+function restoreListReading(): void {
+  const saved = listReading;
+  listReading = null;
+  const list = listRef.value;
+  if (!saved || !list) return;
+  const elements = listItems();
+  if (!elements.length) return;
+  const byKey = new Map(elements.map((element) => [element.dataset.approvalKey ?? "", element]));
+  let target: HTMLElement | null = byKey.get(saved.anchorKey) ?? null;
+  if (!target) {
+    const index = saved.order.indexOf(saved.anchorKey);
+    for (let i = Math.max(0, index); i < saved.order.length && !target; i += 1) {
+      target = byKey.get(saved.order[i] ?? "") ?? null;
+    }
+    for (let i = Math.min(index - 1, saved.order.length - 1); i >= 0 && !target; i -= 1) {
+      target = byKey.get(saved.order[i] ?? "") ?? null;
+    }
+  }
+  if (!target) return;
+  // 真实 DOM 滚动位置：让目标条目保持离开时的布局偏移
+  const desired = Math.max(0, Math.round(saved.scrollTop + (itemTopInList(list, target) - saved.anchorTop)));
+  target.focus({ preventScroll: true });
+  list.scrollTop = desired;
+  // 焦点/布局抖动后以我们算出值为准（不用 scrollIntoView，避免跳回顶部）
+  list.scrollTop = desired;
+}
+
+watch(
+  () => queueListOnly.value,
+  async (isList) => {
+    if (!isList) return;
+    await nextTick();
+    if (!queueListOnly.value) return;
+    restoreListReading();
+  },
+  { immediate: true },
+);
+/** 面板关掉后不把上一次的阅读位置带到下一次打开。 */
+watch(panelOpen, (open) => {
+  if (!open) listReading = null;
+});
+
+/* ── 仲裁身份与统一活动判断（F01；定义在此处供下面带 immediate 的焦点 watch 使用）── */
+const APPROVAL_MODAL_ID = "unified-approval";
+/** 被挡住时的一句话说明（注册成功后清掉，不留下过期提示）。 */
+const ARBITER_BLOCKED_NOTICE = "另一个窗口正在等待你的确认，先处理它；这项申请不会丢。";
+/** 想显示但仲裁还没放行（被同/更高优先级挡住）：不渲染，但当前申请与队列都保留。 */
+const arbiterBlocked = ref(false);
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ *
+ * 被影响确认等更高优先级窗口盖住、或被关闭询问整体挂起时 → false。
+ * 此时只 v-show 隐藏：DOM、当前申请、草稿与阅读位置都保留，
+ * 但不可交互/不可聚焦、也不再抢 Esc 与 Tab。
+ */
+const layerActive = computed(() => panelOpen.value && arbiter.isActive(APPROVAL_MODAL_ID));
+/** 让位原因（挂起方 / 盖住本层的活动窗口）：用于自检属性与无障碍说明。 */
+const hiddenByLayer = computed(() => {
+  if (!panelOpen.value) return "";
+  if (arbiter.suspended) return arbiter.suspended.by;
+  const top: string | null = arbiter.activeId;
+  return top && top !== APPROVAL_MODAL_ID ? top : "";
+});
+
 const toolFacts = computed(() =>
   item.value?.approval ? approvalFacts(item.value.approval) : null,
 );
@@ -66,11 +177,76 @@ const extraConfirm = ref(false);
 
 /** 重点确认（会删除/覆盖）需要额外一次勾选，降低误点。 */
 const needExtraConfirm = computed(() => toolFacts.value?.sideEffect === "destructive");
+
+/* ── F08：到期时钟（到期事实随时间推进，不等后端再推事件）──────────────── */
+/** 本地观察时间：由到期定时器 / 恢复可见 / 回到前台推进（只用于展示与按钮状态）。 */
+const nowMs = ref(Date.now());
+let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearExpiryClock(): void {
+  if (expiryTimer === null) return;
+  clearTimeout(expiryTimer);
+  expiryTimer = null;
+}
+
+/** 按当前申请的真实期限排一次定时器（到点只推进本地观察时间，绝不改写期限）。 */
+function scheduleExpiryClock(): void {
+  clearExpiryClock();
+  const remaining = approvalExpiryRemaining(item.value?.approval ?? null, Date.now());
+  if (remaining === null || remaining <= 0) return;
+  expiryTimer = setTimeout(() => {
+    expiryTimer = null;
+    nowMs.value = Date.now();
+    // 定时器可能因为系统时间抖动提前一毫秒：到点再核一次，绝不提前说「过期」
+    scheduleExpiryClock();
+  }, Math.min(remaining + 1, 2_147_483_647));
+}
+
+/**
+ * 清理 / 重建时钟：
+ * - 让位、挂起、关闭时不空转（定时器清掉）；
+ * - 恢复可见、切回申请、窗口回到前台时先立即核对实际期限，再按剩余时间重排。
+ */
+function syncExpiryClock(): void {
+  nowMs.value = Date.now();
+  if (!panelOpen.value || !layerActive.value) {
+    clearExpiryClock();
+    return;
+  }
+  scheduleExpiryClock();
+}
+
+function onDocumentVisibilityChange(): void {
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+    // 后台不空转：先清掉定时器，回到前台时立即按真实期限核对并重排
+    clearExpiryClock();
+    return;
+  }
+  syncExpiryClock();
+}
+
+watch(
+  () => [
+    item.value?.key ?? null,
+    String(item.value?.approval?.expiresAt ?? ""),
+    String(item.value?.approval?.state ?? ""),
+    layerActive.value,
+    panelOpen.value,
+  ] as const,
+  syncExpiryClock,
+  { immediate: true },
+);
+
+onMounted(() => {
+  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
+  syncExpiryClock();
+});
+
 /**
  * 到期（真实期限来自后端，前端不放宽）：到期后不再提供「批准」，只说明事实。
  * 本地钟只是最后一道保护，服务端同样会拒绝。
  */
-const expired = computed(() => isExpiredApproval(item.value?.approval ?? null));
+const expired = computed(() => isExpiredApproval(item.value?.approval ?? null, nowMs.value));
 const canApprove = computed(
   () => !busy.value && !expired.value && (!needExtraConfirm.value || extraConfirm.value),
 );
@@ -201,13 +377,41 @@ watch(
 );
 
 watch(
-  () => [item.value?.key ?? null, unified.visible, unified.resultsVisible] as const,
-  async ([, visible, resultsVisible]) => {
+  () => [item.value?.key ?? null, unified.visible, unified.resultsVisible, layerActive.value] as const,
+  async ([, visible, resultsVisible, active]) => {
     if (!visible && !resultsVisible) return;
+    // 让位/挂起期间不要抢焦点：焦点由当前活动的那一层接管
+    if (!active) return;
+    // 回到队列列表：焦点由 restoreListReading 放到对应行，不抢给详情容器
+    if (queueListOnly.value) return;
     await nextTick();
-    dialogRef.value?.focus();
+    if (!layerActive.value) return;
+    const root = dialogRef.value;
+    if (root && !root.contains(document.activeElement)) root.focus({ preventScroll: true });
   },
   { immediate: true },
+);
+
+/**
+ * F01 让位与恢复：
+ * - 被更高优先级盖住 / 整体挂起时，焦点不能留在已经隐藏的层里（否则它会继续抢 Esc/Tab）；
+ * - 高优先级窗口关闭后重新成为活动层：焦点回到本层焦点范围（不甩到页面外）。
+ */
+watch(
+  () => layerActive.value,
+  async (active, wasActive) => {
+    if (active && !wasActive) {
+      await nextTick();
+      if (!layerActive.value) return;
+      const root = dialogRef.value;
+      if (root && !root.contains(document.activeElement)) root.focus({ preventScroll: true });
+      return;
+    }
+    if (!active) {
+      const current = document.activeElement as HTMLElement | null;
+      if (current && dialogRef.value?.contains(current)) current.blur();
+    }
+  },
 );
 
 /** 关闭时把焦点还给被打断的元素（后台审批可能叠在别的输入上）。 */
@@ -232,6 +436,9 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  // F08：卸载时清掉到期时钟与前台监听，不留空转定时器
+  clearExpiryClock();
+  document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
   if (arbiter.isOpen(APPROVAL_MODAL_ID)) arbiter.close(APPROVAL_MODAL_ID);
   const target = restoreFocusTo;
   restoreFocusTo = null;
@@ -239,38 +446,49 @@ onBeforeUnmount(() => {
 });
 
 /**
- * 中央弹窗仲裁（契约 §3.2）：打开必须先注册，被更高层弹窗（影响确认 / 关闭询问）挡住时
+ * 中央弹窗仲裁（契约 §3.1/§3.2）：打开必须先注册，被更高层弹窗（影响确认 / 关闭询问）挡住时
  * 不得强行显示；关闭时注销。绝不用 z-index 抢层。
  */
-const APPROVAL_MODAL_ID = "unified-approval";
-/**
- * 更上层触发器（关闭询问等）让业务弹窗「让位」：DOM 与状态保留、只隐藏（v-show），
- * 取消/结束后自动恢复原来的上下文与焦点归还逻辑。
- */
-const hiddenByHigherLayer = computed(() => arbiter.hiddenBy(APPROVAL_MODAL_ID));
-watch(
-  panelOpen,
-  (open) => {
-    if (open) {
-      if (arbiter.isOpen(APPROVAL_MODAL_ID)) return;
-      const accepted = arbiter.open({
-        id: APPROVAL_MODAL_ID,
-        kind: "approval",
-        dismissible: true,
-      });
-      if (!accepted) {
-        // 有更高层的中央弹窗：这次不显示（申请保留），先处理那个窗口
-        unified.lastNotice = "另一个窗口正在等待你的确认，先处理它；这项申请不会丢。";
-        unified.closePanel();
-      }
-      return;
-    }
+function syncArbiterRegistration(): void {
+  if (!panelOpen.value) {
     if (arbiter.isOpen(APPROVAL_MODAL_ID)) arbiter.close(APPROVAL_MODAL_ID);
+    arbiterBlocked.value = false;
+    return;
+  }
+  if (arbiter.isOpen(APPROVAL_MODAL_ID)) {
+    // 幂等：已经在栈里（可能正被更高层盖住），保持注册即可
+    arbiterBlocked.value = false;
+    return;
+  }
+  const accepted = arbiter.open({
+    id: APPROVAL_MODAL_ID,
+    kind: "approval",
+    dismissible: true,
+  });
+  arbiterBlocked.value = !accepted;
+  if (!accepted) {
+    unified.lastNotice = ARBITER_BLOCKED_NOTICE;
+    return;
+  }
+  // 挡路窗口结束后真正进来了：撤掉刚才那句「先处理它」
+  if (unified.lastNotice === ARBITER_BLOCKED_NOTICE) unified.lastNotice = "";
+}
+
+watch(panelOpen, syncArbiterRegistration, { immediate: true });
+/**
+ * 挡路窗口关闭 / 挂起解除后自动补注册：用户已经表达了「要处理这项申请」，
+ * 条件恢复就自动进入，不必再点一次。已在栈里时是幂等 no-op。
+ */
+watch(
+  () => [arbiter.activeId, arbiter.suspendedBy] as const,
+  () => {
+    if (panelOpen.value) syncArbiterRegistration();
   },
-  { immediate: true },
 );
 
 function onKeydown(event: KeyboardEvent) {
+  // 让位/挂起期间本层不可交互：不处理 Esc/Tab，也不阻止默认（按键留给当前活动层）
+  if (!layerActive.value) return;
   if (event.key === "Escape") {
     event.preventDefault();
     // Esc = 关闭/稍后，不做出任何决定（结果视图同样只关闭）
@@ -380,11 +598,13 @@ function retryKnowledgeDetail() {
 
 <template>
   <div
-    v-if="panelOpen"
-    v-show="!hiddenByHigherLayer"
+    v-if="panelOpen && !arbiterBlocked"
+    v-show="layerActive"
     class="ua-mask"
     data-unified-approval-modal
-    data-hidden-by="hiddenByHigherLayer ?? undefined"
+    :data-hidden-by="hiddenByLayer || undefined"
+    :aria-hidden="layerActive ? undefined : 'true'"
+    :inert="layerActive ? undefined : true"
     @click.self="unified.close()"
   >
     <section
@@ -730,7 +950,7 @@ function retryKnowledgeDetail() {
           <template v-if="unified.lastNotice">{{ unified.lastNotice }}</template>
           <template v-else>下面是其余等待你处理的申请；选中一条继续处理。</template>
         </p>
-        <div class="ua-list" role="list" aria-label="等待你处理的申请">
+        <div ref="listRef" class="ua-list" role="list" aria-label="等待你处理的申请">
           <button
             v-for="(queued, index) in items"
             :key="queued.key"
@@ -738,8 +958,9 @@ function retryKnowledgeDetail() {
             type="button"
             role="listitem"
             data-test="unified-approval-list-item"
+            :data-approval-key="queued.key"
             :aria-label="chipAria(index)"
-            @click="unified.switchTo(queued.key)"
+            @click="openFromList(queued.key)"
           >
             <span class="ua-list-kind mono">{{ groupLabel(index) }}</span>
             <span class="ua-list-text">{{ shortLabel(index) }}</span>

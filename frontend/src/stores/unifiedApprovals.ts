@@ -237,6 +237,26 @@ export function isExpiredApproval(
   return Number.isFinite(at) && at <= now;
 }
 
+/**
+ * 距离这条审批到期的毫秒数（只读后端给出的真实期限）。
+ *
+ * F08：界面到期的**时钟**用它排定时器，不依赖后端再推事件。
+ * 返回 null = 没有可解析的期限 / 状态已经是 expired（不需要再排时钟）；
+ * 返回 0 = 已经到期但状态还没标（界面应立刻按事实显示，不在前端改写期限）。
+ */
+export function approvalExpiryRemaining(
+  approval: ApprovalItem | null | undefined,
+  now: number = Date.now(),
+): number | null {
+  if (!approval) return null;
+  if (String(approval.state ?? "").trim() === "expired") return null;
+  const raw = String(approval.expiresAt ?? "").trim();
+  if (!raw) return null;
+  const at = Date.parse(raw);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, at - now);
+}
+
 export interface KnowledgeSubmitError {
   message: string;
   code: string;
