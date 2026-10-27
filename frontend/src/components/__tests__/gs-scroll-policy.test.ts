@@ -171,8 +171,13 @@ describe("星球页（D6）：横向溢出按「修布局 + 去掉横向滚动�
     for (const rel of ["components/planet/MemoryTab.vue", "components/planet/GlobalSearchPanel.vue"]) {
       const s = read(rel);
       expect(s, rel).toContain("v-qio-scrollbar");
-      expect(s, rel).not.toMatch(/overflow: hidden/);
+      // 原生滚动条外观与自绘滚动条在这两处同样不允许
+      expect(s, rel).not.toMatch(/::-webkit-scrollbar|scrollbar-width\s*:/);
     }
+    // 「不再用 overflow:hidden 兜底横向」只约束**滚动容器本身**：
+    // 结果行第二行用 overflow:hidden + text-overflow 做单行省略，不是滚动层（这里按选择器判定）
+    expect(ruleBody(read("components/planet/GlobalSearchPanel.vue"), ".gs-scroll")).not.toContain("overflow: hidden");
+    expect(ruleBody(read("components/planet/MemoryTab.vue"), ".mt-scroll")).not.toContain("overflow: hidden");
   });
 });
 

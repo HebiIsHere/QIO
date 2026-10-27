@@ -83,7 +83,7 @@ describe("全局搜索：范围与分组", () => {
     await search(w, "薄荷");
     await w.find('[data-search-id="k1"]').trigger("click");
     expect(w.emitted("open")?.[0]).toEqual([
-      { kind: "knowledge", id: "k1", title: "薄荷需要充足阳光", note: "知识" },
+      { kind: "knowledge", id: "k1", title: "薄荷需要充足阳光", note: "常识 · 生效" },
     ]);
   });
 

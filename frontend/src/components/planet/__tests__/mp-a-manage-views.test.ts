@@ -102,6 +102,40 @@ describe("全局搜索分组（话题 / 知识 / 实体）", () => {
     const groups = buildSearchGroups(source, "mentha");
     expect(groups.entities.map((h) => h.id)).toEqual(["e1"]);
   });
+
+  it("结果行第二行不再重复类型名，改成有用信息", () => {
+    const topics = buildSearchGroups(
+      { topics: [topic({ topic_id: "t1", title: "薄荷种植", fragment_count: 7, last_activity: "2026-10-27T03:00:00Z" })], knowledge: [], entities: [] },
+      "薄荷",
+    );
+    expect(topics.topics[0].note).toContain("7 片段");
+    expect(topics.topics[0].note).toContain("最近活动");
+    expect(topics.topics[0].note).not.toBe("话题");
+
+    const knowledge = buildSearchGroups(
+      {
+        topics: [],
+        knowledge: [
+          { id: "k1", category: "user_profile", state: "verified", content: "薄荷偏好", confidence: null, topic_id: null, topic_name: "薄荷种植", created_at: "", updated_at: "" } as KnowledgeItem,
+        ],
+        entities: [],
+      },
+      "薄荷",
+    );
+    expect(knowledge.knowledge[0].note).toBe("用户画像 · 已验证 · 薄荷种植");
+
+    const entities = buildSearchGroups(
+      {
+        topics: [],
+        knowledge: [],
+        entities: [
+          { id: "e1", node_id: "n1", name: "薄荷", aliases: [], kind: null, summary: "", attributes: [{ key: "a", value: "b", confidence: 1 }, { key: "c", value: "d", confidence: 1 }], relations: [{ type: "属于", target: "香草" }], state: "active", created_at: "", updated_at: "" } as EntityCard,
+        ],
+      },
+      "薄荷",
+    );
+    expect(entities.entities[0].note).toBe("2 属性 · 1 关系");
+  });
 });
 
 describe("讨论记录分页拼接", () => {
