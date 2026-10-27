@@ -317,11 +317,26 @@ def test_submission_of_another_board_is_rejected(client, db_conn):
 
 
 def test_next_chat_binds_resume_of_waiting_submission(client, db_conn):
-    """§13.3：等待中的板面，下一条聊天消息自动续作原提交并保留等待。"""
+    """§13.3：等待中的板面，下一条聊天消息自动续作原提交并保留等待与原话题。"""
     submission = _submission()
-    client_obj, _ctx = client
+    client_obj, ctx = client
     _seed_content_board(db_conn)
+    # 真实完整的原提交绑定：生产路径里提交受理时就保存了当时的话题。
+    # 缺这条绑定的数据不是合法成功数据（FU3 明确拒绝），修复前本用例因此得到 400。
+    original_topic = ctx.current_topic()
+    # 界面当前话题故意切到另一个**真实话题**：续作只能写回原提交保存的话题，
+    # 当前话题不得覆盖它（与确认 / 恢复 / 重试同一规则）。
+    switched_topic = ctx.topics.nodes.create_topic("P3-D 续作时的界面当前话题")
+    ctx.navigation.anchors.set_active(switched_topic.id)
+    assert ctx.current_topic() == switched_topic.id
+
     submission_id = _add_submission(db_conn)
+    submission.bind_submission_turn(
+        db_conn,
+        submission_id=submission_id,
+        turn_id="turn_first",
+        resume_state={"kind": "submission", "topicId": original_topic},
+    )
     _record_waiting(db_conn, submission_id=submission_id, turn_id="turn_first")
 
     reply = client_obj.post("/api/turns", json=_chat_payload(
@@ -334,6 +349,13 @@ def test_next_chat_binds_resume_of_waiting_submission(client, db_conn):
         f"{CLAUSE}：下一条消息必须绑定为原提交的续作（resume=true）：{body}")
     assert str(body.get("submission_id") or "") == submission_id, (
         f"{CLAUSE}：续作必须绑定到原 submission_id：{body}")
+    assert str(body.get("topic_id") or "") == original_topic, (
+        f"{CLAUSE}：续作必须写回原提交保存的原话题，当前话题不得覆盖：{body}")
+    binding = submission.submission_binding(db_conn, submission_id)
+    assert binding is not None, (
+        f"{CLAUSE}：续作受理后必须保留原提交的绑定（实际 {binding!r}）")
+    assert str(binding["resumeState"].get("topicId") or "") == original_topic, (
+        f"{CLAUSE}：续作不得改写原提交保存的原话题：{binding}")
     waiting = submission.get_waiting(db_conn, BOARD)
     assert waiting is not None, (
         f"{CLAUSE}：回答不足 / 未由工具解除时不得机械清除等待（实际 {waiting!r}）")
