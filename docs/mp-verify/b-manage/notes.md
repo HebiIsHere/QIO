@@ -2,10 +2,11 @@
 
 ## 已知限制（诚实记录）
 
-1. **`MemoryPendingPanel.vue` 仍是基线实现**：本次交付的 `PendingItems.vue` / `MaintenanceRecords.vue`
-   取代了它的两个视图，但 B 不修改 A 独占的 `PlanetView.vue`，所以旧文件暂时保留（避免集成时
-   旧挂载点编译失败）。A 的 PlanetView 切到新组件后，`MemoryPendingPanel.vue` 与它的两份测试
-   （`MemoryPendingPanel.test.ts` / `uf-maintenance-restore-dialog.test.ts`）可以一并删除。
+1. **`MemoryPendingPanel.vue` 已在集成阶段删除**：A 的 `ManagementArea.vue` 已切到
+   `PendingItems.vue` / `MaintenanceRecords.vue`，基线单体组件与它的 `MemoryPendingPanel.test.ts`
+   一并移除；同等的行为断言已迁移到 `PendingItems.test.ts` / `MaintenanceRecords.test.ts`，
+   整理记录中央弹窗的原始用例改写为挂载 `MaintenanceRecords.vue`（`uf-maintenance-restore-dialog.test.ts`，
+   断言意图全部保留）。
 2. **实体卡的 `pending_relations` 没有读写端点**：`/api/entities/candidates` 只暴露
    `field_meta.pending`。所以「待处理」的数量与清单只统计可处理的两类（记忆待确认 + 实体字段候选），
    不把用户无法处理的 `pending_relations` 计成一个假待办。要做需要后端补一个「确认关系目标」端点，

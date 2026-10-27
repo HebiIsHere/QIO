@@ -18,7 +18,6 @@ import {
   type MaintenanceBatchSummary,
   type MaintenanceRestoreResult,
 } from "../../services/api";
-import QConfirm from "../ui/QConfirm.vue";
 import QIcon from "../ui/QIcon.vue";
 import MaintenanceRestoreDialog, { type RestoreDialogItem } from "./MaintenanceRestoreDialog.vue";
 import { useModalArbiterStore } from "../../stores/modalArbiter";

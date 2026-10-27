@@ -228,26 +228,42 @@ def test_migration_modules_export_frozen_shape(module_name, number):
 
 
 def test_frontend_has_memory_pending_entry():
-    """§12.5：前端必须新增「记忆待确认」入口，并区分两类事项的处理程序。
+    """§12.5 / 改版 IA：前端必须有「待处理」「整理记录」入口，并按真实 kind 区分事项。
 
-    入口 = PlanetView 的页签 + 面板组件；只出现注释字样不算（必须在界面结构里）。
+    集成阶段（2026-10-27）把基线单体的 `MemoryPendingPanel.vue` 拆成两个组件：
+    - `PendingItems.vue`：待处理（知识建议 / 整理问题 / 实体更新候选，来源是两个真实接口）；
+    - `MaintenanceRecords.vue`：整理记录（批次、受影响条目、撤回/恢复）。
+    入口由 A 的 `ManagementArea.vue` 挂载（由 `PlanetView.vue` 引入），因此断言口径随结构
+    迁移，而不是放宽：仍要求入口真实存在于界面结构里、按 API 返回的 kind 区分事项、
+    动作集合来自服务端返回的 `actions`（不自行推断），整理记录仍走真实恢复接口。
     """
-    planet = _require_file(FRONTEND_SRC / "views" / "PlanetView.vue", "PlanetView.vue")
-    text = _read(planet)
-    assert "MemoryPendingPanel" in text, (
-        f"{CLAUSE}：PlanetView 未挂载「记忆待确认」面板组件")
-    entry_labels = ("记忆待确认", "待确认")
-    assert any(label in text for label in entry_labels), (
-        f"{CLAUSE}：PlanetView 未提供「待确认」页签入口")
-    panel = FRONTEND_SRC / "components" / "planet" / "MemoryPendingPanel.vue"
-    panel_text = _read(_require_file(panel, "MemoryPendingPanel.vue"))
-    for token in ("知识待审批", "后台维护提问"):
-        assert token in panel_text, (
-            f"{CLAUSE}：待确认面板必须区分两类事项（缺少「{token}」）")
-    # 两类事项的 handler 区分必须来自 API 读取模型字段，不自行推断
-    for token in ("knowledge_proposal", "maintenance_question", "handler"):
-        assert token in panel_text, (
-            f"{CLAUSE}：待确认面板必须按 kind / handler 区分处理程序（缺少 {token}）")
+    planet = _read(_require_file(FRONTEND_SRC / "views" / "PlanetView.vue", "PlanetView.vue"))
+    area_path = FRONTEND_SRC / "components" / "planet" / "ManagementArea.vue"
+    area = _read(_require_file(area_path, "ManagementArea.vue"))
+    entry_text = planet + "\n" + area
+    for token in ("PendingItems", "MaintenanceRecords"):
+        assert token in entry_text, (
+            f"{CLAUSE}：前端未挂载「{token}」入口组件")
+    assert any(label in entry_text for label in ("待处理", "整理记录")), (
+        f"{CLAUSE}：前端未提供「待处理 / 整理记录」入口")
+    pending = _read(
+        _require_file(FRONTEND_SRC / "components" / "planet" / "PendingItems.vue", "PendingItems.vue"))
+    # 三类事项来自真实接口的 kind 字段（不自行推断类别）
+    for token in ("knowledge_proposal", "maintenance_question", "entity_candidate", "kind"):
+        assert token in pending, (
+            f"{CLAUSE}：待处理清单必须按 API 的 kind 区分事项（缺少 {token}）")
+    # 动作集合来自服务端返回的 actions，而不是界面自己猜「能不能点」
+    assert "actions" in pending, (
+        f"{CLAUSE}：待处理清单的动作集合必须来自 API 的 actions 字段")
+    records = _read(
+        _require_file(
+            FRONTEND_SRC / "components" / "planet" / "MaintenanceRecords.vue",
+            "MaintenanceRecords.vue",
+        )
+    )
+    for token in ("listMaintenanceBatches", "previewMaintenanceRestore", "restoreMaintenance"):
+        assert token in records, (
+            f"{CLAUSE}：整理记录必须使用真实的批次 / 预览 / 恢复接口（缺少 {token}）")
 
 
 def test_frontend_source_filter_uses_api_label():
