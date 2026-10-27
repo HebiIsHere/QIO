@@ -225,8 +225,35 @@ async function runAction(browser, action) {
     return Number((Math.max(...after.map((f) => f.mp)) - trigger.mp).toFixed(4));
   })();
 
+  /**
+   * 逐帧明细 + 判读口径（Lead 定）：
+   * - 本机是 SwiftShader 软件渲染，单帧 25–110ms、偶发 200ms 长帧，长帧里进度自然走得远；
+   * - 所以「瞬移」不能用 |Δmp| 绝对值判断，而要**按帧时间归一化**：
+   *   normStep = Δmp / (dt / durationMs) —— 一个「理想帧长」里本该走的步进；
+   * - normStep > 1.6 才算可疑；同时把长帧单独列出（longFrames，dt > 60ms）。
+   */
+  const totalDuration = curve.length ? Math.max(1, curve[curve.length - 1].t - curve[0].t) : 1;
+  const perFrame = [];
+  const longFrames = [];
+  const teleports = [];
+  for (let i = 1; i < curve.length; i += 1) {
+    const dt = Number((curve[i].t - curve[i - 1].t).toFixed(1));
+    const step = Number((curve[i].mp - curve[i - 1].mp).toFixed(4));
+    const normStep = Number((step / (dt / totalDuration)).toFixed(3));
+    perFrame.push({ t: Math.round(curve[i].t), dt, step, normStep });
+    if (dt > 60) longFrames.push({ t: Math.round(curve[i].t), dt });
+    if (Math.abs(normStep) > 1.6) teleports.push({ t: Math.round(curve[i].t), dt, step, normStep });
+  }
+
   const summary = {
     action,
+    perFrame,
+    longFrames,
+    teleports,
+    verdict:
+      teleports.length === 0
+        ? "无瞬移（归一化步进全部 ≤1.6）"
+        : "存在可疑跳变：" + teleports.length + " 处（归一化步进 >1.6）",
     viewport: viewportArg,
     elapsedMs: elapsed,
     frames: curve.length,
