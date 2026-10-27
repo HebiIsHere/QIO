@@ -337,6 +337,17 @@ export interface KnowledgeItem {
   /** 主对话提议所在的轮次 id（后台提炼没有）。 */
   turn_id?: string | null;
   provenance_source?: string | null;
+  /** R02：当前版本号（修订用 CAS 的基准；旧响应可能没有，界面按「无版本」处理）。 */
+  version?: number | null;
+  /** 版本链身份：同一链条上的历史版本共享 chain_id。 */
+  chain_id?: string;
+  /** 这一版替换掉的上一版 id（第一版为 null）。 */
+  supersedes_id?: string | null;
+  /** 真实节点归属（"全局（你）/ 话题：X"由 scope 标签表达，这里给机器可读的 id）。 */
+  scope_nodes?: string[];
+  scope_global?: boolean;
+  /** 归属未解析（旧的无归属条目）：管理界面要能单独筛出来。 */
+  scope_unresolved?: boolean;
   created_at: string;
   updated_at: string;
 }
