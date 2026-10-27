@@ -451,14 +451,28 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     w.unmount();
   });
 
-  it("画布未命中话题点：管理区保持收起", async () => {
+  it("画布未命中话题点：管理区保持收起（内容预挂载，但不进入管理态）", async () => {
     mocks.handleClickMock.mockReturnValue(false);
     const w = mountView(newPinia());
     await flushPromises();
     await w.find("canvas").trigger("click", { clientX: 10, clientY: 20 });
     await nextTick();
     expect(w.classes()).not.toContain("managing");
-    expect(w.findComponent(ManagementArea).exists()).toBe(false);
+    expect(w.element.getAttribute("data-mp")).not.toBe("1.000");
+    expect(w.find("[data-mp-manage-toggle]").attributes("aria-expanded")).toBe("false");
+    w.unmount();
+  });
+
+  it("进场结束后管理区已预挂载：点开管理时不再临时挂载（不阻塞展开首帧）", async () => {
+    vi.useFakeTimers();
+    const w = mountView(newPinia());
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(1800);
+    await flushPromises();
+    expect(w.findComponent(ManagementArea).exists()).toBe(true);
+    // 预挂载 ≠ 展开：管理态还没开始，工具行按钮仍是「管理」
+    expect(w.find("[data-mp-manage-toggle]").attributes("aria-expanded")).toBe("false");
+    vi.useRealTimers();
     w.unmount();
   });
 
