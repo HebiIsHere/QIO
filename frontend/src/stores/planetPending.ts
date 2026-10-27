@@ -53,9 +53,11 @@ export const usePlanetPendingStore = defineStore("planetPending", () => {
     status.value = "loading";
     inflight = (async () => {
       // 两类真实来源并行读：一份失败不影响另一份的事实落地。
+      // 用 async 包装包住调用本身：残缺的替身/旧客户端让某个方法不存在时，也算「这一侧失败」，
+      // 而不是把 refresh() 变成未捕获的异常（数量读不到不该把面板一起弄崩）。
       const [memory, candidates] = await Promise.allSettled([
-        api.listMemoryPending({ limit: 500 }),
-        listAllCandidates(true, 500),
+        (async () => api.listMemoryPending({ limit: 500 }))(),
+        (async () => listAllCandidates(true, 500))(),
       ]);
       const problems: string[] = [];
       let memoryOk = false;
