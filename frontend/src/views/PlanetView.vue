@@ -376,6 +376,8 @@ watch(
 );
 /** 首次展开才挂载管理区，之后 v-show 保活（条目 / 草稿 / 浏览位置都不重置） */
 const managementMounted = ref(false);
+/** 管理区实例：Esc 分层时先问它「这一层能不能退」（搜索 / 待处理 / 整理记录先退一层） */
+const managementRef = ref<{ escapeLayer?: () => boolean } | null>(null);
 /** 外部落点请求：对话页记忆提醒 / 深链 / 页面工具行搜索 */
 const requestView = ref<PlanetTab | null>(null);
 const requestFocusId = ref<string | null>(null);
@@ -1095,8 +1097,11 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
-  // 最上层优先：管理区是用户刚打开的一层，Esc 先收它，再按才收起整个星球
+  // 最上层优先：管理区是用户刚打开的一层，Esc 先退它，再按才收起整个星球。
+  // 管理区内部还有一层（搜索 / 待处理 / 整理记录）：先退到进入前的标签页，再退整个管理区。
   if (managementOpen.value) {
+    const handled = managementRef.value?.escapeLayer?.() ?? false;
+    if (handled) return;
     manage.setExpanded(false);
     return;
   }
@@ -1551,6 +1556,7 @@ async function close() {
         <div class="panel-inner">
           <ManagementArea
             v-if="managementMounted"
+            ref="managementRef"
             :open="managementOpen"
             :request-view="requestView"
             :request-focus-id="requestFocusId"

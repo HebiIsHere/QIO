@@ -498,6 +498,33 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     w.unmount();
   });
 
+  it("Esc 分层（管理区内部）：搜索视图先关搜索，再退整个管理区", async () => {
+    const w = mountView(newPinia(), true);
+    await flushPromises();
+    await toggleManagement(w);
+    await withReducedMotion(async () => {
+      await w.find("[data-mp-search-open]").trigger("click");
+      await flushPromises();
+    });
+    expect(w.attributes("data-view")).toBe("search");
+    expect(w.classes()).toContain("managing");
+
+    // 一层：关搜索（管理区还在，回到进入搜索前的标签页）
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushPromises();
+    expect(w.attributes("data-view")).toBe("tabs");
+    expect(w.classes()).toContain("managing");
+
+    // 两层：退整个管理区
+    await withReducedMotion(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await nextTick();
+    });
+    expect(w.classes()).not.toContain("managing");
+    expect(w.emitted("close")).toBeFalsy();
+    w.unmount();
+  });
+
   it("管理按钮带真实未处理数量角标（来自 planetPending store）", async () => {
     mocks.apiMock.listMemoryPending.mockResolvedValue({ items: [], total: 2, truncated: false, maintenance_available: true });
     const w = mountView(newPinia());

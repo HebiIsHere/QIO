@@ -262,8 +262,26 @@ onMounted(() => {
   if (props.open) void pending.refresh();
 });
 
+/**
+ * Esc 分层的第一层（供 PlanetView 调用）：
+ * 在搜索视图 → 先关搜索回上一个管理上下文；在待处理/整理记录 → 先回原标签页；
+ * 已经在标签页上 → 返回 false，由父级收起整个管理区。
+ * 这样 Esc 永远是「一次退一层」，而不是从搜索里一按就整层收起。
+ */
+function escapeLayer(): boolean {
+  if (view.value === "search") {
+    closeSearch();
+    return true;
+  }
+  if (view.value !== "tabs") {
+    backFromView();
+    return true;
+  }
+  return false;
+}
+
 /** 供父级在收起管理区时保留现场：重新展开时不清空任何状态 */
-defineExpose({ selectTab });
+defineExpose({ selectTab, escapeLayer });
 </script>
 
 <template>
