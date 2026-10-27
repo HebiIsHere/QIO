@@ -258,7 +258,11 @@ def test_review_unavailable_is_not_silent_allow(app_client):
     client = app_client
     target = client.workspace / "unavailable.txt"
 
-    async def _boom(request):
+    def _boom(request):
+        # 必须是同步函数：_FakeReviewer.review 是 async，内部直接调用
+        # outcome_factory(request)（不 await）。这里写成 async 会返回一个
+        # 从未 await 的协程，测试会走「审查输出无效」分支而不是
+        # ReviewUnavailable 分支，并在收尾时报 RuntimeWarning。
         raise ReviewUnavailable("模型超时（受控）")
 
     ctx, requirement, reviewer = _install_reviewer(client, "整理一下工作区", outcome_factory=_boom)
