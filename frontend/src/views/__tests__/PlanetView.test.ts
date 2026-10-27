@@ -177,6 +177,7 @@ beforeEach(() => {
   attachedSession = null;
   resetPlanetSession();
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-motion");
   mocks.handleClickMock.mockReturnValue(false);
   mocks.goMock.mockImplementation(() => Promise.resolve());
   mocks.apiMock.listTopics.mockResolvedValue({ topics: TOPICS });
@@ -193,12 +194,29 @@ beforeEach(() => {
 });
 
 /**
- * 管理态的类名跟着**进度**走（契约 §4.1）：点开/收起后要等占位 transition 用 rAF 写一次
- * --mp，`.managing` 才会出现在根元素上。这里等两帧，测试不去假设 rAF 的实现细节。
+ * 切换管理区（展开/收起）。
+ *
+ * 为什么在「减少动态效果」下点：C 的 transition 在 reduced 下 setExpanded 一帧到位（契约要求），
+ * 而 jsdom 里 rAF 的时间戳与 performance.now 不同源，逐帧进度在单测里不可靠
+ * —— 真实动画路径由 docs/mp-verify/a-page 的浏览器截图 + data-mp 读数验证。
+ * 这里只切换类名/进度这一件事，顺便把「减少动态效果直接到位」也测掉。
  */
-async function waitFrame(ms = 80) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
+async function toggleManagement(w: ReturnType<typeof mountView>) {
+  document.documentElement.setAttribute("data-motion", "reduced");
+  await w.find("[data-mp-manage-toggle]").trigger("click");
   await nextTick();
+  document.documentElement.removeAttribute("data-motion");
+  await nextTick();
+}
+
+/** 在「减少动态效果」下执行一次动作（用于画布点击 / 搜索入口这类会展开管理区的路径） */
+async function withReducedMotion<T>(fn: () => Promise<T>): Promise<T> {
+  document.documentElement.setAttribute("data-motion", "reduced");
+  try {
+    return await fn();
+  } finally {
+    document.documentElement.removeAttribute("data-motion");
+  }
 }
 
 describe("PlanetView 相机联动", () => {
@@ -385,14 +403,10 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
   it("点管理：管理区展开（--mp / data-mp / managing），管理内容挂载在面板里", async () => {
     const w = mountView(newPinia());
     await flushPromises();
-    await w.find("[data-mp-manage-toggle]").trigger("click");
-    await nextTick();
+    await toggleManagement(w);
     expect(w.find("[data-mp-manage-toggle]").attributes("aria-expanded")).toBe("true");
-
-    await waitFrame();
     expect(w.classes()).toContain("managing");
-    expect(w.element.getAttribute("data-mp")).not.toBeNull();
-    expect(Number(w.element.getAttribute("data-mp"))).toBeGreaterThan(0);
+    expect(w.element.getAttribute("data-mp")).toBe("1.000");
     expect(w.findComponent(ManagementArea).exists()).toBe(true);
     expect(w.find("[data-view-panel=\"memory\"]").exists()).toBe(true);
     w.unmount();
@@ -401,19 +415,17 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
   it("管理区收起再展开：状态不重置（列表搜索词、已挂载的面板都保留）", async () => {
     const w = mountView(newPinia());
     await flushPromises();
-    await w.find("[data-mp-manage-toggle]").trigger("click");
+    await toggleManagement(w);
     await flushPromises();
     await w.find(".mt-list-head input").setValue("保留我");
     const listCalls = mocks.apiMock.listTopics.mock.calls.length;
 
-    await w.find("[data-mp-manage-toggle]").trigger("click");
-    await nextTick();
-    // 逻辑目标态立刻变了；.managing 要等收起进度落到 0 才摘掉（两个方向都有过程）
+    await toggleManagement(w);
     expect(w.find("[data-mp-manage-toggle]").attributes("aria-expanded")).toBe("false");
-    await waitFrame(420);
     expect(w.classes()).not.toContain("managing");
+    expect(w.element.getAttribute("data-mp")).toBe("0.000");
 
-    await w.find("[data-mp-manage-toggle]").trigger("click");
+    await toggleManagement(w);
     await flushPromises();
     expect((w.find(".mt-list-head input").element as HTMLInputElement).value).toBe("保留我");
     expect(mocks.apiMock.listTopics.mock.calls.length).toBe(listCalls); // 没有重置数据
@@ -426,9 +438,10 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     await flushPromises();
     currentFake!.selectedTopicId.value = "t1";
     const callsBefore = mocks.focusTopicMock.mock.calls.length;
-    await w.find("canvas").trigger("click", { clientX: 10, clientY: 20 });
-    await flushPromises();
-    await waitFrame();
+    await withReducedMotion(async () => {
+      await w.find("canvas").trigger("click", { clientX: 10, clientY: 20 });
+      await flushPromises();
+    });
     expect(w.classes()).toContain("managing");
     expect(w.attributes("data-view")).toBe("tabs");
     expect(w.attributes("data-tab")).toBe("memory");
@@ -452,15 +465,15 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
   it("Esc 分层：管理区打开时先收管理区；再按收起星球", async () => {
     const w = mountView(newPinia(), true);
     await flushPromises();
-    await w.find("[data-mp-manage-toggle]").trigger("click");
-    await waitFrame();
+    await toggleManagement(w);
     expect(w.classes()).toContain("managing");
 
-    // 第一层：收管理区（逻辑目标态立刻变，进度走完才摘 .managing）
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await nextTick();
+    // 第一层：收管理区（减少动态效果下一次到位；逻辑目标态与类名同时变）
+    await withReducedMotion(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await nextTick();
+    });
     expect(w.find("[data-mp-manage-toggle]").attributes("aria-expanded")).toBe("false");
-    await waitFrame(420);
     expect(w.classes()).not.toContain("managing");
     expect(w.classes()).not.toContain("settling");
 
@@ -468,7 +481,7 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
     expect(w.classes()).toContain("settling");
-    await waitFrame(700);
+    await new Promise((resolve) => setTimeout(resolve, 700));
     expect(w.emitted("close")).toBeTruthy();
     w.unmount();
   });
@@ -476,9 +489,7 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
   it("Esc：焦点在管理区输入框内不收起任何一层", async () => {
     const w = mountView(newPinia(), true);
     await flushPromises();
-    await w.find("[data-mp-manage-toggle]").trigger("click");
-    await flushPromises();
-    await waitFrame();
+    await toggleManagement(w);
     const input = w.find(".mt-list-head input").element as HTMLInputElement;
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await flushPromises();
@@ -503,9 +514,7 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     await flushPromises();
     currentFake!.webglOK.value = false;
     await nextTick();
-    await w.find("[data-mp-manage-toggle]").trigger("click");
-    await flushPromises();
-    await waitFrame();
+    await toggleManagement(w);
     expect(w.find(".webgl-fallback").exists()).toBe(true);
     expect(w.findAll("[data-topic-id]").length).toBe(1);
     w.unmount();
@@ -518,8 +527,7 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
     session.currentTopicId = "t1";
     const w = mountView(pinia);
     await flushPromises();
-    await w.find("[data-mp-manage-toggle]").trigger("click");
-    await flushPromises();
+    await toggleManagement(w);
 
     w.findComponent(ManagementArea).vm.$emit("continue", { topicId: "t2", fragmentId: null });
     await flushPromises();
@@ -535,9 +543,10 @@ describe("记忆星球页布局（本轮改版：内容区域 + 管理区）", (
   it("页面工具行「搜索」：展开管理区并直接落在搜索视图", async () => {
     const w = mountView(newPinia());
     await flushPromises();
-    await w.find("[data-mp-search-open]").trigger("click");
-    await flushPromises();
-    await waitFrame();
+    await withReducedMotion(async () => {
+      await w.find("[data-mp-search-open]").trigger("click");
+      await flushPromises();
+    });
     expect(w.classes()).toContain("managing");
     expect(w.attributes("data-view")).toBe("search");
     expect(w.find("[data-mp-search]").exists()).toBe(true);
