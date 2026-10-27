@@ -217,7 +217,11 @@ function syncExpiryClock(): void {
 }
 
 function onDocumentVisibilityChange(): void {
-  if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+    // 后台不空转：先清掉定时器，回到前台时立即按真实期限核对并重排
+    clearExpiryClock();
+    return;
+  }
   syncExpiryClock();
 }
 
