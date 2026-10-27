@@ -92,6 +92,41 @@ PENDING_CARD_ARCHIVED = "card_archived"  # 用户删了整张卡，自动提炼�
 PENDING_UNKNOWN_SOURCE = "source_unknown"
 
 
+class EntityCardConflict(Exception):
+    """用户修订撞上并发写入（HTTP 409 语义）。
+
+    与「卡不存在」（404）分开：调用方要能如实告诉用户「你看到的不是最新一版」，
+    并且**这次一个字段都没有写**。冲突时点出服务端真实的版本，界面可据此展示
+    「刷新后重试」或「明确覆盖」。current_card 只在冲突发生时由调用方补充。
+    """
+
+    def __init__(
+        self,
+        entity_id: str,
+        *,
+        expected_revision: int | None,
+        current_revision: int | None,
+        current_card: "EntityCard | None" = None,
+    ) -> None:
+        self.entity_id = entity_id
+        self.expected_revision = expected_revision
+        self.current_revision = current_revision
+        self.current_card = current_card
+        super().__init__(
+            f"版本冲突：期望 revision {expected_revision}，当前 {current_revision}"
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": False,
+            "conflict": True,
+            "entity_id": self.entity_id,
+            "expected_revision": self.expected_revision,
+            "current_revision": self.current_revision,
+            "error": "这张实体卡在你编辑期间被改动过；这次没有保存任何内容",
+        }
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1267,16 +1302,39 @@ class EntityCardService:
         aliases: list[str] | None = None,
         summary: str | None = None,
         kind: str | None = None,
+        relations_add: list[dict] | None = None,
+        relations_remove: list[dict] | None = None,
+        expected_revision: int | None = None,
         source: str = SOURCE_USER,
     ) -> EntityCard | None:
         """整体修订（用户明确整张修订）：给出的字段整段替换；None 表示保持原值。
 
         与自动提炼的区别：这里给出什么就是什么（属性列表整段替换），被去掉的属性
         记成墓碑 —— 后续普通提炼不得把它复活；该字段上待处理的自动候选视为已解决。
+
+        expected_revision 是**界面上看到的那一版**（CAS）：与当前 revision 不符时
+        抛 EntityCardConflict（409 语义），一个字段都不写 —— 用户编辑期间被自动提炼
+        或另一个入口改过的卡不会被静默覆盖。
+
+        relations_add / relations_remove 是关系的增删（[{"type","target"}]）：
+        与字段修订属于**同一次提交**，调用方（API 路由）把它们包在同一个事务里，
+        要么全部生效、要么全部不生效。
         """
         card = self.get(card_id)
         if card is None:
             return None
+        # 写之前先核对版本：让「冲突」是可读的 409，而不是 CAS 的静默失败。
+        if (
+            self._has_meta
+            and expected_revision is not None
+            and int(expected_revision) != int(card.revision)
+        ):
+            raise EntityCardConflict(
+                card_id,
+                expected_revision=int(expected_revision),
+                current_revision=card.revision,
+                current_card=card,
+            )
         meta = _normalize_meta(card.field_meta)
         revision = card.revision + 1
         values: dict[str, object] = {}
@@ -1326,10 +1384,48 @@ class EntityCardService:
             self._mark_field(meta, "kind", source, revision)
             self._clear_pending(meta, "kind")
 
-        if not values:
+        add_relations = [rel for rel in (relations_add or []) if isinstance(rel, dict)]
+        remove_relations = [
+            rel for rel in (relations_remove or []) if isinstance(rel, dict)
+        ]
+        if not values and not add_relations and not remove_relations:
             return card
-        result = self._commit_card(card, meta=meta, values=values, mark_user=True)
-        return result
+        result = self._commit_card(
+            card,
+            meta=meta,
+            values=values,
+            mark_user=True,
+            expected_revision=expected_revision,
+        )
+        if result is None:
+            # 预检查之后、写入之前又有人改了这张卡：CAS 兜住，仍是一个字段都没写。
+            current = self.get(card_id)
+            raise EntityCardConflict(
+                card_id,
+                expected_revision=expected_revision,
+                current_revision=current.revision if current is not None else None,
+                current_card=current,
+            )
+        # 关系增删与字段修订在同一事务里（路由负责 COMMIT/ROLLBACK）。
+        node_id = result.node_id or self._ensure_node(result.name)
+        if add_relations:
+            self._sync_relations(
+                node_id,
+                [
+                    EntityRelation(
+                        target=str(rel.get("target") or "").strip(),
+                        type=str(rel.get("type") or "").strip(),
+                    )
+                    for rel in add_relations
+                ],
+            )
+        for rel in remove_relations:
+            self._delete_relation(
+                node_id,
+                str(rel.get("target") or "").strip(),
+                str(rel.get("type") or "").strip(),
+            )
+        return self.get(card_id)
 
     def rename(
         self, card_id: str, name: str, *, aliases: list[str] | None = None
@@ -1413,19 +1509,26 @@ class EntityCardService:
         self._sync_relations(card.node_id, [EntityRelation(target=target, type=rel_type)])
         return self.get(card_id)
 
+    def _delete_relation(self, node_id: str, target: str, rel_type: str) -> None:
+        """删一条关系边（无向匹配；目标按名称找真实节点）。"""
+        if not node_id or not target or not rel_type:
+            return
+        from agent.graph.nodes import NodeService
+
+        other = NodeService(self.conn).get_entity_by_name(target)
+        if other is None:
+            return
+        self.conn.execute(
+            "DELETE FROM edges WHERE type = ? AND "
+            "((src = ? AND dst = ?) OR (src = ? AND dst = ?))",
+            (rel_type, node_id, other.id, other.id, node_id),
+        )
+
     def remove_relation(self, card_id: str, target: str, rel_type: str) -> EntityCard | None:
         card = self.get(card_id)
         if card is None or not card.node_id:
             return None
-        from agent.graph.nodes import NodeService
-
-        other = NodeService(self.conn).get_entity_by_name(target)
-        if other is not None:
-            self.conn.execute(
-                "DELETE FROM edges WHERE type = ? AND "
-                "((src = ? AND dst = ?) OR (src = ? AND dst = ?))",
-                (rel_type, card.node_id, other.id, other.id, card.node_id),
-            )
+        self._delete_relation(card.node_id, target, rel_type)
         return self.get(card_id)
 
     def revoke(self, card_id: str, *, source: str = SOURCE_USER) -> bool:
