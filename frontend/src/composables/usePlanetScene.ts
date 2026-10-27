@@ -46,6 +46,11 @@ const DOT_FALLBACK_MATERIAL = new THREE.MeshBasicMaterial({ color: 0xc51b7d });
 
 /** 新话题进入的淡入时长（毫秒） */
 const ENTER_FADE_MS = 420;
+/**
+ * 连续多少帧「无事可做」才停 rAF。
+ * 取 12（~200ms@60fps）：够把最后一帧的标签/选中环/环宽补偿写完，又不会让空转拖太久。
+ */
+const IDLE_STOP_FRAMES = 12;
 
 /** 话题点的稳定大小档位：由 visual_seed 决定，同一个话题每次出现一样大 */
 function dotSizeOf(topic: BrowseTopic): number {
@@ -81,6 +86,25 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   let scene: THREE.Scene | null = null;
   let camera: THREE.PerspectiveCamera | null = null;
   let controls: OrbitControls | null = null;
+  /**
+   * 姿态组：管理过渡的旋转**只加在这一层**（见 setManageYaw）。
+   *
+   * 为什么单独一层：planetGroup 的 quaternion 被三件事同时写 —— 空闲自转（rotation.y）、
+   * 聚焦 slerp（targetQuat）、收起回正（orientationTween）。管理展开也要转球，
+   * 如果挤进同一层，三者会互相覆盖（表现就是「转一半被拉回去」）。
+   * 父级只做旋转、不含位移与缩放，所以球体屏幕半径、相机距离、轮廓环都不受影响。
+   */
+  let poseGroup: THREE.Group | null = null;
+  /** 姿态组当前的 yaw（弧度），只由 setManageYaw 写 */
+  let manageYaw = 0;
+  /** 已绘帧计数（验收脚本用它证明「动画结束确实停帧」） */
+  let renderCount = 0;
+  /** 连续「无事可做」的帧数：够了就停 rAF，等下次交互再起来 */
+  let idleFrames = 0;
+  /** 已请求的待绘帧（交互/外部状态变化补画一帧用） */
+  let dirtyFrames = 0;
+  /** 是否因为「静下来」停掉了循环（与 paused 区分：paused 是页面不可见） */
+  let loopIdleStopped = false;
   let planetGroup: THREE.Group | null = null;
   let ringMat: THREE.ShaderMaterial | null = null;
   let ringUniforms: ReturnType<typeof makeRingUniforms> | null = null;
@@ -181,6 +205,10 @@ export function usePlanetScene(canvas: { value: HTMLCanvasElement | null }) {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const _q = new THREE.Quaternion();
+  /** 姿态组的世界朝向（管理态下把「世界空间旋转」换算回组内） */
+  const _poseQ = new THREE.Quaternion();
+  /** planetGroup 的世界朝向（= 姿态组朝向 × 自身朝向） */
+  const _worldQ = new THREE.Quaternion();
   const _ringQ = new THREE.Quaternion();
   const _worldDir = new THREE.Vector3();
   const _centerV = new THREE.Vector3();
@@ -295,9 +323,15 @@ function motionDuration(ms: number): number {
     // 用户会觉得「怎么拖都不动」；这条限位同时也是「不集中于极区」的相机侧保证。
     controls.minPolarAngle = POLAR_LIMIT;
     controls.maxPolarAngle = Math.PI - POLAR_LIMIT;
+    // 拖拽/缩放/阻尼都会触发 change：循环停着时据此恢复绘帧（停帧不能把交互冻住）
+    controls.addEventListener("change", () => requestFrame());
 
+    // 姿态组包住 planetGroup：管理展开的旋转写在父级，球体自身的朝向逻辑一行都不用改
+    poseGroup = new THREE.Group();
+    poseGroup.rotation.y = manageYaw;
+    scene.add(poseGroup);
     planetGroup = new THREE.Group();
-    scene.add(planetGroup);
+    poseGroup.add(planetGroup);
 
     // 透明球
     fillMat = new THREE.MeshBasicMaterial({ color: 0x2a2130, transparent: true, opacity: 0.05, depthWrite: false });
@@ -410,8 +444,36 @@ function motionDuration(ms: number): number {
   function startLoop() {
     if (loopActive || paused) return;
     loopActive = true;
+    loopIdleStopped = false;
+    idleFrames = 0;
     lastNow = performance.now();
     raf = requestAnimationFrame(animate);
+  }
+
+  /**
+   * 「有事要做」：补画若干帧，必要时把停掉的循环重新起来。
+   *
+   * 交互（拖动/缩放）、外部状态变化（reveal/主题/话题窗口/管理姿态）都走它。
+   * 停帧之后再交互必须能立刻恢复 —— 这是「停帧不等于冻住」的保证。
+   */
+  function requestFrame(frames = 1) {
+    dirtyFrames = Math.max(dirtyFrames, Math.max(1, frames));
+    if (!loopActive && !paused) startLoop();
+  }
+
+  /**
+   * 管理过渡的姿态角（弧度）：只写姿态组，不碰 planetGroup。
+   *
+   * 契约（_MP-COMMON §4.1）要求管理过渡的旋转与空闲自转 / 聚焦 slerp / OrbitControls 互不覆盖，
+   * 所以这里只改 poseGroup.rotation.y —— 三者写的是 planetGroup，物理上不可能互相打架。
+   * 循环可能正停着（静帧省电）：补一帧让姿态立刻生效。
+   */
+  function setManageYaw(radians: number) {
+    manageYaw = Number.isFinite(radians) ? radians : 0;
+    if (!poseGroup) return;
+    if (Math.abs(poseGroup.rotation.y - manageYaw) < 1e-6) return;
+    poseGroup.rotation.y = manageYaw;
+    requestFrame();
   }
 
   function stopLoop() {
@@ -426,6 +488,8 @@ function motionDuration(ms: number): number {
     if (next) stopLoop();
     else startLoop();
   }
+
+  /** 管理姿态 / 信息密度 / 主题 / 话题窗口变化后补画一帧（循环可能正静着）。 */
 
   /** 低功耗（入口小球）：~15fps，够表达「活着」，不浪费 GPU/电 */
   function setLowPower(next: boolean) {
@@ -545,6 +609,7 @@ function motionDuration(ms: number): number {
     currentData = ringAnchorsForSlots(slotDirs, members.map((m) => Boolean(m)));
     applyRingUniforms(currentData);
     windowChanged?.();
+    requestFrame();
   }
 
   /** 单个槽位替换（旋转推动话题流时使用）。 */
@@ -565,16 +630,19 @@ function motionDuration(ms: number): number {
     lastSwapAt = now;
     swapCount += 1;
     windowChanged?.();
+    requestFrame();
   }
 
   /** 当前哪些槽位在球体背面（用户看不见），按最背面优先排序。 */
   function backSlots(): number[] {
     if (!camera || !planetGroup || !slotDirs.length) return [];
+    planetGroup.updateMatrixWorld(true);
     planetGroup.getWorldPosition(_centerV);
     _camDirV.subVectors(camera.position, _centerV).normalize();
-    const worldDirs = slotDirs.map((dir) =>
-      dir.clone().applyQuaternion(planetGroup!.quaternion).normalize(),
-    );
+    // 用**世界**朝向：管理态的旋转在姿态组上，只读 planetGroup.quaternion 会漏掉它，
+    // 于是「背面槽位」判错 —— 换话题时用户会看到点在正面凭空出现。
+    planetGroup.getWorldQuaternion(_worldQ).normalize();
+    const worldDirs = slotDirs.map((dir) => dir.clone().applyQuaternion(_worldQ).normalize());
     return backSlotOrder(worldDirs, _camDirV);
   }
 
@@ -688,6 +756,17 @@ function motionDuration(ms: number): number {
     _worldDir.copy(dot.position).normalize().applyQuaternion(planetGroup.quaternion);
     _camDirV.subVectors(camera.position, _centerV).normalize();
     _q.setFromUnitVectors(_worldDir, _camDirV);
+    /**
+     * 管理态下姿态组也会转：把「世界空间的旋转」换算回姿态组内部再做乘法，
+     * 否则聚焦会把点转到错误的方向（现状：姿态为 0 时换算结果与原来完全一致，
+     * 所以默认浏览态的聚焦行为一点没变）。
+     */
+    if (poseGroup) {
+      poseGroup.getWorldQuaternion(_poseQ).normalize();
+      if (Math.abs(_poseQ.w) < 0.999999) {
+        _q.premultiply(_poseQ.clone().invert()).multiply(_poseQ);
+      }
+    }
     targetQuat = _q.multiply(planetGroup.quaternion.clone());
     // 短距离用更短时间：已经接近目标朝向时不再跑完整时长
     const base = opts?.duration ?? 320;
@@ -794,6 +873,7 @@ function motionDuration(ms: number): number {
     if (ringMat) applyRingUniforms(currentData);
     // 不在这里改背景：画布是透明的（alpha: true），「虚空」由星球页铺底用
     // `--planet-void` 绘制 —— 转场期间球体外围才不会出现矩形画布。
+    requestFrame();
   }
 
   function animate() {
@@ -901,6 +981,8 @@ function motionDuration(ms: number): number {
       m.opacity = (gridBase[i] ?? m.opacity) * gridDensity;
     });
     frontFacing = 0;
+    /** 是否有话题点还在「进入淡入」里：那几帧必须继续画 */
+    let dotFading = false;
     for (const dot of dotMeshes) {
       dot.getWorldPosition(tmpV);
       const active = dot.userData.active === true;
@@ -910,6 +992,7 @@ function motionDuration(ms: number): number {
       if (!mat.transparent) continue;
       const enterAt = (dot.userData.enterAt as number) ?? 0;
       const k = Math.min(1, Math.max(0, (now - enterAt) / ENTER_FADE_MS));
+      if (k > 0 && k < 1) dotFading = true;
       // 进入淡入 × 信息密度：转场期间话题点真的按密度出现（不是整体淡入）
       mat.opacity = k * dotDensity;
       const base = (dot.userData.base as number) ?? 0.028;
@@ -924,7 +1007,10 @@ function motionDuration(ms: number): number {
         // 选中环与话题点同属 planetGroup：必须用「局部」坐标，
         // 写世界坐标会被父级旋转再变换一次，环就跑到球面别处去了。
         selRing.position.copy(dot.position);
-        _ringQ.copy(planetGroup.quaternion).invert().multiply(camera.quaternion);
+        // selRing 是 planetGroup 的子节点：要让它「正对相机」，得用**世界**朝向反解，
+        // 否则管理态多了姿态组的旋转之后，选中环会跟着歪掉。
+        planetGroup.getWorldQuaternion(_worldQ).normalize();
+        _ringQ.copy(_worldQ).invert().multiply(camera.quaternion);
         selRing.quaternion.copy(_ringQ);
         selRing.scale.setScalar(((dot.userData.base as number) ?? 0.028) * 1.75);
         selRing.visible = true;
@@ -954,15 +1040,52 @@ function motionDuration(ms: number): number {
     }
 
     applyWave(now);
-    controls.update();
+    const cameraChanged = controls.update();
     applyRingWidthCompensation(); // 环宽按「此刻」的几何现算（见 setRingScreenWidth）
     renderer.render(scene, camera);
+    renderCount += 1;
 
     frameCount++;
     if (now - lastFpsTime >= 2000) {
       fps.value = Math.round((frameCount * 1000) / (now - lastFpsTime));
       frameCount = 0;
       lastFpsTime = now;
+    }
+
+    /**
+     * 渲染收尾：**没有任何东西在动**时停掉 rAF。
+     *
+     * 判据（任一为真就继续画）：
+     * - 相机补间 / 朝向补间 / 聚焦 slerp（tween、orientationTween、targetQuat）；
+     * - 空闲自转（idleSpin）与低功耗小球（低功耗本来就是「活着」的常驻表现，保留原行为）；
+     * - 环波动画窗口（1.2s）；
+     * - OrbitControls 阻尼仍在推进（controls.update() 返回 true）；
+     * - 话题点还在进入淡入；
+     * - 显式请求的补帧（requestFrame）。
+     *
+     * 停下来之后由 requestFrame 重新启动（指针交互、reveal 变化、主题、窗口内容、管理姿态、
+     * resize 都会请求）。这样「动画结束就真的不再绘帧」，而不是继续空转吃 GPU。
+     */
+    if (dirtyFrames > 0) dirtyFrames -= 1;
+    const busy =
+      tween !== null ||
+      orientationTween !== null ||
+      targetQuat !== null ||
+      idleSpin ||
+      lowPower ||
+      now - waveStart < 1200 ||
+      cameraChanged ||
+      dotFading ||
+      dirtyFrames > 0;
+    if (busy) {
+      idleFrames = 0;
+      loopIdleStopped = false;
+    } else {
+      idleFrames += 1;
+      if (idleFrames >= IDLE_STOP_FRAMES) {
+        stopLoop();
+        loopIdleStopped = true;
+      }
     }
   }
 
@@ -996,7 +1119,10 @@ function motionDuration(ms: number): number {
     if (paused && renderer && scene && camera) {
       applyRingWidthCompensation();
       renderer.render(scene, camera);
+      return;
     }
+    // 密度是连续性的一部分（转场期间每帧都在变）：必须让循环醒着，否则会停在旧密度上
+    requestFrame();
   }
 
   /**
@@ -1040,8 +1166,45 @@ function motionDuration(ms: number): number {
     return { cx: left + ((ndc.x + 1) / 2) * w, cy: top + ((1 - ndc.y) / 2) * h, radius };
   }
 
+  /**
+   * 只读的 DEV 诊断钩子（生产构建里这段不存在）。
+   *
+   * 为什么放在场景里而不是 PlanetView：视觉验收脚本要能独立判断「动画结束后还在不在绘帧」，
+   * 这属于渲染层的事实；而且 PlanetView 是别人的文件，我不该往里加东西。
+   * 只读、不提供任何写入口。
+   */
+  const devHook = import.meta.env.DEV && typeof window !== "undefined"
+    ? (() => ({
+        webglOK: webglOK.value,
+        renders: renderCount,
+        loopActive,
+        paused,
+        idleStopped: loopIdleStopped,
+        idleFrames,
+        manageYaw: Math.round(manageYaw * 1000) / 1000,
+        cameraDistance: camera ? Math.round(camera.position.length() * 1000) / 1000 : null,
+        fov: camera ? camera.fov : null,
+        quaternion: planetGroup
+          ? [planetGroup.quaternion.x, planetGroup.quaternion.y, planetGroup.quaternion.z, planetGroup.quaternion.w].map(
+              (v) => Math.round(v * 1000) / 1000,
+            )
+          : null,
+        poseYaw: poseGroup ? Math.round(poseGroup.rotation.y * 1000) / 1000 : 0,
+        frontFacing,
+        dotCount: dotMeshes.length,
+        hasSession: browseSession !== null,
+      }))
+    : null;
+  if (devHook && typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__qioPlanetScene = devHook;
+  }
+
   onScopeDispose(() => {
     stopLoop();
+    if (devHook && typeof window !== "undefined") {
+      const w = window as unknown as Record<string, unknown>;
+      if (w.__qioPlanetScene === devHook) delete w.__qioPlanetScene;
+    }
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (pointerHandlers && canvas.value) {
       canvas.value.removeEventListener("pointerdown", pointerHandlers.down);
@@ -1058,6 +1221,7 @@ function motionDuration(ms: number): number {
     scene = null;
     camera = null;
     controls = null;
+    poseGroup = null;
     planetGroup = null;
   });
 
@@ -1068,6 +1232,18 @@ function motionDuration(ms: number): number {
     /** 环在屏幕上的目标宽度（像素）；补偿倍数由渲染器按当时几何现算，见 setRingScreenWidth */
     setRingScreenWidth,
     primeCamera, pullBack,
+    /**
+     * 管理过渡的姿态角（弧度）：只写独立的姿态组（父级），**不碰** planetGroup 的
+     * quaternion / rotation.y / idle spin / 聚焦 slerp / OrbitControls。
+     * 由 usePlanetManageTransition 每帧调用（契约见 _MP-COMMON §4.1）。
+     */
+    setManageYaw,
+    /** 当前管理姿态角（诊断用） */
+    getManageYaw: () => manageYaw,
+    /** 立即补画一帧（循环静着时用；也会把循环唤醒） */
+    requestFrame,
+    /** 已绘帧计数（验收：动画结束后应当不再增长） */
+    getRenderCount: () => renderCount,
     /** 展开时记下「打开前的朝向」、收起时转回它（见 markReturnOrientation / rotateBack） */
     markReturnOrientation, rotateBack,
     /** 当前展示窗口里的 topic_id（按槽位顺序，空位为 null）。 */
@@ -1096,6 +1272,14 @@ function motionDuration(ms: number): number {
           )
         : null,
       lowPower,
+      /** 动画结束是否真的停了：渲染计数 + 循环状态（验收脚本的判据） */
+      renders: renderCount,
+      loopActive,
+      paused,
+      idleStopped: loopIdleStopped,
+      /** 管理姿态角（弧度）与相机距离（给验收脚本换算球体屏幕半径） */
+      manageYaw: Math.round(manageYaw * 1000) / 1000,
+      cameraDistance: camera ? Math.round(camera.position.length() * 1000) / 1000 : null,
       /** 环宽补偿的当前值（入口小球上环是否可见，就看它有没有被铺回去） */
       ringWidthScale: ringUniforms ? Math.round(ringUniforms.uWidthScale.value * 100) / 100 : null,
       windowSize: dotPool?.windowTopicIds().filter(Boolean).length ?? 0,
@@ -1107,7 +1291,9 @@ function motionDuration(ms: number): number {
        */
       dirs: (browseSession?.windowMembers() ?? []).map((m) => {
         if (!m) return null;
-        const v = new THREE.Vector3(...m.dir).applyQuaternion(planetGroup!.quaternion).normalize();
+        planetGroup!.updateMatrixWorld(true);
+        planetGroup!.getWorldQuaternion(_worldQ).normalize();
+        const v = new THREE.Vector3(...m.dir).applyQuaternion(_worldQ).normalize();
         return [v.x, v.y, v.z].map((n) => Math.round(n * 1000) / 1000);
       }),
       /** 话题在星球自身坐标系里的位置（判断「不拖动时位置有没有变」用这个） */

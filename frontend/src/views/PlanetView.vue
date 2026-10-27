@@ -355,8 +355,25 @@ const planet = usePlanetScene(canvasRef);
    不自己再造一套进度控制，也不碰球体旋转（旋转由场景内的 setManageYaw 负责）。
    ====================================================================== */
 const manage = usePlanetManageTransition({ rootRef, planet });
-/** 管理区是否展开（用户的目标态；逐帧进度在 manage.progress） */
+/** 管理区是否展开（**目标态**：Esc 分层、面板交互等逻辑用它） */
 const managementOpen = manage.expanded;
+/**
+ * 管理态类名跟**当前进度**走（不是目标态）。
+ *
+ * 为什么：点「收起」那一刻目标态就变成 false，如果类名也跟着立刻撤掉，管理区会在收起的
+ * 第一帧直接消失、左移后的裁切也提前解除 —— 收起就没有过程了。契约 §4.1 本来就把
+ * `.managing` 交给 progress 管（composable 自己也写），这里用同一个判据（progress > 0），
+ * 并且只在跨过 0 时更新一次（不逐帧触发重渲染）。
+ */
+const managingActive = ref(false);
+watch(
+  () => manage.progress.value,
+  (progress) => {
+    const active = progress > 0;
+    if (active !== managingActive.value) managingActive.value = active;
+  },
+  { flush: "sync" },
+);
 /** 首次展开才挂载管理区，之后 v-show 保活（条目 / 草稿 / 浏览位置都不重置） */
 const managementMounted = ref(false);
 /** 外部落点请求：对话页记忆提醒 / 深链 / 页面工具行搜索 */
@@ -761,6 +778,17 @@ function stopContentObserver() {
   contentObserver?.disconnect();
   contentObserver = null;
 }
+
+onMounted(() => {
+  // 内容区尺寸观察：管理区开合与窗口缩放时同步画布尺寸（管理态下星球侧唯一允许的反应）
+  startContentObserver();
+  // 「待处理」真实数量进页面就取一次（角标不能是装饰；读取失败保留上一次的值）
+  void pendingStore.refresh();
+});
+
+onUnmounted(() => {
+  stopContentObserver();
+});
 
 /** 管理区状态回传（根元素上的 data-tab / data-view 只读读数） */
 function onManageState(state: {
@@ -1495,7 +1523,7 @@ async function close() {
   <div
     ref="rootRef"
     class="planet-view"
-    :class="{ entered, closing, settling, layers: layersIn, armed: stageArmed, curtain: curtainOn, ball: ballMode, tail: tailMode, managing: managementOpen, stacked }"
+    :class="{ entered, closing, settling, layers: layersIn, armed: stageArmed, curtain: curtainOn, ball: ballMode, tail: tailMode, managing: managingActive, stacked }"
     :style="[demoStyle, ballMode ? { opacity: String(ballOpacity) } : null]"
     :data-tab="manageTab"
     :data-view="manageView"
@@ -1782,7 +1810,8 @@ async function close() {
   flex: 0 0 auto;
   width: 100%;
   height: auto;
-  min-height: 0;
+  /* 窄窗下面板接管整块下半区：给一个最小高度，管理内容短时也不留一块「没铺满」的空白底 */
+  min-height: clamp(260px, 52vh, 560px);
   border-left: none;
   border-top: 1px solid var(--border-subtle);
   overflow: visible;

@@ -42,6 +42,7 @@ const manageLabel = computed(() =>
       class="manage-btn"
       type="button"
       data-mp-manage-toggle
+      data-mp-open
       :aria-expanded="expanded"
       :aria-label="manageLabel"
       @click="emit('toggle-manage')"

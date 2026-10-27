@@ -217,7 +217,8 @@ watch(
     if (previous && previous[0] === seq) return;
     applyRequest();
   },
-  { flush: "post" },
+  // 首次挂载就可能带着落点（深链 / 记忆提醒）：immediate 保证这次请求也生效
+  { flush: "post", immediate: true },
 );
 
 watch(
@@ -225,6 +226,7 @@ watch(
   (ticket) => {
     if (ticket > 0) openSearch();
   },
+  { immediate: true },
 );
 
 watch(
@@ -243,6 +245,9 @@ watch(
     memoryFocusTopicId.value = id;
     memoryFocusTicket.value += 1;
   },
+  // 管理区可能在「已经选中了某个话题」之后才挂载（点话题点的那一刻才展开）：
+  // immediate 保证挂载时也把这次选中落到记忆页，而不是等下一次选中
+  { immediate: true },
 );
 
 /** 状态上报：页面根元素上的 data-tab / data-view 是验收脚本的只读读数，不参与布局 */
@@ -339,6 +344,7 @@ defineExpose({ selectTab });
           整理记录
         </button>
         <QIconButton
+          data-mp-close
           :icon="view === 'search' ? 'close' : 'collapse'"
           :label="view === 'search' ? '关闭搜索' : '收起管理'"
           :description="view === 'search' ? '关闭搜索并回到之前的管理内容' : '收起管理区，回到星球中央浏览'"
