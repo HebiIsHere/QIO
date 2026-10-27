@@ -663,6 +663,8 @@ function motionDuration(ms: number): number {
   }
 
   function go(state: CameraState, target?: THREE.Vector3 | null, duration = 300): Promise<void> {
+    // 姿态锁定时不许动相机/朝向：验收脚本要靠「冻结的一帧」做同姿态逐像素比对
+    if (poseLocked) return Promise.resolve();
     return new Promise((resolve) => {
       if (!camera) { resolve(); return; }
       const endTarget = target?.clone().normalize() ?? new THREE.Vector3(0, 0, 1);
@@ -709,6 +711,7 @@ function motionDuration(ms: number): number {
    * 曲线用 `easeInOutCubic` —— 它是对称曲线，所以「收起转回去」正好是「展开转过来」的时间倒放。
    */
   function rotateBack(maxMs: number): number {
+    if (poseLocked) return 0;
     if (!planetGroup || !returnOrientation || !Number.isFinite(maxMs) || maxMs <= 0) return 0;
     const from = planetGroup.quaternion.clone();
     const to = returnOrientation.clone();
@@ -750,6 +753,7 @@ function motionDuration(ms: number): number {
   /** 聚焦话题：相机 tween 到 方向*2.25（easeInOutCubic）+ 星球 slerp 使点居中 + 环波。
    * opts.duration 覆盖补间时长（重对焦/边栏开合后微调用短时长）；opts.wave=false 抑制环波。 */
   function focusTopic(topicId: string, topics: TopicPosition[], opts?: { duration?: number; wave?: boolean }) {
+    if (poseLocked) return;
     if (!camera || !planetGroup) return;
     const dot = dotPool?.meshOfTopic(topicId) ?? null;
     if (!dot) {
@@ -1225,6 +1229,10 @@ function motionDuration(ms: number): number {
       const length = Math.hypot(q[0], q[1], q[2], q[3]);
       if (length < 1e-6) return false;
       poseLocked = true;
+      // 锁定时把在跑的补间全部清掉，否则最近一次聚焦 slerp / 收起回正会把姿态又转走
+      tween = null;
+      orientationTween = null;
+      targetQuat = null;
       planetGroup.quaternion.set(q[0] / length, q[1] / length, q[2] / length, q[3] / length);
       poseGroup?.rotation.set(0, manageYaw, 0);
       requestFrame(3);
