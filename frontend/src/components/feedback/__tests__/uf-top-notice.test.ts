@@ -2,7 +2,7 @@
  * 顶部短通知组件：点击定位任务 / 激活动作、暂停恢复、不抢焦点、完整读屏文案、只关本次。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import TopNotice from "../TopNotice.vue";
 import {
@@ -11,6 +11,12 @@ import {
 } from "../../../stores/notifications";
 import { useConversationTasksStore } from "../../../stores/conversationTasks";
 import { useConversationShellStore } from "../../../stores/conversationShell";
+
+// 跨页通知导航由 C 的 services/noticeNavigation 提供（A 只锁调用契约，不测其内部实现）。
+const navigation = vi.hoisted(() => ({ openTaskNoticeTargets: vi.fn() }));
+vi.mock("../../../services/noticeNavigation", () => ({
+  openTaskNoticeTargets: navigation.openTaskNoticeTargets,
+}));
 
 function setup() {
   setActivePinia(createPinia());
@@ -29,11 +35,15 @@ describe("TopNotice：一条、可定位、暂停恢复、不抢焦点", () => {
     document.body.innerHTML = "";
   });
 
-  it("任务失败通知：点击展开左栏并定位本次任务集合，只关本次通知", async () => {
-    const { notifications, tasks, shell } = setup();
-    const focusSpy = vi.spyOn(tasks, "focusTask").mockResolvedValue(undefined);
-    shell.prefs.leftCollapsed = true;
-    const leftSpy = vi.spyOn(shell, "setLeftWidth");
+  it("任务失败通知：点击交给跨页导航定位整组任务，只关本次通知", async () => {
+    const { notifications } = setup();
+    navigation.openTaskNoticeTargets.mockReset();
+    navigation.openTaskNoticeTargets.mockResolvedValue({
+      ok: true,
+      reason: "ok",
+      taskIds: ["subagent:a", "subagent:b"],
+      message: "",
+    });
     notifications.enqueue({
       key: "task-failed:a",
       kind: "task_failed",
@@ -51,11 +61,13 @@ describe("TopNotice：一条、可定位、暂停恢复、不抢焦点", () => {
     expect(body.attributes("aria-label")).toContain("定位");
 
     await body.trigger("click");
-    await vi.runOnlyPendingTimersAsync();
-    expect(focusSpy).toHaveBeenCalledTimes(2);
-    expect(focusSpy).toHaveBeenCalledWith("subagent:a");
-    expect(focusSpy).toHaveBeenCalledWith("subagent:b");
-    expect(leftSpy).toHaveBeenCalled();
+    await flushPromises();
+    // 交由 C 的导航服务一次处理整组任务（不再自己展开左栏 / 逐条 focusTask）
+    expect(navigation.openTaskNoticeTargets).toHaveBeenCalledTimes(1);
+    expect(navigation.openTaskNoticeTargets.mock.calls[0][0]).toEqual([
+      "subagent:a",
+      "subagent:b",
+    ]);
     expect(notifications.hasActive).toBe(false);
     w.unmount();
   });

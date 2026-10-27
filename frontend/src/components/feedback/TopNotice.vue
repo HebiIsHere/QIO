@@ -8,7 +8,10 @@
  * - 长任务名在可见区域单行省略，**读屏与完整文本**仍可用（aria-label 不截断，不用原生 title）；
  * - 悬停 / 键盘聚焦暂停倒计时，移开恢复剩余；关闭按钮只关这条通知；
  * - 不抢焦点：出现时不 focus 任何元素，只有用户 Tab 才进入；
- * - 点击（只有可定位任务的通知）→ 展开左栏并定位任务集合。
+ * - 点击（只有可定位任务的通知）→ 交给 C 的 openTaskNoticeTargets(taskIds) 让任务列表
+ *   真实可见并定位**全部**任务（不再自己只展开左栏 / 逐条 focusTask / 截断 8 个）；
+ *   有中央弹窗时保留通知、不打断弹窗；导航失败不静默关闭，在通知内以 role="status"
+ *   给出可直接阅读的真实说明。
  */
 import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from "vue";
 import {
@@ -19,8 +22,10 @@ import {
   noticeTaskIds,
   useNotificationsStore,
 } from "../../stores/notifications";
-import { useConversationShellStore } from "../../stores/conversationShell";
-import { useConversationTasksStore } from "../../stores/conversationTasks";
+import {
+  openTaskNoticeTargets,
+  type NoticeNavigationResult,
+} from "../../services/noticeNavigation";
 import { feedbackTopPx } from "./feedbackOffsets";
 
 const notifications = useNotificationsStore();
@@ -37,6 +42,8 @@ const canLocate = computed(
   () => Boolean(notice.value?.focus) && taskIds.value.length > 0,
 );
 const kindClass = computed(() => "is-" + (notice.value?.kind ?? "task_failed"));
+/** 点击定位失败时的真实说明（可见 + role="status" 可读屏；不静默关闭通知）。 */
+const navigationHint = ref("");
 /** 真实落点：全局栏下方；非聊天页再让出一行 .top-notes 的高度（不写死坐标）。 */
 const topPx = ref<number>(0);
 
@@ -63,6 +70,7 @@ watch(
   async (key, previous) => {
     // 通知换了：上一条的暂停原因不再有效（鼠标/焦点事件不会再落到它身上）
     if (previous && previous !== key) notifications.releasePauses(previous);
+    if (previous !== key) navigationHint.value = "";
     if (!key) return;
     await nextTick();
     syncTop();
@@ -103,10 +111,6 @@ onBeforeUnmount(() => {
   if (key) notifications.releasePauses(key);
 });
 
-/**
- * 点击通知：展开左栏（收起了就点不到任务）并定位本次任务集合。
- * 定位失败由 conversationTasks 自己的 focusError / 左栏提示表达，这里不伪造成功。
- */
 /** 点击通知：能定位任务就先定位；否则执行调用方给的激活动作（例如接续引导）。 */
 async function activate(): Promise<void> {
   const current = notifications.active;
@@ -126,26 +130,41 @@ async function activate(): Promise<void> {
   }
 }
 
+/**
+ * 点击定位：把**整组**任务交给 C 的跨页导航服务（真实可见 + 全部定位）。
+ *
+ * - ok → 才算成功，关闭本次通知；
+ * - blocked-by-modal → 保留通知、不打断中央弹窗；
+ * - no-targets / navigation-failed → 不静默关闭，在通知内给出可见且可读屏的说明。
+ */
 async function locate(): Promise<void> {
   const current = notifications.active;
   if (!current) return;
   const ids = noticeTaskIds(current);
   if (!ids.length) return;
+  navigationHint.value = "";
+  let outcome: NoticeNavigationResult;
   try {
-    const shell = useConversationShellStore();
-    if (shell.effectiveLeftCollapsed) shell.setLeftWidth(shell.prefs.leftWidth);
-  } catch {
-    // 外壳 store 未初始化（极端早期 / 单测挂载）：不影响定位本身
+    outcome = await openTaskNoticeTargets(ids);
+  } catch (error) {
+    const reply = (error as Error)?.message;
+    outcome = {
+      ok: false,
+      reason: "navigation-failed",
+      taskIds: ids,
+      message: reply && String(reply).trim()
+        ? "任务列表暂时无法打开：" + String(reply).trim() + "。可以再点一次通知，或在左侧任务栏查看。"
+        : "任务列表暂时无法打开；通知和任务记录都还在。可以再点一次通知，或在左侧任务栏查看。",
+    };
   }
-  const tasks = useConversationTasksStore();
-  for (const taskId of ids.slice(0, 8)) {
-    try {
-      await tasks.focusTask(taskId);
-    } catch {
-      // 单条定位失败不打断批量：左栏会显示「没有找到这项任务」
-    }
+  if (outcome?.ok) {
+    notifications.dismiss(current.key);
+    return;
   }
-  notifications.dismiss(current.key);
+  navigationHint.value =
+    outcome?.message && String(outcome.message).trim()
+      ? String(outcome.message).trim()
+      : "任务列表暂时无法打开；通知和任务记录都还在。可以再点一次通知，或在左侧任务栏查看。";
 }
 
 function close(): void {
@@ -196,6 +215,8 @@ function onKeydown(event: KeyboardEvent): void {
       <p v-else class="uf-notice__body uf-notice__body--static">
         <span class="uf-notice__line">{{ text }}</span>
       </p>
+      <!-- 定位失败时的真实说明：可见 + role="status" 可读屏；不静默关闭通知 -->
+      <p v-if="navigationHint" class="uf-notice__hint" role="status">{{ navigationHint }}</p>
       <!-- 右侧槽位：与左侧同宽，关闭按钮不会把文字挤偏 -->
       <span class="uf-notice__slot uf-notice__slot--right">
         <button
@@ -239,6 +260,15 @@ function onKeydown(event: KeyboardEvent): void {
   font-family: var(--sans);
   font-size: 12.5px;
   line-height: 1.5;
+}
+.uf-notice__hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0 2px 2px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-align: center;
 }
 .uf-notice__slot {
   display: inline-flex;
