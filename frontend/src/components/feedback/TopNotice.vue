@@ -60,7 +60,9 @@ onBeforeUnmount(() => {
 
 watch(
   () => notice.value?.key ?? null,
-  async (key) => {
+  async (key, previous) => {
+    // 通知换了：上一条的暂停原因不再有效（鼠标/焦点事件不会再落到它身上）
+    if (previous && previous !== key) notifications.releasePauses(previous);
     if (!key) return;
     await nextTick();
     syncTop();
@@ -68,12 +70,38 @@ watch(
   { immediate: true },
 );
 
-function pause(): void {
-  if (notice.value) notifications.pause(notice.value.key);
+/** 根节点：判断焦点是否仍在通知内部（内部按钮之间移动焦点不解除聚焦暂停）。 */
+const rootEl = ref<HTMLElement | null>(null);
+
+/** 悬停与键盘聚焦是**两个独立暂停原因**：任一还在，倒计时都不恢复（F06）。 */
+function pauseHover(): void {
+  if (notice.value) notifications.pause(notice.value.key, "hover");
 }
-function resume(): void {
-  if (notice.value) notifications.resume(notice.value.key);
+function resumeHover(): void {
+  if (notice.value) notifications.resume(notice.value.key, "hover");
 }
+function pauseFocus(): void {
+  if (notice.value) notifications.pause(notice.value.key, "focus");
+}
+function onFocusOut(event: FocusEvent): void {
+  const current = notice.value;
+  if (!current) return;
+  const next = (event?.relatedTarget ?? null) as Node | null;
+  const root = rootEl.value;
+  // 焦点还在通知内部（例如从正文按钮移到关闭按钮）：不解除聚焦暂停
+  if (next && root && root.contains(next)) return;
+  if (!next && root && typeof document !== "undefined") {
+    const active = document.activeElement;
+    if (active && active !== root && root.contains(active)) return;
+  }
+  notifications.resume(current.key, "focus");
+}
+
+onBeforeUnmount(() => {
+  // 卸载时释放本组件登记的暂停原因：不能因为组件消失而让通知永远暂停
+  const key = notice.value?.key;
+  if (key) notifications.releasePauses(key);
+});
 
 /**
  * 点击通知：展开左栏（收起了就点不到任务）并定位本次任务集合。
@@ -140,11 +168,12 @@ function onKeydown(event: KeyboardEvent): void {
       class="uf-notice"
       :class="kindClass"
       :style="topPx ? { top: topPx + 'px' } : undefined"
+      ref="rootEl"
       data-test="top-notice"
-      @mouseenter="pause"
-      @mouseleave="resume"
-      @focusin="pause"
-      @focusout="resume"
+      @mouseenter="pauseHover"
+      @mouseleave="resumeHover"
+      @focusin="pauseFocus"
+      @focusout="onFocusOut"
       @keydown="onKeydown"
     >
       <!-- 读屏/完整文案：可见文本会省略长任务名，这里永远完整 -->
