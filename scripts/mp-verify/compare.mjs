@@ -17,7 +17,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decodePng, diffImage, diffStats, encodePng } from "./lib/png.mjs";
+import {
+  bestRotationAlignment,
+  contourRingColor,
+  decodePng,
+  diffImage,
+  diffStats,
+  encodePng,
+  probeMaterials,
+  rotateAbout,
+} from "./lib/png.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -67,9 +76,19 @@ for (const [runKey, baseRun] of baseRuns) {
     const a = decodePng(readFileSync(sphereBase));
     const b = decodePng(readFileSync(sphereRev));
     if (a.width === b.width && a.height === b.height) {
-      const stats = diffStats(a, b, { tolerance });
+      /**
+       * 先做**单轴对齐**再比：基线球体的最终滚转角不确定（入口球空闲自转 + 聚焦 slerp 残留），
+       * 不对齐就会得到 10%+ 的假差异。对齐角写进报告，热图也是对齐后的 —— 这样
+       * 「相同尺寸与朝向」是可复核的，不是嘴上说说。
+       */
+      const center = baseRun.measurement?.centerInImage ?? { x: a.width / 2, y: a.height / 2 };
+      const alignment = bestRotationAlignment(a, b, { cx: center.x, cy: center.y });
+      row.diffs.alignment = alignment;
+      const alignedB = alignment.ok ? rotateAbout(b, alignment.angle, { cx: center.x, cy: center.y }) : b;
+      const stats = diffStats(a, alignedB, { tolerance });
       row.diffs.sphere = stats;
-      const heat = encodePng(diffImage(a, b, { tolerance }));
+      row.diffs.sphereUnaligned = diffStats(a, b, { tolerance });
+      const heat = encodePng(diffImage(a, alignedB, { tolerance }));
       const file = join(outDir, runKey.replace("/", "-") + "-sphere-diff.png");
       writeFileSync(file, heat);
       row.diffs.sphereHeatmap = file;
@@ -121,6 +140,60 @@ for (const [runKey, baseRun] of baseRuns) {
     base: baseRun.measurement?.strokeRuns?.top ?? [],
     rev: revRun.measurement?.strokeRuns?.top ?? [],
   };
+
+  // 调色板（旋转无关）：颜色/透明度有没有变，看这份集合
+  const palOf = (run) => run.measurement?.palette ?? null;
+  const basePal = palOf(baseRun);
+  const revPal = palOf(revRun);
+  if (basePal && revPal) {
+    const baseSet = new Set(basePal.significant);
+    const revSet = new Set(revPal.significant);
+    const onlyBase = [...baseSet].filter((rgb) => !revSet.has(rgb));
+    const onlyRev = [...revSet].filter((rgb) => !baseSet.has(rgb));
+    row.metrics.palette = {
+      baseDistinct: basePal.distinct,
+      revDistinct: revPal.distinct,
+      baseSignificant: baseSet.size,
+      revSignificant: revSet.size,
+      onlyBase,
+      onlyRev,
+      identical: onlyBase.length === 0 && onlyRev.length === 0,
+      baseTop: basePal.top.slice(0, 6),
+      revTop: revPal.top.slice(0, 6),
+    };
+  }
+
+  // 材质探针直接从球体裁剪图算（图像 + 报告里的球心位置），不依赖当初截图的中间结果，
+  // 这样改了探针算法只需要重跑 compare，不用重跑浏览器。
+  const matOf = (run) => {
+    const file = run.files?.sphere;
+    if (!file || !existsSync(file)) return null;
+    const image = decodePng(readFileSync(file));
+    const center = run.measurement?.centerInImage ?? { x: image.width / 2, y: image.height / 2 };
+    const materials = probeMaterials(image, center);
+    const scanRadius = run.measurement?.rowScan?.leftRadius;
+    materials.contourRing = contourRingColor(image, {
+      centerX: center.x,
+      centerY: center.y,
+      radius: scanRadius,
+    });
+    return materials;
+  };
+  const baseMat = matOf(baseRun);
+  const revMat = matOf(revRun);
+  if (baseMat && revMat) {
+    const strongSame =
+      JSON.stringify((baseMat.strongPinkTop ?? []).slice(0, 3).map((i) => i.rgb)) ===
+      JSON.stringify((revMat.strongPinkTop ?? []).slice(0, 3).map((i) => i.rgb));
+    row.metrics.materials = {
+      base: baseMat,
+      rev: revMat,
+      same:
+        (baseMat.contourRing?.mode?.rgb ?? "") === (revMat.contourRing?.mode?.rgb ?? "") &&
+        (baseMat.interiorTop?.[0]?.rgb ?? "") === (revMat.interiorTop?.[0]?.rgb ?? "") &&
+        strongSame,
+    };
+  }
 
   // 位置：球心（画布矩形中心，含 CSS 变换）相对内容区左边缘
   const centerOf = (run) => {
@@ -180,15 +253,20 @@ lines.push("- 基线截图标签：" + base.label + "；改版截图标签：" +
 lines.push("- 基线 URL：" + base.url + "；改版 URL：" + rev.url);
 lines.push("- 生成时间：" + new Date().toISOString());
 lines.push("- 比对方法：球体裁剪图以画布中心为中心裁剪（边长 = 画布短边 × 1.02），所以「球被布局挪到左边」不会造成假差异；逐像素容差 ≤ " + tolerance + "/255 视为未变化。");
+lines.push("- 对齐：以球心为圆心、按最佳对齐角旋转改版裁剪图后再比（基线自身滚转角不可复现，见下文噪声地板）。");
 lines.push("");
-lines.push("| 场景 | 美术逐像素 | 变化像素 | 最大通道差 | 球轮廓直径 基→改（像素扫描） | 半径（DEV 钩子）基→改 | 环宽笔画峰（改） |");
-lines.push("| --- | --- | --- | --- | --- | --- | --- |");
+lines.push("**比较前先做单轴（视线轴）对齐**：以球心为圆心在 -180°..+180° 内搜最佳对齐角（2° 粗搜 + 0.25° 细化），");
+lines.push("对齐后再逐像素比。不对齐的数字同时列出，用来显示「朝向不确定」会造成多大的假差异。");
+lines.push("");
+lines.push("| 场景 | 对齐角 | 对齐后变化像素 | 对齐前变化像素 | 对齐后最大通道差 | 球轮廓直径 基→改（像素扫描） | 半径（DEV 钩子）基→改 | 环宽笔画峰（改） |");
+lines.push("| --- | --- | --- | --- | --- | --- | --- | --- |");
 for (const row of rows) {
   const sphere = row.diffs.sphere;
   lines.push(
     "| " + row.scenario +
-    " | " + (sphere ? (row.verdicts.artIdentical ? "一致" : "有差异") : "无图") +
+    " | " + (row.diffs.alignment?.ok ? row.diffs.alignment.angle + "°" : "-") +
     " | " + (sphere ? sphere.changedPixels + " / " + sphere.totalPixels + "（" + (sphere.changedRatio * 100).toFixed(3) + "%）" : "-") +
+    " | " + (row.diffs.sphereUnaligned ? (row.diffs.sphereUnaligned.changedRatio * 100).toFixed(3) + "%" : "-") +
     " | " + (sphere ? sphere.maxDelta : "-") +
     " | " + fmt(row.metrics.diameter.base) + " → " + fmt(row.metrics.diameter.rev) + "（Δ " + fmt(row.metrics.diameter.delta) + "，" + row.metrics.diameter.method + "）" +
     " | " + fmt(row.metrics.radiusHook.base) + " → " + fmt(row.metrics.radiusHook.rev) +
@@ -217,6 +295,40 @@ for (const row of rows) {
     " | " + String(row.metrics.horizontalOverflow.base) + " → " + String(row.metrics.horizontalOverflow.rev) +
     " |",
   );
+}
+lines.push("");
+lines.push("## 材质探针（旋转无关：颜色/透明度/材质是否变化）");
+lines.push("");
+lines.push("基线自身的最终朝向不可复现（聚焦 slerp 在相机补间结束时被截断，帧时序一变角度就变）——");
+lines.push("因此**逐像素比较要对着「噪声地板」看**（同一份代码跑两次的差异），而材质对比用结构位置上的颜色：");
+lines.push("轮廓环在球心行的颜色、玫红结构最强那批像素的颜色、球体内部众数色。这三组由令牌决定，与朝向无关。");
+lines.push("");
+lines.push("| 场景 | 轮廓环颜色 基→改 | 玫红核心色（前 3）基 → 改 | 内部众数色 基 → 改 | 判定 |");
+lines.push("| --- | --- | --- | --- | --- |");
+for (const row of rows) {
+  const m = row.metrics.materials;
+  if (!m) {
+    lines.push("| " + row.scenario + " | - | - | - | 无探针数据 |");
+    continue;
+  }
+  const top = (list, n) => (list ?? []).slice(0, n).map((item) => item.rgb).join(" / ");
+  lines.push(
+    "| " + row.scenario +
+    " | " + (m.base?.contourRing?.mode?.rgb ?? "-") + " → " + (m.rev?.contourRing?.mode?.rgb ?? "-") +
+    " | " + top(m.base?.strongPinkTop, 3) + " → " + top(m.rev?.strongPinkTop, 3) +
+    " | " + (m.base?.interiorTop?.[0]?.rgb ?? "-") + " → " + (m.rev?.interiorTop?.[0]?.rgb ?? "-") +
+    " | " + (m.same ? "一致" : "有差异") +
+    " |",
+  );
+}
+lines.push("");
+lines.push("## 调色板信息（仅供参考：抗锯齿中间色随朝向变化，**不作为判据**）");
+lines.push("");
+for (const row of rows) {
+  const pal = row.metrics.palette;
+  if (!pal) continue;
+  lines.push("- " + row.scenario + "：distinct " + pal.baseDistinct + " → " + pal.revDistinct +
+    "；top1 " + (pal.baseTop[0]?.rgb ?? "-") + " → " + (pal.revTop[0]?.rgb ?? "-"));
 }
 lines.push("");
 lines.push("## 全局栏与圆角令牌");

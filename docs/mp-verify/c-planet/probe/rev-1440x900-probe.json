@@ -1,0 +1,432 @@
+{
+  "url": "http://127.0.0.1:5103",
+  "label": "rev",
+  "viewport": "1440x900",
+  "startedAt": "2026-10-27T03:38:34.241Z",
+  "checks": {
+    "idleStopsRendering": {
+      "rendersBefore": 147,
+      "rendersAfter": 147,
+      "rendersDelta": 0,
+      "cdpFramesBefore": 1,
+      "cdpFramesAfter": 1,
+      "cdpFramesDelta": 0,
+      "loopActive": false,
+      "paused": false,
+      "verdict": "静置 2.5s 渲染计数不再增长（停了）"
+    },
+    "interactionResumesRendering": {
+      "rendersAfterInteraction": 149,
+      "rendersDelta": 2,
+      "loopActive": true,
+      "verdict": "交互后渲染恢复"
+    },
+    "animationFrameRate": {
+      "frames": 20,
+      "spanMs": 1857,
+      "fps": 10.2
+    },
+    "reducedMotion": {
+      "dataMotion": "reduced",
+      "frames": 139,
+      "framesToTarget": null,
+      "msToTarget": null,
+      "verdict": "减少动画下没有测到到达目标",
+      "curve": [
+        {
+          "t": 1,
+          "mp": null
+        },
+        {
+          "t": 4,
+          "mp": null
+        },
+        {
+          "t": 11,
+          "mp": null
+        },
+        {
+          "t": 17,
+          "mp": null
+        },
+        {
+          "t": 25,
+          "mp": null
+        },
+        {
+          "t": 35,
+          "mp": null
+        },
+        {
+          "t": 39,
+          "mp": null
+        },
+        {
+          "t": 45,
+          "mp": null
+        },
+        {
+          "t": 53,
+          "mp": null
+        },
+        {
+          "t": 60,
+          "mp": null
+        },
+        {
+          "t": 67,
+          "mp": null
+        },
+        {
+          "t": 73,
+          "mp": null
+        },
+        {
+          "t": 80,
+          "mp": null
+        },
+        {
+          "t": 88,
+          "mp": null
+        },
+        {
+          "t": 95,
+          "mp": null
+        },
+        {
+          "t": 101,
+          "mp": null
+        },
+        {
+          "t": 109,
+          "mp": null
+        },
+        {
+          "t": 115,
+          "mp": null
+        },
+        {
+          "t": 122,
+          "mp": null
+        },
+        {
+          "t": 129,
+          "mp": null
+        },
+        {
+          "t": 137,
+          "mp": null
+        },
+        {
+          "t": 142,
+          "mp": null
+        },
+        {
+          "t": 150,
+          "mp": null
+        },
+        {
+          "t": 156,
+          "mp": null
+        }
+      ]
+    }
+  },
+  "notes": [
+    "reduced 模式通过 localStorage(qio-motion=reduced) + 重载生效，与设置页写的是同一份偏好；脚本结束时会把该偏好删掉。"
+  ],
+  "metrics": {
+    "viewport": {
+      "width": 1440,
+      "height": 900,
+      "dpr": 1
+    },
+    "titlebar": 70,
+    "radiusToken": "14px",
+    "view": {
+      "x": 0,
+      "y": 0,
+      "width": 1440,
+      "height": 900,
+      "left": 0,
+      "top": 0,
+      "right": 1440,
+      "bottom": 900
+    },
+    "content": {
+      "x": 0,
+      "y": 0,
+      "width": 1440,
+      "height": 900,
+      "left": 0,
+      "top": 0,
+      "right": 1440,
+      "bottom": 900
+    },
+    "stage": {
+      "x": 0,
+      "y": 0,
+      "width": 1439,
+      "height": 900,
+      "left": 0,
+      "top": 0,
+      "right": 1439,
+      "bottom": 900
+    },
+    "canvas": {
+      "x": 0,
+      "y": 0,
+      "width": 1439,
+      "height": 900,
+      "left": 0,
+      "top": 0,
+      "right": 1439,
+      "bottom": 900
+    },
+    "panel": {
+      "x": 1439,
+      "y": 0,
+      "width": 1,
+      "height": 900,
+      "left": 1439,
+      "top": 0,
+      "right": 1440,
+      "bottom": 900
+    },
+    "sphereFromCanvas": {
+      "cx": 719.5,
+      "cy": 450,
+      "canvasW": 1439,
+      "canvasH": 900
+    },
+    "classes": "planet-view entered layers armed curtain",
+    "mp": "",
+    "dataMp": null,
+    "managing": false,
+    "docScroll": {
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "horizontalOverflow": false
+    },
+    "bodyScroll": {
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    "overflowScrollers": [],
+    "scene": {
+      "webglOK": true,
+      "renders": 147,
+      "loopActive": false,
+      "paused": false,
+      "idleStopped": true,
+      "idleFrames": 12,
+      "manageYaw": 0,
+      "cameraDistance": 2.6,
+      "fov": 45,
+      "quaternion": [
+        -0.271,
+        0.33,
+        -0.127,
+        0.895
+      ],
+      "poseYaw": 0,
+      "frontFacing": 6,
+      "dotCount": 16,
+      "hasSession": true
+    },
+    "stageHook": {
+      "phase": "ready",
+      "k": "1",
+      "tx": "0px",
+      "ty": "0px",
+      "sphere": {
+        "cx": 719.5,
+        "cy": 450,
+        "radius": 452.66504294495525
+      },
+      "origin": {},
+      "target": null,
+      "layers": true,
+      "entered": true,
+      "ball": false,
+      "selected": "topic_562761b53e85",
+      "selectedLabel": {},
+      "demoSpeed": 1,
+      "debug": {
+        "azimuth": 0,
+        "interacting": true,
+        "frontFacing": 6,
+        "backSlots": 16,
+        "swaps": 0,
+        "feeds": 145,
+        "steps": 0,
+        "lastDelta": 0,
+        "lastSwapAgo": -1,
+        "rotationY": 0.721,
+        "quaternion": [
+          -0.271,
+          0.33,
+          -0.127,
+          0.895
+        ],
+        "lowPower": false,
+        "renders": 147,
+        "loopActive": false,
+        "paused": false,
+        "idleStopped": true,
+        "manageYaw": 0,
+        "cameraDistance": 2.6,
+        "ringWidthScale": 1,
+        "windowSize": 13,
+        "id": "h5c24z",
+        "hasSession": true,
+        "dirs": [
+          [
+            0.005,
+            -0.02,
+            1
+          ],
+          [
+            -0.13,
+            0.953,
+            -0.274
+          ],
+          [
+            -0.782,
+            0.622,
+            -0.035
+          ],
+          [
+            -0.794,
+            0.515,
+            0.322
+          ],
+          [
+            0.99,
+            0.097,
+            -0.105
+          ],
+          [
+            -0.47,
+            -0.609,
+            -0.639
+          ],
+          [
+            -0.343,
+            -0.911,
+            0.229
+          ],
+          [
+            -0.011,
+            -0.992,
+            0.126
+          ],
+          [
+            -0.048,
+            -0.489,
+            0.871
+          ],
+          [
+            -0.838,
+            0.067,
+            -0.541
+          ],
+          [
+            0.895,
+            -0.113,
+            -0.432
+          ],
+          [
+            0.728,
+            -0.077,
+            -0.681
+          ],
+          [
+            -0.832,
+            0.316,
+            0.455
+          ],
+          null,
+          null,
+          null
+        ],
+        "localDirs": [
+          [
+            -0.511,
+            -0.584,
+            0.631
+          ],
+          [
+            -0.341,
+            0.932,
+            0.122
+          ],
+          [
+            -0.82,
+            0.493,
+            -0.289
+          ],
+          [
+            -0.973,
+            0.202,
+            -0.114
+          ],
+          [
+            0.757,
+            0.187,
+            0.626
+          ],
+          [
+            0.229,
+            -0.159,
+            -0.96
+          ],
+          [
+            -0.007,
+            -0.895,
+            -0.446
+          ],
+          [
+            0.328,
+            -0.887,
+            -0.325
+          ],
+          [
+            -0.292,
+            -0.899,
+            0.325
+          ],
+          [
+            -0.373,
+            0.322,
+            -0.87
+          ],
+          [
+            0.942,
+            0.196,
+            0.271
+          ],
+          [
+            0.933,
+            0.36,
+            0.018
+          ],
+          [
+            -0.99,
+            -0.04,
+            -0.134
+          ],
+          null,
+          null,
+          null
+        ],
+        "cameraDir": [
+          0,
+          0,
+          1
+        ]
+      }
+    }
+  },
+  "finishedAt": "2026-10-27T03:39:21.344Z"
+}

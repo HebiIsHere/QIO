@@ -591,3 +591,243 @@ export function colorPalette(image, opts = {}) {
     significant: sorted.filter(([, count]) => count >= minCount).map(([key]) => [(key >> 16) & 255, (key >> 8) & 255, key & 255].join(",")),
   };
 }
+/**
+ * 结构色探针（旋转无关的材质证据）。
+ *
+ * 为什么不用「调色板集合」：球体表面是渐变 + 半透明叠加，抗锯齿会产出成百上千种中间色，
+ * 朝向一变这些中间色的分布就变 —— 集合比较只会得到「都不一致」的无用结论。
+ * 真正能证明「颜色/透明度/材质没变」的是**结构位置上的颜色**：
+ * - 轮廓环：球心所在行、球体左极值处的那条细线（opacity 0.8，颜色随主题）；
+ * - 融合环/话题点：玫红强度最高那批像素的颜色（内圈 0.62 / 中 0.44 / 外 0.28 叠加后的实色）；
+ * - 球体内部：排除玫红结构后的众数色（填充 0.05 + 经纬线 + 虚空渐变）。
+ * 这三组在任意朝向下都由令牌决定，因此可以直接在「基线 vs 改版」之间比对。
+ */
+export function probeMaterials(image, opts = {}) {
+  const centerX = opts.centerX ?? image.width / 2;
+  const centerY = opts.centerY ?? image.height / 2;
+  const row = Math.round(centerY);
+
+  const strongPink = new Map();
+  const interior = new Map();
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const score = pinkScore(image, x, y);
+      const i = (y * image.width + x) * 4;
+      const key = (image.data[i] << 16) | (image.data[i + 1] << 8) | image.data[i + 2];
+      if (score >= 0.6) strongPink.set(key, (strongPink.get(key) ?? 0) + 1);
+      else if (Math.hypot(x - centerX, y - centerY) < Math.min(image.width, image.height) * 0.35) {
+        interior.set(key, (interior.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  const toRgb = (key) => [(key >> 16) & 255, (key >> 8) & 255, key & 255].join(",");
+  const rank = (map, limit) =>
+    [...map.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([key, count]) => ({ rgb: toRgb(key), count }));
+
+  /**
+   * 轮廓环颜色：取球心行**最左侧**的玫红像素（= 球体左极值处的那条细线）。
+   * 注意不能取「这一行最强的玫红」—— 那一带常常是融合环或话题点，颜色对但位置不稳，
+   * 换个朝向采样点就跑到别的结构上去了（实测就踩过这个坑）。
+   */
+  let contour = null;
+  for (let x = 0; x < image.width - 2; x += 1) {
+    const score = pinkScore(image, x, row);
+    if (score >= 0.15) {
+      // 往内 1px 取更实的一笔（1px 细线在抗锯齿下最外侧往往只有部分覆盖）
+      const i = (row * image.width + Math.min(image.width - 1, x + 1)) * 4;
+      contour = {
+        rgb: [image.data[i], image.data[i + 1], image.data[i + 2]].join(","),
+        x,
+        score: Number(score.toFixed(3)),
+      };
+      break;
+    }
+  }
+  return {
+    contourOnRow: contour,
+    strongPinkTop: rank(strongPink, 6),
+    strongPinkDistinct: strongPink.size,
+    interiorTop: rank(interior, 4),
+  };
+}
+/**
+ * 轮廓环颜色（按圆采样，朝向无关）。
+ *
+ * 轮廓环是一个完整的圆：沿整个圆周采样后取**众数色**，个别角度上被融合环/话题点
+ * 干扰的采样点会被自动投掉。这样得到的颜色就是轮廓线本身的实色（opacity 0.8）。
+ */
+export function contourRingColor(image, opts = {}) {
+  const centerX = opts.centerX;
+  const centerY = opts.centerY;
+  const radius = opts.radius;
+  if (!Number.isFinite(centerX) || !Number.isFinite(centerY) || !Number.isFinite(radius) || radius <= 1) {
+    return { ok: false, reason: "缺少圆心/半径" };
+  }
+  const counts = new Map();
+  let sampled = 0;
+  const angles = 720;
+  for (let a = 0; a < angles; a += 1) {
+    const theta = (a / angles) * Math.PI * 2;
+    let best = 0;
+    let bestKey = null;
+    for (let dr = -1.5; dr <= 1.5; dr += 0.5) {
+      const x = Math.round(centerX + Math.cos(theta) * (radius + dr));
+      const y = Math.round(centerY + Math.sin(theta) * (radius + dr));
+      if (x < 1 || y < 1 || x >= image.width - 1 || y >= image.height - 1) continue;
+      const score = pinkScore(image, x, y);
+      if (score > best) {
+        best = score;
+        bestKey = (image.data[(y * image.width + x) * 4] << 16) |
+          (image.data[(y * image.width + x) * 4 + 1] << 8) |
+          image.data[(y * image.width + x) * 4 + 2];
+      }
+    }
+    if (bestKey !== null && best >= 0.15) {
+      counts.set(bestKey, (counts.get(bestKey) ?? 0) + 1);
+      sampled += 1;
+    }
+  }
+  if (!sampled) return { ok: false, reason: "圆周上没有采样到玫红像素" };
+  const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const toRgb = (key) => [(key >> 16) & 255, (key >> 8) & 255, key & 255].join(",");
+  return {
+    ok: true,
+    sampled,
+    mode: { rgb: toRgb(top[0][0]), count: top[0][1] },
+    top: top.map(([key, count]) => ({ rgb: toRgb(key), count })),
+  };
+}
+/**
+ * 竖直中带内「每行最右侧玫红像素」的中位数。
+ *
+ * 用途：管理展开后要判断「右半球完整可见」——右边界应当 ≈ 球心 + 半径。
+ * 为什么要按行取中位数：画面里还有界面层的玫红元素（选中话题的标签胶囊、页面工具行、
+ * 按钮描边），它们在竖直方向只占少数行；球轮廓是连续弧线，跨几百行都成立。
+ * 中位数因此对界面元素免疫。
+ */
+export function medianRightmost(image, opts = {}) {
+  const centerY = opts.centerY ?? image.height / 2;
+  const band = opts.band ?? 150;
+  const threshold = opts.threshold ?? 0.25;
+  const rights = [];
+  for (let y = Math.max(0, Math.round(centerY - band)); y <= Math.min(image.height - 1, Math.round(centerY + band)); y += 2) {
+    for (let x = image.width - 1; x >= 0; x -= 1) {
+      if (pinkScore(image, x, y) >= threshold) {
+        rights.push(x);
+        break;
+      }
+    }
+  }
+  if (!rights.length) return { ok: false, reason: "中带内没有玫红像素" };
+  rights.sort((a, b) => a - b);
+  const median = rights[Math.floor(rights.length / 2)];
+  return {
+    ok: true,
+    rows: rights.length,
+    rightmost: median,
+    p10: rights[Math.floor(rights.length * 0.1)],
+    p90: rights[Math.floor(rights.length * 0.9)],
+  };
+}
+/**
+ * 绕球心单轴（视线轴）旋转后的平均绝对差。
+ *
+ * 为什么需要它：基线球体的**最终滚转角**不确定 —— 入口球态的空闲自转（rotation.y += dt·0.1）
+ * 累积量取决于加载时长，聚焦 slerp 之后残留的滚转因此每跑一次都不一样（实测同一份代码两次
+ * 截图差 11–17% 像素、滚转 40–60°）。直接逐像素 diff 只会得到「大量假差异」。
+ * 正确做法：在 -180°..+180° 内搜一个最佳对齐角，在该角度下再比 —— 这时比的是**同一朝向**。
+ */
+export function alignedMeanAbsDiff(a, b, angleDeg, opts = {}) {
+  const cx = opts.cx ?? a.width / 2;
+  const cy = opts.cy ?? a.height / 2;
+  const step = opts.step ?? 1;
+  const rad = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  let sum = 0;
+  let count = 0;
+  for (let y = 0; y < a.height; y += step) {
+    for (let x = 0; x < a.width; x += step) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const sx = Math.round(cx + dx * cos - dy * sin);
+      const sy = Math.round(cy + dx * sin + dy * cos);
+      if (sx < 0 || sy < 0 || sx >= b.width || sy >= b.height) continue;
+      const i = (y * a.width + x) * 4;
+      const j = (sy * b.width + sx) * 4;
+      sum +=
+        Math.abs(a.data[i] - b.data[j]) +
+        Math.abs(a.data[i + 1] - b.data[j + 1]) +
+        Math.abs(a.data[i + 2] - b.data[j + 2]);
+      count += 1;
+    }
+  }
+  return { angle: angleDeg, meanAbs: count ? Number((sum / (count * 3)).toFixed(3)) : null, samples: count };
+}
+
+/**
+ * 单轴对齐搜索：先 2° 粗搜（隔像素采样），再在最佳角附近 0.25° 细化。
+ * 返回最佳角与残余差异；残余差异就是「对齐到同一朝向后，美术还剩多少不同」。
+ */
+export function bestRotationAlignment(a, b, opts = {}) {
+  if (a.width !== b.width || a.height !== b.height) {
+    return { ok: false, reason: "尺寸不同，无法旋转对齐" };
+  }
+  const cx = opts.cx ?? a.width / 2;
+  const cy = opts.cy ?? a.height / 2;
+  const coarseStep = opts.coarseStep ?? 2;
+  const fineStep = opts.fineStep ?? 0.25;
+  const coarse = [];
+  for (let angle = -180; angle < 180; angle += coarseStep) {
+    const result = alignedMeanAbsDiff(a, b, angle, { cx, cy, step: 2 });
+    coarse.push(result);
+  }
+  coarse.sort((m, n) => m.meanAbs - n.meanAbs);
+  const bestCoarse = coarse[0];
+  const fine = [];
+  for (let angle = bestCoarse.angle - coarseStep; angle <= bestCoarse.angle + coarseStep; angle += fineStep) {
+    fine.push(alignedMeanAbsDiff(a, b, angle, { cx, cy, step: 1 }));
+  }
+  fine.sort((m, n) => m.meanAbs - n.meanAbs);
+  const best = fine[0];
+  return {
+    ok: true,
+    angle: Number(best.angle.toFixed(2)),
+    meanAbs: best.meanAbs,
+    unalignedMeanAbs: alignedMeanAbsDiff(a, b, 0, { cx, cy, step: 1 }).meanAbs,
+    coarseBest: Number(bestCoarse.angle.toFixed(1)),
+    candidates: fine.length,
+  };
+}
+
+/** 按最佳对齐角旋转一张图（写差异热图用）。 */
+export function rotateAbout(image, angleDeg, opts = {}) {
+  const cx = opts.cx ?? image.width / 2;
+  const cy = opts.cy ?? image.height / 2;
+  const rad = (angleDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const out = Buffer.alloc(image.width * image.height * 4, 255);
+  for (let y = 0; y < image.height; y += 1) {
+    for (let x = 0; x < image.width; x += 1) {
+      const dx = x - cx;
+      const dy = y - cy;
+      const sx = Math.round(cx + dx * cos - dy * sin);
+      const sy = Math.round(cy + dx * sin + dy * cos);
+      const dst = (y * image.width + x) * 4;
+      if (sx < 0 || sy < 0 || sx >= image.width || sy >= image.height) {
+        out[dst + 3] = 0;
+        continue;
+      }
+      const src = (sy * image.width + sx) * 4;
+      out[dst] = image.data[src];
+      out[dst + 1] = image.data[src + 1];
+      out[dst + 2] = image.data[src + 2];
+      out[dst + 3] = 255;
+    }
+  }
+  return { width: image.width, height: image.height, data: out };
+}

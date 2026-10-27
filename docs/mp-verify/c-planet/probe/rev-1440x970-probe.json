@@ -1,0 +1,432 @@
+{
+  "url": "http://127.0.0.1:5112",
+  "label": "rev",
+  "viewport": "1440x970",
+  "startedAt": "2026-10-27T03:53:44.170Z",
+  "checks": {
+    "idleStopsRendering": {
+      "rendersBefore": 208,
+      "rendersAfter": 208,
+      "rendersDelta": 0,
+      "cdpFramesBefore": 1,
+      "cdpFramesAfter": 1,
+      "cdpFramesDelta": 0,
+      "loopActive": false,
+      "paused": false,
+      "verdict": "静置 2.5s 渲染计数不再增长（停了）"
+    },
+    "interactionResumesRendering": {
+      "rendersAfterInteraction": 212,
+      "rendersDelta": 4,
+      "loopActive": true,
+      "verdict": "交互后渲染恢复"
+    },
+    "animationFrameRate": {
+      "frames": 19,
+      "spanMs": 2021,
+      "fps": 8.9
+    },
+    "reducedMotion": {
+      "dataMotion": "reduced",
+      "frames": 50,
+      "framesToTarget": 16,
+      "msToTarget": 193,
+      "verdict": "减少动画下 193ms 到位（超过一帧，需要排查）",
+      "curve": [
+        {
+          "t": 1,
+          "mp": 0
+        },
+        {
+          "t": 8,
+          "mp": 0
+        },
+        {
+          "t": 16,
+          "mp": 0
+        },
+        {
+          "t": 23,
+          "mp": 0
+        },
+        {
+          "t": 27,
+          "mp": 0
+        },
+        {
+          "t": 32,
+          "mp": 0
+        },
+        {
+          "t": 43,
+          "mp": 0
+        },
+        {
+          "t": 46,
+          "mp": 0
+        },
+        {
+          "t": 53,
+          "mp": 0
+        },
+        {
+          "t": 67,
+          "mp": 0
+        },
+        {
+          "t": 68,
+          "mp": 0
+        },
+        {
+          "t": 80,
+          "mp": 0
+        },
+        {
+          "t": 94,
+          "mp": 0
+        },
+        {
+          "t": 146,
+          "mp": 0
+        },
+        {
+          "t": 170,
+          "mp": 0
+        },
+        {
+          "t": 178,
+          "mp": 0
+        },
+        {
+          "t": 193,
+          "mp": 1
+        },
+        {
+          "t": 209,
+          "mp": 1
+        },
+        {
+          "t": 366,
+          "mp": 1
+        },
+        {
+          "t": 391,
+          "mp": 1
+        },
+        {
+          "t": 489,
+          "mp": 1
+        },
+        {
+          "t": 624,
+          "mp": 1
+        },
+        {
+          "t": 840,
+          "mp": 1
+        },
+        {
+          "t": 1060,
+          "mp": 1
+        }
+      ]
+    }
+  },
+  "notes": [
+    "reduced 模式通过 localStorage(qio-motion=reduced) + 重载生效，与设置页写的是同一份偏好；脚本结束时会把该偏好删掉。"
+  ],
+  "metrics": {
+    "viewport": {
+      "width": 1440,
+      "height": 970,
+      "dpr": 1
+    },
+    "titlebar": 70,
+    "radiusToken": "14px",
+    "view": {
+      "x": 0,
+      "y": 0,
+      "width": 1440,
+      "height": 970,
+      "left": 0,
+      "top": 0,
+      "right": 1440,
+      "bottom": 970
+    },
+    "content": {
+      "x": 0,
+      "y": 70,
+      "width": 1440,
+      "height": 900,
+      "left": 0,
+      "top": 70,
+      "right": 1440,
+      "bottom": 970
+    },
+    "stage": {
+      "x": 0,
+      "y": 70,
+      "width": 1440,
+      "height": 900,
+      "left": 0,
+      "top": 70,
+      "right": 1440,
+      "bottom": 970
+    },
+    "canvas": {
+      "x": 0,
+      "y": 70,
+      "width": 1440,
+      "height": 900,
+      "left": 0,
+      "top": 70,
+      "right": 1440,
+      "bottom": 970
+    },
+    "panel": {
+      "x": 1439,
+      "y": 70,
+      "width": 1,
+      "height": 900,
+      "left": 1439,
+      "top": 70,
+      "right": 1440,
+      "bottom": 970
+    },
+    "sphereFromCanvas": {
+      "cx": 720,
+      "cy": 520,
+      "canvasW": 1440,
+      "canvasH": 900
+    },
+    "classes": "planet-view entered layers armed curtain",
+    "mp": "0.000",
+    "dataMp": "0.000",
+    "managing": false,
+    "docScroll": {
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "horizontalOverflow": false
+    },
+    "bodyScroll": {
+      "scrollWidth": 1440,
+      "clientWidth": 1440
+    },
+    "overflowScrollers": [],
+    "scene": {
+      "webglOK": true,
+      "renders": 208,
+      "loopActive": false,
+      "paused": false,
+      "idleStopped": true,
+      "idleFrames": 12,
+      "manageYaw": 0,
+      "cameraDistance": 2.6,
+      "fov": 45,
+      "quaternion": [
+        0.388,
+        0.748,
+        0.302,
+        0.445
+      ],
+      "poseYaw": 0,
+      "frontFacing": 6,
+      "dotCount": 16,
+      "hasSession": true
+    },
+    "stageHook": {
+      "phase": "ready",
+      "k": "1",
+      "tx": "0px",
+      "ty": "0px",
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "origin": {},
+      "target": null,
+      "layers": true,
+      "entered": true,
+      "ball": false,
+      "selected": "topic_8e3bf4cf8e0c",
+      "selectedLabel": {},
+      "demoSpeed": 1,
+      "debug": {
+        "azimuth": 0,
+        "interacting": true,
+        "frontFacing": 6,
+        "backSlots": 16,
+        "swaps": 0,
+        "feeds": 206,
+        "steps": 0,
+        "lastDelta": 0,
+        "lastSwapAgo": -1,
+        "rotationY": 1.121,
+        "quaternion": [
+          0.388,
+          0.748,
+          0.302,
+          0.445
+        ],
+        "lowPower": false,
+        "renders": 208,
+        "loopActive": false,
+        "paused": false,
+        "idleStopped": true,
+        "manageYaw": 0,
+        "cameraDistance": 2.6,
+        "ringWidthScale": 0.26,
+        "windowSize": 13,
+        "id": "bltwsz",
+        "hasSession": true,
+        "dirs": [
+          [
+            -0.008,
+            0.012,
+            1
+          ],
+          [
+            -0.663,
+            -0.745,
+            -0.071
+          ],
+          [
+            -0.209,
+            -0.866,
+            -0.455
+          ],
+          [
+            0.6,
+            -0.532,
+            -0.598
+          ],
+          [
+            0.47,
+            0.869,
+            0.154
+          ],
+          [
+            0.77,
+            -0.616,
+            0.168
+          ],
+          [
+            -0.562,
+            0.733,
+            -0.382
+          ],
+          [
+            0.914,
+            -0.396,
+            -0.089
+          ],
+          [
+            0.723,
+            -0.126,
+            -0.679
+          ],
+          [
+            0.726,
+            -0.682,
+            -0.086
+          ],
+          [
+            0.957,
+            0.291,
+            0.013
+          ],
+          [
+            -0.975,
+            -0.117,
+            0.19
+          ],
+          [
+            0.173,
+            0.037,
+            0.984
+          ],
+          null,
+          null,
+          null
+        ],
+        "localDirs": [
+          [
+            -0.419,
+            0.801,
+            -0.427
+          ],
+          [
+            -0.402,
+            -0.649,
+            -0.646
+          ],
+          [
+            -0.476,
+            -0.875,
+            -0.089
+          ],
+          [
+            -0.375,
+            -0.564,
+            0.736
+          ],
+          [
+            0.53,
+            0.718,
+            0.451
+          ],
+          [
+            -0.828,
+            0.057,
+            0.557
+          ],
+          [
+            0.958,
+            -0.102,
+            -0.267
+          ],
+          [
+            -0.574,
+            0.011,
+            0.819
+          ],
+          [
+            -0.032,
+            -0.381,
+            0.924
+          ],
+          [
+            -0.762,
+            -0.194,
+            0.618
+          ],
+          [
+            -0.048,
+            0.459,
+            0.887
+          ],
+          [
+            0.114,
+            -0.213,
+            -0.97
+          ],
+          [
+            -0.446,
+            0.858,
+            -0.255
+          ],
+          null,
+          null,
+          null
+        ],
+        "cameraDir": [
+          0,
+          0,
+          1
+        ]
+      }
+    }
+  },
+  "finishedAt": "2026-10-27T03:54:50.828Z"
+}

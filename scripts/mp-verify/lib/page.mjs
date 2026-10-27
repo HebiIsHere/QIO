@@ -29,7 +29,7 @@ export async function openPlanetFromDock(browser, { timeout = 20000 } = {}) {
  * 等星球场景真正就绪：视图在、画布有尺寸、Dev 钩子报告 WebGL 可用、
  * 并且**连续两次采样的球体几何一致**（转场结束）。
  */
-export async function waitPlanetReady(browser, { timeout = 30000 } = {}) {
+export async function waitPlanetReady(browser, { timeout = 45000 } = {}) {
   const deadline = Date.now() + timeout;
   let stable = 0;
   let last = null;

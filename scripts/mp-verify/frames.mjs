@@ -39,6 +39,14 @@ const openSelectors = String(flag("manage-open", DEFAULT_MANAGE_SELECTORS.open.j
 const closeSelectors = String(flag("manage-close", DEFAULT_MANAGE_SELECTORS.close.join("|"))).split("|");
 const strip = Boolean(flag("strip", false));
 const reverseAt = Number(flag("reverse-at", 0.5));
+/**
+ * 反向触发时刻（毫秒，从点展开算起）。
+ *
+ * 为什么按**时间**而不是按 --mp 阈值：软件光栅下偶尔掉帧（实测有 220ms 的停顿），
+ * 进度会在一帧里跨过 0.5，把「阈值触发」变成「几乎展开完才反向」—— 那测的就不是中途反向了。
+ * 按时间触发才稳定落在动画中段。
+ */
+const reverseAfterMs = Number(flag("reverse-after-ms", 240));
 
 mkdirSync(outDir, { recursive: true });
 
@@ -106,6 +114,11 @@ const SAMPLER = `(opts) => {
       state.triggerMp = mp;
       state.triggeredSelector = clickFirst(opts.selectors || []);
     }
+    if (opts.trigger === 'whenElapsedAtLeast' && state.triggeredAt === null && t >= opts.value) {
+      state.triggeredAt = t;
+      state.triggerMp = mp;
+      state.triggeredSelector = clickFirst(opts.selectors || []);
+    }
     if (opts.trigger === 'whenMpAtMost' && state.triggeredAt === null && mp !== null && mp <= opts.value) {
       state.triggeredAt = t;
       state.triggerMp = mp;
@@ -120,8 +133,9 @@ const SAMPLER = `(opts) => {
 /** 一轮动作：可选先展开，再触发动作，采样到最后稳定。 */
 async function runAction(browser, action) {
   await browser.evalJs("(() => { const stop = window.__mpSamplerStop; if (typeof stop === 'function') stop(); return true; })()");
-  // 起始状态：展开动作从收起态开始；收起/反向从展开态开始
-  if (action !== "expand") {
+  // 起始状态：展开与「中途反向」都从**收起态**开始（反向要的是「正展开到一半被收起打断」）；
+  // 只有收起动作才需要先展开。
+  if (action === "collapse") {
     const already = await browser.evalJs(
       "(() => { const v = document.querySelector('.planet-view'); const raw = v ? getComputedStyle(v).getPropertyValue('--mp') : ''; return raw ? Number.parseFloat(raw) : 0; })()",
     );
@@ -143,7 +157,9 @@ async function runAction(browser, action) {
   let samplerOpts = { trigger: "none" };
   if (action === "expand") samplerOpts = {};
   if (action === "collapse") samplerOpts = {};
-  if (action === "reverse") samplerOpts = { trigger: "whenMpAtLeast", value: reverseAt, selectors: closeSelectors };
+  if (action === "reverse") {
+    samplerOpts = { trigger: "whenElapsedAtLeast", value: reverseAfterMs, selectors: closeSelectors };
+  }
   await browser.evalJs("(" + SAMPLER.toString() + ")(" + JSON.stringify(samplerOpts) + ")");
 
   const t0 = Date.now();
@@ -182,13 +198,21 @@ async function runAction(browser, action) {
 
   // 连续性分析
   let maxStep = 0;
-  let jumps = [];
+  let maxRate = 0;
+  const jumps = [];
   let reversals = 0;
   let prevDirection = 0;
   for (let i = 1; i < curve.length; i += 1) {
     const step = curve[i].mp - curve[i - 1].mp;
+    const dt = Math.max(1e-6, curve[i].t - curve[i - 1].t);
     if (Math.abs(step) > maxStep) maxStep = Math.abs(step);
-    if (Math.abs(step) > 0.16) jumps.push({ at: curve[i].t, step: Number(step.toFixed(4)) });
+    maxRate = Math.max(maxRate, (Math.abs(step) / dt) * 1000);
+    /**
+     * 「瞬移」的判据必须按**速率**看，不能只看单帧差值：
+     * 软件光栅下偶尔会掉一帧（30–200ms），一个慢帧里进度当然走得多。
+     * 这里只有「一帧 40ms 内走了 0.16 以上」（≈4 进度/秒以上）才算可疑跳变。
+     */
+    if (Math.abs(step) > 0.16 && dt < 40) jumps.push({ at: curve[i].t, step: Number(step.toFixed(4)), dt });
     const direction = Math.sign(step);
     if (direction !== 0 && prevDirection !== 0 && direction !== prevDirection) reversals += 1;
     if (direction !== 0) prevDirection = direction;
@@ -209,6 +233,8 @@ async function runAction(browser, action) {
     frameRate: curve.length > 1 ? Number(((curve.length - 1) / ((curve[curve.length - 1].t - curve[0].t) / 1000)).toFixed(1)) : null,
     durationMs: curve.length ? Number((curve[curve.length - 1].t - curve[0].t).toFixed(1)) : 0,
     maxStep: Number(maxStep.toFixed(4)),
+    /** 最大进度速率（进度/秒）：与令牌曲线在 1.0 距离上的峰值速率对比，用来判断有没有「跳一下」 */
+    maxRate: Number(maxRate.toFixed(2)),
     jumps,
     reversals,
     trigger,

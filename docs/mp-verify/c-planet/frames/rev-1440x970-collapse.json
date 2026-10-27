@@ -1,0 +1,237 @@
+{
+  "action": "collapse",
+  "viewport": "1440x970",
+  "elapsedMs": 1197,
+  "frames": 26,
+  "frameRate": 22.5,
+  "durationMs": 1110,
+  "maxStep": 0.468,
+  "maxRate": 4.37,
+  "jumps": [],
+  "reversals": 0,
+  "trigger": {
+    "at": null,
+    "mp": null
+  },
+  "reverseOvershoot": null,
+  "startMp": 1,
+  "endMp": 0,
+  "centerX": {
+    "start": 0,
+    "end": 720
+  },
+  "labelX": {
+    "start": 356,
+    "end": 718
+  },
+  "curve": [
+    {
+      "t": 0.3,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 4.7,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 10.8,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 24,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 36.7,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 39.1,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 47.4,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 53.2,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 64.5,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 66.1,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 81.5,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 95.7,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 119.4,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 132.9,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 158.6,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 189.3,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 233.5,
+      "mp": 1,
+      "centerX": 0,
+      "canvasLeft": -720,
+      "labelX": 356,
+      "renders": 213
+    },
+    {
+      "t": 265.4,
+      "mp": 0.97,
+      "centerX": 21.6,
+      "canvasLeft": -698.4,
+      "labelX": 356,
+      "renders": 214
+    },
+    {
+      "t": 330,
+      "mp": 0.922,
+      "centerX": 56.2,
+      "canvasLeft": -663.8,
+      "labelX": 368,
+      "renders": 215
+    },
+    {
+      "t": 434.8,
+      "mp": 0.605,
+      "centerX": 284.4,
+      "canvasLeft": -435.6,
+      "labelX": 391,
+      "renders": 216
+    },
+    {
+      "t": 541.9,
+      "mp": 0.137,
+      "centerX": 621.4,
+      "canvasLeft": -98.6,
+      "labelX": 522,
+      "renders": 217
+    },
+    {
+      "t": 653.5,
+      "mp": 0.013,
+      "centerX": 710.6,
+      "canvasLeft": -9.4,
+      "labelX": 677,
+      "renders": 218
+    },
+    {
+      "t": 783.6,
+      "mp": 0,
+      "centerX": 720,
+      "canvasLeft": 0,
+      "labelX": 714,
+      "renders": 219
+    },
+    {
+      "t": 890,
+      "mp": 0,
+      "centerX": 720,
+      "canvasLeft": 0,
+      "labelX": 718,
+      "renders": 220
+    },
+    {
+      "t": 1001.1,
+      "mp": 0,
+      "centerX": 720,
+      "canvasLeft": 0,
+      "labelX": 718,
+      "renders": 221
+    },
+    {
+      "t": 1110.3,
+      "mp": 0,
+      "centerX": 720,
+      "canvasLeft": 0,
+      "labelX": 718,
+      "renders": 222
+    }
+  ]
+}
