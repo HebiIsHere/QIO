@@ -1666,7 +1666,10 @@ async function stopTurn() {
   background: transparent;
   box-shadow: none;
 }
-/* 输入胶囊：附件圆形按钮 + 输入 + 圆形发送，全部在胶囊内部 */
+/* 输入胶囊：附件圆形按钮 + 输入 + 圆形发送，全部在胶囊内部。
+   圆角是**胶囊形**（--r-pill）：这是用户明确要求保留的设计语言，
+   也是「全应用表面统一 14px」这条规则的唯一例外 —— 只作用于对话页/互动页共用的
+   这个输入盒子（它内部的按钮本来就是圆形），不要顺手改回 14px。 */
 .input-pill {
   display: flex;
   align-items: center;
@@ -1674,7 +1677,7 @@ async function stopTurn() {
   min-width: 0;
   padding: 6px 7px 6px 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  border-radius: var(--r-pill);
   background: var(--bg-surface);
   /* 用户确认不要阴影：只保留 1px 边框；也避免被 .composer 的 overflow-x: clip 截断 */
   box-shadow: none;
