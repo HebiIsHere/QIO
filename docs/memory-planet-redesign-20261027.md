@@ -11,8 +11,9 @@
 | 基线提交 | `d8cdcc41caf581df40778016d6a80b010fe26b11`（开工前核对：本地 = `origin`，远端无后续提交） |
 | 集成分支 | `feat/mp-20261027-integration` |
 | 子分支 | `feat/mp-20261027-a-page`（页面与导航）、`feat/mp-20261027-b-manage`（管理流程）、`feat/mp-20261027-c-planet`（星球过渡与视觉核查） |
-| 最终 SHA | 待回填 |
-| 完整 CI 运行号 | 待回填 |
+| 受测功能 SHA | `21cc8aaf9fe98384d4fb4a6964e8e7a1447fe84d`（推送触发完整 CI 的那个提交） |
+| 最终 HEAD | `3992c0cb034527d170643eadd1e36737a8fac408`（其后只有本文档的文档回填提交，`[skip ci]`） |
+| 完整 CI 运行号 | `40454438978`（`https://github.com/HebiIsHere/QIO/actions/runs/40454438978`）：docs consistency / rust(ubuntu) / rust(windows) / frontend / frozen worker / install e2e / backend(py3.11) / backend(py3.12) 全部成功；`backend (windows-latest)` 在本文件写作时仍在运行，结果见该 run 页面 |
 
 开发方式：三个子智能体各自独立分支 + 独立 worktree 并行开发，Lead 在集成分支统一合并、解决交叉接口、做全量验证；
 共享件归属唯一（`PlanetView.vue` 属 A、星球场景与过渡 composable 属 C、管理面板属 B），跨组依赖用固定契约先落薄占位、
@@ -225,7 +226,8 @@ Linux 环境复现（CI 结果见上表）。
 
 ## 16. 合并说明
 
-- 集成分支 `feat/mp-20261027-integration`（不在基线分支上直接改），已合并 A/B/C 三条子分支并解决唯一的交叉冲突
+- 集成分支：`feat/mp-20261027-integration`（已推送到 origin，**未合并到基线分支** `fix/ui-feedback-followup-20261027`，也没有自动合并到 main）。
+- 不在基线分支上直接改；已合并 A/B/C 三条子分支并解决唯一的交叉冲突
   （`stores/planetPending.ts` 取 B 的真实实现；`usePlanetManageTransition.ts` 取 C 的实现）。
 - 需要合并的内容：**前端页面与组件 + 后端一个接口的最小补齐 + 测试/证据/文档**；无 schema 迁移、无依赖变更
   （三套锁文件未动，不需要重新生成第三方声明）。
