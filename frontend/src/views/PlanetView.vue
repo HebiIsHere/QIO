@@ -1,26 +1,34 @@
 <script setup lang="ts">
 /**
- * 星球页（全屏覆盖层）：3D 球体（左/中）+ 右侧面板（列表/详情/从这里开始）。
- * usePlanetScene 在本页内实例化渲染全屏星球（悬浮球为 SVG 微缩星球，不共享同一
- * WebGL 场景）；相机状态机 overview|planet|focus 语义与悬浮球保持一致：
- * - 打开（悬浮球点击）：场景推进到 planet（有锚点时直接聚焦话题）；
- * - 关闭（✕/Esc/从这里开始）：相机先拉回 overview（悬浮球位置/朝向）再收起覆盖层，
- *   拉回窗口内交互一律禁用。
+ * 星球页（全屏覆盖层）—— 记忆星球页改版（契约 _MP-COMMON §3）。
+ *
+ * 结构：`.planet-view`（fixed 全屏、overflow: clip）内部多一层 `.planet-content`
+ * （`inset: var(--titlebar-height) 0 0 0`）。星球层与管理区都在这层里：
+ * - 默认浏览态：管理区收起，星球在**内容区域**里水平+垂直居中（不再是整窗居中，
+ *   所以球心比基线低半个标题条，这正是本轮要改对的位置）；
+ * - 管理展开：管理区在右侧按 `--mp` 宽度展开，星球层靠 CSS 位移把球心挪到内容区左边缘，
+ *   只剩右半球可见（左半球由视口裁切切掉，不是遮挡、不是缩小）；
+ * - 窄窗口：管理内容排到星球下方，内容区整体一层纵向滚动。
+ *
+ * 三条边界（不能越）：
+ * 1. 星球美术、相机参数、展开/收起连续体（入口小球 → 全屏）**原样保留**；
+ * 2. 管理展开的进度只来自 C 的 `usePlanetManageTransition`（写 `--mp` / `data-mp` / `.managing`），
+ *    本页不自己再造一套，也不通过调相机参数制造位移；
+ * 3. 顶部全局栏（WindowChrome）不动：管理区只能在它下面展开。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { usePlanetScene } from "../composables/usePlanetScene";
-import { api, type PlanetTopicSummary, type TopicDetail, type TopicFingerprint } from "../services/api";
+import { api, type PlanetTopicSummary, type TopicFingerprint } from "../services/api";
 import { PlanetBrowseSession, VISIBLE_CAPACITY } from "../planet/browseSession";
 import { spreadPositions } from "../planet/layoutSlots";
 import { LEVEL_HW } from "../planet/topicData";
 import { useSessionStore } from "../stores/session";
-import { useActionFeedback } from "../composables/useActionFeedback";
-import QInput from "../components/ui/QInput.vue";
 import QIcon from "../components/ui/QIcon.vue";
 import { vQioTip } from "../composables/useQioTip";
-import KnowledgePanel from "../components/planet/KnowledgePanel.vue";
-import EntityPanel from "../components/planet/EntityPanel.vue";
-import MemoryPendingPanel from "../components/planet/MemoryPendingPanel.vue";
+import PageTools from "../components/planet/PageTools.vue";
+import ManagementArea from "../components/planet/ManagementArea.vue";
+import { usePlanetManageTransition } from "../composables/usePlanetManageTransition";
+import { usePlanetPendingStore } from "../stores/planetPending";
 import { useUiStore } from "../stores/ui";
 import { prefersReducedMotion } from "../utils/motion";
 import { CSS_SETTLE_FALLBACK, easePointsFromCssValue, evalCubicBezier } from "../utils/easing";
@@ -38,7 +46,6 @@ import {
   type EntryOrigin,
 } from "../composables/planetContinuum";
 import { ballLayoutReady, readBallSize } from "../planet/entryLayout";
-import QConfirm from "../components/ui/QConfirm.vue";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
 
 /**
@@ -331,25 +338,7 @@ const props = withDefaults(
   { open: true, initialTab: "topic", focusPendingId: null },
 );
 const emit = defineEmits<{ close: [seq?: number] }>();
-/** 实际传给待确认面板的定位目标：每次打开都重新赋值，保证同一个 id 再次打开也能触发定位。 */
-const pendingFocus = ref<string | null>(null);
 
-/**
- * 外部定位请求：打开星球 → 切到「待确认」页签 → 打开右侧面板 → 交给面板滚动/高亮。
- * 不改星球入口与本体样式；页签切换复用既有 switchTab 路径。
- */
-watch(
-  () => [props.open, props.initialTab, props.focusPendingId] as const,
-  ([open, tab, focusId]) => {
-    if (!open) return;
-    if (focusId) pendingFocus.value = focusId;
-    if (tab && tab !== "topic") {
-      panelOpen.value = true;
-      switchTab(tab);
-    }
-  },
-  { flush: "post" },
-);
 const session = useSessionStore();
 const ui = useUiStore();
 
@@ -359,6 +348,101 @@ const rootRef = ref<HTMLElement | null>(null);
 /** 星球层容器：缩放加在它身上（入口小球 → 全屏 Planet 的连续体） */
 const stageRef = ref<HTMLElement | null>(null);
 const planet = usePlanetScene(canvasRef);
+
+/* ======================================================================
+   管理区（契约 §3.3 / §4.1）：唯一进度来源是 C 的 usePlanetManageTransition。
+   它在本页根元素上写 `--mp`（0..1）、`data-mp` 与 `.managing`；本页样式只消费这些，
+   不自己再造一套进度控制，也不碰球体旋转（旋转由场景内的 setManageYaw 负责）。
+   ====================================================================== */
+const manage = usePlanetManageTransition({ rootRef, planet });
+/** 管理区是否展开（**目标态**：Esc 分层、面板交互等逻辑用它） */
+const managementOpen = manage.expanded;
+/**
+ * 管理态类名跟**当前进度**走（不是目标态）。
+ *
+ * 为什么：点「收起」那一刻目标态就变成 false，如果类名也跟着立刻撤掉，管理区会在收起的
+ * 第一帧直接消失、左移后的裁切也提前解除 —— 收起就没有过程了。契约 §4.1 本来就把
+ * `.managing` 交给 progress 管（composable 自己也写），这里用同一个判据（progress > 0），
+ * 并且只在跨过 0 时更新一次（不逐帧触发重渲染）。
+ */
+const managingActive = ref(false);
+watch(
+  () => manage.progress.value,
+  (progress) => {
+    const active = progress > 0;
+    if (active !== managingActive.value) managingActive.value = active;
+  },
+  { flush: "sync" },
+);
+/** 首次展开才挂载管理区，之后 v-show 保活（条目 / 草稿 / 浏览位置都不重置） */
+const managementMounted = ref(false);
+/** 管理区实例：Esc 分层时先问它「这一层能不能退」（搜索 / 待处理 / 整理记录先退一层） */
+const managementRef = ref<{ escapeLayer?: () => boolean } | null>(null);
+/** 外部落点请求：对话页记忆提醒 / 深链 / 页面工具行搜索 */
+const requestView = ref<PlanetTab | null>(null);
+const requestFocusId = ref<string | null>(null);
+const requestSeq = ref(0);
+const searchTicket = ref(0);
+/** 用户**真的点了话题点**时同步给记忆页的话题 id（自动聚焦/重开都不算，避免无请求地展开） */
+const focusedTopicId = ref<string | null>(null);
+/** 管理区状态回传给根元素的只读验收属性（data-tab / data-view），不参与布局 */
+const manageTab = ref<"memory" | "knowledge" | "entity">("memory");
+const manageView = ref<"tabs" | "pending" | "records" | "search">("tabs");
+/** 「待处理」真实数量：角标的唯一来源（B 的 store；读取失败时保留上一次的值） */
+const pendingStore = usePlanetPendingStore();
+/** 锚点切换（继续讨论 / 从这里继续）的进行中与失败原因：唯一定义处 */
+const anchorBusy = ref(false);
+const anchorError = ref("");
+
+/* ---- 左右排布 / 上下排布：判定口径见契约 §3.4 与 Lead 的实测说明 ---- */
+/** 内容区宽度：< 1024 一律上下排布 */
+const STACK_MIN_WIDTH = 1024;
+/** 左右排布的安全余量：管理区左侧要留出「球体半径 × 1.15」，右半球才不会被管理区压住 */
+const STACK_SPHERE_RATIO = 1.15;
+const contentRef = ref<HTMLElement | null>(null);
+const contentWidth = ref(0);
+/** 尺寸/聚焦变化后强制重算一次几何（sphereScreenRect 不是响应式的） */
+const layoutTick = ref(0);
+let contentObserver: ResizeObserver | null = null;
+
+/** 管理区在宽屏下的目标宽度（与 CSS 的 --mp-w 同一份计算，样式与判定不能两套口径） */
+function manageWidthFor(width: number): number {
+  return Math.min(640, Math.max(380, width * 0.46));
+}
+
+const stacked = computed(() => {
+  void layoutTick.value;
+  const width = contentWidth.value;
+  if (!width) return false;
+  if (width < STACK_MIN_WIDTH) return true;
+  const sphere = planet.sphereScreenRect();
+  const radius = sphere?.radius && sphere.radius > 0 ? sphere.radius : (contentRef.value?.clientHeight ?? 0) * 0.3;
+  return width - manageWidthFor(width) < radius * STACK_SPHERE_RATIO;
+});
+
+function measureContent() {
+  contentWidth.value = contentRef.value?.clientWidth ?? 0;
+  layoutTick.value += 1;
+}
+
+
+/**
+ * 外部定位请求：打开星球 → 展开管理区 → 落到指定视图/条目。
+ * 落点解析、返回路径与状态保活都在管理区里（这里只发请求，不复制面板逻辑）。
+ */
+watch(
+  () => [props.open, props.initialTab, props.focusPendingId] as const,
+  ([open, tab, focusId]) => {
+    if (!open) return;
+    if (focusId) {
+      requestManagement("memory", focusId);
+      return;
+    }
+    if (tab && tab !== "topic") requestManagement(tab, null);
+  },
+  { flush: "post" },
+);
+
 /**
  * 球态：没打开星球时，星球层不是消失，而是缩在入口位置**继续渲染真实星球**。
  *
@@ -649,18 +733,8 @@ const windowTopicIds = ref<(string | null)[]>([]);
 let nextCursor: string | null = null;
 let sessionSeed: number | null = null;
 let prefetching = false;
-const detail = ref<TopicDetail | null>(null);
-const detailLoading = ref(false);
-/** 详情加载失败原因。与「从这里继续」的 anchorError 分开：两者来源不同，不能互相覆盖 */
-const detailError = ref("");
-/** 详情失败的技术细节（首行只给人话，见 loadErrorDetail 的说明） */
-const detailErrorDetail = ref("");
-/** 详情请求序号：只接受「最后一次点击」的结果，慢请求返回不得覆盖（竞态防护） */
-let detailSeq = 0;
 /** 收起动作的代号：期间被重新打开时，旧收尾的续行必须放弃写状态与 emit */
 let closeEpoch = 0;
-const search = ref("");
-const selectedFragmentId = ref<string | null>(null);
 /** 「正在收起」= 收势或淡出任一阶段：这段时间里画布/列表/起点等交互都要锁住 */
 const isClosing = computed(() => closing.value || settling.value);
 /**
@@ -686,18 +760,82 @@ const loadError = ref("");
 const loadErrorDetail = ref("");
 /** 首次数据仍在加载：长等待要有明确提示，不以空球冒充完整内容 */
 const dataLoading = ref(false);
-/** 右侧话题边栏：默认收起；点击话题点/展开按钮展开，点击收起按钮收起 */
-const panelOpen = ref(false);
-/** 面板页签：话题 / 知识 / 实体 / 待确认；知识/实体/待确认页签自动进入管理模式（面板 640px 宽） */
-const activeTab = ref<"topic" | "knowledge" | "entity" | "memory">("topic");
-const manageMode = ref(false);
-/** 实体页签挂载后按 node_id 自动打开的实体卡 */
-const entityOpenId = ref("");
-/** 画布尺寸观察器：边栏开合/窗口缩放时同步 WebGL 渲染尺寸 */
+/** 画布尺寸观察器：布局变化（管理区展开/窗口缩放）时同步 WebGL 渲染尺寸 */
 let canvasObserver: ResizeObserver | null = null;
-/** 边栏开合导致画布中心偏移后的重对焦定时器 */
-let recenterTimer = 0;
 
+function startContentObserver() {
+  if (typeof ResizeObserver === "undefined" || !contentRef.value) return;
+  contentObserver = new ResizeObserver(() => {
+    measureContent();
+    // 管理区展开/收起改变了画布尺寸：星球侧唯一允许的动作就是「跟上一层尺寸」。
+    // 这里**不做**任何重对焦/居中补间：管理态下画布中心已经被位移挪到内容区左边缘，
+    // 再居中一次会把焦点话题转到「只剩半个」（Lead 实测口径）。
+    planet.resize();
+  });
+  contentObserver.observe(contentRef.value);
+  measureContent();
+}
+
+function stopContentObserver() {
+  contentObserver?.disconnect();
+  contentObserver = null;
+}
+
+onMounted(() => {
+  // 内容区尺寸观察：管理区开合与窗口缩放时同步画布尺寸（管理态下星球侧唯一允许的反应）
+  startContentObserver();
+  // 「待处理」真实数量进页面就取一次（角标不能是装饰；读取失败保留上一次的值）
+  void pendingStore.refresh();
+});
+
+onUnmounted(() => {
+  stopContentObserver();
+});
+
+/** 管理区状态回传（根元素上的 data-tab / data-view 只读读数） */
+function onManageState(state: {
+  tab: "memory" | "knowledge" | "entity";
+  view: "tabs" | "pending" | "records" | "search";
+}) {
+  manageTab.value = state.tab;
+  manageView.value = state.view;
+}
+
+/** 展开管理区（可带落点）。不带落点时只是展开：管理区自己保活，现场不重置 */
+function requestManagement(view: PlanetTab | null, focusId: string | null = null) {
+  managementMounted.value = true;
+  manage.setExpanded(true);
+  requestView.value = view;
+  requestFocusId.value = focusId;
+  requestSeq.value += 1;
+}
+
+/** 页面工具行的「管理 / 收起」：展开不清空现场，收起保留全部状态 */
+function toggleManagement() {
+  if (manage.expanded.value) {
+    manage.setExpanded(false);
+    return;
+  }
+  managementMounted.value = true;
+  manage.setExpanded(true);
+}
+
+/** 页面工具行的「搜索」：展开管理区并打开搜索视图（搜索独立于当前标签页） */
+function openSearch() {
+  managementMounted.value = true;
+  manage.setExpanded(true);
+  searchTicket.value += 1;
+}
+
+/** 话题结束/恢复后刷新星球侧的话题清单（展示窗口 pin 用得到）；失败不清空已有列表 */
+async function refreshTopics() {
+  try {
+    const r = await api.listTopics();
+    topics.value = r.topics;
+  } catch {
+    /* 刷新失败保持现状 */
+  }
+}
 /* ---- 主题同步：utils/theme.ts 写 html[data-theme]，planet.setTheme 换 WebGL 配色 ---- */
 /** 读取当前主题：tokens.css 依据 data-theme 切变量，缺省按 dark */
 function readTheme(): "dark" | "light" {
@@ -740,36 +878,6 @@ function stopCanvasObserver() {
   canvasObserver?.disconnect();
   canvasObserver = null;
 }
-
-/** 展开/收起右侧边栏（收起为细边 + 展开钮，展开为 340px 面板）。 */
-function togglePanel() {
-  if (isClosing.value || stageMidScale.value) return;
-  panelOpen.value = !panelOpen.value;
-  // 画布宽度随边栏动画变化，结束后若仍有焦点话题，重对焦到新画布中心
-  const focused = planet.selectedTopicId.value;
-  if (focused) scheduleRecenter(focused);
-}
-
-/**
- * 边栏开合后把焦点话题重新居中到新画布中心。
- * 旧规则是「等 380ms 动画结束再补一次移动」，用户会看到明显两次位移；
- * 现在改成与 320ms 宽度过渡同时发生的短补间，整个过程只有一次连续移动。
- */
-function scheduleRecenter(topicId: string, delay = 0) {
-  window.clearTimeout(recenterTimer);
-  recenterTimer = window.setTimeout(() => {
-    if (isClosing.value) return;
-    if (planet.selectedTopicId.value !== topicId) return;
-    planet.focusTopic(topicId, [], { duration: 210, wave: false });
-  }, delay);
-}
-
-/** 面板宽度变化（管理模式开合/页签切换/实体联动）后，把焦点话题重对焦到新画布中心。 */
-function onPanelWidthChange() {
-  const focused = planet.selectedTopicId.value;
-  if (focused) scheduleRecenter(focused);
-}
-
 onMounted(async () => {
   window.addEventListener("keydown", onKeydown);
   // 仅开发构建：给本地视觉验收脚本一个只读窗口快照（生产构建里这段不存在）。
@@ -829,7 +937,6 @@ onMounted(async () => {
   }
   await enterWithData();
 });
-
 /**
  * 「打开」时的数据与转场编排。
  *
@@ -882,7 +989,6 @@ async function reopen() {
   entered.value = false;
   layersIn.value = false;
   anchorError.value = "";
-  detailError.value = "";
   anchorBusy.value = false;
   planet.setPaused(false);
   planet.primeCamera("planet"); // 回到接近最终构图，避免从上一帧残留位置开始
@@ -967,7 +1073,6 @@ async function runEnter(dataReady?: Promise<unknown>) {
   advanceTo(epoch, "ready");
   layersIn.value = true;
 }
-
 onUnmounted(() => {
   window.removeEventListener("keydown", onKeydown);
   if (import.meta.env.DEV) {
@@ -977,7 +1082,6 @@ onUnmounted(() => {
   stopThemeObserver();
   stopCanvasObserver();
   stopEntryWatch();
-  window.clearTimeout(recenterTimer);
   /**
    * 离开对话页（去设置页 / 路由切换）必须把连续体收干净。
    *
@@ -993,9 +1097,12 @@ function onKeydown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT")) return;
-  // 最上层优先：边栏是用户刚打开的一层，Esc 先收它，再按才收起整个星球
-  if (panelOpen.value) {
-    panelOpen.value = false;
+  // 最上层优先：管理区是用户刚打开的一层，Esc 先退它，再按才收起整个星球。
+  // 管理区内部还有一层（搜索 / 待处理 / 整理记录）：先退到进入前的标签页，再退整个管理区。
+  if (managementOpen.value) {
+    const handled = managementRef.value?.escapeLayer?.() ?? false;
+    if (handled) return;
+    manage.setExpanded(false);
     return;
   }
   close();
@@ -1120,93 +1227,6 @@ function focusInitialTopic(duration = OPEN_MS) {
       planet.go("planet", null, duration);
     }
   }
-
-const filteredTopics = ref<TopicFingerprint[]>([]);
-watch([topics, search], () => {
-  const q = search.value.trim().toLowerCase();
-  // 主视图只放"还在进行"的话题；已结束的进下面的分组（结束不是删掉）
-  const active = topics.value.filter((t) => !t.ended);
-  filteredTopics.value = q
-    ? active.filter((t) => t.title.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)))
-    : active;
-}, { immediate: true });
-
-/** 已结束分组：依然可以被搜到、被点到，只是离开了主视图。 */
-const endedTopics = computed(() => {
-  const q = search.value.trim().toLowerCase();
-  const ended = topics.value.filter((t) => t.ended);
-  return q
-    ? ended.filter((t) => t.title.toLowerCase().includes(q) || t.keywords.some((k) => k.toLowerCase().includes(q)))
-    : ended;
-});
-
-async function refreshTopics() {
-  try {
-    const r = await api.listTopics();
-    topics.value = r.topics;
-  } catch {
-    /* 刷新失败时保持现状：不把已有列表清空 */
-  }
-}
-
-/** 「这件事结束了」：结束话题（也会让对应目标降权），或者恢复。 */
-async function toggleTopicEnded(t: TopicFingerprint) {
-  try {
-    if (t.ended) await api.resumeTopic(t.topic_id);
-    else await api.endTopic(t.topic_id);
-    await refreshTopics();
-  } catch (e) {
-    anchorError.value = `操作失败：${(e as Error).message}`;
-  }
-}
-
-async function loadDetail(topicId: string) {
-  const seq = ++detailSeq;
-  detailLoading.value = true;
-  detailError.value = "";
-  selectedFragmentId.value = null;
-  // 换了话题：收起上一段原文，避免把别的话题的历史显示在当前的详情里
-  rawFragmentId.value = null;
-  rawMessages.value = [];
-  rawTotal.value = 0;
-  rawError.value = "";
-  try {
-    const d = await api.getTopicDetail(topicId);
-    // 期间用户已切到别的话题：丢弃过期响应
-    if (seq !== detailSeq || planet.selectedTopicId.value !== topicId) return;
-    detail.value = d;
-  } catch (e) {
-    if (seq === detailSeq) {
-      detail.value = null;
-      // 失败必须自己可见：此时没有详情可展示，错误不能挂在「有详情」的分支里
-      detailError.value = "加载话题详情失败";
-      detailErrorDetail.value = (e as Error).message;
-    }
-  } finally {
-    if (seq === detailSeq) detailLoading.value = false;
-  }
-  await revealDetailArea();
-}
-
-/**
- * 话题列表很长时，详情（或它的错误）会落在列表下方看不见的位置，
- * 用户点完话题只看到行高亮、不知道结果。这里只把详情区域带回视野：
- * 已经在视野内时 `block:"nearest"` 不会移动，符合「页面变化尽量少」。
- */
-async function revealDetailArea() {
-  await nextTick();
-  const el = document.querySelector<HTMLElement>(".detail, .detail-error, .detail-loading");
-  if (!el || typeof el.scrollIntoView !== "function") return;
-  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  el.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" });
-}
-
-/** 详情加载失败后的重试：重新按当前选中话题拉一次 */
-function retryDetail() {
-  const id = planet.selectedTopicId.value;
-  if (id) void loadDetail(id);
-}
-
 /** 首次数据加载失败后的重试：重新取数据，并补一次落点聚焦（展开路径才由 runEnter 负责） */
 async function retryLoad() {
   loadError.value = "";
@@ -1241,15 +1261,14 @@ function ensureTopicInWindow(topicId: string) {
   syncWindow();
 }
 
+/* ---- 画布交互：点击话题点 = 浏览这个项目（展开管理区 / 记忆页打开概览），不改起点 ---- */
 function onCanvasClick(e: MouseEvent) {
   if (isClosing.value || stageMidScale.value) return;
   const focused = planet.handleClick(e.clientX, e.clientY);
-  if (focused) {
-    // 收起态点击话题点：同时展开边栏，画布中心左移 → 动画结束后重对焦
-    const wasCollapsed = !panelOpen.value;
-    panelOpen.value = true;
-    if (wasCollapsed) scheduleRecenter(planet.selectedTopicId.value ?? "");
-  }
+  if (!focused) return;
+  const id = planet.selectedTopicId.value;
+  requestManagement("topic", null);
+  focusedTopicId.value = id;
 }
 
 function onCanvasDblClick() {
@@ -1261,321 +1280,54 @@ watch(() => planet.selectedTopicId.value, (id) => {
   if (id) planetSession.browsedTopicId = id;
   // 选中 = 正在查看：查看期间这个槽位不会被回收（spec 第 52 条）
   browse.lock(id ?? null);
-  if (id && id !== detail.value?.topic_id) loadDetail(id);
-});
-
-// 知识纠错：修正/删除
-const knowledgeEditingId = ref<string | null>(null);
-const knowledgeDraft = ref("");
-/**
- * 知识修正 / 删除的反馈状态：以前失败只写 console.error，界面什么也不显示，
- * 用户会以为改动生效了。现在失败留在对应条目里，带原因与重试。
- */
-const knowledgeFeedback = useActionFeedback();
-
-function startEditKnowledge(k: { id: string; content: string }) {
-  knowledgeEditingId.value = k.id;
-  knowledgeDraft.value = k.content;
-}
-
-async function saveKnowledgeEdit(k: { id: string }) {
-  const content = knowledgeDraft.value.trim();
-  if (!content) return;
-  const key = `knowledge:${k.id}`;
-  await knowledgeFeedback.run(
-    key,
-    async () => {
-      await api.reviseKnowledge(k.id, content);
-      knowledgeEditingId.value = null;
-      if (detail.value) await loadDetail(detail.value.topic_id);
-    },
-    { okText: "已保存", failText: "修改没有保存，内容未改变" },
-  );
-}
-
-/**
- * 归档知识条目。
- * 第四阶段：不再用浏览器原生 `window.confirm`（它说不清「动作 + 影响 + 后果」，
- * 而且风格与 QIO 完全无关）。确认由 `QConfirm` 就地展开，说明归档的真实影响。
- */
-async function archiveKnowledge(k: { id: string; content: string }) {
-  confirmKnowledgeId.value = null;
-  const key = `knowledge:${k.id}`;
-  await knowledgeFeedback.run(
-    key,
-    async () => {
-      await api.revokeKnowledge(k.id);
-      if (detail.value) await loadDetail(detail.value.topic_id);
-    },
-    { okText: "已归档", failText: "归档没有完成" },
-  );
-}
-
-/** 正在就地确认归档的知识条目 id（null = 没有确认在进行） */
-const confirmKnowledgeId = ref<string | null>(null);
-
-/** 锚点设置进行中 / 失败原因（失败必须可见、可重试，且不得假装已切换） */
-const anchorBusy = ref(false);
-const anchorError = ref("");
-
-/** 用户当前选中的历史片段（用于「已选择历史位置」提示，不暴露内部 id） */
-const selectedFragmentSummary = computed(() => {
-  if (!selectedFragmentId.value) return "";
-  const frag = detail.value?.fragments.find((f) => f.fragment_id === selectedFragmentId.value);
-  const text = (frag?.summary || "").trim().replace(/\s+/g, " ");
-  if (!text) return "（该片段暂无摘要）";
-  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
-});
-
-/* ---- 片段原文：按需加载 + 分页（spec 第 9~11 条） ---- */
-/** 一页取多少条原文：够看一段，不把整段历史一次拉回来 */
-const RAW_PAGE = 20;
-/** 当前展开原文的片段（同时只展开一个，长列表才不会被撑爆） */
-const rawFragmentId = ref<string | null>(null);
-const rawMessages = ref<{ id: string; role: string; content: string; created_at: string }[]>([]);
-const rawTotal = ref(0);
-const rawLoading = ref(false);
-const rawError = ref("");
-const rawHasMore = computed(() => rawMessages.value.length < rawTotal.value);
-
-const ROLE_LABELS: Record<string, string> = {
-  user: "你",
-  assistant: "QIO",
-  tool: "工具",
-  system: "系统",
-};
-
-function roleLabel(role: string): string {
-  return ROLE_LABELS[role] ?? role;
-}
-
-/** 知识状态用中文说，不把 draft / pending_review 这类内部状态名丢给用户 */
-const KNOWLEDGE_STATES: Record<string, string> = {
-  draft: "草稿",
-  pending_review: "待确认",
-  verified: "已验证",
-  active: "已生效",
-  expired: "已过期",
-  revoked: "已归档",
-};
-
-function knowledgeStateLabel(state: string): string {
-  return KNOWLEDGE_STATES[state] ?? "状态未知";
-}
-
-/**
- * 状态色统一走 `.qio-state` 的语义档（不再各写一套 k-state 变体）：
- * 生效/已验证 = ok，待确认/草稿 = warn，已归档/过期 = quiet（安静的事实，不是警报）。
- */
-function knowledgeStateTone(state: string): string {
-  if (state === "active" || state === "verified") return "ok";
-  if (state === "pending_review" || state === "draft") return "warn";
-  return "quiet";
-}
-
-/** 「最近活动」这类时间用相对说法更像人话；拿不到就退回日期 */
-function formatWhen(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  const p = (n: number) => String(n).padStart(2, "0");
-  const clock = `${p(d.getHours())}:${p(d.getMinutes())}`;
-  if (days <= 0) return `今天 ${clock}`;
-  if (days === 1) return `昨天 ${clock}`;
-  if (days < 30) return `${days} 天前`;
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-/** 详情顶部的一行事实：最近活动 / 片段数 / 消息数（都来自真实数据） */
-const detailFacts = computed(() => {
-  const d = detail.value;
-  if (!d) return "";
-  const parts: string[] = [];
-  if (d.last_activity) parts.push(`最近活动 ${formatWhen(d.last_activity)}`);
-  parts.push(`${d.fragments.length} 个片段`);
-  if (typeof d.message_count === "number") parts.push(`${d.message_count} 条消息`);
-  return parts.join(" · ");
-});
-
-/** 展开 / 收起某段的原文；展开时才真正读第一页 */
-async function toggleRaw(fragmentId: string) {
-  if (rawFragmentId.value === fragmentId) {
-    rawFragmentId.value = null;
-    return;
-  }
-  rawFragmentId.value = fragmentId;
-  rawMessages.value = [];
-  rawTotal.value = 0;
-  rawError.value = "";
-  await loadRawPage(0);
-}
-
-async function loadRawPage(offset: number) {
-  const id = rawFragmentId.value;
-  if (!id) return;
-  rawLoading.value = true;
-  rawError.value = "";
-  try {
-    const r = await api.fragmentMessages(id, offset, RAW_PAGE);
-    // 期间用户切到了别的片段：丢弃过期响应（竞态防护）
-    if (rawFragmentId.value !== id) return;
-    rawMessages.value = offset === 0 ? r.messages : [...rawMessages.value, ...r.messages];
-    rawTotal.value = r.total;
-  } catch (e) {
-    if (rawFragmentId.value === id) {
-      rawError.value = `读取原文失败：${(e as Error).message}`;
-    }
-  } finally {
-    rawLoading.value = false;
-  }
-}
-
-/** 从某一段原文继续：选中它再走既有的「从这里继续」（旧片段不改，新建接续片段） */
-async function continueFromFragment(fragmentId: string) {
-  if (anchorBusy.value || isClosing.value) return;
-  selectedFragmentId.value = fragmentId;
-  await startHere();
-}
-
-/**
- * 选中的是不是「历史位置」：已封块的片段才是历史；当前开放片段是对话的最新位置，
- * 不该显示成「从这里继续（历史位置）」（与后端 AnchorService.focus_fragment 同一规则）。
- */
-const selectedIsHistoric = computed(() => {
-  if (!selectedFragmentId.value) return false;
-  const frag = detail.value?.fragments.find((f) => f.fragment_id === selectedFragmentId.value);
-  return Boolean(frag?.closed_at);
-});
-const selectedPositionLabel = computed(() =>
-  selectedIsHistoric.value ? "已选择历史位置" : "已选择当前片段",
-);
-const selectedButtonHint = computed(() => {
-  if (!selectedFragmentId.value) return "（整个话题）";
-  return selectedIsHistoric.value ? "（这个历史位置）" : "（当前片段）";
-});
-/**
- * 「查看 → 进入」的分界（spec 第 22 / 53 / 54 条）：
- * 选中话题只是浏览，按这个按钮才是真正改变对话位置的动作。
- */
-const startButtonLabel = computed(() => {
-  if (anchorBusy.value) return "切换中…";
-  if (!selectedFragmentId.value) return `进入「${detail.value?.name ?? "这个话题"}」`;
-  return `从这里继续${selectedButtonHint.value}`;
 });
 
 /**
- * 面板里三个概念必须分开写清（任务05 D）：
- * - 浏览的话题：现在正在看的这个话题（可能只是浏览，不代表起点变了）；
- * - 选中的片段：用户在片段列表里点的那一个（还没生效）；
- * - 已生效的起点：服务端已经接受的起点（来自会话状态，不是本地猜测）。
+ * 继续讨论 / 从这里继续（契约 §5 保留能力）：**唯一**会改变对话起点的动作。
+ * 浏览、搜索、切标签页都不经过这里。失败时不关闭星球、不改本地锚点：
+ * 原因留在管理区里可见、可重试（绝不假装起点已经切好）。
  */
-const browsedTopicName = computed(() => detail.value?.name ?? "（未选择）");
-const selectedFragmentLabel = computed(() =>
-  selectedFragmentId.value ? selectedFragmentSummary.value : "未选择片段（用这个话题的最新位置）",
-);
-const anchorLabel = computed(() => {
-  const id = session.currentTopicId;
-  if (!id) return "未设置（按最新位置继续）";
-  const name =
-    session.topicName ||
-    topics.value.find((t) => t.topic_id === id)?.title ||
-    id;
-  const fragmentTitle = session.anchorFragment?.title;
-  if (fragmentTitle) {
-    return `${name} · ${fragmentTitle}${session.anchorHistoric ? "（历史位置）" : "（当前片段）"}`;
-  }
-  return `${name} · 最新位置`;
-});
-
-async function startHere() {
+async function continueFrom(payload: { topicId: string; fragmentId: string | null }) {
   if (isClosing.value || anchorBusy.value) return;
-  if (!detail.value) return;
-  const target = detail.value;
-  const fragmentId = selectedFragmentId.value;
+  const topicId = payload.topicId;
+  const fragmentId = payload.fragmentId;
   anchorBusy.value = true;
   anchorError.value = "";
   try {
     /**
-     * M01：这次动作把起点明确落到「某话题的最新位置」或「当前开放片段」——
-     * 旧的未落实接续选择必须先原子取消（复用既有 cancelContinuation 接口），
-     * 否则下一条消息仍会被旧登记的历史带偏（界面说切了、消息却去了别处）。
-     *
-     * 只浏览星球（选中话题 / 展开片段 / 关闭面板）**不经过这里**，
-     * 所以浏览不会取消用户已经做出的接续选择。
-     * 取消失败就不改起点：宁可不动，也不把消息送到错误的起点。
+     * 落到「某话题的最新位置 / 当前开放片段」时，旧的未落实接续选择必须先原子取消
+     * （复用 cancelContinuation），否则下一条消息仍会被旧登记的历史带偏。
+     * 只浏览不经过这里，所以浏览不会取消用户已经做出的接续选择。
      */
-    const opensCurrentPosition = !fragmentId || !selectedIsHistoric.value;
+    const opensCurrentPosition = !fragmentId;
     if (opensCurrentPosition && session.pendingContinuation) {
       const cancelled = await session.cancelPendingContinuation();
       if (!cancelled) {
         anchorError.value = session.lastError ?? "旧的接续选择没能取消，未改变起点";
         anchorBusy.value = false;
-        if (isClosing.value) session.lastError = anchorError.value;
         return;
       }
     }
-    // 只用后端返回的权威结果更新本地（标题 / 是否历史位置），
-    // 避免与同一动作触发的 SSE ANCHOR 事件互相覆盖
-    //
-    // 两个明确不同的动作（spec 第 53 / 54 条）：
-    //  - 选中了历史片段 → 从这里继续：旧片段保持不变，后端新建接续片段；
-    //  - 没选片段 → 进入这个话题：从最新位置继续。
+    // 两个明确不同的动作：选中历史片段 = 新建接续片段；没选片段 = 进入最新位置
     const res = fragmentId
-      ? await api.continueFromHistory(target.topic_id, fragmentId)
-      : await api.setAnchor(target.topic_id, null);
-    // setAnchorAndSync：起点真的变了就重新拉取可见消息。
-    // 否则「从这里继续」到别的话题后，对话页还停在上一个话题的对话上。
+      ? await api.continueFromHistory(topicId, fragmentId)
+      : await api.setAnchor(topicId, null);
+    const topicName =
+      topics.value.find((item) => item.topic_id === topicId)?.title ?? session.topicName ?? topicId;
     await session.setAnchorAndSync(
-      res.topic_id || target.topic_id,
+      res.topic_id || topicId,
       res.fragment_id,
-      target.name,
-      res.fragment_id ? { id: res.fragment_id, title: res.fragment_title } : undefined,
+      topicName,
+      res.fragment_id ? { id: res.fragment_id, title: res.fragment_title ?? "" } : undefined,
       res.historic,
     );
   } catch (e) {
-    // 失败：本地锚点不变、不关闭，用户可重试
     anchorError.value = `切换失败，未切换话题：${(e as Error).message}`;
     anchorBusy.value = false;
-    // 星球已经被收起来了：错误必须回到对话页可见，否则用户以为起点已经切好
-    if (isClosing.value) session.lastError = anchorError.value;
     return;
   }
   anchorBusy.value = false;
   await close();
-}
-
-/* ---- 星球记忆中心：四页签 + 管理模式 + 与知识/实体面板联动 ---- */
-function switchTab(tab: "topic" | "knowledge" | "entity" | "memory") {
-  activeTab.value = tab;
-  manageMode.value = tab !== "topic";
-  entityOpenId.value = "";
-  onPanelWidthChange();
-}
-
-/** 「管理模式」按钮：手动切换面板宽度并重对焦 */
-function toggleManageMode() {
-  manageMode.value = !manageMode.value;
-  onPanelWidthChange();
-}
-
-/** 知识面板「聚焦话题」→ 切回话题页签并聚焦/加载该话题（详情由 selectedTopicId watcher 单一来源加载） */
-function focusTopicFromPanel(topicId: string) {
-  planet.selectedTopicId.value = topicId;
-  ensureTopicInWindow(topicId);
-  planet.focusTopic(topicId, []);
-  panelOpen.value = true;
-  switchTab("topic");
-  // 同话题时 watcher 会跳过 reload，这里强制刷新以拿到面板编辑后的最新数据
-  if (detail.value?.topic_id === topicId) loadDetail(topicId);
-}
-
-/** 话题详情实体标签 → 打开实体页签并自动展开该实体卡（按 node_id 匹配） */
-function openEntityByNode(nodeId: string) {
-  activeTab.value = "entity";
-  manageMode.value = true;
-  entityOpenId.value = nodeId;
-  onPanelWidthChange();
 }
 
 /**
@@ -1699,9 +1451,6 @@ async function runCollapseMotion(epoch: number, continuum: number): Promise<bool
     if (now - t0 >= collapseMs) return true;
   }
 }
-
-/**
-
 /**
  * 收起（第四阶段：严格反向的连续体）。
  *
@@ -1721,6 +1470,9 @@ async function close() {
   // 若不捕获，迟到的收尾回调会带上新序号、把刚打开的新层关掉。
   const seqAtClose = props.seq;
   const epoch = ++closeEpoch;
+  // 收拢前把管理区落回收起的进度：收缩几何必须按「球心在内容区中央」算，
+  // 带着 --mp 位移去收拢会把对象缩到一个偏左的位置（还会残留 managing 类）。
+  manage.applyProgress(0);
   if (prefersReducedMotion()) {
     closing.value = true;
     layersIn.value = false;
@@ -1771,31 +1523,67 @@ async function close() {
 }
 </script>
 
+
 <template>
   <div
     ref="rootRef"
     class="planet-view"
-    :class="{ entered, closing, settling, layers: layersIn, armed: stageArmed, curtain: curtainOn, ball: ballMode, tail: tailMode }"
+    :class="{ entered, closing, settling, layers: layersIn, armed: stageArmed, curtain: curtainOn, ball: ballMode, tail: tailMode, managing: managingActive, stacked }"
     :style="[demoStyle, ballMode ? { opacity: String(ballOpacity) } : null]"
+    :data-tab="manageTab"
+    :data-view="manageView"
   >
-    <!-- 星球层：入口小球长大成 Planet 的**就是这一层**（同一对象的尺度变化），
-         所以缩放加在这里，而不是给画布做透明度动画。 -->
-    <!-- data-stage-k 是对外可观测的转场状态（真实几何走 CSS 变量；
-         这里给验收脚本与测试一个稳定的读数，避免依赖 jsdom 对自定义属性的支持） -->
-    <div
-      ref="stageRef"
-      class="planet-stage"
-      :style="stageStyle"
-      :data-stage-k="stageStyle['--stage-k'] ?? '1'"
-    >
-      <canvas
-        ref="canvasRef"
-        class="planet-canvas"
-        :class="{ hovering: hoverTopicId }"
-        @click="onCanvasClick"
-        @dblclick="onCanvasDblClick"
-      ></canvas>
+    <!-- 内容区域（契约 §3.1）：位于全局栏下方。星球层与管理区都在这层里，
+         所以管理区永远在全局栏下面展开；layoutOrigin 的 offsetParent 链会加回标题条高度。
+         星球层铺满整个内容区且**尺寸不随管理区变化**（画布不 resize → 球体直径绝对不变），
+         管理展开只把画布整体左移半个画布宽：球心从「内容宽/2」连续移到 0，只剩右半球可见。 -->
+    <div ref="contentRef" class="planet-content" v-qio-scrollbar data-scroll="planet-content">
+      <div
+        ref="stageRef"
+        class="planet-stage"
+        :style="stageStyle"
+        :data-stage-k="stageStyle['--stage-k'] ?? '1'"
+      >
+        <canvas
+          ref="canvasRef"
+          class="planet-canvas"
+          :class="{ hovering: hoverTopicId }"
+          @click="onCanvasClick"
+          @dblclick="onCanvasDblClick"
+        ></canvas>
+      </div>
+      <aside class="panel" :inert="!managementOpen || undefined">
+        <div class="panel-inner">
+          <ManagementArea
+            v-if="managementMounted"
+            ref="managementRef"
+            :open="managementOpen"
+            :request-view="requestView"
+            :request-focus-id="requestFocusId"
+            :request-seq="requestSeq"
+            :search-ticket="searchTicket"
+            :focused-topic-id="focusedTopicId"
+            :continue-busy="anchorBusy"
+            :continue-error="anchorError"
+            @close="manage.setExpanded(false)"
+            @state="onManageState"
+            @topic-select="selectTopic"
+            @continue="continueFrom"
+            @topics-changed="refreshTopics"
+          />
+        </div>
+      </aside>
+      <!-- 页面工具行：内容区域右上角的一行克制入口（搜索 + 管理，带真实未处理数量角标）。
+           它跟着内容层一起滚动/裁切，不会盖住管理区内容。 -->
+      <PageTools
+        class="page-tools-layer"
+        :expanded="managementOpen"
+        :pending-count="pendingStore.count.value"
+        @search="openSearch"
+        @toggle-manage="toggleManagement"
+      />
     </div>
+
     <!-- 指向话题点时显示简短名称：只显示当前指到的那一个，不让标签常驻遮挡 -->
     <div v-if="hoverLabel" class="topic-hint qio-glass qio-glass--chip" :style="hoverLabelStyle">{{ hoverLabel.title }}</div>
     <!-- 选中话题的名称常驻（悬停其它点时让位给悬停标签） -->
@@ -1840,301 +1628,6 @@ async function close() {
     </div>
     <!-- 首次加载中：入口已经响应，长等待要有明确状态 -->
     <div v-else-if="dataLoading" class="planet-loading qio-glass qio-glass--chip" role="status">正在加载话题…</div>
-
-    <aside class="panel" :class="{ open: panelOpen, manage: manageMode }">
-      <button
-        class="panel-toggle"
-        :aria-label="panelOpen ? '收起话题列表' : '展开话题列表'"
-        :aria-expanded="panelOpen"
-        v-qio-tip="panelOpen ? '收起话题列表' : '展开话题列表'"
-        @click="togglePanel"
-      >
-        <QIcon class="chev" :class="{ flip: !panelOpen }" name="chevron-right" :size="18" />
-      </button>
-      <div class="panel-inner">
-        <div class="tabs">
-          <button class="tab tab-topic" :class="{ active: activeTab === 'topic' }" @click="switchTab('topic')">话题</button>
-          <button class="tab tab-knowledge" :class="{ active: activeTab === 'knowledge' }" @click="switchTab('knowledge')">知识</button>
-          <button class="tab tab-entity" :class="{ active: activeTab === 'entity' }" @click="switchTab('entity')">实体</button>
-          <button class="tab tab-memory" :class="{ active: activeTab === 'memory' }" @click="switchTab('memory')">待确认</button>
-          <span class="spacer"></span>
-          <button
-            class="mode-btn"
-            type="button"
-            :aria-pressed="manageMode"
-            @click="toggleManageMode"
-          >
-            <QIcon v-if="manageMode" name="close" :size="11" />
-            {{ manageMode ? "退出管理" : "管理模式" }}
-          </button>
-        </div>
-
-        <template v-if="activeTab === 'topic'">
-          <div class="panel-head">
-            <h2 class="serif">话题</h2>
-            <QInput v-model="search" placeholder="搜索话题…" />
-          </div>
-          <!-- 可滚动中部：话题列表自己滚（高度封顶），详情正文占满剩余空间自己滚；
-               底部操作区在两者之外，始终可见且不覆盖内容 -->
-          <div class="panel-body">
-            <div class="topic-scroll" v-qio-scrollbar data-qio-fit>
-              <!-- aria-selected 的 option 必须挂在 listbox 上；没有这个祖先，
-                   读屏软件不会把话题读成"可选中的一项"，只会念一串文字 -->
-              <ul class="topic-list" role="listbox" aria-label="话题列表">
-                <li
-                  v-for="t in filteredTopics"
-                  :key="t.topic_id"
-                  :class="{ active: t.topic_id === planet.selectedTopicId.value }"
-                  tabindex="0"
-                  role="option"
-                  :aria-selected="t.topic_id === planet.selectedTopicId.value"
-                  @click="selectTopic(t.topic_id)"
-                  @keydown.enter.prevent="selectTopic(t.topic_id)"
-                  @keydown.space.prevent="selectTopic(t.topic_id)"
-                >
-                  <span class="name serif">{{ t.title }}</span>
-                  <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
-                  <button
-                    class="qio-btn mini quiet topic-toggle-ended"
-                    type="button"
-                    @click.stop="toggleTopicEnded(t)"
-                  >
-                    结束
-                  </button>
-                </li>
-              </ul>
-              <ul
-                v-if="endedTopics.length"
-                class="topic-list ended-list"
-                role="listbox"
-                aria-label="已结束的话题"
-              >
-                <!-- 分组标题不是可选项：给它 presentation，避免 listbox 里混进非 option 子节点 -->
-                <li class="ended-head" role="presentation">已结束（{{ endedTopics.length }}）</li>
-                <li
-                  v-for="t in endedTopics"
-                  :key="t.topic_id"
-                  :class="{ active: t.topic_id === planet.selectedTopicId.value }"
-                  tabindex="0"
-                  role="option"
-                  :aria-selected="t.topic_id === planet.selectedTopicId.value"
-                  @click="selectTopic(t.topic_id)"
-                  @keydown.enter.prevent="selectTopic(t.topic_id)"
-                >
-                  <span class="name serif">{{ t.title }}</span>
-                  <span class="meta qio-badge">{{ t.fragment_count }} 片段</span>
-                  <button
-                    class="qio-btn mini quiet topic-resume"
-                    type="button"
-                    @click.stop="toggleTopicEnded(t)"
-                  >
-                    恢复
-                  </button>
-                </li>
-              </ul>
-            </div>
-
-            <div class="detail-scroll" v-qio-scrollbar data-qio-fit>
-              <div v-if="detailLoading" class="detail-loading">加载中…</div>
-              <!-- 加载失败：没有详情也要能看到失败原因并有重试入口 -->
-              <div v-else-if="detailError" class="detail-error" role="alert">
-                <p class="err-text">{{ detailError }}</p>
-                <details v-if="detailErrorDetail" class="err-detail">
-                  <summary>技术详情</summary>
-                  <span class="mono">{{ detailErrorDetail }}</span>
-                </details>
-                <button class="qio-btn" type="button" @click="retryDetail">重试</button>
-              </div>
-              <div v-else-if="detail" class="detail">
-                <h3 class="serif">{{ detail.name }}</h3>
-                <!-- 信息层级：标题 → 一句摘要 → 最近活动/片段数/消息数 → 片段历史 → 知识/实体 -->
-                <p v-if="detail.summary" class="detail-summary">{{ detail.summary }}</p>
-                <p class="detail-facts mono">{{ detailFacts }}</p>
-                <div v-if="detail.keywords?.length" class="detail-keywords">
-                  <span v-for="k in detail.keywords.slice(0, 6)" :key="k" class="kw">{{ k }}</span>
-                </div>
-
-              <!-- 浏览的话题 / 选中的片段 / 已经生效的起点：三者分开写，不混为一谈 -->
-              <dl class="detail-identity">
-                <div class="id-row">
-                  <dt>浏览的话题</dt>
-                  <dd>{{ browsedTopicName }}</dd>
-                </div>
-                <div class="id-row">
-                  <dt>选中的片段</dt>
-                  <dd>{{ selectedFragmentLabel }}</dd>
-                </div>
-                <div class="id-row">
-                  <dt>已生效的起点</dt>
-                  <dd class="mono">{{ anchorLabel }}</dd>
-                </div>
-              </dl>
-
-              <div class="detail-section">
-                <div class="section-title serif">片段历史</div>
-                <div
-                  v-for="f in detail.fragments"
-                  :key="f.fragment_id"
-                  class="fragment-item"
-                  :class="{ selected: f.fragment_id === selectedFragmentId }"
-                  role="button"
-                  tabindex="0"
-                  :aria-pressed="f.fragment_id === selectedFragmentId"
-                  @click="selectedFragmentId = f.fragment_id"
-                  @keydown.enter.prevent="selectedFragmentId = f.fragment_id"
-                  @keydown.space.prevent="selectedFragmentId = f.fragment_id"
-                >
-                  <div class="fragment-head">
-                    <span class="fragment-when mono">{{ formatWhen(f.created_at ?? f.closed_at) }}</span>
-                    <span class="fragment-count mono">{{ f.message_count }} 条消息</span>
-                    <span class="fragment-state mono">{{ f.closed_at ? "已封块" : "开放中" }}</span>
-                  </div>
-                  <div class="fragment-summary">{{ f.summary || "（无摘要）" }}</div>
-                  <div class="fragment-actions">
-                    <button class="qio-btn mini raw-toggle" type="button" @click.stop="toggleRaw(f.fragment_id)">
-                      {{ rawFragmentId === f.fragment_id ? "收起原文" : "查看原文" }}
-                    </button>
-                    <button
-                      class="qio-btn mini frag-continue"
-                      type="button"
-                      :disabled="closing || anchorBusy"
-                      @click.stop="continueFromFragment(f.fragment_id)"
-                    >
-                      从这里继续
-                    </button>
-                  </div>
-                  <!-- 原文：只读历史，按需分页；明确「这是过去发生过的内容」 -->
-                  <div v-if="rawFragmentId === f.fragment_id" class="fragment-raw">
-                    <p class="raw-note">
-                      以下是当时发生过的内容，只读；当前对话没有停在这里，也不会被改写。
-                    </p>
-                    <p v-if="rawLoading && !rawMessages.length" class="raw-loading">正在读取原文…</p>
-                    <div v-else-if="rawError" class="raw-error" role="alert">
-                      <span>{{ rawError }}</span>
-                      <button class="qio-btn mini" type="button" @click="loadRawPage(rawMessages.length)">
-                        重试
-                      </button>
-                    </div>
-                    <template v-else>
-                      <ul class="raw-list">
-                        <li v-for="m in rawMessages" :key="m.id" class="raw-item" :class="m.role">
-                          <span class="raw-role mono">{{ roleLabel(m.role) }}</span>
-                          <span class="raw-content">{{ m.content }}</span>
-                        </li>
-                      </ul>
-                      <button
-                        v-if="rawHasMore"
-                        class="qio-btn mini raw-more"
-                        type="button"
-                        :disabled="rawLoading"
-                        @click="loadRawPage(rawMessages.length)"
-                      >
-                        {{ rawLoading ? "读取中…" : `继续读取（已读 ${rawMessages.length}/${rawTotal}）` }}
-                      </button>
-                      <p v-else-if="rawTotal" class="raw-end mono">已读完这段历史（共 {{ rawTotal }} 条）</p>
-                    </template>
-                  </div>
-                </div>
-                <p v-if="!detail.fragments.length" class="hint">暂无片段：这个话题还没有可接续的历史位置。</p>
-              </div>
-
-              <div class="detail-section">
-                <div class="section-title serif">实体</div>
-                <div class="entity-tags">
-                  <span v-for="e in detail.entities" :key="e.id" class="entity-tag" @click="openEntityByNode(e.id)">{{ e.name }}</span>
-                  <span v-if="!detail.entities.length" class="hint">无</span>
-                </div>
-              </div>
-
-              <div class="detail-section">
-                <div class="section-title serif">知识</div>
-                <div v-for="k in detail.knowledge" :key="k.id" class="knowledge-item qio-card qio-card--quiet">
-                  <span class="k-state qio-state" :class="knowledgeStateTone(k.state)">{{ knowledgeStateLabel(k.state) }}</span>
-                  <template v-if="knowledgeEditingId === k.id">
-                    <textarea
-                      v-model="knowledgeDraft"
-                      class="qio-inline-edit knowledge-edit"
-                      rows="3"
-                      aria-label="修正知识内容"
-                    ></textarea>
-                    <div class="k-actions open">
-                      <button class="qio-btn mini" type="button" @click="knowledgeEditingId = null">取消</button>
-                      <button
-                        class="qio-btn mini primary"
-                        type="button"
-                        :disabled="knowledgeFeedback.stateOf(`knowledge:${k.id}`) === 'busy'"
-                        @click="saveKnowledgeEdit(k)"
-                      >
-                        {{ knowledgeFeedback.stateOf(`knowledge:${k.id}`) === "busy" ? "保存中…" : "保存" }}
-                      </button>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <span class="k-content">{{ k.content }}</span>
-                    <!-- 阅读态：管理动作不在第一眼出现（hover / 键盘聚焦 / 触屏才显示） -->
-                    <div class="k-actions">
-                      <button class="qio-btn mini quiet" type="button" @click="startEditKnowledge(k)">修正</button>
-                      <button
-                        class="qio-btn mini quiet"
-                        type="button"
-                        :disabled="knowledgeFeedback.stateOf(`knowledge:${k.id}`) === 'busy'"
-                        @click="confirmKnowledgeId = k.id"
-                      >
-                        归档
-                      </button>
-                    </div>
-                  </template>
-                  <!-- 反馈留在这一条上：成功短暂、失败保留并可重试（不静默失败） -->
-                  <span
-                    v-if="knowledgeFeedback.stateOf(`knowledge:${k.id}`) === 'ok'"
-                    class="k-feedback qio-feedback ok"
-                    role="status"
-                  >{{ knowledgeFeedback.okTextOf(`knowledge:${k.id}`) }}</span>
-                  <p
-                    v-if="knowledgeFeedback.stateOf(`knowledge:${k.id}`) === 'failed'"
-                    class="k-feedback qio-feedback err"
-                    role="alert"
-                  >{{ knowledgeFeedback.errorOf(`knowledge:${k.id}`) }}</p>
-                  <QConfirm
-                    v-if="confirmKnowledgeId === k.id"
-                    :open="true"
-                    variant="inline"
-                    tone="danger"
-                    title="归档这条知识？"
-                    detail="归档后它不再参与回答，但不会被删除：可以在知识面板里看到它已归档。"
-                    confirm-text="归档"
-                    @confirm="archiveKnowledge(k)"
-                    @cancel="confirmKnowledgeId = null"
-                  />
-                </div>
-                <p v-if="!detail.knowledge.length" class="hint">无知识条目。</p>
-              </div>
-            </div>
-            </div>
-          </div>
-
-          <!-- 固定底部操作区：选中的片段、起点失败原因与动作按钮始终可见 -->
-          <div v-if="detail" class="detail-actions">
-            <p v-if="selectedFragmentId" class="selected-position">
-              {{ selectedPositionLabel }}：{{ selectedFragmentSummary }}
-            </p>
-            <p v-else class="selected-position muted">
-              未选片段：将从「{{ detail.name }}」的最新位置继续
-            </p>
-            <p v-if="anchorError" class="anchor-error" role="alert">{{ anchorError }}</p>
-            <button class="start-btn qio-btn primary" :disabled="closing || anchorBusy" @click="startHere">
-              {{ startButtonLabel }}
-            </button>
-          </div>
-        </template>
-        <KnowledgePanel v-else-if="activeTab === 'knowledge'" @focus-topic="focusTopicFromPanel" />
-        <MemoryPendingPanel
-          v-else-if="activeTab === 'memory'"
-          :focus-pending-id="pendingFocus"
-        />
-        <EntityPanel v-else :open-by-node-id="entityOpenId" />
-      </div>
-    </aside>
   </div>
 </template>
 
@@ -2144,41 +1637,26 @@ async function close() {
   /* 不用 overflow:hidden：它仍然建立滚动容器，程序性滚动（scrollIntoView / focus）
      能把整层左右推动 —— 星球舞台带着 transform 缩放/位移，正是「真的能横向滚」的来源。
      overflow:clip 在视觉上同样裁切，但**不建立滚动容器**，因此横向滚动能力彻底不存在
-     （验收硬条件 3：不是「藏起滚动条但内容还在左右滚」）。 */
+     （验收硬条件：不是「藏起滚动条但内容还在左右滚」）。 */
   overflow: clip;
-  /* 入口小球自己的画布尺寸。球态（.ball）与收缩尾段（.tail）共用同一个值：
-     尾段要在「球自己的分辨率」下渲染（见 runCollapseMotion），两处必须是同一个数，
+  /* 入口小球自己的画布尺寸。球态（.ball）与收缩尾段（.tail）共用同一个值，
      否则交接时仍会差一点点尺寸。 */
   --ball-size: 108px;
-  /* 背景必须是透明的：盖住对话页的只有 ::before 那层铺底（它才是被淡入淡出的东西）。
-     这里若自带不透明底色（以前是 var(--bg-base)），整层一挂载就把对话页盖死，
-     铺底再怎么淡也看不见 —— 实测：星球还只有 0.23 大时，对话页区域对比度已经是 0。 */
+  /* 管理区目标宽度（契约 §3.3）：与脚本里的 manageWidthFor 是同一份计算 */
+  --mp-w: clamp(380px, 46vw, 640px);
+  /* 背景必须透明的：盖住对话页的只有 ::before 那层铺底。 */
   background: transparent;
-  /* 默认不可见：只有两种状态允许出现在屏幕上 —— 球态（对话页入口那颗小球）
-     或已经进入的星球层。这样场景初始化的那一小段不会把全尺寸星球闪一下。 */
+  /* 默认不可见：只有两种状态允许出现在屏幕上 —— 球态（入口小球）或已经进入的星球层。 */
   opacity: 0;
-  /* 第四阶段：整层不再做「淡出」—— 退出是「对象收拢回入口」，
-     整层淡出会退化成「Planet 直接消失」。淡出交给铺底（::before）单独完成。 */
   transition: opacity var(--dur-exit) var(--ease-1-out);
 }
 .planet-view.ball,
 .planet-view.entered { opacity: 1; }
-/* ---- 球态（对话页常驻的入口小球）----
-   同一个场景缩到入口尺度常驻：层级降到浮动组件之下、不拦截交互（点击与拖动都交给
-   对话页那枚按钮）、跟随入口不补间（拖动要跟手）。 */
+/* ---- 球态（对话页常驻的入口小球）---- */
 .planet-view.ball {
   z-index: 10;
   pointer-events: none;
   background: transparent;
-}
-.planet-view.ball {
-  /* 球态的画布**就是球本身那么大**（不做 CSS 降采样）。
-     以前是把全屏渲染缩到 ~10% 显示：那圈轮廓在 WebGL 里是 1 个设备像素宽的线，
-     缩小后只剩 0.1px，采样大部分落空 —— 看起来「轮廓全是像素点」。
-
-     108px 这个数不是随手取的：球体在画布高度里占 88.7%（固定 FOV 下的投影比例），
-     108 × 0.887 / 2 ≈ 48px，正好等于入口按钮的半径 —— 于是球态的 scale ≈ 1.000，
-     既没有降采样也没有放大，展开那一刻的尺寸也严丝合缝。 */
 }
 .planet-view.ball .planet-stage {
   align-items: center;
@@ -2193,37 +1671,43 @@ async function close() {
   transition: none;
   will-change: auto;
 }
-/* 铺底：半透明地盖住聊天（不是整块纯色），A 阶段淡入、收缩时淡出，
-   让「周边界面退后」与「对话页回到眼前」都发生在这一个对象的变化过程中。 */
+/* 球态：管理区与页面工具行一律不出现（它们属于展开后的星球页） */
+.planet-view.ball .panel,
+.planet-view.ball .page-tools-layer { display: none; }
+/* 铺底：半透明地盖住聊天（不是整块纯色），A 阶段淡入、收缩时淡出 */
 .planet-view::before {
-  /* 铺底用行星场景自己的虚空色（与 WebGL scene.background 同源令牌）：
-     转场期间「球体外围」必须是同一个虚空，否则会看到画布边界 */
   content: ""; position: absolute; inset: 0; z-index: 1; background: var(--planet-void);
   opacity: 0;
-  /* 打开时与「长大」同长（脚本在 B 阶段置 .curtain），收拢时与「收缩」同长
-     （脚本在 return 阶段撤掉 .curtain，这里把退出时长换成 collapse）。 */
-  /* 曲线与长大用同一条（settle）：这样「星球长到多大」与「对话页被盖掉多少」是同步的。
-     换成 ease-3-in 那种慢起曲线时实测：星球已经长到一半，铺底才 6% —— 渐隐全挤在最后。 */
   transition: opacity var(--mo-3-expand) var(--ease-3-settle);
 }
 .planet-view.curtain::before { opacity: 1; }
 .planet-view.settling::before { transition: opacity var(--mo-3-collapse) var(--ease-3-out); }
-/* 内容层压在铺底之上（关闭按钮/诊断/错误条各有自己的 z-index，保持更高） */
-.planet-stage, .panel { z-index: 2; }
-/* 星球层：入口小球 → 全屏 Planet 的连续体。
-   transform-origin 在 (0,0)，位移与尺度由脚本按入口小球的实时几何算出
-   （见 alignStageToEntry）：起点与小球完全重合，终点是 scale(1) 的完整构图。
-   曲线用低频档的柔性收束（约 3% 单次过冲），这是「优雅预算」的支出处。 */
-.planet-stage {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
+
+/* ======================================================================
+   内容区域（契约 §3.1）：位于全局栏下方
+   ====================================================================== */
+.planet-content {
+  position: absolute;
+  inset: var(--titlebar-height) 0 0 0;
   display: flex;
   flex-direction: column;
+  /* 默认浏览态**不裁切**：球顶弧可以像基线一样伸到全局栏后面，美术与基线一致。
+     裁切只在管理展开时打开（见下面的 .managing 规则）。 */
+  overflow: visible;
+  min-width: 0;
+}
+/* 星球层：铺满整个内容区（绝对定位、尺寸不随管理区变化 → 画布不 resize、球体直径不变）。
+   transform-origin 在 (0,0)，位移与尺度由脚本按入口小球的实时几何算出（见 alignStageToEntry）。 */
+.planet-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   transform-origin: 0 0;
   transform: translate3d(var(--stage-tx, 0px), var(--stage-ty, 0px), 0) scale(var(--stage-k, 1));
-  /* 过渡在 .armed 之后才生效：先把入口尺度无过渡地落位，B 阶段的放大才是
-     「从小球尺度长大」，而不是「从 identity 追到小球尺度」 */
+  /* 过渡在 .armed 之后才生效：先把入口尺度无过渡地落位 */
   transition: none;
   /* 只在转场期间提升合成层；常驻 will-change 会白占显存 */
   will-change: transform;
@@ -2231,8 +1715,7 @@ async function close() {
 .planet-view.armed .planet-stage {
   transition: transform var(--mo-3-expand) var(--ease-3-settle);
 }
-/* 收缩尾段：换成入口小球那套布局（画布 = 球自己的尺寸、居中），体量由脚本每帧写入。
-   放在 .armed 之后：这一段的过渡已经由 stageArmed=false 撤掉，这里再兜一层。 */
+/* 收缩尾段：换成入口小球那套布局（画布 = 球自己的尺寸、居中），体量由脚本每帧写入 */
 .planet-view.tail .planet-stage {
   align-items: center;
   justify-content: center;
@@ -2243,19 +1726,125 @@ async function close() {
   width: var(--ball-size);
   height: var(--ball-size);
 }
-/* 已经回到常态：撤掉 will-change */
 .planet-view.layers .planet-stage { will-change: auto; }
 .planet-view.closing { opacity: 0; }
-/* 收起阶段（整体淡出中）：不再拦截点击与焦点 —— 页面已经在消失，不能继续扣着输入 */
 .planet-view.closing { pointer-events: none; }
-.planet-canvas { flex: 1 1 auto; min-width: 0; width: 100%; height: 100%; cursor: grab; }
-/* 画布本身透明清屏（renderer alpha: true，且不设 scene.background）：
-   球体之外的像素是透明的，露出来的是铺底的 `--planet-void`。
-   这样任何尺度下都不存在「画布矩形」，「同一个对象长大」才成立 ——
-   不再需要按球体位置裁一圈遮罩。 */
-.planet-canvas.hovering { cursor: pointer; }
-/* 收起过程中（收势 + 收缩）不拦截点击与焦点：对象已经在回去的路上 */
 .planet-view.settling { pointer-events: none; }
+.planet-canvas {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  /* 管理展开：整块画布左移自身宽度的 50% —— 球心从「内容宽/2」连续移到 0。
+     画布尺寸全程不变，所以球体半径、轮廓与融环都不变，看到的是**完整的右半球**；
+     左半球由视口左边缘自然裁掉（不是遮挡、不是缩小）。 */
+  transform: translate3d(calc(var(--mp, 0) * -50%), 0, 0);
+}
+.planet-canvas.hovering { cursor: pointer; }
+/* 管理态：场景在内容区边界裁切（只露右半球靠的是裁切边界，不是遮挡） */
+.planet-view.managing .planet-content { overflow: clip; }
+.planet-view.managing .planet-stage { overflow: clip; }
+
+/* ======================================================================
+   管理区：右侧按 --mp 展开（绝对定位，不挤压画布）
+   ====================================================================== */
+.panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  width: calc(var(--mp, 0) * var(--mp-w));
+  min-width: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid transparent;
+  /* 布局容器不承担滚动：内容被裁掉，且不建立可被程序性滚动的容器 */
+  overflow: clip;
+  /* 收起（宽度 0）时用 visibility 保证它不再接收焦点；展开第一帧就可见 */
+  visibility: hidden;
+  transition: border-color var(--dur-panel) var(--ease-out);
+}
+.planet-view.managing .panel {
+  visibility: visible;
+  border-left-color: var(--border-subtle);
+}
+/* 内层固定成目标宽度：展开过程中内容不重排（被 .panel 的裁切滑出来） */
+.panel-inner {
+  width: var(--mp-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: clip;
+}
+/*
+ * 面板正文里的一切文本都可能带长话题名 / 长 ID / 长路径。
+ * 「内容宽度不超过容器」才是横向不滚动的**根因修复**（不是靠 hidden/clip 藏起来）。
+ */
+.panel-inner :where(p, li, dd, dt, span, a, code, strong, em, label, h2, h3, h4, summary, pre) {
+  overflow-wrap: anywhere;
+}
+.panel-inner :where(ul, ol, dl, .detail, .topic-list, .epanel, .kpanel) {
+  min-width: 0;
+}
+
+/* ======================================================================
+   窄窗口：星球在上、管理内容在下（契约 §3.4）
+   判定在脚本里（内容宽 ≥ 1024 且管理区左侧容得下「球体半径 × 1.15」才左右排布），
+   所以这里用 .stacked 类而不是纯媒体查询 —— 球体半径会随聚焦距离变。
+   ====================================================================== */
+.planet-view.managing.stacked .planet-content {
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: clip;
+  overscroll-behavior: contain;
+}
+.planet-view.managing.stacked .planet-stage {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  width: 100%;
+  height: clamp(240px, 40vh, 360px);
+  min-height: 0;
+}
+.planet-view.managing.stacked .planet-canvas { transform: none; }
+.planet-view.managing.stacked .panel {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  width: 100%;
+  height: auto;
+  /* 窄窗下面板接管整块下半区：给一个最小高度，管理内容短时也不留一块「没铺满」的空白底 */
+  min-height: clamp(260px, 52vh, 560px);
+  border-left: none;
+  border-top: 1px solid var(--border-subtle);
+  overflow: visible;
+}
+.planet-view.managing.stacked .panel-inner {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+.planet-view.managing.stacked .page-tools-layer { right: 14px; }
+
+/* ======================================================================
+   页面工具行：内容区域右上角（管理区展开时随 --mp 左移让开）
+   ====================================================================== */
+.page-tools-layer {
+  position: absolute;
+  top: 10px;
+  right: calc(var(--mp, 0) * var(--mp-w) + 14px);
+  z-index: 4;
+  opacity: 0;
+  transform: translateY(calc(var(--shift-2) * -1));
+  /* C 阶段才进入：它属于「场景接管」之后的信息层 */
+  transition: opacity var(--mo-3-settle) var(--ease-3-out), transform var(--mo-3-settle) var(--ease-3-out);
+}
+.planet-view.layers .page-tools-layer { opacity: 1; transform: none; }
+
 .close-btn {
   /* 让开自定义标题条（窗口层，比这里的 60 高）：否则条会盖住按钮上半截，
      用户点上去只看到「没反应」 */
@@ -2340,340 +1929,5 @@ async function close() {
   transform: translate(46px, -50%);
   border-color: var(--accent);
   color: var(--accent);
-}
-.panel {
-  position: relative;
-  flex: 0 0 auto;
-  min-width: 0;
-  width: 0;
-  height: 100%;
-  background: var(--bg-panel);
-  border-left: 1px solid transparent;
-  opacity: 0;
-  /* 侧栏开合 210ms，与 210ms 的重定位补间同时发生（不再串联成两次移动）；
-     opacity 负责入场（420ms）与收起时的收势（180ms）。 */
-  transition: width var(--dur-panel) var(--ease-out), border-color var(--dur-panel) var(--ease-out),
-    opacity var(--dur-planet-in) var(--ease-out);
-}
-.planet-view.entered .panel { opacity: 1; }
-.planet-view.entered.settling .panel {
-  /* 收起时右栏要**退场**，不只是变淡：它属于「星球被打开」这件事，
-     留着它就会出现「回到对话页了、话题栏还挂在旁边」（用户实测反馈）。 */
-  width: 0;
-  opacity: 0;
-  border-left-color: transparent;
-  transform: translateX(var(--shift-8));
-  pointer-events: none;
-  transition: width var(--mo-3-prepare) var(--ease-3-out), border-color var(--mo-3-prepare) var(--ease-3-out),
-    opacity var(--mo-3-prepare) var(--ease-3-out), transform var(--mo-3-prepare) var(--ease-3-out);
-}
-/* 球态（对话页入口小球）：右栏一律不出现 —— 收起动画结束时承接上面那一段 */
-.planet-view.ball .panel {
-  width: 0;
-  opacity: 0;
-  border-left-color: transparent;
-  pointer-events: none;
-}
-.panel.open {
-  width: clamp(340px, 32vw, 480px);
-  border-left-color: var(--border-subtle);
-}
-.panel-inner {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
-  /* 布局容器，不承担滚动：clip 保证它不会成为一个可被程序性滚动的横向滚动容器 */
-  overflow: clip;
-}
-/*
- * 面板正文里的一切文本都可能带长话题名 / 长 ID / 长路径。
- * 「内容宽度不超过容器」才是横向不滚动的**根因修复**（不是靠 hidden/clip 藏起来）：
- * 这里的每一条都可任意位置换行，配合各自的 min-width:0，内容不会把容器撑宽。
- */
-.panel-inner :where(p, li, dd, dt, span, a, code, strong, em, label, h2, h3, h4, summary, pre) {
-  overflow-wrap: anywhere;
-}
-.panel-inner :where(ul, ol, dl, .detail, .topic-list, .epanel, .kpanel) {
-  min-width: 0;
-}
-
-/* 可滚动中部：顶部标题与底部操作区保持稳定，只有这两个区域各自滚动 */
-.panel-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  /* 中部只是排版层：真正的滚动在 .topic-scroll / .detail-scroll 两层各自发生 */
-  overflow: clip;
-}
-/* 话题多时列表自己滚，且高度封顶：详情永远留在可见区域，不用先滚过整份列表。
-   这是「独立列表 + 独立详情」的并列结构（契约 §5）：两层各自可滚是允许的，
-   但共享父容器 .panel-inner/.panel-body 只做裁切、**不再**多开一层滚动。
-   滚动条走统一策略：原生外观已全局移除，用共享 QIO 指示条。
-   横向判定口径（实测）：overflow-y:auto 时 overflow-x:clip 会**计算成 hidden**，
-   仍然可被程序性滚动 —— 所以这里只锁手势与滚动条，真正的不横向滚动靠
-   .panel-inner 的换行规则让 scrollWidth == clientWidth（over == 0）。 */
-.topic-scroll {
-  flex: 0 1 auto;
-  max-height: 42%;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: clip;
-  overscroll-behavior: contain;
-  max-width: 100%;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.detail-scroll {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: clip;
-  overscroll-behavior: contain;
-  max-width: 100%;
-}
-/* 固定底部操作区（在正常流里，不覆盖正文） */
-.detail-actions {
-  flex: 0 0 auto;
-  padding: 10px 14px 14px;
-  border-top: 1px solid var(--border-subtle);
-  background: var(--bg-panel);
-}
-.detail-actions .start-btn { margin-top: 10px; }
-.detail-identity {
-  margin: 8px 0 4px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
-  background: var(--bg-inset);
-}
-.detail-identity .id-row { display: flex; gap: 8px; font-size: 12px; line-height: 1.7; }
-.detail-identity dt { color: var(--text-muted); flex: 0 0 84px; margin: 0; }
-.detail-identity dd { margin: 0; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
-.topic-list li:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-.panel.open.manage { width: clamp(360px, 46vw, 640px); }
-/* 中等窗口：面板按视口比例收窄，别把星球挤成一条 */
-@media (max-width: 1199px) {
-  .panel.open { width: 46vw; }
-  .panel.open.manage { width: 50vw; }
-}
-/* 窄窗口（接近 Tauri 最小尺寸）：面板变成覆盖式抽屉，星球保持可用 */
-@media (max-width: 899px) {
-  .panel.open,
-  .panel.open.manage {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(92vw, 520px);
-    z-index: 55;
-    border-left: 1px solid var(--border-strong);
-    box-shadow: var(--shadow-3);
-  }
-}
-/* 窄面板下分区标签换行，而不是把面板内容撑出横向溢出 */
-.tabs { display: flex; align-items: center; gap: 6px; padding: 10px 14px 6px; border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap; }
-.tab { font-size: 13px; padding: 6px 12px; min-width: 0; color: var(--text-secondary); cursor: pointer; background: none; border: none; border-bottom: 2px solid transparent; font-family: var(--sans); }
-.tab:hover { color: var(--text-strong); }
-.tab.active { color: var(--text-strong); border-bottom-color: var(--accent); font-weight: 600; }
-.tabs .spacer { flex: 1; }
-.mode-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 4px 10px; border-radius: var(--qio-ui-radius); border: 1px solid var(--border-strong); background: none; color: var(--text-secondary); cursor: pointer; transition: color var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1); }
-.mode-btn:hover { color: var(--accent); border-color: var(--accent); }
-.panel-toggle {
-  position: absolute;
-  top: 50%;
-  left: -30px;
-  transform: translateY(-50%);
-  z-index: 3;
-  width: 30px;
-  height: 78px;
-  padding: 0;
-  border: 1px solid var(--border-strong);
-  border-right: none;
-  border-radius: var(--qio-ui-radius) 0 0 var(--qio-ui-radius);
-  background: var(--bg-panel);
-  color: var(--text-secondary);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: background var(--mo-1-state) var(--ease-1), color var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1);
-}
-.panel-toggle:hover {
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.panel-toggle .chev {
-  transition: transform var(--mo-2-in) var(--ease-2);
-}
-.panel-toggle .chev.flip {
-  transform: rotate(180deg);
-}
-.panel-head { padding: 14px 14px 8px; min-width: 0; }
-.panel-head h2 { font-size: 16px; color: var(--text-strong); margin: 0 0 8px; overflow-wrap: anywhere; }
-.topic-list { list-style: none; padding: 0 14px; margin: 6px 0; min-width: 0; }
-.topic-list li {
-  display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px;
-  border-radius: var(--qio-ui-radius); cursor: pointer; font-size: 13px;
-  /* 长话题名换行（不是把列表撑宽、也不是把右侧「已选中」标签挤没） */
-  min-width: 0; flex-wrap: wrap;
-}
-.topic-list li:hover { background: var(--accent-soft); }
-.topic-list li.active { background: var(--accent-softer); }
-.topic-list .name { font-size: 14px; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; }
-.topic-list .meta { flex-shrink: 0; }
-.detail { padding: 0 14px 20px; border-top: 1px solid var(--border-subtle); }
-.detail h3 { font-size: 16px; color: var(--text-strong); margin: 12px 0 8px; }
-/* 详情顶部：一句摘要 + 一行事实 + 少量关键词（不堆徽章、不把信息平铺） */
-.detail-summary {
-  margin: 0 0 6px;
-  font-size: 12.5px;
-  line-height: 1.7;
-  color: var(--text-primary);
-}
-.detail-facts {
-  margin: 0 0 6px;
-  font-size: 10.5px;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-}
-.detail-keywords {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-.detail-keywords .kw {
-  font-size: 10.5px;
-  color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 0 8px;
-}
-.detail-section { margin: 10px 0; }
-.section-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; letter-spacing: 0.02em; }
-.fragment-item {
-  border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); padding: 8px 10px; margin-bottom: 6px;
-  cursor: pointer; background: var(--bg-inset);
-}
-.fragment-item:hover { border-color: var(--border-strong); }
-.fragment-item.selected { border-color: var(--accent); background: var(--bg-accent-subtle); }
-.fragment-summary { font-size: 13px; color: var(--text-primary); }
-.fragment-meta { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
-.fragment-item { display: flex; flex-direction: column; gap: 4px; }
-.fragment-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 10.5px;
-  color: var(--text-muted);
-}
-.fragment-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.fragment-when { color: var(--text-secondary); }
-.fragment-count { margin-left: auto; }
-.fragment-state { opacity: 0.8; }
-.fragment-actions { display: flex; gap: 6px; margin-top: 2px; }
-.fragment-actions .qio-btn.mini { height: auto; padding: 3px 10px; font-size: 11px; }
-/* ---- 片段原文（只读历史 + 分页） ---- */
-.fragment-raw {
-  margin-top: 6px;
-  padding: 8px 10px;
-  border-left: 2px solid var(--border-strong);
-  background: var(--bg-inset);
-  border-radius: 0 var(--qio-ui-radius) var(--qio-ui-radius) 0;
-}
-.raw-note {
-  margin: 0 0 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-.raw-loading { margin: 0; font-size: 11.5px; color: var(--text-muted); }
-.raw-error {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 11.5px;
-  color: var(--danger);
-}
-.raw-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.raw-item { display: flex; gap: 8px; font-size: 12px; line-height: 1.6; }
-.raw-role {
-  flex: 0 0 34px;
-  font-size: 10px;
-  color: var(--text-muted);
-  letter-spacing: 0.04em;
-  padding-top: 2px;
-}
-.raw-content { color: var(--text-secondary); white-space: pre-wrap; overflow-wrap: anywhere; }
-.raw-item.assistant .raw-content { color: var(--text-primary); }
-.raw-more { align-self: flex-start; margin-top: 8px; }
-.raw-end { margin: 8px 0 0; font-size: 10.5px; color: var(--text-muted); }
-/* 知识条目的操作反馈：留在这一条上 */
-.k-feedback { font-size: 11px; }
-.k-feedback.ok { color: var(--success); }
-.k-feedback.err { flex-basis: 100%; margin: 2px 0 0; color: var(--danger); }
-.entity-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.entity-tag { background: var(--bg-accent-subtle); border-radius: var(--qio-ui-radius); padding: 3px 10px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
-.knowledge-item {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  margin-bottom: 6px;
-  padding: 8px 10px;
-  font-size: 12.5px;
-}
-/* 阅读态优先：内容占满一行并成为视觉主体，管理动作退到下一行且默认不可见 */
-.knowledge-item .k-content { flex: 1 1 100%; color: var(--text-primary); line-height: 1.7; }
-.knowledge-item .k-actions {
-  display: flex;
-  gap: 6px;
-  margin-left: auto;
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease-1);
-}
-.knowledge-item:hover .k-actions,
-.knowledge-item:focus-within .k-actions,
-.knowledge-item .k-actions.open { opacity: 1; }
-/* 触屏没有 hover：管理入口必须默认可见，否则永远点不到 */
-@media (hover: none) {
-  .knowledge-item .k-actions { opacity: 1; }
-}
-.knowledge-edit { flex: 1 1 100%; min-width: 160px; height: auto; font-size: 12.5px; resize: vertical; }
-.qio-btn.mini { height: auto; padding: 4px 10px; font-size: 11px; }
-.qio-btn.mini.danger { color: var(--danger); border-color: var(--border-danger); }
-.k-content { color: var(--text-primary); }
-.start-btn { width: 100%; height: 40px; margin-top: 12px; font-size: 14px; }
-.start-btn:disabled { opacity: 0.6; cursor: default; }
-.anchor-error {
-  margin-top: 12px; padding: 8px 12px; border-radius: var(--qio-ui-radius);
-  border: 1px solid var(--danger); background: var(--danger-soft);
-  color: var(--danger); font-size: 12px; line-height: 1.5;
-}
-.selected-position {
-  margin-top: 12px; font-size: 12px; line-height: 1.6;
-  color: var(--text-secondary);
-}
-.selected-position.muted { color: var(--text-muted); }
-.hint { font-size: 12px; color: var(--text-muted); }
-.detail-loading { padding: 14px; color: var(--text-muted); font-size: 13px; }
-.detail-error {
-  display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
-  padding: 0 14px 20px; border-top: 1px solid var(--border-subtle);
-}
-.detail-error .err-text {
-  margin-top: 12px; padding: 8px 12px; border-radius: var(--qio-ui-radius); width: 100%;
-  border: 1px solid var(--danger); background: var(--danger-soft);
-  color: var(--danger); font-size: 12px; line-height: 1.5;
 }
 </style>

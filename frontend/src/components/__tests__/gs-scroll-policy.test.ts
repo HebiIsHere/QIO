@@ -81,6 +81,9 @@ describe("统一滚动策略：不再有原生/自绘滚动条", () => {
     "views/settings/CredentialModal.vue",
     "views/DebugView.vue",
     "views/PlanetView.vue",
+    "components/planet/MemoryTab.vue",
+    "components/planet/GlobalSearchPanel.vue",
+    "components/planet/ManagementArea.vue",
     "views/SettingsView.vue",
   ];
 
@@ -130,31 +133,46 @@ describe("下拉 / 浮层：列表滚动走统一指示条、正文不横向滚"
 });
 
 describe("星球页（D6）：横向溢出按「修布局 + 去掉横向滚动能力」处理", () => {
+  // 2026-10-27 改版：话题列表/概览/讨论记录搬进管理区的记忆标签页，星球页只保留舞台与管理面板
   const src = read("views/PlanetView.vue");
 
   it("整层与面板布局容器改成两轴 clip（不再是可被程序性滚动的容器）", () => {
     expect(ruleBody(src, ".planet-view")).toContain("overflow: clip");
     expect(ruleBody(src, ".panel-inner")).toContain("overflow: clip");
-    expect(ruleBody(src, ".panel-body")).toContain("overflow: clip");
+    expect(ruleBody(src, ".panel")).toContain("overflow: clip");
   });
 
-  it("话题列表 / 详情保留各自纵向滚动，横向锁死；面板正文一律可换行", () => {
-    for (const sel of [".topic-scroll", ".detail-scroll"]) {
-      const body = ruleBody(src, sel);
-      expect(body, sel).toContain("overflow-y: auto");
-      expect(body, sel).toContain("overflow-x: clip");
-    }
+  it("窄窗口：内容区是唯一纵向滚动层，横向裁切；面板正文一律可换行", () => {
+    const stacked = ruleBody(src, ".planet-view.managing.stacked .planet-content");
+    expect(stacked).toContain("overflow-y: auto");
+    expect(stacked).toContain("overflow-x: clip");
     // 根因修复：内容宽度不超过容器（否则 overflow-x 会退化成 hidden，仍能左右滚）
     expect(src).toContain("overflow-wrap: anywhere");
     expect(src).toMatch(/\.panel-inner :where\([^)]*\)\s*\{/);
-    expect(ruleBody(src, ".tabs")).toContain("flex-wrap: wrap");
-    expect(ruleBody(src, ".topic-list .name")).toContain("min-width: 0");
+    // 管理区头部与标签在窄窗换行，不把面板撑宽
+    const area = read("components/planet/ManagementArea.vue");
+    expect(ruleBody(area, ".ma-head")).toContain("flex-wrap: wrap");
+    expect(ruleBody(area, ".ma-tabs")).toContain("flex-wrap: wrap");
   });
 
-  it("三处滚动区域都接入共享策略（指示条），且不再用 overflow:hidden 兜底横向", () => {
+  it("记忆标签页：列表 / 概览 / 讨论记录三层各自纵向滚动、横向锁死", () => {
+    const mem = read("components/planet/MemoryTab.vue");
+    const body = ruleBody(mem, ".mt-scroll");
+    expect(body).toContain("overflow-y: auto");
+    expect(body).toContain("overflow-x: clip");
+    expect(ruleBody(mem, ".topic-list .name")).toContain("min-width: 0");
+    // 长摘要 / 长 id 可换行
+    expect(mem).toContain("overflow-wrap: anywhere");
+  });
+
+  it("滚动区域都接入共享策略（指示条），且不再用 overflow:hidden 兜底横向", () => {
     expect(src).toContain("v-qio-scrollbar");
-    expect(ruleBody(src, ".topic-scroll")).not.toContain("overflow: hidden");
     expect(ruleBody(src, ".planet-view")).not.toContain("overflow: hidden");
+    for (const rel of ["components/planet/MemoryTab.vue", "components/planet/GlobalSearchPanel.vue"]) {
+      const s = read(rel);
+      expect(s, rel).toContain("v-qio-scrollbar");
+      expect(s, rel).not.toMatch(/overflow: hidden/);
+    }
   });
 });
 

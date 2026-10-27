@@ -1,0 +1,449 @@
+{
+  "base": "http://localhost:5104",
+  "steps": [
+    {
+      "label": "default-1440x970",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 720,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 1439,
+        "width": 1,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 721.3514590566253,
+        "y": 517.5052497402363,
+        "title": "默认话题"
+      },
+      "mp": "0.000",
+      "managing": false,
+      "stacked": false,
+      "dataView": "tabs",
+      "dataTab": "memory",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "visible",
+      "pendingCount": null
+    },
+    {
+      "label": "managing-1440x970",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": -720,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 0,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 800,
+        "width": 640,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 356.7126693722446,
+        "y": 517.7354394680383,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": false,
+      "dataView": "tabs",
+      "dataTab": "memory",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "clip",
+      "pendingCount": "0"
+    },
+    {
+      "label": "knowledge-tab",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": -720,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 0,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 800,
+        "width": 640,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 356.7126693722446,
+        "y": 517.7354394680383,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": false,
+      "dataView": "tabs",
+      "dataTab": "knowledge",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "clip",
+      "pendingCount": "0"
+    },
+    {
+      "label": "memory-overview",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": -720,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 0,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 800,
+        "width": 640,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 356.7126693722446,
+        "y": 517.7354394680383,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": false,
+      "dataView": "tabs",
+      "dataTab": "memory",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "clip",
+      "pendingCount": "0"
+    },
+    {
+      "label": "pending-view",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": -720,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 0,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 800,
+        "width": 640,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 356.7126693722446,
+        "y": 517.7354394680383,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": false,
+      "dataView": "pending",
+      "dataTab": "memory",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "clip",
+      "pendingCount": "0"
+    },
+    {
+      "label": "global-search",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": -720,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 0,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 800,
+        "width": 640,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 356.7126693722446,
+        "y": 517.7354394680383,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": false,
+      "dataView": "search",
+      "dataTab": "memory",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "clip",
+      "pendingCount": "0"
+    },
+    {
+      "label": "global-search-empty",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": -720,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 0,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 800,
+        "width": 640,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 356.7126693722446,
+        "y": 517.7354394680383,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": false,
+      "dataView": "search",
+      "dataTab": "memory",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "clip",
+      "pendingCount": "0"
+    },
+    {
+      "label": "collapsed-1440x970",
+      "titlebar": "70px",
+      "innerWidth": 1440,
+      "innerHeight": 970,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900
+      },
+      "canvasRect": {
+        "left": 0,
+        "top": 70,
+        "width": 1440,
+        "height": 900,
+        "cx": 720,
+        "cy": 520
+      },
+      "panelRect": {
+        "left": 1439,
+        "width": 1,
+        "right": 1440
+      },
+      "sphere": {
+        "cx": 720,
+        "cy": 520,
+        "radius": 452.66504294495525
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 719.9967689872308,
+        "y": 519.5274822787941,
+        "title": "默认话题"
+      },
+      "mp": "0.000",
+      "managing": false,
+      "stacked": false,
+      "dataView": "search",
+      "dataTab": "memory",
+      "docScrollWidth": 1440,
+      "docClientWidth": 1440,
+      "contentScrollWidth": 1440,
+      "contentClientWidth": 1440,
+      "contentOverflowY": "visible",
+      "pendingCount": "0"
+    },
+    {
+      "label": "narrow-900x820-stacked",
+      "titlebar": "70px",
+      "innerWidth": 900,
+      "innerHeight": 820,
+      "contentRect": {
+        "left": 0,
+        "top": 70,
+        "width": 900,
+        "height": 750
+      },
+      "canvasRect": {
+        "left": 0,
+        "top": 70,
+        "width": 900,
+        "height": 328,
+        "cx": 450,
+        "cy": 234
+      },
+      "panelRect": {
+        "left": 0,
+        "width": 900,
+        "right": 900
+      },
+      "sphere": {
+        "cx": 450,
+        "cy": 234,
+        "radius": 164.9712600954948
+      },
+      "selected": "topic_c77464f2601c",
+      "selectedLabel": {
+        "x": 578.3647641020782,
+        "y": 233.84541804811428,
+        "title": "默认话题"
+      },
+      "mp": "1.000",
+      "managing": true,
+      "stacked": true,
+      "dataView": "search",
+      "dataTab": "memory",
+      "docScrollWidth": 900,
+      "docClientWidth": 900,
+      "contentScrollWidth": 900,
+      "contentClientWidth": 900,
+      "contentOverflowY": "auto",
+      "pendingCount": "0"
+    }
+  ],
+  "stableRadius": 452.66504294495525,
+  "mpExpandSamples": [
+    0,
+    0,
+    0,
+    0,
+    0,
+    0.77,
+    0.965,
+    0.976,
+    0.999
+  ],
+  "mpExpandIntermediateCount": 4,
+  "mpCollapseIntermediateCount": 4,
+  "narrowScroll": {
+    "scrollTop": 4,
+    "scrollHeight": 754,
+    "clientHeight": 750,
+    "scrollWidth": 900,
+    "clientWidth": 900
+  }
+}
