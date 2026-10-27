@@ -42,8 +42,15 @@ const entityStub = defineComponent({
   setup: () => () => null,
 });
 const pendingStub = defineComponent({
-  name: "MemoryPendingPanel",
-  props: { focusPendingId: { type: String, default: null }, focusId: { type: String, default: null } },
+  name: "PendingItems",
+  props: { focusId: { type: String, default: null } },
+  emits: ["changed"],
+  setup: () => () => null,
+});
+const recordsStub = defineComponent({
+  name: "MaintenanceRecords",
+  props: { focusBatchId: { type: String, default: null } },
+  emits: ["changed"],
   setup: () => () => null,
 });
 const searchStub = defineComponent({
@@ -63,7 +70,8 @@ function mountArea(props: Record<string, unknown> = {}) {
       stubs: {
         KnowledgePanel: knowledgeStub,
         EntityPanel: entityStub,
-        MemoryPendingPanel: pendingStub,
+        PendingItems: pendingStub,
+        MaintenanceRecords: recordsStub,
         GlobalSearchPanel: searchStub,
       },
     },
@@ -209,7 +217,7 @@ describe("管理区：外部落点（深链 / 记忆提醒）", () => {
     await flushPromises();
     expect(w.attributes("data-view")).toBe("pending");
     await flushPromises();
-    expect(w.findComponent(pendingStub).props("focusPendingId")).toBe("p1");
+    expect(w.findComponent(pendingStub).props("focusId")).toBe("p1");
   });
 
   it("initialTab=entity 落到实体标签", async () => {

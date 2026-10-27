@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 /**
  * 管理区（契约 §3.5）—— 记忆 / 知识 / 实体三个标签页 + 待处理 / 整理记录两条辅助入口，
  * 全部占据**同一块**管理内容区域（不是额外侧栏、不是抽屉）。
@@ -17,11 +17,12 @@ import MemoryTab from "./MemoryTab.vue";
 import KnowledgePanel from "./KnowledgePanel.vue";
 import EntityPanel from "./EntityPanel.vue";
 /**
- * 待处理 / 整理记录：B 会交付独立的 `PendingItems.vue` / `MaintenanceRecords.vue`（契约 §4.2）。
- * 在它们落地前先用基线 `MemoryPendingPanel` 顶上（真实接口、真实数据、无假状态）；
- * 集成时**只需要替换下面两行 import 与模板里对应的两个组件标签**。
+ * 待处理 / 整理记录：`PendingItems.vue` / `MaintenanceRecords.vue`（B 交付，契约 §4.2），
+ * 与三个标签页共用同一块管理内容区域；它们的处理结果通过 `changed` 回来，
+ * 这里只负责刷新真实数量（角标与「待处理」入口上的数字）。
  */
-import MemoryPendingPanel from "./MemoryPendingPanel.vue";
+import PendingItems from "./PendingItems.vue";
+import MaintenanceRecords from "./MaintenanceRecords.vue";
 import GlobalSearchPanel from "./GlobalSearchPanel.vue";
 import { usePlanetPendingStore } from "../../stores/planetPending";
 import {
@@ -145,6 +146,17 @@ function openAux(next: "pending" | "records") {
   mountedAux[next] = true;
   view.value = next;
   if (next === "pending") void pending.refresh();
+}
+
+/**
+ * 辅助视图里处理完一条事项后回来：只刷新**真实数量**。
+ *
+ * 不在这里重置列表/滚动位置 —— 那是组件自己的浏览状态（契约 §4.2 要求保留），
+ * 也不把数量往后延一拍：角标读的就是 store 的 count，刷新失败时 store 会保留上次
+ * 真实值并标记 partial，不把「不知道」显示成 0。
+ */
+function onAuxChanged() {
+  void pending.refresh();
 }
 
 /** 返回：从辅助视图回原标签页；从搜索回进入搜索前的上下文 */
@@ -344,12 +356,12 @@ defineExpose({ selectTab, escapeLayer });
           class="ma-aux-btn aux-pending"
           type="button"
           data-mp-aux="pending"
-          :data-mp-pending-count="pending.count.value"
+          :data-mp-pending-count="pending.count"
           :class="{ active: view === 'pending' }"
           :aria-pressed="view === 'pending'"
           @click="openAux('pending')"
         >
-          待处理<span v-if="pending.count.value > 0" class="count mono">{{ pending.count.value }}</span>
+          待处理<span v-if="pending.count > 0" class="count mono">{{ pending.count }}</span>
         </button>
         <button
           class="ma-aux-btn aux-records"
@@ -393,6 +405,7 @@ defineExpose({ selectTab, escapeLayer });
           v-if="mountedTabs.knowledge"
           :focus-id="knowledgeFocusId"
           @focus-topic="focusMemoryTopic"
+          @changed="onAuxChanged"
         />
       </div>
       <div v-show="view === 'tabs' && tab === 'entity'" class="ma-view" data-view-panel="entity">
@@ -400,15 +413,15 @@ defineExpose({ selectTab, escapeLayer });
           v-if="mountedTabs.entity"
           :focus-id="entityFocusId"
           :open-by-node-id="entityNodeId ?? ''"
-          @changed="void 0"
+          @changed="onAuxChanged"
         />
       </div>
-      <!-- 待处理 / 整理记录：B 组件落地后替换下面两个分支 -->
+      <!-- 待处理 / 整理记录：同一块管理内容区域内的两个辅助视图（不新开侧栏/抽屉） -->
       <div v-show="view === 'pending'" class="ma-view" data-view-panel="pending">
-        <MemoryPendingPanel v-if="mountedAux.pending" :focus-pending-id="pendingFocusId" />
+        <PendingItems v-if="mountedAux.pending" :focus-id="pendingFocusId" @changed="onAuxChanged" />
       </div>
       <div v-show="view === 'records'" class="ma-view" data-view-panel="records">
-        <MemoryPendingPanel v-if="mountedAux.records" />
+        <MaintenanceRecords v-if="mountedAux.records" @changed="onAuxChanged" />
       </div>
       <div v-show="view === 'search'" class="ma-view" data-view-panel="search">
         <GlobalSearchPanel

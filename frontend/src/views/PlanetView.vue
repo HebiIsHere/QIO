@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 /**
  * 星球页（全屏覆盖层）—— 记忆星球页改版（契约 _MP-COMMON §3）。
  *
@@ -1578,7 +1578,7 @@ async function close() {
       <PageTools
         class="page-tools-layer"
         :expanded="managementOpen"
-        :pending-count="pendingStore.count.value"
+        :pending-count="pendingStore.count"
         @search="openSearch"
         @toggle-manage="toggleManagement"
       />
