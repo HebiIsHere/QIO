@@ -120,18 +120,34 @@ try {
   await sleep(900);
   const reducedFrames = await browser.evalJs("(() => { window.__probe2.on = false; return window.__probe2.frames; })()");
   const reached = reducedFrames.filter((f) => f.mp !== null && f.mp >= 0.999);
+  /**
+   * 「一帧到位」的硬判据：在 0 与 1 之间**没有任何中间帧**。
+   * 注意 framesToTarget 会把「点击还没被主线程处理」的那些帧也数进去（本机单帧 ~12–110ms，
+   * 点击派发 + 布局可能就要十几帧），所以真正要报的是 intermediateFrames = 0。
+   */
+  const intermediate = reducedFrames.filter((f) => f.mp !== null && f.mp > 0.001 && f.mp < 0.999);
+  const firstNonZero = reducedFrames.findIndex((f) => f.mp !== null && f.mp > 0.001);
+  const jumpFrameMs =
+    firstNonZero >= 0 && firstNonZero + 1 < reducedFrames.length
+      ? reducedFrames[firstNonZero + 1].t - reducedFrames[firstNonZero].t
+      : null;
   report.checks.reducedMotion = {
     dataMotion: motionMode,
     frames: reducedFrames.length,
     framesToTarget: reached.length ? reducedFrames.indexOf(reached[0]) : null,
     msToTarget: reached.length ? reached[0].t : null,
+    /** 0..1 之间的中间帧数量：0 = 真正的一帧到位 */
+    intermediateFrames: intermediate.length,
+    /** 从「还没动」到「已经到位」跨过了多少毫秒（≈ 被点击派发/布局阻塞的时间） */
+    jumpFrameMs,
+    singleFrameJump: intermediate.length === 0 && reached.length > 0,
     verdict:
       motionMode !== "reduced"
         ? "减少动画偏好没有生效（data-motion=" + motionMode + "），该项未验证"
-        : reached.length && reached[0].t <= 120
-          ? "减少动画下 " + reached[0].t + "ms 内直接到位（约一帧）"
+        : intermediate.length === 0 && reached.length > 0
+          ? "减少动画下 0 与 1 之间没有任何中间帧（真正一帧到位）；点击派发到生效约 " + (jumpFrameMs ?? "?") + "ms"
           : reached.length
-            ? "减少动画下 " + reached[0].t + "ms 到位（超过一帧，需要排查）"
+            ? "减少动画下出现 " + intermediate.length + " 个中间帧（不是一帧到位，需要排查）"
             : "减少动画下没有测到到达目标",
     curve: reducedFrames.slice(0, 24),
   };
