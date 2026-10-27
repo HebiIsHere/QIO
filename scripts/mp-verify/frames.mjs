@@ -51,7 +51,7 @@ const reverseAfterMs = Number(flag("reverse-after-ms", 240));
 mkdirSync(outDir, { recursive: true });
 
 const SAMPLER = `(opts) => {
-  const state = { frames: [], on: true, t0: performance.now(), triggeredAt: null, triggerMp: null };
+  const state = { frames: [], on: true, t0: performance.now(), triggeredAt: null, triggerMp: null, firstMoveAt: null };
   const root = document.querySelector('.planet-view');
   const stage = document.querySelector('.planet-stage');
   const canvas = document.querySelector('.planet-canvas');
@@ -114,7 +114,13 @@ const SAMPLER = `(opts) => {
       state.triggerMp = mp;
       state.triggeredSelector = clickFirst(opts.selectors || []);
     }
-    if (opts.trigger === 'whenElapsedAtLeast' && state.triggeredAt === null && t >= opts.value) {
+    if (state.firstMoveAt === null && mp !== null && mp > 0.001) state.firstMoveAt = t;
+    if (
+      opts.trigger === 'whenElapsedAtLeast' &&
+      state.triggeredAt === null &&
+      state.firstMoveAt !== null &&
+      t - state.firstMoveAt >= opts.value
+    ) {
       state.triggeredAt = t;
       state.triggerMp = mp;
       state.triggeredSelector = clickFirst(opts.selectors || []);
@@ -158,9 +164,22 @@ async function runAction(browser, action) {
   if (action === "expand") samplerOpts = {};
   if (action === "collapse") samplerOpts = {};
   if (action === "reverse") {
-    samplerOpts = { trigger: "whenElapsedAtLeast", value: reverseAfterMs, selectors: closeSelectors };
+    // 面板可能按 A 的新编排「过渡结束才挂载」，那时收起按钮还不存在 —— 退回到展开按钮（它是开关）
+    samplerOpts = {
+      trigger: "whenElapsedAtLeast",
+      value: reverseAfterMs,
+      selectors: [...closeSelectors, ...openSelectors],
+    };
   }
   await browser.evalJs("(" + SAMPLER.toString() + ")(" + JSON.stringify(samplerOpts) + ")");
+
+  /**
+   * 归一化的基准必须是**动画时长**（--mo-3-expand / --mo-3-collapse），不是采样窗口长度。
+   * 用采样窗口当基准会把 normStep 系统性放大（窗口里还包含点击派发、长帧、动画结束后的等待）。
+   */
+  const animDurationMs = await browser.evalJs(
+    "(() => { const v = document.querySelector('.planet-view') || document.documentElement; const cs = getComputedStyle(v); const pick = (name) => { const raw = cs.getPropertyValue(name).trim(); const value = Number.parseFloat(raw); if (!Number.isFinite(value)) return null; return raw.endsWith('ms') ? value : raw.endsWith('s') ? value * 1000 : value; }; return { expand: pick('--mo-3-expand'), collapse: pick('--mo-3-collapse') }; })()",
+  );
 
   const t0 = Date.now();
   if (action === "expand") await toggleManagement(browser, "open", { open: openSelectors, close: closeSelectors });
@@ -233,13 +252,22 @@ async function runAction(browser, action) {
    * - normStep > 1.6 才算可疑；同时把长帧单独列出（longFrames，dt > 60ms）。
    */
   const totalDuration = curve.length ? Math.max(1, curve[curve.length - 1].t - curve[0].t) : 1;
+  /** 归一化基准：优先用令牌给的动画时长（520 / 420ms），拿不到才退回采样窗口 */
+  const baseDuration =
+    action === "collapse"
+      ? animDurationMs && animDurationMs.collapse
+        ? animDurationMs.collapse
+        : totalDuration
+      : animDurationMs && animDurationMs.expand
+        ? animDurationMs.expand
+        : totalDuration;
   const perFrame = [];
   const longFrames = [];
   const teleports = [];
   for (let i = 1; i < curve.length; i += 1) {
     const dt = Number((curve[i].t - curve[i - 1].t).toFixed(1));
     const step = Number((curve[i].mp - curve[i - 1].mp).toFixed(4));
-    const normStep = Number((step / (dt / totalDuration)).toFixed(3));
+    const normStep = Number((step / (dt / baseDuration)).toFixed(3));
     perFrame.push({ t: Math.round(curve[i].t), dt, step, normStep });
     if (dt > 60) longFrames.push({ t: Math.round(curve[i].t), dt });
     if (Math.abs(normStep) > 1.6) teleports.push({ t: Math.round(curve[i].t), dt, step, normStep });
@@ -262,9 +290,13 @@ async function runAction(browser, action) {
     maxStep: Number(maxStep.toFixed(4)),
     /** 最大进度速率（进度/秒）：与令牌曲线在 1.0 距离上的峰值速率对比，用来判断有没有「跳一下」 */
     maxRate: Number(maxRate.toFixed(2)),
+    /** 归一化基准（ms）：令牌里的动画时长 */
+    baseDurationMs: baseDuration,
+    animDurationTokens: animDurationMs,
     jumps,
     reversals,
     trigger,
+    firstMoveAt: await browser.evalJs("(() => (window.__mpSampler ? window.__mpSampler.firstMoveAt : null))()"),
     reverseOvershoot: overshoot,
     startMp: curve.length ? curve[0].mp : null,
     endMp: curve.length ? curve[curve.length - 1].mp : null,
