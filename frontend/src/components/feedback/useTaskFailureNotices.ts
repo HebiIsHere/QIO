@@ -7,14 +7,16 @@
  * - 断线重连 / 后端换实例：快照可能带回一批旧失败 —— 重新建立基线，不提醒；
  * - 基线之后**真正新增**的失败身份（任务身份 + 失败事件身份，重试后的新失败算新身份）才提醒；
  * - 失败合并 500ms 由 notifications store 负责（同一时间只显示一条）；
- * - 显示前最后核对：任务此刻仍是失败才显示（已「知道了」/已恢复的不再提醒）。
+ * - **只提醒仍需要用户处理的失败**：入队与显示/恢复前都走既有权威规则 isAttentionItem()
+ *   （failed + requiresAttention=false 不弹；等待期间变为不需处理/已「知道了」的成员移除）；
+ * - 显示前最后核对：任务此刻仍是失败且仍需要处理才显示。
  *
  * 单条回复未完成 / 用户主动停止 / 发送结果未知都不属于任务失败，不进这里。
  */
 import { watch, type WatchStopHandle } from "vue";
 import { useConversationTasksStore } from "../../stores/conversationTasks";
 import { useNotificationsStore } from "../../stores/notifications";
-import { taskDisplayStatus } from "../../services/conversationTasks";
+import { isAttentionItem } from "../../services/conversationTasks";
 import { TASK_SOURCE_LABEL } from "../../conversation/contracts";
 import type { TaskFeedItem } from "../../conversation/contracts";
 
@@ -61,18 +63,20 @@ export function useTaskFailureNotices(): TaskFailureNoticesHandle {
   let lastInstance: string | null = null;
 
   /**
-   * 当前快照里**仍需要提醒**的失败项。
+   * 当前快照里**仍需要提醒**的失败项（唯一权威规则：isAttentionItem）。
    *
-   * 排除已「知道了」的项：acknowledged=true 表示后端已经把它移入历史（快照里可能
-   * 还带旧行），它不再是一个待处理失败，也不应为了它弹顶部通知。
+   * - acknowledged=true：后端已经把它移入历史，不再是一个待处理失败；
+   * - requiresAttention=false：后端明确表示不需要用户处理（例如已被重试/自动收口），
+   *   同样不弹顶部通知；
+   * - 只有 failed 且仍需要用户处理的项才进入提醒。
    */
-  function failedItems(): TaskFeedItem[] {
+  function attentionFailures(): TaskFeedItem[] {
     const items = Array.isArray(tasks.current.items) ? tasks.current.items : [];
-    return items.filter((item) => !item.acknowledged && taskDisplayStatus(item) === "failed");
+    return items.filter((item) => isAttentionItem(item));
   }
 
   function captureBaseline(): void {
-    seen = new Set(failedItems().map(taskFailureIdentity));
+    seen = new Set(attentionFailures().map(taskFailureIdentity));
     // 有界：只保留最近的若干身份（Set 有序，保留尾部）
     if (seen.size > TASK_FAILURE_SEEN_LIMIT) {
       const keep = [...seen].slice(-TASK_FAILURE_SEEN_LIMIT);
@@ -87,13 +91,13 @@ export function useTaskFailureNotices(): TaskFailureNoticesHandle {
     seen = new Set();
   }
 
-  /** 显示前最后核对：这条任务此刻仍然是失败、且没有被「知道了」处理掉。 */
-  function stillFailed(taskId: string): boolean {
+  /** 显示/恢复前最后核对：这条任务此刻仍然失败、且仍需要用户处理（isAttentionItem）。 */
+  function stillNeedsAttention(taskId: string): boolean {
     try {
-      const rows = tasks.displayItems("current");
-      const row = rows.find((item) => item.id === taskId);
-      if (!row || row.acknowledged) return false;
-      return taskDisplayStatus(row) === "failed";
+      const items = Array.isArray(tasks.current.items) ? tasks.current.items : [];
+      const row = items.find((item) => item.id === taskId);
+      if (!row) return false;
+      return isAttentionItem(row);
     } catch {
       return false;
     }
@@ -108,7 +112,7 @@ export function useTaskFailureNotices(): TaskFailureNoticesHandle {
       taskIds: [item.id],
       mergeable: true,
       focus: true,
-      stillRelevant: () => stillFailed(item.id),
+      stillRelevant: () => stillNeedsAttention(item.id),
     });
   }
 
@@ -124,7 +128,7 @@ export function useTaskFailureNotices(): TaskFailureNoticesHandle {
       return;
     }
     const fresh: TaskFeedItem[] = [];
-    for (const item of failedItems()) {
+    for (const item of attentionFailures()) {
       const identity = taskFailureIdentity(item);
       if (seen.has(identity)) continue;
       seen.add(identity);
