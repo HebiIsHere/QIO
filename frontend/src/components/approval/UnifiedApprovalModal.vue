@@ -8,7 +8,7 @@
  * - 关闭/稍后只隐藏，不批准也不拒绝；stale（后端已无此审批）只给「知道了」；
  * - 系统事实与模型说明的分工完全复用 ApprovalFacts（不另写一套显示规则）。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   useApprovalsStore,
   approvalFacts,
@@ -19,6 +19,7 @@ import {
 } from "../../stores/approvals";
 import { approvalStateLabel } from "../../services/approvalLifecycle";
 import {
+  approvalExpiryRemaining,
   isExpiredApproval,
   TOOL_ORIGIN_LABELS,
   toolSourceFacts,
@@ -88,11 +89,72 @@ const extraConfirm = ref(false);
 
 /** 重点确认（会删除/覆盖）需要额外一次勾选，降低误点。 */
 const needExtraConfirm = computed(() => toolFacts.value?.sideEffect === "destructive");
+
+/* ── F08：到期时钟（到期事实随时间推进，不等后端再推事件）──────────────── */
+/** 本地观察时间：由到期定时器 / 恢复可见 / 回到前台推进（只用于展示与按钮状态）。 */
+const nowMs = ref(Date.now());
+let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearExpiryClock(): void {
+  if (expiryTimer === null) return;
+  clearTimeout(expiryTimer);
+  expiryTimer = null;
+}
+
+/** 按当前申请的真实期限排一次定时器（到点只推进本地观察时间，绝不改写期限）。 */
+function scheduleExpiryClock(): void {
+  clearExpiryClock();
+  const remaining = approvalExpiryRemaining(item.value?.approval ?? null, Date.now());
+  if (remaining === null || remaining <= 0) return;
+  expiryTimer = setTimeout(() => {
+    expiryTimer = null;
+    nowMs.value = Date.now();
+    // 定时器可能因为系统时间抖动提前一毫秒：到点再核一次，绝不提前说「过期」
+    scheduleExpiryClock();
+  }, Math.min(remaining + 1, 2_147_483_647));
+}
+
+/**
+ * 清理 / 重建时钟：
+ * - 让位、挂起、关闭时不空转（定时器清掉）；
+ * - 恢复可见、切回申请、窗口回到前台时先立即核对实际期限，再按剩余时间重排。
+ */
+function syncExpiryClock(): void {
+  nowMs.value = Date.now();
+  if (!panelOpen.value || !layerActive.value) {
+    clearExpiryClock();
+    return;
+  }
+  scheduleExpiryClock();
+}
+
+function onDocumentVisibilityChange(): void {
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+  syncExpiryClock();
+}
+
+watch(
+  () => [
+    item.value?.key ?? null,
+    String(item.value?.approval?.expiresAt ?? ""),
+    String(item.value?.approval?.state ?? ""),
+    layerActive.value,
+    panelOpen.value,
+  ] as const,
+  syncExpiryClock,
+  { immediate: true },
+);
+
+onMounted(() => {
+  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
+  syncExpiryClock();
+});
+
 /**
  * 到期（真实期限来自后端，前端不放宽）：到期后不再提供「批准」，只说明事实。
  * 本地钟只是最后一道保护，服务端同样会拒绝。
  */
-const expired = computed(() => isExpiredApproval(item.value?.approval ?? null));
+const expired = computed(() => isExpiredApproval(item.value?.approval ?? null, nowMs.value));
 const canApprove = computed(
   () => !busy.value && !expired.value && (!needExtraConfirm.value || extraConfirm.value),
 );
@@ -280,6 +342,9 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  // F08：卸载时清掉到期时钟与前台监听，不留空转定时器
+  clearExpiryClock();
+  document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
   if (arbiter.isOpen(APPROVAL_MODAL_ID)) arbiter.close(APPROVAL_MODAL_ID);
   const target = restoreFocusTo;
   restoreFocusTo = null;
