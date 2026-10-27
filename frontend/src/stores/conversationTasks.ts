@@ -176,7 +176,11 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
     /** 看不清是哪一行发生的结果（例如放弃成功后该行已经移除） */
     feedback: "",
     focusTarget: null as { id: string; seq: number } | null,
+    /** 一次定位的一组任务（全部目标；单目标时只有一项）。 */
+    focusTargets: [] as string[],
     focusError: "",
+    /** 应用级引用计数：GlobalFeedbackHost 挂载/卸载唯一的生命周期开关。 */
+    _globalRefs: 0,
     /** 与事件流的一致性：unknown 初始 / online / offline（断线时才提示可能不是最新）。 */
     connection: "unknown" as "unknown" | "online" | "offline",
     _seq: { current: 0, history: 0 } as Record<TaskView, number>,
@@ -189,6 +193,10 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
     _feedbackTimer: 0 as ReturnType<typeof setTimeout> | 0,
   }),
   getters: {
+    /** 应用级任务数据生命周期的引用计数（>0 = 事件订阅/轮询已建立）。 */
+    globalRefCount(state): number {
+      return state._globalRefs;
+    },
     view(state) {
       return (view: TaskView): TaskViewState => (view === "history" ? state.history : state.current);
     },
@@ -353,6 +361,7 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
       this.detailLoading = [];
       this.notices = {};
       this.focusTarget = null;
+      this.focusTargets = [];
       this.expanded.current = [];
       this.expanded.history = [];
       if (reason) this.setFeedback(reason + "：已按最新后端状态重新对齐。");
@@ -670,59 +679,125 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
       this.setNotice(id, "");
     },
 
-    // ── 定位（中央执行记录 → 左侧任务） ────────────────────────────────
+    // ── 定位（中央执行记录 / 通知 → 左侧任务） ────────────────────────
 
-    async focusTask(taskId: string): Promise<void> {
-      const id = String(taskId ?? "").trim();
-      if (!id) return;
-      this.focusTarget = { id, seq: ++this._focusSeq };
-      this.focusError = "";
-      const shell = useConversationShellStore();
+    /**
+     * 展开并定位**一组**任务（通知合并了多个失败任务时用；单个任务也走这里）。
+     *
+     * - 去空/去重/保序，不截断任何目标；
+     * - 当前/历史两个视图里命中的目标都展开（切换视图后仍是展开态）；
+     * - 可见列表优先当前视图（失败通知基本都在当前），否则历史；
+     * - 失败原因写进 focusError（可直接展示），绝不静默成功。
+     */
+    async focusTasks(taskIds: string[]): Promise<void> {
+      const requested: string[] = [];
+      for (const raw of Array.isArray(taskIds) ? taskIds : []) {
+        const id = String(raw ?? "").trim();
+        if (id && !requested.includes(id)) requested.push(id);
+      }
+      if (!requested.length) return;
       // 恢复事项的 id 是 "recovery:<record_id>"：中央按 record_id 发过来时也要能定位。
-      const candidates = id.indexOf(":") >= 0 ? [id] : [id, "recovery:" + id];
-      const matchCurrent = (): TaskFeedItem | null =>
-        this.displayItems("current").find((item) => candidates.includes(item.id)) ?? null;
-      const matchHistory = (): TaskFeedItem | null =>
-        this.history.items.find((item) => candidates.includes(item.id)) ?? null;
-      const locate = (view: TaskView, itemId: string): void => {
-        shell.setTaskTab(view);
-        this.expand(view, itemId);
+      const candidates = (id: string): string[] =>
+        id.indexOf(":") >= 0 ? [id] : [id, "recovery:" + id];
+      const resolveIn = (items: readonly TaskFeedItem[], out: string[]): void => {
+        for (const id of requested) {
+          const hit = items.find((item) => candidates(id).includes(item.id));
+          if (hit && !out.includes(hit.id)) out.push(hit.id);
+        }
       };
-      const currentHit = matchCurrent();
-      if (currentHit) {
-        locate("current", currentHit.id);
+      const collect = (): { current: string[]; history: string[] } => {
+        const current: string[] = [];
+        const history: string[] = [];
+        resolveIn(this.displayItems("current"), current);
+        resolveIn(this.history.items, history);
+        return { current, history };
+      };
+
+      this.focusError = "";
+      let hits = collect();
+      const foundCount = (target: { current: string[]; history: string[] }): number =>
+        requested.filter((id) =>
+          [...target.current, ...target.history].some((actual) => candidates(id).includes(actual)),
+        ).length;
+      // 目标可能来自陈旧快照（全部或部分没有）：刷新一次权威快照再找。
+      // 历史只在尚未加载时补一份做对照，不动用户已加载的分页。
+      if (foundCount(hits) < requested.length) {
+        await Promise.all([
+          this.refresh("current", { silent: true }),
+          this.history.loaded ? Promise.resolve() : this.refresh("history", { silent: true }),
+        ]);
+        hits = collect();
+      }
+
+      if (!hits.current.length && !hits.history.length) {
+        this.focusTarget = null;
+        this.focusTargets = [];
+        this.focusError =
+          !this.current.loaded && !this.history.loaded
+            ? "任务列表暂不可用：现在无法定位这 " + requested.length + " 项任务。"
+            : "没有找到这 " + requested.length + " 项任务：它们可能已经被清理，或不在当前后端实例的记录里。仍可在左侧任务列表里逐条查看。";
         return;
       }
-      const historyHit = matchHistory();
-      if (historyHit) {
-        locate("history", historyHit.id);
-        return;
+
+      // 全部目标都展开：当前/历史分别记账，切换视图后不会丢失展开态。
+      for (const id of hits.current) this.expand("current", id);
+      for (const id of hits.history) this.expand("history", id);
+
+      const primaryView: TaskView = hits.current.length ? "current" : "history";
+      useConversationShellStore().setTaskTab(primaryView);
+      const visibleHits = primaryView === "current" ? hits.current : hits.history;
+      const visibleOrdered: string[] = [];
+      for (const id of requested) {
+        const actual = visibleHits.find((entry) => candidates(id).includes(entry));
+        if (actual && !visibleOrdered.includes(actual)) visibleOrdered.push(actual);
       }
-      await Promise.all([
-        this.refresh("current", { silent: true }),
-        this.history.loaded ? Promise.resolve() : this.refresh("history", { silent: true }),
-      ]);
-      const currentAfter = matchCurrent();
-      if (currentAfter) {
-        locate("current", currentAfter.id);
-        return;
+      this.focusTargets = visibleOrdered;
+      this.focusTarget = { id: visibleOrdered[0], seq: ++this._focusSeq };
+
+      const matchedRequested = foundCount(hits);
+      const missing = requested.length - matchedRequested;
+      if (missing > 0) {
+        this.focusError =
+          "有 " + missing + " 项任务没有找到（可能已经被清理，或不在当前后端实例的记录里）；其余 " + visibleOrdered.length + " 项已经在列表里展开定位。仍可在左侧任务列表里逐条查看。";
       }
-      const historyAfter = matchHistory();
-      if (historyAfter) {
-        locate("history", historyAfter.id);
-        return;
-      }
-      this.focusTarget = null;
-      if (!this.current.loaded && !this.history.loaded) {
-        this.focusError = "任务列表暂不可用：现在无法定位这项任务。";
-      } else {
-        this.focusError = "没有找到这项任务：它可能已经被清理，或不在当前后端实例的记录里。";
-      }
+    },
+
+    /** 兼容：单目标定位等价 focusTasks([id])。 */
+    async focusTask(taskId: string): Promise<void> {
+      await this.focusTasks([typeof taskId === "string" ? taskId : String(taskId ?? "")]);
     },
 
     /** 供 B / Lead 在中央执行记录里直接调用的别名。 */
     async focus(taskId: string): Promise<void> {
       await this.focusTask(taskId);
+    },
+
+    // ── 应用级生命周期（GlobalFeedbackHost 挂载/卸载） ──────────────────
+
+    /**
+     * 应用级挂载：第一次 acquire 才建立事件订阅 + 轮询 + 首份权威快照；
+     * 重复 acquire 只加计数，不重复订阅/轮询（页面来回切换不累加）。
+     */
+    acquireGlobal(): void {
+      const refs = Math.max(0, Number(this._globalRefs) || 0);
+      this._globalRefs = refs + 1;
+      if (this._globalRefs > 1) return;
+      this.bindEvents();
+      this.startPolling();
+      // 直接进入设置/互动/调试页也要有任务基线：首份快照由应用级挂载建立。
+      void this.ensureLoaded();
+    },
+
+    /**
+     * 应用级卸载：最后一个 release 才真正 dispose（取消订阅/轮询、清理计时器）。
+     * 多余的 release（计数已经是 0）是安全 no-op，不会误停其它持有者。
+     */
+    releaseGlobal(): void {
+      const refs = Math.max(0, Number(this._globalRefs) || 0);
+      if (refs <= 0) return;
+      this._globalRefs = refs - 1;
+      if (this._globalRefs > 0) return;
+      this.dispose();
     },
 
     // ── 事件与轮询 ──────────────────────────────────────────────────────
@@ -822,8 +897,10 @@ export const useConversationTasksStore = defineStore("conversationTasks", {
       this._refreshTimer = 0;
     },
 
-    /** 组件卸载时收口所有定时器（store 可复用，下次 mount 会重新 bind）。 */
+    /** 应用级收口：取消订阅/轮询与所有计时器（store 可复用，下次 acquire 会重新 bind）。 */
     dispose(): void {
+      // 外部直接 dispose（例如测试收口）也应让引用计数归零，避免之后 acquire 不复绑。
+      this._globalRefs = 0;
       this.unbindEvents();
       this.stopPolling();
       if (this._retainTimer) clearTimeout(this._retainTimer);

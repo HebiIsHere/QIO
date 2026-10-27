@@ -22,8 +22,11 @@ const tasks = useConversationTasksStore();
 const listRef = ref<HTMLElement | null>(null);
 const currentTab = ref<HTMLButtonElement | null>(null);
 const historyTab = ref<HTMLButtonElement | null>(null);
-const highlightId = ref("");
+/** 本轮定位要一起高亮的一组任务（单目标时只有一项）。 */
+const highlightIds = ref<string[]>([]);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+/** 最近一次已定位的请求签名：避免同一请求在数据抖动时反复滚动。 */
+let lastFocusKey = "";
 
 const view = computed(() => shell.prefs.taskTab);
 const state = computed(() => tasks.view(view.value));
@@ -45,13 +48,19 @@ const errorWithoutItems = computed(
   () => Boolean(state.value.error) && items.value.length === 0 && !state.value.loading,
 );
 
-function flashHighlight(id: string) {
-  highlightId.value = id;
+function flashHighlight(ids: string[]) {
+  highlightIds.value = ids;
   if (highlightTimer) clearTimeout(highlightTimer);
   highlightTimer = setTimeout(() => {
     highlightTimer = null;
-    highlightId.value = "";
+    highlightIds.value = [];
   }, 1800);
+}
+
+/** 当前定位请求的全部目标（focusTasks 的集合；旧代码只写 focusTarget 时也兼容）。 */
+function focusIdList(): string[] {
+  if (tasks.focusTargets.length) return tasks.focusTargets.slice();
+  return tasks.focusTarget ? [tasks.focusTarget.id] : [];
 }
 
 function rowElement(id: string): HTMLElement | null {
@@ -144,30 +153,40 @@ watch(view, async () => {
   restoreScroll();
 });
 
+/**
+ * 定位当前 focus 请求：**全部目标**一起高亮，只把第一个真正渲染出来的目标滚进视野。
+ * 找不到行时不报错（store 的 focusError 负责说明失败原因）。
+ */
+async function locateFocus(): Promise<void> {
+  const ids = focusIdList();
+  if (!ids.length) return;
+  const seq = tasks.focusTarget?.seq ?? 0;
+  const rows = ids
+    .map((id) => rowElement(id))
+    .filter((row): row is HTMLElement => Boolean(row));
+  // 行还没出现（数据/视图刚切换）时也先记下高亮；行出现后 items.length 变化会再定位一次。
+  const key = seq + "|" + ids.join("|") + "|" + rows.length;
+  if (key === lastFocusKey) return;
+  lastFocusKey = key;
+  flashHighlight(ids);
+  rows[0]?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+}
+
 watch(
-  () => tasks.focusTarget,
-  async (focus) => {
-    if (!focus) return;
+  () => [tasks.focusTarget?.seq ?? 0, tasks.focusTargets.join("|")],
+  async () => {
     await nextTick();
-    const row = rowElement(focus.id);
-    if (!row) return;
-    row.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-    flashHighlight(focus.id);
+    await locateFocus();
   },
   { immediate: true },
 );
 
-// 聚焦请求可能先于列表数据到达（focusTask 期间在刷新）：行出现后再定位一次。
+// 聚焦请求可能先于列表数据到达（focusTasks 期间在刷新）：行出现后再定位一次。
 watch(
   () => items.value.length,
   async () => {
-    const focus = tasks.focusTarget;
-    if (!focus || highlightId.value === focus.id) return;
     await nextTick();
-    const row = rowElement(focus.id);
-    if (!row) return;
-    row.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-    flashHighlight(focus.id);
+    await locateFocus();
   },
 );
 
@@ -300,7 +319,7 @@ onBeforeUnmount(() => {
             :busy-kind="
               tasks.actionBusy.startsWith(item.id + ':') ? tasks.actionBusy.slice(item.id.length + 1) : ''
             "
-            :highlighted="highlightId === item.id"
+            :highlighted="highlightIds.includes(item.id)"
             @toggle="toggleItem(item.id)"
             @action="onAction(item.id, $event)"
             @open-approval="openApproval(item.id)"
