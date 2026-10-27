@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Browser } from "./lib/cdp.mjs";
-import { decodePng, measureContour, measureSilhouette, scanSphereRow, strokeRunHistogram } from "./lib/png.mjs";
+import { colorPalette, decodePng, measureContour, measureSilhouette, scanSphereRow, strokeRunHistogram } from "./lib/png.mjs";
 import {
   collectMetrics,
   DEFAULT_MANAGE_SELECTORS,
@@ -226,6 +226,7 @@ try {
             : null,
           silhouette: measureSilhouette(image),
           strokeRuns: strokeRunHistogram(image),
+          palette: colorPalette(image),
         };
       }
       // 舞台裁剪上的玫红包围盒：「展开后只剩右半球」的判据（左边界贴内容区左边、右边界 ≈ 球心 + 半径）

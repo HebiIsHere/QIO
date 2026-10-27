@@ -561,3 +561,33 @@ export function scanSphereRow(image, opts = {}) {
     rightRadius: median(results.filter((item) => item.rightRadius !== null).map((item) => item.rightRadius)),
   };
 }
+/**
+ * 颜色调色板（颜色 → 像素数），用于**旋转无关**的材质/透明度对比。
+ *
+ * 为什么需要它：基线自身的「最终朝向」是不可复现的（聚焦 slerp 在相机补间结束时被截断，
+ * 帧时序一变，停下来的角度就变）——两次基线截图互相之间都有差异。
+ * 但调色板不受朝向影响：球体填充、轮廓、经纬线、融合环各档透明度的像素颜色是固定的，
+ * 因此「基线 vs 改版」的调色板必须一致；不一致就说明颜色/透明度/材质真的动了。
+ */
+export function colorPalette(image, opts = {}) {
+  const limit = opts.limit ?? 24;
+  const minCount = opts.minCount ?? 40;
+  const counts = new Map();
+  for (let i = 0; i < image.data.length; i += 4) {
+    const key = (image.data[i] << 16) | (image.data[i + 1] << 8) | image.data[i + 2];
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const total = image.width * image.height;
+  return {
+    distinct: counts.size,
+    total,
+    top: sorted.slice(0, limit).map(([key, count]) => ({
+      rgb: [(key >> 16) & 255, (key >> 8) & 255, key & 255].join(","),
+      count,
+      share: Number((count / total).toFixed(5)),
+    })),
+    /** 像素数 ≥ minCount 的颜色（用于「两边集合是否一致」的严格比较） */
+    significant: sorted.filter(([, count]) => count >= minCount).map(([key]) => [(key >> 16) & 255, (key >> 8) & 255, key & 255].join(",")),
+  };
+}

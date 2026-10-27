@@ -62,6 +62,8 @@ if (command === "down") {
     dataDir: flag("data-dir", defaultDataDir(label)),
     python: flag("python", process.env.QIO_MP_PYTHON),
     fallbackPython: flag("fallback-python", process.env.QIO_MP_FALLBACK_PYTHON),
+    // 共用后端（基线 vs 改版必须读同一份数据）：--attach-backend http://127.0.0.1:8771
+    attachBackend: flag("attach-backend", null),
   });
   console.log(JSON.stringify(info, null, 2));
   if (flag("seed", false)) {

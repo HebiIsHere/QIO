@@ -652,6 +652,8 @@ function motionDuration(ms: number): number {
     // 避免 close() 的 await planet.go(...) 因 tween 被覆盖而永不完成（界面卡死）。
     if (tween?.done) tween.done();
     tween = { from, to, t: 0, dur: motionDuration(dur), done };
+    // 循环可能正因为「静下来」停着：补间一开始就得把它叫醒，否则相机永远走不动
+    requestFrame();
   }
 
   function go(state: CameraState, target?: THREE.Vector3 | null, duration = 300): Promise<void> {
@@ -709,6 +711,7 @@ function motionDuration(ms: number): number {
     if (angle < 1e-3) return 0;
     const factor = 0.6 + 0.4 * (1 - Math.cos(angle));
     orientationTween = { from, to, t: 0, dur: Math.max(1, Math.min(maxMs, Math.round(maxMs * factor))) };
+    requestFrame();
     return Math.round((angle * 180) / Math.PI);
   }
 
@@ -1071,6 +1074,9 @@ function motionDuration(ms: number): number {
       tween !== null ||
       orientationTween !== null ||
       targetQuat !== null ||
+      // 与 animate 里那条自转分支同源：没有焦点（或显式 idleSpin）时球一直在缓慢自转，
+      // 这时当然要继续画 —— 「停帧」只针对**真的没人动**的状态。
+      !focusedDot ||
       idleSpin ||
       lowPower ||
       now - waveStart < 1200 ||
