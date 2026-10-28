@@ -15,9 +15,11 @@
 
 三条硬语义（写在这里，是为了让 API / 运行时 / 界面都引用同一份判断）
 -------------------------------------------------------------------
-1. 不可用必须说出来：连接停用 / 撤销 / 过期 / 预算耗尽，或这个模型在当前配置上验证
-   失败，usable=False 且带 unavailable_reason。绝不把不可用模型伪装成可用，也绝不
-   因为一个模型失败就判定整把 Key 的所有模型失效。
+1. 不可用必须说出来：连接停用 / 撤销 / 过期 / 预算耗尽 / **未通过验证** /
+   **密钥在本机不可读**，或这个模型在当前配置上验证失败，usable=False 且带
+   unavailable_reason。连接级判断与真实调用（services.usage_target.credential_problem）
+   逐项同序，两处不能各说各话：界面可选的模型必须真的发得出去。绝不把不可用模型
+   伪装成可用，也绝不因为一个模型失败就判定整把 Key 的所有模型失效。
 2. 验证结论跟着配置走：每行模型记录 verify_fingerprint（密钥版本 + 地址 + 协议 +
    模型名）。配置变了就 applies_to_current_config=False，旧结论不覆盖新配置；迟到的
    验证结果只能留痕，不能改写当前状态（与 CredentialStore.set_verified 同一口径）。
@@ -116,6 +118,12 @@ REASON_CREDENTIAL_DISABLED = "连接已停用"
 REASON_BUDGET_EXHAUSTED = "这条连接的累计用量上限已用完"
 REASON_MODEL_VERIFY_FAILED = "这个模型在当前配置上验证没通过"
 REASON_CAPABILITY_MISSING = "该模型没有声明这个用途需要的能力"
+#: 连接级「还没通过验证」（含上次验证失败）。真实调用以 credential_unverified 拒绝，
+#: 目录必须说同一件事，否则未验证连接会被展示成可选、一发就失败。
+REASON_CREDENTIAL_UNVERIFIED = "连接还没有通过验证"
+#: 元数据看起来正常（active / enabled / verified），但本机已经读不到密钥 —— 撤销会删
+#: 密钥，keyring 后端丢失或密钥被外部清掉同样如此：这条连接发不出真实请求。
+REASON_SECRET_MISSING = "这条连接的密钥在本机不可读"
 
 
 def _now() -> str:
@@ -254,10 +262,16 @@ class ModelCatalogStore:
     # 模型目录
     # ------------------------------------------------------------------
 
-    def list_models(self, credential_id: str) -> list[dict[str, Any]]:
+    def list_models(
+        self, credential_id: str, *, secret_present: bool | None = None
+    ) -> list[dict[str, Any]]:
         """一条连接下的模型（带当前配置的可用性判定）。
 
         排序：来源（手动 > 发现 > 历史）→ 最近更新 → 模型名，保证界面稳定。
+
+        可用性判定要看「密钥还在不在」，但同一条连接的所有模型共享同一个答案：
+        这里只读一次 keyring，再把结论传给每个模型（secret_present），避免一屏
+        N 个模型读 N 次密钥后端。
         """
         row = self._credential_row(credential_id)
         if row is None:
@@ -265,10 +279,18 @@ class ModelCatalogStore:
         rows = self.conn.execute(
             "SELECT * FROM credential_models WHERE credential_id = ?", (_norm(credential_id),)
         ).fetchall()
+        if not rows:
+            return []
         meta = self.credentials._serialize(row)  # noqa: SLF001
+        if secret_present is None:
+            secret_present = self._secret_present(_norm(credential_id))
         out: list[dict[str, Any]] = []
         for model_row in rows:
-            out.append(self._decorate(model_row, meta, credential_row=row))
+            out.append(
+                self._decorate(
+                    model_row, meta, credential_row=row, secret_present=secret_present
+                )
+            )
         out.sort(key=lambda item: (item["_sort_source"], item["updated_at"], item["model_id"]))
         for item in out:
             item.pop("_sort_source", None)
@@ -280,6 +302,7 @@ class ModelCatalogStore:
         meta: dict[str, Any],
         *,
         credential_row: sqlite3.Row | None = None,
+        secret_present: bool | None = None,
     ) -> dict[str, Any]:
         data = _decode_model_row(model_row)
         # 先算「这条验证结论说的是不是当前配置」，再判可用性：顺序反过来会让
@@ -292,7 +315,9 @@ class ModelCatalogStore:
             )
         else:
             data["verify_applies"] = False
-        data["usable"], data["unavailable_reason"] = self.model_usable(data, meta)
+        data["usable"], data["unavailable_reason"] = self.model_usable(
+            data, meta, secret_present=secret_present
+        )
         # 来源排序权重：手动 < 发现 < 历史（用户明确选过的优先展示）。
         data["_sort_source"] = {
             MODEL_SOURCE_MANUAL: "0",
@@ -301,7 +326,13 @@ class ModelCatalogStore:
         }.get(str(data.get("source")), "3")
         return data
 
-    def get_model(self, credential_id: str, model_id: str) -> dict[str, Any] | None:
+    def get_model(
+        self,
+        credential_id: str,
+        model_id: str,
+        *,
+        secret_present: bool | None = None,
+    ) -> dict[str, Any] | None:
         row = self._credential_row(credential_id)
         if row is None:
             return None
@@ -312,7 +343,9 @@ class ModelCatalogStore:
         if model_row is None:
             return None
         meta = self.credentials._serialize(row)  # noqa: SLF001
-        data = self._decorate(model_row, meta, credential_row=row)
+        data = self._decorate(
+            model_row, meta, credential_row=row, secret_present=secret_present
+        )
         data.pop("_sort_source", None)
         return data
 
@@ -643,8 +676,38 @@ class ModelCatalogStore:
     # 可用性判定
     # ------------------------------------------------------------------
 
-    def connection_unusable_reason(self, meta: dict[str, Any] | None) -> str:
-        """连接级不可用原因；空串 = 连接本身可用。"""
+    def _secret_present(self, credential_id: str) -> bool:
+        """这条连接的密钥在本机还能不能读到（只读 keyring，不联网、不发起验证）。
+
+        读不到 = 这条连接现在发不出真实请求：撤销会删密钥，keyring 后端丢失或密钥被
+        外部清掉同样如此。真实调用那一侧（services.usage_target.credential_problem）
+        用的是同一条本地事实，目录不能在这里给出相反结论。
+
+        拿不到 get_secret 的存储（只给元数据的 fake）按「不知道」处理：查不了不等于
+        不可用，不能因此误禁；真实调用那一侧仍然自己判断。
+        """
+        getter = getattr(self.credentials, "get_secret", None)
+        if not callable(getter):
+            return True
+        try:
+            return getter(_norm(credential_id)) is not None
+        except Exception:  # noqa: BLE001 - 读不到密钥 = 这条连接发不出请求
+            return False
+
+    def connection_unusable_reason(
+        self,
+        meta: dict[str, Any] | None,
+        *,
+        secret_present: bool | None = None,
+    ) -> str:
+        """连接级不可用原因；空串 = 连接本身可用。
+
+        判断项与真实调用那一侧（services.usage_target.credential_problem）逐项同序：
+        状态 → 启用 → 验证状态 → 预算 → 密钥是否还可读。顺序本身就是语义：两边都按
+        这个顺序说话，「同时坏了两样」时给出的原因也不会互相打架。
+
+        secret_present 用于一次列出多条模型时避免重复读 keyring；传 None 表示现读。
+        """
         if not meta:
             return REASON_CREDENTIAL_MISSING
         status = str(meta.get("status") or "")
@@ -656,6 +719,13 @@ class ModelCatalogStore:
             return f"连接状态为 {status or '未知'}"
         if not meta.get("enabled", True):
             return REASON_CREDENTIAL_DISABLED
+        state = str(meta.get("verify_state") or VERIFY_STATE_UNVERIFIED)
+        if state not in USABLE_VERIFY_STATES:
+            # 连接没通过验证（含上次验证失败）：真实调用会拒绝，目录也必须拒绝。
+            # legacy 在 USABLE_VERIFY_STATES 里：历史连接不因此被误禁。
+            if state == VERIFY_STATE_FAILED:
+                return REASON_CREDENTIAL_UNVERIFIED + "（上次验证没通过）"
+            return REASON_CREDENTIAL_UNVERIFIED
         budget = meta.get("budget")
         if budget is not None:
             try:
@@ -664,6 +734,12 @@ class ModelCatalogStore:
                 left = 0.0
             if left <= 0:
                 return REASON_BUDGET_EXHAUSTED
+        credential_id = _norm(meta.get("id"))
+        if credential_id:
+            if secret_present is None:
+                secret_present = self._secret_present(credential_id)
+            if not secret_present:
+                return REASON_SECRET_MISSING
         return ""
 
     def model_usable(
@@ -672,14 +748,18 @@ class ModelCatalogStore:
         meta: dict[str, Any] | None,
         *,
         usage_key: str | None = None,
+        secret_present: bool | None = None,
     ) -> tuple[bool, str]:
         """模型可用性判定（连接可用 + 当前配置上验证未失败 + 用途需要的能力已声明）。
 
         注意：usage_key 为空时只做前两项（目录页展示「这个模型本身可不可用」）；
         指定用途时才叠加能力检查 —— 同一个模型对「主对话」可用、对「看图」可能不可用，
         这是两条不同的事实，不能混成一个布尔值。
+
+        连接级判断复用 connection_unusable_reason（与真实调用同一套顺序与原因），
+        不另写一份：两套逻辑迟早会漂移成「界面说可用、一发就失败」。
         """
-        reason = self.connection_unusable_reason(meta)
+        reason = self.connection_unusable_reason(meta, secret_present=secret_present)
         if reason:
             return False, reason
         state = str(model.get("verify_state") or VERIFY_STATE_UNVERIFIED)
@@ -898,7 +978,14 @@ class ModelCatalogStore:
         credential_id = _norm(target.get("credential_id"))
         model_id = _norm(target.get("model_id"))
         meta = self._credential_meta(credential_id)
-        model = self.get_model(credential_id, model_id) if meta is not None else None
+        # 同一个目标只读一次密钥：模型行的可用性与「这个模型是否适用」必须基于同一次
+        # 本地快照，也避免一次解析里重复读 keyring。
+        secret_present = self._secret_present(credential_id) if meta is not None else None
+        model = (
+            self.get_model(credential_id, model_id, secret_present=secret_present)
+            if meta is not None
+            else None
+        )
         preset = preset_for_endpoint((meta or {}).get("endpoint"))
         name = self._connection_name(meta or {}, preset)
         if meta is None or model is None:
@@ -914,7 +1001,9 @@ class ModelCatalogStore:
             }
         # usage_key 一起传：同一个模型对「主对话」可用、对「看图」可能不可用
         # （用途要求的能力不在模型声明里就如实判不可用，不靠名字猜）。
-        usable, reason = self.model_usable(model, meta, usage_key=usage_key)
+        usable, reason = self.model_usable(
+            model, meta, usage_key=usage_key, secret_present=secret_present
+        )
         return {
             "credential_id": credential_id,
             "model_id": model_id,

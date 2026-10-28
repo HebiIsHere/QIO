@@ -328,6 +328,10 @@ _REASON_CODE_BY_TEXT = {
     "这个模型在当前配置上验证没通过": REASON_MODEL_UNUSABLE,
     "该模型没有声明这个用途需要的能力": REASON_MODEL_UNUSABLE,
     "这个连接下没有记录这个模型": REASON_MODEL_UNUSABLE,
+    # 连接级（数据层 credentials/models.py 与这里的 credential_problem 同一条事实）：
+    # 未通过验证 / 密钥在本机不可读 —— 目录与运行时必须给出同一个 reason_code。
+    "连接还没有通过验证": REASON_CREDENTIAL_UNVERIFIED,
+    "这条连接的密钥在本机不可读": REASON_SECRET_MISSING,
 }
 
 
@@ -340,6 +344,11 @@ def _reason_code_for(reason: str) -> str:
         return mapped
     if text.startswith("该模型没有声明"):
         return REASON_MODEL_UNUSABLE
+    if text.startswith("连接还没有通过验证"):
+        # 连接级未验证（含失败态后缀「（上次验证没通过）」）。
+        return REASON_CREDENTIAL_UNVERIFIED
+    if text.startswith("这条连接的密钥"):
+        return REASON_SECRET_MISSING
     if text.startswith("连接状态为"):
         return REASON_CREDENTIAL_REVOKED
     return REASON_MODEL_UNUSABLE
@@ -354,6 +363,10 @@ def credential_problem(store: Any, credential_id: str) -> tuple[str, str] | None
     检查项与基线 policy 一致（状态 / 启用 / 验证 / 预算），外加「密钥还在不在」——
     撤销会删密钥，于是「元数据说 active 但密钥没了」必须在这里如实失败，
     而不是等建 adapter 时静默返回 None。
+
+    顺序即语义（状态 → 启用 → 验证 → 预算 → 密钥）。目录侧
+    （agent.credentials.models.ModelCatalogStore.connection_unusable_reason）按同一
+    顺序、同一批事实判断：两处结论必须一致，否则界面会展示「可选但一发就失败」的目标。
     """
     key_id = str(credential_id or "").strip()
     if not key_id:
