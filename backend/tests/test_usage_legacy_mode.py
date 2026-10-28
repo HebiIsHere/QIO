@@ -82,14 +82,24 @@ def _tables(conn: sqlite3.Connection) -> None:
 
 
 def _model_row(conn: sqlite3.Connection, credential_id: str, model_id: str) -> None:
+    """写一条模型行；允许 credential_id 尚未登记（外键临时关闭）。
+
+    这些用例要考察的是「用途行的 mode 判定」和「指向未登记连接时怎么解析」，
+    不是外键行为；真实路径上 `credential_models.credential_id` 有外键且随连接级联删除，
+    所以「未登记连接的模型行」只能靠外部改库造出来。临时关外键是为了造反例。
+    """
     now = "2026-10-28T00:00:00+00:00"
-    conn.execute(
-        "INSERT INTO credential_models (id, credential_id, model_id, source, capabilities,"
-        " verify_state, discovered_at, updated_at)"
-        " VALUES (?, ?, ?, 'legacy', '[]', 'legacy', ?, ?)"
-        " ON CONFLICT(credential_id, model_id) DO NOTHING",
-        (f"cm_{credential_id}_{model_id}", credential_id, model_id, now, now),
-    )
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute(
+            "INSERT INTO credential_models (id, credential_id, model_id, source, capabilities,"
+            " verify_state, discovered_at, updated_at)"
+            " VALUES (?, ?, ?, 'legacy', '[]', 'legacy', ?, ?)"
+            " ON CONFLICT(credential_id, model_id) DO NOTHING",
+            (f"cm_{credential_id}_{model_id}", credential_id, model_id, now, now),
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
     conn.commit()
 
 
@@ -104,13 +114,20 @@ def _usage_row(
     _tables(conn)
     _model_row(conn, credential_id, model_id)
     now = "2026-10-28T00:00:00+00:00"
-    conn.execute(
-        "INSERT INTO model_usages (id, usage_key, credential_id, model_id, mode, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?)"
-        " ON CONFLICT(usage_key) DO UPDATE SET credential_id=excluded.credential_id,"
-        " model_id=excluded.model_id, mode=excluded.mode, updated_at=excluded.updated_at",
-        (f"mu_{usage_key}", usage_key, credential_id, model_id, mode, now),
-    )
+    # 迁移 73 的 model_usages.credential_id 带外键（级联删除）；这里要构造「分配指向一条
+    # 未登记的连接」这种**外部改库才会出现**的状态，所以临时关掉外键约束。关它是为了
+    # 造反例，不是为了绕过产品规则（产品路径删连接时分配会被级联清掉）。
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.execute(
+            "INSERT INTO model_usages (id, usage_key, credential_id, model_id, mode, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(usage_key) DO UPDATE SET credential_id=excluded.credential_id,"
+            " model_id=excluded.model_id, mode=excluded.mode, updated_at=excluded.updated_at",
+            (f"mu_{usage_key}", usage_key, credential_id, model_id, mode, now),
+        )
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON")
     conn.commit()
 
 
