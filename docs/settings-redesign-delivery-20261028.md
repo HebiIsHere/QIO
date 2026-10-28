@@ -12,6 +12,8 @@
 | 基线 SHA | `ac0a83fde31f9f56edae68ca53a2a79e89a08e45`（开工核对该 SHA 即分支尖端，未改用更新 HEAD） |
 | 集成分支 | `feat/mp-20261027-settings-integration` |
 | 子分支 | `feat/mp-settings-a-shell` / `feat/mp-settings-b-model` / `feat/mp-settings-c-runtime` / `feat/mp-settings-d-verify` |
+| 受测最终 SHA | `2fdf8a4dbb6bd793411fb4eb101491a185e45018`（集成分支尖端） |
+| 完整 CI | run `40635523464`，结论 **success**，全部 job 成功（`https://github.com/HebiIsHere/QIO/actions/runs/40635523464`） |
 
 四条子分支各自独立 worktree 并行开发，Lead 负责集成。共享文件（`api/server.py` 的注册点、
 `credentials/usages.py` 用途目录、`services/api.ts`）明确唯一负责人，其余人只读。
@@ -203,6 +205,14 @@ settings['model.default']（默认模型 = 连接 + 模型）
 ## 5. 验证结果
 
 > 命令、退出码与原始输出以最终交付回复与 CI 运行记录为准；这里只记录口径与结论。
+>
+> **完整 CI**：集成分支 `2fdf8a4d` 的运行 `40635523464` 全部 job 成功 —— 文档一致性、
+> 后端（py3.11 / py3.12 / windows-latest）、前端、rust（ubuntu / windows）、冻结 worker、
+> 安装 e2e、去重前置。本地 Windows 全量后端曾出现两处红：一处是「无凭据提示」断言锁死
+> 一句话（用途解析后文案带上了具体原因），已改成语义断言并复跑通过；另一处
+> `test_r8_cancel_target_verify` 在全量并行下偶发超时、单独运行通过，属基线既有并行
+> flaky（CI 上通过）。本地前端全量的 2 处红是 `router-aliases` 的 5 秒超时（单独跑
+> 3.6–3.9 秒，基线同样贴近超时），CI 上通过，同样判定为本地并行负载导致的既有 flaky。
 
 - **后端**：受影响的定向用例（迁移 / 凭据 / 模型目录 / 路由 / 用途解析 / 搜索 / 后台派生 / 子任务 /
   交互视觉回落）全绿；集成后集中跑一次全量 pytest。
