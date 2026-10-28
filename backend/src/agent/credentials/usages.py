@@ -140,7 +140,8 @@ USAGES: tuple[UsageSpec, ...] = (
         GROUP_PRIMARY,
         True,
         legacy_tags=("research",),
-        call_path="tools/subagent_tool.py::SubagentTool（research 模式）",
+        call_path="（未接通：无独立调用路径，仅 policy 回退标签）",
+        note="当前没有独立的研究模型调用路径：只是历史标签与 policy 回退，选择器不得表现为已生效",
     ),
     UsageSpec(
         "vision",
