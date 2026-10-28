@@ -133,10 +133,12 @@ afterEach(() => {
 });
 beforeEach(() => {
   vi.clearAllMocks();
+  resetModelFacts();
 });
 
 import ModelServicesPanel from "../ModelServicesPanel.vue";
 import { modelCatalogApi } from "../../../services/modelCatalog";
+import { modelFacts, resetModelFacts } from "../../../views/settings/modelFacts";
 
 describe("模型与服务面板 · 接线冒烟", () => {
   it("自己读取目录与凭据，渲染 Key 接入 / 默认模型 / 用途分配三块，且不含密钥", async () => {
@@ -144,7 +146,18 @@ describe("模型与服务面板 · 接线冒烟", () => {
       catalog({
         default: { credentialId: "key_a", modelId: "m1" },
         usages: [
-          usage({ usageKey: "main-chat", label: "主对话", resolved: null, inheritsOk: false }),
+          usage({
+            usageKey: "main-chat",
+            label: "主对话",
+            resolved: {
+              credentialId: "key_a",
+              modelId: "m1",
+              source: "default",
+              usable: true,
+              unavailableReason: "",
+              credentialName: "工作用 DeepSeek",
+            },
+          }),
           usage({ usageKey: "general-chat", label: "通用对话", resolved: null, inheritsOk: false }),
         ],
       }),
@@ -176,5 +189,66 @@ describe("模型与服务面板 · 接线冒烟", () => {
     expect(wrapper.text()).toContain("用途分配");
     expect(wrapper.text()).not.toContain("sk-");
     expect(wrapper.text()).not.toContain("secret");
+
+    // A 的只读区数据入口：目录加载成功后写入真实值（不是草稿）。
+    expect(modelFacts.loaded).toBe(true);
+    expect(modelFacts.defaultModel).toEqual({
+      credentialId: "key_a",
+      modelId: "m1",
+      connectionName: "工作用 DeepSeek",
+      providerName: "DeepSeek",
+    });
+    const mainChat = modelFacts.usages.find((item) => item.usageKey === "main-chat");
+    expect(mainChat).toMatchObject({
+      label: "主对话",
+      credentialId: "key_a",
+      modelId: "m1",
+      connectionName: "工作用 DeepSeek",
+      providerName: "DeepSeek",
+      followsDefault: true,
+      resolved: { credentialId: "key_a", modelId: "m1" },
+    });
+  });
+
+  it("读取失败时保留上次已知的真实值，并在本分区报错（不清空只读区）", async () => {
+    (modelCatalogApi.getCatalog as ReturnType<typeof vi.fn>).mockResolvedValue(
+      catalog({
+        default: { credentialId: "key_a", modelId: "m1" },
+        usages: [usage({ usageKey: "main-chat", label: "主对话" })],
+      }),
+    );
+    (api.listCredentials as ReturnType<typeof vi.fn>).mockResolvedValue({
+      credentials: [meta()],
+      default_key_id: "key_a",
+    });
+    (api.listProviders as ReturnType<typeof vi.fn>).mockResolvedValue({
+      providers: [],
+      model_note: "",
+    });
+    const wrapper = mountIt(ModelServicesPanel, {});
+    await flushPromises();
+    const before = {
+      defaultModel: modelFacts.defaultModel,
+      usages: modelFacts.usages,
+    };
+    expect(before.defaultModel).toEqual({
+      credentialId: "key_a",
+      modelId: "m1",
+      connectionName: "工作用 DeepSeek",
+      providerName: "DeepSeek",
+    });
+
+    (modelCatalogApi.getCatalog as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("backend down"),
+    );
+    const refresh = wrapper.findAll("button").find((button) => button.text().includes("重新读取"));
+    await refresh!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("读取模型与服务设置失败");
+    // 失败不清空：只读区保留上次已知真实值。
+    expect(modelFacts.loaded).toBe(true);
+    expect(modelFacts.defaultModel).toEqual(before.defaultModel);
+    expect(modelFacts.usages).toEqual(before.usages);
   });
 });

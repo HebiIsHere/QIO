@@ -26,6 +26,8 @@ import {
   type CatalogResponse,
   type ModelConnection,
 } from "../../services/modelCatalog";
+// A 的「工具与权限 → 当前生效参数」只读区的数据入口（跨分区共享的真实值，不是草稿）。
+import { setModelFacts } from "../../views/settings/modelFacts";
 
 const loading = ref(true);
 const loadError = ref("");
@@ -47,6 +49,57 @@ const usageSeq = new Map<string, number>();
 
 const connections = ref<ModelConnection[]>([]);
 
+/**
+ * 把「已保存并真实生效」的默认模型与各用途实际使用的模型/Key 交给 A 的只读区。
+ *
+ * 只在读取/保存**成功**后调用：失败时保留上一次已知的真实值（不清空、不写草稿），
+ * 失败原因由本面板分区自己显示。写权限也在这里收口 —— A 不直连模型目录 API。
+ */
+function publishModelFacts() {
+  const current = catalog.value;
+  if (!current) return;
+  const connectionOf = (credentialId: string | null | undefined) => {
+    if (!credentialId) return null;
+    return current.connections.find((item) => item.credentialId === credentialId) ?? null;
+  };
+  try {
+    setModelFacts({
+      defaultModel: current.default
+        ? {
+            credentialId: current.default.credentialId,
+            modelId: current.default.modelId,
+            connectionName:
+              connectionOf(current.default.credentialId)?.name ?? current.default.credentialId,
+            providerName: connectionOf(current.default.credentialId)?.providerName ?? null,
+          }
+        : null,
+      usages: current.usages.map((usage) => {
+        // 跟随默认的用途以「后端解析后的真实目标」为准；显式分配的直接用分配值。
+        const targetId = usage.resolved?.credentialId ?? usage.credentialId ?? null;
+        const connection = connectionOf(targetId);
+        return {
+          usageKey: usage.usageKey,
+          label: usage.label,
+          followsDefault: usage.followsDefault,
+          credentialId: targetId,
+          modelId: usage.resolved?.modelId ?? usage.modelId ?? null,
+          connectionName:
+            usage.resolved?.credentialName || connection?.name || null,
+          providerName: connection?.providerName ?? null,
+          resolved: usage.resolved
+            ? {
+                credentialId: usage.resolved.credentialId,
+                modelId: usage.resolved.modelId,
+              }
+            : null,
+        };
+      }),
+    });
+  } catch {
+    // A 的只读区同步失败不能影响模型面板本身：这里刻意吞掉，不下发错误、不清空。
+  }
+}
+
 async function reload() {
   const seq = ++catalogSeq;
   loading.value = true;
@@ -62,6 +115,8 @@ async function reload() {
     connections.value = catalogReply.connections;
     credentials.value = credentialReply.credentials;
     providers.value = providerReply.providers;
+    // 目录加载成功：只读区拿到一份真实值（不含任何草稿）。
+    publishModelFacts();
   } catch (exc) {
     if (seq !== catalogSeq) return;
     loadError.value = "读取模型与服务设置失败：" + readableError(exc);
@@ -80,7 +135,11 @@ async function saveDefault(target: { credentialId: string; modelId: string }) {
   defaultError.value = "";
   try {
     await modelCatalogApi.setDefault(target);
-    if (seq === defaultSeq) await reload();
+    if (seq === defaultSeq) {
+      await reload();
+      // 保存成功之后再写一次：只读区显示的是刚保存并重新读回的真实值，不是点击时的草稿。
+      if (!loadError.value) publishModelFacts();
+    }
   } catch (exc) {
     if (seq === defaultSeq) defaultError.value = readableError(exc);
   } finally {
@@ -109,7 +168,11 @@ async function assignUsage(
         modelId: target?.modelId ?? null,
       });
     }
-    if (usageSeq.get(primary) === seq) await reload();
+    if (usageSeq.get(primary) === seq) {
+      await reload();
+      // 同上：用途分配保存成功后同步一次真实值（失败时不写，保留上次已知值）。
+      if (!loadError.value) publishModelFacts();
+    }
   } catch (exc) {
     if (usageSeq.get(primary) === seq) {
       usageErrors.value = { ...usageErrors.value, [primary]: readableError(exc) };
