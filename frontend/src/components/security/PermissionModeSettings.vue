@@ -146,19 +146,19 @@ function reload() {
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
-  padding: 0 5px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
 }
 .reload-btn {
   font: inherit;
   font-size: 11px;
   color: var(--link);
   background: transparent;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
-  padding: 0 6px;
-  height: 20px;
+  border: 0;
+  border-radius: 0;
+  padding: 2px 0;
+  height: auto;
   cursor: pointer;
 }
 .reload-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
@@ -174,25 +174,40 @@ function reload() {
   gap: 8px;
   margin: 10px 0 8px;
 }
+/* 选项 = 透明行 + 中性分隔线；选中用「品牌色文字 + 小圆点」，不画卡片、不画玫红边框 */
 .mode-option {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 3px;
   text-align: left;
   font: inherit;
   color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  padding: 10px 12px;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 11px 0 11px 16px;
   cursor: pointer;
 }
-.mode-option:hover:not(:disabled) { border-color: var(--border-strong); }
-.mode-option:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.mode-option.selected {
-  border-color: var(--link);
-  background: var(--bg-inset);
+.mode-option + .mode-option { border-top: 1px solid var(--border-subtle); }
+.mode-option::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 17px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity var(--mo-1-state) var(--ease-1), transform var(--mo-1-state) var(--ease-1);
 }
+.mode-option:hover:not(:disabled) { color: var(--text-strong); }
+.mode-option:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: 4px; }
+.mode-option.selected { background: none; border-color: transparent; }
+.mode-option.selected::before { opacity: 1; transform: scale(1); }
+.mode-option.selected .mode-name { color: var(--link); }
 .mode-option:disabled { opacity: 0.65; cursor: default; }
 .mode-name {
   display: flex;
@@ -205,22 +220,22 @@ function reload() {
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
-  padding: 0 5px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
 }
 .mode-desc {
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);
 }
+/* 切换后的提示：只留文字与语义色，不再画灰底 + 左侧竖条 */
 .switch-note {
   margin: 8px 0 0;
-  padding: 8px 10px;
-  border: 1px solid var(--border-subtle);
-  border-left: 3px solid var(--link);
-  border-radius: var(--r-sm);
-  background: var(--bg-inset);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   font-size: 12px;
   line-height: 1.6;
   color: var(--text-secondary);

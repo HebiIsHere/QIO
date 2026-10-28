@@ -199,17 +199,12 @@ async function assignUsage(
   <!-- data-testid 是给设置页壳与验收脚本用的稳定锚点：外壳的搜索定位与视觉核查
        需要知道「模型面板已经真的挂上了」，而不是靠标题文案猜。 -->
   <div class="panel" data-testid="models-panel">
-    <header class="panel__head">
-      <div>
-        <h2 class="panel__title">模型与服务</h2>
-        <p class="panel__desc">
-          一把 Key 一条连接，一条连接下可以有多个模型；日常对话用默认模型，其余用途可按需单独指定。
-        </p>
-      </div>
-      <button type="button" class="qio-btn mini" :disabled="loading" :aria-busy="loading" @click="reload">
+    <!-- 分区标题与安全说明由外层 ModelServicesSection 提供，这里不再重复一遍标题/说明。 -->
+    <div class="panel__bar">
+      <button type="button" class="qio-btn mini quiet" :disabled="loading" :aria-busy="loading" @click="reload">
         {{ loading ? "读取中…" : "重新读取" }}
       </button>
-    </header>
+    </div>
 
     <p v-if="loadError" class="qio-feedback err" role="alert">{{ loadError }}</p>
 
@@ -245,11 +240,10 @@ async function assignUsage(
 </template>
 
 <style scoped>
+/* 面板不再套第二层"面"，也不重复分区标题；三块之间只留一条中性细线。 */
 .panel { display: flex; flex-direction: column; gap: 14px; }
-.panel__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.panel__title { margin: 0; font-size: var(--fs-md); color: var(--text-strong); }
-.panel__desc { margin: 2px 0 0; font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
-.divider { border: none; border-top: 1px solid var(--border-subtle); margin: 2px 0; }
+.panel__bar { display: flex; justify-content: flex-end; margin-bottom: -8px; }
+.divider { border: none; border-top: 1px solid var(--border-subtle); margin: 4px 0; }
 .loading { font-size: var(--fs-xs); color: var(--text-muted); }
 .qio-feedback.err { color: var(--danger); }
 </style>

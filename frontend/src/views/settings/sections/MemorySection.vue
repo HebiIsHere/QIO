@@ -267,16 +267,10 @@ onMounted(() => {
 
     <header class="set-section__head">
       <h2>记忆分段</h2>
-      <p class="set-section__desc">
-        根据讨论的进展分段：同一阶段可以跨多段，进入新的一段不等于上一段的任务已经完成。
-        下面两个值控制单段规模（轮数与长度），达到任一上限就在完整的一轮之后分段。
-      </p>
-      <p class="set-hint mono">本组一起保存：改完点「保存」，未保存时会标出来</p>
     </header>
 
     <SettingRow
       title="记忆封块分档"
-      desc="短 5 / 标准 10 / 长 15 / 自定义 1-30 轮"
       settings-key="memory.fragment.tier"
     >
       <QSelect
@@ -305,7 +299,7 @@ onMounted(() => {
 
     <SettingRow
       title="单段长度目标"
-      desc="内容长度的兜底上限（2000-200000，按估算字符数计）。到点会分段，但不表示这一阶段的任务已经做完"
+      desc="内容长度的兜底上限（2000-200000，按估算字符数计）"
       settings-key="memory.fragment.max-tokens"
     >
       <QNumber
@@ -332,14 +326,10 @@ onMounted(() => {
 
     <header class="set-section__head">
       <h2>后台整理</h2>
-      <p class="set-section__desc">
-        离线整理记忆与知识（后台执行，不阻塞对话）。开关与间隔即时保存。
-      </p>
     </header>
 
     <SettingRow
       title="启用后台整理"
-      desc="关闭后不再按间隔自动整理；手动「立即整理」仍然可用"
       settings-key="memory.maintenance.enabled"
     >
       <button
@@ -374,7 +364,6 @@ onMounted(() => {
 
     <SettingRow
       title="立即整理"
-      desc="现在启动一次后台整理（不会等待它完成；已经开始的任务不能中途撤销）"
       settings-key="memory.maintenance.run"
     >
       <button type="button" class="qio-btn" @click="askRunMaintenance">立即整理</button>

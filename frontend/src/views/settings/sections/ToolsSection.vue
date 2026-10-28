@@ -198,12 +198,11 @@ onMounted(() => {
 
     <header class="set-section__head">
       <h2>电脑操控</h2>
-      <p class="set-section__desc">允许 QIO 读写文件、执行命令、查看进程。分级授权，高危操作会触发审批。</p>
     </header>
 
     <SettingRow
       title="工作区根目录"
-      desc="QIO 默认可访问的目录；之外默认要审批。留空则用默认工作区（失焦即保存）"
+      desc="QIO 默认可访问的目录；之外默认要审批"
       settings-key="tools.workspace"
     >
       <QInput
@@ -219,9 +218,6 @@ onMounted(() => {
 
     <header class="set-section__head">
       <h2>工具记录</h2>
-      <p class="set-section__desc">
-        保存每次工具调用的参数与输出，供刷新或重开应用后回看（模型不会读到这些内容）。修改即时保存。
-      </p>
     </header>
 
     <SettingRow
@@ -279,9 +275,6 @@ onMounted(() => {
 
     <header class="set-section__head">
       <h2>当前生效参数</h2>
-      <p class="set-section__desc">
-        只读展示，便于排查；这里只显示<strong>已保存且真实生效</strong>的值，不显示任何未保存草稿。
-      </p>
     </header>
 
     <dl class="set-raw" data-settings-key="tools.effective">

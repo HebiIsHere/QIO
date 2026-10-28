@@ -64,15 +64,15 @@
 .set-nav__return {
   font-family: var(--sans);
   font-size: 11.5px;
-  padding: 5px 10px;
-  border-radius: var(--qio-ui-radius);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-inset);
-  color: var(--link);
+  padding: 5px 2px;
+  border-radius: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  transition: color var(--dur-fast) var(--ease);
 }
-.set-nav__return:hover { background: var(--accent-soft); border-color: var(--border-strong); }
+.set-nav__return:hover { background: none; color: var(--link); }
 .set-nav__return:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .set-nav__tabs {
   display: flex;
@@ -92,22 +92,17 @@
   color: var(--text-secondary);
   background: none;
   border: none;
-  border-left: 2px solid transparent;
-  border-radius: 0 var(--qio-ui-radius) var(--qio-ui-radius) 0;
+  border-radius: 0;
   text-align: left;
   cursor: pointer;
   transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
-.set-nav__tab:hover { color: var(--text-strong); background: var(--bg-surface); }
-.set-nav__tab.active { color: var(--text-strong); border-left-color: var(--accent); font-weight: 600; }
+.set-nav__tab:hover { color: var(--text-strong); background: none; }
+.set-nav__tab.active { color: var(--link); font-weight: 600; }
 .set-nav__tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .qio-settings[data-nav-layout="top"] .set-nav__tab {
-  border-left: none;
-  border-bottom: 2px solid transparent;
-  border-radius: var(--qio-ui-radius);
-}
-.qio-settings[data-nav-layout="top"] .set-nav__tab.active {
-  border-bottom-color: var(--accent);
+  border: 0;
+  border-radius: 0;
 }
 
 /* ---------------- 分区与分组 ---------------- */
@@ -133,8 +128,6 @@
   line-height: 1.65;
   color: var(--text-muted);
   margin: 6px 0 0;
-  padding-left: 9px;
-  border-left: 2px solid var(--border-strong);
   overflow-wrap: anywhere;
 }
 .set-hint-inline {
@@ -183,18 +176,18 @@
 .set-seg {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: 4px;
-  padding: 3px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
-  background: var(--bg-inset);
+  gap: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   min-width: 0;
 }
 .set-seg__opt {
   font-family: var(--sans);
   font-size: 12.5px;
-  padding: 6px 14px;
-  border-radius: var(--qio-ui-radius);
+  padding: 6px 2px 6px 12px;
+  border-radius: 0;
   border: none;
   background: transparent;
   color: var(--text-secondary);
@@ -204,23 +197,25 @@
 }
 .set-seg__opt:hover { color: var(--text-strong); }
 .set-seg__opt:active:not(:disabled) { transform: translateY(var(--press-shift)); }
-/* 选中用底色 + 字重 + 下划线三重区分，不只靠颜色 */
+/* 选中：品牌色文字 + 字重 + 一个小圆点标记（由 settings-surface.css 绘制），
+   不再用底色 / 下划线 / 闭合边框三重叠加。 */
 .set-seg__opt.on {
-  background: var(--accent-soft);
-  color: var(--text-strong);
+  background: none;
+  color: var(--link);
   font-weight: 600;
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: none;
 }
 .set-seg__opt:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .set-seg__opt:disabled { opacity: 0.5; cursor: default; }
 
 /* ---------------- 高级选项折叠组（自绘） ---------------- */
 .set-adv {
-  margin: 16px 0 6px;
-  padding: 2px 12px 6px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
-  background: var(--bg-inset);
+  margin: 14px 0 4px;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: none;
   min-width: 0;
 }
 .set-adv__toggle {
@@ -228,7 +223,7 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 10px 2px;
+  padding: 12px 0;
   border: none;
   background: none;
   color: var(--text-secondary);
@@ -236,7 +231,7 @@
   font-size: 12.5px;
   text-align: left;
   cursor: pointer;
-  border-radius: var(--qio-ui-radius);
+  border-radius: 0;
   min-width: 0;
 }
 .set-adv__toggle:hover { color: var(--text-strong); }
@@ -249,11 +244,12 @@
 
 /* ---------------- 按组保存操作条 ---------------- */
 .set-groupbar {
-  margin: 14px 0 4px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--qio-ui-radius);
-  background: var(--bg-surface);
+  margin: 12px 0 4px;
+  padding: 10px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: none;
 }
 .set-groupbar__row {
   display: flex;
@@ -294,15 +290,16 @@
 .set-channels {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 4px 0 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
-  background: var(--bg-inset);
+  gap: 0;
+  margin: 6px 0 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   min-width: 0;
 }
-.set-channel { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; min-width: 0; }
+.set-channel { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; min-width: 0; padding: 9px 0; }
+.set-channel + .set-channel { border-top: 1px solid var(--border-subtle); }
 .set-channel__dot { color: var(--text-muted); flex: none; }
 .set-channel__name { color: var(--text-primary); }
 .set-channel__state {
@@ -322,10 +319,10 @@
 /* ---------------- 关于：许可全文（内容进页面主滚动，不另开限高滚动层） ---------------- */
 .set-license {
   margin: 8px 0 4px;
-  padding: 12px 14px;
-  background: var(--bg-base);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
+  padding: 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
   color: var(--text-secondary);
   font-family: var(--mono);
   font-size: 12px;
@@ -358,15 +355,15 @@
 }
 .set-search__hint { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
 .set-search__state {
-  padding: 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
-  background: var(--bg-inset);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.set-search__state.err { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); font-size: 12.5px; }
+.set-search__state.err { border: 0; background: none; color: var(--danger); font-size: 12.5px; }
 .set-search__state-title { font-size: 13.5px; color: var(--text-strong); overflow-wrap: anywhere; }
 .set-search__state-desc { font-size: 12px; color: var(--text-muted); line-height: 1.6; }
 .set-search__results { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -385,9 +382,9 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px 12px;
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid transparent;
-  border-radius: var(--qio-ui-radius);
+  padding: 9px 2px;
+  border: 0;
+  border-radius: 0;
   background: transparent;
   color: var(--text-primary);
   font-family: var(--sans);
@@ -396,7 +393,8 @@
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
-.set-search__hit:hover { background: var(--bg-surface); border-color: var(--border-subtle); }
+.set-search__hit:hover { background: none; }
+.set-search__item + .set-search__item .set-search__hit { border-top: 1px solid var(--border-subtle); }
 .set-search__hit:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .set-search__hit-title { color: var(--text-strong); overflow-wrap: anywhere; }
 .set-search__hit-cat { font-size: 10.5px; color: var(--text-muted); }
@@ -406,14 +404,8 @@
    只做底色淡出（无位移）：减少动画下 base.css 会把时长压到 90ms，
    状态变化仍看得见，但不会产生空间移动。 */
 @keyframes set-reveal {
-  from {
-    background: var(--accent-soft);
-    box-shadow: inset 0 0 0 2px var(--accent-soft);
-  }
-  to {
-    background: transparent;
-    box-shadow: none;
-  }
+  from { background: var(--accent-soft); }
+  to { background: transparent; }
 }
 .is-revealed {
   animation: set-reveal var(--dur-slow) var(--ease-out) 2 alternate both;

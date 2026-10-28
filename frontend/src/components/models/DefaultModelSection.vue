@@ -51,9 +51,6 @@ function pick(target: { credentialId: string; modelId: string } | null) {
     <header class="section__head">
       <div>
         <h3 id="default-model-title" class="section__title">默认模型</h3>
-        <p class="section__desc">
-          日常对话默认用哪条连接的哪个模型。各用途没单独指定时跟随它；单独指定的用途不会被默认模型覆盖。
-        </p>
       </div>
       <button type="button" class="qio-btn mini" :aria-expanded="picking" @click="picking = !picking">
         {{ current ? "更换默认模型" : "选择默认模型" }}
@@ -72,7 +69,7 @@ function pick(target: { credentialId: string; modelId: string } | null) {
       <span v-if="!currentUsable && currentReason" class="current__reason">{{ currentReason }}</span>
     </div>
     <p v-else class="muted">
-      还没有设置默认模型。日常对话会回退到兼容的旧凭据选择规则（按用途标签挑一条已验证可用的主对话连接）。
+      还没有设置默认模型。日常对话会回退到兼容的旧凭据选择规则。
     </p>
     <p v-if="mainChat && mainChat.resolved" class="muted mono">
       当前实际使用：{{ mainChat.resolved.credentialName }} · {{ mainChat.resolved.modelId }}
@@ -97,17 +94,14 @@ function pick(target: { credentialId: string; modelId: string } | null) {
 .section { display: flex; flex-direction: column; gap: 8px; }
 .section__head { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; }
 .section__title { margin: 0; font-size: var(--fs-sm); color: var(--text-strong); }
-.section__desc { margin: 2px 0 0; font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
+/* 当前值是一行，不再包一层灰底盒子：用一条中性细线把"结论"和下面的说明分开。 */
 .current {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 10px; border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius); background: var(--bg-inset);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 0 2px; border: 0; border-top: 1px solid var(--border-subtle);
+  border-radius: 0; background: none;
 }
 .current__name { font-size: var(--fs-xs); color: var(--text-strong); font-weight: 600; }
 .current__model { font-size: var(--fs-xs); color: var(--text-secondary); }
 .current__reason { flex-basis: 100%; font-size: 10px; color: var(--warning); }
 .muted { margin: 0; font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
-.qio-state.ok { color: var(--success); background: var(--success-soft); border-color: var(--success-soft); }
-.qio-state.err { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
-.qio-state.quiet { color: var(--text-muted); border-color: var(--border-subtle); }
 </style>

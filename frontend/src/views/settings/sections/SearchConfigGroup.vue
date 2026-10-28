@@ -335,11 +335,6 @@ onMounted(() => {
 
     <header class="set-section__head">
       <h2>联网搜索</h2>
-      <p class="set-section__desc">
-        让 agent 能联网检索实时资讯并读取网页正文。免密钥通道用 Exa / Parallel 的免费搜索服务
-        （失败时回退 DuckDuckGo）；填写博查密钥或自建 SearXNG 更稳定。
-      </p>
-      <p class="set-hint mono">开关即时保存；数字参数与 SearXNG 地址一起保存</p>
     </header>
 
     <div class="set-channels" data-settings-key="models.search.status">
@@ -350,7 +345,7 @@ onMounted(() => {
         :data-search-channel="channel.id"
         :data-channel-state="channel.tone"
       >
-        <QIcon class="set-channel__dot" name="info" :size="13" />
+        <span class="set-channel__dot" aria-hidden="true"></span>
         <span class="set-channel__name">{{ channel.name }}</span>
         <span class="set-channel__state" :class="channel.tone">{{ channel.text }}</span>
       </div>
@@ -377,7 +372,7 @@ onMounted(() => {
 
     <SettingRow
       title="免密钥联网搜索"
-      desc="用 Exa / Parallel 免费搜索服务，失败回退 DuckDuckGo；关闭后只是不再使用免费通道，博查 Key 与 SearXNG 地址都保留"
+      desc="关闭后只是不再使用免费通道，博查 Key 与 SearXNG 地址都保留"
       settings-key="models.search.keyless"
     >
       <button
@@ -394,11 +389,7 @@ onMounted(() => {
 
     <SettingRow
       title="博查 API Key"
-      :desc="
-        bochaConfigured
-          ? '已配置（留空保存不会改动它；要移除必须点「清除」）'
-          : '未配置：现在使用免密钥通道或自建 SearXNG 兜底'
-      "
+      :desc="bochaConfigured ? '已配置（留空保存不会改动它；要移除必须点「清除」）' : ''"
       settings-key="models.search.bocha"
     >
       <template v-if="bochaEditing">
@@ -431,7 +422,7 @@ onMounted(() => {
     <AdvGroup id="models.search.advanced" label="高级选项" hint="SearXNG 地址、返回条数、正文预算">
       <SettingRow
         title="自建 SearXNG 地址"
-        desc="可选；需要有可达的自建或自备实例。填好后与数字参数一起保存，清除请直接清空地址并保存"
+        desc="可选；需要有可达的自建或自备实例。清除请直接清空地址并保存"
         settings-key="models.search.advanced.searxng"
       >
         <QInput

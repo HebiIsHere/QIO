@@ -8,6 +8,8 @@
  * - 消息流的空 / 加载 / 失败三态如实；「回到最新消息」的未读计数来自流内真实逻辑。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { nextTick } from "vue";
@@ -147,6 +149,63 @@ describe("话题栏：标题常驻 + 完整说明", () => {
     expect(text).toContain("已经登记");
     expect(text).toContain("下一条消息时生效");
     w.unmount();
+  });
+});
+
+/**
+ * 纵向节奏（视觉修复轮）：展开后整张卡只用一套间距值，分隔线上下对称。
+ * jsdom 不计算样式表，所以这里静态扫描 SFC 的 scoped style（与 settings-visual.test.ts 同口径）。
+ */
+describe("话题详情的纵向节奏：一套固定值 + 分隔线上下对称", () => {
+  const SFC = readFileSync(
+    resolve(process.cwd(), "src/components/conversation/ChatColumn.vue"),
+    "utf8",
+  );
+  const RHYTHM = new Map([
+    ["--td-gap-title-desc", "4px"],
+    ["--td-gap-desc-meta", "10px"],
+    ["--td-gap-meta-rule", "12px"],
+    ["--td-gap-rule-label", "12px"],
+    ["--td-gap-label-line", "4px"],
+  ]);
+
+  it("间距值只在 .topic-details 上定义一次（整卡一套，不各写各的）", () => {
+    for (const [name, value] of RHYTHM) {
+      const decls = [...SFC.matchAll(new RegExp(`${name}:\\s*([^;]+);`, "g"))].map((m) => m[1].trim());
+      expect(decls, name).toEqual([value]);
+    }
+  });
+
+  it("每个节奏点都真的用上了对应变量", () => {
+    const pairs: [string, string][] = [
+      [".td-summary", "--td-gap-title-desc"],
+      [".td-rows", "--td-gap-desc-meta"],
+      [".td-continuation", "--td-gap-meta-rule"],
+      [".td-continuation", "--td-gap-rule-label"],
+      [".td-line", "--td-gap-label-line"],
+    ];
+    for (const [selector, name] of pairs) {
+      const rule = new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`).exec(SFC);
+      expect(rule, selector).not.toBeNull();
+      expect(rule![1], `${selector} → ${name}`).toContain(`var(${name})`);
+    }
+  });
+
+  it("分隔线上下对称：线上 margin 与线下 padding 取同一档值", () => {
+    const rule = /\.td-continuation\s*\{([^}]*)\}/.exec(SFC)?.[1] ?? "";
+    const above = /margin-top:\s*var\((--td-gap-[^)]+)\)/.exec(rule)?.[1];
+    const below = /padding-top:\s*var\((--td-gap-[^)]+)\)/.exec(rule)?.[1];
+    expect(above, "分隔线上侧").toBeTruthy();
+    expect(below, "分隔线下侧").toBeTruthy();
+    expect(RHYTHM.get(above!), "分隔线上下必须同值").toBe(RHYTHM.get(below!));
+  });
+
+  it("段落行高与正文一致：两处段落都走 var(--lh-base)，没有另设更松的行高", () => {
+    for (const selector of [".td-summary", ".td-line"]) {
+      const rule = new RegExp(`\\${selector}\\s*\\{([^}]*)\\}`).exec(SFC)?.[1] ?? "";
+      expect(rule, selector).toContain("line-height: var(--lh-base)");
+      expect(rule, selector).not.toMatch(/line-height:\s*1\.\d+/);
+    }
   });
 });
 

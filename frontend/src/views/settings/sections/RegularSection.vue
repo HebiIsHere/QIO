@@ -7,7 +7,7 @@
  * 保存方式：全部即时保存 —— 这些设置要么只落在本地（主题 / 动画 / 指示条 / 贴靠隐藏 /
  * 诊断），要么一次只有一个值（输出速度 / 关闭行为）。失败时控件回滚到真实值。
  */
-import { computed, ref } from "vue";
+import { ref } from "vue";
 import QSelect from "../../../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../../../stores/ui";
 import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../../../services/quitGuard";
@@ -75,25 +75,10 @@ function onMotionChange(value: string): void {
 
 /* ---------------- 滚动指示条 ---------------- */
 const scrollbarPref = ref<ScrollbarPreference>(getScrollbarPreference());
-/**
- * 文案必须说清边界：「始终显示」只让**允许显示且实际溢出**的区域常驻显示，
- * 不会让板面（hidden 策略）出现滚动条，也不开放任何横向滚动。
- */
-const SCROLLBAR_OPTIONS: { value: ScrollbarPreference; label: string; hint: string }[] = [
-  {
-    value: "auto",
-    label: "自动显示",
-    hint: "默认：滚动、指针靠近边缘或用键盘操作该区域时才出现，停止后淡出",
-  },
-  {
-    value: "always",
-    label: "始终显示",
-    hint: "只让允许显示且实际溢出的区域常驻显示；不会让板面出现滚动条，也不开放对话横向滚动",
-  },
+const SCROLLBAR_OPTIONS: { value: ScrollbarPreference; label: string }[] = [
+  { value: "auto", label: "自动显示" },
+  { value: "always", label: "始终显示" },
 ];
-const scrollbarHint = computed(
-  () => SCROLLBAR_OPTIONS.find((o) => o.value === scrollbarPref.value)?.hint ?? "",
-);
 function onScrollbarChange(value: string): void {
   const next = value as ScrollbarPreference;
   if (next === scrollbarPref.value) return;
@@ -146,17 +131,15 @@ function rerunOnboarding(): void {
  * floatingState 里的 composer 是历史占位（输入区由布局承载，不可拖动、也不会被隐藏），
  * 所以这里不提供一个会「把输入框藏起来」的开关。
  */
-const WINDOW_ITEMS: { id: DockId; title: string; desc: string; key: string }[] = [
+const WINDOW_ITEMS: { id: DockId; title: string; key: string }[] = [
   {
     id: "planet-dock",
     title: "星球入口贴靠后自动隐藏",
-    desc: "关闭＝入口常显（不是禁用）。开启后贴靠完成时淡化，悬停展开、移出再隐藏",
     key: "regular.window.planet-hide",
   },
   {
     id: "settings-float",
     title: "设置入口贴靠后自动隐藏",
-    desc: "关闭＝入口常显（不是禁用）。开启后贴靠完成时淡化，悬停展开、移出再隐藏",
     key: "regular.window.settings-hide",
   },
 ];
@@ -206,10 +189,9 @@ function toggleDiagnostics(): void {
   <section class="set-section" data-settings-section="regular" aria-label="常规设置">
     <header class="set-section__head">
       <h2>外观</h2>
-      <p class="set-section__desc">跟随系统或自行固定；切换立即生效，不需要刷新。</p>
     </header>
 
-    <SettingRow title="主题" desc="跟随系统，或固定暗紫晶 / 净白" settings-key="regular.theme">
+    <SettingRow title="主题" settings-key="regular.theme">
       <SegmentedControl
         :options="THEME_OPTIONS"
         :model-value="themePref"
@@ -220,7 +202,6 @@ function toggleDiagnostics(): void {
 
     <SettingRow
       title="动画"
-      desc="减少动画会同时作用于页面过渡与星球镜头，切换立即生效"
       settings-key="regular.motion"
     >
       <SegmentedControl
@@ -233,7 +214,6 @@ function toggleDiagnostics(): void {
 
     <SettingRow
       title="滚动指示条"
-      desc="不使用系统原生滚动条；「始终显示」只作用于允许显示且确实溢出的区域，不会让板面出现滚动条，也不开放对话横向滚动"
       settings-key="regular.scrollbar"
     >
       <div class="set-stack">
@@ -245,16 +225,12 @@ function toggleDiagnostics(): void {
         />
       </div>
     </SettingRow>
-    <p class="set-hint mono" data-settings-key="regular.scrollbar.hint">{{ scrollbarHint }}</p>
-
     <header class="set-section__head">
       <h2>对话</h2>
-      <p class="set-section__desc">助手回答的呈现方式。</p>
     </header>
 
     <SettingRow
       title="输出速度"
-      desc="打字机逐字输出的速度：慢 25 字/秒 · 中 50 字/秒 · 快 75 字/秒"
       settings-key="regular.speed"
     >
       <QSelect
@@ -266,19 +242,10 @@ function toggleDiagnostics(): void {
 
     <header class="set-section__head">
       <h2>引导</h2>
-      <p class="set-section__desc">
-        重新走一遍设置助手：连接模型、认识你、偏好与目标。已设置项会预填，
-        重复提交不会产生重复的记忆、实体卡或话题。
-      </p>
     </header>
 
     <SettingRow
       :title="onboarding.needsSetup ? '继续设置' : '设置助手'"
-      :desc="
-        onboarding.needsSetup
-          ? '初始设置还没完成：从这里继续（顶部的一次性提醒只出现一次，这里是随时可用的入口）'
-          : '随时可以重跑，完成后回到对话页'
-      "
       settings-key="regular.onboarding"
     >
       <button type="button" class="qio-btn" @click="rerunOnboarding">
@@ -288,17 +255,12 @@ function toggleDiagnostics(): void {
 
     <header class="set-section__head">
       <h2>窗口行为</h2>
-      <p class="set-section__desc">
-        输入框固定在对话底部；星球入口与设置入口为可拖动浮动组件，松手自动贴靠。
-        下面两个开关只控制「贴边后要不要自动隐藏」；关闭不等于禁用入口。
-      </p>
     </header>
 
     <SettingRow
       v-for="item in WINDOW_ITEMS"
       :key="item.id"
       :title="item.title"
-      :desc="item.desc"
       :settings-key="item.key"
     >
       <button
@@ -311,13 +273,12 @@ function toggleDiagnostics(): void {
         @click="toggleWindowHide(item.id)"
       ></button>
       <span class="set-state mono" aria-hidden="true">
-        贴边后自动隐藏：{{ floatingState[item.id].hideEnabled ? "开" : "关" }}
+        {{ floatingState[item.id].hideEnabled ? "开" : "关" }}
       </span>
     </SettingRow>
 
     <SettingRow
       title="布局"
-      desc="将所有浮动组件还原到默认位置并关闭贴靠隐藏"
       settings-key="regular.window.reset-layout"
     >
       <button type="button" class="qio-btn" @click="resetWindowLayout">还原默认布局</button>
@@ -325,7 +286,6 @@ function toggleDiagnostics(): void {
 
     <SettingRow
       title="关闭主窗口时"
-      desc="标题条关闭按钮、系统关闭（Alt+F4 / 任务栏关闭）都按这里的选择处理；最小化到托盘只是隐藏窗口，直接退出会有界收尾"
       settings-key="regular.window.close-behavior"
     >
       <div class="set-stack">
@@ -335,11 +295,6 @@ function toggleDiagnostics(): void {
           label="关闭主窗口行为"
           @update:model-value="onCloseBehaviorChange"
         />
-        <p class="set-hint mono">
-          当前：{{ closeBehaviorLabel(ui.closeBehavior) }}（{{
-            CLOSE_OPTIONS.find((o) => o.value === ui.closeBehavior)?.desc
-          }}）
-        </p>
         <p class="set-hint">
           「最小化到托盘」只是隐藏窗口：QIO 与后端继续运行，可从系统托盘恢复；
           「直接退出」会先停止受理新工作、保存状态并有界收尾，等待中的有效审批会保留到下次启动。
@@ -350,7 +305,6 @@ function toggleDiagnostics(): void {
     <AdvGroup id="regular.advanced" label="高级选项" hint="诊断与图形信息">
       <SettingRow
         title="诊断（开发者模式）"
-        desc="打开后显示 FPS / WebGL / 视角等图形诊断，以及每条消息的 token 明细。日常使用建议保持关闭"
         settings-key="regular.advanced.diagnostics"
       >
         <button

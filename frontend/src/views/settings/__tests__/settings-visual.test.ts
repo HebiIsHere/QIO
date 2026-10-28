@@ -43,22 +43,66 @@ const SHELL_AND_SECTIONS = [
   "views/settings/sections/AboutSection.vue",
 ];
 
-describe("14px 圆角令牌（§4）", () => {
-  it("设置页内的圆角一律使用 var(--qio-ui-radius)", () => {
-    const declarations = [...SETTINGS_CSS.matchAll(/border-radius:\s*([^;]+);/g)].map((m) => m[1].trim());
-    expect(declarations.length).toBeGreaterThan(10);
-    for (const value of declarations) {
-      expect(value, value).toContain("var(--qio-ui-radius)");
+const SETTINGS_SURFACE_CSS = read("styles/settings-surface.css");
+const SETTINGS_SURFACE_NO_COMMENTS = stripComments(SETTINGS_SURFACE_CSS);
+
+describe("圆角：唯一档位，但只给真正的承载面", () => {
+  // 视觉修复（2026-10-28）：短控件不再画闭合外轮廓，所以它们本来就没有圆角。
+  // 这里不逐条比对实现，只钉住两条会真正伤害一致性的规则：
+  // ① 除 0 / 圆形 / 胶囊几何外，圆角只能来自 --qio-ui-radius（14px）；
+  // ② 仍然有形状的东西（承载面、浮层菜单）必须用这个令牌。
+  const allowed = new Set(["0", "50%", "var(--qio-ui-radius)", "var(--r-pill)"]);
+
+  it("除 0 / 圆形 / 胶囊外，圆角只来自 14px 令牌", () => {
+    for (const [label, source] of [
+      ["styles/settings.css", SETTINGS_CSS_NO_COMMENTS],
+      ["styles/settings-surface.css", SETTINGS_SURFACE_NO_COMMENTS],
+    ] as const) {
+      const values = [...source.matchAll(/border-radius:\s*([^;]+);/g)].map((m) => m[1].trim());
+      expect(values.length, label).toBeGreaterThan(5);
+      for (const value of values) {
+        expect(allowed.has(value), label + " -> " + value).toBe(true);
+      }
     }
-    // 不复用旧 --r-* 近似值（旧令牌只留给未纳入本轮的组件）
     expect(SETTINGS_CSS).not.toMatch(/border-radius:\s*var\(--r-(xs|sm|md|lg|xl)\)/);
   });
 
-  it("分区/搜索/折叠组都有明确圆角（不是只给按钮加）", () => {
-    for (const selector of [".set-seg", ".set-adv", ".set-groupbar", ".set-channels", ".set-search__hit", ".set-license"]) {
-      const rule = new RegExp(selector.replace(".", "\\.") + "\\s*\\{([^}]*)\\}").exec(SETTINGS_CSS);
-      expect(rule, selector).not.toBeNull();
-      expect(rule![1], selector).toContain("var(--qio-ui-radius)");
+  it("承载面与浮层菜单仍然用 14px 令牌", () => {
+    expect(SETTINGS_SURFACE_CSS).toMatch(/\.set-main \{[^}]*border-radius:\s*var\(--qio-ui-radius\)/);
+    expect(SETTINGS_SURFACE_CSS).toMatch(/\.qio-select-menu\.qio-select-menu \{[^}]*border-radius:\s*var\(--qio-ui-radius\)/);
+  });
+});
+
+describe("表面：不再有常驻灰底与药丸描边", () => {
+  it("设置样式里没有把 --bg-inset / --bg-surface 当控件填充", () => {
+    expect(SETTINGS_CSS).not.toMatch(/background:\s*var\(--bg-inset\)/);
+    expect(SETTINGS_CSS).not.toMatch(/background:\s*var\(--bg-surface\)/);
+  });
+
+  it("没有药丸外壳的三件套：底边内阴影、单侧竖条", () => {
+    expect(SETTINGS_CSS).not.toMatch(/inset 0 -2px/);
+    expect(SETTINGS_CSS).not.toMatch(/border-left:\s*[23]px/);
+    expect(SETTINGS_SURFACE_CSS).not.toMatch(/inset 0 -2px/);
+  });
+
+  it("分段控件没有轨道：不画底色与外框", () => {
+    const rule = /\.set-seg \{([^}]*)\}/.exec(SETTINGS_CSS);
+    expect(rule, ".set-seg").not.toBeNull();
+    const body = rule === null ? "" : rule[1];
+    expect(body).toContain("background: none");
+    expect(body).toMatch(/border:\s*0/);
+  });
+
+  it("作用域：共享原语的覆盖必须限定在 .qio-settings 内，且不用 !important", () => {
+    expect(SETTINGS_SURFACE_NO_COMMENTS).not.toContain("!important");
+    const body = SETTINGS_SURFACE_NO_COMMENTS;
+    const withoutAtBlocks = body.replace(/@media[^{]+\{/g, "").replace(/@keyframes[^{]+\{/g, "");
+    for (const match of withoutAtBlocks.matchAll(/([^{}]+)\{/g)) {
+      for (const selector of match[1].split(",")) {
+        const sel = selector.trim();
+        if (!sel || sel.startsWith("from") || sel.startsWith("to") || /^\d+%$/.test(sel)) continue;
+        expect(sel.startsWith(".qio-settings"), "未加作用域的选择器：" + sel).toBe(true);
+      }
     }
   });
 });

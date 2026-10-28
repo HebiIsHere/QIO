@@ -10,7 +10,6 @@
  */
 import { computed } from "vue";
 import type { CatalogModel, ModelConnection } from "../../services/modelCatalog";
-import QIcon from "../ui/QIcon.vue";
 
 const props = defineProps<{
   connections: ModelConnection[];
@@ -79,9 +78,6 @@ function connectionState(connection: ModelConnection): { text: string; tone: str
 
 <template>
   <div class="picker" role="group" :aria-label="usageLabel ? usageLabel + '的候选模型' : '候选模型'">
-    <p class="picker__hint">
-      候选按「连接 → 模型」分组；同一个模型名可能来自不同 Key，请按连接名确认发送目标。
-    </p>
     <div v-if="!hasAnyModel" class="picker__empty">
       还没有任何已记录的模型。先在「Key 接入与管理」里添加连接并获取模型。
     </div>
@@ -105,7 +101,6 @@ function connectionState(connection: ModelConnection): { text: string; tone: str
             :aria-describedby="model.usable ? undefined : 'reason-' + group.connection.credentialId + '-' + model.modelId"
             @click="emit('pick', { credentialId: group.connection.credentialId, modelId: model.modelId })"
           >
-            <QIcon v-if="isSelected(group.connection, model)" name="check" />
             <span class="model__name mono">{{ model.displayName || model.modelId }}</span>
             <span v-if="model.displayName && model.displayName !== model.modelId" class="model__id mono">{{ model.modelId }}</span>
             <span class="qio-state" :class="verifyTone(model)">{{ verifyText(model) }}</span>
@@ -132,50 +127,59 @@ function connectionState(connection: ModelConnection): { text: string; tone: str
 </template>
 
 <style scoped>
+/* 候选是一层"展开的浮层"：轻玻璃 + 1px 中性边界 + 层级阴影，保持 14px 圆角；
+   候选行本身透明，选中 = 品牌色模型名 + 4px 圆点（不画外框、不铺选中底色块）。 */
 .picker {
-  margin-top: 8px;
-  padding: 10px;
+  margin-top: 10px;
+  padding: 12px 14px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--qio-ui-radius);
-  background: var(--bg-inset);
+  background: var(--glass-bg);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
-.picker__hint { margin: 0; font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
-.picker__empty { font-size: var(--fs-xs); color: var(--text-muted); }
-.group { display: flex; flex-direction: column; gap: 6px; }
+.picker__empty { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.group { display: flex; flex-direction: column; gap: 4px; }
 .group__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .group__name { font-size: var(--fs-xs); color: var(--text-strong); font-weight: 600; }
-.group__meta { font-size: 10px; color: var(--text-muted); }
+.group__meta { font-size: 10px; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
 .group__count { font-size: 10px; color: var(--text-muted); margin-left: auto; }
 .group__none { margin: 0; font-size: 10.5px; color: var(--text-muted); }
-.models { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.models { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .model {
+  position: relative;
   width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 6px 8px;
-  border: 1px solid transparent;
-  border-radius: var(--qio-ui-radius);
-  background: transparent;
+  padding: 8px 8px 8px 14px;
+  border: 0;
+  border-radius: 0;
+  background: none;
   color: var(--text-primary);
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
-.model:hover:not(:disabled) { background: var(--layer-hover); border-color: var(--border-subtle); }
-.model:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -1px; }
-.model.is-selected { background: var(--layer-selected); border-color: var(--accent); }
+.model::before {
+  content: ""; position: absolute; left: 3px; top: 50%; width: 4px; height: 4px; margin-top: -2px;
+  border-radius: 50%; background: var(--accent);
+  opacity: 0; transform: scale(.6);
+  transition: opacity var(--mo-1-state) var(--ease-1), transform var(--mo-1-state) var(--ease-1);
+}
+.model:hover:not(:disabled) { background: var(--layer-hover); border-color: transparent; }
+.model:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.model.is-selected { background: none; border-color: transparent; }
+.model.is-selected::before { opacity: 1; transform: scale(1); }
+.model.is-selected .model__name { color: var(--link); }
 .model:disabled { cursor: not-allowed; opacity: 1; }
-.model__name { font-size: var(--fs-xs); color: var(--text-strong); }
-.model__id { font-size: 10px; color: var(--text-muted); }
+.model__name { font-size: var(--fs-xs); color: var(--text-strong); overflow-wrap: anywhere; }
+.model__id { font-size: 10px; color: var(--text-muted); overflow-wrap: anywhere; }
 .model__reason { flex-basis: 100%; font-size: 10px; color: var(--warning); }
 .picker__actions { display: flex; gap: 8px; justify-content: flex-end; }
-.qio-state.ok { color: var(--success); background: var(--success-soft); border-color: var(--success-soft); }
-.qio-state.warn { color: var(--warning); background: var(--warning-soft); border-color: var(--warning-soft); }
-.qio-state.err { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
-.qio-state.quiet { color: var(--text-muted); border-color: var(--border-subtle); }
 </style>

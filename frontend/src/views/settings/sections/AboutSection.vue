@@ -30,7 +30,6 @@ const appVersion = String(appPackage.version ?? "");
 
     <header class="set-section__head">
       <h2>更新</h2>
-      <p class="set-section__desc">在应用内完成检查、下载与安装；下载后由你决定何时重启。</p>
     </header>
     <div class="set-update" data-settings-key="about.update">
       <UpdateCard />

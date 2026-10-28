@@ -7,6 +7,7 @@ import { nextTick } from "vue";
 import { resetFloatPositions } from "../../../composables/floatingState";
 import {
   chooseSelectLabel,
+  chooseSelectOption,
   flushFrames,
   mountSettings,
   openCategory,
@@ -111,9 +112,14 @@ describe("迁移清单覆盖：每一项都有稳定 key 与位置", () => {
     await openCategory(w, "memory");
     const memory = sectionById(w, "memory");
     expect(memory.find('[data-settings-group="memory.fragment"]').exists()).toBe(true);
-    expect(memory.text()).toContain("根据讨论的进展分段");
-    expect(memory.text()).toContain("到点会分段");
-    expect(memory.text()).toContain("不等于上一段的任务已经完成");
+    // 本轮清理解释性文案：改为断言控件结构与按组保存行为，不再断言被删掉的说明文字。
+    expect(memory.find('[data-settings-key="memory.fragment.tier"]').exists()).toBe(true);
+    expect(memory.find('[data-settings-key="memory.fragment.max-tokens"]').exists()).toBe(true);
+    await chooseSelectOption(memory, "自定义");
+    expect(memory.find('[data-settings-key="memory.fragment.custom-turns"]').exists()).toBe(true);
+    expect(
+      memory.find('[data-settings-group="memory.fragment"] [data-settings-dirty]').text(),
+    ).toContain("有未保存的修改");
 
     // 立即整理是危险/高影响操作：先确认
     const run = memory.findAll(".qio-btn").find((button) => button.text() === "立即整理");
@@ -205,8 +211,13 @@ describe("常规分区的即时保存语义", () => {
     await chooseSelectLabel(regular, "始终显示");
     expect(document.documentElement.getAttribute("data-scrollbar")).toBe("always");
     expect(localStorage.getItem("qio-scrollbar")).toBe("always");
-    expect(regular.text()).toContain("不会让板面出现滚动条");
-    expect(regular.text()).toContain("不开放对话横向滚动");
+    // 本轮清理解释性文案：改为断言选中态与再次切换后的持久化行为，不再断言说明文字。
+    expect(
+      regular.find('[data-settings-key="regular.scrollbar"] .set-seg__opt.on').text(),
+    ).toBe("始终显示");
+    await chooseSelectLabel(regular, "自动显示");
+    expect(document.documentElement.getAttribute("data-scrollbar")).toBe("auto");
+    expect(localStorage.getItem("qio-scrollbar")).toBe("auto");
     w.unmount();
   });
 

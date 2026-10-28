@@ -276,9 +276,6 @@ async function confirmAction() {
     <header class="head">
       <div>
         <h3 id="key-access-title" class="head__title">Key 接入与管理</h3>
-        <p class="head__desc">
-          一条连接 = 一把 Key + 一个服务地址。模型属于连接，用途再指向「连接 + 模型」。
-        </p>
       </div>
       <button type="button" class="qio-btn primary mini" @click="openCreate">添加 Key</button>
     </header>
@@ -352,21 +349,30 @@ async function confirmAction() {
 </template>
 
 <style scoped>
-.key-access { display: flex; flex-direction: column; gap: 10px; }
-.head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.key-access { display: flex; flex-direction: column; gap: 2px; }
+.head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 2px 0 6px; }
 .head__title { margin: 0; font-size: var(--fs-sm); color: var(--text-strong); }
-.head__desc { margin: 2px 0 0; font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
-.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+/* 筛选：透明文字行，选中 = 品牌色文字 + 4px 圆点；不画灰色胶囊、不画玫红外框。 */
+.filters { display: flex; gap: 2px; flex-wrap: wrap; padding: 0 0 6px; }
 .filter {
+  position: relative;
   display: inline-flex; align-items: center; gap: 6px;
-  border: 1px solid var(--border-subtle); background: var(--bg-inset);
-  color: var(--text-secondary); font: inherit; font-size: 11px;
-  padding: 3px 10px; border-radius: var(--qio-ui-radius); cursor: pointer;
+  border: 0; background: none; border-radius: 0;
+  color: var(--text-secondary); font: inherit; font-size: 11.5px;
+  padding: 4px 10px; cursor: pointer;
+  transition: color var(--mo-1-state) var(--ease-1);
 }
-.filter:hover { border-color: var(--border-strong); }
-.filter:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.filter.is-on { border-color: var(--accent); color: var(--link); background: var(--accent-soft); }
-.filter__count { font-size: 10px; color: var(--text-muted); }
+.filter::before {
+  content: ""; position: absolute; left: 0; top: 50%; width: 4px; height: 4px; margin-top: -2px;
+  border-radius: 50%; background: var(--accent);
+  opacity: 0; transform: scale(.6);
+  transition: opacity var(--mo-1-state) var(--ease-1), transform var(--mo-1-state) var(--ease-1);
+}
+.filter:hover { color: var(--text-strong); }
+.filter:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 4px; }
+.filter.is-on { color: var(--link); font-weight: 600; }
+.filter.is-on::before { opacity: 1; transform: scale(1); }
+.filter__count { font-size: 10px; color: var(--text-muted); font-weight: 400; }
 .empty { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
 .qio-feedback.ok { color: var(--success); }
 .qio-feedback.warn { color: var(--warning); }

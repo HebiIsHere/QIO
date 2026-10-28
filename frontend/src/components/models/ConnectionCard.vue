@@ -129,7 +129,7 @@ watch(tab, (value) => {
 </script>
 
 <template>
-  <article class="qio-card conn">
+  <article class="conn">
     <header class="conn__head">
       <div class="conn__title">
         <span class="conn__name">{{ c.name }}</span>
@@ -200,7 +200,6 @@ watch(tab, (value) => {
             <span class="qio-state" :class="verifyTone">{{ verifyText }}</span>
             <span class="hint">
               按模型：{{ verifiedModels }} / {{ c.models.length }} 个已验证；可用 {{ usableModels }} 个。
-              Key 级验证与模型级验证是两件事，各自独立。
             </span>
           </dd>
         </div>
@@ -216,7 +215,7 @@ watch(tab, (value) => {
 
       <div class="target">
         <h4>当前引用它的用途</h4>
-        <p v-if="!referencedUsages.length" class="hint">暂无用途引用这条连接（未单独指定，或都跟随默认）。</p>
+        <p v-if="!referencedUsages.length" class="hint">暂无用途引用这条连接。</p>
         <ul v-else class="refs">
           <li v-for="usage in referencedUsages" :key="usage.usageKey">
             <span>{{ usage.label }}</span>
@@ -229,9 +228,6 @@ watch(tab, (value) => {
     <!-- 模型：每个模型的能力与验证结果；失败只影响这一个模型。 -->
     <section v-else-if="tab === 'models'" class="panel" role="tabpanel">
       <div class="panel__head">
-        <p class="hint">
-          模型列表来自这条连接保存的地址；「能列出」不等于「能调用」，是否可用看每个模型自己的验证结果。
-        </p>
         <button type="button" class="qio-btn mini" :disabled="busy" @click="emit('discover', true)">
           获取 / 刷新模型
         </button>
@@ -341,7 +337,7 @@ watch(tab, (value) => {
           <div class="budget__fill" :class="{ warn: budgetPct >= 80 }" :style="{ width: budgetPct + '%' }"></div>
         </div>
         <p class="hint">
-          累计用量是「进 + 出」的合计，预算闸门只认它；单轮输出 token 预算在「记忆与整理 → 高级选项」里，两者不合并。
+          累计用量是「进 + 出」的合计；单轮输出 token 预算在「记忆与整理 → 高级选项」里。
         </p>
         <p class="mono">进 {{ formatTokens(usageInput) }} · 出 {{ formatTokens(usageOutput) }} token</p>
       </div>
@@ -374,52 +370,71 @@ watch(tab, (value) => {
 </template>
 
 <style scoped>
-.conn { display: flex; flex-direction: column; gap: 10px; }
+/* 一条连接 = 一条顶部分隔线 + 标题 / 页签 / 内容；不套卡片面，也不给每个状态套胶囊。
+   状态徽标与按钮的底色/描边由设置页表面层统一收口（.qio-settings 内的共享原语），
+   组件这里只保留版式（含选中的 4px 圆点标记）。 */
+.conn { display: flex; flex-direction: column; gap: 12px; padding: 14px 0 8px; border-top: 1px solid var(--border-subtle); }
 .conn__head { display: flex; flex-direction: column; gap: 4px; }
-.conn__title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.conn__title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .conn__name { font-size: var(--fs-base); color: var(--text-strong); font-weight: 600; }
-.conn__facts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-muted); }
+.conn__facts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-muted); min-width: 0; overflow-wrap: anywhere; }
 .dot { opacity: .5; }
-.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--border-subtle); padding-bottom: 4px; }
+
+/* 页签：透明文字标签；选中 = 品牌色文字 + 4px 圆点；内容只用一条中性细线分隔。 */
+.tabs { display: flex; gap: 2px; flex-wrap: wrap; border-bottom: 1px solid var(--border-subtle); }
 .tab {
-  border: 1px solid transparent; background: none; color: var(--text-secondary);
-  font: inherit; font-size: 11.5px; padding: 4px 10px; border-radius: var(--qio-ui-radius);
+  position: relative;
+  border: 0; background: none; border-radius: 0; color: var(--text-secondary);
+  font: inherit; font-size: 11.5px; padding: 6px 10px;
   cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  transition: color var(--mo-1-state) var(--ease-1);
 }
-.tab:hover { background: var(--layer-hover); color: var(--text-strong); }
-.tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.tab.is-active { background: var(--accent-soft); color: var(--text-strong); border-color: var(--accent-soft); }
-.tab__count { font-size: 10px; color: var(--text-muted); }
-.panel { display: flex; flex-direction: column; gap: 10px; }
-.panel__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.states { margin: 0; display: flex; flex-direction: column; gap: 6px; }
-.state-row { display: flex; gap: 10px; align-items: flex-start; }
+.tab::before {
+  content: ""; position: absolute; left: 0; top: 50%; width: 4px; height: 4px; margin-top: -2px;
+  border-radius: 50%; background: var(--accent);
+  opacity: 0; transform: scale(.6);
+  transition: opacity var(--mo-1-state) var(--ease-1), transform var(--mo-1-state) var(--ease-1);
+}
+.tab:hover { background: none; color: var(--text-strong); }
+.tab:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; border-radius: 4px; }
+.tab.is-active { background: none; color: var(--link); font-weight: 600; }
+.tab.is-active::before { opacity: 1; transform: scale(1); }
+.tab__count { font-size: 10px; color: var(--text-muted); font-weight: 400; }
+
+.panel { display: flex; flex-direction: column; gap: 12px; }
+.panel__head { display: flex; align-items: flex-start; justify-content: flex-end; gap: 12px; }
+.states { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.state-row { display: flex; gap: 12px; align-items: flex-start; }
 .state-row dt { flex: 0 0 96px; font-size: 10.5px; color: var(--text-muted); }
 .state-row dd { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-secondary); }
+.target { display: flex; flex-direction: column; gap: 4px; }
 .target h4, .manage-row h4, .budget h4, .panel h4 { margin: 0 0 2px; font-size: 11px; color: var(--text-strong); }
 .target p, .budget p { margin: 0; font-size: 10.5px; color: var(--text-secondary); }
 .refs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-secondary); }
 .refs li { display: flex; gap: 8px; }
-.models { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.model { padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset); display: flex; flex-direction: column; gap: 4px; }
-.model__main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.model__name { font-size: var(--fs-xs); color: var(--text-strong); }
-.model__id { font-size: 10px; color: var(--text-muted); }
+
+/* 模型行：透明行 + 1px 中性分隔线（不再套灰底盒子）。 */
+.models { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.model { padding: 9px 0; border: 0; border-radius: 0; background: none; display: flex; flex-direction: column; gap: 4px; }
+.model + .model { border-top: 1px solid var(--border-subtle); }
+.model__main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.model__name { font-size: var(--fs-xs); color: var(--text-strong); overflow-wrap: anywhere; }
+.model__id { font-size: 10px; color: var(--text-muted); overflow-wrap: anywhere; }
 .model__reason { margin: 0; font-size: 10px; color: var(--warning); }
 .model__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.manage-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); }
+
+/* 管理动作：一行一条，靠中性细线分隔；危险项只染标题。 */
+.manage-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle); }
+.manage-row:last-of-type { border-bottom: 0; padding-bottom: 2px; }
 .manage-row.danger h4 { color: var(--danger); }
 .manage-row p { margin: 0; font-size: 10.5px; color: var(--text-secondary); }
-.budget { display: flex; flex-direction: column; gap: 4px; }
+
+.budget { display: flex; flex-direction: column; gap: 5px; }
 .budget__head { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-secondary); }
-.budget__bar { height: 4px; border-radius: 4px; background: var(--border-subtle); position: relative; overflow: hidden; }
-.budget__fill { position: absolute; inset: 0 auto 0 0; background: var(--success); border-radius: 4px; }
+/* 轨道是一条细线，不是一块灰色填充 */
+.budget__bar { height: 3px; border-radius: 0; background: var(--border-subtle); position: relative; overflow: hidden; }
+.budget__fill { position: absolute; inset: 0 auto 0 0; background: var(--success); border-radius: 0; }
 .budget__fill.warn { background: var(--warning); }
-.audit { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--text-muted); }
+.audit { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 10px; color: var(--text-muted); }
 .hint { margin: 0; font-size: 10px; color: var(--text-muted); line-height: 1.5; }
-.qio-state.ok { color: var(--success); background: var(--success-soft); border-color: var(--success-soft); }
-.qio-state.warn { color: var(--warning); background: var(--warning-soft); border-color: var(--warning-soft); }
-.qio-state.err { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
-.qio-state.info { color: var(--link); background: var(--accent-soft); border-color: var(--accent-soft); }
-.qio-state.quiet { color: var(--text-muted); border-color: var(--border-subtle); }
 </style>

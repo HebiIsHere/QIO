@@ -274,8 +274,10 @@ async function save() {
 
 <template>
   <form class="key-form" @submit.prevent="submit">
-    <p class="lead">
-      {{ mode === "create" ? "选服务商 → 填 API Key → 获取模型 → 保存。正常情况下不需要填地址、协议或模型名。" : mode === "rotate" ? "只替换这把 Key 的密钥；地址与协议不变。" : "修改显示名称、用量上限或用途；改地址 / 协议需要重新填 Key 并确认。" }}
+    <!-- create 的「选服务商 → 填 Key → 获取模型 → 保存」由字段与按钮本身说清楚，不再复述一遍；
+         rotate / edit 保留一句「这次改什么、不改什么」的边界说明（重新填 Key 是硬规则）。 -->
+    <p v-if="mode !== 'create'" class="lead">
+      {{ mode === "rotate" ? "只替换这把 Key 的密钥；地址与协议不变。" : "改服务地址或连接协议需要重新填 Key 并确认。" }}
     </p>
 
     <div v-if="mode === 'create'" class="field">
@@ -328,7 +330,7 @@ async function save() {
     </div>
 
     <div v-if="mode !== 'rotate'" class="field">
-      <label class="field__label">用途（兼容字段，可稍后在「用途分配」里细调）</label>
+      <label class="field__label">用途</label>
       <div class="chips">
         <button
           v-for="option in PURPOSE_OPTIONS"
@@ -369,7 +371,7 @@ async function save() {
     </div>
 
     <button type="button" class="advanced-toggle" :aria-expanded="advanced" @click="advanced = !advanced">
-      高级选项（自定义地址 / 协议 / 手动模型名 / 显示名称 / 用量上限 / 自定义标签）
+      高级选项
     </button>
     <div v-if="advanced" class="advanced">
       <div class="field">
@@ -448,46 +450,172 @@ async function save() {
 </template>
 
 <style scoped>
-.key-form { display: flex; flex-direction: column; gap: 12px; text-align: left; }
-.lead { margin: 0; font-size: 11px; color: var(--text-muted); line-height: 1.6; }
+/*
+ * KeyForm 渲染在 QModal 里，而 QModal Teleport 到 body —— 设置页的 `.qio-settings` 作用域
+ * 覆盖到不了这里。所以弹窗内的共享原语在本表单作用域内就地改写（只影响这个表单，
+ * 其它页面与共享组件保持原样）：
+ *   输入 / 下拉 / 步进 = 透明 + 中性底线（聚焦只把底线转 accent）；
+ *   按钮 = 次级纯文字（hover 一层柔光）、主操作实心玫红、无边框、高度 ≥34px；
+ *   下拉菜单 = 轻玻璃浮层 + 1px 中性边界 + 层级阴影。
+ */
+.key-form { display: flex; flex-direction: column; gap: 14px; text-align: left; }
+.lead { margin: 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.6; }
 .field { display: flex; flex-direction: column; gap: 6px; }
-.field__label { font-size: 11px; color: var(--text-secondary); }
+.field__label { font-size: 11.5px; color: var(--text-secondary); }
 .field__row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+/* 行内按钮不参与伸缩：否则输入框吃满宽度会把「添加」挤成两行 */
+.field__row :deep(.qio-input) { flex: 1 1 auto; min-width: 0; }
+.field__row :deep(.qio-btn) { flex: none; }
 .field__hint { margin: 0; font-size: 10px; color: var(--text-muted); line-height: 1.5; }
 .secret-row { display: flex; align-items: center; gap: 6px; }
 .secret-row :deep(.qio-input) { flex: 1; }
-.chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  border: 1px solid var(--border-subtle); background: var(--bg-inset);
-  color: var(--text-secondary); font: inherit; font-size: 11px;
-  padding: 3px 10px; border-radius: var(--qio-ui-radius); cursor: pointer;
+
+/* ---- 输入框：透明 + 中性底线，不画常驻闭合框 ---- */
+.key-form :deep(.qio-input) {
+  height: 34px;
+  padding: 4px 2px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  font-size: 13.5px;
 }
-.chip:hover { border-color: var(--border-strong); }
-.chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.chip.is-on { border-color: var(--accent); color: var(--link); background: var(--accent-soft); }
+.key-form :deep(.qio-input.mono) { font-size: 12.5px; }
+.key-form :deep(.qio-input:hover) { border-bottom-color: var(--border-strong); background: none; }
+.key-form :deep(.qio-input:focus) { border-bottom-color: var(--accent); background: none; box-shadow: none; }
+.key-form :deep(.qio-input:focus-visible) { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: 4px; }
+.key-form :deep(.qio-input.err) { border-bottom-color: var(--danger); }
+.key-form :deep(.qio-input:disabled) { opacity: .5; }
+
+/* ---- 下拉（服务商 / 模型 / 协议）：同样透明 + 中性底线 ---- */
+.key-form :deep(.qio-combo-trigger),
+.key-form :deep(.qio-select) {
+  height: 34px;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  font-size: 13.5px;
+}
+.key-form :deep(.qio-combo-trigger:hover),
+.key-form :deep(.qio-select:hover) { border-bottom-color: var(--border-strong); background: none; }
+.key-form :deep(.qio-combo-trigger:focus-visible),
+.key-form :deep(.qio-select:focus-visible) {
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.key-form :deep(.qio-select:focus) { background: none; box-shadow: none; border-bottom-color: var(--accent); }
+
+/* ---- 下拉浮层：轻玻璃 + 1px 中性边界 + 层级阴影（14px 圆角） ---- */
+.key-form :deep(.qio-select-menu),
+.key-form :deep(.qio-combo-menu) {
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  box-shadow: var(--elev-floating);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+}
+.key-form :deep(.qio-select-menu .opt),
+.key-form :deep(.qio-combo-opt) { border-radius: 0; }
+.key-form :deep(.qio-select-menu .opt:hover),
+.key-form :deep(.qio-combo-opt.hl) { background: var(--layer-hover); color: var(--text-strong); }
+.key-form :deep(.qio-select-menu .opt.sel),
+.key-form :deep(.qio-combo-opt.sel) { color: var(--link); background: none; }
+.key-form :deep(.qio-combo-search) { background: none; border-bottom: 1px solid var(--border-subtle); }
+
+/* ---- 数字步进：去掉包围数值与按钮的灰壳，只留数值、按钮与底线 ---- */
+.key-form :deep(.q-number) {
+  height: 34px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  overflow: visible;
+}
+.key-form :deep(.q-number:focus-within) { background: none; border-bottom-color: var(--accent); box-shadow: none; }
+.key-form :deep(.q-number .q-number-steps) { border-left: 0; }
+.key-form :deep(.q-number .step.up) { border-bottom: 0; }
+.key-form :deep(.q-number .step) { width: 26px; color: var(--text-muted); }
+.key-form :deep(.q-number .step:hover:not(:disabled)) { background: none; color: var(--accent); }
+.key-form :deep(.q-number .q-number-unit) { padding-right: 4px; }
+
+/* ---- 按钮：次级＝纯文字（hover 起一层柔光，不画药丸）；主操作＝实心玫红、无边框 ---- */
+.key-form :deep(.qio-btn) {
+  height: 32px;
+  padding: 0 10px;
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+.key-form :deep(.qio-btn:hover) { background: var(--layer-hover); color: var(--text-strong); }
+.key-form :deep(.qio-btn:active) { background: var(--accent-soft); }
+.key-form :deep(.qio-btn.primary) {
+  height: 34px;
+  padding: 0 18px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 13px;
+}
+.key-form :deep(.qio-btn.primary:hover) { background: var(--accent-hover); color: var(--on-accent); }
+
+/* ---- 用途 chip：透明文字，选中 = 品牌色文字 + 4px 圆点，不画胶囊外壳 ---- */
+.chips { display: flex; gap: 2px 4px; flex-wrap: wrap; }
+.chip {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 0; background: none; border-radius: 0;
+  color: var(--text-secondary); font: inherit; font-size: 11.5px;
+  padding: 5px 8px 5px 14px; cursor: pointer;
+  transition: color var(--mo-1-state) var(--ease-1);
+}
+.chip::before {
+  content: ""; position: absolute; left: 3px; top: 50%; width: 4px; height: 4px; margin-top: -2px;
+  border-radius: 50%; background: var(--accent);
+  opacity: 0; transform: scale(.6);
+  transition: opacity var(--mo-1-state) var(--ease-1), transform var(--mo-1-state) var(--ease-1);
+}
+.chip:hover { color: var(--text-strong); }
+.chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 4px; }
+.chip.is-on { color: var(--link); font-weight: 600; }
+.chip.is-on::before { opacity: 1; transform: scale(1); }
 .chip__x { border: none; background: none; color: inherit; cursor: pointer; font-size: 12px; line-height: 1; padding: 0; }
+
+/* ---- 高级选项：只用一条顶部分隔线分组，不套灰底容器 ---- */
 .advanced-toggle {
-  align-self: flex-start; border: none; background: none; padding: 0;
-  font: inherit; font-size: 11px; color: var(--text-muted); cursor: pointer; text-decoration: underline dotted;
+  align-self: flex-start; border: none; background: none; padding: 4px 0;
+  font: inherit; font-size: 11.5px; color: var(--text-muted); cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 3px;
 }
 .advanced-toggle:hover { color: var(--text-strong); }
-.advanced { display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset); }
+.advanced-toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: 4px; }
+.advanced {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px 0 0; border: 0; border-top: 1px solid var(--border-subtle);
+  border-radius: 0; background: none;
+}
+
+/* 自绘勾选框：窄方块 + 勾（不做成圆点，避免被读成单选） */
 .confirm {
-  display: flex; align-items: flex-start; gap: 8px; font-size: 11px; color: var(--warning);
+  display: flex; align-items: flex-start; gap: 8px; font-size: 11.5px; color: var(--warning);
   line-height: 1.5; background: none; border: none; padding: 0; text-align: left;
   cursor: pointer; font-family: var(--sans);
 }
-.confirm:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: var(--r-xs); }
+.confirm:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: 4px; }
 .confirm__box {
   flex: 0 0 auto; width: 16px; height: 16px; margin-top: 1px;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: var(--r-xs); border: 1px solid var(--border-strong);
-  background: var(--bg-inset); color: var(--bg-base);
-  transition: background var(--mo-1-state, var(--dur-toggle)) var(--ease-1, var(--ease)),
-    border-color var(--mo-1-state, var(--dur-toggle)) var(--ease-1, var(--ease));
+  border-radius: 4px; border: 1px solid var(--border-strong);
+  background: none; color: var(--on-accent);
+  transition: background var(--mo-1-state) var(--ease-1), border-color var(--mo-1-state) var(--ease-1);
 }
 .confirm__box.is-on { background: var(--warning); border-color: var(--warning); }
 .target-note { font-size: 10.5px; color: var(--text-muted); display: flex; gap: 6px; flex-wrap: wrap; }
-.actions { display: flex; justify-content: flex-end; gap: 8px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 2px; }
 </style>

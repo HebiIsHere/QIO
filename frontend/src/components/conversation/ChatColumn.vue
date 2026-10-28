@@ -517,7 +517,9 @@ onBeforeUnmount(() => {
   color: var(--text-strong);
   background: var(--layer-hover);
 }
-/* ---- 话题说明 ---- */
+/* ---- 话题说明 ----
+   纵向节奏：整张卡只定义一套间距值，展开后的四种分支（正常 / 加载中 / 读取失败 /
+   没有话题）都按同一套落位，避免「挤一段、松一段」。分隔线上下各 12px（对称）。 */
 .topic-details {
   flex: none;
   margin: 6px 0 0;
@@ -528,21 +530,32 @@ onBeforeUnmount(() => {
   box-shadow: var(--shadow-1);
   font-size: var(--fs-sm);
   min-width: 0;
+  /* 标题→描述 4 / 描述→元信息 10 / 元信息→分隔线 12 /
+     分隔线→小标签 12 / 小标签→段落 4 */
+  --td-gap-title-desc: 4px;
+  --td-gap-desc-meta: 10px;
+  --td-gap-meta-rule: 12px;
+  --td-gap-rule-label: 12px;
+  --td-gap-label-line: 4px;
 }
 .td-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 .td-name {
+  min-width: 0;
   font-size: var(--fs-md);
   color: var(--text-strong);
+  overflow-wrap: anywhere;
 }
 .td-close {
   margin-left: auto;
 }
 .td-note {
-  margin: 6px 0 4px;
+  /* 下边距交给下一条块（分隔线 12px），这里只出与标题的 4px */
+  margin: var(--td-gap-title-desc) 0 0;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
@@ -550,10 +563,15 @@ onBeforeUnmount(() => {
 .td-note.err {
   color: var(--danger);
 }
+/* 读取失败时的重试按钮：和错误文案自成一组，到下一条分隔线仍是 12px */
+.topic-details .qio-btn {
+  margin-top: 8px;
+}
 .td-summary {
-  margin: 6px 0 0;
+  margin: var(--td-gap-title-desc) 0 0;
   color: var(--text-primary);
-  line-height: 1.7;
+  /* 正文行高：与页面正文一致，不另设更松的行高 */
+  line-height: var(--lh-base);
   overflow-wrap: anywhere;
 }
 .td-summary.empty {
@@ -564,7 +582,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 18px;
-  margin: 8px 0 0;
+  margin: var(--td-gap-desc-meta) 0 0;
 }
 .td-row {
   display: flex;
@@ -573,6 +591,9 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 .td-row dt {
+  /* 窄窗下标签整体不拆行（"关键/词"这种断字会把一行拆成两行、节奏全乱） */
+  flex: none;
+  white-space: nowrap;
   color: var(--text-muted);
   font-size: 10.5px;
   letter-spacing: 0.04em;
@@ -584,21 +605,25 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 .td-continuation {
-  margin-top: 10px;
-  padding-top: 8px;
+  /* 分隔线上下对称：线上 margin、线下 padding，两边同值（12px） */
+  margin-top: var(--td-gap-meta-rule);
+  padding-top: var(--td-gap-rule-label);
   border-top: 1px solid var(--border-subtle);
   min-width: 0;
 }
 .td-label {
+  /* 块级：标签与下方段落之间的 4px 才是可量的固定值（行内元素会被行盒吃掉一半） */
+  display: block;
   color: var(--text-muted);
   font-size: 10.5px;
   letter-spacing: 0.05em;
 }
 .td-line {
-  margin: 4px 0 0;
+  margin: var(--td-gap-label-line) 0 0;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
-  line-height: 1.65;
+  /* 段落行高与正文一致（与 .td-summary 同一值） */
+  line-height: var(--lh-base);
   overflow-wrap: anywhere;
 }
 /* ---- 全局状态区 ---- */

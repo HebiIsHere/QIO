@@ -62,7 +62,7 @@ const rows = computed<Row[]>(() => {
         keys: general ? ["main-chat", "general-chat"] : ["main-chat"],
         primary: usage,
         label: "日常对话",
-        subtitle: general ? "主对话 / 通用对话合并显示（同一条调用路径）" : "主对话",
+        subtitle: general ? "主对话 / 通用对话合并显示" : "主对话",
         kind: usage.kind,
         group: usage.group,
         note: usage.note,
@@ -74,7 +74,7 @@ const rows = computed<Row[]>(() => {
       keys: [usage.usageKey],
       primary: usage,
       label: usage.label,
-      subtitle: usage.kind === "vision" ? "看图 / 视觉" : "",
+      subtitle: "",
       kind: usage.kind,
       group: usage.group,
       note: usage.note,
@@ -123,20 +123,17 @@ function isFollowing(row: Row): boolean {
 }
 
 function resolvedText(row: Row): string {
-  if (row.primary.kind === "video" || row.primary.kind === "audio") {
-    return row.primary.resolved
-      ? row.primary.resolved.credentialName + " · " + row.primary.resolved.modelId
-      : "沿用现有处理方式（不继承默认对话模型）";
+  if (row.primary.resolved) {
+    return row.primary.resolved.credentialName + " · " + row.primary.resolved.modelId;
   }
-  return row.primary.resolved
-    ? row.primary.resolved.credentialName + " · " + row.primary.resolved.modelId
-    : "尚未设置";
+  // 视频 / 语音 / 嵌入没有显式指定时没有目标：「沿用现有处理方式」由行内标记说明，
+  // 目标与状态不再各重复一遍同一句话（同一行曾出现三次）。
+  const existing = row.primary.kind === "video" || row.primary.kind === "audio" || row.primary.kind === "embedding";
+  return existing ? "" : "尚未设置";
 }
 
 function statusText(row: Row): string {
-  if (!row.primary.resolved) {
-    return row.primary.kind === "embedding" ? "沿用现有本地 / 远程方案" : "—";
-  }
+  if (!row.primary.resolved) return "";
   return row.primary.resolved.usable ? "当前可用" : "当前不可用";
 }
 
@@ -144,6 +141,45 @@ function statusTone(row: Row): string {
   if (!row.primary.resolved) return "quiet";
   return row.primary.resolved.usable ? "ok" : "err";
 }
+
+/**
+ * 行的补充说明（后端 note）。
+ *
+ * 「沿用现有处理方式」「未接通独立调用路径」这类事实行内标记已经说过一遍，
+ * 后端 note 往往就是同一句（或同一句 + 补充原因）：完全重复的不再显示，
+ * 前缀重复的只留真正补充的部分，避免同一行把同一句话说两遍。
+ */
+function noteText(row: Row): string {
+  const note = (row.note || "").trim();
+  if (!note) return "";
+  // 已经被提到列表顶部的那几句，行内不再重复
+  if (sharedNoteSet.value.has(note)) return "";
+  const badge = badgeOf(row);
+  if (!badge) return note;
+  const compact = (value: string) => value.replace(/[\s\u3000]+/g, "");
+  if (compact(note) === compact(badge.text)) return "";
+  if (!note.startsWith(badge.text)) return note;
+  return note.slice(badge.text.length).replace(/^[\s：:，,。；;、\-—]+/, "").trim();
+}
+
+/**
+ * 全列表共用的同一句状态说明（例如「还没有设置默认模型…」）。
+ *
+ * 后端会给每个"跟随默认"的用途各发一遍同一句 note：逐行重复 8 次没有信息量。
+ * 这里把它识别成一条列表级状态，只在顶部说一次，行内不再重复。
+ */
+const sharedNotes = computed(() => {
+  const counts = new Map<string, number>();
+  for (const row of rows.value) {
+    if (!isFollowing(row) || row.primary.resolved) continue;
+    const note = (row.note || "").trim();
+    if (!note) continue;
+    counts.set(note, (counts.get(note) ?? 0) + 1);
+  }
+  // 出现两次以上才算"列表级状态"：只出现一次的那句仍然属于它自己那一行。
+  return [...counts.entries()].filter(([, times]) => times >= 2).map(([note]) => note);
+});
+const sharedNoteSet = computed(() => new Set(sharedNotes.value));
 
 function badgeOf(row: Row): { text: string; tone: string } | null {
   if (row.kind === "video" || row.kind === "audio" || row.kind === "embedding") {
@@ -162,11 +198,10 @@ const usageError = computed(() => props.errors ?? {});
     <header class="section__head">
       <div>
         <h3 id="usage-title" class="section__title">用途分配</h3>
-        <p class="section__desc">
-          每个用途实际用哪条连接的哪个模型。未单独指定时跟随默认模型；换默认模型不会覆盖你单独指定的用途。
-        </p>
       </div>
     </header>
+
+    <p v-for="note in sharedNotes" :key="note" class="list__note">{{ note }}</p>
 
     <div v-for="group in groupedRows" :key="group.group" class="group">
       <h4 class="group__title">{{ group.label }}</h4>
@@ -181,13 +216,13 @@ const usageError = computed(() => props.errors ?? {});
             </span>
           </div>
           <div class="row__target mono">
-            <span>{{ resolvedText(row) }}</span>
-            <span class="qio-state" :class="statusTone(row)">{{ statusText(row) }}</span>
+            <span v-if="resolvedText(row)">{{ resolvedText(row) }}</span>
+            <span v-if="statusText(row)" class="qio-state" :class="statusTone(row)">{{ statusText(row) }}</span>
             <span v-if="row.primary.resolved && !row.primary.resolved.usable && row.primary.resolved.unavailableReason" class="row__reason">
               不可用：{{ row.primary.resolved.unavailableReason }}
             </span>
           </div>
-          <p v-if="row.note" class="row__note">{{ row.note }}</p>
+          <p v-if="noteText(row)" class="row__note">{{ noteText(row) }}</p>
           <p v-if="usageError[row.keys[0]]" class="qio-feedback err" role="alert">
             {{ usageError[row.keys[0]] }}
           </p>
@@ -243,24 +278,23 @@ const usageError = computed(() => props.errors ?? {});
 .section { display: flex; flex-direction: column; gap: 8px; }
 .section__head { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; }
 .section__title { margin: 0; font-size: var(--fs-sm); color: var(--text-strong); }
-.section__desc { margin: 2px 0 0; font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
-.group { display: flex; flex-direction: column; gap: 6px; }
-.group__title { margin: 6px 0 0; font-size: 10.5px; color: var(--text-muted); font-weight: 600; letter-spacing: .04em; }
+.group { display: flex; flex-direction: column; }
+.group + .group { margin-top: 10px; }
+.group__title { margin: 6px 0 2px; font-size: 10.5px; color: var(--text-muted); font-weight: 600; letter-spacing: .04em; }
+/* 用途行默认透明：不套盒子，行与行之间只有一条中性细线；候选面板展开时插在该行下面。 */
 .row {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start;
-  padding: 8px 10px; border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius); background: var(--bg-elevated);
+  padding: 10px 0; border: 0; border-radius: 0; background: none;
 }
+.row + .row { border-top: 1px solid var(--border-subtle); }
 .row__main { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 4px; }
-.row__label { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.row__label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .row__name { font-size: var(--fs-xs); color: var(--text-strong); font-weight: 600; }
 .row__sub { font-size: 10px; color: var(--text-muted); }
 .row__target { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 10.5px; color: var(--text-secondary); }
 .row__reason { flex-basis: 100%; font-size: 10px; color: var(--warning); }
 .row__note { margin: 0; font-size: 10px; color: var(--text-muted); line-height: 1.5; }
+.list__note { margin: 4px 0 6px; font-size: 11px; color: var(--text-muted); line-height: 1.6; }
 .row__actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .muted { margin: 0; font-size: 10.5px; color: var(--text-muted); }
-.qio-state.ok { color: var(--success); background: var(--success-soft); border-color: var(--success-soft); }
-.qio-state.err { color: var(--danger); background: var(--danger-soft); border-color: var(--danger-soft); }
-.qio-state.quiet { color: var(--text-muted); border-color: var(--border-subtle); }
 </style>

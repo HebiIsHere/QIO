@@ -222,7 +222,7 @@ watch(() => [updater.phase, updater.message] as const, () => syncUpdateIssue(), 
 .notes { display: block; margin-top: 4px; color: var(--text-secondary); }
 .err-action { display: block; line-height: 1.6; overflow-wrap: anywhere; }
 .progress {
-  height: 4px; border-radius: var(--r-pill); background: var(--bg-inset); overflow: hidden;
+  height: 3px; border-radius: var(--r-pill); background: var(--layer-hover); overflow: hidden;
 }
 .bar { height: 100%; background: var(--accent); transition: width var(--mo-2-move) var(--ease-2); }
 .stage-line { margin: 0; overflow-wrap: anywhere; }

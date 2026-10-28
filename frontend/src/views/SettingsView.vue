@@ -20,6 +20,9 @@ import router from "../router";
 import { useUiStore } from "../stores/ui";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
 import "../styles/settings.css";
+// 视觉修复（2026-10-28）：去掉常规态灰底与药丸描边。只作用于 .qio-settings，
+// 其它页面与共享原语的默认样式不受影响；详见该文件头部说明。
+import "../styles/settings-surface.css";
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_CATEGORY_IDS,
