@@ -1541,6 +1541,9 @@ class AppContext:
             self._record_usage_unavailable(exc)
             return None
         if target is None:
+            # 没有显式指定、也没有 vision 专用凭据：基线行为是「回调方回落主对话」。
+            # 顺手清掉上一次「显式指定不可用」的记录，免得用户清掉分配后还在报旧原因。
+            self.usage_unavailable.pop("vision", None)
             return None
         self._record_usage(target)
         return await self.build_adapter_for_target(target)
@@ -1905,6 +1908,15 @@ class AppContext:
             return None
         self._record_usage(target)
         return await self.build_adapter_for_target(target)
+
+    def usage_unavailable_detail(self, usage_key: str) -> dict[str, Any] | None:
+        """这个用途最近一次「不可用」的完整事实（原因码 + 可读原因 + 凭据/模型引用）。
+
+        给路由 / 理解模块 / 界面用：它们拿不到 adapter 时也要能说清**为什么**，
+        而不是笼统报「没有可用模型」。没有任何记录返回 None（不编造）。
+        """
+        exc = self.usage_unavailable.get(str(usage_key or "").strip())
+        return exc.to_dict() if exc is not None else None
 
     def main_adapter_unavailable_message(self) -> str:
         """主对话没有可用适配器时的可读原因（有原因就说原因，不笼统说「没配置」）。"""

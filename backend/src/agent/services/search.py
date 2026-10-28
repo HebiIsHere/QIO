@@ -21,6 +21,7 @@ China; falling back to it would silently erase search capability.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -590,33 +591,41 @@ class SearchService:
             for spec in CHANNEL_SPECS
             if not channel_ids or spec["id"] in set(channel_ids)
         ]
-        for channel_id in wanted:
-            check = self._checks.setdefault(channel_id, ChannelCheck())
-            if check.checking:
-                continue
-            configured = self._configured(channel_id)
-            check.checking = True
-            self._check_fingerprints[channel_id] = self._channel_fingerprint(channel_id)
-            try:
-                if not configured:
-                    probe = ChannelProbe(
-                        False,
-                        REASON_NOT_CONFIGURED,
-                        f"{_CHANNEL_BY_ID[channel_id]['label']}还没有配置（没有可检查的凭据或地址）",
-                    )
-                else:
-                    probe = await self._probe_channel(channel_id)
-            except Exception as exc:  # noqa: BLE001 - 检查自身出错也是「这次没结论」
-                probe = ChannelProbe(
-                    False, REASON_UNKNOWN, f"检查失败（{type(exc).__name__}）"
-                )
-            finally:
-                check.checking = False
-            check.usable = probe.usable
-            check.reason_code = probe.reason_code
-            check.message = probe.message
-            check.checked_at = _now_iso()
+        # 并发检查：每条通道一次独立请求，互不影响。串行 7 条 × 8s 超时最坏要等一分钟，
+        # 「点一下检查连接」不能这么慢；并发后最坏只等一条的时间。
+        await asyncio.gather(
+            *(self._check_one(channel_id) for channel_id in wanted),
+            return_exceptions=True,
+        )
         return self.channel_status(wanted)
+
+    async def _check_one(self, channel_id: str) -> None:
+        """检查一条通道并把结论写回（异常一律变成结论，不让整批失败）。"""
+        check = self._checks.setdefault(channel_id, ChannelCheck())
+        if check.checking:
+            return
+        configured = self._configured(channel_id)
+        check.checking = True
+        self._check_fingerprints[channel_id] = self._channel_fingerprint(channel_id)
+        try:
+            if not configured:
+                probe = ChannelProbe(
+                    False,
+                    REASON_NOT_CONFIGURED,
+                    f"{_CHANNEL_BY_ID[channel_id]['label']}还没有配置（没有可检查的凭据或地址）",
+                )
+            else:
+                probe = await self._probe_channel(channel_id)
+        except Exception as exc:  # noqa: BLE001 - 检查自身出错也是「这次没结论」
+            probe = ChannelProbe(
+                False, REASON_UNKNOWN, f"检查失败（{type(exc).__name__}）"
+            )
+        finally:
+            check.checking = False
+        check.usable = probe.usable
+        check.reason_code = probe.reason_code
+        check.message = probe.message
+        check.checked_at = _now_iso()
 
     async def _probe_channel(self, channel_id: str) -> ChannelProbe:
         """把通道 id 分派到对应的真实检查实现。"""

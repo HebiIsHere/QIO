@@ -584,8 +584,11 @@ def _adapter_provider(request: Request):
         """`images=True` 表示本次可能带图：优先一条 `vision` 用途凭据。
 
         - 有 vision 凭据且能用 → 用它（图片交给看得见的模型）；
-        - 没有 / 构建失败 → **如实回落**主循环适配器（老行为）；图片到底能不能交付，
-          由适配器自己的 `supports_images` 决定，材料层据此如实标注；
+        - **显式指定了看图模型、但它现在不可用** → 抛错（原因透传），**不回落**主对话：
+          回落到主对话等于把图片发给用户没选过的模型（设置页改版 §8 的硬要求）。
+          理解模块会把这个原因写进可读失败原因，修好凭据后可以重试；
+        - 压根没有显式指定、也没有 vision 专用凭据 → 如实回落主循环适配器（老行为）；
+          图片到底能不能交付，由适配器自己的 `supports_images` 决定，材料层据此如实标注；
         - 两者都拿不到 → None（理解模块给出可读失败原因）。
         """
         if images and callable(vision_builder):
@@ -595,6 +598,14 @@ def _adapter_provider(request: Request):
                     return vision_adapter
             except Exception:  # noqa: BLE001 - 看图凭据坏了不该让整次理解失败
                 logger.warning("构建看图 adapter 失败，回落到主循环凭据", exc_info=True)
+            else:
+                # build_vision_adapter 返回 None 时有两种情况：**没有** vision 目标
+                # （基线回落主对话），或**显式指定不可用**（已记进 usage_unavailable）。
+                # 后者绝不能当成前者处理 —— 抛出真实原因，由理解模块如实失败。
+                unavailable = getattr(ctx, "usage_unavailable", None) or {}
+                vision_error = unavailable.get("vision")
+                if vision_error is not None:
+                    raise vision_error
         try:
             return await builder()
         except Exception:  # noqa: BLE001 - 没有可用凭据 / adapter 时如实降级

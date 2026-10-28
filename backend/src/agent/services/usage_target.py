@@ -270,8 +270,15 @@ def read_usage_assignments(
 def is_explicit_assignment(row: dict[str, Any] | None) -> bool:
     """这一行是不是「用户显式指定」。
 
-    `model_id` 为空 = 跟随默认（契约 §6.1），不算显式；`mode` 列缺失（精简表 / 老库）
-    时以「model_id 非空」为准 —— 只有显式写下的模型才可能非空。
+    **只有 `mode == 'explicit'` 才算**（与数据层 `ModelCatalogStore._is_explicit` 同口径，
+    两边不能各有一套判断）：
+
+    * `model_id` 为空 = 跟随默认（契约 §6.1），不算显式；
+    * 迁移 73 回填历史 `credentials.tags` 时写的是 `mode='legacy'` —— 历史标签只说明
+      「这把 Key 以前服务过这个用途」，并不锁定模型，所以它**不**算显式指定，仍然走
+      「默认模型 → 基线 policy」那条语义（否则老用户换过默认模型后会被旧标签钉住）；
+    * `mode` 列缺失（极简测试表）时以「model_id 非空」为准 —— 只有显式写下的模型
+      才可能非空。
     """
     if not isinstance(row, dict):
         return False
