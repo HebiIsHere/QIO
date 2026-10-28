@@ -1,0 +1,4382 @@
+{
+  "label": "integration-06ee492f-final",
+  "startedAt": "2026-10-28T04:31:23.341Z",
+  "appUrl": "http://127.0.0.1:5108",
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "width": 800,
+      "height": 600
+    },
+    {
+      "width": 480,
+      "height": 600
+    }
+  ],
+  "themes": [
+    "dark",
+    "light"
+  ],
+  "checks": [
+    {
+      "scope": "dark-1440x900",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 1440,
+        "height": 868
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1440,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 1440,
+          "height": 868,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "nav-layout-side",
+      "ok": true,
+      "detail": {
+        "expected": "side",
+        "modes": [
+          "side"
+        ]
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": null,
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 226,
+              "y": 160.78125,
+              "width": 1192,
+              "height": 55,
+              "right": 1418,
+              "bottom": 215.78125,
+              "top": 160.78125,
+              "left": 226
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 68002,
+          "clientHeight": 868,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "keyboard-reaches-controls",
+      "ok": true,
+      "detail": {
+        "distinct": 8,
+        "navReached": true,
+        "inputReached": true,
+        "missingIndicator": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "keyboard-focus-visible",
+      "ok": true,
+      "detail": {
+        "missing": 0,
+        "total": 8,
+        "samples": []
+      }
+    },
+    {
+      "scope": "reduced-motion-dark-1440x900",
+      "name": "motion-attr-reduced",
+      "ok": true,
+      "detail": "reduced"
+    },
+    {
+      "scope": "reduced-motion-dark-1440x900",
+      "name": "reduced-motion-no-displacement-animation",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 1024,
+        "height": 736
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1024,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 1024,
+          "height": 736,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "nav-layout-side",
+      "ok": true,
+      "detail": {
+        "expected": "side",
+        "modes": [
+          "side"
+        ]
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 812,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 226,
+              "y": 160.78125,
+              "width": 776,
+              "height": 55,
+              "right": 1002,
+              "bottom": 215.78125,
+              "top": 160.78125,
+              "left": 226
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 78982,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 800,
+        "height": 568
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 800,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 800,
+          "height": 568,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "nav-layout-top",
+      "ok": true,
+      "detail": {
+        "expected": "top",
+        "modes": [
+          "top"
+        ]
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 903,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 22,
+              "y": 251.78125,
+              "width": 280,
+              "height": 55,
+              "right": 302,
+              "bottom": 306.78125,
+              "top": 251.78125,
+              "left": 22
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 80339,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 480,
+        "height": 568
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 480,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 480,
+          "height": 568,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "nav-layout-top",
+      "ok": true,
+      "detail": {
+        "expected": "top",
+        "modes": [
+          "top"
+        ]
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1047,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 22,
+              "y": 292.78125,
+              "width": 280,
+              "height": 55,
+              "right": 302,
+              "bottom": 347.78125,
+              "top": 292.78125,
+              "left": 22
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 129987,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "keyboard-reaches-controls",
+      "ok": true,
+      "detail": {
+        "distinct": 8,
+        "navReached": true,
+        "inputReached": true,
+        "missingIndicator": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "keyboard-focus-visible",
+      "ok": true,
+      "detail": {
+        "missing": 0,
+        "total": 8,
+        "samples": []
+      }
+    },
+    {
+      "scope": "reduced-motion-dark-480x600",
+      "name": "motion-attr-reduced",
+      "ok": true,
+      "detail": "reduced"
+    },
+    {
+      "scope": "reduced-motion-dark-480x600",
+      "name": "reduced-motion-no-displacement-animation",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 1440,
+        "height": 868
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "light",
+        "actual": "light"
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1440,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 1440,
+          "height": 868,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "nav-layout-side",
+      "ok": true,
+      "detail": {
+        "expected": "side",
+        "modes": [
+          "side"
+        ]
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": null,
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 226,
+              "y": 160.78125,
+              "width": 1192,
+              "height": 55,
+              "right": 1418,
+              "bottom": 215.78125,
+              "top": 160.78125,
+              "left": 226
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 68002,
+          "clientHeight": 868,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-1440x900",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 1024,
+        "height": 736
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "light",
+        "actual": "light"
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1024,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 1024,
+          "height": 736,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "nav-layout-side",
+      "ok": true,
+      "detail": {
+        "expected": "side",
+        "modes": [
+          "side"
+        ]
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 812,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 226,
+              "y": 160.78125,
+              "width": 776,
+              "height": 55,
+              "right": 1002,
+              "bottom": 215.78125,
+              "top": 160.78125,
+              "left": 226
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 78982,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-1024x768",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 800,
+        "height": 568
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "light",
+        "actual": "light"
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "light-800x600",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 800,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 800,
+          "height": 568,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-800x600",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-800x600",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-800x600",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-800x600",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-800x600",
+      "name": "nav-layout-top",
+      "ok": true,
+      "detail": {
+        "expected": "top",
+        "modes": [
+          "top"
+        ]
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 903,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-800x600",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 22,
+              "y": 251.78125,
+              "width": 280,
+              "height": 55,
+              "right": 302,
+              "bottom": 306.78125,
+              "top": 251.78125,
+              "left": 22
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 80339,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-800x600",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "model-facts-published",
+      "ok": true,
+      "detail": {
+        "modelFactsReady": true
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 480,
+        "height": 568
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "light",
+        "actual": "light"
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "light-480x600",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 480,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 480,
+          "height": 568,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-480x600",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "models-panel-content",
+      "ok": true,
+      "detail": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-480x600",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-480x600",
+      "name": "radius-uniform-token",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-480x600",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-480x600",
+      "name": "nav-layout-top",
+      "ok": true,
+      "detail": {
+        "expected": "top",
+        "modes": [
+          "top"
+        ]
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1047,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "light-480x600",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 22,
+              "y": 292.78125,
+              "width": 280,
+              "height": 55,
+              "right": 302,
+              "bottom": 347.78125,
+              "top": 292.78125,
+              "left": 22
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "long-form-opens",
+      "ok": true,
+      "detail": {
+        "openedForm": {
+          "ok": true,
+          "label": "添加 Key",
+          "control": {
+            "tag": "button",
+            "cls": "qio-btn.primary.mini",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "添加Key"
+          }
+        },
+        "formBefore": 11,
+        "formAfter": 11,
+        "modalVisible": true
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "confirm-layer",
+      "ok": true,
+      "detail": {
+        "action": "撤销"
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 129987,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "light-480x600",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-dark-1024x768-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 39
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-dark-800x600-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 39
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-dark-480x600-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 39
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "structure-hook-present-dark",
+      "ok": true,
+      "detail": {
+        "sources": [
+          "data-settings-key"
+        ]
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-light-1024x768-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 39
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-light-800x600-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 39
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-light-480x600-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 39
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "structure-hook-present-light",
+      "ok": true,
+      "detail": {
+        "sources": [
+          "data-settings-key"
+        ]
+      }
+    }
+  ],
+  "skipped": [],
+  "screenshots": [
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1440x900-longtext.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-reduced-motion-dark-1440x900.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-1024x768-longtext.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-800x600-longtext.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-dark-480x600-longtext.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-reduced-motion-dark-480x600.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1440x900-longtext.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-1024x768-longtext.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-800x600-longtext.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-regular.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-models.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-memory.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-tools.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-cat-about.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-search-results.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-search-hit.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-longform-key.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-confirm.png",
+    "docs\\verification-shots-settings\\integration-06ee492f\\settings-light-480x600-longtext.png"
+  ],
+  "perViewport": {
+    "dark-1440x900": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": null,
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 68002,
+          "clientHeight": 868,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": [],
+      "keyboard": {
+        "sequence": 30,
+        "distinct": 8,
+        "missingIndicator": 0
+      },
+      "reducedMotionViolations": 0
+    },
+    "dark-1024x768": {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "theme": "dark",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 812,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 78982,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/tasks?view=current&limit=40",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/credentials/providers",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/search",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/memory",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/maintenance",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/loop",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/computer",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/tools"
+      ],
+      "pendingEndpoints": [],
+      "abortedRequests": [
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/tasks?view=current&limit=40",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/credentials/providers",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/search",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/memory",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/maintenance",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/loop",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/computer",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/tools"
+      ],
+      "consoleErrorDetails": []
+    },
+    "dark-800x600": {
+      "viewport": {
+        "width": 800,
+        "height": 600
+      },
+      "theme": "dark",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 903,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 80339,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": []
+    },
+    "dark-480x600": {
+      "viewport": {
+        "width": 480,
+        "height": 600
+      },
+      "theme": "dark",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1047,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 129987,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": [],
+      "keyboard": {
+        "sequence": 30,
+        "distinct": 8,
+        "missingIndicator": 0
+      },
+      "reducedMotionViolations": 0
+    },
+    "light-1440x900": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "light",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": null,
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 68002,
+          "clientHeight": 868,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/ui",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/onboarding/status",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/security/mode",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/approvals/pending",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/approvals/history?limit=50",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/memory/pending?kind=knowledge_proposal&limit=500",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/tasks?view=current&limit=40",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/credentials/providers",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/search",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/memory"
+      ],
+      "pendingEndpoints": [],
+      "abortedRequests": [
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/settings/ui",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/onboarding/status",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/security/mode",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/approvals/pending",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/approvals/history?limit=50",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/memory/pending?kind=knowledge_proposal&limit=500",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/tasks?view=current&limit=40",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8758/api/credentials/providers"
+      ],
+      "consoleErrorDetails": []
+    },
+    "light-1024x768": {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "theme": "light",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 812,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 78982,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": []
+    },
+    "light-800x600": {
+      "viewport": {
+        "width": 800,
+        "height": 600
+      },
+      "theme": "light",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 903,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 80339,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": []
+    },
+    "light-480x600": {
+      "viewport": {
+        "width": 480,
+        "height": 600
+      },
+      "theme": "light",
+      "screenshots": 13,
+      "modelFactsReady": true,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "tools.effective.usages",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "modelsPanelWait": {
+        "ready": true,
+        "reason": "content",
+        "rows": 12,
+        "textLength": 1772
+      },
+      "modelsPanel": {
+        "visible": true,
+        "textLength": 1496,
+        "hasKeyAccess": true,
+        "hasDefault": true,
+        "hasUsage": true,
+        "usageNames": [
+          "日常对话",
+          "写代码",
+          "子任务",
+          "研究",
+          "看图",
+          "视频",
+          "语音",
+          "向量与嵌入",
+          "记忆整理",
+          "知识提炼",
+          "实体提炼",
+          "标签：local"
+        ],
+        "usageCount": 12
+      },
+      "radiusViolations": [],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1047,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 129987,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": []
+    }
+  },
+  "notes": [],
+  "fixtures": {
+    "catalog": 18,
+    "credentials": 18,
+    "searchStatus": 18
+  },
+  "finishedAt": "2026-10-28T04:35:18.273Z",
+  "summary": {
+    "total": 232,
+    "passed": 232,
+    "failed": 0,
+    "skipped": 0,
+    "screenshots": 106
+  }
+}

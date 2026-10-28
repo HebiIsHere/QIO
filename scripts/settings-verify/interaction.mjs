@@ -36,6 +36,13 @@ const allowFail = !!flag("allow-fail", false);
 mkdirSync(EVIDENCE_DIR, { recursive: true });
 
 const run = { label, startedAt: new Date().toISOString(), appUrl, checks: [], notes: [] };
+let fixturesReady = false;
+/** 失败/延迟场景会清掉 Fetch 路由（连同读取类 fixture 一起）；后续场景要重新装上。 */
+async function ensureFixtures(browser) {
+  if (fixturesReady) return;
+  await installFixtures(browser);
+  fixturesReady = true;
+}
 function record(scenario, name, ok, detail) {
   run.checks.push({ scenario, name, ok: !!ok, detail: detail === undefined ? null : detail });
   console.log("  " + (ok ? "[PASS]" : "[FAIL]") + " " + scenario + " / " + name + (ok ? "" : " :: " + JSON.stringify(detail).slice(0, 360)));
@@ -236,7 +243,7 @@ async function scenarioDiscardOnLeave(browser) {
 
 async function scenarioSaveSuccess(browser) {
   const scenario = "group-save-success";
-  await openSettingsStable(browser);
+  await ensureFixtures(browser);
   await openModelsAdvanced(browser);
   const found = await findNumberField(browser);
   const debug = await browser.evalJs("(() => ({ url: location.href, hasProbe: !!window.__stg, active: window.__stg ? window.__stg.activeCategory() : null, cats: window.__stg ? window.__stg.categories().map((c) => c.label) : null, probe: window.__stg ? window.__stg.findControl('返回条数') : null }))()");
@@ -269,7 +276,7 @@ async function scenarioSaveSuccess(browser) {
 
 async function scenarioSaveFailure(browser) {
   const scenario = "group-save-failure";
-  await openSettingsStable(browser);
+  await ensureFixtures(browser);
   await openModelsAdvanced(browser);
   const found = await findNumberField(browser);
   record(scenario, "group-field-found", !!found.label, found.info);
@@ -293,13 +300,13 @@ async function scenarioSaveFailure(browser) {
   record(scenario, "draft-kept-after-failure", String(valueNow) === String(target), { expected: target, actual: valueNow });
   record(scenario, "fake-write-injected", browser.log.some((entry) => entry.kind === "stub" && SETTINGS_WRITE(entry)), { writes: writesSince(browser, mark).map((entry) => entry.method + " " + entry.url) });
   for (const off of offs) off();
-  await browser.clearRoutes();
+  fixturesReady = false;
   await sleep(200);
 }
 
 async function scenarioLateResponse(browser) {
   const scenario = "late-response";
-  await openSettingsStable(browser);
+  await ensureFixtures(browser);
   await openModelsAdvanced(browser);
   const found = await findNumberField(browser);
   record(scenario, "group-field-found", !!found.label, found.info);
@@ -339,13 +346,72 @@ async function scenarioLateResponse(browser) {
   record(scenario, "newer-draft-still-marked-dirty", !!dirtyAfter && /未保存/.test(dirtyAfter), { dirtyAfter });
   record(scenario, "one-write-made", call >= 1, { writes: call });
   for (const off of offs) off();
-  await browser.clearRoutes();
+  fixturesReady = false;
   await sleep(200);
+}
+
+async function clickAnyLabel(browser, labels) {
+  for (const text of labels) {
+    const hit = await browser.evalJs("window.__stg.clickLabel(" + JSON.stringify(text) + ")");
+    if (hit?.ok) return hit;
+  }
+  return { ok: false, tried: labels };
+}
+
+/**
+ * 模型与服务的真实面板（B 交付）流程：正常内容 / 长表单 / 中央确认弹窗 / 用途候选。
+ * 只打开、不提交：不改真实数据，也不触发任何模型调用。
+ */
+async function scenarioModelsUi(browser) {
+  const scenario = "models-ui";
+  await ensureFixtures(browser);
+  await openModelsAdvanced(browser);
+  const state = await browser.evalJs("(() => { const panel = document.querySelector('[data-testid=models-panel]'); const placeholder = !!document.querySelector('[data-testid=models-panel-placeholder]'); const visible = panel ? window.__stg.visible(panel) : false; const text = panel ? window.__stg.norm(panel.innerText || '') : ''; const usageNames = panel ? [...panel.querySelectorAll('.row__name')].map((el) => window.__stg.norm(el.innerText || el.textContent || '')) : []; const cards = panel ? panel.querySelectorAll('.conn, [data-connection-card], .card').length : 0; return { panel: !!panel, placeholder, visible, textLength: text.length, hasKeyAccess: text.includes('Key接入与管理'), hasDefault: text.includes('默认模型'), hasUsage: text.includes('用途分配'), usageCount: usageNames.length, usageNames: usageNames.slice(0, 16), cards }; })()");
+  record(scenario, "real-panel-content", !!(state.panel && !state.placeholder && state.visible && state.hasKeyAccess && state.hasDefault && state.hasUsage && state.usageCount >= 8), state);
+  if (!(state.panel && !state.placeholder)) return;
+
+  // 长表单：添加 Key → KeyForm（只截图/断言字段，不填真实内容、不提交）
+  const openedForm = await clickAnyLabel(browser, ["添加 Key", "新建 Key", "添加连接", "接入新的服务商"]);
+  record(scenario, "key-form-opens", !!openedForm?.ok, openedForm);
+  await sleep(750);
+  // 「长表单」= 展开弹窗里的高级兼容入口后再量字段数
+  await browser.evalJs("(() => { const dialog = document.querySelector('.qio-modal, [role=dialog][aria-modal=true], .modal-mask .modal'); if (!dialog) return false; const btn = [...dialog.querySelectorAll('button, summary')].find((el) => window.__stg.visible(el) && /高级/.test(window.__stg.norm(el.innerText || ''))); if (btn) { btn.click(); return true; } return false; })()");
+  await sleep(450);
+  const form = await browser.evalJs("(() => { const dialog = document.querySelector('.qio-modal, [role=dialog][aria-modal=true], .modal-mask .modal'); const inputs = dialog ? [...dialog.querySelectorAll('input, textarea')].filter((el) => window.__stg.visible(el)) : []; const hasProvider = dialog ? !!dialog.querySelector('[role=combobox], .qio-select') : false; const submit = dialog ? [...dialog.querySelectorAll('button')].find((el) => el.type === 'submit' && window.__stg.visible(el)) : null; return { dialog: !!dialog, inputs: inputs.length, hasProvider, hasSubmit: !!submit, submitText: submit ? window.__stg.norm(submit.innerText || '') : '', labels: inputs.map((el) => el.getAttribute('aria-label') || el.placeholder || el.getAttribute('type') || 'input').slice(0, 12) }; })()");
+  record(scenario, "key-form-fields", !!(form.dialog && form.hasProvider && form.hasSubmit && form.inputs >= 2), form);
+  await browser.fill("input[aria-label*='API Key'], input[placeholder*='API Key'], .qio-modal input[type=password]", "fake-verification-only-not-a-real-key").catch(() => {});
+  await sleep(300);
+  // 关闭：优先 ×/关闭，再 取消；QModal 有退场动画，等到真正卸载
+  const closeFirst = await clickAnyLabel(browser, ["关闭", "取消"]);
+  await browser.waitFor("!document.querySelector('.qio-modal, .modal-mask .modal')", { timeout: 5000 }).catch(async () => {
+    await browser.pressKey("Escape");
+    await browser.waitFor("!document.querySelector('.qio-modal, .modal-mask .modal')", { timeout: 3000 }).catch(() => {});
+  });
+  const modalGone = await browser.evalJs("!document.querySelector('.qio-modal, .modal-mask .modal')");
+  record(scenario, "key-form-cancel", !!(closeFirst?.ok && modalGone), { closeFirst, modalGone });
+
+  // 中央确认弹窗：进入连接的「管理」页签 → 撤销密钥（只打开确认层，不确认）
+  const manageTab = await browser.evalJs("(() => { const buttons = [...window.__stg.root().querySelectorAll('button')].filter((el) => { if (!window.__stg.visible(el)) return false; const text = window.__stg.norm(el.innerText || ''); const inCard = !!el.closest('[data-testid=models-panel]'); return inCard && (text === '管理' || text.startsWith('管理')); }); if (!buttons.length) return { ok: false, seen: [...window.__stg.root().querySelectorAll('button')].filter((el) => window.__stg.visible(el)).map((el) => window.__stg.norm(el.innerText || '')).filter(Boolean).slice(-20) }; buttons[0].scrollIntoView({ block: 'center' }); buttons[0].click(); return { ok: true, text: window.__stg.norm(buttons[0].innerText || '') }; })()");
+  await sleep(420);
+  const danger = await clickAnyLabel(browser, ["撤销密钥", "删除连接"]);
+  await sleep(520);
+  const confirm = await browser.evalJs("(() => { const el = document.querySelector('.qio-confirm--layer, .qio-confirm-scrim'); return el && window.__stg.visible(el) ? { text: window.__stg.norm(el.innerText || '').slice(0, 160), hasCancel: !!el.querySelector('[data-qio-confirm-action=cancel]') } : null; })()");
+  record(scenario, "danger-confirm-layer", !!(manageTab?.ok && danger?.ok && confirm && confirm.hasCancel), { manageTab, danger, confirm });
+  await browser.pressKey("Escape");
+  await sleep(420);
+
+  // 用途分配：打开一条用途的候选模型（不为它写入任何值）
+  const usageButton = await clickAnyLabel(browser, ["指定模型"]);
+  await sleep(520);
+  const picker = await browser.evalJs("(() => { const el = document.querySelector('.picker'); return el && window.__stg.visible(el) ? { text: window.__stg.norm(el.innerText || '').slice(0, 220), options: el.querySelectorAll('button').length } : null; })()");
+  record(scenario, "usage-candidate-picker", !!(usageButton?.ok && picker && picker.options >= 1), { usageButton, picker });
+  await browser.pressKey("Escape");
+  await sleep(300);
 }
 
 async function scenarioSearch(browser) {
   const scenario = "search-locate";
-  await openSettingsStable(browser);
+  await ensureFixtures(browser);
   const opened = await browser.evalJs("window.__stg.openSearch()");
   record(scenario, "search-entry", !!opened?.found, opened);
   if (!opened?.found) return;
@@ -385,6 +451,7 @@ async function main() {
   await browser.setViewport(1440, 900);
   await browser.navigate(appUrl + "/", 2200);
   const fixtures = await installFixtures(browser);
+  fixturesReady = true;
   run.fixtures = fixtures.hits;
 
   const scenarios = [
@@ -394,6 +461,7 @@ async function main() {
     ["group-save-failure", scenarioSaveFailure],
     ["late-response", scenarioLateResponse],
     ["search-locate", scenarioSearch],
+    ["models-ui", scenarioModelsUi],
   ];
   const only = String(flag("only", ""));
   for (const [name, fn] of scenarios) {
@@ -408,6 +476,7 @@ async function main() {
     } catch (error) {
       record(name, "scenario-error", false, String(error?.message ?? error));
       try { await browser.clearRoutes(); } catch { /* 忽略 */ }
+      fixturesReady = false;
       try { await openSettingsStable(browser); } catch { /* 忽略 */ }
     }
   }

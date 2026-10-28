@@ -26,6 +26,7 @@ import {
   clickNavByText,
   categoryReport,
   sampleAnimations,
+  waitModelsPanel,
 } from "./lib/probe.mjs";
 import { installFixtures } from "./lib/fixtures.mjs";
 import { DEFAULT_VIEWPORTS, SETTINGS_CATEGORIES, SHOTS_DIR, EVIDENCE_DIR, stamp } from "./lib/env.mjs";
@@ -99,7 +100,7 @@ async function clickFirstLabel(browser, labels) {
 
 async function findConfirm(browser) {
   const attempts = [];
-  const opens = ["更多操作", "管理", "详情", "编辑"];
+  const opens = ["管理", "更多操作", "详情", "编辑", "概览"];
   for (const text of opens) {
     const opened = await browser.evalJs("window.__stg.clickLabel(" + JSON.stringify(text) + ")");
     attempts.push({ step: text, ok: !!opened?.ok });
@@ -184,6 +185,16 @@ async function runViewport(browser, vp, theme) {
   await browser.setStoredPreference("qio-theme", theme);
   await browser.setStoredPreference("qio-motion", "standard");
   await openSettings(browser, appUrl);
+  // B 的模型面板挂载时异步读目录，成功后会给「当前生效参数」补一行 tools.effective.usages。
+  // 结构签名必须等这份数据落定再采，否则同尺寸两次采样的 key 数量会不同（真实踩过）。
+  const factsSelector = "!!document.querySelector('[data-settings-key=\"tools.effective.usages\"]')";
+  entry.modelFactsReady = await browser.waitFor(factsSelector, { timeout: 12000 }).catch(() => false);
+  if (!entry.modelFactsReady) {
+    // 模型面板偶发读取超时：点一次「重新读取」再等，避免把加载态当成结构差异
+    await browser.evalJs("(() => { const panel = document.querySelector('[data-testid=models-panel]'); if (!panel) return false; const btn = [...panel.querySelectorAll('button')].find((el) => window.__stg.norm(el.innerText || '') === '重新读取'); if (btn) { btn.click(); return true; } return false; })()");
+    entry.modelFactsReady = await browser.waitFor(factsSelector, { timeout: 12000 }).catch(() => false);
+  }
+  record(scope, "model-facts-published", entry.modelFactsReady, { modelFactsReady: entry.modelFactsReady });
 
   const state = await probeState(browser);
   entry.signature = state.signatures;
@@ -211,8 +222,17 @@ async function runViewport(browser, vp, theme) {
       continue;
     }
     agg.catReachable.push(true);
-    await sleep(280);
+    // 模型与服务面板要等目录接口的 fixture 返回后才有内容，多等一会儿再判
+    await sleep(category.id === "models" ? 400 : 280);
+    if (category.id === "models" && !modelsPlaceholder) {
+      entry.modelsPanelWait = await waitModelsPanel(browser);
+    }
     const st = await probeState(browser);
+    if (category.id === "models" && !modelsPlaceholder) {
+      const modelsInfo = await browser.evalJs("(() => { const panel = document.querySelector('[data-testid=models-panel]'); const visible = panel ? window.__stg.visible(panel) : false; const text = panel ? window.__stg.norm(panel.innerText || '') : ''; const usageNames = panel ? [...panel.querySelectorAll('.row__name')].map((el) => window.__stg.norm(el.innerText || el.textContent || '')) : []; return { visible, textLength: text.length, hasKeyAccess: text.includes('Key接入与管理'), hasDefault: text.includes('默认模型'), hasUsage: text.includes('用途分配'), usageNames: usageNames.slice(0, 20), usageCount: usageNames.length }; })()");
+      record(scope, "models-panel-content", !!(modelsInfo.visible && modelsInfo.hasKeyAccess && modelsInfo.hasDefault && modelsInfo.hasUsage && modelsInfo.usageCount >= 8), modelsInfo);
+      entry.modelsPanel = modelsInfo;
+    }
     agg.hscroll.push(...st.hscroll.hard.map((item) => ({ cat: category.id, ...item })), ...st.hscroll.designed.map((item) => ({ cat: category.id, designed: true, ...item })));
     agg.native.push(...st.nativeControls.samples.map((item) => ({ cat: category.id, ...item })));
     agg.radius.push(...(st.radius.audit?.violations ?? []).map((item) => ({ cat: category.id, ...item })));
@@ -294,7 +314,7 @@ async function runViewport(browser, vp, theme) {
   } else {
   await clickCategory(browser, SETTINGS_CATEGORIES[1]);
   const formBefore = await browser.evalJs("window.__stg.root().querySelectorAll('input, textarea').length");
-  let openedForm = await clickFirstLabel(browser, ["新建 Key", "新建凭据", "添加 Key", "添加连接", "接入新的服务商", "新建连接", "连接新的服务商", "新建"]);
+  let openedForm = await clickFirstLabel(browser, ["添加 Key", "新建 Key", "新建凭据", "添加连接", "接入新的服务商", "新建连接", "连接新的服务商", "新建"]);
   if (!openedForm?.ok) {
     // 基线把 Key 管理放在独立的「凭据」分类里；新方案在「模型与服务」内。两种都要能走到。
     const navFallback = await clickNavByText(browser, "凭据");
@@ -305,7 +325,7 @@ async function runViewport(browser, vp, theme) {
   }
   await sleep(620);
   const formAfter = await browser.evalJs("window.__stg.root().querySelectorAll('input, textarea').length");
-  const modalVisible = await browser.evalJs("!!document.querySelector('.modal-mask .modal, [role=dialog][aria-modal=true], .qio-modal')");
+  const modalVisible = await browser.evalJs("!!document.querySelector('.modal-mask .modal, [role=dialog][aria-modal=true], .qio-modal, .qio-modal--layer')");
   await shot(browser, "settings-" + tag + "-longform-key");
   entry.screenshots += 1;
   record(scope, "long-form-opens", !!(openedForm?.ok && (modalVisible || formAfter > formBefore)), { openedForm, formBefore, formAfter, modalVisible });

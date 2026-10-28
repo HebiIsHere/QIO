@@ -94,10 +94,13 @@ const FLOWS = {
       const results = await browser.evalJs("window.__stg.searchResults()");
       if (!results?.length) throw new Error("搜索没有结果");
       await browser.evalJs("window.__stg.clickSearchResult(0)");
-      await sleep(1200);
-      const after = await browser.evalJs("window.__stg.activeCategory()");
+      // 高亮只持续 1.6s：点完尽快采一次，再等定位滚动落定
+      await sleep(360);
       const highlighted = await browser.evalJs("window.__stg.highlighted()");
-      return { query: "返回条数", hits: results.length, after, highlighted: highlighted?.length ?? 0 };
+      await sleep(760);
+      const after = await browser.evalJs("window.__stg.activeCategory()");
+      const highlightedAfter = await browser.evalJs("window.__stg.highlighted()");
+      return { query: "返回条数", hits: results.length, after, highlighted: (highlighted?.length ?? 0) || (highlightedAfter?.length ?? 0) };
     },
   },
   "key-flow": {
@@ -105,8 +108,14 @@ const FLOWS = {
     async run(browser) {
       await openSettings(browser, appUrl);
       await clickCategory(browser, SETTINGS_CATEGORIES[1]);
-      await sleep(500);
-      const labels = ["新建 Key", "新建凭据", "添加 Key", "接入新的服务商", "新建连接", "新建"];
+      // 等 B 的真实面板把「添加 Key」渲染出来（目录接口返回后才有）
+      for (let i = 0; i < 48; i += 1) {
+        const ready = await browser.evalJs("(() => { const panel = document.querySelector('[data-testid=models-panel]'); if (!panel) return false; return [...panel.querySelectorAll('button')].some((el) => window.__stg.visible(el) && window.__stg.norm(el.innerText || '') === '添加Key'); })()");
+        if (ready) break;
+        await sleep(250);
+      }
+      await sleep(300);
+      const labels = ["添加 Key", "新建 Key", "新建凭据", "接入新的服务商", "新建连接", "新建"];
       let opened = { ok: false };
       for (const text of labels) {
         opened = await browser.evalJs("window.__stg.clickLabel(" + JSON.stringify(text) + ")");
@@ -124,11 +133,9 @@ const FLOWS = {
       await sleep(900);
       // 假 Key：明确不是任何真实 Key（前缀 fake-），只用于展示表单流程
       const fakeKey = "fake-verification-only-not-a-real-key";
-      const filled = await browser.evalJs(
-        "(() => { const inputs = [...window.__stg.root().querySelectorAll('input[type=password], input[type=text]')].filter((el) => window.__stg.visible(el)); if (!inputs.length) return { ok: false }; const el = inputs[0]; el.focus(); window.__stg.fireInput(el, " + JSON.stringify(fakeKey) + "); return { ok: true, id: el.getAttribute('aria-label') || el.className }; })()",
-      );
+      const filled = await browser.evalJs("window.__stg.fillPasswordLike(" + JSON.stringify(fakeKey) + ")");
       await sleep(700);
-      for (const text of ["获取模型", "下一步", "连接并获取模型", "保存并验证", "连接", "保存"]) {
+      for (const text of ["保存并获取模型", "获取模型", "保存并验证", "下一步", "连接并获取模型", "连接", "保存"]) {
         const hit = await browser.evalJs("window.__stg.clickLabel(" + JSON.stringify(text) + ")");
         if (hit?.ok) break;
       }

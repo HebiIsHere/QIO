@@ -182,6 +182,16 @@ window.__stg = (() => {
     };
   }
 
+  /** 往「密码/Key 类」输入框写值（录屏用：只写假 Key，不提交）。 */
+  function fillPasswordLike(value) {
+    const list = [...document.querySelectorAll("input[type=password], input[aria-label*='Key'], input[placeholder*='Key'], input[placeholder*='key']")].filter(visible);
+    if (!list.length) return { ok: false, reason: "no-input" };
+    const el = list[0];
+    el.focus();
+    fireInput(el, value);
+    return { ok: true, id: el.getAttribute("aria-label") || el.className };
+  }
+
   function fireInput(el, value) {
     const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
@@ -587,7 +597,7 @@ window.__stg = (() => {
     const base = root();
     if (!base) return [];
     const counts = new Map();
-    for (const el of base.querySelectorAll(".set-section__head h2, .set-section__desc, .set-search__hint, h2, h3, p, .mode-desc, .mode-hint")) {
+    for (const el of base.querySelectorAll(".set-section__head h2, .set-section__desc, .set-search__hint, h2, h3, .panel__title, .section__title, .group__title")) {
       if (!visible(el)) continue;
       const text = norm(el.innerText || el.textContent || "");
       if (text.length < 10 || text.length > 400) continue;
@@ -607,7 +617,7 @@ window.__stg = (() => {
 
   return {
     norm, visible, root, desc, rectOf, isOrnament, ownText, allElements,
-    labelElement, rowFor, findControl, setControl, fireInput, menuOptions, clickOptionText, openSelect,
+    labelElement, rowFor, findControl, setControl, fireInput, fillPasswordLike, menuOptions, clickOptionText, openSelect,
     clickLabel, clickSwitch,
     categories, activeCategory, navInfo, panels,
     signature, nativeControls, horizontalScroll, topBar, focusInfo, animations, radiusAudit,

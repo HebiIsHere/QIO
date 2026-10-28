@@ -188,3 +188,17 @@ CDP `Page.startScreencast` 抓浏览器真实合成帧 → ffmpeg 编 mp4（**�
 - 部分检查依赖产品提供稳定钩子（`data-settings-key`、`data-settings-action`、
   `data-settings-fold-toggle`、`data-nav-layout`）；缺失时按回退选择器尽力读取，
   并在 `structure-hook-present` 里明确报出，不会假装通过。
+
+---
+
+## 9. 集成分支复跑（2026-10-28，qio-stg @ 06ee492f）
+
+- 目标：D 的脚本对集成分支（A 壳 + B 模型面板 + C 调用/搜索）重跑，验证占位消失后的真实面板。
+- 证据：docs/verification-shots-settings/integration-06ee492f/（截图 + report.json / report.md + interaction-report.json）、
+  docs/verification-video-settings/integration-06ee492f/（录屏 + record-report.json）。
+- 与 A 壳批次的差异：模型与服务里是 B 的真实面板（Key 接入 / 默认模型 / 12 行用途分配），
+  长表单（KeyForm）与中央确认弹窗（撤销密钥）不再跳过；深浅主题各跑四尺寸。
+- 新增检查：models-panel-content（Key 接入+默认模型+用途分配齐备、用途行 >= 8）、
+  models-ui 交互（真实面板内容 / Key 表单打开与关闭 / 撤销确认层 / 用途候选）。
+- 已知边界：读取类接口仍是浏览器侧 fixture；写请求除注入失败/延迟用例外打真实隔离后端；
+  Key 表单只打开与断言，不提交；不联网、不用真实 Key。

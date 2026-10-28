@@ -26,7 +26,7 @@ export async function openSettings(browser, appUrl, { wait = 900 } = {}) {
 }
 
 async function signatureKey(browser) {
-  return browser.evalJs("(() => { const s = window.__stg.signature(); return s.source + ':' + s.items.length + ':' + s.items.slice(0, 6).join('|'); })()");
+  return browser.evalJs("(() => { const s = window.__stg.signature(); return s.source + ':' + s.items.length + ':' + s.items.join('|'); })()");
 }
 
 export async function waitSignatureStable(browser, { rounds = 3, interval = 220 } = {}) {
@@ -83,6 +83,24 @@ const PROBE_SOURCE = [
   "  bodyTextSample: (document.body.innerText || '').slice(0, 400),",
   "}))()",
 ].join("\n");
+
+/**
+ * 等「模型与服务」真实面板把数据渲染出来（目录 fixture 返回、用途行出现）。
+ * 只等固定毫秒数会拍到加载态（真实踩过：480 宽与 light-1024 那两次）。
+ */
+export async function waitModelsPanel(browser, { timeout = 12000 } = {}) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const state = await browser.evalJs("(() => { const p = document.querySelector('[data-testid=models-panel]'); if (!p) return { ready: false, reason: 'panel-missing' }; const text = p.innerText || ''; if (/正在读取模型与服务设置/.test(text)) return { ready: false, reason: 'loading' }; const rows = p.querySelectorAll('.row__name').length; const buttons = [...p.querySelectorAll('button')].filter((el) => window.__stg.visible(el)).map((el) => window.__stg.norm(el.innerText || '')); return { ready: rows > 0 || buttons.includes('添加Key') || text.length > 600, reason: 'content', rows, textLength: text.length }; })()");
+    if (state?.ready) return state;
+    // 读取卡住时点一次面板自己的「重新读取」（不改产品逻辑，只驱动它重试一次）
+    if (state?.reason === "loading") {
+      await browser.evalJs("(() => { const panel = document.querySelector('[data-testid=models-panel]'); if (!panel) return false; const btn = [...panel.querySelectorAll('button')].find((el) => window.__stg.norm(el.innerText || '') === '重新读取' && !el.disabled); if (btn) { btn.click(); return true; } return false; })()").catch(() => {});
+    }
+    await new Promise((done) => setTimeout(done, 260));
+  }
+  return { ready: false, reason: "timeout" };
+}
 
 /** 按导航项文字点分类（用于「凭据」这类新方案里不再独立存在的兼容入口）。 */
 export async function clickNavByText(browser, text) {
