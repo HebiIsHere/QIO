@@ -1798,3 +1798,168 @@ MIGRATIONS.append(
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 COMPENSATION_VERSION = 72
 
+# ── 设置页改版（2026-10-28）：一 Key 多模型 / 用途分配 / 默认模型 ──────────────────
+# 契约：_STG-COMMON.md §6/§7（B 实现，A/C 消费）。
+#
+# 为什么不再用 credentials.tags 表达用途：
+#   基线把「这条 Key 用来干什么」塞在 tags 里，于是一把 Key 整体被某个用途占用；
+#   同一把 Key 下不同模型无法分给不同用途，同名模型来自不同 Key 时也无法区分。
+# 本轮拆成两张表：
+#   credential_models = 「这条连接下已知的模型」（一把 Key 多个模型）；
+#   model_usages      = 「用途 → (credential_id, model_id|null)」，model_id 为空 = 跟随默认。
+# 默认模型放 settings 的 model.default 键（JSON），与「哪条连接是默认连接」分开：
+#   前者回答「日常对话用哪一家的哪个模型」，后者沿用 credentials.is_default。
+#
+# 只追加、不删列、不改列、不搬密钥：credentials.default_model / tags 继续作为
+# 兼容回退读（C 的用途解析在显式分配之后才回退到它们）。
+_MODEL_CATALOG_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS credential_models (
+        id                 TEXT PRIMARY KEY,
+        credential_id      TEXT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
+        model_id           TEXT NOT NULL,
+        display_name       TEXT,
+        source             TEXT NOT NULL DEFAULT 'discovered',
+        capabilities       TEXT NOT NULL DEFAULT '[]',
+        verify_state       TEXT NOT NULL DEFAULT 'unverified',
+        verified_at        TEXT,
+        verify_error       TEXT,
+        verify_fingerprint TEXT,
+        context_window     INTEGER,
+        discovered_at      TEXT NOT NULL,
+        updated_at         TEXT NOT NULL,
+        UNIQUE (credential_id, model_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_usages (
+        id            TEXT PRIMARY KEY,
+        usage_key     TEXT NOT NULL UNIQUE,
+        credential_id TEXT REFERENCES credentials(id) ON DELETE CASCADE,
+        model_id      TEXT,
+        mode          TEXT NOT NULL DEFAULT 'inherit',
+        updated_at    TEXT NOT NULL
+    )
+    """,
+    # 按连接列模型（目录页与运行时解析都要按连接取）；按模型名检索（跨 Key 同名模型区分）。
+    "CREATE INDEX IF NOT EXISTS idx_credential_models_credential"
+    " ON credential_models(credential_id)",
+    "CREATE INDEX IF NOT EXISTS idx_credential_models_model ON credential_models(model_id)",
+    # usage_key 上的 UNIQUE 约束自带索引；再显式建一条同名索引，是为了让
+    # REQUIRED_OBJECTS 能按**对象名**核对它（UNIQUE 约束的隐式索引名字不可依赖）。
+    "CREATE INDEX IF NOT EXISTS idx_model_usages_usage_key ON model_usages(usage_key)",
+]
+
+# 回填（只跑一次，不放进补偿：补偿按既有契约只能是纯 DDL + 1 条幂等 seed）。
+# 1) 每条凭据的 default_model → credential_models(source='legacy')；
+# 2) tags → model_usages（显式指向「当时那条默认模型」，因为历史上这把 Key 就是整体
+#    服务这些用途的；main-loop 同时展开为 main-chat + general-chat，见 usages.py）；
+# 3) is_default=1 的那条 → settings 的 model.default 键。
+#
+# 三条边界（诚实优先）：
+# * default_model 为空的旧凭据**不回填模型行**：基线兜底模型是运行时猜的
+#   （providers.resolve_model），迁移里不复制猜测值 —— 猜错就是把内容发给没选过的模型；
+#   这类凭据的用途分配留空，由界面在发现/选择模型后补。
+# * verify_state 照抄旧结论但不伪造指纹（verify_fingerprint 留空）：
+#   旧结论属于旧配置，applies_to_current_config 会如实为 false，不会被当成「已验证这个模型」。
+# * 自定义标签原样保留为 custom:<tag>（不产生任何新执行能力，见 usages.py 说明）。
+_MODEL_CATALOG_BACKFILL: list[str] = [
+    """
+    INSERT OR IGNORE INTO credential_models (
+        id, credential_id, model_id, display_name, source, capabilities,
+        verify_state, verified_at, verify_error, verify_fingerprint,
+        context_window, discovered_at, updated_at
+    )
+    SELECT
+        'cm_legacy_' || c.id,
+        c.id,
+        trim(c.default_model),
+        NULL,
+        'legacy',
+        '[]',
+        CASE
+            WHEN c.verify_state IN ('verified', 'legacy') THEN c.verify_state
+            WHEN c.verify_state = 'failed' THEN 'failed'
+            ELSE 'unverified'
+        END,
+        c.verified_at,
+        c.verify_error,
+        NULL,
+        NULL,
+        c.updated_at,
+        c.updated_at
+    FROM credentials c
+    WHERE c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    """,
+    """
+    INSERT OR IGNORE INTO model_usages (id, usage_key, credential_id, model_id, mode, updated_at)
+    SELECT
+        'mu_legacy_' || c.id || '_' || m.usage_key,
+        m.usage_key,
+        c.id,
+        trim(c.default_model),
+        'explicit',
+        c.updated_at
+    FROM credentials c
+    CROSS JOIN json_each(c.tags) AS t
+    JOIN (
+        SELECT 'main-loop' AS tag, 'main-chat' AS usage_key
+        UNION ALL SELECT 'main-loop', 'general-chat'
+        UNION ALL SELECT 'subagent', 'subagent'
+        UNION ALL SELECT 'vision', 'vision'
+        UNION ALL SELECT 'video', 'video'
+        UNION ALL SELECT 'audio', 'audio'
+        UNION ALL SELECT 'research', 'research'
+        UNION ALL SELECT 'embedding', 'embedding'
+    ) AS m ON m.tag = t.value
+    WHERE c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    """,
+    """
+    INSERT OR IGNORE INTO model_usages (id, usage_key, credential_id, model_id, mode, updated_at)
+    SELECT
+        'mu_legacy_' || c.id || '_custom_' || t.value,
+        'custom:' || t.value,
+        c.id,
+        trim(c.default_model),
+        'explicit',
+        c.updated_at
+    FROM credentials c
+    CROSS JOIN json_each(c.tags) AS t
+    WHERE t.value NOT IN (
+            'main-loop', 'subagent', 'vision', 'video', 'audio', 'research', 'embedding'
+        )
+        AND trim(t.value) <> ''
+        AND c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    """,
+    """
+    INSERT OR IGNORE INTO settings (key, value, updated_at)
+    SELECT
+        'model.default',
+        json_object('credential_id', c.id, 'model_id', trim(c.default_model)),
+        c.updated_at
+    FROM credentials c
+    WHERE c.is_default = 1
+        AND c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    ORDER BY c.created_at, c.id
+    LIMIT 1
+    """,
+]
+
+# 只追加迁移 73：新表 + 索引 + 一次性回填。
+MIGRATIONS.append((73, list(_MODEL_CATALOG_DDL) + list(_MODEL_CATALOG_BACKFILL)))
+
+# 补偿入口（新，74）：补偿 72 的全部语句 + 迁移 73 的**建对象语句**。
+# 按既有契约，补偿只重放 DDL（不重放回填：数据迁移只跑一次；对象被删后补建对象即可）。
+MIGRATIONS.append(
+    (
+        74,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 72 for stmt in stmts]
+            + list(_MODEL_CATALOG_DDL)
+        ),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 74
+

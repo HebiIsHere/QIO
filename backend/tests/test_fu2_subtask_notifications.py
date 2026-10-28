@@ -261,8 +261,12 @@ def test_migrations_71_and_72_exist_and_are_ordered():
     assert targets == sorted(set(targets)), targets
     assert 71 in targets and 72 in targets
     assert 70 in targets, "历史迁移 70 必须保留（只追加新迁移）"
-    assert SCHEMA_VERSION == 72, f"SCHEMA_VERSION 应为 72，实际 {SCHEMA_VERSION}"
-    assert COMPENSATION_VERSION == 72, f"COMPENSATION_VERSION 应为 72，实际 {COMPENSATION_VERSION}"
+    # 迁移只追加：后续轮次继续在 71/72 之后登记新迁移，所以这里只断言「不低于 71/72」
+    # 且「补偿入口 = 最新迁移」，不再写死具体号（写死会让后来任何一次追加迁移都误报）。
+    assert SCHEMA_VERSION >= 72, f"SCHEMA_VERSION 应至少为 72，实际 {SCHEMA_VERSION}"
+    assert COMPENSATION_VERSION == SCHEMA_VERSION, (
+        f"COMPENSATION_VERSION 必须等于 SCHEMA_VERSION，实际 {COMPENSATION_VERSION}/{SCHEMA_VERSION}"
+    )
 
 
 def test_compensation_72_contains_new_table_and_is_additive():
@@ -341,8 +345,8 @@ def test_version_70_old_database_upgrades_to_72(tmp_path: Path):
     assert _current(conn) == 70
     recorded_before = _versions(conn)
 
-    assert apply_migrations(conn) == 72
-    assert _current(conn) == 72
+    assert apply_migrations(conn) == SCHEMA_VERSION
+    assert _current(conn) == SCHEMA_VERSION
     tables = {
         str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
@@ -356,7 +360,7 @@ def test_version_recorded_but_table_missing_is_repaired(tmp_path: Path):
     conn.execute("DROP TABLE subtask_notifications")
     assert "subtask_notifications" not in _tables(conn)
 
-    assert apply_migrations(conn) == 72, "版本已到 72 时仍要按对象复核并补偿"
+    assert apply_migrations(conn) == SCHEMA_VERSION, "版本已到最新时仍要按对象复核并补偿"
     assert "subtask_notifications" in _tables(conn)
     queue = SubtaskNotificationQueue(_manager(), conn=conn)
     assert queue.enqueue("task_repaired", _record("task_repaired")) is True
