@@ -1488,8 +1488,13 @@ class AppContext:
         )
 
     def _record_usage(self, target: UsageTarget) -> None:
-        """记下解析结论（不记密钥）；降级要留痕，否则「静默回退」就真的静默了。"""
+        """记下解析结论（不记密钥）；降级要留痕，否则「静默回退」就真的静默了。
+
+        解析成功时清掉这个用途上一次的「不可用」记录：用户修好凭据之后，界面/事件
+        不能再拿旧原因说事（否则「主对话」明明恢复了，失败提示却还挂着旧理由）。
+        """
         self.usage_targets[target.usage_key] = target
+        self.usage_unavailable.pop(target.usage_key, None)
         if target.degraded:
             logger.warning(
                 "用途 %s 的默认模型不可用（%s），已回退到 %s/%s",
