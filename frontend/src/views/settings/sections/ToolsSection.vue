@@ -186,10 +186,11 @@ onMounted(() => {
 
 <template>
   <section class="set-section" data-settings-section="tools" aria-label="工具与权限设置">
-    <header class="set-section__head">
-      <h2>权限</h2>
-      <p class="set-section__desc">权限模式决定 QIO 能直接做什么、什么必须经过你确认。</p>
-    </header>
+    <!--
+      这里**不再**写自己的「权限」标题与说明：PermissionModeSettings 自带标题、
+      说明与三模式选项，写在外面会让同一句说明在页面上出现两次（实测截图
+      settings-dark-1440x900-cat-tools.png）。规则本身仍由该组件维护，未改。
+    -->
     <!-- 复用既有组件：三模式、旧值映射与「只有用户能改」的规则保持不变 -->
     <div data-settings-key="tools.permission">
       <PermissionModeSettings />

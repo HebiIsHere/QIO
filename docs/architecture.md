@@ -459,10 +459,18 @@ backend/evals/*.jsonl  →  agent/eval/run.py  →  指标 JSON  →  与 backen
 | --- | --- |
 | 对话与记忆 | `messages`、`fragments`、`memory_index` |
 | 知识与图 | `knowledge`、`nodes`、`edges`、`entity_mentions`、`entity_cards`、`cursor` |
-| 凭据 | `credentials`、`credential_audit` |
+| 凭据 | `credentials`（一条连接 = 一把 Key）、`credential_audit` |
+| 模型与用途 | `credential_models`（一条连接下已知的模型）、`model_usages`（用途 → 连接 + 模型） |
 | 检索 | `embeddings` |
 | 工具 | `tools`、`tool_calls` |
 | 运行 | `settings`、`turn_traces`、`schema_version` |
+
+**模型与用途的关系（2026-10-28）**：一条 `credentials` 行是一条**连接**（一把 Key，含地址 / 协议 / 用量上限）；
+它下面可以有多个模型（`credential_models`），同一模型可以被多个**用途**使用（`model_usages`），
+同一把 Key 下不同模型也可以分给不同用途。默认模型存在设置键 `model.default`（连接 + 模型）。
+用量账本只挂在连接上：**不按模型复制额度、不重置用量**。`model_usages.mode` 区分
+`explicit`（用户显式指定，不可用时如实失败）、`legacy`（迁移回填的历史标签映射，只保留
+可见性与映射，不锁定模型）与 `inherit`（跟随默认）。
 
 归档策略：消息原文超过冷归档期限后 gzip 归档，SQLite 保留元数据与归档引用；摘要、索引与知识永久保留。
 

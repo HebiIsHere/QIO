@@ -11,6 +11,17 @@
   gap: 26px;
   align-items: flex-start;
   --set-nav-width: 178px;
+  /*
+   * 设置页内的圆角档位收敛到唯一令牌（14px）。
+   *
+   * 复用的共享组件（例如权限模式）用的是全局 `--r-xs/--r-sm/--r-md`（6/8/10px），
+   * 挂在设置页里就会出现 10px 与 6px 混排，违反「设置页内有圆角的界面组件统一 14px」。
+   * 这里只在本页作用域内重映射这三档：其它页面照旧，共享组件自身一行不用改。
+   * `--r-pill`（胶囊 / 圆形）**不**覆盖 —— 那是形状，不是圆角档位。
+   */
+  --r-xs: var(--qio-ui-radius);
+  --r-sm: var(--qio-ui-radius);
+  --r-md: var(--qio-ui-radius);
 }
 /* 窄窗：只把导航容器换成顶部布局；内容 DOM 与顺序完全不变（同一份模板） */
 .qio-settings[data-nav-layout="top"] {
