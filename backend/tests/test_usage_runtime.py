@@ -127,7 +127,7 @@ def _grant(ctx, key_id: str, *, tags=None, model: str = "gpt-x", budget=None) ->
 
 
 def _set_default(ctx, credential_id: str, model_id: str) -> None:
-    """写默认模型，并补一条 credential_models 行（数据处理层核对模型归属）。"""
+    """写默认模型（同时补 credential_models 行：数据层按「这个模型有没有记录」判可用）。"""
     _catalog_tables(ctx.conn)
     now = "2026-10-28T00:00:00+00:00"
     ctx.conn.execute(
@@ -135,7 +135,7 @@ def _set_default(ctx, credential_id: str, model_id: str) -> None:
         " verify_state, discovered_at, updated_at)"
         " VALUES (?, ?, ?, 'manual', '[]', 'verified', ?, ?)"
         " ON CONFLICT(credential_id, model_id) DO NOTHING",
-        ("cm_" + credential_id + "_" + model_id, credential_id, model_id, now, now),
+        (f"cm_{credential_id}_{model_id}", credential_id, model_id, now, now),
     )
     ctx.conn.commit()
     ctx.settings_store.set(
@@ -482,3 +482,55 @@ def test_embedding_impact_reports_facts_only(ctx):
     assert facts["follows_existing"] is False
     assert facts["assignment"]["model_id"] == "text-embedding-3-small"
     assert facts["reindex_required"] is True
+
+
+async def test_recovered_usage_clears_stale_unavailable_reason(ctx, probe_counter):
+    """用户修好凭据后，旧原因必须消失（否则界面一直挂着过期失败）。"""
+    _grant(ctx, "main-key", model="gpt-main")
+    _grant(ctx, "pinned-key", model="gpt-pinned")
+    ctx.credentials.set_enabled("pinned-key", False)
+    _assign(ctx.conn, "main-chat", "pinned-key", "gpt-pinned")
+
+    assert await ctx.build_adapter() is None
+    assert "main-chat" in ctx.usage_unavailable
+
+    ctx.credentials.set_enabled("pinned-key", True)
+    adapter = await ctx.build_adapter()
+    assert adapter is not None and adapter.key_id == "pinned-key"
+    assert "main-chat" not in ctx.usage_unavailable
+    assert ctx.usage_targets["main-chat"].source == SOURCE_EXPLICIT
+
+
+async def test_drain_dispatches_entities_to_its_own_adapter(ctx, monkeypatch):
+    """实体提炼同样拿到自己的 adapter（三条派生都按 kind 分派，不是只分两条）。"""
+    from agent.services import derived_tasks
+
+    class _Task:
+        kind = derived_tasks.KIND_ENTITIES
+        id = "task_entities"
+        fragment_id = "frag-1"
+        content_version = 1
+        claim_generation = 1
+
+    pending = [_Task()]
+
+    def _claim(conn, limit, kinds):
+        taken = [t for t in pending if t.kind in kinds]
+        pending[:] = [t for t in pending if t not in taken]
+        return taken
+
+    monkeypatch.setattr(derived_tasks, "claim_due", _claim)
+    monkeypatch.setattr(ctx.memory_lifecycle, "backfill_entity_tasks", lambda limit=2: 0)
+    seen: list[object] = []
+
+    async def entities_runner(task, adapter, *, tracer=None):
+        seen.append(adapter)
+        return True
+
+    monkeypatch.setattr(ctx.memory_lifecycle, "run_entities_task", entities_runner)
+    own = object()
+    done = await ctx.memory_lifecycle.drain_derived_tasks(
+        object(), adapters={"entities": own}, limit=5
+    )
+    assert done == 1
+    assert seen == [own]
