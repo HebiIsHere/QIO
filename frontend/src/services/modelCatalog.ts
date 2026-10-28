@@ -53,6 +53,28 @@ interface RawResolvedTarget {
   credential_name?: string;
 }
 
+/**
+ * 日常对话合并行的「实际生效目标」（GET /api/models/catalog 的 effective 字段）。
+ *
+ * 由后端用与运行时**同一个** resolve_shared_target 计算（general-chat 显式优先），
+ * 前端只展示、不自己再猜一遍优先级——两份判断分叉正是「显示一个、实际调用另一个」
+ * 那个 bug 的来源。老后端不返回这个字段时按 null 处理（回退 resolved）。
+ */
+interface RawEffectiveTarget {
+  ok: boolean;
+  usage_key: string;
+  credential_id: string | null;
+  model_id: string | null;
+  source: string;
+  matched_usage_key: string;
+  usable: boolean;
+  unavailable_reason: string;
+  reason_code: string;
+  detail_code: string;
+  degraded?: boolean;
+  degrade_reason?: string;
+}
+
 interface RawUsage {
   usage_key: string;
   label: string;
@@ -67,6 +89,8 @@ interface RawUsage {
   daily?: boolean;
   /** 老后端不返回；缺省按 `model` 处理（不因为缺字段就把用途误判成未接通）。 */
   delivery?: string;
+  /** main-chat / general-chat 才有：真实生效目标；其它用途为 undefined。 */
+  effective?: RawEffectiveTarget | null;
 }
 
 interface RawCatalogResponse {
@@ -140,6 +164,22 @@ export interface ResolvedTarget {
   credentialName: string;
 }
 
+/** 真实生效目标（合并行展示用）：与后端运行时解析结果一致，不是前端推断。 */
+export interface EffectiveTarget {
+  ok: boolean;
+  usageKey: string;
+  credentialId: string | null;
+  modelId: string | null;
+  source: string;
+  matchedUsageKey: string;
+  usable: boolean;
+  unavailableReason: string;
+  reasonCode: string;
+  detailCode: string;
+  degraded: boolean;
+  degradeReason: string;
+}
+
 export interface UsageAssignment {
   usageKey: string;
   label: string;
@@ -150,6 +190,11 @@ export interface UsageAssignment {
   followsDefault: boolean;
   inheritsOk: boolean;
   resolved: ResolvedTarget | null;
+  /**
+   * 只有 main-chat / general-chat 才有：后端算好的真实生效目标。
+   * 合并行优先显示它，没有时回退 `resolved`（老后端兼容）。
+   */
+  effective?: EffectiveTarget | null;
   note: string;
   daily: boolean;
   /**
@@ -263,6 +308,24 @@ function toResolvedTarget(raw: RawResolvedTarget | null): ResolvedTarget | null 
   };
 }
 
+function toEffectiveTarget(raw: RawEffectiveTarget | null | undefined): EffectiveTarget | null {
+  if (!raw || typeof raw.ok !== "boolean") return null;
+  return {
+    ok: raw.ok,
+    usageKey: raw.usage_key,
+    credentialId: raw.credential_id,
+    modelId: raw.model_id,
+    source: raw.source || "",
+    matchedUsageKey: raw.matched_usage_key || raw.usage_key,
+    usable: raw.usable,
+    unavailableReason: raw.unavailable_reason || "",
+    reasonCode: raw.reason_code || "",
+    detailCode: raw.detail_code || "",
+    degraded: Boolean(raw.degraded),
+    degradeReason: raw.degrade_reason || "",
+  };
+}
+
 function toUsage(raw: RawUsage): UsageAssignment {
   return {
     usageKey: raw.usage_key,
@@ -274,6 +337,7 @@ function toUsage(raw: RawUsage): UsageAssignment {
     followsDefault: raw.follows_default,
     inheritsOk: raw.inherits_ok,
     resolved: toResolvedTarget(raw.resolved),
+    effective: toEffectiveTarget(raw.effective),
     note: raw.note || "",
     daily: raw.daily !== false,
     delivery:
@@ -398,6 +462,32 @@ export const modelCatalogApi = {
     return {
       ok: raw.ok,
       usage: raw.usage ?? null,
+      usages: (raw.usages || []).map(toUsage),
+    };
+  },
+
+  /**
+   * 一次原子保存多项用途分配（合并行必须整体成功或整体失败）。
+   *
+   * 为什么不能继续循环 `setUsage`：两次顺序请求会在第二次失败时留下半个配置
+   * （主对话换了、通用对话没换）。后端在**一个 SQLite transaction** 内写完整批，
+   * 任一项失败整批回滚；前端这里只发**一次**请求，不自己拼回滚。
+   */
+  async setUsages(payload: {
+    assignments: { usageKey: string; credentialId: string | null; modelId: string | null }[];
+  }): Promise<{ ok: boolean; usages: UsageAssignment[] }> {
+    const raw = await request<{ ok: boolean; usages?: RawUsage[] }>("/api/models/usages", {
+      method: "POST",
+      body: JSON.stringify({
+        assignments: payload.assignments.map((item) => ({
+          usage_key: item.usageKey,
+          credential_id: item.credentialId,
+          model_id: item.modelId,
+        })),
+      }),
+    });
+    return {
+      ok: raw.ok,
       usages: (raw.usages || []).map(toUsage),
     };
   },

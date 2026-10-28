@@ -55,7 +55,11 @@ def register_model_routes(app: Any, ctx: Any) -> None:
         GET 可能被自动重试，带网络副作用的 GET 会让「刷新」变成不可控的重复探测。
         真正的刷新走 POST /api/models/discover（用户显式动作）。
         """
-        result = _store(ctx).catalog()
+        from agent.services.model_usage import attach_effective_chat_target
+
+        # effective 用与运行时**同一个** resolve_shared_target 计算（合并行实际生效目标）：
+        # 目录显示的目标必须就是真实调用会用的那个，否则「显示一个、调用另一个」。
+        result = attach_effective_chat_target(ctx, _store(ctx).catalog())
         result["refresh_requested"] = bool(refresh)
         return result
 
@@ -112,6 +116,26 @@ def register_model_routes(app: Any, ctx: Any) -> None:
             "resolved": usages.get(str(assignment["usage_key"]), {}).get("resolved"),
             "usages": list(usages.values()),
         }
+
+    @app.post("/api/models/usages")
+    async def models_set_usages(body: dict) -> dict:
+        """一次原子保存多项用途分配（合并行必须整体成功或整体失败）。
+
+        前端把 main-chat / general-chat 合并成一行，一次选择要写两个 key：
+        分两次请求会在第二次失败时留下半个配置，所以这里在**一个 SQLite
+        transaction** 内写完整批；任一项校验失败（用途未知 / 连接不存在 /
+        连接与模型不成对）整批回滚并返回明确 4xx。
+        """
+        from agent.services.model_usage import save_assignments
+
+        store = _store(ctx)
+        try:
+            return save_assignments(store, body.get("assignments"))
+        except KeyError as exc:
+            message = exc.args[0] if exc.args else str(exc)
+            raise HTTPException(status_code=404, detail=str(message)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/models/default")
     async def models_set_default(body: dict) -> dict:

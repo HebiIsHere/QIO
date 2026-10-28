@@ -25,6 +25,7 @@ import {
   modelCatalogApi,
   type CatalogResponse,
   type ModelConnection,
+  type UsageAssignment,
 } from "../../services/modelCatalog";
 // A 的「工具与权限 → 当前生效参数」只读区的数据入口（跨分区共享的真实值，不是草稿）。
 import { setModelFacts } from "../../views/settings/modelFacts";
@@ -49,6 +50,16 @@ const usageSeq = new Map<string, number>();
 
 const connections = ref<ModelConnection[]>([]);
 
+/** 共用同一条调用路径的两个日常入口（合并成一行显示 / 保存）。 */
+const MERGED_CHAT_KEYS = ["main-chat", "general-chat"];
+
+/** 只读区展示用的用途状态（沿用后端 delivery / followsDefault 事实，不新增判断）。 */
+function factStatus(usage: UsageAssignment): "unsupported" | "existing" | "follow" | "explicit" {
+  if (usage.delivery === "unsupported") return "unsupported";
+  if (usage.delivery === "existing") return "existing";
+  return usage.followsDefault ? "follow" : "explicit";
+}
+
 /**
  * 把「已保存并真实生效」的默认模型与各用途实际使用的模型/Key 交给 A 的只读区。
  *
@@ -62,6 +73,22 @@ function publishModelFacts() {
     if (!credentialId) return null;
     return current.connections.find((item) => item.credentialId === credentialId) ?? null;
   };
+  /**
+   * 合并行的实际生效目标：优先本行 effective，其次兄弟行的（两者由后端同一份
+   * resolve_shared_target 算出，真实后端两个 key 都会带上）。
+   */
+  const effectiveOf = (usage: UsageAssignment) => {
+    if (usage.effective) return usage.effective;
+    const siblingKey =
+      usage.usageKey === "main-chat"
+        ? "general-chat"
+        : usage.usageKey === "general-chat"
+          ? "main-chat"
+          : "";
+    if (!siblingKey) return null;
+    const sibling = current.usages.find((item) => item.usageKey === siblingKey);
+    return sibling?.effective ?? null;
+  };
   try {
     setModelFacts({
       defaultModel: current.default
@@ -74,7 +101,49 @@ function publishModelFacts() {
           }
         : null,
       usages: current.usages.map((usage) => {
-        // 跟随默认的用途以「后端解析后的真实目标」为准；显式分配的直接用分配值。
+        // 合并行（main-chat / general-chat）以**后端算好的 effective** 为准：
+        // 它与真实运行规则是同一份（general-chat 显式优先），不能再拿 main-chat
+        // 自己的 resolved 冒充「当前实际使用」——两份配置不一致时那会显示一个、
+        // 实际调用另一个。effective 不可用时如实说不可用，不显示旧的 resolved 目标。
+        if (MERGED_CHAT_KEYS.includes(usage.usageKey)) {
+          const merged = effectiveOf(usage);
+          if (merged) {
+            if (!merged.ok || !merged.usable) {
+              return {
+                usageKey: usage.usageKey,
+                label: usage.label,
+                followsDefault: false,
+                credentialId: null,
+                modelId: null,
+                connectionName: null,
+                providerName: null,
+                resolved: null,
+                note:
+                  "实际生效目标不可用：" +
+                  (merged.unavailableReason || "运行时没有解析到可用目标"),
+                status: factStatus(usage),
+              };
+            }
+            const effectiveConnection = connectionOf(merged.credentialId);
+            return {
+              usageKey: usage.usageKey,
+              label: usage.label,
+              // 只有真正落在默认模型 / 政策回退时才算「跟随默认」。
+              followsDefault: merged.source === "default" || merged.source === "policy",
+              credentialId: merged.credentialId,
+              modelId: merged.modelId,
+              connectionName: effectiveConnection?.name || null,
+              providerName: effectiveConnection?.providerName || null,
+              resolved:
+                merged.credentialId && merged.modelId
+                  ? { credentialId: merged.credentialId, modelId: merged.modelId }
+                  : null,
+              note: usage.note,
+              status: factStatus(usage),
+            };
+          }
+        }
+        // 其它用途 / 老后端：跟随默认的以「后端解析后的真实目标」为准，显式分配直接用分配值。
         const targetId = usage.resolved?.credentialId ?? usage.credentialId ?? null;
         const connection = connectionOf(targetId);
         return {
@@ -95,14 +164,7 @@ function publishModelFacts() {
           // 只读区要能区分「分配会生效」「沿用现有处理方式」「当前未接通」，
           // 否则视频/语音/嵌入会显示成「尚未解析」，看起来像还没加载完。
           note: usage.note,
-          status:
-            usage.delivery === "unsupported"
-              ? ("unsupported" as const)
-              : usage.delivery === "existing"
-                ? ("existing" as const)
-                : usage.followsDefault
-                  ? ("follow" as const)
-                  : ("explicit" as const),
+          status: factStatus(usage),
         };
       }),
     });
@@ -172,13 +234,15 @@ async function assignUsage(
     pendingRefs.value = [...pendingRefs.value, referenced];
   }
   try {
-    for (const usageKey of keys) {
-      await modelCatalogApi.setUsage({
+    // 一次请求整体写：合并行（main-chat + general-chat）**不能**分成两次保存 ——
+    // 第二次失败会留下半个配置；后端在一个 SQLite transaction 里全写或全回滚。
+    await modelCatalogApi.setUsages({
+      assignments: keys.map((usageKey) => ({
         usageKey,
         credentialId: target?.credentialId ?? null,
         modelId: target?.modelId ?? null,
-      });
-    }
+      })),
+    });
     if (usageSeq.get(primary) === seq) {
       await reload();
       // 同上：用途分配保存成功后同步一次真实值（失败时不写，保留上次已知值）。

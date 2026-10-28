@@ -14,7 +14,12 @@
 import { computed, ref } from "vue";
 import CandidatePicker from "./CandidatePicker.vue";
 import QConfirm from "../ui/QConfirm.vue";
-import type { CatalogResponse, ModelConnection, UsageAssignment } from "../../services/modelCatalog";
+import type {
+  CatalogResponse,
+  EffectiveTarget,
+  ModelConnection,
+  UsageAssignment,
+} from "../../services/modelCatalog";
 
 const props = defineProps<{
   connections: ModelConnection[];
@@ -40,6 +45,10 @@ interface Row {
   /** 保存时一起写的用途 key（日常对话两个 key 合并为一行） */
   keys: string[];
   primary: UsageAssignment;
+  /** 这一行包含的全部用途（合并行 = main-chat + general-chat） */
+  usages: UsageAssignment[];
+  /** 后端算好的真实生效目标；只有合并行会有（老后端可能是 null） */
+  effective: EffectiveTarget | null;
   label: string;
   subtitle: string;
   kind: string;
@@ -61,6 +70,9 @@ const rows = computed<Row[]>(() => {
       out.push({
         keys: general ? ["main-chat", "general-chat"] : ["main-chat"],
         primary: usage,
+        usages: general ? [usage, general] : [usage],
+        // 后端用与运行时同一份 resolve_shared_target 算出的真实生效目标。
+        effective: usage.effective ?? general?.effective ?? null,
         label: "日常对话",
         subtitle: general ? "主对话 / 通用对话合并显示" : "主对话",
         kind: usage.kind,
@@ -73,6 +85,8 @@ const rows = computed<Row[]>(() => {
     out.push({
       keys: [usage.usageKey],
       primary: usage,
+      usages: [usage],
+      effective: usage.effective ?? null,
       label: usage.label,
       subtitle: "",
       kind: usage.kind,
@@ -118,13 +132,72 @@ function confirmEmbedding() {
   if (pending) emit("assign", pending.row.keys, pending.target);
 }
 
+/**
+ * 合并行是否「跟随默认」：两个 key 都不是显式指定才算。
+ *
+ * 只看 main-chat 会漏掉「main-chat 跟随默认、general-chat 显式指定」这种合法组合：
+ * 那时实际调用的是 general-chat，恢复按钮却会因为 main-chat 跟着默认而消失。
+ */
 function isFollowing(row: Row): boolean {
-  return row.primary.followsDefault;
+  return row.usages.every((usage) => usage.followsDefault);
+}
+
+function connectionNameOf(credentialId: string | null | undefined): string {
+  if (!credentialId) return "";
+  return props.connections.find((item) => item.credentialId === credentialId)?.name ?? "";
+}
+
+interface RowTarget {
+  credentialId: string;
+  modelId: string;
+  credentialName: string;
+  usable: boolean;
+  unavailableReason: string;
+}
+
+/**
+ * 这一行实际会打到哪：优先后端算好的 **effective**（与运行时同一份规则，
+ * general-chat 显式优先），没有时回退 resolved（老后端兼容）。
+ */
+function targetOf(row: Row): RowTarget | null {
+  const effective = row.effective;
+  if (effective) {
+    if (!effective.ok || !effective.credentialId || !effective.modelId) return null;
+    return {
+      credentialId: effective.credentialId,
+      modelId: effective.modelId,
+      credentialName:
+        connectionNameOf(effective.credentialId) || row.primary.resolved?.credentialName || "",
+      usable: effective.usable,
+      unavailableReason: effective.unavailableReason,
+    };
+  }
+  const resolved = row.primary.resolved;
+  if (!resolved) return null;
+  return {
+    credentialId: resolved.credentialId,
+    modelId: resolved.modelId,
+    credentialName: resolved.credentialName,
+    usable: resolved.usable,
+    unavailableReason: resolved.unavailableReason,
+  };
+}
+
+/** 这一行当前不可用的真实原因（effective 不可用时以后端原话为准）。 */
+function unavailableReasonOf(row: Row): string {
+  const effective = row.effective;
+  if (effective && (!effective.ok || !effective.usable)) {
+    return effective.unavailableReason || "运行时没有解析到可用目标";
+  }
+  const target = targetOf(row);
+  return target && !target.usable ? target.unavailableReason : "";
 }
 
 function resolvedText(row: Row): string {
-  if (row.primary.resolved) {
-    return row.primary.resolved.credentialName + " · " + row.primary.resolved.modelId;
+  const target = targetOf(row);
+  if (target) {
+    const name = target.credentialName || target.credentialId;
+    return name + " · " + target.modelId;
   }
   // 视频 / 语音 / 嵌入没有显式指定时没有目标：「沿用现有处理方式」由行内标记说明，
   // 目标与状态不再各重复一遍同一句话（同一行曾出现三次）。
@@ -133,13 +206,15 @@ function resolvedText(row: Row): string {
 }
 
 function statusText(row: Row): string {
-  if (!row.primary.resolved) return "";
-  return row.primary.resolved.usable ? "当前可用" : "当前不可用";
+  const target = targetOf(row);
+  if (!target) return row.effective && !row.effective.ok ? "当前不可用" : "";
+  return target.usable ? "当前可用" : "当前不可用";
 }
 
 function statusTone(row: Row): string {
-  if (!row.primary.resolved) return "quiet";
-  return row.primary.resolved.usable ? "ok" : "err";
+  const target = targetOf(row);
+  if (!target) return row.effective && !row.effective.ok ? "err" : "quiet";
+  return target.usable ? "ok" : "err";
 }
 
 /**
@@ -171,7 +246,7 @@ function noteText(row: Row): string {
 const sharedNotes = computed(() => {
   const counts = new Map<string, number>();
   for (const row of rows.value) {
-    if (!isFollowing(row) || row.primary.resolved) continue;
+    if (!isFollowing(row) || targetOf(row)) continue;
     const note = (row.note || "").trim();
     if (!note) continue;
     counts.set(note, (counts.get(note) ?? 0) + 1);
@@ -218,8 +293,8 @@ const usageError = computed(() => props.errors ?? {});
           <div class="row__target mono">
             <span v-if="resolvedText(row)">{{ resolvedText(row) }}</span>
             <span v-if="statusText(row)" class="qio-state" :class="statusTone(row)">{{ statusText(row) }}</span>
-            <span v-if="row.primary.resolved && !row.primary.resolved.usable && row.primary.resolved.unavailableReason" class="row__reason">
-              不可用：{{ row.primary.resolved.unavailableReason }}
+            <span v-if="unavailableReasonOf(row)" class="row__reason">
+              不可用：{{ unavailableReasonOf(row) }}
             </span>
           </div>
           <p v-if="noteText(row)" class="row__note">{{ noteText(row) }}</p>
