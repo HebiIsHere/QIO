@@ -247,6 +247,40 @@ export interface SearchSettings {
   max_fetch_chars: number;
 }
 
+/**
+ * 联网搜索通道状态（可选端点，由 C 提供后端）。
+ *
+ * 只描述「是否配置 / 是否检查过 / 检查结果」，**不包含任何密钥**。
+ * 形状按前端需要的字段做最小约定，后端多返回的字段忽略：
+ * 调用方拿不到该端点（旧后端 / 404）时降级为只显示「已配置 / 未配置」，
+ * 绝不把「已配置」显示成「检查通过」。
+ */
+export interface SearchChannelStatus {
+  /** keyless | bocha | searxng */
+  channel: string;
+  configured: boolean;
+  /** 是否做过真实连接检查 */
+  checked?: boolean;
+  /** 检查结果；只有 checked=true 时才有意义 */
+  ok?: boolean;
+  /** 失败原因（不含密钥） */
+  reason?: string;
+  detail?: string;
+}
+
+export interface SearchStatusResponse {
+  channels?: SearchChannelStatus[];
+  /** 最近一次检查时间（ISO 字符串，可选） */
+  checked_at?: string;
+}
+
+export interface SearchCheckResponse {
+  ok?: boolean;
+  channels?: SearchChannelStatus[];
+  message?: string;
+  error?: string;
+}
+
 export interface ComputerSettings {
   root_dir: string;
   permission_mode: string;
@@ -285,6 +319,12 @@ export interface ToolRecordFull extends ToolRecordPreview {
 export interface ToolHistorySettings {
   record_outputs: boolean;
   output_retention_days: number;
+  /**
+   * 记录保留天数（0 = 永久保留，也是默认值）：到期删除**整条**工具记录。
+   * 与 output_retention_days（只清空输出全文）是两件事。
+   * 可选：旧后端不返回该字段时前端按 0（永久）降级，不假装清理过。
+   */
+  record_retention_days?: number;
   /** 保存设置时顺带清掉的输出条数（只有 PUT 会带） */
   purged?: number;
 }
@@ -1542,6 +1582,7 @@ export const api = {
   updateToolHistorySettings: (body: {
     record_outputs?: boolean;
     output_retention_days?: number;
+    record_retention_days?: number;
   }) =>
     request<ToolHistorySettings>("/api/settings/tools", {
       method: "PUT",
@@ -1560,6 +1601,17 @@ export const api = {
     request<SearchSettings>("/api/settings/search", {
       method: "PUT",
       body: JSON.stringify(body),
+    }),
+  /**
+   * 联网搜索通道状态（可选端点，C 提供）：只反映「已配置 / 是否检查过 / 检查结果」。
+   * 旧后端没有该端点时调用方捕获错误并降级，不据此判断通道不可用。
+   */
+  getSearchStatus: () => request<SearchStatusResponse>("/api/settings/search/status"),
+  /** 真实连接检查（低影响：打到各通道端点，不做全量抓取） */
+  checkSearch: () =>
+    request<SearchCheckResponse>("/api/settings/search/check", {
+      method: "POST",
+      timeoutMs: API_TIMEOUT_MS.long,
     }),
   getOnboardingStatus: () =>
     request<OnboardingStatus>("/api/onboarding/status"),

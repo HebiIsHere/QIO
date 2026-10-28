@@ -1,0 +1,254 @@
+/**
+ * 设置页保存模型（唯一实现）—— §5 契约。
+ *
+ * 为什么是组合式而不是每个分区各写一遍：
+ * 1) 「迟到的旧响应不得覆盖新修改」和「失败回滚到真实值」是**安全语义**，
+ *    每个分区抄一遍必然出现某处漏了 seq 判断，旧响应就会把用户刚改的值盖回去；
+ * 2) 「未保存」标记、按组保存/取消、分区内联反馈必须是同一套口径，
+ *    否则用户看到「保存中…」却不知道它属于哪个设置组。
+ *
+ * 两种保存模式：
+ * - 即时保存（`saveNow`）：单个开关/分段/下拉。先乐观更新，失败回滚到真实值，
+ *   错误只落在本分区（`notice` 属于当前分区，不共用）。
+ * - 按组保存（`useGroupDraft`）：一组字段共用一个草稿与一次显式提交；
+ *   失败**保留草稿**（用户填的内容不能因为后端 500 就消失），取消才回滚。
+ *
+ * 序号规则：每次写请求领一个递增 token，只有 `token === 最新` 才允许把服务端返回值
+ * 落回界面、也只有它才允许写成功/失败反馈。旧请求的结果被丢弃 —— 不是覆盖，是忽略。
+ *
+ * 离开设置页不做任何额外动作：设置页是整页路由，卸载即丢弃未保存草稿，
+ * 不自动保存、不弹询问、不发额外写请求（见 §5）。本文件不读 localStorage。
+ */
+import { computed, onScopeDispose, reactive, ref, watch, type Ref } from "vue";
+
+export type SettingsNoticeKind = "ok" | "err" | "warn" | "info";
+
+export interface SettingsNotice {
+  kind: SettingsNoticeKind;
+  text: string;
+}
+
+/** 成功提示的存活时长：成功只要「看见它发生了」，不该长期占位（失败更持久）。 */
+export const NOTICE_OK_MS = 4000;
+
+export function settingsErrorText(e: unknown): string {
+  const err = e as { message?: unknown } | null;
+  const message = err && typeof err.message === "string" ? err.message : "";
+  return message || String(e ?? "未知错误");
+}
+
+export interface ImmediateSaveOptions<T> {
+  /** 请求进行中的中性提示（默认「保存中…」） */
+  pending?: string;
+  /** 乐观更新：先把控件切到用户刚选的值 */
+  optimistic?: () => void;
+  /** 回滚：失败时把控件恢复到**真实值**（服务端/本地已生效的那个值） */
+  rollback?: () => void;
+  commit: () => Promise<T>;
+  /** 服务端真值回填（只在响应仍是最新时执行） */
+  apply?: (server: T) => void;
+  success: string | ((server: T) => string);
+  /** 失败文案前缀，最终形如「保存输出速度失败：<原因>」 */
+  failure: string;
+}
+
+export interface QioSettingsSave {
+  notice: Ref<SettingsNotice | null>;
+  setNotice: (kind: SettingsNoticeKind, text: string) => void;
+  clearNotice: () => void;
+  beginWrite: () => number;
+  isLatest: (token: number) => boolean;
+  saveNow: <T>(options: ImmediateSaveOptions<T>) => Promise<boolean>;
+}
+
+/**
+ * 一个分区的保存助手。
+ * `section` 只用于调试标记（data-settings-section），反馈本身留在本实例里 ——
+ * 这样两个分区同时保存时不会互相盖掉提示。
+ */
+export function useQioSettingsSave(section: string): QioSettingsSave {
+  const notice = ref<SettingsNotice | null>(null);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  /** 单调递增的写序号：任何迟到的旧响应都因为 token 落后而被丢弃。 */
+  let seq = 0;
+
+  function clearTimer(): void {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  function setNotice(kind: SettingsNoticeKind, text: string): void {
+    clearTimer();
+    notice.value = { kind, text };
+    // 只收回「这一次」的成功提示：期间新的保存会重置计时器，旧计时器自然失效。
+    if (kind !== "ok") return;
+    timer = setTimeout(() => {
+      timer = null;
+      if (notice.value?.kind === "ok") notice.value = null;
+    }, NOTICE_OK_MS);
+  }
+
+  function clearNotice(): void {
+    clearTimer();
+    notice.value = null;
+  }
+
+  function beginWrite(): number {
+    seq += 1;
+    return seq;
+  }
+
+  function isLatest(token: number): boolean {
+    return token === seq;
+  }
+
+  async function saveNow<T>(options: ImmediateSaveOptions<T>): Promise<boolean> {
+    const token = beginWrite();
+    options.optimistic?.();
+    setNotice("info", options.pending ?? "保存中…");
+    try {
+      const server = await options.commit();
+      // 迟到响应：不落 UI、不写反馈（更新的那次修改/反馈才是事实）。
+      if (!isLatest(token)) return false;
+      options.apply?.(server);
+      const text =
+        typeof options.success === "function" ? options.success(server) : options.success;
+      setNotice("ok", text);
+      return true;
+    } catch (e) {
+      if (!isLatest(token)) return false;
+      // 失败必须让控件回到真实值：停在「看起来改了、其实没保存」比报错更危险。
+      options.rollback?.();
+      setNotice("err", `${options.failure}失败：${settingsErrorText(e)}`);
+      return false;
+    }
+  }
+
+  // 卸载后计时器不能再写状态（例如成功提示的 4s 计时器跨越了页面卸载）。
+  onScopeDispose(clearTimer);
+
+  // section 参与 data 属性时有用，但不应产生任何全局副作用；保留为调试标签。
+  void section;
+  return { notice, setNotice, clearNotice, beginWrite, isLatest, saveNow };
+}
+
+/** 草稿值只允许可 JSON 化的普通值：这里也顺带挡住误传 Ref/组件实例。 */
+export type SettingsDraftValue = string | number | boolean | null;
+
+export type SettingsDraftShape = Record<string, SettingsDraftValue>;
+
+export interface GroupSaveOptions<T extends SettingsDraftShape> {
+  /** 初始值（加载完成前的占位值） */
+  initial: T;
+  /** 提交前的本地校验；返回文案即校验失败原因（不发明细时返回 null） */
+  validate?: (values: T) => string | null;
+  /** 真的提交；返回服务端真值（用于重置基线） */
+  commit: (values: T) => Promise<T>;
+  success?: (server: T) => string;
+  failure: string;
+  pending?: string;
+}
+
+export interface GroupDraft<T extends SettingsDraftShape> {
+  /** 可变的草稿值（绑定到控件） */
+  values: T;
+  /** 最近一次已保存（或刚加载）的真值，用于 cancel 与「未保存」判断 */
+  baseline: Ref<T>;
+  dirty: Ref<boolean>;
+  saving: Ref<boolean>;
+  error: Ref<string | null>;
+  /** 用服务端/初始真值重置草稿并刷新基线（加载完成时调用） */
+  reset: (next: T) => void;
+  /** 取消：丢弃草稿，回到基线 */
+  cancel: () => void;
+  /** 保存：成功返回 true；失败保留草稿并写入 error */
+  save: () => Promise<boolean>;
+}
+
+function cloneDraft<T extends SettingsDraftShape>(value: T): T {
+  return { ...value };
+}
+
+function sameDraft(a: SettingsDraftShape, b: SettingsDraftShape): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => a[key] === b[key]);
+}
+
+/**
+ * 按组草稿。
+ *
+ * 迟到的响应规则比即时保存更细：用户可能在等待期间继续改字段。
+ * 因此成功时先把「已保存真值」写成新基线，**只有在等待期间没有新修改**才把
+ * 服务端返回值抄回草稿；否则保留用户的新输入（它相对新基线仍是未保存状态）。
+ */
+export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOptions<T>): GroupDraft<T> {
+  const values = reactive(cloneDraft(options.initial)) as T;
+  const baseline = ref(cloneDraft(options.initial)) as Ref<T>;
+  const saving = ref(false);
+  const error = ref<string | null>(null);
+  /** 草稿修订号：任何字段变化都会 +1，用于识别「等待期间又改了」。 */
+  let revision = 0;
+  let writeSeq = 0;
+
+  watch(
+    () => ({ ...values }),
+    () => {
+      revision += 1;
+    },
+    { deep: true, flush: "sync" },
+  );
+
+  const dirty = computed(() => !sameDraft(values, baseline.value));
+
+  function reset(next: T): void {
+    const copy = cloneDraft(next);
+    baseline.value = copy;
+    Object.assign(values, copy);
+    error.value = null;
+    revision += 1;
+    writeSeq += 1; // 加载完成：作废此前所有在途响应
+  }
+
+  function cancel(): void {
+    Object.assign(values, cloneDraft(baseline.value));
+    error.value = null;
+    revision += 1;
+  }
+
+  async function save(): Promise<boolean> {
+    if (saving.value) return false;
+    const invalid = options.validate?.(values);
+    if (invalid) {
+      error.value = invalid;
+      return false;
+    }
+    const token = ++writeSeq;
+    const startRevision = revision;
+    saving.value = true;
+    error.value = null;
+    try {
+      const server = await options.commit(cloneDraft(values));
+      if (token !== writeSeq) return false; // 已有更新的保存/加载：旧响应不落 UI
+      const next = cloneDraft(server);
+      baseline.value = next;
+      // 等待期间用户没再改 → 用服务端规范化后的真值回填；否则保留新输入
+      if (revision === startRevision) {
+        Object.assign(values, next);
+        revision += 1;
+      }
+      return true;
+    } catch (e) {
+      if (token !== writeSeq) return false;
+      // 显式保存失败保留草稿：用户刚填的内容不能因为后端错误被清空
+      error.value = `${options.failure}失败：${settingsErrorText(e)}`;
+      return false;
+    } finally {
+      if (token === writeSeq) saving.value = false;
+    }
+  }
+
+  return { values, baseline, dirty, saving, error, reset, cancel, save };
+}
