@@ -16,8 +16,15 @@ import {
 } from "./settingsTestUtils";
 
 vi.mock("../../../services/api", async () => {
-  const { createSettingsApiMock } = await import("./settingsApiMock");
-  return { api: createSettingsApiMock() };
+  const { settingsApiModule } = await import("./settingsApiMock");
+  return settingsApiModule();
+});
+
+// 「模型与服务」是真实面板（不是占位）：把它的数据源换成确定性替身，
+// 否则每个设置页用例都要跟随网络失败的时序。
+vi.mock("../../../services/modelCatalog", async () => {
+  const { modelCatalogModule } = await import("./settingsApiMock");
+  return modelCatalogModule();
 });
 
 beforeEach(() => {
@@ -258,11 +265,13 @@ describe("常规分区的即时保存语义", () => {
 });
 
 describe("模型与服务容器", () => {
-  it("主体是占位面板（集成时由 B 替换），搜索配置在第二块", async () => {
+  it("主体是 B 的模型面板，搜索配置在第二块", async () => {
     const w = await mountSettings();
     await openCategory(w, "models");
     const models = sectionById(w, "models");
-    expect(models.find('[data-testid="models-panel-placeholder"]').exists()).toBe(true);
+    // 集成后主体是 B 的真实面板（占位文件已被整体替换）：按稳定锚点断言，
+    // 不按标题文案猜。
+    expect(models.find('[data-testid="models-panel"]').exists()).toBe(true);
     expect(models.find('[data-settings-key="models.search"]').exists()).toBe(true);
     expect(visibleSection(w).dataset.settingsSection).toBe("models");
     w.unmount();

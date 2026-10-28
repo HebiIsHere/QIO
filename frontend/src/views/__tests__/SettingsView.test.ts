@@ -18,8 +18,14 @@ import {
 } from "../settings/__tests__/settingsTestUtils";
 
 vi.mock("../../services/api", async () => {
-  const { createSettingsApiMock } = await import("../settings/__tests__/settingsApiMock");
-  return { api: createSettingsApiMock() };
+  const { settingsApiModule } = await import("../settings/__tests__/settingsApiMock");
+  return settingsApiModule();
+});
+
+// 「模型与服务」是真实面板（不是占位）：数据源换成确定性替身。
+vi.mock("../../services/modelCatalog", async () => {
+  const { modelCatalogModule } = await import("../settings/__tests__/settingsApiMock");
+  return modelCatalogModule();
 });
 
 beforeEach(() => {
@@ -54,7 +60,7 @@ describe("SettingsView 信息架构（五类）", () => {
     const w = await mountSettings();
     await openCategory(w, "models");
     const models = sectionById(w, "models");
-    expect(models.find('[data-testid="models-panel-placeholder"]').exists()).toBe(true);
+    expect(models.find('[data-testid="models-panel"]').exists()).toBe(true);
     expect(models.text()).toContain("联网搜索");
     expect(models.find('[data-settings-group="models.search"]').exists()).toBe(true);
     w.unmount();

@@ -65,6 +65,8 @@ interface RawUsage {
   resolved: RawResolvedTarget | null;
   note: string;
   daily?: boolean;
+  /** 老后端不返回；缺省按 `model` 处理（不因为缺字段就把用途误判成未接通）。 */
+  delivery?: string;
 }
 
 interface RawCatalogResponse {
@@ -150,6 +152,12 @@ export interface UsageAssignment {
   resolved: ResolvedTarget | null;
   note: string;
   daily: boolean;
+  /**
+   * 这个用途到底怎么被用：`model` 分配会真的生效；`existing` 沿用现有处理方式
+   * （视频 / 语音 / 嵌入，不继承默认对话模型）；`unsupported` 当前没有独立调用路径。
+   * 界面不得把后两者画成已生效的选择器。
+   */
+  delivery: "model" | "existing" | "unsupported";
 }
 
 export interface DiscoveryState {
@@ -268,6 +276,10 @@ function toUsage(raw: RawUsage): UsageAssignment {
     resolved: toResolvedTarget(raw.resolved),
     note: raw.note || "",
     daily: raw.daily !== false,
+    delivery:
+      raw.delivery === "existing" || raw.delivery === "unsupported"
+        ? raw.delivery
+        : "model",
   };
 }
 

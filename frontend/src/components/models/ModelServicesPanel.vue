@@ -92,6 +92,17 @@ function publishModelFacts() {
                 modelId: usage.resolved.modelId,
               }
             : null,
+          // 只读区要能区分「分配会生效」「沿用现有处理方式」「当前未接通」，
+          // 否则视频/语音/嵌入会显示成「尚未解析」，看起来像还没加载完。
+          note: usage.note,
+          status:
+            usage.delivery === "unsupported"
+              ? ("unsupported" as const)
+              : usage.delivery === "existing"
+                ? ("existing" as const)
+                : usage.followsDefault
+                  ? ("follow" as const)
+                  : ("explicit" as const),
         };
       }),
     });
@@ -185,7 +196,9 @@ async function assignUsage(
 </script>
 
 <template>
-  <div class="panel">
+  <!-- data-testid 是给设置页壳与验收脚本用的稳定锚点：外壳的搜索定位与视觉核查
+       需要知道「模型面板已经真的挂上了」，而不是靠标题文案猜。 -->
+  <div class="panel" data-testid="models-panel">
     <header class="panel__head">
       <div>
         <h2 class="panel__title">模型与服务</h2>

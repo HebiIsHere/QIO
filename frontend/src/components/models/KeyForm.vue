@@ -12,6 +12,7 @@
  */
 import { computed, reactive, ref } from "vue";
 import QCombo from "../ui/QCombo.vue";
+import QIcon from "../ui/QIcon.vue";
 import QIconButton from "../ui/QIconButton.vue";
 import QInput from "../ui/QInput.vue";
 import QNumber from "../ui/QNumber.vue";
@@ -408,10 +409,25 @@ async function save() {
           <button type="button" class="qio-btn mini" @click="addCustomTag">添加</button>
         </div>
       </div>
-      <label v-if="targetChanged" class="confirm">
-        <input type="checkbox" :checked="form.confirmTarget" @change="form.confirmTarget = ($event.target as HTMLInputElement).checked" />
-        我确认把发送目标改成 {{ targetLabel }}，并已重新填写这把 Key
-      </label>
+      <!--
+        自绘勾选框：设置页不允许出现系统复选框外观（原生 input type=checkbox 在
+        不同平台长得不一样，也拿不到统一焦点/主题）。语义仍用 role=checkbox +
+        aria-checked，键盘 Space/Enter 与点击同效。
+      -->
+      <button
+        v-if="targetChanged"
+        type="button"
+        class="confirm"
+        role="checkbox"
+        :aria-checked="form.confirmTarget"
+        data-testid="confirm-target-change"
+        @click="form.confirmTarget = !form.confirmTarget"
+      >
+        <span class="confirm__box" :class="{ 'is-on': form.confirmTarget }" aria-hidden="true">
+          <QIcon v-if="form.confirmTarget" name="check" :size="11" />
+        </span>
+        <span>我确认把发送目标改成 {{ targetLabel }}，并已重新填写这把 Key</span>
+      </button>
       <div class="target-note">
         <span>实际连接目标：</span>
         <span class="mono">{{ targetLabel }}</span>
@@ -457,7 +473,21 @@ async function save() {
 }
 .advanced-toggle:hover { color: var(--text-strong); }
 .advanced { display: flex; flex-direction: column; gap: 10px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset); }
-.confirm { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; color: var(--warning); line-height: 1.5; }
+.confirm {
+  display: flex; align-items: flex-start; gap: 8px; font-size: 11px; color: var(--warning);
+  line-height: 1.5; background: none; border: none; padding: 0; text-align: left;
+  cursor: pointer; font-family: var(--sans);
+}
+.confirm:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: var(--r-xs); }
+.confirm__box {
+  flex: 0 0 auto; width: 16px; height: 16px; margin-top: 1px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-xs); border: 1px solid var(--border-strong);
+  background: var(--bg-inset); color: var(--bg-base);
+  transition: background var(--mo-1-state, var(--dur-toggle)) var(--ease-1, var(--ease)),
+    border-color var(--mo-1-state, var(--dur-toggle)) var(--ease-1, var(--ease));
+}
+.confirm__box.is-on { background: var(--warning); border-color: var(--warning); }
 .target-note { font-size: 10.5px; color: var(--text-muted); display: flex; gap: 6px; flex-wrap: wrap; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

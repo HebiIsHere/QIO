@@ -860,6 +860,9 @@ class ModelCatalogStore:
             "resolved": resolved,
             "note": note,
             "daily": spec.daily,
+            # 这个用途到底怎么被用（model / existing / unsupported）：界面据此区分
+            # 「分配会生效」「沿用现有处理方式」「当前未接通」，不把占位画成可用。
+            "delivery": spec.delivery,
         }
 
     def _resolved_target(self, target: dict[str, Any], *, source: str) -> dict[str, Any]:

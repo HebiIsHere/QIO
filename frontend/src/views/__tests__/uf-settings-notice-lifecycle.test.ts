@@ -13,8 +13,14 @@ import {
 } from "../settings/__tests__/settingsTestUtils";
 
 vi.mock("../../services/api", async () => {
-  const { createSettingsApiMock } = await import("../settings/__tests__/settingsApiMock");
-  return { api: createSettingsApiMock() };
+  const { settingsApiModule } = await import("../settings/__tests__/settingsApiMock");
+  return settingsApiModule();
+});
+
+// 「模型与服务」是真实面板（不是占位）：数据源换成确定性替身。
+vi.mock("../../services/modelCatalog", async () => {
+  const { modelCatalogModule } = await import("../settings/__tests__/settingsApiMock");
+  return modelCatalogModule();
 });
 
 beforeEach(() => {

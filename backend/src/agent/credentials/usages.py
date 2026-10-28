@@ -40,6 +40,10 @@ __all__ = [
     "LEGACY_TAG_TO_USAGE",
     "PRESET_USAGE_TAGS",
     "SYSTEM_PROMPT_USAGES",
+    "DELIVERY_MODEL",
+    "DELIVERY_EXISTING",
+    "DELIVERY_UNSUPPORTED",
+    "DELIVERIES",
     "list_usages",
     "find_usage",
     "usage_key_for_legacy_tag",
@@ -52,6 +56,12 @@ __all__ = [
 
 #: 自定义用途 key 前缀：`custom:写作助手` 这种。历史标签原文保留在前缀之后。
 CUSTOM_USAGE_PREFIX = "custom:"
+
+#: `UsageSpec.delivery` 的三种取值。
+DELIVERY_MODEL = "model"          # 真正走模型调用：分配会真的生效
+DELIVERY_EXISTING = "existing"    # 沿用现有处理方式（视频 / 语音 / 嵌入）
+DELIVERY_UNSUPPORTED = "unsupported"  # 当前没有独立调用路径（研究 / 自定义标签）
+DELIVERIES = (DELIVERY_MODEL, DELIVERY_EXISTING, DELIVERY_UNSUPPORTED)
 
 #: 用途分组，决定界面上的排列顺序与折叠方式。
 GROUP_PRIMARY = "primary"      # 日常对话路径
@@ -79,6 +89,10 @@ class UsageSpec:
     note: str = ""
     #: 是否属于"日常入口"（决定它出现在默认可见区域还是折叠区域）。
     daily: bool = True
+    #: 这个用途到底怎么被用（见 DELIVERY_* 常量）：
+    #: `model` 分配会真的生效；`existing` 沿用现有处理方式、不继承默认对话模型；
+    #: `unsupported` 没有独立调用路径 —— 界面不得把它画成已生效的选择器。
+    delivery: str = DELIVERY_MODEL
 
     def to_dict(self) -> dict:
         return {
@@ -91,6 +105,7 @@ class UsageSpec:
             "requires_capabilities": list(self.requires_capabilities),
             "note": self.note,
             "daily": self.daily,
+            "delivery": self.delivery,
         }
 
 
@@ -142,6 +157,8 @@ USAGES: tuple[UsageSpec, ...] = (
         legacy_tags=("research",),
         call_path="（未接通：无独立调用路径，仅 policy 回退标签）",
         note="当前没有独立的研究模型调用路径：只是历史标签与 policy 回退，选择器不得表现为已生效",
+        delivery=DELIVERY_UNSUPPORTED,
+        daily=False,
     ),
     UsageSpec(
         "vision",
@@ -162,6 +179,7 @@ USAGES: tuple[UsageSpec, ...] = (
         legacy_tags=("video",),
         call_path="（未接通：沿用现有处理方式）",
         note="沿用现有处理方式；不会继承默认对话模型",
+        delivery=DELIVERY_EXISTING,
         daily=False,
     ),
     UsageSpec(
@@ -172,6 +190,7 @@ USAGES: tuple[UsageSpec, ...] = (
         legacy_tags=("audio",),
         call_path="（未接通：沿用现有处理方式）",
         note="沿用现有处理方式；不会继承默认对话模型",
+        delivery=DELIVERY_EXISTING,
         daily=False,
     ),
     UsageSpec(
@@ -183,6 +202,7 @@ USAGES: tuple[UsageSpec, ...] = (
         call_path="services/retrieval.py + selector（沿用现有本地/远程方案）",
         requires_capabilities=("embedding",),
         note="更换外部嵌入模型会影响既有索引维度，需要重建确认",
+        delivery=DELIVERY_EXISTING,
         daily=False,
     ),
     UsageSpec(

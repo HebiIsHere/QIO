@@ -1119,6 +1119,21 @@ def create_app(
 
     @app.delete("/api/credentials/{key_id}")
     async def delete_credential(key_id: str) -> dict:
+        # 仍被已保存用途引用的连接不能直接删：删掉它会让那些用途指向不存在的模型，
+        # 而对用户来说「上次还能用的模型突然没了」比「删除被拦住」更糟。前端也会先
+        # 自检（含未保存草稿里的引用），这里是服务端兜底。
+        from agent.credentials.models import ModelCatalogStore
+
+        try:
+            refs = ModelCatalogStore(ctx.conn, ctx.credentials).references_to_credential(key_id)
+        except Exception:  # noqa: BLE001 - 老库还没有用途表：退回基线行为（允许删除）
+            refs = []
+        if refs:
+            labels = "、".join(str(item.get("label") or "") for item in refs)
+            raise HTTPException(
+                status_code=409,
+                detail=f"这条连接还被这些用途引用：{labels}；请先改成别的模型再删除",
+            )
         try:
             ctx.credentials.delete(key_id)
         except KeyError as exc:
@@ -4069,4 +4084,10 @@ def create_app(
     from agent.api.knowledge_approval_routes import register_knowledge_approval_routes
 
     register_knowledge_approval_routes(app, ctx)
+
+    # 设置页改版：模型目录 / 用途分配 / 默认模型的读写入口。数据层与路由都长在
+    # api/model_routes.py 里（这个文件已经够长），这里只挂一行，不改任何既有接口。
+    from agent.api.model_routes import register_model_routes
+
+    register_model_routes(app, ctx)
     return app

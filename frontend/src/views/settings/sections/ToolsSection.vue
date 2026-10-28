@@ -167,7 +167,9 @@ function usageFactLine(usage: (typeof modelFacts.usages)[number]): string {
     usage.followsDefault && usage.resolved
       ? { credentialId: usage.resolved.credentialId, modelId: usage.resolved.modelId }
       : { credentialId: usage.credentialId ?? null, modelId: usage.modelId ?? null };
-  if (!target.modelId) return "尚未解析";
+  // 没有真实目标时把后端的原话写出来：视频 / 语音 / 嵌入是「沿用现有处理方式」、
+  // 研究是「未接通」。写成「尚未解析」会让人以为只是还没加载完。
+  if (!target.modelId) return usage.note || "尚未解析";
   const connection = modelConnectionLabel({
     connectionName: usage.connectionName,
     providerName: usage.providerName,
@@ -343,7 +345,19 @@ onMounted(() => {
         <dt>{{ usage.label }}</dt>
         <dd>
           {{ usageFactLine(usage) }}
-          <span v-if="usage.followsDefault" class="set-hint-inline mono">（跟随默认）</span>
+          <span v-if="usage.followsDefault && usage.modelId" class="set-hint-inline mono">（跟随默认）</span>
+          <span
+            v-if="usage.status === 'unsupported'"
+            class="set-hint-inline mono"
+            data-usage-status="unsupported"
+            >（未接通）</span
+          >
+          <span
+            v-else-if="usage.status === 'existing'"
+            class="set-hint-inline mono"
+            data-usage-status="existing"
+            >（沿用现有处理方式）</span
+          >
         </dd>
       </template>
     </dl>

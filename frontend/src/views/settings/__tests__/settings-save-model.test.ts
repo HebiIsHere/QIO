@@ -14,8 +14,15 @@ import {
 } from "./settingsTestUtils";
 
 vi.mock("../../../services/api", async () => {
-  const { createSettingsApiMock } = await import("./settingsApiMock");
-  return { api: createSettingsApiMock() };
+  const { settingsApiModule } = await import("./settingsApiMock");
+  return settingsApiModule();
+});
+
+// 「模型与服务」是真实面板（不是占位）：把它的数据源换成确定性替身，
+// 否则每个设置页用例都要跟随网络失败的时序。
+vi.mock("../../../services/modelCatalog", async () => {
+  const { modelCatalogModule } = await import("./settingsApiMock");
+  return modelCatalogModule();
 });
 
 beforeEach(() => {

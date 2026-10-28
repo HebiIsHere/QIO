@@ -41,6 +41,19 @@ export interface ModelUsageFact {
   providerName?: string | null;
   /** 后端解析后的真实目标（跟随默认时等于默认模型） */
   resolved?: { credentialId: string; modelId: string } | null;
+  /**
+   * 这个用途「现在到底怎么用」的一句话事实（来自后端的 usage note）。
+   *
+   * video / audio / embedding 不继承默认对话模型、research 没有独立调用路径时，
+   * 目标本身就是空的；只写「尚未解析」会让用户以为还没加载完，所以必须有原话。
+   */
+  note?: string | null;
+  /**
+   * 分配来源：follow（跟随默认）/ explicit（用户显式指定）/
+   * existing（沿用现有处理方式）/ unsupported（未接通）。
+   * 只用于展示，不参与任何授权判断。
+   */
+  status?: "follow" | "explicit" | "existing" | "unsupported" | null;
 }
 
 export interface ModelFacts {

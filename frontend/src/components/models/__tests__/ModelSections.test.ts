@@ -107,6 +107,7 @@ const usage = (overrides: Partial<UsageAssignment> = {}): UsageAssignment => ({
   },
   note: "",
   daily: true,
+  delivery: "model",
   ...overrides,
 });
 
