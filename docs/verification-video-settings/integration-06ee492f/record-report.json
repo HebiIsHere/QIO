@@ -1,0 +1,125 @@
+{
+  "label": "integration-06ee492f",
+  "startedAt": "2026-10-28T04:37:27.760Z",
+  "appUrl": "http://127.0.0.1:5108",
+  "flows": [
+    {
+      "name": "categories",
+      "title": "切换五个分类",
+      "status": "recorded",
+      "notes": [
+        "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+        "原始帧已删除（--keep-frames 可保留）。"
+      ],
+      "result": {
+        "categories": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ]
+      },
+      "elapsedMs": 10741,
+      "frames": 73,
+      "realFrameRate": 8.21,
+      "video": "docs\\verification-video-settings\\integration-06ee492f\\categories\\capture.mp4"
+    },
+    {
+      "name": "resize",
+      "title": "宽窄窗口切换（侧栏 → 顶部标签页）",
+      "status": "recorded",
+      "notes": [
+        "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+        "原始帧已删除（--keep-frames 可保留）。"
+      ],
+      "result": {
+        "viewports": [
+          "1440x900",
+          "1024x768",
+          "800x600",
+          "480x600",
+          "1440x900"
+        ]
+      },
+      "elapsedMs": 10451,
+      "frames": 48,
+      "realFrameRate": 5.37,
+      "video": "docs\\verification-video-settings\\integration-06ee492f\\resize\\capture.mp4"
+    },
+    {
+      "name": "search",
+      "title": "搜索定位（输入 → 结果 → 定位高亮）",
+      "status": "recorded",
+      "notes": [
+        "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+        "原始帧已删除（--keep-frames 可保留）。"
+      ],
+      "result": {
+        "query": "返回条数",
+        "hits": 1,
+        "after": "模型与服务",
+        "highlighted": 1
+      },
+      "elapsedMs": 30251,
+      "frames": 2403,
+      "realFrameRate": 79.51,
+      "video": "docs\\verification-video-settings\\integration-06ee492f\\search\\capture.mp4"
+    },
+    {
+      "name": "key-flow",
+      "title": "Key 接入（假 Key + 替身响应，不联网）",
+      "status": "recorded",
+      "notes": [
+        "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+        "原始帧已删除（--keep-frames 可保留）。"
+      ],
+      "result": {
+        "fakeKeyUsed": true,
+        "filled": {
+          "ok": true,
+          "id": "API Key"
+        }
+      },
+      "elapsedMs": 8716,
+      "frames": 101,
+      "realFrameRate": 12.32,
+      "video": "docs\\verification-video-settings\\integration-06ee492f\\key-flow\\capture.mp4"
+    },
+    {
+      "name": "group-save",
+      "title": "分组保存（改值 → 保存 → 成功反馈）",
+      "status": "recorded",
+      "notes": [
+        "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+        "原始帧已删除（--keep-frames 可保留）。"
+      ],
+      "result": {
+        "saveClicked": true,
+        "notices": [
+          "搜索配置已保存"
+        ]
+      },
+      "elapsedMs": 8643,
+      "frames": 347,
+      "realFrameRate": 43.66,
+      "video": "docs\\verification-video-settings\\integration-06ee492f\\group-save\\capture.mp4"
+    }
+  ],
+  "notes": [
+    "录屏里的写请求全部由浏览器侧替身接住：假 Key 未提交、未联网、未落库；读取类数据同样是 fixture。"
+  ],
+  "fixtures": {
+    "catalog": 10,
+    "credentials": 10,
+    "searchStatus": 7
+  },
+  "finishedAt": "2026-10-28T04:39:12.312Z",
+  "summary": {
+    "flows": 5,
+    "recorded": 5,
+    "skipped": 0,
+    "partial": 0,
+    "videos": 5
+  }
+}
