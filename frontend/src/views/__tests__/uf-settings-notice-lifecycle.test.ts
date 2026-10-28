@@ -1,108 +1,79 @@
 /**
- * D · 设置页反馈生命周期：成功更局部更短（约 4s 自动收回），失败持久到下次操作；
- * 不出现全局顶部成功通知。
+ * 设置页反馈生命周期（改版后）：
+ * 成功提示约 4 秒自动收回、失败持久到下次操作；不出现全局顶部通知。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { flushPromises, mount } from "@vue/test-utils";
+import { flushPromises } from "@vue/test-utils";
 import { nextTick } from "vue";
-import { createPinia, setActivePinia } from "pinia";
-import SettingsView from "../SettingsView.vue";
+import { resetFloatPositions } from "../../composables/floatingState";
+import {
+  chooseSelectLabel,
+  mountSettings,
+  setViewportWidth,
+} from "../settings/__tests__/settingsTestUtils";
 
-const mocks = vi.hoisted(() => ({
-  updateCloseBehavior: vi.fn(),
-}));
-
-vi.mock("../../services/api", () => ({
-  api: {
-    listCredentials: vi.fn(async () => ({ credentials: [], default_key_id: null })),
-    listProviders: vi.fn(async () => ({ providers: [], model_note: "" })),
-    listCredentialModels: vi.fn(async () => ({ models: [] })),
-    getMemorySettings: vi.fn(async () => ({ fragment_max_turns: 10, fragment_max_tokens: 4096 })),
-    updateMemorySettings: vi.fn(async () => ({ ok: true, fragment_max_turns: 10, fragment_max_tokens: 4096 })),
-    getMaintenanceSettings: vi.fn(async () => ({ enabled: false, interval_hours: 24 })),
-    updateMaintenanceSettings: vi.fn(async () => ({ enabled: false, interval_hours: 24 })),
-    getSearchSettings: vi.fn(async () => ({
-      searxng_url: "",
-      bocha_has_key: false,
-      top_k_default: 5,
-      max_fetch_chars: 15000,
-    })),
-    getComputerSettings: vi.fn(async () => ({ root_dir: "", permission_mode: "default" })),
-    getToolHistorySettings: vi.fn(async () => ({ record_outputs: true, output_retention_days: 90 })),
-    getLoopSettings: vi.fn(async () => ({ max_iterations: 128, output_token_budget: 51200 })),
-    getUISettings: vi.fn(async () => ({ typewriter_cps: 50, close_behavior: "ask" })),
-    updateUISettings: vi.fn(async (cps: number) => ({ ok: true, typewriter_cps: cps })),
-    updateCloseBehavior: mocks.updateCloseBehavior,
-    getOnboardingStatus: vi.fn(async () => ({
-      done: false,
-      has_credential: false,
-      has_name: false,
-      has_content: false,
-      wizard_seen: false,
-      welcome_version: "",
-      app_version: "0.1.6",
-      show_wizard: false,
-      hint_dismissed: false,
-    })),
-  },
-}));
-
-function visiblePanel(w: ReturnType<typeof mount>) {
-  return w.findAll(".panel").find((p) => (p.element as HTMLElement).style.display !== "none")!;
-}
-
-async function mountSettings() {
-  const pinia = createPinia();
-  setActivePinia(pinia);
-  const w = mount(SettingsView, {
-    attachTo: document.body,
-    global: { plugins: [pinia], stubs: { RouterLink: true } },
-  });
-  await flushPromises();
-  return w;
-}
+vi.mock("../../services/api", async () => {
+  const { createSettingsApiMock } = await import("../settings/__tests__/settingsApiMock");
+  return { api: createSettingsApiMock() };
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   document.body.innerHTML = "";
-  mocks.updateCloseBehavior.mockResolvedValue({ ok: true, typewriter_cps: 50, close_behavior: "tray" });
+  document.documentElement.removeAttribute("data-motion");
+  document.documentElement.removeAttribute("data-scrollbar");
+  resetFloatPositions();
+  setViewportWidth(1280);
 });
+
+function activeSection(w: Awaited<ReturnType<typeof mountSettings>>): HTMLElement {
+  const sections = w.findAll("[data-settings-section]");
+  const shown = sections.find(
+    (section) => (section.element as HTMLElement).style.display !== "none",
+  );
+  return shown!.element as HTMLElement;
+}
 
 describe("设置页反馈生命周期", () => {
   it("成功提示约 4 秒后自动收回（成功不必长期占位）", async () => {
     const w = await mountSettings();
-    const panel = visiblePanel(w);
-    const system = panel.findAll(".theme-opt").find((b) => b.text() === "系统")!;
     vi.useFakeTimers();
-    await system.trigger("click");
+    // 假计时器下不能用会 flushPromises 的辅助函数（flushPromises 自己依赖真实定时器）
+    // 选一个与当前偏好不同的档位（默认就是「系统」，点它不会产生切换/提示）
+    const dark = w.findAll(".set-seg__opt").find((option) => option.text() === "暗紫晶");
+    expect(dark).toBeTruthy();
+    await dark!.trigger("click");
     await nextTick();
-    const msg = visiblePanel(w).find(".msg");
-    expect(msg.exists()).toBe(true);
-    expect(msg.classes()).toContain("ok");
+    const notice = activeSection(w).querySelector(".set-notice");
+    expect(notice).not.toBeNull();
+    expect(notice!.className).toContain("ok");
     vi.advanceTimersByTime(4100);
     await nextTick();
-    expect(visiblePanel(w).find(".msg").exists()).toBe(false);
+    expect(activeSection(w).querySelector(".set-notice")).toBeNull();
     vi.useRealTimers();
     w.unmount();
   });
 
   it("失败提示持久保留（比成功更久），不随计时自动消失", async () => {
-    mocks.updateCloseBehavior.mockRejectedValueOnce(new Error("后端 500"));
+    const { api } = await import("../../services/api");
+    (api.updateCloseBehavior as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("后端 500"),
+    );
     const w = await mountSettings();
-    const panel = visiblePanel(w);
-    const option = panel.findAll(".motion-opt").find((b) => b.text() === "最小化到托盘")!;
-    await option.trigger("click");
+    const regular = w.findAll('[data-settings-section="regular"]')[0];
+    await chooseSelectLabel(regular, "最小化到托盘");
     await flushPromises();
-    const msg = visiblePanel(w).find(".msg");
-    expect(msg.exists()).toBe(true);
-    expect(msg.classes()).toContain("err");
-    expect(msg.text()).toContain("保存关闭行为失败");
+
+    const notice = activeSection(w).querySelector(".set-notice");
+    expect(notice).not.toBeNull();
+    expect(notice!.className).toContain("err");
+    expect(notice!.textContent).toContain("保存关闭行为失败");
 
     vi.useFakeTimers();
     vi.advanceTimersByTime(10_000);
     await nextTick();
-    expect(visiblePanel(w).find(".msg").classes()).toContain("err");
+    expect(activeSection(w).querySelector(".set-notice")!.className).toContain("err");
     vi.useRealTimers();
     w.unmount();
   });

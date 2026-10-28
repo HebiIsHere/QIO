@@ -1,1883 +1,276 @@
 <script setup lang="ts">
 /**
- * 设置页：按用户心智分区（外观 / 对话与记忆 / 模型与联网 / 工具与权限 / 数据与维护 / 凭据 / 高级）。
- * 反馈按分区独立（notices），成功 / 失败 / 警告 / 信息用不同语义类，颜色全部来自令牌。
- * 服务端 tuning（SearXNG、原始阈值、图形诊断）收进「高级」，默认不打扰普通用户。
+ * 设置页外壳（五类：常规 / 模型与服务 / 记忆与整理 / 工具与权限 / 关于与更新）。
+ *
+ * 三件事只在这里做：
+ * 1. 导航位置：宽窗左侧竖排、窄窗顶部标签页 —— **只换导航容器布局**，
+ *    内容用同一份 DOM（各分区一直挂载，仅 v-show 切换），宽窄切换不重建表单、
+ *    不丢滚动位置/展开状态/未保存草稿。
+ * 2. 搜索定位：点结果 → 切分类 → 展开折叠组 → 滚动并短暂高亮；
+ *    关键词与结果位置在返回搜索面板时保留。
+ * 3. 单一滚动视口：整个设置页只有这一层纵向滚动（导航 sticky，内容不再各自滚动）。
+ *
+ * 不画自己的标题栏：顶部全局栏由 App 的 WindowChrome 提供（§3）；
+ * 只有导航区里的一个紧凑「返回对话」图标按钮。
+ *
+ * 离开设置页：不自动保存、不弹询问、不发额外写请求；未保存草稿随组件卸载丢弃（§5）。
  */
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, type Ref } from "vue";
-import { api, type CredentialMeta, type VerifyReport } from "../services/api";
-import QNumber from "../components/ui/QNumber.vue";
-import QSelect from "../components/ui/QSelect.vue";
-import { useUiStore, TYPEWRITER_SPEEDS } from "../stores/ui";
-import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../services/quitGuard";
-import PermissionModeSettings from "../components/security/PermissionModeSettings.vue";
-import { useOnboardingStore } from "../stores/onboarding";
-import CredentialCard from "./settings/CredentialCard.vue";
-import CredentialModal, { type CredentialModalMode } from "./settings/CredentialModal.vue";
-import { readableError, usageLabel, type CredentialMode } from "../services/credentials";
-import QConfirm from "../components/ui/QConfirm.vue";
-import QIcon from "../components/ui/QIcon.vue";
-import UpdateCard from "../components/UpdateCard.vue";
-import { usePresence } from "../composables/usePresence";
-import {
-  getThemePreference,
-  setThemePreference,
-  type ThemePreference,
-} from "../utils/theme";
-import { getMotionPreference, setMotionPreference, type MotionPreference } from "../utils/motion";
-// 「关于」分区：授权与第三方声明。两处文本都直接来自仓库根目录的**唯一来源**，
-// 由 Vite 在构建期内联（?raw），因此随应用一起分发、离线可读，不需要联网也不需要后端。
-// 生成与校验命令见 licenses/README.md；覆盖率由 scripts/licenses/check_third_party.py 保证。
-import appPackage from "../../package.json";
-import projectLicenseText from "../../../LICENSE?raw";
-import thirdPartyNoticesText from "../../../THIRD-PARTY-NOTICES.md?raw";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import router from "../router";
+import { useUiStore } from "../stores/ui";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
+import "../styles/settings.css";
 import {
-  getScrollbarPreference,
-  setScrollbarPreference,
-  type ScrollbarPreference,
-} from "../utils/scrollIndicator";
-import {
-  floatingState,
-  resetFloatPositions,
-  setHideEnabled,
-  type DockId,
-} from "../composables/floatingState";
-
-type SectionId = "appearance" | "chat" | "model" | "tools" | "data" | "cred" | "advanced" | "about";
-type NoticeKind = "ok" | "err" | "warn" | "info";
-type NoticeKey = SectionId | "loop" | "window";
-interface Notice {
-  kind: NoticeKind;
-  text: string;
-}
-
-const SECTIONS: { id: SectionId; label: string }[] = [
-  { id: "appearance", label: "外观" },
-  { id: "chat", label: "对话与记忆" },
-  { id: "model", label: "模型与联网" },
-  { id: "tools", label: "工具与权限" },
-  { id: "data", label: "数据与维护" },
-  { id: "cred", label: "凭据" },
-  { id: "advanced", label: "高级" },
-  { id: "about", label: "关于" },
-];
+  SETTINGS_CATEGORIES,
+  SETTINGS_CATEGORY_IDS,
+  type SettingsCategoryId,
+} from "./settings/types";
+import SettingsNav from "./settings/shell/SettingsNav.vue";
+import SettingsSearchPanel from "./settings/shell/SettingsSearchPanel.vue";
+import type { SettingsSearchEntry } from "./settings/searchIndex";
+import { requestSettingsReveal, clearSettingsReveal } from "./settings/reveal";
+import { resetEffectiveFacts } from "./settings/effectiveFacts";
+import { resetModelFacts } from "./settings/modelFacts";
+import RegularSection from "./settings/sections/RegularSection.vue";
+import ModelServicesSection from "./settings/sections/ModelServicesSection.vue";
+import MemorySection from "./settings/sections/MemorySection.vue";
+import ToolsSection from "./settings/sections/ToolsSection.vue";
+import AboutSection from "./settings/sections/AboutSection.vue";
 
 const ui = useUiStore();
-/**
- * 打开设置时恢复上次所在分类（录像：从凭据返回后再次进入会跳回外观）。
- * 记忆放在 ui store 里，属于「同次使用」范围，不落盘、不跨重启。
- */
-const activeTab = ref<SectionId>(
-  SECTIONS.some((s) => s.id === ui.settingsSection) ? (ui.settingsSection as SectionId) : "appearance",
+
+/* ---------------- 分类 ---------------- */
+function isCategoryId(value: unknown): value is SettingsCategoryId {
+  return SETTINGS_CATEGORY_IDS.includes(value as SettingsCategoryId);
+}
+const activeCategory = ref<SettingsCategoryId>(
+  isCategoryId(ui.settingsSection) ? ui.settingsSection : "regular",
 );
-const navRef = ref<HTMLElement | null>(null);
-watch(activeTab, (v) => {
-  ui.settingsSection = v;
+watch(activeCategory, (value) => {
+  ui.settingsSection = value;
 });
 
-/** 每个设置组自己的反馈：不共用一个 notice，避免「看起来是搜索保存了，其实是记忆报错」 */
-const notices = reactive<Record<NoticeKey, Notice | null>>({
-  appearance: null,
-  chat: null,
-  loop: null,
-  model: null,
-  tools: null,
-  data: null,
-  cred: null,
-  advanced: null,
-  about: null,
-  window: null,
-});
-
-/** 「关于」分区：版本取自前端 package.json（发版时与 tauri.conf / Cargo / pyproject 同步 bump）。 */
-const appVersion = String(appPackage.version ?? "");
-
-/**
- * 成功提示的存活时长：成功只需要「看见它发生了」，不该长期占位；
- * 失败/警告/进行中必须留到用户处理或下一次操作（失败比成功更持久）。
- */
-const NOTICE_OK_MS = 4000;
-const noticeTimers = new Map<NoticeKey, ReturnType<typeof setTimeout>>();
-
-function clearNoticeTimer(key: NoticeKey) {
-  const timer = noticeTimers.get(key);
-  if (timer) clearTimeout(timer);
-  noticeTimers.delete(key);
+/* ---------------- 宽窄：只切导航布局 ---------------- */
+/** 900px 左右：再窄左侧竖排就会挤掉内容列（设计约定「窄窗导航移到顶部」）。 */
+const NARROW_MAX_WIDTH = 900;
+const narrow = ref(false);
+function syncViewport(): void {
+  if (typeof window === "undefined") return;
+  narrow.value = window.innerWidth <= NARROW_MAX_WIDTH;
 }
 
-function setNotice(key: NoticeKey, kind: NoticeKind, text: string) {
-  clearNoticeTimer(key);
-  notices[key] = { kind, text };
-  if (kind !== "ok") return;
-  // 只收回「这一次」的成功提示：期间新的保存会重置计时器，旧计时器自然失效。
-  const timer = setTimeout(() => {
-    noticeTimers.delete(key);
-    if (notices[key]?.kind === "ok") notices[key] = null;
-  }, NOTICE_OK_MS);
-  noticeTimers.set(key, timer);
-}
-function clearNotice(key: NoticeKey) {
-  clearNoticeTimer(key);
-  notices[key] = null;
-}
-function errText(action: string, e: unknown): string {
-  return `${action}失败：${(e as Error).message}`;
-}
+/* ---------------- 搜索 ---------------- */
+const rootRef = ref<HTMLElement | null>(null);
+const panelsRef = ref<HTMLElement | null>(null);
+const searchPanelRef = ref<InstanceType<typeof SettingsSearchPanel> | null>(null);
+const searchOpen = ref(false);
+const searchQuery = ref("");
+/** 内容区滚动位置：搜索面板与内容区共用同一个滚动视口，来回切换要还回去。 */
+let contentScroll = 0;
+/** 结果面板的滚动位置：点结果去定位，返回结果时停回原处。 */
+let searchReturnScroll = 0;
+const canReturnToSearch = computed(() => !searchOpen.value && searchQuery.value.trim().length > 0);
 
-/**
- * 保存请求的归属序号。同一分区的多次修改并发时，只有最后一次请求
- * 允许回填服务端返回值并给出反馈：否则旧响应会把用户后来改的值覆盖回去，
- * 或者用一条过期的「已保存」盖掉更新的失败。
- */
-const saveSeq = new Map<string, number>();
-function nextSaveSeq(key: string): number {
-  const next = (saveSeq.get(key) ?? 0) + 1;
-  saveSeq.set(key, next);
-  return next;
-}
-function isLatestSave(key: string, seq: number): boolean {
-  return saveSeq.get(key) === seq;
-}
-
-/**
- * 自动保存的等待态（任务 04 PART B2）：
- * 自动保存和显式保存必须能被看出来 —— 请求一发出就先显示「保存中…」，
- * 成功/失败再覆盖它。等待态是纯状态，不依赖任何动画或计时器。
- */
-function beginSave(key: NoticeKey, text = "保存中…"): void {
-  setNotice(key, "info", text);
-}
-
-/* ---------------- 凭据 ---------------- */
-const credentials = ref<CredentialMeta[]>([]);
-/** 当前默认使用（后端算好：显式默认项优先，否则按排序回落） */
-const defaultKeyId = ref<string | null>(null);
-const credFilter = ref<"all" | "enabled" | "disabled" | "revoked" | "expired">("enabled");
-const modal = ref<{
-  open: boolean;
-  mode: CredentialModalMode;
-  initial: CredentialMeta | null;
-}>({ open: false, mode: "create", initial: null });
-/** 凭据弹窗的退出动画：关闭时先淡出再卸载，功能完成不依赖动画事件 */
-const credModal = usePresence(() => modal.value.open, 150);
-
-const filteredCredentials = computed(() => {
-  const list = credentials.value;
-  switch (credFilter.value) {
-    case "enabled":
-      return list.filter((c) => c.status === "active" && c.enabled);
-    case "disabled":
-      return list.filter((c) => c.status === "active" && !c.enabled);
-    case "revoked":
-      return list.filter((c) => c.status === "revoked");
-    case "expired":
-      return list.filter((c) => c.status === "expired");
-    default:
-      return list;
-  }
-});
-
-const FILTERS = [
-  { value: "all", label: "全部" },
-  { value: "enabled", label: "已启用" },
-  { value: "disabled", label: "已停用" },
-  { value: "revoked", label: "已撤销" },
-  { value: "expired", label: "已过期" },
-] as const;
-
-function openCreate() {
-  modal.value = { open: true, mode: "create", initial: null };
-}
-function openMeta(c: CredentialMeta) {
-  modal.value = { open: true, mode: "edit", initial: c };
-}
-function openRotate(c: CredentialMeta) {
-  modal.value = { open: true, mode: "rotate", initial: c };
-}
-
-async function load() {
-  try {
-    const result = await api.listCredentials();
-    credentials.value = result.credentials;
-    defaultKeyId.value = result.default_key_id;
-  } catch (e) {
-    setNotice("cred", "err", errText("加载凭据", e));
-  }
-}
-
-/**
- * 表单已经完成「保存 + 验证」的全部工作（与首次引导共用同一套逻辑），
- * 这里只负责：把结果如实转述给用户、必要时提供重试入口、刷新列表。
- *
- * 「保存成功」与「验证通过」必须分开说：写入成功但模型没通，也绝不能显示成可用。
- */
-async function onModalSaved(payload: {
-  credential: CredentialMeta | null;
-  report: VerifyReport | null;
-  mode: CredentialMode;
-}) {
-  clearNotice("cred");
-  modal.value.open = false;
-  await load();
-  const { report, mode } = payload;
-  if (!report) {
-    setNotice("cred", "ok", mode === "edit" ? "已保存修改" : "已保存");
-    return;
-  }
-  if (report.ok) {
-    setNotice(
-      "cred",
-      "ok",
-      mode === "rotate" ? "已保存，模型可用（新的 API Key 已生效）" : "已保存，模型可用",
-    );
-    return;
-  }
-  setNotice(
-    "cred",
-    "warn",
-    `已保存，尚未通过验证：${report.message}。这条凭据不会被自动选用；可在卡片「更多操作 → 重新验证」重试。`,
-  );
-}
-
-async function retryVerify(c: CredentialMeta) {
-  clearNotice("cred");
-  try {
-    const result = await api.verifyCredential(c.key_id);
-    await load();
-    if (result.verify.ok) {
-      setNotice("cred", "ok", `「${c.note || c.provider_name || c.key_id}」已验证可用`);
-    } else {
-      setNotice("cred", "warn", `仍未通过验证：${result.verify.message}`);
-    }
-  } catch (e) {
-    setNotice("cred", "err", errText("验证凭据", e));
-  }
-}
-
-async function setAsDefault(c: CredentialMeta) {
-  clearNotice("cred");
-  try {
-    await api.setCredentialDefault(c.key_id);
-    await load();
-    setNotice("cred", "ok", `已把「${c.note || c.provider_name || c.key_id}」设为默认使用`);
-  } catch (e) {
-    setNotice("cred", "err", readableError(e));
-  }
-}
-
-function toggleEnabled(c: CredentialMeta) {
-  void (async () => {
-    clearNotice("cred");
-    try {
-      await api.setCredentialEnabled(c.key_id, !c.enabled);
-      await load();
-    } catch (e) {
-      setNotice("cred", "err", errText("切换凭据状态", e));
-    }
-  })();
-}
-
-function remove(keyId: string) {
-  // 不可恢复的高风险动作：用 QIO 自己的确认层（layer 档），并说清后果。
-  askConfirm({
-    title: `彻底删除凭据「${keyId}」？`,
-    detail:
-      "会从 QIO 里删除这把密钥与这条凭据的全部记录，不可恢复。" +
-      "这只是删除 QIO 本地的配置：厂商那边的 API Key 依然有效，需要作废请到厂商后台操作。" +
-      "如果只是想在本机让它失效、保留审计历史，请用「撤销密钥」。",
-    confirmText: "删除",
-    tone: "danger",
-    run: async () => {
-      clearNotice("cred");
-      try {
-        await api.deleteCredential(keyId);
-        credentials.value = credentials.value.filter((c) => c.key_id !== keyId);
-      } catch (e) {
-        setNotice("cred", "err", errText("删除凭据", e));
-      }
-    },
-  });
-}
-
-/**
- * 撤销密钥：让这把密钥立即作废（从密钥库移除），但**保留**这条记录与审计历史。
- * 以前界面上没有这个入口 —— 「已撤销」筛选与「✕ 已撤销」状态都在，但用户做不到。
- * 与「删除」的区别要在确认文案里说清：删除会连记录一起清掉，不可恢复。
- */
-function revoke(keyId: string) {
-  askConfirm({
-    title: `撤销凭据「${keyId}」？`,
-    detail:
-      "密钥会立即从本机密钥库移除，QIO 不再能用它；这条记录与审计历史会保留下来。" +
-      "注意：厂商那边的 API Key 不会被吊销，仍然有效且可能产生费用，需要作废请到厂商后台操作。",
-    confirmText: "撤销",
-    tone: "danger",
-    run: async () => {
-      clearNotice("cred");
-      try {
-        await api.revokeCredential(keyId);
-        await load();
-        setNotice("cred", "ok", "已撤销：这把密钥不能再用，记录与审计历史仍保留");
-      } catch (e) {
-        setNotice("cred", "err", errText("撤销凭据", e));
-      }
-    },
-  });
-}
-
-/**
- * 确认层状态（第四阶段）。
- *
- * 这里取代的是三处浏览器原生 `window.confirm`：原生框说不清「动作 + 影响 + 后果」，
- * 而且它的视觉与 QIO 毫无关系（像是另一个软件的弹窗）。危险动作统一用 layer 档，
- * 确认按钮是中性实心而不是品牌色 —— 品牌色会让危险动作看起来像被推荐的默认选择。
- */
-interface PendingConfirm {
-  title: string;
-  detail: string;
-  confirmText: string;
-  tone: "normal" | "danger";
-  run: () => void | Promise<void>;
-}
-const pendingConfirm = ref<PendingConfirm | null>(null);
-function askConfirm(next: PendingConfirm) {
-  pendingConfirm.value = next;
-}
-async function resolveConfirm() {
-  const pending = pendingConfirm.value;
-  pendingConfirm.value = null;
-  if (pending) await pending.run();
-}
-
-/* ---------------- 外观 ---------------- */
-const themePref = ref<ThemePreference>(getThemePreference());
-
-/** 首次引导：重跑设置助手（向导挂在 App 层，这里只负责把它抬起来）。 */
-const onboarding = useOnboardingStore();
-function rerunOnboarding() {
-  onboarding.reopen();
-  setNotice("appearance", "ok", "设置助手已重新打开");
-}
-const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
-  { value: "system", label: "系统" },
-  { value: "dark", label: "暗紫晶" },
-  { value: "light", label: "净白" },
-];
-function chooseTheme(p: ThemePreference) {
-  themePref.value = p;
-  setThemePreference(p);
-  setNotice("appearance", "ok", `主题已切换：${THEME_OPTIONS.find((o) => o.value === p)?.label}`);
-}
-
-/* 动画偏好：跟随系统 / 标准 / 减少动画。落成 html[data-motion]，
-   CSS 与星球脚本动画读同一份结果，运行中切换立即生效。 */
-const motionPref = ref<MotionPreference>(getMotionPreference());
-const MOTION_OPTIONS: { value: MotionPreference; label: string }[] = [
-  { value: "system", label: "跟随系统" },
-  { value: "standard", label: "标准" },
-  { value: "reduced", label: "减少动画" },
-];
-function chooseMotion(p: MotionPreference) {
-  motionPref.value = p;
-  const mode = setMotionPreference(p);
-  setNotice(
-    "appearance",
-    "ok",
-    `动画已切换：${MOTION_OPTIONS.find((o) => o.value === p)?.label}（当前生效：${mode === "reduced" ? "减少动画" : "标准"}）`,
-  );
-}
-
-/* 滚动指示条偏好：自动显示 / 始终显示。落成 html[data-scrollbar]，
-   CSS 与指示条引擎（composables/useQioScrollbars.ts）读同一份结果。
-   文案必须说清边界：「始终显示」只让**允许显示且实际溢出**的区域常驻显示，
-   不会让板面（hidden 策略）出现滚动条，也不开放任何横向滚动。 */
-const scrollbarPref = ref<ScrollbarPreference>(getScrollbarPreference());
-const SCROLLBAR_OPTIONS: { value: ScrollbarPreference; label: string; hint: string }[] = [
-  {
-    value: "auto",
-    label: "自动显示",
-    hint: "默认：滚动、指针靠近边缘或用键盘操作该区域时才出现，停止后淡出",
-  },
-  {
-    value: "always",
-    label: "始终显示",
-    hint: "只让允许显示且实际溢出的区域常驻显示；不会让板面出现滚动条，也不开放对话横向滚动",
-  },
-];
-const scrollbarHint = computed(
-  () => SCROLLBAR_OPTIONS.find((o) => o.value === scrollbarPref.value)?.hint ?? "",
-);
-function chooseScrollbar(p: ScrollbarPreference) {
-  scrollbarPref.value = p;
-  setScrollbarPreference(p);
-  setNotice(
-    "appearance",
-    "ok",
-    "滚动指示条已切换：" + (SCROLLBAR_OPTIONS.find((o) => o.value === p)?.label ?? p),
-  );
-}
-
-const speedOptions = TYPEWRITER_SPEEDS.map((cps) => ({
-  value: String(cps),
-  label: cps === 25 ? "慢（25 字/秒）" : cps === 50 ? "中（50 字/秒）" : "快（75 字/秒）",
-}));
-
-function onSpeedSelect(v: string) {
-  const cps = Number(v);
-  if (!TYPEWRITER_SPEEDS.includes(cps as (typeof TYPEWRITER_SPEEDS)[number])) return;
-  beginSave("appearance", `正在保存输出速度：${cps} 字/秒…`);
-  void ui.setCps(cps).then(
-    () => setNotice("appearance", "ok", `输出速度已保存：${cps} 字/秒`),
-    (e: unknown) => setNotice("appearance", "err", errText("保存输出速度", e)),
-  );
-}
-
-/* ---------------- 窗口行为 ---------------- */
-const WINDOW_ITEMS: { id: DockId; title: string; desc: string }[] = [
-  {
-    id: "planet-dock",
-    title: "星球入口贴边后自动隐藏",
-    desc: "关闭＝入口常显（不是禁用）。开启后贴靠完成时淡化，悬停展开、移出再隐藏",
-  },
-  {
-    id: "settings-float",
-    title: "设置入口贴边后自动隐藏",
-    desc: "关闭＝入口常显（不是禁用）。开启后贴角完成时淡化，悬停展开、移出再隐藏",
-  },
-];
-function toggleWindowHide(id: DockId) {
-  setHideEnabled(id, !floatingState[id].hideEnabled);
-}
-function resetWindowLayout() {
-  resetFloatPositions();
-  setNotice("window", "ok", "已还原默认布局（贴靠隐藏关闭、位置回到默认）");
-}
-
-/* ---------------- 关闭主窗口行为（R9 契约 §11） ---------------- */
-const CLOSE_OPTIONS = CLOSE_BEHAVIOR_OPTIONS;
-function closeBehaviorLabel(value: CloseBehavior): string {
-  return CLOSE_OPTIONS.find((o) => o.value === value)?.label ?? value;
-}
-/**
- * 保存关闭行为：写后端设置键 ui.close_behavior，立即生效（前端 store 同步更新）。
- * 失败必须让用户看见 —— 「设置看起来改了但实际没保存」会让下一次关窗行为不可预期。
- */
-async function chooseCloseBehavior(value: CloseBehavior) {
-  if (ui.closeBehavior === value) return;
-  beginSave("appearance", `正在保存关闭行为：${closeBehaviorLabel(value)}…`);
-  try {
-    await ui.setCloseBehavior(value);
-    setNotice(
-      "appearance",
-      "ok",
-      `关闭主窗口时：${closeBehaviorLabel(ui.closeBehavior)}（已保存，立即生效）`,
-    );
-  } catch (e) {
-    setNotice("appearance", "err", errText("保存关闭行为", e));
-  }
-}
-
-/* ---------------- 对话与记忆 ---------------- */
-const fragmentTier = ref("10");
-const customCount = ref(10);
-/**
- * 单段长度目标（token）。长度只是**兜底**：到了就分段，但不表示这一阶段做完了
- * —— 这句话必须写在界面上，否则用户会把「分段」读成「任务完成」。
- */
-const fragmentMaxTokens = ref(4096);
-const tierPresets = ["5", "10", "15"];
-const tierOptions = [
-  { value: "5", label: "短（5 轮）" },
-  { value: "10", label: "标准（10 轮）" },
-  { value: "15", label: "长（15 轮）" },
-  { value: "custom", label: "自定义" },
-];
-
-async function loadMemorySettings() {
-  try {
-    const s = await api.getMemorySettings();
-    // 字段现在是「轮」（用户 + 助手算一轮），与界面文案一致
-    const saved = String(s.fragment_max_turns);
-    if (tierPresets.includes(saved)) {
-      fragmentTier.value = saved;
-    } else {
-      fragmentTier.value = "custom";
-      customCount.value = s.fragment_max_turns;
-    }
-    if (typeof s.fragment_max_tokens === "number" && s.fragment_max_tokens > 0) {
-      fragmentMaxTokens.value = s.fragment_max_tokens;
-    }
-  } catch (e) {
-    setNotice("chat", "err", errText("加载记忆设置", e));
-  }
-}
-
-async function saveMemorySettings() {
-  const value = fragmentTier.value === "custom" ? customCount.value : Number(fragmentTier.value);
-  clearNotice("chat");
-  if (!Number.isInteger(value) || value < 1 || value > 30) {
-    setNotice("chat", "err", "自定义轮数需在 1-30 之间");
-    return;
-  }
-  const seq = nextSaveSeq("chat");
-  beginSave("chat", "正在保存记忆封块…");
-  try {
-    const r = await api.updateMemorySettings({ fragment_max_turns: value });
-    if (!isLatestSave("chat", seq)) return; // 已有更新的修改：不回填、不报成功
-    setNotice("chat", "ok", `记忆封块已保存：${r.fragment_max_turns} 轮`);
-    const saved = String(r.fragment_max_turns);
-    if (tierPresets.includes(saved)) {
-      fragmentTier.value = saved;
-    } else {
-      fragmentTier.value = "custom";
-      customCount.value = r.fragment_max_turns;
-    }
-  } catch (e) {
-    if (!isLatestSave("chat", seq)) return;
-    setNotice("chat", "err", errText("保存记忆设置", e));
-  }
-}
-
-function onTierSelect(v: string) {
-  fragmentTier.value = v;
-  if (v !== "custom") void saveMemorySettings();
-}
-function onCustomCountInput(v: number | null) {
-  customCount.value = v ?? 0;
-}
-
-function onMaxTokensInput(v: number | null) {
-  fragmentMaxTokens.value = v ?? 0;
-}
-
-async function saveMaxTokens() {
-  const value = fragmentMaxTokens.value;
-  clearNotice("chat");
-  if (!Number.isInteger(value) || value < 2000 || value > 200000) {
-    setNotice("chat", "err", "单段长度需在 2000-200000 之间");
-    return;
-  }
-  const seq = nextSaveSeq("chat");
-  beginSave("chat", "正在保存单段长度…");
-  try {
-    const r = await api.updateMemorySettings({ fragment_max_tokens: value });
-    if (!isLatestSave("chat", seq)) return;
-    fragmentMaxTokens.value = r.fragment_max_tokens;
-    setNotice("chat", "ok", `单段长度已保存：${r.fragment_max_tokens}`);
-  } catch (e) {
-    if (!isLatestSave("chat", seq)) return;
-    setNotice("chat", "err", errText("保存单段长度", e));
-  }
-}
-
-const loopMaxIterations = ref(128);
-const loopTokenBudget = ref(51200);
-
-async function loadLoopSettings() {
-  try {
-    const s = await api.getLoopSettings();
-    loopMaxIterations.value = s.max_iterations;
-    loopTokenBudget.value = s.output_token_budget;
-  } catch (e) {
-    setNotice("loop", "err", errText("加载对话深度", e));
-  }
-}
-
-async function saveLoopSettings() {
-  clearNotice("loop");
-  if (!Number.isInteger(loopMaxIterations.value) || loopMaxIterations.value < 1 || loopMaxIterations.value > 1000) {
-    setNotice("loop", "err", "迭代上限需在 1-1000 之间");
-    return;
-  }
-  if (!Number.isInteger(loopTokenBudget.value) || loopTokenBudget.value < 0) {
-    setNotice("loop", "err", "输出预算需为不小于 0 的整数");
-    return;
-  }
-  const seq = nextSaveSeq("loop");
-  beginSave("loop", "正在保存对话深度…");
-  try {
-    const r = await api.updateLoopSettings({
-      max_iterations: loopMaxIterations.value,
-      output_token_budget: loopTokenBudget.value,
-    });
-    if (!isLatestSave("loop", seq)) return;
-    loopMaxIterations.value = r.max_iterations;
-    loopTokenBudget.value = r.output_token_budget;
-    setNotice("loop", "ok", "对话深度已保存");
-  } catch (e) {
-    if (!isLatestSave("loop", seq)) return;
-    setNotice("loop", "err", errText("保存对话深度", e));
-  }
-}
-function onLoopIterationsInput(v: number | null) {
-  loopMaxIterations.value = v ?? 0;
-}
-function onLoopTokensInput(v: number | null) {
-  loopTokenBudget.value = v ?? 0;
-}
-
-/* ---------------- 模型与联网 ---------------- */
-const searchTopK = ref(5);
-const searchMaxChars = ref(15000);
-const searchSearxngUrl = ref("");
-/** 博查 Key 是否已配置（真实状态来自后端，不在前端保存明文） */
-const bochaConfigured = ref(false);
-/** 用户显式点击「替换」后才进入编辑态：空输入默认不修改已有凭据 */
-const bochaEditing = ref(false);
-const bochaKeyDraft = ref("");
-/** 免密钥通道（Exa / Parallel 免费 MCP + DuckDuckGo HTML）：默认开启 */
-const searchKeyless = ref(true);
-
-/**
- * 「不可用时解释为什么」（任务 04 PART B5）：
- * 联网搜索可能一条通道都没有 —— 这时不能只把开关摆在那里，
- * 要说清当前有没有可用通道、缺哪一步。
- */
-const searchAvailability = computed(() => {
-  if (searchKeyless.value) {
-    return { ok: true, text: "当前可用：免密钥通道（Exa / Parallel，失败回退 DuckDuckGo）" };
-  }
-  if (bochaConfigured.value) {
-    return { ok: true, text: "当前可用：博查 API Key（免密钥通道已关闭）" };
-  }
-  if (searchSearxngUrl.value.trim()) {
-    return { ok: true, text: `当前可用：自建 SearXNG 实例（${searchSearxngUrl.value.trim()}）` };
-  }
-  return {
-    ok: false,
-    text: "当前没有可用的联网搜索通道：请开启免密钥搜索，或配置博查密钥 / 自建 SearXNG 实例。在此之前，联网搜索不可用。",
-  };
-});
-
-async function loadSearchSettings() {
-  try {
-    const s = await api.getSearchSettings();
-    searchTopK.value = s.top_k_default;
-    searchMaxChars.value = s.max_fetch_chars;
-    searchSearxngUrl.value = s.searxng_url;
-    bochaConfigured.value = s.bocha_has_key;
-    searchKeyless.value = s.keyless_fallback ?? true;
-  } catch (e) {
-    setNotice("model", "err", errText("加载联网搜索设置", e));
-  }
-}
-
-/** 免密钥开关：单独即时保存（与「保存搜索配置」解耦，不会连带写凭据字段） */
-async function toggleKeyless() {
-  const next = !searchKeyless.value;
-  searchKeyless.value = next;
-  beginSave("model", "正在保存免密钥搜索开关…");
-  try {
-    const r = await api.updateSearchSettings({ keyless_fallback: next });
-    searchKeyless.value = r.keyless_fallback ?? next;
-    setNotice(
-      "model",
-      "ok",
-      searchKeyless.value
-        ? "已开启免密钥联网搜索（Exa / Parallel / DuckDuckGo）"
-        : "已关闭免密钥联网搜索（只用博查 / 自建 SearXNG / 必应 / 百度）",
-    );
-  } catch (e) {
-    searchKeyless.value = !next; // 失败回滚，不假装保存成功
-    setNotice("model", "err", errText("保存免密钥搜索开关", e));
-  }
-}
-
-/** 只发送「用户明确修改过」的凭据字段；留空永远不等于清除 */
-function searchPayload(): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    top_k_default: searchTopK.value,
-    max_fetch_chars: searchMaxChars.value,
-    searxng_url: searchSearxngUrl.value.trim(),
-  };
-  if (bochaEditing.value && bochaKeyDraft.value.trim()) {
-    body.bocha_api_key = bochaKeyDraft.value.trim();
-  }
-  return body;
-}
-
-async function saveSearchSettings() {
-  clearNotice("model");
-  if (!Number.isInteger(searchTopK.value) || searchTopK.value < 1 || searchTopK.value > 20) {
-    setNotice("model", "err", "默认返回条数需在 1-20 之间");
-    return;
-  }
-  if (!Number.isInteger(searchMaxChars.value) || searchMaxChars.value < 1000 || searchMaxChars.value > 40000) {
-    setNotice("model", "err", "读正文字符预算需在 1000-40000 之间");
-    return;
-  }
-  if (bochaEditing.value && !bochaKeyDraft.value.trim()) {
-    setNotice("model", "err", "请输入新的博查 API Key，或取消替换");
-    return;
-  }
-  const seq = nextSaveSeq("model");
-  beginSave("model", "正在保存搜索配置…");
-  try {
-    const r = await api.updateSearchSettings(searchPayload());
-    if (!isLatestSave("model", seq)) return;
-    searchTopK.value = r.top_k_default;
-    searchMaxChars.value = r.max_fetch_chars;
-    searchSearxngUrl.value = r.searxng_url;
-    bochaConfigured.value = r.bocha_has_key;
-    bochaEditing.value = false;
-    bochaKeyDraft.value = "";
-    setNotice("model", "ok", "已保存搜索配置");
-  } catch (e) {
-    if (!isLatestSave("model", seq)) return;
-    setNotice("model", "err", errText("保存搜索配置", e));
-  }
-}
-
-/** 清除凭据必须是显式动作（二次确认 + 只发送该字段） */
-async function clearBochaKey() {
-  askConfirm({
-    title: "清除已保存的博查 API Key？",
-    detail: "清除后联网搜索会回退到免密钥通道（Exa / DuckDuckGo 等）。需要时可以重新填写。",
-    confirmText: "清除",
-    tone: "danger",
-    run: async () => {
-      clearNotice("model");
-      try {
-        const r = await api.updateSearchSettings({ bocha_api_key: "" });
-        bochaConfigured.value = r.bocha_has_key;
-        bochaEditing.value = false;
-        bochaKeyDraft.value = "";
-        setNotice("model", "warn", "博查 API Key 已清除，当前使用免密钥搜索");
-      } catch (e) {
-        setNotice("model", "err", errText("清除博查 API Key", e));
-      }
-    },
-  });
-}
-
-function onSearchTopKInput(v: number | null) {
-  searchTopK.value = v ?? 0;
-}
-function onSearchMaxCharsInput(v: number | null) {
-  searchMaxChars.value = v ?? 0;
-}
-
-/* ---------------- 工具与权限 ---------------- */
-const computerRootDir = ref("");
-/*
- * 权限模式（R9 契约 §1）由独立的 PermissionModeSettings 组件负责：
- * 三种新模式、旧值映射展示、只有用户操作才走 PUT /api/security/mode（user_confirmed=true）。
- * 这里不再保留旧的四值下拉（旧值只作为映射事实展示，不再作为可写入口）。
- */
-
-async function loadComputerSettings() {
-  try {
-    const s = await api.getComputerSettings();
-    computerRootDir.value = s.root_dir || "";
-  } catch (e) {
-    setNotice("tools", "err", errText("加载电脑操控设置", e));
-  }
-}
-
-async function saveComputerSettings() {
-  clearNotice("tools");
-  beginSave("tools", "正在保存电脑操控配置…");
-  try {
-    const r = await api.updateComputerSettings({
-      root_dir: computerRootDir.value.trim(),
-    });
-    computerRootDir.value = r.root_dir || "";
-    setNotice("tools", "ok", "电脑操控配置已保存");
-  } catch (e) {
-    setNotice("tools", "err", errText("保存电脑操控配置", e));
-  }
-}
-
-/* ---------------- 工具调用历史 ---------------- */
-const toolRecordOutputs = ref(true);
-const toolOutputRetentionDays = ref(90);
-
-async function loadToolHistorySettings() {
-  try {
-    const s = await api.getToolHistorySettings();
-    toolRecordOutputs.value = s.record_outputs;
-    toolOutputRetentionDays.value = s.output_retention_days;
-  } catch (e) {
-    setNotice("tools", "err", errText("加载工具调用历史设置", e));
-  }
-}
-
-async function saveToolHistorySettings() {
-  clearNotice("tools");
-  const seq = nextSaveSeq("tools");
-  beginSave("tools", "正在保存工具调用历史设置…");
-  try {
-    const r = await api.updateToolHistorySettings({
-      record_outputs: toolRecordOutputs.value,
-      output_retention_days: toolOutputRetentionDays.value,
-    });
-    if (!isLatestSave("tools", seq)) return;
-    toolRecordOutputs.value = r.record_outputs;
-    toolOutputRetentionDays.value = r.output_retention_days;
-    setNotice(
-      "tools",
-      "ok",
-      r.purged
-        ? `已保存；按保留期清理了 ${r.purged} 条旧输出（参数与失败原因仍在）`
-        : "已保存",
-    );
-  } catch (e) {
-    if (!isLatestSave("tools", seq)) return;
-    setNotice("tools", "err", errText("保存工具调用历史设置", e));
-  }
-}
-
-function toggleToolRecordOutputs() {
-  toolRecordOutputs.value = !toolRecordOutputs.value;
-  void saveToolHistorySettings();
-}
-
-function onToolRetentionInput(v: number | null) {
-  toolOutputRetentionDays.value = v ?? 0;
-}
-
-/* ---------------- 数据与维护 ---------------- */
-const maintenanceEnabled = ref(true);
-const maintenanceInterval = ref(24);
-
-async function loadMaintenanceSettings() {
-  try {
-    const s = await api.getMaintenanceSettings();
-    maintenanceEnabled.value = s.enabled;
-    maintenanceInterval.value = s.interval_hours;
-  } catch (e) {
-    setNotice("data", "err", errText("加载维护设置", e));
-  }
-}
-
-async function saveMaintenance() {
-  clearNotice("data");
-  const seq = nextSaveSeq("data");
-  beginSave("data", "正在保存维护设置…");
-  try {
-    const r = await api.updateMaintenanceSettings({
-      enabled: maintenanceEnabled.value,
-      interval_hours: maintenanceInterval.value,
-    });
-    // 旧响应不回填：用户可能已经在等待期间改了间隔或开关
-    if (!isLatestSave("data", seq)) return;
-    maintenanceEnabled.value = r.enabled;
-    maintenanceInterval.value = r.interval_hours;
-    setNotice(
-      "data",
-      "ok",
-      `离线维护已保存：${r.enabled ? "开启" : "关闭"}（每 ${r.interval_hours} 小时）`,
-    );
-  } catch (e) {
-    if (!isLatestSave("data", seq)) return;
-    setNotice("data", "err", errText("保存维护设置", e));
-  }
-}
-
-function toggleMaintenance() {
-  maintenanceEnabled.value = !maintenanceEnabled.value;
-  void saveMaintenance();
-}
-
-async function runMaintenanceNow() {
-  clearNotice("data");
-  try {
-    const r = await api.runMaintenance();
-    setNotice("data", r.started ? "ok" : "info", r.started ? "离线维护已启动（后台执行）" : "维护未启动");
-  } catch (e) {
-    setNotice("data", "err", errText("启动维护", e));
-  }
-}
-
-function onIntervalInput(v: number | null) {
-  maintenanceInterval.value = v ?? 0;
-}
-
-/* ---------------- 高级 / Developer ---------------- */
-function toggleDeveloperMode() {
-  ui.setDeveloperMode(!ui.developerMode);
-  setNotice(
-    "advanced",
-    "ok",
-    ui.developerMode ? "开发者模式已开启：显示图形诊断与 token 明细" : "开发者模式已关闭",
-  );
-}
-
-/**
- * 非敏感表单草稿：离开设置页后仍然保留用户改到一半的值。
- * 敏感字段（凭据密钥、博查 Key 草稿）故意不在这个表里——它们只活在表单自身的内存状态中。
- */
-const draftFields = {
-  fragmentTier,
-  customCount,
-  loopMaxIterations,
-  loopTokenBudget,
-  searchTopK,
-  searchMaxChars,
-  searchSearxngUrl,
-  searchKeyless,
-  computerRootDir,
-  toolRecordOutputs,
-  toolOutputRetentionDays,
-  maintenanceEnabled,
-  maintenanceInterval,
-} as unknown as Record<string, Ref<unknown>>;
-
-/**
- * 进入页面时先把上一轮的草稿快照下来：加载过程会把服务端值写进这些 ref，
- * 而 watcher 又会把 ref 写回 store —— 不快照就会在 load 阶段把自己刚读的草稿覆盖掉。
- */
-const savedDraft: Record<string, unknown> = { ...ui.settingsDraft };
-
-function applyFormDraft() {
-  for (const [key, value] of Object.entries(savedDraft)) {
-    if (key in draftFields) draftFields[key].value = value;
-  }
-}
-
-watch(
-  () => Object.fromEntries(Object.entries(draftFields).map(([k, r]) => [k, r.value])),
-  (v) => {
-    ui.settingsDraft = v;
-  },
-);
-
-onMounted(async () => {
-  ui.settingsSection = activeTab.value;
+function openSearch(): void {
+  if (searchOpen.value) return;
+  contentScroll = rootRef.value?.scrollTop ?? 0;
+  searchOpen.value = true;
   void nextTick(() => {
-    if (navRef.value) navRef.value.scrollTop = ui.settingsNavScroll;
+    if (rootRef.value) rootRef.value.scrollTop = 0;
+    searchPanelRef.value?.focusInput();
   });
-  await Promise.all([
-    load(),
-    loadMemorySettings(),
-    loadMaintenanceSettings(),
-    loadSearchSettings(),
-    loadComputerSettings(),
-    loadToolHistorySettings(),
-    loadLoopSettings(),
-    ui.load(),
-  ]);
-  // 服务端值先落地，再覆盖上用户尚未提交的草稿（草稿优先，但不会凭空产生值）
-  applyFormDraft();
+}
+
+function closeSearch(): void {
+  if (!searchOpen.value) return;
+  searchOpen.value = false;
+  void nextTick(() => {
+    if (rootRef.value) rootRef.value.scrollTop = contentScroll;
+  });
+}
+
+function toggleSearch(): void {
+  if (searchOpen.value) closeSearch();
+  else openSearch();
+}
+
+function returnToResults(): void {
+  if (searchOpen.value) return;
+  searchOpen.value = true;
+  void nextTick(() => {
+    if (rootRef.value) rootRef.value.scrollTop = searchReturnScroll;
+    searchPanelRef.value?.focusInput();
+  });
+}
+
+/* ---------------- 搜索定位：切分类 → 展开 → 滚动 + 短暂高亮 ---------------- */
+const highlightedKey = ref<string | null>(null);
+let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+const HIGHLIGHT_MS = 1600;
+
+function clearHighlightTimer(): void {
+  if (highlightTimer) {
+    clearTimeout(highlightTimer);
+    highlightTimer = null;
+  }
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => resolve());
+    else setTimeout(resolve, 16);
+  });
+}
+
+async function focusRevealed(key: string): Promise<void> {
+  const root = panelsRef.value;
+  if (!root) return;
+  const target = root.querySelector<HTMLElement>(`[data-settings-key="${key}"]`);
+  if (!target) return; // 目标控件可能由集成方（模型面板）提供：找不到就不假装定位成功
+  target.scrollIntoView?.({ block: "center" });
+  clearHighlightTimer();
+  target.classList.remove("is-revealed");
+  // 同一个目标再点一次也要重新播放高亮：读一次布局强制回流
+  void target.offsetWidth;
+  target.classList.add("is-revealed");
+  highlightedKey.value = key;
+  highlightTimer = setTimeout(() => {
+    target.classList.remove("is-revealed");
+    if (highlightedKey.value === key) highlightedKey.value = null;
+    highlightTimer = null;
+  }, HIGHLIGHT_MS);
+}
+
+async function onSearchSelect(entry: SettingsSearchEntry): Promise<void> {
+  searchReturnScroll = rootRef.value?.scrollTop ?? 0;
+  searchOpen.value = false;
+  activeCategory.value = entry.category;
+  requestSettingsReveal(entry.key, entry.fold ?? null);
+  // 折叠组是 nextTick 里展开的；再等两帧让布局稳定后定位，避免滚动到旧位置
+  await nextTick();
+  await nextFrame();
+  await nextFrame();
+  await focusRevealed(entry.key);
+}
+
+function selectCategory(id: SettingsCategoryId): void {
+  if (id === activeCategory.value) {
+    if (searchOpen.value) closeSearch();
+    return;
+  }
+  activeCategory.value = id;
+  if (searchOpen.value) closeSearch();
+}
+
+function backToConversation(): void {
+  void router.push({ name: "conversation" }).catch(() => {
+    /* 单测环境没有真实路由：返回内容页失败不影响设置页自身 */
+  });
+}
+
+/* ---------------- 生命周期 ---------------- */
+onMounted(() => {
+  ui.settingsSection = activeCategory.value;
+  // 只读事实表按「本次进入」重新建立，避免把上次会话的真值当当前值
+  resetEffectiveFacts();
+  resetModelFacts();
+  syncViewport();
+  window.addEventListener("resize", syncViewport);
 });
 
 onUnmounted(() => {
-  // 记住分类列表的滚动位置：分类多、窗口小时，回来不该又滚到顶部
-  if (navRef.value) ui.settingsNavScroll = navRef.value.scrollTop;
-  ui.settingsSection = activeTab.value;
-  // 成功提示的计时器必须随组件卸载清掉，避免卸载后仍写状态。
-  for (const key of [...noticeTimers.keys()]) clearNoticeTimer(key);
-});
-
-/**
- * 切分类时只让右侧内容做一次很短的淡入（左侧分类栏与页头不动）。
- * 先移除类、下一帧再加回来，这样同一个 CSS 动画才会重新播放；
- * 面板本身用 v-show 保留，未提交的草稿不会被重建掉。
- */
-const panelIn = ref(false);
-watch(activeTab, async () => {
-  panelIn.value = false;
-  await nextTick();
-  requestAnimationFrame(() => {
-    panelIn.value = true;
-  });
+  window.removeEventListener("resize", syncViewport);
+  clearHighlightTimer();
+  ui.settingsSection = activeCategory.value;
+  clearSettingsReveal();
+  // 注意：这里**不**保存任何草稿、也不发写请求 —— 离开即丢弃未保存修改（§5）
 });
 </script>
 
 <template>
-  <div class="settings" v-qio-scrollbar data-qio-fit>
-    <!-- 危险动作的确认层（取代原生 confirm）：layer 档 + 中性实心确认按钮 -->
-    <QConfirm
-      :open="!!pendingConfirm"
-      variant="layer"
-      :tone="pendingConfirm?.tone ?? 'danger'"
-      :title="pendingConfirm?.title ?? ''"
-      :detail="pendingConfirm?.detail ?? ''"
-      :confirm-text="pendingConfirm?.confirmText ?? '确定'"
-      cancel-text="取消"
-      title-id="settings-confirm-title"
-      @confirm="resolveConfirm"
-      @cancel="pendingConfirm = null"
+  <div
+    ref="rootRef"
+    class="qio-settings"
+    v-qio-scrollbar
+    data-qio-fit
+    data-testid="settings-page"
+    :data-settings-page="activeCategory"
+    :data-nav-layout="narrow ? 'top' : 'side'"
+  >
+    <SettingsNav
+      :categories="SETTINGS_CATEGORIES"
+      :active="activeCategory"
+      :narrow="narrow"
+      :search-open="searchOpen"
+      :can-return-to-search="canReturnToSearch"
+      @select="selectCategory"
+      @back="backToConversation"
+      @toggle-search="toggleSearch"
+      @return-to-results="returnToResults"
     />
-    <header>
-      <h1>设置</h1>
-      <span class="sub mono">设置 · QIO</span>
-      <span class="spacer"></span>
-      <router-link to="/" class="back">
-        <QIcon name="chevron-left" :size="13" /> 返回对话
-      </router-link>
-    </header>
 
-    <div class="layout">
-      <nav ref="navRef" class="nav" role="tablist" aria-label="设置分区">
-        <button
-          v-for="s in SECTIONS"
-          :key="s.id"
-          type="button"
-          class="tab"
-          role="tab"
-          :class="{ active: activeTab === s.id }"
-          :aria-selected="activeTab === s.id"
-          @click="activeTab = s.id"
-        >
-          {{ s.label }}
-        </button>
-      </nav>
+    <div class="set-main">
+      <SettingsSearchPanel
+        ref="searchPanelRef"
+        :query="searchQuery"
+        :open="searchOpen"
+        @update:query="searchQuery = $event"
+        @select="onSearchSelect"
+        @close="closeSearch"
+      />
 
-      <div class="panels" :class="{ 'panel-in': panelIn }">
-        <!-- 外观 -->
-        <div v-show="activeTab === 'appearance'" class="panel">
-          <section class="sec">
-            <h2>主题</h2>
-            <p class="desc">跟随系统，或固定暗紫晶 / 净白；系统切换实时生效，无需刷新。</p>
-            <div class="seg" role="group" aria-label="主题偏好">
-              <button
-                v-for="o in THEME_OPTIONS"
-                :key="o.value"
-                type="button"
-                class="theme-opt"
-                :class="{ on: themePref === o.value }"
-                :aria-pressed="themePref === o.value"
-                @click="chooseTheme(o.value)"
-              >
-                {{ o.label }}
-              </button>
-            </div>
-          </section>
-
-          <section class="sec">
-            <h2>首次引导</h2>
-            <p class="desc">
-              重新走一遍设置助手：连接模型、认识你、偏好与目标。已设置项会预填，
-              重复提交不会产生重复的记忆、实体卡或话题。
-            </p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">{{ onboarding.needsSetup ? "继续设置" : "设置助手" }}</div>
-                <div class="d">
-                  {{ onboarding.needsSetup
-                    ? "初始设置还没完成：从这里继续（顶部的一次性提醒只出现一次，这里是随时可用的入口）"
-                    : "随时可以重跑，完成后回到对话页" }}
-                </div>
-              </div>
-              <div class="ctl">
-                <button class="qio-btn" type="button" @click="rerunOnboarding">
-                  {{ onboarding.needsSetup ? "继续设置" : "重新运行设置助手" }}
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section class="sec">
-            <h2>动画</h2>
-            <p class="desc">
-              跟随系统，或固定标准 / 减少动画。减少动画会同时作用于页面过渡与星球镜头，
-              切换立即生效，不需要刷新。
-            </p>
-            <div class="seg" role="group" aria-label="动画偏好">
-              <button
-                v-for="o in MOTION_OPTIONS"
-                :key="o.value"
-                type="button"
-                class="motion-opt"
-                :class="{ on: motionPref === o.value }"
-                :aria-pressed="motionPref === o.value"
-                @click="chooseMotion(o.value)"
-              >
-                {{ o.label }}
-              </button>
-            </div>
-          </section>
-
-          <section class="sec">
-            <h2>滚动指示条</h2>
-            <p class="desc">
-              需要滚动的地方不再使用系统原生滚动条，改用 QIO 浮在边缘的细指示条（原生外观已全局移除）。
-              「始终显示」只作用于<strong>允许显示且确实溢出</strong>的区域：它不会让板面出现滚动条，
-              也不开放对话横向滚动 —— 对话永远不能左右滚。
-            </p>
-            <div class="seg" role="group" aria-label="滚动指示条偏好">
-              <button
-                v-for="o in SCROLLBAR_OPTIONS"
-                :key="o.value"
-                type="button"
-                class="scroll-opt"
-                :class="{ on: scrollbarPref === o.value }"
-                :aria-pressed="scrollbarPref === o.value"
-                @click="chooseScrollbar(o.value)"
-              >
-                {{ o.label }}
-              </button>
-            </div>
-            <p class="mode-hint mono">{{ scrollbarHint }}</p>
-          </section>
-
-          <section class="sec">
-            <h2>输出</h2>
-            <p class="desc">助手回答的打字机显示速度：逐字输出，结构完整。</p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">输出速度</div>
-                <div class="d">慢 25 字/秒 · 中 50 字/秒 · 快 75 字/秒</div>
-              </div>
-              <div class="ctl">
-                <QSelect
-                  :options="speedOptions"
-                  :model-value="String(ui.typewriterCps)"
-                  @update:model-value="onSpeedSelect"
-                />
-              </div>
-            </div>
-          </section>
-
-          <p v-if="notices.appearance" class="msg" :class="notices.appearance.kind" role="status">
-            {{ notices.appearance.text }}
-          </p>
-
-          <section class="sec">
-            <h2>窗口行为</h2>
-            <p class="desc">
-              输入框固定在对话底部；星球入口与设置入口为可拖动浮动组件，松手自动贴靠。
-              下面两个开关只控制「贴边后要不要自动隐藏」；关闭不等于禁用入口。
-            </p>
-            <div class="pref" v-for="item in WINDOW_ITEMS" :key="item.id">
-              <div class="txt">
-                <div class="t">{{ item.title }}</div>
-                <div class="d">{{ item.desc }}</div>
-              </div>
-              <div class="ctl">
-                <button
-                  type="button"
-                  class="qio-switch"
-                  :class="{ on: floatingState[item.id].hideEnabled }"
-                  role="switch"
-                  :aria-checked="floatingState[item.id].hideEnabled"
-                  :aria-label="item.title"
-                  @click="toggleWindowHide(item.id)"
-                ></button>
-                <span class="mono">贴边后自动隐藏：{{ floatingState[item.id].hideEnabled ? "开" : "关" }}</span>
-              </div>
-            </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">布局</div>
-                <div class="d">将所有浮动组件还原到默认位置并关闭贴靠隐藏</div>
-              </div>
-              <div class="ctl">
-                <button type="button" class="qio-btn" @click="resetWindowLayout">还原默认布局</button>
-              </div>
-            </div>
-            <p v-if="notices.window" class="msg" :class="notices.window.kind" role="status">
-              {{ notices.window.text }}
-            </p>
-          </section>
-
-          <section class="sec">
-            <h2>关闭主窗口时</h2>
-            <p class="desc">
-              标题条关闭按钮、系统关闭（Alt+F4 / 任务栏关闭）都按这里的选择处理。
-              「最小化到托盘」只是隐藏窗口：QIO 与后端继续运行，可从系统托盘恢复，不会触发退出收尾。
-              「直接退出」会先停止受理新工作、保存状态并有界收尾，再结束本实例的后端进程；
-              等待中的有效审批会保留下来，下次启动可恢复。
-            </p>
-            <div class="seg" role="group" aria-label="关闭主窗口行为">
-              <button
-                v-for="o in CLOSE_OPTIONS"
-                :key="o.value"
-                type="button"
-                class="motion-opt"
-                :class="{ on: ui.closeBehavior === o.value }"
-                :aria-pressed="ui.closeBehavior === o.value"
-                @click="chooseCloseBehavior(o.value)"
-              >
-                {{ o.label }}
-              </button>
-            </div>
-            <p class="mode-hint mono">
-              当前：{{ closeBehaviorLabel(ui.closeBehavior) }}（{{ CLOSE_OPTIONS.find((o) => o.value === ui.closeBehavior)?.desc }}）
-            </p>
-          </section>
-        </div>
-
-        <!-- 对话与记忆 -->
-        <div v-show="activeTab === 'chat'" class="panel">
-          <section class="sec">
-            <h2>记忆</h2>
-            <p class="desc">
-              根据讨论的进展分段：同一阶段可以跨多段，进入新的一段不等于上一段的任务已经完成。
-              下面两个值控制单段规模（轮数与长度），达到任一上限就在**完整的一轮之后**分段。
-            </p>
-            <p class="mode-hint mono">选择后自动保存</p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">记忆封块分档</div>
-                <div class="d">短 5 / 标准 10 / 长 15 / 自定义 1-30 轮</div>
-              </div>
-              <div class="ctl">
-                <QSelect
-                  :options="tierOptions"
-                  :model-value="fragmentTier"
-                  @update:model-value="onTierSelect"
-                />
-                <QNumber
-                  v-if="fragmentTier === 'custom'"
-                  class="num"
-                  :model-value="customCount"
-                  :min="1"
-                  :max="30"
-                  mono
-                  label="自定义轮数"
-                  @update:model-value="onCustomCountInput"
-                  @change="saveMemorySettings"
-                />
-              </div>
-            </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">单段长度目标</div>
-                <div class="d">
-                  内容长度的兜底上限（2000-200000，按估算字符数计）。到点会分段，
-                  但不表示这一阶段的任务已经做完。
-                </div>
-              </div>
-              <div class="ctl">
-                <QNumber
-                  class="num"
-                  :model-value="fragmentMaxTokens"
-                  :min="2000"
-                  :max="200000"
-                  :step="1000"
-                  mono
-                  label="单段长度目标"
-                  @update:model-value="onMaxTokensInput"
-                  @change="saveMaxTokens"
-                />
-              </div>
-            </div>
-            <p v-if="notices.chat" class="msg" :class="notices.chat.kind" role="status">
-              {{ notices.chat.text }}
-            </p>
-          </section>
-
-          <section class="sec">
-            <h2>对话深度</h2>
-            <p class="desc">agent 单轮最多迭代次数与输出 token 预算；达上限时可选择继续。</p>
-            <p class="mode-hint mono">修改后自动保存（失焦或点步进按钮即提交）</p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">单轮迭代上限</div>
-                <div class="d">每轮任务最多重新决策的次数（1-1000）</div>
-              </div>
-              <div class="ctl">
-                <QNumber
-                  class="num"
-                  :model-value="loopMaxIterations"
-                  :min="1"
-                  :max="1000"
-                  mono
-                  label="迭代上限"
-                  @update:model-value="onLoopIterationsInput"
-                  @change="saveLoopSettings"
-                />
-              </div>
-            </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">输出 token 预算</div>
-                <div class="d">单轮模型输出累计上限（0 表示不限）</div>
-              </div>
-              <div class="ctl">
-                <QNumber
-                  class="num"
-                  :model-value="loopTokenBudget"
-                  :min="0"
-                  :max="500000"
-                  mono
-                  label="输出预算"
-                  @update:model-value="onLoopTokensInput"
-                  @change="saveLoopSettings"
-                />
-              </div>
-            </div>
-            <p v-if="notices.loop" class="msg" :class="notices.loop.kind" role="status">
-              {{ notices.loop.text }}
-            </p>
-          </section>
-        </div>
-
-        <!-- 模型与联网 -->
-        <div v-show="activeTab === 'model'" class="panel">
-          <section class="sec">
-            <h2>联网搜索</h2>
-            <p class="desc">
-              让 agent 能联网检索实时资讯并读取网页正文。免密钥通道用 Exa / Parallel 的
-              免费搜索服务（失败时回退 DuckDuckGo）；填写博查密钥或自建 SearXNG 更稳定。
-            </p>
-            <p class="mode-hint mono">开关即时保存；数字参数在点「保存搜索配置」后一起生效</p>
-            <p class="avail" :class="{ off: !searchAvailability.ok }">
-              {{ searchAvailability.text }}
-            </p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">免密钥联网搜索</div>
-                <div class="d">
-                  用 Exa / Parallel 免费搜索服务，失败回退 DuckDuckGo；关闭后只用
-                  博查 / 自建 SearXNG / 必应 / 百度
-                </div>
-              </div>
-              <div class="ctl">
-                <button
-                  type="button"
-                  class="qio-switch keyless-switch"
-                  :class="{ on: searchKeyless }"
-                  role="switch"
-                  :aria-checked="searchKeyless"
-                  aria-label="免密钥联网搜索"
-                  @click="toggleKeyless"
-                ></button>
-                <span class="mono">{{ searchKeyless ? "开启" : "关闭" }}</span>
-              </div>
-            </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">默认返回条数</div>
-                <div class="d">每次搜索返回的结果数（1-20）</div>
-              </div>
-              <div class="ctl">
-                <QNumber
-                  class="num"
-                  :model-value="searchTopK"
-                  :min="1"
-                  :max="20"
-                  mono
-                  label="返回条数"
-                  @update:model-value="onSearchTopKInput"
-                />
-              </div>
-            </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">读正文字符预算</div>
-                <div class="d">抓取网页正文的字符上限（1000-40000）</div>
-              </div>
-              <div class="ctl">
-                <QNumber
-                  class="num"
-                  :model-value="searchMaxChars"
-                  :min="1000"
-                  :max="40000"
-                  mono
-                  label="字符预算"
-                  @update:model-value="onSearchMaxCharsInput"
-                />
-              </div>
-            </div>
-
-            <div class="pref cred-row">
-              <div class="txt">
-                <div class="t">博查 API Key</div>
-                <div class="d">
-                  {{ bochaConfigured ? "已配置（留空保存不会改动它）" : "未配置：使用免密钥检索兜底" }}
-                </div>
-              </div>
-              <div class="ctl">
-                <template v-if="bochaEditing">
-                  <input
-                    v-model="bochaKeyDraft"
-                    class="qio-input mono bocha-key-input"
-                    type="password"
-                    placeholder="粘贴新的博查 API Key"
-                    autocomplete="off"
-                  />
-                  <button type="button" class="qio-btn" @click="bochaEditing = false; bochaKeyDraft = ''">
-                    取消替换
-                  </button>
-                </template>
-                <template v-else>
-                  <span class="state mono">{{ bochaConfigured ? "已配置" : "未配置" }}</span>
-                  <button type="button" class="qio-btn" @click="bochaEditing = true">替换</button>
-                  <button
-                    v-if="bochaConfigured"
-                    type="button"
-                    class="qio-btn danger"
-                    @click="clearBochaKey"
-                  >
-                    清除
-                  </button>
-                </template>
-              </div>
-            </div>
-
-            <div class="pref">
-              <div class="txt">
-                <div class="t">保存搜索配置</div>
-                <div class="d">
-                  返回条数、读正文字符预算、SearXNG 地址一起提交；SearXNG 实例地址在「高级」中填写
-                </div>
-              </div>
-              <div class="ctl">
-                <button type="button" class="qio-btn primary" @click="saveSearchSettings">
-                  保存搜索配置
-                </button>
-              </div>
-            </div>
-            <p v-if="notices.model" class="msg" :class="notices.model.kind" role="status">
-              {{ notices.model.text }}
-            </p>
-          </section>
-        </div>
-
-        <!-- 工具与权限 -->
-        <div v-show="activeTab === 'tools'" class="panel">
-          <section class="sec">
-            <h2>电脑操控</h2>
-            <p class="desc">允许 qio 读写文件、执行命令、查看进程。分级授权，高危操作会触发审批。</p>
-            <p class="mode-hint mono">修改后自动保存</p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">工作区根目录</div>
-                <div class="d">qio 默认可访问的目录；之外默认要审批</div>
-              </div>
-              <div class="ctl">
-                <input
-                  v-model="computerRootDir"
-                  class="qio-input mono computer-root"
-                  type="text"
-                  placeholder="留空则用默认工作区"
-                  @change="saveComputerSettings"
-                />
-              </div>
-            </div>
-            <!-- 权限模式（R9 契约 §1）：三模式选择 / 常驻显示 / 旧值映射 / 只有用户能改 -->
-            <PermissionModeSettings />
-            <p v-if="notices.tools" class="msg" :class="notices.tools.kind" role="status">
-              {{ notices.tools.text }}
-            </p>
-          </section>
-
-          <section class="sec">
-            <h2>工具调用历史</h2>
-            <p class="desc">
-              保存每次工具调用的参数与输出，供你刷新或重开应用后回看（模型不会读到这些内容）。
-            </p>
-            <p class="mode-hint mono">修改后自动保存</p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">保存输出全文</div>
-                <div class="d">关闭后仍保留参数、状态、失败原因与耗时，只是没有完整输出</div>
-              </div>
-              <div class="ctl">
-                <button
-                  type="button"
-                  class="qio-switch"
-                  :class="{ on: toolRecordOutputs }"
-                  role="switch"
-                  :aria-checked="toolRecordOutputs"
-                  aria-label="保存工具输出全文开关"
-                  @click="toggleToolRecordOutputs"
-                ></button>
-              </div>
-            </div>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">输出保留天数</div>
-                <div class="d">
-                  到期只清空输出全文，参数与失败原因继续保留；填 0 表示永久保留
-                </div>
-              </div>
-              <div class="ctl">
-                <QNumber
-                  class="num"
-                  :model-value="toolOutputRetentionDays"
-                  :min="0"
-                  :max="3650"
-                  mono
-                  label="输出保留（天）"
-                  unit="天"
-                  @update:model-value="onToolRetentionInput"
-                  @change="saveToolHistorySettings"
-                />
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <!-- 数据与维护 -->
-        <div v-show="activeTab === 'data'" class="panel">
-          <section class="sec">
-            <h2>更新</h2>
-            <p class="desc">在应用内完成检查、下载与安装；下载后由你决定何时重启。</p>
-            <UpdateCard />
-          </section>
-          <section class="sec">
-            <h2>维护</h2>
-            <p class="desc">离线整理记忆与知识（后台执行）。</p>
-            <p class="mode-hint mono">修改后自动保存</p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">离线维护</div>
-                <div class="d">启用后台整理；间隔 1-720 小时可调</div>
-              </div>
-              <div class="ctl">
-                <button
-                  type="button"
-                  class="qio-switch"
-                  :class="{ on: maintenanceEnabled }"
-                  role="switch"
-                  :aria-checked="maintenanceEnabled"
-                  aria-label="离线维护开关"
-                  @click="toggleMaintenance"
-                ></button>
-                <QNumber
-                  class="num"
-                  :model-value="maintenanceInterval"
-                  :min="1"
-                  :max="720"
-                  mono
-                  label="维护间隔（小时）"
-                  unit="小时"
-                  @update:model-value="onIntervalInput"
-                  @change="saveMaintenance"
-                />
-                <button type="button" class="qio-btn" @click="runMaintenanceNow">立即运行</button>
-              </div>
-            </div>
-            <p v-if="notices.data" class="msg" :class="notices.data.kind" role="status">
-              {{ notices.data.text }}
-            </p>
-          </section>
-        </div>
-
-        <!-- 凭据 -->
-        <div v-show="activeTab === 'cred'" class="panel">
-          <section class="sec">
-            <div class="sec-head">
-              <h2>凭据</h2>
-              <button type="button" class="qio-btn primary new-cred" @click="openCreate">＋ 新建凭据</button>
-            </div>
-            <p class="desc">
-              密钥只写不读：保存后不再显示明文，只写进本机的系统凭据库（keyring），QIO 的数据库里没有它。
-              在 QIO 里停用、撤销或删除凭据，都不会去厂商那边吊销 API Key —— 需要作废 Key 时请到厂商后台操作。
-            </p>
-            <p v-if="notices.cred" class="msg" :class="notices.cred.kind" role="alert">
-              {{ notices.cred.text }}
-            </p>
-
-            <div class="filters">
-              <button
-                v-for="f in FILTERS"
-                :key="f.value"
-                type="button"
-                class="qio-btn filter"
-                :class="{ active: credFilter === f.value }"
-                @click="credFilter = f.value"
-              >
-                {{ f.label }}
-              </button>
-            </div>
-
-            <CredentialCard
-              v-for="c in filteredCredentials"
-              :key="c.key_id"
-              :credential="c"
-              :is-default="defaultKeyId === c.key_id"
-              @edit-meta="openMeta(c)"
-              @rotate="openRotate(c)"
-              @verify="retryVerify(c)"
-              @set-default="setAsDefault(c)"
-              @toggle-enabled="toggleEnabled(c)"
-              @revoke="revoke(c.key_id)"
-              @remove="remove(c.key_id)"
-            />
-            <p v-if="!filteredCredentials.length" class="empty mono">
-              {{ credFilter === "all" ? "尚无凭据。" : "该筛选下无凭据。" }}
-            </p>
-            <p v-if="filteredCredentials.length && !defaultKeyId" class="msg warn" role="status">
-              当前没有可用的主对话凭据，QIO 还答不了话：请新建一把，或把某条凭据「重新验证」通过后设为默认。
-            </p>
-          </section>
-        </div>
-
-        <!-- 高级 -->
-        <div v-show="activeTab === 'advanced'" class="panel">
-          <section class="sec">
-            <h2>开发者</h2>
-            <p class="desc">
-              打开后显示 FPS / WebGL / 视角等图形诊断，以及每条消息的 token 明细。
-              日常使用建议保持关闭。
-            </p>
-            <div class="pref">
-              <div class="txt">
-                <div class="t">开发者模式</div>
-                <div class="d">图形诊断与 token 明细仅在开启后出现</div>
-              </div>
-              <div class="ctl">
-                <button
-                  type="button"
-                  class="qio-switch"
-                  :class="{ on: ui.developerMode }"
-                  role="switch"
-                  :aria-checked="ui.developerMode"
-                  aria-label="开发者模式"
-                  @click="toggleDeveloperMode"
-                ></button>
-                <span class="mono">{{ ui.developerMode ? "开启" : "关闭" }}</span>
-              </div>
-            </div>
-            <p v-if="notices.advanced" class="msg" :class="notices.advanced.kind" role="status">
-              {{ notices.advanced.text }}
-            </p>
-          </section>
-
-          <section class="sec">
-            <h2>检索服务</h2>
-            <details class="adv-fold">
-              <summary>自建 SearXNG 实例（默认折叠）</summary>
-              <div class="adv-body">
-                <p class="desc">可选，需自建或自备可达实例；与「联网搜索」共用保存动作。</p>
-                <input
-                  v-model="searchSearxngUrl"
-                  class="qio-input mono"
-                  type="text"
-                  placeholder="https://your-searxng.example"
-                  autocomplete="off"
-                />
-                <button type="button" class="qio-btn" @click="saveSearchSettings">保存搜索配置</button>
-              </div>
-            </details>
-          </section>
-
-          <section class="sec">
-            <h2>当前生效参数</h2>
-            <p class="desc">只读展示，便于排查；普通使用无需关心。</p>
-            <dl class="raw mono">
-              <dt>记忆封块</dt><dd>{{ fragmentTier === "custom" ? customCount : fragmentTier }} 轮</dd>
-              <dt>迭代上限</dt><dd>{{ loopMaxIterations }}</dd>
-              <dt>输出预算</dt><dd>{{ loopTokenBudget }}</dd>
-              <dt>搜索条数</dt><dd>{{ searchTopK }}</dd>
-              <dt>正文字符预算</dt><dd>{{ searchMaxChars }}</dd>
-              <dt>免密钥搜索</dt>
-              <dd>{{ searchKeyless ? "开启（Exa / Parallel / DuckDuckGo）" : "关闭" }}</dd>
-              <dt>SearXNG</dt><dd>{{ searchSearxngUrl || "（未配置）" }}</dd>
-              <dt>离线维护</dt>
-              <dd>{{ maintenanceEnabled ? `开启 · 每 ${maintenanceInterval} 小时` : "关闭" }}</dd>
-            </dl>
-          </section>
-        </div>
-
-        <!-- 关于：授权与第三方声明（文本随包内联，离线可读） -->
-        <div v-show="activeTab === 'about'" class="panel" data-testid="settings-about">
-          <section class="sec">
-            <h2>版本</h2>
-            <dl class="raw mono">
-              <dt>应用</dt>
-              <dd>QIO {{ appVersion }}</dd>
-            </dl>
-            <p class="desc">
-              模型 Key 全部由你自己提供（BYOK），应用没有自带 Key；数据留在本机（SQLite + 系统凭据库）。
-              除更新检查和你自己发起的模型 / 搜索调用外，应用不主动上传内容。
-            </p>
-          </section>
-
-          <section class="sec">
-            <h2>授权</h2>
-            <p class="desc">
-              QIO 以 MIT 许可证开源：可以自由使用、修改、再分发（含商用），只需保留版权声明与许可声明。
-              完整条款见仓库根目录的 LICENSE（本页展示的就是它）。
-            </p>
-            <details class="adv-fold">
-              <summary>查看 QIO 许可全文</summary>
-              <div class="adv-body">
-                <pre class="license-text" data-testid="qio-license">{{ projectLicenseText }}</pre>
-              </div>
-            </details>
-          </section>
-
-          <section class="sec">
-            <h2>第三方开源组件</h2>
-            <p class="desc">
-              QIO 随安装包分发第三方开源组件（Python 依赖、npm 包、Rust crate、内置 CPython 运行时、
-              内置中文嵌入模型与中文字体）。完整声明（组件清单 + 每个许可证的全文）随应用一起分发，
-              无需联网即可查阅；覆盖率由仓库里的校验脚本保证，少一个组件就失败。
-            </p>
-            <details class="adv-fold">
-              <summary>查看第三方开源组件声明（生成物，请勿手工编辑）</summary>
-              <div class="adv-body">
-                <pre class="license-text" data-testid="third-party-notices">{{ thirdPartyNoticesText }}</pre>
-              </div>
-            </details>
-          </section>
-        </div>
+      <div v-show="!searchOpen" ref="panelsRef" class="set-panels" data-testid="settings-panels">
+        <RegularSection
+          v-show="activeCategory === 'regular'"
+          id="set-panel-regular"
+          role="tabpanel"
+          aria-labelledby="set-tab-regular"
+        />
+        <ModelServicesSection
+          v-show="activeCategory === 'models'"
+          id="set-panel-models"
+          role="tabpanel"
+          aria-labelledby="set-tab-models"
+        />
+        <MemorySection
+          v-show="activeCategory === 'memory'"
+          id="set-panel-memory"
+          role="tabpanel"
+          aria-labelledby="set-tab-memory"
+        />
+        <ToolsSection
+          v-show="activeCategory === 'tools'"
+          id="set-panel-tools"
+          role="tabpanel"
+          aria-labelledby="set-tab-tools"
+        />
+        <AboutSection
+          v-show="activeCategory === 'about'"
+          id="set-panel-about"
+          role="tabpanel"
+          aria-labelledby="set-tab-about"
+        />
       </div>
     </div>
-
-    <CredentialModal
-      v-if="credModal.mounted.value"
-      :mode="modal.mode"
-      :initial="modal.initial"
-      :leaving="credModal.leaving.value"
-      @saved="onModalSaved"
-      @cancel="modal.open = false"
-    />
   </div>
 </template>
 
 <style scoped>
-.settings {
-  max-width: 1080px;
-  margin: 0 auto;
-  padding: 28px 24px 60px;
+/* 单一主滚动视口：整页只有这里纵向滚动（导航 sticky、内容不再各自滚动）。
+   横向锁死：内容本身必须能换行，clip 只作边界保护（§15.3）。 */
+.qio-settings {
   height: 100%;
   overflow-y: auto;
+  overflow-x: clip;
+  padding: 18px 22px 60px;
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--sans);
-  /* 从对话页进入设置：220ms 淡入 + 2px 上移，不推迟内容（内容同帧可见） */
+  /* 从对话页进入设置：只做一次短淡入，不做整页位移（§13.2） */
   animation: settings-in var(--dur-page-in) var(--ease-out) both;
 }
 @keyframes settings-in {
   from { opacity: 0; }
   to { opacity: 1; }
-}
-header { display: flex; align-items: baseline; gap: 14px; margin-bottom: 22px; }
-header h1 { font-family: var(--serif); font-size: 26px; font-weight: 600; color: var(--text-strong); }
-.sub { font-size: 11px; color: var(--text-muted); letter-spacing: 0.06em; }
-.spacer { flex: 1; }
-.back { display: inline-flex; align-items: center; gap: 3px; color: var(--link); text-decoration: none; font-size: 13px; }
-.back:hover { text-decoration: underline; }
-
-/* 布局：左侧分区导航 + 右侧内容（窄窗口自动堆叠） */
-.layout { display: flex; gap: 26px; align-items: flex-start; }
-.nav {
-  display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto;
-  min-width: 148px; position: sticky; top: 0;
-}
-.tab {
-  font-size: 13.5px; padding: 8px 12px; color: var(--text-secondary); cursor: pointer;
-  background: none; border: none; border-left: 2px solid transparent; text-align: left;
-  font-family: var(--sans); border-radius: 0 var(--qio-ui-radius) var(--qio-ui-radius) 0;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-.tab:hover { color: var(--text-strong); background: var(--bg-surface); }
-.tab.active { color: var(--text-strong); border-left-color: var(--accent); font-weight: 600; }
-.panels { flex: 1; min-width: 0; }
-/* 切分类：只对右侧内容做一次很短的淡入，整页与左栏保持不动（任务 04 A） */
-.panels.panel-in { animation: panel-in var(--dur-menu) var(--ease-out) both; }
-@keyframes panel-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@media (max-width: 860px) {
-  .layout { flex-direction: column; gap: 12px; }
-  .nav { flex-direction: row; flex-wrap: wrap; min-width: 0; position: static; gap: 6px; }
-  .tab { border-left: none; border-bottom: 2px solid transparent; border-radius: var(--qio-ui-radius); }
-  .tab.active { border-bottom-color: var(--accent); }
-}
-
-.sec { margin-bottom: 26px; }
-.sec h2 { font-family: var(--serif); font-size: 16px; font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
-.desc { font-size: 12.5px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.65; }
-/* 保存模型与可用性提示：让「自动保存 / 显式保存」「能不能用」一眼可见 */
-.mode-hint {
-  font-size: 11px; letter-spacing: 0.02em; color: var(--text-muted);
-  margin: -6px 0 12px; padding-left: 9px; border-left: 2px solid var(--border-strong);
-}
-.avail {
-  font-size: 12px; line-height: 1.6; color: var(--text-secondary);
-  margin: -4px 0 12px; padding: 7px 10px;
-  border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset);
-}
-.avail.off { color: var(--warning); border-color: var(--warning); background: var(--warning-soft); }
-
-/* 反馈：成功 / 失败 / 警告 / 信息 语义独立，颜色全部来自令牌 */
-.msg { font-size: 12.5px; margin: 10px 0; line-height: 1.55; }
-.msg.ok { color: var(--success); }
-.msg.err { color: var(--danger); }
-.msg.warn { color: var(--warning); }
-.msg.info { color: var(--text-secondary); }
-.empty { font-size: 12px; color: var(--text-muted); }
-
-/* 主题分段控件 */
-.seg { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset); }
-.theme-opt,
-.motion-opt,
-.scroll-opt {
-  font-family: var(--sans); font-size: 12.5px; padding: 6px 16px; border-radius: var(--qio-ui-radius);
-  border: none; background: transparent; color: var(--text-secondary); cursor: pointer;
-  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
-    transform var(--dur-press) var(--ease-out);
-}
-.theme-opt:hover,
-.motion-opt:hover,
-.scroll-opt:hover { color: var(--text-strong); }
-.theme-opt:active,
-.motion-opt:active,
-.scroll-opt:active { transform: translateY(var(--press-shift)); }
-/* 选中用底色 + 字重 + 下划线三重区分，不只靠颜色 */
-.theme-opt.on,
-.motion-opt.on,
-.scroll-opt.on {
-  background: var(--accent-soft); color: var(--text-strong); font-weight: 600;
-  box-shadow: inset 0 -2px 0 var(--accent);
-}
-
-/* preferences */
-.pref {
-  display: flex; align-items: center; gap: 14px; padding: 13px 4px;
-  border-bottom: 1px solid var(--border-subtle); flex-wrap: wrap;
-}
-.pref .txt { flex: 1; min-width: 200px; }
-.pref .txt .t { font-size: 13.5px; color: var(--text-strong); }
-.pref .txt .d { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
-.pref .ctl { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-secondary); flex-wrap: wrap; }
-.num { width: 90px; }
-.pref .ctl .qio-input {
-  min-width: 240px;
-  padding: 8px 12px;
-  border-radius: var(--r-md);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
-  color: var(--text-primary);
-  font-family: var(--mono);
-  font-size: 12px;
-  outline: none;
-}
-.pref .ctl .qio-input::placeholder { color: var(--text-muted); }
-.pref .ctl .qio-input:focus { border-color: var(--accent); }
-.pref .ctl .qio-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
-.state { color: var(--text-secondary); letter-spacing: 0.04em; }
-
-.sec-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.sec-head h2 { margin: 0; }
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
-.filter { font-size: 12px; padding: 4px 12px; }
-.filter.active { color: var(--text-strong); border-color: var(--accent); background: var(--accent-soft); }
-
-/* 高级：原始参数折叠区 */
-.adv-fold { border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); background: var(--bg-inset); padding: 4px 12px; }
-.adv-fold summary { font-size: 12.5px; color: var(--text-secondary); cursor: pointer; padding: 8px 0; }
-.adv-fold summary:hover { color: var(--text-strong); }
-.adv-body { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 12px; align-items: flex-start; }
-.adv-body .qio-input { width: min(420px, 100%); }
-.raw { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; font-size: 11.5px; color: var(--text-secondary); }
-.raw dt { color: var(--text-muted); }
-.raw dd { color: var(--text-secondary); word-break: break-all; }
-
-/* 「关于」里的长文本（许可证 / 第三方声明）：等宽、可滚动，颜色全部来自令牌 */
-.license-text {
-  margin: 10px 0 0;
-  padding: 12px 14px;
-  max-height: 420px;
-  overflow: auto;
-  background: var(--bg-inset);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--qio-ui-radius);
-  color: var(--text-secondary);
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 </style>
