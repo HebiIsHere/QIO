@@ -1898,7 +1898,11 @@ _MODEL_CATALOG_BACKFILL: list[str] = [
         m.usage_key,
         c.id,
         trim(c.default_model),
-        'explicit',
+        -- 历史标签回填是「兼容映射」，不是用户显式指定：基线里 tags 只参与选择政策，
+        -- 从不锁定某把 Key；写成 explicit 会让老用户那把它已停用/欠费的 Key 把
+        -- 主对话直接打成硬失败（违反「保留既有凭据选择政策」）。
+        -- 运行时只把 mode='explicit' 当显式指定，legacy 行只保留可见性与映射。
+        'legacy',
         c.updated_at
     FROM credentials c
     CROSS JOIN json_each(c.tags) AS t
@@ -1921,7 +1925,8 @@ _MODEL_CATALOG_BACKFILL: list[str] = [
         'custom:' || t.value,
         c.id,
         trim(c.default_model),
-        'explicit',
+        -- 同上：历史自定义标签是兼容映射，不是显式指定（不产生执行能力）。
+        'legacy',
         c.updated_at
     FROM credentials c
     CROSS JOIN json_each(c.tags) AS t

@@ -770,6 +770,20 @@ class ModelCatalogStore:
     # 用途列表与解析
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_explicit(row: dict[str, Any] | None) -> bool:
+        """这一行是不是**用户显式指定**（而不是迁移回填的兼容映射）。
+
+        `mode='explicit'` 才算。迁移回填写的是 `mode='legacy'`：历史 tags 在基线里
+        只参与「选哪把 Key」的政策，从不锁定模型；把它当显式指定会让老用户那把它已
+        停用/欠费的 Key 把主对话直接打成硬失败，违反「保留既有凭据选择政策」。
+        """
+        if not isinstance(row, dict):
+            return False
+        if not _norm(row.get("model_id")):
+            return False
+        return str(row.get("mode") or "").strip().lower() == "explicit"
+
     def _assignment(self, spec: UsageSpec) -> dict[str, Any] | None:
         row = self._usage_row(spec.key)
         if row is None:
@@ -823,7 +837,7 @@ class ModelCatalogStore:
         key = spec.key
         kind = usage_kind(key)
         own = self._assignment(spec)
-        explicit = bool(own and own.get("credential_id") and own.get("model_id"))
+        explicit = self._is_explicit(own)
         if explicit:
             target = {"credential_id": own["credential_id"], "model_id": own["model_id"]}
             source = "explicit"
@@ -838,11 +852,17 @@ class ModelCatalogStore:
         else:
             target = None
             source = "none"
-        resolved = self._resolved_target(target, source=source) if target else None
+        resolved = (
+            self._resolved_target(target, source=source, usage_key=key) if target else None
+        )
         follows_default = not explicit
         inherits_ok = bool(resolved and resolved.get("usable"))
         note = spec.note or ""
-        if kind in NON_INHERITING_KINDS and not explicit:
+        if own is not None and not explicit and _norm(own.get("model_id")):
+            # 迁移回填的历史标签映射：保留可见，但**不是**用户显式指定，
+            # 运行时按默认/政策选择（基线里 tags 也从不锁定模型）。
+            note = "历史标签映射：保留用途关联与可见性，不锁定模型；实际按默认模型或既有选择政策"
+        elif kind in NON_INHERITING_KINDS and not explicit:
             note = "沿用现有处理方式：这个用途不继承默认对话模型，需要单独指定才生效"
         elif follows_default and default is None:
             note = "还没有设置默认模型；日常对话会回退到兼容的旧凭据选择规则"
@@ -859,13 +879,22 @@ class ModelCatalogStore:
             "inherits_ok": inherits_ok,
             "resolved": resolved,
             "note": note,
+            # 原始分配行的来源（explicit / legacy / inherit）：界面据此区分
+            # 「用户显式指定」与「迁移回填的兼容映射」，不把后者说成前者。
+            "mode": str(own.get("mode")) if own else None,
             "daily": spec.daily,
             # 这个用途到底怎么被用（model / existing / unsupported）：界面据此区分
             # 「分配会生效」「沿用现有处理方式」「当前未接通」，不把占位画成可用。
             "delivery": spec.delivery,
         }
 
-    def _resolved_target(self, target: dict[str, Any], *, source: str) -> dict[str, Any]:
+    def _resolved_target(
+        self,
+        target: dict[str, Any],
+        *,
+        source: str,
+        usage_key: str | None = None,
+    ) -> dict[str, Any]:
         credential_id = _norm(target.get("credential_id"))
         model_id = _norm(target.get("model_id"))
         meta = self._credential_meta(credential_id)
@@ -883,7 +912,9 @@ class ModelCatalogStore:
                 else "这个连接下没有记录这个模型",
                 "credential_name": name,
             }
-        usable, reason = self.model_usable(model, meta)
+        # usage_key 一起传：同一个模型对「主对话」可用、对「看图」可能不可用
+        # （用途要求的能力不在模型声明里就如实判不可用，不靠名字猜）。
+        usable, reason = self.model_usable(model, meta, usage_key=usage_key)
         return {
             "credential_id": credential_id,
             "model_id": model_id,
@@ -905,17 +936,18 @@ class ModelCatalogStore:
             # 自定义标签不产生执行能力：运行时没有对应调用路径。
             return None
         own = self._assignment(spec)
-        if own and own.get("credential_id") and own.get("model_id"):
+        if self._is_explicit(own):
             return self._resolved_target(
                 {"credential_id": own["credential_id"], "model_id": own["model_id"]},
                 source="explicit",
+                usage_key=key,
             )
         if usage_kind(key) in NON_INHERITING_KINDS:
             # 不继承默认对话模型：没有显式指定就没有目标（调用方沿用现有处理方式）。
             return None
         default = self.get_default()
         if default is not None:
-            return self._resolved_target(default, source="default")
+            return self._resolved_target(default, source="default", usage_key=key)
         return None
 
     def legacy_fallback(self, usage_key: str) -> dict[str, Any] | None:

@@ -242,7 +242,11 @@ def test_upgrade_from_72_backfills_and_preserves_legacy_facts(tmp_path: Path):
     }
     assert usages["main-chat"]["credential_id"] == "key_main"
     assert usages["main-chat"]["model_id"] == "deepseek-v4-flash"
-    assert usages["main-chat"]["mode"] == "explicit"
+    # 历史 tags 回填成 mode='legacy'（不是 explicit）：基线里 tags 只参与「选哪把
+    # Key」的政策，从不锁定模型。写成 explicit 会让老用户那把它已停用/欠费的 Key
+    # 把主对话直接打成硬失败，违反「保留既有凭据选择政策」。运行时只有 explicit
+    # 才算显式指定，legacy 行只保留可见性与映射。
+    assert usages["main-chat"]["mode"] == "legacy"
     assert usages["general-chat"]["credential_id"] == "key_main"
     assert usages["vision"]["credential_id"] == "key_main"
     assert usages["custom:写作"]["credential_id"] == "key_main"
