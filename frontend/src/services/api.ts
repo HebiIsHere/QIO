@@ -214,6 +214,17 @@ export interface ProviderPreset {
   category: string;
   category_label: string;
   note: string;
+  /**
+   * 发现元数据（设置页「自动获取模型」用；后端老版本可能不返回，因此全部可选）。
+   * 这里只描述「怎么问服务商」，不代表任何权限：public_catalog=true 的服务商，
+   * 它的 /models 是公共目录，不能称为「这把 Key 全部可用的模型」。
+   */
+  models_path?: string;
+  supports_pagination?: boolean;
+  public_catalog?: boolean;
+  discovery_note?: string;
+  regions?: string[];
+  entry_types?: string[];
 }
 
 /** 一次可用性验证的结果。「保存成功」与「验证通过」是两件事。 */
