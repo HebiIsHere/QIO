@@ -40,6 +40,14 @@ PRESET_TAGS = [
     "embedding",
 ]
 
+#: 主对话（以及「与主对话同一调用路径」的用途）落到政策回退时的候选标签。
+#:
+#: 定义在 policy 里而不是 services/app.py：用途解析（services/usage_target.py）与
+#: 主循环解析必须用**同一批**候选，各写一份就会出现「主对话能用、通用对话不能用」
+#: 这种只有在某个标签缺失时才暴露的偏差。services/app.py 仍然导出同名常量，供
+#: 既有导入点（onboarding / 测试）继续使用。
+MAIN_LOOP_USAGE_TAGS = ["main-loop", "chat", "code", "vision", "research"]
+
 
 class BudgetExhausted(RuntimeError):
     """这条凭据的累计用量上限已经用完：不再发新的模型请求。
