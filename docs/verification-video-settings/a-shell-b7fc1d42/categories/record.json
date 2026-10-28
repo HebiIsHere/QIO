@@ -1,0 +1,24 @@
+{
+  "name": "categories",
+  "title": "切换五个分类",
+  "status": "recorded",
+  "notes": [
+    "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+    "原始帧已删除（--keep-frames 可保留）。"
+  ],
+  "result": {
+    "categories": [
+      "常规",
+      "模型与服务",
+      "记忆与整理",
+      "工具与权限",
+      "关于与更新"
+    ]
+  },
+  "elapsedMs": 10777,
+  "frames": 44,
+  "realFrameRate": 4.95,
+  "video": "docs\\verification-video-settings\\a-shell-b7fc1d42\\categories\\capture.mp4",
+  "viewport": "1440x900",
+  "screencastScale": 1280
+}

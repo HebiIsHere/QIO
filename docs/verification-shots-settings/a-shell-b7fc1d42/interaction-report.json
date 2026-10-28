@@ -1,0 +1,505 @@
+{
+  "label": "a-shell-b7fc1d42-final",
+  "startedAt": "2026-10-28T03:54:24.860Z",
+  "appUrl": "http://127.0.0.1:5107",
+  "checks": [
+    {
+      "scenario": "draft-retention",
+      "name": "draft-field-found",
+      "ok": true,
+      "detail": {
+        "category": "模型与服务",
+        "set": {
+          "ok": true,
+          "kind": "input"
+        }
+      }
+    },
+    {
+      "scenario": "draft-retention",
+      "name": "draft-kept-after-category-switch",
+      "ok": true,
+      "detail": {
+        "expected": "https://draft-retention.invalid/searxng",
+        "actual": "https://draft-retention.invalid/searxng"
+      }
+    },
+    {
+      "scenario": "draft-retention",
+      "name": "draft-kept-after-resize",
+      "ok": true,
+      "detail": {
+        "expected": "https://draft-retention.invalid/searxng",
+        "actual": "https://draft-retention.invalid/searxng"
+      }
+    },
+    {
+      "scenario": "draft-discard-on-leave",
+      "name": "draft-field-found",
+      "ok": true,
+      "detail": {
+        "category": "模型与服务",
+        "set": {
+          "ok": true,
+          "kind": "input"
+        }
+      }
+    },
+    {
+      "scenario": "draft-discard-on-leave",
+      "name": "leave-discards-draft",
+      "ok": true,
+      "detail": {
+        "expectedNot": "https://discard-on-leave.invalid/searxng",
+        "valueAfterReturn": ""
+      }
+    },
+    {
+      "scenario": "draft-discard-on-leave",
+      "name": "leave-sends-no-extra-write",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scenario": "group-save-success",
+      "name": "group-field-found",
+      "ok": true,
+      "detail": {
+        "info": {
+          "found": true,
+          "kind": "input",
+          "value": "8",
+          "checked": null,
+          "disabled": false,
+          "rect": {
+            "x": 1290,
+            "y": 680.9375,
+            "width": 79,
+            "height": 36,
+            "right": 1369,
+            "bottom": 716.9375,
+            "top": 680.9375,
+            "left": 1290
+          },
+          "row": {
+            "tag": "div",
+            "cls": "set-row",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          },
+          "control": {
+            "tag": "input",
+            "cls": "q-number-input",
+            "id": "",
+            "role": "",
+            "aria": "返回条数",
+            "type": "",
+            "text": ""
+          },
+          "labelEl": {
+            "tag": "div",
+            "cls": "set-row__title",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数"
+          }
+        },
+        "debug": {
+          "url": "http://127.0.0.1:5107/?verify=1793159689084#/settings",
+          "hasProbe": true,
+          "active": "模型与服务",
+          "cats": [
+            "常规",
+            "模型与服务",
+            "记忆与整理",
+            "工具与权限",
+            "关于与更新"
+          ],
+          "probe": {
+            "found": true,
+            "kind": "input",
+            "value": "8",
+            "checked": null,
+            "disabled": false,
+            "rect": {
+              "x": 1290,
+              "y": 680.9375,
+              "width": 79,
+              "height": 36,
+              "right": 1369,
+              "bottom": 716.9375,
+              "top": 680.9375,
+              "left": 1290
+            },
+            "row": {
+              "tag": "div",
+              "cls": "set-row",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "",
+              "text": "默认返回条数每次搜索返回的结果数（1-20）"
+            },
+            "control": {
+              "tag": "input",
+              "cls": "q-number-input",
+              "id": "",
+              "role": "",
+              "aria": "返回条数",
+              "type": "",
+              "text": ""
+            },
+            "labelEl": {
+              "tag": "div",
+              "cls": "set-row__title",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "",
+              "text": "默认返回条数"
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "group-save-success",
+      "name": "dirty-marker-shown",
+      "ok": true,
+      "detail": {
+        "dirtyState": "有未保存的修改"
+      }
+    },
+    {
+      "scenario": "group-save-success",
+      "name": "save-button-clicked",
+      "ok": true,
+      "detail": {
+        "ok": true,
+        "label": "保存",
+        "direct": true
+      }
+    },
+    {
+      "scenario": "group-save-success",
+      "name": "save-request-sent",
+      "ok": true,
+      "detail": [
+        "PUT http://127.0.0.1:8757/api/settings/search"
+      ]
+    },
+    {
+      "scenario": "group-save-success",
+      "name": "success-feedback-shown",
+      "ok": true,
+      "detail": {
+        "notices": [
+          "搜索配置已保存",
+          "搜索配置已保存"
+        ]
+      }
+    },
+    {
+      "scenario": "group-save-success",
+      "name": "value-persisted-after-reload",
+      "ok": true,
+      "detail": {
+        "expected": 7,
+        "actual": "7"
+      }
+    },
+    {
+      "scenario": "group-save-failure",
+      "name": "group-field-found",
+      "ok": true,
+      "detail": {
+        "found": true,
+        "kind": "input",
+        "value": "7",
+        "checked": null,
+        "disabled": false,
+        "rect": {
+          "x": 1290,
+          "y": 680.9375,
+          "width": 79,
+          "height": 36,
+          "right": 1369,
+          "bottom": 716.9375,
+          "top": 680.9375,
+          "left": 1290
+        },
+        "row": {
+          "tag": "div",
+          "cls": "set-row",
+          "id": "",
+          "role": "",
+          "aria": "",
+          "type": "",
+          "text": "默认返回条数每次搜索返回的结果数（1-20）"
+        },
+        "control": {
+          "tag": "input",
+          "cls": "q-number-input",
+          "id": "",
+          "role": "",
+          "aria": "返回条数",
+          "type": "",
+          "text": ""
+        },
+        "labelEl": {
+          "tag": "div",
+          "cls": "set-row__title",
+          "id": "",
+          "role": "",
+          "aria": "",
+          "type": "",
+          "text": "默认返回条数"
+        }
+      }
+    },
+    {
+      "scenario": "group-save-failure",
+      "name": "failure-feedback-shown",
+      "ok": true,
+      "detail": {
+        "notices": [
+          "保存搜索配置失败：/api/settings/search->500:{\"detail\":\"验收注入：保存失败（fake，不发真实请求）\"}",
+          "有未保存的修改"
+        ]
+      }
+    },
+    {
+      "scenario": "group-save-failure",
+      "name": "draft-kept-after-failure",
+      "ok": true,
+      "detail": {
+        "expected": 9,
+        "actual": "9"
+      }
+    },
+    {
+      "scenario": "group-save-failure",
+      "name": "fake-write-injected",
+      "ok": true,
+      "detail": {
+        "writes": [
+          "PUT http://127.0.0.1:8757/api/settings/search"
+        ]
+      }
+    },
+    {
+      "scenario": "late-response",
+      "name": "group-field-found",
+      "ok": true,
+      "detail": {
+        "found": true,
+        "kind": "input",
+        "value": "7",
+        "checked": null,
+        "disabled": false,
+        "rect": {
+          "x": 1290,
+          "y": 680.9375,
+          "width": 79,
+          "height": 36,
+          "right": 1369,
+          "bottom": 716.9375,
+          "top": 680.9375,
+          "left": 1290
+        },
+        "row": {
+          "tag": "div",
+          "cls": "set-row",
+          "id": "",
+          "role": "",
+          "aria": "",
+          "type": "",
+          "text": "默认返回条数每次搜索返回的结果数（1-20）"
+        },
+        "control": {
+          "tag": "input",
+          "cls": "q-number-input",
+          "id": "",
+          "role": "",
+          "aria": "返回条数",
+          "type": "",
+          "text": ""
+        },
+        "labelEl": {
+          "tag": "div",
+          "cls": "set-row__title",
+          "id": "",
+          "role": "",
+          "aria": "",
+          "type": "",
+          "text": "默认返回条数"
+        }
+      }
+    },
+    {
+      "scenario": "late-response",
+      "name": "save-in-flight-edited",
+      "ok": true,
+      "detail": {
+        "duringSave": {
+          "ok": true
+        },
+        "savingState": "有未保存的修改"
+      }
+    },
+    {
+      "scenario": "late-response",
+      "name": "late-old-response-not-applied",
+      "ok": true,
+      "detail": {
+        "expected": 13,
+        "actual": "13",
+        "writes": 1
+      }
+    },
+    {
+      "scenario": "late-response",
+      "name": "newer-draft-still-marked-dirty",
+      "ok": true,
+      "detail": {
+        "dirtyAfter": "有未保存的修改"
+      }
+    },
+    {
+      "scenario": "late-response",
+      "name": "one-write-made",
+      "ok": true,
+      "detail": {
+        "writes": 1
+      }
+    },
+    {
+      "scenario": "search-locate",
+      "name": "search-entry",
+      "ok": true,
+      "detail": {
+        "found": true,
+        "trigger": {
+          "tag": "button",
+          "cls": "qio-icon-btn.is-sm.tone-normal",
+          "id": "",
+          "role": "",
+          "aria": "搜索设置",
+          "type": "button",
+          "text": ""
+        }
+      }
+    },
+    {
+      "scenario": "search-locate",
+      "name": "普通项-result-found",
+      "ok": true,
+      "detail": {
+        "query": "主题",
+        "count": 1
+      }
+    },
+    {
+      "scenario": "search-locate",
+      "name": "普通项-located",
+      "ok": true,
+      "detail": {
+        "query": "主题",
+        "before": "常规",
+        "after": "常规",
+        "highlighted": 0
+      }
+    },
+    {
+      "scenario": "search-locate",
+      "name": "高级参数-result-found",
+      "ok": true,
+      "detail": {
+        "query": "返回条数",
+        "count": 1
+      }
+    },
+    {
+      "scenario": "search-locate",
+      "name": "高级参数-located",
+      "ok": true,
+      "detail": {
+        "query": "返回条数",
+        "before": "常规",
+        "after": "模型与服务",
+        "highlighted": 0
+      }
+    },
+    {
+      "scenario": "search-locate",
+      "name": "折叠用途-result-found",
+      "ok": true,
+      "detail": {
+        "query": "记忆整理",
+        "count": 2
+      }
+    },
+    {
+      "scenario": "search-locate",
+      "name": "折叠用途-located",
+      "ok": true,
+      "detail": {
+        "query": "记忆整理",
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": 0
+      }
+    },
+    {
+      "scenario": "native-dialogs",
+      "name": "no-confirm-alert-prompt",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    }
+  ],
+  "notes": [],
+  "fixtures": {
+    "catalog": 0,
+    "credentials": 0,
+    "searchStatus": 6
+  },
+  "dialogCalls": {
+    "confirm": 0,
+    "alert": 0,
+    "prompt": 0,
+    "samples": []
+  },
+  "categories": {
+    "labels": [
+      "常规",
+      "模型与服务",
+      "记忆与整理",
+      "工具与权限",
+      "关于与更新"
+    ],
+    "missing": [],
+    "unexpected": [],
+    "count": 5
+  },
+  "finishedAt": "2026-10-28T03:55:27.427Z",
+  "summary": {
+    "total": 29,
+    "passed": 29,
+    "failed": 0,
+    "fixtures": {
+      "catalog": 0,
+      "credentials": 0,
+      "searchStatus": 6
+    }
+  }
+}
