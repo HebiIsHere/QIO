@@ -23,6 +23,7 @@ from agent.services import usage_target as usage_module
 from agent.services.usage_target import (
     REASON_BUDGET_EXHAUSTED,
     REASON_CREDENTIAL_DISABLED,
+    REASON_CREDENTIAL_MISSING,
     REASON_CREDENTIAL_REVOKED,
     REASON_CREDENTIAL_UNVERIFIED,
     REASON_EXPLICIT_UNAVAILABLE,
@@ -299,12 +300,36 @@ def test_explicit_assignment_unavailable_fails_with_reason(
     assert "spare-key" not in error.message
 
 
-def test_explicit_assignment_to_missing_credential_fails(store, settings_store, db_conn):
-    _grant(store, "spare-key", verify_state="verified")
-    _assign(db_conn, "entity-extract", "ghost-key", "gpt-x")
-    with pytest.raises(UsageUnavailable) as excinfo:
-        resolve_usage_target(store, settings_store, "entity-extract")
-    assert excinfo.value.reason_code == REASON_EXPLICIT_UNAVAILABLE
+def test_explicit_assignment_to_missing_credential_is_never_silently_redirected(
+    store, settings_store, db_conn
+):
+    """用途分配指向的连接被删了：两种库都不能「顺手换成另一把」。
+
+    * 兼容库（本分支独立跑，表无外键）：分配行还在 → 如实报「显式指定不可用」；
+    * 迁移后的库（数据层，外键 ON DELETE CASCADE）：分配行随连接一起消失 →
+      回到默认/政策解析（分配不存在了，不算「静默替换」）。
+    两种结果都是「不会指向不存在的发送目标」。
+    """
+    _grant(store, "spare-key", model="gpt-spare", verify_state="verified")
+    _grant(store, "pinned-key", model="gpt-pinned", verify_state="verified")
+    _assign(db_conn, "entity-extract", "pinned-key", "gpt-pinned")
+    store.delete("pinned-key")
+
+    try:
+        target = resolve_usage_target(store, settings_store, "entity-extract")
+    except UsageUnavailable as exc:
+        assert exc.reason_code == REASON_EXPLICIT_UNAVAILABLE
+        assert exc.detail_code == REASON_CREDENTIAL_MISSING
+    else:
+        assert target.credential_id == "spare-key"
+        assert target.source in (SOURCE_POLICY, SOURCE_DEFAULT)
+
+
+def test_credential_problem_reports_missing_credential(store):
+    """连接不存在时给的是「缺凭据」而不是「未知错误」（文案里不含密钥）。"""
+    reason_code, message = usage_module.credential_problem(store, "ghost-key")
+    assert reason_code == REASON_CREDENTIAL_MISSING
+    assert "ghost-key" in message
 
 
 def test_explicit_assignment_model_not_in_catalog_fails(store, settings_store, db_conn):
