@@ -4090,4 +4090,11 @@ def create_app(
     from agent.api.model_routes import register_model_routes
 
     register_model_routes(app, ctx)
+
+    # 设置页改版：联网搜索的通道状态与真实连接检查。搜索通道的配置仍在
+    # /api/settings/search（SettingsService 统一落库），这里只补「状态/检查」这类
+    # 会真的打到外部端点的只读/低频入口。
+    from agent.api.search_routes import register_search_routes
+
+    register_search_routes(app, ctx)
     return app
