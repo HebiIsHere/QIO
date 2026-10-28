@@ -11,7 +11,7 @@
 | 基线 | `feat/mp-20261027-settings-integration` @ `af77d2e74d94eb05b5227d69376f57810086d84f` |
 | 修复分支 | `fix/settings-visual-20261028`（独立 worktree，未动基线分支） |
 | 修复分支尖端 | \`（见交付回复）\` |
-| 完整 CI | 见交付回复（运行号回填） |
+| 完整 CI | run `40664735538` → **success（10/10 job 绿）** |
 
 ## 2. 视觉方向（用户确认）
 
@@ -76,3 +76,12 @@
 - 定向测试：`npx vue-tsc --noEmit`、设置页与模型面板、对话页相关 vitest。
 - 集成后集中跑一次完整前端检查 + 一次完整 CI。
 - 其它页面回归：对话页 / 互动页 / 星球页 / 调试页 / 首次引导。
+
+## 7. CI 台账（诚实记录）
+
+- 首次运行 `40664735538` 在 `backend (windows-latest)` 上红了一次：失败用例是
+  `tests/test_audit_attachment_io_verify.py` 的附件上传 I/O 压测（2 × 99MB 上传期望 `[200, 200]`，实际 `[500, 200]`）。
+  本轮改动**只有前端与文档**：`git diff af77d2e7..1c25a01b -- backend` 为 0 行；同一份后端代码在上一轮集成分支的
+  CI 里该项是通过的。所以判定为 Windows runner 的既有不稳定项，与本次改动无关。
+- 处理：`gh run rerun 40664735538 --failed` 只重跑失败 job（不重复整套矩阵），重跑通过 → 整个运行结论 **success**。
+- 其余 job 首次即绿：文档一致性、前端、后端 py3.11 / py3.12、rust（ubuntu / windows）、冻结 worker、安装 e2e、去重前置。
