@@ -127,6 +127,17 @@ def _grant(ctx, key_id: str, *, tags=None, model: str = "gpt-x", budget=None) ->
 
 
 def _set_default(ctx, credential_id: str, model_id: str) -> None:
+    """写默认模型（同时补 credential_models 行：数据层按「这个模型有没有记录」判可用）。"""
+    _catalog_tables(ctx.conn)
+    now = "2026-10-28T00:00:00+00:00"
+    ctx.conn.execute(
+        "INSERT INTO credential_models (id, credential_id, model_id, source, capabilities,"
+        " verify_state, discovered_at, updated_at)"
+        " VALUES (?, ?, ?, 'manual', '[]', 'verified', ?, ?)"
+        " ON CONFLICT(credential_id, model_id) DO NOTHING",
+        (f"cm_{credential_id}_{model_id}", credential_id, model_id, now, now),
+    )
+    ctx.conn.commit()
     ctx.settings_store.set(
         "model.default",
         json.dumps({"credential_id": credential_id, "model_id": model_id}),

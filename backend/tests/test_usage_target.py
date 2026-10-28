@@ -117,7 +117,22 @@ def _assign(
     conn.commit()
 
 
-def _set_default(settings_store, credential_id: str, model_id: str) -> None:
+def _set_default(conn: sqlite3.Connection, settings_store, credential_id: str, model_id: str) -> None:
+    """写默认模型。
+
+    同时补一行 credential_models：数据层按「这条连接下有没有记录这个模型」判断可用性，
+    只写 settings 会让合并后的数据层把默认模型判成不可用（两套读法结论要一致）。
+    """
+    _catalog_tables(conn)
+    now = "2026-10-28T00:00:00+00:00"
+    conn.execute(
+        "INSERT INTO credential_models (id, credential_id, model_id, source, capabilities,"
+        " verify_state, discovered_at, updated_at)"
+        " VALUES (?, ?, ?, 'manual', '[]', 'verified', ?, ?)"
+        " ON CONFLICT(credential_id, model_id) DO NOTHING",
+        (f"cm_{credential_id}_{model_id}", credential_id, model_id, now, now),
+    )
+    conn.commit()
     settings_store.set(
         DEFAULT_MODEL_KEY,
         json.dumps({"credential_id": credential_id, "model_id": model_id}),
@@ -145,8 +160,13 @@ def _grant(
 # -- 老库：没有 model_usages 表 / 没有 default 键 ------------------------------
 
 
-def test_legacy_db_without_usage_table_falls_back_to_policy(store, settings_store):
-    """未迁移的老库：没有表、没有默认模型 → 直接走基线 policy，不抛异常。"""
+def test_legacy_db_without_usage_table_falls_back_to_policy(store, settings_store, db_conn):
+    """未迁移的老库：没有表、没有默认模型 → 直接走基线 policy，不抛异常。
+
+    合并数据层后迁移 73 会把表建出来，所以这里显式把表去掉，真正测「老库」那条路径。
+    """
+    db_conn.execute("DROP TABLE IF EXISTS model_usages")
+    db_conn.commit()
     _grant(store, "main-key", verify_state="verified")
     target = resolve_usage_target(store, settings_store, "main-chat")
     assert target.source == SOURCE_POLICY
@@ -168,7 +188,7 @@ def test_default_model_is_used_when_no_explicit_assignment(store, settings_store
     _catalog_tables(db_conn)
     _grant(store, "main-key", model="gpt-old", verify_state="verified")
     _grant(store, "daily-key", model="gpt-daily", verify_state="verified")
-    _set_default(settings_store, "daily-key", "gpt-daily")
+    _set_default(db_conn, settings_store, "daily-key", "gpt-daily")
 
     target = resolve_usage_target(store, settings_store, "main-chat")
     assert target.source == SOURCE_DEFAULT
@@ -184,7 +204,7 @@ def test_explicit_assignment_overrides_default(store, settings_store, db_conn):
     _grant(store, "main-key", verify_state="verified")
     _grant(store, "daily-key", model="gpt-daily", verify_state="verified")
     _grant(store, "cheap-key", model="gpt-cheap", verify_state="verified")
-    _set_default(settings_store, "daily-key", "gpt-daily")
+    _set_default(db_conn, settings_store, "daily-key", "gpt-daily")
     _assign(db_conn, "memory-organize", "cheap-key", "gpt-cheap")
 
     target = resolve_usage_target(store, settings_store, "memory-organize")
@@ -198,7 +218,7 @@ def test_explicit_assignment_overrides_default(store, settings_store, db_conn):
 
 def test_clearing_assignment_returns_to_following_default(store, settings_store, db_conn):
     _grant(store, "daily-key", model="gpt-daily", verify_state="verified")
-    _set_default(settings_store, "daily-key", "gpt-daily")
+    _set_default(db_conn, settings_store, "daily-key", "gpt-daily")
     _assign(db_conn, "entity-extract", "daily-key", "gpt-daily")
     assert resolve_usage_target(store, settings_store, "entity-extract").source == SOURCE_EXPLICIT
 
@@ -207,12 +227,14 @@ def test_clearing_assignment_returns_to_following_default(store, settings_store,
     assert resolve_usage_target(store, settings_store, "entity-extract").source == SOURCE_DEFAULT
 
 
-def test_default_model_unavailable_degrades_to_policy_with_reason(store, settings_store):
+def test_default_model_unavailable_degrades_to_policy_with_reason(
+    store, settings_store, db_conn
+):
     """默认模型不可用（这里：被停用）→ 回退 policy，但**留痕**，不是静默换 Key。"""
     _grant(store, "main-key", model="gpt-main", verify_state="verified")
     _grant(store, "daily-key", model="gpt-daily", verify_state="verified")
     store.set_enabled("daily-key", False)
-    _set_default(settings_store, "daily-key", "gpt-daily")
+    _set_default(db_conn, settings_store, "daily-key", "gpt-daily")
 
     target = resolve_usage_target(store, settings_store, "main-chat")
     assert target.source == SOURCE_POLICY
@@ -222,10 +244,12 @@ def test_default_model_unavailable_degrades_to_policy_with_reason(store, setting
     assert "daily-key" in target.degrade_message
 
 
-def test_default_model_unavailable_and_no_alternative_raises(store, settings_store):
+def test_default_model_unavailable_and_no_alternative_raises(
+    store, settings_store, db_conn
+):
     _grant(store, "daily-key", model="gpt-daily", verify_state="verified")
     store.set_enabled("daily-key", False)
-    _set_default(settings_store, "daily-key", "gpt-daily")
+    _set_default(db_conn, settings_store, "daily-key", "gpt-daily")
 
     with pytest.raises(UsageUnavailable) as excinfo:
         resolve_usage_target(store, settings_store, "main-chat")
@@ -302,9 +326,11 @@ def test_explicit_assignment_model_not_in_catalog_fails(store, settings_store, d
 
 
 @pytest.mark.parametrize("usage_key", ["video", "audio", "embedding"])
-def test_non_inheriting_usages_never_take_default_chat_model(store, settings_store, usage_key):
+def test_non_inheriting_usages_never_take_default_chat_model(
+    store, settings_store, db_conn, usage_key
+):
     _grant(store, "daily-key", model="gpt-daily", verify_state="verified")
-    _set_default(settings_store, "daily-key", "gpt-daily")
+    _set_default(db_conn, settings_store, "daily-key", "gpt-daily")
     with pytest.raises(UsageUnavailable) as excinfo:
         resolve_usage_target(store, settings_store, usage_key)
     assert excinfo.value.reason_code == REASON_NOT_INHERITED
@@ -367,7 +393,7 @@ def policy(store) -> CredentialPolicy:
     return CredentialPolicy(store, register_default_accounting=False)
 
 
-def test_vision_does_not_inherit_default_chat_model(store, settings_store):
+def test_vision_does_not_inherit_default_chat_model(store, settings_store, db_conn):
     _grant(store, "main-key", model="gpt-main", verify_state="verified")
     store.create(
         "vision-key",
@@ -377,7 +403,7 @@ def test_vision_does_not_inherit_default_chat_model(store, settings_store):
         "gpt-vision",
         verify_state="verified",
     )
-    _set_default(settings_store, "main-key", "gpt-main")
+    _set_default(db_conn, settings_store, "main-key", "gpt-main")
     with pytest.raises(UsageUnavailable) as excinfo:
         resolve_usage_target(store, settings_store, "vision")
     assert excinfo.value.reason_code == REASON_NOT_INHERITED
