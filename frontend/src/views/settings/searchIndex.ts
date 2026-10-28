@@ -29,6 +29,10 @@ export interface SettingsSearchEntry {
  * 为什么这里也写一份：搜索索引必须能在没有加载模型目录（B 的面板尚未取数）时
  * 也能搜到「记忆整理」这类用途名。key 与 label 来自共享契约 §6.2，
  * 只做展示用途；任何执行路径都不从这里读（A 不直接调用模型 API）。
+ *
+ * **对齐要求**：`USAGE_KEYS_FOR_INDEX` 必须与 usages.py 的 `USAGE_KEYS` 完全一致
+ * （顺序也一致）。改动任一处都要同步；`__tests__/settings-usage-index.test.ts`
+ * 会直接读 usages.py 的源码做守卫（不 import Python，只做文本解析）。
  */
 export const SETTINGS_USAGE_ENTRIES: { key: string; label: string; group: string; note: string }[] = [
   { key: "main-chat", label: "主对话", group: "primary", note: "日常对话与工具调用使用这一档" },
@@ -44,6 +48,9 @@ export const SETTINGS_USAGE_ENTRIES: { key: string; label: string; group: string
   { key: "knowledge-distill", label: "知识提炼", group: "background", note: "从对话里提炼知识候选时使用" },
   { key: "entity-extract", label: "实体提炼", group: "background", note: "抽取实体与关系时使用" },
 ];
+
+/** 供守卫测试比对的用途 key 列表（唯一集中处，见文件头「对齐要求」） */
+export const USAGE_KEYS_FOR_INDEX: string[] = SETTINGS_USAGE_ENTRIES.map((usage) => usage.key);
 
 const USAGE_ENTRIES: SettingsSearchEntry[] = SETTINGS_USAGE_ENTRIES.map((usage) => ({
   key: `models.usage.${usage.key}`,

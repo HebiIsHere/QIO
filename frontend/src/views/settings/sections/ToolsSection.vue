@@ -152,11 +152,28 @@ function fact(value: string | number | null | undefined, fallback = "读取中�
   return String(value);
 }
 
+/** 连接展示名：优先 Key 名称，其次服务商名，最后才回退到 id（不把 id 伪装成名称） */
+function modelConnectionLabel(info: {
+  connectionName?: string | null;
+  providerName?: string | null;
+  credentialId?: string | null;
+}): string {
+  return info.connectionName || info.providerName || info.credentialId || "";
+}
+
 function usageFactLine(usage: (typeof modelFacts.usages)[number]): string {
-  if (!usage.connectionName && !usage.modelId) return "尚未解析";
-  const model = usage.modelId ?? "跟随默认模型";
-  const connection = usage.connectionName ? ` · ${usage.connectionName}` : "";
-  return `${model}${connection}`;
+  // 跟随默认的用途以 resolved（后端解析后的真实目标）为准；显式分配的用自身字段
+  const target =
+    usage.followsDefault && usage.resolved
+      ? { credentialId: usage.resolved.credentialId, modelId: usage.resolved.modelId }
+      : { credentialId: usage.credentialId ?? null, modelId: usage.modelId ?? null };
+  if (!target.modelId) return "尚未解析";
+  const connection = modelConnectionLabel({
+    connectionName: usage.connectionName,
+    providerName: usage.providerName,
+    credentialId: target.credentialId,
+  });
+  return connection ? `${target.modelId} · ${connection}` : target.modelId;
 }
 
 onMounted(() => {
@@ -311,7 +328,10 @@ onMounted(() => {
       <dt data-settings-key="tools.effective.model-default">默认模型</dt>
       <dd data-settings-key="tools.effective.model-default">
         <template v-if="modelFacts.defaultModel">
-          {{ modelFacts.defaultModel.modelId }} · {{ modelFacts.defaultModel.connectionName }}
+          {{ modelFacts.defaultModel.modelId }}
+          <template v-if="modelConnectionLabel(modelFacts.defaultModel)">
+            · {{ modelConnectionLabel(modelFacts.defaultModel) }}
+          </template>
         </template>
         <template v-else-if="modelFacts.loaded">尚未设置</template>
         <template v-else>由「模型与服务」提供，尚未读取</template>
