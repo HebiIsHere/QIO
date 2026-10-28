@@ -67,8 +67,26 @@ class WebFetchTool(Tool):
     is_concurrency_safe = True
     timeout_ms = 40_000
 
-    def __init__(self, fetch_html: Any = None) -> None:
+    #: 正文预算的默认值：与 services/settings_service.py 的既有默认保持同一个数。
+    DEFAULT_MAX_CHARS = 15000
+    MAX_CHARS_MIN, MAX_CHARS_MAX = 1000, 40000
+
+    def __init__(self, fetch_html: Any = None, settings: Any = None) -> None:
         self.fetch_html = fetch_html or _fetch
+        # 「设置 → 模型与服务 → 联网搜索 → 正文预算」的真实读取点。
+        # 以前这里是硬编码 15000：设置在界面上能改，运行期根本不看（等于没有这个设置）。
+        # 必须**每次调用时**读（用户改完立刻生效），不能在 import/构造期固化。
+        self.settings = settings
+
+    def _default_max_chars(self) -> int:
+        getter = getattr(self.settings, "get_int", None)
+        if not callable(getter):
+            return self.DEFAULT_MAX_CHARS
+        try:
+            value = int(getter("search.max_fetch_chars", self.DEFAULT_MAX_CHARS))
+        except Exception:  # noqa: BLE001 - 读设置失败按基线默认值，不影响抓取
+            return self.DEFAULT_MAX_CHARS
+        return max(self.MAX_CHARS_MIN, min(value, self.MAX_CHARS_MAX))
 
     async def run(self, **kwargs: Any) -> ToolResult:
         url = str(kwargs.get("url", "") or "").strip()
@@ -107,9 +125,13 @@ class WebFetchTool(Tool):
         text = soup.get_text(" ", strip=True)
         if not text:
             return ToolResult(ok=False, error="该页面无正文可提取")
-        try:
-            budget = int(kwargs.get("max_chars", 15000))
-        except (TypeError, ValueError):
-            budget = 15000
-        budget = max(1000, min(budget, 40000))
+        requested = kwargs.get("max_chars", None)
+        if requested is None or requested == "":
+            budget = self._default_max_chars()
+        else:
+            try:
+                budget = int(requested)
+            except (TypeError, ValueError):
+                budget = self._default_max_chars()
+        budget = max(self.MAX_CHARS_MIN, min(budget, self.MAX_CHARS_MAX))
         return ToolResult(ok=True, content=trim_to_budget(text, budget))

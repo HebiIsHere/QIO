@@ -34,6 +34,7 @@ from agent.prompts import (
 from agent.tools import security_gate
 from agent.tools.base import TOOL_RESULT_PROTOCOL_VERSION, Tool, ToolResult
 from agent.tools.contracts import json_schema_for
+from agent.services.usage_target import UsageUnavailable
 from agent.tools.memory_search import MemorySearchTool
 from agent.tools.registry import ToolRegistry
 from agent.tools.spec import SubagentBudget, ToolDefinition
@@ -582,6 +583,7 @@ class SubagentTool(Tool):
         trace_store=None,
         origin_provider: Callable[[], dict[str, Any] | None] | None = None,
         security=None,
+        usage_assignment: Callable[[], tuple[str, str | None] | None] | None = None,
     ) -> None:
         self.definition = definition
         self.name = definition.name
@@ -597,6 +599,10 @@ class SubagentTool(Tool):
         self.trace_store = trace_store
         self.origin_provider = origin_provider
         self.security = security
+        # 设置页改版 §8：返回「子任务」用途的 (credential_ref, model)；
+        # 返回 None = 没有显式/默认指定（照旧走基线自主选择）；
+        # 显式指定但不可用时抛 UsageUnavailable（由 run() 转成可读失败）。
+        self.usage_assignment = usage_assignment
 
     def _origin(self) -> dict[str, Any]:
         provider = self.origin_provider or _ORIGIN_PROVIDER
@@ -852,16 +858,42 @@ class SubagentTool(Tool):
 
         # 旧 credential_key 只在这里归一化；双参不一致直接拒绝（不猜）。
         legacy_key = business.pop("credential_key", None)
+        # 用途分配（设置页改版 §8）：只有**没有**任何显式指定时才生效
+        # （工具调用里的 credential_ref / 旧 credential_key / 工具定义上的 credential_ref
+        # 都是更具体的指定，优先级更高）。
+        assignment_ref: str | None = None
+        assignment_model: str | None = None
+        if self.usage_assignment is not None and not (
+            (control is not None and control.credential_ref)
+            or legacy_key
+            or self.definition.credential_ref
+        ):
+            try:
+                assigned = self.usage_assignment()
+            except UsageUnavailable as exc:
+                # 显式指定不可用：如实失败，不静默换用别的 Key 或别的模型。
+                return ToolResult(
+                    ok=False,
+                    error=f"子任务用途不可用（{exc.reason_code}）：{exc.message}",
+                    code="credential_unavailable",
+                    status="failed",
+                )
+            if assigned is not None:
+                assignment_ref, assignment_model = assigned
         try:
             choice = credential_selection.resolve_credential_choice(
                 self.credentials,
-                credential_ref=(control.credential_ref if control is not None else None),
+                credential_ref=(
+                    (control.credential_ref if control is not None else None)
+                    or assignment_ref
+                ),
                 credential_key=legacy_key,
                 purpose="subagent",
                 fallback_ref=self.definition.credential_ref,
             )
             model = credential_selection.choose_model(
-                choice, control.model if control is not None else None
+                choice,
+                (control.model if control is not None else None) or assignment_model,
             )
         except credential_selection.CredentialSelectionError as exc:
             return ToolResult(

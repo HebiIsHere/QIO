@@ -9,6 +9,7 @@ pipeline instead of a pile of domain details.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import sqlite3
@@ -16,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from agent.adapters.base import BaseAdapter
+from agent.services.usage_target import REASON_NO_CREDENTIAL, UsageUnavailable
 from agent.storage.db import transaction
 
 logger = logging.getLogger(__name__)
@@ -422,7 +424,13 @@ class MemoryLifecycle:
         return created
 
     async def drain_derived_tasks(
-        self, adapter: BaseAdapter, *, limit: int = 3, tracer=None, backfill_limit: int = 2
+        self,
+        adapter: BaseAdapter | None,
+        *,
+        adapters: dict[str, Any] | None = None,
+        limit: int = 3,
+        tracer=None,
+        backfill_limit: int = 2,
     ) -> int:
         """把到期的派生任务做一轮，返回完成条数（摘要 / 知识 / 实体各自计一条）。
 
@@ -430,6 +438,12 @@ class MemoryLifecycle:
         实体任务同理（但**不依赖**摘要的成功）。第一轮跑完后再补认领一次，
         「封块后摘要/知识/实体都就绪」的既有语义不变；三种派生各有自己的任务行
         （状态 / attempts / 可读 last_error / 认领代次）。
+
+        ``adapters``（设置页改版 §8）：**按 kind** 的用途 adapter
+        （``{"summary": a, "knowledge": b, "entities": c}``）。三种派生任务可以由用户
+        分别指定不同模型，所以这里按 kind 取；没给的 kind 回落到 ``adapter``
+        （旧调用点行为不变）。某个 kind 的用途不可用时，值是一个
+        :class:`UsageUnavailable`，该条任务**如实失败并记录原因**，不偷偷改用主对话模型。
         """
         from agent.services import derived_tasks
 
@@ -439,28 +453,103 @@ class MemoryLifecycle:
             derived_tasks.KIND_KNOWLEDGE,
             derived_tasks.KIND_ENTITIES,
         )
-        done = await self._drain_batch(adapter, limit=limit, tracer=tracer, kinds=kinds)
+        done = await self._drain_batch(
+            adapter, adapters=adapters, limit=limit, tracer=tracer, kinds=kinds
+        )
         done += await self._drain_batch(
             adapter,
+            adapters=adapters,
             limit=limit,
             tracer=tracer,
             kinds=(derived_tasks.KIND_KNOWLEDGE, derived_tasks.KIND_ENTITIES),
         )
         return done
 
+    @contextlib.contextmanager
+    def use_adapters(self, adapters: dict[str, Any] | None):
+        """在一段派生工作里按 kind 分派 adapter（设置页改版 §8）。
+
+        用「实例状态 + 上下文管理器」而不是给 `drain_derived_tasks` 加必填参数：
+        这个方法是被后台协程、既有测试、离线维护共同调用的入口，签名一改就会把
+        「只是想知道派生耗时」的测试打挂。语义上等价于「这一段工作用这几把 adapter」。
+        """
+        previous = getattr(self, "_task_adapters", None)
+        self._task_adapters = adapters
+        try:
+            yield self
+        finally:
+            self._task_adapters = previous
+
+    @staticmethod
+    def _task_adapter(task_kind: str, adapter: BaseAdapter | None, adapters: dict | None):
+        """这条派生任务该用哪个 adapter（用途分配 → 主 adapter 兼容回落）。
+
+        返回 adapter 实例，或 :class:`UsageUnavailable`（该用途当前不可用），
+        或 None（连主 adapter 都没有）。
+
+        兼容回落只发生在一种情况：用途解析报 **no_credential**，而调用方手里已经有
+        adapter。那意味着「库里一条凭据都没有」（首次启动 / 单测注入主 adapter 的离线
+        环境）—— 这时库里没有任何别的服务可选，沿用调用方给的 adapter 与基线一致。
+        真有凭据但用途目标不可用时，用途解析报的是具体原因（停用 / 预算 / 显式指定
+        不可用…），这里**不会**回落，那条任务会如实失败。
+        """
+        if adapters:
+            mapped = adapters.get(task_kind)
+            if isinstance(mapped, UsageUnavailable):
+                if mapped.reason_code == REASON_NO_CREDENTIAL and adapter is not None:
+                    return adapter
+                return mapped
+            if mapped is not None:
+                return mapped
+        return adapter
+
     async def _drain_batch(
-        self, adapter: BaseAdapter, *, limit: int, tracer, kinds: tuple[str, ...]
+        self,
+        adapter: BaseAdapter | None,
+        *,
+        limit: int,
+        tracer,
+        kinds: tuple[str, ...],
+        adapters: dict | None = None,
     ) -> int:
         from agent.services import derived_tasks
 
+        # 没显式传映射时，用 use_adapters() 在这段工作里设定的那一份（见其说明）。
+        active_adapters = adapters if adapters is not None else getattr(
+            self, "_task_adapters", None
+        )
         done = 0
         for task in derived_tasks.claim_due(self.conn, limit=limit, kinds=kinds):
+            task_adapter = self._task_adapter(task.kind, adapter, active_adapters)
+            if isinstance(task_adapter, UsageUnavailable):
+                # 用途不可用：这条任务如实失败（原因可读、可重试），不借用别人的模型。
+                derived_tasks.fail(
+                    self.conn,
+                    task.id,
+                    f"{task_adapter.reason_code}：{task_adapter.message}",
+                    expected_generation=task.claim_generation,
+                )
+                self._record_failure(
+                    tracer,
+                    f"{task.kind}_usage_unavailable",
+                    f"{task_adapter.reason_code}：{task_adapter.message}",
+                )
+                continue
+            if task_adapter is None:
+                # 连主 adapter 都没有（没有可用凭据）：同样是可重试的失败，不假装完成。
+                derived_tasks.fail(
+                    self.conn,
+                    task.id,
+                    "no_credential：没有可用于这条派生任务的模型凭据",
+                    expected_generation=task.claim_generation,
+                )
+                continue
             try:
                 runner = {
                     derived_tasks.KIND_KNOWLEDGE: self.run_knowledge_task,
                     derived_tasks.KIND_ENTITIES: self.run_entities_task,
                 }.get(task.kind, self.run_summary_task)
-                if await runner(task, adapter, tracer=tracer):
+                if await runner(task, task_adapter, tracer=tracer):
                     done += 1
             except asyncio.CancelledError:
                 # 关闭 / 取消（M06）：不是失败 —— 过代次校验后放回队列，
@@ -587,19 +676,27 @@ class MemoryLifecycle:
         )
 
     async def close_fragment(
-        self, topic_id: str, adapter: BaseAdapter, tracer=None
+        self,
+        topic_id: str,
+        adapter: BaseAdapter | None,
+        tracer=None,
+        *,
+        adapters: dict[str, Any] | None = None,
     ) -> Any | None:
         """兼容入口：封存 + **立刻**把派生任务做完。
 
         新路径（编排器）只封存、不等待模型；直接调用它的地方
         （例如既有测试、离线维护）仍然拿到「封存并带摘要」的结果。
+        ``adapters`` 是把三种派生分开用不同用途 adapter 的入口（见 drain_derived_tasks）。
         """
         sealed = self.seal_fragment(
             topic_id, reason="capacity", tracer=tracer, continue_same_stage=True
         )
         if sealed is None:
             return None
-        await self.drain_derived_tasks(adapter, limit=5, tracer=tracer)
+        await self.drain_derived_tasks(
+            adapter, adapters=adapters, limit=5, tracer=tracer
+        )
         return self.fragments.get(sealed.id)
 
     # -- 派生诊断 ----------------------------------------------------------

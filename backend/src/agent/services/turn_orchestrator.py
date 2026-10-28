@@ -407,10 +407,12 @@ class TurnOrchestrator:
         if adapter is None:
             # 凭据不可用：状态进协议（前端据此给人话提示），警告负责显示，
             # 二者职责不同（spec 第 43~46 条）。
+            # 设置页改版 §8：原因可能是「显式指定的用途 Key 现在不能用」，此时说
+            # 「还没有配置凭据」是错的 —— 文案统一由 AppContext 按真实原因给出。
             await app.announce_credential_unavailable(ctx.turn_id)
             await app.bus.publish(
                 make_warning(
-                    "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话",
+                    app.main_adapter_unavailable_message(),
                     turn_id=ctx.turn_id,
                 )
             )
@@ -1461,8 +1463,10 @@ class TurnOrchestrator:
         if plan.needs_consolidation:
             # 收尾的压缩整理会发起**额外**的模型调用（不进 model_calls）：
             # 它同样要能在阶段账本里被看见，否则又是一段无法解释的等待。
+            # 设置页改版 §8：整理用「记忆整理」这个用途自己的模型，而不是主对话那把
+            # （用户改了用途分配就必须真的换；不可用时如实跳过，见 consolidate_for_usage）。
             with tracer.phase("model_wait", "consolidate"):
-                await app.consolidate(final_topic, adapter)
+                await app.consolidate_for_usage(final_topic, tracer=getattr(ctx, "trace", None))
 
     def _schedule_derived_work(
         self, adapter, tracer=None, *, fragment_id: str | None = None
@@ -1493,9 +1497,15 @@ class TurnOrchestrator:
 
             _t0 = _time.perf_counter()
             try:
-                await self.app.memory_lifecycle.drain_derived_tasks(
-                    adapter, limit=3, tracer=tracer
-                )
+                # 三种派生各自走自己的用途 adapter（记忆整理 / 知识提炼 / 实体提炼）。
+                # 先在这里**冻结**解析结果：后台任务开始执行之后用户再改用途分配，
+                # 这一批任务仍按原配置归属（下一次派发才用新保存值）。
+                adapters = await self.app.build_derived_adapters()
+                lifecycle = self.app.memory_lifecycle
+                with lifecycle.use_adapters(adapters):
+                    await lifecycle.drain_derived_tasks(
+                        adapter, limit=3, tracer=tracer
+                    )
             except Exception as exc:  # noqa: BLE001 - 派生失败不得影响会话
                 logging.getLogger(__name__).warning("derived work failed", exc_info=True)
                 writer = getattr(tracer, "warning", None)

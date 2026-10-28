@@ -330,7 +330,14 @@ async def run_dreaming(ctx) -> dict:
         summaries="\n".join(f"- {s['summary'][:200]}" for s in summaries) or "(无)",
     )
     try:
-        adapter = await ctx.build_adapter()
+        # 设置页改版 §8：后台整理走「记忆整理」用途自己的模型；没有可用目标就
+        # 如实跳过（不借用主对话那把 Key —— 那会绕过用户的用途分配）。
+        build_for_usage = getattr(ctx, "build_adapter_for_usage", None)
+        adapter = (
+            await build_for_usage("memory-organize")
+            if callable(build_for_usage)
+            else await ctx.build_adapter()
+        )
         if adapter is None:
             return {"dreaming_candidates": 0, "error": "no adapter"}
         from agent.core.loop import AgentLoop

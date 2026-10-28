@@ -28,7 +28,11 @@ from agent.adapters.text import TextAdapter
 from agent.config import Settings
 from agent.core.guard import RunawayGuard
 from agent.core.tool_state import ToolExecutionState
-from agent.credentials.policy import CredentialPolicy, CredentialRef
+from agent.credentials.policy import (
+    MAIN_LOOP_USAGE_TAGS as _POLICY_MAIN_LOOP_USAGE_TAGS,
+    CredentialPolicy,
+    CredentialRef,
+)
 from agent.credentials.providers import (
     resolve_endpoint as resolve_credential_endpoint,
     resolve_model as resolve_credential_model,
@@ -57,6 +61,20 @@ from agent.services.lifecycle import (
     log_close_report,
     merge_close_reports,
 )
+from agent.credentials.usages import legacy_tags_for_usage as _legacy_tags_for_usage
+from agent.services.usage_target import (
+    REASON_ADAPTER_UNAVAILABLE,
+    REASON_NO_CREDENTIAL,
+    SOURCE_DEFAULT,
+    SOURCE_EXPLICIT,
+    SOURCE_POLICY,
+    UsageTarget,
+    UsageUnavailable,
+    is_explicit_assignment as _is_explicit_usage_assignment,
+    read_usage_assignments as _read_usage_assignments,
+    resolve_shared_target as _resolve_shared_usage_target,
+    resolve_usage_target as _resolve_usage_target,
+)
 from agent.storage.settings import SettingsStore
 from agent.prompts import (
     NOTIFY_SUBTASK_DONE,
@@ -77,7 +95,18 @@ MAIN_LOOP_TAG = "main-loop"
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-MAIN_LOOP_USAGE_TAGS = ["main-loop", "chat", "code", "vision", "research"]
+# 主对话候选标签的唯一来源在 credentials/policy.py（用途解析也用同一批）。
+# 这里保留同名常量：既有导入点（onboarding / 测试）不因这次重构而断。
+MAIN_LOOP_USAGE_TAGS = list(_POLICY_MAIN_LOOP_USAGE_TAGS)
+
+#: 后台三类用途 → 派生任务 kind（derived_tasks.KIND_*）。
+#: 三者**各自独立**解析用途并各自建 adapter：以前三条都复用主 Turn 的同一个 adapter，
+#: 于是「换掉记忆整理用的模型」在界面上看起来生效、实际毫无作用。
+DERIVED_USAGE_BY_KIND = {
+    "summary": "memory-organize",
+    "knowledge": "knowledge-distill",
+    "entities": "entity-extract",
+}
 BUDGET_RATIO = 0.25
 
 # 用户忽略过某类高影响知识后，这段时间内不再把同类候选弹到对话里。
@@ -173,6 +202,11 @@ class AppContext:
             conn, enabled=self.settings_store.get("trace.enabled", "true") != "false"
         )
         self.policy = CredentialPolicy(self.credentials)
+        # 用途解析的最近一次结论（**只含凭据 id 与模型名，不含密钥**）：
+        # 界面 / 事件 / 后台任务据此说明「这个用途现在凭什么在用它」，以及
+        # 「默认模型不可用，已回退到 X（原因）」。没有条目 = 本轮还没解析过。
+        self.usage_targets: dict[str, UsageTarget] = {}
+        self.usage_unavailable: dict[str, UsageUnavailable] = {}
         self.probe_cache = ProbeCache()
         self.context_registry = ContextLengthRegistry()
         # Adapter / 底层 HTTP client 复用：每个 Turn 重新建连接池是没有必要的
@@ -272,8 +306,10 @@ class AppContext:
         from agent.tools.web_search import WebSearchTool
         from agent.tools.web_fetch import WebFetchTool
 
-        self.registry.register(WebSearchTool(self.search_service))
-        self.registry.register(WebFetchTool())
+        # 搜索参数（返回条数 / 正文预算）从设置实时读取：设置在界面上可改，
+        # 运行期必须跟着变（见 tools/web_search.py / web_fetch.py 的同名注释）。
+        self.registry.register(WebSearchTool(self.search_service, self.settings_store))
+        self.registry.register(WebFetchTool(settings=self.settings_store))
         # 电脑操控：共享沙箱 + 文件系统/命令/进程工具（分级授权，走 ComputerSandbox）
         from agent.services.computer import ComputerSandbox, DEFAULT_MODE
         from agent.tools.fs_tools import (
@@ -1383,6 +1419,7 @@ class AppContext:
                         adapter_factory=self.build_adapter_for_credential,
                         bus=self.bus,
                         trace_store=self.trace_store,
+                        usage_assignment=self.subagent_usage_assignment,
                     )
                 else:
                     tool = CodeTool(
@@ -1395,6 +1432,79 @@ class AppContext:
                 logger.info("restored tool: %s", definition.name)
             except Exception:  # noqa: BLE001 - a broken tool must not block startup
                 logger.warning("failed to restore tool: %s", definition.name, exc_info=True)
+
+    # -- 用途解析（设置页改版 §8）-----------------------------------------
+    #
+    # 一次 turn / 一个后台任务开始时**冻结** UsageTarget（见 turn_orchestrator.begin /
+    # _schedule_derived_work）：用户中途改了用途分配，已经开始的调用仍按原配置归属，
+    # 后续调用才用新保存值。解析本身是纯读（services/usage_target.py），不建连接。
+
+    def resolve_usage(
+        self, usage_key: str, *, policy_tags: list[str] | None = None
+    ) -> UsageTarget:
+        """按用途解析出 (凭据, 模型)。不可用时抛 UsageUnavailable（带原因码）。"""
+        return _resolve_usage_target(
+            self.credentials,
+            self.settings_store,
+            usage_key,
+            policy=self.policy,
+            policy_tags=policy_tags,
+        )
+
+    def resolve_main_target(self) -> UsageTarget:
+        """主对话 / 通用对话：共用同一条调用路径，通用对话显式指定优先。"""
+        return _resolve_shared_usage_target(
+            self.credentials,
+            self.settings_store,
+            ["general-chat", "main-chat"],
+            policy=self.policy,
+            primary_key="main-chat",
+        )
+
+    def resolve_alongside_target(self, usage_key: str) -> UsageTarget | None:
+        """「专项用途」：只有**显式指定**或基线专项标签才有目标，否则 None。
+
+        看图就是这种：基线行为是「有 vision 凭据就用它，没有就如实回落主对话」。
+        这里不继承默认模型（``vision`` 的 inherits_default=False）：把默认对话模型
+        塞给看图，等于让一个可能读不了图的模型去读图。
+        """
+        usage_key = str(usage_key or "").strip()
+        if not usage_key:
+            return None
+        assignment = _read_usage_assignments(self.credentials).get(usage_key)
+        if _is_explicit_usage_assignment(assignment):
+            # 显式指定损坏 → 硬失败（不静默换成主对话那把 Key）。
+            return self.resolve_usage(usage_key)
+        tags = list(_legacy_tags_for_usage(usage_key))
+        refs = self.policy.resolve(usage_key, tags) if tags else []
+        if not refs:
+            return None
+        ref = refs[0]
+        return UsageTarget(
+            usage_key=usage_key,
+            credential_id=ref.key_id,
+            model_id=ref.default_model,
+            source=SOURCE_POLICY,
+        )
+
+    def _record_usage(self, target: UsageTarget) -> None:
+        """记下解析结论（不记密钥）；降级要留痕，否则「静默回退」就真的静默了。"""
+        self.usage_targets[target.usage_key] = target
+        if target.degraded:
+            logger.warning(
+                "用途 %s 的默认模型不可用（%s），已回退到 %s/%s",
+                target.usage_key,
+                target.degrade_reason,
+                target.credential_id,
+                target.model_id or "(凭据默认模型)",
+            )
+
+    def _record_usage_unavailable(self, exc: UsageUnavailable) -> None:
+        """记下「这个用途现在不可用 + 原因」；文案里没有密钥，也没有请求内容。"""
+        self.usage_unavailable[exc.usage_key] = exc
+        logger.warning(
+            "用途 %s 不可用：%s（%s）", exc.usage_key, exc.reason_code, exc.message
+        )
 
     # -- adapter ----------------------------------------------------------
 
@@ -1414,11 +1524,120 @@ class AppContext:
         return refs[0] if refs else None
 
     async def build_vision_adapter(self) -> BaseAdapter | None:
-        """看图用的适配器：有 vision 用途凭据就用它，没有就返回 None（由调用方回落）。"""
-        ref = self.resolve_vision_ref()
-        if ref is None:
+        """看图用的适配器（用途 `vision`）。
+
+        显式指定了看图模型却不可用 → **不换 Key**：记下原因并返回 None（调用方按
+        「没有专用看图凭据」如实回落，图片能否交付由适配器能力决定）。
+        没有显式指定 → 基线的 vision 标签凭据 → 没有就 None（由调用方回落主对话）。
+        """
+        try:
+            target = self.resolve_alongside_target("vision")
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
             return None
-        return await self.build_adapter_for_credential(ref.key_id, ref.default_model)
+        if target is None:
+            return None
+        self._record_usage(target)
+        return await self.build_adapter_for_target(target)
+
+    async def build_adapter_for_target(self, target: UsageTarget) -> BaseAdapter | None:
+        """按冻结好的用途目标建（或复用）adapter —— 归因/预算仍走唯一那条路径。"""
+        return await self.build_adapter_for_credential(
+            target.credential_id, target.model_id
+        )
+
+    async def build_adapter_for_usage(
+        self, usage_key: str, *, policy_tags: list[str] | None = None
+    ) -> BaseAdapter | None:
+        """后台路径用：按用途解析并建 adapter；不可用时记录原因并返回 None。
+
+        这台机器的调用方（维护、后台分析）拿不到 adapter 就如实跳过并说明原因，
+        绝不悄悄改用主对话那把 Key。
+        """
+        try:
+            target = self.resolve_usage(usage_key, policy_tags=policy_tags)
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
+            return None
+        self._record_usage(target)
+        return await self.build_adapter_for_target(target)
+
+    def subagent_usage_assignment(self) -> tuple[str, str | None] | None:
+        """「子任务」用途的显式 / 默认指定（给 tools/subagent_tool.py 用）。
+
+        * 没有显式分配、也没有默认模型 → None：照旧走基线自主选择（``credential_selection``）；
+        * 有显式分配 → 返回 (credential_ref, model)；**不可用时抛 UsageUnavailable**，
+          由工具如实失败 —— 用户明确指定的凭据不能被静默替换；
+        * 只有默认模型 → 返回默认模型目标；默认层不可用时回退基线选择，但降级事实已由
+          `_record_usage` 记下（界面可显示「默认模型不可用，已回退到 X」）。
+        """
+        assignment = _read_usage_assignments(self.credentials).get("subagent")
+        if _is_explicit_usage_assignment(assignment):
+            target = self.resolve_usage("subagent")
+            self._record_usage(target)
+            return target.credential_id, target.model_id
+        try:
+            target = self.resolve_usage("subagent")
+        except UsageUnavailable as exc:
+            # 没有显式分配时，回退是基线自己的事；这里只记原因。
+            self._record_usage_unavailable(exc)
+            return None
+        self._record_usage(target)
+        if target.source in (SOURCE_EXPLICIT, SOURCE_DEFAULT):
+            return target.credential_id, target.model_id
+        return None
+
+    async def build_background_adapter(self, usage_key: str) -> BaseAdapter | None:
+        """后台维护路径（知识维护批次 / 维护问答）用的 adapter。
+
+        * 用途能解析出目标 → 用它（用户改了用途分配就真的换）；
+        * **数据库里一条凭据都没有**（首次启动 / 单测注入主 adapter 的离线环境）→
+          保持基线：用主 adapter。这时库里没有任何别的服务可选，不存在「把内容发给
+          用户没选过的服务」的风险；一旦真有凭据而用途目标不可用，就返回 None，
+          由调用方如实失败（不悄悄换用主对话模型）。
+        """
+        adapter = await self.build_adapter_for_usage(usage_key)
+        if adapter is not None:
+            return adapter
+        exc = self.usage_unavailable.get(usage_key)
+        if exc is not None and exc.reason_code != REASON_NO_CREDENTIAL:
+            return None
+        return await self.build_adapter()
+
+    async def build_derived_adapters(self) -> dict[str, Any]:
+        """后台三类用途各自解析 + 建 adapter，返回 ``kind -> adapter | UsageUnavailable``。
+
+        为什么不是「一个 adapter 传下去」：摘要（记忆整理）、知识提炼、实体提炼是三条
+        独立派生任务，用户可以分别指定不同模型；共用主 Turn 的 adapter 会让「用途分配」
+        在界面上看起来生效、实际毫无作用。
+
+        解析/建 adapter 失败时返回**异常对象**而不是 None：派发器按 kind 把它写成该任务
+        的可读失败原因（这条任务停了，别的任务照跑），不退回主对话模型。
+        """
+        result: dict[str, Any] = {}
+        for kind, usage_key in DERIVED_USAGE_BY_KIND.items():
+            try:
+                target = self.resolve_usage(usage_key)
+            except UsageUnavailable as exc:
+                self._record_usage_unavailable(exc)
+                result[kind] = exc
+                continue
+            self._record_usage(target)
+            adapter = await self.build_adapter_for_target(target)
+            if adapter is None:
+                exc = UsageUnavailable(
+                    usage_key,
+                    REASON_ADAPTER_UNAVAILABLE,
+                    f"「{usage_key}」用途解析到 {target.credential_id}，但它建不出可用适配器"
+                    "（端点或模型缺失）",
+                    credential_id=target.credential_id,
+                    model_id=target.model_id,
+                )
+                self._record_usage_unavailable(exc)
+                result[kind] = exc
+                continue
+            result[kind] = adapter
+        return result
 
     def _loop_max_iterations(self) -> int:
         """用户配置的迭代上限；0 表示未配置（用模式默认值）。"""
@@ -1668,10 +1887,26 @@ class AppContext:
         return report
 
     async def build_adapter(self) -> BaseAdapter | None:
-        ref = self.resolve_main_ref()
-        if ref is None:
+        """主对话适配器（用途 main-chat / general-chat）。
+
+        解析优先：显式指定 → 默认模型 → 基线 policy。不可用时**不换 Key**，而是记下
+        原因并返回 None —— 调用方（Turn 编排器）据此给出可读的终态，而不是把它当成
+        「没有配置凭据」。这个返回值同时是这一轮的**冻结**结果（下一次调用才会用新保存值）。
+        """
+        try:
+            target = self.resolve_main_target()
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
             return None
-        return await self.build_adapter_for_credential(ref.key_id, ref.default_model)
+        self._record_usage(target)
+        return await self.build_adapter_for_target(target)
+
+    def main_adapter_unavailable_message(self) -> str:
+        """主对话没有可用适配器时的可读原因（有原因就说原因，不笼统说「没配置」）。"""
+        exc = self.usage_unavailable.get("main-chat")
+        if exc is None:
+            return "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话"
+        return f"主对话当前不可用：{exc.message}"
 
     # -- 能力与凭据状态广播 ------------------------------------------------
 
@@ -1706,15 +1941,25 @@ class AppContext:
             await self.bus.publish(make_event(EventType.FALLBACK, fallback))
 
     async def announce_credential_unavailable(self, turn_id: str | None = None) -> None:
-        """主循环没有可用凭据：只说明「现在用不了 + 去哪里加」，不带内部标识。"""
+        """主循环没有可用凭据：说明「现在用不了 + 为什么 + 去哪里处理」。
+
+        以前一律报 reason_code=no_credential（「还没有配置凭据」）。用户在设置里显式
+        指定了用途、但那把 Key 被停用 / 预算耗尽时，这句话是错的：凭据已经配好了，
+        是它现在不能用。所以这里优先报真实原因码与可读原因（不含密钥、不含 endpoint）。
+        """
         from agent.api.events import EventType, make_event
 
+        exc = self.usage_unavailable.get("main-chat")
         data: dict = {
             "status": "unavailable",
             "scope": "main_loop",
-            "reason_code": "no_credential",
-            "message": "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key",
+            "reason_code": exc.reason_code if exc is not None else "no_credential",
+            "message": self.main_adapter_unavailable_message(),
         }
+        if exc is not None:
+            # 只给定位用的引用（凭据 id / 模型名），不含任何密钥材料。
+            data["credential_id"] = exc.credential_id
+            data["model_id"] = exc.model_id
         if turn_id:
             data["turn_id"] = turn_id
         await self.bus.publish(make_event(EventType.CREDENTIAL_STATUS, data))
@@ -1808,6 +2053,7 @@ class AppContext:
             tool_store=self.tool_store,
             trace_store=self.trace_store,
             turn_id_provider=self._active_turn_id,
+            usage_assignment=self.subagent_usage_assignment,
         )
 
     def _active_turn_id(self) -> str | None:
@@ -2920,7 +3166,10 @@ class AppContext:
             with tracer.phase("memory_post"):
                 fragment = self.fragments.get_or_create_open(topic)
                 if self.fragments.should_close(fragment):
-                    closed = await self._close_fragment(topic, adapter, tracer=tracer)
+                    # 通知轮是真实运行时路径：三种派生各自走自己的用途 adapter。
+                    closed = await self._close_fragment(
+                        topic, adapter, tracer=tracer, usage_adapters=True
+                    )
                     if closed is not None:
                         # 索引在 close_fragment 内部已增量更新（不再全量重建）；
                         # 话题向量刷新走工作线程，取消后不写回。
@@ -4148,11 +4397,23 @@ class AppContext:
     # -- fragment close: summary + entities + knowledge extraction --------
 
     async def _close_fragment(
-        self, topic_id: str, adapter: BaseAdapter, tracer=None
+        self,
+        topic_id: str,
+        adapter: BaseAdapter,
+        tracer=None,
+        *,
+        usage_adapters: bool = False,
     ) -> Any | None:
-        """委派给 MemoryLifecycle。"""
+        """封块 + 立刻做完三种派生。
+
+        `usage_adapters=False`（默认）是**兼容入口**：调用方已经给定 adapter
+        （既有测试 / 离线维护），三种派生共用它，行为与基线完全一致。
+        `usage_adapters=True` 用于运行时的通知轮：三种派生各自走自己的用途解析，
+        与主对话解耦（用户改了用途分配就必须真的换）。
+        """
+        adapters = await self.build_derived_adapters() if usage_adapters else None
         return await self.memory_lifecycle.close_fragment(
-            topic_id, adapter, tracer=tracer
+            topic_id, adapter, tracer=tracer, adapters=adapters
         )
 
     async def _extract_knowledge(
@@ -4175,6 +4436,33 @@ class AppContext:
         self, topic_id: str, adapter: BaseAdapter, tracer=None
     ) -> bool:
         """委派给 MemoryLifecycle（tracer 只用于把派生修正/失败写进 trace）。"""
+        return await self.memory_lifecycle.consolidate(topic_id, adapter, tracer=tracer)
+
+    async def consolidate_for_usage(self, topic_id: str, tracer=None) -> bool:
+        """预算压缩整理：走 `memory-organize` 用途。
+
+        不可用（显式指定坏了 / 没有可用凭据）时**如实跳过**：这不是对话主路径，
+        不能让整轮失败，也绝不能改用主对话模型偷偷跑完（那会绕过用户的用途分配）。
+        返回是否真的做了一次整理。
+        """
+        try:
+            target = self.resolve_usage("memory-organize")
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
+            return False
+        self._record_usage(target)
+        adapter = await self.build_adapter_for_target(target)
+        if adapter is None:
+            self._record_usage_unavailable(
+                UsageUnavailable(
+                    "memory-organize",
+                    REASON_ADAPTER_UNAVAILABLE,
+                    f"记忆整理用途解析到 {target.credential_id}，但建不出可用适配器",
+                    credential_id=target.credential_id,
+                    model_id=target.model_id,
+                )
+            )
+            return False
         return await self.memory_lifecycle.consolidate(topic_id, adapter, tracer=tracer)
 
     # -- topics -----------------------------------------------------------

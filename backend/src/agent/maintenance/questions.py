@@ -185,7 +185,18 @@ async def _call_model(ctx: Any, data: dict[str, Any]) -> tuple[Any, list[str], d
     """组装独立回答任务并调用模型（修复最多一次）。不注入任何主对话内容。"""
     from agent.maintenance.runner import run_structured_task
 
-    adapter = await ctx.build_adapter()
+    # 与 run_batch 同一条用途（知识维护属「知识提炼」的后台处理）：没有可用目标时
+    # 如实抛错，不改用主对话模型。
+    builder = getattr(ctx, "build_background_adapter", None)
+    if callable(builder):
+        adapter = await builder("knowledge-distill")
+    else:
+        usage_builder = getattr(ctx, "build_adapter_for_usage", None)
+        adapter = (
+            await usage_builder("knowledge-distill")
+            if callable(usage_builder)
+            else await ctx.build_adapter()
+        )
     if adapter is None:
         raise RuntimeError("没有可用模型适配器")
     return await run_structured_task(
