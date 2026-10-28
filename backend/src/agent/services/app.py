@@ -119,6 +119,13 @@ KNOWLEDGE_IGNORE_KEY_PREFIX = "knowledge.ignored_at."
 # Anthropic 能力探测的缓存时长：能力档位不会频繁变化，没必要每个 Turn 实测一次。
 ANTHROPIC_PROBE_TTL_SECONDS = 3600.0
 
+# adapter 缓存的条数上限（按「凭据 + 模型」槽位算）。超出时淘汰最久没用的槽位 ——
+# 淘汰只是**松开引用**，不是关闭连接：仍被后台工作持有的 adapter 不能被关掉。
+ADAPTER_CACHE_LIMIT = 16
+# 被新配置顶替下来的旧 adapter 暂留条数上限。留一点是为了「换 Key 那一刻已经开始
+# 的工作」还能用自己的连接收尾，同时不让历史连接无限堆积。
+ADAPTER_RETIRED_LIMIT = 16
+
 # 会话历史分页：首屏只取最近一页，其余按游标往前翻。
 SESSION_PAGE_DEFAULT_LIMIT = 200
 SESSION_PAGE_MAX_LIMIT = 500
@@ -211,8 +218,14 @@ class AppContext:
         self.context_registry = ContextLengthRegistry()
         # Adapter / 底层 HTTP client 复用：每个 Turn 重新建连接池是没有必要的
         # （新 TCP/TLS 握手 + 新连接池），能力探测结果也不该每轮重测。
-        # key = (key_id, credential version, endpoint, model)
+        # key = (key_id, credential version, updated_at, endpoint, model)
         self._adapter_cache: dict[tuple, BaseAdapter] = {}
+        # 槽位索引：(key_id, model) -> 当前缓存键。**同一个槽位**换配置才顶替旧的；
+        # 同一凭据的不同模型是不同槽位，可以同时存在（A：以前会被互相关闭）。
+        self._adapter_slots: dict[tuple, tuple] = {}
+        # 被顶替 / 淘汰下来、暂时还留着强引用的旧 adapter（有界，见 _retire_adapter）。
+        # 运行期**不关闭**它们：可能还有已经开始的工作在用，关闭会打断那次调用。
+        self._adapter_retired: list[tuple[tuple, BaseAdapter]] = []
         # Anthropic 能力探测的缓存（key 里含凭据版本，换 Key 立即失效）
         self._anthropic_probe_at: dict[tuple, float] = {}
         self.fragments = FragmentManager(conn)
@@ -1662,6 +1675,8 @@ class AppContext:
 
         正常 Turn 复用同一个 adapter（等价于复用底层 HTTP client / 连接池）；
         凭据被轮换、端点或模型变化时缓存键变化 → 自然重建；
+        缓存按 `(key_id, model)` 分槽位：同一凭据的不同模型可以同时使用，
+        建后一个不会关闭/顶替前一个（A）；被顶替的旧 adapter 运行期不关闭，
         应用关闭时由 `aclose()` 统一释放。
         """
         secret = self.credentials.get_secret(key_id)
@@ -1686,6 +1701,8 @@ class AppContext:
         )
         cached = self._adapter_cache.get(cache_key)
         if cached is not None:
+            # 命中即刷新最近使用顺序（dict 保序，容量淘汰从最旧的开始）。
+            self._adapter_cache[cache_key] = self._adapter_cache.pop(cache_key)
             return cached
 
         adapter = await self._create_adapter(secret, model, base_url, key_id, meta)
@@ -1751,12 +1768,69 @@ class AppContext:
         return result
 
     def _remember_adapter(self, cache_key: tuple, adapter: BaseAdapter) -> None:
-        """记住 adapter，并淘汰同一凭据的旧版本（避免缓存随轮换无限增长）。"""
-        key_id = cache_key[0]
-        for old_key in [k for k in self._adapter_cache if k[0] == key_id and k != cache_key]:
-            stale = self._adapter_cache.pop(old_key)
-            _close_adapter_soon(stale)
+        """记住 adapter；只有**同一个槽位**换配置才顶替旧的，绝不关闭别的模型。
+
+        历史缺陷（A）：这里以前会把同一 key_id 的其它缓存项全部 pop 并
+        `_close_adapter_soon`。于是同一把 Key 下换成另一个模型（记忆整理 / 知识提炼 /
+        实体提炼各自指定不同模型，主对话与子任务用不同模型）时，前一个还在跑的任务
+        的连接会被关掉。
+
+        现在的规则：
+
+        * 槽位 = `(key_id, model)`：不同模型各自独立，互不顶替、互不关闭；
+        * 同一槽位换了配置（凭据版本 / updated_at / 端点）→ 新配置成为该槽位当前项，
+          旧 adapter 进暂留名单（`_adapter_retired`），**运行期不关闭**：
+          换配置那一刻已经开始的工作仍能用自己的连接收尾；
+        * 两条名单都有条数上限（`_prune_adapters` 只松开引用、不关闭）：没人再引用的
+          旧连接会立刻被引用计数回收，仍被持有的（正在用）保持可用 —— 这正是「不无限
+          保留历史连接」与「不打断在用连接」可以同时成立的原因；
+        * 唯一的关闭点是 `aclose()`（应用关闭）。
+        """
+        # 并发建同一个键（例如主对话与后台派生工作几乎同时开跑）：后到的成为当前项，
+        # 先到的进暂留名单 —— 同样不关闭，谁手里还拿着它谁就能继续用完。
+        replaced = self._adapter_cache.get(cache_key)
+        if replaced is not None and replaced is not adapter:
+            self._adapter_cache.pop(cache_key, None)
+            self._retire_adapter(cache_key, replaced)
+        # 缓存键的排布见 build_adapter_for_credential：末位是模型，首位是凭据 id。
+        slot = (cache_key[0], cache_key[-1])
+        previous_key = self._adapter_slots.get(slot)
+        if previous_key is not None and previous_key != cache_key:
+            previous = self._adapter_cache.pop(previous_key, None)
+            if previous is not None:
+                self._retire_adapter(previous_key, previous)
+        # 插入到末尾 = 最近使用（dict 保序，容量淘汰按它做 LRU）。
+        self._adapter_cache.pop(cache_key, None)
         self._adapter_cache[cache_key] = adapter
+        self._adapter_slots[slot] = cache_key
+        self._prune_adapters()
+
+    def _retire_adapter(self, cache_key: tuple, adapter: BaseAdapter) -> None:
+        """把被顶替 / 淘汰的旧 adapter 放进**有界**暂留名单（不关闭）。
+
+        留一个强引用只为「应用退出时还能对最近的旧连接做一次显式 close」；
+        超出上限的最旧条目只是松开引用 —— 引用计数会立刻回收没人再持有的底层
+        client，仍被后台工作持有的条目由持有者决定生命周期。运行期这里不关闭
+        任何连接（那会打断已经开始的调用）。
+        """
+        self._adapter_retired.append((cache_key, adapter))
+        while len(self._adapter_retired) > ADAPTER_RETIRED_LIMIT:
+            # 不调用 close()：可能还有已经开始的工作在用。松开引用即回收无人引用的。
+            self._adapter_retired.pop(0)
+
+    def _prune_adapters(self) -> None:
+        """把当前缓存压到条数上限：淘汰最久没用的槽位（同样只松开引用、不关闭）。
+
+        被淘汰的 adapter 进暂留名单，所以「容量淘汰」不会变成「关闭一个正在被用的
+        连接」—— 运行期没有任何路径关闭缓存里的 adapter。
+        """
+        while len(self._adapter_cache) > ADAPTER_CACHE_LIMIT:
+            stale_key = next(iter(self._adapter_cache))
+            stale = self._adapter_cache.pop(stale_key)
+            slot = (stale_key[0], stale_key[-1])
+            if self._adapter_slots.get(slot) == stale_key:
+                self._adapter_slots.pop(slot, None)
+            self._retire_adapter(stale_key, stale)
 
     async def aclose(self) -> "CloseReport":
         """应用关闭：按依赖顺序收尾，不留悬挂的任务与等待。
@@ -1870,9 +1944,20 @@ class AppContext:
             )
 
         if decision.release_adapters:
-            adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
+            # 当前缓存 + 被顶替仍暂留的旧 adapter 一起关：应用退出时不存在「还可以
+            # 继续用」的连接，而关闭前后台执行单元已经确认停下（见 close_decision）。
+            # 运行期从不关闭它们（见 _remember_adapter），所以这里是唯一的关闭点。
+            adapters = list(self._adapter_cache.values())
+            adapters.extend(adapter for _key, adapter in self._adapter_retired)
+            self._adapter_cache = {}
+            self._adapter_slots.clear()
+            self._adapter_retired.clear()
             self._anthropic_probe_at.clear()
+            closed: set[int] = set()
             for adapter in adapters:
+                if id(adapter) in closed:
+                    continue
+                closed.add(id(adapter))
                 await _close_adapter(adapter)
             report = report.with_phase(PHASE_ADAPTERS_RELEASED)
         else:
@@ -4624,12 +4709,3 @@ async def _close_adapter(adapter: BaseAdapter) -> None:
             await result
     except Exception:  # noqa: BLE001 - shutdown must not raise
         logger.warning("failed to close model client", exc_info=True)
-
-
-def _close_adapter_soon(adapter: BaseAdapter) -> None:
-    """同步上下文里淘汰旧 adapter：交给事件循环异步关闭。"""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return  # 没有事件循环（例如测试构造阶段）：交给 GC
-    asyncio.create_task(_close_adapter(adapter))
