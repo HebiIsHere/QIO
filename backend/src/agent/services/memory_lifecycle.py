@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import sqlite3
@@ -51,6 +52,14 @@ class MemoryLifecycle:
         self.remove_selector = remove_selector
         # 本轮新建的高影响候选：等回答完成后再由会话层提示用户
         self._pending_candidates: list[dict] = []
+        # 派生工作的「按 kind 用途配置」：**任务上下文隔离**（每个 asyncio 任务有自己的
+        # 值），不是实例可变属性 —— 两个后台派生工作交错时不会互相覆盖，收尾也不会把
+        # 别人的配置恢复成实例状态。放在实例上只是容器归属：不同 AppContext 不串值。
+        self._task_adapters_ctx: contextvars.ContextVar[dict[str, Any] | None] = (
+            contextvars.ContextVar(
+                f"memory_lifecycle_task_adapters_{id(self)}", default=None
+            )
+        )
 
     def take_knowledge_candidates(self) -> list[dict]:
         """取走（并清空）待提示的高影响知识候选。"""
@@ -444,8 +453,15 @@ class MemoryLifecycle:
         分别指定不同模型，所以这里按 kind 取；没给的 kind 回落到 ``adapter``
         （旧调用点行为不变）。某个 kind 的用途不可用时，值是一个
         :class:`UsageUnavailable`，该条任务**如实失败并记录原因**，不偷偷改用主对话模型。
+
+        没显式给 ``adapters`` 时，取**本任务上下文**里 ``use_adapters()` 冻结的那一份，
+        并且在进入时**快照**下来：这项工作的所有批次都按同一份执行，不会被并行工作
+        或同一任务里后续的 ``use_adapters()` 改写。
         """
         from agent.services import derived_tasks
+
+        if adapters is None:
+            adapters = self._task_adapters_ctx.get()
 
         self.backfill_entity_tasks(limit=backfill_limit)
         kinds = (
@@ -469,16 +485,19 @@ class MemoryLifecycle:
     def use_adapters(self, adapters: dict[str, Any] | None):
         """在一段派生工作里按 kind 分派 adapter（设置页改版 §8）。
 
-        用「实例状态 + 上下文管理器」而不是给 `drain_derived_tasks` 加必填参数：
-        这个方法是被后台协程、既有测试、离线维护共同调用的入口，签名一改就会把
-        「只是想知道派生耗时」的测试打挂。语义上等价于「这一段工作用这几把 adapter」。
+        值存在**任务上下文**（contextvars.ContextVar），不是实例属性：
+        每个后台协程（asyncio.Task 创建时复制上下文）只看得到自己那份，两个派生工作
+        交错时不会互相覆盖；退出时只恢复本任务里的上一份，不把别人的配置写成实例状态。
+        同一任务内嵌套使用仍是「内层覆盖、退出恢复外层」。
+
+        语义等价于「这一段工作用这几把 adapter」；显式给
+        `drain_derived_tasks(..., adapters=...)` 的调用方不需要本入口。
         """
-        previous = getattr(self, "_task_adapters", None)
-        self._task_adapters = adapters
+        token = self._task_adapters_ctx.set(adapters)
         try:
             yield self
         finally:
-            self._task_adapters = previous
+            self._task_adapters_ctx.reset(token)
 
     @staticmethod
     def _task_adapter(task_kind: str, adapter: BaseAdapter | None, adapters: dict | None):
@@ -514,10 +533,9 @@ class MemoryLifecycle:
     ) -> int:
         from agent.services import derived_tasks
 
-        # 没显式传映射时，用 use_adapters() 在这段工作里设定的那一份（见其说明）。
-        active_adapters = adapters if adapters is not None else getattr(
-            self, "_task_adapters", None
-        )
+        # 用途配置只来自本次 drain 的显式参数（drain_derived_tasks 已在入口快照任务
+        # 上下文里的那一份并显式传下来）；这里不读任何实例可变状态。
+        active_adapters = adapters
         done = 0
         for task in derived_tasks.claim_due(self.conn, limit=limit, kinds=kinds):
             task_adapter = self._task_adapter(task.kind, adapter, active_adapters)
