@@ -156,6 +156,11 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         # FU2-D（迁移 71）：子任务完成通知的持久化队列。缺了它，通知退回纯内存：
         # 超过 200 条静默丢最早、入队即被当成已交付、重启即清空（本轮修的就是这三条）。
         "subtask_notifications",
+        # 设置页改版（迁移 73）：一把 Key 下已知的模型 / 用途 → (连接, 模型|null)。
+        # 缺了它们，模型目录只能每次重新发现（界面看不到缓存与验证结论），
+        # 用途分配也退回 credentials.tags 的一把 Key 整体占用。
+        "credential_models",
+        "model_usages",
     ),
     "columns": (
         "turn_journal.owner_instance_id",
@@ -298,6 +303,10 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "idx_internal_data_identities_active",
         # FU2-D（迁移 71）：按 (delivered_at, created_at) 取最早未送达通知（FIFO 投递）。
         "idx_subtask_notifications_pending",
+        # 设置页改版（迁移 73）：按连接列出模型 / 按模型名检索 / 用途唯一性。
+        "idx_credential_models_credential",
+        "idx_credential_models_model",
+        "idx_model_usages_usage_key",
     ),
 }
 

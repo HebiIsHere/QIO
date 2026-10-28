@@ -48,6 +48,19 @@ class ProviderPreset:
     auth_path: str = "/models"
     category: str = CATEGORY_OFFICIAL
     note: str = ""
+    # ── 发现元数据（设置页「自动获取模型」用；只描述**怎么问**，不代表任何权限）──
+    # 模型列表接口路径：拼在 base_url 后面。默认 /models 是 OpenAI 兼容约定。
+    models_path: str = "/models"
+    # 该接口是否真的分页。默认 False（一次拿全）；界面据此决定要不要显示分页控件。
+    supports_pagination: bool = False
+    # /models 是**公共目录**还是「这把 Key 的可用清单」。公共目录不能称「全部可用模型」。
+    public_catalog: bool = False
+    # 给用户看的一句发现说明（例如「核对 Key 要走 /key」），空串表示没有额外歧义。
+    discovery_note: str = ""
+    # 有地区差异的服务商：不同地区是不同发送目标，界面在歧义时要让用户补选。
+    regions: tuple[str, ...] = ()
+    # 有接入类型差异的服务商（例如 AI Studio API Key vs Vertex AI 的接入方式）。
+    entry_types: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +72,13 @@ class ProviderPreset:
             "category": self.category,
             "category_label": CATEGORY_LABELS.get(self.category, ""),
             "note": self.note,
+            # 发现元数据原样下发：界面不需要自己再维护一份「哪家有没有分页 / 是不是公共目录」。
+            "models_path": self.models_path,
+            "supports_pagination": self.supports_pagination,
+            "public_catalog": self.public_catalog,
+            "discovery_note": self.discovery_note,
+            "regions": list(self.regions),
+            "entry_types": list(self.entry_types),
         }
 
 
@@ -87,6 +107,9 @@ PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset(
         "minimax", "MiniMax", KIND_OPENAI, "https://api.minimax.chat/v1",
         "minimax-m3",
+        regions=("cn", "intl"),
+        discovery_note="国内站与海外站是不同地址；这里默认国内站，"
+        "海外站请用自定义服务地址填写",
     ),
     ProviderPreset(
         "mimo", "MiMo（小米）", KIND_OPENAI, "https://api.xiaomimimo.com/v1",
@@ -96,10 +119,17 @@ PRESETS: tuple[ProviderPreset, ...] = (
         "gemini", "Google Gemini", KIND_OPENAI,
         "https://generativelanguage.googleapis.com/v1beta/openai/",
         "gemini-2.5-pro", ("AIza",),
+        # 这里只覆盖 AI Studio 的 OpenAI 兼容接入；Vertex AI 的接入方式与地区是另一套。
+        entry_types=("ai-studio", "vertex"),
+        discovery_note="当前地址是 Google AI Studio 的 OpenAI 兼容接入；"
+        "Vertex AI 需要单独的接入方式与地区，请用自定义服务地址",
     ),
     ProviderPreset(
         "qwen", "Qwen（DashScope）", KIND_OPENAI,
         "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3-max",
+        regions=("cn", "intl"),
+        discovery_note="国内站与海外站是不同地址；这里默认国内站，"
+        "海外站请用自定义服务地址填写",
     ),
     ProviderPreset(
         "groq", "Groq", KIND_OPENAI, "https://api.groq.com/openai/v1",
@@ -118,11 +148,17 @@ PRESETS: tuple[ProviderPreset, ...] = (
         "deepseek/deepseek-v4-flash", ("sk-or-",),
         auth_path="/key", category=CATEGORY_AGGREGATOR,
         note="/models 是公开目录，核对 Key 走 /key",
+        # 关键区别：OpenRouter 的 /models 不认证也返回目录，界面**不得**把这份列表
+        # 称为「这把 Key 全部可用的模型」；核对 Key 有效性走 /key。
+        public_catalog=True,
+        discovery_note="这里的模型列表是 OpenRouter 的公共目录（不校验 Key），"
+        "不代表这把 Key 有权限调用其中任何一个；核对 Key 请用验证功能",
     ),
     ProviderPreset(
         "siliconflow", "SiliconFlow（硅基流动）", KIND_OPENAI,
         "https://api.siliconflow.cn/v1", "Qwen/Qwen3-32B",
         category=CATEGORY_AGGREGATOR, note="同一个地址转发多家模型",
+        discovery_note="同一把 Key 下不同模型可能来自不同上游，列表只是这个地址提供哪些模型",
     ),
     ProviderPreset(
         "aihubmix", "AIHubMix", KIND_OPENAI, "https://api.aihubmix.com/v1",
