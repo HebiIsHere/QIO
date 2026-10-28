@@ -132,9 +132,14 @@ async def test_turn_without_credential_warns(client):
     result = await ctx.run_turn("你好")
     assert result["ok"] is False
     assert result["reason"] == "no_credential"
-    # 界面文案统一中文：无凭据提示必须是中文（用户会看到这条 WARNING）
+    # 界面文案统一中文：无凭据提示必须是中文且可行动（用户会看到这条 WARNING）。
+    # 2026-10-28 起主对话改走用途解析，提示会带上**具体原因**（例如「没有可用于
+    # 「主对话」的模型凭据」），不再固定为「还没有配置可用的模型凭据」这一句。
+    # 所以断言改成「说清了是凭据问题 + 指向设置 + 没有英文内部串」，
+    # 而不是锁死一句会被文案改进误伤的话。
     warning = "".join(collected)
-    assert "还没有配置可用的模型凭据" in warning
+    assert "凭据" in warning
+    assert "设置" in warning
     assert "no main-loop credential" not in warning
     await asyncio.sleep(0.05)
     task.cancel()
