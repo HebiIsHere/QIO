@@ -80,7 +80,7 @@ describe("同步关闭行为到壳：串行且以最新值收尾", () => {
 
     pending[1].resolve(undefined);
     await two;
-    expect(behaviorCalls().at(-1)).toBe("tray");
+    expect(behaviorCalls()[behaviorCalls().length - 1]).toBe("tray");
   });
 
   it("等待期间又选了新值：壳最终收到的是最新值（旧值不会最后落地）", async () => {
@@ -101,7 +101,7 @@ describe("同步关闭行为到壳：串行且以最新值收尾", () => {
     pending[1].resolve(undefined);
     await two;
     await flushAsync();
-    expect(behaviorCalls().at(-1)).toBe("quit");
+    expect(behaviorCalls()[behaviorCalls().length - 1]).toBe("quit");
 
     pending[2].resolve(undefined);
     await three;
@@ -117,7 +117,7 @@ describe("同步关闭行为到壳：串行且以最新值收尾", () => {
 
     const two = syncCloseBehaviorToShell("tray");
     await flushAsync();
-    expect(behaviorCalls().at(-1)).toBe("tray");
+    expect(behaviorCalls()[behaviorCalls().length - 1]).toBe("tray");
     pending[1].resolve(undefined);
     await two;
   });
