@@ -13,8 +13,18 @@
   board_submissions / turn_journal）派生展示就绪对象：7 档真实状态 + 中文标签、
   title 复用确认时的意图名、record_head 合并、attempts 时间线、diagnostics。
   旧消息（没有元数据）原样返回，不猜、不隐藏、不批量改写。
-* record_key = "ie:" + submission_id + ":" + ",".join(sorted(intent_ids))：
-  同一提交 + 同一意图集共用一条记录；不同 submission / 不同意图集绝不合并。
+* record_key = "ie:" + submission_id + ":" + version_sig + ":" +
+  ",".join(sorted(intent_ids))，其中 version_sig = "i1=v2,i2=v3"（按 intent_id 排序的
+  授权版本签名）。同一提交 + 同一授权版本 + 同一意图集共用一条记录；重新确认
+  （授权版本变化）/ 不同 submission / 不同意图集绝不合并。旧的
+  "ie:<submission_id>:<ids>"（没有版本段）原样兼容：按它们自己的 key 归组，
+  不重写、不猜测、不迁移。
+* record_head = **本次返回的这一页里**属于该 record 的最早消息（前端同一 key 只渲染
+  一次）；状态 / attempts / 逐项状态仍按该 record 在整个话题里的全部消息派生，
+  不受分页限制。
+* 写 side 在 raw 的 intent_titles 里放 Turn 开始时 board_intents.title 的真实快照
+  （用户确认时看到的名称）；读 side 优先用该条消息 raw 里的快照，快照缺失时退回
+  当前 board_intents.title（旧记录兼容）。
 
 本模块不写任何政策判断（确认 / 审批 / 执行范围 / 恢复 / 自动重试都不在这里），
 只为「这条内部工作文字如何被记录与展示」提供事实与派生。
@@ -107,15 +117,47 @@ _MAX_ATTEMPTS = 200
 # ---------------------------------------------------------------------------
 
 
-def build_record_key(submission_id: Any, intent_ids: Iterable[Any]) -> str:
-    """契约 §二：同一提交 + 同一意图集（排序后）→ 同一个 record_key。
+def build_version_sig(
+    authorization_versions: Mapping[Any, Any] | None,
+    intent_ids: Iterable[Any] | None = None,
+) -> str:
+    """契约 §一：授权版本签名 "i1=v2,i2=v3"（按 intent_id 排序）。
 
+    * 只包含传入意图集里**确实有版本记录**的意图；
+    * 一个都没有时返回空串 —— 调用方据此退回旧 key 格式（旧记录兼容）。
+    """
+    versions = _versions(authorization_versions)
+    if intent_ids is None:
+        wanted = sorted(versions)
+    else:
+        wanted = sorted(
+            {str(item).strip() for item in intent_ids or [] if str(item).strip()}
+        )
+    return ",".join(
+        f"{intent_id}=v{versions[intent_id]}"
+        for intent_id in wanted
+        if intent_id in versions
+    )
+
+
+def build_record_key(
+    submission_id: Any,
+    intent_ids: Iterable[Any],
+    authorization_versions: Mapping[Any, Any] | None = None,
+) -> str:
+    """契约 §一：同一提交 + 同一授权版本 + 同一意图集（排序后）→ 同一个 record_key。
+
+    新格式：`ie:<submission_id>:<version_sig>:<ids>`；
+    没有版本签名（旧调用方 / 旧记录）时保持旧格式 `ie:<submission_id>:<ids>`。
     缺 submission_id 或意图集为空时返回空串（调用方按「无法核对」处理）。
     """
     sid = str(submission_id or "").strip()
     ids = sorted({str(item).strip() for item in intent_ids or [] if str(item).strip()})
     if not sid or not ids:
         return ""
+    sig = build_version_sig(authorization_versions, ids)
+    if sig:
+        return "ie:" + sid + ":" + sig + ":" + ",".join(ids)
     return "ie:" + sid + ":" + ",".join(ids)
 
 
@@ -131,11 +173,17 @@ def turn_record_facts(
     retry_attempt: Any = None,
     retry_limit: Any = None,
     authorization_versions: Mapping[Any, Any] | None = None,
+    intent_titles: Sequence[Mapping[Any, Any]] | Mapping[Any, Any] | None = None,
 ) -> dict[str, Any]:
     """一次真实续作 Turn 的程序事实（写进 TurnContext → messages.raw）。
 
     所有值都来自调用方**已经核过的真实记录**（board_submissions / board_intents /
     board_intent_turns / TurnContext）；这里不做任何推断。
+
+    * `authorization_versions` 是本次真实认领的授权版本集合，同时决定 record_key
+      的版本段（重新确认 → 新 key）；
+    * `intent_titles` 是 Turn 开始时 board_intents.title 的真实快照
+      （[{"id": ..., "title": ...}]），读 side 优先用它，改名后旧记录仍保留旧名。
     """
     ids = [str(item) for item in intent_ids or [] if str(item).strip()]
     versions: dict[str, int] = {}
@@ -144,8 +192,17 @@ def turn_record_facts(
             versions[str(key)] = int(value)
         except (TypeError, ValueError):
             versions[str(key)] = 0
+    title_by_id = {
+        entry["id"]: entry["title"]
+        for entry in _title_snapshot_entries(intent_titles)
+    }
+    record_titles = [
+        {"id": intent_id, "title": title_by_id[intent_id]}
+        for intent_id in ids
+        if intent_id in title_by_id
+    ]
     return {
-        "record_key": build_record_key(submission_id, ids),
+        "record_key": build_record_key(submission_id, ids, versions),
         "board_id": str(board_id or ""),
         "submission_id": str(submission_id or ""),
         "topic_id": str(topic_id or ""),
@@ -156,6 +213,7 @@ def turn_record_facts(
         "retry_attempt": _as_int_or_none(retry_attempt),
         "retry_limit": _as_int_or_none(retry_limit),
         "authorization_versions": versions,
+        "intent_titles": record_titles,
     }
 
 
@@ -224,10 +282,15 @@ def _metadata_of(message: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _key_for(meta: Mapping[str, Any], message_id: str) -> str:
+    """这条消息自己的 record_key：raw 里写了什么就用什么（旧 key 原样保留）。"""
     key = str(meta.get("record_key") or "").strip()
     if key:
         return key
-    built = build_record_key(meta.get("submission_id") or "", meta.get("intent_ids") or [])
+    built = build_record_key(
+        meta.get("submission_id") or "",
+        meta.get("intent_ids") or [],
+        meta.get("authorization_versions"),
+    )
     return built or ("?" + str(message_id))
 
 
@@ -329,6 +392,23 @@ class _RecordContext:
                 turn_ids,
             )
         }
+        # 契约 §三：record_head 只看「本次返回的这一页」。页内消息顺序就是返回顺序
+        # （历史通道按 created_at, id 升序）；这里再按同一口径排序，避免调用方乱序时
+        # 把后面的消息误判成页内最早。
+        self.page_ids: dict[str, list[str]] = {}
+        page_entries: dict[str, list[tuple[str, str]]] = {}
+        for message, meta in zip(messages, metas):
+            if meta is None:
+                continue
+            message_id = str(message.get("id") or "")
+            if not message_id:
+                continue
+            page_entries.setdefault(_key_for(meta, message_id), []).append(
+                (str(message.get("created_at") or ""), message_id)
+            )
+        for record_key, items in page_entries.items():
+            items.sort()
+            self.page_ids[record_key] = [message_id for _created_at, message_id in items]
         self._intent_cache: dict[str, dict[str, Any]] = {}
         self._view_cache: dict[str, dict[str, Any]] = {}
 
@@ -425,10 +505,41 @@ class _RecordContext:
             ]
             base = self._derive(key, entries)
             self._view_cache[key] = base
-        entries = self.groups.get(key) or []
-        head_id = entries[0]["id"] if entries else message_id
         result = dict(base)
+        # 契约 §二：名称快照优先用**这条消息自己** raw 里的快照；同一 record 的
+        # 早期消息在改名后仍保留它确认时的名称。
+        snapshot = _title_snapshot(meta)
+        if snapshot:
+            result = self._with_title_snapshot(base, snapshot)
+        # 契约 §三：record_head = 本次返回页内该 record 的最早消息（不按全话题）。
+        page_ids = self.page_ids.get(key) or []
+        head_id = page_ids[0] if page_ids else message_id
         result["record_head"] = head_id == message_id
+        return result
+
+    def _with_title_snapshot(
+        self, base: Mapping[str, Any], snapshot: Mapping[str, str]
+    ) -> dict[str, Any]:
+        """把该条消息 raw 的名称快照盖在派生结果上（只改名称，状态口径不动）。"""
+        result = dict(base)
+        items: list[dict[str, Any]] = []
+        changed = False
+        for item in base.get("intents") or []:
+            updated = dict(item)
+            title = snapshot.get(str(updated.get("id") or ""))
+            if title and title != updated.get("title"):
+                updated["title"] = title
+                changed = True
+            items.append(updated)
+        if not changed:
+            return result
+        result["intents"] = items
+        result["title"] = _record_title(
+            items, [str(item.get("id") or "") for item in items]
+        )
+        scope = dict(base.get("scope") or {})
+        scope["intent_titles"] = [str(item.get("title") or "") for item in items]
+        result["scope"] = scope
         return result
 
     # -- 派生 ---------------------------------------------------------------
@@ -449,16 +560,15 @@ class _RecordContext:
                 if value and value not in turn_ids:
                     turn_ids.append(value)
         display_source = _display_source(first_meta.get("source"))
-        intent_items = [self._intent_item(intent_id, entries) for intent_id in intent_ids]
+        # 契约 §二：标题优先取这条记录 raw 里的名称快照（首条消息的快照即记录标题），
+        # 快照缺失（旧记录）才退回当前 board_intents.title。
+        snapshot = _title_snapshot(first_meta)
+        intent_items = [
+            self._intent_item(intent_id, entries, snapshot) for intent_id in intent_ids
+        ]
         status = self._record_status(record_key, intent_ids)
         verified = status != STATUS_UNKNOWN
-        with_data = [item["title"] for item in intent_items if item["title"]]
-        if with_data:
-            title = with_data[0] if len(with_data) == 1 else (
-                f"{with_data[0]}（另有 {len(with_data) - 1} 项）"
-            )
-        else:
-            title = "意图记录缺失" if intent_ids else "互动意图执行记录"
+        title = _record_title(intent_items, intent_ids)
         result_entry = self._result_entry(board_id, intent_items)
         return {
             "record_key": record_key,
@@ -499,8 +609,15 @@ class _RecordContext:
             return f"{len(missing)} 项意图的记录已不存在，无法核对真实状态。"
         return "没有可核对的意图状态记录，无法确认真实状态。"
 
-    def _intent_item(self, intent_id: str, entries: Sequence[dict]) -> dict[str, Any]:
+    def _intent_item(
+        self,
+        intent_id: str,
+        entries: Sequence[dict],
+        snapshot: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         state = self._intent_state(intent_id)
+        # 契约 §二：名称优先用消息 raw 的快照（用户确认时看到的名称）；缺失才退回当前名称。
+        snapshot_title = str((snapshot or {}).get(intent_id) or "").strip()
         attempts = sum(
             1
             for entry in entries
@@ -509,7 +626,7 @@ class _RecordContext:
         if state is None:
             return {
                 "id": intent_id,
-                "title": "（意图记录已不存在）",
+                "title": snapshot_title or "（意图记录已不存在）",
                 "status": STATUS_UNKNOWN,
                 "status_label": STATUS_LABELS[STATUS_UNKNOWN],
                 "attempts": attempts,
@@ -518,7 +635,7 @@ class _RecordContext:
             }
         return {
             "id": intent_id,
-            "title": state["title"],
+            "title": snapshot_title or state["title"],
             "status": state["status"],
             "status_label": STATUS_LABELS[state["status"]],
             "attempts": attempts,
@@ -811,6 +928,52 @@ def _versions(value: Any) -> dict[str, int]:
     return out
 
 
+def _title_snapshot_entries(
+    value: Sequence[Mapping[Any, Any]] | Mapping[Any, Any] | None,
+) -> list[dict[str, str]]:
+    """名称快照归一成 [{"id": ..., "title": ...}]（空名称 / 重复 id 直接丢弃）。"""
+    if isinstance(value, Mapping):
+        candidates: list[Any] = [
+            {"id": key, "title": title} for key, title in value.items()
+        ]
+    else:
+        candidates = list(value or [])
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if not isinstance(item, Mapping):
+            continue
+        intent_id = str(item.get("id") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not intent_id or not title or intent_id in seen:
+            continue
+        seen.add(intent_id)
+        out.append({"id": intent_id, "title": title})
+    return out
+
+
+def _title_snapshot(meta: Mapping[str, Any]) -> dict[str, str]:
+    """一条消息 raw 里的名称快照（id → title）；旧记录没有这个键时返回空 dict。"""
+    return {
+        entry["id"]: entry["title"]
+        for entry in _title_snapshot_entries(meta.get("intent_titles"))
+    }
+
+
+def _record_title(
+    intents: Sequence[Mapping[str, Any]], intent_ids: Sequence[str]
+) -> str:
+    """记录级标题：沿用上一轮口径（首个真实名称 / 另有 N 项），但名称取自快照优先项。"""
+    titles = [
+        str(item.get("title") or "") for item in intents if str(item.get("title") or "")
+    ]
+    if titles:
+        return titles[0] if len(titles) == 1 else (
+            f"{titles[0]}（另有 {len(titles) - 1} 项）"
+        )
+    return "意图记录缺失" if intent_ids else "互动意图执行记录"
+
+
 def _human_reason(value: Any) -> str:
     """内部错误码翻成人话；未知内部码不上界面（不伪造原因）。"""
     text = str(value or "").strip()
@@ -881,6 +1044,7 @@ def _unknown_view(meta: Mapping[str, Any]) -> dict[str, Any]:
     """降级对象：读取派生失败时如实给 unknown（不猜状态、不隐藏消息）。"""
     key = str(meta.get("record_key") or "")
     ids = [str(item) for item in meta.get("intent_ids") or [] if str(item).strip()]
+    snapshot = _title_snapshot(meta)
     return {
         "record_key": key,
         "record_head": True,
@@ -889,13 +1053,13 @@ def _unknown_view(meta: Mapping[str, Any]) -> dict[str, Any]:
         "status_label": STATUS_LABELS[STATUS_UNKNOWN],
         "scope": {
             "board_name": "",
-            "intent_titles": [],
+            "intent_titles": [snapshot[intent_id] for intent_id in ids if intent_id in snapshot],
             "source": _display_source(meta.get("source")),
         },
         "intents": [
             {
                 "id": intent_id,
-                "title": "（意图记录已不存在）",
+                "title": snapshot.get(intent_id) or "（意图记录已不存在）",
                 "status": STATUS_UNKNOWN,
                 "status_label": STATUS_LABELS[STATUS_UNKNOWN],
                 "attempts": 0,

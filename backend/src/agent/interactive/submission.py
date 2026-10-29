@@ -1812,7 +1812,7 @@ def start_interactive_turn(
     rows = []
     for intent_id in ids:
         row = conn.execute(
-            "SELECT id, board_id, submission_id, status, version, authorization"
+            "SELECT id, board_id, submission_id, status, version, title, authorization"
             " FROM board_intents WHERE id = ?",
             (intent_id,),
         ).fetchone()
@@ -1873,12 +1873,16 @@ def start_interactive_turn(
         else:
             resolved_attempt = 1
     versions: dict[str, int] = {}
+    # R2 返修契约 §二：Turn 开始时 board_intents.title 的真实快照（用户确认时看到的
+    # 名称）。只读同一批已核过的意图行，不新增模型调用、不猜测。
+    intent_titles: dict[str, str] = {}
     for row in rows:
         authorization = models.loads(row["authorization"], {})
         try:
             versions[str(row["id"])] = int((authorization or {}).get("version") or 0)
         except (TypeError, ValueError):
             versions[str(row["id"])] = 0
+        intent_titles[str(row["id"])] = str(row["title"] or "")
     # 话题归属：续作 Turn 只写回原提交保存的 binding.resumeState.topicId。
     # 调用方传入的 topic_id（历史上是界面当前选中话题）不得覆盖原提交话题；
     # 无法确认归属时必须在 claim / 提交 / 写绑定之前明确失败，不回退当前话题。
@@ -1984,6 +1988,10 @@ def start_interactive_turn(
         retry_attempt=retry_attempt,
         retry_limit=retry_limit,
         authorization_versions=versions,
+        intent_titles=[
+            {"id": intent_id, "title": intent_titles.get(intent_id, "")}
+            for intent_id in ids
+        ],
     )
     facts = {
         "mode": MODE_INTERACTIVE,

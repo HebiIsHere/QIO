@@ -247,8 +247,15 @@ def _append_record_message(
     retry_attempt: int | None = None,
     retry_limit: int | None = None,
     versions: dict | None = None,
+    intent_titles: list | None = None,
 ) -> str:
-    """落一条互动续作的 user 消息（写侧事实；读取派生只认这些真实字段）。"""
+    """落一条互动续作的 user 消息（写侧事实；读取派生只认这些真实字段）。
+
+    * `versions` 只是 raw 里的授权版本事实；默认 record_key 仍是**旧格式**
+      （`ie:<sub>:<ids>`），用来模拟升级前写入的旧记录；
+    * 想模拟新写侧的「确认版本段」记录，请显式传 `record_key`（用
+      `records.build_record_key(sub, ids, versions)` 生成）与 `intent_titles` 快照。
+    """
     records = _records()
     key = record_key if record_key is not None else records.build_record_key(
         submission_id, intent_ids
@@ -266,6 +273,8 @@ def _append_record_message(
         "authorization_versions": versions or {str(item): 1 for item in intent_ids},
         "record_key": key,
     }
+    if intent_titles is not None:
+        facts["intent_titles"] = [dict(item) for item in intent_titles]
     message_id, _fragment = ctx.memory.append_message(
         topic_id=topic,
         role="user",
@@ -348,8 +357,11 @@ def test_start_interactive_turn_binds_real_execution_facts(db_conn):
 
     facts = calls[0]["turn"].get("board_intent_execution")
     assert isinstance(facts, dict), "续作 Turn 必须绑定可核对的执行记录事实"
-    assert facts["record_key"] == records.build_record_key(SUBMISSION, ids)
-    assert facts["record_key"] == "ie:" + SUBMISSION + ":" + ids[0]
+    # 契约 §一：新格式带授权版本段（同一次确认的 confirm / retry 共用；重新确认才变）
+    assert facts["record_key"] == records.build_record_key(
+        SUBMISSION, ids, {ids[0]: 1}
+    )
+    assert facts["record_key"] == "ie:" + SUBMISSION + ":" + ids[0] + "=v1:" + ids[0]
     assert facts["board_id"] == BOARD
     assert facts["submission_id"] == SUBMISSION
     assert facts["topic_id"] == "topic-r2"
@@ -359,6 +371,8 @@ def test_start_interactive_turn_binds_real_execution_facts(db_conn):
     assert facts["attempt"] == 1
     assert facts["retry_attempt"] is None
     assert facts["authorization_versions"] == {ids[0]: 1}
+    # 契约 §二：Turn 开始时把用户确认时看到的名称写进快照
+    assert facts["intent_titles"] == [{"id": ids[0], "title": "整理这组资料"}]
 
 
 def test_batch_confirm_binds_all_confirmed_intents_in_real_order(db_conn):
@@ -383,7 +397,14 @@ def test_batch_confirm_binds_all_confirmed_intents_in_real_order(db_conn):
     assert facts["intent_ids"] == ids
     assert facts["source"] == "batch_confirm"
     assert facts["authorization_versions"] == {ids[0]: 1, ids[1]: 1}
-    assert facts["record_key"] == "ie:" + SUBMISSION + ":" + ",".join(sorted(ids))
+    sig = ",".join(f"{intent_id}=v1" for intent_id in sorted(ids))
+    assert facts["record_key"] == (
+        "ie:" + SUBMISSION + ":" + sig + ":" + ",".join(sorted(ids))
+    )
+    assert facts["intent_titles"] == [
+        {"id": ids[0], "title": "整理资料"},
+        {"id": ids[1], "title": "导出表格"},
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -427,12 +448,15 @@ def test_confirmed_interactive_turn_message_is_recorded_as_intent_execution(
         assert row["content"].startswith("【互动意图续作】")
         raw = json.loads(row["raw"])
         facts = raw["intent_execution"]
-        assert facts["record_key"] == "ie:" + SUBMISSION + ":" + ids[0]
+        assert facts["record_key"] == (
+            "ie:" + SUBMISSION + ":" + ids[0] + "=v1:" + ids[0]
+        )
         assert facts["submission_id"] == SUBMISSION
         assert facts["intent_ids"] == ids
         assert facts["source"] == "confirm"
         assert facts["turn_id"] == turn_id
         assert facts["authorization_versions"] == {ids[0]: 1}
+        assert facts["intent_titles"] == [{"id": ids[0], "title": "整理这组资料"}]
 
         # 模型侧上下文没有缩水：这一轮真的把内部指令原文发给了模型
         sent = [
@@ -496,7 +520,7 @@ def test_manual_retry_adds_attempt_to_same_record(db_conn, settings):
         ]
         assert len(records) == 2, records
         keys = {message["intent_execution"]["record_key"] for message in records}
-        assert keys == {"ie:" + SUBMISSION + ":" + ids[0]}
+        assert keys == {"ie:" + SUBMISSION + ":" + ids[0] + "=v1:" + ids[0]}
         heads = [message["intent_execution"]["record_head"] for message in records]
         assert heads == [True, False], heads
         latest = records[-1]["intent_execution"]
@@ -790,8 +814,12 @@ def test_different_submissions_are_not_merged(record_env):
     assert first["record_head"] is True and second["record_head"] is True
 
 
-def test_record_head_is_computed_across_pages(record_env):
-    """同 record 的第二条即使单独成页，也不得冒充 head。"""
+def test_record_head_is_computed_within_returned_page(record_env):
+    """契约 §三（返修）：record_head 只按「本次返回的这一页」判定。
+
+    翻页后记录不能整条消失：该页里属于该 record 的最早消息就是本页 head；
+    同一页里两条都在时，仍然只有最早那条是 head。状态 / attempts 按整个话题派生。
+    """
     client, ctx = record_env
     ids = _seed_approved_intents(ctx.conn, titles=("整理这组资料",))
     topic, _fragment = _topic(ctx)
@@ -809,11 +837,18 @@ def test_record_head_is_computed_across_pages(record_env):
     )
     latest_page = _get_messages(client, topic, limit=1)
     assert [item["id"] for item in latest_page] == [second_id]
-    assert _record_of(latest_page, second_id)["record_head"] is False
+    # 这一页里该 record 只有第二条 → 它才是本页 head（否则翻页后整条记录被隐藏）
+    assert _record_of(latest_page, second_id)["record_head"] is True
     cursor = latest_page[0]["created_at"] + "|" + latest_page[0]["id"]
     older_page = _get_messages(client, topic, limit=1, before=cursor)
     assert [item["id"] for item in older_page] == [first_id]
     assert _record_of(older_page, first_id)["record_head"] is True
+    # attempts / 状态仍按整个话题的全部消息派生（不受分页限制）
+    assert [item["attempt"] for item in _record_of(older_page, first_id)["attempts"]] == [1, 2]
+    # 同一页里两条都在：仍然只有最早那条 head
+    full_page = _get_messages(client, topic)
+    assert _record_of(full_page, first_id)["record_head"] is True
+    assert _record_of(full_page, second_id)["record_head"] is False
 
 
 def test_status_follows_real_records_across_all_seven_states(record_env):
