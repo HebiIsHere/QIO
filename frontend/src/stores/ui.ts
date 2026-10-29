@@ -29,6 +29,17 @@ function readDeveloperMode(): boolean {
  * 旧响应（无论成功还是失败）一律忽略。加载（load）同样领号，晚到的旧配置不得盖掉用户的新选择。
  */
 let closeBehaviorWriteSeq = 0;
+/**
+ * 已经被采纳为「服务端真实持久值」的最大写序号（F05 返修）。
+ *
+ * 保存请求的返回顺序不受前端控制：**前一次成功、后一次失败**时，如果只把
+ * 「最新一次失败」回退到本地记住的值，就会退回更早的旧值，和实际已保存的值（以及壳）
+ * 不一致。这里让每次成功（哪怕是迟到的）都把自己的持久值记为候选，
+ * 再配合失败后的一次服务端校准，保证「实际保存值 = 界面 = 壳」。
+ */
+let closeBehaviorValueSeq = 0;
+/** 在途的保存请求数：迟到请求结算完时用来判断「是否还有更新的一次在选择中」。 */
+let closeBehaviorInFlight = 0;
 
 export const useUiStore = defineStore("ui", {
   state: () => ({
@@ -46,6 +57,12 @@ export const useUiStore = defineStore("ui", {
      * 下一次关窗行为就和界面不一致了（F05）。
      */
     closeBehaviorEffective: DEFAULT_CLOSE_BEHAVIOR as CloseBehavior,
+    /**
+     * 最近一次**已经提交给桌面壳**的值（同一次运行期内去重）。
+     * 迟到请求结算、失败校准等路径可能把同一个值重复提交；壳只需要最后一次真实值，
+     * 重复 IPC 既无意义也会放大「旧同步过程」的机会。
+     */
+    closeBehaviorShellSynced: null as CloseBehavior | null,
     /**
      * 开发者模式（默认 OFF）：FPS / WebGL / token 等诊断信息只在开启后出现；
      * 正常模式保持「像产品，不像 debugger」。
@@ -66,6 +83,12 @@ export const useUiStore = defineStore("ui", {
     loaded: false,
   }),
   actions: {
+    /** 把关闭行为提交给桌面壳（相同值不重复提交）。 */
+    pushCloseBehaviorToShell(behavior: CloseBehavior) {
+      if (this.closeBehaviorShellSynced === behavior) return;
+      this.closeBehaviorShellSynced = behavior;
+      void syncCloseBehaviorToShell(behavior);
+    },
     setDeveloperMode(on: boolean) {
       this.developerMode = on;
       try {
@@ -86,8 +109,10 @@ export const useUiStore = defineStore("ui", {
         const loaded = normalizeCloseBehavior(s.close_behavior);
         this.closeBehavior = loaded;
         this.closeBehaviorEffective = loaded;
+        // 加载到的值是当前真实基线：之前（以及随后迟到的）写响应不得再把更早的值当基线。
+        closeBehaviorValueSeq = closeBehaviorWriteSeq;
         // 同步给壳：系统关闭事件由壳按这个值执行（不依赖前端再回传动作）。
-        void syncCloseBehaviorToShell(loaded);
+        this.pushCloseBehaviorToShell(loaded);
       } catch (e) {
         console.error("[ui] load settings failed:", e);
       } finally {
@@ -104,25 +129,64 @@ export const useUiStore = defineStore("ui", {
      */
     async setCloseBehavior(behavior: CloseBehavior) {
       const token = ++closeBehaviorWriteSeq;
+      closeBehaviorInFlight += 1;
       // 乐观显示：用户点下去就有反馈；真实生效值仍以上一次确认为准。
       this.closeBehavior = behavior;
       try {
         const r = await api.updateCloseBehavior(behavior);
-        // 迟到的旧响应：它代表的不是最新选择，不写状态也不同步壳。
-        if (token !== closeBehaviorWriteSeq) return;
-        const effective = normalizeCloseBehavior(r.close_behavior ?? behavior);
-        this.closeBehavior = effective;
-        this.closeBehaviorEffective = effective;
-        // 保存成功后立即让壳拿到新值：下一次点 X 就按新行为执行（无需重启）。
-        // 同步本身在 desktop 层串行化，保证最后发起的那次最后到达。
-        void syncCloseBehaviorToShell(effective);
+        const persisted = normalizeCloseBehavior(r.close_behavior ?? behavior);
+        // 每一次成功都带着「服务端真实持久值」；只要它是比已知基线更新的一次选择就采纳。
+        // 迟到的旧成功也可以更新基线（它确实写进去了），但不能覆盖更新一次选择的结果。
+        if (token > closeBehaviorValueSeq) {
+          closeBehaviorValueSeq = token;
+          this.closeBehaviorEffective = persisted;
+        }
+        // 只有最新一次选择才允许写界面并同步壳。
+        if (token === closeBehaviorWriteSeq) {
+          this.closeBehavior = this.closeBehaviorEffective;
+          // 同步本身在 desktop 层串行化，保证最后发起的那次最后到达。
+          this.pushCloseBehaviorToShell(this.closeBehaviorEffective);
+        }
       } catch (e) {
-        // 旧请求的失败不影响较新结果（新选择自己会给出成功/失败反馈）。
-        if (token !== closeBehaviorWriteSeq) return;
-        // 最新选择保存失败：界面必须回到真实生效值，不能停在没保存成功的值上。
-        this.closeBehavior = this.closeBehaviorEffective;
+        const latest = token === closeBehaviorWriteSeq;
+        if (latest) {
+          // 最新选择失败：不能只回退到本地记的值 —— 前一次需求可能已经保存成功但响应迟到。
+          // 以服务端真实保存值为准校准；读不到时才退回最近一次已确认值（并如实报错）。
+          await this.reconcileCloseBehavior(token);
+        }
         console.error("[ui] save close behavior failed:", e);
-        throw e;
+        if (latest) throw e;
+      } finally {
+        closeBehaviorInFlight -= 1;
+        // 迟到的旧请求结算完、且没有更新的选择在途：界面与壳对齐到最新已知持久值。
+        // 这一步保证「前一次成功、后一次失败」在任意返回顺序下都收敛到同一个值。
+        if (token !== closeBehaviorWriteSeq && closeBehaviorInFlight === 0) {
+          this.closeBehavior = this.closeBehaviorEffective;
+          this.pushCloseBehaviorToShell(this.closeBehaviorEffective);
+        }
+      }
+    },
+    /**
+     * 保存失败后的服务端校准（F05 返修）：读一次真实持久值，界面与壳都跟它走。
+     *
+     * 失败原因可能是超时（请求其实已经写进去了），也可能是服务端明确拒绝（没写进去）；
+     * 只有服务端能回答「现在到底是什么」。读不到时退回最近一次已确认值并保留错误反馈，
+     * 绝不退回更早的旧值。期间用户又改了选择（token 变了）时不校准，交给新选择。
+     */
+    async reconcileCloseBehavior(token: number) {
+      try {
+        const s = await api.getUISettings();
+        if (token !== closeBehaviorWriteSeq) return;
+        const actual = normalizeCloseBehavior(s.close_behavior);
+        closeBehaviorValueSeq = closeBehaviorWriteSeq;
+        this.closeBehavior = actual;
+        this.closeBehaviorEffective = actual;
+        this.pushCloseBehaviorToShell(actual);
+      } catch (err) {
+        if (token !== closeBehaviorWriteSeq) return;
+        console.warn("[ui] 校准关闭行为失败，退回最近一次已确认值", err);
+        this.closeBehavior = this.closeBehaviorEffective;
+        this.pushCloseBehaviorToShell(this.closeBehaviorEffective);
       }
     },
     async setCps(cps: number) {
