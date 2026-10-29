@@ -397,6 +397,8 @@ const usageError = computed(() => props.errors ?? {});
           :usage-label="row.label"
           :usage-key="row.keys[0]"
           :usage-error="usageCandidateErrors[row.keys[0]] || ''"
+          :usage-pending="Boolean(usageCandidateBusy[row.keys[0]])"
+          :required-capabilities="row.primary.requiresCapabilities ?? []"
           @pick="pick(row, $event)"
           @cancel="expanded = null"
         />

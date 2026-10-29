@@ -31,6 +31,14 @@ const props = defineProps<{
   usageKey?: string;
   /** 读取用途候选判定失败时的如实说明（不阻塞选择，但要说清楚） */
   usageError?: string;
+  /**
+   * 当前用途要求的必备能力（后端用途定义，如 vision 用途要 vision）。
+   * 用途判定还没读回来 / 读失败时，用它 + 模型**已声明**的能力做本地兜底：
+   * 明确缺能力的候选仍然不可选，能力未知的仍然可选（与既定规则一致）。
+   */
+  requiredCapabilities?: string[];
+  /** 正在读取该用途的候选判定（服务端结论未到） */
+  usagePending?: boolean;
 }>();
 const emit = defineEmits<{
   pick: [target: { credentialId: string; modelId: string } | null];
@@ -61,14 +69,27 @@ function viewOf(model: CatalogModel): ModelView {
   const usageScoped =
     typeof model.usageUsable === "boolean" && Boolean(model.usageKey || props.usageKey);
   const generalUsable = model.usable;
+  const declared = Array.isArray(model.capabilities) ? model.capabilities.filter(Boolean) : [];
+  const required = (props.requiredCapabilities ?? []).filter(Boolean);
+  // 用途判定未就绪（读取中 / 读取失败）时的本地兜底：只看「用途要求」与「模型已声明能力」
+  // 两条事实。已声明能力不含所需能力 = 明确不适用；没声明能力 = 未知，仍可选中。
+  const missingLocal =
+    !usageScoped && required.length > 0 && declared.length > 0
+      ? required.filter((cap) => !declared.includes(cap))
+      : [];
   const usageUsable = usageScoped ? Boolean(model.usageUsable) : generalUsable;
-  const selectable = generalUsable && usageUsable;
+  const selectable = generalUsable && usageUsable && missingLocal.length === 0;
   let reason = "";
   if (!generalUsable) {
     // 连接 / 模型层面的既有原因（第一轮口径），不与用途能力混在一起。
     reason = model.unavailableReason || "当前不可用";
   } else if (usageScoped && !usageUsable) {
     reason = model.usageReason || "该模型不适用于当前用途";
+  } else if (missingLocal.length) {
+    reason =
+      "该模型已声明的能力不包含当前用途所需的能力（" +
+      missingLocal.join("/") +
+      "）：用途判定暂未读到，仍按已知事实判定为不适用";
   }
   let usageBadge: { text: string; tone: string } | null = null;
   if (generalUsable && usageScoped) {
@@ -79,6 +100,11 @@ function viewOf(model: CatalogModel): ModelView {
     } else if (model.capabilityState === "unknown") {
       usageBadge = { text: "能力未确认", tone: "quiet" };
     }
+  } else if (generalUsable && missingLocal.length) {
+    usageBadge = { text: "不适用于该用途：缺少所需能力", tone: "err" };
+  } else if (generalUsable && !usageScoped && required.length > 0 && declared.length === 0) {
+    // 能力真正未知：沿用既定规则（仍可选），只标注「能力未确认」。
+    usageBadge = { text: "能力未确认", tone: "quiet" };
   }
   return { model, generalUsable, usageScoped, selectable, reason, usageBadge };
 }
@@ -136,6 +162,7 @@ function connectionState(connection: ModelConnection): { text: string; tone: str
     <div v-if="!hasAnyModel" class="picker__empty">
       还没有任何已记录的模型。先在「Key 接入与管理」里添加连接并获取模型。
     </div>
+    <p v-if="usagePending" class="picker__note" role="status">正在读取这个用途的候选判定…</p>
     <p v-if="usageError" class="picker__note" role="status">{{ usageError }}</p>
     <section v-for="group in groups" :key="group.connection.credentialId" class="group">
       <header class="group__head">
