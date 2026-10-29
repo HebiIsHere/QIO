@@ -613,6 +613,8 @@ async def discover(
         provider_id=provider.id if provider else None,
         model_count=len(discovered_ids),
         config_signature=signature,
+        # 只有成功取回才更新「模型来源」；之后的失败尝试不能把来源改成新配置。
+        source_signature=signature,
     )
     current, historical = _catalog_models(store, credential_id)
     return _page_result(

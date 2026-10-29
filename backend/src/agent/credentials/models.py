@@ -525,12 +525,21 @@ class ModelCatalogStore:
         provider_id: str | None = None,
         model_count: int = 0,
         config_signature: str = "",
+        source_signature: str = "",
     ) -> dict[str, Any]:
         """记住最近一次发现的时间与错误（界面据此说「上次检查」而不是假装刚刚成功）。
 
-        config_signature 记录这次结果属于哪一份连接配置（地址 / 协议 / Key 版本）；
-        界面缓存按它校验归属，换配置后不会把旧结果当成当前事实（F09）。
+        config_signature 记录最近一次**尝试**属于哪一份配置；source_signature 记录
+        「这些模型是从哪份配置真正取回来的」——失败尝试不能改写来源事实。
         """
+        # 失败尝试只更新「最近一次尝试」，不改变模型来源：沿用上一次成功记录的来源签名；
+        # 旧格式没有 source_signature 时，用「上一次状态没有错误」的 config_signature 兜底。
+        preserved = self.discovery_state(credential_id)
+        effective_source = str(source_signature or "")
+        if not effective_source:
+            effective_source = str(preserved.get("source_signature") or "")
+        if not effective_source and preserved.get("error") is None:
+            effective_source = str(preserved.get("config_signature") or "")
         payload = {
             "checked_at": _now(),
             "error": error or None,
@@ -539,6 +548,7 @@ class ModelCatalogStore:
             "provider_id": provider_id,
             "model_count": int(model_count),
             "config_signature": str(config_signature or ""),
+            "source_signature": effective_source,
         }
         self._settings_set(
             DISCOVERY_KEY_PREFIX + _norm(credential_id),
@@ -556,6 +566,7 @@ class ModelCatalogStore:
             "provider_id": None,
             "model_count": 0,
             "config_signature": "",
+            "source_signature": "",
         }
         if not raw:
             return empty
@@ -573,6 +584,7 @@ class ModelCatalogStore:
             "provider_id": data.get("provider_id"),
             "model_count": int(data.get("model_count") or 0),
             "config_signature": str(data.get("config_signature") or ""),
+            "source_signature": str(data.get("source_signature") or ""),
         }
 
     def record_current_set(
@@ -950,9 +962,11 @@ class ModelCatalogStore:
         legacy_signature = ""
         legacy_owned = False
         if not has_set:
-            legacy_signature = str(
-                self.discovery_state(credential_id).get("config_signature") or ""
-            )
+            state = self.discovery_state(credential_id)
+            # 来源事实优先：失败尝试写下的 config_signature 不能替代「模型从哪来」。
+            legacy_signature = str(state.get("source_signature") or "")
+            if not legacy_signature and not state.get("error"):
+                legacy_signature = str(state.get("config_signature") or "")
             legacy_owned = bool(legacy_signature) and legacy_signature == signature
         current: list[dict[str, Any]] = []
         historical: list[dict[str, Any]] = []

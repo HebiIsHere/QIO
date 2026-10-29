@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from agent.api.server import create_app
 from agent.config import Settings
 from agent.credentials.models import (
     CURRENT_SET_KEY_PREFIX,
+    DISCOVERY_KEY_PREFIX,
     MODEL_SOURCE_MANUAL,
     ModelCatalogStore,
 )
@@ -457,3 +459,103 @@ async def test_old_format_without_set_field_uses_explicit_provenance(
     assert {"old-a", "manual-keep", "new-only"} <= rows
     usage = next(item for item in store.list_usages() if item["usage_key"] == "vision")
     assert usage["model_id"] == "manual-keep"
+
+async def _make_old_format_connection(monkeypatch, ctx, credentials, store, old_models):
+    """建立「旧格式」记录：没有集合字段，只有发现状态里的成功来源签名。"""
+    _make(credentials)
+    store.upsert_model("key_a", "manual-keep", source=MODEL_SOURCE_MANUAL)
+    store.set_usage("vision", "key_a", "manual-keep")
+
+    async def fetch_old(**_kwargs):
+        return [{"model_id": item} for item in old_models]
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fetch_old)
+    await discovery.discover(ctx, "key_a", refresh=True)
+
+    # 模拟旧格式：删掉集合字段与来源签名字段，只留成功状态里的 config_signature。
+    store._settings_delete(CURRENT_SET_KEY_PREFIX + "key_a")
+    state = store.discovery_state("key_a")
+    legacy = {
+        "checked_at": state.get("checked_at"),
+        "error": None,
+        "reason_code": None,
+        "source": "provider",
+        "provider_id": state.get("provider_id"),
+        "model_count": int(state.get("model_count") or 0),
+        "config_signature": state.get("config_signature"),
+    }
+    store._settings_set(DISCOVERY_KEY_PREFIX + "key_a", json.dumps(legacy, ensure_ascii=False))
+    credentials.reconfigure(
+        "key_a",
+        secret=SECRET_NEXT,
+        endpoint=MOONSHOT,
+        confirm_reconfigure=True,
+        default_model="kimi-k2",
+    )
+    return store.discovery_signature("key_a")
+
+
+def _assert_old_models_stay_historical(store) -> None:
+    current, historical = store.current_model_view("key_a")
+    assert [item["model_id"] for item in current] == ["manual-keep"]
+    assert [item["model_id"] for item in historical] == ["old-a"]
+    catalog = store.catalog()
+    connection = next(item for item in catalog["connections"] if item["credential_id"] == "key_a")
+    assert [item["model_id"] for item in connection["models"]] == ["manual-keep"]
+    assert [item["model_id"] for item in connection["historical_models"]] == ["old-a"]
+    rows = {item["model_id"] for item in store.list_models("key_a")}
+    assert {"old-a", "manual-keep"} <= rows
+    usage = next(item for item in store.list_usages() if item["usage_key"] == "vision")
+    assert usage["model_id"] == "manual-keep"
+
+
+@pytest.mark.asyncio
+async def test_old_format_keeps_history_after_new_config_timeout(monkeypatch, ctx, credentials, store):
+    new_signature = await _make_old_format_connection(monkeypatch, ctx, credentials, store, ["old-a"])
+
+    async def fetch_timeout(**_kwargs):
+        raise discovery.DiscoveryError(discovery.REASON_TIMEOUT, "timed out")
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fetch_timeout)
+    failed = await discovery.discover(ctx, "key_a", refresh=True)
+    assert failed["stale"] is False
+    assert failed["reason_code"] == discovery.REASON_TIMEOUT
+    # 失败尝试不能改写「模型来源」：旧模型仍是历史，而不是重新变成当前。
+    assert [m["model_id"] for m in failed["models"]] == ["manual-keep"]
+    assert [m["model_id"] for m in failed["historical_models"]] == ["old-a"]
+    _assert_old_models_stay_historical(store)
+
+    # 重新读取 / 缓存同样一致（不会因为最近一次失败把旧模型列回当前）
+    cached = await discovery.discover(ctx, "key_a")
+    assert cached["source"] == "cache"
+    assert cached["error"]
+    assert [m["model_id"] for m in cached["models"]] == ["manual-keep"]
+    assert [m["model_id"] for m in cached["historical_models"]] == ["old-a"]
+    _assert_old_models_stay_historical(store)
+
+    # 状态里「最近一次尝试」属于新配置，但「来源」仍是旧配置：两者分开记录。
+    state = store.discovery_state("key_a")
+    assert state["config_signature"] == new_signature
+    assert state["source_signature"] and state["source_signature"] != new_signature
+
+
+@pytest.mark.asyncio
+async def test_old_format_keeps_history_after_new_config_empty_list(monkeypatch, ctx, credentials, store):
+    await _make_old_format_connection(monkeypatch, ctx, credentials, store, ["old-a"])
+
+    async def fetch_empty(**_kwargs):
+        return []
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fetch_empty)
+    empty = await discovery.discover(ctx, "key_a", refresh=True)
+    assert empty["stale"] is False
+    assert empty["reason_code"] == discovery.REASON_NO_LISTING
+    assert [m["model_id"] for m in empty["models"]] == ["manual-keep"]
+    assert [m["model_id"] for m in empty["historical_models"]] == ["old-a"]
+    _assert_old_models_stay_historical(store)
+
+    cached = await discovery.discover(ctx, "key_a")
+    assert cached["source"] == "cache"
+    assert [m["model_id"] for m in cached["models"]] == ["manual-keep"]
+    assert [m["model_id"] for m in cached["historical_models"]] == ["old-a"]
+    _assert_old_models_stay_historical(store)
