@@ -50,6 +50,7 @@ from agent.credentials.store import (
     CredentialStore,
 )
 from agent.credentials.usages import (
+    CUSTOM_USAGE_PREFIX,
     DELIVERY_MODEL,
     DELIVERY_UNSUPPORTED,
     USAGE_BY_KEY,
@@ -646,11 +647,16 @@ class ModelCatalogStore:
            `model_usable(..., usage_key=...)`（连接状态 / 验证 / 预算 / 密钥 / 模型验证 /
            用途所需能力）；能力未声明按「未知」放行，不按模型名猜、不联网验证。
         """
-        key = normalize_usage_key(usage_key)
+        raw_key = str(usage_key or "").strip()
+        key = normalize_usage_key(raw_key)
         spec = find_usage(key)
         credential_id = _norm(credential_id) or None
         model_id = _norm(model_id) or None
-        if spec is None and not is_custom_usage(key):
+        # 返修：只有**显式 custom:<tag>** 才是合法历史标签；自由文本仍按未知用途拒绝
+        # （保留第一轮 400 语义），否则「清除历史覆盖」对自定义标签不可用。
+        if spec is None and not (
+            raw_key.startswith(CUSTOM_USAGE_PREFIX) and is_custom_usage(key)
+        ):
             raise ValueError(f"未知用途：{usage_key}")
         if credential_id is None:
             if model_id is not None:

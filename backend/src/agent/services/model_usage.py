@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import Any
 
 from agent.credentials.usages import (
+    CUSTOM_USAGE_PREFIX,
     UsageAssignmentError,
     find_usage,
     is_custom_usage,
@@ -67,10 +68,13 @@ def _assignment_entries(assignments: Any) -> list[dict[str, Any]]:
         if not usage_key:
             raise ValueError(f"第 {index} 项用途分配缺少用途标识")
         key = normalize_usage_key(usage_key)
-        # 返修：历史自定义标签（custom:<tag>）是**合法用途 key**（迁移回填的历史行要能被清除），
-        # 不能在这里当「未知用途」400 掉。它有没有独立调用路径由后面的统一校验回答：
-        # 新增分配 → UsageNotEffective（422）；清除（两个都留空）→ 允许。
-        if find_usage(key) is None and not is_custom_usage(key):
+        # 返修：**显式写出的**历史自定义标签（原文就是 custom:<tag>）是合法用途 key
+        # （迁移回填的历史行要能被清除），不能当「未知用途」400 掉；它有没有独立调用路径
+        # 由后面的统一校验回答：新增分配 → UsageNotEffective（422）；清除 → 允许。
+        # 没有 custom: 前缀的自由文本仍然按输入错误拒绝（保留第一轮的 400 语义）。
+        if find_usage(key) is None and not (
+            usage_key.startswith(CUSTOM_USAGE_PREFIX) and is_custom_usage(key)
+        ):
             raise ValueError(f"第 {index} 项用途分配引用了未知用途：{usage_key}")
         if key in seen:
             raise ValueError(f"第 {index} 项用途分配重复指定了同一个用途：{usage_key}")

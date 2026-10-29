@@ -153,3 +153,18 @@ def test_single_endpoint_also_clears_custom_history(client, credentials, store, 
     )
     assert response.status_code == 200, response.text
     assert CUSTOM_KEY not in _usage_rows(db_conn)
+
+def test_batch_still_rejects_free_text_unknown_usage(client, credentials, store, db_conn):
+    """没有 custom: 前缀的自由文本仍是输入错误（400），不能被当成历史标签放行。"""
+    _seed(credentials, store)
+    response = client.post(
+        "/api/models/usages",
+        json={
+            "assignments": [
+                {"usage_key": "not-a-usage", "credential_id": None, "model_id": None}
+            ]
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "not-a-usage" in str(response.json()["detail"])
+    assert _usage_rows(db_conn) == {}
