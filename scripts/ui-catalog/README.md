@@ -151,7 +151,7 @@ Markdown 渲染全覆盖（往 ASSISTANT 事件里灌一段含全元素的正文
 - [ ] 凭据：4 张卡（生效中 / 预算 90% 警告 / 已停用 / 已撤销）
 - [ ] 凭据筛选：全部 / 已启用 / 已停用 / 已撤销 / 已过期 + 空结果文案
 - [ ] QConfirm layer：删除凭据、撤销凭据（两份确认文案）
-- [ ] CredentialModal：create / meta / rotate 三种模式 + 校验错误
+- [ ] 设置页「模型与服务」Key 编辑弹窗（KeyForm）：新增 / 编辑 / 更换 Key 三种模式 + 校验错误
 - [ ] 设置页窄窗口单列
 - [ ] 调试页：无 trace / 有 trace 列表（done、failed、cancelled 徽章）/ 选中详情（各块折叠展开）/ 记录开关 / 分页
 

@@ -6,6 +6,7 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
+最后核对：2026-10-29（**发布前第四轮死代码清理完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `04c7df1ecf2aedd45d54b0b9d06ee47a97df3538`（第三轮返修五交付尖端，前三轮成果全部保留），分支 `fix/release-step4-dead-code-cleanup-20261029`。七项已无生产入口的死代码删除：旧设置页 `CredentialCard` / `CredentialModal`（连同三个专属测试）、`KnowledgeCandidateCard`（知识候选已由统一审批层直接 ingest）、`useComposerClearance`（输入区底部让位已由 MessageStream 按共享 composerMetrics 统一处理）、`usePresence`（浮层进出场已由 QModal/QConfirm 承担）、ui store 未使用的 `settingsDraft` 与已被 `saveCps` 取代的 `setCps`；同步清理滚动策略清单、ChatColumn 旧占位引用与设置页 tab 待办里的失效指向，旧测试/mock 不保留。受保护项未动：`frontend/src/components/credentials/CredentialForm.vue`（现仅首次引导使用）、`frontend/src/services/credentials.ts`、当前模型面板（KeyForm / KeyAccessSection）、统一审批链路、前三轮保存与恢复逻辑、历史迁移/兼容/恢复重试与历史验收记录。定向验证：前端定向 vitest（51 文件 / 423 项用例）、`npx vue-tsc --noEmit`、`python scripts/check_docs.py` 全部通过；**仅完成定向验证，未运行全量测试、构建或 CI**，提交使用 `[skip ci]`。详见 `docs/release-step4-dead-code-cleanup-20261029.md`。
 最后核对：2026-10-29（**发布前第三轮返修五完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `966703f53d2153aa63e8e3ebe63f79bcdb2e5095`，分支 `fix/release-step3-settings-reliability-20261029`。输出速度保存：分别维护「用户最新选择」（ui.typewriterCps）与「实际已保存值」（加载确认值 + 本次接口成功返回，不从界面读取）；新增 ui.saveCps 返回本次接口真实结果且不写界面；沿用共享串行保存（同一设置依次、不同设置独立、关闭行为保持原处理）；等待期间保持最新选择，最新失败恢复最后实际成功值并保留错误，全部失败恢复最初确认值。固定清单六项（单次失败、25 成功/75 失败、25 失败/75 成功、两次失败含非默认初值、25/75/50 等待期间不被较早请求改回、最终成功/最终失败）均通过，另核对请求依次执行。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
 最后核对：2026-10-29（**发布前第三轮返修四完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `2e902d637b4e75d3fc7fc1ec13a87ed809114a16`，分支 `fix/release-step3-settings-reliability-20261029`。① 提交顺序 ≠ 实际写入顺序：同一设置改为依次保存（后一次在前一次结算后才写入），实际写入顺序确定，回滚依据来自最后实际写入成功的响应；较新操作仍优先，不同设置独立并行；② 最终校准同步生效摘要：记录服务端返回的真实保存值，校准/失败回滚优先用 apply 同时刷新控件与 effectiveFacts（后台整理开关、间隔、对话深度同原则）；③ 免密钥开关适配共享规则：新增真实保存值与 trackSaved，回滚/校准不再用点击瞬间的界面值，并核对记忆/工具/搜索/常规全部 saveNow 调用方；开启先失败、关闭随后成功时最终显示关闭且错误保留。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 定向 pytest + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
 最后核对：2026-10-29（**发布前第三轮返修三完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `15bbffb55c274cb2ec9b104f95bfdbe7b47fa330`，分支 `fix/release-step3-settings-reliability-20261029`。① 连续保存回滚：`trackSaved` 按写入序号记录真实保存值（迟到旧成功不回退更新的真实值），失败回滚读已记录真实值，并在全部在途结算、最新请求失败后执行最终校准；30、40 都成功（30 迟到）后再提交 50 失败恢复 40；30/40/50 中 50 先失败、40 成功、30 失败最终显示 40；记忆、对话深度与工具设置统一同一逻辑、不同设置独立。② 旧格式模型归属：发现状态新增模型来源签名，只有成功取回才更新，失败 / 空列表尝试不改变来源；旧格式优先用来源签名、其次用无错误的尝试签名兜底；更换地址或 Key 后新配置超时 / 空列表时，重新读取与缓存仍把旧模型列为历史，手动模型、历史记录与用途引用保留。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 定向 pytest + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
@@ -1798,8 +1799,9 @@ P16–P24，直接并列会产生两套同号里程碑）。它们的验收结�
 - **斜杠命令体系**：未实现。工具创建没有独立的「入口页面」——按第三阶段的入口原则，
   它在对话里发生（说明需求 → Agent 调 `create_tool` → 同一张工具创建卡推进到「已创建」），
   设置页只放长期配置（电脑操控权限、联网通道），不承担这个动作。
-- **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里；对话页只在回答完成后
-  显示高影响知识候选卡（保存 / 修改 / 忽略），不做成常驻面板。
+- **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里；对话页也不做常驻面板。
+  高影响知识候选在回答完成后进入统一审批的「待确认」（`UnifiedApprovalLayer` 直接 ingest），
+  保存 / 修改 / 忽略都在统一审批弹窗内完成，不再有对话流内的候选卡。
 - **工具创建的真实端到端**：**后端全链已在安装包自带的 sidecar 上跑通**（2026-10-02 第二阶段：
   `create_tool → dev_write_file → dev_run_tests(2/2) → dev_submit_tool → 两次审批 → 注册 → 调用 → 工具记录`，
   见 `docs/e2e-install-2026-10-02.md`）。**仍未跑的是界面那一层**：这条链是在 API 上用离线假厂商驱动的，

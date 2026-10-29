@@ -78,26 +78,39 @@ PlanetView（全屏覆盖层，与对话页共享同一 3D 场景）
 
 ## 3. 设置页组件树
 
+设置页是**单一滚动视口**：宽窗左侧竖排导航、窄窗顶部标签页，两者只换导航容器布局，
+内容用同一份 DOM（五个分区一直挂载、仅 `v-show` 切换），切换宽窄与出入搜索都不重建表单、
+不丢草稿。外壳不画自己的页头：全局栏由 `WindowChrome` 提供，导航区只留「返回对话」与
+「搜索设置」两个图标按钮。
+
 ```
-SettingsView
-├── SettingsTabs（凭据 / 偏好）
-├── CredentialsTab
-│   ├── CredentialList     Key 卡片（掩码显示 + 状态色标 + 预算进度）
-│   ├── CredentialCard     默认只给结论（名称/厂商、模型、中文用途、当前默认、启用与验证状态）
-│   │                      地址/内部标识/版本/审计收进「详情」；管理动作在「更多操作」里（收起时 inert）
-│   ├── CredentialModal    「添加 / 编辑 / 更换 API Key」三种入口的弹窗外壳（进出场 + 焦点归还）
-│   └── AuditView          审计日志（版本历史）
-└── PreferencesTab
-    ├── ModelEndpoints     模型端点配置（base_url/model/适配档）
-    ├── MemoryDefaults     记忆强度默认值、冷热阈值
-    └── BehaviorToggles    行为开关（force_continue 等）
+SettingsView（五分类：常规 / 模型与服务 / 记忆与整理 / 工具与权限 / 关于与更新）
+├── SettingsNav            宽窗左侧竖排 / 窄窗顶部标签（返回对话、搜索入口、返回搜索结果）
+├── SettingsSearchPanel    静态索引搜索：名称 + 分类 + 说明，点击切分类、展开折叠组并短暂高亮
+└── sections（全部常驻，v-show 切换）
+    ├── RegularSection     常规：外观、输出速度、窗口行为、引导入口、高级诊断开关
+    ├── ModelServicesSection
+    │   ├── ModelServicesPanel    模型与 Key：Key 接入与管理（KeyAccessSection，弹窗内为 KeyForm）、
+    │   │                         默认模型、用途分配；渲染异常只替换本分区，不影响其它分类
+    │   └── SearchConfigGroup     联网搜索：通道状态与高级参数
+    ├── MemorySection      记忆与整理：记忆分段（按组保存）、后台整理、对话深度
+    ├── ToolsSection       工具与权限：权限模式、工作区、工具记录、当前生效参数（只读）
+    └── AboutSection       关于与更新：版本、更新（UpdateCard）、许可证与第三方声明（离线内联）
 ```
 
-### 3.1 凭据表单（首次引导与设置页共用）
+外壳组件在 `frontend/src/views/settings/shell/`（`SettingRow` / `AdvGroup` / `SegmentedControl` /
+`GroupSaveBar` / `SettingsNoticeLine` 等）；分类定义是 `frontend/src/views/settings/types.ts`，
+搜索索引是 `frontend/src/views/settings/searchIndex.ts`。
 
-`frontend/src/components/credentials/CredentialForm.vue` 是**唯一**一份凭据表单：
-首次引导的「连接模型」与设置页弹窗都渲染它，默认值、校验与提交/验证逻辑放在
-`frontend/src/services/credentials.ts` 的 `useCredentialForm`，两处不可能漂移。
+### 3.1 凭据表单（仅首次引导）
+
+`frontend/src/components/credentials/CredentialForm.vue` 是**唯一**一份凭据表单，
+现在只用于首次引导的「连接模型」（`frontend/src/components/onboarding/OnboardingWizard.vue`）：
+默认值、校验与提交/验证逻辑放在 `frontend/src/services/credentials.ts` 的 `useCredentialForm`。
+
+设置页的模型/凭据入口不经过它：模型与服务分类挂 `frontend/src/components/models/ModelServicesPanel.vue`，
+连接列表与弹窗入口是 `frontend/src/components/models/KeyAccessSection.vue`（弹窗内是
+`frontend/src/components/models/KeyForm.vue`），保存与验证走模型目录/凭据接口。
 
 ```
 CredentialForm
@@ -193,7 +206,9 @@ APPROVAL_REQUIRED 到达 → 队列弹出 → 展示 payload（解释/测试摘�
 
 - 悬浮球不再是「SVG 图标按钮」：入口小球现在是**全屏 Planet 的压缩态**（`PlanetOrb`，与全屏星球共用
   `frontend/src/planet/sdfRings.ts` 的距离场数学），并与全屏星球构成进入/退出连续体。
-- 记忆/知识面板仍在星球页详情与面板内，对话页只在回答完成后显示高影响知识候选卡。
+- 记忆/知识面板仍在星球页详情与面板内，对话页不设常驻面板。高影响知识候选在回答完成后进入统一审批的
+  「待确认」（`frontend/src/components/conversation/UnifiedApprovalLayer.vue` 直接 ingest
+  `session.knowledgeCandidates`）；批准 / 修改后的保存与不保存都在统一审批弹窗内完成，不再有对话流内的候选卡。
 
 ---
 
