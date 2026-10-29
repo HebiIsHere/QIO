@@ -52,6 +52,10 @@ __all__ = [
     "custom_usage_key",
     "custom_tag_of",
     "normalize_usage_key",
+    "usage_is_effective",
+    "UsageAssignmentError",
+    "UsageNotEffective",
+    "UsageTargetNotUsable",
 ]
 
 #: 自定义用途 key 前缀：`custom:写作助手` 这种。历史标签原文保留在前缀之后。
@@ -62,6 +66,54 @@ DELIVERY_MODEL = "model"          # 真正走模型调用：分配会真的生�
 DELIVERY_EXISTING = "existing"    # 沿用现有处理方式（视频 / 语音 / 嵌入）
 DELIVERY_UNSUPPORTED = "unsupported"  # 当前没有独立调用路径（研究 / 自定义标签）
 DELIVERIES = (DELIVERY_MODEL, DELIVERY_EXISTING, DELIVERY_UNSUPPORTED)
+
+
+class UsageAssignmentError(ValueError):
+    """用途分配被拒绝（语义不成立，不是请求格式错误）。
+
+    带一个**稳定的机器可读 code** 与人话说明：HTTP 层据此给 4xx 结构化响应，
+    前端据此显示原因而不是把 JSON 当字符串。清除（恢复跟随默认）不会触发它。
+    """
+
+    code = "usage_assignment_rejected"
+
+    def __init__(
+        self,
+        usage_key: str,
+        message: str,
+        *,
+        reason: str = "",
+        credential_id: str | None = None,
+        model_id: str | None = None,
+    ) -> None:
+        super().__init__(str(message))
+        self.usage_key = str(usage_key or "")
+        self.reason = str(reason or "")
+        self.credential_id = credential_id
+        self.model_id = model_id
+
+    def to_dict(self) -> dict:
+        return {
+            "ok": False,
+            "code": self.code,
+            "detail": str(self),
+            "usage_key": self.usage_key,
+            "reason": self.reason,
+            "credential_id": self.credential_id,
+            "model_id": self.model_id,
+        }
+
+
+class UsageNotEffective(UsageAssignmentError):
+    """这个用途没有独立模型调用路径：写独立分配不会影响真实请求。"""
+
+    code = "usage_not_effective"
+
+
+class UsageTargetNotUsable(UsageAssignmentError):
+    """分配的目标当前不可用（连接 / 模型验证 / 用途所需能力）：真实调用必然失败。"""
+
+    code = "usage_target_unusable"
 
 #: 用途分组，决定界面上的排列顺序与折叠方式。
 GROUP_PRIMARY = "primary"      # 日常对话路径
@@ -132,14 +184,20 @@ USAGES: tuple[UsageSpec, ...] = (
         call_path="与主对话同一路径（resolve_main_target）",
         note="与主对话共用同一条调用路径，日常入口已合并；单独指定时优先于主对话",
     ),
+    # 没有任何地方单独读取 code 的分配（核对过 services/app.py::resolve_main_target、
+    # resolve_usage / resolve_alongside_target / build_background_adapter、
+    # tools/subagent_tool.py、memory_lifecycle.py、maintenance.py、derived_tasks.py、
+    # entities/extract.py、services/retrieval.py、_legacy_tags_for_usage、policy 回退，
+    # 以及 normalize_usage_key 的全部消费方：写代码由日常对话的模型完成）。
     UsageSpec(
         "code",
         "写代码",
         GROUP_PRIMARY,
         True,
         legacy_tags=(),
-        call_path="与主对话同一路径（工具调用由 loop 决定）",
-        note="当前没有独立的代码模型调用路径，跟随主对话",
+        call_path="（未接通：跟随日常对话，没有独立读取 code 分配的调用路径）",
+        note="当前没有独立的代码模型调用路径：写代码由日常对话的模型完成，跟随日常对话",
+        delivery=DELIVERY_UNSUPPORTED,
     ),
     UsageSpec(
         "subagent",
@@ -177,8 +235,8 @@ USAGES: tuple[UsageSpec, ...] = (
         GROUP_SPECIAL,
         False,
         legacy_tags=("video",),
-        call_path="（未接通：沿用现有处理方式）",
-        note="沿用现有处理方式；不会继承默认对话模型",
+        call_path="（未接通：没有独立模型调用路径，沿用现有处理方式）",
+        note="未接通独立模型调用路径：沿用现有处理方式，不继承默认对话模型",
         delivery=DELIVERY_EXISTING,
         daily=False,
     ),
@@ -188,8 +246,8 @@ USAGES: tuple[UsageSpec, ...] = (
         GROUP_SPECIAL,
         False,
         legacy_tags=("audio",),
-        call_path="（未接通：沿用现有处理方式）",
-        note="沿用现有处理方式；不会继承默认对话模型",
+        call_path="（未接通：没有独立模型调用路径，沿用现有处理方式）",
+        note="未接通独立模型调用路径：沿用现有处理方式，不继承默认对话模型",
         delivery=DELIVERY_EXISTING,
         daily=False,
     ),
@@ -199,9 +257,9 @@ USAGES: tuple[UsageSpec, ...] = (
         GROUP_SPECIAL,
         False,
         legacy_tags=("embedding",),
-        call_path="services/retrieval.py + selector（沿用现有本地/远程方案）",
+        call_path="services/retrieval.py + selector（沿用现有本地/远程方案，不读这里的分配）",
         requires_capabilities=("embedding",),
-        note="更换外部嵌入模型会影响既有索引维度，需要重建确认",
+        note="未接通独立模型调用路径：沿用现有处理方式（本地 / 远程嵌入方案），这里的分配不会切换检索使用的嵌入模型",
         delivery=DELIVERY_EXISTING,
         daily=False,
     ),
@@ -269,6 +327,17 @@ def find_usage(key: str | None) -> UsageSpec | None:
     if not text:
         return None
     return USAGE_BY_KEY.get(text)
+
+
+def usage_is_effective(key: str | None) -> bool:
+    """这个用途的独立分配会不会影响真实请求。
+
+    只有 `delivery == "model"`（存在真实读取点）算生效；其余用途（video / audio /
+    embedding 沿用现有处理方式、research / code / custom:<tag> 没有独立调用路径）
+    的历史分配只保留可见性与清除入口，界面不得把它们画成「当前实际使用」。
+    """
+    spec = find_usage(key)
+    return spec is not None and spec.delivery == DELIVERY_MODEL
 
 
 def is_custom_usage(key: str | None) -> bool:

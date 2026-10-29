@@ -401,7 +401,6 @@ async def test_build_derived_adapters_snapshots_all_targets_before_first_await(
         "old-knowledge",
         verify_state="verified",
     )
-    ctx.credentials.set_enabled("old-disabled-key", False)
     ctx.credentials.create(
         "new-key",
         "sk-fake-new-key",
@@ -419,6 +418,8 @@ async def test_build_derived_adapters_snapshots_all_targets_before_first_await(
     store.set_usage("memory-organize", "old-key", "old-summary")
     store.set_usage("knowledge-distill", "old-disabled-key", "old-knowledge")
     store.set_usage("entity-extract", "old-key", "old-entities")
+    # 分配保存之后连接才变坏：这是真实场景（预算/停用/撤销都可能发生在配置之后）。
+    ctx.credentials.set_enabled("old-disabled-key", False)
 
     created: list[tuple[str, str]] = []
     first_build_started = asyncio.Event()

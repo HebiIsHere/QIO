@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 
 
 def _store(ctx: Any) -> Any:
@@ -44,22 +45,54 @@ def _bool_or(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _assignment_rejection(exc: Any) -> Any:
+    """用途分配被拒（语义不成立）：稳定的机器可读 code + 人话 detail。
+
+    形状与 400 / 404 的 detail 字符串不同是有意的：前端要按 code 区分「这个用途
+    本来就不会生效」与「请求写错了」，而不是把 JSON 当字符串显示。
+    """
+    return JSONResponse(status_code=422, content=exc.to_dict())
+
+
 def register_model_routes(app: Any, ctx: Any) -> None:
     """把模型目录相关路由挂到一个已创建的 FastAPI app 上。"""
 
     @app.get("/api/models/catalog")
-    async def models_catalog(refresh: int = 0) -> dict:
+    async def models_catalog(refresh: int = 0, usage_key: str | None = None) -> Any:
         """目录快照：连接 → 模型 → 用途分配 → 默认模型（**只读，不联网**）。
 
         refresh 参数保留给界面（契约 §6.3），但这里刻意**不**在 GET 里发起认证请求：
         GET 可能被自动重试，带网络副作用的 GET 会让「刷新」变成不可控的重复探测。
         真正的刷新走 POST /api/models/discover（用户显式动作）。
+
+        `usage_key`（可选）：额外返回**服务端算好的**用途维度结论（usage_usable /
+        usage_reason / capability_state）。判断只来自已有模型能力与用途要求，
+        不按模型名猜、不发起验证或联网探测。
         """
+        from agent.credentials.usages import find_usage, normalize_usage_key
         from agent.services.model_usage import attach_effective_chat_target
 
+        scope = str(usage_key or "").strip()
+        normalized = ""
+        if scope:
+            try:
+                normalized = normalize_usage_key(scope)
+            except ValueError:
+                normalized = ""
+            if find_usage(normalized or scope) is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "ok": False,
+                        "code": "unknown_usage",
+                        "detail": f"未知用途：{scope}",
+                    },
+                )
         # effective 用与运行时**同一个** resolve_shared_target 计算（合并行实际生效目标）：
         # 目录显示的目标必须就是真实调用会用的那个，否则「显示一个、调用另一个」。
-        result = attach_effective_chat_target(ctx, _store(ctx).catalog())
+        result = attach_effective_chat_target(
+            ctx, _store(ctx).catalog(usage_key=normalized or None)
+        )
         result["refresh_requested"] = bool(refresh)
         return result
 
@@ -93,8 +126,15 @@ def register_model_routes(app: Any, ctx: Any) -> None:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post("/api/models/usage")
-    async def models_set_usage(body: dict) -> dict:
-        """分配用途：给 (credential_id, model_id) 或恢复跟随默认（两者都为空）。"""
+    async def models_set_usage(body: dict) -> Any:
+        """分配用途：给 (credential_id, model_id) 或恢复跟随默认（两者都为空）。
+
+        无法生效的新分配（没有独立调用路径的用途 / 目标当前不可用）返回结构化 422：
+        `{ok: false, code, detail, usage_key, reason, credential_id, model_id}`。
+        「恢复跟随默认 / 清除历史覆盖」（两者都为空）不会被这条规则拦截。
+        """
+        from agent.credentials.usages import UsageAssignmentError
+
         usage_key = str(body.get("usage_key") or "").strip()
         if not usage_key:
             raise HTTPException(status_code=400, detail="缺少用途标识")
@@ -105,6 +145,8 @@ def register_model_routes(app: Any, ctx: Any) -> None:
                 body.get("credential_id"),
                 body.get("model_id"),
             )
+        except UsageAssignmentError as exc:
+            return _assignment_rejection(exc)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
@@ -126,11 +168,15 @@ def register_model_routes(app: Any, ctx: Any) -> None:
         transaction** 内写完整批；任一项校验失败（用途未知 / 连接不存在 /
         连接与模型不成对）整批回滚并返回明确 4xx。
         """
+        from agent.credentials.usages import UsageAssignmentError
         from agent.services.model_usage import save_assignments
 
         store = _store(ctx)
         try:
             return save_assignments(store, body.get("assignments"))
+        except UsageAssignmentError as exc:
+            # 整批语义保留：任何一项不生效，整批不写，并给出稳定 code。
+            return _assignment_rejection(exc)
         except KeyError as exc:
             message = exc.args[0] if exc.args else str(exc)
             raise HTTPException(status_code=404, detail=str(message)) from exc

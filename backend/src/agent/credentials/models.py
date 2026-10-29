@@ -50,13 +50,18 @@ from agent.credentials.store import (
     CredentialStore,
 )
 from agent.credentials.usages import (
+    DELIVERY_MODEL,
+    DELIVERY_UNSUPPORTED,
     USAGE_BY_KEY,
     USAGES,
+    UsageNotEffective,
     UsageSpec,
+    UsageTargetNotUsable,
     custom_tag_of,
     find_usage,
     is_custom_usage,
     normalize_usage_key,
+    usage_is_effective,
 )
 from agent.storage.db import transaction
 
@@ -136,6 +141,17 @@ def _new_id(prefix: str) -> str:
 
 def _norm(value: Any) -> str:
     return str(value if value is not None else "").strip()
+
+
+#: 没有独立调用路径的用途，给用户一句话原因（按 delivery 区分）。
+_NO_CALL_PATH_PHRASE = {
+    "existing": "沿用现有处理方式，没有独立的模型调用路径",
+    "unsupported": "当前没有独立的模型调用路径",
+}
+
+
+def _no_call_path_phrase(spec: UsageSpec) -> str:
+    return _NO_CALL_PATH_PHRASE.get(spec.delivery, _NO_CALL_PATH_PHRASE["unsupported"])
 
 
 def compute_model_fingerprint(
@@ -621,13 +637,21 @@ class ModelCatalogStore:
         credential_id: str | None,
         model_id: str | None,
     ) -> dict[str, Any]:
-        """设置用途分配；两者都为空 = 恢复跟随默认（删掉覆盖行）。"""
+        """设置用途分配；两者都为空 = 恢复跟随默认（删掉覆盖行）。
+
+        两条硬规则（B/C）：
+        1. **没有独立调用路径的用途不接受新分配**：写下去也不会被任何真实调用读取，
+           只能谎报「已生效」；清除历史覆盖仍然允许（清除不是新分配）。
+        2. **分配的目标必须现在真的可用**：与真实调用同一个
+           `model_usable(..., usage_key=...)`（连接状态 / 验证 / 预算 / 密钥 / 模型验证 /
+           用途所需能力）；能力未声明按「未知」放行，不按模型名猜、不联网验证。
+        """
         key = normalize_usage_key(usage_key)
         spec = find_usage(key)
-        if spec is None:
-            raise ValueError(f"未知用途：{usage_key}")
         credential_id = _norm(credential_id) or None
         model_id = _norm(model_id) or None
+        if spec is None and not is_custom_usage(key):
+            raise ValueError(f"未知用途：{usage_key}")
         if credential_id is None:
             if model_id is not None:
                 raise ValueError("只给模型不给连接会指到一个不存在的发送目标")
@@ -638,6 +662,9 @@ class ModelCatalogStore:
             raise ValueError("指定了连接就必须指定模型；要跟随默认请把两者都留空")
         if self._credential_row(credential_id) is None:
             raise KeyError(f"credential not found: {credential_id}")
+        # 先整条校验（有没有独立调用路径 + 目标现在是否真的可用），再写任何记录：
+        # 被拒绝的分配不留下模型行 / 用途行。
+        self.check_assignment(key, credential_id, model_id)
         if self.get_model(credential_id, model_id) is None:
             # 高级入口允许手动模型名：用户明确写了它，就记为 manual（不是我们猜的）。
             self.upsert_model(credential_id, model_id, source=MODEL_SOURCE_MANUAL)
@@ -659,6 +686,64 @@ class ModelCatalogStore:
             "model_id": model_id,
             "mode": "explicit",
         }
+
+    def check_assignment(
+        self,
+        usage_key: str,
+        credential_id: str,
+        model_id: str,
+    ) -> None:
+        """一条用途分配现在能不能真的发出去；不能就抛 UsageTargetNotUsable。
+
+        与真实调用同一个 `model_usable(..., usage_key=...)`：连接级事实（状态 / 启用 /
+        验证 / 预算 / 密钥）→ 模型级验证失败 → 用途要求的能力是否声明。
+        能力未声明 = 未知，按现有运行规则放行（与候选展示一致）。
+
+        批量保存在**开启事务前**逐项调用它，保证「整批先校验、再原子写」。
+        """
+        key = normalize_usage_key(usage_key)
+        spec = find_usage(key)
+        credential_id = _norm(credential_id)
+        model_id = _norm(model_id)
+        if spec is None:
+            if is_custom_usage(key):
+                raise UsageNotEffective(
+                    key,
+                    f"「{custom_tag_of(key)}」是历史自定义标签：只保留可见性与映射，"
+                    "不产生新的执行能力，这里的模型分配不会影响真实请求",
+                    credential_id=credential_id,
+                    model_id=model_id,
+                )
+            raise ValueError(f"未知用途：{usage_key}")
+        if self._credential_row(credential_id) is None:
+            raise KeyError(f"credential not found: {credential_id}")
+        if not usage_is_effective(key):
+            # 没有独立调用路径：写下去不会被任何真实调用读取，只能谎报「已生效」。
+            raise UsageNotEffective(
+                key,
+                f"「{spec.label}」{_no_call_path_phrase(spec)}："
+                "这里的模型分配不会影响真实请求，请改为跟随默认或清除历史覆盖",
+                credential_id=credential_id,
+                model_id=model_id,
+            )
+        meta = self._credential_meta(credential_id)
+        model = self.get_model(credential_id, model_id)
+        if model is None:
+            # 还没写进目录的手动模型名：按「未验证、能力未知」判断，与保存后的结论一致。
+            model = {
+                "verify_state": VERIFY_STATE_UNVERIFIED,
+                "verify_applies": False,
+                "capabilities": [],
+            }
+        usable, reason = self.model_usable(model, meta, usage_key=key)
+        if not usable:
+            raise UsageTargetNotUsable(
+                key,
+                f"「{spec.label}」的目标当前不可用：{reason}",
+                reason=reason,
+                credential_id=credential_id,
+                model_id=model_id,
+            )
 
     def clear_usage(self, usage_key: str) -> None:
         self.set_usage(usage_key, None, None)
@@ -780,7 +865,16 @@ class ModelCatalogStore:
     # 目录快照（GET /api/models/catalog 的形状）
     # ------------------------------------------------------------------
 
-    def catalog(self) -> dict[str, Any]:
+    def catalog(self, *, usage_key: str | None = None) -> dict[str, Any]:
+        """目录快照；带 usage_key 时额外给出「候选是否适用于该用途」的服务端结论。
+
+        用途维度只来自**现有模型能力与用途要求**（不按模型名猜、不联网验证）：
+        * `usage_usable`：与真实保存 / 调用同一个 `model_usable(..., usage_key=...)`；
+        * `capability_state`：supported / missing / unknown / not_required；
+        * 一般可用性 `usable` 保持与用途无关 —— 同一个模型可能「一般可用」但
+          「不适用于看图」，这是两条不同事实，界面两条都要显示。
+        """
+        spec = find_usage(usage_key) if usage_key else None
         rows = self._credential_rows()
         connections: list[dict[str, Any]] = []
         discovery: dict[str, Any] = {}
@@ -788,7 +882,9 @@ class ModelCatalogStore:
             meta = self.credentials._serialize(row)  # noqa: SLF001
             credential_id = str(meta["id"])
             preset = preset_for_endpoint(meta.get("endpoint")) or find_preset(None)
-            models = self.list_models(credential_id)
+            # 每条连接只读一次密钥：一般可用性与用途维度判断共用同一份本地快照。
+            secret_present = self._secret_present(credential_id)
+            models = self.list_models(credential_id, secret_present=secret_present)
             budget = meta.get("budget")
             try:
                 budget_left = (
@@ -811,28 +907,86 @@ class ModelCatalogStore:
                     "budget_used": float(meta.get("budget_used") or 0),
                     "budget_left": budget_left,
                     "models": [
-                        {
-                            "model_id": item["model_id"],
-                            "display_name": item["display_name"] or item["model_id"],
-                            "source": item["source"],
-                            "capabilities": item["capabilities"],
-                            "verify_state": item["verify_state"],
-                            "verified_at": item["verified_at"],
-                            "verify_error": item["verify_error"],
-                            "usable": item["usable"],
-                            "unavailable_reason": item["unavailable_reason"],
-                        }
+                        self._catalog_model_view(
+                            item,
+                            meta,
+                            spec,
+                            secret_present=secret_present,
+                        )
                         for item in models
                     ],
                 }
             )
             discovery[credential_id] = self.discovery_state(credential_id)
-        return {
+        result: dict[str, Any] = {
             "connections": connections,
             "default": self.get_default(),
             "usages": self.list_usages(),
             "discovery": discovery,
         }
+        if spec is not None:
+            result["usage"] = {
+                "usage_key": spec.key,
+                "label": spec.label,
+                "delivery": spec.delivery,
+                "effective": spec.delivery == DELIVERY_MODEL,
+                "requires_capabilities": list(spec.requires_capabilities),
+                "note": spec.note,
+            }
+        return result
+
+    def _catalog_model_view(
+        self,
+        item: dict[str, Any],
+        meta: dict[str, Any],
+        spec: UsageSpec | None,
+        *,
+        secret_present: bool | None,
+    ) -> dict[str, Any]:
+        """目录里的一行模型：一般可用性 +（带用途时）用途维度结论。"""
+        payload = {
+            "model_id": item["model_id"],
+            "display_name": item["display_name"] or item["model_id"],
+            "source": item["source"],
+            "capabilities": item["capabilities"],
+            "verify_state": item["verify_state"],
+            "verified_at": item["verified_at"],
+            "verify_error": item["verify_error"],
+            "usable": item["usable"],
+            "unavailable_reason": item["unavailable_reason"],
+        }
+        if spec is None:
+            return payload
+        usable, reason = self.model_usable(
+            item, meta, usage_key=spec.key, secret_present=secret_present
+        )
+        payload.update(
+            {
+                "usage_key": spec.key,
+                "usage_usable": usable,
+                "usage_reason": reason,
+                "capability_state": self.capability_state(
+                    spec, item.get("capabilities")
+                ),
+                "usage_requires_capabilities": list(spec.requires_capabilities),
+            }
+        )
+        return payload
+
+    @staticmethod
+    def capability_state(spec: UsageSpec, capabilities: Any) -> str:
+        """能力声明的三类事实；未声明 = unknown（不能判为不支持）。"""
+        required = list(spec.requires_capabilities)
+        if not required:
+            return "not_required"
+        declared = [str(item) for item in (capabilities or []) if str(item).strip()]
+        if not declared:
+            return "unknown"
+        return (
+            "supported"
+            if all(item in declared for item in required)
+            else "missing"
+        )
 
     @staticmethod
     def _connection_name(meta: dict[str, Any], preset: Any) -> str:
@@ -903,6 +1057,7 @@ class ModelCatalogStore:
                     "legacy",
                     False,
                     note="历史自定义标签：只保留可见性与映射，不产生新的执行能力",
+                    delivery=DELIVERY_UNSUPPORTED,
                     daily=False,
                 )
             )
@@ -914,40 +1069,73 @@ class ModelCatalogStore:
     def describe_usage(
         self, spec: UsageSpec, *, default: dict[str, str] | None = None
     ) -> dict[str, Any]:
+        """一个用途的完整视图：分配、是否跟随默认、当前实际目标、是否真的生效。
+
+        `assignment_effective` 是 B 的核心事实：只有存在真实调用读取点的用途才为
+        True。没有读取点的用途不解析「当前生效目标」（resolved=None），历史覆盖放进
+        `historical_target` 并标「历史配置（未生效）」，界面据此只读展示 + 清除入口。
+        """
         key = spec.key
         kind = usage_kind(key)
         own = self._assignment(spec)
         explicit = self._is_explicit(own)
-        if explicit:
-            target = {"credential_id": own["credential_id"], "model_id": own["model_id"]}
-            source = "explicit"
-        elif kind in NON_INHERITING_KINDS:
-            # video / audio / embedding 不继承默认对话模型：未显式指定时如实为空，
-            # 由运行时「沿用现有处理方式」，不给一个看起来生效的假目标。
-            target = None
-            source = "none"
-        elif default is not None:
-            target = dict(default)
-            source = "default"
-        else:
-            target = None
-            source = "none"
-        resolved = (
-            self._resolved_target(target, source=source, usage_key=key) if target else None
+        assignment_effective = spec.delivery == DELIVERY_MODEL
+        historical = bool(
+            not assignment_effective and own is not None and _norm(own.get("model_id"))
         )
-        follows_default = not explicit
-        inherits_ok = bool(resolved and resolved.get("usable"))
+        target: dict[str, Any] | None = None
+        source = "none"
+        resolved = None
+        historical_target: dict[str, Any] | None = None
+        follows_default = False
+        inherits_ok = False
         note = spec.note or ""
-        if own is not None and not explicit and _norm(own.get("model_id")):
-            # 迁移回填的历史标签映射：保留可见，但**不是**用户显式指定，
-            # 运行时按默认/政策选择（基线里 tags 也从不锁定模型）。
-            note = "历史标签映射：保留用途关联与可见性，不锁定模型；实际按默认模型或既有选择政策"
-        elif kind in NON_INHERITING_KINDS and not explicit:
-            note = "沿用现有处理方式：这个用途不继承默认对话模型，需要单独指定才生效"
-        elif follows_default and default is None:
-            note = "还没有设置默认模型；日常对话会回退到兼容的旧凭据选择规则"
-        elif explicit and resolved is not None and not resolved.get("usable"):
-            note = "已明确指定，但当前不可用：" + str(resolved.get("unavailable_reason") or "")
+        if assignment_effective:
+            if explicit:
+                target = {
+                    "credential_id": own["credential_id"],
+                    "model_id": own["model_id"],
+                }
+                source = "explicit"
+            elif kind in NON_INHERITING_KINDS:
+                # vision：不继承默认对话模型；未显式指定时如实为空，由调用方回落。
+                target = None
+                source = "none"
+            elif default is not None:
+                target = dict(default)
+                source = "default"
+            resolved = (
+                self._resolved_target(target, source=source, usage_key=key)
+                if target
+                else None
+            )
+            follows_default = not explicit
+            inherits_ok = bool(resolved and resolved.get("usable"))
+            if own is not None and not explicit and _norm(own.get("model_id")):
+                # 迁移回填的历史标签映射：保留可见，但**不是**用户显式指定，
+                # 运行时按默认/政策选择（基线里 tags 也从不锁定模型）。
+                note = "历史标签映射：保留用途关联与可见性，不锁定模型；实际按默认模型或既有选择政策"
+            elif kind in NON_INHERITING_KINDS and not explicit:
+                note = "沿用现有处理方式：这个用途不继承默认对话模型，需要单独指定才生效"
+            elif follows_default and default is None:
+                note = "还没有设置默认模型；日常对话会回退到兼容的旧凭据选择规则"
+            elif explicit and resolved is not None and not resolved.get("usable"):
+                note = "已明确指定，但当前不可用：" + str(
+                    resolved.get("unavailable_reason") or ""
+                )
+        elif historical:
+            # 没有独立调用路径：不给出「当前生效目标」，历史覆盖单独可读并标未生效。
+            historical_target = self._resolved_target(
+                {
+                    "credential_id": own["credential_id"],
+                    "model_id": own["model_id"],
+                },
+                source="historical",
+            )
+            note = (
+                "历史配置（未生效）：这个用途没有独立的模型调用路径，"
+                "历史覆盖只保留可见性与清除入口，不会影响真实请求"
+            )
         return {
             "usage_key": key,
             "label": spec.label,
@@ -966,6 +1154,12 @@ class ModelCatalogStore:
             # 这个用途到底怎么被用（model / existing / unsupported）：界面据此区分
             # 「分配会生效」「沿用现有处理方式」「当前未接通」，不把占位画成可用。
             "delivery": spec.delivery,
+            # **是否真的生效**（唯一事实，来自上级的真实读取点核对结果）。
+            "assignment_effective": assignment_effective,
+            # 存在历史覆盖但不会生效：可读、标未生效、可清除，不静默删除。
+            "historical": historical,
+            "historical_target": historical_target,
+            "requires_capabilities": list(spec.requires_capabilities),
         }
 
     def _resolved_target(
@@ -1024,6 +1218,9 @@ class ModelCatalogStore:
         if spec is None:
             # 自定义标签不产生执行能力：运行时没有对应调用路径。
             return None
+        if spec.delivery != DELIVERY_MODEL:
+            # 没有独立调用路径（沿用现有处理方式 / 未接通）：历史分配不会改变真实请求。
+            return None
         own = self._assignment(spec)
         if self._is_explicit(own):
             return self._resolved_target(
@@ -1049,6 +1246,9 @@ class ModelCatalogStore:
         key = normalize_usage_key(usage_key)
         spec = find_usage(key)
         if spec is None:
+            return None
+        if spec.delivery != DELIVERY_MODEL:
+            # 没有独立调用路径：不让调试接口把一个「实际不会被打到」的目标说成当前目标。
             return None
         if usage_kind(key) in NON_INHERITING_KINDS:
             return None
