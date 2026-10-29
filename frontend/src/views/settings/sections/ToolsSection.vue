@@ -26,10 +26,14 @@ const security = useSecurityStore();
 /* ---------------- 工作区根目录（失焦即时保存） ---------------- */
 const workspaceRoot = ref("");
 const workspaceSaved = ref("");
+/** 用户是否动过工作区（迟到的初始读取不得覆盖，F14） */
+let workspaceTouched = 0;
 
 async function loadComputerSettings(): Promise<void> {
+  const touchedAtStart = workspaceTouched;
   try {
     const s = await api.getComputerSettings();
+    if (workspaceTouched !== touchedAtStart) return;
     workspaceSaved.value = s.root_dir || "";
     workspaceRoot.value = s.root_dir || "";
   } catch (e) {
@@ -41,7 +45,9 @@ function saveWorkspace(): void {
   const next = workspaceRoot.value.trim();
   if (next === workspaceSaved.value) return;
   const previous = workspaceSaved.value;
+  workspaceTouched += 1;
   void save.saveNow<{ root_dir: string }>({
+    key: "tools.workspace",
     pending: "正在保存工作区根目录…",
     rollback: () => {
       workspaceRoot.value = previous;
@@ -61,6 +67,8 @@ const recordOutputs = ref(true);
 const outputRetentionDays = ref(90);
 const recordRetentionDays = ref(0);
 const recordsSaved = ref({ recordOutputs: true, outputRetentionDays: 90, recordRetentionDays: 0 });
+/** 用户对工具记录设置做过几次保存：迟到的初始读取不得覆盖（F14） */
+let recordsTouched = 0;
 
 function applyRecords(server: {
   record_outputs: boolean;
@@ -79,8 +87,10 @@ function applyRecords(server: {
 }
 
 async function loadToolHistory(): Promise<void> {
+  const touchedAtStart = recordsTouched;
   try {
     const s = await api.getToolHistorySettings();
+    if (recordsTouched !== touchedAtStart) return;
     applyRecords({ ...s, record_retention_days: s.record_retention_days ?? 0 });
   } catch (e) {
     save.setNotice("err", `加载工具调用历史设置失败：${(e as Error).message}`);
@@ -91,13 +101,19 @@ function toggleRecordOutputs(): void {
   const next = !recordOutputs.value;
   const previous = recordOutputs.value;
   recordOutputs.value = next;
+  recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number; purged?: number }>({
     pending: "正在保存工具记录设置…",
     rollback: () => {
       recordOutputs.value = previous;
     },
+    key: "tools.records.outputs",
     commit: () => api.updateToolHistorySettings({ record_outputs: next }),
-    apply: applyRecords,
+    // F08：这次保存只拥有「保存输出全文」；响应附带的其它保留期字段可能更旧。
+    apply: (server) => {
+      recordOutputs.value = server.record_outputs;
+      recordsSaved.value = { ...recordsSaved.value, recordOutputs: server.record_outputs };
+    },
     success: (server) =>
       server.purged
         ? `已保存；按保留期清理了 ${server.purged} 条旧输出（参数与失败原因仍在）`
@@ -110,13 +126,18 @@ function onOutputRetentionChange(value: number | null): void {
   const next = value ?? 0;
   const previous = outputRetentionDays.value;
   outputRetentionDays.value = next;
+  recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number; purged?: number }>({
+    key: "tools.records.output-retention",
     pending: "正在保存输出保留期…",
     rollback: () => {
       outputRetentionDays.value = previous;
     },
     commit: () => api.updateToolHistorySettings({ output_retention_days: next }),
-    apply: applyRecords,
+    apply: (server) => {
+      outputRetentionDays.value = server.output_retention_days;
+      recordsSaved.value = { ...recordsSaved.value, outputRetentionDays: server.output_retention_days };
+    },
     success: (server) =>
       server.purged
         ? `输出保留期已保存；清理了 ${server.purged} 条旧输出`
@@ -129,13 +150,19 @@ function onRecordRetentionChange(value: number | null): void {
   const next = value ?? 0;
   const previous = recordRetentionDays.value;
   recordRetentionDays.value = next;
+  recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number }>({
+    key: "tools.records.record-retention",
     pending: "正在保存记录保留期…",
     rollback: () => {
       recordRetentionDays.value = previous;
     },
     commit: () => api.updateToolHistorySettings({ record_retention_days: next }),
-    apply: applyRecords,
+    apply: (server) => {
+      const days = server.record_retention_days ?? recordsSaved.value.recordRetentionDays;
+      recordRetentionDays.value = days;
+      recordsSaved.value = { ...recordsSaved.value, recordRetentionDays: days };
+    },
     success: (server) =>
       `记录保留期已保存：${(server.record_retention_days ?? 0) === 0 ? "永久保留" : `${server.record_retention_days} 天`}`,
     failure: "保存记录保留期",

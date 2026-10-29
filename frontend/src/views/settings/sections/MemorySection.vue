@@ -95,8 +95,12 @@ function onCancelFragment(): void {
 }
 
 async function loadMemorySettings(): Promise<void> {
+  const revisionAtStart = fragment.revision.value;
   try {
     const s = await api.getMemorySettings();
+    // F14：这是**初始读取**，不是权威覆盖。用户在等待期间编辑/保存过（或保存还在途）时，
+    // 迟到的读取不得覆盖较新的编辑、保存值和生效摘要。
+    if (fragment.saving.value || fragment.revision.value !== revisionAtStart) return;
     const savedTier = TIER_PRESETS.includes(String(s.fragment_max_turns))
       ? String(s.fragment_max_turns)
       : "custom";
@@ -115,10 +119,14 @@ async function loadMemorySettings(): Promise<void> {
 /* ---------------- 后台整理（即时保存） ---------------- */
 const maintenanceEnabled = ref(true);
 const maintenanceInterval = ref(24);
+/** 用户对后台整理做过几次修改/保存：迟到的初始读取按这个计数判断是否已被更新的选择取代（F14） */
+let maintenanceTouched = 0;
 
 async function loadMaintenanceSettings(): Promise<void> {
+  const touchedAtStart = maintenanceTouched;
   try {
     const s = await api.getMaintenanceSettings();
+    if (maintenanceTouched !== touchedAtStart) return;
     maintenanceEnabled.value = s.enabled;
     maintenanceInterval.value = s.interval_hours;
     patchEffectiveFacts({
@@ -130,19 +138,13 @@ async function loadMaintenanceSettings(): Promise<void> {
   }
 }
 
-function applyMaintenance(server: { enabled: boolean; interval_hours: number }): void {
-  maintenanceEnabled.value = server.enabled;
-  maintenanceInterval.value = server.interval_hours;
-  patchEffectiveFacts({
-    maintenanceEnabled: server.enabled,
-    maintenanceInterval: server.interval_hours,
-  });
-}
-
 function toggleMaintenance(): void {
   const next = !maintenanceEnabled.value;
   const previous = maintenanceEnabled.value;
+  maintenanceTouched += 1;
   void save.saveNow<{ enabled: boolean; interval_hours: number }>({
+    // F08：同一分区的不同设置各有身份，互不作废在途保存。
+    key: "memory.maintenance.enabled",
     pending: "正在保存后台整理开关…",
     optimistic: () => {
       maintenanceEnabled.value = next;
@@ -151,7 +153,12 @@ function toggleMaintenance(): void {
       maintenanceEnabled.value = previous;
     },
     commit: () => api.updateMaintenanceSettings({ enabled: next }),
-    apply: applyMaintenance,
+    // F08：这次保存只拥有「开关」这一个设置；响应里附带的其它字段可能来自更早的请求，
+    // 不能拿它覆盖另一个设置在途/已成功的选择。
+    apply: (server) => {
+      maintenanceEnabled.value = server.enabled;
+      patchEffectiveFacts({ maintenanceEnabled: server.enabled });
+    },
     success: (server) =>
       `后台整理已保存：${server.enabled ? "开启" : "关闭"}（每 ${server.interval_hours} 小时）`,
     failure: "保存后台整理开关",
@@ -162,13 +169,18 @@ function onMaintenanceIntervalChange(value: number | null): void {
   const next = value ?? 0;
   const previous = maintenanceInterval.value;
   maintenanceInterval.value = next;
+  maintenanceTouched += 1;
   void save.saveNow<{ enabled: boolean; interval_hours: number }>({
+    key: "memory.maintenance.interval",
     pending: "正在保存整理间隔…",
     rollback: () => {
       maintenanceInterval.value = previous;
     },
     commit: () => api.updateMaintenanceSettings({ interval_hours: next }),
-    apply: applyMaintenance,
+    apply: (server) => {
+      maintenanceInterval.value = server.interval_hours;
+      patchEffectiveFacts({ maintenanceInterval: server.interval_hours });
+    },
     success: (server) => `整理间隔已保存：每 ${server.interval_hours} 小时`,
     failure: "保存整理间隔",
   });
@@ -195,10 +207,14 @@ async function runMaintenanceNow(): Promise<void> {
 /* ---------------- 高级选项：对话深度（即时保存） ---------------- */
 const loopMaxIterations = ref(128);
 const loopTokenBudget = ref(51200);
+/** 用户对对话深度做过几次保存：同上，迟到的初始读取不得覆盖（F14） */
+let loopTouched = 0;
 
 async function loadLoopSettings(): Promise<void> {
+  const touchedAtStart = loopTouched;
   try {
     const s = await api.getLoopSettings();
+    if (loopTouched !== touchedAtStart) return;
     loopMaxIterations.value = s.max_iterations;
     loopTokenBudget.value = s.output_token_budget;
     patchEffectiveFacts({ maxIterations: s.max_iterations, outputTokenBudget: s.output_token_budget });
@@ -227,7 +243,9 @@ function saveLoop(): void {
     save.setNotice("err", "输出预算需为不小于 0 的整数");
     return;
   }
+  loopTouched += 1;
   void save.saveNow<{ max_iterations: number; output_token_budget: number }>({
+    key: "memory.loop",
     pending: "正在保存对话深度…",
     commit: () => api.updateLoopSettings({ max_iterations: iterations, output_token_budget: budget }),
     apply: applyLoop,

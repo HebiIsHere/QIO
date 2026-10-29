@@ -38,6 +38,15 @@ export function settingsErrorText(e: unknown): string {
 }
 
 export interface ImmediateSaveOptions<T> {
+  /**
+   * 这个设置在分区里的**身份**（F08）。
+   *
+   * 同一分区有多个独立设置（后台整理开关 / 整理间隔 / 输出速度 / 工具记录…），
+   * 它们各自的保存在途互不作废：A 失败时 A 必须回滚并留下错误，B 成功仍是成功。
+   * 只有同一个 key 的后发请求才作废先发请求（同一设置仍须防止旧响应覆盖新选择）。
+   * 省略 = 分区级（旧调用方式，行为不变）。
+   */
+  key?: string;
   /** 请求进行中的中性提示（默认「保存中…」） */
   pending?: string;
   /** 乐观更新：先把控件切到用户刚选的值 */
@@ -56,8 +65,8 @@ export interface QioSettingsSave {
   notice: Ref<SettingsNotice | null>;
   setNotice: (kind: SettingsNoticeKind, text: string) => void;
   clearNotice: () => void;
-  beginWrite: () => number;
-  isLatest: (token: number) => boolean;
+  beginWrite: (key?: string) => number;
+  isLatest: (token: number, key?: string) => boolean;
   saveNow: <T>(options: ImmediateSaveOptions<T>) => Promise<boolean>;
 }
 
@@ -69,8 +78,16 @@ export interface QioSettingsSave {
 export function useQioSettingsSave(section: string): QioSettingsSave {
   const notice = ref<SettingsNotice | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
-  /** 单调递增的写序号：任何迟到的旧响应都因为 token 落后而被丢弃。 */
+  /**
+   * 单调整体写序号（无 key 的旧调用方式）。
+   * 带 key 的调用各有一份序号：不同设置在途互不作废，只有同一设置的后发才作废先发。
+   */
   let seq = 0;
+  const keySeq = new Map<string, number>();
+  /** 当前提示属于哪个设置（key）；null = 分区级提示。 */
+  let noticeKey: string | null = null;
+  /** 当前提示是不是一次尚未被处理的失败（F08：不被另一设置的成功静默覆盖）。 */
+  let noticeIsError = false;
 
   function clearTimer(): void {
     if (timer) {
@@ -79,49 +96,68 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     }
   }
 
-  function setNotice(kind: SettingsNoticeKind, text: string): void {
+  function setNotice(kind: SettingsNoticeKind, text: string, key?: string): void {
+    const owner = key ?? null;
+    if (noticeIsError && owner !== noticeKey) {
+      // 另一个设置刚失败、用户还没看到/处理：成功的绿色提示不能把错误盖掉。
+      if (kind === "ok" || kind === "info") return;
+    }
     clearTimer();
     notice.value = { kind, text };
+    noticeKey = owner;
+    noticeIsError = kind === "err";
     // 只收回「这一次」的成功提示：期间新的保存会重置计时器，旧计时器自然失效。
     if (kind !== "ok") return;
     timer = setTimeout(() => {
       timer = null;
-      if (notice.value?.kind === "ok") notice.value = null;
+      if (notice.value?.kind === "ok") {
+        notice.value = null;
+        noticeIsError = false;
+        noticeKey = null;
+      }
     }, NOTICE_OK_MS);
   }
 
   function clearNotice(): void {
     clearTimer();
     notice.value = null;
+    noticeKey = null;
+    noticeIsError = false;
   }
 
-  function beginWrite(): number {
+  function beginWrite(key?: string): number {
+    if (key) {
+      const value = (keySeq.get(key) ?? 0) + 1;
+      keySeq.set(key, value);
+      return value;
+    }
     seq += 1;
     return seq;
   }
 
-  function isLatest(token: number): boolean {
-    return token === seq;
+  function isLatest(token: number, key?: string): boolean {
+    return key ? (keySeq.get(key) ?? 0) === token : token === seq;
   }
 
   async function saveNow<T>(options: ImmediateSaveOptions<T>): Promise<boolean> {
-    const token = beginWrite();
+    const key = options.key;
+    const token = beginWrite(key);
     options.optimistic?.();
-    setNotice("info", options.pending ?? "保存中…");
+    setNotice("info", options.pending ?? "保存中…", key);
     try {
       const server = await options.commit();
       // 迟到响应：不落 UI、不写反馈（更新的那次修改/反馈才是事实）。
-      if (!isLatest(token)) return false;
+      if (!isLatest(token, key)) return false;
       options.apply?.(server);
       const text =
         typeof options.success === "function" ? options.success(server) : options.success;
-      setNotice("ok", text);
+      setNotice("ok", text, key);
       return true;
     } catch (e) {
-      if (!isLatest(token)) return false;
+      if (!isLatest(token, key)) return false;
       // 失败必须让控件回到真实值：停在「看起来改了、其实没保存」比报错更危险。
       options.rollback?.();
-      setNotice("err", `${options.failure}失败：${settingsErrorText(e)}`);
+      setNotice("err", `${options.failure}失败：${settingsErrorText(e)}`, key);
       return false;
     }
   }
@@ -159,6 +195,11 @@ export interface GroupDraft<T extends SettingsDraftShape> {
   dirty: Ref<boolean>;
   saving: Ref<boolean>;
   error: Ref<string | null>;
+  /**
+   * 草稿修订号：任何字段变化（含 reset / cancel / 保存成功回填）都会 +1。
+   * 分区加载迟到时用它判断「用户在等待期间有没有改过」——改过就不能拿旧加载值覆盖。
+   */
+  revision: Ref<number>;
   /** 用服务端/初始真值重置草稿并刷新基线（加载完成时调用） */
   reset: (next: T) => void;
   /** 取消：丢弃草稿，回到基线 */
@@ -190,13 +231,15 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
   const saving = ref(false);
   const error = ref<string | null>(null);
   /** 草稿修订号：任何字段变化都会 +1，用于识别「等待期间又改了」。 */
-  let revision = 0;
+  const revision = ref(0);
   let writeSeq = 0;
+  /** 当前正在等响应的保存（用于「被 reset/新保存作废后仍要正确结束 saving」）。 */
+  let activeSaveToken: number | null = null;
 
   watch(
     () => ({ ...values }),
     () => {
-      revision += 1;
+      revision.value += 1;
     },
     { deep: true, flush: "sync" },
   );
@@ -208,14 +251,14 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
     baseline.value = copy;
     Object.assign(values, copy);
     error.value = null;
-    revision += 1;
+    revision.value += 1;
     writeSeq += 1; // 加载完成：作废此前所有在途响应
   }
 
   function cancel(): void {
     Object.assign(values, cloneDraft(baseline.value));
     error.value = null;
-    revision += 1;
+    revision.value += 1;
   }
 
   async function save(): Promise<boolean> {
@@ -226,7 +269,8 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
       return false;
     }
     const token = ++writeSeq;
-    const startRevision = revision;
+    const startRevision = revision.value;
+    activeSaveToken = token;
     saving.value = true;
     error.value = null;
     try {
@@ -235,9 +279,9 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
       const next = cloneDraft(server);
       baseline.value = next;
       // 等待期间用户没再改 → 用服务端规范化后的真值回填；否则保留新输入
-      if (revision === startRevision) {
+      if (revision.value === startRevision) {
         Object.assign(values, next);
-        revision += 1;
+        revision.value += 1;
       }
       return true;
     } catch (e) {
@@ -246,9 +290,15 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
       error.value = `${options.failure}失败：${settingsErrorText(e)}`;
       return false;
     } finally {
-      if (token === writeSeq) saving.value = false;
+      // 关键（F14）：reset / 更新的保存会作废这次响应（token !== writeSeq），
+      // 但「这次保存」必须自己结束 saving —— 否则界面会永远停在「保存中」，
+      // 后续 save() 也会被入口的 saving 判断永久拒绝。
+      if (activeSaveToken === token) {
+        activeSaveToken = null;
+        saving.value = false;
+      }
     }
   }
 
-  return { values, baseline, dirty, saving, error, reset, cancel, save };
+  return { values, baseline, dirty, saving, error, revision, reset, cancel, save };
 }

@@ -100,6 +100,7 @@ function onSpeedChange(value: string): void {
   if (!TYPEWRITER_SPEEDS.includes(cps as (typeof TYPEWRITER_SPEEDS)[number])) return;
   const previous = ui.typewriterCps;
   void save.saveNow<{ typewriter_cps: number }>({
+    key: "regular.speed",
     pending: `正在保存输出速度：${cps} 字/秒…`,
     optimistic: () => {
       ui.typewriterCps = cps;
@@ -163,6 +164,7 @@ function onCloseBehaviorChange(value: string): void {
   const next = value as CloseBehavior;
   if (ui.closeBehavior === next) return;
   void save.saveNow<void>({
+    key: "regular.close-behavior",
     pending: `正在保存关闭行为：${closeBehaviorLabel(next)}…`,
     rollback: () => {
       // 失败时回到**真实生效值**（store 里最近一次确认生效的那个），不是页面自己记的上一帧：

@@ -35,6 +35,9 @@ const { notice } = save;
 /* ---------------- 基础状态（来自 /api/settings/search） ---------------- */
 const keyless = ref(true);
 const bochaConfigured = ref(false);
+/** 用户对免密钥开关 / 博查 Key 做过几次显式动作：迟到的初始读取不得覆盖（F14） */
+let keylessTouched = 0;
+let bochaTouched = 0;
 /* 博查 Key 的输入只活在组件内存里：不进草稿、不进索引、不落 localStorage。 */
 const bochaEditing = ref(false);
 const bochaKeyDraft = ref("");
@@ -248,7 +251,10 @@ function toggleKeyless(): void {
   const next = !keyless.value;
   const previous = keyless.value;
   keyless.value = next;
+  keylessTouched += 1;
   void save.saveNow<SearchSettings>({
+    // F08：免密钥开关与搜索配置组是同一分区的不同设置，互不作废在途保存。
+    key: "models.search.keyless",
     pending: "正在保存免密钥通道开关…",
     rollback: () => {
       keyless.value = previous;
@@ -269,6 +275,7 @@ function toggleKeyless(): void {
 
 /* ---------------- 博查 Key（替换 / 清除都是显式动作） ---------------- */
 function startReplace(): void {
+  bochaTouched += 1;
   bochaEditing.value = true;
   bochaKeyDraft.value = "";
   manualError.value = null;
@@ -283,6 +290,7 @@ function askClearBocha(): void {
 }
 async function clearBochaKey(): Promise<void> {
   pendingClear.value = false;
+  bochaTouched += 1;
   try {
     const result = await api.updateSearchSettings({ bocha_api_key: "" });
     bochaConfigured.value = result.bocha_has_key;
@@ -296,17 +304,29 @@ async function clearBochaKey(): Promise<void> {
 
 /* ---------------- 加载 ---------------- */
 async function load(): Promise<void> {
+  const revisionAtStart = search.revision.value;
+  const keylessAtStart = keylessTouched;
+  const bochaAtStart = bochaTouched;
   try {
     const s = await api.getSearchSettings();
-    search.reset({ topK: s.top_k_default, maxFetchChars: s.max_fetch_chars, searxngUrl: s.searxng_url });
-    bochaConfigured.value = s.bocha_has_key;
-    keyless.value = s.keyless_fallback ?? true;
-    patchEffectiveFacts({
-      searchTopK: s.top_k_default,
-      searchMaxFetchChars: s.max_fetch_chars,
-      searxngUrl: s.searxng_url,
-      searchKeyless: keyless.value,
-    });
+    // F14：迟到的初始读取不能覆盖用户在等待期间的编辑/保存值。
+    // 草稿被改过或保存还在途 → 保留草稿；免密钥/博查各自被用户动过 → 保留用户选择。
+    const groupSuperseded = search.saving.value || search.revision.value !== revisionAtStart;
+    const keylessSuperseded = keylessTouched !== keylessAtStart;
+    const bochaSuperseded = bochaTouched !== bochaAtStart;
+    if (!groupSuperseded) {
+      search.reset({ topK: s.top_k_default, maxFetchChars: s.max_fetch_chars, searxngUrl: s.searxng_url });
+      patchEffectiveFacts({
+        searchTopK: s.top_k_default,
+        searchMaxFetchChars: s.max_fetch_chars,
+        searxngUrl: s.searxng_url,
+      });
+    }
+    if (!bochaSuperseded) bochaConfigured.value = s.bocha_has_key;
+    if (!keylessSuperseded) {
+      keyless.value = s.keyless_fallback ?? true;
+      patchEffectiveFacts({ searchKeyless: keyless.value });
+    }
   } catch (e) {
     save.setNotice("err", `加载联网搜索设置失败：${settingsErrorText(e)}`);
   }
