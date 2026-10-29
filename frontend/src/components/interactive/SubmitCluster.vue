@@ -20,6 +20,7 @@
     三者互斥、同一时间只开一个、再点同一入口收起，数据绝不相互串用。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 import { computed, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../../stores/interactive";
 import { fetchBoardState } from "../../services/interactive";
@@ -155,7 +156,7 @@ const pendingApprovals = computed(() =>
   ),
 );
 
-/** 这一轮是否真有一个可展示的批量列表（资格判据与 IntentBatchTray 同一口径）。 */
+/** 这一轮是否真有一个可展示的批量列表（资格判据与任务面板「待确认」同一口径）。 */
 const batchListAvailable = computed(() =>
   store.batches.some(
     (batch) => batch.intentIds.length >= BATCH_LIST_MIN && batch.pendingIds.length > 0,
@@ -332,16 +333,13 @@ function locateOnBoard(intent: Intent): void {
 }
 
 /**
- * 批量入口：直接打开**任务面板的待确认分区**（真实界面）。
+ * 批量入口：直接打开**任务面板的待确认分区**（真实界面，唯一状态是 tasksOpen）。
  *
- * 基线只把 store.batchOpen 置 true，而 IntentBatchTray 已不在新页面上挂载 ——
- * 点了没有任何可见反馈。现在批量对象与操作资格都来自 store.taskRows，
- * 面板里有逐条批准 / 拒绝与同批操作，无内容时给准确空态。
+ * 唯一的批量状态是 store.tasksOpen（旧通道的 batchOpen 已在合并后清理中删除）：
+ * 批量对象与操作资格都来自 store.taskRows，面板里有逐条批准 / 拒绝与同批操作，
+ * 无内容时给准确空态。
  */
 function openBatchList(): void {
-  // 旧通道的 batchOpen 仍保留为兼容字段（旧 IntentBatchTray 已不在新页面上挂载），
-  // 真正的可见承接界面是任务面板的「待确认」分区。
-  store.batchOpen = true;
   store.openTaskCenter("pending");
 }
 
@@ -665,7 +663,7 @@ function onSubmit() {
         data-im="submit-history-toggle"
         :aria-expanded="openPanel === 'result'"
         aria-controls="submit-result-panel"
-        title="展开上次提交的完整结果说明（只读，不会再次提交）"
+        v-qio-tip="'展开上次提交的完整结果说明（只读，不会再次提交）'"
         @click="togglePanel('result')"
       >
         上次提交 · {{ historyLabel }}
@@ -677,7 +675,7 @@ function onSubmit() {
         data-im="understanding-history-toggle"
         :aria-expanded="openPanel === 'process'"
         aria-controls="submit-process-panel"
-        title="查看上次提交的过程记录（只读，不会启动新任务）"
+        v-qio-tip="'查看上次提交的过程记录（只读，不会启动新任务）'"
         @click="togglePanel('process')"
       >
         {{ openPanel === "process" ? "收起过程" : "查看过程" }}
@@ -740,7 +738,7 @@ function onSubmit() {
             v-if="noteDetail"
             class="u-detail"
             data-im="understanding-detail"
-            :title="uText.detail"
+            v-qio-tip="uText.detail"
           >{{ noteDetail }}</span>
         </p>
         <span class="u-actions">
@@ -796,7 +794,7 @@ function onSubmit() {
                 data-im="submit-approve"
                 :data-intent-id="intent.id"
                 :disabled="decisionBusy === intent.id || !approveAvailability(intent).allowed"
-                :title="approveAvailability(intent).text"
+                v-qio-tip="approveAvailability(intent).text"
                 @click="decide(intent, 'approve')"
               >
                 {{ decisionBusy === intent.id ? "处理中…" : "批准" }}
@@ -807,7 +805,7 @@ function onSubmit() {
                 data-im="submit-reject"
                 :data-intent-id="intent.id"
                 :disabled="decisionBusy === intent.id || !rejectAvailability(intent).allowed"
-                :title="rejectAvailability(intent).text"
+                v-qio-tip="rejectAvailability(intent).text"
                 @click="decide(intent, 'reject')"
               >
                 拒绝
@@ -999,7 +997,7 @@ function onSubmit() {
         :aria-label="compact ? '提交状态与详情' : undefined"
         :aria-expanded="openPanel === 'details'"
         aria-controls="submit-details-panel"
-        :title="compact ? '提交状态与本次提交范围（点击查看详情）' : '本次提交范围与改动（只读，不会再次提交）'"
+        v-qio-tip="compact ? '提交状态与本次提交范围（点击查看详情）' : '本次提交范围与改动（只读，不会再次提交）'"
         @click="togglePanel('details')"
       >
         <template v-if="compact">
@@ -1015,7 +1013,7 @@ function onSubmit() {
         class="submit"
         type="button"
         data-im="submit"
-        :title="failure?.nextStep"
+        v-qio-tip="failure?.nextStep ?? ''"
         :disabled="busy || !store.board"
         @click="onSubmit"
       >
@@ -1146,7 +1144,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   max-width: 100%;
   text-align: left;
@@ -1237,7 +1235,7 @@ function onSubmit() {
   font-size: var(--fs-xs);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
 }
 .u-label.tone-open { color: var(--link); border-color: var(--link); }
@@ -1270,7 +1268,7 @@ function onSubmit() {
   gap: 2px;
   padding: var(--sp-1) var(--sp-2);
   border-left: 2px solid var(--accent);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .approvals-head {
@@ -1326,7 +1324,7 @@ function onSubmit() {
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
   cursor: pointer;
 }
@@ -1356,7 +1354,7 @@ function onSubmit() {
   padding: var(--sp-1) var(--sp-2);
   overflow-wrap: anywhere;
   border-left: 2px solid var(--danger);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--danger-soft);
   font-size: var(--fs-xs);
   line-height: 1.45;
@@ -1372,7 +1370,7 @@ function onSubmit() {
   margin: 0;
   padding: var(--sp-1) var(--sp-2);
   border-left: 2px solid var(--warning);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--warning-soft);
   font-size: var(--fs-xs);
   line-height: 1.45;
@@ -1415,7 +1413,7 @@ function onSubmit() {
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }
@@ -1460,7 +1458,7 @@ function onSubmit() {
   color: var(--on-accent);
   background: var(--accent);
   border: none;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-2) var(--sp-5);
   cursor: pointer;
 }
@@ -1491,7 +1489,7 @@ function onSubmit() {
   overscroll-behavior: contain;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--shadow-2);
   font-family: var(--sans);
   user-select: text;
@@ -1555,7 +1553,7 @@ function onSubmit() {
   font-family: var(--mono);
   color: var(--text-primary);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-1);
 }
 .sc-process-text { min-width: 0; overflow-wrap: anywhere; }

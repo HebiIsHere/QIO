@@ -1,0 +1,214 @@
+{
+  "radiusBefore": 452.66504294495525,
+  "expand": {
+    "frames": 13,
+    "medianFrameGapMs": 130.4,
+    "maxStep": 0.63,
+    "maxStepAtMs": 414.1,
+    "intermediateCount": 5,
+    "intermediateInFirst300ms": 4,
+    "firstProgressAtMs": 14.3,
+    "settledAtMs": 2.1,
+    "startMp": 0,
+    "startCenterX": 0,
+    "endMp": 1,
+    "endCenterX": -720,
+    "first12": [
+      {
+        "dt": 2.1,
+        "mp": 0,
+        "cx": 0
+      },
+      {
+        "dt": 14.3,
+        "mp": 0.009,
+        "cx": -6.480000019073486
+      },
+      {
+        "dt": 18.7,
+        "mp": 0.067,
+        "cx": -48.2400016784668
+      },
+      {
+        "dt": 46.1,
+        "mp": 0.123,
+        "cx": -88.55999755859375
+      },
+      {
+        "dt": 245.5,
+        "mp": 0.335,
+        "cx": -241.1999969482422
+      },
+      {
+        "dt": 414.1,
+        "mp": 0.965,
+        "cx": -694.7999877929688
+      },
+      {
+        "dt": 544.5,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 650.1,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 783.5,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 972.3,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 1077.4,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 1231.4,
+        "mp": 1,
+        "cx": -720
+      }
+    ]
+  },
+  "expanded": {
+    "mp": 1,
+    "centerX": -720,
+    "radius": 452.66504294495525,
+    "panelRect": {
+      "left": 800,
+      "width": 640
+    }
+  },
+  "collapse": {
+    "frames": 22,
+    "medianFrameGapMs": 18.3,
+    "maxStep": 0.474,
+    "maxStepAtMs": 496.4,
+    "intermediateCount": 5,
+    "intermediateInFirst300ms": 4,
+    "firstProgressAtMs": -1.5,
+    "settledAtMs": -1.5,
+    "startMp": 1,
+    "startCenterX": -720,
+    "endMp": 0,
+    "endCenterX": 0,
+    "first12": [
+      {
+        "dt": -1.5,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": -0.7,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 7.6,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 14,
+        "mp": 1,
+        "cx": -720
+      },
+      {
+        "dt": 23.5,
+        "mp": 0.999,
+        "cx": -719.280029296875
+      },
+      {
+        "dt": 28.3,
+        "mp": 0.997,
+        "cx": -717.8400268554688
+      },
+      {
+        "dt": 147.9,
+        "mp": 0.994,
+        "cx": -715.6799926757812
+      },
+      {
+        "dt": 152.6,
+        "mp": 0.66,
+        "cx": -475.20001220703125
+      },
+      {
+        "dt": 260.9,
+        "mp": 0.615,
+        "cx": -442.79998779296875
+      },
+      {
+        "dt": 496.4,
+        "mp": 0.141,
+        "cx": -101.5199966430664
+      },
+      {
+        "dt": 514.7,
+        "mp": 0,
+        "cx": 0
+      },
+      {
+        "dt": 612.6,
+        "mp": 0,
+        "cx": 0
+      }
+    ]
+  },
+  "collapsedState": {
+    "mp": 0,
+    "centerX": 0,
+    "radius": 452.66504294495525,
+    "docOverflowX": 0
+  },
+  "dispatchOnce": {
+    "before": "false",
+    "after": "true"
+  },
+  "afterDispatch": {
+    "mp": 1,
+    "expanded": "true"
+  },
+  "runs": {
+    "expandRuns": [
+      {
+        "maxStep": 0.48,
+        "medianFrameGapMs": 16,
+        "intermediateInFirst300ms": 4
+      },
+      {
+        "maxStep": 0.63,
+        "medianFrameGapMs": 130.4,
+        "intermediateInFirst300ms": 4
+      },
+      {
+        "maxStep": 0.679,
+        "medianFrameGapMs": 108.9,
+        "intermediateInFirst300ms": 4
+      }
+    ],
+    "collapseRuns": [
+      {
+        "maxStep": 0.473,
+        "medianFrameGapMs": 177.5,
+        "intermediateInFirst300ms": 1
+      },
+      {
+        "maxStep": 0.474,
+        "medianFrameGapMs": 18.3,
+        "intermediateInFirst300ms": 4
+      },
+      {
+        "maxStep": 0.513,
+        "medianFrameGapMs": 7.1,
+        "intermediateInFirst300ms": 0
+      }
+    ]
+  }
+}

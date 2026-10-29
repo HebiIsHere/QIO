@@ -1,5 +1,5 @@
 /**
- * QIO 原子控件画廊：把五个 ui/ 组件（QInput / QSelect / QNumber / QSlider / QConfirm）
+ * QIO 原子控件画廊：把四个 ui/ 组件（QInput / QSelect / QNumber / QConfirm）
  * 的**全部状态**并排渲染出来，供 `scripts/ui-catalog/atoms.mjs` 逐个截图。
  *
  * 为什么需要这一页：这些控件的边界态（禁用、错误、空选项、上限夹取、危险档确认层）
@@ -20,8 +20,13 @@ import "../src/styles/base.css";
 import QInput from "../src/components/ui/QInput.vue";
 import QSelect from "../src/components/ui/QSelect.vue";
 import QNumber from "../src/components/ui/QNumber.vue";
-import QSlider from "../src/components/ui/QSlider.vue";
 import QConfirm from "../src/components/ui/QConfirm.vue";
+import QCombo from "../src/components/ui/QCombo.vue";
+import QIcon from "../src/components/ui/QIcon.vue";
+import QIconButton from "../src/components/ui/QIconButton.vue";
+import QModal from "../src/components/ui/QModal.vue";
+import { ICON_NAMES } from "../src/components/ui/icons";
+import { ensureQioTipLayer } from "../src/components/ui/mountQioTipLayer";
 import { applyTheme, getThemePreference, resolveTheme } from "../src/utils/theme";
 import { applyMotion, getMotionPreference, resolveMotion } from "../src/utils/motion";
 
@@ -50,6 +55,379 @@ const SIZE_OPTIONS = [
   { value: "high", label: "高（更慢、更稳）" },
   { value: "medium", label: "标准" },
   { value: "low", label: "省电" },
+];
+
+const VENDORS = [
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic", hint: "需要海外网络" },
+  { value: "qwen", label: "通义千问" },
+];
+
+// ---------------------------------------------------------------- QIconButton / QIcon
+const newBlocks: BlockSpec[] = [
+  {
+    id: "atoms-qiconbutton-states",
+    group: "QIconButton",
+    title: "图标按钮：普通 / 安静 / 危险 / 禁用",
+    note: "统一 32×32、14px 圆角；aria-label 必填、无原生 title；禁用仍是语义化 button。",
+    state: "states",
+    setup: () => () =>
+      h("div", { class: "row-demo" }, [
+        h(QIconButton, { icon: "close", label: "关闭" }),
+        h(QIconButton, { icon: "copy", label: "复制", tone: "quiet" }),
+        h(QIconButton, { icon: "trash", label: "删除", tone: "danger" }),
+        h(QIconButton, { icon: "refresh", label: "刷新（禁用）", disabled: true }),
+        h(QIconButton, { icon: "collapse", label: "收起", size: "sm", expanded: true }),
+      ]),
+  },
+  {
+    id: "atoms-qiconbutton-tip",
+    group: "QIconButton",
+    title: "用途说明：悬停 500ms",
+    note: "悬停 500ms 后出现统一浮层（角色 tooltip）；键盘聚焦立即出现，Esc/滚动/换页消失。截图脚本会把指针停在这个按钮上。",
+    state: "tip",
+    setup: () => () =>
+      h("div", { class: "row-demo" }, [
+        h(QIconButton, {
+          icon: "download",
+          label: "下载",
+          description: "把这份材料下载到本机（不改动源文件）",
+          "data-role": "tip-target",
+        }),
+        h(QIconButton, {
+          icon: "info",
+          label: "说明",
+          description: "这条说明很长：它会换行而不是把浮层撑出屏幕，也不会挡住按钮本身；浮层最大宽度 280px，始终留在视口内。",
+          "data-role": "tip-target-long",
+        }),
+      ]),
+  },
+  {
+    id: "atoms-qiconbutton-busy",
+    group: "QIconButton",
+    title: "处理中（busy）",
+    note: "保留尺寸与位置，挡住重复点击（原生 disabled + aria-busy），视觉只表示“正在进行”。",
+    state: "busy",
+    setup: () => () => h("div", { class: "row-demo" }, [h(QIconButton, { icon: "refresh", label: "正在刷新", busy: true })]),
+  },
+  {
+    id: "atoms-qiconbutton-focus",
+    group: "QIconButton",
+    title: "键盘焦点 + 立即说明",
+    note: "键盘 Tab 聚焦时焦点环可见（不用 outline:none 抹掉），用途说明立即出现（不等 500ms）。截图脚本会真实按 Tab 造出 focus-visible。",
+    state: "focus",
+    setup: () => () =>
+      h("div", { class: "row-demo" }, [
+        h("button", { class: "qio-btn", type: "button", "data-role": "focus-anchor" }, "先聚焦这里"),
+        h(QIconButton, { icon: "settings", label: "设置", description: "打开设置页", "data-role": "icon-focus" }),
+      ]),
+  },
+
+  {
+    id: "atoms-qicon-all",
+    group: "QIcon",
+    title: "图标全表（24 viewBox / 1.6 描边）",
+    note: "全站图标唯一来源 icons.ts；交互图标不允许用 emoji / Unicode 字符 / 图片代替。",
+    state: "all",
+    setup: () => () =>
+      h(
+        "div",
+        { class: "icon-grid" },
+        ICON_NAMES.map((name) =>
+          h("div", { class: "icon-cell", "data-icon-name": name }, [
+            h(QIcon, { name, size: 20 }),
+            h("span", { class: "icon-label" }, name),
+          ]),
+        ),
+      ),
+  },
+
+  // ---------------------------------------------------------------- QModal
+  {
+    id: "atoms-qmodal-normal",
+    group: "QModal",
+    title: "中央弹窗 · 普通",
+    note: "三槽标题栏：左槽留空、标题中轴、右槽关闭图标按钮；正文与按钮组居中，动作按钮等宽同高。",
+    state: "normal",
+    setup: () => {
+      const open = ref(false);
+      return () =>
+        h("div", { class: "confirm-demo" }, [
+          h("button", { class: "qio-btn", type: "button", "data-role": "modal-trigger", onClick: () => (open.value = true) }, "打开中央弹窗"),
+          h(
+            QModal,
+            {
+              open: open.value,
+              title: "保存这项设置？",
+              kicker: "保存后立即生效",
+              modalId: "catalog-modal-normal",
+              width: "440px",
+              onClose: () => (open.value = false),
+            },
+            {
+              default: () =>
+                h("p", null, "保存后当前页面会按新设置重新加载；已经发出的对话与草稿不受影响。"),
+              footer: () => [
+                h("button", { class: "qio-btn", type: "button", "data-role": "modal-cancel", onClick: () => (open.value = false) }, "取消"),
+                h("button", { class: "qio-btn primary", type: "button", "data-role": "modal-confirm", onClick: () => (open.value = false) }, "保存"),
+              ],
+            },
+          ),
+        ]);
+    },
+  },
+  {
+    id: "atoms-qmodal-danger-long",
+    group: "QModal",
+    title: "中央弹窗 · 危险 + 长标题",
+    note: "tone=danger 只让标题变色，不把整个弹窗染红；长标题自然换行且仍居中，不会被关闭按钮挤偏。",
+    state: "danger-long",
+    setup: () => {
+      const open = ref(false);
+      return () =>
+        h("div", { class: "confirm-demo" }, [
+          h("button", { class: "qio-btn", type: "button", "data-role": "modal-trigger", onClick: () => (open.value = true) }, "打开危险弹窗"),
+          h(
+            QModal,
+            {
+              open: open.value,
+              title: "删除这项凭据并撤销它在所有环境里的授权？",
+              kicker: "此操作不可恢复",
+              modalId: "catalog-modal-danger",
+              tone: "danger",
+              width: "420px",
+              onClose: () => (open.value = false),
+            },
+            {
+              default: () =>
+                h("p", null, "密钥会从系统凭据库删除；依赖它的能力立即不可用。本地删除与厂商吊销是两件事，这里只做本地删除。"),
+              footer: () => [
+                h("button", { class: "qio-btn", type: "button", "data-role": "modal-cancel", onClick: () => (open.value = false) }, "取消"),
+                h("button", { class: "qio-btn danger-solid", type: "button", "data-role": "modal-confirm", onClick: () => (open.value = false) }, "删除"),
+              ],
+            },
+          ),
+        ]);
+    },
+  },
+  {
+    id: "atoms-qmodal-nodismiss",
+    group: "QModal",
+    title: "中央弹窗 · 不可收起",
+    note: "dismissible=false：没有关闭按钮，Esc/外部点击都不关闭（影响确认、审批进行中等场景）。",
+    state: "no-dismiss",
+    setup: () => {
+      const open = ref(false);
+      return () =>
+        h("div", { class: "confirm-demo" }, [
+          h("button", { class: "qio-btn", type: "button", "data-role": "modal-trigger", onClick: () => (open.value = true) }, "打开不可取消弹窗"),
+          h(
+            QModal,
+            {
+              open: open.value,
+              title: "这次执行会修改 3 个文件",
+              kicker: "需要你明确确认",
+              modalId: "catalog-modal-nodismiss",
+              dismissible: false,
+              onClose: () => (open.value = false),
+            },
+            {
+              default: () => h("p", null, "确认后才会开始执行；外部点击与 Esc 不会撤销这次确认。"),
+              footer: () => [
+                h("button", { class: "qio-btn", type: "button", "data-role": "modal-cancel", onClick: () => (open.value = false) }, "返回"),
+                h("button", { class: "qio-btn primary", type: "button", "data-role": "modal-confirm", onClick: () => (open.value = false) }, "确认执行"),
+              ],
+            },
+          ),
+        ]);
+    },
+  },
+
+  {
+    id: "atoms-qmodal-three-actions",
+    group: "QModal",
+    title: "中央弹窗 · 三个选项",
+    note: "关闭询问这类三选一：按钮组整体居中、同高、等宽（三个都一样宽，不会一个宽两个窄）；窄窗纵排。",
+    state: "three-actions",
+    setup: () => {
+      const open = ref(false);
+      return () =>
+        h("div", { class: "confirm-demo" }, [
+          h("button", { class: "qio-btn", type: "button", "data-role": "modal-trigger", onClick: () => (open.value = true) }, "打开三选项弹窗"),
+          h(
+            QModal,
+            {
+              open: open.value,
+              title: "退出 QIO？",
+              kicker: "退出会结束当前运行",
+              modalId: "catalog-modal-three",
+              width: "460px",
+              onClose: () => (open.value = false),
+            },
+            {
+              default: () => h("p", null, "正在执行的对话与任务会中止；草稿与已保存的记录不会丢失。"),
+              footer: () => [
+                h("button", { class: "qio-btn", type: "button", "data-role": "modal-cancel", onClick: () => (open.value = false) }, "取消"),
+                h("button", { class: "qio-btn", type: "button", onClick: () => (open.value = false) }, "最小化到托盘"),
+                h("button", { class: "qio-btn danger-solid", type: "button", onClick: () => (open.value = false) }, "退出 QIO"),
+              ],
+            },
+          ),
+        ]);
+    },
+  },
+
+  {
+    id: "atoms-qmodal-busy",
+    group: "QModal",
+    title: "中央弹窗 · 处理中（busy）",
+    note: "提交中：关闭按钮禁用、Esc/外部点击都不关闭，防止关闭中的重复提交；正文与尺寸不跳动。",
+    state: "busy",
+    setup: () => {
+      const open = ref(false);
+      return () =>
+        h("div", { class: "confirm-demo" }, [
+          h("button", { class: "qio-btn", type: "button", "data-role": "modal-trigger", onClick: () => (open.value = true) }, "打开处理中弹窗"),
+          h(
+            QModal,
+            {
+              open: open.value,
+              title: "正在保存设置…",
+              kicker: "请不要关闭窗口",
+              modalId: "catalog-modal-busy",
+              busy: true,
+              width: "420px",
+              onClose: () => (open.value = false),
+            },
+            {
+              default: () => h("p", null, "这一次保存会写入本机配置；完成后弹窗会自己关闭。"),
+              footer: () => [
+                h("button", { class: "qio-btn", type: "button", "data-role": "modal-cancel", onClick: () => (open.value = false) }, "稍后处理"),
+                h("button", { class: "qio-btn primary", type: "button", disabled: true }, "保存中…"),
+              ],
+            },
+          ),
+        ]);
+    },
+  },
+
+  // ---------------------------------------------------------------- QConfirm 补充
+  {
+    id: "atoms-qconfirm-layer-long",
+    group: "QConfirm",
+    title: "layer 档 · 长标题与长文本",
+    note: "长标题/长 URL 换行不撑破、标题仍居中；动作按钮等宽同高；320 宽视口下按钮组纵排（截图脚本复核）。",
+    state: "layer-long",
+    setup: () => {
+      const open = ref(false);
+      return () =>
+        h("div", { class: "confirm-demo" }, [
+          h("button", { class: "qio-btn", type: "button", "data-role": "trigger", onClick: () => (open.value = true) }, "打开长文本确认层"),
+          h(QConfirm, {
+            open: open.value,
+            variant: "layer",
+            title: "覆盖保存这个已经存在的配置文件？",
+            detail:
+              "同名文件会被这一次的内容替换；旧内容不会自动备份。若这份配置来自 https://example.com/some/very/long/path/that/should/wrap/instead/of/overflowing/config.json ，请先确认来源。",
+            confirmText: "覆盖保存",
+            cancelText: "取消",
+            onConfirm: () => (open.value = false),
+            onCancel: () => (open.value = false),
+          }),
+        ]);
+    },
+  },
+
+  // ---------------------------------------------------------------- 状态/表单补充
+  {
+    id: "atoms-qinput-busy",
+    group: "QInput",
+    title: "处理中（busy）",
+    note: "保留内容、挡住编辑；只表达“正在进行”，不伪造进度；真实进度由业务状态表达。",
+    state: "busy",
+    setup: () => () => h(QInput, { modelValue: "正在校验地址…", busy: true, ariaLabel: "服务地址" }),
+  },
+  {
+    id: "atoms-qselect-placeholder",
+    group: "QSelect",
+    title: "空值占位",
+    note: "未选择时显示 placeholder（弱化色）；没有可选项时显示 emptyText，而不是一行空白。",
+    state: "placeholder",
+    setup: () => () => h(QSelect, { options: SIZE_OPTIONS, modelValue: "", placeholder: "请选择档位" }),
+  },
+  {
+    id: "atoms-qselect-busy",
+    group: "QSelect",
+    title: "处理中（busy）",
+    note: "保留当前值，不展开菜单（避免在保存过程中改值）；cursor 提示进度。",
+    state: "busy",
+    setup: () => () => h(QSelect, { options: SIZE_OPTIONS, modelValue: "medium", busy: true }),
+  },
+  {
+    id: "atoms-qcombo-default",
+    group: "QCombo",
+    title: "可搜索下拉（收起）",
+    note: "触发框 38px、14px 圆角；未选时弱化 placeholder。",
+    state: "closed",
+    setup: () => {
+      const v = ref("");
+      return () => h(QCombo, { options: VENDORS, modelValue: v.value, placeholder: "选择厂商", "onUpdate:modelValue": (x: string) => (v.value = x) });
+    },
+  },
+  {
+    id: "atoms-qcombo-open",
+    group: "QCombo",
+    title: "可搜索下拉（打开）",
+    note: "菜单 14px 圆角、选项行 14px；键盘 ↑↓/Home/End/Enter/Esc/Tab 完整（截图脚本点开）。",
+    state: "open",
+    setup: () => {
+      const v = ref("");
+      return () => h(QCombo, { options: VENDORS, modelValue: v.value, placeholder: "选择厂商", "onUpdate:modelValue": (x: string) => (v.value = x) });
+    },
+  },
+  {
+    id: "atoms-qcombo-empty",
+    group: "QCombo",
+    title: "无匹配结果",
+    note: "搜索不到时在原位说明（空状态文案由 emptyText 提供），不是一条空白菜单。",
+    state: "empty",
+    setup: () => {
+      const v = ref("");
+      return () => h(QCombo, { options: VENDORS, modelValue: v.value, placeholder: "选择厂商", "onUpdate:modelValue": (x: string) => (v.value = x) });
+    },
+  },
+  {
+    id: "atoms-qcombo-disabled-busy",
+    group: "QCombo",
+    title: "禁用 / 处理中",
+    note: "禁用整体降透明度、不展开；处理中保留当前值、不展开（避免保存过程中改值）。",
+    state: "disabled-busy",
+    setup: () => () =>
+      h("div", { class: "row-demo" }, [
+        h(QCombo, { options: VENDORS, modelValue: "deepseek", disabled: true }),
+        h(QCombo, { options: VENDORS, modelValue: "openai", busy: true }),
+      ]),
+  },
+
+  {
+    id: "atoms-badges",
+    group: "Badge / State",
+    title: "计数徽标与状态徽章",
+    note: "徽标/标签/状态统一 14px 圆角 token；状态色只来自语义令牌，不用硬编码色值。",
+    state: "badges",
+    setup: () => () =>
+      h("div", { class: "row-demo" }, [
+        h("span", { class: "qio-badge" }, "3"),
+        h("span", { class: "qio-badge link" }, "12"),
+        h("span", { class: "qio-tag" }, "已归档"),
+        h("span", { class: "qio-state ok" }, "已完成"),
+        h("span", { class: "qio-state warn" }, "等待中"),
+        h("span", { class: "qio-state err" }, "失败"),
+        h("span", { class: "qio-state info" }, "处理中"),
+        h("span", { class: "qio-state quiet" }, "未知"),
+      ]),
+  },
 ];
 
 const BLOCKS: BlockSpec[] = [
@@ -263,49 +641,6 @@ const BLOCKS: BlockSpec[] = [
     setup: () => () => h(QNumber, { modelValue: 8, min: 0, max: 99, disabled: true }),
   },
 
-  // ---------------------------------------------------------------- QSlider
-  {
-    id: "atoms-qslider-zero",
-    group: "QSlider",
-    title: "0（最小）",
-    note: "已填充段为空，滑块在最左。",
-    state: "zero",
-    setup: () => {
-      const v = ref(0);
-      return () => h(QSlider, { modelValue: v.value, label: "动画速度", "onUpdate:modelValue": (x: number) => (v.value = x) });
-    },
-  },
-  {
-    id: "atoms-qslider-mid",
-    group: "QSlider",
-    title: "中值",
-    note: "轨道左半段是强调色（已填充），右半段是弱边框色。",
-    state: "mid",
-    setup: () => {
-      const v = ref(0.5);
-      return () => h(QSlider, { modelValue: v.value, label: "动画速度", "onUpdate:modelValue": (x: number) => (v.value = x) });
-    },
-  },
-  {
-    id: "atoms-qslider-full",
-    group: "QSlider",
-    title: "1（最大）",
-    note: "滑块在最右，整条轨道都是已填充色。",
-    state: "full",
-    setup: () => {
-      const v = ref(1);
-      return () => h(QSlider, { modelValue: v.value, label: "动画速度", "onUpdate:modelValue": (x: number) => (v.value = x) });
-    },
-  },
-  {
-    id: "atoms-qslider-disabled",
-    group: "QSlider",
-    title: "禁用",
-    note: "整体降透明度、指针不再提示可拖动。",
-    state: "disabled",
-    setup: () => () => h(QSlider, { modelValue: 0.4, label: "动画速度", disabled: true }),
-  },
-
   // ---------------------------------------------------------------- QConfirm
   {
     id: "atoms-qconfirm-inline-normal",
@@ -486,6 +821,7 @@ const BLOCKS: BlockSpec[] = [
         ]);
     },
   },
+...newBlocks,
 ];
 
 const STYLE = `
@@ -503,6 +839,12 @@ const STYLE = `
   .stage { min-height: 44px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .stage .qio-input, .stage .confirm-demo { min-width: 260px; }
   .confirm-demo { display: flex; align-items: center; }
+  .row-demo { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .icon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; width: 100%; }
+  .icon-cell { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px;
+               border: 1px solid var(--border-subtle); border-radius: var(--qio-ui-radius); }
+  .icon-label { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); overflow-wrap: anywhere; }
+  .blk { border-radius: var(--qio-ui-radius); }
 `;
 
 function boot() {
@@ -510,13 +852,16 @@ function boot() {
   style.textContent = STYLE;
   document.head.appendChild(style);
 
+  // 用途说明浮层在画廊里也必须只挂一次（产品里由 App.vue 挂载）
+  ensureQioTipLayer();
+
   const root = document.getElementById("gallery");
   if (!root) throw new Error("缺少 #gallery 容器");
 
   const head = document.createElement("header");
   head.className = "gal-head";
   head.innerHTML =
-    "<h1>QIO 原子控件画廊</h1><p>五个 ui/ 组件的全状态并排展示 —— 只用于 UI 穷举截图，不是产品页面。</p>";
+    "<h1>QIO 原子控件画廊</h1><p>ui/ 组件全状态并排展示（含本轮新增图标按钮、用途说明、中央弹窗、确认层、表单状态）—— 只用于 UI 穷举截图，不是产品页面。</p>";
   root.appendChild(head);
 
   const grid = document.createElement("div");

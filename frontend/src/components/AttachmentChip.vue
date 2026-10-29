@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 附件 chip：一个附件 = 一条事实。
  *
@@ -53,7 +54,7 @@ const title = computed(() => {
     class="chip"
     data-qio-fit
     :class="['s-' + attachment.state, 'k-' + attachment.kind]"
-    :title="title"
+    v-qio-tip="title"
   >
     <!-- 文件类型的第一眼识别：一个轻量的圆形文件符号，不抢文件名 -->
     <span class="file-glyph" aria-hidden="true">
@@ -76,7 +77,7 @@ const title = computed(() => {
         v-if="attachment.error"
         class="err"
         data-test="attach-error"
-        :title="attachment.error"
+        v-qio-tip="attachment.error"
       >
         {{ attachment.error }}
       </span>
@@ -93,7 +94,7 @@ const title = computed(() => {
         type="button"
         :disabled="busy"
         :aria-label="'在右侧预览附件 ' + attachment.name"
-        title="在右侧只读预览（不改源文件）"
+        v-qio-tip="'在右侧只读预览（不改源文件）'"
         @click="emit('preview', attachment.id)"
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -104,7 +105,11 @@ const title = computed(() => {
 
       <!-- 次操作收进 ⋯：打开副本 / 重新定位 / 重试 / 重新上传 / 移除 -->
       <details class="more">
-        <summary class="more-btn" :aria-label="'更多附件操作：' + attachment.name" title="更多附件操作">
+        <summary
+          class="more-btn"
+          :aria-label="'更多附件操作：' + attachment.name"
+          v-qio-tip="'更多附件操作（打开副本 / 重新定位 / 重试 / 移除）'"
+        >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="5" cy="12" r="1.6" />
             <circle cx="12" cy="12" r="1.6" />
@@ -118,7 +123,7 @@ const title = computed(() => {
             type="button"
             :disabled="busy"
             :aria-label="'打开附件 ' + attachment.name"
-            :title="'打开 ' + attachment.name"
+            v-qio-tip="'打开 ' + attachment.name"
             @click="emit('open', attachment.id)"
           >
             打开副本
@@ -129,7 +134,7 @@ const title = computed(() => {
             type="button"
             :disabled="busy"
             :aria-label="'重新定位附件 ' + attachment.name"
-            title="文件被移动或改名了？重新指定它的位置"
+            v-qio-tip="'文件被移动或改名了？重新指定它的位置'"
             @click="emit('relocate', attachment.id)"
           >
             重新定位
@@ -150,7 +155,7 @@ const title = computed(() => {
             type="button"
             :disabled="busy"
             :aria-label="'重新上传附件 ' + attachment.name + '（QIO 无法从原地址恢复）'"
-            title="QIO 无法从原地址恢复：请重新选择这个文件"
+            v-qio-tip="'QIO 无法从原地址恢复：请重新选择这个文件'"
             @click="emit('reupload', attachment.id)"
           >
             重新上传
@@ -309,7 +314,7 @@ const title = computed(() => {
   color: var(--text-secondary);
   cursor: pointer;
   text-align: left;
-  border-radius: 8px;
+  border-radius: var(--qio-ui-radius);
 }
 .act:disabled {
   color: var(--text-muted);
@@ -384,7 +389,7 @@ const title = computed(() => {
   min-width: 142px;
   padding: 4px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
   display: flex;

@@ -1,0 +1,404 @@
+/* 设置页表面层（视觉修复 2026-10-28）
+   ============================================================================
+   目的：去掉设置页的「常驻灰色填充底」与「药丸描边 / 玫红外框 / 内阴影底边 / 单侧竖条」，
+   换成 QIO 自己的组织方式：标题 + 留白 + 对齐 + 少量中性细线；只有主按钮有实心填充。
+
+   约束（与 AGENTS.md 和本轮要求一致）：
+   - 只作用于 .qio-settings 内部；对话页 / 互动页 / 星球页 / 首次引导保持原样。
+   - 不改 `--bg-inset` 等令牌、不改 base.css 的默认样式、不用 !important、不引入新色板或字体。
+   - 共享组件是 scoped 样式（`class[data-v-xxx]`，0-2-0）。这里的覆盖选择器刻意写成
+     「作用域 + 重复类名」（0-3-0），比 scoped 高一级，能稳定压过它们而不靠 !important。
+   - 圆角唯一来源仍是 `var(--qio-ui-radius)`；但短控件不再画 14px 闭合外轮廓，
+     所以次级按钮/标记不出现"药丸"。
+   - 动效沿用 `--mo-1-*` / `--ease-1`，减少动画由 base.css 的 html[data-motion] 统一降级。
+   ============================================================================ */
+
+/* ---------------- ① 一层承载面 ----------------
+   整页只在这里有一层"面"：浅玻璃 + 一层浅中性边界 + 低层级阴影。
+   不为每个设置组/每一行/每个状态再套卡片。 */
+.qio-settings .set-main {
+  background: var(--glass-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  box-shadow: var(--shadow-1);
+  padding: 22px 26px 26px;
+  backdrop-filter: blur(8px) saturate(115%);
+  -webkit-backdrop-filter: blur(8px) saturate(115%);
+}
+.qio-settings[data-nav-layout="top"] .set-main { padding: 16px 16px 20px; }
+
+/* ---------------- ② 导航 ----------------
+   去掉玫红左竖条与底部强调线：当前分类 = 品牌强调文字 + 4px 小圆点。 */
+.qio-settings .set-nav__return {
+  border: 0;
+  background: none;
+  padding: 4px 0;
+  border-radius: 0;
+  color: var(--text-muted);
+}
+.qio-settings .set-nav__return:hover { color: var(--link); background: none; }
+.qio-settings .set-nav__tab {
+  position: relative;
+  border: 0;
+  border-radius: 0;
+  padding: 8px 6px 8px 16px;
+  background: none;
+}
+.qio-settings .set-nav__tab::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity var(--mo-1-state) var(--ease-1), transform var(--mo-1-state) var(--ease-1);
+}
+.qio-settings .set-nav__tab:hover { color: var(--text-strong); background: none; }
+.qio-settings .set-nav__tab.active { color: var(--link); border: 0; font-weight: 600; }
+.qio-settings .set-nav__tab.active::before { opacity: 1; transform: scale(1); }
+/* 顶部标签形态：不画下划线，只保留同一个小圆点 */
+.qio-settings[data-nav-layout="top"] .set-nav__tab {
+  padding: 6px 10px 6px 18px;
+  border: 0;
+}
+.qio-settings[data-nav-layout="top"] .set-nav__tab::before { left: 6px; }
+.qio-settings[data-nav-layout="top"] .set-nav__tab.active { border: 0; }
+
+/* ---------------- ③ 分区与行 ----------------
+   行与行之间只有一条中性细线；说明文字是纯文本，不再有左侧竖条。 */
+.qio-settings .set-row { border-bottom: 1px solid var(--border-subtle); }
+.qio-settings .set-hint {
+  border-left: 0;
+  padding-left: 0;
+  margin-top: 6px;
+}
+.qio-settings .set-hint-inline { color: var(--text-muted); }
+
+/* ---------------- ④ 分段选择 ----------------
+   去掉灰轨道、闭合外框与底边内阴影：选中 = 品牌色文字 + 4px 小圆点。 */
+.qio-settings .set-seg {
+  gap: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.qio-settings .set-seg__opt {
+  position: relative;
+  padding: 6px 2px 6px 12px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+}
+.qio-settings .set-seg__opt::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity var(--mo-1-state) var(--ease-1), transform var(--mo-1-state) var(--ease-1);
+}
+.qio-settings .set-seg__opt:hover { color: var(--text-strong); background: none; }
+.qio-settings .set-seg__opt.on {
+  background: none;
+  box-shadow: none;
+  color: var(--link);
+  font-weight: 600;
+}
+.qio-settings .set-seg__opt.on::before { opacity: 1; transform: scale(1); }
+.qio-settings .set-seg__opt:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+
+/* ---------------- ⑤ 高级选项 / 未保存条 / 通道 / 许可 ----------------
+   全部改成「分隔线 + 标题 + 内容」的折叠结构，不再包灰底容器。 */
+.qio-settings .set-adv {
+  margin: 14px 0 4px;
+  padding: 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: none;
+}
+.qio-settings .set-adv__toggle { padding: 12px 0; border-radius: 0; }
+.qio-settings .set-adv__toggle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.qio-settings .set-adv__body { padding: 2px 0 10px; }
+
+.qio-settings .set-groupbar {
+  margin: 12px 0 4px;
+  padding: 10px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: none;
+}
+
+.qio-settings .set-channels {
+  gap: 0;
+  margin: 6px 0 10px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+.qio-settings .set-channel { padding: 9px 0; }
+.qio-settings .set-channel + .set-channel { border-top: 1px solid var(--border-subtle); }
+.qio-settings .set-channel-actions { padding-top: 10px; }
+/* 通道行前的标记：中性小圆点（状态语义在右侧文字里），不用 ⟪i⟫ 之类的图标 */
+.qio-settings .set-channel__dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--border-strong);
+  flex: none;
+  margin-right: 2px;
+}
+
+.qio-settings .set-license {
+  margin: 8px 0 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+}
+
+/* ---------------- ⑥ 搜索面板 ---------------- */
+.qio-settings .set-search__input { height: 34px; }
+.qio-settings .set-search__state {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  gap: 4px;
+}
+.qio-settings .set-search__state.err { background: none; }
+.qio-settings .set-search__hit {
+  padding: 9px 2px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  position: relative;
+}
+.qio-settings .set-search__hit + .set-search__hit,
+.qio-settings .set-search__item + .set-search__item .set-search__hit {
+  border-top: 1px solid var(--border-subtle);
+}
+.qio-settings .set-search__hit:hover { background: none; }
+.qio-settings .set-search__hit::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--qio-ui-radius);
+  background: radial-gradient(120% 160% at 0% 50%, var(--layer-hover), transparent 70%);
+  opacity: 0;
+  transition: opacity var(--mo-1-state) var(--ease-1);
+  pointer-events: none;
+}
+.qio-settings .set-search__hit:hover::after { opacity: 1; }
+.qio-settings .set-search__hit:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* 搜索定位高亮：只做底色淡出，不再叠内阴影"框" */
+@keyframes set-reveal-quiet {
+  from { background: var(--accent-soft); }
+  to { background: transparent; }
+}
+.qio-settings .is-revealed {
+  animation: set-reveal-quiet var(--dur-slow) var(--ease-out) 2 alternate both;
+  box-shadow: none;
+}
+
+/* ---------------- ⑦ 共享原语（设置页作用域内改写） ---------------- */
+
+/* 输入：透明 + 中性底线；聚焦只改底线，不画常驻玫红闭合框 */
+.qio-settings .qio-input.qio-input {
+  height: 32px;
+  padding: 4px 2px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+}
+.qio-settings .qio-input.qio-input:hover { border-bottom-color: var(--border-strong); background: none; }
+.qio-settings .qio-input.qio-input:focus {
+  background: none;
+  border-bottom-color: var(--accent);
+  box-shadow: none;
+}
+.qio-settings .qio-input.qio-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.qio-settings .qio-input.qio-input.busy,
+.qio-settings .qio-input.qio-input[aria-busy="true"] { background: none; border-bottom-color: var(--accent-soft); }
+.qio-settings .qio-input.qio-input.err { border-bottom-color: var(--danger); }
+/* 多行输入仍然需要可见边界，否则看不出可输入区域 */
+.qio-settings textarea.qio-input.qio-input {
+  min-height: 88px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  background: var(--layer-hover);
+}
+
+/* 下拉（关闭态）：透明 + 中性底线 */
+.qio-settings .qio-select.qio-select {
+  height: 32px;
+  /* 比长选项（如「慢（25 字/秒）」）宽一点，菜单才能单行显示且不溢出窗口 */
+  min-width: 168px;
+  padding: 0 2px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  font-size: 13.5px;
+}
+.qio-settings .qio-select.qio-select:hover { border-bottom-color: var(--border-strong); background: none; }
+.qio-settings .qio-select.qio-select:focus { background: none; border-bottom-color: var(--accent); box-shadow: none; }
+.qio-settings .qio-select.qio-select:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+/* 下拉展开态：轻玻璃浮层 + 一层浅中性边界 + 层级阴影 */
+.qio-settings .qio-select-menu.qio-select-menu {
+  /* 菜单与触发框同宽（左对齐），选项单行显示由触发框宽度保证，见下面的 min-width。 */
+  min-width: 100%;
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  box-shadow: var(--elev-floating);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  padding: 4px;
+}
+/* 菜单项不画形状：悬停只是一层柔光底，所以不给它圆角（避免短高度 + 大圆角成药丸） */
+.qio-settings .qio-select-menu.qio-select-menu .opt { border-radius: 0; }
+.qio-settings .qio-select-menu.qio-select-menu .opt:hover { background: var(--layer-hover); color: var(--text-strong); }
+.qio-settings .qio-select-menu.qio-select-menu .opt.sel { color: var(--link); font-weight: 600; background: none; }
+
+/* 数字步进：去掉包围数字与按钮的灰壳与格子分隔，只留数值、按钮与底线 */
+.qio-settings .q-number.q-number {
+  height: 32px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  overflow: visible;
+}
+.qio-settings .q-number.q-number:focus-within { background: none; border-bottom-color: var(--accent); box-shadow: none; }
+.qio-settings .q-number.q-number .q-number-steps { border-left: 0; }
+.qio-settings .q-number.q-number .step.up { border-bottom: 0; }
+.qio-settings .q-number.q-number .step { width: 26px; color: var(--text-muted); }
+.qio-settings .q-number.q-number .step:hover:not(:disabled) { background: none; color: var(--accent); }
+.qio-settings .q-number.q-number .q-number-unit { padding-right: 4px; }
+
+/* 按钮：次级＝纯文字/图标（悬停只起一层柔光，不画药丸）；主操作＝实心玫红，无边框 */
+.qio-settings .qio-btn.qio-btn {
+  height: 32px;
+  padding: 0 10px;
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+}
+.qio-settings .qio-btn.qio-btn:hover {
+  background: radial-gradient(120% 160% at 0% 50%, var(--layer-hover), transparent 72%);
+  color: var(--text-strong);
+}
+.qio-settings .qio-btn.qio-btn:active { background: radial-gradient(120% 160% at 0% 50%, var(--accent-soft), transparent 72%); }
+.qio-settings .qio-btn.qio-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+.qio-settings .qio-btn.qio-btn.primary {
+  height: 34px;
+  padding: 0 18px;
+  background: var(--accent);
+  border: 0;
+  color: var(--on-accent);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+.qio-settings .qio-btn.qio-btn.primary:hover { background: var(--accent-hover); color: var(--on-accent); }
+.qio-settings .qio-btn.qio-btn.primary.mini { height: 32px; padding: 0 13px; font-size: 12px; }
+.qio-settings .qio-btn.qio-btn.mini { height: 28px; padding: 0 8px; font-size: 11.5px; }
+.qio-settings .qio-btn.qio-btn.danger { color: var(--danger); background: none; border: 0; }
+.qio-settings .qio-btn.qio-btn.danger:hover { background: radial-gradient(120% 160% at 0% 50%, var(--danger-soft), transparent 72%); color: var(--danger); }
+
+/* 开关：保留可见拨动结构（线性轨道 + 星球滑块），不给外壳加边框 */
+.qio-settings .qio-switch.qio-switch {
+  width: 38px;
+  height: 22px;
+  border-radius: 0;
+  background: none;
+}
+.qio-settings .qio-switch.qio-switch::before {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 10.5px;
+  height: 1px;
+  background: var(--border-strong);
+  border-radius: var(--r-pill);
+  transition: background var(--mo-1-state) var(--ease-1), opacity var(--mo-1-state) var(--ease-1);
+}
+.qio-settings .qio-switch.qio-switch.on { background: none; }
+.qio-settings .qio-switch.qio-switch.on::before { background: var(--accent); opacity: 0.6; }
+.qio-settings .qio-switch.qio-switch::after {
+  top: 4px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  background: var(--text-faint);
+  box-shadow: inset -1px -2px 3px rgba(0, 0, 0, 0.22), inset 1px 1px 2px rgba(255, 255, 255, 0.28);
+  transition: left var(--mo-1-state) var(--ease-1), background var(--mo-1-state) var(--ease-1),
+    box-shadow var(--mo-1-state) var(--ease-1);
+}
+.qio-settings .qio-switch.qio-switch.on::after {
+  left: 23px;
+  background: var(--accent);
+  box-shadow: 0 0 10px 2px var(--accent-soft), inset -1px -2px 3px rgba(0, 0, 0, 0.2);
+}
+.qio-settings .qio-switch.qio-switch:disabled { opacity: 0.45; }
+
+/* 状态标记 / 标签：去掉胶囊底与描边，改成 4px 圆点 + 文字（语义色只染点与文字） */
+.qio-settings .qio-state.qio-state {
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--text-muted);
+}
+.qio-settings .qio-state.qio-state::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.qio-settings .qio-state.qio-state.ok { color: var(--success); background: none; border: 0; }
+.qio-settings .qio-state.qio-state.warn { color: var(--warning); background: none; border: 0; }
+.qio-settings .qio-state.qio-state.err { color: var(--danger); background: none; border: 0; }
+.qio-settings .qio-state.qio-state.info { color: var(--link); background: none; border: 0; }
+.qio-settings .qio-state.qio-state.quiet { color: var(--text-muted); border: 0; }
+.qio-settings .qio-state.qio-state.quiet::before { background: none; box-shadow: inset 0 0 0 1px currentColor; }
+.qio-settings .qio-tag.qio-tag { border: 0; border-radius: 0; padding: 0; background: none; }
+.qio-settings .qio-badge.qio-badge { border: 0; border-radius: 0; padding: 0; background: none; color: var(--text-muted); }
+
+/* 卡片：设置页里不再嵌套第二层"面" */
+.qio-settings .qio-card.qio-card {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+}
+
+/* ---------------- ⑧ 窄窗 ----------------
+   维持同一节奏：不靠缩小组件换取空间。 */
+@media (max-width: 900px) {
+  .qio-settings .set-main { padding: 14px 14px 18px; }
+  .qio-settings .set-seg { gap: 16px; }
+}

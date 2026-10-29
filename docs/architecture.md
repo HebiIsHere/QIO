@@ -298,7 +298,7 @@ Planet 与 List/Search 职责并列：Planet 负责浏览、发现、重新遇�
 | Tools | `agent/tools/registry.py`、`agent/tools/builtin.py`、各类内置工具 |
 | Subagents | `agent/tools/subagent_tool.py`、`agent/tools/task_manager.py` |
 | Credentials | `agent/credentials/` |
-| Approval | `agent/tools/approval.py` |
+| Approval | `agent/tools/approval.py`（旧 request 审批输出 legacy 标识；`/decide` 拒绝 legacy，`/respond` 服务旧路径；执行结果经 `agent/tools/approval_results.py` 统一收口） |
 | Sandbox | `agent/tools/sandbox.py` |
 | ExecutionPolicy | `agent/tools/policy.py` |
 
@@ -341,7 +341,7 @@ Planet 与 List/Search 职责并列：Planet 负责浏览、发现、重新遇�
 | 取消 | 按 `turn_id` 定位；`/api/turns/cancel` 取消当前活跃或排队的 turn，`/api/turns/{turn_id}/cancel` 指定目标 |
 | 工具事件归属 | 每次执行带 turn / 调用标识，监听方按标识过滤，不跨 turn 串线 |
 | 子 agent 并发 | 并行运行，受 `TaskManager` 信号量限制（上限见 `agent/tools/task_manager.py`） |
-| 子 agent 完成后的通知 | 作为独立 notify turn 投递，使用 `subagent:<task_id>` 作为 turn 标识；不写用户消息、不递归触发 |
+| 子 agent 完成后的通知 | 作为独立 notify turn 投递，使用 `subagent:<task_id>` 作为 turn 标识；不写用户消息、不递归触发。通知先持久化（只追加迁移 71/72 的 `subtask_notifications`：task_id 主键、delivered_at/attempts/last_error/origin），入队只做去重、不算交付；只有 notify turn 被 TurnManager 接受后才写 delivered_at，失败保留可重试、重启继续投递、同一 task 至多一次（跨崩溃窗口为 at-least-once） |
 | 取消与通知 | 取消作用于确定目标；不会因为一个 turn 结束就切断另一个 turn 的状态 |
 
 **不要把「POST 后后台执行」理解成支持完全安全的多 turn 并发。** 当前是「可靠的单飞主 Agent + 明确排队」，而不是多用户 Agent Server；多用户并发属明确不做的范围（见 `status.md`）。
@@ -459,10 +459,18 @@ backend/evals/*.jsonl  →  agent/eval/run.py  →  指标 JSON  →  与 backen
 | --- | --- |
 | 对话与记忆 | `messages`、`fragments`、`memory_index` |
 | 知识与图 | `knowledge`、`nodes`、`edges`、`entity_mentions`、`entity_cards`、`cursor` |
-| 凭据 | `credentials`、`credential_audit` |
+| 凭据 | `credentials`（一条连接 = 一把 Key）、`credential_audit` |
+| 模型与用途 | `credential_models`（一条连接下已知的模型）、`model_usages`（用途 → 连接 + 模型） |
 | 检索 | `embeddings` |
 | 工具 | `tools`、`tool_calls` |
 | 运行 | `settings`、`turn_traces`、`schema_version` |
+
+**模型与用途的关系（2026-10-28）**：一条 `credentials` 行是一条**连接**（一把 Key，含地址 / 协议 / 用量上限）；
+它下面可以有多个模型（`credential_models`），同一模型可以被多个**用途**使用（`model_usages`），
+同一把 Key 下不同模型也可以分给不同用途。默认模型存在设置键 `model.default`（连接 + 模型）。
+用量账本只挂在连接上：**不按模型复制额度、不重置用量**。`model_usages.mode` 区分
+`explicit`（用户显式指定，不可用时如实失败）、`legacy`（迁移回填的历史标签映射，只保留
+可见性与映射，不锁定模型）与 `inherit`（跟随默认）。
 
 归档策略：消息原文超过冷归档期限后 gzip 归档，SQLite 保留元数据与归档引用；摘要、索引与知识永久保留。
 
@@ -521,7 +529,7 @@ npm test
 | `TOOL_CREATE_STATUS` | `tools/dev_tools.py`、`tools/lifecycle.py` | 工具创建卡（按 `group_id`） | 是 | 同一张卡的创建阶段推进 |
 | `KNOWLEDGE_CANDIDATE` | `services/memory_lifecycle.py` + turn 收尾 | 对话内确认卡 | 是（回答完成后） | 高影响知识的保存 / 修改 / 忽略 |
 | `APPROVAL_REQUIRED` | `tools/approval.py` | `stores/approvals.ts` | 是 | 需要用户决定的操作 |
-| `APPROVAL_RESULT` | `tools/approval.py` | `stores/approvals.ts` | 是（卡片状态） | 授权的结局（单次使用） |
+| `APPROVAL_RESULT` | `tools/approval.py`、`tools/approval_results.py` | `stores/approvals.ts` | 是（卡片状态） | 授权的结局（单次使用）；旧 request 路径用户决定 phase=approved/rejected，工具真实执行结束后补 phase=executed/failed 并写 `approval_history`（PK approval_id），「已批准」不等于「已执行成功」 |
 | `CAPABILITY` | `services/app.py`（模式变化时） | `stores/events.ts` | 否（正常不显示） | 适配档位（native / text / unsupported） |
 | `FALLBACK` | `services/app.py`（进入兼容文本模式那一次） | 一次性轻提示 | 是（仅降级时） | 能力降级说明，不重复、不阻塞 |
 | `CREDENTIAL_STATUS` | `api/server.py`（凭据增删改）+ `turn_orchestrator` | `stores/events.ts` | 仅当阻止功能 | 凭据可用性（不含内部标识） |
@@ -927,7 +935,7 @@ explanation 时补上模型文案，`description` / `access` / `capabilities` / 
 | 工具创建 | 对话里说明需求（Agent 调 `create_tool`）→ 工具创建卡 | Agent 判断需要新工具 | 是 |
 | 话题浏览 / 切换 / 从历史继续 | 星球 + 话题详情 | 明确说「切到 X」 | 是 |
 | 记忆浏览（片段摘要 → 原文） | 星球 → 话题详情 → 片段「查看原文」 | — | 是 |
-| 知识浏览 / 修正 / 归档 | 星球 → 知识页签 + 对话内高影响候选卡 | 高影响候选在回答完成后出现 | 是 |
+| 知识浏览 / 修正 / 归档 | 星球 → 知识页签 + 统一审批「待确认」 | 高影响候选在回答完成后进入待确认 | 是 |
 | 实体卡浏览 / 修正 | 星球 → 实体页签 | Agent 提取实体卡 | 是 |
 | 凭据管理（新增 / 更换 API Key / 重新验证 / 设为默认 / 暂停 / 删除 / 审计） | 设置 → 凭据 | 没有可用凭据时的提示指向这里 | 是 |
 | 联网搜索通道 | 设置 → 模型与联网 | Agent 调 `web_search` | 是 |
@@ -981,17 +989,19 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
 ### 12.6 高影响知识候选的流程
 
 ```
-回答完成 → 高影响候选以低干扰卡片出现在对话流
-        → 保存（verify + activate）/ 修改（生成新版本并生效）/ 忽略（记录 ignored）
+回答完成（TURN_END 之后）
+        → 候选进入统一审批的「待确认」队列
+          （UnifiedApprovalLayer ingest session.knowledgeCandidates）
+        → 在统一审批弹窗内完成 保存（verify + activate）/ 修改（生成新版本并生效）/ 忽略（记录 ignored）
 ```
 
 关键约束：
 
-- 候选**只在回答完成之后**出现，绝不打断正在进行的回答（`KNOWLEDGE_CANDIDATE`
-  由 turn 收尾发出，前端也在 `TURN_END` 之后才显示）；
+- 候选**只在回答完成之后**出现（进入统一审批「待确认」），绝不打断正在进行的回答
+  （`KNOWLEDGE_CANDIDATE` 由 turn 收尾发出，前端也在 `TURN_END` 之后才 ingest）；
 - 忽略过一次的内容不再自动重复提示（`knowledge.provenance` 里的 `ignored_at`）；
 - Knowledge Panel 仍然是浏览 / 修正 / 归档 / 审核历史的入口，但**不再**是高影响
-  候选唯一的确认入口。
+  候选唯一的确认入口：确认与保存都在统一审批弹窗内完成。
 
 ### 12.7 独立任务（subagent）的产品语义
 
@@ -1400,7 +1410,7 @@ fingerprint` / 策略哈希同样只在那里。危险动作（自由 shell、�
       ├─ merge / normalize → 领域操作 + 新版本记录（provenance.merged_from / 操作批次）
       ├─ ask → 持久待回答事项 maintenance_items
       └─ 批次 / 事项 / 操作记录（迁移 47）
-  → MemoryPendingPanel / API（C：待确认 + 维护记录 + 恢复预览/结果）
+  → PendingItems / MaintenanceRecords / API（待确认 / 整理记录 + 恢复预览/结果）
   → 独立回答（B：MAINTENANCE_ANSWER_SYSTEM → revise/revoke/needs_clarification/deferred/no_change）
   → 安全恢复（B：逐条 / 整批；新版本记录；保护用户后续修改）
 ```

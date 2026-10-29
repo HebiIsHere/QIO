@@ -10,6 +10,7 @@
  */
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
+import { useSessionStore } from "./session";
 import * as api from "../services/interactive";
 // 阅读位置的读写属于**预览服务**（不是板面状态）：位置按「附件 + 文件版本」归属，
 // 写它不产生表达、不改板面版本（契约 §3.3）。
@@ -159,6 +160,19 @@ export type SubmissionStage =
   | "submit_failed"
   | "empty"
   | "duplicate";
+
+/**
+ * 服务端对一次「剩余撤回」决定的逐项结果（N4）：界面按它说明处理了几项、
+ * 哪些因为之后又有变化需要重新决定、还剩几项 —— 不按 decisionIds 的条数猜结果。
+ */
+export interface RevertDecisionSummary {
+  requested: string[];
+  processed: string[];
+  reconfirmed: string[];
+  skipped: string[];
+  remaining: string[];
+  gone: string[];
+}
 
 export const useInteractiveStore = defineStore("interactive", () => {
   const boardId = ref(DEFAULT_BOARD_ID);
@@ -423,12 +437,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
    * 新代码不要再用它。
    */
   const auxOpen = ref(true);
-  const demoMode = ref(false);
   /** 右下悬浮聊天是否展开（收起不清消息、不删草稿、不打断对话） */
   const chatOpen = ref(false);
-  /** 右上批量列表是否展开（默认收起，不因数量变化抢占用户的决定） */
-  const batchOpen = ref(false);
-  /** 顶部「任务」浮层是否展开 */
+  /** 顶部「任务」浮层是否展开（批量入口也落到这同一个面板） */
   const tasksOpen = ref(false);
   /**
    * 展开预览的卡片 id（契约 2026-10-12 §3.5 / §3.6）：**只在前端内存**的查看状态。
@@ -2192,6 +2203,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
       // 板面刷新失败只影响「页面事实是否最新」，执行与意图读取照常进行
     }
     await loadExecutions();
+    /**
+     * 意图执行记录（R2 返修二）：确认 / 恢复 / 拒绝 / 任务控制之后，当前显示的对话话题
+     * 必须**无需手动刷新**就出现这条记录（记录是服务端写进话题历史的消息）。
+     *
+     * 只调用既有历史读取（session.loadHistory），不轮询、不伪造记录；
+     * 读取失败由 session.history 的既有错误口径显示（不弹窗），并留下「可能过期」提示位，
+     * 下一次相关 Turn 结束 / 页面重新激活时再读一次。
+     */
+    const session = useSessionStore();
+    session.markIntentRecordsStale();
+    await session.refreshIntentExecutionRecords("intent-action");
   }
 
   /** 打开任务面板（f焦点区分「任务」与「批量待确认」两条入口，界面是同一个）。 */
@@ -2282,6 +2304,36 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } finally {
       loading.value = false;
     }
+  }
+
+  /**
+   * 选中一块**已经存在**的板面（意图执行记录的「结果入口」定位）。
+   *
+   * 步骤与边界：
+   * 1) 先按既有 `GET /api/interactive/boards`（只读清单）确认目标板面真实存在 ——
+   *    板面加载接口对未知 id 会建一块空板面（避免白屏），不能拿它当存在性判断；
+   * 2) 存在才切换当前板面身份并走既有 `load()`（不新建板面、不改执行政策）；
+   * 3) 失败如实返回原因（不存在 / 清单读不到 / 加载失败），由界面显示一句实话。
+   */
+  async function selectBoard(targetId: string): Promise<{ ok: boolean; reason: string }> {
+    const id = String(targetId ?? "").trim();
+    if (!id) return { ok: false, reason: "这条结果没有给出板面编号" };
+    if (!apiSupports("fetchBoards")) {
+      return { ok: false, reason: "当前后端没有板面清单能力，无法确认这块板面是否存在" };
+    }
+    try {
+      const payload = await api.fetchBoards();
+      const boards = Array.isArray(payload?.boards) ? payload.boards : [];
+      if (!boards.some((item) => String(item?.id ?? "") === id)) {
+        return { ok: false, reason: "没有找到这块板面（可能已被删除）" };
+      }
+    } catch (err) {
+      return { ok: false, reason: "读取板面清单失败：" + ((err as Error)?.message || "原因未知") };
+    }
+    if (boardId.value !== id) boardId.value = id;
+    await load();
+    if (loadError.value) return { ok: false, reason: loadError.value };
+    return { ok: true, reason: "" };
   }
 
   /** 某个草稿键当前的保存状态（没有记录就是 idle）。 */
@@ -3719,15 +3771,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     return result;
   }
 
-  async function advanceDemo(
-    intentId: string,
-    outcome: "done" | "failed" | "paused" | "cancelled" | "revert_rest",
-  ) {
-    const result = await api.advanceIntent(intentId, outcome);
-    await settleAfterIntentChange();
-    return result;
-  }
-
   /* ------------------------------------------------------------------
    * N3/N4：剩余撤回决定（intent.revert.pendingDecision）的真正执行与关闭
    * ------------------------------------------------------------------ */
@@ -3764,13 +3807,21 @@ export const useInteractiveStore = defineStore("interactive", () => {
    *
    * - 只传这次界面上**明确展示**的 decisionIds（N4 的服务端保护会按当前内容重核）；
    * - 只有服务端真的执行了（ok===true）才算成功；失败原样返回真实原因，界面给重试入口；
-   * - 仍有剩余待决定项时保留提示；处理完则收起这次提示。
+   * - 仍有剩余待决定项时保留提示；处理完则收起这次提示；
+   * - 成功时带回服务端的逐项结果（processed / reconfirmed / remaining），
+   *   界面据此说「处理了几项、还剩几项」，不拿展示条数冒充处理条数。
    * - 不重复执行：上一次请求还在飞时直接返回，不叠加请求。
    */
   async function continueRevertDecision(
     intentId: string,
     decisionIds?: string[],
-  ): Promise<{ ok: boolean; reason?: string; detail?: string; intent?: Intent }> {
+  ): Promise<{
+    ok: boolean;
+    reason?: string;
+    detail?: string;
+    intent?: Intent;
+    decision?: RevertDecisionSummary;
+  }> {
     if (!intentId) return { ok: false, reason: "没有指定要处理的任务" };
     if (revertDecisionStateFor(intentId).status === "pending") {
       return { ok: false, reason: "这次撤回决定正在执行，请等它返回" };
@@ -3778,6 +3829,9 @@ export const useInteractiveStore = defineStore("interactive", () => {
     setRevertDecisionState(intentId, "pending");
     try {
       const result = await api.advanceIntent(intentId, "revert_rest", decisionIds);
+      // 后端 advance_intent（revert_rest）额外返回 decision 逐项摘要；服务层类型没列全，
+      // 这里按真实协议读取，缺失时如实当作「没有逐项摘要」处理（界面不猜条数）。
+      const decision = (result as { decision?: RevertDecisionSummary }).decision;
       await loadIntents();
       await refreshBoardFromServer();
       await refreshVisibleRange();
@@ -3786,12 +3840,12 @@ export const useInteractiveStore = defineStore("interactive", () => {
       if (result.ok === false) {
         const reason = result.detail || result.reason || "这次撤回没有执行";
         setRevertDecisionState(intentId, "error", reason);
-        return { ok: false, reason, detail: result.detail, intent };
+        return { ok: false, reason, detail: result.detail, intent, decision };
       }
       setRevertDecisionState(intentId, "idle");
       if (remaining > 0) reopenRevertDecision(intentId);
       else dismissRevertDecision(intentId);
-      return { ok: true, intent };
+      return { ok: true, intent, decision };
     } catch (err) {
       const failure = (err as { payload?: { error?: string; reason?: string; detail?: string } }).payload;
       const reason =
@@ -4024,26 +4078,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     saveError.value = null;
     if (!pendingImpact.value) scheduleSave();
   }
-  async function createDemoIntents() {
-    const before = intentIdSet();
-    const result = await api.createDemoIntents(boardId.value);
-    await loadIntents();
-    /*
-     * 演示入口一次产生的（可能不止四项）：记成同一批。
-     *
-     * 注意不能只看「新出现的 id」：后端对**尚未结束的同名演示项会复用**（不重复创建），
-     * 复用时新 id 是 0 个，只按新 id 记就会漏掉整批 —— 实测表现为「点了生成 4 项，批量入口却不出现」。
-     * 这里以**接口返回的这一批**为准（这正是「一次产生过程」的可证明来源，契约 §9.2）：
-     * 有返回值就用返回值，没有才退回「新出现的 id」。
-     */
-    const produced = (result?.created ?? [])
-      .map((item) => item?.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0);
-    if (produced.length) recordIntentBatch("session:demo:" + Date.now(), produced);
-    else recordNewIntents(before, "session:demo:" + Date.now());
-    return result;
-  }
-
 /**
    * 读取当前的影响确认。
    *
@@ -4916,9 +4950,7 @@ export const useInteractiveStore = defineStore("interactive", () => {
     cancelExecution,
 
     auxOpen,
-    demoMode,
     chatOpen,
-    batchOpen,
     tasksOpen,
     // 卡片内预览的展开状态（只在前端内存；契约 2026-10-12 §3.5 / §3.6）
     expandedCards,
@@ -4952,6 +4984,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     refreshVisibleRange,
     loadIntents,
     load,
+    /** R2 返修二：意图执行记录「结果入口」的板面定位（只选中已存在的板面，不新建） */
+    selectBoard,
     refreshBoardFromServer,
     setDraft,
     draftFor,
@@ -4996,8 +5030,6 @@ export const useInteractiveStore = defineStore("interactive", () => {
     reject,
     decideBatch,
     updatePreview,
-    advanceDemo,
-    createDemoIntents,
     confirmImpact,
     cancelImpact,
     cancelRecovery,

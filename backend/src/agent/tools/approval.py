@@ -48,6 +48,9 @@ from agent.storage.approvals import (
     ApprovalError,
     ApprovalNotFound,
     ApprovalStore,
+    ApprovalsUnreadable,
+    LegacyApprovalNotExecutable,
+    OverridesUnsupported,
 )
 from agent.storage.db import transaction
 from agent.storage.instance_registry import RECORD_APPROVAL
@@ -121,6 +124,34 @@ def request_digest(kind: str, payload: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8", errors="replace")).hexdigest()[:32]
 
 
+#: 旧 request() 路径里**端到端**支持 overrides 的审批类型（契约 §4.2 预算）。
+#: 只有这些路径的执行器真的读取用户批准的值；其它路径收到 overrides 必须显式拒绝，
+#: 不得静默丢弃（那会让界面表现成「已接受修改」）。
+OVERRIDE_SUPPORT = {
+    # tool_create：子智能体创建，执行器（tools/lifecycle.py）读取批准后的预算。
+    "tool_create": frozenset({"subagent_budget"}),
+    # tool_execution：开发任务执行授权（tools/dev_auth.py）读取生命周期/到期时刻。
+    "tool_execution": frozenset({"lifetime", "grant_lifetime", "expires_at"}),
+}
+
+
+def overrides_supported(kind: str, payload: dict | None) -> bool:
+    """这条旧审批是否端到端支持 overrides（供 API/事件告诉界面能否编辑预算）。"""
+    payload = payload if isinstance(payload, dict) else {}
+    if str(kind or "") == "tool_create":
+        return str(payload.get("tool_type") or "") == "subagent"
+    if str(kind or "") == "tool_execution":
+        return isinstance(payload.get("code_boundary"), dict)
+    return False
+
+
+def supported_override_keys(kind: str, payload: dict | None) -> frozenset[str]:
+    payload = payload if isinstance(payload, dict) else {}
+    if not overrides_supported(kind, payload):
+        return frozenset()
+    return OVERRIDE_SUPPORT.get(str(kind or ""), frozenset())
+
+
 @dataclass
 class ApprovalRequest:
     approval_id: str
@@ -142,6 +173,11 @@ class ApprovalRequest:
             "session_id": self.session_id,
             "expires_at": self.expires_at,
             "request_digest": self.digest,
+            # 旧 request() 审批：没有 v2 状态，前端只能走 /respond（不能 /decide）。
+            "legacy": True,
+            "state": None,
+            "status": "pending",
+            "overrides_supported": overrides_supported(self.kind, self.payload),
         }
 
 
@@ -229,10 +265,19 @@ class ApprovalService:
             self._waiters.pop(approval_id, None)
             self._requests.pop(approval_id, None)
             self._settle(approval_id, "cancelled")
+            self._record_legacy_decision(
+                approval_id,
+                decision="cancelled",
+                payload=request.payload,
+                kind=request.kind,
+                reason=reason,
+            )
             self._publish_result(
                 {
                     "approval_id": approval_id,
                     "decision": "cancelled",
+                    "phase": "cancelled",
+                    "legacy": True,
                     "reason": reason,
                     "turn_id": request.turn_id,
                 }
@@ -327,10 +372,12 @@ class ApprovalService:
         try:
             with transaction(self.conn):
                 for approval_id in victims:
+                    # 旧 request() 行没有 v2 状态：用独立事实 interrupted_legacy，
+                    # 不写 state 列（不把旧路径伪装成生命周期记录）。
                     self.conn.execute(
-                        "UPDATE pending_approvals SET status = 'interrupted',"
-                        " state = 'interrupted_unverified', resolved_at = ?"
-                        " WHERE approval_id = ? AND status = 'pending'",
+                        "UPDATE pending_approvals SET status = 'interrupted_legacy',"
+                        " resolved_at = ?"
+                        " WHERE approval_id = ? AND status = 'pending' AND state IS NULL",
                         (_now().isoformat(), approval_id),
                     )
         except Exception:  # noqa: BLE001 - 记录失败不能挡住启动
@@ -361,8 +408,8 @@ class ApprovalService:
         try:
             with transaction(self.conn):
                 self.conn.execute(
-                    "UPDATE pending_approvals SET status = 'interrupted',"
-                    " state = 'interrupted_unverified', resolved_at = ?"
+                    "UPDATE pending_approvals SET status = 'interrupted_legacy',"
+                    " resolved_at = ?"
                     " WHERE status = 'pending' AND state IS NULL",
                     (_now().isoformat(),),
                 )
@@ -419,9 +466,10 @@ class ApprovalService:
             return []
         try:
             rows = self.conn.execute(
-                "SELECT approval_id, kind, payload, turn_id, created_at, expires_at "
-                "FROM pending_approvals WHERE status = 'interrupted' "
-                "ORDER BY created_at DESC LIMIT ?",
+                "SELECT approval_id, kind, payload, turn_id, session_id, created_at,"
+                " expires_at, status FROM pending_approvals"
+                " WHERE status IN ('interrupted','interrupted_legacy')"
+                " AND state IS NULL ORDER BY created_at DESC LIMIT ?",
                 (max(1, int(limit)),),
             ).fetchall()
         except Exception:  # noqa: BLE001 - 读不到就不报告，不猜
@@ -433,14 +481,24 @@ class ApprovalService:
                 payload = json.loads(row["payload"] or "{}")
             except (TypeError, ValueError):
                 payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            kind = str(row["kind"] or "")
             out.append(
                 {
                     "approval_id": row["approval_id"],
-                    "kind": row["kind"],
+                    "kind": kind,
                     "what": str(payload.get("description") or ""),
+                    # 旧请求的绑定事实原样保留（恢复后仍能核对「批准的是哪一次请求」）。
                     "turn_id": row["turn_id"],
+                    "session_id": row["session_id"],
                     "created_at": row["created_at"],
                     "expires_at": row["expires_at"],
+                    "request_digest": request_digest(kind, payload),
+                    "legacy": True,
+                    "state": None,
+                    "status": row["status"] or "interrupted_legacy",
+                    "overrides_supported": overrides_supported(kind, payload),
                     "outcome": "not_executed",
                 }
             )
@@ -455,6 +513,14 @@ class ApprovalService:
         return out
 
     # -- introspection ----------------------------------------------------
+
+    @staticmethod
+    def _unreadable(exc: BaseException) -> ApprovalsUnreadable:
+        """读取持久化审批失败 → 显式错误（不是空集合）；消息必须说清「不代表没有」。"""
+        detail = (type(exc).__name__ + ": " + str(exc)).strip()
+        return ApprovalsUnreadable(
+            "读取审批数据失败（" + detail + "）：这不代表没有审批/历史，可以重试"
+        )
 
     def pending(self) -> list[dict]:
         """仍然有效、仍在等待用户决定的审批（重连 / RESYNC 时用它恢复界面）。
@@ -475,14 +541,18 @@ class ApprovalService:
                 continue
             out.append(request.as_payload())
         # v2：持久化状态机里的等待项（旧 request() 的内存等待与它并存，按 id 去重）。
+        # 读取失败必须**显式失败**：返回内存里的那部分会让前端把残缺集合当成功、
+        # 清掉没有读回来的待办；内存里的 legacy 也不能掩盖持久层失败。
         if self.store is not None:
             try:
-                seen = {str(item.get("approval_id") or "") for item in out}
-                for item in self.store.list_pending():
-                    if str(item.get("approval_id") or "") not in seen:
-                        out.append(item)
-            except Exception:  # noqa: BLE001 - 读取失败不能挡住界面恢复旧项
+                persisted = self.store.list_pending()
+            except Exception as exc:  # noqa: BLE001 - 转成可重试的显式错误
                 logger.warning("failed to list persisted approvals", exc_info=True)
+                raise self._unreadable(exc) from exc
+            seen = {str(item.get("approval_id") or "") for item in out}
+            for item in persisted:
+                if str(item.get("approval_id") or "") not in seen:
+                    out.append(item)
         out.sort(key=lambda item: str(item.get("created_at") or ""))
         return out
 
@@ -640,9 +710,9 @@ class ApprovalService:
             return []
         try:
             return self.store.history(limit=limit)
-        except Exception:  # noqa: BLE001 - 读历史失败返回空，不猜
+        except Exception as exc:  # noqa: BLE001 - 读历史失败 ≠ 没有历史：显式错误
             logger.warning("failed to read approval history", exc_info=True)
-            return []
+            raise self._unreadable(exc) from exc
 
     def audit_trail(self, approval_id: str) -> list[dict]:
         if self.store is None:
@@ -731,7 +801,9 @@ class ApprovalService:
                 if datetime.now(timezone.utc) > deadline:
                     reason = "这条审批已超过原始有效期（不会重新获得 10 分钟）；本次没有执行"
                     row = self.store.mark_expired(approval_id)
-                    await self._publish_phase("invalidated", row, extra={"summary": reason})
+                    # 到期就是到期：状态/历史都已是 expired，事件相位也必须一致，
+                    # 否则前端把「已过期」显示成「执行前核对不通过」（相位错配）。
+                    await self._publish_phase("expired", row, extra={"summary": reason})
                     await self._notify(row, ok=False, summary=reason)
                     return
             except (TypeError, ValueError):
@@ -851,6 +923,9 @@ class ApprovalService:
             "created_at": row.get("created_at"),
             "expires_at": row.get("expires_at"),
             "state": row.get("state"),
+            # v2 生命周期记录：不是旧路径；overrides 只读（/decide 不接受）。
+            "legacy": False,
+            "overrides_supported": False,
             "confirmed_stage": int(row.get("confirmed_stage") or 0),
             "requires_confirmations": int(row.get("requires_confirmations") or 1),
             "source": row.get("source") or "tool",
@@ -980,6 +1055,123 @@ class ApprovalService:
         self._turn_id = turn_id
         self._session_id = session_id
 
+    # -- 旧 request() 路径：决定与执行结果是分别可读的两条事实 -----------------
+
+    @staticmethod
+    def _legacy_label(kind: str, payload: dict | None) -> str:
+        payload = payload if isinstance(payload, dict) else {}
+        return str(payload.get("description") or "") or str(kind or "这次操作")
+
+    def _record_legacy_decision(
+        self,
+        approval_id: str,
+        *,
+        decision: str,
+        payload: dict | None,
+        kind: str,
+        reason: str | None = None,
+    ) -> None:
+        """把旧路径的用户决定写成可读历史（approval_history，PK 每条审批一条）。
+
+        只写「决定」这一层事实：approved 的 summary 明确是「等待执行」，
+        绝不提前写成执行成功；真实结果由工具执行边界统一覆盖（见 record_legacy_execution）。
+        """
+        if self.store is None:
+            return
+        label = self._legacy_label(kind, payload)
+        detail: dict = {"decision": decision, "kind": str(kind or ""), "label": label}
+        if reason:
+            detail["reason"] = str(reason)
+        if decision == "approved":
+            outcome = "approved"
+            summary = "已批准：" + label + "（等待执行）"
+            detail["ok"] = None
+        elif decision == "rejected":
+            outcome = "rejected"
+            summary = "已拒绝：" + label + "（不会执行）"
+        elif decision == "cancelled":
+            outcome = "cancelled"
+            summary = "已取消：" + label + "（本次没有执行）"
+        elif decision == "timeout":
+            outcome = "expired"
+            summary = "已过期：" + label + "（等你确认超过期限，本次没有执行）"
+            detail["decision"] = "timeout"
+        else:  # pragma: no cover - 内部只传上面四种
+            return
+        try:
+            self.store.write_history(
+                approval_id, summary=summary, outcome=outcome, detail=detail
+            )
+        except Exception:  # noqa: BLE001 - 历史失败不能挡住审批本身
+            logger.warning("failed to write legacy approval history", exc_info=True)
+
+    def record_legacy_choice(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        summary: str,
+        choice: str = "continue",
+    ) -> None:
+        """「继续/停止」这类**决定型**旧审批的可读事实（不是可执行操作）。
+
+        不能写 executed/failed：那会把「用户点了继续」伪造成「操作执行成功」
+        （Lead 裁决 2026-10-26）。outcome 保持 approved/rejected，只把 summary
+        说清用户到底选了什么；真实可判定的执行结果由对应执行器另行收口。
+        """
+        if self.store is None:
+            return
+        raw = self.store.get_raw(approval_id)
+        if raw is None or self.store.is_v2(raw):
+            return
+        row = self.store.row_to_dict(raw) or {}
+        kind = str(row.get("kind") or "")
+        label = str(row.get("label") or "")
+        outcome = "approved" if approved else "rejected"
+        detail = {
+            "decision": outcome,
+            "kind": kind,
+            "label": label,
+            "choice": str(choice or "continue"),
+        }
+        try:
+            self.store.write_history(
+                approval_id, summary=str(summary), outcome=outcome, detail=detail
+            )
+        except Exception:  # noqa: BLE001 - 历史失败不能挡住本轮继续/停止
+            logger.warning("failed to record legacy choice history", exc_info=True)
+
+    @staticmethod
+    def _check_overrides(kind: str, payload: dict | None, overrides: dict | None) -> None:
+        """不支持 overrides 的路径必须显式拒绝；不得静默丢弃用户的修改。"""
+        if not overrides:
+            return
+        allowed = supported_override_keys(kind, payload)
+        if not allowed:
+            raise OverridesUnsupported(
+                "这条审批不支持 overrides（预算/授权覆盖）：修改没有生效，"
+                "审批仍按原内容等待你的回答。"
+            )
+        unknown = sorted(
+            str(key) for key in dict(overrides).keys() if str(key) not in allowed
+        )
+        if unknown:
+            raise OverridesUnsupported(
+                "这条审批不支持这些 overrides 字段："
+                + "、".join(unknown)
+                + "；修改没有生效。"
+            )
+
+    @staticmethod
+    def _register_legacy_result(approval_id: str) -> None:
+        """登记「已批准、等待真实执行」的旧审批，由工具执行边界统一收尾。"""
+        try:
+            from agent.tools.approval_results import register_approved
+
+            register_approved(approval_id)
+        except Exception:  # noqa: BLE001 - 登记失败不能影响审批本身
+            logger.warning("failed to register legacy approval result", exc_info=True)
+
     async def request(
         self,
         kind: str,
@@ -1011,7 +1203,7 @@ class ApprovalService:
             make_event(EventType.APPROVAL_REQUIRED, {"approval": request.as_payload()})
         )
         try:
-            return await asyncio.wait_for(future, timeout=self.timeout_seconds)
+            result = await asyncio.wait_for(future, timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
             # 过期也是审批的**结局**：必须让客户端知道，
             # 否则界面会一直显示一个已经不可能被批准的 Allow / Reject。
@@ -1021,12 +1213,21 @@ class ApprovalService:
                     {
                         "approval_id": approval_id,
                         "decision": "timeout",
+                        "phase": "expired",
+                        "legacy": True,
                         "reason": "expired",
                         "turn_id": request.turn_id,
                     },
                 )
             )
             self._settle(approval_id, "timeout")
+            self._record_legacy_decision(
+                approval_id,
+                decision="timeout",
+                payload=payload,
+                kind=kind,
+                reason="expired",
+            )
             return ApprovalResult(approval_id, "timeout")
         except asyncio.CancelledError:
             # 等待审批的那一轮被取消（用户按了 Stop）：审批也随之结束。
@@ -1038,6 +1239,8 @@ class ApprovalService:
                         {
                             "approval_id": approval_id,
                             "decision": "cancelled",
+                            "phase": "cancelled",
+                            "legacy": True,
                             "reason": "turn_cancelled",
                             "turn_id": request.turn_id,
                         },
@@ -1046,7 +1249,19 @@ class ApprovalService:
             except Exception:  # noqa: BLE001 - 取消路径上的通知是尽力而为
                 pass
             self._settle(approval_id, "cancelled")
+            self._record_legacy_decision(
+                approval_id,
+                decision="cancelled",
+                payload=payload,
+                kind=kind,
+                reason="turn_cancelled",
+            )
             raise
+        else:
+            if result.decision == "approved":
+                # 已批准但工具还没执行完：登记给执行边界，成功后统一写 executed/failed。
+                self._register_legacy_result(approval_id)
+            return result
         finally:
             self._waiters.pop(approval_id, None)
             self._requests.pop(approval_id, None)
@@ -1072,6 +1287,8 @@ class ApprovalService:
         if future is None and self.store is not None:
             raw = self.store.get_raw(approval_id)
             if raw is not None and self.store.is_v2(raw):
+                # v2 生命周期记录不接受 overrides（decide/confirm 不读取它们）。
+                self._check_overrides("", None, overrides)
                 row = self.store.get(approval_id) or {}
                 if turn_id is not None and row.get("turn_id") and turn_id != row.get("turn_id"):
                     raise ValueError("approval does not belong to this turn")
@@ -1088,6 +1305,30 @@ class ApprovalService:
                     raise ValueError(f"invalid decision: {decision}")
                 await self.decide(approval_id, target)
                 return True
+            if raw is not None and self.store.is_legacy(raw):
+                # 旧行：没有可恢复执行计划。已中断的要明确说「不会再执行」，
+                # 而不是模糊 404（读起来像找不到或输错 id）。
+                status = str(dict(raw).get("status") or "")
+                if status in ("interrupted", "interrupted_legacy"):
+                    raise LegacyApprovalNotExecutable(
+                        "这条审批来自旧版路径，进程重启时那次工具调用已经结束："
+                        "那次操作没有执行，也不会再执行。"
+                    )
+                if status in (
+                    "approved",
+                    "rejected",
+                    "timeout",
+                    "cancelled",
+                    "completed",
+                    "failed",
+                    "interrupted_unverified",
+                ):
+                    # 已经应答过：单次消费语义不变（重放失败，保持旧 404 语义）。
+                    return False
+                raise LegacyApprovalNotExecutable(
+                    "这条审批来自旧版路径，但发起它的工具调用已经不在等待中："
+                    "那次操作没有执行，也不会再执行。"
+                )
         if future is None or future.done():
             return False
         request = self._requests.get(approval_id)
@@ -1105,23 +1346,107 @@ class ApprovalService:
             raise ValueError("approval digest mismatch")
         if decision not in ("approved", "rejected"):
             raise ValueError(f"invalid decision: {decision}")
+        # 契约 §4.2：只有端到端支持 overrides 的旧路径可以带；其它路径明确拒绝，
+        # 不得静默丢弃（那会让界面表现成「已接受修改」）。校验在消费之前。
+        self._check_overrides(request.kind, request.payload, overrides)
         result = ApprovalResult(approval_id, decision, scope, overrides)
         future.set_result(result)
         # 单次使用：立刻失效，重放必然失败
         self._waiters.pop(approval_id, None)
         self._requests.pop(approval_id, None)
         self._settle(approval_id, decision)
+        # 用户决定是可读事实（刷新/断线后仍能看到「已批准（等待执行）」或「已拒绝」）。
+        self._record_legacy_decision(
+            approval_id,
+            decision=decision,
+            payload=request.payload,
+            kind=request.kind,
+        )
+        if decision == "approved":
+            # 真实的 executed/failed 由工具执行边界在结果出来后统一写（见 approval_results）。
+            self._register_legacy_result(approval_id)
         await self.bus.publish(
             make_event(
                 EventType.APPROVAL_RESULT,
                 {
                     "approval_id": approval_id,
                     "decision": decision,
+                    "phase": decision,
+                    "legacy": True,
                     "turn_id": request.turn_id,
+                    "overrides_supported": overrides_supported(
+                        request.kind, request.payload
+                    ),
                 },
             )
         )
         return True
+
+    async def record_legacy_execution(
+        self,
+        approval_id: str,
+        *,
+        ok: bool,
+        error: str | None = None,
+        summary: str | None = None,
+    ) -> dict | None:
+        """旧审批保护的**真实执行结果**：写 approval_history 并发布 APPROVAL_RESULT。
+
+        只记录结果，不重新触发任何工具（不重复执行）。v2 审批的结果由
+        store.finish/_publish_phase 负责，这里不碰。已批准但工具未执行完时，
+        历史停在 outcome=approved；执行结束才升级为 executed/failed（契约 §4.2）。
+        """
+        if self.store is None or self.conn is None:
+            return None
+        raw = self.store.get_raw(approval_id)
+        if raw is None or self.store.is_v2(raw):
+            return None
+        data = dict(raw)
+        if str(data.get("status") or "") != "approved":
+            # 拒绝/取消/超时/中断的结果不由这里收口，也不允许覆盖它们的结局。
+            return None
+        row = self.store.row_to_dict(raw) or {}
+        kind = str(row.get("kind") or data.get("kind") or "")
+        label = str(row.get("label") or "")
+        turn_id = row.get("turn_id")
+        err = str(error).strip() if error is not None else ""
+        name = label or kind or "这次操作"
+        outcome = "executed" if ok else "failed"
+        if summary:
+            readable = str(summary)
+        elif ok:
+            readable = "已执行：" + name
+        elif err:
+            readable = "执行失败：" + name + "（" + err[:200] + "）"
+        else:
+            readable = "执行失败：" + name
+        detail = {
+            "ok": bool(ok),
+            "kind": kind,
+            "label": label,
+            "error": err or None,
+            "decision": "approved",
+        }
+        try:
+            self.store.write_history(
+                approval_id, summary=readable, outcome=outcome, detail=detail
+            )
+        except Exception:  # noqa: BLE001 - 历史失败不能挡住执行结果事件
+            logger.warning("failed to write legacy execution history", exc_info=True)
+        event = {
+            "approval_id": approval_id,
+            "decision": "approved",
+            "phase": outcome,
+            "legacy": True,
+            "ok": bool(ok),
+            "summary": readable,
+            "detail": detail,
+            "turn_id": turn_id,
+            "kind": kind,
+            "label": label,
+        }
+        await self.bus.publish(make_event(EventType.APPROVAL_RESULT, event))
+        return event
 
     # -- model-authored explanation ---------------------------------------
 

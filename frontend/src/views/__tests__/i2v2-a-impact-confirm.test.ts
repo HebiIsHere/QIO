@@ -5,7 +5,7 @@
  * 没有任何界面承接 —— 用户看到的是「有改动尚未保存」但永远没有确认入口（死等待），
  * 旧的 ImpactConfirmDialog 已实现但没有挂载。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
 import { flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
@@ -25,7 +25,6 @@ const mocks = vi.hoisted(() => {
     fetchAcceptance: vi.fn(),
     createIntents: vi.fn(),
     saveDrafts: vi.fn(),
-    createDemoIntents: vi.fn(),
     approveIntent: vi.fn(),
     rejectIntent: vi.fn(),
     batchDecide: vi.fn(),
@@ -107,6 +106,13 @@ const AFFECTED = {
   consequence: "这次保存会让该任务暂停并保留进度",
 };
 
+afterEach(async () => {
+  // 测试隔离：先让上一个用例的异步更新（页面加载 / 保存链 / 定时器）落地，再清空挂载点；
+  // 否则残留更新会进入下一个用例，造成与产品无关的顺序依赖。
+  await flushPromises();
+  document.body.innerHTML = "";
+});
+
 beforeEach(() => {
   // resetAllMocks：连 mockImplementationOnce 的排队一起清掉，避免上一个用例的
   // 未决 promise 被下一个用例的页面加载吃掉（跨用例串扰会让正确实现看起来像卡住）
@@ -181,7 +187,8 @@ describe("F01 影响确认：真实展示 → 确认 → 以回执为准", () =>
     expect(confirm).toEqual({ checkId: "chk-1", stateVersion: 2 });
     expect(store.pendingImpact).toBeNull();
     expect(store.saveStatus).toBe("saved");
-    expect(byIm(wrapper, "impact-confirm").length).toBe(0);
+    // v-show：窗口 DOM 保留（便于恢复状态），确认后不再显示
+    expect(byIm(wrapper, "impact-confirm-scrim")[0].isVisible()).toBe(false);
     const outcome = textOf(wrapper, "impact-confirm-outcome");
     expect(outcome).toContain("改动已保存生效");
     wrapper.unmount();
@@ -266,17 +273,17 @@ describe("F01 顶栏保存状态：等待确认时不得显示「已保存」", 
 });
 
 describe("F01 影响确认与统一审批：不叠两个阻塞面、互不替代", () => {
-  it("工具/权限审批弹窗打开时让位，只保留一个阻塞面；审批关闭后影响确认回来", async () => {
+  it("关闭询问挂起时让位（隐藏但不卸载），恢复后影响确认回来", async () => {
     const { wrapper } = await openImpactConfirm();
-    const { useUnifiedApprovalsStore } = await import("../../stores/unifiedApprovals");
-    const unified = useUnifiedApprovalsStore();
-    unified.visible = true;
+    const { useModalArbiterStore } = await import("../../stores/modalArbiter");
+    const arbiter = useModalArbiterStore();
+    arbiter.suspendAll("close-ask");
     await flushPromises();
-    expect(byIm(wrapper, "impact-confirm").length).toBe(0);
+    expect(byIm(wrapper, "impact-confirm-scrim")[0].isVisible()).toBe(false);
     expect(byIm(wrapper, "impact-confirm-deferred").length).toBe(1);
-    unified.visible = false;
+    arbiter.resumeAll();
     await flushPromises();
-    expect(byIm(wrapper, "impact-confirm").length).toBe(1);
+    expect(byIm(wrapper, "impact-confirm-scrim")[0].isVisible()).toBe(true);
     wrapper.unmount();
   });
 

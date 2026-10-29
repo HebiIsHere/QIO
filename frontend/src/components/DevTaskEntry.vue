@@ -312,7 +312,7 @@ async function resume(task: DevTaskRow) {
 }
 /* 一行浅色文字：它是「补充信息」，视觉分量要低于待确认的审批入口 */
 .dev-task-entry {
-  padding: 5px 12px; border-radius: var(--r-pill);
+  padding: 5px 14px; border-radius: var(--r-pill);
   background: var(--bg-elevated); color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   font-family: var(--sans); font-size: 12.5px;
@@ -344,7 +344,7 @@ async function resume(task: DevTaskRow) {
   /* 动态视口高度更贴合真机（地址栏/工具栏收起时不再被裁掉）；旧内核落到上一行 */
   max-height: max(180px, calc(100dvh - var(--qio-top-notes-offset, calc(var(--titlebar-height) + 12px)) - var(--dev-panel-reserve)));
   width: min(560px, calc(100vw - 32px));
-  padding: 10px 12px; border-radius: var(--r-2);
+  padding: 10px 14px; border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-elevated); border: 1px solid var(--border-subtle);
   box-shadow: var(--shadow-2); pointer-events: auto;
   font-family: var(--sans); font-size: 12.5px; color: var(--text-primary);
@@ -364,30 +364,42 @@ async function resume(task: DevTaskRow) {
 .dev-task-row { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 /* 长需求文字在窄窗口里换行而不是撑出横向滚动（也不许把按钮挤出可见区） */
 .dev-task-request {
-  margin: 0; color: var(--text-strong);
+  margin: 0; color: var(--text-strong); text-align: center;
   overflow-wrap: anywhere; word-break: break-word;
 }
-.dev-task-meta { margin: 0; display: flex; flex-wrap: wrap; gap: 10px; color: var(--text-muted); font-size: 12px; }
+.dev-task-meta { margin: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; color: var(--text-muted); font-size: 12px; }
 /* 授权范围：只读的一行事实 + 一个「撤销授权」动作 */
 .dev-task-scope {
-  margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px;
   color: var(--text-muted); font-size: 12px;
   overflow-wrap: anywhere; word-break: break-word;
 }
 .dev-task-revoke {
-  padding: 3px 9px; border-radius: var(--r-pill);
+  padding: 3px 12px; border-radius: var(--r-pill);
   background: transparent; color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   font-family: var(--sans); font-size: 12px; cursor: pointer;
 }
 .dev-task-revoke:hover { color: var(--danger); border-color: var(--danger); }
 .dev-task-revoke:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-/* 动作行：窄窗口换行，不横向溢出，也不把按钮挤出可见区 */
+/* 动作行：整体居中、同高、配对同宽；窄窗纵排（不横向溢出、不把按钮挤出可见区） */
 .dev-task-actions {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 2px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; margin-top: 2px;
+}
+.dev-task-resume, .dev-task-abandon, .dev-task-revoke {
+  min-width: 112px;
+  height: 30px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+@media (max-width: 420px) {
+  .dev-task-actions { flex-direction: column; align-items: stretch; }
+  .dev-task-resume, .dev-task-abandon { width: 100%; }
 }
 .dev-task-resume {
-  padding: 4px 10px; border-radius: var(--r-pill);
+  padding: 4px 14px; border-radius: var(--r-pill);
   background: transparent; color: var(--accent);
   border: 1px solid var(--border-subtle);
   font-family: var(--sans); font-size: 12.5px; cursor: pointer;
@@ -396,7 +408,7 @@ async function resume(task: DevTaskRow) {
 .dev-task-resume:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 /* 与「撤销授权」同档的安静按钮：危险的是确认层里的那一下，不是入口本身 */
 .dev-task-abandon {
-  padding: 4px 10px; border-radius: var(--r-pill);
+  padding: 4px 14px; border-radius: var(--r-pill);
   background: transparent; color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
   font-family: var(--sans); font-size: 12.5px; cursor: pointer;

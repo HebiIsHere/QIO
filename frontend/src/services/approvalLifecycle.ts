@@ -22,7 +22,9 @@ export type ApprovalLifecycleState =
   | "cancelled"
   | "expired"
   | "invalidated"
-  | "interrupted_unverified";
+  | "interrupted_unverified"
+  /** 旧 request() 落库行恢复出的中断事实：不是 v2 waiting，也不能拿 /decide 去应答。 */
+  | "interrupted_legacy";
 
 export const APPROVAL_STATE_LABELS: Record<string, string> = {
   waiting: "等待确认",
@@ -35,6 +37,7 @@ export const APPROVAL_STATE_LABELS: Record<string, string> = {
   expired: "已过期",
   invalidated: "已失效（执行前核对不通过）",
   interrupted_unverified: "执行中断，待核对",
+  interrupted_legacy: "未执行（旧审批中断待核对）",
 };
 
 /** 「还要继续推进」的非终态：这些状态不能从待办里移除（仍需要用户动作或等待执行）。 */
@@ -66,6 +69,23 @@ export interface PendingApproval {
   /** 后端 CAS 修订号（decide/confirm 可带 expected_revision；缺失时不带） */
   revisions?: number;
   revision?: number;
+  /**
+   * 旧 request() 落库行（B-CP1 冻结）：旧审批没有 v2 状态机。
+   * 前端绝不为它补 state=waiting，也绝不调用 /decide。
+   */
+  legacy?: boolean;
+  /**
+   * 这条旧路径是否真的支持 overrides（后端自述；undefined = 旧后端没给这个字段，
+   * 按既有 tool_create 子智能体路径的兼容行为处理）。
+   */
+  overrides_supported?: boolean;
+  /** 旧审批恢复出的「未执行 / 中断」事实（B-CP1：status=interrupted_legacy）。 */
+  interrupted_legacy?: boolean;
+  /**
+   * 后端原始状态词（B-CP1：legacy 的 state 恒为 null，中断事实看这里的
+   * status=interrupted_legacy；存活时为 "pending"）。
+   */
+  status?: string;
 }
 
 export interface ApprovalHistoryEntry {
@@ -75,6 +95,8 @@ export interface ApprovalHistoryEntry {
   outcome: string;
   detail: Record<string, unknown>;
   at: string;
+  /** 旧审批路径（B-CP1：legacy=true；detail.legacy 也兼容读取）。 */
+  legacy?: boolean;
 }
 
 export class ApprovalRequestError extends Error {
@@ -154,9 +176,28 @@ function numberOr(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-/** 把后端 pending 条目收敛成稳定形状（未知状态不丢：原样保留，界面按 waiting 展示）。 */
+/** 把后端 pending 条目收敛成稳定形状（未知状态不丢；旧审批不补 state）。 */
 export function toPendingApproval(raw: Record<string, unknown>): PendingApproval {
   const operation = raw.operation;
+  const payload = asRecord(raw.payload);
+  /**
+   * 旧审批（legacy）没有 v2 状态机：后端行里 state / operation 可能为空。
+   * 这里**绝不**把缺失的 state 补成 waiting —— 补了就会被前端判成生命周期记录、
+   * 走到后端明确拒绝的 /decide 上（B-CP1：legacy 只走 /respond）。
+   */
+  const state = text(raw.state).trim();
+  const status = text(raw.status).trim();
+  const legacyRaw = raw.legacy === true || payload.legacy === true;
+  /**
+   * B-CP1：legacy 的 state 恒为 null，绝不补 waiting；中断事实用 status
+   * （=interrupted_legacy）表达，state=interrupted_legacy 仅作兼容。
+   */
+  const interruptedLegacy =
+    raw.interrupted_legacy === true || status === "interrupted_legacy" || state === "interrupted_legacy";
+  const legacy = legacyRaw || interruptedLegacy;
+  const overridesRaw = raw.overrides_supported ?? payload.overrides_supported;
+  const overridesSupported =
+    typeof overridesRaw === "boolean" ? overridesRaw : undefined;
   return {
     approval_id: text(raw.approval_id ?? raw.id),
     kind: text(raw.kind, "unknown"),
@@ -166,7 +207,7 @@ export function toPendingApproval(raw: Record<string, unknown>): PendingApproval
     instruction_text: text(raw.instruction_text) || null,
     created_at: text(raw.created_at),
     expires_at: text(raw.expires_at) || null,
-    state: text(raw.state, "waiting"),
+    state,
     confirmed_stage: numberOr(raw.confirmed_stage, 0),
     requires_confirmations: Math.max(1, numberOr(raw.requires_confirmations, 1)),
     source: text(raw.source, "tool"),
@@ -184,6 +225,10 @@ export function toPendingApproval(raw: Record<string, unknown>): PendingApproval
       : null,
     revisions: numberOr(raw.revisions ?? raw.revision, 0) || undefined,
     revision: numberOr(raw.revision, 0) || undefined,
+    ...(status ? { status } : {}),
+    ...(legacy ? { legacy: true } : {}),
+    ...(typeof overridesSupported === "boolean" ? { overrides_supported: overridesSupported } : {}),
+    ...(interruptedLegacy ? { interrupted_legacy: true } : {}),
   };
 }
 
@@ -250,6 +295,7 @@ export async function getApprovalHistory(limit = 20): Promise<ApprovalHistoryEnt
       outcome: text(row.outcome ?? row.state ?? row.status),
       detail: asRecord(row.detail),
       at: text(row.at ?? row.created_at),
+      ...(row.legacy === true ? { legacy: true } : {}),
     };
   });
 }
@@ -271,6 +317,8 @@ export function approvalStateFromPhase(phase: string): ApprovalLifecycleState | 
       return "invalidated";
     case "interrupted_unverified":
       return "interrupted_unverified";
+    case "interrupted_legacy":
+      return "interrupted_legacy";
     case "rejected":
       return "rejected";
     case "cancelled":

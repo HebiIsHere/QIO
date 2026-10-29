@@ -264,7 +264,7 @@ describe("待审批出现时审批入口主动展开（§5.4）", () => {
     }
   });
 
-  it("同一批够四项时给出既有批量列表的入口（不另造第二套批量操作）", async () => {
+  it("同一批够四项时批量入口接到真实任务面板（tasksOpen 唯一开合状态）", async () => {
     const store = freshStore();
     store.submitStatus = "succeeded";
     store.understanding = understandingFixture({ status: "understood", kind: "intent" });
@@ -275,7 +275,9 @@ describe("待审批出现时审批入口主动展开（§5.4）", () => {
     const open = w.get('[data-im="submit-open-batch"]');
     expect(open.text()).toContain("批量审批");
     await open.trigger("click");
-    expect(store.batchOpen).toBe(true);
+    // 唯一的批量状态是任务面板：入口真实打开「待确认」分区（旧 batchOpen 通道已删除）
+    expect(store.tasksOpen).toBe(true);
+    expect(store.taskCenterFocus).toBe("pending");
   });
 
   it("审批之后的执行事实只取服务端记录：不把「已批准」说成「已完成」", () => {

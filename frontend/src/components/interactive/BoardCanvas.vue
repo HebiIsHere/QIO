@@ -16,7 +16,8 @@
   6. 拖线目标判定认**当前显示矩形**（displayRect）：拖动 / 尺寸预览期间卡片 / 连线 /
      高亮画在哪，落点就判在哪；这些临时显示坐标只读，绝不写回板面（0.2.5 §四）。
      展开阅读只切卡内内容，不产生第二套位置（_IML-COMMON.md §1 F1）。
-  7. 改版后底部工具栏与板内搜索由页面壳与 A 的组件渲染：本文件不再引用 <BoardToolbar /> 与 <BoardSearchPanel />。
+  7. 改版后底部工具栏与板内搜索由页面壳与 v2 的组件渲染：本文件不再引用 <BoardToolbar />，
+     板内搜索也不再由独立的旧搜索面板承担（现由 v2/InteractiveChromeTools 的顶栏搜索负责）。
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -253,11 +254,11 @@ const linkTarget = computed(() => {
  * 板面操作提示**不常驻**（2026-10-14 修）。
  *
  * 原来 `.view-hint` 是无条件渲染的：一进板面就永远占着顶部一行，与互动空间既有规则冲突 ——
- * ChatDock 里明确写着「快捷键说明只留一处（帮助里），面板里不再常驻小字」。
+ * 互动页的既有规则是「快捷键说明只留一处（帮助入口里），面板里不再常驻小字」。
  * 现在只在本机**还没用过**这三个查看手势时显示一条，用过一次就永久收起；
- * 完整说明同时留在 ChatDock 的帮助里（板面手势一节）。
+ * 完整说明同时留在帮助入口里（板面手势一节）。
  *
- * 读写沿用项目既有的防御式 localStorage 范式（chatFrame.ts / drafts.ts）：
+ * 读写沿用项目既有的防御式 localStorage 范式（interactive/drafts.ts / chatFrameState.ts）：
  * 隐私模式或企业策略下连读属性都可能抛异常，抛了就退回「本次会话内存」。
  */
 const BOARD_HINT_KEY = "qio-board-hint-seen";

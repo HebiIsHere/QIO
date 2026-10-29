@@ -255,6 +255,26 @@ def _knowledge_payload(ctx, item) -> dict:
     }
 
 
+def _relation_change_list(raw: object) -> list[dict]:
+    """关系增删入参清洗：只接受 `[{"type": str, "target": str}]`，空项丢弃。
+
+    不猜类型、不按名称自动创建实体：目标按名称匹配**真实节点**（与既有
+    add/remove relation 的语义一致），找不到目标时后端不会凭空造一个同名实体。
+    非法形状整条丢弃而不是 500：界面已经按真实值提交，坏输入只可能来自老客户端。
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        rel_type = str(entry.get("type") or "").strip()
+        target = str(entry.get("target") or "").strip()
+        if rel_type and target:
+            out.append({"type": rel_type, "target": target})
+    return out
+
+
 _KNOWLEDGE_SOURCE_LABELS = {
     "onboarding": "引导",
     "dream_correct": "后台整理",
@@ -508,7 +528,7 @@ def create_app(
             if report is not None:
                 log_close_report(report)
 
-    app = FastAPI(title="QIO", version="0.2.10", lifespan=lifespan)
+    app = FastAPI(title="QIO", version="0.3.0", lifespan=lifespan)
     # R9 §11：桌面壳真正退出前的唯一收尾入口（POST /api/lifecycle/shutdown）。
     # 入口（agent/main.py）通过 app.state.shutdown_coordinator 注入「如何让 uvicorn 退出」。
     app.include_router(build_lifecycle_router(ctx, shutdown))
@@ -862,6 +882,32 @@ def create_app(
             )
         existing = ctx.credentials.get_metadata(key_id)
         if existing is not None:
+            # F13：同一个 client_request_id 必须是「同一次提交」的重试。
+            # 内容变了还复用旧标识会静默把新内容丢掉（看起来保存成功、实际还是旧连接），
+            # 所以这里比较内容指纹：一致才返回原记录，不一致明确 409 让调用方换标识。
+            def _budget_key(value):
+                return None if value is None else round(float(value), 6)
+
+            same_content = (
+                ctx.credentials.get_secret(key_id) == secret
+                and str(existing.get("endpoint") or "").strip()
+                == str(endpoint or "").strip()
+                and str(existing.get("kind") or "").strip() == str(kind or "").strip()
+                and str(existing.get("default_model") or "").strip() == model
+                and sorted(str(tag) for tag in (existing.get("tags") or []))
+                == sorted(str(tag) for tag in tags)
+                and str(existing.get("note") or "").strip() == str(note or "").strip()
+                and _budget_key(existing.get("budget")) == _budget_key(_budget(body.get("budget")))
+            )
+            if not same_content:
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "ok": False,
+                        "code": "client_request_id_conflict",
+                        "detail": "这次提交的内容和之前用同一请求标识提交的内容不同；请重新打开表单再保存",
+                    },
+                )
             return {
                 "ok": True,
                 "saved": True,
@@ -1099,6 +1145,21 @@ def create_app(
 
     @app.delete("/api/credentials/{key_id}")
     async def delete_credential(key_id: str) -> dict:
+        # 仍被已保存用途引用的连接不能直接删：删掉它会让那些用途指向不存在的模型，
+        # 而对用户来说「上次还能用的模型突然没了」比「删除被拦住」更糟。前端也会先
+        # 自检（含未保存草稿里的引用），这里是服务端兜底。
+        from agent.credentials.models import ModelCatalogStore
+
+        try:
+            refs = ModelCatalogStore(ctx.conn, ctx.credentials).references_to_credential(key_id)
+        except Exception:  # noqa: BLE001 - 老库还没有用途表：退回基线行为（允许删除）
+            refs = []
+        if refs:
+            labels = "、".join(str(item.get("label") or "") for item in refs)
+            raise HTTPException(
+                status_code=409,
+                detail=f"这条连接还被这些用途引用：{labels}；请先改成别的模型再删除",
+            )
         try:
             ctx.credentials.delete(key_id)
         except KeyError as exc:
@@ -3054,7 +3115,7 @@ def create_app(
             )
         return out
 
-    def _history_page_with_attachments(page: dict) -> dict:
+    def _history_page_with_attachments(page: dict, *, topic_id: str | None = None) -> dict:
         """给一页历史消息补上附件（问题 5：刷新 / 重进历史后附件行必须还在）。
 
         * 形状与实时发送路径**完全一致**：就是 attachments.payload()，前端 session.ts
@@ -3078,6 +3139,17 @@ def create_app(
                     enriched.append(updated)
                 else:
                     enriched.append(message)
+        # 互动意图执行记录（R2 契约 §三）：服务端按真实记录派生展示就绪对象，
+        # 前端只按 content_type / intent_execution 渲染，不再按文本前缀猜。
+        # 旧消息（没有元数据）原样返回；派生失败只降级成 unknown，不隐藏消息。
+        try:
+            from agent.interactive import records as intent_records
+
+            enriched = intent_records.decorate_messages(
+                ctx.conn, enriched, topic_id=topic_id
+            )
+        except Exception as exc:  # noqa: BLE001 - 展示派生失败不能影响历史返回
+            logger.warning("intent execution decoration failed: %s", redact_text(str(exc)))
         # 结束事实（R4 S6）：刷新 / 换设备后失败轮仍要说得出为什么、还有哪些操作。
         # 只查这一页涉及的轮次（一次批量），旧记录没有事实就不出现。
         return {
@@ -3094,7 +3166,8 @@ def create_app(
         node = ctx.topics.nodes.get_topic(topic_id)
         # 首次只给最近一页（默认 200 条）：不再随历史长度线性增长
         page = _history_page_with_attachments(
-            ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT)
+            ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT),
+            topic_id=topic_id,
         )
         return {
             "topic_id": topic_id,
@@ -3121,7 +3194,8 @@ def create_app(
         page = _history_page_with_attachments(
             ctx.session_messages_page(
                 target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
-            )
+            ),
+            topic_id=target,
         )
         return {"topic_id": target, **page}
 
@@ -3354,14 +3428,27 @@ def create_app(
         offset = max(0, int(offset))
         limit = max(1, min(int(limit), 200))
         rows = ctx.conn.execute(
-            "SELECT id, role, content, content_type, created_at FROM messages "
+            "SELECT id, role, content, content_type, created_at, raw, turn_id FROM messages "
             "WHERE fragment_id = ? ORDER BY created_at, id LIMIT ? OFFSET ?",
             (fragment_id, limit, offset),
         ).fetchall()
+        messages = [dict(row) for row in rows]
+        # 互动意图执行记录（R2 契约 §三）：这条通道同样给展示就绪对象；
+        # raw 是派生输入，不新增到响应表面（保持既有字段集合，只加 intent_execution）。
+        try:
+            from agent.interactive import records as intent_records
+
+            messages = intent_records.decorate_messages(
+                ctx.conn, messages, topic_id=fragment.topic_id
+            )
+        except Exception as exc:  # noqa: BLE001 - 展示派生失败不能影响历史返回
+            logger.warning("intent execution decoration failed: %s", redact_text(str(exc)))
+        for message in messages:
+            message.pop("raw", None)
         return {
             "fragment_id": fragment_id,
             "topic_id": fragment.topic_id,
-            "messages": [dict(row) for row in rows],
+            "messages": messages,
             "total": ctx.fragments.message_count(fragment_id),
             "offset": offset,
             "limit": limit,
@@ -3650,24 +3737,54 @@ def create_app(
         return {"entity": svc.to_dict(card)}
 
     @app.post("/api/entities/{entity_id}/revise")
-    async def revise_entity(entity_id: str, body: dict) -> dict:
-        from agent.entities.cards import EntityCardService
+    async def revise_entity(entity_id: str, body: dict):
+        """整体修订一张实体卡（用户明确动作）。
+
+        一次提交可以同时带字段与关系增删（`relations.add` / `relations.remove`）：
+        **同一个事务**里要么全部生效、要么全部不生效（不会留下「字段改了、关系没改」）。
+
+        `expected_revision` 是界面上看到的版本（CAS）：不符返回 409，且一个字段都没写。
+        用户编辑期间卡被自动提炼或另一个入口改过时，界面必须提示冲突、保留草稿，
+        绝不静默覆盖 —— 这正是这个参数存在的理由。
+        """
+        from agent.entities.cards import EntityCardConflict, EntityCardService
+        from agent.storage.db import transaction
+
+        expected = body.get("expected_revision")
+        if expected is not None:
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="expected_revision must be an integer"
+                ) from None
+
+        relations = body.get("relations")
+        relations = relations if isinstance(relations, dict) else {}
+        add_relations = _relation_change_list(relations.get("add"))
+        remove_relations = _relation_change_list(relations.get("remove"))
 
         svc = EntityCardService(ctx.conn)
-        card = svc.get(entity_id)
-        if card is None:
-            raise HTTPException(status_code=404, detail="entity not found")
-        attributes = body.get("attributes")
-        aliases = body.get("aliases")
-        summary = body.get("summary")
-        kind = body.get("kind")
-        updated = svc.revise(
-            entity_id,
-            attributes=attributes,
-            aliases=aliases,
-            summary=summary,
-            kind=kind,
-        )
+        try:
+            # 读与写放在同一个事务里：CAS 校验基于事务内的当前版本，
+            # 关系增删跟着字段修订一起提交/回滚。
+            with transaction(ctx.conn):
+                card = svc.get(entity_id)
+                if card is None:
+                    raise HTTPException(status_code=404, detail="entity not found")
+                updated = svc.revise(
+                    entity_id,
+                    attributes=body.get("attributes"),
+                    aliases=body.get("aliases"),
+                    summary=body.get("summary"),
+                    kind=body.get("kind"),
+                    relations_add=add_relations,
+                    relations_remove=remove_relations,
+                    expected_revision=expected,
+                )
+        except EntityCardConflict as exc:
+            # 409：条件校验失败，什么都没改（形状与 A04 的候选冲突一致）。
+            return JSONResponse(status_code=409, content=exc.to_dict())
         return {"ok": True, "entity": svc.to_dict(updated) if updated else None}
 
     @app.post("/api/entities/{entity_id}/revoke")
@@ -3876,16 +3993,38 @@ def create_app(
 
     @app.get("/api/approvals/pending")
     async def list_pending_approvals() -> dict:
-        """等待用户决定的审批（含操作摘要、过期时间、确认阶段、来源）。"""
-        return {"approvals": approvals.pending(), "instance_id": instance_id}
+        """等待用户决定的审批（含操作摘要、过期时间、确认阶段、来源）。
+
+        读取持久化审批失败时显式 503（code=approvals_unreadable）：绝不能返回
+        200+空/部分集合 —— 前端会因此把待办清掉（把失败的补读当成「没有待办」）。
+        """
+        try:
+            items = approvals.pending()
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"approvals": items, "instance_id": instance_id}
 
     @app.get("/api/approvals/history")
     async def list_approval_history(limit: int = 50) -> dict:
-        return {"history": approvals.history(limit=max(1, min(int(limit), 200)))}
+        try:
+            history = approvals.history(limit=max(1, min(int(limit), 200)))
+        except _ApprovalError as exc:
+            raise _approval_http_error(exc) from exc
+        return {"history": history}
 
     @app.post("/api/approvals/{approval_id}/decide")
     async def decide_approval(approval_id: str, body: dict) -> dict:
         decision = str(body.get("decision") or "")
+        # 契约 §4.2：/decide 端到端不接受 overrides（预算/授权覆盖只属于部分旧路径）。
+        # 带着 overrides 调它必须显式拒绝，不能静默忽略让界面表现成「已接受修改」。
+        if body.get("overrides"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "overrides_unsupported",
+                    "message": "这条审批不支持 overrides（预算/授权覆盖）：修改没有生效。",
+                },
+            )
         expected_revision = body.get("expected_revision")
         scope = body.get("scope")
         try:
@@ -3997,4 +4136,17 @@ def create_app(
     from agent.api.knowledge_approval_routes import register_knowledge_approval_routes
 
     register_knowledge_approval_routes(app, ctx)
+
+    # 设置页改版：模型目录 / 用途分配 / 默认模型的读写入口。数据层与路由都长在
+    # api/model_routes.py 里（这个文件已经够长），这里只挂一行，不改任何既有接口。
+    from agent.api.model_routes import register_model_routes
+
+    register_model_routes(app, ctx)
+
+    # 设置页改版：联网搜索的通道状态与真实连接检查。搜索通道的配置仍在
+    # /api/settings/search（SettingsService 统一落库），这里只补「状态/检查」这类
+    # 会真的打到外部端点的只读/低频入口。
+    from agent.api.search_routes import register_search_routes
+
+    register_search_routes(app, ctx)
     return app

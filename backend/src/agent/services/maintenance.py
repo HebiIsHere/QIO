@@ -216,7 +216,12 @@ def _request_approval(ctx, kind: str, payload: dict) -> None:
         try:
             result = await ctx.approvals.request(kind, payload)
             if result.decision == "approved":
-                await _apply_approval(ctx, kind, payload)
+                try:
+                    await _apply_approval(ctx, kind, payload)
+                except Exception as exc:  # noqa: BLE001 - 失败也要如实收口，再交给原错误处理
+                    await _record_approval_result(ctx, result, ok=False, error=exc)
+                    raise
+                await _record_approval_result(ctx, result, ok=True)
             elif kind == "tool_candidate" and result.decision == "rejected":
                 # 已拒绝且无新依据不催问：记录建议指纹 + 本次判断依据。
                 try:
@@ -240,6 +245,28 @@ def _request_approval(ctx, kind: str, payload: dict) -> None:
             logger.warning("关闭中：不再新建维护审批等待（%s）", kind)
             return
     asyncio.create_task(_wait_and_apply())
+
+
+async def _record_approval_result(
+    ctx, result, *, ok: bool, error: BaseException | None = None
+) -> None:
+    """后台维护审批真实应用完成/失败后的收口（契约 §4.2；Lead 裁决 2026-10-26）。
+
+    维护审批不经过工具执行边界，所以在真实 _apply_approval 完成/失败后把历史从
+    approved 升级为 executed/failed（只写结果事实，不改维护逻辑与授权语义）。
+    没有持久化审批装配（替身 ctx）时是 no-op。
+    """
+    recorder = getattr(getattr(ctx, "approvals", None), "record_legacy_execution", None)
+    approval_id = getattr(result, "approval_id", None)
+    if not callable(recorder) or not approval_id:
+        return
+    error_text = None
+    if error is not None:
+        error_text = f"{type(error).__name__}: {error}"
+    try:
+        await recorder(str(approval_id), ok=bool(ok), error=error_text)
+    except Exception:  # noqa: BLE001 - 收尾失败不能影响维护流程
+        logger.warning("failed to record maintenance approval result", exc_info=True)
 
 
 async def _apply_approval(ctx, kind: str, payload: dict) -> None:
@@ -303,7 +330,14 @@ async def run_dreaming(ctx) -> dict:
         summaries="\n".join(f"- {s['summary'][:200]}" for s in summaries) or "(无)",
     )
     try:
-        adapter = await ctx.build_adapter()
+        # 设置页改版 §8：后台整理走「记忆整理」用途自己的模型；没有可用目标就
+        # 如实跳过（不借用主对话那把 Key —— 那会绕过用户的用途分配）。
+        build_for_usage = getattr(ctx, "build_adapter_for_usage", None)
+        adapter = (
+            await build_for_usage("memory-organize")
+            if callable(build_for_usage)
+            else await ctx.build_adapter()
+        )
         if adapter is None:
             return {"dreaming_candidates": 0, "error": "no adapter"}
         from agent.core.loop import AgentLoop

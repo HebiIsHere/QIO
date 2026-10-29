@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 消息流：@tanstack/vue-virtual 虚拟滚动 + 底部跟随。
  * 按「用户消息开新轮次」把消息分组为 turn，虚拟化单位是轮次块；
@@ -13,7 +14,7 @@ import TurnProcess from "./TurnProcess.vue";
 import ContinueBar from "./ContinueBar.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
-import { groupTurns, type StreamTurn } from "../stores/session";
+import { groupTurns, visibleIntentExecutionMessages, type StreamTurn } from "../stores/session";
 import { useLatestButtonAnchor } from "../composables/useLatestButtonAnchor";
 import { subscribeComposerMetrics } from "../composables/composerMetrics";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
@@ -52,7 +53,15 @@ let pendingRestoreOnReject = false;
 /** 距底部多少像素内算「跟随中」 */
 const NEAR_BOTTOM_PX = 120;
 
-const messages = computed(() => session.messages);
+/**
+ * 消息流里真正要渲染的消息。
+ *
+ * 意图执行记录（R2 契约 §四 / 返修二）：同一 record_key 只渲染**一张**卡 —— 保留消息顺序
+ * 最早的那条 head（服务端的分页 head 是「本页最早」，同一记录跨页时可能各带一个 head），
+ * 自动重试 / 再次执行产生的其余消息不渲染（每次 attempt 仍在头部记录的详情里可见）。
+ * 只做显示过滤，不改 session.messages、不删数据 —— 历史 / 互动对话两个入口共用这一处。
+ */
+const messages = computed(() => visibleIntentExecutionMessages(session.messages));
 
 /**
  * 「回到最新消息」按钮的位置：由输入框与底部内容块的**真实边界**算出来
@@ -644,7 +653,7 @@ const phaseLabel = computed(() => {
         class="back-latest"
         type="button"
         :aria-label="unseen > 0 ? `回到最新消息（${unseen} 条新消息）` : '回到最新消息'"
-        title="回到最新消息"
+        v-qio-tip="'回到最新消息'"
         @click="backToLatest"
       >
         <svg class="latest-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -681,16 +690,21 @@ const phaseLabel = computed(() => {
 .stream {
   flex: 1;
   min-width: 0;
+  /* 纵向滚动视口是**普通块容器**：不参与 flex 行分配（历史 bug：被当成 flex 行时，
+     spacer 的 width:100% 会把空状态推到右边）。空状态另行绝对定位。 */
+  display: block;
+  /* 空状态是绝对定位覆盖层（见 .empty）：必须相对消息可视区定位。 */
+  position: relative;
   overflow-y: auto;
   /* 横向一律不建立滚动范围：内容在各自的布局链上换行 / 收缩（见 scroll.css 的 data-qio-fit） */
   overflow-x: clip;
-  /* 左右留白取「正文列」令牌：与输入气泡同一条列。
-     ≤1400px 时右侧令牌会变成 132px —— 那是给常驻星球入口球留的通道，
-     两个组件读同一个值，谁也不能单独挪（见 tokens.css 的 --column-inset-*）。 */
-  padding: 34px var(--column-inset-right) 20px var(--column-inset-left);
+  /* 左右留白 = 消息框的统一内边距（输入区读同一个 --chat-pad-inline）。
+     星球入口已经移进输入行内部，不再需要 ≤1400px 时给浮动球预留的 132px 右让位。 */
+  padding: 20px var(--chat-pad-inline, 12px) 12px var(--chat-pad-inline, 12px);
   /* 原生滚动条外观由 styles/scroll.css 全局消除（不预留轨道空白）；
      本区域的指示条由 v-qio-scrollbar 提供，不再写 scrollbar-width: thin。 */
-  background: var(--bg-base);
+  /* 表面（边框/圆角/底色）由外层 .chat-box 承担，消息流自己不再画一层底 */
+  background: transparent;
 }
 /* 键盘聚焦时才显示焦点环：滚动区域平时不抢视觉焦点 */
 .stream:focus-visible {
@@ -730,14 +744,22 @@ const phaseLabel = computed(() => {
   background: var(--border-subtle);
 }
 /* ---- 空状态 ---- */
+/*
+  空状态（FU5）：相对 .stream 绝对铺满消息可视区并水平/垂直居中。
+  它脱离滚动内容流 —— 不参与 spacer / 虚拟列表 / typing / ContinueBar 的宽度分配，
+  因此既不会被推到右边，也不会影响有消息时的虚拟列表与滚动。
+  pointer-events: none：只是文字引导，不拦截滚动 / 其他控件。
+*/
 .empty {
-  height: 100%;
+  position: absolute;
+  inset: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
   gap: 14px;
   text-align: center;
+  pointer-events: none;
 }
 .empty .greet {
   font-size: 34px;
@@ -756,7 +778,7 @@ const phaseLabel = computed(() => {
   margin-top: 6px;
   padding: 7px 14px;
   border: 1px solid var(--border-subtle);
-  border-radius: 20px;
+  border-radius: var(--qio-ui-radius);
   font-size: 12px;
   color: var(--text-secondary);
 }

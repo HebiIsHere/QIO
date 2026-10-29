@@ -159,10 +159,20 @@ class MaintenanceRunner:
         return self.ctx.conn
 
     async def _build_adapter(self) -> Any:
-        builder = getattr(self.ctx, "build_adapter", None)
-        if builder is None:
+        # 设置页改版 §8：知识维护批次走「知识提炼」用途自己的模型。
+        # 没有该用途可用目标时返回 None，调用方按「没有可用模型适配器」如实失败
+        # （不改用主对话模型偷偷跑完 —— 那会绕过用户的用途分配）。
+        # build_background_adapter 只在「库里一条凭据都没有」时保持基线（见其文档）。
+        builder = getattr(self.ctx, "build_background_adapter", None)
+        if callable(builder):
+            return await builder("knowledge-distill")
+        builder = getattr(self.ctx, "build_adapter_for_usage", None)
+        if callable(builder):
+            return await builder("knowledge-distill")
+        legacy = getattr(self.ctx, "build_adapter", None)
+        if legacy is None:
             return None
-        return await builder()
+        return await legacy()
 
     # -- 输入组装 ---------------------------------------------------------
 

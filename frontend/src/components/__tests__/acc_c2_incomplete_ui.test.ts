@@ -316,7 +316,7 @@ describe("F06 界面：incomplete 不被静默吞掉（顶部结局提示）", (
     return mount(ConversationView, {
       global: {
         plugins: [pinia],
-        stubs: { MessageStream: true, Composer: true, SettingsFloat: true },
+        stubs: { MessageStream: true, Composer: true },
       },
     });
   }

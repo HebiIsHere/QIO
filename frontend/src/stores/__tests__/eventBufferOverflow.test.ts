@@ -14,6 +14,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { RESYNC_BUFFER_LIMIT, useEventStore } from "../events";
 import type { AgentEvent } from "../../services/events";
 import { useSessionStore } from "../session";
+import { useApprovalsStore } from "../approvals";
 import { api } from "../../services/api";
 
 const captured = vi.hoisted(() => ({
@@ -60,6 +61,10 @@ function deferredState(state: unknown) {
 function setup() {
   const pinia = createPinia();
   setActivePinia(pinia);
+  // 审批生命周期恢复会发真实 HTTP 并留下 15s 超时定时器；本文件只验证事件同步的
+  // 提示定时器是否清理，把审批补读隔离掉（否则 getTimerCount 会被网络超时污染）。
+  const approvals = useApprovalsStore();
+  vi.spyOn(approvals, "refreshApprovalsAndHistory").mockResolvedValue(undefined);
   return { events: useEventStore(), session: useSessionStore() };
 }
 

@@ -1,0 +1,24 @@
+{
+  "name": "resize",
+  "title": "宽窄窗口切换（侧栏 → 顶部标签页）",
+  "status": "recorded",
+  "notes": [
+    "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+    "原始帧已删除（--keep-frames 可保留）。"
+  ],
+  "result": {
+    "viewports": [
+      "1440x900",
+      "1024x768",
+      "800x600",
+      "480x600",
+      "1440x900"
+    ]
+  },
+  "elapsedMs": 10451,
+  "frames": 48,
+  "realFrameRate": 5.37,
+  "video": "docs\\verification-video-settings\\integration-06ee492f\\resize\\capture.mp4",
+  "viewport": "1440x900",
+  "screencastScale": 1280
+}

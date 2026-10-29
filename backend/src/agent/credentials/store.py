@@ -90,6 +90,37 @@ def compute_input_fingerprint(
     return f"{FINGERPRINT_VERSION}:{digest[:32]}"
 
 
+def compute_discovery_signature(
+    *,
+    version: int | str | None,
+    endpoint: str | None,
+    kind: str | None,
+) -> str:
+    """一次「获取模型」属于哪一份连接配置（Key 版本 + 地址 + 协议）。
+
+    与验证指纹同族，但刻意**不含 default_model**：模型列表来自服务商，改默认模型
+    不影响「这次列表属于谁」；把它算进来会把一次正常的默认模型编辑误判成配置变化。
+    指纹只用于比较，不含密钥材料。
+    """
+    try:
+        normalized_version = int(version or 0)
+    except (TypeError, ValueError):
+        normalized_version = 0
+    canonical = json.dumps(
+        {
+            "v": FINGERPRINT_VERSION,
+            "version": normalized_version,
+            "endpoint": _fingerprint_field(endpoint),
+            "kind": _fingerprint_field(kind),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.new(_FINGERPRINT_ALGO, canonical.encode("utf-8")).hexdigest()
+    return f"disc1:{digest[:32]}"
+
+
 def validate_endpoint(endpoint: str | None) -> None:
     """端点默认必须 HTTPS；只有本机 loopback provider 允许明文 HTTP。
 

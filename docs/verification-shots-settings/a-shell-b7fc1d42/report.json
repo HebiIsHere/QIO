@@ -1,0 +1,2385 @@
+{
+  "label": "a-shell-b7fc1d42-final",
+  "startedAt": "2026-10-28T03:54:24.477Z",
+  "appUrl": "http://127.0.0.1:5107",
+  "viewports": [
+    {
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "width": 1024,
+      "height": 768
+    },
+    {
+      "width": 800,
+      "height": 600
+    },
+    {
+      "width": 480,
+      "height": 600
+    }
+  ],
+  "themes": [
+    "dark"
+  ],
+  "checks": [
+    {
+      "scope": "dark-1440x900",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 1440,
+        "height": 868
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1440,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 1440,
+          "height": 868,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "radius-uniform-token",
+      "ok": false,
+      "detail": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 1192,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 1192,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 1192,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ]
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "nav-layout-side",
+      "ok": true,
+      "detail": {
+        "expected": "side",
+        "modes": [
+          "side"
+        ]
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": null,
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 226,
+              "y": 160.78125,
+              "width": 1192,
+              "height": 55,
+              "right": 1418,
+              "bottom": 215.78125,
+              "top": 160.78125,
+              "left": 226
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 68002,
+          "clientHeight": 868,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "keyboard-reaches-controls",
+      "ok": true,
+      "detail": {
+        "distinct": 8,
+        "navReached": true,
+        "inputReached": true,
+        "missingIndicator": []
+      }
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "keyboard-focus-visible",
+      "ok": true,
+      "detail": {
+        "missing": 0,
+        "total": 8,
+        "samples": []
+      }
+    },
+    {
+      "scope": "reduced-motion-dark-1440x900",
+      "name": "motion-attr-reduced",
+      "ok": true,
+      "detail": "reduced"
+    },
+    {
+      "scope": "reduced-motion-dark-1440x900",
+      "name": "reduced-motion-no-displacement-animation",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 1024,
+        "height": 736
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 1024,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 1024,
+          "height": 736,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "radius-uniform-token",
+      "ok": false,
+      "detail": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 776,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 776,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 776,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ]
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "nav-layout-side",
+      "ok": true,
+      "detail": {
+        "expected": "side",
+        "modes": [
+          "side"
+        ]
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 812,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 226,
+              "y": 160.78125,
+              "width": 776,
+              "height": 55,
+              "right": 1002,
+              "bottom": 215.78125,
+              "top": 160.78125,
+              "left": 226
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 78982,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 800,
+        "height": 568
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 800,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 800,
+          "height": 568,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "radius-uniform-token",
+      "ok": false,
+      "detail": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 756,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 756,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 756,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ]
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "nav-layout-top",
+      "ok": true,
+      "detail": {
+        "expected": "top",
+        "modes": [
+          "top"
+        ]
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1011,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 22,
+              "y": 251.78125,
+              "width": 280,
+              "height": 55,
+              "right": 302,
+              "bottom": 306.78125,
+              "top": 251.78125,
+              "left": 22
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 80339,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "settings-root-present",
+      "ok": true,
+      "detail": {
+        "x": 0,
+        "y": 32,
+        "width": 480,
+        "height": 568
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "theme-applied",
+      "ok": true,
+      "detail": {
+        "expected": "dark",
+        "actual": "dark"
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "radius-token-is-14px",
+      "ok": true,
+      "detail": "14px"
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "global-bar-single-and-fixed",
+      "ok": true,
+      "detail": {
+        "chromeCount": 1,
+        "chromeInsideRoot": 0,
+        "chrome": {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "width": 480,
+            "height": 32,
+            "bottom": 32
+          },
+          "position": "fixed",
+          "zIndex": "240"
+        },
+        "root": {
+          "x": 0,
+          "y": 32,
+          "width": 480,
+          "height": 568,
+          "top": 32
+        },
+        "overlap": false,
+        "fixedInside": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "global-bar-not-replaced",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "global-bar-no-overlap",
+      "ok": true,
+      "detail": {
+        "rootTop": 32,
+        "chromeBottom": 32
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "five-categories",
+      "ok": true,
+      "detail": {
+        "labels": [
+          "常规",
+          "模型与服务",
+          "记忆与整理",
+          "工具与权限",
+          "关于与更新"
+        ],
+        "missing": [],
+        "unexpected": [],
+        "count": 5
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "advanced-regular-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "advanced-models-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "advanced-memory-expanded",
+      "ok": true,
+      "detail": {
+        "opened": 1
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-horizontal-scroll",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-native-select-number-checkbox",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "radius-uniform-token",
+      "ok": false,
+      "detail": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 436,
+          "h": 106,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 436,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 436,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ]
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "radius-edge-attached-reported",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "nav-layout-top",
+      "ok": true,
+      "detail": {
+        "expected": "top",
+        "modes": [
+          "top"
+        ]
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "single-vertical-scroll",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1140,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-duplicate-heading-desc",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-native-dialogs",
+      "ok": true,
+      "detail": {
+        "confirm": 0,
+        "alert": 0,
+        "prompt": 0,
+        "samples": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "search-results",
+      "ok": true,
+      "detail": {
+        "count": 1,
+        "sample": [
+          {
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）",
+            "rect": {
+              "x": 22,
+              "y": 292.78125,
+              "width": 280,
+              "height": 55,
+              "right": 302,
+              "bottom": 347.78125,
+              "top": 292.78125,
+              "left": 22
+            },
+            "el": {
+              "tag": "button",
+              "cls": "set-search__hit",
+              "id": "",
+              "role": "",
+              "aria": "",
+              "type": "button",
+              "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "search-locate-highlight",
+      "ok": true,
+      "detail": {
+        "before": "模型与服务",
+        "after": "模型与服务",
+        "highlighted": [
+          {
+            "tag": "div",
+            "cls": "set-row.is-revealed",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认返回条数每次搜索返回的结果数（1-20）"
+          }
+        ],
+        "clicked": {
+          "ok": true,
+          "clicked": {
+            "tag": "button",
+            "cls": "set-search__hit",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "button",
+            "text": "默认返回条数模型与服务每次搜索返回的结果数（1-20）"
+          }
+        }
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "long-text-readable",
+      "ok": true,
+      "detail": {
+        "expanded": 2,
+        "textLength": 20000
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "single-vertical-scroll-under-overflow",
+      "ok": true,
+      "detail": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 129987,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "no-runtime-errors",
+      "ok": true,
+      "detail": {
+        "consoleErrors": [],
+        "httpFails": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "keyboard-reaches-controls",
+      "ok": true,
+      "detail": {
+        "distinct": 8,
+        "navReached": true,
+        "inputReached": true,
+        "missingIndicator": []
+      }
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "keyboard-focus-visible",
+      "ok": true,
+      "detail": {
+        "missing": 0,
+        "total": 8,
+        "samples": []
+      }
+    },
+    {
+      "scope": "reduced-motion-dark-480x600",
+      "name": "motion-attr-reduced",
+      "ok": true,
+      "detail": "reduced"
+    },
+    {
+      "scope": "reduced-motion-dark-480x600",
+      "name": "reduced-motion-no-displacement-animation",
+      "ok": true,
+      "detail": []
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-dark-1024x768-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 38
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-dark-800x600-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 38
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "same-dom-order-dark-480x600-vs-1440x900",
+      "ok": true,
+      "detail": {
+        "count": 38
+      }
+    },
+    {
+      "scope": "structure",
+      "name": "structure-hook-present-dark",
+      "ok": true,
+      "detail": {
+        "sources": [
+          "data-settings-key"
+        ]
+      }
+    }
+  ],
+  "skipped": [
+    {
+      "scope": "dark-1440x900",
+      "name": "long-form-opens",
+      "reason": "模型与服务里的 Key 面板由 B 提供，当前分支是占位（data-testid=models-panel-placeholder），不判红"
+    },
+    {
+      "scope": "dark-1440x900",
+      "name": "confirm-layer",
+      "reason": "Key 管理面板由 B 提供，当前是占位；危险操作确认层在集成后才有入口，不判红"
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "long-form-opens",
+      "reason": "模型与服务里的 Key 面板由 B 提供，当前分支是占位（data-testid=models-panel-placeholder），不判红"
+    },
+    {
+      "scope": "dark-1024x768",
+      "name": "confirm-layer",
+      "reason": "Key 管理面板由 B 提供，当前是占位；危险操作确认层在集成后才有入口，不判红"
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "long-form-opens",
+      "reason": "模型与服务里的 Key 面板由 B 提供，当前分支是占位（data-testid=models-panel-placeholder），不判红"
+    },
+    {
+      "scope": "dark-800x600",
+      "name": "confirm-layer",
+      "reason": "Key 管理面板由 B 提供，当前是占位；危险操作确认层在集成后才有入口，不判红"
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "long-form-opens",
+      "reason": "模型与服务里的 Key 面板由 B 提供，当前分支是占位（data-testid=models-panel-placeholder），不判红"
+    },
+    {
+      "scope": "dark-480x600",
+      "name": "confirm-layer",
+      "reason": "Key 管理面板由 B 提供，当前是占位；危险操作确认层在集成后才有入口，不判红"
+    }
+  ],
+  "screenshots": [
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-regular.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-models.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-memory.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-tools.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-cat-about.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-search-results.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-search-hit.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1440x900-longtext.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-reduced-motion-dark-1440x900.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-regular.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-models.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-memory.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-tools.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-cat-about.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-search-results.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-search-hit.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-1024x768-longtext.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-regular.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-models.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-memory.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-tools.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-cat-about.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-search-results.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-search-hit.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-800x600-longtext.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-regular.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-regular-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-models.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-models-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-memory.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-memory-advanced.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-tools.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-cat-about.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-search-results.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-search-hit.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-dark-480x600-longtext.png",
+    "docs\\verification-shots-settings\\a-shell-b7fc1d42\\settings-reduced-motion-dark-480x600.png"
+  ],
+  "perViewport": {
+    "dark-1440x900": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "theme": "dark",
+      "screenshots": 11,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "radiusViolations": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 1192,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 1192,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 1192,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": null,
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 68002,
+          "clientHeight": 868,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 900,
+          "clientHeight": 900,
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": [],
+      "keyboard": {
+        "sequence": 30,
+        "distinct": 8,
+        "missingIndicator": 0
+      },
+      "reducedMotionViolations": 0
+    },
+    "dark-1024x768": {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "theme": "dark",
+      "screenshots": 11,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "radiusViolations": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 776,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 776,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 776,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 812,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 78982,
+          "clientHeight": 736,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 768,
+          "clientHeight": 768,
+          "scrollWidth": 1024,
+          "clientWidth": 1024,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": []
+    },
+    "dark-800x600": {
+      "viewport": {
+        "width": 800,
+        "height": 600
+      },
+      "theme": "dark",
+      "screenshots": 11,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "radiusViolations": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 756,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 756,
+          "h": 67,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 756,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1011,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 80339,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 800,
+          "clientWidth": 800,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [],
+      "pendingEndpoints": [],
+      "abortedRequests": [],
+      "consoleErrorDetails": []
+    },
+    "dark-480x600": {
+      "viewport": {
+        "width": 480,
+        "height": 600
+      },
+      "theme": "dark",
+      "screenshots": 11,
+      "signature": {
+        "source": "data-settings-key",
+        "items": [
+          "regular.theme",
+          "regular.motion",
+          "regular.scrollbar",
+          "regular.scrollbar.hint",
+          "regular.speed",
+          "regular.onboarding",
+          "regular.window.planet-hide",
+          "regular.window.settings-hide",
+          "regular.window.reset-layout",
+          "regular.window.close-behavior",
+          "regular.advanced.diagnostics",
+          "models.panel",
+          "models.search",
+          "models.search.status",
+          "models.search.keyless",
+          "models.search.bocha",
+          "models.search.advanced.searxng",
+          "models.search.advanced.top-k",
+          "models.search.advanced.max-fetch-chars",
+          "memory.fragment.tier",
+          "memory.fragment.max-tokens",
+          "memory.maintenance.enabled",
+          "memory.maintenance.interval",
+          "memory.maintenance.run",
+          "memory.advanced.max-iterations",
+          "memory.advanced.output-budget",
+          "tools.permission",
+          "tools.workspace",
+          "tools.records.record-outputs",
+          "tools.records.output-retention",
+          "tools.records.record-retention",
+          "tools.effective",
+          "tools.effective.model-default",
+          "tools.effective.model-default",
+          "about.version",
+          "about.update",
+          "about.license",
+          "about.third-party"
+        ]
+      },
+      "radiusViolations": [
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 436,
+          "h": 106,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "只读模式QIO可以读取文件；不能修改、创建或删除你的业务"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 436,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option.selected",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "受限模式默认首次安装的默认模式。读取默认允许；修改或删除"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "6px 6px 6px 6px",
+          "w": 33,
+          "h": 20,
+          "el": {
+            "tag": "span",
+            "cls": "mode-tag",
+            "id": "",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "默认"
+          }
+        },
+        {
+          "cat": "tools",
+          "radius": "10px 10px 10px 10px",
+          "w": 436,
+          "h": 86,
+          "el": {
+            "tag": "button",
+            "cls": "mode-option",
+            "id": "",
+            "role": "radio",
+            "aria": "",
+            "type": "button",
+            "text": "完全无限制模式普通操作不再逐项审批，但仍受操作系统账户权"
+          }
+        }
+      ],
+      "radiusEdgeAttached": [],
+      "scrollAudit": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "常规模型与服务记忆与整理工具与权限关于与更新版本模型Ke"
+          },
+          "scrollHeight": 1140,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "scrollAuditOverflow": {
+        "main": {
+          "el": {
+            "tag": "div",
+            "cls": "qio-settings.qio-scroll-host",
+            "id": "qio-scroll-3",
+            "role": "",
+            "aria": "",
+            "type": "",
+            "text": "返回搜索结果常规模型与服务记忆与整理工具与权限关于与更新"
+          },
+          "scrollHeight": 129987,
+          "clientHeight": 568,
+          "overflowY": "auto"
+        },
+        "nested": [],
+        "bounded": [],
+        "document": {
+          "scrollHeight": 600,
+          "clientHeight": 600,
+          "scrollWidth": 480,
+          "clientWidth": 480,
+          "horizontalOk": true
+        },
+        "rootOverflowY": "auto"
+      },
+      "httpFails": [
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health"
+      ],
+      "pendingEndpoints": [],
+      "abortedRequests": [
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health",
+        "FAILED net::ERR_ABORTED http://127.0.0.1:8757/api/health"
+      ],
+      "consoleErrorDetails": [],
+      "keyboard": {
+        "sequence": 30,
+        "distinct": 8,
+        "missingIndicator": 0
+      },
+      "reducedMotionViolations": 0
+    }
+  },
+  "notes": [],
+  "fixtures": {
+    "catalog": 0,
+    "credentials": 0,
+    "searchStatus": 12
+  },
+  "modelsPlaceholder": true,
+  "finishedAt": "2026-10-28T03:56:23.925Z",
+  "summary": {
+    "total": 104,
+    "passed": 100,
+    "failed": 4,
+    "skipped": 8,
+    "screenshots": 46
+  }
+}

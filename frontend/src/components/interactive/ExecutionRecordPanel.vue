@@ -152,7 +152,7 @@ function ids(values: string[] | undefined): string {
   overflow: auto;
   padding: var(--sp-5);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-3);
   color: var(--text-primary);

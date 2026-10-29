@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import App from "../../App.vue";
@@ -23,7 +23,7 @@ vi.mock("../../services/api", () => ({
 
 // 启动握手是外壳/后端的事，这里把它当作已就绪 —— 这几条用例只关心欢迎页的展开规则
 const boot = vi.hoisted(() => ({ waitForBackend: vi.fn() }));
-vi.mock("../../services/boot", () => ({ waitForBackend: boot.waitForBackend }));
+vi.mock("../../services/boot", () => ({ waitForBackend: boot.waitForBackend, BOOT_SLOW_MS: 10_000 }));
 
 vi.mock("../../stores/events", () => ({
   useEventStore: () => ({ connect: vi.fn() }),
@@ -59,7 +59,7 @@ async function mountApp() {
   const wrapper = mount(App, {
     global: {
       plugins: [pinia],
-      stubs: { RouterView: true, ApprovalEntry: true, ApprovalModal: true, DevTaskEntry: true },
+      stubs: { RouterView: true, NonChatApprovalEntry: true, DevTaskEntry: true },
     },
   });
   await flushPromises();
@@ -80,7 +80,6 @@ async function mountConversation() {
       stubs: {
         MessageStream: true,
         Composer: true,
-        SettingsFloat: true,
         PlanetDock: true,
         PlanetView: true,
         PlanetBoot: true,
@@ -122,23 +121,25 @@ describe("欢迎页 gating", () => {
     expect(w.find(".onboarding").exists()).toBe(true);
   });
 
-  it("未完成且未关闭 → 对话页「继续设置」；点 × 记录关闭；点「继续设置」重新展开", async () => {
+  it("未完成时对话页不再渲染设置提示（顶部一次性轻提醒由 D 承接）；关闭与重开能力保留", async () => {
     stubStatus({ done: false, hint_dismissed: false });
     const w = await mountConversation();
     const store = useOnboardingStore();
     await store.load();
     await flushPromises();
 
-    const hint = w.find(".setup-hint");
-    expect(hint.exists()).toBe(true);
-    expect(hint.text()).toContain("继续设置");
+    // 生产挂载已移除：主对话不再有 .setup-hint（引导门槛/必填/迁移/后端 hint 字段都没改）
+    expect(w.find(".setup-hint").exists()).toBe(false);
+    expect(store.hintVisible, "数据仍如实反映「未完成且未关闭」").toBe(true);
 
-    await hint.find(".close").trigger("click");
+    // 关闭能力保留：仍然调用既有的后端字段写入
+    await store.setHintDismissed(true);
     await flushPromises();
     expect(api.setOnboardingHint).toHaveBeenCalledWith(true);
+    expect(store.hintVisible).toBe(false);
 
-    // 重新展开：点击「继续设置」后向导应当出现
-    await hint.find(".resume").trigger("click");
+    // 重新展开能力保留（设置页「重新运行设置助手」与旧入口共用）
+    store.reopen();
     expect(store.showWizard).toBe(true);
   });
 });

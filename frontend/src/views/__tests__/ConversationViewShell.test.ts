@@ -54,7 +54,6 @@ const stubs = {
     template: '<div class="stub-preview" :data-full="full ? \'true\' : \'false\'" />',
   },
   UnifiedApprovalLayer: { name: "UnifiedApprovalLayer", template: "<div />" },
-  SettingsFloat: { name: "SettingsFloat", template: "<div />" },
   PlanetDock: {
     name: "PlanetDock",
     emits: ["open"],

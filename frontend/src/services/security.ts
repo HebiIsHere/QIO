@@ -180,6 +180,10 @@ export async function setSecurityMode(mode: PermissionMode): Promise<SecurityMod
     {
       method: "PUT",
       timeoutMs: 20_000,
+      // 必须显式声明 JSON：FastAPI 的 `body: dict` 在没有 Content-Type 时会把
+      // 原始字节当字符串校验，返回 422「Input should be a valid dictionary」
+      // （用户实测：/api/security/mode -> 422）。
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode, user_confirmed: true }),
     },
   );

@@ -24,7 +24,6 @@ const mocks = vi.hoisted(() => ({
     fetchAcceptance: vi.fn(),
     createIntents: vi.fn(),
     saveDrafts: vi.fn(),
-    createDemoIntents: vi.fn(),
     approveIntent: vi.fn(),
     rejectIntent: vi.fn(),
     batchDecide: vi.fn(),
@@ -78,6 +77,13 @@ function understanding(status = "understood", submissionId = "s1") {
     understandings: [{ id: "u1", status, submissionId, createdAt: STAMP }],
   };
 }
+
+afterEach(async () => {
+  // 测试隔离：先让上一个用例的异步更新（页面加载 / 保存链 / 定时器）落地，再清空挂载点；
+  // 否则残留更新会进入下一个用例，造成与产品无关的顺序依赖。
+  await flushPromises();
+  document.body.innerHTML = "";
+});
 
 beforeEach(() => {
   // resetAllMocks：连 mockImplementationOnce 的排队一起清掉，避免上一个用例的

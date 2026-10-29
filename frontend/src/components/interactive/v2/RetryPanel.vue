@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../../composables/useQioTip";
 /**
  * 重试系列面板（Phase 3-C 契约 §6.3）。
  *
@@ -236,7 +237,7 @@ defineExpose({ load, retry: manualRetry });
             class="retry-btn"
             data-im="p3c-retry-manual"
             :disabled="!canManualRetry(item)"
-            :title="retryTitle(item)"
+            v-qio-tip="retryTitle(item)"
             @click="manualRetry(item)"
           >{{ busyId === item.seriesId ? "提交中…" : "手动重试一次" }}</button>
         </div>
@@ -281,7 +282,7 @@ defineExpose({ load, retry: manualRetry });
   color: var(--text-secondary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 2px var(--sp-2);
   cursor: pointer;
 }
@@ -298,7 +299,7 @@ defineExpose({ load, retry: manualRetry });
   gap: var(--sp-1);
   padding: var(--sp-2);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   min-width: 0;
 }

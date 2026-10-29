@@ -1,13 +1,16 @@
 <!--
-  互动页顶栏控件（Phase 1-B，子智能体 p1-layout 负责）：搜索 + 唯一的保存状态。
+  互动页顶栏控件（Phase 1-B，子智能体 p1-layout 负责）：内联搜索 + 唯一的保存状态。
 
   契约：docs/interactive-page-v2-contract.md §2.1 / §2.3。
   - 挂载点由 A 在 WindowChrome 里提供：#qio-interactive-chrome-extra（品牌与设置之间）；
     本组件用 Teleport 挂进去，同时**不接管拖动面**（拖动面是容器兄弟，见 WindowChrome）。
-  - 全局栏自身 overflow: hidden，所以搜索结果浮层 Teleport 到 body 并用 fixed 定位，
-    再由 chromePlacement 纯函数把矩形钳进视口 —— 不被顶栏裁切、不被推出屏幕。
-  - 搜索用真实 store 的板面 + 现有 searchCards 纯函数，点结果 dispatch
-    qio:interactive:locate-card（与 BoardSearchPanel 同一套定位事件），不造假数据。
+  - FU4：搜索不再是「按钮 + 弹窗」，而是直接渲染在挂载点里的**内联输入框**：
+    初始较窄，点击 / 聚焦即进入输入状态并加宽（宽度过渡），不需要点第二次；
+    除 input 自身 placeholder 外没有任何标题 / label / 说明 / scope / 关闭按钮文字。
+  - 结果列表是锚定在输入框下方的**小浮层列表**（不是弹窗）：无标题、无说明，
+    Teleport 到 body + fixed 定位并由 chromePlacement 纯函数把矩形钳进视口
+    —— 不被全局栏裁切、不被推出屏幕；点结果仍 dispatch qio:interactive:locate-card。
+  - 搜索用真实 store 的板面 + 现有 searchCards 纯函数，不造假数据；Esc / 点击外部收起结果。
   - 保存状态是互动页**唯一**的一处：说准「保存只落库 ≠ QIO 已收到」，
     失败原因一句话，完整原文放 title。
 -->
@@ -49,22 +52,47 @@ const saveView = computed(() =>
   }),
 );
 
-/* ── 板内搜索 ──────────────────────────────────────────────────────────── */
+/**
+ * 保存失败时的**唯一**就地重试入口。
+ *
+ * 为什么放在顶栏保存状态这里：同一时刻只允许一处常驻的「保存失败」——
+ * 之前的 SaveFailureBanner 和这里的保存状态说的是同一个问题，两条常驻横幅会让
+ * 用户以为有两件事要处理。现在失败原因与状态都在这一处，动作也在这一处；
+ * 草稿本机保存失败、提交后刷新失败不属于「保存状态」，仍就近留在输入区上方。
+ */
+const retryBusy = ref(false);
+async function retrySave(): Promise<void> {
+  if (retryBusy.value) return;
+  retryBusy.value = true;
+  try {
+    await store.saveNow();
+  } finally {
+    retryBusy.value = false;
+  }
+}
+
+/* ── 板内搜索（内联输入 + 下方结果浮层列表） ───────────────────────────── */
 interface Hit {
   id: string;
   kindLabel: string;
   summary: string;
-  bookmarked: boolean;
-  checked: boolean;
-  hidden: boolean;
 }
 
-const searchOpen = ref(false);
 const query = ref("");
+const expanded = ref(false);
 const locatedId = ref<string | null>(null);
-const triggerEl = ref<HTMLButtonElement | null>(null);
+const fieldEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLInputElement | null>(null);
-const panelEl = ref<HTMLElement | null>(null);
+const resultsEl = ref<HTMLElement | null>(null);
+let listenersOn = false;
+/**
+ * 从结果列表按 Esc 收起后会把焦点还给输入框；这次「聚焦」只用于恢复焦点，
+ * 不能再次把结果展开（否则 Esc 等于没反应）。
+ */
+let suppressNextActivate = false;
+
+/** 结果只在「已进入输入状态 + 有查询词」时出现；空结果不渲染任何说明文字。 */
+const resultsOpen = computed(() => expanded.value && query.value.trim().length > 0);
 
 const hits = computed<Hit[]>(() => {
   const state = store.board;
@@ -78,14 +106,11 @@ const hits = computed<Hit[]>(() => {
         id: card.id,
         kindLabel: CARD_KIND_LABELS[card.kind],
         summary: text ? (text.length > 28 ? text.slice(0, 28) + "…" : text) : "（无内容）",
-        bookmarked: card.bookmarked,
-        checked: card.checked,
-        hidden: card.hidden,
       };
     });
 });
 
-/** 初始位置只是个安全值；打开后会用触发按钮的真实矩形重算。 */
+/** 初始位置只是个安全值；打开结果后会用输入框的真实矩形重算。 */
 const placement = ref<ChromePopoverPlacement>({
   left: CHROME_POPOVER_MARGIN,
   top: CHROME_POPOVER_MARGIN,
@@ -93,7 +118,7 @@ const placement = ref<ChromePopoverPlacement>({
   maxHeight: 0,
 });
 
-const panelStyle = computed(() => ({
+const resultsStyle = computed(() => ({
   position: "fixed" as const,
   left: placement.value.left + "px",
   top: placement.value.top + "px",
@@ -101,11 +126,11 @@ const panelStyle = computed(() => ({
   maxHeight: placement.value.maxHeight + "px",
 }));
 
-/** 重新计算浮层位置：右对齐搜索按钮，被视口钳制。窗口变化 / 滚动时调用。 */
+/** 重新计算结果浮层位置：右对齐输入框，被视口钳制。窗口变化 / 滚动时调用。 */
 function updatePlacement(): void {
-  const trigger = triggerEl.value;
-  if (!trigger || typeof window === "undefined") return;
-  const rect = trigger.getBoundingClientRect();
+  const anchor = fieldEl.value;
+  if (!anchor || typeof window === "undefined") return;
+  const rect = anchor.getBoundingClientRect();
   placement.value = placeChromePopover(
     {
       left: rect.left,
@@ -126,57 +151,95 @@ function updatePlacement(): void {
 }
 
 function onDocumentPointerDown(event: Event): void {
-  if (!searchOpen.value) return;
+  if (!expanded.value) return;
   const target = event.target as Node | null;
   if (!target) return;
-  if (panelEl.value?.contains(target) || triggerEl.value?.contains(target)) return;
-  void closeSearch(false);
+  if (fieldEl.value?.contains(target) || resultsEl.value?.contains(target)) return;
+  closeResults();
 }
 
 function addGlobalListeners(): void {
-  if (typeof window === "undefined") return;
+  if (listenersOn || typeof window === "undefined") return;
+  listenersOn = true;
   window.addEventListener("resize", updatePlacement);
   window.addEventListener("scroll", updatePlacement, true);
   document.addEventListener("pointerdown", onDocumentPointerDown, true);
 }
 
 function removeGlobalListeners(): void {
-  if (typeof window === "undefined") return;
+  if (!listenersOn || typeof window === "undefined") return;
+  listenersOn = false;
   window.removeEventListener("resize", updatePlacement);
   window.removeEventListener("scroll", updatePlacement, true);
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
 }
 
-async function openSearch(): Promise<void> {
-  if (searchOpen.value) return;
-  searchOpen.value = true;
+/** 点击 / 聚焦 = 进入输入状态并加宽（一次点击即可输入，不需要再点第二次）。 */
+async function activateSearch(): Promise<void> {
+  if (expanded.value) return;
+  expanded.value = true;
+  addGlobalListeners();
   await nextTick();
   updatePlacement();
-  addGlobalListeners();
-  inputEl.value?.focus();
 }
 
-async function closeSearch(restoreFocus = true): Promise<void> {
-  if (!searchOpen.value) return;
-  searchOpen.value = false;
+/** 收起结果（不清空输入，沿用既有习惯；输入框保持焦点时 Esc 不会再次展开）。 */
+function closeResults(): void {
+  if (!expanded.value) return;
+  expanded.value = false;
   locatedId.value = null;
   removeGlobalListeners();
-  if (!restoreFocus) return;
-  await nextTick();
-  triggerEl.value?.focus();
 }
 
-function toggleSearch(): void {
-  if (searchOpen.value) void closeSearch();
-  else void openSearch();
+function onInputKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    // Esc 只收结果：不让板面把它当成「取消拖动 / 清空选择」
+    event.stopPropagation();
+    event.preventDefault();
+    closeResults();
+    return;
+  }
+  if (event.key === "ArrowDown" && resultsOpen.value) {
+    // 键盘可达：从输入框直接进入结果列表
+    const first = resultsEl.value?.querySelector<HTMLElement>("[data-iw-chrome-search-result]");
+    if (first) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 }
 
-function onPanelKeydown(event: KeyboardEvent): void {
+function onResultsKeydown(event: KeyboardEvent): void {
   if (event.key !== "Escape") return;
-  // Esc 只收搜索浮层：不让板面把它当成「取消拖动 / 清空选择」
   event.stopPropagation();
   event.preventDefault();
-  void closeSearch();
+  closeResults();
+  // 焦点还给输入框，但不要因为这次聚焦又把结果展开
+  suppressNextActivate = true;
+  inputEl.value?.focus();
+  queueMicrotask(() => {
+    suppressNextActivate = false;
+  });
+}
+
+/** 点搜索框的任何位置（含图标区）都直接进入输入：一次点击即可打字。 */
+function focusInput(): void {
+  inputEl.value?.focus();
+  void activateSearch();
+}
+
+/** 聚焦只用于「进入输入状态」；从结果列表返回焦点的这一次不重新展开。 */
+function onFocus(): void {
+  if (suppressNextActivate) {
+    suppressNextActivate = false;
+    return;
+  }
+  void activateSearch();
+}
+
+function onQueryInput(): void {
+  void activateSearch();
+  void nextTick().then(updatePlacement);
 }
 
 function locate(hit: Hit): void {
@@ -187,40 +250,47 @@ function locate(hit: Hit): void {
   );
 }
 
-onBeforeUnmount(() => {
-  removeGlobalListeners();
-});
+onBeforeUnmount(removeGlobalListeners);
 </script>
 
 <template>
-  <!-- 顶栏里的控件：搜索 + 唯一保存状态（不接管拖动面，pointer-events 只作用于自己） -->
+  <!-- 顶栏里的控件：内联搜索 + 唯一保存状态（不接管拖动面，pointer-events 只作用于自己） -->
   <Teleport v-if="mountTarget" :to="mountTarget">
     <div class="iw-chrome" data-iw-chrome-tools>
-      <p
-        class="iw-save"
-        :data-tone="saveView.tone"
-        data-iw-chrome-save
-        role="status"
-        :title="saveView.detail || undefined"
-        :aria-label="'保存状态：' + saveView.text"
-      >
-        <span class="iw-dot" aria-hidden="true"></span>
-        <span class="iw-save-text">{{ saveView.text }}</span>
-      </p>
+      <div class="iw-save-group">
+        <p
+          class="iw-save"
+          :data-tone="saveView.tone"
+          data-iw-chrome-save
+          role="status"
+          :aria-label="'保存状态：' + saveView.text + (saveView.detail ? '（' + saveView.detail + '）' : '')"
+        >
+          <span class="iw-dot" aria-hidden="true"></span>
+          <span class="iw-save-text">{{ saveView.text }}</span>
+        </p>
+        <button
+          v-if="saveView.tone === 'err'"
+          class="iw-save-retry"
+          type="button"
+          data-iw-chrome-save-retry
+          :disabled="retryBusy"
+          aria-label="重试保存（只重新保存，不会重复提交）"
+          @click="retrySave"
+        >{{ retryBusy ? "重试中…" : "重试" }}</button>
+      </div>
 
-      <button
-        ref="triggerEl"
-        class="iw-search-btn"
-        type="button"
-        data-iw-chrome-search
-        aria-haspopup="dialog"
-        aria-controls="iw-chrome-search-panel"
-        :aria-expanded="searchOpen ? 'true' : 'false'"
-        aria-label="搜索板面"
-        title="板内搜索：只查你自己的板面"
-        @click="toggleSearch"
+      <!--
+        内联搜索框：这里就是唯一的搜索入口（没有按钮、没有弹窗）。
+        除 input 自己的 placeholder 外不渲染任何文字提示；放大镜图标在输入框内。
+      -->
+      <div
+        ref="fieldEl"
+        class="iw-search-field"
+        data-iw-chrome-search-field
+        :data-expanded="expanded ? 'true' : 'false'"
+        @click="focusInput"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <svg class="iw-search-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <circle cx="7" cy="7" r="4.1" fill="none" stroke="currentColor" stroke-width="1.4" />
           <path
             d="M10.1 10.1 13.8 13.8"
@@ -230,79 +300,51 @@ onBeforeUnmount(() => {
             stroke-linecap="round"
           />
         </svg>
-        <span class="iw-search-label">搜索</span>
-      </button>
-    </div>
-  </Teleport>
-
-  <!-- 结果浮层：单独 Teleport 到 body + fixed，避免被全局栏 overflow 裁切 -->
-  <Teleport v-if="mountTarget" to="body">
-    <section
-      v-if="searchOpen"
-      id="iw-chrome-search-panel"
-      ref="panelEl"
-      class="iw-search"
-      data-iw-chrome-search-panel
-      role="dialog"
-      aria-modal="false"
-      aria-label="板内搜索"
-      :style="panelStyle"
-      v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
-      @keydown="onPanelKeydown"
-    >
-      <header class="iw-search-head">
-        <h2 class="iw-search-title">板内搜索</h2>
-        <button
-          class="iw-search-close"
-          type="button"
-          data-iw-chrome-search-close
-          title="收起搜索（Esc）"
-          @click="closeSearch()"
-        >
-          收起
-        </button>
-      </header>
-
-      <label class="iw-search-field">
-        <span class="iw-search-field-label">搜你自己的板面</span>
         <input
           ref="inputEl"
           v-model="query"
+          class="iw-search-input"
           type="search"
           data-iw-chrome-search-input
-          placeholder="搜文字卡、材料名称或链接地址"
-          aria-label="板内搜索"
+          placeholder="搜板内卡片"
+          aria-label="搜索板面"
+          autocomplete="off"
+          spellcheck="false"
+          @focus="onFocus()"
+          @click="activateSearch()"
+          @input="onQueryInput"
+          @keydown="onInputKeydown"
         />
-      </label>
+      </div>
+    </div>
+  </Teleport>
 
-      <ul v-if="hits.length" class="iw-search-results">
-        <li v-for="hit in hits" :key="hit.id">
-          <button
-            class="iw-search-result"
-            type="button"
-            data-iw-chrome-search-result
-            :data-card-id="hit.id"
-            :class="{ located: locatedId === hit.id }"
-            @click="locate(hit)"
-          >
-            <span class="row">
-              <span class="kind mono">{{ hit.kindLabel }}</span>
-              <span class="summary">{{ hit.summary }}</span>
-            </span>
-            <span class="tags">
-              <span v-if="hit.bookmarked" class="tag bookmark">书签优先</span>
-              <span v-if="hit.hidden" class="tag hidden">已隐藏（退出讨论范围）</span>
-              <span v-else-if="hit.checked" class="tag checked">已勾选</span>
-              <span v-else class="tag">未勾选</span>
-              <span v-if="locatedId === hit.id" class="tag located-tag">已在板面上定位</span>
-            </span>
-          </button>
-        </li>
-      </ul>
-      <p v-else-if="query.trim()" class="iw-search-note">没有匹配的卡片。</p>
-      <p v-else class="iw-search-note">输入关键词后，点结果会在板面上定位（不会修改板面）。</p>
-      <p class="iw-search-scope">搜索只查你自己的板面；未勾选的注释不会因此交给 QIO。</p>
-    </section>
+  <!-- 结果列表：小浮层（不是弹窗）→ Teleport 到 body + fixed，避免被全局栏裁切 -->
+  <Teleport v-if="mountTarget" to="body">
+    <ul
+      v-if="resultsOpen && hits.length"
+      ref="resultsEl"
+      class="iw-search-results"
+      data-iw-chrome-search-results
+      role="list"
+      :style="resultsStyle"
+      v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
+      @keydown="onResultsKeydown"
+    >
+      <li v-for="hit in hits" :key="hit.id">
+        <button
+          class="iw-search-result"
+          type="button"
+          data-iw-chrome-search-result
+          :data-card-id="hit.id"
+          :class="{ located: locatedId === hit.id }"
+          @click="locate(hit)"
+        >
+          <span class="kind mono">{{ hit.kindLabel }}</span>
+          <span class="summary">{{ hit.summary }}</span>
+        </button>
+      </li>
+    </ul>
   </Teleport>
 </template>
 
@@ -311,21 +353,28 @@ onBeforeUnmount(() => {
 .iw-chrome {
   display: flex;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
   height: 100%;
   min-width: 0;
+  max-width: 100%;
   /* 全局栏的拖动面是兄弟节点；这里只接收自己这一块区域的指针事件 */
   pointer-events: auto;
   font-family: var(--sans);
 }
 
+.iw-save-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: min(300px, 30vw);
+}
 .iw-save {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   margin: 0;
   min-width: 0;
-  max-width: min(240px, 24vw);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
   white-space: nowrap;
@@ -355,52 +404,100 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 失败时唯一就地的重试入口：只在保存失败（tone=err）时出现 */
+.iw-save-retry {
+  flex: none;
+  font: inherit;
+  font-size: var(--fs-xs);
+  color: var(--text-strong);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--qio-ui-radius);
+  padding: 0 var(--sp-2);
+  min-height: 22px;
+  cursor: pointer;
+}
+.iw-save-retry:disabled { color: var(--text-muted); cursor: default; }
+.iw-save-retry:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 
-.iw-search-btn {
+/*
+  内联搜索框（FU4）：初始较窄，点击 / 聚焦后加宽（宽度过渡）。
+  只有 input 自己；除 placeholder 外没有任何可见文字。
+*/
+.iw-search-field {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
-  flex: none;
-  height: 28px;
-  padding: 0 var(--sp-2);
+  flex: 0 1 auto;
+  width: 128px;
+  max-width: calc(100vw - 240px);
+  height: 26px;
+  padding: 0 var(--sp-2) 0 24px;
   border: 1px solid transparent;
   border-radius: var(--r-pill);
-  background: none;
-  font: inherit;
-  font-size: var(--fs-sm);
+  background: var(--bg-inset);
   color: var(--text-secondary);
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease);
+  transition:
+    width var(--dur-menu) var(--ease-out),
+    border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
 }
-.iw-search-btn:hover {
-  color: var(--text-strong);
-  background: var(--layer-hover);
+.iw-search-field:hover {
   border-color: var(--border-subtle);
 }
-.iw-search-btn:focus-visible {
+.iw-search-field:focus-within {
+  border-color: var(--border-strong);
+  background: var(--bg-surface);
   outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
-.iw-search-btn svg {
-  width: 14px;
-  height: 14px;
+.iw-search-field[data-expanded="true"] {
+  width: 260px;
+  max-width: min(320px, calc(100vw - 240px));
+}
+.iw-search-icon {
+  position: absolute;
+  left: 8px;
+  width: 13px;
+  height: 13px;
   flex: none;
+  pointer-events: none;
+  color: var(--text-muted);
+}
+.iw-search-input {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  outline: none;
+}
+.iw-search-input::placeholder {
+  color: var(--text-muted);
+}
+.iw-search-input:focus-visible {
+  outline: none;
 }
 
-/* ── 搜索结果浮层（Teleport 到 body；position/尺寸由面板内联样式给出）─────── */
-.iw-search {
-  /* 高于全局栏（240），保证浮层出现在顶栏之上而不是被它裁掉 */
+/* ── 搜索结果：输入框下方的小浮层列表（不是弹窗）────────────────────────── */
+.iw-search-results {
   z-index: 260;
+  list-style: none;
+  margin: 0;
+  padding: var(--sp-1);
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  padding: var(--sp-3);
+  gap: 2px;
   overflow-y: auto;
   overflow-x: hidden;
   background: var(--bg-elevated);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-shadow: var(--shadow-2);
   color: var(--text-primary);
   font-family: var(--sans);
@@ -416,90 +513,18 @@ onBeforeUnmount(() => {
     transform: none;
   }
 }
-
-.iw-search-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
-}
-.iw-search-title {
-  margin: 0;
-  font-family: var(--serif);
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--text-strong);
-}
-.iw-search-close {
-  font: inherit;
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-  background: none;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  padding: 1px var(--sp-2);
-  cursor: pointer;
-}
-.iw-search-close:hover {
-  color: var(--text-strong);
-  border-color: var(--border-strong);
-}
-.iw-search-close:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
-
-.iw-search-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-.iw-search-field-label {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-}
-.iw-search-field input {
-  font: inherit;
-  font-size: var(--fs-sm);
-  color: var(--text-primary);
-  background: var(--bg-inset);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  padding: var(--sp-1) var(--sp-2);
-}
-.iw-search-field input:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
-
-.iw-search-note,
-.iw-search-scope {
-  margin: 0;
-  font-size: var(--fs-xs);
-  line-height: var(--lh-tight);
-  color: var(--text-faint);
-}
-
-.iw-search-results {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
 .iw-search-result {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  gap: var(--sp-1);
   text-align: left;
   font: inherit;
   font-size: var(--fs-xs);
   color: var(--text-primary);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
 }
@@ -514,46 +539,32 @@ onBeforeUnmount(() => {
 .iw-search-result.located {
   border-color: var(--warning);
 }
-.row {
-  display: flex;
-  align-items: baseline;
-  gap: var(--sp-1);
-  min-width: 0;
-}
 .kind {
   flex: none;
   color: var(--text-muted);
 }
 .summary {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-  color: var(--text-faint);
-}
-.tag {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-pill);
-  padding: 0 var(--sp-1);
-}
-.tag.bookmark {
-  color: var(--warning);
-  border-color: var(--warning);
-}
-.tag.hidden {
-  color: var(--text-muted);
-  border-style: dashed;
-}
-.tag.checked {
-  color: var(--success);
-  border-color: var(--success);
-}
-.tag.located-tag {
-  color: var(--warning);
-  border-color: var(--warning);
+
+/* 窄窗：保存状态与搜索框都不许把全局栏挤溢出（480 仍可用） */
+@media (max-width: 760px) {
+  .iw-save-group {
+    max-width: 120px;
+  }
+  .iw-save {
+    max-width: 72px;
+  }
+  .iw-search-field {
+    width: 104px;
+    max-width: calc(100vw - 220px);
+  }
+  .iw-search-field[data-expanded="true"] {
+    width: 180px;
+    max-width: min(200px, calc(100vw - 200px));
+  }
 }
 </style>

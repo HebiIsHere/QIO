@@ -28,7 +28,11 @@ from agent.adapters.text import TextAdapter
 from agent.config import Settings
 from agent.core.guard import RunawayGuard
 from agent.core.tool_state import ToolExecutionState
-from agent.credentials.policy import CredentialPolicy, CredentialRef
+from agent.credentials.policy import (
+    MAIN_LOOP_USAGE_TAGS as _POLICY_MAIN_LOOP_USAGE_TAGS,
+    CredentialPolicy,
+    CredentialRef,
+)
 from agent.credentials.providers import (
     resolve_endpoint as resolve_credential_endpoint,
     resolve_model as resolve_credential_model,
@@ -57,6 +61,20 @@ from agent.services.lifecycle import (
     log_close_report,
     merge_close_reports,
 )
+from agent.credentials.usages import legacy_tags_for_usage as _legacy_tags_for_usage
+from agent.services.usage_target import (
+    REASON_ADAPTER_UNAVAILABLE,
+    REASON_NO_CREDENTIAL,
+    SOURCE_DEFAULT,
+    SOURCE_EXPLICIT,
+    SOURCE_POLICY,
+    UsageTarget,
+    UsageUnavailable,
+    is_explicit_assignment as _is_explicit_usage_assignment,
+    read_usage_assignments as _read_usage_assignments,
+    resolve_shared_target as _resolve_shared_usage_target,
+    resolve_usage_target as _resolve_usage_target,
+)
 from agent.storage.settings import SettingsStore
 from agent.prompts import (
     NOTIFY_SUBTASK_DONE,
@@ -77,7 +95,18 @@ MAIN_LOOP_TAG = "main-loop"
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-MAIN_LOOP_USAGE_TAGS = ["main-loop", "chat", "code", "vision", "research"]
+# 主对话候选标签的唯一来源在 credentials/policy.py（用途解析也用同一批）。
+# 这里保留同名常量：既有导入点（onboarding / 测试）不因这次重构而断。
+MAIN_LOOP_USAGE_TAGS = list(_POLICY_MAIN_LOOP_USAGE_TAGS)
+
+#: 后台三类用途 → 派生任务 kind（derived_tasks.KIND_*）。
+#: 三者**各自独立**解析用途并各自建 adapter：以前三条都复用主 Turn 的同一个 adapter，
+#: 于是「换掉记忆整理用的模型」在界面上看起来生效、实际毫无作用。
+DERIVED_USAGE_BY_KIND = {
+    "summary": "memory-organize",
+    "knowledge": "knowledge-distill",
+    "entities": "entity-extract",
+}
 BUDGET_RATIO = 0.25
 
 # 用户忽略过某类高影响知识后，这段时间内不再把同类候选弹到对话里。
@@ -89,6 +118,13 @@ KNOWLEDGE_IGNORE_KEY_PREFIX = "knowledge.ignored_at."
 
 # Anthropic 能力探测的缓存时长：能力档位不会频繁变化，没必要每个 Turn 实测一次。
 ANTHROPIC_PROBE_TTL_SECONDS = 3600.0
+
+# adapter 缓存的条数上限（按「凭据 + 模型」槽位算）。超出时淘汰最久没用的槽位 ——
+# 淘汰只是**松开引用**，不是关闭连接：仍被后台工作持有的 adapter 不能被关掉。
+ADAPTER_CACHE_LIMIT = 16
+# 被新配置顶替下来的旧 adapter 暂留条数上限。留一点是为了「换 Key 那一刻已经开始
+# 的工作」还能用自己的连接收尾，同时不让历史连接无限堆积。
+ADAPTER_RETIRED_LIMIT = 16
 
 # 会话历史分页：首屏只取最近一页，其余按游标往前翻。
 SESSION_PAGE_DEFAULT_LIMIT = 200
@@ -130,6 +166,10 @@ def _record_understanding_phase(
     return report.with_phase(PHASE_UNDERSTANDING_STOPPED)
 
 
+#: 子任务通知轮的确定性 request_id 前缀（TurnManager 幂等索引按它查重）。
+SUBTASK_NOTIFICATION_REQUEST_ID_PREFIX = "subtask-notify:"
+
+
 class AppContext:
     def __init__(self, settings: Settings, conn: sqlite3.Connection, bus: EventBus) -> None:
         self.settings = settings
@@ -169,12 +209,23 @@ class AppContext:
             conn, enabled=self.settings_store.get("trace.enabled", "true") != "false"
         )
         self.policy = CredentialPolicy(self.credentials)
+        # 用途解析的最近一次结论（**只含凭据 id 与模型名，不含密钥**）：
+        # 界面 / 事件 / 后台任务据此说明「这个用途现在凭什么在用它」，以及
+        # 「默认模型不可用，已回退到 X（原因）」。没有条目 = 本轮还没解析过。
+        self.usage_targets: dict[str, UsageTarget] = {}
+        self.usage_unavailable: dict[str, UsageUnavailable] = {}
         self.probe_cache = ProbeCache()
         self.context_registry = ContextLengthRegistry()
         # Adapter / 底层 HTTP client 复用：每个 Turn 重新建连接池是没有必要的
         # （新 TCP/TLS 握手 + 新连接池），能力探测结果也不该每轮重测。
-        # key = (key_id, credential version, endpoint, model)
+        # key = (key_id, credential version, updated_at, endpoint, model)
         self._adapter_cache: dict[tuple, BaseAdapter] = {}
+        # 槽位索引：(key_id, model) -> 当前缓存键。**同一个槽位**换配置才顶替旧的；
+        # 同一凭据的不同模型是不同槽位，可以同时存在（A：以前会被互相关闭）。
+        self._adapter_slots: dict[tuple, tuple] = {}
+        # 被顶替 / 淘汰下来、暂时还留着强引用的旧 adapter（有界，见 _retire_adapter）。
+        # 运行期**不关闭**它们：可能还有已经开始的工作在用，关闭会打断那次调用。
+        self._adapter_retired: list[tuple[tuple, BaseAdapter]] = []
         # Anthropic 能力探测的缓存（key 里含凭据版本，换 Key 立即失效）
         self._anthropic_probe_at: dict[tuple, float] = {}
         self.fragments = FragmentManager(conn)
@@ -268,8 +319,10 @@ class AppContext:
         from agent.tools.web_search import WebSearchTool
         from agent.tools.web_fetch import WebFetchTool
 
-        self.registry.register(WebSearchTool(self.search_service))
-        self.registry.register(WebFetchTool())
+        # 搜索参数（返回条数 / 正文预算）从设置实时读取：设置在界面上可改，
+        # 运行期必须跟着变（见 tools/web_search.py / web_fetch.py 的同名注释）。
+        self.registry.register(WebSearchTool(self.search_service, self.settings_store))
+        self.registry.register(WebFetchTool(settings=self.settings_store))
         # 电脑操控：共享沙箱 + 文件系统/命令/进程工具（分级授权，走 ComputerSandbox）
         from agent.services.computer import ComputerSandbox, DEFAULT_MODE
         from agent.tools.fs_tools import (
@@ -495,9 +548,13 @@ class AppContext:
         # 对话页任务栏：子任务生命周期同步写进 task_feed（展示事实，不替代执行）。
         self.task_manager = TaskManager(bus, on_change=self._on_subagent_task_change)
         self.services.register("task_manager", self.task_manager)
-        # 阶段四 A：子任务完成通知先入队（按 task 去重），空闲时各自成为一条通知轮；
-        # 不打断当前交流、不因处理另一条通知而丢弃。
-        self.subtask_notifications = SubtaskNotificationQueue(self.task_manager)
+        # 阶段四 A / FU2-D：子任务完成通知先**持久化**入队（task_id 主键去重），空闲时
+        # 各自成为一条通知轮。投递状态在库里（delivered_at 才是交付判据）：重启可恢复、
+        # 失败保留待重试、超过告警阈值只告警不丢弃。入队 ≠ 交付。
+        self.subtask_notifications = SubtaskNotificationQueue(self.task_manager, conn=conn)
+        # 投递失败后的延迟重试（秒）；只在没有 active / queued 用户轮时才会真正提交。
+        self.subtask_notification_retry_delay = 10.0
+        self._notify_retry_task: asyncio.Task | None = None
         # 阶段四 A：程序绑定子任务 origin（当前真实用户轮 + 原话题），模型不能伪造。
         set_origin_provider(self._subtask_origin)
         from agent.tools.credential_catalog import ListAvailableCredentialsTool
@@ -681,6 +738,8 @@ class AppContext:
             self.recover_instance_owned_records()
         except Exception:  # noqa: BLE001 - 恢复失败不该让应用起不来
             logger.warning("instance owned recovery failed", exc_info=True)
+        # FU2-D：上一次进程没送达的通知还在库里 —— 启动后继续投递（不靠用户先说话）。
+        self._prime_subtask_notification_delivery()
 
     # -- 实例归属的启动恢复（契约 C1）--------------------------------------
 
@@ -1373,6 +1432,7 @@ class AppContext:
                         adapter_factory=self.build_adapter_for_credential,
                         bus=self.bus,
                         trace_store=self.trace_store,
+                        usage_assignment=self.subagent_usage_assignment,
                     )
                 else:
                     tool = CodeTool(
@@ -1385,6 +1445,84 @@ class AppContext:
                 logger.info("restored tool: %s", definition.name)
             except Exception:  # noqa: BLE001 - a broken tool must not block startup
                 logger.warning("failed to restore tool: %s", definition.name, exc_info=True)
+
+    # -- 用途解析（设置页改版 §8）-----------------------------------------
+    #
+    # 一次 turn / 一个后台任务开始时**冻结** UsageTarget（见 turn_orchestrator.begin /
+    # _schedule_derived_work）：用户中途改了用途分配，已经开始的调用仍按原配置归属，
+    # 后续调用才用新保存值。解析本身是纯读（services/usage_target.py），不建连接。
+
+    def resolve_usage(
+        self, usage_key: str, *, policy_tags: list[str] | None = None
+    ) -> UsageTarget:
+        """按用途解析出 (凭据, 模型)。不可用时抛 UsageUnavailable（带原因码）。"""
+        return _resolve_usage_target(
+            self.credentials,
+            self.settings_store,
+            usage_key,
+            policy=self.policy,
+            policy_tags=policy_tags,
+        )
+
+    def resolve_main_target(self) -> UsageTarget:
+        """主对话 / 通用对话：共用同一条调用路径，通用对话显式指定优先。"""
+        return _resolve_shared_usage_target(
+            self.credentials,
+            self.settings_store,
+            ["general-chat", "main-chat"],
+            policy=self.policy,
+            primary_key="main-chat",
+        )
+
+    def resolve_alongside_target(self, usage_key: str) -> UsageTarget | None:
+        """「专项用途」：只有**显式指定**或基线专项标签才有目标，否则 None。
+
+        看图就是这种：基线行为是「有 vision 凭据就用它，没有就如实回落主对话」。
+        这里不继承默认模型（``vision`` 的 inherits_default=False）：把默认对话模型
+        塞给看图，等于让一个可能读不了图的模型去读图。
+        """
+        usage_key = str(usage_key or "").strip()
+        if not usage_key:
+            return None
+        assignment = _read_usage_assignments(self.credentials).get(usage_key)
+        if _is_explicit_usage_assignment(assignment):
+            # 显式指定损坏 → 硬失败（不静默换成主对话那把 Key）。
+            return self.resolve_usage(usage_key)
+        tags = list(_legacy_tags_for_usage(usage_key))
+        refs = self.policy.resolve(usage_key, tags) if tags else []
+        if not refs:
+            return None
+        ref = refs[0]
+        return UsageTarget(
+            usage_key=usage_key,
+            credential_id=ref.key_id,
+            model_id=ref.default_model,
+            source=SOURCE_POLICY,
+        )
+
+    def _record_usage(self, target: UsageTarget) -> None:
+        """记下解析结论（不记密钥）；降级要留痕，否则「静默回退」就真的静默了。
+
+        解析成功时清掉这个用途上一次的「不可用」记录：用户修好凭据之后，界面/事件
+        不能再拿旧原因说事（否则「主对话」明明恢复了，失败提示却还挂着旧理由）。
+        """
+        self.usage_targets[target.usage_key] = target
+        self.usage_unavailable.pop(target.usage_key, None)
+        if target.degraded:
+            logger.warning(
+                "用途 %s 的默认模型不可用（%s），已回退到 %s/%s",
+                target.usage_key,
+                target.degrade_reason,
+                target.credential_id,
+                target.model_id or "(凭据默认模型)",
+            )
+
+    def _record_usage_unavailable(self, exc: UsageUnavailable) -> None:
+        """记下「这个用途现在不可用 + 原因」；文案里没有密钥，也没有请求内容。"""
+        self.usage_unavailable[exc.usage_key] = exc
+        logger.warning(
+            "用途 %s 不可用：%s（%s）", exc.usage_key, exc.reason_code, exc.message
+        )
 
     # -- adapter ----------------------------------------------------------
 
@@ -1404,11 +1542,147 @@ class AppContext:
         return refs[0] if refs else None
 
     async def build_vision_adapter(self) -> BaseAdapter | None:
-        """看图用的适配器：有 vision 用途凭据就用它，没有就返回 None（由调用方回落）。"""
-        ref = self.resolve_vision_ref()
-        if ref is None:
+        """看图用的适配器（用途 `vision`）。
+
+        显式指定了看图模型却不可用 → **不换 Key**：记下原因并返回 None（调用方按
+        「没有专用看图凭据」如实回落，图片能否交付由适配器能力决定）。
+        没有显式指定 → 基线的 vision 标签凭据 → 没有就 None（由调用方回落主对话）。
+        """
+        try:
+            target = self.resolve_alongside_target("vision")
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
             return None
-        return await self.build_adapter_for_credential(ref.key_id, ref.default_model)
+        if target is None:
+            # 没有显式指定、也没有 vision 专用凭据：基线行为是「回调方回落主对话」。
+            # 顺手清掉上一次「显式指定不可用」的记录，免得用户清掉分配后还在报旧原因。
+            self.usage_unavailable.pop("vision", None)
+            return None
+        self._record_usage(target)
+        return await self.build_adapter_for_target(target)
+
+    async def build_adapter_for_target(self, target: UsageTarget) -> BaseAdapter | None:
+        """按冻结好的用途目标建（或复用）adapter —— 归因/预算仍走唯一那条路径。"""
+        return await self.build_adapter_for_credential(
+            target.credential_id, target.model_id
+        )
+
+    async def build_adapter_for_usage(
+        self, usage_key: str, *, policy_tags: list[str] | None = None
+    ) -> BaseAdapter | None:
+        """后台路径用：按用途解析并建 adapter；不可用时记录原因并返回 None。
+
+        这台机器的调用方（维护、后台分析）拿不到 adapter 就如实跳过并说明原因，
+        绝不悄悄改用主对话那把 Key。
+        """
+        try:
+            target = self.resolve_usage(usage_key, policy_tags=policy_tags)
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
+            return None
+        self._record_usage(target)
+        return await self.build_adapter_for_target(target)
+
+    def subagent_usage_assignment(self) -> tuple[str, str | None] | None:
+        """「子任务」用途的显式 / 默认指定（给 tools/subagent_tool.py 用）。
+
+        * 没有显式分配、也没有默认模型 → None：照旧走基线自主选择（``credential_selection``）；
+        * 有显式分配 → 返回 (credential_ref, model)；**不可用时抛 UsageUnavailable**，
+          由工具如实失败 —— 用户明确指定的凭据不能被静默替换；
+        * 只有默认模型 → 返回默认模型目标；默认层不可用时回退基线选择，但降级事实已由
+          `_record_usage` 记下（界面可显示「默认模型不可用，已回退到 X」）。
+        """
+        assignment = _read_usage_assignments(self.credentials).get("subagent")
+        if _is_explicit_usage_assignment(assignment):
+            target = self.resolve_usage("subagent")
+            self._record_usage(target)
+            return target.credential_id, target.model_id
+        try:
+            target = self.resolve_usage("subagent")
+        except UsageUnavailable as exc:
+            # 没有显式分配时，回退是基线自己的事；这里只记原因。
+            self._record_usage_unavailable(exc)
+            return None
+        self._record_usage(target)
+        if target.source in (SOURCE_EXPLICIT, SOURCE_DEFAULT):
+            return target.credential_id, target.model_id
+        return None
+
+    async def build_background_adapter(self, usage_key: str) -> BaseAdapter | None:
+        """后台维护路径（知识维护批次 / 维护问答）用的 adapter。
+
+        * 用途能解析出目标 → 用它（用户改了用途分配就真的换）；
+        * **数据库里一条凭据都没有**（首次启动 / 单测注入主 adapter 的离线环境）→
+          保持基线：用主 adapter。这时库里没有任何别的服务可选，不存在「把内容发给
+          用户没选过的服务」的风险；一旦真有凭据而用途目标不可用，就返回 None，
+          由调用方如实失败（不悄悄换用主对话模型）。
+        """
+        adapter = await self.build_adapter_for_usage(usage_key)
+        if adapter is not None:
+            return adapter
+        exc = self.usage_unavailable.get(usage_key)
+        if exc is not None and exc.reason_code != REASON_NO_CREDENTIAL:
+            return None
+        return await self.build_adapter()
+
+    def _snapshot_derived_targets(self) -> dict[str, Any]:
+        """在**第一次异步等待之前**冻结本批三类用途的目标/不可用结果。
+
+        为什么必须单独做这一步：`build_derived_adapters` 会逐个 `await` 建连接；
+        每次 await 都是用户修改设置的机会。如果边建边解析，就会出现「summary 用旧
+        配置、knowledge/entities 用新配置」的同一批混用 —— 本批工作的所有目标必须
+        在第一次让出事件循环前确定，后续连接准备只消费这份快照。
+
+        这里全是同步本地读（`resolve_usage` 只读设置/目录/凭据元数据，不联网、
+        不建连接），所以调用方在第一次 await 前调用它即可保证快照完整。
+        """
+        targets: dict[str, Any] = {}
+        for kind, usage_key in DERIVED_USAGE_BY_KIND.items():
+            try:
+                target = self.resolve_usage(usage_key)
+            except UsageUnavailable as exc:
+                self._record_usage_unavailable(exc)
+                targets[kind] = exc
+                continue
+            self._record_usage(target)
+            targets[kind] = target
+        return targets
+
+    async def build_derived_adapters(self) -> dict[str, Any]:
+        """后台三类用途各自解析 + 建 adapter，返回 ``kind -> adapter | UsageUnavailable``。
+
+        为什么不是「一个 adapter 传下去」：摘要（记忆整理）、知识提炼、实体提炼是三条
+        独立派生任务，用户可以分别指定不同模型；共用主 Turn 的 adapter 会让「用途分配」
+        在界面上看起来生效、实际毫无作用。
+
+        **本批配置是冻结的**：先同步解析三项目标（含不可用结果），再逐个建连接；
+        用户在建第一种连接期间修改设置，只影响下一次 `build_derived_adapters`，
+        本批的 summary/knowledge/entities 继续使用开始时那份目标（B 剩余问题）。
+
+        解析/建 adapter 失败时返回**异常对象**而不是 None：派发器按 kind 把它写成该任务
+        的可读失败原因（这条任务停了，别的任务照跑），不退回主对话模型。
+        """
+        targets = self._snapshot_derived_targets()
+        result: dict[str, Any] = {}
+        for kind, target in targets.items():
+            if isinstance(target, UsageUnavailable):
+                result[kind] = target
+                continue
+            adapter = await self.build_adapter_for_target(target)
+            if adapter is None:
+                exc = UsageUnavailable(
+                    target.usage_key,
+                    REASON_ADAPTER_UNAVAILABLE,
+                    f"「{target.usage_key}」用途解析到 {target.credential_id}，但它建不出可用适配器"
+                    "（端点或模型缺失）",
+                    credential_id=target.credential_id,
+                    model_id=target.model_id,
+                )
+                self._record_usage_unavailable(exc)
+                result[kind] = exc
+                continue
+            result[kind] = adapter
+        return result
 
     def _loop_max_iterations(self) -> int:
         """用户配置的迭代上限；0 表示未配置（用模式默认值）。"""
@@ -1425,6 +1699,8 @@ class AppContext:
 
         正常 Turn 复用同一个 adapter（等价于复用底层 HTTP client / 连接池）；
         凭据被轮换、端点或模型变化时缓存键变化 → 自然重建；
+        缓存按 `(key_id, model)` 分槽位：同一凭据的不同模型可以同时使用，
+        建后一个不会关闭/顶替前一个（A）；被顶替的旧 adapter 运行期不关闭，
         应用关闭时由 `aclose()` 统一释放。
         """
         secret = self.credentials.get_secret(key_id)
@@ -1449,6 +1725,8 @@ class AppContext:
         )
         cached = self._adapter_cache.get(cache_key)
         if cached is not None:
+            # 命中即刷新最近使用顺序（dict 保序，容量淘汰从最旧的开始）。
+            self._adapter_cache[cache_key] = self._adapter_cache.pop(cache_key)
             return cached
 
         adapter = await self._create_adapter(secret, model, base_url, key_id, meta)
@@ -1514,12 +1792,69 @@ class AppContext:
         return result
 
     def _remember_adapter(self, cache_key: tuple, adapter: BaseAdapter) -> None:
-        """记住 adapter，并淘汰同一凭据的旧版本（避免缓存随轮换无限增长）。"""
-        key_id = cache_key[0]
-        for old_key in [k for k in self._adapter_cache if k[0] == key_id and k != cache_key]:
-            stale = self._adapter_cache.pop(old_key)
-            _close_adapter_soon(stale)
+        """记住 adapter；只有**同一个槽位**换配置才顶替旧的，绝不关闭别的模型。
+
+        历史缺陷（A）：这里以前会把同一 key_id 的其它缓存项全部 pop 并
+        `_close_adapter_soon`。于是同一把 Key 下换成另一个模型（记忆整理 / 知识提炼 /
+        实体提炼各自指定不同模型，主对话与子任务用不同模型）时，前一个还在跑的任务
+        的连接会被关掉。
+
+        现在的规则：
+
+        * 槽位 = `(key_id, model)`：不同模型各自独立，互不顶替、互不关闭；
+        * 同一槽位换了配置（凭据版本 / updated_at / 端点）→ 新配置成为该槽位当前项，
+          旧 adapter 进暂留名单（`_adapter_retired`），**运行期不关闭**：
+          换配置那一刻已经开始的工作仍能用自己的连接收尾；
+        * 两条名单都有条数上限（`_prune_adapters` 只松开引用、不关闭）：没人再引用的
+          旧连接会立刻被引用计数回收，仍被持有的（正在用）保持可用 —— 这正是「不无限
+          保留历史连接」与「不打断在用连接」可以同时成立的原因；
+        * 唯一的关闭点是 `aclose()`（应用关闭）。
+        """
+        # 并发建同一个键（例如主对话与后台派生工作几乎同时开跑）：后到的成为当前项，
+        # 先到的进暂留名单 —— 同样不关闭，谁手里还拿着它谁就能继续用完。
+        replaced = self._adapter_cache.get(cache_key)
+        if replaced is not None and replaced is not adapter:
+            self._adapter_cache.pop(cache_key, None)
+            self._retire_adapter(cache_key, replaced)
+        # 缓存键的排布见 build_adapter_for_credential：末位是模型，首位是凭据 id。
+        slot = (cache_key[0], cache_key[-1])
+        previous_key = self._adapter_slots.get(slot)
+        if previous_key is not None and previous_key != cache_key:
+            previous = self._adapter_cache.pop(previous_key, None)
+            if previous is not None:
+                self._retire_adapter(previous_key, previous)
+        # 插入到末尾 = 最近使用（dict 保序，容量淘汰按它做 LRU）。
+        self._adapter_cache.pop(cache_key, None)
         self._adapter_cache[cache_key] = adapter
+        self._adapter_slots[slot] = cache_key
+        self._prune_adapters()
+
+    def _retire_adapter(self, cache_key: tuple, adapter: BaseAdapter) -> None:
+        """把被顶替 / 淘汰的旧 adapter 放进**有界**暂留名单（不关闭）。
+
+        留一个强引用只为「应用退出时还能对最近的旧连接做一次显式 close」；
+        超出上限的最旧条目只是松开引用 —— 引用计数会立刻回收没人再持有的底层
+        client，仍被后台工作持有的条目由持有者决定生命周期。运行期这里不关闭
+        任何连接（那会打断已经开始的调用）。
+        """
+        self._adapter_retired.append((cache_key, adapter))
+        while len(self._adapter_retired) > ADAPTER_RETIRED_LIMIT:
+            # 不调用 close()：可能还有已经开始的工作在用。松开引用即回收无人引用的。
+            self._adapter_retired.pop(0)
+
+    def _prune_adapters(self) -> None:
+        """把当前缓存压到条数上限：淘汰最久没用的槽位（同样只松开引用、不关闭）。
+
+        被淘汰的 adapter 进暂留名单，所以「容量淘汰」不会变成「关闭一个正在被用的
+        连接」—— 运行期没有任何路径关闭缓存里的 adapter。
+        """
+        while len(self._adapter_cache) > ADAPTER_CACHE_LIMIT:
+            stale_key = next(iter(self._adapter_cache))
+            stale = self._adapter_cache.pop(stale_key)
+            slot = (stale_key[0], stale_key[-1])
+            if self._adapter_slots.get(slot) == stale_key:
+                self._adapter_slots.pop(slot, None)
+            self._retire_adapter(stale_key, stale)
 
     async def aclose(self) -> "CloseReport":
         """应用关闭：按依赖顺序收尾，不留悬挂的任务与等待。
@@ -1539,6 +1874,14 @@ class AppContext:
         数据库连接的关闭由调用方决定（`create_app(..., close_db_on_shutdown=True)`
         时在 lifespan 的最后一步），保证不会出现「后台任务还在写，DB 已经关了」。
         """
+        # FU2-D：先取消待执行的「通知投递延迟重试」句柄（库里的待投递记录保留，
+        # 下次启动由 _prime_subtask_notification_delivery 继续投递）。
+        try:
+            self.cancel_notification_retry()
+        except Exception:  # noqa: BLE001 - 取消失败不阻止其它收尾
+            logging.getLogger(__name__).warning(
+                "cancel notification retry failed", exc_info=True
+            )
         # R9：先停审批后台执行器（取消在途执行任务；waiting 审批不取消，供重启恢复）。
         try:
             await self.approvals.aclose()
@@ -1625,9 +1968,20 @@ class AppContext:
             )
 
         if decision.release_adapters:
-            adapters, self._adapter_cache = list(self._adapter_cache.values()), {}
+            # 当前缓存 + 被顶替仍暂留的旧 adapter 一起关：应用退出时不存在「还可以
+            # 继续用」的连接，而关闭前后台执行单元已经确认停下（见 close_decision）。
+            # 运行期从不关闭它们（见 _remember_adapter），所以这里是唯一的关闭点。
+            adapters = list(self._adapter_cache.values())
+            adapters.extend(adapter for _key, adapter in self._adapter_retired)
+            self._adapter_cache = {}
+            self._adapter_slots.clear()
+            self._adapter_retired.clear()
             self._anthropic_probe_at.clear()
+            closed: set[int] = set()
             for adapter in adapters:
+                if id(adapter) in closed:
+                    continue
+                closed.add(id(adapter))
                 await _close_adapter(adapter)
             report = report.with_phase(PHASE_ADAPTERS_RELEASED)
         else:
@@ -1650,10 +2004,35 @@ class AppContext:
         return report
 
     async def build_adapter(self) -> BaseAdapter | None:
-        ref = self.resolve_main_ref()
-        if ref is None:
+        """主对话适配器（用途 main-chat / general-chat）。
+
+        解析优先：显式指定 → 默认模型 → 基线 policy。不可用时**不换 Key**，而是记下
+        原因并返回 None —— 调用方（Turn 编排器）据此给出可读的终态，而不是把它当成
+        「没有配置凭据」。这个返回值同时是这一轮的**冻结**结果（下一次调用才会用新保存值）。
+        """
+        try:
+            target = self.resolve_main_target()
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
             return None
-        return await self.build_adapter_for_credential(ref.key_id, ref.default_model)
+        self._record_usage(target)
+        return await self.build_adapter_for_target(target)
+
+    def usage_unavailable_detail(self, usage_key: str) -> dict[str, Any] | None:
+        """这个用途最近一次「不可用」的完整事实（原因码 + 可读原因 + 凭据/模型引用）。
+
+        给路由 / 理解模块 / 界面用：它们拿不到 adapter 时也要能说清**为什么**，
+        而不是笼统报「没有可用模型」。没有任何记录返回 None（不编造）。
+        """
+        exc = self.usage_unavailable.get(str(usage_key or "").strip())
+        return exc.to_dict() if exc is not None else None
+
+    def main_adapter_unavailable_message(self) -> str:
+        """主对话没有可用适配器时的可读原因（有原因就说原因，不笼统说「没配置」）。"""
+        exc = self.usage_unavailable.get("main-chat")
+        if exc is None:
+            return "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话"
+        return f"主对话当前不可用：{exc.message}"
 
     # -- 能力与凭据状态广播 ------------------------------------------------
 
@@ -1688,15 +2067,25 @@ class AppContext:
             await self.bus.publish(make_event(EventType.FALLBACK, fallback))
 
     async def announce_credential_unavailable(self, turn_id: str | None = None) -> None:
-        """主循环没有可用凭据：只说明「现在用不了 + 去哪里加」，不带内部标识。"""
+        """主循环没有可用凭据：说明「现在用不了 + 为什么 + 去哪里处理」。
+
+        以前一律报 reason_code=no_credential（「还没有配置凭据」）。用户在设置里显式
+        指定了用途、但那把 Key 被停用 / 预算耗尽时，这句话是错的：凭据已经配好了，
+        是它现在不能用。所以这里优先报真实原因码与可读原因（不含密钥、不含 endpoint）。
+        """
         from agent.api.events import EventType, make_event
 
+        exc = self.usage_unavailable.get("main-chat")
         data: dict = {
             "status": "unavailable",
             "scope": "main_loop",
-            "reason_code": "no_credential",
-            "message": "当前没有可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key",
+            "reason_code": exc.reason_code if exc is not None else "no_credential",
+            "message": self.main_adapter_unavailable_message(),
         }
+        if exc is not None:
+            # 只给定位用的引用（凭据 id / 模型名），不含任何密钥材料。
+            data["credential_id"] = exc.credential_id
+            data["model_id"] = exc.model_id
         if turn_id:
             data["turn_id"] = turn_id
         await self.bus.publish(make_event(EventType.CREDENTIAL_STATUS, data))
@@ -1790,6 +2179,7 @@ class AppContext:
             tool_store=self.tool_store,
             trace_store=self.trace_store,
             turn_id_provider=self._active_turn_id,
+            usage_assignment=self.subagent_usage_assignment,
         )
 
     def _active_turn_id(self) -> str | None:
@@ -2555,6 +2945,17 @@ class AppContext:
             "goal_version": getattr(active, "bound_intent_version", None),
         }
 
+    @staticmethod
+    def _notification_request_id(item) -> str:
+        """通知投递的确定性请求身份（同一 task_id 只有一条通知轮）。
+
+        用途：TurnManager 的 request_id 幂等索引在本进程内可查重。若上一次 submit
+        已受理但 delivered_at 落库失败（或两步之间被打断），再次投递时先查这个 id，
+        已存在就不再重复提交，直接补记交付 —— 把「崩溃窗口内重复投递」压到仅剩
+        跨进程重启这一条（诚实边界见 subtask_notifications 模块 docstring）。
+        """
+        return SUBTASK_NOTIFICATION_REQUEST_ID_PREFIX + str((item or {}).get("task_id") or "")
+
     def _format_notice(self, task_id: str, record) -> str:
         """兼容名：通知正文统一由 subtask_notifications 渲染（固定文案来自 prompts）。"""
         from agent.tools.subtask_notifications import build_notification, format_completion_notice
@@ -2599,7 +3000,11 @@ class AppContext:
             return
 
     async def _pump_subtask_notifications(self) -> None:
-        """空闲时取一条通知作为自己的通知轮；不在 active 用户轮里打断当前交流。"""
+        """空闲时取一条未送达通知作为自己的通知轮；不在 active 用户轮里打断当前交流。
+
+        FU2-D 的交付判据：只有 turns.submit **成功受理**后才写 delivered_at（唯一事实）；
+        失败写 attempts / last_error 并保留待重试，安排一次延迟重试，绝不当成已交付。
+        """
         if self._notify_turn or self.turns.active is not None:
             return
         # 用户消息还在排队：先让用户轮执行，通知轮排在其后（不抢占）。
@@ -2612,19 +3017,125 @@ class AppContext:
 
         origin = item.get("origin") or {}
         topic = str(origin.get("topic_id") or "") or None
+        # 确定性 request_id：本进程内已受理过同一条通知就不再重复提交（只补记交付）。
+        request_id: str | None = None
         try:
-            turn = self.turns.submit(format_completion_notice(item), topic, notify=True)
-        except Exception:  # noqa: BLE001 - 提交失败放回队列，下一轮再试
+            parameters = inspect.signature(self.turns.submit).parameters
+        except (TypeError, ValueError):  # pragma: no cover - 内置/替身签名不可省
+            parameters = {}
+        if "request_id" in parameters:
+            request_id = self._notification_request_id(item)
+            lookup = getattr(self.turns, "lookup_request", None)
+            if callable(lookup):
+                try:
+                    existing = lookup(request_id)
+                except Exception:  # noqa: BLE001 - 查重失败按未受理处理（宁可重试一次）
+                    existing = None
+                if existing is not None:
+                    logging.getLogger(__name__).info(
+                        "subtask notification already accepted in this process: %s",
+                        request_id,
+                    )
+                    try:
+                        self.subtask_notifications.mark_delivered(item)
+                    except Exception:  # noqa: BLE001 - 补记失败仍要可观测
+                        logging.getLogger(__name__).warning(
+                            "subtask notification backfill delivered failed", exc_info=True
+                        )
+                    return
+        try:
+            if request_id is None:
+                turn = self.turns.submit(format_completion_notice(item), topic, notify=True)
+            else:
+                turn = self.turns.submit(
+                    format_completion_notice(item), topic, notify=True, request_id=request_id
+                )
+        except Exception as exc:  # noqa: BLE001 - 提交失败 ≠ 交付：保留待重试
             logging.getLogger(__name__).warning(
                 "subtask notification turn submit failed", exc_info=True
             )
-            self.subtask_notifications.requeue(item)
+            self.subtask_notifications.mark_failed(
+                item, f"{type(exc).__name__}: {str(exc)[:200]}"
+            )
+            self._schedule_subtask_notification_retry()
             return
+        # 被 TurnManager 接受 = 交付事实：立刻写 delivered_at（同一条永不重投）。
+        try:
+            self.subtask_notifications.mark_delivered(item)
+        except Exception:  # noqa: BLE001 - 已交给 TurnManager，落库失败必须可观测
+            logging.getLogger(__name__).warning(
+                "subtask notification mark delivered failed", exc_info=True
+            )
         # 通知轮携带结构化事实（身份 / 状态 / 结果引用 / origin），供轮末原话题续作。
         try:
             turn.subtask_notification = item
         except Exception:  # noqa: BLE001 - TurnContext 允许动态属性，失败不影响执行
             pass
+
+    def _schedule_subtask_notification_retry(self) -> None:
+        """投递失败后安排一次延迟重试（只重试，不伪造交付）。"""
+        if self._notify_retry_task is not None and not self._notify_retry_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._notify_retry_task = loop.create_task(self._subtask_notification_retry_later())
+
+    async def _subtask_notification_retry_later(self) -> None:
+        try:
+            await asyncio.sleep(max(0.0, float(self.subtask_notification_retry_delay)))
+            await self._pump_subtask_notifications()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 重试失败只记日志，记录仍在库里
+            logging.getLogger(__name__).warning(
+                "subtask notification retry failed", exc_info=True
+            )
+        finally:
+            self._notify_retry_task = None
+
+    def cancel_notification_retry(self) -> None:
+        """取消待执行的延迟重试（测试 / 关闭收尾用；不删库里的待投递记录）。"""
+        task = self._notify_retry_task
+        self._notify_retry_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def resume_subtask_notifications(self) -> int:
+        """重启恢复：把库里未送达的通知继续投递；返回恢复前的未送达条数。"""
+        try:
+            pending = self.subtask_notifications.pending_count()
+        except Exception:  # noqa: BLE001 - 读不到如实记日志，不假装没有待投递
+            logging.getLogger(__name__).warning(
+                "subtask notification pending count failed", exc_info=True
+            )
+            return 0
+        if pending:
+            logging.getLogger(__name__).info(
+                "subtask notifications: 恢复 %s 条未送达通知，继续投递", pending
+            )
+            await self._pump_subtask_notifications()
+        return pending
+
+    def _prime_subtask_notification_delivery(self) -> None:
+        """启动时加载未送达通知并继续投递（不依赖用户先说话）。"""
+        try:
+            pending = self.subtask_notifications.pending_count()
+        except Exception:  # noqa: BLE001 - 队列不可用要可见，但不阻止启动
+            logging.getLogger(__name__).warning(
+                "subtask notification prime failed", exc_info=True
+            )
+            return
+        if pending <= 0:
+            return
+        try:
+            asyncio.get_running_loop().create_task(self.resume_subtask_notifications())
+        except RuntimeError:
+            # 没有事件循环（同步构造 / 单测）：记录仍在库里，等第一次轮末/空闲再投递。
+            logging.getLogger(__name__).info(
+                "subtask notifications: %s 条未送达（当前无事件循环，稍后投递）", pending
+            )
 
     async def _execute_notify_turn(self, ctx) -> None:
         """System-driven turn: main agent reacts to a finished subagent task."""
@@ -2634,6 +3145,14 @@ class AppContext:
         # 系统通知轮不是用户指令：不产生 grant，审批来源如实标为 background。
         origin_token = approval_origin.set("background")
         self._notify_turn = True
+        # FU3-D：通知轮的话题**只解析一次**，并在本轮所有落点复用同一结果。
+        # 优先「原任务话题」（turns.submit 已按 origin 把它写进 ctx.initial_topic），
+        # 只有它缺失时才回退界面当前话题。通知轮是原任务的续作，不是用户此刻
+        # 正在看的那个话题 —— 用 current_topic() 会把结果写进另一个话题。
+        initial_topic = getattr(ctx, "initial_topic", None)
+        initial_text = str(initial_topic).strip() if initial_topic is not None else ""
+        # 两者都缺失时保持 None（与基线一致：不把「没有话题」伪造成空串话题）。
+        resolved_topic = initial_text or self.current_topic()
         try:
             self.approvals.set_context(turn_id=ctx.turn_id, session_id=self.session_id)
             tracer = getattr(ctx, "trace", None)
@@ -2642,7 +3161,7 @@ class AppContext:
 
                 tracer = TurnTracer(self.trace_store, ctx.turn_id)
                 ctx.trace = tracer
-            self.trace_store.ensure_started(ctx.turn_id, initial_topic=ctx.initial_topic)
+            self.trace_store.ensure_started(ctx.turn_id, initial_topic=resolved_topic)
             with tracer.phase("adapter_setup"):
                 adapter = await self.build_adapter()
             if adapter is None:
@@ -2651,7 +3170,8 @@ class AppContext:
                 ctx.error = "no_credential"
                 self.trace_store.finish(ctx.turn_id, "unavailable", error="no_credential")
                 return
-            topic = self.current_topic()
+            # 同一解析结果贯穿：上下文 / 绑定 / trace / 后续保存都用它。
+            topic = resolved_topic
             ctx.current_topic = topic
             # 系统驱动的轮也要有自己的绑定（归属明确），并且标记成 system：
             # 它不占用户轮次容量，也不该被当成「用户开了新的一轮」。
@@ -2772,7 +3292,10 @@ class AppContext:
             with tracer.phase("memory_post"):
                 fragment = self.fragments.get_or_create_open(topic)
                 if self.fragments.should_close(fragment):
-                    closed = await self._close_fragment(topic, adapter, tracer=tracer)
+                    # 通知轮是真实运行时路径：三种派生各自走自己的用途 adapter。
+                    closed = await self._close_fragment(
+                        topic, adapter, tracer=tracer, usage_adapters=True
+                    )
                     if closed is not None:
                         # 索引在 close_fragment 内部已增量更新（不再全量重建）；
                         # 话题向量刷新走工作线程，取消后不写回。
@@ -4000,11 +4523,23 @@ class AppContext:
     # -- fragment close: summary + entities + knowledge extraction --------
 
     async def _close_fragment(
-        self, topic_id: str, adapter: BaseAdapter, tracer=None
+        self,
+        topic_id: str,
+        adapter: BaseAdapter,
+        tracer=None,
+        *,
+        usage_adapters: bool = False,
     ) -> Any | None:
-        """委派给 MemoryLifecycle。"""
+        """封块 + 立刻做完三种派生。
+
+        `usage_adapters=False`（默认）是**兼容入口**：调用方已经给定 adapter
+        （既有测试 / 离线维护），三种派生共用它，行为与基线完全一致。
+        `usage_adapters=True` 用于运行时的通知轮：三种派生各自走自己的用途解析，
+        与主对话解耦（用户改了用途分配就必须真的换）。
+        """
+        adapters = await self.build_derived_adapters() if usage_adapters else None
         return await self.memory_lifecycle.close_fragment(
-            topic_id, adapter, tracer=tracer
+            topic_id, adapter, tracer=tracer, adapters=adapters
         )
 
     async def _extract_knowledge(
@@ -4027,6 +4562,33 @@ class AppContext:
         self, topic_id: str, adapter: BaseAdapter, tracer=None
     ) -> bool:
         """委派给 MemoryLifecycle（tracer 只用于把派生修正/失败写进 trace）。"""
+        return await self.memory_lifecycle.consolidate(topic_id, adapter, tracer=tracer)
+
+    async def consolidate_for_usage(self, topic_id: str, tracer=None) -> bool:
+        """预算压缩整理：走 `memory-organize` 用途。
+
+        不可用（显式指定坏了 / 没有可用凭据）时**如实跳过**：这不是对话主路径，
+        不能让整轮失败，也绝不能改用主对话模型偷偷跑完（那会绕过用户的用途分配）。
+        返回是否真的做了一次整理。
+        """
+        try:
+            target = self.resolve_usage("memory-organize")
+        except UsageUnavailable as exc:
+            self._record_usage_unavailable(exc)
+            return False
+        self._record_usage(target)
+        adapter = await self.build_adapter_for_target(target)
+        if adapter is None:
+            self._record_usage_unavailable(
+                UsageUnavailable(
+                    "memory-organize",
+                    REASON_ADAPTER_UNAVAILABLE,
+                    f"记忆整理用途解析到 {target.credential_id}，但建不出可用适配器",
+                    credential_id=target.credential_id,
+                    model_id=target.model_id,
+                )
+            )
+            return False
         return await self.memory_lifecycle.consolidate(topic_id, adapter, tracer=tracer)
 
     # -- topics -----------------------------------------------------------
@@ -4171,12 +4733,3 @@ async def _close_adapter(adapter: BaseAdapter) -> None:
             await result
     except Exception:  # noqa: BLE001 - shutdown must not raise
         logger.warning("failed to close model client", exc_info=True)
-
-
-def _close_adapter_soon(adapter: BaseAdapter) -> None:
-    """同步上下文里淘汰旧 adapter：交给事件循环异步关闭。"""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return  # 没有事件循环（例如测试构造阶段）：交给 GC
-    asyncio.create_task(_close_adapter(adapter))

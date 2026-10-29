@@ -233,6 +233,33 @@ def verification_raw(result) -> dict | None:
     return payload
 
 
+def _user_message_facts(ctx) -> tuple[str, dict | None]:
+    """这一轮 user 消息落库用的 (content_type, raw)。
+
+    R2 契约：只有 start_interactive_turn **真实绑定**过的续作 Turn 才带
+    content_type="intent_execution" 与程序事实；普通用户消息（含聊天里的续作消息）
+    仍是 "text"、raw=None，行为与以前完全一样。
+    事实键由 submission.start_interactive_turn 写入 ctx（board_intent_execution），
+    这里只做透传，不推断、不补字段；常量只认 interactive.records 的单一定义。
+    """
+    facts = getattr(ctx, "board_intent_execution", None)
+    if isinstance(facts, dict) and str(facts.get("record_key") or "").strip():
+        from agent.interactive import records as intent_records
+
+        return intent_records.CONTENT_TYPE, {intent_records.RAW_KEY: dict(facts)}
+    submission_facts = getattr(ctx, "board_submission_facts", None)
+    if isinstance(submission_facts, dict) and submission_facts:
+        # R5：互动提交轮也是程序消息。content 原样保留（模型仍拿到 board_id /
+        # submission_id 原文），只在落库时标类型 + 事实；展示层不把它当普通用户消息。
+        from agent.interactive import submission as interactive_submission
+
+        return (
+            interactive_submission.SUBMISSION_CONTENT_TYPE,
+            {"board_submission": dict(submission_facts)},
+        )
+    return "text", None
+
+
 @dataclass
 class _Plan:
     topic: str
@@ -407,10 +434,12 @@ class TurnOrchestrator:
         if adapter is None:
             # 凭据不可用：状态进协议（前端据此给人话提示），警告负责显示，
             # 二者职责不同（spec 第 43~46 条）。
+            # 设置页改版 §8：原因可能是「显式指定的用途 Key 现在不能用」，此时说
+            # 「还没有配置凭据」是错的 —— 文案统一由 AppContext 按真实原因给出。
             await app.announce_credential_unavailable(ctx.turn_id)
             await app.bus.publish(
                 make_warning(
-                    "还没有配置可用的模型凭据：请在「设置 → 凭据」里添加一个 API Key 后再对话",
+                    app.main_adapter_unavailable_message(),
                     turn_id=ctx.turn_id,
                 )
             )
@@ -577,13 +606,19 @@ class TurnOrchestrator:
                 )
 
         # write user message into memory domain first
+        # R2 契约：互动续作的 user 消息按**真实程序事实**落库（content_type +
+        # raw 元数据）；content 原样保留（模型侧上下文一个字都不动）。
+        # 事实只来自 start_interactive_turn 绑定的 ctx，不按消息文本 / 前缀判断，
+        # 用户输入无法声明自己属于某条已确认记录。
+        user_content_type, user_raw = _user_message_facts(ctx)
         with tracer.phase("persistence", "user_message"):
             msg_id, _ = app.memory.append_message(
                 topic_id=topic,
                 role="user",
                 content=message,
-                content_type="text",
+                content_type=user_content_type,
                 model=adapter.model,
+                raw=user_raw,
                 turn_id=ctx.turn_id,
             )
         ctx.user_message_id = msg_id
@@ -1461,8 +1496,10 @@ class TurnOrchestrator:
         if plan.needs_consolidation:
             # 收尾的压缩整理会发起**额外**的模型调用（不进 model_calls）：
             # 它同样要能在阶段账本里被看见，否则又是一段无法解释的等待。
+            # 设置页改版 §8：整理用「记忆整理」这个用途自己的模型，而不是主对话那把
+            # （用户改了用途分配就必须真的换；不可用时如实跳过，见 consolidate_for_usage）。
             with tracer.phase("model_wait", "consolidate"):
-                await app.consolidate(final_topic, adapter)
+                await app.consolidate_for_usage(final_topic, tracer=getattr(ctx, "trace", None))
 
     def _schedule_derived_work(
         self, adapter, tracer=None, *, fragment_id: str | None = None
@@ -1493,9 +1530,15 @@ class TurnOrchestrator:
 
             _t0 = _time.perf_counter()
             try:
-                await self.app.memory_lifecycle.drain_derived_tasks(
-                    adapter, limit=3, tracer=tracer
-                )
+                # 三种派生各自走自己的用途 adapter（记忆整理 / 知识提炼 / 实体提炼）。
+                # 先在这里**冻结**解析结果：后台任务开始执行之后用户再改用途分配，
+                # 这一批任务仍按原配置归属（下一次派发才用新保存值）。
+                adapters = await self.app.build_derived_adapters()
+                lifecycle = self.app.memory_lifecycle
+                with lifecycle.use_adapters(adapters):
+                    await lifecycle.drain_derived_tasks(
+                        adapter, limit=3, tracer=tracer
+                    )
             except Exception as exc:  # noqa: BLE001 - 派生失败不得影响会话
                 logging.getLogger(__name__).warning("derived work failed", exc_info=True)
                 writer = getattr(tracer, "warning", None)

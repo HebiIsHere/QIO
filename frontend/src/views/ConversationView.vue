@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 对话页 v2 外壳（A 负责外层布局与顶部全局栏入口；中央/右侧内容由 B/C 各自组件承担）。
  *
@@ -36,6 +37,11 @@ import {
   clampRightWidth,
 } from "../conversation/layoutPrefs";
 import { listenFocusTask } from "../services/conversationTasks";
+import {
+  registerNoticeNavigationHost,
+  unregisterNoticeNavigationHost,
+  type NoticeNavigationHost,
+} from "../services/noticeNavigation";
 import TaskRail from "../components/conversation/TaskRail.vue";
 import ChatColumn from "../components/conversation/ChatColumn.vue";
 import PreviewPanel from "../components/conversation/PreviewPanel.vue";
@@ -152,6 +158,8 @@ function nudgeSplitter(kind: "left" | "right", event: KeyboardEvent) {
 // ── 收起后的任务入口 / 窄窗口抽屉 ─────────────────────────────────────────
 
 const railDrawer = ref(false);
+/** 这次打开抽屉是否要自动把焦点放进第一个按钮（用户点击时是；通知导航不抢焦点）。 */
+const railDrawerAutofocus = ref(true);
 const railDrawerEl = ref<HTMLElement | null>(null);
 const railEntryEl = ref<HTMLButtonElement | null>(null);
 
@@ -170,8 +178,10 @@ const railEntryLabel = computed(() => {
 
 function onRailEntry() {
   // 窄窗口：抽屉式临时展开（不改写用户偏好）；否则按用户手动收起状态展开。
-  if (shell.viewportWidth < LEFT_AUTO_COLLAPSE_BELOW) railDrawer.value = true;
-  else shell.toggleLeft();
+  if (shell.viewportWidth < LEFT_AUTO_COLLAPSE_BELOW) {
+    railDrawerAutofocus.value = true;
+    railDrawer.value = true;
+  } else shell.toggleLeft();
 }
 
 async function closeRailDrawer() {
@@ -199,12 +209,47 @@ watch(
 
 watch(railDrawer, async (open) => {
   if (!open) return;
+  // 通知导航打开的抽屉保持当前焦点：顶部短通知「不抢焦点」的既有规则不能在这里破例。
+  if (!railDrawerAutofocus.value) {
+    railDrawerAutofocus.value = true;
+    return;
+  }
   await nextTick();
   const root = railDrawerEl.value;
   if (!root) return;
   const first = root.querySelector<HTMLElement>("button:not(:disabled)");
   first?.focus();
 });
+
+// ── 通知点击 → 任务列表可见落点（供 services/noticeNavigation 调用） ────────
+
+/**
+ * 让任务列表真实可见：关闭盖住它的页内覆盖层，必要时展开左栏 / 窄窗抽屉。
+ * 只调整可见性与层级，不处理任何任务，也不清空任何草稿或阅读位置。
+ */
+async function ensureTaskListVisibleForNotice(): Promise<boolean> {
+  // 1) 页内覆盖层：记忆星球 / 恢复收件箱；全窗口预览也会整块盖住三栏。
+  if (recoveryOpen.value) recoveryOpen.value = false;
+  if (planetOpen.value) planetOpen.value = false;
+  if (shell.prefs.previewFull) shell.setPreviewFull(false);
+  // 2) 左栏：宽窗按现有开关展开（用户手动收起时）；窄窗走现有任务抽屉。
+  if (!shell.leftVisible) {
+    if (shell.prefs.leftCollapsed) shell.toggleLeft();
+    await nextTick();
+    if (!shell.leftVisible) {
+      railDrawerAutofocus.value = false;
+      railDrawer.value = true;
+    }
+  }
+  await nextTick();
+  return shell.leftVisible || railDrawer.value;
+}
+
+const noticeNavigationHost: NoticeNavigationHost = {
+  ensureTaskListVisible: ensureTaskListVisibleForNotice,
+};
+// 本页拥有星球 / 恢复区 / 抽屉这些页面级可见性状态，所以由本页注册可见性宿主。
+registerNoticeNavigationHost(noticeNavigationHost);
 
 // ── 星球入口（保持现有行为） ───────────────────────────────────────────────
 
@@ -337,9 +382,11 @@ onMounted(() => {
   if (!shell.loaded) void shell.load();
   stopViewport = shell.installViewportTracking();
   if (session.history.status === "idle") void session.loadHistory();
+  // 互动页确认 / 恢复 / 重试之后留下的「历史可能过期」：回到对话页时兑现一次（只读，不轮询）
+  else void session.reloadHistoryIfStale();
 
-  tasks.bindEvents();
-  tasks.startPolling();
+  // 事件订阅 / 轮询由应用级生命周期（GlobalFeedbackHost → acquireGlobal）负责：
+  // 对话页只保留自己的幂等刷新，卸载页面不再停掉全局任务数据。
   if (tasks.current.loaded) {
     // 幂等刷新：离开期间可能出现新任务/新状态，但不清空、不重置展开与滚动。
     void tasks.refresh("current", { silent: true });
@@ -371,7 +418,8 @@ onBeforeUnmount(() => {
   registerConversationPreviewOpener(null);
   registerConversationReplyCodeOpener(null);
   setDraggingChrome(false);
-  tasks.dispose();
+  unregisterNoticeNavigationHost(noticeNavigationHost);
+  // 页面卸载不停全局任务数据（引用计数归零由应用级宿主负责）；只收本页自己的预览状态。
   preview.dispose();
   // 最后一次布局改动要落盘（防抖窗口内切走页面时不能丢）。
   void shell.flush();
@@ -420,7 +468,7 @@ onBeforeUnmount(() => {
           class="rail-btn"
           type="button"
           data-rail-entry
-          :title="railEntryLabel"
+          v-qio-tip="railEntryLabel"
           :aria-label="railEntryLabel"
           :aria-expanded="railDrawer ? 'true' : 'false'"
           @click="onRailEntry"
@@ -502,7 +550,7 @@ onBeforeUnmount(() => {
       v-if="!shell.rightVisible && shell.prefs.previewTabs.length"
       class="preview-reopen"
       type="button"
-      :title="'打开文件预览（' + shell.prefs.previewTabs.length + ' 个标签）'"
+      v-qio-tip="'打开文件预览（' + shell.prefs.previewTabs.length + ' 个标签）'"
       :aria-label="'打开文件预览，' + shell.prefs.previewTabs.length + ' 个标签'"
       @click="shell.setRightOpen(true)"
     >
@@ -592,7 +640,7 @@ onBeforeUnmount(() => {
   flex: none;
   min-width: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -607,7 +655,7 @@ onBeforeUnmount(() => {
   flex: none;
   min-width: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   overflow: hidden;
@@ -626,7 +674,7 @@ onBeforeUnmount(() => {
   top: 42%;
   height: 40px;
   left: calc(50% - 1px);
-  border-radius: 5px;
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   transition: background var(--dur-fast) var(--ease-1);
 }
@@ -651,17 +699,21 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 10px;
+  /* FU5：任务按钮就是收起栏本身 —— 不再在栏里再套一个小圆角按钮。
+     栏与按钮用同一圈圆角、同一条边：按钮铺满整栏，圆角完全对齐。 */
+  padding: 0;
+  overflow: hidden;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
 }
 .rail-btn {
   position: relative;
-  width: 36px;
-  padding: 8px 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  width: 100%;
+  flex: 1;
+  padding: 14px 0;
+  border: 0;
+  border-radius: inherit;
   background: transparent;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
@@ -669,6 +721,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center; /* 图标 + 「任务」整组在收起栏里垂直居中 */
   gap: 5px;
 }
 .rail-btn svg {
@@ -680,13 +733,23 @@ onBeforeUnmount(() => {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.rail-btn:hover { color: var(--text-strong); border-color: var(--border-strong); }
-.rail-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.rail-label { writing-mode: vertical-rl; letter-spacing: 0.14em; }
+.rail-btn:hover { color: var(--text-strong); background: var(--layer-hover); }
+.rail-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+/* 竖排「任务」：竖排行盒给一个偶数宽度（line-height:16px）——在 46px 宽的按钮里
+   从整数像素开始、左右对称留白，避免半像素盒宽在高 DPI 下看起来偏左/右；
+   再对字体墨迹的轻微右侧偏重做 0.5px 光学补偿。 */
+.rail-label {
+  writing-mode: vertical-rl;
+  letter-spacing: 0.14em;
+  line-height: 16px;
+  text-align: center;
+  transform: translateX(-0.5px);
+}
 .rail-badge {
   position: absolute;
-  top: -6px;
-  right: -6px;
+  /* 收起栏 overflow:hidden（保证按钮与栏圆角完全对齐），徽标改为贴内侧右上角 */
+  top: 4px;
+  right: 4px;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
@@ -715,7 +778,7 @@ onBeforeUnmount(() => {
   /* 与话题/左栏同一条卡片顶线：y=82；左右/底边与全局栏同一 8px 外沿 */
   inset: 2px 8px 8px;
   z-index: 30;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   overflow: hidden;
   box-shadow: var(--shadow-3);
 }
@@ -740,7 +803,7 @@ onBeforeUnmount(() => {
   max-width: calc(100vw - 24px);
   display: flex;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-3);
   overflow: hidden;
@@ -765,7 +828,7 @@ onBeforeUnmount(() => {
   padding: 10px 0;
   border: 1px solid var(--border-subtle);
   border-right: 0;
-  border-radius: var(--r-sm) 0 0 var(--r-sm);
+  border-radius: var(--qio-ui-radius) 0 0 var(--r-sm);
   background: var(--bg-elevated);
   color: var(--text-muted);
   cursor: pointer;
@@ -813,7 +876,7 @@ onBeforeUnmount(() => {
   gap: var(--sp-2);
   padding: var(--sp-4) var(--sp-5);
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xl);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-3);
   overflow-y: auto;

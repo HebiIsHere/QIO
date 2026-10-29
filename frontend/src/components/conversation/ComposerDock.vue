@@ -2,14 +2,20 @@
 /**
  * 输入区外壳（v3）：入口图标行 / 模式切换 / 输入胶囊 / 记忆星球入口。
  *
- * 结构（对齐用户提供的 HTML 与确认稿）：
- *   入口图标行（与胶囊同宽、居中；在胶囊外）
+ * 结构（2026-10-27 改版：与消息流一起被 .chat-box 包住）：
+ *   入口图标行（与胶囊同宽、居中；在胶囊外，向上生长）
  *   [模式切换]  [附件图标 · 输入框 · 发送圆钮]  [记忆星球固定槽]
- *   Enter 提示（胶囊外）
  *
  * - 模式切换与星球入口都不在输入胶囊内部；
- * - 入口行与胶囊同一个 .composer-stack，宽度天然一致；
+ * - 入口行与胶囊宽度相同（同样的左右留白），icon 行居中；
  * - 星球入口的位置由右侧固定槽给出（PlanetDock anchored），不参与浮动/避让。
+ *
+ * 对齐规则（改版核心）：
+ * - 入口行是 .composer-line **之外**的一行 —— 它出现/换行只让整块向上长，
+ *   不会把输入胶囊往下推，也不会改变模式切换与输入胶囊的对齐关系；
+ * - .composer-line 是「模式切换 | 输入胶囊 | 星球入口」的对齐单元，
+ *   align-items: center 让三者共用同一条垂直中心线；
+ * - 星球入口直径 = 输入胶囊单行高度（--composer-pill-h），球心与胶囊中心天然重合。
  */
 import Composer from "../Composer.vue";
 import ComposerEntries from "./ComposerEntries.vue";
@@ -18,14 +24,15 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
 
 <template>
   <div class="composer-dock">
+    <!-- 入口行：在输入行之外，出现时向上生长（不参与输入行的对齐） -->
+    <div class="composer-entries">
+      <ComposerEntries />
+    </div>
     <div class="composer-line">
       <div class="composer-mode-cell">
         <ConversationModeSwitch />
       </div>
       <div class="composer-stack">
-        <div class="composer-entries">
-          <ComposerEntries />
-        </div>
         <Composer />
       </div>
       <div v-if="$slots.planet" class="composer-planet-cell">
@@ -41,18 +48,21 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   min-width: 0;
   position: relative;
   z-index: 2;
-  /* 说明行已删：只留底部的 8px 外沿；高度由输入行/星球槽共同决定 */
-  padding: 0 12px 8px;
+  /* 左右留白与消息流同一套（.chat-box 上的 --chat-pad-inline）；
+     底部留白 = 胶囊到消息框下缘的距离。 */
+  padding: 0 var(--chat-pad-inline, 12px) var(--chat-pad-bottom, 12px);
+  /* 星球入口直径 = 输入胶囊单行高度（球直径 = 输入框高度） */
+  --planet-size: var(--composer-pill-h, 54px);
 }
 .composer-line {
   display: grid;
   /* 三列硬约束：模式 | 对话栈 | 星球槽；列间距就是星球与胶囊的保底安全距。 */
-  grid-template-columns: auto minmax(0, 860px) var(--planet-size, 96px);
+  grid-template-columns: auto minmax(0, 860px) var(--planet-size, 54px);
   column-gap: 12px;
+  /* 只看这一行：模式切换、输入胶囊、星球入口共用同一条垂直中心线 */
   align-items: center;
   justify-content: center;
   width: 100%;
-  /* 模式 90 + 间隙 12 + 胶囊 860 + 间隙 12 + 星球 96 = 1070 */
   max-width: 1070px;
   margin: 0 auto;
   min-width: 0;
@@ -63,7 +73,7 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   max-width: 860px;
   min-width: 0;
 }
-/* 入口行与胶囊同宽：都在 composer-stack 里，宽度天然一致；图标行居中。
+/* 入口行与胶囊同宽：同在一个 composer-dock 里、同样的左右留白；图标行居中。
    只有真的有入口时才占一行的高度（没有事项时完全收起，不留空白）。 */
 .composer-entries {
   width: 100%;
@@ -78,32 +88,24 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   grid-column: 1;
   align-self: center;
   min-width: 0;
-  /* 说明行已删：模式与胶囊直接共用同一条中心线 */
-  padding-bottom: 0;
 }
 .composer-planet-cell {
   grid-column: 3;
-  width: var(--planet-size, 96px);
+  width: var(--planet-size, 54px);
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
-  /* 球心与胶囊中心对齐；不再用 transform 缩放布局盒，避免热区/视觉尺寸错位 */
-  padding-bottom: 0;
 }
 .composer-planet-cell :deep(.dock.anchored) {
-  width: var(--planet-size, 96px);
-  height: var(--planet-size, 96px);
+  width: var(--planet-size, 54px);
+  height: var(--planet-size, 54px);
 }
 .composer-planet-cell :deep(.orb) {
   width: 100% !important;
   height: 100% !important;
 }
 @media (max-width: 1100px) {
-  .composer-dock {
-    padding: 0 8px 8px;
-  }
   .composer-line {
-    --planet-size: 80px;
     column-gap: 12px;
   }
 }
@@ -112,8 +114,7 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
     display: none;
   }
   .composer-line {
-    --planet-size: 56px;
-    column-gap: 12px;
+    column-gap: 8px;
   }
 }
 </style>

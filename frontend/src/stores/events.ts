@@ -14,15 +14,22 @@ import { resetBackend } from "../services/backend";
 import { invalidateRestore, restoreRuntimeState } from "./restore";
 
 /**
- * 用户此刻是否正在输入（输入框 / 文本域 / 可编辑区域）。
- * 后台任务请求确认时用它决定「立即弹出」还是「亮出入口、等用户主动打开」。
+ * 续作轮里「本轮 user 消息已经落库之后」才会出现的事件（见后端 turn_orchestrator 的写入顺序：
+ * 先写 user 消息，再开始模型阶段）。首个这样的事件到达时，意图执行记录已经读得到。
  */
-function isUserEditing(): boolean {
-  if (typeof document === "undefined") return false;
-  const ae = document.activeElement as HTMLElement | null;
-  if (!ae) return false;
-  return ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable === true;
-}
+const INTENT_RECORD_PROGRESS_EVENTS: ReadonlySet<string> = new Set([
+  "STAGE",
+  "ASSISTANT",
+  "TOOL_START",
+  "TOOL_END",
+]);
+
+/**
+ * 审批自动弹出的门控**不在这里判断**：统一的自动弹出规则已收敛到
+ * stores/unifiedApprovals 的 maybeAutoOpen() + stores/feedbackGate（输入法组合输入、
+ * 失焦延迟、中央弹窗、记忆星球覆盖层、设置/调试页）。
+ * 事件层只负责把申请放进队列，避免两处门控各说一套。
+ */
 
 /** 事件里的可选数值字段（缺失 / 非数字 → null，表示「没有版本信息」）。 */
 function numberOrNull(value: unknown): number | null {
@@ -148,7 +155,14 @@ export const useEventStore = defineStore("events", {
          * 有没有待审批 / 有没有没执行完的消息」由这一次快照说清。
          * 首次连接、页面刷新后重连、普通重连都是这一条路径。
          */
-        void restoreRuntimeState("connect");
+        void restoreRuntimeState("connect").then(() =>
+          /**
+           * 补读与运行状态快照**分开**：pending 是审批生命周期的权威集合，history 是
+           * 执行终态。断线期间错过的「结局」只能从这里补回来（快照只表达还活着的项）。
+           * 失败不阻塞事件分发，原因分别落在 recoveryError / historyError 上。
+           */
+          useApprovalsStore().refreshApprovalsAndHistory("connect"),
+        );
       };
       source.onerror = () => {
         this.connected = false;
@@ -173,7 +187,10 @@ export const useEventStore = defineStore("events", {
        * 会先被应用，随后旧 snapshot 返回又把它覆盖掉。
        */
       if (event.type === "RESYNC") {
-        void restoreRuntimeState("resync");
+        void restoreRuntimeState("resync").then(() =>
+          // RESYNC 完成后补读审批生命周期（pending + 终态历史），与 onopen 同一入口
+          useApprovalsStore().refreshApprovalsAndHistory("resync"),
+        );
         return;
       }
       if (this.resyncing) {
@@ -189,8 +206,25 @@ export const useEventStore = defineStore("events", {
       }
       this.dispatch(event);
     },
+    /**
+     * 续作轮的「消息已落库之后」的事件到达：让当前话题用既有历史读取刷一次记录。
+     *
+     * 为什么是这几类事件：它们都发生在本轮 user 消息落库之后（topic 预判 / 写入在前，
+     * 模型阶段在后），所以这是「记录现在读得到」的最早时机。每轮只兑现一次，不轮询；
+     * 与意图执行无关的普通聊天轮不会登记，自然也不会走到这里。
+     */
+    refreshIntentRecordOnTurnProgress(
+      event: AgentEvent,
+      session: ReturnType<typeof useSessionStore>,
+    ): void {
+      if (!INTENT_RECORD_PROGRESS_EVENTS.has(event.type)) return;
+      const turnId = String((event.data as Record<string, unknown> | undefined)?.turn_id ?? "");
+      if (!turnId) return;
+      void session.refreshIntentExecutionTurnProgress(turnId);
+    },
     dispatch(event: AgentEvent) {
       const session = useSessionStore();
+      this.refreshIntentRecordOnTurnProgress(event, session);
       switch (event.type) {
         case "TURN_START":
           {
@@ -225,6 +259,14 @@ export const useEventStore = defineStore("events", {
             if (requestId) session.noteTurnStartedForRequest(requestId, tid || undefined);
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
+            /**
+             * 意图执行记录（R2 返修二）：确认 / 恢复 / 重试由**服务端**发起续作轮，
+             * 本机没有这次发送动作（TURN_START 不带 request_id，也不是 notify 系统轮）。
+             * 登记它，等这一轮的消息真正落库后用既有历史读取把记录刷出来。
+             */
+            if (tid && !requestId && !Boolean(d.notify)) {
+              session.noteIntentExecutionTurn(tid);
+            }
           }
           break;
         case "TURN_END": {
@@ -361,6 +403,13 @@ export const useEventStore = defineStore("events", {
           if (tid) session.forgetQueuedTurn(tid);
           session.endTurn(tid, endRevision);
           /**
+           * 意图执行记录（R2 返修二）：相关续作轮结束后刷新**真实终态**。
+           *
+           * 只对登记过的续作轮生效（确认 / 恢复 / 手动重试 / 服务端自动重试都在这条路径上），
+           * 走既有历史读取；失败按既有 history 错误口径，不会把「没读到」说成已更新。
+           */
+          void session.refreshIntentExecutionTurnEnd(tid);
+          /**
            * 一轮结束 = 这一轮里可能刚好创建、测试或提交了开发任务。
            * 顶部那行「有 N 个工具开发任务没做完」必须马上跟上，
            * 否则用户得刷新页面才看得到刚发生的事。
@@ -398,7 +447,9 @@ export const useEventStore = defineStore("events", {
         }
         case "RESYNC": {
           // RESYNC 在 `route()` 里就已经拦下并触发同步，这里只是兜底
-          void restoreRuntimeState("resync");
+          void restoreRuntimeState("resync").then(() =>
+            useApprovalsStore().refreshApprovalsAndHistory("resync"),
+          );
           break;
         }
         case "CAPABILITY": {
@@ -729,7 +780,8 @@ export const useEventStore = defineStore("events", {
           const d = event.data as Record<string, unknown>;
           const approval = (d.approval ?? d) as Record<string, unknown>;
           // 与 RESYNC 恢复走同一个入口：同一个审批，实时收到和断线恢复必须一致
-          this.handleApprovalRequired(approval, { autoOpen: !isUserEditing() });
+          // 实时到达的申请按统一门控自动弹出（输入中/覆盖层/弹窗由 unifiedApprovals 判定）
+          this.handleApprovalRequired(approval, { autoOpen: true });
           break;
         }
       }
@@ -803,8 +855,8 @@ export const useEventStore = defineStore("events", {
           ? approvalMetaFromPending(toPendingApproval(approval))
           : undefined;
       useApprovalsStore().enqueue(id, kind || "unknown", (approval.payload ?? {}) as Record<string, unknown>, {
-        // 用户正在输入（含凭据表单）时不抢焦点；恢复时不抢焦点
-        autoOpen: opts.autoOpen ?? !isUserEditing(),
+        // 恢复路径显式传 autoOpen:false（不抢焦点）；实时到达交统一门控决定
+        autoOpen: opts.autoOpen ?? true,
         // 绑定信息随待办一起保存：应答时原样回传（服务端另有自己的校验）
         turnId: (approval.turn_id as string | null) ?? null,
         sessionId: (approval.session_id as string | null) ?? null,
@@ -827,6 +879,8 @@ export const useEventStore = defineStore("events", {
      */
     async startResync(): Promise<void> {
       await restoreRuntimeState("resync");
+      // 手动 / 页面触发的同步同样补读审批生命周期（与 onopen、RESYNC 同一入口）
+      await useApprovalsStore().refreshApprovalsAndHistory("resync");
     },
 
     /** 同步期间缓存的事件按到达顺序补放（嵌套的 RESYNC 只做标记）。 */
@@ -856,6 +910,22 @@ export const useEventStore = defineStore("events", {
      */
     applyRuntimeState(state: {
       approvals: { approval_id: string; kind: string; payload: Record<string, unknown> }[];
+      /**
+       * 旧审批中断事实（B-CP1 /api/runtime/state）：只读展示，不是待办。
+       * 旧后端没有这个字段 → 不传，store 保持现状。
+       */
+      interrupted_approvals?: {
+        approval_id: string;
+        kind?: string;
+        what?: string;
+        created_at?: string;
+        status?: string;
+        legacy?: boolean;
+        outcome?: string;
+        turn_id?: string | null;
+        session_id?: string | null;
+        request_digest?: string | null;
+      }[];
       tasks: { task_id: string; tool: string; status: "queued" | "running" | "done" | "failed"; ok?: boolean | null; content_preview?: string; error?: string | null }[];
       tools?: ToolExecutionSnapshot[];
       /**
@@ -884,6 +954,11 @@ export const useEventStore = defineStore("events", {
       // 每轮结束事实：重连后失败的那一轮仍然说得出为什么（旧记录没有就不写）
       session.applyTurnFactsSnapshot(state.turn_facts);
       useApprovalsStore().reconcile(state.approvals.map((a) => a.approval_id));
+      /**
+       * 旧审批中断事实（B-CP1）：单独存放、只读展示（结果面板「旧审批中断」区）。
+       * 绝不放进入审批队列 —— 它们不是等待用户确认的待办，数进去就是假待办。
+       */
+      useApprovalsStore().ingestInterruptedLegacy(state.interrupted_approvals);
       /**
        * 「继续 / 停止」操作条也属于待办：快照里已经没有它（事务结束了 / 别处应答了）
        * 就必须本地收口 —— 否则用户会看到一个点不动的假待办。

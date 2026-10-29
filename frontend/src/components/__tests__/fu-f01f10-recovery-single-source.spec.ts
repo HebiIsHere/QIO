@@ -1,7 +1,13 @@
 /**
- * F08 回归（界面层）：旧入口 InterruptedTurnEntry 与新入口 RecoveryInbox
- * 必须共用一份恢复状态 —— 同一条记录不在两边重复出现，处理掉之后两边都不残留，
- * 处理掉最后一条不出现虚假的「还有 N 条未显示」。
+ * F08 回归（界面层）：新旧两个恢复入口必须共用一份恢复状态 ——
+ * 收件箱（RecoveryInbox）与「发送异常与草稿」面板（SendIssuesPanel，入口①）里
+ * 的「上次没有执行的消息」是同一批 interrupted 记录：同一条不在两边重复出现，
+ * 处理掉之后两边都不残留，处理掉最后一条不出现虚假的「还有 N 条未显示」。
+ *
+ * 2026-10-26（合并后清理 · C1）：旧的常驻入口 InterruptedTurnEntry.vue 已删除，
+ * 它的有效能力（继续 / 忽略 / 全部忽略 / 结果说明 / 收件箱拉不到时的兜底）由
+ * components/conversation/SendIssuesPanel.vue 承接。本文件按新的真实入口断言，
+ * 负向断言（不重复入口、不复活、不虚假剩余条数）一条不少。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -47,7 +53,7 @@ vi.mock("../../services/recoveryApi", () => ({
 }));
 
 import RecoveryInbox from "../RecoveryInbox.vue";
-import InterruptedTurnEntry from "../InterruptedTurnEntry.vue";
+import SendIssuesPanel from "../conversation/SendIssuesPanel.vue";
 import { useSessionStore } from "../../stores/session";
 import type { RecoveryRecordView } from "../../services/recoveryApi";
 import type { InterruptedTurn } from "../../services/api";
@@ -118,25 +124,25 @@ beforeEach(() => {
 });
 
 describe("F08 两个恢复入口共用一份状态", () => {
-  it("收件箱覆盖的记录只出现一次；在新入口忽略后旧入口不残留", async () => {
+  it("收件箱覆盖的记录只出现一次；发送异常面板不重复同一条", async () => {
     const { pinia, session } = setup();
     session.applyInterruptedState([], [TURN_A], []);
     recoveryFns.fetchRecoveryRecords.mockResolvedValue(listing([record("turn_a")], { total: 1 }));
     await session.loadRecoveryInbox();
 
     const inbox = mount(RecoveryInbox, { global: { plugins: [pinia] } });
-    const entry = mount(InterruptedTurnEntry, { global: { plugins: [pinia] } });
+    const issues = mount(SendIssuesPanel, { global: { plugins: [pinia] } });
     await flushPromises();
 
-    // 记录只由新入口提供：旧入口不再重复一条同样的操作入口
+    // 记录只由收件箱提供：发送异常面板不再重复一条同样的操作入口
     expect(inbox.findAll(".item")).toHaveLength(1);
-    expect(entry.find(".interrupted-turns").exists()).toBe(false);
+    expect(issues.find('[data-section="interrupted"]').exists()).toBe(false);
 
     await inbox.find("button.btn-ignore").trigger("click");
     await flushPromises();
 
     expect(inbox.find(".item").exists()).toBe(false);
-    expect(entry.find(".interrupted-turns").exists()).toBe(false);
+    expect(issues.find('[data-section="interrupted"]').exists()).toBe(false);
     expect(session.interruptedTurns).toEqual([]);
     expect(session.recoveryRecords).toEqual([]);
     expect(session.recoveryTotal).toBe(0);
@@ -144,39 +150,40 @@ describe("F08 两个恢复入口共用一份状态", () => {
     // 旧快照回来也不复活
     session.applyInterruptedState([], [TURN_A], []);
     await flushPromises();
-    expect(entry.find(".interrupted-turns").exists()).toBe(false);
+    expect(issues.find('[data-section="interrupted"]').exists()).toBe(false);
 
     inbox.unmount();
-    entry.unmount();
+    issues.unmount();
   });
 
-  it("收件箱拉不到时旧入口兜底显示；在旧入口忽略后收件箱也不残留", async () => {
+  it("收件箱接口拉不到时，发送异常面板兜底显示中断消息；处理后面板与收件箱都不残留", async () => {
     const { pinia, session } = setup();
     recoveryFns.fetchRecoveryRecords.mockRejectedValue(new Error("network down"));
     session.applyInterruptedState([], [TURN_A], []);
     await session.loadRecoveryInbox();
 
     const inbox = mount(RecoveryInbox, { global: { plugins: [pinia] } });
-    const entry = mount(InterruptedTurnEntry, { global: { plugins: [pinia] } });
+    const issues = mount(SendIssuesPanel, { global: { plugins: [pinia] } });
     await flushPromises();
 
-    // 专用接口挂了：孤儿 / 中断消息仍然由旧入口看得见，不能消失
-    expect(entry.find(".interrupted-turns").exists()).toBe(true);
+    // 专用收件箱接口挂了：中断消息仍然由发送异常面板看得见，不能消失
+    const section = issues.find('[data-section="interrupted"]');
+    expect(section.exists()).toBe(true);
+    expect(section.text()).toContain("帮我把发布闸门跑一遍");
     expect(inbox.find(".item").exists()).toBe(false);
 
-    await entry.find(".entry").trigger("click");
-    await entry.find("button.btn-dismiss").trigger("click");
+    await section.find("button.qio-btn.mini.quiet").trigger("click");
     await flushPromises();
 
     expect(session.interruptedTurns).toEqual([]);
     expect(session.recoveryRecords).toEqual([]);
-    // 旧入口不再有可操作的那一条（只留下「已忽略」的结果说明）
-    expect(entry.find(".entry").exists()).toBe(false);
-    expect(entry.find(".notice").text()).toContain("已忽略");
+    // 列表清空之后结果说明仍然留在屏幕上
+    expect(issues.find(".notice").text()).toContain("已忽略");
+    expect(issues.find('[data-section="interrupted"]').exists()).toBe(false);
     expect(inbox.find(".item").exists()).toBe(false);
 
     inbox.unmount();
-    entry.unmount();
+    issues.unmount();
   });
 
   it("处理掉最后一条后，界面上不再有虚假的「还有 N 条未显示」", async () => {

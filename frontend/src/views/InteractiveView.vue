@@ -8,6 +8,7 @@
   - 统一审批层只挂这一处，旧 ApprovalEntry / ApprovalModal 在聊天路由让位（App.vue 门控）。
 -->
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useInteractiveStore } from "../stores/interactive";
 import BoardCanvas from "../components/interactive/BoardCanvas.vue";
@@ -349,7 +350,7 @@ const boardSize = computed(() => {
                 v-if="store.submissionStage === 'idle'"
                 class="im-note"
                 data-im="not-connected"
-                title="保存只落库、不调用模型；提交之后 QIO 才会读取本次互动材料的内容并开始理解"
+                v-qio-tip="'保存只落库、不调用模型；提交之后 QIO 才会读取本次互动材料的内容并开始理解'"
               >
                 还没有提交给 QIO
               </span>
@@ -359,7 +360,7 @@ const boardSize = computed(() => {
                   :class="'tone-' + uText.tone"
                   data-im="understanding-status"
                   :data-understanding-status="store.understandingStatus ?? 'none'"
-                  :title="uText.detail"
+                  v-qio-tip="uText.detail"
                 >{{ uText.label }}</span>
                 <button
                   v-if="store.understandingStatus === 'failed'"
@@ -385,15 +386,19 @@ const boardSize = computed(() => {
                 data-im="collapse-previews"
                 @click="store.collapseAllPreviews()"
               >收起预览（{{ store.previewExpandedCount }}）</button>
-              <button
-                class="im-chip"
-                type="button"
-                data-im="tasks-entry"
-                :aria-expanded="store.tasksOpen"
-                title="互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）"
-                @click="store.tasksOpen ? store.closeTaskCenter() : store.openTaskCenter('tasks')"
-              >任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}</button>
             </div>
+          </div>
+
+          <!-- FU6：任务入口钉在板面右上角（不再和状态行挤在一行）。 -->
+          <div class="im-board-corner">
+            <button
+              class="im-chip"
+              type="button"
+              data-im="tasks-entry"
+              :aria-expanded="store.tasksOpen"
+              v-qio-tip="'互动任务：执行中可暂停 / 取消，已暂停可继续（与聊天停止不是同一件事）'"
+              @click="store.tasksOpen ? store.closeTaskCenter() : store.openTaskCenter('tasks')"
+            >任务{{ store.taskRows.length ? " " + store.taskRows.length : "" }}</button>
           </div>
 
           <ExecutionRecordPanel
@@ -526,9 +531,10 @@ const boardSize = computed(() => {
   width: 100%;
   max-width: 860px;
   margin: 0 auto;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
-  background: var(--bg-elevated);
+  /* FU7：栏本体透明，模糊由组件内的 ::before 承担（板面从栏后透出）。 */
+  border: 1px solid color-mix(in srgb, var(--border-strong) 65%, transparent);
+  border-radius: var(--qio-ui-radius);
+  background: transparent;
   box-shadow: var(--shadow-2);
 }
 .im-floating-chat :deep(.ic-toolbar) {
@@ -578,8 +584,11 @@ const boardSize = computed(() => {
   padding: 0;
 }
 .im-floating-chat :deep(.ic-composer) {
-  max-width: 860px;
-  margin: 0 auto;
+  /* FU5：输入行内部用三列 grid 居中输入列 —— 外层不能再限制成 860，
+     否则 grid 两侧的 1fr 没有可用空间，输入列又会整体右偏。 */
+  width: 100%;
+  max-width: none;
+  margin: 0;
 }
 .im-floating-chat :deep(.ic-bar) {
   width: fit-content;
@@ -626,6 +635,18 @@ const boardSize = computed(() => {
   justify-content: flex-end;
   gap: var(--sp-3);
   pointer-events: none;
+}
+/* FU6：任务入口钉在板面右上角（HUD 只留状态；拖动/滚动不带走它）。 */
+.im-board-corner {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  /* 高于板面自身的标题/提示层，否则上半个按钮会被那条白带盖住 */
+  z-index: 60;
+  pointer-events: auto;
+}
+@media (max-width: 900px) {
+  .im-board-corner { top: 8px; right: 8px; }
 }
 /* 板面名让位给全局栏；HUD 只保留真实状态与旧能力入口，避免压住组标题。 */
 .im-hud-left,
@@ -713,7 +734,7 @@ const boardSize = computed(() => {
 .im-notice {
   margin: 0;
   padding: var(--sp-2) var(--sp-4);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   font-size: var(--fs-sm);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);

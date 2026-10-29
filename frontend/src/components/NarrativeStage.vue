@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 /**
  * 执行叙事（Execution Narrative）的一行：**抽屉头 + 收纳的调用记录**。
  *
@@ -103,7 +104,7 @@ const mark = computed(() =>
       class="nhead"
       type="button"
       :aria-expanded="open ? 'true' : 'false'"
-      :title="open ? '收起这一步的调用记录' : '展开这一步的调用记录'"
+      v-qio-tip="open ? '收起这一步的调用记录' : '展开这一步的调用记录'"
       @click="open = !open"
     >
       <span class="nmark" aria-hidden="true">{{ mark }}</span>
@@ -183,7 +184,7 @@ const mark = computed(() =>
 .nhead:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 .nmark {
   flex: 0 0 auto;
@@ -302,7 +303,7 @@ const mark = computed(() =>
   padding: 5px 10px;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   font-size: 12px;
   color: var(--text-secondary);
 }

@@ -14,6 +14,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
+import { vQioTip } from "../../composables/useQioTip";
 import type { CardAnchor, GroupAnchorSide } from "../../interactive/linkEndpoints";
 
 const props = withDefaults(
@@ -102,7 +103,7 @@ function onAnchorDown(anchor: CardAnchor, event: PointerEvent): void {
       :data-active="isActive(anchor) ? 'true' : 'false'"
       role="button"
       tabindex="0"
-      :title="titleOf(anchor)"
+      v-qio-tip="titleOf(anchor)"
       :aria-label="titleOf(anchor)"
       @pointerdown="onAnchorDown(anchor, $event)"
     >

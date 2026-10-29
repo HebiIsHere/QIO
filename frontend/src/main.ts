@@ -6,8 +6,8 @@ import "./styles/tokens.css";
 import "./styles/base.css";
 // 统一滚动规则：原生滚动条外观全局消除 + QIO 浮动指示条 + 表格适配 + 横向不滚动约束
 import "./styles/scroll.css";
-// 互动板改版的浮层层级与避让（主智能体在集成时统一导入；A 负责该文件）
-import "./styles/interactive-shell.css";
+// 互动板浮层层级与板面 chrome 的公共层（唯一来源：层级变量 / 工具栏档位测量 / 板面选择约束）
+import "./styles/layers.css";
 // 中文衬线声部：本地打包 Noto Serif SC（SIL OFL 1.1，@fontsource 分发，
 // unicode-range 分片按需加载，离线可用；不引入网络字体）
 import "@fontsource/noto-serif-sc/400.css";

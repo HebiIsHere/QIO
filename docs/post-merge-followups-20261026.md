@@ -1,0 +1,259 @@
+# 合并后遗留问题修复（P91）— 2026-10-26
+
+> 修复分支：fix/post-merge-followups-20261026（未合入 main、未发布）。
+> 基线：origin/fix/post-merge-integration-cleanup-20261025 = 373fda40bf904ea0c715d8560fda71c58a6bc051。
+> 状态：进行中（收口时回填结论、SHA、CI 运行号）。
+
+## 0. 给用户的说明（非技术）
+
+**修复了什么（用户可见）**
+
+1. **切了话题再确认，续作不会跑错话题**：确认、恢复、重试会使用那次提交原本保存的话题；读不到原话题时明确提示原因（例如「原提交话题无法确认，未开始执行」），不会悄悄用你当前切到的话题顶替，也不会重复执行已完成的操作。
+2. **旧审批恢复后不再走错接口**：旧格式审批会明确标成「旧审批」，继续用旧的 `/respond` 回答；恢复出来的旧审批只读显示「未执行/中断待核对」，不会被当成新审批去 `/decide`。
+3. **预算修改与实际执行一致**：只有真正支持改预算的旧路径（子智能体创建等）可以编辑，并且执行用你批准的值；不支持修改的记录只读展示；后端收到不支持的修改会明确拒绝，不会出现「界面能改、执行却用旧值」。
+4. **批准之后能看见真实结果**：旧 `/respond` 路径现在也会在工具真实执行完后记录「已执行成功/执行失败」并写入历史；「已批准」与「已执行成功」严格分开。断线重连、页面回到前台时会主动补读审批状态与历史，按审批 id 合并不串项，执行不再永远停在「执行中」；读取失败会显示原因并可重试。
+5. **子任务通知不再丢**：超过 200 条不再静默丢弃最早的通知；通知先持久化，投递成功才记为已送达，失败会保留并可重试，重启后继续投递未送达的通知；同一任务不会重复通知（跨进程崩溃的极小窗口仍是至少一次，见边界）。
+6. **文档与许可证概括更正**：上一阶段的「进行中」结论改为已完成并区分历史阶段；许可证概括按实际第三方组件更正（含弱 copyleft 的 MPL-2.0 与作为可选项的 LGPL 等）。
+
+**怎么验证的**：每一项都先在修复前写出会失败的回归用例（基线红），修复后转绿；再做定向测试、独立验收（F）、一次本地全量、一次完整 CI；真实界面补了 480 窄窗与断线重连等证据（见 §4）。
+
+**仍存在/未验证**：普通聊天续作仍回退当前话题（下一轮）；v2 审批结果路径未改；通知跨崩溃仍是「至少一次」；真实桌面壳、安装形态、真实模型链路、POSIX 本轮没有新证据（沿用上一轮证据并如实标注）；迁移只进不退。详见 §6。
+
+## 1. 基线与分支
+
+| 项目 | 值 |
+| --- | --- |
+| 仓库 | HebiIsHere/QIO |
+| 开工 fetch 的上游分支 | fix/post-merge-integration-cleanup-20261025 = 373fda40 |
+| origin/main | 1b03541e（未前进；本轮不碰 main） |
+| 修复分支 | fix/post-merge-followups-20261026 |
+| 受测代码 SHA | 本地全量与独立验收：`8cb18828`（产品代码）；完整 CI：`48b01f0c`（同一产品代码 + docs）；失败修复仅测试提交：`0c47e11b` |
+| 最终 HEAD | 本文件所在提交（docs-only 回填）；与受测 SHA 的差异仅 docs，可用 `git rev-parse HEAD` 与 `git diff --name-only` 核对 |
+
+## 2. 工作流与文件 owner
+
+| 工作流 | 分支 | worktree | 主要交付 |
+| --- | --- | --- | --- |
+| A 话题归属 | fix/fu2-topic-attribution | D:\qio-dev\fixq2-a | 确认/恢复/重试原话题优先、无法确认明确失败 |
+| B 审批后端 | fix/fu2-approval-backend | D:\qio-dev\fixq2-b | legacy 身份、/respond 路由、执行结果持久化历史、overrides 语义 |
+| C 审批前端 | fix/fu2-approval-frontend | D:\qio-dev\fixq2-c | 重连补读合并、结果闭环展示、预算只读/可改一致 |
+| D 通知投递 | fix/fu2-notification-delivery | D:\qio-dev\fixq2-d | 持久化队列、可靠投递、重启恢复、去掉 200 静默丢弃 |
+| E 文档许可 | docs/fu2-docs-license | D:\qio-dev\fixq2-e | 阶段状态更正、P91 记录、许可证概括、证据 |
+| F 独立验收 | verify/fu2-acceptance | D:\qio-dev\fixq2-f | 基线反例 + 候选独立验收 |
+| Lead | fix/post-merge-followups-20261026 | D:\qio-dev\fixq2-lead | 契约冻结、集成、全量、CI、本文档 |
+
+## 3. 五项修复逐项
+
+### 3.1 互动续作的话题归属
+
+**问题**：确认/恢复/重试启动续作 Turn 时，`_start_intent_turn` 把界面当前选中话题传给 `start_interactive_turn`，而后者只在 `topic_id` 为空时才读原提交绑定 → 切换话题后确认会把续作写进新话题；没有绑定时还会用当前话题兜底起 Turn。
+**反例（基线红）**：新回归 17 例中 13 红——原提交 `topicId=topic-saved` 时直接调用与真实 POST /confirm 都拿到 `topic-current`；无绑定/topicId 为空时 `started=True`（期望明确失败）。证据 `_fixpm2/evidence/A/red-baseline-topic-attribution.log`。
+**修复**：`submission.resolve_resume_topic` 只认 `binding.resumeState.topicId`，缺失/为空/读取失败返回 `code=topic_unresolved`；`start_interactive_turn` 在 claim/提交/写绑定之前强制解析，失败不启动/不写绑定/不回退当前话题；API 不再传当前话题并补可读 code/reason；前端 `intentDisplay.summarizeConfirm` 消费 `started=false/startError/turnStart.reason` 显示真实原因。
+**调用点核对**：startup_recovery 与 turn_orchestrator 两处都能从意图拿到带 topicId 的 submission；无 binding 时只 release_retry/skipped（最多 3 次 exhausted，无死循环）、不崩溃、不起 Turn、不重复执行（已补 4 条测试，2 条基线红）。
+**验证（绿）**：新用例 17 passed；相邻 11 文件 147 passed；相关端点 123 passed/6 skipped；既有 `test_p3_d_intent_resume_retry.py` 仅改 1 条过期断言（调用方话题 → 原提交话题），未放宽。
+**未解决（已在本轮收口后追加修复）**：`resolve_chat_binding` 的普通互动聊天续作原先仍回退 current_topic；收口后按用户要求追加修复并只做定向验证（见 §4.6）。历史「succeeded 但绑定缺失」数据自动重试仍会显式失败（不写错话题、不重复执行）。
+### 3.2 旧审批恢复与预算
+
+**问题**：旧 `request()` 审批落库行 state 为空，读取时 `state_of` 把空 state 按 status 映射（pending→waiting），恢复又把旧行标成 `interrupted_unverified`；旧审批因此被当成 v2 生命周期、前端误调 `/decide`。旧 `/respond` 只把决定交给等待中的工具，工具真实执行后没有任何地方写结果——已批准升不到已执行成功/失败。不支持 overrides 的路径收到 overrides 被静默忽略。
+**反例（基线红）**：F 验收 3 红（无 legacy 标识/state 伪造 waiting、/decide 错误语义、恢复后 status 非独立事实）；预算 2 红（不支持 overrides 的旧路径与 v2 经 /respond 都静默接受）。B 红证据 12 failed/3 passed。
+**修复（后端）**：`row_to_dict` 对 legacy 输出 `legacy=true/state=null/status` 原值；恢复落 `status=interrupted_legacy`、state 保持 NULL，保留 turn/session/digest/created/expires；`/decide` 对 legacy 409 `legacy_approval_use_respond`，已中断 legacy 再 /respond 409 `legacy_approval_not_executable`，已消费仍 404；`tools/approval_results.py` 在 ToolRegistry 执行边界用 ContextVar 统一收口 legacy 真实执行结果（history executed/failed + APPROVAL_RESULT executed/failed，不重复执行），维护审批与护栏/预算「继续/停止」分别按真实执行/决定事实收口（后者不写 executed）。预算：`overrides_supported` 顶层布尔，仅 tool_create+subagent 与 tool_execution+code_boundary 端到端支持，其余带 overrides 400 `overrides_unsupported` 且不消费。
+**修复（前端）**：legacy 只走 /respond、不补 state；中断 legacy 只读；结果面板区分旧审批 approved 与 executed/failed；预算可编辑 ⇔ 旧 tool_create 子智能体且非 v2 且 overridesSupported!==false，v2 只读且绝不带 overrides；后端 400 显示真实原因并转只读。
+**验证**：B 新回归 19 passed、两批定向 384 passed；C 红 17 failed/5 passed → 绿（FU2-C 40、审批相关 272、更大定向 233、vue-tsc 0）；集成分支复跑 B 审批 33 passed。
+**未解决**：v2 store 生命周期结果仍走原 store.finish（未改）；legacy approved 但工具未执行完时历史停在 approved（界面明说等待执行，不伪造成功）。
+### 3.3 审批结果闭环
+
+**问题**：SSE 断线/RESYNC/回前台时前端只恢复运行时快照（`restoreRuntimeState`），从不补读审批 pending/history；断线期间审批已完成（executed/failed），本机记录仍停在「执行中」；历史读取失败没有可见错误；旧审批 approved 与 executed 也没有区分展示。
+**反例（基线红）**：F 验收 3 红（restoreRuntimeState 一次都没调用 getApprovalHistory/getPendingApprovals；断线前 executing 重连后仍 executing；读失败无可见错误）。C 红 17 failed/5 passed。
+**修复**：唯一入口 `approvals.refreshApprovalsAndHistory`，在 SSE onopen（首次+重连）、RESYNC 完成、窗口回前台触发；按 approval_id 合并——pending 等待项保留，history/事件终态收口本机 approved/executing；不新增重复行、不串项、不因补读重复提交；pending/history 读取失败分别可见且可重试，不伪装空集合；结果面板区分旧审批 approved（等待执行）与 executed/failed，中断 legacy 只读展示。
+**验证**：C 新用例转绿（FU2-C 40）；审批相关定向 272 passed；更大定向 233 passed；`vue-tsc --noEmit` exit 0；集成分支上 B 契约联调通过。证据 `_fixpm2/evidence/C/green-*.log`、`final-*.log`。
+**未解决**：跨崩溃 exactly-once 不在本轮（通知侧见 §3.4）；前端只依赖后端字段，无独立状态机。
+### 3.4 子任务通知容量与可靠投递
+
+**问题**：`SubtaskNotificationQueue` 是纯内存 deque，超过 200 条时 `popleft` 静默丢弃最早通知；`enqueue` 即调 `TaskManager.mark_notified`（把入队当交付成功）；重启后未送达通知全丢，take 后崩溃也丢。
+**反例（基线红）**：D 新回归 22 例中 21 failed（250 条入队后 pending_count=200、最早 50 条被丢弃、入队即 mark_notified、无迁移/表、重启为空）；F 独立复现 4 红。证据 `_fixpm2/evidence/D/red-baseline.txt`。
+**修复**：只追加迁移 71 建 `subtask_notifications(task_id PK, payload, origin, created_at, delivered_at, attempts, last_error, last_attempt_at)` + 待投递索引；72 为补偿入口（70 全部语句 + 71 DDL + 4 个可修复列 ADD COLUMN），`SCHEMA_VERSION = COMPENSATION_VERSION = 72`，`REQUIRED_OBJECTS` 同步表/列/索引。队列改 DB 模式：`INSERT OR IGNORE` 幂等去重、>200 只告警不丢弃、`take` 记 attempts/last_attempt_at、**只有 `mark_delivered` 写 delivered_at（唯一交付判据）**、`mark_failed` 保留 last_error 待重试、重启加载未送达。`app.py`：pump 在 `turns.submit` 受理成功后才 mark_delivered，失败 mark_failed + 延迟重试（10s），`resume_subtask_notifications`/启动 prime 补投；投递用确定性 `request_id=subtask-notify:<task_id>` + `lookup_request` 查重。
+**验证**：新回归 22 passed；通知/子任务/迁移/应用定向 141 passed；5 个未显式迁移的 AppContext 测试 35 passed；既有迁移升级测试按授权把 `==70` 改为 `== SCHEMA_VERSION` 后 17 passed（未跳过/放宽/删用例）。F 调整后的独立通知验收 6 passed（250 条不丢、失败保留可重试、重启续投不重投、跨重启去重）。
+**未解决/边界（如实）**：跨崩溃仍为 at-least-once——`turns.submit` 与写 `delivered_at` 无共享事务，若 submit 已受理、写交付前进程被杀，重启可能重投一次（同进程内 request_id 查重已压掉；正常失败重试路径不重复）；延迟重试为单次 10s 调度，无指数退避/最大次数；启动 prime 在 `AppContext.__init__` 末尾触发。
+### 3.5 文档与许可证
+
+**问题**：`docs/post-merge-integration-cleanup-20261025.md` 仍写「状态：进行中」；`docs/compliance.md` 把依赖概括为「全是 MIT/Apache/BSD/ISC/OFL 宽松许可、没有 copyleft 传染项」，与实际清单不符。
+**修复**：旧文档第 5 行改为 P90 阶段已完成并新增 §12 P91 阶段（历史阶段与当前状态分开）；`docs/status.md` 新增 2026-10-26 最后核对行与 P91 里程碑（partial → 收口回填）；`docs/compliance.md` 按实际组件更正：含 MPL-2.0（7 条，文件级弱 copyleft，含 MPL-2.0 AND MIT）、LGPL-2.1-or-later 仅作 MIT/Apache-2.0 并列可选项（2 条 r-efi），其余 MIT/Apache/BSD/ISC/Zlib/Unlicense/CC0/MIT-0/0BSD/OFL/PSF/Unicode-3.0/BlueOak/CDLA/LLVM-exception 等，未发现 GPL/AGPL 单项；随包资产按实际 4 条（CPython 运行时、python-build-standalone、bge-small-zh-v1.5、Noto Serif SC）更正；补充「未改依赖不重新生成声明」与「生成输入 sha256 受换行符影响、CRLF 检出重跑只会改 3 行哈希、不得提交」的边界（该陷阱本轮已复现并撤销，未提交假变更）。
+**验证**：`scripts/licenses/check_third_party.py` 通过（锁文件组件 914/声明 918/许可证 42 种，`--selftest` 7/7）；`scripts/check_docs.py` 通过（100 个里程碑，P91 解析成功）；未改依赖/锁文件/生成物。
+**边界**：本轮无新的真机桌面/安装形态/真实模型证据（沿用 P90 证据并按未验证列出，见 §6）。
+
+## 4. 验证台账
+
+### 4.1 反例（基线红，先复现再修复）
+
+| 项 | 基线 373fda40 红证据 | 修复后 |
+| --- | --- | --- |
+| 话题归属 | A：新回归 17 例中 13 红（原提交话题被当前话题覆盖；无绑定仍起 Turn）；F 独立 3 红（直接调用 + 真实 POST /confirm） | 全绿 |
+| 旧审批恢复 | B：12 failed/3 passed（legacy 无标识、state 伪造 waiting、/decide 语义错、恢复 status 非独立事实）；F 独立 3 红 | 全绿 |
+| 预算 overrides | F 独立 2 红（不支持 overrides 的旧路径与 v2 经 /respond 静默接受）；B 红含 overrides 用例 | 全绿 |
+| 审批结果闭环 | C：4 文件 17 failed/5 passed（restoreRuntimeState 不补读、断线后仍 executing、读失败无错误）；F 独立 3 红 | 全绿 |
+| 通知容量/投递 | D：22 例 21 failed（250 条丢最早 50、入队即 mark_notified、无迁移/表、重启丢失）；F 独立 4 红 | 全绿 |
+
+证据目录：`_fixpm2/evidence/{A,B,C,D,F}/`（red-* 日志；F 的 `baseline-repro.md` 与 `baseline/item*.log`）。
+### 4.2 定向验证（开发期，非全量）
+
+| 工作流 | 定向范围 | 结果 |
+| --- | --- | --- |
+| A 话题归属 | 新回归 + 相邻 11 文件 + 相关端点 11 文件 | 17 passed；147 passed；123 passed/6 skipped |
+| B 审批后端 | 新回归 + 审批/registry 18 文件 + loop/维护 11 文件 + 合并两批 | 19 passed；185 passed；86 passed；384 passed |
+| C 审批前端 | FU2-C 文件 + 审批相关 + 更大定向 + vue-tsc | 40 passed；272 passed；233 passed；tsc 0 |
+| D 通知投递 | 新测试 + 子任务/通知/迁移/应用定向 + 无显式迁移的 AppContext 测试 | 22 passed；141 passed；35 passed；迁移升级 17 passed |
+| E 文档许可 | check_docs.py/--selftest、licenses check/--selftest | 通过（100 里程碑；914/918/42 种；selftest 7/7） |
+| F 独立验收 | 基线五项反例 + 候选复跑（反例/保真/真实界面） | 基线 15 红断言/4 保真通过 → 候选：反例 21/21 绿、保真 6/6、回归 101+81 passed、vue-tsc 0、480 真实界面 4/4（见 §4.5 与 ACCEPTANCE.md） |
+| Lead 集成 | 每次合并后定向 + 集成后 A/D 回归、B 审批、vue-tsc/vite build | 全部通过（日志 `_fixpm2/evidence/lead-*`） |
+### 4.3 本地全量（仅一次）
+
+- 候选：**8cb18828**（集成分支 tip；F 的验收测试在 8cb18828 之上以独立文件合入，产品代码不变，最终树 c2a47f48）。
+- **后端全量**：`cd backend && uv run --frozen pytest -q`（601 个测试文件、收集 6013 项；在后端树 744546b7 上跑，该树在 8cb18828→c2a47f48 之间产品代码未变；F 的 5 个验收测试文件在其后合入，另行定向跑通见下）→ **exit 0**（无 failed/error；日志尾部为既有 ResourceWarning/PytestUnraisableException 噪音；`_fixpm2/evidence/lead-full-backend-e030e570.log`）。
+- **前端全量**：`cd frontend && npx vitest run --maxWorkers=4` → **452 files / 4025 tests 全部通过（exit 0）**，无失败/跳过；`npx vue-tsc --noEmit` exit 0；`npx vite build` 成功（9.07s，dist 未提交）。
+- **文档/许可/门禁**：`check_docs.py`（100 里程碑）与 `--selftest`、`check_third_party.py`（914/918/42 种）与 `--selftest`、`release_gate.py --selftest`、`verify_workflow_contract.py`（113 断言）全部通过。
+- **离线评估**：`uv run --frozen python -m agent.eval.run` 在候选与基线 373fda40 各跑一次，输出逐字节相同（`_fixpm2/evidence/eval-*.json`）。
+- **F 验收测试在最终树**：backend 5 文件（话题/旧审批/预算/保真/通知）20 passed；frontend `fu2-acceptance` 4 passed。
+### 4.4 完整 CI（仅一次）与定向复验
+
+- **触发**：把修复分支推送到 origin（此前不存在远端分支；push 是唯一一次会跑完整矩阵的远端事件；未开 PR、未推子分支、未动 main）。运行 **run 40257319813**，SHA `48b01f0c`（产品代码与本地全量候选 8cb18828 相同，仅多 docs），event=push。
+- **逐 job**：ci dedup preflight ✓ / docs consistency ✓ / frontend（typecheck+测试+构建）✓ / rust (ubuntu) ✓ / rust (windows) ✓ / frozen worker (windows) ✓ / install e2e (windows) ✓ / backend (py3.11) ✓ / backend (windows-latest) ✓ / **backend (py3.12) ✗**；无 skipped、无 cancelled。
+- **唯一失败**：`backend (py3.12)` 的 `tests/test_pm_acceptance_approval_surface.py::test_two_concurrent_approvals_keep_separate_results`（`AssertionError: 并发审批有结果丢失`）。日志根因：测试 helper `_row` 在测试主线程直连读取同一 sqlite 连接，而后台执行器在事件循环线程 `store.finish()` 写同一连接，py3.12 抛 `sqlite3.InterfaceError: bad parameter or other API misuse`（`get_raw`），导致该审批未落历史。**与产品代码无关**：同一提交的 py3.11 与 Windows 后端全绿；本地 py3.11 同文件重复通过；测试本身在 P90 即存在主线程直连读的写法，本次被并发时序触发。
+- **处置（未重跑第二次完整矩阵）**：把测试 helper 改为经应用事件循环线程读取（`client.portal.call`，断言一条未改、未删/未放宽），提交 `0c47e11b` 并以 `[skip ci]` 推送（不产生第二次完整矩阵）；随后用 targeted-verify 对**新提交完整 SHA** 做定向复验：py3.12 run **40263546217** success、py3.11 run **40263563419** success（均指定 ref + 完整 SHA + 两个测试文件；workflow 内 `assert checked-out commit equals requested SHA` 通过，实际受测 SHA 以该断言/日志为准，不以 dispatch 元数据 head_sha 为准）。
+- **未使用** `Re-run failed jobs` 冒充修复通过、未降低门禁、未把 skipped/cancelled 算通过；两次 targeted-verify 是失败后的定向复验，不是第二次完整 CI。
+- **最终 HEAD 与受测 SHA**：`0c47e11b..HEAD` 仅 docs 回填（`git diff --name-only` 可复核）；完整矩阵受测代码 SHA 为 `48b01f0c`，产品代码与本地全量 `8cb18828` 相同。
+### 4.5 真实界面/桌面证据
+
+- **F 独立真实界面（480x600，隔离后端 8842 + vite 5292 + 独立数据目录 + fake/mock 模型）**：4/4 PASS、consoleErrors=0、无横向溢出：0 待办+历史可从 ⑤ 读到真实持久历史；reload/新 SSE connect 后仍可回看（重连补读）；「已批准」显示等待执行（无预算编辑、无“可修改后批准”、无允许按钮、不说已完成）；对已不存在的审批点击决定时显示真实 404 原因、不假装成功。证据 `_fixpm2/evidence/F/ui/`（4 张截图 + JSON）。
+- **C 真实后端契约探针**（端口 8899、临时数据目录）：pending/history/runtime 形状与前端一致；legacy /decide → 409 `legacy_approval_use_respond`；/decide + overrides → 400 `overrides_unsupported`；已中断 legacy /respond → 409 `legacy_approval_not_executable`。
+- **真机桌面/安装形态**：本轮未重新构建桌面壳、未打包、未做安装/卸载验证；真机桌面证据仍为 P90 的 `_fixpm/evidence/D/f07`（本轮未改壳侧代码），按未验证列出。真实模型链路未验证（全部 fake/mock）。
+- **LIMITED（F 记录）**：通知的 AppContext pump/启动补投/request_id 查重只做代码核对 + 队列级真实状态机验证，未构造完整 AppContext 端到端；界面“断线重连”用 reload/新 connect 模拟、“决定失败”用 404 注入，未做真实网络故障注入；跨崩溃 at-least-once 窗口按 D 说明保留。
+
+### 4.6 收口后追加修复（定向验证，未触发全量/CI）
+
+- 追加修复：普通互动聊天续作 `submission.resolve_chat_binding` 与确认/恢复/重试同规则——原提交保存的 `binding.resumeState.topicId` 优先；原提交存在但话题无法核对时明确拒绝这次发送（API 400，带可读原因），不回退当前话题、不静默改绑；没有 submission 的新消息仍使用当前话题（正常发消息不变）。
+- 红→绿：新增 `backend/tests/test_fu3_chat_topic_binding.py` 5 例；把 `submission.py` 临时回退到基线后同文件 2 例红（缺失话题被当前话题顶替），修复后 5 例绿；与相邻 `tests/test_p3_a_waiting.py` 合并 18 passed。证据 `_fixpm2/evidence/fu3-chat-topic.md`。
+- 约束：按用户要求**未跑全量测试、未触发 CI**；本次改动以 `[skip ci]` 推送，不产生 CI 运行。
+
+## 5. 保留机制与保护清单
+
+- 三次确认（required/confirmed_stage 由后端推导与 CAS）、期限（expires_at 不续期）、CAS（revision/expected_revision 不变）、单次执行（claim CAS 只有一个执行者）、执行前重核（operation_digest/预检查）：本轮未改语义，B 的旧路径收尾只写结果不重跑工具；既有 approval/lifecycle/restart 测试全绿。
+- 旧 `/respond` 接口保留并继续服务旧 request 审批（绑定 turn/session/digest 校验、单次消费不变）；旧 `/demo/advance` 与 pendingDecision 撤回路径未动。
+- 历史数据库迁移 1..70 未改写；只追加 71（通知表）与 72（补偿入口），空库/旧版本 70 库升级、对象缺失补偿均有测试。
+- 未恢复已删除的旧界面/旧组件；未改版本号与三套锁文件；旧审批 UI 仍只走统一审批体系。
+- 已删除的旧界面不复活；`sdfRings`、测试 support/harness、归档模块 `archive.py` 未动。
+
+## 6. 未解决与未验证
+
+- **话题归属**：普通互动聊天续作已按同一规则修复（原提交 topicId 优先；缺失明确拒绝、不回退当前话题，见 §4.6）；历史「succeeded 但绑定写入缺失」的数据其自动重试仍会显式失败（不写错话题、不重复执行）。
+- **审批**：v2 store 生命周期结果仍走原 `store.finish` 路径（本轮未改）；旧审批 approved 但工具未执行完时历史停在 approved（界面明说等待执行，不伪造成功）；旧 `request()` 内存在进程重启后无法再应答（恢复为 interrupted_legacy 只读），这是既有语义。
+- **通知**：跨崩溃仍是 at-least-once（submit 与写 delivered_at 无共享事务，可能在极小窗口重投一次；同进程内 request_id 查重已压掉，正常失败重试不重复）；延迟重试为单次 10s，无指数退避/最大次数；未构造完整 AppContext 的端到端 pump 重试验收（F 按代码核对 + 单测覆盖，列 LIMITED）。
+- **真实桌面 / 安装形态 / 真实模型 / POSIX**：本轮未新增证据。真机桌面与安装 e2e 沿用 P90 证据（见 docs/post-merge-integration-cleanup-20261025.md 与 `_fixpm/evidence/D/f07`），本轮代码未改壳侧；真实模型链路全程 fake/mock；POSIX 仅由 CI 覆盖。
+- **UI**：本轮前端改动只做审批结果/重连/预算/确认失败原因，未做全量视觉走查；F 的 480 窄窗与断线重连真实界面证据见 §4.5。
+
+## 7. 合并准备
+
+- **分支状态**：修复分支推送 origin/fix/post-merge-followups-20261026（独立分支，未合入 main、未打包、未发布、未改版本号/锁文件）。
+- **本轮唯一一次完整 CI**：由修复分支 push 触发 ci.yml 完整矩阵（含 install e2e、冻结 worker、三平台后端、前端类型/测试/构建、rust 两平台、docs）。若失败：修复提交带 `[skip ci]` 推送（不产生第二次完整矩阵），再用 targeted-verify.yml 指定 ref + 完整 SHA + 平台 + 筛选定向复验；最终 HEAD 若含仅文档回填提交同样 `[skip ci]`，并记录「受测 SHA 与最终 HEAD 的差异仅为 docs」。
+- **CI 触发防重复（沿用 P90 规则）**：push 排除 fix/pm-* 与 verify/pm-*；本轮子分支 fix/fu2-*、docs/fu2-*、verify/fu2-* 不 push（只在本地集成），集成分支 push 就是唯一完整矩阵；concurrency 按实际受测提交（PR head 回退 github.sha）；main push 与 PR 门禁未改动。
+- **未来合入 main**：PR 运行按 head SHA、main push 按 merge SHA，是两个不同提交、各自一次完整矩阵（concurrency 不会把它们当重复）；若仓库保护要求两者都跑，按「不同 SHA 两次完整运行」如实记录，不冒充去重。减负方案：fast-forward/rebase 合并让 main SHA 等于已验证 head，或 PR 只跑 targeted、main push 作为唯一完整门禁。本轮未创建 PR。
+- **数据库兼容**：本轮只追加迁移 71/72（SCHEMA_VERSION=COMPENSATION_VERSION=72），空库、版本 70 旧库升级、对象缺失补偿均有测试；迁移只进不退，代码回退不会自动降库，恢复旧备份前须确认不会覆盖升级后新增数据。未改写任何历史迁移。
+- **合并材料**：本文档（五项逐项、反例/修复/验证、保留机制、未解决边界）+ 各工作流证据（`_fixpm2/evidence/{A..F}`）+ 分支提交历史（merge --no-ff 保留工作流边界）。
+
+## 8. 第二轮定向修复（FU3，2026-10-26 后续）
+
+本轮按用户要求：**只做定向验证 + 一次全量测试；只推送，不触发 CI**（推送使用 [skip ci]，推送后核对无新 CI 运行）。
+
+### 8.1 审批读取失败不再伪装成空集合（P1）
+- 问题：`ApprovalService.pending()` 吞掉 `store.list_pending()` 异常只记 warning（且内存 legacy 会掩盖持久层失败），`history()` 吞异常返回 `[]`；审批 pending/history 端点因此返回 200+空/部分集合，前端把失败补读当成功并可能清掉待办。
+- 修复（B）：新增 `ApprovalsUnreadable`（code=approvals_unreadable）；`pending()`/`history()` 读取失败显式抛出（不再返回空/部分）；两个审批端点捕获 → **503** + `detail={"code":"approvals_unreadable","message":"读取审批数据失败（…）：这不代表没有审批/历史，可以重试"}`；失败不改状态、可立即重试。前端无需改动（非 2xx 会保留已有待办并显示可重试错误）。
+- 验证：新回归 6 例（服务层/API 503+code、内存 legacy 不掩盖、重试恢复）；红证据基线 200+空集合，修复后 6 passed；审批相关定向 151+151 passed。
+
+### 8.2 手动完整 CI 的所有测试 job 必须测试指定提交（P1）
+- 问题：`ci.yml` 只有 `ci-dedup-preflight` 用 `inputs.ref` checkout 并断言 `expected_sha`；其余测试 job 是默认 checkout（workflow_dispatch 下是派发 ref 尖端，可能≠指定 SHA）。
+- 修复（E）：docs/backend/backend-windows/frontend/rust/rust-windows/frozen-worker/install-e2e 全部显式 `ref: ${{ inputs.expected_sha || github.sha }}`（dispatch 检出被 preflight 校验过的提交；push/PR 回退 github.sha，行为不变）；preflight 断言保留。
+- 契约：`verify_workflow_contract.py` 新增逐 job 断言（dispatch 必须 expected_sha、不得用 inputs.ref、push/PR 回退 github.sha、checkout 不得按事件跳过），selftest 增加 4 个反例；本地 146 断言 PASS / selftest 19 项 0 失败 / 11 场景 0 不符 / YAML 可解析。本轮未触发 CI。
+
+### 8.3 审批到期事件相位不再显示成「失效」（P2）
+- 问题：`_execute_approved` 到期路径已 `mark_expired`（history=expired），事件却发 phase=invalidated，前端显示「执行前核对不通过」，补读历史也无法纠正。
+- 修复（B）：到期分支发布 phase=**expired**（summary 原文保留）；digest 被改/期限无法核对仍是 invalidated。前端已能映射 expired（approvalStateFromPhase、resultStateFromOutcome、终态集合、文案）。
+- 验证：新用例断言到期事件 phases=[expired]、history outcome=expired；红证据基线 phases=[invalidated]。
+
+### 8.4 补读快照竞态：新到达审批不被旧快照删除（P1）
+- 问题：前端 `recoverPending` 在 await getPendingApprovals() 之后无条件 `reconcile(snapshotIds)`；请求期间通过事件到达的新审批会被较旧的空快照删掉。
+- 修复（C）：待办项记录 `arrivedSeq`（enqueue 分配、applyPending 推进、store 单调计数）；`recoverPending` 请求前捕获序号，返回后只移除「请求开始前已存在且快照没有」的项；请求期间新到达/更新的保留；失败/404 仍保留全部。`refreshApprovalsAndHistory` 复用同一路径。
+- 验证：新用例 5 例（deferred 请求 + 期间新审批/更新旧项 + refresh 路径；失败保留）；红证据基线 3 failed；定向回归 36 文件 / 290 tests passed；`vue-tsc` 0。
+
+### 8.5 子任务通知轮不再跑错话题（P1）
+- 问题：`_pump_subtask_notifications` 已按 origin 原话题 A 提交（ctx.initial_topic=A），但 `_execute_notify_turn` 无条件 `topic=self.current_topic()`（界面当前话题 B），绑定/上下文/trace/结果保存全变成 B。
+- 修复（D）：通知轮只解析一次话题——`ctx.initial_topic` 优先，缺失/空白才回退 `current_topic()`；`ensure_started/set_initial_topic/ctx.current_topic/ctx.bound_topic/record_binding/append_message/fragments/finish` 全部使用同一结果；通知轮其他语义不变。
+- 验证：新用例 2 例（A/B 场景全链路均为 A；缺失时回退 B）；红证据基线 1 failed；定向 13 文件 96 passed。
+
+### 8.6 本轮验证与推送
+- 定向：上述各工作流新用例与相邻回归全部通过（证据 `_fixpm2/evidence/{B,C,D,E}/`）。
+- 验证门槛（按用户最新指令）：**不做全量测试、不触发 CI**；本轮以各工作流红→绿定向用例与集成后定向回归为验收依据。说明：在收到该指令前，前端全量曾执行完成（454 文件 / 4034 例全过）——仅作参考事实，不作为本轮验收门槛；后端全量已中止（约 2003 项后停止），不作为验收依据。
+- 静态检查：docs 一致性（101 里程碑）/ 第三方声明（914/918/42 种）/ 发布闸门自检 / workflow 契约 146 断言 + selftest 19 项 / 离线评估与基线逐字节相同。
+- 推送：本次以 [skip ci] 推送，**不触发 CI**（用户要求）；推送后核对该分支无新 run。
+- 未解决/边界：`/api/runtime/state` 的 approvals 快照在同故障下返回 500（不再伪装空，但不是 503+code；非审批端点未改）；`interrupted()/audit_trail()` 仍保留读失败返回空旧行为；本轮无 CI、无真实桌面/安装/真实模型验证。
+
+## 9. FU4：权限模式全局栏化、互动搜索内联、切换 422 修复（2026-10-26）
+
+用户要求：直接修改修复、不走全量测试、不触发 CI、只做针对性测试保证相关代码能跑。
+
+### 9.1 权限模式：胶囊 → 全局栏纯文字
+- 删除 `PermissionModeBadge`（页面内胶囊徽标）及其在 ChatColumn / InteractiveView 的挂载；新增 `components/security/PermissionModeText.vue`，由 WindowChrome 在对话页/互动页共用全局栏渲染（纯文字，无边框/底色/圆角；读取中与读取失败如实显示；点击进入设置 →「工具与权限」，本身不改模式）。
+- 测试：新组件单测（加载/读取中/失败/点击）、b-f01 改为全局栏页面级测试（两个路由）、e1 验收改为「全局栏有文字 + 页面内不再有徽标」；WindowChrome / p1a 共享全局栏回归通过。
+
+### 9.2 互动搜索：弹窗 → 全局栏内联输入
+- `InteractiveChromeTools.vue` 去掉搜索按钮与 body 弹出面板（标题/label/说明/scope/关闭按钮文字全部删除），直接渲染内联 input：初始较窄、点击/聚焦加宽（一次点击即可输入），放大镜图标在框内，除 placeholder 外没有可见提示文字。
+- 结果改为锚定输入框下方的小浮层列表（Teleport body + fixed + 视口钳制；`role=list` 非 dialog；无标题/说明；无命中不渲染说明），点结果仍 dispatch locate；Esc/点击外部收起；ArrowDown 进入结果；480 窄窗结果不出界。
+- 测试：重写 p1b-v2-chrome-tools（保留保存状态 + 真实 store 搜索/locate 断言，新增内联/加宽/无额外文字/无命中/Esc/外部/键盘/窄窗），定向交互组件 73 文件/689 例通过；`scripts/i2v2-verify/playwright_flows.mjs` 同步改为操作内联输入框。
+
+### 9.3 切换权限模式 422
+- 根因：`frontend/src/services/security.ts::setSecurityMode` 发 `PUT /api/security/mode` 时 body 是 JSON 文本但没有 `Content-Type`；FastAPI `body: dict` 收到裸字节按字符串校验 → 422「Input should be a valid dictionary」。
+- 修复：请求显式带 `Content-Type: application/json`。实测同一 body：带头 200，不带头 422；新增 service 单元测试（断言头/请求体/422 如实抛出）。
+
+### 9.4 验证与边界
+- 定向：权限模式相关 47 例、交互组件 73 文件/689 例、security 请求契约 2 例、窗口栏/共享全局栏/design-guards 通过；`vue-tsc --noEmit` 0；`vite build` 成功。
+- 真实浏览器（Playwright + Edge，测试服务器 5199/8734）：1440 与 480 两路由截图与 JSON 在 `_fixpm2/evidence/FU4/ui/`；全局栏文字纯文字（0 border、透明底、0 圆角、11px）、旧徽标 0、搜索容器无额外交字、点击 94→226px 并聚焦、无 dialog、窄窗 scrollWidth=480、consoleErrors=0。
+- 边界：按用户要求未跑全量、未触发 CI；未做真机壳复验；有匹配卡片的搜索结果仅由组件测试覆盖（实机板面无匹配数据）。
+
+### 9.5 补充：全局栏消失、只剩 QIO（旧深链）
+- 现象：用户打开 `#/conversation` 时页面空、顶部只剩 QIO 字标。根因不是这次的权限模式改动，而是路由：对话页真实 path 是 `/`，`/conversation` 没有匹配路由 → App 没有视图、WindowChrome 的 `hasGlobalBar` 为 false，走「其他页面」分支（点 + QIO 字标），图标与全局栏自然都不在。
+- 修复：`router.ts` 增加 `/conversation` → `/` 别名，并增加未知路径 catch-all 回 `/`（单窗口桌面应用里没有可停留的 404 空白页）；新增 `src/__tests__/router-aliases.test.ts` 3 例（旧深链、未知深链、interactive/settings 不被吃掉）。
+- 实测：`#/conversation` 与 `/this-route-does-not-exist` 都重定向到 `#/`，全局栏恢复（图标 / PERSONAL AGENT / 受限模式 / 设置 / 话题栏）；`#/interactive`、`#/settings` 正常；Playwright 截图 `_fixpm2/evidence/FU4/ui/05-conversation-redirected.png`。
+
+## 10. FU5：空态居中、模式切换直连、任务栏圆角、互动输入列居中（2026-10-26）
+
+用户要求：直接修、不做全量测试、不触发 CI；第 5 条（透明高斯模糊对话栏）先回答可行性。
+
+### 10.1 空对话引导居中（对话页 + 互动对话栏）
+- 根因：`MessageStream` 的 `.stream` 被当成 flex 行容器，子节点虚拟列表 `spacer{width:100%}` 与内容宽度的 `.empty` 并排，`.empty` 被推到右边（1440 实测 greet 中心比消息区中心偏 +560px 左右）。
+- 修复：`.stream` 明确 `display:block; position:relative`；`.empty` 绝对铺满消息可视区、flex 居中、`pointer-events:none`。空态不参与滚动内容流，不影响有消息时的虚拟列表与滚动；互动页复用同一组件一起修好。
+- 实测：`.empty` 覆盖 `.stream` 全区域，greet 中心相对消息区中心偏移 **0.0px**；截图 `01-conversation-empty-1440.png`。
+
+### 10.2 模式切换：点击直接切换（去掉菜单）
+- `ConversationModeSwitch` 重写：按钮显示当前模式，点击直接跳另一模式（`/` ⇄ `/interactive`），不再渲染 `role=menu`/menuitem，不保留 Esc/外部点击收菜单；`aria-label/title` 为「切换到互动模式 / 切换到对话模式」；依旧只导航，不碰任何业务状态。
+- 实测：点击后 URL 直接变为 `#/interactive`、`[role=menu]` 数量 0；p1a 测试按直连语义重写。
+
+### 10.3 收起任务栏：按钮与栏圆角完全对齐
+- 收起栏 `.collapsed-rail` 去掉 `padding-top` 与内层 36px 小按钮：`.rail-btn` 铺满整栏（`width:100%; flex:1`）、`border-radius: inherit`、无内层边框；hover 用整栏底色；未读徽标改为栏内侧右上角。
+- 实测 480：栏 48×520 圆角 14px，按钮 46×518 圆角 14px（1px 为外框），截图 `03-rail-480.png`。
+
+### 10.4 互动页：输入框居中、模式切换靠左
+- `.ic-composer-row` 改为三列 grid：左/右 1fr、中间 860px；输入列固定中间列 → 面板内真正居中；模式切换放左列右对齐（不占输入宽度）；`.ic-composer` 去 860 上限铺满；≤700 窄窗切到输入上方左对齐；消息列仍 860。
+- 实测 1440：row grid `48px 860px 48px`，输入列中心相对面板中心偏移 **0.0px**；按用户反馈再往左让 20px，switch 与输入胶囊 gap 12→**32px**（1440 时 switch x=179、1100 时 x=9，仍完整可见）；截图 `02-interactive-composer-1440.png`、`nudge-1440.png`。
+
+### 10.5 第 5 条（透明 + 高斯模糊的互动对话栏）：结论与做法（本轮未实现）
+- **能做到**，且不需要改动消息数据/滚动逻辑；推荐纯 CSS（Chromium/WebView2 支持完整）：
+  1. 对话面板背景改为半透明 + `backdrop-filter: blur(10px) saturate(1.05)`，让板面在栏后模糊透出；
+  2. 有框消息保留自己的不透明背景（`backdrop-filter:none`），视觉上"实"；
+  3. 无框文字块用 `position:relative` 包裹，`::before` 绝对定位铺在文字下方（略外扩 10–14px），`backdrop-filter: blur(24px)`，再用 `mask-image: radial-gradient/linear-gradient` 做羽化边缘 → 文字下模糊更强，边界是渐变过渡、不会出现硬线；
+  4. "随文字滚动"由布局天然保证：模糊层挂在文字块上、位于滚动内容内，滚动时一起移动，无需 JS 同步；
+  5. 性能：模糊层只挂在可见消息块上（虚拟列表已限制数量）；若滚动掉帧，退化为"面板一层 blur + 文字块只加半透明底"，或把强模糊层改为 `will-change` 独立合成层并减少羽化范围。
+- **风险/边界**：`backdrop-filter` 在嵌套（父级也有 blur）时合成结果依浏览器而异；Safari/Firefox 对 mask+backdrop-filter 组合支持较弱（QIO 桌面是 WebView2，浏览器预览 Edge/Chrome 正常）；大面积实时模糊可能增加 GPU 负担。
+- 需要你确认视觉强度（面板 blur 半径、文字块 blur 半径、羽化范围）后我再实现，并用截图做对比。
+
+### 10.6 验证与边界
+- 定向：FU5 布局守卫 8 例（红→绿）、模式切换直连用例、相关 9 文件 77 例 + pm-acceptance/design-guards 33 例通过；`vue-tsc` 0；`vite build` 成功。
+- 实机（Playwright + Edge，5199/8734）：见 §10.1–10.4 的几何数值与截图；`consoleErrors=0`。
+- 边界：jsdom 无布局引擎，像素结论以实机截图/几何测量为准；第 5 条未实现；本轮按要求未跑全量、未触发 CI。

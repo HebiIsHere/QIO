@@ -25,7 +25,7 @@
 >
   <template #board><!-- BoardCanvas / 板面浮层（现有组件原样放入） --></template>
   <template #bookmarks><!-- 书签列表内容（真实 store 数据由 Lead 提供） --></template>
-  <template #chat><!-- 对话内容（ChatDock 或后续 v2 对话面板） --></template>
+  <template #chat><!-- 对话内容（v2/InteractiveConversation） --></template>
   <template #toolbar><!-- 底部工具栏内容（BoardToolbar 或后续 v2 工具栏） --></template>
   <template #composer><!-- 输入区内容（后续 v2 输入组件） --></template>
 </InteractiveWorkspace>
@@ -49,8 +49,8 @@
 - 底部：输入区贴底，工具栏在它上方，间距 `--iw-gap`（12px）—— 明确分层、不互相覆盖。
 - 对话区打开时从底部区域上方展开，高度上限 = 可用高度 × 46%，并且永远给板面保留 220px 最小高度；
   空间不足时它不占位，`data-iw-layout-issues` 里会如实出现 `chat_capped`。
-- 所有区域互不相交：**没有覆盖板面的浮层**（现有 ChatDock/BoardToolbar 若仍以绝对定位浮在板面上，
-  建议放进 `#board` slot 内与 BoardCanvas 同级，沿用它们原有的舞台定位）。
+- 所有区域互不相交：**没有覆盖板面的浮层**（旧的可拖动对话窗已删除；当前互动页把工具栏与输入区
+  放进「悬浮对话区」，板面保持完整高度，见 views/InteractiveView.vue 的 .im-floating-chat）。
 
 Lead 集成注意：
 
@@ -74,13 +74,18 @@ Lead 集成注意：
 
 - props：`target?: string`（默认 `#qio-interactive-chrome-extra`，测试/特殊集成可覆盖）。
 - 挂载点不存在时**什么都不渲染**（不造一条假顶栏）；出现后由 MutationObserver 自动接上。
-- 控件内容：唯一保存状态（`role="status"`，真实 store 的 `saveStatus/dirty/saveError`）+ 板内搜索按钮。
+- 控件内容：唯一保存状态（`role="status"`，真实 store 的 `saveStatus/dirty/saveError`）+
+  **内联搜索框**（`input` 直接渲染在挂载点里，没有按钮、没有弹窗；除 input 自己的 placeholder
+  外没有任何标题 / label / 说明 / 关闭按钮文字）。
+- 交互（FU4）：初始较窄，点击 / 聚焦即进入输入状态并加宽（宽度过渡，一次点击即可输入）；
+  Esc / 点击外部收起结果，输入内容保留。
 - 搜索：真实 store 板面 + `interactive/board.ts` 的 `searchCards`；点结果 dispatch
-  `qio:interactive:locate-card`（与 BoardSearchPanel 同一套定位事件），显示「已在板面上定位」。
-- 浮层：`Teleport to body` + `position: fixed`；位置由 `placeChromePopover` 钳进视口
-  （右对齐搜索按钮、宽度按视口收窄、`max-height` 收到视口下沿），不被全局栏 `overflow` 裁切。
-- 键盘：打开即聚焦输入框；Esc 收起并把焦点还给搜索按钮；点击外部收起（不抢板面焦点）。
-- 无障碍：按钮 `aria-expanded/aria-controls/aria-haspopup="dialog"`，浮层 `role="dialog"` 带名字。
+  `qio:interactive:locate-card`（沿用互动页既有的定位事件名）。
+- 结果列表：锚定在输入框下方的**小浮层列表**（不是弹窗，无标题 / 无说明）；
+  `Teleport to body` + `position: fixed`，位置由 `placeChromePopover` 钳进视口
+  （右对齐输入框、宽度按视口收窄、`max-height` 收到视口下沿），不被全局栏 `overflow` 裁切。
+- 键盘：聚焦即输入；ArrowDown 从输入框进入结果列表；Esc 收起（从结果列表按 Esc 回到输入框）。
+- 无障碍：`aria-label` 只落在控件本身（搜索框 `搜索板面`）；结果列表 `role="list"`，不是 dialog。
 
 ## 4. 纯函数 API（Lead / 测试可直接复用）
 
@@ -137,15 +142,14 @@ import { saveStatusView } from "./v2/saveStatus";
   - 高度记在本机 `localStorage`（按板面），损坏值忽略。
   - 收起条用真实会话状态说话：正在回复/已排队 N 条/草稿已保留/点开继续对话。
 
-### Composer / ChatDock 的绑定接口
+### Composer 的绑定接口
 
 - `Composer.vue` 新增可选 prop `chatBinding`：只作为 `session.send` 的 `options.interactive` 传下去；
   不传 → 对话页行为完全不变（请求体不带板面身份）。Composer **不读 interactive store**。
-- `ChatDock.vue` 新增可选 prop `binding`：不传时仍用 `store.chatBinding`（旧调用方不变）；
-  传了就以 props 为准。
+- 互动页由 `v2/InteractiveConversation` 传入 `store.chatBinding`（互动对话窗是这条绑定唯一的生产者）。
 
 ## 6. 验证
 
 - `npx vue-tsc --noEmit`
 - `npx vitest run src/components/interactive/__tests__/p1b-v2-layout.test.ts src/components/interactive/__tests__/p1b-v2-workspace.test.ts src/components/interactive/__tests__/p1b-v2-chrome-tools.test.ts`
-- Phase 3-B：`npx vitest run src/components/interactive/v2/__tests__/conversationLayout.test.ts src/components/interactive/v2/__tests__/InteractiveConversation.test.ts src/components/__tests__/p3b-composer-binding.test.ts src/components/interactive/__tests__/p3b-chatdock-binding.test.ts`
+- 互动对话窗与几何桥：`npx vitest run src/components/interactive/v2/__tests__/conversationLayout.test.ts src/components/interactive/v2/__tests__/InteractiveConversation.test.ts src/components/interactive/v2/__tests__/conversationGeometryBridge.test.ts src/components/__tests__/p3b-composer-binding.test.ts`

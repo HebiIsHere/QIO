@@ -18,7 +18,6 @@ import { useInteractiveStore } from "../interactive";
 import { api } from "../../services/api";
 import * as imApi from "../../services/interactive";
 import { draftStorageKey, readDraft, UNBOUND_DRAFT_ID } from "../../interactive/drafts";
-import ChatDock from "../../components/interactive/ChatDock.vue";
 import CardDraftHint from "../../components/interactive/CardDraftHint.vue";
 
 vi.mock("../../services/api", () => ({
@@ -35,7 +34,6 @@ vi.mock("../../services/api", () => ({
     approveIntent: vi.fn(),
     rejectIntent: vi.fn(),
     batchDecide: vi.fn(),
-    createDemoIntents: vi.fn(),
     advanceIntent: vi.fn(),
     updateIntentPreview: vi.fn(),
   },
@@ -52,7 +50,6 @@ vi.mock("../../services/interactive", () => ({
   approveIntent: vi.fn(),
   rejectIntent: vi.fn(),
   batchDecide: vi.fn(),
-  createDemoIntents: vi.fn(),
   advanceIntent: vi.fn(),
   updateIntentPreview: vi.fn(),
 }));
@@ -262,65 +259,6 @@ describe("聊天草稿持久化（契约 §9.4）", () => {
     expect(storedText(chatKey("t1"))).toBe("写不进本机的字");
   });
 
-  it("发送失败后恢复原稿，但不覆盖用户在请求期间新输入的文字（组件级）", async () => {
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const session = useSessionStore();
-    const interactive = useInteractiveStore();
-    interactive.chatOpen = true;
-    session.currentTopicId = "t1";
-    session.draft = "第一条要发的话";
-
-    const pending: Array<(ok: boolean) => void> = [];
-    vi.spyOn(session, "send").mockImplementation(
-      () => new Promise<boolean>((resolve) => { pending.push(resolve); }),
-    );
-
-    const wrapper = mount(ChatDock, { global: { plugins: [pinia] } });
-    await flushPromises();
-    await wrapper.find('[data-im="chat-send"]').trigger("click");
-    await flushPromises();
-    // 请求在飞：输入框已经清空
-    expect(session.draft).toBe("");
-
-    // 用户又打了字
-    await wrapper.find('[data-im="chat-input"]').setValue("请求还没回来时写的新内容");
-    expect(session.draft).toBe("请求还没回来时写的新内容");
-
-    // 失败回执到达：恢复逻辑必须看到「已经有新输入」，不许覆盖
-    pending[0](false);
-    await flushPromises();
-    expect(session.draft).toBe("请求还没回来时写的新内容");
-    expect(wrapper.find('[data-im="chat-failure"]').exists()).toBe(true);
-    wrapper.unmount();
-  });
-
-  it("保存失败时悬浮聊天显示真实原因与重试入口，不说「已保存」", async () => {
-    breakLocalStorage("本地存储被禁用");
-    const pinia = createPinia();
-    setActivePinia(pinia);
-    const session = useSessionStore();
-    useInteractiveStore().chatOpen = true;
-    session.currentTopicId = "t1";
-    session.draft = "写不进本机的字";
-    session.flushDraft();
-    expect(session.draftSaveStatus).toBe("error");
-
-    const wrapper = mount(ChatDock, { global: { plugins: [pinia] } });
-    const status = wrapper.find('[data-im="chat-draft-status"]').text();
-    expect(status).toContain("草稿未保存");
-    expect(status).toContain("本地存储被禁用");
-    expect(status).not.toContain("已保存");
-    expect(wrapper.find('[data-im="chat-draft-retry"]').exists()).toBe(true);
-
-    // 存储恢复后点重试：只重写草稿，状态改成已保存
-    restoreLocalStorage();
-    await wrapper.find('[data-im="chat-draft-retry"]').trigger("click");
-    await flushPromises();
-    expect(session.draftSaveStatus).toBe("saved");
-    expect(wrapper.find('[data-im="chat-draft-status"]').text()).toContain("已保存在本机");
-    wrapper.unmount();
-  });
 });
 
 describe("卡片草稿保存状态（契约 §9.5）", () => {
@@ -341,7 +279,7 @@ describe("卡片草稿保存状态（契约 §9.5）", () => {
     expect(vi.mocked(imApi.saveDrafts).mock.calls[1][1]).toEqual({ "card:c1": "没保存上的内容" });
     // 重试只写草稿：不建卡、不提交、不调用 QIO
     expect(imApi.submitBoard).not.toHaveBeenCalled();
-    expect(imApi.createDemoIntents).not.toHaveBeenCalled();
+    expect(imApi.advanceIntent).not.toHaveBeenCalled();
     expect(api.sendTurn).not.toHaveBeenCalled();
   });
 

@@ -10,7 +10,7 @@ import { createPinia, setActivePinia } from "pinia";
 import App from "../App.vue";
 
 const boot = vi.hoisted(() => ({ waitForBackend: vi.fn() }));
-vi.mock("../services/boot", () => ({ waitForBackend: boot.waitForBackend }));
+vi.mock("../services/boot", () => ({ waitForBackend: boot.waitForBackend, BOOT_SLOW_MS: 10_000 }));
 
 const connect = vi.fn();
 vi.mock("../stores/events", () => ({ useEventStore: () => ({ connect }) }));
@@ -25,7 +25,7 @@ async function mountApp() {
   const wrapper = mount(App, {
     global: {
       plugins: [pinia],
-      stubs: { RouterView: true, ApprovalEntry: true, ApprovalModal: true, DevTaskEntry: true },
+      stubs: { RouterView: true, NonChatApprovalEntry: true, DevTaskEntry: true },
     },
   });
   await flushPromises();
@@ -42,8 +42,9 @@ describe("App 启动状态", () => {
 
     const w = await mountApp();
 
-    expect(w.find(".boot-note").text()).toContain("正在启动");
-    expect(w.find(".boot-note").text()).toContain("秒");
+    expect(w.find(".boot-status").text()).toContain("正在启动 QIO");
+    // 任务书：超过 10 秒才显示「已等待 N 秒」——刚开始不显示数字，也不打扰
+    expect(w.find(".boot-status").text()).not.toContain("已等待");
     expect(w.findComponent({ name: "RouterView" }).exists()).toBe(false);
     expect(connect).not.toHaveBeenCalled();
     w.unmount();
@@ -54,7 +55,7 @@ describe("App 启动状态", () => {
 
     const w = await mountApp();
 
-    expect(w.find(".boot-note").exists()).toBe(false);
+    expect(w.find(".boot-status").exists()).toBe(false);
     expect(w.findComponent({ name: "RouterView" }).exists()).toBe(true);
     expect(connect).toHaveBeenCalled();
     w.unmount();
@@ -65,17 +66,20 @@ describe("App 启动状态", () => {
 
     const w = await mountApp();
 
-    expect(w.find(".boot-note.err").text()).toContain("后端没有应答");
-    expect(w.find(".boot-note.err").text()).toContain("Failed to fetch");
-    expect(w.find(".boot-note.err").text()).toContain("QIO.log");
-    expect(w.find(".boot-note.err").text()).toContain("重试");
+    expect(w.find(".boot-status.failed").text()).toContain("QIO 没有启动完成");
+    expect(w.find(".boot-status.failed").text()).toContain("Failed to fetch");
+    expect(w.find(".boot-status.failed").text()).toContain("重试");
     expect(w.findComponent({ name: "RouterView" }).exists()).toBe(false);
+    // 技术细节默认折叠：展开后才显示日志路径（不把技术信息常驻在最显眼处）
+    expect(w.find(".boot-status.failed").text()).not.toContain("QIO.log");
+    await w.find(".boot-details-toggle").trigger("click");
+    expect(w.find(".boot-status.failed").text()).toContain("QIO.log");
 
     boot.waitForBackend.mockResolvedValueOnce({ base: "http://127.0.0.1:1", token: "tk" });
-    await w.find(".boot-note.err button").trigger("click");
+    await w.find(".boot-retry").trigger("click");
     await flushPromises();
 
-    expect(w.find(".boot-note").exists()).toBe(false);
+    expect(w.find(".boot-status").exists()).toBe(false);
     expect(w.findComponent({ name: "RouterView" }).exists()).toBe(true);
     w.unmount();
   });

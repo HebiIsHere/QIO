@@ -32,6 +32,7 @@ import { cardDraftKey } from "../../../interactive/drafts";
 import { isVisibleCard, localVisibleRange, visibleRangeCounts } from "../../../interactive/submission";
 import { FENCE, emptyDoc, parseDocText, serializeDocText, type TextDoc } from "../../../interactive/textCard";
 import type { BoardCard as BoardCardModel, CardKind } from "../../../interactive/types";
+import { hasTipRecord } from "../../../composables/useQioTip";
 
 /** 替身只覆盖真实服务模块**全部**用到的方法（缺一个就会在等待回执时抛「没有这个导出」） */
 vi.mock("../../../services/interactive", () => ({
@@ -47,7 +48,6 @@ vi.mock("../../../services/interactive", () => ({
   approveIntent: vi.fn(),
   rejectIntent: vi.fn(),
   batchDecide: vi.fn(),
-  createDemoIntents: vi.fn(),
   createIntents: vi.fn(),
   advanceIntent: vi.fn(),
   updateIntentPreview: vi.fn(),
@@ -331,7 +331,8 @@ describe("BoardCard：文字卡的编辑与显示", () => {
     await Promise.resolve();
     const copy = wrapper.get('[data-im="card-code-copy"]');
     expect(copy.text()).toContain("复制失败");
-    expect(copy.attributes("title") || "").toContain("手动复制");
+    expect(copy.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(copy.element as HTMLElement), "手动复制退路要走统一用途说明").toBe(true);
   });
 
   it("链接：不安全 scheme 如实说明打不开（不假装打开、也不静默失败）", async () => {

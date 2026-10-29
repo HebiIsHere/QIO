@@ -10,6 +10,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import { useConversationShellStore } from "../../stores/conversationShell";
 import { useConversationTasksStore } from "../../stores/conversationTasks";
+import QIconButton from "../ui/QIconButton.vue";
 import TaskRailItem from "./TaskRailItem.vue";
 
 const props = withDefaults(defineProps<{ drawer?: boolean }>(), { drawer: false });
@@ -19,8 +20,13 @@ const shell = useConversationShellStore();
 const tasks = useConversationTasksStore();
 
 const listRef = ref<HTMLElement | null>(null);
-const highlightId = ref("");
+const currentTab = ref<HTMLButtonElement | null>(null);
+const historyTab = ref<HTMLButtonElement | null>(null);
+/** 本轮定位要一起高亮的一组任务（单目标时只有一项）。 */
+const highlightIds = ref<string[]>([]);
 let highlightTimer: ReturnType<typeof setTimeout> | null = null;
+/** 最近一次已定位的请求签名：避免同一请求在数据抖动时反复滚动。 */
+let lastFocusKey = "";
 
 const view = computed(() => shell.prefs.taskTab);
 const state = computed(() => tasks.view(view.value));
@@ -42,13 +48,19 @@ const errorWithoutItems = computed(
   () => Boolean(state.value.error) && items.value.length === 0 && !state.value.loading,
 );
 
-function flashHighlight(id: string) {
-  highlightId.value = id;
+function flashHighlight(ids: string[]) {
+  highlightIds.value = ids;
   if (highlightTimer) clearTimeout(highlightTimer);
   highlightTimer = setTimeout(() => {
     highlightTimer = null;
-    highlightId.value = "";
+    highlightIds.value = [];
   }, 1800);
+}
+
+/** 当前定位请求的全部目标（focusTasks 的集合；旧代码只写 focusTarget 时也兼容）。 */
+function focusIdList(): string[] {
+  if (tasks.focusTargets.length) return tasks.focusTargets.slice();
+  return tasks.focusTarget ? [tasks.focusTarget.id] : [];
 }
 
 function rowElement(id: string): HTMLElement | null {
@@ -67,12 +79,41 @@ function restoreScroll() {
   root.scrollTop = tasks.scrollTop[view.value] || 0;
 }
 
+const TAB_ORDER: Array<"current" | "history"> = ["current", "history"];
+
 async function switchTab(tab: "current" | "history") {
   if (tab === view.value) return;
   if (listRef.value) tasks.setScroll(view.value, listRef.value.scrollTop);
   await tasks.switchView(tab);
   await nextTick();
   restoreScroll();
+}
+
+function tabElement(tab: "current" | "history"): HTMLButtonElement | null {
+  return tab === "current" ? currentTab.value : historyTab.value;
+}
+
+/**
+ * tablist 键盘：←/→ 在两个视图间循环，Home/End 跳到首/末。
+ *
+ * 为什么必须做：两个 tab 是同一组选项，键盘用户不该被迫 Tab 两次再到列表；
+ * 同时只让当前 tab 进 Tab 序列（roving tabindex），与 ARIA tabs 模式一致 ——
+ * 这样「切换视图」和「进入任务列表」是两条清晰路径，不会把焦点困在 tab 上。
+ */
+async function onTabsKeydown(event: KeyboardEvent): Promise<void> {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const index = TAB_ORDER.indexOf(view.value);
+  let nextIndex = index;
+  if (event.key === "ArrowLeft") nextIndex = (index - 1 + TAB_ORDER.length) % TAB_ORDER.length;
+  else if (event.key === "ArrowRight") nextIndex = (index + 1) % TAB_ORDER.length;
+  else if (event.key === "Home") nextIndex = 0;
+  else nextIndex = TAB_ORDER.length - 1;
+  const next = TAB_ORDER[nextIndex];
+  await switchTab(next);
+  await nextTick();
+  tabElement(next)?.focus();
 }
 
 function onListScroll() {
@@ -112,30 +153,40 @@ watch(view, async () => {
   restoreScroll();
 });
 
+/**
+ * 定位当前 focus 请求：**全部目标**一起高亮，只把第一个真正渲染出来的目标滚进视野。
+ * 找不到行时不报错（store 的 focusError 负责说明失败原因）。
+ */
+async function locateFocus(): Promise<void> {
+  const ids = focusIdList();
+  if (!ids.length) return;
+  const seq = tasks.focusTarget?.seq ?? 0;
+  const rows = ids
+    .map((id) => rowElement(id))
+    .filter((row): row is HTMLElement => Boolean(row));
+  // 行还没出现（数据/视图刚切换）时也先记下高亮；行出现后 items.length 变化会再定位一次。
+  const key = seq + "|" + ids.join("|") + "|" + rows.length;
+  if (key === lastFocusKey) return;
+  lastFocusKey = key;
+  flashHighlight(ids);
+  rows[0]?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+}
+
 watch(
-  () => tasks.focusTarget,
-  async (focus) => {
-    if (!focus) return;
+  () => [tasks.focusTarget?.seq ?? 0, tasks.focusTargets.join("|")],
+  async () => {
     await nextTick();
-    const row = rowElement(focus.id);
-    if (!row) return;
-    row.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-    flashHighlight(focus.id);
+    await locateFocus();
   },
   { immediate: true },
 );
 
-// 聚焦请求可能先于列表数据到达（focusTask 期间在刷新）：行出现后再定位一次。
+// 聚焦请求可能先于列表数据到达（focusTasks 期间在刷新）：行出现后再定位一次。
 watch(
   () => items.value.length,
   async () => {
-    const focus = tasks.focusTarget;
-    if (!focus || highlightId.value === focus.id) return;
     await nextTick();
-    const row = rowElement(focus.id);
-    if (!row) return;
-    row.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
-    flashHighlight(focus.id);
+    await locateFocus();
   },
 );
 
@@ -156,52 +207,43 @@ onBeforeUnmount(() => {
     <header class="rail-head">
       <h2 class="rail-title">任务</h2>
       <div class="rail-head-actions">
-        <button
-          class="icon-btn"
-          type="button"
-          title="刷新任务列表"
-          aria-label="刷新任务列表"
-          :disabled="state.loading"
-          :aria-busy="state.loading ? 'true' : 'false'"
+        <QIconButton
+          icon="refresh"
+          label="刷新任务列表"
+          description="重新读取任务清单（不会执行或取消任何任务）"
+          size="sm"
+          tone="quiet"
+          :busy="state.loading"
           @click="refresh"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M3 6.5a5 5 0 0 1 8.6-2.4L13 5.5" />
-            <path d="M13 2.8v2.9H10" />
-            <path d="M13 9.5a5 5 0 0 1-8.6 2.4L3 10.5" />
-            <path d="M3 13.2v-2.9H6" />
-          </svg>
-        </button>
-        <button
+        />
+        <QIconButton
           v-if="props.drawer"
-          class="icon-btn"
-          type="button"
-          title="关闭任务列表"
-          aria-label="关闭任务列表"
+          icon="close"
+          label="关闭任务列表"
+          description="关闭任务列表，任务本身不受影响"
+          size="sm"
+          tone="quiet"
           @click="emit('close')"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" /></svg>
-        </button>
-        <button
+        />
+        <QIconButton
           v-else
-          class="icon-btn"
-          type="button"
-          title="收起任务栏"
-          aria-label="收起任务栏"
+          icon="collapse"
+          label="收起任务栏"
+          description="收起左侧任务栏，展开入口仍在左栏边缘"
+          size="sm"
+          tone="quiet"
           @click="shell.toggleLeft()"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <rect x="2" y="3" width="12" height="10" rx="1.5" />
-            <path d="M6 3v10" />
-          </svg>
-        </button>
+        />
       </div>
     </header>
 
-    <div class="rail-tabs" role="tablist" aria-label="任务视图">
+    <div class="rail-tabs" role="tablist" aria-label="任务视图" @keydown="onTabsKeydown">
       <button
+        ref="currentTab"
         type="button"
         role="tab"
+        data-task-tab="current"
+        :tabindex="view === 'current' ? 0 : -1"
         :aria-selected="view === 'current' ? 'true' : 'false'"
         :class="{ selected: view === 'current' }"
         @click="switchTab('current')"
@@ -211,8 +253,11 @@ onBeforeUnmount(() => {
         <span v-else-if="activeCount > 0" class="tab-count mono">{{ activeCount }}</span>
       </button>
       <button
+        ref="historyTab"
         type="button"
         role="tab"
+        data-task-tab="history"
+        :tabindex="view === 'history' ? 0 : -1"
         :aria-selected="view === 'history' ? 'true' : 'false'"
         :class="{ selected: view === 'history' }"
         @click="switchTab('history')"
@@ -227,7 +272,14 @@ onBeforeUnmount(() => {
     <p v-if="tasks.focusError" class="rail-warn" role="alert">{{ tasks.focusError }}</p>
     <div v-if="tasks.feedback" class="rail-feedback" role="status">
       <span>{{ tasks.feedback }}</span>
-      <button type="button" aria-label="关闭提示" title="关闭提示" @click="dismissFeedback">×</button>
+      <QIconButton
+        icon="close"
+        label="关闭提示"
+        description="只关闭这条提示，不影响任务与数据"
+        size="sm"
+        tone="quiet"
+        @click="dismissFeedback"
+      />
     </div>
 
     <div
@@ -267,7 +319,7 @@ onBeforeUnmount(() => {
             :busy-kind="
               tasks.actionBusy.startsWith(item.id + ':') ? tasks.actionBusy.slice(item.id.length + 1) : ''
             "
-            :highlighted="highlightId === item.id"
+            :highlighted="highlightIds.includes(item.id)"
             @toggle="toggleItem(item.id)"
             @action="onAction(item.id, $event)"
             @open-approval="openApproval(item.id)"
@@ -319,48 +371,13 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 2px;
 }
-.icon-btn {
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
-}
-.icon-btn svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.icon-btn:hover {
-  color: var(--text-strong);
-  background: var(--layer-hover);
-}
-.icon-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.icon-btn:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
 .rail-tabs {
   flex: none;
   display: flex;
   gap: 3px;
   margin: 0 10px 6px;
   padding: 3px;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
 }
 .rail-tabs button {
@@ -371,7 +388,7 @@ onBeforeUnmount(() => {
   gap: 5px;
   padding: 5px 4px;
   border: 0;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
@@ -416,27 +433,13 @@ onBeforeUnmount(() => {
   margin: 0 12px 6px;
   padding: 6px 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-base);
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   line-height: 1.6;
 }
 .rail-feedback span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.rail-feedback button {
-  flex: none;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-  padding: 2px;
-}
-.rail-feedback button:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
-}
 .rail-list {
   flex: 1;
   min-height: 0;

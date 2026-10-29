@@ -6,6 +6,7 @@ import { useEventStore } from "../../stores/events";
 import { useSessionStore } from "../../stores/session";
 import { useUiStore } from "../../stores/ui";
 import type { StreamMessage } from "../../stores/session";
+import { hasTipRecord } from "../../composables/useQioTip";
 
 function makeMessage(over: Partial<StreamMessage> & { role: StreamMessage["role"] }): StreamMessage {
   return {
@@ -128,7 +129,9 @@ describe("MessageItem 工具卡呈现", () => {
       pinia,
     );
     expect(w.find(".tool-name").text()).toBe("网络搜索");
-    expect(w.find(".tool-card").attributes("title")).toBe("web_search");
+    // 原始工具名只走统一用途说明（QTip），不再用原生 title
+    expect(w.find(".tool-card").attributes("title")).toBeUndefined();
+    expect(hasTipRecord(w.find(".tool-card").element as HTMLElement)).toBe(true);
     expect(w.find(".tool-name").text()).not.toContain("web_search");
     w.unmount();
   });

@@ -1,4 +1,5 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 中央对话工作区（B 负责完整实现）。
  *
@@ -17,20 +18,16 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useSessionStore } from "../../stores/session";
 import { useEventStore } from "../../stores/events";
-import { useOnboardingStore } from "../../stores/onboarding";
 import { useConversationShellStore } from "../../stores/conversationShell";
 import { restoreRuntimeState } from "../../stores/restore";
 import { api, type TopicDetail } from "../../services/api";
 import MessageStream from "../MessageStream.vue";
-import KnowledgeCandidateCard from "../KnowledgeCandidateCard.vue";
+import QIcon from "../ui/QIcon.vue";
+import QIconButton from "../ui/QIconButton.vue";
 import ComposerDock from "./ComposerDock.vue";
-import PermissionModeBadge from "../security/PermissionModeBadge.vue";
-import { useComposerClearance } from "../../composables/useComposerClearance";
-import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const session = useSessionStore();
 const events = useEventStore();
-const onboarding = useOnboardingStore();
 const shell = useConversationShellStore();
 
 /* ------------------------------------------------------------------ */
@@ -169,9 +166,14 @@ function reconnectEvents(): void {
 }
 
 /**
- * 只收「影响整个对话」的真实状态：
- * 历史读取失败（不是没有历史）、连接/同步异常、全局错误与警告、凭据不可用、
+ * 只收「影响整个对话」且需要就地处理的真实状态：
+ * 历史读取失败（不是没有历史）、连接/同步异常、全局错误、
  * 能力降级（兼容模式）、布局偏好保存失败。
+ *
+ * **整体性异常统一走顶部全局异常入口**（B 的 GlobalIssueEntry）：
+ * 凭据不可用 / 模型不可用 / 连接中断这类跨页问题不再在这里重复一条常驻警告
+ * —— 同一条事实在页面里说两遍会让人以为有两件事要处理。store 字段
+ * （events.credentialNotice / session.warning）保留，由全局入口使用。
  * 单轮失败 / 中断 / 取消不在这里 —— 它们由对应轮次自己说明（TurnProcess）。
  */
 const statusNotices = computed<StatusNotice[]>(() => {
@@ -222,16 +224,6 @@ const statusNotices = computed<StatusNotice[]>(() => {
         { label: "前往设置", to: "/settings" },
       ],
     });
-  } else if (session.warning) {
-    out.push({ id: "warning", tone: "warn", tag: "提示", text: session.warning, actions: [] });
-  } else if (events.credentialNotice) {
-    out.push({
-      id: "credential",
-      tone: "warn",
-      tag: "提示",
-      text: events.credentialNotice,
-      actions: [{ label: "前往设置", to: "/settings" }],
-    });
   } else if (session.lastTurnOutcome?.status === "cancelled") {
     // 取消是正常结局：安静地说一声（具体轮次状态仍由那一轮自己的过程区说明）
     out.push({
@@ -277,8 +269,6 @@ const statusNotices = computed<StatusNotice[]>(() => {
 /* ------------------------------------------------------------------ */
 
 /** 底部候选块：按输入区真实高度让位（输入区是固定贴底的气泡） */
-const bottomCluster = ref<HTMLElement | null>(null);
-useComposerClearance(bottomCluster);
 
 function focusComposer(e: MouseEvent): void {
   const el = document.getElementById("composer-input");
@@ -314,7 +304,7 @@ onBeforeUnmount(() => {
         type="button"
         :aria-expanded="detailsOpen ? 'true' : 'false'"
         aria-controls="topic-details"
-        :title="`${topicTitle}：点击查看话题说明与历史续接状态`"
+        v-qio-tip="`${topicTitle}：点击查看话题说明与历史续接状态`"
         @click="toggleDetails"
       >
         <span class="topic-mark mono" aria-hidden="true">TOPIC</span>
@@ -326,14 +316,9 @@ onBeforeUnmount(() => {
           {{ anchorTitle ? `从「${anchorTitle}」继续` : "从选中的历史位置继续" }}
         </span>
         <span class="chev" :class="{ open: detailsOpen }" aria-hidden="true">
-          <svg viewBox="0 0 24 24">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
+          <QIcon name="chevron-down" :size="18" />
         </span>
       </button>
-      <!-- 权限模式常驻可见（R9 契约 §1）：对话页 v2 删掉了输入区旧话题栏，
-           徽标随常驻话题栏一起挪到这里；点击进入设置由用户切换，徽标本身不改模式。 -->
-      <PermissionModeBadge />
     </header>
 
     <!-- 话题完整说明（打开才读；读不到就说读不到） -->
@@ -347,14 +332,15 @@ onBeforeUnmount(() => {
     >
       <div class="td-head">
         <span class="td-name serif">{{ detail?.name || topicTitle }}</span>
-        <button
+        <QIconButton
           class="td-close"
-          type="button"
-          aria-label="收起话题说明"
+          icon="close"
+          label="收起话题说明"
+          description="收起话题说明，话题与消息都不受影响"
+          size="sm"
+          tone="quiet"
           @click="detailsOpen = false"
-        >
-          ×
-        </button>
+        />
       </div>
       <p v-if="detailLoading" class="td-note" role="status">正在读取话题说明…</p>
       <template v-else-if="detailError">
@@ -389,13 +375,6 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <!-- 首次引导的轻提示（可关闭；不是错误） -->
-    <div v-if="onboarding.hintVisible" class="setup-hint" role="status" data-qio-fit>
-      <span class="text">还没设置完 QIO —— 补上模型、称呼与目标，它才会真正记得你</span>
-      <button class="link resume" type="button" @click="onboarding.reopen()">继续设置</button>
-      <button class="close" type="button" aria-label="关闭提示" @click="onboarding.setHintDismissed(true)">×</button>
-    </div>
-
     <!-- 全局状态区：只放影响整个对话的事项（轮次内部状态留在轮次里） -->
     <div v-if="statusNotices.length" class="status-zone" data-qio-fit>
       <div
@@ -425,27 +404,17 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <MessageStream class="message-stage" />
-
-    <!-- 底部候选：需要用户决定的高影响知识；输入区是固定气泡，这里按它的高度让位 -->
-    <div ref="bottomCluster" class="bottom-cluster" data-qio-fit>
-      <div
-        v-if="session.knowledgeCandidates.length"
-        class="candidates"
-        data-qio-fit
-        v-qio-scrollbar="{ policy: 'auto', axis: 'y' }"
-      >
-        <KnowledgeCandidateCard
-          v-for="candidate in session.knowledgeCandidates"
-          :key="candidate.knowledgeId"
-          :candidate="candidate"
-        />
-      </div>
+    <!--
+      消息框（2026-10-27 改版）：消息流与底部输入块（入口按钮行 / 模式切换 / 输入胶囊 /
+      记忆星球入口）在**同一个圆角框**里。输入框上方的入口按钮出现、换行时只在框内
+      向上生长 —— 输入胶囊不被推动，模式切换与星球入口始终和输入胶囊同一条中心线。
+    -->
+    <div class="chat-box" data-qio-fit>
+      <MessageStream class="message-stage" />
+      <ComposerDock>
+        <template #planet><slot name="planet" /></template>
+      </ComposerDock>
     </div>
-
-    <ComposerDock>
-      <template #planet><slot name="planet" /></template>
-    </ComposerDock>
   </section>
 </template>
 
@@ -478,7 +447,7 @@ onBeforeUnmount(() => {
   min-height: 50px;
   padding: 10px 16px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   color: inherit;
@@ -537,64 +506,56 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
   transition: color var(--dur-fast) var(--ease-1), background-color var(--dur-fast) var(--ease-1);
 }
-.topic-main .chev svg {
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+.topic-main .chev :deep(svg) {
   transform-origin: 50% 50%;
   transition: transform var(--dur-fast) var(--ease-1);
 }
-.topic-main .chev.open svg {
+.topic-main .chev.open :deep(svg) {
   transform: rotate(180deg);
 }
 .topic-main:hover .chev {
   color: var(--text-strong);
   background: var(--layer-hover);
 }
-/* ---- 话题说明 ---- */
+/* ---- 话题说明 ----
+   纵向节奏：整张卡只定义一套间距值，展开后的四种分支（正常 / 加载中 / 读取失败 /
+   没有话题）都按同一套落位，避免「挤一段、松一段」。分隔线上下各 12px（对称）。 */
 .topic-details {
   flex: none;
   margin: 6px 0 0;
   padding: 10px 14px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   box-shadow: var(--shadow-1);
   font-size: var(--fs-sm);
   min-width: 0;
+  /* 标题→描述 4 / 描述→元信息 10 / 元信息→分隔线 12 /
+     分隔线→小标签 12 / 小标签→段落 4 */
+  --td-gap-title-desc: 4px;
+  --td-gap-desc-meta: 10px;
+  --td-gap-meta-rule: 12px;
+  --td-gap-rule-label: 12px;
+  --td-gap-label-line: 4px;
 }
 .td-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 .td-name {
+  min-width: 0;
   font-size: var(--fs-md);
   color: var(--text-strong);
+  overflow-wrap: anywhere;
 }
 .td-close {
   margin-left: auto;
-  border: none;
-  background: none;
-  padding: 0 2px;
-  color: var(--text-muted);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-}
-.td-close:hover {
-  color: var(--text-strong);
-}
-.td-close:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 1px;
 }
 .td-note {
-  margin: 6px 0 4px;
+  /* 下边距交给下一条块（分隔线 12px），这里只出与标题的 4px */
+  margin: var(--td-gap-title-desc) 0 0;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
   overflow-wrap: anywhere;
@@ -602,10 +563,15 @@ onBeforeUnmount(() => {
 .td-note.err {
   color: var(--danger);
 }
+/* 读取失败时的重试按钮：和错误文案自成一组，到下一条分隔线仍是 12px */
+.topic-details .qio-btn {
+  margin-top: 8px;
+}
 .td-summary {
-  margin: 6px 0 0;
+  margin: var(--td-gap-title-desc) 0 0;
   color: var(--text-primary);
-  line-height: 1.7;
+  /* 正文行高：与页面正文一致，不另设更松的行高 */
+  line-height: var(--lh-base);
   overflow-wrap: anywhere;
 }
 .td-summary.empty {
@@ -616,7 +582,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 18px;
-  margin: 8px 0 0;
+  margin: var(--td-gap-desc-meta) 0 0;
 }
 .td-row {
   display: flex;
@@ -625,6 +591,9 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 .td-row dt {
+  /* 窄窗下标签整体不拆行（"关键/词"这种断字会把一行拆成两行、节奏全乱） */
+  flex: none;
+  white-space: nowrap;
   color: var(--text-muted);
   font-size: 10.5px;
   letter-spacing: 0.04em;
@@ -636,51 +605,26 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
 }
 .td-continuation {
-  margin-top: 10px;
-  padding-top: 8px;
+  /* 分隔线上下对称：线上 margin、线下 padding，两边同值（12px） */
+  margin-top: var(--td-gap-meta-rule);
+  padding-top: var(--td-gap-rule-label);
   border-top: 1px solid var(--border-subtle);
   min-width: 0;
 }
 .td-label {
+  /* 块级：标签与下方段落之间的 4px 才是可量的固定值（行内元素会被行盒吃掉一半） */
+  display: block;
   color: var(--text-muted);
   font-size: 10.5px;
   letter-spacing: 0.05em;
 }
 .td-line {
-  margin: 4px 0 0;
+  margin: var(--td-gap-label-line) 0 0;
   color: var(--text-secondary);
   font-size: var(--fs-xs);
-  line-height: 1.65;
+  /* 段落行高与正文一致（与 .td-summary 同一值） */
+  line-height: var(--lh-base);
   overflow-wrap: anywhere;
-}
-/* ---- 首次引导 ---- */
-.setup-hint {
-  flex: none;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 7px 14px;
-  margin: 6px 12px 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
-  background: var(--accent-soft);
-  color: var(--text-secondary);
-  font-size: var(--fs-sm);
-  min-width: 0;
-}
-.setup-hint .text {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.setup-hint .close {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
 }
 /* ---- 全局状态区 ---- */
 .status-zone {
@@ -698,7 +642,7 @@ onBeforeUnmount(() => {
   gap: 8px 12px;
   padding: 6px 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-surface);
   font-size: var(--fs-sm);
   min-width: 0;
@@ -748,31 +692,29 @@ onBeforeUnmount(() => {
   cursor: default;
 }
 /* ---- 消息流 / 底部候选 ---- */
-.message-stage {
-  flex: 1;
+/* 消息框：消息流 + 底部输入块（输入胶囊 / 模式切换 / 星球入口 / 入口按钮行）同一个框。
+   边框、圆角、底色都在这一层；消息流自己不再画表面。
+   左右留白由 --chat-pad-inline 同时供给消息流与输入区（统一）。 */
+.chat-box {
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
-  background: var(--bg-base);
-}
-.bottom-cluster {
-  flex: none;
-  display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 0;
   margin-top: var(--conversation-card-gap, 12px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius);
+  background: var(--bg-base);
+  overflow: clip;
+  --chat-pad-inline: 12px;
+  --chat-pad-bottom: 12px;
 }
-.candidates {
+.message-stage {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 0 12px;
-  min-width: 0;
-  max-height: 42vh;
-  overflow-y: auto;
-  overflow-x: clip;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 .skip-link {
   position: absolute;
@@ -786,7 +728,7 @@ onBeforeUnmount(() => {
   padding: 6px 10px;
   background: var(--bg-elevated);
   border: 1px solid var(--accent);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   color: var(--text-strong);
 }
 </style>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 卡片内预览的主体（契约 §3.5：**一张已展开卡片**的预览区，不是弹出窗口）。
  *
@@ -670,7 +671,7 @@ defineExpose({
   >
     <header class="cip-head">
       <div class="cip-ident">
-        <span class="cip-name" data-testid="cip-name" :title="fileName">{{ fileName }}</span>
+        <span class="cip-name" data-testid="cip-name" v-qio-tip="fileName">{{ fileName }}</span>
         <span class="cip-status" data-testid="cip-status">{{ statusText }}</span>
       </div>
       <button type="button" class="cip-close" data-testid="cip-close" @click="props.onClose()">
@@ -788,7 +789,7 @@ defineExpose({
             {{ block.text }}
           </h4>
           <p v-else-if="block.type === 'list'" class="cip-li" data-testid="cip-li">
-            <span class="cip-marker" :title="block.ordered === null ? '编号未知（文件里没有说明编号格式）' : ''">{{
+            <span class="cip-marker" v-qio-tip="block.ordered === null ? '编号未知（文件里没有说明编号格式）' : ''">{{
               block.marker
             }}</span>
             <span><template v-for="(run, runIndex) in block.runs" :key="runIndex"><strong
@@ -918,7 +919,7 @@ defineExpose({
           type="button"
           class="cip-action"
           :data-testid="'cip-action-' + action.kind"
-          :title="action.note"
+          v-qio-tip="action.note ?? ''"
           @click="runAction(action)"
         >
           {{ action.label }}
@@ -946,7 +947,7 @@ defineExpose({
   font-size: var(--fs-base);
   line-height: var(--lh-base);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   box-sizing: border-box;
 }
 .cip-head {
@@ -994,7 +995,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
@@ -1059,7 +1060,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-1);
 }
 /*
@@ -1075,7 +1076,7 @@ defineExpose({
   min-width: 0;
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-2);
 }
 .cip-canvas-box[data-qio-pan="both"] {
@@ -1103,7 +1104,7 @@ defineExpose({
   padding: var(--sp-2);
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   font-family: var(--mono);
   font-size: var(--fs-sm);
   line-height: var(--lh-tight);
@@ -1309,7 +1310,7 @@ defineExpose({
   margin: 0;
   max-width: 100%;
   padding: 2px var(--sp-2);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
   overflow-wrap: anywhere;
 }
@@ -1329,7 +1330,7 @@ defineExpose({
   color: var(--text-primary);
   background: var(--bg-elevated);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: var(--sp-1) var(--sp-2);
   cursor: pointer;
 }

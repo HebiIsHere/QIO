@@ -1,15 +1,16 @@
 /**
  * 内联审批的门控与幂等（契约 §1.5 + Lead 裁决 3）：
  *
- * * 内联卡显示时，全局 ApprovalEntry 不再对**同一个 approval_id** 显示按钮；
+ * * 内联卡显示时，统一入口（聊天页 ⑤ / 非聊天路由 NonChatApprovalEntry）不再对
+ *   **同一个 approval_id** 显示按钮 —— 门控在 store 层按 id 生效，不靠组件自觉；
  * * respondById 按 approval_id 幂等：重复点击只发一次请求，也绝不误伤下一项；
  * * 非当前轮 / 没有绑定轮的审批仍走全局入口。
+ *
+ * 说明：这里不挂载任何旧入口/弹窗组件（A-CP1 后由 C 删除）；入口的可见性与点击
+ * 行为分别由 composerApprovalReach.test.ts / nonChatApprovalEntry.test.ts 覆盖。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import { nextTick } from "vue";
-import ApprovalEntry from "../../components/ApprovalEntry.vue";
 import { useApprovalsStore } from "../approvals";
 
 const { respondApproval } = vi.hoisted(() => ({ respondApproval: vi.fn() }));
@@ -30,31 +31,34 @@ function setup() {
 }
 
 describe("同一时刻只允许一套按钮（按 approval_id 门控）", () => {
-  it("内联声明生效时，全局入口不再显示按钮；释放后恢复", async () => {
-    const { pinia, approvals } = setup();
+  it("内联声明生效：inlineClaimed 为 true；释放后恢复", () => {
+    const { approvals } = setup();
     approvals.enqueue("ap_1", "tool_execution", {}, { autoOpen: false });
-    const w = mount(ApprovalEntry, { global: { plugins: [pinia] } });
-    await nextTick();
-    expect(w.find(".approval-entry").exists()).toBe(true);
 
     approvals.claimInline("ap_1");
-    await nextTick();
-    expect(w.find(".approval-entry").exists()).toBe(false);
+    expect(approvals.inlineId).toBe("ap_1");
+    expect(approvals.inlineClaimed).toBe(true);
 
     approvals.releaseInline("ap_1");
-    await nextTick();
-    expect(w.find(".approval-entry").exists()).toBe(true);
-    w.unmount();
+    expect(approvals.inlineId).toBeNull();
+    expect(approvals.inlineClaimed).toBe(false);
   });
 
-  it("内联声明只对同一条审批生效（不是「有审批就藏」）", async () => {
-    const { pinia, approvals } = setup();
+  it("内联声明只对同一条审批生效（不是「有审批就藏」）", () => {
+    const { approvals } = setup();
     approvals.enqueue("ap_1", "tool_execution", {}, { autoOpen: false });
     approvals.claimInline("ap_other");
-    const w = mount(ApprovalEntry, { global: { plugins: [pinia] } });
-    await nextTick();
-    expect(w.find(".approval-entry").exists()).toBe(true);
-    w.unmount();
+    expect(approvals.inlineId).toBe("ap_other");
+    expect(approvals.inlineClaimed).toBe(false);
+  });
+
+  it("统一审批层接管期间内联按钮让位；离开聊天页后恢复", () => {
+    const { approvals } = setup();
+    expect(approvals.inlineAllowed).toBe(true);
+    approvals.inlineSuppressed = true;
+    expect(approvals.inlineAllowed).toBe(false);
+    approvals.inlineSuppressed = false;
+    expect(approvals.inlineAllowed).toBe(true);
   });
 });
 

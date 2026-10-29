@@ -1,0 +1,8 @@
+{
+  "name": "key-flow",
+  "title": "Key 接入（假 Key + 替身响应，不联网）",
+  "status": "skipped-placeholder",
+  "notes": [
+    "模型与服务里的 Key 面板由 B 提供，当前是占位；Key 接入流程等集成后再录。"
+  ]
+}

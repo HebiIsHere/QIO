@@ -22,6 +22,8 @@ import { defineStore } from "pinia";
 import { request } from "../services/api";
 import type { MemoryPendingListing, PendingItemView } from "../services/api";
 import { approvalFacts, useApprovalsStore, type ApprovalItem } from "./approvals";
+import { useApprovalResultsStore } from "./approvalResults";
+import { canAutoOpenApproval } from "./feedbackGate";
 import { useSessionStore } from "./session";
 
 export type UnifiedKind = "tool" | "knowledge";
@@ -216,6 +218,45 @@ export function isBlockingModalOpen(): boolean {
   return nodes.some((node) => !node.hasAttribute("data-unified-approval-modal"));
 }
 
+/**
+ * 审批是否已经到期（真实期限来自后端；期限只读，不在前端放宽）。
+ *
+ * 到期后不再提供「批准」：本地钟只是最后一道保护，服务端自己也会拒绝；
+ * 这里绝不改写 expiresAt，也不把过期说成已处理。
+ */
+export function isExpiredApproval(
+  approval: ApprovalItem | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!approval) return false;
+  const state = String(approval.state ?? "").trim();
+  if (state === "expired") return true;
+  const raw = String(approval.expiresAt ?? "").trim();
+  if (!raw) return false;
+  const at = Date.parse(raw);
+  return Number.isFinite(at) && at <= now;
+}
+
+/**
+ * 距离这条审批到期的毫秒数（只读后端给出的真实期限）。
+ *
+ * F08：界面到期的**时钟**用它排定时器，不依赖后端再推事件。
+ * 返回 null = 没有可解析的期限 / 状态已经是 expired（不需要再排时钟）；
+ * 返回 0 = 已经到期但状态还没标（界面应立刻按事实显示，不在前端改写期限）。
+ */
+export function approvalExpiryRemaining(
+  approval: ApprovalItem | null | undefined,
+  now: number = Date.now(),
+): number | null {
+  if (!approval) return null;
+  if (String(approval.state ?? "").trim() === "expired") return null;
+  const raw = String(approval.expiresAt ?? "").trim();
+  if (!raw) return null;
+  const at = Date.parse(raw);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, at - now);
+}
+
 export interface KnowledgeSubmitError {
   message: string;
   code: string;
@@ -392,6 +433,146 @@ function mergeUnifiedItems(
   return [...tools, ...knowledge];
 }
 
+/* ------------------------------------------------------------------ */
+/* F05：队列标签的「对象身份 + 操作摘要」                                */
+/* ------------------------------------------------------------------ */
+
+function squashText(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+/** 路径末段（文件名）：/a/b/报告.md 与 D:\work\报告.md 都取「报告.md」。 */
+function pathTail(path: string): string {
+  const parts = String(path ?? "").split(/[\\/]+/).filter((part) => part.trim().length > 0);
+  return parts.length ? parts[parts.length - 1] : String(path ?? "").trim();
+}
+
+/**
+ * 中间省略：保留头尾（对象身份的区别常在尾部，例如「…第 2 版.md」）。
+ * 只影响可见文本；title/aria 用完整文本，不用它。
+ */
+export function middleEllipsis(text: string, limit = 18): string {
+  const value = squashText(text);
+  if (value.length <= limit) return value;
+  if (limit <= 3) return value.slice(0, limit) + "…";
+  const head = Math.ceil((limit - 1) / 2);
+  const tail = limit - 1 - head;
+  return value.slice(0, head) + "…" + (tail > 0 ? value.slice(value.length - tail) : "");
+}
+
+/** 从审批载荷里收集真实对象路径（payload / arguments 里的 path/paths/files，最多两层）。 */
+function collectObjectPaths(payload: unknown): string[] {
+  const out: string[] = [];
+  const push = (value: unknown): void => {
+    if (typeof value === "string" && value.trim()) out.push(value.trim());
+    else if (Array.isArray(value)) for (const item of value) push(item);
+  };
+  const visit = (node: unknown, depth: number): void => {
+    if (!node || typeof node !== "object" || depth > 2) return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (["path", "paths", "file", "files", "filename"].includes(key)) push(value);
+      else if (depth < 2 && value && typeof value === "object") visit(value, depth + 1);
+    }
+  };
+  visit(payload, 0);
+  return [...new Set(out)];
+}
+
+/**
+ * 这条申请针对的**对象身份**（F05 的关键：先给能区分的东西，再给操作摘要）。
+ *
+ * * 工具类：对象路径末段（多对象注明数量）+ 版本号（有就带）；没有路径就用工具名；
+ *   再没有就用审批 id 尾段兜底（保证同类型多条永远能区分，不靠猜）。
+ * * 知识类：内容摘要（没有内容才退回 id）。
+ *
+ * `short=true` 时做中间省略（给可见 chip 用）；title/aria 用完整文本。
+ */
+export function unifiedItemIdentity(
+  item: UnifiedApprovalItem | null | undefined,
+  opts: { short?: boolean } = {},
+): string {
+  if (!item) return "";
+  const shorten = (value: string, limit = 18): string =>
+    opts.short ? middleEllipsis(value, limit) : value;
+  if (item.kind === "knowledge") {
+    const content = squashText(item.knowledge?.content);
+    const id = String(item.knowledge?.id ?? "");
+    const identity = content || id;
+    return shorten(identity, 18);
+  }
+  const payload = (item.approval?.payload ?? {}) as Record<string, unknown>;
+  const versionRaw = payload.version ?? payload.revision ?? payload.expected_version;
+  const version =
+    versionRaw === null || versionRaw === undefined || typeof versionRaw === "object"
+      ? ""
+      : String(versionRaw).trim();
+  const paths = collectObjectPaths(payload);
+  if (paths.length) {
+    const first = pathTail(paths[0]);
+    const many = paths.length > 1 ? ` 等 ${paths.length} 个对象` : "";
+    const versionText = version ? ` v${version}` : "";
+    return shorten(first + versionText + many, 22);
+  }
+  const batchItems = Array.isArray(payload.items) ? payload.items : [];
+  if (batchItems.length) {
+    const firstPath = collectObjectPaths({ items: batchItems })[0] ?? "";
+    const first = firstPath ? pathTail(firstPath) : "";
+    const label = `${batchItems.length} 项` + (first ? ` · ${first}` : "");
+    return shorten(label, 22);
+  }
+  const toolName = squashText(payload.name) || squashText(payload.tool_name);
+  if (toolName) return shorten(toolName + (version ? ` v${version}` : ""), 22);
+  if (version) return "v" + version;
+  const identity = String(item.identity ?? "");
+  return identity ? "#" + identity.slice(-8) : "";
+}
+
+/** 操作摘要全文（不截断；title/aria 用）。 */
+export function unifiedItemSummaryFull(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  if (item.kind === "knowledge") {
+    const category =
+      KNOWLEDGE_CATEGORY_LABELS[String(item.knowledge?.category ?? "")] ?? "知识";
+    const content = squashText(item.knowledge?.content);
+    return content ? category + "：" + content : category;
+  }
+  const facts = item.approval ? approvalFacts(item.approval) : null;
+  const text = squashText(facts?.description || facts?.operationSummary);
+  return text || item.title || "需要你确认的操作";
+}
+
+/**
+ * 可见 chip 的一句话（F05）：**对象身份在前**，操作摘要在后。
+ * 这样即使后半段被 CSS 省略号截掉，同类型多条也能在可见部分区分。
+ */
+export function unifiedItemSummary(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  const identity = unifiedItemIdentity(item, { short: true });
+  const summary = unifiedItemSummaryFull(item);
+  const summaryShort = middleEllipsis(summary, 20);
+  if (!identity) return summaryShort;
+  if (!summaryShort || identity === summaryShort) return identity;
+  return identity + " · " + summaryShort;
+}
+
+/** 标签上的类型分组（短标签，不替代摘要）。 */
+export function unifiedItemGroupLabel(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  if (item.kind === "knowledge") return "知识";
+  return "权限";
+}
+
+/** chip 的完整可区分文案（title/aria 用，绝不复用被截断的可见文本）。 */
+export function unifiedItemFullLabel(item: UnifiedApprovalItem | null | undefined): string {
+  if (!item) return "";
+  const identity = unifiedItemIdentity(item);
+  const summary = unifiedItemSummaryFull(item);
+  const parts = [unifiedItemGroupLabel(item)];
+  if (identity) parts.push(identity);
+  if (summary && summary !== identity) parts.push(summary);
+  return parts.join("：");
+}
+
 const DEFERRED_STORAGE_KEY = "qio.unifiedApprovals.deferred";
 const DEFERRED_MAX = 200;
 
@@ -428,6 +609,13 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     /** 最近一次从服务端读到待确认列表的时间（毫秒）；null = 还没成功读过 */
     knowledgeLoadedAt: null as number | null,
     visible: false,
+    /**
+     * 「结果与历史」视图是否打开（F02）。
+     *
+     * 与 visible 分开：待审批数为 0 时也要能打开结果；两个视图共用一个弹窗，
+     * 同一时刻只显示其中一个（不是第二套常驻入口）。
+     */
+    resultsVisible: false,
     activeKey: null as string | null,
     /** 用户「稍后处理 / 关闭」过的申请：同一项不再自动弹 */
     deferredKeys: loadDeferredKeys(),
@@ -442,6 +630,18 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     lastNotice: "",
     editingKey: null as string | null,
     drafts: {} as Record<string, string>,
+    /**
+     * 处理完一项后的「队列列表」态：回到列表，由用户选下一条；
+     * 不自动进入下一条详情（用户任务书：处理完一项回列表保位置）。
+     */
+    queueListOnly: false,
+    /**
+     * 用户收起弹窗时的到达序号基线。
+     *
+     * 收起只表示「稍后处理」：已经存在的申请不再自动弹；只有真正新到达
+     * （arrivalSeq 更大）的申请才按规则自动弹出。
+     */
+    autoBlockedSeq: 0,
   }),
   getters: {
     /** 统一队列：工具/权限类在前（更紧急），知识保存按到达顺序在后。 */
@@ -468,11 +668,18 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
     activeItem(state): UnifiedApprovalItem | null {
       const items = mergeUnifiedItems(state, useApprovalsStore().queue);
       if (!items.length) return null;
-      return items.find((item) => item.key === state.activeKey) ?? items[0];
+      if (state.activeKey) return items.find((item) => item.key === state.activeKey) ?? null;
+      // 列表态没有「当前项」：弹窗显示队列列表，不自动进入某一条详情
+      return state.queueListOnly ? null : (items[0] ?? null);
     },
     activeIndex(state): number {
       const items = mergeUnifiedItems(state, useApprovalsStore().queue);
-      const active = items.find((item) => item.key === state.activeKey) ?? items[0];
+      if (!items.length) return -1;
+      const active = state.activeKey
+        ? items.find((item) => item.key === state.activeKey)
+        : state.queueListOnly
+          ? null
+          : items[0];
       if (!active) return -1;
       return items.findIndex((item) => item.key === active.key);
     },
@@ -572,7 +779,15 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         this.visible = false;
         this.activeKey = null;
         this.editingKey = null;
+        this.queueListOnly = false;
         // 注意：不清 submitError —— 队列被权威刷新清空时，失败原因仍要能说清楚
+        return;
+      }
+      if (this.queueListOnly) {
+        // 列表态：队列怎么变都保持列表，不自动选中一条详情
+        if (this.activeKey && !items.some((item) => item.key === this.activeKey)) {
+          this.activeKey = null;
+        }
         return;
       }
       if (!this.activeKey || !items.some((item) => item.key === this.activeKey)) {
@@ -589,21 +804,43 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
      * - 内联审批正在显示这一条 → 不自动弹（同一时刻只有一套按钮）。
      */
     maybeAutoOpen(): boolean {
-      if (this.visible) return false;
+      if (this.visible || this.resultsVisible) return false;
       const approvals = useApprovalsStore();
-      // 恢复路径 / 用户已点「稍后处理」：不抢焦点，入口亮着等用户主动打开
-      if (approvals.deferred) return false;
+      /**
+       * 注意：这里**不能**用 approvals.deferred 早退。
+       *
+       * 那个字段同时被「用户稍后处理」与「恢复路径/编辑中到达」复用；一旦早退，
+       * 输入中到达的审批在失焦后会永远不弹，autoPending 也不会被置位（真实故障）。
+       * 用户主动收起由 unified.deferredKeys + autoBlockedSeq 表达；恢复路径由
+       * ApprovalItem.restored 表达，两者都不影响「真正新到达的申请」。
+       */
       const items = this.items as UnifiedApprovalItem[];
       const candidate = items.find(
         (item) =>
           item.kind === "tool" &&
           !item.deferred &&
           !this.autoShownKeys.includes(item.key) &&
-          !item.stale,
+          !item.stale &&
+          !isExpiredApproval(item.approval) &&
+          // 恢复路径补读出来的旧审批不抢焦点：亮入口，等用户主动打开
+          item.approval?.restored !== true &&
+          // 收起弹窗之前就已经存在的申请：不因一次收起/重渲染又弹回来；
+          // 真正新到达（arrivalSeq 更大）的申请仍按规则自动弹。
+          (item.approval?.arrivedSeq ?? 0) > this.autoBlockedSeq,
       );
       if (!candidate) return false;
-      if (approvals.inlineClaimed || isUserEditing() || isBlockingModalOpen()) {
+      if (approvals.inlineClaimed) {
         this.autoPending = true;
+        return false;
+      }
+      /**
+       * 自动弹出门控（集中判断，不散落）：
+       * 输入中 / 输入法组合输入 / 刚离开输入框（延迟） / 有中央弹窗 / 记忆星球覆盖层 /
+       * 设置与调试页 / 窗口后台 —— 任一成立都不弹，条件恢复后再试。
+       */
+      const gate = canAutoOpenApproval();
+      if (!gate.ok) {
+        this.autoPending = gate.retry;
         return false;
       }
       this.autoShownKeys = [...this.autoShownKeys.slice(-99), candidate.key];
@@ -629,18 +866,72 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         approvals.openNow();
       }
       this.activeKey = target.key;
+      this.queueListOnly = false;
       this.visible = true;
+      this.resultsVisible = false;
       this.submitError = "";
       this.submitErrorCode = "";
       return true;
     },
 
-    /** 关闭：只隐藏，不批准也不拒绝；当前项记为「稍后」，不因轮询反复自动弹。 */
+    /**
+     * 打开「审批结果与历史」（F02）：**不要求**有待审批项。
+     *
+     * 结果来自后端 /api/approvals/history + 实时 APPROVAL_RESULT；
+     * 打开时刷新一次历史（失败会在面板里显示原因与重试，不当作空历史）。
+     */
+    openResults(): boolean {
+      const results = useApprovalResultsStore();
+      void results.loadHistory();
+      this.visible = false;
+      this.resultsVisible = true;
+      this.submitError = "";
+      this.submitErrorCode = "";
+      return true;
+    },
+
+    /**
+     * 回到待审批队列（没有待办时返回 false，不显示空队列）。
+     * 有正在看的项就保持它；否则显示队列列表，由用户选下一条。
+     */
+    showQueue(): boolean {
+      this.resultsVisible = false;
+      const items = this.items as UnifiedApprovalItem[];
+      if (!items.length) {
+        this.visible = false;
+        this.queueListOnly = false;
+        return false;
+      }
+      const keep = this.activeKey && items.some((item) => item.key === this.activeKey);
+      this.activeKey = keep ? this.activeKey : null;
+      this.queueListOnly = !keep;
+      this.visible = true;
+      return true;
+    },
+
+    /** 关闭整个面板（队列与结果都收起；不批准也不拒绝）。 */
+    closePanel(): void {
+      if (this.resultsVisible && !this.visible) {
+        this.resultsVisible = false;
+        return;
+      }
+      this.close();
+    },
+
+    /**
+     * 关闭：只隐藏，不批准也不拒绝；当前项记为「稍后」，不因轮询反复自动弹。
+     *
+     * 同时记下到达序号基线：收起之后**已存在的**申请不再自动弹（不得立刻连弹下一条）；
+     * 真正新到达的申请仍按规则处理。
+     */
     close(): void {
       const active = this.activeItem as UnifiedApprovalItem | null;
       if (active) this.deferKey(active.key);
+      this.autoBlockedSeq = useApprovalsStore().arrivalSeq;
       this.visible = false;
+      this.resultsVisible = false;
       this.activeKey = null;
+      this.queueListOnly = false;
       this.editingKey = null;
       this.autoPending = false;
       this.submitError = "";
@@ -670,6 +961,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.editingKey = null;
       this.submitError = "";
       this.submitErrorCode = "";
+      this.queueListOnly = false;
     },
 
     deferKey(key: string): void {
@@ -692,6 +984,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
         approvals.showFull(target.identity);
       }
       this.activeKey = key;
+      this.queueListOnly = false;
       this.visible = true;
       this.submitError = "";
       this.submitErrorCode = "";
@@ -699,14 +992,25 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       return true;
     },
 
+    /**
+     * 进入编辑：**保留已有草稿**（切换队列项再切回来不能丢失已改内容）。
+     * 只有明确「取消修改」才丢弃草稿。
+     */
     startEdit(): void {
       const active = this.activeItem as UnifiedApprovalItem | null;
       if (!active || active.kind !== "knowledge") return;
-      this.drafts[active.key] = active.knowledge?.content ?? "";
+      if (this.drafts[active.key] === undefined) {
+        this.drafts[active.key] = active.knowledge?.content ?? "";
+      }
       this.editingKey = active.key;
     },
 
+    /** 取消修改：明确丢弃这份草稿（不是「切换项」的默认行为）。 */
     stopEdit(): void {
+      const key = this.editingKey;
+      if (key && Object.prototype.hasOwnProperty.call(this.drafts, key)) {
+        delete this.drafts[key];
+      }
       this.editingKey = null;
     },
 
@@ -748,6 +1052,16 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       if (active.kind === "tool") {
         if (decision !== "approve" && decision !== "reject") return false;
         if (active.stale) return false;
+        /**
+         * 到期禁止批准：真实期限来自后端，到期后服务端也会拒绝；这里先给出可理解原因，
+         * 不发请求、不放宽期限、不假装已处理。
+         */
+        if (decision === "approve" && isExpiredApproval(active.approval)) {
+          this.submitError =
+            "这项申请已经到期，不能再批准（期限不会放宽）。需要的话请让后端重新发起这次申请。";
+          this.submitErrorCode = "expired";
+          return false;
+        }
         this.submittingKey = active.key;
         this.submitError = "";
         this.submitErrorCode = "";
@@ -860,18 +1174,33 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       }
     },
 
+    /**
+     * 一项已经处理完（提交成功 / 已失效 / 已有结局）。
+     *
+     * 规则（用户任务书）：回到**队列列表**并保留位置与展开状态，由用户自己选下一条；
+     * 不得自动进入下一条详情，也不立刻弹出剩余项的详情。
+     */
     finishHandled(key: string): void {
+      // 这一项已经有结局：它的编辑草稿不再有意义，删掉（其余项的草稿原样保留）
+      if (key && Object.prototype.hasOwnProperty.call(this.drafts, key)) {
+        delete this.drafts[key];
+      }
       const items = this.items as UnifiedApprovalItem[];
       const remaining = items.filter((item) => item.key !== key);
       if (!remaining.length) {
         this.visible = false;
         this.activeKey = null;
+        this.queueListOnly = false;
         this.editingKey = null;
         return;
       }
-      this.activeKey = remaining[0]?.key ?? null;
+      // 回到列表：activeKey 置空、列表态打开；队列顺序与展开状态都还在
+      this.activeKey = null;
+      this.queueListOnly = true;
       this.visible = true;
       this.editingKey = null;
+      // 刚处理完的这一轮不再因轮询/队列变化自动弹回详情
+      this.autoBlockedSeq = useApprovalsStore().arrivalSeq;
     },
 
     reset(): void {
@@ -880,6 +1209,7 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.knowledgeError = "";
       this.knowledgeLoadedAt = null;
       this.visible = false;
+      this.resultsVisible = false;
       this.activeKey = null;
       this.deferredKeys = [];
       this.autoShownKeys = [];
@@ -890,6 +1220,8 @@ export const useUnifiedApprovalsStore = defineStore("unifiedApprovals", {
       this.lastNotice = "";
       this.editingKey = null;
       this.drafts = {};
+      this.queueListOnly = false;
+      this.autoBlockedSeq = 0;
       persistDeferredKeys([]);
     },
   },

@@ -1,0 +1,705 @@
+{
+  "url": "http://127.0.0.1:5101",
+  "label": "base",
+  "startedAt": "2026-10-27T03:58:45.420Z",
+  "demoSpeed": null,
+  "viewports": [
+    "1440x900"
+  ],
+  "runs": [
+    {
+      "viewport": "1440x900",
+      "viewportRaw": "1440x900",
+      "scenario": "planet",
+      "entry": "[data-planet-entry]",
+      "staticState": {
+        "stable": true,
+        "samples": 3
+      },
+      "radiusHook": 452.67,
+      "labelX": null,
+      "metrics": {
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "dpr": 1
+        },
+        "titlebar": 70,
+        "radiusToken": "14px",
+        "view": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "left": 0,
+          "top": 0,
+          "right": 1440,
+          "bottom": 900
+        },
+        "content": {
+          "x": 0,
+          "y": 0,
+          "width": 1440,
+          "height": 900,
+          "left": 0,
+          "top": 0,
+          "right": 1440,
+          "bottom": 900
+        },
+        "stage": {
+          "x": 0,
+          "y": 0,
+          "width": 1439,
+          "height": 900,
+          "left": 0,
+          "top": 0,
+          "right": 1439,
+          "bottom": 900
+        },
+        "canvas": {
+          "x": 0,
+          "y": 0,
+          "width": 1439,
+          "height": 900,
+          "left": 0,
+          "top": 0,
+          "right": 1439,
+          "bottom": 900
+        },
+        "panel": {
+          "x": 1439,
+          "y": 0,
+          "width": 1,
+          "height": 900,
+          "left": 1439,
+          "top": 0,
+          "right": 1440,
+          "bottom": 900
+        },
+        "sphereFromCanvas": {
+          "cx": 719.5,
+          "cy": 450,
+          "canvasW": 1439,
+          "canvasH": 900
+        },
+        "classes": "planet-view entered layers armed curtain",
+        "mp": "",
+        "dataMp": null,
+        "managing": false,
+        "docScroll": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440,
+          "horizontalOverflow": false
+        },
+        "bodyScroll": {
+          "scrollWidth": 1440,
+          "clientWidth": 1440
+        },
+        "overflowScrollers": [],
+        "scene": null,
+        "stageHook": {
+          "phase": "ready",
+          "k": "1",
+          "tx": "0px",
+          "ty": "0px",
+          "sphere": {
+            "cx": 719.5,
+            "cy": 450,
+            "radius": 452.66504294495525
+          },
+          "origin": {},
+          "target": null,
+          "layers": true,
+          "entered": true,
+          "ball": false,
+          "selected": "topic_562761b53e85",
+          "selectedLabel": null,
+          "demoSpeed": 1,
+          "debug": {
+            "azimuth": 0,
+            "interacting": true,
+            "frontFacing": 4,
+            "backSlots": 16,
+            "swaps": 0,
+            "feeds": 355,
+            "steps": 0,
+            "lastDelta": 0,
+            "lastSwapAgo": -1,
+            "rotationY": 2.36,
+            "quaternion": [
+              0,
+              0.925,
+              0,
+              0.381
+            ],
+            "lowPower": false,
+            "ringWidthScale": 0.26,
+            "windowSize": 13,
+            "id": "d8y8uv",
+            "hasSession": true,
+            "dirs": [
+              [
+                -0.133,
+                0.895,
+                -0.426
+              ],
+              [
+                -0.447,
+                -0.849,
+                0.281
+              ],
+              [
+                -0.963,
+                0.111,
+                -0.246
+              ],
+              [
+                0.494,
+                0.81,
+                -0.316
+              ],
+              [
+                0.215,
+                0.735,
+                -0.643
+              ],
+              [
+                0.036,
+                -0.387,
+                0.921
+              ],
+              [
+                0.046,
+                -0.743,
+                0.668
+              ],
+              [
+                0.328,
+                -0.629,
+                0.705
+              ],
+              [
+                -0.565,
+                0.29,
+                -0.773
+              ],
+              [
+                0.911,
+                0.403,
+                -0.084
+              ],
+              [
+                -0.369,
+                -0.619,
+                -0.693
+              ],
+              [
+                0.653,
+                -0.527,
+                -0.544
+              ],
+              [
+                0.75,
+                0.639,
+                -0.168
+              ],
+              null,
+              null,
+              null
+            ],
+            "localDirs": [
+              [
+                0.395,
+                0.895,
+                0.209
+              ],
+              [
+                0.119,
+                -0.849,
+                -0.515
+              ],
+              [
+                0.857,
+                0.111,
+                -0.504
+              ],
+              [
+                -0.129,
+                0.81,
+                0.572
+              ],
+              [
+                0.3,
+                0.735,
+                0.607
+              ],
+              [
+                -0.675,
+                -0.387,
+                -0.628
+              ],
+              [
+                -0.503,
+                -0.743,
+                -0.441
+              ],
+              [
+                -0.729,
+                -0.629,
+                -0.269
+              ],
+              [
+                0.945,
+                0.29,
+                0.151
+              ],
+              [
+                -0.587,
+                0.403,
+                0.702
+              ],
+              [
+                0.75,
+                -0.619,
+                0.232
+              ],
+              [
+                -0.081,
+                -0.527,
+                0.846
+              ],
+              [
+                -0.414,
+                0.639,
+                0.648
+              ],
+              null,
+              null,
+              null
+            ],
+            "cameraDir": [
+              0,
+              0,
+              1
+            ]
+          }
+        }
+      },
+      "measurement": {
+        "crop": {
+          "x": 269.5,
+          "y": 0,
+          "width": 900,
+          "height": 900
+        },
+        "centerInImage": {
+          "x": 450,
+          "y": 450
+        },
+        "rowScan": {
+          "ok": true,
+          "rows": [
+            {
+              "y": 444,
+              "leftEdge": 31,
+              "rightEdge": 867,
+              "leftRadius": 419,
+              "rightRadius": 417,
+              "width": 837
+            },
+            {
+              "y": 447,
+              "leftEdge": 31,
+              "rightEdge": 867,
+              "leftRadius": 419,
+              "rightRadius": 417,
+              "width": 837
+            },
+            {
+              "y": 450,
+              "leftEdge": 31,
+              "rightEdge": 867,
+              "leftRadius": 419,
+              "rightRadius": 417,
+              "width": 837
+            },
+            {
+              "y": 453,
+              "leftEdge": 31,
+              "rightEdge": 867,
+              "leftRadius": 419,
+              "rightRadius": 417,
+              "width": 837
+            },
+            {
+              "y": 456,
+              "leftEdge": 31,
+              "rightEdge": 867,
+              "leftRadius": 419,
+              "rightRadius": 417,
+              "width": 837
+            }
+          ],
+          "width": 837,
+          "leftRadius": 419,
+          "rightRadius": 417
+        },
+        "contour": {
+          "ok": true,
+          "cx": 461.58,
+          "cy": 548.67,
+          "radius": 357.91,
+          "diameter": 715.82,
+          "residualPx": 0,
+          "arcSpanDeg": 198,
+          "points": 396,
+          "extremes": {
+            "left": 103.68,
+            "right": 819.49,
+            "top": 190.76,
+            "bottom": 906.57
+          }
+        },
+        "contourViewport": {
+          "cx": 731.08,
+          "cy": 548.67,
+          "radius": 357.91,
+          "diameter": 715.82
+        },
+        "silhouette": {
+          "ok": true,
+          "left": 31,
+          "right": 867,
+          "top": 60,
+          "bottom": 894,
+          "width": 837,
+          "height": 835,
+          "cx": 449,
+          "cy": 477,
+          "pixels": 4088
+        },
+        "strokeRuns": {
+          "histogram": [
+            0,
+            968,
+            787,
+            162,
+            52,
+            10,
+            10,
+            9,
+            6,
+            2,
+            5,
+            6,
+            0,
+            4,
+            4,
+            0,
+            6
+          ],
+          "top": [
+            {
+              "width": 2,
+              "count": 787
+            },
+            {
+              "width": 3,
+              "count": 162
+            },
+            {
+              "width": 4,
+              "count": 52
+            },
+            {
+              "width": 5,
+              "count": 10
+            }
+          ],
+          "sampled": 2031
+        },
+        "palette": {
+          "distinct": 743,
+          "total": 810000,
+          "top": [
+            {
+              "rgb": "245,242,237",
+              "count": 596748,
+              "share": 0.73673
+            },
+            {
+              "rgb": "244,241,236",
+              "count": 135339,
+              "share": 0.16709
+            },
+            {
+              "rgb": "255,255,255",
+              "count": 45000,
+              "share": 0.05556
+            },
+            {
+              "rgb": "242,231,231",
+              "count": 2450,
+              "share": 0.00302
+            },
+            {
+              "rgb": "240,227,228",
+              "count": 2149,
+              "share": 0.00265
+            },
+            {
+              "rgb": "244,237,234",
+              "count": 2115,
+              "share": 0.00261
+            },
+            {
+              "rgb": "231,231,228",
+              "count": 1800,
+              "share": 0.00222
+            },
+            {
+              "rgb": "232,199,213",
+              "count": 1784,
+              "share": 0.0022
+            },
+            {
+              "rgb": "239,227,228",
+              "count": 1515,
+              "share": 0.00187
+            },
+            {
+              "rgb": "217,153,184",
+              "count": 1309,
+              "share": 0.00162
+            },
+            {
+              "rgb": "243,240,235",
+              "count": 1186,
+              "share": 0.00146
+            },
+            {
+              "rgb": "240,237,232",
+              "count": 1142,
+              "share": 0.00141
+            },
+            {
+              "rgb": "238,220,224",
+              "count": 1134,
+              "share": 0.0014
+            },
+            {
+              "rgb": "239,221,225",
+              "count": 1132,
+              "share": 0.0014
+            },
+            {
+              "rgb": "242,234,233",
+              "count": 1101,
+              "share": 0.00136
+            },
+            {
+              "rgb": "203,108,158",
+              "count": 951,
+              "share": 0.00117
+            },
+            {
+              "rgb": "231,197,211",
+              "count": 948,
+              "share": 0.00117
+            },
+            {
+              "rgb": "235,213,219",
+              "count": 716,
+              "share": 0.00088
+            },
+            {
+              "rgb": "189,63,131",
+              "count": 625,
+              "share": 0.00077
+            },
+            {
+              "rgb": "241,238,233",
+              "count": 590,
+              "share": 0.00073
+            },
+            {
+              "rgb": "244,241,237",
+              "count": 585,
+              "share": 0.00072
+            },
+            {
+              "rgb": "231,228,223",
+              "count": 438,
+              "share": 0.00054
+            },
+            {
+              "rgb": "235,233,228",
+              "count": 435,
+              "share": 0.00054
+            },
+            {
+              "rgb": "236,234,229",
+              "count": 433,
+              "share": 0.00053
+            }
+          ],
+          "significant": [
+            "245,242,237",
+            "244,241,236",
+            "255,255,255",
+            "242,231,231",
+            "240,227,228",
+            "244,237,234",
+            "231,231,228",
+            "232,199,213",
+            "239,227,228",
+            "217,153,184",
+            "243,240,235",
+            "240,237,232",
+            "238,220,224",
+            "239,221,225",
+            "242,234,233",
+            "203,108,158",
+            "231,197,211",
+            "235,213,219",
+            "189,63,131",
+            "241,238,233",
+            "244,241,237",
+            "231,228,223",
+            "235,233,228",
+            "236,234,229",
+            "232,229,224",
+            "228,92,186",
+            "244,242,237",
+            "162,93,113",
+            "244,240,235",
+            "243,239,234",
+            "241,235,231",
+            "240,234,231",
+            "239,232,229",
+            "240,233,230",
+            "241,236,232",
+            "243,238,233",
+            "242,237,233",
+            "234,223,221",
+            "235,225,223",
+            "242,237,232",
+            "237,228,226",
+            "234,224,222",
+            "237,227,225",
+            "245,241,236",
+            "232,219,218",
+            "236,227,224",
+            "233,222,220",
+            "238,230,228",
+            "238,229,227",
+            "233,220,219",
+            "242,236,232",
+            "230,215,215",
+            "229,214,214",
+            "211,182,187",
+            "162,94,114",
+            "228,212,212",
+            "232,218,217",
+            "226,208,209",
+            "165,99,118",
+            "241,230,230",
+            "223,203,205",
+            "226,209,209",
+            "207,175,182",
+            "219,195,198"
+          ]
+        },
+        "materials": {
+          "contourOnRow": {
+            "rgb": "223,172,197",
+            "x": 31,
+            "score": 1
+          },
+          "strongPinkTop": [
+            {
+              "rgb": "203,108,158",
+              "count": 951
+            },
+            {
+              "rgb": "189,63,131",
+              "count": 625
+            },
+            {
+              "rgb": "228,92,186",
+              "count": 385
+            },
+            {
+              "rgb": "189,61,131",
+              "count": 14
+            },
+            {
+              "rgb": "214,143,178",
+              "count": 5
+            },
+            {
+              "rgb": "214,141,177",
+              "count": 5
+            }
+          ],
+          "strongPinkDistinct": 61,
+          "interiorTop": [
+            {
+              "rgb": "245,242,237",
+              "count": 303690
+            },
+            {
+              "rgb": "232,199,213",
+              "count": 1252
+            },
+            {
+              "rgb": "242,231,231",
+              "count": 781
+            },
+            {
+              "rgb": "240,227,228",
+              "count": 743
+            }
+          ]
+        }
+      },
+      "stageMeasurement": {
+        "clip": {
+          "x": 0,
+          "y": 0,
+          "width": 1439,
+          "height": 900
+        },
+        "silhouette": {
+          "ok": true,
+          "left": 28,
+          "right": 1137,
+          "top": 19,
+          "bottom": 894,
+          "width": 1110,
+          "height": 876,
+          "cx": 582.5,
+          "cy": 456.5,
+          "pixels": 4422
+        },
+        "canvasCenterX": 719.5,
+        "canvasLeft": 0,
+        "areaWidth": 1439,
+        "visibleLeftEdge": 28,
+        "visibleRightEdge": 1137,
+        "rightReachRatio": 0.922,
+        "leftGap": 28,
+        "rightReachPx": 410.5,
+        "rightReachRatioMedian": 0.907
+      },
+      "files": {
+        "page": "D:\\qio-dev\\qio-mp-c\\docs\\mp-verify\\c-planet\\shots\\base\\base-1440x900-planet.png",
+        "stage": "D:\\qio-dev\\qio-mp-c\\docs\\mp-verify\\c-planet\\shots\\base\\base-1440x900-planet-stage.png",
+        "sphere": "D:\\qio-dev\\qio-mp-c\\docs\\mp-verify\\c-planet\\shots\\base\\base-1440x900-planet-sphere.png"
+      }
+    }
+  ],
+  "consoleErrors": [],
+  "httpFails": [],
+  "finishedAt": "2026-10-27T03:59:58.228Z"
+}

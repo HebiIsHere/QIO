@@ -16,6 +16,12 @@ WORKFLOW_DIR = ROOT / ".github" / "workflows"
 CI_FILE = WORKFLOW_DIR / "ci.yml"
 TARGETED_FILE = WORKFLOW_DIR / "targeted-verify.yml"
 
+# 与 targeted-verify.yml 共用同一份 SHA 判定实现：ci.yml 的 workflow_dispatch 身份校验调用
+# 的就是 verify_sha.py。这里直接 import 它的纯判定函数，「不一致会红」由同一份代码证明，
+# 而不是靠 workflow 文本里出现了某个字符串。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from verify_sha import check_sha as verify_sha_check  # noqa: E402
+
 DOLLAR = "$"
 
 CI_REQUIRED_JOBS = (
@@ -101,6 +107,75 @@ TARGETED_REQUIRED_INPUTS = (
     "verify_sha_self_test",
 )
 
+# ── 2026-10-26 本轮 CI 防重复契约（工作流 D）────────────────────────────────────
+# ci.yml 保留 push 全分支 + PR 的完整矩阵门禁，只额外排除本轮工作分支；
+# 去重键 = **实际受测提交**（PR 头提交 / push 提交 / dispatch 的 ref 尖端）；
+# workflow_dispatch 提供「按完整 SHA 锁定的一次完整矩阵」，checkout 后必须核验 SHA。
+CI_PUSH_PATTERNS = (
+    "**",
+    "!fix/pm-*",
+    "!verify/pm-*",
+)
+# 这些分支必须仍然触发完整矩阵（main 门禁、普通分支门禁、本轮集成分支都不得被排除误伤）。
+# 本轮集成分支的这一次 push 就是本轮**唯一一次**完整矩阵（Lead 2026-10-26 裁决）。
+CI_PUSH_MUST_MATCH = (
+    "main",
+    "fix/other-defect",
+    "feat/conversation-page-v2",
+    "releases/2026-10",
+    "fix/post-merge-integration-cleanup-20261025",
+)
+# 本轮并行子智能体的工作分支：永不 push（本地 merge），排除只防误推时烧掉完整矩阵。
+CI_PUSH_MUST_NOT_MATCH = (
+    "fix/pm-a-approval-results",
+    "fix/pm-b-interactive-mode",
+    "fix/pm-c-legacy-cleanup",
+    "fix/pm-d-desktop-ci-docs",
+    "verify/pm-e-acceptance",
+)
+CI_TESTED_COMMIT_EXPR = "github.event.pull_request.head.sha || github.sha"
+CI_DISPATCH_INPUTS = ("ref", "expected_sha")
+
+# P1（fu3）：dispatch 的完整矩阵里，**每个测试 job** 的 checkout 都必须检出被 preflight 校验的
+# 提交。只校验 preflight 自己的 checkout 不够 —— 其余 job 的默认 actions/checkout 在
+# workflow_dispatch 下检出的是 github.sha（派发 ref 尖端），可能不等于 expected_sha，于是
+# 「校验的是 A、测试的是 B」。push/PR 时该输入为空，回退 github.sha（与默认 checkout 同一提交）。
+CI_DISPATCH_CHECKOUT_REF_EXPR = "inputs.expected_sha || github.sha"
+# 与 CI_REQUIRED_JOBS 一致：这些 job 都是测试矩阵，必须显式检出受测提交。
+CI_TEST_CHECKOUT_JOBS = CI_REQUIRED_JOBS
+
+# 触发场景表：用 ci.yml 的真实规则计算「什么事件会不会跑完整矩阵、去重键是什么」。
+# 每条都带期望值 —— 与 YAML 实际规则不一致就 fail，这张表是断言不是说明文档。
+# 字段：event / ref / sha（事件提交）/ head（PR 头提交）/ expected_sha（dispatch 输入）/
+#       expect（是否期望起完整矩阵）/ expect_sha_ok（dispatch 身份校验期望结果，None=不涉及）/ note
+CI_SCENARIOS = (
+    {"event": "push", "ref": "refs/heads/main", "sha": "a" * 40, "head": None, "expected_sha": None,
+     "expect": True, "expect_sha_ok": None, "note": "main 门禁：必须跑"},
+    {"event": "push", "ref": "refs/heads/fix/other-defect", "sha": "b" * 40, "head": None, "expected_sha": None,
+     "expect": True, "expect_sha_ok": None, "note": "普通分支门禁：不受本轮排除影响"},
+    {"event": "push", "ref": "refs/heads/fix/pm-a-approval-results", "sha": "1" * 40, "head": None, "expected_sha": None,
+     "expect": False, "expect_sha_ok": None, "note": "本轮工作分支：不自动跑，改用 targeted-verify"},
+    {"event": "push", "ref": "refs/heads/verify/pm-e-acceptance", "sha": "2" * 40, "head": None, "expected_sha": None,
+     "expect": False, "expect_sha_ok": None, "note": "本轮验收分支：不自动跑"},
+    {"event": "push", "ref": "refs/heads/fix/post-merge-integration-cleanup-20261025", "sha": "3" * 40, "head": None,
+     "expected_sha": None, "expect": True, "expect_sha_ok": None,
+     "note": "本轮集成分支 push：本轮唯一一次完整矩阵"},
+    {"event": "push", "ref": "refs/tags/integ-candidate", "sha": "4" * 40, "head": None, "expected_sha": None,
+     "expect": False, "expect_sha_ok": None, "note": "tag push 不匹配 branches 过滤（可给 dispatch 当 ref）"},
+    {"event": "pull_request", "ref": "refs/pull/42/merge", "sha": "c" * 40, "head": "a" * 40, "expected_sha": None,
+     "expect": True, "expect_sha_ok": None, "note": "PR 门禁：必须跑；键 = PR 头提交（与同提交 push 同组）"},
+    {"event": "pull_request", "ref": "refs/pull/43/merge", "sha": "d" * 40, "head": "b" * 40, "expected_sha": None,
+     "expect": True, "expect_sha_ok": None, "note": "PR 门禁：与普通分支 push 同一 head 提交时同组"},
+    {"event": "pull_request", "ref": "refs/pull/44/merge", "sha": "e" * 40, "head": "f" * 40, "expected_sha": None,
+     "expect": True, "expect_sha_ok": None, "note": "本轮工作分支开 PR 仍跑完整矩阵（PR 门禁不被 push 排除影响）"},
+    {"event": "workflow_dispatch", "ref": "refs/heads/fix/post-merge-integration-cleanup-20261025",
+     "sha": "a" * 40, "head": None, "expected_sha": "a" * 40, "expect": True, "expect_sha_ok": True,
+     "note": "dispatch：锁 expected_sha；但需默认分支已有触发器，本轮不依赖"},
+    {"event": "workflow_dispatch", "ref": "refs/tags/integ-candidate", "sha": "b" * 40, "head": None,
+     "expected_sha": "5" * 40, "expect": True, "expect_sha_ok": False,
+     "note": "dispatch：expected_sha 与 ref 尖端不一致 → preflight 失败、run 红（同上，本轮不依赖）"},
+)
+
 
 class WorkflowLoader(yaml.SafeLoader):
     pass
@@ -164,6 +239,148 @@ def workflow_text(workflow):
     return yaml.safe_dump(workflow, allow_unicode=True, sort_keys=False)
 
 
+def github_branch_matches(pattern, branch):
+    """按 GitHub 分支过滤语义匹配（本项目只用 * 与 **；? 由契约断言拒绝，避免假匹配）。"""
+    import re as _re
+
+    out = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            out.append("[^/]*")
+            index += 1
+        else:
+            out.append(_re.escape(pattern[index]))
+            index += 1
+    return _re.fullmatch("".join(out), branch) is not None
+
+
+def push_branch_triggered(patterns, branch):
+    """GitHub push.branches 求值：按顺序匹配，后面的负向模式覆盖前面的正向匹配。"""
+    matched = False
+    for raw in patterns or ():
+        pattern = str(raw)
+        negative = pattern.startswith("!")
+        body = pattern[1:] if negative else pattern
+        if github_branch_matches(body, branch):
+            matched = not negative
+    return matched
+
+
+def evaluated_dedup_key(group, *, sha, head_sha=None, workflow="CI"):
+    """把 ci.yml 的 concurrency 表达式在给定事件上下文下求值（只覆盖本仓库实际用到的引用）。"""
+    tested = head_sha or sha
+    text = str(group)
+    text = text.replace(DOLLAR + "{{ github.workflow }}", workflow)
+    text = text.replace(DOLLAR + "{{ " + CI_TESTED_COMMIT_EXPR + " }}", tested)
+    text = text.replace(DOLLAR + "{{ github.sha }}", sha)
+    text = text.replace(DOLLAR + "{{ github.event.pull_request.head.sha }}", head_sha or "")
+    return text
+
+
+def build_scenario_rows(workflow):
+    """用 workflow 实际规则计算触发场景表（含每条是否与期望一致）。"""
+    on = parse_on(workflow)
+    push = on.get("push") or {}
+    patterns = push.get("branches") if isinstance(push, dict) else None
+    concurrency = workflow.get("concurrency") or {}
+    group = str(concurrency.get("group", ""))
+    rows = []
+    for spec in CI_SCENARIOS:
+        event = spec["event"]
+        ref = spec["ref"]
+        sha = spec["sha"]
+        head = spec.get("head")
+        runs = False
+        sha_ok = None
+        tested = sha
+        if event == "push":
+            branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else None
+            runs = bool(branch) and push_branch_triggered(patterns, branch)
+        elif event == "pull_request":
+            runs = "pull_request" in on
+            tested = head or sha
+        elif event == "workflow_dispatch":
+            runs = "workflow_dispatch" in on
+            expected = spec.get("expected_sha")
+            # dispatch 的 run 一定被创建；身份校验在 preflight 里比较 ref 尖端（= github.sha）
+            # 与 expected_sha，不一致整个 run 红。
+            sha_ok = None if expected is None else (expected == sha)
+        key = evaluated_dedup_key(group, sha=sha, head_sha=head)
+        runs_ok = runs is spec["expect"]
+        sha_expect = spec.get("expect_sha_ok")
+        sha_ok_ok = True if sha_expect is None else (sha_ok is sha_expect)
+        rows.append(
+            {
+                "event": event,
+                "ref": ref,
+                "tested": tested,
+                "runs": runs,
+                "expect": spec["expect"],
+                "runs_ok": runs_ok,
+                "sha_ok": sha_ok,
+                "sha_ok_ok": sha_ok_ok,
+                "key": key,
+                "note": spec["note"],
+                "ok": runs_ok and sha_ok_ok,
+            }
+        )
+    return rows
+
+
+def check_scenarios(workflow, rep):
+    """场景表断言：事件语义、dispatch 身份校验、同提交 push/PR 去重键一致。"""
+    rows = build_scenario_rows(workflow)
+    rep.check("场景表：所有场景的触发结论与期望一致", all(row["runs_ok"] for row in rows),
+              "; ".join(row["ref"] for row in rows if not row["runs_ok"]))
+    rep.check("场景表：dispatch 身份校验结论与期望一致（不一致/缩写会红）",
+              all(row["sha_ok_ok"] for row in rows), "; ".join(row["ref"] for row in rows if not row["sha_ok_ok"]))
+    by_ref = {(row["event"], row["ref"], row["tested"]): row["key"] for row in rows}
+    keys = [row["key"] for row in rows]
+    main_push_key = by_ref[("push", "refs/heads/main", "a" * 40)]
+    branch_push_key = by_ref[("push", "refs/heads/fix/other-defect", "b" * 40)]
+    pr_main_head_key = by_ref[("pull_request", "refs/pull/42/merge", "a" * 40)]
+    pr_branch_head_key = by_ref[("pull_request", "refs/pull/43/merge", "b" * 40)]
+    dispatch_key = by_ref[("workflow_dispatch",
+                           "refs/heads/fix/post-merge-integration-cleanup-20261025", "a" * 40)]
+    rep.check("场景表：同一提交的 push 与 PR 去重键相同", main_push_key == pr_main_head_key,
+              main_push_key + " vs " + pr_main_head_key)
+    rep.check("场景表：同一提交的普通分支 push 与 PR 去重键相同", branch_push_key == pr_branch_head_key,
+              branch_push_key + " vs " + pr_branch_head_key)
+    rep.check("场景表：dispatch 的键等于它校验过的受测提交（与同提交 push 同组）", dispatch_key == main_push_key,
+              dispatch_key + " vs " + main_push_key)
+    rep.check("场景表：不同提交的去重键不同（修复推送照常跑门禁）", main_push_key != branch_push_key,
+              main_push_key + " vs " + branch_push_key)
+    rep.check("场景表：去重键里带的是提交 SHA 而不是合成合并 SHA", all("c" * 40 not in key for key in keys),
+              "PR merge SHA 不应出现在任何键里")
+
+
+def print_scenarios(workflow):
+    """把场景表的计算过程与结论打印出来（CI 日志里可审计）。"""
+    rows = build_scenario_rows(workflow)
+    print("== 触发场景表（由 ci.yml 实际规则计算；FAIL 表示规则与契约不符） ==")
+    print("  " + " | ".join(("事件", "ref", "受测提交", "起完整矩阵", "dispatch校验", "去重键", "说明")))
+    for row in rows:
+        mark = "OK  " if row["ok"] else "FAIL"
+        sha_state = "-" if row["sha_ok"] is None else ("通过" if row["sha_ok"] else "红")
+        print(
+            "  " + mark + " | "
+            + row["event"] + " | "
+            + row["ref"] + " | "
+            + row["tested"][:8] + " | "
+            + ("是" if row["runs"] else "否") + " | "
+            + sha_state + " | "
+            + row["key"] + " | "
+            + row["note"]
+        )
+    bad = [row for row in rows if not row["ok"]]
+    print("  -> " + str(len(rows)) + " 个场景，" + str(len(bad)) + " 个与契约不符")
+    return not bad
+
+
 def check_filter_markers(text, rep):
     """筛选契约的共用断言：真实 workflow 文本与 selftest 合成文本都过这一份。"""
     for needle in FILTER_MARKER_NEEDLES:
@@ -188,26 +405,153 @@ def parse_on(workflow):
     return {}
 
 
+def check_dispatch_preflight(job, text, rep):
+    """dispatch 的身份校验必须是真实断言，不是打印：checkout + verify_sha.py + dispatch 守卫。"""
+    if not isinstance(job, dict):
+        job = {}
+    steps = job.get("steps") or []
+    checkout_steps = []
+    verify_steps = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        uses = str(step.get("uses", ""))
+        run = str(step.get("run", ""))
+        if uses.startswith("actions/checkout@"):
+            checkout_steps.append(step)
+        if "verify_sha.py" in run:
+            verify_steps.append(step)
+    rep.check("ci.yml/ci-dedup-preflight: dispatch 会 checkout 输入 ref", bool(checkout_steps),
+              "steps=" + repr([step.get("name") for step in steps]))
+    if checkout_steps:
+        checkout_text = workflow_text(checkout_steps[0])
+        rep.check_in("ci.yml/ci-dedup-preflight: checkout ref 来自 inputs.ref", "inputs.ref", checkout_text)
+        rep.check("ci.yml/ci-dedup-preflight: checkout 只在 dispatch 执行（其它事件不花 checkout 时间）",
+                  "workflow_dispatch" in str(checkout_steps[0].get("if", "")), repr(checkout_steps[0].get("if")))
+    rep.check("ci.yml/ci-dedup-preflight: dispatch 调用 verify_sha.py 做真实 SHA 断言", bool(verify_steps),
+              "steps=" + repr([step.get("name") for step in steps]))
+    if verify_steps:
+        verify_text = workflow_text(verify_steps[0])
+        for needle in ("--requested", "--expected-ref"):
+            rep.check_in("ci.yml/ci-dedup-preflight: SHA 断言参数 " + needle, needle, verify_text)
+        rep.check("ci.yml/ci-dedup-preflight: SHA 断言只在 dispatch 执行",
+                  "workflow_dispatch" in str(verify_steps[0].get("if", "")), repr(verify_steps[0].get("if")))
+    rep.check_in("ci.yml: preflight 打印实际受测提交", "tested commit", text)
+    rep.check_in("ci.yml: preflight 打印去重键", "dedup key", text)
+    # 「不一致会红」用同一份判定实现直接证明（ci.yml 的 dispatch 步骤调用的就是这份脚本）。
+    same_ok, _ = verify_sha_check("a" * 40, "a" * 40, label="ci-contract")
+    mismatch_ok, _ = verify_sha_check("a" * 40, "b" * 40, label="ci-contract")
+    short_ok, _ = verify_sha_check("a" * 7, "a" * 40, label="ci-contract")
+    rep.check("ci.yml: dispatch SHA 校验对不一致/缩写判定失败（与 targeted-verify 同一实现）",
+              same_ok and not mismatch_ok and not short_ok,
+              f"same={same_ok} mismatch={mismatch_ok} short_ok={short_ok}")
+
+
+def job_checkout_steps(job):
+    """一个 job 里的 actions/checkout 步骤（只看结构，不看注释）。"""
+    if not isinstance(job, dict):
+        return []
+    steps = job.get("steps") or []
+    return [
+        step
+        for step in steps
+        if isinstance(step, dict) and str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+
+
+def check_dispatch_checkouts(jobs, text, rep):
+    """dispatch 的完整矩阵里，每个测试 job 都必须检出被 preflight 校验过的提交。"""
+    rep.check_in(
+        "ci.yml: 说明 dispatch 时所有测试 job 按 expected_sha 检出",
+        CI_DISPATCH_CHECKOUT_REF_EXPR,
+        text,
+    )
+    for name in CI_TEST_CHECKOUT_JOBS:
+        job = jobs.get(name)
+        if not isinstance(job, dict):
+            rep.check("ci.yml/" + name + ": 测试 job 存在（以便检查 checkout）", False, "missing job")
+            continue
+        checkouts = job_checkout_steps(job)
+        rep.check(
+            "ci.yml/" + name + ": 有且只有一个测试 checkout",
+            len(checkouts) == 1,
+            "checkouts=" + repr(len(checkouts)),
+        )
+        if not checkouts:
+            continue
+        checkout = checkouts[0]
+        checkout_text = workflow_text(checkout)
+        rep.check(
+            "ci.yml/" + name + ": dispatch 时 checkout 按 expected_sha（校验过的提交）",
+            CI_DISPATCH_CHECKOUT_REF_EXPR in checkout_text,
+            "checkout=" + repr(checkout),
+        )
+        rep.check(
+            "ci.yml/" + name + ": 不用 ref 尖端（inputs.ref）替代 expected_sha",
+            "inputs.ref" not in checkout_text,
+            "checkout=" + repr(checkout),
+        )
+        rep.check(
+            "ci.yml/" + name + ": push/PR 回退 github.sha 且 checkout 不被事件条件跳过",
+            "github.sha" in checkout_text and "if" not in checkout,
+            "checkout=" + repr(checkout),
+        )
+
+
 def check_ci(workflow, text, rep):
     on = parse_on(workflow)
-    rep.check("ci.yml: still triggered by push (other branches keep their gate)", "push" in on, "on=" + repr(sorted(on)))
+    rep.check("ci.yml: still triggered by push (main/ordinary branches keep their gate)", "push" in on, "on=" + repr(sorted(on)))
     rep.check("ci.yml: still triggered by pull_request", "pull_request" in on, "on=" + repr(sorted(on)))
+
     push = on.get("push")
-    rep.check(
-        "ci.yml: push covers all branches (dedup must not narrow other branches)",
-        isinstance(push, dict) and push.get("branches") == ["**"],
-        "push=" + repr(push),
-    )
-    rep.check("ci.yml: no workflow_dispatch (targeted entry is a separate workflow)", "workflow_dispatch" not in on)
+    patterns = push.get("branches") if isinstance(push, dict) else None
+    rep.check("ci.yml: push declares a branch allowlist", isinstance(patterns, list) and bool(patterns), "push=" + repr(push))
+    if isinstance(patterns, list) and patterns:
+        rep.check("ci.yml: push allowlist 与契约逐项一致（只额外排除本轮工作分支）",
+                  tuple(patterns) == CI_PUSH_PATTERNS, repr(patterns))
+        rep.check("ci.yml: 第一条模式是 '**'（全分支基线）", patterns[0] == "**", repr(patterns[0]))
+        rep.check("ci.yml: 后续模式全部是负向排除（! 前缀）",
+                  all(isinstance(item, str) and item.startswith("!") and len(item) > 1 for item in patterns[1:]),
+                  repr(list(patterns[1:])))
+        rep.check("ci.yml: 模式里不使用 ?（本契约的匹配器不实现它的 GitHub 语义）",
+                  all("?" not in str(item) for item in patterns), repr(patterns))
+        for branch in CI_PUSH_MUST_MATCH:
+            rep.check("ci.yml: push 仍触发完整矩阵 " + branch, push_branch_triggered(patterns, branch) is True)
+        for branch in CI_PUSH_MUST_NOT_MATCH:
+            rep.check("ci.yml: 本轮工作分支不自动跑矩阵 " + branch, push_branch_triggered(patterns, branch) is False)
+
+    # workflow_dispatch：按完整 SHA 锁定的完整矩阵。job 不得按事件跳过，否则 dispatch 就不是完整矩阵。
+    dispatch = on.get("workflow_dispatch")
+    rep.check("ci.yml: workflow_dispatch 存在（按完整 SHA 锁定的完整矩阵入口）", isinstance(dispatch, dict), repr(dispatch))
+    dispatch_inputs = (dispatch.get("inputs") if isinstance(dispatch, dict) else {}) or {}
+    missing_inputs = [name for name in CI_DISPATCH_INPUTS if name not in dispatch_inputs]
+    rep.check("ci.yml: dispatch 输入 ref + expected_sha 都在", not missing_inputs, "missing " + repr(missing_inputs))
+    for name in CI_DISPATCH_INPUTS:
+        spec = dispatch_inputs.get(name) or {}
+        rep.check("ci.yml: dispatch 输入 " + name + " 必填", spec.get("required") is True, repr(spec))
     rep.check("ci.yml: no schedule (dedup must not add timed triggers)", "schedule" not in on)
 
     concurrency = workflow.get("concurrency")
     rep.check("ci.yml: workflow-level concurrency declared", isinstance(concurrency, dict), repr(concurrency))
     if isinstance(concurrency, dict):
         group = str(concurrency.get("group", ""))
-        rep.check("ci.yml: concurrency group keyed on github.sha (push+PR of one commit share a group)", "github.sha" in group, group)
-        rep.check("ci.yml: cancel-in-progress explicitly true", concurrency.get("cancel-in-progress") is True, repr(concurrency.get("cancel-in-progress")))
-    rep.check("ci.yml: no skip-ci style check disabling", "skip ci" not in text and "skip-checks" not in text)
+        rep.check("ci.yml: concurrency 键 = 实际受测提交（PR 头提交，回退 github.sha）",
+                  CI_TESTED_COMMIT_EXPR in group, group)
+        rep.check("ci.yml: concurrency 键带 workflow 前缀", "github.workflow" in group, group)
+        rep.check("ci.yml: cancel-in-progress explicitly true", concurrency.get("cancel-in-progress") is True,
+                  repr(concurrency.get("cancel-in-progress")))
+        push_key = evaluated_dedup_key(group, sha="a" * 40)
+        pr_key = evaluated_dedup_key(group, sha="c" * 40, head_sha="a" * 40)
+        rep.check("ci.yml: 同一提交的 push 与 PR 去重键相同（PR 合成 SHA 不再重复起矩阵）",
+                  push_key == pr_key, push_key + " vs " + pr_key)
+        rep.check("ci.yml: 不同提交去重键不同（修复推送照常跑门禁）",
+                  push_key != evaluated_dedup_key(group, sha="b" * 40), group)
+        rep.check("ci.yml: dispatch 场景键等于实际受测提交（ref 尖端 == expected_sha）",
+                  evaluated_dedup_key(group, sha="a" * 40) == push_key, push_key)
+    # 只看 YAML 语义（注释里提到跳过标记不算禁用 CI；注释本身不会改变任何行为）。
+    workflow_body = workflow_text(workflow)
+    rep.check("ci.yml: no skip-ci style check disabling",
+              "skip ci" not in workflow_body and "skip-checks" not in workflow_body)
 
     jobs = workflow.get("jobs") or {}
     missing = [name for name in CI_REQUIRED_JOBS if name not in jobs]
@@ -215,8 +559,11 @@ def check_ci(workflow, text, rep):
     for name in CI_REQUIRED_JOBS:
         job = jobs.get(name)
         if isinstance(job, dict) and "if" in job:
-            rep.check("ci.yml/" + name + ": job is not conditionally skipped", False, "if=" + repr(job["if"]))
+            rep.check("ci.yml/" + name + ": 不按事件条件跳过（dispatch 也必须是完整矩阵）", False, "if=" + repr(job["if"]))
     rep.check_in("ci.yml: docs job runs the workflow-contract assertions", "verify_workflow_contract.py", text)
+    rep.check_in("ci.yml: 写明 dispatch 需默认分支已有触发器（真实限制，本轮不依赖）", "默认分支", text)
+    check_dispatch_preflight(jobs.get("ci-dedup-preflight") or {}, text, rep)
+    check_dispatch_checkouts(jobs, text, rep)
 
 
 def check_targeted(workflow, text, rep, action_text=None):
@@ -341,34 +688,179 @@ def check_no_skip_ci(rep):
 
 def selftest(verbose=False):
     print("== selftest: break each contract, assertions must go red ==")
+    import copy
+
     rep = Report("selftest")
     good_ci = {
-        "on": {"push": {"branches": ["**"]}, "pull_request": None},
-        "concurrency": {"group": "ci-" + DOLLAR + "{ github.workflow }-" + DOLLAR + "{ github.sha }", "cancel-in-progress": True},
-        "jobs": {name: {"steps": []} for name in CI_REQUIRED_JOBS},
+        "on": {
+            "push": {"branches": list(CI_PUSH_PATTERNS)},
+            "pull_request": None,
+            "workflow_dispatch": {"inputs": {name: {"required": True, "type": "string"} for name in CI_DISPATCH_INPUTS}},
+        },
+        "concurrency": {
+            "group": "ci-" + DOLLAR + "{{ github.workflow }}-" + DOLLAR + "{{ github.event.pull_request.head.sha || github.sha }}",
+            "cancel-in-progress": True,
+        },
+        "jobs": {
+            name: {
+                "steps": [
+                    {
+                        "uses": "actions/checkout@v5",
+                        "with": {"ref": DOLLAR + "{{ " + CI_DISPATCH_CHECKOUT_REF_EXPR + " }}"},
+                    }
+                ]
+            }
+            for name in CI_REQUIRED_JOBS
+        },
     }
-    text_ci = "python scripts/targeted-verify/verify_workflow_contract.py"
-    sub = Report("selftest-ci-good", verbose=verbose)
-    check_ci(good_ci, text_ci, sub)
-    rep.check("intact ci.yml passes", not sub.failed(), "; ".join(r[0] for r in sub.failed()))
+    good_ci["jobs"]["ci-dedup-preflight"] = {
+        "steps": [
+            {
+                "name": "Checkout the dispatched ref",
+                "uses": "actions/checkout@v5",
+                "if": "github.event_name == 'workflow_dispatch'",
+                "with": {"ref": "inputs.ref"},
+            },
+            {
+                "name": "Assert dispatched ref tip equals expected SHA",
+                "if": "github.event_name == 'workflow_dispatch'",
+                "run": "python scripts/targeted-verify/verify_sha.py --requested X --expected-ref Y",
+            },
+        ]
+    }
+    text_ci = (
+        "python scripts/targeted-verify/verify_workflow_contract.py tested commit dedup key 默认分支 "
+        + CI_DISPATCH_CHECKOUT_REF_EXPR
+    )
 
-    broken_concurrency = dict(good_ci)
-    broken_concurrency.pop("concurrency")
-    sub = Report("selftest-ci-no-concurrency", verbose=verbose)
-    check_ci(broken_concurrency, text_ci, sub)
-    rep.check("removing concurrency must fail", any("concurrency" in row[0] for row in sub.failed()))
+    def run_ci(data, name):
+        scoped = Report(name, verbose=verbose)
+        check_ci(data, text_ci, scoped)
+        return scoped
 
-    broken_sha = dict(good_ci)
-    broken_sha["concurrency"] = {"group": "ci-" + DOLLAR + "{ github.ref }", "cancel-in-progress": True}
-    sub = Report("selftest-ci-wrong-group", verbose=verbose)
-    check_ci(broken_sha, text_ci, sub)
-    rep.check("keying concurrency on github.ref must fail", any("github.sha" in row[0] for row in sub.failed()))
+    def broken_ci(mutator, name):
+        data = copy.deepcopy(good_ci)
+        mutator(data)
+        return run_ci(data, name)
 
-    broken_push = dict(good_ci)
-    broken_push["on"] = {"push": {"branches": ["integrate/**"]}, "pull_request": None}
-    sub = Report("selftest-ci-narrow-push", verbose=verbose)
-    check_ci(broken_push, text_ci, sub)
-    rep.check("narrowing push must fail", any("push covers all branches" in row[0] for row in sub.failed()))
+    sub = run_ci(good_ci, "selftest-ci-good")
+    rep.check("intact ci.yml passes", not sub.failed(), "; ".join(row[0] for row in sub.failed()))
+
+    scoped = broken_ci(lambda data: data.pop("concurrency"), "selftest-ci-no-concurrency")
+    rep.check("removing concurrency must fail", any("concurrency" in row[0] for row in scoped.failed()))
+
+    def wrong_group(data):
+        data["concurrency"] = {"group": "ci-" + DOLLAR + "{{ github.ref }}", "cancel-in-progress": True}
+
+    scoped = broken_ci(wrong_group, "selftest-ci-wrong-group")
+    rep.check("keying concurrency on github.ref must fail", any("实际受测提交" in row[0] for row in scoped.failed()))
+
+    def narrow_push(data):
+        data["on"]["push"]["branches"] = ["main"]
+
+    scoped = broken_ci(narrow_push, "selftest-ci-narrow-push")
+    rep.check("narrowing push to main must fail", any("push allowlist" in row[0] for row in scoped.failed()))
+
+    def exclude_main(data):
+        data["on"]["push"]["branches"] = ["**", "!main"]
+
+    scoped = broken_ci(exclude_main, "selftest-ci-main-excluded")
+    rep.check("excluding main from push must fail", any("push 仍触发完整矩阵 main" in row[0] for row in scoped.failed()))
+
+    def drop_round_exclusions(data):
+        data["on"]["push"]["branches"] = ["**"]
+
+    scoped = broken_ci(drop_round_exclusions, "selftest-ci-no-round-exclusion")
+    rep.check("dropping the round-branch exclusions must fail", any("本轮工作分支不自动跑矩阵" in row[0] for row in scoped.failed()))
+
+    def exclude_integration_branch(data):
+        data["on"]["push"]["branches"] = ["**", "!fix/post-merge-*"]
+
+    scoped = broken_ci(exclude_integration_branch, "selftest-ci-integration-excluded")
+    rep.check("excluding the round integration branch must fail", any(
+        "push 仍触发完整矩阵 fix/post-merge-integration-cleanup-20261025" in row[0] for row in scoped.failed()
+    ))
+
+    def drop_expected_sha(data):
+        data["on"]["workflow_dispatch"]["inputs"].pop("expected_sha", None)
+
+    scoped = broken_ci(drop_expected_sha, "selftest-ci-dispatch-inputs")
+    rep.check("dropping expected_sha input must fail", any("expected_sha" in row[0] for row in scoped.failed()))
+
+    def drop_dispatch_assert(data):
+        data["jobs"]["ci-dedup-preflight"] = {
+            "steps": [
+                {
+                    "name": "Checkout the dispatched ref",
+                    "uses": "actions/checkout@v5",
+                    "if": "github.event_name == 'workflow_dispatch'",
+                    "with": {"ref": "inputs.ref"},
+                }
+            ]
+        }
+
+    scoped = broken_ci(drop_dispatch_assert, "selftest-ci-dispatch-assert")
+    rep.check("dropping the dispatch SHA assertion must fail", any("verify_sha.py" in row[0] for row in scoped.failed()))
+
+    def add_job_if(data):
+        data["jobs"]["backend"] = {"steps": [], "if": "github.event_name == 'push'"}
+
+    scoped = broken_ci(add_job_if, "selftest-ci-conditional-job")
+    rep.check("conditionally skipping a matrix job must fail", any("不按事件条件跳过" in row[0] for row in scoped.failed()))
+
+    def job_default_checkout(data):
+        data["jobs"]["backend"]["steps"] = [{"uses": "actions/checkout@v5"}]
+
+    scoped = broken_ci(job_default_checkout, "selftest-ci-job-default-checkout")
+    rep.check(
+        "a test job with default checkout must fail",
+        any("dispatch 时 checkout 按 expected_sha" in row[0] for row in scoped.failed()),
+    )
+
+    def job_tip_ref_checkout(data):
+        data["jobs"]["frontend"]["steps"] = [
+            {"uses": "actions/checkout@v5", "with": {"ref": DOLLAR + "{{ inputs.ref }}"}}
+        ]
+
+    scoped = broken_ci(job_tip_ref_checkout, "selftest-ci-job-tip-ref")
+    rep.check(
+        "a test job checking out inputs.ref must fail",
+        any("dispatch 时 checkout 按 expected_sha" in row[0] for row in scoped.failed()),
+    )
+
+    def job_conditional_checkout(data):
+        data["jobs"]["rust"]["steps"] = [
+            {
+                "uses": "actions/checkout@v5",
+                "if": "github.event_name == 'workflow_dispatch'",
+                "with": {"ref": DOLLAR + "{{ " + CI_DISPATCH_CHECKOUT_REF_EXPR + " }}"},
+            }
+        ]
+
+    scoped = broken_ci(job_conditional_checkout, "selftest-ci-job-conditional-checkout")
+    rep.check(
+        "conditionally skipping checkout on push/PR must fail",
+        any("push/PR 回退 github.sha" in row[0] for row in scoped.failed()),
+    )
+
+    def job_missing_checkout(data):
+        data["jobs"]["docs"]["steps"] = []
+
+    scoped = broken_ci(job_missing_checkout, "selftest-ci-job-no-checkout")
+    rep.check(
+        "a test job without checkout must fail",
+        any("有且只有一个测试 checkout" in row[0] for row in scoped.failed()),
+    )
+
+    scoped = Report("selftest-scenarios-good", verbose=verbose)
+    check_scenarios(good_ci, scoped)
+    rep.check("intact scenario table passes", not scoped.failed(), "; ".join(row[0] for row in scoped.failed()))
+
+    scenario_broken = copy.deepcopy(good_ci)
+    scenario_broken["on"]["push"]["branches"] = ["**", "!main"]
+    scoped = Report("selftest-scenarios-bad", verbose=verbose)
+    check_scenarios(scenario_broken, scoped)
+    rep.check("scenario table catches an excluded main branch", bool(scoped.failed()))
 
     good_inputs = {name: {"required": True, "default": "x"} for name in TARGETED_REQUIRED_INPUTS}
     good_inputs["targets"] = {"type": "choice", "options": list(TARGETED_REQUIRED_CHOICES)}
@@ -433,6 +925,7 @@ def selftest(verbose=False):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="parse workflow yaml and assert trigger/verify/filter contract")
     parser.add_argument("--selftest", action="store_true", help="prove the assertions can go red")
+    parser.add_argument("--scenarios", action="store_true", help="只打印触发场景表（仍按真实规则判定，失败退出 1）")
     parser.add_argument("--verbose", action="store_true", help="print every failed assertion inside selftest")
     args = parser.parse_args(argv)
 
@@ -445,11 +938,17 @@ def main(argv=None):
 
     ci = load_workflow(CI_FILE)
     targeted = load_workflow(TARGETED_FILE)
+
+    if args.scenarios:
+        return 0 if print_scenarios(ci) else 1
+
     rep = Report("workflow contract")
     print("parsed: " + str(CI_FILE.relative_to(ROOT)) + " / " + str(TARGETED_FILE.relative_to(ROOT)))
     check_ci(ci, workflow_text(ci) + CI_FILE.read_text(encoding="utf-8"), rep)
     check_targeted(targeted, workflow_text(targeted) + TARGETED_FILE.read_text(encoding="utf-8"), rep)
+    check_scenarios(ci, rep)
     check_no_skip_ci(rep)
+    print_scenarios(ci)
     return rep.render()
 
 

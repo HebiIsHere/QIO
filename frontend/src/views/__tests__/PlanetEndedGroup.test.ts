@@ -53,12 +53,21 @@ function mountView() {
   });
 }
 
+/** 话题列表在管理区的记忆标签页里：先点开管理区（改版后的信息架构） */
+async function openManagement(w: ReturnType<typeof mount>) {
+  await w.find("[data-mp-manage-toggle]").trigger("click");
+  // 内容是在下一帧预挂载/补挂的（展开首帧不能花在首次挂载上）：等一帧再断言
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  await flushPromises();
+}
+
 describe("星球的已结束分组", () => {
   beforeEach(() => vi.restoreAllMocks());
 
   it("主视图只列进行中的话题，已结束的单独成组", async () => {
     const w = mountView();
     await flushPromises();
+    await openManagement(w);
     const main = w.find(".topic-list:not(.ended-list)");
     expect(main.text()).toContain("开发 QIO");
     expect(main.text()).not.toContain("选课");
@@ -69,6 +78,7 @@ describe("星球的已结束分组", () => {
   it("可以把进行中的话题标成结束", async () => {
     const w = mountView();
     await flushPromises();
+    await openManagement(w);
     await w.find(".topic-toggle-ended").trigger("click");
     await flushPromises();
     expect(api.endTopic).toHaveBeenCalledWith("t_active");
@@ -77,6 +87,7 @@ describe("星球的已结束分组", () => {
   it("可以恢复已结束的话题", async () => {
     const w = mountView();
     await flushPromises();
+    await openManagement(w);
     await w.find(".topic-resume").trigger("click");
     await flushPromises();
     expect(api.resumeTopic).toHaveBeenCalledWith("t_ended");

@@ -6,11 +6,15 @@ import { useUiStore } from "./stores/ui";
 import { useOnboardingStore } from "./stores/onboarding";
 import { useApprovalsStore } from "./stores/approvals";
 import { useSecurityStore } from "./stores/security";
-import ApprovalModal from "./components/ApprovalModal.vue";
-import ApprovalEntry from "./components/ApprovalEntry.vue";
+import NonChatApprovalEntry from "./components/approval/NonChatApprovalEntry.vue";
+import UnifiedApprovalLayer from "./components/conversation/UnifiedApprovalLayer.vue";
 import DevTaskEntry from "./components/DevTaskEntry.vue";
 import WindowChrome from "./components/WindowChrome.vue";
 import OnboardingWizard from "./components/onboarding/OnboardingWizard.vue";
+import QTipLayer from "./components/ui/QTipLayer.vue";
+import GlobalFeedbackHost from "./components/feedback/GlobalFeedbackHost.vue";
+import BootStatus from "./components/BootStatus.vue";
+import SetupIncompleteNotice from "./components/onboarding/SetupIncompleteNotice.vue";
 import { waitForBackend } from "./services/boot";
 
 const events = useEventStore();
@@ -99,24 +103,14 @@ onUnmounted(stopTicker);
          它是 fixed 的窗口层，所以这里用 padding-top 把页面内容整体让下去一个条高，
          而不是靠浮在上面 —— 否则顶部那一条里的控件会「看得见、点不到」。 -->
     <WindowChrome />
-    <!-- 后端还没应答：说清在等什么（以前这里是一片空白，看起来像卡死） -->
-    <div v-if="bootState === 'starting'" class="boot-note" role="status">
-      <p class="boot-title">正在启动 QIO 后端…</p>
-      <p class="boot-meta mono">已等 {{ waitedSeconds }} 秒</p>
-      <p v-if="waitedSeconds >= 10" class="boot-hint">
-        比平时慢。本机若有程序拦住系统命令（例如 reg.exe 报 0xC0000142），启动会被拖住；
-        日志在 %LOCALAPPDATA%\com.qio.app\logs\QIO.log。
-      </p>
-    </div>
-    <div v-else-if="bootState === 'failed'" class="boot-note err" role="alert">
-      <p class="boot-title">QIO 后端没有应答（已经等了 {{ waitedSeconds }} 秒）</p>
-      <p class="boot-meta">{{ bootDetail }}</p>
-      <p class="boot-hint">
-        也可能只是启动很慢：点「重试」会接着等。日志：
-        <span class="mono">%LOCALAPPDATA%\com.qio.app\logs\QIO.log</span>
-      </p>
-      <button class="qio-btn primary" type="button" @click="boot">重试</button>
-    </div>
+    <!-- 启动状态：简洁标识 + 真实状态；超过 10 秒才显示等待秒数，技术细节折叠，失败可重试 -->
+    <BootStatus
+      v-if="bootState !== 'ready'"
+      :state="bootState === 'failed' ? 'failed' : 'starting'"
+      :waited-seconds="waitedSeconds"
+      :detail="bootDetail"
+      @retry="boot"
+    />
     <template v-else>
       <router-view />
       <!--
@@ -124,17 +118,26 @@ onUnmounted(stopTicker);
         （真实情况：一句「上次那项操作没有执行」和「有 N 项操作等待确认」重叠）。
         容器本身不接收点击，只有里面的按钮可点。
       -->
-      <!-- 旧顶部审批入口只在非聊天路由保留；互动的 DevTaskEntry 仍可见（不与审批混在一起）。 -->
+      <!--
+        非聊天路由（设置 / 调试 / 星球）的统一审批入口：与聊天页同一个入口语义
+        （有待办时亮出、可打开列表），没有待办时也能打开「结果与历史」。
+        互动的 DevTaskEntry 仍可见（不与审批混在一起）。
+      -->
       <div v-if="!isConversation" class="top-notes">
-        <ApprovalEntry v-if="!isChatRoute" />
+        <NonChatApprovalEntry v-if="!isChatRoute" />
         <DevTaskEntry />
       </div>
-      <!-- 同一时刻只允许一套按钮：对话页由 UnifiedApprovalLayer 统一承载；
-           其他页面在过程区已内联显示这条审批时，全局弹窗让位（按 approval_id 门控） -->
-      <ApprovalModal v-if="!isChatRoute && !approvals.inlineClaimed" />
+      <!-- 非聊天路由的审批弹窗：与聊天页是同一个 UnifiedApprovalModal（不是第二套按钮） -->
+      <UnifiedApprovalLayer v-if="!isChatRoute" :show-memory="false" />
       <!-- 首次引导：真正首次启动，或「本版本还没展示过欢迎页」（刚更新的用户）时展开一次 -->
       <OnboardingWizard v-if="onboarding.showWizard" @done="onboarding.closeForSession()" />
     </template>
+    <!-- 全局唯一的用途说明浮层（500ms 悬停 / 聚焦 / 触控长按；由 v-qio-tip 驱动） -->
+    <QTipLayer />
+    <!-- 顶部短通知 + 全局异常入口/面板 + 任务失败监听 + 输入门控（只挂一次） -->
+    <GlobalFeedbackHost />
+    <!-- 初始设置未完成的一次性中性提醒：只有真正显示过才记为已提醒（Lead 挂一次） -->
+    <SetupIncompleteNotice />
   </div>
 </template>
 
@@ -147,35 +150,6 @@ onUnmounted(stopTicker);
 * { box-sizing: border-box; }
 body { margin: 0; }
 .app-shell { width: 100vw; height: 100vh; overflow: hidden; padding-top: var(--titlebar-height); }
-/* 启动状态：安静的一行说明 + 原因，不做成大卡片（它只是等几秒的事） */
-.boot-note {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 24px;
-  text-align: center;
-  color: var(--text-muted);
-}
-.boot-title {
-  margin: 0;
-  font-size: 15px;
-  color: var(--text-strong);
-}
-.boot-meta {
-  margin: 0;
-  font-size: 12.5px;
-}
-.boot-hint {
-  margin: 0;
-  max-width: 46em;
-  font-size: 12px;
-  line-height: 1.7;
-}
-.boot-note.err .boot-title { color: var(--danger); }
-.boot-note.err button { margin-top: 6px; }
 /*
  * 顶部居中的提示条（待确认的审批 / 上次没执行的操作 / 没做完的开发任务）。
  * 容器 shrink-to-fit，空白区域不挡下面页面的点击。

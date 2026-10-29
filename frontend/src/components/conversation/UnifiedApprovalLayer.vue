@@ -12,15 +12,14 @@
  */
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useApprovalsStore } from "../../stores/approvals";
+import { useApprovalResultsStore } from "../../stores/approvalResults";
 import { useSessionStore } from "../../stores/session";
 import { useInteractiveStore } from "../../stores/interactive";
-import {
-  isBlockingModalOpen,
-  isUserEditing,
-  useUnifiedApprovalsStore,
-} from "../../stores/unifiedApprovals";
+import { useModalArbiterStore } from "../../stores/modalArbiter";
+import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
+import { isInputBusy } from "../../stores/feedbackGate";
+import { planetContinuum } from "../../composables/planetContinuum";
 import UnifiedApprovalModal from "../approval/UnifiedApprovalModal.vue";
-import MemoryQuestionReminder from "./MemoryQuestionReminder.vue";
 import type { MemoryOpenTarget } from "../../stores/memoryQuestions";
 
 const props = withDefaults(
@@ -37,9 +36,11 @@ const emit = defineEmits<{
 }>();
 
 const approvals = useApprovalsStore();
+const results = useApprovalResultsStore();
 const session = useSessionStore();
 const unified = useUnifiedApprovalsStore();
 const interactive = useInteractiveStore();
+const arbiter = useModalArbiterStore();
 
 const REFRESH_MS = 30_000;
 const RETRY_THROTTLE_MS = 250;
@@ -118,12 +119,31 @@ function onUserInteraction() {
 function onVisibilityChange() {
   if (document.visibilityState !== "visible") return;
   void unified.refreshKnowledgePending();
+  /**
+   * 窗口回到前台 = 界面可能已经落后于后端：主动补读审批生命周期
+   * （pending + 执行终态历史），与 SSE 重连 / RESYNC 共用同一个只读入口。
+   * 失败分别落在 recoveryError / historyError 上，由结果面板给出可重试入口。
+   */
+  void approvals.refreshApprovalsAndHistory("foreground");
   retryAutoOpen();
 }
 
 function onOpenMemory(target: MemoryOpenTarget) {
   emit("open-memory", target);
 }
+
+/**
+ * 记忆星球覆盖层关闭后补一次自动弹出重试。
+ *
+ * 星球是覆盖层（路由仍然是对话页）：覆盖层开着时门控返回 planet-overlay，autoPending 会留着；
+ * 关闭动画结束后再试一次，不能让申请一直等到用户点别处才出现。
+ */
+watch(
+  () => planetContinuum.phase,
+  (phase) => {
+    if (phase === "idle" && unified.autoPending) retryAutoOpen();
+  },
+);
 
 onMounted(() => {
   layerState.count += 1;
@@ -132,6 +152,9 @@ onMounted(() => {
   }
   // 对话页由统一弹窗接管按钮：让过程区内联卡让位（Lead 在 TurnProcess 加一行门控）
   approvals.inlineSuppressed = true;
+  // F02：启动即补一次审批历史 —— 刷新/换页后仍能回看结果；也让 ⑤ 入口在
+  // 「0 待办但有历史」时仍然可达（读取失败会在结果面板显示原因与重试）。
+  results.ensureLoaded();
   ingestCandidates();
   // 页面加载时已经存在的待审批项也要遵守自动弹出规则（此前只在「队列变化」时尝试，
   // 启动前就存在的申请会只亮入口、不自动弹）。
@@ -182,7 +205,8 @@ watch(
     if (!visible || unified.visible) return;
     const current = approvals.current;
     if (!current) return;
-    if (approvals.inlineClaimed || isUserEditing() || isBlockingModalOpen()) return;
+    // 显式「查看完整信息」也不能叠在别的中央弹窗或输入法组合输入上
+    if (approvals.inlineClaimed || isInputBusy() || arbiter.hasModal) return;
     unified.open("tool:" + current.approval_id);
   },
 );
@@ -218,7 +242,11 @@ defineExpose({ openApprovals, retryAutoOpen });
     <!-- 入口统一放到输入区上方的五图标入口（⑤）：对话页只有这一处审批入口，
          这里不再额外渲染顶部浮动条，避免同一时刻出现两个入口。 -->
     <UnifiedApprovalModal />
-    <MemoryQuestionReminder v-if="props.showMemory" @open="onOpenMemory" />
+    <!--
+      记忆问题提醒（MemoryQuestionReminder）的生产挂载已按用户任务书移除：
+      主对话不再显示「记忆整理问题」提醒，三类事项改由星球「待确认」本地处理；
+      组件文件与共享数据保留（星球侧能力不受影响）。
+    -->
     <p v-if="notice" class="ua-layer-notice" role="status">{{ notice }}</p>
   </div>
 </template>

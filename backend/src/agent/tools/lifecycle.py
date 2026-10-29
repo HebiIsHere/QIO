@@ -80,6 +80,7 @@ class ToolLifecycle:
         tool_store=None,
         trace_store=None,
         turn_id_provider=None,
+        usage_assignment=None,
     ) -> None:
         self.approvals = approvals
         self.sandbox = sandbox or SandboxExecutor()
@@ -94,6 +95,9 @@ class ToolLifecycle:
         self.bus = bus
         self.tool_store = tool_store
         self.trace_store = trace_store
+        # 用途解析（设置页改版 §8）：子任务型工具的凭据/模型来自「子任务」用途；
+        # 未接线（None）时与旧行为完全一致（基线自主选择）。
+        self.usage_assignment = usage_assignment
         # 工具创建流程的进度出口（同一 group_id 一张卡）
         self.status = ToolCreateStatus(bus, turn_id_provider)
         # 注册前守卫（由 DevSubmitTool 在提交前注入）：返回拒绝理由字符串表示
@@ -505,6 +509,7 @@ class ToolLifecycle:
                     adapter_factory=self.adapter_factory,
                     bus=self.bus,
                     trace_store=self.trace_store,
+                    usage_assignment=self.usage_assignment,
                 )
         else:
             tool = CodeTool(

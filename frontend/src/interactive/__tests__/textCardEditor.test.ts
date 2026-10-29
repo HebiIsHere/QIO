@@ -9,7 +9,7 @@
  * - 【组件/DOM】挂载真实 TextCardEditor.vue 与真实 <textarea>；
  * - 【真实选区】用 textarea 自己的 setSelectionRange + input 事件驱动，不断言内部实现细节。
  */
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { mount, type VueWrapper } from "@vue/test-utils";
@@ -150,13 +150,15 @@ describe("TextCardEditor：一个连续编辑区", () => {
     vm.unmount();
   });
 
-  it("插入链接：给出地址后 [标题](地址) 成为链接块，选区落在标题上", async () => {
+  it("插入链接：在卡片里就地输入网址后 [标题](地址) 成为链接块，选区落在标题上", async () => {
     const vm = mountEditor({ content: "QIO 仓库" });
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("https://github.com/HebiIsHere/QIO");
     // 选区是标题本体（不含块后空行）：编辑器得到的是规范文本 "QIO 仓库\n"
     editor(vm).setSelectionRange(0, "QIO 仓库".length);
     await toolbar(vm, "link");
-    promptSpy.mockRestore();
+    expect(vm.find('[data-im="card-link-row"]').exists(), "必须出现行内网址输入行").toBe(true);
+    expect(vm.get('[data-im="card-link-label"]').text()).toContain("插入链接");
+    await vm.get('[data-im="card-link-input"]').setValue("https://github.com/HebiIsHere/QIO");
+    await vm.get('[data-im="card-link-confirm"]').trigger("click");
 
     const payload = lastChange(vm);
     const doc = parseDocText(payload.docText);
@@ -164,20 +166,96 @@ describe("TextCardEditor：一个连续编辑区", () => {
     expect(doc.blocks[0].text).toBe("QIO 仓库");
     expect(doc.blocks[0].attrs?.href).toBe("https://github.com/HebiIsHere/QIO");
     expect([editor(vm).selectionStart, editor(vm).selectionEnd]).toEqual([1, 1 + "QIO 仓库".length]);
+    expect(vm.find('[data-im="card-link-row"]').exists(), "确认后行收起").toBe(false);
     vm.unmount();
   });
 
-  it("插入链接：用户取消输入地址时不静默失败，如实说明地址为空、链接打不开", async () => {
+  it("插入链接：空地址确认时原地说明原因、不写坏正文；取消也不改正文", async () => {
     const vm = mountEditor({ content: "标题" });
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
     editor(vm).setSelectionRange(0, 2);
     await toolbar(vm, "link");
-    promptSpy.mockRestore();
+    await vm.get('[data-im="card-link-confirm"]').trigger("click");
+    expect(vm.get('[data-im="card-link-error"]').text()).toContain("不能为空");
+    expect(editor(vm).value, "确认失败时正文一个字都不改").toBe("标题\n");
+    expect(vm.emitted("change"), "不能因为校验失败就 emit change").toBeFalsy();
 
-    const doc = parseDocText(lastChange(vm).docText);
-    expect(doc.blocks[0].kind).toBe("link");
-    expect(doc.blocks[0].attrs?.href).toBe("");
-    expect(vm.get('[data-im="card-fmt-note"]').text()).toContain("地址为空");
+    await vm.get('[data-im="card-link-cancel"]').trigger("click");
+    expect(vm.find('[data-im="card-link-row"]').exists()).toBe(false);
+    expect(editor(vm).value).toBe("标题\n");
+    expect(vm.emitted("change")).toBeFalsy();
+    vm.unmount();
+  });
+
+  it("修改已有链接：光标落在链接里时直接改地址（链接标题不变）", async () => {
+    const text = "看这一行\n\n[示例](https://old.example.com)\n";
+    const vm = mountEditor({ meta: { docText: text } });
+    const at = text.indexOf("示例");
+    editor(vm).setSelectionRange(at, at);
+    await toolbar(vm, "link");
+    expect(vm.get('[data-im="card-link-label"]').text()).toContain("修改链接");
+    const input = vm.get('[data-im="card-link-input"]').element as HTMLInputElement;
+    expect(input.value, "已有的地址必须带出来，而不是让人重打").toBe("https://old.example.com");
+    expect(vm.find('[data-im="card-link-remove"]').exists(), "已有链接可以在原位移除").toBe(true);
+
+    await vm.get('[data-im="card-link-input"]').setValue("https://new.example.com");
+    await vm.get('[data-im="card-link-confirm"]').trigger("click");
+    const payload = lastChange(vm);
+    expect(payload.docText).toBe("看这一行\n\n[示例](https://new.example.com)\n");
+    const doc = parseDocText(payload.docText);
+    expect(doc.blocks.map((b) => b.kind)).toEqual(["paragraph", "link"]);
+    expect(doc.blocks[1].attrs?.href).toBe("https://new.example.com");
+    vm.unmount();
+  });
+
+  it("移除已有链接：只去掉链接包装，文字留在正文里", async () => {
+    const text = "看 [示例](https://old.example.com) 这一行\n";
+    const vm = mountEditor({ meta: { docText: text } });
+    const at = text.indexOf("示例");
+    editor(vm).setSelectionRange(at, at);
+    await toolbar(vm, "link");
+    await vm.get('[data-im="card-link-remove"]').trigger("click");
+    const payload = lastChange(vm);
+    expect(payload.docText).toBe("看 示例 这一行\n");
+    expect(parseDocText(payload.docText).blocks[0].kind).toBe("paragraph");
+    vm.unmount();
+  });
+
+  it("链接地址不合法：行内说清原因，正文不变（不当成可打开的地址写进去）", async () => {
+    const vm = mountEditor({ content: "危险链接" });
+    editor(vm).setSelectionRange(0, 4);
+    await toolbar(vm, "link");
+    await vm.get('[data-im="card-link-input"]').setValue("javascript:alert(1)");
+    await vm.get('[data-im="card-link-confirm"]').trigger("click");
+    expect(vm.get('[data-im="card-link-error"]').text()).toContain("http");
+    expect(editor(vm).value).toBe("危险链接\n");
+    vm.unmount();
+  });
+
+  it("链接行键盘：Enter 确认；输入法组合输入期间的回车不算确认；Esc 取消并把焦点还给编辑区", async () => {
+    const vm = mountEditor({ content: "键盘" });
+    editor(vm).setSelectionRange(0, 2);
+    await toolbar(vm, "link");
+    const input = vm.get('[data-im="card-link-input"]');
+    await input.setValue("https://example.com");
+
+    // 组合输入（候选字确认）期间的回车不能当成确认
+    const composing = new KeyboardEvent("keydown", { key: "Enter", bubbles: true });
+    Object.defineProperty(composing, "isComposing", { value: true });
+    input.element.dispatchEvent(composing);
+    await vm.vm.$nextTick();
+    expect(vm.find('[data-im="card-link-row"]').exists(), "组合输入期间回车不确认").toBe(true);
+    expect(vm.emitted("change")).toBeFalsy();
+
+    await input.trigger("keydown", { key: "Enter" });
+    expect(vm.find('[data-im="card-link-row"]').exists()).toBe(false);
+    expect(lastChange(vm).docText).toContain("[键盘](https://example.com)");
+
+    // Esc 取消：不写正文，焦点回到编辑区
+    editor(vm).setSelectionRange(0, 2);
+    await toolbar(vm, "link");
+    await vm.get('[data-im="card-link-row"]').trigger("keydown", { key: "Escape" });
+    expect(vm.find('[data-im="card-link-row"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(editor(vm));
     vm.unmount();
   });
 

@@ -28,7 +28,7 @@ describe("PlanetDock 话题星球入口", () => {
     const w = await mountDock();
     const dock = w.find(".dock");
     expect(dock.exists()).toBe(true);
-    expect(dock.attributes("aria-label")).toBe("打开话题星球");
+    expect(dock.attributes("aria-label")).toBe("打开话题星球（星球入口；可拖动贴边）");
     w.unmount();
   });
 

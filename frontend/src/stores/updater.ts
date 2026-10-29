@@ -16,6 +16,7 @@ import {
   describeUpdateError,
   tauriUpdaterApi,
   type UpdateErrorKind,
+  type UpdateStage,
   type UpdaterApi,
 } from "../services/updater";
 
@@ -54,6 +55,12 @@ export const useUpdaterStore = defineStore("updater", {
     progressPercent: null as number | null,
     downloaded: 0,
     total: null as number | null,
+    /**
+     * 下载并安装的真实阶段（见 services/updater.UpdateStage）。
+     * 只用于如实展示「现在在做什么」：idle = 未开始，done = 安装已完成待重启；
+     * 业务状态仍由 phase 决定，阶段回调不会推进 phase。
+     */
+    stage: "idle" as UpdateStage | "idle" | "done",
     /** 失败原因的人话（分类见 services/updater.describeUpdateError） */
     message: "",
     errorKind: "unknown" as UpdateErrorKind,
@@ -149,6 +156,7 @@ export const useUpdaterStore = defineStore("updater", {
       if (seq === null) return; // 单一有效操作：检查/下载期间不再起第二个
       this.phase = "checking";
       this.message = "";
+      this.stage = "idle";
       try {
         const api = await this._apiOrLoad();
         if (!this._isOperationActive(seq)) return;
@@ -187,6 +195,9 @@ export const useUpdaterStore = defineStore("updater", {
       this.phase = "downloading";
       this.message = "";
       this.progressPercent = null;
+      // 先标「下载中」：api 的 onStage 会随真实进度推进到校验/安装；
+      // 即使测试替身不实现 onStage，界面也不会停在「未开始」。
+      this.stage = "downloading";
       try {
         const api = await this._apiOrLoad();
         if (!this._isOperationActive(seq)) return;
@@ -198,18 +209,27 @@ export const useUpdaterStore = defineStore("updater", {
             this.total = progress.total;
             this.progressPercent = progress.percent;
           },
-          // 界面显示的是这个版本：安装的必须是同一个，不能无声换成另一个版本
-          { expectedVersion: this.availableVersion },
+          {
+            // 界面显示的是这个版本：安装的必须是同一个，不能无声换成另一个版本
+            expectedVersion: this.availableVersion,
+            // 阶段仅用于展示：迟到的阶段回调（失败后/被新操作取代后）一律丢弃
+            onStage: (stage) => {
+              if (!this._isOperationActive(seq) || this.phase !== "downloading") return;
+              this.stage = stage;
+            },
+          },
         );
         if (!this._isOperationActive(seq)) return;
         this.phase = "ready";
         this.progressPercent = 100;
+        this.stage = "done";
       } catch (error) {
         if (!this._isOperationActive(seq)) return;
         const described = describeUpdateError(error);
         this.phase = "failed";
         this.errorKind = described.kind;
         this.message = described.message;
+        this.stage = "idle";
       } finally {
         this._finishOperation(seq);
       }

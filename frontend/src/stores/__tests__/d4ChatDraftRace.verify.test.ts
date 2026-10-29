@@ -7,7 +7,7 @@
  * 标注：
  *   【纯函数】只依赖本机草稿记录
  *   【会话层】只依赖 stores/session.ts 的公开状态与动作（不依赖具体实现细节）
- *   【组件】挂载真实组件（Composer / ChatDock）
+ *   【组件】挂载真实组件（ComposerDock；旧 ChatDock 已删除，对应组件级用例随组件移除）
  *   【模拟失败】用受控的 api.sendTurn 拒绝制造发送失败
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,14 +22,7 @@ import {
   readDraft,
   UNBOUND_DRAFT_ID,
 } from "../../interactive/drafts";
-import ChatDock from "../../components/interactive/ChatDock.vue";
 import ComposerDock from "../../components/conversation/ComposerDock.vue";
-import { useInteractiveStore } from "../interactive";
-
-/** 悬浮聊天面板默认收起：挂载前先打开，才能操作输入框 */
-function openChat(): void {
-  useInteractiveStore().chatOpen = true;
-}
 
 /** v2：对话页输入区（模式切换与本组用例无关：避免测试环境缺少 router） */
 function mountDock() {
@@ -58,7 +51,6 @@ vi.mock("../../services/api", () => ({
     approveIntent: vi.fn(),
     rejectIntent: vi.fn(),
     batchDecide: vi.fn(),
-    createDemoIntents: vi.fn(),
     advanceIntent: vi.fn(),
     updateIntentPreview: vi.fn(),
     fetchHistoryPage: vi.fn(),
@@ -77,7 +69,6 @@ vi.mock("../../services/interactive", () => ({
   approveIntent: vi.fn(),
   rejectIntent: vi.fn(),
   batchDecide: vi.fn(),
-  createDemoIntents: vi.fn(),
   advanceIntent: vi.fn(),
   updateIntentPreview: vi.fn(),
 }));
@@ -131,76 +122,6 @@ afterEach(() => {
  *             A 的原文可恢复（只能恢复到 A）。
  * ======================================================================== */
 describe("时序 1：A 失败的消息不许跑到 B 上（§10.1）", () => {
-  it("【组件】ChatDock：A 发送中切到 B，A 失败 → B 输入框保持为空", async () => {
-    vi.useFakeTimers();
-    const session = useSessionStore();
-    session.currentTopicId = "A";
-    session.draft = "A 的原稿";
-    vi.advanceTimersByTime(500);
-    expect(storedText(chatKey("A"))).toBe("A 的原稿");
-
-    openChat();
-    const wrapper = mount(ChatDock, { attachTo: document.body });
-    const input = wrapper.find('[data-im="chat-input"]');
-    expect(input.exists()).toBe(true);
-    await input.setValue("A 的原稿");
-    await flushPromises();
-
-    const pending = pendingSend();
-    await wrapper.find('[data-im="chat-send"]').trigger("click");
-    await flushPromises();
-
-    // 发送请求在飞：切到 B
-    session.currentTopicId = "B";
-    await flushPromises();
-    vi.advanceTimersByTime(600);
-    await flushPromises();
-    expect(session.draft).toBe("");
-
-    // A 的请求失败
-    deferred[0].reject(new Error("网络中断"));
-    await flushPromises();
-    await vi.advanceTimersByTimeAsync(600);
-    await flushPromises();
-
-    // B 的输入框绝不能被 A 的失败原文污染
-    expect((wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement).value).toBe("");
-    expect(session.draft).toBe("");
-    expect(storedText(chatKey("B"))).toBeNull();
-    wrapper.unmount();
-    void pending;
-  });
-
-  it("【组件】ChatDock：失败原文只在回到 A 后可用，不自动重发", async () => {
-    vi.useFakeTimers();
-    const session = useSessionStore();
-    session.currentTopicId = "A";
-    openChat();
-    const wrapper = mount(ChatDock, { attachTo: document.body });
-    await wrapper.find('[data-im="chat-input"]').setValue("A 的原稿");
-    await flushPromises();
-
-    pendingSend();
-    await wrapper.find('[data-im="chat-send"]').trigger("click");
-    await flushPromises();
-    vi.mocked(api.sendTurn).mockResolvedValue(acceptedSend("turn_2") as never);
-    deferred[0].reject(new Error("网络中断"));
-    await flushPromises();
-
-    // 换到 B 再回 A
-    session.currentTopicId = "B";
-    await flushPromises();
-    session.currentTopicId = "A";
-    await flushPromises();
-
-    const before = vi.mocked(api.sendTurn).mock.calls.length;
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushPromises();
-    // 不许自动重新发送
-    expect(vi.mocked(api.sendTurn).mock.calls.length).toBe(before);
-    wrapper.unmount();
-  });
-
   it("【会话层】A 发送失败不会写入 B 的草稿键", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
@@ -227,39 +148,6 @@ describe("时序 1：A 失败的消息不许跑到 B 上（§10.1）", () => {
  *             失败原文另有恢复入口（两份都保留）。
  * ======================================================================== */
 describe("时序 2：失败原文不许覆盖后来输入的新文字（§10.1）", () => {
-  it("【组件】ChatDock：A 失败后新内容留在输入框，失败原文可单独取回", async () => {
-    vi.useFakeTimers();
-    const session = useSessionStore();
-    session.currentTopicId = "A";
-    openChat();
-    const wrapper = mount(ChatDock, { attachTo: document.body });
-    await wrapper.find('[data-im="chat-input"]').setValue("第一条：要发出去的话");
-    await flushPromises();
-
-    pendingSend();
-    await wrapper.find('[data-im="chat-send"]').trigger("click");
-    await flushPromises();
-
-    // 请求在飞：用户又写了新内容
-    await wrapper.find('[data-im="chat-input"]').setValue("第二条：后来写的新内容");
-    await flushPromises();
-
-    deferred[0].reject(new Error("网络中断"));
-    await flushPromises();
-    await vi.advanceTimersByTimeAsync(800);
-    await flushPromises();
-
-    const value = (wrapper.find('[data-im="chat-input"]').element as HTMLTextAreaElement).value;
-    expect(value).toBe("第二条：后来写的新内容");
-
-    // 失败原文必须有一个明确的取回入口，且内容就是失败的那一份
-    const failed = (session as unknown as { failedSend?: { text: string; topicId: string | null } }).failedSend;
-    expect(failed, "会话层要保留失败原文的事实").toBeTruthy();
-    expect(failed?.text).toBe("第一条：要发出去的话");
-    expect(failed?.topicId).toBe("A");
-    wrapper.unmount();
-  });
-
   it("【会话层】retryFailedSend 只在原话题把失败原文放回输入框，不自动发送", async () => {
     vi.useFakeTimers();
     const session = useSessionStore();
@@ -414,24 +302,6 @@ describe("时序 4：请求话题在点击那一刻确定（§10.1）", () => {
     const call = vi.mocked(api.sendTurn).mock.calls[0];
     expect(call[0]).toBe("发到 A 的话");
     expect(call[1], "发送请求必须用点击那一刻的话题").toBe("A");
-  });
-
-  it("【组件】ChatDock：点击发送后立刻切话题，请求仍带原话题", async () => {
-    const session = useSessionStore();
-    session.currentTopicId = "A";
-    openChat();
-    const wrapper = mount(ChatDock, { attachTo: document.body });
-    await wrapper.find('[data-im="chat-input"]').setValue("A 的话");
-    await flushPromises();
-    pendingSend();
-    await wrapper.find('[data-im="chat-send"]').trigger("click");
-    await flushPromises();
-    session.currentTopicId = "B";
-    await flushPromises();
-    deferred[0].resolve(acceptedSend("turn_1"));
-    await flushPromises();
-    expect(vi.mocked(api.sendTurn).mock.calls[0][1]).toBe("A");
-    wrapper.unmount();
   });
 });
 

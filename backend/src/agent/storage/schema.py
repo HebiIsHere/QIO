@@ -1737,6 +1737,234 @@ MIGRATIONS.append(
     )
 )
 
+# ── FU2-D（2026-10-26 后续修复轮）：子任务完成通知的持久化队列 ────────────────────
+# 契约：_fixpm2/COMMON.md §4.4 / BRIEF-d.md。基线（373fda40）三个真实缺陷：
+#   1) 纯内存 deque + MAX_PENDING_NOTIFICATIONS=200，超过时 popleft **静默丢弃**最早通知；
+#   2) enqueue 就调用 TaskManager.mark_notified —— 把「入队」当成「已通知/已交付」；
+#   3) 没有持久化：进程重启队列清空；take 之后崩溃丢该通知（已标 notified，无法补投）。
+#
+# 表设计（同 task_id 只一行 = INSERT OR IGNORE 幂等去重）：
+#   task_id         主键（同一任务最多一条通知）
+#   payload         JSON：通知事实（tool/status/outcome/status_label/preview/origin…）
+#   origin          JSON：程序绑定的原任务上下文（turn_id / topic_id / goal_version）
+#   created_at      入队时间（FIFO 依据；与 rowid 一起保证稳定顺序）
+#   delivered_at    **唯一的「已交付」判据**：只有通知轮被 TurnManager 接受后才写
+#   attempts        投递尝试次数（取出即 +1，失败保留待重试）
+#   last_error      最近一次投递失败的真实原因（不静默）
+#   last_attempt_at 最近一次尝试时间
+_SUBTASK_NOTIFICATIONS_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS subtask_notifications (
+        task_id         TEXT PRIMARY KEY,
+        payload         TEXT NOT NULL,
+        origin          TEXT NOT NULL DEFAULT '{}',
+        created_at      TEXT NOT NULL,
+        delivered_at    TEXT,
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        last_error      TEXT,
+        last_attempt_at TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_subtask_notifications_pending"
+    " ON subtask_notifications(delivered_at, created_at)",
+]
+
+MIGRATIONS.append((71, list(_SUBTASK_NOTIFICATIONS_DDL)))
+
+# 可修复列：REQUIRED_OBJECTS 只列「补偿能补回来」的对象（与既往约定一致）——
+# 整表缺失时 CREATE TABLE 建出完整形状；表在但状态列丢了时 ADD COLUMN 补得回来；
+# 主键/基础列被改这类形状损坏不伪装成可补偿项，留给按对象的告警与人判断。
+_SUBTASK_NOTIFICATIONS_REPAIR_COLUMNS: list[str] = [
+    "ALTER TABLE subtask_notifications ADD COLUMN delivered_at TEXT",
+    "ALTER TABLE subtask_notifications ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE subtask_notifications ADD COLUMN last_error TEXT",
+    "ALTER TABLE subtask_notifications ADD COLUMN last_attempt_at TEXT",
+]
+
+# 补偿入口（新，72）：补偿 70 的全部语句 + 迁移 71（通知表 / 索引）+ 可修复列。
+# 与 66/68/70 同口径：纯追加 DDL（CREATE TABLE/INDEX IF NOT EXISTS + ADD COLUMN），
+# 不改写任何历史迁移与数据；SCHEMA_VERSION = COMPENSATION_VERSION = 72。
+MIGRATIONS.append(
+    (
+        72,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 70 for stmt in stmts]
+            + list(_SUBTASK_NOTIFICATIONS_DDL)
+            + list(_SUBTASK_NOTIFICATIONS_REPAIR_COLUMNS)
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 70
+COMPENSATION_VERSION = 72
+
+# ── 设置页改版（2026-10-28）：一 Key 多模型 / 用途分配 / 默认模型 ──────────────────
+# 契约：_STG-COMMON.md §6/§7（B 实现，A/C 消费）。
+#
+# 为什么不再用 credentials.tags 表达用途：
+#   基线把「这条 Key 用来干什么」塞在 tags 里，于是一把 Key 整体被某个用途占用；
+#   同一把 Key 下不同模型无法分给不同用途，同名模型来自不同 Key 时也无法区分。
+# 本轮拆成两张表：
+#   credential_models = 「这条连接下已知的模型」（一把 Key 多个模型）；
+#   model_usages      = 「用途 → (credential_id, model_id|null)」，model_id 为空 = 跟随默认。
+# 默认模型放 settings 的 model.default 键（JSON），与「哪条连接是默认连接」分开：
+#   前者回答「日常对话用哪一家的哪个模型」，后者沿用 credentials.is_default。
+#
+# 只追加、不删列、不改列、不搬密钥：credentials.default_model / tags 继续作为
+# 兼容回退读（C 的用途解析在显式分配之后才回退到它们）。
+_MODEL_CATALOG_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS credential_models (
+        id                 TEXT PRIMARY KEY,
+        credential_id      TEXT NOT NULL REFERENCES credentials(id) ON DELETE CASCADE,
+        model_id           TEXT NOT NULL,
+        display_name       TEXT,
+        source             TEXT NOT NULL DEFAULT 'discovered',
+        capabilities       TEXT NOT NULL DEFAULT '[]',
+        verify_state       TEXT NOT NULL DEFAULT 'unverified',
+        verified_at        TEXT,
+        verify_error       TEXT,
+        verify_fingerprint TEXT,
+        context_window     INTEGER,
+        discovered_at      TEXT NOT NULL,
+        updated_at         TEXT NOT NULL,
+        UNIQUE (credential_id, model_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS model_usages (
+        id            TEXT PRIMARY KEY,
+        usage_key     TEXT NOT NULL UNIQUE,
+        credential_id TEXT REFERENCES credentials(id) ON DELETE CASCADE,
+        model_id      TEXT,
+        mode          TEXT NOT NULL DEFAULT 'inherit',
+        updated_at    TEXT NOT NULL
+    )
+    """,
+    # 按连接列模型（目录页与运行时解析都要按连接取）；按模型名检索（跨 Key 同名模型区分）。
+    "CREATE INDEX IF NOT EXISTS idx_credential_models_credential"
+    " ON credential_models(credential_id)",
+    "CREATE INDEX IF NOT EXISTS idx_credential_models_model ON credential_models(model_id)",
+    # usage_key 上的 UNIQUE 约束自带索引；再显式建一条同名索引，是为了让
+    # REQUIRED_OBJECTS 能按**对象名**核对它（UNIQUE 约束的隐式索引名字不可依赖）。
+    "CREATE INDEX IF NOT EXISTS idx_model_usages_usage_key ON model_usages(usage_key)",
+]
+
+# 回填（只跑一次，不放进补偿：补偿按既有契约只能是纯 DDL + 1 条幂等 seed）。
+# 1) 每条凭据的 default_model → credential_models(source='legacy')；
+# 2) tags → model_usages（显式指向「当时那条默认模型」，因为历史上这把 Key 就是整体
+#    服务这些用途的；main-loop 同时展开为 main-chat + general-chat，见 usages.py）；
+# 3) is_default=1 的那条 → settings 的 model.default 键。
+#
+# 三条边界（诚实优先）：
+# * default_model 为空的旧凭据**不回填模型行**：基线兜底模型是运行时猜的
+#   （providers.resolve_model），迁移里不复制猜测值 —— 猜错就是把内容发给没选过的模型；
+#   这类凭据的用途分配留空，由界面在发现/选择模型后补。
+# * verify_state 照抄旧结论但不伪造指纹（verify_fingerprint 留空）：
+#   旧结论属于旧配置，applies_to_current_config 会如实为 false，不会被当成「已验证这个模型」。
+# * 自定义标签原样保留为 custom:<tag>（不产生任何新执行能力，见 usages.py 说明）。
+_MODEL_CATALOG_BACKFILL: list[str] = [
+    """
+    INSERT OR IGNORE INTO credential_models (
+        id, credential_id, model_id, display_name, source, capabilities,
+        verify_state, verified_at, verify_error, verify_fingerprint,
+        context_window, discovered_at, updated_at
+    )
+    SELECT
+        'cm_legacy_' || c.id,
+        c.id,
+        trim(c.default_model),
+        NULL,
+        'legacy',
+        '[]',
+        CASE
+            WHEN c.verify_state IN ('verified', 'legacy') THEN c.verify_state
+            WHEN c.verify_state = 'failed' THEN 'failed'
+            ELSE 'unverified'
+        END,
+        c.verified_at,
+        c.verify_error,
+        NULL,
+        NULL,
+        c.updated_at,
+        c.updated_at
+    FROM credentials c
+    WHERE c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    """,
+    """
+    INSERT OR IGNORE INTO model_usages (id, usage_key, credential_id, model_id, mode, updated_at)
+    SELECT
+        'mu_legacy_' || c.id || '_' || m.usage_key,
+        m.usage_key,
+        c.id,
+        trim(c.default_model),
+        -- 历史标签回填是「兼容映射」，不是用户显式指定：基线里 tags 只参与选择政策，
+        -- 从不锁定某把 Key；写成 explicit 会让老用户那把它已停用/欠费的 Key 把
+        -- 主对话直接打成硬失败（违反「保留既有凭据选择政策」）。
+        -- 运行时只把 mode='explicit' 当显式指定，legacy 行只保留可见性与映射。
+        'legacy',
+        c.updated_at
+    FROM credentials c
+    CROSS JOIN json_each(c.tags) AS t
+    JOIN (
+        SELECT 'main-loop' AS tag, 'main-chat' AS usage_key
+        UNION ALL SELECT 'main-loop', 'general-chat'
+        UNION ALL SELECT 'subagent', 'subagent'
+        UNION ALL SELECT 'vision', 'vision'
+        UNION ALL SELECT 'video', 'video'
+        UNION ALL SELECT 'audio', 'audio'
+        UNION ALL SELECT 'research', 'research'
+        UNION ALL SELECT 'embedding', 'embedding'
+    ) AS m ON m.tag = t.value
+    WHERE c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    """,
+    """
+    INSERT OR IGNORE INTO model_usages (id, usage_key, credential_id, model_id, mode, updated_at)
+    SELECT
+        'mu_legacy_' || c.id || '_custom_' || t.value,
+        'custom:' || t.value,
+        c.id,
+        trim(c.default_model),
+        -- 同上：历史自定义标签是兼容映射，不是显式指定（不产生执行能力）。
+        'legacy',
+        c.updated_at
+    FROM credentials c
+    CROSS JOIN json_each(c.tags) AS t
+    WHERE t.value NOT IN (
+            'main-loop', 'subagent', 'vision', 'video', 'audio', 'research', 'embedding'
+        )
+        AND trim(t.value) <> ''
+        AND c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    """,
+    """
+    INSERT OR IGNORE INTO settings (key, value, updated_at)
+    SELECT
+        'model.default',
+        json_object('credential_id', c.id, 'model_id', trim(c.default_model)),
+        c.updated_at
+    FROM credentials c
+    WHERE c.is_default = 1
+        AND c.default_model IS NOT NULL AND trim(c.default_model) <> ''
+    ORDER BY c.created_at, c.id
+    LIMIT 1
+    """,
+]
+
+# 只追加迁移 73：新表 + 索引 + 一次性回填。
+MIGRATIONS.append((73, list(_MODEL_CATALOG_DDL) + list(_MODEL_CATALOG_BACKFILL)))
+
+# 补偿入口（新，74）：补偿 72 的全部语句 + 迁移 73 的**建对象语句**。
+# 按既有契约，补偿只重放 DDL（不重放回填：数据迁移只跑一次；对象被删后补建对象即可）。
+MIGRATIONS.append(
+    (
+        74,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 72 for stmt in stmts]
+            + list(_MODEL_CATALOG_DDL)
+        ),
+    )
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+COMPENSATION_VERSION = 74
 

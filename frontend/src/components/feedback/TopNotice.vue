@@ -1,0 +1,380 @@
+<script setup lang="ts">
+/**
+ * 顶部短通知（B）：同一时间只显示一条，窗口居中、全局栏下方。
+ *
+ * 视觉与行为（用户任务书）：
+ * - 对称布局：左右槽位等宽（左侧状态点、右侧关闭按钮），标题/正文居中；
+ * - 圆角走统一 token（--qio-ui-radius，14px）；轻玻璃感、深浅色都由 token 提供；
+ * - 长任务名在可见区域单行省略，**读屏与完整文本**仍可用（aria-label 不截断，不用原生 title）；
+ * - 悬停 / 键盘聚焦暂停倒计时，移开恢复剩余；关闭按钮只关这条通知；
+ * - 不抢焦点：出现时不 focus 任何元素，只有用户 Tab 才进入；
+ * - 点击（只有可定位任务的通知）→ 交给 C 的 openTaskNoticeTargets(taskIds) 让任务列表
+ *   真实可见并定位**全部**任务（不再自己只展开左栏 / 逐条 focusTask / 截断 8 个）；
+ *   有中央弹窗时保留通知、不打断弹窗；导航失败不静默关闭，在通知内以 role="status"
+ *   给出可直接阅读的真实说明。
+ */
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from "vue";
+import {
+  noticeActivation,
+  noticeDisplayText,
+  noticeFullText,
+  noticeIsActivatable,
+  noticeTaskIds,
+  useNotificationsStore,
+} from "../../stores/notifications";
+import {
+  openTaskNoticeTargets,
+  type NoticeNavigationResult,
+} from "../../services/noticeNavigation";
+import { feedbackTopPx } from "./feedbackOffsets";
+
+const notifications = useNotificationsStore();
+const notice = computed(() => notifications.active);
+const text = computed(() => noticeDisplayText(notice.value));
+const fullText = computed(() => noticeFullText(notice.value));
+const taskIds = computed(() => noticeTaskIds(notice.value));
+/**
+ * 可激活才做成按钮：任务失败类点击去左栏定位；带激活动作的通知（例如接续引导）
+ * 点击执行那个动作。两者都没有时保持纯文本（不做假按钮）。
+ */
+const clickable = computed(() => noticeIsActivatable(notice.value));
+const canLocate = computed(
+  () => Boolean(notice.value?.focus) && taskIds.value.length > 0,
+);
+const kindClass = computed(() => "is-" + (notice.value?.kind ?? "task_failed"));
+/** 点击定位失败时的真实说明（可见 + role="status" 可读屏；不静默关闭通知）。 */
+const navigationHint = ref("");
+/** 真实落点：全局栏下方；非聊天页再让出一行 .top-notes 的高度（不写死坐标）。 */
+const topPx = ref<number>(0);
+
+function syncTop(): void {
+  const next = feedbackTopPx();
+  if (next > 0) topPx.value = next;
+}
+
+function onResize(): void {
+  syncTop();
+}
+
+onMounted(() => {
+  syncTop();
+  window.addEventListener("resize", onResize, { passive: true });
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", onResize);
+});
+
+watch(
+  () => notice.value?.key ?? null,
+  async (key, previous) => {
+    // 通知换了：上一条的暂停原因不再有效（鼠标/焦点事件不会再落到它身上）
+    if (previous && previous !== key) notifications.releasePauses(previous);
+    if (previous !== key) navigationHint.value = "";
+    if (!key) return;
+    await nextTick();
+    syncTop();
+  },
+  { immediate: true },
+);
+
+/** 根节点：判断焦点是否仍在通知内部（内部按钮之间移动焦点不解除聚焦暂停）。 */
+const rootEl = ref<HTMLElement | null>(null);
+
+/** 悬停与键盘聚焦是**两个独立暂停原因**：任一还在，倒计时都不恢复（F06）。 */
+function pauseHover(): void {
+  if (notice.value) notifications.pause(notice.value.key, "hover");
+}
+function resumeHover(): void {
+  if (notice.value) notifications.resume(notice.value.key, "hover");
+}
+function pauseFocus(): void {
+  if (notice.value) notifications.pause(notice.value.key, "focus");
+}
+function onFocusOut(event: FocusEvent): void {
+  const current = notice.value;
+  if (!current) return;
+  const next = (event?.relatedTarget ?? null) as Node | null;
+  const root = rootEl.value;
+  // 焦点还在通知内部（例如从正文按钮移到关闭按钮）：不解除聚焦暂停
+  if (next && root && root.contains(next)) return;
+  if (!next && root && typeof document !== "undefined") {
+    const active = document.activeElement;
+    if (active && active !== root && root.contains(active)) return;
+  }
+  notifications.resume(current.key, "focus");
+}
+
+onBeforeUnmount(() => {
+  // 卸载时释放本组件登记的暂停原因：不能因为组件消失而让通知永远暂停
+  const key = notice.value?.key;
+  if (key) notifications.releasePauses(key);
+});
+
+/** 点击通知：能定位任务就先定位；否则执行调用方给的激活动作（例如接续引导）。 */
+async function activate(): Promise<void> {
+  const current = notifications.active;
+  if (!current) return;
+  if (canLocate.value) {
+    await locate();
+    return;
+  }
+  const handler = noticeActivation(current);
+  const key = current.key;
+  notifications.dismiss(key);
+  if (!handler) return;
+  try {
+    handler();
+  } catch {
+    // 激活动作失败不阻断界面：具体失败由该功能自己的反馈表达
+  }
+}
+
+/**
+ * 点击定位：把**整组**任务交给 C 的跨页导航服务（真实可见 + 全部定位）。
+ *
+ * - ok → 才算成功，关闭本次通知；
+ * - blocked-by-modal → 保留通知、不打断中央弹窗；
+ * - no-targets / navigation-failed → 不静默关闭，在通知内给出可见且可读屏的说明。
+ */
+async function locate(): Promise<void> {
+  const current = notifications.active;
+  if (!current) return;
+  const ids = noticeTaskIds(current);
+  if (!ids.length) return;
+  navigationHint.value = "";
+  let outcome: NoticeNavigationResult;
+  try {
+    outcome = await openTaskNoticeTargets(ids);
+  } catch (error) {
+    const reply = (error as Error)?.message;
+    outcome = {
+      ok: false,
+      reason: "navigation-failed",
+      taskIds: ids,
+      message: reply && String(reply).trim()
+        ? "任务列表暂时无法打开：" + String(reply).trim() + "。可以再点一次通知，或在左侧任务栏查看。"
+        : "任务列表暂时无法打开；通知和任务记录都还在。可以再点一次通知，或在左侧任务栏查看。",
+    };
+  }
+  if (outcome?.ok) {
+    notifications.dismiss(current.key);
+    return;
+  }
+  navigationHint.value =
+    outcome?.message && String(outcome.message).trim()
+      ? String(outcome.message).trim()
+      : "任务列表暂时无法打开；通知和任务记录都还在。可以再点一次通知，或在左侧任务栏查看。";
+}
+
+function close(): void {
+  const current = notifications.active;
+  if (current) notifications.dismiss(current.key);
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  event.stopPropagation();
+  close();
+}
+</script>
+
+<template>
+  <Transition name="uf-notice" appear>
+    <div
+      v-if="notice"
+      class="uf-notice"
+      :class="kindClass"
+      :style="topPx ? { top: topPx + 'px' } : undefined"
+      ref="rootEl"
+      data-test="top-notice"
+      @mouseenter="pauseHover"
+      @mouseleave="resumeHover"
+      @focusin="pauseFocus"
+      @focusout="onFocusOut"
+      @keydown="onKeydown"
+    >
+      <!-- 读屏/完整文案：可见文本会省略长任务名，这里永远完整 -->
+      <span class="qio-sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {{ fullText }}
+      </span>
+      <!-- 左侧槽位：状态点（等宽，不是图标冒充交互） -->
+      <span class="uf-notice__slot" aria-hidden="true">
+        <span class="uf-notice__dot"></span>
+      </span>
+      <button
+        v-if="clickable"
+        class="uf-notice__body"
+        type="button"
+        :aria-label="canLocate ? fullText + '，点击在左侧任务栏定位' : fullText + '，点击继续'"
+        @click="activate"
+      >
+        <span class="uf-notice__line">{{ text }}</span>
+      </button>
+      <p v-else class="uf-notice__body uf-notice__body--static">
+        <span class="uf-notice__line">{{ text }}</span>
+      </p>
+      <!-- 定位失败时的真实说明：可见 + role="status" 可读屏；不静默关闭通知 -->
+      <p v-if="navigationHint" class="uf-notice__hint" role="status">{{ navigationHint }}</p>
+      <!-- 右侧槽位：与左侧同宽，关闭按钮不会把文字挤偏 -->
+      <span class="uf-notice__slot uf-notice__slot--right">
+        <button
+          class="uf-notice__close"
+          type="button"
+          aria-label="关闭这条通知（不会改变任务或设置状态）"
+          @click.stop="close"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7 7l10 10M17 7L7 17" />
+          </svg>
+        </button>
+      </span>
+    </div>
+  </Transition>
+</template>
+
+<style scoped>
+/* 窗口居中、全局栏下方；宽度自适应内容但不超过窄窗。 */
+.uf-notice {
+  position: fixed;
+  top: calc(var(--titlebar-height, 32px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 196;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: min(560px, calc(100vw - 24px));
+  min-height: 36px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
+  background: var(--glass-bg), var(--bg-elevated);
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  box-shadow: var(--shadow-2);
+  color: var(--text-secondary);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.uf-notice__hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0 2px 2px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-align: center;
+}
+.uf-notice__slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+.uf-notice__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.uf-notice.is-task_failed .uf-notice__dot {
+  background: var(--warning);
+}
+.uf-notice.is-setup_incomplete .uf-notice__dot {
+  background: var(--accent);
+}
+.uf-notice__body {
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-strong);
+  font: inherit;
+  text-align: center;
+}
+button.uf-notice__body {
+  cursor: pointer;
+  border-radius: var(--qio-ui-radius, var(--r-lg));
+}
+button.uf-notice__body:hover .uf-notice__line {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+button.uf-notice__body:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* 可见文本单行省略；完整内容在读屏文案里（不用原生 title 凑） */
+.uf-notice__line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+.uf-notice__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--qio-ui-radius, var(--r-lg));
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-1), color var(--dur-fast) var(--ease-1);
+}
+.uf-notice__close svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+.uf-notice__close:hover {
+  background: var(--bg-inset);
+  color: var(--text-strong);
+}
+.uf-notice__close:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+/* 平缓出现/离开；只动透明度与小位移，尊重减少动态效果 */
+.uf-notice-enter-active,
+.uf-notice-leave-active {
+  transition: opacity var(--dur-menu) var(--ease-1-out), transform var(--dur-menu) var(--ease-1-out);
+}
+.uf-notice-enter-from,
+.uf-notice-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(calc(-1 * var(--shift-4, 4px)));
+}
+@media (prefers-reduced-motion: reduce) {
+  .uf-notice-enter-active,
+  .uf-notice-leave-active {
+    transition: none;
+  }
+}
+/* 窄窗：左右槽位仍等宽，文字自行换行（不因宽度不足挤偏居中轴） */
+@media (max-width: 480px) {
+  .uf-notice {
+    width: calc(100vw - 24px);
+  }
+  .uf-notice__line {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+}
+</style>

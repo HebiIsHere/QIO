@@ -33,9 +33,26 @@ export interface UpdateProgress {
   percent: number | null;
 }
 
+/**
+ * 一次「下载并安装」里**真实发生**的阶段（界面据此说清现在在做什么）。
+ *
+ * - `downloading`：正在下载更新包（插件在下载完成后才做签名校验）；
+ * - `verifying`：下载字节流结束、插件开始校验签名（这一段时间没有百分比）；
+ * - `preparing`：真正要替换安装文件了，先结束后端进程树（有真实结果才继续）；
+ * - `installing`：安装器启动中；**100% 下载 ≠ 安装完成**。
+ *
+ * 这些阶段只用于如实展示，不改变任何更新机制/顺序。
+ */
+export type UpdateStage = "downloading" | "verifying" | "preparing" | "installing";
+
 /** 下载/安装时的操作约束。`expectedVersion` 是界面上显示的版本：对不上就不装。 */
 export interface DownloadInstallOptions {
   expectedVersion?: string;
+  /**
+   * 真实阶段回调（可选）：`UpdaterApi` 的测试替身可以不实现，
+   * store 只在收到时更新展示状态，绝不据此推进业务状态机。
+   */
+  onStage?: (stage: UpdateStage) => void;
 }
 
 /** 前端需要的全部更新能力；store 依赖这个接口，测试注入假实现。 */
@@ -265,6 +282,7 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
   const progressReporter = (
     state: { total: number | null; downloaded: number },
     onProgress: (progress: UpdateProgress) => void,
+    onStage?: (stage: UpdateStage) => void,
   ) => {
     return (event: { event: string; data?: { contentLength?: number; chunkLength?: number } }) => {
       if (event.event === "Started") {
@@ -274,6 +292,9 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
         state.downloaded += event.data?.chunkLength ?? 0;
       } else if (event.event === "Finished") {
         onProgress({ downloaded: state.downloaded, total: state.total, percent: 100 });
+        // 插件在 download() 内部完成签名校验：字节流结束后到 download 返回之间
+        // 就是「校验」阶段（没有百分比，界面如实说正在校验而不是继续画 100%）。
+        onStage?.("verifying");
         return;
       } else {
         return;
@@ -333,15 +354,18 @@ export async function tauriUpdaterApi(): Promise<UpdaterApi> {
           total: null,
           downloaded: 0,
         };
-        await update.download(progressReporter(state, onProgress));
+        options?.onStage?.("downloading");
+        await update.download(progressReporter(state, onProgress, options?.onStage));
         onProgress({ downloaded: state.downloaded, total: state.total, percent: 100 });
 
         // 3) 校验通过、真要替换安装文件了，才结束后端进程树
         try {
+          options?.onStage?.("preparing");
           const prep = await prepareForUpdate(invokeCommand);
           if (prep.alreadyStopped) {
             console.info("[qio] 更新前没有本实例后端在跑，无需结束");
           }
+          options?.onStage?.("installing");
           await update.install();
         } catch (error) {
           // 后端已经（或可能已经）被停掉：必须恢复，不能把聊天留在不可用状态。

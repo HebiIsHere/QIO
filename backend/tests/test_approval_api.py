@@ -50,8 +50,10 @@ def _submit(client, *, kind="test.op", label="测试操作", confirmations=1, pa
     return client.portal.call(_do)
 
 
+# 同 test_pm_acceptance_approval_surface：审批行读取回到事件循环线程，
+# 避免测试主线程与执行器并发使用同一 sqlite 连接（py3.12 会抛 InterfaceError）。
 def _row(client, approval_id):
-    return client.app.state.ctx.approvals.store.get(approval_id)
+    return client.portal.call(lambda: client.app.state.ctx.approvals.store.get(approval_id))
 
 
 def _wait_state(client, approval_id, state, *, timeout=5.0):
@@ -257,3 +259,129 @@ def test_runtime_state_restores_pending_approvals(client):
     assert approvals, "断线/RESYNC 后必须能查回等待中的审批"
     assert approvals[0]["state"] == "waiting"
     assert "interrupted_approvals" in state
+
+def _register_executor_with(client, kind: str, handler) -> None:
+    client.app.state.ctx.operations.register(kind, handler, replace=True)
+
+
+def test_batch_item_results_are_persisted_and_returned_by_history(client):
+    """F03：批量逐项结果（item_id/status/reason）必须原样进历史，不能在落库时丢掉。"""
+
+    async def batch_executor(payload, ctx):
+        from agent.security.operations import ExecResult
+
+        return ExecResult(
+            ok=False,
+            state="failed",
+            summary="批量写回部分完成：1/2 项已写回，其余项已保留文件",
+            detail={
+                "batch": True,
+                "results": [
+                    {
+                        "item_id": "item_1",
+                        "path": "C:\\work\\a.txt",
+                        "ok": True,
+                        "status": "completed",
+                        "reason": "",
+                    },
+                    {
+                        "item_id": "item_2",
+                        "path": "C:\\work\\b.txt",
+                        "ok": False,
+                        "status": "failed",
+                        "reason": "磁盘写满",
+                    },
+                ],
+            },
+        )
+
+    _register_executor_with(client, "test.batch", batch_executor)
+    events = _record_events(client)
+    ticket = _submit(client, kind="test.batch", label="批量写回附件源文件")
+    client.post(
+        "/api/approvals/{}/decide".format(ticket.approval_id),
+        json={"decision": "approve"},
+    )
+    row = _wait_state(client, ticket.approval_id, "failed")
+    assert row["state"] == "failed"
+
+    history = client.get("/api/approvals/history", params={"limit": 20}).json()["history"]
+    entry = next(item for item in history if item["approval_id"] == ticket.approval_id)
+    assert entry["outcome"] == "failed"
+    assert entry["kind"] == "test.batch"
+    assert entry["detail"]["label"] == "批量写回附件源文件"
+    items = entry["detail"]["results"]
+    assert [item["item_id"] for item in items] == ["item_1", "item_2"]
+    assert items[0]["status"] == "completed"
+    assert items[1]["status"] == "failed"
+    assert items[1]["reason"] == "磁盘写满"
+
+    # 同一个 detail 也随 APPROVAL_RESULT 事件发给前端（前端逐项展示的依据）
+    terminal_events = [
+        event
+        for event in events
+        if event.type.value == "APPROVAL_RESULT"
+        and event.data.get("phase") == "failed"
+        and event.data.get("approval_id") == ticket.approval_id
+    ]
+    assert terminal_events, "失败结局必须有 APPROVAL_RESULT"
+    assert terminal_events[0].data["ok"] is False
+    assert [item["item_id"] for item in terminal_events[0].data["detail"]["results"]] == [
+        "item_1",
+        "item_2",
+    ]
+
+
+def test_history_records_rejected_cancelled_and_expired_terminals(client):
+    """F02：拒绝/取消/过期是终态，刷新后仍能回看（只补数据行，不改 schema）。"""
+    rejected = _submit(client, label="要拒绝的写入")
+    assert client.post(
+        "/api/approvals/{}/decide".format(rejected.approval_id),
+        json={"decision": "reject"},
+    ).status_code == 200
+    cancelled = _submit(client, label="要取消的写入")
+    assert client.post(
+        "/api/approvals/{}/decide".format(cancelled.approval_id),
+        json={"decision": "cancel"},
+    ).status_code == 200
+    expired = _submit(client, label="会过期的写入")
+    client.app.state.ctx.approvals.store.mark_expired(expired.approval_id)
+
+    history = {
+        item["approval_id"]: item
+        for item in client.get("/api/approvals/history", params={"limit": 50}).json()["history"]
+    }
+    assert history[rejected.approval_id]["outcome"] == "rejected"
+    assert "已拒绝" in history[rejected.approval_id]["summary"]
+    assert "要拒绝的写入" in history[rejected.approval_id]["summary"]
+    assert history[rejected.approval_id]["detail"]["label"] == "要拒绝的写入"
+    assert history[rejected.approval_id]["detail"]["decision"] == "rejected"
+
+    assert history[cancelled.approval_id]["outcome"] == "cancelled"
+    assert "已取消" in history[cancelled.approval_id]["summary"]
+
+    assert history[expired.approval_id]["outcome"] == "expired"
+    assert "已过期" in history[expired.approval_id]["summary"]
+    assert history[expired.approval_id]["detail"]["reason"] == "expired"
+
+
+def test_late_terminal_writes_do_not_overwrite_execution_history(client):
+    """已执行的历史不得被迟到的过期/作废写回覆盖（每次审批一条最新结果 ≠ 任意改写）。"""
+    counter: list = []
+    _register_executor(client, counter=counter)
+    ticket = _submit(client, label="已经执行完的写入")
+    client.post(
+        "/api/approvals/{}/decide".format(ticket.approval_id),
+        json={"decision": "approve"},
+    )
+    assert _wait_state(client, ticket.approval_id, "completed")["state"] == "completed"
+    store = client.app.state.ctx.approvals.store
+    store.mark_expired(ticket.approval_id)
+    store.mark_invalidated(ticket.approval_id, "迟到的作废")
+    history = [
+        item
+        for item in client.get("/api/approvals/history", params={"limit": 50}).json()["history"]
+        if item["approval_id"] == ticket.approval_id
+    ]
+    assert len(history) == 1
+    assert history[0]["outcome"] == "executed"

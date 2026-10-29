@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 对话页右侧只读文件预览（C 负责）。
  *
@@ -85,7 +86,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="qio-btn quiet mini"
-          :title="full ? '返回对话布局' : '全窗口预览'"
+          v-qio-tip="full ? '返回对话布局' : '全窗口预览'"
           :aria-label="full ? '返回对话布局' : '全窗口预览'"
           @click="emit('toggleFull')"
         >
@@ -94,7 +95,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="qio-btn quiet mini"
-          title="收起预览，保留标签与阅读位置"
+          v-qio-tip="'收起预览，保留标签与阅读位置'"
           aria-label="收起预览，保留标签与阅读位置"
           @click="emit('close')"
         >
@@ -122,7 +123,7 @@ onBeforeUnmount(() => {
           class="pv-tab-main"
           role="tab"
           :aria-selected="tab.id === activeTab?.id"
-          :title="tab.target.title + ' · ' + PREVIEW_KIND_LABEL[tab.target.kind]"
+          v-qio-tip="tab.target.title + ' · ' + PREVIEW_KIND_LABEL[tab.target.kind]"
           @click="activate(tab.id)"
         >
           <span class="pv-tab-title">{{ tab.target.title }}</span>
@@ -132,7 +133,7 @@ onBeforeUnmount(() => {
           type="button"
           class="pv-tab-close"
           :aria-label="'关闭预览：' + tab.target.title"
-          title="关闭这个预览（不删除文件）"
+          v-qio-tip="'关闭这个预览（不删除文件）'"
           @click.stop="closeTab(tab.id)"
         >×</button>
       </div>
@@ -254,7 +255,7 @@ onBeforeUnmount(() => {
 .pv-tab-main:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 .pv-tab-title {
   max-width: 100%;
@@ -280,7 +281,7 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-faint);
   font-size: var(--fs-sm);
@@ -338,7 +339,7 @@ onBeforeUnmount(() => {
   color: var(--text-primary);
   background: transparent;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   padding: 0 var(--sp-2);
   cursor: pointer;
 }

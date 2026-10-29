@@ -19,7 +19,7 @@ from agent.adapters.probe import ProbeResult
 from agent.api.bus import EventBus
 from agent.config import Settings
 from agent.credentials.store import MemoryKeyring
-from agent.services.app import AppContext
+from agent.services.app import ADAPTER_CACHE_LIMIT, AppContext
 from agent.storage.db import connect
 from agent.storage.migrate import apply_migrations
 
@@ -119,6 +119,12 @@ async def test_adapter_cache_does_not_grow_without_bound(ctx, probe_counter):
     for i in range(6):
         ctx.credentials.update_secret("k1", f"sk-rotated-{i}")
         await ctx.build_adapter()
-    # 同一个 key_id 只保留最新版本的 adapter
-    assert len([k for k in ctx._adapter_cache if k[0] == "k1"]) <= 1
+    # A 修复后的语义：槽位是 (key_id, model)。**同一槽位**换配置只保留最新那份
+    # （旧版本进有界暂留名单，不在这里重复计数，运行期也不关闭它 —— 见
+    # tests/test_release_step1_a.py）；不同模型是不同槽位，可以同时存在。
+    #
+    # 旧断言是「同一 key_id 只保留最新版本的 adapter」——它锁死的正是缺陷行为：
+    # 同一把 Key 下换一个模型会把别的模型正在用的连接关掉。
+    assert len([k for k in ctx._adapter_cache if k[0] == "k1" and k[-1] == "gpt-x"]) == 1
+    assert len(ctx._adapter_cache) <= ADAPTER_CACHE_LIMIT, "缓存总体必须有界"
     await ctx.aclose()

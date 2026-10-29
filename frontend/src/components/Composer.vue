@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useSessionStore } from "../stores/session";
 import { MEDIA_CAPABILITY_HINT } from "./mediaFacts";
@@ -1413,8 +1414,8 @@ async function stopTurn() {
     <!--
       对话页 v2：旧的话题栏整行（话题名 / 续接提示 / 快捷键说明）已删除 —— 话题名移到
       ChatColumn 的常驻话题栏，输入区只保留输入胶囊本身。
-      R9 的「权限模式常驻可见」也随之从这条行挪到 ChatColumn 的话题栏（见该组件的
-      <PermissionModeBadge />），不在这里恢复旧行。
+      R9 的「权限模式常驻可见」已统一挪到窗口全局栏（见 WindowChrome 里的
+      <PermissionModeText />，对话页 / 互动页同一处），不在这里恢复旧行。
     -->
     <div
       v-if="pending.length || attaching || attachError || attachNote || pathOpen || sendRejection || preparingVisible || preparingNotice"
@@ -1552,7 +1553,7 @@ async function stopTurn() {
           :disabled="attaching"
           :aria-expanded="attachMenuOpen ? 'true' : 'false'"
           aria-haspopup="menu"
-          title="添加附件：选择本地文件，或粘贴路径"
+          v-qio-tip="'添加附件：选择本地文件，或粘贴路径'"
           aria-label="添加附件"
           @click="toggleAttachMenu"
         >
@@ -1582,7 +1583,7 @@ async function stopTurn() {
         wrap="soft"
         aria-label="输入消息（Enter 发送，Shift+Enter 换行）"
         aria-keyshortcuts="Enter Shift+Enter"
-        title="Enter 发送 · Shift+Enter 换行"
+        v-qio-tip="'Enter 发送 · Shift+Enter 换行'"
         placeholder="继续讨论，或添加文件…"
         @keydown="onKeydown"
         @input="autosize"
@@ -1600,7 +1601,7 @@ async function stopTurn() {
         :data-mode="primaryMode"
         :data-ready="sendReady ? 'true' : 'false'"
         :aria-label="primaryLabel"
-        :title="primaryTitle"
+        v-qio-tip="primaryTitle"
         @click="primaryAction"
       >
         <span v-if="primaryMode === 'stop'" class="sq" aria-hidden="true"></span>
@@ -1644,6 +1645,9 @@ async function stopTurn() {
 .composer {
   /* 宽度链：气泡本身不得横向滚动（真正的修复在各层的 min-width:0 与换行重排） */
   min-width: 0;
+  /* 输入胶囊「单行高度」的唯一来源：星球入口直径与行星过渡的入口尺度都读它，
+     保证「球直径 = 输入框高度」（改这里会同时改变球的大小，别只改一边）。 */
+  --composer-pill-h: 54px;
   /* 独立悬浮于消息流之上，与对话内容同一列（居中 860px），不参与消息流布局；
      消息流底部通过滚动缓冲让出本气泡高度，滚到底时最新消息停在气泡上方。
 
@@ -1665,12 +1669,18 @@ async function stopTurn() {
   background: transparent;
   box-shadow: none;
 }
-/* 输入胶囊：附件圆形按钮 + 输入 + 圆形发送，全部在胶囊内部 */
+/* 输入胶囊：附件圆形按钮 + 输入 + 圆形发送，全部在胶囊内部。
+   圆角是**胶囊形**（--r-pill）：这是用户明确要求保留的设计语言，
+   也是「全应用表面统一 14px」这条规则的唯一例外 —— 只作用于对话页/互动页共用的
+   这个输入盒子（它内部的按钮本来就是圆形），不要顺手改回 14px。 */
 .input-pill {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
+  /* 单行高度由这里锁定（= --composer-pill-h）；多行输入时自然增高，
+     星球入口仍按单行高度对齐（球直径 = 输入框高度，见 ComposerDock 的 --planet-size）。 */
+  min-height: var(--composer-pill-h, 54px);
   padding: 6px 7px 6px 8px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
@@ -2055,7 +2065,7 @@ async function stopTurn() {
   min-width: 188px;
   padding: 4px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
   box-shadow: var(--shadow-2);
 }
@@ -2067,7 +2077,7 @@ async function stopTurn() {
   width: 100%;
   padding: 8px 9px;
   border: 0;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -2137,7 +2147,7 @@ async function stopTurn() {
   height: 28px;
   padding: 0 8px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   color: var(--text-primary);
   font-size: 11.5px;
@@ -2151,7 +2161,7 @@ async function stopTurn() {
   height: 28px;
   padding: 0 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--sans);
@@ -2168,7 +2178,7 @@ async function stopTurn() {
   margin-top: var(--sp-2);
   padding: var(--sp-3);
   border: 1px solid var(--warning);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-elevated);
 }
 .attach-reject-msg {
@@ -2219,7 +2229,7 @@ async function stopTurn() {
   align-items: center;
   justify-content: center;
   border: 1px dashed var(--accent);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   background: var(--accent-soft);
   color: var(--text-strong);
   font-family: var(--sans);

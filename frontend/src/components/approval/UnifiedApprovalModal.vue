@@ -8,42 +8,247 @@
  * - 关闭/稍后只隐藏，不批准也不拒绝；stale（后端已无此审批）只给「知道了」；
  * - 系统事实与模型说明的分工完全复用 ApprovalFacts（不另写一套显示规则）。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   useApprovalsStore,
   approvalFacts,
+  isInterruptedLegacyApproval,
+  isLegacyApproval,
   isLifecycleApproval,
   type ApprovalBudget,
 } from "../../stores/approvals";
 import { approvalStateLabel } from "../../services/approvalLifecycle";
 import {
+  approvalExpiryRemaining,
+  isExpiredApproval,
   TOOL_ORIGIN_LABELS,
   toolSourceFacts,
+  unifiedItemFullLabel,
+  unifiedItemGroupLabel,
+  unifiedItemSummary,
   useUnifiedApprovalsStore,
 } from "../../stores/unifiedApprovals";
+import { useModalArbiterStore } from "../../stores/modalArbiter";
 import ApprovalFacts from "../ApprovalFacts.vue";
+import ApprovalResultsPanel from "./ApprovalResultsPanel.vue";
 import KnowledgeApprovalBody from "./KnowledgeApprovalBody.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 
 const unified = useUnifiedApprovalsStore();
 const approvals = useApprovalsStore();
+const arbiter = useModalArbiterStore();
 
 const item = computed(() => (unified.visible ? unified.activeItem : null));
+/** 处理完一项后的队列列表态：回到列表由用户选下一条，不自动进入下一条详情。 */
+const queueListOnly = computed(() => unified.visible && unified.queueListOnly);
+/**
+ * 弹窗打开条件：有当前项 / 队列列表态 / 用户明确打开了「结果与历史」（0 待办也可见）。
+ */
+const panelOpen = computed(
+  () => Boolean(item.value) || queueListOnly.value || unified.resultsVisible,
+);
 const items = computed(() => unified.items);
 const activeIndex = computed(() => unified.activeIndex);
 const busy = computed(() => !!item.value && unified.submittingKey === item.value.key);
 const dialogRef = ref<HTMLElement | null>(null);
 
+/* ── F09：审批列表的阅读位置（真实 DOM 滚动位置；详情替换列表时 DOM 会被销毁）──── */
+interface ListReadingPosition {
+  /** 离开列表时的真实 scrollTop。 */
+  scrollTop: number;
+  /** 可视锚点：哪一条申请（稳定身份，不用索引）。 */
+  anchorKey: string;
+  /** 锚点相对列表内容顶部的布局位置（offsetTop 差，不含滚动）。 */
+  anchorTop: number;
+  /** 离开时的队列顺序：锚点已被处理移除时用它找合理相邻项。 */
+  order: string[];
+}
+const listRef = ref<HTMLElement | null>(null);
+let listReading: ListReadingPosition | null = null;
+
+function listItems(): HTMLElement[] {
+  const list = listRef.value;
+  if (!list) return [];
+  return Array.from(list.querySelectorAll<HTMLElement>("[data-approval-key]"));
+}
+
+function itemTopInList(list: HTMLElement, element: HTMLElement): number {
+  return element.offsetTop - list.offsetTop;
+}
+
+/** 从列表点进详情前：记下真实可视位置（稳定身份 + 布局偏移 + 队列顺序）。 */
+function openFromList(key: string): void {
+  const list = listRef.value;
+  if (list) {
+    const anchor = listItems().find((element) => element.dataset.approvalKey === key) ?? null;
+    listReading = {
+      scrollTop: list.scrollTop,
+      anchorKey: key,
+      anchorTop: anchor ? itemTopInList(list, anchor) : 0,
+      order: listItems().map((element) => element.dataset.approvalKey ?? ""),
+    };
+  }
+  unified.switchTo(key);
+}
+
+/**
+ * 回到列表：恢复真实 DOM 滚动位置与焦点。
+ *
+ * - 锚点还在：按同一布局偏移换算（期间插入了新申请也不会把用户送回顶部）；
+ * - 锚点已被处理移除：恢复并把焦点放到相邻项（同位置接班项优先，其次上一项）；
+ * - 只恢复列表，不自动进入任何详情（不连弹）。
+ */
+function restoreListReading(): void {
+  const saved = listReading;
+  listReading = null;
+  const list = listRef.value;
+  if (!saved || !list) return;
+  const elements = listItems();
+  if (!elements.length) return;
+  const byKey = new Map(elements.map((element) => [element.dataset.approvalKey ?? "", element]));
+  let target: HTMLElement | null = byKey.get(saved.anchorKey) ?? null;
+  if (!target) {
+    const index = saved.order.indexOf(saved.anchorKey);
+    for (let i = Math.max(0, index); i < saved.order.length && !target; i += 1) {
+      target = byKey.get(saved.order[i] ?? "") ?? null;
+    }
+    for (let i = Math.min(index - 1, saved.order.length - 1); i >= 0 && !target; i -= 1) {
+      target = byKey.get(saved.order[i] ?? "") ?? null;
+    }
+  }
+  if (!target) return;
+  // 真实 DOM 滚动位置：让目标条目保持离开时的布局偏移
+  const desired = Math.max(0, Math.round(saved.scrollTop + (itemTopInList(list, target) - saved.anchorTop)));
+  target.focus({ preventScroll: true });
+  list.scrollTop = desired;
+  // 焦点/布局抖动后以我们算出值为准（不用 scrollIntoView，避免跳回顶部）
+  list.scrollTop = desired;
+}
+
+watch(
+  () => queueListOnly.value,
+  async (isList) => {
+    if (!isList) return;
+    await nextTick();
+    if (!queueListOnly.value) return;
+    restoreListReading();
+  },
+  { immediate: true },
+);
+/** 面板关掉后不把上一次的阅读位置带到下一次打开。 */
+watch(panelOpen, (open) => {
+  if (!open) listReading = null;
+});
+
+/* ── 仲裁身份与统一活动判断（F01；定义在此处供下面带 immediate 的焦点 watch 使用）── */
+const APPROVAL_MODAL_ID = "unified-approval";
+/** 被挡住时的一句话说明（注册成功后清掉，不留下过期提示）。 */
+const ARBITER_BLOCKED_NOTICE = "另一个窗口正在等待你的确认，先处理它；这项申请不会丢。";
+/** 想显示但仲裁还没放行（被同/更高优先级挡住）：不渲染，但当前申请与队列都保留。 */
+const arbiterBlocked = ref(false);
+/**
+ * 统一活动判断（F01）：已打开 && 无整体挂起 && 是栈顶活动项。
+ *
+ * 被影响确认等更高优先级窗口盖住、或被关闭询问整体挂起时 → false。
+ * 此时只 v-show 隐藏：DOM、当前申请、草稿与阅读位置都保留，
+ * 但不可交互/不可聚焦、也不再抢 Esc 与 Tab。
+ */
+const layerActive = computed(() => panelOpen.value && arbiter.isActive(APPROVAL_MODAL_ID));
+/** 让位原因（挂起方 / 盖住本层的活动窗口）：用于自检属性与无障碍说明。 */
+const hiddenByLayer = computed(() => {
+  if (!panelOpen.value) return "";
+  if (arbiter.suspended) return arbiter.suspended.by;
+  const top: string | null = arbiter.activeId;
+  return top && top !== APPROVAL_MODAL_ID ? top : "";
+});
+
 const toolFacts = computed(() =>
   item.value?.approval ? approvalFacts(item.value.approval) : null,
 );
 const budgetForm = ref<ApprovalBudget | null>(null);
+/**
+ * 用户是否真的改过预算（F06）。
+ *
+ * 没改就不发 overrides —— 否则「默认值」会静默覆盖提案里原本更小/更大的预算，
+ * 表现为「没改也生效了修改」。只有 dirty 才把用户批准的值传给后端。
+ */
+const budgetDirty = ref(false);
 const extraConfirm = ref(false);
 
 /** 重点确认（会删除/覆盖）需要额外一次勾选，降低误点。 */
 const needExtraConfirm = computed(() => toolFacts.value?.sideEffect === "destructive");
+
+/* ── F08：到期时钟（到期事实随时间推进，不等后端再推事件）──────────────── */
+/** 本地观察时间：由到期定时器 / 恢复可见 / 回到前台推进（只用于展示与按钮状态）。 */
+const nowMs = ref(Date.now());
+let expiryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearExpiryClock(): void {
+  if (expiryTimer === null) return;
+  clearTimeout(expiryTimer);
+  expiryTimer = null;
+}
+
+/** 按当前申请的真实期限排一次定时器（到点只推进本地观察时间，绝不改写期限）。 */
+function scheduleExpiryClock(): void {
+  clearExpiryClock();
+  const remaining = approvalExpiryRemaining(item.value?.approval ?? null, Date.now());
+  if (remaining === null || remaining <= 0) return;
+  expiryTimer = setTimeout(() => {
+    expiryTimer = null;
+    nowMs.value = Date.now();
+    // 定时器可能因为系统时间抖动提前一毫秒：到点再核一次，绝不提前说「过期」
+    scheduleExpiryClock();
+  }, Math.min(remaining + 1, 2_147_483_647));
+}
+
+/**
+ * 清理 / 重建时钟：
+ * - 让位、挂起、关闭时不空转（定时器清掉）；
+ * - 恢复可见、切回申请、窗口回到前台时先立即核对实际期限，再按剩余时间重排。
+ */
+function syncExpiryClock(): void {
+  nowMs.value = Date.now();
+  if (!panelOpen.value || !layerActive.value) {
+    clearExpiryClock();
+    return;
+  }
+  scheduleExpiryClock();
+}
+
+function onDocumentVisibilityChange(): void {
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+    // 后台不空转：先清掉定时器，回到前台时立即按真实期限核对并重排
+    clearExpiryClock();
+    return;
+  }
+  syncExpiryClock();
+}
+
+watch(
+  () => [
+    item.value?.key ?? null,
+    String(item.value?.approval?.expiresAt ?? ""),
+    String(item.value?.approval?.state ?? ""),
+    layerActive.value,
+    panelOpen.value,
+  ] as const,
+  syncExpiryClock,
+  { immediate: true },
+);
+
+onMounted(() => {
+  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
+  syncExpiryClock();
+});
+
+/**
+ * 到期（真实期限来自后端，前端不放宽）：到期后不再提供「批准」，只说明事实。
+ * 本地钟只是最后一道保护，服务端同样会拒绝。
+ */
+const expired = computed(() => isExpiredApproval(item.value?.approval ?? null, nowMs.value));
 const canApprove = computed(
-  () => !busy.value && (!needExtraConfirm.value || extraConfirm.value),
+  () => !busy.value && !expired.value && (!needExtraConfirm.value || extraConfirm.value),
 );
 
 const sourceFacts = computed(() =>
@@ -79,6 +284,23 @@ const errorText = computed(() => {
  * 这里只做**呈现**：绝不自行推进状态、绝不本地把 confirmed_stage 加一。
  */
 const lifecycle = computed(() => isLifecycleApproval(item.value?.approval ?? null));
+/**
+ * B-CP1：旧审批恢复出的中断事实（legacy + status=interrupted_legacy）。
+ * 只读显示「未执行 / 中断待核对」，绝不给批准/拒绝按钮 —— 那次操作没有执行。
+ */
+const interruptedLegacy = computed(() =>
+  isInterruptedLegacyApproval(item.value?.approval ?? null),
+);
+/**
+ * 后端明确表示这条**旧路径**不支持 overrides：预算只读，并说明真实原因。
+ *
+ * 只在旧审批上显示：v2 生命周期记录本来就走 /decide（不接受 overrides），
+ * 用「旧路径」的说法去解释它反而会误导。
+ */
+const budgetUnsupported = computed(() => {
+  const approval = item.value?.approval ?? null;
+  return Boolean(approval && isLegacyApproval(approval) && approval.overridesSupported === false);
+});
 const requiredConfirmations = computed(() =>
   Math.max(1, Number(item.value?.approval?.requiresConfirmations ?? 1)),
 );
@@ -132,6 +354,14 @@ function acknowledgeExecution() {
   unified.noteQueueChanged();
 }
 
+/** 旧审批中断事实：只收起这条只读提示，不批准也不拒绝（那次操作本来就没执行）。 */
+function acknowledgeLegacyInterrupted() {
+  const active = item.value;
+  if (!active || active.kind !== "tool") return;
+  approvals.resolve(active.identity);
+  unified.noteQueueChanged();
+}
+
 const editing = computed(() => !!item.value && unified.editingKey === item.value.key);
 const draft = computed(() => (item.value ? unified.draftFor(item.value.key) : ""));
 
@@ -141,18 +371,47 @@ watch(
     extraConfirm.value = false;
     unified.stopEdit();
     budgetForm.value = toolFacts.value?.budget ?? null;
+    budgetDirty.value = false;
     await nextTick();
   },
 );
 
 watch(
-  () => [item.value?.key ?? null, unified.visible] as const,
-  async ([, visible]) => {
-    if (!visible) return;
+  () => [item.value?.key ?? null, unified.visible, unified.resultsVisible, layerActive.value] as const,
+  async ([, visible, resultsVisible, active]) => {
+    if (!visible && !resultsVisible) return;
+    // 让位/挂起期间不要抢焦点：焦点由当前活动的那一层接管
+    if (!active) return;
+    // 回到队列列表：焦点由 restoreListReading 放到对应行，不抢给详情容器
+    if (queueListOnly.value) return;
     await nextTick();
-    dialogRef.value?.focus();
+    if (!layerActive.value) return;
+    const root = dialogRef.value;
+    if (root && !root.contains(document.activeElement)) root.focus({ preventScroll: true });
   },
   { immediate: true },
+);
+
+/**
+ * F01 让位与恢复：
+ * - 被更高优先级盖住 / 整体挂起时，焦点不能留在已经隐藏的层里（否则它会继续抢 Esc/Tab）；
+ * - 高优先级窗口关闭后重新成为活动层：焦点回到本层焦点范围（不甩到页面外）。
+ */
+watch(
+  () => layerActive.value,
+  async (active, wasActive) => {
+    if (active && !wasActive) {
+      await nextTick();
+      if (!layerActive.value) return;
+      const root = dialogRef.value;
+      if (root && !root.contains(document.activeElement)) root.focus({ preventScroll: true });
+      return;
+    }
+    if (!active) {
+      const current = document.activeElement as HTMLElement | null;
+      if (current && dialogRef.value?.contains(current)) current.blur();
+    }
+  },
 );
 
 /** 关闭时把焦点还给被打断的元素（后台审批可能叠在别的输入上）。 */
@@ -177,16 +436,63 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  // F08：卸载时清掉到期时钟与前台监听，不留空转定时器
+  clearExpiryClock();
+  document.removeEventListener("visibilitychange", onDocumentVisibilityChange);
+  if (arbiter.isOpen(APPROVAL_MODAL_ID)) arbiter.close(APPROVAL_MODAL_ID);
   const target = restoreFocusTo;
   restoreFocusTo = null;
   if (target && target.isConnected) target.focus();
 });
 
+/**
+ * 中央弹窗仲裁（契约 §3.1/§3.2）：打开必须先注册，被更高层弹窗（影响确认 / 关闭询问）挡住时
+ * 不得强行显示；关闭时注销。绝不用 z-index 抢层。
+ */
+function syncArbiterRegistration(): void {
+  if (!panelOpen.value) {
+    if (arbiter.isOpen(APPROVAL_MODAL_ID)) arbiter.close(APPROVAL_MODAL_ID);
+    arbiterBlocked.value = false;
+    return;
+  }
+  if (arbiter.isOpen(APPROVAL_MODAL_ID)) {
+    // 幂等：已经在栈里（可能正被更高层盖住），保持注册即可
+    arbiterBlocked.value = false;
+    return;
+  }
+  const accepted = arbiter.open({
+    id: APPROVAL_MODAL_ID,
+    kind: "approval",
+    dismissible: true,
+  });
+  arbiterBlocked.value = !accepted;
+  if (!accepted) {
+    unified.lastNotice = ARBITER_BLOCKED_NOTICE;
+    return;
+  }
+  // 挡路窗口结束后真正进来了：撤掉刚才那句「先处理它」
+  if (unified.lastNotice === ARBITER_BLOCKED_NOTICE) unified.lastNotice = "";
+}
+
+watch(panelOpen, syncArbiterRegistration, { immediate: true });
+/**
+ * 挡路窗口关闭 / 挂起解除后自动补注册：用户已经表达了「要处理这项申请」，
+ * 条件恢复就自动进入，不必再点一次。已在栈里时是幂等 no-op。
+ */
+watch(
+  () => [arbiter.activeId, arbiter.suspendedBy] as const,
+  () => {
+    if (panelOpen.value) syncArbiterRegistration();
+  },
+);
+
 function onKeydown(event: KeyboardEvent) {
+  // 让位/挂起期间本层不可交互：不处理 Esc/Tab，也不阻止默认（按键留给当前活动层）
+  if (!layerActive.value) return;
   if (event.key === "Escape") {
     event.preventDefault();
-    // Esc = 关闭/稍后，不做出任何决定
-    unified.close();
+    // Esc = 关闭/稍后，不做出任何决定（结果视图同样只关闭）
+    unified.closePanel();
     return;
   }
   if (event.key !== "Tab") return;
@@ -210,6 +516,16 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
+/** 打开结果与历史视图（待审批为 0 时也能打开；同一弹窗内切换，不是第二套入口）。 */
+function showResults() {
+  unified.openResults();
+}
+
+/** 回到待审批队列（没有待办时保持结果视图）。 */
+function showQueue() {
+  unified.showQueue();
+}
+
 function goStep(delta: number) {
   const list = items.value;
   const next = list[activeIndex.value + delta];
@@ -217,13 +533,27 @@ function goStep(delta: number) {
   unified.switchTo(next.key);
 }
 
+/**
+ * 队列标签的可见摘要（F05）：**对象身份在前**（文件名末段/版本号/项数），
+ * 操作摘要在后；同类型多条即使后半段被省略号截断，可见部分也能区分。
+ */
 function shortLabel(index: number): string {
+  return unifiedItemSummary(items.value[index] ?? null);
+}
+
+/** 标签上的类型分组（权限 / 知识）。 */
+function groupLabel(index: number): string {
+  return unifiedItemGroupLabel(items.value[index] ?? null);
+}
+
+/**
+ * 标签的完整读屏/悬停文案（F05）：**不截断**的对象身份 + 操作摘要，
+ * 绝不复用被截断的可见文本 —— 悬停/读屏能拿到完整且可区分的信息。
+ */
+function chipAria(index: number): string {
   const target = items.value[index];
-  if (!target) return "";
-  if (target.kind === "knowledge") {
-    return target.knowledge?.category ? "知识保存" : "知识保存";
-  }
-  return target.title;
+  if (target) return unifiedItemFullLabel(target);
+  return "";
 }
 
 async function submit(decision: "approve" | "approve_modified" | "ignore" | "reject") {
@@ -231,8 +561,16 @@ async function submit(decision: "approve" | "approve_modified" | "ignore" | "rej
   if (!active) return;
   if (active.kind === "tool") {
     const facts = toolFacts.value;
+    /**
+     * F06：只有「旧 tool_create 子智能体路径」+「用户真的改过预算」才发 overrides。
+     * v2 生命周期记录（/decide 不支持 overrides）永远不发，避免假修改。
+     */
     const overrides =
-      decision === "approve" && facts?.isSubagentCreate
+      decision === "approve" &&
+      facts?.isSubagentCreate &&
+      !lifecycle.value &&
+      !budgetUnsupported.value &&
+      budgetDirty.value
         ? {
             subagent_budget: {
               max_iterations: budgetForm.value?.maxIterations ?? 5,
@@ -247,6 +585,12 @@ async function submit(decision: "approve" | "approve_modified" | "ignore" | "rej
   await unified.submit(decision);
 }
 
+/** 用户改了预算：只有这次真的改动才允许随批准提交（F06）。 */
+function onBudgetChange(next: ApprovalBudget) {
+  budgetForm.value = next;
+  budgetDirty.value = true;
+}
+
 function retryKnowledgeDetail() {
   void unified.refreshKnowledgePending();
 }
@@ -254,9 +598,13 @@ function retryKnowledgeDetail() {
 
 <template>
   <div
-    v-if="item"
+    v-if="panelOpen && !arbiterBlocked"
+    v-show="layerActive"
     class="ua-mask"
     data-unified-approval-modal
+    :data-hidden-by="hiddenByLayer || undefined"
+    :aria-hidden="layerActive ? undefined : 'true'"
+    :inert="layerActive ? undefined : true"
     @click.self="unified.close()"
   >
     <section
@@ -270,18 +618,56 @@ function retryKnowledgeDetail() {
       @keydown="onKeydown"
     >
       <header class="ua-head">
-        <p class="ua-kicker mono">{{ kicker }}</p>
-        <button
-          class="ua-close"
-          type="button"
-          aria-label="关闭（稍后处理，不会自动批准或拒绝）"
-          title="稍后处理：只收起窗口，保留申请"
-          @click="unified.close()"
-        >
-          ×
-        </button>
-        <h2 id="ua-title" class="ua-title serif">{{ item.title }}</h2>
+        <!-- 三槽位：左右槽位等宽；关闭按钮不挤偏标题，标题始终在窗口中线 -->
+        <span class="ua-head__slot" aria-hidden="true"></span>
+        <div class="ua-head__main">
+          <p class="ua-kicker mono">{{ unified.resultsVisible ? "审批结果与历史 · 只读记录" : kicker }}</p>
+          <h2 id="ua-title" class="ua-title serif">
+            {{ unified.resultsVisible ? "审批结果与历史" : queueListOnly ? "待处理的申请" : item?.title ?? "" }}
+          </h2>
+        </div>
+        <span class="ua-head__slot">
+          <button
+            class="ua-close"
+            type="button"
+            aria-label="关闭（不会自动批准或拒绝；稍后处理：只收起窗口，保留申请）"
+            @click="unified.closePanel()"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 7l10 10M17 7L7 17" />
+            </svg>
+          </button>
+        </span>
       </header>
+
+      <!-- 两个视图共用一个弹窗：待审批队列 / 结果与历史（F02；0 待办也能打开结果） -->
+      <div class="ua-tabs" role="tablist" aria-label="审批视图">
+        <button
+          class="ua-tab"
+          type="button"
+          role="tab"
+          :aria-selected="!unified.resultsVisible"
+          :class="{ active: !unified.resultsVisible }"
+          :disabled="!items.length"
+          data-test="unified-approval-tab-queue"
+          @click="showQueue"
+        >
+          待审批 {{ items.length }}
+        </button>
+        <button
+          class="ua-tab"
+          type="button"
+          role="tab"
+          :aria-selected="unified.resultsVisible"
+          :class="{ active: unified.resultsVisible }"
+          data-test="unified-approval-tab-results"
+          @click="showResults"
+        >
+          结果与历史
+        </button>
+      </div>
+
+      <template v-if="!unified.resultsVisible && item">
 
       <div v-if="items.length > 1" class="ua-switch" data-test="unified-approval-switch">
         <div class="ua-switch-line">
@@ -294,7 +680,7 @@ function retryKnowledgeDetail() {
               :disabled="activeIndex <= 0"
               @click="goStep(-1)"
             >
-              ‹
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 6l-6 6 6 6" /></svg>
             </button>
             <button
               class="ua-nav-btn"
@@ -303,7 +689,7 @@ function retryKnowledgeDetail() {
               :disabled="activeIndex >= items.length - 1"
               @click="goStep(1)"
             >
-              ›
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 6l6 6-6 6" /></svg>
             </button>
           </div>
         </div>
@@ -316,12 +702,13 @@ function retryKnowledgeDetail() {
             role="tab"
             :aria-selected="queued.key === item.key"
             :class="{ active: queued.key === item.key, deferred: queued.deferred }"
-            :title="shortLabel(index)"
+            :aria-label="chipAria(index)"
+            :data-test="'unified-approval-chip'"
             @click="unified.switchTo(queued.key)"
           >
-            <span class="ua-chip-kind mono">{{ queued.kind === "knowledge" ? "知识" : "权限" }}</span>
+            <span class="ua-chip-kind mono">{{ groupLabel(index) }}</span>
             <span class="ua-chip-text">{{ shortLabel(index) }}</span>
-            <span v-if="queued.deferred" class="ua-chip-dot mono" aria-label="稍后处理过">·</span>
+            <span v-if="queued.deferred" class="ua-chip-dot" aria-hidden="true"></span>
           </button>
         </div>
       </div>
@@ -337,10 +724,30 @@ function retryKnowledgeDetail() {
           <p v-if="item.stale" class="ua-stale" role="status">
             这条审批已经有结局（可能已在别处处理或已过期），不会再等待你的授权。未做出任何授权。
           </p>
+          <!-- B-CP1：旧审批恢复出的中断事实 —— 只读，明确说「那次操作没有执行」 -->
+          <p
+            v-if="interruptedLegacy"
+            class="ua-stale"
+            role="status"
+            data-test="unified-approval-legacy-interrupted"
+          >
+            未执行：这是旧审批路径留下的一条中断待核对记录，上次操作没有执行，也不会再执行。
+            这里只显示事实，不提供批准或拒绝。
+          </p>
+          <!-- overrides_supported=false：后端明确说这条旧路径不能改预算，界面也不假装能改 -->
+          <p
+            v-if="budgetUnsupported"
+            class="ua-refresh-note"
+            role="status"
+            data-test="unified-approval-budget-unsupported"
+          >
+            后端明确指出：这条旧审批路径不支持修改执行预算，预算只能按审批记录里的值只读核对。
+          </p>
           <ApprovalFacts
             :item="item.approval"
             :budget="budgetForm"
-            @update:budget="budgetForm = $event"
+            :hide-lifecycle-status="true"
+            @update:budget="onBudgetChange"
           />
         </template>
         <template v-else-if="item.knowledge">
@@ -370,6 +777,10 @@ function retryKnowledgeDetail() {
         </span>
       </p>
 
+      <p v-if="expired" class="ua-expired" role="status" data-test="unified-approval-expired">
+        这项申请已经到期，不能再批准（期限来自后端，不会被放宽）。需要的话请让后端重新发起这次申请。
+      </p>
+
       <p v-if="errorText" class="ua-error" role="alert">{{ failureHint }}</p>
 
       <footer class="ua-actions">
@@ -383,6 +794,20 @@ function retryKnowledgeDetail() {
           >
             知道了
           </button>
+          <!-- 旧审批中断事实：只读，只给「知道了」——不提供任何授权动作 -->
+          <template v-else-if="interruptedLegacy">
+            <p class="ua-awaiting" role="status" data-test="unified-approval-legacy-interrupted-readonly">
+              这项已经不会执行，不需要你做任何决定。
+            </p>
+            <button
+              class="ua-btn later"
+              type="button"
+              data-test="unified-approval-legacy-ack"
+              @click="acknowledgeLegacyInterrupted()"
+            >
+              知道了
+            </button>
+          </template>
           <!-- 已批准 / 执行中（含重启恢复出来的状态）：只等后端结果，不再给决定按钮 -->
           <template v-else-if="awaitingExecution">
             <p class="ua-awaiting" role="status" data-test="unified-approval-awaiting">
@@ -419,18 +844,18 @@ function retryKnowledgeDetail() {
               stage 由后端 CAS 判定（前端只发 confirmed_stage+1，并用返回值覆盖进度）。
             -->
             <button
-              v-if="needsConfirm"
+              v-if="needsConfirm && !expired"
               class="ua-btn primary"
               type="button"
               :disabled="busy"
               data-test="unified-approval-confirm-next"
-              :title="'确认进度以后端为准：已确认 ' + doneConfirmations + '/' + requiredConfirmations + ' 次'"
+              :aria-label="'继续确认（第 ' + (doneConfirmations + 1) + '/' + requiredConfirmations + ' 次）；确认进度以后端为准'"
               @click="submit('approve')"
             >
               {{ busy ? "提交中…" : confirmButtonText }}
             </button>
             <button
-              v-else
+              v-else-if="!expired"
               class="ua-btn primary"
               type="button"
               :disabled="!canApprove"
@@ -491,6 +916,68 @@ function retryKnowledgeDetail() {
         </template>
       </footer>
       <p class="ua-note">每次只处理当前申请。关闭窗口不会自动批准或拒绝，也不会丢失申请。</p>
+      </template>
+
+      <!-- 结果与历史：只读；0 待办时也能打开（F02） -->
+      <template v-else-if="unified.resultsVisible">
+        <div class="ua-body ua-results-body" v-qio-scrollbar>
+          <ApprovalResultsPanel />
+        </div>
+        <footer class="ua-actions">
+          <button
+            v-if="items.length"
+            class="ua-btn quiet"
+            type="button"
+            data-test="unified-approval-back-queue"
+            @click="showQueue"
+          >
+            回到待审批（{{ items.length }}）
+          </button>
+          <button
+            class="ua-btn later"
+            type="button"
+            data-test="unified-approval-results-close"
+            @click="unified.closePanel()"
+          >
+            关闭
+          </button>
+        </footer>
+      </template>
+
+      <!-- 处理完一项后的队列列表：回到列表、保留位置，由用户选下一条（不自动进入详情） -->
+      <template v-else>
+        <p class="ua-list-hint" role="status" data-test="unified-approval-list-hint">
+          <template v-if="unified.lastNotice">{{ unified.lastNotice }}</template>
+          <template v-else>下面是其余等待你处理的申请；选中一条继续处理。</template>
+        </p>
+        <div ref="listRef" class="ua-list" role="list" aria-label="等待你处理的申请">
+          <button
+            v-for="(queued, index) in items"
+            :key="queued.key"
+            class="ua-list-item"
+            type="button"
+            role="listitem"
+            data-test="unified-approval-list-item"
+            :data-approval-key="queued.key"
+            :aria-label="chipAria(index)"
+            @click="openFromList(queued.key)"
+          >
+            <span class="ua-list-kind mono">{{ groupLabel(index) }}</span>
+            <span class="ua-list-text">{{ shortLabel(index) }}</span>
+            <span v-if="queued.deferred" class="ua-list-defer mono">稍后</span>
+          </button>
+        </div>
+        <footer class="ua-actions">
+          <button
+            class="ua-btn later"
+            type="button"
+            data-test="unified-approval-list-close"
+            @click="unified.closePanel()"
+          >
+            关闭
+          </button>
+        </footer>
+      </template>
     </section>
   </div>
 </template>
@@ -520,7 +1007,7 @@ function retryKnowledgeDetail() {
   gap: 10px;
   padding: 18px 20px 14px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-elevated);
   color: var(--text-primary);
   box-shadow: var(--shadow-3);
@@ -537,9 +1024,22 @@ function retryKnowledgeDetail() {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
+/* 标题栏三槽位：左右等宽，标题在中线上；关闭按钮放在右槽位里不挤偏标题 */
 .ua-head {
-  position: relative;
-  padding-right: 28px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 6px;
+}
+.ua-head__slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+.ua-head__main {
+  min-width: 0;
+  text-align: center;
 }
 .ua-kicker {
   margin: 0 0 6px;
@@ -547,6 +1047,8 @@ function retryKnowledgeDetail() {
   letter-spacing: 0.08em;
   color: var(--text-muted);
   text-transform: uppercase;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 .ua-title {
   margin: 0;
@@ -554,21 +1056,29 @@ function retryKnowledgeDetail() {
   font-size: 19px;
   font-weight: 500;
   color: var(--text-strong);
+  text-align: center;
   overflow-wrap: anywhere;
 }
 .ua-close {
-  position: absolute;
-  top: -2px;
-  right: -2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 28px;
   height: 28px;
+  padding: 0;
   border: 1px solid transparent;
   border-radius: 50%;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 16px;
-  line-height: 1;
   cursor: pointer;
+}
+.ua-close svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
 }
 .ua-close:hover {
   background: var(--bg-inset);
@@ -576,7 +1086,39 @@ function retryKnowledgeDetail() {
 }
 .ua-close:focus-visible {
   outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  outline-offset: 1px;
+}
+/* 两个视图共用一个弹窗；标签是视图切换，不是第二套入口 */
+.ua-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ua-tab {
+  appearance: none;
+  padding: 6px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ua-tab.active {
+  color: var(--text-strong);
+  border-bottom-color: var(--accent);
+}
+.ua-tab:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ua-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.ua-results-body {
+  padding-top: 4px;
 }
 .ua-switch {
   border-top: 1px solid var(--border-subtle);
@@ -586,7 +1128,8 @@ function retryKnowledgeDetail() {
 .ua-switch-line {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 10px;
 }
 .ua-count {
@@ -599,13 +1142,26 @@ function retryKnowledgeDetail() {
   gap: 4px;
 }
 .ua-nav-btn {
-  width: 24px;
-  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 24px;
+  padding: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
+}
+.ua-nav-btn svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .ua-nav-btn:disabled {
   opacity: 0.35;
@@ -615,19 +1171,23 @@ function retryKnowledgeDetail() {
   outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
+/* F05：480px 窄窗下 ≥3 条待审批标签必须**换行**显示（不是只藏滚动条），
+   每条都带自己的操作摘要，不再是多个相同的「权限」标签。 */
 .ua-queue {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 6px;
   margin-top: 7px;
-  overflow-x: auto;
   padding-bottom: 2px;
 }
 .ua-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex: none;
-  max-width: 200px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   padding: 3px 9px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--r-pill);
@@ -657,7 +1217,10 @@ function retryKnowledgeDetail() {
   white-space: nowrap;
 }
 .ua-chip-dot {
-  color: var(--text-muted);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
 }
 .ua-body {
   flex: 1;
@@ -673,7 +1236,7 @@ function retryKnowledgeDetail() {
   margin: 0 0 10px;
   padding: 8px 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-inset);
   font-size: 11.5px;
 }
@@ -693,7 +1256,7 @@ function retryKnowledgeDetail() {
   margin: 0 0 10px;
   padding: 8px 10px;
   border: 1px solid var(--warning);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--warning-soft, var(--bg-inset));
   color: var(--text-primary);
   font-size: 12px;
@@ -707,7 +1270,7 @@ function retryKnowledgeDetail() {
 .ua-refresh-btn {
   margin-left: 8px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: transparent;
   color: var(--text-secondary);
   font-size: 11px;
@@ -718,7 +1281,7 @@ function retryKnowledgeDetail() {
   margin: 0;
   padding: 8px 12px;
   border: 1px solid var(--danger);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--danger-soft);
   color: var(--danger);
   font-size: 12px;
@@ -729,17 +1292,22 @@ function retryKnowledgeDetail() {
   margin: 0;
   font-size: 11.5px;
   color: var(--text-secondary);
+  text-align: center;
   overflow-wrap: anywhere;
 }
 .ua-awaiting {
-  margin: 0 auto 0 0;
+  flex-basis: 100%;
+  margin: 0;
   font-size: 12px;
   color: var(--text-secondary);
+  text-align: center;
+  overflow-wrap: anywhere;
 }
+/* 按钮组整体居中、同高、配对同宽；窄窗纵排（不靠空格/固定坐标凑居中） */
 .ua-actions {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 8px;
   flex-wrap: wrap;
   padding-top: 10px;
@@ -748,19 +1316,61 @@ function retryKnowledgeDetail() {
 .ua-confirm {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  margin-right: auto;
+  flex-basis: 100%;
+  margin: 0;
   color: var(--text-secondary);
   font-size: 11.5px;
+  text-align: center;
 }
 .ua-confirm input {
   accent-color: var(--accent);
 }
+/* 复选框不用系统默认外观：真实 input 保留（键盘/读屏/输入法安全），视觉自绘 */
+.ua-confirm input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-1),
+    border-color var(--dur-fast) var(--ease-1);
+}
+.ua-confirm input[type="checkbox"]::after {
+  content: "";
+  width: 9px;
+  height: 5px;
+  border-left: 1.6px solid var(--on-accent);
+  border-bottom: 1.6px solid var(--on-accent);
+  transform: rotate(-45deg);
+  opacity: 0;
+}
+.ua-confirm input[type="checkbox"]:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.ua-confirm input[type="checkbox"]:checked::after {
+  opacity: 1;
+}
+.ua-confirm input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 .ua-btn {
-  min-width: 92px;
+  flex: 0 1 auto;
+  min-width: 116px;
   height: 34px;
   padding: 0 16px;
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   border: 1px solid transparent;
   font-family: var(--sans);
   font-size: 13px;
@@ -809,5 +1419,96 @@ function retryKnowledgeDetail() {
   color: var(--text-muted);
   font-size: 10.5px;
   line-height: 1.5;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* 到期事实（不是错误横幅：期限到了就如实说，不提供批准） */
+.ua-expired {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
+  background: var(--warning-soft, var(--bg-inset));
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+/* 处理完一项后的队列列表：每行一条，点击进入详情（位置与展开状态由队列本身保留） */
+.ua-list-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.ua-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(46vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.ua-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ua-list-item:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-inset);
+}
+.ua-list-item:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.ua-list-kind {
+  flex: none;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.ua-list-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ua-list-defer {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* 窄窗（320/480）：按钮组纵排、占满宽度；弹窗自身由遮罩的 padding 收窄 */
+@media (max-width: 480px) {
+  .ua-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .ua-btn {
+    width: 100%;
+    min-width: 0;
+  }
+  .ua-head {
+    grid-template-columns: 28px minmax(0, 1fr) 28px;
+  }
 }
 </style>

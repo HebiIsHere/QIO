@@ -21,8 +21,13 @@ import { approvalFacts } from "../stores/approvals";
 
 const props = defineProps<{
   item: ApprovalItem;
-  /** 子 agent 预算的当前值（可修改后批准）；只在子 agent 型工具创建时有意义 */
+  /** 子 agent 预算的当前值（可修改后批准）；只在旧 tool_create 子智能体路径有意义 */
   budget?: ApprovalBudget | null;
+  /**
+   * true：父级（统一审批弹窗）已经在自己的状态行里显示状态/期限，
+   * 这里不再重复同一事实 —— 同一信息只说一处（F05）。
+   */
+  hideLifecycleStatus?: boolean;
 }>();
 
 const emit = defineEmits<{ "update:budget": [ApprovalBudget] }>();
@@ -67,7 +72,11 @@ function syncBudget() {
       老审批（老后端事件没有 state）不渲染这一块 —— 不在旧数据上伪造新状态。
     -->
     <div v-if="facts.lifecycleState || facts.isInternalData" class="lifecycle" data-test="approval-lifecycle">
-      <p v-if="facts.stateLabel" class="lifecycle-state" data-test="approval-lifecycle-state">
+      <p
+        v-if="facts.stateLabel && !props.hideLifecycleStatus"
+        class="lifecycle-state"
+        data-test="approval-lifecycle-state"
+      >
         状态：<span class="lifecycle-value" :data-state="facts.lifecycleState">{{ facts.stateLabel }}</span>
       </p>
       <p v-if="facts.isInternalData" class="internal-warning" data-test="approval-internal-warning">
@@ -82,7 +91,9 @@ function syncBudget() {
         操作：{{ facts.operationSummary }}
       </p>
       <p v-if="facts.sourceLabel" class="lifecycle-line">来源：{{ facts.sourceLabel }}</p>
-      <p v-if="facts.expiresAt" class="lifecycle-line">过期时间：{{ facts.expiresAt }}</p>
+      <p v-if="facts.expiresAt && !props.hideLifecycleStatus" class="lifecycle-line">
+        过期时间：{{ facts.expiresAt }}
+      </p>
     </div>
 
     <!-- 2) 它会访问什么：具体行为标签（不是 Low/Medium/High） -->
@@ -169,8 +180,14 @@ function syncBudget() {
       <pre class="adv-raw mono" data-qio-fit>{{ facts.advanced.raw }}</pre>
     </details>
 
-    <!-- 子 agent 执行预算：可改后批准（内联卡与弹窗都有这个入口） -->
-    <div v-if="facts.budget" class="budget-box">
+    <!--
+      F06：两类子智能体审批分开。
+      * facts.budget 只存在于旧 tool_create 子智能体路径（走 /respond overrides，
+        执行器真的会用用户批准的值）→ 这里才给可编辑控件与「可修改后批准」。
+      * facts.budgetReadOnly 属于 v2 生命周期记录（/decide 不支持 overrides）：
+        照实显示只读值，不给控件、不承诺可修改。
+    -->
+    <div v-if="facts.budget" class="budget-box" data-test="approval-budget-editable">
       <div class="budget-title">子 agent 执行预算（可修改后批准）</div>
       <div class="budget-row">
         <label>最大迭代</label>
@@ -180,6 +197,26 @@ function syncBudget() {
         <label>输出上限(字)</label>
         <QNumber v-model="budgetForm.output_limit_chars" :min="100" mono label="输出上限" @update:model-value="syncBudget" />
       </div>
+    </div>
+    <div v-else-if="facts.budgetReadOnly" class="budget-box readonly" data-test="approval-budget-readonly">
+      <div class="budget-title">子 agent 执行预算（只读）</div>
+      <p class="budget-note">
+        这条记录由后端生命周期管理，不支持在这里修改执行预算；批准后按审批记录里的值执行。
+      </p>
+      <dl class="budget-values">
+        <div>
+          <dt>最大迭代</dt>
+          <dd class="mono">{{ facts.budgetReadOnly.maxIterations }}</dd>
+        </div>
+        <div>
+          <dt>最大 token</dt>
+          <dd class="mono">{{ facts.budgetReadOnly.maxTokens }}</dd>
+        </div>
+        <div>
+          <dt>输出上限(字)</dt>
+          <dd class="mono">{{ facts.budgetReadOnly.outputLimitChars }}</dd>
+        </div>
+      </dl>
     </div>
   </div>
 </template>
@@ -199,7 +236,7 @@ function syncBudget() {
   margin: 0 0 10px;
   padding: 10px 12px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   background: var(--bg-inset);
   font-size: 12.5px;
   line-height: 1.6;
@@ -231,7 +268,7 @@ function syncBudget() {
   padding: 10px 12px;
   border: 1px solid var(--accent-soft);
   background: var(--accent-softer);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .qio-explanation .tag {
   display: flex;
@@ -297,7 +334,7 @@ function syncBudget() {
   padding: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-inset);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .af-ops-title {
   font-size: 12.5px;
@@ -364,7 +401,7 @@ function syncBudget() {
      不在审批正文（父层唯一滚动区）里再切出第二个小滚动窗口。 */
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-secondary);
@@ -414,7 +451,7 @@ function syncBudget() {
   /* content 策略：同上 —— raw params 默认折叠，展开后靠软换行 + 父层滚动 */
   background: var(--bg-inset);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius, var(--r-lg));
   font-size: 11.5px;
   line-height: 1.5;
   color: var(--text-secondary);
@@ -426,7 +463,7 @@ function syncBudget() {
   padding: 10px;
   border: 1px solid var(--border-subtle);
   background: var(--bg-inset);
-  border-radius: 8px;
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .cap-title {
   font-size: 12.5px;
@@ -447,7 +484,7 @@ function syncBudget() {
   margin-top: 10px;
   padding: 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--qio-ui-radius, var(--r-lg));
 }
 .budget-title {
   font-size: 12px;
@@ -466,5 +503,35 @@ function syncBudget() {
 }
 .budget-row .q-number {
   width: 108px;
+}
+.budget-box.readonly {
+  border-style: dashed;
+}
+.budget-note {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.budget-values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0;
+}
+.budget-values > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.budget-values dt {
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.budget-values dd {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-strong);
 }
 </style>

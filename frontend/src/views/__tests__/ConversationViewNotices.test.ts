@@ -29,22 +29,22 @@ function mountView() {
   return mount(ConversationView, {
     global: {
       plugins: [pinia],
-      stubs: { MessageStream: true, Composer: true, SettingsFloat: true },
+      stubs: { MessageStream: true, Composer: true },
     },
   });
 }
 
 describe("历史读取失败的状态表达", () => {
-  it("「还没设置完」横幅仍在对话列内，可关闭；v2 不再用顶部悬浮让位", async () => {
+  it("「还没设置完」提示不再生产挂载在对话列（改由顶部一次性轻提醒承接）", async () => {
     const w = mountView();
     const { useOnboardingStore } = await import("../../stores/onboarding");
     const store = useOnboardingStore();
     store.status = { done: false, hint_dismissed: false } as never;
     await flushPromises();
 
-    const hint = w.find(".setup-hint");
-    expect(hint.exists()).toBe(true);
-    expect(hint.text()).toContain("还没设置完");
+    // 提醒呈现换了位置，但「未完成/已关闭」的事实仍由 onboarding store 与后端字段表达
+    expect(w.find(".setup-hint").exists()).toBe(false);
+    expect(store.hintVisible).toBe(true);
     // v2：审批/任务入口移入左栏与输入区上方入口，顶部不再有需要让位的悬浮条，
     // 因此对话页不再写 --qio-top-notes-offset（其他页面仍由 App.vue 使用该变量）。
     expect(
@@ -55,6 +55,7 @@ describe("历史读取失败的状态表达", () => {
     await flushPromises();
 
     expect(w.find(".setup-hint").exists()).toBe(false);
+    expect(store.hintVisible).toBe(false);
     w.unmount();
   });
 
@@ -78,29 +79,22 @@ describe("历史读取失败的状态表达", () => {
   });
 });
 
-describe("凭据状态提示", () => {
-  it("凭据被暂停 / 撤销时，对话页把话说出来并给出恢复入口", async () => {
+describe("整体异常不再在页面里重复常驻（统一走顶部全局异常入口）", () => {
+  it("凭据暂停 / 撤销不再渲染成页内常驻警告；store 字段保留给全局入口", async () => {
     const w = mountView();
     await flushPromises();
     const events = useEventStore();
 
-    // 后端在凭据不可用/暂停/撤销时都会送这条文案（store 里早就写了，界面从来没渲染过）
     events.credentialNotice = "有一项凭据已暂停：依赖它的能力暂时不可用（可在「设置 → 凭据」恢复）";
     await flushPromises();
 
-    const notice = w.find(".notice.warn");
-    expect(notice.exists()).toBe(true);
-    expect(notice.text()).toContain("已暂停");
-    expect(notice.text()).toContain("前往设置");
-
-    // 恢复之后这条提示自己消失（不常驻）
-    events.credentialNotice = null;
-    await flushPromises();
+    // 同一条事实只在一个地方说：页面状态区不再复制一条 .notice.warn
     expect(w.find(".notice.warn").exists()).toBe(false);
+    expect(events.credentialNotice, "数据不删除，交给全局异常入口使用").toContain("已暂停");
     w.unmount();
   });
 
-  it("错误优先于凭据提示：同一时刻只显示最需要处理的那一条", async () => {
+  it("单轮失败仍然留在原位（err），不被整体异常入口吞掉", async () => {
     const w = mountView();
     await flushPromises();
     const session = useSessionStore();
@@ -110,6 +104,7 @@ describe("凭据状态提示", () => {
     await flushPromises();
 
     expect(w.find(".notice.err").exists()).toBe(true);
+    expect(w.find(".notice.err").text()).toContain("这一轮执行失败");
     expect(w.find(".notice.warn").exists()).toBe(false);
     w.unmount();
   });

@@ -6,6 +6,26 @@
 - 安装与运行 → `docs/SETUP.md`
 - 协作约定 → `AGENTS.md`
 
+最后核对：2026-10-29（**发布前第六轮 Windows 候选安装包与真实服务验证完成；未合并 main、未打标签、未发布、未触发 CI**：分支 `fix/release-step6-native-validation-20261029`，基线第五轮已验收 `1e8592b5275042036a8b33ffab2199273ba4ae3f`，构建代码 SHA `f9d250cfecee4aef3f0703ced16ba331bbce844d`（0.3.0 版本同步，10 文件 +11/−11，未升级依赖）。候选为 origin/main `1b03541eedd2dcaa9b82d6102108d717c71c6fb4` 的严格后代（0 behind / 318 ahead），main 无独立新增提交，v0.3.0 标签本地/远端均不存在。用脚本既有完整链路从干净检出构建 `QIO_0.3.0_x64-setup-UNSIGNED-TEST.exe`（128,950,995 字节，SHA256 `3c323894e63acf4d4d1baf8eb4dd9edffa06d057b2aba018cb669d55cf3924f4`，构建清单 commit=f9d250c / signing=unsigned-test）；本机无更新签名口令、无 Windows 代码签名证书，未伪造 .sig/latest.json。六项：①全新安装/首启 PASS（内置 Python 3.11.15、ONNX 模型真实加载、检索实际命中；首次引导页面可达但必填项自动填充未完成，全流程 NOT VERIFIED）；②0.2.10→0.3.0 覆盖升级 PASS（话题/消息/知识/板面/凭据引用/设置保留，schema 51→74 只追加，二次重开幂等）；③托盘隐藏/恢复、直接退出自然 exit=0、无孤儿 sidecar、lease 清理 PASS（ask 弹窗点击未单独验证）；④真实厂商 NOT VERIFIED（Command Code 401、DeepSeek 402 余额不足，属真实账户/服务状态），受控假厂商下流式/停止/500 重试、同 Key 多模型与三种后台用途归属、互动主链路、附件小样本 PASS，真实看图/互动恢复/首次引导全流程 NOT VERIFIED；⑤更新失败窗口级 PASS（失败可见、不伪装已是最新、失败后可用、重启正常），真实签名验签/下载篡改拒绝 SKIP/NOT VERIFIED，生产更新源未改；⑥静默卸载默认保留数据 PASS、不影响既有安装 PASS，显式「删除应用数据」选择 NOT VERIFIED（静默模式跳过勾选页）。实际产物闸门 13 PASS / 2 预期 FAIL（latest.json、installer.sig）/ 1 WARN（updater.artifacts），exit 1；构建/装置问题均不改产品（首次构建缺 node_modules 用 npm ci 补齐；install_e2e 端口污染与 verify_install_desktop 注册表收尾属装置问题，已干净复跑/还原）；本机 D:\QIO 744 文件 sha256 与 D:\QIO-data app.db 本体未变。全部新增提交带 [skip ci]，仅版本号与文档；未跑全量测试。详见 `docs/release-step6-native-validation-20261029.md` 与 `docs/releases/v0.3.0-candidate.md`。）
+最后核对：2026-10-29（**发布前第五轮补充：互动页直接进入时执行记录自动出现（R5b）完成；未合并 main、未打标签、未发布、未触发 CI**：基线/分支尖端 `681d610369e533ce651d71332fede11ccde87b11`，分支 `fix/release-step5-integration-validation-20261029`，修复提交（本轮受测代码 SHA）`a1531e4980c909697a470ba9942121850fd3c8c9`。根因：普通对话页负责 `history=idle` 时的首次 `loadHistory`；互动页只调用 `reloadHistoryIfStale`，而 `refreshIntentExecutionRecords` 遇 `idle` 直接返回 —— 直接进入 / 刷新互动页后确认并执行，执行记录不会自动出现，必须先切到普通对话页。修复：`InteractiveConversation.onMounted` 在 `history=idle` 时复用既有 `session.loadHistory()`（同一读取入口、既有去重与请求代号/话题归属保护），已加载则继续既有 stale 刷新；不轮询、不伪造记录、不强制跳页，不改 store 刷新逻辑、展示层与后端。先失败后通过回归：新增 `release-step5b-history-bootstrap.test.ts`（修复前 1 失败 2 通过；修复后 3 通过）；相关刷新/展示定向 vitest 12 文件 84 项 exit 0、`npx vue-tsc --noEmit` exit 0。真实前后端 + 本机扮演的受控模型服务复验：入口 A（新上下文直接 `#/interactive`，含确认前一次刷新）记录 t+514ms 自动出现「正在处理」、t+4773ms 自动更新「已完成」，结果入口保留、内部绑定文字不出现、URL 全程 `#/interactive`、console 0 错误；入口 B（先 `#/` 再 `#/interactive`）t+447ms / t+4867ms 同结果。面板在确认瞬间按既有「板面操作自动收起」收起（既有行为），真实重新展开即见记录（非切页、非刷新）。未改后端、版本号、权限规则、视觉、DB schema 与 CI 工作流；未跑全量测试、未跑前端生产构建、未重跑六项集成、未触发 CI。详见 `docs/release-step5b-interactive-history-bootstrap-20261029.md`。）
+最后核对：2026-10-29（**发布前第五轮合并前集成验证完成；未合并 main、未打标签、未发布、未触发 CI**：候选代码 SHA `dc97b25ea3817c1ad5445959a7b758d2adf9ad61`（第四轮交付尖端），分支 `fix/release-step5-integration-validation-20261029`。main 关系：`origin/main` = `1b03541eedd2dcaa9b82d6102108d717c71c6fb4`，候选是 main 的严格后代（313 ahead / 0 behind，merge-base = main），main 无独立新增提交，完整修复链保留、无需重放或合并提交。六项清单：①启动与入口 PASS（隔离空数据完成现有 7 步引导进主页、对话/互动/设置切换、真实 main 旧数据样本 schema 70→74 升级保留与二次重开幂等）；②普通对话 PASS（流式首个正文早于假厂商结束 3.542 秒、界面停止 cancelled/user_stopped、500 失败后界面重试成功、历史重开内容与终态一致）；③模型组合 PASS（同一连接 4 个模型：主对话与三种后台用途各自命中，操作期间改配置只影响后续批次）；④互动意图：确认→执行→记录自动更新与重试/恢复 PASS，发现并**最小修复**两个集成阻塞（确认路径结果入口不可达 → 读取侧回退权威账本 `board_operations`；提交轮内部绑定文字作为普通用户消息 → 提交轮标记 `content_type=board_submission` 且前端不渲染，模型可见正文一字不改），修复提交 `d4de01a40552425a5ead9d422af5fd6a467d60d0`，只重跑第 4 项与直接受影响项后 PASS；⑤设置与凭据 PASS（保存成功/失败/连续修改显示值与实际一致、输出速度固定清单通过、凭据未改内容重试不重复建连接、获取模型失败结束等待并可单独重试、刷新重开一致）；⑥搜索与候选 PASS（同类 18 条命中、总数正确、第 9 条与最后一条可定位、无看图能力模型禁作看图候选、未接通用途只读）。定向测试：后端受影响 10 文件 142 项、前端受影响 11 文件 111 项，其余各项定向文件均 exit 0；前端生产构建在两个代码状态各一次（`dc97b25e` 与 `d4de01a4`）均 exit 0；`check_docs`、第三方声明检查与 `release_gate --selftest` 通过（自检只代表检查机制本身，不代表已有安装包验证）。真实厂商调用与 Windows 安装包/发布操作**未验证**（后续原生发布验证）；本轮提交均带 `[skip ci]`，未运行全量测试、未触发 CI。详见 `docs/release-step5-integration-validation-20261029.md`。）
+最后核对：2026-10-29（**发布前第四轮死代码清理完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `04c7df1ecf2aedd45d54b0b9d06ee47a97df3538`（第三轮返修五交付尖端，前三轮成果全部保留），分支 `fix/release-step4-dead-code-cleanup-20261029`。七项已无生产入口的死代码删除：旧设置页 `CredentialCard` / `CredentialModal`（连同三个专属测试）、`KnowledgeCandidateCard`（知识候选已由统一审批层直接 ingest）、`useComposerClearance`（输入区底部让位已由 MessageStream 按共享 composerMetrics 统一处理）、`usePresence`（浮层进出场已由 QModal/QConfirm 承担）、ui store 未使用的 `settingsDraft` 与已被 `saveCps` 取代的 `setCps`；同步清理滚动策略清单、ChatColumn 旧占位引用与设置页 tab 待办里的失效指向，旧测试/mock 不保留。受保护项未动：`frontend/src/components/credentials/CredentialForm.vue`（现仅首次引导使用）、`frontend/src/services/credentials.ts`、当前模型面板（KeyForm / KeyAccessSection）、统一审批链路、前三轮保存与恢复逻辑、历史迁移/兼容/恢复重试与历史验收记录。定向验证：前端定向 vitest（51 文件 / 423 项用例）、`npx vue-tsc --noEmit`、`python scripts/check_docs.py` 全部通过；**仅完成定向验证，未运行全量测试、构建或 CI**，提交使用 `[skip ci]`。详见 `docs/release-step4-dead-code-cleanup-20261029.md`。
+最后核对：2026-10-29（**发布前第三轮返修五完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `966703f53d2153aa63e8e3ebe63f79bcdb2e5095`，分支 `fix/release-step3-settings-reliability-20261029`。输出速度保存：分别维护「用户最新选择」（ui.typewriterCps）与「实际已保存值」（加载确认值 + 本次接口成功返回，不从界面读取）；新增 ui.saveCps 返回本次接口真实结果且不写界面；沿用共享串行保存（同一设置依次、不同设置独立、关闭行为保持原处理）；等待期间保持最新选择，最新失败恢复最后实际成功值并保留错误，全部失败恢复最初确认值。固定清单六项（单次失败、25 成功/75 失败、25 失败/75 成功、两次失败含非默认初值、25/75/50 等待期间不被较早请求改回、最终成功/最终失败）均通过，另核对请求依次执行。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
+最后核对：2026-10-29（**发布前第三轮返修四完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `2e902d637b4e75d3fc7fc1ec13a87ed809114a16`，分支 `fix/release-step3-settings-reliability-20261029`。① 提交顺序 ≠ 实际写入顺序：同一设置改为依次保存（后一次在前一次结算后才写入），实际写入顺序确定，回滚依据来自最后实际写入成功的响应；较新操作仍优先，不同设置独立并行；② 最终校准同步生效摘要：记录服务端返回的真实保存值，校准/失败回滚优先用 apply 同时刷新控件与 effectiveFacts（后台整理开关、间隔、对话深度同原则）；③ 免密钥开关适配共享规则：新增真实保存值与 trackSaved，回滚/校准不再用点击瞬间的界面值，并核对记忆/工具/搜索/常规全部 saveNow 调用方；开启先失败、关闭随后成功时最终显示关闭且错误保留。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 定向 pytest + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
+最后核对：2026-10-29（**发布前第三轮返修三完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `15bbffb55c274cb2ec9b104f95bfdbe7b47fa330`，分支 `fix/release-step3-settings-reliability-20261029`。① 连续保存回滚：`trackSaved` 按写入序号记录真实保存值（迟到旧成功不回退更新的真实值），失败回滚读已记录真实值，并在全部在途结算、最新请求失败后执行最终校准；30、40 都成功（30 迟到）后再提交 50 失败恢复 40；30/40/50 中 50 先失败、40 成功、30 失败最终显示 40；记忆、对话深度与工具设置统一同一逻辑、不同设置独立。② 旧格式模型归属：发现状态新增模型来源签名，只有成功取回才更新，失败 / 空列表尝试不改变来源；旧格式优先用来源签名、其次用无错误的尝试签名兜底；更换地址或 Key 后新配置超时 / 空列表时，重新读取与缓存仍把旧模型列为历史，手动模型、历史记录与用途引用保留。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 定向 pytest + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
+最后核对：2026-10-29（**发布前第三轮返修二完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `92438384037d609d99363c3780130fc50cf1465c`，分支 `fix/release-step3-settings-reliability-20261029`。① 连续保存回滚：每个设置记录最新请求结果与在途数，成功响应（含迟到成功）写回真实保存值，失败回滚读失败时刻的真实值；整理间隔 24→30 成功、40 失败最终显示 30（两种到达顺序），较新成功仍不会被旧成功覆盖；② 保存期间返回的初始读取：adoptBaseline 不作废在途保存、不清错误，仅更新取消基线，保存失败后取消回服务端保存值（记忆 12000 / 搜索条数 9）；③ 失败反馈不被读取清除：保存失败后迟到的初始读取不再清掉未解决错误（记忆 / 搜索两组）；④ 旧格式目录兼容：没有集合字段但已有发现来源签名时按签名区分当前 / 历史，换地址或 Key 后旧模型进入历史，历史行、手动模型与用途引用保留。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 定向 pytest + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
+最后核对：2026-10-29（**发布前第三轮设置可靠性返修完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线 `b4c8afe868079b967090270589956cc31e9f3518`，分支 `fix/release-step3-settings-reliability-20261029`。① 失败回滚：工具记录/后台整理/对话深度分别维护已保存真值，保存失败回到真实值（90 改 30 失败仍 90、24 改 30 失败仍 24），不再拿输入值当基线；② 错误保留：按设置保留未解决失败，两个设置先后失败只修好第二个时第一个错误仍在原反馈区可见；③ 输入保护：工作区、迭代上限等入口在实际输入（update:modelValue）时就建立保护，迟到的初始读取不覆盖未提交输入；④ 取消恢复：组草稿新增 adoptBaseline / savedRevision，初始读取期间已编辑时保留输入但取消回到服务端实际保存值（记忆回 12000 而非 4096、搜索条数回 9 而非 5），并保护更新的保存结果；⑤ 模型获取归属与顺序：失败/空结果/成功在写库与写状态前统一校验「最新请求 + 当前配置」，旧配置超时与同配置较早请求都不能覆盖较新的成功结果，后端 stale=superseded/config_changed、前端静默退场；⑥ 当前目录与历史分开：记录当前配置的发现集合，获取结果/数量/缓存/重载后一致，旧地址模型进入 historical_models 保留（历史、手动模型、用途引用都不删除）。提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 定向 pytest + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
+最后核对：2026-10-29（**发布前第三轮设置可靠性修复完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：基线为已验收提交 `69c44558487aff3957140dab6a4b7f6bf36a2a92`（上一轮分支尖端，前两轮成果全部保留），工作分支 `fix/release-step3-settings-reliability-20261029`。A 独立设置保存（F08）：同一分区每个即时设置各领写序号，不同设置的保存在途互不作废；A 失败回滚自己的控件并保留错误，B 的成功不被静默覆盖；同一设置仍只认最新响应，且单字段保存只回写自己拥有的字段与生效摘要。B 初始读取不覆盖（F14）：记忆分段 / 后台整理 / 对话深度 / 联网搜索 / 工作区 / 工具记录的迟到初始读取，在用户已编辑或保存后跳过重置与生效摘要写入；组保存被作废后正确结束 saving，不再永久停在「保存中」。C 模型获取归属（F09）：表单与已保存连接按「配置签名（服务商 / 地址 / 协议 / Key）+ 请求身份」丢弃旧响应，不写模型列表、默认选择与获取状态；后端发现按配置指纹校验，重配期间的旧结果不写库、不改写发现状态，缓存按当前配置归属，手动模型 / 用途引用 / 历史保留。D 模型获取反馈（F12）：保存后的自动获取分别处理成功 / 空列表 / 业务失败 / 网络异常，全部结束「正在同步」并明确「列表未验证可用」；失败可重试获取且不重复创建连接。E Key 保存重试（F13）：未改内容的重试复用同一 request 身份、改内容才换；提交中重复点击 / 回车只发一次；后端同身份同内容幂等返回同一 key、同身份不同内容 409 且不改原记录。F 搜索完整性（F11）：话题 / 知识 / 实体显示真实命中总数，分批「查看更多」，第 9 条与最后一条都能打开定位；换词保护、失败重试与返回搜索上下文保留。本轮提交使用 `[skip ci]`：**仅完成定向验证（前端定向 vitest + 类型检查 + 定向 pytest + 文档一致性），未运行全量测试、构建或 CI**。详见 `docs/release-step3-settings-reliability-20261029.md`。）
+最后核对：2026-10-29（**发布前第二轮返修三完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：分支 `fix/release-step2-ui-consistency-20261029`（基线 `08ac8aa3` 不变）。A 关闭行为：连续两次保存「后一次先失败并完成回读、前一次随后才写入成功」时，还有请求在途不把回读当最终结果，全部结算后补读服务端真实值作为终态，实际保存值/界面/桌面壳最终一致，不回退更早旧值，保留对较新选择的序号保护；B 执行记录更新：过程状态读取在途时收到 TURN_END 不再丢弃刷新要求，当前读取结束后自动补读最新状态（同话题才补读，话题变了丢弃以防旧响应覆盖），不轮询、不并发打同一接口。提交使用 `[skip ci]`：**本轮新提交仅完成定向验证（前端类型检查 + 定向 vitest），未运行 CI**。详见 `docs/release-step2-ui-consistency-20261029.md`。）
+最后核对：2026-10-29（**发布前第二轮返修（验收遗漏）完成实现与定向验证；未合并 main、未打标签、未发布、未触发 CI**：分支 `fix/release-step2-ui-consistency-20261029`（基线 `cc52b150` 不变）。A 关闭行为：每次成功都采纳服务端持久值作为基线、最新失败后校准服务端真实值，连续保存「前成功后失败」不再回退更早旧值，界面/桌面壳与实际保存值一致；B 批量接口允许清除 `custom:<tag>` 历史覆盖（新增无效分配仍 422、整批仍原子）；C 用途判定读取中/失败时按用途必备能力 + 模型已声明能力本地兜底（明确缺能力仍不可选并说明、能力真正未知沿用既定规则），判定到达后以服务端为准；D 意图执行记录：确认版本进入 record_key（重新确认分开、自动重试合并）、写入确认时的名称快照、分页改为页内 head 且前端同 key 只渲染一次、确认/恢复/重试后无需手动刷新即出现并按 TURN_END 更新真实状态、板面结果入口可定位真实板面（失败有一句实话）。本轮提交使用 `[skip ci]`：**新提交仅完成定向验证（前端类型检查 + 定向 vitest + 定向 pytest），未运行 CI**。详见 `docs/release-step2-ui-consistency-20261029.md`。）
+最后核对：2026-10-29（**发布前第二轮 UI 一致性修复完成实现与本地定向验证；未合并 main、未打标签、未发布、未开始下一轮**：基线 `fix/release-step1-model-reliability-20261028` @ `f5d0e744`（远端尖端即该提交，含第一轮已验收提交），工作分支 `fix/release-step2-ui-consistency-20261029`。A 关闭行为（F05）：`setCloseBehavior` / `load` 在真正写状态与同步桌面壳的位置领单调序号，旧响应（成功或失败）一律忽略；保存失败回到最近一次确认生效值并给出明确反馈；壳同步串行化，最后发起的那次最后到达。B 用途生效性（F06）：按真实调用点逐项核对后，code / research / video / audio / embedding / `custom:<tag>` 不再提供独立模型选择（界面只读说明 + 后端两个保存入口结构化 422 `usage_not_effective`），历史覆盖可读且标「历史配置（未生效）」、可清除；获得确认的生效用途（日常对话合并行 / 子任务 / 看图 / 记忆整理 / 知识提炼 / 实体提炼）照旧可选。C 候选按用途（F07）：catalog 按 `usage_key` 给服务端算好的 `usage_usable` / `capability_state`（supported / missing / unknown / not_required），明确缺能力禁选并说明、能力未知仍可选并标「能力未确认」、连接不可用沿用第一轮原因；保存校验复用同一 `model_usable(..., usage_key=...)`，批量仍整体成功/失败。D 意图执行记录（F10）：续作 Turn 的 user 消息落 `content_type="intent_execution"` + 程序事实（content 原样保留，模型上下文与可信绑定不动），服务端读取时派生 7 档真实状态、`record_head` 合并、attempts 时间线、逐项状态、结果入口与诊断编号；前端渲染为默认收起的「意图执行记录」，与用户消息区分，旧记录原样兼容。详见 `docs/release-step2-ui-consistency-20261029.md`。）
+最后核对：2026-10-29（**发布前第一轮模型可靠性修复完成实现与本地验证；未合并 main、未打标签、未发布**：基线 `fix/settings-visual-20261028` @ `3fefb59e`，工作分支 `fix/release-step1-model-reliability-20261028`。四项：A 同一凭据下不同模型的 adapter 缓存不再互相关闭（按 `(key_id, model)` 分槽位；运行期不关闭仍可能被使用的连接，缓存与暂留均有界，应用退出统一释放）；B 并行后台派生工作改为任务上下文隔离（contextvars + drain 入口快照，不再共享实例可变配置），且 `build_derived_adapters` 在首次异步等待前冻结整批目标/不可用结果（准备第一种连接期间改设置只影响下一批）；C 模型目录、用途候选与真实调用对连接可用性同源（未验证、验证失败、停用、撤销、过期、预算耗尽、密钥不可读一致；legacy 与「连接已验证、模型未单独验证」不误禁）；D 「日常对话」合并行改为后端单事务原子保存，目录用与运行时同一 `resolve_shared_target` 的 `effective` 显示真实生效目标。详见 `docs/release-step1-model-reliability-20261029.md`。）
+最后核对：2026-10-28（**设置页视觉修复（P97）完成实现与定向验证，未合并基线分支、未打包、未发布**：去掉设置页常驻灰底与药丸描边（含玫红外框、底边内阴影、单侧竖条），改为「标题 + 留白 + 对齐 + 中性细线」+ 单层轻玻璃承载面，选中态统一为品牌色文字 + 4px 圆点；开关改为线性轨道 + 滑块（保留同尺寸命中区）；下拉/候选/确认层改轻玻璃浮层。同时删除设置页「没有必要」的解释文字（安全提示、错误信息、限额/单位、状态词、许可与第三方声明全部保留），并把对话页话题详情卡的纵向节奏统一为一套固定间距。所有共享原语的覆盖都限定在 \`.qio-settings\` 作用域，其它页面不受影响；未改接口、保存与草稿机制、权限规则、搜索定位、首次引导与模型调用。详见 \`docs/settings-visual-fix-20261028.md\`。）
+最后核对：2026-10-28（**设置页改版与模型/用途接入（P96）完成实现、集成与定向验收，未合并基线分支、未打包、未发布**：基线 `HebiIsHere/QIO` @ `ac0a83fde31f9f56edae68ca53a2a79e89a08e45`（分支 `feat/mp-20261027-integration`，开工核对该 SHA 即分支尖端，未改用更新 HEAD），集成分支 `feat/mp-20261027-settings-integration`，四条子分支各自独立 worktree 并行后由 Lead 合并。内容：设置页 8 个 tab 并为**五类**（常规 / 模型与服务 / 记忆与整理 / 工具与权限 / 关于与更新），宽窗左侧导航、窄窗顶部标签且**只换导航容器布局**（内容同一份 DOM）；去掉设置页自绘页头，保留应用全局栏；新增设置搜索（静态索引，结果给名称+分类+说明，点击切分类、展开折叠组、定位高亮、返回保留关键词与位置）；混合保存（即时 + 按组，分区独立反馈、递增 seq 丢弃迟到响应，离开页面直接丢弃草稿且不发额外写请求）；—— 模型侧改为「**一把 Key 一条连接 / 一条连接多个模型 / 用途分别分配**」（追加迁移 73/74，新增 `credential_models` 与 `model_usages`，默认模型落 `settings['model.default']`；用量账本仍只挂在连接上，不按模型复制额度）；新增模型目录发现（分页/刷新/缓存/错误分类，只有显式提交才发认证请求）、按模型验证（按连接配置指纹失效）、Key 详情四页签与引用保护；用途解析接进真实调用链（主对话/通用对话/子任务/看图/记忆整理/知识提炼/实体提炼），并把此前「只存不读」的搜索返回条数与正文字符预算真正接到工具默认值；联网搜索保持免密钥通道 + 博查 + SearXNG + 必应/百度回退顺序，新增通道状态与真实连接检查（区分「已配置」与「检查通过」）。**没有**改对话页、互动页、星球美术、权限规则、首次引导机制、后台整理算法与触发规则、更新与重启决定方式、许可证与第三方声明的离线内容来源；**没有**改其它页面圆角（设置页统一用既有 `--qio-ui-radius` = 14px）。未合并到基线分支、未打包、未发布；未接通能力与边界见 P96 与 `docs/settings-redesign-delivery-20261028.md`。）
+最后核对：2026-10-27（**记忆星球页改版（P95）完成实现、集成与验收**：基线 `fix/ui-feedback-followup-20261027` @ `d8cdcc41`（开工核对：本地 = origin、远端无后续提交），集成分支 `feat/mp-20261027-integration`，三条子分支各自独立 worktree 并行后由 Lead 合并。内容：内容区在全局栏下方、星球默认居中、管理展开时球心移到内容区左边缘只露右半球（直径不变）；新增一套可往返的星球展开/收起过渡（独立姿态组 + 令牌曲线 + 中途反向速度衔接 + 减少动画一帧到位 + 静帧停绘）；管理区三标签 + 待处理/整理记录；记忆页话题概览与完整讨论记录；知识/实体列表详情与草稿化编辑（原子提交、409 冲突保留草稿、未保存先确认）；待处理三类真实事项；整理记录前后对比默认折叠、撤回复用中央弹窗；全局搜索覆盖三类。后端仅补实体修订的 relations 原子增删与 expected_revision CAS，无 schema / 依赖变更。美术未变：DEV 半径与基线逐位相同、结构色与环宽笔画峰相同、同姿态逐像素差 3.35%（未对齐 19.4%）、像素扫描直径 Δ-1px（基线自跑噪声地板 Δ37px）。未合并到基线分支、未打包、未发布；已知边界见 `docs/memory-planet-redesign-20261027.md`。）
+最后核对：2026-10-27（**全应用提示/通知/弹窗统一改造完成实现与集成，未合并 main、未发布、未打包**：基线 `fix/post-merge-followups-20261026` @ `e5c80253`（远端未推进）；分支 `fix/ui-feedback-unification-20261026`，四个独立 worktree 并行完成后合入。唯一圆角令牌 14px、QIcon/QIconButton/500ms 用途说明、QModal/QConfirm 对称标题与按钮、自定义控件状态、通知调度（500ms 合并/约 5s/暂停恢复/事件身份去重/历史不重放）、全局异常单入口与根因去重、弹窗仲裁与关闭询问让位、审批输入法/失焦/覆盖层/收起不连弹/处理完回列表/真实期限、记忆星球本地处理与整批撤回中央弹窗、启动/更新/关闭真实阶段与可见失败、一次性初始设置提醒。验证：基线类型检查与定向抽样通过；全量前端轮（功能 SHA `bb3b7896`）477 文件 470 通过/7 失败，6 个为旧断言/测试隔离问题已修并定向复跑通过，1 个为基线既有并行 flaky；真实应用场景脚本、ui-catalog 71 项几何、场景展示页几何全部通过；完整 CI 在最终功能 SHA 上运行（唯一一次完成的完整运行；首个 push 的运行被最终视觉审计修复提交取代，未计为完成，详见最终交付记录）。详见 `docs/ui-feedback-unification-20261026.md`。**）
+最后核对：2026-10-26（**后续修复轮（P91）已完成**：本地全量与完整 CI run 40257319813（9/10，唯一失败为测试跨线程 sqlite 问题，已修测试并 targeted-verify py3.12/3.11 双通过）、F 独立验收五项反例转绿与真实界面 480 证据见 docs/post-merge-followups-20261026.md；基线 `origin/fix/post-merge-integration-cleanup-20261025` = 373fda40（P90 分支 tip，未合入 main）、`origin/main` 仍为 1b03541e；本轮分支 fix/post-merge-followups-20261026（未合入 main、未打包、未发布）。范围：互动续作话题归属（原提交 binding.resumeState.topicId 优先）、旧 request 审批的 legacy 身份与恢复、/decide 拒绝 legacy 而 /respond 继续、执行结果写 approval_history 并发 APPROVAL_RESULT、预算 overrides 真实生效或显式拒绝、子任务通知持久化可靠投递（只追加迁移 71/72）、文档与第三方许可概括更正。收口：受测产品代码 8cb18828、完整 CI SHA 48b01f0c（run 40257319813，9/10；唯一失败为测试跨线程使用 sqlite，已修测试 0c47e11b 并 targeted-verify py3.12/3.11 双通过）、最终 HEAD 为本文件所在提交（docs-only 回填，见 docs/post-merge-followups-20261026.md）；未验证边界见 P91 与 `docs/post-merge-integration-cleanup-20261025.md` §12。）
+最后核对：2026-10-26（**合并后前后端漏接修复与旧代码清理完成**：基线 origin/main 1b03541e，修复分支 fix/post-merge-integration-cleanup-20261025（未合入 main、未打包、未发布）。互动页权限模式徽标收起/展开常驻；审批最终结果与历史按 approval_id 去重持久可回看、两个聊天路由与非聊天路由均可达（0 待办也可查）；批量逐项结果、恢复失败可见可重试、480 窄窗队列可区分且键盘可达、子智能体预算旧创建路径真实生效且只读生命周期无假控件。删除 17 个已不挂载的旧前端文件及其旧测试/mock，旧浮层样式收敛为 styles/layers.css 唯一公共来源，batchOpen 死状态统一到 tasksOpen；保留 /respond、/demo/advance、历史迁移等真实消费者能力。D01/D02 更正上一轮 CI 台账与回退说明；真机桌面壳 7 场景通过。详见 docs/post-merge-integration-cleanup-20261025.md。）
 最后核对：2026-10-25（**三分支整合（对话页 v2 / 互动页 v2 / R9-H13）完成实现、合并与验证**：冻结来源 origin/main 249a6344、feat/conversation-page-v2 13ec0935、feat/interactive-page-v2 9b236348、r9h13/main 6f56d815；开工后互动页线又交付 fix/interactive-v2-frontend-flow 28813463（F01–F10 前端操作逻辑修复），按「远端推进取最新完成交付」并入。19 个冲突文件逐一裁决（启动恢复三段并存、设置接口字段并集、WindowChrome 外观取 v2 + 关闭协议取 R9、board_tools 快照合并 display 与源文件事实）；数据库撞号解决为页面线迁移改号到 66 之后（67 task_feed / 69 P3-D，68/70 统一补偿，SCHEMA_VERSION=COMPENSATION_VERSION=70）+ 分支线前置兼容修复，五类来源库（空/main51/cv55/i2_57/r9_66）升级验证通过。整合说明与台账见 docs/integration-3way-20261025.md。**)
 最后核对：2026-10-25（**互动页 v2 前端操作逻辑修复（F01–F10）完成并集成**：基线 `9b236348`，修复分支 `fix/interactive-v2-frontend-flow`，未合并 main、未打包、未发布。材料影响确认回到页面（真实受影响任务 / 材料 / 后果、「等待确认，尚未保存」、确认 / 取消、过期与保存失败处理，与工具审批同一时刻只有一个阻塞面）；意图视图收进 store 成为唯一维护位置（延迟理解、刷新、重试、确认 / 恢复后统一刷新，旧链重复预览让位，旧失败不覆盖新状态）；「任务」与批量入口接到真实任务面板（暂停 / 继续 / 取消、执行记录、聊天停止与任务取消分离）；恢复事项摘要独立于面板（稳定去重、失败不伪装为空、处理后立即减少、对话收起仍可打开）；意图读取失败保留旧内容并可重试；重复拖线只打开原关系、不覆盖含义 / 方向 / 曲线；菜单移出组给卡片找组外空位（不与剩余成员 / 组框重叠）；收起组内卡片定位先展开再按实际可用视野定位；关系胶囊拖动按缩放换算并支持 Esc / 中断 / 失焦取消；意图位置保存失败回到操作前位置、服务器位置优先。前端定向 / 集成测试与类型检查通过；真实页面（1440×900、700×800、480×760）逐流程验收与完整 CI 记录见 `docs/interactive-v2/frontend-flow-fixes-20261025.md` 与 `docs/interactive-v2/delivery.md` §9。）
 最后核对：2026-10-25（**互动页 v2 交互修复第三批完成**：组内成员固定纵向排列（加入 / 重排 / 合并 / 拖出自动收拢，间距 12px，组框由排列结果重算），拖动成组不再重叠；生产局部工具栏改为卡片左上角定位，按上边容量逐个把按钮分配到上边/左边：先超过端点的按钮滑到左边，后续按钮压在上面并把前一个继续下压；其他按钮在上边向左补位；两边可同时存在按钮，按钮固定 30px、无托板。**本轮追加：端点命中区只保留卡片外侧半区（边框内不再抢点击），短条和悬停半圆都以贴边端为基准向外展开；缩小视野时短条不再以中心为基准侵入边框。组内成员按顺序显示 1..n 圆形编号；组被选中时边框与阴影高亮；组拖入时显示“插入这里”虚线占位，位置按放下后的插入下标落在两个成员之间；组内固定纵向排列、拖入热区按指针、拖组同帧、组头收紧和组表面统一均已完成。工具栏按钮位置改为按卡片实时显示宽高逐帧计算，拖动缩放时即时换边、无跳变；上边和左边容量都用尽后自动进入第二列；端口半圆的基座偏移修正，悬停前后中心误差 ≤1px。剩余：组拖入插入占位线和组视觉细节；工具栏锚点旧测试已更新为卡片左上角 + 逐按钮布局；前端全量 447 files / 4133 tests 全部通过。** 类型检查与构建通过。）
@@ -677,7 +697,7 @@
   审批 explanation 与事实不变 / 并行不串味 / `_qio` 不进参数 / 批次结算 / runtime 与历史恢复 /
   容量排除 / 完整一轮端到端）、`frontend/src/stores/__tests__/executionNarrative.test.ts`、
   `frontend/src/components/__tests__/ExecutionNarrativeDrawer.test.ts`、
-  `frontend/src/components/__tests__/ApprovalModal.test.ts`。
+  frontend/src/components/__tests__/ApprovalModal.test.ts（2026-10-26 已随旧审批展示层删除）。
 - **Known limitations：**
   - 工具卡本身**不写入 `messages` 表**（沿用既有边界）：历史里抽屉打开看到的是
     系统生成的调用摘要。2026-09-24 起，工具调用另存于 `tool_records` 表，
@@ -1688,8 +1708,8 @@ P16–P24，直接并列会产生两套同号里程碑）。它们的验收结�
     本地删除的组/关联按 base 三路判定，服务器无关改动不再复活它们；已确认的最高服务器版本独立于候选正文单调推进；
     提交结果与后续读取结果分开记录；任务清单读取失败与「成功空集合」区分。
   * 发送与恢复（F02/F03/F04/F12）：`frontend/src/stores/session.ts`、
-    `frontend/src/components/Composer.vue`、`frontend/src/components/interactive/ChatDock.vue`、
-    `frontend/src/components/interactive/FailedSendNotice.vue`、`backend/src/agent/core/turn.py`、
+    `frontend/src/components/Composer.vue`、frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除）、
+    frontend/src/components/interactive/FailedSendNotice.vue（2026-10-26 已随旧互动展示层删除）、`backend/src/agent/core/turn.py`、
     `backend/src/agent/api/server.py`。每次发送冻结不可变提交快照（原文 / 话题 / 显式附件列表 / 请求身份 /
     重试来源 / 起点信息）；未决发送有独立持久台账，不做数量裁剪；受理事实由
     `acceptance_facts()` 如实给出四种状态（`preparing` / `not_accepted` /
@@ -1782,8 +1802,9 @@ P16–P24，直接并列会产生两套同号里程碑）。它们的验收结�
 - **斜杠命令体系**：未实现。工具创建没有独立的「入口页面」——按第三阶段的入口原则，
   它在对话里发生（说明需求 → Agent 调 `create_tool` → 同一张工具创建卡推进到「已创建」），
   设置页只放长期配置（电脑操控权限、联网通道），不承担这个动作。
-- **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里；对话页只在回答完成后
-  显示高影响知识候选卡（保存 / 修改 / 忽略），不做成常驻面板。
+- **对话页内嵌的记忆/知识面板**：未实现，面板在星球页详情里；对话页也不做常驻面板。
+  高影响知识候选在回答完成后进入统一审批的「待确认」（`UnifiedApprovalLayer` 直接 ingest），
+  保存 / 修改 / 忽略都在统一审批弹窗内完成，不再有对话流内的候选卡。
 - **工具创建的真实端到端**：**后端全链已在安装包自带的 sidecar 上跑通**（2026-10-02 第二阶段：
   `create_tool → dev_write_file → dev_run_tests(2/2) → dev_submit_tool → 两次审批 → 注册 → 调用 → 工具记录`，
   见 `docs/e2e-install-2026-10-02.md`）。**仍未跑的是界面那一层**：这条链是在 API 上用离线假厂商驱动的，
@@ -2006,7 +2027,7 @@ npm test
 | 窗口无边框 | `frontend/src-tauri/tauri.conf.json`：窗口 `decorations: false`；`shadow: true` 保留（Windows 上它给无边框窗口 1px 边线与 Win11 圆角） | 「无边框窗口契约」逐条点名配置与权限 |
 | 自绘标题条 = 拖拽面 + 三个按钮 | 新增 `frontend/src/components/WindowChrome.vue`：满宽拖拽面（`data-tauri-drag-region`，双击由 Tauri 内置逻辑转成最大化/还原）+ 右侧最小化/最大化/关闭；按钮只在壳里渲染（浏览器预览里画了也点不动），最大化状态跟着系统的 resize 事件走 | `frontend/src/components/__tests__/WindowChrome.test.ts` |
 | 按钮真的调得动壳 | `frontend/src-tauri/capabilities/default.json` 补 `core:window:allow-start-dragging` / `allow-minimize` / `allow-toggle-maximize` / `allow-close` / `allow-is-maximized`：少一个按钮就静默失灵（调用被权限挡掉），所以契约测试逐个点名 | `frontend/src/design-guards.test.ts` |
-| 顶部让出条高：贴顶控件不许被压住 | 高度只在 `frontend/src/styles/tokens.css` 定义一次（`--titlebar-height`），JS 侧经 `frontend/src/utils/titlebar.ts` 读同一个值；`App.vue` 用 `padding-top` 让出这一段；原本贴顶的控件（设置齿轮、待确认入口、设置页 toast、星球页「收起星球」与两条顶部状态条）各下移一个条高 | `frontend/src/utils/__tests__/titlebar.test.ts`、`frontend/src/components/__tests__/SettingsFloat.test.ts` |
+| 顶部让出条高：贴顶控件不许被压住 | 高度只在 `frontend/src/styles/tokens.css` 定义一次（`--titlebar-height`），JS 侧经 `frontend/src/utils/titlebar.ts` 读同一个值；`App.vue` 用 `padding-top` 让出这一段；原本贴顶的控件（设置齿轮、待确认入口、设置页 toast、星球页「收起星球」与两条顶部状态条）各下移一个条高 | `frontend/src/utils/__tests__/titlebar.test.ts`、frontend/src/components/__tests__/SettingsFloat.test.ts（2026-10-26 已删除，设置入口由 WindowChrome 全局栏承接） |
 
 **实拍与命中证据**（`frontend/scripts/window_chrome_shots.mjs`，图与结果在 `frontend/e2e-shots/window-chrome/`）：
 脚本自己判红绿，不靠人读图 —— 标题条 32px、整条除按钮外都是拖拽面、页面内容从 y=32 起、
@@ -2286,7 +2307,7 @@ npm test
   「上次有一项操作没有执行：…」（多项时写「上次有 N 项操作没有执行（例如 …）」）。
   它**不是待办、也点不动** —— 那次调用随进程没了，恢复一个「等你回答」的授权是假的。
 - 实现：`frontend/src/stores/session.ts`（`interruptedOperations` + RESYNC 时填充）、
-  `frontend/src/components/ApprovalEntry.vue`（只读的一行）、`frontend/src/services/api.ts`（类型）。
+  frontend/src/components/ApprovalEntry.vue（2026-10-26 已删除，非聊天路由入口由 NonChatApprovalEntry 承接）（只读的一行）、`frontend/src/services/api.ts`（类型）。
 - 已验证：前端 `npx vitest run` 全绿、`npx vue-tsc --noEmit` 通过。
 - 下一步：**「未完成任务」入口**（把开发任务列表带进界面）——已由紧接着的这一节做完。
 - 仍未做：`ApprovalEntry` 那一行只有 store 级测试，没有组件级渲染测试；真机界面验收仍未做。
@@ -2319,7 +2340,7 @@ npm test
 - 实现：`frontend/src/components/DevTaskEntry.vue`、`frontend/src/stores/session.ts`
   （`devTasks` / `unfinishedDevTasks` / `refreshDevTasks`）、`frontend/src/stores/events.ts`
   （三处刷新时机）、`frontend/src/services/api.ts`（`getDevTasks` 与 `DevTaskRow`）、
-  `frontend/src/components/ApprovalEntry.vue` 与 `frontend/src/App.vue`（顶部容器）。
+  frontend/src/components/ApprovalEntry.vue（2026-10-26 已删除，非聊天路由入口由 NonChatApprovalEntry 承接） 与 `frontend/src/App.vue`（顶部容器）。
 - 测试：`frontend/src/components/__tests__/DevTaskEntry.test.ts`（没有任务不显示 / 有任务只亮
   一行 / 已提交不算未完成 / 点开才展开且说清证据过期 / 「继续开发」把 id 与状态交给模型 /
   交不出去时如实说明且不收起）、`frontend/src/stores/__tests__/devTasks.test.ts`（取数、
@@ -2491,7 +2512,7 @@ npm test
 | 装依赖是一次网络 + 磁盘动作 | 必须先拿到用户确认（新增审批 kind `dependency_install`，列出要装的包）；拒绝或超时 → **不建环境、不跑测试**，并说明「没有同意」 | `tools/tool_envs.py`、`tools/dev_tools.py` | `test_tool_envs.py`、`test_tool_env_integration.py` |
 | 测试与运行可能偷偷用错解释器 | 声明了依赖的工具：测试用专用环境的 Python；注册后的调用也用它，环境没准备好就**明确失败**（不静默回落随包环境） | `tools/tester.py`、`tools/runtime_tools.py`、`tools/executor_env.py`、`tools/sandbox.py` | `test_tool_env_integration.py`（测试跑在专用环境里 / 拒绝安装则不执行 / 无依赖工具不受影响 / 注册工具缺环境时拒绝执行） |
 | 容器执行时依赖环境会被忽略 | 容器隔离执行 + 需要专用环境 → 直接说明「容器里不会装这套依赖」，请改用受限子进程或去掉依赖声明 | `tools/sandbox.py` | `test_tool_project_execution.py` |
-| 界面看到安装请求会显示英文枚举名 | 审批标题加「安装依赖」；payload 里的包列表与说明沿用既有渲染 | `frontend/src/components/ApprovalModal.vue` | `frontend .../ApprovalModal.test.ts` |
+| 界面看到安装请求会显示英文枚举名 | 审批标题加「安装依赖」；payload 里的包列表与说明沿用既有渲染 | frontend/src/components/ApprovalModal.vue（2026-10-26 已删除，统一审批由 UnifiedApprovalModal 承接） | `frontend .../ApprovalModal.test.ts` |
 
 **真实链路验证（不是替身）**：本机用默认安装器实跑过一遍 —— 真建 venv、真从 PyPI 装
 `six`、拿到专用解释器；第二次调用直接复用同一个环境（`reused=true`），没有重复安装。
@@ -4345,10 +4366,10 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   尺寸调整只改布局与查看 —— 不产生表达 / 意图 / 审批 / 模型调用，不取消持续许可，不动草稿与阅读状态。
   - 公共原语：`frontend/src/interactive/resize.ts`（八向算术、最小/最大夹紧、恢复收敛、新卡落点）、
     `frontend/src/composables/useResizeGesture.ts`（指针手势；取消即恢复：指针取消 / Esc / 失焦 / 卸载）、
-    `frontend/src/components/interactive/ResizeHandles.vue`（四边四角热区 + 右下角克制标记 + 键盘可达的 −/＋）、
+    frontend/src/components/interactive/ResizeHandles.vue（2026-10-26 已删除，卡片缩放热区由 BoardResizeLayer 承接）（四边四角热区 + 右下角克制标记 + 键盘可达的 −/＋）、
     `frontend/src/interactive/chatFrame.ts`（对话窗口位置/尺寸按**板面身份**绑定的本机偏好）、
     `frontend/src/interactive/chatFrameState.ts`（显示框共享桥）、
-    `frontend/src/interactive/overlayAvoid.ts`（浮层互相让开的带宽几何）。
+    frontend/src/interactive/overlayAvoid.ts（2026-10-26 已删除，无生产消费者）（浮层互相让开的带宽几何）。
   - **卡片常态尺寸就是板面状态的 `card.w/h`**：常态提交 `{x, y, w, h}`；展开中或被让位时只提交 `{w, h}`，
     临时槽位坐标**绝不**写回板面。后端 `submission.py` 的 `_card_meaning` 不含位置/大小，
     纯几何变化归入 `DISPLAY_ONLY_EXPRESSIONS`（`layout_only`），因此不产生意图。
@@ -4390,7 +4411,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
   - **共享原语（唯一实现）**：`frontend/src/styles/scroll.css`（全局消除原生滚动条外观，不设全局
     `overflow:hidden`、不禁用滚轮）、`frontend/src/composables/useQioScrollbars.ts`（auto/hidden 两策略的
     浮动指示条引擎）、`frontend/src/composables/useQioTables.ts` + `frontend/src/utils/qioTable.ts`（表格两态）、
-    `frontend/src/utils/scrollIndicator.ts`（指示条偏好）、`frontend/src/components/ui/QioScrollArea.vue`；
+    `frontend/src/utils/scrollIndicator.ts`（指示条偏好）、frontend/src/components/ui/QioScrollArea.vue（2026-10-26 已删除，滚动指示条由 v-qio-scrollbar 承接）；
     令牌集中在 `frontend/src/styles/tokens.css` 的 `--scroll-*`。
   - **对话内不得横向滚动**（取代此前「代码块可以横向滚动」的写法）：消息流、消息项、气泡、正文、过程详情、
     附件、输入区、错误恢复与对话内预览都不是水平滚动容器；代码块软换行（`white-space: pre-wrap`，
@@ -4463,18 +4484,18 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **Status：** completed
 - **Implementation：**
   - `frontend/src/components/interactive/BoardCanvas.vue` 里的 `.view-hint` 原来是**无条件渲染**的常驻提示，
-    与互动空间既有规则冲突（`frontend/src/components/interactive/ChatDock.vue` 里写着「快捷键说明只留一处
+    与互动空间既有规则冲突（frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 里写着「快捷键说明只留一处
     （帮助里），面板里不再常驻小字」）。现在改成：只在本机**还没用过查看手势**时显示一条，
     平移 / 滚轮缩放 / 空格框选任一手势**结束**后永久收起 —— 在手势结束后才收，避免拖动中途改变容器高度；
     状态记进 `localStorage` 的 `qio-board-hint-seen`，读写沿用项目既有的防御式范式
     （隐私模式 / 企业策略下连读属性都可能抛异常，抛了就退回本次会话内存）。
   - 该提示去掉 `role="status"`：它不是实时状态，而文案里嵌着实时缩放百分比，
     作为 aria-live 区域会让读屏在每一次滚轮缩放时重复播报整条提示。
-  - 完整说明并入帮助：`frontend/src/components/interactive/ChatDock.vue` 的帮助里新增「板面手势」一段
+  - 完整说明并入帮助：frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 的帮助里新增「板面手势」一段
     （`data-im="chat-help-board"`），摘要行同步改为「帮助：可见范围 · 板面手势 · 媒体读取 · 附件限制 · 快捷键」。
 - **Tests：** `frontend/src/interactive/__tests__/boardCanvas.test.ts` 新增一组用例（首次进入显示且不是 aria-live、
   平移后收起并把「已看过」写进本机、缩放后收起、框选后收起、已看过时不再显示）；
-  `frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts` 的帮助用例补上板面手势断言。
+  frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts（2026-10-26 已删除） 的帮助用例补上板面手势断言。
   既有「拖动空白处 = 平移查看位置」用例原先靠 `toContain("平移")` 间接依赖这条常驻提示，
   改为断言「平移不留下任何提示条」。真实浏览器（Chrome，1200×800）核对：
   首次进入有提示 → 空白处滚轮缩放后消失且本机标记写入 → 刷新后不再出现。
@@ -4858,7 +4879,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
     会启动浏览器**原生文本选择拖拽**，指针越过滚动容器边缘时 Chromium 触发选择自动滚动，
     把最近的滚动容器 `.board-viewport` 滚走 —— 实测从提交区拖到窗口底，
     `scrollTop` 从 0 跳到 **811**（卡片正文不会：卡片自己有 `preventDefault`）。
-  - 修法（方案 A）：`frontend/src/styles/interactive-shell.css` 里给互动舞台
+  - 修法（方案 A）：frontend/src/styles/interactive-shell.css（2026-10-26 已删除，新版公共层变量迁到 frontend/src/styles/layers.css） 里给互动舞台
     `main.im-stage` 加 `user-select: none`；需要选文字 / 复制的地方**显式开回来**：
     卡片正文（`[data-im="card-body"]`）、对话面板（`[data-im="chat-panel"]`）、
     `textarea` / `input` / `[contenteditable="true"]`（选择不是继承锁，子元素可以重新打开）。
@@ -4878,14 +4899,14 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **Implementation：**
   - 现象：窗口变矮（实测 1200×560）时，对话窗口的默认框被收敛到 238px，输入行被推到面板底边之外，
     再由 `.panel` 的 `overflow: clip` 裁掉 —— 发送键完全看不见，也没有任何入口能滚到它。
-  - 根因两层：① `frontend/src/components/interactive/ChatDock.vue` 的 `.composer` 是 `min-height: 0`，
+  - 根因两层：① frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 的 `.composer` 是 `min-height: 0`，
     面板一矮先压输入区；② `frontend/src/interactive/chatFrame.ts` 的 `CHAT_FRAME_MIN.h = 220` 是按
     「标题栏 44 + 输入区 92 + 阅读区 72」估的，实测这三段分别是 52 / 147 / 72，最小值本身就偏小。
   - 修法：`.composer` 给出必需的最小高度 96px（附件行 31 + gap 4 + 输入行 57 ≈ 92，留一点余量），
     面板变矮时**先让阅读区、再让帮助摘要**（帮助另有顶部入口，不会失去访问路径）；
     `CHAT_FRAME_MIN` 按实测分解抬到 260（内边距 24 + 标题栏 52 + gap 16 + 阅读区 72 + 输入区必需 92 ≈ 256）。
-- **Tests：** `frontend/src/interactive/__tests__/chatFrame.test.ts` 的最小值用例改成按实测分解断言；
-  `frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts` 增加源码守卫
+- **Tests：** frontend/src/interactive/__tests__/chatFrame.test.ts（2026-10-26 已删除，chatFrameState 发布语义测试保留） 的最小值用例改成按实测分解断言；
+  frontend/src/components/interactive/__tests__/irl-a-chatDock.test.ts（2026-10-26 已删除） 增加源码守卫
   （`.composer` 必须声明不小于 92px 的最小高度）；`frontend/src/interactive/__tests__/irl-verify-chatframe.test.ts`
   里那条写死 580 的断言改为按 `CHAT_FRAME_MIN.h` 推导，避免数字过期。
   真实浏览器核对（Chrome）：1200×800 / 1024×768 / 1440×900 与修复前一致；
@@ -4998,7 +5019,7 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
     「卡在上方」，右下角一直留白。用户明确希望：**工具栏尽可能向左缩小**，把右下角让出来。
   - 根因一：窗口缩小时把「收敛后的框」直接写回**当前生效框**，窗口放大回来时已经没有
     「用户原本想要的框」可恢复 —— 实测 520 → 244，窗口恢复后仍停在 260。
-    修法：`frontend/src/components/interactive/ChatDock.vue` 把**用户框**（`preferredFrame`，
+    修法：frontend/src/components/interactive/ChatDock.vue（2026-10-26 已随旧互动展示层删除） 把**用户框**（`preferredFrame`，
     唯一落盘的那份）与**生效框**（`frame`）分开；窗口变化只重新推导生效框
     （`convergeChatFrame(preferredFrame, area)`），只有用户拖动 / 调整尺寸才更新用户框。
   - 根因二：工具栏在「扣掉 132px 聊天保留宽度后的剩余空间里居中」并固定上限 1180px
@@ -5896,3 +5917,107 @@ v0.2.0 里图片只能是 `image_unsupported`（"只登记元数据，不声称�
 - **数据库**：页面线迁移改号到 R9 链之后（67 = task_feed/task_ack，69 = P3-D，68/70 = 统一补偿），R9 的 52/53/55/57..66 语义不动；REQUIRED_OBJECTS 取两线并集；新增分支线前置兼容修复（50 < 版本 < 70 且对象缺失时只重放补偿的 CREATE/ALTER，不写版本号、不改数据）。
 - **验证**：五类来源库升级（空/main 51/cv 55/i2 57/r9 66）全部 → 70，必需对象齐全、原行保留、二次启动幂等；后端定向（迁移/审批/安全/互动/设置）与前端定向（审批/互动/外壳/对话页）通过；真实界面截图检查。完整 CI 记录见整合说明 §6。
 - **边界**：真机 Tauri 关闭/托盘/真正退出与安装形态 E2E 未在本机验证（无壳二进制），按未验证记录。子智能体预算在 v2 生命周期路径只读展示（/decide 不透传 overrides）。
+
+### P90 — 合并后前后端漏接修复与旧代码清理（2026-10-26）
+
+- **Status：** completed（实现/定向验证/真实界面/真机桌面/本地全量/完整 CI 记录见本节与交付文档；未合入 main、未打包、未发布、未改版本号）
+- **基线**：origin/main 1b03541eedd2dcaa9b82d6102108d717c71c6fb4；修复分支 fix/post-merge-integration-cleanup-20261025（五个工作流各自独立分支/worktree，Lead 统一集成）。上一轮整合为 P89。
+- **F01–F06 能力修复**：互动页权限模式徽标常驻（收起/展开可见、单一状态源、读取中/失败如实）；统一审批「待审批 / 结果与历史」两视图（按 approval_id 建键、approved/executing 明确等待执行、终态持久可回看、两个聊天路由与设置/调试等非聊天路由均可达、0 待办仍可查）；批量逐项结果（真实 item_id/对象身份/状态/原因 + 整批汇总）；待审批恢复失败与历史读取失败分别可见并可重试（不清空、不冒充空集合、不续期、不重复创建、不推进确认阶段）；480 窄窗队列换行、对象身份在前、键盘可切换、状态/期限只显示一处；子智能体预算旧 tool_create 路径可编辑且「真的改过才发 overrides」并由后端测试证明执行器采用，只读生命周期记录不再给可编辑控件或「可修改后批准」承诺。
+- **C01–C05 清理**：删除 17 个已不挂载的旧前端文件（含旧审批展示层 3 个）与对应旧测试/mock；旧浮层样式 interactive-shell.css 重构为 styles/layers.css 唯一公共来源（层级变量、工具栏测量、板面选择约束按真实钩子）；batchOpen 死字段/导出/断言删除并统一 tasksOpen；对话几何桥生产者改为 v2 互动对话窗真实可见几何（收起/卸载发布空、不读持久化假框）；过时 MIGRATED_CAPABILITIES 与假断言删除；QSlider/QioScrollArea、零消费者包装、旧面板文案函数、闲置演示入口删除；保留 /respond、/demo/advance 真实撤回、历史迁移、archive.py、sdfRings 与通用缩放手势工具等保护清单能力。
+- **D01–D02 记录更正**：上一轮 CI 台账改为「一次完整矩阵跑完 9/10 + 单条基线失败、定向复验；另一次重复完整矩阵启动部分 job 后取消」，保留运行号与取消事实，明确 dispatch 元数据 head_sha 不等于实际受测 SHA、产品/测试/文档树区别；回退说明删除 force-with-lease 强推 main，改为保留历史的回退提交/PR 与数据库独立说明（本轮未执行回退）。
+- **F07 真机桌面**：真实编译并启动候选壳（内嵌候选前端 + 真实 Python 后端，不用 stand-in sidecar、不用真实密钥），7 场景通过：X/ask 三选、关闭到托盘、托盘恢复、托盘菜单退出、记住选择与重启后生效、系统 WM_CLOSE、挂起后端阻塞退出（taskkill /T 核验、进程树清空）、重复关闭不叠加不二次退出；WindowChrome 观感与 R9 壳协议同时保留。安装形态、冻结 sidecar、系统关机注销、ACK 兜底、物理鼠标托盘未验证（见交付文档）。
+- **CI 防重复**：ci.yml 排除本轮子工作分支 push、concurrency 按实际受测提交（PR head 回退 sha）、新增 workflow_dispatch（ref + expected_sha + checkout 后 SHA 校验）；本轮唯一完整矩阵由集成分支一次 push 承担，失败修复用 targeted-verify 定向复验（[skip ci] 策略见交付文档）。
+- **验证**：本地后端全量与前端全量各一次（见交付文档 §9.2）；类型检查、生产构建、文档一致性、第三方声明、离线评估与基线对比按仓库要求执行；完整 CI 运行号与逐 job 结果、定向复验记录见交付文档 §9.3；真实界面 1440x900 / 480x600 与真机桌面证据见 §9.4。
+- **交付文档**：docs/post-merge-integration-cleanup-20261025.md（能力对应表、F/C/D 逐项状态、删除清单、测试迁移对照、验证台账、未验证边界、合并准备）。
+- **边界**：真实模型链路与 POSIX 平台未本地验证；安装包形态与系统关机/注销未验证；480 收起态徽标位于既有悬浮对话状态条内，该行可能与一张卡下边缘重叠（非新增浮层）；旧 /respond 兼容路径的执行结果没有持久化历史，界面不伪造进「结果与历史」。
+
+### P91 — 后续修复轮：续作话题归属、审批闭环与通知可靠投递（2026-10-26 后续轮）
+
+- **Status：** completed（五项修复与清理均实现并验证；本地全量/完整 CI/失败项定向复验/独立验收记录见下；未合入 main、未打包、未发布、未改版本号）
+- **基线**：`origin/fix/post-merge-integration-cleanup-20261025` = 373fda40（P90 分支 tip；origin/main 仍为 1b03541e，未前进）；Lead 集成分支 fix/post-merge-followups-20261026，工作流 A–F 各自独立 worktree/分支。
+- **A 互动续作话题归属**：续作 Turn 优先使用原提交保存的 binding.resumeState.topicId；当前选中话题不得覆盖；binding 缺失/话题无法核对时明确失败（不静默回退、不启动、不写绑定、不重复执行）。
+- **B 审批后端**：旧 request() 落库行在输出中标记 legacy=true（不伪造 state=waiting），恢复保留原 turn/session/digest/期限绑定事实，旧审批状态用 interrupted_legacy 等独立事实；/decide 对 legacy 明确拒绝、/respond 继续服务且单次消费与绑定校验不变；执行结束写 approval_history（PK approval_id，后写真实终态）并发 APPROVAL_RESULT（executed/failed），「已批准/执行中」不显示成成功；预算 overrides 真实生效，不支持时显式 400 拒绝，不静默丢弃。
+- **C 审批前端**：按 approval_id 合并 pending/history/事件；legacy 或无 state 项只走 /respond，绝不调 /decide、不补 state；重连/回前台主动补读；读取失败可见可重试；已批准等待执行与执行成功/失败严格区分；预算仅端到端支持 overrides 的旧路径可编辑。
+- **D 通知投递**：只追加迁移 71 建 subtask_notifications（task_id 主键、payload、origin、created_at、delivered_at、attempts、last_error、last_attempt_at）+ 待投递索引；72 为补偿入口（SCHEMA_VERSION=COMPENSATION_VERSION=72，REQUIRED_OBJECTS 同步表/列/索引）；enqueue 只做持久化去重、不算交付成功；只有 notify turn 被 TurnManager 接受后才写 delivered_at；失败保留 last_error 待重试、重启继续投递；同一 task_id 至多一次、FIFO（跨崩溃窗口为 at-least-once，已如实记录）。
+- **E 文档与许可**：本文档区分 P90 已完成事实与 P91 进行中；`docs/post-merge-integration-cleanup-20261025.md` §12 记录本轮范围与收口占位；`docs/compliance.md` 按实际许可证组（含 MPL-2.0 文件级弱 copyleft、LGPL-2.1-or-later 仅作为并列可选项）更正概括；本轮未改依赖/锁文件，未重新生成第三方声明。
+- **验证**：本地全量一次——后端 601 文件/6013 项 exit 0；前端 452 文件/4025 项全通过；`vue-tsc --noEmit` 0 error；`vite build` 成功；docs/license/release gate/workflow 契约检查通过；离线评估与基线逐字节相同。完整 CI run **40257319813**（SHA 48b01f0c，event=push，10 job：9 success + backend py3.12 1 failure；install e2e/frozen worker/rust×2/frontend/docs/backend py3.11/backend windows 均 success，无 skipped/cancelled）。失败定位为**测试**跨线程使用同一 sqlite 连接（py3.12 抛 sqlite3.InterfaceError；产品代码未改、py3.11 与 Windows 同代码全绿），修测试 helper 后以 `[skip ci]` 推送 0c47e11b，targeted-verify py3.12 run **40263546217** success、py3.11 run **40263563419** success（均指定完整 SHA 并在 workflow 内断言实际 checkout SHA）。独立验收 F：五项反例全绿、保真 6/6、回归 101+81、真实界面 480 4/4；LIMITED：通知 AppContext 端到端未构造、网络故障注入未做、跨崩溃 at-least-once 窗口保留。
+- **收口后追加修复（定向验证，未触发全量/CI）**：普通互动聊天续作 `resolve_chat_binding` 与确认/恢复/重试同规则——原提交保存的 topicId 优先；原提交存在但话题无法核对时明确 400 拒绝，不回退当前话题、不静默改绑；无 submission 的新消息仍用当前话题。新增 `backend/tests/test_fu3_chat_topic_binding.py`（基线 2 红 → 修复后 5 绿；相邻 waiting 13 绿）。按用户要求未跑全量、未触发 CI，改动以 `[skip ci]` 推送。
+- **边界**：真实模型/厂商链路一律 fake/mock；POSIX 平台无本地证据（本机仅 Windows）；安装包形态与系统关机/注销未验证；真机桌面壳默认未在本轮重新验证（除非收口时另有证据）；历史里程碑中「未合并 main/未发布」等表述是各历史阶段事实，不因本轮开始而改写。
+
+### P92 — 第二轮定向修复：审批读取失败、CI 派发提交、过期相位、补读竞态、通知话题（2026-10-26 后续轮）
+
+- **Status：** completed（定向验证；按用户要求**不做全量测试、不触发 CI**；未合入 main、未打包、未发布、未改版本号）
+- **基线**：上一轮修复分支 tip `dae32828`（P91 收口后）；本轮继续同一修复分支，B/C/D/E 子工作流各自独立分支（fix/fu3-*），Lead 统一集成。
+- **P1 审批读取失败显式化**：`ApprovalService.pending()/history()` 读取失败不再返回空/部分集合；`/api/approvals/pending`、`/api/approvals/history` 返回 503 + `approvals_unreadable`，前端保留已有待办并显示可重试错误。
+- **P1 手动完整 CI 测试提交修正**：`ci.yml` 全部测试 job 显式 checkout `inputs.expected_sha || github.sha`（dispatch 检被 preflight 校验的提交；push/PR 不变）；契约检查器新增逐 job 断言与 4 个 selftest 反例。
+- **P2 到期事件相位修正**：`_execute_approved` 到期路径事件 phase 由 invalidated 改为 expired（history 同步 expired），前端显示「已过期」而非「执行前核对不通过」。
+- **P1 补读快照竞态**：前端按 arrivedSeq 区分「请求开始前已存在」与「补读期间新到达」，旧快照不再删除新审批；失败/404 保留全部待办。
+- **P1 通知轮话题**：`_execute_notify_turn` 优先 `ctx.initial_topic`（origin 原话题），缺失才回退 current_topic；绑定/上下文/trace/结果保存同一话题，不再改绑界面当前话题。
+- **验证**：各修复均有红→绿定向证据（`_fixpm2/evidence/`）；集成后定向回归通过；`vue-tsc --noEmit` 0 error、`vite build` 成功、docs/license/workflow 契约自检通过、离线评估与基线逐字节相同。按用户最新指令**不做全量测试、不触发 CI**（前端全量在指令前已完成，仅作参考；后端全量已中止）。
+- **边界**：`/api/runtime/state` 的 approvals 快照同故障返回 500（不再伪装空，但非 503+code）；`interrupted()/audit_trail()` 仍保留读失败返回空旧行为；本轮无真实桌面/安装/真实模型验证。
+
+### P93 — FU4：权限模式移到全局栏、互动搜索内联、权限模式切换 422 修复（2026-10-26）
+
+- **Status：** completed（定向测试 + 真实浏览器截图复核；按用户要求**不做全量测试、不触发 CI**；未合入 main、未打包、未发布、未改版本号）
+- **权限模式移到全局栏**：删除页面内胶囊徽标（ChatColumn 话题栏 / InteractiveView 对话窗状态条），改为 WindowChrome 全局栏里的纯文字 `PermissionModeText`（对话页 / 互动页同一处、同一个 store；读取中/失败如实显示；点击进设置 →「工具与权限」，不切模式）。
+- **互动搜索内联**：去掉「按钮 + body 弹窗面板」，在全局栏挂载点直接渲染内联 input：点击/聚焦即展开加宽（一次点击即可输入）；除 input 自身 placeholder 外无任何标题/label/说明/scope/关闭按钮文字；结果是锚定输入框下方的小浮层列表（非 dialog，无标题/说明，可点选定位）；Esc/点击外部收起，支持键盘与 480 窄窗。
+- **修复切换权限模式 422**：`setSecurityMode` 的 PUT 请求补 `Content-Type: application/json`。此前无 Content-Type，FastAPI 的 `body: dict` 把 JSON 文本当字符串校验，返回 422「Input should be a valid dictionary」；实测同一 body 带 JSON 头 200、不带 422，已在真实后端验证。
+- **验证**：定向测试（权限模式 47、交互组件 73 文件/689 例、security 请求契约 2、相关 design-guards/窗口栏等）；`vue-tsc --noEmit` 0 error；`vite build` 成功；Playwright(Edge) 实机 1440/480 两个路由：全局栏文字可见且纯文字（无边框/透明底/0 圆角）、旧徽标 0、搜索只保留输入框（容器无额外交字）、点击后 94→226px 且聚焦、无 dialog、窄窗 scrollWidth=480 无横向溢出、consoleErrors=0（截图与 JSON：`_fixpm2/evidence/FU4/ui/`）。
+- **边界**：本轮不做全量/CI；未做真机桌面壳复验；搜索结果未在真实有匹配卡片的板面上做视觉复核（无卡片数据时按设计不渲染说明）；脚本 `scripts/i2v2-verify/playwright_flows.mjs` 已同步改为操作内联输入框。
+
+- **补充修复（用户反馈：全局栏消失，只剩 QIO）**：用户打开的是旧深链/手输深链 `#/conversation`，而对话页真实 path 是 `/` —— 无匹配路由导致页面不渲染、WindowChrome 走「非聊天页」分支只剩 QIO 字标（图标 / PERSONAL AGENT / 权限模式 / 设置入口全部没有）。已加 `/conversation` → `/` 别名与未知路径 catch-all 回对话页；Playwright 实测 `#/conversation`、任意未知哈希都回到完整全局栏（图标 + PERSONAL AGENT + 权限模式文字 + 设置），`#/interactive`、`#/settings` 不受影响（截图 `05-conversation-redirected.png`）。
+
+### P94 — FU5：空态居中、模式切换直连、收起任务栏圆角对齐、互动输入列居中（2026-10-26）
+
+- **Status：** completed（定向测试 + 真实浏览器截图/几何复核；按用户要求**不做全量测试、不触发 CI**；未合入 main、未打包、未发布、未改版本号）
+- **空状态居中**：`MessageStream` 的 `.stream` 明确 `display:block; position:relative`，空状态 `.empty` 改为绝对铺满消息可视区并水平/垂直居中（`pointer-events:none`），不再被虚拟列表 spacer 的 `width:100%` 推到右侧；对话页与互动页复用同一组件一起修正；三种空态文案（读取中/读取失败/真空）不变。
+- **模式切换直连**：`ConversationModeSwitch` 去掉弹出菜单，点击按钮直接 `router.push` 到另一模式；按钮显示当前模式、`aria-label/title` 说明「切换到…」；保留只导航语义（不碰草稿/审批/附件/任务），无菜单/Esc/外部点击旧逻辑。
+- **收起任务栏圆角对齐**：`ConversationView` 的 `.collapsed-rail` 去掉内边距与内层小按钮，`.rail-btn` 铺满整栏、`border-radius: inherit`、无内层边框；悬停用整栏底色；未读徽标移到栏内侧右上角（`overflow:hidden` 下不再被裁）。
+- **互动输入列居中**：`.ic-composer-row` 改三列 grid（`minmax(0,1fr) minmax(0,860px) minmax(0,1fr)`），输入列固定 860 并真正居中；模式切换在第一列 `justify-self:end`、紧贴输入列左侧（不占输入宽度）；`.ic-composer` 去 860 上限铺满面板；≤700 窄窗切到输入上方左对齐；消息列 `.ic-stream` 仍 860。
+- **第 5 条（透明高斯模糊对话栏）本轮不实现**：可行性已确认（见交付文档 §10.5 的方案与风险），按用户要求先只给结论与做法。
+- **验证**：新增 FU5 布局守卫测试 8 例（红 6 failed → 绿 8 passed）；模式切换测试改为直连语义；相关定向 9 文件 77 例 + pm-acceptance/design-guards/harness 33 例全部通过；`vue-tsc --noEmit` 0；`vite build` 成功；Playwright(Edge) 实机：空态相对消息区水平偏移 0px、点按钮直接 `#/interactive` 且无 menu、互动输入列相对面板中心偏移 0px、switch 在输入左侧 gap 12px、480 收起栏按钮与栏同圆角(14px)且无横向溢出、consoleErrors=0（截图/JSON：`_fixpm2/evidence/FU5/ui/`）。
+- **边界**：jsdom 无布局引擎，布局用源码守卫 + 组件结构断言，像素效果以实机截图为准；第 5 条未实现；本轮无全量/CI。
+
+
+### P95 — 记忆星球页改版：布局 / 三标签管理区 / 星球过渡 / 管理流程 / 全局搜索（2026-10-27）
+
+- **Status：** completed（三条子分支独立 worktree 并行完成、Lead 集成；定向 + 全量前端 + 后端定向 + 文档一致性 + 完整 CI 见交付文档；未合并到基线分支、未打包、未发布）
+- **页面结构**：`.planet-view` 内新增 `.planet-content`（`inset: var(--titlebar-height) 0 0 0`，位于全局栏下方）；星球层铺满内容区且尺寸不随管理区变化，管理展开只对画布做 `translateX(calc(var(--mp) * -50%))` → 球心从内容区中心连续移到左边缘、只露右半球；默认态不裁切（美术与基线一致）；顶部全局栏原样保留。
+- **星球过渡**：新增 `composables/usePlanetManageTransition.ts`（唯一进度来源 `--mp` / `data-mp` / `.managing`，曲线取 CSS 令牌，中途反向按瞬时速度用三次 Hermite 衔接，减少动画一帧到位）；`usePlanetScene` 新增独立姿态组 `poseGroup` + `setManageYaw`（管理旋转不碰 planetGroup 的四元数/自转/聚焦 slerp/OrbitControls），并新增静帧停绘（无变化 12 帧后停 rAF，交互即恢复）。球体/融合环/相机参数未改。
+- **管理区**：记忆 / 知识 / 实体三标签（同一块内容区域，首次激活挂载后 v-show 保活，切换保留浏览状态且不换景）+ 待处理（真实数量）/ 整理记录辅助入口（返回恢复原标签页）。记忆页：话题列表 → 概览 → 完整讨论记录，「对话当前话题」与「正在浏览」分开写，只有「继续讨论 / 从这里继续」走既有锚点切换。知识/实体：列表 → 详情 → 返回（恢复搜索/筛选/滚动）+ 草稿化编辑（保存才一次提交、取消丢弃、失败保留草稿、409 冲突保留输入并展示服务端当前值、未保存离开先确认）。待处理合并三类真实来源（知识建议 / 记忆整理问题 / 实体更新候选），「修改后确认」走既有原子接口；整理记录列表 → 单次详情（受影响条目默认折叠，撤回/恢复复用中央弹窗）。
+- **全局搜索**：页面工具行入口，一次并行覆盖话题/知识/实体并按三类分组，独立于当前标签页；加载/空/失败三态自绘；请求序号丢弃旧响应；点结果切标签并打开详情，返回保留关键词与结果，关闭恢复此前管理上下文。
+- **接口**：`POST /api/entities/{id}/revise` 增补 `relations{add,remove}`（与字段同一事务）与 `expected_revision` CAS（不符 409 且不写任何字段）；知识修订沿用既有 `expected_version` + 409。无 schema 变更、无依赖变更。前端新增 `stores/planetPending.ts`（真实待处理数）。
+- **视觉证据**：DEV 钩子半径与基线逐位相同（452.66504294495525）；像素扫描直径差 -1px（基线自跑两次差 37px，作噪声地板）；轮廓环/球内/融合环三组结构色众数相同、环宽笔画峰相同；同姿态逐像素差 3.35%（未对齐 19.4%）。管理态实测球心 x=0、右缘 0.987R、管理区 left=800 不遮挡。停帧 208→208（2.5s）、减少动画 `intermediateFrames=0`。
+- **规范核查**：页面内圆角一律 `var(--qio-ui-radius)`（源码 0 处其它取值）；页面 DOM 内原生外观控件 0、无 `alert/confirm/prompt`；颜色全走 `var(--*)`；1440×970 / 1024×768 / 900×700 三档窗口逐层无横向滚动。
+- **追加（用户要求，2026-10-27）**：对话页 / 互动页共用的输入胶囊**恢复胶囊形**（`.input-pill` 用 `--r-pill`，`design-guards` 断言同步改为胶囊形）——它是「全应用表面统一 14px」的唯一例外；记忆星球页内的 14px 统一不受影响。`r`n- **追加（用户要求，2026-10-27）**：对话页「消息框」改版 —— 消息流与底部输入块（入口按钮行 / 模式切换 / 输入胶囊 / 记忆星球入口）收进**同一个圆角框**（`.chat-box`，边框/圆角/底色只在框上）；入口行移到输入行之外，出现/换行只在框内**向上生长**，输入胶囊不再被推动；`.composer-line` 的 `align-items: center` 让模式切换 / 输入胶囊 / 星球入口共用一条中心线；星球入口直径改为**与输入胶囊等高**（`--composer-pill-h: 54px`，入口画布 `--ball-size: 61px` ≈ 54/0.887，所以开合动画的入口尺度 scale ≈ 1.000、不失真）；消息流与输入区共用 `--chat-pad-inline` 一套左右留白，并去掉不再需要的 132px 星球通道与 `.bottom-cluster` 占位逻辑。实测（1440×970 / 1024×768 / 760×820）：有/无入口行时输入胶囊中心 y 不变、模式/胶囊/星球三者中心完全一致、球直径 = 胶囊高度 = 54px、无横向滚动。
+- **边界**：星球美术「逐像素完全一致」不可证（基线每次打开朝向不同），已用同姿态差异 + 噪声地板 + 三条旋转无关结构证据替代；窄窗口 900×700 走上下排布时星球区随高度等比变小（排布结果，非 CSS 缩放），左右排布窗口（≥880 宽且放得下）直径保持不变；实体 `pending_relations` 无读写端点，未计入待处理数量。细节：`docs/memory-planet-redesign-20261027.md`。
+
+### P96 — 设置页改版与模型/用途接入（2026-10-28）
+
+- **Status：** partial（五类设置页、搜索、混合保存、Key→模型→用途数据模型与迁移、模型发现与按模型验证、用途解析接入真实调用链、搜索通道状态与真实检查均已实现并有自动化测试；完整 CI 在集成分支 `feat/mp-20261027-settings-integration` 的 `2fdf8a4dbb6bd793411fb4eb101491a185e45018` 上通过（run 40635523464，全部 job 成功）；未接通能力与边界见本节末尾，故不标 completed）
+- **信息架构**：设置页从基线的 8 个 tab 并为**五类** —— 常规 / 模型与服务 / 记忆与整理 / 工具与权限 / 关于与更新。复杂参数回到所属分类的「高级选项」（诊断开关→常规；迭代上限与输出预算→记忆与整理；SearXNG 地址、搜索条数、正文预算→模型与服务），不再集中成一个「高级」分类。基线每个控件都在新页面有位置，逐条对照见交付文档的迁移清单。
+- **响应式**：正常窗口是左侧分类导航 + 右侧内容；窄窗口把导航移到顶部变标签页。**只换导航容器的位置与形式**：内容用同一份 DOM（面板 `v-show` 常驻、不重建表单），分组 / 顺序 / 操作方式在两种宽度下完全一致；宽窄切换保留当前分类、滚动位置、展开状态与未保存草稿。
+- **保存模型**：即时保存（主题 / 动画 / 滚动指示条 / 输出速度 / 窗口行为 / 后台整理 / 工具记录 / 搜索免密钥开关）失败回滚控件到真实值；按组保存（搜索配置、Key 表单、默认模型与用途分配、记忆分段、后台整理间隔、工具记录保留）各自「保存 / 取消」+ 未保存标记，失败保留草稿；分区反馈互不覆盖，每次写带递增序号，迟到的旧响应不落界面。**离开设置页直接丢弃未保存草稿**：不自动保存、不弹询问、返回后不恢复，也不额外发写请求。
+- **搜索**：设置页内独立「搜索设置」入口（顶部全局栏行为不变），静态索引覆盖设置名称、说明、用途名称与高级参数；结果给名称 + 所属分类 + 简短说明；点击后进分类、必要时展开高级选项或后台用途分组、定位并短暂高亮，同时保留其它草稿；返回搜索结果保留关键词与结果位置；无结果与失败用自绘状态。索引里不含任何密钥。
+- **数据模型**：`credentials` 仍是「一条连接（一把 Key）」；新增 `credential_models`（该连接下已知的模型）与 `model_usages`（用途 → 连接 + 模型，`mode` 区分 explicit / legacy / inherit）；默认模型落 `settings['model.default']`。追加迁移 73（建表 + 索引 + 回填）与 74（补偿入口，只含可重放 DDL），`SCHEMA_VERSION`/`COMPENSATION_VERSION` 随之推进；历史迁移一行未改。回填只处理 `default_model` 非空的旧凭据（不猜模型）；历史 tags 以 `mode='legacy'` 保留映射而**不**当成显式指定 —— 基线里 tags 只参与「选哪把 Key」的政策，写成显式会让老用户那把它已停用/欠费的 Key 把主对话打成硬失败。用量账本、预算、审计、系统凭据库引用与历史默认项全部保留，不按模型复制额度、不重置用量。
+- **模型接入**：正常流程收敛为「选服务商或接受本地识别提示 → 填 API Key → 自动获取模型 → 分配用途」，正常流程不要求填地址 / 协议 / 模型名；自定义地址、连接协议、手动模型名、显示名称、累计用量上限与历史自定义用途标签都在默认收起的高级入口。本地 Key 前缀只作**提示**、不当作验证成功；有歧义时要求用户补选，必要时选地区或接入类型；只对用户提交的那一个地址发认证请求，不跨平台逐一试、不交给模型判断来源；改地址或协议必须重确认，且确认前不拿这把 Key 去新地址取模型或验证。发现支持分页、刷新、缓存，并把断网 / 超时 / 限流 / 无权限 / 无效 Key / 无列表分开归类；公共模型目录与服务商目录分别标注，不把公共目录说成「这把 Key 全部可用的模型」。
+- **用途分配**：13 个用途（主对话 / 通用对话 / 写代码 / 子任务 / 看图视觉 / 视频 / 语音 / 研究 / 向量嵌入 / 记忆整理 / 知识提炼 / 实体提炼 / 历史自定义标签）。先默认模型，各用途按需单独指定；未指定跟随默认；换默认不覆盖显式指定；显示每个用途实际使用的模型与连接并提供「恢复跟随默认」；候选按服务商与连接分组，停用 / 撤销 / 过期 / 预算耗尽 / 验证未通过 / 能力不满足的候选照样列出但写原因且不可选。主对话与通用对话的调用路径已核实等价，日常入口合并展示、两个用途键都保留在数据里。视频 / 语音 / 嵌入明确「沿用现有处理方式」，不继承默认对话模型；嵌入显式换外部模型时说明维度与索引影响并复用中央确认。
+- **调用接入**：新增用途解析（`backend/src/agent/services/usage_target.py`）：显式指定 → 默认模型 → 基线 policy 回退；显式指定不可用时如实失败并带原因码（不静默换 Key），默认模型不可用时按基线政策回退但标记降级并给出原因与实际使用的目标。主对话 / 通用对话、子任务、看图、记忆整理、知识提炼、实体提炼六条路径都已接到解析结果（派生任务开始时冻结三把 adapter，已开始的调用保留原配置归属）。**研究没有独立调用路径**，只有历史标签与 policy 回退，已如实标注「未接通」，不提供看起来生效的选择器。
+- **联网搜索**：模型凭据与搜索凭据分开管理，博查 Key 不进模型列表或用途选择器。免密钥通道、博查、自建 SearXNG、必应/百度等备用通道与回退顺序全部保留；**免密钥通道不是总开关**，关闭它只移除免密钥那几条，不清除也不关闭其它配置，不改回退顺序。博查 Key 留空保存不等于清除，清除是显式操作。新增 `GET /api/settings/search/status`（各通道 configured / check_state / checked_at / 原因码，不含密钥）与 `POST /api/settings/search/check`（真实一次极小请求，区分断网 / 超时 / 限流 / 凭据无效），「已配置」与「检查通过」分开显示。另修正一处基线缺陷：搜索的默认返回条数与正文字符预算此前只存不读，现在工具每次调用真的读设置。
+- **验证**：设置页有「当前生效参数」只读区，显示已保存且真实生效的值（含默认模型与各用途实际目标），不把草稿当生效值。
+- **未接通 / 边界**：研究无独立调用路径；写代码与主对话同一路径、无独立调用；视频 / 语音按设计沿用现有处理方式（显式指定才生效）；搜索连接检查结论是进程内状态，重启后回到「未检查」；所有验证均为 fake/mock，**未做真实联网与真实 Key 联调**。
+- **不改的东西**：首次引导的步骤与完成条件、三种权限模式与授权审批规则、后台整理算法与触发规则、软件更新与重启决定方式、许可证与第三方声明的离线内容来源。
+
+### P97 — 设置页视觉修复：去灰底 / 去药丸描边 / 删多余解释 + 对话页话题卡间距（2026-10-28）
+
+- **Status：** completed（实现、定向验证与完整 CI 通过：run `40664735538` → success，10/10 job 绿；首次运行时 Windows 后端 job 因附件上传 I/O 压测的既有不稳定项红过一次，已单独重跑通过。范围仅视觉与文案，未改接口、保存、草稿、权限、搜索定位、首次引导与模型调用）
+- **基线**：`feat/mp-20261027-settings-integration` @ `af77d2e74d94eb05b5227d69376f57810086d84f`；修复分支 `fix/settings-visual-20261028`（独立 worktree）。
+- **表面**：设置内容区改为**一层**承载面（轻玻璃 + 1px 中性边界 + `--shadow-1` + 14px 圆角），不再为每组/每行/每个状态套卡片。新增 `frontend/src/styles/settings-surface.css` 承载全部共享原语的设置页作用域覆盖（`.qio-settings` 前缀；不用 `!important`；不改 `--bg-inset` 等令牌、不改 base.css 默认样式，其它页面不受影响）。
+- **去灰底**：分类导航返回键、分段轨道、下拉、数字步进、输入、次级按钮、筛选、高级选项、未保存条、搜索通道、许可折叠组、搜索面板状态与命中项、更新卡与权限卡片的灰底/盒面全部去掉；改成「标题 + 留白 + 对齐 + 中性细线」。实测（五分类 × 净白/暗紫晶）：`--bg-inset` 填充 **0 处**。
+- **去描边**：分段选中态不再有灰轨道、闭合外框与 `inset 0 -2px` 底边内阴影；导航选中态去掉玫红左竖条与顶部底线；权限选项去掉灰卡片与玫红选中边框；提示信息去掉左竖条。选中统一为**品牌色文字 + 4px 圆点**。实测强调色边框/内阴影/单侧竖条 **0 处**。
+- **开关**：保留可见拨动结构（1px 线性轨道 + 14px 滑块，开=滑块右移 + 品牌色 + 柔光），命中区仍是 38×22；不用纯文字勾选，不加外框。
+- **浮层**：下拉菜单、候选面板、确认层为轻玻璃 + 一层浅中性边界 + 层级阴影；菜单宽度随触发框（触发框设最小宽度保证选项单行，不横向溢出）。
+- **焦点与状态**：`focus-visible` 保留（实测 2px `--focus-ring`，Tab 可达）；错误/警告/危险语义色不变。
+- **删除多余解释**：按「解释为什么/怎么实现/与控件重复/同句重复」的规则删除设置页说明文字；**保留**安全与危险提示、错误与失败原因、限额/范围/单位/默认值语义、状态词、许可与第三方/BYOK 合规说明。模型用途列表里同一句重复 8 次的状态说明改为列表顶部说一次（行内不再重复）。搜索索引里的 description 保留（它是搜索结果元数据，不是页面正文）。
+- **对话页**：话题详情卡的纵向节奏统一为一套固定值（标题→描述 4 / 描述→元信息 10 / 元信息→分隔线 12 / 分隔线上下对称 12 / 分隔线→小标签 12 / 小标签→段落 4），段落行高与正文一致（`--lh-base`）；480 与 320 宽无横向溢出。
+- **验证**：`npx vue-tsc --noEmit`、设置页/模型面板/对话页定向 vitest、整页计算样式审计（五分类 × 双主题：灰底 0、强调色描边 0、单侧竖条 0）、1440/480 截图与键盘焦点截图见交付说明。

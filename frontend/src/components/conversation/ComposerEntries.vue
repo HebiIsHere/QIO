@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { vQioTip } from "../../composables/useQioTip";
 /**
  * 输入框正上方紧邻的五个图标入口（B）。
  *
@@ -13,6 +14,7 @@
 import { computed, ref, watch } from "vue";
 import { useSessionStore } from "../../stores/session";
 import { useApprovalsStore } from "../../stores/approvals";
+import { useApprovalResultsStore } from "../../stores/approvalResults";
 import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import SendIssuesPanel from "./SendIssuesPanel.vue";
@@ -22,6 +24,7 @@ import {
   continuationText,
   deriveComposerEntries,
   snippetOf,
+  type ComposerEntryBadge,
   type ComposerEntryId,
 } from "./entries";
 
@@ -66,6 +69,8 @@ const session = useSessionStore();
 const approvals = useApprovalsStore();
 // ⑤ 的数量与打开动作走统一审批队列：工具/权限类 + 知识保存类按身份去重后的有效数量。
 const unified = useUnifiedApprovalsStore();
+// F02：结果与历史也走同一个 ⑤ 入口（0 待办时仍可达），不新增第二套常驻按钮。
+const results = useApprovalResultsStore();
 
 /** 当前展开的入口（null = 全部收起）：内置与额外入口共用这一个状态。 */
 const openEntry = ref<string | null>(null);
@@ -101,7 +106,28 @@ const entries = computed(() =>
   }),
 );
 
-const visibleEntries = computed(() => entries.value.filter((entry) => entry.visible));
+/**
+ * ⑤ 是否可见（F02）。
+ *
+ * 原有规则「没有事项就不占位置」保留；「审批结果与历史」本身也是需要可达的事项：
+ * 有待办、有历史结果、或恢复/历史读取失败时，⑤ 都在（失败时用户才能点开重试）。
+ * 完全空白（无待办、无历史、无错误）时仍不显示空入口。
+ */
+const showApprovalEntry = computed(
+  () =>
+    unified.count > 0 ||
+    results.hasAny ||
+    Boolean(results.historyError) ||
+    Boolean(approvals.recoveryError),
+);
+
+const visibleEntries = computed(() =>
+  entries.value
+    .filter((entry) => entry.visible || (entry.id === "approvals" && showApprovalEntry.value))
+    .map((entry) =>
+      entry.id === "approvals" ? { ...entry, visible: true, count: unified.count } : entry,
+    ),
+);
 
 /** 展开中的入口如果不再有事项（被处理完 / 切了话题 / 调用方隐藏），面板自动收起（状态本身不动）。 */
 watch(
@@ -135,8 +161,13 @@ function toggle(id: string) {
   if (id === "approvals") {
     // 审批：直接打开统一弹窗并收起其余事项（不在这里放内联批准/拒绝按钮）。
     // unified.open() 按类型分派：工具/权限仍走既有审批接口，知识走知识原子接口。
+    // 没有待办时打开同一个弹窗的「结果与历史」——入口仍然只有这一个（F02）。
     openEntry.value = null;
-    unified.open();
+    if (unified.count === 0) {
+      unified.openResults();
+    } else {
+      unified.open();
+    }
     return;
   }
   openEntry.value = openEntry.value === id ? null : id;
@@ -145,6 +176,28 @@ function toggle(id: string) {
 function close() {
   if (openEntry.value) emit("extra-close", openEntry.value);
   openEntry.value = null;
+}
+
+/**
+ * ⑤ 的读屏/悬停文案（F02 入口可访问名）。
+ *
+ * 宽口径验收会用「执行结果 / 审批历史 / 结果与历史」匹配入口，所以这里必须
+ * 明确写出能打开什么；失败状态也要说清（不是「0 项申请」）。
+ */
+/** 入口上的可见失败标记（F04）：只有真的读取失败时才出现；没有错误时不渲染。 */
+const approvalEntryError = computed(() => {
+  if (approvals.recoveryError) return "恢复待审批项失败";
+  if (results.historyError) return "审批历史读取失败";
+  return "";
+});
+
+function approvalEntryLabel(entry: ComposerEntryBadge): string {
+  if (entry.count > 0) {
+    return `待审批申请（${entry.count} 项）：打开统一审批窗口，可切换查看审批结果与历史`;
+  }
+  if (approvals.recoveryError) return "审批：待审批列表读取失败，打开查看原因与重试";
+  if (results.historyError) return "审批结果与历史：历史读取失败，打开查看原因与重试";
+  return "审批结果与历史：查看审批最终结果与后端历史（只读，刷新后仍可查看）";
 }
 
 function extraAriaLabel(entry: ExtraComposerEntry): string {
@@ -337,8 +390,8 @@ const panelTitle = computed(() => {
         :data-entry="entry.id"
         :data-tone="entry.tone"
         :aria-expanded="openEntry === entry.id ? 'true' : 'false'"
-        :aria-label="`${COMPOSER_ENTRY_TEXT[entry.id].title}：${COMPOSER_ENTRY_TEXT[entry.id].hint}${entry.count > 0 ? `（${entry.count} 项）` : ''}`"
-        :title="`${COMPOSER_ENTRY_TEXT[entry.id].title} — ${COMPOSER_ENTRY_TEXT[entry.id].hint}`"
+        :aria-label="entry.id === 'approvals' ? approvalEntryLabel(entry) : `${COMPOSER_ENTRY_TEXT[entry.id].title}：${COMPOSER_ENTRY_TEXT[entry.id].hint}${entry.count > 0 ? `（${entry.count} 项）` : ''}`"
+        v-qio-tip="entry.id === 'approvals' ? approvalEntryLabel(entry) : `${COMPOSER_ENTRY_TEXT[entry.id].title} — ${COMPOSER_ENTRY_TEXT[entry.id].hint}`"
         @click="toggle(entry.id)"
       >
         <svg class="ico" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
@@ -365,7 +418,19 @@ const panelTitle = computed(() => {
           </template>
         </svg>
         <span v-if="entry.count > 0" class="count mono">{{ entry.count }}</span>
-        <span v-else-if="entry.tone === 'warn'" class="dot" aria-hidden="true"></span>
+        <span
+          v-else-if="entry.tone === 'warn' && !(entry.id === 'approvals' && approvalEntryError)"
+          class="dot"
+          aria-hidden="true"
+        ></span>
+        <!-- F04：读取失败要**看得见**（不只在 aria-label 里）：入口角上的警示标 -->
+        <span
+          v-if="entry.id === 'approvals' && approvalEntryError"
+          class="entry-error"
+          data-test="approval-entry-error"
+          v-qio-tip="approvalEntryError + '（打开查看原因与重试）'"
+          aria-hidden="true"
+        >!</span>
         <span v-if="entry.id === 'continuation'" class="entry-label">继续</span>
         <span v-else-if="entry.id === 'queue'" class="entry-label">排队</span>
         <span v-else-if="entry.id === 'approvals'" class="entry-label">审批</span>
@@ -382,7 +447,7 @@ const panelTitle = computed(() => {
         :data-tone="entry.tone ?? 'plain'"
         :aria-expanded="openEntry === entry.id ? 'true' : 'false'"
         :aria-label="extraAriaLabel(entry)"
-        :title="entry.hint ? entry.title + ' — ' + entry.hint : entry.title"
+        v-qio-tip="entry.hint ? entry.title + ' — ' + entry.hint : entry.title"
         @click="toggle(entry.id)"
       >
         <svg class="ico" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
@@ -403,7 +468,7 @@ const panelTitle = computed(() => {
   margin-bottom: 8px;
   min-width: 0;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--r-md);
+  border-radius: var(--qio-ui-radius);
   background: var(--bg-inset);
   overflow: hidden;
 }
@@ -481,7 +546,7 @@ const panelTitle = computed(() => {
   height: auto;
   padding: 3px 10px;
   font-size: 11.5px;
-  border-radius: var(--r-sm);
+  border-radius: var(--qio-ui-radius);
 }
 .feedback {
   margin: 0;
@@ -567,6 +632,25 @@ const panelTitle = computed(() => {
   height: 6px;
   border-radius: 50%;
   background: var(--warning);
+}
+/* 读取失败的警示标：绝对定位，不参与布局（480px 也不会把图标行挤坏） */
+.entry-btn .entry-error {
+  position: absolute;
+  left: -3px;
+  bottom: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1px solid var(--bg-elevated);
+  background: var(--danger);
+  color: var(--bg-base);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
 }
 .entry-label {
   letter-spacing: 0.02em;

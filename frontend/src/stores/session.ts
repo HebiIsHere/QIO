@@ -4,6 +4,10 @@ import {
   type DevAbandonResult,
   type DevAuthorizationRow,
   type DevTaskRow,
+  type IntentExecutionAttempt,
+  type IntentExecutionIntent,
+  type IntentExecutionRecord,
+  type IntentExecutionResultRef,
   type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
@@ -978,6 +982,11 @@ export interface StreamMessage {
   role: "user" | "assistant" | "tool" | "subagent" | "tool_creation" | "system" | "narrative";
   content: string;
   contentType: string;
+  /**
+   * 意图执行记录（R2 契约 §三）：服务端对 content_type === "intent_execution" 的消息
+   * 附带**展示就绪**的对象。缺省 = 普通消息；前端只依据它渲染，不按文本猜。
+   */
+  intentExecution?: IntentExecutionRecord;
   createdAt: string;
   toolName?: string;
   toolOk?: boolean;
@@ -1084,6 +1093,157 @@ export interface StreamMessage {
    * 它同时是「受理结果与提交时是否一致」的核对依据。
    */
   startIdentity?: StartIdentity;
+}
+
+/** 非数组对象才收；服务端字段缺失/形状不对时按「没有这个对象」处理。 */
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** 字符串数组（只收字符串项；其它类型不猜测）。 */
+function stringListOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function resultRefOf(value: unknown): IntentExecutionResultRef | null {
+  const raw = recordOf(value);
+  if (!raw) return null;
+  const ref: IntentExecutionResultRef = {};
+  if (typeof raw.kind === "string") ref.kind = raw.kind;
+  if (typeof raw.label === "string") ref.label = raw.label;
+  if (typeof raw.target === "string") ref.target = raw.target;
+  return ref;
+}
+
+/**
+ * 解析服务端附带的 `intent_execution` 对象（R2 契约 §三）。
+ *
+ * 只做形状收敛：字符串/布尔/数组按原样收下，缺字段不补、不推状态、不从正文猜。
+ * 返回 null = 没有可用的服务端对象 → 调用方按普通消息降级（契约 §四最后一条）。
+ */
+export function parseIntentExecution(raw: unknown): IntentExecutionRecord | null {
+  const source = recordOf(raw);
+  if (!source) return null;
+  const record: IntentExecutionRecord = {};
+  if (typeof source.record_key === "string") record.record_key = source.record_key;
+  if (typeof source.record_head === "boolean") record.record_head = source.record_head;
+  if (typeof source.title === "string") record.title = source.title;
+  if (typeof source.status === "string") record.status = source.status;
+  if (typeof source.status_label === "string") record.status_label = source.status_label;
+  const scope = recordOf(source.scope);
+  if (scope) {
+    record.scope = {
+      ...(typeof scope.board_name === "string" || scope.board_name === null
+        ? { board_name: scope.board_name as string | null }
+        : {}),
+      ...(stringListOf(scope.intent_titles) ? { intent_titles: stringListOf(scope.intent_titles) } : {}),
+      ...(typeof scope.source === "string" ? { source: scope.source } : {}),
+    };
+  }
+  if (Array.isArray(source.intents)) {
+    record.intents = source.intents
+      .map((item) => recordOf(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => {
+        const intent: IntentExecutionIntent = {};
+        if (typeof item.id === "string") intent.id = item.id;
+        if (typeof item.title === "string") intent.title = item.title;
+        if (typeof item.status === "string") intent.status = item.status;
+        if (typeof item.status_label === "string") intent.status_label = item.status_label;
+        if (typeof item.attempts === "number" && Number.isFinite(item.attempts)) {
+          intent.attempts = item.attempts;
+        }
+        if (typeof item.failure_reason === "string") intent.failure_reason = item.failure_reason;
+        const resultRef = resultRefOf(item.result_ref);
+        if (resultRef) intent.result_ref = resultRef;
+        return intent;
+      });
+  }
+  if (Array.isArray(source.attempts)) {
+    record.attempts = source.attempts
+      .map((item) => recordOf(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => {
+        const attempt: IntentExecutionAttempt = {};
+        if (typeof item.attempt === "number" && Number.isFinite(item.attempt)) {
+          attempt.attempt = item.attempt;
+        }
+        if (typeof item.source === "string") attempt.source = item.source;
+        if (typeof item.turn_id === "string") attempt.turn_id = item.turn_id;
+        if (typeof item.status === "string") attempt.status = item.status;
+        if (typeof item.reason === "string") attempt.reason = item.reason;
+        if (typeof item.started_at === "string") attempt.started_at = item.started_at;
+        return attempt;
+      });
+  }
+  const resultEntry = resultRefOf(source.result_entry);
+  if (resultEntry) record.result_entry = resultEntry;
+  const authorization = recordOf(source.authorization_versions);
+  if (authorization) {
+    const versions: Record<string, number> = {};
+    for (const [key, value] of Object.entries(authorization)) {
+      if (typeof value === "number" && Number.isFinite(value)) versions[key] = value;
+    }
+    record.authorization_versions = versions;
+  }
+  const diagnostics = recordOf(source.diagnostics);
+  if (diagnostics) {
+    record.diagnostics = {
+      ...(typeof diagnostics.board_id === "string" ? { board_id: diagnostics.board_id } : {}),
+      ...(typeof diagnostics.submission_id === "string"
+        ? { submission_id: diagnostics.submission_id }
+        : {}),
+      ...(stringListOf(diagnostics.intent_ids) ? { intent_ids: stringListOf(diagnostics.intent_ids) } : {}),
+      ...(stringListOf(diagnostics.turn_ids) ? { turn_ids: stringListOf(diagnostics.turn_ids) } : {}),
+      ...(typeof diagnostics.record_key === "string"
+        ? { record_key: diagnostics.record_key }
+        : {}),
+    };
+  }
+  if (typeof source.verified === "boolean") record.verified = source.verified;
+  if (typeof source.verified_note === "string") record.verified_note = source.verified_note;
+  return Object.keys(record).length ? record : null;
+}
+
+/**
+ * 同一 record_key 只渲染一次（R2 契约 §四）：服务端把最早那条标 record_head=true，
+ * 其余是自动重试/再次执行的重复尝试。它们不渲染，避免同一次确认刷屏；每次 attempt
+ * 仍然在头部记录的详情里可见。
+ */
+export function isHiddenIntentExecution(
+  message: Pick<StreamMessage, "contentType" | "intentExecution">,
+): boolean {
+  return (
+    message.contentType === "intent_execution" &&
+    Boolean(message.intentExecution) &&
+    message.intentExecution?.record_head !== true
+  );
+}
+
+/**
+ * 消息流里真正可渲染的意图执行记录（R2 契约 §四 / 返修二）。
+ *
+ * 服务端的 head 口径是「**本页里**属于该 record 的最早一条」：分页之后，同一条记录可能在
+ * 不同页各带一个 `record_head=true`。界面只能渲染一次 —— 按消息顺序保留最早的那条
+ * （消息数组本身就是时间顺序），后续重复的 head 隐藏，避免滚动一下出现两张一样的卡片。
+ *
+ * 没有 record_head 字段的旧记录照旧隐藏；没有 record_key 的记录无法判断是否同一条，
+ * 仍按 head 渲染（服务端已经说过它是这一页的头部）。
+ */
+export function visibleIntentExecutionMessages(messages: StreamMessage[]): StreamMessage[] {
+  const heads = new Set<string>();
+  return messages.filter((message) => {
+    if (isHiddenIntentExecution(message)) return false;
+    if (message.contentType !== "intent_execution" || !message.intentExecution) return true;
+    const key = String(message.intentExecution.record_key ?? "").trim();
+    if (!key) return true;
+    if (heads.has(key)) return false;
+    heads.add(key);
+    return true;
+  });
 }
 
 /** 一次发送在受理时捕获的起点身份（稳定身份，不随后续导航变化）。 */
@@ -1908,6 +2068,30 @@ const sessionStoreDefinition = defineStore("session", {
     turnActionFeedback: {} as Record<string, string>,
     /** 正在提交的操作（`turnId:action`）：防重复提交 */
     turnActionBusy: null as string | null,
+    /**
+     * 意图执行记录（R2 返修二）：确认 / 恢复 / 重试之后，当前话题的历史可能已经过期。
+     *
+     * 这只是**提示位**，不是数据源：只用来决定「什么时候再走一次既有历史读取」，
+     * 不参与任何展示，也不代表本地已经有一条记录。
+     */
+    intentRecordsStale: false,
+    /** 一次历史重读正在进行（多条触发合并成一次，不并发打同一个接口） */
+    _intentRecordRefreshBusy: false,
+    /**
+     * 服务端发起的续作轮（确认 / 恢复 / 重试 / 自动重试）：本机没有「发送动作」，
+     * 只能靠 TURN_START 认领。登记后，这一轮首个「消息已落库」的事件 / TURN_END
+     * 会用既有历史读取刷新真实记录。
+     */
+    _intentRecordTurns: [] as string[],
+    /** 已经为这些轮做过一次「过程刷新」（STAGE / ASSISTANT 每轮可能很多条，只兑现一次） */
+    _intentRecordTurnProgress: [] as string[],
+    /**
+     * 过程刷新还没返回时又收到了「该刷新」的通知（例如 TURN_END）：不能丢掉这次要求，
+     * 当前读取结束后补读一次最新状态（本轮返修）。
+     */
+    _intentRecordRefreshPending: false,
+    /** 上面那次补读要求发起时的话题：话题变了就丢弃，避免旧响应把新话题覆盖 */
+    _intentRecordRefreshPendingTopic: null as string | null,
   }),
   getters: {
     /**
@@ -2848,7 +3032,7 @@ const sessionStoreDefinition = defineStore("session", {
      *
      * 结束事实由 recordTurnFacts **先**落地，这里只负责清理排队标记：
      * * 清掉这条用户消息的「等待中」；
-     * * 把它登记为「已取消」（QueueChip 可查看）；
+     * * 把它登记为「已取消」（对话页入口④「排队」可查看）；
      * * 绝不触碰 active / turnRunning —— 正在跑的可能是另一轮。
      */
     concludeQueuedTurn(turnId: string) {
@@ -3192,13 +3376,13 @@ const sessionStoreDefinition = defineStore("session", {
       // 服务端说「还有没返回的」时，总数不能被本地合并改小 —— 截断提示必须真实
       this.recoveryTotal = Math.max(this.recoveryTotal, merged.length);
       this.recoveryRecords = merged;
-      // 收件箱清单变了：旧入口（InterruptedTurnEntry）渲染的那份派生清单也要跟着收敛
+      // 收件箱清单变了：入口①「发送异常」与恢复收件箱共用的那份派生清单也要跟着收敛
       this._syncInterruptedTurns();
     },
     /**
-     * 从 `_rawInterruptedTurns` 派生出旧入口渲染的 `interruptedTurns`。
+     * 从 `_rawInterruptedTurns` 派生出界面渲染的 `interruptedTurns`。
      *
-     * 两个入口（旧的 InterruptedTurnEntry 与新的 RecoveryInbox）覆盖的是**同一批**事项，
+     * 两个入口（SendIssuesPanel 入口①「发送异常」与 RecoveryInbox）覆盖的是**同一批**事项，
      * 同一条记录绝不能同时出现在两边（那会让用户对同一条重复操作，且状态各说各话）。
      * 收件箱已经覆盖的 id 由新入口独家提供操作；收件箱拉不到时旧入口仍然兜底显示
      * （覆盖不会因此丢失）。已确认处理的 id 两边都过滤：稍旧的快照不许复活它们。
@@ -4756,6 +4940,8 @@ const sessionStoreDefinition = defineStore("session", {
         created_at: string;
         turn_id?: string | null;
         raw?: string;
+        /** 意图执行记录对象（content_type === "intent_execution" 时服务端附带） */
+        intent_execution?: unknown;
       }[],
       records: ToolRecordPreview[],
     ): StreamMessage[] {
@@ -4877,8 +5063,13 @@ const sessionStoreDefinition = defineStore("session", {
       raw?: string;
       /** 附件（契约 §1.6）：历史消息同样要能打开副本 / 重新定位 */
       attachments?: unknown;
+      /** 意图执行记录对象（content_type === "intent_execution" 时服务端附带） */
+      intent_execution?: unknown;
     }): StreamMessage {
       const attachments = historyAttachmentRefs(m.attachments);
+      // 只认服务端字段：content_type 命中且有对象才当记录；缺对象按普通消息降级
+      const intentExecution =
+        m.content_type === "intent_execution" ? parseIntentExecution(m.intent_execution) : null;
       if (m.content_type === "narrative") {
         // 历史里的叙事行：模型文案 + 系统生成的调用摘要（工具卡本身不进历史）
         const meta = parseNarrativeRaw(m.raw);
@@ -4916,6 +5107,7 @@ const sessionStoreDefinition = defineStore("session", {
         role: m.role as StreamMessage["role"],
         content,
         contentType: m.content_type,
+        ...(intentExecution ? { intentExecution } : {}),
         createdAt: m.created_at,
         topicName: this.topicName,
         fresh: false,
@@ -4987,6 +5179,157 @@ const sessionStoreDefinition = defineStore("session", {
     async retryHistory() {
       if (this.history.status === "loading") return;
       await this.loadHistory();
+    },
+
+    /* ------------------------------------------------------------------
+     * 意图执行记录：确认 / 恢复 / 重试之后「无需手动刷新」与「Turn 结束后态自己变」
+     *
+     * 只做两件事：用**既有历史读取**（loadHistory，同一个 /api/session/messages 入口）
+     * 重读当前话题；把「该重读了」记成提示位。不轮询、不伪造本地记录、不按文本猜状态，
+     * 也不在读取失败时把它说成「已更新」（失败口径沿用既有 history.status / history.error）。
+     * ------------------------------------------------------------------ */
+
+    /** 标记「当前话题的历史可能过期」：等下一次相关 Turn 结束 / 页面重新激活时再读一次。 */
+    markIntentRecordsStale() {
+      this.intentRecordsStale = true;
+    },
+
+    /** 当前已加载消息里有没有意图执行记录（只看服务端字段，不猜文本）。 */
+    hasIntentExecutionRecord(): boolean {
+      return this.messages.some(
+        (message) => message.contentType === "intent_execution" && Boolean(message.intentExecution),
+      );
+    },
+
+    /**
+     * 登记本轮是服务端发起的续作轮（确认 / 恢复 / 重试）：它没有本机的发送动作，
+     * 但一旦真正开跑就会落一条意图执行记录。
+     */
+    noteIntentExecutionTurn(turnId: string): void {
+      const id = String(turnId ?? "").trim();
+      if (!id || this._intentRecordTurns.includes(id)) return;
+      this._intentRecordTurns = [...this._intentRecordTurns.slice(-19), id];
+    },
+
+    /** 这一轮是不是被登记的续作轮（只影响「要不要重读历史」，不参与展示）。 */
+    isIntentExecutionTurn(turnId: string): boolean {
+      const id = String(turnId ?? "").trim();
+      return Boolean(id) && this._intentRecordTurns.includes(id);
+    },
+
+    /**
+     * 这一轮结束时值不值得重读历史：
+     * * 它是登记过的续作轮；
+     * * 并且「记录可能已经出现」（当前页已有记录）或「有动作刚发生还没看到记录」（提示位）。
+     *
+     * 两者都不成立时（普通聊天轮）什么都不做：不打断用户正在看的对话。
+     */
+    shouldRefreshIntentRecordsForTurn(turnId: string): boolean {
+      if (!this.isIntentExecutionTurn(turnId)) return false;
+      return this.intentRecordsStale || this.hasIntentExecutionRecord();
+    },
+
+    /**
+     * 续作轮的首个「消息已落库之后」的事件到达：过程状态先刷一次（每轮只一次）。
+     *
+     * 让记录在 Turn 还在跑的时候就出现（通常是「正在处理」），不用等整轮结束。
+     */
+    async refreshIntentExecutionTurnProgress(turnId: string): Promise<void> {
+      const id = String(turnId ?? "").trim();
+      if (!id) return;
+      if (!this.shouldRefreshIntentRecordsForTurn(id)) return;
+      if (this._intentRecordTurnProgress.includes(id)) return;
+      this._intentRecordTurnProgress = [...this._intentRecordTurnProgress.slice(-19), id];
+      await this.refreshIntentExecutionRecords("turn-progress");
+    },
+
+    /**
+     * 续作轮结束：把真实终态读出来（确认 / 恢复 / 重试 / 服务端自动重试都走这里）。
+     *
+     * Turn 结束是**唯一**可信的「状态该变了」的时机；读完就不再重复登记这一轮。
+     */
+    async refreshIntentExecutionTurnEnd(turnId: string): Promise<void> {
+      const id = String(turnId ?? "").trim();
+      if (!id) return;
+      /**
+       * 判定口径（与验收对齐）：
+       * * 当前页**已经能看到**意图执行记录 → 这一轮的结束可能与记录状态有关，刷新一次真实状态。
+       *   服务端自动重试轮本机无法预知 turnId，只能这样按「话题里确实有记录」认定；
+       * * 还没有记录（首次确认刚发生）→ 只有登记过的续作轮 + 「可能过期」提示才刷新。
+       * 其余情况（没有记录、也不是续作轮的普通聊天轮）什么都不做，不打扰用户。
+       */
+      const hasRecord = this.hasIntentExecutionRecord();
+      const tracked = this.isIntentExecutionTurn(id);
+      this._intentRecordTurns = this._intentRecordTurns.filter((item) => item !== id);
+      this._intentRecordTurnProgress = this._intentRecordTurnProgress.filter((item) => item !== id);
+      if (!hasRecord && !tracked) return;
+      await this.refreshIntentExecutionRecords("turn-end");
+    },
+
+    /**
+     * 用**既有历史读取**刷新当前话题（确认 / 恢复 / 重试成功、相关 Turn 结束、页面重新激活）。
+     *
+     * 返回这次是否真的读到了（history.status === "ready"）。读不到时不抛出、不弹窗：
+     * 失败原因已经由 loadHistory 按既有口径写进 history.status / history.error，
+     * 界面照常显示「历史没有加载出来 + 重试」—— 绝不把没读到说成已更新。
+     */
+    async refreshIntentExecutionRecords(_reason = "intent-action"): Promise<boolean> {
+      if (this._intentRecordRefreshBusy) {
+        /**
+         * 已经有一次历史读取在跑：**不能直接丢掉这次刷新要求**。
+         * 触发顺序（本轮返修）：过程状态读取还没返回时收到 TURN_END —— 旧实现会把结束刷新
+         * 丢掉，记录于是停在「正在处理」。这里只记下要求，当前读取结束后补读一次；
+         * 不并发打同一个接口，也不轮询。
+         */
+        this._intentRecordRefreshPending = true;
+        this._intentRecordRefreshPendingTopic = this.currentTopicId ?? null;
+        return false;
+      }
+      // 已经在读 / 还没进入任何话题（首屏加载会自然带上最新一页）：不重复打接口
+      if (this.history.status === "loading" || this.history.status === "idle") return false;
+      /**
+       * 正在流式输出的用户聊天轮里整段重读历史会把已经生成的正文擦掉；
+       * 等这一轮结束再刷新（记录不会丢，结束后的 TURN_END 刷新会读到终态）。
+       */
+      if (this.turnRunning && !this.isIntentExecutionTurn(this.activeTurnId ?? "")) return false;
+      this._intentRecordRefreshBusy = true;
+      try {
+        await this.loadHistory();
+        const ok = this.history.status === "ready";
+        /**
+         * 只有**真的读到了记录**才算「可能过期」这一页已经补齐：
+         * 动作刚发生时记录可能还没落库（续作轮还在建上下文），这次读不到不能把提示位清掉，
+         * 否则后续的进度 / TURN_END 刷新会因为「既没提示、也还没记录」而不再触发。
+         */
+        if (ok && this.hasIntentExecutionRecord()) this.intentRecordsStale = false;
+        return ok;
+      } finally {
+        this._intentRecordRefreshBusy = false;
+        await this._flushIntentRecordRefresh();
+      }
+    },
+
+    /**
+     * 读取结束后兑现「挂起的刷新要求」（本轮返修）。
+     *
+     * 只补读一次；发起时的话题已经换了就丢弃（旧话题的读取不能覆盖新话题）。
+     * 仍受既有条件约束（没有进入话题 / 正在流式输出的普通用户轮不重读）。
+     */
+    async _flushIntentRecordRefresh(): Promise<void> {
+      if (!this._intentRecordRefreshPending) return;
+      const topicAtRequest = this._intentRecordRefreshPendingTopic;
+      this._intentRecordRefreshPending = false;
+      this._intentRecordRefreshPendingTopic = null;
+      if (topicAtRequest !== (this.currentTopicId ?? null)) return;
+      if (this.history.status === "loading" || this.history.status === "idle") return;
+      if (this.turnRunning && !this.isIntentExecutionTurn(this.activeTurnId ?? "")) return;
+      await this.refreshIntentExecutionRecords("deferred");
+    },
+
+    /** 页面重新激活：把确认 / 重试留下的「可能过期」提示兑现一次（只读）。 */
+    async reloadHistoryIfStale(): Promise<boolean> {
+      if (!this.intentRecordsStale) return false;
+      return this.refreshIntentExecutionRecords("page-activation");
     },
     /** 清掉某一轮的操作反馈（新的尝试开始时旧错误不再显示） */
     clearTurnActionFeedback(turnId: string) {

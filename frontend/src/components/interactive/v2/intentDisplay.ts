@@ -267,6 +267,16 @@ export type ConfirmResponseWithTurn = Omit<ConfirmResponse, "results"> & {
   turn_id?: string | null;
   turnId?: string | null;
   resume?: boolean;
+  /**
+   * A 的修复：确认已保存但续作 Turn 没起来时的真实原因。
+   * 后端可能放在 turnStart（{code, reason}）/ startError / 顶层 reason。
+   */
+  turnStart?: {
+    code?: string | null;
+    reason?: string | null;
+  } | null;
+  startCode?: string | null;
+  reason?: string | null;
 };
 
 /** 读取真实执行轮次：逐项优先，其次响应级；没有就 null（绝不编造）。 */
@@ -309,6 +319,12 @@ export interface ConfirmSummary {
   /** 服务端响应级 turn_id（有些实现放在顶层） */
   responseTurnId: string | null;
   resume: boolean;
+  /** 确认已保存，但后端明确说本次**没有开始执行**（started===false）。 */
+  startFailed: boolean;
+  /** 没开始执行的原因码（如 topic_unresolved；没有就空串） */
+  startCode: string;
+  /** 没开始执行的真实原因（给人看；没有就空串） */
+  startError: string;
   /** 可直接展示的一句人话（绝不说成已完成） */
   notice: string;
 }
@@ -331,6 +347,19 @@ export function summarizeConfirm(
   }
   const responseTurnId = readTurnId(response);
   const batch = options.batch ?? Boolean(response?.batch);
+  /**
+   * A 的修复：确认"已保存但没开始执行"时后端给的真实原因。
+   * 读取顺序（后端契约）：turnStart.reason → startError → 顶层 reason；
+   * 原因码：turnStart.code → startCode。**只有 started===false 才当失败**，
+   * started 缺省 / true 都不伪造失败。
+   */
+  const turnStart =
+    response?.turnStart && typeof response.turnStart === "object" ? response.turnStart : null;
+  const startFailed = response?.started === false;
+  const startCode = String(turnStart?.code ?? response?.startCode ?? "").trim();
+  const startError = startFailed
+    ? String(turnStart?.reason ?? response?.startError ?? response?.reason ?? "").trim()
+    : "";
 
   const rows: ConfirmRowView[] = requested.map((intentId) => {
     const item = byId.get(intentId);
@@ -369,7 +398,10 @@ export function summarizeConfirm(
   const succeededIds = rows.filter((row) => row.returned && row.ok).map((row) => row.intentId);
   const failedIds = rows.filter((row) => !row.returned || !row.ok).map((row) => row.intentId);
   const completedIds = rows.filter((row) => row.completed).map((row) => row.intentId);
-  const startedUnknownIds = rows.filter((row) => row.startedUnknown).map((row) => row.intentId);
+  // 已知没开始（started=false）时由下面的明确原因收口，不再叠一句"没有返回执行轮次"
+  const startedUnknownIds = startFailed
+    ? []
+    : rows.filter((row) => row.startedUnknown).map((row) => row.intentId);
   const turnIds: Record<string, string> = {};
   for (const row of rows) if (row.turnId) turnIds[row.intentId] = row.turnId;
 
@@ -397,6 +429,16 @@ export function summarizeConfirm(
         " —— 不能认为已经开始执行（服务端没有返回 turn_id）。",
     );
   }
+  /**
+   * 「已确认但没有开始执行」必须说清原因（A 的 topic_unresolved 就是这一类）。
+   * 不能只留一句"没有返回执行轮次"——用户会以为已经排队，实际那次续作根本没起来。
+   */
+  if (startFailed) {
+    const reason = startError || "服务端没有返回具体原因";
+    const prefix = startCode === "topic_unresolved" ? "原提交话题无法确认" : "";
+    const detail = prefix ? prefix + "（" + reason + "）" : reason;
+    parts.push("已确认，但本次没有开始执行：" + detail + "。事务已保存，可查看原因后重试。");
+  }
   if (completedIds.length) {
     parts.push("服务端已完成：" + completedIds.join("、") + "。");
   } else if (succeededIds.length) {
@@ -413,39 +455,12 @@ export function summarizeConfirm(
     turnIds,
     responseTurnId,
     resume: response?.resume === true,
+    startFailed,
+    startCode,
+    startError,
     notice: parts.join(""),
   };
 }
-
-// --- 能力迁移（Phase 1-D 审计：旧工作台 / BatchTray / StatusPopover 的有效能力） ----
-
-export interface MigratedCapability {
-  from: "IntentWorkbench" | "IntentBatchTray" | "IntentStatusPopover";
-  capability: string;
-  /** 迁移到本 Phase 3-A 的哪里（组件 / 纯函数 / 依赖服务端字段） */
-  movedTo: string;
-  /** 已迁移 / 依赖后端字段 / 不在本轮（如实标注） */
-  status: "migrated" | "needs-backend" | "kept-legacy";
-}
-
-/**
- * 旧能力的去向表（测试守住「不能直接删、有效能力要有去处」）。
- * 注意：IntentBatchTray / IntentStatusPopover 的暂停 / 继续 / 取消与旧账本是**旧链接口**，
- * 新链需要后端同步提供；本轮如实标注为 needs-backend，不用前端 setTimeout 或假状态顶上。
- */
-export const MIGRATED_CAPABILITIES: readonly MigratedCapability[] = [
-  { from: "IntentWorkbench", capability: "目标 / 预期 / 依据 / 范围 / 版本", movedTo: "v2/IntentLayer 详情面板", status: "migrated" },
-  { from: "IntentWorkbench", capability: "依赖 / 冲突", movedTo: "v2/IntentLayer 详情面板（dependencyText）", status: "migrated" },
-  { from: "IntentWorkbench", capability: "操作账本摘要", movedTo: "v2/IntentLayer 详情面板（operationsSummaryText）", status: "migrated" },
-  { from: "IntentWorkbench", capability: "单条确认", movedTo: "v2/IntentLayer 显式单 id 确认", status: "migrated" },
-  { from: "IntentWorkbench", capability: "同批确认（≥2，显式 ids）", movedTo: "v2/IntentLayer 批量栏 + batchConfirmIntents", status: "migrated" },
-  { from: "IntentWorkbench", capability: "等待事项 / 结果卡 / 恢复预览", movedTo: "IntentWorkbench 保留（新链服务不变）+ v2/IntentLayer 恢复入口", status: "kept-legacy" },
-  { from: "IntentBatchTray", capability: "批次列表 / 同批批准 / 拒绝 / 执行摘要", movedTo: "批量确认走 v2/IntentLayer；拒绝与旧批次台账留在旧链（不冒充新链）", status: "kept-legacy" },
-  { from: "IntentBatchTray", capability: "依赖 / 冲突提示", movedTo: "v2/IntentLayer 详情（dependencyText + conflicts）", status: "migrated" },
-  { from: "IntentStatusPopover", capability: "真实执行状态 / 定位预览", movedTo: "v2/IntentLayer 状态标签 + 定位（Lead 接线 move 事件）；旧浮层保留", status: "migrated" },
-  { from: "IntentStatusPopover", capability: "暂停 / 继续 / 取消执行", movedTo: "新链需后端执行控制接口（本轮不伪造）", status: "needs-backend" },
-  { from: "IntentStatusPopover", capability: "失败重试读取", movedTo: "v2/IntentLayer 恢复预览 + 诚实失败原因（自动重试由后端调度）", status: "migrated" },
-];
 
 /** 详情面板里的能力行：依赖 / 冲突 / 账本 / 范围 / 授权 / 恢复。 */
 export interface CapabilityRow {

@@ -21,6 +21,7 @@ import { useInteractiveStore } from "../../../stores/interactive";
 import { emptyState } from "../../../interactive/board";
 import { cardDraftKey } from "../../../interactive/drafts";
 import type { BoardCard as BoardCardModel } from "../../../interactive/types";
+import { hasTipRecord } from "../../../composables/useQioTip";
 
 const STAMP = "2026-10-15T00:00:00.000Z";
 /** 反引号用常量拼：测试源码里不出现三连反引号，避免被 Markdown 工具链误读 */
@@ -394,7 +395,8 @@ describe("结果卡：复制原文与许可 UI（B4 / B6）", () => {
     await btn.trigger("click");
     await flushPromises();
     expect(btn.text()).toContain("复制失败");
-    expect(btn.attributes("title") ?? "").toContain("手动复制");
+    expect(btn.attributes("title")).toBeUndefined();
+    expect(hasTipRecord(btn.element as HTMLElement), "手动复制退路要走统一用途说明").toBe(true);
   });
 
   it("没有正文时「复制原文」不可用（不假装复制出内容）", () => {

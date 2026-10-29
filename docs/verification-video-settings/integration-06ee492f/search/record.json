@@ -1,0 +1,21 @@
+{
+  "name": "search",
+  "title": "搜索定位（输入 → 结果 → 定位高亮）",
+  "status": "recorded",
+  "notes": [
+    "mp4 按 24fps 编码；CDP 帧时间戳不等间隔，视频用于目视流程，帧级数据以截图与 JSON 为准。",
+    "原始帧已删除（--keep-frames 可保留）。"
+  ],
+  "result": {
+    "query": "返回条数",
+    "hits": 1,
+    "after": "模型与服务",
+    "highlighted": 1
+  },
+  "elapsedMs": 30251,
+  "frames": 2403,
+  "realFrameRate": 79.51,
+  "video": "docs\\verification-video-settings\\integration-06ee492f\\search\\capture.mp4",
+  "viewport": "1440x900",
+  "screencastScale": 1280
+}

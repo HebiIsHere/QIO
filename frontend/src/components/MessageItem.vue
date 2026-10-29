@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { vQioTip } from "../composables/useQioTip";
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
+import IntentExecutionMessage from "./IntentExecutionMessage.vue";
 import AttachmentChip from "./AttachmentChip.vue";
 import { mediaFactsOf } from "./mediaFacts";
 import { splitSystemAnnotation, useSessionStore } from "../stores/session";
@@ -48,6 +50,22 @@ const tokText = computed(() => {
   if (!usage) return "";
   return `token ${usage.tokens.toLocaleString("en-US")}`;
 });
+
+/**
+ * 意图执行记录（R2 契约 §四）：只认服务端字段 —— content_type 命中且带 intent_execution 对象。
+ * 缺对象时返回 null，按普通消息降级（不按文本前缀/关键词猜）。
+ */
+const intentExecution = computed(() =>
+  props.message.contentType === "intent_execution" ? (props.message.intentExecution ?? null) : null,
+);
+
+/**
+ * 互动提交轮（R5）：服务端把提交轮的程序消息标成 board_submission。
+ * 内部绑定文字（board_id / submission_id / 程序指令）仍留在 content 里给模型，
+ * 但**不作为普通用户消息出现**——只认服务端字段，不按文本前缀猜；历史旧消息
+ * （content_type=text）保持原样，不回溯改写。
+ */
+const boardSubmission = computed(() => props.message.contentType === "board_submission");
 
 const open = ref(false);
 /** 本次会话新产生的消息：最多一次很短的入场；历史消息不带这个标记 */
@@ -499,12 +517,26 @@ function removeOne(id: string) {
 </script>
 
 <template>
-  <div class="message" :class="[message.role, { fresh: isFresh }]" data-qio-fit>
+  <div
+    v-if="!boardSubmission"
+    class="message"
+    :class="[message.role, { fresh: isFresh, 'intent-record': intentExecution }]"
+    data-qio-fit
+  >
     <!--
       消息宽度链根：data-qio-fit = min-width:0 + max-width:100% + overflow-x:clip。
       横向溢出的真正修复在下面的布局（min-width:0 / 换行 / 收缩），clip 只是边界保护。
     -->
-    <template v-if="message.role === 'user'">
+    <!--
+      意图执行记录（R2 契约 §四）：与「用户亲自输入的消息」明确区分。
+      只渲染服务端结构化的 intent_execution 对象；record_head !== true 的记录在
+      MessageStream 层已过滤，组件内也会拒绝渲染（双保险，历史/实时同一入口）。
+    -->
+    <template v-if="intentExecution">
+      <IntentExecutionMessage :record="intentExecution" />
+    </template>
+
+    <template v-else-if="message.role === 'user'">
       <div class="bubble user-bubble" data-qio-fit>
         <div class="plain">{{ message.content }}</div>
       </div>
@@ -606,14 +638,14 @@ function removeOne(id: string) {
         data-qio-fit
         :class="{ fail: toolFailed, running: toolRunning, open }"
         :data-state="toolRunning ? 'running' : toolFailed ? 'failed' : 'ready'"
-        :title="rawToolName"
+        v-qio-tip="rawToolName"
       >
         <button
           class="tool-head"
           type="button"
           @click="toggleTool"
           :aria-expanded="open"
-          :title="open ? '收起' : '展开'"
+          v-qio-tip="open ? '收起' : '展开'"
         >
           <span
             class="tool-mark"
@@ -638,7 +670,7 @@ function removeOne(id: string) {
           v-if="canLocate"
           class="task-locate"
           type="button"
-          title="在左侧任务栏定位这条执行记录（已归档的会定位到历史）"
+          v-qio-tip="'在左侧任务栏定位这条执行记录（已归档的会定位到历史）'"
           @click="locateTask"
         >
           在任务栏查看
@@ -704,7 +736,7 @@ function removeOne(id: string) {
           v-if="canLocate"
           class="task-locate"
           type="button"
-          title="在左侧任务栏定位这项独立任务"
+          v-qio-tip="'在左侧任务栏定位这项独立任务'"
           @click="locateTask"
         >
           在任务栏查看
@@ -772,7 +804,7 @@ function removeOne(id: string) {
             class="code-preview-btn"
             type="button"
             :aria-label="'在右侧查看这段' + (block.language || '') + '代码（只读）'"
-            :title="'在右侧只读预览这段' + (block.language || '') + '代码'"
+            v-qio-tip="'在右侧只读预览这段' + (block.language || '') + '代码'"
             @click="previewCodeBlock(block)"
           >
             <span class="code-preview-glyph" aria-hidden="true">
@@ -920,6 +952,13 @@ function removeOne(id: string) {
   /* 用户消息收窄：靠 alignment + 字色区分角色，不用整块色填充 */
   max-width: min(620px, 88%);
 }
+/* 意图执行记录：左侧整宽记录卡（不是用户消息），不继承用户侧的右对齐与玫红规线 */
+.message.intent-record {
+  margin-left: 0;
+  margin-right: auto;
+  align-items: stretch;
+  max-width: min(760px, 100%);
+}
 .message.assistant {
   margin-right: auto;
   align-items: flex-start;
@@ -931,7 +970,7 @@ function removeOne(id: string) {
   max-width: min(760px, 100%);
   border-left: 2px solid var(--border-strong);
   background: var(--bg-inset);
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 .sf-kind {
   display: block;
@@ -1083,7 +1122,7 @@ function removeOne(id: string) {
 .copy-btn:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-  border-radius: var(--r-xs);
+  border-radius: var(--qio-ui-radius);
 }
 /* ---- 工具卡 ---- */
 /* 卡片家族共用契约：`.qio-card`（底/边/圆角/层级）+ `data-state`（running/waiting/ready/failed）。
@@ -1091,7 +1130,7 @@ function removeOne(id: string) {
 .tool-card {
   margin: 4px 0;
   padding: 0;
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   /* 纯裁剪（圆角 + 收起详情）：overflow: clip 不建立滚动容器 ——
      程序性滚动也做不到，不存在「看不见但能左右滚」的路径。 */
   overflow: clip;
@@ -1144,7 +1183,7 @@ function removeOne(id: string) {
 }
 .tool-status {
   padding: 1px 8px;
-  border-radius: 20px;
+  border-radius: var(--qio-ui-radius);
   font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.04em;
@@ -1241,7 +1280,7 @@ function removeOne(id: string) {
 .subagent-card {
   margin: 4px 0;
   border-left: 2px solid var(--link);
-  border-radius: var(--r-lg);
+  border-radius: var(--qio-ui-radius);
   padding: 10px 12px;
   font-size: 12.5px;
 }

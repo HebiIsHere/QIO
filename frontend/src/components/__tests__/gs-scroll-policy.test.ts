@@ -36,28 +36,6 @@ function ruleBody(source: string, selector: string): string {
   return m ? m[1] : "";
 }
 
-const FAILED_SEND = "components/interactive/FailedSendNotice.vue";
-
-describe("task-7：失败恢复浮层的滚动层收敛（FailedSendNotice）", () => {
-  it("四个选择器都不再自开滚动层（max-height + overflow-y 的组合已移除）", () => {
-    const src = read(FAILED_SEND);
-    for (const sel of [".failed-send", ".recovery", ".pending", ".quote"]) {
-      const body = ruleBody(src, sel);
-      expect(body, sel + " 规则必须存在").not.toBe("");
-      expect(body, sel + " 不应再有 max-height（会在同一阅读流里再切一层小滚动窗口）").not.toContain("max-height");
-      expect(body, sel + " 不应再有 overflow-y").not.toContain("overflow-y");
-      expect(body, sel + " 不应再有 overscroll-behavior").not.toContain("overscroll-behavior");
-    }
-  });
-
-  it("恢复入口仍然带边界保护；规模由「默认 3 条 + 查看其余 N 条」控制", () => {
-    const src = read(FAILED_SEND);
-    expect(src).toContain("data-qio-fit");
-    expect(src).toContain("DEFAULT_SHOWN");
-    expect(src).toContain("查看其余");
-  });
-});
-
 describe("恢复/审批正文的 scroll 层数（task-7 连带范围）", () => {
   it("RecoveryInbox 没有自开滚动层，长原文默认简述 + 就地展开", () => {
     const src = read("components/RecoveryInbox.vue");
@@ -79,24 +57,15 @@ describe("恢复/审批正文的 scroll 层数（task-7 连带范围）", () => 
     expect(src).toContain("data-qio-fit");
   });
 
-  it("ApprovalModal：正文是唯一滚动层，按钮区在正文之外（固定操作不被滚走）", () => {
-    const src = read("components/ApprovalModal.vue");
-    const body = ruleBody(src, ".body");
-    expect(body).toContain("max-height");
+  it("统一审批弹窗：正文是唯一滚动层，按钮区在正文之外（固定操作不被滚走）", () => {
+    // 旧 components/ApprovalModal.vue 在 A-CP1 后由 C 删除；同一约束改由统一弹窗承接。
+    const src = read("components/approval/UnifiedApprovalModal.vue");
+    const body = ruleBody(src, ".ua-body");
     expect(body).toContain("overflow-y: auto");
-    expect(src).toContain('class="body" v-qio-scrollbar data-qio-fit');
-    // 模板顺序：.body 先出现、.actions 在后 —— 按钮在滚动区外
-    expect(src.indexOf('class="body"')).toBeLessThan(src.indexOf('class="actions"'));
-  });
-
-  it("ImpactConfirmDialog：滚动收敛到 .body 一层，操作区固定在框内", () => {
-    const src = read("components/interactive/ImpactConfirmDialog.vue");
-    expect(ruleBody(src, ".dialog")).toContain("overflow: clip");
-    const body = ruleBody(src, ".body");
-    expect(body).toContain("overflow-y: auto");
-    expect(body).toContain("flex: 1 1 auto");
-    expect(src).toContain('class="body" v-qio-scrollbar data-qio-fit');
-    expect(ruleBody(src, ".actions")).toContain("flex: none");
+    expect(body).toContain("min-height: 0");
+    expect(src).toContain('class="ua-body" v-qio-scrollbar');
+    // 模板顺序：.ua-body 先出现、.ua-actions 在后 —— 按钮在滚动区外
+    expect(src.indexOf('class="ua-body"')).toBeLessThan(src.indexOf('class="ua-actions"'));
   });
 });
 
@@ -105,16 +74,15 @@ describe("统一滚动策略：不再有原生/自绘滚动条", () => {
     "components/DevTaskEntry.vue",
     "components/ui/QCombo.vue",
     "components/ui/QSelect.vue",
-    "components/interactive/IntentBatchTray.vue",
-    "components/interactive/IntentPreviewCard.vue",
-    "components/interactive/IntentStatusPopover.vue",
     "components/interactive/SubmitCluster.vue",
     "components/planet/EntityPanel.vue",
     "components/planet/KnowledgePanel.vue",
     "components/onboarding/OnboardingWizard.vue",
-    "views/settings/CredentialModal.vue",
     "views/DebugView.vue",
     "views/PlanetView.vue",
+    "components/planet/MemoryTab.vue",
+    "components/planet/GlobalSearchPanel.vue",
+    "components/planet/ManagementArea.vue",
     "views/SettingsView.vue",
   ];
 
@@ -129,8 +97,8 @@ describe("统一滚动策略：不再有原生/自绘滚动条", () => {
   it("声明了纵向滚动的区域都接入了共享策略（指令 / 组合式 / 容器组件）", () => {
     const missing = converted.filter((rel) => {
       const src = read(rel);
-      if (!/overflow-y:\s*auto/.test(src) && !/class="qio-scroll-area"/.test(src)) return false;
-      return !/v-qio-scrollbar|useQioScrollbars|QioScrollArea|qio-scroll-area/.test(src);
+      if (!/overflow-y:\s*auto/.test(src)) return false;
+      return !/v-qio-scrollbar|useQioScrollbars/.test(src);
     });
     expect(missing).toEqual([]);
   });
@@ -164,31 +132,51 @@ describe("下拉 / 浮层：列表滚动走统一指示条、正文不横向滚"
 });
 
 describe("星球页（D6）：横向溢出按「修布局 + 去掉横向滚动能力」处理", () => {
+  // 2026-10-27 改版：话题列表/概览/讨论记录搬进管理区的记忆标签页，星球页只保留舞台与管理面板
   const src = read("views/PlanetView.vue");
 
   it("整层与面板布局容器改成两轴 clip（不再是可被程序性滚动的容器）", () => {
     expect(ruleBody(src, ".planet-view")).toContain("overflow: clip");
     expect(ruleBody(src, ".panel-inner")).toContain("overflow: clip");
-    expect(ruleBody(src, ".panel-body")).toContain("overflow: clip");
+    expect(ruleBody(src, ".panel")).toContain("overflow: clip");
   });
 
-  it("话题列表 / 详情保留各自纵向滚动，横向锁死；面板正文一律可换行", () => {
-    for (const sel of [".topic-scroll", ".detail-scroll"]) {
-      const body = ruleBody(src, sel);
-      expect(body, sel).toContain("overflow-y: auto");
-      expect(body, sel).toContain("overflow-x: clip");
-    }
+  it("窄窗口：内容区是唯一纵向滚动层，横向裁切；面板正文一律可换行", () => {
+    const stacked = ruleBody(src, ".planet-view.managing.stacked .planet-content");
+    expect(stacked).toContain("overflow-y: auto");
+    expect(stacked).toContain("overflow-x: clip");
     // 根因修复：内容宽度不超过容器（否则 overflow-x 会退化成 hidden，仍能左右滚）
     expect(src).toContain("overflow-wrap: anywhere");
     expect(src).toMatch(/\.panel-inner :where\([^)]*\)\s*\{/);
-    expect(ruleBody(src, ".tabs")).toContain("flex-wrap: wrap");
-    expect(ruleBody(src, ".topic-list .name")).toContain("min-width: 0");
+    // 管理区头部与标签在窄窗换行，不把面板撑宽
+    const area = read("components/planet/ManagementArea.vue");
+    expect(ruleBody(area, ".ma-head")).toContain("flex-wrap: wrap");
+    expect(ruleBody(area, ".ma-tabs")).toContain("flex-wrap: wrap");
   });
 
-  it("三处滚动区域都接入共享策略（指示条），且不再用 overflow:hidden 兜底横向", () => {
+  it("记忆标签页：列表 / 概览 / 讨论记录三层各自纵向滚动、横向锁死", () => {
+    const mem = read("components/planet/MemoryTab.vue");
+    const body = ruleBody(mem, ".mt-scroll");
+    expect(body).toContain("overflow-y: auto");
+    expect(body).toContain("overflow-x: clip");
+    expect(ruleBody(mem, ".topic-list .name")).toContain("min-width: 0");
+    // 长摘要 / 长 id 可换行
+    expect(mem).toContain("overflow-wrap: anywhere");
+  });
+
+  it("滚动区域都接入共享策略（指示条），且不再用 overflow:hidden 兜底横向", () => {
     expect(src).toContain("v-qio-scrollbar");
-    expect(ruleBody(src, ".topic-scroll")).not.toContain("overflow: hidden");
     expect(ruleBody(src, ".planet-view")).not.toContain("overflow: hidden");
+    for (const rel of ["components/planet/MemoryTab.vue", "components/planet/GlobalSearchPanel.vue"]) {
+      const s = read(rel);
+      expect(s, rel).toContain("v-qio-scrollbar");
+      // 原生滚动条外观与自绘滚动条在这两处同样不允许
+      expect(s, rel).not.toMatch(/::-webkit-scrollbar|scrollbar-width\s*:/);
+    }
+    // 「不再用 overflow:hidden 兜底横向」只约束**滚动容器本身**：
+    // 结果行第二行用 overflow:hidden + text-overflow 做单行省略，不是滚动层（这里按选择器判定）
+    expect(ruleBody(read("components/planet/GlobalSearchPanel.vue"), ".gs-scroll")).not.toContain("overflow: hidden");
+    expect(ruleBody(read("components/planet/MemoryTab.vue"), ".mt-scroll")).not.toContain("overflow: hidden");
   });
 });
 
