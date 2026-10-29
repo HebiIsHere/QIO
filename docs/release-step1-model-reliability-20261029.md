@@ -17,7 +17,8 @@
 
 - 原触发条件：`use_adapters` 把按 kind 的 adapter 映射写入实例属性 `_task_adapters`；两个后台派生工作交错时互相覆盖，后续阶段可能读到别人的配置、空配置或残留的旧配置。
 - 修复：改为任务上下文隔离（`contextvars.ContextVar`），`drain_derived_tasks` 在入口快照本次配置并显式传给两批 `_drain_batch`；`_drain_batch` 不再读取实例可变状态。显式 `adapters=` 与 `UsageUnavailable` 如实失败语义不变。
-- 验证：`backend/tests/test_release_step1_b.py`（asyncio.Event 明确同步点交错、单工作三阶段一致、取消/失败收尾不污染、无实例残留），并回归既有派生测试。
+- 后续修复（B 剩余问题）：`build_derived_adapters` 在**第一次异步等待之前**同步解析并冻结本批三项目的与不可用结果，再逐个建连接；用户在建第一种连接期间修改用途设置，只影响下一批，不再出现同批 summary 旧配置、knowledge/entities 新配置的混用。
+- 验证：`backend/tests/test_release_step1_b.py`（asyncio.Event 明确同步点交错、单工作三阶段一致、取消/失败收尾不污染、无实例残留；新增「暂停第一种连接构建 → 修改三项用途设置 → 放行」的确定性测试，同时覆盖旧目标与旧不可用结果、下一批全部新配置），并回归既有派生测试。
 
 ### C. 模型目录与真实调用对连接可用性的判断一致
 
@@ -36,7 +37,7 @@
 - 后端定向：四项新增测试与受影响的 adapter/派生/目录/用途/路由既有测试全部通过。
 - 前端：`npx vue-tsc --noEmit`、`npm run build` 通过；定向 vitest（模型组件 + 设置页）通过；全量 `npm test` 只有一个在基线上同样失败的 Windows 环境用例（同一基线提交的 Linux CI 运行通过），不属于本轮改动。
 - 文档：`python scripts/check_docs.py` 与 `--selftest` 通过。
-- 完整后端 `uv run --frozen pytest` 通过（exit 0，无失败用例）；集成后的定向与邻近回归亦通过。
+- 完整后端 `uv run --frozen pytest` 在上一候选提交（四项修复）上通过（exit 0，无失败用例）；B 剩余问题为后续定向修复，按用户要求只跑定向测试、未重跑全量或 CI。
 
 ## 范围外记录（本轮不处理）
 

@@ -356,3 +356,142 @@ async def test_schedule_derived_work_hands_snapshot_to_real_drain(app_ctx, monke
 
     assert len(build_calls) == 1, "一次派发只解析一次用途配置（快照）"
     assert used == [summary_adapter], "派发解析出的 adapter 必须真的交给 drain 执行"
+
+
+async def test_build_derived_adapters_snapshots_all_targets_before_first_await(
+    app_ctx, monkeypatch
+):
+    """B 剩余问题：准备第一种连接期间改用途设置，不能改变这一批的另外两类目标。
+
+    真实链路：真实的 AppContext / 凭据 / model_usages 配置读取 + 真实的
+    build_adapter_for_target；只把「模型调用 / 连接创建」换成可暂停的 fake。
+    先用 asyncio.Event 把第一类（summary）的连接创建卡住，在卡住期间把三条用途
+    全部改到新目标，再放行：
+    * 本批 summary/knowledge/entities 必须全部使用改动前的目标/不可用结果；
+    * 下一批必须全部使用新目标（中途修改只影响新开始的工作）。
+    """
+    from agent.credentials.models import ModelCatalogStore
+    from agent.services.usage_target import UsageUnavailable
+
+    ctx = app_ctx
+    old_models = {
+        "memory-organize": "old-summary",
+        "knowledge-distill": "old-knowledge",
+        "entity-extract": "old-entities",
+    }
+    new_models = {
+        "memory-organize": "new-summary",
+        "knowledge-distill": "new-knowledge",
+        "entity-extract": "new-entities",
+    }
+    ctx.credentials.create(
+        "old-key",
+        "sk-fake-old-key",
+        ["main-loop"],
+        "https://old.example.com/v1",
+        "old-summary",
+        verify_state="verified",
+    )
+    # knowledge 的旧目标在准备期间不可用：不可用结果也必须随目标一起快照。
+    ctx.credentials.create(
+        "old-disabled-key",
+        "sk-fake-old-disabled-key",
+        ["main-loop"],
+        "https://old-disabled.example.com/v1",
+        "old-knowledge",
+        verify_state="verified",
+    )
+    ctx.credentials.set_enabled("old-disabled-key", False)
+    ctx.credentials.create(
+        "new-key",
+        "sk-fake-new-key",
+        ["main-loop"],
+        "https://new.example.com/v1",
+        "new-summary",
+        verify_state="verified",
+    )
+    store = ModelCatalogStore(ctx.conn, ctx.credentials)
+    for model_id in ("old-summary", "old-knowledge", "old-entities"):
+        store.upsert_model("old-key", model_id)
+    store.upsert_model("old-disabled-key", "old-knowledge")
+    for model_id in ("new-summary", "new-knowledge", "new-entities"):
+        store.upsert_model("new-key", model_id)
+    store.set_usage("memory-organize", "old-key", "old-summary")
+    store.set_usage("knowledge-distill", "old-disabled-key", "old-knowledge")
+    store.set_usage("entity-extract", "old-key", "old-entities")
+
+    created: list[tuple[str, str]] = []
+    first_build_started = asyncio.Event()
+    release_first_build = asyncio.Event()
+
+    class _BuiltAdapter:
+        def __init__(self, key_id: str, model: str) -> None:
+            self.key_id = key_id
+            self.model = model
+
+        def __repr__(self) -> str:  # pragma: no cover - 只在失败信息里出现
+            return f"<built {self.key_id}:{self.model}>"
+
+    async def fake_create(secret, model, base_url, key_id, meta):  # noqa: ANN001, ANN202
+        # 只替换模型调用/连接创建；目标解析、凭据读取、可用性判断都走真实实现。
+        created.append((key_id, model))
+        if len(created) == 1:
+            first_build_started.set()
+            await release_first_build.wait()
+        return _BuiltAdapter(key_id, model)
+
+    monkeypatch.setattr(ctx, "_create_adapter", fake_create)
+
+    first_batch = asyncio.create_task(ctx.build_derived_adapters())
+    await asyncio.wait_for(first_build_started.wait(), timeout=5)
+
+    # 第一种连接仍卡在创建中：此时修改三条用途设置（模拟用户在设置页改配置）。
+    for usage_key, model_id in new_models.items():
+        store.set_usage(usage_key, "new-key", model_id)
+    for usage_key, model_id in new_models.items():
+        usage = store.get_usage(usage_key)
+        assert (usage["credential_id"], usage["model_id"]) == ("new-key", model_id)
+
+    release_first_build.set()
+    first = await asyncio.wait_for(first_batch, timeout=5)
+
+    # 本批：summary/entities 用旧目标；knowledge 保留旧的「不可用」结果，
+    # 不能因为等待期间用户改好了配置就跑新模型，也不能静默换 Key。
+    assert (first["summary"].key_id, first["summary"].model) == (
+        "old-key",
+        "old-summary",
+    ), f"summary 被中途修改影响：{first['summary']!r}（created={created}）"
+    assert isinstance(first["knowledge"], UsageUnavailable), (
+        "knowledge 的旧不可用结果必须在本批保留；"
+        f"实际={first['knowledge']!r}（created={created}）"
+    )
+    assert first["knowledge"].detail_code == "credential_disabled", (
+        f"不可用原因必须仍是改动前的故障：{first['knowledge'].to_dict()}"
+    )
+    assert (first["entities"].key_id, first["entities"].model) == (
+        "old-key",
+        "old-entities",
+    ), f"entities 被中途修改影响：{first['entities']!r}（created={created}）"
+    assert created == [("old-key", "old-summary"), ("old-key", "old-entities")], (
+        f"本批只应创建旧目标的两条连接（knowledge 旧目标不可用）；实际={created}"
+    )
+
+    # 下一批：全部使用用户中途保存的新配置（只影响新开始的工作）。
+    second = await asyncio.wait_for(ctx.build_derived_adapters(), timeout=5)
+    assert (second["summary"].key_id, second["summary"].model) == (
+        "new-key",
+        "new-summary",
+    )
+    assert (second["knowledge"].key_id, second["knowledge"].model) == (
+        "new-key",
+        "new-knowledge",
+    )
+    assert (second["entities"].key_id, second["entities"].model) == (
+        "new-key",
+        "new-entities",
+    )
+    assert created[2:] == [
+        ("new-key", "new-summary"),
+        ("new-key", "new-knowledge"),
+        ("new-key", "new-entities"),
+    ], f"下一批必须全部使用新配置；实际={created}"

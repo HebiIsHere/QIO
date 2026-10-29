@@ -1625,6 +1625,29 @@ class AppContext:
             return None
         return await self.build_adapter()
 
+    def _snapshot_derived_targets(self) -> dict[str, Any]:
+        """在**第一次异步等待之前**冻结本批三类用途的目标/不可用结果。
+
+        为什么必须单独做这一步：`build_derived_adapters` 会逐个 `await` 建连接；
+        每次 await 都是用户修改设置的机会。如果边建边解析，就会出现「summary 用旧
+        配置、knowledge/entities 用新配置」的同一批混用 —— 本批工作的所有目标必须
+        在第一次让出事件循环前确定，后续连接准备只消费这份快照。
+
+        这里全是同步本地读（`resolve_usage` 只读设置/目录/凭据元数据，不联网、
+        不建连接），所以调用方在第一次 await 前调用它即可保证快照完整。
+        """
+        targets: dict[str, Any] = {}
+        for kind, usage_key in DERIVED_USAGE_BY_KIND.items():
+            try:
+                target = self.resolve_usage(usage_key)
+            except UsageUnavailable as exc:
+                self._record_usage_unavailable(exc)
+                targets[kind] = exc
+                continue
+            self._record_usage(target)
+            targets[kind] = target
+        return targets
+
     async def build_derived_adapters(self) -> dict[str, Any]:
         """后台三类用途各自解析 + 建 adapter，返回 ``kind -> adapter | UsageUnavailable``。
 
@@ -1632,24 +1655,25 @@ class AppContext:
         独立派生任务，用户可以分别指定不同模型；共用主 Turn 的 adapter 会让「用途分配」
         在界面上看起来生效、实际毫无作用。
 
+        **本批配置是冻结的**：先同步解析三项目标（含不可用结果），再逐个建连接；
+        用户在建第一种连接期间修改设置，只影响下一次 `build_derived_adapters`，
+        本批的 summary/knowledge/entities 继续使用开始时那份目标（B 剩余问题）。
+
         解析/建 adapter 失败时返回**异常对象**而不是 None：派发器按 kind 把它写成该任务
         的可读失败原因（这条任务停了，别的任务照跑），不退回主对话模型。
         """
+        targets = self._snapshot_derived_targets()
         result: dict[str, Any] = {}
-        for kind, usage_key in DERIVED_USAGE_BY_KIND.items():
-            try:
-                target = self.resolve_usage(usage_key)
-            except UsageUnavailable as exc:
-                self._record_usage_unavailable(exc)
-                result[kind] = exc
+        for kind, target in targets.items():
+            if isinstance(target, UsageUnavailable):
+                result[kind] = target
                 continue
-            self._record_usage(target)
             adapter = await self.build_adapter_for_target(target)
             if adapter is None:
                 exc = UsageUnavailable(
-                    usage_key,
+                    target.usage_key,
                     REASON_ADAPTER_UNAVAILABLE,
-                    f"「{usage_key}」用途解析到 {target.credential_id}，但它建不出可用适配器"
+                    f"「{target.usage_key}」用途解析到 {target.credential_id}，但它建不出可用适配器"
                     "（端点或模型缺失）",
                     credential_id=target.credential_id,
                     model_id=target.model_id,
