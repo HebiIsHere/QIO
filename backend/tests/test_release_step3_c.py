@@ -254,3 +254,148 @@ def test_same_request_id_different_content_is_rejected(client):
     assert after[0]["default_model"] == before[0]["default_model"]
     assert after[0]["endpoint"] == before[0]["endpoint"]
     assert after[0]["version"] == before[0]["version"]
+
+# ---------------------------------------------------------------------------
+# 返修：获取归属与顺序 / 当前目录与历史分开
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_old_config_failure_does_not_overwrite_new_config_success(
+    monkeypatch, ctx, credentials, store
+):
+    _make(credentials)
+    started = asyncio.Event()
+    release_failure = asyncio.Event()
+    calls = {"n": 0}
+
+    async def fake_fetch(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            started.set()
+            await release_failure.wait()
+            raise discovery.DiscoveryError(discovery.REASON_TIMEOUT, "timed out")
+        return [{"model_id": "new-model"}]
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fake_fetch)
+    old_task = asyncio.create_task(discovery.discover(ctx, "key_a", refresh=True))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    # 旧配置请求仍在途时连接被重配，新配置的一次获取先成功
+    credentials.reconfigure(
+        "key_a",
+        secret=SECRET_NEXT,
+        endpoint=OPENAI,
+        confirm_reconfigure=True,
+        default_model="gpt-5.6-luna",
+    )
+    newest = await asyncio.wait_for(discovery.discover(ctx, "key_a", refresh=True), timeout=5)
+    assert newest["stale"] is False
+    assert [m["model_id"] for m in newest["models"]] == ["new-model"]
+    state_after_success = store.discovery_state("key_a")
+    assert state_after_success["error"] is None
+    assert state_after_success["model_count"] == 1
+
+    # 旧配置的超时此刻才回来：不得把新配置的成功状态改成失败
+    release_failure.set()
+    old = await asyncio.wait_for(old_task, timeout=5)
+    assert old["stale"] is True
+    assert old["reason_code"] in {
+        discovery.REASON_SUPERSEDED,
+        discovery.REASON_CONFIG_CHANGED,
+    }
+    state_now = store.discovery_state("key_a")
+    assert state_now["error"] is None
+    assert state_now["model_count"] == 1
+    current, _historical = store.current_model_view("key_a")
+    assert "new-model" in [item["model_id"] for item in current]
+
+
+@pytest.mark.asyncio
+async def test_older_request_same_config_does_not_overwrite_newer(monkeypatch, ctx, credentials, store):
+    _make(credentials)
+    started = asyncio.Event()
+    release_old = asyncio.Event()
+    calls = {"n": 0}
+
+    async def fake_fetch(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            started.set()
+            await release_old.wait()
+            return [{"model_id": "older-model"}]
+        return [{"model_id": "newer-model"}]
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fake_fetch)
+    older_task = asyncio.create_task(discovery.discover(ctx, "key_a", refresh=True))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    newer = await asyncio.wait_for(discovery.discover(ctx, "key_a", refresh=True), timeout=5)
+    assert newer["stale"] is False
+    assert [m["model_id"] for m in newer["models"]] == ["newer-model"]
+
+    release_old.set()
+    older = await asyncio.wait_for(older_task, timeout=5)
+    assert older["stale"] is True
+    assert older["reason_code"] == discovery.REASON_SUPERSEDED
+    # 较早请求的模型没有被写入，当前目录仍是较新一次的结果
+    assert store.get_model("key_a", "older-model") is None
+    current, _historical = store.current_model_view("key_a")
+    assert [item["model_id"] for item in current] == ["newer-model"]
+    state = store.discovery_state("key_a")
+    assert state["error"] is None
+    assert state["model_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_current_directory_excludes_old_config_models(monkeypatch, ctx, credentials, store):
+    _make(credentials)
+    store.upsert_model("key_a", "manual-keep", source=MODEL_SOURCE_MANUAL)
+    store.set_usage("vision", "key_a", "manual-keep")
+
+    async def fetch_old(**_kwargs):
+        return [{"model_id": "old-a"}, {"model_id": "old-b"}]
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fetch_old)
+    first = await discovery.discover(ctx, "key_a", refresh=True)
+    assert sorted(m["model_id"] for m in first["models"]) == ["manual-keep", "old-a", "old-b"]
+    assert first["historical_total"] == 0
+
+    # 换地址：旧地址的模型继续留在库里（历史），但不再是「当前目录」
+    credentials.reconfigure(
+        "key_a",
+        secret=SECRET_NEXT,
+        endpoint=MOONSHOT,
+        confirm_reconfigure=True,
+        default_model="kimi-k2",
+    )
+
+    async def fetch_new(**_kwargs):
+        return [{"model_id": "new-only"}]
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fetch_new)
+    refreshed = await discovery.discover(ctx, "key_a", refresh=True)
+    current_ids = [m["model_id"] for m in refreshed["models"]]
+    historical_ids = [m["model_id"] for m in refreshed["historical_models"]]
+    assert sorted(current_ids) == ["manual-keep", "new-only"]
+    assert refreshed["total"] == len(current_ids) == 2
+    assert sorted(historical_ids) == ["old-a", "old-b"]
+    assert refreshed["historical_total"] == 2
+
+    # 缓存返回同一份「当前目录 / 历史」划分
+    cached = await discovery.discover(ctx, "key_a")
+    assert cached["source"] == "cache"
+    assert [m["model_id"] for m in cached["models"]] == current_ids
+    assert [m["model_id"] for m in cached["historical_models"]] == historical_ids
+
+    # 重载后（目录快照）与获取结果一致：当前目录只算当前配置，历史单独列出
+    catalog = store.catalog()
+    connection = next(item for item in catalog["connections"] if item["credential_id"] == "key_a")
+    assert [m["model_id"] for m in connection["models"]] == current_ids
+    assert [m["model_id"] for m in connection["historical_models"]] == historical_ids
+
+    # 历史行、手动模型与用途引用都保留（不靠删除记录规避）
+    all_rows = {item["model_id"] for item in store.list_models("key_a")}
+    assert {"old-a", "old-b", "new-only", "manual-keep"} <= all_rows
+    usage = next(item for item in store.list_usages() if item["usage_key"] == "vision")
+    assert usage["model_id"] == "manual-keep"

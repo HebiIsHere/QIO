@@ -17,8 +17,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -34,7 +32,7 @@ from agent.credentials.providers import (
     resolve_endpoint,
     uses_anthropic,
 )
-from agent.credentials.store import FINGERPRINT_VERSION
+from agent.credentials.store import compute_discovery_signature
 from agent.credentials.usages import find_usage, normalize_usage_key
 
 logger = logging.getLogger(__name__)
@@ -57,6 +55,8 @@ REASON_ENDPOINT_MISSING = "endpoint_missing"
 REASON_CREDENTIAL_UNAVAILABLE = "credential_unavailable"
 REASON_SERVER_ERROR = "server_error"
 REASON_CONFIG_CHANGED = "config_changed"
+#: 同一个连接有更新的一次获取在跑（或已经完成）：这次较早的结果不能覆盖它。
+REASON_SUPERSEDED = "superseded"
 REASON_UNKNOWN = "unknown"
 
 REASON_MESSAGES = {
@@ -70,6 +70,7 @@ REASON_MESSAGES = {
     REASON_CREDENTIAL_UNAVAILABLE: "这条连接当前不可用（已停用、已撤销或本机没有密钥）",
     REASON_SERVER_ERROR: "服务端出错，没能取回模型列表",
     REASON_CONFIG_CHANGED: "连接配置在获取过程中发生了变化，本次获取结果没有写入；请重新获取",
+    REASON_SUPERSEDED: "这次获取已被更新的一次获取取代，结果没有写入",
     REASON_UNKNOWN: "获取模型列表时出现未知问题，可以展开技术细节",
 }
 
@@ -110,24 +111,16 @@ def _cache_age_seconds(checked_at: Any) -> float | None:
 
 
 def discovery_config_signature(meta: dict[str, Any] | None) -> str:
-    """这次「获取模型」到底属于哪一份连接配置（F09）。
+    """这次「获取模型」到底属于哪一份连接配置（F09：Key 版本 + 地址 + 协议）。
 
-    发现是一次带 await 的网络调用；期间用户可能改了地址 / 协议 / 换了 Key。
-    version 覆盖「Key 被替换」这类变化（换钥会推进版本），endpoint 与 kind 覆盖
-    「这把钥匙发给谁、按哪种协议发」。指纹只用于比较，不含密钥材料。
-
-    刻意**不**含 default_model：模型列表来自服务商，改默认模型不影响「这次列表属于谁」；
-    把它算进来会让一次正常的默认模型编辑误判成配置变化。
+    与 credentials.store.compute_discovery_signature 同一份实现：目录、发现缓存与
+    发现写入用同一个指纹，避免两处判断分叉。指纹只用于比较，不含密钥材料。
     """
-    payload = {
-        "v": FINGERPRINT_VERSION,
-        "version": int((meta or {}).get("version") or 0),
-        "endpoint": str((meta or {}).get("endpoint") or "").strip(),
-        "kind": str((meta or {}).get("kind") or "").strip(),
-    }
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return f"disc1:{digest[:32]}"
+    return compute_discovery_signature(
+        version=(meta or {}).get("version"),
+        endpoint=(meta or {}).get("endpoint"),
+        kind=(meta or {}).get("kind"),
+    )
 
 
 def _redact(text: str, secret: str | None) -> str:
@@ -309,8 +302,11 @@ def _page_result(
     error: str | None = None,
     reason_code: str | None = None,
     stale: bool = False,
+    historical_models: list[dict[str, Any]] | None = None,
+    config_signature: str = "",
 ) -> dict[str, Any]:
     result = _page_of(models, page, page_size)
+    historical = historical_models or []
     result.update(
         {
             "credential_id": credential_id,
@@ -320,6 +316,9 @@ def _page_result(
             "error": error,
             "reason_code": reason_code,
             "stale": bool(stale),
+            "config_signature": config_signature,
+            "historical_models": historical,
+            "historical_total": len(historical),
             "public_catalog": bool(provider and provider.public_catalog),
             "note": (provider.discovery_note if provider else "") or "",
         }
@@ -327,22 +326,76 @@ def _page_result(
     return result
 
 
-def _catalog_models(store: ModelCatalogStore, credential_id: str) -> list[dict[str, Any]]:
-    """目录里已记录的模型（按稳定顺序）；发现接口返回的也是这份，界面不用两套数据。"""
-    return [
-        {
-            "model_id": item["model_id"],
-            "display_name": item["display_name"] or item["model_id"],
-            "source": item["source"],
-            "capabilities": item["capabilities"],
-            "verify_state": item["verify_state"],
-            "verified_at": item["verified_at"],
-            "verify_error": item["verify_error"],
-            "usable": item["usable"],
-            "unavailable_reason": item["unavailable_reason"],
-        }
-        for item in store.list_models(credential_id)
-    ]
+def _project_model(item: dict[str, Any]) -> dict[str, Any]:
+    """发现响应里的模型形状（与目录同一份事实）。"""
+    return {
+        "model_id": item["model_id"],
+        "display_name": item["display_name"] or item["model_id"],
+        "source": item["source"],
+        "capabilities": item["capabilities"],
+        "verify_state": item["verify_state"],
+        "verified_at": item["verified_at"],
+        "verify_error": item["verify_error"],
+        "usable": item["usable"],
+        "unavailable_reason": item["unavailable_reason"],
+    }
+
+
+def _catalog_models(store: ModelCatalogStore, credential_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """（当前目录模型, 旧配置历史模型）：当前返回 / 数量 / 缓存 / 重载后都读同一份划分。"""
+    current, historical = store.current_model_view(credential_id)
+    return [_project_model(item) for item in current], [_project_model(item) for item in historical]
+
+
+#: 进程内的发现请求代号（按连接）：同配置下较早的请求晚回来时，不能覆盖较新的结果。
+#: 单进程后端 + 单事件循环，字典读写不需要锁；只用于「谁是最新一次获取」。
+_DISCOVERY_TOKENS: dict[str, int] = {}
+
+
+def _begin_discovery(credential_id: str) -> int:
+    token = int(_DISCOVERY_TOKENS.get(credential_id) or 0) + 1
+    _DISCOVERY_TOKENS[credential_id] = token
+    return token
+
+
+def _discovery_is_latest(credential_id: str, token: int) -> bool:
+    return int(_DISCOVERY_TOKENS.get(credential_id) or 0) == token
+
+
+def _stale_result(
+    credential_id: str,
+    provider: Any,
+    *,
+    reason_code: str,
+    page: int,
+    page_size: int,
+    signature: str,
+    store: ModelCatalogStore,
+) -> dict[str, Any]:
+    current, historical = _catalog_models(store, credential_id)
+    return _page_result(
+        credential_id,
+        provider,
+        current,
+        source="provider",
+        page=page,
+        page_size=page_size,
+        error=REASON_MESSAGES.get(reason_code, REASON_MESSAGES[REASON_UNKNOWN]),
+        reason_code=reason_code,
+        stale=True,
+        historical_models=historical,
+        config_signature=signature,
+    )
+
+
+def _stale_reason(ctx: Any, credential_id: str, token: int, signature: str) -> str:
+    """写库 / 写状态前的统一检查：先看请求顺序，再看配置归属（返修 5）。"""
+    if not _discovery_is_latest(credential_id, token):
+        return REASON_SUPERSEDED
+    current_meta = ctx.credentials.get_metadata(credential_id)
+    if current_meta is None or discovery_config_signature(current_meta) != signature:
+        return REASON_CONFIG_CHANGED
+    return ""
 
 
 async def discover(
@@ -363,10 +416,12 @@ async def discover(
     if meta is None:
         raise KeyError(f"credential not found: {credential_id}")
     provider = preset_for_endpoint(meta.get("endpoint")) or find_preset(None)
-    cached = _catalog_models(store, credential_id)
     state = store.discovery_state(credential_id)
     # 这次获取归属哪一份配置：写库/缓存/状态都要按它校验（F09）。
     signature = discovery_config_signature(meta)
+    # 请求顺序：同一连接后发起的获取才算最新；较早的请求晚回来不能覆盖较新的结果。
+    token = _begin_discovery(credential_id)
+    cached_models, cached_historical = _catalog_models(store, credential_id)
 
     if not refresh:
         age = _cache_age_seconds(state.get("checked_at"))
@@ -376,20 +431,29 @@ async def discover(
         cache_owned = str(state.get("config_signature") or "") == signature
         # 缓存既包括「上次成功拿到的模型」，也包括「上次失败的错误」：两者都在
         # 检查过的窗口内，不能让界面每点一次都重新打一遍网络（刷新是显式动作）。
-        if fresh and cache_owned and (cached or state.get("error")):
+        if fresh and cache_owned and (cached_models or state.get("error")):
             if state.get("error"):
                 return _page_result(
                     credential_id,
                     provider,
-                    cached,
+                    cached_models,
                     source="cache",
                     page=page,
                     page_size=page_size,
                     error=str(state.get("error")),
                     reason_code=state.get("reason_code") or REASON_UNKNOWN,
+                    historical_models=cached_historical,
+                    config_signature=signature,
                 )
             return _page_result(
-                credential_id, provider, cached, source="cache", page=page, page_size=page_size
+                credential_id,
+                provider,
+                cached_models,
+                source="cache",
+                page=page,
+                page_size=page_size,
+                historical_models=cached_historical,
+                config_signature=signature,
             )
 
     endpoint = resolve_endpoint(meta)
@@ -406,12 +470,14 @@ async def discover(
         return _page_result(
             credential_id,
             provider,
-            cached,
+            cached_models,
             source="provider",
             page=page,
             page_size=page_size,
             error=error,
             reason_code=REASON_ENDPOINT_MISSING,
+            historical_models=cached_historical,
+            config_signature=signature,
         )
 
     secret = ctx.credentials.get_secret(credential_id)
@@ -428,12 +494,14 @@ async def discover(
         return _page_result(
             credential_id,
             provider,
-            cached,
+            cached_models,
             source="provider",
             page=page,
             page_size=page_size,
             error=error,
             reason_code=REASON_CREDENTIAL_UNAVAILABLE,
+            historical_models=cached_historical,
+            config_signature=signature,
         )
 
     anthropic = uses_anthropic(meta, endpoint) or str(meta.get("kind") or "") == KIND_ANTHROPIC
@@ -450,6 +518,19 @@ async def discover(
         logger.warning(
             "模型发现失败（连接 %s，分类 %s）：%s", credential_id, exc.reason_code, exc.detail
         )
+        # 失败结果同样要核对顺序与配置归属：旧配置的超时 / 旧请求的失败不能覆盖
+        # 新配置那次成功的获取状态（返修 5）。
+        stale_reason = _stale_reason(ctx, credential_id, token, signature)
+        if stale_reason:
+            return _stale_result(
+                credential_id,
+                provider,
+                reason_code=stale_reason,
+                page=page,
+                page_size=page_size,
+                signature=signature,
+                store=store,
+            )
         store.record_discovery(
             credential_id,
             source="provider",
@@ -461,29 +542,30 @@ async def discover(
         return _page_result(
             credential_id,
             provider,
-            cached,
+            cached_models,
             source="provider",
             page=page,
             page_size=page_size,
             error=exc.message,
             reason_code=exc.reason_code,
+            historical_models=cached_historical,
+            config_signature=signature,
         )
 
-    # 网络调用期间配置可能已经被改掉：这份结果属于**旧配置**，不能写进当前连接，
-    # 也不能改写当前的获取状态（迟到结果只作废，不冒充事实）。
-    current_meta = ctx.credentials.get_metadata(credential_id)
-    if current_meta is None or discovery_config_signature(current_meta) != signature:
-        logger.info("模型发现结果因连接配置变化被丢弃（连接 %s）", credential_id)
-        return _page_result(
+    # 成功 / 空结果 / 失败在写库前统一核对：① 是不是这条连接最新的获取请求；
+    # ② 结果是否仍属于当前配置（配置在等待期间可能被改）。任一不符都不写库、
+    # 不改获取状态 —— 旧配置超时不能覆盖新配置的成功状态（返修 5）。
+    stale_reason = _stale_reason(ctx, credential_id, token, signature)
+    if stale_reason:
+        logger.info("模型发现结果被丢弃（连接 %s，%s）", credential_id, stale_reason)
+        return _stale_result(
             credential_id,
             provider,
-            _catalog_models(store, credential_id),
-            source="provider",
+            reason_code=stale_reason,
             page=page,
             page_size=page_size,
-            error=REASON_MESSAGES[REASON_CONFIG_CHANGED],
-            reason_code=REASON_CONFIG_CHANGED,
-            stale=True,
+            signature=signature,
+            store=store,
         )
 
     if not fetched:
@@ -500,26 +582,48 @@ async def discover(
         return _page_result(
             credential_id,
             provider,
-            cached,
+            cached_models,
             source="provider",
             page=page,
             page_size=page_size,
             error=error,
             reason_code=REASON_NO_LISTING,
+            historical_models=cached_historical,
+            config_signature=signature,
         )
 
     store.upsert_discovered(credential_id, fetched)
+    # 当前目录只记「这次真实返回 / 当前配置下已经返回过」的模型：
+    # 旧地址留下的行继续留在库里（历史 / 手动 / 用途引用），但不计入本次结果。
+    previous = store.current_set(credential_id)
+    previous_owned = str(previous.get("config_signature") or "") == signature
+    previous_ids = previous["model_ids"] if previous_owned else []
+    discovered_ids = [
+        str(item.get("model_id") or "") for item in fetched if item.get("model_id")
+    ]
+    store.record_current_set(
+        credential_id,
+        config_signature=signature,
+        model_ids=list(dict.fromkeys([*previous_ids, *discovered_ids])),
+    )
     store.record_discovery(
         credential_id,
         source="provider",
         error=None,
         provider_id=provider.id if provider else None,
-        model_count=len(fetched),
+        model_count=len(discovered_ids),
         config_signature=signature,
     )
-    models = _catalog_models(store, credential_id)
+    current, historical = _catalog_models(store, credential_id)
     return _page_result(
-        credential_id, provider, models, source="provider", page=page, page_size=page_size
+        credential_id,
+        provider,
+        current,
+        source="provider",
+        page=page,
+        page_size=page_size,
+        historical_models=historical,
+        config_signature=signature,
     )
 
 

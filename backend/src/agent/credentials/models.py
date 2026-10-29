@@ -44,6 +44,7 @@ from agent.credentials.providers import (
 )
 from agent.credentials.store import (
     USABLE_VERIFY_STATES,
+    compute_discovery_signature,
     VERIFY_STATE_FAILED,
     VERIFY_STATE_UNVERIFIED,
     VERIFY_STATE_VERIFIED,
@@ -83,6 +84,12 @@ DEFAULT_MODEL_KEY = "model.default"
 
 #: 最近一次发现结果（按连接）：checked_at / error / source / provider_id / model_count。
 DISCOVERY_KEY_PREFIX = "model.discovery."
+
+#: 当前配置下「这次真实获取到的目录」（按连接）：
+#: {"config_signature": "...", "model_ids": [...]}。用来把「当前目录」与旧配置留下的
+#: 历史模型行分开：新地址只返回一个模型时，旧地址的模型仍在库里（历史 / 手动 / 用途引用），
+#: 但不再算成本次获取结果。空 = 还没有按配置记录过（旧数据按「当前」兼容处理）。
+CURRENT_SET_KEY_PREFIX = "model.current_set."
 
 #: 用途 kind：运行时按它决定用哪种调用路径。显式写明而不是从名字猜，
 #: C 的用途解析与界面文案都读这一份。
@@ -568,6 +575,38 @@ class ModelCatalogStore:
             "config_signature": str(data.get("config_signature") or ""),
         }
 
+    def record_current_set(
+        self, credential_id: str, *, config_signature: str, model_ids: list[str]
+    ) -> dict[str, Any]:
+        """记住「当前配置下这次真正返回的模型集合」（不删除任何历史行）。"""
+        payload = {
+            "config_signature": str(config_signature or ""),
+            "model_ids": [_norm(item) for item in model_ids if _norm(item)],
+        }
+        self._settings_set(
+            CURRENT_SET_KEY_PREFIX + _norm(credential_id),
+            json.dumps(payload, ensure_ascii=False),
+        )
+        return payload
+
+    def current_set(self, credential_id: str) -> dict[str, Any]:
+        """当前配置记录过的模型集合；没有记录时返回空签名 + 空列表（旧数据兼容）。"""
+        raw = self._settings_get(CURRENT_SET_KEY_PREFIX + _norm(credential_id))
+        empty: dict[str, Any] = {"config_signature": "", "model_ids": []}
+        if not raw:
+            return empty
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return empty
+        if not isinstance(data, dict):
+            return empty
+        ids = data.get("model_ids")
+        return {
+            "config_signature": str(data.get("config_signature") or ""),
+            "model_ids": [_norm(item) for item in ids] if isinstance(ids, list) else [],
+        }
+
     # ------------------------------------------------------------------
     # 默认模型
     # ------------------------------------------------------------------
@@ -879,6 +918,42 @@ class ModelCatalogStore:
     # 目录快照（GET /api/models/catalog 的形状）
     # ------------------------------------------------------------------
 
+    def discovery_signature(self, credential_id: str) -> str:
+        """这条连接**当前**的发现配置签名（Key 版本 + 地址 + 协议）。"""
+        row = self._credential_row(_norm(credential_id))
+        if row is None:
+            return ""
+        meta = self.credentials._serialize(row)  # noqa: SLF001
+        return compute_discovery_signature(
+            version=meta.get("version"),
+            endpoint=meta.get("endpoint"),
+            kind=meta.get("kind"),
+        )
+
+    def current_model_view(self, credential_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """把一条连接的模型分成（当前目录, 旧配置历史）。
+
+        当前目录 = 手动 / 历史兼容行 + **当前配置**这次真实获取到的模型；
+        旧配置发现过的模型仍在库里（历史 / 用途引用 / 手动模型都不删除），但不再算进
+        本次获取结果 —— 新地址只返回一个模型时，旧地址的模型不能一起被计数。
+        还没有按配置记录过集合的旧数据：全部按当前目录兼容（第一次成功获取后写入集合）。
+        """
+        signature = self.discovery_signature(credential_id)
+        info = self.current_set(credential_id)
+        stored_signature = str(info.get("config_signature") or "")
+        owned = bool(stored_signature) and stored_signature == signature
+        current_ids = set(info["model_ids"]) if owned else set()
+        has_set = bool(stored_signature)
+        current: list[dict[str, Any]] = []
+        historical: list[dict[str, Any]] = []
+        for item in self.list_models(credential_id):
+            if str(item.get("source")) == MODEL_SOURCE_DISCOVERED:
+                is_current = (not has_set) or (owned and str(item["model_id"]) in current_ids)
+            else:
+                is_current = True
+            (current if is_current else historical).append(item)
+        return current, historical
+
     def catalog(self, *, usage_key: str | None = None) -> dict[str, Any]:
         """目录快照；带 usage_key 时额外给出「候选是否适用于该用途」的服务端结论。
 
@@ -898,7 +973,8 @@ class ModelCatalogStore:
             preset = preset_for_endpoint(meta.get("endpoint")) or find_preset(None)
             # 每条连接只读一次密钥：一般可用性与用途维度判断共用同一份本地快照。
             secret_present = self._secret_present(credential_id)
-            models = self.list_models(credential_id, secret_present=secret_present)
+            # 当前目录与旧配置历史分开：历史行保留（手动 / 用途引用 / 审计），但不计入本次获取。
+            models, historical_models = self.current_model_view(credential_id)
             budget = meta.get("budget")
             try:
                 budget_left = (
@@ -928,6 +1004,15 @@ class ModelCatalogStore:
                             secret_present=secret_present,
                         )
                         for item in models
+                    ],
+                    "historical_models": [
+                        self._catalog_model_view(
+                            item,
+                            meta,
+                            spec,
+                            secret_present=secret_present,
+                        )
+                        for item in historical_models
                     ],
                 }
             )

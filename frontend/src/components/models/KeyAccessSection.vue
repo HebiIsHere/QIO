@@ -136,7 +136,16 @@ function showDiscoveryResult(result: {
   publicCatalog: boolean;
   note: string;
 }): void {
-  if (result.stale || result.reasonCode === "config_changed") {
+  if (result.stale) {
+    // 已被更新的一次获取接管：旧请求（含旧配置的超时/失败）不能覆盖当前反馈。
+    if (result.reasonCode === "superseded") return;
+    notice.value = {
+      tone: "warn",
+      text: "连接配置已改变，本次获取结果已忽略；请重新获取",
+    };
+    return;
+  }
+  if (result.reasonCode === "config_changed") {
     notice.value = {
       tone: "warn",
       text: "连接配置已改变，本次获取结果已忽略；请重新获取",

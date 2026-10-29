@@ -356,3 +356,91 @@ describe("F12 连接保存后的自动获取：四种反馈都结束「正在同
     expect(mocks.api.updateCredentialMeta).not.toHaveBeenCalled();
   });
 });
+
+describe("返修：获取结果按配置归属与请求顺序写入", () => {
+  function mountSection() {
+    const wrapper = mount(KeyAccessSection, {
+      props: {
+        connections: [connection()],
+        credentials: [meta()],
+        catalog: { connections: [connection()], default: null, usages: [], discovery: {} },
+        providers: PROVIDERS,
+      },
+    });
+    mounted.push(wrapper);
+    return wrapper;
+  }
+  async function triggerSaved(wrapper: VueWrapper) {
+    await buttonByText(wrapper, "添加 Key").trigger("click");
+    await flushPromises();
+    wrapper.findComponent(KeyForm).vm.$emit("saved", "key_a");
+    await flushPromises();
+  }
+
+  it("旧配置的超时不能覆盖新配置那次成功的获取状态", async () => {
+    let rejectOld: (e: Error) => void = () => {};
+    mocks.catalog.discover.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectOld = reject; }),
+    );
+    const wrapper = mountSection();
+    await triggerSaved(wrapper); // 第一次获取（旧配置）挂起
+    expect(wrapper.text()).toContain("正在同步");
+
+    // 同一连接被重新保存：第二次获取成功，先显示成功状态
+    mocks.catalog.discover.mockResolvedValueOnce(
+      discoveryResult({
+        models: [
+          { modelId: "new-1", displayName: "new-1", source: "discovered", capabilities: [], verifyState: "unverified", verifiedAt: null, verifyError: null, usable: true, unavailableReason: "" },
+          { modelId: "new-2", displayName: "new-2", source: "discovered", capabilities: [], verifyState: "unverified", verifiedAt: null, verifyError: null, usable: true, unavailableReason: "" },
+        ],
+        total: 2,
+      }),
+    );
+    await triggerSaved(wrapper);
+    expect(wrapper.text()).toContain("已获取 2 个模型");
+    expect(wrapper.text()).not.toContain("正在同步");
+
+    // 旧请求此刻才超时：不得改写成功状态
+    rejectOld(new Error("old config timeout"));
+    await flushPromises();
+    expect(wrapper.text()).toContain("已获取 2 个模型");
+    expect(wrapper.text()).not.toContain("网络异常");
+    expect(wrapper.text()).not.toContain("配置已改变");
+    wrapper.unmount();
+  });
+
+  it("同配置下较早的获取结果不能覆盖较新的获取结果", async () => {
+    let resolveOld: (v: ReturnType<typeof discoveryResult>) => void = () => {};
+    mocks.catalog.discover.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveOld = resolve as never; }),
+    );
+    const wrapper = mountSection();
+    await triggerSaved(wrapper); // 较早的一次获取挂起
+
+    mocks.catalog.discover.mockResolvedValueOnce(
+      discoveryResult({
+        models: [
+          { modelId: "newer-1", displayName: "newer-1", source: "discovered", capabilities: [], verifyState: "unverified", verifiedAt: null, verifyError: null, usable: true, unavailableReason: "" },
+          { modelId: "newer-2", displayName: "newer-2", source: "discovered", capabilities: [], verifyState: "unverified", verifiedAt: null, verifyError: null, usable: true, unavailableReason: "" },
+        ],
+        total: 2,
+      }),
+    );
+    await triggerSaved(wrapper); // 较新的一次先成功
+    expect(wrapper.text()).toContain("已获取 2 个模型");
+
+    // 较早请求晚回来（旧结果 / 或被后端标 superseded）：不得覆盖
+    resolveOld(
+      discoveryResult({
+        models: [
+          { modelId: "older-1", displayName: "older-1", source: "discovered", capabilities: [], verifyState: "unverified", verifiedAt: null, verifyError: null, usable: true, unavailableReason: "" },
+        ],
+        total: 1,
+      }),
+    );
+    await flushPromises();
+    expect(wrapper.text()).toContain("已获取 2 个模型");
+    expect(wrapper.text()).not.toContain("已获取 1 个模型");
+    wrapper.unmount();
+  });
+});
