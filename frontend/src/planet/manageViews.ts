@@ -81,11 +81,14 @@ export interface SearchHit {
 }
 
 export interface SearchGroups {
+  /** 每类命中的**完整**列表（真实顺序；展示层再分批，不在这里截断） */
   topics: SearchHit[];
   knowledge: SearchHit[];
   entities: SearchHit[];
-  /** 三类命中总数（用于「共 N 项」与空状态判定） */
+  /** 三类真实命中总数（用于「共 N 项」与空状态判定） */
   total: number;
+  /** 每类真实命中数（分组标题展示真实总数，不是当前显示条数） */
+  counts: { topics: number; knowledge: number; entities: number };
 }
 
 export interface SearchSource {
@@ -94,7 +97,11 @@ export interface SearchSource {
   entities: EntityCard[];
 }
 
-/** 每组最多展示多少条：搜索是「找到并打开」，不是把整库平铺出来 */
+/**
+ * 每组**首批**展示多少条（F11）：搜索是「找到并打开」，不是把整库平铺出来；
+ * 但命中总数必须是真的，其余结果通过「查看更多」分批展开 —— 不能靠一个固定截断数
+ * 假装那就是全部（原先每组只留 8 条且把 8 当总数，第九条以后根本看不到）。
+ */
 export const SEARCH_GROUP_LIMIT = 8;
 
 const KNOWLEDGE_CATEGORY_LABELS: Record<string, string> = {
@@ -145,27 +152,25 @@ function hitEntity(card: EntityCard): SearchHit {
  * 全局搜索：一次搜索同时覆盖话题 / 知识 / 实体（与当前标签页无关），结果按三类分组。
  * 纯函数 —— 数据由调用方并行取好再传进来，这里只做匹配与截断（顺序保持后端顺序）。
  */
-export function buildSearchGroups(
-  source: SearchSource,
-  query: string,
-  limit = SEARCH_GROUP_LIMIT,
-): SearchGroups {
+export function buildSearchGroups(source: SearchSource, query: string): SearchGroups {
   const q = query.trim().toLowerCase();
-  const empty: SearchGroups = { topics: [], knowledge: [], entities: [], total: 0 };
+  const empty: SearchGroups = {
+    topics: [],
+    knowledge: [],
+    entities: [],
+    total: 0,
+    counts: { topics: 0, knowledge: 0, entities: 0 },
+  };
   if (!q) return empty;
   const has = (text: string | null | undefined) => (text ?? "").toLowerCase().includes(q);
 
-  const topics = source.topics
-    .filter((t) => matchesTopic(t, q))
-    .slice(0, limit)
-    .map(hitTopic);
+  // 全量命中：展示层的分批只影响「显示多少条」，不影响总数与后续可达性。
+  const topics = source.topics.filter((t) => matchesTopic(t, q)).map(hitTopic);
   const knowledge = source.knowledge
     .filter((k) => has(k.content) || has(k.topic_name))
-    .slice(0, limit)
     .map(hitKnowledge);
   const entities = source.entities
     .filter((e) => has(e.name) || (e.aliases ?? []).some((a) => has(a)) || has(e.summary))
-    .slice(0, limit)
     .map(hitEntity);
 
   return {
@@ -173,6 +178,7 @@ export function buildSearchGroups(
     knowledge,
     entities,
     total: topics.length + knowledge.length + entities.length,
+    counts: { topics: topics.length, knowledge: knowledge.length, entities: entities.length },
   };
 }
 

@@ -86,16 +86,20 @@ describe("全局搜索分组（话题 / 知识 / 实体）", () => {
     expect(searchGroupsEmpty(groups)).toBe(true);
   });
 
-  it("每组有条数上限，命中的 id 是真实 id（点击后靠它定位条目）", () => {
+  it("命中列表完整、真实总数单独给出（第九条与最后一条仍然存在并可点）", () => {
     const many = {
       topics: Array.from({ length: 30 }, (_, i) => topic({ topic_id: `t${i}`, title: `薄荷 ${i}` })),
       knowledge: [],
       entities: [],
     };
     const groups = buildSearchGroups(many, "薄荷");
-    expect(groups.topics.length).toBe(SEARCH_GROUP_LIMIT);
-    expect(groups.topics[0].kind).toBe("topic");
-    expect(groups.topics[0].id).toBe("t0");
+    // 展示层才分批；这里不再把「每组 8 条」当成全部结果（否则总数是假的、第九条不可达）。
+    expect(groups.topics.length).toBe(30);
+    expect(groups.counts.topics).toBe(30);
+    expect(groups.total).toBe(30);
+    expect(groups.topics[SEARCH_GROUP_LIMIT].kind).toBe("topic");
+    expect(groups.topics[SEARCH_GROUP_LIMIT].id).toBe(`t${SEARCH_GROUP_LIMIT}`);
+    expect(groups.topics[29].id).toBe("t29");
   });
 
   it("别名也参与实体匹配", () => {

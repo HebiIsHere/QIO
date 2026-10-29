@@ -14,16 +14,20 @@
  * 结果点击只上报 hit（kind + 真实 id）：切哪个标签页、打开哪个条目由管理区决定，
  * 这样「搜索 → 打开条目 → 返回搜索结果」的上下文留在同一处。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { api } from "../../services/api";
 import QInput from "../ui/QInput.vue";
 import QIconButton from "../ui/QIconButton.vue";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
 import {
   buildSearchGroups,
+  SEARCH_GROUP_LIMIT,
   type SearchGroups,
   type SearchHit,
 } from "../../planet/manageViews";
+
+/** 结果分组的键（与 SearchGroups 的三个列表同形；SearchKind 是单数，不能混用） */
+type GroupKey = "topics" | "knowledge" | "entities";
 
 const props = withDefaults(
   defineProps<{
@@ -36,7 +40,13 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ open: [hit: SearchHit] }>();
 
-const EMPTY: SearchGroups = { topics: [], knowledge: [], entities: [], total: 0 };
+const EMPTY: SearchGroups = {
+  topics: [],
+  knowledge: [],
+  entities: [],
+  total: 0,
+  counts: { topics: 0, knowledge: 0, entities: 0 },
+};
 
 const query = ref("");
 const groups = ref<SearchGroups>(EMPTY);
@@ -50,12 +60,48 @@ const inputRef = ref<{ $el?: HTMLInputElement } | null>(null);
 let seq = 0;
 let timer = 0;
 
+/**
+ * 每类当前展示到第几条（F11：分页只看展示层，命中列表与总数始终是完整的）。
+ * 换关键词时重置——展开状态属于「这一次搜索」，不能带到下一次。
+ */
+const shown = reactive<Record<GroupKey, number>>({
+  topics: SEARCH_GROUP_LIMIT,
+  knowledge: SEARCH_GROUP_LIMIT,
+  entities: SEARCH_GROUP_LIMIT,
+});
+
+function resetShown(): void {
+  shown.topics = SEARCH_GROUP_LIMIT;
+  shown.knowledge = SEARCH_GROUP_LIMIT;
+  shown.entities = SEARCH_GROUP_LIMIT;
+}
+
+/** 某一类再展开一批（每次一批，直到最后一条也可见、可点）。 */
+function showMore(kind: GroupKey): void {
+  const all = groups.value[kind];
+  shown[kind] = Math.min(all.length, shown[kind] + SEARCH_GROUP_LIMIT);
+}
+
 const visibleGroups = computed(() =>
-  [
-    { key: "topics" as const, title: "话题", hits: groups.value.topics },
-    { key: "knowledge" as const, title: "知识", hits: groups.value.knowledge },
-    { key: "entities" as const, title: "实体", hits: groups.value.entities },
-  ].filter((group) => group.hits.length > 0),
+  (
+    [
+      { key: "topics" as const, title: "话题" },
+      { key: "knowledge" as const, title: "知识" },
+      { key: "entities" as const, title: "实体" },
+    ] as { key: GroupKey; title: string }[]
+  )
+    .filter((group) => groups.value[group.key].length > 0)
+    .map((group) => {
+      const all = groups.value[group.key];
+      const limit = Math.min(shown[group.key], all.length);
+      return {
+        key: group.key,
+        title: group.title,
+        total: groups.value.counts[group.key],
+        hits: all.slice(0, limit),
+        remaining: all.length - limit,
+      };
+    }),
 );
 const hasQuery = computed(() => query.value.trim().length > 0);
 const showEmpty = computed(
@@ -70,6 +116,7 @@ async function runSearch(raw: string) {
     error.value = "";
     groups.value = EMPTY;
     searchedFor.value = "";
+    resetShown();
     return;
   }
   loading.value = true;
@@ -82,10 +129,13 @@ async function runSearch(raw: string) {
       api.listEntities(),
     ]);
     if (mySeq !== seq) return; // 旧响应：新的关键词已经发起，丢弃这一次
-    groups.value = buildSearchGroups(
+    const next = buildSearchGroups(
       { topics: topics.topics, knowledge: knowledge.knowledge, entities: entities.entities },
       keyword,
     );
+    // 换关键词 = 新一代搜索：结果与展开状态一起重置（旧关键词的展开位置没有意义）。
+    if (keyword !== searchedFor.value) resetShown();
+    groups.value = next;
     searchedFor.value = keyword;
   } catch (e) {
     if (mySeq !== seq) return;
@@ -169,7 +219,9 @@ onBeforeUnmount(() => window.clearTimeout(timer));
       <template v-else-if="searchedFor && groups.total > 0">
         <p class="gs-summary mono">「{{ searchedFor }}」共 {{ groups.total }} 项结果</p>
         <section v-for="group in visibleGroups" :key="group.key" class="gs-group">
-          <h3 class="gs-group-title serif">{{ group.title }}（{{ group.hits.length }}）</h3>
+          <h3 class="gs-group-title serif">
+            {{ group.title }}（{{ group.total }}）
+          </h3>
           <ul class="gs-list">
             <li v-for="hit in group.hits" :key="`${hit.kind}:${hit.id}`">
               <button
@@ -184,6 +236,15 @@ onBeforeUnmount(() => window.clearTimeout(timer));
               </button>
             </li>
           </ul>
+          <button
+            v-if="group.remaining > 0"
+            class="qio-btn mini gs-more"
+            type="button"
+            :data-search-more="group.key"
+            @click="showMore(group.key)"
+          >
+            查看更多（还剩 {{ group.remaining }} 条）
+          </button>
         </section>
       </template>
       <p v-else-if="showEmpty" class="gs-hint">
@@ -300,5 +361,10 @@ onBeforeUnmount(() => window.clearTimeout(timer));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 分批查看更多：安静的文字按钮，不抢结果本身的注意力 */
+.gs-more {
+  margin-top: var(--sp-2);
+  color: var(--text-secondary);
 }
 </style>
