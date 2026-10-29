@@ -5,7 +5,7 @@
  * 没有任何界面承接 —— 用户看到的是「有改动尚未保存」但永远没有确认入口（死等待），
  * 旧的 ImpactConfirmDialog 已实现但没有挂载。
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
 import { flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
@@ -105,6 +105,13 @@ const AFFECTED = {
   materials: ["c1"],
   consequence: "这次保存会让该任务暂停并保留进度",
 };
+
+afterEach(async () => {
+  // 测试隔离：先让上一个用例的异步更新（页面加载 / 保存链 / 定时器）落地，再清空挂载点；
+  // 否则残留更新会进入下一个用例，造成与产品无关的顺序依赖。
+  await flushPromises();
+  document.body.innerHTML = "";
+});
 
 beforeEach(() => {
   // resetAllMocks：连 mockImplementationOnce 的排队一起清掉，避免上一个用例的

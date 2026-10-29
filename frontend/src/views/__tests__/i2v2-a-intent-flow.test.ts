@@ -78,6 +78,13 @@ function understanding(status = "understood", submissionId = "s1") {
   };
 }
 
+afterEach(async () => {
+  // 测试隔离：先让上一个用例的异步更新（页面加载 / 保存链 / 定时器）落地，再清空挂载点；
+  // 否则残留更新会进入下一个用例，造成与产品无关的顺序依赖。
+  await flushPromises();
+  document.body.innerHTML = "";
+});
+
 beforeEach(() => {
   // resetAllMocks：连 mockImplementationOnce 的排队一起清掉，避免上一个用例的
   // 未决 promise 被下一个用例的页面加载吃掉（跨用例串扰会让正确实现看起来像卡住）
