@@ -663,7 +663,10 @@ export interface IntentExecutionAttempt {
   /** confirm / resume / retry */
   source?: string;
   turn_id?: string;
+  /** Turn 级状态（done / failed / cancelled / running …） */
   status?: string;
+  /** 服务端给的中文状态文案（界面优先用它，缺省时才按枚举兜底翻译） */
+  status_label?: string;
   reason?: string;
   started_at?: string;
 }

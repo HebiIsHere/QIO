@@ -298,6 +298,47 @@ describe("会话 store：服务端 intent_execution 解析与头部过滤", () =
     expect(isHiddenIntentExecution(msg)).toBe(true);
   });
 
+  it("执行经过的每一次尝试用服务端 status_label；缺省时按 Turn 状态兜底成中文", () => {
+    const withLabel = mountRecord({
+      ...RECORD,
+      attempts: [
+        {
+          attempt: 1,
+          source: "retry",
+          turn_id: "turn_2",
+          status: "done",
+          status_label: "已完成",
+          reason: "",
+          started_at: "2026-10-29T10:05:00+08:00",
+        },
+      ],
+    });
+    withLabel.find('[data-test="intent-execution-head"]').trigger("click");
+    const labelledText = withLabel.text();
+    expect(labelledText).toContain("已完成");
+    expect(labelledText).not.toMatch(/\bdone\b/);
+    withLabel.unmount();
+
+    // 服务端没给 label 时不能把 "done" 这类 Turn 枚举原样漏到界面上
+    const fallback = mountRecord({
+      ...RECORD,
+      attempts: [
+        {
+          attempt: 2,
+          source: "retry",
+          turn_id: "turn_3",
+          status: "done",
+          reason: "",
+          started_at: "2026-10-29T10:09:00+08:00",
+        },
+      ],
+    });
+    fallback.find('[data-test="intent-execution-head"]').trigger("click");
+    expect(fallback.text()).not.toMatch(/\bdone\b/);
+    expect(fallback.text()).toContain("已完成");
+    fallback.unmount();
+  });
+
   it("普通 text 消息即使混入 intent_execution 字段也按普通消息处理", () => {
     const pinia = createPinia();
     setActivePinia(pinia);

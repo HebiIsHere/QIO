@@ -24,7 +24,11 @@ const open = ref(false);
 const detailId = "intent-execution-detail-" + useId();
 const resultNotice = ref("");
 
-/** 服务端给的状态枚举 → 中文兜底（只在 status_label 缺失时用于翻译，不推断状态） */
+/**
+ * 服务端状态枚举 → 中文兜底（只在 status_label 缺失时用于翻译，不推断状态）。
+ * 后半段是 **attempt** 的 Turn 级状态（done / cancelled / stopped），
+ * 与记录级的七档状态不是同一套枚举，只用于时间线那一行的兜底文案。
+ */
 const STATUS_TEXT: Record<string, string> = {
   confirmed: "已确认，等待处理",
   queued: "等待处理",
@@ -33,6 +37,9 @@ const STATUS_TEXT: Record<string, string> = {
   failed: "处理失败",
   completed: "已完成",
   unknown: "状态无法核对",
+  done: "已完成",
+  cancelled: "已停止",
+  stopped: "已停止",
 };
 
 /** 尝试来源 → 中文（来源也是服务端事实，label 缺失时按枚举翻译） */
@@ -100,7 +107,8 @@ const attemptRows = computed(() =>
     key: (attempt.turn_id || "attempt") + "-" + index,
     index: typeof attempt.attempt === "number" ? attempt.attempt : index + 1,
     source: sourceTextOf(attempt.source),
-    status: statusTextOf(attempt.status, undefined),
+    // 尝试的状态同样是服务端事实：优先 status_label，缺省才按 Turn 枚举兜底
+    status: statusTextOf(attempt.status, attempt.status_label),
     at: formatTime(attempt.started_at),
     reason: textOf(attempt.reason),
   })),
