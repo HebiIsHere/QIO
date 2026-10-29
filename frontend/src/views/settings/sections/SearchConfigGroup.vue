@@ -317,11 +317,12 @@ async function load(): Promise<void> {
     };
     // F14：迟到的初始读取不能覆盖用户在等待期间的编辑/保存值。
     // 已有更新的保存结果 / 保存还在途 → 整体跳过（不覆盖保存值，也不用旧值当取消基线）。
-    if (search.saving.value || search.savedRevision.value !== savedAtStart) {
-      // 什么都不写：保存结果才是更新的权威。
-    } else if (search.revision.value !== revisionAtStart) {
-      // 用户已经在编辑：保留输入，但取消必须回到服务端实际保存值（返修 4），
-      // 而不是加载前的占位默认值（记忆应回 12000 / 搜索条数应回 9）。
+    if (search.savedRevision.value !== savedAtStart) {
+      // 已有更新的保存成功：旧加载值无关紧要，整体跳过。
+    } else if (search.saving.value || search.revision.value !== revisionAtStart) {
+      // 用户已经在编辑 / 保存还在途：保留输入与在途保存，但取消必须回到服务端实际保存值
+      // （返修 4）；保存期间返回时也先记下真实基线，保存失败仍能取消回它（返修 2）。
+      // adoptBaseline 不清错误、不作废在途保存（返修 3）。
       search.adoptBaseline(truth);
     } else {
       search.reset(truth);

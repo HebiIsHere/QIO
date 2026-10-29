@@ -416,3 +416,220 @@ describe("返修：取消回到服务端实际保存值（不是加载前占位�
     w.unmount();
   });
 });
+
+describe("返修二：连续保存后的回滚值 / 保存期间初始读取 / 失败反馈保留", () => {
+  it("整理间隔连续提交 30 成功、40 失败：最终显示实际保存的 30（失败先回、成功后到）", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
+    const resolvers: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    update.mockImplementation(
+      () => new Promise((resolve, reject) => { resolvers.push({ resolve, reject }); }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const input = memory.find('input[aria-label="整理间隔（小时）"]');
+
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+    await input.setValue("40");
+    await input.trigger("blur");
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(2);
+
+    // 后一次（40）先失败，前一次（30）随后成功：服务端实际保存 30。
+    resolvers[1].reject(new Error("500 boom"));
+    await flushFrames();
+    resolvers[0].resolve({ enabled: true, interval_hours: 30 });
+    await flushFrames();
+
+    expect((input.element as HTMLInputElement).value).toBe("30");
+    w.unmount();
+  });
+
+  it("整理间隔连续提交 30 成功、40 失败：最终显示实际保存的 30（成功先到）", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
+    const resolvers: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    update.mockImplementation(
+      () => new Promise((resolve, reject) => { resolvers.push({ resolve, reject }); }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const input = memory.find('input[aria-label="整理间隔（小时）"]');
+
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+    await input.setValue("40");
+    await input.trigger("blur");
+    await flushFrames();
+
+    resolvers[0].resolve({ enabled: true, interval_hours: 30 });
+    await flushFrames();
+    resolvers[1].reject(new Error("500 boom"));
+    await flushFrames();
+
+    expect((input.element as HTMLInputElement).value).toBe("30");
+    w.unmount();
+  });
+
+  it("记忆：保存期间返回初始读取，随后保存失败 → 取消仍回 12000", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: { fragment_max_turns: number; fragment_max_tokens: number }) => void = () => {};
+    let rejectSave: (e: Error) => void = () => {};
+    (api.getMemorySettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    (api.updateMemorySettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectSave = reject; }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const maxTokens = memory.find('input[aria-label="单段长度目标"]');
+    await maxTokens.setValue("9000");
+    await nextTick();
+    await memory
+      .find('[data-settings-group="memory.fragment"] [data-settings-action="save"]')
+      .trigger("click");
+    await flushFrames();
+
+    // 初始读取在保存期间返回（服务端已保存 12000），随后保存失败
+    resolveLoad({ fragment_max_turns: 10, fragment_max_tokens: 12000 });
+    await flushFrames();
+    rejectSave(new Error("500 boom"));
+    await flushFrames();
+
+    await memory
+      .find('[data-settings-group="memory.fragment"] [data-settings-action="cancel"]')
+      .trigger("click");
+    await nextTick();
+    expect((maxTokens.element as HTMLInputElement).value).toBe("12000");
+    w.unmount();
+  });
+
+  it("搜索：保存期间返回初始读取，随后保存失败 → 取消仍回 9", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: {
+      searxng_url: string;
+      bocha_has_key: boolean;
+      keyless_fallback: boolean;
+      top_k_default: number;
+      max_fetch_chars: number;
+    }) => void = () => {};
+    let rejectSave: (e: Error) => void = () => {};
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    (api.updateSearchSettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectSave = reject; }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    await models.find('[data-settings-fold-toggle="models.search.advanced"]').trigger("click");
+    await nextTick();
+    const topK = models.find('input[aria-label="返回条数"]');
+    await topK.setValue("12");
+    await nextTick();
+    await models
+      .find('[data-settings-group="models.search"] [data-settings-action="save"]')
+      .trigger("click");
+    await flushFrames();
+
+    resolveLoad({
+      searxng_url: "",
+      bocha_has_key: false,
+      keyless_fallback: true,
+      top_k_default: 9,
+      max_fetch_chars: 15000,
+    });
+    await flushFrames();
+    rejectSave(new Error("500 boom"));
+    await flushFrames();
+
+    await models
+      .find('[data-settings-group="models.search"] [data-settings-action="cancel"]')
+      .trigger("click");
+    await nextTick();
+    expect((topK.element as HTMLInputElement).value).toBe("9");
+    w.unmount();
+  });
+
+  it("记忆：保存已失败后初始读取返回，未解决的保存错误仍可见", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: { fragment_max_turns: number; fragment_max_tokens: number }) => void = () => {};
+    (api.getMemorySettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    (api.updateMemorySettings as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("500 boom"),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    await memory.find('input[aria-label="单段长度目标"]').setValue("9000");
+    await nextTick();
+    await memory
+      .find('[data-settings-group="memory.fragment"] [data-settings-action="save"]')
+      .trigger("click");
+    await flushFrames();
+    expect(memory.find('[data-settings-group="memory.fragment"] .set-notice.err').text()).toContain(
+      "保存记忆分段失败",
+    );
+
+    resolveLoad({ fragment_max_turns: 10, fragment_max_tokens: 12000 });
+    await flushFrames();
+    expect(memory.find('[data-settings-group="memory.fragment"] .set-notice.err').text()).toContain(
+      "保存记忆分段失败",
+    );
+    w.unmount();
+  });
+
+  it("搜索：保存已失败后初始读取返回，未解决的保存错误仍可见", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: {
+      searxng_url: string;
+      bocha_has_key: boolean;
+      keyless_fallback: boolean;
+      top_k_default: number;
+      max_fetch_chars: number;
+    }) => void = () => {};
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    (api.updateSearchSettings as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("500 boom"),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    await models.find('[data-settings-fold-toggle="models.search.advanced"]').trigger("click");
+    await nextTick();
+    await models.find('input[aria-label="返回条数"]').setValue("12");
+    await nextTick();
+    await models
+      .find('[data-settings-group="models.search"] [data-settings-action="save"]')
+      .trigger("click");
+    await flushFrames();
+    expect(models.find('[data-settings-group="models.search"] .set-notice.err').text()).toContain(
+      "保存搜索配置失败",
+    );
+
+    resolveLoad({
+      searxng_url: "",
+      bocha_has_key: false,
+      keyless_fallback: true,
+      top_k_default: 9,
+      max_fetch_chars: 15000,
+    });
+    await flushFrames();
+    expect(models.find('[data-settings-group="models.search"] .set-notice.err').text()).toContain(
+      "保存搜索配置失败",
+    );
+    w.unmount();
+  });
+});

@@ -50,17 +50,20 @@ function onWorkspaceInput(value: string): void {
 function saveWorkspace(): void {
   const next = workspaceRoot.value.trim();
   if (next === workspaceSaved.value) return;
-  const previous = workspaceSaved.value;
   workspaceTouched += 1;
   void save.saveNow<{ root_dir: string }>({
     key: "tools.workspace",
     pending: "正在保存工作区根目录…",
     rollback: () => {
-      workspaceRoot.value = previous;
+      // 失败回到实际保存值（连续保存前成功后失败时不是提交瞬间的值）。
+      workspaceRoot.value = workspaceSaved.value;
     },
-    commit: () => api.updateComputerSettings({ root_dir: next }),
-    apply: (server) => {
+    commit: async () => {
+      const server = await api.updateComputerSettings({ root_dir: next });
       workspaceSaved.value = server.root_dir || "";
+      return server;
+    },
+    apply: (server) => {
       workspaceRoot.value = server.root_dir || "";
     },
     success: "工作区根目录已保存",
@@ -105,17 +108,20 @@ async function loadToolHistory(): Promise<void> {
 
 function toggleRecordOutputs(): void {
   const next = !recordOutputs.value;
-  // 回滚到真实已保存值（不是刚才的乐观值）
-  const previous = recordsSaved.value.recordOutputs;
   recordOutputs.value = next;
   recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number; purged?: number }>({
     pending: "正在保存工具记录设置…",
     rollback: () => {
-      recordOutputs.value = previous;
+      // 回滚到真实已保存值（不是刚才的乐观值 / 提交瞬间的值）
+      recordOutputs.value = recordsSaved.value.recordOutputs;
     },
     key: "tools.records.outputs",
-    commit: () => api.updateToolHistorySettings({ record_outputs: next }),
+    commit: async () => {
+      const server = await api.updateToolHistorySettings({ record_outputs: next });
+      recordsSaved.value = { ...recordsSaved.value, recordOutputs: server.record_outputs };
+      return server;
+    },
     // F08：这次保存只拥有「保存输出全文」；响应附带的其它保留期字段可能更旧。
     apply: (server) => {
       recordOutputs.value = server.record_outputs;
@@ -136,17 +142,20 @@ function onOutputRetentionInput(value: number | null): void {
 
 function onOutputRetentionChange(value: number | null): void {
   const next = value ?? 0;
-  // 回滚到真实已保存值：用户刚输入 30 不能当成回滚基线（返修 1：90 改 30 失败仍显示 30）。
-  const previous = recordsSaved.value.outputRetentionDays;
   outputRetentionDays.value = next;
   recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number; purged?: number }>({
     key: "tools.records.output-retention",
     pending: "正在保存输出保留期…",
     rollback: () => {
-      outputRetentionDays.value = previous;
+      // 回滚到真实已保存值：用户刚输入 30 / 提交瞬间的值都不能当基线（返修 1）。
+      outputRetentionDays.value = recordsSaved.value.outputRetentionDays;
     },
-    commit: () => api.updateToolHistorySettings({ output_retention_days: next }),
+    commit: async () => {
+      const server = await api.updateToolHistorySettings({ output_retention_days: next });
+      recordsSaved.value = { ...recordsSaved.value, outputRetentionDays: server.output_retention_days };
+      return server;
+    },
     apply: (server) => {
       outputRetentionDays.value = server.output_retention_days;
       recordsSaved.value = { ...recordsSaved.value, outputRetentionDays: server.output_retention_days };
@@ -166,16 +175,20 @@ function onRecordRetentionInput(value: number | null): void {
 
 function onRecordRetentionChange(value: number | null): void {
   const next = value ?? 0;
-  const previous = recordsSaved.value.recordRetentionDays;
   recordRetentionDays.value = next;
   recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number }>({
     key: "tools.records.record-retention",
     pending: "正在保存记录保留期…",
     rollback: () => {
-      recordRetentionDays.value = previous;
+      recordRetentionDays.value = recordsSaved.value.recordRetentionDays;
     },
-    commit: () => api.updateToolHistorySettings({ record_retention_days: next }),
+    commit: async () => {
+      const server = await api.updateToolHistorySettings({ record_retention_days: next });
+      const days = server.record_retention_days ?? recordsSaved.value.recordRetentionDays;
+      recordsSaved.value = { ...recordsSaved.value, recordRetentionDays: days };
+      return server;
+    },
     apply: (server) => {
       const days = server.record_retention_days ?? recordsSaved.value.recordRetentionDays;
       recordRetentionDays.value = days;

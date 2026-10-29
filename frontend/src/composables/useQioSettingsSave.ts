@@ -56,6 +56,12 @@ export interface ImmediateSaveOptions<T> {
   commit: () => Promise<T>;
   /** 服务端真值回填（只在响应仍是最新时执行） */
   apply?: (server: T) => void;
+  /**
+   * 迟到成功、但该设置最新一次请求已经失败时的收敛（默认用 apply）。
+   * 场景（返修 1）：连续提交 30、40，40 先失败、30 后成功 —— 服务端实际保存的是 30，
+   * 界面必须收敛到 30，而不是停在回滚用的更早值；较新成功仍然不允许被旧成功覆盖。
+   */
+  reconcile?: (server: T) => void;
   success: string | ((server: T) => string);
   /** 失败文案前缀，最终形如「保存输出速度失败：<原因>」 */
   failure: string;
@@ -91,6 +97,18 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
    * 第一个的错误必须继续可见；成功只清掉它自己那个设置的错误。
    */
   const errorNotices = new Map<string, SettingsNotice>();
+  /** 每个设置「最新一次请求」的结果：只有最新请求失败时，迟到的成功才允许收敛真实值。 */
+  const latestOutcome = new Map<string, "success" | "failure">();
+  /** 每个设置在途请求数：还有更新请求在跑时，旧成功不收敛，避免打断在途选择。 */
+  const inflightWrites = new Map<string, number>();
+
+  function writeId(key?: string): string {
+    return key ?? "";
+  }
+
+  function inflightOf(id: string): number {
+    return inflightWrites.get(id) ?? 0;
+  }
 
   function clearTimer(): void {
     if (timer) {
@@ -166,13 +184,23 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
 
   async function saveNow<T>(options: ImmediateSaveOptions<T>): Promise<boolean> {
     const key = options.key;
+    const id = writeId(key);
     const token = beginWrite(key);
+    inflightWrites.set(id, inflightOf(id) + 1);
     options.optimistic?.();
     setNotice("info", options.pending ?? "保存中…", key);
     try {
       const server = await options.commit();
-      // 迟到响应：不落 UI、不写反馈（更新的那次修改/反馈才是事实）。
-      if (!isLatest(token, key)) return false;
+      if (!isLatest(token, key)) {
+        // 迟到成功：默认不落 UI（更新的那次修改才是事实）。但如果该设置最新一次请求已经
+        // 失败、且已没有在途请求，这次成功携带的是服务端真实保存值 —— 界面必须收敛过去，
+        // 否则「前一次成功、后一次失败」会退回到更早的值（返修 1）。
+        if (latestOutcome.get(id) === "failure" && inflightOf(id) - 1 <= 0) {
+          (options.reconcile ?? options.apply)?.(server);
+        }
+        return false;
+      }
+      latestOutcome.set(id, "success");
       options.apply?.(server);
       const text =
         typeof options.success === "function" ? options.success(server) : options.success;
@@ -180,10 +208,13 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
       return true;
     } catch (e) {
       if (!isLatest(token, key)) return false;
+      latestOutcome.set(id, "failure");
       // 失败必须让控件回到真实值：停在「看起来改了、其实没保存」比报错更危险。
       options.rollback?.();
       setNotice("err", `${options.failure}失败：${settingsErrorText(e)}`, key);
       return false;
+    } finally {
+      inflightWrites.set(id, Math.max(0, inflightOf(id) - 1));
     }
   }
 
@@ -290,10 +321,9 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
   }
 
   function adoptBaseline(next: T): void {
+    // 只更新「取消回到哪」的基线：不动草稿、不动在途保存（否则保存成功会被误作废），
+    // 也不清除尚未解决的保存错误（返修 3：失败反馈不能被随后返回的读取清除）。
     baseline.value = cloneDraft(next);
-    error.value = null;
-    // 作废比这次初始读取更早的响应；不动草稿，用户正在输入的内容保留。
-    writeSeq += 1;
   }
 
   function cancel(): void {

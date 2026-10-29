@@ -101,7 +101,8 @@ async function loadMemorySettings(): Promise<void> {
     const s = await api.getMemorySettings();
     // F14：这是**初始读取**，不是权威覆盖。已有更新的保存结果 / 保存还在途时，
     // 迟到的读取不得覆盖较新的保存值与生效摘要。
-    if (fragment.saving.value || fragment.savedRevision.value !== savedAtStart) return;
+    // 已有更新的保存成功 → 旧加载值无关紧要，整体跳过。
+    if (fragment.savedRevision.value !== savedAtStart) return;
     const savedTier = TIER_PRESETS.includes(String(s.fragment_max_turns))
       ? String(s.fragment_max_turns)
       : "custom";
@@ -110,9 +111,10 @@ async function loadMemorySettings(): Promise<void> {
       customTurns: s.fragment_max_turns,
       maxTokens: s.fragment_max_tokens,
     };
-    if (fragment.revision.value !== revisionAtStart) {
-      // 用户已经在编辑：保留输入，但取消必须回到服务端实际保存值（返修 4），
-      // 不能回到加载前的占位默认值；生效摘要也不拿旧加载值覆盖。
+    if (fragment.saving.value || fragment.revision.value !== revisionAtStart) {
+      // 用户已经在编辑 / 保存还在途：保留输入与保存，但取消必须回到服务端实际保存值
+      // （返修 4）；保存期间返回时也先记下这个真实基线，随后保存失败仍能取消回它（返修 2）。
+      // adoptBaseline 不清错误、不作废在途保存：保存成功会覆盖基线，失败则保留错误（返修 3）。
       fragment.adoptBaseline(values);
       return;
     }
@@ -150,7 +152,6 @@ async function loadMaintenanceSettings(): Promise<void> {
 
 function toggleMaintenance(): void {
   const next = !maintenanceEnabled.value;
-  const previous = maintenanceSaved.value.enabled;
   maintenanceTouched += 1;
   void save.saveNow<{ enabled: boolean; interval_hours: number }>({
     // F08：同一分区的不同设置各有身份，互不作废在途保存。
@@ -159,19 +160,24 @@ function toggleMaintenance(): void {
     optimistic: () => {
       maintenanceEnabled.value = next;
     },
-    rollback: () => {
-      maintenanceEnabled.value = previous;
-    },
-    commit: () => api.updateMaintenanceSettings({ enabled: next }),
-    // F08：这次保存只拥有「开关」这一个设置；响应里附带的其它字段可能来自更早的请求，
-    // 不能拿它覆盖另一个设置在途/已成功的选择。
-    apply: (server) => {
+    // 服务端真实保存值在每次成功响应时都记下来（包括迟到成功）：失败回滚 / 收敛用它。
+    commit: async () => {
+      const server = await api.updateMaintenanceSettings({ enabled: next });
       maintenanceSaved.value = {
         enabled: server.enabled,
         interval: maintenanceSaved.value.interval,
       };
+      return server;
+    },
+    // F08：这次保存只拥有「开关」这一个设置；响应里附带的其它字段可能来自更早的请求，
+    // 不能拿它覆盖另一个设置在途/已成功的选择。
+    apply: (server) => {
       maintenanceEnabled.value = server.enabled;
       patchEffectiveFacts({ maintenanceEnabled: server.enabled });
+    },
+    rollback: () => {
+      // 返回「实际保存值」而不是提交瞬间的值：连续保存前成功后失败时可能是 30（返修 1）。
+      maintenanceEnabled.value = maintenanceSaved.value.enabled;
     },
     success: (server) =>
       `后台整理已保存：${server.enabled ? "开启" : "关闭"}（每 ${server.interval_hours} 小时）`,
@@ -186,24 +192,26 @@ function onMaintenanceIntervalInput(value: number | null): void {
 
 function onMaintenanceIntervalChange(value: number | null): void {
   const next = value ?? 0;
-  // 回滚到最近一次真实保存值，而不是用户刚输入的数字（返修 1）。
-  const previous = maintenanceSaved.value.interval;
   maintenanceInterval.value = next;
   maintenanceTouched += 1;
   void save.saveNow<{ enabled: boolean; interval_hours: number }>({
     key: "memory.maintenance.interval",
     pending: "正在保存整理间隔…",
-    rollback: () => {
-      maintenanceInterval.value = previous;
-    },
-    commit: () => api.updateMaintenanceSettings({ interval_hours: next }),
-    apply: (server) => {
+    commit: async () => {
+      const server = await api.updateMaintenanceSettings({ interval_hours: next });
       maintenanceSaved.value = {
         enabled: maintenanceSaved.value.enabled,
         interval: server.interval_hours,
       };
+      return server;
+    },
+    apply: (server) => {
       maintenanceInterval.value = server.interval_hours;
       patchEffectiveFacts({ maintenanceInterval: server.interval_hours });
+    },
+    rollback: () => {
+      // 连续提交 30、40：30 已成功（真实保存 30）、40 失败时回到 30，而不是 24（返修 1）。
+      maintenanceInterval.value = maintenanceSaved.value.interval;
     },
     success: (server) => `整理间隔已保存：每 ${server.interval_hours} 小时`,
     failure: "保存整理间隔",
@@ -275,16 +283,26 @@ function saveLoop(): void {
     return;
   }
   loopTouched += 1;
-  const previous = { ...loopSaved.value };
   void save.saveNow<{ max_iterations: number; output_token_budget: number }>({
     key: "memory.loop",
     pending: "正在保存对话深度…",
-    // 失败回到真实已保存值，而不是用户刚输入的数字（返修 1）。
+    // 失败回到真实已保存值，而不是用户刚输入的数字或提交瞬间的值（返修 1）。
     rollback: () => {
-      loopMaxIterations.value = previous.maxIterations;
-      loopTokenBudget.value = previous.outputTokenBudget;
+      loopMaxIterations.value = loopSaved.value.maxIterations;
+      loopTokenBudget.value = loopSaved.value.outputTokenBudget;
     },
-    commit: () => api.updateLoopSettings({ max_iterations: iterations, output_token_budget: budget }),
+    // 每次成功（含迟到成功）都记下真实保存值。
+    commit: async () => {
+      const server = await api.updateLoopSettings({
+        max_iterations: iterations,
+        output_token_budget: budget,
+      });
+      loopSaved.value = {
+        maxIterations: server.max_iterations,
+        outputTokenBudget: server.output_token_budget,
+      };
+      return server;
+    },
     apply: applyLoop,
     success: "对话深度已保存",
     failure: "保存对话深度",
