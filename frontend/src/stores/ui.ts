@@ -64,6 +64,11 @@ export const useUiStore = defineStore("ui", {
      */
     closeBehaviorShellSynced: null as CloseBehavior | null,
     /**
+     * 最新一次保存失败、但还有别的保存在途：此刻的服务端回读不是最终结果。
+     * 先展示已知值，等**全部请求结算**后再补读一次真实值（本轮返修）。
+     */
+    closeBehaviorReconcilePending: false,
+    /**
      * 开发者模式（默认 OFF）：FPS / WebGL / token 等诊断信息只在开启后出现；
      * 正常模式保持「像产品，不像 debugger」。
      */
@@ -143,6 +148,8 @@ export const useUiStore = defineStore("ui", {
         }
         // 只有最新一次选择才允许写界面并同步壳。
         if (token === closeBehaviorWriteSeq) {
+          // 最新一次已经成功：之前因「还有请求在途」挂起的补读不再需要。
+          this.closeBehaviorReconcilePending = false;
           this.closeBehavior = this.closeBehaviorEffective;
           // 同步本身在 desktop 层串行化，保证最后发起的那次最后到达。
           this.pushCloseBehaviorToShell(this.closeBehaviorEffective);
@@ -151,18 +158,37 @@ export const useUiStore = defineStore("ui", {
         const latest = token === closeBehaviorWriteSeq;
         if (latest) {
           // 最新选择失败：不能只回退到本地记的值 —— 前一次需求可能已经保存成功但响应迟到。
-          // 以服务端真实保存值为准校准；读不到时才退回最近一次已确认值（并如实报错）。
-          await this.reconcileCloseBehavior(token);
+          if (closeBehaviorInFlight > 1) {
+            /**
+             * 还有别的保存请求在途（本轮返修的触发顺序：后一次先失败、前一次随后才写入成功）：
+             * 此刻的回读看不到那次写入，**不能当成最终结果**。先展示最近一次已确认值，
+             * 等全部请求结算后由 finally 补读一次真实值。
+             */
+            this.closeBehaviorReconcilePending = true;
+            this.closeBehavior = this.closeBehaviorEffective;
+          } else {
+            // 只有本次在途：回读就是最终结果（超时可能其实写进去了 / 明确拒绝没写进去）。
+            await this.reconcileCloseBehavior(token);
+          }
         }
         console.error("[ui] save close behavior failed:", e);
         if (latest) throw e;
       } finally {
         closeBehaviorInFlight -= 1;
-        // 迟到的旧请求结算完、且没有更新的选择在途：界面与壳对齐到最新已知持久值。
-        // 这一步保证「前一次成功、后一次失败」在任意返回顺序下都收敛到同一个值。
-        if (token !== closeBehaviorWriteSeq && closeBehaviorInFlight === 0) {
-          this.closeBehavior = this.closeBehaviorEffective;
-          this.pushCloseBehaviorToShell(this.closeBehaviorEffective);
+        if (closeBehaviorInFlight === 0) {
+          if (this.closeBehaviorReconcilePending) {
+            /**
+             * 全部保存请求终于都结算了：这时服务端才知道最终值（可能正是迟到的旧成功写进去的）。
+             * 补读一次真实值作为最终状态；读不到时 reconcileCloseBehavior 会退回最近一次已确认值。
+             */
+            this.closeBehaviorReconcilePending = false;
+            await this.reconcileCloseBehavior(closeBehaviorWriteSeq);
+          } else if (token !== closeBehaviorWriteSeq) {
+            // 迟到的旧请求结算完、且没有更新的选择在途：界面与壳对齐到最新已知持久值。
+            // 这一步保证「前一次成功、后一次失败」在任意返回顺序下都收敛到同一个值。
+            this.closeBehavior = this.closeBehaviorEffective;
+            this.pushCloseBehaviorToShell(this.closeBehaviorEffective);
+          }
         }
       }
     },
