@@ -143,6 +143,77 @@ C（候选四类结论）、D（意图执行记录）各有宽/窄两张。核�
    不做整套视觉验收。
 7. 旧记录（本轮实现之前写入的、没有元数据的续作消息）原样展示；如需回填需要另开迁移，本轮不做。
 
+## 返修二（验收遗漏，2026-10-29 第二次交付）
+
+基线仍为 `cc52b150`（上一轮交付 SHA），分支不变；本轮只处理验收遗漏，不删除/缩小上一轮已通过的语义。
+
+### 1. 关闭行为：连续保存「前一次成功、后一次失败」的一致性
+
+- 原缺陷：最新一次保存失败时只回退到本地记住的值；如果前一次其实已经保存成功（只是响应迟到），
+  实际持久值、界面与桌面壳会不一致，甚至退回更早的旧值。
+- 修复（`frontend/src/stores/ui.ts`）：每一次成功响应都采纳服务端返回的持久值作为基线（迟到的旧成功也算，
+  但不会覆盖更新一次选择的结果）；最新一次失败后**校准一次服务端真实值**（`GET /api/ui/settings`），
+  读不到才退回最近一次已确认值；壳同步去重，迟到的旧请求结算后把界面/壳对齐到最新已知持久值。
+- 验证：`stores/__tests__/closeBehaviorReconcile.test.ts`（4 条：前成功后失败、后失败先到+旧成功迟到、
+  校准也失败、旧成功后到），加上上一轮的 ordering/desktop/设置页用例，共 15 条通过；基线实现上这些新用例是红的。
+
+### 2. 历史覆盖清除：批量接口允许清除既有 custom 分配
+
+- 原缺陷：批量保存把 `custom:<tag>` 当「未知用途」直接 400，界面的「清除历史覆盖」对自定义标签历史行不可用。
+- 修复（`backend/src/agent/services/model_usage.py`）：`custom:<tag>` 是合法用途 key；清除（两个都留空）始终允许；
+  新增 custom 分配仍被统一校验拒绝（422 `usage_not_effective`）；整批仍然整体成功或整体失败。
+- 验证：`backend/tests/test_release_step2b_bc_repair.py`（5 条：单用清除、混合批量原子、拒绝新增、整批回滚、
+  单入口清除），加上上一轮 B/C 用例全过。
+
+### 3. 看图候选：用途判定读取中 / 失败时的能力兜底
+
+- 原缺陷：候选先渲染不带用途维度的列表，服务端用途判定未到时把「一般可用」当成「适用于该用途」，
+  看图时能选中明确只有文字能力的模型。
+- 修复（`frontend/src/components/models/CandidatePicker.vue`、`UsageAssignmentSection.vue`）：候选组件接收用途
+  必备能力；判定未到/失败时用「用途要求 + 模型已声明能力」本地兜底——明确缺能力的仍不可选并说明原因，
+  能力真正未知的仍可选并标「能力未确认」；判定到达后以服务端为准。用途分配面板把「读取中」传进候选面板。
+- 验证：`components/models/__tests__/ReleaseStep2bCandidateFallback.test.ts`（5 条：读取中、读取失败、服务端结论优先、
+  无能力要求的用途不受影响、面板级「读取中→到达」）。
+
+### 4. 意图执行记录
+
+- **无需刷新即可出现 + 真实状态更新**（`stores/session.ts`、`stores/events.ts`、`stores/interactive.ts`、
+  `services/interactive.ts`、两个页面各 +2 行的激活刷新）：确认 / 批量确认 / 恢复 / 手动重试成功后标记历史可能过期并用
+  **既有** `loadHistory()` 重读当前话题；服务端发起的续作轮由 TURN_START 认领，首个「消息已落库之后」的事件
+  （STAGE / ASSISTANT / TOOL_*）刷一次过程状态，TURN_END 刷真实终态；自动重试轮凭「当前页已有记录」在 TURN_END 刷新。
+  不轮询、不伪造记录、刷新失败沿用既有 history 错误口径（不说成已更新），用户自己的流式轮不整段重读。
+- **不同确认版本分别记录、保留各自确认时的名称**（`interactive/records.py`、`interactive/submission.py`）：
+  `record_key` 增加授权版本签名段（`ie:<submission>:i1=v2,i2=v1:<ids>`），重新确认（版本变化）→ 新记录，
+  自动重试（版本不变）→ 原记录加 attempts；Turn 开始时把 `board_intents.title` 快照写进 raw，读取优先用快照，
+  旧记录保留它确认时的名称；旧 key / 无快照的旧消息原样兼容。
+- **分页不隐藏当前记录**：服务端 `record_head` 改为「本次页内该 record 的最早消息」，状态/attempts 仍按整话题派生；
+  前端 `visibleIntentExecutionMessages` 按消息顺序只保留同一 `record_key` 最早的一条，跨页重复 head 隐藏（只渲染一张）。
+- **板面结果入口可打开/定位**（`IntentExecutionMessage.vue`、`stores/interactive.ts` 的 `selectBoard`）：
+  `kind === "board"` 时先按只读板面清单确认存在 → 切换 `boardId` + 既有 `load()` → 跳互动页；
+  不存在/清单读不到/加载失败显示「没能定位到这块面：<原因>」，不新建板面、不装作已打开。
+- 验证：后端 `tests/test_r2b_intent_records.py`（8 条：重新确认 v1→v2 两个 key、旧名保留、自动重试同 key、
+  分页每页一条 head、旧 key/无快照兼容、真实 HTTP 两轮确认端到端）+ 上一轮 D 用例与互动回归（232 + 31 项）；
+  前端 `components/__tests__/IntentExecutionRefresh.test.ts` + 扩充的 IntentExecutionMessage / MessageStream 用例（35 条），
+  以及相邻回归（stores/components/views/interactive/v2 1669 条、interactive/services 1707 条）。
+
+### 返修视觉核对（真实组件 + 真实令牌）
+
+- `docs/verification-shots/r2-ui-consistency-20261029/r2b-intent-record-board-entry-wide-760.png`（板面结果入口；
+  窄窗见 `…-narrow-380.png`）
+- `docs/verification-shots/r2-ui-consistency-20261029/r2b-candidate-usage-pending-wide-700.png`
+  （用途判定读取中：text-only 不可选 + 原因，能力未知可选 + 「能力未确认」）
+
+### 返修已知限制
+
+1. 记录出现依赖「一次性历史读取 + 续作轮首个落库后事件」，不是消息级订阅；服务端很晚才写消息时，
+   出现时间 = 写入后第一个模型事件（仍无需手动刷新）。
+2. 重试针对的记录不在当前已加载页（更早分页）时不主动重读；下次历史加载按分页 head 显示正确状态。
+3. 刷新失败且用户一直停在同页、无新 Turn/页面切换时，提示位要等下次激活或相关 TURN_END 才兑现；
+   期间按既有历史错误口径显示。
+4. 「选中板面」= 切换 `boardId` + 既有 `load()`；应用目前没有多板面切换 UI 入口，跨板面浏览不在本任务范围。
+5. 同一意图的旧版本记录状态仍按真实记录派生（会随意图现状演进），本轮只冻结「名称」，不冻结状态。
+6. 本轮提交使用仓库支持的 `[skip ci]`：**未触发 CI**，新提交仅完成定向验证（前端类型检查 + 定向 vitest + 定向 pytest）。
+
 ## 状态
 
 - 本地定向验证已完成；分支已推送远端（完整 SHA 与 CI 结果在交付记录中回填）。
