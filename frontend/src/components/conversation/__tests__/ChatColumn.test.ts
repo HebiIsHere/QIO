@@ -53,7 +53,6 @@ function mountColumn(pinia = freshPinia()) {
       stubs: {
         MessageStream: { template: '<div class="stream-stub" />' },
         ComposerDock: { template: '<div class="dock-stub" />' },
-        KnowledgeCandidateCard: true,
         RouterLink: { props: ["to"], template: "<a><slot /></a>" },
       },
     },

@@ -85,12 +85,6 @@ export const useUiStore = defineStore("ui", {
      */
     settingsSection: null as string | null,
     settingsNavScroll: 0,
-    /**
-     * 设置页「非敏感」表单草稿（同次运行期）。
-     * 设置是整页路由，离开会卸载组件；不记住就会把用户改到一半的值丢掉。
-     * 凭据密钥一类敏感输入**不进这里**（只在表单自身的内存状态里）。
-     */
-    settingsDraft: {} as Record<string, unknown>,
     loaded: false,
   }),
   actions: {
@@ -221,17 +215,6 @@ export const useUiStore = defineStore("ui", {
         console.warn("[ui] 校准关闭行为失败，退回最近一次已确认值", err);
         this.closeBehavior = this.closeBehaviorEffective;
         this.pushCloseBehaviorToShell(this.closeBehaviorEffective);
-      }
-    },
-    async setCps(cps: number) {
-      this.typewriterCps = cps;
-      try {
-        await api.updateUISettings(cps);
-      } catch (e) {
-        // 抛给调用方：设置页要给出可见的失败反馈，不能只写控制台、
-        // 也不能让界面停在「已保存」的假状态上。
-        console.error("[ui] save typewriter cps failed:", e);
-        throw e;
       }
     },
     /**

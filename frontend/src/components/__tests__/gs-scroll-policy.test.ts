@@ -78,7 +78,6 @@ describe("统一滚动策略：不再有原生/自绘滚动条", () => {
     "components/planet/EntityPanel.vue",
     "components/planet/KnowledgePanel.vue",
     "components/onboarding/OnboardingWizard.vue",
-    "views/settings/CredentialModal.vue",
     "views/DebugView.vue",
     "views/PlanetView.vue",
     "components/planet/MemoryTab.vue",
