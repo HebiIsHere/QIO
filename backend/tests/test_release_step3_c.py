@@ -20,7 +20,11 @@ from fastapi.testclient import TestClient
 
 from agent.api.server import create_app
 from agent.config import Settings
-from agent.credentials.models import MODEL_SOURCE_MANUAL, ModelCatalogStore
+from agent.credentials.models import (
+    CURRENT_SET_KEY_PREFIX,
+    MODEL_SOURCE_MANUAL,
+    ModelCatalogStore,
+)
 from agent.credentials.store import CredentialStore, MemoryKeyring
 from agent.services import model_catalog as discovery
 
@@ -397,5 +401,59 @@ async def test_current_directory_excludes_old_config_models(monkeypatch, ctx, cr
     # 历史行、手动模型与用途引用都保留（不靠删除记录规避）
     all_rows = {item["model_id"] for item in store.list_models("key_a")}
     assert {"old-a", "old-b", "new-only", "manual-keep"} <= all_rows
+    usage = next(item for item in store.list_usages() if item["usage_key"] == "vision")
+    assert usage["model_id"] == "manual-keep"
+
+@pytest.mark.asyncio
+async def test_old_format_without_set_field_uses_explicit_provenance(
+    monkeypatch, ctx, credentials, store
+):
+    """旧格式（没有本次新增集合字段）但发现状态已有来源签名：换配置后必须分开。"""
+    _make(credentials)
+    store.upsert_model("key_a", "manual-keep", source=MODEL_SOURCE_MANUAL)
+    store.set_usage("vision", "key_a", "manual-keep")
+
+    async def fetch_old(**_kwargs):
+        return [{"model_id": "old-a"}]
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fetch_old)
+    await discovery.discover(ctx, "key_a", refresh=True)
+
+    # 模拟旧格式记录：删掉集合字段，只保留发现状态里的来源签名。
+    store._settings_delete(CURRENT_SET_KEY_PREFIX + "key_a")
+    assert store.current_set("key_a")["config_signature"] == ""
+    assert store.discovery_state("key_a")["config_signature"]
+
+    # 同一份配置下：按来源签名仍属于当前（旧数据兼容，不误判成历史）。
+    current_same, historical_same = store.current_model_view("key_a")
+    assert "old-a" in [item["model_id"] for item in current_same]
+    assert [item["model_id"] for item in historical_same] == []
+
+    # 换地址 / Key 后：来源签名不同 → 旧模型进入历史，不能一律列为当前。
+    credentials.reconfigure(
+        "key_a",
+        secret=SECRET_NEXT,
+        endpoint=MOONSHOT,
+        confirm_reconfigure=True,
+        default_model="kimi-k2",
+    )
+    current_old, historical_old = store.current_model_view("key_a")
+    assert [item["model_id"] for item in current_old] == ["manual-keep"]
+    assert [item["model_id"] for item in historical_old] == ["old-a"]
+    catalog = store.catalog()
+    connection = next(item for item in catalog["connections"] if item["credential_id"] == "key_a")
+    assert [item["model_id"] for item in connection["models"]] == ["manual-keep"]
+    assert [item["model_id"] for item in connection["historical_models"]] == ["old-a"]
+
+    # 新地址成功获取后：当前 = 手动 + 新模型；旧模型仍在历史里，引用与行都保留。
+    async def fetch_new(**_kwargs):
+        return [{"model_id": "new-only"}]
+
+    monkeypatch.setattr(discovery, "fetch_provider_models", fetch_new)
+    refreshed = await discovery.discover(ctx, "key_a", refresh=True)
+    assert sorted(m["model_id"] for m in refreshed["models"]) == ["manual-keep", "new-only"]
+    assert [m["model_id"] for m in refreshed["historical_models"]] == ["old-a"]
+    rows = {item["model_id"] for item in store.list_models("key_a")}
+    assert {"old-a", "manual-keep", "new-only"} <= rows
     usage = next(item for item in store.list_usages() if item["usage_key"] == "vision")
     assert usage["model_id"] == "manual-keep"

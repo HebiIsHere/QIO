@@ -936,7 +936,9 @@ class ModelCatalogStore:
         当前目录 = 手动 / 历史兼容行 + **当前配置**这次真实获取到的模型；
         旧配置发现过的模型仍在库里（历史 / 用途引用 / 手动模型都不删除），但不再算进
         本次获取结果 —— 新地址只返回一个模型时，旧地址的模型不能一起被计数。
-        还没有按配置记录过集合的旧数据：全部按当前目录兼容（第一次成功获取后写入集合）。
+        兼容旧格式：没有集合字段、但发现状态已经记录了来源签名（上一轮写下的
+        discovery config_signature）时，按那个签名判断归属；只有连来源签名都没有的
+        真正老数据才全部按当前目录兼容（第一次成功获取后写入集合）。
         """
         signature = self.discovery_signature(credential_id)
         info = self.current_set(credential_id)
@@ -944,11 +946,25 @@ class ModelCatalogStore:
         owned = bool(stored_signature) and stored_signature == signature
         current_ids = set(info["model_ids"]) if owned else set()
         has_set = bool(stored_signature)
+        # 旧格式兼容：集合字段缺失时，来源签名仍然明确说明这些模型属于哪份配置。
+        legacy_signature = ""
+        legacy_owned = False
+        if not has_set:
+            legacy_signature = str(
+                self.discovery_state(credential_id).get("config_signature") or ""
+            )
+            legacy_owned = bool(legacy_signature) and legacy_signature == signature
         current: list[dict[str, Any]] = []
         historical: list[dict[str, Any]] = []
         for item in self.list_models(credential_id):
             if str(item.get("source")) == MODEL_SOURCE_DISCOVERED:
-                is_current = (not has_set) or (owned and str(item["model_id"]) in current_ids)
+                if has_set:
+                    is_current = owned and str(item["model_id"]) in current_ids
+                elif legacy_signature:
+                    # 有明确来源签名：换地址/Key 后旧来源的模型一律算历史，不能全列当前。
+                    is_current = legacy_owned
+                else:
+                    is_current = True
             else:
                 is_current = True
             (current if is_current else historical).append(item)
