@@ -2085,6 +2085,13 @@ const sessionStoreDefinition = defineStore("session", {
     _intentRecordTurns: [] as string[],
     /** 已经为这些轮做过一次「过程刷新」（STAGE / ASSISTANT 每轮可能很多条，只兑现一次） */
     _intentRecordTurnProgress: [] as string[],
+    /**
+     * 过程刷新还没返回时又收到了「该刷新」的通知（例如 TURN_END）：不能丢掉这次要求，
+     * 当前读取结束后补读一次最新状态（本轮返修）。
+     */
+    _intentRecordRefreshPending: false,
+    /** 上面那次补读要求发起时的话题：话题变了就丢弃，避免旧响应把新话题覆盖 */
+    _intentRecordRefreshPendingTopic: null as string | null,
   }),
   getters: {
     /**
@@ -5267,7 +5274,17 @@ const sessionStoreDefinition = defineStore("session", {
      * 界面照常显示「历史没有加载出来 + 重试」—— 绝不把没读到说成已更新。
      */
     async refreshIntentExecutionRecords(_reason = "intent-action"): Promise<boolean> {
-      if (this._intentRecordRefreshBusy) return false;
+      if (this._intentRecordRefreshBusy) {
+        /**
+         * 已经有一次历史读取在跑：**不能直接丢掉这次刷新要求**。
+         * 触发顺序（本轮返修）：过程状态读取还没返回时收到 TURN_END —— 旧实现会把结束刷新
+         * 丢掉，记录于是停在「正在处理」。这里只记下要求，当前读取结束后补读一次；
+         * 不并发打同一个接口，也不轮询。
+         */
+        this._intentRecordRefreshPending = true;
+        this._intentRecordRefreshPendingTopic = this.currentTopicId ?? null;
+        return false;
+      }
       // 已经在读 / 还没进入任何话题（首屏加载会自然带上最新一页）：不重复打接口
       if (this.history.status === "loading" || this.history.status === "idle") return false;
       /**
@@ -5288,7 +5305,25 @@ const sessionStoreDefinition = defineStore("session", {
         return ok;
       } finally {
         this._intentRecordRefreshBusy = false;
+        await this._flushIntentRecordRefresh();
       }
+    },
+
+    /**
+     * 读取结束后兑现「挂起的刷新要求」（本轮返修）。
+     *
+     * 只补读一次；发起时的话题已经换了就丢弃（旧话题的读取不能覆盖新话题）。
+     * 仍受既有条件约束（没有进入话题 / 正在流式输出的普通用户轮不重读）。
+     */
+    async _flushIntentRecordRefresh(): Promise<void> {
+      if (!this._intentRecordRefreshPending) return;
+      const topicAtRequest = this._intentRecordRefreshPendingTopic;
+      this._intentRecordRefreshPending = false;
+      this._intentRecordRefreshPendingTopic = null;
+      if (topicAtRequest !== (this.currentTopicId ?? null)) return;
+      if (this.history.status === "loading" || this.history.status === "idle") return;
+      if (this.turnRunning && !this.isIntentExecutionTurn(this.activeTurnId ?? "")) return;
+      await this.refreshIntentExecutionRecords("deferred");
     },
 
     /** 页面重新激活：把确认 / 重试留下的「可能过期」提示兑现一次（只读）。 */
