@@ -58,10 +58,9 @@ function saveWorkspace(): void {
       // 失败回到实际保存值（连续保存前成功后失败时不是提交瞬间的值）。
       workspaceRoot.value = workspaceSaved.value;
     },
-    commit: async () => {
-      const server = await api.updateComputerSettings({ root_dir: next });
+    commit: () => api.updateComputerSettings({ root_dir: next }),
+    trackSaved: (server) => {
       workspaceSaved.value = server.root_dir || "";
-      return server;
     },
     apply: (server) => {
       workspaceRoot.value = server.root_dir || "";
@@ -117,15 +116,13 @@ function toggleRecordOutputs(): void {
       recordOutputs.value = recordsSaved.value.recordOutputs;
     },
     key: "tools.records.outputs",
-    commit: async () => {
-      const server = await api.updateToolHistorySettings({ record_outputs: next });
+    commit: () => api.updateToolHistorySettings({ record_outputs: next }),
+    trackSaved: (server) => {
       recordsSaved.value = { ...recordsSaved.value, recordOutputs: server.record_outputs };
-      return server;
     },
     // F08：这次保存只拥有「保存输出全文」；响应附带的其它保留期字段可能更旧。
     apply: (server) => {
       recordOutputs.value = server.record_outputs;
-      recordsSaved.value = { ...recordsSaved.value, recordOutputs: server.record_outputs };
     },
     success: (server) =>
       server.purged
@@ -151,14 +148,12 @@ function onOutputRetentionChange(value: number | null): void {
       // 回滚到真实已保存值：用户刚输入 30 / 提交瞬间的值都不能当基线（返修 1）。
       outputRetentionDays.value = recordsSaved.value.outputRetentionDays;
     },
-    commit: async () => {
-      const server = await api.updateToolHistorySettings({ output_retention_days: next });
+    commit: () => api.updateToolHistorySettings({ output_retention_days: next }),
+    trackSaved: (server) => {
       recordsSaved.value = { ...recordsSaved.value, outputRetentionDays: server.output_retention_days };
-      return server;
     },
     apply: (server) => {
       outputRetentionDays.value = server.output_retention_days;
-      recordsSaved.value = { ...recordsSaved.value, outputRetentionDays: server.output_retention_days };
     },
     success: (server) =>
       server.purged
@@ -183,16 +178,14 @@ function onRecordRetentionChange(value: number | null): void {
     rollback: () => {
       recordRetentionDays.value = recordsSaved.value.recordRetentionDays;
     },
-    commit: async () => {
-      const server = await api.updateToolHistorySettings({ record_retention_days: next });
+    commit: () => api.updateToolHistorySettings({ record_retention_days: next }),
+    trackSaved: (server) => {
       const days = server.record_retention_days ?? recordsSaved.value.recordRetentionDays;
       recordsSaved.value = { ...recordsSaved.value, recordRetentionDays: days };
-      return server;
     },
     apply: (server) => {
       const days = server.record_retention_days ?? recordsSaved.value.recordRetentionDays;
       recordRetentionDays.value = days;
-      recordsSaved.value = { ...recordsSaved.value, recordRetentionDays: days };
     },
     success: (server) =>
       `记录保留期已保存：${(server.record_retention_days ?? 0) === 0 ? "永久保留" : `${server.record_retention_days} 天`}`,

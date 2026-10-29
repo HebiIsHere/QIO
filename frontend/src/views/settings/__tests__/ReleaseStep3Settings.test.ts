@@ -633,3 +633,83 @@ describe("返修二：连续保存后的回滚值 / 保存期间初始读取 / �
     w.unmount();
   });
 });
+
+describe("返修三：连续保存的回滚值（保存顺序 + 最终校准）", () => {
+  function deferredUpdate() {
+    const calls: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    return calls;
+  }
+
+  it("30、40 都成功（40 是真实值，30 响应迟到），再提交 50 失败 → 恢复 40", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
+    const calls = deferredUpdate();
+    update.mockImplementation(
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const input = memory.find('input[aria-label="整理间隔（小时）"]');
+
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+    await input.setValue("40");
+    await input.trigger("blur");
+    await flushFrames();
+
+    // 40（较新）先成功 → 真实保存值 40
+    calls[1].resolve({ enabled: true, interval_hours: 40 });
+    await flushFrames();
+    // 30（较旧）响应迟到：不能把已记录的真实值改回 30
+    calls[0].resolve({ enabled: true, interval_hours: 30 });
+    await flushFrames();
+
+    // 再提交 50 并失败：必须恢复 40，而不是 30
+    await input.setValue("50");
+    await input.trigger("blur");
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(3);
+    calls[2].reject(new Error("500 boom"));
+    await flushFrames();
+
+    expect((input.element as HTMLInputElement).value).toBe("40");
+    w.unmount();
+  });
+
+  it("连续提交 30、40、50：50 先失败、40 随后成功、30 最后失败 → 全部结束后显示 40", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
+    const calls = deferredUpdate();
+    update.mockImplementation(
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const input = memory.find('input[aria-label="整理间隔（小时）"]');
+
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+    await input.setValue("40");
+    await input.trigger("blur");
+    await flushFrames();
+    await input.setValue("50");
+    await input.trigger("blur");
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(3);
+
+    calls[2].reject(new Error("500 boom"));
+    await flushFrames();
+    calls[1].resolve({ enabled: true, interval_hours: 40 });
+    await flushFrames();
+    calls[0].reject(new Error("stale failure"));
+    await flushFrames();
+
+    // 全部结算后的最终校准：真实保存值是 40（不是回滚时的 24，也不是 30）
+    expect((input.element as HTMLInputElement).value).toBe("40");
+    w.unmount();
+  });
+});

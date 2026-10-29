@@ -57,11 +57,11 @@ export interface ImmediateSaveOptions<T> {
   /** 服务端真值回填（只在响应仍是最新时执行） */
   apply?: (server: T) => void;
   /**
-   * 迟到成功、但该设置最新一次请求已经失败时的收敛（默认用 apply）。
-   * 场景（返修 1）：连续提交 30、40，40 先失败、30 后成功 —— 服务端实际保存的是 30，
-   * 界面必须收敛到 30，而不是停在回滚用的更早值；较新成功仍然不允许被旧成功覆盖。
+   * 记录「实际保存值」：只在响应的写入序号比上次已记录的成功更新时调用（迟到成功
+   * 不能把更晚成功写下的真实值改回旧值）。失败回滚 / 全部结算后的最终校准都读它。
+   * 场景：30、40 都成功（真实 40，30 响应迟到）→ 再提交 50 失败，必须恢复 40。
    */
-  reconcile?: (server: T) => void;
+  trackSaved?: (server: T) => void;
   success: string | ((server: T) => string);
   /** 失败文案前缀，最终形如「保存输出速度失败：<原因>」 */
   failure: string;
@@ -99,8 +99,10 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
   const errorNotices = new Map<string, SettingsNotice>();
   /** 每个设置「最新一次请求」的结果：只有最新请求失败时，迟到的成功才允许收敛真实值。 */
   const latestOutcome = new Map<string, "success" | "failure">();
-  /** 每个设置在途请求数：还有更新请求在跑时，旧成功不收敛，避免打断在途选择。 */
+  /** 每个设置在途请求数：全部结算后做一次最终校准（只在该设置最新请求失败时）。 */
   const inflightWrites = new Map<string, number>();
+  /** 每个设置「已记录真实保存值」对应的写入序号：迟到成功不得回退更新的真实值。 */
+  const savedTokens = new Map<string, number>();
 
   function writeId(key?: string): string {
     return key ?? "";
@@ -191,15 +193,12 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     setNotice("info", options.pending ?? "保存中…", key);
     try {
       const server = await options.commit();
-      if (!isLatest(token, key)) {
-        // 迟到成功：默认不落 UI（更新的那次修改才是事实）。但如果该设置最新一次请求已经
-        // 失败、且已没有在途请求，这次成功携带的是服务端真实保存值 —— 界面必须收敛过去，
-        // 否则「前一次成功、后一次失败」会退回到更早的值（返修 1）。
-        if (latestOutcome.get(id) === "failure" && inflightOf(id) - 1 <= 0) {
-          (options.reconcile ?? options.apply)?.(server);
-        }
-        return false;
+      // 记录真实保存值：只有比上次记录更新的成功才写（30 响应迟到不能把 40 改回 30）。
+      if (token > (savedTokens.get(id) ?? 0)) {
+        savedTokens.set(id, token);
+        options.trackSaved?.(server);
       }
+      if (!isLatest(token, key)) return false;
       latestOutcome.set(id, "success");
       options.apply?.(server);
       const text =
@@ -215,6 +214,11 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
       return false;
     } finally {
       inflightWrites.set(id, Math.max(0, inflightOf(id) - 1));
+      // 全部结算后的最终校准：该设置最新请求失败时，界面回到「已记录的真实保存值」。
+      // 覆盖「50 先失败、40 随后成功」这种失败时真实值还没到达的顺序。
+      if (inflightOf(id) === 0 && latestOutcome.get(id) === "failure") {
+        options.rollback?.();
+      }
     }
   }
 

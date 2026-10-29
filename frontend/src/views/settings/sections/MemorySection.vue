@@ -160,14 +160,13 @@ function toggleMaintenance(): void {
     optimistic: () => {
       maintenanceEnabled.value = next;
     },
-    // 服务端真实保存值在每次成功响应时都记下来（包括迟到成功）：失败回滚 / 收敛用它。
-    commit: async () => {
-      const server = await api.updateMaintenanceSettings({ enabled: next });
+    commit: () => api.updateMaintenanceSettings({ enabled: next }),
+    // 真实保存值：只在这次写入序号比上次已记录的成功更新时记录（迟到成功不回退）。
+    trackSaved: (server) => {
       maintenanceSaved.value = {
         enabled: server.enabled,
         interval: maintenanceSaved.value.interval,
       };
-      return server;
     },
     // F08：这次保存只拥有「开关」这一个设置；响应里附带的其它字段可能来自更早的请求，
     // 不能拿它覆盖另一个设置在途/已成功的选择。
@@ -197,20 +196,20 @@ function onMaintenanceIntervalChange(value: number | null): void {
   void save.saveNow<{ enabled: boolean; interval_hours: number }>({
     key: "memory.maintenance.interval",
     pending: "正在保存整理间隔…",
-    commit: async () => {
-      const server = await api.updateMaintenanceSettings({ interval_hours: next });
+    commit: () => api.updateMaintenanceSettings({ interval_hours: next }),
+    trackSaved: (server) => {
       maintenanceSaved.value = {
         enabled: maintenanceSaved.value.enabled,
         interval: server.interval_hours,
       };
-      return server;
     },
     apply: (server) => {
       maintenanceInterval.value = server.interval_hours;
       patchEffectiveFacts({ maintenanceInterval: server.interval_hours });
     },
     rollback: () => {
-      // 连续提交 30、40：30 已成功（真实保存 30）、40 失败时回到 30，而不是 24（返修 1）。
+      // 回到「已记录的真实保存值」：30、40 都成功（真实 40）后提交 50 失败时恢复 40；
+      // 30 成功、40 失败时恢复 30（返修 1 / 返修三 1）。
       maintenanceInterval.value = maintenanceSaved.value.interval;
     },
     success: (server) => `整理间隔已保存：每 ${server.interval_hours} 小时`,
@@ -291,17 +290,13 @@ function saveLoop(): void {
       loopMaxIterations.value = loopSaved.value.maxIterations;
       loopTokenBudget.value = loopSaved.value.outputTokenBudget;
     },
-    // 每次成功（含迟到成功）都记下真实保存值。
-    commit: async () => {
-      const server = await api.updateLoopSettings({
-        max_iterations: iterations,
-        output_token_budget: budget,
-      });
+    commit: () =>
+      api.updateLoopSettings({ max_iterations: iterations, output_token_budget: budget }),
+    trackSaved: (server) => {
       loopSaved.value = {
         maxIterations: server.max_iterations,
         outputTokenBudget: server.output_token_budget,
       };
-      return server;
     },
     apply: applyLoop,
     success: "对话深度已保存",
