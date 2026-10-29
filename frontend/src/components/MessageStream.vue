@@ -14,7 +14,7 @@ import TurnProcess from "./TurnProcess.vue";
 import ContinueBar from "./ContinueBar.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
-import { groupTurns, type StreamTurn } from "../stores/session";
+import { groupTurns, isHiddenIntentExecution, type StreamTurn } from "../stores/session";
 import { useLatestButtonAnchor } from "../composables/useLatestButtonAnchor";
 import { subscribeComposerMetrics } from "../composables/composerMetrics";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
@@ -53,7 +53,14 @@ let pendingRestoreOnReject = false;
 /** 距底部多少像素内算「跟随中」 */
 const NEAR_BOTTOM_PX = 120;
 
-const messages = computed(() => session.messages);
+/**
+ * 消息流里真正要渲染的消息。
+ *
+ * 意图执行记录（R2 契约 §四）：同一 record_key 只渲染服务端标记的 record_head 那一条；
+ * 自动重试 / 再次执行产生的其余消息不渲染（它们每次 attempt 仍在头部的详情里可见）。
+ * 只做显示过滤，不改 session.messages、不删数据 —— 历史 / 互动对话两个入口共用这一处。
+ */
+const messages = computed(() => session.messages.filter((m) => !isHiddenIntentExecution(m)));
 
 /**
  * 「回到最新消息」按钮的位置：由输入框与底部内容块的**真实边界**算出来
