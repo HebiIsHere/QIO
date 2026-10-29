@@ -244,3 +244,34 @@
 - 前端：`npx vitest run src/views/settings src/components/models` 全部通过；`npx vue-tsc --noEmit` 通过。
 - 后端：`uv run --frozen pytest tests/test_release_step3_c.py`（9 项）+ 相邻 catalog/routes/usage/step1c/1d/2bc/credential 定向套件通过。
 - 文档：`python scripts/check_docs.py` 通过；提交使用 `[skip ci]`，未运行全量测试 / 构建 / CI。
+
+## 返修三（2026-10-29 第四次交付）
+
+基线仍为 `15bbffb55c274cb2ec9b104f95bfdbe7b47fa330`，分支不变；本轮只处理验收列出的两项（含四条失败用例）。
+
+### 1. 连续保存的回滚值（保存顺序 + 最终校准）
+
+- 原缺陷：
+  - 30、40 都保存成功（服务端真实值 40），但 30 的响应迟到，迟到的成功把「已记录真实值」回退成 30；随后提交 50 失败，界面恢复成 30 而不是 40。
+  - 连续提交 30、40、50，50 先失败（此时还没有任何成功响应，回滚到 24），40 随后成功但被判定为「旧响应」不落 UI，30 最后失败；全部结算后界面停在 24。
+- 修复（`frontend/src/composables/useQioSettingsSave.ts` + 记忆 / 对话深度 / 工具设置的所有同类调用）：
+  - 新增 `trackSaved`：每次成功按**写入序号**判断是否更新「真实保存值」——只有比上次已记录的成功更新才写，迟到旧成功不能把更新的真实值改回去。
+  - 失败回滚读「已记录的真实保存值」，不再读提交瞬间的值 / 乐观值。
+  - 新增「最终校准」：该设置所有在途请求结算后，若最新一次请求失败，再执行一次回滚——把界面校准到最新成功写下的真实值，覆盖「失败先到、真实值后到」的顺序。
+  - 记忆（后台整理开关 / 间隔、对话深度）与工具（工作区、输出全文、两个保留期）统一改为同一逻辑；不同设置仍各用独立序号与真实值，互不作废。
+- 验证：`ReleaseStep3Settings.test.ts` 的「30、40 都成功（30 迟到）→ 50 失败恢复 40」「30/40/50 中 50 先失败、40 成功、30 失败 → 最终 40」。
+
+### 2. 旧格式模型在获取失败后的归属
+
+- 原缺陷：旧格式记录没有集合字段时，归属判断用了「最近一次发现尝试」的配置签名；更换地址 / Key 后新配置获取超时或返回空列表，失败尝试把该签名改成新配置，于是重新读取与缓存又把旧模型列为当前。
+- 修复：
+  - 发现状态新增「模型来源签名」`source_signature`：只有**成功取回模型**才更新；失败 / 空列表尝试只更新 `config_signature`（最近一次尝试），不改变来源事实。
+  - 旧格式兼容：优先用 `source_signature`；字段缺失（旧数据）时用「上一次状态没有错误」的 `config_signature` 兜底；两者都没有的真正老数据才全部按当前兼容。
+  - 当前目录 / 历史划分、发现响应、目录快照与缓存都读同一份来源事实：新配置失败后旧模型继续在 `historical_models`，手动模型、历史行与用途引用保留。
+- 验证：`backend/tests/test_release_step3_c.py` 的「旧格式 + 新配置超时」「旧格式 + 新配置空列表」两个用例（含重新读取 / 缓存一致性与手动模型 / 用途引用保留）。
+
+### 本轮定向验证
+
+- 前端：`npx vitest run src/views/settings src/components/models` 全部通过；`npx vue-tsc --noEmit` 通过。
+- 后端：`uv run --frozen pytest tests/test_release_step3_c.py`（11 项）+ 相邻 catalog/routes/usage/step1c/1d/2bc/credential 定向套件通过。
+- 文档：`python scripts/check_docs.py` 通过；提交使用 `[skip ci]`，未运行全量测试 / 构建 / CI。
