@@ -43,8 +43,14 @@ let closeBehaviorInFlight = 0;
 
 export const useUiStore = defineStore("ui", {
   state: () => ({
-    /** 打字机输出速度（字符/秒），三档 25/50/75 */
+    /** 打字机输出速度（字符/秒），三档 25/50/75 —— 这是「用户最新选择」的界面值 */
     typewriterCps: DEFAULT_TYPEWRITER_CPS as number,
+    /**
+     * 输出速度「实际已保存值」：只为设置页提供**最初已确认**的基线。
+     * 只由加载成功与本次接口成功返回更新，不能从正在变化的界面状态读取；
+     * 设置页在保存成功时还会用接口返回再校准（见 RegularSection）。
+     */
+    typewriterCpsSaved: DEFAULT_TYPEWRITER_CPS as number,
     /**
      * 关闭主窗口时的行为（R9 契约 §11，设置键 ui.close_behavior）：
      * ask 每次询问 / tray 最小化到托盘 / quit 直接退出。
@@ -109,6 +115,8 @@ export const useUiStore = defineStore("ui", {
       try {
         const s = await api.getUISettings();
         this.typewriterCps = s.typewriter_cps ?? DEFAULT_TYPEWRITER_CPS;
+        // 加载成功是「已确认的初始值」：实际已保存值只能来自这里或本次接口成功返回。
+        this.typewriterCpsSaved = this.typewriterCps;
         if (token !== closeBehaviorWriteSeq) return;
         // 旧客户端/后端没有该字段：按契约默认 ask，不报错（不静默提高成 quit）。
         const loaded = normalizeCloseBehavior(s.close_behavior);
@@ -225,6 +233,15 @@ export const useUiStore = defineStore("ui", {
         console.error("[ui] save typewriter cps failed:", e);
         throw e;
       }
+    },
+    /**
+     * 保存输出速度并返回**本次接口的真实结果**；
+     * 这里不写界面值（排队执行较早请求时不能把较早选择重新写回界面），
+     * 也不写「已保存值」（由设置页按写入顺序采纳成功响应）。
+     */
+    async saveCps(cps: number): Promise<number> {
+      const r = await api.updateUISettings(cps);
+      return typeof r?.typewriter_cps === "number" ? r.typewriter_cps : cps;
     },
   },
 });

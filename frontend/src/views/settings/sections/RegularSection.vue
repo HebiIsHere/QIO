@@ -7,7 +7,7 @@
  * 保存方式：全部即时保存 —— 这些设置要么只落在本地（主题 / 动画 / 指示条 / 贴靠隐藏 /
  * 诊断），要么一次只有一个值（输出速度 / 关闭行为）。失败时控件回滚到真实值。
  */
-import { ref } from "vue";
+import { ref, watch } from "vue";
 import QSelect from "../../../components/ui/QSelect.vue";
 import { useUiStore, TYPEWRITER_SPEEDS } from "../../../stores/ui";
 import { CLOSE_BEHAVIOR_OPTIONS, type CloseBehavior } from "../../../services/quitGuard";
@@ -95,27 +95,40 @@ const speedOptions = TYPEWRITER_SPEEDS.map((cps) => ({
   value: String(cps),
   label: cps === 25 ? "慢（25 字/秒）" : cps === 50 ? "中（50 字/秒）" : "快（75 字/秒）",
 }));
+/**
+ * 「实际已保存值」：只能由已确认的初始值（加载成功）或本次接口成功返回更新，
+ * 不能从正在变化的界面状态读取；所有请求都失败时回滚到它（返修五）。
+ */
+const speedSaved = ref(ui.typewriterCpsSaved);
+watch(
+  () => ui.typewriterCpsSaved,
+  (saved) => {
+    speedSaved.value = saved;
+  },
+);
 function onSpeedChange(value: string): void {
   const cps = Number(value);
   if (!TYPEWRITER_SPEEDS.includes(cps as (typeof TYPEWRITER_SPEEDS)[number])) return;
-  const previous = ui.typewriterCps;
-  void save.saveNow<{ typewriter_cps: number }>({
+  void save.saveNow<number>({
     key: "regular.speed",
     pending: `正在保存输出速度：${cps} 字/秒…`,
+    // 用户最新选择先显示；后续排队执行较早请求时不能把它改回较早选择。
     optimistic: () => {
       ui.typewriterCps = cps;
     },
+    // 等待期间保持最新选择；最新失败时由共享逻辑恢复最后实际保存成功的值。
     rollback: () => {
-      ui.typewriterCps = previous;
+      ui.typewriterCps = speedSaved.value;
     },
-    commit: async () => {
-      await ui.setCps(cps);
-      return { typewriter_cps: ui.typewriterCps };
+    // 返回本次接口的真实结果；不在这里写界面（排队执行较早请求时不回写旧选择）。
+    commit: () => ui.saveCps(cps),
+    trackSaved: (saved) => {
+      speedSaved.value = saved;
     },
-    apply: (server) => {
-      ui.typewriterCps = server.typewriter_cps;
+    apply: (saved) => {
+      ui.typewriterCps = saved;
     },
-    success: `输出速度已保存：${cps} 字/秒`,
+    success: (saved) => `输出速度已保存：${saved} 字/秒`,
     failure: "保存输出速度",
   });
 }
