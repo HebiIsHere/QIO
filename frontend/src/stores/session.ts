@@ -4,6 +4,10 @@ import {
   type DevAbandonResult,
   type DevAuthorizationRow,
   type DevTaskRow,
+  type IntentExecutionAttempt,
+  type IntentExecutionIntent,
+  type IntentExecutionRecord,
+  type IntentExecutionResultRef,
   type InterruptedTurn,
   type ToolRecordPreview,
 } from "../services/api";
@@ -978,6 +982,11 @@ export interface StreamMessage {
   role: "user" | "assistant" | "tool" | "subagent" | "tool_creation" | "system" | "narrative";
   content: string;
   contentType: string;
+  /**
+   * 意图执行记录（R2 契约 §三）：服务端对 content_type === "intent_execution" 的消息
+   * 附带**展示就绪**的对象。缺省 = 普通消息；前端只依据它渲染，不按文本猜。
+   */
+  intentExecution?: IntentExecutionRecord;
   createdAt: string;
   toolName?: string;
   toolOk?: boolean;
@@ -1084,6 +1093,134 @@ export interface StreamMessage {
    * 它同时是「受理结果与提交时是否一致」的核对依据。
    */
   startIdentity?: StartIdentity;
+}
+
+/** 非数组对象才收；服务端字段缺失/形状不对时按「没有这个对象」处理。 */
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+/** 字符串数组（只收字符串项；其它类型不猜测）。 */
+function stringListOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function resultRefOf(value: unknown): IntentExecutionResultRef | null {
+  const raw = recordOf(value);
+  if (!raw) return null;
+  const ref: IntentExecutionResultRef = {};
+  if (typeof raw.kind === "string") ref.kind = raw.kind;
+  if (typeof raw.label === "string") ref.label = raw.label;
+  if (typeof raw.target === "string") ref.target = raw.target;
+  return ref;
+}
+
+/**
+ * 解析服务端附带的 `intent_execution` 对象（R2 契约 §三）。
+ *
+ * 只做形状收敛：字符串/布尔/数组按原样收下，缺字段不补、不推状态、不从正文猜。
+ * 返回 null = 没有可用的服务端对象 → 调用方按普通消息降级（契约 §四最后一条）。
+ */
+export function parseIntentExecution(raw: unknown): IntentExecutionRecord | null {
+  const source = recordOf(raw);
+  if (!source) return null;
+  const record: IntentExecutionRecord = {};
+  if (typeof source.record_key === "string") record.record_key = source.record_key;
+  if (typeof source.record_head === "boolean") record.record_head = source.record_head;
+  if (typeof source.title === "string") record.title = source.title;
+  if (typeof source.status === "string") record.status = source.status;
+  if (typeof source.status_label === "string") record.status_label = source.status_label;
+  const scope = recordOf(source.scope);
+  if (scope) {
+    record.scope = {
+      ...(typeof scope.board_name === "string" || scope.board_name === null
+        ? { board_name: scope.board_name as string | null }
+        : {}),
+      ...(stringListOf(scope.intent_titles) ? { intent_titles: stringListOf(scope.intent_titles) } : {}),
+      ...(typeof scope.source === "string" ? { source: scope.source } : {}),
+    };
+  }
+  if (Array.isArray(source.intents)) {
+    record.intents = source.intents
+      .map((item) => recordOf(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => {
+        const intent: IntentExecutionIntent = {};
+        if (typeof item.id === "string") intent.id = item.id;
+        if (typeof item.title === "string") intent.title = item.title;
+        if (typeof item.status === "string") intent.status = item.status;
+        if (typeof item.status_label === "string") intent.status_label = item.status_label;
+        if (typeof item.attempts === "number" && Number.isFinite(item.attempts)) {
+          intent.attempts = item.attempts;
+        }
+        if (typeof item.failure_reason === "string") intent.failure_reason = item.failure_reason;
+        const resultRef = resultRefOf(item.result_ref);
+        if (resultRef) intent.result_ref = resultRef;
+        return intent;
+      });
+  }
+  if (Array.isArray(source.attempts)) {
+    record.attempts = source.attempts
+      .map((item) => recordOf(item))
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => {
+        const attempt: IntentExecutionAttempt = {};
+        if (typeof item.attempt === "number" && Number.isFinite(item.attempt)) {
+          attempt.attempt = item.attempt;
+        }
+        if (typeof item.source === "string") attempt.source = item.source;
+        if (typeof item.turn_id === "string") attempt.turn_id = item.turn_id;
+        if (typeof item.status === "string") attempt.status = item.status;
+        if (typeof item.reason === "string") attempt.reason = item.reason;
+        if (typeof item.started_at === "string") attempt.started_at = item.started_at;
+        return attempt;
+      });
+  }
+  const resultEntry = resultRefOf(source.result_entry);
+  if (resultEntry) record.result_entry = resultEntry;
+  const authorization = recordOf(source.authorization_versions);
+  if (authorization) {
+    const versions: Record<string, number> = {};
+    for (const [key, value] of Object.entries(authorization)) {
+      if (typeof value === "number" && Number.isFinite(value)) versions[key] = value;
+    }
+    record.authorization_versions = versions;
+  }
+  const diagnostics = recordOf(source.diagnostics);
+  if (diagnostics) {
+    record.diagnostics = {
+      ...(typeof diagnostics.board_id === "string" ? { board_id: diagnostics.board_id } : {}),
+      ...(typeof diagnostics.submission_id === "string"
+        ? { submission_id: diagnostics.submission_id }
+        : {}),
+      ...(stringListOf(diagnostics.intent_ids) ? { intent_ids: stringListOf(diagnostics.intent_ids) } : {}),
+      ...(stringListOf(diagnostics.turn_ids) ? { turn_ids: stringListOf(diagnostics.turn_ids) } : {}),
+      ...(typeof diagnostics.record_key === "string"
+        ? { record_key: diagnostics.record_key }
+        : {}),
+    };
+  }
+  if (typeof source.verified === "boolean") record.verified = source.verified;
+  if (typeof source.verified_note === "string") record.verified_note = source.verified_note;
+  return Object.keys(record).length ? record : null;
+}
+
+/**
+ * 同一 record_key 只渲染一次（R2 契约 §四）：服务端把最早那条标 record_head=true，
+ * 其余是自动重试/再次执行的重复尝试。它们不渲染，避免同一次确认刷屏；每次 attempt
+ * 仍然在头部记录的详情里可见。
+ */
+export function isHiddenIntentExecution(
+  message: Pick<StreamMessage, "contentType" | "intentExecution">,
+): boolean {
+  return (
+    message.contentType === "intent_execution" &&
+    Boolean(message.intentExecution) &&
+    message.intentExecution?.record_head !== true
+  );
 }
 
 /** 一次发送在受理时捕获的起点身份（稳定身份，不随后续导航变化）。 */
@@ -4756,6 +4893,8 @@ const sessionStoreDefinition = defineStore("session", {
         created_at: string;
         turn_id?: string | null;
         raw?: string;
+        /** 意图执行记录对象（content_type === "intent_execution" 时服务端附带） */
+        intent_execution?: unknown;
       }[],
       records: ToolRecordPreview[],
     ): StreamMessage[] {
@@ -4877,8 +5016,13 @@ const sessionStoreDefinition = defineStore("session", {
       raw?: string;
       /** 附件（契约 §1.6）：历史消息同样要能打开副本 / 重新定位 */
       attachments?: unknown;
+      /** 意图执行记录对象（content_type === "intent_execution" 时服务端附带） */
+      intent_execution?: unknown;
     }): StreamMessage {
       const attachments = historyAttachmentRefs(m.attachments);
+      // 只认服务端字段：content_type 命中且有对象才当记录；缺对象按普通消息降级
+      const intentExecution =
+        m.content_type === "intent_execution" ? parseIntentExecution(m.intent_execution) : null;
       if (m.content_type === "narrative") {
         // 历史里的叙事行：模型文案 + 系统生成的调用摘要（工具卡本身不进历史）
         const meta = parseNarrativeRaw(m.raw);
@@ -4916,6 +5060,7 @@ const sessionStoreDefinition = defineStore("session", {
         role: m.role as StreamMessage["role"],
         content,
         contentType: m.content_type,
+        ...(intentExecution ? { intentExecution } : {}),
         createdAt: m.created_at,
         topicName: this.topicName,
         fresh: false,

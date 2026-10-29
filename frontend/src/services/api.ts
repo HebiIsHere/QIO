@@ -629,6 +629,74 @@ export interface InterruptedTurn {
   updated_at?: string | null;
 }
 
+/**
+ * 一条意图执行记录（R2 契约 §三）：服务端对 content_type === "intent_execution" 的消息
+ * **读取时派生**好的展示对象。前端只依据这个对象渲染，不按文本前缀/关键词猜。
+ *
+ * 字段全部可选：服务端对象缺失或字段不全时按普通消息降级，不报错、不编造状态。
+ */
+export interface IntentExecutionScope {
+  board_name?: string | null;
+  intent_titles?: string[];
+  source?: string;
+}
+
+export interface IntentExecutionResultRef {
+  kind?: string;
+  label?: string;
+  target?: string;
+}
+
+export interface IntentExecutionIntent {
+  id?: string;
+  title?: string;
+  status?: string;
+  status_label?: string;
+  /** 这条意图累计真实尝试次数（服务端事实） */
+  attempts?: number;
+  failure_reason?: string;
+  result_ref?: IntentExecutionResultRef | null;
+}
+
+export interface IntentExecutionAttempt {
+  attempt?: number;
+  /** confirm / resume / retry */
+  source?: string;
+  turn_id?: string;
+  status?: string;
+  reason?: string;
+  started_at?: string;
+}
+
+export interface IntentExecutionDiagnostics {
+  board_id?: string;
+  submission_id?: string;
+  intent_ids?: string[];
+  turn_ids?: string[];
+  record_key?: string;
+}
+
+export interface IntentExecutionRecord {
+  record_key?: string;
+  /** 同 record_key 里最早那条消息为 true；前端只渲染 head */
+  record_head?: boolean;
+  /** 用户确认时看到的意图名称（服务端组成），不新增命名 */
+  title?: string;
+  /** confirmed / queued / running / partial / failed / completed / unknown */
+  status?: string;
+  /** 服务端给的中文状态文案（界面状态只用它） */
+  status_label?: string;
+  scope?: IntentExecutionScope | null;
+  intents?: IntentExecutionIntent[];
+  attempts?: IntentExecutionAttempt[];
+  result_entry?: IntentExecutionResultRef | null;
+  authorization_versions?: Record<string, number>;
+  /** 内部编号：只允许出现在详情折叠区 */
+  diagnostics?: IntentExecutionDiagnostics | null;
+  verified?: boolean;
+  verified_note?: string;
+}
+
 /** 把可选查询参数拼成 ?a=b（空值不出现；不改变后端默认值）。 */
 function memoryQuery(params: Record<string, string | number | undefined>): string {
   const search = new URLSearchParams();
@@ -1213,6 +1281,8 @@ export const api = {
         turn_id?: string | null;
         /** 叙事行的系统元数据（JSON 字符串）：kind 与系统生成的调用摘要 */
         raw?: string;
+        /** 意图执行记录的展示就绪对象（content_type=intent_execution 时才有） */
+        intent_execution?: IntentExecutionRecord | null;
       }[];
       /** 这一页涉及的每轮结束事实（台账里确实记过的才有；含 incomplete） */
       turn_facts?: TurnFactsRow[];
@@ -1240,6 +1310,8 @@ export const api = {
         created_at: string;
         turn_id?: string | null;
         raw?: string;
+        /** 意图执行记录的展示就绪对象（content_type=intent_execution 时才有） */
+        intent_execution?: IntentExecutionRecord | null;
       }[];
       /** 更早的这一页同样带回每轮结束事实（含 incomplete；旧记录不出现） */
       turn_facts?: TurnFactsRow[];
@@ -1290,7 +1362,15 @@ export const api = {
       total: number;
       offset: number;
       limit: number;
-      messages: { id: string; role: string; content: string; content_type: string; created_at: string }[];
+      messages: {
+        id: string;
+        role: string;
+        content: string;
+        content_type: string;
+        created_at: string;
+        /** 意图执行记录的展示就绪对象（content_type=intent_execution 时才有） */
+        intent_execution?: IntentExecutionRecord | null;
+      }[];
     }>(
       `/api/fragments/${encodeURIComponent(fragmentId)}/messages?offset=${offset}&limit=${limit}`,
       { timeoutMs: API_TIMEOUT_MS.bulk },
@@ -1859,7 +1939,15 @@ export interface TopicDetailFragment {
   /** 该片段最后一次活动时间（用于「最近活动」这一层信息） */
   last_activity?: string | null;
   /** 第二层不再内联原文；原文由 fragmentMessages 按需分页读取（spec 第 42~43 条） */
-  messages?: { id: string; role: string; content: string; content_type: string; created_at: string }[];
+  messages?: {
+    id: string;
+    role: string;
+    content: string;
+    content_type: string;
+    created_at: string;
+    /** 意图执行记录的展示就绪对象（content_type=intent_execution 时才有） */
+    intent_execution?: IntentExecutionRecord | null;
+  }[];
 }
 
 export interface TopicDetail {

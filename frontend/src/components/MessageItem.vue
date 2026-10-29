@@ -3,6 +3,7 @@ import { vQioTip } from "../composables/useQioTip";
 import { computed, ref } from "vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ToolCreationCard from "./ToolCreationCard.vue";
+import IntentExecutionMessage from "./IntentExecutionMessage.vue";
 import AttachmentChip from "./AttachmentChip.vue";
 import { mediaFactsOf } from "./mediaFacts";
 import { splitSystemAnnotation, useSessionStore } from "../stores/session";
@@ -49,6 +50,14 @@ const tokText = computed(() => {
   if (!usage) return "";
   return `token ${usage.tokens.toLocaleString("en-US")}`;
 });
+
+/**
+ * 意图执行记录（R2 契约 §四）：只认服务端字段 —— content_type 命中且带 intent_execution 对象。
+ * 缺对象时返回 null，按普通消息降级（不按文本前缀/关键词猜）。
+ */
+const intentExecution = computed(() =>
+  props.message.contentType === "intent_execution" ? (props.message.intentExecution ?? null) : null,
+);
 
 const open = ref(false);
 /** 本次会话新产生的消息：最多一次很短的入场；历史消息不带这个标记 */
@@ -500,12 +509,25 @@ function removeOne(id: string) {
 </script>
 
 <template>
-  <div class="message" :class="[message.role, { fresh: isFresh }]" data-qio-fit>
+  <div
+    class="message"
+    :class="[message.role, { fresh: isFresh, 'intent-record': intentExecution }]"
+    data-qio-fit
+  >
     <!--
       消息宽度链根：data-qio-fit = min-width:0 + max-width:100% + overflow-x:clip。
       横向溢出的真正修复在下面的布局（min-width:0 / 换行 / 收缩），clip 只是边界保护。
     -->
-    <template v-if="message.role === 'user'">
+    <!--
+      意图执行记录（R2 契约 §四）：与「用户亲自输入的消息」明确区分。
+      只渲染服务端结构化的 intent_execution 对象；record_head !== true 的记录在
+      MessageStream 层已过滤，组件内也会拒绝渲染（双保险，历史/实时同一入口）。
+    -->
+    <template v-if="intentExecution">
+      <IntentExecutionMessage :record="intentExecution" />
+    </template>
+
+    <template v-else-if="message.role === 'user'">
       <div class="bubble user-bubble" data-qio-fit>
         <div class="plain">{{ message.content }}</div>
       </div>
@@ -920,6 +942,13 @@ function removeOne(id: string) {
   align-items: flex-end;
   /* 用户消息收窄：靠 alignment + 字色区分角色，不用整块色填充 */
   max-width: min(620px, 88%);
+}
+/* 意图执行记录：左侧整宽记录卡（不是用户消息），不继承用户侧的右对齐与玫红规线 */
+.message.intent-record {
+  margin-left: 0;
+  margin-right: auto;
+  align-items: stretch;
+  max-width: min(760px, 100%);
 }
 .message.assistant {
   margin-right: auto;
