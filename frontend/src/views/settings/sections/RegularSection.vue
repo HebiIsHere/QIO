@@ -162,12 +162,12 @@ function closeBehaviorLabel(value: CloseBehavior): string {
 function onCloseBehaviorChange(value: string): void {
   const next = value as CloseBehavior;
   if (ui.closeBehavior === next) return;
-  const previous = ui.closeBehavior;
   void save.saveNow<void>({
     pending: `正在保存关闭行为：${closeBehaviorLabel(next)}…`,
     rollback: () => {
-      // 失败时回到真实值：停留在新值会让下一次关窗行为与界面不一致
-      ui.closeBehavior = previous;
+      // 失败时回到**真实生效值**（store 里最近一次确认生效的那个），不是页面自己记的上一帧：
+      // 连续切换时上一帧可能只是尚未保存成功的乐观值，拿它回滚会和实际关窗行为不一致（F05）。
+      ui.closeBehavior = ui.closeBehaviorEffective;
     },
     commit: () => ui.setCloseBehavior(next),
     success: () => `关闭主窗口时：${closeBehaviorLabel(ui.closeBehavior)}（已保存，立即生效）`,

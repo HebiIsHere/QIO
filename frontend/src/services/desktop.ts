@@ -56,19 +56,30 @@ export async function listenShellEvent(
 }
 
 /**
- * 把当前关闭行为同步给壳（壳侧兜底用）。
+ * 把关闭行为同步给壳（壳侧兜底用）。
  *
  * 真机 install_e2e 教训：关闭行为不能只由前端判定 —— 前端启动握手异常时点 X 会毫无反应。
  * 壳缓存这一份；读不到时壳还会自己请求后端设置。失败只记日志，不影响 UI 设置本身。
+ *
+ * 顺序保证（F05）：连续切换会产生多次同步，IPC 的完成顺序不由前端控制。
+ * 两次 invoke 并发时，先发的晚到就会让壳缓存旧值 —— 下一次点 X 按旧行为执行。
+ * 因此这里把同步**串行化**并保留每一次请求的顺序：最后发起的那次最后到达，
+ * 壳最终一定拿着最新有效选择。单次失败只记日志，不阻塞后面的同步。
  */
-export async function syncCloseBehaviorToShell(behavior: CloseAction): Promise<void> {
-  if (!inTauriShell()) return;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("qio_set_close_behavior", { behavior });
-  } catch (err) {
-    console.warn("[qio] 同步关闭行为到壳失败（壳会自己读后端设置）", err);
-  }
+let closeBehaviorShellChain: Promise<void> = Promise.resolve();
+
+export function syncCloseBehaviorToShell(behavior: CloseAction): Promise<void> {
+  if (!inTauriShell()) return Promise.resolve();
+  const next = closeBehaviorShellChain.then(async () => {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("qio_set_close_behavior", { behavior });
+    } catch (err) {
+      console.warn("[qio] 同步关闭行为到壳失败（壳会自己读后端设置）", err);
+    }
+  });
+  closeBehaviorShellChain = next;
+  return next;
 }
 
 /** 确认收到壳的关闭问询（ask 档）：壳 1.8s 内没等到会走「隐藏到托盘」兜底。 */
