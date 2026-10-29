@@ -688,6 +688,11 @@ class _RecordContext:
         row = self.intent_rows.get(intent_id)
         counts = _counts(models.loads(row["applied"] if row is not None else "{}", {}))
         if not any(counts.values()):
+            # R5 只读回退：确认→board 工具路径不写 applied，但权威账本里有真实创建操作。
+            ledger = _ledger_applied(self.conn, intent_id)
+            if ledger is not None:
+                counts = _merge_counts(counts, _counts(ledger))
+        if not any(counts.values()):
             for execution in self.executions.get(intent_id, []):
                 counts = _merge_counts(
                     counts, _counts(models.loads(execution["result"], {}))
@@ -711,8 +716,15 @@ class _RecordContext:
         counts = {"cards": 0, "groups": 0, "links": 0}
         for item in completed:
             row = self.intent_rows.get(str(item["id"]))
-            if row is not None:
-                counts = _merge_counts(counts, _counts(models.loads(row["applied"], {})))
+            item_counts = (
+                _counts(models.loads(row["applied"], {})) if row is not None else {}
+            )
+            if not any(item_counts.values()):
+                # R5 只读回退：board_intents.applied 为空时用真实账本派生计数。
+                ledger = _ledger_applied(self.conn, str(item["id"]))
+                if ledger is not None:
+                    item_counts = _counts(ledger)
+            counts = _merge_counts(counts, item_counts)
         if not any(counts.values()):
             # 「已完成」但没有任何真实结果对象：不给结果入口（不编造可点入口）
             return None
@@ -1011,6 +1023,59 @@ def _intent_status(row: sqlite3.Row, claim: sqlite3.Row | None) -> str:
     if status == "approved":
         return STATUS_CONFIRMED
     return STATUS_UNKNOWN
+
+
+def _ledger_applied(
+    conn: sqlite3.Connection, intent_id: Any
+) -> dict[str, list[str]] | None:
+    """只读回退（R5）：权威账本 board_operations 里该意图已 applied 的创建操作。
+
+    为什么需要：确认→board 工具路径只写 board_operations、不写
+    board_intents.applied；结果入口按「真实结果对象」派生，不能因此丢失。
+    只统计真实创建出来的对象（result 载荷由 board_tools 的写工具生成）：
+    create_card → result.card_id / result.card.id；group_cards →
+    result.created_group_id（加入已有分组不算新对象）；add_link →
+    result.link_id 且 result.created 为真（已存在的关系不算新对象）。
+    旧库没有 board_operations 表 / 读取失败 → _query 已降级为空，按「没有结果」处理。
+    返回 None 表示账本里没有真实创建操作（调用方保持原有的 none 语义）。
+    """
+    text = str(intent_id or "").strip()
+    if not text:
+        return None
+    rows = _query(
+        conn,
+        "SELECT action, result FROM board_operations"
+        " WHERE intent_id = ? AND status = 'applied'",
+        (text,),
+    )
+    cards: list[str] = []
+    groups: list[str] = []
+    links: list[str] = []
+    for row in rows:
+        action = str(row["action"] or "")
+        payload = models.loads(row["result"], {})
+        if not isinstance(payload, Mapping):
+            payload = {}
+        if action == "create_card":
+            card = payload.get("card") if isinstance(payload.get("card"), Mapping) else {}
+            card_id = str(payload.get("card_id") or card.get("id") or "").strip()
+            if card_id:
+                cards.append(card_id)
+        elif action == "group_cards":
+            group_id = str(payload.get("created_group_id") or "").strip()
+            if group_id:
+                groups.append(group_id)
+        elif action == "add_link":
+            link_id = str(payload.get("link_id") or "").strip()
+            if link_id and payload.get("created"):
+                links.append(link_id)
+    if not (cards or groups or links):
+        return None
+    return {
+        "cardIds": sorted(set(cards)),
+        "groupIds": sorted(set(groups)),
+        "linkIds": sorted(set(links)),
+    }
 
 
 def _counts(value: Any) -> dict[str, int]:

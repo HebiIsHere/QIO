@@ -243,14 +243,21 @@ def _user_message_facts(ctx) -> tuple[str, dict | None]:
     这里只做透传，不推断、不补字段；常量只认 interactive.records 的单一定义。
     """
     facts = getattr(ctx, "board_intent_execution", None)
-    if not isinstance(facts, dict):
-        return "text", None
-    if not str(facts.get("record_key") or "").strip():
-        # 没有可核对的 record_key 就不冒充记录：保持旧行为，读取侧不会出现半条记录。
-        return "text", None
-    from agent.interactive import records as intent_records
+    if isinstance(facts, dict) and str(facts.get("record_key") or "").strip():
+        from agent.interactive import records as intent_records
 
-    return intent_records.CONTENT_TYPE, {intent_records.RAW_KEY: dict(facts)}
+        return intent_records.CONTENT_TYPE, {intent_records.RAW_KEY: dict(facts)}
+    submission_facts = getattr(ctx, "board_submission_facts", None)
+    if isinstance(submission_facts, dict) and submission_facts:
+        # R5：互动提交轮也是程序消息。content 原样保留（模型仍拿到 board_id /
+        # submission_id 原文），只在落库时标类型 + 事实；展示层不把它当普通用户消息。
+        from agent.interactive import submission as interactive_submission
+
+        return (
+            interactive_submission.SUBMISSION_CONTENT_TYPE,
+            {"board_submission": dict(submission_facts)},
+        )
+    return "text", None
 
 
 @dataclass

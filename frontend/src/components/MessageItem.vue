@@ -59,6 +59,14 @@ const intentExecution = computed(() =>
   props.message.contentType === "intent_execution" ? (props.message.intentExecution ?? null) : null,
 );
 
+/**
+ * 互动提交轮（R5）：服务端把提交轮的程序消息标成 board_submission。
+ * 内部绑定文字（board_id / submission_id / 程序指令）仍留在 content 里给模型，
+ * 但**不作为普通用户消息出现**——只认服务端字段，不按文本前缀猜；历史旧消息
+ * （content_type=text）保持原样，不回溯改写。
+ */
+const boardSubmission = computed(() => props.message.contentType === "board_submission");
+
 const open = ref(false);
 /** 本次会话新产生的消息：最多一次很短的入场；历史消息不带这个标记 */
 const isFresh = computed(() => session.freshIds.includes(props.message.id));
@@ -510,6 +518,7 @@ function removeOne(id: string) {
 
 <template>
   <div
+    v-if="!boardSubmission"
     class="message"
     :class="[message.role, { fresh: isFresh, 'intent-record': intentExecution }]"
     data-qio-fit

@@ -42,6 +42,11 @@ from agent.storage.db import transaction
 
 logger = logging.getLogger(__name__)
 
+#: R5：互动「提交轮」程序消息的 content_type（唯一常量来源）。
+#: 内部绑定文字（board_id / submission_id / 程序指令）仍在 content 里给模型用，
+#: 但展示层据此不把它当作普通用户消息；历史旧消息（content_type=text）保持原样。
+SUBMISSION_CONTENT_TYPE = "board_submission"
+
 class StaleState(Exception):
     """提交被拒（M4 路径 3）：候选版本 / 确认范围与当前服务端不一致。
 

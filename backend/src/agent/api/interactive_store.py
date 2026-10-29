@@ -382,6 +382,18 @@ async def submit(request: Request, board_id: str, body: dict | None = None) -> d
         turn.board_intent_ids = tuple(kwargs.get("intent_ids") or ())
         turn.board_resolved_question_ids = tuple(kwargs.get("resolved_question_ids") or ())
         turn.board_attempt = int(kwargs.get("attempt") or 1)
+        # R5：把这次提交的程序事实绑到该 turn（content 原样保留），供
+        # turn_orchestrator._user_message_facts 落 content_type=board_submission +
+        # raw 事实；展示层因此不会把内部绑定文字当普通用户消息。
+        submission._bind_turn_facts(
+            turn,
+            {
+                "board_submission_facts": {
+                    "board_id": turn.board_id,
+                    "submission_id": turn.board_submission_id,
+                }
+            },
+        )
         return {
             "ok": True,
             "turnId": turn.turn_id,
