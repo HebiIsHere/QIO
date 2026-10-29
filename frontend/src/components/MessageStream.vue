@@ -14,7 +14,7 @@ import TurnProcess from "./TurnProcess.vue";
 import ContinueBar from "./ContinueBar.vue";
 import { turnLabel } from "../utils/turnLabel";
 import { prefersReducedMotion } from "../utils/motion";
-import { groupTurns, isHiddenIntentExecution, type StreamTurn } from "../stores/session";
+import { groupTurns, visibleIntentExecutionMessages, type StreamTurn } from "../stores/session";
 import { useLatestButtonAnchor } from "../composables/useLatestButtonAnchor";
 import { subscribeComposerMetrics } from "../composables/composerMetrics";
 import { vQioScrollbar } from "../composables/useQioScrollbars";
@@ -56,11 +56,12 @@ const NEAR_BOTTOM_PX = 120;
 /**
  * 消息流里真正要渲染的消息。
  *
- * 意图执行记录（R2 契约 §四）：同一 record_key 只渲染服务端标记的 record_head 那一条；
- * 自动重试 / 再次执行产生的其余消息不渲染（它们每次 attempt 仍在头部的详情里可见）。
+ * 意图执行记录（R2 契约 §四 / 返修二）：同一 record_key 只渲染**一张**卡 —— 保留消息顺序
+ * 最早的那条 head（服务端的分页 head 是「本页最早」，同一记录跨页时可能各带一个 head），
+ * 自动重试 / 再次执行产生的其余消息不渲染（每次 attempt 仍在头部记录的详情里可见）。
  * 只做显示过滤，不改 session.messages、不删数据 —— 历史 / 互动对话两个入口共用这一处。
  */
-const messages = computed(() => session.messages.filter((m) => !isHiddenIntentExecution(m)));
+const messages = computed(() => visibleIntentExecutionMessages(session.messages));
 
 /**
  * 「回到最新消息」按钮的位置：由输入框与底部内容块的**真实边界**算出来

@@ -1,13 +1,17 @@
-import { describe, expect, it, beforeEach } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia, type Pinia } from "pinia";
+import { createMemoryHistory, createRouter } from "vue-router";
+import { defineComponent } from "vue";
 import IntentExecutionMessage from "../IntentExecutionMessage.vue";
 import MessageItem from "../MessageItem.vue";
 import {
   isHiddenIntentExecution,
   useSessionStore,
+  visibleIntentExecutionMessages,
   type StreamMessage,
 } from "../../stores/session";
+import { useInteractiveStore } from "../../stores/interactive";
 import type { IntentExecutionRecord } from "../../services/api";
 
 /**
@@ -353,5 +357,162 @@ describe("会话 store：服务端 intent_execution 解析与头部过滤", () =
     });
     expect(msg.intentExecution).toBeUndefined();
     expect(isHiddenIntentExecution(msg)).toBe(false);
+  });
+});
+
+describe("分页后同一 record_key 只渲染一张卡（返修二）", () => {
+  function historyRecord(session: ReturnType<typeof useSessionStore>, id: string, at: string, title: string) {
+    return session._historyMessage({
+      id,
+      role: "user",
+      content: "内部工作文字",
+      content_type: "intent_execution",
+      created_at: at,
+      turn_id: "turn_" + id,
+      intent_execution: { ...RECORD, title, record_key: "ie:sub_123:int_a,int_b", record_head: true },
+    });
+  }
+
+  it("两个 head 同 key：按消息顺序保留最早的一条，后续隐藏", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const older = historyRecord(session, "m1", "2026-10-29T10:00:00+08:00", "第一次确认");
+    const newer = historyRecord(session, "m2", "2026-10-29T10:05:00+08:00", "第二次确认");
+    const visible = visibleIntentExecutionMessages([older, newer]);
+    expect(visible.map((m) => m.id)).toEqual(["m1"]);
+    expect(visible[0].intentExecution?.title).toBe("第一次确认");
+  });
+
+  it("不同 record_key 各渲染一张；非 head 仍隐藏；普通消息不受影响", () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const first = historyRecord(session, "m1", "2026-10-29T10:00:00+08:00", "第一次确认");
+    const other = session._historyMessage({
+      id: "m2",
+      role: "user",
+      content: "内部工作文字",
+      content_type: "intent_execution",
+      created_at: "2026-10-29T10:03:00+08:00",
+      intent_execution: {
+        ...RECORD,
+        title: "另一次确认",
+        record_key: "ie:sub_999:int_c",
+        record_head: true,
+      },
+    });
+    const retryHidden = session._historyMessage({
+      id: "m3",
+      role: "user",
+      content: "内部工作文字",
+      content_type: "intent_execution",
+      created_at: "2026-10-29T10:06:00+08:00",
+      intent_execution: {
+        ...RECORD,
+        title: "同一条记录的自动重试",
+        record_key: "ie:sub_123:int_a,int_b",
+        record_head: false,
+      },
+    });
+    const plain = session._historyMessage({
+      id: "m4",
+      role: "user",
+      content: "用户自己说的话",
+      content_type: "text",
+      created_at: "2026-10-29T10:07:00+08:00",
+    });
+    const visible = visibleIntentExecutionMessages([first, other, retryHidden, plain]);
+    expect(visible.map((m) => m.id)).toEqual(["m1", "m2", "m4"]);
+  });
+});
+
+describe("结果入口：kind=board 打开真实板面（返修二）", () => {
+  const Empty = defineComponent({ template: "<div />" });
+
+  function makeRouter() {
+    return createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/", name: "conversation", component: Empty },
+        { path: "/interactive", name: "interactive", component: Empty },
+      ],
+    });
+  }
+
+  async function mountAtConversation(record: IntentExecutionRecord) {
+    const router = makeRouter();
+    await router.push("/");
+    await router.isReady();
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const w = mount(IntentExecutionMessage, {
+      props: { record },
+      global: { plugins: [pinia, router] },
+    });
+    await w.find('[data-test="intent-execution-head"]').trigger("click");
+    return { w, router, pinia };
+  }
+
+  const BOARD_RECORD: IntentExecutionRecord = {
+    ...RECORD,
+    result_entry: { kind: "board", label: "板面结果：1 张卡片", target: "board_1" },
+  };
+
+  it("点击后选中该 board，并跳到互动页", async () => {
+    const { w, router, pinia } = await mountAtConversation(BOARD_RECORD);
+    setActivePinia(pinia);
+    const store = useInteractiveStore();
+    const select = vi.spyOn(store, "selectBoard").mockResolvedValue({ ok: true, reason: "" });
+
+    await w.find('[data-test="intent-result-open"]').trigger("click");
+    await flushPromises();
+
+    expect(select).toHaveBeenCalledWith("board_1");
+    expect(router.currentRoute.value.path).toBe("/interactive");
+    w.unmount();
+  });
+
+  it("定位失败（板面不存在）：不跳转，并显示一句实话", async () => {
+    const { w, router, pinia } = await mountAtConversation(BOARD_RECORD);
+    setActivePinia(pinia);
+    const store = useInteractiveStore();
+    vi.spyOn(store, "selectBoard").mockResolvedValue({
+      ok: false,
+      reason: "没有找到这块板面（可能已被删除）",
+    });
+
+    await w.find('[data-test="intent-result-open"]').trigger("click");
+    await flushPromises();
+
+    expect(router.currentRoute.value.path).toBe("/");
+    expect(w.find('[data-test="intent-result-notice"]').text()).toContain(
+      "没能定位到这块板面：没有找到这块板面（可能已被删除）",
+    );
+    w.unmount();
+  });
+
+  it("记录没给 target 时退回诊断里的板面编号（同一份事实）", async () => {
+    const { w, pinia } = await mountAtConversation({
+      ...BOARD_RECORD,
+      result_entry: { kind: "board", label: "板面结果：1 张卡片" },
+    });
+    setActivePinia(pinia);
+    const store = useInteractiveStore();
+    const select = vi.spyOn(store, "selectBoard").mockResolvedValue({ ok: true, reason: "" });
+
+    await w.find('[data-test="intent-result-open"]').trigger("click");
+    await flushPromises();
+
+    expect(select).toHaveBeenCalledWith("board_1");
+    w.unmount();
+  });
+
+  it("外部链接结果保持上一轮行为（仍是链接地址）", async () => {
+    const { w } = await mountAtConversation(RECORD);
+    const link = w.find('[data-test="intent-result-link"]');
+    expect(link.attributes("href")).toBe("https://example.com/result");
+    expect(w.find('[data-test="intent-result-open"]').exists()).toBe(false);
+    w.unmount();
   });
 });

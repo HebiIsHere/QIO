@@ -10,12 +10,14 @@
  * - 不按文本前缀/关键词判断、不自行推状态、不新增弹窗。
  */
 import { computed, ref, useId } from "vue";
+import { useRouter } from "vue-router";
 import type {
   IntentExecutionAttempt,
   IntentExecutionIntent,
   IntentExecutionRecord,
   IntentExecutionResultRef,
 } from "../services/api";
+import { useInteractiveStore } from "../stores/interactive";
 import { isSafeExternalUrl, openExternal } from "../utils/externalLink";
 
 const props = defineProps<{ record: IntentExecutionRecord }>();
@@ -139,12 +141,70 @@ const failureReasons = computed(() => {
 
 const resultEntry = computed<IntentExecutionResultRef | null>(() => props.record.result_entry ?? null);
 const resultLabel = computed(() => textOf(resultEntry.value?.label) || "查看结果");
-const resultTarget = computed(() => textOf(resultEntry.value?.target));
+/**
+ * 结果入口的目标：
+ * - 外部链接（http/https/mailto）就是地址，按上一轮行为打开；
+ * - `kind === "board"` 是**真实板面结果**，target 是板面 id —— 点击要打开互动页并选中该板面；
+ *   服务端没给 target 时退回记录诊断里的板面编号（同一份事实），仍拿不到就如实说没有。
+ */
+const isBoardResult = computed(() => textOf(resultEntry.value?.kind) === "board");
+const resultTarget = computed(() => {
+  const direct = textOf(resultEntry.value?.target);
+  if (direct) return direct;
+  return isBoardResult.value ? textOf(props.record.diagnostics?.board_id) : "";
+});
 const resultHref = computed(() =>
-  isSafeExternalUrl(resultTarget.value) ? resultTarget.value : "",
+  !isBoardResult.value && isSafeExternalUrl(resultTarget.value) ? resultTarget.value : "",
 );
 
+/**
+ * 页面路由：结果入口要跳到互动页。
+ * 组件也可能在独立挂载 / 单测里没有 router（不能用 useRouter 直接炸掉）—— 拿不到就只是不跳转，
+ * 由一句实话说明，而不是点了没反应。
+ */
+let router: ReturnType<typeof useRouter> | null = null;
+try {
+  router = useRouter();
+} catch {
+  router = null;
+}
+
+const boardLocating = ref(false);
+
+/** 板面结果入口：互动页 + 选中真实板面；失败如实说明（不新建板面、不装作已经打开）。 */
+async function openBoardResult() {
+  if (boardLocating.value) return;
+  const target = resultTarget.value;
+  if (!target) {
+    resultNotice.value = "这条结果没有给出板面编号，没能定位";
+    return;
+  }
+  boardLocating.value = true;
+  resultNotice.value = "";
+  try {
+    const store = useInteractiveStore();
+    const located = await store.selectBoard(target);
+    if (!located.ok) {
+      resultNotice.value = "没能定位到这块板面：" + (located.reason || "原因未知");
+      return;
+    }
+    if (!router) {
+      resultNotice.value = "板面已经选中；当前没有页面路由，没法跳转到互动页";
+      return;
+    }
+    await router.push("/interactive");
+  } catch (err) {
+    resultNotice.value = "没能定位到这块板面：" + ((err as Error)?.message || "原因未知");
+  } finally {
+    boardLocating.value = false;
+  }
+}
+
 async function openResult() {
+  if (isBoardResult.value) {
+    await openBoardResult();
+    return;
+  }
   if (!resultTarget.value) return;
   if (!resultHref.value) {
     resultNotice.value = "这个结果入口的地址不能直接打开";
@@ -287,8 +347,18 @@ function formatTime(iso?: string): string {
 
         <div v-if="resultEntry" class="intent-sec">
           <h4 class="intent-sec-label">结果入口</h4>
+          <button
+            v-if="isBoardResult"
+            class="intent-result-link intent-result-button"
+            type="button"
+            data-test="intent-result-open"
+            :disabled="boardLocating"
+            @click="openResult"
+          >
+            {{ boardLocating ? "正在定位板面…" : resultLabel }}
+          </button>
           <a
-            v-if="resultHref"
+            v-else-if="resultHref"
             class="intent-result-link"
             data-test="intent-result-link"
             :href="resultHref"
@@ -302,7 +372,9 @@ function formatTime(iso?: string): string {
             {{ resultLabel }}
             <span v-if="resultTarget" class="intent-result-target mono">{{ resultTarget }}</span>
           </span>
-          <p v-if="resultNotice" class="intent-result-notice" role="status">{{ resultNotice }}</p>
+          <p v-if="resultNotice" class="intent-result-notice" role="status" data-test="intent-result-notice">
+            {{ resultNotice }}
+          </p>
         </div>
 
         <p v-if="verifiedNote" class="intent-verified-note">{{ verifiedNote }}</p>
@@ -520,6 +592,24 @@ function formatTime(iso?: string): string {
   text-decoration: underline;
   text-underline-offset: 2px;
   overflow-wrap: anywhere;
+}
+/* 板面结果入口是按钮（同一套链接外观）：点它有真实动作 —— 跳互动页并选中板面 */
+.intent-result-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.intent-result-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.intent-result-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 .intent-result-link:focus-visible {
   outline: 2px solid var(--focus-ring);

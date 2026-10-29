@@ -1223,6 +1223,29 @@ export function isHiddenIntentExecution(
   );
 }
 
+/**
+ * 消息流里真正可渲染的意图执行记录（R2 契约 §四 / 返修二）。
+ *
+ * 服务端的 head 口径是「**本页里**属于该 record 的最早一条」：分页之后，同一条记录可能在
+ * 不同页各带一个 `record_head=true`。界面只能渲染一次 —— 按消息顺序保留最早的那条
+ * （消息数组本身就是时间顺序），后续重复的 head 隐藏，避免滚动一下出现两张一样的卡片。
+ *
+ * 没有 record_head 字段的旧记录照旧隐藏；没有 record_key 的记录无法判断是否同一条，
+ * 仍按 head 渲染（服务端已经说过它是这一页的头部）。
+ */
+export function visibleIntentExecutionMessages(messages: StreamMessage[]): StreamMessage[] {
+  const heads = new Set<string>();
+  return messages.filter((message) => {
+    if (isHiddenIntentExecution(message)) return false;
+    if (message.contentType !== "intent_execution" || !message.intentExecution) return true;
+    const key = String(message.intentExecution.record_key ?? "").trim();
+    if (!key) return true;
+    if (heads.has(key)) return false;
+    heads.add(key);
+    return true;
+  });
+}
+
 /** 一次发送在受理时捕获的起点身份（稳定身份，不随后续导航变化）。 */
 export interface StartIdentity {
   /** 提交时的话题（后端 `/api/turns` 收到的 topic_id） */
@@ -2045,6 +2068,23 @@ const sessionStoreDefinition = defineStore("session", {
     turnActionFeedback: {} as Record<string, string>,
     /** 正在提交的操作（`turnId:action`）：防重复提交 */
     turnActionBusy: null as string | null,
+    /**
+     * 意图执行记录（R2 返修二）：确认 / 恢复 / 重试之后，当前话题的历史可能已经过期。
+     *
+     * 这只是**提示位**，不是数据源：只用来决定「什么时候再走一次既有历史读取」，
+     * 不参与任何展示，也不代表本地已经有一条记录。
+     */
+    intentRecordsStale: false,
+    /** 一次历史重读正在进行（多条触发合并成一次，不并发打同一个接口） */
+    _intentRecordRefreshBusy: false,
+    /**
+     * 服务端发起的续作轮（确认 / 恢复 / 重试 / 自动重试）：本机没有「发送动作」，
+     * 只能靠 TURN_START 认领。登记后，这一轮首个「消息已落库」的事件 / TURN_END
+     * 会用既有历史读取刷新真实记录。
+     */
+    _intentRecordTurns: [] as string[],
+    /** 已经为这些轮做过一次「过程刷新」（STAGE / ASSISTANT 每轮可能很多条，只兑现一次） */
+    _intentRecordTurnProgress: [] as string[],
   }),
   getters: {
     /**
@@ -5132,6 +5172,129 @@ const sessionStoreDefinition = defineStore("session", {
     async retryHistory() {
       if (this.history.status === "loading") return;
       await this.loadHistory();
+    },
+
+    /* ------------------------------------------------------------------
+     * 意图执行记录：确认 / 恢复 / 重试之后「无需手动刷新」与「Turn 结束后态自己变」
+     *
+     * 只做两件事：用**既有历史读取**（loadHistory，同一个 /api/session/messages 入口）
+     * 重读当前话题；把「该重读了」记成提示位。不轮询、不伪造本地记录、不按文本猜状态，
+     * 也不在读取失败时把它说成「已更新」（失败口径沿用既有 history.status / history.error）。
+     * ------------------------------------------------------------------ */
+
+    /** 标记「当前话题的历史可能过期」：等下一次相关 Turn 结束 / 页面重新激活时再读一次。 */
+    markIntentRecordsStale() {
+      this.intentRecordsStale = true;
+    },
+
+    /** 当前已加载消息里有没有意图执行记录（只看服务端字段，不猜文本）。 */
+    hasIntentExecutionRecord(): boolean {
+      return this.messages.some(
+        (message) => message.contentType === "intent_execution" && Boolean(message.intentExecution),
+      );
+    },
+
+    /**
+     * 登记本轮是服务端发起的续作轮（确认 / 恢复 / 重试）：它没有本机的发送动作，
+     * 但一旦真正开跑就会落一条意图执行记录。
+     */
+    noteIntentExecutionTurn(turnId: string): void {
+      const id = String(turnId ?? "").trim();
+      if (!id || this._intentRecordTurns.includes(id)) return;
+      this._intentRecordTurns = [...this._intentRecordTurns.slice(-19), id];
+    },
+
+    /** 这一轮是不是被登记的续作轮（只影响「要不要重读历史」，不参与展示）。 */
+    isIntentExecutionTurn(turnId: string): boolean {
+      const id = String(turnId ?? "").trim();
+      return Boolean(id) && this._intentRecordTurns.includes(id);
+    },
+
+    /**
+     * 这一轮结束时值不值得重读历史：
+     * * 它是登记过的续作轮；
+     * * 并且「记录可能已经出现」（当前页已有记录）或「有动作刚发生还没看到记录」（提示位）。
+     *
+     * 两者都不成立时（普通聊天轮）什么都不做：不打断用户正在看的对话。
+     */
+    shouldRefreshIntentRecordsForTurn(turnId: string): boolean {
+      if (!this.isIntentExecutionTurn(turnId)) return false;
+      return this.intentRecordsStale || this.hasIntentExecutionRecord();
+    },
+
+    /**
+     * 续作轮的首个「消息已落库之后」的事件到达：过程状态先刷一次（每轮只一次）。
+     *
+     * 让记录在 Turn 还在跑的时候就出现（通常是「正在处理」），不用等整轮结束。
+     */
+    async refreshIntentExecutionTurnProgress(turnId: string): Promise<void> {
+      const id = String(turnId ?? "").trim();
+      if (!id) return;
+      if (!this.shouldRefreshIntentRecordsForTurn(id)) return;
+      if (this._intentRecordTurnProgress.includes(id)) return;
+      this._intentRecordTurnProgress = [...this._intentRecordTurnProgress.slice(-19), id];
+      await this.refreshIntentExecutionRecords("turn-progress");
+    },
+
+    /**
+     * 续作轮结束：把真实终态读出来（确认 / 恢复 / 重试 / 服务端自动重试都走这里）。
+     *
+     * Turn 结束是**唯一**可信的「状态该变了」的时机；读完就不再重复登记这一轮。
+     */
+    async refreshIntentExecutionTurnEnd(turnId: string): Promise<void> {
+      const id = String(turnId ?? "").trim();
+      if (!id) return;
+      /**
+       * 判定口径（与验收对齐）：
+       * * 当前页**已经能看到**意图执行记录 → 这一轮的结束可能与记录状态有关，刷新一次真实状态。
+       *   服务端自动重试轮本机无法预知 turnId，只能这样按「话题里确实有记录」认定；
+       * * 还没有记录（首次确认刚发生）→ 只有登记过的续作轮 + 「可能过期」提示才刷新。
+       * 其余情况（没有记录、也不是续作轮的普通聊天轮）什么都不做，不打扰用户。
+       */
+      const hasRecord = this.hasIntentExecutionRecord();
+      const tracked = this.isIntentExecutionTurn(id);
+      this._intentRecordTurns = this._intentRecordTurns.filter((item) => item !== id);
+      this._intentRecordTurnProgress = this._intentRecordTurnProgress.filter((item) => item !== id);
+      if (!hasRecord && !tracked) return;
+      await this.refreshIntentExecutionRecords("turn-end");
+    },
+
+    /**
+     * 用**既有历史读取**刷新当前话题（确认 / 恢复 / 重试成功、相关 Turn 结束、页面重新激活）。
+     *
+     * 返回这次是否真的读到了（history.status === "ready"）。读不到时不抛出、不弹窗：
+     * 失败原因已经由 loadHistory 按既有口径写进 history.status / history.error，
+     * 界面照常显示「历史没有加载出来 + 重试」—— 绝不把没读到说成已更新。
+     */
+    async refreshIntentExecutionRecords(_reason = "intent-action"): Promise<boolean> {
+      if (this._intentRecordRefreshBusy) return false;
+      // 已经在读 / 还没进入任何话题（首屏加载会自然带上最新一页）：不重复打接口
+      if (this.history.status === "loading" || this.history.status === "idle") return false;
+      /**
+       * 正在流式输出的用户聊天轮里整段重读历史会把已经生成的正文擦掉；
+       * 等这一轮结束再刷新（记录不会丢，结束后的 TURN_END 刷新会读到终态）。
+       */
+      if (this.turnRunning && !this.isIntentExecutionTurn(this.activeTurnId ?? "")) return false;
+      this._intentRecordRefreshBusy = true;
+      try {
+        await this.loadHistory();
+        const ok = this.history.status === "ready";
+        /**
+         * 只有**真的读到了记录**才算「可能过期」这一页已经补齐：
+         * 动作刚发生时记录可能还没落库（续作轮还在建上下文），这次读不到不能把提示位清掉，
+         * 否则后续的进度 / TURN_END 刷新会因为「既没提示、也还没记录」而不再触发。
+         */
+        if (ok && this.hasIntentExecutionRecord()) this.intentRecordsStale = false;
+        return ok;
+      } finally {
+        this._intentRecordRefreshBusy = false;
+      }
+    },
+
+    /** 页面重新激活：把确认 / 重试留下的「可能过期」提示兑现一次（只读）。 */
+    async reloadHistoryIfStale(): Promise<boolean> {
+      if (!this.intentRecordsStale) return false;
+      return this.refreshIntentExecutionRecords("page-activation");
     },
     /** 清掉某一轮的操作反馈（新的尝试开始时旧错误不再显示） */
     clearTurnActionFeedback(turnId: string) {

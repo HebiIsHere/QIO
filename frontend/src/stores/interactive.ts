@@ -10,6 +10,7 @@
  */
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
+import { useSessionStore } from "./session";
 import * as api from "../services/interactive";
 // 阅读位置的读写属于**预览服务**（不是板面状态）：位置按「附件 + 文件版本」归属，
 // 写它不产生表达、不改板面版本（契约 §3.3）。
@@ -2202,6 +2203,17 @@ export const useInteractiveStore = defineStore("interactive", () => {
       // 板面刷新失败只影响「页面事实是否最新」，执行与意图读取照常进行
     }
     await loadExecutions();
+    /**
+     * 意图执行记录（R2 返修二）：确认 / 恢复 / 拒绝 / 任务控制之后，当前显示的对话话题
+     * 必须**无需手动刷新**就出现这条记录（记录是服务端写进话题历史的消息）。
+     *
+     * 只调用既有历史读取（session.loadHistory），不轮询、不伪造记录；
+     * 读取失败由 session.history 的既有错误口径显示（不弹窗），并留下「可能过期」提示位，
+     * 下一次相关 Turn 结束 / 页面重新激活时再读一次。
+     */
+    const session = useSessionStore();
+    session.markIntentRecordsStale();
+    await session.refreshIntentExecutionRecords("intent-action");
   }
 
   /** 打开任务面板（f焦点区分「任务」与「批量待确认」两条入口，界面是同一个）。 */
@@ -2292,6 +2304,36 @@ export const useInteractiveStore = defineStore("interactive", () => {
     } finally {
       loading.value = false;
     }
+  }
+
+  /**
+   * 选中一块**已经存在**的板面（意图执行记录的「结果入口」定位）。
+   *
+   * 步骤与边界：
+   * 1) 先按既有 `GET /api/interactive/boards`（只读清单）确认目标板面真实存在 ——
+   *    板面加载接口对未知 id 会建一块空板面（避免白屏），不能拿它当存在性判断；
+   * 2) 存在才切换当前板面身份并走既有 `load()`（不新建板面、不改执行政策）；
+   * 3) 失败如实返回原因（不存在 / 清单读不到 / 加载失败），由界面显示一句实话。
+   */
+  async function selectBoard(targetId: string): Promise<{ ok: boolean; reason: string }> {
+    const id = String(targetId ?? "").trim();
+    if (!id) return { ok: false, reason: "这条结果没有给出板面编号" };
+    if (!apiSupports("fetchBoards")) {
+      return { ok: false, reason: "当前后端没有板面清单能力，无法确认这块板面是否存在" };
+    }
+    try {
+      const payload = await api.fetchBoards();
+      const boards = Array.isArray(payload?.boards) ? payload.boards : [];
+      if (!boards.some((item) => String(item?.id ?? "") === id)) {
+        return { ok: false, reason: "没有找到这块板面（可能已被删除）" };
+      }
+    } catch (err) {
+      return { ok: false, reason: "读取板面清单失败：" + ((err as Error)?.message || "原因未知") };
+    }
+    if (boardId.value !== id) boardId.value = id;
+    await load();
+    if (loadError.value) return { ok: false, reason: loadError.value };
+    return { ok: true, reason: "" };
   }
 
   /** 某个草稿键当前的保存状态（没有记录就是 idle）。 */
@@ -4942,6 +4984,8 @@ export const useInteractiveStore = defineStore("interactive", () => {
     refreshVisibleRange,
     loadIntents,
     load,
+    /** R2 返修二：意图执行记录「结果入口」的板面定位（只选中已存在的板面，不新建） */
+    selectBoard,
     refreshBoardFromServer,
     setDraft,
     draftFor,

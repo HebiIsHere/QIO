@@ -160,6 +160,8 @@ onMounted(() => {
   // 首次也记一次：下次打开保持同一高度（记忆的是「用户看到的那一档」）
   writeStoredHeight(panelHeight.value);
   if (expandedState.value) openedOnce.value = true;
+  // 互动页重新打开：把确认 / 重试留下的「历史可能过期」兑现一次（既有历史读取，只读、不轮询）
+  void session.reloadHistoryIfStale();
 });
 
 /** 展开 / 收起：只动显示，不调用会话层的任何方法（回复、草稿、附件、排队都不受影响）。 */
