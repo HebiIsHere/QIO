@@ -26,6 +26,12 @@ interface RawCatalogModel {
   verify_error: string | null;
   usable: boolean;
   unavailable_reason: string;
+  /** 以下只有 GET /api/models/catalog?usage_key=... 才返回（服务端算好的用途维度） */
+  usage_key?: string;
+  usage_usable?: boolean;
+  usage_reason?: string;
+  capability_state?: string;
+  usage_requires_capabilities?: string[];
 }
 
 interface RawConnection {
@@ -89,14 +95,31 @@ interface RawUsage {
   daily?: boolean;
   /** 老后端不返回；缺省按 `model` 处理（不因为缺字段就把用途误判成未接通）。 */
   delivery?: string;
+  /** 独立分配会不会真的影响真实请求（没有读取点的用途为 false）。 */
+  assignment_effective?: boolean;
+  /** 有历史覆盖但不会生效：只保留可见性与清除入口。 */
+  historical?: boolean;
+  historical_target?: RawResolvedTarget | null;
+  requires_capabilities?: string[];
   /** main-chat / general-chat 才有：真实生效目标；其它用途为 undefined。 */
   effective?: RawEffectiveTarget | null;
+}
+
+interface RawUsageScope {
+  usage_key: string;
+  label: string;
+  delivery: string;
+  effective: boolean;
+  requires_capabilities: string[];
+  note: string;
 }
 
 interface RawCatalogResponse {
   connections: RawConnection[];
   default: { credential_id: string; model_id: string } | null;
   usages: RawUsage[];
+  /** 带 usage_key 请求时才有：这次目录快照按哪个用途算候选。 */
+  usage?: RawUsageScope | null;
   discovery: Record<
     string,
     {
@@ -135,8 +158,28 @@ export interface CatalogModel {
   verifyState: string;
   verifiedAt: string | null;
   verifyError: string | null;
+  /** 一般可用性：与用途无关（连接 / 模型验证层面的结论）。 */
   usable: boolean;
   unavailableReason: string;
+  /** 用途维度（只有按 usage_key 请求目录时才有；服务端算，前端只呈现）。 */
+  usageKey?: string;
+  usageUsable?: boolean;
+  usageReason?: string;
+  /** supported / missing / unknown / not_required；unknown 仍可选。 */
+  capabilityState?: CapabilityState;
+  usageRequiresCapabilities?: string[];
+}
+
+export type CapabilityState = "supported" | "missing" | "unknown" | "not_required";
+
+/** 目录快照按哪个用途算的候选（带 usage_key 请求时由后端给出）。 */
+export interface UsageScope {
+  usageKey: string;
+  label: string;
+  delivery: "model" | "existing" | "unsupported";
+  effective: boolean;
+  requiresCapabilities: string[];
+  note: string;
 }
 
 export interface ModelConnection {
@@ -203,6 +246,16 @@ export interface UsageAssignment {
    * 界面不得把后两者画成已生效的选择器。
    */
   delivery: "model" | "existing" | "unsupported";
+  /**
+   * 独立分配**是否真的影响真实请求**（后端核对真实读取路径后的唯一事实）。
+   * 老后端不返回：按「会生效」处理，不把正常用途降级成只读。
+   */
+  assignmentEffective?: boolean;
+  /** 有历史覆盖但不会生效：只读展示 + 清除入口，不静默删除。 */
+  historical?: boolean;
+  /** 历史覆盖指向的目标（只用于如实展示，不代表当前实际使用）。 */
+  historicalTarget?: ResolvedTarget | null;
+  requiresCapabilities?: string[];
 }
 
 export interface DiscoveryState {
@@ -223,6 +276,8 @@ export interface CatalogResponse {
   default: DefaultModel | null;
   usages: UsageAssignment[];
   discovery: Record<string, DiscoveryState>;
+  /** 带 usageKey 读取时才有：这次候选按哪个用途算。 */
+  usageScope?: UsageScope | null;
 }
 
 export interface DiscoveryResult {
@@ -282,8 +337,14 @@ export interface UsageResolveResult {
 
 // ── 形状转换 ────────────────────────────────────────────────────────────────
 
+function toCapabilityState(raw: unknown): CapabilityState | undefined {
+  return raw === "supported" || raw === "missing" || raw === "unknown" || raw === "not_required"
+    ? raw
+    : undefined;
+}
+
 function toCatalogModel(raw: RawCatalogModel): CatalogModel {
-  return {
+  const model: CatalogModel = {
     modelId: raw.model_id,
     displayName: raw.display_name || raw.model_id,
     source: raw.source,
@@ -293,6 +354,33 @@ function toCatalogModel(raw: RawCatalogModel): CatalogModel {
     verifyError: raw.verify_error,
     usable: raw.usable,
     unavailableReason: raw.unavailable_reason || "",
+  };
+  // 用途维度字段只在按 usage_key 请求目录时出现；缺省不猜（前端只呈现后端算的）。
+  if (typeof raw.usage_usable === "boolean") {
+    model.usageKey = raw.usage_key || "";
+    model.usageUsable = raw.usage_usable;
+    model.usageReason = raw.usage_reason || "";
+    model.capabilityState = toCapabilityState(raw.capability_state);
+    model.usageRequiresCapabilities = Array.isArray(raw.usage_requires_capabilities)
+      ? raw.usage_requires_capabilities
+      : [];
+  }
+  return model;
+}
+
+function toUsageScope(raw: RawUsageScope | null | undefined): UsageScope | null {
+  if (!raw || !raw.usage_key) return null;
+  const delivery: UsageScope["delivery"] =
+    raw.delivery === "existing" || raw.delivery === "unsupported" ? raw.delivery : "model";
+  return {
+    usageKey: raw.usage_key,
+    label: raw.label || raw.usage_key,
+    delivery,
+    effective: Boolean(raw.effective),
+    requiresCapabilities: Array.isArray(raw.requires_capabilities)
+      ? raw.requires_capabilities
+      : [],
+    note: raw.note || "",
   };
 }
 
@@ -344,6 +432,13 @@ function toUsage(raw: RawUsage): UsageAssignment {
       raw.delivery === "existing" || raw.delivery === "unsupported"
         ? raw.delivery
         : "model",
+    // 老后端不返回时按「会生效」处理（不因为缺字段就把正常用途降级成只读）。
+    assignmentEffective: raw.assignment_effective !== false,
+    historical: raw.historical === true,
+    historicalTarget: toResolvedTarget(raw.historical_target ?? null),
+    requiresCapabilities: Array.isArray(raw.requires_capabilities)
+      ? raw.requires_capabilities
+      : [],
   };
 }
 
@@ -395,10 +490,42 @@ function toDiscoveryResult(raw: RawDiscoveryResult): DiscoveryResult {
 
 // ── API ─────────────────────────────────────────────────────────────────────
 
+/**
+ * 把模型接口的失败翻译成一句人话（保存 / 读取共用）。
+ *
+ * 用途分配被拒时后端返回结构化 4xx（{code, detail, ...}）：这里读 detail，
+ * 不把 JSON 原文丢给用户；老接口的字符串 detail 仍然取 ApiError.message 的后半段。
+ */
+export function modelErrorMessage(error: unknown): string {
+  const body = (error as { body?: unknown } | null)?.body;
+  if (body && typeof body === "object") {
+    const record = body as Record<string, unknown>;
+    const detail = record.detail;
+    if (typeof detail === "string" && detail.trim()) return detail.trim().slice(0, 300);
+    if (detail && typeof detail === "object") {
+      const nested = (detail as Record<string, unknown>).message;
+      if (typeof nested === "string" && nested.trim()) return nested.trim().slice(0, 300);
+    }
+  }
+  const text = error instanceof Error ? error.message : String(error);
+  const marker = text.lastIndexOf(" -> ");
+  if (marker >= 0) {
+    const after = text.slice(marker + 4);
+    const sep = after.indexOf(": ");
+    if (sep >= 0) return after.slice(sep + 2).trim().slice(0, 300);
+  }
+  return text.trim().slice(0, 300);
+}
+
 export const modelCatalogApi = {
   /** 目录快照（连接 / 模型 / 用途 / 默认模型）。只读，不联网。 */
-  async getCatalog(options: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<CatalogResponse> {
-    const query = options.refresh ? "?refresh=1" : "";
+  async getCatalog(options: { refresh?: boolean; usageKey?: string; signal?: AbortSignal } = {}): Promise<CatalogResponse> {
+    const params = new URLSearchParams();
+    if (options.refresh) params.set("refresh", "1");
+    // usage_key：让服务端按当前用途算候选（能力缺失 / 未知 / 连接不可用），
+    // 前端只呈现结论；这次读仍然只读本地事实（不发验证、不联网）。
+    if (options.usageKey) params.set("usage_key", options.usageKey);
+    const query = params.toString() ? "?" + params.toString() : "";
     const raw = await request<RawCatalogResponse>(`/api/models/catalog${query}`, {
       signal: options.signal,
       timeoutMs: API_TIMEOUT_MS.read,
@@ -414,6 +541,7 @@ export const modelCatalogApi = {
         : null,
       usages: (raw.usages || []).map(toUsage),
       discovery,
+      usageScope: toUsageScope(raw.usage),
     };
   },
 

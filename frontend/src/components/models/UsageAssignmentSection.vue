@@ -2,23 +2,27 @@
 /**
  * 用途分配：每个用途实际用哪条连接的哪个模型。
  *
- * 语义（_STG-COMMON.md §6.2，别处已定，这里只做界面）：
+ * 语义（_STG-COMMON.md §6.2 + 发布第二轮 B，别处已定，这里只做界面）：
  * - 先默认模型，各用途按需单独指定；未指定 = 跟随默认；
- * - 换默认模型**不覆盖**显式指定；「恢复跟随默认」才清掉覆盖；
- * - video / audio / embedding 显示为「沿用现有处理方式」，不继承默认对话模型；
- *   embedding 显式换外部模型时展示维度影响并复用中央确认（QConfirm）；
- * - research 如实标注尚未接通独立调用路径；
- * - main-chat 与 general-chat 日常入口合并成一行显示（调用路径已核实等价），
- *   但两个 key 都保留在数据里，保存时一起写。
+ * - **只有真正参与调用的用途**才提供独立模型选择（main-chat/general-chat 合并行、
+ *   subagent、vision、记忆整理 / 知识提炼 / 实体提炼）。判断来自后端的
+ *   delivery === "model" 与 assignmentEffective，前端不自己再猜一遍调用路径；
+ * - 没有独立调用路径的用途（研究 / 视频 / 语音 / 嵌入 / 写代码 / 历史自定义标签）
+ *   只读展示一句话当前行为，不再画成可用选择器；
+ * - 历史配置继续可读，如实标「历史配置（未生效）」，并保留「清除历史覆盖」入口
+ *   （不静默删除、不冒充当前实际使用）；
+ * - 候选按当前用途判断能力（服务端算），打开候选时按 usage_key 取一次只读目录。
  */
 import { computed, ref } from "vue";
 import CandidatePicker from "./CandidatePicker.vue";
-import QConfirm from "../ui/QConfirm.vue";
-import type {
-  CatalogResponse,
-  EffectiveTarget,
-  ModelConnection,
-  UsageAssignment,
+import {
+  modelCatalogApi,
+  modelErrorMessage,
+  type CatalogResponse,
+  type EffectiveTarget,
+  type ModelConnection,
+  type ResolvedTarget,
+  type UsageAssignment,
 } from "../../services/modelCatalog";
 
 const props = defineProps<{
@@ -55,6 +59,17 @@ interface Row {
   group: string;
   note: string;
   daily: boolean;
+  /** 独立分配会不会真的生效（后端事实） */
+  assignmentEffective: boolean;
+  /** 存在不会生效的历史覆盖 */
+  historical: boolean;
+  historicalTarget: ResolvedTarget | null;
+  delivery: "model" | "existing" | "unsupported";
+}
+
+function effectiveOf(usage: UsageAssignment): boolean {
+  // 老后端不返回 → 按「会生效」处理（不把正常用途降级成只读）。
+  return usage.assignmentEffective !== false;
 }
 
 const rows = computed<Row[]>(() => {
@@ -79,6 +94,10 @@ const rows = computed<Row[]>(() => {
         group: usage.group,
         note: usage.note,
         daily: usage.daily,
+        assignmentEffective: effectiveOf(usage) && (!general || effectiveOf(general)),
+        historical: usage.historical === true,
+        historicalTarget: usage.historicalTarget ?? null,
+        delivery: usage.delivery,
       });
       continue;
     }
@@ -93,43 +112,80 @@ const rows = computed<Row[]>(() => {
       group: usage.group,
       note: usage.note,
       daily: usage.daily,
+      assignmentEffective: effectiveOf(usage),
+      historical: usage.historical === true,
+      historicalTarget: usage.historicalTarget ?? null,
+      delivery: usage.delivery,
     });
   }
   // 主区域优先：daily 在前，组内保持后端顺序（后端顺序即产品顺序）。
   return out;
 });
 
+/** 会生效的用途：正常分组、正常提供独立选择。 */
 const groupedRows = computed(() => {
   const result: { group: string; label: string; rows: Row[] }[] = [];
   for (const group of GROUP_ORDER) {
-    const items = rows.value.filter((row) => row.group === group);
+    const items = rows.value.filter(
+      (row) => row.group === group && row.assignmentEffective,
+    );
     if (items.length) result.push({ group, label: GROUP_LABELS[group] ?? group, rows: items });
   }
   return result;
 });
 
+/** 不生效的用途：只读说明 + 历史配置（可清除）。 */
+const readonlyRows = computed(() => rows.value.filter((row) => !row.assignmentEffective));
+
 const expanded = ref<string | null>(null);
-const pendingEmbedding = ref<{ row: Row; target: { credentialId: string; modelId: string } } | null>(null);
+
+/**
+ * 按用途取候选：GET /api/models/catalog?usage_key=...，服务端算 usage_usable /
+ * capability_state（只读本地事实，不发起验证、不联网）。失败不阻塞选择，但如实说明。
+ */
+const usageConnections = ref<Record<string, ModelConnection[]>>({});
+const usageCandidateErrors = ref<Record<string, string>>({});
+const usageCandidateBusy = ref<Record<string, boolean>>({});
+
+async function loadCandidates(row: Row): Promise<void> {
+  const key = row.keys[0];
+  if (usageCandidateBusy.value[key]) return;
+  usageCandidateBusy.value = { ...usageCandidateBusy.value, [key]: true };
+  try {
+    const reply = await modelCatalogApi.getCatalog({ usageKey: key });
+    if (reply && Array.isArray(reply.connections)) {
+      usageConnections.value = { ...usageConnections.value, [key]: reply.connections };
+      const next = { ...usageCandidateErrors.value };
+      delete next[key];
+      usageCandidateErrors.value = next;
+    }
+  } catch (exc) {
+    usageCandidateErrors.value = {
+      ...usageCandidateErrors.value,
+      [key]: "没能读到这个用途的候选判定：" + modelErrorMessage(exc),
+    };
+  } finally {
+    usageCandidateBusy.value = { ...usageCandidateBusy.value, [key]: false };
+  }
+}
+
+function connectionsFor(row: Row): ModelConnection[] {
+  return usageConnections.value[row.keys[0]] ?? props.connections;
+}
 
 function toggle(row: Row) {
   const key = row.keys[0];
-  expanded.value = expanded.value === key ? null : key;
+  if (expanded.value === key) {
+    expanded.value = null;
+    return;
+  }
+  expanded.value = key;
+  if (!usageConnections.value[key] && !usageCandidateBusy.value[key]) void loadCandidates(row);
 }
 
 function pick(row: Row, target: { credentialId: string; modelId: string } | null) {
   expanded.value = null;
-  if (row.kind === "embedding" && target) {
-    // 换外部嵌入模型会改变向量维度：先让用户确认影响，再保存。
-    pendingEmbedding.value = { row, target };
-    return;
-  }
   emit("assign", row.keys, target);
-}
-
-function confirmEmbedding() {
-  const pending = pendingEmbedding.value;
-  pendingEmbedding.value = null;
-  if (pending) emit("assign", pending.row.keys, pending.target);
 }
 
 /**
@@ -156,7 +212,7 @@ interface RowTarget {
 }
 
 /**
- * 这一行实际会打到哪：优先后端算好的 **effective**（与运行时同一份规则，
+ * 这一行实际会打到哪：优先后端算好的 effective（与运行时同一份规则，
  * general-chat 显式优先），没有时回退 resolved（老后端兼容）。
  */
 function targetOf(row: Row): RowTarget | null {
@@ -195,14 +251,9 @@ function unavailableReasonOf(row: Row): string {
 
 function resolvedText(row: Row): string {
   const target = targetOf(row);
-  if (target) {
-    const name = target.credentialName || target.credentialId;
-    return name + " · " + target.modelId;
-  }
-  // 视频 / 语音 / 嵌入没有显式指定时没有目标：「沿用现有处理方式」由行内标记说明，
-  // 目标与状态不再各重复一遍同一句话（同一行曾出现三次）。
-  const existing = row.primary.kind === "video" || row.primary.kind === "audio" || row.primary.kind === "embedding";
-  return existing ? "" : "尚未设置";
+  if (!target) return "尚未设置";
+  const name = target.credentialName || target.credentialId;
+  return name + " · " + target.modelId;
 }
 
 function statusText(row: Row): string {
@@ -246,6 +297,7 @@ function noteText(row: Row): string {
 const sharedNotes = computed(() => {
   const counts = new Map<string, number>();
   for (const row of rows.value) {
+    if (!row.assignmentEffective) continue;
     if (!isFollowing(row) || targetOf(row)) continue;
     const note = (row.note || "").trim();
     if (!note) continue;
@@ -257,12 +309,26 @@ const sharedNotes = computed(() => {
 const sharedNoteSet = computed(() => new Set(sharedNotes.value));
 
 function badgeOf(row: Row): { text: string; tone: string } | null {
-  if (row.kind === "video" || row.kind === "audio" || row.kind === "embedding") {
-    return { text: "沿用现有处理方式", tone: "quiet" };
-  }
   if (row.kind === "vision") return { text: "需要能读图的模型", tone: "quiet" };
-  if (row.primary.usageKey === "research") return { text: "未接通独立调用路径", tone: "quiet" };
   return null;
+}
+
+/** 只读用途的一句话状态（与后端 delivery 同一口径）。 */
+function readonlyBadge(row: Row): string {
+  return row.delivery === "existing" ? "沿用现有处理方式" : "未接通独立调用路径";
+}
+
+/** 历史覆盖指向的目标（只用于如实展示，不说成当前实际使用）。 */
+function historicalText(row: Row): string {
+  const target = row.historicalTarget;
+  if (!target) return "";
+  const name = connectionNameOf(target.credentialId) || target.credentialId;
+  return name + " · " + target.modelId;
+}
+
+function historicalUnavailable(row: Row): string {
+  const target = row.historicalTarget;
+  return target && !target.usable ? target.unavailableReason : "";
 }
 
 const usageError = computed(() => props.errors ?? {});
@@ -325,27 +391,59 @@ const usageError = computed(() => props.errors ?? {});
         </div>
         <CandidatePicker
           v-if="expanded === row.keys[0]"
-          :connections="connections"
+          :connections="connectionsFor(row)"
           :selected="row.primary.credentialId && row.primary.modelId ? { credentialId: row.primary.credentialId, modelId: row.primary.modelId } : null"
           :allow-inherit="!isFollowing(row)"
           :usage-label="row.label"
+          :usage-key="row.keys[0]"
+          :usage-error="usageCandidateErrors[row.keys[0]] || ''"
           @pick="pick(row, $event)"
           @cancel="expanded = null"
         />
       </div>
     </div>
 
-    <p v-if="!groupedRows.length" class="muted">正在加载用途分配…</p>
+    <!-- 不生效的用途：只读说明，不再画成可用选择器。 -->
+    <div v-if="readonlyRows.length" class="group" data-test="usage-readonly">
+      <h4 class="group__title">不单独生效的用途</h4>
+      <p class="list__note">
+        这些用途当前没有独立的模型调用路径：保留历史配置的可见性与清除入口，这里的模型选择不会改变真实请求。
+      </p>
+      <div v-for="row in readonlyRows" :key="row.keys[0]" class="row row--readonly">
+        <div class="row__main">
+          <div class="row__label">
+            <span class="row__name">{{ row.label }}</span>
+            <span class="qio-state quiet">{{ readonlyBadge(row) }}</span>
+            <span v-if="row.historical" class="qio-state warn" data-test="usage-historical">
+              历史配置（未生效）
+            </span>
+          </div>
+          <div v-if="row.historical && row.historicalTarget" class="row__target mono">
+            <span>{{ historicalText(row) }}</span>
+            <span v-if="historicalUnavailable(row)" class="row__reason">
+              不可用：{{ historicalUnavailable(row) }}
+            </span>
+          </div>
+          <p v-if="row.note" class="row__note">{{ row.note }}</p>
+          <p v-if="usageError[row.keys[0]]" class="qio-feedback err" role="alert">
+            {{ usageError[row.keys[0]] }}
+          </p>
+          <p v-if="busyKey === row.keys[0]" class="row__note" role="status">正在保存…</p>
+        </div>
+        <div v-if="row.historical" class="row__actions">
+          <button
+            type="button"
+            class="qio-btn mini quiet"
+            :aria-label="'清除' + row.label + '的历史覆盖'"
+            @click="emit('assign', row.keys, null)"
+          >
+            清除历史覆盖
+          </button>
+        </div>
+      </div>
+    </div>
 
-    <QConfirm
-      :open="!!pendingEmbedding"
-      title="更换嵌入模型会改变向量维度"
-      detail="新的嵌入模型维度可能与现有索引不一致：既有向量需要重建，否则检索结果会不可靠。这不会影响对话模型。确认把这个用途换成所选模型吗？"
-      confirm-text="确认更换"
-      variant="layer"
-      @confirm="confirmEmbedding"
-      @cancel="pendingEmbedding = null"
-    />
+    <p v-if="!groupedRows.length && !readonlyRows.length" class="muted">正在加载用途分配…</p>
   </section>
 </template>
 
@@ -372,4 +470,5 @@ const usageError = computed(() => props.errors ?? {});
 .list__note { margin: 4px 0 6px; font-size: 11px; color: var(--text-muted); line-height: 1.6; }
 .row__actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .muted { margin: 0; font-size: 10.5px; color: var(--text-muted); }
+.row--readonly .row__name { color: var(--text-secondary); }
 </style>
