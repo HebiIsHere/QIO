@@ -160,8 +160,14 @@ onMounted(() => {
   // 首次也记一次：下次打开保持同一高度（记忆的是「用户看到的那一档」）
   writeStoredHeight(panelHeight.value);
   if (expandedState.value) openedOnce.value = true;
-  // 互动页重新打开：把确认 / 重试留下的「历史可能过期」兑现一次（既有历史读取，只读、不轮询）
-  void session.reloadHistoryIfStale();
+  /**
+   * 互动页的历史入口（R5b）：普通对话页负责首次加载；直接进入 / 刷新互动页时
+   * history 仍是 idle，只调 reloadHistoryIfStale（idle 下是空操作）会让确认后的
+   * 执行记录永远等不到刷新。这里复用同一个既有 loadHistory（同一接口、同一去重与
+   * 话题归属保护，不轮询、不伪造记录、不跳页），已加载过则继续走既有 stale 刷新。
+   */
+  if (session.history.status === "idle") void session.loadHistory();
+  else void session.reloadHistoryIfStale();
 });
 
 /** 展开 / 收起：只动显示，不调用会话层的任何方法（回复、草稿、附件、排队都不受影响）。 */
