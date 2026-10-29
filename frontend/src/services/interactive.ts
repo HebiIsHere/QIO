@@ -103,6 +103,22 @@ export function fetchBoardState(boardId: string): Promise<BoardStateResponse> {
   return request(`${BASE}/boards/${encodeURIComponent(boardId)}/state`);
 }
 
+/** 板面清单里的一项（服务端事实：id + 标题）。 */
+export interface BoardSummary {
+  id: string;
+  title: string;
+}
+
+/**
+ * 板面清单（只读）。
+ *
+ * 为什么结果入口需要它：板面加载接口对**未知 id** 会建一块空板面（避免白屏），
+ * 所以「读得到 state」不能证明板面存在；判断「这块板面还在不在」只能看清单。
+ */
+export function fetchBoards(): Promise<{ boards: BoardSummary[] }> {
+  return request(`${BASE}/boards`);
+}
+
 /**
  * 保存：每完成一次操作就写一次。**这个调用不经过 QIO**。
  *

@@ -382,6 +382,8 @@ onMounted(() => {
   if (!shell.loaded) void shell.load();
   stopViewport = shell.installViewportTracking();
   if (session.history.status === "idle") void session.loadHistory();
+  // 互动页确认 / 恢复 / 重试之后留下的「历史可能过期」：回到对话页时兑现一次（只读，不轮询）
+  else void session.reloadHistoryIfStale();
 
   // 事件订阅 / 轮询由应用级生命周期（GlobalFeedbackHost → acquireGlobal）负责：
   // 对话页只保留自己的幂等刷新，卸载页面不再停掉全局任务数据。

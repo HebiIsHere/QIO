@@ -7,6 +7,7 @@ import type { IntentExecutionRecord } from "../../services/api";
 vi.mock("../../services/api", () => ({
   api: {
     sendTurn: vi.fn(async () => ({ ok: true })),
+    getSessionMessagesBefore: vi.fn(async () => ({ messages: [], has_more: false, next_before: null })),
     getSessionContext: vi.fn(async () => ({
       topic_id: "t1",
       topic_name: "话题",
@@ -43,6 +44,7 @@ vi.mock("@tanstack/vue-virtual", async () => {
 
 import MessageStream from "../MessageStream.vue";
 import { useSessionStore } from "../../stores/session";
+import { api } from "../../services/api";
 
 const RECORD: IntentExecutionRecord = {
   record_key: "ie:sub_123:int_a",
@@ -112,6 +114,46 @@ describe("MessageStream 意图执行记录（历史与实时共用）", () => {
     await nextTick();
     expect(w.find(".user-bubble").text()).toContain("def add(a, b):");
     expect(w.find('[data-test="intent-execution"]').exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("分页后同一 record_key 在两页都带 head：只渲染一张（保留顺序最早的那条）", async () => {
+    const { w, session } = await mountStream();
+    const recordRow = (id: string, at: string, title: string) => ({
+      id,
+      role: "user",
+      content: INTERNAL_TEXT,
+      content_type: "intent_execution",
+      created_at: at,
+      turn_id: "turn_" + id,
+      intent_execution: { ...RECORD, title, record_head: true },
+    });
+    vi.mocked(api.getSessionContext).mockResolvedValueOnce({
+      topic_id: "t1",
+      topic_name: "话题",
+      anchor_fragment: null,
+      messages: [recordRow("m2", "2026-10-29T10:05:00+08:00", "第二次确认")],
+      has_more: true,
+      next_before: "c2|m2",
+    } as never);
+    vi.mocked(api.getSessionMessagesBefore).mockResolvedValueOnce({
+      messages: [recordRow("m1", "2026-10-29T10:00:00+08:00", "第一次确认")],
+      has_more: false,
+      next_before: null,
+    } as never);
+
+    await session.loadHistory();
+    await nextTick();
+    // 最新一页先读到（它自己就是这一页的 head）
+    expect(w.findAll('[data-test="intent-execution"]')).toHaveLength(1);
+
+    // 向上翻页拿到更早的 head：整条消息流里仍然只有一张卡，且是顺序最早的那条
+    await session.loadOlderHistory();
+    await nextTick();
+    const cards = w.findAll('[data-test="intent-execution"]');
+    expect(cards).toHaveLength(1);
+    expect(cards[0].text()).toContain("第一次确认");
+    expect(w.text()).not.toContain("第二次确认");
     w.unmount();
   });
 });

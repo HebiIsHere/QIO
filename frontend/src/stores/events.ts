@@ -14,6 +14,17 @@ import { resetBackend } from "../services/backend";
 import { invalidateRestore, restoreRuntimeState } from "./restore";
 
 /**
+ * 续作轮里「本轮 user 消息已经落库之后」才会出现的事件（见后端 turn_orchestrator 的写入顺序：
+ * 先写 user 消息，再开始模型阶段）。首个这样的事件到达时，意图执行记录已经读得到。
+ */
+const INTENT_RECORD_PROGRESS_EVENTS: ReadonlySet<string> = new Set([
+  "STAGE",
+  "ASSISTANT",
+  "TOOL_START",
+  "TOOL_END",
+]);
+
+/**
  * 审批自动弹出的门控**不在这里判断**：统一的自动弹出规则已收敛到
  * stores/unifiedApprovals 的 maybeAutoOpen() + stores/feedbackGate（输入法组合输入、
  * 失焦延迟、中央弹窗、记忆星球覆盖层、设置/调试页）。
@@ -195,8 +206,25 @@ export const useEventStore = defineStore("events", {
       }
       this.dispatch(event);
     },
+    /**
+     * 续作轮的「消息已落库之后」的事件到达：让当前话题用既有历史读取刷一次记录。
+     *
+     * 为什么是这几类事件：它们都发生在本轮 user 消息落库之后（topic 预判 / 写入在前，
+     * 模型阶段在后），所以这是「记录现在读得到」的最早时机。每轮只兑现一次，不轮询；
+     * 与意图执行无关的普通聊天轮不会登记，自然也不会走到这里。
+     */
+    refreshIntentRecordOnTurnProgress(
+      event: AgentEvent,
+      session: ReturnType<typeof useSessionStore>,
+    ): void {
+      if (!INTENT_RECORD_PROGRESS_EVENTS.has(event.type)) return;
+      const turnId = String((event.data as Record<string, unknown> | undefined)?.turn_id ?? "");
+      if (!turnId) return;
+      void session.refreshIntentExecutionTurnProgress(turnId);
+    },
     dispatch(event: AgentEvent) {
       const session = useSessionStore();
+      this.refreshIntentRecordOnTurnProgress(event, session);
       switch (event.type) {
         case "TURN_START":
           {
@@ -231,6 +259,14 @@ export const useEventStore = defineStore("events", {
             if (requestId) session.noteTurnStartedForRequest(requestId, tid || undefined);
             // 系统驱动的轮（例如独立任务完成后的收尾）不是用户发起的消息轮
             session.turnStarted(Boolean(d.notify));
+            /**
+             * 意图执行记录（R2 返修二）：确认 / 恢复 / 重试由**服务端**发起续作轮，
+             * 本机没有这次发送动作（TURN_START 不带 request_id，也不是 notify 系统轮）。
+             * 登记它，等这一轮的消息真正落库后用既有历史读取把记录刷出来。
+             */
+            if (tid && !requestId && !Boolean(d.notify)) {
+              session.noteIntentExecutionTurn(tid);
+            }
           }
           break;
         case "TURN_END": {
@@ -366,6 +402,13 @@ export const useEventStore = defineStore("events", {
           }
           if (tid) session.forgetQueuedTurn(tid);
           session.endTurn(tid, endRevision);
+          /**
+           * 意图执行记录（R2 返修二）：相关续作轮结束后刷新**真实终态**。
+           *
+           * 只对登记过的续作轮生效（确认 / 恢复 / 手动重试 / 服务端自动重试都在这条路径上），
+           * 走既有历史读取；失败按既有 history 错误口径，不会把「没读到」说成已更新。
+           */
+          void session.refreshIntentExecutionTurnEnd(tid);
           /**
            * 一轮结束 = 这一轮里可能刚好创建、测试或提交了开发任务。
            * 顶部那行「有 N 个工具开发任务没做完」必须马上跟上，
