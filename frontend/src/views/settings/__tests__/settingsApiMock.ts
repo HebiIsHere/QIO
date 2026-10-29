@@ -86,7 +86,7 @@ export function createSettingsApiMock() {
       has_content: true,
       wizard_seen: true,
       welcome_version: "",
-      app_version: "0.2.10",
+      app_version: "0.3.0",
       show_wizard: false,
       hint_dismissed: true,
     })),
