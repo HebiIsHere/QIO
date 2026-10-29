@@ -233,6 +233,26 @@ def verification_raw(result) -> dict | None:
     return payload
 
 
+def _user_message_facts(ctx) -> tuple[str, dict | None]:
+    """这一轮 user 消息落库用的 (content_type, raw)。
+
+    R2 契约：只有 start_interactive_turn **真实绑定**过的续作 Turn 才带
+    content_type="intent_execution" 与程序事实；普通用户消息（含聊天里的续作消息）
+    仍是 "text"、raw=None，行为与以前完全一样。
+    事实键由 submission.start_interactive_turn 写入 ctx（board_intent_execution），
+    这里只做透传，不推断、不补字段；常量只认 interactive.records 的单一定义。
+    """
+    facts = getattr(ctx, "board_intent_execution", None)
+    if not isinstance(facts, dict):
+        return "text", None
+    if not str(facts.get("record_key") or "").strip():
+        # 没有可核对的 record_key 就不冒充记录：保持旧行为，读取侧不会出现半条记录。
+        return "text", None
+    from agent.interactive import records as intent_records
+
+    return intent_records.CONTENT_TYPE, {intent_records.RAW_KEY: dict(facts)}
+
+
 @dataclass
 class _Plan:
     topic: str
@@ -579,13 +599,19 @@ class TurnOrchestrator:
                 )
 
         # write user message into memory domain first
+        # R2 契约：互动续作的 user 消息按**真实程序事实**落库（content_type +
+        # raw 元数据）；content 原样保留（模型侧上下文一个字都不动）。
+        # 事实只来自 start_interactive_turn 绑定的 ctx，不按消息文本 / 前缀判断，
+        # 用户输入无法声明自己属于某条已确认记录。
+        user_content_type, user_raw = _user_message_facts(ctx)
         with tracer.phase("persistence", "user_message"):
             msg_id, _ = app.memory.append_message(
                 topic_id=topic,
                 role="user",
                 content=message,
-                content_type="text",
+                content_type=user_content_type,
                 model=adapter.model,
+                raw=user_raw,
                 turn_id=ctx.turn_id,
             )
         ctx.user_message_id = msg_id

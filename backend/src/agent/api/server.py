@@ -3089,7 +3089,7 @@ def create_app(
             )
         return out
 
-    def _history_page_with_attachments(page: dict) -> dict:
+    def _history_page_with_attachments(page: dict, *, topic_id: str | None = None) -> dict:
         """给一页历史消息补上附件（问题 5：刷新 / 重进历史后附件行必须还在）。
 
         * 形状与实时发送路径**完全一致**：就是 attachments.payload()，前端 session.ts
@@ -3113,6 +3113,17 @@ def create_app(
                     enriched.append(updated)
                 else:
                     enriched.append(message)
+        # 互动意图执行记录（R2 契约 §三）：服务端按真实记录派生展示就绪对象，
+        # 前端只按 content_type / intent_execution 渲染，不再按文本前缀猜。
+        # 旧消息（没有元数据）原样返回；派生失败只降级成 unknown，不隐藏消息。
+        try:
+            from agent.interactive import records as intent_records
+
+            enriched = intent_records.decorate_messages(
+                ctx.conn, enriched, topic_id=topic_id
+            )
+        except Exception as exc:  # noqa: BLE001 - 展示派生失败不能影响历史返回
+            logger.warning("intent execution decoration failed: %s", redact_text(str(exc)))
         # 结束事实（R4 S6）：刷新 / 换设备后失败轮仍要说得出为什么、还有哪些操作。
         # 只查这一页涉及的轮次（一次批量），旧记录没有事实就不出现。
         return {
@@ -3129,7 +3140,8 @@ def create_app(
         node = ctx.topics.nodes.get_topic(topic_id)
         # 首次只给最近一页（默认 200 条）：不再随历史长度线性增长
         page = _history_page_with_attachments(
-            ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT)
+            ctx.session_messages_page(topic_id, limit=limit or SESSION_PAGE_DEFAULT_LIMIT),
+            topic_id=topic_id,
         )
         return {
             "topic_id": topic_id,
@@ -3156,7 +3168,8 @@ def create_app(
         page = _history_page_with_attachments(
             ctx.session_messages_page(
                 target, limit=limit or SESSION_PAGE_DEFAULT_LIMIT, before=before
-            )
+            ),
+            topic_id=target,
         )
         return {"topic_id": target, **page}
 
@@ -3389,14 +3402,27 @@ def create_app(
         offset = max(0, int(offset))
         limit = max(1, min(int(limit), 200))
         rows = ctx.conn.execute(
-            "SELECT id, role, content, content_type, created_at FROM messages "
+            "SELECT id, role, content, content_type, created_at, raw, turn_id FROM messages "
             "WHERE fragment_id = ? ORDER BY created_at, id LIMIT ? OFFSET ?",
             (fragment_id, limit, offset),
         ).fetchall()
+        messages = [dict(row) for row in rows]
+        # 互动意图执行记录（R2 契约 §三）：这条通道同样给展示就绪对象；
+        # raw 是派生输入，不新增到响应表面（保持既有字段集合，只加 intent_execution）。
+        try:
+            from agent.interactive import records as intent_records
+
+            messages = intent_records.decorate_messages(
+                ctx.conn, messages, topic_id=fragment.topic_id
+            )
+        except Exception as exc:  # noqa: BLE001 - 展示派生失败不能影响历史返回
+            logger.warning("intent execution decoration failed: %s", redact_text(str(exc)))
+        for message in messages:
+            message.pop("raw", None)
         return {
             "fragment_id": fragment_id,
             "topic_id": fragment.topic_id,
-            "messages": [dict(row) for row in rows],
+            "messages": messages,
             "total": ctx.fragments.message_count(fragment_id),
             "offset": offset,
             "limit": limit,

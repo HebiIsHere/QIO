@@ -37,7 +37,7 @@ import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from agent.interactive import board_store, models
+from agent.interactive import board_store, models, records
 from agent.storage.db import transaction
 
 logger = logging.getLogger(__name__)
@@ -1970,6 +1970,21 @@ def start_interactive_turn(
             "turnId": None,
             "resume": False,
         }
+    # R2 契约 §一：这次续作 Turn 的程序事实（供主循环落库时原样写进 messages.raw）。
+    # 只来自本次真实绑定（已核过的意图 / 提交 / 授权版本 / 已落定的 turn_id）；
+    # 不从消息文本或用户输入推断，也不改变模型侧任何内容。
+    execution_facts = records.turn_record_facts(
+        board_id=bid,
+        submission_id=sid,
+        topic_id=topic_id,
+        intent_ids=ids,
+        source=source,
+        turn_id=turn_id,
+        attempt=resolved_attempt,
+        retry_attempt=retry_attempt,
+        retry_limit=retry_limit,
+        authorization_versions=versions,
+    )
     facts = {
         "mode": MODE_INTERACTIVE,
         "board_id": bid,
@@ -1983,6 +1998,7 @@ def start_interactive_turn(
         "board_retry_series": str(retry_series_id or ""),
         "board_retry_attempt": int(retry_attempt or 0),
         "board_turn_source": str(source),
+        "board_intent_execution": execution_facts,
     }
     _bind_turn_facts(turn, facts)
     bind_claimed_turn(conn, intent_ids=ids, turn_id=turn_id)
