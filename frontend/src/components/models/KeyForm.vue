@@ -10,7 +10,7 @@
  * - 获取模型 ≠ 验证可用：列表来自服务商，能不能调用要保存后按模型验证；
  * - 改地址 / 改协议 = 换了发送目标，必须重新填 Key 并显式确认后才生效（与后端规则一致）。
  */
-import { computed, reactive, ref } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import QCombo from "../ui/QCombo.vue";
 import QIcon from "../ui/QIcon.vue";
 import QIconButton from "../ui/QIconButton.vue";
@@ -75,6 +75,20 @@ const models = ref<string[]>([]);
 const modelsNote = ref("");
 const selectedModel = ref<string>("");
 const fetched = ref(false);
+/** 模型列表请求序号（F09）：换服务商 / 地址 / Key 后，旧请求的结果不得写回。 */
+let modelSeq = 0;
+/** 最近一次新建提交的内容签名与请求身份（F13：同内容重试复用、内容变了才换）。 */
+let lastSubmit: { signature: string; requestId: string } | null = null;
+
+/** 这次「获取模型」请求到底属于哪一份表单配置（只用于比较，不含其他状态）。 */
+function modelSignature(): string {
+  return JSON.stringify([
+    form.providerId,
+    endpointValue.value,
+    kindValue.value,
+    form.secret.trim(),
+  ]);
+}
 
 const provider = computed<ProviderPreset | null>(
   () => props.providers.find((item) => item.id === form.providerId) ?? null,
@@ -113,6 +127,8 @@ const title = computed(() =>
 );
 
 function chooseProvider(id: string) {
+  // 换服务商 = 换发送目标：在途的获取请求不再属于这份配置，先作废再清展示（F09）。
+  modelSeq += 1;
   form.providerId = id;
   const preset = props.providers.find((item) => item.id === id);
   if (!preset) return;
@@ -126,7 +142,8 @@ function chooseProvider(id: string) {
 }
 
 function onSecretInput() {
-  // 换了 Key 也说明「之前那次发现不能代表这次」，清空模型结果，避免保存旧列表。
+  // 换了 Key 也说明「之前那次发现不能代表这次」：在途请求作废并清空模型结果。
+  modelSeq += 1;
   if (fetched.value) {
     models.value = [];
     selectedModel.value = "";
@@ -180,12 +197,17 @@ async function fetchModels() {
     return;
   }
   discovering.value = true;
+  const token = ++modelSeq;
+  const signature = modelSignature();
   try {
     const reply = await api.listCredentialModels({
       endpoint,
       kind: kindValue.value,
       secret: form.secret.trim(),
     });
+    // F09：等待期间换了服务商 / 地址 / 协议 / Key —— 这份结果不属于当前配置，
+    // 不能更新模型列表、默认选择和获取状态。
+    if (token !== modelSeq || signature !== modelSignature()) return;
     models.value = reply.models;
     fetched.value = true;
     if (!reply.models.length) {
@@ -196,11 +218,27 @@ async function fetchModels() {
       if (!selectedModel.value) selectedModel.value = reply.models[0];
     }
   } catch (exc) {
+    if (token !== modelSeq || signature !== modelSignature()) return;
     error.value = readableError(exc);
   } finally {
+    // 「获取中」必须结束：同一个表单同一时刻只允许一个获取请求（按钮在 discovering 时禁用）。
     discovering.value = false;
   }
 }
+
+// 高级选项里直接改地址 / 协议同样是换发送目标：作废在途请求并清掉旧列表。
+watch(
+  () => [form.endpoint, form.kind],
+  () => {
+    modelSeq += 1;
+    if (fetched.value) {
+      models.value = [];
+      selectedModel.value = "";
+      fetched.value = false;
+      modelsNote.value = "连接目标变了，请重新获取模型";
+    }
+  },
+);
 
 function resolvedModel(): string {
   if (form.manualModel.trim()) return form.manualModel.trim();
@@ -209,6 +247,8 @@ function resolvedModel(): string {
 }
 
 async function submit() {
+  // F13：提交中的重复点击 / 回车不得再发一次保存（否则会凭空多一条连接）。
+  if (busy.value) return;
   error.value = "";
   notice.value = "";
   if (needsSecret.value && !form.secret.trim()) {
@@ -223,13 +263,14 @@ async function submit() {
 }
 
 async function save() {
+  if (busy.value) return;
   busy.value = true;
   try {
     if (props.mode === "create") {
       const model = resolvedModel();
       if (!endpointValue.value) throw new Error("请选择服务商或填写服务地址");
       if (!model) throw new Error("请选择或填写模型名称");
-      const reply = await api.createCredential({
+      const payload: Record<string, unknown> = {
         provider: isCustom.value ? "custom" : form.providerId,
         secret: form.secret.trim(),
         endpoint: endpointValue.value,
@@ -238,8 +279,19 @@ async function save() {
         tags: legacyTags.value,
         note: form.note.trim() || provider.value?.name || undefined,
         budget: form.budget,
-        client_request_id:
-          "cred-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      };
+      // F13：同一个表单内容的重试必须复用同一个请求身份（后端据此返回同一条连接；
+      // 客户端丢了应答也不会新建第二条）。只有实际提交内容变化才换新身份。
+      const signature = JSON.stringify(payload);
+      if (!lastSubmit || lastSubmit.signature !== signature) {
+        lastSubmit = {
+          signature,
+          requestId: "cred-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        };
+      }
+      const reply = await api.createCredential({
+        ...payload,
+        client_request_id: lastSubmit.requestId,
       });
       emit("saved", reply.key_id);
       return;

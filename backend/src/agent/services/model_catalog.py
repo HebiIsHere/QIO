@@ -17,6 +17,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +34,7 @@ from agent.credentials.providers import (
     resolve_endpoint,
     uses_anthropic,
 )
+from agent.credentials.store import FINGERPRINT_VERSION
 from agent.credentials.usages import find_usage, normalize_usage_key
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ REASON_NO_LISTING = "no_listing"
 REASON_ENDPOINT_MISSING = "endpoint_missing"
 REASON_CREDENTIAL_UNAVAILABLE = "credential_unavailable"
 REASON_SERVER_ERROR = "server_error"
+REASON_CONFIG_CHANGED = "config_changed"
 REASON_UNKNOWN = "unknown"
 
 REASON_MESSAGES = {
@@ -65,6 +69,7 @@ REASON_MESSAGES = {
     REASON_ENDPOINT_MISSING: "这条连接没有保存服务地址，无法获取模型列表",
     REASON_CREDENTIAL_UNAVAILABLE: "这条连接当前不可用（已停用、已撤销或本机没有密钥）",
     REASON_SERVER_ERROR: "服务端出错，没能取回模型列表",
+    REASON_CONFIG_CHANGED: "连接配置在获取过程中发生了变化，本次获取结果没有写入；请重新获取",
     REASON_UNKNOWN: "获取模型列表时出现未知问题，可以展开技术细节",
 }
 
@@ -102,6 +107,27 @@ def _cache_age_seconds(checked_at: Any) -> float | None:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     return max(0.0, (datetime.now(timezone.utc) - moment).total_seconds())
+
+
+def discovery_config_signature(meta: dict[str, Any] | None) -> str:
+    """这次「获取模型」到底属于哪一份连接配置（F09）。
+
+    发现是一次带 await 的网络调用；期间用户可能改了地址 / 协议 / 换了 Key。
+    version 覆盖「Key 被替换」这类变化（换钥会推进版本），endpoint 与 kind 覆盖
+    「这把钥匙发给谁、按哪种协议发」。指纹只用于比较，不含密钥材料。
+
+    刻意**不**含 default_model：模型列表来自服务商，改默认模型不影响「这次列表属于谁」；
+    把它算进来会让一次正常的默认模型编辑误判成配置变化。
+    """
+    payload = {
+        "v": FINGERPRINT_VERSION,
+        "version": int((meta or {}).get("version") or 0),
+        "endpoint": str((meta or {}).get("endpoint") or "").strip(),
+        "kind": str((meta or {}).get("kind") or "").strip(),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"disc1:{digest[:32]}"
 
 
 def _redact(text: str, secret: str | None) -> str:
@@ -282,6 +308,7 @@ def _page_result(
     page_size: int,
     error: str | None = None,
     reason_code: str | None = None,
+    stale: bool = False,
 ) -> dict[str, Any]:
     result = _page_of(models, page, page_size)
     result.update(
@@ -292,6 +319,7 @@ def _page_result(
             "source": source,
             "error": error,
             "reason_code": reason_code,
+            "stale": bool(stale),
             "public_catalog": bool(provider and provider.public_catalog),
             "note": (provider.discovery_note if provider else "") or "",
         }
@@ -337,13 +365,18 @@ async def discover(
     provider = preset_for_endpoint(meta.get("endpoint")) or find_preset(None)
     cached = _catalog_models(store, credential_id)
     state = store.discovery_state(credential_id)
+    # 这次获取归属哪一份配置：写库/缓存/状态都要按它校验（F09）。
+    signature = discovery_config_signature(meta)
 
     if not refresh:
         age = _cache_age_seconds(state.get("checked_at"))
         fresh = age is not None and age <= DISCOVERY_CACHE_SECONDS
+        # 缓存必须属于**当前**这份配置：换了地址 / 协议 / Key 之后，上一份配置的
+        # 「上次结果」不能冒充这次的结果（否则界面拿旧列表当新事实）。
+        cache_owned = str(state.get("config_signature") or "") == signature
         # 缓存既包括「上次成功拿到的模型」，也包括「上次失败的错误」：两者都在
         # 检查过的窗口内，不能让界面每点一次都重新打一遍网络（刷新是显式动作）。
-        if fresh and (cached or state.get("error")):
+        if fresh and cache_owned and (cached or state.get("error")):
             if state.get("error"):
                 return _page_result(
                     credential_id,
@@ -368,6 +401,7 @@ async def discover(
             error=error,
             reason_code=REASON_ENDPOINT_MISSING,
             provider_id=provider.id if provider else None,
+            config_signature=signature,
         )
         return _page_result(
             credential_id,
@@ -389,6 +423,7 @@ async def discover(
             error=error,
             reason_code=REASON_CREDENTIAL_UNAVAILABLE,
             provider_id=provider.id if provider else None,
+            config_signature=signature,
         )
         return _page_result(
             credential_id,
@@ -421,6 +456,7 @@ async def discover(
             error=exc.message,
             reason_code=exc.reason_code,
             provider_id=provider.id if provider else None,
+            config_signature=signature,
         )
         return _page_result(
             credential_id,
@@ -433,6 +469,23 @@ async def discover(
             reason_code=exc.reason_code,
         )
 
+    # 网络调用期间配置可能已经被改掉：这份结果属于**旧配置**，不能写进当前连接，
+    # 也不能改写当前的获取状态（迟到结果只作废，不冒充事实）。
+    current_meta = ctx.credentials.get_metadata(credential_id)
+    if current_meta is None or discovery_config_signature(current_meta) != signature:
+        logger.info("模型发现结果因连接配置变化被丢弃（连接 %s）", credential_id)
+        return _page_result(
+            credential_id,
+            provider,
+            _catalog_models(store, credential_id),
+            source="provider",
+            page=page,
+            page_size=page_size,
+            error=REASON_MESSAGES[REASON_CONFIG_CHANGED],
+            reason_code=REASON_CONFIG_CHANGED,
+            stale=True,
+        )
+
     if not fetched:
         # 200 但没有可识别模型：如实报「没有列表」，不伪造「0 个可用模型」。
         error = REASON_MESSAGES[REASON_NO_LISTING]
@@ -442,6 +495,7 @@ async def discover(
             error=error,
             reason_code=REASON_NO_LISTING,
             provider_id=provider.id if provider else None,
+            config_signature=signature,
         )
         return _page_result(
             credential_id,
@@ -461,6 +515,7 @@ async def discover(
         error=None,
         provider_id=provider.id if provider else None,
         model_count=len(fetched),
+        config_signature=signature,
     )
     models = _catalog_models(store, credential_id)
     return _page_result(

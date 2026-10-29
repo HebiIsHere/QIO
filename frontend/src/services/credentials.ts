@@ -235,7 +235,9 @@ export function useCredentialForm(options: CredentialFormOptions): CredentialFor
   const savedKeyId = ref<string | null>(null);
 
   // 同一次「新建」的重试标识：请求超时后用户再点一次保存，后端据此识别为同一次提交。
-  const clientRequestId = `cred_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  // 内容变了才换新身份（否则会把改过的内容当成旧提交静默复用）。
+  let clientRequestId = `cred_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  let clientRequestSignature: string | null = null;
   // 两个独立的序号：保存/验证的序号绝不能被后台的「取模型列表」顶掉，
   // 否则一次后台刷新就会让正在进行的保存被判成过期请求，界面永远停在「保存中…」。
   let seq = 0;
@@ -475,11 +477,19 @@ export function useCredentialForm(options: CredentialFormOptions): CredentialFor
           endpoint: currentTarget().endpoint,
           default_model: currentTarget().model,
           kind: form.kind,
-          client_request_id: clientRequestId,
         };
         if (form.providerId) payload.provider = form.providerId;
         if (form.note.trim()) payload.note = form.note.trim();
         if (form.budget && form.budget > 0) payload.budget = form.budget;
+        // F13：未改内容的重试复用同一个请求身份；实际提交内容变化才换新身份。
+        const signature = JSON.stringify(payload);
+        if (clientRequestSignature !== signature) {
+          clientRequestSignature = signature;
+          if (clientRequestSignature) {
+            clientRequestId = `cred_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+          }
+        }
+        payload.client_request_id = clientRequestId;
 
         // 已经写过库了：后续的「保存」都作用在**同一条**记录上，不新建。
         // - 钥匙没变 → 只是重试验证（不写库、不涨版本）；

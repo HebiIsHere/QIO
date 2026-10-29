@@ -144,6 +144,8 @@ interface RawDiscoveryResult {
   has_more: boolean;
   error: string | null;
   reason_code: string | null;
+  /** F09：这次结果属于旧配置（获取期间连接被改），已丢弃、没有写入。 */
+  stale?: boolean;
   public_catalog: boolean;
   note: string;
 }
@@ -292,6 +294,8 @@ export interface DiscoveryResult {
   hasMore: boolean;
   error: string | null;
   reasonCode: string | null;
+  /** F09：结果属于旧配置（获取期间连接被改）时，后端不会写入；界面也不得当成当前事实。 */
+  stale: boolean;
   publicCatalog: boolean;
   note: string;
 }
@@ -483,6 +487,7 @@ function toDiscoveryResult(raw: RawDiscoveryResult): DiscoveryResult {
     hasMore: raw.has_more,
     error: raw.error,
     reasonCode: raw.reason_code,
+    stale: raw.stale === true,
     publicCatalog: raw.public_catalog,
     note: raw.note || "",
   };

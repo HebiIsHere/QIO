@@ -87,8 +87,86 @@ const formOpen = ref(false);
 const formMode = ref<"create" | "edit" | "rotate">("create");
 const formInitial = ref<CredentialMeta | null>(null);
 
-const notice = ref<{ tone: "ok" | "warn" | "err"; text: string } | null>(null);
+const notice = ref<{ tone: "ok" | "warn" | "err" | "info"; text: string } | null>(null);
 const busyId = ref<string | null>(null);
+
+/* ---- 获取模型请求的归属（F09）：按连接 + 当时的连接配置领身份 ---- */
+let discoverSeq = 0;
+const discoverTokens = new Map<string, number>();
+
+function credentialMeta(credentialId: string): CredentialMeta | null {
+  return byId.value[credentialId] ?? null;
+}
+
+/** 这次获取属于哪一份已保存配置（地址 / 协议 / Key 版本）；不算默认模型与备注。 */
+function configSignature(credentialId: string): string {
+  const meta = credentialMeta(credentialId);
+  return JSON.stringify([
+    credentialId,
+    meta?.endpoint ?? "",
+    meta?.kind ?? "",
+    meta?.version ?? 0,
+  ]);
+}
+
+function beginDiscover(credentialId: string): { token: number; signature: string } {
+  const token = ++discoverSeq;
+  discoverTokens.set(credentialId, token);
+  return { token, signature: configSignature(credentialId) };
+}
+
+/** 这次请求还是不是该连接最新的一次获取（更新的保存 / 获取会接管并让旧的静默退场）。 */
+function isLatestDiscover(credentialId: string, token: number): boolean {
+  return discoverTokens.get(credentialId) === token;
+}
+
+/** 结果是否仍属于当前配置：版本 / 地址 / 协议变了就属于旧配置，不能写回（F09）。 */
+function isCurrentDiscover(credentialId: string, token: number, signature: string): boolean {
+  return isLatestDiscover(credentialId, token) && configSignature(credentialId) === signature;
+}
+
+/** 获取结果的统一反馈（F12）：成功 / 空列表 / 业务失败 / 配置已变，必须都结束「正在同步」。 */
+function showDiscoveryResult(result: {
+  stale: boolean;
+  reasonCode: string | null;
+  error: string | null;
+  models: unknown[];
+  total: number;
+  source: string;
+  publicCatalog: boolean;
+  note: string;
+}): void {
+  if (result.stale || result.reasonCode === "config_changed") {
+    notice.value = {
+      tone: "warn",
+      text: "连接配置已改变，本次获取结果已忽略；请重新获取",
+    };
+    return;
+  }
+  if (result.error) {
+    notice.value = {
+      tone: "warn",
+      text: "获取模型失败：" + result.error + "；可点「重新获取」重试",
+    };
+    return;
+  }
+  if (!result.models.length) {
+    notice.value = {
+      tone: "warn",
+      text: "这个地址没有返回可用的模型列表；可重新获取，或在高级选项里手动填写模型名称",
+    };
+    return;
+  }
+  const base =
+    "已获取 " + result.total + " 个模型（来源：" + (result.source === "cache" ? "上次结果" : "服务商") + "）";
+  notice.value = {
+    tone: result.publicCatalog ? "warn" : "info",
+    text:
+      base +
+      "。这只代表可选的模型列表，尚未验证可用" +
+      (result.publicCatalog && result.note ? "。" + result.note : ""),
+  };
+}
 
 interface ConfirmState {
   kind: "revoke" | "delete" | "blocked";
@@ -118,14 +196,39 @@ function openRotate(connection: ModelConnection) {
 
 async function onSaved(credentialId: string) {
   formOpen.value = false;
-  notice.value = { tone: "ok", text: "连接已保存。正在同步模型目录…" };
+  const request = beginDiscover(credentialId);
+  notice.value = { tone: "info", text: "连接已保存。正在同步模型目录…" };
   // 新建/改配置后立即按新配置获取一次模型：模型属于这次保存的地址与 Key。
+  // 旧请求（上一次配置 / 更早的一次保存）由请求身份挡住，不能写回当前状态（F09）。
   try {
-    await modelCatalogApi.discover({ credentialId, refresh: true });
+    const result = await modelCatalogApi.discover({ credentialId, refresh: true });
+    if (!isLatestDiscover(credentialId, request.token)) return; // 又被一次更新的保存接管了
+    if (!isCurrentDiscover(credentialId, request.token, request.signature)) {
+      // 请求发出后连接被重配：结果属于旧配置，不能写回；如实提示并让上层重读目录。
+      notice.value = {
+        tone: "warn",
+        text: "连接配置已改变，本次获取结果已忽略；请重新获取",
+      };
+      return;
+    }
+    showDiscoveryResult(result);
   } catch (exc) {
-    notice.value = { tone: "warn", text: "连接已保存，但获取模型失败：" + readableError(exc) };
+    if (!isLatestDiscover(credentialId, request.token)) return;
+    if (!isCurrentDiscover(credentialId, request.token, request.signature)) {
+      notice.value = {
+        tone: "warn",
+        text: "连接配置已改变，本次获取结果已忽略；请重新获取",
+      };
+      return;
+    }
+    // 网络异常也是四种结果之一：连接已经保存，如实说获取失败并允许重试（不重复创建连接）。
+    notice.value = {
+      tone: "err",
+      text: "连接已保存，但获取模型时网络异常：" + readableError(exc) + "；可稍后重试获取",
+    };
+  } finally {
+    if (isLatestDiscover(credentialId, request.token)) emit("changed");
   }
-  emit("changed");
 }
 
 function verifyNotice(report: VerifyReport | null | undefined) {
@@ -161,30 +264,29 @@ async function verifyKey(connection: ModelConnection) {
 }
 
 async function discover(connection: ModelConnection, refresh: boolean) {
+  const request = beginDiscover(connection.credentialId);
   busyId.value = connection.credentialId;
   try {
     const result = await modelCatalogApi.discover({
       credentialId: connection.credentialId,
       refresh,
     });
-    if (result.error) {
-      notice.value = { tone: "warn", text: "获取模型失败：" + result.error };
-    } else if (result.models.length) {
-      const base =
-        "已获取 " + result.total + " 个模型（来源：" + (result.source === "cache" ? "上次结果" : "服务商") + "）";
-      // 公共目录（例如 OpenRouter）不能称为「这把 Key 全部可用的模型」：把说明一并显示出来。
-      notice.value = {
-        tone: result.publicCatalog ? "warn" : "ok",
-        text: result.publicCatalog && result.note ? base + "。" + result.note : base,
-      };
-    } else {
-      notice.value = { tone: "warn", text: "这个地址没有返回可用的模型列表" };
+    if (!isLatestDiscover(connection.credentialId, request.token)) return;
+    if (!isCurrentDiscover(connection.credentialId, request.token, request.signature)) {
+      notice.value = { tone: "warn", text: "连接配置已改变，本次获取结果已忽略；请重新获取" };
+      return;
     }
+    showDiscoveryResult(result);
     emit("changed");
   } catch (exc) {
-    notice.value = { tone: "err", text: readableError(exc) };
+    if (!isLatestDiscover(connection.credentialId, request.token)) return;
+    if (!isCurrentDiscover(connection.credentialId, request.token, request.signature)) {
+      notice.value = { tone: "warn", text: "连接配置已改变，本次获取结果已忽略；请重新获取" };
+      return;
+    }
+    notice.value = { tone: "err", text: "获取模型时网络异常：" + readableError(exc) + "；可重试" };
   } finally {
-    busyId.value = null;
+    if (busyId.value === connection.credentialId) busyId.value = null;
   }
 }
 
@@ -377,4 +479,5 @@ async function confirmAction() {
 .qio-feedback.ok { color: var(--success); }
 .qio-feedback.warn { color: var(--warning); }
 .qio-feedback.err { color: var(--danger); }
+.qio-feedback.info { color: var(--text-muted); }
 </style>

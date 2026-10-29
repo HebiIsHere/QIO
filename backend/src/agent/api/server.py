@@ -882,6 +882,32 @@ def create_app(
             )
         existing = ctx.credentials.get_metadata(key_id)
         if existing is not None:
+            # F13：同一个 client_request_id 必须是「同一次提交」的重试。
+            # 内容变了还复用旧标识会静默把新内容丢掉（看起来保存成功、实际还是旧连接），
+            # 所以这里比较内容指纹：一致才返回原记录，不一致明确 409 让调用方换标识。
+            def _budget_key(value):
+                return None if value is None else round(float(value), 6)
+
+            same_content = (
+                ctx.credentials.get_secret(key_id) == secret
+                and str(existing.get("endpoint") or "").strip()
+                == str(endpoint or "").strip()
+                and str(existing.get("kind") or "").strip() == str(kind or "").strip()
+                and str(existing.get("default_model") or "").strip() == model
+                and sorted(str(tag) for tag in (existing.get("tags") or []))
+                == sorted(str(tag) for tag in tags)
+                and str(existing.get("note") or "").strip() == str(note or "").strip()
+                and _budget_key(existing.get("budget")) == _budget_key(_budget(body.get("budget")))
+            )
+            if not same_content:
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "ok": False,
+                        "code": "client_request_id_conflict",
+                        "detail": "这次提交的内容和之前用同一请求标识提交的内容不同；请重新打开表单再保存",
+                    },
+                )
             return {
                 "ok": True,
                 "saved": True,

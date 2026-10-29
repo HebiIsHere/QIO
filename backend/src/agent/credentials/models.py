@@ -517,8 +517,13 @@ class ModelCatalogStore:
         reason_code: str | None = None,
         provider_id: str | None = None,
         model_count: int = 0,
+        config_signature: str = "",
     ) -> dict[str, Any]:
-        """记住最近一次发现的时间与错误（界面据此说「上次检查」而不是假装刚刚成功）。"""
+        """记住最近一次发现的时间与错误（界面据此说「上次检查」而不是假装刚刚成功）。
+
+        config_signature 记录这次结果属于哪一份连接配置（地址 / 协议 / Key 版本）；
+        界面缓存按它校验归属，换配置后不会把旧结果当成当前事实（F09）。
+        """
         payload = {
             "checked_at": _now(),
             "error": error or None,
@@ -526,6 +531,7 @@ class ModelCatalogStore:
             "source": source,
             "provider_id": provider_id,
             "model_count": int(model_count),
+            "config_signature": str(config_signature or ""),
         }
         self._settings_set(
             DISCOVERY_KEY_PREFIX + _norm(credential_id),
@@ -542,6 +548,7 @@ class ModelCatalogStore:
             "source": None,
             "provider_id": None,
             "model_count": 0,
+            "config_signature": "",
         }
         if not raw:
             return empty
@@ -558,6 +565,7 @@ class ModelCatalogStore:
             "source": data.get("source"),
             "provider_id": data.get("provider_id"),
             "model_count": int(data.get("model_count") or 0),
+            "config_signature": str(data.get("config_signature") or ""),
         }
 
     # ------------------------------------------------------------------
