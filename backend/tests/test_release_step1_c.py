@@ -91,9 +91,22 @@ def _make_connection(
 def _make_explicit_assignment(
     store: ModelCatalogStore, credentials: CredentialStore, usage_key: str = "main-chat"
 ) -> None:
-    """一条连接 + 一个模型 + 一条显式用途分配（真实调用走的就是这条）。"""
+    """一条连接 + 一个模型 + 一条显式用途分配（真实调用走的就是这条）。
+
+    这里直接写分配行（不经保存校验）：用例要构造的场景是「分配保存之后连接/模型
+    才变成未验证、停用、密钥不可读」——保存入口会拒绝这种新分配（发布第二轮 C），
+    但**已经存在的**分配必须继续被目录与运行时如实判定。
+    """
     store.upsert_model(KEY_ID, MODEL_ID)
-    store.set_usage(usage_key, KEY_ID, MODEL_ID)
+    now = "2026-10-29T00:00:00+00:00"
+    store.conn.execute(
+        "INSERT INTO model_usages (id, usage_key, credential_id, model_id, mode, updated_at)"
+        " VALUES (?, ?, ?, ?, 'explicit', ?)"
+        " ON CONFLICT(usage_key) DO UPDATE SET credential_id=excluded.credential_id,"
+        " model_id=excluded.model_id, mode=excluded.mode, updated_at=excluded.updated_at",
+        (f"mu_{usage_key}", usage_key, KEY_ID, MODEL_ID, now),
+    )
+    store.conn.commit()
 
 
 def _apply_state(credentials: CredentialStore, key_id: str, state: str) -> None:

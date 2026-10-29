@@ -59,6 +59,8 @@ vi.mock("../../../services/modelCatalog", () => ({
     getPublicCatalog: vi.fn(),
     resolveUsage: vi.fn(),
   },
+  modelErrorMessage: (error: unknown) =>
+    error instanceof Error ? error.message : String(error),
 }));
 
 type Mock = ReturnType<typeof vi.fn>;
@@ -238,14 +240,19 @@ describe("合并行保存 · 一次原子批量请求", () => {
       new Error("批量保存失败：第 2 项用途分配无效"),
     );
     const wrapper = await mountPanel();
-    const loadsBefore = (modelCatalogApi.getCatalog as Mock).mock.calls.length;
-
-    await pickModel(wrapper, rowByText(wrapper, "日常对话"), "M-A2");
+    // 打开候选会按用途取一次只读目录（第二轮 C）；它不是「保存成功后 reload」。
+    await buttonByText(rowByText(wrapper, "日常对话"), "指定模型").trigger("click");
+    await flushPromises();
+    const loadsAfterOpen = (modelCatalogApi.getCatalog as Mock).mock.calls.length;
+    const target = wrapper.findAll("button.model").find((item) => item.text().includes("M-A2"));
+    expect(target, "找不到候选模型：M-A2").toBeTruthy();
+    await target!.trigger("click");
+    await flushPromises();
 
     expect(modelCatalogApi.setUsages).toHaveBeenCalledTimes(1);
     expect(modelCatalogApi.setUsage).not.toHaveBeenCalled();
     // 失败 = 不 reload（没有「保存成功」的假象），并保留真实错误。
-    expect((modelCatalogApi.getCatalog as Mock).mock.calls.length).toBe(loadsBefore);
+    expect((modelCatalogApi.getCatalog as Mock).mock.calls.length).toBe(loadsAfterOpen);
     const merged = rowByText(wrapper, "日常对话");
     expect(merged.text()).toContain("批量保存失败");
   });

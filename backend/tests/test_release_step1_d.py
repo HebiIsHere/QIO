@@ -369,11 +369,16 @@ def test_effective_reports_verify_unusable_connection(client, seeded, ctx):
         tags=["main-loop"],
         endpoint=DEEPSEEK,
         default_model="model-c",
-        verify_state="unverified",
+        verify_state="verified",
         note="未验证 C",
     )
     seeded.upsert_model("key_c", "model-c")
     seeded.set_usage("main-chat", "key_c", "model-c")
+    # 分配保存之后连接才变成未验证：目录/运行时必须对已存在的分配如实判定。
+    ctx.conn.execute(
+        "UPDATE credentials SET verify_state = 'unverified' WHERE id = 'key_c'"
+    )
+    ctx.conn.commit()
 
     payload = client.get("/api/models/catalog").json()
     effective = _usages_by_key(payload)["main-chat"]["effective"]

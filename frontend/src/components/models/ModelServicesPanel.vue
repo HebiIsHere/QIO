@@ -20,9 +20,9 @@ import {
   type CredentialMeta,
   type ProviderPreset,
 } from "../../services/api";
-import { readableError } from "../../services/credentials";
 import {
   modelCatalogApi,
+  modelErrorMessage,
   type CatalogResponse,
   type ModelConnection,
   type UsageAssignment,
@@ -101,6 +101,23 @@ function publishModelFacts() {
           }
         : null,
       usages: current.usages.map((usage) => {
+        // 没有独立调用路径的用途（研究 / 视频 / 语音 / 嵌入 / 写代码 / 自定义标签）：
+        // 历史配置只属于「用途分配」页，不写进「当前生效参数」，否则会把不会生效的
+        // 历史模型说成当前实际使用。保留后端原话（含「历史配置（未生效）」）。
+        if (usage.delivery === "existing" || usage.delivery === "unsupported") {
+          return {
+            usageKey: usage.usageKey,
+            label: usage.label,
+            followsDefault: false,
+            credentialId: null,
+            modelId: null,
+            connectionName: null,
+            providerName: null,
+            resolved: null,
+            note: usage.note,
+            status: factStatus(usage),
+          };
+        }
         // 合并行（main-chat / general-chat）以**后端算好的 effective** 为准：
         // 它与真实运行规则是同一份（general-chat 显式优先），不能再拿 main-chat
         // 自己的 resolved 冒充「当前实际使用」——两份配置不一致时那会显示一个、
@@ -192,7 +209,7 @@ async function reload() {
     publishModelFacts();
   } catch (exc) {
     if (seq !== catalogSeq) return;
-    loadError.value = "读取模型与服务设置失败：" + readableError(exc);
+    loadError.value = "读取模型与服务设置失败：" + modelErrorMessage(exc);
   } finally {
     if (seq === catalogSeq) loading.value = false;
   }
@@ -214,7 +231,7 @@ async function saveDefault(target: { credentialId: string; modelId: string }) {
       if (!loadError.value) publishModelFacts();
     }
   } catch (exc) {
-    if (seq === defaultSeq) defaultError.value = readableError(exc);
+    if (seq === defaultSeq) defaultError.value = modelErrorMessage(exc);
   } finally {
     if (seq === defaultSeq) defaultBusy.value = false;
   }
@@ -250,7 +267,7 @@ async function assignUsage(
     }
   } catch (exc) {
     if (usageSeq.get(primary) === seq) {
-      usageErrors.value = { ...usageErrors.value, [primary]: readableError(exc) };
+      usageErrors.value = { ...usageErrors.value, [primary]: modelErrorMessage(exc) };
     }
   } finally {
     if (referenced) pendingRefs.value = pendingRefs.value.filter((id) => id !== referenced);

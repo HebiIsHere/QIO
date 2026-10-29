@@ -7,6 +7,14 @@
  *    验证未通过 / 能力不满足），否则用户会以为「这把 Key 没有这个模型」；
  * 2. 每个候选显示的是「它自己」的状态，不是一个总的绿点：Key 状态、模型验证状态分开；
  * 3. 同名模型跨 Key 必须能区分：分组标题是连接（名称 + 服务商 + 端点点位）。
+ *
+ * 用途维度（发布第二轮 C）：候选按**当前用途**给结论，且由服务端算好，这里只呈现：
+ * - 能力已声明 → 可选；
+ * - 明确缺少所需能力 → 禁止选择 + 原因；
+ * - 能力未知（模型没声明 capabilities）→ **仍可选**，标注「能力未确认」；
+ * - 连接本身不可用 → 禁止选择 + 既有原因文案。
+ * 「一般可用」与「适用于当前用途」是两条不同事实：同一个模型可能普通对话可用、
+ * 看图不适用，两条都要显示出来。
  */
 import { computed } from "vue";
 import type { CatalogModel, ModelConnection } from "../../services/modelCatalog";
@@ -19,24 +27,71 @@ const props = defineProps<{
   allowInherit?: boolean;
   /** 这张列表对应的用途（用于能力检查的说明文案；不改变后端判定） */
   usageLabel?: string;
+  /** 当前用途 key（服务端按它算 usage_usable / capability_state；没有数据时不猜） */
+  usageKey?: string;
+  /** 读取用途候选判定失败时的如实说明（不阻塞选择，但要说清楚） */
+  usageError?: string;
 }>();
 const emit = defineEmits<{
   pick: [target: { credentialId: string; modelId: string } | null];
   cancel: [];
 }>();
 
+interface ModelView {
+  model: CatalogModel;
+  /** 这个模型一般可不可用（与用途无关） */
+  generalUsable: boolean;
+  /** 服务端是否给了用途维度结论 */
+  usageScoped: boolean;
+  /** 现在到底能不能选 */
+  selectable: boolean;
+  /** 不能选的原因（一般不可用原因优先，其次用途不适用原因） */
+  reason: string;
+  /** 用途维度的一句话结论（仅当一般可用且有结论时显示） */
+  usageBadge: { text: string; tone: string } | null;
+}
+
 interface Group {
   connection: ModelConnection;
-  models: CatalogModel[];
+  models: ModelView[];
   usableCount: number;
 }
 
+function viewOf(model: CatalogModel): ModelView {
+  const usageScoped =
+    typeof model.usageUsable === "boolean" && Boolean(model.usageKey || props.usageKey);
+  const generalUsable = model.usable;
+  const usageUsable = usageScoped ? Boolean(model.usageUsable) : generalUsable;
+  const selectable = generalUsable && usageUsable;
+  let reason = "";
+  if (!generalUsable) {
+    // 连接 / 模型层面的既有原因（第一轮口径），不与用途能力混在一起。
+    reason = model.unavailableReason || "当前不可用";
+  } else if (usageScoped && !usageUsable) {
+    reason = model.usageReason || "该模型不适用于当前用途";
+  }
+  let usageBadge: { text: string; tone: string } | null = null;
+  if (generalUsable && usageScoped) {
+    if (model.capabilityState === "supported") {
+      usageBadge = { text: "该用途能力已声明", tone: "ok" };
+    } else if (model.capabilityState === "missing") {
+      usageBadge = { text: "不适用于该用途：缺少所需能力", tone: "err" };
+    } else if (model.capabilityState === "unknown") {
+      usageBadge = { text: "能力未确认", tone: "quiet" };
+    }
+  }
+  return { model, generalUsable, usageScoped, selectable, reason, usageBadge };
+}
+
 const groups = computed<Group[]>(() =>
-  props.connections.map((connection) => ({
-    connection,
-    models: connection.models,
-    usableCount: connection.models.filter((m) => m.usable).length,
-  })),
+  props.connections.map((connection) => {
+    const models = connection.models.map(viewOf);
+    return {
+      connection,
+      models,
+      usableCount: models.filter((item) => item.selectable).length,
+    };
+  }),
 );
 
 const hasAnyModel = computed(() => props.connections.some((c) => c.models.length > 0));
@@ -81,6 +136,7 @@ function connectionState(connection: ModelConnection): { text: string; tone: str
     <div v-if="!hasAnyModel" class="picker__empty">
       还没有任何已记录的模型。先在「Key 接入与管理」里添加连接并获取模型。
     </div>
+    <p v-if="usageError" class="picker__note" role="status">{{ usageError }}</p>
     <section v-for="group in groups" :key="group.connection.credentialId" class="group">
       <header class="group__head">
         <span class="group__name">{{ group.connection.name }}</span>
@@ -92,26 +148,29 @@ function connectionState(connection: ModelConnection): { text: string; tone: str
         这条连接还没有模型记录：到「Key 接入与管理 → 模型」里点「获取模型」。
       </p>
       <ul v-else class="models">
-        <li v-for="model in group.models" :key="model.modelId">
+        <li v-for="view in group.models" :key="view.model.modelId">
           <button
             type="button"
             class="model qio-row"
-            :class="{ 'is-selected': isSelected(group.connection, model) }"
-            :disabled="!model.usable"
-            :aria-describedby="model.usable ? undefined : 'reason-' + group.connection.credentialId + '-' + model.modelId"
-            @click="emit('pick', { credentialId: group.connection.credentialId, modelId: model.modelId })"
+            :class="{ 'is-selected': isSelected(group.connection, view.model) }"
+            :disabled="!view.selectable"
+            :aria-describedby="view.selectable ? undefined : 'reason-' + group.connection.credentialId + '-' + view.model.modelId"
+            @click="emit('pick', { credentialId: group.connection.credentialId, modelId: view.model.modelId })"
           >
-            <span class="model__name mono">{{ model.displayName || model.modelId }}</span>
-            <span v-if="model.displayName && model.displayName !== model.modelId" class="model__id mono">{{ model.modelId }}</span>
-            <span class="qio-state" :class="verifyTone(model)">{{ verifyText(model) }}</span>
-            <span v-if="model.source === 'manual'" class="qio-tag">手动</span>
-            <span v-if="model.capabilities.length" class="qio-tag">能力 {{ model.capabilities.join("/") }}</span>
+            <span class="model__name mono">{{ view.model.displayName || view.model.modelId }}</span>
+            <span v-if="view.model.displayName && view.model.displayName !== view.model.modelId" class="model__id mono">{{ view.model.modelId }}</span>
+            <span class="qio-state" :class="verifyTone(view.model)">{{ verifyText(view.model) }}</span>
+            <span v-if="view.model.source === 'manual'" class="qio-tag">手动</span>
+            <span v-if="view.model.capabilities.length" class="qio-tag">能力 {{ view.model.capabilities.join("/") }}</span>
+            <!-- 两条不同事实：一般可用性（与用途无关）与是否适用于当前用途。 -->
+            <span v-if="view.usageScoped && view.generalUsable" class="qio-state ok">一般可用</span>
+            <span v-if="view.usageBadge" class="qio-state" :class="view.usageBadge.tone">{{ view.usageBadge.text }}</span>
             <span
-              v-if="!model.usable"
-              :id="'reason-' + group.connection.credentialId + '-' + model.modelId"
+              v-if="!view.selectable"
+              :id="'reason-' + group.connection.credentialId + '-' + view.model.modelId"
               class="model__reason"
             >
-              {{ model.unavailableReason || "当前不可用" }}
+              {{ view.reason }}
             </span>
           </button>
         </li>
@@ -143,6 +202,7 @@ function connectionState(connection: ModelConnection): { text: string; tone: str
   gap: 10px;
 }
 .picker__empty { margin: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.picker__note { margin: 0; font-size: 10.5px; color: var(--text-muted); }
 .group { display: flex; flex-direction: column; gap: 4px; }
 .group__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .group__name { font-size: var(--fs-xs); color: var(--text-strong); font-weight: 600; }

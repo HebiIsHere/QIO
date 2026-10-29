@@ -56,6 +56,8 @@ vi.mock("../../../services/modelCatalog", () => ({
     getPublicCatalog: vi.fn(),
     resolveUsage: vi.fn(),
   },
+  modelErrorMessage: (error: unknown) =>
+    error instanceof Error ? error.message : String(error),
 }));
 
 const model = (overrides: Partial<CatalogModel> = {}): CatalogModel => ({
@@ -251,12 +253,26 @@ describe("用途分配 · 合并日常入口 / 恢复跟随默认 / 沿用现有
         credentialName: "工作用 DeepSeek",
       },
     }),
-    usage({ usageKey: "video", label: "视频", kind: "video", group: "special", resolved: null, inheritsOk: false }),
+    // 发布第二轮 B：这三类没有独立调用路径，界面只读（delivery 来自后端）。
+    usage({
+      usageKey: "video",
+      label: "视频",
+      kind: "video",
+      group: "special",
+      delivery: "existing",
+      assignmentEffective: false,
+      followsDefault: false,
+      resolved: null,
+      inheritsOk: false,
+    }),
     usage({
       usageKey: "research",
       label: "研究",
       kind: "chat",
       group: "primary",
+      delivery: "unsupported",
+      assignmentEffective: false,
+      followsDefault: false,
       resolved: null,
       inheritsOk: false,
     }),
@@ -265,8 +281,23 @@ describe("用途分配 · 合并日常入口 / 恢复跟随默认 / 沿用现有
       label: "向量 / 嵌入",
       kind: "embedding",
       group: "special",
+      delivery: "existing",
+      assignmentEffective: false,
+      followsDefault: false,
       resolved: null,
       inheritsOk: false,
+      credentialId: "key_a",
+      modelId: "m1",
+      historical: true,
+      historicalTarget: {
+        credentialId: "key_a",
+        modelId: "m1",
+        source: "historical",
+        usable: true,
+        unavailableReason: "",
+        credentialName: "工作用 DeepSeek",
+      },
+      note: "历史配置（未生效）：这个用途没有独立的模型调用路径，历史覆盖只保留可见性与清除入口，不会影响真实请求",
     }),
   ];
 
@@ -311,20 +342,18 @@ describe("用途分配 · 合并日常入口 / 恢复跟随默认 / 沿用现有
     expect(researchRow!.text()).toContain("未接通独立调用路径");
   });
 
-  it("embedding 显式换外部模型要先确认维度影响，确认后才保存", async () => {
+  it("embedding 改为只读说明：没有独立调用路径，历史覆盖标未生效且可清除", async () => {
     const wrapper = mountSection();
     const embeddingRow = wrapper.findAll(".row").find((row) => row.text().includes("向量 / 嵌入"));
-    await buttonByText(embeddingRow!, "指定模型").trigger("click");
-    const target = embeddingRow!.findAll("button.model").find((item) => item.text().includes("M2"));
-    await target!.trigger("click");
-    await flushPromises();
-    const confirm = wrapper.find(".qio-confirm");
-    expect(confirm.exists()).toBe(true);
-    expect(confirm.text()).toContain("向量维度");
-    await confirm.find('[data-qio-confirm-action="confirm"]').trigger("click");
-    expect(wrapper.emitted("assign")).toEqual([
-      [["embedding"], { credentialId: "key_a", modelId: "m2" }],
-    ]);
+    // 不再提供「指定模型」：换外部嵌入模型并不会被真实调用读取。
+    const picker = embeddingRow!
+      .findAll("button")
+      .find((button) => button.text().includes("指定模型"));
+    expect(picker, "embedding 不应再有独立模型选择").toBeFalsy();
+    expect(embeddingRow!.text()).toContain("沿用现有处理方式");
+    expect(embeddingRow!.text()).toContain("历史配置（未生效）");
+    await buttonByText(embeddingRow!, "清除历史覆盖").trigger("click");
+    expect(wrapper.emitted("assign")).toEqual([[["embedding"], null]]);
   });
 });
 

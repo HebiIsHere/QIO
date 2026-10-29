@@ -180,13 +180,15 @@ def test_non_inheriting_usages_do_not_borrow_default_chat_model(store, credentia
     store.set_default("key_a", "chat-model")
     usages = {item["usage_key"]: item for item in store.list_usages()}
     for key in ("video", "audio", "embedding"):
-        assert usages[key]["follows_default"] is True
+        # 不继承默认对话模型：没有显式指定就没有「当前目标」，也不假装跟随默认。
+        assert usages[key]["follows_default"] is False
         assert usages[key]["resolved"] is None
+        assert usages[key]["assignment_effective"] is False
         assert "沿用现有处理方式" in usages[key]["note"]
         assert store.resolve_usage(key) is None, "不继承默认对话模型"
-    # 显式指定才生效。
-    store.set_usage("video", "key_a", "chat-model")
-    assert store.resolve_usage("video")["model_id"] == "chat-model"
+    # 显式指定同样不会生效：这些用途没有独立调用路径，保存时就会被拒（B）。
+    with pytest.raises(ValueError):
+        store.set_usage("video", "key_a", "chat-model")
     assert usage_kind("video") == "video"
     assert usage_kind("custom:写作") == "custom"
 

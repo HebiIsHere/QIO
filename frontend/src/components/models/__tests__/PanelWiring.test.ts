@@ -44,6 +44,8 @@ vi.mock("../../../services/modelCatalog", () => ({
     getPublicCatalog: vi.fn(),
     resolveUsage: vi.fn(),
   },
+  modelErrorMessage: (error: unknown) =>
+    error instanceof Error ? error.message : String(error),
 }));
 
 const model = (overrides: Record<string, unknown> = {}) => ({

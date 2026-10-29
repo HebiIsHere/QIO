@@ -27,7 +27,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.credentials.usages import find_usage, normalize_usage_key
+from agent.credentials.usages import (
+    UsageAssignmentError,
+    find_usage,
+    normalize_usage_key,
+)
 from agent.services.usage_target import (
     UsageUnavailable,
     credential_problem,
@@ -93,6 +97,31 @@ def save_assignments(store: Any, assignments: Any) -> dict[str, Any]:
     （每项都带 resolved），界面据此展示「刚保存并真实读回」的配置，而不是点击草稿。
     """
     entries = _assignment_entries(assignments)
+    # 第一遍：整批先校验，任何一项不通过就整批不写（比「边写边回滚」更早失败，
+    # 也不会给高级入口留下自动补写的模型行）。校验与真实调用同一份判断：
+    # 用途有没有独立调用路径 + 目标现在是否真的可用（含用途所需能力）。
+    for index, entry in enumerate(entries, start=1):
+        if entry["credential_id"] is None:
+            # 清除历史覆盖 / 恢复跟随默认：不是新分配，始终允许。
+            continue
+        try:
+            store.check_assignment(
+                entry["usage_key"], entry["credential_id"], entry["model_id"]
+            )
+        except UsageAssignmentError as exc:
+            # 保留稳定的机器可读 code：路由据此返回结构化 4xx，而不是一句 400。
+            raise type(exc)(
+                exc.usage_key,
+                f"第 {index} 项用途分配无效：{exc}",
+                reason=exc.reason,
+                credential_id=exc.credential_id,
+                model_id=exc.model_id,
+            ) from exc
+        except KeyError as exc:  # 连接不存在：保留 404 语义
+            message = exc.args[0] if exc.args else str(exc)
+            raise KeyError(f"第 {index} 项用途分配无效：{message}") from exc
+        except ValueError as exc:  # 形状 / 用途不合法：保留 400 语义
+            raise ValueError(f"第 {index} 项用途分配无效：{exc}") from exc
     applied: list[dict[str, Any]] = []
     with transaction(store.conn):
         for index, entry in enumerate(entries, start=1):
