@@ -304,3 +304,31 @@
 - 前端：`npx vitest run src/views/settings src/components/models` 全部通过；`npx vue-tsc --noEmit` 通过。
 - 后端：模型目录相关定向 pytest 通过（本轮未改后端逻辑）。
 - 文档：`python scripts/check_docs.py` 通过；提交使用 `[skip ci]`，未运行全量测试 / 构建 / CI。
+
+## 返修五（2026-10-29 第六次交付）：输出速度保存逻辑
+
+基线仍为 `966703f53d2153aa63e8e3ebe63f79bcdb2e5095`，分支不变；只调整输出速度的调用及必要状态/返回值，复用既有共享串行保存。
+
+### 规则与实现
+
+- **分别维护「用户最新选择」与「实际已保存值」**：界面值仍是 `ui.typewriterCps`；实际已保存值只由「已确认的初始值」（`ui.typewriterCpsSaved`，来自加载成功）与「本次接口成功返回」更新，绝不从正在变化的界面状态读取。
+- **保存返回本次接口真实结果**：新增 `ui.saveCps(cps)`，只调用接口并返回 `typewriter_cps`，不写界面、不写已保存值（排队执行较早请求时不能把较早选择写回界面）。
+- **共享串行保存**：沿用 `useQioSettingsSave` 的同一设置依次保存；不同设置独立；关闭行为保持原有 `serial: false`（ui store 自有顺序与生效值）。
+- **等待期间保持最新选择**；最新保存失败由共享逻辑恢复最后实际保存成功的值并保留错误；全部失败恢复最初已确认的保存值。
+- 首次保存前若尚未加载，则以 store 的初始已确认值兜底；加载成功后同步为服务端确认值（测试用非默认初值复核，确认没有硬编码默认值）。
+
+### 固定验收清单（真实组件 + 可控接口响应）
+
+1. 单次保存失败，恢复原已保存值（50）并显示错误。
+2. 初始 50，连续选择 25、75：25 成功、75 失败 → 最终恢复 25；等待期间界面保持 75，较早成功不改界面；请求依次执行（第一次结算后才发第二次）。
+3. 同样操作，25 失败、75 成功 → 最终 75。
+4. 两次都失败 → 恢复最初已确认的 50；另用非默认初值 75 复核，两次失败恢复 75（未硬编码默认值）。
+5. 连续选择 25、75、50：最新 50 等待期间，较早请求（25、75）开始或结束都不能把界面改回 25/75；三次请求依次执行。
+6. 三次选择分别覆盖最终成功与最终失败：25 成功、75 成功、50 失败 → 恢复最后实际成功的 75 且错误可见。
+
+验证文件：`frontend/src/views/settings/__tests__/outputSpeedSettings.test.ts`（真实 SettingsView / RegularSection + 可控 `updateUISettings` Promise）。同时核对界面值（`ui.typewriterCps`）、实际保存值（初始读取 + 接口成功返回）与请求顺序。
+
+### 本轮定向验证
+
+- 前端：`npx vitest run src/views/settings src/views/__tests__/SettingsView.test.ts src/components/models` 全部通过；`npx vue-tsc --noEmit` 通过。
+- 文档：`python scripts/check_docs.py` 通过；提交使用 `[skip ci]`，未运行全量测试 / 构建 / CI。
