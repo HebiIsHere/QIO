@@ -47,6 +47,12 @@ export interface ImmediateSaveOptions<T> {
    * 省略 = 分区级（旧调用方式，行为不变）。
    */
   key?: string;
+  /**
+   * 是否让同一设置的写入串行（默认 true）。极少数设置已经由更底层维护顺序与
+   * 真实生效值（例如关闭行为由 ui store 的写序号 + closeBehaviorEffective 负责），
+   * 它们可以显式关闭，避免上层再排队改变既有语义。
+   */
+  serial?: boolean;
   /** 请求进行中的中性提示（默认「保存中…」） */
   pending?: string;
   /** 乐观更新：先把控件切到用户刚选的值 */
@@ -103,6 +109,14 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
   const inflightWrites = new Map<string, number>();
   /** 每个设置「已记录真实保存值」对应的写入序号：迟到成功不得回退更新的真实值。 */
   const savedTokens = new Map<string, number>();
+  /** 每个设置已记录的真实保存值（服务端返回的规范化值）：最终校准同时恢复控件与生效摘要。 */
+  const savedServers = new Map<string, unknown>();
+  /**
+   * 同一设置**依次保存**：后一次点击排在前一次结算之后再发请求。
+   * 并发写同一个设置时，「点击顺序」不等于「服务端实际写入顺序」，回滚依据会不可靠；
+   * 串行化让实际写入顺序确定，且较新的操作只在它真正执行时才成为界面事实。
+   */
+  const writeChains = new Map<string, Promise<void>>();
 
   function writeId(key?: string): string {
     return key ?? "";
@@ -184,6 +198,16 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     return key ? (keySeq.get(key) ?? 0) === token : token === seq;
   }
 
+  function restoreSaved<T>(options: ImmediateSaveOptions<T>, id: string): void {
+    // 控件、回滚依据与「当前生效参数」必须一起回到同一个真实保存值：优先用服务端
+    // 返回的规范化值（apply 同时刷新控件与生效摘要），没有成功响应时才退回分区自己的回滚。
+    if (savedServers.has(id) && options.apply) {
+      options.apply(savedServers.get(id) as T);
+      return;
+    }
+    options.rollback?.();
+  }
+
   async function saveNow<T>(options: ImmediateSaveOptions<T>): Promise<boolean> {
     const key = options.key;
     const id = writeId(key);
@@ -191,35 +215,43 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     inflightWrites.set(id, inflightOf(id) + 1);
     options.optimistic?.();
     setNotice("info", options.pending ?? "保存中…", key);
-    try {
-      const server = await options.commit();
-      // 记录真实保存值：只有比上次记录更新的成功才写（30 响应迟到不能把 40 改回 30）。
-      if (token > (savedTokens.get(id) ?? 0)) {
-        savedTokens.set(id, token);
-        options.trackSaved?.(server);
+    const run = async (): Promise<boolean> => {
+      try {
+        const server = await options.commit();
+        // 记录真实保存值：只有比上次记录更新的成功才写（迟到成功不能回退更新的真实值）。
+        if (token > (savedTokens.get(id) ?? 0)) {
+          savedTokens.set(id, token);
+          savedServers.set(id, server);
+          options.trackSaved?.(server);
+        }
+        if (!isLatest(token, key)) return false;
+        latestOutcome.set(id, "success");
+        options.apply?.(server);
+        const text =
+          typeof options.success === "function" ? options.success(server) : options.success;
+        setNotice("ok", text, key);
+        return true;
+      } catch (e) {
+        if (!isLatest(token, key)) return false;
+        latestOutcome.set(id, "failure");
+        // 失败必须让控件回到真实值：停在「看起来改了、其实没保存」比报错更危险。
+        restoreSaved(options, id);
+        setNotice("err", `${options.failure}失败：${settingsErrorText(e)}`, key);
+        return false;
+      } finally {
+        inflightWrites.set(id, Math.max(0, inflightOf(id) - 1));
+        // 全部结算后的最终校准：该设置最新请求失败时，控件与生效摘要一起回到真实保存值。
+        if (inflightOf(id) === 0 && latestOutcome.get(id) === "failure") {
+          restoreSaved(options, id);
+        }
       }
-      if (!isLatest(token, key)) return false;
-      latestOutcome.set(id, "success");
-      options.apply?.(server);
-      const text =
-        typeof options.success === "function" ? options.success(server) : options.success;
-      setNotice("ok", text, key);
-      return true;
-    } catch (e) {
-      if (!isLatest(token, key)) return false;
-      latestOutcome.set(id, "failure");
-      // 失败必须让控件回到真实值：停在「看起来改了、其实没保存」比报错更危险。
-      options.rollback?.();
-      setNotice("err", `${options.failure}失败：${settingsErrorText(e)}`, key);
-      return false;
-    } finally {
-      inflightWrites.set(id, Math.max(0, inflightOf(id) - 1));
-      // 全部结算后的最终校准：该设置最新请求失败时，界面回到「已记录的真实保存值」。
-      // 覆盖「50 先失败、40 随后成功」这种失败时真实值还没到达的顺序。
-      if (inflightOf(id) === 0 && latestOutcome.get(id) === "failure") {
-        options.rollback?.();
-      }
-    }
+    };
+    if (options.serial === false) return run();
+    // 同一设置串行：前一次结算后才发下一次，实际写入顺序不再取决于网络/并发。
+    const previous = writeChains.get(id) ?? Promise.resolve();
+    const runPromise = previous.then(run, run);
+    writeChains.set(id, runPromise.then(() => undefined, () => undefined));
+    return runPromise;
   }
 
   // 卸载后计时器不能再写状态（例如成功提示的 4s 计时器跨越了页面卸载）。

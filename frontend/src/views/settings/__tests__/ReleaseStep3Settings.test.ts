@@ -73,8 +73,13 @@ describe("F08 同一区域不同设置的保存互不取消", () => {
     expect(updateTools).toHaveBeenCalledTimes(1);
 
     // A 此时才失败：必须回滚自己的工作区输入，并留下可读错误；B 的保存不能被取消。
-    for (const reject of rejectWorkspace) reject(new Error("PUT /api/settings/computer -> 500: boom"));
-    await flushFrames();
+    // （同一设置串行：迟到的重复 change 会在前一次结算后才发出，所以逐轮结算到队列清空）
+    for (let round = 0; round < 4 && rejectWorkspace.length; round += 1) {
+      const pending = [...rejectWorkspace];
+      rejectWorkspace.length = 0;
+      for (const reject of pending) reject(new Error("PUT /api/settings/computer -> 500: boom"));
+      await flushFrames();
+    }
 
     expect((workspace.element as HTMLInputElement).value).toBe("");
     expect(tools.find(".set-notice.err").text()).toContain("保存工作区根目录失败");
@@ -85,40 +90,40 @@ describe("F08 同一区域不同设置的保存互不取消", () => {
     w.unmount();
   });
 
-  it("同一设置连续保存只认最新一次：旧响应迟到不覆盖新选择", async () => {
+  it("同一设置依次保存：后一次在前一次结算后才发请求，旧成功不覆盖新选择", async () => {
     const { api } = await import("../../../services/api");
     const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
-    let releaseFirst: (v: { enabled: boolean; interval_hours: number }) => void = () => {};
-    update.mockImplementationOnce(
-      () => new Promise((resolve) => { releaseFirst = resolve as never; }),
+    const calls: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    update.mockImplementation(
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }),
     );
-    update.mockImplementationOnce(async (body: { enabled?: boolean; interval_hours?: number }) => ({
-      enabled: body.enabled ?? true,
-      interval_hours: body.interval_hours ?? 24,
-    }));
 
     const w = await mountSettings();
     await openCategory(w, "memory");
     const memory = sectionById(w, "memory");
-
     const interval = memory.find('input[aria-label="整理间隔（小时）"]');
+
     await interval.setValue("30");
     await interval.trigger("blur");
     await flushFrames();
-
     await interval.setValue("40");
     await interval.trigger("blur");
     await flushFrames();
-    expect(update).toHaveBeenCalledTimes(2);
+    // 同一设置串行：第一次还在途时，第二次不并发发出
+    expect(update).toHaveBeenCalledTimes(1);
 
-    releaseFirst({ enabled: true, interval_hours: 24 });
+    calls[0].resolve({ enabled: true, interval_hours: 30 });
+    await flushFrames();
+    // 第一次结算后第二次才发出；它的响应还没回来，控件保持用户的新选择
+    expect(update).toHaveBeenCalledTimes(2);
+    expect((interval.element as HTMLInputElement).value).toBe("40");
+
+    calls[1].resolve({ enabled: true, interval_hours: 40 });
     await flushFrames();
     expect((interval.element as HTMLInputElement).value).toBe("40");
     w.unmount();
   });
-});
 
-describe("F14 迟到的初始读取不覆盖较新的编辑 / 保存值 / 生效摘要", () => {
   it("记忆分段：迟到的 getMemorySettings 不改回已保存值，也不覆盖生效摘要", async () => {
     const { api } = await import("../../../services/api");
     let resolveLoad: (v: { fragment_max_turns: number; fragment_max_tokens: number }) => void = () => {};
@@ -305,8 +310,12 @@ describe("返修：两个设置先后失败，只修好第二个时第一个错�
     await flushFrames();
     expect(tools.find(".set-notice.err").text()).toContain("保存输出保留期失败");
 
-    for (const reject of rejects) reject(new Error("workspace 500"));
-    await flushFrames();
+    for (let round = 0; round < 4 && rejects.length; round += 1) {
+      const pending = [...rejects];
+      rejects.length = 0;
+      for (const reject of pending) reject(new Error("workspace 500"));
+      await flushFrames();
+    }
 
     await retention.setValue("35");
     await retention.trigger("blur");
@@ -418,12 +427,12 @@ describe("返修：取消回到服务端实际保存值（不是加载前占位�
 });
 
 describe("返修二：连续保存后的回滚值 / 保存期间初始读取 / 失败反馈保留", () => {
-  it("整理间隔连续提交 30 成功、40 失败：最终显示实际保存的 30（失败先回、成功后到）", async () => {
+  it("顺序保存 30 成功、40 失败：最终显示实际保存的 30", async () => {
     const { api } = await import("../../../services/api");
     const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
-    const resolvers: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    const calls: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
     update.mockImplementation(
-      () => new Promise((resolve, reject) => { resolvers.push({ resolve, reject }); }),
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }),
     );
     const w = await mountSettings();
     await openCategory(w, "memory");
@@ -436,24 +445,25 @@ describe("返修二：连续保存后的回滚值 / 保存期间初始读取 / �
     await input.setValue("40");
     await input.trigger("blur");
     await flushFrames();
+    expect(update).toHaveBeenCalledTimes(1);
+
+    calls[0].resolve({ enabled: true, interval_hours: 30 });
+    await flushFrames();
     expect(update).toHaveBeenCalledTimes(2);
-
-    // 后一次（40）先失败，前一次（30）随后成功：服务端实际保存 30。
-    resolvers[1].reject(new Error("500 boom"));
-    await flushFrames();
-    resolvers[0].resolve({ enabled: true, interval_hours: 30 });
+    calls[1].reject(new Error("500 boom"));
     await flushFrames();
 
+    // 实际写入顺序确定（30 成功、40 失败）→ 恢复 30
     expect((input.element as HTMLInputElement).value).toBe("30");
     w.unmount();
   });
 
-  it("整理间隔连续提交 30 成功、40 失败：最终显示实际保存的 30（成功先到）", async () => {
+  it("同一设置串行：后一次必须等前一次结算后才写入（不并发）", async () => {
     const { api } = await import("../../../services/api");
     const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
-    const resolvers: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    const calls: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
     update.mockImplementation(
-      () => new Promise((resolve, reject) => { resolvers.push({ resolve, reject }); }),
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }),
     );
     const w = await mountSettings();
     await openCategory(w, "memory");
@@ -466,13 +476,13 @@ describe("返修二：连续保存后的回滚值 / 保存期间初始读取 / �
     await input.setValue("40");
     await input.trigger("blur");
     await flushFrames();
-
-    resolvers[0].resolve({ enabled: true, interval_hours: 30 });
+    expect(update).toHaveBeenCalledTimes(1);
+    calls[0].resolve({ enabled: true, interval_hours: 30 });
     await flushFrames();
-    resolvers[1].reject(new Error("500 boom"));
+    expect(update).toHaveBeenCalledTimes(2);
+    calls[1].resolve({ enabled: true, interval_hours: 40 });
     await flushFrames();
-
-    expect((input.element as HTMLInputElement).value).toBe("30");
+    expect((input.element as HTMLInputElement).value).toBe("40");
     w.unmount();
   });
 
@@ -640,7 +650,7 @@ describe("返修三：连续保存的回滚值（保存顺序 + 最终校准）"
     return calls;
   }
 
-  it("30、40 都成功（40 是真实值，30 响应迟到），再提交 50 失败 → 恢复 40", async () => {
+  it("顺序保存 30、40 都成功，再提交 50 失败 → 恢复实际保存的 40", async () => {
     const { api } = await import("../../../services/api");
     const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
     const calls = deferredUpdate();
@@ -659,14 +669,11 @@ describe("返修三：连续保存的回滚值（保存顺序 + 最终校准）"
     await input.trigger("blur");
     await flushFrames();
 
-    // 40（较新）先成功 → 真实保存值 40
-    calls[1].resolve({ enabled: true, interval_hours: 40 });
-    await flushFrames();
-    // 30（较旧）响应迟到：不能把已记录的真实值改回 30
     calls[0].resolve({ enabled: true, interval_hours: 30 });
     await flushFrames();
+    calls[1].resolve({ enabled: true, interval_hours: 40 });
+    await flushFrames();
 
-    // 再提交 50 并失败：必须恢复 40，而不是 30
     await input.setValue("50");
     await input.trigger("blur");
     await flushFrames();
@@ -678,7 +685,7 @@ describe("返修三：连续保存的回滚值（保存顺序 + 最终校准）"
     w.unmount();
   });
 
-  it("连续提交 30、40、50：50 先失败、40 随后成功、30 最后失败 → 全部结束后显示 40", async () => {
+  it("顺序保存 30、40、50（50 失败）→ 全部结束后显示 40", async () => {
     const { api } = await import("../../../services/api");
     const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
     const calls = deferredUpdate();
@@ -699,17 +706,88 @@ describe("返修三：连续保存的回滚值（保存顺序 + 最终校准）"
     await input.setValue("50");
     await input.trigger("blur");
     await flushFrames();
-    expect(update).toHaveBeenCalledTimes(3);
+    expect(update).toHaveBeenCalledTimes(1);
 
-    calls[2].reject(new Error("500 boom"));
+    calls[0].resolve({ enabled: true, interval_hours: 30 });
     await flushFrames();
     calls[1].resolve({ enabled: true, interval_hours: 40 });
     await flushFrames();
-    calls[0].reject(new Error("stale failure"));
+    expect(update).toHaveBeenCalledTimes(3);
+    calls[2].reject(new Error("500 boom"));
     await flushFrames();
 
-    // 全部结算后的最终校准：真实保存值是 40（不是回滚时的 24，也不是 30）
+    // 30、40 都已真实写入，50 失败 → 回到实际保存值 40
     expect((input.element as HTMLInputElement).value).toBe("40");
+    w.unmount();
+  });
+});
+
+describe("返修四：生效摘要同步 / 免密钥开关共享保存规则", () => {
+  it("最终校准同时更新控件与“当前生效参数”（后台整理间隔回 30）", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateMaintenanceSettings as ReturnType<typeof vi.fn>;
+    const calls: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    update.mockImplementation(
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const input = memory.find('input[aria-label="整理间隔（小时）"]');
+
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+    await input.setValue("40");
+    await input.trigger("blur");
+    await flushFrames();
+    calls[0].resolve({ enabled: true, interval_hours: 30 });
+    await flushFrames();
+    calls[1].reject(new Error("500 boom"));
+    await flushFrames();
+
+    expect((input.element as HTMLInputElement).value).toBe("30");
+    // 切到「工具与权限」看只读的「当前生效参数」：必须与控件一致，不能还是 24
+    await openCategory(w, "tools");
+    expect(sectionById(w, "tools").text()).toContain("每 30 小时");
+    w.unmount();
+  });
+
+  it("免密钥开关连点：开启先失败、关闭随后成功 → 最终显示关闭且错误可见", async () => {
+    const { api } = await import("../../../services/api");
+    const update = api.updateSearchSettings as ReturnType<typeof vi.fn>;
+    const calls: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
+    update.mockImplementation(
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }); }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    const toggle = models.find('button[aria-label="免密钥联网搜索"]');
+    expect(toggle.attributes("aria-checked")).toBe("true");
+
+    // 原来开启：先点关闭，再点开启（后者是较新的操作）
+    await toggle.trigger("click");
+    await toggle.trigger("click");
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(1);
+
+    // 关闭（较早）先成功写入，开启（较新）随后失败 → 实际保存的是关闭
+    calls[0].resolve({
+      searxng_url: "",
+      bocha_has_key: false,
+      keyless_fallback: false,
+      top_k_default: 5,
+      max_fetch_chars: 15000,
+    });
+    await flushFrames();
+    expect(update).toHaveBeenCalledTimes(2);
+    calls[1].reject(new Error("500 boom"));
+    await flushFrames();
+
+    expect(toggle.attributes("aria-checked")).toBe("false");
+    expect(models.text()).toContain("已关闭");
+    expect(models.find(".set-notice.err").text()).toContain("保存免密钥通道开关失败");
     w.unmount();
   });
 });

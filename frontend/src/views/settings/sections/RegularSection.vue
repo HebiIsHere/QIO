@@ -165,6 +165,9 @@ function onCloseBehaviorChange(value: string): void {
   if (ui.closeBehavior === next) return;
   void save.saveNow<void>({
     key: "regular.close-behavior",
+    // 关闭行为的顺序与真实生效值由 ui store 自己维护（写序号 + closeBehaviorEffective），
+    // 上层不再串行排队，保持既有语义。
+    serial: false,
     pending: `正在保存关闭行为：${closeBehaviorLabel(next)}…`,
     rollback: () => {
       // 失败时回到**真实生效值**（store 里最近一次确认生效的那个），不是页面自己记的上一帧：

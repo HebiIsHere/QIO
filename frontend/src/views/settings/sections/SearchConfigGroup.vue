@@ -34,6 +34,8 @@ const { notice } = save;
 
 /* ---------------- 基础状态（来自 /api/settings/search） ---------------- */
 const keyless = ref(true);
+/** 免密钥开关的真实保存值：失败回滚 / 最终校准读它，不用点击瞬间捕获的界面值。 */
+const keylessSaved = ref(true);
 const bochaConfigured = ref(false);
 /** 用户对免密钥开关 / 博查 Key 做过几次显式动作：迟到的初始读取不得覆盖（F14） */
 let keylessTouched = 0;
@@ -249,19 +251,23 @@ function onCancelGroup(): void {
 /* ---------------- 免密钥通道（即时保存，不是总开关） ---------------- */
 function toggleKeyless(): void {
   const next = !keyless.value;
-  const previous = keyless.value;
   keyless.value = next;
   keylessTouched += 1;
   void save.saveNow<SearchSettings>({
     // F08：免密钥开关与搜索配置组是同一分区的不同设置，互不作废在途保存。
     key: "models.search.keyless",
     pending: "正在保存免密钥通道开关…",
+    // 回滚到真实保存值；最终校准也用 apply 同步控件与生效摘要。
     rollback: () => {
-      keyless.value = previous;
+      keyless.value = keylessSaved.value;
+      patchEffectiveFacts({ searchKeyless: keyless.value });
     },
     commit: () => api.updateSearchSettings({ keyless_fallback: next }),
+    trackSaved: (server) => {
+      keylessSaved.value = server.keyless_fallback ?? keylessSaved.value;
+    },
     apply: (server) => {
-      keyless.value = server.keyless_fallback ?? next;
+      keyless.value = server.keyless_fallback ?? keyless.value;
       bochaConfigured.value = server.bocha_has_key;
       patchEffectiveFacts({ searchKeyless: keyless.value });
     },
@@ -336,7 +342,8 @@ async function load(): Promise<void> {
     const bochaSuperseded = bochaTouched !== bochaAtStart;
     if (!bochaSuperseded) bochaConfigured.value = s.bocha_has_key;
     if (!keylessSuperseded) {
-      keyless.value = s.keyless_fallback ?? true;
+      keylessSaved.value = s.keyless_fallback ?? true;
+      keyless.value = keylessSaved.value;
       patchEffectiveFacts({ searchKeyless: keyless.value });
     }
   } catch (e) {
