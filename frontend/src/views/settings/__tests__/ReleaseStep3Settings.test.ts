@@ -235,3 +235,184 @@ describe("F14 请求被作废后保存状态正确结束", () => {
     w.unmount();
   });
 });
+
+describe("返修：失败回滚到真实已保存值（不能拿输入值当基线）", () => {
+  it("输出保留期 90 改成 30、保存失败后回到 90", async () => {
+    const { api } = await import("../../../services/api");
+    (api.updateToolHistorySettings as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("500 boom"),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    const input = tools.find('input[aria-label="输出保留（天）"]');
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+
+    expect((input.element as HTMLInputElement).value).toBe("90");
+    expect(tools.find(".set-notice.err").text()).toContain("保存输出保留期失败");
+    w.unmount();
+  });
+
+  it("后台整理间隔 24 改成 30、保存失败后回到 24", async () => {
+    const { api } = await import("../../../services/api");
+    (api.updateMaintenanceSettings as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("500 boom"),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const input = memory.find('input[aria-label="整理间隔（小时）"]');
+    await input.setValue("30");
+    await input.trigger("blur");
+    await flushFrames();
+
+    expect((input.element as HTMLInputElement).value).toBe("24");
+    expect(memory.find(".set-notice.err").text()).toContain("保存整理间隔失败");
+    w.unmount();
+  });
+});
+
+describe("返修：两个设置先后失败，只修好第二个时第一个错误仍可见", () => {
+  it("工作区失败 + 输出保留期失败 → 只重试保留期成功，工作区错误保持可见", async () => {
+    const { api } = await import("../../../services/api");
+    const updateComputer = api.updateComputerSettings as ReturnType<typeof vi.fn>;
+    const updateTools = api.updateToolHistorySettings as ReturnType<typeof vi.fn>;
+    const rejects: Array<(e: Error) => void> = [];
+    updateComputer.mockImplementation(
+      () => new Promise((_resolve, reject) => { rejects.push(reject); }),
+    );
+    updateTools.mockRejectedValueOnce(new Error("500 boom"));
+    updateTools.mockResolvedValueOnce({
+      record_outputs: true,
+      output_retention_days: 35,
+      record_retention_days: 0,
+    });
+
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+
+    const workspace = tools.find('input[aria-label="工作区根目录"]');
+    await workspace.setValue("D:\\failed-workspace");
+    await workspace.trigger("change");
+    await flushFrames();
+
+    const retention = tools.find('input[aria-label="输出保留（天）"]');
+    await retention.setValue("30");
+    await retention.trigger("blur");
+    await flushFrames();
+    expect(tools.find(".set-notice.err").text()).toContain("保存输出保留期失败");
+
+    for (const reject of rejects) reject(new Error("workspace 500"));
+    await flushFrames();
+
+    await retention.setValue("35");
+    await retention.trigger("blur");
+    await flushFrames();
+
+    expect((retention.element as HTMLInputElement).value).toBe("35");
+    expect(tools.find(".set-notice.err").text()).toContain("保存工作区根目录失败");
+    w.unmount();
+  });
+});
+
+describe("返修：实际输入即建立保护，迟到初始读取不覆盖未提交输入", () => {
+  it("工作区：只输入未失焦时，迟到 getComputerSettings 不覆盖", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: { root_dir: string; permission_mode: string }) => void = () => {};
+    (api.getComputerSettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "tools");
+    const tools = sectionById(w, "tools");
+    const workspace = tools.find('input[aria-label="工作区根目录"]');
+    await workspace.setValue("D:\\typed-not-blurred");
+    await nextTick();
+    resolveLoad({ root_dir: "D:\\server-workspace", permission_mode: "default" });
+    await flushFrames();
+    expect((workspace.element as HTMLInputElement).value).toBe("D:\\typed-not-blurred");
+    w.unmount();
+  });
+
+  it("迭代上限：只输入未失焦时，迟到 getLoopSettings 不覆盖", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: { max_iterations: number; output_token_budget: number }) => void = () => {};
+    (api.getLoopSettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const input = memory.find('input[aria-label="迭代上限"]');
+    await input.setValue("200");
+    await nextTick();
+    resolveLoad({ max_iterations: 128, output_token_budget: 51200 });
+    await flushFrames();
+    expect((input.element as HTMLInputElement).value).toBe("200");
+    w.unmount();
+  });
+});
+
+describe("返修：取消回到服务端实际保存值（不是加载前占位默认值）", () => {
+  it("记忆分段：初始读取期间已编辑，取消回到服务端保存的 12000", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: { fragment_max_turns: number; fragment_max_tokens: number }) => void = () => {};
+    (api.getMemorySettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "memory");
+    const memory = sectionById(w, "memory");
+    const maxTokens = memory.find('input[aria-label="单段长度目标"]');
+    await maxTokens.setValue("9000");
+    await nextTick();
+    resolveLoad({ fragment_max_turns: 10, fragment_max_tokens: 12000 });
+    await flushFrames();
+
+    await memory
+      .find('[data-settings-group="memory.fragment"] [data-settings-action="cancel"]')
+      .trigger("click");
+    await nextTick();
+    expect((maxTokens.element as HTMLInputElement).value).toBe("12000");
+    w.unmount();
+  });
+
+  it("联网搜索：初始读取期间已编辑，取消回到服务端保存的 9", async () => {
+    const { api } = await import("../../../services/api");
+    let resolveLoad: (v: {
+      searxng_url: string;
+      bocha_has_key: boolean;
+      keyless_fallback: boolean;
+      top_k_default: number;
+      max_fetch_chars: number;
+    }) => void = () => {};
+    (api.getSearchSettings as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLoad = resolve as never; }),
+    );
+    const w = await mountSettings();
+    await openCategory(w, "models");
+    const models = sectionById(w, "models");
+    await models.find('[data-settings-fold-toggle="models.search.advanced"]').trigger("click");
+    await nextTick();
+    const topK = models.find('input[aria-label="返回条数"]');
+    await topK.setValue("12");
+    await nextTick();
+    resolveLoad({
+      searxng_url: "",
+      bocha_has_key: false,
+      keyless_fallback: true,
+      top_k_default: 9,
+      max_fetch_chars: 15000,
+    });
+    await flushFrames();
+    await models
+      .find('[data-settings-group="models.search"] [data-settings-action="cancel"]')
+      .trigger("click");
+    await nextTick();
+    expect((topK.element as HTMLInputElement).value).toBe("9");
+    w.unmount();
+  });
+});

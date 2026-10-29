@@ -41,6 +41,12 @@ async function loadComputerSettings(): Promise<void> {
   }
 }
 
+function onWorkspaceInput(value: string): void {
+  // 实际输入就建立保护：不等失焦/保存，迟到初始读取也不能覆盖未提交输入（返修 3）。
+  workspaceTouched += 1;
+  workspaceRoot.value = value;
+}
+
 function saveWorkspace(): void {
   const next = workspaceRoot.value.trim();
   if (next === workspaceSaved.value) return;
@@ -99,7 +105,8 @@ async function loadToolHistory(): Promise<void> {
 
 function toggleRecordOutputs(): void {
   const next = !recordOutputs.value;
-  const previous = recordOutputs.value;
+  // 回滚到真实已保存值（不是刚才的乐观值）
+  const previous = recordsSaved.value.recordOutputs;
   recordOutputs.value = next;
   recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number; purged?: number }>({
@@ -122,9 +129,15 @@ function toggleRecordOutputs(): void {
   });
 }
 
+function onOutputRetentionInput(value: number | null): void {
+  recordsTouched += 1;
+  outputRetentionDays.value = value ?? 0;
+}
+
 function onOutputRetentionChange(value: number | null): void {
   const next = value ?? 0;
-  const previous = outputRetentionDays.value;
+  // 回滚到真实已保存值：用户刚输入 30 不能当成回滚基线（返修 1：90 改 30 失败仍显示 30）。
+  const previous = recordsSaved.value.outputRetentionDays;
   outputRetentionDays.value = next;
   recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number; purged?: number }>({
@@ -146,9 +159,14 @@ function onOutputRetentionChange(value: number | null): void {
   });
 }
 
+function onRecordRetentionInput(value: number | null): void {
+  recordsTouched += 1;
+  recordRetentionDays.value = value ?? 0;
+}
+
 function onRecordRetentionChange(value: number | null): void {
   const next = value ?? 0;
-  const previous = recordRetentionDays.value;
+  const previous = recordsSaved.value.recordRetentionDays;
   recordRetentionDays.value = next;
   recordsTouched += 1;
   void save.saveNow<{ record_outputs: boolean; output_retention_days: number; record_retention_days?: number }>({
@@ -238,7 +256,7 @@ onMounted(() => {
         placeholder="留空则用默认工作区"
         mono
         aria-label="工作区根目录"
-        @update:model-value="(value: string) => (workspaceRoot = value)"
+        @update:model-value="onWorkspaceInput"
         @change="saveWorkspace"
       />
     </SettingRow>
@@ -277,7 +295,7 @@ onMounted(() => {
         mono
         label="输出保留（天）"
         unit="天"
-        @update:model-value="(value: number | null) => (outputRetentionDays = value ?? 0)"
+        @update:model-value="onOutputRetentionInput"
         @change="onOutputRetentionChange(outputRetentionDays)"
       />
     </SettingRow>
@@ -295,7 +313,7 @@ onMounted(() => {
         mono
         label="记录保留（天）"
         unit="天"
-        @update:model-value="(value: number | null) => (recordRetentionDays = value ?? 0)"
+        @update:model-value="onRecordRetentionInput"
         @change="onRecordRetentionChange(recordRetentionDays)"
       />
     </SettingRow>

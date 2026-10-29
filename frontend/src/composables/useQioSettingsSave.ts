@@ -86,8 +86,11 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
   const keySeq = new Map<string, number>();
   /** 当前提示属于哪个设置（key）；null = 分区级提示。 */
   let noticeKey: string | null = null;
-  /** 当前提示是不是一次尚未被处理的失败（F08：不被另一设置的成功静默覆盖）。 */
-  let noticeIsError = false;
+  /**
+   * 按设置保留的未解决失败（F08 返修 2）：两个不同设置先后失败后，只修好第二个，
+   * 第一个的错误必须继续可见；成功只清掉它自己那个设置的错误。
+   */
+  const errorNotices = new Map<string, SettingsNotice>();
 
   function clearTimer(): void {
     if (timer) {
@@ -96,33 +99,55 @@ export function useQioSettingsSave(section: string): QioSettingsSave {
     }
   }
 
+  function showLatestUnresolvedError(): void {
+    const entries = Array.from(errorNotices.entries());
+    if (!entries.length) return;
+    const last = entries[entries.length - 1];
+    notice.value = last[1];
+    noticeKey = last[0];
+  }
+
   function setNotice(kind: SettingsNoticeKind, text: string, key?: string): void {
     const owner = key ?? null;
-    if (noticeIsError && owner !== noticeKey) {
-      // 另一个设置刚失败、用户还没看到/处理：成功的绿色提示不能把错误盖掉。
-      if (kind === "ok" || kind === "info") return;
+    if (kind === "ok") {
+      // 成功只清除「这个设置自己」的错误；其它设置未解决的失败继续显示在原反馈区。
+      if (owner !== null) errorNotices.delete(owner);
+      clearTimer();
+      if (errorNotices.size) {
+        showLatestUnresolvedError();
+        return;
+      }
+      notice.value = { kind, text };
+      noticeKey = owner;
+      timer = setTimeout(() => {
+        timer = null;
+        if (notice.value?.kind === "ok") {
+          notice.value = null;
+          noticeKey = null;
+        }
+      }, NOTICE_OK_MS);
+      return;
     }
+    if (kind === "err") {
+      clearTimer();
+      const error: SettingsNotice = { kind, text };
+      notice.value = error;
+      noticeKey = owner;
+      if (owner !== null) errorNotices.set(owner, error);
+      return;
+    }
+    // 中性 / 成功态提示：有未解决的错误时不动（错误优先保留）。
+    if (errorNotices.size) return;
     clearTimer();
     notice.value = { kind, text };
     noticeKey = owner;
-    noticeIsError = kind === "err";
-    // 只收回「这一次」的成功提示：期间新的保存会重置计时器，旧计时器自然失效。
-    if (kind !== "ok") return;
-    timer = setTimeout(() => {
-      timer = null;
-      if (notice.value?.kind === "ok") {
-        notice.value = null;
-        noticeIsError = false;
-        noticeKey = null;
-      }
-    }, NOTICE_OK_MS);
   }
 
   function clearNotice(): void {
     clearTimer();
     notice.value = null;
     noticeKey = null;
-    noticeIsError = false;
+    errorNotices.clear();
   }
 
   function beginWrite(key?: string): number {
@@ -200,8 +225,16 @@ export interface GroupDraft<T extends SettingsDraftShape> {
    * 分区加载迟到时用它判断「用户在等待期间有没有改过」——改过就不能拿旧加载值覆盖。
    */
   revision: Ref<number>;
+  /** 保存成功次数：初始读取迟到时用它判断「是否已有更新的保存结果」 */
+  savedRevision: Ref<number>;
   /** 用服务端/初始真值重置草稿并刷新基线（加载完成时调用） */
   reset: (next: T) => void;
+  /**
+   * 只把「服务端实际保存值」记为取消基线，不动用户正在编辑的草稿（返修 4）。
+   * 初始读取迟到且用户已经编辑过时用它：保留输入，但取消回到真实保存值，
+   * 而不是回到加载前的占位默认值。
+   */
+  adoptBaseline: (next: T) => void;
   /** 取消：丢弃草稿，回到基线 */
   cancel: () => void;
   /** 保存：成功返回 true；失败保留草稿并写入 error */
@@ -232,6 +265,7 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
   const error = ref<string | null>(null);
   /** 草稿修订号：任何字段变化都会 +1，用于识别「等待期间又改了」。 */
   const revision = ref(0);
+  const savedRevision = ref(0);
   let writeSeq = 0;
   /** 当前正在等响应的保存（用于「被 reset/新保存作废后仍要正确结束 saving」）。 */
   let activeSaveToken: number | null = null;
@@ -253,6 +287,13 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
     error.value = null;
     revision.value += 1;
     writeSeq += 1; // 加载完成：作废此前所有在途响应
+  }
+
+  function adoptBaseline(next: T): void {
+    baseline.value = cloneDraft(next);
+    error.value = null;
+    // 作废比这次初始读取更早的响应；不动草稿，用户正在输入的内容保留。
+    writeSeq += 1;
   }
 
   function cancel(): void {
@@ -278,6 +319,7 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
       if (token !== writeSeq) return false; // 已有更新的保存/加载：旧响应不落 UI
       const next = cloneDraft(server);
       baseline.value = next;
+      savedRevision.value += 1;
       // 等待期间用户没再改 → 用服务端规范化后的真值回填；否则保留新输入
       if (revision.value === startRevision) {
         Object.assign(values, next);
@@ -300,5 +342,5 @@ export function useGroupDraft<T extends SettingsDraftShape>(options: GroupSaveOp
     }
   }
 
-  return { values, baseline, dirty, saving, error, revision, reset, cancel, save };
+  return { values, baseline, dirty, saving, error, revision, savedRevision, reset, adoptBaseline, cancel, save };
 }

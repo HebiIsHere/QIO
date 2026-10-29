@@ -305,23 +305,34 @@ async function clearBochaKey(): Promise<void> {
 /* ---------------- 加载 ---------------- */
 async function load(): Promise<void> {
   const revisionAtStart = search.revision.value;
+  const savedAtStart = search.savedRevision.value;
   const keylessAtStart = keylessTouched;
   const bochaAtStart = bochaTouched;
   try {
     const s = await api.getSearchSettings();
+    const truth = {
+      topK: s.top_k_default,
+      maxFetchChars: s.max_fetch_chars,
+      searxngUrl: s.searxng_url,
+    };
     // F14：迟到的初始读取不能覆盖用户在等待期间的编辑/保存值。
-    // 草稿被改过或保存还在途 → 保留草稿；免密钥/博查各自被用户动过 → 保留用户选择。
-    const groupSuperseded = search.saving.value || search.revision.value !== revisionAtStart;
-    const keylessSuperseded = keylessTouched !== keylessAtStart;
-    const bochaSuperseded = bochaTouched !== bochaAtStart;
-    if (!groupSuperseded) {
-      search.reset({ topK: s.top_k_default, maxFetchChars: s.max_fetch_chars, searxngUrl: s.searxng_url });
+    // 已有更新的保存结果 / 保存还在途 → 整体跳过（不覆盖保存值，也不用旧值当取消基线）。
+    if (search.saving.value || search.savedRevision.value !== savedAtStart) {
+      // 什么都不写：保存结果才是更新的权威。
+    } else if (search.revision.value !== revisionAtStart) {
+      // 用户已经在编辑：保留输入，但取消必须回到服务端实际保存值（返修 4），
+      // 而不是加载前的占位默认值（记忆应回 12000 / 搜索条数应回 9）。
+      search.adoptBaseline(truth);
+    } else {
+      search.reset(truth);
       patchEffectiveFacts({
         searchTopK: s.top_k_default,
         searchMaxFetchChars: s.max_fetch_chars,
         searxngUrl: s.searxng_url,
       });
     }
+    const keylessSuperseded = keylessTouched !== keylessAtStart;
+    const bochaSuperseded = bochaTouched !== bochaAtStart;
     if (!bochaSuperseded) bochaConfigured.value = s.bocha_has_key;
     if (!keylessSuperseded) {
       keyless.value = s.keyless_fallback ?? true;

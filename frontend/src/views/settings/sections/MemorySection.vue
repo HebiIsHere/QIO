@@ -96,11 +96,12 @@ function onCancelFragment(): void {
 
 async function loadMemorySettings(): Promise<void> {
   const revisionAtStart = fragment.revision.value;
+  const savedAtStart = fragment.savedRevision.value;
   try {
     const s = await api.getMemorySettings();
-    // F14：这是**初始读取**，不是权威覆盖。用户在等待期间编辑/保存过（或保存还在途）时，
-    // 迟到的读取不得覆盖较新的编辑、保存值和生效摘要。
-    if (fragment.saving.value || fragment.revision.value !== revisionAtStart) return;
+    // F14：这是**初始读取**，不是权威覆盖。已有更新的保存结果 / 保存还在途时，
+    // 迟到的读取不得覆盖较新的保存值与生效摘要。
+    if (fragment.saving.value || fragment.savedRevision.value !== savedAtStart) return;
     const savedTier = TIER_PRESETS.includes(String(s.fragment_max_turns))
       ? String(s.fragment_max_turns)
       : "custom";
@@ -109,6 +110,12 @@ async function loadMemorySettings(): Promise<void> {
       customTurns: s.fragment_max_turns,
       maxTokens: s.fragment_max_tokens,
     };
+    if (fragment.revision.value !== revisionAtStart) {
+      // 用户已经在编辑：保留输入，但取消必须回到服务端实际保存值（返修 4），
+      // 不能回到加载前的占位默认值；生效摘要也不拿旧加载值覆盖。
+      fragment.adoptBaseline(values);
+      return;
+    }
     fragment.reset(values);
     patchEffectiveFacts({ memoryTurns: s.fragment_max_turns, memoryTokens: s.fragment_max_tokens });
   } catch (e) {
@@ -119,6 +126,8 @@ async function loadMemorySettings(): Promise<void> {
 /* ---------------- 后台整理（即时保存） ---------------- */
 const maintenanceEnabled = ref(true);
 const maintenanceInterval = ref(24);
+/** 最近一次已保存（或刚加载）的后台整理真值：失败回滚与取消都用它，不用用户刚敲的值（返修 1） */
+const maintenanceSaved = ref({ enabled: true, interval: 24 });
 /** 用户对后台整理做过几次修改/保存：迟到的初始读取按这个计数判断是否已被更新的选择取代（F14） */
 let maintenanceTouched = 0;
 
@@ -127,6 +136,7 @@ async function loadMaintenanceSettings(): Promise<void> {
   try {
     const s = await api.getMaintenanceSettings();
     if (maintenanceTouched !== touchedAtStart) return;
+    maintenanceSaved.value = { enabled: s.enabled, interval: s.interval_hours };
     maintenanceEnabled.value = s.enabled;
     maintenanceInterval.value = s.interval_hours;
     patchEffectiveFacts({
@@ -140,7 +150,7 @@ async function loadMaintenanceSettings(): Promise<void> {
 
 function toggleMaintenance(): void {
   const next = !maintenanceEnabled.value;
-  const previous = maintenanceEnabled.value;
+  const previous = maintenanceSaved.value.enabled;
   maintenanceTouched += 1;
   void save.saveNow<{ enabled: boolean; interval_hours: number }>({
     // F08：同一分区的不同设置各有身份，互不作废在途保存。
@@ -156,6 +166,10 @@ function toggleMaintenance(): void {
     // F08：这次保存只拥有「开关」这一个设置；响应里附带的其它字段可能来自更早的请求，
     // 不能拿它覆盖另一个设置在途/已成功的选择。
     apply: (server) => {
+      maintenanceSaved.value = {
+        enabled: server.enabled,
+        interval: maintenanceSaved.value.interval,
+      };
       maintenanceEnabled.value = server.enabled;
       patchEffectiveFacts({ maintenanceEnabled: server.enabled });
     },
@@ -165,9 +179,15 @@ function toggleMaintenance(): void {
   });
 }
 
+function onMaintenanceIntervalInput(value: number | null): void {
+  maintenanceTouched += 1;
+  maintenanceInterval.value = value ?? 0;
+}
+
 function onMaintenanceIntervalChange(value: number | null): void {
   const next = value ?? 0;
-  const previous = maintenanceInterval.value;
+  // 回滚到最近一次真实保存值，而不是用户刚输入的数字（返修 1）。
+  const previous = maintenanceSaved.value.interval;
   maintenanceInterval.value = next;
   maintenanceTouched += 1;
   void save.saveNow<{ enabled: boolean; interval_hours: number }>({
@@ -178,6 +198,10 @@ function onMaintenanceIntervalChange(value: number | null): void {
     },
     commit: () => api.updateMaintenanceSettings({ interval_hours: next }),
     apply: (server) => {
+      maintenanceSaved.value = {
+        enabled: maintenanceSaved.value.enabled,
+        interval: server.interval_hours,
+      };
       maintenanceInterval.value = server.interval_hours;
       patchEffectiveFacts({ maintenanceInterval: server.interval_hours });
     },
@@ -207,7 +231,9 @@ async function runMaintenanceNow(): Promise<void> {
 /* ---------------- 高级选项：对话深度（即时保存） ---------------- */
 const loopMaxIterations = ref(128);
 const loopTokenBudget = ref(51200);
-/** 用户对对话深度做过几次保存：同上，迟到的初始读取不得覆盖（F14） */
+/** 最近一次已保存（或刚加载）的对话深度真值：失败回滚用它（返修 1） */
+const loopSaved = ref({ maxIterations: 128, outputTokenBudget: 51200 });
+/** 用户对对话深度做过几次修改/保存：同上，迟到的初始读取不得覆盖（F14） */
 let loopTouched = 0;
 
 async function loadLoopSettings(): Promise<void> {
@@ -215,6 +241,7 @@ async function loadLoopSettings(): Promise<void> {
   try {
     const s = await api.getLoopSettings();
     if (loopTouched !== touchedAtStart) return;
+    loopSaved.value = { maxIterations: s.max_iterations, outputTokenBudget: s.output_token_budget };
     loopMaxIterations.value = s.max_iterations;
     loopTokenBudget.value = s.output_token_budget;
     patchEffectiveFacts({ maxIterations: s.max_iterations, outputTokenBudget: s.output_token_budget });
@@ -224,6 +251,10 @@ async function loadLoopSettings(): Promise<void> {
 }
 
 function applyLoop(server: { max_iterations: number; output_token_budget: number }): void {
+  loopSaved.value = {
+    maxIterations: server.max_iterations,
+    outputTokenBudget: server.output_token_budget,
+  };
   loopMaxIterations.value = server.max_iterations;
   loopTokenBudget.value = server.output_token_budget;
   patchEffectiveFacts({
@@ -244,9 +275,15 @@ function saveLoop(): void {
     return;
   }
   loopTouched += 1;
+  const previous = { ...loopSaved.value };
   void save.saveNow<{ max_iterations: number; output_token_budget: number }>({
     key: "memory.loop",
     pending: "正在保存对话深度…",
+    // 失败回到真实已保存值，而不是用户刚输入的数字（返修 1）。
+    rollback: () => {
+      loopMaxIterations.value = previous.maxIterations;
+      loopTokenBudget.value = previous.outputTokenBudget;
+    },
     commit: () => api.updateLoopSettings({ max_iterations: iterations, output_token_budget: budget }),
     apply: applyLoop,
     success: "对话深度已保存",
@@ -255,9 +292,12 @@ function saveLoop(): void {
 }
 
 function onIterationsInput(value: number | null): void {
+  // 实际输入就建立保护：不等失焦/保存，迟到初始读取也不能覆盖未提交输入（返修 3）。
+  loopTouched += 1;
   loopMaxIterations.value = value ?? 0;
 }
 function onBudgetInput(value: number | null): void {
+  loopTouched += 1;
   loopTokenBudget.value = value ?? 0;
 }
 
@@ -375,7 +415,7 @@ onMounted(() => {
         mono
         label="整理间隔（小时）"
         unit="小时"
-        @update:model-value="(value: number | null) => (maintenanceInterval = value ?? 0)"
+        @update:model-value="onMaintenanceIntervalInput"
         @change="onMaintenanceIntervalChange(maintenanceInterval)"
       />
     </SettingRow>
