@@ -191,3 +191,86 @@ def test_record_facts_keeps_the_claims():
         }
     })
     assert facts.declaration["claims"] == ["test_passed", "registered"]
+
+# ---------------------------------------------------------------------------
+# 知识提交（propose_knowledge）：结构化事实 → 可读的核对说明
+#
+# 截图缺陷：知识提交在「依据校验」这一步失败后，默认可见区只有
+# 「N 项失败：evidence_ids 必须来自…」这种技术原文，模型随后仍可能说
+# 「已让它等你审批」。这里钉住：失败用什么程序字段表达、注记怎么说人话、
+# 后续成功如何覆盖失败（有证据按证据呈现）。
+# ---------------------------------------------------------------------------
+
+
+def _knowledge(state: str, code: str) -> dict:
+    return {"knowledge_proposal": {"state": state, "code": code}}
+
+
+def test_knowledge_failure_gets_a_readable_annotation():
+    """证据校验失败：默认注记说人话，不把技术原文当成结论。"""
+    facts = TurnFacts()
+    facts.record_facts(_knowledge("failed", "evidence_not_found"))
+    note = facts.annotation() or ""
+    assert "知识提交未成功" in note
+    assert "引用依据未通过核对" in note
+    assert "evidence_ids" not in note
+
+
+def test_knowledge_failure_is_not_repeated_as_raw_tool_error():
+    """同一次失败既记了工具终态又记了结构化事实：默认注记只说一遍。"""
+    facts = TurnFacts()
+    facts.record_tool(
+        call_id="c1",
+        tool_name="propose_knowledge",
+        ok=False,
+        status="failed",
+        error="evidence_ids 必须来自本轮实际证据目录，未找到：ghost",
+    )
+    facts.record_facts(_knowledge("failed", "evidence_not_found"))
+    note = facts.annotation() or ""
+    assert note.count("知识提交") == 1
+    assert "propose_knowledge 执行失败" not in note
+    assert "未找到：ghost" not in note
+
+
+def test_knowledge_failure_with_unknown_code_does_not_invent_a_reason():
+    facts = TurnFacts()
+    facts.record_facts(_knowledge("failed", "some_future_code"))
+    note = facts.annotation() or ""
+    assert "知识提交未成功" in note
+    assert "引用依据" not in note
+
+
+def test_awaiting_approval_is_not_a_failure():
+    facts = TurnFacts()
+    facts.record_facts(_knowledge("awaiting_approval", "awaiting_user_approval"))
+    assert facts.annotation() is None
+    assert facts.knowledge_proposal == {
+        "state": "awaiting_approval",
+        "code": "awaiting_user_approval",
+    }
+
+
+def test_later_successful_proposal_clears_an_earlier_failure():
+    facts = TurnFacts()
+    facts.record_tool(call_id="c1", tool_name="propose_knowledge", ok=False, status="failed")
+    facts.record_facts(_knowledge("failed", "evidence_not_found"))
+    facts.record_tool(call_id="c2", tool_name="propose_knowledge", ok=True, status="success")
+    facts.record_facts(_knowledge("awaiting_approval", "awaiting_user_approval"))
+    assert facts.annotation() is None
+
+
+def test_rejected_knowledge_content_is_annotated_readably():
+    facts = TurnFacts()
+    facts.record_facts(_knowledge("rejected", "rejected_content"))
+    note = facts.annotation() or ""
+    assert "知识提交未成功" in note
+    assert "拒绝" in note
+
+
+def test_knowledge_facts_ignore_garbage():
+    facts = TurnFacts()
+    facts.record_facts({"knowledge_proposal": "nope"})
+    facts.record_facts({"knowledge_proposal": {"state": "weird", "code": "x"}})
+    facts.record_facts({"knowledge_proposal": {"state": "failed"}})
+    assert facts.knowledge_proposal is None

@@ -90,8 +90,17 @@ export interface TurnQueueSnapshot {
  *
  * `unknown` **不是**「没收到通知」的同义词：只有服务器自己也拿不出这次调用的
  * 结果（记录已被回收 / 后端重启过）时才允许用它。
+ *
+ * `awaiting_approval` 是「调用成功但仍在等用户确认」：知识提交这类操作完成后
+ * 只是进入待审批，界面不能说「已完成 / 已保存」。旧记录不会有这个值。
  */
-export type ToolStatus = "running" | "success" | "failed" | "cancelled" | "unknown";
+export type ToolStatus =
+  | "running"
+  | "success"
+  | "failed"
+  | "cancelled"
+  | "unknown"
+  | "awaiting_approval";
 
 /** 执行叙事（Execution Narrative）的四种形态，见 spec 2026-09-22。 */
 export type NarrativeKind = "announce" | "progress" | "warning" | "result";
@@ -1010,6 +1019,24 @@ export interface StreamMessage {
   toolStatus?: ToolStatus;
   /** 工具耗时（毫秒）；没有意义时（太快/未知）不显示 */
   toolDurationMs?: number;
+  /**
+   * TOOL_END 的稳定机器代码（例如 evidence_not_found / awaiting_user_approval）。
+   * 界面用 code + category_label 生成可读结论，不从 toolError 的中文文本猜。
+   * 旧数据没有这个字段（undefined = 没有结构化事实，不编造）。
+   */
+  toolCode?: string | null;
+  /** 统一的失败类别（后端 tool_feedback.ErrorCategory 值，例如 timeout / permission） */
+  toolCategory?: string | null;
+  /** 类别的中文标签（后端给；只用于展示，不做逻辑判断） */
+  toolCategoryLabel?: string | null;
+  /** 这次失败是否值得重试（后端结构化事实；旧数据没有） */
+  toolRecoverable?: boolean | null;
+  /**
+   * ToolResult.status 原值（completed / awaiting_approval / conflict / failed…）。
+   * 与 toolStatus（成功/失败/取消的展示语义）分开：awaiting_approval 是成功调用
+   * 但尚未生效，不能被 ok=true 吞掉。
+   */
+  toolResultStatus?: string | null;
   /** 独立任务标识：同一 task_id 只有一张卡 */
   taskId?: string;
   /** 独立任务状态（用户可见语义：开始 / 进行中 / 已完成 / 失败） */
@@ -4635,8 +4662,30 @@ const sessionStoreDefinition = defineStore("session", {
       status?: ToolStatus | null,
       recordId?: string | null,
       stageId?: string | null,
+      /**
+       * TOOL_END 的结构化事实（用户要求 §四.7：界面只认程序字段，不猜错误文本）。
+       * 旧事件没有这个参数 → 不写任何值，历史记录保持原样。
+       */
+      structured?: {
+        code?: string | null;
+        category?: string | null;
+        categoryLabel?: string | null;
+        recoverable?: boolean | null;
+        resultStatus?: string | null;
+      } | null,
     ) {
       const key = callId || toolName;
+      /** 把结构化事实写到工具卡上（重复事件按最新事实覆盖；缺字段不覆盖旧值）。 */
+      const applyStructured = (message: StreamMessage) => {
+        if (!structured) return;
+        if (structured.code) message.toolCode = structured.code;
+        if (structured.category) message.toolCategory = structured.category;
+        if (structured.categoryLabel) message.toolCategoryLabel = structured.categoryLabel;
+        if (typeof structured.recoverable === "boolean") {
+          message.toolRecoverable = structured.recoverable;
+        }
+        if (structured.resultStatus) message.toolResultStatus = structured.resultStatus;
+      };
       // 折叠掉的创建流程调用：失败要写回创建卡，不能让用户看不到原因
       if (TOOL_CREATION_TOOLS.has(toolName) || this._suppressedToolCalls.includes(key)) {
         const groupId = this._creationGroupByCall[key];
@@ -4670,6 +4719,7 @@ const sessionStoreDefinition = defineStore("session", {
         // 工具调用历史的记录 id：卡片展开时靠它取参数与输出全文
         if (recordId) target.toolRecordId = recordId;
         if (stageId) target.stageId = stageId;
+        applyStructured(target);
         this.attachCallToStage(null, stageId ?? target.stageId, key);
         return;
       }
@@ -4687,6 +4737,13 @@ const sessionStoreDefinition = defineStore("session", {
         ...(typeof durationMs === "number" ? { toolDurationMs: durationMs } : {}),
         ...(recordId ? { toolRecordId: recordId } : {}),
         ...(stageId ? { stageId } : {}),
+        ...(structured?.code ? { toolCode: structured.code } : {}),
+        ...(structured?.category ? { toolCategory: structured.category } : {}),
+        ...(structured?.categoryLabel ? { toolCategoryLabel: structured.categoryLabel } : {}),
+        ...(typeof structured?.recoverable === "boolean"
+          ? { toolRecoverable: structured.recoverable }
+          : {}),
+        ...(structured?.resultStatus ? { toolResultStatus: structured.resultStatus } : {}),
       });
       this.attachCallToStage(null, stageId, key);
     },

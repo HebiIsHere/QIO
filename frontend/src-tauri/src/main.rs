@@ -1900,6 +1900,65 @@ fn close_behavior_override() -> Option<String> {
     None
 }
 
+/// Windows 11 原生窗口外轮廓：系统圆角 + 去掉 DWM 边框（用户提示词 §六）。
+///
+/// 为什么必须在壳侧做：窗口四角是 **DWM 合成器**裁切的。网页层给 .app-shell 加
+/// border-radius 只会得到「方形窗口里再画一个圆角矩形」，四角仍会露出窗口底色 ——
+/// 那不是原生圆角，也不能靠 CSS 伪装。
+///
+/// 两个属性都只在 Windows 11（Build 22000+）生效：
+/// * DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND：请求系统圆角。半径由系统决定
+///   （Windows 不提供任意像素半径，所以不承诺与全局栏的 20px 精确一致），最大化 /
+///   系统贴边时由系统自动取消圆角、还原后自动恢复 —— 壳侧不需要自己监听窗口状态。
+/// * DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE：去掉 DWM 画的窗口边框。Tauri 官方配置
+///   文档写明 decorations:false + shadow:true 在 Windows 上会加一条 1px 白边。
+///
+/// 失败只记日志、不影响启动：Windows 10 及更早没有系统圆角（保持方形就是系统边界），
+/// DWM 合成被禁用时也不会有圆角。这里绝不为了「看起来圆角」去改窗口区域或加网页圆角。
+#[cfg(windows)]
+fn apply_windows_window_outline(window: &tauri::WebviewWindow) {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    };
+
+    let Ok(raw) = window.hwnd() else {
+        log::debug!("[qio] 窗口外轮廓：拿不到 HWND，跳过原生圆角（不影响启动）");
+        return;
+    };
+    let hwnd = raw.0 as HWND;
+
+    // 系统圆角偏好：半径由 Windows 决定；最大化/贴边/还原全部由系统处理。
+    let corner: i32 = DWMWCP_ROUND;
+    let hr = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+            &corner as *const i32 as *const c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+    };
+    if hr < 0 {
+        log::debug!("[qio] 系统圆角偏好不可用（Windows 10 及更早？）：DWM 返回 {hr:#x}");
+    }
+
+    // 去掉 DWM 窗口边框：无边框 + 阴影会留下 1px 白边，与「四角无黑边/白边」冲突。
+    let border: u32 = DWMWA_COLOR_NONE;
+    let hr = unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR as u32,
+            &border as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+    };
+    if hr < 0 {
+        log::debug!("[qio] 窗口边框颜色不可用（需要 Windows 11 22000+）：DWM 返回 {hr:#x}");
+    }
+}
+
 /// 显示主窗口：隐藏到托盘后必须能恢复（show + unminimize + focus 缺一不可）。
 ///
 /// 只隐藏、不重建窗口：后端不会被重新拉起，也不会出现「第二个实例」。
@@ -2316,6 +2375,14 @@ fn main() {
             install_direct_fallback_guard();
 
             app.manage(Arc::clone(&runtime_for_setup));
+            // §六：Windows 11 原生窗口外轮廓（系统圆角 + 去掉 DWM 白边）。
+            // 只调系统合成属性、不碰网页布局；失败只记日志，不影响启动。
+            #[cfg(windows)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    apply_windows_window_outline(&window);
+                }
+            }
             // R9 §11：系统托盘。创建失败只降级（关闭行为仍可用），不让应用起不来。
             if let Err(err) = setup_tray(app.handle()) {
                 log::error!(

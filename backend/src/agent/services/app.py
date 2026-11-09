@@ -2789,6 +2789,12 @@ class AppContext:
             error=str(trace.get("error") or ""),
             duration_ms=trace.get("duration_ms"),
             save_output=self.settings_store.get_bool("tools.record_outputs", True),
+            # 结构化事实（迁移 75）：任务栏据此判断失败值不值得展示；
+            # 旧调用方不传时如实为 None（默认不进任务栏），不按错误文本猜。
+            code=trace.get("code"),
+            category=trace.get("category"),
+            recoverable=trace.get("recoverable"),
+            result_status=trace.get("result_status"),
         )
 
     def prune_tool_outputs(self) -> int:

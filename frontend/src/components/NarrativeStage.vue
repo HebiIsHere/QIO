@@ -27,15 +27,39 @@ interface Row {
   id: string;
   tool: string;
   title: string;
-  status: "running" | "success" | "failed" | "cancelled";
+  status: "running" | "success" | "failed" | "cancelled" | "awaiting";
   durationMs: number | null;
   error: string | null;
 }
 
 function statusOf(message: StreamMessage): Row["status"] {
+  // 等待审批是「成功调用但尚未生效」的独立状态：不并入成功（会假称完成），
+  // 也不并入失败（会假称出错）。只认后端结构化事实。
+  if (message.toolStatus === "awaiting_approval") return "awaiting";
   if (message.toolStatus) return message.toolStatus === "unknown" ? "failed" : message.toolStatus;
+  if (message.toolResultStatus === "awaiting_approval") return "awaiting";
   if (message.toolRunning) return "running";
   return message.toolOk === false ? "failed" : "success";
+}
+
+const STATUS_LABEL: Record<Row["status"], string> = {
+  running: "运行中",
+  success: "成功",
+  failed: "失败",
+  cancelled: "已取消",
+  awaiting: "等待审批",
+};
+
+function statusMark(status: Row["status"]): string {
+  if (status === "success") return "✓";
+  if (status === "awaiting") return "◷";
+  return "✕";
+}
+
+function statusMarkClass(status: Row["status"]): string {
+  if (status === "success") return "ok";
+  if (status === "awaiting") return "awaiting";
+  return "fail";
 }
 
 /** 实时轮次优先用工具卡的真实状态；历史轮次用系统写的调用摘要。 */
@@ -65,6 +89,7 @@ const historyRows = computed(() => ((props.calls ?? []).length ? [] : rows.value
 const running = computed(() => rows.value.filter((r) => r.status === "running").length);
 const failed = computed(() => rows.value.filter((r) => r.status === "failed").length);
 const cancelled = computed(() => rows.value.filter((r) => r.status === "cancelled").length);
+const awaiting = computed(() => rows.value.filter((r) => r.status === "awaiting").length);
 const durationMs = computed(() => {
   if (!rows.value.length || rows.value.some((r) => r.durationMs === null)) return null;
   return rows.value.reduce((sum, r) => sum + (r.durationMs ?? 0), 0);
@@ -81,6 +106,8 @@ const metaText = computed(() => {
   if (failed.value) return `${failed.value} 失败`;
   if (cancelled.value) return `${cancelled.value} 已取消`;
   if (running.value) return `${running.value} 运行中`;
+  // 等待审批：调用已成功但还没生效，不能收进「N 次调用」冒充完成。
+  if (awaiting.value) return `${awaiting.value} 等待审批`;
   const total = durationMs.value;
   return total === null
     ? `${rows.value.length} 次调用`
@@ -128,12 +155,20 @@ const mark = computed(() =>
           <template v-if="historyRows.length">
             <div class="calls-note mono">调用摘要 · 系统生成</div>
             <div v-for="row in historyRows" :key="row.id" class="callrow">
-              <span class="tool-mark" :class="row.status === 'success' ? 'ok' : 'fail'" aria-hidden="true">
-                {{ row.status === "success" ? "✓" : "✕" }}
+              <span class="tool-mark" :class="statusMarkClass(row.status)" aria-hidden="true">
+                {{ statusMark(row.status) }}
               </span>
               <span class="callname mono">{{ row.tool || row.title }}</span>
-              <span class="callmeta mono" :class="{ bad: row.status !== 'success' }">
-                {{ row.error || (row.durationMs !== null ? formatDuration(row.durationMs) : row.status) }}
+              <span
+                class="callmeta mono"
+                :class="{ bad: row.status === 'failed' || row.status === 'cancelled' }"
+              >
+                {{
+                  row.error ||
+                  (row.durationMs !== null
+                    ? formatDuration(row.durationMs)
+                    : STATUS_LABEL[row.status])
+                }}
               </span>
             </div>
           </template>
@@ -312,6 +347,9 @@ const mark = computed(() =>
 }
 .tool-mark.ok {
   color: var(--success);
+}
+.tool-mark.awaiting {
+  color: var(--warning);
 }
 .tool-mark.fail {
   color: var(--danger);

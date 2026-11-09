@@ -190,6 +190,13 @@ REQUIRED_OBJECTS: dict[str, tuple[str, ...]] = {
         "board_submissions.client_request_id",
         # 阶段三（P3-D，整合后迁移 69；原页面线 56）：意图显示位置；缺列时视图读不到 display。
         "board_intents.display",
+        # 对话页 §一（迁移 75）：工具失败进入任务栏的结构化事实。缺了它们，
+        # 只能按错误文本猜「值不值得展示」，旧失败还会在重连后重新冒出来；
+        # 补偿迁移 76 里有对应的 ADD COLUMN。
+        "tool_records.code",
+        "tool_records.category",
+        "tool_records.recoverable",
+        "tool_records.result_status",
         # 阶段一（迁移 44）：滚动摘要覆盖位置 / 输入版本。缺了它们，主对话无法只处理
         # 未覆盖的新消息（会重复摘要或跳过原文）；补偿迁移 45 里有对应 ADD COLUMN。
         "fragments.rolling_covered_message_id",

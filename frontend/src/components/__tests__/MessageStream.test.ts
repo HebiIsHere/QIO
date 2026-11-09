@@ -4,6 +4,7 @@ import { createPinia, setActivePinia, type Pinia } from "pinia";
 import { nextTick } from "vue";
 import MessageStream from "../MessageStream.vue";
 import { useSessionStore } from "../../stores/session";
+import { useChatViewportStore, type SavedReadingPosition } from "../../stores/chatViewport";
 import { api } from "../../services/api";
 
 vi.mock("../../services/api", () => ({
@@ -26,20 +27,42 @@ async function settle() {
   await nextTick();
 }
 
+/** 构造一个保存过的阅读位置（测试只关心恢复策略，不伪造真实布局）。 */
+function savedPosition(overrides: Partial<SavedReadingPosition> = {}): SavedReadingPosition {
+  return {
+    topicId: null,
+    turnKey: "",
+    anchorKey: null,
+    anchorOffset: 0,
+    turnOffset: 0,
+    textSnippet: null,
+    textOffset: null,
+    scrollTop: 0,
+    following: false,
+    messageCount: 0,
+    lastMessageId: null,
+    savedAt: Date.now(),
+    viewportWidth: 1000,
+    ...overrides,
+  };
+}
+
 async function mountStream(): Promise<{
   w: ReturnType<typeof mount>;
   session: ReturnType<typeof useSessionStore>;
+  viewport: ReturnType<typeof useChatViewportStore>;
   stream: HTMLElement;
   pinia: Pinia;
 }> {
   const pinia = createPinia();
   setActivePinia(pinia);
   const session = useSessionStore();
+  const viewport = useChatViewportStore();
   const w = mount(MessageStream, { global: { plugins: [pinia] } });
   await nextTick();
   const stream = w.find(".stream").element as HTMLElement;
   shape(stream, 1000, 400); // 底部 = scrollTop 600
-  return { w, session, stream, pinia };
+  return { w, session, viewport, stream, pinia };
 }
 
 beforeEach(() => {
@@ -189,13 +212,15 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     await nextTick();
     const stream2 = w2.find(".stream").element as HTMLElement;
     shape(stream2, 1000, 400);
-    await new Promise((r) => setTimeout(r, 30));
-    expect(stream2.scrollTop).toBe(0); // 恢复逻辑不写位置；跟随由新内容触发
+    // 修复 §二.1：离开前在底部 → 返回后主动贴底并继续跟随，不依赖「之后再来一条消息」
+    await new Promise((r) => setTimeout(r, 60));
+    expect(stream2.scrollTop).toBe(600);
+    expect(session.streamFollowing).toBe(true);
     w2.unmount();
   });
 
-  it("上翻阅读时新消息只计数，点击「回到最新消息」才滚动并恢复跟随", async () => {
-    const { w, session, stream } = await mountStream();
+  it("上翻阅读时新消息只计数，入口请求「回到最新」才滚动并恢复跟随", async () => {
+    const { w, session, viewport, stream } = await mountStream();
     stream.scrollTop = 120;
     stream.dispatchEvent(new Event("scroll"));
     await nextTick();
@@ -204,13 +229,11 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     session.pushUser("新消息 2");
     await settle();
     expect(stream.scrollTop).toBe(120); // 没有被强行拉回
-    const btn = w.find(".back-latest");
-    expect(btn.exists()).toBe(true);
-    expect(btn.attributes("aria-label")).toContain("回到最新消息");
-    expect(btn.attributes("aria-label")).toContain("2 条新消息"); // 未读计数
-    expect(btn.find(".count").text()).toBe("2");
+    // 入口行（ComposerEntries）读的是同一份共享状态；这里验证状态与消费链路
+    expect(viewport.following).toBe(false);
+    expect(viewport.unseen).toBe(2);
 
-    await btn.trigger("click");
+    viewport.requestBackToLatest();
     await settle();
     // 平滑滚动按帧推进：轮询等到落到底部（最长约 800ms）
     for (let i = 0; i < 40 && stream.scrollTop !== 600; i++) {
@@ -218,12 +241,31 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     }
     expect(stream.scrollTop).toBe(600);
     expect(session.streamFollowing).toBe(true);
-    expect(w.find(".back-latest").exists()).toBe(false);
+    expect(viewport.following).toBe(true);
+    expect(viewport.unseen).toBe(0);
+    w.unmount();
+  });
+
+  it("回到最新的平滑滚动可被用户滚动中断（用户操作优先）", async () => {
+    const { w, viewport, stream } = await mountStream();
+    stream.scrollTop = 120;
+    stream.dispatchEvent(new Event("scroll"));
+    await nextTick();
+
+    viewport.requestBackToLatest();
+    await nextTick();
+    // 动画进行中用户自己滚动：立刻中断，不再把位置拉回底部
+    stream.dispatchEvent(new Event("wheel"));
+    stream.scrollTop = 200;
+    stream.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(stream.scrollTop).toBe(200);
+    expect(viewport.following).toBe(false);
     w.unmount();
   });
 
   it("回到最新：滚动过程中内容还在变高，也要落到真正的底部（不是开始时的估算底部）", async () => {
-    const { w, session, stream } = await mountStream();
+    const { w, session, viewport, stream } = await mountStream();
     stream.scrollTop = 120;
     stream.dispatchEvent(new Event("scroll"));
     await nextTick();
@@ -232,7 +274,7 @@ describe("MessageStream 跟随触发源（P0：只有本机发送才拉回底部
     await settle();
     // 虚拟列表在滚动中逐条测量：总高度从 1000 涨到 1600（真实底部 1200）
     setTimeout(() => shape(stream, 1600, 400), 30);
-    await w.find(".back-latest").trigger("click");
+    viewport.requestBackToLatest();
     for (let i = 0; i < 60 && stream.scrollTop !== 1200; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -381,7 +423,7 @@ describe("本机发送被拒绝后不留后遗症（P0：没发出去的消息�
     expect(session.sendRejectedSeq).toBe(1);
     expect(stream.scrollTop).toBe(120); // 回到发送前的位置
     expect(session.streamFollowing).toBe(false); // 不因为一次失败就进入跟随
-    expect(w.find(".back-latest").exists()).toBe(false); // 没有留下虚假的未读计数
+    expect(useChatViewportStore().unseen).toBe(0); // 没有留下虚假的未读计数
 
     // 之后到达的内容同样不把阅读位置拽到底部
     session.pushUser("别人发的新消息");
@@ -426,6 +468,121 @@ describe("本机发送被拒绝后不留后遗症（P0：没发出去的消息�
     await waitFrame();
 
     expect(stream.scrollTop).toBe(260);
+    w.unmount();
+  });
+});
+/**
+ * 阅读位置恢复（修复提示词 §二）：稳定身份、有界校正、用户优先、话题隔离。
+ *
+ * jsdom 没有布局、虚拟列表也不渲染真实轮次，所以「按锚点校正到同一内容位置」的
+ * 真实虚拟列表行为由浏览器回归场景覆盖；这里钉住恢复策略、取消条件与回退说明。
+ */
+describe("MessageStream 阅读位置恢复（§二）", () => {
+  it("恢复期间用户先滚动：恢复与校正立即作废，不再把位置拉回", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const viewport = useChatViewportStore();
+    session.currentTopicId = "t1";
+    viewport.savePosition(
+      savedPosition({ topicId: "t1", following: true, scrollTop: 0 }),
+    );
+    const w = mount(MessageStream, { global: { plugins: [pinia] } });
+    await nextTick();
+    const stream = w.find(".stream").element as HTMLElement;
+    shape(stream, 1000, 400);
+    // 贴底恢复还在进行时用户自己滚动
+    stream.scrollTop = 120;
+    stream.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(stream.scrollTop).toBe(120);
+    expect(session.streamFollowing).toBe(false);
+    expect(viewport.following).toBe(false);
+    w.unmount();
+  });
+
+  it("离开期间新增消息：未读数量按保存时最后一条消息计算", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const viewport = useChatViewportStore();
+    session.currentTopicId = "t1";
+    session.pushUser("旧消息 1");
+    session.pushUser("旧消息 2");
+    const lastId = session.messages[session.messages.length - 1]?.id ?? null;
+    viewport.savePosition(
+      savedPosition({
+        topicId: "t1",
+        following: false,
+        messageCount: session.messages.length,
+        lastMessageId: lastId,
+      }),
+    );
+    // 离开期间来了两条新消息
+    session.pushUser("新消息 1");
+    session.pushUser("新消息 2");
+    const w = mount(MessageStream, { global: { plugins: [pinia] } });
+    await nextTick();
+    const stream = w.find(".stream").element as HTMLElement;
+    shape(stream, 1000, 400);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(viewport.following).toBe(false);
+    expect(viewport.unseen).toBe(2);
+    expect(stream.scrollTop).toBe(0);
+    w.unmount();
+  });
+
+  it("原阅读位置不在已加载范围：回退到最近可用内容并简短说明（不静默跳到底部）", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const viewport = useChatViewportStore();
+    session.currentTopicId = "t1";
+    session.pushUser("现在能看到的消息");
+    viewport.savePosition(
+      savedPosition({
+        topicId: "t1",
+        turnKey: "turn_no_longer_loaded",
+        following: false,
+        scrollTop: 300,
+      }),
+    );
+    const w = mount(MessageStream, { global: { plugins: [pinia] } });
+    await nextTick();
+    const stream = w.find(".stream").element as HTMLElement;
+    shape(stream, 1000, 400);
+    await new Promise((r) => setTimeout(r, 60));
+    const note = w.find('[data-test="restore-note"]');
+    expect(note.exists()).toBe(true);
+    expect(note.text()).toContain("原来的阅读位置");
+    expect(stream.scrollTop).toBe(0);
+    expect(viewport.following).toBe(false);
+    w.unmount();
+  });
+
+  it("恢复按话题隔离：别的话题保存的位置不会套用到当前话题", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const session = useSessionStore();
+    const viewport = useChatViewportStore();
+    session.currentTopicId = "topic_b";
+    viewport.savePosition(
+      savedPosition({
+        topicId: "topic_a",
+        turnKey: "turn_a",
+        following: false,
+        scrollTop: 250,
+      }),
+    );
+    const w = mount(MessageStream, { global: { plugins: [pinia] } });
+    await nextTick();
+    const stream = w.find(".stream").element as HTMLElement;
+    shape(stream, 1000, 400);
+    await new Promise((r) => setTimeout(r, 60));
+    // 当前话题没有保存位置：按跟随底部处理，不拿另一个话题的位置跳过去
+    expect(stream.scrollTop).toBe(600);
+    expect(viewport.following).toBe(true);
+    expect(w.find('[data-test="restore-note"]').exists()).toBe(false);
     w.unmount();
   });
 });

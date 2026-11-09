@@ -575,6 +575,19 @@ export const useEventStore = defineStore("events", {
             (d.record_id as string | null) ?? null,
             // 契约 §1.3：可选 stage_id（缺省 null = 归入「整轮」）
             (d.stage_id as string | null) ?? null,
+            /**
+             * 结构化事实（用户要求 §四.7）：界面用稳定 code / 类别标签生成可读结论，
+             * 不从错误文本猜。旧事件没有这些字段 → null，保持历史行为。
+             * result_status 是 ToolResult.status 原值（awaiting_approval 等）：
+             * TOOL_END 的 status 按 ok 归一，不能替代「还在等审批」这个事实。
+             */
+            {
+              code: stringOrNull(d.code),
+              category: stringOrNull(d.category),
+              categoryLabel: stringOrNull(d.category_label),
+              recoverable: typeof d.recoverable === "boolean" ? d.recoverable : null,
+              resultStatus: stringOrNull(d.result_status ?? d.tool_result_status),
+            },
           );
           if (session.turnRunning) {
             session.activity = session.turnPhase === "generating" ? "generating" : "waiting";

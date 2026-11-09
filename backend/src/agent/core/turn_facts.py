@@ -31,6 +31,27 @@ DEV_TEST_CURRENT = "current"
 DEV_TEST_STALE = "stale"
 _TEST_STATES = frozenset({DEV_TEST_NONE, DEV_TEST_CURRENT, DEV_TEST_STALE})
 
+# 知识提交（propose_knowledge）的结局事实：由 ToolResult.facts["knowledge_proposal"]
+# 给出（state + 稳定 code）。界面与最终答复校准都只认这些程序字段。
+KNOWLEDGE_PROPOSAL_KEY = "knowledge_proposal"
+KNOWLEDGE_FAILED = "failed"
+KNOWLEDGE_REJECTED = "rejected"
+KNOWLEDGE_AWAITING_APPROVAL = "awaiting_approval"
+KNOWLEDGE_ACTIVE = "active"
+_KNOWLEDGE_STATES = frozenset(
+    {KNOWLEDGE_FAILED, KNOWLEDGE_REJECTED, KNOWLEDGE_AWAITING_APPROVAL, KNOWLEDGE_ACTIVE}
+)
+
+# 稳定错误码 → 可读说明（只认程序字段，不从中文错误文本猜）。
+_KNOWLEDGE_FAILURE_LABELS = {
+    "evidence_not_found": "引用依据未通过核对",
+    "evidence_unsupported": "引用依据不足以支持这条结论",
+    "invalid_scope": "归属范围无效",
+    "invalid_arguments": "提交参数不合法",
+    "rejected_content": "这条内容你之前明确拒绝过",
+    "create_failed": "创建待审批条目失败",
+}
+
 # 注记的硬约束：最多列这么多条失败，其余归并成一句；总长有上限。
 MAX_ANNOTATION_ITEMS = 3
 DEFAULT_ANNOTATION_LIMIT = 600
@@ -113,6 +134,8 @@ class TurnFacts:
         self._tools: dict[str, dict[str, Any]] = {}
         self._dev_tasks: dict[str, DevTaskFact] = {}
         self._declaration: dict[str, Any] | None = None
+        # 本轮知识提交的**最后一次**结局（同一轮重试成功会覆盖失败：有证据按证据走）。
+        self._knowledge_proposal: dict[str, Any] | None = None
 
     # -- 记账 -------------------------------------------------------------
 
@@ -145,7 +168,7 @@ class TurnFacts:
         self._dev_tasks[fact.task_id] = fact
 
     def record_facts(self, facts: Any) -> None:
-        """收一次工具结果里的 `facts`：开发任务事实与结论声明。"""
+        """收一次工具结果里的 `facts`：开发任务事实、结论声明与知识提交结局。"""
         if not isinstance(facts, dict):
             return
         fact = DevTaskFact.from_payload(facts.get("dev_task"))
@@ -158,6 +181,35 @@ class TurnFacts:
                 basis=declaration.get("basis"),
                 claims=declaration.get("claims"),
             )
+        proposal = facts.get(KNOWLEDGE_PROPOSAL_KEY)
+        if isinstance(proposal, dict):
+            self.record_knowledge_proposal(
+                state=proposal.get("state"),
+                code=proposal.get("code"),
+                knowledge_id=proposal.get("knowledge_id"),
+            )
+
+    def record_knowledge_proposal(
+        self,
+        *,
+        state: Any,
+        code: Any,
+        knowledge_id: Any = None,
+    ) -> None:
+        """记一次知识提交的结局（同一轮后写覆盖先写）。
+
+        只认程序字段：state 必须是我们认识的四种之一，code 必须非空；
+        形状不对就忽略（宁可不记，也不编一个「已经提交」）。
+        """
+        state_text = str(state or "").strip()
+        code_text = str(code or "").strip()
+        if state_text not in _KNOWLEDGE_STATES or not code_text:
+            return
+        record: dict[str, Any] = {"state": state_text, "code": code_text}
+        knowledge_id_text = str(knowledge_id or "").strip()
+        if knowledge_id_text:
+            record["knowledge_id"] = knowledge_id_text
+        self._knowledge_proposal = record
 
     def record_declaration(
         self,
@@ -176,6 +228,13 @@ class TurnFacts:
     # -- 读 ---------------------------------------------------------------
 
     @property
+    def knowledge_proposal(self) -> dict | None:
+        """本轮最后一次知识提交结局；没有结构化事实时为 None（不猜）。"""
+        if not self._knowledge_proposal:
+            return None
+        return dict(self._knowledge_proposal)
+
+    @property
     def declaration_accepted(self) -> bool:
         return bool(self._declaration and self._declaration.get("accepted"))
 
@@ -192,8 +251,22 @@ class TurnFacts:
     def unresolved(self) -> list[str]:
         """本轮「没有通过验证」的事实，一条一行（已压成单行）。"""
         items: list[str] = []
+        proposal = self._knowledge_proposal
+        proposal_failed = bool(
+            proposal
+            and proposal.get("state") in (KNOWLEDGE_FAILED, KNOWLEDGE_REJECTED)
+        )
+        if proposal_failed and proposal is not None:
+            # 知识提交失败：说人话，不把技术错误原文当结论（原文在工具卡展开详情里）。
+            label = _KNOWLEDGE_FAILURE_LABELS.get(str(proposal.get("code") or ""))
+            items.append(
+                f"知识提交未成功，{label}" if label else "知识提交未成功"
+            )
         for name, record in self._tools.items():
             if record.get("status") != STATUS_FAILED:
+                continue
+            # 同一失败已经有可读的结构化说明时，不再重复一遍技术原文。
+            if name == "propose_knowledge" and proposal_failed:
                 continue
             reason = record.get("error") or "（没有给出失败原因）"
             items.append(f"{name} 执行失败：{reason}")

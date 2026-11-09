@@ -14,6 +14,7 @@ import { vQioTip } from "../../composables/useQioTip";
 import { computed, ref, watch } from "vue";
 import { useSessionStore } from "../../stores/session";
 import { useApprovalsStore } from "../../stores/approvals";
+import { useChatViewportStore } from "../../stores/chatViewport";
 import { useApprovalResultsStore } from "../../stores/approvalResults";
 import { useUnifiedApprovalsStore } from "../../stores/unifiedApprovals";
 import { vQioScrollbar } from "../../composables/useQioScrollbars";
@@ -67,6 +68,8 @@ const emit = defineEmits<{
 
 const session = useSessionStore();
 const approvals = useApprovalsStore();
+// 「回到最新」与消息流共用同一份真实阅读状态（跟随 / 未读），不另造一套
+const viewport = useChatViewportStore();
 // ⑤ 的数量与打开动作走统一审批队列：工具/权限类 + 知识保存类按身份去重后的有效数量。
 const unified = useUnifiedApprovalsStore();
 // F02：结果与历史也走同一个 ⑤ 入口（0 待办时仍可达），不新增第二套常驻按钮。
@@ -128,6 +131,24 @@ const visibleEntries = computed(() =>
       entry.id === "approvals" ? { ...entry, visible: true, count: unified.count } : entry,
     ),
 );
+
+/**
+ * 「回到最新消息」入口（§三）：
+ * - 只有用户离开底部、且当前确实有消息时出现；
+ * - 放在辅助入口行**固定顺序的末尾**，与其它入口同一尺寸/间距；
+ * - 只改变阅读位置，不取消「从历史继续」选择、不改消息状态。
+ */
+const showBackToLatest = computed(
+  () => !viewport.following && session.messages.length > 0,
+);
+const backToLatestLabel = computed(() =>
+  viewport.unseen > 0
+    ? `回到最新消息（${viewport.unseen} 条新消息）`
+    : "回到最新消息",
+);
+function backToLatest(): void {
+  viewport.requestBackToLatest();
+}
 
 /** 展开中的入口如果不再有事项（被处理完 / 切了话题 / 调用方隐藏），面板自动收起（状态本身不动）。 */
 watch(
@@ -376,7 +397,7 @@ const panelTitle = computed(() => {
     </transition>
 
     <div
-      v-if="visibleEntries.length || extraVisible.length"
+      v-if="visibleEntries.length || extraVisible.length || showBackToLatest"
       class="entry-row"
       role="toolbar"
       :aria-label="props.context === 'interactive' ? '输入区事项入口' : '输入区快捷入口'"
@@ -455,6 +476,26 @@ const panelTitle = computed(() => {
         </svg>
         <span v-if="entry.count && entry.count > 0" class="count mono">{{ entry.count }}</span>
         <span v-else-if="(entry.tone ?? 'plain') === 'warn'" class="dot" aria-hidden="true"></span>
+      </button>
+
+      <!--
+        回到最新：固定顺序的末尾。强调色实底 + 白色向下箭头；
+        角标用页面底色 + 强调色文字，与实底清楚区分（不把所有辅助按钮都染成强调色）。
+      -->
+      <button
+        v-if="showBackToLatest"
+        class="entry-btn back-latest"
+        type="button"
+        data-entry="backToLatest"
+        data-test="back-to-latest"
+        :aria-label="backToLatestLabel"
+        v-qio-tip="backToLatestLabel"
+        @click="backToLatest"
+      >
+        <svg class="ico" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 2.6v10.8M3.4 8.6 8 13.2l4.6-4.6" />
+        </svg>
+        <span v-if="viewport.unseen > 0" class="count mono" aria-hidden="true">{{ viewport.unseen }}</span>
       </button>
     </div>
   </div>
@@ -623,6 +664,27 @@ const panelTitle = computed(() => {
   font-size: 9px;
   line-height: 13px;
   text-align: center;
+}
+/* 回到最新：强调色实底、白色箭头；尺寸/图标/间距与其它入口一致，不加光晕 */
+.entry-btn.back-latest {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.entry-btn.back-latest:hover {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+.entry-btn.back-latest:active {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--on-accent);
+}
+.entry-btn.back-latest .count {
+  border-color: var(--bg-surface);
+  background: var(--bg-surface);
+  color: var(--accent);
 }
 .entry-btn .dot {
   position: absolute;

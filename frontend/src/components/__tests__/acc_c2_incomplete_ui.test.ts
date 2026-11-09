@@ -212,14 +212,18 @@ describe("F06 界面：incomplete 的过程区不是「已完成」", () => {
     w.unmount();
   });
 
-  it("completed 仍然说「已完成」（回归：不把正常完成一并改成未完成）", async () => {
+  it("completed 说「本轮已结束」而不是「未完成」（回归：正常结束不并入不完整）", async () => {
     const { w } = mountProcess({
       turnId: "turn_ok",
       facts: facts({ turnId: "turn_ok", status: "completed", reason: null, reasonCode: "none", actions: [] }),
     });
     await nextTick();
     expect(w.find("[data-test='turn-process']").attributes("data-state")).toBe("ready");
-    expect(w.find("[data-test='turn-process-status']").text()).toContain("已完成");
+    const status = w.find("[data-test='turn-process-status']").text();
+    // §四.2：回复流程结束 ≠ 用户目标完成，但也不是「未完成」。
+    expect(status).toContain("本轮已结束");
+    expect(status).not.toContain("未完成");
+    expect(status).not.toContain("已完成");
     w.unmount();
   });
 

@@ -53,6 +53,19 @@ const statusLabel = computed(() => taskStatusLabel(props.item));
 const attention = computed(() => isAttentionItem(props.item));
 const sourceText = computed(() => taskSourceText(props.item));
 const originText = computed(() => taskOriginText(props.item));
+/**
+ * 折叠行是否还要显示来源。
+ *
+ * 工具任务标题已经是「工具执行 · <工具名>」，同一行 meta 再写一次「工具执行」只是噪声。
+ * 只按「标题以来源文案开头」判断，不写死 source === "tool"：独立任务的
+ * 「独立任务 · <名称>」同理；来源本身仍保留在展开后的详情 facts 里（见 facts）。
+ */
+const showSource = computed(() => {
+  const label = sourceText.value.trim();
+  if (!label) return false;
+  const title = (props.item.title || props.item.summary || "").trim();
+  return !title.startsWith(label);
+});
 const timingText = computed(() => taskTimingText(props.item));
 const detailId = computed(() => "task-detail-" + props.item.id);
 
@@ -170,7 +183,7 @@ function fallbackActionLabel(kind: string): string {
     <div class="task-meta">
       <span class="task-status" :data-status="status">{{ statusLabel }}</span>
       <span v-if="attention" class="task-need">需要处理</span>
-      <span class="task-source">{{ sourceText }}</span>
+      <span v-if="showSource" class="task-source">{{ sourceText }}</span>
       <span class="task-origin">{{ originText }}</span>
       <span v-if="timingText" class="task-time mono">{{ timingText }}</span>
     </div>

@@ -89,6 +89,32 @@ def test_proposal_evidence_must_exist(db_conn: sqlite3.Connection):
     assert db_conn.execute("SELECT COUNT(*) c FROM knowledge").fetchone()["c"] == 0
 
 
+def test_proposal_results_carry_structured_facts(db_conn: sqlite3.Connection):
+    """知识提交的每次结局都带结构化事实（最终答复校准只认程序字段）。
+
+    截图缺陷链路：evidence_not_found 失败后模型仍可能说「已让它等你审批」。
+    这里钉住工具侧输出：失败 = state=failed + 稳定 code；成功 = state=awaiting_approval；
+    同内容再次提交 = already_awaiting_approval。有了这些字段，事实台账才能不靠
+    中文错误文本猜出「这次提交到底成没成」。
+    """
+    tool = _tool(db_conn)
+    rejected = asyncio.run(tool.run(**_args(evidence_ids=["ghost"])))
+    assert rejected.facts == {
+        "knowledge_proposal": {"state": "failed", "code": "evidence_not_found"}
+    }
+    accepted = asyncio.run(tool.run(**_args()))
+    assert accepted.facts == {
+        "knowledge_proposal": {
+            "state": "awaiting_approval",
+            "code": "awaiting_user_approval",
+            "knowledge_id": accepted.data["knowledge_id"],
+        }
+    }
+    duplicate = asyncio.run(tool.run(**_args()))
+    assert duplicate.facts["knowledge_proposal"]["state"] == "awaiting_approval"
+    assert duplicate.facts["knowledge_proposal"]["code"] == "already_awaiting_approval"
+
+
 def test_qio_observed_requires_real_observation(db_conn: sqlite3.Connection):
     tool = _tool(db_conn)
     rejected = asyncio.run(
@@ -165,6 +191,14 @@ def test_active_duplicate_is_not_recreated(db_conn: sqlite3.Connection):
     result = asyncio.run(tool.run(**_args(content="已经是有效知识")))
     assert result.ok and result.code == "already_active"
     assert result.data["knowledge_id"] == item.id
+    # 已经是有效知识 = 成功事实（可据实说「已保存为有效知识」），不是失败。
+    assert result.facts == {
+        "knowledge_proposal": {
+            "state": "active",
+            "code": "already_active",
+            "knowledge_id": item.id,
+        }
+    }
     assert db_conn.execute("SELECT COUNT(*) c FROM knowledge").fetchone()["c"] == 1
 
 
@@ -180,6 +214,9 @@ def test_rejected_content_cannot_be_saved_again_by_propose(db_conn: sqlite3.Conn
     assert not result.ok
     assert result.status == "conflict" and result.code == "rejected_content"
     assert result.data["rejected"]["knowledge_id"] == item.id
+    assert result.facts == {
+        "knowledge_proposal": {"state": "rejected", "code": "rejected_content"}
+    }
 
 
 # ---------------------------------------------------------------------------

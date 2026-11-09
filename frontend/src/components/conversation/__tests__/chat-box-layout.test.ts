@@ -53,26 +53,35 @@ describe("消息框：消息流 + 底部输入块同一个框", () => {
     expect(stage).toMatch(/background:\s*transparent/);
   });
 
-  it("入口按钮行在输入行之外（出现时向上长，不推动输入胶囊）", () => {
+  it("入口按钮行与输入胶囊同一列（出现时向上长，不推动输入胶囊）", () => {
+    const gridAt = dock.indexOf('class="composer-grid"');
     const entriesAt = dock.indexOf('class="composer-entries"');
-    const lineAt = dock.indexOf('class="composer-line"');
-    expect(entriesAt, "composer-entries").toBeGreaterThan(-1);
-    expect(lineAt, "composer-line").toBeGreaterThan(-1);
-    // 入口行必须排在 .composer-line 之前，且不在 .composer-stack 里面
-    expect(entriesAt).toBeLessThan(lineAt);
     const stackAt = dock.indexOf('class="composer-stack"');
-    expect(stackAt).toBeGreaterThan(lineAt);
-    expect(dock.indexOf("</template>", stackAt)).toBeGreaterThan(0);
-    // 模式/胶囊/星球是同一个对齐单元
-    expect(block(dock, ".composer-line")).toMatch(/align-items:\s*center/);
-    expect(block(dock, ".composer-planet-cell")).toMatch(/align-items:\s*center/);
+    expect(gridAt, "composer-grid").toBeGreaterThan(-1);
+    expect(entriesAt, "composer-entries").toBeGreaterThan(-1);
+    expect(stackAt, "composer-stack").toBeGreaterThan(entriesAt);
+    // 入口行在胶囊行之外（不参与模式/胶囊/星球那一条垂直中心线）
+    const modeAt = dock.indexOf('class="composer-mode-cell"');
+    const planetAt = dock.indexOf('class="composer-planet-cell"');
+    expect(modeAt).toBeGreaterThan(entriesAt);
+    expect(planetAt).toBeGreaterThan(stackAt);
+    // 同一个 grid：入口行与胶囊都在第 2 列 → 以真实胶囊为基准居中
+    const grid = block(dock, ".composer-grid");
+    expect(grid).toMatch(/grid-template-columns:\s*auto minmax\(0,\s*860px\) var\(--planet-size/);
+    expect(grid).toMatch(/align-items:\s*center/);
+    expect(block(dock, ".composer-entries")).toMatch(/grid-column:\s*2/);
+    expect(block(dock, ".composer-stack")).toMatch(/grid-column:\s*2/);
+    expect(block(dock, ".composer-mode-cell")).toMatch(/grid-column:\s*1/);
+    expect(block(dock, ".composer-planet-cell")).toMatch(/grid-column:\s*3/);
+    // 没有入口时整行收起；有入口时才占高度
+    expect(dock).toMatch(/\.composer-entries:has\(\.entry-row\)/);
   });
 
   it("星球入口直径 = 输入胶囊单行高度（同一个令牌）", () => {
     expect(composer).toMatch(/--composer-pill-h:\s*54px/);
     expect(block(composer, ".input-pill")).toMatch(/min-height:\s*var\(--composer-pill-h/);
     expect(dock).toMatch(/--planet-size:\s*var\(--composer-pill-h/);
-    expect(block(dock, ".composer-line")).toMatch(/var\(--planet-size/);
+    expect(block(dock, ".composer-grid")).toMatch(/var\(--planet-size/);
   });
 
   it("入口小球的画布尺寸跟着球的直径走（54 / 0.887 ≈ 61，scale ≈ 1）", () => {

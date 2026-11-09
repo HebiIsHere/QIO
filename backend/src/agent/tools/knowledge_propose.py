@@ -88,6 +88,22 @@ class ProposeKnowledgeArgs(BaseModel):
     )
 
 
+def _proposal_facts(
+    state: str, code: str, *, knowledge_id: str | None = None
+) -> dict[str, Any]:
+    """知识提交的结构化事实（给主循环的每轮事实台账，不进模型消息）。
+
+    界面与最终答复校准只认这些程序字段（state/code），不从中文错误文本猜：
+    * state=failed / rejected：这次提交没有成功；
+    * state=awaiting_approval：真的在等用户确认（尚未生效）；
+    * state=active：已经是有效知识。
+    """
+    payload: dict[str, Any] = {"state": state, "code": code}
+    if knowledge_id:
+        payload["knowledge_id"] = knowledge_id
+    return {"knowledge_proposal": payload}
+
+
 def _failure(
     code: str,
     message: str,
@@ -95,6 +111,7 @@ def _failure(
     recoverable: bool = True,
     data: dict[str, Any] | None = None,
     status: str = "failed",
+    state: str = "failed",
 ) -> ToolResult:
     return ToolResult(
         ok=False,
@@ -105,6 +122,7 @@ def _failure(
         status=status,
         code=code,
         data=dict(data or {}),
+        facts=_proposal_facts(state, code),
     )
 
 
@@ -211,6 +229,7 @@ class ProposeKnowledgeTool(Tool):
                 "这条内容用户明确拒绝过，未再次保存：「" + content[:60] + "」",
                 recoverable=False,
                 status="conflict",
+                state="rejected",
                 data={"rejected": tombstone},
             )
         ks = KnowledgeService(self.conn)
@@ -230,6 +249,9 @@ class ProposeKnowledgeTool(Tool):
                         "state": existing.state.value,
                         "created": False,
                     },
+                    facts=_proposal_facts(
+                        "active", "already_active", knowledge_id=existing.id
+                    ),
                 )
             if existing.state in (
                 KnowledgeState.PENDING_REVIEW,
@@ -246,6 +268,11 @@ class ProposeKnowledgeTool(Tool):
                         "state": existing.state.value,
                         "created": False,
                     },
+                    facts=_proposal_facts(
+                        "awaiting_approval",
+                        "already_awaiting_approval",
+                        knowledge_id=existing.id,
+                    ),
                 )
             # draft：同一内容尚未被拒绝过 → 复用这一条重新提交（不重复建行）
             item = ks.submit(existing.id)
@@ -275,6 +302,7 @@ class ProposeKnowledgeTool(Tool):
         return self._awaiting(item, created=True)
 
     def _awaiting(self, item, *, created: bool) -> ToolResult:
+        code = "awaiting_user_approval" if created else "resubmitted_for_approval"
         return ToolResult(
             ok=True,
             content=(
@@ -284,7 +312,7 @@ class ProposeKnowledgeTool(Tool):
             ),
             protocol_version=TOOL_RESULT_PROTOCOL_VERSION,
             status="awaiting_approval",
-            code="awaiting_user_approval" if created else "resubmitted_for_approval",
+            code=code,
             data={
                 "knowledge_id": item.id,
                 "state": item.state.value,
@@ -294,4 +322,37 @@ class ProposeKnowledgeTool(Tool):
                 "scope_nodes": list(item.node_ids or []),
                 "created": created,
             },
+            facts=_proposal_facts(
+                "awaiting_approval", code, knowledge_id=item.id
+            ),
         )
+
+    # -- 呈现 --------------------------------------------------------------
+    # 卡片默认可见的一句结论：用稳定错误码翻译成可读中文（原始错误仍留在
+    # ToolResult.error / content 里，由展开详情展示，不丢事实）。
+    _FAILURE_PRESENTATION: dict[str, tuple[str, str]] = {
+        "evidence_not_found": ("未通过核对", "引用依据未通过核对"),
+        "evidence_unsupported": ("未通过核对", "引用依据不足以支持这条结论"),
+        "invalid_scope": ("未通过核对", "归属范围无效"),
+        "invalid_arguments": ("未提交", "提交参数不合法"),
+        "rejected_content": ("未提交", "这条内容你之前明确拒绝过"),
+        "create_failed": ("未通过核对", "创建待审批条目失败"),
+    }
+
+    def present_result(self, result: ToolResult) -> dict[str, Any] | None:
+        code = str(result.code or "")
+        if result.ok:
+            if code in (
+                "awaiting_user_approval",
+                "resubmitted_for_approval",
+                "already_awaiting_approval",
+            ):
+                # 真的在等用户确认：界面可以说「等待审批」，但不能说「已保存」。
+                return {"status": "等待审批"}
+            if code == "already_active":
+                return {"status": "已是有效知识"}
+            return None
+        status, summary = self._FAILURE_PRESENTATION.get(
+            code, ("未通过核对", "这次提交没有成功")
+        )
+        return {"status": status, "summary": summary}

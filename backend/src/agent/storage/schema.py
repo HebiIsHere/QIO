@@ -1965,6 +1965,71 @@ MIGRATIONS.append(
     )
 )
 
+# ── 对话页 §一（2026-11-09）：工具失败进入任务栏的结构化事实 ───────────────────
+# 用户口径：单次工具失败默认只保留在执行记录里；任务栏只展示值得持续关注的工作、
+# 需要处理的阻碍与待核查的结果。判定必须用程序字段（code / category / recoverable /
+# result_status），不按错误文本关键词猜，也不为每次错误额外调用模型。
+#
+# status 列仍是既有三态（success / failed / cancelled），不改历史行语义；
+# result_status 存 ToolResult.status 的协议事实（例如 awaiting_approval：
+# ok=True 但仍在等待用户确认），供过程区区分「调用成功」与「等待审批」。
+# 旧行这几列为 NULL —— 读侧按「没有结构化事实」处理（默认不进任务栏），
+# 不回溯猜测、不改写历史。
+_TOOL_RECORD_FACT_DDL: list[str] = [
+    "ALTER TABLE tool_records ADD COLUMN code TEXT",
+    "ALTER TABLE tool_records ADD COLUMN category TEXT",
+    "ALTER TABLE tool_records ADD COLUMN recoverable INTEGER",
+    "ALTER TABLE tool_records ADD COLUMN result_status TEXT",
+]
+
+#: 工具历史表本体（迁移 20 的同一形状）：只进补偿入口，不进迁移 75。
+#: 补偿要求「清单里的列所在表丢得掉、补得回来」—— 没有 CREATE TABLE 时
+#: ADD COLUMN 无处可加；放在 75 里会让每次升级都多一条 IF NOT EXISTS 的无用语句。
+_TOOL_RECORD_BASE_DDL: list[str] = [
+    """
+    CREATE TABLE IF NOT EXISTS tool_records (
+        id             TEXT PRIMARY KEY,
+        turn_id        TEXT NOT NULL,
+        topic_id       TEXT,
+        call_id        TEXT NOT NULL DEFAULT '',
+        seq            INTEGER NOT NULL DEFAULT 0,
+        tool_name      TEXT NOT NULL,
+        arguments      TEXT NOT NULL DEFAULT '{}',
+        output         TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'success',
+        error          TEXT NOT NULL DEFAULT '',
+        duration_ms    INTEGER,
+        truncated      INTEGER NOT NULL DEFAULT 0,
+        output_missing INTEGER NOT NULL DEFAULT 0,
+        missing_reason TEXT NOT NULL DEFAULT '',
+        created_at     TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_tool_records_turn ON tool_records(turn_id)",
+    "CREATE INDEX IF NOT EXISTS idx_tool_records_created ON tool_records(created_at)",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_records_call
+        ON tool_records(turn_id, call_id) WHERE call_id <> ''
+    """,
+]
+
+# 只追加迁移 75：给工具历史补结构化事实列。
+MIGRATIONS.append((75, list(_TOOL_RECORD_FACT_DDL)))
+
+# 补偿入口（新，76）：补偿 74 的全部语句 + 工具历史表本体 + 迁移 75 的追加列。
+# 与 66/68/70/72/74 同口径：纯追加 DDL；「版本已登记但列/表丢失」的存量库
+# 由 migrate.verify_required_objects 重放这里补齐，不改任何数据行。
+MIGRATIONS.append(
+    (
+        76,
+        _dedupe_statements(
+            [stmt for target, stmts in MIGRATIONS if target == 74 for stmt in stmts]
+            + list(_TOOL_RECORD_BASE_DDL)
+            + list(_TOOL_RECORD_FACT_DDL)
+        ),
+    )
+)
+
 SCHEMA_VERSION = MIGRATIONS[-1][0]
-COMPENSATION_VERSION = 74
+COMPENSATION_VERSION = 76
 

@@ -488,7 +488,7 @@ onBeforeUnmount(() => {
         class="wc-btn"
         type="button"
         aria-label="最小化"
-        v-qio-tip="'把窗口最小化到任务栏（QIO 继续在后台运行）'"
+        v-qio-tip="'最小化到任务栏'"
         @click="run('minimize')"
       >
         <QIcon name="window-minimize" :size="12" />

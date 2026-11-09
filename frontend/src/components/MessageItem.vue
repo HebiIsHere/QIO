@@ -115,27 +115,44 @@ const toolTitle = computed(
  * 视觉上沿用既有的卡片状态（取消与未知复用最接近的失败外观），
  * 但文案必须说出真实状态 —— 「取消」不是「失败」，「结果未收到」也不是。
  */
-const toolState = computed<"running" | "success" | "failed" | "cancelled" | "unknown">(() => {
+const toolState = computed<
+  "running" | "success" | "failed" | "cancelled" | "unknown" | "awaiting_approval"
+>(() => {
   if (props.message.toolStatus) return props.message.toolStatus;
   // 老数据（历史 / 测试构造的消息）没有 toolStatus：按旧字段兜底
   if (props.message.toolRunning === true) return "running";
   return props.message.toolOk === false ? "failed" : "success";
 });
 const toolRunning = computed(() => toolState.value === "running");
-const toolFailed = computed(() => !toolRunning.value && toolState.value !== "success");
+/**
+ * 调用成功、但仍在等用户确认（知识提交等）：不能说「已完成 / 已保存」。
+ * 只认后端结构化事实（ToolStatus 或 ToolResult.status 原值），不从文案推断。
+ */
+const toolAwaitingApproval = computed(() => {
+  if (toolState.value === "awaiting_approval") return true;
+  return toolState.value === "success" && props.message.toolResultStatus === "awaiting_approval";
+});
+const toolFailed = computed(
+  () =>
+    !toolRunning.value &&
+    !toolAwaitingApproval.value &&
+    toolState.value !== "success",
+);
 const toolMark = computed(() => {
   if (toolRunning.value) return "◌";
+  if (toolAwaitingApproval.value) return "◷";
   if (toolState.value === "cancelled") return "⊘";
   if (toolState.value === "unknown") return "?";
   return toolFailed.value ? "✕" : "✓";
 });
 /**
- * 卡片上的状态徽标：运行中 / 已取消由语义决定；
+ * 卡片上的状态徽标：运行中 / 已取消 / 等待审批由语义决定；
  * 其余（成功、失败）沿用工具自己的呈现文案，没有就不显示（不制造噪声）。
  */
 const toolStateLabel = computed(() => {
   if (toolRunning.value) return "运行中";
   if (toolState.value === "cancelled") return "已取消";
+  if (toolAwaitingApproval.value) return "等待审批";
   return props.message.presentation?.status || "";
 });
 
@@ -154,8 +171,26 @@ const durationText = computed(() => {
  * 有信息量的原因，用户只看到一句笼统的「这次执行没有成功」，等于又静默了一次。
  */
 const FAILURE_LINE_LIMIT = 120;
+/** 知识提交失败：稳定 code → 可读原因（与过程区同一套程序字段口径，不猜错误文本）。 */
+const KNOWLEDGE_FAILURE_LABELS: Record<string, string> = {
+  evidence_not_found: "引用依据未通过核对",
+  evidence_unsupported: "引用依据不足以支持这条结论",
+  invalid_scope: "归属范围无效",
+  invalid_arguments: "提交参数不合法",
+  rejected_content: "这条内容你之前明确拒绝过",
+  create_failed: "创建待审批条目失败",
+};
+const isKnowledgeProposalTool = computed(
+  () =>
+    (props.message.presentation?.tool || props.message.toolName || "") ===
+    "propose_knowledge",
+);
 const toolFailureLine = computed(() => {
   if (!toolFailed.value) return "";
+  if (isKnowledgeProposalTool.value) {
+    const label = KNOWLEDGE_FAILURE_LABELS[String(props.message.toolCode ?? "")];
+    return label ? `知识提交未成功，${label}` : "知识提交未成功";
+  }
   const raw = (props.message.toolError ?? "").trim();
   if (raw) {
     if (raw.length <= FAILURE_LINE_LIMIT) return raw;
@@ -636,8 +671,16 @@ function removeOne(id: string) {
       <div
         class="tool-card qio-card"
         data-qio-fit
-        :class="{ fail: toolFailed, running: toolRunning, open }"
-        :data-state="toolRunning ? 'running' : toolFailed ? 'failed' : 'ready'"
+        :class="{ fail: toolFailed, running: toolRunning, awaiting: toolAwaitingApproval, open }"
+        :data-state="
+          toolRunning
+            ? 'running'
+            : toolFailed
+              ? 'failed'
+              : toolAwaitingApproval
+                ? 'awaiting'
+                : 'ready'
+        "
         v-qio-tip="rawToolName"
       >
         <button
@@ -649,7 +692,15 @@ function removeOne(id: string) {
         >
           <span
             class="tool-mark"
-            :class="toolRunning ? 'running' : toolFailed ? 'fail' : 'ok'"
+            :class="
+              toolRunning
+                ? 'running'
+                : toolFailed
+                  ? 'fail'
+                  : toolAwaitingApproval
+                    ? 'awaiting'
+                    : 'ok'
+            "
           >
             {{ toolMark }}
           </span>
@@ -657,7 +708,15 @@ function removeOne(id: string) {
           <span
             v-if="toolRunning || toolStateLabel"
             class="tool-status qio-state"
-            :class="toolRunning ? 'running info' : toolFailed ? 'fail err' : 'ok'"
+            :class="
+              toolRunning
+                ? 'running info'
+                : toolFailed
+                  ? 'fail err'
+                  : toolAwaitingApproval
+                    ? 'awaiting'
+                    : 'ok'
+            "
           >
             {{ toolStateLabel }}
           </span>
@@ -1067,22 +1126,24 @@ function removeOne(id: string) {
   color: var(--text-muted);
   text-align: right;
 }
-/* 元数据：低调存在，hover / focus 时才完全显形（第一眼只看内容） */
+/* 元数据：默认就必须清楚可读（时间/用量属于信息，不是装饰）。
+   统一用 --fs-meta 令牌（visual 负责在 tokens.css 定义；这里带 --fs-tech 兜底），
+   颜色用实测 5.4:1 的 --text-muted，静态不透明；hover 只做轻微提亮。 */
 .meta {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 6px;
-  font-size: 10.5px;
+  font-size: var(--fs-meta, var(--fs-tech));
   color: var(--text-muted);
   letter-spacing: 0.05em;
-  opacity: 0.62;
-  transition: opacity var(--dur-fast) var(--ease);
+  opacity: 1;
+  transition: color var(--dur-fast) var(--ease);
 }
 .message:hover .meta,
 .message:focus-within .meta {
-  opacity: 1;
+  color: var(--text-secondary);
 }
 .ts {
   color: var(--text-muted);
@@ -1143,6 +1204,11 @@ function removeOne(id: string) {
 .tool-card.running {
   border-style: dashed;
 }
+/* 等待审批：调用成功但尚未生效 —— 用警示色区分「已完成」 */
+.tool-card.awaiting {
+  border-color: var(--warning);
+  border-style: dashed;
+}
 .tool-head {
   display: flex;
   align-items: center;
@@ -1175,6 +1241,9 @@ function removeOne(id: string) {
 .tool-mark.running {
   color: var(--link);
 }
+.tool-mark.awaiting {
+  color: var(--warning);
+}
 .tool-name {
   min-width: 0;
   overflow-wrap: anywhere;
@@ -1197,6 +1266,9 @@ function removeOne(id: string) {
 }
 .tool-status.running {
   color: var(--link);
+}
+.tool-status.awaiting {
+  color: var(--warning);
 }
 .tool-duration {
   font-size: 10px;

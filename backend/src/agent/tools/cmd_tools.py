@@ -1062,17 +1062,22 @@ class _CmdTool(Tool):
         if result.ok and category is None:
             return ToolResult(ok=True, content=merged or "(无输出)", facts=facts)
         if category == "exit_code":
+            # 非零退出码可能是检查结果（grep/diff 的常见返回值），不能直接推出「整个
+            # 任务失败」；但真实退出码必须保留。稳定 code 供界面/任务栏分开判断。
             return ToolResult(
                 ok=False,
                 error=f"{label}退出码 {result.returncode}",
                 content=merged,
+                code="exit_code",
                 facts=facts,
             )
         if category == "timeout":
+            # 超时是「不知道有没有生效」：命令可能已经产生副作用。
             return ToolResult(
                 ok=False,
                 error=f"{label}{result.error or '执行超时'}",
                 category="timeout",
+                code="timeout",
                 facts=facts,
             )
         if category == "startup":
@@ -1231,6 +1236,7 @@ class _CmdTool(Tool):
                 error="这次操作需要你的批准，但当前没有可用的审批服务：本次没有执行。",
                 category="permission",
                 recoverable=False,
+                code="approval_unavailable",
             )
         from agent.tools.approval_present import describe_computer_action
 
@@ -1247,6 +1253,10 @@ class _CmdTool(Tool):
             return ToolResult(
                 ok=False,
                 error=f"{label}未获批准：{refusal_reason(r.decision)}",
+                # 用户拒绝/未批准 = 需要用户处理的授权阻碍（结构化事实，不靠中文匹配）。
+                category="permission",
+                recoverable=False,
+                code="permission_denied",
             )
         return None
 
@@ -1283,7 +1293,13 @@ class _CmdTool(Tool):
             )
         if self.security is None:
             if legacy_verdict == "deny":
-                return ToolResult(ok=False, error=denied)
+                return ToolResult(
+                    ok=False,
+                    error=denied,
+                    category="permission",
+                    recoverable=False,
+                    code="permission_denied",
+                )
             if legacy_verdict == "approve":
                 merged = dict(legacy_payload)
                 if permanent_delete is not None:
@@ -1590,7 +1606,7 @@ class RunCmdTool(_CmdTool):
     async def run(self, **kwargs: Any) -> ToolResult:
         cmd = str(kwargs.get("cmd") or "").strip()
         if not cmd:
-            return ToolResult(ok=False, error="cmd 必填")
+            return ToolResult(ok=False, error="cmd 必填", code="missing_argument")
         cwd = str(kwargs.get("cwd") or "") or None
         timeout = float(kwargs.get("timeout") or 30)
         mode = self._mode()

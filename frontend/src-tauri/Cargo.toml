@@ -78,6 +78,9 @@ windows-sys = { version = "0.61", features = [
   # 附件：点击选择本地文件走 Win32 原生对话框（GetOpenFileNameW 在
   # UI\Controls\Dialogs 下）。只加 feature，不新增 crate（不联网拉 dialog 插件）。
   "Win32_UI_Controls_Dialogs",
+  # 窗口外轮廓（§六）：DwmSetWindowAttribute 在 Graphics\Dwm 下。
+  # 只加 feature、不新增 crate（windows-sys 本来就在依赖树里，Cargo.lock 不变）。
+  "Win32_Graphics_Dwm",
 ] }
 
 [profile.release]

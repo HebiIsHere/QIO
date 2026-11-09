@@ -226,12 +226,37 @@ function toolStateOf(m: StreamMessage): string {
 const failedTools = computed(() => tools.value.filter((m) => toolStateOf(m) === "failed"));
 const cancelledTools = computed(() => tools.value.filter((m) => toolStateOf(m) === "cancelled"));
 const unknownTools = computed(() => tools.value.filter((m) => toolStateOf(m) === "unknown"));
+/** 成功但尚未生效、仍在等用户确认的调用（只认后端结构化事实） */
+const awaitingApprovalTools = computed(() => tools.value.filter(isAwaitingApprovalTool));
+
+/**
+ * 本轮最后一次知识提交的结局：同一轮里失败后重试成功时，以**最后一次**为准
+ * （用户要求 §四.4「有后续成功证据时按证据呈现」；后端事实台账同一口径）。
+ */
+const lastKnowledgeProposal = computed(() => {
+  const list = tools.value.filter(isKnowledgeProposal);
+  return list.length ? list[list.length - 1] : null;
+});
+const lastKnowledgeProposalFailed = computed(() => {
+  const last = lastKnowledgeProposal.value;
+  return !!last && toolStateOf(last) === "failed";
+});
+/** 默认摘要里真正要报的失败：知识提交已被后续成功覆盖时不再念旧失败（细节仍在工具卡里）。 */
+const summaryFailedTools = computed(() => {
+  if (lastKnowledgeProposalFailed.value) return failedTools.value;
+  return failedTools.value.filter((m) => !isKnowledgeProposal(m));
+});
 const runningToolLabel = computed(
   () => runningTools.value[0]?.presentation?.title || runningTools.value[0]?.toolName || "",
 );
 
 const STATUS_WORD: Record<string, string> = {
-  completed: "已完成",
+  /**
+   * completed 只代表「这一轮回复流程正常结束」，不代表用户目标已完成，
+   * 更不代表知识已保存 / 已提交审批（用户要求 §四.1/2/3）。
+   * 只有过程区里出现后端确认的等待审批事实时，状态词才升级为「等待审批」。
+   */
+  completed: "本轮已结束",
   failed: "已失败",
   cancelled: "已停止",
   stopped: "已停止",
@@ -243,6 +268,64 @@ const STATUS_WORD: Record<string, string> = {
   incomplete: "未完成",
 };
 
+/** 知识提交失败时，稳定 code → 可读原因（与后端 turn_facts 同一套程序字段口径）。 */
+const KNOWLEDGE_FAILURE_LABELS: Record<string, string> = {
+  evidence_not_found: "引用依据未通过核对",
+  evidence_unsupported: "引用依据不足以支持这条结论",
+  invalid_scope: "归属范围无效",
+  invalid_arguments: "提交参数不合法",
+  rejected_content: "这条内容你之前明确拒绝过",
+  create_failed: "创建待审批条目失败",
+};
+
+/** 这些 code 表示「调用成功，但还在等用户确认」（尚未生效）。 */
+const AWAITING_APPROVAL_CODES = new Set([
+  "awaiting_user_approval",
+  "already_awaiting_approval",
+  "resubmitted_for_approval",
+]);
+
+function toolIdentity(m: StreamMessage): string {
+  return m.presentation?.tool || m.toolName || "";
+}
+/**
+ * 第一层失败/等待结论里的工具名：只用后端给的中文展示名。
+ * 原始工具名（web_search 这类内部标识）留给展开后的工具卡，不挤进默认状态行。
+ */
+function toolTitle(m: StreamMessage): string {
+  return m.presentation?.title || "工具";
+}
+function isKnowledgeProposal(m: StreamMessage): boolean {
+  return toolIdentity(m) === "propose_knowledge";
+}
+/** 这次调用是否「在等用户确认」：只认后端结构化事实，不从文案推断。 */
+function isAwaitingApprovalTool(m: StreamMessage): boolean {
+  if (m.toolResultStatus === "awaiting_approval") return true;
+  return AWAITING_APPROVAL_CODES.has(String(m.toolCode ?? ""));
+}
+/**
+ * 失败调用的默认可读结论（用户要求 §四.6）。
+ *
+ * 优先用后端稳定 code（知识提交的已知失败原因），其次用类别标签中文；
+ * 两者都没有时只说「执行失败」——绝不从 toolError 的中文关键词猜原因，
+ * 原始错误原文留在逐项工具卡的展开详情里。
+ */
+function toolFailureSummary(m: StreamMessage): string {
+  if (isKnowledgeProposal(m)) {
+    const label = KNOWLEDGE_FAILURE_LABELS[String(m.toolCode ?? "")];
+    return label ? `知识提交未成功，${label}` : "知识提交未成功";
+  }
+  const category = m.toolCategoryLabel ? `（${m.toolCategoryLabel}）` : "";
+  const title = toolTitle(m);
+  // 拉丁工具名后留一个空格（「grep 执行失败」）；中文标题直接相连（「网络搜索执行失败」）
+  const sep = /[A-Za-z0-9]$/.test(title) ? " " : "";
+  return `${title}${sep}执行失败${category}`;
+}
+/** 等待审批的默认可读结论（成功但尚未生效：不说已完成 / 已保存）。 */
+function toolAwaitingSummary(m: StreamMessage): string {
+  return isKnowledgeProposal(m) ? "知识提交等待你确认（尚未生效）" : `${toolTitle(m)}等待你确认`;
+}
+
 const statusWord = computed(() => {
   if (props.running) {
     // 只有这条审批**确实内联在本轮过程区**时才说「等待确认」；
@@ -251,7 +334,17 @@ const statusWord = computed(() => {
     return session.turnPhase === "generating" ? "运行中" : "正在处理";
   }
   if (props.queued) return "等待开始";
-  if (props.facts) return STATUS_WORD[props.facts.status] ?? "已结束";
+  if (props.facts) {
+    /**
+     * 回复流程正常结束、但确实有「还在等用户确认」的结构化事实时，
+     * 第一层说「等待审批」——不宣称已完成 / 已保存（用户要求 §四.2/4）。
+     */
+    if (props.facts.status === "completed" && awaitingApprovalTools.value.length) {
+      return "等待审批";
+    }
+    return STATUS_WORD[props.facts.status] ?? "已结束";
+  }
+  if (awaitingApprovalTools.value.length) return "等待审批";
   return "已结束";
 });
 
@@ -266,7 +359,13 @@ const statusHasToolCount = computed(
   () => runningTools.value.length > 0 || (props.running && tools.value.length > 0),
 );
 
-/** 状态行里的工具 / 阶段事实（**一行**，不堆状态） */
+/**
+ * 状态行里的工具事实（**一行**，不堆状态）。
+ *
+ * 分层（用户要求 §四.8）：第一层只放「简短状态 + 可读的简短结果」；
+ * 阶段数 / 调用数 / 耗时都降为次级信息（抽屉摘要与耗时入口）；
+ * 原始错误原文与逐项执行细节只出现在展开后的工具卡里。
+ */
 const statusDetail = computed(() => {
   const bits: string[] = [];
   if (runningTools.value.length) {
@@ -274,19 +373,27 @@ const statusDetail = computed(() => {
     bits.push(`${label} · ${runningTools.value.length} 项工具运行中`);
   } else if (props.running && tools.value.length) {
     bits.push(`已完成 ${tools.value.length} 次调用`);
-  } else if (!props.running && stages.value.length) {
-    // 当前阶段块会显示阶段名，这里只在收起后（没有当前阶段块）才补一句
-    const last = stages.value[stages.value.length - 1];
-    if (last?.name) bits.push(last.name);
   }
-  if (failedTools.value.length) {
+  if (awaitingApprovalTools.value.length) {
+    const first = awaitingApprovalTools.value[0];
+    bits.push(
+      awaitingApprovalTools.value.length === 1
+        ? toolAwaitingSummary(first)
+        : `${awaitingApprovalTools.value.length} 项操作等待你确认`,
+    );
+  }
+  if (summaryFailedTools.value.length) {
     /**
-     * 失败不能只留一个计数：状态行是默认可见区，把**第一项**失败的一句话原因带上
-     * （工具参数 / 完整输出仍在展开后）。可恢复的单次工具错误由此一眼可见。
+     * 失败不能只留一个计数：默认可见区给出**可读的结构化结论**（code / 类别标签），
+     * 不用 toolError 的原始文本（那是展开详情）。单次可恢复失败不改变整轮状态；
+     * 同一次知识提交先失败后重试成功时，以最后一次成功证据为准。
      */
-    const reason = (failedTools.value[0]?.toolError ?? "").trim();
-    const short = reason.length > 40 ? `${reason.slice(0, 40)}…` : reason;
-    bits.push(reason ? `${failedTools.value.length} 项失败：${short}` : `${failedTools.value.length} 项失败`);
+    const first = toolFailureSummary(summaryFailedTools.value[0]);
+    bits.push(
+      summaryFailedTools.value.length === 1
+        ? first
+        : `${first}；共 ${summaryFailedTools.value.length} 项调用未成功`,
+    );
   }
   if (cancelledTools.value.length) bits.push(`${cancelledTools.value.length} 项已取消`);
   if (unknownTools.value.length) bits.push(`${unknownTools.value.length} 项结果未收到`);
@@ -552,7 +659,7 @@ onBeforeUnmount(() => {
   <section
     class="turn-process"
     data-qio-fit
-    :class="{ open: historyOpen, running, failed: failedTools.length > 0 }"
+    :class="{ open: historyOpen, running }"
     :data-state="dataState"
     :data-turn="turnId || undefined"
     data-test="turn-process"
@@ -871,6 +978,9 @@ onBeforeUnmount(() => {
   font-family: var(--sans);
   font-size: var(--fs-sm);
   color: var(--text-muted);
+  /* 长工具名 / 长结论在窄窗口任意位置折行：状态与展开入口不被挤出可见区 */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .tp-chev {
   font-size: 10px;

@@ -144,7 +144,13 @@ describe("过程区：状态行与当前阶段", () => {
     });
     await nextTick();
     expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
-    expect(w.find("[data-test='turn-process-status']").text()).toContain("已完成");
+    /**
+     * §四.2（2026-11-09 用户要求）：completed 只代表本轮回复流程结束，
+     * 语音必须说「本轮已结束」；不能宣称用户目标已完成（「已完成」）。
+     */
+    const status = w.find("[data-test='turn-process-status']").text();
+    expect(status).toContain("本轮已结束");
+    expect(status).not.toContain("已完成");
     expect(w.find("[data-test='turn-process-duration']").text()).toContain("12 秒");
     /**
      * 折叠态**只出现一次状态词**（2026-10-06 D 的真机截图实测缺陷：
@@ -153,7 +159,7 @@ describe("过程区：状态行与当前阶段", () => {
      */
     const region = w.find("[data-test='turn-process']");
     // 用可见文本计数（html() 会带上模板注释，注释不该参与断言）
-    expect(region.text().split("已完成").length - 1).toBe(1);
+    expect(region.text().split("本轮已结束").length - 1).toBe(1);
     // 总耗时仍然可见（在同一个折叠态里）
     expect(region.text()).toContain("12 秒");
     w.unmount();
@@ -170,7 +176,12 @@ describe("过程区：状态行与当前阶段", () => {
     await nextTick();
     const status = w.find("[data-test='turn-process-status']").text();
     expect(status).toContain("已失败");
-    expect(status).toContain("1 项失败");
+    /**
+     * §四.3/6：单次工具失败不把整轮变成失败的结果之外，还必须是**可读结论**；
+     * 原始错误（boom）只在展开的逐项工具卡详情里，不进第一层状态行。
+     */
+    expect(status).toContain("读取文件执行失败");
+    expect(status).not.toContain("boom");
     expect(w.find("[data-test='turn-process-history']").exists()).toBe(false);
     // 失败态同样只有一个状态词（耗时面板不再拼状态词）
     expect(w.find("[data-test='turn-process']").text().split("已失败").length - 1).toBe(1);

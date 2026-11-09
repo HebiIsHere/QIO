@@ -952,6 +952,10 @@ class AgentLoop:
                 "category": result_facts.get("category"),
                 "category_label": result_facts.get("category_label"),
                 "recoverable": result_facts.get("recoverable"),
+                # 稳定机器代码与真实结果状态（§四 消费）：缺字段时如实为 None，
+                # 旧前端只读 status / category 也不受影响。
+                "code": result_facts.get("code"),
+                "result_status": result_facts.get("result_status"),
                 "content_preview": safe_preview,
                 "duration_ms": duration_ms,
                 "presentation": data.get("presentation"),
@@ -981,6 +985,9 @@ class AgentLoop:
             return None
         call = pending["call"]
         result = pending["result"]
+        # 结构化事实（code / category / recoverable / result_status）与事件同源：
+        # 工具历史据此判断失败是否值得进任务栏，不走错误文本关键词匹配。
+        result_facts = tool_feedback.facts(result)
         try:
             record_id = self.tool_trace({
                 "tool_name": tool_name,
@@ -994,6 +1001,10 @@ class AgentLoop:
                 "seq": self._call_seq.get(str(data.get("call_id") or ""), 0),
                 "duration_ms": duration_ms,
                 "status": status,
+                "code": result_facts.get("code"),
+                "category": result_facts.get("category"),
+                "recoverable": result_facts.get("recoverable"),
+                "result_status": result_facts.get("result_status"),
             })
             return str(record_id) if record_id else None
         except Exception:  # noqa: BLE001 - tracing must not break the loop

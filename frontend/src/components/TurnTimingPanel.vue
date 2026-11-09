@@ -33,7 +33,8 @@ const devMode = computed(() => props.dev ?? ui.developerMode);
 const { state, timing, load } = useTurnTiming(() => props.turnId ?? null);
 
 const STATUS_WORD: Record<string, string> = {
-  completed: "已完成",
+  // 与过程区同一口径：completed 只表示回复流程结束，不宣称目标已完成。
+  completed: "本轮已结束",
   failed: "已失败",
   cancelled: "已停止",
   stopped: "已停止",

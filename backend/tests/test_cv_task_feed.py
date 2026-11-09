@@ -130,17 +130,33 @@ def test_unfinished_dev_task_needs_user_and_exposes_supported_actions(client):
     assert revoke["supported"] is False
 
 
-def test_failed_tool_execution_is_attention_then_ack_moves_to_history(client):
+def test_actionable_failed_tool_execution_is_attention_then_ack_moves_to_history(client):
+    """需要用户处理的失败（缺少授权等）才是任务栏条目；瞬时失败只留在执行记录。
+
+    用户提示词 §一 的完整判定在 test_conv030_tool_failure_task_feed.py；这里只保留
+    「需要处理 → 置顶 → 知道了进历史且结果保留」这条既有交互的回归覆盖。
+    """
     ctx = client.app.state.ctx
+    now = _now()
+    ctx.conn.execute(
+        "INSERT INTO turn_journal (turn_id, message, status, created_at, ended_at, updated_at) "
+        "VALUES (?, ?, 'completed', ?, ?, ?)",
+        ("turn_cv_attention", "测试消息", now, now, now),
+    )
+    ctx.conn.commit()
     record_id = tool_records.record_tool_call(
         ctx.conn,
-        turn_id="turn_cv",
+        turn_id="turn_cv_attention",
         tool_name="run_shell",
         arguments={"cmd": "pytest"},
-        output="命令行失败输出",
+        output="命令行输出",
         status="failed",
-        error="exit 1",
+        error="命令未获批准",
         duration_ms=1500,
+        code="permission_denied",
+        category="permission",
+        recoverable=False,
+        result_status="failed",
     )
     assert record_id
     item = _find(client, f"tool:{record_id}")

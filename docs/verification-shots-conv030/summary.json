@@ -1,0 +1,255 @@
+{
+  "generatedAt": "2026-11-09T12:04:09.104Z",
+  "base": "http://127.0.0.1:5199",
+  "provider": "http://127.0.0.1:8798",
+  "viewport": "1440x900 / 800x600",
+  "results": [
+    {
+      "name": "种子轮 1 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "种子轮 2 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "种子轮 3 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "种子轮 4 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "种子轮 5 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "种子轮 6 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "种子轮 7 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "种子轮 8 拿到真实长回答",
+      "ok": true,
+      "detail": null
+    },
+    {
+      "name": "A1 离开前确实在底部（真实长对话）",
+      "ok": true,
+      "detail": {
+        "scrollTop": 28318,
+        "max": 28318,
+        "scrollHeight": 28944,
+        "clientHeight": 626,
+        "backVisible": false,
+        "backAria": null,
+        "badge": null,
+        "turns": 7
+      }
+    },
+    {
+      "name": "A2 虚拟列表已渲染真实轮次块",
+      "ok": true,
+      "detail": {
+        "turns": 7
+      }
+    },
+    {
+      "name": "A3 设置返回后主动恢复到底部并保持跟随（没有新消息也贴底）",
+      "ok": true,
+      "detail": {
+        "scrollTop": 28318,
+        "max": 28318,
+        "scrollHeight": 28944,
+        "clientHeight": 626,
+        "backVisible": false,
+        "backAria": null,
+        "badge": null,
+        "turns": 7
+      }
+    },
+    {
+      "name": "B1 已滚到长回答内部（标记段落可见）",
+      "ok": true,
+      "detail": {
+        "offset": 180.1875,
+        "scrollTop": 16096,
+        "max": 28318,
+        "scrollHeight": 28944,
+        "text": "第 22 段 · 长回答第5组：为了验证虚拟列表先估算再实测真实高度，这一段故意写得足够长，包含中文、英文 mixed content、数字 522，以及一个可"
+      }
+    },
+    {
+      "name": "B2 保存时不在底部（回到最新入口应出现）",
+      "ok": true,
+      "detail": {
+        "scrollTop": 16096,
+        "max": 28318
+      }
+    },
+    {
+      "name": "B3 离开期间后端确实受理了新的一轮",
+      "ok": true,
+      "detail": {
+        "status": 200,
+        "body": "{\"ok\":true,\"accepted\":true,\"cancelled\":false,\"turn_id\":\"turn_275a778a3879\",\"status\":\"accepted\",\"message\":\"离开期间来的新消息（浏览器回归）\",\"topic_id\":\"topic_6be5e96c3a0f\",\"receipt\":{\"state\":\"accepted\",\"accepted\":true,\"cancelled\":false,\"pending\":false,\"reason\":null,\"deduped\":false,\"turn_id\":\"turn_275a778a3879\",\"status\":\"accepted\",\"attachment_ids\":[]},\"bound_attachment_ids\":[],\"rejected\":[],\"attachments\":[]}"
+      }
+    },
+    {
+      "name": "B4 返回后同一段内容仍在相近视口位置（不是只比较 scrollTop）",
+      "ok": true,
+      "detail": {
+        "savedOffset": 180.1875,
+        "restoredOffset": 180.1875,
+        "savedScrollTop": 16096,
+        "restoredScrollTop": 16096
+      }
+    },
+    {
+      "name": "B5 离开期间的新消息没有把阅读位置拉走（停止跟随）",
+      "ok": true,
+      "detail": {
+        "scrollTop": 16096,
+        "max": 31932,
+        "scrollHeight": 32558,
+        "clientHeight": 626,
+        "backVisible": true,
+        "backAria": "回到最新消息（2 条新消息）",
+        "badge": "2",
+        "turns": 9
+      }
+    },
+    {
+      "name": "B6 新消息数量在回到最新入口上提示",
+      "ok": true,
+      "detail": {
+        "badge": "2",
+        "aria": "回到最新消息（2 条新消息）"
+      }
+    },
+    {
+      "name": "C1 入口行以真实输入胶囊为基准居中（误差 ≤ 2px）",
+      "ok": true,
+      "detail": {
+        "rowCenter": 884.5,
+        "stackCenter": 884.5,
+        "buttonWidth": 34,
+        "buttonHeight": 34,
+        "background": "rgb(197, 27, 125)",
+        "color": "rgb(255, 238, 248)",
+        "borderRadius": "50%",
+        "lastChild": true
+      }
+    },
+    {
+      "name": "C2 回到最新在入口行末尾、尺寸与其它入口一致（34px 圆形）",
+      "ok": true,
+      "detail": {
+        "rowCenter": 884.5,
+        "stackCenter": 884.5,
+        "buttonWidth": 34,
+        "buttonHeight": 34,
+        "background": "rgb(197, 27, 125)",
+        "color": "rgb(255, 238, 248)",
+        "borderRadius": "50%",
+        "lastChild": true
+      }
+    },
+    {
+      "name": "C3 强调色实底 + 白色箭头（颜色来自令牌）",
+      "ok": true,
+      "detail": {
+        "background": "rgb(197, 27, 125)",
+        "color": "rgb(255, 238, 248)"
+      }
+    },
+    {
+      "name": "C4 入口行参与正常布局，消息区在其上方结束（不遮挡正文）",
+      "ok": true,
+      "detail": {
+        "stageBottom": 773,
+        "rowTop": 773,
+        "overlap": false
+      }
+    },
+    {
+      "name": "C5 长输入时入口行仍以胶囊为中心且不溢出",
+      "ok": true,
+      "detail": {
+        "rowCenter": 884.5,
+        "stackCenter": 884.5,
+        "overflow": false
+      }
+    },
+    {
+      "name": "C6 左侧任务栏收起后入口行仍以胶囊为中心",
+      "ok": true,
+      "detail": {
+        "rowCenter": 762.5,
+        "stackCenter": 762.5
+      }
+    },
+    {
+      "name": "D1 点击回到最新后到底部并恢复跟随（入口隐藏）",
+      "ok": true,
+      "detail": {
+        "scrollTop": 31932,
+        "max": 31932,
+        "scrollHeight": 32558,
+        "clientHeight": 626,
+        "backVisible": false,
+        "backAria": null,
+        "badge": null,
+        "turns": 7
+      }
+    },
+    {
+      "name": "D2 回到最新只改变阅读位置：接续选择提示原样保留",
+      "ok": true,
+      "detail": {
+        "chipBefore": "从选中的历史位置继续",
+        "chipAfter": "从选中的历史位置继续"
+      }
+    },
+    {
+      "name": "E1 减少动态效果下点击立即贴底（不播放平滑动画）",
+      "ok": true,
+      "detail": {
+        "scrollTop": 31932,
+        "max": 31932,
+        "scrollHeight": 32558,
+        "clientHeight": 626,
+        "backVisible": false,
+        "backAria": null,
+        "badge": null,
+        "turns": 7
+      }
+    },
+    {
+      "name": "F1 800×600 最小支持窗口：入口行不溢出、仍以胶囊为中心",
+      "ok": true,
+      "detail": {
+        "rowLeft": 172,
+        "rowRight": 713,
+        "dockLeft": 69,
+        "dockRight": 791,
+        "rowCenter": 442.5,
+        "stackCenter": 442.5,
+        "overflow": false
+      }
+    }
+  ],
+  "pass": 27,
+  "fail": 0
+}

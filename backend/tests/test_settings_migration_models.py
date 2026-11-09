@@ -148,7 +148,10 @@ def test_versions_are_appended_and_compensation_is_the_latest(tmp_path: Path):
     assert 71 in numbers and 72 in numbers, "历史迁移必须保留"
     assert 73 in numbers, "没有登记只追加迁移 73（模型目录 / 用途分配 / 默认模型）"
     assert 74 in numbers, "没有登记补偿入口迁移 74"
-    assert SCHEMA_VERSION == COMPENSATION_VERSION == max(numbers) == 74
+    # 迁移只追加：本轮之后还会继续登记新迁移，所以这里只锁「补偿入口 = 最新迁移」，
+    # 不再写死具体号（写死会让后来任何一次追加迁移都误报）。
+    assert SCHEMA_VERSION == COMPENSATION_VERSION == max(numbers)
+    assert max(numbers) >= 74
 
 
 def test_required_objects_include_new_tables_and_indexes():

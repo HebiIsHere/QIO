@@ -49,6 +49,19 @@ def _clip(text: str) -> tuple[str, bool]:
     return f"{text[:MAX_TEXT_CHARS]}\n…（已截断，原文 {len(text)} 字）", True
 
 
+def _short(value: Any, limit: int = 100) -> str | None:
+    """机器标识类小字段（code / category / result_status）：脱敏 + 限长后入库。
+
+    这些值由程序产生（枚举值 / 稳定代码），但仍与其他输出一样先过
+    `trace/redact.py` —— 新增输出路径不得成为密钥原文的旁路。
+    None 保持 None：「没有结构化事实」和「未知」是两种事实，不互相冒充。
+    """
+    if value is None:
+        return None
+    text = redact_text(str(value)).strip()
+    return text[:limit] if text else None
+
+
 def record_tool_call(
     conn: sqlite3.Connection,
     *,
@@ -63,11 +76,24 @@ def record_tool_call(
     error: str = "",
     duration_ms: int | None = None,
     save_output: bool = True,
+    code: str | None = None,
+    category: str | None = None,
+    recoverable: bool | None = None,
+    result_status: str | None = None,
 ) -> str | None:
     """写一行工具记录。
 
     返回记录 id：重复的 `(turn_id, call_id)` 返回已有行的 id（幂等），写库失败返回 None。
     参数、输出**与错误原因**都先过 `trace/redact.py` 打码；**写历史失败绝不影响工具结果**。
+
+    结构化事实（迁移 75 新增的列，均可为 None = 旧记录/未知）：
+
+    * `code`：工具给的稳定机器代码（`exit_code` / `permission_denied` …），
+      任务栏据此判断「值不值得展示」，不做错误文本关键词匹配；
+    * `category`：统一的失败类别（见 `core/tool_feedback.py` 的 ErrorCategory）；
+    * `recoverable`：换参数/补条件后重试是否有意义（None = 未表态）；
+    * `result_status`：真实 ToolResult.status（例如 `awaiting_approval`）。
+      `status` 列仍是既有三态（success / failed / cancelled），语义不变。
 
     错误原因曾经是唯一的例外（只做 str()）：工具把凭据写进异常消息再抛出时，
     参数与输出都是打码的，只有 error 是密钥原文 —— 与本模块的承诺和 AGENTS.md
@@ -90,8 +116,9 @@ def record_tool_call(
         conn.execute(
             "INSERT OR IGNORE INTO tool_records "
             "(id, turn_id, topic_id, call_id, seq, tool_name, arguments, output, status, "
-            " error, duration_ms, truncated, output_missing, missing_reason, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " error, duration_ms, truncated, output_missing, missing_reason, created_at, "
+            " code, category, recoverable, result_status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record_id,
                 str(turn_id or ""),
@@ -108,6 +135,10 @@ def record_tool_call(
                 output_missing,
                 missing_reason,
                 _now(),
+                _short(code),
+                _short(category),
+                None if recoverable is None else (1 if recoverable else 0),
+                _short(result_status),
             ),
         )
         conn.commit()
@@ -160,6 +191,13 @@ def _preview(row: dict) -> dict:
         "output_chars": len(output),
         "preview": output[:PREVIEW_CHARS],
         "created_at": row["created_at"],
+        # 结构化事实（迁移 75）：旧行 / 未表态时如实为 None，不猜。
+        "code": row.get("code"),
+        "category": row.get("category"),
+        "recoverable": (
+            None if row.get("recoverable") is None else bool(row["recoverable"])
+        ),
+        "result_status": row.get("result_status"),
     }
 
 
@@ -171,7 +209,8 @@ def previews_for_turns(conn: sqlite3.Connection, turn_ids: list[str]) -> list[di
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         "SELECT id, turn_id, call_id, seq, tool_name, output, status, error, duration_ms, "
-        "truncated, output_missing, missing_reason, created_at FROM tool_records "
+        "truncated, output_missing, missing_reason, created_at, code, category, "
+        "recoverable, result_status FROM tool_records "
         f"WHERE turn_id IN ({placeholders}) ORDER BY created_at ASC, seq ASC",
         ids,
     ).fetchall()

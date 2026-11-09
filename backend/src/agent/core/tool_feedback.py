@@ -153,7 +153,13 @@ def _redact_and_limit(text: str, limit: int) -> str:
 
 
 def facts(result: ToolResult) -> dict[str, Any]:
-    """结构化的结果事实（给事件/界面/日志用，与给模型的消息同源）。"""
+    """结构化的结果事实（给事件/界面/日志用，与给模型的消息同源）。
+
+    `code` / `result_status` 是 Phase 1 结构化结果协议里的程序字段：
+    前者是稳定机器代码（界面用它判断「值不值得展示」，不匹配中文错误文本），
+    后者是真实 ToolResult.status（例如 `awaiting_approval`）。旧工具没有这两个
+    字段时如实为 None —— 归一后的 `status` 仍然只说 success / failed / cancelled。
+    """
     category = resolve_category(result) if not result.ok else None
     return {
         "status": status_of(result),
@@ -161,6 +167,8 @@ def facts(result: ToolResult) -> dict[str, Any]:
         "category": category.value if category else None,
         "category_label": category_label(category.value) if category else None,
         "recoverable": is_recoverable(result) if not result.ok else None,
+        "code": result.code,
+        "result_status": result.status,
         "reason": (result.error or "").strip() or None,
     }
 

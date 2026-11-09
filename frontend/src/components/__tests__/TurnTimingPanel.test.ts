@@ -230,3 +230,26 @@ describe("长 trace 的渲染开销", () => {
     w.unmount();
   });
 });
+
+describe("§四.2：耗时面板的状态词只表达「本轮回复结束」", () => {
+  it("completed 显示「本轮已结束」，不宣称目标已完成", async () => {
+    const w = mountPanel({ status: "completed", durationMs: 1500, queueMs: 0 });
+    await flushPromises();
+    const summary = w.find("summary").text();
+    expect(summary).toContain("本轮已结束");
+    expect(summary).not.toContain("已完成");
+    expect(summary).toContain("耗时");
+    w.unmount();
+  });
+
+  it("failed / cancelled 仍如实显示失败与停止（不被完成语义吞掉）", async () => {
+    const failed = mountPanel({ status: "failed", durationMs: 1000, queueMs: 0 });
+    await flushPromises();
+    expect(failed.find("summary").text()).toContain("已失败");
+    failed.unmount();
+    const stopped = mountPanel({ status: "cancelled", durationMs: 1000, queueMs: 0 });
+    await flushPromises();
+    expect(stopped.find("summary").text()).toContain("已停止");
+    stopped.unmount();
+  });
+});

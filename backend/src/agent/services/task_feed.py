@@ -78,6 +78,24 @@ _EXEC_TOOLS = frozenset(
     }
 )
 
+# ── 工具失败进入任务栏的条件（用户提示词 §一，2026-11-09）────────────────────
+# 单次工具失败默认只保留在执行记录里。任务栏只展示值得持续关注的工作、需要用户
+# 处理的阻碍、确实需要持续核查的结果；判断只用程序字段（tool_name / status /
+# code / category / turn 结束事实 / 尝试顺序），不按错误文本关键词猜，也不额外调模型。
+#
+# 本轮只对这三个工具做判定：不把同一规则无条件下沉到其它工具（它们的展示规则不变）。
+_TRIAGE_TOOLS = frozenset({"run_shell", "web_search", "web_fetch"})
+#: 需要用户真正动手才能继续的失败类别（补齐条件后可继续执行）。
+_ACTIONABLE_CATEGORIES = frozenset({"permission", "missing_dependency", "environment", "startup"})
+#: 需要用户真正动手的稳定代码（服务未配置 → 去设置里配置）。
+_ACTIONABLE_CODES = frozenset({"search_not_configured"})
+#: 命令超时可能已产生副作用且无法确认是否生效 → 待核查（只对 run_shell）。
+_TRIAGE_TIMEOUT_TOOLS = frozenset({"run_shell"})
+#: 非零退出码常见于检查类命令：保留真实结果，但不进任务栏、不计入需要处理。
+_EXIT_CODE = "exit_code"
+#: turn_journal 里「这一轮还没结束」的状态：此刻模型可能正在重试，不先冒独立条目。
+_TURN_OPEN_STATUSES = frozenset({"queued", "running"})
+
 _DERIVED_KIND_LABELS = {
     "summary": "记忆摘要",
     "knowledge": "知识提炼",
@@ -627,6 +645,156 @@ def _dev_rows(ctx: Any, acked: set[str]) -> list[dict[str, Any]]:
     return rows
 
 
+def _turn_statuses(conn: sqlite3.Connection, turn_ids: set[str]) -> dict[str, str]:
+    """批量取每轮在 turn_journal 里的真实状态（一次查询，不 N+1）。
+
+    缺行 = 没有结束事实可依赖（旧记录 / 已清理 / 非 API 路径写入）：不猜「已完成」，
+    这类失败默认不进任务栏 —— 首次加载与重连后不能重新冒出一批旧错误。
+    """
+    ids = sorted(turn_id for turn_id in turn_ids if turn_id)
+    if not ids or not _table_exists(conn, "turn_journal"):
+        return {}
+    out: dict[str, str] = {}
+    for start in range(0, len(ids), 400):
+        chunk = ids[start : start + 400]
+        placeholders = ",".join("?" for _ in chunk)
+        try:
+            rows = conn.execute(
+                "SELECT turn_id, status FROM turn_journal "
+                f"WHERE turn_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+        except sqlite3.Error:
+            return out
+        for row in rows:
+            out[str(row["turn_id"])] = str(row["status"] or "")
+    return out
+
+
+def _triage_attempts(
+    conn: sqlite3.Connection, turn_ids: set[str]
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """这三类工具在相关轮次里的全部尝试，按 (turn_id, tool_name) 分组、按真实顺序排。
+
+    同一 turn 内同一工具的尝试构成一条「尝试链」：同一目标（run_shell 的 cmd+cwd、
+    web_search 的 query、web_fetch 的 url）是重试，不同目标是替换查询/来源/命令。
+    链里只有**最后一次尝试**能代表这条链的最终状态 —— 前面的失败要么已被后续执行
+    补齐，要么已被替换，都不单独生成任务栏条目。
+    """
+    ids = sorted(turn_id for turn_id in turn_ids if turn_id)
+    if not ids:
+        return {}
+    chains: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for start in range(0, len(ids), 400):
+        chunk = ids[start : start + 400]
+        placeholders = ",".join("?" for _ in chunk)
+        try:
+            rows = conn.execute(
+                "SELECT id, turn_id, seq, tool_name, status, code, category, created_at "
+                "FROM tool_records "
+                f"WHERE turn_id IN ({placeholders}) "
+                "AND tool_name IN ('run_shell', 'web_search', 'web_fetch') "
+                "ORDER BY turn_id, created_at, seq",
+                chunk,
+            ).fetchall()
+        except sqlite3.Error:
+            return {}
+        for row in rows:
+            key = (str(row["turn_id"] or ""), str(row["tool_name"] or ""))
+            chains.setdefault(key, []).append(dict(row))
+    return chains
+
+
+def _triage_deserves_attention(tool_name: str, row: dict[str, Any]) -> bool:
+    """依据结构化事实判断「这条失败值不值得进任务栏」——不读错误正文。"""
+    code = str(row.get("code") or "")
+    category = str(row.get("category") or "")
+    if code == _EXIT_CODE:
+        # 非零退出码可能是检查结果（grep / diff 的常见返回值）：执行记录保留真实值，
+        # 但任务栏不据此推导「整个任务失败」，也不计入需要处理数量。
+        return False
+    if category in _ACTIONABLE_CATEGORIES or code in _ACTIONABLE_CODES:
+        return True
+    if category == "timeout" and tool_name in _TRIAGE_TIMEOUT_TOOLS:
+        # 命令可能已经产生副作用，无法确认是否生效 → 待核查。
+        return True
+    # 其余（external_service / code_error / output_format / assertion / unknown /
+    # 没有结构化事实的旧行）：瞬时失败或已由本轮回复解释，默认不进任务栏。
+    return False
+
+
+def _triage_summary(row: dict[str, Any], label: str) -> str:
+    """需要处理/待核查条目的可读中文说明：说清用户要做什么、处理后能继续什么。"""
+    code = str(row.get("code") or "")
+    category = str(row.get("category") or "")
+    if code == "search_not_configured":
+        return (
+            "联网搜索服务还没有配置：在「设置 → 模型与服务」里配置搜索服务后，"
+            "搜索请求才能拿到结果。"
+        )
+    if category == "timeout" or code == "timeout":
+        return (
+            f"{label}超时，无法确认是否已经生效：请先核查目标是否已被改动，"
+            "再决定是否重新执行。"
+        )
+    if category == "permission":
+        return (
+            f"{label}需要你的授权才能继续：批准这次调用或调整执行权限后，"
+            "可以重新执行它。"
+        )
+    if category == "missing_dependency":
+        return f"运行环境缺少{label}需要的依赖或程序：补齐后可以继续这次执行。"
+    if category in ("environment", "startup"):
+        return f"{label}没有启动成功（执行环境不可用）：检查程序或环境后可以重新执行。"
+    return f"{label}失败后需要你处理：处理后可以继续这次工作。"
+
+
+def _triage_hidden_ids(
+    conn: sqlite3.Connection, records: list[sqlite3.Row]
+) -> set[str]:
+    """本轮过滤：返回失败但「不值得进任务栏」的记录 id（执行记录本身原样保留）。
+
+    规则（全部来自结构化事实）：
+    1) 同一 turn 内同一工具只认最后一次尝试（重试/替换前的失败不单列）；
+    2) 最后一次尝试已被后续成功执行补齐 → 不列；
+    3) 这一轮还在跑/排队（可能正在重试）或没有结束事实 → 暂不列；
+    4) 按 code / category 判定：只有真正需要用户处理或必须持续核查的才列。
+    """
+    candidates: dict[str, dict[str, Any]] = {}
+    turn_ids: set[str] = set()
+    for row in records:
+        name = str(row["tool_name"] or "")
+        if name not in _TRIAGE_TOOLS or str(row["status"] or "") != "failed":
+            continue
+        record = dict(row)
+        candidates[str(row["id"])] = record
+        turn_id = str(row["turn_id"] or "")
+        if turn_id:
+            turn_ids.add(turn_id)
+    if not candidates:
+        return set()
+
+    chains = _triage_attempts(conn, turn_ids)
+    statuses = _turn_statuses(conn, turn_ids)
+    hidden: set[str] = set()
+    for record_id, record in candidates.items():
+        turn_id = str(record.get("turn_id") or "")
+        if not turn_id:
+            hidden.add(record_id)  # 没有可靠轮次事实：无法判定重试/补齐，默认不展示
+            continue
+        chain = chains.get((turn_id, str(record.get("tool_name") or ""))) or []
+        if not chain or str(chain[-1].get("id")) != record_id:
+            hidden.add(record_id)  # 不是最后一次尝试：已被重试/替换覆盖
+            continue
+        status = statuses.get(turn_id, "")
+        if status in _TURN_OPEN_STATUSES or not status:
+            hidden.add(record_id)  # 这一轮还在跑/没有结束事实：先不生成独立条目
+            continue
+        if not _triage_deserves_attention(str(record.get("tool_name") or ""), record):
+            hidden.add(record_id)
+    return hidden
+
+
 def _tool_rows(ctx: Any, conn: sqlite3.Connection, acked: set[str]) -> list[dict[str, Any]]:
     if not _table_exists(conn, "tool_records"):
         return []
@@ -642,14 +810,19 @@ def _tool_rows(ctx: Any, conn: sqlite3.Connection, acked: set[str]) -> list[dict
         records = conn.execute(
             "SELECT id, turn_id, topic_id, tool_name, status, error, duration_ms, truncated, "
             "output_missing, missing_reason, created_at, substr(output, 1, 400) AS preview, "
-            "length(output) AS output_chars FROM tool_records "
-            "ORDER BY created_at DESC LIMIT 200"
+            "length(output) AS output_chars, code, category, recoverable, result_status "
+            "FROM tool_records ORDER BY created_at DESC LIMIT 200"
         ).fetchall()
     except sqlite3.Error:
         return []
+    # 用户 §一：单次失败默认只留在执行记录里。过滤发生在生成处，当前/历史/计数/
+    # 徽标/顶部通知因此共用同一批 item（不是只在 Vue 模板里藏一行）。
+    hidden = _triage_hidden_ids(conn, records)
     for row in records:
         name = str(row["tool_name"] or "")
         if name in subagent_tools or name in _SHELL_TOOLS:
+            continue
+        if str(row["id"]) in hidden:
             continue
         raw_status = str(row["status"] or "")
         duration = row["duration_ms"]
@@ -677,6 +850,14 @@ def _tool_rows(ctx: Any, conn: sqlite3.Connection, acked: set[str]) -> list[dict
         error = str(row["error"] or "")
         preview = "" if missing else str(row["preview"] or "")
         truncated = bool(row["truncated"]) or int(row["output_chars"] or 0) > 400
+        # 默认摘要用工具给的原文；这三类工具的失败若是「值得展示」的，
+        # 摘要换成可读中文（要做什么 / 处理后能继续什么），错误原文只进详情。
+        summary = error or preview.replace("\n", " ")
+        detail = error or missing_reason
+        attention = status == "failed"
+        if name in _TRIAGE_TOOLS and raw_status == "failed":
+            attention = True
+            summary = _triage_summary(dict(row), label)
         item_id = f"{SOURCE_TOOL}:{row['id']}"
         actions = [
             {"kind": "read_more", "label": "查看更多", "target": str(row["id"]), "supported": True}
@@ -699,17 +880,17 @@ def _tool_rows(ctx: Any, conn: sqlite3.Connection, acked: set[str]) -> list[dict
                 origin="topic" if row["topic_id"] else "unknown",
                 topic_id=row["topic_id"],
                 executor=label,
-                summary=error or preview.replace("\n", " "),
+                summary=summary,
                 queued_at=created_at,
                 started_at=started,
                 finished_at=created_at,
                 duration_ms=int(duration) if isinstance(duration, (int, float)) else None,
-                requires_attention=status == "failed",
+                requires_attention=attention,
                 output_preview=preview,
                 output_truncated=truncated,
                 output_hint=hint or ("仅显示部分" if truncated else ""),
                 actions=actions,
-                detail=error or missing_reason,
+                detail=detail,
                 acknowledged=item_id in acked,
             )
         )
@@ -901,7 +1082,9 @@ def task_detail(ctx: Any, task_id: str) -> dict[str, Any] | None:
         from agent.storage import tool_records
 
         record = tool_records.get_record(ctx.conn, source_id)
-        if record is None:
+        # 被任务栏过滤掉的失败（§一：单次失败只留在执行记录里）不提供任务栏详情入口；
+        # 执行记录本身仍走 /api/tool-records/{id} 完整可读，不删除、不改写成成功。
+        if record is None or item is None:
             return None
         parts = [
             {"kind": "output", "label": "输出", "text": str(record.get("output") or ""),

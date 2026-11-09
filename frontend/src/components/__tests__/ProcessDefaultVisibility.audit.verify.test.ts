@@ -301,7 +301,9 @@ describe("契约 §1.5：运行中默认折叠", () => {
       drawer(untouched).exists(),
       "完成之后默认可见区仍然只有状态行（不得因为状态变化把历史塞回用户眼前）",
     ).toBe(false);
-    expect(untouched.text(), "完成后必须如实显示状态词").toMatch(/已完成|已停止/);
+    // §四.2：completed 的如实说法是「本轮已结束」（不再宣称「已完成」）。
+    expect(untouched.text(), "完成后必须如实显示状态词").toMatch(/本轮已结束|已停止/);
+    expect(untouched.text(), "不得把回复结束说成目标已完成").not.toContain("已完成");
     untouched.unmount();
 
     // (b) 用户手动展开过：完成**不得**把它收走 —— 契约明文保护正在阅读的用户

@@ -39,6 +39,7 @@ import ChatColumn from "../ChatColumn.vue";
 import MessageStream from "../../MessageStream.vue";
 import { useSessionStore } from "../../../stores/session";
 import { useEventStore } from "../../../stores/events";
+import { useChatViewportStore } from "../../../stores/chatViewport";
 
 function freshPinia(): Pinia {
   const pinia = createPinia();
@@ -316,11 +317,11 @@ describe("消息流空 / 加载 / 失败三态（真实 MessageStream）", () =>
     await nextTick();
     await nextTick();
 
-    const button = w.find(".back-latest");
-    expect(button.exists()).toBe(true);
-    expect(button.attributes("aria-label")).toContain("回到最新消息");
-    expect(button.find(".count").exists()).toBe(true);
-    expect(button.find(".count").text()).toBe("1");
+    // 「回到最新」入口已并入输入区辅助入口行（ComposerEntries），按钮本身由该组件的
+    // 定向用例覆盖；消息流这里钉住同一份共享阅读状态（未读计数来自真实流内计数）。
+    const viewport = useChatViewportStore();
+    expect(viewport.following).toBe(false);
+    expect(viewport.unseen).toBe(1);
     w.unmount();
   });
 });

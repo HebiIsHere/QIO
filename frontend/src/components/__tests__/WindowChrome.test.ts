@@ -18,8 +18,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import WindowChrome from "../WindowChrome.vue";
+import QTipLayer from "../ui/QTipLayer.vue";
+import { hideTip } from "../../composables/useQioTip";
 import { useUiStore } from "../../stores/ui";
 import { resetQuitGuard } from "../../services/quitGuard";
 
@@ -115,14 +118,18 @@ function setShell(on: boolean) {
   else delete g.__TAURI_INTERNALS__;
 }
 
-async function mountChrome(behavior: "ask" | "tray" | "quit" = "ask") {
+async function mountChrome(behavior: "ask" | "tray" | "quit" = "ask", attach = false) {
   const pinia = createPinia();
   setActivePinia(pinia);
   mocks.getUISettings.mockResolvedValue({ typewriter_cps: 50, close_behavior: behavior });
   const ui = useUiStore();
   ui.loaded = true;
   ui.closeBehavior = behavior;
-  const w = mount(WindowChrome, { global: { plugins: [pinia] } });
+  const w = mount(WindowChrome, {
+    global: { plugins: [pinia] },
+    // 用途说明要在真实 DOM 里量位置，需要挂到 document 上
+    ...(attach ? { attachTo: document.body } : {}),
+  });
   await flushPromises();
   await flushPromises();
   return w;
@@ -222,6 +229,42 @@ describe("窗口控制语义", () => {
     const labels = w.findAll(".window-controls button").map((b) => b.attributes("aria-label"));
     expect(labels).toEqual(["最小化", "最大化", "关闭"]);
     w.unmount();
+  });
+
+  it("最小化用途说明只说「最小化到任务栏」；按钮名称与键盘聚焦说明保持不变", async () => {
+    const w = await mountChrome("ask", true);
+    const layer = mount(QTipLayer, { attachTo: document.body });
+    const button = w.find('button[aria-label="最小化"]').element as HTMLButtonElement;
+    // 准确的按钮名称（读屏拿到的名字）不因缩短提示而改变
+    expect(button.getAttribute("aria-label")).toBe("最小化");
+    expect(button.tagName).toBe("BUTTON");
+    expect(button.getAttribute("type")).toBe("button");
+
+    vi.useFakeTimers();
+    try {
+      // 鼠标悬停：500ms 后出现，文案只保留最短的必要信息
+      button.dispatchEvent(new Event("pointerenter"));
+      vi.advanceTimersByTime(600);
+      await nextTick();
+      await nextTick();
+      expect(document.querySelector('[role="tooltip"]')?.textContent?.trim()).toBe("最小化到任务栏");
+
+      // 键盘聚焦：立即可见（键盘用户不用等 500ms）
+      hideTip();
+      await nextTick();
+      await nextTick();
+      expect(document.querySelector('[role="tooltip"]')).toBeNull();
+      button.dispatchEvent(new Event("focusin"));
+      await nextTick();
+      await nextTick();
+      expect(document.querySelector('[role="tooltip"]')?.textContent?.trim()).toBe("最小化到任务栏");
+    } finally {
+      vi.useRealTimers();
+      hideTip();
+      layer.unmount();
+      w.unmount();
+      document.body.innerHTML = "";
+    }
   });
 
   it("最小化 / 最大化按钮调到壳的窗口接口", async () => {

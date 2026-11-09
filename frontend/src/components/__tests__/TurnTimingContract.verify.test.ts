@@ -222,14 +222,17 @@ describe("契约 §3：折叠态必须能看见总耗时", () => {
     const region = wrapper.find('[data-test="turn-process"]');
     expect(region.exists(), "折叠态过程区必须存在").toBe(true);
     const regionText = region.text();
-    const wordCount = (regionText.match(/已完成/g) || []).length;
+    // §四.2：completed 的准确说法是「本轮已结束」，且只由过程区状态行说一次。
+    const wordCount = (regionText.match(/本轮已结束/g) || []).length;
     expect(wordCount, "折叠态状态词只出现一次：" + regionText).toBe(1);
+    expect(regionText, "不得再宣称「已完成」").not.toContain("已完成");
     expect(regionText, "折叠态仍要看得见总耗时").toMatch(/耗时[\s\S]{0,8}1\.5/);
 
     const timing = wrapper.find('[data-test="turn-timing"]');
     if (timing.exists()) {
       const timingText = timing.text();
       expect(timingText, "耗时入口自己不该再拼状态词：" + timingText).not.toContain("已完成");
+      expect(timingText, "耗时入口不得重复状态词").not.toContain("本轮已结束");
       expect(timingText).toContain("耗时");
     }
     wrapper.unmount();

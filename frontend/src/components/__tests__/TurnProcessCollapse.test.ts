@@ -262,7 +262,9 @@ describe("问题 4：运行中默认可见区 = 状态行 + 当前阶段名 + �
     await nextTick();
 
     const status = w.find("[data-test='turn-process-status']").text();
-    expect(status).toContain("已完成");
+    // §四.2：completed 说「本轮已结束」，不宣称目标已完成
+    expect(status).toContain("本轮已结束");
+    expect(status).not.toContain("已完成");
     expect(status).toContain("耗时");
     expect(status).toContain("2.6 秒");
     expect(callCountTokens(status)).toHaveLength(1);
@@ -329,7 +331,7 @@ describe("问题 4：运行中默认可见区 = 状态行 + 当前阶段名 + �
 });
 
 describe("问题 4：状态行的失败摘要是系统事实，不是模型文案", () => {
-  it("TOOL_END 的真实 error → 状态行带一句话原因；完整详情仍然折叠", async () => {
+  it("TOOL_END 失败 → 状态行给可读结构化结论（不贴原始错误）；完整详情仍然折叠", async () => {
     const failed = msg({
       id: "t9",
       role: "tool",
@@ -345,14 +347,15 @@ describe("问题 4：状态行的失败摘要是系统事实，不是模型文�
     session.turnPhase = "generating";
     await nextTick();
     const status = w.find("[data-test='turn-process-status']").text();
-    expect(status).toContain("1 项失败");
-    expect(status).toContain("grep 退出码 2：路径不存在");
+    // §四.3/6：失败不改变整轮状态，默认只给可读结论；原始 error 文本不进第一层
+    expect(status).toContain("搜索代码执行失败");
+    expect(status).not.toContain("grep 退出码 2");
     // 失败详情仍然在折叠区：逐项工具卡不在默认可见区
     expect(w.findAll(".tool-card")).toHaveLength(0);
     w.unmount();
   });
 
-  it("没有 error 的失败不编造原因：只说「N 项失败」", async () => {
+  it("没有 error / 没有类别标签的失败不编造原因：只说「工具执行失败」", async () => {
     const failed = msg({
       id: "t10",
       role: "tool",
@@ -367,7 +370,8 @@ describe("问题 4：状态行的失败摘要是系统事实，不是模型文�
     session.turnPhase = "generating";
     await nextTick();
     const status = w.find("[data-test='turn-process-status']").text();
-    expect(status).toContain("1 项失败");
+    // 没有结构化事实时不能假装知道原因：用后端给的中文展示名 + 「执行失败」。
+    expect(status).toContain("搜索代码执行失败");
     expect(status).not.toContain("这次执行没有成功"); // 不替失败编一句原因
     expect(status).not.toContain("：");
     w.unmount();

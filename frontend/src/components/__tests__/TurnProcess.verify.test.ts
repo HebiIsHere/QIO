@@ -376,7 +376,12 @@ describe("契约 §1.2 / §1.3：同阶段更新与自主转阶段", () => {
       }),
     );
     await settle();
-    expect(wrapper.text()).toContain("搜索失败");
+    // §四.3/6：失败调用在默认状态行里是**可读结论**（工具展示名 + 执行失败；
+    // 这次事件没有中文展示名，就用通用「工具」，不把原始工具标识塞进状态行），
+    // 原始错误文本只进展开后的工具卡详情。
+    expect(wrapper.text()).toContain("工具执行失败");
+    expect(wrapper.text()).not.toContain("搜索失败");
+    expect(wrapper.text()).not.toContain("grep_search 执行失败");
     wrapper.unmount();
   });
 });
@@ -429,7 +434,9 @@ describe("契约 §1.5：完成自动收起", () => {
     await settle();
 
     const region = requireProcessRegion(wrapper);
-    expect(region.text()).toMatch(/已完成|已停止/);
+    // §四.2：回复流程正常结束 → 「本轮已结束」（不再宣称「已完成」）。
+    expect(region.text()).toMatch(/本轮已结束|已停止/);
+    expect(region.text()).not.toContain("已完成");
     expect(historyCollapsed(wrapper), "完成之后过程区必须自动收起").toBe(true);
     expect(wrapper.text()).toContain("已经改好了。");
     wrapper.unmount();

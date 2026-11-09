@@ -91,40 +91,59 @@ class WebFetchTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         url = str(kwargs.get("url", "") or "").strip()
         if not url:
-            return ToolResult(ok=False, error="url 必填")
+            return ToolResult(ok=False, error="url 必填", code="missing_argument")
         if not url.lower().startswith(("http://", "https://")):
-            return ToolResult(ok=False, error="url 必须是 http(s) 地址")
+            return ToolResult(
+                ok=False, error="url 必须是 http(s) 地址", code="invalid_argument"
+            )
         try:
             code, html = await self.fetch_html(url)
         except Exception as exc:  # noqa: BLE001 - 网络层失败必须说清是哪个地址
+            # 网络层失败是瞬时的：换来源/重试即可，默认不值得进任务栏（§一）。
             return ToolResult(
                 ok=False,
                 error=(
                     f"抓取失败：连不上 {url}"
                     f"（{type(exc).__name__}: {str(exc).strip() or '没有更多说明'}）"
                 ),
+                code="fetch_network_error",
+                category="external_service",
             )
         if code != 200:
-            return ToolResult(ok=False, error=f"无法读取正文（HTTP {code}）")
+            return ToolResult(
+                ok=False,
+                error=f"无法读取正文（HTTP {code}）",
+                code="fetch_http_error",
+                category="external_service",
+            )
         low = html.lower()
         if any(f in low for f in JS_REQUIRED_FLAGS):
+            # 脚本渲染是页面形态限制，不是用户授权/配置问题：换来源即可。
             return ToolResult(
                 ok=False,
                 error=(
                     "网页正文由 JavaScript 在浏览器里生成，抓取器读不到"
                     "（不是登录或验证问题；该站点若有数据接口，直接抓接口）"
                 ),
+                code="fetch_js_required",
+                category="output_format",
             )
         if any(f in low for f in BAD_HTML_FLAGS):
             return ToolResult(
-                ok=False, error="该页面需要登录或验证，无法读取正文"
+                ok=False,
+                error="该页面需要登录或验证，无法读取正文",
+                code="fetch_login_required",
+                category="external_service",
             )
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "aside"]):
             tag.decompose()
         text = soup.get_text(" ", strip=True)
         if not text:
-            return ToolResult(ok=False, error="该页面无正文可提取")
+            return ToolResult(
+                ok=False, error="该页面无正文可提取", code="fetch_empty",
+                category="output_format",
+            )
         requested = kwargs.get("max_chars", None)
         if requested is None or requested == "":
             budget = self._default_max_chars()

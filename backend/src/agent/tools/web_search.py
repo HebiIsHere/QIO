@@ -55,7 +55,8 @@ class WebSearchTool(Tool):
     async def run(self, **kwargs: Any) -> ToolResult:
         query = str(kwargs.get("query", "") or "").strip()
         if not query:
-            return ToolResult(ok=False, error="query is required")
+            # 结构化 code：调用参数缺失属于模型侧可自行修正的问题，不是用户待办。
+            return ToolResult(ok=False, error="query is required", code="missing_argument")
         requested = kwargs.get("top_k", None)
         if requested is None or requested == "":
             top_k = self._default_top_k()
@@ -66,12 +67,22 @@ class WebSearchTool(Tool):
                 top_k = self._default_top_k()
         top_k = max(self.TOP_K_MIN, min(top_k, self.TOP_K_MAX))
         if self.search_service is None:
-            return ToolResult(ok=False, error="搜索服务未配置")
+            # 「服务未配置」是需要用户动手的配置项（§一 可以展示的类别）；
+            # 用稳定 code + category 表达，界面不解析中文原因。
+            return ToolResult(
+                ok=False,
+                error="搜索服务未配置",
+                code="search_not_configured",
+                category="environment",
+                recoverable=False,
+            )
         outcome = await self.search_service.search(query, top_k)
         if outcome.status == "error":
             return ToolResult(
                 ok=False,
                 error=f"无法联网搜索：{outcome.error}（不要重复重试同一查询）",
+                code="search_failed",
+                category="external_service",
             )
         if outcome.status == "empty" or not outcome.hits:
             return ToolResult(ok=True, content="未找到相关结果")
