@@ -605,7 +605,9 @@ const panelTitle = computed(() => {
   flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
-  padding: 0 0 2px;
+  /* 上下留白对称：入口按钮在「消息区底边 → 输入胶囊顶边」之间垂直居中
+     （配合 ComposerDock 里 .composer-entries:has(.entry-row) 去掉底部外边距）。 */
+  padding: 9px 0;
 }
 .entry-btn {
   position: relative;

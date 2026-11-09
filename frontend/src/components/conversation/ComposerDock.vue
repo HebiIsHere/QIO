@@ -73,9 +73,10 @@ import ConversationModeSwitch from "./ConversationModeSwitch.vue";
   width: 100%;
   min-width: 0;
 }
-/* 只有真的有入口时才占一行的高度（没有事项时完全收起，不留空白） */
+/* 只有真的有入口时才占一行的高度（没有事项时完全收起，不留空白）。
+   上下间距由 .entry-row 的对称内边距提供：按钮在消息区底边与输入胶囊顶边之间垂直居中。 */
 .composer-entries:has(.entry-row) {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 .composer-mode-cell {
   grid-column: 1;
