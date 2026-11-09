@@ -361,7 +361,15 @@ class MemoryLifecycle:
         card_svc = EntityCardService(self.conn)
         # 提交时核对修订版本：快照取自**模型调用之前**。
         snapshot = card_svc.revision_snapshot()
-        outcome = await extract_entity_cards_outcome(adapter, [dict(m) for m in messages])
+        # 输入给模型的真实来源目录（证据 id 只能来自这里；不编造来源）。
+        # 与知识提炼共用同一份后台目录：片段 / 片段消息 / 摘要索引 / 既有实体 /
+        # 已有知识。缺了它，抽取侧会按空目录校验，真实 evidence_ids 也会被拒。
+        evidence_catalog = self._evidence_catalog(fragment)
+        outcome = await extract_entity_cards_outcome(
+            adapter,
+            [dict(m) for m in messages],
+            evidence_catalog=evidence_catalog,
+        )
         self._record_repairs(tracer, "实体卡", outcome.notes)
         if outcome.value is None:
             reason = outcome.error or "实体卡提炼不可用"
@@ -369,7 +377,9 @@ class MemoryLifecycle:
             derived_tasks.fail(self.conn, task.id, reason, expected_generation=generation)
             return False
 
-        candidates, notes = prepare_candidates_for_commit(outcome.value)
+        candidates, notes = prepare_candidates_for_commit(
+            outcome.value, evidence_catalog=evidence_catalog
+        )
         if notes:
             self._record_repairs(tracer, "实体卡", notes)
 
@@ -852,7 +862,7 @@ class MemoryLifecycle:
         )
 
     def _evidence_catalog(self, fragment) -> list[dict]:
-        """后台知识提炼的真实来源目录（输入给模型的 evidence 清单）。
+        """后台提炼（知识 / 实体）的真实来源目录（输入给模型的 evidence 清单）。
 
         条目形状（与 C 的 derivation 约定）：{"id": "真实 id", "kind":
         "message|fragment|summary|entity|knowledge", "label": "简短说明"}。
